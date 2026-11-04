@@ -1623,6 +1623,10 @@ pub enum Builtin {
     /// runs the callback once per index below a count, in parallel, lending every child the
     /// same shared borrow, and returns the results in index order (F10).
     TaskScope,
+    /// `Routine.scope :: (Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]`
+    /// (TZ11): `Task.scope`'s type and rules, with each child on a tzroutine of its own, which may
+    /// wait (for the others too).
+    RoutineScope,
     /// `Atomic.create :: AtomicValue<'a> => 'a -> Atomic<'a>` (F10).
     AtomicCreate,
     /// `Atomic.load :: AtomicValue<'a> => ref Atomic<'a> -> 'a`.
@@ -2168,6 +2172,7 @@ impl Builtin {
         Self::AsyncPosted,
         Self::AsyncRetire,
         Self::TaskScope,
+        Self::RoutineScope,
         Self::AtomicCreate,
         Self::AtomicLoad,
         Self::AtomicStore,
@@ -2503,6 +2508,7 @@ impl Builtin {
             Self::AsyncPosted => "Async.__posted",
             Self::AsyncRetire => "Async.__retire",
             Self::TaskScope => "Task.scope",
+            Self::RoutineScope => "Routine.scope",
             Self::AtomicCreate => "Atomic.create",
             Self::AtomicLoad => "Atomic.load",
             Self::AtomicStore => "Atomic.store",
@@ -3708,6 +3714,7 @@ impl Builtin {
                 }
             }
             Self::TaskScope
+            | Self::RoutineScope
             | Self::AtomicCreate
             | Self::AtomicLoad
             | Self::AtomicStore
@@ -3942,13 +3949,14 @@ impl Builtin {
                 | Self::ParallelReduce
                 | Self::ParallelForEachChunk
                 | Self::TaskScope
+                | Self::RoutineScope
         )
     }
 
     /// The argument of a parallel operation that holds the callback.
     pub(crate) fn parallel_callback(self) -> usize {
         match self {
-            Self::TaskScope => 2,
+            Self::TaskScope | Self::RoutineScope => 2,
             Self::ParallelInit | Self::ParallelReduce | Self::ParallelForEachChunk => 1,
             _ => 0,
         }
@@ -4074,7 +4082,13 @@ impl Builtin {
 
     /// Whether this builtin is a `Routine` operation, lowered to calls of the tzroutine runtime (TZ02).
     pub(crate) fn is_routine(self) -> bool {
-        self.name().starts_with("Routine.")
+        self.name().starts_with("Routine.") && self != Self::RoutineScope
+    }
+
+    /// Whether this builtin is `Task.scope` or its successor `Routine.scope` (TZ11): a parallel
+    /// operation whose children share a borrow and return a result each.
+    pub(crate) fn is_scope(self) -> bool {
+        matches!(self, Self::TaskScope | Self::RoutineScope)
     }
 
     /// Whether this builtin is an operation of the timers (TZ05): `Time.sleep`, `after`, `tick`,
@@ -4113,8 +4127,10 @@ impl Builtin {
     /// the default WebAssembly target, until TZ09). So do the operations of `Context` (TZ07), whose
     /// deadlines are timers and whose `after_func` spawns.
     pub(crate) fn spawns(self) -> bool {
-        matches!(self, Self::RoutineGo | Self::WaitGroupGo)
-            || (self.is_timer() && self != Self::TimeSleep && self.length_nanoseconds().is_none())
+        matches!(
+            self,
+            Self::RoutineGo | Self::WaitGroupGo | Self::RoutineScope
+        ) || (self.is_timer() && self != Self::TimeSleep && self.length_nanoseconds().is_none())
             || self.is_context()
     }
 
@@ -4375,7 +4391,7 @@ impl Builtin {
         let atomic_value = || vec![constraint("AtomicValue", a())];
         let borrowed = |ty| Reference(Box::new(ty), false);
         match self {
-            Self::TaskScope => {
+            Self::TaskScope | Self::RoutineScope => {
                 let shared = || Reference(Box::new(Var("s")), false);
                 (
                     vec![

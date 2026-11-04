@@ -562,6 +562,8 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         ParallelInit | ParallelMap | ParallelMapRef | ParallelReduce | TaskScope => {
             facts(Some(Effect::Task), true, false, false, true, false, None)
         }
+        // TZ11: the children may wait for each other, and a deadlock among them traps at the call.
+        RoutineScope => facts(Some(Effect::Task), true, true, true, true, false, None),
         // B24
         ParallelForEachChunk => facts(Some(Effect::Task), true, true, false, true, false, None),
         // TZ02: `Routine.go` spawns a tzroutine that calls the owned function it takes.
@@ -3596,8 +3598,8 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 355);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 180);
+        assert_eq!(Builtin::ALL.len(), 356);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 181);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 175);
     }
 
@@ -3607,7 +3609,7 @@ mod tests {
         assert_eq!(by(Effect::Io), 10);
         assert_eq!(by(Effect::Os), 21);
         assert_eq!(by(Effect::Net), 12);
-        assert_eq!(by(Effect::Task), 18);
+        assert_eq!(by(Effect::Task), 19);
         assert_eq!(by(Effect::Atomic), 92);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
@@ -3617,23 +3619,23 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 79);
+        assert_eq!(count(|facts| facts.alloc), 80);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 54);
+        assert_eq!(count(|facts| facts.trap), 55);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
     }
 
     #[test]
     fn diverge_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.diverge), 27);
+        assert_eq!(count(|facts| facts.diverge), 28);
     }
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 28);
+        assert_eq!(count(|facts| facts.callbacks), 29);
     }
 
     fn checked(source: &str) -> CheckedModule {

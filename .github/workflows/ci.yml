@@ -125,8 +125,9 @@ jobs:
       # TZ02: tzroutine { } and Routine, end to end, and the exports of tests/fixtures/tzroutine with live == 0. TZ03: Channel
       # between tzroutines and tasks at 1 and 4 Ps (native), and the one-thread Channel of the default WebAssembly target.
       # TZ04: select, the same two ways. TZ05: the timers (native). TZ06: the sync types, at 1 and 4 Ps and on the one
-      # thread of the default WebAssembly target. TZ07: Context and ErrGroup (native).
-      - name: tzroutine, Channel, select, timers, sync and Context (TZ02 to TZ07)
+      # thread of the default WebAssembly target. TZ07: Context and ErrGroup (native). TZ11: Parallel on the scheduler
+      # and Routine.scope (native).
+      - name: tzroutine, Channel, select, timers, sync, Context and Parallel (TZ02 to TZ07, TZ11)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           node scripts/slot.mjs -- node tests/tzroutine.mjs target/debug/tsuzuri
@@ -139,6 +140,7 @@ jobs:
           node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri sync_types
           node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri sync_single
           node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri context
+          node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri parallel_scheduler
       - name: Primitive types
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/primitives.mjs target/debug/tsuzuri

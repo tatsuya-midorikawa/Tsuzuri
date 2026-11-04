@@ -189,10 +189,10 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | NetWrite | NetClose | NetClassify | NetWatch | NetUnwatch | NetConnect | NetNames
         | NetSend => Some(Outside),
         BenchNow | BenchConsume | GenSeed => Some(Clock),
-        TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap
-        | ParallelMapRef | ParallelReduce | ParallelForEachChunk | AsyncResume | AsyncTake
-        | AsyncPut | AsyncNextId | AsyncClock | AsyncWait | AsyncPosted | AsyncRetire
-        | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs
+        TaskRun | TaskParallel | TaskParallelResults | TaskScope | RoutineScope | ParallelInit
+        | ParallelMap | ParallelMapRef | ParallelReduce | ParallelForEachChunk | AsyncResume
+        | AsyncTake | AsyncPut | AsyncNextId | AsyncClock | AsyncWait | AsyncPosted
+        | AsyncRetire | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs
         | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => Some(Task),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some(Clock),
@@ -900,6 +900,10 @@ impl<'a> Scanner<'a> {
                     K::SelectWait(_) => {
                         Some(Effect::Builtin(Builtin::ChannelRecv, Category::State))
                     }
+                    // Routine.scope spawns, as Routine.go does (TZ11): never pure.
+                    K::Parallel(Builtin::RoutineScope, _) => {
+                        Some(Effect::Builtin(Builtin::RoutineScope, Category::Task))
+                    }
                     K::Parallel(_, arguments) => {
                         let mut closed = true;
                         for argument in arguments
@@ -1541,7 +1545,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            180
+            181
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

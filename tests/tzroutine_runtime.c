@@ -1765,6 +1765,100 @@ static void test_context_after(void) {
     printf("context after: ok\n");
 }
 
+/* ---------------------------------------------------------------- Parallel and Routine.scope (TZ11) */
+
+/* tsuzuri_tz_parallel calls every index once, from a pseudo-G and from a tzroutine, with any number
+ * of Ps; a nested call inside a callback works on its own; inside a trap boundary it asks for the
+ * task runtime's pool (3) and calls nothing. */
+enum { CLAIMS_MAX = 10000 };
+static _Atomic int64_t claims[CLAIMS_MAX];
+static void claim(void *ctx, uint64_t i) {
+    CHECK(ctx == claims && i < CLAIMS_MAX);
+    atomic_fetch_add(&claims[i], 1);
+}
+static void check_claims(uint64_t n) {
+    for (uint64_t i = 0; i < CLAIMS_MAX; i++) CHECK(atomic_load(&claims[i]) == (i < n ? 1 : 0));
+    for (uint64_t i = 0; i < CLAIMS_MAX; i++) atomic_store(&claims[i], 0);
+}
+static void claims_routine(void *env) {
+    uint64_t n = (uint64_t)(uintptr_t)env;
+    CHECK(tsuzuri_tz_parallel(claim, claims, n) == 0);
+    check_claims(n);
+}
+static _Atomic int64_t nested_total;
+static void nested_inner(void *ctx, uint64_t i) {
+    (void)ctx;
+    atomic_fetch_add(&nested_total, (int64_t)i + 1);
+}
+static void nested_outer(void *ctx, uint64_t i) {
+    (void)ctx;
+    (void)i;
+    CHECK(tsuzuri_tz_parallel(nested_inner, NULL, 100) == 0);
+}
+#if !defined(_WIN32)
+static void *test_owner(void) { return &nested_total; }
+#endif
+static void test_parallel(void) {
+    uint64_t sizes[] = {0, 1, 7, 10000};
+    for (int k = 0; k < 4; k++) {
+        CHECK(tsuzuri_tz_parallel(claim, claims, sizes[k]) == 0);
+        check_claims(sizes[k]);
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(claims_routine, (void *)(uintptr_t)sizes[k]);
+        join(scope);
+    }
+    atomic_store(&nested_total, 0);
+    CHECK(tsuzuri_tz_parallel(nested_outer, NULL, 16) == 0);
+    CHECK(atomic_load(&nested_total) == 16 * 5050);
+#if !defined(_WIN32)
+    tsuzuri_trap_hooks.owner = test_owner;
+    CHECK(tsuzuri_tz_parallel(claim, claims, 5) == 3);
+    tsuzuri_trap_hooks.owner = NULL;
+    check_claims(0);
+#endif
+    printf("parallel: ok\n");
+}
+
+/* Routine.scope: every child runs once on its own tzroutine and may wait for the others: 64
+ * children pass a value around a ring of channels, which needs them all at once (with one P too). */
+enum { RING = 64 };
+static tzr_chan *ring[RING];
+static int64_t ring_seen[RING];
+static void ring_child(void *ctx, uint64_t i) {
+    CHECK(ctx == ring);
+    int64_t v = 0;
+    if (i == 0) {
+        v = 1;
+        CHECK(tsuzuri_tz_chan_send(ring[1], &v, 1) == TZR_OK);
+        CHECK(tsuzuri_tz_chan_recv(ring[0], &v, 1) == TZR_OK);
+    } else {
+        CHECK(tsuzuri_tz_chan_recv(ring[i], &v, 1) == TZR_OK);
+        v++;
+        CHECK(tsuzuri_tz_chan_send(ring[(i + 1) % RING], &v, 1) == TZR_OK);
+    }
+    ring_seen[i] = v;
+}
+static void scope_spawner(void *ctx, uint64_t i) {
+    (void)ctx;
+    tsuzuri_tz_go(incr, (void *)(uintptr_t)(i + 1));
+}
+static void test_scope_run(void) {
+    for (int i = 0; i < RING; i++) ring[i] = chan_make(sizeof(int64_t), 0);
+    CHECK(tsuzuri_tz_scope_run(ring_child, ring, RING) == 0);
+    CHECK(ring_seen[0] == RING);
+    for (int i = 1; i < RING; i++) CHECK(ring_seen[i] == i + 1);
+    for (int i = 0; i < RING; i++) {
+        CHECK(tsuzuri_tz_chan_release(ring[i]) == 1);
+        free(ring[i]);
+    }
+    CHECK(tsuzuri_tz_scope_run(ring_child, ring, 0) == 0);
+    /* the call waits for what the children spawned too */
+    atomic_store(&counter, 0);
+    CHECK(tsuzuri_tz_scope_run(scope_spawner, NULL, 100) == 0);
+    CHECK(atomic_load(&counter) == 5050);
+    printf("scope run: ok\n");
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -1828,6 +1922,8 @@ int main(int argc, char **argv) {
     RUN("context_deadline_race", test_context_deadline_race());
     RUN("context_after", test_context_after());
     RUN("context_expire_boundary", test_context_expire_boundary());
+    RUN("parallel", test_parallel());
+    RUN("scope_run", test_scope_run());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

@@ -2008,6 +2008,122 @@ static int64_t tzr_addr_wake(void *addr, int64_t n) {
     return count;
 }
 
+/* ---------------------------------------------------------------- Parallel and Routine.scope (TZ11) */
+
+#if !defined(_WIN32)
+/* The hooks of src/runtime/trap.c, as src/runtime/task.c declares them: without trap.c they are
+ * NULL. Only `owner` is read here. */
+#ifndef TSUZURI_TRAP_INFO_DEFINED
+#define TSUZURI_TRAP_INFO_DEFINED
+typedef struct {
+    uint32_t site;
+    uint32_t kind;
+} tsuzuri_trap_info;
+#endif
+#ifndef TSUZURI_TRAP_HOOKS_DEFINED
+#define TSUZURI_TRAP_HOOKS_DEFINED
+struct tz_trap_hooks {
+    void *(*owner)(void);
+    int32_t (*item)(void *, void (*)(void *, uint64_t), uint32_t (*)(void *, uint64_t),
+                    void *, uint64_t, uint32_t *, tsuzuri_trap_info *);
+    void (*resume)(const tsuzuri_trap_info *);
+    void *(*allocate)(size_t);
+    void (*release)(void *);
+};
+__attribute__((weak, visibility("hidden"))) struct tz_trap_hooks tsuzuri_trap_hooks;
+#endif
+#endif
+
+/* Whether the calling thread is inside a trap boundary (a failure domain, Domain.run). The trap
+ * frame is the thread's, so no tzroutine may park inside one or run an item for it: such a call of
+ * Parallel stays on the task runtime's pool, which runs each item under the boundary and raises the
+ * trap of an item in the caller. */
+static int tzr_trap_boundary(void) {
+#if defined(_WIN32)
+    return 0;
+#else
+    return tsuzuri_trap_hooks.owner != NULL && tsuzuri_trap_hooks.owner() != NULL;
+#endif
+}
+
+/* One call of Parallel on the scheduler: the caller and its helpers claim the indices one at a
+ * time. The job is on the caller's stack: a helper touches it last when it takes itself off
+ * `remaining`, and the wake after that uses the address only as a key (a spurious wake of a later
+ * waiter of the same address looks again). */
+typedef struct tzr_parallel {
+    void (*cb)(void *, uint64_t);
+    void *ctx;
+    uint64_t n;
+    _Atomic uint64_t next;      /* the next index to claim */
+    _Atomic uint64_t remaining; /* the helpers that have not finished */
+} tzr_parallel;
+
+static void tzr_parallel_work(tzr_parallel *job) {
+    for (uint64_t i; (i = atomic_fetch_add_explicit(&job->next, 1, memory_order_relaxed)) < job->n;)
+        job->cb(job->ctx, i);
+}
+
+static void tzr_parallel_helper(void *arg) {
+    tzr_parallel *job = arg;
+    tzr_parallel_work(job);
+    if (atomic_fetch_sub_explicit(&job->remaining, 1, memory_order_acq_rel) == 1) tzr_addr_wake(&job->remaining, 1);
+}
+
+/* Parallel.* in a program that uses the tzroutine runtime: cb(ctx, i) once for each i < n, on the
+ * caller and on min(n, P) - 1 helper tzroutines (min(n, P) when a pseudo-G calls, since it holds no
+ * P); returns when every call has returned. Returns 0, or 3 inside a trap boundary, where the
+ * generated code calls the task runtime instead. Only a callback that waits can leave the wait to
+ * the deadlock detector, which has reported it: the call has no source position, so it traps here
+ * (as the end of a boundary does), and the logic trap stays the callback's. */
+TZR_API int32_t tsuzuri_tz_parallel(void (*cb)(void *, uint64_t), void *ctx, uint64_t n) {
+    if (n == 0) return 0;
+    if (tzr_trap_boundary()) return 3;
+    tzr_start();
+    tzr_g *g = tzr_current();
+    uint64_t procs = (uint64_t)tzr_sched.nprocs;
+    uint64_t helpers = (n < procs ? n : procs) - (g->kind == TZR_KIND_ROUTINE ? 1 : 0);
+    tzr_parallel job = {cb, ctx, n, 0, helpers};
+    tzr_scope *scope = tzr_spawn_scope(g);
+    for (uint64_t k = 0; k < helpers; k++) tzr_spawn(scope, tzr_parallel_helper, &job, 0);
+    tzr_parallel_work(&job);
+    for (uint64_t r; (r = atomic_load_explicit(&job.remaining, memory_order_acquire)) != 0;)
+        if (tzr_addr_wait(&job.remaining, r, 1, "Parallel")) __builtin_trap();
+    return 0;
+}
+
+/* Routine.scope: child i calls cb(ctx, i) on a tzroutine of its own, and the call returns when
+ * every child, and every tzroutine that they spawned, has finished. Its scope is no boundary: the
+ * timers that the children make belong to the caller's boundary, as the caller's own do. Returns
+ * 0, or 2 when the deadlock detector ended the wait. */
+typedef struct {
+    void (*cb)(void *, uint64_t);
+    void *ctx;
+    uint64_t index;
+} tzr_scope_child;
+
+static void tzr_scope_child_run(void *arg) {
+    tzr_scope_child child = *(tzr_scope_child *)arg;
+    free(arg);
+    child.cb(child.ctx, child.index);
+}
+
+TZR_API int32_t tsuzuri_tz_scope_run(void (*cb)(void *, uint64_t), void *ctx, uint64_t n) {
+    tzr_start();
+    tzr_g *g = tzr_current();
+    tzr_scope *scope = calloc(1, sizeof *scope);
+    if (scope == NULL) tzr_fatal("out of memory");
+    scope->boundary = tzr_spawn_scope(g)->boundary;
+    for (uint64_t i = 0; i < n; i++) {
+        tzr_scope_child *child = malloc(sizeof *child);
+        if (child == NULL) tzr_fatal("out of memory");
+        *child = (tzr_scope_child){cb, ctx, i};
+        tzr_spawn(scope, tzr_scope_child_run, child, 0);
+    }
+    if (tzr_scope_wait(scope)) return 2; /* the scope stays: a child may still end and touch it */
+    free(scope);
+    return 0;
+}
+
 /* The parking lot for the sync types that TZ06 writes in C (RwMutex, Once, Cond, Semaphore). */
 TZR_API int32_t tsuzuri_tz_addr_wait(_Atomic uint64_t *addr, uint64_t expected) {
     return tzr_addr_wait(addr, expected, 1, "sync wait") ? 2 : 0;

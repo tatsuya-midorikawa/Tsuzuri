@@ -3223,20 +3223,15 @@ impl<'a> Checker<'a, '_> {
             }
             E::Parallel(operation, arguments) => {
                 let callback = operation.parallel_callback();
-                let scope = *operation == crate::check::Builtin::TaskScope;
-                let input = if matches!(
-                    operation,
-                    crate::check::Builtin::ParallelInit | crate::check::Builtin::TaskScope
-                ) {
+                let scope = operation.is_scope();
+                let input = if *operation == crate::check::Builtin::ParallelInit || scope {
                     None
                 } else {
                     Some(arguments.len() - 1)
                 };
-                // The callbacks of `reduce` and `Task.scope` take two arguments.
-                let result_arity = usize::from(matches!(
-                    operation,
-                    crate::check::Builtin::ParallelReduce | crate::check::Builtin::TaskScope
-                ));
+                // The callbacks of `reduce`, `Task.scope` and `Routine.scope` take two arguments.
+                let result_arity =
+                    usize::from(*operation == crate::check::Builtin::ParallelReduce || scope);
                 let base = self.held.len();
                 for (index, argument) in arguments.iter().enumerate() {
                     let value = self.eval(argument, Use::Consume, &during)?;

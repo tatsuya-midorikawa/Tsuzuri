@@ -1628,6 +1628,43 @@ const suites = {
     ],
     traps: [["parallel_large_length", [-1n]], ["parallel_trap", []]],
   },
+  // TZ11: the cases of `parallel` in a program that uses the tzroutine runtime, where Parallel runs on its scheduler
+  // (the same expected values), and Routine.scope, at one and at four Ps.
+  parallel_scheduler: {
+    nativeOnly: true,
+    environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
+    cases: [
+      ...[0n, 1n, 4095n, 4096n, 4097n, 8192n].map((count) => ["parallel_init_sum", [count], count * (count + 1n) / 2n]),
+      ...[4194303n, 4194304n, 4194305n].map((count) => ["parallel_large_length", [count], count]),
+      ["parallel_slice", [], 19n], ["parallel_strings", [4097n], 20485n],
+      ["parallel_copy_arrays", [4097n], 4097n * 4098n / 2n], ["parallel_copy_functions", [], 22n],
+      ["parallel_callback_snapshots", [4097n], 8194n], ["parallel_float_special", [], 1n], ["parallel_order", [], 1203n],
+      ["parallel_capture_order", [], 53n],
+      ["parallel_wrapping", [], -16n],
+      ["scope_ring", [], 2143n],
+      ["scope_shares_borrow", [], 1225130000n],
+      ["scope_shares_an_atomic", [], 36n],
+      ["scope_empty", [], 0n],
+      // The for_each_chunk cases of mutable_slices, with its expected values.
+      ...[[0n, 1n], [1n, 1n], [10n, 3n], [10000n, 4096n], [10000n, 1n], [5n, 100n]].map(([count, size]) => ["chunk_double", [count, size],
+        Array.from({ length: Number(count) }, (_, index) => 2n * BigInt(index) + BigInt(index % 3)).reduce((sum, value) => sum + value, 0n)]),
+      ...[[0n, 2n], [9n, 4n], [5000n, 333n]].map(([count, size]) => ["chunk_captured", [count, size], count * (count - 1n) / 2n + 10n * count * count]),
+      ...[0n, 1n, 7n, 20n, 100n].map((count) => {
+        const words = Array.from({ length: Number(count) }, (_, index) => String(count - BigInt(index)));
+        const sorted = [];
+        for (let start = 0; start < words.length; start += 7) sorted.push(...words.slice(start, start + 7).sort());
+        return ["chunk_strings", [count], sorted.reduce((sum, word) => BigInt.asIntN(64, sum * 31n + BigInt(word.length)), 0n)];
+      }),
+      ...[[0n, 1n], [1n, 1n], [10n, 4n], [2049n, 1n], [4098n, 2n], [5000n, 1n], [5000n, 3n], [100n, 1000n]].map(([count, size]) =>
+        ["chunk_dynamic", [count, size], count * (count - 1n) / 2n + count * (10n * count + size % 2n)]),
+    ],
+    traps: [["parallel_large_length", [-1n]], ["parallel_trap", []], ["chunk_size_zero", []]],
+    inspect(ir) {
+      for (const declaration of ["declare i32 @tsuzuri_tz_parallel(ptr, ptr, i64)", "declare i32 @tsuzuri_tz_scope_run(ptr, ptr, i64)"]) {
+        assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
+      }
+    },
+  },
   debug_output: {
     cases: [["debug_answer", [], 42n], ["debug_owned", [0n], 0n], ["debug_owned", [1000n], 5000n]],
     traps: [["debug_display_trap", []]],
@@ -2731,9 +2768,12 @@ for (const count of [0, 1, 4095, 4096, 4097, 8192]) {
     }
     return partials.reduce(combine, identity);
   };
-  suites.parallel.cases.push(["parallel_subtract", [BigInt(count)], fold(10n, 10n, (index) => BigInt(index % 7), (left, right) => BigInt.asIntN(64, left - right))]);
-  suites.parallel.cases.push(["parallel_copy_reduce", [BigInt(count)], fold(1n, 1n, BigInt, (left, right) => left + right)]);
-  suites.parallel.cases.push(["parallel_float", [BigInt(count)], BigInt(fold(0, 0, (index) => index % 3 === 0 ? 1e16 : index % 3 === 1 ? 1 : -1e16, (left, right) => left + right))]);
+  // TZ11: the scheduler's suite checks the same reductions.
+  for (const suite of [suites.parallel, suites.parallel_scheduler]) {
+    suite.cases.push(["parallel_subtract", [BigInt(count)], fold(10n, 10n, (index) => BigInt(index % 7), (left, right) => BigInt.asIntN(64, left - right))]);
+    suite.cases.push(["parallel_copy_reduce", [BigInt(count)], fold(1n, 1n, BigInt, (left, right) => left + right)]);
+    suite.cases.push(["parallel_float", [BigInt(count)], BigInt(fold(0, 0, (index) => index % 3 === 0 ? 1e16 : index % 3 === 1 ? 1 : -1e16, (left, right) => left + right))]);
+  }
 }
 const wrapHash = (value) => BigInt.asIntN(64, value);
 function textHash(text, utf8) {

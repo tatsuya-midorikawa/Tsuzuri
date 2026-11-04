@@ -122,8 +122,8 @@ impl FunctionEmitter<'_, '_> {
             ("i64".to_owned(), data.length.to_owned()),
             ("i64".into(), data.chunks.into()),
             (
-                // The shared borrow of `Task.scope` is a `%tz.array` when it borrows a slice.
-                if kernel.operation == Builtin::TaskScope {
+                // The shared borrow of a scope is a `%tz.array` when it borrows a slice.
+                if kernel.operation.is_scope() {
                     self.ty(kernel.input)
                 } else {
                     "ptr".into()
@@ -214,7 +214,7 @@ impl FunctionEmitter<'_, '_> {
         };
         if kernel.operation == Builtin::ParallelForEachChunk {
             emitter.parallel_chunk_body(&kernel, &loaded, &callback, direct.as_ref());
-        } else if kernel.operation == Builtin::TaskScope {
+        } else if kernel.operation.is_scope() {
             emitter.parallel_scope_child(&kernel, &loaded, &callback, direct.as_ref());
         } else {
             emitter.parallel_items(&kernel, &loaded, &callback, direct.as_ref());
@@ -226,15 +226,49 @@ impl FunctionEmitter<'_, '_> {
         emitter.instruction("ret void");
         let definition = emitter.auxiliary(&format!("void {symbol}(ptr %context, i64 %chunk)"));
         self.intrinsics.insert(definition);
-        self.instruction(format!(
-            "call void @tsuzuri_task_parallel(ptr {symbol}, ptr {context}, i64 {})",
-            data.chunks
-        ));
+        self.parallel_call(kernel.operation, &symbol, &context, data.chunks);
         if let Some((snapshots, _)) = snapshots {
             self.drop_value(&Type::Array(Box::new(kernel.callback.clone())), &snapshots);
         }
         self.jump(&done);
         self.begin(&done);
+    }
+
+    /// Runs `symbol(context, chunk)` for each chunk and returns when they have all run: on the task
+    /// runtime's pool, or, in a native program that uses the tzroutine runtime, on its scheduler
+    /// (TZ11), whose `tsuzuri_tz_parallel` has the caller and helper tzroutines claim the chunks.
+    /// Inside a trap boundary it answers 3, and the pool runs them, each item under the boundary. A
+    /// `Routine.scope` gives each child a tzroutine of its own, whose children may wait for each
+    /// other, so a deadlock among them traps at the call; `Task.scope` stays on the pool (TZ12).
+    fn parallel_call(&mut self, operation: Builtin, symbol: &str, context: &str, chunks: &str) {
+        let pool =
+            format!("call void @tsuzuri_task_parallel(ptr {symbol}, ptr {context}, i64 {chunks})");
+        if operation == Builtin::RoutineScope {
+            self.intrinsics
+                .insert("declare i32 @tsuzuri_tz_scope_run(ptr, ptr, i64)".into());
+            let status = self.value(format!(
+                "call i32 @tsuzuri_tz_scope_run(ptr {symbol}, ptr {context}, i64 {chunks})"
+            ));
+            self.channel_not_deadlocked(&status);
+            return;
+        }
+        if operation == Builtin::TaskScope || !self.globals.tzroutine || self.globals.wasm {
+            self.instruction(pool);
+            return;
+        }
+        self.intrinsics
+            .insert("declare i32 @tsuzuri_tz_parallel(ptr, ptr, i64)".into());
+        let status = self.value(format!(
+            "call i32 @tsuzuri_tz_parallel(ptr {symbol}, ptr {context}, i64 {chunks})"
+        ));
+        let bounded = self.value(format!("icmp eq i32 {status}, 3"));
+        let on_pool = self.label();
+        let after = self.label();
+        self.branch(&bounded, &on_pool, &after);
+        self.begin(&on_pool);
+        self.instruction(pool);
+        self.jump(&after);
+        self.begin(&after);
     }
 
     /// One job of `Parallel.for_each_chunk`: a contiguous range of chunks, run in order. Chunk `c` holds
@@ -412,8 +446,8 @@ impl FunctionEmitter<'_, '_> {
         if operation == Builtin::ParallelForEachChunk {
             return self.parallel_chunks(arguments);
         }
-        if operation == Builtin::TaskScope {
-            return self.parallel_scope(arguments, result_type);
+        if operation.is_scope() {
+            return self.parallel_scope(operation, arguments, result_type);
         }
         let reduce = operation == Builtin::ParallelReduce;
         let initialize = operation == Builtin::ParallelInit;
@@ -575,8 +609,14 @@ impl FunctionEmitter<'_, '_> {
     /// `Task.scope shared count callback`: one group item per index below `count`, so that every
     /// child is a unit the pool may run on its own thread, each calling the callback with the
     /// shared borrow and its index, and the results in index order (F10). A negative count traps
-    /// where the result array is allocated.
-    fn parallel_scope(&mut self, arguments: &[TypedExpr], result_type: &Type) -> String {
+    /// where the result array is allocated. `Routine.scope` is the same with a tzroutine for each
+    /// child (TZ11).
+    fn parallel_scope(
+        &mut self,
+        operation: Builtin,
+        arguments: &[TypedExpr],
+        result_type: &Type,
+    ) -> String {
         let callback_type = &arguments[2].ty;
         let shared_type = &arguments[0].ty;
         // A borrowed temporary (`Task.scope (ref 5) ...`) lives in a slot until the children finish.
@@ -615,7 +655,7 @@ impl FunctionEmitter<'_, '_> {
         let (result, output) = self.allocate_array(element, &count);
         self.parallel_launch(
             Kernel {
-                operation: Builtin::TaskScope,
+                operation,
                 input: shared_type,
                 element,
                 callback: callback_type,

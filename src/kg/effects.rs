@@ -12,7 +12,7 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 179;
+const IMPURE_BUILTINS: usize = 180;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
@@ -25,10 +25,10 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | OsSpawn | BenchNow | GenSeed => Some("os"),
         NetResolve | NetOpen | NetAccept | NetRead | NetWrite | NetClose | NetClassify
         | NetWatch | NetUnwatch | NetConnect | NetNames | NetSend => Some("net"),
-        TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap
-        | ParallelMapRef | ParallelReduce | ParallelForEachChunk | DomainRun | RoutineGo
-        | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount
-        | TimeAfterFunc | ContextAfterFunc => Some("task"),
+        TaskRun | TaskParallel | TaskParallelResults | TaskScope | RoutineScope | ParallelInit
+        | ParallelMap | ParallelMapRef | ParallelReduce | ParallelForEachChunk | DomainRun
+        | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs
+        | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => Some("task"),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some("os"),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {

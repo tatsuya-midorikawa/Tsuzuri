@@ -1165,6 +1165,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | タイマー（TZ05） | `tests/timers.rs` | `features.mjs timers`（native、P 1・4）、`tzroutine.mjs`、`tzroutine_runtime.mjs` |
 | 同期の型・`Mutex` の移設（TZ06） | `tests/sync_types.rs`、`tests/concurrency.rs` | `features.mjs sync_types`（native、P 1・4）・`sync_single`（native と既定の WebAssembly）・`concurrency`、`tzroutine.mjs`、`tzroutine_runtime.mjs` |
 | `Context`・`ErrGroup`（TZ07） | `tests/context.rs` | `features.mjs context`（native、P 1・4）、`tzroutine.mjs`、`tzroutine_runtime.mjs` |
+| スケジューラーの上の `Parallel`・`Routine.scope`（TZ11） | `tests/parallel_scheduler.rs` | `features.mjs parallel_scheduler`（native、P 1・4）と `parallel`、`tzroutine.mjs`、`tzroutine_runtime.mjs` |
 | トラップの報告・境界・`Domain`（E14・B10） | `tests/trap_locations.rs`、`tests/trap_backtrace.rs`（バックトレースとクラッシュレポート）、`tests/domain.rs`（`E1038` と IR） | `trap_return.mjs`（C の境界と `tests/domain_runtime.c`）、`domain.mjs`、`trap_boundary.mjs`、`stack_overflow.mjs`、`trap_return_sync.mjs`（`TSUZURI_NO_SANITIZERS=1` で sanitizer の build を外す） |
 | SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
 | 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |

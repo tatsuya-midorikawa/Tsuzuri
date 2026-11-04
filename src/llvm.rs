@@ -1393,7 +1393,11 @@ fn emit_program(
     // The passes over the whole text run once, on the program that is kept: the text of a large
     // program has hundreds of thousands of lines, and the first pass of an exhausted budget is
     // thrown away.
-    let spawning = spawns(module);
+    // TZ11: in a native program that uses the tzroutine runtime, Parallel.* starts helper
+    // tzroutines without a spawn of its own: their frames need the probes, and a pool call inside a
+    // chunk the blocking wrapper, as in a program that spawns.
+    let spawning =
+        spawns(module) || (!wasm && uses_tzroutine(module) && scheduler_parallel(module));
     let output = if spawning {
         let mut boundaries = tzroutine_boundaries(module);
         boundaries.extend(worker_callbacks(&output));
@@ -4388,7 +4392,26 @@ fn expression_spawns(expression: &TypedExpr) -> bool {
         TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin.spawns() => {
             true
         }
+        // TZ11: `Routine.scope`, whose calls are parallel operations.
+        TypedExprKind::Parallel(operation, _) if operation.spawns() => true,
         _ => expression.children().into_iter().any(expression_spawns),
+    }
+}
+
+/// Whether a function that the program reaches calls `Parallel.*` (TZ11), whose chunks run on helper
+/// tzroutines in a native program that uses the tzroutine runtime.
+fn scheduler_parallel(module: &CheckedModule) -> bool {
+    let reachable = reachable_functions(module, None, true);
+    module.functions.iter().enumerate().any(|(id, function)| {
+        (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
+            && expression_parallel(&function.body)
+    })
+}
+
+fn expression_parallel(expression: &TypedExpr) -> bool {
+    match &expression.kind {
+        TypedExprKind::Parallel(operation, _) if !operation.is_scope() => true,
+        _ => expression.children().into_iter().any(expression_parallel),
     }
 }
 
@@ -4417,6 +4440,7 @@ pub fn uses_tzroutine(module: &CheckedModule) -> bool {
 fn expression_uses_tzroutine(expression: &TypedExpr) -> bool {
     match &expression.kind {
         TypedExprKind::RoutineGo(_) | TypedExprKind::SelectWait(_) => true,
+        TypedExprKind::Parallel(operation, _) if operation.spawns() => true,
         // The lengths (`Time.second()`) are constants, which use no scheduler.
         TypedExprKind::Function(FunctionRef::Builtin(instance))
             if instance.builtin.spawns()
@@ -4437,6 +4461,7 @@ fn expression_uses_tzroutine(expression: &TypedExpr) -> bool {
 fn expression_waits(expression: &TypedExpr) -> bool {
     match &expression.kind {
         TypedExprKind::RoutineGo(_) | TypedExprKind::SelectWait(_) => true,
+        TypedExprKind::Parallel(operation, _) if operation.spawns() => true,
         TypedExprKind::Function(FunctionRef::Builtin(instance))
             if instance.builtin.spawns() || instance.builtin.is_channel() =>
         {
