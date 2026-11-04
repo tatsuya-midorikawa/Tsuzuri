@@ -325,6 +325,7 @@ try {
       await check(`parallel and mutex ${optimization}`, async () => {
         assert.equal(await within(e.parallel_in_routines(), "parallel"), 4n * 500500n);
         assert.equal(await within(e.mutex_across_wait(), "mutex"), 12n);
+        assert.equal(await within(e.inside_lock(), "inside_lock"), 3n);
       });
       await check(`trap ${optimization}`, async () => {
         await expectTrap(e.trap_in_routine(7n), TsuzuriTrap, "trap_in_routine");
