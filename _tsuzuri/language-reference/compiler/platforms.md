@@ -67,7 +67,7 @@ tsuzuri build lib --target aarch64-pc-windows-msvc --emit object -o lib.obj
 | `aarch64-pc-windows-gnu` | `aarch64-w64-windows-gnu` | 2 | リンク（macOS・Linux の 3 job） |
 | `x86_64-pc-windows-gnu` | `x86_64-w64-windows-gnu` | 2 | リンク（macOS・Linux の 3 job） |
 
-[vscode.yml](../../../.github/workflows/vscode.yml) は、5 つのホストで CLI archive と VSIX を作成し、展開・インストールした配布物、LSP、Async、Net を検証します。Windows の配布物は MinGW を使い、x64 は LLVM の MSVC でも Async・Net と PDB を検査します。Windows Arm64 の拡張は編集・診断・ビルド・実行・テストに対応しますが、同梱 CodeLLDB がないためソースデバッグは未対応です。
+[vscode.yml](../../../.github/workflows/vscode.yml) は、5 つのホストで CLI archive と VSIX を作成し、展開・インストールした配布物、LSP、Net を検証します。Windows の配布物は MinGW を使い、x64 は LLVM の MSVC でも Net と PDB を検査します。Windows Arm64 の拡張は編集・診断・ビルド・実行・テストに対応しますが、同梱 CodeLLDB がないためソースデバッグは未対応です。
 
 拡張機能の起動とツールチェーンの解決、VSIX の作成・再検証も、上の 5 環境だけを受け付けます。対象外では、開発用コンパイラや既存の配布物を使っても、対応ホストを示すエラーで停止します。
 
@@ -76,7 +76,7 @@ tsuzuri build lib --target aarch64-pc-windows-msvc --emit object -o lib.obj
 
 ## OS ごとの違い
 
-| OS | target | 実行ファイル | オブジェクト | 共有ライブラリ | OS API | `Net` と `Async.block_on` |
+| OS | target | 実行ファイル | オブジェクト | 共有ライブラリ | OS API | `Net` |
 | --- | --- | --- | --- | --- | --- | --- |
 | macOS Arm64 | `aarch64-apple-darwin` | なし | `.o` | `.dylib` | 受け付ける | 受け付ける |
 | Linux x64・Arm64（glibc、musl） | `*-unknown-linux-*` | なし | `.o` | `.so` | 受け付ける | 受け付ける |
@@ -173,7 +173,7 @@ TSUZURI_RUNNER=qemu-aarch64 tsuzuri run app --target aarch64-unknown-linux-musl
 - `ci.yml` は、Linux x64 の Clippy と Rust テストに加え、Windows x64・Arm64、Linux Arm64、macOS Arm64 を型検査します。`tests/platforms.mjs` が配布物と CI マトリクスの対応環境を照合します。
 - `targets.yml` の 3 job は、ホストの実行、9 triple の object の形式と CPU、同梱ツールチェーンの 7 triple のリンク、Linux での qemu-user を検査します。
 - `windows.yml` の 2 job は、LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 で、native と名前を付けた MSVC の target の `-O0`・`-O3`、Win32 の tzroutine、UTF-8、ファイル保護、object の ABI、トラップ、WASM、Rust テストを検査します。Visual Studio は x64 が 2022、Arm64 が 2026 です。
-- `vscode.yml` の 5 job は、ホストに対応する CLI archive と VSIX、そのインストール、LSP、Async、Net を検査します。Windows Arm64 のソースデバッグは対象外です。
+- `vscode.yml` の 5 job は、ホストに対応する CLI archive と VSIX、そのインストール、LSP、Net を検査します。Windows Arm64 のソースデバッグは対象外です。
 
 ## まとめ
 

@@ -16,6 +16,7 @@
 - `extern` 関数・ファイル・ソケットなど、OS で待つ呼び出しの間も、ほかの tzroutine は走り続けます（[OS を待つ呼び出し](#os-を待つ呼び出し)）。
 - tzroutine の間の値の受け渡しには [Channel](../built-in-types-and-modules/channel.md) を使います（Go の `chan T`）。
 - `task { }`・型 `Task<T>`・`Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope` は削除しました（`E1040`）。書き換え方は [Task からの移行](#task-からの移行) です。
+- `Async { }`・`async { }`・型 `Async<T>`・`Async.*` と、`Net` の `_async` の関数も削除しました（`E1040`）。I/O を待ちながらほかの計算を進める仕事は tzroutine で書きます。書き換え方は [Async からの移行](#async-からの移行) です。
 - 対応するのはネイティブの macOS・Linux・Windows（aarch64・x86-64）です。WebAssembly で tzroutine を起動するプログラムは `E2000` です。
 
 ## 基本の書き方
@@ -484,6 +485,389 @@ Atomic.load (ref hits)
 - `shared` は `Sync`、結果は `Send` の所有値、コールバックは借用した環境を持てない、直接の呼び出しだけ、という規則は `Task.scope` と同じです。
 - tzroutine を起動するので、WebAssembly、`--freestanding`、`--trap-mode return` では `E2000`、`pure def` の中では `E1029` です。これらで `Task.scope` を使っていた配列の計算は、`Parallel.*` に書き換えます。
 
+## Async からの移行
+
+`Async { … }`・`async { … }`、型 `Async<T>`・`Async.Operation`、`Async.yield`・`sleep`・`now`・`all`・`all_results`・`run`・`block_on`・`start`・`host` と、`Net` の `_async` の 12 関数（`connect_async`・`accept_async`・`read_async`・`write_async`・`recv_from_async`・`send_to_async`・`bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async`）は、言語から削除しました（TZ13）。I/O を待ちながらほかの計算を進める仕事は、tzroutine で書きます。tzroutine の中の `Net` の操作、`Time.sleep`、`Channel` の待ちは、その tzroutine だけを待たせ、ほかの tzroutine は走り続けます（[OS を待つ呼び出し](#os-を待つ呼び出し)）。
+
+削除した形を書くと `E1040` です。診断の `help` が書き換え先を示します。
+
+| 書いたもの | kind | メッセージ | help（書き換え先） |
+| --- | --- | --- | --- |
+| `Async { … }`・`async { … }` | `removed_async` | `'Async { }' was removed`・`'async { }' was removed` | 仕事をその場で実行します。ほかの仕事を進めながら I/O を待つなら、tzroutine を起動します（`run the work directly; to wait for I/O while other work runs, spawn tzroutines`） |
+| 型 `Async<T>`・`Async.Operation`（`Async.Step`・`Async.Next` も） | `removed_async` | `the type 'Async' was removed`・`the type 'Async.Operation' was removed` | 値をそのまま返すか、あとで届けるなら `Channel` を使います（`return the value directly, or use a Channel to deliver it later`） |
+| `Async.run`・`Async.block_on` | `removed_async` | `'Async.run' was removed` など | 仕事を直接呼びます。tzroutine の中なら、I/O の待ちはほかの tzroutine を止めません（`call the work directly (in a tzroutine, I/O waits without stopping other tzroutines)`） |
+| `Async.all`・`Async.all_results` | `removed_async` | `'Async.all' was removed` など | 仕事ごとに tzroutine を起動して `WaitGroup` で待つか、最初の誤りを受け取るなら `ErrGroup` で待ちます（`spawn a tzroutine per job and wait with WaitGroup, or with ErrGroup for the first error`） |
+| `Async.sleep`・`Async.now`・`Async.yield` | `removed_async` | `'Async.sleep' was removed` など | `Time.sleep`・`Time.monotonic_ns`・`Routine.yield` を使います（`use Time.sleep, Time.monotonic_ns, or Routine.yield`） |
+| `Async.start`・`Async.host` | `removed_async` | `'Async.start' was removed` など | ホストが駆動する実行器は削除しました。ネイティブではホストのスレッドから export を呼び、WebAssembly（`--wasm-feature jspi`）では export の `Promise` を待ちます（`the host-driven executor was removed; call exports from host threads (native) or await the export's Promise (WebAssembly with --wasm-feature jspi)`） |
+| `Net.connect_async` などの 12 関数 | `removed_net_async` | `'Net.read_async' was removed` など | `_async` の付かない `Net.connect` などを tzroutine の中で呼びます。待つ間もほかの tzroutine は止まりません（`call Net.connect (and the others without '_async') in a tzroutine; it waits without stopping other tzroutines`） |
+
+- ビルダーの操作（`Async.Return`・`Async.Bind` など）を名前で呼んでも、`Async { }` と同じ help の `E1040` です。
+- `tsuzuri fix` は、どの形も自動では書き換えません。意味の同じ書き換え先がないからです。次の例を見て手で直します。
+- `async` と `Async` は普通の名前です（`let async = 2`）。`.tc` に `@alias async` を書いた利用者のビルダーがあれば、`async { … }` はそのビルダーの式です。利用者の `Async.tc` のビルダー、`Async` という名前のモジュール・型も、そのまま使えます。`E1040` になるのは、その名前が利用者の定義に解決しないときだけです（[ビルダーの別名](../computation-expressions/computation-expressions.md#ビルダーの別名)）。
+- `Async.run` の仮想時刻（呼び出しごとに 0 から始まり、すべての計算が眠ったときだけ進む、決定的な時計）には後継がありません（TZ13 の D3）。時刻に依存する処理を決定的に試すときは、時刻を関数の引数で渡すか、時刻を `Channel` で届けます。
+- ホストのイベントループに計算を預ける実行器（`Async.start`・`Async.host`、C の `tsuzuri_async_poll`・`tsuzuri_async_complete`・`tsuzuri_async_post`、WebAssembly の `tsuzuri_async_set_epoch` とグルーの `bindings.async`）にも後継がありません（TZ13 の D2。[Async.start とホストの poll](#asyncstart-とホストの-poll)）。
+- 時間の単位が変わります。`Async.sleep` と `Async.now` は実行器の単位（`Async.block_on` ではミリ秒）でしたが、`Time.sleep` と `Time.monotonic_ns` はナノ秒です。ミリ秒で書くときは `n * Time.millisecond()` です。
+- `Async` の計算はコールド（作っただけでは動かない）で、1 本のスレッドの上で交代に進みました。tzroutine は `tzroutine { }` を評価した時点で始まり、ほかの tzroutine と並列に走ります。共有する値は `Atomic`・`Mutex`・`Channel` で守ります。
+
+### Async.all を tzroutine と WaitGroup にする
+
+`Async.run (Async.all [a, b])` は、2 つの計算を交代に進めて、結果を入力の順の配列で返しました。tzroutine では、仕事ごとに 1 つ起動して [WaitGroup](../built-in-types-and-modules/waitgroup.md) で終わりを待ちます。結果は `Arc<Mutex<[T]>>` の自分の添字に書くか、[Channel](../built-in-types-and-modules/channel.md) で受け取ります。
+
+書き換える前（今は `E1040`）:
+
+```text
+def fetch :: i64 -> Async<i64>
+fn fetch id = Async {
+    do! Async.sleep (id * 10)
+    return id * 100
+}
+
+let results = Async.run (Async.all [fetch 1, fetch 2])
+$"{results[0]},{results[1]}"
+```
+
+書き換えた後:
+
+```tsuzuri run=100%2C200
+def fetch :: i64 -> i64
+fn fetch id =
+    Time.sleep (id * 10 * Time.millisecond())
+    id * 100
+
+let results = Arc.new (Mutex.create (new [i64](2, \_index -> 0)))
+let group = WaitGroup.create ()
+WaitGroup.add (ref group) 2
+let first_done = WaitGroup.share (ref group)
+let first = Arc.share (ref results)
+tzroutine {
+    let value = fetch 1
+    Mutex.with_lock (Arc.get (ref first)) (\values -> Array.write 0 value values)
+    WaitGroup.done (ref first_done)
+}
+let second_done = WaitGroup.share (ref group)
+let second = Arc.share (ref results)
+tzroutine {
+    let value = fetch 2
+    Mutex.with_lock (Arc.get (ref second)) (\values -> Array.write 1 value values)
+    WaitGroup.done (ref second_done)
+}
+WaitGroup.wait (ref group)
+Mutex.with_lock (Arc.get (ref results)) (\values -> $"{values[0]},{values[1]}")
+```
+
+実行結果:
+
+```text
+100,200
+```
+
+- 2 つの `fetch` は同時に眠るので、全体の待ち時間は長いほうの 20 ms ほどです（`Async.all` と同じく、待ち時間が重なります）。
+- 各 tzroutine が自分の添字に書くので、結果は入力の順です。結果を `Channel` で受け取るなら `WaitGroup` は要りません。受け取る数だけ `Channel.recv` を呼びます（[終了の待ち](#終了の待ち)）。その場合の順は、終わった順です。
+
+### Async.sleep を Time.sleep にする
+
+`Async.sleep` は計算を中断して、実行器の時計を待ちました。[`Time.sleep`](../built-in-types-and-modules/time.md#tzroutine-の中で待つ) は、tzroutine の中ではその tzroutine だけを、`main` などのスレッドではそのスレッドを、少なくとも指定のナノ秒だけ待たせます。`Async.now` は `Time.monotonic_ns`、`Async.yield` は `Routine.yield` です。
+
+書き換える前（今は `E1040`）:
+
+```text
+def main :: unit -> i32 = \() ->
+    let! waited = Async.block_on (Async {
+        let! start = Async.now ()
+        do! Async.sleep 10
+        let! finish = Async.now ()
+        return finish - start
+    })
+    do! IO.write_line (if waited >= 10 then "slept" else "early")
+    0
+```
+
+書き換えた後:
+
+```tsuzuri run=slept
+def main :: unit -> i32 = \() ->
+    let! start = Time.monotonic_ns ()
+    Time.sleep (10 * Time.millisecond())
+    let! finish = Time.monotonic_ns ()
+    let waited = Result.get finish - Result.get start
+    do! IO.write_line (if waited >= 10 * Time.millisecond() then "slept" else "early")
+    0
+```
+
+実行結果:
+
+```text
+slept
+```
+
+`Time.monotonic_ns` は `IO<Result<i64, Os.Error>>` で、差だけに意味があります。`Async.sleep` の 10 は `Async.block_on` ではミリ秒だったので、`10 * Time.millisecond()` にします。
+
+### タイムアウトを select と Time.after にする
+
+`Async` では、期限で計算を止めるのに、期限の時刻に `Error` を返す兄弟を `Async.all_results` に並べました。tzroutine では、待つ相手のチャンネルと [`Time.after`](../built-in-types-and-modules/time.md#タイムアウトtimeafter) のチャンネルを [select](select.md#タイムアウト) で同時に待ち、先に来たほうを選びます。
+
+書き換える前（今は `E1040`）:
+
+```text
+def answer :: unit -> Async<Result<string, string>>
+fn answer _ = Async {
+    do! Async.sleep 200
+    return Result.Ok "value"
+}
+
+def deadline :: i64 -> Async<Result<string, string>>
+fn deadline ms = Async {
+    do! Async.sleep ms
+    return Result.Error "timeout"
+}
+
+let! outcome = Async.block_on (Async.all_results [answer (), deadline 20])
+match outcome with
+| Result.Ok _ -> "value"
+| Result.Error reason -> reason
+```
+
+書き換えた後:
+
+```tsuzuri run=timeout
+let answers: Channel<string> = Channel.make 1
+let out = Channel.share answers
+tzroutine {
+    Time.sleep (200 * Time.millisecond())
+    Channel.send out "value"
+}
+let deadline = Time.after (20 * Time.millisecond())
+select
+| recv answer from answers -> Maybe.get answer
+| recv _ from deadline -> "timeout"
+```
+
+実行結果:
+
+```text
+timeout
+```
+
+- `select` は待つのをやめるだけで、相手の tzroutine を止めません。境界（ここではトップレベル）は、その tzroutine が終わるまで戻らないので、このプログラムは 200 ms ほどで終わります。`all_results` のように相手を途中で止めるには、相手に [Context](../built-in-types-and-modules/context.md) を渡し、`Context.done` を `select` で見させます（[終わらない tzroutine を止める](#終わらない-tzroutine-を止める)）。期限で取り消す `Context` は `Context.with_timeout` で作ります。
+- チャンネルの容量を 1 にしておくと、期限のあとに送る値は受け取られないままチャンネルに入り、相手は待たずに終わります。容量 0 だと、相手は受け取り手を待ち続け、境界の待ちと合わせてデッドロックとして報告されます（`all tzroutines are asleep - deadlock!`）。
+- ソケットの操作の期限は、今までどおり `Net` の操作の時間制限（`Maybe.Some ms`）で書けます。
+
+### Async.all_results を ErrGroup にする
+
+`Async.all_results` は、時刻の順で最初の `Error` を返し、残りの計算をその場で止めました。[ErrGroup](../built-in-types-and-modules/errgroup.md) は、最初の誤りを `ErrGroup.wait` で返し、グループの `Context` を取り消します。残りの仕事は、その `Context` を見て自分で止まります。
+
+書き換える前（今は `E1040`）:
+
+```text
+def check :: i64 -> i64 -> Async<Result<unit, string>>
+fn check delay code = Async {
+    do! Async.sleep delay
+    if code > 0 then return Result.Error $"code {code}"
+    else return Result.Ok ()
+}
+
+let! outcome = Async.block_on (Async.all_results [check 1000 0, check 1 2, check 2000 0])
+match outcome with
+| Result.Ok _ -> "ok"
+| Result.Error error -> $"error: {error}"
+```
+
+書き換えた後:
+
+```tsuzuri run=error%3A%20code%202
+def check :: ref Context -> i64 -> i64 -> Result<unit, string>
+fn check ctx delay code =
+    let done = Context.done ctx
+    let timer = Time.after (delay * Time.millisecond())
+    select
+    | recv _ from done -> Result.Ok ()
+    | recv _ from timer -> if code > 0 then Result.Error $"code {code}" else Result.Ok ()
+
+let group: ErrGroup<string> = ErrGroup.create ()
+let delays = [1000, 1, 2000]
+let codes = [0, 2, 0]
+for index in 0 ..< 3 do
+    let delay = delays[index]
+    let code = codes[index]
+    let ctx = ErrGroup.context group
+    ErrGroup.go group (Owned.function (\() -> check (ref ctx) delay code))
+match ErrGroup.wait group with
+| Result.Ok _ -> "ok"
+| Result.Error error -> $"error: {error}"
+```
+
+実行結果:
+
+```text
+error: code 2
+```
+
+- 2 つ目の仕事が 1 ms で失敗するとグループの `Context` が取り消され、`done` を待っていた 1 つ目と 3 つ目がすぐ戻ります。`ErrGroup.wait` は全員が戻ってから戻るので、プログラムは 1 秒を待たずに終わります。
+- `ErrGroup.wait` の「最初」は、`Async.all_results` と同じく終わった時刻の順です。関数は `Ok` の値を返せないので、値は `Atomic`・`Mutex`・`Channel` で受け渡します（[Task.parallel_results を ErrGroup にする](#taskparallel_results-を-errgroup-にする)）。
+
+### Net の _async を tzroutine の中の Net にする
+
+`Net.read_async` などは、`Async.block_on` の中でソケットを待つ双子でした。tzroutine の中では、同期版の `Net.read`・`Net.write`・`Net.accept`・`Net.connect` などが、ソケットの準備を待つ間その tzroutine だけを待たせます（[tzroutine の中の Net](../built-in-types-and-modules/net.md#tzroutine-の中の-net)）。型は `Async<…>` から `IO<…>` に戻るので、`let!` で実行します。
+
+書き換える前（今は `E1040`）:
+
+```text
+def echo_one :: own Net.TcpStream -> Async<i64>
+fn echo_one stream = Async {
+    match! Net.read_async stream 100 (Maybe.Some 5000) with
+    | Result.Error _ -> return -1
+    | Result.Ok bytes ->
+        let count = bytes.length
+        let! _written = Net.write_async stream bytes (Maybe.Some 5000)
+        let! _closed = Net.close_async stream
+        return count
+}
+
+def serve :: own Net.TcpListener -> Async<i64>
+fn serve listener = Async {
+    match! Net.accept_async listener (Maybe.Some 5000) with
+    | Result.Error _ -> return -2
+    | Result.Ok stream -> return! echo_one stream
+}
+
+// main: let! counts = Async.block_on (Async.all [serve listener, client target])
+```
+
+書き換えた後:
+
+```tsuzuri run=server%205%20client%205
+def bytes_of :: ref string -> [ubyte]
+fn bytes_of text = Utf8String.to_bytes (Utf8String.from_string text)
+
+def main :: unit -> i32 = \() ->
+    let! bound = Net.bind (Maybe.get (Net.parse_address (ref "127.0.0.1:0")))
+    let listener = Result.get bound
+    let target = Net.local_addr listener
+    let server_count: Channel<i64> = Channel.make 1
+    let client_count: Channel<i64> = Channel.make 1
+    let server_out = Channel.share server_count
+    tzroutine {
+        let! accepted = Net.accept listener (Maybe.Some 5000)
+        let stream = Result.get accepted
+        let! received = Net.read stream 100 (Maybe.Some 5000)
+        let bytes = Result.get received
+        let count = bytes.length
+        let! _written = Net.write stream bytes (Maybe.Some 5000)
+        let! _closed = Net.close stream
+        Channel.send server_out count
+    }
+    let client_out = Channel.share client_count
+    tzroutine {
+        let! connected = Net.connect target (Maybe.Some 5000)
+        let stream = Result.get connected
+        let! _written = Net.write stream (bytes_of (ref "hello")) (Maybe.Some 5000)
+        let! received = Net.read stream 100 (Maybe.Some 5000)
+        let! _closed = Net.close stream
+        Channel.send client_out (Result.get received).length
+    }
+    let server = Maybe.get (Channel.recv server_count)
+    let client = Maybe.get (Channel.recv client_count)
+    do! IO.write_line $"server {server} client {client}"
+    let! _closed = Net.close_listener listener
+    0
+```
+
+実行結果:
+
+```text
+server 5 client 5
+```
+
+- 時間制限（`Maybe.Some ms`）は、同期版でも呼び出し全体の期限で、切れると `TimedOut` です。
+- `_async` の操作は、兄弟の失敗で取り消せました。tzroutine で待っている操作を途中でやめるには、ほかの tzroutine がそのソケットを閉じます。待ちは閉じたハンドルの誤り（`InvalidInput`）で終わります。
+- wasm32 の `--wasm-feature jspi --wasm-feature net` では、同期版の操作が JSPI でモジュールを中断します。tzroutine は WebAssembly ではまだ起動できません（`E2000`。[ターゲット](#ターゲット)）。
+
+### Async.start とホストの poll
+
+`Async.start` は、計算をホストが駆動する実行器へ預けてすぐ戻り、ホストが `tsuzuri_async_poll` を回して進めました。`Async.host` はホストの操作を始め、ホストが `tsuzuri_async_complete`（ほかのスレッドからは `tsuzuri_async_post`）で完了を渡しました。この形には後継がありません。tzroutine は、それを起動した境界（`export` の 1 回の呼び出しなど）の中で終わるからです。ヘッダーの `tsuzuri_async_*` の宣言も、WebAssembly の `tsuzuri_async_set_epoch` も、グルーの `bindings.async`（`complete`・`settled`）もなくなりました。
+
+書き換える前（今は `E1040`）:
+
+```text
+extern def start_download :: i64 -> i64 -> unit
+extern def cancel_download :: i64 -> unit
+extern def show :: i64 -> unit
+
+def download :: i64 -> Async<i64> = \item -> Async.host (Async.Operation {
+    start: \operation -> start_download operation item,
+    cancel: \operation -> cancel_download operation
+})
+
+export def refresh :: i64 -> unit = \item ->
+    do! Async.start (Async {
+        let! sizes = Async.all [download item, download (item + 1)]
+        show (sizes[0] + sizes[1])
+    })
+```
+
+ネイティブでは、ホストの操作を普通の（待つ）`extern` 関数にして、export の中の tzroutine から呼びます。`extern` 関数の呼び出しの間も、ほかの tzroutine は走ります。export の呼び出しは、その中の tzroutine がすべて終わるまで戻りません。ホストのイベントループを止めたくないときは、ホストが別のスレッドから export を呼びます。
+
+書き換えた後:
+
+```tsuzuri
+extern def download :: i64 -> i64
+
+export def refresh :: i64 -> i64 = \item ->
+    let sizes: Channel<i64> = Channel.make 2
+    for offset in 0 ..< 2 do
+        let out = Channel.share sizes
+        tzroutine {
+            Channel.send out (download (item + offset))
+        }
+    Maybe.get (Channel.recv sizes) + Maybe.get (Channel.recv sizes)
+```
+
+C のホストは、イベントループのスレッドとは別のスレッドで `tz_refresh` を呼びます。
+
+```c
+#include <pthread.h>
+#include <stdio.h>
+#include <unistd.h>
+#include "app.h"
+
+int64_t tsuzuri_host_Main_download(int64_t item) {
+    usleep(10000); /* ホストの待つ呼び出し */
+    return item * 100;
+}
+
+static void *refresh_thread(void *argument) {
+    int64_t *item = argument;
+    *item = tz_refresh(*item); /* 中の tzroutine が終わると戻る */
+    return NULL;
+}
+
+int main(void) {
+    int64_t item = 1;
+    pthread_t thread;
+    pthread_create(&thread, NULL, refresh_thread, &item);
+    /* ここでホストのイベントループが動き続ける */
+    pthread_join(thread, NULL);
+    printf("%lld\n", (long long)item);
+    return 0;
+}
+```
+
+```sh
+tsuzuri build Main.tz --emit header -o app.h
+tsuzuri build Main.tz --emit object -o app.o
+clang -O2 host.c app.o -o host -pthread
+./host
+```
+
+実行結果:
+
+```text
+300
+```
+
+- 結果を待たずにイベントループへ戻りたいときは、上のように export を呼ぶスレッドを分け、終わったらそのスレッドからイベントループへ知らせます（ホストの仕組みで）。
+- WebAssembly では、`--wasm-feature jspi` のグルーの export が `Promise` を返します。JavaScript は `await` で結果を待ち、その間もイベントループは動きます。グルーの中でモジュールが中断するのは、今は `--wasm-feature net` のソケットの待ちだけです（[WebAssembly の JSPI](../compiler/webassembly.md#jspi)）。WebAssembly の tzroutine は、まだ `E2000` です。
+
 ## 他の言語との比較
 
 | 言語 | 書き方 | 終わりを待つか |
@@ -504,6 +888,7 @@ Go の `go f(x)` は引数 `x` を呼び出し側で評価しますが、Tsuzuri
 - P の数は `TSUZURI_MAXPROCS`、スタックの予約は `TSUZURI_TZROUTINE_STACK_KIB` で変えられます。
 - WebAssembly、`--freestanding`、`--trap-mode return` とは組み合わせられません（`E2000`）。
 - 削除した `Task` の書き換えは、[Task からの移行](#task-からの移行) の表と例のとおりです。`Task.scope` だけは `tsuzuri fix` が `Routine.scope` へ書き換えます。
+- 削除した `Async` と `Net` の `_async` の書き換えは、[Async からの移行](#async-からの移行) のとおりです。ホストが駆動する実行器と、`Async.run` の仮想時刻には後継がありません。
 
 ## 関連項目
 
@@ -517,6 +902,9 @@ Go の `go f(x)` は引数 `x` を呼び出し側で評価しますが、Tsuzuri
 - [Owned](../built-in-types-and-modules/owned.md)
 - [Context](../built-in-types-and-modules/context.md)
 - [ErrGroup](../built-in-types-and-modules/errgroup.md)
+- [Time](../built-in-types-and-modules/time.md)
+- [select 式](select.md)
+- [Net](../built-in-types-and-modules/net.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [言語仕様（tzroutine）](../../../docs/language.md#tzroutine)
 - [言語リファレンスの目次](../index.md)

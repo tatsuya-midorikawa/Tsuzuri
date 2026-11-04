@@ -115,7 +115,7 @@ results[0]
 
 規則は次のとおりです。
 
-- `shared` の型は `Sync` でなければなりません。`Rc`、extern ハンドル、排他参照、Copy でない `dyn` 値、`Owned.Function`、`Seq`、`Async`、GPU のハンドルは `Sync` ではなく、`E1013`（`tzroutines and threads can share only Sync values; ... is not Sync`）です。整数、文字列、配列、レコード、関数値、`Atomic`、`Mutex`、`Sync` な値の `Arc` は `Sync` です（[組み込みの印](../types-and-type-inference/constraints.md#組み込みの印)）。
+- `shared` の型は `Sync` でなければなりません。`Rc`、extern ハンドル、排他参照、Copy でない `dyn` 値、`Owned.Function`、`Seq`、GPU のハンドルは `Sync` ではなく、`E1013`（`tzroutines and threads can share only Sync values; ... is not Sync`）です。整数、文字列、配列、レコード、関数値、`Atomic`、`Mutex`、`Sync` な値の `Arc` は `Sync` です（[組み込みの印](../types-and-type-inference/constraints.md#組み込みの印)）。
 - `shared` が関数値、または関数値を含む値のときは、その環境が借用を持たない所有値であると証明できなければなりません。証明できないとき（引数で受け取った未知の関数値など）は `E1013`（`Routine.scope can share only values with proven owned environments`）です。
 - `f` は借用を持った環境を捕捉できません（`E1013`、`parallel callbacks and values cannot retain borrowed environments`）。共有したい値は、引数の `shared` で受け取ります。
 - 結果は `Send` の所有値です。`shared` を返すことはできません（`E1013`、`values that move to another tzroutine or thread must be owned`）。

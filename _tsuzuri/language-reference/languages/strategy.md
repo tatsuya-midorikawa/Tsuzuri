@@ -169,7 +169,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | 整数 WGSL、緩い `f32`・`f16` の WGSL（名前で選ぶ）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行と WebGPU ホスト試作、SPIR-V 生成と `Gpu.request Gpu.Vulkan` による Vulkan 上の実行（厳密な整数と、報告と適合プローブを通るデバイスの厳密な `f32`、緩い `f32`）、測って選ぶ `Gpu.Auto` | 実験的 | F07、F09 の Phase 1〜3。確かめたのは Apple M1 Max（WebGPU は wgpu-native と Dawn、Vulkan は MoltenVK と SwiftShader）だけ |
 | WASM threads | 実装済みの opt-in | F06。ブラウザ向けのグルーは E13 の `--emit bindings-js --wasm-feature threads` |
 | Windows x64（MSVC）の実行検証 | 検証済み | [G10](../../../_features/_completed/G10-windows.md)。CI の `windows-2022` が `cargo test`、native の `-O0`・`-O3`、WASM を実行する。ARM64 と MinGW のホストは未確認。OS API は `E2002`、共有ライブラリは `E2000` |
-| 非同期計算 | 実装済み（純粋な仮想時刻、native reactor、ホスト駆動、WASM JSPI は opt-in） | [Async 式](../async-tasks-and-lazy/async.md)、B08 |
+| 非同期計算（`Async`） | 削除（TZ13） | B08。I/O を待ちながらほかの計算を進める処理は tzroutine と netpoller（TZ08）で書く（[Async からの移行](../async-tasks-and-lazy/tzroutine.md#async-からの移行)）。ホスト駆動の実行器と仮想時刻には後継がない |
 | ネットワーク | 実装済み | [Net](../built-in-types-and-modules/net.md)、E09。TCP・UDP・アドレス・名前解決。native（Linux と Windows の実行は CI だけで検証）と、`--wasm-feature jspi --wasm-feature net` の wasm32（Node.js）。TLS は含まない |
 | 線形時間の正規表現 `Regex`、Unicode 17.0.0 の表 `Unicode` | 実装済み | D09。後戻りしない Pike VM |
 | JSON（`Json`）と CBOR（`Cbor`）、`Encode` / `Decode` の導出 | 実装済み | D08。字句を保つ数値、ストリーミングの読み書き |
@@ -206,7 +206,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 - 暗黙の変換と暗黙の高速化を避け、契約と診断を明示します。
 - 性能は最優先の要件の一つですが、数値と所有権の意味より優先しません。
 - 速い経路を足しても、移植できる基準経路を残します。
-- GPU は実験的、Windows の OS API は未対応、非同期 I/O は `Net` のソケットだけです。公開の registry は運営していません。
+- GPU は実験的、Windows の OS API は未対応、tzroutine が OS スレッドを止めずに待てる I/O は `Net` のソケットだけです。公開の registry は運営していません。
 - 実装済みと計画中を混ぜて、対応済みとは呼びません。
 
 ## 関連項目

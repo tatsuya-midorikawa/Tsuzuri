@@ -8,7 +8,7 @@
 
 - `--emit bindings-js` が `<name>.mjs` と `<name>.d.mts` を出します。型の検査、バッファの確保と解放、トラップの扱いはこのグルーが行います。
 - `--wasm-feature threads` を足すと、ブラウザで Web Worker のスレッドプールを作るグルーになります。COOP / COEP の無いページでは `Error` で、逐次実行には切り替えません。
-- [Async 式](../async-tasks-and-lazy/async.md) の `Async.start` は、グルーの `bindings.async` がイベントループで駆動します。`Async.block_on` は `--wasm-feature jspi` で JSPI を使い、export が `Promise` を返します。
+- `--wasm-feature jspi` を足すと、グルーの export が `Promise` を返す関数になります（JavaScript Promise Integration）。`--wasm-feature net` のソケットは、待つ間 JSPI でモジュールを中断し、その間も JavaScript は動きます（[JSPI](#jspi)）。
 - `--wasm-feature webgpu` を足すと、`Gpu.request Gpu.WebGpu` のプログラムが `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import します。既定の出力は import を持ちません。WebAssembly には Vulkan のホストがなく、`Gpu.request Gpu.Vulkan` は常に `Unavailable`、`Gpu.Auto` は CPU 参照が動かし、どちらも import を増やしません。
 - 公開名は C と同じ `tz_` 接頭辞です。`export def add` は `tz_add` になります。
 - `i64` は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は 0 か 1 の `Number` です。グルーは `bool` を `boolean` に直します。
@@ -153,7 +153,7 @@ trap (site 0) trap
 2n
 ```
 
-グルーは `node:` の import も `fetch` も使わないので、ブラウザでも同じファイルを `import` できます。ブラウザでは `fetch` で取ったバイト列か、`WebAssembly.compileStreaming` で作ったモジュールを `load` に渡します。`--wasm-feature threads` を付けたときのグルーは [スレッドのグルー](#スレッドのグルー) で、`--wasm-feature jspi` を付けたときのグルーと `bindings.async` は [非同期計算と JSPI](#非同期計算と-jspi) で説明します。
+グルーは `node:` の import も `fetch` も使わないので、ブラウザでも同じファイルを `import` できます。ブラウザでは `fetch` で取ったバイト列か、`WebAssembly.compileStreaming` で作ったモジュールを `load` に渡します。`--wasm-feature threads` を付けたときのグルーは [スレッドのグルー](#スレッドのグルー) で、`--wasm-feature jspi` を付けたときのグルーは [JSPI](#jspi) で説明します。
 
 ### 型の対応
 
@@ -449,40 +449,23 @@ tsuzuri build Main.tz --target wasm32 -O0 --wasm-feature tail-call -o even_odd.w
 
 実行するエンジンは、tail call 提案に対応している必要があります。Node.js 20.19.6 の V8 で、深さ 10,000,000 の相互再帰が `-O0` と `-O3` で動くことを確かめました。ほかのエンジンは確かめていません。付けないビルドの IR には `musttail` が、module には `return_call` が現れません。`--emit llvm` の先頭の注記、Clang に渡す `-mtail-call`、ランタイムの object との結合は [WebAssembly の機能](option.md#webassembly) にあります。`--backend fast` の wasm32 には付けられません（`E2000`）。
 
-## 非同期計算と JSPI
+## JSPI
 
-[Async 式](../async-tasks-and-lazy/async.md) の実行器に到達するプログラム（`Async.start` か `Async.block_on` を使うもの）は、`tsuzuri_async_poll`（`(now: i64) => i64`）と `tsuzuri_async_complete`（`(operation: i64, value: i64) => void`）を export します。実行器に到達しないプログラムの export と import は変わりません。
-
-`Async.start` は import を足しません。ホストが `tsuzuri_async_poll` を回し、`Async.host` の操作の完了を `tsuzuri_async_complete` で渡します。`--emit bindings-js` のグルーは、これを自動で行います。export の呼び出しと `complete` のあと、またいちばん早いタイマーの時刻に、`performance.now()` のミリ秒で poll します。宣言には次が加わります。
-
-```typescript
-export interface AsyncHost {
-  complete(operation: bigint, value: bigint): void;
-  settled(): Promise<void>;
-}
-export interface Bindings { readonly async: AsyncHost }
-```
-
-`complete` は `bigint` の操作 ID と値を受け取ります。ほかの型は `TypeError`、`i64` の範囲外は `RangeError` です。`settled()` は、計算が残っていない状態になると解決します。実行器の失敗では拒否し、再作成まで失敗を保持します。待っていない ID を `complete` に渡すとトラップで、インスタンスを捨てます。待っていた計算も失われます。使い方の例は [Async 式](../async-tasks-and-lazy/async.md#ホストが駆動する実行asyncstart) にあります。
-
-実行器のモジュールは `tsuzuri_async_set_epoch(i64)` も export します。グルーは、新しいインスタンスで操作を開始する前に、1 以上 2^24 未満の世代を設定します。同じ生成モジュール内では、複数の `load` とインスタンスの再作成を通じて世代を再利用しません。別のインスタンスや破棄したインスタンスの ID を `complete` に渡すと `TypeError` になり、新しい計算へ取り違えて渡しません。別々に生成したグルーや生の WASM の間では、ホストが操作 ID と実行器を対応付けます。生の WASM を再作成するホストも世代を変えます。操作の開始後に世代を変更するとトラップします。
-
-`Async.block_on` は、待つ間に WebAssembly のスタックを中断します。そのために JavaScript Promise Integration（JSPI）を使います。`--wasm-feature jspi` を付けて、`.wasm` とグルーの両方をビルドします。
+`--wasm-feature jspi` は、待つ間に WebAssembly のスタックを中断する JavaScript Promise Integration（JSPI）のグルーを選びます。`.wasm` とグルーの両方に付けてビルドします。
 
 ```sh
 tsuzuri build app --target wasm32 --wasm-feature jspi --emit bindings-js -o app.mjs
 tsuzuri build app --target wasm32 --wasm-feature jspi -O3 -o app.wasm
 ```
 
-- モジュールは `tsuzuri_async.clock`（`() => i64`、ミリ秒）と `tsuzuri_async.wait`（`(deadline: i64) => void`）を import します。`wait` は `WebAssembly.Suspending` で包んだ関数で、期限か操作の完了で解決する `Promise` を返します。期限が `i64` の最大値なら、完了だけを待ちます。
-- `Async.block_on` に到達する export は、`WebAssembly.promising` で包んで呼びます。JSPI のグルーは、すべての export を `Promise` を返す関数にします。宣言の戻り値も `Promise<T>` です。
-- JSPI のグルーは export を呼び出し順に直列化し、待っている間に次の呼び出しで同じスタックや結果を使いません。入力は呼び出し時点のコピーで、`withBorrowed` はありません。生の `WebAssembly.promising` の呼び出しも、前の呼び出しを await してから次を始めます。
-- export が待っている間も JavaScript は動きます。`bindings.async.complete` は、待っている export を起こします。
+- JSPI のグルーは、すべての export を `WebAssembly.promising` で包み、`Promise` を返す関数にします。宣言の戻り値も `Promise<T>` です（`export def add :: i64 -> i64 -> i64` なら `add(arg0: bigint, arg1: bigint): Promise<bigint>`）。ホストは結果を `await` します。
+- モジュールが中断するのは、`WebAssembly.Suspending` で包んだ import を呼んだときだけです。このグルーで今それに当たるのは、`--wasm-feature net` のソケットの待ち（[Net のソケット](#net-のソケットnodejs)）です（`--wasm-feature webgpu` の import も JSPI で中断しますが、グルーではなく `createGpuImports` のホストで使います。[WebGPU デバイス](#webgpu-デバイス)）。中断している間も、JavaScript のイベントループは動きます。待つ import のないモジュールでは、`.wasm` は `--wasm-feature jspi` を付けないものと同じで、グルーだけが違います。
+- JSPI のグルーは export を呼び出し順に直列化し、待っている間に次の呼び出しで同じスタックや結果を使いません。入力は呼び出し時点のコピーで、`withBorrowed` はありません。生の `WebAssembly.promising` で呼ぶホストも、前の呼び出しを await してから次を呼びます。
 - `--wasm-feature jspi` は、`wasm32` と `wasm64` の `object`、`llvm`、`wasm` と、wasm32 の `bindings-js` で使えます。`--wasm-feature threads` や `--wasm-host wasi` とは同時に指定できません（`E2000`）。
-- `--wasm-feature jspi` なしで `Async.block_on` に到達すると、`.wasm` のビルドだけでなく `--emit bindings-js` の生成も `E2000` です。`.wasm` とグルーの両方に同じオプションを付けます。JSPI を使う `.wasm` を JSPI なしのグルーで読むと、`load` が `module does not match bindings: it waits through JSPI; generate the bindings with --wasm-feature jspi as well` で失敗します。
-- JSPI（`WebAssembly.Suspending` と `WebAssembly.promising`）を持つエンジンが要ります。リポジトリの `tests/async.mjs` で、Node.js 24 で動くことを確かめました。Node.js 20 にはありません。
+- tzroutine を起動するプログラムは、`--wasm-feature jspi` を付けても `E2000`（`tzroutine with --wasm-feature jspi is not implemented yet`）です（[tzroutine 式](../async-tasks-and-lazy/tzroutine.md#ターゲット)）。
+- JSPI（`WebAssembly.Suspending` と `WebAssembly.promising`）を持つエンジンが要ります。持たないエンジンでは、グルーの `load` が `JSPI bindings require WebAssembly.Suspending and WebAssembly.promising; use a JSPI-capable engine` で失敗します。リポジトリの `tests/net_wasm.mjs` で、Node.js 24 で動くことを確かめました。Node.js 20 にはありません。
 
-`--wasm-feature threads` は、実行器に到達するプログラムを `E2000` で拒否します。現在の WASM worker は Async 実行器の TLS を設定しません。
+TZ13 で、`Async` の実行器を削除しました。`Async.start` の export（`tsuzuri_async_poll`・`tsuzuri_async_complete`・`tsuzuri_async_set_epoch`）、`Async.block_on` の import（`tsuzuri_async.clock`・`tsuzuri_async.wait`）、グルーの `bindings.async`（`complete`・`settled`）は、もうありません。ホストのイベントループで計算を進める形には後継がなく、ホストは export の `Promise` を待ちます（[Async からの移行](../async-tasks-and-lazy/tzroutine.md#asyncstart-とホストの-poll)）。
 
 ## WebGPU デバイス
 
@@ -510,25 +493,24 @@ tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net --emit 
 tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net -O3 -o app.wasm
 ```
 
-- モジュールは、到達した操作だけを、モジュール `tsuzuri_net` の import として宣言します（`resolve`・`open`・`accept`・`read`・`write`・`try_accept`・`try_read`・`close`・`classify`・`names`・`send`・`watch`・`unwatch`・`connect`）。待つ `resolve`・`open`・`accept`・`read`・`write` は、グルーが `WebAssembly.Suspending` で包んだ関数で、Node.js が仕事をする間、WebAssembly のスタックを中断します。`try_accept`・`try_read` は、時間制限 0 の `accept`・`read`（`_async` の操作が最初に試す呼び出し）の入口で、待たずにすぐ戻る普通の関数です。`Async.start` の実行器はホストが JSPI の外から `tsuzuri_async_poll` を呼んで進めるので、中断する import を呼ぶと `SuspendError` でインスタンスが捨てられます。時間制限が 0 かどうかは、`.wasm` の中で実行時に選びます。ほかの import は、すぐ戻ります。
-- 実装は生成したグルーの中にあります。`node:net`・`node:dgram`・`node:dns` で動かし、ネイティブの `net.c` と同じ約束を守ります（世代付きのハンドルの表、`(kind << 32) | code` の状態、呼び出し全体の期限、時間制限 0 は「1 回だけ試す」、閉じたハンドルは `InvalidInput`）。非同期の操作は `tsuzuri_async_complete` で完了します。`code` は Node.js の `os.constants.errno` の値です。システムの定数にはなく libuv だけが名前を付けているエラー（`EHOSTDOWN` など）は、libuv の表（`util.getSystemErrorMap()`）から補うので、`Net.error_kind` はネイティブと同じに `Unreachable` などへ分類します。グルーの import は、Node.js の呼び出しが投げた例外（たとえばポート 0 宛ての `dgram` の送信）を、その呼び出しの状態（`code` は `EINVAL` など）にして返します。例外がモジュールへ届いてインスタンスが捨てられることはありません。
+- モジュールは、到達した操作だけを、モジュール `tsuzuri_net` の import として宣言します（`resolve`・`open`・`accept`・`read`・`write`・`try_accept`・`try_read`・`close`・`classify`）。待つ `resolve`・`open`・`accept`・`read`・`write` は、グルーが `WebAssembly.Suspending` で包んだ関数で、Node.js が仕事をする間、WebAssembly のスタックを中断します。`try_accept`・`try_read` は、時間制限 0 の `accept`・`read` の入口で、待たずにすぐ戻る普通の関数です。時間制限が 0 かどうかは、`.wasm` の中で実行時に選びます（std の `Net` は時間制限 0 を範囲外として断るので、今の std からは呼ばれません）。ほかの import は、すぐ戻ります。
+- 実装は生成したグルーの中にあります。`node:net`・`node:dgram`・`node:dns` で動かし、ネイティブの `net.c` と同じ約束を守ります（世代付きのハンドルの表、`(kind << 32) | code` の状態、呼び出し全体の期限、時間制限 0 は「1 回だけ試す」、閉じたハンドルは `InvalidInput`）。`code` は Node.js の `os.constants.errno` の値です。システムの定数にはなく libuv だけが名前を付けているエラー（`EHOSTDOWN` など）は、libuv の表（`util.getSystemErrorMap()`）から補うので、`Net.error_kind` はネイティブと同じに `Unreachable` などへ分類します。グルーの import は、Node.js の呼び出しが投げた例外（たとえばポート 0 宛ての `dgram` の送信）を、その呼び出しの状態（`code` は `EINVAL` など）にして返します。例外がモジュールへ届いてインスタンスが捨てられることはありません。
 - グルーは `node:` のモジュールを、読み込むときに `import()` します。ブラウザには生の TCP も UDP もないので、`load` は `Net sockets need Node.js (node:net, node:dgram, and node:dns); a browser has no raw TCP or UDP` で失敗します。ソケットに到達しないモジュールは、`--wasm-feature net` を付けても、`--wasm-feature jspi` だけのグルーと同じ文字列（`node:` の import も `tsuzuri_net` の import もない）になり、`.wasm` も `tsuzuri_alloc` を export しません。到達するかどうかは、`.wasm` の IR に `@tsuzuri_net_` の宣言が出るかどうかと同じ基準（公開関数が呼ぶ分も含みます）で決めます。`Net.error_kind` も、ホストの `classify` を使うので、到達に数えます。
 - `--wasm-feature net` は、wasm32 の `object`、`llvm`、`wasm` と `bindings-js` で使えます。`--wasm-feature jspi` が必要です。`--wasm-feature threads`・`--wasm-host wasi`・wasm64・native とは同時に指定できません（`E2000`）。
-- JSPI を持つエンジンが要ります。リポジトリの `tests/net_wasm.mjs` で、macOS の Node.js 24 に対して、ブロッキングの API も `_async` の操作（`Async.block_on` から）も、`127.0.0.1` と `::1` の loopback で通ることを確かめました。`Async.start` の実行器からは、`connect_async`・`read_async`・`accept_async`・`recv_from_async` を確かめました（`bind_async` と `bind_udp_async` は後述のとおり使えません）。Linux と Windows の Node.js、ブラウザは検証していません。
+- JSPI を持つエンジンが要ります。リポジトリの `tests/net_wasm.mjs` で、macOS の Node.js 24 に対して、ブロッキングの API が `127.0.0.1` と `::1` の loopback で通ることを確かめました。Linux と Windows の Node.js、ブラウザは検証していません。
 
 ネイティブとの違いは次のとおりです。
 
 - listener の `SO_REUSEADDR` は、Node.js の `listen` が選べないので、Node.js の既定に従います。
 - `shutdown` の `Read` は、以後の `read` を 0 バイト（EOF）にして、届くデータを捨てます。OS の `SHUT_RD` は呼びません。
-- 送信は Node.js の内部バッファに積みます。`write` の期限は、積んだデータが Node.js の書き込みの完了に届くまでの時間で、期限が先に来て `TimedOut` になっても、積んだデータは取り消せず、あとで送られます。`write_async` の下の送信は、1 回に 64 KiB までを受け取り、残りはバッファが空くのを待ちます（Node.js が積んだだけのデータを、送れたと数えないためです。`send_to_async` の datagram は、64 KiB を超えると `InvalidInput`（`EMSGSIZE`）です）。
+- 送信は Node.js の内部バッファに積みます。`write` の期限は、積んだデータが Node.js の書き込みの完了に届くまでの時間で、期限が先に来て `TimedOut` になっても、積んだデータは取り消せず、あとで送られます。
 - `close` は、受け取ったデータを送り終えてから閉じます（ネイティブの `close` で、カーネルが送り続けるのと同じです）。相手が読まないと、そのソケットは残り、`Net` の呼び出しからは見えなくなります。送り終えるまで、Node.js のプロセスも終わりません（積んだデータの書き込みが済むのを待ちます）。
-- ソケットを閉じ忘れたプログラムは、ネイティブではプロセスの終了で閉じられます。Node.js では、ソケットは、モジュールがそれを待っているあいだ（待つ呼び出し、`watch`、`connect`）だけプロセスを生かします。待っていないソケットは `unref` されるので、閉じていないソケットが残っていても、ほかにすることがなければ Node.js は終わります（`leak` のテストで確かめました）。モジュールが例外で止まってインスタンスが捨てられたときは、そのインスタンスのソケット（listener、UDP、接続、作りかけのもの）をすべて、その場で閉じます。ポートはすぐ空き、接続は相手に閉じて見え、listener への接続は拒否されます。
+- ソケットを閉じ忘れたプログラムは、ネイティブではプロセスの終了で閉じられます。Node.js では、ソケットは、モジュールがそれを待っているあいだ（待つ呼び出しの間）だけプロセスを生かします。待っていないソケットは `unref` されるので、閉じていないソケットが残っていても、ほかにすることがなければ Node.js は終わります（`leak` のテストで確かめました）。モジュールが例外で止まってインスタンスが捨てられたときは、そのインスタンスのソケット（listener、UDP、接続、作りかけのもの）をすべて、その場で閉じます。ポートはすぐ空き、接続は相手に閉じて見え、listener への接続は拒否されます。
 - 読み取られないまま届くものは、上限までしか保ちません。UDP のソケットは、まだ `recv_from` されていないデータグラムを 1 MiB と 4096 個まで保ち、あふれた分は、受信バッファが満杯のカーネルと同じに捨てます（カーネル自身の上限は、これとは別にかかります）。listener は、まだ `accept` されていない接続を 128 個まで保ち、あふれた接続は、RST で切ります。`accept` の途中で OS の資源が尽きるなどの listener の失敗は、次の `accept` が 1 回だけ返します。
-- UDP のデータグラムをポート 0 へ送ると、`send_to`・`send_to_async` とも `InvalidInput`（`EINVAL`）になります。ネイティブは OS で違い、Linux は `EINVAL`、Windows は `EADDRNOTAVAIL`、macOS は送って捨てます。Node.js の `dgram` は、ポート 0 を例外で断ります。
-- UDP の送信は、1 回の送信が 1 つのデータグラムで、結果もその送信自身のものです。Node.js は送信を次のターンに行い、結果をそのあとに返します。`send_to` は、その結果が返るまで待ちます。`send_to_async` は、データグラムを呼び出しの中で Node.js へ 1 回だけ渡し、操作は、Node.js が返すその送信の結果（成功、またはその送信が失敗した理由）を待って返します。OS が断る大きさのデータグラムは、その送信が `EMSGSIZE` などで失敗して、何も送りません（64 KiB を超えるものは、グルーが先に `EMSGSIZE` にします）。同じ内容を続けて送っても、`Async.all` で一度に始めても、送られるデータグラムの数は送信の数と同じです。送信の失敗が、同じソケットの `recv_from`・`recv_from_async` に現れることはありません。違いは、始めた送信を、操作の取り消し（兄弟の失敗など）で取り戻せないことです。ネイティブの送信は、呼び出しが戻るときに終わっているので、取り消す余地がありません。
-- UDP のソケットを `close` したとき、Node.js がまだ終えていない送信があれば、ソケットはその最後の送信が終わってから閉じます（閉じたソケットは、まだ出ていない送信を捨てるためです）。ハンドルは `close` が戻った時点から無効（以後の呼び出しは `InvalidInput`）で、始めていた送信は、それぞれ自分の結果を返します。`Async.all [send_to_async s data target, close_udp_async s]` のように、同じ実行器で送信と `close` が重なっても、データグラムは送られ、送信は成功を返します。
+- UDP のデータグラムをポート 0 へ送ると、`send_to` は `InvalidInput`（`EINVAL`）になります。ネイティブは OS で違い、Linux は `EINVAL`、Windows は `EADDRNOTAVAIL`、macOS は送って捨てます。Node.js の `dgram` は、ポート 0 を例外で断ります。
+- UDP の送信は、1 回の送信が 1 つのデータグラムで、結果もその送信自身のものです。Node.js は送信を次のターンに行い、結果をそのあとに返します。`send_to` は、その結果が返るまで待ちます。OS が断る大きさのデータグラムは、その送信が `EMSGSIZE` などで失敗して、何も送りません（64 KiB を超えるものは、グルーが先に `EMSGSIZE`（`InvalidInput`）にします）。同じ内容を続けて送っても、送られるデータグラムの数は送信の数と同じです。送信の失敗が、同じソケットの `recv_from` に現れることはありません。
+- UDP のソケットを `close` したとき、Node.js がまだ終えていない送信があれば、ソケットはその最後の送信が終わってから閉じます（閉じたソケットは、まだ出ていない送信を捨てるためです）。ハンドルは `close` が戻った時点から無効（以後の呼び出しは `InvalidInput`）で、始めていた送信は、それぞれ自分の結果を返します。
 - `accept` が返す接続の相手のアドレス（`peer_addr`）は、Node.js が接続を受け取った時点のものです。接続を `accept` するより前に相手が RST で切っても、相手のアドレスは残ります（ネイティブの `accept` が返すアドレスと同じです）。Node.js が受け取るより前に切られた接続は、OS が相手の名前を答えないことがあり（Linux で起こり得ます。Linux での実行は未検証です）、そのときは `0.0.0.0:0` です。
-- `Async.start` の実行器から使えない操作があります。`bind_async` と `bind_udp_async` は、Node.js の bind が終わるのを JSPI で待つので、`Async.block_on` の中でだけ使えます。`Async.start` の中で呼ぶと、`SuspendError`（`trying to suspend without WebAssembly.promising`）でインスタンスが捨てられます。`Async.start` の前に、`export` の中で `Net.bind`・`Net.bind_udp` で作って、ハンドルを起動する計算へ渡してください。ほかの `_async` の操作は、どちらの実行器からも使えます。
 - `resolve` の host に ASCII 以外のバイトを含むものは、すべてのターゲットで `InvalidInput` です。Node.js の `dns.lookup` は、host を IDNA で変換してから OS に渡すので、全角の `１２７．０．０．１` や `127。0。0。1` が 127.0.0.1 になってしまうためです。国際化ドメイン名は、`xn--` の形で書きます（[Net の名前解決](../built-in-types-and-modules/net.md#名前解決)）。グルーも、数値のアドレスに読める host を自分で断ります。
 
 ## WASI
@@ -631,7 +613,7 @@ for (let i = 0; i < exports.tsuzuri_overflow_count(); i += 1) {
 - バッファはポインタと長さ、所有結果は 16 バイトの記述子です。呼び出しのあとビューを取り直します。
 - `simd128` は許可、`threads` は共有メモリとワーカーのホストが必要です。ブラウザでは、`--emit bindings-js --wasm-feature threads` のグルーがプールを作ります。
 - `--wasm-feature tail-call` は、相互再帰の末尾呼び出しを `return_call` にして定数スタックにします。実行環境が tail-call 提案を持つときだけ使えます（[末尾呼び出し](#末尾呼び出しtail-call)）。
-- `Async.start` の実行器は `tsuzuri_async_poll` と `tsuzuri_async_complete` で駆動し、グルーでは `bindings.async` が受け持ちます。`Async.block_on` は `--wasm-feature jspi` が要ります。
+- `--wasm-feature jspi` のグルーは export を `Promise` を返す関数にし、呼び出しを直列化します。モジュールは `--wasm-feature net` のソケットの待ちで中断します（[JSPI](#jspi)）。
 - `Gpu.request Gpu.WebGpu` は `--wasm-feature webgpu` が要り、JSPI のホスト（`createGpuImports`）が WebGPU を呼びます。`Gpu.Vulkan` は WebAssembly では使えず（`Unavailable`）、`Gpu.Auto` は CPU 参照です。
 - `--trap-info` の `.trap.json` とサイト ID で位置を引き、トラップしたインスタンスは捨てます。
 - `--overflow-report` のモジュールは、`tsuzuri_overflow_count`・`tsuzuri_overflow_hit` と `.overflow.json` で、折り返した整数の演算を知らせます。
@@ -639,7 +621,7 @@ for (let i = 0; i < exports.tsuzuri_overflow_count(); i += 1) {
 ## 関連項目
 
 - [コンパイラ オプション](option.md)
-- [Async 式](../async-tasks-and-lazy/async.md)
+- [tzroutine 式](../async-tasks-and-lazy/tzroutine.md)
 - [ネイティブ連携 (C ABI)](native-interop.md)
 - [診断メッセージとエラーコード](diagnostics.md)
 - [言語仕様の公開 ABI](../../../docs/language.md#公開-abi)

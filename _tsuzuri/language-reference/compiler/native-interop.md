@@ -457,7 +457,7 @@ llvm-bcanalyzer -dump add.bc | grep -m1 "record string"
 
 ### 何が入るか
 
-bitcode の外から見える記号は、`--emit object` と同じ公開 C ABI（`--emit shared` が書き出す一覧）です。強い定義は、`tz_<名前>`、`--trap-mode return` の `tsuzuri_try_<名前>`、`--allocator counting` の `tsuzuri_alloc_stats`、標準入出力の入口の `tsuzuri_main`、`Async.start` の `tsuzuri_async_poll` と `tsuzuri_async_complete` です。弱い定義は、`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、f16 などのソフトウェア実装 `tz_soft_*`、`--allocator small` の `tz_small_*`、そして `Async.block_on` に届くプログラムで、ほかのスレッドが呼ぶ `tsuzuri_async_post` です。`tsuzuri_async_post` は C ランタイムが定義するので、まとめるときに内部にならないよう名前を残します（下の `llvm-link` の項）。C ランタイムのそれ以外の関数は、この bitcode の中の内部関数で、ホストの名前と衝突しません。
+bitcode の外から見える記号は、`--emit object` と同じ公開 C ABI（`--emit shared` が書き出す一覧）です。強い定義は、`tz_<名前>`、`--trap-mode return` の `tsuzuri_try_<名前>`、`--allocator counting` の `tsuzuri_alloc_stats`、標準入出力の入口の `tsuzuri_main` です。弱い定義は、`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、f16 などのソフトウェア実装 `tz_soft_*`、`--allocator small` の `tz_small_*` です。C ランタイムの関数は、この bitcode の中の内部関数で、ホストの名前と衝突しません。
 
 LLVM は、呼ぶ側の関数の target 属性が呼ばれる側の属性を含むときだけ、関数を inline します。Clang は C の関数に `"target-cpu"`、`"tune-cpu"`、`"target-features"` を付けますが、このコンパイラの IR は付けません。そこで `--emit bitcode` は、小さな C のファイルを同じ Clang で `-S -emit-llvm` にして読み、その Clang が C の関数に付ける `target-cpu` と `tune-cpu` を、IR の全関数に付けます。既定で `target-features` を写さないのは、同じ CPU でも feature の列が少し違うホストで inline されなくなるからです。`--cpu native` は features も写します。F08 の `@cpu` 版のように、関数が自分の `target-features` を持つときは、それを保ちます。
 
@@ -465,7 +465,7 @@ LLVM は、呼ぶ側の関数の target 属性が呼ばれる側の属性を含�
 
 `--emit object` のオプション（`-O`、`-g`、`--trap-info`、`--trap-mode return`、`--allocator host|small|counting`、`--cpu native`、`--target TRIPLE`）は、同じ意味で bitcode に通ります。リンク入力、`--strip`、`--profile-generate`・`--profile-use`、`--freestanding`、Windows の target は `E2000` です（[診断](option.md#組み合わせがエラーになる場合)）。ビルドキャッシュは使いません（`--no-cache` と同じ）。
 
-C ランタイムを使うプログラム（tzroutine と `Parallel.*`・`Mutex`、`Async`、標準入出力、OS API、`Net`、整数配列の `Array.sum` などの CPU カーネル、`--trap-mode return`）は、ランタイムを IR にして `llvm-link --internalize` で 1 つにまとめます。ランタイムだけが定義する公開の記号（`tsuzuri_async_post`）は、`--internalize` が内部にしないよう、IR に宣言と `@llvm.used` の一覧を足して残します。まとめた後に、それが外部の定義のままかを検査し、そうでなければ `E2002` です。`llvm-link` は、`TSUZURI_LLVM_LINK`、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します。Clang と同じ LLVM のものを使います。見つからないと `E2002` で、`TSUZURI_LLVM_LINK` を勧めます。ランタイムの要らないプログラム（`add` だけなど）には、要りません。配布物の `bin/` に `llvm-link` があるのは macOS だけです（[コンパイラの使い方](usage.md)）。
+C ランタイムを使うプログラム（tzroutine と `Parallel.*`・`Mutex`、標準入出力、OS API、`Net`、整数配列の `Array.sum` などの CPU カーネル、`--trap-mode return`）は、ランタイムを IR にして `llvm-link --internalize` で 1 つにまとめます。ランタイムだけが定義する公開の記号があれば、`--internalize` が内部にしないよう、IR に宣言と `@llvm.used` の一覧を足して残し、まとめた後に外部の定義のままかを検査します（そうでなければ `E2002`）。今のランタイムには、そのような記号はありません（TZ13 で削除した `Async` の `tsuzuri_async_post` が、ただ 1 つでした）。`llvm-link` は、`TSUZURI_LLVM_LINK`、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します。Clang と同じ LLVM のものを使います。見つからないと `E2002` で、`TSUZURI_LLVM_LINK` を勧めます。ランタイムの要らないプログラム（`add` だけなど）には、要りません。配布物の `bin/` に `llvm-link` があるのは macOS だけです（[コンパイラの使い方](usage.md)）。
 
 Clang が bitcode を書かないとき（`-x ir -flto=thin -c` の `-flto=thin` を落とすランチャーなど）は、出力の先頭が bitcode でないので `E2002` で止めます。配布物の `tsuzuri-clang` は `-flto` を同梱の LLVM Clang に渡します。
 
@@ -535,23 +535,11 @@ Tsuzuri のコードからは [Alloc](../built-in-types-and-modules/alloc.md) �
 
 契約の詳細は [言語仕様のホスト提供の allocator](../../../docs/language.md#ホスト提供の-allocator) を見てください。
 
-## 非同期計算の実行器
+## ホストのイベントループと export
 
-[Async 式](../async-tasks-and-lazy/async.md) の `Async.start` か `Async.block_on` に到達するプログラムは、実行器の入口を公開します。ヘッダーには次の宣言が入ります。`tsuzuri_async_post` は、`Async.block_on` に到達するときだけです。
+export の呼び出しは、その中で起動した tzroutine がすべて終わるまで戻りません（[tzroutine 式](../async-tasks-and-lazy/tzroutine.md)）。中の tzroutine が `extern` の呼び出しやソケットで待つ間も、ほかの tzroutine は走ります。ホストのイベントループを止めたくないときは、ホストが別のスレッドから export を呼び、結果をホストの仕組みでイベントループへ知らせます。
 
-```c
-int64_t tsuzuri_async_poll(int64_t now);
-void tsuzuri_async_complete(int64_t operation, int64_t value);
-int32_t tsuzuri_async_post(int64_t operation, int64_t value);
-```
-
-`Async.host` に渡す操作の `start` と `cancel` は、普通の `extern`（`tsuzuri_host_<モジュール>_<名前>`）としてホストが実装します。`tsuzuri_async_poll` は時計を `now` まで進めて計算を再開し、次に poll する時刻を返します。`-1` は計算が残っていないこと、`INT64_MAX` はホストの操作の完了だけを待っていることを表します。規則と C のホストの骨組みは、[Async 式](../async-tasks-and-lazy/async.md#ホストが駆動する実行asyncstart) にあります。
-
-`Async.block_on` に到達する実行ファイルと、macOS / Linux の共有ライブラリには、コンパイラが `src/runtime/async.c`（単調時計、条件変数による待ち、ほかのスレッドからの完了の列）を埋め込みます。`--emit llvm` の IR を自分でリンクするときは、このファイルも一緒にコンパイルします。POSIX では `-pthread` を付けます。Windows は Win32 の同期（SRWLOCK と条件変数）と `QueryPerformanceCounter` だけを使うので、追加のライブラリは要りません。対応するホストは Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 ですが、Windows でコンパイラがリンクするのは実行ファイル（と test / debug-test / bench）だけです。Windows の `--emit shared` は従来どおり `E2000`、runtime を埋め込む COFF の `--emit object` は tzroutine・CPU・IO と同じく非対応なので、DLL や静的ライブラリにするときは、LLVM IR を出して、このファイルと一緒に自分でリンクします。test / debug-test / bench も同じ対応範囲です。
-
-- 実行器はスレッドごとに独立しています。複数のスレッドから `Async.block_on` を呼んでも、操作の完了は開始したスレッドへ届きます。`Async.start` を投入したスレッドから poll し、そのスレッドを計算の終了まで生存させます。
-- ほかのスレッドから操作を完了するときは、`tsuzuri_async_post` を使います。受理すると 1 を返して待機を起こし、未知・二重・完了済み・取り消し済みなら 0 です。`tsuzuri_async_complete` は、実行器を動かしているスレッド（コールバックの中を含む）から呼びます。mailbox の確保も選択した Tsuzuri allocator を通り、終了・取り消しで解放されます。
-- `--trap-mode return` とは組み合わせられません（`E2000`）。トラップした呼び出しのブロックを境界が解放しても、実行器の状態から届いてしまうからです。
+TZ13 で、ホストが駆動する `Async` の実行器を削除しました。ヘッダーの `tsuzuri_async_poll`・`tsuzuri_async_complete`・`tsuzuri_async_post` の宣言と、それを実装した `src/runtime/async.c` は、もうありません。計算をホストのイベントループに預けて poll で進める形には、後継がありません。書き換えの例（ホストのスレッドから export を呼ぶ C のホスト）は、[Async からの移行](../async-tasks-and-lazy/tzroutine.md#asyncstart-とホストの-poll) にあります。
 
 ## スレッドとホストの責任
 
@@ -559,7 +547,7 @@ tzroutine と `Parallel.*` のコールバック（`Routine.scope` の子を含�
 
 `extern type` の値は所有値なので、ある時点でそれを使える tzroutine は 1 つです。[Arc](../built-in-types-and-modules/rc.md) で包んでも、ハンドル（またはハンドルを隠しうる Copy でない `dyn` 値や `Owned.Function`）を持つ値の `Arc` は tzroutine へ渡せず（`E1013`）、関数値にも捕捉できない（`E1005`）ので、同じハンドルを複数の tzroutine から同時に使うことはありません。
 
-export とコールバックは、利用者から共有して変更する大域的な状態を持ちません。[非同期計算の実行器](#非同期計算の実行器) の状態はスレッドごとに保持し、別スレッドの完了配送だけを runtime が同期します。ホストが渡したバッファを、呼び出しのあいだに別スレッドが書き換えるのは、契約違反です。
+export とコールバックは、利用者から共有して変更する大域的な状態を持ちません。ホストが渡したバッファを、呼び出しのあいだに別スレッドが書き換えるのは、契約違反です。
 
 ホストは信頼境界です。例外の unwind、呼び出しが返ったあとのポインタの保持、回復不能な失敗から Tsuzuri のフレーム越しに戻ることはしません。`--trap-mode return` を指定すると、各エクスポート関数に対応する `tsuzuri_try_<name>` がヘッダーに追加され、トラップ発生時にプロセスを終了させる代わりにステータスコード 1 を返せます。その呼び出し中に確保されたヒープ領域は境界処理によって自動解放され、デストラクタは実行されません。オブジェクトを埋め込んだホストは、自分でシグナルハンドラを用意しない限り、スタック枯渇を Tsuzuri のメッセージとしては受け取りません。
 
@@ -749,12 +737,12 @@ C の名前はリンク名としてそのまま残り、Tsuzuri 側の名前だ�
 - `tsuzuri bindgen` は、ABI の一致を確かめられる C の宣言だけを生成し、推測で型を当てはめません。
 - `--emit shared` の共有ライブラリを、生成した C#、Python、C++ のバインディングから呼べます。
 - `--emit bitcode` の bitcode を、同じ Clang の `-flto=thin` でリンクすると、小さな公開関数がホストのループへ inline されます（[言語間 LTO と bitcode](#言語間-lto-と-bitcode)）。
-- `Async.start` と `Async.block_on` を使うプログラムは、`tsuzuri_async_poll`・`tsuzuri_async_complete`（`block_on` では `tsuzuri_async_post` も）でホストが実行器を進めます。
+- export の呼び出しは、中の tzroutine がすべて終わってから戻ります。ホストのイベントループを止めたくないときは、別のスレッドから export を呼びます（[ホストのイベントループと export](#ホストのイベントループと-export)）。
 
 ## 関連項目
 
 - [WebAssembly への出力](webassembly.md)
-- [Async 式](../async-tasks-and-lazy/async.md)
+- [tzroutine 式](../async-tasks-and-lazy/tzroutine.md)
 - [コンパイラ オプション](option.md)
 - [コンパイラの使い方](usage.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)

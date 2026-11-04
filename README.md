@@ -15,7 +15,7 @@
 - **引数規約（edition 2027）**: 通常の所有する引数・裸の型変数・関数引数は既定で読み取り、`own T` は値渡し、`mut T` は排他更新です。可変な所有者・排他参照からの field／要素の代入も検査します。既存 manifest の省略時は 2026 のままで、`fix --edition 2027 --from 2026` が旧契約を保って移行します。
 - **直感的で表現力豊かな関数型構文**: カリー化、強力な型推論、代数的データ型（`union`）、網羅性を検証するパターンマッチ、パイプライン演算子（`|>`）、関数合成（`>>` / `<<`）をサポートしています。
 - **ゼロコストの型クラス**: 型クラスはコンパイル時に静的に単相化（モノモーフィゼーション）され、動的ディスパッチやランタイム辞書のオーバーヘッドを生じさせません。異なる型の値を一つのコレクションへ入れるときだけ、`dyn` 型で実行時のディスパッチを明示できます。
-- **拡張可能なコンピュテーション式**: `.tc` ファイルでビルダーを定義することで、`Result` や `Maybe`、非同期処理などのモナディックな制御フローを言語本来の構文のように扱えます。
+- **拡張可能なコンピュテーション式**: `.tc` ファイルでビルダーを定義することで、`Result` や `Maybe`、`IO` などのモナディックな制御フローを言語本来の構文のように扱えます。
 - **安全で軽量な並列処理**: Go の goroutine に相当する `tzroutine { ... }`（専用のスタックを持つ M:N のスケジューリング。捕捉は所有値のムーブか Copy です。`main` や `export` の呼び出しは、その中で起動した tzroutine の終了を待ちます）と、同じスケジューラーの上で配列を分けて並列に計算する `Parallel.*`、借用を共有する子を tzroutine で呼ぶ `Routine.scope` により、データ競合のない安全な並列計算を提供します。Go の `chan T` に当たる `Channel<T>`（`for x in ch`、`close`、バッファなしの受け渡し）、複数のチャンネルを同時に待つ `select` 式、Go の `time` と同じタイマー（`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker`）、Go の `sync` に当たる同期の型（`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap`）、取り消しと期限の `Context`、最初の誤りで残りを止める `ErrGroup` も使えます。
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
@@ -98,7 +98,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 | メモリモデル | 所有権の移動（move）と借用検査（`ref T`／`ref mut T`、Rust 互換の `&T`／`&mut T` も可）。最後の使用と非重複の match 束縛でのコピー省略。明示的なヒープ確保（`new`）とスタック配置の区別。文字列・配列・リスト・環境の自動解放、`instance Drop` による RAII（GC は不使用。共有は明示的な `Rc` / `Arc`）。 |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。所有権・借用から証明した内部参照属性、scoped alias、限定した scalar TBAA・値・memory effects の情報を付与（public wrapper・slice ABI は維持）。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化し、同じ再帰グループへの末尾呼び出しは native で保証された末尾呼び出し（`musttail`）。 |
 | 安全性 | ゼロ除算や配列・リスト境界アクセスの実行時検査。LLVM の未定義動作に依存しない数値仕様。`@checked` による整数オーバーフローは `try` で `Result` に変換可能。 |
-| ホスト連携 | スカラー・バッファ・レコードの C ABI 連携および WebAssembly（WASM）のエクスポート／インポート。`extern` のリンク名指定・不透明ハンドル・静的コールバック、ネイティブのホストリンク。標準入出力と OS API は `IO`、協調的な待ちは `Async`、UI やネットワークのイベントはホスト側に委譲。 |
+| ホスト連携 | スカラー・バッファ・レコードの C ABI 連携および WebAssembly（WASM）のエクスポート／インポート。`extern` のリンク名指定・不透明ハンドル・静的コールバック、ネイティブのホストリンク。標準入出力と OS API は `IO`、I/O を待ちながら別の計算を進めるのは tzroutine、UI のイベントループはホスト側に委譲。 |
 | 開発・AI 支援 | 明示的な関数シグネチャ、暗黙の型変換の排除、位置情報付き JSON 診断（原因の識別子 kind、関連する位置・直し方・修正案を含む）、型つき穴 `?` と型での検索（`tsuzuri find`）、診断の説明（`tsuzuri explain`）とよくある誤りのヒント、決定的な IR 出力。公式 LSP、フォーマッター、テストランナー、REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行）。 |
 
 ---
@@ -333,7 +333,7 @@ match answer with
 ```
 
 - **構文要素**: `let!` は `Builder.Bind`、`return` は `Builder.Return` に展開されます。その他、必要に応じて `ReturnFrom`、`Yield`／`YieldFrom`、`Zero`、`Combine`、`For`／`While`、`Delay`／`Run` を実装できます。使用した構文に対応する操作がビルダーに未定義の場合は、明確なコンパイルエラーとなります。
-- **ビルダーの別名**: `.tc` に `@alias async` のように書くと、`async { ... }` と小文字でも同じビルダーを呼べます（`Async { ... }` と同じ展開）。標準の `Async` は `@alias async` を宣言済みです。詳細は [ビルダーの別名](_tsuzuri/language-reference/computation-expressions/computation-expressions.md#ビルダーの別名) を参照してください。
+- **ビルダーの別名**: ビルダーの `.tc`（たとえば `Query.tc`）に `@alias query` のように書くと、`query { ... }` と小文字でも同じビルダーを呼べます（`Query { ... }` と同じ展開）。詳細は [ビルダーの別名](_tsuzuri/language-reference/computation-expressions/computation-expressions.md#ビルダーの別名) を参照してください。
 - **高度な演算**: 複数ソースの並行的な合成を行う `and!` や `match!`、およびビルダーが提供する `MergeSources` / `BindReturn` / `Bind2` に対応しています（`and!` の各項は左から右へ順に一度ずつ評価され、勝手な自動並列化は行われません）。
 - **暗黙のコンピュテーション式**: 通常の関数や `main` の本体において、明示的なビルダーブロックを省略して `let!` や `do!` を直接記述することも可能です。コンパイラが戻り値の型に基づいて適切なビルダーを自動合成します。詳細は [暗黙の計算式](docs/language.md#ビルダー名を省略した本体) を参照してください。
 - **最適化**: スコープを脱出しないローカルな継続はコンパイラによって特殊化・インライン化され、不要なクロージャのメモリ確保や間接関数呼び出しが完全に消去されます。特殊化した関数（worker）の数には 1,024 個の予算があり、使い切る program では、予算で完成できる連鎖を完成させ、残りは通常の経路になります（[測定](docs/benchmarks.md#抽象化コストの除去pr032026-10-16)）。詳細は [ビルダーの仕様](docs/language.md#コンピュテーション式) および [コンピュテーション式の比較](docs/benchmarks.md#コンピュテーション式の比較) を参照してください。実行例は `tsuzuri run examples/computations` で確認できます。
@@ -382,25 +382,7 @@ match ErrGroup.wait group with
 ```
 
 - **削除した Task**: 以前の `task { ... }`、`Task<T>`、`Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope` は削除しました。書くと `E1040` で、`tsuzuri fix` は `Task.scope` を `Routine.scope` に書き換えます。書き換え方は [Task からの移行](_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md#task-からの移行) にあります。
-
-### 非同期計算 (`Async`)
-
-待ち時間のあいだに同じスレッドで別の計算を進めるには、標準の `Async` を使います。`Async.run` は仮想時刻、`Async.block_on` は実時間、`Async.start` はホストの poll で実行します。CPU のコアを使う並列処理は、上の `Parallel.*` と tzroutine と分担します。
-
-```text
-let work = Async {
-    do! Async.sleep 10
-    let! now = Async.now ()
-    return now + 32
-}
-
-Async.run work
-// 出力: 42
-```
-
-ビルダーの `.tc` に `@alias` を書くと、小文字の別名でも同じビルダーを呼べます。標準の `Async` は `@alias async` を宣言しているので、`async { ... }` は `Async { ... }` と同じ計算です。別名の規則は [コンピュテーション式](_tsuzuri/language-reference/computation-expressions/computation-expressions.md#ビルダーの別名) を参照してください。
-
-`Async.all` は子を入力順に協調スケジュールし、`Async.all_results` は最初に時刻順で完了した `Error` で残りを取り消します。`Async` の値はコールドで非 Copy です。中断をまたぐ借用は `E1013` で拒否されます。詳しくは [Async 式](_tsuzuri/language-reference/async-tasks-and-lazy/async.md) を参照してください。
+- **削除した Async**: 以前の `Async { ... }`・`async { ... }`、`Async<T>`、`Async.run`・`Async.block_on`・`Async.all`・`Async.all_results`・`Async.sleep`・`Async.start` などと、`Net` の `_async` の 12 関数（`connect_async` など）は削除しました（TZ13）。書くと `E1040` で、`tsuzuri fix` の自動の書き換えはありません。I/O を待ちながら別の計算を進めるには tzroutine を起動し（`Net` の同期の関数は、その tzroutine だけを待たせます）、終わりは `WaitGroup` か `ErrGroup`、タイムアウトは `select` と `Time.after`、待ちは `Time.sleep` で書きます。ホストのイベントループが計算を進める実行器（`Async.start`）と `Async.run` の仮想時刻には後継がありません。書き換え方は [Async からの移行](_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md#async-からの移行) にあります。
 
 ### 入出力・OS 連携・定数
 
@@ -429,7 +411,7 @@ def main :: unit -> i32 = \() ->
 #### ネットワーク API
 
 TCP と UDP のソケット、IP アドレスの解析と表示、名前解決は、opt-in の標準モジュール `Net` で提供されます（ソケットは macOS・Linux・Windows の native と、`--wasm-feature jspi --wasm-feature net` を付けた Node.js 向けの wasm32。アドレスの解析と表示はどの target でも import なしで動きます）。
-操作は `IO<Result<T, Os.Error>>` で、`Async.block_on` の中では `_async` の双子（`connect_async` など）を使えます。ハンドルは `Copy` の不透明な値です（`close` か `with_connection` などで閉じます）。通信は暗号化されません。API と例は [Net](_tsuzuri/language-reference/built-in-types-and-modules/net.md) を参照してください。
+操作は `IO<Result<T, Os.Error>>` です。tzroutine の中の待つ操作（`Net.accept`・`Net.read` など）は、その tzroutine だけを待たせ、ほかの tzroutine は走り続けます（[tzroutine の中の Net](_tsuzuri/language-reference/built-in-types-and-modules/net.md#tzroutine-の中の-net)）。ハンドルは `Copy` の不透明な値です（`close` か `with_connection` などで閉じます）。通信は暗号化されません。API と例は [Net](_tsuzuri/language-reference/built-in-types-and-modules/net.md) を参照してください。
 
 #### エントリーポイント (`Main.tz`)
 
@@ -529,9 +511,8 @@ def main :: unit -> i32 = \() ->
 | `Bench`, `Gen` | ベンチマーク（`tsuzuri bench`）とプロパティテストの生成器 |
 | `Alloc` | 確保・再確保・解放と要求バイト数の snapshot・差分。テストは counting heap を必要なときだけ自動で連結します |
 | `Parallel`, `Simd`, `Gpu` | データ並列処理、128-bit・256-bit SIMD 演算、GPU カーネル連携 |
-| `Async` | 協調的な非同期計算、仮想時刻、native reactor、ホストの再開 |
 | `File`, `Dir`, `Path`, `Env`, `Time`, `Random`, `Os`, `Process` | ファイル、環境変数、システム時刻、プロセス管理などの OS API |
-| `Net` | TCP・UDP のソケット、IP アドレスの解析と表示、名前解決（opt-in。ソケットは macOS・Linux・Windows の native と、`--wasm-feature jspi --wasm-feature net` の Node.js 向け wasm32。`Async.block_on` の中では `_async` の双子） |
+| `Net` | TCP・UDP のソケット、IP アドレスの解析と表示、名前解決（opt-in。ソケットは macOS・Linux・Windows の native と、`--wasm-feature jspi --wasm-feature net` の Node.js 向け wasm32。tzroutine の中の待ちは、その tzroutine だけを待たせる） |
 | `Format` | 文字列補間およびカスタムフォーマット用ヘルパー |
 | `Json` | JSON の解析・出力と `Encode` / `Decode` による値の変換 |
 | `Cbor` | `Json.Value` の CBOR（RFC 8949）の読み書き |
@@ -1025,7 +1006,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `--contracts off\|check\|test\|prove` | 契約の行（`@requires`・`@ensures`）の使い方（既定: `build` は `off`、`run`・`test` は `check`）。`test` は `tsuzuri test` で性質テストを作り、`prove` は SMT ソルバーで証明してから `check` として続けます。 |
 | `--prove-timeout SECONDS`, `--function NAME` | `--contracts prove` と `tsuzuri prove` の問いごとの時間（既定 10 秒）と、証明する関数。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
-| `--wasm-feature simd128\|threads\|jspi\|webgpu\|net\|tail-call` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、Async の JavaScript Promise Integration、`Gpu.request Gpu.WebGpu` 用の WebGPU import、`Net` のソケットを Node.js 向けのグルーで実装する `net`、同じ再帰グループへの保証された末尾呼び出しを `return_call` にする `tail-call`。`net` には `jspi` が必要）を有効化します。 |
+| `--wasm-feature simd128\|threads\|jspi\|webgpu\|net\|tail-call` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、モジュールが JavaScript Promise Integration で待ち、export が Promise を返す `jspi`、`Gpu.request Gpu.WebGpu` 用の WebGPU import、`Net` のソケットを Node.js 向けのグルーで実装する `net`、同じ再帰グループへの保証された末尾呼び出しを `return_call` にする `tail-call`。`net` には `jspi` が必要）を有効化します。 |
 | `--allocator system\|host\|counting\|small` | ヒープ確保の行き先（既定: `system`）。`host` はホストの `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼びます。`counting` は実行ファイル・object・共有ライブラリ・LLVM IR・header・WASM に使え、`Alloc` と従来の 32-byte ABI `tsuzuri_alloc_stats` で読めます。`run` と `test` も `counting` だけを受けます。`small` は native 64-bit のサイズ区分 allocator（512 バイト以下を区分から、それ以上を C ライブラリから確保）で、WASM・`--trap-mode return`・`--freestanding` とは排他です。 |
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
 | `--backend llvm\|fast` | コード生成器（既定: `llvm`）。`fast` は `-O0` の `build`・`run`・`test` で、Tsuzuri の出した LLVM IR を Clang に渡さずにコンパイラ自身が機械語にします（native は Cranelift、wasm32 は WebAssembly の命令を直接書きます。`run` と `test` は native だけです）。`cargo build --release --features fast-backend` でビルドした `tsuzuri` が要り、`-O1` 以上、`--cpu native`、`--emit exe\|object`（wasm32 は `wasm\|object`）以外、`--profile-*`、`--target TRIPLE`、Windows のホストは `E2000` です（[コード生成器](_tsuzuri/language-reference/compiler/option.md#コード生成器)）。 |
@@ -1166,7 +1147,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | コンパイル時評価（`const`・`const def`・静的データ） | `tests/constants.rs` | `features.mjs constants`・`const_functions`・`const_statics`、`progfuzz.mjs`（const と実行時の一致） |
 | 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite）、`codegen_units.mjs`（codegen unit への分割。PB07。`TSUZURI_CODEGEN_UNITS=split` で、ほかの suite も分けたビルドで確かめられます）、`progfuzz.mjs`（言語全体の差分ファズ。G36） |
 | スタックのフレーム・末尾呼び出し（PM09） | `tests/stack_frames.rs`（寿命の印と関数ごとの上限）、`tests/tail_recursion.rs`（`musttail`・drop の順序・対象外の形）、`tests/fast_backend.rs`・`tests/fast_backend_ops.rs`（`return_call` への翻訳） | `stack.mjs`（深さ 10,000,000 の相互再帰。native・`--backend fast`・`--wasm-feature tail-call`）、`control.mjs`（`TSUZURI_ASAN=1` も）、`user_drop.mjs` |
-| 並列・WASM threads・同期 | `tests/parallel.rs`、`tests/concurrency.rs`（`Atomic`・`Mutex`・`DataChannel`）、`tests/removed_features.rs`（削除した `task { }`・`Task<T>`・`Task.*` の `E1040`） | `wasm_threads.mjs`、`wasm_threads_stress.mjs`、`trap_return_sync.mjs`、`features.mjs concurrency`・`data_channel`、`TSUZURI_TSAN=1` の実行。`tests/tasks.mjs`・`tests/tasks.rs` は TZ12 で Task と一緒に削除し、その値の場合は `features.mjs tzroutine_values`（native、P 1・4）へ移しました。ネイティブの `Parallel`・`Mutex`・`DataChannel` は tzroutine のランタイムで動くので、下の tzroutine・`Channel`・同期の型・`Parallel`（TZ11）の行の suite が確かめます |
+| 並列・WASM threads・同期 | `tests/parallel.rs`、`tests/concurrency.rs`（`Atomic`・`Mutex`・`DataChannel`）、`tests/removed_features.rs`（削除した `task { }`・`Task<T>`・`Task.*`、`Async { }`・`Async<T>`・`Async.*`・`Net.*_async` の `E1040`） | `wasm_threads.mjs`、`wasm_threads_stress.mjs`、`trap_return_sync.mjs`、`features.mjs concurrency`・`data_channel`、`TSUZURI_TSAN=1` の実行。`tests/tasks.mjs`・`tests/tasks.rs` は TZ12 で Task と一緒に削除し、その値の場合は `features.mjs tzroutine_values`（native、P 1・4）へ移しました。ネイティブの `Parallel`・`Mutex`・`DataChannel` は tzroutine のランタイムで動くので、下の tzroutine・`Channel`・同期の型・`Parallel`（TZ11）の行の suite が確かめます |
 | tzroutine のランタイム（TZ01） | —（C だけ） | `tzroutine_runtime.mjs`（`src/runtime/tzroutine.c` の C の単体テスト。`TSUZURI_TSAN=1`・`TSUZURI_ASAN=1` で sanitizer も） |
 | tzroutine 式・`Routine`（TZ02） | `tests/tzroutine.rs` | `tzroutine.mjs`、`features.mjs tzroutine`（native だけ）、`tzroutine_runtime.mjs` |
 | `Channel`・`E1040`（TZ03） | `tests/channel.rs`、`tests/removed_features.rs` | `features.mjs channel`（native、P 1・4）・`channel_single`（native と既定の WebAssembly）、`tzroutine_runtime.mjs` |
@@ -1245,7 +1226,6 @@ python3 tests/lldb_strings.py   # LLDB の formatter（scripts/lldb/tsuzuri_lldb
 python3 tests/lldb_lists.py   # PM04: 同じ formatter の `ListProvider` が、`head` から `next` の連鎖をたどって各要素の address を返すこと（先頭側の空き slot、短い length の view、alignment 16 の要素の slot の offset 32）、chunk を二分探索で見つけて読んだ chunk を覚えていること、壊れたメモリ（範囲外の head、循環する `next`、合わない header、不正な長さ）で例外にならないことを、LLDB のセッションなしで確かめる（python3 だけで動く）
 node tests/tzroutine.mjs target/release/tsuzuri   # tzroutine 式（TZ02）の run・test を -O0／-O3 × P 1・4 で（main の終了の待ち、Routine.go、tzroutine の中のトラップ、WebAssembly の拒否）
 node tests/tzroutine_runtime.mjs   # tzroutine のランタイム（TZ01）の C の単体テスト。-O0／-O3 × P 1・2・4、stack.c との連結（溢れの報告）、Apple silicon では Rosetta の x86-64、Windows では Fiber。TSUZURI_TSAN=1・TSUZURI_ASAN=1 で sanitizer も
-node tests/async.mjs target/release/tsuzuri   # JSPI の検証には Node.js 24 以降
 node tests/features.mjs target/release/tsuzuri
 ASAN_OPTIONS=detect_stack_use_after_return=1 TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri storage   # 連結のスタック領域・捕捉環境・移送・再利用
 node tests/features.mjs target/release/tsuzuri list_chunks   # リストの chunk（PM04）。chunk の境界（i64 は 1〜4093 個、16 bytes の slot は 1〜2046 個、unit は 8〜32744 個）の前後で、cons・添字（範囲外は trap）・tail・パターン・比較・hash・display・複製・配列との変換・スタックのリテラルの移送・user Drop を持つ要素の drop の順序・heap のリテラルの途中の例外で何も漏れないこと（host が live == 0 を確かめる）を、native／WASM の -O0／-O3 で照合する。TSUZURI_ASAN=1・TSUZURI_TEST_ALLOCATOR=small・TSUZURI_RANGE_FLAGS=audit でも回す
@@ -1268,7 +1248,7 @@ node tests/io.mjs target/release/tsuzuri
 node tests/repl.mjs target/release/tsuzuri
 node tests/script.mjs target/release/tsuzuri
 node tests/os.mjs target/release/tsuzuri
-node tests/net.mjs target/release/tsuzuri   # アドレス・名前解決・ソケット・非同期・監視スレッド・確保の追跡。127.0.0.1 の ephemeral port だけを使い、どのディレクトリからでも動く（CI は vsc/ から）。TSUZURI_TSAN=1 で ThreadSanitizer も。TSUZURI_NO_SANITIZERS=1 で ASan／UBSan を使わない（Homebrew の LLVM 21 は macOS でサニタイザー付きの実行ファイルが起動で止まるため、macOS の CI はこれを付ける）
+node tests/net.mjs target/release/tsuzuri   # アドレス・名前解決・ソケット・tzroutine の中の待ち（netpoller）・確保の追跡。127.0.0.1 の ephemeral port だけを使い、どのディレクトリからでも動く（CI は vsc/ から）。TSUZURI_TSAN=1 で ThreadSanitizer も。TSUZURI_NO_SANITIZERS=1 で ASan／UBSan を使わない（Homebrew の LLVM 21 は macOS でサニタイザー付きの実行ファイルが起動で止まるため、macOS の CI はこれを付ける）
 node tests/net_wasm.mjs target/release/tsuzuri   # wasm32 のソケット（--wasm-feature jspi --wasm-feature net）を Node.js 24 の JSPI で。Node.js 24 未満なら省く。2 GiB を超えるアドレスの case はメモリ 8 GiB 以上で動き、TSUZURI_NET_WASM_HIGH=0 で省ける
 node tests/platforms.mjs   # 配布物と CI マトリクスが対応する 5 環境だけを含むこと
 node tests/targets.mjs target/release/tsuzuri   # --target TRIPLE の 9 個を、実行・リンク・オブジェクトのどこまで確かめたか 1 行ずつ出す。TSUZURI_CROSS_LINK=1 と TSUZURI_CROSS_CLANG=<同梱の tsuzuri-clang> で、同梱ツールチェーンのリンクも（無ければ失敗）。TSUZURI_CROSS_EXECUTE=1 で Linux の qemu-user による静的 musl の実行も。CI は .github/workflows/targets.yml

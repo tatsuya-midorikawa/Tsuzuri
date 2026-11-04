@@ -126,7 +126,7 @@ native と `--wasm-feature simd128` の WebAssembly は Latin-1 の走査・比�
   `pure` は `def` の直前、`own` は引数型全体の前でだけ印として読み、それ以外では識別子に使えます。
   コロン記号の連続 `::` は、`def` の宣言名と型シグネチャの区切り、リストのコンス演算子 `head :: tail`、および名前空間・モジュールのパス（例: `Sample::Features::Shape.area`）として使用されます。
   識別子同士を空白を挟まずに連結し、末尾の要素が大文字で始まる（モジュールを指す）場合、または行頭の `namespace`／`using` 宣言内に現れる `::` がパス区切り文字として認識されます。パターンマッチにおける `x::xs` はリストのコンスとして解釈されます。
-  なお、`Set.union` と `Async.yield` のため、`union` と `yield` はモジュール関数の宣言名およびドットに後続するメンバー名としても使用可能です（変数名、型名、モジュール名としては使用できません）。単独の `yield` はコンピュテーション式の文のままです。
+  なお、`Set.union` と `Routine.yield` のため、`union` と `yield` はモジュール関数の宣言名およびドットに後続するメンバー名としても使用可能です（変数名、型名、モジュール名としては使用できません）。単独の `yield` はコンピュテーション式の文のままです。
   同様に `new` は、ドットに後続するメンバー名としてだけ使用可能です（`Rc.new`、`Arc.new`。C10）。
 - コメント構文には、行末までをコメントアウトする `//`（行コメント）と、ネスト記述が可能な `/* ... */`（ブロックコメント）が利用できます。 <!-- rule: LEX-004 -->
 - ファイルの先頭（バイト 0）が `#!` で始まる場合、その 1 行（shebang 行。例: `#!/usr/bin/env -S tsuzuri script`）は行コメントとして読み飛ばされ、改行はそのまま残ります（G13）。`.tz`・`.tt`・`.tc` のどのソースにも同じ規則が適用され、位置（行・列）は shebang 行を含むファイルのまま数えます。BOM の後や 2 行目以降の `#!` はこれまでどおり構文エラーです。`#` で始まる正しいプログラムはないため、この規則で意味が変わる既存のプログラムはありません。
@@ -362,7 +362,7 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 明示的に `using std` と記述する必要はありませんが、記述した場合は他の `using` と同様に std モジュール群をモジュール名単体でスコープへ導入します。
 ユーザー定義のソースファイルにおいて、名前空間 `std` またはその配下の階層を明示的に宣言することは禁止されています（`E1011`）。
 標準ライブラリのソースコードは、プロジェクト内で使用されていない場合であっても型検査の対象となりますが、実際のコードから到達しない std の関数、レコード、union、および組み込み関数のラッパーは、最終的な LLVM IR から安全に間引かれます。
-ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`DataChannel`、`RegexText`、`Domain`、`Monoids`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`、`MatrixView<T>`、`Tensor<T>`、`Atomic<T>`、`Mutex<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
+ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`DataChannel`、`RegexText`、`Domain`、`Monoids`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`、`MatrixView<T>`、`Tensor<T>`、`Atomic<T>`、`Mutex<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
 `build`・`check`・`run`・`test`・`doc` は、ユーザーのソースがモジュール名（`Json` については、そのインスタンスを使う組み込みクラス `Encode`・`Decode` も）を識別子として含むときだけ、そのモジュールを読み込みます（コメントや文字列の中に現れても読み込みます）。`Regex` は `Unicode` と `RegexText` を、`RegexText` は `Regex` を、`Cbor` は `Json` を伴います。名前を書かないプログラムはこれらを型検査せず、生成コードも変わりません。言語サーバーは補完のため常にすべてを読み込みます。
 標準ライブラリは外部への `export` 関数を持ちません。IO のエントリーポイントおよびランタイム境界には専用の内部シンボルが追加されます。WASM 出力における外部インポートは、実際に到達した IO／extern 呼び出し、明示的な Debug 出力、ならびに `--wasm-host wasi` 指定時の WASI preview1 関数にのみ限定して追加されます。
 標準ライブラリ内の `private` 関数は std の内部からのみ呼び出し可能であり、ユーザーコードから参照した場合は `E1022` エラーとなります。
@@ -370,11 +370,11 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で、`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` は TZ06 で、`Context`・`ErrGroup` は TZ07 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で、`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` は TZ06 で、`Context`・`ErrGroup` は TZ07 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。`Async` は TZ13 で std から削除し、予約も外しました。利用者のモジュール `Async.tz` は普通のモジュールです（[非同期計算（Async）](#非同期計算async)）。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -478,7 +478,7 @@ WASM 環境では、モジュール名が `tsuzuri`、関数名が `<Module>.<na
 `extern type Counter` のように宣言することで、ホスト環境が管理・所有する不透明なリソースポインタを指すハンドル型を定義できます（モジュール内限定の `private extern type` も定義可能です）。型引数、型本体、およびリンク名を持つことはできず（`E0002`）、名前解決や修飾規則は通常のレコード型と同様のルールに従います（同名重複は `E1001`）。
 Tsuzuri コード内でハンドル型の値を直接構築するリテラル構文は存在せず、extern 関数の戻り値として受け取るか、または export 関数の実引数としてホスト側から渡されることによってのみ取得できます。ハンドル型は Copy でも Clone でもありません。値渡しは常に所有権の移動（move）となり、移動後に元の変数を使用しようとすると `E1012` エラーとなります。また `ref` を前置することで共有借用として安全に参照できます。ハンドル値を通常の関数値に捕捉（キャプチャ）することは禁止されており（`E1005`）、`Eq` や `Display` 型クラスのインスタンスも持ちません。
 ハンドル値はスコープを抜けて破棄される際、コンパイラによって自動でデストラクタが実行されることはありません（drop glue なし）。リソースの解放は、利用者がハンドル値をクローズ用の extern 関数へ値渡しで引き渡すことによって明示的に行います。明示的なクローズを怠った場合はホストリソースのメモリリークとなります。
-スコープ終了時にリソースを確実に自動クローズさせたい場合は、ハンドル値を record 型でラップしたうえで `instance Drop` を実装し、その `drop` メソッド内部から借用参照を受け取るクローズ用 extern 関数を呼び出す設計パターンを採用してください（詳細は [利用者定義の解放](#利用者定義の解放) 参照）。
+スコープ終了時にリソースを確実に自動クローズさせたい場合は、ハンドル値を record 型でラップしたうえで `instance Drop` を実装し、その `drop` メソッド内部から借用参照を受け取るクローズ用 extern 関数を呼び出す設計パターンを採用してください（詳細は [利用者定義の解放](#利用者定義の解放drop) 参照）。
 
 C 言語 ABI においてハンドル型を配置できる場所は、extern 関数、`export def` 関数、およびコールバック関数の引数位置（値 `H` または共有借用 `ref H`）、ならびに extern 関数および `export def` 関数の戻り値位置（値 `H`）に限定されます。ABI 境界のレコードのフィールド型、バッファの要素型、あるいは可変借用 `ref mut H` として配置した場合は `E1008` エラーとなります。なお、ABI 境界以外の通常の Tsuzuri コード内であれば、非 Copy な値としてレコード、union、配列、`Maybe` の内部へ自由に格納可能です。
 ネイティブ環境におけるハンドル値はポインタ 1 つ分の幅（LLVM `ptr`）、wasm32 環境では 32-bit 整数（JavaScript 上では `number`）として表現されます。`ref H` の場合であっても、ポインタへのポインタではなくハンドル値そのものがホストへ受け渡されます。生成される C ヘッダーには、プロトタイプ宣言に先立って `typedef struct tz_handle_<長さ付き修飾名>_s *tz_handle_<…>;` という型定義が 1 回だけ出力されます。
@@ -655,7 +655,7 @@ Rust 互換の記号記法においても、空白の後に被演算子を隣接
 ### 純粋関数（`pure def`）
 
 `pure def` は全 edition で使える純粋性の表明です。通常の `def`、クロージャ、特殊化したコールバックも含め、
-到達する処理に外部入出力、時計、共有可変状態、非同期実行器、GPU、dyn、利用者の Drop がないことを検査します。
+到達する処理に外部入出力、時計、共有可変状態、tzroutine の起動と待ち、GPU、dyn、利用者の Drop がないことを検査します。
 `ref mut` 引数と可変引数束縛は `E1029` です。無印の引数は共有借用（解放不要な Copy 値は値渡し）、
 明示の `own T` は所有値です。`own` は再帰的に平たいデータだけを受け取り、参照・Rc／Arc・ハンドル・関数・dyn・利用者の Drop を含みません。
 排他参照を持つ record も共有 view では読み取り専用です。その view を通した書き換え・排他的な再借用は `E1014` です。
@@ -720,7 +720,7 @@ def answer :: i32 = {
 共有借用参照（`ref`）を捕捉した関数値は、参照先のリソース所有者よりも長く生存することはできません。
 コピー、レコード格納、配列格納、関数呼び出しを経由した場合であっても、この生存期間の依存関係は借用チェッカーによって漏れなく追跡されます。
 排他借用参照（`ref mut T`）や、それを含む配列を再利用可能な関数値の内部に保持することは固く禁止されており、`Capture` 制約によってコンパイル時に拒否されます。
-また、`Drop` を実装した型も勝手な複製ができないため `Capture` 制約を満たしません（そのような値を取り扱う関数値は `Owned.function` を用いて構築します。[利用者定義の解放](#利用者定義の解放) 参照）。
+また、`Drop` を実装した型も勝手な複製ができないため `Capture` 制約を満たしません（そのような値を取り扱う関数値は `Owned.function` を用いて構築します。[利用者定義の解放](#利用者定義の解放drop) 参照）。
 排他借用を受け取る関数は、その場で直ちに完全適用して呼び出す必要があります。例えば `(replace ref mut text) "new"` や `"new" |> replace ref mut text` といった記述は可能ですが、`let later = replace ref mut text;` のように部分適用した関数値を保存することはできません。
 関数の途中段階が借用を保持しないと証明された場合は、その段階の借用は後続引数の評価前に早期終了します。
 
@@ -866,7 +866,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Copy` | 所有権モデルにおける値の複製可能性制約（メソッドなし） | 構造的に Copy 可能な型 |
 | `Capture` | 再利用可能なクロージャ環境への捕捉制約（メソッドなし） | 排他参照を含まない型（string、関数値、共有参照を含む） |
 | `Send` | tzroutine や別のスレッドへ所有権を移転可能な制約（メソッドなし） | 格納された参照型を含まない型（関数の捕捉環境は別途所有権検査される）。`Arc<'a>` は `'a` が `Send` かつ `Sync` のとき |
-| `Sync` | 複数の tzroutine やスレッドが共有借用で同時に使える制約（メソッドなし） | 整数、浮動小数点、bool、文字、文字列、関数値、`Atomic`、`Mutex`、`Copy` な `dyn`、それらだけを格納した配列・リスト・タプル・レコード・共用体、`'a` が `Sync` な `Arc<'a>`。`Rc`、extern ハンドル、排他参照、`Seq`、`Async`、GPU のハンドル、`Copy` でない `dyn`、`Owned.Function` は含まない |
+| `Sync` | 複数の tzroutine やスレッドが共有借用で同時に使える制約（メソッドなし） | 整数、浮動小数点、bool、文字、文字列、関数値、`Atomic`、`Mutex`、`Copy` な `dyn`、それらだけを格納した配列・リスト・タプル・レコード・共用体、`'a` が `Sync` な `Arc<'a>`。`Rc`、extern ハンドル、排他参照、`Seq`、GPU のハンドル、`Copy` でない `dyn`、`Owned.Function` は含まない |
 | `AtomicValue` | `Atomic` に入れられる型の制約（メソッドなし） | i8／i16／i32／i64／i8u／i16u／i32u／i64u／bool |
 | `Display` | `display :: ref 'a -> string` | 全数値型、bool、unit、string、utf8string |
 | `Parse` | `parse :: ref string -> Maybe<'a>` | 全数値型、bool |
@@ -875,7 +875,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Elementary` | 初等超越関数用制約（メソッドなし） | f32／f64 のみ（ユーザーによるインスタンス追加は不可） |
 | `Err` | `msg :: ref 'a -> string`（`try` ハンドラの戻り値型に要求） | なし（標準ライブラリの `Exception` がインスタンスを保持。[検査付き算術と例外](#検査付き算術と例外) 参照） |
 | `Encode`／`Decode` | `encode :: ref 'a -> Result<Json.Value, Json.Error>`／`decode :: ref Json.Value -> Result<'a, Json.Error>` | なし（標準ライブラリの `Json` が bool、全整数型、全浮動小数点型、decimal 型、文字列型、`Maybe`、配列、リスト、`Vec`、`Map`、`Set`、`HashMap`、`HashSet`、2〜4 要素のタプル、`Json.Value` のインスタンスを保持。[Json](#json) 参照） |
-| `Drop` | `drop :: ref mut 'a -> unit`（スコープ終了時に drop glue が自動呼び出し。式からは直接参照不可） | なし（ユーザー定義の record や union に対して明示実装。[利用者定義の解放](#利用者定義の解放) 参照） |
+| `Drop` | `drop :: ref mut 'a -> unit`（スコープ終了時に drop glue が自動呼び出し。式からは直接参照不可） | なし（ユーザー定義の record や union に対して明示実装。[利用者定義の解放](#利用者定義の解放drop) 参照） |
 
 `Capture` 制約は、排他参照、`Drop` を実装した型、`Owned.Function`、extern ハンドル、`Copy` でない `dyn`、`Rc`、`Atomic`・`Mutex` およびそれらを含む集約値を、再利用可能な関数値へ捕捉することを静的に拒否します。
 `Send` 制約は tzroutine の捕捉値、`Routine.scope`・`Parallel.*` の結果などの型から自動推論され、特殊化の際にも再検査されます。
@@ -1423,7 +1423,6 @@ Windows 環境上で動作するコンパイラがネイティブバイナリを
 | TCP サーバー | `bind :: Address -> IO<Result<TcpListener, Os.Error>>`、`accept :: TcpListener -> Maybe<i64> -> IO<Result<TcpStream, Os.Error>>`、`local_addr`、`close_listener` |
 | UDP | `bind_udp`、`send_to :: UdpSocket -> [ubyte] -> Address -> IO<Result<unit, Os.Error>>`、`recv_from :: UdpSocket -> i64 -> Maybe<i64> -> IO<Result<([ubyte] * Address), Os.Error>>`、`udp_local_addr`、`close_udp` |
 | 括弧 | `with_connection`・`with_accepted`・`with_listener`・`with_udp`（`Capture<'a> => ... (handle -> IO<'a>) -> IO<Result<'a, Os.Error>>`。本体の成否にかかわらず戻る前に閉じる） |
-| 非同期（`Async.block_on` の中） | `connect_async`・`accept_async`・`read_async`・`write_async`・`recv_from_async`・`send_to_async`（同期版の `IO<...>` を `Async<...>` にした型）、待たない `bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async` |
 | エラー | `error_kind :: Os.Error -> ErrorKind`（`TimedOut`・`ConnectionRefused`・`ConnectionReset`・`AddressInUse`・`AddressNotAvailable`・`Unreachable`・`Unclassified`） |
 
 `Address { v6, high, low, port }` は `Copy` の不透明な record で、`==`・`Hash`・`Display`（`address_text` と同じ文字列）を持ちます。`parse_address` は `a.b.c.d:port` か `[ipv6]:port` だけを受け、IPv4 は 1〜3 桁の 10 進 4 部分（先頭の 0 は `0` だけ、255 以下）、IPv6 は 1〜4 桁の 16 進（大文字可）で `::` は高々 1 回、最後の部分だけが IPv4 形式（2 group）でもよく、ゾーン（`%`）は受けません。port は 1〜5 桁で先頭の 0 は `0` だけ、65535 以下で、空白は受けません。`127.1`・`0x7f.0.0.1`・`010.0.0.1` のように `inet_aton` が受ける形を拒否するので、許可リストの検査と実際の接続先が食い違いません。`resolve` も、アドレスに読める host を同じ解析器だけで決めるので（上）、`parse_ip` が `None` の host を「名前」として `resolve` に渡しても、システムはそれをアドレスとして読みません。`address_text` は RFC 5952 の形（小文字、先頭の 0 を省略、長さ 2 以上の最長の 0 の並びを `::` に、同長は先頭、IPv4 埋め込みは 16 進）です。
@@ -1434,13 +1433,13 @@ Windows 環境上で動作するコンパイラがネイティブバイナリを
 
 失敗は `Os.Error` で、`Os.ErrorKind` に case を足せないため、`errno` を `code` に持つ `Other` が多くなります。`errno` から `Os.ErrorKind` への対応は、`EACCES`・`EPERM` が `PermissionDenied`、`EADDRINUSE` が `AlreadyExists`、`EINVAL`・`EAFNOSUPPORT`・`EADDRNOTAVAIL`・`EMSGSIZE` が `InvalidInput`、`getaddrinfo` の `EAI_NONAME`（と `EAI_NODATA`）が `NotFound`（`code` 0）、それ以外の `EAI_*` は `Other`（`code` 0）、残りは `Other` です。`Net.error_kind` は、`ETIMEDOUT` を `TimedOut`、`ECONNREFUSED` を `ConnectionRefused`、`ECONNRESET`・`ECONNABORTED`・`EPIPE` を `ConnectionReset`、`EADDRINUSE` を `AddressInUse`、`EADDRNOTAVAIL` を `AddressNotAvailable`、`ENETUNREACH`・`EHOSTUNREACH`・`ENETDOWN`・`EHOSTDOWN` を `Unreachable` に分類し、`code` 0 とそれ以外は `Unclassified` です。`errno` の値は OS ごとに違いますが、分類は同じ結果になります。`EINTR` はランタイムが再試行します。
 
-すべてのソケットは `FD_CLOEXEC` 付きで（Linux は作成と同時、macOS は直後）、内部では非ブロッキングです。送信は SIGPIPE を起こさず（`MSG_NOSIGNAL`、macOS は `SO_NOSIGPIPE`）、相手が切れたソケットへの書き込みは `ConnectionReset` の `Error` です。IPv6 のソケットは `IPV6_V6ONLY` を有効にし、listener は `SO_REUSEADDR` と `SOMAXCONN` の backlog を付けます（`SO_REUSEPORT`・`TCP_NODELAY` は使いません）。ソケットの数の上限は OS に従います。Windows は、送ったデータグラムの宛先のポートが閉じていると、同じソケットの次の受信を `WSAECONNRESET` で失敗させるので、`bind_udp` が `SIO_UDP_CONNRESET` でそれを切り、受信はそれでも報告された `WSAECONNRESET` を飛ばして次を待ちます。`accept` は、相手が `accept` の前に切った接続（`ECONNABORTED`。Windows は `WSAECONNRESET`）をエラーにせず、次の接続を返します。Windows の実行は CI だけで確かめます。`0.0.0.0` や `::` で待つとネットワークへ公開されるので、例と文書は `127.0.0.1` を使います。ソケットの操作は入口のスレッドで順に実行され、待っている間はプログラム全体が止まります。
+すべてのソケットは `FD_CLOEXEC` 付きで（Linux は作成と同時、macOS は直後）、内部では非ブロッキングです。送信は SIGPIPE を起こさず（`MSG_NOSIGNAL`、macOS は `SO_NOSIGPIPE`）、相手が切れたソケットへの書き込みは `ConnectionReset` の `Error` です。IPv6 のソケットは `IPV6_V6ONLY` を有効にし、listener は `SO_REUSEADDR` と `SOMAXCONN` の backlog を付けます（`SO_REUSEPORT`・`TCP_NODELAY` は使いません）。ソケットの数の上限は OS に従います。Windows は、送ったデータグラムの宛先のポートが閉じていると、同じソケットの次の受信を `WSAECONNRESET` で失敗させるので、`bind_udp` が `SIO_UDP_CONNRESET` でそれを切り、受信はそれでも報告された `WSAECONNRESET` を飛ばして次を待ちます。`accept` は、相手が `accept` の前に切った接続（`ECONNABORTED`。Windows は `WSAECONNRESET`）をエラーにせず、次の接続を返します。Windows の実行は CI だけで確かめます。`0.0.0.0` や `::` で待つとネットワークへ公開されるので、例と文書は `127.0.0.1` を使います。tzroutine でないスレッド（`main` のトップレベル、`export` を呼んだホストのスレッド）の待ちは、そのスレッドを止めます。tzroutine の中の待ちは、その tzroutine だけがスケジューラーの netpoller で待ち、ほかの tzroutine は走り続けます（TZ08。[tzroutine](#tzroutine) の「OS を待つ呼び出し」）。
 
-実装は `std/Net.tz` と、std 専用の組み込み関数 `Net.__resolve`・`__open`・`__accept`・`__read`・`__write`・`__close`・`__classify`・`__watch`・`__unwatch`・`__connect`・`__names`・`__send`（std の `Net` 以外から参照すると `E1022`）、そして `src/runtime/net.c` です。IR が `@tsuzuri_net_` を宣言したときだけ native の runtime に連結され、アドレスの関数だけのプログラムは runtime も import も持ちません。既定の wasm32（と `--wasm-host wasi`）でソケットに到達するビルドは `E2000`（`--wasm-feature net` の例外は下記）、macOS・Linux・Windows 以外の native（ホストと、`--target` で名指しした FreeBSD・Android・iOS）は `E2002`、`--freestanding` は `E2000` です。macOS・Linux は POSIX のソケット、Windows は Winsock（`WSAStartup` は最初の呼び出しで一度だけ、`closesocket`・`WSAPoll`・`ioctlsocket`、`ws2_32` をリンク）で動かします。
+実装は `std/Net.tz` と、std 専用の組み込み関数 `Net.__resolve`・`__open`・`__accept`・`__read`・`__write`・`__close`・`__classify`（std の `Net` 以外から参照すると `E1022`）、そして `src/runtime/net.c` です。IR が `@tsuzuri_net_` を宣言したときだけ native の runtime に連結され、アドレスの関数だけのプログラムは runtime も import も持ちません。既定の wasm32（と `--wasm-host wasi`）でソケットに到達するビルドは `E2000`（`--wasm-feature net` の例外は下記）、macOS・Linux・Windows 以外の native（ホストと、`--target` で名指しした FreeBSD・Android・iOS）は `E2002`、`--freestanding` は `E2000` です。macOS・Linux は POSIX のソケット、Windows は Winsock（`WSAStartup` は最初の呼び出しで一度だけ、`closesocket`・`WSAPoll`・`ioctlsocket`、`ws2_32` をリンク）で動かします。
 
-**非同期の操作（`_async`）。**`Async` の計算は `IO` を実行できないので、`connect_async :: Address -> Maybe<i64> -> Async<Result<TcpStream, Os.Error>>`・`accept_async`・`read_async`・`write_async`・`recv_from_async`・`send_to_async` と、待たない `bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async` を `Async.host` の上に足します（同期版は変わりません。`Net` は `Async` を使うので、`OPT_IN` の `uses` に `Async` があります）。実行器のスレッドは待ちません。操作は時間制限 0 で一度だけ試し（待つ必要があれば、`kind` が `Other` で `code` が 0 の状態が返ります）、必要ならソケットの準備の監視を `Net.__watch`（接続は `Net.__connect`、取り消しは `Net.__unwatch`）で頼み、準備ができたら再試行します。監視は、最初の待ちで始まり待ちが無くなると終わる 1 本の分離スレッドで、`poll`（Windows は `WSAPoll`）と起床用の pipe（Windows は自分宛ての UDP ソケット）で待ち、完了（0 か状態）を、IR が渡す `tsuzuri_async_post` へ入れます。完了は何も所有せず、接続の途中のソケットだけが待ちの所有物です（取り消しで閉じ、post が拒否されたら新しいソケットを閉じます）。ソケットを閉じるときは、記述子を閉じる前にそのソケットの待ちを外して起こします。時間制限は操作全体の期限で、`Async.now ()` で測ります。`Async.block_on` のない native のプログラムが非同期の操作に到達すると、完了を受け取る反応器が無いので `E2000` です。`resolve` の非同期版はありません。
+**削除した `_async` の操作（TZ13）。**`connect_async`・`accept_async`・`read_async`・`write_async`・`recv_from_async`・`send_to_async`・`bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async` の 12 関数は、`Async` とともに削除しました。書くと `E1040`（`removed_net_async`、`'Net.connect_async' was removed`、help は `call Net.connect (and the others without '_async') in a tzroutine; it waits without stopping other tzroutines`）です。tzroutine の中で同期版を呼べば、待つのはその tzroutine だけです。監視のスレッド、`Net.__watch`・`__unwatch`・`__connect`・`__names`・`__send`、`net.c` の `tsuzuri_net_watch`・`connect`・`unwatch` もなくなりました。書き換えの例は [非同期計算（Async）](#非同期計算async) にあります。
 
-**wasm32（Node.js）。**`--wasm-feature net` は、wasm32 の object・LLVM IR・WASM と `--emit bindings-js` だけで使え、`--wasm-feature jspi` が要ります（threads・`--wasm-host`・wasm64・native との併用は `E2000`）。IR の `tsuzuri_net_*` の宣言のうち到達したものだけに、`"wasm-import-module"="tsuzuri_net"` と `"wasm-import-name"` を付けて import にします。`net.c` は連結せず、`__watch`・`__connect` は `tsuzuri_async_post` の関数ポインタを取りません（完了は import が `tsuzuri_async_complete` で渡します）。`--emit bindings-js` のグルーは、`node:net`・`node:dgram`・`node:dns` で 14 個の import（`resolve`・`open`・`accept`・`read`・`write`・`try_accept`・`try_read`・`close`・`classify`・`names`・`send`・`watch`・`unwatch`・`connect`）を実装します。世代検査付きのハンドルの表、`(kind << 32) | code` の状態、呼び出し全体の期限、時間制限 0 の「1 回だけ試す」は `net.c` と同じ約束です。待つ呼び出し（`resolve`・`open`・`accept`・`read`・`write`）は `WebAssembly.Suspending` で包み、WebAssembly のスタックを中断します。時間制限 0 の `accept`・`read`（`_async` の操作の最初の試行）は、`.wasm` の中で実行時にその値を見て、中断しない普通の import の `try_accept`・`try_read` へ分けます（`Async.start` の実行器はホストが JSPI の外から進めるので、中断する import を呼べません）。グルーの import は、Node.js が投げた例外をその呼び出しの状態にして返し、例外がモジュールへ届くことはありません。ソケットに到達しないモジュール（`llvm::reaches_net`。IR に `@tsuzuri_net_` の宣言が出るかどうかと同じ基準）は、`--wasm-feature net` を付けても `--wasm-feature jspi` だけのグルーになります。ブラウザーには生の TCP も UDP もないので、Node.js の組み込みモジュールがない環境では `load` が失敗します。ネイティブとの違いは、listener の `SO_REUSEADDR` が Node.js の既定に従うこと、`shutdown` の `Read` が OS の `SHUT_RD` を呼ばず以後の `read` を EOF にすること、`write` の期限が積んだデータの送信を取り消さないこと、非同期の送信（`write_async`）が 1 回に 64 KiB までしか受け取らないこと（Node.js が積んだだけのデータを送れたと数えないため）、`close` が受け取ったデータを送り終えてから閉じ、それまでプロセスが終わらないこと、UDP のデータグラムのポート 0 宛てが `EINVAL` になること、UDP の送信が 1 回につき 1 つのデータグラムで、`send_to_async` はその送信自身の結果（OS が断る大きさなら `EMSGSIZE` など）を待って返し（始めた送信は操作の取り消しで取り戻せません）、受信には送信の失敗が現れないこと、UDP のソケットの `close` が Node.js の終えていない送信を終えてから閉じること、`accept` した接続の相手のアドレスが接続の届いた時点のもので、相手が `accept` の前に RST で切っても残ること、エラー番号が Node.js の `os.constants.errno` に libuv だけが名前を付けるもの（`EHOSTDOWN` など）を足した表であること、待っていないソケットはプロセスを生かさずインスタンスが捨てられるとすべて閉じること、読まれないまま届く UDP を 1 MiB と 4096 個、`accept` されない接続を 128 個までしか保たず、あふれた接続は RST で切ること、`bind_async`・`bind_udp_async` が `Async.start` の実行器では使えず `Async.block_on` の中でだけ使えることです。`resolve` は、ASCII 以外のバイトを含む host を全ターゲットで `InvalidInput` にします（Node.js の `dns.lookup` が IDNA で変換するため）。検証は macOS の Node.js 24 の loopback（`127.0.0.1` と `::1`）で、`Async.start` からは `connect_async`・`read_async`・`accept_async`・`recv_from_async` を確かめました。Linux と Windows の Node.js、ブラウザーは未検証です。
+**wasm32（Node.js）。**`--wasm-feature net` は、wasm32 の object・LLVM IR・WASM と `--emit bindings-js` だけで使え、`--wasm-feature jspi` が要ります（threads・`--wasm-host`・wasm64・native との併用は `E2000`）。IR の `tsuzuri_net_*` の宣言のうち到達したものだけに、`"wasm-import-module"="tsuzuri_net"` と `"wasm-import-name"` を付けて import にします。`net.c` は連結しません。`--emit bindings-js` のグルーは、`node:net`・`node:dgram`・`node:dns` で 9 個の import（`resolve`・`open`・`accept`・`read`・`write`・`try_accept`・`try_read`・`close`・`classify`）を実装します（TZ13 で `_async` の操作のための `names`・`send`・`watch`・`unwatch`・`connect` を削除しました）。世代検査付きのハンドルの表、`(kind << 32) | code` の状態、呼び出し全体の期限、時間制限 0 の「1 回だけ試す」は `net.c` と同じ約束です。待つ呼び出し（`resolve`・`open`・`accept`・`read`・`write`）は `WebAssembly.Suspending` で包み、WebAssembly のスタックを中断します。時間制限 0 の `accept`・`read` は、`.wasm` の中で実行時にその値を見て、中断しない普通の import の `try_accept`・`try_read` へ分けます。この分岐を使ったのは TZ13 で削除した `_async` の操作の最初の試行で、`std/Net.tz` の同期版は時間制限 0 で呼びませんが、同期版の IR と import を変えないために残しています。グルーの import は、Node.js が投げた例外をその呼び出しの状態にして返し、例外がモジュールへ届くことはありません。ソケットに到達しないモジュール（`llvm::reaches_net`。IR に `@tsuzuri_net_` の宣言が出るかどうかと同じ基準）は、`--wasm-feature net` を付けても `--wasm-feature jspi` だけのグルーになります。ブラウザーには生の TCP も UDP もないので、Node.js の組み込みモジュールがない環境では `load` が失敗します。ネイティブとの違いは、listener の `SO_REUSEADDR` が Node.js の既定に従うこと、`shutdown` の `Read` が OS の `SHUT_RD` を呼ばず以後の `read` を EOF にすること、`write` の期限が積んだデータの送信を取り消さないこと、`close` が受け取ったデータを送り終えてから閉じ、それまでプロセスが終わらないこと、UDP のデータグラムのポート 0 宛てが `EINVAL` になること、UDP の送信が 1 回につき 1 つのデータグラムで、`send_to` はその送信自身の結果（OS が断る大きさなら `EMSGSIZE` など。64 KiB を超えるものはグルーが先に `EMSGSIZE` にします）を待って返し、受信には送信の失敗が現れないこと、UDP のソケットの `close` が Node.js の終えていない送信を終えてから閉じること、`accept` した接続の相手のアドレスが接続の届いた時点のもので、相手が `accept` の前に RST で切っても残ること、エラー番号が Node.js の `os.constants.errno` に libuv だけが名前を付けるもの（`EHOSTDOWN` など）を足した表であること、待っていないソケットはプロセスを生かさずインスタンスが捨てられるとすべて閉じること、読まれないまま届く UDP を 1 MiB と 4096 個、`accept` されない接続を 128 個までしか保たず、あふれた接続は RST で切ることです。`resolve` は、ASCII 以外のバイトを含む host を全ターゲットで `InvalidInput` にします（Node.js の `dns.lookup` が IDNA で変換するため）。検証は macOS の Node.js 24 の loopback（`127.0.0.1` と `::1`）です。Linux と Windows の Node.js、ブラウザーは未検証です。
 
 ## トラップ位置
 
@@ -2327,7 +2326,7 @@ match answer with
 
 `.tc` のトップレベルに `@alias name` と書くと、そのビルダーを `name { ... }` と小文字でも呼べます。
 別名はビルダー名のもう 1 つの綴りであり、展開、型検査、生成される IR はビルダー名を書いたときとまったく同一です。
-標準ライブラリの `Async.tc` は `@alias async` を宣言しているため、`async { ... }` と `Async { ... }` は同じ計算を表します。
+TZ13 で `Async` を削除したので、標準ライブラリのビルダーで別名を宣言するものはありません。別名は利用者のビルダーのための機能です。
 
 ```text
 @alias identity
@@ -2352,9 +2351,9 @@ let lower = identity { let! value = 42; return value }
 解決の規則です。
 
 - `name { ... }`（空本体の `name {}` を含む）の `name` は、まずビルダーのモジュール名（名前空間付きでも）として解決し、当たらなければ別名として解決します。別名は利用者のビルダー、標準ライブラリのビルダーの順に探し、同じ層で見えるビルダーが 1 つならそれを使います。複数あれば `E1004` で、ビルダー自身の名前（`Acme::Tools::Parser { ... }`）で選びます。`using` した 2 つの名前空間に同じ名前のビルダーがあっても、別名は宣言したビルダーを選び、両方が宣言していれば `E1004` です。
-- 別名の意味を持つのは `{` の前の位置だけです。値、型、モジュール修飾の位置では通常の識別子のままで、同名のローカル変数があってもビルダーの解決は変わりません。`async.run` は `E1002` です。`Async.run` と書きます。`name { field: value }` はこれまでどおりレコードリテラルです。本体が空の `name {}` は、別名があれば別名が先に選ばれ、同名の（小文字の）空レコードがあっても変わりません（`Name.tc` と空レコード `Name` の関係と同じ）。
-- どのビルダーにも別名にも当たらない小文字の `name { ... }` は `E1018` で、`@alias name` の宣言を案内します。本体が空の `name {}` も、その名前のレコードがなければ同じです（あれば空のレコードです）。
-- 標準ライブラリの `Async` は名前が現れるときだけ読み込まれる opt-in のモジュールです（D-40）。別名の `async` も同じ条件に含まれ、ソースに `async` の語があれば読み込まれます。コメントや文字列の中の語も数え、`asynchronous` のように別の語の一部は数えません。opt-in のモジュールの宣言を利用者の裸の名前から隠す規則は、別名には適用しません。
+- 別名の意味を持つのは `{` の前の位置だけです。値、型、モジュール修飾の位置では通常の識別子のままで、同名のローカル変数があってもビルダーの解決は変わりません。`identity.Return` は `E1002` です。`Identity.Return` と書きます。`name { field: value }` はこれまでどおりレコードリテラルです。本体が空の `name {}` は、別名があれば別名が先に選ばれ、同名の（小文字の）空レコードがあっても変わりません（`Name.tc` と空レコード `Name` の関係と同じ）。
+- どのビルダーにも別名にも当たらない小文字の `name { ... }` は `E1018` で、`@alias name` の宣言を案内します。本体が空の `name {}` も、その名前のレコードがなければ同じです（あれば空のレコードです）。例外は TZ12 と TZ13 で削除した `task { ... }`（`removed_task_expression`）と `async { ... }`（`removed_async`）で、利用者のビルダーに当たらなければ `E1040` です。`Async { ... }` も、利用者のモジュール `Async` がなければ `E1040` です（[非同期計算（Async）](#非同期計算async)）。
+- opt-in の std モジュール（D-40）がビルダーの別名を宣言すれば、その別名の語がソースにあるときにもモジュールを読み込みます（`stdlib::OPT_IN` の `aliases`）。今は別名を宣言する std モジュールはありません。opt-in のモジュールの宣言を利用者の裸の名前から隠す規則は、別名には適用しません。
 
 ### ビルダー名を省略した本体
 
@@ -2558,7 +2557,7 @@ Copy 型の配列や関数値を捕捉するときは、既存の所有権規則
 - 子どものトラップは、ほかの tzroutine のトラップと同じくプロセス全体の失敗です。
 
 `Sync` は、複数の tzroutine やスレッドが同じ値の共有借用を同時に使ってよいことを表す組み込みの印（メソッドなし）です。共有借用から値を書き換えられる型は、`Atomic<T>` と `Mutex<T>`（と [同期の型（TZ06）](#同期の型tz06)）です（[Atomic / Mutex](#atomic--mutex)）。
-`Arc<T>` は `T` が `Sync` のとき `Sync` で、`T` が `Send` かつ `Sync` のとき `Send` です。`Rc`、extern ハンドル、排他参照、`Seq`、`Async`、GPU のハンドル、`Copy` でない `dyn`、`Owned.Function` は `Sync` ではありません。
+`Arc<T>` は `T` が `Sync` のとき `Sync` で、`T` が `Send` かつ `Sync` のとき `Send` です。`Rc`、extern ハンドル、排他参照、`Seq`、GPU のハンドル、`Copy` でない `dyn`、`Owned.Function` は `Sync` ではありません。
 `Atomic` と `Mutex` は、関数値に捕捉できません（`E1005`）。関数値は複製されることがあり、複製した `Atomic` や `Mutex` は別のセルになるためです。共有借用 `ref cell` を捕捉するか、`Arc` に入れるか、引数で渡します。
 
 ### 実行バックエンドと失敗
@@ -2585,7 +2584,7 @@ WASM ターゲットにおいては、デフォルトでは同一の静的型、
 既定の WASM では、`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグになり、`DataChannel` の操作はモジュールの中の IR（満たされない待ちはその場でトラップ）で、import は増えません。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令になります。`Mutex` と `DataChannel` も使えます（ロックの語と待ちは共有メモリの atomic 命令と `memory.atomic.wait32` で、スレッドごとの状態はインスタンスごとの WebAssembly のグローバルです。ホストのグルーは変わりません）。`Routine.scope` は tzroutine を起動するので、WebAssembly では `E2000` です。`--freestanding` では、`Mutex`・`DataChannel`・`Parallel.*`・`Routine.scope` は `E2000` です（`--freestanding cannot use tzroutine: ...`）。`Atomic` はランタイムを使わないので通ります。
 extern 関数を使用するワーカーには同一のホスト環境定義が必要であり、`createThreadPool` の `importsModule` が各インスタンス用の `createImports({memory, workerId, data})` を返却します。
 なお Web ブラウザ環境で動作させる場合は、HTTP レスポンスヘッダーに `Cross-Origin-Opener-Policy: same-origin`（COOP）および `Cross-Origin-Embedder-Policy: require-corp`（COEP）を設定して cross-origin isolation を有効化し、専用の Web Worker ホストスクリプトを別途用意する必要があります（Node.js 用のホストコードをそのままブラウザ環境へインポートすることはできません）。
-`Parallel.*` と `Routine.scope` は、ネイティブでも WASM でも同期の呼び出しであり、GUI の UI スレッドやブラウザのイベントループを空ける非同期 API ではありません。待ち時間をほかの計算へ譲るには、次の `Async` を使います。
+`Parallel.*` と `Routine.scope` は、ネイティブでも WASM でも同期の呼び出しであり、GUI の UI スレッドやブラウザのイベントループを空ける非同期 API ではありません。ネイティブで待ち時間のあいだにほかの計算を進めるには、tzroutine を使います（[tzroutine](#tzroutine)）。ホストのイベントループに計算を預ける仕組みはありません（[非同期計算（Async）](#非同期計算async)）。
 チャンク・子・tzroutine の内部で発生した言語トラップ、メモリ不足、および無限ループに関する規則は通常式とまったく同一であり、
 失敗時におけるスタックの巻き戻し、捕捉された所有変数の後始末、およびほかのチャンクや tzroutine の強制キャンセルは保証されません。
 すべてが正常に終了した場合、使用されたすべての所有メモリは漏れなく回収され、ガベージコレクションに依存することのないメモリ管理が達成されます（`Arc` で共有した値は、最後の所有者を解放した tzroutine がその場で解放します）。
@@ -2616,53 +2615,23 @@ extern 関数を使用するワーカーには同一のホスト環境定義が�
 
 ## 非同期計算（Async）
 
-`Async<'a>` は、1 つのスレッドで中断点ごとに協調的に進む、コールドな非同期計算です。`Async { ... }` は標準 `Async` ビルダーのコンピュテーション式で、作っただけでは実行しません。
+この節は、TZ13 で削除した機能と、その書き換え先の記録です。TZ13 で、標準の `Async` モジュール（型 `Async<'a>`・`Async.Operation`、`Async { ... }`・`async { ... }` のビルダー、`Async.yield`・`sleep`・`now`・`all`・`all_results`・`run`・`block_on`・`start`・`host`）と、`Net` の 12 個の `_async` 関数を言語から削除しました（D-61 の決定 4）。ネイティブの reactor（`src/runtime/async.c`）、ホスト駆動の実行器の入口（`tsuzuri_async_poll`・`tsuzuri_async_complete`・`tsuzuri_async_post`・`tsuzuri_async_set_epoch`）と `--emit header` のその宣言、JSPI の import のモジュール `tsuzuri_async`（`clock`・`wait`）、生成グルーの `bindings.async`（`complete`・`settled`）もなくなりました。これらを書いたプログラムは `E1040` です。
 
-| 実行器 | 実行モデル | 戻り値 |
-|---|---|---|
-| `Async.run` | 仮想時刻。すべてが `sleep` 中のときだけ最小の起床時刻へ進む | `'a` |
-| `Async.block_on` | 単調時計の実時間。タイマーまたはホスト完了まで現在のスレッドを待機 | `IO<'a>` |
-| `Async.start` | ホストが `tsuzuri_async_poll` で駆動する実行器へ投入 | `IO<unit>` |
+| 書いたもの | kind | メッセージ | help | 書き換え |
+|---|---|---|---|---|
+| `Async { … }`・`async { … }` | `removed_async` | `'Async { }' was removed`（`async` は `'async { }' was removed`） | `run the work directly; to wait for I/O while other work runs, spawn tzroutines` | 本体をその場で実行する。I/O を待つ間にほかの仕事を進めるなら、仕事ごとに `tzroutine { … }` を起動する |
+| 型 `Async<T>`・`Async.Operation` | `removed_async` | `the type 'Async' was removed`（`the type 'Async.Operation' was removed`） | `return the value directly, or use a Channel to deliver it later` | `T` の値をそのまま返す。後で届く値は `Channel` で受け取る |
+| `Async.run`・`Async.block_on` | `removed_async` | `'Async.run' was removed` など | `call the work directly (in a tzroutine, I/O waits without stopping other tzroutines)` | 仕事を直接呼ぶ |
+| `Async.all`・`Async.all_results` | `removed_async` | `'Async.all' was removed` など | `spawn a tzroutine per job and wait with WaitGroup, or with ErrGroup for the first error` | 仕事ごとの tzroutine と `WaitGroup`（結果は `Mutex` か `Channel` で集める）。`all_results` は `ErrGroup`（`wait` が返すのは完了の時刻で最初の誤り） |
+| `Async.sleep`・`Async.now`・`Async.yield` | `removed_async` | `'Async.sleep' was removed` など | `use Time.sleep, Time.monotonic_ns, or Routine.yield` | `Time.sleep d`（`d` はナノ秒。`Async.sleep` のミリ秒は `n * Time.millisecond()`）・`Time.monotonic_ns ()`・`Routine.yield ()`。タイムアウトは `select` と `Time.after` |
+| `Async.start`・`Async.host` | `removed_async` | `'Async.start' was removed` など | `the host-driven executor was removed; call exports from host threads (native) or await the export's Promise (WebAssembly with --wasm-feature jspi)` | 後継はない（下記） |
+| `Net.connect_async` など 12 関数 | `removed_net_async` | `'Net.connect_async' was removed` など | `call Net.connect (and the others without '_async') in a tzroutine; it waits without stopping other tzroutines` | tzroutine の中で `_async` のない同期版を呼ぶ（[ネットワーク（Net）](#ネットワークnet)） |
 
-標準 API は次のとおりです。
-
-```text
-Async.yield       :: unit -> Async<unit>
-Async.sleep       :: i64 -> Async<unit>
-Async.now         :: unit -> Async<i64>
-Async.all         :: Capture<'a> => [Async<'a>] -> Async<['a]>
-Async.all_results :: (Capture<'a>, Capture<'e>) => [Async<Result<'a, 'e>>] -> Async<Result<['a], 'e>>
-Async.run         :: Async<'a> -> 'a
-Async.block_on    :: Async<'a> -> IO<'a>
-Async.start       :: Async<unit> -> IO<unit>
-Async.host        :: Async.Operation -> Async<i64>
-```
-
-`Async.yield ()` は時刻を進めずに一度だけ譲ります。`Async.sleep n` は `n <= 0` なら同じ動作で、`n > 0` なら現在時刻に `n` を飽和加算した時刻まで待ちます。`Async.now ()` は中断しません。
-
-`Async.all` は子を入力順に開始し、各 round で再開できる子を入力順に 1 step ずつ進め、結果を入力順に返します。`Async.all_results` は最初にスケジュール順で完了した `Error` を返し、残りを現在の中断点で破棄します。`Async` の中で通常の `for` を使うと、反復本体が `Async<unit>` になります。`while` と文の `yield` は `Async` ビルダーに定義されていないため `E1018` です。
-
-`Async.Async<'a>` は不透明で非 Copy です。`start` フィールドを読む、`Async { start: ... }` と構築する、または `Async` の値を move 後に使うと、それぞれ `E1022` または `E1012` です。`Async<T>` の式が loan を持つ場合は、開始も中断点とみなし、次の診断を出します。
-
-```text
-error[E1013]: async computations cannot keep borrowed values across 'let!', 'do!', or the start of the computation; move or clone the value into the async block instead
-```
-
-借用は中断より前に終わらせるか、所有値をブロックへ move します。`Async` はスレッド間で共有しません。CPU の並列実行には `Parallel.*` か tzroutine を使います（[並列実行](#並列実行)）。
-
-### ホストの再開
-
-`Async.host` は `Async.Operation { start, cancel }` を受け取り、実行器から操作 ID を渡してホストを呼びます。ホストは完了時に `tsuzuri_async_complete(operation, value)` を呼び、次の poll で計算を再開させます。`tsuzuri_async_poll(now)` は時計を前へ進め、完了を配り、次に poll すべき時刻を返します。未登録・完了済み・取消済みの ID、poll の再入、`Async.run` でのホスト操作はトラップです。
-
-native では `Async.block_on` が `src/runtime/async.c` の単調時計、条件変数、操作 ID ごとの完了 mailbox を使います。ほかのスレッドからは `int32_t tsuzuri_async_post(int64_t operation, int64_t value)` を使い、受理時は 1、未知・二重・完了済み・取消済みの操作なら 0 を返します。登録は操作の開始時、退役は完了または取消時に行い、退役時には競合して届いた完了も破棄します。mailbox は標準の Tsuzuri allocator を使い、最後の操作を退役させると解放します。各 native スレッドは独立した実行器を持ち、操作 ID の高位ビットで完了先のスレッドを選びます。待ちは POSIX では pthread の条件変数、Windows では SRWLOCK と条件変数で、時計は単調です（Windows の既定のタイマー分解能は約 15.6 ms で、短い `sleep` はその分遅れることがありますが、早く起きることはありません）。macOS・Linux・Windows 以外の native `block_on` は、ほかの Unix も含め `E2002` です。runtime を埋め込む Windows の COFF `--emit object` は非対応です。test / debug-test / bench の対応範囲も同じです。
-
-WASM で `Async.start` を使う場合、既定の出力には import を追加せず、`tsuzuri_async_poll` と `tsuzuri_async_complete` をホストが呼びます。`Async.block_on` は WebAssembly のスタックを待機中に中断する JSPI を使うため、`--wasm-feature jspi` が必要です。`tsuzuri_async.clock` と `tsuzuri_async.wait` を import し、JSPI に対応する export は Promise を返します。`--wasm-feature jspi` は `threads` や `--wasm-host wasi` と併用できません。`--wasm-feature threads` は、Async の per-thread executor を設定しないため、`Async.start` / `Async.block_on` と併用できません。
-
-`--emit bindings-js` で作ったグルーは、`Async.start` に到達する場合 `bindings.async.complete(operation, value)` と `bindings.async.settled()` を提供し、イベントループから自動的に poll します。WASM の `Async.block_on` は `.wasm` とグルーの生成の両方で `--wasm-feature jspi` を要求し、省略は生成前に `E2000` です。`complete` は引数の i64 範囲と、同じ生成グルー内のインスタンス世代を検査します。raw WASM のホストは、再作成前と異なる正の epoch（2^24 未満）を `tsuzuri_async_set_epoch` に設定してから操作を開始します。生成グルーはこれを自動で行います。
-
-JSPI 用のグルーではすべての export が Promise を返し、同じインスタンスへの呼び出しを直列化します。typed array は呼び出し要求時にコピーし、`withBorrowed` は提供しません。raw JSPI のホストは前の `block_on` を await してから次を呼びます。バックグラウンド実行の失敗は `settled()` を reject し、インスタンスを再作成するまで保持します。Async の実行器は `--trap-mode return` と併用できません。
-
-native の `tsuzuri test`、`test --index N -g`、`tsuzuri bench` は実時間の実行器にも対応します。WASM のテスト実行器は `Async.start` / `Async.block_on` を駆動できないため `E2000` で拒否します（`Async.run` は使用可能）。詳細は [WebAssembly への出力](../_tsuzuri/language-reference/compiler/webassembly.md) の [非同期計算と JSPI](../_tsuzuri/language-reference/compiler/webassembly.md#非同期計算と-jspi) を参照してください。
+- 型の `Async.Step`・`Async.Next` と、ビルダーの操作（`Async.Return`・`ReturnFrom`・`Bind`・`Delay`・`Zero`・`Combine`・`For`）を名前で書いても `E1040`（`removed_async`）です。どれも確かな修正案を持たないので、`tsuzuri fix` は書き換えません。書き換えの例は [言語リファレンスの Async からの移行](../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md#async-からの移行) にあります。
+- `async` と `Async` は予約された名前ではありません。`async { … }` は、`@alias async` を宣言した利用者のビルダーが見えるときはそのビルダーの計算式です（[ビルダーの別名](#ビルダーの別名alias)）。利用者のモジュール `Async`（`Async.tz`、または `Async.tc` のビルダー）と型 `Async` は普通の名前として解決します。`E1040` になるのは、その名前がどの定義にも解決しないときだけです（利用者のモジュール `Async` にない `Async.run` も `E1040` です）。
+- **ホスト駆動の実行器には後継がありません**（TZ13 の D2）。tzroutine は境界の中で終わる（D-61 の決定 1）ので、ホストのイベントループに計算を預けて、後から完了を渡す形とは合わないためです。ネイティブのホストは `export` 関数を呼び、その呼び出しは中で起動した tzroutine がすべて終わるまで戻りません（[tzroutine](#tzroutine)）。ホストのイベントループを止めたくないときは、ホストが別のスレッドから `export` を呼びます。WebAssembly では、`--wasm-feature jspi` の export は Promise を返し、ホストはそれを await します。JSPI で待つのは `--wasm-feature net` のソケットの呼び出しで、WebAssembly の tzroutine は今は `E2000` です（[WebAssembly への出力の JSPI](../_tsuzuri/language-reference/compiler/webassembly.md#jspi)）。
+- **`Async.run` の仮想時刻にも後継がありません**（TZ13 の D3）。時刻に依存する処理を決定的に試すときは、時刻を関数の引数か `Channel` で渡します。
+- 出なくなった kind は登録簿に残します: `E1013` の `borrow_across_async_boundary`（`Async` の中断をまたぐ借用）、`E2000` の `net_async_needs_block_on`・`wasm_test_runner_async`。
 
 ## 制御構文
 
@@ -3599,7 +3568,7 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 - 表現: 値は 1 つのポインタで、ヒープのブロック `{ 強い数, 弱い数, 値 }` を指します。強い所有者全体で弱い数を 1 つ持ちます。最後の強い所有者がスコープを抜けると値を drop し、続いてこの 1 つを減らし、弱い数が 0 になったブロックを解放します。ムーブ済みの領域（ヌル）の drop は何もしません。
 - `Arc` の計数: 増加は `atomicrmw add ... monotonic`、減少は `atomicrmw sub ... release` で、0 にした所有者は `fence acquire` の後で値とブロックを解放します。`Arc.try_unwrap` は強い数を `cmpxchg` で 1 から 0 にしたときだけ値を取り出し、`Arc.upgrade` は 0 でない強い数を `cmpxchg`（成功は `acquire`）で増やすまで繰り返します。`Rc` は通常のロード・ストアだけを使います。既定の wasm32 では atomic 命令が通常の命令に下がり、`--wasm-feature threads` では WASM の atomic 命令になります。WASM の import は増えません。
 - 計数が `i64` の最大値を超える増加はトラップします。
-- `Send`: `Rc`／`Rc.Weak` は `Send` ではなく、`Arc<'a>`／`Arc.Weak<'a>` は `'a` が `Send` かつ `Sync` のとき `Send` です（Rust の `Arc<T>: Send` と同じ規則です）。`Arc` を持つ各 tzroutine は `Arc.get` で同時に値を借用できるので、`'a` は複数の tzroutine やスレッドが共有借用で同時に使える `Sync` な型に限ります。`Sync` でないのは、`Rc`／`Rc.Weak`、extern ハンドル（`extern type`。ホストのハンドルはスレッド安全とは限らない）、Copy でない `dyn` 値、`Owned.Function`、排他参照、`Seq`、`Async`、GPU のハンドルを、格納グラフのどこかに持つ値です。`Sync` でない値の `Arc` を持つ値を tzroutine へ渡すと `E1013` です（同じ tzroutine の中での `Arc.share` は自由です）。`Atomic<'a>` と `Mutex<'a>` は `Sync` なので、`Arc<Atomic<i64>>` と `Arc<Mutex<'a>>` が、tzroutine の間で状態を共有する書き方です（[共有状態と Routine.scope](#共有状態と-routinescope)）。
+- `Send`: `Rc`／`Rc.Weak` は `Send` ではなく、`Arc<'a>`／`Arc.Weak<'a>` は `'a` が `Send` かつ `Sync` のとき `Send` です（Rust の `Arc<T>: Send` と同じ規則です）。`Arc` を持つ各 tzroutine は `Arc.get` で同時に値を借用できるので、`'a` は複数の tzroutine やスレッドが共有借用で同時に使える `Sync` な型に限ります。`Sync` でないのは、`Rc`／`Rc.Weak`、extern ハンドル（`extern type`。ホストのハンドルはスレッド安全とは限らない）、Copy でない `dyn` 値、`Owned.Function`、排他参照、`Seq`、GPU のハンドルを、格納グラフのどこかに持つ値です。`Sync` でない値の `Arc` を持つ値を tzroutine へ渡すと `E1013` です（同じ tzroutine の中での `Arc.share` は自由です）。`Atomic<'a>` と `Mutex<'a>` は `Sync` なので、`Arc<Atomic<i64>>` と `Arc<Mutex<'a>>` が、tzroutine の間で状態を共有する書き方です（[共有状態と Routine.scope](#共有状態と-routinescope)）。
 - 捕捉: 関数値の型は捕捉した値を表さず、どの関数値も tzroutine へ渡せるので、`Rc`／`Rc.Weak` とそれを持つ値は関数値（ラムダ、部分適用、`Owned.function`）に捕捉できません（`E1005`）。`Arc` は値が `Sync` のときだけ捕捉でき（そうでなければ `E1005`）、関数値の複製は所有者を 1 増やします。
 - 中身の制約: 排他参照を含む値は入れられません（`E1005`）。共有参照を含む値（`Rc<ref string>`）は参照先より長く生きられず、`share` や `upgrade` の結果も同じ借用を持ちます。
 - 循環: 値ができる前にその値を指す `Rc` は作れず、`Rc`／`Arc` の値は共有されている間は変更できないので、`Rc`／`Arc` だけでは循環を作れません。`Mutex` は共有された値を書き換えられ、`Arc` は `Mutex` の中に入れられる（`Rc` は `Send` ではないので入れられません）ので、`Arc<Node>` の中の `Mutex` が別の `Arc<Node>` を指すと循環を作れ、その循環のブロックは所有者がいなくなっても解放されません。サイクルコレクターはなく、循環の一方は `Arc.Weak` で持ちます。循環するグラフは [Arena](#arena) でも表せます。
@@ -4856,7 +4825,7 @@ LLD リンカーによって到達不能な不要コードは完全にストリ�
 macOS は Apple Silicon のネイティブ arm64 だけで、Rosetta の x64 環境は対象外です。同梱の `tsuzuri-clang` は明示 target を指定しても Intel macOS ホストを拒否し、Intel macOS 向けの生成も拒否します。CLI・VSIX のツールチェーンの作成と再検証は、Clang の既定 target も Apple Silicon であることを確認します。
 VS Code 拡張も同じ 5 環境だけです。起動時とツールチェーン解決時に拡張ホストを検査し、対象外では対応ホストを示すエラーで停止します。開発用コンパイラの設定でも回避できず、VSIX の作成と再検証も同じ制限です。Windows Arm64 のソースデバッグ未対応は維持します。
 `--target` は、`native`（ビルド機。Windows 以外では Clang へ `--target` を渡さない）、`wasm32`、`wasm64`、および 64-bit・リトルエンディアンの native の名前を受けます。`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は `wasm32` と `wasm64` の別名です。native の名前は `aarch64-apple-darwin`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-gnu`、`aarch64-pc-windows-msvc`、`x86_64-pc-windows-msvc`、`aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl`、`aarch64-pc-windows-gnu`、`x86_64-pc-windows-gnu` の 9 個です。Linux の glibc/musl と Windows の MSVC/MinGW を区別し、大文字小文字を区別し、別名は受け付けません。macOS x64、RISC-V、FreeBSD、Android、iOS、bare-metal など、それ以外は `E2000`（`unknown target`）です。32-bit は、native の IR が 64-bit のポインターを前提にする理由も添えます。
-言語の意味（整数の折り返し、丸め、NaN、符号付きゼロ、評価順序、トラップ、所有権）は target で変わりません。target で変わるのは、Clang の target、OS ごとのランタイム（`os.c`・`net.c`・`async.c`・`tzroutine.c` の Win32 版）、Windows の ABI の書き換えと COFF の allocator、`@cpu` の版、`Math.fma` の実装（AArch64 だけが命令）、出力の拡張子です。`--target native` の出力は従来と同じです。
+言語の意味（整数の折り返し、丸め、NaN、符号付きゼロ、評価順序、トラップ、所有権）は target で変わりません。target で変わるのは、Clang の target、OS ごとのランタイム（`os.c`・`net.c`・`tzroutine.c` の Win32 版）、Windows の ABI の書き換えと COFF の allocator、`@cpu` の版、`Math.fma` の実装（AArch64 だけが命令）、出力の拡張子です。`--target native` の出力は従来と同じです。
 名前を付けた target の実行ファイルは、同梱ツールチェーンか、システムの Clang と `TSUZURI_SYSROOT`（C のコンパイルとリンクへ渡す sysroot。macOS は SDK）でリンクします。MSVC の SDK と CRT は `INCLUDE` と `LIB` を使います。`--cpu native` は、ビルド機で動かせない target では `E2000` です。`run` と `test` は、ビルド機で動かせない target では `TSUZURI_RUNNER` を指定したときだけ動き、`bench` は `E2000` です。tier、リンクの手段、診断の一覧は [言語リファレンスの対応プラットフォーム](../_tsuzuri/language-reference/compiler/platforms.md) にあります。
 
 ### 生成バインディング
@@ -4867,11 +4836,12 @@ VS Code 拡張も同じ 5 環境だけです。起動時とツールチェーン
 - 評価順序と所有権: 引数の個数・型・範囲を先に検査し（失敗は `TypeError`／`RangeError` で、インスタンスに触れない）、インスタンスを用意し、入力を左から順に `tsuzuri_alloc` へ複製し、out 領域を確保して `tz_<name>` を呼び、結果を複製して `tsuzuri_free` し、out と入力を逆順に解放します。JavaScript は wasm のポインタを保持しません。`withBorrowed(kind, length, callback)` は callback の間だけ wasm 側の領域を `Borrowed` として貸し、複製を 1 回減らします。
 - import: `load` の `imports` に WASM の import 名をキーとした関数を渡します。グルーはモジュールが宣言した import だけを渡し、import を足しません。借用入力は複製して渡し、所有結果はグルーが確保して記述子を書きます。`--wasm-feature threads`、IO の入口、`--debug-output`、`--wasm-host wasi`、`--allocator host` のモジュールと、wasm64 のモジュールは `load` が拒否します。
 - トラップ: export の呼び出し中に出た例外はインスタンスを捨て、次の呼び出しで同じモジュールと import から同期的に作り直します（[トラップ位置](#トラップ位置) の境界と同じ規則）。ホストの例外は同じ値のまま、`WebAssembly.RuntimeError` は `TsuzuriTrap`（`trap.reason` が `"trap"`、`site` は `tsuzuri_trap_site`、`sites` を渡せば位置と種類）、スタック枯渇は `reason: "stack"` の `TsuzuriTrap` になります。同期の作り直しが失敗したとき（Chrome のメインスレッドは 8 MB を超えるモジュールで拒みます）は、その呼び出しが `Error` で失敗し、`ready()` が非同期に作り直します。
+- JSPI: `--wasm-feature jspi` を付けると、表に `"jspi": true` を持つグルーを出します。すべての export は `WebAssembly.promising` で包んで呼ぶ `Promise` を返す関数になり（宣言の戻り値も `Promise<T>`）、同じインスタンスへの呼び出しを呼び出しの順に直列化します。入力は呼び出しの時点で複製し、`withBorrowed` は `TypeError` です。`load` は `WebAssembly.Suspending` と `WebAssembly.promising` を持たないエンジンを拒否します。JSPI で中断するのは `--wasm-feature net` のソケットの呼び出しです（TZ13 より前は `Async.block_on` の待ちも）。
 - スレッド: `--wasm-feature threads` を付けると、同じ表から、ブラウザの Web Worker でスレッドプールを作るグルーを出します。`load` は `crossOriginIsolated` と `SharedArrayBuffer` を確かめ、満たさなければワーカーを起動せずに `Error` を投げます（逐次実行へは切り替えません）。共有メモリと、補助ワーカーの起動、スタックの割り当て、失敗時の poison は `src/runtime/wasm-threads.mjs` と同じ手順です。export は調整役のワーカーで動いて `Promise` を返し、ホスト関数は各ワーカーで `importsModule` の `createImports({ workerId, data })` から作ります。トラップやホストの例外はプール全体を止め、作り直しは `load` からです。
 
 `tsuzuri build <path> --emit shared` は、`tz_<name>` と、定義されていれば `tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_main`、`tsuzuri_alloc_stats`、`tsuzuri_try_<name>` だけを export する共有ライブラリ（macOS の `.dylib`、Linux の `.so`）を出します。実行ファイルと同じくリンク入力を受け、未解決のシンボルは `E2002` です。Windows（DLL の出力は未対応です。[G10](../_features/_completed/G10-windows.md) の後続の作業です）、`--allocator host`、native 以外のターゲットは `E2000` です。`--emit bindings-cs`、`bindings-py`、`bindings-cpp` は、同じ表から C#（`[LibraryImport]`、`SafeHandle` で所有する結果、`ReadOnlySpan<T>` の借用入力、blittable な struct のレコード）、Python（`ctypes`、結果は複製して `tsuzuri_free`）、C++20（C ヘッダーの上の RAII。`std::span`、`std::u16string_view`、`tsuzuri_free` を呼ぶ所有型）のバインディングを出します。どれも引数を C ABI の前に検査し（不正な UTF-8 は呼ぶ前に例外）、`--trap-mode return` を付けると `tsuzuri_try_<name>` を呼んでトラップを各言語の例外にします。付けないと、トラップはプロセスを終わらせます。
 
-`tsuzuri build <path> --emit bitcode` は、C・C++ のホストが `-flto=thin` で小さな公開関数を inline できるように、プログラムと、それが使う C ランタイムを 1 つにまとめた ThinLTO の LLVM bitcode（`.bc`）を出します。外から見える強い定義は `tz_<name>`（`--trap-mode return` では `tsuzuri_try_<name>`、`--allocator counting` では `tsuzuri_alloc_stats`、標準入出力の入口では `tsuzuri_main`、`Async.start` では `tsuzuri_async_poll` と `tsuzuri_async_complete`）で、`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、`tz_soft_*`、`tz_small_*`、`Async.block_on` に届くときの `tsuzuri_async_post`（C ランタイムが定義し、ほかのスレッドから呼べるよう外部のまま残します）は弱い定義です。C ランタイムのそれ以外の関数は内部になります。IR の全関数に、同じ Clang が C の関数に付ける `target-cpu` と `tune-cpu`（`--cpu native` と wasm32 の `simd128` は `target-features` も）を付け、`"target-features"` を持つ F08 の `@cpu` 版はそれを保ちます。ホストは、bitcode を書いた Clang と同じ Clang で、`-flto=thin`（Linux は `-fuse-ld=lld`）でリンクします。C ランタイムを使うプログラムには、Clang と同じ LLVM の `llvm-link` が要ります。`--target wasm32` は C ランタイムも `llvm-link` も使わず、`wasm-ld` の LTO でホストへ inline できます。Windows と `wasm64`、`--freestanding`、`--strip`、`--profile-generate`・`--profile-use`、リンク入力、WASM の threads・jspi・webgpu・net・tail-call・WASI は `E2000` です。ビルドキャッシュは使いません。測定と確かめた組み合わせは [ネイティブ連携](../_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode) と [benchmarks.md](benchmarks.md#pr08-言語間-lto-と-bitcode-出力) にあります。
+`tsuzuri build <path> --emit bitcode` は、C・C++ のホストが `-flto=thin` で小さな公開関数を inline できるように、プログラムと、それが使う C ランタイムを 1 つにまとめた ThinLTO の LLVM bitcode（`.bc`）を出します。外から見える強い定義は `tz_<name>`（`--trap-mode return` では `tsuzuri_try_<name>`、`--allocator counting` では `tsuzuri_alloc_stats`、標準入出力の入口では `tsuzuri_main`）で、`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、`tz_soft_*`、`tz_small_*` は弱い定義です（TZ13 より前は、`Async` の実行器の `tsuzuri_async_poll`・`tsuzuri_async_complete`・`tsuzuri_async_post` もありました）。C ランタイムのそれ以外の関数は内部になります。IR の全関数に、同じ Clang が C の関数に付ける `target-cpu` と `tune-cpu`（`--cpu native` と wasm32 の `simd128` は `target-features` も）を付け、`"target-features"` を持つ F08 の `@cpu` 版はそれを保ちます。ホストは、bitcode を書いた Clang と同じ Clang で、`-flto=thin`（Linux は `-fuse-ld=lld`）でリンクします。C ランタイムを使うプログラムには、Clang と同じ LLVM の `llvm-link` が要ります。`--target wasm32` は C ランタイムも `llvm-link` も使わず、`wasm-ld` の LTO でホストへ inline できます。Windows と `wasm64`、`--freestanding`、`--strip`、`--profile-generate`・`--profile-use`、リンク入力、WASM の threads・jspi・webgpu・net・tail-call・WASI は `E2000` です。ビルドキャッシュは使いません。測定と確かめた組み合わせは [ネイティブ連携](../_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode) と [benchmarks.md](benchmarks.md#pr08-言語間-lto-と-bitcode-出力) にあります。
 
 ### ホスト提供の allocator
 
@@ -4987,7 +4957,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1001`–`E1010` | 識別子名（複数のビルダーが宣言する別名の曖昧さを含む）、型シグネチャ、演算子、引数構成、レコードフィールド、公開 ABI、リテラル、インラインレイアウト |
 | `E1011` | 無効または重複したモジュール名、予約モジュール名・予約名前空間 `std` の不正使用、不正な標準ライブラリパス |
 | `E1012` | 所有権 move 後の不正な再利用、不正な代入先（Drop 型からのフィールド・共用体ペイロードの部分 move および更新、`Owned.function` 本体でのキャプチャ値の不正 move を含む） |
-| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、Async の開始・中断点や tzroutine の境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む。`values that move to another tzroutine or thread must be owned; ... contains a reference`）、tzroutine へ持ち込む `Rc`／`Rc.Weak`（`values that move to another tzroutine or thread must be Send; ... holds an Rc or Rc.Weak, ...`）、`Sync` でない値の `Arc`、`Routine.scope` で共有する `Sync` でない値（`tzroutines and threads can share only Sync values; ... is not Sync ...`）、`Mutex.with_lock` の結果に含まれる借用、`DataChannel.send` の要素が持つ借用（`a channel item cannot hold a borrow`）、`Send` でない型で使われた、`DataChannel.bounded`・`Mutex.create` などを包むジェネリック関数 |
+| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、tzroutine の境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む。`values that move to another tzroutine or thread must be owned; ... contains a reference`）、tzroutine へ持ち込む `Rc`／`Rc.Weak`（`values that move to another tzroutine or thread must be Send; ... holds an Rc or Rc.Weak, ...`）、`Sync` でない値の `Arc`、`Routine.scope` で共有する `Sync` でない値（`tzroutines and threads can share only Sync values; ... is not Sync ...`）、`Mutex.with_lock` の結果に含まれる借用、`DataChannel.send` の要素が持つ借用（`a channel item cannot hold a borrow`）、`Send` でない型で使われた、`DataChannel.bounded`・`Mutex.create` などを包むジェネリック関数 |
 | `E1014` | 借用の競合（共有借用中の排他アクセス）、不変な値に対する不正な可変アクセス |
 | `E1015` | 曖昧な型変数、無限型の検出、不適切な多相性、型検査時点で参照型か未確定な `ref` オペランド |
 | `E1016` | 型クラスまたはインスタンスの不正宣言や重複定義（`Drop` インスタンスおよび `Drop.drop` への直接参照を含む） |
@@ -5011,7 +4981,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1037` | `@trusted` の置き場と性質の誤り |
 | `E1038` | `Domain.run` の使い方の誤り（直接呼んでいない・引数がラムダでも `pure def` の名前でもない・平たいデータでない捕捉・純粋でない本体・平たいデータでない結果・領域を持てないビルド） |
 | `E1039` | 浮動小数点の数を含む型への `Monoid` の制約（`Parallel.fold` が `Array.fold_monoid` と違いうる） |
-| `E1040` | 消えた・改名された名前。`renamed_to_data_channel`: 旧 `Channel.bounded` などは `DataChannel` の名前（確かな修正案を持つ）。`removed_task_expression`: `task { … }`（`@alias task` の利用者のビルダーがないとき）。`removed_task_type`: 型 `Task<T>`。`removed_task_api`: `Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope`（`Task.scope` だけが `Routine.scope` への確かな修正案を持つ）。どれも利用者の定義に解決しないときだけ（[並列実行](#並列実行)） |
+| `E1040` | 消えた・改名された名前。`renamed_to_data_channel`: 旧 `Channel.bounded` などは `DataChannel` の名前（確かな修正案を持つ）。`removed_task_expression`: `task { … }`（`@alias task` の利用者のビルダーがないとき）。`removed_task_type`: 型 `Task<T>`。`removed_task_api`: `Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope`（`Task.scope` だけが `Routine.scope` への確かな修正案を持つ）。`removed_async`: `Async { … }`・`async { … }`（`@alias async` の利用者のビルダーがないとき）・型 `Async<T>`・`Async.Operation`・`Async.run` などの関数（TZ13）。`removed_net_async`: `Net.connect_async` などの 12 関数（TZ13）。どれも利用者の定義に解決しないときだけ（[並列実行](#並列実行)、[非同期計算（Async）](#非同期計算async)） |
 | `E1025` | 自動導出（deriving）がサポートされていない型クラスまたは要素型、停止しない再帰的 `Default` 定義 |
 | `E1026` | コンパイル時定数評価（`const` の初期化式と `const def` の本体）におけるトラップ発生、循環参照、計算ステップ上限超過、未対応の定数式、`const def` の署名・本体の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `W1001` | 未使用のローカル変数、引数、またはパターン束縛変数（警告） |
@@ -5026,7 +4996,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1010` | `@trusted` のない `extern` の関数の使用（`--warn untrusted-extern` 指定時と `tsuzuri audit` だけ） |
 | `W2001` | キャッシュや知識グラフを使えなかったときのツール警告（ソースの警告ではない。`--json` のときだけ、このコードの JSON オブジェクトになる） |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
-| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備（`tsuzuri find` の引数・読めない問い合わせの型 `find_bad_arguments` と、どのモジュールにも当たらない `--module` の `find_unknown_module` を含む）、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否、`Async.block_on` を使わない native のプログラムが `Net` の非同期操作に到達した場合、`--freestanding` での `Mutex` と `DataChannel` |
+| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備（`tsuzuri find` の引数・読めない問い合わせの型 `find_bad_arguments` と、どのモジュールにも当たらない `--module` の `find_unknown_module` を含む）、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否、`--freestanding` での `Mutex` と `DataChannel` |
 | `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows の target で OS API に到達した場合の `E2002` エラー（`E2001` は `TSUZURI_RUNNER` を起動できない場合も） |
 | `E2003` / `E2004` / `E2005` | 出力ファイル保護エラー／エントリーポイント要件不一致（`Main.tz` の `main` シグネチャ違反等）／プログラム実行時の異常終了（`def main` または `IO<i32>` のエントリーポイントが非ゼロのステータスで終了した場合の `E2005` を含む） |
 | `E2006` | 言語内テストケースの実行失敗（アサーション不一致等） |

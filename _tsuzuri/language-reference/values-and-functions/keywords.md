@@ -32,9 +32,10 @@ get().n
 
 - Tsuzuri には 42 個の予約語があり、原則として変数名や関数名などの識別子に使えません。予約語はソースの言語版（edition）で決まり、今ある edition `2026` の予約語がこの一覧です。 <!-- rule: LEX-005 --> <!-- rule: EDN-006 -->
 - `of`、`where`、`namespace`、`using`、`use`、`try`、`finally`、`is`、`otherwise`、`tzroutine`、`select` は文脈キーワードであり、所定の構文以外では通常の変数名として利用できます。 <!-- rule: LEX-006 -->
-- 例外として、`union`・`yield`・`new` はドット直後のメンバー名（`Set.union`、`Async.yield`、`Rc.new`）として利用可能です。
+- 例外として、`union`・`yield`・`new` はドット直後のメンバー名（`Set.union`、`Routine.yield`、`Rc.new`）として利用可能です。
 - `not`、`ignore`、`assert` は予約語ではなく、値として渡せる組み込み関数です。 <!-- rule: LEX-007 -->
 - `task` と `Task` は予約語でも組み込みの名前でもなく、変数名・関数名・モジュール名に使えます（`task { ... }` 式と `Task` モジュールは削除されました）。
+- `async` と `Async` も同じく、予約語でも組み込みの名前でもなく、変数名・関数名・モジュール名に使えます（`Async { ... }`・`async { ... }` 式と `Async` モジュールは削除されました）。
 
 ## 予約語と文脈キーワードの違い
 
@@ -249,13 +250,11 @@ Set.length ref s3
 3
 ```
 
-標準ライブラリの `Set` は集合の和を `def union`、`Async` は中断点を `def yield` として定義しています。モジュールの関数宣言にもこれらの名前を使えますが、呼び出しは修飾します。`new` は `Rc.new` / `Arc.new` のようなメンバー名として使います。単独の変数名や型名には使えません。
+標準ライブラリの `Set` は集合の和を `def union` として定義し、組み込みの `Routine` は実行を譲る関数を `Routine.yield` という名前で持っています。モジュールの関数宣言にもこれらの名前を使えますが、呼び出しは修飾します。`new` は `Rc.new` / `Arc.new` のようなメンバー名として使います。単独の変数名や型名には使えません。
 
 ```tsuzuri run=42
-Async.run (Async {
-    do! Async.yield ()
-    return 42
-})
+Routine.yield ()
+42
 ```
 
 ### 予約語ではない組み込み識別子
@@ -266,13 +265,14 @@ Async.run (Async {
 - **`ignore`**: 引数を捨てて `unit` を返す組み込み関数（`'a -> unit`）です。
 - **`assert`**: 条件が偽ならトラップする組み込み関数（`bool -> unit`）です。予約語ではなく、関数値として渡せます。
 - **`task`・`Task`**: 予約語ではなく、組み込みの名前でもありません（`task { ... }` 式、型 `Task<T>`、`Task.run` などは削除されました）。`let task = 1` や、利用者のモジュール `Task` も書けます。`task { ... }` と書くと、`@alias task` を宣言した利用者のビルダー（[ビルダーの別名](../computation-expressions/computation-expressions.md#ビルダーの別名)）がそれを使い、なければ `E1040`（`'task { }' was removed`）です。書き換え方は [Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行) にあります。
+- **`async`・`Async`**: 予約語ではなく、組み込みの名前でもありません（`Async { ... }`・`async { ... }` 式、型 `Async<T>`、`Async.run` などは削除されました）。`let async = 2` や、利用者のモジュール `Async` も書けます。`async { ... }` と書くと、`@alias async` を宣言した利用者のビルダーがそれを使い、なければ `E1040`（`'async { }' was removed`）です。`Async { ... }` も、利用者の `Async.tc` がなければ `E1040` です。書き換え方は [Async からの移行](../async-tasks-and-lazy/tzroutine.md#async-からの移行) にあります。
 - **予約モジュール名**: `Maybe` や `Array` などはキーワードではありません。ファイル名（モジュール名）として使うと `E1011` です。関数名やレコード名には使えます。
 
 ## まとめ
 
 - Tsuzuri には 42 個の予約語があり、構文構造の基本を定義しています。
 - 予約語は変数名や関数名などの識別子に使えません。
-- `union`・`yield`・`new` は予約語ですが、`Set.union`、`Async.yield`、`Rc.new` のようなメンバー名としては利用可能です。
+- `union`・`yield`・`new` は予約語ですが、`Set.union`、`Routine.yield`、`Rc.new` のようなメンバー名としては利用可能です。
 - `where`、`of`、`use`、`try`、`finally`、`is`、`otherwise`、`namespace`、`using` は文脈キーワードです。所定の位置以外では普通の名前です。`with` は予約語です。
 - `not`、`ignore`、`assert` は組み込み関数であり、予約語ではありません。
 

@@ -99,14 +99,14 @@ def main :: unit -> i32 = \() ->
 - `IO<T>` is an action that runs only when bound. In `main`, `do! a` runs `a` and `let! x = a` binds its result. `IO { ... }` builds an action to return.
 - In a body returning `Maybe` or `Result` (or in `Maybe { }`, `Result { }`), `let! x = m` unwraps, the first `None` or `Error` skips the rest, and `return v` wraps.
 - `return` only ends a builder block; it is not an early exit. `and!` runs left to right. `match! m with` unwraps, then matches.
-- A `.tc` file is one builder (`Bind`, `Return`...). `Async { }` interleaves waits: `Async.run`, `Async.sleep`.
+- A `.tc` file is one builder (`Bind`, `Return`...): `Name.tc` gives `Name { ... }`.
 
 ## Concurrency and parallelism
 - `tzroutine { ... }` starts a tzroutine (a goroutine) and returns `()`; `main`, export calls, tests and benches wait for theirs.
 - It captures owned or Copy `Send` values (a reference or `Rc` is E1013); share with `Arc.share`, mutate through `Atomic` or `Mutex`.
 - Use `WaitGroup`, `Channel` and `select`, `ErrGroup` (first error); `Routine.scope (ref s) n f` returns `n` results in order.
 - `Parallel.init n f`, `Parallel.map f xs`, `Parallel.reduce z f xs`, `Parallel.sum xs` split arrays into fixed chunks; call them with every argument.
-- `task { }` and `Task` were removed (E1040).
+- `task { }`, `Task`, `Async` and `Net.*_async` were removed (E1040).
 ```tsuzuri run=7%20is%20odd
 def half :: i64 -> Result<i64, string> = \n ->
     if n % 2 == 0 then Ok (n / 2) else Error $"{n} is odd"
@@ -137,4 +137,4 @@ Call std functions qualified, subject last: `Map.insert k v m`. Signatures: `tsu
 - `Maybe`, `Result`, `Seq` (lazy). `Map`, `Set` (ordered), `HashMap`, `HashSet`: `insert`, `get` or `contains`, `remove`, `iter`.
 - `Int` (`abs`, `min`, `checked_add`), `Math` (`sqrt`, `pi`), `BigInt`, `Random`.
 - `IO`, `File` (`read_text`, `write_text`), `Dir`, `Path`, `Env` (`args`), `Process`, `Time`, `Json`, `Regex`, `Format`, `Debug`.
-- `Routine`, `Parallel`, `Channel`, `Async`, `Atomic`, `Mutex`, `DataChannel`, `Rc`, `Arc`, `Arena`, `Owned`; `Test`, `Gen`, `Bench`.
+- `Routine`, `Parallel`, `Channel`, `Atomic`, `Mutex`, `DataChannel`, `Rc`, `Arc`, `Arena`, `Owned`; `Test`, `Gen`, `Bench`.
