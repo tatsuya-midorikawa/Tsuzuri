@@ -2540,6 +2540,81 @@ static void test_dchan_deadlock(void) {
     printf("DataChannel deadlock: ok\n");
 }
 
+/* TZ10: a request of sysmon (made by hand here) makes the G that checks yield, takes itself back,
+ * and leaves the global count at 0; a check without a request, or on a pseudo-G, does nothing. */
+static void preempt_ask(tzr_p *p) {
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&p->preempt, &expected, 1)) atomic_fetch_add(&tsuzuri_tz_preempt_pending, 1);
+}
+static _Atomic int preempt_flag_moved;
+static void preempt_flag_body(void *env) {
+    (void)env;
+    for (int round = 0; round < 100; round++) {
+        tzr_p *p = tzr_this_m()->p;
+        tsuzuri_tz_preempt_check(); /* nobody asked (unless sysmon did, if the OS stopped the thread) */
+        p = tzr_this_m()->p;
+        uint32_t tick = atomic_load(&p->schedtick);
+        preempt_ask(p);
+        CHECK(atomic_load(&tsuzuri_tz_preempt_pending) >= 1);
+        tsuzuri_tz_preempt_check(); /* yields: back on another P, or on p after another start there */
+        tzr_p *now = tzr_this_m()->p;
+        CHECK(now != p || atomic_load(&p->schedtick) != tick);
+        atomic_fetch_add(&preempt_flag_moved, 1);
+    }
+}
+static void test_preempt_flag(void) {
+    atomic_store(&preempt_flag_moved, 0);
+    tsuzuri_tz_preempt_check(); /* a pseudo-G */
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 4; i++) tsuzuri_tz_go(preempt_flag_body, NULL);
+    join(scope);
+    CHECK(atomic_load(&preempt_flag_moved) == 400);
+    CHECK(atomic_load(&tsuzuri_tz_preempt_pending) == 0);
+    printf("preempt flag: ok\n");
+}
+
+/* TZ10: with every P running a G that never waits and checks only when the global count says so
+ * (as the generated code does), a G that sleeps 10 ms at a time still wakes, 50 times in a row,
+ * while they run: sysmon asks them to yield. Without the requests it would never run again (the
+ * watchdog ends the case). Afterwards the count goes back to 0. Lower bounds only. */
+static _Atomic int preempt_busy_stop;
+static _Atomic int64_t preempt_busy_checks;
+static void preempt_busy(void *env) {
+    (void)env;
+    uint64_t x = 1;
+    while (!atomic_load_explicit(&preempt_busy_stop, memory_order_relaxed)) {
+        for (int i = 0; i < 1000; i++) x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+        if (atomic_load_explicit(&tsuzuri_tz_preempt_pending, memory_order_relaxed)) {
+            atomic_fetch_add(&preempt_busy_checks, 1);
+            tsuzuri_tz_preempt_check();
+        }
+    }
+    CHECK(x != 0);
+}
+static void preempt_ticker(void *env) {
+    int64_t *wakes = env;
+    for (int i = 0; i < 50; i++) {
+        CHECK(tsuzuri_tz_sleep(10000000) == 0);
+        (*wakes)++;
+    }
+    atomic_store(&preempt_busy_stop, 1);
+}
+static void test_preempt_sysmon(void) {
+    start_watchdog();
+    atomic_store(&preempt_busy_stop, 0);
+    atomic_store(&preempt_busy_checks, 0);
+    int64_t wakes = 0;
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int64_t i = 0; i < tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(preempt_busy, NULL);
+    tsuzuri_tz_go(preempt_ticker, &wakes);
+    join(scope);
+    CHECK(wakes == 50);
+    CHECK(atomic_load(&preempt_busy_checks) > 0);
+    for (int i = 0; i < 2000 && atomic_load(&tsuzuri_tz_preempt_pending) != 0; i++) block_ms(1);
+    CHECK(atomic_load(&tsuzuri_tz_preempt_pending) == 0);
+    printf("preempt sysmon: %lld checks\n", (long long)atomic_load(&preempt_busy_checks));
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -2623,6 +2698,8 @@ int main(int argc, char **argv) {
     RUN("netpoll_timeout", test_netpoll_timeout());
     RUN("netpoll_close", test_netpoll_close());
     RUN("netpoll_race", test_netpoll_race());
+    RUN("preempt_flag", test_preempt_flag());
+    RUN("preempt_sysmon", test_preempt_sysmon());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

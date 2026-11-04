@@ -647,7 +647,7 @@ struct tzr_p {
     _Atomic(tzr_g *) runq[TZR_RUNQ];
     _Atomic(tzr_g *) runnext;
     tzr_p *link;
-    uint32_t schedtick;
+    _Atomic uint32_t schedtick;    /* one more at each G that the P starts (the owner writes, sysmon reads) */
     uint32_t runnext_streak; /* owner only: tzr_runqget's takes from runnext in a row */
     tzr_g *gfree;
     int gfree_count;
@@ -655,6 +655,10 @@ struct tzr_p {
     _Atomic uint32_t syscall_tick; /* one more at each blocking call (TZ08) */
     uint32_t sysmon_tick;          /* sysmon only: syscall_tick when it last looked */
     int64_t sysmon_when;           /* sysmon only: when it first saw that call */
+    _Atomic(tzr_m *) runm;         /* the M that runs a G on this P now, or NULL (TZ10) */
+    _Atomic int preempt;           /* 1: sysmon asked the G that runs here to yield (TZ10) */
+    uint32_t seen_tick;            /* sysmon only: schedtick when it last looked (TZ10) */
+    int64_t seen_at;               /* sysmon only: when it first saw that tick */
 };
 
 struct tzr_m {
@@ -964,9 +968,10 @@ static void tzr_pidleput(tzr_p *p) {
     atomic_fetch_add(&tzr_sched.npidle, 1);
 }
 
-/* The M runs Gs on p from now on. */
+/* The M runs Gs on p from now on. It starts in the scheduler: no G runs on p yet (TZ10). */
 static void tzr_wirep(tzr_m *m, tzr_p *p) {
     m->p = p;
+    atomic_store_explicit(&p->runm, NULL, memory_order_relaxed);
     atomic_store_explicit(&p->status, TZR_P_RUNNING, memory_order_relaxed);
 }
 
@@ -1094,11 +1099,29 @@ static void tzr_checkdead(void) {
     tzr_sched.deadlocked = 0;
 }
 
+/* ---------------------------------------------------------------- preemption requests (TZ10) */
+
+/* How many Ps sysmon has asked to give up their G, of those that have not answered (TZ10). The
+ * generated code of a program that spawns reads it at function entries and at the back edges of
+ * loops that call (load atomic monotonic), and calls tsuzuri_tz_preempt_check when it is not 0. */
+TZR_API _Atomic int32_t tsuzuri_tz_preempt_pending;
+
+/* Takes back sysmon's request to p, if there is one: its G answered, or another G runs there. */
+static void tzr_preempt_clear(tzr_p *p) {
+    if (atomic_load_explicit(&p->preempt, memory_order_relaxed)
+        && atomic_exchange_explicit(&p->preempt, 0, memory_order_relaxed))
+        atomic_fetch_sub_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
+}
+
 /* ---------------------------------------------------------------- scheduling */
 
 static void tzr_execute(tzr_m *m, tzr_g *g) {
+    tzr_p *p = m->p;
     m->curg = g;
-    m->p->schedtick++;
+    atomic_store_explicit(&p->schedtick, atomic_load_explicit(&p->schedtick, memory_order_relaxed) + 1,
+                          memory_order_relaxed);
+    tzr_preempt_clear(p); /* asked of the G before: this is a new one */
+    atomic_store_explicit(&p->runm, m, memory_order_relaxed);
     atomic_store(&g->status, TZR_G_RUNNING);
 #if defined(TZR_TSAN)
     TZR_TSAN_SWITCH(g->tsan_fiber);
@@ -1111,7 +1134,8 @@ static void tzr_execute(tzr_m *m, tzr_g *g) {
 #if defined(TZR_ASAN)
     TZR_ASAN_FINISH(fake, NULL, NULL);
 #endif
-    /* back on g0: the G parked, yielded or exited */
+    /* back on g0: the G parked, yielded or exited (on this M, which may hold another P by now) */
+    if (m->p) atomic_store_explicit(&m->p->runm, NULL, memory_order_relaxed);
     tzr_g *prev = m->curg;
     m->curg = NULL;
     void (*after)(tzr_m *, tzr_g *) = m->after;
@@ -1123,7 +1147,7 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
     for (;;) {
         tzr_p *p = m->p;
         tzr_g *g;
-        if (p->schedtick % 61 == 0 && atomic_load(&tzr_sched.runq_size) > 0) {
+        if (atomic_load_explicit(&p->schedtick, memory_order_relaxed) % 61 == 0 && atomic_load(&tzr_sched.runq_size) > 0) {
             tzr_mutex_lock(&tzr_sched.lock);
             g = tzr_globrunqget(p, 1);
             tzr_mutex_unlock(&tzr_sched.lock);
@@ -1868,6 +1892,8 @@ static void tzr_acquirep(tzr_m *m) {
         tzr_mutex_unlock(&tzr_sched.lock);
     }
     tzr_wirep(m, p);
+    /* back from a blocking call or a locked G's wait: its G goes on running here (TZ10) */
+    if (m->curg) atomic_store_explicit(&p->runm, m, memory_order_relaxed);
 }
 
 /* A P that its M gave up (a blocking call that sysmon took it from, a locked G that waits): to an M
@@ -2045,6 +2071,40 @@ static int tzr_retake(int64_t now) {
     return took;
 }
 
+/* TZ10 Phase 1: asks each P whose G has run for 10 ms (the same schedtick in two rounds that far
+ * apart, D3) to give it up. The request is the P's, not the G's: a G may end and be freed while
+ * sysmon looks, a P never is. The G sees it at its next check (tsuzuri_tz_preempt_check) and
+ * yields to the end of the global run queue (D6). A G that does not answer is asked again 10 ms
+ * later. Returns 1 when it asked. */
+#define TZR_PREEMPT_AFTER 10000000 /* ns */
+static int tzr_preempt_scan(int64_t now) {
+    int asked = 0;
+    for (int i = 0; i < tzr_sched.nprocs; i++) {
+        tzr_p *p = tzr_sched.allp[i];
+        uint32_t tick = atomic_load_explicit(&p->schedtick, memory_order_relaxed);
+        if (atomic_load_explicit(&p->status, memory_order_relaxed) != TZR_P_RUNNING
+            || atomic_load_explicit(&p->runm, memory_order_relaxed) == NULL) {
+            tzr_preempt_clear(p); /* nothing runs there to answer */
+            p->seen_tick = tick;
+            p->seen_at = now;
+            continue;
+        }
+        if (tick != p->seen_tick) {
+            p->seen_tick = tick;
+            p->seen_at = now;
+            continue;
+        }
+        if (now - p->seen_at < TZR_PREEMPT_AFTER) continue;
+        p->seen_at = now;
+        int expected = 0;
+        if (atomic_compare_exchange_strong_explicit(&p->preempt, &expected, 1, memory_order_relaxed,
+                                                    memory_order_relaxed))
+            atomic_fetch_add_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
+        asked = 1;
+    }
+    return asked;
+}
+
 static void *tzr_sysmon(void *arg) {
     (void)arg;
     int64_t delay = TZR_SYSMON_MIN;
@@ -2062,7 +2122,9 @@ static void *tzr_sysmon(void *arg) {
         }
         tzr_cond_wait_for(&tzr_sysmon_state.wake, &tzr_sysmon_state.lock, delay);
         tzr_mutex_unlock(&tzr_sysmon_state.lock);
-        int took = tzr_retake(tzr_nanotime());
+        int64_t now = tzr_nanotime();
+        int took = tzr_retake(now);
+        took |= tzr_preempt_scan(now);
         tzr_mutex_lock(&tzr_sysmon_state.lock);
         if (took) {
             delay = TZR_SYSMON_MIN;
@@ -2083,6 +2145,33 @@ static void tzr_sysmon_init(void) {
 static void tzr_sysmon_start(void) {
     if (!atomic_load_explicit(&tzr_sysmon_state.started, memory_order_acquire))
         tzr_run_once(&tzr_sysmon_state.once, tzr_sysmon_init);
+}
+
+/* The check that the generated code calls when tsuzuri_tz_preempt_pending is not 0 (TZ10): a G whose
+ * P sysmon asked yields, as Routine.yield does (to the end of the global run queue, D6), unless it
+ * is inside a trap boundary, whose frame belongs to its thread (a failure domain's closure; the
+ * request is taken back and comes again in 10 ms). A pseudo-G, a G that nobody asked and a G whose
+ * M holds no P do nothing. The yield keeps errno (and Windows's last error), which a later call in
+ * the generated code may still read for the C call before the check. */
+static int tzr_trap_boundary(void);
+TZR_API void tsuzuri_tz_preempt_check(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->p == NULL) return;
+    tzr_p *p = m->p;
+    if (!atomic_load_explicit(&p->preempt, memory_order_relaxed)
+        || !atomic_exchange_explicit(&p->preempt, 0, memory_order_relaxed))
+        return;
+    atomic_fetch_sub_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
+    if (tzr_trap_boundary()) return;
+    int saved = errno;
+#if defined(_WIN32)
+    DWORD last = GetLastError();
+#endif
+    tsuzuri_tz_yield();
+#if defined(_WIN32)
+    SetLastError(last);
+#endif
+    errno = saved;
 }
 
 /* The spawn scope of the calling G, and setting it back: a failure domain that a trap left
