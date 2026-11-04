@@ -1,6 +1,7 @@
 // TZ08: a tzroutine in a blocking call (an extern function, a file) does not stop the others. The host
 // is host.c, which tests/tzroutine.mjs links, and the program runs in a directory of eight files.
-extern def host_sleep_ms :: i64 -> unit
+extern def host_wait_released :: unit -> unit
+extern def host_release :: unit -> unit
 extern def host_apply :: (i64 -> i64) -> i64 -> i64
 
 // The callback of `host_apply` runs inside the host's call, and waits for a tzroutine that it starts.
@@ -16,15 +17,16 @@ def doubled :: i64 -> i64 = \x ->
         | Maybe.None -> -1
 
 def main :: unit -> i32 = \() ->
-    // extern_sleep_does_not_stall: one tzroutine sleeps 300 ms in the host; meanwhile two others make
-    // 1,000 round trips, with one P too. The round trips start once the sleeper is about to sleep.
+    // extern_sleep_does_not_stall: one tzroutine waits in the host until the others release it; they
+    // make 1,000 round trips meanwhile, with one P too, which they could not if the call kept the P.
+    // The round trips start once the sleeper is about to call the host.
     let order: Channel<string> = Channel.make 2
     let started: Channel<unit> = Channel.make 1
     let sleeper_started = Channel.share started
     let sleeper_order = Channel.share order
     tzroutine {
         Channel.send sleeper_started ()
-        host_sleep_ms 300
+        host_wait_released ()
         Channel.send sleeper_order "slept"
     }
     let requests: Channel<i64> = Channel.make 0
@@ -49,6 +51,7 @@ def main :: unit -> i32 = \() ->
                 | Maybe.None -> -1
         Channel.close pinger_requests
         Channel.send pinger_order $"rounds={value}"
+        host_release ()
     }
     let first = match Channel.recv order with
         | Maybe.Some text -> text

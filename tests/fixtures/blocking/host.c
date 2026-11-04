@@ -1,6 +1,9 @@
-/* The host of tests/fixtures/blocking (TZ08), linked by tests/tzroutine.mjs: a call that sleeps, and
- * one that calls Tsuzuri back in the middle of its own blocking work. */
+/* The host of tests/fixtures/blocking (TZ08), linked by tests/tzroutine.mjs: a call that waits until
+ * another tzroutine releases it (with a watchdog that ends a hang), and one that calls Tsuzuri back in
+ * the middle of its own blocking work. */
+#include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <time.h>
 
 static void pause_ms(int64_t ms) {
@@ -9,7 +12,16 @@ static void pause_ms(int64_t ms) {
     }
 }
 
-void tsuzuri_host_Main_host_sleep_ms(int64_t ms) { pause_ms(ms); }
+static _Atomic int released;
+
+void tsuzuri_host_Main_host_wait_released(void) {
+    for (int waited = 0; !atomic_load(&released); waited++) {
+        if (waited > 60000) abort(); /* a minute: the others never ran */
+        pause_ms(1);
+    }
+}
+
+void tsuzuri_host_Main_host_release(void) { atomic_store(&released, 1); }
 
 int64_t tsuzuri_host_Main_host_apply(int64_t (*callback)(int64_t), int64_t x) {
     pause_ms(2);

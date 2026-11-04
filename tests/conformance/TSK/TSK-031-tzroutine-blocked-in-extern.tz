@@ -1,19 +1,25 @@
-// One tzroutine waits 300 ms in libc's usleep; meanwhile two others make 1,000 round trips, which
-// they could not on the same processor if the call kept it. They start once the sleeper is about to
-// call it.
+// As many tzroutines as there are processors call libc's usleep over and over until the others have
+// made 1,000 round trips; the round trips start once all of them are calling it. If a call kept its
+// processor, the round trips would never run and the test would hang, whatever the number of
+// processors: each call lets the scheduler give its processor to the waiting tzroutines.
 extern "usleep" def c_usleep :: i32u -> i32
 
 def run :: unit -> string
 fn run _ =
-    let order: Channel<string> = Channel.make 2
-    let started: Channel<unit> = Channel.make 1
-    let sleeper_started = Channel.share started
-    let sleeper_order = Channel.share order
-    tzroutine {
-        Channel.send sleeper_started ()
-        let _slept = c_usleep 300000i32u
-        Channel.send sleeper_order "slept"
-    }
+    let sleepers = Routine.max_procs ()
+    let inside = Arc.new (Atomic.create 0i64)
+    let done = Arc.new (Atomic.create false)
+    let order: Channel<string> = Channel.make (sleepers + 1)
+    for _sleeper in 1 ..= sleepers do
+        let mine = Arc.share (ref inside)
+        let finished = Arc.share (ref done)
+        let out = Channel.share order
+        tzroutine {
+            let _in = Atomic.fetch_add (Arc.get (ref mine)) 1i64
+            while !Atomic.load (Arc.get (ref finished)) do
+                let _slept = c_usleep 1000i32u
+            Channel.send out "slept"
+        }
     let requests: Channel<i64> = Channel.make 0
     let replies: Channel<i64> = Channel.make 0
     let server_requests = Channel.share requests
@@ -22,30 +28,33 @@ fn run _ =
         for value in server_requests do
             Channel.send server_replies (value + 1)
     }
-    let pinger_started = Channel.share started
-    let pinger_requests = Channel.share requests
-    let pinger_replies = Channel.share replies
+    let seen = Arc.share (ref inside)
+    let release = Arc.share (ref done)
     let pinger_order = Channel.share order
     tzroutine {
-        let _go = Channel.recv pinger_started
+        while Atomic.load (Arc.get (ref seen)) < sleepers do
+            Routine.yield ()
         let mut value = 0i64
         for _round in 0 ..< 1000 do
-            Channel.send pinger_requests value
-            value = match Channel.recv pinger_replies with
+            Channel.send requests value
+            value = match Channel.recv replies with
                 | Maybe.Some next -> next
                 | Maybe.None -> -1
-        Channel.close pinger_requests
-        Channel.send pinger_order "rounds"
+        Channel.close requests
+        Channel.send pinger_order $"rounds={value}"
+        Atomic.store (Arc.get (ref release)) true
     }
     let first = match Channel.recv order with
         | Maybe.Some text -> text
         | Maybe.None -> "none"
-    let second = match Channel.recv order with
-        | Maybe.Some text -> text
-        | Maybe.None -> "none"
-    first + " " + second
+    let mut slept = 0i64
+    for _sleeper in 1 ..= sleepers do
+        match Channel.recv order with
+        | Maybe.Some "slept" -> slept = slept + 1
+        | _ -> ()
+    $"{first} {slept == sleepers}"
 
 run ()
 
 // rule: TSK-031
-// expect: stdout "rounds slept\n"
+// expect: stdout "rounds=1000 true\n"
