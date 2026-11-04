@@ -372,10 +372,23 @@ const ROUTINE_OWNED_START: &str = "define internal void @tz.tzroutine.owned(ptr 
 /// the readers of the overflow report (A23). They only read globals, so they have no check.
 const UNCHECKED_STACK_EXPORTS: [&str; 2] = ["@tsuzuri_overflow_count(", "@tsuzuri_overflow_hit("];
 
+/// Where the stack checks of `with_stack_checks` find a function's stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StackBounds {
+    /// The module's own stack, `__stack_low` to `__stack_high`.
+    Main,
+    /// The bounds of `--wasm-feature threads`, which the host sets for a worker before any call:
+    /// their loads are `!invariant.load`, so LLVM merges inlined checks and hoists them out of loops.
+    Workers,
+    /// The bounds of each G of `--wasm-feature jspi` (TZ09), which the stack switch writes while
+    /// the program runs: plain loads.
+    Switched,
+}
+
 /// Checks every function's stack pointer, after its static frame is allocated,
 /// against its stack, so an overflow traps before the frame is used instead of
 /// wrapping below address 0 into grown memory or running into a worker stack's neighbor.
-pub(crate) fn with_stack_checks(ir: String, workers: bool) -> String {
+pub(crate) fn with_stack_checks(ir: String, bounds: StackBounds) -> String {
     let mut output = String::with_capacity(ir.len() + ir.len() / 8);
     let mut lines = ir.split_inclusive('\n').peekable();
     while let Some(line) = lines.next() {
@@ -422,33 +435,42 @@ pub(crate) fn with_stack_checks(ir: String, workers: bool) -> String {
         output.push_str(&rest);
     }
     // The frame address is the stack pointer after the static frame. Unlike
-    // stacksave it has no side effects, and hosts set worker bounds before any
-    // call, so LLVM can merge inlined checks and hoist them out of loops.
+    // stacksave it has no side effects, so LLVM can merge inlined checks and, with
+    // invariant bounds, hoist them out of loops.
     output.push_str(
         "declare ptr @llvm.frameaddress.p0(i32 immarg)\n@__stack_low = external global i8\n@__stack_high = external global i8\n",
     );
-    let bounds = if workers {
-        "@tsuzuri_stack_base = addrspace(1) global i32 0\n@tsuzuri_stack_top = addrspace(1) global i32 0\n\
-         ; Zero bounds mean the main stack, so a worker whose host never set its\n\
-         ; bounds traps on its first call instead of running unchecked.\n\
-         define internal void @tz.stack.check() nounwind {\nentry:\n\
-         \x20 %pointer = call ptr @llvm.frameaddress.p0(i32 0)\n\
-         \x20 %sp = ptrtoint ptr %pointer to i32\n\
-         \x20 %worker_top = load i32, ptr addrspace(1) @tsuzuri_stack_top, !invariant.load !{}\n\
-         \x20 %main = icmp eq i32 %worker_top, 0\n\
-         \x20 %main_top = ptrtoint ptr @__stack_high to i32\n\
-         \x20 %top = select i1 %main, i32 %main_top, i32 %worker_top\n\
-         \x20 %worker_base = load i32, ptr addrspace(1) @tsuzuri_stack_base, !invariant.load !{}\n\
-         \x20 %main_base = ptrtoint ptr @__stack_low to i32\n\
-         \x20 %base = select i1 %main, i32 %main_base, i32 %worker_base\n"
-    } else {
-        "define internal void @tz.stack.check() nounwind {\nentry:\n\
-         \x20 %pointer = call ptr @llvm.frameaddress.p0(i32 0)\n\
-         \x20 %sp = ptrtoint ptr %pointer to i32\n\
-         \x20 %top = ptrtoint ptr @__stack_high to i32\n\
-         \x20 %base = ptrtoint ptr @__stack_low to i32\n"
+    let invariant = match bounds {
+        StackBounds::Main => None,
+        StackBounds::Workers => Some(", !invariant.load !{}"),
+        StackBounds::Switched => Some(""),
     };
-    output.push_str(bounds);
+    if let Some(invariant) = invariant {
+        let _ = write!(
+            output,
+            "@tsuzuri_stack_base = addrspace(1) global i32 0\n@tsuzuri_stack_top = addrspace(1) global i32 0\n\
+             ; Zero bounds mean the main stack, so a worker whose host never set its\n\
+             ; bounds traps on its first call instead of running unchecked.\n\
+             define internal void @tz.stack.check() nounwind {{\nentry:\n\
+             \x20 %pointer = call ptr @llvm.frameaddress.p0(i32 0)\n\
+             \x20 %sp = ptrtoint ptr %pointer to i32\n\
+             \x20 %worker_top = load i32, ptr addrspace(1) @tsuzuri_stack_top{invariant}\n\
+             \x20 %main = icmp eq i32 %worker_top, 0\n\
+             \x20 %main_top = ptrtoint ptr @__stack_high to i32\n\
+             \x20 %top = select i1 %main, i32 %main_top, i32 %worker_top\n\
+             \x20 %worker_base = load i32, ptr addrspace(1) @tsuzuri_stack_base{invariant}\n\
+             \x20 %main_base = ptrtoint ptr @__stack_low to i32\n\
+             \x20 %base = select i1 %main, i32 %main_base, i32 %worker_base\n"
+        );
+    } else {
+        output.push_str(
+            "define internal void @tz.stack.check() nounwind {\nentry:\n\
+             \x20 %pointer = call ptr @llvm.frameaddress.p0(i32 0)\n\
+             \x20 %sp = ptrtoint ptr %pointer to i32\n\
+             \x20 %top = ptrtoint ptr @__stack_high to i32\n\
+             \x20 %base = ptrtoint ptr @__stack_low to i32\n",
+        );
+    }
     let _ = write!(
         output,
         "  %limit = add i32 %base, {STACK_CHECK_MARGIN}\n  %offset = sub i32 %sp, %limit\n  %range = sub i32 %top, %limit\n  %inside = icmp ule i32 %offset, %range\n  br i1 %inside, label %done, label %overflow\noverflow:\n  call void @llvm.trap()\n  unreachable\ndone:\n  ret void\n}}\n"
@@ -1112,9 +1134,16 @@ pub(crate) fn emit_wasm_build(
     )?;
     // Before trap instrumentation, so an overflow reports the site of the checked function. TZ09:
     // the tzroutines of a wasm32 module that spawns (JSPI) each check against their own stack, as
-    // the workers of `--wasm-feature threads` do.
+    // the workers of `--wasm-feature threads` do, whose bounds the stack switch changes.
     let ir = if stack_checks {
-        with_stack_checks(ir, threads || spawns(module))
+        let bounds = if spawns(module) {
+            StackBounds::Switched
+        } else if threads {
+            StackBounds::Workers
+        } else {
+            StackBounds::Main
+        };
+        with_stack_checks(ir, bounds)
     } else {
         ir
     };
@@ -10311,8 +10340,18 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
     fn stack_checks_follow_static_allocas_in_every_definition() {
         let ir = "@text = constant [8 x i8] c\"define {\"\ndeclare void @external()\ndefine internal i64 @a(i64 %x) nounwind {\nentry:\n  ret i64 %x\n}\ndefine void @b() {\n  ret void\n}\ndefine i32 @c() {\n0: ; entry\n  ret i32 0\n}\ndefine i32 @tsuzuri_overflow_count() nounwind {\nentry:\n  ret i32 1\n}\n";
         let call = "  call void @tz.stack.check()\n";
-        for workers in [false, true] {
-            let checked = with_stack_checks(ir.to_owned(), workers);
+        for bounds in [
+            StackBounds::Main,
+            StackBounds::Workers,
+            StackBounds::Switched,
+        ] {
+            let workers = bounds != StackBounds::Main;
+            let checked = with_stack_checks(ir.to_owned(), bounds);
+            // Only the bounds that the host sets once are invariant (Copilot on #90).
+            assert_eq!(
+                checked.matches("!invariant.load").count(),
+                if bounds == StackBounds::Workers { 2 } else { 0 }
+            );
             assert!(checked.contains(&format!("nounwind {{\nentry:\n{call}  ret i64 %x")));
             assert!(checked.contains(&format!("@b() {{\n{call}  ret void")));
             assert!(checked.contains(&format!("@c() {{\n0: ; entry\n{call}  ret i32 0")));
@@ -10337,7 +10376,7 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             );
         }
         let allocas = "define void @d(i64 %n) {\nentry:\n  %slot = alloca i64, align 16\n  store i64 %n, ptr %slot\n  %buffer = alloca [128 x i8], align 16\n  %dynamic = alloca i8, i64 %n, align 16\n  br label %next\nnext:\n  %late = alloca i8, align 1\n  ret void\n}\n";
-        assert!(with_stack_checks(allocas.to_owned(), false).starts_with(&format!(
+        assert!(with_stack_checks(allocas.to_owned(), StackBounds::Main).starts_with(&format!(
             "define void @d(i64 %n) {{\nentry:\n  %slot = alloca i64, align 16\n  %buffer = alloca [128 x i8], align 16\n{call}  store i64 %n, ptr %slot\n  %dynamic = alloca i8, i64 %n, align 16\n  br label %next\nnext:\n  %late = alloca i8, align 1\n  ret void\n}}\n"
         )));
     }

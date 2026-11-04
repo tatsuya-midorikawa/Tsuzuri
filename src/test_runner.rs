@@ -819,7 +819,7 @@ fn build_runner(
     drop(overflow);
     text = llvm::with_wasm_heap_limit(text, max_memory);
     if crate::driver::wasm_stack_checks(options.target, false, max_memory) {
-        text = llvm::with_stack_checks(text, false);
+        text = llvm::with_stack_checks(text, llvm::StackBounds::Main);
     }
     text = llvm::with_wasm_gpu_host(text, false);
     text.push_str(include_str!("runtime/wasm.ll"));
