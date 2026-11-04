@@ -170,6 +170,23 @@ fn sleep_lets_others_run =
     Atomic.store (Arc.get (ref stop)) true
     (if slept then 10 else 0) + (if Atomic.load (Arc.get (ref ticks)) > 0 then 1 else 0)
 
+// A ticker of 1 ns is due again as soon as it fires: the call that receives from it still runs, takes `n` ticks, each
+// later than the one before, and stops it (n).
+export def short_ticker :: i64 -> i64
+fn short_ticker n =
+    let ticker = Ticker.create 1
+    let ticks = Ticker.channel ticker
+    let mut count = 0i64
+    let mut last = 0i64
+    for _ in 1 ..= n do
+        match Channel.recv ticks with
+        | Maybe.Some time ->
+            if time > last then count = count + 1
+            last = time
+        | Maybe.None -> ()
+    Ticker.stop ticker
+    count
+
 // Two receivers of a channel that nobody sends on: every tzroutine waits, and the call is rejected.
 export def deadlock :: i64 -> i64
 fn deadlock n =

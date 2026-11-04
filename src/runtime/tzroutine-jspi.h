@@ -193,9 +193,16 @@ static void tzr_start(void) {}
 static tzr_g *tzr_current(void) { return tzr_jspi_current != NULL ? tzr_jspi_current : &tzr_jspi_main; }
 
 /* The deadlock detector is the glue's. tzroutine.c asks it to look again when the last timer is
- * gone: the glue learns that no timer is left. */
-static void tzr_jspi_timers_report(void);
-static void tzr_checkdead(void) { tzr_jspi_timers_report(); }
+ * gone: the glue learns that no timer is left. The first timer (tzr_heap_push) sets these hooks, so
+ * that a program without timers reaches neither the import `clock` nor `timer`, and its
+ * tsuzuri_tz_fire does nothing. Volatile: the optimizer would call the one function stored in each
+ * directly otherwise, and keep both imports. */
+static void (*volatile tzr_jspi_report)(void);
+static void (*volatile tzr_jspi_fire_due)(void);
+static void tzr_checkdead(void) {
+    void (*report)(void) = tzr_jspi_report;
+    if (report != NULL) report();
+}
 
 /* ---------------------------------------------------------------- park and ready */
 
