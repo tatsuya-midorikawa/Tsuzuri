@@ -3,6 +3,7 @@
 extern def host_wait_released :: unit -> unit
 extern def host_release :: unit -> unit
 extern def host_apply :: (i64 -> i64) -> i64 -> i64
+extern def host_call_export :: i64 -> i64
 
 // The callback of `host_apply` runs inside the host's call, and waits for a tzroutine that it starts.
 def doubled :: i64 -> i64 = \x ->
@@ -15,6 +16,11 @@ def doubled :: i64 -> i64 = \x ->
     match Channel.recv results with
         | Maybe.Some value -> value
         | Maybe.None -> -1
+
+// The host calls this export inside its own call (as a C function, not as a callback): it takes the
+// P back as a callback does, and waits for the tzroutine that `doubled` starts.
+export def doubled_export :: i64 -> i64
+fn doubled_export x = doubled x
 
 def main :: unit -> i32 = \() ->
     // extern_sleep_does_not_stall: one tzroutine waits in the host until the others release it; they
@@ -73,6 +79,19 @@ def main :: unit -> i32 = \() ->
             | Maybe.Some value -> value
             | Maybe.None -> 0
     do! IO.write_line $"callbacks={total}"
+    // export_from_extern: eight tzroutines call the host, which calls the export `doubled_export`.
+    let exported: Channel<i64> = Channel.make 8
+    for i in 1 ..= 8 do
+        let out = Channel.share exported
+        tzroutine {
+            Channel.send out (host_call_export (i as i64))
+        }
+    let mut through = 0i64
+    for _i in 1 ..= 8 do
+        through = through + match Channel.recv exported with
+            | Maybe.Some value -> value
+            | Maybe.None -> 0
+    do! IO.write_line $"exports={through}"
     // file_read_in_routines: eight tzroutines read a file each.
     let lengths: Channel<i64> = Channel.make 8
     for i in 0 ..< 8 do

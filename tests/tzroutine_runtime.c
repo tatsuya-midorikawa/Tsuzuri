@@ -2055,6 +2055,43 @@ static void test_locked_yield(void) {
     printf("locked yield: ok\n");
 }
 
+/* Two locked Gs that yield until a queued G sets the flag: with one P too, the queued G runs at the
+ * next yield; the two do not hand the P only to each other (which let it run only now and then). */
+static _Atomic int locked_yielding, setter_queued;
+static _Atomic int64_t yields_after_queued;
+static void locked_counting_yielder(void *env) {
+    (void)env;
+    atomic_fetch_add(&locked_yielding, 1);
+    tsuzuri_tz_lock_thread();
+    while (!atomic_load(&locked_flag)) {
+        if (atomic_load(&setter_queued)) atomic_fetch_add(&yields_after_queued, 1);
+        tsuzuri_tz_yield();
+    }
+    tsuzuri_tz_unlock_thread();
+}
+static void flag_setter(void *env) {
+    (void)env;
+    atomic_store(&locked_flag, 1);
+}
+static void test_locked_yielders(void) {
+    for (int round = 0; round < 5; round++) {
+        atomic_store(&locked_flag, 0);
+        atomic_store(&locked_yielding, 0);
+        atomic_store(&setter_queued, 0);
+        atomic_store(&yields_after_queued, 0);
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(locked_counting_yielder, NULL);
+        tsuzuri_tz_go(locked_counting_yielder, NULL);
+        while (atomic_load(&locked_yielding) < 2) tzr_os_yield();
+        tsuzuri_tz_go(flag_setter, NULL);
+        atomic_store(&setter_queued, 1);
+        join(scope);
+        /* a few yields of each until the M that runs the queue gets the P (thousands before) */
+        CHECK(atomic_load(&yields_after_queued) < 100);
+    }
+    printf("locked yielders: ok\n");
+}
+
 static void test_locked_thread(void) {
     atomic_store(&locked_moves, 0);
     tzr_chan *c[3];
@@ -2565,6 +2602,7 @@ int main(int argc, char **argv) {
     RUN("blocking_callback", test_blocking_callback());
     RUN("locked_thread", test_locked_thread());
     RUN("locked_yield", test_locked_yield());
+    RUN("locked_yielders", test_locked_yielders());
     RUN("dchan_ring", test_dchan_ring());
     RUN("dchan_waits", test_dchan_waits());
     RUN("dchan_close", test_dchan_close());

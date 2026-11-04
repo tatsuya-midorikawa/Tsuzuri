@@ -24,7 +24,7 @@ const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", 
   "semaphore", "context_tree", "context_deadline", "context_release", "context_deadline_race", "context_after",
   "context_expire_boundary",
   "parallel", "scope_run",
-  "blocking_handoff", "blocking_reacquire", "blocking_deadlock", "blocking_callback", "locked_thread", "locked_yield",
+  "blocking_handoff", "blocking_reacquire", "blocking_deadlock", "blocking_callback", "locked_thread", "locked_yield", "locked_yielders",
   "netpoll_pipe", "netpoll_timeout", "netpoll_close", "netpoll_race",
   "dchan_ring", "dchan_waits", "dchan_close", "dchan_lock", "dchan_deadlock",
   "long_sleep"];
