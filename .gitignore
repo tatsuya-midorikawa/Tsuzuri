@@ -31,6 +31,7 @@ target
 !src/runtime/sync.ll
 !src/runtime/sync-wasm.ll
 !src/runtime/channel-wasm.ll
+!src/runtime/tzroutine-jspi.ll
 !src/runtime/string.ll
 !src/runtime/string_scalar.ll
 !src/runtime/string_v128.ll

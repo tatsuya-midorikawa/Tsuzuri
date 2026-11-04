@@ -792,13 +792,14 @@ fn build_runner(
             overflow_fails,
         });
     }
-    // TZ02: the tzroutines of WebAssembly will suspend through JSPI (TZ09). A test program that
-    // only uses a `Channel` links the channels built for one thread (TZ03, `TZR_SINGLE`).
+    // The tzroutines of WebAssembly suspend through JSPI (TZ09), which only the JavaScript glue of a
+    // `tsuzuri build --wasm-feature jspi` drives; this runner calls the tests without it (D6). A test
+    // program that only uses a `Channel` links the channels built for one thread (TZ03, `TZR_SINGLE`).
     let tzroutine_single = text.contains("@tsuzuri_tz_");
     if tzroutine_single && llvm::spawns(module) {
         return Err(driver_error_of(
-            DiagnosticKind::OptionRequiresOption,
-            "tzroutine on WebAssembly needs --wasm-feature jspi",
+            DiagnosticKind::OptionConflict,
+            "the WebAssembly test runner cannot run tzroutines: they suspend with --wasm-feature jspi, which only build takes; run the tests natively, or build the module with --target wasm32 --wasm-feature jspi --emit bindings-js and call its exports",
         ));
     }
     // WebAssembly cannot write the report: the Node runner reads the hits and writes the lines of

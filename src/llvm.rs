@@ -258,6 +258,68 @@ pub(crate) fn with_net_imports(ir: &str) -> String {
     output
 }
 
+/// TZ09: the Net imports of a wasm32 module that spawns (`--wasm-feature jspi`), which suspend the G
+/// that calls them. Each declaration becomes the import `@tz.jspi.net.<name>`, and `@tsuzuri_net_<name>`
+/// a function that keeps the G's stack pointer and stack bounds across the call, with the scheduler's
+/// stack in place meanwhile (`src/runtime/tzroutine-jspi.ll`, which the driver appends): the Gs that run
+/// while it is suspended move the stack pointer, which JSPI does not keep. The function is `noinline`,
+/// so that the caller's stack checks never see the scheduler's bounds.
+pub(crate) fn with_switching_net_imports(ir: &str) -> String {
+    let mut output = String::with_capacity(ir.len() + 1024);
+    let mut wrappers = String::new();
+    for line in ir.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\r', '\n']);
+        let declaration = body
+            .strip_prefix("declare ")
+            .and_then(|declaration| declaration.split_once(" @tsuzuri_net_"))
+            .filter(|_| body.ends_with(')'))
+            .and_then(|(result, rest)| {
+                let (name, parameters) = rest.split_once('(')?;
+                Some((result, name, parameters.strip_suffix(')')?))
+            });
+        let Some((result, name, parameters)) = declaration else {
+            output.push_str(line);
+            continue;
+        };
+        let _ = writeln!(
+            output,
+            "declare {result} @tz.jspi.net.{name}({parameters}) \"wasm-import-module\"=\"tsuzuri_net\" \"wasm-import-name\"=\"{name}\""
+        );
+        let types: Vec<&str> = parameters.split(", ").filter(|ty| !ty.is_empty()).collect();
+        let formals = types
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| format!("{ty} %a{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (call, ret) = if result == "void" {
+            (String::new(), "ret void".to_owned())
+        } else {
+            ("%result = ".to_owned(), format!("ret {result} %result"))
+        };
+        let _ = write!(
+            wrappers,
+            "define hidden {result} @tsuzuri_net_{name}({formals}) noinline nounwind {{\nentry:\n\
+             \x20 %sp = load volatile ptr, ptr addrspace(1) @__stack_pointer\n\
+             \x20 %base = load volatile i32, ptr addrspace(1) @tsuzuri_stack_base\n\
+             \x20 %top = load volatile i32, ptr addrspace(1) @tsuzuri_stack_top\n\
+             \x20 call void @tz.jspi.leave(ptr %sp)\n\
+             \x20 {call}call {result} @tz.jspi.net.{name}({formals})\n\
+             \x20 store volatile i32 %base, ptr addrspace(1) @tsuzuri_stack_base\n\
+             \x20 store volatile i32 %top, ptr addrspace(1) @tsuzuri_stack_top\n\
+             \x20 store volatile ptr %sp, ptr addrspace(1) @__stack_pointer\n\
+             \x20 {ret}\n}}\n"
+        );
+    }
+    if !wrappers.is_empty() {
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&wrappers);
+    }
+    output
+}
+
 /// Sets the WASM heap limit in the heap runtime's three comparisons, and in the one of
 /// `@tz.string.latin1_fits` (PM03: the same limit on the UTF-16 size of a Latin-1 string). Only whole
 /// lines match, so string constants containing the same text stay unchanged.
@@ -1045,9 +1107,11 @@ pub(crate) fn emit_wasm_build(
             executable_roots: false,
         },
     )?;
-    // Before trap instrumentation, so an overflow reports the site of the checked function.
+    // Before trap instrumentation, so an overflow reports the site of the checked function. TZ09:
+    // the tzroutines of a wasm32 module that spawns (JSPI) each check against their own stack, as
+    // the workers of `--wasm-feature threads` do.
     let ir = if stack_checks {
-        with_stack_checks(ir, threads)
+        with_stack_checks(ir, threads || spawns(module))
     } else {
         ir
     };
@@ -2116,6 +2180,8 @@ fn emit_program_in(
         output.push_str(&report.runtime(wasm)?);
         report.publish();
     }
+    // TZ09: a WebAssembly program that spawns runs on the tzroutine runtime of JSPI.
+    let spawning = globals.spawns;
     for global in globals.definitions {
         output.push_str(&global);
         output.push('\n');
@@ -2157,12 +2223,14 @@ fn emit_program_in(
         runtime_symbols.append(&mut output, include_str!("runtime/recursive.ll"));
     }
     // A counting build also lets a WASM host allocate the buffer that `tsuzuri_alloc_stats` fills.
+    // The tzroutine runtime of JSPI allocates its records and its stacks with it (TZ09).
     if uses_host_abi(module)
         || runtime_symbols.prefix("tsuzuri_io_")
         || runtime_symbols.prefix("tsuzuri_os_")
         || runtime_symbols.prefix("tsuzuri_net_")
         || runtime_symbols.contains("tsuzuri_arguments")
         || instrumentation.allocator == Allocator::Counting
+        || (wasm && spawning)
     {
         if wasm || crate::target::current_platform().windows() || instrumentation.trap_return {
             runtime_symbols.append(&mut output, host_abi::allocator());
@@ -2199,30 +2267,32 @@ fn emit_program_in(
             output.push('\n');
         }
         let sequential = wasm && !instrumentation.wasm_threads;
+        // TZ09: the DataChannel of a WebAssembly program that spawns is the one of the tzroutine
+        // runtime of JSPI (tzroutine.c's, as natively), whose waits suspend the G.
+        let wasm_channel = channel && sequential && !spawning;
         if parallel && sequential {
             runtime_symbols.append(&mut output, include_str!("runtime/task-wasm.ll"));
         } else if parallel {
             output.push_str("declare void @tsuzuri_task_parallel(ptr, ptr, i64)\n");
         }
-        if (mutex || channel) && sequential {
+        if (mutex && sequential) || wasm_channel {
             runtime_symbols.append(&mut output, include_str!("runtime/sync-wasm.ll"));
-            if channel {
+            if wasm_channel {
                 runtime_symbols.append(&mut output, include_str!("runtime/channel-wasm.ll"));
             }
-        } else if mutex || channel {
-            if mutex {
-                output.push_str(
-                    "declare i32 @tsuzuri_mutex_lock(ptr)\ndeclare void @tsuzuri_mutex_unlock(ptr)\ndeclare i32 @tsuzuri_mutex_parallel_ok()\n",
-                );
-            }
-            if channel && wasm {
+        }
+        if mutex && !sequential {
+            output.push_str(
+                "declare i32 @tsuzuri_mutex_lock(ptr)\ndeclare void @tsuzuri_mutex_unlock(ptr)\ndeclare i32 @tsuzuri_mutex_parallel_ok()\n",
+            );
+        }
+        if channel && !wasm_channel {
+            if wasm && !sequential {
                 output.push_str("declare i32 @tsuzuri_mutex_wait_ok()\n");
             }
-            if channel {
-                output.push_str(
-                    "declare i32 @tsuzuri_channel_send(ptr, ptr)\ndeclare i32 @tsuzuri_channel_recv(ptr, ptr)\ndeclare void @tsuzuri_channel_clone_sender(ptr)\ndeclare i32 @tsuzuri_channel_close(ptr, i32)\n",
-                );
-            }
+            output.push_str(
+                "declare i32 @tsuzuri_channel_send(ptr, ptr)\ndeclare i32 @tsuzuri_channel_recv(ptr, ptr)\ndeclare void @tsuzuri_channel_clone_sender(ptr)\ndeclare i32 @tsuzuri_channel_close(ptr, i32)\n",
+            );
         }
         if mutex && parallel {
             runtime_symbols.append(&mut output, include_str!("runtime/sync.ll"));

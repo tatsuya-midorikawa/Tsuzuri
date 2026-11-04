@@ -243,7 +243,8 @@ pub fn table(module: &CheckedModule) -> Value {
     table_for(module, JsFlavor::Single)
 }
 
-/// The descriptor table of `flavor`: the JSPI glue has `jspi`, and its exports return promises.
+/// The descriptor table of `flavor`: the JSPI glue has `jspi`, and its exports return promises; the
+/// glue of a module that spawns has `tzroutine` too (TZ09).
 fn table_for(module: &CheckedModule, flavor: JsFlavor) -> Value {
     let exports: Vec<_> = exports(module)
         .into_iter()
@@ -296,6 +297,10 @@ fn table_for(module: &CheckedModule, flavor: JsFlavor) -> Value {
     });
     if flavor == JsFlavor::Jspi {
         table["jspi"] = json!(true);
+        // TZ09: the module imports `tsuzuri_tz`, and the glue runs its tzroutines.
+        if crate::llvm::spawns(module) {
+            table["tzroutine"] = json!(true);
+        }
     }
     table
 }
