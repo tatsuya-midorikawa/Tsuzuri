@@ -2157,13 +2157,16 @@ static void netpoll_writer(void *env) {
 static void test_netpoll_pipe(void) {
     for (int i = 0; i < 100; i++) nonblocking_pair(netpoll_fds[i]);
     atomic_store(&netpoll_turn, 0);
+    tzr_mutex_lock(&tzr_sched.lock);
+    int ms = tzr_sched.mcount; /* the cases before may have left idle Ms */
+    tzr_mutex_unlock(&tzr_sched.lock);
     void *scope = tsuzuri_tz_scope_enter();
     for (int i = 0; i < 100; i++) tsuzuri_tz_go(netpoll_reader, (void *)(intptr_t)i);
     /* every reader waits in the netpoller before the writer starts */
     while (atomic_load(&tzr_sched.nnetwait) < 100) tzr_os_yield();
     /* they wait without their Ms: a blocking wait would hold one M each */
     tzr_mutex_lock(&tzr_sched.lock);
-    int ms = tzr_sched.mcount;
+    ms = tzr_sched.mcount - ms;
     tzr_mutex_unlock(&tzr_sched.lock);
     CHECK(ms <= tzr_sched.nprocs + 4);
     tsuzuri_tz_go(netpoll_writer, NULL);
