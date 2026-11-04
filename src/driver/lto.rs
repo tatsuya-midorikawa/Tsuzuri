@@ -403,8 +403,9 @@ fn functions_among<'a>(
 /// Keeps the public entry points that only the C runtime defines external through the merge of the runtime into
 /// the bitcode (D5). `llvm-link --internalize` makes every symbol that the second file alone defines internal,
 /// except those on `@llvm.used`. `exports` are the names a host may call (the ones of a shared library), and those
-/// that `ir` does not define come from the runtime (`tsuzuri_async_post` does): `ir` gets a declaration of each
-/// and an `@llvm.used` list of them, so the runtime's definition stays external, as it is in an object.
+/// that `ir` does not define come from the runtime (none does since TZ13 removed the reactor's entry point, which
+/// was the only one): `ir` gets a declaration of each and an `@llvm.used` list of them, so the runtime's definition
+/// stays external, as it is in an object.
 ///
 /// The result is the names it kept, for [`check_kept_exports`].
 pub fn keep_runtime_exports(
@@ -630,12 +631,12 @@ mod tests {
     #[test]
     fn keeps_what_the_runtime_alone_defines() {
         let mut ir = "define i32 @tz_add(i32 %a, i32 %b) {\n  ret i32 0\n}define weak void @tsuzuri_free(ptr %p) {\n  ret void\n}\ndeclare void @tsuzuri_alloc_stats()\n".to_owned();
-        let exports = names(&["tsuzuri_async_post", "tsuzuri_free", "tz_add"]);
+        let exports = names(&["tsuzuri_aux_post", "tsuzuri_free", "tz_add"]);
         let kept = keep_runtime_exports(&mut ir, &exports).unwrap();
-        assert_eq!(kept, ["tsuzuri_async_post"]);
+        assert_eq!(kept, ["tsuzuri_aux_post"]);
         assert!(
             ir.ends_with(
-                "declare void @tsuzuri_async_post()\n@llvm.used = appending global [1 x ptr] [ptr @tsuzuri_async_post], section \"llvm.metadata\"\n"
+                "declare void @tsuzuri_aux_post()\n@llvm.used = appending global [1 x ptr] [ptr @tsuzuri_aux_post], section \"llvm.metadata\"\n"
             ),
             "{ir}"
         );
@@ -645,16 +646,16 @@ mod tests {
 
     #[test]
     fn keeps_a_declared_function_without_declaring_it_again() {
-        let mut ir = "declare i32 @tsuzuri_async_post(i64, i64)\ndefine void @f() {\n  ret void\n}"
-            .to_owned();
-        let exports = names(&["tsuzuri_async_post", "tsuzuri_cpu_x", "tsuzuri_async_post"]);
+        let mut ir =
+            "declare i32 @tsuzuri_aux_post(i64, i64)\ndefine void @f() {\n  ret void\n}".to_owned();
+        let exports = names(&["tsuzuri_aux_post", "tsuzuri_cpu_x", "tsuzuri_aux_post"]);
         let kept = keep_runtime_exports(&mut ir, &exports).unwrap();
-        assert_eq!(kept, ["tsuzuri_async_post", "tsuzuri_cpu_x"]);
-        assert_eq!(ir.matches("declare i32 @tsuzuri_async_post").count(), 1);
-        assert!(!ir.contains("declare void @tsuzuri_async_post"), "{ir}");
+        assert_eq!(kept, ["tsuzuri_aux_post", "tsuzuri_cpu_x"]);
+        assert_eq!(ir.matches("declare i32 @tsuzuri_aux_post").count(), 1);
+        assert!(!ir.contains("declare void @tsuzuri_aux_post"), "{ir}");
         assert!(ir.contains("declare void @tsuzuri_cpu_x()\n"), "{ir}");
         assert!(
-            ir.ends_with("@llvm.used = appending global [2 x ptr] [ptr @tsuzuri_async_post, ptr @tsuzuri_cpu_x], section \"llvm.metadata\"\n"),
+            ir.ends_with("@llvm.used = appending global [2 x ptr] [ptr @tsuzuri_aux_post, ptr @tsuzuri_cpu_x], section \"llvm.metadata\"\n"),
             "{ir}"
         );
         // Between the end of the definition and the new text there is a line break.
@@ -678,7 +679,7 @@ mod tests {
     fn refuses_an_ir_that_has_its_own_used_list() {
         let mut ir =
             "@llvm.used = appending global [0 x ptr] [], section \"llvm.metadata\"\n".to_owned();
-        let error = keep_runtime_exports(&mut ir, &names(&["tsuzuri_async_post"])).unwrap_err();
+        let error = keep_runtime_exports(&mut ir, &names(&["tsuzuri_aux_post"])).unwrap_err();
         assert_eq!(error.code, "E2002");
         assert!(error.message.contains("@llvm.used"), "{}", error.message);
         // Nothing to keep needs no list, so the IR's own stays.
@@ -689,30 +690,28 @@ mod tests {
     fn finds_a_kept_function_that_the_merge_hid() {
         let directory = scratch("merged");
         let merged = directory.join("combined.ll");
-        let kept = names(&["tsuzuri_async_post"]);
+        let kept = names(&["tsuzuri_aux_post"]);
         let check = |text: &str| {
             fs::write(&merged, text).unwrap();
             check_kept_exports(&merged, &kept)
         };
-        assert!(check("define weak i32 @tsuzuri_async_post(i64 %0, i64 %1) local_unnamed_addr #3 {\n  ret i32 0\n}\n").is_ok());
+        assert!(check("define weak i32 @tsuzuri_aux_post(i64 %0, i64 %1) local_unnamed_addr #3 {\n  ret i32 0\n}\n").is_ok());
         assert!(
-            check(
-                "define dso_local i32 @\"tsuzuri_async_post\"(i64 %0, i64 %1) {\n  ret i32 0\n}\n"
-            )
-            .is_ok()
+            check("define dso_local i32 @\"tsuzuri_aux_post\"(i64 %0, i64 %1) {\n  ret i32 0\n}\n")
+                .is_ok()
         );
         for hidden in [
-            "define internal i32 @tsuzuri_async_post(i64 %0, i64 %1) {\n  ret i32 0\n}\n",
-            "define private i32 @tsuzuri_async_post(i64 %0, i64 %1) {\n  ret i32 0\n}\n",
-            "define weak hidden i32 @tsuzuri_async_post(i64 %0, i64 %1) {\n  ret i32 0\n}\n",
-            "declare i32 @tsuzuri_async_post(i64, i64)\n",
-            "define i32 @tsuzuri_async_posted() {\n  ret i32 0\n}\n",
+            "define internal i32 @tsuzuri_aux_post(i64 %0, i64 %1) {\n  ret i32 0\n}\n",
+            "define private i32 @tsuzuri_aux_post(i64 %0, i64 %1) {\n  ret i32 0\n}\n",
+            "define weak hidden i32 @tsuzuri_aux_post(i64 %0, i64 %1) {\n  ret i32 0\n}\n",
+            "declare i32 @tsuzuri_aux_post(i64, i64)\n",
+            "define i32 @tsuzuri_aux_posted() {\n  ret i32 0\n}\n",
             "",
         ] {
             let error = check(hidden).unwrap_err();
             assert_eq!(error.code, "E2002");
             assert!(
-                error.message.contains("tsuzuri_async_post")
+                error.message.contains("tsuzuri_aux_post")
                     && error.message.contains("TSUZURI_LLVM_LINK"),
                 "{}",
                 error.message

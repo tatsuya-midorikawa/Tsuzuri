@@ -40,8 +40,8 @@ pub enum JsFlavor {
     Single,
     /// A module of `--wasm-feature threads` on Web Workers; calls return promises.
     Threads,
-    /// One instance of a module of `--wasm-feature jspi`: calls return promises, because
-    /// `Async.block_on` may suspend them (B08 Phase 3).
+    /// One instance of a module of `--wasm-feature jspi`: calls return promises, because a wait
+    /// of the module (a socket of `--wasm-feature net`) may suspend them.
     Jspi,
 }
 
@@ -67,15 +67,6 @@ const JSPI_DECLARATIONS: &str = r#"export interface Bindings {
   readonly exports: Exports;
   ready(): Promise<void>;
 }
-"#;
-
-/// The executor of `Async.start` on the JavaScript event loop (B08): `complete` hands the value of
-/// a host operation to the computation that waits for it, and `settled` waits until none runs.
-const ASYNC_DECLARATIONS: &str = r#"export interface AsyncHost {
-  complete(operation: bigint, value: bigint): void;
-  settled(): Promise<void>;
-}
-export interface Bindings { readonly async: AsyncHost }
 "#;
 
 /// The first line of a generated file, after the comment marker of its language.
@@ -252,8 +243,7 @@ pub fn table(module: &CheckedModule) -> Value {
     table_for(module, JsFlavor::Single)
 }
 
-/// The descriptor table with `async`: whether the glue drives the host-driven executor of
-/// `Async.start` (B08), and whether `Async.block_on` waits through JSPI imports.
+/// The descriptor table of `flavor`: the JSPI glue has `jspi`, and its exports return promises.
 fn table_for(module: &CheckedModule, flavor: JsFlavor) -> Value {
     let exports: Vec<_> = exports(module)
         .into_iter()
@@ -297,16 +287,17 @@ fn table_for(module: &CheckedModule, flavor: JsFlavor) -> Value {
             )
         })
         .collect();
-    let driven = !crate::llvm::host_entries(module).is_empty();
-    let jspi = flavor == JsFlavor::Jspi;
-    json!({
+    let mut table = json!({
         "abi": ABI_VERSION,
         "hostAbi": crate::llvm::uses_host_abi(module),
         "exports": exports,
         "imports": imports,
         "records": records,
-        "async": (driven || jspi).then(|| json!({ "driven": driven, "jspi": jspi })),
-    })
+    });
+    if flavor == JsFlavor::Jspi {
+        table["jspi"] = json!(true);
+    }
+    table
 }
 
 /// The rest of the fixed declarations of a thread pool.
@@ -337,10 +328,19 @@ pub fn javascript_for(module: &CheckedModule, flavor: JsFlavor) -> String {
     )
 }
 
+/// The comment of `bindings-core.mjs` in `inspect` after which the Net glue accepts the `tsuzuri_net` imports.
+const NET_INSPECT_ANCHOR: &str = "    // Here javascript_with_net (src/bindings.rs) accepts the socket imports of --wasm-feature net.\n";
+/// The comment of `bindings-core.mjs` in `bind` after which the Net glue defines `netImports` (`bindings-net.mjs`).
+const NET_IMPORTS_ANCHOR: &str = "  // Here javascript_with_net (src/bindings.rs) adds the sockets of --wasm-feature net (bindings-net.mjs).\n";
+/// The comment of `bindings-core.mjs` in `importObject` after which the Net glue gives an instance its imports.
+const NET_BIND_ANCHOR: &str =
+    "    // Here javascript_with_net (src/bindings.rs) gives the instance the socket imports.\n";
+
 /// The sockets of a module of `--wasm-feature net` (E09 Phase 3), which the glue implements on Node.js: the table says
 /// so, the Node modules are loaded when the glue loads, `inspect` accepts the `tsuzuri_net` imports, and the instance
-/// gets them beside the clock and the wait of Async.block_on. Only a module that reaches a socket (`llvm::reaches_net`)
-/// has these imports, and the driver gives any other module the glue of its flavor, without the Node modules.
+/// gets them. The three places are comments of `bindings-core.mjs` that name this function. Only a module that
+/// reaches a socket (`llvm::reaches_net`) has these imports, and the driver gives any other module the glue of its
+/// flavor, without the Node modules.
 pub fn javascript_with_net(module: &CheckedModule) -> String {
     let mut table = table_for(module, JsFlavor::Jspi);
     table["net"] = json!(true);
@@ -350,17 +350,13 @@ pub fn javascript_with_net(module: &CheckedModule) -> String {
         RUNTIME_CORE,
         &[
             (
-                "    if (namespace === \"tsuzuri_async\") {\n",
+                NET_INSPECT_ANCHOR,
                 "    if (namespace === \"tsuzuri_net\" && kind === \"function\" && TABLE.net === true) continue;\n",
-                false,
+                true,
             ),
+            (NET_IMPORTS_ANCHOR, RUNTIME_NET, true),
             (
-                "  // The clock of Async.block_on in milliseconds, and its wait: a promise that settles at the\n",
-                RUNTIME_NET,
-                false,
-            ),
-            (
-                "    if (jspi) object.tsuzuri_async = asyncImports(owner);\n",
+                NET_BIND_ANCHOR,
                 "    if (TABLE.net === true) object.tsuzuri_net = netImports(owner);\n",
                 true,
             ),
@@ -566,10 +562,6 @@ pub fn declarations_for(module: &CheckedModule, flavor: JsFlavor) -> String {
         } else {
             DECLARATIONS
         });
-        // The glue drives the executor of `Async.start` and completes host operations (B08).
-        if !crate::llvm::host_entries(module).is_empty() {
-            output.push_str(ASYNC_DECLARATIONS);
-        }
         let options = if imports.is_empty() {
             "options?: { sites?: readonly TrapSite[] }".to_owned()
         } else {
@@ -606,17 +598,33 @@ mod tests {
             .replace("\r\n", "\n")
             .replace('\n', "\r\n");
         let edits = [
-            (
-                "    if (namespace === \"tsuzuri_async\") {\n",
-                "// net\n",
-                false,
-            ),
-            (
-                "    if (jspi) object.tsuzuri_async = asyncImports(owner);\n",
-                "// bind\n",
-                true,
-            ),
+            (super::NET_INSPECT_ANCHOR, "// net\n", true),
+            (super::NET_IMPORTS_ANCHOR, "// imports\n", true),
+            (super::NET_BIND_ANCHOR, "// bind\n", true),
         ];
         assert_eq!(splice(super::RUNTIME_CORE, &edits), splice(&crlf, &edits));
+    }
+
+    #[test]
+    fn the_net_glue_goes_where_its_anchors_are() {
+        // Each anchor is in the runtime once, in `inspect`, in `bind` before `current`, and in `importObject`.
+        // The glue of a module without sockets carries the anchors too, and names nothing of the Net glue.
+        let core = lf(super::RUNTIME_CORE);
+        for anchor in [
+            super::NET_INSPECT_ANCHOR,
+            super::NET_IMPORTS_ANCHOR,
+            super::NET_BIND_ANCHOR,
+        ] {
+            assert_eq!(core.matches(anchor).count(), 1, "{anchor:?}");
+            for name in ["netImports", "NODE_NET", "node:net", "tsuzuri_net"] {
+                assert!(!anchor.contains(name), "{anchor:?}");
+            }
+        }
+        let at = |text: &str| core.find(text).unwrap();
+        assert!(at("function inspect(") < at(super::NET_INSPECT_ANCHOR));
+        assert!(at(super::NET_INSPECT_ANCHOR) < at("function checkHostImports("));
+        assert!(at("  function importObject(owner) {") < at(super::NET_BIND_ANCHOR));
+        assert!(at(super::NET_BIND_ANCHOR) < at(super::NET_IMPORTS_ANCHOR));
+        assert!(at(super::NET_IMPORTS_ANCHOR) < at("  function current() {"));
     }
 }

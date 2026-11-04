@@ -676,6 +676,8 @@ diagnostic_kinds! {
         // E1039
         (MonoidFloatInstance, "monoid_float_instance", "E1039"),
         // E1040
+        (RemovedAsync, "removed_async", "E1040"),
+        (RemovedNetAsync, "removed_net_async", "E1040"),
         (RemovedTaskApi, "removed_task_api", "E1040"),
         (RemovedTaskExpression, "removed_task_expression", "E1040"),
         (RemovedTaskType, "removed_task_type", "E1040"),

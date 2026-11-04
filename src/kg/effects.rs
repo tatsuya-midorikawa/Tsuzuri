@@ -12,19 +12,19 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 177;
+const IMPURE_BUILTINS: usize = 164;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
     use Builtin::*;
     match builtin {
         DebugPrintString | AllocCounter | BenchConsume => Some("debug"),
-        IOReadLine | IOWrite | AsyncResume | AsyncTake | AsyncPut | AsyncNextId | AsyncClock
-        | AsyncWait | AsyncPosted | AsyncRetire => Some("io"),
+        IOReadLine | IOWrite => Some("io"),
         OsRead | OsArgs | OsWrite | OsRandom | OsClock | OsSleep | OsOpen | OsHandle | OsClose
         | OsSpawn | BenchNow | GenSeed => Some("os"),
-        NetResolve | NetOpen | NetAccept | NetRead | NetWrite | NetClose | NetClassify
-        | NetWatch | NetUnwatch | NetConnect | NetNames | NetSend => Some("net"),
+        NetResolve | NetOpen | NetAccept | NetRead | NetWrite | NetClose | NetClassify => {
+            Some("net")
+        }
         RoutineScope | ParallelInit | ParallelMap | ParallelMapRef | ParallelReduce
         | ParallelForEachChunk | DomainRun | RoutineGo | WaitGroupGo | RoutineYield
         | RoutineCount | RoutineMaxProcs | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => {

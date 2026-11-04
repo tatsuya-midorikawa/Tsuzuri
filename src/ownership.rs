@@ -134,8 +134,6 @@ fn join(result: &mut Value, value: Value) {
     result.loans.extend(value.loans);
 }
 
-/// B08 D6: an `Async` value holds no loans, so no borrow lives across a suspension.
-const ASYNC_BORROW: &str = "async computations cannot keep borrowed values across 'let!', 'do!', or the start of the computation; move or clone the value into the async block instead";
 const MOVE_OUT_OF_DROP: &str = "cannot move a field or payload out of a value whose type implements Drop; borrow it with 'ref' instead";
 
 impl Place {
@@ -492,7 +490,6 @@ fn check_body<'a>(
             .collect(),
         // `Drop.drop` borrows the dropped value through its only parameter.
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
-        placeholders: BTreeSet::new(),
         later_use_budget: LATER_USE_NODES,
     };
     for (index, parameter) in parameters.clone().enumerate() {
@@ -753,9 +750,6 @@ struct Checker<'a, 'run> {
     callbacks: BTreeMap<usize, &'a CallbackContract>,
     /// The root of the value that the checked `Drop.drop` body drops.
     drop_root: Option<usize>,
-    /// The external roots of parameters that store no reference: their loans only stand for
-    /// whatever a function or async argument captured, which the caller checks (B08 D6).
-    placeholders: BTreeSet<usize>,
     /// How many more steps the diagnostics may take in this function to find where a moved value
     /// or a borrow came from (`Flow`).
     later_use_budget: usize,
@@ -1185,9 +1179,6 @@ impl<'a> Checker<'a, '_> {
     ) {
         let root = usize::MAX - parameter.id;
         self.external.insert(root);
-        if !parameter.ty.contains_stored_reference(&self.module.types()) {
-            self.placeholders.insert(root);
-        }
         let target = slots.is_some_and(|slots| slots.targets.get(index) == Some(&true));
         let count = if target {
             2
@@ -2483,7 +2474,7 @@ impl<'a> Checker<'a, '_> {
         usage: Use,
         live: &BTreeSet<usize>,
     ) -> Result<Value, Diagnostic> {
-        let value = match expression.kind {
+        match expression.kind {
             E::While { .. } | E::ForRange { .. } | E::ForEach { .. } | E::Match { .. } => {
                 self.eval_control(expression, live)
             }
@@ -2491,20 +2482,7 @@ impl<'a> Checker<'a, '_> {
             E::Call(..) => self.eval_call(expression, live),
             E::Lambda { .. } => self.eval_lambda(expression, live),
             _ => self.eval_value(expression, usage, live),
-        }?;
-        if expression.ty.is_async(&self.module.types())
-            && value
-                .loans
-                .iter()
-                .any(|loan| !self.placeholders.contains(&self.loans[*loan].place.root))
-        {
-            return Err(error(
-                DiagnosticKind::BorrowAcrossAsyncBoundary,
-                ASYNC_BORROW,
-                expression.span,
-            ));
         }
-        Ok(value)
     }
 
     /// Records an ownership event of the variable at `root` (G26 phase 5).

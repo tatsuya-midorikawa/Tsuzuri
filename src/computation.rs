@@ -430,6 +430,23 @@ fn lower(builder: &Ident, body: &ComputationBlock, names: &Names) -> Result<Expr
                 "run the work directly, or spawn it with 'tzroutine { ... }' and wait with WaitGroup or a Channel",
             );
         }
+        // TZ13: `Async { }` and `async { }` were the std builder `Async`; a builder of the program named
+        // `Async` or `@alias async` comes first, and a module of the program named `Async` that is
+        // no builder gets the message of any other module.
+        if builder.text == "async"
+            || (builder.text == "Async"
+                && !names
+                    .full_modules
+                    .keys()
+                    .any(|module| module_stem(module) == "Async"))
+        {
+            return Diagnostic::of(
+                DiagnosticKind::RemovedAsync,
+                format!("'{} {{ }}' was removed", builder.text),
+                builder.span,
+            )
+            .with_help(ASYNC_EXPRESSION_HELP);
+        }
         // Module names are capitalized, so a lowercase name can only be an alias.
         let message = if builder.text.starts_with(|first: char| first.is_ascii_lowercase()) {
             format!(

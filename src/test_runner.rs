@@ -656,12 +656,6 @@ fn native_runtime_sources(
                 crate::driver::net_message(platform),
             ));
         }
-        if llvm::uses_net_async(text) && !llvm::uses_reactor(text) {
-            return Err(driver_error_of(
-                DiagnosticKind::NetAsyncNeedsBlockOn,
-                crate::driver::NET_ASYNC_MESSAGE,
-            ));
-        }
         sources.push(("net.c", include_str!("runtime/net.c").to_owned()));
     }
     if text.contains("declare i32 @tsuzuri_io_") {
@@ -669,15 +663,6 @@ fn native_runtime_sources(
     }
     if text.contains("declare i32 @tsuzuri_gpu_") {
         sources.push(("gpu.c", llvm::gpu_runtime_source(text)));
-    }
-    if llvm::uses_reactor(text) {
-        if !platform.reactor() {
-            return Err(driver_error_of(
-                DiagnosticKind::PlatformUnsupportedApi,
-                crate::driver::async_message(platform),
-            ));
-        }
-        sources.push(("async.c", include_str!("runtime/async.c").to_owned()));
     }
     Ok(sources)
 }
@@ -849,12 +834,6 @@ fn build_runner(
             crate::driver::NET_WASM_MESSAGE,
         ));
     }
-    if text.contains("define i64 @tsuzuri_async_poll(") || llvm::uses_reactor(&text) {
-        return Err(driver_error_of(
-            DiagnosticKind::WasmTestRunnerAsync,
-            "the WebAssembly test runner cannot drive Async.start or Async.block_on; use Async.run, or build a module with an asynchronous host",
-        ));
-    }
     let ir = directory.join("tests.ll");
     let object = directory.join("tests.o");
     let artifact = directory.join("tests.wasm");
@@ -1002,7 +981,6 @@ fn compile_native_runner(
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
     let net_runtime = llvm::uses_net(&text);
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
-    let async_runtime = llvm::uses_reactor(&text);
     let gpu_runtime = text.contains("declare i32 @tsuzuri_gpu_");
     let trap_runtime = text.contains(TRAP_RUNTIME_DECLARATION);
     if trap_runtime && !platform.unix() {
@@ -1023,12 +1001,6 @@ fn compile_native_runner(
         return Err(driver_error_of(
             DiagnosticKind::PlatformUnsupportedApi,
             crate::driver::net_message(platform),
-        ));
-    }
-    if async_runtime && !platform.reactor() {
-        return Err(driver_error_of(
-            DiagnosticKind::PlatformUnsupportedApi,
-            crate::driver::async_message(platform),
         ));
     }
     let kind = runner.kind;
@@ -1075,7 +1047,6 @@ fn compile_native_runner(
         (os_runtime, "os.c", include_str!("runtime/os.c")),
         (net_runtime, "net.c", include_str!("runtime/net.c")),
         (io_runtime, "io.c", include_str!("runtime/io.c")),
-        (async_runtime, "async.c", include_str!("runtime/async.c")),
         (gpu_runtime, "gpu.c", gpu_source.as_str()),
         (trap_runtime, "trap.c", include_str!("runtime/trap.c")),
     ] {
@@ -1095,9 +1066,7 @@ fn compile_native_runner(
         .map_err(|error| io_error("write tzroutine runtime", &runtime, error))?;
         clang.arg(&runtime);
     }
-    if (async_runtime || net_runtime || gpu_runtime || trap_runtime || tzroutine_runtime)
-        && !platform.windows()
-    {
+    if (net_runtime || gpu_runtime || trap_runtime || tzroutine_runtime) && !platform.windows() {
         clang.arg("-pthread");
     }
     // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.

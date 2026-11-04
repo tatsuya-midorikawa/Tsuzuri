@@ -8,7 +8,6 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Alloc.tz", include_str!("../std/Alloc.tz")),
     ("std/Arena.tz", include_str!("../std/Arena.tz")),
     ("std/Array.tz", include_str!("../std/Array.tz")),
-    ("std/Async.tc", include_str!("../std/Async.tc")),
     ("std/Atomic.tz", include_str!("../std/Atomic.tz")),
     ("std/Bench.tz", include_str!("../std/Bench.tz")),
     ("std/BigInt.tz", include_str!("../std/BigInt.tz")),
@@ -124,7 +123,6 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Cbor",
     "Bench",
     "Gen",
-    "Async",
     "Matrix",
     "Atomic",
     "Mutex",
@@ -189,8 +187,6 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Json.Reader"
             | "Json.Writer"
             | "Gen.Gen"
-            | "Async.Async"
-            | "Async.Next"
             | "Matrix.Matrix"
             | "Net.Address"
             | "Net.TcpStream"
@@ -299,12 +295,6 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         uses: &[],
     },
     OptIn {
-        module: "Async",
-        names: &["Async"],
-        aliases: &["async"],
-        uses: &[],
-    },
-    OptIn {
         module: "Matrix",
         names: &["Matrix"],
         aliases: &[],
@@ -314,7 +304,7 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "Net",
         names: &["Net"],
         aliases: &[],
-        uses: &["Async"],
+        uses: &[],
     },
     OptIn {
         module: "Atomic",
@@ -838,11 +828,10 @@ mod tests {
         );
         assert_eq!(loaded("let x = 1Regex"), ["Regex", "Unicode", "RegexText"]);
         assert_eq!(loaded("42"), Vec::<&str>::new());
-        // A builder alias is a lowercase mention of the module; only the exact word counts.
-        assert_eq!(loaded("let _ = async { return 1 }"), ["Async"]);
+        // TZ13: no std builder has an alias any more, so `async { }` loads nothing (it is E1040).
         assert_eq!(
-            loaded("let asynchronous = 1\nlet async_work = 2\nlet myasync = 3"),
-            Vec::<&str>::new()
+            loaded("let _ = async { return 1 }\nlet x = Net.bind"),
+            ["Net"]
         );
         // The load order is the embedded order.
         let all = sources_for(OPT_IN.iter().map(|module| module.module));
@@ -851,7 +840,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 74);
+        assert_eq!(RESERVED_MODULES.len(), 73);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));
@@ -859,6 +848,7 @@ mod tests {
         assert!(is_reserved_module("Text"));
         assert!(is_reserved_module("RegexText"));
         assert!(!is_reserved_module("Task"));
+        assert!(!is_reserved_module("Async"));
         assert!(!is_reserved_module("Main"));
         assert!(!is_reserved_module("math"));
     }

@@ -12,9 +12,7 @@ export async function load(source, options = {}) {
   const bound = bind(module, used, hostImports, sites);
   await bound.start();
   const bindings = { exports: bound.exports, ready: bound.ready };
-  if (!TABLE.async?.jspi) bindings.withBorrowed = bound.withBorrowed;
-  // The executor of Async.start on this event loop (B08).
-  if (bound.async !== undefined) bindings.async = bound.async;
+  if (TABLE.jspi !== true) bindings.withBorrowed = bound.withBorrowed;
   return Object.freeze(bindings);
 }
 

@@ -203,18 +203,12 @@ impl Target {
 pub(crate) const OS_WASM_MESSAGE: &str = "wasm output cannot use the File, Dir, Env, Time, Random, or Process operating-system APIs because the default wasm target has no host imports; build for the native target, use --wasm-host wasi, or keep to Path and Random.Pcg, which need no host";
 /// Why a Windows build cannot reach them yet.
 pub(crate) const OS_WINDOWS_MESSAGE: &str = "the File, Dir, Env, Time, Random, and Process operating-system APIs are not supported on Windows yet (G10); build on macOS or Linux";
-/// Why the native reactor of `Async.block_on` (`src/runtime/async.c`, which `Platform::reactor` says
-/// has an implementation) is missing on the machine the compiler runs on.
-pub(crate) const ASYNC_NATIVE_MESSAGE: &str =
-    "Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform";
 /// Why wasm output cannot reach the sockets of the standard Net module (E09).
 pub(crate) const NET_WASM_MESSAGE: &str = "wasm32 output cannot use the Net socket API because the default wasm32 target has no host imports; build for the native target, build with --wasm-feature jspi --wasm-feature net and load the module with the generated JavaScript bindings on Node.js, or keep to Net address parsing, which needs no host";
 /// Why a build for another host cannot reach the Net sockets (`src/runtime/net.c`, which
 /// `Platform::net` says has an implementation: POSIX sockets on macOS and Linux, Winsock on Windows).
 pub(crate) const NET_NATIVE_MESSAGE: &str =
     "the Net socket API is only available on macOS, Linux, and Windows; build on one of them";
-/// Why a program that starts a Net async operation needs the reactor of `Async.block_on` natively.
-pub(crate) const NET_ASYNC_MESSAGE: &str = "the Net async operations (connect_async, accept_async, read_async, ...) complete through the reactor of Async.block_on; run the computation with Async.block_on";
 
 /// Why the operating-system APIs are missing: the Windows message, or the one that names a target.
 pub(crate) fn os_message(platform: Platform) -> String {
@@ -239,17 +233,6 @@ pub(crate) fn net_message(platform: Platform) -> String {
         None => NET_NATIVE_MESSAGE.to_owned(),
         Some(triple) => format!(
             "the Net socket API is only available for macOS, Linux, and Windows targets; {} has no implementation of it",
-            triple.name()
-        ),
-    }
-}
-
-/// Why `Async.block_on` is missing: the host message, or the one that names a target.
-pub(crate) fn async_message(platform: Platform) -> String {
-    match platform.triple() {
-        None => ASYNC_NATIVE_MESSAGE.to_owned(),
-        Some(triple) => format!(
-            "Async.block_on is only available for macOS, Linux, and Windows targets; use Async.run for {}",
             triple.name()
         ),
     }
@@ -426,7 +409,8 @@ pub struct BuildOptions {
     pub debug_info: bool,
     pub wasm_simd: bool,
     pub wasm_threads: bool,
-    /// `--wasm-feature jspi`: `Async.block_on` waits through JavaScript Promise Integration (B08).
+    /// `--wasm-feature jspi`: the module suspends through JavaScript Promise Integration while it
+    /// waits, and its exports return promises (the sockets of `--wasm-feature net`, tzroutines).
     pub wasm_jspi: bool,
     /// `--wasm-feature webgpu`: `Gpu.request Gpu.WebGpu` and the kernels on that device call the
     /// JSPI imports `tsuzuri_gpu.open` and `tsuzuri_gpu.run` (F09 Phase 2).
@@ -3801,8 +3785,6 @@ fn build_complete(
         links.check_shape()?;
         links.check_readable()?;
     }
-    // The executor of `Async.start` and `Async.block_on` keeps its state across calls (B08), so the
-    // blocks that a trapped call allocated and the trap boundary frees could still be reachable from it.
     // A trap in a tzroutine happens on a scheduler thread, far from the call that spawned it (TZ02).
     if options.trap_return && llvm::spawns(module) {
         return Err(driver_error_of(
@@ -3817,26 +3799,6 @@ fn build_complete(
         return Err(driver_error_of(
             DiagnosticKind::OptionConflict,
             "--trap-mode return cannot be combined with Channel, Time.sleep or the sync types of the tzroutine runtime (WaitGroup, Once, OnceValue, RwMutex, Cond, Semaphore, SyncMap): a trap would leave the runtime's state of the call behind",
-        ));
-    }
-    if options.trap_return && !llvm::host_entries(module).is_empty() {
-        return Err(driver_error_of(
-            DiagnosticKind::OptionConflict,
-            "--trap-mode return cannot be combined with Async.start or Async.block_on: a trap inside the executor would leave its state half updated",
-        ));
-    }
-    // Each thread has its own executor in thread-local storage, which the workers of WebAssembly
-    // threads do not set up. Their glue would also call exports from several workers (B08).
-    if options.wasm_threads && !llvm::host_entries(module).is_empty() {
-        return Err(driver_error_of(
-            DiagnosticKind::OptionConflict,
-            "--wasm-feature threads cannot be combined with Async.start or Async.block_on: their executor keeps per-thread state that WebAssembly threads do not set up",
-        ));
-    }
-    if options.target.is_wasm() && !options.wasm_jspi && llvm::reaches_reactor(module) {
-        return Err(driver_error_of(
-            DiagnosticKind::OptionRequiresOption,
-            "Async.block_on on WebAssembly needs --wasm-feature jspi: it suspends the WebAssembly stack with JavaScript Promise Integration while it waits",
         ));
     }
     if options.emit.is_bindings() {
@@ -4177,8 +4139,6 @@ fn build_complete(
     } else {
         String::new()
     };
-    // `Async.block_on` waits in src/runtime/async.c natively and through JSPI imports on WASM (B08).
-    let async_reactor = runtime_symbols.contains("tsuzuri_async_wait");
     // A `def main :: Array<string> -> i32` reads its arguments in src/runtime/arguments.c.
     let arguments_runtime = runtime_symbols.contains("tsuzuri_arguments");
     if options.freestanding {
@@ -4208,7 +4168,6 @@ fn build_complete(
             ("declare i64 @tsuzuri_os_", "the operating-system APIs"),
             ("@tsuzuri_net_", "the Net socket API"),
             ("declare i32 @tsuzuri_gpu_", "GPU devices"),
-            ("declare void @tsuzuri_async_wait(", "Async.block_on"),
             ("@tsuzuri_arguments(", "program arguments"),
             ("declare i64 @write(", "Debug output"),
             ("declare i32 @putchar(", "Debug output"),
@@ -4254,7 +4213,7 @@ fn build_complete(
         || trap_runtime
         || gpu_runtime
         || (options.target == Target::Native
-            && (io_runtime || os_runtime || net_runtime || arguments_runtime || async_reactor));
+            && (io_runtime || os_runtime || net_runtime || arguments_runtime));
     // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
     // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
     // A tzroutine's stack is smaller than a thread's, so a program with tzroutines reports its
@@ -4322,18 +4281,6 @@ fn build_complete(
             NET_WASM_MESSAGE,
         ));
     }
-    // The poller completes an async operation through the reactor's mailbox, which exists only in `Async.block_on`.
-    // On WebAssembly the host completes it with `tsuzuri_async_complete`.
-    if net_runtime
-        && options.target == Target::Native
-        && llvm::uses_net_async(&text)
-        && !async_reactor
-    {
-        return Err(driver_error_of(
-            DiagnosticKind::NetAsyncNeedsBlockOn,
-            NET_ASYNC_MESSAGE,
-        ));
-    }
     if net_runtime
         && !platform.net()
         && options.target == Target::Native
@@ -4342,16 +4289,6 @@ fn build_complete(
         return Err(driver_error_of(
             DiagnosticKind::PlatformUnsupportedApi,
             net_message(platform),
-        ));
-    }
-    if async_reactor
-        && !platform.reactor()
-        && options.target == Target::Native
-        && options.emit != Emit::Llvm
-    {
-        return Err(driver_error_of(
-            DiagnosticKind::PlatformUnsupportedApi,
-            async_message(platform),
         ));
     }
     if os_runtime
@@ -4367,7 +4304,7 @@ fn build_complete(
     if platform.windows() && native_runtime && options.emit == Emit::Object {
         return Err(driver_error_of(
             DiagnosticKind::PlatformUnsupportedApi,
-            "Windows COFF objects with embedded tzroutine, CPU, IO, or Async runtime are not supported; emit LLVM and link the runtime once, or build an executable",
+            "Windows COFF objects with embedded tzroutine, CPU, IO, or Net runtime are not supported; emit LLVM and link the runtime once, or build an executable",
         ));
     }
     protect_sources(project, output)?;
@@ -4764,11 +4701,9 @@ fn build_complete(
                 } else {
                     ""
                 },
-                if async_reactor && options.target == Target::Native {
-                    include_str!("runtime/async.c")
-                } else {
-                    ""
-                },
+                // The third part was the reactor of the removed async computations (async.c, TZ13): it
+                // stays empty for the prebuilt runtimes, as the sixth does.
+                String::new(),
                 gpu_source,
                 if trap_runtime {
                     include_str!("runtime/trap.c")
@@ -4814,7 +4749,7 @@ fn build_complete(
                 .args(compile_args(platform))
                 .args(sdk_args(platform)?)
                 .arg(options.optimization.flag());
-            if (tzroutine_runtime || trap_runtime || async_reactor || net_runtime || gpu_runtime)
+            if (tzroutine_runtime || trap_runtime || net_runtime || gpu_runtime)
                 && !platform.windows()
             {
                 runtime.arg("-pthread");
@@ -5499,17 +5434,11 @@ fn build_complete(
                     linker.arg(format!("--export=tz_{}", function.name));
                 }
             }
-            for (symbol, _) in llvm::host_entries(module) {
-                linker.arg(format!("--export={symbol}"));
-            }
             if staged_profile
                 .as_ref()
                 .is_some_and(profile::PreparedProfile::instruments_wasm)
             {
                 linker.args(profile::WASM_LINK_ARGS);
-            }
-            if !llvm::host_entries(module).is_empty() {
-                linker.arg("--export=tsuzuri_async_set_epoch");
             }
             linker.arg(&module_input).arg("-o").arg(&artifact);
             collect_message(
@@ -5582,15 +5511,9 @@ pub(crate) fn shared_exports(ir: &str, module: &CheckedModule, trap_return: bool
             names
         })
         .collect();
-    // The reactor's runtime defines `tsuzuri_async_post`, which other threads call (B08).
-    if llvm::uses_reactor(ir) {
-        symbols.push("tsuzuri_async_post".to_owned());
-    }
     for symbol in [
         "tsuzuri_alloc",
         "tsuzuri_alloc_stats",
-        "tsuzuri_async_complete",
-        "tsuzuri_async_poll",
         "tsuzuri_free",
         "tsuzuri_main",
     ] {

@@ -214,8 +214,8 @@ Build options:
                          end of this help, builds native code for that machine; its C headers, C
                          library, and linker come from the bundled toolchain or TSUZURI_SYSROOT
     --wasm-feature <name>   Opt in to simd128 (WASM build), threads (wasm32 build), jspi
-                            (WASM build; Async.block_on waits through JavaScript Promise
-                            Integration), webgpu (wasm32 build; Gpu.request Gpu.WebGpu and
+                            (WASM build; the module waits through JavaScript Promise
+                            Integration, and its exports return promises), webgpu (wasm32 build; Gpu.request Gpu.WebGpu and
                             the kernels on that device call the JSPI imports tsuzuri_gpu.open
                             and tsuzuri_gpu.run, which src/runtime/webgpu.mjs implements),
                             net (wasm32 build with jspi; the Net sockets become imports that

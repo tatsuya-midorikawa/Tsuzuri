@@ -338,3 +338,214 @@ fn tsuzuri_fix_writes_routine_scope() {
     assert_eq!(tsuzuri(&["run"]), "46\n");
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+/// The `E1040` of a form that TZ13 removed: its kind, message, and help. None has a fix, since no
+/// replacement means the same.
+fn removed_async(source: &str) -> (&'static str, String, String) {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, "E1040", "{source}\n{}", error.message);
+    assert!(error.fixes.is_empty(), "{source}");
+    (
+        error.kind.expect(source),
+        error.message.clone(),
+        error.help.clone().expect(source),
+    )
+}
+
+#[test]
+fn names_the_removed_async_forms() {
+    const EXPRESSION: &str =
+        "run the work directly; to wait for I/O while other work runs, spawn tzroutines";
+    const TYPE: &str = "return the value directly, or use a Channel to deliver it later";
+    const RUN: &str =
+        "call the work directly (in a tzroutine, I/O waits without stopping other tzroutines)";
+    const ALL: &str =
+        "spawn a tzroutine per job and wait with WaitGroup, or with ErrGroup for the first error";
+    const CLOCK: &str = "use Time.sleep, Time.monotonic_ns, or Routine.yield";
+    const HOST: &str = "the host-driven executor was removed; call exports from host threads (native) or await the export's Promise (WebAssembly with --wasm-feature jspi)";
+    for (source, message, help) in [
+        (
+            "let job = async { return 1 }\n0\n",
+            "'async { }' was removed",
+            EXPRESSION,
+        ),
+        (
+            "let job = Async { return 1 }\n0\n",
+            "'Async { }' was removed",
+            EXPRESSION,
+        ),
+        (
+            "def f :: ref Async<i64> -> i64\nfn f job = 0\n\n0\n",
+            "the type 'Async' was removed",
+            TYPE,
+        ),
+        (
+            "def f :: ref Async.Async<i64> -> i64\nfn f job = 0\n\n0\n",
+            "the type 'Async.Async' was removed",
+            TYPE,
+        ),
+        (
+            "def f :: ref Async.Operation -> i64\nfn f operation = 0\n\n0\n",
+            "the type 'Async.Operation' was removed",
+            TYPE,
+        ),
+        (
+            "let operation = Async.Operation { start: \\id -> (), cancel: \\id -> () }\n0\n",
+            "the type 'Async.Operation' was removed",
+            TYPE,
+        ),
+        (
+            "let value = Async.run 1\n0\n",
+            "'Async.run' was removed",
+            RUN,
+        ),
+        (
+            "let value = Async.block_on 1\n0\n",
+            "'Async.block_on' was removed",
+            RUN,
+        ),
+        (
+            "let values = Async.all [1, 2]\n0\n",
+            "'Async.all' was removed",
+            ALL,
+        ),
+        (
+            "let values = Async.all_results [1, 2]\n0\n",
+            "'Async.all_results' was removed",
+            ALL,
+        ),
+        (
+            "let done = Async.sleep 10\n0\n",
+            "'Async.sleep' was removed",
+            CLOCK,
+        ),
+        (
+            "let now = Async.now ()\n0\n",
+            "'Async.now' was removed",
+            CLOCK,
+        ),
+        // `yield` after a dot is a member name, as in `Routine.yield`.
+        (
+            "let next = Async.yield ()\n0\n",
+            "'Async.yield' was removed",
+            CLOCK,
+        ),
+        (
+            "let started = Async.start 1\n0\n",
+            "'Async.start' was removed",
+            HOST,
+        ),
+        (
+            "let id = Async.host 1\n0\n",
+            "'Async.host' was removed",
+            HOST,
+        ),
+        // The operations of the builder, which a program could call by name.
+        (
+            "let job = Async.Return 1\n0\n",
+            "'Async.Return' was removed",
+            EXPRESSION,
+        ),
+    ] {
+        assert_eq!(
+            removed_async(source),
+            ("removed_async", message.to_owned(), help.to_owned()),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn names_the_removed_net_async_operations() {
+    const HELP: &str = "call Net.connect (and the others without '_async') in a tzroutine; it waits without stopping other tzroutines";
+    let address = "let address = Maybe.get (Net.parse_address \"127.0.0.1:0\")\n";
+    for (name, arguments) in [
+        ("connect_async", "address (Maybe.Some 1000)"),
+        ("accept_async", "1 Maybe.None"),
+        ("read_async", "1 4096 Maybe.None"),
+        ("write_async", "1 [1ubyte] Maybe.None"),
+        ("recv_from_async", "1 1500 Maybe.None"),
+        ("send_to_async", "1 [1ubyte] address"),
+        ("bind_async", "address"),
+        ("bind_udp_async", "address"),
+        ("close_async", "1"),
+        ("close_listener_async", "1"),
+        ("close_udp_async", "1"),
+        ("shutdown_async", "1 Net.Write"),
+    ] {
+        let source = format!("{address}let result = Net.{name} {arguments}\n0\n");
+        assert_eq!(
+            removed_async(&source),
+            (
+                "removed_net_async",
+                format!("'Net.{name}' was removed"),
+                HELP.to_owned()
+            ),
+            "{source}"
+        );
+        // The diagnostic covers the qualified name.
+        let error = analyze(&source).unwrap_err();
+        let start = source.find(&format!("Net.{name}")).unwrap();
+        assert_eq!(
+            (error.span.start, error.span.end),
+            (start, start + "Net.".len() + name.len()),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn an_async_of_the_program_is_its_own() {
+    // `async` is an identifier, and the program may define `Async` as a type or a module.
+    for source in [
+        "let async = 5\nasync + 1\n",
+        "def async :: i64 -> i64\nfn async n = n + 1\n\nasync 4\n",
+        "record Async { id: i64 }\n\ndef id :: ref Async -> i64\nfn id job = job.id\n\nlet job = Async { id: 4 }\nid (ref job)\n",
+    ] {
+        analyze(source).unwrap_or_else(|e| panic!("{source}\n{}: {}", e.code, e.message));
+    }
+    // A module `Async` of the program: its functions and types are found first.
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "let operation = Async.Operation { id: 2 }\nAsync.run (Async.start operation)\n",
+        ),
+        (
+            "Async.tz",
+            "record Operation { id: i64 }\n\ndef start :: Operation -> i64\nfn start operation = operation.id\n\ndef run :: i64 -> i64\nfn run n = n + 1\n",
+        ),
+    ])
+    .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+    let builder = "def Return :: 'a -> 'a\nfn Return value = value\n\ndef Bind :: 'a -> ('a -> 'b) -> 'b\nfn Bind value next = next value\n";
+    // A builder `@alias async` of the program names `async { }`.
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "def one :: i64 -> i64\nfn one n = async { let! a = n; return a + 1 }\n\none 1\n",
+        ),
+        ("Steps.tc", &format!("@alias async\n\n{builder}")),
+    ])
+    .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+    // A builder `Async.tc` of the program names `Async { }`.
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "def one :: i64 -> i64\nfn one n = Async { let! a = n; return a + 1 }\n\none 1\n",
+        ),
+        ("Async.tc", builder),
+    ])
+    .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+    // A module `Async` of the program that is no builder is not the removed one: `Async { }` is
+    // the error of any other module.
+    let error = analyze_modules(&[
+        ("Main.tz", "let job = Async { return 1 }\n0\n"),
+        ("Async.tz", "def run :: i64 -> i64\nfn run n = n + 1\n"),
+    ])
+    .unwrap_err();
+    assert_eq!(
+        error.kind,
+        Some("unknown_computation_builder"),
+        "{}",
+        error.message
+    );
+}

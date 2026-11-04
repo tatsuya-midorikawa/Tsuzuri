@@ -446,9 +446,6 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
         "Os.__random" => Random,
         "Os.__clock"
         | "Os.__sleep"
-        | "Async.__clock"
-        | "Async.__wait"
-        | "Async.__posted"
         | "Bench.now"
         | "Time.sleep"
         | "Time.after"
@@ -462,15 +459,14 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
         | "Context.__with_deadline" => Time,
         "Os.__spawn" => Process,
         "Net.__resolve" | "Net.__open" | "Net.__accept" | "Net.__read" | "Net.__write"
-        | "Net.__close" | "Net.__watch" | "Net.__unwatch" | "Net.__connect" | "Net.__names"
-        | "Net.__send" => Net,
+        | "Net.__close" => Net,
         "Gpu.__open" | "Gpu.__features" | "Gpu.__run" | "Gpu.__select" | "Gpu.__last" => Gpu,
         _ => return None,
     })
 }
 
 /// The private builtins that touch only the CPU and memory (appendix A.2 and the ones added since).
-pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 49] = [
+pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 44] = [
     "Net.__classify",
     "Unicode.__table_length",
     "Unicode.__table_entry",
@@ -481,11 +477,6 @@ pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 49] = [
     "Vec.__insert",
     "Vec.__splice",
     "Arena.__next_id",
-    "Async.__resume",
-    "Async.__take",
-    "Async.__put",
-    "Async.__next_id",
-    "Async.__retire",
     "DataChannel.__close_sender",
     "DataChannel.__close_receiver",
     "Channel.__release",
@@ -1661,10 +1652,11 @@ mod tests {
             assert!(touches != quiet, "{name} must be in exactly one table");
             world += usize::from(touches);
         }
-        // Appendix A.2: 39 builtins reach the host (4 of them the timers of TZ05, 2 the deadlines
-        // of TZ07); the rest touch only the CPU and memory.
-        assert_eq!(world, 39);
-        assert_eq!(private.len(), 39 + PRIVATE_WITHOUT_CAPABILITY.len());
+        // Appendix A.2: 31 builtins reach the host (4 of them the timers of TZ05, 2 the deadlines
+        // of TZ07; TZ13 removed the 3 of Async and the 5 of Net's async operations); the rest
+        // touch only the CPU and memory.
+        assert_eq!(world, 31);
+        assert_eq!(private.len(), 31 + PRIVATE_WITHOUT_CAPABILITY.len());
         // The multiplexed builtins follow their file.
         assert_eq!(primitive("Os.__read", "Env"), Some(Capability::Env));
         assert_eq!(primitive("Os.__read", "Dir"), Some(Capability::Fs));

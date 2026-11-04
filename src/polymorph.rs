@@ -2643,7 +2643,7 @@ impl Classes {
                     )
                 } else {
                     format!(
-                        "{ty} shares a tzroutine body, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc, and several tzroutines could then use it at once"
+                        "{ty} shares a tzroutine body, an exclusive reference, a lazy sequence or a GPU handle through an Arc, and several tzroutines could then use it at once"
                     )
                 };
                 return Err(if class == "Capture" {
@@ -2678,7 +2678,7 @@ impl Classes {
                 return Err(Diagnostic::of(
                     DiagnosticKind::TaskRequiresSync,
                     format!(
-                        "tzroutines and threads can share only Sync values; {} is not Sync (an Rc, an extern handle, a dyn value that is not Copy, an Owned.Function, a tzroutine body, an exclusive reference, a lazy sequence, an Async computation or a GPU handle cannot be shared between them); move the value into one tzroutine, or share an Arc of a Sync value",
+                        "tzroutines and threads can share only Sync values; {} is not Sync (an Rc, an extern handle, a dyn value that is not Copy, an Owned.Function, a tzroutine body, an exclusive reference, a lazy sequence or a GPU handle cannot be shared between them); move the value into one tzroutine, or share an Arc of a Sync value",
                         constraint.ty.display(types)
                     ),
                     constraint.span,
@@ -3142,11 +3142,6 @@ impl Checker<'_> {
                 | Builtin::NetWrite
                 | Builtin::NetClose
                 | Builtin::NetClassify
-                | Builtin::NetWatch
-                | Builtin::NetUnwatch
-                | Builtin::NetConnect
-                | Builtin::NetNames
-                | Builtin::NetSend
         ) && !(self.module == "Net" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
             return Err(Diagnostic::of(
@@ -3252,24 +3247,6 @@ impl Checker<'_> {
             return Err(Diagnostic::of(
                 DiagnosticKind::PrivateStdPrimitive,
                 "the failure-domain primitives are private to the standard Domain module; call Domain.run",
-                span,
-            ));
-        }
-        if matches!(
-            builtin,
-            Builtin::AsyncResume
-                | Builtin::AsyncTake
-                | Builtin::AsyncPut
-                | Builtin::AsyncNextId
-                | Builtin::AsyncClock
-                | Builtin::AsyncWait
-                | Builtin::AsyncPosted
-                | Builtin::AsyncRetire
-        ) && !(self.module == "Async" && self.names.origin(self.module) == ModuleOrigin::Std)
-        {
-            return Err(Diagnostic::of(
-                DiagnosticKind::PrivateStdPrimitive,
-                "the continuation primitive is private to the standard Async module; compose computations with the Async builder",
                 span,
             ));
         }
@@ -3396,17 +3373,6 @@ impl Checker<'_> {
                 return Err(Diagnostic::of(
                     DiagnosticKind::StdRepresentationMismatch,
                     "Seq.next requires Maybe.None and Maybe.Some in standard order",
-                    span,
-                ));
-            }
-        }
-        if builtin == Builtin::AsyncResume {
-            let run = Type::function(vec![types[0].clone()], types[1].clone());
-            if !matches!(&parameters[0], Type::Record(id, arguments) if self.types.record_fields(*id, arguments) == [run])
-            {
-                return Err(Diagnostic::of(
-                    DiagnosticKind::StdRepresentationMismatch,
-                    "Async.__resume requires the standard Async.Next record",
                     span,
                 ));
             }

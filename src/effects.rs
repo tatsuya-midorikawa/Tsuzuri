@@ -445,31 +445,7 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         // B8
         DynOf => facts(None, true, false, false, false, true, None),
         // B9
-        IOWrite | AsyncClock | AsyncRetire => {
-            facts(Some(Effect::Io), false, false, false, false, false, None)
-        }
-        // B10
-        AsyncTake | AsyncPut | AsyncNextId | AsyncPosted => facts(
-            Some(Effect::Io),
-            false,
-            false,
-            false,
-            false,
-            false,
-            Some("runtime_internal"),
-        ),
-        // B11
-        AsyncResume => facts(Some(Effect::Io), false, false, false, true, false, None),
-        // B12
-        AsyncWait => facts(
-            Some(Effect::Io),
-            false,
-            false,
-            true,
-            false,
-            false,
-            Some("runtime_internal"),
-        ),
+        IOWrite => facts(Some(Effect::Io), false, false, false, false, false, None),
         // B13
         IOReadLine => facts(
             Some(Effect::Io),
@@ -515,7 +491,7 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             Some("host_status"),
         ),
         // B18
-        NetClose | NetClassify | NetWatch | NetUnwatch | NetSend => facts(
+        NetClose | NetClassify => facts(
             Some(Effect::Net),
             false,
             false,
@@ -525,21 +501,11 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             Some("host_status"),
         ),
         // B19
-        NetWrite | NetConnect => facts(
+        NetWrite => facts(
             Some(Effect::Net),
             false,
             false,
             true,
-            false,
-            false,
-            Some("host_status"),
-        ),
-        // B20
-        NetNames => facts(
-            Some(Effect::Net),
-            true,
-            false,
-            false,
             false,
             false,
             Some("host_status"),
@@ -1131,7 +1097,7 @@ fn open_type(ty: &Type, types: &TypeContext<'_>) -> bool {
         matches!(part, Type::Function(..) | Type::Dyn(_) | Type::Once(_))
             || part.is_owned_function(types)
             || matches!(part, Type::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std
-                && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Async.Async" | "Async.Next"))
+                && types.records[*id].name == "Seq.Seq")
     })
 }
 
@@ -3588,17 +3554,18 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 353);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 178);
+        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations.
+        assert_eq!(Builtin::ALL.len(), 340);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 165);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 175);
     }
 
     #[test]
     fn impure_builtins_are_pinned_by_effect() {
         let by = |effect| count(|facts| facts.effect == Some(effect));
-        assert_eq!(by(Effect::Io), 10);
+        assert_eq!(by(Effect::Io), 2);
         assert_eq!(by(Effect::Os), 21);
-        assert_eq!(by(Effect::Net), 12);
+        assert_eq!(by(Effect::Net), 7);
         assert_eq!(by(Effect::Task), 16);
         assert_eq!(by(Effect::Atomic), 92);
         assert_eq!(by(Effect::Rc), 18);
@@ -3609,23 +3576,23 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 76);
+        assert_eq!(count(|facts| facts.alloc), 75);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
         assert_eq!(count(|facts| facts.trap), 55);
-        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
+        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 27);
     }
 
     #[test]
     fn diverge_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.diverge), 28);
+        assert_eq!(count(|facts| facts.diverge), 26);
     }
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 29);
+        assert_eq!(count(|facts| facts.callbacks), 28);
     }
 
     fn checked(source: &str) -> CheckedModule {
