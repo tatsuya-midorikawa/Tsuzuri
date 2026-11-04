@@ -19,7 +19,30 @@ struct tz_io_buffer {
     int64_t length;
 };
 
-TZ_IO_API int32_t tsuzuri_io_read_line(struct tz_io_buffer *output) {
+/* The blocking-call hooks (TZ08): os.c, io.c, net.c and gpu.c call them around a call that may wait
+ * for the OS, and the scheduler sets them when it starts (tzr_init), so that a tzroutine in such a
+ * call lets sysmon give its P away. The parts of the runtime are one translation unit, so the first
+ * part that has this block defines them; a program without tzroutines leaves them null. */
+#ifndef TSUZURI_BLOCKING_HOOKS_DEFINED
+#define TSUZURI_BLOCKING_HOOKS_DEFINED
+#include <stdatomic.h>
+#if defined(_WIN32)
+static void (*_Atomic tsuzuri_blocking_enter_hook)(void);
+static void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+#else
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_enter_hook)(void);
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+#endif
+#define TZ_BLOCKING_CALL(hook)                                                                   \
+    do {                                                                                         \
+        void (*tz_blocking_hook)(void) = atomic_load_explicit(&(hook), memory_order_acquire);   \
+        if (tz_blocking_hook != 0) tz_blocking_hook();                                          \
+    } while (0)
+#define TZ_BLOCKING_ENTER() TZ_BLOCKING_CALL(tsuzuri_blocking_enter_hook)
+#define TZ_BLOCKING_EXIT() TZ_BLOCKING_CALL(tsuzuri_blocking_exit_hook)
+#endif
+
+static int32_t tz_io_read_line_now(struct tz_io_buffer *output) {
     output->data = NULL;
     output->length = 0;
 #if defined(_WIN32)
@@ -66,7 +89,15 @@ TZ_IO_API int32_t tsuzuri_io_read_line(struct tz_io_buffer *output) {
     }
 }
 
-TZ_IO_API int32_t tsuzuri_io_write(int32_t destination, const unsigned char *data, int64_t length) {
+// TZ08: a tzroutine in this call lets its P go.
+TZ_IO_API int32_t tsuzuri_io_read_line(struct tz_io_buffer *output) {
+    TZ_BLOCKING_ENTER();
+    int32_t status = tz_io_read_line_now(output);
+    TZ_BLOCKING_EXIT();
+    return status;
+}
+
+static int32_t tz_io_write_now(int32_t destination, const unsigned char *data, int64_t length) {
     if ((destination != 1 && destination != 2) || length < 0) return 1;
 #if defined(_WIN32)
     if (_setmode(destination, _O_BINARY) == -1) return 1;
@@ -79,4 +110,12 @@ TZ_IO_API int32_t tsuzuri_io_write(int32_t destination, const unsigned char *dat
         if (ferror(stream) || written == 0) return 1;
     }
     return fflush(stream) == 0 ? 0 : 1;
+}
+
+// TZ08: a tzroutine in this call lets its P go.
+TZ_IO_API int32_t tsuzuri_io_write(int32_t destination, const unsigned char *data, int64_t length) {
+    TZ_BLOCKING_ENTER();
+    int32_t status = tz_io_write_now(destination, data, length);
+    TZ_BLOCKING_EXIT();
+    return status;
 }

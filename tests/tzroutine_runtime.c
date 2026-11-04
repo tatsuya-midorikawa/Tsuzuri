@@ -1859,6 +1859,216 @@ static void test_scope_run(void) {
     printf("scope run: ok\n");
 }
 
+/* 30. blocking calls (TZ08): a G in a blocking call lets sysmon give its P away, takes a P again
+ * after the call, keeps the deadlock detector from judging while it is in the call, and stays on its
+ * thread in a callback of the call and in Routine.with_locked_thread. */
+static void block_ms(int ms) {
+#if defined(_WIN32)
+    Sleep((DWORD)ms);
+#else
+    struct timespec t = {ms / 1000, (long)(ms % 1000) * 1000000L};
+    while (nanosleep(&t, &t) != 0) {
+    }
+#endif
+}
+#if defined(_WIN32)
+typedef DWORD thread_id;
+static thread_id this_thread(void) { return GetCurrentThreadId(); }
+static int same_thread(thread_id a, thread_id b) { return a == b; }
+#else
+typedef pthread_t thread_id;
+static thread_id this_thread(void) { return pthread_self(); }
+static int same_thread(thread_id a, thread_id b) { return pthread_equal(a, b); }
+#endif
+static _Atomic int64_t handoff_order;
+static _Atomic int64_t handoff_slept_at, handoff_rounds_at;
+static _Atomic int handoff_inside;
+static void handoff_sleeper(void *env) {
+    (void)env;
+    tsuzuri_tz_blocking_enter();
+    atomic_store(&handoff_inside, 1);
+    block_ms(200);
+    tsuzuri_tz_blocking_exit();
+    atomic_store(&handoff_slept_at, atomic_fetch_add(&handoff_order, 1) + 1);
+}
+static void handoff_pinger(void *env) {
+    pingpong *pp = env;
+    pinger(pp);
+    atomic_store(&handoff_rounds_at, atomic_fetch_add(&handoff_order, 1) + 1);
+}
+static void test_blocking_handoff(void) {
+    pingpong pp = {chan_make(8, 0), chan_make(8, 0), 1000};
+    atomic_store(&handoff_order, 0);
+    atomic_store(&handoff_inside, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(handoff_sleeper, NULL);
+    while (!atomic_load(&handoff_inside)) tzr_os_yield();
+    tsuzuri_tz_go(ponger, &pp);
+    tsuzuri_tz_go(handoff_pinger, &pp);
+    join(scope);
+    /* the 1,000 round trips ran on the P that the sleeper's call gave up, even with one P */
+    CHECK(atomic_load(&handoff_rounds_at) == 1 && atomic_load(&handoff_slept_at) == 2);
+    free(pp.ping);
+    free(pp.pong);
+    printf("blocking handoff: ok\n");
+}
+
+static _Atomic int64_t reacquire_rounds;
+static _Atomic int reacquire_stop;
+static _Atomic int64_t reacquire_seen[2];
+static void reacquire_spinner(void *env) {
+    (void)env;
+    while (!atomic_load(&reacquire_stop)) {
+        atomic_fetch_add(&reacquire_rounds, 1);
+        tsuzuri_tz_yield();
+    }
+}
+static void reacquire_blocker(void *env) {
+    int which = (int)(intptr_t)env;
+    for (int i = 0; i < 4; i++) {
+        int64_t before = atomic_load(&reacquire_rounds);
+        tsuzuri_tz_blocking_enter();
+        block_ms(50);
+        tsuzuri_tz_blocking_exit();
+        /* back with a P: the G goes on here */
+        atomic_fetch_add(&reacquire_seen[which], atomic_load(&reacquire_rounds) - before);
+        tsuzuri_tz_yield();
+    }
+}
+static void reacquire_root(void *env) {
+    (void)env;
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(reacquire_blocker, (void *)(intptr_t)0);
+    tsuzuri_tz_go(reacquire_blocker, (void *)(intptr_t)1);
+    CHECK(tsuzuri_tz_scope_leave(scope) == 0);
+    atomic_store(&reacquire_stop, 1);
+}
+static void test_blocking_reacquire(void) {
+    atomic_store(&reacquire_rounds, 0);
+    atomic_store(&reacquire_stop, 0);
+    atomic_store(&reacquire_seen[0], 0);
+    atomic_store(&reacquire_seen[1], 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(reacquire_spinner, NULL);
+    tsuzuri_tz_go(reacquire_root, NULL);
+    join(scope);
+    /* the spinner ran while each blocker was in its calls */
+    CHECK(atomic_load(&reacquire_seen[0]) > 0 && atomic_load(&reacquire_seen[1]) > 0);
+    CHECK(atomic_load(&tzr_sched.nmsys) == 0);
+    printf("blocking reacquire: ok\n");
+}
+
+/* A G in a blocking call may wake the others when it returns: everybody else waiting is no deadlock. */
+static void late_sender(void *env) {
+    tsuzuri_tz_blocking_enter();
+    block_ms(100);
+    tsuzuri_tz_blocking_exit();
+    int64_t v = 5;
+    CHECK(tsuzuri_tz_chan_send(env, &v, 1) == TZR_OK);
+}
+static void early_receiver(void *env) {
+    int64_t v = 0;
+    CHECK(tsuzuri_tz_chan_recv(env, &v, 1) == TZR_OK && v == 5);
+}
+static void test_blocking_deadlock(void) {
+    tzr_chan *c = chan_make(8, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(early_receiver, c);
+    tsuzuri_tz_go(early_receiver, c);
+    tsuzuri_tz_go(late_sender, c);
+    tsuzuri_tz_go(late_sender, c);
+    join(scope);
+    free(c);
+    printf("blocking deadlock: ok\n");
+}
+
+/* A callback of a blocking call runs on the G with a P again, and a wait in it keeps the G on the
+ * thread that has the host's frames; the call goes on after the callback. */
+static _Atomic int64_t callback_got;
+static void callback_body(tzr_chan *c) {
+    thread_id before = this_thread();
+    int32_t depth = tsuzuri_tz_callback_enter();
+    CHECK(depth == 1);
+    for (int64_t i = 1; i <= 20; i++) {
+        CHECK(tsuzuri_tz_chan_send(c, &i, 1) == TZR_OK); /* waits for the receiver */
+        CHECK(tsuzuri_tz_sleep(100000) == 0);
+        CHECK(same_thread(before, this_thread()));
+    }
+    tsuzuri_tz_callback_exit(depth);
+}
+static void callback_caller(void *env) {
+    tsuzuri_tz_blocking_enter();
+    block_ms(5);
+    callback_body(env); /* the host calls back */
+    block_ms(5);
+    tsuzuri_tz_blocking_exit();
+    tsuzuri_tz_yield();
+}
+static void callback_receiver(void *env) {
+    int64_t v;
+    for (int i = 0; i < 20; i++) {
+        CHECK(tsuzuri_tz_chan_recv(env, &v, 1) == TZR_OK);
+        atomic_fetch_add(&callback_got, v);
+    }
+}
+static void test_blocking_callback(void) {
+    tzr_chan *c = chan_make(8, 0);
+    atomic_store(&callback_got, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 4; i++) {
+        tsuzuri_tz_go(callback_caller, c);
+        tsuzuri_tz_go(callback_receiver, c);
+    }
+    join(scope);
+    CHECK(atomic_load(&callback_got) == 4 * 210);
+    /* a thread that is not an M, and a callback outside a call, do nothing */
+    CHECK(tsuzuri_tz_callback_enter() == 0);
+    tsuzuri_tz_callback_exit(0);
+    free(c);
+    printf("blocking callback: ok\n");
+}
+
+/* Routine.with_locked_thread: the G stays on one thread through yields, waits and sleeps, and
+ * others still run (with one P, its waits give the P away). */
+static _Atomic int64_t locked_moves;
+static void locked_partner(void *env) {
+    int64_t v;
+    while (tsuzuri_tz_chan_recv(env, &v, 1) == TZR_OK && v >= 0) CHECK(tsuzuri_tz_chan_send(env, &v, 1) == TZR_OK);
+}
+static void locked_worker(void *env) {
+    tzr_chan *c = env;
+    tsuzuri_tz_lock_thread();
+    thread_id home = this_thread();
+    for (int64_t i = 0; i < 200; i++) {
+        CHECK(tsuzuri_tz_chan_send(c, &i, 1) == TZR_OK);
+        int64_t back = -2;
+        CHECK(tsuzuri_tz_chan_recv(c, &back, 1) == TZR_OK && back == i);
+        if (i % 10 == 0) CHECK(tsuzuri_tz_sleep(50000) == 0);
+        tsuzuri_tz_yield();
+        if (!same_thread(home, this_thread())) atomic_fetch_add(&locked_moves, 1);
+    }
+    tsuzuri_tz_unlock_thread();
+    int64_t stop = -1;
+    CHECK(tsuzuri_tz_chan_send(c, &stop, 1) == TZR_OK);
+}
+static void test_locked_thread(void) {
+    atomic_store(&locked_moves, 0);
+    tzr_chan *c[3];
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 3; i++) {
+        c[i] = chan_make(8, 0);
+        tsuzuri_tz_go(locked_worker, c[i]);
+        tsuzuri_tz_go(locked_partner, c[i]);
+    }
+    join(scope);
+    CHECK(atomic_load(&locked_moves) == 0);
+    CHECK(tzr_sched.nmlocked == 0);
+    for (int i = 0; i < 3; i++) free(c[i]);
+    tsuzuri_tz_lock_thread(); /* a thread that is not an M: nothing */
+    tsuzuri_tz_unlock_thread();
+    printf("locked thread: ok\n");
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -1924,6 +2134,11 @@ int main(int argc, char **argv) {
     RUN("context_expire_boundary", test_context_expire_boundary());
     RUN("parallel", test_parallel());
     RUN("scope_run", test_scope_run());
+    RUN("blocking_handoff", test_blocking_handoff());
+    RUN("blocking_reacquire", test_blocking_reacquire());
+    RUN("blocking_deadlock", test_blocking_deadlock());
+    RUN("blocking_callback", test_blocking_callback());
+    RUN("locked_thread", test_locked_thread());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

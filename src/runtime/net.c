@@ -136,6 +136,29 @@ typedef struct pollfd tz_net_pollfd;
 #endif
 #endif
 
+/* The blocking-call hooks (TZ08): os.c, io.c, net.c and gpu.c call them around a call that may wait
+ * for the OS, and the scheduler sets them when it starts (tzr_init), so that a tzroutine in such a
+ * call lets sysmon give its P away. The parts of the runtime are one translation unit, so the first
+ * part that has this block defines them; a program without tzroutines leaves them null. */
+#ifndef TSUZURI_BLOCKING_HOOKS_DEFINED
+#define TSUZURI_BLOCKING_HOOKS_DEFINED
+#include <stdatomic.h>
+#if defined(_WIN32)
+static void (*_Atomic tsuzuri_blocking_enter_hook)(void);
+static void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+#else
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_enter_hook)(void);
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+#endif
+#define TZ_BLOCKING_CALL(hook)                                                                   \
+    do {                                                                                         \
+        void (*tz_blocking_hook)(void) = atomic_load_explicit(&(hook), memory_order_acquire);   \
+        if (tz_blocking_hook != 0) tz_blocking_hook();                                          \
+    } while (0)
+#define TZ_BLOCKING_ENTER() TZ_BLOCKING_CALL(tsuzuri_blocking_enter_hook)
+#define TZ_BLOCKING_EXIT() TZ_BLOCKING_CALL(tsuzuri_blocking_exit_hook)
+#endif
+
 // Writing to a socket whose peer is gone must be an error, not SIGPIPE: MSG_NOSIGNAL where it exists, and
 // SO_NOSIGPIPE on every socket where that is the way (macOS). Windows has no such signal.
 #if !defined(_WIN32)
@@ -472,9 +495,12 @@ static int tz_net_wait(tz_net_fd descriptor, short events, int64_t deadline) {
         entry.fd = descriptor;
         entry.events = events;
         entry.revents = 0;
+        TZ_BLOCKING_ENTER();
         int ready = tz_net_poll(&entry, 1, timeout);
+        int error = ready < 0 ? tz_net_errno() : 0;
+        TZ_BLOCKING_EXIT();
         if (ready > 0) return 0;
-        if (ready < 0 && tz_net_errno() != TZ_NET_E_INTR) return tz_net_errno();
+        if (ready < 0 && error != TZ_NET_E_INTR) return error;
     }
 }
 
@@ -1267,9 +1293,13 @@ static int64_t tz_net_close_handle(int64_t handle) {
     tz_net_fd descriptor;
     if (!tz_net_forget(handle, &descriptor)) return tz_net_bad_handle();
     tz_net_cancel_handle(handle);
-    // After EINTR the descriptor state is unspecified, and retrying could close another one.
-    if (tz_net_close_fd(descriptor) == 0) return 0;
-    int error = tz_net_errno();
+    // After EINTR the descriptor state is unspecified, and retrying could close another one. A close can
+    // wait (a lingering socket): a tzroutine lets its P go (TZ08).
+    TZ_BLOCKING_ENTER();
+    int closed = tz_net_close_fd(descriptor);
+    int error = closed == 0 ? 0 : tz_net_errno();
+    TZ_BLOCKING_EXIT();
+    if (closed == 0) return 0;
     return error == TZ_NET_E_INTR ? 0 : tz_net_error(error);
 }
 
@@ -1455,7 +1485,10 @@ TZ_NET_API int64_t tsuzuri_net_resolve(struct tz_net_buffer *output, const unsig
     }
     hints.ai_flags = 0;
     list = NULL;
+    // The resolver may wait for the network: a tzroutine lets its P go (TZ08), which keeps errno.
+    TZ_BLOCKING_ENTER();
     int failure = getaddrinfo(name, NULL, &hints, &list);
+    TZ_BLOCKING_EXIT();
     if (failure != 0) return tz_net_resolve_error(failure);
     unsigned char records[TZ_NET_MAX_RESOLVED * TZ_NET_RECORD];
     size_t count = 0;

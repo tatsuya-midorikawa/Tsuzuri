@@ -247,6 +247,29 @@ extern _Atomic(int32_t (*)(uintptr_t)) tsuzuri_stack_guard_hook;
 #endif
 TZR_API int32_t tsuzuri_tz_stack_guard_hit(uintptr_t address);
 
+/* The blocking-call hooks (TZ08): os.c, io.c, net.c and gpu.c call them around a call that may wait
+ * for the OS, and the scheduler sets them when it starts (tzr_init), so that a tzroutine in such a
+ * call lets sysmon give its P away. The parts of the runtime are one translation unit, so the first
+ * part that has this block defines them; a program without tzroutines leaves them null. */
+#ifndef TSUZURI_BLOCKING_HOOKS_DEFINED
+#define TSUZURI_BLOCKING_HOOKS_DEFINED
+#include <stdatomic.h>
+#if defined(_WIN32)
+static void (*_Atomic tsuzuri_blocking_enter_hook)(void);
+static void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+#else
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_enter_hook)(void);
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+#endif
+#define TZ_BLOCKING_CALL(hook)                                                                   \
+    do {                                                                                         \
+        void (*tz_blocking_hook)(void) = atomic_load_explicit(&(hook), memory_order_acquire);   \
+        if (tz_blocking_hook != 0) tz_blocking_hook();                                          \
+    } while (0)
+#define TZ_BLOCKING_ENTER() TZ_BLOCKING_CALL(tsuzuri_blocking_enter_hook)
+#define TZ_BLOCKING_EXIT() TZ_BLOCKING_CALL(tsuzuri_blocking_exit_hook)
+#endif
+
 #if !defined(_WIN32)
 /* ---------------------------------------------------------------- OS calls (POSIX) */
 
@@ -508,6 +531,9 @@ static void *tzr_initial_frame(char *top, void (*start)(void)) {
 
 enum { TZR_G_IDLE, TZR_G_RUNNABLE, TZR_G_RUNNING, TZR_G_WAITING, TZR_G_DEAD };
 enum { TZR_KIND_ROUTINE, TZR_KIND_THREAD };
+/* A P runs Gs (RUNNING), is in the idle list (IDLE), or belongs to an M in a blocking call
+ * (SYSCALL, TZ08), which sysmon may take it from with a compare-exchange to IDLE. */
+enum { TZR_P_RUNNING, TZR_P_SYSCALL, TZR_P_IDLE };
 
 typedef struct tzr_g tzr_g;
 typedef struct tzr_m tzr_m;
@@ -541,7 +567,8 @@ struct tzr_g {
     tzr_scope *spawn_scope; /* where tsuzuri_tz_go counts children (NULL: scope, or the root) */
     uint64_t id;
     const char *wait_reason;
-    tzr_note note;      /* pseudo-G only */
+    tzr_note note;      /* a pseudo-G's, or a locked G's (note_ready) */
+    int note_ready;     /* a G's note has been initialized (the first lock, TZ08) */
     int doomed;        /* pseudo-G only: woken by the deadlock detector */
     int idle;          /* pseudo-G only: not counted as running (an M's thread outside a blocking call, or
                         * a thread that waits for the items it gave the task runtime) */
@@ -550,6 +577,8 @@ struct tzr_g {
     _Atomic uint32_t select_done;
     uintptr_t *held;    /* the locks that it holds, in the order taken (TZ06), with their kinds */
     uint32_t held_count, held_capacity;
+    tzr_m *lockedm;     /* the M that it stays on (TZ08: a callback, Routine.with_locked_thread) */
+    uint32_t locks;     /* how many locks to its M it holds; the last unlock lets it move */
 #if defined(TZR_TSAN)
     void *tsan_fiber;
 #endif
@@ -569,6 +598,10 @@ struct tzr_p {
     uint32_t runnext_streak; /* owner only: tzr_runqget's takes from runnext in a row */
     tzr_g *gfree;
     int gfree_count;
+    _Atomic int status;            /* TZR_P_* */
+    _Atomic uint32_t syscall_tick; /* one more at each blocking call (TZ08) */
+    uint32_t sysmon_tick;          /* sysmon only: syscall_tick when it last looked */
+    int64_t sysmon_when;           /* sysmon only: when it first saw that call */
 };
 
 struct tzr_m {
@@ -580,6 +613,8 @@ struct tzr_m {
     tzr_m *link;
     int spinning;
     int blocked;   /* inside a blocking call of curg: the thread acts as a pseudo-G */
+    int syscall_depth; /* the nesting of tsuzuri_tz_blocking_enter (TZ08) */
+    tzr_p *oldp;   /* the P that it had before its blocking call */
     void (*after)(tzr_m *, tzr_g *);
     void (*after_unlock)(void *);
     void *after_arg;
@@ -608,6 +643,8 @@ static struct {
     tzr_m *pwait;                 /* Ms back from a blocking call, waiting for a P */
     _Atomic int npwait;           /* their number, read without the lock by the scheduling loop */
     int nmblocked;                /* Ms in a blocking call: their threads count as pseudo-Gs */
+    _Atomic int nmsys;            /* Ms in a blocking call that let sysmon take their P (TZ08) */
+    int nmlocked;                 /* Ms asleep while their locked G waits (TZ08) */
     int mcount;
     _Atomic int nmspinning;
     tzr_p *allp[TZR_MAXPROCS];
@@ -830,11 +867,14 @@ static tzr_g *tzr_globrunqget(tzr_p *p, int max) {
 
 /* ---------------------------------------------------------------- Ps and Ms */
 
+static void tzr_sysmon_kick(void);
+
 static tzr_p *tzr_pidleget(void) {
     tzr_p *p = tzr_sched.pidle;
     if (p) {
         tzr_sched.pidle = p->link;
         atomic_fetch_sub(&tzr_sched.npidle, 1);
+        tzr_sysmon_kick(); /* a P runs again: sysmon watches it */
     }
     return p;
 }
@@ -842,6 +882,7 @@ static tzr_p *tzr_pidleget(void) {
 /* tzr_sched.lock held (or the scheduler not started). An M that is back from a blocking call and
  * waits for a P takes it first. */
 static void tzr_pidleput(tzr_p *p) {
+    atomic_store_explicit(&p->status, TZR_P_IDLE, memory_order_relaxed);
     tzr_m *waiter = tzr_sched.pwait;
     if (waiter) {
         tzr_sched.pwait = waiter->link;
@@ -853,6 +894,12 @@ static void tzr_pidleput(tzr_p *p) {
     p->link = tzr_sched.pidle;
     tzr_sched.pidle = p;
     atomic_fetch_add(&tzr_sched.npidle, 1);
+}
+
+/* The M runs Gs on p from now on. */
+static void tzr_wirep(tzr_m *m, tzr_p *p) {
+    m->p = p;
+    atomic_store_explicit(&p->status, TZR_P_RUNNING, memory_order_relaxed);
 }
 
 static void *tzr_mstart(void *arg);
@@ -906,7 +953,7 @@ static void tzr_stopm(tzr_m *m) {
     tzr_checkdead();
     tzr_mutex_unlock(&tzr_sched.lock);
     tzr_note_sleep(&m->park);
-    m->p = m->nextp;
+    tzr_wirep(m, m->nextp);
     m->nextp = NULL;
 }
 
@@ -946,7 +993,10 @@ static void tzr_report_deadlock(void) {
 /* Called with tzr_sched.lock held whenever an M goes idle or a pseudo-G parks. */
 static void tzr_checkdead(void) {
     if (tzr_sched.deadlocked) return;
-    int running = tzr_sched.mcount - tzr_sched.nmidle - tzr_sched.nmblocked + tzr_sched.npseudo_running;
+    /* An M in a blocking call (TZ08) counts as running: its call may return and wake a G. One that
+     * sleeps while its locked G waits does not. */
+    int running = tzr_sched.mcount - tzr_sched.nmidle - tzr_sched.nmblocked - tzr_sched.nmlocked
+                  + tzr_sched.npseudo_running;
     if (running > 0) return;
     if (atomic_load(&tzr_sched.runq_size) > 0) return;
     if (atomic_load(&tzr_sched.ntimers) > 0) return;
@@ -1059,7 +1109,7 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
                 tzr_p *again = tzr_pidleget();
                 tzr_mutex_unlock(&tzr_sched.lock);
                 if (again) {
-                    m->p = again;
+                    tzr_wirep(m, again);
                     m->spinning = 1;
                     atomic_fetch_add(&tzr_sched.nmspinning, 1);
                 }
@@ -1130,7 +1180,7 @@ static void *tzr_mstart(void *arg) {
 #if defined(TZ_STACK_GUARD)
     tsuzuri_stack_scheduler_thread(); /* the alternate stack on which stack.c reports an overflow */
 #endif
-    m->p = m->nextp;
+    tzr_wirep(m, m->nextp);
     m->nextp = NULL;
     tzr_schedule(m);
     return NULL;
@@ -1157,6 +1207,8 @@ __attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_os_sleep_h
 #endif
 static int32_t tzr_sleep_if_routine(int64_t ns);
 #endif
+TZR_API void tsuzuri_tz_blocking_enter(void);
+TZR_API void tsuzuri_tz_blocking_exit(void);
 
 static void tzr_init(void) {
     long cpus = tzr_online_cpus();
@@ -1172,6 +1224,8 @@ static void tzr_init(void) {
 #if !defined(_WIN32)
     atomic_store_explicit(&tsuzuri_os_sleep_hook, tzr_sleep_if_routine, memory_order_release);
 #endif
+    atomic_store_explicit(&tsuzuri_blocking_enter_hook, tsuzuri_tz_blocking_enter, memory_order_release);
+    atomic_store_explicit(&tsuzuri_blocking_exit_hook, tsuzuri_tz_blocking_exit, memory_order_release);
     for (int i = nprocs - 1; i >= 0; i--) {
         tzr_p *p = calloc(1, sizeof *p);
         if (p == NULL) tzr_fatal("out of memory starting the scheduler");
@@ -1279,6 +1333,30 @@ static void tzr_switch_out(tzr_m *m, tzr_g *g) {
 #endif
 }
 
+static void tzr_handoffp(tzr_p *p);
+static void tzr_acquirep(tzr_m *m);
+
+/* A G locked to its M (TZ08: in a callback of a blocking call, or Routine.with_locked_thread) waits
+ * on its thread, as a pseudo-G does, so that it goes on there: the M gives its P to whoever runs
+ * what is queued (as sysmon does for a blocking call) and takes a P again when the G is woken.
+ * While it sleeps, the M does not count as running for the deadlock detector. */
+static int tzr_park_locked(tzr_m *m, tzr_g *g, void (*unlock)(void *), void *arg) {
+    tzr_p *p = m->p;
+    m->p = NULL;
+    tzr_mutex_lock(&tzr_sched.lock);
+    atomic_store(&g->status, TZR_G_WAITING);
+    tzr_sched.nmlocked++;
+    tzr_mutex_unlock(&tzr_sched.lock);
+    if (unlock) unlock(arg);
+    tzr_handoffp(p);
+    tzr_mutex_lock(&tzr_sched.lock);
+    tzr_checkdead();
+    tzr_mutex_unlock(&tzr_sched.lock);
+    tzr_note_sleep(&g->note);
+    tzr_acquirep(m);
+    return 0;
+}
+
 /* Parks the current G until tzr_ready. `unlock(arg)` runs once the G is off its stack (R1).
  * Returns 1 only for a pseudo-G that the deadlock detector woke. */
 static int tzr_park(void (*unlock)(void *), void *arg, const char *reason) {
@@ -1300,6 +1378,7 @@ static int tzr_park(void (*unlock)(void *), void *arg, const char *reason) {
         return doomed;
     }
     tzr_m *m = tzr_this_m();
+    if (g->lockedm != NULL) return tzr_park_locked(m, g, unlock, arg);
     atomic_store(&g->status, TZR_G_WAITING);
     m->after = tzr_after_park;
     m->after_unlock = unlock;
@@ -1326,6 +1405,14 @@ static void tzr_ready(tzr_g *g) {
         return;
     }
     int expected = TZR_G_WAITING;
+    if (g->lockedm != NULL) { /* it waits on its own M's thread (tzr_park_locked) */
+        tzr_mutex_lock(&tzr_sched.lock);
+        if (!atomic_compare_exchange_strong(&g->status, &expected, TZR_G_RUNNING)) tzr_fatal("bad tzroutine status in ready");
+        tzr_sched.nmlocked--;
+        tzr_mutex_unlock(&tzr_sched.lock);
+        tzr_note_wake(&g->note);
+        return;
+    }
     if (!atomic_compare_exchange_strong(&g->status, &expected, TZR_G_RUNNABLE)) tzr_fatal("bad tzroutine status in ready");
     tzr_m *m = tzr_this_m();
     if (m != NULL && m->p != NULL) {
@@ -1359,6 +1446,18 @@ static void tzr_after_yield(tzr_m *m, tzr_g *g) {
     tzr_mutex_unlock(&tzr_sched.lock);
 }
 
+/* A locked G lets what is queued run on its P and takes a P again: it stays on its thread. */
+static void tzr_yield_locked(tzr_m *m) {
+    tzr_p *p = m->p;
+    if (tzr_runq_empty(p) && atomic_load(&tzr_sched.runq_size) == 0) {
+        tzr_os_yield();
+        return;
+    }
+    m->p = NULL;
+    tzr_startm(p, 0);
+    tzr_acquirep(m);
+}
+
 TZR_API void tsuzuri_tz_yield(void) {
     tzr_m *m = tzr_this_m();
     if (m == NULL || m->curg == NULL || m->blocked) {
@@ -1366,6 +1465,10 @@ TZR_API void tsuzuri_tz_yield(void) {
         return;
     }
     tzr_g *g = m->curg;
+    if (g->lockedm != NULL) {
+        tzr_yield_locked(m);
+        return;
+    }
     m->after = tzr_after_yield;
 #if defined(TZR_TSAN)
     TZR_TSAN_SWITCH(m->tsan_g0);
@@ -1417,6 +1520,7 @@ static void tzr_after_exit(tzr_m *m, tzr_g *g) {
 #if defined(TZR_TSAN)
             __tsan_destroy_fiber(g->tsan_fiber);
 #endif
+            if (g->note_ready) tzr_note_destroy(&g->note);
             free(g->held);
             free(g);
         }
@@ -1556,7 +1660,10 @@ static void tzr_scope_release(tzr_scope *scope) {
 
 /* Starts `code(env)` on a new G counted in `scope` (already counted when `reserved`). It does not
  * ask for the caller's G, so the timer thread spawns without becoming a pseudo-G. */
+static void tzr_sysmon_start(void);
+
 static void tzr_spawn(tzr_scope *scope, void (*code)(void *), void *env, int reserved) {
+    tzr_sysmon_start();
     tzr_g *g = tzr_galloc();
     if (g == NULL) tzr_fatal("cannot allocate a tzroutine stack (out of memory or address space)");
     g->code = code;
@@ -1692,6 +1799,14 @@ TZR_API void tsuzuri_tz_block_leave(void) {
     tzr_mutex_lock(&tzr_sched.lock);
     tzr_set_running(thread, 0);
     tzr_sched.nmblocked--; /* the M counts again, as running */
+    tzr_mutex_unlock(&tzr_sched.lock);
+    tzr_acquirep(m);
+}
+
+/* Takes an idle P for the M, or waits until an M gives one back (tzr_pidleput, tzr_serve_pwait).
+ * Meanwhile the M counts as running: a P that becomes idle goes to it first. */
+static void tzr_acquirep(tzr_m *m) {
+    tzr_mutex_lock(&tzr_sched.lock);
     tzr_p *p = tzr_pidleget();
     if (p == NULL) {
         m->link = tzr_sched.pwait;
@@ -1704,7 +1819,222 @@ TZR_API void tsuzuri_tz_block_leave(void) {
     } else {
         tzr_mutex_unlock(&tzr_sched.lock);
     }
-    m->p = p;
+    tzr_wirep(m, p);
+}
+
+/* A P that its M gave up (a blocking call that sysmon took it from, a locked G that waits): to an M
+ * that runs what is queued, or to the idle list, where an M back from its call or new work takes it. */
+static void tzr_handoffp(tzr_p *p) {
+    if (!tzr_runq_empty(p) || atomic_load(&tzr_sched.runq_size) > 0) {
+        tzr_startm(p, 0);
+        return;
+    }
+    tzr_mutex_lock(&tzr_sched.lock);
+    tzr_pidleput(p);
+    tzr_mutex_unlock(&tzr_sched.lock);
+    /* a G queued before the P was seen idle would wait for nobody */
+    if (atomic_load(&tzr_sched.runq_size) > 0) tzr_wakep();
+}
+
+/* TZ08: a blocking call of a G (an extern function, or a call of os.c, io.c, net.c or gpu.c that may
+ * wait for the OS) lets its P go, as Go's entersyscall does: without a lock, the P is marked SYSCALL
+ * and the M keeps it as `oldp`. Sysmon takes a P that has stayed in the same call for one of its
+ * rounds (tzr_retake) and hands it to an M that runs what is queued. The M that comes back takes its
+ * P again when sysmon has not taken it (a compare-exchange), or an idle one, or waits for one; the G
+ * never leaves its M inside the call. Calls nest (a callback's extern), and a pseudo-G, which holds
+ * no P, does nothing. */
+static void tzr_entersyscall(tzr_m *m) {
+    tzr_p *p = m->p;
+    m->oldp = p;
+    m->p = NULL;
+    atomic_fetch_add_explicit(&tzr_sched.nmsys, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&p->syscall_tick, 1, memory_order_relaxed);
+    atomic_store_explicit(&p->status, TZR_P_SYSCALL, memory_order_release);
+}
+
+static void tzr_exitsyscall(tzr_m *m) {
+    tzr_p *p = m->oldp;
+    m->oldp = NULL;
+    atomic_fetch_sub_explicit(&tzr_sched.nmsys, 1, memory_order_relaxed);
+    int expected = TZR_P_SYSCALL;
+    if (atomic_compare_exchange_strong_explicit(&p->status, &expected, TZR_P_RUNNING, memory_order_acquire,
+                                                memory_order_relaxed)) {
+        m->p = p;
+        return;
+    }
+    /* sysmon took it. The caller reads the call's error number after this (net.c, an extern's C). */
+    int saved = errno;
+#if defined(_WIN32)
+    DWORD last = GetLastError();
+#endif
+    tzr_acquirep(m);
+#if defined(_WIN32)
+    SetLastError(last);
+#endif
+    errno = saved;
+}
+
+TZR_API void tsuzuri_tz_blocking_enter(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked || m->syscall_depth++ > 0) return;
+    tzr_entersyscall(m);
+}
+
+TZR_API void tsuzuri_tz_blocking_exit(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked || --m->syscall_depth > 0) return;
+    tzr_exitsyscall(m);
+}
+
+/* Locking a G to its M (TZ08): it runs only there until the last unlock. tzr_park_locked,
+ * tzr_yield_locked and tzr_ready keep it on that M. */
+static void tzr_lockm(tzr_m *m, tzr_g *g) {
+    if (g->locks++ > 0) return;
+    if (!g->note_ready) {
+        tzr_note_init(&g->note);
+        g->note_ready = 1;
+    }
+    g->lockedm = m;
+}
+
+static void tzr_unlockm(tzr_g *g) {
+    if (--g->locks == 0) g->lockedm = NULL;
+}
+
+/* The entry and the exit of a callback (`tz.callback.*`) that an extern function calls on a G's
+ * thread inside its blocking call: the M takes its P again for the callback, and the G stays locked to
+ * the M, whose stack holds the host's frames (a wait in the callback sleeps on this thread). The exit
+ * goes back into the call. Returns the depth of the call, which the exit restores: 0 when the callback
+ * runs elsewhere (a thread of the host, or a pseudo-G), where both do nothing. */
+TZR_API int32_t tsuzuri_tz_callback_enter(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked || m->syscall_depth == 0) return 0;
+    int32_t depth = m->syscall_depth;
+    m->syscall_depth = 0;
+    tzr_exitsyscall(m);
+    tzr_lockm(m, m->curg);
+    return depth;
+}
+
+TZR_API void tsuzuri_tz_callback_exit(int32_t depth) {
+    if (depth == 0) return;
+    tzr_m *m = tzr_this_m(); /* the same M: the G was locked to it */
+    tzr_unlockm(m->curg);
+    tzr_entersyscall(m);
+    m->syscall_depth = depth;
+}
+
+/* Routine.with_locked_thread (TZ08 Phase 3): the calling G stays on its M's thread from the lock to
+ * the unlock, for host APIs bound to a thread. A pseudo-G is its thread already. */
+TZR_API void tsuzuri_tz_lock_thread(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked) return;
+    tzr_lockm(m, m->curg);
+}
+
+TZR_API void tsuzuri_tz_unlock_thread(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked) return;
+    tzr_unlockm(m->curg);
+}
+
+/* ---------------------------------------------------------------- sysmon (TZ08) */
+
+/* One thread, started by the first spawn, that takes the P of a blocking call (tzr_retake). It looks
+ * every 20 µs, twice as long after 50 rounds that did nothing, up to 10 ms, and back to 20 µs after
+ * a round that did something (Go's sysmon). While every P is idle nothing can need it, so it sleeps
+ * until a P is taken again (tzr_pidleget kicks it). */
+#define TZR_SYSMON_MIN 20000           /* ns */
+#define TZR_SYSMON_MAX 10000000        /* ns */
+#define TZR_SYSCALL_LONG 10000000      /* ns: a call this long gives its P up even with nothing queued */
+
+static struct {
+    tzr_mutex lock;
+    tzr_cond wake;
+    tzr_once once;
+    _Atomic int started;
+    _Atomic int parked;
+} tzr_sysmon_state = {
+    .lock = TZR_MUTEX_INIT,
+#if !defined(__linux__)
+    .wake = TZR_COND_INIT, /* Linux initializes it with the monotonic clock (tzr_timer_cond_init) */
+#endif
+    .once = TZR_ONCE_INIT,
+};
+
+static void tzr_sysmon_kick(void) {
+    if (!atomic_load(&tzr_sysmon_state.parked)) return;
+    tzr_mutex_lock(&tzr_sysmon_state.lock);
+    atomic_store(&tzr_sysmon_state.parked, 0);
+    tzr_cond_signal(&tzr_sysmon_state.wake);
+    tzr_mutex_unlock(&tzr_sysmon_state.lock);
+}
+
+/* Takes each P that has been in the same blocking call since the last round, unless nothing is
+ * queued on it, another P or a spinning M can take new work, and the call is younger than 10 ms
+ * (Go's retake): such a P is left to its M, which saves the handoff of a short call. */
+static int tzr_retake(int64_t now) {
+    int took = 0;
+    for (int i = 0; i < tzr_sched.nprocs; i++) {
+        tzr_p *p = tzr_sched.allp[i];
+        if (atomic_load_explicit(&p->status, memory_order_acquire) != TZR_P_SYSCALL) continue;
+        uint32_t tick = atomic_load_explicit(&p->syscall_tick, memory_order_relaxed);
+        if (tick != p->sysmon_tick) {
+            p->sysmon_tick = tick;
+            p->sysmon_when = now;
+            continue;
+        }
+        if (tzr_runq_empty(p) && atomic_load(&tzr_sched.npidle) + atomic_load(&tzr_sched.nmspinning) > 0
+            && now - p->sysmon_when < TZR_SYSCALL_LONG)
+            continue;
+        int expected = TZR_P_SYSCALL;
+        if (!atomic_compare_exchange_strong_explicit(&p->status, &expected, TZR_P_IDLE, memory_order_acq_rel,
+                                                     memory_order_relaxed))
+            continue; /* its M came back first */
+        tzr_handoffp(p);
+        took = 1;
+    }
+    return took;
+}
+
+static void *tzr_sysmon(void *arg) {
+    (void)arg;
+    int64_t delay = TZR_SYSMON_MIN;
+    int quiet = 0;
+    tzr_mutex_lock(&tzr_sysmon_state.lock);
+    for (;;) {
+        if (atomic_load(&tzr_sched.npidle) == tzr_sched.nprocs) {
+            /* Dekker with tzr_pidleget: either it sees `parked`, or this sees the P it took. */
+            atomic_store(&tzr_sysmon_state.parked, 1);
+            while (atomic_load(&tzr_sysmon_state.parked) && atomic_load(&tzr_sched.npidle) == tzr_sched.nprocs)
+                tzr_cond_wait_for(&tzr_sysmon_state.wake, &tzr_sysmon_state.lock, -1);
+            atomic_store(&tzr_sysmon_state.parked, 0);
+            delay = TZR_SYSMON_MIN;
+            quiet = 0;
+        }
+        tzr_cond_wait_for(&tzr_sysmon_state.wake, &tzr_sysmon_state.lock, delay);
+        tzr_mutex_unlock(&tzr_sysmon_state.lock);
+        int took = tzr_retake(tzr_nanotime());
+        tzr_mutex_lock(&tzr_sysmon_state.lock);
+        if (took) {
+            delay = TZR_SYSMON_MIN;
+            quiet = 0;
+        } else if (++quiet > 50 && delay < TZR_SYSMON_MAX) {
+            delay = delay * 2 > TZR_SYSMON_MAX ? TZR_SYSMON_MAX : delay * 2;
+        }
+    }
+    return NULL;
+}
+
+static void tzr_sysmon_init(void) {
+    tzr_timer_cond_init(&tzr_sysmon_state.wake);
+    tzr_thread_start(tzr_sysmon, NULL, 256 * 1024, "cannot start the sysmon thread");
+    atomic_store(&tzr_sysmon_state.started, 1);
+}
+
+static void tzr_sysmon_start(void) {
+    if (!atomic_load_explicit(&tzr_sysmon_state.started, memory_order_acquire))
+        tzr_run_once(&tzr_sysmon_state.once, tzr_sysmon_init);
 }
 
 /* The depth of the blocking calls of the calling G, and leaving those that a trap skipped: a failure
