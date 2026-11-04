@@ -218,7 +218,7 @@ jobs:
           # on the macOS that B08 used, so macOS runs those blocks without sanitizers.
           if [ "$RUNNER_OS" = macOS ]; then export TSUZURI_NO_SANITIZERS=1; fi
           status=0
-          for block in address resolve sockets async runtime alloc; do
+          for block in address resolve sockets async runtime alloc tzroutine; do
             node ../tests/net.mjs toolchain/bin/tsuzuri "$block" || status=1
           done
           # JSPI needs the Node.js 24 of this job.
@@ -226,7 +226,8 @@ jobs:
           exit $status
       # Windows (Winsock): the bundled MinGW toolchain is what the extension ships; x64 also runs the LLVM MSVC toolchain.
       # Only the blocks that do not need POSIX descriptors or sanitizers run here (address, resolve, and async, which includes
-      # the accept after a reset connection and the datagram sent to a closed port that the runtime handles for Windows).
+      # the accept after a reset connection and the datagram sent to a closed port that the runtime handles for Windows, and
+      # tzroutine, the WSAPoll netpoller of TZ08).
       - name: Net sockets and WebAssembly on Windows
         if: runner.os == 'Windows'
         run: |
@@ -234,7 +235,7 @@ jobs:
           export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
           export TSUZURI_WASM64=0
           status=0
-          for block in address resolve async; do
+          for block in address resolve async tzroutine; do
             node ../tests/net.mjs toolchain/bin/tsuzuri.exe "$block" || status=1
           done
           node ../tests/net_wasm.mjs toolchain/bin/tsuzuri.exe || status=1
@@ -245,7 +246,7 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang.exe"
           export TSUZURI_WASM_LD="$LLVM_PREFIX/bin/wasm-ld.exe"
           status=0
-          for block in resolve async; do
+          for block in resolve async tzroutine; do
             node ../tests/net.mjs toolchain/bin/tsuzuri.exe "$block" || status=1
           done
           exit $status

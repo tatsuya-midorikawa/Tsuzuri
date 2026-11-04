@@ -194,6 +194,8 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | AsyncTake | AsyncPut | AsyncNextId | AsyncClock | AsyncWait | AsyncPosted
         | AsyncRetire | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs
         | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => Some(Task),
+        // TZ08: the function runs on the calling tzroutine's own thread.
+        RoutineWithLockedThread => Some(Task),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some(Clock),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
@@ -1545,7 +1547,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            181
+            182
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

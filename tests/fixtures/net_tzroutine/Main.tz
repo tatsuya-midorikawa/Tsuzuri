@@ -1,0 +1,106 @@
+// TZ08: Net on tzroutines. A server with a tzroutine per connection and 100 clients, each a tzroutine,
+// echo at once; with one P too, since a tzroutine that waits for its socket waits alone.
+def message :: own i64 -> [ubyte]
+fn message index = Array.init (index % 7 + 1) (\at -> ((index + at) % 251) as ubyte)
+
+def sum_of :: ref [ubyte] -> i64
+fn sum_of bytes =
+    let mut total = 0
+    for at in 0 ..< bytes.length do
+        total = total + (bytes[at] as i64)
+    total
+
+def main :: unit -> i32 = \() ->
+    let! bound = Net.bind (Maybe.get (Net.parse_address (ref "127.0.0.1:0")))
+    let listener = Result.get bound
+    let address = Net.local_addr listener
+    let results: Channel<bool> = Channel.make 0
+    tzroutine {
+        for _connection in 0 ..< 100 do
+            let! accepted = Net.accept listener Maybe.None
+            let stream = Result.get accepted
+            tzroutine {
+                let! received = Net.read stream 64 Maybe.None
+                let! _sent = Net.write stream (Result.get received) Maybe.None
+                let! _closed = Net.close stream
+            }
+        let! _closed = Net.close_listener listener
+    }
+    for index in 0 ..< 100 do
+        let out = Channel.share results
+        tzroutine {
+            let! connected = Net.connect address Maybe.None
+            let stream = Result.get connected
+            let sent = message index
+            let length = sent.length
+            let expected = sum_of (ref sent)
+            let! _sent = Net.write stream sent Maybe.None
+            let! received = Net.read stream 64 Maybe.None
+            let bytes = Result.get received
+            let! _closed = Net.close stream
+            Channel.send out (bytes.length == length && sum_of (ref bytes) == expected)
+        }
+    let mut echoes = 0
+    for _client in 0 ..< 100 do
+        match Channel.recv results with
+        | Maybe.Some true -> echoes = echoes + 1
+        | _ -> ()
+    do! IO.write_line $"echoes: {echoes}"
+    // A read with nobody writing times out, and the other tzroutines go on meanwhile.
+    let! idle_bound = Net.bind (Maybe.get (Net.parse_address (ref "127.0.0.1:0")))
+    let idle_listener = Result.get idle_bound
+    let idle_address = Net.local_addr idle_listener
+    let ticks = Arc.new (Atomic.create 0i64)
+    let ticker = Arc.share (ref ticks)
+    let stop = Arc.new (Atomic.create false)
+    let stopped = Arc.share (ref stop)
+    tzroutine {
+        while !Atomic.load (Arc.get (ref stopped)) do
+            let _tick = Atomic.fetch_add (Arc.get (ref ticker)) 1i64
+            Time.sleep (Time.millisecond())
+    }
+    let ticks_seen = Arc.share (ref ticks)
+    let stopper = Arc.share (ref stop)
+    tzroutine {
+        let! connected = Net.connect idle_address Maybe.None
+        let stream = Result.get connected
+        let before = Atomic.load (Arc.get (ref ticks_seen))
+        let! received = Net.read stream 16 (Maybe.Some 50)
+        let kind = match received with
+            | Result.Ok _ -> "data"
+            | Result.Error error -> to_string (Net.error_kind error)
+        let after = Atomic.load (Arc.get (ref ticks_seen))
+        do! IO.write_line $"read: {kind}, others ran: {after > before}"
+        Atomic.store (Arc.get (ref stopper)) true
+        let! _closed = Net.close stream
+    }
+    let! accepted = Net.accept idle_listener (Maybe.Some 5000)
+    let idle_stream = Result.get accepted
+    while !Atomic.load (Arc.get (ref stop)) do
+        Routine.yield ()
+    let! _closed = Net.close idle_stream
+    // A read that waits for its stream ends when another tzroutine closes the stream: it reports the
+    // closed handle (InvalidInput) instead of waiting for ever.
+    let! peer_connected = Net.connect idle_address Maybe.None
+    let peer = Result.get peer_connected
+    let! reader_accepted = Net.accept idle_listener (Maybe.Some 5000)
+    let shared = Result.get reader_accepted
+    let reads: Channel<string> = Channel.make 1
+    let read_out = Channel.share reads
+    tzroutine {
+        let! received = Net.read shared 16 Maybe.None
+        Channel.send read_out (match received with
+            | Result.Ok _ -> "data"
+            | Result.Error error -> match error.kind with
+                | Os.InvalidInput -> "closed"
+                | _ -> "other")
+    }
+    Time.sleep (20 * Time.millisecond())
+    let! _closed_shared = Net.close shared
+    let read_after_close = match Channel.recv reads with
+        | Maybe.Some text -> text
+        | Maybe.None -> "none"
+    do! IO.write_line $"read across a close: {read_after_close}"
+    let! _closed_peer = Net.close peer
+    let! _closed_listener = Net.close_listener idle_listener
+    0

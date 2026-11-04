@@ -12,7 +12,7 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 180;
+const IMPURE_BUILTINS: usize = 181;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
@@ -29,6 +29,8 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | ParallelMap | ParallelMapRef | ParallelReduce | ParallelForEachChunk | DomainRun
         | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs
         | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => Some("task"),
+        // TZ08: the function runs on the calling tzroutine's own thread.
+        RoutineWithLockedThread => Some("task"),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some("os"),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {

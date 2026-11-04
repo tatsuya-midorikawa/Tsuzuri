@@ -12,7 +12,8 @@
 - 捕捉は所有値のムーブか Copy の複製で、`Send` でなければなりません。借用（`ref` など）を捕捉すると `E1013`、`Rc` も `E1013` です。 <!-- rule: TSK-013 -->
 - 境界（`main`・`export` の呼び出し・`test`・`bench`）は、その中で起動した tzroutine がすべて終わるまで戻りません。 <!-- rule: TSK-012 -->
 - ただし、トップレベルの最後の式や `export` の戻り値は、**待つ前に**計算されます。子の結果を読むときは、子の完了を数えて待ってから読みます。
-- `Routine` モジュール（`go`・`yield`・`count`・`max_procs`・`cpu_count`）で、関数値の起動、実行の譲渡、数の問い合わせができます（[Routine](../built-in-types-and-modules/routine.md)）。
+- `Routine` モジュール（`go`・`yield`・`count`・`max_procs`・`cpu_count`・`with_locked_thread`）で、関数値の起動、実行の譲渡、数の問い合わせ、OS スレッドへの固定ができます（[Routine](../built-in-types-and-modules/routine.md)）。
+- `extern` 関数・ファイル・ソケットなど、OS で待つ呼び出しの間も、ほかの tzroutine は走り続けます（[OS を待つ呼び出し](#os-を待つ呼び出し)）。
 - tzroutine の間の値の受け渡しには [Channel](../built-in-types-and-modules/channel.md) を使います（Go の `chan T`）。
 - 対応するのはネイティブの macOS・Linux・Windows（aarch64・x86-64）です。WebAssembly で tzroutine を起動するプログラムは `E2000` です。
 
@@ -213,10 +214,68 @@ tzroutine は M:N のスケジューラーで走ります。
 
 - 同時に tzroutine を走らせる OS スレッドの数（P の数）は、既定でオンラインの CPU 数（256 まで）です。環境変数 `TSUZURI_MAXPROCS`（1〜256 の 10 進）で、起動時に 1 回だけ決められます。`Routine.max_procs ()` がその値です。
 - 待つ tzroutine（`Routine.yield`・`Time.sleep`・`Time.sleep_ms`・境界の待ちなど）は OS スレッドを止めないので、待つ tzroutine の数はスレッド数に縛られません。周期の処理は [Ticker](../built-in-types-and-modules/ticker.md#周期の処理を止める)、遅らせた処理は [`Time.after_func`](../built-in-types-and-modules/time.md#遅らせて呼ぶtimeafter_func) で書きます。
-- プリエンプションはまだありません。待たずに計算し続ける tzroutine は、その OS スレッドを離しません。長い計算では、ときどき `Routine.yield ()` を呼びます。`extern` 関数やファイルの I/O など、OS で待つ呼び出しも、その間 OS スレッドを止めます。
+- プリエンプションはまだありません。待たずに計算し続ける tzroutine は、その OS スレッドを離しません。長い計算では、ときどき `Routine.yield ()` を呼びます。OS で待つ呼び出しは次の節です。
 - tzroutine の中の `Task.run (Task.parallel …)`・`Task.scope`・`Parallel.*` は、終わりを待つ間、P を手放します。`TSUZURI_MAXPROCS=1` でも、ほかの tzroutine と、そのタスクの中で起動した tzroutine は走ります。待っている間に呼び出したスレッドで走るタスクは、tzroutine でないスレッドと同じく、そのスレッドを止めて待ちます。
 - 各 tzroutine のスタックは、既定で 1 MiB の予約です（触れたページだけが実メモリになります）。下端の 128 KiB はガードで、溢れると `trap: stack overflow` と報告して終わります（Windows では理由なしで終わります）。tzroutine を起動するプログラムは、すべての関数が大きな frame のページを確保の時に順に触れる（stack probe）ので、ガードより大きな frame もガードを飛び越えません。深い再帰には `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576 の 10 進、KiB）で予約を増やします。範囲外の値は無視して既定値を使います。
 - Linux では、1 つのスタックが mapping を 2 つ使うので、同時に生きる tzroutine はおよそ 3 万個（`vm.max_map_count` の既定 65,530 の半分）が上限です。超えると `Tsuzuri runtime: cannot allocate a tzroutine stack (out of memory or address space)` と書いて終わります。
+
+## OS を待つ呼び出し
+
+tzroutine が OS を待つ呼び出しに入っても、ほかの tzroutine は止まりません（Go と同じ仕組みです）。 <!-- rule: TSK-031 -->
+
+- **P の引き継ぎ**: 次の呼び出しの間、その tzroutine の OS スレッドは P を手放せる状態になります。スケジューラーの見張りのスレッド（sysmon）が、同じ呼び出しが 20 µs ほど続いているのを見つけると、P を取り上げて別の OS スレッドに渡し、待っている tzroutine を走らせます。呼び出しから戻った tzroutine は、P を取り戻せればそのまま続け、取り戻せなければ空いた P を待ちます。短い呼び出しの費用は、印の 2 回の atomic な書き込みです。
+  - `extern` 関数の呼び出し（すべて。どの関数が待つかを型から知れないため）
+  - `File`・`Dir`・`Process.run`・`Random` の OS の呼び出し、標準入出力（`IO.read_line`・`IO.write_line` など）
+  - `Net.resolve`（名前解決）、ソケットを閉じる呼び出し
+  - GPU の装置の呼び出し（`Gpu.request`・カーネルの実行）
+- **ソケットの待ち**: `Net.accept`・`Net.read`・`Net.write`・`Net.connect` などがソケットの準備を待つときは、その tzroutine だけが待ちます（netpoller。macOS は kqueue、Linux は epoll、Windows は `WSAPoll` の 1 本のスレッド）。OS スレッドを止めないので、接続ごとに tzroutine を起動するサーバーを、`TSUZURI_MAXPROCS=1` でも書けます。時間切れ（`Maybe.Some ms`）と、待っているソケットを閉じたときの扱いは、tzroutine でないスレッドと同じです（[Net](../built-in-types-and-modules/net.md#tzroutine-の中の-net)）。
+- **デッドロックの判定**: OS を待つ呼び出しの中の tzroutine と、ソケットを待つ tzroutine は、外から起きうるので、ほかが全員眠っていてもデッドロックとは判定しません。
+- **コールバック**: `extern` 関数が Tsuzuri の関数を呼び返す（[静的コールバック](../compiler/native-interop.md#静的コールバック)）か、呼び出しの中でホストが `export` 関数を呼ぶと、その間は P を取り戻して普通の tzroutine として走ります。ホストの C の frame がそのスレッドのスタックにあるので、その中で待っても、tzroutine はその OS スレッドで続きます（[`Routine.with_locked_thread`](../built-in-types-and-modules/routine.md#routinewith_locked_thread) と同じ固定）。
+- tzroutine でないスレッド（`main` のトップレベル、`export` を呼んだホストのスレッド）は、今までどおり、そのスレッドで待ちます。
+
+次の例では、ホストの C 関数 `host_wait_ms` が 300 ms 待つ間に、ほかの 2 つの tzroutine が 1,000 回往復し、`rounds=1000 slept` と出力します（`TSUZURI_MAXPROCS=1` でも同じです。ホストを `--link` でリンクします）。
+
+```tsuzuri
+extern def host_wait_ms :: i64 -> unit
+
+let order: Channel<string> = Channel.make 2
+let started: Channel<unit> = Channel.make 1
+let sleeper_started = Channel.share started
+let sleeper_order = Channel.share order
+tzroutine {
+    Channel.send sleeper_started ()
+    host_wait_ms 300
+    Channel.send sleeper_order "slept"
+}
+let requests: Channel<i64> = Channel.make 0
+let replies: Channel<i64> = Channel.make 0
+let server_requests = Channel.share requests
+let server_replies = Channel.share replies
+tzroutine {
+    for value in server_requests do
+        Channel.send server_replies (value + 1)
+}
+let pinger_started = Channel.share started
+let pinger_order = Channel.share order
+tzroutine {
+    let _go = Channel.recv pinger_started
+    let mut value = 0i64
+    for _round in 0 ..< 1000 do
+        Channel.send requests value
+        value = match Channel.recv replies with
+            | Maybe.Some next -> next
+            | Maybe.None -> -1
+    Channel.close requests
+    Channel.send pinger_order $"rounds={value}"
+}
+let first = match Channel.recv order with
+    | Maybe.Some text -> text
+    | Maybe.None -> "none"
+let second = match Channel.recv order with
+    | Maybe.Some text -> text
+    | Maybe.None -> "none"
+$"{first} {second}"
+```
 
 ## 失敗
 

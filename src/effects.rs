@@ -573,6 +573,10 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         RoutineCount | RoutineMaxProcs | RoutineCpuCount => {
             facts(Some(Effect::Task), false, false, false, false, false, None)
         }
+        // TZ08: the function runs on the calling thread, which is all that changes.
+        RoutineWithLockedThread => {
+            facts(Some(Effect::Task), false, false, false, true, false, None)
+        }
         // TZ05: the timers read the clock; a period of 0 or less traps; a timer's channel is allocated.
         TimeSleep => facts(Some(Effect::Os), false, false, false, false, false, None),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
@@ -3598,8 +3602,8 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 356);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 181);
+        assert_eq!(Builtin::ALL.len(), 357);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 182);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 175);
     }
 
@@ -3609,7 +3613,7 @@ mod tests {
         assert_eq!(by(Effect::Io), 10);
         assert_eq!(by(Effect::Os), 21);
         assert_eq!(by(Effect::Net), 12);
-        assert_eq!(by(Effect::Task), 19);
+        assert_eq!(by(Effect::Task), 20);
         assert_eq!(by(Effect::Atomic), 92);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
@@ -3635,7 +3639,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 29);
+        assert_eq!(count(|facts| facts.callbacks), 30);
     }
 
     fn checked(source: &str) -> CheckedModule {

@@ -24,13 +24,15 @@ const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", 
   "semaphore", "context_tree", "context_deadline", "context_release", "context_deadline_race", "context_after",
   "context_expire_boundary",
   "parallel", "scope_run",
+  "blocking_handoff", "blocking_reacquire", "blocking_deadlock", "blocking_callback", "locked_thread", "locked_yield", "locked_yielders",
+  "netpoll_pipe", "netpoll_timeout", "netpoll_close", "netpoll_race",
   "long_sleep"];
 const windows = process.platform === "win32";
 const platformFlags = windows
   ? [`--target=${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "-fuse-ld=lld", "-D_CRT_SECURE_NO_WARNINGS"]
   : ["-pthread"];
 // After the inputs, for linkers with --as-needed: glibc keeps fegetround and fesetround in libm.
-const libraries = windows ? [] : ["-lm"];
+const libraries = windows ? ["-lws2_32"] : ["-lm"];
 // The cases whose children end by a signal, which a sanitizer reports in its own way.
 const signalled = new Set(["stack_size", "failures"]);
 

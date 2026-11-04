@@ -1416,6 +1416,12 @@ fn emit_program(
     } else {
         output
     };
+    // TZ08: on WebAssembly the tzroutines of JSPI share one thread, and a call holds no P there.
+    let output = if spawning && !wasm {
+        with_blocking_externs(output, &extern_symbols(module), &tzroutine_exports(module))
+    } else {
+        output
+    };
     Ok((
         simd::with_vector_alignment(unique_declarations(limit_worker_inlining(output))),
         marks,
@@ -1552,6 +1558,106 @@ pub(crate) fn with_tzroutine_scopes(ir: String, boundaries: &BTreeSet<String>) -
         output.push_str(
             "declare ptr @tsuzuri_tz_scope_enter()\ndeclare void @tsuzuri_tz_boundary_leave(ptr)\n",
         );
+    }
+    output
+}
+
+/// The C symbols of the extern functions of the program (TZ08).
+fn extern_symbols(module: &CheckedModule) -> BTreeSet<String> {
+    module
+        .functions
+        .iter()
+        .filter_map(|function| match &function.body.kind {
+            TypedExprKind::HostCall(import, _) => Some(import.native_symbol.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The callee of a direct `call` instruction, without its `@`.
+fn direct_callee(body: &str) -> Option<&str> {
+    let after = body.split_once("call ")?.1;
+    let name = after.split_once('@')?.1;
+    let end = name.find('(')?;
+    Some(&name[..end])
+}
+
+/// The public wrappers of the exports (`tz_<name>`), which a host may also call from inside an extern
+/// function that a tzroutine called.
+fn tzroutine_exports(module: &CheckedModule) -> BTreeSet<String> {
+    module
+        .functions
+        .iter()
+        .filter(|function| function.exported)
+        .map(|function| format!("tz_{}", function.name))
+        .collect()
+}
+
+/// Makes every call of an extern function a blocking call in a native program that spawns (TZ08): it
+/// is between `tsuzuri_tz_blocking_enter` and `_exit`, so that sysmon can give the P of a tzroutine
+/// that waits in it to another M. A callback that the host calls inside such a call (the C wrapper
+/// `tz.callback.*`), and an export that it calls there (`entries`), takes the P back for its body
+/// (`tsuzuri_tz_callback_enter`) and goes back into the call before each `ret`
+/// (`tsuzuri_tz_callback_exit`). On a thread that is not a scheduler worker in such a call, each of
+/// them does nothing.
+pub(crate) fn with_blocking_externs(
+    ir: String,
+    symbols: &BTreeSet<String>,
+    entries: &BTreeSet<String>,
+) -> String {
+    if symbols.is_empty() {
+        return ir;
+    }
+    let mut output = String::with_capacity(ir.len() + 256);
+    let mut calls = false;
+    let mut callbacks = false;
+    let mut lines = ir.split_inclusive('\n');
+    while let Some(line) = lines.next() {
+        let header = line.trim_end();
+        if header.starts_with("define ")
+            && header.ends_with('{')
+            && (header.contains(" @tz.callback.")
+                || header
+                    .split_once(" @")
+                    .and_then(|(_, name)| name.split_once('('))
+                    .is_some_and(|(name, _)| entries.contains(name)))
+        {
+            callbacks = true;
+            output.push_str(line);
+            let Some(label) = lines.next() else { break };
+            output.push_str(label);
+            output.push_str("  %tz.callback = call i32 @tsuzuri_tz_callback_enter()\n");
+            for line in lines.by_ref() {
+                let body = line.trim_start();
+                if body.starts_with("ret ") || body.trim_end() == "ret void" {
+                    output.push_str("  call void @tsuzuri_tz_callback_exit(i32 %tz.callback)\n");
+                }
+                output.push_str(line);
+                if line.trim_end() == "}" {
+                    break;
+                }
+            }
+            continue;
+        }
+        let body = line.trim_start();
+        if !body.starts_with("declare ")
+            && direct_callee(body).is_some_and(|callee| symbols.contains(callee))
+        {
+            calls = true;
+            output.push_str("  call void @tsuzuri_tz_blocking_enter()\n");
+            output.push_str(line);
+            output.push_str("  call void @tsuzuri_tz_blocking_exit()\n");
+            continue;
+        }
+        output.push_str(line);
+    }
+    if calls {
+        output.push_str(
+            "declare void @tsuzuri_tz_blocking_enter()\ndeclare void @tsuzuri_tz_blocking_exit()\n",
+        );
+    }
+    if callbacks {
+        output.push_str("declare i32 @tsuzuri_tz_callback_enter()\ndeclare void @tsuzuri_tz_callback_exit(i32)\n");
     }
     output
 }
@@ -7029,6 +7135,28 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     /// then drops the closure and frees the box.
     fn routine_builtin(&mut self, builtin: Builtin, ty: &Type) -> String {
         let (declaration, call) = match builtin {
+            Builtin::RoutineWithLockedThread => {
+                let Type::Function(parameters, _) = ty else {
+                    unreachable!("builtin has function type")
+                };
+                // TZ08: a native G stays on its M from the lock to the unlock; WebAssembly runs one
+                // thread, so the function is just called there.
+                let native = !self.globals.wasm;
+                if native {
+                    self.intrinsics
+                        .insert("declare void @tsuzuri_tz_lock_thread()".into());
+                    self.intrinsics
+                        .insert("declare void @tsuzuri_tz_unlock_thread()".into());
+                    self.instruction("call void @tsuzuri_tz_lock_thread()");
+                }
+                let (value, _) =
+                    self.apply_value("%arg0", &parameters[0], Some((&Type::Unit, "0")), true);
+                if native {
+                    self.instruction("call void @tsuzuri_tz_unlock_thread()");
+                }
+                self.drop_value(&parameters[0], "%arg0");
+                return value;
+            }
             Builtin::RoutineGo => {
                 let Type::Function(parameters, _) = ty else {
                     unreachable!("builtin has function type")

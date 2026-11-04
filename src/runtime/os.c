@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdatomic.h>
@@ -44,6 +45,31 @@ struct tz_os_buffer {
     unsigned char *data;
     int64_t length;
 };
+
+/* The blocking-call hooks (TZ08): os.c, io.c, net.c and gpu.c call them around a call that may wait
+ * for the OS, and the scheduler sets them when it starts (tzr_init), so that a tzroutine in such a
+ * call lets sysmon give its P away. The parts of the runtime are one translation unit, so the first
+ * part that has this block defines them; a program without tzroutines leaves them null. */
+#ifndef TSUZURI_BLOCKING_HOOKS_DEFINED
+#define TSUZURI_BLOCKING_HOOKS_DEFINED
+#include <stdatomic.h>
+/* Windows has no weak data: a selectany definition is shared by the units that define it (the runner of
+ * `tsuzuri test` compiles each part of the runtime alone). */
+#if defined(_WIN32)
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_enter_hook)(void) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_exit_hook)(void) = 0;
+#else
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_enter_hook)(void);
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+#endif
+#define TZ_BLOCKING_CALL(hook)                                                                   \
+    do {                                                                                         \
+        void (*tz_blocking_hook)(void) = atomic_load_explicit(&(hook), memory_order_acquire);   \
+        if (tz_blocking_hook != 0) tz_blocking_hook();                                          \
+    } while (0)
+#define TZ_BLOCKING_ENTER() TZ_BLOCKING_CALL(tsuzuri_blocking_enter_hook)
+#define TZ_BLOCKING_EXIT() TZ_BLOCKING_CALL(tsuzuri_blocking_exit_hook)
+#endif
 
 enum {
     TZ_OS_NOT_FOUND = 1,
@@ -314,7 +340,7 @@ static int64_t tz_os_environment(struct tz_os_buffer *output, const char *name) 
 // op 0 reads a file, 1 lists a directory, 2 returns the working directory (the path is ignored),
 // 3 reads an environment variable (a missing one is kind 1 with code 0), and 4 and 5 describe a
 // path, following a symbolic link (4) or not (5).
-TZ_OS_API int64_t tsuzuri_os_read(struct tz_os_buffer *output, int32_t operation, const unsigned char *path, int64_t length) {
+static int64_t tz_os_read_now(struct tz_os_buffer *output, int32_t operation, const unsigned char *path, int64_t length) {
     tz_os_clear(output);
     if (operation == 2) return tz_os_current_directory(output);
     int64_t status = 0;
@@ -339,6 +365,14 @@ TZ_OS_API int64_t tsuzuri_os_read(struct tz_os_buffer *output, int32_t operation
         break;
     }
     free(name);
+    return status;
+}
+
+// TZ08: a tzroutine in this call lets its P go.
+TZ_OS_API int64_t tsuzuri_os_read(struct tz_os_buffer *output, int32_t operation, const unsigned char *path, int64_t length) {
+    TZ_BLOCKING_ENTER();
+    int64_t status = tz_os_read_now(output, operation, path, length);
+    TZ_BLOCKING_EXIT();
     return status;
 }
 
@@ -390,7 +424,7 @@ static int64_t tz_os_write_file(const char *name, int flags, const unsigned char
 
 // op 0 creates or truncates and writes, 1 creates or appends, 2 makes a directory (parents are
 // not created), 3 removes an empty directory, and 4 unlinks a file or a symbolic link.
-TZ_OS_API int64_t tsuzuri_os_write(int32_t operation, const unsigned char *path, int64_t path_length, const unsigned char *data, int64_t data_length) {
+static int64_t tz_os_write_now(int32_t operation, const unsigned char *path, int64_t path_length, const unsigned char *data, int64_t data_length) {
     int64_t status = 0;
     char *name = tz_os_name(path, path_length, &status);
     if (name == NULL) return status;
@@ -418,6 +452,14 @@ TZ_OS_API int64_t tsuzuri_os_write(int32_t operation, const unsigned char *path,
     return status;
 }
 
+// TZ08: a tzroutine in this call lets its P go.
+TZ_OS_API int64_t tsuzuri_os_write(int32_t operation, const unsigned char *path, int64_t path_length, const unsigned char *data, int64_t data_length) {
+    TZ_BLOCKING_ENTER();
+    int64_t status = tz_os_write_now(operation, path, path_length, data, data_length);
+    TZ_BLOCKING_EXIT();
+    return status;
+}
+
 // Open files (File.Handle). A handle is (generation << 32) | (slot + 1). Every open file gets a
 // generation that is never used again, so a closed or stale handle is rejected instead of reaching
 // whichever file now has the same descriptor number. The table is freed when no file is open.
@@ -428,11 +470,16 @@ struct tz_os_file {
     int writable;
 };
 
+// The table is shared by the threads that run tzroutines, which may open, use and close files at
+// once (TZ08: one that waits in a call gives its P to another), so it changes under a lock; a call
+// takes what it needs under the lock and waits for the system outside it.
 static struct tz_os_file *tz_os_files = NULL;
 static size_t tz_os_file_capacity = 0;
 static size_t tz_os_files_open = 0;
 static int64_t tz_os_generation = 0;
+static pthread_mutex_t tz_os_files_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// The entry of `handle`, or NULL (the table's lock held).
 static struct tz_os_file *tz_os_file_of(int64_t handle) {
     if (handle <= 0) return NULL;
     uint64_t slot = (uint64_t)handle & UINT64_C(0xffffffff);
@@ -448,7 +495,7 @@ static int64_t tz_os_bad_handle(void) {
 
 // op 0 opens for reading, 1 creates or truncates for writing, 2 creates or appends, and 3 creates a
 // new file and fails when it exists. A failure returns the negated status.
-TZ_OS_API int64_t tsuzuri_os_open(int32_t mode, const unsigned char *path, int64_t length) {
+static int64_t tz_os_open_now(int32_t mode, const unsigned char *path, int64_t length) {
     int64_t status = 0;
     char *name = tz_os_name(path, length, &status);
     if (name == NULL) return -status;
@@ -481,42 +528,59 @@ TZ_OS_API int64_t tsuzuri_os_open(int32_t mode, const unsigned char *path, int64
         close(descriptor);
         return -tz_os_error(error);
     }
-    if (tz_os_generation >= INT32_MAX) {
-        close(descriptor);
-        return -tz_os_status(TZ_OS_OTHER, EOVERFLOW);
-    }
+    pthread_mutex_lock(&tz_os_files_lock);
+    int64_t failure = 0;
+    if (tz_os_generation >= INT32_MAX) failure = tz_os_status(TZ_OS_OTHER, EOVERFLOW);
     size_t slot = 0;
-    while (slot < tz_os_file_capacity && tz_os_files[slot].generation != 0) slot++;
-    if (slot == tz_os_file_capacity) {
+    while (failure == 0 && slot < tz_os_file_capacity && tz_os_files[slot].generation != 0) slot++;
+    if (failure == 0 && slot == tz_os_file_capacity) {
         size_t next = tz_os_file_capacity == 0 ? 8 : tz_os_file_capacity * 2;
-        if (next > UINT32_MAX) {
-            close(descriptor);
-            return -tz_os_status(TZ_OS_OTHER, EMFILE);
-        }
-        struct tz_os_file *larger = realloc(tz_os_files, next * sizeof(struct tz_os_file));
+        struct tz_os_file *larger = next > UINT32_MAX ? NULL : realloc(tz_os_files, next * sizeof(struct tz_os_file));
         if (larger == NULL) {
-            close(descriptor);
-            return -tz_os_status(TZ_OS_OTHER, ENOMEM);
+            failure = tz_os_status(TZ_OS_OTHER, next > UINT32_MAX ? EMFILE : ENOMEM);
+        } else {
+            for (size_t index = tz_os_file_capacity; index < next; index++) larger[index].generation = 0;
+            tz_os_files = larger;
+            tz_os_file_capacity = next;
         }
-        for (size_t index = tz_os_file_capacity; index < next; index++) larger[index].generation = 0;
-        tz_os_files = larger;
-        tz_os_file_capacity = next;
     }
-    struct tz_os_file *file = &tz_os_files[slot];
-    file->descriptor = descriptor;
-    file->generation = ++tz_os_generation;
-    file->readable = readable;
-    file->writable = writable;
-    tz_os_files_open++;
-    return (file->generation << 32) | (int64_t)(slot + 1);
+    int64_t handle = 0;
+    if (failure == 0) {
+        struct tz_os_file *file = &tz_os_files[slot];
+        file->descriptor = descriptor;
+        file->generation = ++tz_os_generation;
+        file->readable = readable;
+        file->writable = writable;
+        tz_os_files_open++;
+        handle = (file->generation << 32) | (int64_t)(slot + 1);
+    }
+    pthread_mutex_unlock(&tz_os_files_lock);
+    if (failure != 0) {
+        close(descriptor);
+        return -failure;
+    }
+    return handle;
+}
+
+// TZ08: a tzroutine in this call lets its P go.
+TZ_OS_API int64_t tsuzuri_os_open(int32_t mode, const unsigned char *path, int64_t length) {
+    TZ_BLOCKING_ENTER();
+    int64_t status = tz_os_open_now(mode, path, length);
+    TZ_BLOCKING_EXIT();
+    return status;
 }
 
 // op 0 reads up to `count` bytes (none at the end of the file), 1 writes `data` completely, and
 // 2 flushes, which only checks the handle because nothing is buffered.
-TZ_OS_API int64_t tsuzuri_os_handle(struct tz_os_buffer *output, int32_t operation, int64_t handle, int64_t count, const unsigned char *data, int64_t data_length) {
+static int64_t tz_os_handle_now(struct tz_os_buffer *output, int32_t operation, int64_t handle, int64_t count, const unsigned char *data, int64_t data_length) {
     tz_os_clear(output);
-    struct tz_os_file *file = tz_os_file_of(handle);
-    if (file == NULL) return tz_os_bad_handle();
+    pthread_mutex_lock(&tz_os_files_lock);
+    struct tz_os_file *entry = tz_os_file_of(handle);
+    struct tz_os_file copy;
+    if (entry != NULL) copy = *entry;
+    pthread_mutex_unlock(&tz_os_files_lock);
+    if (entry == NULL) return tz_os_bad_handle();
+    const struct tz_os_file *file = &copy;
     switch (operation) {
     case 0: {
         if (!file->readable) return tz_os_bad_handle();
@@ -560,20 +624,41 @@ TZ_OS_API int64_t tsuzuri_os_handle(struct tz_os_buffer *output, int32_t operati
     }
 }
 
+// TZ08: a tzroutine in this call lets its P go.
+TZ_OS_API int64_t tsuzuri_os_handle(struct tz_os_buffer *output, int32_t operation, int64_t handle, int64_t count, const unsigned char *data, int64_t data_length) {
+    TZ_BLOCKING_ENTER();
+    int64_t status = tz_os_handle_now(output, operation, handle, count, data, data_length);
+    TZ_BLOCKING_EXIT();
+    return status;
+}
+
 // Closes a file; the handle is invalid afterwards even when the system reports a failure.
-TZ_OS_API int64_t tsuzuri_os_close(int64_t handle) {
+static int64_t tz_os_close_now(int64_t handle) {
+    pthread_mutex_lock(&tz_os_files_lock);
     struct tz_os_file *file = tz_os_file_of(handle);
-    if (file == NULL) return tz_os_bad_handle();
-    int result = close(file->descriptor);
-    int error = errno;
-    file->generation = 0;
-    if (--tz_os_files_open == 0) {
-        free(tz_os_files);
-        tz_os_files = NULL;
-        tz_os_file_capacity = 0;
+    int descriptor = file != NULL ? file->descriptor : -1;
+    if (file != NULL) {
+        file->generation = 0;
+        if (--tz_os_files_open == 0) {
+            free(tz_os_files);
+            tz_os_files = NULL;
+            tz_os_file_capacity = 0;
+        }
     }
+    pthread_mutex_unlock(&tz_os_files_lock);
+    if (descriptor < 0) return tz_os_bad_handle();
+    int result = close(descriptor);
+    int error = errno;
     // After EINTR the descriptor state is unspecified, and retrying could close another one.
     return result != 0 && error != EINTR ? tz_os_error(error) : 0;
+}
+
+// TZ08: a tzroutine in this call lets its P go.
+TZ_OS_API int64_t tsuzuri_os_close(int64_t handle) {
+    TZ_BLOCKING_ENTER();
+    int64_t status = tz_os_close_now(handle);
+    TZ_BLOCKING_EXIT();
+    return status;
 }
 
 // Output captured from a child stays below this many bytes in all, or the child is killed.
@@ -643,7 +728,7 @@ static int tz_os_make_pipe(int pipe_ends[2]) {
 // `input` goes to its standard input, which is then closed. The result is two little-endian i32 (the exit
 // code, or -1 and then the signal that ended it), two little-endian u64 (the lengths of the output and the
 // error stream), and the two streams.
-TZ_OS_API int64_t tsuzuri_os_spawn(struct tz_os_buffer *output, const unsigned char *program, int64_t program_length, const unsigned char *arguments, int64_t arguments_length, const unsigned char *input, int64_t input_length) {
+static int64_t tz_os_spawn_now(struct tz_os_buffer *output, const unsigned char *program, int64_t program_length, const unsigned char *arguments, int64_t arguments_length, const unsigned char *input, int64_t input_length) {
     tz_os_clear(output);
     int64_t status = 0;
     char *name = tz_os_name(program, program_length, &status);
@@ -808,7 +893,15 @@ TZ_OS_API int64_t tsuzuri_os_spawn(struct tz_os_buffer *output, const unsigned c
     return result;
 }
 
-TZ_OS_API int64_t tsuzuri_os_random(struct tz_os_buffer *output, int64_t count) {
+// TZ08: a tzroutine in this call lets its P go.
+TZ_OS_API int64_t tsuzuri_os_spawn(struct tz_os_buffer *output, const unsigned char *program, int64_t program_length, const unsigned char *arguments, int64_t arguments_length, const unsigned char *input, int64_t input_length) {
+    TZ_BLOCKING_ENTER();
+    int64_t status = tz_os_spawn_now(output, program, program_length, arguments, arguments_length, input, input_length);
+    TZ_BLOCKING_EXIT();
+    return status;
+}
+
+static int64_t tz_os_random_now(struct tz_os_buffer *output, int64_t count) {
     tz_os_clear(output);
     if (count < 0 || count > TZ_OS_MAX_RANDOM) return tz_os_invalid_input();
     if (count == 0) return 0;
@@ -825,6 +918,14 @@ TZ_OS_API int64_t tsuzuri_os_random(struct tz_os_buffer *output, int64_t count) 
     output->data = bytes;
     output->length = count;
     return 0;
+}
+
+// TZ08: a tzroutine in this call lets its P go.
+TZ_OS_API int64_t tsuzuri_os_random(struct tz_os_buffer *output, int64_t count) {
+    TZ_BLOCKING_ENTER();
+    int64_t status = tz_os_random_now(output, count);
+    TZ_BLOCKING_EXIT();
+    return status;
 }
 
 // op 0 is the monotonic clock and 1 the Unix clock, both in nanoseconds; INT64_MIN reports failure.

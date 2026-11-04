@@ -286,6 +286,56 @@ invalid input
 
 host が空、NUL を含む、253 バイトを超える、または port が 0 から 65535 の外のときは、システムを呼ばずに `InvalidInput`（`code` は 0）です。アドレスに読める host（上の分類）で `parse_ip` が読めないものも `InvalidInput` で、上の例の `127.1`・`fe80::1%en0`・`１２７．０．０．１` がそれです。孤立サロゲートは `InvalidEncoding` です。名前が存在しなければ `NotFound`（`code` は 0）です。
 
+## tzroutine の中の Net
+
+[tzroutine](../async-tasks-and-lazy/tzroutine.md) の中では、同期版の `connect`・`accept`・`read`・`write`・`recv_from`・`send_to` がソケットの準備を待つ間、その tzroutine だけが待ちます。OS スレッドは止まらず、ほかの tzroutine が走り続けます（netpoller。macOS は kqueue、Linux は epoll、Windows は `WSAPoll` を使う 1 本のスレッド）。接続ごとに tzroutine を起動するサーバーを、`TSUZURI_MAXPROCS=1` でも書けます。
+
+```tsuzuri run=echoes%3A%203
+def main :: unit -> i32 = \() ->
+    let! bound = Net.bind (Maybe.get (Net.parse_address (ref "127.0.0.1:0")))
+    let listener = Result.get bound
+    let address = Net.local_addr listener
+    // the server: a tzroutine per connection, which echoes what it reads
+    tzroutine {
+        for _connection in 0 ..< 3 do
+            let! accepted = Net.accept listener Maybe.None
+            let stream = Result.get accepted
+            tzroutine {
+                let! received = Net.read stream 64 Maybe.None
+                let! _sent = Net.write stream (Result.get received) Maybe.None
+                let! _closed = Net.close stream
+            }
+        let! _closed = Net.close_listener listener
+    }
+    // three clients at once
+    let results: Channel<bool> = Channel.make 0
+    for index in 0 ..< 3 do
+        let out = Channel.share results
+        tzroutine {
+            let! connected = Net.connect address Maybe.None
+            let stream = Result.get connected
+            let! _sent = Net.write stream (Array.init 3 (\at -> (index + at) as ubyte)) Maybe.None
+            let! received = Net.read stream 64 Maybe.None
+            let! _closed = Net.close stream
+            Channel.send out (match received with
+                | Result.Ok bytes -> bytes.length == 3 && bytes[0] == index as ubyte
+                | Result.Error _ -> false)
+        }
+    let mut echoes = 0
+    for _client in 0 ..< 3 do
+        match Channel.recv results with
+        | Maybe.Some true -> echoes = echoes + 1
+        | _ -> ()
+    do! IO.write_line $"echoes: {echoes}"
+    0
+```
+
+- 時間制限（`Maybe.Some ms`）の意味は変わりません。時間が切れると `TimedOut` の `Error` で、その間もほかの tzroutine は走ります。
+- 待っている tzroutine のソケットを別の tzroutine が閉じると、待ちは終わり、その操作は閉じたハンドルの誤り（`InvalidInput`）になります。
+- 名前解決（`resolve`）とソケットを閉じる呼び出しは、OS の呼び出しの間、P をほかの OS スレッドに渡します（[OS を待つ呼び出し](../async-tasks-and-lazy/tzroutine.md#os-を待つ呼び出し)）。
+- tzroutine でないスレッド（トップレベルのコード、`export` を呼んだホストのスレッド）では、今までどおり、そのスレッドが待ちます。
+- 1 つのソケットを、読むのと書くのとで 2 つの tzroutine が同時に待つことはできます。同じ向きに 2 つが同時に待つと、2 つ目は OS スレッドを止めて待ちます（`Net` のハンドルは 1 つの所有者が使う前提です）。
+
 ## 非同期のソケット（Async）
 
 `Async` の計算の中では `IO` を実行できません。計算が必要とする操作には、`_async` を付けた双子があります。結果の型は同期版と同じで、`IO<...>` が `Async<...>` になるだけです。`Net` を使うプログラムは `Async` も読み込みます（`Net` が `Async` を使うためです）。
@@ -469,7 +519,7 @@ timeout: TimedOut
 - 平文の TCP で秘密を送らないでください。
 - 非同期の操作が使う監視のスレッドは、プロセスに 1 本だけです（最初の待ちで始まり、待ちが無くなると終わります）。待ちの数に上限はなく、OS のディスクリプタの数に従います。
 
-`TcpStream` などを 2 つのスレッドから同時に同じハンドルへ使うことはできません（IO は入口のスレッドで順に実行します）。同期版のソケット操作は、待っている間プログラム全体が止まります。待たせたくないときは、`Async.block_on` の中で `_async` の双子を使います。
+`TcpStream` などを 2 つのスレッドから同時に同じハンドルへ使うことはできません（IO は入口のスレッドで順に実行します）。tzroutine でないスレッドの同期版のソケット操作は、待っている間そのスレッドが止まります。待たせたくないときは、[tzroutine の中で](#tzroutine-の中の-net)同期版を使うか、`Async.block_on` の中で `_async` の双子を使います。
 
 ## 対応環境
 

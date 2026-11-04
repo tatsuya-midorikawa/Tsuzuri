@@ -58,6 +58,31 @@
 #define TZ_GPU_API __attribute__((weak, visibility("hidden")))
 #endif
 
+/* The blocking-call hooks (TZ08): os.c, io.c, net.c and gpu.c call them around a call that may wait
+ * for the OS, and the scheduler sets them when it starts (tzr_init), so that a tzroutine in such a
+ * call lets sysmon give its P away. The parts of the runtime are one translation unit, so the first
+ * part that has this block defines them; a program without tzroutines leaves them null. */
+#ifndef TSUZURI_BLOCKING_HOOKS_DEFINED
+#define TSUZURI_BLOCKING_HOOKS_DEFINED
+#include <stdatomic.h>
+/* Windows has no weak data: a selectany definition is shared by the units that define it (the runner of
+ * `tsuzuri test` compiles each part of the runtime alone). */
+#if defined(_WIN32)
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_enter_hook)(void) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_exit_hook)(void) = 0;
+#else
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_enter_hook)(void);
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+#endif
+#define TZ_BLOCKING_CALL(hook)                                                                   \
+    do {                                                                                         \
+        void (*tz_blocking_hook)(void) = atomic_load_explicit(&(hook), memory_order_acquire);   \
+        if (tz_blocking_hook != 0) tz_blocking_hook();                                          \
+    } while (0)
+#define TZ_BLOCKING_ENTER() TZ_BLOCKING_CALL(tsuzuri_blocking_enter_hook)
+#define TZ_BLOCKING_EXIT() TZ_BLOCKING_CALL(tsuzuri_blocking_exit_hook)
+#endif
+
 enum {
     TZ_GPU_OK = 0,
     TZ_GPU_UNAVAILABLE = 1,
@@ -959,7 +984,7 @@ finish:
 // in the same translation unit when the program names `Gpu.Vulkan` or `Gpu.Auto` and defines TZ_GPU_VULKAN. It
 // has its own lock, so a Vulkan call does not wait for a WebGPU call.
 
-TZ_GPU_API int32_t tsuzuri_gpu_open(int32_t backend, int32_t features) {
+static int32_t tz_gpu_open_now(int32_t backend, int32_t features) {
     int status = TZ_GPU_UNAVAILABLE;
 #ifdef TZ_GPU_VULKAN
     if (backend == 2) return tz_vulkan_open(features);
@@ -970,7 +995,15 @@ TZ_GPU_API int32_t tsuzuri_gpu_open(int32_t backend, int32_t features) {
     return status;
 }
 
-TZ_GPU_API int32_t tsuzuri_gpu_run(int32_t backend, int32_t mode, int32_t flags, int32_t lanes, const void *wgsl, int32_t wgsl_length, const void *spirv, int32_t spirv_length, const void *input, int64_t count, void *output) {
+// TZ08: a tzroutine that waits for the device lets its P go.
+TZ_GPU_API int32_t tsuzuri_gpu_open(int32_t backend, int32_t features) {
+    TZ_BLOCKING_ENTER();
+    int32_t status = tz_gpu_open_now(backend, features);
+    TZ_BLOCKING_EXIT();
+    return status;
+}
+
+static int32_t tz_gpu_run_now(int32_t backend, int32_t mode, int32_t flags, int32_t lanes, const void *wgsl, int32_t wgsl_length, const void *spirv, int32_t spirv_length, const void *input, int64_t count, void *output) {
     int status = TZ_GPU_UNAVAILABLE;
 #ifdef TZ_GPU_VULKAN
     if (backend == 2) return tz_vulkan_run(mode, flags, lanes, wgsl, wgsl_length, spirv, spirv_length, input, count, output);
@@ -980,6 +1013,14 @@ TZ_GPU_API int32_t tsuzuri_gpu_run(int32_t backend, int32_t mode, int32_t flags,
     tz_gpu_acquire();
     if (backend == 1) status = tz_wgpu_run(mode, flags, lanes, wgsl, wgsl_length, input, count, output);
     tz_gpu_release();
+    return status;
+}
+
+// TZ08: a tzroutine that waits for the device lets its P go.
+TZ_GPU_API int32_t tsuzuri_gpu_run(int32_t backend, int32_t mode, int32_t flags, int32_t lanes, const void *wgsl, int32_t wgsl_length, const void *spirv, int32_t spirv_length, const void *input, int64_t count, void *output) {
+    TZ_BLOCKING_ENTER();
+    int32_t status = tz_gpu_run_now(backend, mode, flags, lanes, wgsl, wgsl_length, spirv, spirv_length, input, count, output);
+    TZ_BLOCKING_EXIT();
     return status;
 }
 

@@ -7,7 +7,7 @@
 | 規模 | XL。Phase 1（sysmon と、ブロッキング呼び出しの P の引き継ぎ）L、Phase 2（netpoller: Net の待ちを kqueue／epoll で G だけの待ちにする）L、Phase 3（Windows の netpoller と `Routine.with_locked_thread`）M |
 | 依存 | TZ02, TZ05 |
 | 後続 | TZ10（sysmon を使うプリエンプション）、TZ13（Net の `_async` の削除。Phase 2 が移行先） |
-| 状態 | todo |
+| 状態 | done（2026-11-04。Phase 1〜3。native の macOS・Linux・Windows。下の「実装と検証」） |
 | 起票 | 2026-11-01（D-61。HEAD `9a76d8ac` で確認） |
 | 承認 | 承認済み（D-61）。決定事項 D1〜D7 は既定案 |
 | 手本にする既存実装 | Go の `entersyscall`／`exitsyscall`／`sysmon`／`retake`／`handoffp` の考え方（コードは写さない）。`src/runtime/net.c` の `tz_net_wait`（461 行。すべてのソケットの待ちが通る 1 か所）と、Async 用の poll のスレッド（`tz_net_poller_main` 794 行、起こすための pipe 700〜745 行）。TZ05 の `os.c` のフック（`tsuzuri_os_sleep_hook`。弱い定義の関数ポインター） |
@@ -200,3 +200,26 @@ TZ02 の時点では、tzroutine が `extern` の関数やファイルの読み�
 | D5 | Linux は epoll、macOS は kqueue。`poll` の版は作らない | `poll` は接続数に比例する | 既定案 |
 | D6 | Windows は `WSAPoll` のスレッド（IOCP は使わない） | `net.c` の既存の方法と同じ。IOCP は別チケット | 既定案 |
 | D7 | `with_locked_thread` は関数の範囲で固定する（解除を別の呼び出しにしない） | 所有権の範囲で必ず解除される | 既定案 |
+
+## 着手時の再検討（2026-11-04、HEAD `019c8d7d`）
+
+起票（HEAD `9a76d8ac`）のあとに入った TZ02〜TZ07・TZ11 と照らして、次のとおり合わせた。
+
+1. **既存の `tsuzuri_tz_block_enter`／`leave`**（TZ02。Task のプールの join を囲む、Go の `entersyscallblock` に当たる即時の引き継ぎ）は残し、このチケットの `tsuzuri_tz_blocking_enter`／`exit`（`entersyscall` に当たる。sysmon が取る）を別に足した。前者の M は擬似 G として振る舞う（`m->blocked`）ので、その中では後者は何もしない。前者は TZ12 で Task とともに消える。
+2. **コールバックはスレッドに固定する**: 設計の「コールバックの入口で P を取り戻す」だけでは、コールバックの中で待った G が別の M で続き、ホストの C の frame を別の OS スレッドで再開しうる（`errno` やスレッドローカルを使う C を壊す）。Go の cgo と同じく、コールバックの間は G を M に固定する（Phase 3 の `with_locked_thread` と同じ仕組み）。固定された G の待ちは g0 へ切り替えず、`g->note` で OS スレッドを眠らせ、P を引き継いで（`tzr_handoffp`）、起きたら P を取り直す（`tzr_acquirep`）。設計の「その M の専用の欄」は、G 自身の note で同じことをした。
+3. **印の条件**: 設計の `globals.tzroutine`（`uses_tzroutine`）ではなく、G が存在しうるプログラム（`spawns(module)`、または TZ11 の手伝いを持つネイティブの `Parallel`。スタックの probe と同じ条件）にした。G のいないプログラムでは印は何もしないので、印を付けるプログラムを最小にした。
+4. **netpoller の起こし**（`EVFILT_USER`／`eventfd`）は作らなかった: 期限は TZ05 のタイマーのヒープ（`NET` の種類）で扱い、登録は待つ G が自分で `kevent`／`epoll_ctl` するので、netpoller のスレッドは無期限に待つだけでよい。
+5. **記述子ごとの記録と番号**: epoll は記述子ごとに 1 つの登録しか持てない（読みと書きの待ち手を 1 つの `data` で指す）ので、記述子ごとの記録 `tzr_pd` を決して解放しない表に置き、登録ごとの番号でイベントを照合する（閉じて別のソケットが同じ番号を取ったときの古いイベントを捨てる）。
+6. **Windows の hook**: `tsuzuri test` の実行器はランタイムの部品を別々の翻訳単位にするので、Windows（弱い定義を使わない）では hook を `selectany` の定義にした。Windows の netpoller は `net.c` が同じ翻訳単位にあるとき（ドライバーの経路）だけ入り、`tsuzuri test` の実行器では `net.c` が従来の `WSAPoll` で待つ（P の引き継ぎは働く）。
+
+## 実装と検証（2026-11-04）
+
+- **範囲**: Phase 1〜3 をすべて実装した（1 つの PR）。Phase 2 の `EVFILT_USER`／`eventfd` は上の 4 のとおり不要。
+- **ランタイム**（`src/runtime/tzroutine.c`）: P の状態（`RUNNING`・`SYSCALL`・`IDLE`）と `syscall_tick`、`tsuzuri_tz_blocking_enter`／`exit`（ロックなし。exit の負けた側は空いた P か `pwait`。`errno` と `GetLastError` を保つ）、sysmon（最初の spawn で始まる 1 本。20 µs から倍に 10 ms まで。Go の `retake` の条件。すべての P が空いている間は条件変数で眠り、`tzr_pidleget` が起こす）、`tzr_handoffp`・`tzr_acquirep`・`tzr_wirep`、固定された G（`g->lockedm`・`locks`、`tzr_park_locked`・`tzr_yield_locked`、`nmlocked`）、`tsuzuri_tz_callback_enter`／`exit`、`tsuzuri_tz_lock_thread`／`unlock_thread`、netpoller（kqueue・epoll・Windows の `WSAPoll` のスレッド、`tzr_netwait` の commit の手順、`NET` のタイマー、`nnetwait`、閉じる記述子の hook）。デッドロックの判定は、呼び出しの中の M を走っている M として数え（変更なし）、固定された G のために眠る M を外し、`nnetwait` があれば判定しない。
+- **C の hook**: `os.c`（read・write・open・handle・close・spawn・random を囲む）、`io.c`（read_line・write）、`net.c`（poll の待ち、`getaddrinfo`、ソケットを閉じる呼び出し。`tz_net_wait` は netpoller の hook を先に呼ぶ。閉じる前に close の hook）、`gpu.c`（open・run）。`os.c` の `sleep` の nanosleep の経路は、G では TZ05 の hook が先に待つので囲まない。
+- **コンパイラ**: `llvm::with_blocking_externs`（`extern` の呼び出しを enter／exit で囲み、`tz.callback.*` の入口と各 `ret` に callback の enter／exit）、組み込み `Routine.with_locked_thread :: (unit -> 'a) -> 'a`（`Builtin::RoutineWithLockedThread`。効果は `task`・callbacks、純粋でない、KG は `task`。ネイティブは lock／unlock で囲み、WebAssembly は呼ぶだけ）。
+- **テスト**: `tests/tzroutine_runtime.c` に `blocking_handoff`・`blocking_reacquire`・`blocking_deadlock`・`blocking_callback`・`locked_thread`・`netpoll_pipe`（100 の読み手が書いた順に起き、M は P + 4 以下）・`netpoll_timeout`・`netpoll_close`・`netpoll_race`（Windows は loopback の TCP の組）。`tests/blocking.rs`（5 件: spawn しないプログラムの IR は不変、spawn するプログラムの `extern` の対、コールバックの入口と各 `ret`、`with_locked_thread`）。`tests/tzroutine.mjs` に `tests/fixtures/blocking`（ホストの C `host.c` を `--link`。`extern_sleep_does_not_stall`・`callback_from_extern`・`file_read_in_routines`。POSIX）。`tests/net.mjs` の段 `tzroutine`（`tests/fixtures/net_tzroutine`: 接続ごとの tzroutine のエコーサーバーと 100 のクライアント、`read_timeout`。P 1・4、`-O0`／`-O3`）を `vscode.yml` の Net の段（Linux・macOS・Windows の MinGW と MSVC）に足した。規則 `TSK-031` と `tests/conformance/TSK/TSK-031-tzroutine-blocked-in-extern.tz`（libc の `usleep`）。
+- **実行したコマンドと結果**: `cargo nextest run --locked`（下の PR の本文に件数）、`TSUZURI_TSAN=1 TSUZURI_ASAN=1 node tests/tzroutine_runtime.mjs`（566 runs）、`node tests/tzroutine.mjs target/debug/tsuzuri`（107 runs）、`node tests/net.mjs target/debug/tsuzuri`（全段）、`node tests/os.mjs`・`node tests/io.mjs`、`node scripts/conformance.mjs --rule TSK-031`、`node scripts/check-spec.mjs --require-markers`、`node scripts/check-docs.mjs`（変更したページ）、`gen-docs --check`、`check-cli-docs`、`sh scripts/check-runtime-includes.sh`、zig の `x86_64-linux-gnu`・`x86_64-windows-gnu` で `tests/tzroutine_runtime.c` を `-Werror` でコンパイル（Linux の epoll と Windows の netpoller。実行は CI）。
+- **計測**: sysmon は、すべての P が空いている間は眠る（`top` で 0 %）。CI に時間の閾値は入れていない。
+- **文書**: `async-tasks-and-lazy/tzroutine.md`（「OS を待つ呼び出し」）、`built-in-types-and-modules/net.md`（「tzroutine の中の Net」）、`built-in-types-and-modules/routine.md`（`with_locked_thread`）、`compiler/native-interop.md`、`compiler/conformance.md`（生成）、`docs/language.md`、`docs/architecture.md`、`README.md`、`spec/rules/TSK.md`。
+- **変更したファイル**: `src/runtime/tzroutine.c`・`os.c`・`io.c`・`net.c`・`gpu.c`、`src/llvm.rs`・`src/check.rs`・`src/effects.rs`・`src/pure_rules.rs`・`src/kg/effects.rs`、`tests/blocking.rs`（新規）・`tests/fixtures/blocking/`（新規）・`tests/fixtures/net_tzroutine/`（新規）・`tests/conformance/TSK/TSK-031-*.tz`（新規）・`tests/tzroutine_runtime.c`・`tests/tzroutine_runtime.mjs`・`tests/tzroutine.mjs`・`tests/net.mjs`、`.github/workflows/vscode.yml`、上の文書。

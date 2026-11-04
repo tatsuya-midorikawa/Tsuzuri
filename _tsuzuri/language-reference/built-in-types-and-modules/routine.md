@@ -9,6 +9,7 @@
 - `Routine.yield ()` は、実行をほかの tzroutine に譲ります（Go の `runtime.Gosched`）。
 - `Routine.count ()` は、生きている tzroutine の数に、呼んだスレッドの 1 を足した数です（Go の `runtime.NumGoroutine` は `main` を数えます）。
 - `Routine.max_procs ()` は同時に tzroutine を走らせる OS スレッドの数、`Routine.cpu_count ()` はオンラインの CPU 数です。
+- `Routine.with_locked_thread f` は、`f ()` を呼ぶ間、呼んだ tzroutine をその OS スレッドに固定します（Go の `runtime.LockOSThread`）。スレッドに結び付いたホストの API を `extern` で呼ぶときに使います。
 - `Routine.scope` 以外は関数値として渡せます（`let f: unit -> unit = Routine.yield`）。`Routine.scope` は `Task.scope` と同じく直接の呼び出しだけです（`E1013`）。`pure def` の中では使えません（`E1029`）。`Routine.yield` は `Mutex.with_lock` の中でも譲れます（ロックは tzroutine のもの。TZ06）。
 
 ## 提供 API 一覧
@@ -21,6 +22,7 @@
 | `Routine.count` | `unit -> i64` | 生きている tzroutine の数 + 1（呼んだスレッドの分） | `runtime.NumGoroutine()` |
 | `Routine.max_procs` | `unit -> i64` | 同時に tzroutine を走らせる OS スレッドの数（`TSUZURI_MAXPROCS`、既定は CPU 数で 256 まで） | `runtime.GOMAXPROCS(0)` |
 | `Routine.cpu_count` | `unit -> i64` | オンラインの CPU 数（1 以上） | `runtime.NumCPU()` |
+| `Routine.with_locked_thread` | `(unit -> 'a) -> 'a` | 関数を呼ぶ間、呼んだ tzroutine をその OS スレッドに固定し、関数の結果を返す | `runtime.LockOSThread()` と `UnlockOSThread()` |
 
 `Routine.go` で起動した tzroutine も、`tzroutine { }` と同じく、それを起動した境界（`main`・`export` の呼び出し・`test`・`bench`）が終わりを待ちます。
 
@@ -115,6 +117,35 @@ results[0]
 - 子が作ったタイマーは、呼び出し元の境界のものです（`Routine.scope` の終わりでは止まりません）。
 - tzroutine を起動するので、`pure def` の中では使えず（`E1029`）、WebAssembly では `E2000` です。
 
+## Routine.with_locked_thread
+
+GUI の UI スレッド、OpenGL の文脈、スレッドローカルな状態を持つ C のライブラリなど、呼んだ OS スレッドに結び付いたホストの API は、同じスレッドから呼び続けなければなりません。tzroutine は待つたびに別の OS スレッドで続くことがあるので、そうした API を呼ぶ間は `Routine.with_locked_thread` でスレッドに固定します。
+
+```tsuzuri run=main%20100
+let results: Channel<i64> = Channel.make 4
+for i in 1 ..= 4 do
+    let out = Channel.share results
+    tzroutine {
+        let value = Routine.with_locked_thread (\() -> {
+            Time.sleep (Time.millisecond());
+            Routine.yield ();
+            i * 10
+        })
+        Channel.send out value
+    }
+let mut total = 0i64
+for _i in 1 ..= 4 do
+    total = total + match Channel.recv results with
+        | Maybe.Some value -> value
+        | Maybe.None -> 0
+let label = Routine.with_locked_thread (\() -> "main")
+$"{label} {total}"
+```
+
+- 固定は関数の範囲だけで、関数が戻れば外れます（外す呼び出しを別に書く形にはしていません。D7）。入れ子にできます。
+- 固定された tzroutine が待つ（`Channel`・`Time.sleep`・`Mutex` など）と、その OS スレッドも眠り、ほかの tzroutine は走らせません。そのあいだ P はほかの OS スレッドへ渡るので、`TSUZURI_MAXPROCS=1` でもほかの tzroutine は進みます。`Routine.yield ()` は、待っている tzroutine があれば P を渡し、同じスレッドで続けます。
+- tzroutine でないスレッド（`main` のトップレベル、`export` を呼んだホストのスレッド）は、もともとそのスレッドで走るので、何もしません。WebAssembly では関数を呼ぶだけです。
+
 ## 引数の順序
 
 `Routine` の関数は対象（操作する値）を取らないか、引数が 1 つだけなので、[引数の順序](./argument-order.md) の規則の影響を受けません。
@@ -134,6 +165,7 @@ results[0]
 - `Routine.go` は所有する関数を tzroutine で 1 回呼びます。
 - `Routine.scope` は借用を共有する子を tzroutine で呼び、全員を待ちます（`Task.scope` の後継）。
 - `Routine.yield`・`count`・`max_procs`・`cpu_count` は、譲渡とスケジューラーへの問い合わせです。
+- `Routine.with_locked_thread` は、関数の間 tzroutine を OS スレッドに固定します。
 - 予約されたモジュール名で、std のファイルはありません。
 
 ## 関連項目

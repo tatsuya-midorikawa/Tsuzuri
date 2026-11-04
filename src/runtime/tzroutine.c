@@ -156,6 +156,7 @@ static void tzr_fatal(const char *message);
 #define _GNU_SOURCE
 #endif
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
@@ -169,8 +170,12 @@ static void tzr_fatal(const char *message);
 #if defined(__APPLE__)
 #include <os/lock.h>
 #endif
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+#include <sys/event.h>
+#endif
 #if defined(__linux__)
 #include <linux/futex.h>
+#include <sys/epoll.h>
 #include <sys/syscall.h>
 #endif
 #endif
@@ -246,6 +251,51 @@ void tsuzuri_stack_scheduler_thread(void);
 extern _Atomic(int32_t (*)(uintptr_t)) tsuzuri_stack_guard_hook;
 #endif
 TZR_API int32_t tsuzuri_tz_stack_guard_hit(uintptr_t address);
+
+/* The blocking-call hooks (TZ08): os.c, io.c, net.c and gpu.c call them around a call that may wait
+ * for the OS, and the scheduler sets them when it starts (tzr_init), so that a tzroutine in such a
+ * call lets sysmon give its P away. The parts of the runtime are one translation unit, so the first
+ * part that has this block defines them; a program without tzroutines leaves them null. */
+#ifndef TSUZURI_BLOCKING_HOOKS_DEFINED
+#define TSUZURI_BLOCKING_HOOKS_DEFINED
+#include <stdatomic.h>
+/* Windows has no weak data: a selectany definition is shared by the units that define it (the runner of
+ * `tsuzuri test` compiles each part of the runtime alone). */
+#if defined(_WIN32)
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_enter_hook)(void) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_exit_hook)(void) = 0;
+#else
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_enter_hook)(void);
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+#endif
+#define TZ_BLOCKING_CALL(hook)                                                                   \
+    do {                                                                                         \
+        void (*tz_blocking_hook)(void) = atomic_load_explicit(&(hook), memory_order_acquire);   \
+        if (tz_blocking_hook != 0) tz_blocking_hook();                                          \
+    } while (0)
+#define TZ_BLOCKING_ENTER() TZ_BLOCKING_CALL(tsuzuri_blocking_enter_hook)
+#define TZ_BLOCKING_EXIT() TZ_BLOCKING_CALL(tsuzuri_blocking_exit_hook)
+#endif
+
+/* net.c's hooks (TZ08 Phase 2), which the scheduler sets when it starts: the wait of a tzroutine for
+ * a socket, in the netpoller (0 ready, 1 timed out, -1 when net.c must poll itself), and the close of
+ * a socket, before the descriptor closes (the waits for it end). A wait asks `open(handle,
+ * descriptor)` (handle 0: none) under the lock that the close hook takes, and net.c forgets the
+ * handle before it calls the close hook: a wait either finds its handle closed and does not start, or
+ * is woken by the close, also when the descriptor is taken by another socket in between. Defined by
+ * the first part that has this block. */
+#ifndef TSUZURI_NET_HOOKS_DEFINED
+#define TSUZURI_NET_HOOKS_DEFINED
+#if defined(_WIN32)
+__attribute__((selectany)) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write, int64_t timeout,
+                                                                     int32_t (*open)(int64_t, intptr_t), int64_t handle) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor) = 0;
+#else
+__attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_net_wait_hook)(
+    intptr_t descriptor, int32_t write, int64_t timeout, int32_t (*open)(int64_t, intptr_t), int64_t handle);
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor);
+#endif
+#endif
 
 #if !defined(_WIN32)
 /* ---------------------------------------------------------------- OS calls (POSIX) */
@@ -508,6 +558,9 @@ static void *tzr_initial_frame(char *top, void (*start)(void)) {
 
 enum { TZR_G_IDLE, TZR_G_RUNNABLE, TZR_G_RUNNING, TZR_G_WAITING, TZR_G_DEAD };
 enum { TZR_KIND_ROUTINE, TZR_KIND_THREAD };
+/* A P runs Gs (RUNNING), is in the idle list (IDLE), or belongs to an M in a blocking call
+ * (SYSCALL, TZ08), which sysmon may take it from with a compare-exchange to IDLE. */
+enum { TZR_P_RUNNING, TZR_P_SYSCALL, TZR_P_IDLE };
 
 typedef struct tzr_g tzr_g;
 typedef struct tzr_m tzr_m;
@@ -516,6 +569,7 @@ typedef struct tzr_sudog tzr_sudog;
 typedef struct tzr_chan tzr_chan;
 
 typedef struct tzr_timer tzr_timer;
+typedef struct tzr_netwait tzr_netwait;
 
 typedef struct tzr_scope {
     tzr_lock lock;
@@ -541,7 +595,8 @@ struct tzr_g {
     tzr_scope *spawn_scope; /* where tsuzuri_tz_go counts children (NULL: scope, or the root) */
     uint64_t id;
     const char *wait_reason;
-    tzr_note note;      /* pseudo-G only */
+    tzr_note note;      /* a pseudo-G's, or a locked G's (note_ready) */
+    int note_ready;     /* a G's note has been initialized (the first lock, TZ08) */
     int doomed;        /* pseudo-G only: woken by the deadlock detector */
     int idle;          /* pseudo-G only: not counted as running (an M's thread outside a blocking call, or
                         * a thread that waits for the items it gave the task runtime) */
@@ -550,6 +605,8 @@ struct tzr_g {
     _Atomic uint32_t select_done;
     uintptr_t *held;    /* the locks that it holds, in the order taken (TZ06), with their kinds */
     uint32_t held_count, held_capacity;
+    tzr_m *lockedm;     /* the M that it stays on (TZ08: a callback, Routine.with_locked_thread) */
+    uint32_t locks;     /* how many locks to its M it holds; the last unlock lets it move */
 #if defined(TZR_TSAN)
     void *tsan_fiber;
 #endif
@@ -569,6 +626,10 @@ struct tzr_p {
     uint32_t runnext_streak; /* owner only: tzr_runqget's takes from runnext in a row */
     tzr_g *gfree;
     int gfree_count;
+    _Atomic int status;            /* TZR_P_* */
+    _Atomic uint32_t syscall_tick; /* one more at each blocking call (TZ08) */
+    uint32_t sysmon_tick;          /* sysmon only: syscall_tick when it last looked */
+    int64_t sysmon_when;           /* sysmon only: when it first saw that call */
 };
 
 struct tzr_m {
@@ -580,6 +641,8 @@ struct tzr_m {
     tzr_m *link;
     int spinning;
     int blocked;   /* inside a blocking call of curg: the thread acts as a pseudo-G */
+    int syscall_depth; /* the nesting of tsuzuri_tz_blocking_enter (TZ08) */
+    tzr_p *oldp;   /* the P that it had before its blocking call */
     void (*after)(tzr_m *, tzr_g *);
     void (*after_unlock)(void *);
     void *after_arg;
@@ -605,9 +668,11 @@ static struct {
     _Atomic int npidle;
     tzr_m *midle;
     int nmidle;
-    tzr_m *pwait;                 /* Ms back from a blocking call, waiting for a P */
+    tzr_m *pwait, *pwait_tail;    /* Ms back from a blocking call, waiting for a P (first in, first out) */
     _Atomic int npwait;           /* their number, read without the lock by the scheduling loop */
     int nmblocked;                /* Ms in a blocking call: their threads count as pseudo-Gs */
+    _Atomic int nmsys;            /* Ms in a blocking call that let sysmon take their P (TZ08) */
+    int nmlocked;                 /* Ms asleep while their locked G waits (TZ08) */
     int mcount;
     _Atomic int nmspinning;
     tzr_p *allp[TZR_MAXPROCS];
@@ -617,6 +682,7 @@ static struct {
     int npseudo_parked;
     int64_t npending;             /* items of the task runtime that have not started (TZ03) */
     _Atomic int64_t ntimers;      /* timers that will still fire */
+    _Atomic int64_t nnetwait;     /* Gs waiting for a socket in the netpoller (TZ08) */
     _Atomic int local_cached;     /* finished Gs in the Ps' lists (at most TZR_LOCAL_CACHE) */
     _Atomic uint64_t next_id;
     tzr_g *allgs;                  /* every G with a stack, for the deadlock report */
@@ -830,22 +896,44 @@ static tzr_g *tzr_globrunqget(tzr_p *p, int max) {
 
 /* ---------------------------------------------------------------- Ps and Ms */
 
+static void tzr_sysmon_kick(void);
+
 static tzr_p *tzr_pidleget(void) {
     tzr_p *p = tzr_sched.pidle;
     if (p) {
         tzr_sched.pidle = p->link;
         atomic_fetch_sub(&tzr_sched.npidle, 1);
+        tzr_sysmon_kick(); /* a P runs again: sysmon watches it */
     }
     return p;
+}
+
+/* The Ms that wait for a P, served in the order they came (tzr_sched.lock held): an M that waits
+ * again after a turn goes behind the others. */
+static void tzr_pwait_push(tzr_m *m) {
+    m->link = NULL;
+    if (tzr_sched.pwait_tail != NULL) tzr_sched.pwait_tail->link = m;
+    else tzr_sched.pwait = m;
+    tzr_sched.pwait_tail = m;
+    atomic_fetch_add(&tzr_sched.npwait, 1);
+}
+
+static tzr_m *tzr_pwait_pop(void) {
+    tzr_m *m = tzr_sched.pwait;
+    if (m != NULL) {
+        tzr_sched.pwait = m->link;
+        if (tzr_sched.pwait == NULL) tzr_sched.pwait_tail = NULL;
+        atomic_fetch_sub(&tzr_sched.npwait, 1);
+    }
+    return m;
 }
 
 /* tzr_sched.lock held (or the scheduler not started). An M that is back from a blocking call and
  * waits for a P takes it first. */
 static void tzr_pidleput(tzr_p *p) {
-    tzr_m *waiter = tzr_sched.pwait;
+    atomic_store_explicit(&p->status, TZR_P_IDLE, memory_order_relaxed);
+    tzr_m *waiter = tzr_pwait_pop();
     if (waiter) {
-        tzr_sched.pwait = waiter->link;
-        atomic_fetch_sub(&tzr_sched.npwait, 1);
         waiter->nextp = p;
         tzr_note_wake(&waiter->park);
         return;
@@ -853,6 +941,12 @@ static void tzr_pidleput(tzr_p *p) {
     p->link = tzr_sched.pidle;
     tzr_sched.pidle = p;
     atomic_fetch_add(&tzr_sched.npidle, 1);
+}
+
+/* The M runs Gs on p from now on. */
+static void tzr_wirep(tzr_m *m, tzr_p *p) {
+    m->p = p;
+    atomic_store_explicit(&p->status, TZR_P_RUNNING, memory_order_relaxed);
 }
 
 static void *tzr_mstart(void *arg);
@@ -906,7 +1000,7 @@ static void tzr_stopm(tzr_m *m) {
     tzr_checkdead();
     tzr_mutex_unlock(&tzr_sched.lock);
     tzr_note_sleep(&m->park);
-    m->p = m->nextp;
+    tzr_wirep(m, m->nextp);
     m->nextp = NULL;
 }
 
@@ -946,10 +1040,14 @@ static void tzr_report_deadlock(void) {
 /* Called with tzr_sched.lock held whenever an M goes idle or a pseudo-G parks. */
 static void tzr_checkdead(void) {
     if (tzr_sched.deadlocked) return;
-    int running = tzr_sched.mcount - tzr_sched.nmidle - tzr_sched.nmblocked + tzr_sched.npseudo_running;
+    /* An M in a blocking call (TZ08) counts as running: its call may return and wake a G. One that
+     * sleeps while its locked G waits does not. */
+    int running = tzr_sched.mcount - tzr_sched.nmidle - tzr_sched.nmblocked - tzr_sched.nmlocked
+                  + tzr_sched.npseudo_running;
     if (running > 0) return;
     if (atomic_load(&tzr_sched.runq_size) > 0) return;
     if (atomic_load(&tzr_sched.ntimers) > 0) return;
+    if (atomic_load(&tzr_sched.nnetwait) > 0) return; /* the network may wake a G */
     if (tzr_sched.npending > 0) return; /* an item that has not started may wake a waiter */
     if (atomic_load(&tzr_sched.ngoroutines) == 0 && tzr_sched.npseudo_parked == 0) return;
     for (int i = 0; i < tzr_sched.nprocs; i++)
@@ -1059,7 +1157,7 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
                 tzr_p *again = tzr_pidleget();
                 tzr_mutex_unlock(&tzr_sched.lock);
                 if (again) {
-                    m->p = again;
+                    tzr_wirep(m, again);
                     m->spinning = 1;
                     atomic_fetch_add(&tzr_sched.nmspinning, 1);
                 }
@@ -1082,13 +1180,11 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
 static void tzr_serve_pwait(tzr_m *m) {
     if (atomic_load(&tzr_sched.npwait) == 0) return;
     tzr_mutex_lock(&tzr_sched.lock);
-    tzr_m *waiter = tzr_sched.pwait;
+    tzr_m *waiter = tzr_pwait_pop();
     if (waiter == NULL) {
         tzr_mutex_unlock(&tzr_sched.lock);
         return;
     }
-    tzr_sched.pwait = waiter->link;
-    atomic_fetch_sub(&tzr_sched.npwait, 1);
     waiter->nextp = m->p;
     m->p = NULL;
     tzr_note_wake(&waiter->park);
@@ -1130,7 +1226,7 @@ static void *tzr_mstart(void *arg) {
 #if defined(TZ_STACK_GUARD)
     tsuzuri_stack_scheduler_thread(); /* the alternate stack on which stack.c reports an overflow */
 #endif
-    m->p = m->nextp;
+    tzr_wirep(m, m->nextp);
     m->nextp = NULL;
     tzr_schedule(m);
     return NULL;
@@ -1157,6 +1253,13 @@ __attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_os_sleep_h
 #endif
 static int32_t tzr_sleep_if_routine(int64_t ns);
 #endif
+TZR_API void tsuzuri_tz_blocking_enter(void);
+TZR_API void tsuzuri_tz_blocking_exit(void);
+#if !defined(_WIN32) || defined(TZ_NET_WINSOCK)
+static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout, int32_t (*open)(int64_t, intptr_t),
+                                int64_t handle);
+static void tzr_netpoll_close(intptr_t fd);
+#endif
 
 static void tzr_init(void) {
     long cpus = tzr_online_cpus();
@@ -1171,6 +1274,12 @@ static void tzr_init(void) {
 #endif
 #if !defined(_WIN32)
     atomic_store_explicit(&tsuzuri_os_sleep_hook, tzr_sleep_if_routine, memory_order_release);
+#endif
+    atomic_store_explicit(&tsuzuri_blocking_enter_hook, tsuzuri_tz_blocking_enter, memory_order_release);
+    atomic_store_explicit(&tsuzuri_blocking_exit_hook, tsuzuri_tz_blocking_exit, memory_order_release);
+#if !defined(_WIN32) || defined(TZ_NET_WINSOCK)
+    atomic_store_explicit(&tsuzuri_net_wait_hook, tzr_netpoll_wait, memory_order_release);
+    atomic_store_explicit(&tsuzuri_net_close_hook, tzr_netpoll_close, memory_order_release);
 #endif
     for (int i = nprocs - 1; i >= 0; i--) {
         tzr_p *p = calloc(1, sizeof *p);
@@ -1279,6 +1388,30 @@ static void tzr_switch_out(tzr_m *m, tzr_g *g) {
 #endif
 }
 
+static void tzr_handoffp(tzr_p *p);
+static void tzr_acquirep(tzr_m *m);
+
+/* A G locked to its M (TZ08: in a callback of a blocking call, or Routine.with_locked_thread) waits
+ * on its thread, as a pseudo-G does, so that it goes on there: the M gives its P to whoever runs
+ * what is queued (as sysmon does for a blocking call) and takes a P again when the G is woken.
+ * While it sleeps, the M does not count as running for the deadlock detector. */
+static int tzr_park_locked(tzr_m *m, tzr_g *g, void (*unlock)(void *), void *arg) {
+    tzr_p *p = m->p;
+    m->p = NULL;
+    tzr_mutex_lock(&tzr_sched.lock);
+    atomic_store(&g->status, TZR_G_WAITING);
+    tzr_sched.nmlocked++;
+    tzr_mutex_unlock(&tzr_sched.lock);
+    if (unlock) unlock(arg);
+    tzr_handoffp(p);
+    tzr_mutex_lock(&tzr_sched.lock);
+    tzr_checkdead();
+    tzr_mutex_unlock(&tzr_sched.lock);
+    tzr_note_sleep(&g->note);
+    tzr_acquirep(m);
+    return 0;
+}
+
 /* Parks the current G until tzr_ready. `unlock(arg)` runs once the G is off its stack (R1).
  * Returns 1 only for a pseudo-G that the deadlock detector woke. */
 static int tzr_park(void (*unlock)(void *), void *arg, const char *reason) {
@@ -1300,6 +1433,7 @@ static int tzr_park(void (*unlock)(void *), void *arg, const char *reason) {
         return doomed;
     }
     tzr_m *m = tzr_this_m();
+    if (g->lockedm != NULL) return tzr_park_locked(m, g, unlock, arg);
     atomic_store(&g->status, TZR_G_WAITING);
     m->after = tzr_after_park;
     m->after_unlock = unlock;
@@ -1326,6 +1460,14 @@ static void tzr_ready(tzr_g *g) {
         return;
     }
     int expected = TZR_G_WAITING;
+    if (g->lockedm != NULL) { /* it waits on its own M's thread (tzr_park_locked) */
+        tzr_mutex_lock(&tzr_sched.lock);
+        if (!atomic_compare_exchange_strong(&g->status, &expected, TZR_G_RUNNING)) tzr_fatal("bad tzroutine status in ready");
+        tzr_sched.nmlocked--;
+        tzr_mutex_unlock(&tzr_sched.lock);
+        tzr_note_wake(&g->note);
+        return;
+    }
     if (!atomic_compare_exchange_strong(&g->status, &expected, TZR_G_RUNNABLE)) tzr_fatal("bad tzroutine status in ready");
     tzr_m *m = tzr_this_m();
     if (m != NULL && m->p != NULL) {
@@ -1359,6 +1501,35 @@ static void tzr_after_yield(tzr_m *m, tzr_g *g) {
     tzr_mutex_unlock(&tzr_sched.lock);
 }
 
+/* A locked G lets what is queued run on its P, or else an M back from a blocking call that waits for
+ * a P have it, and takes a P again after them: it stays on its thread. What is queued comes first:
+ * the M that runs it serves the waiting Ms between two Gs (tzr_serve_pwait), so two locked Gs that
+ * yield in turn hand the P to the queue too, and not only to each other. */
+static void tzr_yield_locked(tzr_m *m) {
+    tzr_p *p = m->p;
+    if (!tzr_runq_empty(p) || atomic_load(&tzr_sched.runq_size) > 0) {
+        m->p = NULL;
+        tzr_startm(p, 0);
+        tzr_acquirep(m); /* behind the Ms that wait already */
+        return;
+    }
+    if (atomic_load(&tzr_sched.npwait) > 0) {
+        tzr_mutex_lock(&tzr_sched.lock);
+        tzr_m *waiter = tzr_pwait_pop();
+        if (waiter != NULL) {
+            waiter->nextp = p;
+            m->p = NULL;
+            tzr_note_wake(&waiter->park);
+        }
+        tzr_mutex_unlock(&tzr_sched.lock);
+        if (m->p == NULL) {
+            tzr_acquirep(m); /* behind the M that has the P now */
+            return;
+        }
+    }
+    tzr_os_yield();
+}
+
 TZR_API void tsuzuri_tz_yield(void) {
     tzr_m *m = tzr_this_m();
     if (m == NULL || m->curg == NULL || m->blocked) {
@@ -1366,6 +1537,10 @@ TZR_API void tsuzuri_tz_yield(void) {
         return;
     }
     tzr_g *g = m->curg;
+    if (g->lockedm != NULL) {
+        tzr_yield_locked(m);
+        return;
+    }
     m->after = tzr_after_yield;
 #if defined(TZR_TSAN)
     TZR_TSAN_SWITCH(m->tsan_g0);
@@ -1417,6 +1592,7 @@ static void tzr_after_exit(tzr_m *m, tzr_g *g) {
 #if defined(TZR_TSAN)
             __tsan_destroy_fiber(g->tsan_fiber);
 #endif
+            if (g->note_ready) tzr_note_destroy(&g->note);
             free(g->held);
             free(g);
         }
@@ -1556,7 +1732,10 @@ static void tzr_scope_release(tzr_scope *scope) {
 
 /* Starts `code(env)` on a new G counted in `scope` (already counted when `reserved`). It does not
  * ask for the caller's G, so the timer thread spawns without becoming a pseudo-G. */
+static void tzr_sysmon_start(void);
+
 static void tzr_spawn(tzr_scope *scope, void (*code)(void *), void *env, int reserved) {
+    tzr_sysmon_start();
     tzr_g *g = tzr_galloc();
     if (g == NULL) tzr_fatal("cannot allocate a tzroutine stack (out of memory or address space)");
     g->code = code;
@@ -1692,11 +1871,17 @@ TZR_API void tsuzuri_tz_block_leave(void) {
     tzr_mutex_lock(&tzr_sched.lock);
     tzr_set_running(thread, 0);
     tzr_sched.nmblocked--; /* the M counts again, as running */
+    tzr_mutex_unlock(&tzr_sched.lock);
+    tzr_acquirep(m);
+}
+
+/* Takes an idle P for the M, or waits until an M gives one back (tzr_pidleput, tzr_serve_pwait).
+ * Meanwhile the M counts as running: a P that becomes idle goes to it first. */
+static void tzr_acquirep(tzr_m *m) {
+    tzr_mutex_lock(&tzr_sched.lock);
     tzr_p *p = tzr_pidleget();
     if (p == NULL) {
-        m->link = tzr_sched.pwait;
-        tzr_sched.pwait = m;
-        atomic_fetch_add(&tzr_sched.npwait, 1);
+        tzr_pwait_push(m);
         tzr_mutex_unlock(&tzr_sched.lock);
         tzr_note_sleep(&m->park);
         p = m->nextp;
@@ -1704,7 +1889,222 @@ TZR_API void tsuzuri_tz_block_leave(void) {
     } else {
         tzr_mutex_unlock(&tzr_sched.lock);
     }
-    m->p = p;
+    tzr_wirep(m, p);
+}
+
+/* A P that its M gave up (a blocking call that sysmon took it from, a locked G that waits): to an M
+ * that runs what is queued, or to the idle list, where an M back from its call or new work takes it. */
+static void tzr_handoffp(tzr_p *p) {
+    if (!tzr_runq_empty(p) || atomic_load(&tzr_sched.runq_size) > 0) {
+        tzr_startm(p, 0);
+        return;
+    }
+    tzr_mutex_lock(&tzr_sched.lock);
+    tzr_pidleput(p);
+    tzr_mutex_unlock(&tzr_sched.lock);
+    /* a G queued before the P was seen idle would wait for nobody */
+    if (atomic_load(&tzr_sched.runq_size) > 0) tzr_wakep();
+}
+
+/* TZ08: a blocking call of a G (an extern function, or a call of os.c, io.c, net.c or gpu.c that may
+ * wait for the OS) lets its P go, as Go's entersyscall does: without a lock, the P is marked SYSCALL
+ * and the M keeps it as `oldp`. Sysmon takes a P that has stayed in the same call for one of its
+ * rounds (tzr_retake) and hands it to an M that runs what is queued. The M that comes back takes its
+ * P again when sysmon has not taken it (a compare-exchange), or an idle one, or waits for one; the G
+ * never leaves its M inside the call. Calls nest (a callback's extern), and a pseudo-G, which holds
+ * no P, does nothing. */
+static void tzr_entersyscall(tzr_m *m) {
+    tzr_p *p = m->p;
+    m->oldp = p;
+    m->p = NULL;
+    atomic_fetch_add_explicit(&tzr_sched.nmsys, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&p->syscall_tick, 1, memory_order_relaxed);
+    atomic_store_explicit(&p->status, TZR_P_SYSCALL, memory_order_release);
+}
+
+static void tzr_exitsyscall(tzr_m *m) {
+    tzr_p *p = m->oldp;
+    m->oldp = NULL;
+    atomic_fetch_sub_explicit(&tzr_sched.nmsys, 1, memory_order_relaxed);
+    int expected = TZR_P_SYSCALL;
+    if (atomic_compare_exchange_strong_explicit(&p->status, &expected, TZR_P_RUNNING, memory_order_acquire,
+                                                memory_order_relaxed)) {
+        m->p = p;
+        return;
+    }
+    /* sysmon took it. The caller reads the call's error number after this (net.c, an extern's C). */
+    int saved = errno;
+#if defined(_WIN32)
+    DWORD last = GetLastError();
+#endif
+    tzr_acquirep(m);
+#if defined(_WIN32)
+    SetLastError(last);
+#endif
+    errno = saved;
+}
+
+TZR_API void tsuzuri_tz_blocking_enter(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked || m->syscall_depth++ > 0) return;
+    tzr_entersyscall(m);
+}
+
+TZR_API void tsuzuri_tz_blocking_exit(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked || --m->syscall_depth > 0) return;
+    tzr_exitsyscall(m);
+}
+
+/* Locking a G to its M (TZ08): it runs only there until the last unlock. tzr_park_locked,
+ * tzr_yield_locked and tzr_ready keep it on that M. */
+static void tzr_lockm(tzr_m *m, tzr_g *g) {
+    if (g->locks++ > 0) return;
+    if (!g->note_ready) {
+        tzr_note_init(&g->note);
+        g->note_ready = 1;
+    }
+    g->lockedm = m;
+}
+
+static void tzr_unlockm(tzr_g *g) {
+    if (--g->locks == 0) g->lockedm = NULL;
+}
+
+/* The entry and the exit of a callback (`tz.callback.*`) that an extern function calls on a G's
+ * thread inside its blocking call: the M takes its P again for the callback, and the G stays locked to
+ * the M, whose stack holds the host's frames (a wait in the callback sleeps on this thread). The exit
+ * goes back into the call. Returns the depth of the call, which the exit restores: 0 when the callback
+ * runs elsewhere (a thread of the host, or a pseudo-G), where both do nothing. */
+TZR_API int32_t tsuzuri_tz_callback_enter(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked || m->syscall_depth == 0) return 0;
+    int32_t depth = m->syscall_depth;
+    m->syscall_depth = 0;
+    tzr_exitsyscall(m);
+    tzr_lockm(m, m->curg);
+    return depth;
+}
+
+TZR_API void tsuzuri_tz_callback_exit(int32_t depth) {
+    if (depth == 0) return;
+    tzr_m *m = tzr_this_m(); /* the same M: the G was locked to it */
+    tzr_unlockm(m->curg);
+    tzr_entersyscall(m);
+    m->syscall_depth = depth;
+}
+
+/* Routine.with_locked_thread (TZ08 Phase 3): the calling G stays on its M's thread from the lock to
+ * the unlock, for host APIs bound to a thread. A pseudo-G is its thread already. */
+TZR_API void tsuzuri_tz_lock_thread(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked) return;
+    tzr_lockm(m, m->curg);
+}
+
+TZR_API void tsuzuri_tz_unlock_thread(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked) return;
+    tzr_unlockm(m->curg);
+}
+
+/* ---------------------------------------------------------------- sysmon (TZ08) */
+
+/* One thread, started by the first spawn, that takes the P of a blocking call (tzr_retake). It looks
+ * every 20 µs, twice as long after 50 rounds that did nothing, up to 10 ms, and back to 20 µs after
+ * a round that did something (Go's sysmon). While every P is idle nothing can need it, so it sleeps
+ * until a P is taken again (tzr_pidleget kicks it). */
+#define TZR_SYSMON_MIN 20000           /* ns */
+#define TZR_SYSMON_MAX 10000000        /* ns */
+#define TZR_SYSCALL_LONG 10000000      /* ns: a call this long gives its P up even with nothing queued */
+
+static struct {
+    tzr_mutex lock;
+    tzr_cond wake;
+    tzr_once once;
+    _Atomic int started;
+    _Atomic int parked;
+} tzr_sysmon_state = {
+    .lock = TZR_MUTEX_INIT,
+#if !defined(__linux__)
+    .wake = TZR_COND_INIT, /* Linux initializes it with the monotonic clock (tzr_timer_cond_init) */
+#endif
+    .once = TZR_ONCE_INIT,
+};
+
+static void tzr_sysmon_kick(void) {
+    if (!atomic_load(&tzr_sysmon_state.parked)) return;
+    tzr_mutex_lock(&tzr_sysmon_state.lock);
+    atomic_store(&tzr_sysmon_state.parked, 0);
+    tzr_cond_signal(&tzr_sysmon_state.wake);
+    tzr_mutex_unlock(&tzr_sysmon_state.lock);
+}
+
+/* Takes each P that has been in the same blocking call since the last round, unless nothing is
+ * queued on it, another P or a spinning M can take new work, and the call is younger than 10 ms
+ * (Go's retake): such a P is left to its M, which saves the handoff of a short call. */
+static int tzr_retake(int64_t now) {
+    int took = 0;
+    for (int i = 0; i < tzr_sched.nprocs; i++) {
+        tzr_p *p = tzr_sched.allp[i];
+        if (atomic_load_explicit(&p->status, memory_order_acquire) != TZR_P_SYSCALL) continue;
+        uint32_t tick = atomic_load_explicit(&p->syscall_tick, memory_order_relaxed);
+        if (tick != p->sysmon_tick) {
+            p->sysmon_tick = tick;
+            p->sysmon_when = now;
+            continue;
+        }
+        if (tzr_runq_empty(p) && atomic_load(&tzr_sched.npidle) + atomic_load(&tzr_sched.nmspinning) > 0
+            && now - p->sysmon_when < TZR_SYSCALL_LONG)
+            continue;
+        int expected = TZR_P_SYSCALL;
+        if (!atomic_compare_exchange_strong_explicit(&p->status, &expected, TZR_P_IDLE, memory_order_acq_rel,
+                                                     memory_order_relaxed))
+            continue; /* its M came back first */
+        tzr_handoffp(p);
+        took = 1;
+    }
+    return took;
+}
+
+static void *tzr_sysmon(void *arg) {
+    (void)arg;
+    int64_t delay = TZR_SYSMON_MIN;
+    int quiet = 0;
+    tzr_mutex_lock(&tzr_sysmon_state.lock);
+    for (;;) {
+        if (atomic_load(&tzr_sched.npidle) == tzr_sched.nprocs) {
+            /* Dekker with tzr_pidleget: either it sees `parked`, or this sees the P it took. */
+            atomic_store(&tzr_sysmon_state.parked, 1);
+            while (atomic_load(&tzr_sysmon_state.parked) && atomic_load(&tzr_sched.npidle) == tzr_sched.nprocs)
+                tzr_cond_wait_for(&tzr_sysmon_state.wake, &tzr_sysmon_state.lock, -1);
+            atomic_store(&tzr_sysmon_state.parked, 0);
+            delay = TZR_SYSMON_MIN;
+            quiet = 0;
+        }
+        tzr_cond_wait_for(&tzr_sysmon_state.wake, &tzr_sysmon_state.lock, delay);
+        tzr_mutex_unlock(&tzr_sysmon_state.lock);
+        int took = tzr_retake(tzr_nanotime());
+        tzr_mutex_lock(&tzr_sysmon_state.lock);
+        if (took) {
+            delay = TZR_SYSMON_MIN;
+            quiet = 0;
+        } else if (++quiet > 50 && delay < TZR_SYSMON_MAX) {
+            delay = delay * 2 > TZR_SYSMON_MAX ? TZR_SYSMON_MAX : delay * 2;
+        }
+    }
+    return NULL;
+}
+
+static void tzr_sysmon_init(void) {
+    tzr_timer_cond_init(&tzr_sysmon_state.wake);
+    tzr_thread_start(tzr_sysmon, NULL, 256 * 1024, "cannot start the sysmon thread");
+    atomic_store(&tzr_sysmon_state.started, 1);
+}
+
+static void tzr_sysmon_start(void) {
+    if (!atomic_load_explicit(&tzr_sysmon_state.started, memory_order_acquire))
+        tzr_run_once(&tzr_sysmon_state.once, tzr_sysmon_init);
 }
 
 /* The depth of the blocking calls of the calling G, and leaving those that a trap skipped: a failure
@@ -2628,7 +3028,7 @@ TZR_API int64_t tsuzuri_tz_chan_length(tzr_chan *c) {
  * (TZ01 D9): Time.after's and Time.tick's belong to the runtime until they fire or stop; a Timer or
  * Ticker handle owns its record (`handle`), which the handle's drop frees. A pending timer other
  * than WAKE is listed in the boundary scope of the G that made it, whose end stops it. */
-enum { TZR_TIMER_WAKE, TZR_TIMER_SEND, TZR_TIMER_TICK, TZR_TIMER_FUNC, TZR_TIMER_CTX };
+enum { TZR_TIMER_WAKE, TZR_TIMER_SEND, TZR_TIMER_TICK, TZR_TIMER_FUNC, TZR_TIMER_CTX, TZR_TIMER_NET };
 /* DORMANT (TZ07): listed in its boundary but out of the heap and not counted in ntimers, until a
  * context's cancel starts it (Context.after_func): it never fires by the clock, so it does not keep
  * the deadlock detector from looking. */
@@ -2649,6 +3049,8 @@ struct tzr_timer {
     void *box;                  /* FUNC: the boxed function, until it runs or is dropped */
     void *ctx;                  /* CTX (TZ07): the context whose deadline this is; the timer is
                                  * part of it and holds one reference while it pends */
+    tzr_netwait *net;           /* NET (TZ08): the socket wait whose deadline this is, which holds
+                                 * the timer on its G's stack like WAKE */
     tzr_scope *scope;           /* the boundary that lists it, or NULL */
     tzr_timer *scope_next, *scope_prev;
 };
@@ -2702,6 +3104,8 @@ static void tzr_heap_down(size_t i) {
 }
 
 static void *tzr_timerproc(void *arg);
+static int tzr_netwait_post(tzr_netwait *w, int outcome);
+enum { TZR_NW_ARMED, TZR_NW_PARKED, TZR_NW_READY, TZR_NW_TIMEDOUT };
 
 /* Adds t to the heap as PENDING and wakes the thread when t is the earliest (tzr_timers.lock). */
 static void tzr_heap_push(tzr_timer *t) {
@@ -2828,6 +3232,10 @@ static void *tzr_timerproc(void *arg) {
             switch (top->kind) {
             case TZR_TIMER_WAKE:
                 tzr_ready(top->g); /* the G may run and leave `top` (its stack frame) at once */
+                break;
+            case TZR_TIMER_NET:
+                /* the G takes this lock before it leaves `top`, so it is there until the lock goes */
+                tzr_netwait_post(top->net, TZR_NW_TIMEDOUT);
                 break;
             case TZR_TIMER_SEND:
                 tzr_timer_offer(top->chan, now);
@@ -3064,6 +3472,467 @@ TZR_API void tsuzuri_tz_timer_free(void *timer) {
     tzr_timer_unref(t->chan, t->release);
     free(t);
 }
+
+/* ---------------------------------------------------------------- netpoller (TZ08) */
+
+/* Net's waits (tz_net_wait of src/runtime/net.c) on a tzroutine stop the G only: the G registers its
+ * socket with one netpoller thread (kqueue on macOS and the BSDs, epoll on Linux), which wakes it when
+ * the socket is ready; a deadline is a NET timer of the heap, on the G's stack like a WAKE timer. A
+ * thread that is not a tzroutine, and a wait that the netpoller cannot take, polls in net.c.
+ *
+ * A wait is settled once (tzr_netwait_post): READY by the netpoller or by a close of its socket, or
+ * TIMEDOUT by its timer. The G arms it and then parks with tzr_netwait_commit as the unlock of
+ * tzr_park: a wait settled before the G was off its stack makes the commit wake the G at once, and a
+ * waker that settles a parked wait wakes the G itself. A waker reads the record only while it is
+ * linked to its descriptor (the netpoller, under the descriptor's lock) or while its timer is in the
+ * heap (the timer thread, under tzr_timers.lock); the G takes both locks after it wakes, before it
+ * leaves the record. */
+struct tzr_netwait {
+    tzr_g *g;
+    _Atomic int state;
+    tzr_timer timer;
+};
+
+static int tzr_netwait_post(tzr_netwait *w, int outcome) {
+    tzr_g *g = w->g;
+    int s = atomic_load(&w->state);
+    while (s == TZR_NW_ARMED || s == TZR_NW_PARKED) {
+        if (atomic_compare_exchange_weak(&w->state, &s, outcome)) {
+            if (s == TZR_NW_PARKED) tzr_ready(g);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+#if !defined(_WIN32) || defined(TZ_NET_WINSOCK)
+static void tzr_netwait_commit(void *arg) {
+    tzr_netwait *w = arg;
+    int s = TZR_NW_ARMED;
+    if (!atomic_compare_exchange_strong(&w->state, &s, TZR_NW_PARKED)) tzr_ready(w->g); /* settled already */
+}
+#endif
+
+#if !defined(_WIN32)
+/* The waits of one descriptor: at most a reader and a writer (a Net handle has one owner; a second
+ * waiter of a kind polls). `seq` numbers the registrations, so that an event of an earlier one, or of
+ * a descriptor that was closed and taken again, is ignored; a number is taken only when the kernel
+ * accepted its registration. The records are never freed: the netpoller may look one up after its
+ * socket is gone. */
+typedef struct {
+    tzr_lock lock;
+    uint32_t seq[2];        /* kqueue: per kind; epoll: seq[0], for the descriptor */
+    int registered;         /* epoll: the descriptor is in the set */
+    tzr_netwait *waiter[2]; /* 0 the reader, 1 the writer */
+} tzr_pd;
+
+#define TZR_PD_CHUNK 1024
+#define TZR_PD_CHUNKS 16384 /* descriptors below 16 Mi; a larger one polls */
+static _Atomic(tzr_pd *) tzr_pd_chunks[TZR_PD_CHUNKS];
+static tzr_lock tzr_pd_grow;
+
+static tzr_pd *tzr_pd_of(intptr_t fd, int make) {
+    if (fd < 0 || fd >= (intptr_t)TZR_PD_CHUNK * TZR_PD_CHUNKS) return NULL;
+    size_t chunk = (size_t)fd / TZR_PD_CHUNK;
+    tzr_pd *pds = atomic_load_explicit(&tzr_pd_chunks[chunk], memory_order_acquire);
+    if (pds == NULL && make) {
+        tzr_lock_acquire(&tzr_pd_grow);
+        pds = atomic_load_explicit(&tzr_pd_chunks[chunk], memory_order_relaxed);
+        if (pds == NULL) {
+            pds = calloc(TZR_PD_CHUNK, sizeof *pds);
+            if (pds != NULL) atomic_store_explicit(&tzr_pd_chunks[chunk], pds, memory_order_release);
+        }
+        tzr_lock_release(&tzr_pd_grow);
+    }
+    return pds ? &pds[(size_t)fd % TZR_PD_CHUNK] : NULL;
+}
+
+static uint64_t tzr_pd_key(intptr_t fd, uint32_t seq) { return ((uint64_t)(uint32_t)fd << 32) | seq; }
+
+static tzr_once tzr_netpoll_once = TZR_ONCE_INIT;
+static _Atomic int tzr_netpoll_state; /* 0 not started, 1 running, 2 cannot start (net.c polls) */
+static int tzr_netpoll_fd = -1;
+
+/* Settles the waiter of kind `dir` as READY and unlinks it (the descriptor's lock held). */
+static void tzr_pd_wake(tzr_pd *pd, int dir) {
+    tzr_netwait *w = pd->waiter[dir];
+    if (w == NULL) return;
+    pd->waiter[dir] = NULL;
+    tzr_netwait_post(w, TZR_NW_READY);
+}
+
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+/* Registers the waiter of kind `dir` (the descriptor's lock held): one shot, keyed by its own number. */
+static int tzr_netpoll_arm(tzr_pd *pd, intptr_t fd, int dir) {
+    struct kevent change;
+    uint32_t seq = pd->seq[dir] + 1;
+    EV_SET(&change, (uintptr_t)fd, dir ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0,
+           (void *)(uintptr_t)tzr_pd_key(fd, seq));
+    if (kevent(tzr_netpoll_fd, &change, 1, NULL, 0, NULL) != 0) return -1;
+    pd->seq[dir] = seq;
+    return 0;
+}
+
+static void *tzr_netpoller(void *arg) {
+    (void)arg;
+    struct kevent events[64];
+    for (;;) {
+        int n = kevent(tzr_netpoll_fd, NULL, 0, events, 64, NULL);
+        for (int i = 0; i < n; i++) {
+            uint64_t key = (uint64_t)(uintptr_t)events[i].udata;
+            int dir = events[i].filter == EVFILT_WRITE;
+            tzr_pd *pd = tzr_pd_of((intptr_t)(key >> 32), 0);
+            if (pd == NULL) continue;
+            tzr_lock_acquire(&pd->lock);
+            if (pd->seq[dir] == (uint32_t)key) tzr_pd_wake(pd, dir); /* an error or the end counts */
+            tzr_lock_release(&pd->lock);
+        }
+    }
+    return NULL;
+}
+
+static int tzr_netpoll_open(void) {
+    int kq = kqueue();
+    if (kq >= 0 && fcntl(kq, F_SETFD, FD_CLOEXEC) != 0) {
+        close(kq);
+        kq = -1;
+    }
+    return kq;
+}
+#else
+/* Registers what the waiters of the descriptor wait for (its lock held): one shot, keyed by a new
+ * number, so that the event of an earlier registration is ignored; the new one, level-triggered,
+ * reports what is still ready. When the kernel refuses it, the earlier registration and its number
+ * stay, so that a waiter that it covers still wakes. */
+static int tzr_netpoll_rearm(tzr_pd *pd, intptr_t fd) {
+    struct epoll_event event;
+    uint32_t seq = pd->seq[0] + 1;
+    event.events = EPOLLONESHOT | (pd->waiter[0] ? EPOLLIN | EPOLLRDHUP : 0) | (pd->waiter[1] ? EPOLLOUT : 0);
+    event.data.u64 = tzr_pd_key(fd, seq);
+    int op = pd->registered ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
+    if (epoll_ctl(tzr_netpoll_fd, op, (int)fd, &event) != 0) {
+        /* a descriptor closed without tzr_netpoll_close, or one that is in the set already */
+        if (errno != (op == EPOLL_CTL_MOD ? ENOENT : EEXIST)) return -1;
+        op = op == EPOLL_CTL_MOD ? EPOLL_CTL_ADD : EPOLL_CTL_MOD;
+        if (epoll_ctl(tzr_netpoll_fd, op, (int)fd, &event) != 0) return -1;
+    }
+    pd->seq[0] = seq;
+    pd->registered = 1;
+    return 0;
+}
+
+static int tzr_netpoll_arm(tzr_pd *pd, intptr_t fd, int dir) {
+    (void)dir;
+    return tzr_netpoll_rearm(pd, fd);
+}
+
+static void *tzr_netpoller(void *arg) {
+    (void)arg;
+    struct epoll_event events[64];
+    for (;;) {
+        int n = epoll_wait(tzr_netpoll_fd, events, 64, -1);
+        for (int i = 0; i < n; i++) {
+            uint64_t key = events[i].data.u64;
+            uint32_t ready = events[i].events;
+            intptr_t fd = (intptr_t)(key >> 32);
+            tzr_pd *pd = tzr_pd_of(fd, 0);
+            if (pd == NULL) continue;
+            tzr_lock_acquire(&pd->lock);
+            if (pd->seq[0] == (uint32_t)key) {
+                /* an error or a hang-up wakes both: the next call reports it */
+                if (ready & (EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP)) tzr_pd_wake(pd, 0);
+                if (ready & (EPOLLOUT | EPOLLERR | EPOLLHUP)) tzr_pd_wake(pd, 1);
+                /* the one-shot registration is off: a waiter of the other kind needs a new one, and
+                 * when that fails it wakes, and its retry reports the error */
+                if ((pd->waiter[0] || pd->waiter[1]) && tzr_netpoll_rearm(pd, fd) != 0) {
+                    tzr_pd_wake(pd, 0);
+                    tzr_pd_wake(pd, 1);
+                }
+            }
+            tzr_lock_release(&pd->lock);
+        }
+    }
+    return NULL;
+}
+
+static int tzr_netpoll_open(void) { return epoll_create1(EPOLL_CLOEXEC); }
+#endif
+
+static void tzr_netpoll_init(void) {
+    int fd = tzr_netpoll_open();
+    if (fd < 0) {
+        atomic_store(&tzr_netpoll_state, 2);
+        return;
+    }
+    tzr_netpoll_fd = fd;
+    tzr_thread_start(tzr_netpoller, NULL, 256 * 1024, "cannot start the netpoller thread");
+    atomic_store(&tzr_netpoll_state, 1);
+}
+
+/* Waits on a tzroutine until the descriptor can be read (write == 0) or written, or `timeout` ns
+ * pass (-1: no limit): 0 ready (an error, a hang-up or a close counts: the next call reports it),
+ * 1 timed out, -1 when net.c must poll (a thread, a G inside a blocking call, a second waiter of a
+ * kind, or a descriptor that the netpoller cannot take). A `handle` (not 0) that `open` finds closed
+ * is ready at once: net.c then reports it. `open` is asked under the descriptor's lock, which net.c's
+ * close takes after forgetting the handle, so a wait that starts is woken by a close that follows,
+ * and none starts on a descriptor that another socket took after the close. */
+static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout, int32_t (*open)(int64_t, intptr_t),
+                                int64_t handle) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked || m->syscall_depth > 0) return -1;
+    if (atomic_load(&tzr_netpoll_state) == 0) tzr_run_once(&tzr_netpoll_once, tzr_netpoll_init);
+    if (atomic_load(&tzr_netpoll_state) != 1) return -1;
+    tzr_pd *pd = tzr_pd_of(fd, 1);
+    if (pd == NULL) return -1;
+    int dir = write != 0;
+    tzr_netwait w = {.g = m->curg, .state = TZR_NW_ARMED};
+    tzr_lock_acquire(&pd->lock);
+    if (pd->waiter[dir] != NULL) {
+        tzr_lock_release(&pd->lock);
+        return -1;
+    }
+    if (handle != 0 && !open(handle, fd)) {
+        tzr_lock_release(&pd->lock);
+        return 0; /* ready: net.c sees the closed handle */
+    }
+    pd->waiter[dir] = &w;
+    if (tzr_netpoll_arm(pd, fd, dir) != 0) {
+        pd->waiter[dir] = NULL;
+        tzr_lock_release(&pd->lock);
+        return -1;
+    }
+    tzr_lock_release(&pd->lock);
+    atomic_fetch_add(&tzr_sched.nnetwait, 1);
+    if (timeout >= 0) {
+        w.timer.when = tzr_deadline(tzr_nanotime(), timeout);
+        w.timer.kind = TZR_TIMER_NET;
+        w.timer.net = &w;
+        tzr_lock_acquire(&tzr_timers.lock);
+        tzr_heap_push(&w.timer);
+        atomic_fetch_add(&tzr_sched.ntimers, 1);
+        tzr_lock_release(&tzr_timers.lock);
+    }
+    tzr_park(tzr_netwait_commit, &w, "Net wait");
+    if (timeout >= 0) {
+        tzr_lock_acquire(&tzr_timers.lock);
+        int taken = tzr_timer_take(&w.timer);
+        tzr_lock_release(&tzr_timers.lock);
+        if (taken == 2) tzr_timers_gone(1);
+    }
+    tzr_lock_acquire(&pd->lock);
+    if (pd->waiter[dir] == &w) pd->waiter[dir] = NULL; /* timed out: the registration may stay armed */
+    tzr_lock_release(&pd->lock);
+    atomic_fetch_sub(&tzr_sched.nnetwait, 1);
+    return atomic_load(&w.state) == TZR_NW_TIMEDOUT;
+}
+
+/* A socket that net.c is about to close, after it forgot its handle: its waiters wake as ready (net.c
+ * then reports the closed handle), and an event of it that is on its way is ignored. A wait that
+ * comes later finds the handle closed under the same lock (tzr_netpoll_wait), so nothing waits on a
+ * registration that the close drops without an event. A descriptor without a record has had no wait,
+ * and the handle check keeps any from starting. */
+static void tzr_netpoll_close(intptr_t fd) {
+    tzr_pd *pd = tzr_pd_of(fd, 0);
+    if (pd == NULL) return;
+    tzr_lock_acquire(&pd->lock);
+    pd->seq[0]++;
+    pd->seq[1]++;
+    pd->registered = 0;
+    tzr_pd_wake(pd, 0);
+    tzr_pd_wake(pd, 1);
+    tzr_lock_release(&pd->lock);
+}
+#elif defined(TZ_NET_WINSOCK)
+/* Windows (Phase 3): net.c is in the unit (it includes winsock2.h and defines TZ_NET_WINSOCK). One
+ * thread polls every waited socket with WSAPoll, and a UDP socket that sends to itself wakes it when
+ * the set changes, as net.c's own poller does (D6: no IOCP). A waiter is in the list until it leaves
+ * (the poller settles it and takes it out, or the G takes it out after its timer); the poller reads a
+ * waiter only under the list's lock, as the G removes it. */
+typedef struct {
+    SOCKET socket;
+    short events;   /* POLLRDNORM or POLLWRNORM */
+    uint64_t serial; /* the order of registration */
+    tzr_netwait *w;
+} tzr_winwait;
+
+static struct {
+    tzr_lock lock;
+    tzr_winwait *waits;
+    size_t count, capacity;
+    uint64_t serial;
+    SOCKET wake;
+    struct sockaddr_in wake_address;
+} tzr_winpoll = {.wake = INVALID_SOCKET};
+
+static tzr_once tzr_netpoll_once = TZR_ONCE_INIT;
+static _Atomic int tzr_netpoll_state; /* 0 not started, 1 running, 2 cannot start (net.c polls) */
+
+static void tzr_winpoll_kick(void) {
+    char byte = 1;
+    sendto(tzr_winpoll.wake, &byte, 1, 0, (const struct sockaddr *)&tzr_winpoll.wake_address, sizeof tzr_winpoll.wake_address);
+}
+
+/* Settles and removes the waits of `socket`, or every wait when it is INVALID_SOCKET (the list's lock
+ * held). */
+static void tzr_winpoll_wake_all(SOCKET socket) {
+    size_t kept = 0;
+    for (size_t i = 0; i < tzr_winpoll.count; i++) {
+        tzr_winwait wait = tzr_winpoll.waits[i];
+        if (socket == INVALID_SOCKET || wait.socket == socket) tzr_netwait_post(wait.w, TZR_NW_READY);
+        else tzr_winpoll.waits[kept++] = wait;
+    }
+    tzr_winpoll.count = kept;
+}
+
+static void *tzr_netpoller(void *arg) {
+    (void)arg;
+    WSAPOLLFD *entries = NULL;
+    uint64_t *serials = NULL;
+    size_t capacity = 0;
+    for (;;) {
+        tzr_lock_acquire(&tzr_winpoll.lock);
+        size_t count = tzr_winpoll.count;
+        if (count + 1 > capacity) {
+            size_t next = capacity ? capacity * 2 : 64;
+            while (next < count + 1) next *= 2;
+            WSAPOLLFD *more_entries = realloc(entries, next * sizeof *entries);
+            uint64_t *more_serials = more_entries ? realloc(serials, next * sizeof *serials) : NULL;
+            if (more_entries) entries = more_entries;
+            if (more_serials) serials = more_serials;
+            if (!more_entries || !more_serials) {
+                tzr_winpoll_wake_all(INVALID_SOCKET); /* the retries poll in net.c */
+                tzr_lock_release(&tzr_winpoll.lock);
+                continue;
+            }
+            capacity = next;
+        }
+        entries[0].fd = tzr_winpoll.wake;
+        entries[0].events = POLLRDNORM;
+        entries[0].revents = 0;
+        for (size_t i = 0; i < count; i++) {
+            entries[1 + i].fd = tzr_winpoll.waits[i].socket;
+            entries[1 + i].events = tzr_winpoll.waits[i].events;
+            entries[1 + i].revents = 0;
+            serials[i] = tzr_winpoll.waits[i].serial;
+        }
+        tzr_lock_release(&tzr_winpoll.lock);
+        int ready = WSAPoll(entries, (ULONG)(count + 1), -1);
+        tzr_lock_acquire(&tzr_winpoll.lock);
+        if (ready == SOCKET_ERROR) {
+            if (WSAGetLastError() != WSAEINTR) tzr_winpoll_wake_all(INVALID_SOCKET); /* the retries report it */
+        } else if (ready > 0) {
+            if (entries[0].revents != 0) {
+                char bytes[64];
+                while (recv(tzr_winpoll.wake, bytes, sizeof bytes, 0) > 0) {
+                }
+            }
+            /* the list is in the order of `serial`, as the snapshot: a wait that left is skipped */
+            size_t kept = 0, seen = 0;
+            for (size_t i = 0; i < tzr_winpoll.count; i++) {
+                tzr_winwait wait = tzr_winpoll.waits[i];
+                while (seen < count && serials[seen] < wait.serial) seen++;
+                short revents = seen < count && serials[seen] == wait.serial ? entries[1 + seen].revents : 0;
+                if (revents != 0) tzr_netwait_post(wait.w, TZR_NW_READY); /* an error or the end counts */
+                else tzr_winpoll.waits[kept++] = wait;
+            }
+            tzr_winpoll.count = kept;
+        }
+        tzr_lock_release(&tzr_winpoll.lock);
+    }
+    return NULL;
+}
+
+/* The wake socket is overlapped, as socket() makes them and net.c does: Windows runs the calls on a
+ * socket made without WSA_FLAG_OVERLAPPED (a synchronous handle) one at a time, so a kick's sendto
+ * would wait for the WSAPoll of the netpoller thread on the same socket, which only the kick ends. */
+static void tzr_netpoll_init(void) {
+    SOCKET wake = WSASocketW(AF_INET, SOCK_DGRAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+    struct sockaddr_in address;
+    int length = sizeof address;
+    memset(&address, 0, sizeof address);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    u_long nonblocking = 1;
+    if (wake == INVALID_SOCKET || ioctlsocket(wake, FIONBIO, &nonblocking) != 0
+        || bind(wake, (struct sockaddr *)&address, sizeof address) != 0
+        || getsockname(wake, (struct sockaddr *)&address, &length) != 0) {
+        if (wake != INVALID_SOCKET) closesocket(wake);
+        atomic_store(&tzr_netpoll_state, 2);
+        return;
+    }
+    tzr_winpoll.wake = wake;
+    tzr_winpoll.wake_address = address;
+    tzr_thread_start(tzr_netpoller, NULL, 256 * 1024, "cannot start the netpoller thread");
+    atomic_store(&tzr_netpoll_state, 1);
+}
+
+/* As on POSIX, the handle is checked under the lock that the close takes. */
+static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout, int32_t (*open)(int64_t, intptr_t),
+                                int64_t handle) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked || m->syscall_depth > 0) return -1;
+    if (atomic_load(&tzr_netpoll_state) == 0) tzr_run_once(&tzr_netpoll_once, tzr_netpoll_init);
+    if (atomic_load(&tzr_netpoll_state) != 1) return -1;
+    tzr_netwait w = {.g = m->curg, .state = TZR_NW_ARMED};
+    tzr_lock_acquire(&tzr_winpoll.lock);
+    if (handle != 0 && !open(handle, fd)) {
+        tzr_lock_release(&tzr_winpoll.lock);
+        return 0; /* ready: net.c sees the closed handle */
+    }
+    if (tzr_winpoll.count == tzr_winpoll.capacity) {
+        size_t next = tzr_winpoll.capacity ? tzr_winpoll.capacity * 2 : 64;
+        tzr_winwait *more = realloc(tzr_winpoll.waits, next * sizeof *more);
+        if (more == NULL) {
+            tzr_lock_release(&tzr_winpoll.lock);
+            return -1;
+        }
+        tzr_winpoll.waits = more;
+        tzr_winpoll.capacity = next;
+    }
+    tzr_winpoll.waits[tzr_winpoll.count++] =
+        (tzr_winwait){(SOCKET)fd, write ? POLLWRNORM : POLLRDNORM, ++tzr_winpoll.serial, &w};
+    tzr_lock_release(&tzr_winpoll.lock);
+    tzr_winpoll_kick();
+    atomic_fetch_add(&tzr_sched.nnetwait, 1);
+    if (timeout >= 0) {
+        w.timer.when = tzr_deadline(tzr_nanotime(), timeout);
+        w.timer.kind = TZR_TIMER_NET;
+        w.timer.net = &w;
+        tzr_lock_acquire(&tzr_timers.lock);
+        tzr_heap_push(&w.timer);
+        atomic_fetch_add(&tzr_sched.ntimers, 1);
+        tzr_lock_release(&tzr_timers.lock);
+    }
+    tzr_park(tzr_netwait_commit, &w, "Net wait");
+    if (timeout >= 0) {
+        tzr_lock_acquire(&tzr_timers.lock);
+        int taken = tzr_timer_take(&w.timer);
+        tzr_lock_release(&tzr_timers.lock);
+        if (taken == 2) tzr_timers_gone(1);
+    }
+    tzr_lock_acquire(&tzr_winpoll.lock);
+    for (size_t i = 0; i < tzr_winpoll.count; i++) {
+        if (tzr_winpoll.waits[i].w == &w) { /* timed out: still listed */
+            memmove(&tzr_winpoll.waits[i], &tzr_winpoll.waits[i + 1], (tzr_winpoll.count - i - 1) * sizeof *tzr_winpoll.waits);
+            tzr_winpoll.count--;
+            break;
+        }
+    }
+    tzr_lock_release(&tzr_winpoll.lock);
+    atomic_fetch_sub(&tzr_sched.nnetwait, 1);
+    return atomic_load(&w.state) == TZR_NW_TIMEDOUT;
+}
+
+/* As on POSIX: before the close, after net.c forgot the handle, the waits of the socket end; a wait
+ * that comes later finds the handle closed. */
+static void tzr_netpoll_close(intptr_t fd) {
+    if (atomic_load(&tzr_netpoll_state) != 1) return;
+    tzr_lock_acquire(&tzr_winpoll.lock);
+    tzr_winpoll_wake_all((SOCKET)fd);
+    tzr_lock_release(&tzr_winpoll.lock);
+    tzr_winpoll_kick();
+}
+#endif /* !_WIN32 */
 
 static void tzr_ctx_unref(void *ctx);
 
