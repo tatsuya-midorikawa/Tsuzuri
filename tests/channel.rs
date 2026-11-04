@@ -176,19 +176,18 @@ fn an_item_holds_no_borrow() {
 }
 
 #[test]
-fn a_wait_inside_a_lock_traps_in_a_program_with_channels() {
+fn a_wait_inside_a_lock_waits_in_a_program_with_channels() {
+    // TZ06: the lock of a program that uses the tzroutine runtime is the G's, so a channel
+    // operation may wait inside it (Go's sync.Mutex); the thread's mark of TZ03 is gone.
     let module = accepts(
         "let lock = Mutex.create 0i64\nlet ch: Channel<i64> = Channel.make 1\nlet borrowed = ref ch\nMutex.with_lock (ref lock) (\\value -> {\n    Channel.send borrowed 1;\n    deref value\n})\n",
     );
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
-    assert!(ir.contains("call void @tz.mutex.mark(i32 1)"), "{ir}");
-    assert!(ir.contains("call i1 @tz.routine.unlocked()"), "{ir}");
-    // try_send never waits.
-    let trying = accepts(
-        "let lock = Mutex.create 0i64\nlet ch: Channel<i64> = Channel.make 1\nlet borrowed = ref ch\nlet _r = Mutex.with_lock (ref lock) (\\value -> match Channel.try_send borrowed 1 with | Result.Ok _ -> 1 | Result.Error _ -> 0)\n0\n",
+    assert!(ir.contains("call i32 @tsuzuri_tz_mutex32_lock(ptr"), "{ir}");
+    assert!(
+        !ir.contains("tz.mutex.mark") && !ir.contains("tz.routine.unlocked"),
+        "{ir}"
     );
-    let ir = llvm::emit(&trying, llvm::Entry::Console).unwrap();
-    assert!(!ir.contains("call i1 @tz.routine.unlocked()"), "{ir}");
 }
 
 #[test]

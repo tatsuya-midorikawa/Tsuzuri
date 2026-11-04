@@ -1,0 +1,25 @@
+/// A counter of the work to wait for (Go's `sync.WaitGroup`, TZ06). `WaitGroup.add` counts work
+/// before it starts, `WaitGroup.done` when it ends, and `WaitGroup.wait` waits until the count is
+/// zero. `WaitGroup.go` adds one, starts a function on a new tzroutine and takes the one off when
+/// the function returns; it does not wait, which is still the caller's `wait`. The handle counts
+/// its owners: `WaitGroup.share` makes another one for a tzroutine, and the last drop frees the
+/// counter.
+record WaitGroup { block: i64 }
+instance Drop<WaitGroup> {
+    fn drop group = WaitGroup.__drop group
+}
+
+/// Takes one from the count (Go's `wg.Done()`). A count below zero traps.
+///
+/// ```tsuzuri run=done
+/// let group = WaitGroup.create ()
+/// WaitGroup.add group 1
+/// let finished = WaitGroup.share group
+/// tzroutine {
+///     WaitGroup.done finished
+/// }
+/// WaitGroup.wait group
+/// "done"
+/// ```
+def done :: ref WaitGroup -> unit
+fn done group = WaitGroup.add group (-1)

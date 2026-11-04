@@ -227,23 +227,17 @@ fn programs_without_timers_keep_their_ir() {
 }
 
 #[test]
-fn a_sleep_ms_in_a_waiting_program_checks_the_lock() {
-    // On a tzroutine, os.c's sleep waits through the scheduler's hook, so a positive one in a
-    // program that waits traps inside the thread's Mutex.with_lock, as Time.sleep does.
+fn a_sleep_ms_in_a_waiting_program_may_hold_a_lock() {
+    // On a tzroutine, os.c's sleep waits through the scheduler's hook. Since TZ06 the program's
+    // Mutex.with_lock is the runtime's lock of the G, which a tzroutine may hold while it waits,
+    // so no thread mark is checked (as for Time.sleep).
     let module = accepts(
         "tzroutine { () }\nlet! slept = Time.sleep_ms 1\nmatch slept with\n| Result.Ok _ -> 0\n| Result.Error _ -> 1\n",
     );
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
-    let sleep = ir
-        .lines()
-        .position(|line| line.contains("call i64 @tsuzuri_os_sleep(i64 %arg0)"))
-        .expect("the sleep");
-    let check = ir
-        .lines()
-        .position(|line| line.contains("call i1 @tz.routine.unlocked()"))
-        .expect("the check of the lock");
-    assert!(check < sleep, "{ir}");
-    assert!(ir.contains("icmp sgt i64 %arg0, 0"), "{ir}");
+    assert!(ir.contains("call i64 @tsuzuri_os_sleep(i64 %arg0)"), "{ir}");
+    assert!(!ir.contains("tz.routine.unlocked"), "{ir}");
+    assert!(!ir.contains("tz.mutex.locked"), "{ir}");
 }
 
 #[test]

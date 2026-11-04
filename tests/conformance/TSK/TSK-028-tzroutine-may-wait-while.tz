@@ -1,0 +1,17 @@
+// The holder of the lock waits for a value that another tzroutine sends.
+let lock = Mutex.create 0i64
+let values: Channel<i64> = Channel.make 0
+let sender = Channel.share values
+tzroutine {
+    Channel.send sender 42
+}
+let receiver = ref values
+Mutex.with_lock (ref lock) (\value -> {
+    deref value = match Channel.recv receiver with
+        | Maybe.Some item -> item
+        | Maybe.None -> 0;
+    deref value
+})
+
+// rule: TSK-028
+// expect: stdout "42\n"

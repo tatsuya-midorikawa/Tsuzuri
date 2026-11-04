@@ -277,6 +277,30 @@ fn at_ref key map =
 	assert (index >= 0)
 	ref map.entries[index].value
 
+/// A reference to the value for `key`, which is borrowed, or `None` when no entry has it: one
+/// lookup, where `contains_key_ref` and then `at_ref` take two. A borrow inside a `Maybe` takes no
+/// region, so the result borrows the key too and cannot outlive it (`at_ref` names the map alone).
+///
+/// @complexity expected O(1), worst O(n)
+/// @see HashMap.at_ref
+///
+/// ```tsuzuri run=one%20none
+/// let names = HashMap.empty() |> HashMap.insert 1 "one"
+/// let one = 1
+/// let two = 2
+/// let first = match HashMap.try_at_ref (ref one) names with
+///     | Maybe.Some name -> $"{name}"
+///     | Maybe.None -> "none"
+/// let second = match HashMap.try_at_ref (ref two) names with
+///     | Maybe.Some name -> $"{name}"
+///     | Maybe.None -> "none"
+/// $"{first} {second}"
+/// ```
+def try_at_ref :: (Hash<'key>, Eq<'key>) => ref 'key -> ref HashMap<'key, 'value> -> Maybe<ref 'value>
+fn try_at_ref key map =
+	let index = find map key
+	if index >= 0 then Maybe.Some (ref map.entries[index].value) else Maybe.None
+
 /// A reference to the value for `key`; traps when no entry has it.
 ///
 /// @complexity expected O(1), worst O(n)

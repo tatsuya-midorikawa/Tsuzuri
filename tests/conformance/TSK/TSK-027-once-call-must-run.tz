@@ -1,0 +1,18 @@
+let once = Once.create ()
+let runs = Arc.new (Atomic.create 0i64)
+let group = WaitGroup.create ()
+for _ in 1 ..= 16 do
+    let mine = Once.share (ref once)
+    let counter = Arc.share (ref runs)
+    WaitGroup.go (ref group) (Owned.function (\() -> {
+        let counting = Arc.get (ref counter);
+        Once.call (ref mine) (\() -> {
+            let _old = Atomic.fetch_add counting 1i64;
+            ()
+        })
+    }))
+WaitGroup.wait (ref group)
+Atomic.load (Arc.get (ref runs))
+
+// rule: TSK-027
+// expect: stdout "1\n"

@@ -6,7 +6,7 @@
 
 - `Mutex.create value` で作り、共有借用 `ref Mutex<T>` に対する `Mutex.with_lock mutex callback` の中でだけ値に触れます。`callback` は排他借用 `ref mut T` を受け取り、その結果を返します。ロックは `callback` が終わると解放されます。
 - 結果は `Send` でなければならず、ロック中の値への借用を持てません。`ref` を返すことは `E1013`（`tasks require owned values`）で、借用を捕捉した関数値と、それを含む `Maybe`・タプル・配列・レコード・`Seq` も `E1013`（`Mutex.with_lock results must be proven free of borrowed environments`）です。ロックが外れた後で、置き換えられたり別のタスクに書かれたりした値を読むことになるからです。値のコピーを捕捉した関数のように、借用を持たないと証明できる結果は返せます（[結果とロック](#結果とロック)）。`Mutex.create` も、タスクへ渡せる `T`（`Send`）だけを受け取ります。
-- ロックを持ったまま別の `Mutex.with_lock` を呼ぶこと（入れ子）と、ロック中に並列処理（`Task.parallel`・`Task.scope`・`Parallel.*`）を始めることは、トラップです。デッドロックはしません。
+- ロックを持ったまま別の `Mutex.with_lock` を呼ぶこと（入れ子）と、ロック中に並列処理（`Task.parallel`・`Task.scope`・`Parallel.*`）を始めることは、トラップです。デッドロックはしません。ただし tzroutine のランタイムを使うプログラム（tzroutine・`Channel`・`select`・タイマー・`WaitGroup` などの同期の型を使うもの）では、ロックは tzroutine のもので、ロックを持ったまま待てます（[tzroutine のプログラムのロック](#tzroutine-のプログラムのロック)）。
 - `Mutex<T>` は非 Copy の所有値で、`Send` かつ `Sync` です。関数値には捕捉できません（`E1005`）。複数のタスクへは、[Task.scope](../async-tasks-and-lazy/task.md#共有状態と-taskscope) の共有借用か `Arc<Mutex<T>>` で渡します。
 - `Mutex` のポイズンはありません。トラップが起きたときの扱いは[トラップとロック](#トラップとロック)に書きます。
 - `Arc` と `Mutex` を組み合わせると循環を作れます。サイクルコレクターはないので、循環の一方は `Arc.Weak` で持ちます（[Rc と Arc](./rc.md#循環と解放)）。
@@ -121,6 +121,19 @@ error[E1013]: Mutex.with_lock results must be proven free of borrowed environmen
 
 証明は `Mutex.with_lock` を直接、ロックと `callback` を一度に渡して呼ぶ形で行います。結果が借用を持ちうるときは、`Mutex.with_lock (ref total)` のように引数を一部だけ渡すことと、`Mutex.with_lock` 自体を関数値にすることは、`E1013`（`Mutex.with_lock must be fully applied directly when its result may hold borrowed values`）です。結果が借用を持ちえない型（整数や文字列など）なら、どちらも書けます。`callback` が引数で受け取った関数値のように、本体を調べられないものは、結果が借用を持ちうる限り通りません。ジェネリックな関数が `callback` を引数で受け取って `Mutex.with_lock` に渡すときも、結果の型が借用を持ちうる型で使うと、同じ理由で通りません（結果が整数や文字列などなら、どちらも書けます）。
 
+## tzroutine のプログラムのロック
+
+tzroutine のランタイムを使うプログラム（tzroutine・`Channel`・`select`・タイマー・[WaitGroup](./waitgroup.md)・[Once](./once.md)・[OnceValue](./oncevalue.md)・[RwMutex](./rwmutex.md)・[Cond](./cond.md)・[Semaphore](./semaphore.md)・[SyncMap](./syncmap.md) のどれかを使うもの）では、`Mutex.with_lock` はランタイムのロックになり、Go の `sync.Mutex` と同じ規則です（TZ06）。
+
+- ロックは、それを取った tzroutine のものです。待つのは tzroutine だけで、OS スレッドは止まりません。
+- ロックを持ったまま `Channel` の送受信・`select`・`Routine.yield`・`Time.sleep`・`WaitGroup.wait`・別のロックで待ってよいです。 <!-- rule: TSK-028 -->
+- 同じ `Mutex` を、持っている tzroutine がもう一度取るとトラップです（`Tsuzuri runtime: Mutex.with_lock cannot be nested`）。**違う** `Mutex` の入れ子はできます。2 つのロックを逆の順に取って互いを待つと、デッドロックの判定（`Tsuzuri runtime: all tzroutines are asleep - deadlock! (… Mutex lock)`）がトラップにします。
+- 待ちは compare-exchange、混んでいれば 32 回試し直してから、アドレスで待つ表（parking lot）で眠ります。公平さ（Go の starvation mode）は保証しません。
+- ロックの中の `Task.parallel` や `DataChannel` の待ちも検査しません（`DataChannel` の待ちはその OS スレッドを止めます）。
+- 失敗の領域（`Domain.run`）の中のトラップは、その領域の中で取ったロックを、領域を出るときに解放します。`--trap-mode return` とは組み合わせられません（`E2000`）。
+
+ほかのプログラム（tzroutine のランタイムを使わないもの）は、下の規則のままです。生成コードも変わりません。
+
 ## ロックの規則
 
 | 操作 | 結果 |
@@ -131,7 +144,7 @@ error[E1013]: Mutex.with_lock results must be proven free of borrowed environmen
 | `with_lock` の中で `Task.run` する | できる。そのタスクはこのスレッドで逐次に実行します |
 | 別のスレッドがロックを持っている間に `with_lock` する | 待つ。持ち主が終えたら取れる |
 
-入れ子と並列開始を禁じるのは、ロックを持ったまま待つ場所をなくすためです。持ち主は、ロックの中で別のロックも子どもの完了も待たないので、待つ側は必ずロックを取れます。デッドロックのかわりにトラップになり、native ではトラップの前に標準エラーへ `Mutex.with_lock cannot be nested; release the outer mutex first` または `parallel work cannot start inside Mutex.with_lock; move it outside the critical section` と出します。WASM にはコンソールがないので、トラップだけです。
+この表は tzroutine のランタイムを使わないプログラムの規則です。入れ子と並列開始を禁じるのは、ロックを持ったまま待つ場所をなくすためです。持ち主は、ロックの中で別のロックも子どもの完了も待たないので、待つ側は必ずロックを取れます。デッドロックのかわりにトラップになり、native ではトラップの前に標準エラーへ `Mutex.with_lock cannot be nested; release the outer mutex first` または `parallel work cannot start inside Mutex.with_lock; move it outside the critical section` と出します。WASM にはコンソールがないので、トラップだけです。
 
 `with_lock` の `callback` はロックを取った後で走るので、長い処理を入れると、待つスレッドの時間も延びます。`Mutex.with_lock` の中では、値の読み書きだけをして、重い計算はロックの外で行います。ロックを待つスレッドは眠り、順序（公平性）は保証しません。
 
@@ -179,6 +192,10 @@ error[E1013]: Mutex.with_lock results must be proven free of borrowed environmen
 - 複数のタスクへは、`Task.scope` の共有借用か `Arc<Mutex<T>>` で渡します。`Arc` と `Mutex` で循環を作ると解放されないので、`Arc.Weak` を使います。
 
 ## 関連項目
+
+- [RwMutex](./rwmutex.md)
+- [Cond](./cond.md)
+- [WaitGroup](./waitgroup.md)
 
 - [Atomic](./atomic.md) — ロックなしの整数と `bool`
 - [Task 式](../async-tasks-and-lazy/task.md#共有状態と-taskscope) — `Task.scope`

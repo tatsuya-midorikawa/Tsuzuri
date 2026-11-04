@@ -12,7 +12,7 @@ use super::input::Input;
 /// The key of the note node.
 pub const NOTE: &str = "note";
 
-const CELL_EVIDENCE: [(&str, &str, &str); 7] = [
+const CELL_EVIDENCE: [(&str, &str, &str); 10] = [
     ("Channel<", "channel", "Channel"),
     ("SendOnly<", "send", "Channel"),
     ("ReceiveOnly<", "recv", "Channel"),
@@ -20,12 +20,19 @@ const CELL_EVIDENCE: [(&str, &str, &str); 7] = [
     ("DataChannel.Receiver<", "recv", "DataChannel"),
     ("Mutex<", "lock", "Mutex"),
     ("Atomic<", "atomic", "Atomic"),
+    // TZ06: the cells of the sync types (the handles without a value are not cells).
+    ("RwMutex<", "lock", "RwMutex"),
+    ("OnceValue<", "once", "OnceValue"),
+    ("SyncMap<", "lock", "SyncMap"),
 ];
-const CREATORS: [(&str, &str); 4] = [
+const CREATORS: [(&str, &str); 7] = [
     ("Channel.make", "Channel"),
     ("DataChannel.bounded", "DataChannel"),
     ("Mutex.create", "Mutex"),
     ("Atomic.create", "Atomic"),
+    ("RwMutex.create", "RwMutex"),
+    ("OnceValue.create", "OnceValue"),
+    ("SyncMap.create", "SyncMap"),
 ];
 
 /// The type between `opening` at byte `start` of `text` and its matching `>` (not the `>` of a
@@ -108,6 +115,7 @@ pub fn graph(
                 | "Task.scope"
                 | "Routine.go"
                 | "Time.after_func"
+                | "WaitGroup.go"
         ) || edge.to.starts_with("Parallel.")
         {
             region

@@ -457,7 +457,7 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
 }
 
 /// The private builtins that touch only the CPU and memory (appendix A.2 and the ones added since).
-pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 31] = [
+pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 38] = [
     "Net.__classify",
     "Unicode.__table_length",
     "Unicode.__table_entry",
@@ -484,6 +484,13 @@ pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 31] = [
     "Ticker.__channel",
     "Ticker.__stop",
     "Ticker.__free",
+    "WaitGroup.__drop",
+    "Once.__begin",
+    "Once.__end",
+    "Once.__drop",
+    "Cond.__drop",
+    "Semaphore.__drop",
+    "SyncMap.__replace",
     "Bench.consume",
     "Alloc.__counter",
     "Gen.__seed",

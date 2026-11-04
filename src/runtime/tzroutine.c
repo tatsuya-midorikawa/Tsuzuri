@@ -85,6 +85,65 @@ TZR_API int64_t tsuzuri_tz_count(void) { return 1; }
 TZR_API int64_t tsuzuri_tz_max_procs(void) { return 1; }
 TZR_API int64_t tsuzuri_tz_cpu_count(void) { return 1; }
 
+/* The sync types of TZ06 on one thread: a held lock is held by the one G, so taking it again is
+ * the nesting that traps, and a wait that nobody can end is a deadlock (status 2). */
+TZR_API int32_t tsuzuri_tz_mutex32_lock(_Atomic uint32_t *word) {
+    if (atomic_load_explicit(word, memory_order_relaxed) != 0) return 1;
+    atomic_store_explicit(word, 1, memory_order_relaxed);
+    return 0;
+}
+TZR_API void tsuzuri_tz_mutex32_unlock(_Atomic uint32_t *word) { atomic_store_explicit(word, 0, memory_order_relaxed); }
+TZR_API int32_t tsuzuri_tz_rw_read_lock(_Atomic uint64_t *word) {
+    if (atomic_load_explicit(word, memory_order_relaxed) != 0) return 1;
+    atomic_store_explicit(word, 1, memory_order_relaxed);
+    return 0;
+}
+TZR_API void tsuzuri_tz_rw_read_unlock(_Atomic uint64_t *word) { atomic_store_explicit(word, 0, memory_order_relaxed); }
+TZR_API int32_t tsuzuri_tz_rw_write_lock(_Atomic uint64_t *word) { return tsuzuri_tz_rw_read_lock(word); }
+TZR_API void tsuzuri_tz_rw_write_unlock(_Atomic uint64_t *word) { atomic_store_explicit(word, 0, memory_order_relaxed); }
+TZR_API int32_t tsuzuri_tz_held_depth(void) { return 0; }
+TZR_API void tsuzuri_tz_held_restore(int32_t depth) { (void)depth; }
+TZR_API int32_t tsuzuri_tz_once_begin(_Atomic uint64_t *word) {
+    uint64_t s = atomic_load_explicit(word, memory_order_relaxed);
+    if (s == 2) return 0;
+    if (s == 1) return 2; /* the function calls its own Once */
+    atomic_store_explicit(word, 1, memory_order_relaxed);
+    return 1;
+}
+TZR_API void tsuzuri_tz_once_end(_Atomic uint64_t *word) { atomic_store_explicit(word, 2, memory_order_relaxed); }
+TZR_API int32_t tsuzuri_tz_cond_wait(_Atomic uint64_t *sequence, _Atomic uint32_t *mutex, uint64_t observed) {
+    (void)sequence;
+    (void)mutex;
+    (void)observed;
+    return 2;
+}
+TZR_API void tsuzuri_tz_cond_wake(_Atomic uint64_t *sequence, int64_t n) {
+    (void)n;
+    atomic_fetch_add_explicit(sequence, 1, memory_order_relaxed);
+}
+TZR_API int32_t tsuzuri_tz_sem_acquire(_Atomic uint64_t *word, uint64_t weight, int32_t block) {
+    uint64_t s = atomic_load_explicit(word, memory_order_relaxed);
+    if (s >= weight) {
+        atomic_store_explicit(word, s - weight, memory_order_relaxed);
+        return 0;
+    }
+    return block ? 2 : 1;
+}
+TZR_API int32_t tsuzuri_tz_sem_release(_Atomic uint64_t *word, uint64_t weight, uint64_t capacity) {
+    uint64_t s = atomic_load_explicit(word, memory_order_relaxed);
+    if (weight > capacity - s) return 1;
+    atomic_store_explicit(word, s + weight, memory_order_relaxed);
+    return 0;
+}
+TZR_API int32_t tsuzuri_tz_waitgroup_add(_Atomic uint64_t *word, int64_t delta) {
+    uint64_t v = atomic_load_explicit(word, memory_order_relaxed) + (uint64_t)delta;
+    atomic_store_explicit(word, v, memory_order_relaxed);
+    return v > (uint64_t)INT64_MAX;
+}
+TZR_API int32_t tsuzuri_tz_waitgroup_wait(_Atomic uint64_t *word) {
+    return atomic_load_explicit(word, memory_order_relaxed) == 0 ? 0 : 2;
+}
+
 #else
 #if defined(_WIN32)
 static void tzr_fatal(const char *message);
@@ -489,6 +548,8 @@ struct tzr_g {
     uint64_t rand;
     tzr_sudog *param;   /* the sudog that completed this G's wait */
     _Atomic uint32_t select_done;
+    uintptr_t *held;    /* the locks that it holds, in the order taken (TZ06), with their kinds */
+    uint32_t held_count, held_capacity;
 #if defined(TZR_TSAN)
     void *tsan_fiber;
 #endif
@@ -1144,6 +1205,7 @@ static void tzr_pseudo_destroy(void *arg) {
     tzr_checkdead(); /* the last running thread may leave only parked participants */
     tzr_mutex_unlock(&tzr_sched.lock);
     tzr_note_destroy(&g->note);
+    free(g->held);
     free(g);
 }
 
@@ -1355,6 +1417,7 @@ static void tzr_after_exit(tzr_m *m, tzr_g *g) {
 #if defined(TZR_TSAN)
             __tsan_destroy_fiber(g->tsan_fiber);
 #endif
+            free(g->held);
             free(g);
         }
     }
@@ -1656,6 +1719,9 @@ TZR_API void tsuzuri_tz_report(int32_t what) {
         "negative WaitGroup counter",
         "Mutex.with_lock cannot be nested",
         "a tzroutine cannot yield or wait inside Mutex.with_lock; move the call outside the critical section",
+        "RwMutex cannot be locked again by the tzroutine that holds it",
+        "Semaphore released more than it acquired",
+        "Semaphore weight is negative or larger than its capacity",
     };
     if (what > 0 && what < (int32_t)(sizeof messages / sizeof messages[0])) {
         fprintf(stderr, "Tsuzuri runtime: %s\n", messages[what]);
@@ -1875,11 +1941,13 @@ static int tzr_bucket_unlink(size_t b, tzr_waiter *target) {
     return 0;
 }
 
-/* Returns 1 for a doomed pseudo-G (deadlock). */
-static int tzr_addr_wait(_Atomic uint64_t *addr, uint64_t expected, const char *reason) {
-    size_t b = tzr_bucket((void *)addr);
+/* Parks while the word at addr, of 64 bits when `wide` and of 32 otherwise (the Mutex's), equals
+ * `expected`. Returns 1 for a doomed pseudo-G (deadlock). */
+static int tzr_addr_wait(void *addr, uint64_t expected, int wide, const char *reason) {
+    size_t b = tzr_bucket(addr);
     tzr_lock_acquire(&tzr_buckets[b].lock);
-    if (atomic_load(addr) != expected) {
+    uint64_t now = wide ? atomic_load((_Atomic uint64_t *)addr) : atomic_load((_Atomic uint32_t *)addr);
+    if (now != expected) {
         tzr_lock_release(&tzr_buckets[b].lock);
         return 0;
     }
@@ -1899,8 +1967,8 @@ static int tzr_addr_wait(_Atomic uint64_t *addr, uint64_t expected, const char *
 /* Wakes up to n waiters of addr (all of them when n < 0) with the bucket locked (R3 allows it), so
  * that a waiter that wakes and waits again cannot join the same wake. A waiter is on its own stack,
  * so it is unlinked before it is woken and never read after. */
-static int64_t tzr_addr_wake(_Atomic uint64_t *addr, int64_t n) {
-    size_t b = tzr_bucket((void *)addr);
+static int64_t tzr_addr_wake(void *addr, int64_t n) {
+    size_t b = tzr_bucket(addr);
     int64_t count = 0;
     tzr_lock_acquire(&tzr_buckets[b].lock);
     tzr_waiter **link = &tzr_buckets[b].first;
@@ -1923,7 +1991,7 @@ static int64_t tzr_addr_wake(_Atomic uint64_t *addr, int64_t n) {
 
 /* The parking lot for the sync types that TZ06 writes in C (RwMutex, Once, Cond, Semaphore). */
 TZR_API int32_t tsuzuri_tz_addr_wait(_Atomic uint64_t *addr, uint64_t expected) {
-    return tzr_addr_wait(addr, expected, "sync wait") ? 2 : 0;
+    return tzr_addr_wait(addr, expected, 1, "sync wait") ? 2 : 0;
 }
 
 TZR_API int64_t tsuzuri_tz_addr_wake(_Atomic uint64_t *addr, int64_t n) {
@@ -1942,7 +2010,7 @@ TZR_API int32_t tsuzuri_tz_mutex_lock(_Atomic uint64_t *word) {
             && atomic_compare_exchange_weak_explicit(word, &c, 1, memory_order_acquire, memory_order_relaxed)) return 0;
     }
     while (atomic_exchange_explicit(word, 2, memory_order_acquire) != 0)
-        if (tzr_addr_wait(word, 2, "Mutex lock")) return 2;
+        if (tzr_addr_wait(word, 2, 1, "Mutex lock")) return 2;
     return 0;
 }
 
@@ -1966,8 +2034,223 @@ TZR_API int32_t tsuzuri_tz_waitgroup_wait(_Atomic uint64_t *word) {
     for (;;) {
         uint64_t v = atomic_load(word);
         if (v == 0) return 0;
-        if (tzr_addr_wait(word, v, "WaitGroup.wait")) return 2;
+        if (tzr_addr_wait(word, v, 1, "WaitGroup.wait")) return 2;
     }
+}
+
+/* ---------------------------------------------------------------- sync (TZ06) */
+
+/* The locks that a G holds (Mutex, and the read and write locks of RwMutex), in the order taken, so
+ * that taking one again traps instead of waiting for itself (D4), and a failure domain that a trap
+ * left releases what was taken inside it (tsuzuri_tz_held_restore). The list is the G's own, out of
+ * the frames: a trap leaves the frames of the critical sections behind. The low bits of an entry
+ * are its kind (the words are 8-byte aligned in their cells). */
+enum { TZR_HELD_MUTEX = 0, TZR_HELD_READ = 1, TZR_HELD_WRITE = 2 };
+#define TZR_HELD_KIND 3u
+
+static int tzr_held_has(tzr_g *g, const void *word) {
+    for (uint32_t i = 0; i < g->held_count; i++)
+        if ((g->held[i] & ~(uintptr_t)TZR_HELD_KIND) == (uintptr_t)word) return 1;
+    return 0;
+}
+
+static void tzr_held_push(tzr_g *g, const void *word, unsigned kind) {
+    if (g->held_count == g->held_capacity) {
+        uint32_t capacity = g->held_capacity ? g->held_capacity * 2 : 8;
+        uintptr_t *held = realloc(g->held, capacity * sizeof *held);
+        if (held == NULL) tzr_fatal("out of memory");
+        g->held = held;
+        g->held_capacity = capacity;
+    }
+    g->held[g->held_count++] = (uintptr_t)word | kind;
+}
+
+/* Takes the last entry of `word` off the list (a critical section ends where it began). */
+static void tzr_held_pop(tzr_g *g, const void *word) {
+    for (uint32_t i = g->held_count; i-- > 0;) {
+        if ((g->held[i] & ~(uintptr_t)TZR_HELD_KIND) == (uintptr_t)word) {
+            memmove(&g->held[i], &g->held[i + 1], (g->held_count - i - 1) * sizeof *g->held);
+            g->held_count--;
+            return;
+        }
+    }
+}
+
+/* Mutex.with_lock of a program that uses the tzroutine runtime (TZ06): the 32-bit word of the cell
+ * is 0 free, 1 held, 2 held with waiters. Only the G waits: the lock is the G's, so a holder may
+ * wait for a channel, a select or another lock (Go's sync.Mutex). Returns 1 when the G holds this
+ * mutex already (the generated code reports 4 and traps), 2 on a deadlock. */
+TZR_API int32_t tsuzuri_tz_mutex32_lock(_Atomic uint32_t *word) {
+    tzr_g *g = tzr_current();
+    if (tzr_held_has(g, word)) return 1;
+    uint32_t c = 0;
+    if (!atomic_compare_exchange_strong_explicit(word, &c, 1, memory_order_acquire, memory_order_relaxed)) {
+        int taken = 0;
+        for (int spin = 0; spin < 32 && !taken; spin++) {
+            c = 0;
+            taken = atomic_load_explicit(word, memory_order_relaxed) == 0
+                    && atomic_compare_exchange_weak_explicit(word, &c, 1, memory_order_acquire, memory_order_relaxed);
+        }
+        if (!taken)
+            while (atomic_exchange_explicit(word, 2, memory_order_acquire) != 0)
+                if (tzr_addr_wait(word, 2, 0, "Mutex lock")) return 2;
+    }
+    tzr_held_push(g, word, TZR_HELD_MUTEX);
+    return 0;
+}
+
+TZR_API void tsuzuri_tz_mutex32_unlock(_Atomic uint32_t *word) {
+    tzr_held_pop(tzr_current(), word);
+    if (atomic_exchange_explicit(word, 0, memory_order_release) == 2) tzr_addr_wake(word, 1);
+}
+
+/* RwMutex (TZ06): the low 32 bits of the word count the readers, bits 32 to 62 the writers that wait
+ * and bit 63 says that a writer holds it. While a writer waits, new readers stay out, so readers
+ * cannot starve the writers (Go's policy): a waiting writer counts itself once and takes itself off
+ * the count when it takes the lock, and a release keeps the count. Every change that can let a
+ * waiter in wakes them all: the last reader when writers wait, and the writer's release; a woken
+ * waiter looks again. 1 means the G holds this lock already in some mode (reported 6), 2 a
+ * deadlock. */
+#define TZR_RW_WRITER (UINT64_C(1) << 63)
+#define TZR_RW_WAITER (UINT64_C(1) << 32)
+#define TZR_RW_WAITERS (TZR_RW_WRITER - TZR_RW_WAITER)
+#define TZR_RW_READERS (TZR_RW_WAITER - 1)
+
+TZR_API int32_t tsuzuri_tz_rw_read_lock(_Atomic uint64_t *word) {
+    tzr_g *g = tzr_current();
+    if (tzr_held_has(g, word)) return 1;
+    for (;;) {
+        uint64_t s = atomic_load_explicit(word, memory_order_relaxed);
+        if ((s & (TZR_RW_WRITER | TZR_RW_WAITERS)) == 0) {
+            if (atomic_compare_exchange_weak_explicit(word, &s, s + 1, memory_order_acquire, memory_order_relaxed)) break;
+            continue;
+        }
+        if (tzr_addr_wait(word, s, 1, "RwMutex.with_read")) return 2;
+    }
+    tzr_held_push(g, word, TZR_HELD_READ);
+    return 0;
+}
+
+TZR_API void tsuzuri_tz_rw_read_unlock(_Atomic uint64_t *word) {
+    tzr_held_pop(tzr_current(), word);
+    uint64_t s = atomic_fetch_sub_explicit(word, 1, memory_order_release) - 1;
+    if ((s & TZR_RW_READERS) == 0 && (s & TZR_RW_WAITERS)) tzr_addr_wake(word, -1);
+}
+
+TZR_API int32_t tsuzuri_tz_rw_write_lock(_Atomic uint64_t *word) {
+    tzr_g *g = tzr_current();
+    if (tzr_held_has(g, word)) return 1;
+    int counted = 0;
+    for (;;) {
+        uint64_t s = atomic_load_explicit(word, memory_order_relaxed);
+        if ((s & (TZR_RW_WRITER | TZR_RW_READERS)) == 0) {
+            uint64_t taken = (s | TZR_RW_WRITER) - (counted ? TZR_RW_WAITER : 0);
+            if (atomic_compare_exchange_weak_explicit(word, &s, taken, memory_order_acquire, memory_order_relaxed)) break;
+            continue;
+        }
+        if (!counted) {
+            if (!atomic_compare_exchange_weak_explicit(word, &s, s + TZR_RW_WAITER, memory_order_relaxed,
+                                                       memory_order_relaxed)) continue;
+            s += TZR_RW_WAITER;
+            counted = 1;
+        }
+        if (tzr_addr_wait(word, s, 1, "RwMutex.with_write")) {
+            atomic_fetch_sub_explicit(word, TZR_RW_WAITER, memory_order_relaxed);
+            return 2;
+        }
+    }
+    tzr_held_push(g, word, TZR_HELD_WRITE);
+    return 0;
+}
+
+TZR_API void tsuzuri_tz_rw_write_unlock(_Atomic uint64_t *word) {
+    tzr_held_pop(tzr_current(), word);
+    atomic_fetch_and_explicit(word, ~TZR_RW_WRITER, memory_order_release);
+    tzr_addr_wake(word, -1);
+}
+
+/* The depth of the calling G's held locks, and the release of those that a trap left above it: a
+ * failure domain and a pool item restore the depth that they began with (TZ06, as the mark of the
+ * thread-owned Mutex of TZ02 was). */
+TZR_API int32_t tsuzuri_tz_held_depth(void) { return (int32_t)tzr_current()->held_count; }
+
+TZR_API void tsuzuri_tz_held_restore(int32_t depth) {
+    tzr_g *g = tzr_current();
+    while (g->held_count > (uint32_t)depth) {
+        uintptr_t entry = g->held[g->held_count - 1];
+        void *word = (void *)(entry & ~(uintptr_t)TZR_HELD_KIND);
+        switch (entry & TZR_HELD_KIND) {
+        case TZR_HELD_MUTEX: tsuzuri_tz_mutex32_unlock(word); break;
+        case TZR_HELD_READ: tsuzuri_tz_rw_read_unlock(word); break;
+        default: tsuzuri_tz_rw_write_unlock(word); break;
+        }
+    }
+}
+
+/* Once and OnceValue (TZ06): the word is 0 not run, 1 running, 2 done. begin returns 1 to the caller
+ * that runs the function, 0 once it is done (after waiting for the one that runs it), 2 on a
+ * deadlock (a function that calls its own Once waits for itself, D6). end publishes the value. */
+TZR_API int32_t tsuzuri_tz_once_begin(_Atomic uint64_t *word) {
+    (void)tzr_current();
+    for (;;) {
+        uint64_t s = atomic_load_explicit(word, memory_order_acquire);
+        if (s == 2) return 0;
+        if (s == 0) {
+            if (atomic_compare_exchange_weak_explicit(word, &s, 1, memory_order_acquire, memory_order_acquire)) return 1;
+            continue;
+        }
+        if (tzr_addr_wait(word, 1, 1, "Once.call")) return 2;
+    }
+}
+
+TZR_API void tsuzuri_tz_once_end(_Atomic uint64_t *word) {
+    (void)tzr_current();
+    atomic_store_explicit(word, 2, memory_order_release);
+    tzr_addr_wake(word, -1);
+}
+
+/* Cond.wait_with (TZ06 Phase 2): with the mutex held and the predicate false, `observed` is the
+ * sequence number read under the lock. Releases the mutex, waits while the number is unchanged and
+ * takes the mutex again. A signal adds one to the number, so a wake between the release and the
+ * wait is not lost; a spurious one is harmless (the caller checks the predicate again). */
+TZR_API int32_t tsuzuri_tz_cond_wait(_Atomic uint64_t *sequence, _Atomic uint32_t *mutex, uint64_t observed) {
+    tsuzuri_tz_mutex32_unlock(mutex);
+    int doomed = tzr_addr_wait(sequence, observed, 1, "Cond.wait_with");
+    int32_t status = tsuzuri_tz_mutex32_lock(mutex);
+    return doomed ? 2 : status;
+}
+
+TZR_API void tsuzuri_tz_cond_wake(_Atomic uint64_t *sequence, int64_t n) {
+    (void)tzr_current();
+    atomic_fetch_add_explicit(sequence, 1, memory_order_release);
+    tzr_addr_wake(sequence, n);
+}
+
+/* Semaphore (x/sync/semaphore.Weighted, TZ06 Phase 2): the word is the free weight. The generated
+ * code checks the weight against the capacity first. A release wakes every waiter, which take
+ * what they can in no particular order (D7). */
+TZR_API int32_t tsuzuri_tz_sem_acquire(_Atomic uint64_t *word, uint64_t weight, int32_t block) {
+    (void)tzr_current();
+    for (;;) {
+        uint64_t s = atomic_load_explicit(word, memory_order_relaxed);
+        if (s >= weight) {
+            if (atomic_compare_exchange_weak_explicit(word, &s, s - weight, memory_order_acquire, memory_order_relaxed)) return 0;
+            continue;
+        }
+        if (!block) return 1;
+        if (tzr_addr_wait(word, s, 1, "Semaphore.acquire")) return 2;
+    }
+}
+
+/* Returns 1 when the free weight would pass the capacity (reported 7). */
+TZR_API int32_t tsuzuri_tz_sem_release(_Atomic uint64_t *word, uint64_t weight, uint64_t capacity) {
+    (void)tzr_current();
+    uint64_t s = atomic_load_explicit(word, memory_order_relaxed);
+    do {
+        if (weight > capacity - s) return 1;
+    } while (!atomic_compare_exchange_weak_explicit(word, &s, s + weight, memory_order_release, memory_order_relaxed));
+    tzr_addr_wake(word, -1);
+    return 0;
 }
 
 #endif /* TZR_SINGLE */

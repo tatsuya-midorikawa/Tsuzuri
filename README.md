@@ -16,7 +16,7 @@
 - **直感的で表現力豊かな関数型構文**: カリー化、強力な型推論、代数的データ型（`union`）、網羅性を検証するパターンマッチ、パイプライン演算子（`|>`）、関数合成（`>>` / `<<`）をサポートしています。
 - **ゼロコストの型クラス**: 型クラスはコンパイル時に静的に単相化（モノモーフィゼーション）され、動的ディスパッチやランタイム辞書のオーバーヘッドを生じさせません。異なる型の値を一つのコレクションへ入れるときだけ、`dyn` 型で実行時のディスパッチを明示できます。
 - **拡張可能なコンピュテーション式**: `.tc` ファイルでビルダーを定義することで、`Result` や `Maybe`、非同期処理などのモナディックな制御フローを言語本来の構文のように扱えます。
-- **安全で軽量な並列処理**: 遅延評価・一回実行のタスク（`task { ... }`）と常駐スレッドプールにより、データ競合のない安全な並列計算を提供します。Go の goroutine に相当する `tzroutine { ... }`（専用のスタックを持つ M:N のスケジューリング。`main` や `export` の呼び出しは、その中で起動した tzroutine の終了を待ちます）と、Go の `chan T` に当たる `Channel<T>`（`for x in ch`、`close`、バッファなしの受け渡し）、複数のチャンネルを同時に待つ `select` 式、Go の `time` と同じタイマー（`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker`）も使えます。
+- **安全で軽量な並列処理**: 遅延評価・一回実行のタスク（`task { ... }`）と常駐スレッドプールにより、データ競合のない安全な並列計算を提供します。Go の goroutine に相当する `tzroutine { ... }`（専用のスタックを持つ M:N のスケジューリング。`main` や `export` の呼び出しは、その中で起動した tzroutine の終了を待ちます）と、Go の `chan T` に当たる `Channel<T>`（`for x in ch`、`close`、バッファなしの受け渡し）、複数のチャンネルを同時に待つ `select` 式、Go の `time` と同じタイマー（`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker`）、Go の `sync` に当たる同期の型（`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap`）も使えます。
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
 - **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。対応環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 つだけです。`--target` は、Linux の glibc/musl と Windows の MSVC/MinGW を区別した 9 個の native triple を受け付け、同梱ツールチェーンか `TSUZURI_SYSROOT` でクロスリンクします。検証範囲と機能の制限は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
@@ -509,6 +509,7 @@ def main :: unit -> i32 = \() ->
 | `Channel` | Go の双方向のチャンネル。`make`（0 はバッファなし）・`send`・`recv`・`try_send`・`try_recv`・`close`・`length`・`capacity`・`share`、`for x in ch`。向きのあるハンドル `send_only`・`receive_only` |
 | `SendOnly`・`ReceiveOnly` | `Channel` の送るだけ・受け取るだけのハンドル（Go の `chan<- T`・`<-chan T`）と、その操作 |
 | `Timer`・`Ticker` | 1 回送るタイマーと周期のティッカー（Go の `time.Timer`・`time.Ticker`）。`create`・`channel`・`stop`・`reset` |
+| `WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` | Go の `sync` と `x/sync/semaphore` に当たる同期の型。待つのは tzroutine だけ |
 | `DataChannel` | 容量付きの MPMC キュー（旧 `Channel`）。`Sender`／`Receiver`、`bounded`・`send`・`recv`・`clone_sender`。最後の `Sender` の drop で閉じ、全スレッドが待ったらデッドロックのトラップ |
 | `String`, `Utf8String`, `Char` | UTF-16 / UTF-8 文字列および文字操作 |
 | `Text`, `RegexText` | `string` と `utf8string` に共通の操作の型クラス（`Text.find`・`Text.split`・`Text.trim` の形。`String`・`Utf8String` の同名の関数への直接の呼び出し）。opt-in の `RegexText` は `Regex.*_text` が使う |
@@ -1161,6 +1162,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | `Channel`・`E1040`（TZ03） | `tests/channel.rs`、`tests/removed_features.rs` | `features.mjs channel`（native、P 1・4）・`channel_single`（native と既定の WebAssembly）、`tzroutine_runtime.mjs` |
 | `select` 式（TZ04） | `tests/select.rs` | `features.mjs select`（native、P 1・4）・`select_single`（native と既定の WebAssembly） |
 | タイマー（TZ05） | `tests/timers.rs` | `features.mjs timers`（native、P 1・4）、`tzroutine.mjs`、`tzroutine_runtime.mjs` |
+| 同期の型・`Mutex` の移設（TZ06） | `tests/sync_types.rs`、`tests/concurrency.rs` | `features.mjs sync_types`（native、P 1・4）・`sync_single`（native と既定の WebAssembly）・`concurrency`、`tzroutine.mjs`、`tzroutine_runtime.mjs` |
 | トラップの報告・境界・`Domain`（E14・B10） | `tests/trap_locations.rs`、`tests/trap_backtrace.rs`（バックトレースとクラッシュレポート）、`tests/domain.rs`（`E1038` と IR） | `trap_return.mjs`（C の境界と `tests/domain_runtime.c`）、`domain.mjs`、`trap_boundary.mjs`、`stack_overflow.mjs`、`trap_return_sync.mjs`（`TSUZURI_NO_SANITIZERS=1` で sanitizer の build を外す） |
 | SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
 | 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |

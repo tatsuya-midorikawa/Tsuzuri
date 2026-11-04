@@ -12,7 +12,7 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 135;
+const IMPURE_BUILTINS: usize = 166;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
@@ -27,9 +27,8 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | NetWatch | NetUnwatch | NetConnect | NetNames | NetSend => Some("net"),
         TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap
         | ParallelMapRef | ParallelReduce | ParallelForEachChunk | DomainRun | RoutineGo
-        | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount | TimeAfterFunc => {
-            Some("task")
-        }
+        | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount
+        | TimeAfterFunc => Some("task"),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset => Some("os"),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
@@ -38,6 +37,13 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some("atomic")
         }
+        WaitGroupCreate | WaitGroupAdd | WaitGroupWait | WaitGroupShare | WaitGroupDrop
+        | OnceCreate | OnceBegin | OnceEnd | OnceDone | OnceShare | OnceDrop | OnceValueCreate
+        | OnceValueGet | OnceValueIntoInner | RwMutexCreate | RwMutexWithRead
+        | RwMutexWithWrite | RwMutexIntoInner | CondCreate | CondWaitWith | CondSignal
+        | CondBroadcast | CondShare | CondDrop | SemaphoreCreate | SemaphoreAcquire
+        | SemaphoreTryAcquire | SemaphoreRelease | SemaphoreShare | SemaphoreDrop => Some("atomic"),
+        SyncMapReplace => None,
         AtomicCreate
         | AtomicLoad
         | AtomicStore

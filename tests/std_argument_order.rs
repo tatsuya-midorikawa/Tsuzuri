@@ -71,6 +71,7 @@ const MODULES: &[(&str, Kind)] = &[
     ("Cbor", SingleArgument),
     ("Channel", Exempt(BUILTIN_HANDLE)),
     ("Char", SingleArgument),
+    ("Cond", Exempt(BUILTIN_HANDLE)),
     ("DataChannel", Exempt(BUILTIN_HANDLE)),
     ("Debug", SingleArgument),
     ("Dir", SingleArgument),
@@ -117,6 +118,8 @@ const MODULES: &[(&str, Kind)] = &[
     ("Monoids", SingleArgument),
     ("Mutex", Exempt(BUILTIN_HANDLE)),
     ("Net", Exempt(HANDLE)),
+    ("Once", Exempt(BUILTIN_HANDLE)),
+    ("OnceValue", Exempt(BUILTIN_HANDLE)),
     ("Os", subject(&["[ubyte]"])),
     ("Owned", Exempt(BUILTIN_HANDLE)),
     ("Parallel", SingleArgument),
@@ -128,10 +131,14 @@ const MODULES: &[(&str, Kind)] = &[
     ("Regex", text(&["string", "utf8string", "'s"], &["text"])),
     ("RegexText", text(&["'s"], &["text"])),
     ("Result", subject(&["Result"])),
+    ("RwMutex", Exempt(BUILTIN_HANDLE)),
+    ("Semaphore", Exempt(BUILTIN_HANDLE)),
     ("SendOnly", Exempt(BUILTIN_HANDLE)),
     ("Seq", subject(&["Seq"])),
     ("Set", subject(&["Set"])),
     ("String", text(&["string", "[string]"], &["text", "parts"])),
+    // A concurrent map is a resource that tzroutines share, like Mutex: the map comes first.
+    ("SyncMap", Exempt(HANDLE)),
     ("Tensor", subject(&["Tensor", "View"])),
     ("Test", Exempt(HARNESS)),
     // The methods of the class take the text, `'s`, last; they have no `fn` lines, so no names are read.
@@ -146,6 +153,7 @@ const MODULES: &[(&str, Kind)] = &[
         text(&["utf8string", "[utf8string]"], &["text", "parts"]),
     ),
     ("Vec", subject(&["Vec"])),
+    ("WaitGroup", Exempt(BUILTIN_HANDLE)),
 ];
 
 /// Pure functions of a module that is exempt as a whole, or whose subject is a type variable: their parameter types.

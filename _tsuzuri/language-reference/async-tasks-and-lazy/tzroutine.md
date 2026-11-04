@@ -18,20 +18,20 @@
 
 ## 基本の書き方
 
-`tzroutine` の直後に、同じ行で `{` を書きます。次の例は、100 個の tzroutine がそれぞれ自分の番号を `Atomic` に足します。
+`tzroutine` の直後に、同じ行で `{` を書きます。次の例は、100 個の tzroutine がそれぞれ自分の番号を `Atomic` に足し、[WaitGroup](../built-in-types-and-modules/waitgroup.md) で全員の終わりを待ちます。
 
 ```tsuzuri run=sum%3D4950
+let group = WaitGroup.create ()
 let total = Arc.new (Atomic.create 0i64)
-let done = Arc.new (Atomic.create 0i64)
 for i in 0 ..< 100 do
+    WaitGroup.add (ref group) 1
+    let finished = WaitGroup.share (ref group)
     let mine = Arc.share (ref total)
-    let finished = Arc.share (ref done)
     tzroutine {
         let _sum = Atomic.fetch_add (Arc.get (ref mine)) (i as i64)
-        let _count = Atomic.fetch_add (Arc.get (ref finished)) 1i64
+        WaitGroup.done (ref finished)
     }
-while Atomic.load (Arc.get (ref done)) < 100i64 do
-    Routine.yield ()
+WaitGroup.wait (ref group)
 $"sum={Atomic.load (Arc.get (ref total))}"
 ```
 
@@ -41,8 +41,8 @@ $"sum={Atomic.load (Arc.get (ref total))}"
 sum=4950
 ```
 
-- 各 tzroutine は `Arc.share` した自分のハンドル `mine`・`finished` を捕捉して持ち込みます（ムーブ）。`i` は Copy なので複製されます。
-- 最後の式 `$"sum=..."` は、`main` が子を待つ**前に**計算されます。そこで `done` が 100 になるまで `Routine.yield ()` で実行を譲りながら待ち、それから合計を読みます。数えずに読むと、結果が実行ごとに変わります。
+- 各 tzroutine は `Arc.share`・`WaitGroup.share` した自分のハンドル `mine`・`finished` を捕捉して持ち込みます（ムーブ）。`i` は Copy なので複製されます。
+- 最後の式 `$"sum=..."` は、`main` が子を待つ**前に**計算されます。そこで `WaitGroup.wait` で 100 個の終わりを待ってから合計を読みます。待たずに読むと、結果が実行ごとに変わります。
 
 次の例では、子が書いた行が、最後の式の値の表示より先に出ます。`main` は、最後の式を計算したあと、値を表示する前に、子の終了を待つからです。
 
@@ -114,6 +114,25 @@ String.length (ref s)     // E1012: use of moved or partially moved value 's'
 
 Go と違って待つのは、`Drop`（ファイルの flush など）を必ず走らせ、確保した値を残さないためです。
 
+境界の途中で子の終わりを待つには [WaitGroup](../built-in-types-and-modules/waitgroup.md) を使います（Go の `sync.WaitGroup`）。待つのは呼んだ tzroutine だけです。
+
+```tsuzuri run=sum%3D4950
+let group = WaitGroup.create ()
+let total = Arc.new (Mutex.create 0i64)
+for i in 0 ..< 100 do
+    WaitGroup.add (ref group) 1
+    let done = WaitGroup.share (ref group)
+    let mine = Arc.share (ref total)
+    tzroutine {
+        Mutex.with_lock (Arc.get (ref mine)) (\value -> deref value = deref value + i)
+        WaitGroup.done (ref done)
+    }
+WaitGroup.wait (ref group)
+$"sum={Mutex.with_lock (Arc.get (ref total)) (\value -> deref value)}"
+```
+
+tzroutine を使うプログラムの `Mutex.with_lock` は tzroutine のロックで、ロックを持ったまま待てます（[Mutex](../built-in-types-and-modules/mutex.md#tzroutine-のプログラムのロック)）。ほかの同期の型は [Once](../built-in-types-and-modules/once.md)・[OnceValue](../built-in-types-and-modules/oncevalue.md)・[RwMutex](../built-in-types-and-modules/rwmutex.md)・[Cond](../built-in-types-and-modules/cond.md)・[Semaphore](../built-in-types-and-modules/semaphore.md)・[SyncMap](../built-in-types-and-modules/syncmap.md) です。
+
 子の結果は、[Channel](../built-in-types-and-modules/channel.md) で受け取ると、数えて待つ必要がありません。受け取ること自体が待ち合わせです。
 
 ```tsuzuri run=total%3D30
@@ -167,7 +186,7 @@ tzroutine は M:N のスケジューラーで走ります。
 
 - tzroutine の本体のトラップ（`assert`、範囲外の添字、0 での除算など）は、ほかのトラップと同じく、プロセス全体の失敗です。報告は、トラップした tzroutine の OS スレッドが標準エラーへ書きます（`--trap-info` なら位置を含みます）。
 - `--trap-mode return` とは組み合わせられません（`E2000`）。ある tzroutine のトラップを、それを起動した呼び出しから返せないからです。
-- tzroutine を起動するプログラムでは、`Mutex.with_lock` の中で `Routine.yield` を呼ぶとトラップします（`Tsuzuri runtime: a tzroutine cannot yield or wait inside Mutex.with_lock; move the call outside the critical section`）。ロックの持ち主は OS スレッドなので、ロックを持ったまま tzroutine が別の OS スレッドへ移れないからです。このため、`Routine.yield` を呼ぶ関数には `@no_trap` を付けられません（`E1031`）。
+- tzroutine を起動するプログラムの `Mutex.with_lock` は tzroutine のロックなので、ロックの中で `Routine.yield` や待つ操作を呼べます（TZ06。TZ05 まではトラップでした）。
 
 ## ターゲット
 

@@ -256,7 +256,7 @@ match Channel.recv ch with      // ← ここでトラップする
 | Maybe.None -> 0
 ```
 
-- tzroutine を起動するプログラムでも、`Channel` を使うプログラムでも、`Mutex.with_lock` の中で待つ操作（`send`・`recv`・`for`）を呼ぶとトラップします（`Tsuzuri runtime: a tzroutine cannot yield or wait inside Mutex.with_lock; ...`）。ロックの持ち主は OS スレッドだからです。`try_send`・`try_recv`・`close`・`length`・`capacity` は待たないので使えます。
+- `Channel` を使うプログラムの `Mutex.with_lock` は tzroutine のランタイムのロックで、ロックを持ったまま待つ操作（`send`・`recv`・`for`・`select`）を呼べます（TZ06。[Mutex](./mutex.md#tzroutine-のプログラムのロック)）。
 
 ## ターゲット
 

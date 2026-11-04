@@ -1,0 +1,18 @@
+// The total is read after the wait: every tzroutine has added its part by then.
+let group = WaitGroup.create ()
+let total = Arc.new (Atomic.create 0i64)
+for i in 1 ..= 50 do
+    WaitGroup.add (ref group) 1
+    let finished = WaitGroup.share (ref group)
+    let mine = Arc.share (ref total)
+    tzroutine {
+        for _ in 1 ..= 20 do
+            Routine.yield ()
+        let _old = Atomic.fetch_add (Arc.get (ref mine)) i
+        WaitGroup.done (ref finished)
+    }
+WaitGroup.wait (ref group)
+Atomic.load (Arc.get (ref total))
+
+// rule: TSK-026
+// expect: stdout "1275\n"

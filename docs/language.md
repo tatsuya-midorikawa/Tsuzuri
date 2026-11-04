@@ -373,9 +373,9 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 
 `Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で、`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` は TZ06 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -2659,7 +2659,7 @@ POSIX または Windows 以外の未対応プラットフォームに対する�
 
 - **型**: 本体は型 `unit` の通常のブロックで、ほかの型は `E1003` です。`let!`・`do!` は関数の本体と同じく IO をその場で実行し、`let` は改行でも終わります。`return` は関数の本体と同じ扱いです。式の型は `unit` です。
 - **捕捉**: `task { }` と同じ規則です。所有値はムーブ、Copy の値は複製で、捕捉は `Send` でなければなりません（`Rc` などは `E1013`）。借用（`ref`、借用した関数の環境）の捕捉は `E1013`、ムーブした値の外での使用は `E1012`、外の `let mut` への代入は `E1014`、本体から外のループへの `break`・`continue` は `E1023` です。`pure def` の中では `E1029`、`const` の初期化では `E1026` です。
-- **評価**: `tzroutine { … }` を評価すると捕捉を環境へ移し、tzroutine を作ってから次の式へ進みます。親の続きと子の本体の間に順序はありません。本体はちょうど 1 回走り、使わなかった捕捉は本体の終わりに 1 回だけ drop されます。本体のトラップはプロセス全体の失敗です。`Task.parallel`・`Task.scope`・`Parallel.*` のワーカーで起動した tzroutine は、そのタスクの終わりで待たれます。spawn するプログラムでは、`Mutex.with_lock` の中の `Routine.yield` はトラップします（ランタイムが理由を書く）。
+- **評価**: `tzroutine { … }` を評価すると捕捉を環境へ移し、tzroutine を作ってから次の式へ進みます。親の続きと子の本体の間に順序はありません。本体はちょうど 1 回走り、使わなかった捕捉は本体の終わりに 1 回だけ drop されます。本体のトラップはプロセス全体の失敗です。`Task.parallel`・`Task.scope`・`Parallel.*` のワーカーで起動した tzroutine は、そのタスクの終わりで待たれます。tzroutine のランタイムを使うプログラムの `Mutex.with_lock` は tzroutine のロックなので、その中で `Routine.yield` や待つ操作を呼べます（TZ06。TZ05 まではトラップ）。
 - **終了の待ち**: 実行ファイルの `main`（トップレベルのコード、`def main`、IO の入口）、`export def` の 1 回の呼び出し、`tsuzuri test` の 1 件、`tsuzuri bench` の 1 回の計測は、その中で起動した tzroutine（孫を含む）がすべて終わるまで戻りません。待つのは本体が戻った直後で、トップレベルの最後の式の値はその前に計算され、待った後に表示されます。全員が待ちに入れば、ランタイムが `Tsuzuri runtime: all tzroutines are asleep - deadlock! (<n> waiting: <理由>, ...)` を書いてトラップします。
 - **`Routine`**: 組み込みのモジュール。`Routine.go :: own Owned.Function<unit, unit> -> unit`（所有する関数を新しい tzroutine で 1 回呼び、drop する）、`Routine.yield :: unit -> unit`、`Routine.count :: unit -> i64`（生きている tzroutine の数 + 1）、`Routine.max_procs :: unit -> i64`、`Routine.cpu_count :: unit -> i64`。
 - **実行**: ランタイムは `src/runtime/tzroutine.c` の M:N のスケジューラーです。P の数は `TSUZURI_MAXPROCS`（1〜256、既定はオンラインの CPU 数）、各 tzroutine のスタックの予約は `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576、既定 1024）で、下端の 128 KiB がガードです。プリエンプションはなく、`extern` 関数とファイルの I/O はその間 OS スレッドを止めます。tzroutine を起動するプログラムは、すべての関数が大きな frame に stack probe を使います。
@@ -3740,10 +3740,31 @@ TZ05 は Go の `time` パッケージのタイマーを入れます。長さは
 - `IO` でない理由: タイマーは `Routine.go`・`Channel.send`・`select` と同じく、呼んだ時点で働く組み込みの関数です。`IO` は何度も実行できる値なので、1 回しか呼べない `after_func` の関数を持てず、`IO` のチャンネルはトップレベルの `let!` の継続（何度も呼べる関数）へ捕捉できません（`E1005`）。また `Time` の std のソースは変えないので（下の「読み込み」）、組み込みの関数にしています。時計を読む OS の効果（`os`）と権限 `time` は `IO` の関数と同じで、`pure` の関数からは呼べません。
 - 境界: `main`・`export`・`test`・`bench`（とプールの項目）の終わりは、その中の tzroutine の終わりを待ってから、そこで作ったまだ発火していないタイマーを待たずに止め、ランタイムの参照を離します（`Time.after`・`Time.tick` のチャンネルはここで解放され、`after_func` の関数は呼ばれずに drop されます）。`Timer`・`Ticker` のハンドルは境界の外へ出られ、止められたまま drop を待ちます。
 - `Timer`・`Ticker` は非 Copy の不透明な record（`{ handle: i64 }`。構築・フィールド参照・分解は `E1022`）で、`Drop` で止めてランタイムの記録を解放します。`Send`・`Sync` で、関数値への捕捉は `E1005` です。ハンドルを先に取ります（D-59 の資源のハンドルの例外）。私的な組み込み `Timer.__create`・`__channel`・`__stop`・`__reset`・`__free` と `Ticker` の同じ名前のものは、それぞれの std のモジュールの外では `E1022`（`private_std_primitive`）です。
-- 権限は `time`（時計を読む `Time.sleep`・`after`・`tick`・`after_func` と `create`・`reset`。長さの関数は権限も効果もない）。効果は `os`（`after_func` は `task`）、作るものは `alloc`、`tick`・`Ticker` の 0 以下と、tzroutine を起動するプログラムの `Mutex.with_lock` の中の `Time.sleep` と正の `Time.sleep_ms` は `trap` です（`Time.sleep_ms` は `@no_trap` の関数から呼べない）。
+- 権限は `time`（時計を読む `Time.sleep`・`after`・`tick`・`after_func` と `create`・`reset`。長さの関数は権限も効果もない）。効果は `os`（`after_func` は `task`）、作るものは `alloc`、`tick`・`Ticker` の 0 以下は `trap` です（`Mutex.with_lock` の中の `Time.sleep` と `Time.sleep_ms` は、TZ06 からトラップしません）。
 - 読み込み: `Time` は今までどおり常に読み込むモジュールで、`std/Time.tz` は変えていません（関数を足すと、ほかのすべてのプログラムの生成コードの内部の名前の番号がずれるため）。`Time.after`・`Time.tick` の型は `Channel` を、`Time.after_func` は `Timer` を名指すので、ソースに `Time.after`・`Time.tick`・`Time.after_func`（ドットの前後の空白は問わない）が現れたプログラムは、`Channel`・`Timer` も読み込みます（`stdlib::MEMBER_TRIGGERS`）。`Timer`・`Ticker` は opt-in のモジュールで、`create`・`channel`・`stop`・`reset` は私的な組み込み（`Timer.__create` など）を呼ぶ std の関数です。
 - 実装: タイマーは TZ01 のタイマーのヒープとスレッドに `SEND`・`TICK`・`FUNC` の種類を足したものです。チャンネルのブロック（128 + 8 バイト）は生成コードが確保し（確保の追跡で数える）、ランタイムが最後の参照で `@tz.free` で解放します。`Time.sleep_ms` は `os.c` のフックで、tzroutine の中なら `Time.sleep` と同じ待ちになります。
 - ターゲット: ネイティブの macOS・Linux・Windows。タイマーを作る操作はスケジューラーの境界を要るので（tzroutine の起動と同じ扱い）、WebAssembly と `--trap-mode return` は `E2000` です。`Time.sleep` だけは起動しない操作で、WebAssembly では `Time.sleep_ms` と同じ OS の待ち（ミリ秒に切り上げ、`--wasm-host` が必要）に下がります。
+
+### 同期の型（TZ06）
+
+Go の `sync` と `x/sync/semaphore` に当たる型です。待つのは tzroutine（擬似 G を含む）だけで、OS スレッドを止めません。どれも予約モジュールで、名前が現れたプログラムだけに読み込まれます。
+
+| 型 | API | Go |
+|---|---|---|
+| `WaitGroup` | `create`・`add g n`（負になれば `Tsuzuri runtime: negative WaitGroup counter` でトラップ）・`done g`・`wait g`・`go g f`（1 を足して `Owned.Function<unit, unit>` を新しい tzroutine で呼び、終わりで 1 を引く）・`share g` | `sync.WaitGroup`（`Go` は 1.25） |
+| `Once` | `create`・`call o f`（`f :: unit -> unit` を最大 1 回。同時の呼び出しは終わりを待つ）・`done o`・`share o` | `sync.Once` |
+| `OnceValue<T>` | `create`・`get c make :: (Send<'a>, Sync<'a>) => ref OnceValue<'a> -> (unit -> 'a) -> ref 'a`（結果はセルの借用と同じ寿命。`Arc.get` と同じ規則）・`into_inner c :: Maybe<'a>` | `sync.OnceValue` |
+| `RwMutex<T>` | `create :: Send<'a> => 'a -> RwMutex<'a>`・`with_read :: Send<'b> => ref RwMutex<'a> -> (ref 'a -> 'b) -> 'b`・`with_write`（`ref mut 'a`）・`into_inner` | `sync.RWMutex` |
+| `Cond` | `create`・`wait_with c m ready body :: Send<'b> => ref Cond -> ref Mutex<'a> -> (ref 'a -> bool) -> (ref mut 'a -> 'b) -> 'b`・`signal`・`broadcast`・`share` | `sync.Cond` |
+| `Semaphore` | `create n`・`acquire s w`・`try_acquire s w :: bool`・`release s w`・`share s` | `semaphore.Weighted` |
+| `SyncMap<K, V>` | `create`・`load`（`Copy<'v>`）・`with_value`・`store`・`load_or_store :: ('v * bool)`・`delete :: bool`・`length`・`for_each` | `sync.Map` |
+
+- **`Mutex` の移設**: tzroutine のランタイムを使うプログラム（`llvm::uses_tzroutine`: tzroutine の起動・`Channel`・`select`・タイマー・このページの型のどれかに届く）では、`Mutex.with_lock` はランタイムのロック（`tsuzuri_tz_mutex32_lock`。セルの 32 ビットの語の 3 状態）です。ロックは G のもので、ロックを持ったまま待てます。同じ `Mutex` を持っている G がもう一度取ると `Tsuzuri runtime: Mutex.with_lock cannot be nested` でトラップし、違う `Mutex` の入れ子は許します（順序の誤りは判定が `Mutex lock` として見つける）。TZ02・TZ03 の「スレッドの印と、ロックの中の yield・待ちのトラップ」はなくなりました。使わないプログラムの `Mutex` の生成と規則は変わりません（TZ12 まで）。
+- **入れ子のトラップ**: `RwMutex` を持っている G がもう一度取る（読みの中の読みも）と `Tsuzuri runtime: RwMutex cannot be locked again by the tzroutine that holds it`。G が持つロックは、ランタイムが G ごとの一覧に持ちます。失敗の領域（`Domain.run`）と `Task` のプールの項目の守りは、入ったときの深さ（`tsuzuri_tz_held_depth`）を覚え、トラップが残したロックを解放します（`tsuzuri_tz_held_restore`）。
+- **`Semaphore`**: 容量が負、重みが負か容量より大きいと `Tsuzuri runtime: Semaphore weight is negative or larger than its capacity`、容量を超えて返すと `Tsuzuri runtime: Semaphore released more than it acquired` でトラップします。先着順は保証しません。
+- **`Once`・`OnceValue`**: 状態の語は 0（未実行）・1（実行中）・2（完了）。関数の中から同じ `Once` を呼ぶと自分を待ち、判定がトラップにします。`OnceValue` の値は、書いてから状態を release で公開し、読む側は acquire で読みます。
+- **型**: `WaitGroup`・`Once`・`Cond`・`Semaphore` は `{ block: i64 }` の不透明なハンドル（構築・分解は `E1022`）で、ブロック `{ refs, word }`（`Semaphore` は容量も）は生成コードが確保し、`share` は参照数を 1 足し、最後の drop が解放します。`OnceValue<T>`（セル `(i64u * Maybe<'a>)`）・`RwMutex<T>`（セル `(i64u * 'a)`）は `Mutex<T>` と同じく 1 要素の配列のセルです。どれも非 Copy で、関数値への捕捉は `E1005` です。`RwMutex.with_read`・`with_write`・`Cond.wait_with` の結果は、`Mutex.with_lock` と同じくロック中の値への借用を持てません（`E1013`、`mutex_result_retains_borrow`。直接の呼び出しだけ、`must_apply_directly`）。`OnceValue.get` の初期化の関数が返す値はセルに残るので、借用を持てる型では、外の借用も持てません（同じ診断）。私的な組み込み（`Once.__begin`・`__end`、ハンドルの `__drop`、`SyncMap.__replace`）は std のモジュールの外では `E1022` です。
+- **ターゲット**: ネイティブの macOS・Linux・Windows。既定の WebAssembly では、tzroutine を起動しないプログラムが `TZR_SINGLE`（1 本の実行）で使い、待つべき操作はその場でトラップします（`Mutex` も、このページの型を使うプログラムでは同じロックの 1 本の版）。`WaitGroup.go` は tzroutine を起動するので WebAssembly では `E2000` です。`--trap-mode return` は `Channel` と同じく `E2000` です。
 
 ### DataChannel
 
@@ -4162,6 +4183,7 @@ let lengths = texts |> Array.mapr (\t -> t.length)           // [1, 3]
 | `HashMap.get_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.get` |
 | `HashMap.get` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.get_ref` |
 | `HashMap.at_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at` |
+| `HashMap.try_at_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at_ref` |
 | `HashMap.at` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at_ref` |
 | `HashMap.insert` | 償却 $O(1)$、最悪 $O(n \cdot n)$ | - |
 | `HashMap.remove_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.remove` |

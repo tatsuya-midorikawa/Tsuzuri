@@ -193,7 +193,7 @@ fn task_payload = Identity {
 }
 
 export def while_delegate :: i64
-fn while_delegate = Once { while true { return 42 } }
+fn while_delegate = JustOnce { while true { return 42 } }
 
 export def numeric_boundary :: i64
 fn numeric_boundary = {

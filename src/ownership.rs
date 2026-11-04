@@ -979,14 +979,36 @@ impl<'a> Checker<'a, '_> {
 
     /// What `Mutex.with_lock` returns when `callee` is that builtin, or the generated function
     /// that calls it after lowering: the type after its lock and callback, which is a function
-    /// when the callback's result is one (F10).
-    fn locked_result(&self, callee: &TypedExpr) -> Option<Type> {
+    /// when the callback's result is one (F10). The same holds for the callbacks that run under
+    /// the locks of TZ06, `RwMutex.with_read`, `RwMutex.with_write` and the body of
+    /// `Cond.wait_with`. Also the index of that callback among the arguments.
+    fn locked_result(&self, callee: &TypedExpr) -> Option<(Type, usize)> {
+        use crate::check::Builtin::{
+            CondWaitWith, MutexWith, OnceValueGet, RwMutexWithRead, RwMutexWithWrite,
+        };
+        let builtin = self.builtin_called(callee)?;
+        let callback = match builtin {
+            MutexWith | RwMutexWithRead | RwMutexWithWrite | OnceValueGet => 1,
+            CondWaitWith => 3,
+            _ => return None,
+        };
         match &callee.ty {
-            Type::Function(parameters, _)
-                if self.builtin_called(callee) == Some(crate::check::Builtin::MutexWith)
-                    && parameters.len() >= 2 =>
-            {
-                Some(callee.ty.after_arguments(2))
+            // `OnceValue.get` keeps what its initializer returns in the cell, which outlives the
+            // call: that value, the `'a` of the borrowed `OnceValue<'a>`, is the one checked (TZ06;
+            // a curried initializer's own type is flattened).
+            Type::Function(parameters, _) if builtin == OnceValueGet && parameters.len() > 1 => {
+                match &parameters[0] {
+                    Type::Reference(cell, _) => match cell.as_ref() {
+                        Type::Record(_, arguments) if arguments.len() == 1 => {
+                            Some((arguments[0].clone(), callback))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            Type::Function(parameters, _) if parameters.len() > callback => {
+                Some((callee.ty.after_arguments(callback + 1), callback))
             }
             _ => None,
         }
@@ -2690,7 +2712,9 @@ impl<'a> Checker<'a, '_> {
         // A direct call of `Mutex.with_lock` checks its callback's result with its arguments below,
         // and one of `DataChannel.send` checks its item; any other use of either builtin as a value is
         // checked where it is evaluated.
-        let locked = self.locked_result(callee).filter(|_| arguments.len() >= 2);
+        let locked = self
+            .locked_result(callee)
+            .filter(|(_, callback)| arguments.len() > *callback);
         let sent = self.sent_item(callee).filter(|_| arguments.len() >= 2);
         // What comes out of a channel was checked when it went in; `Channel.try_send` gives back
         // the item that it checked. Only a full call gives that: `Channel.try_send ch` is a function
@@ -2738,15 +2762,29 @@ impl<'a> Checker<'a, '_> {
             // written by another task, by then. Only a result that is proven free of borrows made
             // inside the callback may hold borrows at all (F10). The generated function that
             // applies the builtin to its own parameters proves nothing: its callers are checked.
-            if index == 1
-                && let Some(returned) = &locked
+            // `OnceValue.get` keeps the value in the cell, which outlives any borrow: its
+            // initializer may hold none, from outside either (TZ06).
+            let kept = self.builtin_called(callee) == Some(crate::check::Builtin::OnceValueGet);
+            if let Some((returned, callback)) = &locked
+                && index == *callback
                 && returned.carries_loans(&self.module.types())
-                && !value.closed_result[0]
+                && (!value.closed_result[0] || (kept && !value.loans.is_empty()))
                 && !self.is_generated_parameter(argument)
             {
+                let builtin = self.builtin_called(callee);
+                let name = builtin.map_or("Mutex.with_lock", |b| b.name());
+                let message = if builtin == Some(crate::check::Builtin::OnceValueGet) {
+                    format!(
+                        "{name} initializers must return values proven free of borrowed environments: the cell keeps the value after the borrowed data is gone; return an owned value, or a function that captures a copy"
+                    )
+                } else {
+                    format!(
+                        "{name} results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy"
+                    )
+                };
                 return Err(error(
                     DiagnosticKind::MutexResultRetainsBorrow,
-                    "Mutex.with_lock results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy",
+                    message,
                     argument.span,
                 ));
             }
@@ -2778,6 +2816,9 @@ impl<'a> Checker<'a, '_> {
                 Some(sources) => {
                     self.argument_regions(sources, slots, index, argument, &value, &mut current)
                 }
+                // The reference of `OnceValue.get` points into the cell, never into what its
+                // initializer borrowed: that was checked above to stay out of the cell.
+                None if kept && index == 1 => {}
                 None => current.loans.extend(&value.loans),
             }
             self.held.push(value);
@@ -2953,10 +2994,11 @@ impl<'a> Checker<'a, '_> {
             E::Function(_)
                 if self
                     .locked_result(expression)
-                    .is_some_and(|returned| returned.carries_loans(&self.module.types())) =>
+                    .is_some_and(|(returned, _)| returned.carries_loans(&self.module.types())) =>
             {
+                let name = self.builtin_called(expression).map_or("Mutex.with_lock", |b| b.name());
                 return Err(error(DiagnosticKind::MustApplyDirectly,
-                    "Mutex.with_lock must be fully applied directly when its result may hold borrowed values, so that the result can be checked: call it with the lock and the callback together",
+                    format!("{name} must be fully applied directly when its result may hold borrowed values, so that the result can be checked: call it with the lock and the callback together"),
                     expression.span,
                 ));
             }

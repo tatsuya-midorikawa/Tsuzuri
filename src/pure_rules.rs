@@ -192,8 +192,8 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap
         | ParallelMapRef | ParallelReduce | ParallelForEachChunk | AsyncResume | AsyncTake
         | AsyncPut | AsyncNextId | AsyncClock | AsyncWait | AsyncPosted | AsyncRetire
-        | RoutineGo | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount
-        | TimeAfterFunc => Some(Task),
+        | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs
+        | RoutineCpuCount | TimeAfterFunc => Some(Task),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset => Some(Clock),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
@@ -202,6 +202,12 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some(State)
         }
+        WaitGroupCreate | WaitGroupAdd | WaitGroupWait | WaitGroupShare | WaitGroupDrop
+        | OnceCreate | OnceBegin | OnceEnd | OnceDone | OnceShare | OnceDrop | OnceValueCreate
+        | OnceValueGet | OnceValueIntoInner | RwMutexCreate | RwMutexWithRead
+        | RwMutexWithWrite | RwMutexIntoInner | CondCreate | CondWaitWith | CondSignal
+        | CondBroadcast | CondShare | CondDrop | SemaphoreCreate | SemaphoreAcquire
+        | SemaphoreTryAcquire | SemaphoreRelease | SemaphoreShare | SemaphoreDrop => Some(State),
         AtomicCreate
         | AtomicLoad
         | AtomicStore
@@ -269,6 +275,7 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         GpuOpen | GpuFeatures | GpuRun | GpuSelect | GpuLast => Some(Gpu),
         DynOf => Some(Dyn),
         DomainRun => Some(Category::Domain),
+        SyncMapReplace => None,
         Sqrt
         | Floor
         | Ceil
@@ -1530,7 +1537,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            136
+            167
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

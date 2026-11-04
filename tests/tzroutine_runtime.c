@@ -518,7 +518,7 @@ static void test_fp(void) {
 /* 16. the end of a boundary (TZ02): an empty scope returns at once, a full one after its tzroutines */
 /* 23. the messages of the generated code's traps (TZ02, TZ03): a child writes them all */
 static void report_body(void) {
-    for (int32_t what = 0; what <= 6; what++) tsuzuri_tz_report(what); /* 0 and 6 write nothing */
+    for (int32_t what = 0; what <= 9; what++) tsuzuri_tz_report(what); /* 0 and 9 write nothing */
     _exit(47);
 }
 static void test_report(void) {
@@ -1354,6 +1354,206 @@ static void test_sleep_ms_hook(void) {
 static void test_sleep_ms_hook(void) { printf("sleep_ms hook: no os.c on Windows\n"); }
 #endif
 
+/* 26. the sync types (TZ06) */
+static _Atomic uint32_t mutex32;
+static int64_t mutex32_plain;
+static _Atomic uint32_t mutex32_other;
+static void mutex32_locker(void *env) {
+    int64_t rounds = (int64_t)(intptr_t)env;
+    for (int64_t i = 0; i < rounds; i++) {
+        CHECK(tsuzuri_tz_mutex32_lock(&mutex32) == 0);
+        CHECK(tsuzuri_tz_mutex32_lock(&mutex32) == 1); /* the same mutex again: the generated code traps */
+        CHECK(tsuzuri_tz_mutex32_lock(&mutex32_other) == 0); /* another one nests */
+        int64_t v = mutex32_plain;
+        if (i % 16 == 0) tsuzuri_tz_yield(); /* a holder may switch away (Go's Mutex) */
+        mutex32_plain = v + 1;
+        tsuzuri_tz_mutex32_unlock(&mutex32_other);
+        tsuzuri_tz_mutex32_unlock(&mutex32);
+    }
+}
+static void test_mutex32(void) {
+    mutex32_plain = 0;
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 16; i++) tsuzuri_tz_go(mutex32_locker, (void *)(intptr_t)1000);
+    mutex32_locker((void *)(intptr_t)1000); /* the main thread too */
+    join(scope);
+    CHECK(mutex32_plain == 17000);
+    CHECK(atomic_load(&mutex32) == 0 && tzr_current()->held_count == 0);
+    /* a depth that a trap left: restore releases what was taken above it */
+    int32_t depth = tsuzuri_tz_held_depth();
+    CHECK(tsuzuri_tz_mutex32_lock(&mutex32) == 0);
+    _Atomic uint64_t rw = 0;
+    CHECK(tsuzuri_tz_rw_read_lock(&rw) == 0);
+    tsuzuri_tz_held_restore(depth);
+    CHECK(atomic_load(&mutex32) == 0 && atomic_load(&rw) == 0 && tsuzuri_tz_held_depth() == depth);
+    printf("mutex32: ok\n");
+}
+
+/* RwMutex: 8 readers and 2 writers; a writer never sees a reader, and readers share */
+static _Atomic uint64_t rw_word;
+static _Atomic int64_t rw_readers, rw_writers, rw_shared, rw_violations;
+static int64_t rw_value;
+static void rw_reader(void *env) {
+    (void)env;
+    for (int i = 0; i < 1000; i++) {
+        CHECK(tsuzuri_tz_rw_read_lock(&rw_word) == 0);
+        CHECK(tsuzuri_tz_rw_read_lock(&rw_word) == 1); /* again in the same G: reported 6 */
+        CHECK(tsuzuri_tz_rw_write_lock(&rw_word) == 1);
+        int64_t now = atomic_fetch_add(&rw_readers, 1) + 1;
+        if (now > 1) atomic_fetch_add(&rw_shared, 1);
+        if (atomic_load(&rw_writers) != 0) atomic_fetch_add(&rw_violations, 1);
+        if (i % 64 == 0) tsuzuri_tz_yield();
+        atomic_fetch_sub(&rw_readers, 1);
+        tsuzuri_tz_rw_read_unlock(&rw_word);
+    }
+}
+static void rw_writer(void *env) {
+    (void)env;
+    for (int i = 0; i < 1000; i++) {
+        CHECK(tsuzuri_tz_rw_write_lock(&rw_word) == 0);
+        CHECK(tsuzuri_tz_rw_read_lock(&rw_word) == 1);
+        if (atomic_fetch_add(&rw_writers, 1) != 0 || atomic_load(&rw_readers) != 0) atomic_fetch_add(&rw_violations, 1);
+        rw_value++;
+        if (i % 64 == 0) tsuzuri_tz_yield();
+        atomic_fetch_sub(&rw_writers, 1);
+        tsuzuri_tz_rw_write_unlock(&rw_word);
+    }
+}
+static void test_rwmutex(void) {
+    rw_value = 0;
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 8; i++) tsuzuri_tz_go(rw_reader, NULL);
+    for (int i = 0; i < 2; i++) tsuzuri_tz_go(rw_writer, NULL);
+    join(scope);
+    CHECK(atomic_load(&rw_violations) == 0);
+    CHECK(rw_value == 2000);
+    CHECK(atomic_load(&rw_word) == 0);
+    printf("rwmutex: ok (%lld shared reads)\n", (long long)atomic_load(&rw_shared));
+}
+
+/* Writer preference with two writers queued: a reader that comes while they wait goes after both,
+ * also after the first one has taken the lock and let it go. */
+static _Atomic uint64_t pref_word;
+static int pref_order[3];
+static _Atomic int pref_count;
+static void pref_writer(void *env) {
+    CHECK(tsuzuri_tz_rw_write_lock(&pref_word) == 0);
+    pref_order[atomic_fetch_add(&pref_count, 1)] = (int)(intptr_t)env;
+    tsuzuri_tz_rw_write_unlock(&pref_word);
+}
+static void pref_reader(void *env) {
+    (void)env;
+    CHECK(tsuzuri_tz_rw_read_lock(&pref_word) == 0);
+    pref_order[atomic_fetch_add(&pref_count, 1)] = 0;
+    tsuzuri_tz_rw_read_unlock(&pref_word);
+}
+static void test_rw_writers_first(void) {
+    for (int round = 0; round < 20; round++) {
+        atomic_store(&pref_count, 0);
+        CHECK(tsuzuri_tz_rw_read_lock(&pref_word) == 0);
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(pref_writer, (void *)(intptr_t)1);
+        tsuzuri_tz_go(pref_writer, (void *)(intptr_t)2);
+        while ((atomic_load(&pref_word) & TZR_RW_WAITERS) != 2 * TZR_RW_WAITER) CHECK(tsuzuri_tz_sleep(100000) == 0);
+        tsuzuri_tz_go(pref_reader, NULL);
+        CHECK(tsuzuri_tz_sleep(1000000) == 0);
+        tsuzuri_tz_rw_read_unlock(&pref_word);
+        join(scope);
+        CHECK(atomic_load(&pref_count) == 3 && pref_order[2] == 0);
+        CHECK(atomic_load(&pref_word) == 0);
+    }
+    printf("rw writers first: ok\n");
+}
+
+/* Once: 16 callers at once, the function runs once and everyone returns after it */
+static _Atomic uint64_t once_word;
+static _Atomic int64_t once_runs, once_after;
+static void once_caller(void *env) {
+    (void)env;
+    int32_t status = tsuzuri_tz_once_begin(&once_word);
+    CHECK(status == 0 || status == 1);
+    if (status == 1) {
+        for (int i = 0; i < 100; i++) tsuzuri_tz_yield(); /* the others wait meanwhile */
+        atomic_fetch_add(&once_runs, 1);
+        tsuzuri_tz_once_end(&once_word);
+    }
+    if (atomic_load(&once_runs) == 1) atomic_fetch_add(&once_after, 1);
+}
+static void test_once(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 16; i++) tsuzuri_tz_go(once_caller, NULL);
+    join(scope);
+    CHECK(atomic_load(&once_runs) == 1 && atomic_load(&once_after) == 16);
+    CHECK(tsuzuri_tz_once_begin(&once_word) == 0);
+    printf("once: ok\n");
+}
+
+/* Cond: a queue that consumers wait on until it is not empty */
+static _Atomic uint32_t cond_mutex;
+static _Atomic uint64_t cond_sequence;
+static int64_t cond_queue, cond_taken;
+static void cond_consumer(void *env) {
+    (void)env;
+    for (int i = 0; i < 250; i++) {
+        CHECK(tsuzuri_tz_mutex32_lock(&cond_mutex) == 0);
+        while (cond_queue == 0) {
+            uint64_t observed = atomic_load(&cond_sequence);
+            CHECK(tsuzuri_tz_cond_wait(&cond_sequence, &cond_mutex, observed) == 0);
+        }
+        cond_queue--;
+        cond_taken++;
+        tsuzuri_tz_mutex32_unlock(&cond_mutex);
+    }
+}
+static void cond_producer(void *env) {
+    (void)env;
+    for (int i = 0; i < 500; i++) {
+        CHECK(tsuzuri_tz_mutex32_lock(&cond_mutex) == 0);
+        cond_queue++;
+        tsuzuri_tz_mutex32_unlock(&cond_mutex);
+        tsuzuri_tz_cond_wake(&cond_sequence, i % 2 ? 1 : -1);
+        if (i % 8 == 0) tsuzuri_tz_yield();
+    }
+}
+static void test_cond(void) {
+    cond_queue = cond_taken = 0;
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 4; i++) tsuzuri_tz_go(cond_consumer, NULL);
+    for (int i = 0; i < 2; i++) tsuzuri_tz_go(cond_producer, NULL);
+    join(scope);
+    CHECK(cond_taken == 1000 && cond_queue == 0);
+    printf("cond: ok\n");
+}
+
+/* Semaphore: capacity 3 and 20 tzroutines; at most 3 hold a weight at once */
+static _Atomic uint64_t sem_word;
+static _Atomic int64_t sem_inside, sem_most;
+static void sem_worker(void *env) {
+    (void)env;
+    for (int i = 0; i < 100; i++) {
+        CHECK(tsuzuri_tz_sem_acquire(&sem_word, 1, 1) == 0);
+        int64_t now = atomic_fetch_add(&sem_inside, 1) + 1;
+        for (int64_t most = atomic_load(&sem_most); now > most && !atomic_compare_exchange_weak(&sem_most, &most, now);) {
+        }
+        tsuzuri_tz_yield();
+        atomic_fetch_sub(&sem_inside, 1);
+        CHECK(tsuzuri_tz_sem_release(&sem_word, 1, 3) == 0);
+    }
+}
+static void test_semaphore(void) {
+    atomic_store(&sem_word, 3);
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 20; i++) tsuzuri_tz_go(sem_worker, NULL);
+    join(scope);
+    CHECK(atomic_load(&sem_most) <= 3 && atomic_load(&sem_most) >= 1);
+    CHECK(atomic_load(&sem_word) == 3);
+    CHECK(tsuzuri_tz_sem_acquire(&sem_word, 2, 0) == 0);
+    CHECK(tsuzuri_tz_sem_acquire(&sem_word, 2, 0) == 1); /* only 1 left: try_acquire fails */
+    CHECK(tsuzuri_tz_sem_release(&sem_word, 2, 3) == 0);
+    CHECK(tsuzuri_tz_sem_release(&sem_word, 1, 3) == 1); /* more than it acquired: reported 7 */
+    printf("semaphore: ok (at most %lld)\n", (long long)atomic_load(&sem_most));
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -1405,6 +1605,12 @@ int main(int argc, char **argv) {
     RUN("after_func", test_after_func());
     RUN("boundary_timers", test_boundary_timers());
     RUN("sleep_ms_hook", test_sleep_ms_hook());
+    RUN("mutex32", test_mutex32());
+    RUN("rwmutex", test_rwmutex());
+    RUN("rw_writers_first", test_rw_writers_first());
+    RUN("once", test_once());
+    RUN("cond", test_cond());
+    RUN("semaphore", test_semaphore());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

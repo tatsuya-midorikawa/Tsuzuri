@@ -483,7 +483,8 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         // B14
         BenchNow | GenSeed => facts(Some(Effect::Os), false, false, false, false, false, None),
         // B15
-        OsClock | OsClose => facts(
+        // TZ06: a sleep may hold the G's lock, so no sleep traps (TZ05's guard is gone).
+        OsClock | OsSleep | OsClose => facts(
             Some(Effect::Os),
             false,
             false,
@@ -492,9 +493,6 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             false,
             Some("host_status"),
         ),
-        // TZ05: in a program that waits, a positive sleep inside the thread's Mutex.with_lock
-        // traps, as Time.sleep does.
-        OsSleep => facts(Some(Effect::Os), false, true, false, false, false, None),
         // B16
         OsArgs | OsRandom => facts(
             Some(Effect::Os),
@@ -568,14 +566,13 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         ParallelForEachChunk => facts(Some(Effect::Task), true, true, false, true, false, None),
         // TZ02: `Routine.go` spawns a tzroutine that calls the owned function it takes.
         RoutineGo => facts(Some(Effect::Task), true, false, false, true, false, None),
-        // A yield inside `Mutex.with_lock` traps in a program that spawns.
-        RoutineYield => facts(Some(Effect::Task), false, true, false, false, false, None),
+        // TZ06: a yield inside `Mutex.with_lock` is allowed (the lock is the G's).
+        RoutineYield => facts(Some(Effect::Task), false, false, false, false, false, None),
         RoutineCount | RoutineMaxProcs | RoutineCpuCount => {
             facts(Some(Effect::Task), false, false, false, false, false, None)
         }
-        // TZ05: the timers read the clock. A sleep inside `Mutex.with_lock` traps in a program that
-        // spawns, as a yield does; a period of 0 or less traps; a timer's channel is allocated.
-        TimeSleep => facts(Some(Effect::Os), false, true, false, false, false, None),
+        // TZ05: the timers read the clock; a period of 0 or less traps; a timer's channel is allocated.
+        TimeSleep => facts(Some(Effect::Os), false, false, false, false, false, None),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
             facts(None, false, false, false, false, false, None)
         }
@@ -585,10 +582,16 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         TickerReset => facts(Some(Effect::Os), false, true, false, false, false, None),
         // `Time.after_func` spawns a tzroutine that calls the owned function it takes.
         TimeAfterFunc => facts(Some(Effect::Task), true, false, false, true, false, None),
-        // A new handle of the timer's channel, which its drop releases.
-        TimerChannel | TickerChannel => {
-            facts(Some(Effect::Atomic), true, false, false, false, false, None)
-        }
+        // A new handle of the timer's channel, which its drop releases (no allocation).
+        TimerChannel | TickerChannel => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
         TimerStop | TickerStop => facts(
             Some(Effect::Atomic),
             false,
@@ -601,6 +604,46 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         // The drop of an after_func's `Timer` drops the function that has not run.
         TimerFree | TickerFree => {
             facts(Some(Effect::Atomic), false, false, false, true, false, None)
+        }
+        // TZ06: the handles and cells of the sync types are allocated; a wait may last for ever
+        // and traps at a deadlock; a lock taken again, a negative counter and a weight out of range
+        // trap.
+        WaitGroupCreate | OnceCreate | OnceValueCreate | RwMutexCreate | CondCreate => {
+            facts(Some(Effect::Atomic), true, false, false, false, false, None)
+        }
+        // Another handle of the same block: one more in its count, no allocation.
+        WaitGroupShare | OnceShare | CondShare | SemaphoreShare => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
+        SemaphoreCreate => facts(Some(Effect::Atomic), true, true, false, false, false, None),
+        WaitGroupWait | OnceBegin | SemaphoreAcquire => {
+            facts(Some(Effect::Atomic), false, true, true, false, false, None)
+        }
+        WaitGroupAdd | SemaphoreTryAcquire | SemaphoreRelease => {
+            facts(Some(Effect::Atomic), false, true, false, false, false, None)
+        }
+        OnceEnd | OnceDone | CondSignal | CondBroadcast | WaitGroupDrop | OnceDrop | CondDrop
+        | SemaphoreDrop | OnceValueIntoInner | RwMutexIntoInner => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
+        // A swap of two values in place.
+        SyncMapReplace => facts(None, false, false, false, false, false, None),
+        // Like `Routine.go`, after the count.
+        WaitGroupGo => facts(Some(Effect::Task), true, true, false, true, false, None),
+        OnceValueGet | RwMutexWithRead | RwMutexWithWrite | CondWaitWith => {
+            facts(Some(Effect::Atomic), false, true, true, true, false, None)
         }
         // B25
         AtomicLoad
@@ -655,9 +698,17 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         ChannelClose | SendOnlyClose => {
             facts(Some(Effect::Atomic), false, true, false, false, false, None)
         }
-        // A new handle that its drop releases.
+        // A new handle that its drop releases: one more in the channel's count, no allocation.
         ChannelShare | ChannelSendOnly | ChannelReceiveOnly | SendOnlyShare | ReceiveOnlyShare => {
-            facts(Some(Effect::Atomic), true, false, false, false, false, None)
+            facts(
+                Some(Effect::Atomic),
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+            )
         }
         // B28
         MutexWith => facts(Some(Effect::Atomic), false, true, true, true, false, None),
@@ -3513,9 +3564,9 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 310);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 136);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 174);
+        assert_eq!(Builtin::ALL.len(), 342);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 167);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 175);
     }
 
     #[test]
@@ -3524,8 +3575,8 @@ mod tests {
         assert_eq!(by(Effect::Io), 10);
         assert_eq!(by(Effect::Os), 19);
         assert_eq!(by(Effect::Net), 12);
-        assert_eq!(by(Effect::Task), 16);
-        assert_eq!(by(Effect::Atomic), 52);
+        assert_eq!(by(Effect::Task), 17);
+        assert_eq!(by(Effect::Atomic), 82);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
         assert_eq!(by(Effect::Gpu), 5);
@@ -3539,18 +3590,18 @@ mod tests {
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 45);
-        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 36);
+        assert_eq!(count(|facts| facts.trap), 54);
+        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
     }
 
     #[test]
     fn diverge_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.diverge), 20);
+        assert_eq!(count(|facts| facts.diverge), 27);
     }
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 21);
+        assert_eq!(count(|facts| facts.callbacks), 26);
     }
 
     fn checked(source: &str) -> CheckedModule {
