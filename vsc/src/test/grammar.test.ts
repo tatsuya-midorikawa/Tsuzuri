@@ -100,7 +100,7 @@ test('TextMate grammar treats a first-line shebang as a comment', async () => {
 test('member-position keywords stay function names', async () => {
 	const { grammar, registry } = await loadGrammar();
 	try {
-		for (const member of ['Async.yield', 'Set.union', 'Rc.new']) {
+		for (const member of ['Routine.yield', 'Set.union', 'Rc.new']) {
 			const line = `do! ${member} ()`;
 			const start = line.indexOf('.') + 1;
 			const token = grammar.tokenizeLine(line, INITIAL).tokens.find(candidate => candidate.startIndex === start);
@@ -116,7 +116,7 @@ test('a builder alias is an attribute and a module-like name', async () => {
 	const { grammar, registry } = await loadGrammar();
 	try {
 		// The formatter keeps one space, but unformatted declarations are valid too.
-		for (const line of ['@alias async', '@alias    async', '@alias\tasync', '@alias \t async // note']) {
+		for (const line of ['@alias query', '@alias    query', '@alias\tquery', '@alias \t query // note']) {
 			const tokens = grammar.tokenizeLine(line, INITIAL).tokens;
 			const at = (offset: number) => {
 				const token = tokens.find(candidate => candidate.startIndex <= offset && offset < candidate.endIndex);
@@ -124,7 +124,7 @@ test('a builder alias is an attribute and a module-like name', async () => {
 				return token.scopes;
 			};
 			assert.ok(at(0).includes('storage.modifier.attribute.tsuzuri'), JSON.stringify(line));
-			assert.ok(at(line.indexOf('async')).includes('entity.name.namespace.tsuzuri'), JSON.stringify(line));
+			assert.ok(at(line.indexOf('query')).includes('entity.name.namespace.tsuzuri'), JSON.stringify(line));
 		}
 		// Without a name yet, the attribute alone is still highlighted.
 		const bare = grammar.tokenizeLine('@alias', INITIAL).tokens;

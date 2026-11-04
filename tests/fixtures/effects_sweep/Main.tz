@@ -133,8 +133,6 @@ export def json_values :: i64 -> i64 = \_n ->
 export def sockets :: i64 -> i64 = \_n ->
     match Net.parse_address "127.0.0.1:0" with
     | Maybe.Some address ->
-        let _a = Net.bind_async address
-        let _b = Net.bind_udp_async address
         let _c = Net.with_listener address (\listener -> Net.with_accepted listener Maybe.None (\_stream -> IO.Return 1))
         1
     | Maybe.None -> 0

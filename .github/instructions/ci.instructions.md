@@ -26,7 +26,7 @@ Lessons from the PR #3 and #4 VS Code workflow failures, and from the Windows ga
   `gh api repos/<owner>/<repo>/actions/jobs/<job>/logs`.
 - The bundled Windows x64 toolchain compiles C with `zig cc`, which defines `NDEBUG` from `-O1` up, unlike clang
   elsewhere. A C test host that calls the code under test inside `assert(...)` then skips the call, and later steps see
-  a state that never happened (the Async host test died with `0xC000001D` at `-O1` and passed at `-O0`). Start such
+  a state that never happened (a C host test died with `0xC000001D` at `-O1` and passed at `-O0`). Start such
   hosts with `#undef NDEBUG`, and read a pass of an optimized run as meaningful only if its checks were compiled in.
 - `windows.yml` is the Windows gate (G10). Its `cargo test --locked --no-fail-fast` takes 40 to 50 minutes on
   `windows-2022` and comes last, so a failure of the other steps can be read at once. The first Windows run of a step is

@@ -1,7 +1,7 @@
 //! B09: local `let rec` functions, with `and` groups.
 
 use tsuzuri::diagnostic::{Diagnostic, Severity};
-use tsuzuri::{analyze, llvm, parser};
+use tsuzuri::{analyze, analyze_modules, llvm, parser};
 
 /// How many bindings of `program` have each recursion, in the order `rec`, `and`.
 fn recursive_bindings(source: &str) -> (usize, usize) {
@@ -574,18 +574,32 @@ fn local_let_rec_in_computation_expressions() {
         "def job :: Maybe<i64> -> Maybe<bool> = \\source ->\n    let! m = source\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    return even m\n",
         "def job :: i64 -> Maybe<i64> = \\n ->\n    let base = n + 1\n    let rec a = \\k -> if k == 0 then base else b (k - 1)\n    and b = \\k -> if k == 0 then base else a (k - 1)\n    let rec c = \\k -> a k + 1\n    return c n\n",
         "let job = Maybe {\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    return even 6\n}\nMaybe.get job\n",
-        // The other lowerings bind consecutive statements together: IO run directly, a builder
-        // with groups before and after a `let!`, and `Async`.
+        // The other lowerings bind consecutive statements together: IO run directly, and a builder
+        // with groups before and after a `let!` (a builder without `Run` is below).
         "def main :: unit -> i32 = \\() ->\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    do! IO.write_line (to_string (even 10))\n    0\n",
         "def main :: unit -> i32 = \\() ->\n    do! IO.write_line \"start\"\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    do! IO.write_line (to_string (odd 7))\n    0\n",
         "def compute :: i64 -> Maybe<bool> = \\n ->\n    let! a = Maybe.Some n\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    let! b = Maybe.Some (a + 1)\n    let rec up = \\k -> if k == 0 then 0 else down (k - 1) + 1\n    and down = \\k -> if k == 0 then 0 else up (k - 1) + 1\n    return even b && up a == a\nlet shown = compute 6\nshown\n",
-        "def job :: i64 -> Async<bool> = \\n ->\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    let! t = Async.now ()\n    return even (n + t)\n",
     ] {
         let module = analyze(source)
             .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
         let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
         assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
     }
+    // A builder whose `Delay` gives the computation itself and that has no `Run` (the shape of
+    // `IO`, which a body of IO does not use: it runs directly).
+    let later = "record Later<'a> { value: 'a }\n\n\
+        def Return :: own 'a -> Later<'a>\nfn Return value = Later { value: value }\n\n\
+        def ReturnFrom :: own Later<'a> -> Later<'a>\nfn ReturnFrom later = later\n\n\
+        def Bind :: own Later<'a> -> own ('a -> Later<'b>) -> Later<'b>\nfn Bind later next = next later.value\n\n\
+        def Delay :: own (unit -> Later<'a>) -> Later<'a>\nfn Delay body = body ()\n\n\
+        def Zero :: Later<unit>\nfn Zero = Later { value: () }\n\n\
+        def Combine :: own Later<unit> -> own Later<'a> -> Later<'a>\nfn Combine _first second = second\n\n\
+        def now :: own unit -> Later<i64>\nfn now _unit = Later { value: 1 }\n";
+    let job = "def job :: i64 -> Later<bool> = \\n ->\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    let! t = Later.now ()\n    return even (n + t)\n";
+    let module = analyze_modules(&[("Main.tz", job), ("Later.tc", later)])
+        .unwrap_or_else(|error| panic!("{job}\n{}: {}", error.code, error.message));
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
     // `let! rec` stays a syntax error in a computation.
     let error = parse_error("let r = Maybe {\n    let! rec go = \\m -> m\n    return 1\n}\nr\n");
     assert_eq!(error.code, "E0002");

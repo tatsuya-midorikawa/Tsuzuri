@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 // ports ("::1" when the machine has it); nothing leaves the machine, no port is fixed, and no pass or fail
 // depends on how long something took. A child that runs for 60 seconds is killed as hung, which is not a limit
 // that a test measures. Expectations come from Node's own net, dgram, URL, and os modules.
-//   node tests/net.mjs target/release/tsuzuri [address|resolve|sockets|async|runtime|alloc]
+//   node tests/net.mjs target/release/tsuzuri [address|resolve|sockets|tzroutine|portable|runtime|alloc]
 // It runs from the repository whatever the directory it is started in (the CI starts it in vsc/): the compiler and the
 // tools that the environment names by a path are made absolute first, then the working directory moves to the repository.
 // The blocks "alloc" and "runtime" also build with AddressSanitizer and UndefinedBehaviorSanitizer (and, with
@@ -144,9 +144,6 @@ const ok = ["ok"];
 const failure = (kind, osKind, code) => `${kind} ${osKind} ${code}`;
 const invalid = failure("Unclassified", "InvalidInput", 0);
 const stale = failure("Unclassified", "InvalidInput", errno.EBADF);
-// The code of the failure that the async fixtures make up for themselves: no system has an error number like it (Linux has
-// 99, EADDRNOTAVAIL, and another system may have any small number), so it is Unclassified everywhere.
-const synthetic = 2147418113;
 
 // Address text that a system's resolver reads in its own way ("127.1", "0x7f000001", "fe80::1%lo0"): `Net.resolve` decides
 // such a host with the strict parser alone and never asks the system, so the answer does not depend on the system. A host
@@ -660,29 +657,12 @@ try {
     console.log("Net tzroutines: an echo server with a tzroutine per connection and 100 clients, and a read timeout, passed with 1 and 4 Ps at -O0 and -O3");
   }
 
-  if (wanted("async")) {
-    const project = fixture("net_async");
+  // The socket cases that run on every platform, Windows too, whose runtime skips a connection reset before the accept and
+  // turns off the report of a datagram sent to a closed port (the block "sockets" needs POSIX descriptors).
+  if (wanted("portable")) {
+    const project = fixture("net_portable");
     const v6Server = await listen(() => {}, "::1").then(server => server, () => undefined);
     if (v6Server) await stop(v6Server);
-
-    // A program that starts a Net async operation needs the reactor of Async.block_on natively (E2000), and the default
-    // wasm32 output has no host to open a socket with.
-    const unaided = join(root, "unaided");
-    mkdirSync(unaided, { recursive: true });
-    writeFileSync(join(unaided, "Main.tz"), `def main :: unit -> i32 = \\() ->
-    let address = Maybe.get (Net.parse_address (ref "127.0.0.1:9"))
-    let outcome = Async.run (Net.connect_async address Maybe.None)
-    do! IO.write_line (Result.is_ok (ref outcome))
-    0
-`);
-    for (const optimization of optimizations) {
-      const refused = execute(compiler, ["build", unaided, optimization, "-o", join(root, "unaided")], {}, false);
-      assert.equal(refused.status, 1, refused.stderr);
-      assert.match(refused.stderr, /error\[E2000\]: the Net async operations \(connect_async, accept_async, read_async, \.\.\.\) complete through the reactor of Async\.block_on/);
-      const wasm = execute(compiler, ["build", unaided, "--target", "wasm32", optimization, "-o", join(root, "unaided.wasm")], {}, false);
-      assert.match(wasm.stderr, /error\[E2000\]: wasm32 output cannot use the Net socket API/);
-    }
-    execute(compiler, ["check", unaided]);
 
     for (const optimization of optimizations) {
       const exe = build(project, optimization);
@@ -742,15 +722,6 @@ try {
         assert.deepEqual(result.lines.slice(1), ["gate: datagram:2", "accept: ok read:4"]);
       }
 
-      // Forty clients connect at once to a server in the same executor; sixty-four reads wait together; reads that
-      // nothing satisfies are cancelled again and again; closing a socket ends the waits on it.
-      assert.deepEqual((await run(exe, "crowd")).lines, ["crowd: server=40 clients=40"]);
-      assert.deepEqual((await run(exe, "waits")).lines, ["waits: sum=2016 sent=64", "closed=128"]);
-      assert.deepEqual((await run(exe, "cancel")).lines, [
-        `cancel: error ${failure("Unclassified", "Other", synthetic)}`, "after: ok read:1", "again: 97", "rounds: 200", "last: 2 243", "closed",
-      ]);
-      assert.deepEqual((await run(exe, "close_wait")).lines, [`read: error ${stale}`, `accept: error ${stale}`, "done"]);
-
       // Timeouts are for the whole operation and leave the socket good.
       const timedOut = failure("TimedOut", "Other", errno.ETIMEDOUT);
       assert.deepEqual((await run(exe, "timeouts")).lines, [`read: ${timedOut}`, `accept: ${timedOut}`, "late: 7 1", "closed"]);
@@ -808,7 +779,7 @@ try {
       assert.deepEqual((await run(exe, "shutdown")).lines, [`ok read:0 ok read:3 ${failure("ConnectionReset", "Other", errno.EPIPE)}`, "closed"]);
       assert.deepEqual((await run(exe, "stale")).lines, Array(9).fill(stale));
     }
-    console.log("Net async: connect, accept, read, write, datagrams, timeouts, cancellation, and closing under Async.block_on passed at -O0 and -O3");
+    console.log("Net portable: connect, accept (after a reset too), read, write, datagrams (to a closed port too), timeouts, and closing passed at -O0 and -O3");
   }
 
   if (wanted("alloc")) {
@@ -842,8 +813,6 @@ int main(int argc, char **argv) {
     execute(classifier, pairs);
 
     // Allocation tracking plus ASan and UBSan: every owned result and the runtime's own table are freed on every path.
-    // A result may be freed by the poller thread of the async operations, so the counters are atomic, and a run ends only
-    // when that thread has gone and (for the async cases) every descriptor that the run opened is closed.
     const trackedIr = (name, instrument = "", change = undefined) => {
       const irPath = join(root, `tracked-${name}${instrument}.ll`);
       execute(compiler, ["build", fixture(name, change), "--emit", "llvm", "-o", irPath]);
@@ -856,7 +825,6 @@ int main(int argc, char **argv) {
     const harness = join(root, "tracked-host.c");
     writeFileSync(harness, `#undef NDEBUG
 #include <assert.h>
-#include <fcntl.h>
 #include <netdb.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -910,31 +878,23 @@ int tz_test_getaddrinfo(const char *node, const char *service, const struct addr
     if (status == 0 && hints != NULL && (hints->ai_flags & AI_NUMERICHOST) != 0) atomic_fetch_add(&numeric_hits, 1);
     return status;
 }
-static int open_descriptors(void) {
-    int count = 0;
-    for (int descriptor = 0; descriptor < 1024; descriptor++) {
-        if (fcntl(descriptor, F_GETFD) != -1) count++;
-    }
-    return count;
-}
-// The poller of the async operations ends soon after the last wait, and frees what it has then.
-static void settle(int descriptors) {
+// What the runtime holds after a run: nothing.
+static void settle(void) {
     for (int attempt = 0; attempt < 2000; attempt++) {
-        if (atomic_load(&temporaries) == 0 && (descriptors < 0 || open_descriptors() == descriptors)) return;
+        if (atomic_load(&temporaries) == 0) return;
         struct timespec pause = {0, 5 * 1000000L};
         nanosleep(&pause, NULL);
     }
-    fprintf(stderr, "runtime memory left: %lld, descriptors %d (expected %d)\\n", (long long)atomic_load(&temporaries), open_descriptors(), descriptors);
+    fprintf(stderr, "runtime memory left: %lld\\n", (long long)atomic_load(&temporaries));
     abort();
 }
 int main(void) {
     const char *text = getenv("TZ_ITERATIONS");
     int iterations = text ? atoi(text) : 1;
-    int descriptors = getenv("TZ_CHECK_DESCRIPTORS") ? open_descriptors() : -1;
     for (int index = 0; index < iterations; index++) {
         assert(tsuzuri_main() == 0);
         assert(atomic_load(&live) == 0);
-        settle(descriptors);
+        settle();
     }
     if (atomic_load(&numeric_hits) != 0) {
         fprintf(stderr, "the system read %lld hosts as addresses that the checks of Net.resolve let through\\n", (long long)atomic_load(&numeric_hits));
@@ -965,7 +925,7 @@ ${marker}`));
     const iterations = 12;
     const looping = (optimization, ir, sanitizers = sanitized ? "address,undefined" : "") => {
       const executable = join(root, `tracked-${sanitizers.replace(",", "-") || "plain"}-${basename(ir)}${optimization}`);
-      execute(clang, [optimization, ...(sanitizers ? [`-fsanitize=${sanitizers}`] : []), "-fno-omit-frame-pointer", "-Wno-override-module", ir, runtime, "src/runtime/os.c", "src/runtime/io.c", "src/runtime/async.c", harness, "-lm", "-pthread", "-o", executable]);
+      execute(clang, [optimization, ...(sanitizers ? [`-fsanitize=${sanitizers}`] : []), "-fno-omit-frame-pointer", "-Wno-override-module", ir, runtime, "src/runtime/os.c", "src/runtime/io.c", harness, "-lm", "-pthread", "-o", executable]);
       return executable;
     };
     const irPath = trackedIr("net_sockets");
@@ -1037,59 +997,12 @@ ${marker}`));
       }
     }
     console.log(`Net allocation: ${iterations} runs of each case ${sanitized ? "with ASan and UBSan" : "without sanitizers"} at -O0 and -O3 freed every result and the handle table`);
-
-    // The async cases add the poller thread and the mailbox: after every run the thread is gone, its memory is freed, and
-    // the descriptors are those of the start. With TSUZURI_TSAN=1 the same cases run under ThreadSanitizer, whose runs
-    // need the IR functions to carry the sanitizer attribute as well.
-    const asyncCases = async (executable, env) => {
-      const tracked = (caseName, port, lines, onLine) => track(executable, caseName, port, lines, onLine, { TZ_CHECK_DESCRIPTORS: "1", ...env });
-      const echoing = await listen(socket => { socket.on("data", data => socket.write(data)); socket.on("end", () => socket.end()); socket.on("error", () => {}); });
-      await tracked("echo", echoing.address().port, 5);
-      await stop(echoing);
-      const clients = [];
-      await tracked("server", 0, 5, line => {
-        const found = /^port=(\d+)$/.exec(line);
-        if (!found) return;
-        const client = net.connect({ host: "127.0.0.1", port: Number(found[1]) }, () => client.write("hello\n"));
-        client.on("data", () => {});
-        client.on("error", () => {});
-        clients.push(client);
-      });
-      await Promise.all(clients.map(closed));
-      assert.equal(clients.length, iterations);
-      const peers = [];
-      await tracked("accept_reset", 0, 3, line => {
-        const found = /^ports=(\d+) (\d+)$/.exec(line);
-        if (found) peers.push(resetThenGood(Number(found[1]), Number(found[2])));
-      });
-      for (const good of await Promise.all(peers)) good.destroy();
-      assert.equal(peers.length, iterations);
-      for (const [name, lines] of [["crowd", 1], ["waits", 2], ["cancel", 6], ["close_wait", 3], ["timeouts", 4], ["validate", 10], ["udp", 5], ["shutdown", 2], ["stale", 9]]) {
-        await tracked(name, 0, lines);
-      }
-      const ending = await listen(socket => { socket.on("error", () => {}); socket.end("abc"); });
-      await tracked("eof", ending.address().port, 3);
-      const big = await listen(socket => { socket.on("error", () => {}); socket.end(pattern(3145728)); });
-      await tracked("bigread", big.address().port, 1);
-      const gone = await listen(() => {});
-      const gonePort = gone.address().port;
-      await stop(gone);
-      await tracked("refused", gonePort, 1);
-      await Promise.all([ending, big].map(stop));
-    };
-    const asyncIr = trackedIr("net_async");
-    for (const optimization of optimizations) await asyncCases(looping(optimization, asyncIr), {});
-    console.log(`Net async allocation: ${iterations} runs of each case ${sanitized ? "with ASan and UBSan" : "without sanitizers"} at -O0 and -O3 freed every result, the mailbox, the poller's memory, and every descriptor`);
-    if (threadSanitized) {
-      const instrumented = trackedIr("net_async", "thread");
-      for (const optimization of optimizations) await asyncCases(looping(optimization, instrumented, "thread"), {});
-      console.log("Net async threads: the same cases under ThreadSanitizer at -O0 and -O3 reported nothing");
-    }
   }
 
   if (wanted("runtime")) {
-    // The poller thread, the connect that a wait owns, closing and cancelling, without the compiler (tests/net_runtime.c):
-    // plain, with ASan and UBSan, and (TSUZURI_TSAN=1) with ThreadSanitizer (none of them with TSUZURI_NO_SANITIZERS=1).
+    // The calls that try once, timeouts, stale handles, and threads that churn sockets, without the compiler
+    // (tests/net_runtime.c): plain, with ASan and UBSan, and (TSUZURI_TSAN=1) with ThreadSanitizer (none of them with
+    // TSUZURI_NO_SANITIZERS=1).
     const configurations = [["", []]];
     if (sanitized) configurations.push(["address-undefined", ["-fsanitize=address,undefined"]]);
     if (threadSanitized) configurations.push(["thread", ["-fsanitize=thread"]]);
@@ -1098,10 +1011,10 @@ ${marker}`));
         const executable = join(root, `net-runtime-${name}${optimization}`);
         execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", optimization, "-g", "-fno-omit-frame-pointer", ...flags, "-pthread", "tests/net_runtime.c", "src/runtime/net.c", "-o", executable]);
         const result = execute(executable, [], { env: { ...process.env, ASAN_OPTIONS: "detect_stack_use_after_return=1", TSAN_OPTIONS: "halt_on_error=1" } });
-        assert.match(result.stdout, /net runtime: waits, timeouts, close, unwatch, connect, cancel, and threads that churn sockets passed/);
+        assert.match(result.stdout, /net runtime: tries once, timeouts, stale handles, and threads that churn sockets passed/);
       }
     }
-    console.log(`Net runtime: the poller, connects that a wait owns, close, cancel, and churn from four threads passed (${configurations.map(([name]) => name || "plain").join(", ")})`);
+    console.log(`Net runtime: tries once, timeouts, stale handles, and churn from four threads passed (${configurations.map(([name]) => name || "plain").join(", ")})`);
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

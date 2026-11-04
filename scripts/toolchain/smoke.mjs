@@ -106,37 +106,43 @@ try {
     assert.match(failed.stdout, /"status":"failed"/);
     console.log(`Bundled native ${optimization}: IO, arguments, DWARF, duplicate test selection, Parallel, failures passed.`);
   }
-  // Async.block_on waits on the real clock on every platform (B08, Windows: D-43), with one
-  // executor per thread (the tzroutines of Routine.scope run on several): the compiler links its
-  // reactor, which runs on Win32 threads and locks on Windows. A test and a program both wait.
+  // Time.sleep waits on the real clock on every platform (TZ05), in tzroutines and in the
+  // threads of Routine.scope: the compiler links the tzroutine runtime and its timers, which run
+  // on Win32 threads and locks on Windows. A test and a program both wait.
   const waiting = path.join(directory, 'waiting');
   await mkdir(waiting);
   await writeFile(path.join(waiting, 'Main.tz'), [
-    'def span :: i64 -> Async<i64>',
-    'fn span delay = Async {',
-    '    let! start = Async.now ()',
-    '    do! Async.sleep delay',
-    '    let! finish = Async.now ()',
-    '    return finish - start',
-    '}',
-    '',
-    'def worker :: i64 -> i64',
-    'fn worker delay =',
-    '    let! value = Async.block_on (span delay)',
-    '    value',
+    'def nap :: i64 -> i64',
+    'fn nap delay =',
+    '    let! start = Time.monotonic_ns ()',
+    '    Time.sleep (delay * Time.millisecond())',
+    '    let! finish = Time.monotonic_ns ()',
+    '    match (start, finish) with',
+    '    | (Result.Ok begun, Result.Ok ended) -> (ended - begun) / 1000000',
+    '    | _ -> -1',
     '',
     'def main :: unit -> i32 = \\() ->',
     '    let base = 10',
-    '    let spans = Routine.scope (ref base) 3 (\\first index -> worker (deref first + index))',
-    '    let! timed = Async.block_on (Async.all [span 20, span 40])',
-    '    if spans[0] >= 10 && spans[1] >= 11 && spans[2] >= 12 && timed[0] >= 20 && timed[1] >= 40 then',
+    '    let spans = Routine.scope (ref base) 3 (\\first index -> nap (deref first + index))',
+    '    let results: Channel<bool> = Channel.make 0',
+    '    for delay in [20, 40] do',
+    '        let out = Channel.share results',
+    '        tzroutine {',
+    '            Channel.send out (nap delay >= delay)',
+    '        }',
+    '    let mut waited = 0',
+    '    for _round in 0 ..< 2 do',
+    '        match Channel.recv results with',
+    '        | Maybe.Some true -> waited = waited + 1',
+    '        | _ -> ()',
+    '    if spans[0] >= 10 && spans[1] >= 11 && spans[2] >= 12 && waited == 2 then',
     '        do! IO.write_line "waited"',
     '        0',
     '    else',
     '        1',
     '',
-    'test "block_on waits for the timer" =',
-    '    let! elapsed = Async.block_on (span 15)',
+    'test "Time.sleep waits for the timer" =',
+    '    let elapsed = nap 15',
     '    assert (elapsed >= 15)',
     '',
   ].join('\n'));
@@ -146,7 +152,7 @@ try {
     assert.equal(run(artifact, []).stdout, 'waited\n');
     const passed = run(compiler, ['test', waiting, optimization, '--json']);
     assert.match(passed.stdout, /"passed":1,"failed":0,"ignored":0/);
-    console.log(`Bundled native ${optimization}: Async.block_on timers, per-thread executors, and tests passed.`);
+    console.log(`Bundled native ${optimization}: Time.sleep in tzroutines and Routine.scope, and in a test, passed.`);
   }
   const kernel = path.join(directory, 'kernel');
   await mkdir(kernel);

@@ -320,9 +320,10 @@ fn contextual_callbacks_keep_array_types_in_blocks_and_computation_continuations
          Array.sum (Array.map ({ let ignored = 0; \\text -> text.length }) texts) }\n",
     )
     .unwrap();
-    let source = "def action :: unit -> IO<i64> = \\() -> Async.block_on (Async { \
-        let! values = Async.all [Async { return 1 }, Async { return 2 }]; \
-        return values[0] + values[1] })\n\
+    let source = "def action :: unit -> Maybe<i64> = \\() -> Maybe { \
+        let! values = Maybe.Some [Maybe.default_value 0 (Maybe { return 1 }), 2]; \
+        let! more = Maybe { let! inner = Maybe.Some [values[1], 3]; return inner }; \
+        return values[0] + more[1] }\n\
         export def answer :: i64 = 0\n";
     assert_eq!(ir("2027", source), ir("2026", source));
 }

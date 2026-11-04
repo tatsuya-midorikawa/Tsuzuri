@@ -100,32 +100,8 @@ jobs:
       - run: cargo clippy --manifest-path ../Cargo.toml --locked --all-targets -- -D warnings
       # PB05: the fast backend is compiled only with its feature. Windows does not run it yet, so this is where its Windows code is checked.
       - run: cargo clippy --manifest-path ../Cargo.toml --locked --all-targets --features fast-backend -- -D warnings
-      - name: Async compiler contracts
-        run: cargo test --manifest-path ../Cargo.toml --locked --test async
       - run: npm run test:unit
       - run: npm run toolchain
-      - name: Async executors and JSPI
-        if: runner.os != 'Windows'
-        run: |
-          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
-          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
-          node ../tests/features.mjs toolchain/bin/tsuzuri async
-          node ../tests/async.mjs toolchain/bin/tsuzuri
-      # Windows (D-43): the reactor of Async.block_on runs on Win32 threads and locks. The bundled
-      # MinGW toolchain is what the extension ships; x64 also runs the LLVM MSVC toolchain.
-      - name: Async executors and JSPI on Windows
-        if: runner.os == 'Windows'
-        run: |
-          export TSUZURI_CLANG="$(node -p "require('node:path').resolve('toolchain/bin/tsuzuri-clang.exe')")"
-          export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
-          export TSUZURI_WASM64=0
-          node ../tests/async.mjs toolchain/bin/tsuzuri.exe
-      - name: Async executors with the LLVM MSVC toolchain
-        if: matrix.target == 'win32-x64'
-        run: |
-          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang.exe"
-          export TSUZURI_WASM_LD="$LLVM_PREFIX/bin/wasm-ld.exe"
-          node ../tests/async.mjs toolchain/bin/tsuzuri.exe
       - name: Compiler LSP protocol
         run: node ../tests/lsp_sessions.mjs "toolchain/bin/tsuzuri${{ runner.os == 'Windows' && '.exe' || '' }}"
       - run: npm run test:toolchain
@@ -203,12 +179,12 @@ jobs:
           } else {
             Write-Output '::notice::llvm-pdbutil.exe is not installed; checked the PDB bytes only'
           }
-      # E09: the sockets of the Net module, blocking and async, and on WebAssembly (macOS, Linux, and Windows). These steps come
+      # E09: the sockets of the Net module, natively and on WebAssembly (macOS, Linux, and Windows). These steps come
       # last so that a failure here does not skip the packaging and VSIX steps above, and each step runs all of its commands
       # even when one fails, so that one failure does not hide the others. Linux and Windows are checked by this job only: the
       # author could run macOS, and compiled the Linux (glibc and musl) and Windows (MinGW and MSVC) runtimes without running them.
       # The scripts move to the repository themselves; the compiler path is relative to vsc/, where the job runs.
-      - name: Net sockets, async operations, and WebAssembly
+      - name: Net sockets and WebAssembly
         if: runner.os != 'Windows'
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
@@ -218,14 +194,14 @@ jobs:
           # on the macOS that B08 used, so macOS runs those blocks without sanitizers.
           if [ "$RUNNER_OS" = macOS ]; then export TSUZURI_NO_SANITIZERS=1; fi
           status=0
-          for block in address resolve sockets async runtime alloc tzroutine; do
+          for block in address resolve sockets portable runtime alloc tzroutine; do
             node ../tests/net.mjs toolchain/bin/tsuzuri "$block" || status=1
           done
           # JSPI needs the Node.js 24 of this job.
           node ../tests/net_wasm.mjs toolchain/bin/tsuzuri || status=1
           exit $status
       # Windows (Winsock): the bundled MinGW toolchain is what the extension ships; x64 also runs the LLVM MSVC toolchain.
-      # Only the blocks that do not need POSIX descriptors or sanitizers run here (address, resolve, and async, which includes
+      # Only the blocks that do not need POSIX descriptors or sanitizers run here (address, resolve, and portable, which includes
       # the accept after a reset connection and the datagram sent to a closed port that the runtime handles for Windows, and
       # tzroutine, the WSAPoll netpoller of TZ08).
       - name: Net sockets and WebAssembly on Windows
@@ -235,7 +211,7 @@ jobs:
           export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
           export TSUZURI_WASM64=0
           status=0
-          for block in address resolve async tzroutine; do
+          for block in address resolve portable tzroutine; do
             node ../tests/net.mjs toolchain/bin/tsuzuri.exe "$block" || status=1
           done
           node ../tests/net_wasm.mjs toolchain/bin/tsuzuri.exe || status=1
@@ -246,7 +222,7 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang.exe"
           export TSUZURI_WASM_LD="$LLVM_PREFIX/bin/wasm-ld.exe"
           status=0
-          for block in resolve async tzroutine; do
+          for block in resolve portable tzroutine; do
             node ../tests/net.mjs toolchain/bin/tsuzuri.exe "$block" || status=1
           done
           exit $status

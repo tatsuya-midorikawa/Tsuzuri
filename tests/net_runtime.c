@@ -1,8 +1,9 @@
-// Tests of the socket runtime of the standard Net module (E09) without the compiler: the readiness waits of the
-// poller thread, the connect that a wait owns, closing and cancelling, and the descriptors that must not leak. It links
-// src/runtime/net.c and completes operations through a recording `post`, as the IR passes `tsuzuri_async_post` in.
-// Everything stays on 127.0.0.1 with ephemeral ports. No result depends on how long something took: a bound on waiting
-// only says that the program is hung. Build it with the address, thread, or undefined-behaviour sanitizer as well.
+// Tests of the socket runtime of the standard Net module (E09) without the compiler: the calls that try once (a timeout of
+// 0), timeouts, stale handles, a connection reset before accept, a datagram to a closed port, threads that churn sockets
+// through the handle table, the descriptors that must not leak, and the refusal of address text. It links src/runtime/net.c
+// alone, so every wait is a poll of the calling thread (a tzroutine's waits go to the netpoller: tests/net.mjs, block
+// "tzroutine"). Everything stays on 127.0.0.1 with ephemeral ports. No result depends on how long something took: a bound on
+// waiting only says that the program is hung. Build it with the address, thread, or undefined-behaviour sanitizer as well.
 #undef NDEBUG
 #define _POSIX_C_SOURCE 200809L
 #if defined(__APPLE__)
@@ -29,19 +30,12 @@ struct tz_net_buffer {
     unsigned char *data;
     int64_t length;
 };
-typedef int32_t (*post_function)(int64_t, int64_t);
-
 extern int64_t tsuzuri_net_open(struct tz_net_buffer *, int32_t, int64_t, int64_t, int64_t, int64_t);
 extern int64_t tsuzuri_net_accept(struct tz_net_buffer *, int64_t, int64_t);
 extern int64_t tsuzuri_net_read(struct tz_net_buffer *, int32_t, int64_t, int64_t, int64_t);
 extern int64_t tsuzuri_net_write(int32_t, int64_t, const unsigned char *, int64_t, int64_t, int64_t, int64_t, int64_t);
-extern int64_t tsuzuri_net_send(int32_t, int64_t, const unsigned char *, int64_t, int64_t, int64_t, int64_t, int64_t);
 extern int64_t tsuzuri_net_close(int32_t, int64_t);
-extern int64_t tsuzuri_net_names(struct tz_net_buffer *, int64_t);
 extern int64_t tsuzuri_net_resolve(struct tz_net_buffer *, const unsigned char *, int64_t, int64_t);
-extern void tsuzuri_net_watch(post_function, int64_t, int64_t, int32_t, int64_t);
-extern void tsuzuri_net_connect(post_function, int64_t, int64_t, int64_t, int64_t, int64_t);
-extern void tsuzuri_net_unwatch(int64_t);
 
 static atomic_int_fast64_t live;
 void *tsuzuri_alloc(int64_t size) {
@@ -61,76 +55,6 @@ void tsuzuri_free(void *pointer) {
 // The status of a call that was told not to wait and would have had to: kind Other, code 0.
 #define PENDING (INT64_C(7) << 32)
 #define TIMED_OUT ((INT64_C(7) << 32) | ETIMEDOUT)
-#define NONE INT64_MIN
-// Operations of the stress test are counted, not recorded.
-#define STRESS_BASE INT64_C(1000000)
-
-// The completions that the poller posted, and the one operation whose post is refused (as after a cancel).
-static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t arrived = PTHREAD_COND_INITIALIZER;
-struct completion {
-    int64_t operation;
-    int64_t value;
-};
-static struct completion completions[4096];
-static size_t completion_count;
-static int64_t refused_operation;
-static atomic_int_fast64_t stress_completions;
-
-static int32_t post(int64_t operation, int64_t value) {
-    if (operation >= STRESS_BASE) {
-        atomic_fetch_add(&stress_completions, 1);
-        return 1;
-    }
-    pthread_mutex_lock(&lock);
-    int accepted = operation != refused_operation;
-    if (accepted) {
-        assert(completion_count < sizeof completions / sizeof completions[0]);
-        for (size_t index = 0; index < completion_count; index++) assert(completions[index].operation != operation && "an operation completes once");
-        completions[completion_count].operation = operation;
-        completions[completion_count].value = value;
-        completion_count++;
-        pthread_cond_broadcast(&arrived);
-    }
-    pthread_mutex_unlock(&lock);
-    return accepted;
-}
-
-static void deadline_after(struct timespec *at, int milliseconds) {
-    clock_gettime(CLOCK_REALTIME, at);
-    at->tv_sec += milliseconds / 1000;
-    at->tv_nsec += (long)(milliseconds % 1000) * 1000000L;
-    if (at->tv_nsec >= 1000000000L) {
-        at->tv_sec++;
-        at->tv_nsec -= 1000000000L;
-    }
-}
-
-// The value that `operation` completed with, waiting at most `milliseconds` for it: NONE when it did not.
-static int64_t completion_of(int64_t operation, int milliseconds) {
-    struct timespec until;
-    deadline_after(&until, milliseconds);
-    pthread_mutex_lock(&lock);
-    for (;;) {
-        for (size_t index = 0; index < completion_count; index++) {
-            if (completions[index].operation == operation) {
-                int64_t value = completions[index].value;
-                pthread_mutex_unlock(&lock);
-                return value;
-            }
-        }
-        if (pthread_cond_timedwait(&arrived, &lock, &until) != 0) break;
-    }
-    pthread_mutex_unlock(&lock);
-    return NONE;
-}
-
-// A completion is expected within a minute, which only a hung program misses.
-static int64_t completed(int64_t operation) {
-    int64_t value = completion_of(operation, 60000);
-    assert(value != NONE && "the operation completed");
-    return value;
-}
 
 static int descriptor_limit(void) {
     long limit = sysconf(_SC_OPEN_MAX);
@@ -146,7 +70,8 @@ static int open_descriptors(void) {
     return count;
 }
 
-// The descriptors of the poller go when its last wait does, which is soon after: wait for the count to settle.
+// The descriptors that are open must come back to `expected`. A sanitizer may open one of its own a moment late, so a count
+// that differs is asked again for a while before it fails.
 static void expect_descriptors(int expected) {
     for (int attempt = 0; attempt < 2000; attempt++) {
         if (open_descriptors() == expected) return;
@@ -205,285 +130,79 @@ static void close_all(const int64_t *handles, size_t count) {
     for (size_t index = 0; index < count; index++) assert(tsuzuri_net_close(0, handles[index]) == 0);
 }
 
-static atomic_int_fast64_t next_operation = 1;
-
-static int64_t operation(void) {
-    return atomic_fetch_add(&next_operation, 1);
-}
-
-// A wait that ends when the socket is readable, and a read that tries once.
-static void test_ready(void) {
+// A call with a timeout of 0 tries once: an accept or a read that would have to wait is PENDING and allocates nothing, and
+// one that finds something takes it.
+static void test_try_once(void) {
     int baseline = open_descriptors();
     int port;
     int64_t listener = listen_on_loopback(&port), client, server;
+    struct tz_net_buffer names;
+    assert(tsuzuri_net_accept(&names, listener, 0) == -PENDING && names.data == NULL && "no connection waits");
     pair_on(listener, port, &client, &server);
     struct tz_net_buffer bytes;
     assert(read_now(server, &bytes) == PENDING && bytes.data == NULL && "an empty socket would wait");
-    int64_t op = operation();
-    tsuzuri_net_watch(post, op, server, 1, -1);
-    assert(completion_of(op, 100) == NONE && "nothing yet");
-    send_byte(client, 'x');
-    assert(completed(op) == 0);
-    assert(read_now(server, &bytes) == 0 && bytes.length == 1 && bytes.data[0] == 'x');
+    // A write of two bytes arrives as one segment: the read that waits takes the first, and the second is there for a read
+    // that does not.
+    const unsigned char both[] = {'x', 'y'};
+    assert(tsuzuri_net_write(0, client, both, 2, 0, 0, 0, 5000) == 0);
+    assert(tsuzuri_net_read(&bytes, 0, server, 1, 5000) == 0 && bytes.length == 1 && bytes.data[0] == 'x');
     tsuzuri_free(bytes.data);
-    assert(read_now(server, &bytes) == PENDING);
-    op = operation();
-    tsuzuri_net_watch(post, op, client, 2, -1);
-    assert(completed(op) == 0 && "an idle connection can be written");
-    // A closed peer is readable: the wait ends, and the read says that it is the end.
-    op = operation();
-    tsuzuri_net_watch(post, op, server, 1, -1);
+    assert(read_now(server, &bytes) == 0 && bytes.length == 1 && bytes.data[0] == 'y');
+    tsuzuri_free(bytes.data);
+    assert(read_now(server, &bytes) == PENDING && bytes.data == NULL);
+    // A closed peer is the end of the stream, for a read that waits and for one that does not.
     assert(tsuzuri_net_close(0, client) == 0);
-    assert(completed(op) == 0);
+    assert(tsuzuri_net_read(&bytes, 0, server, 64, 5000) == 0 && bytes.length == 0 && bytes.data == NULL);
     assert(read_now(server, &bytes) == 0 && bytes.length == 0 && bytes.data == NULL);
-    assert(tsuzuri_net_close(0, server) == 0);
-    assert(tsuzuri_net_close(0, listener) == 0);
+    // A datagram socket with nothing in it would wait too.
+    int64_t datagram = tsuzuri_net_open(&names, 2, 0, 0, LOOPBACK, -1);
+    assert(datagram > 0);
+    tsuzuri_free(names.data);
+    assert(tsuzuri_net_read(&bytes, 1, datagram, 64, 0) == PENDING && bytes.data == NULL);
+    int64_t all[] = {server, listener, datagram};
+    close_all(all, 3);
     expect_descriptors(baseline);
 }
 
+// A timeout is for the whole call, and the socket stays good after it.
 static void test_timeout(void) {
     int baseline = open_descriptors();
     int port;
     int64_t listener = listen_on_loopback(&port), client, server;
+    struct tz_net_buffer names;
+    assert(tsuzuri_net_accept(&names, listener, 30) == -TIMED_OUT && names.data == NULL);
     pair_on(listener, port, &client, &server);
-    int64_t op = operation();
-    tsuzuri_net_watch(post, op, server, 1, 30);
-    assert(completed(op) == TIMED_OUT);
-    // A timeout of 0 is a deadline that has passed; one below -1 and an unknown kind of event are not valid.
-    op = operation();
-    tsuzuri_net_watch(post, op, server, 1, 0);
-    assert(completed(op) == TIMED_OUT);
-    op = operation();
-    tsuzuri_net_watch(post, op, server, 1, -5);
-    assert((completed(op) >> 32) == INVALID_INPUT);
-    op = operation();
-    tsuzuri_net_watch(post, op, server, 3, -1);
-    assert((completed(op) >> 32) == INVALID_INPUT);
-    // Several waits for one socket, one of which times out first.
-    int64_t first = operation(), second = operation();
-    tsuzuri_net_watch(post, first, server, 1, 20);
-    tsuzuri_net_watch(post, second, server, 1, -1);
-    assert(completed(first) == TIMED_OUT);
-    assert(completion_of(second, 50) == NONE);
+    struct tz_net_buffer bytes;
+    assert(tsuzuri_net_read(&bytes, 0, server, 64, 30) == TIMED_OUT && bytes.data == NULL);
     send_byte(client, 1);
-    assert(completed(second) == 0);
+    assert(tsuzuri_net_read(&bytes, 0, server, 64, 5000) == 0 && bytes.length == 1 && bytes.data[0] == 1);
+    tsuzuri_free(bytes.data);
     int64_t all[] = {client, server, listener};
     close_all(all, 3);
     expect_descriptors(baseline);
 }
 
-// Closing a socket that waits ends the wait, and the handle is dead; a handle that was never open is refused at once.
-static void test_close_and_stale(void) {
+// A closed handle is dead, and a handle that was never open is refused the same way, at once.
+static void test_stale(void) {
     int baseline = open_descriptors();
     int port;
     int64_t listener = listen_on_loopback(&port), client, server;
     pair_on(listener, port, &client, &server);
-    int64_t first = operation(), second = operation();
-    tsuzuri_net_watch(post, first, server, 1, -1);
-    tsuzuri_net_watch(post, second, server, 1, -1);
-    assert(completion_of(first, 50) == NONE);
     assert(tsuzuri_net_close(0, server) == 0);
-    assert(completed(first) == 0 && completed(second) == 0 && "a wait on a closed socket ends");
     struct tz_net_buffer bytes;
     int64_t status = read_now(server, &bytes);
     assert((status >> 32) == INVALID_INPUT && (status & 0xffffffff) == EBADF);
-    int64_t op = operation();
-    tsuzuri_net_watch(post, op, server, 1, -1);
-    assert(completed(op) == status && "a stale handle is refused");
-    op = operation();
-    tsuzuri_net_watch(post, op, 0, 1, -1);
-    assert(completed(op) == status);
-    op = operation();
-    tsuzuri_net_watch(post, op, listener, 1, -1);
-    assert(completion_of(op, 50) == NONE && "a listener can be watched");
-    assert(tsuzuri_net_close(0, listener) == 0);
-    assert(completed(op) == 0);
-    assert(tsuzuri_net_close(0, client) == 0);
-    expect_descriptors(baseline);
-}
-
-// A wait that was taken back completes nothing; the poller goes away and comes back with the next wait.
-static void test_unwatch(void) {
-    int baseline = open_descriptors();
-    int port;
-    int64_t listener = listen_on_loopback(&port), client, server;
-    pair_on(listener, port, &client, &server);
-    int pair_descriptors = open_descriptors();
-    int64_t op = operation();
-    tsuzuri_net_watch(post, op, server, 1, -1);
-    tsuzuri_net_unwatch(op);
-    tsuzuri_net_unwatch(op);
-    tsuzuri_net_unwatch(operation());
-    send_byte(client, 1);
-    assert(completion_of(op, 100) == NONE && "no completion after unwatch");
-    expect_descriptors(pair_descriptors);
-    op = operation();
-    tsuzuri_net_watch(post, op, server, 1, -1);
-    assert(completed(op) == 0 && "the poller starts again");
-    expect_descriptors(pair_descriptors);
-    int64_t all[] = {client, server, listener};
-    close_all(all, 3);
-    expect_descriptors(baseline);
-}
-
-// Many waits at once, each for its own socket, finish exactly once.
-static void test_many(void) {
-    enum { PAIRS = 60 };
-    int baseline = open_descriptors();
-    int port;
-    int64_t listener = listen_on_loopback(&port);
-    int64_t clients[PAIRS], servers[PAIRS], operations[PAIRS];
-    for (int index = 0; index < PAIRS; index++) {
-        pair_on(listener, port, &clients[index], &servers[index]);
-        operations[index] = operation();
-        tsuzuri_net_watch(post, operations[index], servers[index], 1, -1);
-    }
-    for (int index = PAIRS - 1; index >= 0; index -= 2) send_byte(clients[index], (unsigned char)index);
-    for (int index = PAIRS - 1; index >= 0; index -= 2) assert(completed(operations[index]) == 0);
-    for (int index = 0; index < PAIRS - 1; index += 2) assert(completion_of(operations[index], 1) == NONE);
-    for (int index = 0; index < PAIRS - 1; index += 2) send_byte(clients[index], (unsigned char)index);
-    for (int index = 0; index < PAIRS - 1; index += 2) assert(completed(operations[index]) == 0);
-    close_all(clients, PAIRS);
-    close_all(servers, PAIRS);
-    assert(tsuzuri_net_close(0, listener) == 0);
-    expect_descriptors(baseline);
-}
-
-// A connect that a wait owns: success, refusal, and a post that is refused.
-static void test_connect(void) {
-    int baseline = open_descriptors();
-    int port;
-    int64_t listener = listen_on_loopback(&port);
-    int64_t op = operation();
-    tsuzuri_net_connect(post, op, port, 0, LOOPBACK, -1);
-    int64_t handle = completed(op);
-    assert(handle > 0);
-    struct tz_net_buffer names;
-    assert(tsuzuri_net_names(&names, handle) == 0 && names.length == 40);
-    // The local record, then the peer record: IPv4 on 127.0.0.1, the peer at the target's port.
-    assert(names.data[0] == 4 && names.data[16] == 127 && names.data[19] == 1 && port_of(names.data) != 0 && port_of(names.data) != port);
-    assert(names.data[20] == 4 && names.data[36] == 127 && names.data[39] == 1 && port_of(names.data + 20) == port);
-    tsuzuri_free(names.data);
-    int64_t server = accept_from(listener);
-    send_byte(server, 'k');
-    struct tz_net_buffer bytes;
-    assert(tsuzuri_net_read(&bytes, 0, handle, 8, 5000) == 0 && bytes.length == 1 && bytes.data[0] == 'k');
-    tsuzuri_free(bytes.data);
-    int64_t both[] = {handle, server};
-    close_all(both, 2);
-
-    // The operation is gone before the connect ends: the post is refused and the new socket is closed, which the
-    // listener's side sees as the end of the stream.
-    op = operation();
-    atomic_thread_fence(memory_order_seq_cst);
-    pthread_mutex_lock(&lock);
-    refused_operation = op;
-    pthread_mutex_unlock(&lock);
-    tsuzuri_net_connect(post, op, port, 0, LOOPBACK, -1);
-    server = accept_from(listener);
-    assert(tsuzuri_net_read(&bytes, 0, server, 8, 60000) == 0 && bytes.length == 0 && "the socket of the refused post was closed");
-    assert(completion_of(op, 10) == NONE);
-    assert(tsuzuri_net_close(0, server) == 0);
-    pthread_mutex_lock(&lock);
-    refused_operation = 0;
-    pthread_mutex_unlock(&lock);
-
-    // A port that nobody listens on, a timeout of 0 (a deadline that has passed), and one below -1.
-    assert(tsuzuri_net_close(0, listener) == 0);
-    op = operation();
-    tsuzuri_net_connect(post, op, port, 0, LOOPBACK, 5000);
-    int64_t refused = completed(op);
-    assert(refused < 0 && ((-refused) >> 32) == OTHER && ((-refused) & 0xffffffff) == ECONNREFUSED);
-    op = operation();
-    tsuzuri_net_connect(post, op, port, 0, LOOPBACK, 0);
-    assert(completed(op) == -TIMED_OUT);
-    op = operation();
-    tsuzuri_net_connect(post, op, port, 0, LOOPBACK, -3);
-    assert(((-completed(op)) >> 32) == INVALID_INPUT);
-    expect_descriptors(baseline);
-}
-
-// Fills the queue of a listener so that a connect to it hangs, as on Linux, where the system drops the connection
-// request: the number of connections that were made, or minus one more than that when the next connect ended some
-// other way (macOS resets it), with the error in `reason`.
-static int fill_queue(int port, int64_t *handles, int capacity, int *reason) {
-    for (int count = 0; count < capacity; count++) {
-        struct tz_net_buffer names;
-        int64_t handle = tsuzuri_net_open(&names, 0, port, 0, LOOPBACK, 200);
-        if (handle > 0) {
-            tsuzuri_free(names.data);
-            handles[count] = handle;
-        } else {
-            *reason = (int)((-handle) & 0xffffffff);
-            return -handle == TIMED_OUT ? count : -(count + 1);
-        }
-    }
-    *reason = 0;
-    return -(capacity + 1);
-}
-
-// A connect that hangs, taken back (its socket is closed and nothing completes), and one that reaches its deadline
-// (the status, and its socket is closed too).
-static void check_hanging_connect(int64_t host, int port) {
-    int during = open_descriptors();
-    int64_t op = operation();
-    tsuzuri_net_connect(post, op, port, 0, host, -1);
-    assert(completion_of(op, 200) == NONE && "the connect waits");
-    assert(open_descriptors() > during && "the wait owns a socket");
-    tsuzuri_net_unwatch(op);
-    assert(completion_of(op, 100) == NONE);
-    expect_descriptors(during);
-    op = operation();
-    tsuzuri_net_connect(post, op, port, 0, host, 60);
-    assert(completed(op) == -TIMED_OUT);
-    expect_descriptors(during);
-}
-
-static void test_connect_cancel(void) {
-    struct rlimit limits;
-    if (getrlimit(RLIMIT_NOFILE, &limits) == 0 && limits.rlim_cur < limits.rlim_max) {
-        limits.rlim_cur = limits.rlim_max > 16384 ? 16384 : limits.rlim_max;
-        if (setrlimit(RLIMIT_NOFILE, &limits) != 0) {
-            limits.rlim_cur = 10240;
-            setrlimit(RLIMIT_NOFILE, &limits);
-        }
-    }
-    int baseline = open_descriptors();
-    int port;
-    int64_t listener = listen_on_loopback(&port);
-    static int64_t filling[8192];
-    int reason;
-    int count = fill_queue(port, filling, 8192, &reason);
-    int tested = count >= 0;
-    if (tested) {
-        check_hanging_connect(LOOPBACK, port);
-        close_all(filling, (size_t)count);
-    } else {
-        close_all(filling, (size_t)(-count - 1));
-    }
-    assert(tsuzuri_net_close(0, listener) == 0);
-    expect_descriptors(baseline);
-    if (tested) return;
-    // Another way to a connect that hangs is an address that nothing answers (192.0.2.1 is reserved for examples):
-    // where a route to it exists, the request goes unanswered. Where it does not, there is nothing to cancel.
-    struct tz_net_buffer names;
-    int64_t probe = tsuzuri_net_open(&names, 0, 9, 0, INT64_C(0xc0000201), 200);
-    if (probe == -TIMED_OUT) {
-        check_hanging_connect(INT64_C(0xc0000201), 9);
-        return;
-    }
-    if (probe > 0) {
-        tsuzuri_free(names.data);
-        assert(tsuzuri_net_close(0, probe) == 0);
-    }
-    printf("net runtime: the system neither hangs a connect to a full queue (error %d) nor to 192.0.2.1, so the cancel of a connect that waits is not tested\n", reason);
+    assert(tsuzuri_net_read(&bytes, 0, server, 64, 5000) == status && "a stale handle does not wait");
+    assert(read_now(0, &bytes) == status);
+    assert(tsuzuri_net_close(0, server) == status);
+    int64_t all[] = {client, listener};
+    close_all(all, 2);
     expect_descriptors(baseline);
 }
 
 // Handles that producers made and consumers have not taken, and the churn of both.
 #define SLOTS 16
 static atomic_int_fast64_t slots[SLOTS];
-static atomic_int_fast64_t stress_operations = STRESS_BASE;
 
 struct stress {
     int port;
@@ -506,6 +225,7 @@ static void *produce(void *argument) {
 }
 
 static atomic_int stress_done;
+static atomic_int_fast64_t stress_reads;
 
 static void *consume(void *argument) {
     struct stress *work = argument;
@@ -515,26 +235,13 @@ static void *consume(void *argument) {
             sched_yield();
             continue;
         }
-        int64_t reading = atomic_fetch_add(&stress_operations, 2), writing = reading + 1;
-        tsuzuri_net_watch(post, reading, handle, 1, round % 5 == 0 ? 1 : -1);
-        tsuzuri_net_watch(post, writing, handle, 2, round % 2 == 0 ? 1 : -1);
-        switch (round % 4) {
-        case 0:
-            tsuzuri_net_unwatch(reading);
-            break;
-        case 1:
-            tsuzuri_net_unwatch(writing);
-            tsuzuri_net_unwatch(reading);
-            break;
-        case 2:
-            assert(tsuzuri_net_close(0, handle) == 0);
-            tsuzuri_net_unwatch(writing);
-            handle = 0;
-            break;
-        default:
-            break;
-        }
-        if (handle != 0) assert(tsuzuri_net_close(0, handle) == 0);
+        // A read that tries once finds the byte, the end of the stream, or nothing yet; it fails only when the handle is dead.
+        struct tz_net_buffer bytes;
+        int64_t status = read_now(handle, &bytes);
+        assert(status == 0 || status == PENDING || (status >> 32) == OTHER);
+        if (status == 0) tsuzuri_free(bytes.data);
+        assert(tsuzuri_net_close(0, handle) == 0);
+        atomic_fetch_add(&stress_reads, 1);
     }
     return NULL;
 }
@@ -559,7 +266,8 @@ static void connect_and_reset(int port) {
 // connection: Windows reports such a connection as WSAECONNRESET from accept (net.c skips it there), macOS drops it or
 // refuses an option on it, and Linux hands it over and fails its first read. So what comes back is the connection that was
 // reset (and its read fails) or the good one, never an error, and the good one follows. The Windows runtime is checked by its
-// CI only; this pins the contract on the systems that run here, and the E2E "accept_reset" of tests/net.mjs runs it on Windows.
+// CI only; this pins the contract on the systems that run here, and the case "accept_reset" of the block "portable" of
+// tests/net.mjs runs it on Windows.
 static void test_accept_reset(void) {
     int baseline = open_descriptors();
     int port;
@@ -590,7 +298,8 @@ static void test_accept_reset(void) {
 // A datagram that goes to a port that nobody listens on must not make the next receive of the same socket fail: Windows
 // reports the ICMP "port unreachable" as WSAECONNRESET from the next receive unless SIO_UDP_CONNRESET is turned off (net.c does
 // that, and skips the error if it is still reported), and no other system reports it for a socket that is not connected. As for
-// test_accept_reset, this pins the contract here, and the E2E "udp_gone" of tests/net.mjs runs it on Windows.
+// test_accept_reset, this pins the contract here, and the line "vanished" of the case "udp" of the block "portable" of
+// tests/net.mjs runs it on Windows.
 static void test_datagram_after_closed_port(void) {
     int baseline = open_descriptors();
     struct tz_net_buffer names;
@@ -622,8 +331,9 @@ static void test_datagram_after_closed_port(void) {
     expect_descriptors(baseline);
 }
 
-// Producers and consumers share one poller, and close, cancel, and watch each other's sockets. The results are not what is
-// tested, but a crash, a hang, a post of one operation twice, and a leaked socket are.
+// Producers and consumers share the handle table: producers open connections and put them in slots, and consumers take them,
+// read once, and close them. The results are not what is tested, but a crash, a hang, a handle used after its close, and a
+// leaked socket are.
 static void test_stress(void) {
     int baseline = open_descriptors();
     int port;
@@ -731,12 +441,9 @@ int main(void) {
     int port;
     int64_t listener = listen_on_loopback(&port), client, server;
     pair_on(listener, port, &client, &server);
-    int64_t warm = operation();
-    tsuzuri_net_watch(post, warm, server, 2, -1);
-    assert(completed(warm) == 0);
     int64_t all[] = {client, server, listener};
     close_all(all, 3);
-    // Wait until the descriptors have been steady for a while: the poller of the warm-up is gone then.
+    // Wait until the descriptors have been steady for a while.
     int start = open_descriptors();
     for (int steady = 0; steady < 10;) {
         struct timespec pause = {0, 10 * 1000000L};
@@ -745,13 +452,9 @@ int main(void) {
         steady = now == start ? steady + 1 : 0;
         start = now;
     }
-    test_ready();
+    test_try_once();
     test_timeout();
-    test_close_and_stale();
-    test_unwatch();
-    test_many();
-    test_connect();
-    test_connect_cancel();
+    test_stale();
     test_accept_reset();
     test_datagram_after_closed_port();
     test_stress();
@@ -759,6 +462,6 @@ int main(void) {
     // The system's resolver may keep a descriptor of its own (a connection to a resolver service), which is not a leak.
     test_resolve();
     assert(atomic_load(&live) == 0 && "every buffer was freed");
-    printf("net runtime: waits, timeouts, close, unwatch, connect, cancel, and threads that churn sockets passed (%lld completions of the churn); a connection reset before accept and a datagram sent to a closed port report nothing; a host that the system reads as an address is refused\n", (long long)atomic_load(&stress_completions));
+    printf("net runtime: tries once, timeouts, stale handles, and threads that churn sockets passed (%lld reads of the churn); a connection reset before accept and a datagram sent to a closed port report nothing; a host that the system reads as an address is refused\n", (long long)atomic_load(&stress_reads));
     return 0;
 }

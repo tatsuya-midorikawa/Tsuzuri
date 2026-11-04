@@ -1,6 +1,5 @@
 //! D-43: `@alias name` in a `.tc` builder file names the builder in `name { ... }`.
 
-use tsuzuri::check::ModuleOrigin;
 use tsuzuri::diagnostic::Diagnostic;
 use tsuzuri::{analyze_modules, analyze_modules_with_semantics, llvm};
 
@@ -23,47 +22,6 @@ fn rejected(sources: &[(&str, &str)], code: &str) -> Diagnostic {
     let error = analyze_modules(sources).expect_err(&format!("{sources:?}"));
     assert_eq!(error.code, code, "{sources:?}\n{}", error.message);
     error
-}
-
-fn async_is_loaded(source: &str) -> bool {
-    analyze_modules(&[("Main.tz", source)])
-        .unwrap()
-        .records
-        .iter()
-        .any(|record| record.name == "Async.Async" && record.origin == ModuleOrigin::Std)
-}
-
-#[test]
-fn the_std_async_builder_answers_to_async() {
-    let program = |name: &str| {
-        format!(
-            "export def paused :: i64 -> i64\nfn paused n = Async.run ({name} {{ do! Async.yield (); let! now = Async.now (); return now + n }})"
-        )
-    };
-    assert_eq!(
-        ir(&[("Main.tz", &program("Async"))]),
-        ir(&[("Main.tz", &program("async"))]),
-        "an alias is only another spelling"
-    );
-    // An empty body is a computation too, not a record.
-    ir(&[(
-        "Main.tz",
-        "export def run :: i64 -> i64\nfn run n =\n    let _empty = async {}\n    Async.run (async { return n })",
-    )]);
-}
-
-#[test]
-fn an_alias_word_alone_loads_the_std_builder() {
-    assert!(async_is_loaded(
-        "export def make :: i64 -> i64\nfn make n =\n    let _unused = async { return n }\n    n"
-    ));
-    assert!(!async_is_loaded(
-        "export def make :: i64 -> i64\nfn make n =\n    let asynchronous = n\n    asynchronous"
-    ));
-    // A local that carries the alias's name changes nothing: the name before `{` is a builder.
-    assert!(async_is_loaded(
-        "export def make :: i64 -> i64\nfn make n =\n    let async = n\n    async + 1"
-    ));
 }
 
 #[test]
@@ -171,24 +129,19 @@ fn aliases_follow_the_namespaces_that_their_builders_are_in_sight_in() {
     );
 }
 
+/// TZ13 removed std's `Async` and its alias `async`: a user builder may take the alias, and a user builder `Async.tc` the
+/// name.
 #[test]
-fn user_aliases_take_a_name_before_std_aliases() {
+fn a_user_builder_may_be_called_async() {
     let mine = builder("@alias async");
     let program =
         |name: &str| format!("export def one :: i64 -> i64\nfn one n = {name} {{ return n + 1 }}");
-    // `async` is the user's builder `Mine`, as it would be spelled; std's `Async` is not involved.
     assert_eq!(
         ir(&[("Main.tz", &program("async")), ("Mine.tc", &mine)]),
         ir(&[("Main.tz", &program("Mine")), ("Mine.tc", &mine)])
     );
-    // The std builder stays reachable by its name next to it.
-    ir(&[
-        (
-            "Main.tz",
-            "export def two :: i64 -> i64\nfn two n = Async.run (Async { return n + 2 }) + (async { return n })",
-        ),
-        ("Mine.tc", &mine),
-    ]);
+    let named = ir(&[("Main.tz", &program("Async")), ("Async.tc", &builder(""))]);
+    assert!(named.contains("call i64 @tz.fn.Async.Return"), "{named}");
 }
 
 /// TZ12 removed `task { }`: `task` is an ordinary word, so a user builder may take it as its alias.
@@ -208,19 +161,19 @@ fn malformed_alias_declarations_are_rejected() {
     for (header, message) in [
         (
             "@alias Upper",
-            "a builder alias starts with a lowercase letter, as in '@alias async'; 'Upper' would collide with module and type names",
+            "a builder alias starts with a lowercase letter, as in '@alias query'; 'Upper' would collide with module and type names",
         ),
         (
             "@alias _private",
-            "a builder alias starts with a lowercase letter, as in '@alias async'",
+            "a builder alias starts with a lowercase letter, as in '@alias query'",
         ),
         (
             "@alias match",
-            "'@alias' takes a builder alias such as 'async': an identifier that is not a reserved word",
+            "'@alias' takes a builder alias such as 'query': an identifier that is not a reserved word",
         ),
         (
             "@alias 5",
-            "'@alias' takes a builder alias such as 'async': an identifier that is not a reserved word",
+            "'@alias' takes a builder alias such as 'query': an identifier that is not a reserved word",
         ),
         (
             "@alias try",
@@ -228,11 +181,11 @@ fn malformed_alias_declarations_are_rejected() {
         ),
         (
             "@alias",
-            "write the alias name on the same line as '@alias', as in '@alias async'",
+            "write the alias name on the same line as '@alias', as in '@alias query'",
         ),
         (
             "@alias\nmine",
-            "write the alias name on the same line as '@alias', as in '@alias async'",
+            "write the alias name on the same line as '@alias', as in '@alias query'",
         ),
         (
             "@alias mine extra",
@@ -365,31 +318,44 @@ fn builders_of_one_name_in_two_namespaces_are_told_apart_by_their_aliases() {
 
 #[test]
 fn the_language_server_analysis_resolves_aliases_with_all_of_std_loaded() {
-    // The editor analyzes with every std module loaded, opt-in ones included.
-    let source = "export def paused :: i64 -> i64\nfn paused n = Async.run (async { do! Async.yield (); return n + 1 })";
-    let (module, _index) = analyze_modules_with_semantics(&[("Main.tz", source)])
-        .unwrap_or_else(|error| panic!("{error:?}"));
-    llvm::emit(&module, llvm::Entry::Library).unwrap();
-    // The alias is the std builder's, whichever modules sit beside it.
+    // The editor analyzes with every std module loaded, opt-in ones included; no std builder declares an alias since TZ13,
+    // so an alias is the user's builder, whichever modules sit beside it.
     let mine = builder("@alias mine");
-    analyze_modules_with_semantics(&[
+    let (module, _index) = analyze_modules_with_semantics(&[
         (
             "Main.tz",
-            "export def one :: i64 -> i64\nfn one n = mine { return n }",
+            "export def one :: i64 -> i64\nfn one n = mine { let! a = n; return a + 1 }",
         ),
         ("Mine.tc", &mine),
     ])
     .unwrap_or_else(|error| panic!("{error:?}"));
+    llvm::emit(&module, llvm::Entry::Library).unwrap();
 }
 
 #[test]
 fn an_alias_does_not_name_a_module() {
-    // `async.run` would be a module path; the alias is only a builder name.
-    let error = analyze_modules(&[(
-        "Main.tz",
-        "export def one :: i64 -> i64\nfn one n = async.run (Async { return n })",
-    )])
+    // `mine.Return` would be a module path; the alias is only a builder name.
+    let mine = builder("@alias mine");
+    let error = analyze_modules(&[
+        (
+            "Main.tz",
+            "export def one :: i64 -> i64\nfn one n = mine.Return (Mine { return n })",
+        ),
+        ("Mine.tc", &mine),
+    ])
     .expect_err("an alias is not a module");
     assert_eq!(error.code, "E1002");
-    assert_eq!(error.message, "unknown value 'async'");
+    assert_eq!(error.message, "unknown value 'mine'");
+    // Nor a value: a local may carry the alias's name, and only the name before `{` is the builder.
+    let source = |body: &str| format!("export def make :: i64 -> i64\nfn make n =\n{body}");
+    assert_eq!(
+        ir(&[
+            ("Main.tz", &source("    let mine = n\n    mine + 1")),
+            ("Mine.tc", &mine)
+        ]),
+        ir(&[
+            ("Main.tz", &source("    let other = n\n    other + 1")),
+            ("Mine.tc", &mine)
+        ])
+    );
 }

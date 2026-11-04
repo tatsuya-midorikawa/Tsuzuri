@@ -78,17 +78,17 @@ fn renders_public_apis_in_signature_order_and_keeps_markdown() {
 fn renders_builder_aliases_below_the_title() {
     let alias = |lines: &str| {
         let program = parser::parse(lines).unwrap();
-        docgen::render_module("Async", &program)
+        docgen::render_module("Query", &program)
     };
     assert_eq!(
-        alias("@alias async\n"),
-        "# Async\n\nBuilder alias: `async`\n\n"
+        alias("@alias query\n"),
+        "# Query\n\nBuilder alias: `query`\n\n"
     );
     assert_eq!(
-        alias("@alias async\n@alias job\n"),
-        "# Async\n\nBuilder aliases: `async`, `job`\n\n"
+        alias("@alias query\n@alias job\n"),
+        "# Query\n\nBuilder aliases: `query`, `job`\n\n"
     );
-    assert_eq!(alias("\n"), "# Async\n\n");
+    assert_eq!(alias("\n"), "# Query\n\n");
 }
 
 #[test]

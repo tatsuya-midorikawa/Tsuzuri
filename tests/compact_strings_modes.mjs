@@ -32,7 +32,7 @@ const quick = [
 const full = [
   ...quick, "e2e", "examples", "bindings", "features", "os", "script", "repl", "targets", "packages", "bindgen", "wasm_memory",
   "wasm64", "ffi_extensions", "bindings_threads", "docgen", "user_drop", "trap_boundary", "trap_return", "trap_return_sync",
-  "tzroutine", "async", "computations", "control", "debug_info", "wasm_simd", "debugger",
+  "tzroutine", "computations", "control", "debug_info", "wasm_simd", "debugger",
 ];
 const named = process.env.TSUZURI_MODES_SUITES?.split(",").filter(Boolean);
 const suites = (named ?? (size === "full" ? full : quick)).map((name) => [name, [`tests/${name}.mjs`, compiler, ...(name === "compact_strings" && size === "quick" ? ["--quick"] : [])]]);

@@ -62,34 +62,6 @@ fn echo port =
 		| (Result.Ok _, Result.Ok _, (count, sum)) -> if count == 1024 then sum else 0 - 2000 - count
 		| _ -> 0 - 3000
 
-def rec collect_async :: own Net.TcpStream -> own i64 -> own i64 -> own i64 -> Async<i64>
-fn rec collect_async stream wanted total sum = Async {
-	match! Net.read_async stream 4096 (Maybe.Some 20000) with
-	| Result.Error error -> return 0 - kind_code error
-	| Result.Ok bytes ->
-		let count = total + bytes.length
-		let all = sum + sum_of (ref bytes)
-		if bytes.length == 0 || count >= wanted then return (if count == wanted then all else 0 - 2000 - count)
-		else return! collect_async stream wanted count all
-}
-
-def echo_client :: own Net.Address -> Async<i64>
-fn echo_client target = Async {
-	match! Net.connect_async target (Maybe.Some 5000) with
-	| Result.Error error -> return 0 - 1000 - kind_code error
-	| Result.Ok stream ->
-		let! _written = Net.write_async stream (pattern 1024) (Maybe.Some 5000)
-		let! sum = collect_async stream 1024 0 0
-		let! _closed = Net.close_async stream
-		return sum
-}
-
-/// The same echo through the async operations.
-export def echo_async :: own i64 -> i64
-fn echo_async port =
-	let! sum = Async.block_on (echo_client (loopback port))
-	sum
-
 /// The program listens, reports its port, takes one connection, and sends back what it read in capitals' place: a byte more.
 export def serve_once :: own i64 -> i64
 fn serve_once _seed =
@@ -112,30 +84,6 @@ fn serve_once _seed =
 			| ((count, sum), (after, _), Result.Ok _, Result.Ok _) -> count * 1000 + sum + after * 1000000
 			| _ -> 0 - 3000
 
-def serve_one :: own Net.TcpListener -> Async<i64>
-fn serve_one listener = Async {
-	match! Net.accept_async listener (Maybe.Some 20000) with
-	| Result.Error error -> return 0 - 2000 - kind_code error
-	| Result.Ok stream ->
-		let! received = collect_async stream 6 0 0
-		let! _written = Net.write_async stream (bytes_of (ref "HELLO\n")) (Maybe.Some 5000)
-		let! _shut = Net.shutdown_async stream Net.Write
-		let! _closed = Net.close_async stream
-		let! _closed_listener = Net.close_listener_async listener
-		return received
-}
-
-/// The same server through the async operations.
-export def serve_async :: own i64 -> i64
-fn serve_async _seed =
-	let! bound = Net.bind (loopback 0)
-	match bound with
-	| Result.Error error -> 0 - 1000 - kind_code error
-	| Result.Ok listener ->
-		report (Net.port (Net.local_addr listener))
-		let! received = Async.block_on (serve_one listener)
-		received
-
 /// One datagram in, one out: the length of what arrived, times ten, plus 1 when its source has a port.
 export def udp_once :: own i64 -> i64
 fn udp_once _seed =
@@ -151,34 +99,6 @@ fn udp_once _seed =
 			let! sent = Net.send_to socket (bytes_of (ref "pong")) source
 			let! _closed = Net.close_udp socket
 			bytes.length * 10 + (if Net.port source != 0 && Result.is_ok (ref sent) then 1 else 0)
-
-def datagram_receive :: own Net.UdpSocket -> Async<i64>
-fn datagram_receive socket = Async {
-	match! Net.recv_from_async socket 64 (Maybe.Some 20000) with
-	| Result.Error error -> return 0 - kind_code error
-	| Result.Ok (bytes, _) -> return bytes.length
-}
-
-def datagram_send :: own Net.UdpSocket -> own Net.Address -> Async<i64>
-fn datagram_send socket target = Async {
-	do! Async.sleep 20
-	let! sent = Net.send_to_async socket (bytes_of (ref "udp")) target
-	return (if Result.is_ok (ref sent) then 1 else 0)
-}
-
-/// Two UDP sockets of one program: a receive waits for a send that comes later.
-export def udp_async :: own i64 -> i64
-fn udp_async _seed =
-	let! first = Net.bind_udp (loopback 0)
-	let! second = Net.bind_udp (loopback 0)
-	match (first, second) with
-	| (Result.Ok receiver, Result.Ok sender) ->
-		let target = Net.udp_local_addr receiver
-		let! results = Async.block_on (Async.all [datagram_receive receiver, datagram_send sender target])
-		let! _closed_receiver = Net.close_udp receiver
-		let! _closed_sender = Net.close_udp sender
-		results[0] * 10 + results[1]
-	| _ -> 0 - 1
 
 /// How many addresses "localhost" has, and whether 127.0.0.1 or ::1 is among them: 0 when there is none.
 export def lookup :: own i64 -> i64
@@ -247,81 +167,6 @@ fn quiet port =
 		| (Result.Error error, Result.Ok bytes) -> kind_code error * 100 + bytes.length
 		| _ -> 0 - 3000
 
-def idle_read :: own Net.TcpStream -> Async<Result<i64, Os.Error>>
-fn idle_read stream = Async {
-	match! Net.read_async stream 16 Maybe.None with
-	| Result.Error error -> return Result.Error error
-	| Result.Ok bytes -> return Result.Ok bytes.length
-}
-
-/// A failure that is no error number of any system (Linux has 99: EADDRNOTAVAIL).
-const SyntheticCode: i32 = 2147418113i32
-
-def failing :: own i64 -> Async<Result<i64, Os.Error>>
-fn failing delay = Async {
-	do! Async.sleep delay
-	return Result.Error (Os.Error { kind: Os.Other, code: SyntheticCode })
-}
-
-/// A read that nothing satisfies is cancelled when a sibling fails, and the stream still works afterwards: 9900 for the
-/// failure of the sibling (its own code, not a cancelled read's) and the length of what the stream still reads.
-export def cancel :: own i64 -> i64
-fn cancel port =
-	let! connected = Net.connect (loopback port) (Maybe.Some 5000)
-	match connected with
-	| Result.Error error -> 0 - 1000 - kind_code error
-	| Result.Ok stream ->
-		let! outcome = Async.block_on (Async.all_results [idle_read stream, failing 20])
-		let! after = Net.read stream 16 (Maybe.Some 20000)
-		let! _closed = Net.close stream
-		match (outcome, after) with
-		| (Result.Error error, Result.Ok bytes) -> (if error.code == SyntheticCode then 9900 else 0) + bytes.length
-		| _ -> 0 - 3000
-
-def crowd_client :: own Net.Address -> own i64 -> Async<i64>
-fn crowd_client target index = Async {
-	match! Net.connect_async target (Maybe.Some 10000) with
-	| Result.Error _ -> return 0
-	| Result.Ok stream ->
-		let payload = Array.init 16 (\position -> ((index + position) % 256) as ubyte)
-		let wanted = sum_of (ref payload) % 256
-		let! written = Net.write_async stream payload (Maybe.Some 10000)
-		let! answer = collect_async stream 1 0 0
-		let! _closed = Net.close_async stream
-		return (if Result.is_ok (ref written) && answer == wanted then 1 else 0)
-}
-
-def rec crowd_server :: own Net.TcpListener -> own i64 -> own i64 -> Async<i64>
-fn rec crowd_server listener remaining handled = Async {
-	if remaining == 0 then return handled
-	else
-		match! Net.accept_async listener (Maybe.Some 10000) with
-		| Result.Error _ -> return handled
-		| Result.Ok stream ->
-			let! sum = collect_async stream 16 0 0
-			let! _written = Net.write_async stream [(sum % 256) as ubyte] (Maybe.Some 10000)
-			let! _closed = Net.close_async stream
-			return! crowd_server listener (remaining - 1) (handled + 1)
-}
-
-def crowd_clients :: own Net.Address -> own i64 -> Async<i64>
-fn crowd_clients target count = Async {
-	let! results = Async.all (Array.init count (\index -> crowd_client target index))
-	return Array.sum (ref results)
-}
-
-/// Thirty clients and one server in one program: the served count times 1000 plus the clients that got the right answer.
-export def crowd :: own i64 -> i64
-fn crowd _seed =
-	let! bound = Net.bind (loopback 0)
-	match bound with
-	| Result.Error error -> 0 - 1000 - kind_code error
-	| Result.Ok listener ->
-		let target = Net.local_addr listener
-		let! counts = Async.block_on (Async.all [crowd_server listener 30 0, crowd_clients target 30])
-		let! _closed = Net.close_listener listener
-		counts[0] * 1000 + counts[1]
-
 /// A closed handle, a timeout out of range, and a second close: the host errno of the first, then 100 for each of the others.
 export def lifecycle :: own i64 -> i64
 fn lifecycle port =
@@ -363,18 +208,16 @@ fn bigread port =
 		match outcome with
 		| (count, sum) -> if count == 3145728 then sum else 0 - 2000 - count
 
-/// Four mebibytes to a peer that reads slowly: whether the whole write went out, through the async write.
+/// Four mebibytes to a peer that reads slowly: whether the whole write went out.
 export def bigwrite :: own i64 -> i64
 fn bigwrite port =
-	let! text = Async.block_on (Async {
-		match! Net.connect_async (loopback port) (Maybe.Some 5000) with
-		| Result.Error _ -> return 0
-		| Result.Ok stream ->
-			let! written = Net.write_async stream (pattern 4194304) (Maybe.Some 30000)
-			let! _closed = Net.close_async stream
-			return (if Result.is_ok (ref written) then 1 else 0)
-	})
-	text
+	let! connected = Net.connect (loopback port) (Maybe.Some 5000)
+	match connected with
+	| Result.Error _ -> 0
+	| Result.Ok stream ->
+		let! written = Net.write stream (pattern 4194304) (Maybe.Some 30000)
+		let! _closed = Net.close stream
+		if Result.is_ok (ref written) then 1 else 0
 
 /// A datagram that does not fit (consumed, with the host's EMSGSIZE as its code), the next one, and an empty one.
 export def datagrams :: own i64 -> i64
@@ -429,8 +272,8 @@ fn leak _seed =
 		| _ -> 0 - 2
 	| _ -> 0 - 1
 
-/// A datagram to port 0, which Node refuses by throwing, and a system may refuse too: the code of the failure of the blocking
-/// send times 1000, plus the code of the async one.
+/// A datagram to port 0, which Node refuses by throwing, and a system may refuse too: the code of the failure of a send times
+/// 1000, plus the code of a second send of the same socket (the failure is the call's, and the socket stays usable).
 export def zero_port :: own i64 -> i64
 fn zero_port _seed =
 	let! bound = Net.bind_udp (loopback 0)
@@ -438,11 +281,11 @@ fn zero_port _seed =
 	| Result.Error error -> 0 - 1000 - kind_code error
 	| Result.Ok socket ->
 		let target = loopback 0
-		let! blocking = Net.send_to socket (bytes_of (ref "x")) target
-		let! asynchronous = Async.block_on (Net.send_to_async socket (bytes_of (ref "x")) target)
+		let! first = Net.send_to socket (bytes_of (ref "x")) target
+		let! second = Net.send_to socket (bytes_of (ref "x")) target
 		let! _closed = Net.close_udp socket
-		match (blocking, asynchronous) with
-		| (Result.Error first, Result.Error second) -> first.code as i64 * 1000 + second.code as i64
+		match (first, second) with
+		| (Result.Error failure, Result.Error again) -> failure.code as i64 * 1000 + again.code as i64
 		| _ -> 0 - 3000
 
 /// A peer that ends its sending and waits for the answer: the program reads to the end of the stream, and then writes. The
@@ -466,20 +309,6 @@ fn half_close _seed =
 			| ((count, _), Result.Ok _) -> count * 10 + 1
 			| ((count, _), Result.Error _) -> count * 10
 
-def datagram_outcome :: own Net.UdpSocket -> own Net.UdpSocket -> Async<i64>
-fn datagram_outcome sender receiver = Async {
-	match! Net.send_to_async sender (pattern 65536) (Net.udp_local_addr receiver) with
-	| Result.Ok _ -> return 0 - 1
-	| Result.Error failure ->
-		match! Net.recv_from_async sender 64 (Maybe.Some 300) with
-		| Result.Ok _ -> return 0 - 2
-		| Result.Error silence ->
-			let! _sent = Net.send_to_async receiver (bytes_of (ref "ok")) (Net.udp_local_addr sender)
-			match! Net.recv_from_async sender 64 (Maybe.Some 5000) with
-			| Result.Error _ -> return 0 - 3
-			| Result.Ok (bytes, _) -> return failure.code as i64 * 10000 + kind_code silence * 100 + bytes.length
-}
-
 /// A datagram that the system refuses to send (one more byte than a datagram can hold) is the failure of that send, and does
 /// not spoil the socket's receive: the code of the failure times 10000, the kind of a receive on the same socket that finds
 /// nothing times 100, and the length of the datagram that comes next.
@@ -489,10 +318,17 @@ fn datagram_failure _seed =
 	let! second = Net.bind_udp (loopback 0)
 	match (first, second) with
 	| (Result.Ok sender, Result.Ok receiver) ->
-		let! outcome = Async.block_on (datagram_outcome sender receiver)
+		let! refused = Net.send_to sender (pattern 65536) (Net.udp_local_addr receiver)
+		let! silence = Net.recv_from sender 64 (Maybe.Some 300)
+		let! _sent = Net.send_to receiver (bytes_of (ref "ok")) (Net.udp_local_addr sender)
+		let! answer = Net.recv_from sender 64 (Maybe.Some 5000)
 		let! _closed_sender = Net.close_udp sender
 		let! _closed_receiver = Net.close_udp receiver
-		outcome
+		match (refused, silence, answer) with
+		| (Result.Ok _, _, _) -> 0 - 1
+		| (_, Result.Ok _, _) -> 0 - 2
+		| (_, _, Result.Error _) -> 0 - 3
+		| (Result.Error failure, Result.Error quiet, Result.Ok (bytes, _)) -> failure.code as i64 * 10000 + kind_code quiet * 100 + bytes.length
 	| _ -> 0 - 1
 
 /// A connection that was reset while the program was not reading it is a reset when it reads, not a clean end. The first
@@ -520,13 +356,6 @@ fn reset_idle _seed =
 			| _ -> 0 - 3000
 		| _ -> 0 - 2000
 
-def rec drain :: own Net.UdpSocket -> own i64 -> Async<i64>
-fn rec drain socket count = Async {
-	match! Net.recv_from_async socket 2048 (Maybe.Some 200) with
-	| Result.Ok _ -> return! drain socket (count + 1)
-	| Result.Error _ -> return count
-}
-
 /// A socket that nobody reads while datagrams arrive keeps a bounded number of them: it reports its port, and (once the host has
 /// sent what it wants) reads until a receive finds nothing for a moment. How many it read.
 export def udp_flood :: own i64 -> i64
@@ -536,7 +365,13 @@ fn udp_flood _seed =
 	| Result.Error error -> 0 - 1000 - kind_code error
 	| Result.Ok socket ->
 		report (Net.port (Net.udp_local_addr socket))
-		let! count = Async.block_on (drain socket 0)
+		let mut count = 0
+		let mut more = true
+		while more do
+			let! received = Net.recv_from socket 2048 (Maybe.Some 200)
+			match received with
+			| Result.Ok _ -> count = count + 1
+			| Result.Error _ -> more = false
 		let! _closed = Net.close_udp socket
 		count
 
@@ -575,78 +410,30 @@ fn accept_flood _seed =
 		count
 	| _ -> 0 - 1
 
-// ---- Under Async.start the host polls the executor outside JSPI, so a poll cannot suspend: the operations that try once
-// must not use a call that does. Each result is reported as 1000000 plus its value; a port is reported as it is. ----
+// ---- Datagram sends: each send is one datagram and has its own result; the peer address of an accepted connection; the
+// names of errors ----
 
-export def started_read :: own i64 -> unit
-fn started_read port =
-	do! Async.start (Async {
-		match! Net.connect_async (loopback port) (Maybe.Some 5000) with
-		| Result.Error error -> report (1000000 - kind_code error)
-		| Result.Ok stream ->
-			match! Net.read_async stream 16 (Maybe.Some 5000) with
-			| Result.Error error -> report (1000000 - 100 - kind_code error)
-			| Result.Ok bytes ->
-				let! _closed = Net.close_async stream
-				report (1000000 + bytes.length)
-	})
-
-export def started_accept :: own i64 -> unit
-fn started_accept _seed =
-	let! bound = Net.bind (loopback 0)
-	match bound with
-	| Result.Error _ -> report (1000000 - 1)
-	| Result.Ok listener ->
-		report (Net.port (Net.local_addr listener))
-		do! Async.start (Async {
-			match! Net.accept_async listener (Maybe.Some 5000) with
-			| Result.Error error -> report (1000000 - 100 - kind_code error)
-			| Result.Ok stream ->
-				let! _closed = Net.close_async stream
-				report 1000001
-		})
-
-export def started_recv :: own i64 -> unit
-fn started_recv _seed =
-	let! bound = Net.bind_udp (loopback 0)
-	match bound with
-	| Result.Error _ -> report (1000000 - 1)
-	| Result.Ok socket ->
-		report (Net.port (Net.udp_local_addr socket))
-		do! Async.start (Async {
-			match! Net.recv_from_async socket 64 (Maybe.Some 5000) with
-			| Result.Error error -> report (1000000 - 100 - kind_code error)
-			| Result.Ok (bytes, _) ->
-				let! _closed = Net.close_udp_async socket
-				report (1000000 + bytes.length)
-		})
-
-// ---- Datagram sends: each send is one datagram and has its own result, whatever the timing; the peer address of an accepted
-// connection; the names of errors ----
-
-def rec send_same :: own Net.UdpSocket -> own Net.Address -> own i64 -> own i64 -> Async<i64>
-fn rec send_same socket target remaining sent = Async {
-	if remaining == 0 then return sent
-	else
-		let! outcome = Net.send_to_async socket (bytes_of (ref "same")) target
-		return! send_same socket target (remaining - 1) (sent + (if Result.is_ok (ref outcome) then 1 else 0))
-}
+def rec send_same :: own Net.UdpSocket -> own Net.Address -> own i64 -> own i64 -> IO<i64>
+fn rec send_same socket target remaining sent =
+	if remaining == 0 then IO.pure sent
+	else IO.bind (\outcome ->
+		send_same socket target (remaining - 1) (sent + (if Result.is_ok (ref outcome) then 1 else 0))) (Net.send_to socket (bytes_of (ref "same")) target)
 
 def burst_message :: own i64 -> [ubyte]
 fn burst_message index = Array.init 100 (\position -> (if position == 0 then index else 85) as ubyte)
 
-def burst_send :: own Net.UdpSocket -> own Net.Address -> own i64 -> Async<i64>
-fn burst_send socket target index = Async {
-	let! outcome = Net.send_to_async socket (burst_message index) target
-	return (if Result.is_ok (ref outcome) then 1 else 0)
-}
+def rec send_burst :: own Net.UdpSocket -> own Net.Address -> own i64 -> own i64 -> IO<i64>
+fn rec send_burst socket target index sent =
+	if index == 50 then IO.pure sent
+	else IO.bind (\outcome ->
+		send_burst socket target (index + 1) (sent + (if Result.is_ok (ref outcome) then 1 else 0))) (Net.send_to socket (burst_message index) target)
 
 def ok_value :: ref Result<unit, Os.Error> -> i64
 fn ok_value result = if Result.is_ok result then 1 else 0
 
-/// Datagrams to a peer at `port` that counts them: one async send, one blocking send, twelve async sends in a row of the same
-/// bytes, fifty at once from one executor (each of a hundred bytes that start with its index), and an end marker. How many of
-/// the sends said Ok: one datagram for each of them arrives, and no other.
+/// Datagrams to a peer at `port` that counts them: one send, twelve sends in a row of the same bytes, fifty in a row of a
+/// hundred bytes that start with their index, and an end marker. How many of the sends said Ok: one datagram for each of them
+/// arrives, and no other.
 export def udp_counts :: own i64 -> i64
 fn udp_counts port =
 	let! bound = Net.bind_udp (loopback 0)
@@ -654,27 +441,25 @@ fn udp_counts port =
 	| Result.Error error -> 0 - 1000 - kind_code error
 	| Result.Ok socket ->
 		let target = loopback port
-		let! single = Async.block_on (Net.send_to_async socket (bytes_of (ref "one")) target)
-		let! blocking = Net.send_to socket (bytes_of (ref "blocking")) target
-		let! rows = Async.block_on (send_same socket target 12 0)
-		let! burst = Async.block_on (Async.all (Array.init 50 (\index -> burst_send socket target index)))
-		let! last = Async.block_on (Net.send_to_async socket (bytes_of (ref "end")) target)
+		let! single = Net.send_to socket (bytes_of (ref "one")) target
+		let! rows = send_same socket target 12 0
+		let! burst = send_burst socket target 0 0
+		let! last = Net.send_to socket (bytes_of (ref "end")) target
 		let! _closed = Net.close_udp socket
-		ok_value (ref single) + ok_value (ref blocking) + rows + Array.sum (ref burst) + ok_value (ref last)
+		ok_value (ref single) + rows + burst + ok_value (ref last)
 
-def rec echo_datagrams :: own Net.UdpSocket -> own i64 -> own i64 -> Async<i64>
-fn rec echo_datagrams socket remaining served = Async {
-	if remaining == 0 then return served
-	else
-		match! Net.recv_from_async socket 2048 (Maybe.Some 20000) with
-		| Result.Error _ -> return served
+def rec echo_datagrams :: own Net.UdpSocket -> own i64 -> own i64 -> IO<i64>
+fn rec echo_datagrams socket remaining served =
+	if remaining == 0 then IO.pure served
+	else IO.bind (\received ->
+		match received with
+		| Result.Error _ -> IO.pure served
 		| Result.Ok (bytes, source) ->
-			let! sent = Net.send_to_async socket bytes source
-			return! echo_datagrams socket (remaining - 1) (served + (if Result.is_ok (ref sent) then 1 else 0))
-}
+			IO.bind (\sent ->
+				echo_datagrams socket (remaining - 1) (served + (if Result.is_ok (ref sent) then 1 else 0))) (Net.send_to socket bytes source)) (Net.recv_from socket 2048 (Maybe.Some 20000))
 
-/// A datagram server: it reports its port and answers `count` requests, each with its own bytes to its source, through
-/// recv_from_async and send_to_async. How many answers were sent.
+/// A datagram server: it reports its port and answers `count` requests, each with its own bytes to its source. How many
+/// answers were sent.
 export def udp_echo :: own i64 -> i64
 fn udp_echo count =
 	let! bound = Net.bind_udp (loopback 0)
@@ -682,28 +467,21 @@ fn udp_echo count =
 	| Result.Error error -> 0 - 1000 - kind_code error
 	| Result.Ok socket ->
 		report (Net.port (Net.udp_local_addr socket))
-		let! served = Async.block_on (echo_datagrams socket count 0)
+		let! served = echo_datagrams socket count 0
 		let! _closed = Net.close_udp socket
 		served
 
-/// A socket that is closed right after its send still sends the datagram, and the send still says how it went: after an async
-/// send that has ended, after a blocking send, and with the close racing the async send in one executor. The datagrams go to a
-/// peer at `port`; how many of the six calls (three sends and three closes) said Ok.
-export def udp_close_race :: own i64 -> i64
-fn udp_close_race port =
-	let target = loopback port
-	let! first = Net.bind_udp (loopback 0)
-	let! second = Net.bind_udp (loopback 0)
-	let! third = Net.bind_udp (loopback 0)
-	match (first, second, third) with
-	| (Result.Ok after_async, Result.Ok after_blocking, Result.Ok racing) ->
-		let! sent_async = Async.block_on (Net.send_to_async after_async (bytes_of (ref "after-async")) target)
-		let! closed_async = Net.close_udp after_async
-		let! sent_blocking = Net.send_to after_blocking (bytes_of (ref "after-blocking")) target
-		let! closed_blocking = Net.close_udp after_blocking
-		let! raced = Async.block_on (Async.all [Net.send_to_async racing (bytes_of (ref "racing-close")) target, Net.close_udp_async racing])
-		ok_value (ref sent_async) + ok_value (ref closed_async) + ok_value (ref sent_blocking) + ok_value (ref closed_blocking) + ok_value (ref raced[0]) + ok_value (ref raced[1])
-	| _ -> 0 - 1
+/// A socket that is closed right after its send still sends the datagram, and the send still says how it went. The datagram
+/// goes to a peer at `port`; how many of the two calls (the send and the close) said Ok.
+export def udp_close_after_send :: own i64 -> i64
+fn udp_close_after_send port =
+	let! bound = Net.bind_udp (loopback 0)
+	match bound with
+	| Result.Error error -> 0 - 1000 - kind_code error
+	| Result.Ok socket ->
+		let! sent = Net.send_to socket (bytes_of (ref "after-send")) (loopback port)
+		let! closed = Net.close_udp socket
+		ok_value (ref sent) + ok_value (ref closed)
 
 def os_kind_text :: own Os.ErrorKind -> string
 fn os_kind_text kind =
@@ -716,7 +494,7 @@ fn os_kind_text kind =
 	| Os.Interrupted -> "Interrupted"
 	| Os.Other -> "Other"
 
-/// "<Net.ErrorKind> <Os.ErrorKind> <system code>", as the native fixture of the async operations (tests/fixtures/net_async) prints it.
+/// "<Net.ErrorKind> <Os.ErrorKind> <system code>": the text of a failure in the lines of `udp_lines`.
 def failure_text :: own Os.Error -> string
 fn failure_text error = to_string (Net.error_kind error) + " " + os_kind_text error.kind + " " + to_string error.code
 
@@ -732,20 +510,6 @@ fn udp_text result =
 	| Result.Ok (bytes, _) -> "datagram:" + to_string bytes.length
 	| Result.Error error -> failure_text error
 
-def line_receive :: own Net.UdpSocket -> own Net.Address -> Async<i64>
-fn line_receive socket sender = Async {
-	match! Net.recv_from_async socket 64 (Maybe.Some 5000) with
-	| Result.Error _ -> return -1
-	| Result.Ok (bytes, source) -> return bytes.length * 10 + (if source == sender then 1 else 0)
-}
-
-def line_send :: own Net.UdpSocket -> own Net.Address -> own [ubyte] -> Async<i64>
-fn line_send socket target data = Async {
-	do! Async.sleep 20
-	let! sent = Net.send_to_async socket data target
-	return (if unit_text sent == "ok" then 1 else 0)
-}
-
 /// A datagram to a port that nobody listens on is no failure of the receive that follows it (Windows would report the ICMP
 /// "port unreachable" from the next receive of the same socket unless that is turned off).
 def vanished_line :: own Net.UdpSocket -> own Result<Net.UdpSocket, Os.Error> -> IO<string>
@@ -755,14 +519,12 @@ fn vanished_line receiver spare =
 	| Result.Ok gone ->
 		let vanished_target = Net.udp_local_addr gone
 		IO.bind (\_closed ->
-			Async.block_on (Async {
-				let! _sent = Net.send_to_async receiver (bytes_of (ref "x")) vanished_target
-				let! result = Net.recv_from_async receiver 64 (Maybe.Some 40)
-				return udp_text result
-			})) (Net.close_udp gone)
+			IO.bind (\_sent ->
+				IO.map (\result -> udp_text result) (Net.recv_from receiver 64 (Maybe.Some 40))) (Net.send_to receiver (bytes_of (ref "x")) vanished_target)) (Net.close_udp gone)
 
-/// The `udp` case of the native fixture tests/fixtures/net_async (run_udp), line for line: what two UDP sockets of one executor
-/// print there is what the glue must give. The lines are joined by newlines.
+/// What two UDP sockets of one program see, line by line, with the system's own numbers in the failures: a datagram and its
+/// source, a receive that times out, a datagram to a closed port, a datagram that does not fit (consumed) and the two after it,
+/// and the closes (the second close of a socket fails). The lines are joined by newlines.
 export def udp_lines :: own i64 -> string
 fn udp_lines _seed =
 	let! first = Net.bind_udp (loopback 0)
@@ -771,29 +533,26 @@ fn udp_lines _seed =
 	| (Result.Ok receiver, Result.Ok sender) ->
 		let target = Net.udp_local_addr receiver
 		let origin = Net.udp_local_addr sender
-		let! exchange = Async.block_on (Async.all [line_receive receiver origin, line_send sender target (bytes_of (ref "udp"))])
-		let! quiet = Async.block_on (Async {
-			let! result = Net.recv_from_async receiver 64 (Maybe.Some 40)
-			return udp_text result
-		})
+		let! sent = Net.send_to sender (bytes_of (ref "udp")) target
+		let! received = Net.recv_from receiver 64 (Maybe.Some 5000)
+		let exchange = match received with
+			| Result.Error _ -> -1
+			| Result.Ok (bytes, source) -> bytes.length * 10 + (if source == origin then 1 else 0)
+		let! quiet = Net.recv_from receiver 64 (Maybe.Some 40)
 		let! spare = Net.bind_udp (loopback 0)
 		let! vanished = vanished_line receiver spare
-		let! truncated = Async.block_on (Async {
-			let! _sent = Net.send_to_async sender (pattern 100) target
-			let! result = Net.recv_from_async receiver 10 (Maybe.Some 5000)
-			let! _next = Net.send_to_async sender (bytes_of (ref "ok")) target
-			let! after = Net.recv_from_async receiver 10 (Maybe.Some 5000)
-			let! _empty = Net.send_to_async sender (nothing ()) target
-			let! blank = Net.recv_from_async receiver 10 (Maybe.Some 5000)
-			return udp_text result + " then " + udp_text after + " then " + udp_text blank
-		})
-		let! closed = Async.block_on (Async {
-			let! a = Net.close_udp_async receiver
-			let! b = Net.close_udp_async sender
-			let! c = Net.close_udp_async sender
-			return unit_text a + " " + unit_text b + " " + unit_text c
-		})
-		"exchange: " + to_string exchange[0] + " " + to_string exchange[1] + "\nquiet: " + quiet + "\nvanished: " + vanished + "\ntruncated: " + truncated + "\nclosed: " + closed
+		let! _big = Net.send_to sender (pattern 100) target
+		let! cut = Net.recv_from receiver 10 (Maybe.Some 5000)
+		let! _next = Net.send_to sender (bytes_of (ref "ok")) target
+		let! after = Net.recv_from receiver 10 (Maybe.Some 5000)
+		let! _empty = Net.send_to sender (nothing ()) target
+		let! blank = Net.recv_from receiver 10 (Maybe.Some 5000)
+		let! a = Net.close_udp receiver
+		let! b = Net.close_udp sender
+		let! c = Net.close_udp sender
+		let truncated = udp_text cut + " then " + udp_text after + " then " + udp_text blank
+		let closed = unit_text a + " " + unit_text b + " " + unit_text c
+		"exchange: " + to_string exchange + " " + to_string (ok_value (ref sent)) + "\nquiet: " + udp_text quiet + "\nvanished: " + vanished + "\ntruncated: " + truncated + "\nclosed: " + closed
 	| _ -> "no sockets"
 
 /// A connection that its peer reset before the program accepted it still has the peer's address. The program listens twice and
@@ -819,6 +578,22 @@ fn peer_after_reset _seed =
 			let! _closed = Net.close stream
 			Net.port peer * 10 + (if Net.ip_text peer == "127.0.0.1" then 1 else 0)
 	| _ -> 0 - 1
+
+/// Reports `port`, sends `data` to the echo peer at `port`, and reports `0 - port` once the answer is back: a call that
+/// suspends between its two reports. The sum of the bytes that came back.
+export def echo_bytes :: ref [ubyte] -> own i64 -> i64
+fn echo_bytes data port =
+	report port
+	let! connected = Net.connect (loopback port) (Maybe.Some 5000)
+	match connected with
+	| Result.Error error -> 0 - 1000 - kind_code error
+	| Result.Ok stream ->
+		let! _written = Net.write stream (Array.copy data) (Maybe.Some 5000)
+		let! outcome = collect stream data.length 0 0
+		let! _closed = Net.close stream
+		report (0 - port)
+		match outcome with
+		| (count, sum) -> if count == data.length then sum else 0 - 2000 - count
 
 /// Two gibibytes of capacity (nothing touches it) put every later allocation above 2 GiB, where an address is a negative number
 /// to the host: the echo of 1024 bytes through buffers up there, and the capacity that was held meanwhile.

@@ -105,8 +105,8 @@ fn spacing_preserves_calls_indices_generics_and_prefix_operators() {
             "Maybe { let! value = Some 1; return value }\n",
         ),
         (
-            "Async{do! Async.yield ();return 1}",
-            "Async { do! Async.yield (); return 1 }\n",
+            "IO{do! Routine.yield ();return 1}",
+            "IO { do! Routine.yield (); return 1 }\n",
         ),
         (
             "Maybe{use ! value=Some 1;return value}",
@@ -309,16 +309,16 @@ fn namespace_and_using_headers_keep_their_lines() {
 
 #[test]
 fn builder_aliases_keep_their_lines_and_fingerprints() {
-    let source = "// the spelling\n@alias    async   // lowercase\n\n@alias   other\n/// Returns the value.\ndef Return::'a->'a\nfn Return value=value\n";
-    let formatted = format_source("Async.tc", source, SourceKind::Computation)
+    let source = "// the spelling\n@alias    query   // lowercase\n\n@alias   other\n/// Returns the value.\ndef Return::'a->'a\nfn Return value=value\n";
+    let formatted = format_source("Query.tc", source, SourceKind::Computation)
         .unwrap()
         .formatted;
     assert_eq!(
         formatted,
-        "// the spelling\n@alias async   // lowercase\n\n@alias other\n/// Returns the value.\ndef Return :: 'a -> 'a\nfn Return value = value\n"
+        "// the spelling\n@alias query   // lowercase\n\n@alias other\n/// Returns the value.\ndef Return :: 'a -> 'a\nfn Return value = value\n"
     );
     assert_eq!(
-        format_source("Async.tc", &formatted, SourceKind::Computation)
+        format_source("Query.tc", &formatted, SourceKind::Computation)
             .unwrap()
             .formatted,
         formatted
@@ -329,18 +329,18 @@ fn builder_aliases_keep_their_lines_and_fingerprints() {
         .iter()
         .map(|alias| alias.text.as_str())
         .collect();
-    assert_eq!(aliases, ["async", "other"]);
+    assert_eq!(aliases, ["query", "other"]);
     assert_eq!(
         ast_fingerprint(parser::parse(source).unwrap()),
         ast_fingerprint(program)
     );
     // The fingerprint sees which aliases a file declares.
     assert_ne!(
-        ast_fingerprint(parser::parse("@alias async\n").unwrap()),
+        ast_fingerprint(parser::parse("@alias query\n").unwrap()),
         ast_fingerprint(parser::parse("@alias other\n").unwrap())
     );
     assert_ne!(
-        ast_fingerprint(parser::parse("@alias async\n").unwrap()),
+        ast_fingerprint(parser::parse("@alias query\n").unwrap()),
         ast_fingerprint(parser::parse("\n").unwrap())
     );
 }

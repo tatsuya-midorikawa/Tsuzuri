@@ -796,7 +796,7 @@ fn a_foreign_target_tests_through_the_runner_and_reports_each_test() {
 fn runtimes_a_target_lacks_are_refused_before_any_tool_runs() {
     use fake_toolchain::{setup, text};
     const OS: &str = "def main :: unit -> i32 = \\() ->\n    let! home = Env.var \"HOME\"\n    0\n";
-    const NET: &str = "def main :: unit -> i32 = \\() ->\n    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))\n    let! outcome = Async.block_on (Net.connect_async address (Maybe.Some 100))\n    do! IO.write_line (Result.is_ok (ref outcome))\n    0\n";
+    const NET: &str = "def main :: unit -> i32 = \\() ->\n    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))\n    let! outcome = Net.connect address (Maybe.Some 100)\n    do! IO.write_line (Result.is_ok (ref outcome))\n    0\n";
     for (source, name) in [(OS, "os"), (NET, "net")] {
         let setup = setup(name, source);
         for triple in Triple::ALL {

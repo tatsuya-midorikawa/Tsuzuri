@@ -285,19 +285,16 @@ fn arc_shares_only_sync_values_between_tzroutines() {
         "E1013",
     );
     assert!(message.contains(sync_send), "{message}");
-    for (source, shape) in [
-        (
-            "let shared = Arc.new (Seq.unfold (\\n -> if n < 3 then Some (n, n + 1) else None) 0)\ntzroutine {\n    let _count = Arc.strong_count (ref shared)\n}\n0",
-            "shares a tzroutine body, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc",
+    let message = rejects(
+        "let shared = Arc.new (Seq.unfold (\\n -> if n < 3 then Some (n, n + 1) else None) 0)\ntzroutine {\n    let _count = Arc.strong_count (ref shared)\n}\n0",
+        "E1013",
+    );
+    assert!(
+        message.contains(
+            "shares a tzroutine body, an exclusive reference, a lazy sequence or a GPU handle through an Arc"
         ),
-        (
-            "let shared = Arc.new (async { return 1 })\ntzroutine {\n    let _count = Arc.strong_count (ref shared)\n}\n0",
-            "shares a tzroutine body, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc",
-        ),
-    ] {
-        let message = rejects(source, "E1013");
-        assert!(message.contains(shape), "{message}");
-    }
+        "{message}"
+    );
     let message = rejects(
         &format!(
             "{HANDLE}let shared = Arc.new (counter_new 1)\ntzroutine {{\n    let _count = Arc.strong_count (ref shared)\n}}\n0"

@@ -64,7 +64,6 @@ const MODULES: &[(&str, Kind)] = &[
     ("Alloc", subject(&["Stats"])),
     ("Arena", subject(&["Arena"])),
     ("Array", subject(&["[]"])),
-    ("Async", SingleArgument),
     ("Atomic", Exempt(BUILTIN_HANDLE)),
     ("Bench", Exempt(HARNESS)),
     ("BigInt", subject(&["BigInt"])),

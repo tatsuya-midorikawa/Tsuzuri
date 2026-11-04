@@ -123,20 +123,19 @@ fn std_probe_matches_the_expected_sites() {
         (8, 46, "IO.write_line", Stdio),
         (9, 42, "Debug.print", Stdio),
         (10, 83, "Net.connect", Net),
-        (11, 87, "Net.read_async", Net),
+        (11, 83, "Net.read", Net),
         (12, 61, "HashMap.randomized", Random),
-        (13, 56, "Async.block_on", Time),
-        (14, 65, "Gpu.request", Gpu),
-        (15, 76, "Process.run", Process),
-        (18, 41, "c_abs", Ffi),
+        (13, 65, "Gpu.request", Gpu),
+        (14, 76, "Process.run", Process),
+        (17, 41, "c_abs", Ffi),
     ];
     let expected: Vec<_> = expected
         .into_iter()
         .map(|(line, column, callee, capability)| (line, column, callee.to_owned(), capability))
         .collect();
     assert_eq!(sites, expected);
-    // `Net.parse_address` (16:63) and `Path.join` (17:52) are pure.
-    assert!(sites.iter().all(|(line, ..)| *line != 16 && *line != 17));
+    // `Net.parse_address` (15:63) and `Path.join` (16:52) are pure.
+    assert!(sites.iter().all(|(line, ..)| *line != 15 && *line != 16));
     let [c_abs] = analysis.externs.as_slice() else {
         panic!("{:?}", analysis.externs);
     };
@@ -164,16 +163,12 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
         "Os.__clock",
         "Os.__sleep",
         "Os.__spawn",
-        "Async.__clock",
-        "Async.__wait",
-        "Async.__posted",
         "Bench.now",
     ]
     .into_iter()
     .chain(
         [
-            "resolve", "open", "accept", "read", "write", "close", "watch", "unwatch", "connect",
-            "names", "send", "classify",
+            "resolve", "open", "accept", "read", "write", "close", "classify",
         ]
         .iter()
         .map(|name| &*Box::leak(format!("Net.__{name}").into_boxed_str())),
@@ -221,7 +216,6 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
     }
     let expected = BTreeMap::from(
         [
-            ("Async.tc", 3),
             ("Bench.tz", 4),
             ("Debug.tz", 1),
             ("Dir.tz", 3),
@@ -229,7 +223,7 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
             ("File.tz", 6),
             ("Gpu.tz", 9),
             ("IO.tc", 2),
-            ("Net.tz", 26),
+            ("Net.tz", 12),
             ("Process.tz", 1),
             ("Random.tz", 1),
             ("Time.tz", 2),
@@ -241,7 +235,7 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
         "a std file reaches the host in a new place; update appendix A of E15, the table of \
          src/capabilities.rs and tests/fixtures/capabilities/std-table.txt"
     );
-    assert_eq!(found.values().sum::<usize>(), 61);
+    assert_eq!(found.values().sum::<usize>(), 44);
 }
 
 /// The projects of the corpus: every fixture and example with a `Main.tz`.
@@ -297,10 +291,10 @@ fn corpus_table() -> BTreeMap<String, CapabilitySet> {
 }
 
 #[test]
-fn std_table_file_lists_the_102_functions() {
+fn std_table_file_lists_the_89_functions() {
     let expected = std::fs::read_to_string("tests/fixtures/capabilities/std-table.txt").unwrap();
     let lines: Vec<&str> = expected.lines().collect();
-    assert_eq!(lines.len(), 102);
+    assert_eq!(lines.len(), 89);
     let derived: Vec<String> = corpus_table()
         .into_iter()
         .map(|(name, set)| {

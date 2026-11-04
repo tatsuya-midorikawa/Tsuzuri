@@ -25,7 +25,7 @@ try {
   const main = "/// Doubles a value.\n/// ```tsuzuri\n/// twice 21\n/// ```\ndef twice :: (Add<'a>, Copy<'a>) => 'a -> 'a\nfn twice value = value + value\nprivate def hidden :: i64\nfn hidden = 0\n/// Answer.\nconst answer: i64 = 42\n";
   writeFileSync(join(input, "Main.tz"), main);
   writeFileSync(join(input, "Geometry", "Point.tz"), "/// Coordinates.\nrecord Point { x: f64, y: f64 }\n");
-  writeFileSync(join(input, "Builder.tc"), "/// Returns a value.\ndef Return :: 'a -> 'a\nfn Return value = value\n");
+  writeFileSync(join(input, "Builder.tc"), "@alias build\n\n/// Returns a value.\ndef Return :: 'a -> 'a\nfn Return value = value\n");
   writeFileSync(join(input, "Protocols.tt"), "/// Measures values.\nclass Measure<'a> {\n/// Gets the size.\ndef size :: ref 'a -> i64\n}\n");
   cli(["doc", input, "-o", output, "--json"]);
   const first = snapshot(output);
@@ -35,6 +35,7 @@ try {
   assert.equal(first["Main.md"], "# Main\n\n## `twice`\n\n```tsuzuri\ndef twice :: (Add<'a>, Copy<'a>) => 'a -> 'a\n```\n\nDoubles a value.\n```tsuzuri\ntwice 21\n```\n\n## `answer`\n\n```tsuzuri\nconst answer: i64\n```\n\nAnswer.\n\n");
   assert.equal(first["Geometry.Point.md"], "# Geometry::Point\n\n## `Point`\n\n```tsuzuri\nrecord Point {\n  x: f64\n  y: f64\n}\n```\n\nCoordinates.\n\n");
   assert.match(first["Protocols.md"], /### `Measure.size`[\s\S]*Gets the size\./);
+  assert.match(first["Builder.md"], /^# Builder\n\nBuilder alias: `build`\n\n## `Return`/);
   assert.doesNotMatch(first["Main.md"], /hidden/);
   for (const source of [input, join(input, "Main.tz"), join(input, "Builder.tc"), join(input, "Protocols.tt")]) {
     cli(["doc", source, "--output", output]);
@@ -69,8 +70,6 @@ try {
   assert.match(maybe, /^# Maybe\n\nNamespace: `std`\n/);
   assert.match(maybe, /union Maybe/);
   assert.match(maybe, /## `Return`/);
-  const asyncPage = readFileSync(join(stdOutput, "Async.md"), "utf8");
-  assert.match(asyncPage, /^# Async\n\nNamespace: `std`\n\nBuilder alias: `async`\n\n/);
   console.log("docgen: deterministic public Markdown, hierarchy, builders/classes, protected publication, compiler-free std generation passed");
 } finally {
   rmSync(temporary, { recursive: true, force: true });
