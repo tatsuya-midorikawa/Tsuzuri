@@ -25,6 +25,7 @@ const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", 
   "context_expire_boundary",
   "parallel", "scope_run",
   "blocking_handoff", "blocking_reacquire", "blocking_deadlock", "blocking_callback", "locked_thread",
+  "netpoll_pipe", "netpoll_timeout", "netpoll_close", "netpoll_race",
   "long_sleep"];
 const windows = process.platform === "win32";
 const platformFlags = windows

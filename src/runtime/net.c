@@ -159,6 +159,21 @@ __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit
 #define TZ_BLOCKING_EXIT() TZ_BLOCKING_CALL(tsuzuri_blocking_exit_hook)
 #endif
 
+/* net.c's hooks (TZ08 Phase 2), which the scheduler sets when it starts: the wait of a tzroutine for
+ * a socket, in the netpoller (0 ready, 1 timed out, -1 when net.c must poll itself), and the close of
+ * a socket, which ends the waits for it. Defined by the first part that has this block. */
+#ifndef TSUZURI_NET_HOOKS_DEFINED
+#define TSUZURI_NET_HOOKS_DEFINED
+#if defined(_WIN32)
+static int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write, int64_t timeout);
+static void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor);
+#else
+__attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write,
+                                                                                     int64_t timeout);
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor);
+#endif
+#endif
+
 // Writing to a socket whose peer is gone must be an error, not SIGPIPE: MSG_NOSIGNAL where it exists, and
 // SO_NOSIGPIPE on every socket where that is the way (macOS). Windows has no such signal.
 #if !defined(_WIN32)
@@ -480,16 +495,25 @@ static int64_t tz_net_deadline(int64_t timeout) {
 // Waits until the socket can do `events` or the deadline passes: 0 when it can (an error or a hang-up counts, and
 // the next call reports it), TZ_NET_E_TIMEDOUT at the deadline, TZ_NET_E_PENDING for a call that must not wait,
 // or the error number of poll. An interrupted poll starts again with the time that is left, rounded up to a
-// whole millisecond so that the last fraction does not spin.
+// whole millisecond so that the last fraction does not spin. On a tzroutine the scheduler's netpoller waits
+// instead, and only the tzroutine waits (TZ08); it leaves the wait to poll when it cannot take it.
 static int tz_net_wait(tz_net_fd descriptor, short events, int64_t deadline) {
     if (deadline == TZ_NET_ATTEMPT) return TZ_NET_E_PENDING;
+    int32_t (*netpoll)(intptr_t, int32_t, int64_t) = atomic_load_explicit(&tsuzuri_net_wait_hook, memory_order_acquire);
     for (;;) {
         int timeout = -1;
+        int64_t remaining = -1;
         if (deadline >= 0) {
-            int64_t remaining = deadline - tz_net_now();
+            remaining = deadline - tz_net_now();
             if (remaining <= 0) return TZ_NET_E_TIMEDOUT;
             int64_t milliseconds = (remaining + 999999) / 1000000;
             timeout = milliseconds > INT_MAX ? INT_MAX : (int)milliseconds;
+        }
+        if (netpoll != NULL) {
+            int32_t waited = netpoll((intptr_t)descriptor, events == TZ_NET_POLL_WRITE, remaining);
+            if (waited == 0) return 0;
+            if (waited == 1) return TZ_NET_E_TIMEDOUT;
+            netpoll = NULL;
         }
         tz_net_pollfd entry;
         entry.fd = descriptor;
@@ -1293,6 +1317,9 @@ static int64_t tz_net_close_handle(int64_t handle) {
     tz_net_fd descriptor;
     if (!tz_net_forget(handle, &descriptor)) return tz_net_bad_handle();
     tz_net_cancel_handle(handle);
+    // A tzroutine that waits on the socket wakes, and its retry reports the closed handle (TZ08).
+    void (*closing)(intptr_t) = atomic_load_explicit(&tsuzuri_net_close_hook, memory_order_acquire);
+    if (closing != NULL) closing((intptr_t)descriptor);
     // After EINTR the descriptor state is unspecified, and retrying could close another one. A close can
     // wait (a lingering socket): a tzroutine lets its P go (TZ08).
     TZ_BLOCKING_ENTER();

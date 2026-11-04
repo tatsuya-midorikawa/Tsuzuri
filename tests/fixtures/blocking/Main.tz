@@ -1,0 +1,90 @@
+// TZ08: a tzroutine in a blocking call (an extern function, a file) does not stop the others. The host
+// is host.c, which tests/tzroutine.mjs links, and the program runs in a directory of eight files.
+extern def host_sleep_ms :: i64 -> unit
+extern def host_apply :: (i64 -> i64) -> i64 -> i64
+
+// The callback of `host_apply` runs inside the host's call, and waits for a tzroutine that it starts.
+def doubled :: i64 -> i64 = \x ->
+    let results: Channel<i64> = Channel.make 0
+    let out = Channel.share results
+    tzroutine {
+        Time.sleep (Time.millisecond())
+        Channel.send out (x * 2)
+    }
+    match Channel.recv results with
+        | Maybe.Some value -> value
+        | Maybe.None -> -1
+
+def main :: unit -> i32 = \() ->
+    // extern_sleep_does_not_stall: one tzroutine sleeps 300 ms in the host; meanwhile two others make
+    // 1,000 round trips, with one P too. The round trips start once the sleeper is about to sleep.
+    let order: Channel<string> = Channel.make 2
+    let started: Channel<unit> = Channel.make 1
+    let sleeper_started = Channel.share started
+    let sleeper_order = Channel.share order
+    tzroutine {
+        Channel.send sleeper_started ()
+        host_sleep_ms 300
+        Channel.send sleeper_order "slept"
+    }
+    let requests: Channel<i64> = Channel.make 0
+    let replies: Channel<i64> = Channel.make 0
+    let server_requests = Channel.share requests
+    let server_replies = Channel.share replies
+    tzroutine {
+        for value in server_requests do
+            Channel.send server_replies (value + 1)
+    }
+    let pinger_started = Channel.share started
+    let pinger_requests = Channel.share requests
+    let pinger_replies = Channel.share replies
+    let pinger_order = Channel.share order
+    tzroutine {
+        let _go = Channel.recv pinger_started
+        let mut value = 0i64
+        for _round in 0 ..< 1000 do
+            Channel.send pinger_requests value
+            value = match Channel.recv pinger_replies with
+                | Maybe.Some next -> next
+                | Maybe.None -> -1
+        Channel.close pinger_requests
+        Channel.send pinger_order $"rounds={value}"
+    }
+    let first = match Channel.recv order with
+        | Maybe.Some text -> text
+        | Maybe.None -> "none"
+    let second = match Channel.recv order with
+        | Maybe.Some text -> text
+        | Maybe.None -> "none"
+    do! IO.write_line $"{first} {second}"
+    // callback_from_extern: eight tzroutines call the host, which calls `doubled` back.
+    let sums: Channel<i64> = Channel.make 8
+    for i in 1 ..= 8 do
+        let out = Channel.share sums
+        tzroutine {
+            Channel.send out (host_apply doubled (i as i64))
+        }
+    let mut total = 0i64
+    for _i in 1 ..= 8 do
+        total = total + match Channel.recv sums with
+            | Maybe.Some value -> value
+            | Maybe.None -> 0
+    do! IO.write_line $"callbacks={total}"
+    // file_read_in_routines: eight tzroutines read a file each.
+    let lengths: Channel<i64> = Channel.make 8
+    for i in 0 ..< 8 do
+        let out = Channel.share lengths
+        let path = $"file{i}.txt"
+        tzroutine {
+            let! read = File.read_bytes path
+            Channel.send out (match read with
+                | Result.Ok bytes -> bytes.length
+                | Result.Error _ -> -1)
+        }
+    let mut bytes = 0i64
+    for _i in 0 ..< 8 do
+        bytes = bytes + match Channel.recv lengths with
+            | Maybe.Some value -> value
+            | Maybe.None -> 0
+    do! IO.write_line $"files={bytes}"
+    0

@@ -7,6 +7,7 @@
 #include <fenv.h>
 #if !defined(_WIN32)
 #include <signal.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #endif
 
@@ -2069,6 +2070,169 @@ static void test_locked_thread(void) {
     printf("locked thread: ok\n");
 }
 
+#if !defined(_WIN32)
+/* 31. the netpoller (TZ08 Phase 2): a G that waits for a descriptor waits alone, wakes when its
+ * descriptor is ready, at its deadline, or when the descriptor is closed. */
+static void nonblocking_pair(int fds[2]) {
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    for (int i = 0; i < 2; i++) CHECK(fcntl(fds[i], F_SETFL, fcntl(fds[i], F_GETFL) | O_NONBLOCK) == 0);
+}
+/* Reads one byte as net.c does: try, and wait in the netpoller while there is none. */
+static int read_byte(int fd, int64_t timeout, char *byte) {
+    for (;;) {
+        ssize_t n = read(fd, byte, 1);
+        if (n == 1) return 0;
+        if (n == 0) return 2;
+        CHECK(errno == EAGAIN || errno == EWOULDBLOCK);
+        int32_t waited = tzr_netpoll_wait(fd, 0, timeout);
+        CHECK(waited == 0 || waited == 1);
+        if (waited == 1) return 1;
+    }
+}
+static int netpoll_fds[100][2];
+static _Atomic int64_t netpoll_turn;
+static int64_t netpoll_woke[100];
+static void netpoll_reader(void *env) {
+    int i = (int)(intptr_t)env;
+    char byte;
+    CHECK(read_byte(netpoll_fds[i][0], -1, &byte) == 0 && byte == (char)i);
+    netpoll_woke[i] = atomic_fetch_add(&netpoll_turn, 1);
+}
+static void netpoll_writer(void *env) {
+    (void)env;
+    for (int i = 99; i >= 0; i--) {
+        char byte = (char)i;
+        int64_t before = atomic_load(&netpoll_turn);
+        CHECK(write(netpoll_fds[i][1], &byte, 1) == 1);
+        while (atomic_load(&netpoll_turn) == before) tsuzuri_tz_yield();
+    }
+}
+static void test_netpoll_pipe(void) {
+    for (int i = 0; i < 100; i++) nonblocking_pair(netpoll_fds[i]);
+    atomic_store(&netpoll_turn, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 100; i++) tsuzuri_tz_go(netpoll_reader, (void *)(intptr_t)i);
+    /* every reader waits in the netpoller before the writer starts */
+    while (atomic_load(&tzr_sched.nnetwait) < 100) tzr_os_yield();
+    /* they wait without their Ms: a blocking wait would hold one M each */
+    tzr_mutex_lock(&tzr_sched.lock);
+    int ms = tzr_sched.mcount;
+    tzr_mutex_unlock(&tzr_sched.lock);
+    CHECK(ms <= tzr_sched.nprocs + 4);
+    tsuzuri_tz_go(netpoll_writer, NULL);
+    join(scope);
+    /* each reader woke when its descriptor had a byte: in the order of the writes */
+    for (int i = 0; i < 100; i++) CHECK(netpoll_woke[i] == 99 - i);
+    for (int i = 0; i < 100; i++) {
+        close(netpoll_fds[i][0]);
+        close(netpoll_fds[i][1]);
+    }
+    CHECK(atomic_load(&tzr_sched.nnetwait) == 0);
+    printf("netpoll pipe: ok\n");
+}
+
+static _Atomic int64_t netpoll_ticks;
+static _Atomic int netpoll_stop;
+static void netpoll_ticker(void *env) {
+    (void)env;
+    while (!atomic_load(&netpoll_stop)) {
+        atomic_fetch_add(&netpoll_ticks, 1);
+        CHECK(tsuzuri_tz_sleep(1000000) == 0);
+    }
+}
+static void netpoll_timeout_reader(void *env) {
+    int *fds = env;
+    char byte;
+    double t = seconds();
+    int64_t ticks = atomic_load(&netpoll_ticks);
+    CHECK(read_byte(fds[0], 30000000, &byte) == 1); /* nobody writes: the deadline */
+    CHECK(seconds() - t >= 0.029);
+    CHECK(atomic_load(&netpoll_ticks) > ticks); /* the other tzroutine ran meanwhile */
+    /* ready before its deadline: the timer goes */
+    CHECK(write(fds[1], "x", 1) == 1);
+    CHECK(read_byte(fds[0], 5000000000, &byte) == 0 && byte == 'x');
+    atomic_store(&netpoll_stop, 1);
+}
+static void test_netpoll_timeout(void) {
+    int fds[2];
+    nonblocking_pair(fds);
+    atomic_store(&netpoll_stop, 0);
+    atomic_store(&netpoll_ticks, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(netpoll_ticker, NULL);
+    tsuzuri_tz_go(netpoll_timeout_reader, fds);
+    join(scope);
+    close(fds[0]);
+    close(fds[1]);
+    CHECK(atomic_load(&tzr_sched.ntimers) == 0 && atomic_load(&tzr_sched.nnetwait) == 0);
+    printf("netpoll timeout: ok\n");
+}
+
+static void netpoll_close_reader(void *env) {
+    int fd = *(int *)env;
+    /* the close of its descriptor wakes it as ready */
+    CHECK(tzr_netpoll_wait(fd, 0, -1) == 0);
+}
+static void test_netpoll_close(void) {
+    for (int round = 0; round < 20; round++) {
+        int fds[2];
+        nonblocking_pair(fds);
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(netpoll_close_reader, &fds[0]);
+        while (atomic_load(&tzr_sched.nnetwait) == 0) tzr_os_yield();
+        tzr_netpoll_close(fds[0]);
+        join(scope);
+        close(fds[0]);
+        close(fds[1]);
+    }
+    printf("netpoll close: ok\n");
+}
+
+/* Readiness and deadlines that fall together: each wait is settled once, by whichever comes first. */
+typedef struct { int fds[2]; int64_t timeout; } netpoll_racer;
+static _Atomic int64_t netpoll_outcomes[3];
+static void netpoll_race_reader(void *env) {
+    netpoll_racer *r = env;
+    char byte;
+    int outcome = read_byte(r->fds[0], r->timeout, &byte);
+    atomic_fetch_add(&netpoll_outcomes[outcome], 1);
+    if (outcome == 1) CHECK(read_byte(r->fds[0], -1, &byte) == 0); /* the byte comes anyway */
+}
+static void netpoll_race_writer(void *env) {
+    netpoll_racer *r = env;
+    for (int spin = (int)(r->timeout / 1000); spin > 0; spin--) tsuzuri_tz_yield();
+    CHECK(write(r->fds[1], "y", 1) == 1);
+}
+static void test_netpoll_race(void) {
+    enum { N = 64 };
+    netpoll_racer racers[N];
+    for (int i = 0; i < 3; i++) atomic_store(&netpoll_outcomes[i], 0);
+    for (int round = 0; round < 20; round++) {
+        void *scope = tsuzuri_tz_scope_enter();
+        for (int i = 0; i < N; i++) {
+            nonblocking_pair(racers[i].fds);
+            racers[i].timeout = (int64_t)(i % 8) * 25000;
+            tsuzuri_tz_go(netpoll_race_reader, &racers[i]);
+            tsuzuri_tz_go(netpoll_race_writer, &racers[i]);
+        }
+        join(scope);
+        for (int i = 0; i < N; i++) {
+            close(racers[i].fds[0]);
+            close(racers[i].fds[1]);
+        }
+    }
+    CHECK(atomic_load(&netpoll_outcomes[0]) + atomic_load(&netpoll_outcomes[1]) == 20 * N);
+    CHECK(atomic_load(&tzr_sched.ntimers) == 0 && atomic_load(&tzr_sched.nnetwait) == 0);
+    printf("netpoll race: %lld ready, %lld timed out\n", (long long)atomic_load(&netpoll_outcomes[0]),
+           (long long)atomic_load(&netpoll_outcomes[1]));
+}
+#else
+static void test_netpoll_pipe(void) { printf("netpoll pipe: not on Windows\n"); }
+static void test_netpoll_timeout(void) { printf("netpoll timeout: not on Windows\n"); }
+static void test_netpoll_close(void) { printf("netpoll close: not on Windows\n"); }
+static void test_netpoll_race(void) { printf("netpoll race: not on Windows\n"); }
+#endif
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -2139,6 +2303,10 @@ int main(int argc, char **argv) {
     RUN("blocking_deadlock", test_blocking_deadlock());
     RUN("blocking_callback", test_blocking_callback());
     RUN("locked_thread", test_locked_thread());
+    RUN("netpoll_pipe", test_netpoll_pipe());
+    RUN("netpoll_timeout", test_netpoll_timeout());
+    RUN("netpoll_close", test_netpoll_close());
+    RUN("netpoll_race", test_netpoll_race());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

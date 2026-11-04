@@ -4,7 +4,7 @@
 //
 // usage: node tests/tzroutine.mjs [target/debug/tsuzuri]
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -475,6 +475,37 @@ bump ()
     const test = cli(["test", tested, optimization]);
     assert.match(test.stdout, /1 passed; 0 failed/);
     runs++;
+  }
+
+  // TZ08: a tzroutine in a blocking call (an extern function, a file read) lets the others run, with
+  // one P too, and a callback that the host calls inside the call waits on its thread. The host and
+  // File are POSIX here (os.c is POSIX only).
+  if (process.platform !== "win32") {
+    const blocking = join(temporary, "blocking");
+    mkdirSync(blocking);
+    writeFileSync(join(blocking, "Main.tz"), readFileSync(join(root, "tests/fixtures/blocking/Main.tz"), "utf8"));
+    const host = join(temporary, "blocking-host.o");
+    execute(process.env.TSUZURI_CLANG ?? "clang", ["-c", "-O2", join(root, "tests/fixtures/blocking/host.c"), "-o", host]);
+    const files = join(temporary, "blocking-files");
+    mkdirSync(files);
+    let bytes = 0;
+    for (let i = 0; i < 8; i++) {
+      const text = "x".repeat(1000 * (i + 1) + i);
+      bytes += text.length;
+      writeFileSync(join(files, `file${i}.txt`), text);
+    }
+    // 2 * (1 + ... + 8) from the callbacks
+    const expected = `rounds=1000 slept\ncallbacks=72\nfiles=${bytes}\n`;
+    for (const optimization of ["-O0", "-O3"]) {
+      const executable = join(temporary, `blocking${optimization}`);
+      cli(["build", blocking, optimization, "--link", host, "-o", executable]);
+      for (const procs of ["1", "4"]) {
+        const run = spawnSync(executable, [], { cwd: files, encoding: "utf8", timeout: 120_000, env: { ...process.env, TSUZURI_MAXPROCS: procs } });
+        assert.equal(run.status, 0, `blocking ${optimization} P${procs}\n${run.stdout}\n${run.stderr}`);
+        assert.equal(lines(run.stdout), expected, `blocking ${optimization} P${procs}`);
+        runs++;
+      }
+    }
   }
 
   // TZ05: Time.sleep_ms in a tzroutine waits without its thread (the hook of os.c): a watcher sees
