@@ -65,11 +65,13 @@ fn wait_on_thread request =
     let! value = Async.block_on (wait_host request)
     value
 
-// Each chunk of Parallel.init waits on its own executor for an operation that another thread
-// completes; the host posts each completion to the thread that began the operation.
+// Each of four chunks of one element waits on its own executor, on the threads of the scheduler, for
+// an operation that another thread completes; the host posts each completion to the thread that began
+// the operation. (Parallel.init would be one chunk: it splits arrays of 4,096 elements and more.)
 export def parallel_completed :: own i64 -> i64
 fn parallel_completed n =
-    let values = Parallel.init 4 (\index -> wait_on_thread (n + index))
+    let mut values = new [i64](4, \_index -> 0)
+    Parallel.for_each_chunk 1 (\start chunk -> Array.write 0 (wait_on_thread (n + start)) chunk) (ref mut values)
     Array.sum ref values
 
 export def buffered :: ref [i64] -> own i64 -> [i64]
