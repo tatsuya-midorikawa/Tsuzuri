@@ -645,6 +645,38 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         OnceValueGet | RwMutexWithRead | RwMutexWithWrite | CondWaitWith => {
             facts(Some(Effect::Atomic), false, true, true, true, false, None)
         }
+        // TZ07: a context and its done channel are allocated; a deadline reads the clock.
+        ContextBackground | ContextWithCancel => {
+            facts(Some(Effect::Atomic), true, false, false, false, false, None)
+        }
+        // Another handle of the context or of its done channel: one more in a count.
+        ContextShare | ContextDone => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
+        ContextWithTimeout | ContextWithDeadline => {
+            facts(Some(Effect::Os), true, false, false, false, false, None)
+        }
+        // A cancel walks the tree with a stack (and lists of deadlines and functions) that it
+        // allocates.
+        ContextCancel => facts(Some(Effect::Atomic), true, false, false, false, false, None),
+        ContextErr | ContextDeadline | ContextRelease | ContextStopAfter => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
+        // Like `Time.after_func`, and its drop drops the function that has not run.
+        ContextAfterFunc => facts(Some(Effect::Task), true, false, false, true, false, None),
+        ContextFreeAfter => facts(Some(Effect::Atomic), false, false, false, true, false, None),
         // B25
         AtomicLoad
         | AtomicStore
@@ -3564,8 +3596,8 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 342);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 167);
+        assert_eq!(Builtin::ALL.len(), 355);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 180);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 175);
     }
 
@@ -3573,10 +3605,10 @@ mod tests {
     fn impure_builtins_are_pinned_by_effect() {
         let by = |effect| count(|facts| facts.effect == Some(effect));
         assert_eq!(by(Effect::Io), 10);
-        assert_eq!(by(Effect::Os), 19);
+        assert_eq!(by(Effect::Os), 21);
         assert_eq!(by(Effect::Net), 12);
-        assert_eq!(by(Effect::Task), 17);
-        assert_eq!(by(Effect::Atomic), 82);
+        assert_eq!(by(Effect::Task), 18);
+        assert_eq!(by(Effect::Atomic), 92);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
         assert_eq!(by(Effect::Gpu), 5);
@@ -3585,7 +3617,7 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 73);
+        assert_eq!(count(|facts| facts.alloc), 79);
     }
 
     #[test]
@@ -3601,7 +3633,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 26);
+        assert_eq!(count(|facts| facts.callbacks), 28);
     }
 
     fn checked(source: &str) -> CheckedModule {

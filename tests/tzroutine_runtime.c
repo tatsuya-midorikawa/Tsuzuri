@@ -1554,6 +1554,217 @@ static void test_semaphore(void) {
     printf("semaphore: ok (at most %lld)\n", (long long)atomic_load(&sem_most));
 }
 
+/* ---------------------------------------------------------------- contexts (TZ07) */
+
+static _Atomic int64_t ctx_blocks;
+static void *ctx_block(void) {
+    atomic_fetch_add(&ctx_blocks, 1);
+    void *block = calloc(1, sizeof(tzr_chan));
+    CHECK(block != NULL);
+    return block;
+}
+static void ctx_block_free(void *block) {
+    atomic_fetch_sub(&ctx_blocks, 1);
+    free(block);
+}
+static void *ctx_new(void *parent, int64_t deadline) {
+    return tsuzuri_tz_ctx_new(parent, deadline, ctx_block(), ctx_block_free);
+}
+/* The drop of a handle of a done channel, as the generated code's. */
+static void ctx_done_drop(tzr_chan *c) {
+    if (tsuzuri_tz_chan_release(c)) ctx_block_free(c);
+}
+/* Whether the done channel is closed, without waiting. */
+static int ctx_closed(void *ctx) {
+    tzr_chan *done = tsuzuri_tz_ctx_done(ctx);
+    unsigned char unit = 0;
+    int closed = tsuzuri_tz_chan_recv(done, &unit, 0) == TZR_CLOSED;
+    ctx_done_drop(done);
+    return closed;
+}
+static void ctx_waiter(void *env) {
+    unsigned char unit = 0;
+    CHECK(tsuzuri_tz_chan_recv(env, &unit, 1) == TZR_CLOSED);
+    ctx_done_drop(env);
+    atomic_fetch_add(&counter, 1);
+}
+
+/* A cancel closes the done channels of the context and every descendant with its reason, wakes
+ * the tzroutines that wait on them and leaves the rest of the tree; a second cancel keeps the
+ * reason; a child of a cancelled context starts cancelled; a chain of 100,000 is cancelled and
+ * freed without recursion. */
+static void test_context_tree(void) {
+    atomic_store(&counter, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    void *root = ctx_new(NULL, INT64_MAX);
+    void *a = ctx_new(root, INT64_MAX);
+    void *b = ctx_new(a, INT64_MAX);
+    void *c = ctx_new(b, INT64_MAX);
+    void *other = ctx_new(root, INT64_MAX);
+    void *watched[3] = {a, b, c};
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 4; j++) tsuzuri_tz_go(ctx_waiter, tsuzuri_tz_ctx_done(watched[i]));
+    CHECK(tsuzuri_tz_ctx_err(c) == 0 && !ctx_closed(c));
+    tsuzuri_tz_ctx_cancel(a);
+    join(scope);
+    CHECK(atomic_load(&counter) == 12);
+    CHECK(tsuzuri_tz_ctx_err(a) == 1 && tsuzuri_tz_ctx_err(b) == 1 && tsuzuri_tz_ctx_err(c) == 1);
+    CHECK(ctx_closed(a) && ctx_closed(b) && ctx_closed(c));
+    CHECK(tsuzuri_tz_ctx_err(root) == 0 && tsuzuri_tz_ctx_err(other) == 0 && !ctx_closed(other));
+    tsuzuri_tz_ctx_cancel(root); /* a root is never cancelled */
+    CHECK(tsuzuri_tz_ctx_err(root) == 0 && !ctx_closed(root) && tsuzuri_tz_ctx_err(other) == 0);
+    tsuzuri_tz_ctx_cancel(c);
+    CHECK(tsuzuri_tz_ctx_err(c) == 1);
+    void *late = ctx_new(b, INT64_MAX);
+    CHECK(tsuzuri_tz_ctx_err(late) == 1 && ctx_closed(late));
+    CHECK(tsuzuri_tz_ctx_deadline(root) == INT64_MAX && tsuzuri_tz_ctx_deadline(late) == INT64_MAX);
+    void *contexts[6] = {root, a, b, c, other, late};
+    for (int i = 0; i < 6; i++) tsuzuri_tz_ctx_release(contexts[i]);
+    enum { DEPTH = 100000 };
+    void **chain = malloc(DEPTH * sizeof *chain);
+    CHECK(chain != NULL);
+    chain[0] = ctx_new(NULL, INT64_MAX);
+    for (int i = 1; i < DEPTH; i++) chain[i] = ctx_new(chain[i - 1], INT64_MAX);
+    tsuzuri_tz_ctx_cancel(chain[1]);
+    CHECK(tsuzuri_tz_ctx_err(chain[DEPTH - 1]) == 1 && tsuzuri_tz_ctx_err(chain[0]) == 0);
+    for (int i = 0; i < DEPTH; i++) tsuzuri_tz_ctx_release(chain[i]); /* the parents first */
+    free(chain);
+    CHECK(atomic_load(&ctx_blocks) == 0);
+    printf("context tree: ok\n");
+}
+
+/* A deadline cancels with reason 2, not before it; a child inherits an earlier deadline of its
+ * parent; a deadline that has passed cancels at once; the drop of the last handle stops a pending
+ * deadline. */
+static void test_context_deadline(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    void *root = ctx_new(NULL, INT64_MAX);
+    int64_t start = tzr_nanotime();
+    void *timed = tsuzuri_tz_ctx_timeout(root, 20000000, ctx_block(), ctx_block_free);
+    CHECK(tsuzuri_tz_ctx_deadline(timed) >= start + 20000000);
+    void *child = ctx_new(timed, INT64_MAX - 1);
+    CHECK(tsuzuri_tz_ctx_deadline(child) == tsuzuri_tz_ctx_deadline(timed));
+    tzr_chan *done = tsuzuri_tz_ctx_done(child);
+    unsigned char unit = 0;
+    CHECK(tsuzuri_tz_chan_recv(done, &unit, 1) == TZR_CLOSED);
+    CHECK(tzr_nanotime() - start >= 20000000);
+    CHECK(tsuzuri_tz_ctx_err(timed) == 2 && tsuzuri_tz_ctx_err(child) == 2);
+    ctx_done_drop(done);
+    void *past = ctx_new(root, 0);
+    CHECK(tsuzuri_tz_ctx_err(past) == 2 && ctx_closed(past));
+    void *saturated = tsuzuri_tz_ctx_timeout(root, INT64_MAX, ctx_block(), ctx_block_free);
+    CHECK(tsuzuri_tz_ctx_deadline(saturated) == INT64_MAX - 1 && tsuzuri_tz_ctx_err(saturated) == 0);
+    void *contexts[4] = {timed, child, past, saturated};
+    for (int i = 0; i < 4; i++) tsuzuri_tz_ctx_release(contexts[i]);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(pending_timers() == 0);
+    /* in a fresh boundary, so that no deadline above is still being stopped */
+    scope = tsuzuri_tz_scope_enter();
+    void *distant = ctx_new(root, tzr_nanotime() + 3600 * (int64_t)1000000000);
+    CHECK(pending_timers() == 1);
+    tsuzuri_tz_ctx_release(distant);
+    CHECK(pending_timers() == 0);
+    tsuzuri_tz_ctx_release(root);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(atomic_load(&ctx_blocks) == 0 && pending_timers() == 0);
+    printf("context deadline: ok\n");
+}
+
+/* A child keeps its parent: the parent's handles may go first. A context whose deadline pends at
+ * the end of its boundary has the deadline stopped there, and its handles still work. */
+static void test_context_release(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    void *root = ctx_new(NULL, INT64_MAX);
+    void *parent = ctx_new(root, INT64_MAX);
+    void *child = ctx_new(parent, INT64_MAX);
+    void *shared = parent;
+    tsuzuri_tz_ctx_share(shared);
+    tsuzuri_tz_ctx_release(root);
+    tsuzuri_tz_ctx_release(parent);
+    tsuzuri_tz_ctx_cancel(shared);
+    CHECK(tsuzuri_tz_ctx_err(child) == 1);
+    tsuzuri_tz_ctx_release(shared);
+    tsuzuri_tz_ctx_release(child);
+    CHECK(atomic_load(&ctx_blocks) == 0);
+    root = ctx_new(NULL, INT64_MAX);
+    void *timed = ctx_new(root, tzr_nanotime() + 3600 * (int64_t)1000000000);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(pending_timers() == 0 && tsuzuri_tz_ctx_err(timed) == 0);
+    tsuzuri_tz_ctx_cancel(timed);
+    CHECK(tsuzuri_tz_ctx_err(timed) == 1);
+    tsuzuri_tz_ctx_release(timed);
+    tsuzuri_tz_ctx_release(root);
+    CHECK(atomic_load(&ctx_blocks) == 0);
+    printf("context release: ok\n");
+}
+
+/* 10,000 children with a deadline of 1 ms, released at once, while their timers fire. */
+static void test_context_deadline_race(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    void *root = ctx_new(NULL, INT64_MAX);
+    for (int i = 0; i < 10000; i++) {
+        void *child = tsuzuri_tz_ctx_timeout(root, (int64_t)(i % 5) * 250000, ctx_block(), ctx_block_free);
+        if (i % 7 == 0) tsuzuri_tz_ctx_cancel(child);
+        tsuzuri_tz_ctx_release(child);
+    }
+    tsuzuri_tz_ctx_release(root);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(pending_timers() == 0);
+    while (atomic_load(&ctx_blocks) != 0) CHECK(tsuzuri_tz_sleep(1000000) == 0);
+    printf("context deadline race: ok\n");
+}
+
+/* A deadline that expires as its boundary ends counts in the boundary until its cancel and its
+ * reference are over: right after the end of the boundary, only the root's block is left. */
+static void test_context_expire_boundary(void) {
+    void *root = ctx_new(NULL, INT64_MAX);
+    for (int round = 0; round < 2000; round++) {
+        void *scope = tsuzuri_tz_scope_enter();
+        void *child = tsuzuri_tz_ctx_timeout(root, (int64_t)(round % 4) * 50000, ctx_block(), ctx_block_free);
+        if (round % 2) CHECK(tsuzuri_tz_sleep((int64_t)(round % 3) * 50000) == 0);
+        tsuzuri_tz_ctx_release(child);
+        tsuzuri_tz_boundary_leave(scope);
+        CHECK(atomic_load(&ctx_blocks) == 1);
+    }
+    tsuzuri_tz_ctx_release(root);
+    CHECK(atomic_load(&ctx_blocks) == 0 && pending_timers() == 0);
+    printf("context expire boundary: ok\n");
+}
+
+/* Context.after_func: the function runs on a new tzroutine once the context is cancelled (at once
+ * when it has ended), never when stopped first; a function that never ran is dropped by the drop
+ * of its handle or the end of its boundary. A dormant function is no pending timer. */
+static void test_context_after(void) {
+    atomic_store(&func_runs, 0);
+    atomic_store(&func_drops, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    void *root = ctx_new(NULL, INT64_MAX);
+    void *ctx = ctx_new(root, INT64_MAX);
+    void *after = tsuzuri_tz_ctx_after(ctx, timer_block(), timer_block_free, func_run, func_drop, &func_runs);
+    void *stopped = tsuzuri_tz_ctx_after(ctx, timer_block(), timer_block_free, func_run, func_drop, &func_runs);
+    CHECK(pending_timers() == 0);
+    CHECK(tsuzuri_tz_ctx_stop_after(stopped) == 1 && tsuzuri_tz_ctx_stop_after(stopped) == 0);
+    tsuzuri_tz_ctx_cancel(ctx);
+    while (atomic_load(&func_runs) == 0) CHECK(tsuzuri_tz_sleep(1000000) == 0);
+    CHECK(tsuzuri_tz_ctx_stop_after(after) == 0);
+    void *ended = tsuzuri_tz_ctx_after(ctx, timer_block(), timer_block_free, func_run, func_drop, &func_runs);
+    while (atomic_load(&func_runs) == 1) CHECK(tsuzuri_tz_sleep(1000000) == 0);
+    tsuzuri_tz_ctx_free_after(after);
+    tsuzuri_tz_ctx_free_after(stopped);
+    tsuzuri_tz_ctx_free_after(ended);
+    CHECK(atomic_load(&func_runs) == 2 && atomic_load(&func_drops) == 1);
+    void *waiting = tsuzuri_tz_ctx_after(root, timer_block(), timer_block_free, func_run, func_drop, &func_runs);
+    tsuzuri_tz_ctx_release(ctx);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(atomic_load(&func_runs) == 2 && atomic_load(&func_drops) == 2);
+    tsuzuri_tz_ctx_cancel(root); /* after the boundary: the function was dropped there */
+    tsuzuri_tz_ctx_free_after(waiting);
+    tsuzuri_tz_ctx_release(root);
+    CHECK(atomic_load(&func_runs) == 2 && atomic_load(&func_drops) == 2);
+    CHECK(atomic_load(&ctx_blocks) == 0 && atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
+    printf("context after: ok\n");
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -1611,6 +1822,12 @@ int main(int argc, char **argv) {
     RUN("once", test_once());
     RUN("cond", test_cond());
     RUN("semaphore", test_semaphore());
+    RUN("context_tree", test_context_tree());
+    RUN("context_deadline", test_context_deadline());
+    RUN("context_release", test_context_release());
+    RUN("context_deadline_race", test_context_deadline_race());
+    RUN("context_after", test_context_after());
+    RUN("context_expire_boundary", test_context_expire_boundary());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

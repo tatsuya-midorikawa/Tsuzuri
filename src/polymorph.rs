@@ -3179,6 +3179,8 @@ impl Checker<'_> {
             Builtin::CondDrop => Some("Cond"),
             Builtin::SemaphoreDrop => Some("Semaphore"),
             Builtin::SyncMapReplace => Some("SyncMap"),
+            // TZ07: every `Context` builtin is behind `std/Context.tz`.
+            builtin if builtin.is_context() => Some("Context"),
             _ => None,
         };
         if let Some(module) = sync_module

@@ -1,0 +1,19 @@
+// The done channels of the context and of its descendants at every depth are closed; its parent's
+// and its sibling's stay open.
+def closed :: ref Context -> i64
+fn closed context =
+    let done = Context.done context
+    match Channel.try_recv done with
+    | Channel.Disconnected -> 1
+    | _ -> 0
+
+let root = Context.background ()
+let parent = Context.with_cancel root
+let sibling = Context.with_cancel root
+let child = Context.with_cancel parent
+let grandchild = Context.with_cancel child
+Context.cancel parent
+closed parent + closed child * 10 + closed grandchild * 100 + closed sibling * 1000 + closed root * 10000
+
+// rule: TSK-029
+// expect: stdout "111\n"

@@ -1829,6 +1829,37 @@ pub enum Builtin {
     /// and returns what was there, so that `std/SyncMap.tz` rebuilds the map under the write lock
     /// while the place always holds a whole map. Private to that module.
     SyncMapReplace,
+    /// `Context.__background :: unit -> Context` (TZ07): the root of a tree of cancellation. The
+    /// `Context` builtins are the runtime's contexts (`tsuzuri_tz_ctx_*`), private to
+    /// `std/Context.tz`, which wraps them.
+    ContextBackground,
+    /// `Context.__with_cancel :: ref Context -> Context`: a child.
+    ContextWithCancel,
+    /// `Context.__with_timeout :: ref Context -> i64 -> Context`: a child whose deadline is the
+    /// nanoseconds from now (the runtime reads the clock).
+    ContextWithTimeout,
+    /// `Context.__with_deadline :: ref Context -> i64 -> Context`: a child whose deadline is the
+    /// time of the monotonic clock.
+    ContextWithDeadline,
+    /// `Context.__cancel :: ref Context -> unit`.
+    ContextCancel,
+    /// `Context.__done :: ref Context -> Channel<unit>`: a new handle of the done channel.
+    ContextDone,
+    /// `Context.__err :: ref Context -> i64`: 0 running, 1 canceled, 2 deadline exceeded.
+    ContextErr,
+    /// `Context.__deadline :: ref Context -> i64`: `i64` max without a deadline.
+    ContextDeadline,
+    /// `Context.__share :: ref Context -> Context`.
+    ContextShare,
+    /// `Context.__release`, the body of the `Drop` instance of `Context`.
+    ContextRelease,
+    /// `Context.__after_func :: ref Context -> Owned.Function<unit, unit> -> Context.AfterFunc`
+    /// (TZ07 Phase 3): a dormant timer of the runtime that the cancel wakes.
+    ContextAfterFunc,
+    /// `Context.__stop_after :: ref Context.AfterFunc -> bool`.
+    ContextStopAfter,
+    /// `Context.__free_after`, the body of the `Drop` instance of `Context.AfterFunc`.
+    ContextFreeAfter,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -2239,6 +2270,19 @@ impl Builtin {
         Self::SemaphoreShare,
         Self::SemaphoreDrop,
         Self::SyncMapReplace,
+        Self::ContextBackground,
+        Self::ContextWithCancel,
+        Self::ContextWithTimeout,
+        Self::ContextWithDeadline,
+        Self::ContextCancel,
+        Self::ContextDone,
+        Self::ContextErr,
+        Self::ContextDeadline,
+        Self::ContextShare,
+        Self::ContextRelease,
+        Self::ContextAfterFunc,
+        Self::ContextStopAfter,
+        Self::ContextFreeAfter,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -2561,6 +2605,19 @@ impl Builtin {
             Self::SemaphoreShare => "Semaphore.share",
             Self::SemaphoreDrop => "Semaphore.__drop",
             Self::SyncMapReplace => "SyncMap.__replace",
+            Self::ContextBackground => "Context.__background",
+            Self::ContextWithCancel => "Context.__with_cancel",
+            Self::ContextWithTimeout => "Context.__with_timeout",
+            Self::ContextWithDeadline => "Context.__with_deadline",
+            Self::ContextCancel => "Context.__cancel",
+            Self::ContextDone => "Context.__done",
+            Self::ContextErr => "Context.__err",
+            Self::ContextDeadline => "Context.__deadline",
+            Self::ContextShare => "Context.__share",
+            Self::ContextRelease => "Context.__release",
+            Self::ContextAfterFunc => "Context.__after_func",
+            Self::ContextStopAfter => "Context.__stop_after",
+            Self::ContextFreeAfter => "Context.__free_after",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
             Self::AllocCounter => "Alloc.__counter",
@@ -3761,6 +3818,19 @@ impl Builtin {
             | Self::SemaphoreShare
             | Self::SemaphoreDrop
             | Self::SyncMapReplace => self.wait_scheme(),
+            Self::ContextBackground
+            | Self::ContextWithCancel
+            | Self::ContextWithTimeout
+            | Self::ContextWithDeadline
+            | Self::ContextCancel
+            | Self::ContextDone
+            | Self::ContextErr
+            | Self::ContextDeadline
+            | Self::ContextShare
+            | Self::ContextRelease
+            | Self::ContextAfterFunc
+            | Self::ContextStopAfter
+            | Self::ContextFreeAfter => self.context_scheme(),
             #[cfg(test)]
             Self::TestAdd => (vec![a(), a()], a(), vec![integer()]),
             #[cfg(test)]
@@ -4040,10 +4110,12 @@ impl Builtin {
     /// program wait for the tzroutines spawned in them (TZ02; TZ05, TZ06 and TZ07 add theirs). A
     /// timer other than `Time.sleep`'s is listed in its boundary, whose end stops it (TZ05), so the
     /// operations of the timers count too: only the scheduler has the timers (not the one thread of
-    /// the default WebAssembly target, until TZ09).
+    /// the default WebAssembly target, until TZ09). So do the operations of `Context` (TZ07), whose
+    /// deadlines are timers and whose `after_func` spawns.
     pub(crate) fn spawns(self) -> bool {
         matches!(self, Self::RoutineGo | Self::WaitGroupGo)
             || (self.is_timer() && self != Self::TimeSleep && self.length_nanoseconds().is_none())
+            || self.is_context()
     }
 
     /// The value in nanoseconds of the lengths `Time.nanosecond` .. `Time.hour` (TZ05).
@@ -4159,6 +4231,60 @@ impl Builtin {
             ),
             Self::SyncMapReplace => (vec![a(), Reference(Box::new(a()), true)], a(), Vec::new()),
             _ => unreachable!("not a sync builtin of TZ06"),
+        }
+    }
+
+    /// Whether this builtin is an operation of `Context` (TZ07), lowered to calls of the tzroutine
+    /// runtime's contexts.
+    pub(crate) fn is_context(self) -> bool {
+        self.name().starts_with("Context.")
+    }
+
+    /// The schemes of `Context` (TZ07), kept out of `scheme` so that its frame stays small.
+    #[inline(never)]
+    fn context_scheme(self) -> (Vec<BuiltinType>, BuiltinType, Vec<BuiltinConstraint>) {
+        use BuiltinType::{Concrete, Reference};
+        let std = |module: &'static str, name: &'static str, args| BuiltinType::Std {
+            module,
+            name,
+            args,
+        };
+        let context = || std("Context", "Context", Vec::new());
+        let borrowed = || Reference(Box::new(context()), false);
+        let after = || std("Context", "AfterFunc", Vec::new());
+        let unit = || Concrete(Type::Unit);
+        let int = || Concrete(Type::I64);
+        match self {
+            Self::ContextBackground => (vec![unit()], context(), Vec::new()),
+            Self::ContextWithCancel | Self::ContextShare => {
+                (vec![borrowed()], context(), Vec::new())
+            }
+            Self::ContextWithTimeout | Self::ContextWithDeadline => {
+                (vec![borrowed(), int()], context(), Vec::new())
+            }
+            Self::ContextCancel | Self::ContextRelease => (vec![borrowed()], unit(), Vec::new()),
+            Self::ContextDone => (
+                vec![borrowed()],
+                std("Channel", "Channel", vec![unit()]),
+                Vec::new(),
+            ),
+            Self::ContextErr | Self::ContextDeadline => (vec![borrowed()], int(), Vec::new()),
+            Self::ContextAfterFunc => (
+                vec![borrowed(), std("Owned", "Function", vec![unit(), unit()])],
+                after(),
+                Vec::new(),
+            ),
+            Self::ContextStopAfter => (
+                vec![Reference(Box::new(after()), false)],
+                Concrete(Type::Bool),
+                Vec::new(),
+            ),
+            Self::ContextFreeAfter => (
+                vec![Reference(Box::new(after()), false)],
+                unit(),
+                Vec::new(),
+            ),
+            _ => unreachable!("not a Context builtin"),
         }
     }
 

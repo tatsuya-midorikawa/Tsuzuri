@@ -2608,6 +2608,35 @@ const suites = {
       assert.doesNotMatch(ir, /@tsuzuri_mutex_lock\(/);
     },
   },
+  // TZ07: Context and ErrGroup between tzroutines, at one and at four Ps (native only).
+  context: {
+    nativeOnly: true,
+    environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
+    cases: [
+      ["stop_a_worker", [], 3n],
+      ["cancel_tree", [], 10n],
+      ["timeout", [], 1n],
+      ["parent_deadline_wins", [], 1n],
+      ["deadline_passed", [], 11n],
+      ["cancel_idempotent", [], 111n],
+      ["deep_cancel", [], 10000n],
+      ["after_func_on_cancel", [], 1n],
+      ["errgroup_ok", [], 5050n],
+      ["errgroup_first_error", [], 309n],
+      ["errgroup_limit", [], 1n],
+      ["errgroup_try_go", [], 7601n],
+      ["release_order", [], 1n],
+      ["errgroup_limit_raised", [], 9n],
+      ["deadline_max", [], 1n],
+    ],
+    traps: [["errgroup_limit_while_running", []]],
+    inspect(ir) {
+      for (const declaration of ["declare ptr @tsuzuri_tz_ctx_new(ptr, i64, ptr, ptr)",
+        "declare void @tsuzuri_tz_ctx_cancel(ptr)", "declare void @tsuzuri_tz_ctx_release(ptr)"]) {
+        assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
+      }
+    },
+  },
   // TZ06: the sync types without a second tzroutine, native and default WebAssembly (TZR_SINGLE: no import).
   sync_single: {
     cases: [

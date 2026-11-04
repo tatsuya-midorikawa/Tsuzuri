@@ -32,3 +32,5 @@ The rules of this area, one sentence each, with the document that states them an
 | TSK-026 | `WaitGroup.wait` MUST return only after the counter is zero. | [waitgroup.md](../../_tsuzuri/language-reference/built-in-types-and-modules/waitgroup.md) | TSK-026-waitgroup-wait-must-return | active |
 | TSK-027 | `Once.call` MUST run its function at most once. | [once.md](../../_tsuzuri/language-reference/built-in-types-and-modules/once.md) | TSK-027-once-call-must-run | active |
 | TSK-028 | A tzroutine MAY wait while it holds a `Mutex`. | [mutex.md](../../_tsuzuri/language-reference/built-in-types-and-modules/mutex.md) | TSK-028-tzroutine-may-wait-while | active |
+| TSK-029 | Canceling a `Context` MUST close the `done` channel of it and of every descendant. | [context.md](../../_tsuzuri/language-reference/built-in-types-and-modules/context.md) | TSK-029-canceling-a-context-must | active |
+| TSK-030 | `ErrGroup.wait` MUST return only after every function given to `go` has returned. | [errgroup.md](../../_tsuzuri/language-reference/built-in-types-and-modules/errgroup.md) | TSK-030-errgroup-wait-must-return | active |

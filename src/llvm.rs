@@ -397,6 +397,8 @@ mod bulk;
 mod channel;
 #[path = "llvm_compare.rs"]
 mod compare;
+#[path = "llvm_context.rs"]
+mod context;
 #[path = "llvm_cpu.rs"]
 mod cpu;
 #[path = "llvm_display.rs"]
@@ -8297,7 +8299,8 @@ fn emit_builtin(
             if builtin.is_routine()
                 || builtin.is_channel()
                 || builtin.is_timer()
-                || builtin.is_wait() =>
+                || builtin.is_wait()
+                || builtin.is_context() =>
         {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
@@ -8442,6 +8445,8 @@ fn emit_typed_builtin(
         emitter.timer_builtin(instance.builtin, ty)
     } else if instance.builtin.is_wait() {
         emitter.wait_builtin(instance, ty)
+    } else if instance.builtin.is_context() {
+        emitter.context_builtin(instance.builtin, ty)
     } else if instance.builtin == Builtin::OwnedFunction {
         let owned = emitter.ty(&ty.after_arguments(1));
         emitter.value(format!(

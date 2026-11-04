@@ -6,6 +6,8 @@ Array.random_shuffle_in_place: random
 Async.block_on: time
 Bench.of: time
 Bench.with_input: time
+Context.with_deadline: time
+Context.with_timeout: time
 Debug.print: stdio
 Debug.trace: stdio
 Dir.create: fs

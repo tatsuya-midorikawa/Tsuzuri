@@ -1,0 +1,203 @@
+/// A group of tzroutines that work on parts of one task (Go's `golang.org/x/sync/errgroup`, TZ07).
+/// `ErrGroup.go` calls a function on a new tzroutine and `ErrGroup.wait` waits for all of them and
+/// returns the first error. The first error also cancels the group's context, which the functions
+/// can watch to stop early. `ErrGroup.set_limit` bounds how many run at once. The handle counts its
+/// owners: `ErrGroup.share` makes another one for a tzroutine.
+record ErrGroup<'e> { group: WaitGroup, first: Channel<'e>, slots: Arc<Mutex<(i64 * i64)>>, room: Cond, context: Context }
+
+/// A group whose context is a child of `Context.background` (Go's `var g errgroup.Group`).
+///
+/// ```tsuzuri run=ok
+/// let group: ErrGroup<string> = ErrGroup.create ()
+/// match ErrGroup.wait group with
+/// | Result.Ok _ -> "ok"
+/// | Result.Error message -> message
+/// ```
+def create :: Send<'e> => own unit -> ErrGroup<'e>
+fn create _unit =
+    let root = Context.background ()
+    ErrGroup.with_context root
+
+/// A group whose context is a child of `parent` (Go's `errgroup.WithContext`): it is cancelled by
+/// the first error, by `ErrGroup.wait`, or with its parent.
+///
+/// ```tsuzuri run=true
+/// let root = Context.background ()
+/// let parent = Context.with_cancel root
+/// let group: ErrGroup<string> = ErrGroup.with_context parent
+/// let ctx = ErrGroup.context group
+/// Context.cancel parent
+/// Context.is_done ctx
+/// ```
+def with_context :: Send<'e> => ref Context -> ErrGroup<'e>
+fn with_context parent = ErrGroup {
+    group: WaitGroup.create (),
+    first: Channel.make 1,
+    slots: Arc.new (Mutex.create (0, -1)),
+    room: Cond.create (),
+    context: Context.with_cancel parent
+}
+
+/// A handle of the group's context (the `ctx` of Go's `errgroup.WithContext`).
+///
+/// ```tsuzuri run=false
+/// let group: ErrGroup<string> = ErrGroup.create ()
+/// let ctx = ErrGroup.context group
+/// Context.is_done ctx
+/// ```
+def context :: ref ErrGroup<'e> -> Context
+fn context group = Context.share (ref group.context)
+
+/// Calls the function on a new tzroutine (Go's `g.Go(f)`). With a limit, it first waits until fewer
+/// than the limit run. An `Error` of the function cancels the group's context; the first one is
+/// what `ErrGroup.wait` returns, and a later one is dropped.
+///
+/// ```tsuzuri run=Error%203
+/// let group: ErrGroup<i64> = ErrGroup.create ()
+/// for i in 1 ..= 5 do
+///     ErrGroup.go group (Owned.function (\() -> if i == 3 then Result.Error i else Result.Ok ()))
+/// match ErrGroup.wait group with
+/// | Result.Ok _ -> "Ok"
+/// | Result.Error i -> $"Error {i}"
+/// ```
+def go :: Send<'e> => ref ErrGroup<'e> -> own Owned.Function<unit, Result<unit, 'e>> -> unit
+fn go group f =
+    Cond.wait_with (ref group.room) (Arc.get (ref group.slots)) (\slots -> has_room (deref slots)) (\slots -> deref slots = taken (deref slots))
+    start group f
+
+/// Calls the function on a new tzroutine as `ErrGroup.go` does when fewer than the limit run (Go's
+/// `g.TryGo(f)`), and otherwise gives it back.
+///
+/// ```tsuzuri run=given%20back
+/// let group: ErrGroup<string> = ErrGroup.create ()
+/// ErrGroup.set_limit group 0
+/// match ErrGroup.try_go group (Owned.function (\() -> Result.Ok ())) with
+/// | Result.Ok _ -> "started"
+/// | Result.Error _ -> "given back"
+/// ```
+def try_go :: Send<'e> => ref ErrGroup<'e> -> own Owned.Function<unit, Result<unit, 'e>> -> Result<unit, Owned.Function<unit, Result<unit, 'e>>>
+fn try_go group f =
+    let room = Mutex.with_lock (Arc.get (ref group.slots)) (\slots ->
+        if has_room (deref slots) then {
+            deref slots = taken (deref slots);
+            true
+        } else false)
+    if room then {
+        start group f;
+        Result.Ok ()
+    } else Result.Error f
+
+/// Bounds how many functions of the group run at once (Go's `g.SetLimit(n)`); a negative limit
+/// removes the bound. Changing it while a function of the group runs traps.
+///
+/// ```tsuzuri run=true
+/// let group: ErrGroup<string> = ErrGroup.create ()
+/// ErrGroup.set_limit group 2
+/// let counts = Arc.new (Mutex.create (0, 0))
+/// for _ in 1 ..= 6 do
+///     let mine = Arc.share (ref counts)
+///     ErrGroup.go group (Owned.function (\() -> {
+///         Mutex.with_lock (Arc.get (ref mine)) (\c -> deref c = match deref c with
+///             | (now, most) -> (now + 1, Int.max most (now + 1)));
+///         Time.sleep Time.millisecond();
+///         Mutex.with_lock (Arc.get (ref mine)) (\c -> deref c = match deref c with
+///             | (now, most) -> (now - 1, most));
+///         Result.Ok ()
+///     }))
+/// let _done = ErrGroup.wait group
+/// Mutex.with_lock (Arc.get (ref counts)) (\c -> match deref c with
+///     | (_now, most) -> most <= 2)
+/// ```
+def set_limit :: ref ErrGroup<'e> -> own i64 -> unit
+fn set_limit group limit =
+    Mutex.with_lock (Arc.get (ref group.slots)) (\slots -> {
+        assert (running (deref slots) == 0);
+        deref slots = (0, limit)
+    })
+    // A go that waits for room (a limit of 0 before) looks again.
+    Cond.broadcast (ref group.room)
+
+/// Waits until every function of the group has returned, cancels the group's context, and returns
+/// the first error, or `Ok` (Go's `g.Wait()`). A second wait returns `Ok` unless another function
+/// failed since.
+///
+/// ```tsuzuri run=Ok
+/// let group: ErrGroup<string> = ErrGroup.create ()
+/// for _ in 1 ..= 10 do
+///     ErrGroup.go group (Owned.function (\() -> Result.Ok ()))
+/// match ErrGroup.wait group with
+/// | Result.Ok _ -> "Ok"
+/// | Result.Error message -> message
+/// ```
+def wait :: ref ErrGroup<'e> -> Result<unit, 'e>
+fn wait group =
+    WaitGroup.wait (ref group.group)
+    Context.cancel (ref group.context)
+    match Channel.try_recv (ref group.first) with
+    | Channel.Item error -> Result.Error error
+    | _ -> Result.Ok ()
+
+/// Another handle of the same group, for a tzroutine that starts more functions in it.
+///
+/// ```tsuzuri run=Ok
+/// let group: ErrGroup<string> = ErrGroup.create ()
+/// let other = ErrGroup.share group
+/// ErrGroup.go other (Owned.function (\() -> Result.Ok ()))
+/// match ErrGroup.wait group with
+/// | Result.Ok _ -> "Ok"
+/// | Result.Error message -> message
+/// ```
+def share :: ref ErrGroup<'e> -> ErrGroup<'e>
+fn share group = ErrGroup {
+    group: WaitGroup.share (ref group.group),
+    first: Channel.share (ref group.first),
+    slots: Arc.share (ref group.slots),
+    room: Cond.share (ref group.room),
+    context: Context.share (ref group.context)
+}
+
+/// Whether one more function may start: fewer than the limit run, or there is no limit.
+private def has_room :: own (i64 * i64) -> bool
+fn has_room slots =
+    match slots with
+    | (running, limit) -> limit < 0 || running < limit
+
+/// The slots with one more function running.
+private def taken :: own (i64 * i64) -> (i64 * i64)
+fn taken slots =
+    match slots with
+    | (running, limit) -> (running + 1, limit)
+
+/// How many functions run.
+private def running :: own (i64 * i64) -> i64
+fn running slots =
+    match slots with
+    | (count, _limit) -> count
+
+/// Starts the function, which has a slot, on a new tzroutine that counts in the group.
+private def start :: Send<'e> => ref ErrGroup<'e> -> own Owned.Function<unit, Result<unit, 'e>> -> unit
+fn start group f =
+    let first = Channel.share (ref group.first)
+    let slots = Arc.share (ref group.slots)
+    let room = Cond.share (ref group.room)
+    let context = Context.share (ref group.context)
+    WaitGroup.go (ref group.group) (Owned.function (\() -> {
+        finish (ref first) (ref context) (Owned.call (ref f) ());
+        Mutex.with_lock (Arc.get (ref slots)) (\count -> deref count = released (deref count));
+        Cond.broadcast (ref room)
+    }))
+
+/// Keeps the first error of the group and cancels its context; a later error is dropped.
+private def finish :: ref Channel<'e> -> ref Context -> own Result<unit, 'e> -> unit
+fn finish first context outcome =
+    match outcome with
+    | Result.Ok _ -> ()
+    | Result.Error error ->
+        let _later = Channel.try_send first error
+        Context.cancel context
+
+/// The slots with one function fewer running.
+private def released :: own (i64 * i64) -> (i64 * i64)
+fn released slots =
+    match slots with
+    | (running, limit) -> (running - 1, limit)

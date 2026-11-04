@@ -218,6 +218,51 @@ let result =
     | recv _ from deadline -> "timeout"
 do! IO.write_line result
 `, "timeout\n"],
+  // TZ07: the ticket's example: a worker stops when its context is cancelled, and main does not wait
+  // for ever at its end.
+  [`let root = Context.background ()
+let ctx = Context.with_cancel root
+let ticks: Channel<i64> = Channel.make 0
+let worker_ctx = Context.share ctx
+let out = Channel.share ticks
+tzroutine {
+    let done = Context.done worker_ctx
+    let mut n = 0i64
+    let mut running = true
+    while running do
+        select
+        | recv _ from done -> running = false
+        | send n to out -> n = n + 1
+}
+let mut seen = 0i64
+for _ in 1 ..= 3 do
+    match Channel.recv ticks with
+    | Maybe.Some _ -> seen = seen + 1
+    | Maybe.None -> ()
+Context.cancel ctx
+$"stopped after {seen}"
+`, "stopped after 3\n"],
+  // An ErrGroup whose functions watch the group's context: the first error stops the others.
+  [`let group: ErrGroup<string> = ErrGroup.create ()
+for i in 1 ..= 8 do
+    let ctx = ErrGroup.context group
+    ErrGroup.go group (Owned.function (\\() ->
+        if i == 5 then Result.Error "five failed"
+        else {
+            let done = Context.done ctx;
+            let _closed = Channel.recv done;
+            Result.Ok ()
+        }))
+match ErrGroup.wait group with
+| Result.Ok _ -> "ok"
+| Result.Error message -> message
+`, "five failed\n"],
+  // A context whose deadline is an hour away does not keep main waiting: the end of main stops it.
+  [`let root = Context.background ()
+let ctx = Context.with_timeout root Time.hour()
+let _after = Context.after_func ctx (Owned.function (\\() -> ()))
+Context.is_done ctx
+`, "false\n"],
   // A ticker and a quit channel in one select loop; main waits for the worker's first tick and quits it.
   [`def worker :: ref Channel<unit> -> ref Channel<i64> -> ref Channel<unit> -> unit
 fn worker quit report first =
@@ -507,6 +552,14 @@ run ()
   const sleptWasm = cli(["build", slept, "--target", "wasm32", "-o", join(temporary, "slept.wasm"), "--json"], false);
   assert.match(sleptWasm.stderr, /operating-system APIs|--wasm-host/);
   runs += 3;
+
+  // TZ07: a Context is the scheduler's too (its deadline is a timer).
+  const contexted = project("export def f :: i64 -> i64\nfn f n =\n    let root = Context.background ()\n    if Context.is_done root then 0 else n\n");
+  const contextWasm = cli(["build", contexted, "--target", "wasm32", "-o", join(temporary, "context.wasm"), "--json"], false);
+  assert.match(contextWasm.stderr, /"code":"E2000"/);
+  const contextReturn = cli(["build", contexted, "--emit", "shared", "--trap-mode", "return", "-o", join(temporary, "context.so"), "--json"], false);
+  assert.match(contextReturn.stderr, /"code":"E2000"/);
+  runs += 2;
 
   // WebAssembly waits for JSPI (TZ09); the error is E2000 before any build.
   const exported = project("export def f :: i64 -> i64\nfn f n =\n    tzroutine { () }\n    n\n");

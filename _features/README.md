@@ -291,7 +291,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | TZ04 | [`select` 式](_completed/TZ04-select.md) | P0 | L | TZ03 | done（native と既定の WebAssembly） |
 | TZ05 | [時間（`Time.sleep`・`Time.after`・`Time.tick`・`Timer`・`Ticker`・`Time.after_func`）](_completed/TZ05-timers.md) | P1 | M | TZ03 | done（native の macOS・Linux・Windows。タイマーは組み込みの関数で `IO` を返さない。WebAssembly は TZ09） |
 | TZ06 | [同期（`Mutex` の移設・`RwMutex`・`WaitGroup`・`Once`・`OnceValue`・`Cond`・`Semaphore`・`SyncMap`）](_completed/TZ06-sync.md) | P1 | L | TZ02 | done（native の macOS・Linux・Windows。既定の WebAssembly は tzroutine を起動しない 1 本の実行。`Mutex.with_lock` は tzroutine を使うプログラムで G のロック） |
-| TZ07 | [`Context`（取り消し・期限）と `ErrGroup`](TZ07-context-errgroup.md) | P1 | M | TZ04, TZ05, TZ06 | todo |
+| TZ07 | [`Context`（取り消し・期限）と `ErrGroup`](_completed/TZ07-context-errgroup.md) | P1 | M | TZ04, TZ05, TZ06 | done（native の macOS・Linux・Windows。`with_timeout`・`with_deadline` は `IO` を返さない。WebAssembly は TZ09） |
 | TZ08 | [ブロッキング呼び出しの P の引き継ぎ（sysmon）と netpoller](TZ08-blocking-calls-netpoller.md) | P1 | XL | TZ02, TZ05 | todo |
 | TZ09 | [WebAssembly（JSPI）の tzroutine](TZ09-wasm-jspi.md) | P2 | L | TZ04, TZ05, TZ06 | todo |
 | TZ10 | [プリエンプション（長く走る tzroutine の横取り）](TZ10-preemption.md) | P2 | L | TZ08 | todo |

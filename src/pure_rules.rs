@@ -193,9 +193,9 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | ParallelMapRef | ParallelReduce | ParallelForEachChunk | AsyncResume | AsyncTake
         | AsyncPut | AsyncNextId | AsyncClock | AsyncWait | AsyncPosted | AsyncRetire
         | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs
-        | RoutineCpuCount | TimeAfterFunc => Some(Task),
+        | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => Some(Task),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
-        | TickerReset => Some(Clock),
+        | TickerReset | ContextWithTimeout | ContextWithDeadline => Some(Clock),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
             None
         }
@@ -207,7 +207,11 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | OnceValueGet | OnceValueIntoInner | RwMutexCreate | RwMutexWithRead
         | RwMutexWithWrite | RwMutexIntoInner | CondCreate | CondWaitWith | CondSignal
         | CondBroadcast | CondShare | CondDrop | SemaphoreCreate | SemaphoreAcquire
-        | SemaphoreTryAcquire | SemaphoreRelease | SemaphoreShare | SemaphoreDrop => Some(State),
+        | SemaphoreTryAcquire | SemaphoreRelease | SemaphoreShare | SemaphoreDrop
+        | ContextBackground | ContextWithCancel | ContextCancel | ContextDone | ContextErr
+        | ContextDeadline | ContextShare | ContextRelease | ContextStopAfter | ContextFreeAfter => {
+            Some(State)
+        }
         AtomicCreate
         | AtomicLoad
         | AtomicStore
@@ -1537,7 +1541,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            167
+            180
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

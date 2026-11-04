@@ -152,11 +152,47 @@ $"total={total}"
 
 `Task.parallel` のタスク、`Task.scope` の子ども、`Parallel.*` のコールバックはスレッドプールのワーカーで走り、どの境界の中でもありません。そこで起動した tzroutine は、そのタスク（子ども、コールバックの 1 回）が終わる前に待たれます。したがって、それらの呼び出しが戻るのは、中で起動した tzroutine が終わった後です。
 
-> **Go から来た人への注意**: 終わらない tzroutine（無限ループ、来ない値を待つもの）を残すと、境界が待ち続けます。全員が待ちに入って誰も起こせなくなったときは、デッドロックの判定が次の文を標準エラーへ書いて、プロセスを終えます。
+> **Go から来た人への注意**: 終わらない tzroutine（無限ループ、来ない値を待つもの）を残すと、境界が待ち続けます（止め方は次の節）。全員が待ちに入って誰も起こせなくなったときは、デッドロックの判定が次の文を標準エラーへ書いて、プロセスを終えます。
 >
 > ```text
 > Tsuzuri runtime: all tzroutines are asleep - deadlock! (1 waiting: end of scope (waiting for tzroutines))
 > ```
+
+## 終わらない tzroutine を止める
+
+境界は待つので、止まらない処理（サーバーのループ、周期の処理、遅い呼び出しの待ち）は、外から止める合図を受け取れるように書きます。標準の手段は [Context](../built-in-types-and-modules/context.md) です（Go の `context`）。tzroutine は `Context.done` のチャンネルを `select` で見て、閉じたら自分で戻ります。ランタイムが tzroutine を強制的に止めることはありません。
+
+```tsuzuri run=stopped%20after%203
+let root = Context.background ()
+let ctx = Context.with_cancel root
+let ticks: Channel<i64> = Channel.make 0
+let worker_ctx = Context.share ctx
+let out = Channel.share ticks
+tzroutine {
+    let done = Context.done worker_ctx
+    let mut n = 0i64
+    let mut running = true
+    while running do
+        select
+        | recv _ from done -> running = false
+        | send n to out -> n = n + 1
+}
+let mut seen = 0i64
+for _ in 1 ..= 3 do
+    match Channel.recv ticks with
+    | Maybe.Some _ -> seen = seen + 1
+    | Maybe.None -> ()
+Context.cancel ctx
+$"stopped after {seen}"
+```
+
+実行結果:
+
+```text
+stopped after 3
+```
+
+期限で止めるときは `Context.with_timeout` を使います。いくつもの tzroutine のうち 1 つが失敗したら残りを止めて最初の誤りを返す処理は [ErrGroup](../built-in-types-and-modules/errgroup.md) です。
 
 ## Routine.go
 
@@ -239,6 +275,8 @@ Go の `go f(x)` は引数 `x` を呼び出し側で評価しますが、Tsuzuri
 - [Mutex](../built-in-types-and-modules/mutex.md)
 - [Rc と Arc](../built-in-types-and-modules/rc.md)
 - [Owned](../built-in-types-and-modules/owned.md)
+- [Context](../built-in-types-and-modules/context.md)
+- [ErrGroup](../built-in-types-and-modules/errgroup.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [言語仕様（tzroutine）](../../../docs/language.md#tzroutine)
 - [言語リファレンスの目次](../index.md)
