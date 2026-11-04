@@ -45,17 +45,17 @@ pub(super) const POLL_CALL: &str = "  call void @tz.preempt.poll()\n";
 /// The check's body and the runtime's two symbols (src/runtime/tzroutine.c), which the runtime
 /// defines hidden in the same image (a direct load, no GOT). The request is rare, so the call is
 /// weighted cold. A yield is no synchronization of the program's memory (a program has no data race,
-/// D-61), so the call touches only memory that the program cannot see, and LLVM keeps the program's
-/// values in registers across it; it is never removed.
+/// D-61), so the call touches only the count, which it takes as its argument, and memory that the
+/// module cannot see: LLVM keeps the program's values in registers across it; it is never removed.
 const POLL_DEFINITION: &str = "@tsuzuri_tz_preempt_pending = external hidden global i32\n\
-declare void @tsuzuri_tz_preempt_check() nounwind memory(inaccessiblemem: readwrite)\n\
+declare void @tsuzuri_tz_preempt_check(ptr) nounwind memory(argmem: readwrite, inaccessiblemem: readwrite)\n\
 define internal void @tz.preempt.poll() nounwind alwaysinline {\n\
 entry:\n\
 \x20 %pending = load atomic i32, ptr @tsuzuri_tz_preempt_pending monotonic, align 4\n\
 \x20 %asked = icmp ne i32 %pending, 0\n\
 \x20 br i1 %asked, label %yield, label %done, !prof !{!\"branch_weights\", i32 1, i32 1048575}\n\
 yield:\n\
-\x20 call void @tsuzuri_tz_preempt_check()\n\
+\x20 call void @tsuzuri_tz_preempt_check(ptr @tsuzuri_tz_preempt_pending)\n\
 \x20 br label %done\n\
 done:\n\
 \x20 ret void\n\
@@ -92,13 +92,11 @@ pub(super) fn emitted_from_source(name: &str) -> bool {
     name.starts_with("tz.fn.") || name.starts_with("tz.specialized.")
 }
 
-/// The functions that the signal of Phase 2 may stop: the source's, and the generated functions that
-/// call them directly, into which LLVM inlines them at -O3: the adapters, the entries of tzroutines (a
-/// body that is only a loop ends up in its `@tz.tzroutine.start.*`) and the chunks of `Parallel.*` and
-/// `Routine.scope` (a callback that is only a loop ends up in its `@tz.parallel.chunk.*`), and the
-/// C wrappers that a G enters inside an extern call, a callback (`@tz.callback.*`) or an export
-/// (`exports`, `tz_<name>`), which take the P back for their body. None of them holds a runtime lock
-/// or reads thread storage itself.
+/// The generated functions that the signal of Phase 2 may stop besides the source's and their callers
+/// (`with_generated_section`), which reach the source through a pointer that LLVM may resolve: the
+/// adapters, the entries of tzroutines, the chunks of `Parallel.*` and `Routine.scope`, and the C
+/// wrappers that a G enters inside an extern call, a callback (`@tz.callback.*`) or an export
+/// (`exports`, `tz_<name>`), which take the P back for their body.
 fn preemptible(name: &str, exports: &BTreeSet<String>) -> bool {
     let bare = bare(name);
     emitted_from_source(name)
@@ -645,8 +643,14 @@ pub(crate) fn with_preemption_checks(ir: String, opaque: &BTreeSet<String>) -> S
 
 /// The section of the generated code (TZ10 Phase 2): the only code where the runtime's signal
 /// handler may stop a tzroutine. Every function emitted from source goes there, after the checks
-/// (whose cold call LLVM inlines into it), and so do the adapters and tzroutine entries that call
-/// them (`preemptible`); the runtime's functions in IR stay in `.text`.
+/// (whose cold call LLVM inlines into it), with the generated functions of `preemptible` and every
+/// function that calls one of them directly, itself or through others: LLVM may inline a source
+/// function into any of its callers, with a loop that has no calls (a `dyn` slot, the drop of an
+/// environment or a `dyn` value, which run a method or a `Drop.drop`). A function that reads thread
+/// storage (`@llvm.threadlocal.address`) stays in `.text`, and so do the callers that only it joins
+/// to the source (it is `noinline`, `with_preemption_checks`), and the runtime's other functions in
+/// IR. None of these functions holds a runtime lock: the runtime calls the generated code after it
+/// lets go of its locks.
 pub(super) const MACH_O_SECTION: &str = "__TEXT,__tz_text,regular,pure_instructions";
 pub(super) const ELF_SECTION: &str = "tz_text";
 
@@ -659,15 +663,46 @@ pub(crate) fn with_generated_section(
         " section \"{}\"",
         if mach_o { MACH_O_SECTION } else { ELF_SECTION }
     );
-    let mut output = String::with_capacity(ir.len() + ir.len() / 64);
-    for line in ir.split_inclusive('\n') {
+    let lines: Vec<&str> = ir.split_inclusive('\n').collect();
+    let functions = definitions(&lines);
+    let defined: BTreeSet<&str> = functions.iter().map(|function| function.name).collect();
+    let mut callers: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut thread_bound = vec![false; functions.len()];
+    for (id, function) in functions.iter().enumerate() {
+        for line in &lines[function.header + 1..function.close] {
+            thread_bound[id] |= line.contains("@llvm.threadlocal.address");
+            if let Some(Callee::Defined(name)) = callee(line, &defined) {
+                callers.entry(name).or_default().push(id);
+            }
+        }
+    }
+    let mut inside = vec![false; functions.len()];
+    let mut work: Vec<usize> = (0..functions.len())
+        .filter(|&id| !thread_bound[id] && preemptible(functions[id].name, exports))
+        .collect();
+    for &id in &work {
+        inside[id] = true;
+    }
+    while let Some(id) = work.pop() {
+        for &caller in callers.get(functions[id].name).into_iter().flatten() {
+            if !inside[caller] && !thread_bound[caller] {
+                inside[caller] = true;
+                work.push(caller);
+            }
+        }
+    }
+    let headers: BTreeSet<usize> = functions
+        .iter()
+        .zip(&inside)
+        .filter(|(_, inside)| **inside)
+        .map(|(function, _)| function.header)
+        .collect();
+    let mut output = String::with_capacity(ir.len() + headers.len() * section.len());
+    for (index, line) in lines.iter().enumerate() {
         let header = line.trim_end();
-        let at = (header.starts_with("define ")
-            && header.ends_with('{')
-            && !header.contains(" section \"")
-            && callable(line, true).is_some_and(|call| preemptible(call.name, exports)))
-        .then(|| header.find(" !dbg ").or_else(|| header.rfind(" {")))
-        .flatten();
+        let at = (headers.contains(&index) && !header.contains(" section \""))
+            .then(|| header.find(" !dbg ").or_else(|| header.rfind(" {")))
+            .flatten();
         match at {
             Some(at) => {
                 output.push_str(&line[..at]);
@@ -800,6 +835,41 @@ define internal ptr @tz_small_realloc(ptr %block, i64 %size) nounwind {\nentry:\
         assert!(elf.contains("@tz_small_realloc(ptr %block, i64 %size) nounwind {\n"));
         assert_eq!(mach_o.matches(MACH_O_SECTION).count(), 8);
         assert_eq!(with_generated_section(elf.clone(), false, &exports), elf);
+    }
+
+    #[test]
+    fn the_callers_of_the_source_go_to_the_section_unless_they_read_thread_storage() {
+        // A `dyn` slot and the drops of an environment and of a `dyn` value call a method or a
+        // `Drop.drop` directly, which -O3 inlines with its loop; their callers may inline them in
+        // turn (Copilot on #91). A function that reads thread storage stays out, and so does one
+        // that reaches the source only through it.
+        let ir = "define internal i64 @tz.fn.Main.spin(ptr %arg0) nounwind {\nentry:\n  ret i64 0\n}\n\
+define internal i64 @\"tz.dyn.slot.Main.$instance.8.spin\"(ptr %self) nounwind {\nentry:\n  %v = call i64 @tz.fn.Main.spin(ptr %self)\n  ret i64 %v\n}\n\
+define internal void @\"tz.dyn.drop[Main.Spinner]\"(ptr %self) nounwind {\nentry:\n  %v = call i64 @tz.fn.Main.spin(ptr %self)\n  ret void\n}\n\
+define internal void @tz.env.drop.$lambda.4.1(ptr %env) nounwind {\nentry:\n  call void @\"tz.dyn.drop[Main.Spinner]\"(ptr %env)\n  call void @tz.free(ptr %env)\n  ret void\n}\n\
+define internal void @tz.free(ptr %block) nounwind {\nentry:\n  ret void\n}\n\
+define internal void @tz.closure.drop(ptr %code, ptr %env) nounwind {\nentry:\n  call void %code(ptr %env)\n  ret void\n}\n\
+define internal ptr @tz.cache(ptr %env) nounwind noinline {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  %v = call i64 @tz.fn.Main.spin(ptr %t)\n  ret ptr %t\n}\n\
+define internal ptr @tz.cached(ptr %env) nounwind {\nentry:\n  %t = call ptr @tz.cache(ptr %env)\n  ret ptr %t\n}\n\
+@tls = internal thread_local global i64 0\n";
+        let elf = with_generated_section(ir.to_owned(), false, &BTreeSet::new());
+        for inside in [
+            "@tz.fn.Main.spin(ptr %arg0) nounwind section \"tz_text\" {\n",
+            "@\"tz.dyn.slot.Main.$instance.8.spin\"(ptr %self) nounwind section \"tz_text\" {\n",
+            "@\"tz.dyn.drop[Main.Spinner]\"(ptr %self) nounwind section \"tz_text\" {\n",
+            "@tz.env.drop.$lambda.4.1(ptr %env) nounwind section \"tz_text\" {\n",
+        ] {
+            assert!(elf.contains(inside), "{inside}");
+        }
+        for outside in [
+            "@tz.free(ptr %block) nounwind {\n",
+            "@tz.closure.drop(ptr %code, ptr %env) nounwind {\n",
+            "@tz.cache(ptr %env) nounwind noinline {\n",
+            "@tz.cached(ptr %env) nounwind {\n",
+        ] {
+            assert!(elf.contains(outside), "{outside}");
+        }
+        assert_eq!(elf.matches(ELF_SECTION).count(), 4);
     }
 
     #[test]

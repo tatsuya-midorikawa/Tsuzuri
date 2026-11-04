@@ -2548,27 +2548,31 @@ static void test_dchan_deadlock(void) {
 }
 
 /* TZ10: a request of sysmon (made by hand here) makes the G that checks yield, takes itself back,
- * and leaves the global count at 0; a check without a request, or on a pseudo-G, does nothing. */
+ * and leaves the global count at 0; a check without a request, or on a pseudo-G, does nothing.
+ * Sysmon takes back the request of a P that it sees between two Gs, and a scan that saw p so before
+ * this G started there can take back the request made here: then the check takes nothing, and the G
+ * asks again (sysmon asks again 10 ms later in the same case). */
 static void preempt_ask(tzr_p *p) { (void)tzr_preempt_ask(p); }
 static _Atomic int preempt_flag_moved;
 static void preempt_flag_body(void *env) {
     (void)env;
     for (int round = 0; round < 100; round++) {
-        tzr_p *p = tzr_this_m()->p;
-        tsuzuri_tz_preempt_check(); /* nobody asked (unless sysmon did, if the OS stopped the thread) */
-        p = tzr_this_m()->p;
-        uint32_t tick = atomic_load(&p->schedtick);
-        preempt_ask(p);
-        CHECK(atomic_load(&tsuzuri_tz_preempt_pending) >= 1);
-        tsuzuri_tz_preempt_check(); /* yields: back on another P, or on p after another start there */
-        tzr_p *now = tzr_this_m()->p;
-        CHECK(now != p || atomic_load(&p->schedtick) != tick);
+        tsuzuri_tz_preempt_check(&tsuzuri_tz_preempt_pending); /* nobody asked (unless sysmon did, if the OS stopped the thread) */
+        for (int attempt = 0;; attempt++) {
+            tzr_p *p = tzr_this_m()->p;
+            uint32_t tick = atomic_load(&p->schedtick);
+            preempt_ask(p);
+            tsuzuri_tz_preempt_check(&tsuzuri_tz_preempt_pending); /* yields: back on another P, or on p after another start there */
+            tzr_p *now = tzr_this_m()->p;
+            if (now != p || atomic_load(&p->schedtick) != tick) break;
+            CHECK(attempt < 100); /* a stale scan took the request back */
+        }
         atomic_fetch_add(&preempt_flag_moved, 1);
     }
 }
 static void test_preempt_flag(void) {
     atomic_store(&preempt_flag_moved, 0);
-    tsuzuri_tz_preempt_check(); /* a pseudo-G */
+    tsuzuri_tz_preempt_check(&tsuzuri_tz_preempt_pending); /* a pseudo-G */
     void *scope = tsuzuri_tz_scope_enter();
     for (int i = 0; i < 4; i++) tsuzuri_tz_go(preempt_flag_body, NULL);
     join(scope);
@@ -2590,7 +2594,7 @@ static void preempt_busy(void *env) {
         for (int i = 0; i < 1000; i++) x = x * 6364136223846793005ULL + 1442695040888963407ULL;
         if (atomic_load_explicit(&tsuzuri_tz_preempt_pending, memory_order_relaxed)) {
             atomic_fetch_add(&preempt_busy_checks, 1);
-            tsuzuri_tz_preempt_check();
+            tsuzuri_tz_preempt_check(&tsuzuri_tz_preempt_pending);
         }
     }
     CHECK(x != 0);

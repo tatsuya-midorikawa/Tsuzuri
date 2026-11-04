@@ -1,6 +1,7 @@
 // TZ10: tzroutines that compute without waiting do not keep the only P from the others. Run by
-// tests/tzroutine.mjs with TSUZURI_MAXPROCS=1 (and 4), as `<program> busy|values|tight|inlined|scope_spin`. A case that
-// waits for a ticker could not finish if a tzroutine kept the P: it checks only lower bounds.
+// tests/tzroutine.mjs with TSUZURI_MAXPROCS=1 (and 4), as `<program> <case>` (the names in `run`). A
+// case that waits for a ticker could not finish if a tzroutine kept the P: it checks only lower
+// bounds.
 
 def rec fib :: i64 -> i64
 fn rec fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
@@ -99,6 +100,106 @@ fn scope_spin _ =
         })
     $"scope_spin: {results[0] + results[1]}"
 
+// A tzroutine that spins without calls in a method that it calls through a `dyn` value, in the
+// `Drop.drop` of a `dyn` value that it drops, or in the `Drop.drop` of a capture of an
+// `Owned.Function` that it drops, until a tzroutine that sleeps first sets the flag. The value comes
+// through a Channel, so LLVM cannot resolve the call: -O3 inlines the method into the `dyn` slot and
+// the `Drop.drop` into the drop of the `dyn` value and of the environment, which the section holds
+// as well (they call the source).
+record Flag { shared: Arc<Atomic<i64>> }
+
+instance Spin.Spin<Flag> {
+    fn spin flag =
+        let mut x = 0i64
+        while Atomic.load (Arc.get (ref flag.shared)) == 0i64 do
+            x = x + 1
+        1
+}
+
+record Spinner { shared: Arc<Atomic<i64>> }
+
+instance Spin.Spin<Spinner> {
+    fn spin _spinner = 2
+}
+
+instance Drop<Spinner> {
+    fn drop spinner =
+        let mut x = 0i64
+        while Atomic.load (Arc.get (ref spinner.shared)) == 0i64 do
+            x = x + 1
+}
+
+record Boxed { value: dyn (Spin.Spin, Send) }
+
+def set_later :: own Arc<Atomic<i64>> -> unit
+fn set_later flag =
+    tzroutine {
+        Time.sleep (20 * Time.millisecond())
+        Atomic.store (Arc.get (ref flag)) 1i64
+    }
+
+def dyn_spin :: unit -> string
+fn dyn_spin _ =
+    let stop = Arc.new (Atomic.create 0i64)
+    let done = Arc.new (Atomic.create 0i64)
+    let spinners: Channel<Boxed> = Channel.make 1
+    let received = Channel.share spinners
+    let spin_done = Arc.share (ref done)
+    tzroutine {
+        match Channel.recv received with
+        | Maybe.Some boxed -> Atomic.store (Arc.get (ref spin_done)) (Spin.Spin.spin (ref boxed.value))
+        | Maybe.None -> ()
+    }
+    Channel.send spinners (Boxed { value: Dyn.of (Flag { shared: Arc.share (ref stop) }) })
+    set_later (Arc.share (ref stop))
+    while Atomic.load (Arc.get (ref done)) == 0i64 do
+        Routine.yield ()
+    $"dyn_spin: {Atomic.load (Arc.get (ref done))}"
+
+def drop_spin :: unit -> string
+fn drop_spin _ =
+    let stop = Arc.new (Atomic.create 0i64)
+    let done = Arc.new (Atomic.create 0i64)
+    let spinners: Channel<Boxed> = Channel.make 1
+    let received = Channel.share spinners
+    let spin_done = Arc.share (ref done)
+    tzroutine {
+        match Channel.recv received with
+        | Maybe.Some boxed -> {
+            Owned.drop boxed;
+            Atomic.store (Arc.get (ref spin_done)) 1i64
+        }
+        | Maybe.None -> ()
+    }
+    Channel.send spinners (Boxed { value: Dyn.of (Spinner { shared: Arc.share (ref stop) }) })
+    set_later (Arc.share (ref stop))
+    while Atomic.load (Arc.get (ref done)) == 0i64 do
+        Routine.yield ()
+    $"drop_spin: {Atomic.load (Arc.get (ref done))}"
+
+def closure_spin :: unit -> string
+fn closure_spin _ =
+    let stop = Arc.new (Atomic.create 0i64)
+    let done = Arc.new (Atomic.create 0i64)
+    let functions: Channel<Owned.Function<i64, i64>> = Channel.make 1
+    let received = Channel.share functions
+    let spin_done = Arc.share (ref done)
+    tzroutine {
+        match Channel.recv received with
+        | Maybe.Some count -> {
+            let first = Owned.call (ref count) 1;
+            Owned.drop count;
+            Atomic.store (Arc.get (ref spin_done)) first
+        }
+        | Maybe.None -> ()
+    }
+    let spinner = Spinner { shared: Arc.share (ref stop) }
+    Channel.send functions (Owned.function (\n -> if Atomic.load (Arc.get (ref spinner.shared)) == 0i64 then n else n + 1))
+    set_later (Arc.share (ref stop))
+    while Atomic.load (Arc.get (ref done)) == 0i64 do
+        Routine.yield ()
+    $"closure_spin: {Atomic.load (Arc.get (ref done))}"
+
 // values_unchanged: two tzroutines that compute for longer than 10 ms on one P are preempted in
 // turn; their results are those of the same computations without tzroutines.
 def sum_steps :: i64 -> i64
@@ -145,18 +246,21 @@ fn values _ =
     $"values: {Atomic.load (Arc.get (ref fibs))} {Atomic.load (Arc.get (ref sums))} {Atomic.load (Arc.get (ref chains))} plain: {plain_fibs} {plain_sums} {plain_chains}"
 
 // The case is told by the length of its name: busy (4), tight (5), values (6), inlined (7),
-// scope_spin (10).
+// dyn_spin (8), drop_spin (9), scope_spin (10), closure_spin (12).
 def run :: i64 -> string
 fn run length =
     if length == 4 then busy ()
     elif length == 5 then tight ()
     elif length == 6 then values ()
     elif length == 7 then inlined ()
+    elif length == 8 then dyn_spin ()
+    elif length == 9 then drop_spin ()
     elif length == 10 then scope_spin ()
-    else "usage: busy|values|tight|inlined|scope_spin"
+    elif length == 12 then closure_spin ()
+    else "usage: busy|values|tight|inlined|dyn_spin|drop_spin|scope_spin|closure_spin"
 
 def main :: Array<string> -> i32
 fn main args =
-    let text = if args.length < 1 then "usage: busy|values|tight|inlined|scope_spin" else run args[args.length - 1].length
+    let text = if args.length < 1 then "usage: busy|values|tight|inlined|dyn_spin|drop_spin|scope_spin|closure_spin" else run args[args.length - 1].length
     do! IO.write_line text
     0

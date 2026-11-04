@@ -2704,21 +2704,23 @@ static void tzr_sysmon_start(void) {
         tzr_run_once(&tzr_sysmon_state.once, tzr_sysmon_init);
 }
 
-/* The check that the generated code calls when tsuzuri_tz_preempt_pending is not 0 (TZ10): a G whose
- * P sysmon asked yields, as Routine.yield does (to the end of the global run queue, D6), unless it
- * is inside a trap boundary, whose frame belongs to its thread (a failure domain's closure; the
- * request is taken back and comes again in 10 ms). A pseudo-G, a G that nobody asked and a G whose
- * M holds no P do nothing. The yield keeps errno (and Windows's last error), which a later call in
- * the generated code may still read for the C call before the check. */
+/* The check that the generated code calls when tsuzuri_tz_preempt_pending is not 0 (TZ10), with the
+ * count's address (its declaration says that it writes only through that and to the runtime's own
+ * memory, which the module does not declare): a G whose P sysmon asked yields, as Routine.yield does
+ * (to the end of the global run queue, D6), unless it is inside a trap boundary, whose frame belongs
+ * to its thread (a failure domain's closure; the request is taken back and comes again in 10 ms). A
+ * pseudo-G, a G that nobody asked and a G whose M holds no P do nothing. The yield keeps errno (and
+ * Windows's last error), which a later call in the generated code may still read for the C call
+ * before the check. */
 static int tzr_trap_boundary(void);
-TZR_API void tsuzuri_tz_preempt_check(void) {
+TZR_API void tsuzuri_tz_preempt_check(_Atomic int32_t *pending) {
     tzr_m *m = tzr_this_m();
     if (m == NULL || m->curg == NULL || m->p == NULL) return;
     tzr_p *p = m->p;
     if (!atomic_load_explicit(&p->preempt, memory_order_relaxed)
         || !atomic_exchange_explicit(&p->preempt, 0, memory_order_acquire))
         return;
-    atomic_fetch_sub_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
+    atomic_fetch_sub_explicit(pending, 1, memory_order_relaxed);
     if (tzr_trap_boundary()) return;
     int saved = tzr_errno_get();
 #if defined(_WIN32)

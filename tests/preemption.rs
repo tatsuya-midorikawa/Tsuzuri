@@ -130,10 +130,11 @@ fn checks_go_to_cycles_and_to_loops_that_call_and_never_to_leaves() {
         1
     );
     assert_eq!(
-        ir.matches("declare void @tsuzuri_tz_preempt_check()")
+        ir.matches("declare void @tsuzuri_tz_preempt_check(ptr) nounwind memory(argmem: readwrite, inaccessiblemem: readwrite)")
             .count(),
         1
     );
+    assert!(ir.contains("call void @tsuzuri_tz_preempt_check(ptr @tsuzuri_tz_preempt_pending)"));
     assert_eq!(
         ir.matches("define internal void @tz.preempt.poll()")
             .count(),
