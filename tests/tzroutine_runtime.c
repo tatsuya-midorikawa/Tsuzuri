@@ -961,9 +961,11 @@ static void test_donor(void) {
         atomic_store(&donor_leave, 1);
         join(scope);
         CHECK(atomic_load(&donor_hits) == 101);
-        /* the Ms that looked for work park within microseconds */
+        /* the Ms that looked for work park within microseconds; a loaded runner may not run a woken
+         * M for a while (the windows.yml run of #88 waited longer than 2 s once), and the bound is only
+         * for a spinner that never parks */
         double t = seconds();
-        while (atomic_load(&tzr_sched.nmspinning) != 0 && seconds() - t < 2.0) tzr_os_yield();
+        while (atomic_load(&tzr_sched.nmspinning) != 0 && seconds() - t < 10.0) tzr_os_yield();
         CHECK(atomic_load(&tzr_sched.nmspinning) == 0);
     }
 }
