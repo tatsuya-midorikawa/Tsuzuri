@@ -13,6 +13,7 @@
 - 境界（`main`・`export` の呼び出し・`test`・`bench`）は、その中で起動した tzroutine がすべて終わるまで戻りません。 <!-- rule: TSK-012 -->
 - ただし、トップレベルの最後の式や `export` の戻り値は、**待つ前に**計算されます。子の結果を読むときは、子の完了を数えて待ってから読みます。
 - `Routine` モジュール（`go`・`yield`・`count`・`max_procs`・`cpu_count`・`with_locked_thread`）で、関数値の起動、実行の譲渡、数の問い合わせ、OS スレッドへの固定ができます（[Routine](../built-in-types-and-modules/routine.md)）。
+- 待たずに計算し続ける tzroutine も、10 ms ほどで P を譲ります（[横取り](#横取りプリエンプション)）。
 - `extern` 関数・ファイル・ソケットなど、OS で待つ呼び出しの間も、ほかの tzroutine は走り続けます（[OS を待つ呼び出し](#os-を待つ呼び出し)）。
 - tzroutine の間の値の受け渡しには [Channel](../built-in-types-and-modules/channel.md) を使います（Go の `chan T`）。
 - `task { }`・型 `Task<T>`・`Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope` は削除しました（`E1040`）。書き換え方は [Task からの移行](#task-からの移行) です。
@@ -216,10 +217,54 @@ tzroutine は M:N のスケジューラーで走ります。
 
 - 同時に tzroutine を走らせる OS スレッドの数（P の数）は、既定でオンラインの CPU 数（256 まで）です。環境変数 `TSUZURI_MAXPROCS`（1〜256 の 10 進）で、起動時に 1 回だけ決められます。`Routine.max_procs ()` がその値です。
 - 待つ tzroutine（`Routine.yield`・`Time.sleep`・`Time.sleep_ms`・境界の待ちなど）は OS スレッドを止めないので、待つ tzroutine の数はスレッド数に縛られません。周期の処理は [Ticker](../built-in-types-and-modules/ticker.md#周期の処理を止める)、遅らせた処理は [`Time.after_func`](../built-in-types-and-modules/time.md#遅らせて呼ぶtimeafter_func) で書きます。
-- プリエンプションはまだありません。待たずに計算し続ける tzroutine は、その OS スレッドを離しません。長い計算では、ときどき `Routine.yield ()` を呼びます。OS で待つ呼び出しは次の節です。
+- 待たずに計算し続ける tzroutine も、10 ms ほどで P をほかの tzroutine に譲ります（[横取り](#横取りプリエンプション)）。OS で待つ呼び出しは [OS を待つ呼び出し](#os-を待つ呼び出し) です。
 - `Parallel.*` は、このスケジューラーの上で、呼び出し元と手伝いの tzroutine（呼び出し元が tzroutine なら最大 `min(チャンク数, P) - 1` 個、tzroutine でないスレッドなら最大 `min(チャンク数, P)` 個）がチャンクを分けます（[Parallel](../built-in-types-and-modules/parallel.md)）。`Routine.scope` は子ごとに tzroutine を起動します。どちらも、終わりを待つ tzroutine は P を手放すので、`TSUZURI_MAXPROCS=1` でも、ほかの tzroutine は走ります。
 - 各 tzroutine のスタックは、既定で 1 MiB の予約です（触れたページだけが実メモリになります）。下端の 128 KiB はガードで、溢れると `trap: stack overflow` と報告して終わります（Windows では理由なしで終わります）。tzroutine を起動するプログラムは、すべての関数が大きな frame のページを確保の時に順に触れる（stack probe）ので、ガードより大きな frame もガードを飛び越えません。深い再帰には `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576 の 10 進、KiB）で予約を増やします。範囲外の値は無視して既定値を使います。
 - Linux では、1 つのスタックが mapping を 2 つ使うので、同時に生きる tzroutine はおよそ 3 万個（`vm.max_map_count` の既定 65,530 の半分）が上限です。超えると `Tsuzuri runtime: cannot allocate a tzroutine stack (out of memory or address space)` と書いて終わります。
+
+## 横取り（プリエンプション）
+
+待たずに計算し続ける tzroutine も、同じ P を待つほかの tzroutine（チャンネルで起こされた受け手、タイマーで起きた tzroutine など）をいつまでも待たせません。スケジューラーの見張りのスレッド（sysmon）は、同じ tzroutine を 10 ms 以上走らせている P を見つけると、その tzroutine に P を譲るよう求めます。求められた tzroutine は、`Routine.yield ()` を呼んだときと同じく、全体の実行待ちの列の末尾へ回ります（Go の goroutine と同じ考え方です）。止まる位置が増えるだけで、値・評価の順序・所有権は変わりません。
+
+- **検査（ネイティブのすべてのターゲット）**: tzroutine を起動するプログラムでは、生成コードが次の位置で求めを読みます。求めのない間の費用は、1 回の読み込みと予測の当たる分岐です。
+  - 再帰する関数の、再帰の呼び出しの前（再帰しない道、たとえば `fib` の `n < 2` の道には入れません）
+  - 重い呼び出し（ランタイム、`extern` 関数、標準入出力、再帰する関数、またはそれらを呼ぶ関数）を含むループの、後ろへの分岐
+- 呼び出しのないループ、インライン展開で消える小さな関数とラムダだけを呼ぶループ（`Array.map (\x -> x * 2)` など）、確保（`Vec.push` など）だけを呼ぶループには検査を入れません。検査がループに入るとベクトル化と性能が失われるためです（[tzroutine の横取りの費用](../../../docs/benchmarks.md#tzroutine-の横取りの費用tz10)）。
+- **信号（macOS と Linux の実行ファイル）**: 求めから 10 ms たっても検査に来ない tzroutine は、sysmon が送る `SIGURG` で止まり、P を譲ります。これで、呼び出しのない密なループも横取りされます。止めるのは生成コードの中だけで（コンパイラーは生成した関数を専用のセクションに置きます）、ランタイム・C ライブラリ・ホストの関数の中では止めません。止めた位置のすべてのレジスタ（浮動小数点とベクトルの状態、フラグを含む）を保存して元に戻すので、計算の結果は変わりません。実行ファイルは `SIGURG` のハンドラーを置き、Tsuzuri のものでない `SIGURG` は、それ以前のハンドラーに渡します。
+- **横取りしない場所**: tzroutine でないスレッド（`main` のトップレベル、`export` を呼んだホストのスレッド）、`Domain.run` の中（トラップの枠がそのスレッドのものなので、その tzroutine はそのスレッドで続けます）。
+- **信号を使わない構成**: Windows、`--emit object`・`--emit shared`・`--emit bitcode`（ホストのシグナルの設定を変えないため）、`--backend fast` では検査だけです。そこでは呼び出しのない長いループは横取りされないので、長い計算の途中でときどき `Routine.yield ()` を呼びます。Linux の aarch64 で、SVE・SME のレジスタの状態が生きているスレッドは、信号で止めずに次の求めを待ちます。WebAssembly（JSPI）の tzroutine は横取りしません。
+
+次の例では、1 つの tzroutine が `fib 20` を回し続ける間に、もう 1 つの tzroutine が 10 ms ごとの `Ticker` を 5 回受け取り、終わりの合図を送ります。`TSUZURI_MAXPROCS=1` で P が 1 つだけでも、横取りがあるので同じ出力です。
+
+```tsuzuri run=ticks%3D5
+def rec fib :: i64 -> i64
+fn rec fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+let stop = Arc.new (Atomic.create 0i64)
+let received = Arc.new (Atomic.create 0i64)
+let busy_stop = Arc.share (ref stop)
+tzroutine {
+    let mut total = 0i64
+    while Atomic.load (Arc.get (ref busy_stop)) == 0i64 do
+        total = total + fib 20
+}
+let ticker_stop = Arc.share (ref stop)
+let mine = Arc.share (ref received)
+tzroutine {
+    let ticker = Ticker.create (10 * Time.millisecond())
+    let ticks = Ticker.channel ticker
+    for _ in 1 ..= 5 do
+        match Channel.recv ticks with
+        | Maybe.Some _ ->
+            let _n = Atomic.fetch_add (Arc.get (ref mine)) 1i64
+        | Maybe.None -> ()
+    Ticker.stop ticker
+    Atomic.store (Arc.get (ref ticker_stop)) 1i64
+}
+while Atomic.load (Arc.get (ref stop)) == 0i64 do
+    Routine.yield ()
+$"ticks={Atomic.load (Arc.get (ref received))}"
+```
 
 ## OS を待つ呼び出し
 

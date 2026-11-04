@@ -294,7 +294,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | TZ07 | [`Context`（取り消し・期限）と `ErrGroup`](_completed/TZ07-context-errgroup.md) | P1 | M | TZ04, TZ05, TZ06 | done（native の macOS・Linux・Windows。`with_timeout`・`with_deadline` は `IO` を返さない。WebAssembly は TZ09） |
 | TZ08 | [ブロッキング呼び出しの P の引き継ぎ（sysmon）と netpoller](_completed/TZ08-blocking-calls-netpoller.md) | P1 | XL | TZ02, TZ05 | done（`extern`・ファイル・標準入出力・GPU の呼び出しの間 P を sysmon が引き継ぐ。Net の待ちは netpoller（kqueue・epoll・`WSAPoll`）。`Routine.with_locked_thread`） |
 | TZ09 | [WebAssembly（JSPI）の tzroutine](TZ09-wasm-jspi.md) | P2 | L | TZ04, TZ05, TZ06 | todo |
-| TZ10 | [プリエンプション（長く走る tzroutine の横取り）](TZ10-preemption.md) | P2 | L | TZ08 | todo |
+| TZ10 | [プリエンプション（長く走る tzroutine の横取り）](_completed/TZ10-preemption.md) | P2 | L | TZ08 | done（10 ms 走った tzroutine に sysmon が譲らせる。検査は再帰の呼び出しの前と、重い呼び出しのあるループ（ネイティブのすべて）。macOS・Linux の実行ファイルは呼び出しのないループも `SIGURG` で止める。Windows・オブジェクト・`--backend fast` は検査だけ。WebAssembly は横取りしない） |
 | TZ11 | [`Parallel` と `Routine.scope` を tzroutine のスケジューラーへ移す](_completed/TZ11-parallel-on-scheduler.md) | P1 | M | TZ06 | done（tzroutine を使うネイティブのプログラムの `Parallel.*` はスケジューラーの上。`Domain.run` の中はプール。`Routine.scope` を追加） |
 | TZ12 | [`Task`・`task { }` の削除と移行（`DataChannel` の待ちの移設を含む）](_completed/TZ12-remove-task.md) | P1 | L | TZ04, TZ07, TZ11 | done（`task { }`・`Task<T>`・`Task.*` は `E1040`（`removed_task_*`。`tsuzuri fix` が `Task.scope` を `Routine.scope` に）。ネイティブの `Parallel`・`Mutex`・`DataChannel` は全プログラムで tzroutine のランタイム。`task.c` を削除） |
 | TZ13 | [`Async` と Net の `_async` の削除と移行](_completed/TZ13-remove-async.md) | P1 | M | TZ08, TZ12 | done（`Async`・`async { }`・`Async.*` と Net の `_async` は `E1040`（`removed_async`・`removed_net_async`）。reactor（`async.c`）とホスト駆動の実行器を削除し、後継はない（D2）） |
