@@ -232,7 +232,7 @@ tzroutine は M:N のスケジューラーで走ります。
 - 呼び出しのないループ、インライン展開で消える小さな関数とラムダだけを呼ぶループ（`Array.map (\x -> x * 2)` など）、確保（`Vec.push` など）だけを呼ぶループには検査を入れません。検査がループに入るとベクトル化と性能が失われるためです（[tzroutine の横取りの費用](../../../docs/benchmarks.md#tzroutine-の横取りの費用tz10)）。
 - **信号（macOS と Linux の実行ファイル）**: 求めから 10 ms たっても検査に来ない tzroutine は、sysmon が送る `SIGURG` で止まり、P を譲ります。これで、呼び出しのない密なループも横取りされます。止めるのは生成コードの中だけで（コンパイラーは生成した関数を専用のセクションに置きます）、ランタイム・C ライブラリ・ホストの関数の中では止めません。止めた位置のすべてのレジスタ（浮動小数点とベクトルの状態、フラグを含む）を保存して元に戻すので、計算の結果は変わりません。実行ファイルは `SIGURG` のハンドラーを置き、Tsuzuri のものでない `SIGURG` は、それ以前のハンドラーに渡します。
 - **横取りしない場所**: tzroutine でないスレッド（`main` のトップレベル、`export` を呼んだホストのスレッド）、`Domain.run` の中（トラップの枠がそのスレッドのものなので、その tzroutine はそのスレッドで続けます）。
-- **信号を使わない構成**: Windows、`--emit object`・`--emit shared`・`--emit bitcode`（ホストのシグナルの設定を変えないため）、`--backend fast` では検査だけです。そこでは呼び出しのない長いループは横取りされないので、長い計算の途中でときどき `Routine.yield ()` を呼びます。Linux の aarch64 で、SVE・SME のレジスタの状態が生きているスレッドは、信号で止めずに次の求めを待ちます。WebAssembly（JSPI）の tzroutine は横取りしません。
+- **信号を使わない構成**: Windows、`--emit object`・`--emit shared`・`--emit bitcode`（ホストのシグナルの設定を変えないため）、`--backend fast`、`tsuzuri test`・`tsuzuri bench` の実行器では検査だけです。そこでは呼び出しのない長いループは横取りされないので、長い計算の途中でときどき `Routine.yield ()` を呼びます。Linux の aarch64 で、SVE・SME のレジスタの状態が生きているスレッドは、信号で止めずに次の求めを待ちます。WebAssembly（JSPI）の tzroutine は横取りしません。
 
 次の例では、1 つの tzroutine が `fib 20` を回し続ける間に、もう 1 つの tzroutine が 10 ms ごとの `Ticker` を 5 回受け取り、終わりの合図を送ります。`TSUZURI_MAXPROCS=1` で P が 1 つだけでも、横取りがあるので同じ出力です。
 
