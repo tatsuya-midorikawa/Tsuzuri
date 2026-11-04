@@ -1547,7 +1547,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            181
+            182
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

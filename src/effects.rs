@@ -3602,8 +3602,8 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 356);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 181);
+        assert_eq!(Builtin::ALL.len(), 357);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 182);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 175);
     }
 
@@ -3613,7 +3613,7 @@ mod tests {
         assert_eq!(by(Effect::Io), 10);
         assert_eq!(by(Effect::Os), 21);
         assert_eq!(by(Effect::Net), 12);
-        assert_eq!(by(Effect::Task), 19);
+        assert_eq!(by(Effect::Task), 20);
         assert_eq!(by(Effect::Atomic), 92);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
@@ -3639,7 +3639,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 29);
+        assert_eq!(count(|facts| facts.callbacks), 30);
     }
 
     fn checked(source: &str) -> CheckedModule {
