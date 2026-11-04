@@ -112,14 +112,19 @@ try {
   const waiting = path.join(directory, 'waiting');
   await mkdir(waiting);
   await writeFile(path.join(waiting, 'Main.tz'), [
+    // The clock is the timers' (Time.after 0 receives the monotonic time): Time.monotonic_ns reads
+    // it through the OS runtime, which Windows builds do not have.
+    'def now :: unit -> i64',
+    'fn now _ =',
+    '    match Channel.recv (Time.after 0) with',
+    '    | Maybe.Some time -> time',
+    '    | Maybe.None -> -1',
+    '',
     'def nap :: i64 -> i64',
     'fn nap delay =',
-    '    let! start = Time.monotonic_ns ()',
+    '    let start = now ()',
     '    Time.sleep (delay * Time.millisecond())',
-    '    let! finish = Time.monotonic_ns ()',
-    '    match (start, finish) with',
-    '    | (Result.Ok begun, Result.Ok ended) -> (ended - begun) / 1000000',
-    '    | _ -> -1',
+    '    (now () - start) / Time.millisecond()',
     '',
     'def main :: unit -> i32 = \\() ->',
     '    let base = 10',
