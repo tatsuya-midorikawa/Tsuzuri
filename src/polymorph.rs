@@ -224,7 +224,7 @@ pub(super) fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
         Type::Vec(element) => Type::Vec(Box::new(map_type(element, f))),
         Type::Shared(value, kind) => Type::Shared(Box::new(map_type(value, f)), *kind),
         Type::Tuple(elements) => Type::Tuple(elements.iter().map(|ty| map_type(ty, f)).collect()),
-        Type::Task(result) => Type::Task(Box::new(map_type(result, f))),
+        Type::Once(result) => Type::Once(Box::new(map_type(result, f))),
         Type::Reference(value, mutable) => Type::Reference(Box::new(map_type(value, f)), *mutable),
         Type::Function(parameters, result) => Type::function_with_conventions(
             parameters.iter().map(|ty| map_type(ty, f)).collect(),
@@ -285,7 +285,7 @@ fn type_size(ty: &Type) -> Option<usize> {
             | Type::ArrayView(ty)
             | Type::List(ty)
             | Type::Vec(ty)
-            | Type::Task(ty)
+            | Type::Once(ty)
             | Type::Shared(ty, _)
             | Type::Reference(ty, _) => visit(ty, depth + 1, count),
             Type::Function(parameters, result) => {
@@ -378,7 +378,7 @@ impl Inference {
             Type::Tuple(elements) => {
                 Type::Tuple(elements.iter().map(|ty| self.resolve(ty)).collect())
             }
-            Type::Task(result) => Type::Task(Box::new(self.resolve(result))),
+            Type::Once(result) => Type::Once(Box::new(self.resolve(result))),
             Type::Reference(value, mutable) => {
                 Type::Reference(Box::new(self.resolve(value)), *mutable)
             }
@@ -475,7 +475,7 @@ impl Inference {
             | (Type::ArrayView(a), Type::ArrayView(b))
             | (Type::List(a), Type::List(b))
             | (Type::Vec(a), Type::Vec(b))
-            | (Type::Task(a), Type::Task(b)) => {
+            | (Type::Once(a), Type::Once(b)) => {
                 return self.unify(a, b, types, span);
             }
             (Type::Reference(a, n), Type::Reference(b, m)) if n == m => {
@@ -1086,7 +1086,6 @@ impl Classes {
                 let collected = (|| {
                     let qualified = format!("{module}.{}", declaration.name.text);
                     if declaration.name.text == "_"
-                        || declaration.name.text == "Task"
                         || classes.names.contains_key(&declaration.name.text)
                         || classes
                             .names
@@ -1707,7 +1706,6 @@ impl Classes {
             | TypeExprKind::ArrayView(ty)
             | TypeExprKind::FixedArray(ty, _)
             | TypeExprKind::List(ty)
-            | TypeExprKind::Task(ty)
             | TypeExprKind::Own(ty)
             | TypeExprKind::Mut(ty)
             | TypeExprKind::Pure(ty)
@@ -2621,7 +2619,7 @@ impl Classes {
                     Diagnostic::of(
                         DiagnosticKind::CaptureRcInFunctionValue,
                         format!(
-                            "cannot capture {} in a function value; function values may move to other tasks, and Rc counts its owners without atomic operations; capture an Arc, or pass the Rc as an argument",
+                            "cannot capture {} in a function value; function values may move to other tzroutines or threads, and Rc counts its owners without atomic operations; capture an Arc, or pass the Rc as an argument",
                             constraint.ty.display(types)
                         ),
                         constraint.span,
@@ -2630,7 +2628,7 @@ impl Classes {
                     Diagnostic::of(
                         DiagnosticKind::TaskRequiresSend,
                         format!(
-                            "tasks require Send values; {} holds an Rc or Rc.Weak, whose counts are not atomic; share values across tasks with Arc",
+                            "values that move to another tzroutine or thread must be Send; {} holds an Rc or Rc.Weak, whose counts are not atomic; share values across tzroutines with Arc",
                             constraint.ty.display(types)
                         ),
                         constraint.span,
@@ -2641,18 +2639,18 @@ impl Classes {
                 let ty = constraint.ty.display(types);
                 let reason = if constraint.ty.holds_host_state(types) {
                     format!(
-                        "{ty} shares an extern handle, a dyn value that is not Copy, or an Owned.Function through an Arc, and several tasks could then use it at once"
+                        "{ty} shares an extern handle, a dyn value that is not Copy, or an Owned.Function through an Arc, and several tzroutines could then use it at once"
                     )
                 } else {
                     format!(
-                        "{ty} shares a task, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc, and several tasks could then use it at once"
+                        "{ty} shares a tzroutine body, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc, and several tzroutines could then use it at once"
                     )
                 };
                 return Err(if class == "Capture" {
                     Diagnostic::of(
                         DiagnosticKind::CaptureUnsendableInFunctionValue,
                         format!(
-                            "cannot capture {ty} in a function value; function values may move to other tasks, and {reason}; pass it as an argument"
+                            "cannot capture {ty} in a function value; function values may move to other tzroutines or threads, and {reason}; pass it as an argument"
                         ),
                         constraint.span,
                     )
@@ -2660,7 +2658,7 @@ impl Classes {
                     Diagnostic::of(
                         DiagnosticKind::TaskRequiresSend,
                         format!(
-                            "tasks require Send values; {reason}; give the value to one task instead"
+                            "values that move to another tzroutine or thread must be Send; {reason}; give the value to one tzroutine instead"
                         ),
                         constraint.span,
                     )
@@ -2680,7 +2678,7 @@ impl Classes {
                 return Err(Diagnostic::of(
                     DiagnosticKind::TaskRequiresSync,
                     format!(
-                        "tasks can share only Sync values; {} is not Sync (an Rc, an extern handle, a dyn value that is not Copy, an Owned.Function, a task, an exclusive reference, a lazy sequence, an Async computation or a GPU handle cannot be shared between tasks); move the value into one task, or share an Arc of a Sync value",
+                        "tzroutines and threads can share only Sync values; {} is not Sync (an Rc, an extern handle, a dyn value that is not Copy, an Owned.Function, a tzroutine body, an exclusive reference, a lazy sequence, an Async computation or a GPU handle cannot be shared between them); move the value into one tzroutine, or share an Arc of a Sync value",
                         constraint.ty.display(types)
                     ),
                     constraint.span,
@@ -2700,7 +2698,7 @@ impl Classes {
                 return Err(Diagnostic::of(
                     DiagnosticKind::CaptureExclusiveInReusableFunction,
                     format!(
-                        "cannot capture {} in a reusable function; fully apply exclusive borrows and keep single-use tasks in task blocks",
+                        "cannot capture {} in a reusable function; fully apply exclusive borrows, or move the value into a tzroutine body, which runs once",
                         constraint.ty.display(types)
                     ),
                     constraint.span,
@@ -2710,7 +2708,7 @@ impl Classes {
                 return Err(Diagnostic::of(
                     DiagnosticKind::TaskRequiresOwnedValue,
                     format!(
-                        "tasks require owned values; {} contains a reference",
+                        "values that move to another tzroutine or thread must be owned; {} contains a reference",
                         constraint.ty.display(types)
                     ),
                     constraint.span,
@@ -2772,7 +2770,7 @@ fn head_constructor(ty: &Type) -> Option<HeadKey> {
         Type::List(_) => (12, 0),
         Type::Vec(_) => (13, 0),
         Type::Tuple(elements) => (14, elements.len()),
-        Type::Task(_) => (15, 0),
+        Type::Once(_) => (15, 0),
         _ => return None,
     })
 }
@@ -2974,7 +2972,6 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
                 .map(|ty| type_expression(ty, types, span))
                 .collect(),
         ),
-        Type::Task(ty) => TypeExprKind::Task(Box::new(type_expression(ty, types, span))),
         Type::Reference(ty, mutable) => {
             TypeExprKind::Reference(Box::new(type_expression(ty, types, span)), *mutable)
         }
@@ -3461,7 +3458,6 @@ impl Checker<'_> {
             BuiltinType::ArrayView(ty) => Type::ArrayView(element(ty)?),
             BuiltinType::List(ty) => Type::List(element(ty)?),
             BuiltinType::Vec(ty) => Type::Vec(element(ty)?),
-            BuiltinType::Task(ty) => Type::Task(element(ty)?),
             BuiltinType::Shared(ty, kind) => Type::Shared(element(ty)?, *kind),
             BuiltinType::Reference(ty, mutable) => Type::Reference(element(ty)?, *mutable),
             BuiltinType::Std { module, name, args } => {
@@ -4210,7 +4206,7 @@ fn captures(
                 recursive,
                 ..
             } => {
-                let task = matches!(expression.ty, Type::Task(_));
+                let task = matches!(expression.ty, Type::Once(_));
                 let class = if task || *owned { "Send" } else { "Capture" };
                 // A `let rec` function is lifted to take its captures by value or by reference
                 // (B09), which a type variable cannot decide: the type is known after
@@ -4819,7 +4815,7 @@ fn drop_components(
             Type::Array(element)
             | Type::List(element)
             | Type::Vec(element)
-            | Type::Task(element) => pending.push((**element).clone()),
+            | Type::Once(element) => pending.push((**element).clone()),
             // The last strong pointer drops the shared value (C10).
             Type::Shared(element, kind) if !kind.weak() => pending.push((**element).clone()),
             _ => {}
@@ -5519,7 +5515,7 @@ impl Specializer<'_> {
             constraints: Vec::new(),
             members: Vec::new(),
             capture_count: 0,
-            is_task: false,
+            is_once: false,
             owned_captures: false,
             contracts: Default::default(),
         });
@@ -5585,7 +5581,7 @@ impl Specializer<'_> {
             constraints: Vec::new(),
             members: Vec::new(),
             capture_count: 0,
-            is_task: false,
+            is_once: false,
             owned_captures: false,
             contracts: Default::default(),
         });

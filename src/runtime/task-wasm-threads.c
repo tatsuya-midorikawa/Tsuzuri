@@ -358,7 +358,7 @@ int32_t tsuzuri_mutex_parallel_ok(void) { return mutex_held == 0; }
 int32_t tsuzuri_mutex_wait_ok(void) { return mutex_held == 0; }
 
 /* Channel (F10 Phase 2): the block that the generated code allocates (src/llvm_sync.rs), as in the
-   native runtime (src/runtime/task.c). Every operation runs under `queue_mutex`, which also guards
+   native runtime (src/runtime/tzroutine.c since TZ12). Every operation runs under `queue_mutex`, which also guards
    the counts of `waiting`, so that "every task is waiting" is decided on one consistent view. */
 typedef struct {
     uint64_t capacity;

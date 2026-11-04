@@ -784,7 +784,6 @@ fn mentions_variable(ty: &TypeExpr) -> bool {
             | TypeExprKind::Array(inner)
             | TypeExprKind::ArrayView(inner)
             | TypeExprKind::List(inner)
-            | TypeExprKind::Task(inner)
             | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Own(inner)
             | TypeExprKind::Mut(inner)

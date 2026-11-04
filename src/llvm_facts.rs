@@ -31,7 +31,7 @@ fn scalar(ty: &Type) -> bool {
 fn hidden(ty: &Type, module: &CheckedModule) -> bool {
     matches!(
         ty,
-        Type::Shared(..) | Type::Handle(_) | Type::Function(..) | Type::Task(_) | Type::Dyn(_)
+        Type::Shared(..) | Type::Handle(_) | Type::Function(..) | Type::Once(_) | Type::Dyn(_)
     ) || matches!(ty, Type::Record(id, _) if module.records[*id].opaque())
 }
 
@@ -596,7 +596,7 @@ pub(super) fn apply(
         result: "",
         memory: String::new(),
     };
-    if function.capture_count != 0 || function.is_task {
+    if function.capture_count != 0 || function.is_once {
         return facts;
     }
     facts.parameters = parameter_facts(function, module);
@@ -910,7 +910,7 @@ pub(super) fn reuse_pure_calls(module: &CheckedModule, ir: String) -> String {
         .filter(|function| {
             function.origin.pure
                 && function.capture_count == 0
-                && !function.is_task
+                && !function.is_once
                 && function.origin.cpu == 0
                 && matches!(function.signature.result, Type::Integer(..))
                 && function

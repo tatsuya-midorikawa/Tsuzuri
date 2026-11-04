@@ -577,7 +577,6 @@ pub(super) fn instrument_with(
         .filter(|name| {
             !external.contains(*name)
                 && !name.starts_with("@__")
-                && !name.starts_with("@tz.task.item.")
                 && !name.starts_with("@tz.parallel.chunk.")
                 && !name.starts_with("@tz.domain.thunk.")
                 // TZ02: the tzroutine runtime calls these as `void (*)(void *)`.

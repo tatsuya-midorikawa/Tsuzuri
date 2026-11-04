@@ -419,7 +419,7 @@ impl Checker<'_> {
                 | Type::List(ty)
                 | Type::Vec(ty)
                 | Type::FixedArray(ty, _)
-                | Type::Task(ty)
+                | Type::Once(ty)
                 | Type::Shared(ty, _)
                 | Type::Reference(ty, _) => open(checker, ty),
                 Type::Function(parameters, result) => {

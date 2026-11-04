@@ -454,11 +454,8 @@ impl<'a> Run<'a, '_> {
             | K::HostCall(..)
             | K::Lambda { .. }
             | K::Closure(..)
-            | K::TaskRun(_)
             | K::RoutineGo(_)
             | K::SelectWait(_)
-            | K::TaskParallel(_)
-            | K::TaskParallelResults(_)
             | K::Parallel(..)
             | K::StructuralCompare(..)
             | K::StructuralHash(_)

@@ -25,7 +25,7 @@ fn collect_types(ty: &Type, found: &mut BTreeSet<Type>) {
             | Type::ArrayView(inner)
             | Type::List(inner)
             | Type::Vec(inner)
-            | Type::Task(inner)
+            | Type::Once(inner)
             | Type::Reference(inner, _)
             | Type::Shared(inner, _) => pending.push(inner),
             Type::FixedArray(element, length) => {
@@ -72,7 +72,7 @@ fn concrete(ty: &Type) -> bool {
             | Type::ArrayView(inner)
             | Type::List(inner)
             | Type::Vec(inner)
-            | Type::Task(inner)
+            | Type::Once(inner)
             | Type::Reference(inner, _)
             | Type::Shared(inner, _) => pending.push(inner),
             Type::FixedArray(element, length) => {

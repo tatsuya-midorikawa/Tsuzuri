@@ -253,7 +253,6 @@ struct Parser<'a> {
     position: usize,
     previous_end: usize,
     nesting: usize,
-    in_task: bool,
     /// Inside the block of a `tzroutine { }` (TZ02): as in a task block, a newline ends a `let`.
     in_routine: bool,
     stop_at_arm: bool,
@@ -301,7 +300,6 @@ impl<'a> Parser<'a> {
             position: 0,
             previous_end: 0,
             nesting: 0,
-            in_task: false,
             in_routine: false,
             stop_at_arm: false,
             stop_at_arrow: false,
@@ -1108,7 +1106,6 @@ impl Parser<'_> {
         }
         self.previous_end = self.tokens[self.position.saturating_sub(1)].span.end;
         self.nesting = 0;
-        self.in_task = false;
         self.in_routine = false;
         self.stop_at_arm = false;
         self.stop_at_arrow = false;
@@ -2546,17 +2543,15 @@ impl Parser<'_> {
             self.dyn_type()?
         } else {
             let mut name = self.qualified_ident()?;
-            // The builtin types `Array`, `Task`, and `Vec` belong to the std namespace too.
-            if let Some(builtin @ ("Array" | "Task" | "Vec")) = name
+            // The builtin types `Array` and `Vec` belong to the std namespace too.
+            if let Some(builtin @ ("Array" | "Vec")) = name
                 .text
                 .strip_prefix(crate::stdlib::NAMESPACE)
                 .and_then(|rest| rest.strip_prefix("::"))
             {
                 name.text = builtin.into();
             }
-            if name.text == "Task" && self.at(&TokenKind::Less) {
-                TypeExprKind::Task(Box::new(self.single_type_argument()?))
-            } else if name.text == "Array" && self.at(&TokenKind::Less) {
+            if name.text == "Array" && self.at(&TokenKind::Less) {
                 TypeExprKind::Array(Box::new(self.single_type_argument()?))
             } else if self.at(&TokenKind::Less) && self.current().span.start == self.previous_end {
                 TypeExprKind::Apply(Box::new(name), self.type_arguments()?.into_boxed_slice())
@@ -2821,8 +2816,7 @@ impl Parser<'_> {
             let checked = first.is_none() && self.checked_attribute();
             let member = first.is_none() && self.continues_group(bindings.last());
             if first.is_none() && (member || self.eat(&TokenKind::Let)) {
-                let mut binding =
-                    self.binding(self.in_task || self.in_routine, false, member, checked)?;
+                let mut binding = self.binding(self.in_routine, false, member, checked)?;
                 if checked {
                     binding.value = self.checked(binding.value)?;
                 }
@@ -2830,8 +2824,7 @@ impl Parser<'_> {
                 bindings.push(binding);
             } else if first.is_none() && self.use_binding_ahead() {
                 self.take();
-                let mut binding =
-                    self.binding(self.in_task || self.in_routine, true, false, false)?;
+                let mut binding = self.binding(self.in_routine, true, false, false)?;
                 if checked {
                     binding.value = self.checked(binding.value)?;
                 }
@@ -2843,11 +2836,16 @@ impl Parser<'_> {
                     "@checked applies to a let or expression statement in a block",
                 ));
             } else if first.is_none() && self.at(&TokenKind::Return) {
-                break self.task_return()?;
+                // TZ12: the end of a `task { }` was the last place outside a computation expression.
+                return Err(self.error_of(
+                    DiagnosticKind::ReturnOutsideTaskEnd,
+                    "'return' is only allowed in a computation expression; a block's value is its last expression",
+                ));
             } else if first.is_none() && self.at(&TokenKind::Do) {
-                let binding = self.task_do()?;
-                depth = depth.max(binding.value.depth);
-                bindings.push(binding);
+                return Err(self.error_of(
+                    DiagnosticKind::DoBangOutsideTask,
+                    "'do!' is only allowed in a computation expression or a function body that runs IO directly",
+                ));
             } else if first.is_none() && self.at(&TokenKind::RightBrace) {
                 break self.make(ExprKind::Unit, self.current().span, 1)?;
             } else {
@@ -2919,17 +2917,6 @@ impl Parser<'_> {
         )
     }
 
-    fn task(&mut self) -> Result<Expr, Diagnostic> {
-        let start = self.take().span;
-        let outer = (self.in_task, self.in_routine);
-        (self.in_task, self.in_routine) = (true, false);
-        let body = self.block()?;
-        (self.in_task, self.in_routine) = outer;
-        let span = start.through(body.span);
-        let depth = body.depth + 1;
-        self.make(ExprKind::Task(Box::new(body)), span, depth)
-    }
-
     /// Whether the `tzroutine` at the position starts a `tzroutine { ... }` expression: a `{` follows on
     /// the same line (TZ02). Anywhere else the word is an ordinary identifier.
     /// Whether `select` starts a select expression (TZ04): the next token is `|` and the one after it
@@ -2958,65 +2945,13 @@ impl Parser<'_> {
     /// as in a function body, not the binds of a task (TZ02).
     fn tzroutine(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.take().span;
-        let outer = (self.in_task, self.in_routine);
-        (self.in_task, self.in_routine) = (false, true);
+        let outer = self.in_routine;
+        self.in_routine = true;
         let body = self.block()?;
-        (self.in_task, self.in_routine) = outer;
+        self.in_routine = outer;
         let span = start.through(body.span);
         let depth = body.depth + 1;
         self.make(ExprKind::Routine(Box::new(body)), span, depth)
-    }
-
-    fn task_return(&mut self) -> Result<Expr, Diagnostic> {
-        if !self.in_task {
-            return Err(self.error_of(
-                DiagnosticKind::ReturnOutsideTaskEnd,
-                "'return' is only allowed at the end of a task block",
-            ));
-        }
-        let start = self.take().span;
-        let run = self.eat(&TokenKind::Bang);
-        let value = self.expression_inner(0, true, true)?;
-        let value = if run {
-            let span = start.through(value.span);
-            let depth = value.depth + 1;
-            self.make(ExprKind::TaskRun(Box::new(value)), span, depth)?
-        } else {
-            value
-        };
-        self.eat(&TokenKind::Semicolon);
-        Ok(value)
-    }
-
-    fn task_do(&mut self) -> Result<Binding, Diagnostic> {
-        if !self.in_task {
-            return Err(self.error_of(
-                DiagnosticKind::DoBangOutsideTask,
-                "'do!' is only allowed inside a task block",
-            ));
-        }
-        let start = self.take().span;
-        self.expect(&TokenKind::Bang, "'!' after 'do'")?;
-        let value = self.expression_inner(0, true, true)?;
-        let span = start.through(value.span);
-        let depth = value.depth + 1;
-        let value = self.make(ExprKind::TaskRun(Box::new(value)), span, depth)?;
-        self.binding_end(true)?;
-        Ok(Binding {
-            name: Ident {
-                text: "_".into(),
-                span,
-                provenance: Provenance::Generated,
-            },
-            mutable: false,
-            using: false,
-            recursion: Recursion::None,
-            annotation: Some(TypeExpr {
-                kind: TypeExprKind::Named("unit".into()),
-                span,
-            }),
-            value,
-        })
     }
 
     /// A syntax error of `let rec` (B09) at the current token, or at `span`. The parser functions
@@ -3046,21 +2981,17 @@ impl Parser<'_> {
         if member {
             return self.recursive_member(top_level, checked);
         }
-        let run = self.eat(&TokenKind::Bang);
-        if run && !self.in_task {
+        if self.eat(&TokenKind::Bang) {
             return Err(self.error_of(
                 DiagnosticKind::UseBangOutsideComputation,
                 if using {
-                    "'use!' is only allowed inside a task block or a computation expression"
+                    "'use!' is only allowed in a computation expression or a function body that runs IO directly"
                 } else {
-                    "'let!' is only allowed inside a task block"
+                    "'let!' is only allowed in a computation expression or a function body that runs IO directly"
                 },
             ));
         }
-        if run && self.at(&TokenKind::Rec) {
-            return self.rec_error_of(DiagnosticKind::RecursiveLetBang, LET_BANG_REC, None);
-        }
-        let mut binding = if using {
+        let binding = if using {
             self.use_binding_value(top_level)?
         } else {
             self.binding_value(top_level)?
@@ -3071,11 +3002,6 @@ impl Parser<'_> {
                 CHECKED_LET_REC,
                 Some(binding.name.span),
             );
-        }
-        if run {
-            let span = binding.value.span;
-            let depth = binding.value.depth + 1;
-            binding.value = self.make(ExprKind::TaskRun(Box::new(binding.value)), span, depth)?;
         }
         self.binding_end(top_level)?;
         Ok(binding)
@@ -3259,19 +3185,16 @@ impl Parser<'_> {
     }
 
     fn computation(&mut self, builder: Ident) -> Result<Expr, Diagnostic> {
-        let outer = (self.in_task, self.in_routine);
-        (self.in_task, self.in_routine) = (false, false);
+        let outer = self.in_routine;
+        self.in_routine = false;
         let body = self.computation_block()?;
-        (self.in_task, self.in_routine) = outer;
+        self.in_routine = outer;
         let span = builder.span.through(body.span);
         let depth = body.depth + 1;
         self.make(ExprKind::Computation(builder, Box::new(body)), span, depth)
     }
 
     fn implicit_computation_ahead(&self, indent: Option<usize>) -> bool {
-        if self.in_task {
-            return false;
-        }
         let mut depth = 0usize;
         let mut statement = true;
         let mut previous_end = self.previous_end;
@@ -4107,7 +4030,6 @@ impl Parser<'_> {
                 | TokenKind::True
                 | TokenKind::False
                 | TokenKind::New
-                | TokenKind::Task
                 | TokenKind::Backslash
                 | TokenKind::Ref
                 | TokenKind::Deref
@@ -4374,7 +4296,6 @@ impl Parser<'_> {
     fn primary(&mut self, allow_record: bool, stop_at_newline: bool) -> Result<Expr, Diagnostic> {
         let start = self.current().span;
         let kind = match &self.current().kind {
-            TokenKind::Task => return self.task(),
             TokenKind::Backslash => return self.explicit_lambda(),
             TokenKind::New => return self.new_collection(),
             TokenKind::While => return self.while_expression(),
@@ -4685,14 +4606,14 @@ impl Parser<'_> {
         arrow: Span,
         stop_at_newline: bool,
     ) -> Result<Expr, Diagnostic> {
-        let outer = (self.in_task, self.in_routine);
-        (self.in_task, self.in_routine) = (false, false);
+        let outer = self.in_routine;
+        self.in_routine = false;
         let body = if self.implicit_computation_ahead(Some(self.column(self.current().span))) {
             self.body_expression()?
         } else {
             self.expression_inner(0, true, stop_at_newline)?
         };
-        (self.in_task, self.in_routine) = outer;
+        self.in_routine = outer;
         self.record_legacy_lambda(&name, arrow, &body);
         let span = name.span.through(body.span);
         let depth = body.depth + 1;

@@ -617,7 +617,7 @@ fn reason(effect: &Effect) -> String {
         }
         Effect::Builtin(builtin, _) => builtin_reason(*builtin, builtin_facts(*builtin).dynamic),
         Effect::Concurrency => {
-            "the callback starts a task or a parallel operation (effect: task)".into()
+            "the callback starts a tzroutine or a parallel operation (effect: task)".into()
         }
         Effect::Dyn => "the callback uses dyn dispatch (effect: dyn)".into(),
         Effect::UserDrop(ty) => format!(

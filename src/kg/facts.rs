@@ -29,7 +29,7 @@ pub(crate) fn roots(module: &CheckedModule, capture: &Capture) -> Vec<Option<Str
         // A lambda's parent comes before it, but a chain of lifts is short; follow it.
         for _ in 0..module.functions.len() {
             let function = &module.functions[at];
-            if matches!(function.module.as_str(), "$lambda" | "$task") {
+            if matches!(function.module.as_str(), "$lambda" | "$once") {
                 match function.origin.parent {
                     Some(parent) if parent != at => {
                         at = parent;

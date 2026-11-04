@@ -2309,7 +2309,7 @@ TZR_API int32_t tsuzuri_tz_waitgroup_wait(_Atomic uint64_t *word) {
 /* ---------------------------------------------------------------- DataChannel (TZ12) */
 
 /* DataChannel (F10 Phase 2, renamed in TZ03) on the scheduler: the generated code allocates and
- * initializes the block (src/llvm_sync.rs) and calls these with the ABI and statuses that task.c had
+ * initializes the block (src/llvm_sync.rs) and calls these with the ABI and statuses that the task pool's runtime (task.c, removed in TZ12) had
  * (0 done, 1 no receiver or no sender is left, 2 deadlock). The header of the block is ten words;
  * the reserved word (offset 56) is the channel's tzr_lock and the two waiter words (64 and 72) are
  * the heads of the receivers' and the senders' queues, all zero from the generated code. A G or a

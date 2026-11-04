@@ -439,8 +439,6 @@ mod simd;
 mod strings;
 #[path = "llvm_sync.rs"]
 mod sync;
-#[path = "llvm_task.rs"]
-mod task;
 #[path = "llvm_timer.rs"]
 mod timer;
 #[path = "llvm_wait.rs"]
@@ -1609,7 +1607,6 @@ pub(crate) fn with_blocking_externs(ir: String, symbols: &BTreeSet<String>) -> S
     output
 }
 
-
 /// Emits the program once, up to the passes over its whole text. `exhausted` tells whether a worker
 /// request found the budget spent.
 #[allow(clippy::too_many_arguments)]
@@ -2725,7 +2722,7 @@ fn environment_type(function: &CheckedFunction, count: usize, module: &CheckedMo
 }
 
 fn immediate_capture(function: &CheckedFunction, count: usize, globals: &Globals) -> bool {
-    if function.is_task || count != 1 {
+    if function.is_once || count != 1 {
         return false;
     }
     let width = match function.signature.parameters[0] {
@@ -2903,7 +2900,7 @@ fn closure_slots(
     let name = function.qualified_name();
     if count == 0 || immediate {
         ("null".to_owned(), "null".to_owned())
-    } else if !function.is_task
+    } else if !function.is_once
         && !function.owned_captures
         && function.signature.parameters[..count]
             .iter()
@@ -2951,7 +2948,7 @@ fn closure_wrappers(
         let environment = environment_type(function, count, module);
         let immediate = immediate_capture(function, count, globals);
         if count != 0 && !immediate {
-            if !function.is_task
+            if !function.is_once
                 && !function.owned_captures
                 && function.signature.parameters[..count]
                     .iter()
@@ -3062,7 +3059,7 @@ fn closure_wrappers(
         );
         let mut env = "%env".to_owned();
         if !immediate
-            && !function.is_task
+            && !function.is_once
             && count != 0
             && function.signature.parameters[..count]
                 .iter()
@@ -3163,7 +3160,7 @@ fn closure_wrappers(
         } else {
             String::new()
         };
-        let borrow = if function.is_task { "" } else { ", i1 %borrow" };
+        let borrow = if function.is_once { "" } else { ", i1 %borrow" };
         output.push_str(&apply.auxiliary_with(
             &format!(
                 "{} @tz.apply.{name}.{count}({argument}ptr %env{borrow})",
@@ -3241,7 +3238,7 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        Type::Function(..) | Type::Task(_) => "%tz.closure".into(),
+        Type::Function(..) | Type::Once(_) => "%tz.closure".into(),
         Type::Dyn(_) => "%tz.dyn".into(),
         Type::Reference(..) if ty.slice_element().is_some() => "%tz.array".into(),
         Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => "ptr".into(),
@@ -3645,7 +3642,7 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         ),
         Type::Reference(value, false) => format!("ref[{}]", canonical_type(value, module)),
         Type::Reference(value, true) => format!("refmut[{}]", canonical_type(value, module)),
-        Type::Task(result) => format!("task[{}]", canonical_type(result, module)),
+        Type::Once(result) => format!("once[{}]", canonical_type(result, module)),
         Type::Shared(value, kind) => format!(
             "{}[{}]",
             match kind {
@@ -4027,7 +4024,7 @@ fn named_types(module: &CheckedModule, emitted: &[bool]) -> BTreeSet<Type> {
             Type::Array(ty)
             | Type::List(ty)
             | Type::Vec(ty)
-            | Type::Task(ty)
+            | Type::Once(ty)
             | Type::FixedArray(ty, _)
             | Type::Shared(ty, _)
             | Type::Reference(ty, _) => visit(ty, pending),
@@ -4271,7 +4268,7 @@ pub fn waits(module: &CheckedModule) -> bool {
 /// Whether the program uses the waits of the tzroutine runtime (TZ06): it waits (`waits`), or a
 /// function that it reaches uses a timer (TZ05) or a sync type of TZ06. Then `Mutex.with_lock` is
 /// the runtime's lock, which a tzroutine may hold while it waits; every other program keeps the
-/// thread's lock of the task runtime (TZ12 moves them all).
+/// lock of F10 on WebAssembly (natively every program uses the runtime's lock since TZ12).
 pub fn uses_tzroutine(module: &CheckedModule) -> bool {
     let reachable = reachable_functions(module, None, true);
     module.functions.iter().enumerate().any(|(id, function)| {
@@ -5145,8 +5142,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             && same_parameters
             && self.function.capture_count == 0
             && target.capture_count == 0
-            && !self.function.is_task
-            && !target.is_task
+            && !self.function.is_once
+            && !target.is_once
             && !dispatched
             && !own
                 .parameters
@@ -5780,20 +5777,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.interpolation(interpolation, &expression.ty)
             }
             TypedExprKind::Call(callee, arguments) => self.call(callee, arguments),
-            TypedExprKind::TaskRun(task) => {
-                let task = self.expression(task);
-                let (code, environment) = self.closure_parts(&task);
-                self.value(format!(
-                    "call {} {code}(ptr {environment})",
-                    self.ty(&expression.ty)
-                ))
-            }
             TypedExprKind::RoutineGo(task) => self.routine_go(task),
             TypedExprKind::SelectWait(wait) => self.select_wait(wait, &expression.ty),
-            TypedExprKind::TaskParallel(tasks) => self.parallel_tasks(tasks, &expression.ty),
-            TypedExprKind::TaskParallelResults(tasks) => {
-                self.parallel_result_tasks(tasks, &expression.ty)
-            }
             TypedExprKind::If {
                 condition,
                 then_branch,
@@ -6199,7 +6184,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     self.instruction(format!("call void @tz.rec.drop(ptr {value})"));
                 }
             }
-            Type::Function(..) | Type::Task(_) => {
+            Type::Function(..) | Type::Once(_) => {
                 self.instruction(format!("call void @tz.closure.drop(%tz.closure {value})"))
             }
             // A14: the vtable's drop slot drops the stored value and frees its data.
@@ -6340,7 +6325,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             Type::Vec(element) => self.clone_vector(element, value),
             Type::Shared(shared, kind) => self.clone_shared(shared, *kind, value),
-            Type::Task(_) => unreachable!("single-use tasks cannot be cloned"),
+            Type::Once(_) => unreachable!("run-once functions cannot be cloned"),
             Type::Handle(_) => unreachable!("extern handles cannot be cloned"),
             // A14 Phase 2: only a `Copy` dyn value has a clone slot.
             Type::Dyn(dyn_type) => {
@@ -6792,57 +6777,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.closure_descriptor(target.function, target.bound, &environment)
     }
 
-    fn parallel_tasks(&mut self, tasks: &TypedExpr, result: &Type) -> String {
-        let tasks = self.expression(tasks);
-        let source = self.value(format!("extractvalue %tz.array {tasks}, 0"));
-        let length = self.value(format!("extractvalue %tz.array {tasks}, 1"));
-        let Type::Array(element) = result else {
-            unreachable!()
-        };
-        let (array, target) = self.allocate_array(element, &length);
-        let ty = self.ty(element);
-        let callback = format!("@tz.task.item.{}", ty.trim_start_matches('%'));
-        if let Some(marks) = &mut self.globals.traps {
-            marks
-                .sources
-                .entry(callback.clone())
-                .or_insert((self.current_span, false));
-        }
-        self.intrinsics.insert(format!(
-            "define internal void {callback}(ptr %context, i64 %index) nounwind {{\n\
-             entry:\n\
-               %source = load ptr, ptr %context\n\
-               %target.slot = getelementptr inbounds {{ ptr, ptr }}, ptr %context, i32 0, i32 1\n\
-               %target = load ptr, ptr %target.slot\n\
-               %slot = getelementptr inbounds %tz.closure, ptr %source, i64 %index\n\
-               %task = load %tz.closure, ptr %slot\n\
-               %descriptor = extractvalue %tz.closure %task, 0\n\
-               %code = load ptr, ptr %descriptor\n\
-               %env = extractvalue %tz.closure %task, 1\n\
-               %result = call {ty} %code(ptr %env)\n\
-               %destination = getelementptr inbounds {ty}, ptr %target, i64 %index\n\
-               store {ty} %result, ptr %destination\n\
-               ret void\n\
-             }}\n"
-        ));
-        let context = self.fresh();
-        self.allocas
-            .push(format!("{context} = alloca {{ ptr, ptr }}, align 16"));
-        self.instruction(format!("store ptr {source}, ptr {context}"));
-        let slot = self.value(format!(
-            "getelementptr inbounds {{ ptr, ptr }}, ptr {context}, i32 0, i32 1"
-        ));
-        self.instruction(format!("store ptr {target}, ptr {slot}"));
-        self.instruction(format!(
-            "call void @tsuzuri_task_parallel(ptr {callback}, ptr {context}, i64 {length})"
-        ));
-        self.instruction(format!("call void @tz.free(ptr {source})"));
-        array
-    }
-
-    /// `tzroutine { body }` (TZ02): moves the captures into the closure of the lifted `Task<unit>`
+    /// `tzroutine { body }` (TZ02): moves the captures into the closure of the lifted run-once
     /// body and hands it to the runtime, which runs it once on a tzroutine and returns at once. The
-    /// task's adapter returns the `i8` of `unit` and frees the environment, and the runtime calls a
+    /// body's adapter returns the `i8` of `unit` and frees the environment, and the runtime calls a
     /// `void (ptr)`, so each site has a start function that forwards to its adapter.
     fn routine_go(&mut self, task: &TypedExpr) -> String {
         let closure = self.expression(task);

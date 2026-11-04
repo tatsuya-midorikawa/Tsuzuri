@@ -28,7 +28,7 @@ pub const CHAPTERS: &[Chapter] = &[
     Chapter {
         name: "language",
         level: 1,
-        title: "Language: modules, declarations, patterns, type classes, builders, tasks, std map",
+        title: "Language: modules, declarations, patterns, type classes, builders, tzroutines, std map",
         text: include_str!("../guide/language.md"),
     },
     Chapter {

@@ -419,7 +419,6 @@ fn builtin_type(ty: &BuiltinType) -> String {
         BuiltinType::List(element) => format!("[|{}|]", builtin_type(element)),
         BuiltinType::Vec(element) => format!("Vec<{}>", builtin_type(element)),
         BuiltinType::Tuple(elements) => format!("({})", builtin_types(elements, " * ")),
-        BuiltinType::Task(result) => format!("Task<{}>", builtin_type(result)),
         BuiltinType::Shared(value, kind) => format!("{}<{}>", kind.name(), builtin_type(value)),
         BuiltinType::Reference(target, false) => format!("ref {}", builtin_type(target)),
         BuiltinType::Reference(target, true) => format!("ref mut {}", builtin_type(target)),
@@ -686,7 +685,6 @@ mod tests {
                 BuiltinType::List(boxed(var("a"))),
                 BuiltinType::Vec(boxed(var("a"))),
                 BuiltinType::Tuple(vec![var("a"), BuiltinType::Concrete(Type::Bool)]),
-                BuiltinType::Task(boxed(var("a"))),
                 BuiltinType::Shared(boxed(var("a")), SharedKind::RcWeak),
                 BuiltinType::Shared(boxed(var("a")), SharedKind::Arc),
                 BuiltinType::Reference(boxed(var("a")), false),
@@ -704,7 +702,7 @@ mod tests {
         assert_eq!(
             builtin_signature(&every),
             "(Integer<'a>, Copy<'b>) => 'a -> i64 -> Maybe<'a> -> Plain -> ['a] -> ref mut ['a..] \
-             -> [|'a|] -> Vec<'a> -> ('a * bool) -> Task<'a> -> Rc.Weak<'a> -> Arc<'a> -> ref 'a \
+             -> [|'a|] -> Vec<'a> -> ('a * bool) -> Rc.Weak<'a> -> Arc<'a> -> ref 'a \
              -> ('a -> 'b -> 'c) -> (fn() -> 'a) -> Unsigned<'a> -> Wide<'a> -> Lane<'a, 4> \
              -> Lane<'a> -> Mask<'a> -> ['a; N]"
         );
@@ -975,7 +973,7 @@ mod tests {
             let name = crate::stdlib::module_name(path).unwrap();
             assert!(names.contains(&name), "{name}");
         }
-        for name in ["Int", "Simd", "Rc", "Arc", "FixedArray", "Dyn", "Task"] {
+        for name in ["Int", "Simd", "Rc", "Arc", "FixedArray", "Dyn", "Routine"] {
             assert!(names.contains(&name), "{name}");
         }
         assert_eq!(names.last(), Some(&PRELUDE));

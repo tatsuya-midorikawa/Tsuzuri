@@ -536,9 +536,7 @@ pub fn valid_namespace(text: &str, edition: Edition) -> bool {
             first != crate::stdlib::NAMESPACE && !crate::stdlib::is_reserved_module(first)
         })
         && text.split("::").all(|segment| {
-            segment != "_"
-            && segment != "Task"
-            && crate::lexer::lex(segment, edition).is_ok_and(|tokens| {
+            segment != "_" && crate::lexer::lex(segment, edition).is_ok_and(|tokens| {
                 matches!(
                     tokens.as_slice(),
                     [Token { kind: TokenKind::Ident(name), .. }, Token { kind: TokenKind::End, .. }]
@@ -1669,7 +1667,6 @@ mod tests {
             "std",
             "std::Tools",
             "match",
-            "Task",
             "_",
             "1st",
             long.as_str(),

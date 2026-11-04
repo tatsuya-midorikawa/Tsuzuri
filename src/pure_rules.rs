@@ -11,7 +11,7 @@ fn opaque_input(ty: &Type, types: &TypeContext<'_>, shared: bool) -> bool {
         ty,
         |part| {
             matches!(part, Type::Function(parameters, _) if !parameters.pure)
-                || matches!(part, Type::Dyn(_) | Type::Task(_))
+                || matches!(part, Type::Dyn(_) | Type::Once(_))
                 || (!shared && matches!(part, Type::Reference(_, true)))
         },
         |part| {
@@ -76,7 +76,7 @@ fn plain_part(ty: &Type, types: &TypeContext<'_>) -> bool {
         Type::Reference(..)
         | Type::Shared(..)
         | Type::Handle(_)
-        | Type::Task(_)
+        | Type::Once(_)
         | Type::Dyn(_)
         | Type::Function(..)
         | Type::ArrayView(_)
@@ -117,7 +117,7 @@ pub(crate) fn what(ty: &Type, types: &TypeContext<'_>) -> &'static str {
         Type::Reference(..) => "a reference",
         Type::Shared(..) => "an 'Rc' or 'Arc'",
         Type::Handle(_) => "an extern handle",
-        Type::Function(..) | Type::Dyn(_) | Type::Task(_) => "a function, 'dyn', or a task",
+        Type::Function(..) | Type::Dyn(_) | Type::Once(_) => "a function, 'dyn', or a task",
         _ if ty.has_user_drop(types) => "a value with a user Drop",
         _ => "a type that is not plain data",
     }
@@ -189,11 +189,12 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | NetWrite | NetClose | NetClassify | NetWatch | NetUnwatch | NetConnect | NetNames
         | NetSend => Some(Outside),
         BenchNow | BenchConsume | GenSeed => Some(Clock),
-        TaskRun | TaskParallel | TaskParallelResults | TaskScope | RoutineScope | ParallelInit
-        | ParallelMap | ParallelMapRef | ParallelReduce | ParallelForEachChunk | AsyncResume
-        | AsyncTake | AsyncPut | AsyncNextId | AsyncClock | AsyncWait | AsyncPosted
-        | AsyncRetire | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs
-        | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => Some(Task),
+        RoutineScope | ParallelInit | ParallelMap | ParallelMapRef | ParallelReduce
+        | ParallelForEachChunk | AsyncResume | AsyncTake | AsyncPut | AsyncNextId | AsyncClock
+        | AsyncWait | AsyncPosted | AsyncRetire | RoutineGo | WaitGroupGo | RoutineYield
+        | RoutineCount | RoutineMaxProcs | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => {
+            Some(Task)
+        }
         // TZ08: the function runs on the calling tzroutine's own thread.
         RoutineWithLockedThread => Some(Task),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
@@ -459,11 +460,7 @@ pub(crate) fn builtin_impure(builtin: Builtin) -> bool {
 fn closed_task_operation(builtin: Builtin) -> bool {
     matches!(
         builtin,
-        Builtin::TaskRun
-            | Builtin::TaskParallel
-            | Builtin::TaskParallelResults
-            | Builtin::TaskScope
-            | Builtin::ParallelInit
+        Builtin::ParallelInit
             | Builtin::ParallelMap
             | Builtin::ParallelMapRef
             | Builtin::ParallelReduce
@@ -575,7 +572,7 @@ fn closed_callable<'a>(
     active: &mut Vec<&'a TypedExpr>,
 ) -> Result<Option<Vec<CallTarget>>, LimitExceeded> {
     let staged =
-        expression.ty.function_purity() == Some(true) || matches!(expression.ty, Type::Task(_));
+        expression.ty.function_purity() == Some(true) || matches!(expression.ty, Type::Once(_));
     let mut pending = vec![(expression, true, staged)];
     let mut locals = BTreeSet::new();
     let mut targets = Vec::new();
@@ -895,7 +892,6 @@ impl<'a> Scanner<'a> {
                 use TypedExprKind as K;
                 match &expression.kind {
                     K::HostCall(import, _) => Some(Effect::Host(import.native_symbol.clone())),
-                    K::TaskRun(_) | K::TaskParallel(_) | K::TaskParallelResults(_) => None,
                     // Spawning outlives the call, unlike the closed task operations (TZ02).
                     K::RoutineGo(_) => Some(Effect::Builtin(Builtin::RoutineGo, Category::Task)),
                     // A select waits on channels (TZ04), as Channel.recv does.
@@ -1003,7 +999,7 @@ impl<'a> Scanner<'a> {
                     | K::TypeFunction { .. }
                     | K::Lambda { .. }
                     | K::CaseConstructor { .. } => Some(Effect::Unresolved),
-                    K::Function(_) | K::Closure(..) if matches!(expression.ty, Type::Task(_)) => {
+                    K::Function(_) | K::Closure(..) if matches!(expression.ty, Type::Once(_)) => {
                         let targets = closed_callable(
                             expression,
                             &aliases,
@@ -1087,7 +1083,7 @@ impl<'a> Scanner<'a> {
             }
             if !matches!(expression.kind, TypedExprKind::Lambda { .. }) {
                 pending.extend(expression.children());
-            } else if matches!(expression.ty, Type::Task(_))
+            } else if matches!(expression.ty, Type::Once(_))
                 && let TypedExprKind::Lambda { body, .. } = &expression.kind
             {
                 pending.push(body);

@@ -158,7 +158,7 @@ pub(super) fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
         | Type::Array(_)
         | Type::List(_)
         | Type::Dyn(_) => 16,
-        Type::Function(..) | Type::Task(_) | Type::Vec(_) => 32,
+        Type::Function(..) | Type::Once(_) | Type::Vec(_) => 32,
         _ => 8,
     }
 }
@@ -355,7 +355,7 @@ impl FunctionEmitter<'_, '_> {
 
     fn reserve_buffer(&mut self, bytes: usize) -> bool {
         if self.heap_initializer
-            || self.function.is_task
+            || self.function.is_once
             || self
                 .globals
                 .recursive_functions

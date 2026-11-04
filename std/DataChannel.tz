@@ -1,9 +1,9 @@
-/// The sending end of a bounded channel. `DataChannel.send` borrows it, so several tasks may share one
-/// through a `Task.scope` or an `Arc`, and `DataChannel.clone_sender` makes an owner of its own. The
+/// The sending end of a bounded channel. `DataChannel.send` borrows it, so several tzroutines may share one
+/// through a `Routine.scope` or an `Arc`, and `DataChannel.clone_sender` makes an owner of its own. The
 /// channel closes for its receivers when the last `Sender` is dropped; the drop glue below is what
 /// closes it, so a `Sender` that is never dropped keeps the channel open.
 record Sender<'a> { block: i64 }
-/// The receiving end of a bounded channel. `DataChannel.recv` borrows it, so several tasks may take
+/// The receiving end of a bounded channel. `DataChannel.recv` borrows it, so several tzroutines may take
 /// items from one receiver (an item reaches exactly one of them). Dropping it makes every later
 /// `DataChannel.send` return its item in an `Error`.
 record Receiver<'a> { block: i64 }

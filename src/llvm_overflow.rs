@@ -44,7 +44,7 @@ impl Report {
         function.origin.module == ModuleOrigin::User
             && function.origin.bench.is_none()
             && (!function.module.starts_with('$')
-                || matches!(function.module.as_str(), "$lambda" | "$task"))
+                || matches!(function.module.as_str(), "$lambda" | "$once"))
             // The checker makes the top-level code of a file `$entry` and the body of a test
             // `$test.N`, generated functions.
             && (function.origin.provenance == Provenance::User

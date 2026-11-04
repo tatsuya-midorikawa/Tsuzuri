@@ -7,7 +7,6 @@ pub enum Constructor {
     Array,
     List,
     Vec,
-    Task,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,7 +30,6 @@ impl Constructor {
             Self::Array => "Array".into(),
             Self::List => "List".into(),
             Self::Vec => "Vec".into(),
-            Self::Task => "Task".into(),
         }
     }
 }
@@ -66,7 +64,6 @@ pub(super) fn apply(head: Type, arguments: Box<[Type]>) -> Type {
             Constructor::Array => Type::Array(Box::new(complete.remove(0))),
             Constructor::List => Type::List(Box::new(complete.remove(0))),
             Constructor::Vec => Type::Vec(Box::new(complete.remove(0))),
-            Constructor::Task => Type::Task(Box::new(complete.remove(0))),
         };
     }
     Type::Application(Box::new(head), arguments)
@@ -91,7 +88,6 @@ pub(super) fn decompose(ty: &Type) -> Option<(Constructor, Box<[Type]>)> {
         Type::Array(element) => Some((Constructor::Array, vec![(**element).clone()].into())),
         Type::List(element) => Some((Constructor::List, vec![(**element).clone()].into())),
         Type::Vec(element) => Some((Constructor::Vec, vec![(**element).clone()].into())),
-        Type::Task(element) => Some((Constructor::Task, vec![(**element).clone()].into())),
         _ => None,
     }
 }
@@ -148,7 +144,6 @@ pub(super) fn resolve_constructor(
         "Array" => Constructor::Array,
         "List" => Constructor::List,
         "Vec" => Constructor::Vec,
-        "Task" => Constructor::Task,
         _ => match names.named_type(module, name, expression.span)? {
             NamedType::Record(info) => Constructor::Record(info.id, names.record_arities[info.id]),
             NamedType::Union(info) => Constructor::Union(info.id, names.union_arities[info.id]),

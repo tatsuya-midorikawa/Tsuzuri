@@ -18,11 +18,11 @@ const MAX_LOCATIONS: usize = 10_000;
 const MAX_COMPLETIONS: usize = 500;
 const MAX_SYMBOLS: usize = 256;
 
-const KEYWORDS: [&str; 43] = [
+const KEYWORDS: [&str; 42] = [
     "fn", "def", "rec", "and", "export", "extern", "private", "record", "union", "type", "const",
-    "test", "bench", "class", "instance", "deriving", "dyn", "let", "task", "do", "return",
-    "yield", "for", "in", "to", "downto", "while", "break", "continue", "mut", "ref", "deref",
-    "new", "as", "if", "then", "elif", "else", "match", "with", "when", "true", "false",
+    "test", "bench", "class", "instance", "deriving", "dyn", "let", "do", "return", "yield", "for",
+    "in", "to", "downto", "while", "break", "continue", "mut", "ref", "deref", "new", "as", "if",
+    "then", "elif", "else", "match", "with", "when", "true", "false",
 ];
 const TOKEN_TYPES: [&str; 11] = [
     "namespace",

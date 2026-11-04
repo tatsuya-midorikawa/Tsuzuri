@@ -85,7 +85,7 @@ pub(crate) fn counted(function: &CheckedFunction) -> bool {
         && function.origin.test.is_none()
         && function.origin.bench.is_none()
         // Lifted lambdas and tasks count; builtin, case, and export wrappers do not.
-        && (!function.module.starts_with('$') || matches!(function.module.as_str(), "$lambda" | "$task"))
+        && (!function.module.starts_with('$') || matches!(function.module.as_str(), "$lambda" | "$once"))
         && (function.origin.provenance == Provenance::User || function.origin.parent.is_some())
         && !matches!(
             function.body.kind,

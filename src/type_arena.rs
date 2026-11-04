@@ -177,7 +177,7 @@ impl Hash for Fingerprint<'_> {
             | Type::ArrayView(inner)
             | Type::List(inner)
             | Type::Vec(inner)
-            | Type::Task(inner) => Fingerprint(inner).hash(state),
+            | Type::Once(inner) => Fingerprint(inner).hash(state),
             Type::Reference(inner, mutable) => {
                 mutable.hash(state);
                 Fingerprint(inner).hash(state);

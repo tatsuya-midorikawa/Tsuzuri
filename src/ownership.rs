@@ -215,7 +215,7 @@ pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
             &function.body,
             true,
             &closed,
-            function.is_task,
+            function.is_once,
             false,
             Contract::of(function),
             &mut recovered,
@@ -238,7 +238,7 @@ pub(crate) fn copy_reads(module: &CheckedModule) -> Vec<Vec<CopyRead>> {
             &function.body,
             false,
             &closed,
-            function.is_task,
+            function.is_once,
             module.user_drops.values().any(|drop| *drop == id),
             Contract::of(function),
             &mut Vec::new(),
@@ -286,7 +286,7 @@ fn check_functions(
                 &function.body,
                 infer,
                 &closed,
-                function.is_task,
+                function.is_once,
                 module.user_drops.values().any(|drop| *drop == id),
                 Contract::of(function),
                 &mut recovered,
@@ -544,7 +544,7 @@ pub(crate) fn events_abstract(
             &function.body,
             true,
             &closed,
-            function.is_task,
+            function.is_once,
             module.user_drops.values().any(|drop| *drop == id),
             Contract::of(function),
             &mut Vec::new(),
@@ -597,11 +597,8 @@ fn closed(
         | E::CaseConstructor { .. }
         | E::Method(..)
         | E::TypeFunction { .. }
-        | E::TaskRun(_)
         | E::RoutineGo(_)
         | E::SelectWait(_)
-        | E::TaskParallel(_)
-        | E::TaskParallelResults(_)
         | E::Parallel(..) => true,
         E::Local(id) => locals.get(id).copied().unwrap_or(false),
         E::Construct { payload, .. } => payload
@@ -885,7 +882,7 @@ impl<'a> Checker<'a, '_> {
                         &function.body,
                         false,
                         self.closed,
-                        function.is_task,
+                        function.is_once,
                         false,
                         Contract {
                             result: Some(&shifted),
@@ -1277,7 +1274,7 @@ impl<'a> Checker<'a, '_> {
                 let diagnostic = error(
                     DiagnosticKind::TaskResultRetainsBorrow,
                     if task {
-                        "task results cannot retain borrowed values"
+                        "the result of a tzroutine body cannot retain borrowed values"
                     } else {
                         "cannot return a reference to a local value"
                     },
@@ -2902,7 +2899,7 @@ impl<'a> Checker<'a, '_> {
             body,
             self.infer,
             self.closed,
-            matches!(expression.ty, Type::Task(_)),
+            matches!(expression.ty, Type::Once(_)),
             false,
             Contract::default(),
             self.recovered,
@@ -2953,10 +2950,10 @@ impl<'a> Checker<'a, '_> {
                 }
             };
             let value = self.eval(&value, Use::Consume, during)?;
-            if matches!(expression.ty, Type::Task(_)) && !value.loans.is_empty() {
+            if matches!(expression.ty, Type::Once(_)) && !value.loans.is_empty() {
                 return Err(error(
                     DiagnosticKind::TaskCaptureRetainsBorrow,
-                    "task captures cannot retain borrowed values, including borrowed function environments",
+                    "the captures of a tzroutine cannot retain borrowed values, including borrowed function environments",
                     expression.span,
                 ));
             }
@@ -3157,19 +3154,16 @@ impl<'a> Checker<'a, '_> {
                 });
                 for capture in captures {
                     let value = self.eval(capture, Use::Consume, &during)?;
-                    if matches!(expression.ty, Type::Task(_)) && !value.loans.is_empty() {
+                    if matches!(expression.ty, Type::Once(_)) && !value.loans.is_empty() {
                         return Err(error(DiagnosticKind::TaskCaptureRetainsBorrow,
-                            "task captures cannot retain borrowed values, including borrowed function environments",
+                            "the captures of a tzroutine cannot retain borrowed values, including borrowed function environments",
                             expression.span,
                         ));
                     }
                     result.loans.extend(value.loans);
                 }
             }
-            E::TaskRun(value)
-            | E::RoutineGo(value)
-            | E::TaskParallel(value)
-            | E::TaskParallelResults(value) => {
+            E::RoutineGo(value) => {
                 self.eval(value, Use::Consume, &during)?;
             }
             // A select (TZ04): the arms in order. A channel is lent until the wait, so a later
@@ -3247,7 +3241,7 @@ impl<'a> Checker<'a, '_> {
                             && self.shares_borrowed_environment(argument, &value)
                         {
                             return Err(error(DiagnosticKind::TaskScopeSharesBorrowedEnvironment,
-                                "task scopes can share only values with proven owned environments",
+                                "Routine.scope can share only values with proven owned environments",
                                 argument.span,
                             ));
                         }
@@ -4408,7 +4402,7 @@ mod event_tests {
                             &function.body,
                             infer,
                             &closed,
-                            function.is_task,
+                            function.is_once,
                             module.user_drops.values().any(|drop| *drop == id),
                             Contract::of(function),
                             &mut recovered,

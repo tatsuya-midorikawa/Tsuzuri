@@ -304,7 +304,7 @@ impl FunctionEmitter<'_, '_> {
         });
     }
 
-    /// The `Task.scope` child of group item `%chunk`: the callback gets the shared borrow and the
+    /// The `Routine.scope` child of group item `%chunk`: the callback gets the shared borrow and the
     /// item's index, and its result goes to the same index of the output (F10).
     fn parallel_scope_child(
         &mut self,
@@ -598,11 +598,9 @@ impl FunctionEmitter<'_, '_> {
         result
     }
 
-    /// `Task.scope shared count callback`: one group item per index below `count`, so that every
-    /// child is a unit the pool may run on its own thread, each calling the callback with the
-    /// shared borrow and its index, and the results in index order (F10). A negative count traps
-    /// where the result array is allocated. `Routine.scope` is the same with a tzroutine for each
-    /// child (TZ11).
+    /// `Routine.scope shared count callback` (TZ11): one child per index below `count`, each on a
+    /// tzroutine of its own, calling the callback with the shared borrow and its index, and the
+    /// results in index order. A negative count traps where the result array is allocated.
     fn parallel_scope(
         &mut self,
         operation: Builtin,
@@ -611,7 +609,7 @@ impl FunctionEmitter<'_, '_> {
     ) -> String {
         let callback_type = &arguments[2].ty;
         let shared_type = &arguments[0].ty;
-        // A borrowed temporary (`Task.scope (ref 5) ...`) lives in a slot until the children finish.
+        // A borrowed temporary (`Routine.scope (ref 5) ...`) lives in a slot until the children finish.
         let mut operands = Vec::new();
         let shared = if let TypedExprKind::BorrowOperand(operand) = &arguments[0].kind {
             self.operand_borrow(&arguments[0], operand, &mut operands)
@@ -642,7 +640,7 @@ impl FunctionEmitter<'_, '_> {
             self.forget_temporary(value);
         }
         let Type::Array(element) = result_type else {
-            unreachable!("Task.scope returns an array")
+            unreachable!("Routine.scope returns an array")
         };
         let (result, output) = self.allocate_array(element, &count);
         self.parallel_launch(

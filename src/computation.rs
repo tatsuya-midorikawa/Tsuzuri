@@ -223,9 +223,7 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
         }
         ExprKind::Unary(_, value)
         | ExprKind::Lambda(_, value)
-        | ExprKind::Task(value)
         | ExprKind::Routine(value)
-        | ExprKind::TaskRun(value)
         | ExprKind::Checked(value)
         | ExprKind::Field(value, _)
         | ExprKind::Borrow(value, _, _)
@@ -421,6 +419,17 @@ fn expand_block(
 
 fn lower(builder: &Ident, body: &ComputationBlock, names: &Names) -> Result<Expr, Diagnostic> {
     let methods = names.builders.get(&builder.text).ok_or_else(|| {
+        // TZ12: `task { }` was the language's own; a builder `@alias task` of the program comes first.
+        if builder.text == "task" {
+            return Diagnostic::of(
+                DiagnosticKind::RemovedTaskExpression,
+                "'task { }' was removed",
+                builder.span,
+            )
+            .with_help(
+                "run the work directly, or spawn it with 'tzroutine { ... }' and wait with WaitGroup or a Channel",
+            );
+        }
         // Module names are capitalized, so a lowercase name can only be an alias.
         let message = if builder.text.starts_with(|first: char| first.is_ascii_lowercase()) {
             format!(
@@ -1189,11 +1198,7 @@ pub(super) fn check_implicit(
     bounded_depth(checker.computation_depth + body.depth + 4, body.span)?;
     checker.computation_depth += 4;
     let checked = if let Some(builder) = builder.text.strip_prefix("$implicit.body.") {
-        if builder == "task" {
-            checker.implicit_task_sequence(body, expected)
-        } else {
-            checker.implicit_sequence(builder, body, expected)
-        }
+        checker.implicit_sequence(builder, body, expected)
     } else {
         let outer_loop = std::mem::take(&mut checker.normal_loop_depth);
         let outer = checker
@@ -1229,9 +1234,6 @@ impl Checker<'_> {
     }
 
     fn implicit_candidates(&self, ty: &Type, result: bool) -> Vec<String> {
-        if matches!(self.inference.resolve(ty), Type::Task(_)) {
-            return vec!["task".into()];
-        }
         let mut candidates = Vec::new();
         let mut fallback = Vec::new();
         for (builder, methods) in &self.names.builders {
@@ -1459,22 +1461,6 @@ impl Checker<'_> {
         if entry && builder == "IO" {
             return self.direct_root(prefix, &remaining, expected);
         }
-        if builder == "task" {
-            let required = match expected.map(|ty| self.inference.resolve(ty)) {
-                Some(Type::Task(result)) => *result,
-                _ => self.inference.fresh(),
-            };
-            let result = self.implicit_task_sequence(&remaining, Some(&required))?;
-            let result = typed_block(prefix, result, body.span);
-            return self.checked_lambda(
-                Vec::new(),
-                result,
-                outer,
-                expected,
-                body.span,
-                LambdaKind::Task,
-            );
-        }
         let names = self.names;
         let methods = &names.builders[&builder];
         let mut required = expected.cloned().unwrap_or_else(|| self.inference.fresh());
@@ -1594,12 +1580,6 @@ impl Checker<'_> {
             let source = make(ExprKind::Name(name), source.span, 1)?;
             let expression = if source_builder == builder {
                 lowering.call("ReturnFrom", vec![source], first.span)?
-            } else if source_builder == "task" {
-                lowering.call(
-                    "Return",
-                    vec![make(ExprKind::TaskRun(Box::new(source)), first.span, 2)?],
-                    first.span,
-                )?
             } else {
                 let foreign = ComputationBlock {
                     statements: vec![ComputationStatement {
@@ -1682,14 +1662,7 @@ impl Checker<'_> {
         binding.value = make(ExprKind::Name(source_name), binding.value.span, 1)?;
         let mut tail = body.clone();
         tail.statements.remove(0);
-        let result = if source_builder == "task" {
-            binding.value = make(ExprKind::TaskRun(Box::new(binding.value)), first.span, 2)?;
-            block(
-                vec![binding],
-                lowering.implicit_tail(first, tail)?,
-                body.span,
-            )?
-        } else if source_builder == lowering.builder.text {
+        let result = if source_builder == lowering.builder.text {
             let fused = lowering.methods.contains("BindReturn")
                 && matches!(first.kind, ComputationStatementKind::Let(_, true))
                 && matches!(
@@ -1847,7 +1820,7 @@ impl Checker<'_> {
                 implicit_body(&source_builder, tail)?
             };
             lowering.and_bindings(&sources, rest, fused, body.span)?
-        } else if source_builder != "task" && lowering.methods.contains("Using") {
+        } else if lowering.methods.contains("Using") {
             let callback = ident("$implicit.next", body.span);
             let tuple = ident("$implicit.tuple", body.span);
             let mut values = Vec::new();
@@ -1949,188 +1922,6 @@ impl Checker<'_> {
             lowering.call("Return", vec![expression], body.span)?
         };
         Ok((staged, expression))
-    }
-
-    fn implicit_task_sequence(
-        &mut self,
-        body: &ComputationBlock,
-        expected: Option<&Type>,
-    ) -> Result<TypedExpr, Diagnostic> {
-        self.scopes.push(BTreeMap::new());
-        let checked = self
-            .lower_implicit_task_sequence(body)
-            .and_then(|(staged, expression)| {
-                self.expression(&expression, expected)
-                    .map(|result| typed_block(staged, result, body.span))
-            });
-        self.scopes.pop();
-        checked
-    }
-
-    fn lower_implicit_task_sequence(
-        &mut self,
-        body: &ComputationBlock,
-    ) -> Result<StagedComputation, Diagnostic> {
-        let Some(first) = body.statements.first() else {
-            return Ok((Vec::new(), make(ExprKind::Unit, body.span, 1)?));
-        };
-        // The members of a `let rec` group are bound together (B09), so the continuation starts
-        // after all of them.
-        let group = recursive_group(&body.statements);
-        let mut tail = body.clone();
-        tail.statements.drain(..group.len().max(1));
-        let continuation = implicit_body("task", tail)?;
-        let result = match &first.kind {
-            ComputationStatementKind::Let(binding, false) => {
-                let bindings = if group.is_empty() {
-                    vec![binding.clone()]
-                } else {
-                    group
-                };
-                block(bindings, continuation, body.span)?
-            }
-            ComputationStatementKind::Let(_, true) | ComputationStatementKind::Do(_) => {
-                let mut binding = match &first.kind {
-                    ComputationStatementKind::Let(binding, _) => binding.clone(),
-                    ComputationStatementKind::Do(value) => Binding {
-                        name: ident("_", first.span),
-                        mutable: false,
-                        using: false,
-                        recursion: Recursion::None,
-                        annotation: Some(annotation("unit", first.span)),
-                        value: value.clone(),
-                    },
-                    _ => unreachable!(),
-                };
-                let value = self.expression(&binding.value, None)?;
-                let source_builder =
-                    self.implicit_source_builder(&value.ty, Some("task"), binding.value.span)?;
-                let name = ident("$implicit.task", first.span);
-                let local = self.bind(&name, value.ty.clone(), false);
-                binding.value = make(ExprKind::Name(name), first.span, 1)?;
-                let expression = if source_builder == "task" {
-                    binding.value =
-                        make(ExprKind::TaskRun(Box::new(binding.value)), first.span, 2)?;
-                    block(vec![binding], continuation, body.span)?
-                } else {
-                    let mut foreign = body.clone();
-                    foreign.statements[0].kind = ComputationStatementKind::Let(binding, true);
-                    make(
-                        ExprKind::Computation(
-                            ident(&format!("$implicit.root.{source_builder}"), body.span),
-                            Box::new(foreign),
-                        ),
-                        body.span,
-                        body.depth + 1,
-                    )?
-                };
-                return Ok((vec![(local, value)], expression));
-            }
-            ComputationStatementKind::Operation("Return", value) => value.clone(),
-            ComputationStatementKind::Operation("ReturnFrom", value) => make(
-                ExprKind::TaskRun(Box::new(value.clone())),
-                first.span,
-                value.depth + 1,
-            )?,
-            ComputationStatementKind::Expression(value) if body.statements.len() == 1 => {
-                value.clone()
-            }
-            ComputationStatementKind::Expression(value) => block(
-                vec![Binding {
-                    name: ident("_", first.span),
-                    mutable: false,
-                    using: false,
-                    recursion: Recursion::None,
-                    annotation: Some(annotation("unit", first.span)),
-                    value: value.clone(),
-                }],
-                continuation,
-                body.span,
-            )?,
-            ComputationStatementKind::For(pattern, source, nested) => {
-                let value = make(
-                    ExprKind::For {
-                        pattern: pattern.clone(),
-                        source: Box::new(source.clone()),
-                        body: Box::new(implicit_body("task", nested.clone())?),
-                    },
-                    first.span,
-                    body.depth + 1,
-                )?;
-                block(
-                    vec![Binding {
-                        name: ident("_", first.span),
-                        mutable: false,
-                        using: false,
-                        recursion: Recursion::None,
-                        annotation: Some(annotation("unit", first.span)),
-                        value,
-                    }],
-                    continuation,
-                    body.span,
-                )?
-            }
-            ComputationStatementKind::While(condition, nested) => {
-                let value = make(
-                    ExprKind::While {
-                        condition: Box::new(condition.clone()),
-                        body: Box::new(implicit_body("task", nested.clone())?),
-                    },
-                    first.span,
-                    body.depth + 1,
-                )?;
-                block(
-                    vec![Binding {
-                        name: ident("_", first.span),
-                        mutable: false,
-                        using: false,
-                        recursion: Recursion::None,
-                        annotation: Some(annotation("unit", first.span)),
-                        value,
-                    }],
-                    continuation,
-                    body.span,
-                )?
-            }
-            ComputationStatementKind::If(condition, yes, no) => {
-                let branch = make(
-                    ExprKind::If {
-                        condition: Box::new(condition.clone()),
-                        then_branch: Box::new(implicit_body("task", yes.clone())?),
-                        else_branch: Box::new(match no {
-                            Some(no) => implicit_body("task", no.clone())?,
-                            None => make(ExprKind::Unit, first.span, 1)?,
-                        }),
-                    },
-                    first.span,
-                    body.depth + 1,
-                )?;
-                if body.statements.len() == 1 {
-                    branch
-                } else {
-                    block(
-                        vec![Binding {
-                            name: ident("_", first.span),
-                            mutable: false,
-                            using: false,
-                            recursion: Recursion::None,
-                            annotation: Some(annotation("unit", first.span)),
-                            value: branch,
-                        }],
-                        continuation,
-                        body.span,
-                    )?
-                }
-            }
-            _ => {
-                return Err(Diagnostic::of(
-                    DiagnosticKind::ImplicitTaskNeedsBuilder,
-                    "this implicit task operation requires an explicit computation builder",
-                    first.span,
-                ));
-            }
-        };
-        Ok((Vec::new(), result))
     }
 }
 

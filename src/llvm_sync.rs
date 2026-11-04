@@ -279,7 +279,7 @@ impl FunctionEmitter<'_, '_> {
         self.guard(&free, TrapKind::Assert);
     }
 
-    /// Traps when the runtime found that every task is waiting (status 2).
+    /// Traps when the runtime found that every tzroutine and thread is waiting (status 2).
     pub(super) fn channel_not_deadlocked(&mut self, status: &str) {
         let progress = self.value(format!("icmp ne i32 {status}, 2"));
         self.guard(&progress, TrapKind::Assert);
@@ -480,7 +480,7 @@ impl FunctionEmitter<'_, '_> {
     }
 }
 
-/// Byte offsets in a channel block. The runtimes (`task.c`, `task-wasm-threads.c`,
+/// Byte offsets in a channel block. The runtimes (`tzroutine.c` since TZ12, `task-wasm-threads.c`,
 /// `channel-wasm.ll`) lay it out the same way: the capacity, the size of an item, the index of
 /// the oldest item, the number of items, the live senders, the live receivers, the live handles
 /// of either kind, two words for the runtime's waiting lists, and then the ring of items.

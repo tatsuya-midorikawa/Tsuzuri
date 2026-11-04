@@ -489,7 +489,6 @@ impl<'a> Renaming<'a> {
             Length(length) => Length(*length),
             List(inner) => List(Box::new(self.ty(inner))),
             Tuple(elements) => Tuple(elements.iter().map(|element| self.ty(element)).collect()),
-            Task(result) => Task(Box::new(self.ty(result))),
             Function(parameters, result) => Function(
                 parameters
                     .iter()
@@ -1391,7 +1390,6 @@ fn has_type_variable(ty: &TypeExpr, lengths: &Lengths<'_>) -> bool {
         | TypeExprKind::Array(inner)
         | TypeExprKind::ArrayView(inner)
         | TypeExprKind::List(inner)
-        | TypeExprKind::Task(inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Own(inner)
         | TypeExprKind::Mut(inner)

@@ -2021,9 +2021,7 @@ pub(crate) fn load_packages(
             }
             let (text, manifest) = read_manifest(&path)?;
             if manifest.namespace.split('.').next().is_some_and(|first| {
-                first == crate::stdlib::NAMESPACE
-                    || crate::stdlib::is_reserved_module(first)
-                    || first == "Task"
+                first == crate::stdlib::NAMESPACE || crate::stdlib::is_reserved_module(first)
             }) {
                 return Err(SourceError::new(
                     &path,
@@ -4274,7 +4272,9 @@ fn build_complete(
     let callback_table = options.target.is_wasm() && runtime_symbols.prefix("tz.callback.");
     // TZ02: the tzroutine runtime switches stacks on aarch64 and x86-64 under POSIX and Windows.
     // On WebAssembly it will suspend through JSPI (TZ09).
-    if (tzroutine_symbols || tzroutine_runtime) && !matches!(options.emit, Emit::Llvm | Emit::Header) {
+    if (tzroutine_symbols || tzroutine_runtime)
+        && !matches!(options.emit, Emit::Llvm | Emit::Header)
+    {
         if tzroutine_symbols && options.target.is_wasm() && options.wasm_threads {
             return Err(if runtime_symbols.prefix("tsuzuri_tz_chan_") {
                 driver_error_of(
@@ -4367,7 +4367,7 @@ fn build_complete(
     if platform.windows() && native_runtime && options.emit == Emit::Object {
         return Err(driver_error_of(
             DiagnosticKind::PlatformUnsupportedApi,
-            "Windows COFF objects with embedded task, CPU, IO, or Async runtime are not supported; emit LLVM and link the runtime once, or build an executable",
+            "Windows COFF objects with embedded tzroutine, CPU, IO, or Async runtime are not supported; emit LLVM and link the runtime once, or build an executable",
         ));
     }
     protect_sources(project, output)?;
@@ -4814,11 +4814,7 @@ fn build_complete(
                 .args(compile_args(platform))
                 .args(sdk_args(platform)?)
                 .arg(options.optimization.flag());
-            if (tzroutine_runtime
-                || trap_runtime
-                || async_reactor
-                || net_runtime
-                || gpu_runtime)
+            if (tzroutine_runtime || trap_runtime || async_reactor || net_runtime || gpu_runtime)
                 && !platform.windows()
             {
                 runtime.arg("-pthread");
@@ -4890,7 +4886,7 @@ fn build_complete(
                         if bitcode {
                             "bitcode with the C runtime requires llvm-link matching Clang; set TSUZURI_LLVM_LINK, or put llvm-link next to Clang"
                         } else {
-                            "macOS debug objects with tasks require llvm-link matching Clang; set TSUZURI_LLVM_LINK"
+                            "macOS debug objects with the C runtime require llvm-link matching Clang; set TSUZURI_LLVM_LINK"
                         },
                     )?,
                 );
@@ -5184,9 +5180,7 @@ fn build_complete(
         }
         if native_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang.args(["-x", "none"]).arg(&runtime_object);
-            if (tzroutine_runtime || net_runtime || trap_runtime)
-                && !platform.windows()
-            {
+            if (tzroutine_runtime || net_runtime || trap_runtime) && !platform.windows() {
                 clang.arg("-pthread");
             }
             // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.
@@ -5373,7 +5367,7 @@ fn build_complete(
                     &mut linker,
                     &cross_hint(
                         platform,
-                        "the native linker must support relocatable object linking for parallel tasks",
+                        "the native linker must support relocatable object linking for the C runtime",
                     ),
                 )?,
             );
@@ -8359,7 +8353,7 @@ mod tests {
     fn stack_runtime_writes_the_report_the_driver_looks_for() {
         let source = include_str!("runtime/stack.c");
         assert!(source.contains(&format!("\"{STACK_OVERFLOW_REPORT}\\n\"")));
-        assert!(source.contains("tsuzuri_stack_thread"));
+        assert!(source.contains("tsuzuri_stack_scheduler_thread"));
         assert!(include_str!("runtime/tzroutine.c").contains("tsuzuri_stack_scheduler_thread();"));
     }
 

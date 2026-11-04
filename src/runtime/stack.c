@@ -159,12 +159,6 @@ void tsuzuri_stack_scheduler_thread(void) {
     tz_stack_handle();
 }
 
-/* Called first by every thread the task runtime starts. */
-__attribute__((visibility("hidden")))
-void tsuzuri_stack_thread(void) {
-    (void)tz_stack_prepare(0);
-}
-
 __attribute__((constructor))
 static void tz_stack_install(void) {
     if (!tz_stack_prepare(1)) return;

@@ -112,7 +112,7 @@ pub(crate) fn type_id_text(
             "({})",
             elements.iter().map(nested).collect::<Vec<_>>().join(" * ")
         ),
-        Type::Task(result) => format!("Task<{}>", type_id_text(result, types, modules)),
+        Type::Once(result) => format!("$once<{}>", type_id_text(result, types, modules)),
         Type::Shared(value, kind) => {
             format!("{}<{}>", kind.name(), type_id_text(value, types, modules))
         }
@@ -253,7 +253,7 @@ mod tests {
             text(&Type::Tuple(vec![i64.clone(), unary.clone()])),
             "(i64 * (i64 -> bool))"
         );
-        assert_eq!(text(&Type::Task(Box::new(Type::Unit))), "Task<unit>");
+        assert_eq!(text(&Type::Once(Box::new(Type::Unit))), "$once<unit>");
         assert_eq!(
             text(&Type::Shared(Box::new(Type::String), SharedKind::RcWeak)),
             "Rc.Weak<string>"

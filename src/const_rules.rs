@@ -32,7 +32,7 @@ fn value_part(ty: &Type, types: &TypeContext<'_>) -> bool {
         // Collections of other shapes, handles, and values with behavior have no literal form.
         | Type::List(_)
         | Type::Vec(_)
-        | Type::Task(_)
+        | Type::Once(_)
         | Type::Handle(_)
         | Type::Function(..)
         | Type::Reference(..)
@@ -73,7 +73,7 @@ pub(in super::super) fn check_signature(
             DiagnosticKind::ConstSignatureInvalid,
             function.name.span,
             format!(
-                "const def parameters and results must be plain values; '{}' is not one, so remove functions, references, tasks, lists, and std collections",
+                "const def parameters and results must be plain values; '{}' is not one, so remove functions, references, lists, and std collections",
                 ty.display(types)
             ),
         ));
@@ -347,11 +347,8 @@ pub(super) fn validate_function(
             | K::Method(..)
             | K::TypeFunction { .. }
             | K::HostCall(..)
-            | K::TaskRun(_)
             | K::RoutineGo(_)
             | K::SelectWait(_)
-            | K::TaskParallel(_)
-            | K::TaskParallelResults(_)
             | K::Parallel(..)
             | K::StructuralHash(_)
             | K::StructuralDisplay(_)

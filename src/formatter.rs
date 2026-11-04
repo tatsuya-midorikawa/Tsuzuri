@@ -822,7 +822,6 @@ impl Canonical {
             TypeExprKind::Array(inner)
             | TypeExprKind::ArrayView(inner)
             | TypeExprKind::List(inner)
-            | TypeExprKind::Task(inner)
             | TypeExprKind::Own(inner)
             | TypeExprKind::Mut(inner)
             | TypeExprKind::Pure(inner)
@@ -999,9 +998,7 @@ impl Canonical {
                 self.ident(name);
             }
             Unary(_, value)
-            | Task(value)
             | Routine(value)
-            | TaskRun(value)
             | ComputationBoundary(value)
             | Checked(value)
             | NewLiteral(value)

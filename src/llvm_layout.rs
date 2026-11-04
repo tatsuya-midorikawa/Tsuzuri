@@ -236,7 +236,7 @@ pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (u
         Type::Char => (2, 2),
         Type::Utf8Char => (4, 4),
         Type::String | Type::Utf8String | Type::Array(_) | Type::List(_) => (16, 8),
-        Type::Function(..) | Type::Task(_) => {
+        Type::Function(..) | Type::Once(_) => {
             if lower {
                 (8, 4)
             } else {
@@ -374,7 +374,7 @@ fn niche_layout(
         Type::Reference(..) if payload.slice_element().is_none() && !webassembly() => {
             Niche::NullPointer
         }
-        Type::Function(..) | Type::Task(_) => Niche::NullDescriptor,
+        Type::Function(..) | Type::Once(_) => Niche::NullDescriptor,
         _ => return None,
     };
     if module.unions[id].user_drop || module.types().recursive(&Type::Union(id, arguments.into())) {
@@ -1140,7 +1140,7 @@ fn use n =
             ("Lanes8", record("Main.Lanes8")),
             ("Resource", record("Main.Resource")),
             ("Closure", closure.clone()),
-            ("Task<i64>", Type::Task(Box::new(Type::I64))),
+            ("Task<i64>", Type::Once(Box::new(Type::I64))),
             ("Handlers", record("Main.Handlers")),
             ("Choice", union("Main.Choice", &[])),
             ("Callback", union("Main.Callback", &[])),

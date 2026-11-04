@@ -311,7 +311,7 @@ Build options:
                          from per-thread size classes (native 64-bit targets, also executables
                          and shared libraries; not WASM, --freestanding, or --trap-mode return)
     --freestanding         Native object, llvm, or header output that needs no C library;
-                         requires --allocator host and rejects IO, OS APIs, Net sockets, tasks, and Debug
+                         requires --allocator host and rejects IO, OS APIs, Net sockets, tzroutines, and Debug
     --strip                Link a native executable without its local symbols (build only; not with -g;
                          a Windows link is left as it is)
     --wasm-opt             Run Binaryen's wasm-opt -Oz over the linked .wasm (build with --target wasm32
