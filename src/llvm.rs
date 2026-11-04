@@ -425,6 +425,8 @@ mod math;
 mod overflow_emit;
 #[path = "llvm_parallel.rs"]
 mod parallel;
+#[path = "llvm_preempt.rs"]
+pub(crate) mod preempt;
 #[path = "llvm_ranges.rs"]
 mod range_flags;
 #[path = "llvm_recursive.rs"]
@@ -1409,6 +1411,14 @@ fn emit_program(
     // TZ08: on WebAssembly the tzroutines of JSPI share one thread, and a call holds no P there.
     let output = if spawning && !wasm {
         with_blocking_externs(output, &extern_symbols(module), &tzroutine_exports(module))
+    } else {
+        output
+    };
+    // TZ10: the tzroutines that a native program spawns check sysmon's requests to yield. A program
+    // whose only tzroutines are the helpers of `Parallel.*` has nothing that waits for them: its
+    // other threads hold no P. WebAssembly's JSPI tzroutines are not preempted (TZ09).
+    let output = if !wasm && spawns(module) {
+        preempt::with_preemption_checks(output, &preempt::opaque_functions(module))
     } else {
         output
     };

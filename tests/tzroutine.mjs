@@ -651,6 +651,52 @@ $"{sum} {trapped}"
     }
   }
 
+  // TZ10: preemption (tests/fixtures/preemption). With one P, a tzroutine that computes without
+  // waiting yields when sysmon asks: `busy` calls fib in a loop (the checks of Phase 1) and `tight`
+  // runs a loop without calls (the signal of Phase 2), while another tzroutine receives 50 ticks of a
+  // 10 ms Ticker; neither could finish if the computing one kept the P. `values` runs fib, an array
+  // sum and a chain of steps on three tzroutines that are preempted in turn, and prints the same
+  // computations without tzroutines. Only the counts and the values are checked, never a time.
+  {
+    const fib = (n) => (n < 2 ? n : fib(n - 1) + fib(n - 2));
+    const step = (x) => (x * 31 + 7) % 1000003;
+    let fibs = 0, sums = 0n, chains = 0;
+    for (let round = 1; round <= 3; round++) {
+      fibs += fib(25 + round);
+      let chunk = 0;
+      for (let i = 0; i < 1000000 * round; i++) {
+        chunk += step(i) * step(i);
+        if (chunk > 2 ** 52) { sums += BigInt(chunk); chunk = 0; }
+      }
+      sums += BigInt(chunk);
+      let x = 1;
+      for (let i = 0; i < 3000000 * round; i++) x = step(x);
+      chains += x;
+    }
+    const expected = {
+      values: `values: ${fibs} ${sums} ${chains} plain: ${fibs} ${sums} ${chains}\n`,
+      busy: "busy: ticks=50 calls>0\n",
+      tight: "tight: ticks=50\n",
+    };
+    const fixture = join(temporary, "preemption");
+    mkdirSync(fixture);
+    writeFileSync(join(fixture, "Main.tz"), readFileSync(join(root, "tests/fixtures/preemption/Main.tz"), "utf8"));
+    for (const optimization of ["-O0", "-O3"]) {
+      const executable = join(temporary, `preemption${optimization}${process.platform === "win32" ? ".exe" : ""}`);
+      cli(["build", fixture, optimization, "-o", executable]);
+      for (const name of Object.keys(expected)) {
+        // Windows has the checks of Phase 1 only: a loop without calls keeps its P there.
+        if (name === "tight" && process.platform === "win32") continue;
+        for (const procs of ["1", "4"]) {
+          const run = spawnSync(executable, [name], { cwd: fixture, encoding: "utf8", timeout: 120_000, env: { ...process.env, TSUZURI_MAXPROCS: procs } });
+          assert.equal(run.status, 0, `preemption ${name} ${optimization} P${procs}: ${run.signal ?? ""}\n${run.stdout}\n${run.stderr}`);
+          assert.equal(lines(run.stdout), expected[name], `preemption ${name} ${optimization} P${procs}`);
+          runs++;
+        }
+      }
+    }
+  }
+
   // TZ11: Routine.scope spawns a tzroutine for each child: E2000 on WebAssembly too.
   const scoped = project("export def f :: i64 -> i64\nfn f n =\n    let values = [n, n]\n    let doubled = Routine.scope (ref values) 2 (\\shared index -> shared[index] * 2)\n    doubled[0]\n");
   const scopedWasm = cli(["build", scoped, "--target", "wasm32", "-o", join(temporary, "scoped.wasm"), "--json"], false);
