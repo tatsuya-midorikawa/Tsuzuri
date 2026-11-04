@@ -1,0 +1,100 @@
+// TZ10 (S3, D1): compute kernels that run on a tzroutine, so that the program spawns and its code has
+// the preemption checks. benchmarks/run-tzroutine.mjs builds this file with two compilers and runs
+// them in turn; each kernel is timed here with the monotonic clock, around its own work only, and
+// prints `name nanoseconds result`. The results are checked against independent values by the runner.
+
+def rec fib :: i64 -> i64
+fn rec fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+def rec gcd :: i64 -> i64 -> i64
+fn rec gcd a b = if b == 0 then a else gcd b (a % b)
+
+def square :: i64 -> i64
+fn square x = x * x
+
+def step :: i64 -> i64
+fn step x = (x * 31 + 7) % 1000003
+
+// A recursive call at every level: the entry check of fib runs at each call.
+def kernel_fib :: unit -> i64
+fn kernel_fib _ = fib 35
+
+// A loop whose body calls a recursive function: the back edge and the entry of gcd check.
+def kernel_gcd :: unit -> i64
+fn kernel_gcd _ =
+    let mut total = 0i64
+    for a in 1 ..= 1500 do
+        for b in 1 ..= 1500 do
+            total = total + gcd a b
+    total
+
+// A loop that calls a small function that inlines and vectorizes: no check.
+def kernel_squares :: [i64] -> i64
+fn kernel_squares values =
+    let mut total = 0i64
+    for _round in 1 ..= 40 do
+        for v in values do
+            total = total + square (v % 4096)
+    total
+
+// Array.map and Array.fold with lambdas: inlined, vectorized, no check in the loops.
+def kernel_map_fold :: [i64] -> i64
+fn kernel_map_fold values =
+    let mut total = 0i64
+    for round in 1 ..= 20 do
+        let doubled = Array.map (\x -> x * 2 + round) (Array.copy values)
+        total = total + Array.fold (\acc x -> acc + x * 3) 0i64 doubled
+    total
+
+// A chain of dependent steps through a small function: a loop without a check.
+def kernel_chain :: unit -> i64
+fn kernel_chain _ =
+    let mut x = 1i64
+    for _ in 1 ..= 60000000 do
+        x = step x
+    x
+
+// A recursive quicksort on a vector of steps: recursion with loops inside.
+def rec sorted :: own [i64] -> [i64]
+fn rec sorted values =
+    if values.length < 2 then values
+    else
+        let pivot = values[values.length / 2]
+        let below = Array.filter (\x -> x < pivot) (Array.copy values)
+        let equal = Array.filter (\x -> x == pivot) (Array.copy values)
+        let above = Array.filter (\x -> x > pivot) values
+        Array.append (Array.append (sorted below) equal) (sorted above)
+
+def kernel_sort :: unit -> i64
+fn kernel_sort _ =
+    let values = Array.init 400000 (\i -> step (i * 7919 % 1000003))
+    let result = sorted values
+    result[0] + result[result.length / 2] * 3 + result[result.length - 1] * 7
+
+def timed :: own string -> own (unit -> i64) -> string
+fn timed name work =
+    let! before = Time.monotonic_ns ()
+    let value = work ()
+    let! after = Time.monotonic_ns ()
+    match (before, after) with
+    | (Result.Ok first, Result.Ok last) -> $"{name} {last - first} {value}"
+    | _ -> $"{name} 0 {value}"
+
+def run :: unit -> string
+fn run _ =
+    let values = Array.init 1000000 (\i -> step i)
+    let fib = timed "fib" (\() -> kernel_fib ())
+    let gcd = timed "gcd" (\() -> kernel_gcd ())
+    let squares = timed "squares" (\() -> kernel_squares (Array.copy values))
+    let map_fold = timed "map_fold" (\() -> kernel_map_fold (Array.copy values))
+    let chain = timed "chain" (\() -> kernel_chain ())
+    let sort = timed "sort" (\() -> kernel_sort ())
+    $"{fib}\n{gcd}\n{squares}\n{map_fold}\n{chain}\n{sort}"
+
+// main waits for the tzroutine before it returns (D-61 decision 1).
+def main :: unit -> i32
+fn main _ =
+    tzroutine {
+        do! IO.write_line (run ())
+    }
+    0

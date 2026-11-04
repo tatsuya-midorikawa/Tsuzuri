@@ -3,33 +3,36 @@
 //! sysmon has asked some P to give up its tzroutine, calls `tsuzuri_tz_preempt_check`.
 //!
 //! The check is one line, `call void @tz.preempt.poll()`, whose body is `alwaysinline`: LLVM splits
-//! the block for the cold call itself, so the pass never edits the control flow or a `phi`. It goes
+//! the block for the cold call itself, so the pass never edits the control flow or a `phi`. Every
+//! long computation is a loop or a recursion, and the check goes where they repeat:
 //!
-//! - at the entry of every emitted function (`@tz.fn.*`, `@tz.specialized.*`) that is not a *leaf*,
-//!   after the static `alloca`s of the entry block, and
-//! - before the back edge of every loop of such a function whose blocks call something that is not a
-//!   leaf.
+//! - in a function of a cycle of direct calls (recursion), before the first call in a block to a
+//!   function of a cycle: the path that recurses checks once per call, the base case not at all;
+//! - at the entry of a function whose cycle the IR does not show (`opaque_functions`: recursion that
+//!   only a closure closes, and a `dyn` dispatcher), after the static `alloca`s of the entry block;
+//! - before the back edge of a loop whose blocks make a *heavy* call: one that stays a call that can
+//!   take long whatever LLVM inlines (the C runtime, an extern function, the C library, inline
+//!   assembly, a recursive function, or a defined function that makes such a call).
 //!
-//! A leaf is a defined function that calls nothing but LLVM intrinsics and other leaves and is not in
-//! a cycle of calls. LLVM may inline a leaf into a loop that is then free of calls and vectorize it,
-//! so a check in a leaf, or in a loop whose only calls are leaves, would cost the vector loop that the
-//! same program has without tzroutines (S2). A call that is not a leaf (an extern function, the C
-//! runtime, a call through a pointer, a recursive function) stays a call after inlining, so a check
-//! beside it does not change what the loop can become. Every long computation is a loop or a cycle
-//! of calls: a cycle has a non-leaf entry in it, and a loop with a non-leaf call has a check at its
-//! back edge. What is left without a check is a loop whose calls all inline away (D2: Phase 2).
-//!
-//! A call through a pointer is transparent: a closure that a loop calls is usually a constant there,
-//! and LLVM turns the call into a direct one and inlines it (`Array.map` with a lambda vectorizes).
-//! The recursion that only a call through a pointer closes is found in the source instead
-//! (`opaque_functions`): a function that can reach itself through the functions and lambdas that it
-//! names, and a `dyn` dispatcher, whose calls go through a table that LLVM cannot see through, count
-//! as opaque calls.
+//! Everything else stays as it is, because a check there would cost more than the load it costs. A
+//! call that LLVM may inline into a loop that is then free of calls and vectorized (a small function,
+//! a lambda that a loop calls through a constant closure) would bring a check into that loop and cost
+//! its vector loop (S2); a call that only allocates (`malloc`, `realloc`, `free` and the allocators
+//! of `--allocator`) is bounded, and a check beside it in a loop of `Vec.push` grows the function
+//! enough that LLVM stops inlining it (S3: `Array.filter` lost its inlined predicate, +32 %). An entry
+//! check in every recursive function costs a recursion as small as `fib` 9 %; before its recursive
+//! calls, nothing measurable (docs/benchmarks.md). What is left without a check is a loop whose calls
+//! are all light: Phase 2 stops those (D2).
 //!
 //! Loops are found from the text of each function: its blocks, the labels of their terminators,
 //! the dominators, and the natural loop of each back edge (an edge to a block that dominates its
 //! source). A function that `facts` marks with a memory effect is straight-line and calls only
-//! intrinsics, so it is a leaf; the pass leaves it alone in any case.
+//! intrinsics; the pass leaves it alone.
+//!
+//! A check may move its tzroutine to another thread. A runtime function in IR that reads a thread's
+//! local storage (`@llvm.threadlocal.address`, the caches of `--allocator small`) is made `noinline`,
+//! so that no address of one thread's storage is kept in a function across a check (LLVM may reuse
+//! the intrinsic's result across calls).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,10 +42,13 @@ use crate::check::{CheckedModule, FunctionRef, TypedExpr, TypedExprKind};
 /// The check that the pass inserts.
 pub(super) const POLL_CALL: &str = "  call void @tz.preempt.poll()\n";
 
-/// The check's body and the runtime's two symbols (src/runtime/tzroutine.c). The request is rare, so
-/// the call is weighted cold.
-const POLL_DEFINITION: &str = "@tsuzuri_tz_preempt_pending = external global i32\n\
-declare void @tsuzuri_tz_preempt_check()\n\
+/// The check's body and the runtime's two symbols (src/runtime/tzroutine.c), which the runtime
+/// defines hidden in the same image (a direct load, no GOT). The request is rare, so the call is
+/// weighted cold. A yield is no synchronization of the program's memory (a program has no data race,
+/// D-61), so the call touches only memory that the program cannot see, and LLVM keeps the program's
+/// values in registers across it; it is never removed.
+const POLL_DEFINITION: &str = "@tsuzuri_tz_preempt_pending = external hidden global i32\n\
+declare void @tsuzuri_tz_preempt_check() nounwind memory(inaccessiblemem: readwrite)\n\
 define internal void @tz.preempt.poll() nounwind alwaysinline {\n\
 entry:\n\
 \x20 %pending = load atomic i32, ptr @tsuzuri_tz_preempt_pending monotonic, align 4\n\
@@ -55,15 +61,30 @@ done:\n\
 \x20 ret void\n\
 }\n";
 
-/// The functions whose code is Tsuzuri source: the ones that get checks (and, in Phase 2, the section
-/// of generated code).
+/// The C library's allocator and the allocators of `--allocator host` and of the trap boundaries:
+/// bounded calls that never wait.
+const LIGHT: [&str; 11] = [
+    "@malloc",
+    "@calloc",
+    "@realloc",
+    "@free",
+    "@aligned_alloc",
+    "@tsuzuri_host_alloc",
+    "@tsuzuri_host_realloc",
+    "@tsuzuri_host_free",
+    "@tsuzuri_tracked_malloc",
+    "@tsuzuri_tracked_realloc",
+    "@tsuzuri_tracked_free",
+];
+
+/// The functions whose code is Tsuzuri source: the ones that get checks.
 pub(super) fn emitted_from_source(name: &str) -> bool {
     name.starts_with("@tz.fn.") || name.starts_with("@tz.specialized.")
 }
 
-/// The symbols of the functions whose calls stay calls whatever LLVM inlines: a function in a cycle
-/// of the functions and lambdas that the source names (recursion, also through a closure), and a
-/// `dyn` dispatcher.
+/// The symbols of the functions whose cycles the IR may not show: a function in a cycle of the
+/// functions and lambdas that the source names (recursion, also through a closure), and a `dyn`
+/// dispatcher, whose calls go through a table.
 pub(super) fn opaque_functions(module: &CheckedModule) -> BTreeSet<String> {
     fn named(expression: &TypedExpr, found: &mut BTreeSet<usize>) {
         match &expression.kind {
@@ -162,32 +183,33 @@ fn components(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
 /// What a `call` line calls.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Callee {
-    /// An LLVM intrinsic, or a call through a pointer (a closure, which LLVM resolves and inlines
-    /// where it is a constant): nothing that keeps a loop from becoming free of calls.
-    Transparent,
-    /// A function that the module defines.
+    /// An LLVM intrinsic, a call through a pointer (a closure, which LLVM resolves and inlines where
+    /// it is a constant), or an allocator (`LIGHT`).
+    Light,
+    /// A function that the module defines (an opaque function of the source is heavy itself).
     Defined(String),
-    /// A declared function, an opaque function of the source, inline assembly or a form not
-    /// recognized.
-    Opaque,
+    /// A declared function, inline assembly or a form not recognized.
+    Heavy,
 }
 
-fn callee(line: &str, defined: &BTreeSet<&str>, opaque: &BTreeSet<String>) -> Option<Callee> {
+fn callee(line: &str, defined: &BTreeSet<&str>) -> Option<Callee> {
     let body = line.trim_start();
     if body.starts_with(';') || !body.contains("call ") {
         return None;
     }
     let Some(call) = callable(line, false) else {
-        return Some(Callee::Opaque);
+        return Some(Callee::Heavy);
     };
     let name = call.name;
-    Some(if name.starts_with("@llvm.") || name.starts_with('%') {
-        Callee::Transparent
-    } else if defined.contains(name) && !opaque.contains(name) {
-        Callee::Defined(name.to_owned())
-    } else {
-        Callee::Opaque
-    })
+    Some(
+        if name.starts_with("@llvm.") || name.starts_with('%') || LIGHT.contains(&name) {
+            Callee::Light
+        } else if defined.contains(name) {
+            Callee::Defined(name.to_owned())
+        } else {
+            Callee::Heavy
+        },
+    )
 }
 
 /// One `define` of the module: the lines of its header and closing brace.
@@ -221,9 +243,9 @@ fn definitions<'a>(lines: &[&'a str]) -> Vec<Definition<'a>> {
     found
 }
 
-/// The defined functions that are leaves: no call but to transparent callees and leaves, and not in a
-/// cycle.
-fn leaves(calls: &BTreeMap<&str, Vec<Callee>>) -> BTreeSet<String> {
+/// The defined functions in a cycle of direct calls, and those that make a heavy call (themselves
+/// or through the defined functions that they call; a function of a cycle is heavy).
+fn classify(calls: &BTreeMap<&str, Vec<Callee>>) -> (BTreeSet<String>, BTreeSet<String>) {
     let names: Vec<&str> = calls.keys().copied().collect();
     let index: BTreeMap<&str, usize> = names
         .iter()
@@ -242,21 +264,24 @@ fn leaves(calls: &BTreeMap<&str, Vec<Callee>>) -> BTreeSet<String> {
                 .collect()
         })
         .collect();
-    let mut leaf = vec![false; names.len()];
+    let mut heavy = vec![false; names.len()];
+    let mut cycles = BTreeSet::new();
+    let mut heavies = BTreeSet::new();
     for component in components(&edges) {
         let cyclic = component.len() > 1 || edges[component[0]].contains(&component[0]);
         for &member in &component {
-            leaf[member] = !cyclic
-                && !calls[names[member]].contains(&Callee::Opaque)
-                && edges[member].iter().all(|&target| leaf[target]);
+            heavy[member] = cyclic
+                || calls[names[member]].contains(&Callee::Heavy)
+                || edges[member].iter().any(|&target| heavy[target]);
+            if cyclic {
+                cycles.insert(names[member].to_owned());
+            }
+            if heavy[member] {
+                heavies.insert(names[member].to_owned());
+            }
         }
     }
-    names
-        .iter()
-        .enumerate()
-        .filter(|(id, _)| leaf[*id])
-        .map(|(_, name)| (*name).to_owned())
-        .collect()
+    (cycles, heavies)
 }
 
 /// A label line (`name:` or `"name":`, a comment after it allowed), or `None`.
@@ -314,24 +339,36 @@ fn terminator(line: &str) -> bool {
     TERMINATORS.iter().any(|word| instruction.starts_with(word))
 }
 
-/// One block of a function: where its terminator starts, and its successors.
+/// One block of a function: its first instruction, where its terminator starts, its successors, and
+/// whether it makes a heavy call.
 struct Block<'a> {
+    start: usize,
     terminator: usize,
     successors: Vec<&'a str>,
-    calls_non_leaf: bool,
+    heavy: bool,
 }
 
-/// The lines before which a check goes in the function between `header` and `close`: before the
-/// entry block's terminator, and before the terminator of each latch of a loop with a non-leaf call.
-/// `None` when the function's blocks cannot be read.
-fn check_sites<'a>(
-    lines: &[&'a str],
+/// What the checks of one function are placed by.
+struct Rules<'r> {
+    /// A call that makes a loop need a check at its back edge.
+    heavy: &'r dyn Fn(&str) -> bool,
+    /// A call to a function of a cycle (checked before the first such call of each block), when the
+    /// function itself is in one.
+    recursive: Option<&'r dyn Fn(&str) -> bool>,
+    /// A check at the entry.
+    entry: bool,
+}
+
+/// The lines before which a check goes in the function between `header` and `close`. `None` when
+/// the function's blocks cannot be read.
+fn check_sites(
+    lines: &[&str],
     header: usize,
     close: usize,
-    non_leaf_call: &dyn Fn(&str) -> bool,
+    rules: &Rules<'_>,
 ) -> Option<BTreeSet<usize>> {
-    let mut names: Vec<&'a str> = Vec::new();
-    let mut blocks: Vec<Block<'a>> = Vec::new();
+    let mut names: Vec<&str> = Vec::new();
+    let mut blocks: Vec<Block<'_>> = Vec::new();
     let mut index = header + 1;
     let first = lines.get(index).and_then(|line| label_of(line))?;
     let mut current = Some(first);
@@ -350,12 +387,13 @@ fn check_sites<'a>(
                 .iter()
                 .flat_map(|line| targets(line))
                 .collect();
-            let calls_non_leaf = (start..terminator).any(|line| non_leaf_call(lines[line]));
+            let heavy = (start..terminator).any(|line| (rules.heavy)(lines[line]));
             names.push(name);
             blocks.push(Block {
+                start,
                 terminator,
                 successors,
-                calls_non_leaf,
+                heavy,
             });
             current = (index != close).then_some(next);
             start = index + 1;
@@ -450,7 +488,24 @@ fn check_sites<'a>(
         node = dominator[node];
     };
     let mut sites = BTreeSet::new();
-    sites.insert(blocks[0].terminator);
+    if rules.entry {
+        // A `musttail` call must stay right before its `ret`.
+        let entry = blocks[0].terminator;
+        let musttail = lines[entry].trim_start().starts_with("ret")
+            && entry > blocks[0].start
+            && lines[entry - 1].contains("musttail call ");
+        sites.insert(if musttail { entry - 1 } else { entry });
+    }
+    if let Some(recursive) = rules.recursive {
+        for (node, block) in blocks.iter().enumerate() {
+            if seen[node]
+                && let Some(line) =
+                    (block.start..block.terminator).find(|&line| recursive(lines[line]))
+            {
+                sites.insert(line);
+            }
+        }
+    }
     for latch in postorder.iter().copied() {
         for &header in &successors[latch] {
             if !dominates(header, latch) || sites.contains(&blocks[latch].terminator) {
@@ -469,19 +524,10 @@ fn check_sites<'a>(
                     }
                 }
             }
-            if body.iter().any(|&node| blocks[node].calls_non_leaf) {
+            if body.iter().any(|&node| blocks[node].heavy) {
                 sites.insert(blocks[latch].terminator);
             }
         }
-    }
-    // A `musttail` call must stay right before its `ret`.
-    let entry = blocks[0].terminator;
-    if lines[entry].trim_start().starts_with("ret")
-        && entry > header + 1
-        && lines[entry - 1].contains("musttail call ")
-    {
-        sites.remove(&entry);
-        sites.insert(entry - 1);
     }
     Some(sites)
 }
@@ -496,28 +542,48 @@ pub(crate) fn with_preemption_checks(ir: String, opaque: &BTreeSet<String>) -> S
     for function in &functions {
         let mut found: Vec<Callee> = lines[function.header + 1..function.close]
             .iter()
-            .filter_map(|line| callee(line, &defined, opaque))
+            .filter_map(|line| callee(line, &defined))
             .collect();
         if opaque.contains(function.name) {
-            found.push(Callee::Opaque);
+            found.push(Callee::Heavy);
         }
         calls.insert(function.name, found);
     }
-    let leaves = leaves(&calls);
-    let non_leaf_call = |line: &str| match callee(line, &defined, opaque) {
-        None | Some(Callee::Transparent) => false,
-        Some(Callee::Defined(name)) => !leaves.contains(&name),
-        Some(Callee::Opaque) => true,
+    let (cycles, heavies) = classify(&calls);
+    let heavy = |line: &str| match callee(line, &defined) {
+        None | Some(Callee::Light) => false,
+        Some(Callee::Defined(name)) => heavies.contains(&name),
+        Some(Callee::Heavy) => true,
+    };
+    let recursive = |line: &str| match callee(line, &defined) {
+        Some(Callee::Defined(name)) => cycles.contains(&name),
+        _ => false,
     };
     let mut sites = BTreeSet::new();
+    let mut thread_bound = BTreeSet::new();
     for function in &functions {
-        if !emitted_from_source(function.name)
-            || leaves.contains(function.name)
-            || lines[function.header].contains(" memory(")
-        {
+        if !emitted_from_source(function.name) {
+            let body = &lines[function.header + 1..function.close];
+            if body
+                .iter()
+                .any(|line| line.contains("@llvm.threadlocal.address"))
+                && !lines[function.header].contains(" noinline")
+            {
+                thread_bound.insert(function.header);
+            }
             continue;
         }
-        if let Some(found) = check_sites(&lines, function.header, function.close, &non_leaf_call) {
+        if !heavies.contains(function.name) || lines[function.header].contains(" memory(") {
+            continue;
+        }
+        let rules = Rules {
+            heavy: &heavy,
+            recursive: cycles
+                .contains(function.name)
+                .then_some(&recursive as &dyn Fn(&str) -> bool),
+            entry: opaque.contains(function.name) && !cycles.contains(function.name),
+        };
+        if let Some(found) = check_sites(&lines, function.header, function.close, &rules) {
             sites.extend(found);
         }
     }
@@ -528,6 +594,14 @@ pub(crate) fn with_preemption_checks(ir: String, opaque: &BTreeSet<String>) -> S
     for (index, line) in lines.iter().enumerate() {
         if sites.contains(&index) {
             output.push_str(POLL_CALL);
+        }
+        if thread_bound.contains(&index)
+            && let Some(at) = line.rfind(" {")
+        {
+            output.push_str(&line[..at]);
+            output.push_str(" noinline");
+            output.push_str(&line[at..]);
+            continue;
         }
         output.push_str(line);
     }
@@ -542,8 +616,9 @@ pub(crate) fn with_preemption_checks(ir: String, opaque: &BTreeSet<String>) -> S
 mod tests {
     use super::*;
 
-    fn checks(ir: &str) -> Vec<String> {
-        let output = with_preemption_checks(ir.to_owned(), &BTreeSet::new());
+    fn checks(ir: &str, opaque: &[&str]) -> Vec<String> {
+        let opaque = opaque.iter().map(|name| (*name).to_owned()).collect();
+        let output = with_preemption_checks(ir.to_owned(), &opaque);
         let mut found = Vec::new();
         let mut function = String::new();
         let lines: Vec<&str> = output.lines().collect();
@@ -559,54 +634,67 @@ mod tests {
     }
 
     #[test]
-    fn leaves_and_call_free_loops_get_no_check() {
+    fn light_calls_and_call_free_loops_get_no_check() {
         let ir = "define internal i64 @tz.fn.M.square(i64 %arg0) nounwind {\nentry:\n  br label %loop\nloop:\n  %v = mul i64 %arg0, %arg0\n  ret i64 %v\n}\n\
-define internal i64 @tz.fn.M.sum(i64 %arg0) nounwind {\nentry:\n  %s = alloca i64\n  br label %loop\nloop:\n  br label %b0\nb0:\n  %x = call i64 @tz.fn.M.square(i64 %arg0)\n  %c = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %x, i64 1)\n  br i1 true, label %b0, label %b1\nb1:\n  ret i64 %x\n}\n";
-        assert!(checks(ir).is_empty());
+define internal ptr @tz.alloc(i64 %size) nounwind {\nentry:\n  %p = call ptr @malloc(i64 %size)\n  ret ptr %p\n}\n\
+define internal i64 @tz.fn.M.sum(ptr %arg0) nounwind {\nentry:\n  %s = alloca i64\n  br label %loop\nloop:\n  br label %b0\nb0:\n  %x = call i64 @tz.fn.M.square(i64 1)\n  %y = call i64 %arg0(i64 %x)\n  %z = call ptr @tz.alloc(i64 8)\n  %c = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %x, i64 1)\n  br i1 true, label %b0, label %b1\nb1:\n  ret i64 %x\n}\n\
+declare ptr @malloc(i64)\n";
+        assert!(checks(ir, &[]).is_empty());
         assert_eq!(with_preemption_checks(ir.to_owned(), &BTreeSet::new()), ir);
     }
 
     #[test]
-    fn a_cycle_and_a_loop_with_an_opaque_call_are_checked() {
-        let ir = "define internal i64 @tz.fn.M.fib(i64 %arg0) nounwind {\nentry:\n  %slot = alloca i64\n  br label %loop\nloop:\n  %a = call i64 @tz.fn.M.fib(i64 %arg0)\n  ret i64 %a\n}\n\
+    fn recursion_and_a_loop_with_a_heavy_call_are_checked() {
+        let ir = "define internal i64 @tz.fn.M.fib(i64 %arg0) nounwind {\nentry:\n  %slot = alloca i64\n  br label %loop\nloop:\n  %small = icmp slt i64 %arg0, 2\n  br i1 %small, label %b0, label %b1\nb0:\n  ret i64 %arg0\nb1:\n  %a = call i64 @tz.fn.M.fib(i64 %arg0)\n  %b = call i64 @tz.fn.M.fib(i64 %a)\n  ret i64 %b\n}\n\
 define internal void @tz.fn.M.spin(ptr %arg0) nounwind {\nentry:\n  br label %loop\nloop:\n  br label %b0\nb0:\n  call void @tsuzuri_tz_yield()\n  br label %b1\nb1:\n  %x = load i1, ptr %arg0\n  switch i32 0, label %b0 [\n    i32 1, label %b2\n  ]\nb2:\n  ret void\n}\n\
 declare void @tsuzuri_tz_yield()\n";
         assert_eq!(
-            checks(ir),
+            checks(ir, &[]),
             [
-                "@tz.fn.M.fib br label %loop",
-                "@tz.fn.M.spin br label %loop",
+                "@tz.fn.M.fib %a = call i64 @tz.fn.M.fib(i64 %arg0)",
                 "@tz.fn.M.spin switch i32 0, label %b0 [",
             ]
         );
         let output = with_preemption_checks(ir.to_owned(), &BTreeSet::new());
-        assert!(
-            output
-                .contains("%slot = alloca i64\n  call void @tz.preempt.poll()\n  br label %loop\n")
-        );
         assert_eq!(
             output
                 .matches("define internal void @tz.preempt.poll()")
                 .count(),
             1
         );
+        assert_eq!(
+            output
+                .matches("@tsuzuri_tz_preempt_pending = external hidden global i32")
+                .count(),
+            1
+        );
     }
 
     #[test]
-    fn a_closure_call_is_transparent_and_an_opaque_function_is_not() {
+    fn an_opaque_function_checks_at_its_entry_and_makes_loops_heavy() {
         let ir = "define internal i64 @tz.fn.M.apply(ptr %arg0) nounwind {\nentry:\n  br label %loop\nloop:\n  br label %b0\nb0:\n  %x = call i64 %arg0(i64 1)\n  %y = call i64 @tz.fn.M.walk(i64 %x)\n  br i1 true, label %b0, label %b1\nb1:\n  ret i64 %x\n}\n\
-define internal i64 @tz.fn.M.walk(i64 %arg0) nounwind {\nentry:\n  br label %loop\nloop:\n  ret i64 %arg0\n}\n";
-        assert!(checks(ir).is_empty());
-        let opaque = BTreeSet::from(["@tz.fn.M.walk".to_owned()]);
-        let output = with_preemption_checks(ir.to_owned(), &opaque);
-        assert_eq!(output.matches(POLL_CALL).count(), 3, "{output}");
+define internal i64 @tz.fn.M.walk(i64 %arg0) nounwind {\nentry:\n  %slot = alloca i64\n  br label %loop\nloop:\n  ret i64 %arg0\n}\n";
+        assert!(checks(ir, &[]).is_empty());
+        assert_eq!(
+            checks(ir, &["@tz.fn.M.walk"]),
+            [
+                "@tz.fn.M.apply br i1 true, label %b0, label %b1",
+                "@tz.fn.M.walk br label %loop",
+            ]
+        );
     }
 
     #[test]
-    fn runtime_functions_and_marked_functions_are_left_alone() {
-        let ir = "define internal ptr @tz.alloc(i64 %size) nounwind {\nentry:\n  %p = call ptr @malloc(i64 %size)\n  br label %b0\nb0:\n  br i1 true, label %b0, label %b1\nb1:\n  ret ptr %p\n}\n\
-define internal i64 @tz.fn.M.pure(i64 %arg0) nounwind memory(none) {\nentry:\n  %x = call ptr @tz.alloc(i64 1)\n  ret i64 0\n}\n\
-declare ptr @malloc(i64)\n";
-        assert!(checks(ir).is_empty());
+    fn runtime_and_marked_functions_are_left_alone_and_thread_storage_stays_out_of_line() {
+        let ir = "define internal ptr @tz.cache(i64 %size) nounwind {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  br label %b0\nb0:\n  call void @tsuzuri_tz_yield()\n  br i1 true, label %b0, label %b1\nb1:\n  ret ptr %t\n}\n\
+define internal i64 @tz.fn.M.pure(i64 %arg0) nounwind memory(none) {\nentry:\n  call void @tsuzuri_tz_yield()\n  ret i64 0\n}\n\
+define internal i64 @tz.fn.M.spawn(i64 %arg0) nounwind {\nentry:\n  br label %b0\nb0:\n  call void @tsuzuri_tz_yield()\n  br i1 true, label %b0, label %b1\nb1:\n  ret i64 0\n}\n\
+@tls = internal thread_local global i64 0\ndeclare void @tsuzuri_tz_yield()\n";
+        assert_eq!(
+            checks(ir, &[]),
+            ["@tz.fn.M.spawn br i1 true, label %b0, label %b1"]
+        );
+        let output = with_preemption_checks(ir.to_owned(), &BTreeSet::new());
+        assert!(output.contains("define internal ptr @tz.cache(i64 %size) nounwind noinline {\n"));
     }
 }

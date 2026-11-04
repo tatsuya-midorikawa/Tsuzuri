@@ -1,8 +1,9 @@
 //! TZ10 Phase 1: the cooperative preemption checks of a native program that spawns tzroutines.
-//! A check is the line `call void @tz.preempt.poll()`: at the entry of an emitted function that is
-//! not a leaf, and before the back edge of a loop whose blocks call something that is not a leaf.
-//! A program without `tzroutine` keeps its IR (S1), and a loop that vectorizes without tzroutines
-//! still vectorizes with them (S2).
+//! A check is the line `call void @tz.preempt.poll()` (src/llvm_preempt.rs): before the recursive
+//! calls of a recursive function, and before the back edge of a loop that makes a heavy call (the
+//! runtime, an extern, a recursive function), never in a loop whose calls are small functions,
+//! lambdas or allocations. A program without `tzroutine` keeps its IR (S1), and a loop that
+//! vectorizes without tzroutines still vectorizes with them (S2).
 use std::process::Command;
 
 use tsuzuri::{analyze, llvm};
@@ -96,27 +97,35 @@ fn a_program_without_tzroutines_has_no_check() {
 #[test]
 fn checks_go_to_cycles_and_to_loops_that_call_and_never_to_leaves() {
     let ir = emit(&format!("{KERNELS}{SPAWN}"));
-    // A recursive function checks at its entry, after the static allocas of the entry block.
+    // A recursive function checks before its recursive calls, not on the path of its base case.
     assert_eq!(polls(&ir, "@tz.fn.Main.fib"), 1);
     let fib = body(&ir, "@tz.fn.Main.fib");
-    let entry = &fib[fib.find("entry:\n").unwrap()..fib.find("\nloop:\n").unwrap()];
+    let site = fib.find(POLL).unwrap();
     assert!(
-        entry.ends_with(&format!("  {POLL}\n  br label %loop")),
-        "{entry}"
+        fib[site..]
+            .lines()
+            .nth(1)
+            .unwrap()
+            .contains("call i64 @tz.fn.Main.fib("),
+        "{fib}"
     );
-    // A loop that calls the runtime checks at its back edge (and the function at its entry).
-    assert_eq!(polls(&ir, "@tz.fn.Main.yielding"), 2);
-    // A leaf and a call-free loop: none. A loop whose calls are leaves (a small function, a lambda
-    // that LLVM inlines): none in the loop.
+    assert!(
+        !fib[..fib.find("\nloop:\n").unwrap()].contains(POLL),
+        "{fib}"
+    );
+    // A loop that calls the runtime checks at its back edge; its function has no other check.
+    assert_eq!(polls(&ir, "@tz.fn.Main.yielding"), 1);
+    // A leaf and a call-free loop: none. A loop whose calls inline away (a small function, a lambda
+    // that a loop calls through a constant closure): none in the loop.
     assert_eq!(polls(&ir, "@tz.fn.Main.square"), 0);
     assert_eq!(polls(&ir, "@tz.fn.Main.plain_sum"), 0);
     assert_eq!(polls(&ir, "@tz.fn.Main.sum_squares"), 0);
     assert_eq!(polls(&ir, "@tz.fn.Main.folded"), 0);
-    // The spawning function calls the runtime: a check at its entry.
-    assert_eq!(polls(&ir, "@tz.fn.Main.go"), 1);
+    // A function that calls the runtime once, outside any loop: none.
+    assert_eq!(polls(&ir, "@tz.fn.Main.go"), 0);
     // The runtime's symbols, once.
     assert_eq!(
-        ir.matches("@tsuzuri_tz_preempt_pending = external global i32")
+        ir.matches("@tsuzuri_tz_preempt_pending = external hidden global i32")
             .count(),
         1
     );
@@ -142,7 +151,7 @@ fn an_extern_call_in_a_loop_is_checked() {
     let ir = emit(&source);
     assert_eq!(
         polls(&ir, "@tz.fn.Main.ticks"),
-        2,
+        1,
         "{}",
         body(&ir, "@tz.fn.Main.ticks")
     );
@@ -170,6 +179,20 @@ fn recursion_through_a_closure_is_checked() {
         polls(&ir, "@tz.fn.Main.countdown") >= 1,
         "{}",
         body(&ir, "@tz.fn.Main.countdown")
+    );
+}
+
+#[test]
+fn a_loop_that_only_allocates_is_not_checked() {
+    let source = format!(
+        "export def built :: i64 -> i64\nfn built n =\n    let mut values: Vec<i64> = Vec.empty()\n    for i in 1 ..= n do\n        values = Vec.push (i * 2) values\n    Vec.length (ref values)\n{SPAWN}"
+    );
+    let ir = emit(&source);
+    assert_eq!(
+        polls(&ir, "@tz.fn.Main.built"),
+        0,
+        "{}",
+        body(&ir, "@tz.fn.Main.built")
     );
 }
 
