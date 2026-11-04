@@ -1040,10 +1040,6 @@ static void tzr_startm(tzr_p *p, int spinning) {
     m->spinning = spinning;
     m->rand = 0x9E3779B97F4A7C15ULL ^ (uint64_t)(uintptr_t)m;
     tzr_sched.mcount++;
-#if defined(TZR_ASYNC)
-    atomic_store_explicit(&m->all_next, atomic_load_explicit(&tzr_sched.allm, memory_order_relaxed), memory_order_relaxed);
-    atomic_store_explicit(&tzr_sched.allm, m, memory_order_release);
-#endif
     tzr_mutex_unlock(&tzr_sched.lock);
     tzr_thread_start(tzr_mstart, m, 256 * 1024, "cannot start a scheduler thread"); /* g0 runs only the scheduler */
 }
@@ -2356,9 +2352,20 @@ __attribute__((no_sanitize("address"))) static void tzr_async_handler(int sig, s
         atomic_store_explicit(&tzr_async.probed, tzr_async_measure(uc), memory_order_relaxed);
         return;
     }
-    if (tzr_async_resume(uc)) return;
-    int kicked = tzr_async_kicked();
-    if (tzr_async_stop(uc) || kicked) return;
+    if (tzr_async_resume(uc)) {
+        /* a kick of sysmon that this signal brought as well was for the G that goes on now: taken,
+         * or later kicks would wait for a signal that its handler never takes */
+        (void)tzr_async_kicked();
+        return;
+    }
+    /* Only a kick of sysmon stops a G (a SIGURG of the program's own can find a P still armed), and
+     * it is taken even when the G cannot be stopped where it is. A kick that sysmon counts while a
+     * handler runs, before it sends the signal, can go to this handler, and its signal then reaches
+     * the previous handler instead of one of the program's: as many reach it either way. */
+    if (tzr_async_kicked()) {
+        (void)tzr_async_stop(uc);
+        return;
+    }
     /* Not this runtime's: whoever had SIGURG before. Its default is to ignore it. */
     if (tzr_async_previous.sa_flags & SA_SIGINFO) {
         if (tzr_async_previous.sa_sigaction) tzr_async_previous.sa_sigaction(sig, info, context);
@@ -2397,6 +2404,10 @@ static void tzr_async_entry(tzr_async_frame *frame) {
 /* An M takes SIGURG, on an alternate stack (stack.c's when it is linked, else one of its own). */
 static void tzr_async_thread(tzr_m *m) {
     m->thread = pthread_self();
+    /* listed for the handlers once its thread is known: the release publishes it with the M */
+    tzr_m *head = atomic_load_explicit(&tzr_sched.allm, memory_order_relaxed);
+    do atomic_store_explicit(&m->all_next, head, memory_order_relaxed);
+    while (!atomic_compare_exchange_weak_explicit(&tzr_sched.allm, &head, m, memory_order_release, memory_order_relaxed));
     stack_t current;
     if (sigaltstack(NULL, &current) == 0 && (current.ss_flags & SS_DISABLE)) {
         stack_t alternate = {.ss_sp = malloc(64 * 1024), .ss_size = 64 * 1024, .ss_flags = 0};

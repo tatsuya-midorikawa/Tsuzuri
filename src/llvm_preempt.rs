@@ -82,14 +82,16 @@ pub(super) fn emitted_from_source(name: &str) -> bool {
     name.starts_with("@tz.fn.") || name.starts_with("@tz.specialized.")
 }
 
-/// The functions that the signal of Phase 2 may stop: the source's, and the adapters and the entries of
-/// tzroutines that call them, into which LLVM inlines them (at -O3, a tzroutine's body that is only a
-/// loop ends up in its `@tz.tzroutine.start.*`). Neither kind holds a runtime lock or reads thread
-/// storage itself.
+/// The functions that the signal of Phase 2 may stop: the source's, and the generated functions that
+/// call them directly, into which LLVM inlines them at -O3: the adapters, the entries of tzroutines (a
+/// body that is only a loop ends up in its `@tz.tzroutine.start.*`) and the chunks of `Parallel.*` and
+/// `Routine.scope` (a callback that is only a loop ends up in its `@tz.parallel.chunk.*`). None of
+/// them holds a runtime lock or reads thread storage itself.
 fn preemptible(name: &str) -> bool {
     emitted_from_source(name)
         || name.starts_with("@tz.apply.")
         || name.starts_with("@tz.tzroutine.start.")
+        || name.starts_with("@tz.parallel.chunk.")
 }
 
 /// The symbols of the functions whose cycles the IR may not show: a function in a cycle of the
@@ -737,7 +739,8 @@ define internal i64 @tz.fn.M.walk(i64 %arg0) nounwind {\nentry:\n  %slot = alloc
 define internal i64 @tz.specialized.3(i64 %arg0) nounwind {\nentry:\n  ret i64 0\n}\n\
 define internal ptr @tz.alloc(i64 %size) nounwind {\nentry:\n  ret ptr null\n}\n\
 define internal i8 @tz.apply.$once.4.1(ptr %env) nounwind alwaysinline {\nentry:\n  ret i8 0\n}\n\
-define internal void @tz.tzroutine.start.$once.4.1(ptr %env) {\nentry:\n  ret void\n}\n";
+define internal void @tz.tzroutine.start.$once.4.1(ptr %env) {\nentry:\n  ret void\n}\n\
+define internal void @tz.parallel.chunk.0(ptr %context, i64 %start, i64 %end) {\nentry:\n  ret void\n}\n";
         let elf = with_generated_section(ir.to_owned(), false);
         // The adapter and the entry of a tzroutine, into which -O3 inlines a body that is only a
         // loop (Copilot on #91).
@@ -745,11 +748,14 @@ define internal void @tz.tzroutine.start.$once.4.1(ptr %env) {\nentry:\n  ret vo
             "@tz.apply.$once.4.1(ptr %env) nounwind alwaysinline section \"tz_text\" {\n"
         ));
         assert!(elf.contains("@tz.tzroutine.start.$once.4.1(ptr %env) section \"tz_text\" {\n"));
+        assert!(elf.contains(
+            "@tz.parallel.chunk.0(ptr %context, i64 %start, i64 %end) section \"tz_text\" {\n"
+        ));
         assert!(elf.contains("@tz.fn.M.f(i64 %arg0) nounwind \"probe-stack\"=\"inline-asm\" section \"tz_text\" !dbg !7 {\n"));
         assert!(elf.contains("@tz.specialized.3(i64 %arg0) nounwind section \"tz_text\" {\n"));
         assert!(elf.contains("@tz.alloc(i64 %size) nounwind {\n"));
         let mach_o = with_generated_section(ir.to_owned(), true);
-        assert_eq!(mach_o.matches(MACH_O_SECTION).count(), 4);
+        assert_eq!(mach_o.matches(MACH_O_SECTION).count(), 5);
         assert_eq!(with_generated_section(elf.clone(), false), elf);
     }
 

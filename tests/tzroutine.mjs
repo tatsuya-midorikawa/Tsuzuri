@@ -654,7 +654,8 @@ $"{sum} {trapped}"
   // TZ10: preemption (tests/fixtures/preemption). With one P, a tzroutine that computes without
   // waiting yields when sysmon asks: `busy` calls fib in a loop (the checks of Phase 1) and `tight`
   // runs a loop without calls (the signal of Phase 2; `inlined` is a tzroutine whose whole body is
-  // that loop, which -O3 inlines into the tzroutine's entry), while another tzroutine receives 50 ticks of a
+  // that loop, which -O3 inlines into the tzroutine's entry, and `scope_spin` a Routine.scope child
+  // that spins until its sibling sets a flag, inlined into the scope's chunk), while another tzroutine receives 50 ticks of a
   // 10 ms Ticker; neither could finish if the computing one kept the P. `values` runs fib, an array
   // sum and a chain of steps on three tzroutines that are preempted in turn, and prints the same
   // computations without tzroutines. Only the counts and the values are checked, never a time.
@@ -679,6 +680,7 @@ $"{sum} {trapped}"
       busy: "busy: ticks=50 calls>0\n",
       tight: "tight: ticks=50\n",
       inlined: "inlined: ticks=50\n",
+      scope_spin: "scope_spin: 3\n",
     };
     const fixture = join(temporary, "preemption");
     mkdirSync(fixture);
@@ -688,7 +690,7 @@ $"{sum} {trapped}"
       cli(["build", fixture, optimization, "-o", executable]);
       for (const name of Object.keys(expected)) {
         // Windows has the checks of Phase 1 only: a loop without calls keeps its P there.
-        if ((name === "tight" || name === "inlined") && process.platform === "win32") continue;
+        if (["tight", "inlined", "scope_spin"].includes(name) && process.platform === "win32") continue;
         for (const procs of ["1", "4"]) {
           const run = spawnSync(executable, [name], { cwd: fixture, encoding: "utf8", timeout: 120_000, env: { ...process.env, TSUZURI_MAXPROCS: procs } });
           assert.equal(run.status, 0, `preemption ${name} ${optimization} P${procs}: ${run.signal ?? ""}\n${run.stdout}\n${run.stderr}`);
