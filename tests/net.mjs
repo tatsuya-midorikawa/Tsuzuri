@@ -646,14 +646,15 @@ try {
   }
 
   // TZ08: a tzroutine that waits for its socket waits alone (the netpoller), so a server with a tzroutine per
-  // connection serves 100 clients at once with one P, and a read's timeout leaves the other tzroutines running.
+  // connection serves 100 clients at once with one P, a read's timeout leaves the other tzroutines running, and a
+  // read that waits ends when another tzroutine closes its stream.
   if (wanted("tzroutine")) {
     const project = fixture("net_tzroutine");
     for (const optimization of optimizations) {
       const exe = build(project, optimization);
       for (const procs of ["1", "4"]) {
         const outcome = execute(exe, [], { env: { ...process.env, TSUZURI_MAXPROCS: procs } });
-        assert.equal(outcome.stdout.replace(/\r\n/g, "\n"), "echoes: 100\nread: TimedOut, others ran: true\n", `${optimization} ${procs}`);
+        assert.equal(outcome.stdout.replace(/\r\n/g, "\n"), "echoes: 100\nread: TimedOut, others ran: true\nread across a close: closed\n", `${optimization} ${procs}`);
       }
     }
     console.log("Net tzroutines: an echo server with a tzroutine per connection and 100 clients, and a read timeout, passed with 1 and 4 Ps at -O0 and -O3");

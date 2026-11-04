@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdatomic.h>
@@ -469,11 +470,16 @@ struct tz_os_file {
     int writable;
 };
 
+// The table is shared by the threads that run tzroutines, which may open, use and close files at
+// once (TZ08: one that waits in a call gives its P to another), so it changes under a lock; a call
+// takes what it needs under the lock and waits for the system outside it.
 static struct tz_os_file *tz_os_files = NULL;
 static size_t tz_os_file_capacity = 0;
 static size_t tz_os_files_open = 0;
 static int64_t tz_os_generation = 0;
+static pthread_mutex_t tz_os_files_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// The entry of `handle`, or NULL (the table's lock held).
 static struct tz_os_file *tz_os_file_of(int64_t handle) {
     if (handle <= 0) return NULL;
     uint64_t slot = (uint64_t)handle & UINT64_C(0xffffffff);
@@ -522,34 +528,38 @@ static int64_t tz_os_open_now(int32_t mode, const unsigned char *path, int64_t l
         close(descriptor);
         return -tz_os_error(error);
     }
-    if (tz_os_generation >= INT32_MAX) {
-        close(descriptor);
-        return -tz_os_status(TZ_OS_OTHER, EOVERFLOW);
-    }
+    pthread_mutex_lock(&tz_os_files_lock);
+    int64_t failure = 0;
+    if (tz_os_generation >= INT32_MAX) failure = tz_os_status(TZ_OS_OTHER, EOVERFLOW);
     size_t slot = 0;
-    while (slot < tz_os_file_capacity && tz_os_files[slot].generation != 0) slot++;
-    if (slot == tz_os_file_capacity) {
+    while (failure == 0 && slot < tz_os_file_capacity && tz_os_files[slot].generation != 0) slot++;
+    if (failure == 0 && slot == tz_os_file_capacity) {
         size_t next = tz_os_file_capacity == 0 ? 8 : tz_os_file_capacity * 2;
-        if (next > UINT32_MAX) {
-            close(descriptor);
-            return -tz_os_status(TZ_OS_OTHER, EMFILE);
-        }
-        struct tz_os_file *larger = realloc(tz_os_files, next * sizeof(struct tz_os_file));
+        struct tz_os_file *larger = next > UINT32_MAX ? NULL : realloc(tz_os_files, next * sizeof(struct tz_os_file));
         if (larger == NULL) {
-            close(descriptor);
-            return -tz_os_status(TZ_OS_OTHER, ENOMEM);
+            failure = tz_os_status(TZ_OS_OTHER, next > UINT32_MAX ? EMFILE : ENOMEM);
+        } else {
+            for (size_t index = tz_os_file_capacity; index < next; index++) larger[index].generation = 0;
+            tz_os_files = larger;
+            tz_os_file_capacity = next;
         }
-        for (size_t index = tz_os_file_capacity; index < next; index++) larger[index].generation = 0;
-        tz_os_files = larger;
-        tz_os_file_capacity = next;
     }
-    struct tz_os_file *file = &tz_os_files[slot];
-    file->descriptor = descriptor;
-    file->generation = ++tz_os_generation;
-    file->readable = readable;
-    file->writable = writable;
-    tz_os_files_open++;
-    return (file->generation << 32) | (int64_t)(slot + 1);
+    int64_t handle = 0;
+    if (failure == 0) {
+        struct tz_os_file *file = &tz_os_files[slot];
+        file->descriptor = descriptor;
+        file->generation = ++tz_os_generation;
+        file->readable = readable;
+        file->writable = writable;
+        tz_os_files_open++;
+        handle = (file->generation << 32) | (int64_t)(slot + 1);
+    }
+    pthread_mutex_unlock(&tz_os_files_lock);
+    if (failure != 0) {
+        close(descriptor);
+        return -failure;
+    }
+    return handle;
 }
 
 // TZ08: a tzroutine in this call lets its P go.
@@ -564,8 +574,13 @@ TZ_OS_API int64_t tsuzuri_os_open(int32_t mode, const unsigned char *path, int64
 // 2 flushes, which only checks the handle because nothing is buffered.
 static int64_t tz_os_handle_now(struct tz_os_buffer *output, int32_t operation, int64_t handle, int64_t count, const unsigned char *data, int64_t data_length) {
     tz_os_clear(output);
-    struct tz_os_file *file = tz_os_file_of(handle);
-    if (file == NULL) return tz_os_bad_handle();
+    pthread_mutex_lock(&tz_os_files_lock);
+    struct tz_os_file *entry = tz_os_file_of(handle);
+    struct tz_os_file copy;
+    if (entry != NULL) copy = *entry;
+    pthread_mutex_unlock(&tz_os_files_lock);
+    if (entry == NULL) return tz_os_bad_handle();
+    const struct tz_os_file *file = &copy;
     switch (operation) {
     case 0: {
         if (!file->readable) return tz_os_bad_handle();
@@ -619,16 +634,21 @@ TZ_OS_API int64_t tsuzuri_os_handle(struct tz_os_buffer *output, int32_t operati
 
 // Closes a file; the handle is invalid afterwards even when the system reports a failure.
 static int64_t tz_os_close_now(int64_t handle) {
+    pthread_mutex_lock(&tz_os_files_lock);
     struct tz_os_file *file = tz_os_file_of(handle);
-    if (file == NULL) return tz_os_bad_handle();
-    int result = close(file->descriptor);
-    int error = errno;
-    file->generation = 0;
-    if (--tz_os_files_open == 0) {
-        free(tz_os_files);
-        tz_os_files = NULL;
-        tz_os_file_capacity = 0;
+    int descriptor = file != NULL ? file->descriptor : -1;
+    if (file != NULL) {
+        file->generation = 0;
+        if (--tz_os_files_open == 0) {
+            free(tz_os_files);
+            tz_os_files = NULL;
+            tz_os_file_capacity = 0;
+        }
     }
+    pthread_mutex_unlock(&tz_os_files_lock);
+    if (descriptor < 0) return tz_os_bad_handle();
+    int result = close(descriptor);
+    int error = errno;
     // After EINTR the descriptor state is unspecified, and retrying could close another one.
     return result != 0 && error != EINTR ? tz_os_error(error) : 0;
 }

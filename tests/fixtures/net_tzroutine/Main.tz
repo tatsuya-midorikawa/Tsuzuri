@@ -79,5 +79,28 @@ def main :: unit -> i32 = \() ->
     while !Atomic.load (Arc.get (ref stop)) do
         Routine.yield ()
     let! _closed = Net.close idle_stream
+    // A read that waits for its stream ends when another tzroutine closes the stream: it reports the
+    // closed handle (InvalidInput) instead of waiting for ever.
+    let! peer_connected = Net.connect idle_address Maybe.None
+    let peer = Result.get peer_connected
+    let! reader_accepted = Net.accept idle_listener (Maybe.Some 5000)
+    let shared = Result.get reader_accepted
+    let reads: Channel<string> = Channel.make 1
+    let read_out = Channel.share reads
+    tzroutine {
+        let! received = Net.read shared 16 Maybe.None
+        Channel.send read_out (match received with
+            | Result.Ok _ -> "data"
+            | Result.Error error -> match error.kind with
+                | Os.InvalidInput -> "closed"
+                | _ -> "other")
+    }
+    Time.sleep (20 * Time.millisecond())
+    let! _closed_shared = Net.close shared
+    let read_after_close = match Channel.recv reads with
+        | Maybe.Some text -> text
+        | Maybe.None -> "none"
+    do! IO.write_line $"read across a close: {read_after_close}"
+    let! _closed_peer = Net.close peer
     let! _closed_listener = Net.close_listener idle_listener
     0

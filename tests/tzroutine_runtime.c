@@ -1892,12 +1892,20 @@ static int same_thread(thread_id a, thread_id b) { return pthread_equal(a, b); }
 #endif
 static _Atomic int64_t handoff_order;
 static _Atomic int64_t handoff_slept_at, handoff_rounds_at;
-static _Atomic int handoff_inside;
+static _Atomic int handoff_inside, handoff_released;
+/* Stays in its blocking call until `flag` is set, with a watchdog that fails a hang. */
+static void block_until(_Atomic int *flag) {
+    double t = seconds();
+    while (!atomic_load(flag)) {
+        CHECK(seconds() - t < 60.0);
+        block_ms(1);
+    }
+}
 static void handoff_sleeper(void *env) {
     (void)env;
     tsuzuri_tz_blocking_enter();
     atomic_store(&handoff_inside, 1);
-    block_ms(200);
+    block_until(&handoff_released); /* the round trips must run meanwhile, on the P that it gave up */
     tsuzuri_tz_blocking_exit();
     atomic_store(&handoff_slept_at, atomic_fetch_add(&handoff_order, 1) + 1);
 }
@@ -1905,11 +1913,13 @@ static void handoff_pinger(void *env) {
     pingpong *pp = env;
     pinger(pp);
     atomic_store(&handoff_rounds_at, atomic_fetch_add(&handoff_order, 1) + 1);
+    atomic_store(&handoff_released, 1);
 }
 static void test_blocking_handoff(void) {
     pingpong pp = {chan_make(8, 0), chan_make(8, 0), 1000};
     atomic_store(&handoff_order, 0);
     atomic_store(&handoff_inside, 0);
+    atomic_store(&handoff_released, 0);
     void *scope = tsuzuri_tz_scope_enter();
     tsuzuri_tz_go(handoff_sleeper, NULL);
     while (!atomic_load(&handoff_inside)) tzr_os_yield();
@@ -1938,7 +1948,12 @@ static void reacquire_blocker(void *env) {
     for (int i = 0; i < 4; i++) {
         int64_t before = atomic_load(&reacquire_rounds);
         tsuzuri_tz_blocking_enter();
-        block_ms(50);
+        /* the spinner runs while this G is in its call: it waits until it has (a watchdog fails a hang) */
+        double t = seconds();
+        while (atomic_load(&reacquire_rounds) == before) {
+            CHECK(seconds() - t < 60.0);
+            block_ms(1);
+        }
         tsuzuri_tz_blocking_exit();
         /* back with a P: the G goes on here */
         atomic_fetch_add(&reacquire_seen[which], atomic_load(&reacquire_rounds) - before);
@@ -2061,6 +2076,40 @@ static void locked_worker(void *env) {
     int64_t stop = -1;
     CHECK(tsuzuri_tz_chan_send(c, &stop, 1) == TZR_OK);
 }
+/* A locked G that yields until a G back from a blocking call sets a flag: with one P its yield gives the
+ * P to that G's M, which waits for it, or the two would wait for each other for ever. */
+static _Atomic int locked_flag, blocked_inside;
+static void locked_yielder(void *env) {
+    (void)env;
+    tsuzuri_tz_lock_thread();
+    double t = seconds();
+    while (!atomic_load(&locked_flag)) {
+        CHECK(seconds() - t < 60.0);
+        tsuzuri_tz_yield();
+    }
+    tsuzuri_tz_unlock_thread();
+}
+static void flag_after_call(void *env) {
+    (void)env;
+    tsuzuri_tz_blocking_enter();
+    atomic_store(&blocked_inside, 1);
+    block_ms(20);
+    tsuzuri_tz_blocking_exit();
+    atomic_store(&locked_flag, 1);
+}
+static void test_locked_yield(void) {
+    for (int round = 0; round < 5; round++) {
+        atomic_store(&locked_flag, 0);
+        atomic_store(&blocked_inside, 0);
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(flag_after_call, NULL);
+        while (!atomic_load(&blocked_inside)) tzr_os_yield();
+        tsuzuri_tz_go(locked_yielder, NULL);
+        join(scope);
+    }
+    printf("locked yield: ok\n");
+}
+
 static void test_locked_thread(void) {
     atomic_store(&locked_moves, 0);
     tzr_chan *c[3];
@@ -2223,6 +2272,10 @@ static void netpoll_close_reader(void *env) {
     /* the close of its socket wakes it as ready */
     CHECK(tzr_netpoll_wait((intptr_t)fd, 0, -1) == 0);
 }
+static void netpoll_closing_reader(void *env) {
+    sock fd = *(sock *)env;
+    CHECK(tzr_netpoll_wait((intptr_t)fd, 0, -1) == 0 && atomic_load(&tzr_sched.nnetwait) == 0);
+}
 static void test_netpoll_close(void) {
     for (int round = 0; round < 20; round++) {
         sock fds[2];
@@ -2230,8 +2283,13 @@ static void test_netpoll_close(void) {
         void *scope = tsuzuri_tz_scope_enter();
         tsuzuri_tz_go(netpoll_close_reader, &fds[0]);
         while (atomic_load(&tzr_sched.nnetwait) == 0) tzr_os_yield();
-        tzr_netpoll_close((intptr_t)fds[0]);
+        tzr_netpoll_close((intptr_t)fds[0], 0);
         join(scope);
+        /* while it closes, a wait does not start (the close would drop it unseen): it is ready */
+        scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(netpoll_closing_reader, &fds[0]);
+        join(scope);
+        tzr_netpoll_close((intptr_t)fds[0], 1);
         sock_close(fds[0]);
         sock_close(fds[1]);
     }
@@ -2347,6 +2405,7 @@ int main(int argc, char **argv) {
     RUN("blocking_deadlock", test_blocking_deadlock());
     RUN("blocking_callback", test_blocking_callback());
     RUN("locked_thread", test_locked_thread());
+    RUN("locked_yield", test_locked_yield());
     RUN("netpoll_pipe", test_netpoll_pipe());
     RUN("netpoll_timeout", test_netpoll_timeout());
     RUN("netpoll_close", test_netpoll_close());

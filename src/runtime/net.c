@@ -165,16 +165,17 @@ __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit
 
 /* net.c's hooks (TZ08 Phase 2), which the scheduler sets when it starts: the wait of a tzroutine for
  * a socket, in the netpoller (0 ready, 1 timed out, -1 when net.c must poll itself), and the close of
- * a socket, which ends the waits for it. Defined by the first part that has this block. */
+ * a socket, before it (closed 0: the waits for it end, and none starts) and after it (closed 1).
+ * Defined by the first part that has this block. */
 #ifndef TSUZURI_NET_HOOKS_DEFINED
 #define TSUZURI_NET_HOOKS_DEFINED
 #if defined(_WIN32)
 __attribute__((selectany)) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write, int64_t timeout) = 0;
-__attribute__((selectany)) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor, int32_t closed) = 0;
 #else
 __attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write,
                                                                                      int64_t timeout);
-__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor);
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor, int32_t closed);
 #endif
 #endif
 
@@ -230,6 +231,9 @@ enum { TZ_NET_WATCH_READ = 1, TZ_NET_WATCH_WRITE = 2 };
 
 // An error number that no system reports: a call that was told not to wait would have had to.
 #define TZ_NET_E_PENDING (-1)
+// What tz_net_wait returns when the handle that it waited for was closed meanwhile (TZ08): the call
+// reports the closed handle, as the next call on it would.
+#define TZ_NET_E_CLOSED (-3)
 // The deadline of a call that must not wait (a timeout of 0), apart from -1 for no deadline.
 #define TZ_NET_ATTEMPT (-2)
 
@@ -296,7 +300,9 @@ static void tz_net_mutex_unlock(tz_net_mutex *mutex) {
     if (pthread_mutex_unlock(mutex) != 0) abort();
 }
 
-static int tz_net_errno(void) { return errno; }
+// Not inlined: on a tzroutine a wait in the netpoller may go on on another thread (TZ08), and an inlined
+// read could keep the address of the first thread's errno across it.
+__attribute__((noinline)) static int tz_net_errno(void) { return errno; }
 
 static int64_t tz_net_now(void) {
     struct timespec now;
@@ -320,6 +326,7 @@ static int64_t tz_net_status(int kind, int code) {
 static int64_t tz_net_error(int error) {
     int kind;
     if (error == TZ_NET_E_PENDING) return tz_net_status(TZ_NET_OTHER, 0);
+    if (error == TZ_NET_E_CLOSED) return tz_net_status(TZ_NET_INVALID_INPUT, TZ_NET_E_BADF);
     switch (error) {
     case TZ_NET_E_ACCES:
 #if !defined(_WIN32)
@@ -500,8 +507,10 @@ static int64_t tz_net_deadline(int64_t timeout) {
 // the next call reports it), TZ_NET_E_TIMEDOUT at the deadline, TZ_NET_E_PENDING for a call that must not wait,
 // or the error number of poll. An interrupted poll starts again with the time that is left, rounded up to a
 // whole millisecond so that the last fraction does not spin. On a tzroutine the scheduler's netpoller waits
-// instead, and only the tzroutine waits (TZ08); it leaves the wait to poll when it cannot take it.
-static int tz_net_wait(tz_net_fd descriptor, short events, int64_t deadline) {
+// instead, and only the tzroutine waits (TZ08); it leaves the wait to poll when it cannot take it. Such a wait
+// may end because another tzroutine closed the socket: when `handle` (0 for none) is no longer open with this
+// descriptor, the result is TZ_NET_E_CLOSED.
+static int tz_net_wait(tz_net_fd descriptor, short events, int64_t deadline, int64_t handle) {
     if (deadline == TZ_NET_ATTEMPT) return TZ_NET_E_PENDING;
     int32_t (*netpoll)(intptr_t, int32_t, int64_t) = atomic_load_explicit(&tsuzuri_net_wait_hook, memory_order_acquire);
     for (;;) {
@@ -515,7 +524,11 @@ static int tz_net_wait(tz_net_fd descriptor, short events, int64_t deadline) {
         }
         if (netpoll != NULL) {
             int32_t waited = netpoll((intptr_t)descriptor, events == TZ_NET_POLL_WRITE, remaining);
-            if (waited == 0) return 0;
+            if (waited == 0) {
+                struct tz_net_socket open;
+                if (handle != 0 && (!tz_net_find(handle, 0, &open) || open.descriptor != descriptor)) return TZ_NET_E_CLOSED;
+                return 0;
+            }
             if (waited == 1) return TZ_NET_E_TIMEDOUT;
             netpoll = NULL;
         }
@@ -1039,7 +1052,7 @@ TZ_NET_API int64_t tsuzuri_net_open(struct tz_net_buffer *output, int32_t operat
             error = tz_net_errno();
             // An interrupted or slow connect goes on by itself; it is finished when the socket can be written.
             if (TZ_NET_CONNECT_PENDING(error)) {
-                error = tz_net_wait(descriptor, TZ_NET_POLL_WRITE, deadline);
+                error = tz_net_wait(descriptor, TZ_NET_POLL_WRITE, deadline, 0);
                 if (error == 0) {
                     int pending = 0;
                     socklen_t size = sizeof pending;
@@ -1105,7 +1118,7 @@ TZ_NET_API int64_t tsuzuri_net_accept(struct tz_net_buffer *output, int64_t hand
         // A connection that the peer gave up before this call is not an error for the next one.
         if (error == TZ_NET_E_INTR || TZ_NET_GONE_BEFORE_ACCEPT(error)) continue;
         if (!TZ_NET_WOULD_BLOCK(error)) return -tz_net_error(error);
-        error = tz_net_wait(listener.descriptor, TZ_NET_POLL_READ, deadline);
+        error = tz_net_wait(listener.descriptor, TZ_NET_POLL_READ, deadline, handle);
         if (error != 0) return -tz_net_error(error);
     }
 }
@@ -1164,7 +1177,7 @@ static int64_t tz_net_receive_from(tz_net_fd descriptor, unsigned char *buffer, 
 }
 
 // A datagram: its source address record, then its bytes. A datagram longer than `maximum` is consumed and EMSGSIZE.
-static int64_t tz_net_receive_datagram(struct tz_net_buffer *output, tz_net_fd descriptor, int64_t maximum, int64_t deadline) {
+static int64_t tz_net_receive_datagram(struct tz_net_buffer *output, tz_net_fd descriptor, int64_t maximum, int64_t deadline, int64_t handle) {
     // No datagram is longer than 65,535 bytes, so a bigger buffer never fills.
     size_t capacity = maximum < TZ_NET_MAX_DATAGRAM ? (size_t)maximum : TZ_NET_MAX_DATAGRAM;
     unsigned char packet[TZ_NET_RECORD + TZ_NET_MAX_DATAGRAM];
@@ -1185,14 +1198,14 @@ static int64_t tz_net_receive_datagram(struct tz_net_buffer *output, tz_net_fd d
         if (error == TZ_NET_E_CONNRESET) continue;
 #endif
         if (!TZ_NET_WOULD_BLOCK(error)) return tz_net_error(error);
-        error = tz_net_wait(descriptor, TZ_NET_POLL_READ, deadline);
+        error = tz_net_wait(descriptor, TZ_NET_POLL_READ, deadline, handle);
         if (error != 0) return tz_net_error(error);
     }
 }
 
 // What has arrived on a stream, at most `maximum` bytes, none at the end of the stream. A small read lands on
 // the stack and is copied exactly; a big one lands in the memory it is delivered in.
-static int64_t tz_net_receive_stream(struct tz_net_buffer *output, tz_net_fd descriptor, int64_t maximum, int64_t deadline) {
+static int64_t tz_net_receive_stream(struct tz_net_buffer *output, tz_net_fd descriptor, int64_t maximum, int64_t deadline, int64_t handle) {
     unsigned char stack[TZ_NET_STACK_READ];
     int owned = maximum > TZ_NET_STACK_READ;
     unsigned char *buffer = owned ? tsuzuri_alloc(maximum) : stack;
@@ -1201,7 +1214,7 @@ static int64_t tz_net_receive_stream(struct tz_net_buffer *output, tz_net_fd des
         if (count >= 0) return tz_net_finish_read(output, buffer, owned, maximum, (size_t)count);
         int error = tz_net_errno();
         if (error != TZ_NET_E_INTR) {
-            if (TZ_NET_WOULD_BLOCK(error)) error = tz_net_wait(descriptor, TZ_NET_POLL_READ, deadline);
+            if (TZ_NET_WOULD_BLOCK(error)) error = tz_net_wait(descriptor, TZ_NET_POLL_READ, deadline, handle);
             if (error != 0) {
                 if (owned) tsuzuri_free(buffer);
                 return tz_net_error(error);
@@ -1219,8 +1232,8 @@ TZ_NET_API int64_t tsuzuri_net_read(struct tz_net_buffer *output, int32_t operat
     struct tz_net_socket socket_entry;
     if (!tz_net_find(handle, operation == 0 ? TZ_NET_STREAM : TZ_NET_DATAGRAM, &socket_entry)) return tz_net_bad_handle();
     int64_t deadline = tz_net_deadline(timeout);
-    return operation == 1 ? tz_net_receive_datagram(output, socket_entry.descriptor, maximum, deadline)
-                          : tz_net_receive_stream(output, socket_entry.descriptor, maximum, deadline);
+    return operation == 1 ? tz_net_receive_datagram(output, socket_entry.descriptor, maximum, deadline, handle)
+                          : tz_net_receive_stream(output, socket_entry.descriptor, maximum, deadline, handle);
 }
 
 // Sends `length` bytes of a stream once: the count, or -1 and the error number.
@@ -1258,7 +1271,7 @@ TZ_NET_API int64_t tsuzuri_net_write(int32_t operation, int64_t handle, const un
             int error = tz_net_errno();
             if (error == TZ_NET_E_INTR) continue;
             if (!TZ_NET_WOULD_BLOCK(error)) return tz_net_error(error);
-            error = tz_net_wait(descriptor, TZ_NET_POLL_WRITE, -1);
+            error = tz_net_wait(descriptor, TZ_NET_POLL_WRITE, -1, handle);
             if (error != 0) return tz_net_error(error);
         }
     }
@@ -1274,7 +1287,7 @@ TZ_NET_API int64_t tsuzuri_net_write(int32_t operation, int64_t handle, const un
         int error = count < 0 ? tz_net_errno() : TZ_NET_E_WOULDBLOCK;
         if (error == TZ_NET_E_INTR) continue;
         if (!TZ_NET_WOULD_BLOCK(error)) return tz_net_error(error);
-        error = tz_net_wait(descriptor, TZ_NET_POLL_WRITE, deadline);
+        error = tz_net_wait(descriptor, TZ_NET_POLL_WRITE, deadline, handle);
         if (error != 0) return tz_net_error(error);
     }
     return 0;
@@ -1321,15 +1334,17 @@ static int64_t tz_net_close_handle(int64_t handle) {
     tz_net_fd descriptor;
     if (!tz_net_forget(handle, &descriptor)) return tz_net_bad_handle();
     tz_net_cancel_handle(handle);
-    // A tzroutine that waits on the socket wakes, and its retry reports the closed handle (TZ08).
-    void (*closing)(intptr_t) = atomic_load_explicit(&tsuzuri_net_close_hook, memory_order_acquire);
-    if (closing != NULL) closing((intptr_t)descriptor);
+    // A tzroutine that waits on the socket wakes and reports the closed handle, and none waits on it again
+    // until it is closed (TZ08).
+    void (*closing)(intptr_t, int32_t) = atomic_load_explicit(&tsuzuri_net_close_hook, memory_order_acquire);
+    if (closing != NULL) closing((intptr_t)descriptor, 0);
     // After EINTR the descriptor state is unspecified, and retrying could close another one. A close can
     // wait (a lingering socket): a tzroutine lets its P go (TZ08).
     TZ_BLOCKING_ENTER();
     int closed = tz_net_close_fd(descriptor);
     int error = closed == 0 ? 0 : tz_net_errno();
     TZ_BLOCKING_EXIT();
+    if (closing != NULL) closing((intptr_t)descriptor, 1);
     if (closed == 0) return 0;
     return error == TZ_NET_E_INTR ? 0 : tz_net_error(error);
 }
