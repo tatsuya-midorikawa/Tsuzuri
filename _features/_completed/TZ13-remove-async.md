@@ -7,7 +7,7 @@
 | 規模 | M。Phase 1（Net の `_async` と Async の非同期の待ちの経路）M、Phase 2（`Async` のモジュール・ビルダー・実行器・ホスト駆動の削除と `E1040`）M、Phase 3（テスト・文書・CI の整理）M |
 | 依存 | TZ08, TZ12 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（2026-11-04。Phase 1〜3。下の「着手時の再検討」と「実装と検証」） |
 | 起票 | 2026-11-01（D-61。HEAD `9a76d8ac` で確認） |
 | 承認 | 承認済み（D-61 の決定 4: 即削除）。決定事項 D1〜D6 は既定案。**ホストのイベントループに計算を預ける機能（`Async.start`・`Async.host`・`tsuzuri_async_poll`）には後継がない**（D2）ことを、着手前に人間に再確認する |
 | 手本にする既存実装 | TZ12（削除の進め方、`E1040`、kind を消さない規則、規則 ID の退役） |
@@ -185,3 +185,26 @@ D-61 の決定 4 のとおり、Async を削除する。I/O を待ちながら�
 
 - 利用者は、TZ01〜TZ13 の判断をすべて実装者に委ねた（2026-11-04 の指示「あなたが考える最高の選択肢で実装することを常に許可します」）。着手条件の「D2 を人間に再確認した記録」は、この委任で満たす。
 - その委任に基づき、D2（ホスト駆動の実行器 `Async.start`・`Async.host`・`tsuzuri_async_poll`・`complete`・`post` の後継は作らない）を採用した。理由は決定事項の表のとおり（tzroutine は境界の中で終わる。D-61 の決定 1）。ホストのイベントループを止めたくない場合は、ホストが別のスレッドから export を呼ぶ（仕様 2）。
+
+## 着手時の再検討（2026-11-04、HEAD `16b71ba7`。TZ12 の上）
+
+起票（HEAD `9a76d8ac`）のあとに入った TZ08〜TZ12 と照らして、次のとおり合わせた。
+
+1. **`Net.__names`・`Net.__send` も消した**: 表にないが、使うのは `_async` の 12 関数だけだった（C の `tsuzuri_net_names`・`tsuzuri_net_send`、表の `names` の欄、グルーの対応する関数も）。
+2. **時間制限 0 の「1 回だけ試す」経路は残した**: `std/Net.tz` は時間制限 0 で呼ばなくなったが、WASM の `try_accept`・`try_read` の import と `waiting_call` の分岐、`net.c` の `TZ_NET_ATTEMPT`／`TZ_NET_E_PENDING` を消すと、同期の Net の WASM モジュールの IR と import が変わる（S1）。コメントに残す理由を書いた。後で整理できる。
+3. **`E1040` の範囲**: 表の行に加えて、ビルダーの操作（`Async.Return`・`Bind`・`Delay` など）と型 `Async.Step`・`Async.Next` も `removed_async`（ビルダーの help）。利用者の `Async` モジュール・ビルダーや `@alias async` があれば、それが先に解決する。どの行も `fixes` を持たない（同期版は型が違う）。
+4. **件数**: 表の `PRIVATE_WITHOUT_CAPABILITY` の 22 は古く、実際は 49 → 44。組み込みの件数の pin は、消した 13 の組み込みから手で数えた（`ALL` 353 → 340 など）。
+5. **S2 のグルーの目印**: `bindings-core.mjs` の 3 か所に目印のコメント（`inspect`・`importObject`・`bind`）を置き、`javascript_with_net` は `NET_INSPECT_ANCHOR` などの定数でその後ろへ差し込む（配置は前と同じ）。目印はソケットのないグルーの検査の語（`tsuzuri_net`・`netImports`・`NODE_NET`・`node:net`）を含まない。表の `"async"` は消え、JSPI の flavor だけ `"jspi": true` を持つ。
+6. **ランタイムの単位の 3 番目の部分**（`async.c`）は、事前ビルドのランタイムが一致するように空の文字列として残した（TZ12 の 6 番目と同じ）。`Platform::reactor` は呼ぶ側がすべて Async だったので消した。
+7. **`tests/net.mjs` の段 `async` は `portable` に書き換えた**: `vscode.yml` は POSIX の記述子を要る段 `sockets` を Windows で走らせないので、`async` の段は Windows で blocking のソケットの振る舞い（accept の前のリセットの読み飛ばし、閉じたポートへの datagram の報告の抑止）を通しで確かめる唯一の段だった。同じ case の同期版を `tests/fixtures/net_portable` に移し、期待はそのまま。`crowd`・`waits`・`cancel`・`close_wait` は消した（tzroutine の段が 100 のクライアントと close をまたぐ read を持つ。取り消しは後継がない）。
+8. **JSPI の export の直列化の検査**: TZ09 の `tests/tzroutine_wasm.mjs` はまだないので、`tests/net_wasm.mjs` の `jspi_queue`（中断する呼び出しの前後を報告する export `echo_bytes` を 3 回同時に呼び、1 つずつ順に走ることと、呼んだ後に変えた型付き配列の引数が前の値のままであること）へ移した。キューを飛ばしたグルーでは順序が `+,+,+,-,-,-` になり、検査が失敗することを確かめた。wasm64 で中断する JSPI のモジュールと、WebAssembly の上の同時の待ち（`crowd` など）は、TZ09 の tzroutine の WASM で確かめる（TZ09 に引き継ぐ）。
+9. **`docs/language.md` の見出し「非同期計算（Async）」は残した**: `_features/_completed/B08-async.md` などが link するので、中身を削除の記録（`E1040` の表、D2・D3、ホストの今のやり方）にした。
+
+## 実装と検証（2026-11-04）
+
+- **範囲**: Phase 1〜3 をすべて実装した（1 つの PR、TZ12 の PR の上に重ねる）。
+- **コンパイラ・ランタイム・std**: `std/Async.tc`・`src/runtime/async.c` を削除。`std/Net.tz` の `_async` の 12 関数と私的な補助、`net.c` の Async の poll のスレッド（起こし・待ちの表・`tsuzuri_net_watch`／`connect`／`unwatch`・`tz_net_settle`・`tz_net_post`・`tz_net_cancel_handle`）を削除（TZ08 の netpoller のフックと `tz_net_wait` は残す）。`check.rs` の `Async.*` の 8 個と Net の 5 個の組み込み、Async の非 Copy・非 Sync・`is_async`、`ownership.rs` の `BorrowAcrossAsyncBoundary` の検査、`llvm.rs`・`llvm_io.rs` の生成（slot・thread index・reactor・`host_entries`・ヘッダーの `tsuzuri_async_*`）、ドライバーの Async の `E2000`・`E2002`・`async.c` の連結・`--export=tsuzuri_async_*`、テストの実行器、`capabilities.rs`・`effects.rs`・`pure_rules.rs`・`kg/effects.rs` の行と pin、グルーの `createAsyncHost`・`asyncImports`・世代を削除。kind は消さない（`net_async_needs_block_on`・`wasm_test_runner_async`・`borrow_across_async_boundary` は登録簿に残り、出なくなった）。
+- **`E1040`**: `removed_async`・`removed_net_async`（`src/diagnostic_kinds.rs`、`src/explain/codes/E1040.md`）。`tests/removed_features.rs` が表の全行と、利用者の定義が勝つ場合を検査する。
+- **テスト**: 上の 7・8 のほか、Async を例に使ったテストを同じ性質の別の構成（`Maybe`／`IO` のビルダー、テストの中の `.tc` の利用者のビルダー、`Routine.yield`、同期の Net）に書き換えた。`tests/async.rs`・`tests/async.mjs` と fixture `async`・`async_host`・`async_reactor`・`net_async`、`features.mjs` の suite `async` を削除。
+- **実行したコマンドと結果**: `cargo nextest run --locked`（下の PR の本文に件数）、`cargo test --locked --lib`、`node tests/net.mjs`（全段。`runtime` は ASan＋UBSan と TSan も）、`node tests/net_wasm.mjs`、`node tests/features.mjs`（`regex`・`unicode` 以外の 78 suite。2 つは手元の Node 24.22 の Unicode 18 と std の 17 の差で、TZ12 の前から同じ）、`tests/docgen.mjs`・`tests/bindings.mjs`・`tests/tzroutine.mjs`・`tests/lsp_sessions.mjs`、VS Code の `test:unit`・`check-types`・`lint`、変更したページの `check-docs`、`gen-docs --check`、`check-cli-docs`、`check-guide`、`check-guide-lite`、`check-spec --require-markers`、`check-links`。`examples/*` の IR は Async を使わないものすべてで変わらない（同期の Net のプログラムは、Net が Async を読まなくなったので生成の id の番号だけが変わる）。
+- **文書**: 言語リファレンス（`async.md` を削除、`tzroutine.md` に「Async からの移行」、`webassembly.md` の「JSPI」、`native-interop.md` の「ホストのイベントループと export」、`net.md`、`computation-expressions.md`、`keywords.md`、`diagnostics.md` ほか）、`docs/language.md`、`docs/architecture.md`、`docs/benchmarks.md`（B08 の測定を履歴へ）、`guide/`、`README.md`、`scripts/check-cli-docs.mjs`、`vscode.yml`・`windows.yml`・`ci.instructions.md`。
