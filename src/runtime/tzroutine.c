@@ -2439,7 +2439,8 @@ TZR_API int32_t tsuzuri_channel_send(void *block, const void *item) {
             return 1;
         }
         if (c->count < c->capacity) {
-            memcpy(tzr_dchan_slot(c, c->count), item, c->item_size);
+            /* a unit item has no bytes, and its pointer may be NULL (memcpy's are nonnull) */
+            if (c->item_size != 0) memcpy(tzr_dchan_slot(c, c->count), item, c->item_size);
             c->count++;
             tzr_dchan_wake(c, 0, 0);
             return 0;
@@ -2454,7 +2455,7 @@ TZR_API int32_t tsuzuri_channel_recv(void *block, void *item) {
     for (;;) {
         tzr_lock_acquire(&c->lock);
         if (c->count > 0) {
-            memcpy(item, tzr_dchan_slot(c, 0), c->item_size);
+            if (c->item_size != 0) memcpy(item, tzr_dchan_slot(c, 0), c->item_size);
             c->head = (c->head + 1) % c->capacity;
             c->count--;
             tzr_dchan_wake(c, 1, 0);
