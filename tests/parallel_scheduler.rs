@@ -150,7 +150,12 @@ fn helpers_without_a_spawn_are_instrumented() {
             ir.contains("call i32 @tsuzuri_tz_parallel(ptr @tz.parallel.chunk."),
             "{ir}"
         );
-        assert!(ir.contains("\"probe-stack\"=\"inline-asm\""), "{ir}");
+        // Windows probes with __chkstk itself
+        assert_eq!(
+            ir.contains("\"probe-stack\"=\"inline-asm\""),
+            !cfg!(windows),
+            "{ir}"
+        );
         assert!(!ir.contains("@tsuzuri_tz_block_enter"), "{ir}");
     }
 }

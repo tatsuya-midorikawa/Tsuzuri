@@ -2167,6 +2167,17 @@ static int read_byte(sock fd, int64_t timeout, char *byte) {
         if (waited == 1) return 1;
     }
 }
+/* After the waits: no G waits in the netpoller, and no timer is pending. A NET timer that fired is
+ * counted out by the timer thread after it lets its lock go, and the G that it woke may have left
+ * before that, so the count may still fall for a moment. */
+static void netpoll_settled(void) {
+    CHECK(atomic_load(&tzr_sched.nnetwait) == 0);
+    double t = seconds();
+    while (atomic_load(&tzr_sched.ntimers) != 0) {
+        CHECK(seconds() - t < 10.0);
+        tzr_os_yield();
+    }
+}
 static sock netpoll_fds[100][2];
 static _Atomic int64_t netpoll_turn;
 static int64_t netpoll_woke[100];
@@ -2245,7 +2256,7 @@ static void test_netpoll_timeout(void) {
     join(scope);
     sock_close(fds[0]);
     sock_close(fds[1]);
-    CHECK(atomic_load(&tzr_sched.ntimers) == 0 && atomic_load(&tzr_sched.nnetwait) == 0);
+    netpoll_settled();
     printf("netpoll timeout: ok\n");
 }
 
@@ -2343,7 +2354,7 @@ static void test_netpoll_race(void) {
         }
     }
     CHECK(atomic_load(&netpoll_outcomes[0]) + atomic_load(&netpoll_outcomes[1]) == 20 * N);
-    CHECK(atomic_load(&tzr_sched.ntimers) == 0 && atomic_load(&tzr_sched.nnetwait) == 0);
+    netpoll_settled();
     printf("netpoll race: %lld ready, %lld timed out\n", (long long)atomic_load(&netpoll_outcomes[0]),
            (long long)atomic_load(&netpoll_outcomes[1]));
 }

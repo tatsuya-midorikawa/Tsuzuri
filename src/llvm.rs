@@ -1399,8 +1399,10 @@ fn emit_program(
     } else {
         output
     };
+    // Windows probes a frame larger than a page with `__chkstk` already, and there LLVM reads the
+    // value of `probe-stack` as the name of the function to call instead.
     let output = if spawning {
-        with_stack_probes(output)
+        with_stack_probes(output, wasm || !crate::target::current_platform().windows())
     } else {
         output
     };
@@ -1432,10 +1434,11 @@ fn tzroutine_boundaries(module: &CheckedModule) -> BTreeSet<String> {
 }
 
 /// Makes every function of a program that spawns probe the pages of a frame larger than a page as
-/// it allocates the frame (TZ02). A frame can be larger than the 128 KiB guard of a tzroutine's
+/// it allocates the frame (TZ02). With `probe` false (Windows, whose code probes with `__chkstk`
+/// anyway) only the allocas move. A frame can be larger than the 128 KiB guard of a tzroutine's
 /// stack (the slots of the locals are outside `MAX_FRAME_BYTES`); probed, it faults in the guard,
 /// which `stack.c` reports, instead of jumping over it into another mapping.
-pub(crate) fn with_stack_probes(ir: String) -> String {
+pub(crate) fn with_stack_probes(ir: String, probe: bool) -> String {
     const PROBE: &str = " \"probe-stack\"=\"inline-asm\"";
     let mut output = String::with_capacity(ir.len() + ir.len() / 16);
     let mut lines = ir.split_inclusive('\n').peekable();
@@ -1449,7 +1452,9 @@ pub(crate) fn with_stack_probes(ir: String) -> String {
             continue;
         };
         output.push_str(&line[..at]);
-        output.push_str(PROBE);
+        if probe {
+            output.push_str(PROBE);
+        }
         output.push_str(&line[at..]);
         // The constant allocas of the entry block go to its top. One after a call would leave the
         // entry block when the call is inlined and become a dynamic alloca, which the probed

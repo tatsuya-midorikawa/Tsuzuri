@@ -1,5 +1,5 @@
-let task = 1
-task
+let match = 1
+match
 
 // rule: EDN-006
 // expect: check-error E0002 line=1
