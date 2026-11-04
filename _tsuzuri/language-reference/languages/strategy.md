@@ -177,7 +177,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | 共有所有の `Rc` / `Arc` / `Weak`、循環する構造の `Arena` | 実装済み | C10。共有した値の書き換えは F10 の `Atomic` / `Mutex` |
 | 多次元配列 `Matrix`・借用の窓 `MatrixView`・N 次元の `Tensor`（行優先の連続バッファ、行列積の演算順序を固定、FMA 版と行分割の並列版は別名） | 実装済み | [Matrix](../built-in-types-and-modules/matrix.md)・[MatrixView](../built-in-types-and-modules/matrix-view.md)・[Tensor](../built-in-types-and-modules/tensor.md)、C11。行列積の GPU カーネルと、x86-64 の速度は含まない |
 | `Atomic`、`Mutex`、`Sync` | 実装済み。ネイティブの `Mutex` は tzroutine のランタイムのロック（TZ06・TZ12）。`--wasm-feature threads` でも使える（Worker でロックを待つ） | F10 の Phase 1 |
-| tzroutine、`Routine.scope`、スケジューラーの上の `Parallel` | 実装済み。ネイティブの macOS・Linux・Windows だけ（WebAssembly の tzroutine と `Routine.scope` は `E2000`） | TZ01・TZ02・TZ11・TZ12 |
+| tzroutine、`Routine.scope`、スケジューラーの上の `Parallel` | 実装済み。ネイティブの macOS・Linux・Windows と、`--wasm-feature jspi` の wasm32（JSPI で 1 本のスレッドの上を交代に走る。並列ではない。Node.js 24 で検証）。`jspi` のない WebAssembly の tzroutine と `Routine.scope` は `E2000` | TZ01・TZ02・TZ09・TZ11・TZ12 |
 | `DataChannel`（容量付きの MPMC、待ちとデッドロックの報告） | 実装済み。ネイティブは tzroutine のスケジューラーで待つ（TZ12） | F10 の Phase 2 |
 | REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行） | 実装済み | G13。入力ごとに `Main.tz` を作り直して検査・実行する。JIT はない |
 | ベンチマーク（`tsuzuri bench`）、カバレッジ（`tsuzuri test --coverage`）、プロパティテスト（`Gen`） | 実装済み | G18。ネイティブだけ。速さの合否の閾値はない |

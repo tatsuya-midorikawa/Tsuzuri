@@ -79,7 +79,7 @@ stopped
 
 ## ターゲット
 
-ネイティブ（macOS・Linux・Windows）で動きます。WebAssembly は tzroutine と同じく `E2000` です。
+ネイティブ（macOS・Linux・Windows）と、`--wasm-feature jspi` の wasm32 で動きます。`jspi` のない WebAssembly は tzroutine と同じく `E2000` です。
 
 ## API リファレンス
 

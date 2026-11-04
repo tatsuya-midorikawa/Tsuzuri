@@ -352,7 +352,7 @@ job 3 failed
 
 `ErrGroup.wait` が返す誤りは、完了の時刻の順で最初のものです。複数の仕事が失敗するとき、入力のインデックスが最小のものとは限りません。成功した仕事の値も集めるときは、各関数が [Channel](channel.md) へ送るか、`Mutex` の中へ書きます。
 
-`Parallel.*` は、既定の WebAssembly では逐次に実行し、結果は同じです。`ErrGroup` は tzroutine を起動するので、WebAssembly では `E2000` です。トラップやメモリ不足は `Error` にならず、プロセスが失敗します。
+`Parallel.*` は、既定の WebAssembly では逐次に実行し、結果は同じです。`ErrGroup` は tzroutine を起動するので、WebAssembly では `--wasm-feature jspi` の wasm32 だけで動きます（ほかは `E2000`）。トラップやメモリ不足は `Error` にならず、プロセスが失敗します。
 
 `and!` は並列実行ではありません。1 本の流れで右辺を順に評価するだけです。
 

@@ -153,7 +153,7 @@ Tsuzuri runtime: Mutex.with_lock cannot be nested
 
 ### WebAssembly のロック
 
-WebAssembly の `Mutex` は、従来の規則のままです（tzroutine のランタイムを使うプログラム、つまり `Channel`・`select`・タイマー・同期の型を使うものは、1 本の実行の上の、ネイティブと同じ規則のランタイムのロックです）。
+WebAssembly の `Mutex` は、従来の規則のままです（tzroutine のランタイムを使うプログラム、つまり `Channel`・`select`・タイマー・同期の型を使うものは、1 本の実行の上の、ネイティブと同じ規則のランタイムのロックです）。tzroutine を起動する wasm32 のプログラム（`--wasm-feature jspi`）では、ロックはその tzroutine のもので、持ったまま待てます。ロックを待つ別の tzroutine は、持ち主が `with_lock` を抜けるまで待ちます（[tzroutine の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi)）。
 
 | 操作 | 結果 |
 | --- | --- |
