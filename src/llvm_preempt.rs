@@ -82,6 +82,16 @@ pub(super) fn emitted_from_source(name: &str) -> bool {
     name.starts_with("@tz.fn.") || name.starts_with("@tz.specialized.")
 }
 
+/// The functions that the signal of Phase 2 may stop: the source's, and the adapters and the entries of
+/// tzroutines that call them, into which LLVM inlines them (at -O3, a tzroutine's body that is only a
+/// loop ends up in its `@tz.tzroutine.start.*`). Neither kind holds a runtime lock or reads thread
+/// storage itself.
+fn preemptible(name: &str) -> bool {
+    emitted_from_source(name)
+        || name.starts_with("@tz.apply.")
+        || name.starts_with("@tz.tzroutine.start.")
+}
+
 /// The symbols of the functions whose cycles the IR may not show: a function in a cycle of the
 /// functions and lambdas that the source names (recursion, also through a closure), and a `dyn`
 /// dispatcher, whose calls go through a table.
@@ -587,7 +597,9 @@ pub(crate) fn with_preemption_checks(ir: String, opaque: &BTreeSet<String>) -> S
             sites.extend(found);
         }
     }
-    if sites.is_empty() {
+    // A program without check sites still needs the functions that read thread storage kept out of
+    // the code that the signal of Phase 2 stops.
+    if sites.is_empty() && thread_bound.is_empty() {
         return ir;
     }
     let mut output = String::with_capacity(ir.len() + sites.len() * POLL_CALL.len() + 512);
@@ -605,16 +617,19 @@ pub(crate) fn with_preemption_checks(ir: String, opaque: &BTreeSet<String>) -> S
         }
         output.push_str(line);
     }
-    if !output.ends_with('\n') {
-        output.push('\n');
+    if !sites.is_empty() {
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(POLL_DEFINITION);
     }
-    output.push_str(POLL_DEFINITION);
     output
 }
 
 /// The section of the generated code (TZ10 Phase 2): the only code where the runtime's signal
 /// handler may stop a tzroutine. Every function emitted from source goes there, after the checks
-/// (whose cold call LLVM inlines into it); the runtime's functions in IR stay in `.text`.
+/// (whose cold call LLVM inlines into it), and so do the adapters and tzroutine entries that call
+/// them (`preemptible`); the runtime's functions in IR stay in `.text`.
 pub(super) const MACH_O_SECTION: &str = "__TEXT,__tz_text,regular,pure_instructions";
 pub(super) const ELF_SECTION: &str = "tz_text";
 
@@ -629,7 +644,7 @@ pub(crate) fn with_generated_section(ir: String, mach_o: bool) -> String {
         let at = (header.starts_with("define ")
             && header.ends_with('{')
             && !header.contains(" section \"")
-            && callable(line, true).is_some_and(|call| emitted_from_source(call.name)))
+            && callable(line, true).is_some_and(|call| preemptible(call.name)))
         .then(|| header.find(" !dbg ").or_else(|| header.rfind(" {")))
         .flatten();
         match at {
@@ -720,13 +735,21 @@ define internal i64 @tz.fn.M.walk(i64 %arg0) nounwind {\nentry:\n  %slot = alloc
     fn generated_functions_go_to_their_section_and_the_runtime_stays() {
         let ir = "define internal i64 @tz.fn.M.f(i64 %arg0) nounwind \"probe-stack\"=\"inline-asm\" !dbg !7 {\nentry:\n  ret i64 0\n}\n\
 define internal i64 @tz.specialized.3(i64 %arg0) nounwind {\nentry:\n  ret i64 0\n}\n\
-define internal ptr @tz.alloc(i64 %size) nounwind {\nentry:\n  ret ptr null\n}\n";
+define internal ptr @tz.alloc(i64 %size) nounwind {\nentry:\n  ret ptr null\n}\n\
+define internal i8 @tz.apply.$once.4.1(ptr %env) nounwind alwaysinline {\nentry:\n  ret i8 0\n}\n\
+define internal void @tz.tzroutine.start.$once.4.1(ptr %env) {\nentry:\n  ret void\n}\n";
         let elf = with_generated_section(ir.to_owned(), false);
+        // The adapter and the entry of a tzroutine, into which -O3 inlines a body that is only a
+        // loop (Copilot on #91).
+        assert!(elf.contains(
+            "@tz.apply.$once.4.1(ptr %env) nounwind alwaysinline section \"tz_text\" {\n"
+        ));
+        assert!(elf.contains("@tz.tzroutine.start.$once.4.1(ptr %env) section \"tz_text\" {\n"));
         assert!(elf.contains("@tz.fn.M.f(i64 %arg0) nounwind \"probe-stack\"=\"inline-asm\" section \"tz_text\" !dbg !7 {\n"));
         assert!(elf.contains("@tz.specialized.3(i64 %arg0) nounwind section \"tz_text\" {\n"));
         assert!(elf.contains("@tz.alloc(i64 %size) nounwind {\n"));
         let mach_o = with_generated_section(ir.to_owned(), true);
-        assert_eq!(mach_o.matches(MACH_O_SECTION).count(), 2);
+        assert_eq!(mach_o.matches(MACH_O_SECTION).count(), 4);
         assert_eq!(with_generated_section(elf.clone(), false), elf);
     }
 
@@ -742,5 +765,18 @@ define internal i64 @tz.fn.M.spawn(i64 %arg0) nounwind {\nentry:\n  br label %b0
         );
         let output = with_preemption_checks(ir.to_owned(), &BTreeSet::new());
         assert!(output.contains("define internal ptr @tz.cache(i64 %size) nounwind noinline {\n"));
+        // Without a check site the function is still kept out of line, and nothing else changes
+        // (Copilot on #91).
+        let no_sites = "define internal ptr @tz.cache(i64 %size) nounwind {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  ret ptr %t\n}\n\
+define internal i64 @tz.fn.M.leaf(i64 %arg0) nounwind {\nentry:\n  ret i64 %arg0\n}\n\
+@tls = internal thread_local global i64 0\n";
+        let output = with_preemption_checks(no_sites.to_owned(), &BTreeSet::new());
+        assert_eq!(
+            output,
+            no_sites.replace(
+                "@tz.cache(i64 %size) nounwind {",
+                "@tz.cache(i64 %size) nounwind noinline {"
+            )
+        );
     }
 }

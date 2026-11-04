@@ -1,5 +1,5 @@
 // TZ10: tzroutines that compute without waiting do not keep the only P from the others. Run by
-// tests/tzroutine.mjs with TSUZURI_MAXPROCS=1 (and 4), as `<program> busy|values|tight`. A case that
+// tests/tzroutine.mjs with TSUZURI_MAXPROCS=1 (and 4), as `<program> busy|values|tight|inlined`. A case that
 // waits for a ticker could not finish if a tzroutine kept the P: it checks only lower bounds.
 
 def rec fib :: i64 -> i64
@@ -63,6 +63,23 @@ fn tight _ =
         Routine.yield ()
     $"tight: ticks={Atomic.load (Arc.get (ref received))}"
 
+// The same with a tzroutine whose whole body is the loop: at -O3 LLVM inlines that body into the
+// entry of the tzroutine, which the section holds as well.
+def inlined :: unit -> string
+fn inlined _ =
+    let stop = Arc.new (Atomic.create 0i64)
+    let received = Arc.new (Atomic.create 0i64)
+    let spin_stop = Arc.share (ref stop)
+    tzroutine {
+        let mut x = 0i64
+        while Atomic.load (Arc.get (ref spin_stop)) == 0i64 do
+            x = x + 1
+    }
+    tick50 (Arc.share (ref stop)) (Arc.share (ref received))
+    while Atomic.load (Arc.get (ref stop)) == 0i64 do
+        Routine.yield ()
+    $"inlined: ticks={Atomic.load (Arc.get (ref received))}"
+
 // values_unchanged: two tzroutines that compute for longer than 10 ms on one P are preempted in
 // turn; their results are those of the same computations without tzroutines.
 def sum_steps :: i64 -> i64
@@ -108,16 +125,17 @@ fn values _ =
         plain_chains = plain_chains + chain (3000000 * round)
     $"values: {Atomic.load (Arc.get (ref fibs))} {Atomic.load (Arc.get (ref sums))} {Atomic.load (Arc.get (ref chains))} plain: {plain_fibs} {plain_sums} {plain_chains}"
 
-// The case is told by the length of its name: busy (4), tight (5), values (6).
+// The case is told by the length of its name: busy (4), tight (5), values (6), inlined (7).
 def run :: i64 -> string
 fn run length =
     if length == 4 then busy ()
     elif length == 5 then tight ()
     elif length == 6 then values ()
-    else "usage: busy|values|tight"
+    elif length == 7 then inlined ()
+    else "usage: busy|values|tight|inlined"
 
 def main :: Array<string> -> i32
 fn main args =
-    let text = if args.length < 1 then "usage: busy|values|tight" else run args[args.length - 1].length
+    let text = if args.length < 1 then "usage: busy|values|tight|inlined" else run args[args.length - 1].length
     do! IO.write_line text
     0

@@ -2626,6 +2626,13 @@ static void test_preempt_sysmon(void) {
 #define GENERATED __attribute__((section("tz_text"), noinline))
 #endif
 static _Atomic int async_stop;
+/* SIGURGs that reach the handler the program had before the runtime's (main installs it first): only
+ * the ones that are not sysmon's. */
+static _Atomic int urgent_foreign;
+static void urgent_counted(int sig) {
+    (void)sig;
+    atomic_fetch_add(&urgent_foreign, 1);
+}
 GENERATED static uint64_t async_spin(_Atomic int *stop) {
     uint64_t x = 1;
     while (!atomic_load_explicit(stop, memory_order_relaxed)) x = x * 6364136223846793005ULL + 1442695040888963407ULL;
@@ -2702,6 +2709,8 @@ static void test_preempt_async_values(void) {
         CHECK(results[i].ints[0] == expected.ints[0] && results[i].ints[1] == expected.ints[1]);
         CHECK(memcmp(results[i].floats, expected.floats, sizeof expected.floats) == 0);
     }
+    /* the comparison holds only for a kernel that was stopped */
+    CHECK(atomic_load(&tzr_async.yielded) > before);
     printf("preempt async values: %llu stops\n", (unsigned long long)(atomic_load(&tzr_async.yielded) - before));
 }
 
@@ -2718,12 +2727,17 @@ static void async_runtime_spinner(void *env) {
 }
 static void test_preempt_async_runtime(void) {
     uint64_t stops = atomic_load(&tzr_async.stopped), signals = atomic_load(&tzr_async.signals);
+    int foreign = atomic_load(&urgent_foreign);
     int64_t until = tzr_nanotime() + 300000000;
     void *scope = tsuzuri_tz_scope_enter();
     for (int64_t i = 0; i <= tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(async_runtime_spinner, &until);
     join(scope);
     CHECK(atomic_load(&tzr_async.signals) > signals);
     CHECK(atomic_load(&tzr_async.stopped) == stops);
+    /* sysmon's signals that stopped nothing are not the program's; a SIGURG of its own still is */
+    CHECK(atomic_load(&urgent_foreign) == foreign);
+    raise(SIGURG);
+    CHECK(atomic_load(&urgent_foreign) == foreign + 1);
     printf("preempt async runtime: %llu signals, no stop\n", (unsigned long long)(atomic_load(&tzr_async.signals) - signals));
 }
 #else
@@ -2749,6 +2763,14 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-deep-100") == 0) { stack_body(100); return 0; }
     if (only && strcmp(only, "child-deep-900") == 0) { stack_body(900); return 0; }
     if (only && strcmp(only, "child-deep-3500") == 0) { stack_body(3500); return 0; }
+#if defined(TZR_ASYNC)
+    /* before the first spawn, whose sysmon installs the runtime's handler over this one */
+    struct sigaction counted;
+    memset(&counted, 0, sizeof counted);
+    counted.sa_handler = urgent_counted;
+    sigemptyset(&counted.sa_mask);
+    sigaction(SIGURG, &counted, NULL);
+#endif
 #define RUN(name, call) if (!only || strcmp(only, name) == 0) call
     RUN("spawn", test_spawn());
     RUN("tree", test_tree());

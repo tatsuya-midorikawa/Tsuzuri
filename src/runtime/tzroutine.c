@@ -707,6 +707,7 @@ struct tzr_m {
     pthread_t thread;               /* where sysmon sends its signal (TZ10 Phase 2) */
     _Atomic(void *) async_resume;   /* the frame that this M's G resumes from, while it does */
     _Atomic(tzr_m *) all_next;      /* every M, for the signal handler */
+    _Atomic int async_kicks;        /* sysmon's SIGURGs to this M that its handler has not taken */
 #endif
 };
 
@@ -751,6 +752,12 @@ static _Thread_local tzr_g *tzr_tls_pseudo;
 
 /* R2: every TLS read goes through these noinline functions. */
 static TZR_NOINLINE tzr_m *tzr_this_m(void) { return tzr_tls_m; }
+
+/* errno around a yield, after which the G may run on another thread (R2): glibc declares
+ * __errno_location const, so the compiler may keep the slot that it found before the yield and write
+ * the old thread's errno. Each access is a call that finds the slot of the thread it runs on. */
+static TZR_NOINLINE int tzr_errno_get(void) { return errno; }
+static TZR_NOINLINE void tzr_errno_set(int value) { errno = value; }
 
 static uint64_t tzr_rand(uint64_t *state) {
     /* xorshift64*; the state is never zero */
@@ -2332,13 +2339,26 @@ __attribute__((no_sanitize("address"))) static int tzr_async_resume(ucontext_t *
     return 0;
 }
 
+/* Takes the kicks that sysmon sent to the M of this thread (found without TLS): whether this SIGURG
+ * is sysmon's, even when the G cannot be stopped where it is (in the runtime or the C library). */
+__attribute__((no_sanitize("address"))) static int tzr_async_kicked(void) {
+    pthread_t self = pthread_self();
+    for (tzr_m *m = atomic_load_explicit(&tzr_sched.allm, memory_order_acquire); m;
+         m = atomic_load_explicit(&m->all_next, memory_order_relaxed)) {
+        if (pthread_equal(m->thread, self)) return atomic_exchange_explicit(&m->async_kicks, 0, memory_order_acquire) > 0;
+    }
+    return 0;
+}
+
 __attribute__((no_sanitize("address"))) static void tzr_async_handler(int sig, siginfo_t *info, void *context) {
     ucontext_t *uc = context;
     if (atomic_load_explicit(&tzr_async.probing, memory_order_relaxed)) {
         atomic_store_explicit(&tzr_async.probed, tzr_async_measure(uc), memory_order_relaxed);
         return;
     }
-    if (tzr_async_resume(uc) || tzr_async_stop(uc)) return;
+    if (tzr_async_resume(uc)) return;
+    int kicked = tzr_async_kicked();
+    if (tzr_async_stop(uc) || kicked) return;
     /* Not this runtime's: whoever had SIGURG before. Its default is to ignore it. */
     if (tzr_async_previous.sa_flags & SA_SIGINFO) {
         if (tzr_async_previous.sa_sigaction) tzr_async_previous.sa_sigaction(sig, info, context);
@@ -2359,9 +2379,9 @@ static void tzr_async_entry(tzr_async_frame *frame) {
     if (m != NULL && m->curg != NULL && m->p != NULL && m->syscall_depth == 0 && !tzr_trap_boundary()) {
         tzr_preempt_clear(m->p);
         atomic_fetch_add_explicit(&tzr_async.yielded, 1, memory_order_relaxed);
-        int saved = errno;
+        int saved = tzr_errno_get();
         tsuzuri_tz_yield();
-        errno = saved;
+        tzr_errno_set(saved);
         m = tzr_this_m(); /* R2: maybe another M */
     }
     if (m == NULL) tzr_async_lost();
@@ -2417,6 +2437,9 @@ static void tzr_async_kick(tzr_p *p) {
     tzr_m *m = atomic_load_explicit(&p->runm, memory_order_acquire);
     if (m == NULL || atomic_load_explicit(&p->run_lo, memory_order_relaxed) == 0) return;
     atomic_store_explicit(&p->async_armed, 1, memory_order_release);
+    /* One signal for the kicks that its handler has not taken: a SIGURG that is pending already
+     * takes them all, and a second would reach the handler with none, as if it were someone else's. */
+    if (atomic_fetch_add_explicit(&m->async_kicks, 1, memory_order_release) != 0) return;
     atomic_fetch_add_explicit(&tzr_async.signals, 1, memory_order_relaxed);
     pthread_kill(m->thread, SIGURG);
 #else
@@ -2586,7 +2609,7 @@ TZR_API void tsuzuri_tz_preempt_check(void) {
         return;
     atomic_fetch_sub_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
     if (tzr_trap_boundary()) return;
-    int saved = errno;
+    int saved = tzr_errno_get();
 #if defined(_WIN32)
     DWORD last = GetLastError();
 #endif
@@ -2594,7 +2617,7 @@ TZR_API void tsuzuri_tz_preempt_check(void) {
 #if defined(_WIN32)
     SetLastError(last);
 #endif
-    errno = saved;
+    tzr_errno_set(saved);
 }
 
 /* The spawn scope of the calling G, and setting it back: a failure domain that a trap left
