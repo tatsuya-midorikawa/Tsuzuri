@@ -10,6 +10,9 @@
 #include <ws2tcpip.h>
 #define TZ_NET_WINSOCK 1
 #endif
+/* TZ10: a test pauses sysmon's kick between its read of the gate and its signal. */
+static void urgent_kick_pause(void) __attribute__((unused));
+#define TZR_KICK_PAUSE() urgent_kick_pause()
 #include "../src/runtime/tzroutine.c"
 
 #include <assert.h>
@@ -2920,12 +2923,77 @@ static void urgent_syscall_body(void) {
     pthread_join(kicker, NULL);
     _exit(atomic_load(&urgent_read) == 1 && atomic_load(&urgent_foreign) == 0 ? 52 : 4);
 }
+/* The kick reads the gate open and is paused (sysmon descheduled) before it sends; meanwhile the G
+ * enters a blocking call. It waits for the signal and its handler, however long the pause, so a read
+ * in the call under a handler without SA_RESTART is not cut short. */
+static _Atomic int urgent_pause_armed, urgent_pause_reached, urgent_kick_go;
+static void urgent_kick_pause(void) {
+    if (!atomic_load(&urgent_pause_armed)) return;
+    atomic_store(&urgent_pause_reached, 1);
+    struct timespec t = {0, 100000000};
+    nanosleep(&t, NULL);
+}
+static void *urgent_paused_kicker(void *env) {
+    (void)env;
+    while (!atomic_load(&urgent_kick_go)) {
+    }
+    atomic_store(&urgent_pause_armed, 1);
+    tzr_async_kick(urgent_kicked_p);
+    struct timespec t = {0, 200000000};
+    nanosleep(&t, NULL);
+    char byte = 1;
+    (void)!write(urgent_pipe[1], &byte, 1);
+    return NULL;
+}
+static void urgent_paused_g(void *env) {
+    (void)env;
+    urgent_kicked_p = tzr_this_m()->p;
+    atomic_store(&urgent_kick_go, 1);
+    while (!atomic_load(&urgent_pause_reached)) {
+    }
+    tsuzuri_tz_blocking_enter();
+    char byte;
+    ssize_t n = read(urgent_pipe[0], &byte, 1);
+    tsuzuri_tz_blocking_exit();
+    atomic_store(&urgent_read, (int)n);
+}
+static void urgent_paused_body(void) {
+    urgent_install(urgent_counted, 0);
+    urgent_runtime_ready();
+    if (pipe(urgent_pipe) != 0) _exit(3);
+    pthread_t kicker;
+    if (pthread_create(&kicker, NULL, urgent_paused_kicker, NULL) != 0) _exit(3);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(urgent_paused_g, NULL);
+    join(scope);
+    pthread_join(kicker, NULL);
+    _exit(atomic_load(&urgent_read) == 1 && atomic_load(&urgent_foreign) == 0 ? 53 : 4);
+}
+
+/* A handler of the program's own with SA_NODEFER runs with SIGURG unblocked. */
+static _Atomic int urgent_unblocked;
+static void urgent_nodefer(int sig) {
+    (void)sig;
+    sigset_t now;
+    pthread_sigmask(SIG_BLOCK, NULL, &now);
+    if (sigismember(&now, SIGURG) == 0) atomic_store(&urgent_unblocked, 1);
+    atomic_fetch_add(&urgent_foreign, 1);
+}
+static void urgent_nodefer_body(void) {
+    urgent_install(urgent_nodefer, SA_NODEFER);
+    urgent_runtime_ready();
+    raise(SIGURG);
+    _exit(atomic_load(&urgent_foreign) == 1 && atomic_load(&urgent_unblocked) ? 54 : 4);
+}
+
 static void test_preempt_async_edges(void) {
     CHECK(exited_with(run_child("child-urgent-window"), 50));
 #if !defined(__APPLE__)
     CHECK(exited_with(run_child("child-urgent-oneshot"), 51));
 #endif
     CHECK(exited_with(run_child("child-urgent-syscall"), 52));
+    CHECK(exited_with(run_child("child-urgent-paused"), 53));
+    CHECK(exited_with(run_child("child-urgent-nodefer"), 54));
     printf("preempt async edges: ok\n");
 }
 static void test_preempt_async_forward(void) {
@@ -2943,6 +3011,7 @@ static void test_preempt_async_runtime(void) { printf("preempt async runtime: no
 static void test_preempt_async_ignored(void) { printf("preempt async ignored: not built\n"); }
 static void test_preempt_async_forward(void) { printf("preempt async forward: not built\n"); }
 static void test_preempt_async_edges(void) { printf("preempt async edges: not built\n"); }
+static void urgent_kick_pause(void) {}
 #endif
 
 int main(int argc, char **argv) {
@@ -2961,6 +3030,8 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-urgent-window") == 0) urgent_window_body();
     if (only && strcmp(only, "child-urgent-oneshot") == 0) urgent_oneshot_body();
     if (only && strcmp(only, "child-urgent-syscall") == 0) urgent_syscall_body();
+    if (only && strcmp(only, "child-urgent-paused") == 0) urgent_paused_body();
+    if (only && strcmp(only, "child-urgent-nodefer") == 0) urgent_nodefer_body();
 #endif
 #if !defined(_WIN32)
     if (only && strcmp(only, "child-dchan-deadlock") == 0) dchan_deadlock_body();

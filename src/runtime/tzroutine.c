@@ -1988,15 +1988,26 @@ static void tzr_handoffp(tzr_p *p) {
  * P again when sysmon has not taken it (a compare-exchange), or an idle one, or waits for one; the G
  * never leaves its M inside the call. Calls nest (a callback's extern), and a pseudo-G, which holds
  * no P, does nothing. */
+#if defined(TZR_ASYNC)
+static int tzr_async_deliverable(void);
+#endif
+
 static void tzr_entersyscall(tzr_m *m) {
 #if defined(TZR_ASYNC)
     /* Dekker with tzr_async_kick: either sysmon sees the gate closed and sends nothing, or this sees
-     * its kick and waits until the handler took it, so that no SIGURG of sysmon interrupts the call
-     * (EINTR, or a nanosleep cut short). Bounded: a handler that the program put over the runtime's
-     * never takes it. */
+     * its kick and waits until the handler took it (sysmon may be descheduled before it sends), so
+     * that no SIGURG of sysmon interrupts the call (EINTR, or a nanosleep cut short). Only if the
+     * handler can never take it (the program put its own over the runtime's, or blocks SIGURG on
+     * this thread) does the M give up its signals and go on. */
     atomic_store_explicit(&m->async_gate, 1, memory_order_seq_cst);
-    for (int i = 0; i < 1000 && atomic_load_explicit(&m->async_kicks, memory_order_seq_cst) != 0; i++)
+    for (int i = 1; atomic_load_explicit(&m->async_kicks, memory_order_seq_cst) != 0; i++) {
         tzr_os_yield(); /* into the kernel and back: a pending signal is delivered then */
+        if (i % 1024 == 0 && !tzr_async_deliverable()) {
+            atomic_store_explicit(&m->async_ready, 0, memory_order_relaxed);
+            atomic_store_explicit(&m->async_kicks, 0, memory_order_relaxed);
+            break;
+        }
+    }
 #endif
     tzr_p *p = m->p;
     m->oldp = p;
@@ -2146,6 +2157,7 @@ typedef struct tzr_async_frame {
 static struct {
     _Atomic int enabled;
     _Atomic int probing;
+    pthread_t prober;         /* the thread of sysmon, while it probes */
     _Atomic uint64_t probed;  /* the size of a context that the thread of sysmon saw, 0: unusable */
     _Atomic uint64_t signals; /* sent by sysmon */
     _Atomic uint64_t stopped; /* stops in generated code */
@@ -2380,7 +2392,7 @@ __attribute__((no_sanitize("address"))) static int tzr_async_kicked(void) {
 
 __attribute__((no_sanitize("address"))) static void tzr_async_handler(int sig, siginfo_t *info, void *context) {
     ucontext_t *uc = context;
-    if (atomic_load_explicit(&tzr_async.probing, memory_order_relaxed)) {
+    if (atomic_load_explicit(&tzr_async.probing, memory_order_acquire) && pthread_equal(pthread_self(), tzr_async.prober)) {
         atomic_store_explicit(&tzr_async.probed, tzr_async_measure(uc), memory_order_relaxed);
         return;
     }
@@ -2406,12 +2418,27 @@ __attribute__((no_sanitize("address"))) static void tzr_async_handler(int sig, s
     if ((tzr_async_previous.sa_flags & SA_RESETHAND)
         && atomic_exchange_explicit(&tzr_async_oneshot, 1, memory_order_relaxed))
         return;
-    /* with the signals that its own action blocked while it runs */
+    /* with the signals that its own action blocked while it runs, and SIGURG itself unblocked if it
+     * asked for SA_NODEFER (this handler runs with it blocked) */
     sigset_t saved;
     pthread_sigmask(SIG_BLOCK, &tzr_async_previous.sa_mask, &saved);
+    if ((tzr_async_previous.sa_flags & SA_NODEFER) && sigismember(&tzr_async_previous.sa_mask, SIGURG) != 1) {
+        sigset_t urgent;
+        sigemptyset(&urgent);
+        sigaddset(&urgent, SIGURG);
+        pthread_sigmask(SIG_UNBLOCK, &urgent, NULL);
+    }
     if (tzr_async_previous.sa_flags & SA_SIGINFO) tzr_async_previous.sa_sigaction(sig, info, context);
     else tzr_async_previous.sa_handler(sig);
     pthread_sigmask(SIG_SETMASK, &saved, NULL);
+}
+
+/* Whether a SIGURG sent to this thread now reaches tzr_async_handler (tzr_entersyscall). */
+static int tzr_async_deliverable(void) {
+    struct sigaction now;
+    sigset_t mask;
+    if (sigaction(SIGURG, NULL, &now) != 0 || pthread_sigmask(SIG_BLOCK, NULL, &mask) != 0) return 0;
+    return (now.sa_flags & SA_SIGINFO) && now.sa_sigaction == tzr_async_handler && sigismember(&mask, SIGURG) != 1;
 }
 
 #if defined(TZR_ASAN)
@@ -2490,11 +2517,16 @@ static void tzr_async_init(void) {
     sigemptyset(&urgent);
     sigaddset(&urgent, SIGURG);
     pthread_sigmask(SIG_UNBLOCK, &urgent, NULL);
-    atomic_store(&tzr_async.probing, 1);
+    tzr_async.prober = pthread_self();
+    atomic_store_explicit(&tzr_async.probing, 1, memory_order_release);
     raise(SIGURG);
     atomic_store(&tzr_async.probing, 0);
     if (atomic_load(&tzr_async.probed) != 0) atomic_store_explicit(&tzr_async.enabled, 1, memory_order_release);
 }
+#endif
+
+#if defined(TZR_ASYNC) && !defined(TZR_KICK_PAUSE)
+#define TZR_KICK_PAUSE() ((void)0)
 #endif
 
 /* Sysmon: the G of p did not answer the request of 10 ms ago. */
@@ -2520,6 +2552,7 @@ static void tzr_async_kick(tzr_p *p) {
         return;
     }
     if (before != 0) return;
+    TZR_KICK_PAUSE(); /* tests: sysmon descheduled between the gate and the signal */
     atomic_fetch_add_explicit(&tzr_async.signals, 1, memory_order_relaxed);
     pthread_kill(m->thread, SIGURG);
 #else
