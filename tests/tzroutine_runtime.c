@@ -2091,8 +2091,10 @@ static void test_locked_yielders(void) {
         tsuzuri_tz_go(flag_setter, NULL);
         atomic_store(&setter_queued, 1);
         join(scope);
-        /* a few yields of each until the M that runs the queue gets the P (thousands before) */
-        CHECK(atomic_load(&yields_after_queued) < 100);
+        /* a few yields of each until the M that runs the queue gets the P (thousands before). With
+         * more Ps than the two locked Gs hold, an idle P runs the queue whatever they do, and they
+         * count how soon the OS wakes its thread, which under TSan can take more than 100 yields */
+        if (tzr_sched.nprocs <= 2) CHECK(atomic_load(&yields_after_queued) < 100);
     }
     printf("locked yielders: ok\n");
 }
