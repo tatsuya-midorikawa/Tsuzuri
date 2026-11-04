@@ -165,17 +165,21 @@ __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit
 
 /* net.c's hooks (TZ08 Phase 2), which the scheduler sets when it starts: the wait of a tzroutine for
  * a socket, in the netpoller (0 ready, 1 timed out, -1 when net.c must poll itself), and the close of
- * a socket, before it (closed 0: the waits for it end, and none starts) and after it (closed 1).
- * Defined by the first part that has this block. */
+ * a socket, before the descriptor closes (the waits for it end). A wait asks `open(handle,
+ * descriptor)` (handle 0: none) under the lock that the close hook takes, and net.c forgets the
+ * handle before it calls the close hook: a wait either finds its handle closed and does not start, or
+ * is woken by the close, also when the descriptor is taken by another socket in between. Defined by
+ * the first part that has this block. */
 #ifndef TSUZURI_NET_HOOKS_DEFINED
 #define TSUZURI_NET_HOOKS_DEFINED
 #if defined(_WIN32)
-__attribute__((selectany)) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write, int64_t timeout) = 0;
-__attribute__((selectany)) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor, int32_t closed) = 0;
+__attribute__((selectany)) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write, int64_t timeout,
+                                                                     int32_t (*open)(int64_t, intptr_t), int64_t handle) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor) = 0;
 #else
-__attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write,
-                                                                                     int64_t timeout);
-__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor, int32_t closed);
+__attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_net_wait_hook)(
+    intptr_t descriptor, int32_t write, int64_t timeout, int32_t (*open)(int64_t, intptr_t), int64_t handle);
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor);
 #endif
 #endif
 
@@ -503,16 +507,24 @@ static int64_t tz_net_deadline(int64_t timeout) {
     return tz_net_now() + timeout * INT64_C(1000000);
 }
 
+// Whether `handle` is still open with `descriptor`. The netpoller asks it under the lock that the close hook takes,
+// which a close calls after it has forgotten the handle (TZ08).
+static int32_t tz_net_still_open(int64_t handle, intptr_t descriptor) {
+    struct tz_net_socket open;
+    return tz_net_find(handle, 0, &open) && (intptr_t)open.descriptor == descriptor;
+}
+
 // Waits until the socket can do `events` or the deadline passes: 0 when it can (an error or a hang-up counts, and
 // the next call reports it), TZ_NET_E_TIMEDOUT at the deadline, TZ_NET_E_PENDING for a call that must not wait,
 // or the error number of poll. An interrupted poll starts again with the time that is left, rounded up to a
 // whole millisecond so that the last fraction does not spin. On a tzroutine the scheduler's netpoller waits
 // instead, and only the tzroutine waits (TZ08); it leaves the wait to poll when it cannot take it. Such a wait
-// may end because another tzroutine closed the socket: when `handle` (0 for none) is no longer open with this
-// descriptor, the result is TZ_NET_E_CLOSED.
+// may end because another tzroutine closed the socket, or not start because it was closed already: when
+// `handle` (0 for none) is no longer open with this descriptor, the result is TZ_NET_E_CLOSED.
 static int tz_net_wait(tz_net_fd descriptor, short events, int64_t deadline, int64_t handle) {
     if (deadline == TZ_NET_ATTEMPT) return TZ_NET_E_PENDING;
-    int32_t (*netpoll)(intptr_t, int32_t, int64_t) = atomic_load_explicit(&tsuzuri_net_wait_hook, memory_order_acquire);
+    int32_t (*netpoll)(intptr_t, int32_t, int64_t, int32_t (*)(int64_t, intptr_t), int64_t) =
+        atomic_load_explicit(&tsuzuri_net_wait_hook, memory_order_acquire);
     for (;;) {
         int timeout = -1;
         int64_t remaining = -1;
@@ -523,7 +535,7 @@ static int tz_net_wait(tz_net_fd descriptor, short events, int64_t deadline, int
             timeout = milliseconds > INT_MAX ? INT_MAX : (int)milliseconds;
         }
         if (netpoll != NULL) {
-            int32_t waited = netpoll((intptr_t)descriptor, events == TZ_NET_POLL_WRITE, remaining);
+            int32_t waited = netpoll((intptr_t)descriptor, events == TZ_NET_POLL_WRITE, remaining, tz_net_still_open, handle);
             if (waited == 0) {
                 struct tz_net_socket open;
                 if (handle != 0 && (!tz_net_find(handle, 0, &open) || open.descriptor != descriptor)) return TZ_NET_E_CLOSED;
@@ -1334,17 +1346,16 @@ static int64_t tz_net_close_handle(int64_t handle) {
     tz_net_fd descriptor;
     if (!tz_net_forget(handle, &descriptor)) return tz_net_bad_handle();
     tz_net_cancel_handle(handle);
-    // A tzroutine that waits on the socket wakes and reports the closed handle, and none waits on it again
-    // until it is closed (TZ08).
-    void (*closing)(intptr_t, int32_t) = atomic_load_explicit(&tsuzuri_net_close_hook, memory_order_acquire);
-    if (closing != NULL) closing((intptr_t)descriptor, 0);
+    // A tzroutine that waits on the socket wakes and reports the closed handle; a wait that starts later finds
+    // the handle forgotten above and does not start (TZ08).
+    void (*closing)(intptr_t) = atomic_load_explicit(&tsuzuri_net_close_hook, memory_order_acquire);
+    if (closing != NULL) closing((intptr_t)descriptor);
     // After EINTR the descriptor state is unspecified, and retrying could close another one. A close can
     // wait (a lingering socket): a tzroutine lets its P go (TZ08).
     TZ_BLOCKING_ENTER();
     int closed = tz_net_close_fd(descriptor);
     int error = closed == 0 ? 0 : tz_net_errno();
     TZ_BLOCKING_EXIT();
-    if (closing != NULL) closing((intptr_t)descriptor, 1);
     if (closed == 0) return 0;
     return error == TZ_NET_E_INTR ? 0 : tz_net_error(error);
 }

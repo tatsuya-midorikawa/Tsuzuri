@@ -2125,7 +2125,7 @@ static int read_byte(sock fd, int64_t timeout, char *byte) {
         if (n == 1) return 0;
         if (n == 0) return 2;
         CHECK(sock_would_block());
-        int32_t waited = tzr_netpoll_wait((intptr_t)fd, 0, timeout);
+        int32_t waited = tzr_netpoll_wait((intptr_t)fd, 0, timeout, NULL, 0);
         CHECK(waited == 0 || waited == 1);
         if (waited == 1) return 1;
     }
@@ -2212,31 +2212,62 @@ static void test_netpoll_timeout(void) {
     printf("netpoll timeout: ok\n");
 }
 
+/* net.c's table of open handles, for one handle (7): open while `netpoll_open_handle` says so. */
+static _Atomic int netpoll_open_handle;
+static int32_t netpoll_open(int64_t handle, intptr_t descriptor) {
+    (void)descriptor;
+    return handle == 7 && atomic_load(&netpoll_open_handle);
+}
 static void netpoll_close_reader(void *env) {
     sock fd = *(sock *)env;
     /* the close of its socket wakes it as ready */
-    CHECK(tzr_netpoll_wait((intptr_t)fd, 0, -1) == 0);
+    CHECK(tzr_netpoll_wait((intptr_t)fd, 0, -1, netpoll_open, 7) == 0);
 }
-static void netpoll_closing_reader(void *env) {
+static void netpoll_closed_reader(void *env) {
     sock fd = *(sock *)env;
-    CHECK(tzr_netpoll_wait((intptr_t)fd, 0, -1) == 0 && atomic_load(&tzr_sched.nnetwait) == 0);
+    /* a reader that got EAGAIN before its handle was closed and its descriptor taken by another
+     * socket: the wait does not start on the other socket, it is ready (net.c reports the close) */
+    CHECK(tzr_netpoll_wait((intptr_t)fd, 0, -1, netpoll_open, 7) == 0 && atomic_load(&tzr_sched.nnetwait) == 0);
+}
+static void netpoll_reused_reader(void *env) {
+    sock fd = *(sock *)env;
+    char byte;
+    for (;;) {
+        int n = sock_read(fd, &byte);
+        if (n == 1) break;
+        CHECK(n < 0 && sock_would_block());
+        CHECK(tzr_netpoll_wait((intptr_t)fd, 0, -1, netpoll_open, 7) == 0);
+    }
+    CHECK(byte == 'r');
 }
 static void test_netpoll_close(void) {
     for (int round = 0; round < 20; round++) {
         sock fds[2];
         nonblocking_pair(fds);
+        atomic_store(&netpoll_open_handle, 1);
         void *scope = tsuzuri_tz_scope_enter();
         tsuzuri_tz_go(netpoll_close_reader, &fds[0]);
         while (atomic_load(&tzr_sched.nnetwait) == 0) tzr_os_yield();
-        tzr_netpoll_close((intptr_t)fds[0], 0);
+        /* net.c's close: it forgets the handle, calls the hook, then closes the descriptor */
+        atomic_store(&netpoll_open_handle, 0);
+        tzr_netpoll_close((intptr_t)fds[0]);
         join(scope);
-        /* while it closes, a wait does not start (the close would drop it unseen): it is ready */
-        scope = tsuzuri_tz_scope_enter();
-        tsuzuri_tz_go(netpoll_closing_reader, &fds[0]);
-        join(scope);
-        tzr_netpoll_close((intptr_t)fds[0], 1);
         sock_close(fds[0]);
         sock_close(fds[1]);
+        sock again[2];
+        nonblocking_pair(again); /* usually takes the same descriptors */
+        scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(netpoll_closed_reader, &again[0]);
+        join(scope);
+        /* the socket that took the descriptor waits as any other: nothing of the close is left */
+        atomic_store(&netpoll_open_handle, 1);
+        scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(netpoll_reused_reader, &again[0]);
+        while (atomic_load(&tzr_sched.nnetwait) == 0) tzr_os_yield();
+        CHECK(sock_write(again[1], "r") == 1);
+        join(scope);
+        sock_close(again[0]);
+        sock_close(again[1]);
     }
     printf("netpoll close: ok\n");
 }

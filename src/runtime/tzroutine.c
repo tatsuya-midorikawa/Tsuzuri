@@ -280,17 +280,21 @@ __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit
 
 /* net.c's hooks (TZ08 Phase 2), which the scheduler sets when it starts: the wait of a tzroutine for
  * a socket, in the netpoller (0 ready, 1 timed out, -1 when net.c must poll itself), and the close of
- * a socket, before it (closed 0: the waits for it end, and none starts) and after it (closed 1).
- * Defined by the first part that has this block. */
+ * a socket, before the descriptor closes (the waits for it end). A wait asks `open(handle,
+ * descriptor)` (handle 0: none) under the lock that the close hook takes, and net.c forgets the
+ * handle before it calls the close hook: a wait either finds its handle closed and does not start, or
+ * is woken by the close, also when the descriptor is taken by another socket in between. Defined by
+ * the first part that has this block. */
 #ifndef TSUZURI_NET_HOOKS_DEFINED
 #define TSUZURI_NET_HOOKS_DEFINED
 #if defined(_WIN32)
-__attribute__((selectany)) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write, int64_t timeout) = 0;
-__attribute__((selectany)) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor, int32_t closed) = 0;
+__attribute__((selectany)) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write, int64_t timeout,
+                                                                     int32_t (*open)(int64_t, intptr_t), int64_t handle) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor) = 0;
 #else
-__attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write,
-                                                                                     int64_t timeout);
-__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor, int32_t closed);
+__attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_net_wait_hook)(
+    intptr_t descriptor, int32_t write, int64_t timeout, int32_t (*open)(int64_t, intptr_t), int64_t handle);
+__attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor);
 #endif
 #endif
 
@@ -1258,8 +1262,9 @@ TZR_API void tsuzuri_tz_blocking_exit(void);
 static void tzr_abandon(void);
 #endif
 #if !defined(_WIN32) || defined(TZ_NET_WINSOCK)
-static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout);
-static void tzr_netpoll_close(intptr_t fd, int32_t closed);
+static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout, int32_t (*open)(int64_t, intptr_t),
+                                int64_t handle);
+static void tzr_netpoll_close(intptr_t fd);
 #endif
 
 static void tzr_init(void) {
@@ -3418,13 +3423,13 @@ static void tzr_netwait_commit(void *arg) {
 #if !defined(_WIN32)
 /* The waits of one descriptor: at most a reader and a writer (a Net handle has one owner; a second
  * waiter of a kind polls). `seq` numbers the registrations, so that an event of an earlier one, or of
- * a descriptor that was closed and taken again, is ignored. The records are never freed: the
- * netpoller may look one up after its socket is gone. */
+ * a descriptor that was closed and taken again, is ignored; a number is taken only when the kernel
+ * accepted its registration. The records are never freed: the netpoller may look one up after its
+ * socket is gone. */
 typedef struct {
     tzr_lock lock;
     uint32_t seq[2];        /* kqueue: per kind; epoll: seq[0], for the descriptor */
     int registered;         /* epoll: the descriptor is in the set */
-    int closing;            /* net.c closes it: no wait starts (the close would drop it unseen) */
     tzr_netwait *waiter[2]; /* 0 the reader, 1 the writer */
 } tzr_pd;
 
@@ -3467,10 +3472,12 @@ static void tzr_pd_wake(tzr_pd *pd, int dir) {
 /* Registers the waiter of kind `dir` (the descriptor's lock held): one shot, keyed by its own number. */
 static int tzr_netpoll_arm(tzr_pd *pd, intptr_t fd, int dir) {
     struct kevent change;
-    uint32_t seq = ++pd->seq[dir];
+    uint32_t seq = pd->seq[dir] + 1;
     EV_SET(&change, (uintptr_t)fd, dir ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0,
            (void *)(uintptr_t)tzr_pd_key(fd, seq));
-    return kevent(tzr_netpoll_fd, &change, 1, NULL, 0, NULL) == 0 ? 0 : -1;
+    if (kevent(tzr_netpoll_fd, &change, 1, NULL, 0, NULL) != 0) return -1;
+    pd->seq[dir] = seq;
+    return 0;
 }
 
 static void *tzr_netpoller(void *arg) {
@@ -3502,11 +3509,13 @@ static int tzr_netpoll_open(void) {
 #else
 /* Registers what the waiters of the descriptor wait for (its lock held): one shot, keyed by a new
  * number, so that the event of an earlier registration is ignored; the new one, level-triggered,
- * reports what is still ready. */
+ * reports what is still ready. When the kernel refuses it, the earlier registration and its number
+ * stay, so that a waiter that it covers still wakes. */
 static int tzr_netpoll_rearm(tzr_pd *pd, intptr_t fd) {
     struct epoll_event event;
+    uint32_t seq = pd->seq[0] + 1;
     event.events = EPOLLONESHOT | (pd->waiter[0] ? EPOLLIN | EPOLLRDHUP : 0) | (pd->waiter[1] ? EPOLLOUT : 0);
-    event.data.u64 = tzr_pd_key(fd, ++pd->seq[0]);
+    event.data.u64 = tzr_pd_key(fd, seq);
     int op = pd->registered ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
     if (epoll_ctl(tzr_netpoll_fd, op, (int)fd, &event) != 0) {
         /* a descriptor closed without tzr_netpoll_close, or one that is in the set already */
@@ -3514,6 +3523,7 @@ static int tzr_netpoll_rearm(tzr_pd *pd, intptr_t fd) {
         op = op == EPOLL_CTL_MOD ? EPOLL_CTL_ADD : EPOLL_CTL_MOD;
         if (epoll_ctl(tzr_netpoll_fd, op, (int)fd, &event) != 0) return -1;
     }
+    pd->seq[0] = seq;
     pd->registered = 1;
     return 0;
 }
@@ -3569,8 +3579,12 @@ static void tzr_netpoll_init(void) {
 /* Waits on a tzroutine until the descriptor can be read (write == 0) or written, or `timeout` ns
  * pass (-1: no limit): 0 ready (an error, a hang-up or a close counts: the next call reports it),
  * 1 timed out, -1 when net.c must poll (a thread, a G inside a blocking call, a second waiter of a
- * kind, or a descriptor that the netpoller cannot take). */
-static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout) {
+ * kind, or a descriptor that the netpoller cannot take). A `handle` (not 0) that `open` finds closed
+ * is ready at once: net.c then reports it. `open` is asked under the descriptor's lock, which net.c's
+ * close takes after forgetting the handle, so a wait that starts is woken by a close that follows,
+ * and none starts on a descriptor that another socket took after the close. */
+static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout, int32_t (*open)(int64_t, intptr_t),
+                                int64_t handle) {
     tzr_m *m = tzr_this_m();
     if (m == NULL || m->curg == NULL || m->syscall_depth > 0) return -1;
     if (atomic_load(&tzr_netpoll_state) == 0) tzr_run_once(&tzr_netpoll_once, tzr_netpoll_init);
@@ -3584,7 +3598,7 @@ static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout) {
         tzr_lock_release(&pd->lock);
         return -1;
     }
-    if (pd->closing) {
+    if (handle != 0 && !open(handle, fd)) {
         tzr_lock_release(&pd->lock);
         return 0; /* ready: net.c sees the closed handle */
     }
@@ -3619,21 +3633,20 @@ static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout) {
     return atomic_load(&w.state) == TZR_NW_TIMEDOUT;
 }
 
-/* A socket that net.c is about to close (closed 0): its waiters wake as ready (net.c then reports the
- * closed handle), an event of it that is on its way is ignored, and no wait starts until it is closed
- * (closed 1), since the close would drop the registration without an event. */
-static void tzr_netpoll_close(intptr_t fd, int32_t closed) {
+/* A socket that net.c is about to close, after it forgot its handle: its waiters wake as ready (net.c
+ * then reports the closed handle), and an event of it that is on its way is ignored. A wait that
+ * comes later finds the handle closed under the same lock (tzr_netpoll_wait), so nothing waits on a
+ * registration that the close drops without an event. A descriptor without a record has had no wait,
+ * and the handle check keeps any from starting. */
+static void tzr_netpoll_close(intptr_t fd) {
     tzr_pd *pd = tzr_pd_of(fd, 0);
     if (pd == NULL) return;
     tzr_lock_acquire(&pd->lock);
-    pd->closing = !closed;
-    if (!closed) {
-        pd->seq[0]++;
-        pd->seq[1]++;
-        pd->registered = 0;
-        tzr_pd_wake(pd, 0);
-        tzr_pd_wake(pd, 1);
-    }
+    pd->seq[0]++;
+    pd->seq[1]++;
+    pd->registered = 0;
+    tzr_pd_wake(pd, 0);
+    tzr_pd_wake(pd, 1);
     tzr_lock_release(&pd->lock);
 }
 #elif defined(TZ_NET_WINSOCK)
@@ -3656,8 +3669,6 @@ static struct {
     uint64_t serial;
     SOCKET wake;
     struct sockaddr_in wake_address;
-    SOCKET closing[16]; /* sockets that net.c closes: no wait starts on them */
-    size_t nclosing;
 } tzr_winpoll = {.wake = INVALID_SOCKET};
 
 static tzr_once tzr_netpoll_once = TZR_ONCE_INIT;
@@ -3759,18 +3770,18 @@ static void tzr_netpoll_init(void) {
     atomic_store(&tzr_netpoll_state, 1);
 }
 
-static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout) {
+/* As on POSIX, the handle is checked under the lock that the close takes. */
+static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout, int32_t (*open)(int64_t, intptr_t),
+                                int64_t handle) {
     tzr_m *m = tzr_this_m();
     if (m == NULL || m->curg == NULL || m->syscall_depth > 0) return -1;
     if (atomic_load(&tzr_netpoll_state) == 0) tzr_run_once(&tzr_netpoll_once, tzr_netpoll_init);
     if (atomic_load(&tzr_netpoll_state) != 1) return -1;
     tzr_netwait w = {.g = m->curg, .state = TZR_NW_ARMED};
     tzr_lock_acquire(&tzr_winpoll.lock);
-    for (size_t i = 0; i < tzr_winpoll.nclosing; i++) {
-        if (tzr_winpoll.closing[i] == (SOCKET)fd) {
-            tzr_lock_release(&tzr_winpoll.lock);
-            return 0; /* ready: net.c sees the closed handle */
-        }
+    if (handle != 0 && !open(handle, fd)) {
+        tzr_lock_release(&tzr_winpoll.lock);
+        return 0; /* ready: net.c sees the closed handle */
     }
     if (tzr_winpoll.count == tzr_winpoll.capacity) {
         size_t next = tzr_winpoll.capacity ? tzr_winpoll.capacity * 2 : 64;
@@ -3816,25 +3827,14 @@ static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout) {
     return atomic_load(&w.state) == TZR_NW_TIMEDOUT;
 }
 
-/* As on POSIX: before the close the waits of the socket end and none starts, until after the close. A
- * close beyond the 16 at once is left to the waiter's next call, which reports the closed handle. */
-static void tzr_netpoll_close(intptr_t fd, int32_t closed) {
+/* As on POSIX: before the close, after net.c forgot the handle, the waits of the socket end; a wait
+ * that comes later finds the handle closed. */
+static void tzr_netpoll_close(intptr_t fd) {
     if (atomic_load(&tzr_netpoll_state) != 1) return;
     tzr_lock_acquire(&tzr_winpoll.lock);
-    if (!closed) {
-        if (tzr_winpoll.nclosing < sizeof tzr_winpoll.closing / sizeof tzr_winpoll.closing[0])
-            tzr_winpoll.closing[tzr_winpoll.nclosing++] = (SOCKET)fd;
-        tzr_winpoll_wake_all((SOCKET)fd);
-    } else {
-        for (size_t i = 0; i < tzr_winpoll.nclosing; i++) {
-            if (tzr_winpoll.closing[i] == (SOCKET)fd) {
-                tzr_winpoll.closing[i] = tzr_winpoll.closing[--tzr_winpoll.nclosing];
-                break;
-            }
-        }
-    }
+    tzr_winpoll_wake_all((SOCKET)fd);
     tzr_lock_release(&tzr_winpoll.lock);
-    if (!closed) tzr_winpoll_kick();
+    tzr_winpoll_kick();
 }
 #endif /* !_WIN32 */
 
