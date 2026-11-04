@@ -48,7 +48,12 @@ function expected() {
 }
 
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-tzroutine-bench-"));
-const median = (values) => { const sorted = [...values].sort((a, b) => a - b); return sorted[Math.floor(sorted.length / 2)]; };
+// The middle sample, or the mean of the two middle ones for an even count.
+const median = (values) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+};
 try {
   const want = expected();
   const builds = [["new", compiler], ...(options.baseline ? [["baseline", options.baseline]] : [])].map(([name, path]) => {
