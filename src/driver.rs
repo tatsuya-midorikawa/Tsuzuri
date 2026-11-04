@@ -4258,7 +4258,11 @@ fn build_complete(
     // a function in a section: both keep the checks of Phase 1 only.
     let async_preempt = stack_runtime && tzroutine_runtime && !fast && llvm::spawns(module);
     if async_preempt {
-        text = llvm::preempt::with_generated_section(text, platform.mach_o());
+        text = llvm::preempt::with_generated_section(
+            text,
+            platform.mach_o(),
+            &llvm::tzroutine_exports(module),
+        );
     }
     // B10: the report of an executable built with --trap-info writes the chain of frames when
     // TSUZURI_TRAP_REPORT names a file (src/runtime/backtrace.c); only the executable's IR asks for it.

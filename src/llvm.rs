@@ -1660,7 +1660,7 @@ fn direct_callee(body: &str) -> Option<&str> {
 
 /// The public wrappers of the exports (`tz_<name>`), which a host may also call from inside an extern
 /// function that a tzroutine called.
-fn tzroutine_exports(module: &CheckedModule) -> BTreeSet<String> {
+pub(crate) fn tzroutine_exports(module: &CheckedModule) -> BTreeSet<String> {
     module
         .functions
         .iter()

@@ -95,14 +95,18 @@ pub(super) fn emitted_from_source(name: &str) -> bool {
 /// The functions that the signal of Phase 2 may stop: the source's, and the generated functions that
 /// call them directly, into which LLVM inlines them at -O3: the adapters, the entries of tzroutines (a
 /// body that is only a loop ends up in its `@tz.tzroutine.start.*`) and the chunks of `Parallel.*` and
-/// `Routine.scope` (a callback that is only a loop ends up in its `@tz.parallel.chunk.*`). None of
-/// them holds a runtime lock or reads thread storage itself.
-fn preemptible(name: &str) -> bool {
+/// `Routine.scope` (a callback that is only a loop ends up in its `@tz.parallel.chunk.*`), and the
+/// C wrappers that a G enters inside an extern call, a callback (`@tz.callback.*`) or an export
+/// (`exports`, `tz_<name>`), which take the P back for their body. None of them holds a runtime lock
+/// or reads thread storage itself.
+fn preemptible(name: &str, exports: &BTreeSet<String>) -> bool {
     let bare = bare(name);
     emitted_from_source(name)
         || bare.starts_with("tz.apply.")
         || bare.starts_with("tz.tzroutine.start.")
         || bare.starts_with("tz.parallel.chunk.")
+        || bare.starts_with("tz.callback.")
+        || exports.contains(bare)
 }
 
 /// The symbols of the functions whose cycles the IR may not show: a function in a cycle of the
@@ -646,7 +650,11 @@ pub(crate) fn with_preemption_checks(ir: String, opaque: &BTreeSet<String>) -> S
 pub(super) const MACH_O_SECTION: &str = "__TEXT,__tz_text,regular,pure_instructions";
 pub(super) const ELF_SECTION: &str = "tz_text";
 
-pub(crate) fn with_generated_section(ir: String, mach_o: bool) -> String {
+pub(crate) fn with_generated_section(
+    ir: String,
+    mach_o: bool,
+    exports: &BTreeSet<String>,
+) -> String {
     let section = format!(
         " section \"{}\"",
         if mach_o { MACH_O_SECTION } else { ELF_SECTION }
@@ -657,7 +665,7 @@ pub(crate) fn with_generated_section(ir: String, mach_o: bool) -> String {
         let at = (header.starts_with("define ")
             && header.ends_with('{')
             && !header.contains(" section \"")
-            && callable(line, true).is_some_and(|call| preemptible(call.name)))
+            && callable(line, true).is_some_and(|call| preemptible(call.name, exports)))
         .then(|| header.find(" !dbg ").or_else(|| header.rfind(" {")))
         .flatten();
         match at {
@@ -762,8 +770,12 @@ define internal ptr @tz.alloc(i64 %size) nounwind {\nentry:\n  ret ptr null\n}\n
 define internal i8 @tz.apply.$once.4.1(ptr %env) nounwind alwaysinline {\nentry:\n  ret i8 0\n}\n\
 define internal void @tz.tzroutine.start.$once.4.1(ptr %env) {\nentry:\n  ret void\n}\n\
 define internal void @tz.parallel.chunk.0(ptr %context, i64 %start, i64 %end) {\nentry:\n  ret void\n}\n\
-define internal i64 @\"tz.fn.M.spin.cpu.avx2\"(i64 %arg0) nounwind {\nentry:\n  ret i64 0\n}\n";
-        let elf = with_generated_section(ir.to_owned(), false);
+define internal i64 @\"tz.fn.M.spin.cpu.avx2\"(i64 %arg0) nounwind {\nentry:\n  ret i64 0\n}\n\
+define internal i64 @tz.callback.Main.spin(i64 %arg0) nounwind {\nentry:\n  ret i64 0\n}\n\
+define i64 @tz_spin_export(i64 %arg0) nounwind {\nentry:\n  ret i64 0\n}\n\
+define internal ptr @tz_small_realloc(ptr %block, i64 %size) nounwind {\nentry:\n  ret ptr null\n}\n";
+        let exports = BTreeSet::from(["tz_spin_export".to_owned()]);
+        let elf = with_generated_section(ir.to_owned(), false, &exports);
         // The adapter and the entry of a tzroutine, into which -O3 inlines a body that is only a
         // loop (Copilot on #91).
         assert!(elf.contains(
@@ -776,13 +788,18 @@ define internal i64 @\"tz.fn.M.spin.cpu.avx2\"(i64 %arg0) nounwind {\nentry:\n  
         assert!(elf.contains("@tz.fn.M.f(i64 %arg0) nounwind \"probe-stack\"=\"inline-asm\" section \"tz_text\" !dbg !7 {\n"));
         assert!(elf.contains("@tz.specialized.3(i64 %arg0) nounwind section \"tz_text\" {\n"));
         assert!(elf.contains("@tz.alloc(i64 %size) nounwind {\n"));
-        let mach_o = with_generated_section(ir.to_owned(), true);
+        let mach_o = with_generated_section(ir.to_owned(), true, &exports);
         // the quoted symbol of a `@cpu` version (Copilot on #91)
         assert!(
             elf.contains("@\"tz.fn.M.spin.cpu.avx2\"(i64 %arg0) nounwind section \"tz_text\" {\n")
         );
-        assert_eq!(mach_o.matches(MACH_O_SECTION).count(), 6);
-        assert_eq!(with_generated_section(elf.clone(), false), elf);
+        // the wrappers of a callback and of an export that a G enters inside an extern call, but not
+        // a runtime function with the same `tz_` prefix (Copilot on #91)
+        assert!(elf.contains("@tz.callback.Main.spin(i64 %arg0) nounwind section \"tz_text\" {\n"));
+        assert!(elf.contains("@tz_spin_export(i64 %arg0) nounwind section \"tz_text\" {\n"));
+        assert!(elf.contains("@tz_small_realloc(ptr %block, i64 %size) nounwind {\n"));
+        assert_eq!(mach_o.matches(MACH_O_SECTION).count(), 8);
+        assert_eq!(with_generated_section(elf.clone(), false, &exports), elf);
     }
 
     #[test]
