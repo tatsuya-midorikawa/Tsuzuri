@@ -51,7 +51,7 @@ done
 ## 表現とターゲット
 
 - 語は 64 ビットの通し番号です。待つ側はロックの下で番号を読み、ロックを外して番号が変わるまで待ちます。起こす側は番号を 1 増やしてから起こすので、外してから待つまでの間の起こしも失われません。
-- ネイティブの macOS・Linux・Windows で動きます。既定の WebAssembly では 1 本の実行として使え、述語が偽の `wait_with` は誰も起こせないのでトラップします。
+- ネイティブの macOS・Linux・Windows で動きます。既定の WebAssembly では、tzroutine を起動しないプログラムが 1 本の実行として使え、述語が偽の `wait_with` は誰も起こせないのでトラップします。`--wasm-feature jspi` で tzroutine を起動する wasm32 のプログラムでは、ネイティブと同じく、待つのはその tzroutine だけです（[tzroutine の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi)）。
 
 ## 関連項目
 
