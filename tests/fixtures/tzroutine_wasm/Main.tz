@@ -305,6 +305,21 @@ fn parallel_in_routines =
             | Maybe.None -> 0)
     total
 
+// In a module that spawns, a lock is the tzroutine's: a DataChannel operation and Parallel run inside it, as natively
+// (mutex.md, WebAssembly のロック): 1 + 1 + (0 + 1) = 3.
+export def inside_lock :: i64
+fn inside_lock =
+    let lock = Mutex.create 0i64
+    match DataChannel.bounded 1 with
+    | (sender, receiver) ->
+        let sent = ref sender
+        let received = ref receiver
+        Mutex.with_lock (ref lock) (\_value -> {
+            let ok = match DataChannel.send sent 1 with | Result.Ok _unit -> 1 | Result.Error _item -> 0;
+            let got = match DataChannel.recv received with | Maybe.Some item -> item | Maybe.None -> 0;
+            ok + got + Array.sum (ref (Parallel.init 2 (\index -> index)))
+        })
+
 // A Mutex held across a wait: the holder waits on a channel inside the critical section while another tzroutine
 // waits for the lock; the second adds after the first (12).
 export def mutex_across_wait :: i64

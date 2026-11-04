@@ -46,7 +46,7 @@ Atomic.load (ref count)
 ## 型とターゲット
 
 - `Once` は非 Copy の不透明なハンドルです（構築・分解は `E1022`）。`Send`・`Sync` で、何度も呼べる関数値には捕捉できません（`E1005`）。
-- ネイティブの macOS・Linux・Windows で動きます。既定の WebAssembly では 1 本の実行として使えます（関数の中から同じ `Once` を呼ぶとトラップ）。
+- ネイティブの macOS・Linux・Windows で動きます。既定の WebAssembly では、tzroutine を起動しないプログラムが 1 本の実行として使えます（関数の中から同じ `Once` を呼ぶとトラップ）。`--wasm-feature jspi` で tzroutine を起動する wasm32 のプログラムでは、ネイティブと同じく、待つのはその tzroutine だけです（[tzroutine の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi)）。
 
 ## 関連項目
 

@@ -42,7 +42,7 @@ RwMutex.with_read (ref lock) (\value -> deref value)
 ## 表現とターゲット
 
 - セルは、64 ビットのロックの語と値を持つ 1 要素の配列です。語の下位 62 ビットが読み手の数、ビット 62 が「書き手が待っている」、ビット 63 が「書き手が持っている」です。読みの解放で最後の読み手が書き手を、書きの解放が全員を起こします。
-- ネイティブの macOS・Linux・Windows と既定の WebAssembly（1 本の実行。待つべきロックはトラップ）で使えます。
+- ネイティブの macOS・Linux・Windows と既定の WebAssembly（tzroutine を起動しないプログラムは 1 本の実行。待つべきロックはトラップ）で使えます。`--wasm-feature jspi` で tzroutine を起動する wasm32 のプログラムでは、ネイティブと同じく、待つのはその tzroutine だけです（[tzroutine の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi)）。
 
 ## 関連項目
 

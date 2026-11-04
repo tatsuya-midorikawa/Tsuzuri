@@ -189,7 +189,7 @@ flowchart TD
 
 要素と結果には `Send` が要ります。ほかの tzroutine やスレッドへ渡せる所有値、という意味です。`ref` を要素に含めることはできません。
 
-コールバックは `Atomic` と `Mutex` を捕捉できません（`E1005`）。全員で 1 つの状態を更新するときは、共有借用を子どもに渡す [Routine.scope](routine.md#routinescope) を使います。ネイティブでは、`Mutex.with_lock` の中でもこのページの API を呼べます（ロックを持ったまま、すべてのチャンクの終わりを待ちます）。WebAssembly では、`Mutex.with_lock` の中で呼ぶとトラップします（[Mutex](mutex.md#webassembly-のロック)）。
+コールバックは `Atomic` と `Mutex` を捕捉できません（`E1005`）。全員で 1 つの状態を更新するときは、共有借用を子どもに渡す [Routine.scope](routine.md#routinescope) を使います。ネイティブでは、`Mutex.with_lock` の中でもこのページの API を呼べます（ロックを持ったまま、すべてのチャンクの終わりを待ちます）。WebAssembly では、tzroutine のランタイムを使わないプログラムで `Mutex.with_lock` の中で呼ぶとトラップします。使うプログラム（`Channel`・`select`・タイマー・同期の型を使うもの、`--wasm-feature jspi` で tzroutine を起動するもの）では、ネイティブと同じく呼べます（[Mutex](mutex.md#webassembly-のロック)）。
 
 ## スレッドと WASM
 

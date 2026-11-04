@@ -380,7 +380,7 @@ console.log(await bindings.exports.sum(100n)); // sum=5050
 
 - export の呼び出しが境界で、その中で起動した tzroutine がすべて終わってから `Promise` が解決します。呼び出しは直列化され、前の呼び出しの tzroutine が終わるまで次の呼び出しは始まりません。
 - 走るのはいつも 1 つで、ほかの tzroutine に替わるのは待つ点か `Routine.yield ()` だけです（プリエンプションはありません）。`Routine.max_procs ()` と `Routine.cpu_count ()` は 1 です。`Parallel.*` はその tzroutine の上で添字の順に逐次に走ります。
-- tzroutine が待つ間、ホストのイベントループは止まりません。走り続ける tzroutine があっても、グルーは数ミリ秒ごとにホストのタイマーと I/O に順番を渡します。タイマー（`Time.sleep`・`Time.after`・`Timer` など）はグルーの `setTimeout` で期限に発火します。
+- tzroutine が待つ間、ホストのイベントループは止まりません。待つ点や `Routine.yield ()` で替わりながら tzroutine が走り続けても、グルーは数ミリ秒ごとにホストのタイマーと I/O に順番を渡します。ただし、グルーに戻るのは tzroutine が止まったときだけです。待たずに計算し続ける tzroutine は、止まるまで JavaScript のスレッドを持ち続けます。長い計算には、ときどき `Routine.yield ()` を入れます。タイマー（`Time.sleep`・`Time.after`・`Timer` など）はグルーの `setTimeout` で期限に発火します。
 - tzroutine のスタック（線形メモリ）は 64 KiB の固定です。関数の入口で検査し、溢れるとトラップします（隣の tzroutine のスタックやヒープを壊しません。`--trap-info` なら種類は `stack overflow`）。スタックは tzroutine が最初に走るときに取り、終わった tzroutine のものを使い回すので、メモリを使うのは始まっていて終わっていない tzroutine だけです。既定の 16 MiB のメモリには、同時に約 200 個が入ります。それより多くを同時に待たせるときは `--wasm-max-memory` を増やします。
 - `-O0` では、128 bit の浮動小数点数・十進数（`f128`・`d128`）のソフトウェア演算の frame が 60 KiB 近くになり、tzroutine の中ではスタックが足りずにトラップします。tzroutine の中でそれらを計算するときは `-O1` 以上でビルドします。
 - すべての tzroutine が待ち、タイマーもソケットの待ちも残っていないと、export の `Promise` が `RuntimeError("all tzroutines are asleep - deadlock!")` で拒否され、インスタンスは捨てられます（次の呼び出しは新しいインスタンスで動きます）。ほかのトラップは、ネイティブの報告の文を出さずに `TsuzuriTrap` で拒否します。
