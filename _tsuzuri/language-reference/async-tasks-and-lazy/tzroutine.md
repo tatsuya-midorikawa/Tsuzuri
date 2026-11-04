@@ -230,7 +230,7 @@ tzroutine が OS を待つ呼び出しに入っても、ほかの tzroutine は�
   - GPU の装置の呼び出し（`Gpu.request`・カーネルの実行）
 - **ソケットの待ち**: `Net.accept`・`Net.read`・`Net.write`・`Net.connect` などがソケットの準備を待つときは、その tzroutine だけが待ちます（netpoller。macOS は kqueue、Linux は epoll、Windows は `WSAPoll` の 1 本のスレッド）。OS スレッドを止めないので、接続ごとに tzroutine を起動するサーバーを、`TSUZURI_MAXPROCS=1` でも書けます。時間切れ（`Maybe.Some ms`）と、待っているソケットを閉じたときの扱いは、tzroutine でないスレッドと同じです（[Net](../built-in-types-and-modules/net.md#tzroutine-の中の-net)）。
 - **デッドロックの判定**: OS を待つ呼び出しの中の tzroutine と、ソケットを待つ tzroutine は、外から起きうるので、ほかが全員眠っていてもデッドロックとは判定しません。
-- **コールバック**: `extern` 関数が Tsuzuri の関数を呼び返す（[静的コールバック](../compiler/native-interop.md#静的コールバック)）と、その間は P を取り戻して普通の tzroutine として走ります。ホストの C の frame がそのスレッドのスタックにあるので、コールバックの中で待っても、tzroutine はその OS スレッドで続きます（[`Routine.with_locked_thread`](../built-in-types-and-modules/routine.md#routinewith_locked_thread) と同じ固定）。
+- **コールバック**: `extern` 関数が Tsuzuri の関数を呼び返す（[静的コールバック](../compiler/native-interop.md#静的コールバック)）か、呼び出しの中でホストが `export` 関数を呼ぶと、その間は P を取り戻して普通の tzroutine として走ります。ホストの C の frame がそのスレッドのスタックにあるので、その中で待っても、tzroutine はその OS スレッドで続きます（[`Routine.with_locked_thread`](../built-in-types-and-modules/routine.md#routinewith_locked_thread) と同じ固定）。
 - tzroutine でないスレッド（`main` のトップレベル、`export` を呼んだホストのスレッド）は、今までどおり、そのスレッドで待ちます。
 
 次の例では、ホストの C 関数 `host_wait_ms` が 300 ms 待つ間に、ほかの 2 つの tzroutine が 1,000 回往復し、`rounds=1000 slept` と出力します（`TSUZURI_MAXPROCS=1` でも同じです。ホストを `--link` でリンクします）。

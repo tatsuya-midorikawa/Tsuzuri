@@ -478,7 +478,7 @@ bump ()
   }
 
   // TZ08: a tzroutine in a blocking call (an extern function, a file read) lets the others run, with
-  // one P too, and a callback that the host calls inside the call waits on its thread. The host and
+  // one P too, and a callback or an export that the host calls inside the call waits on its thread. The host and
   // File are POSIX here (os.c is POSIX only).
   if (process.platform !== "win32") {
     const blocking = join(temporary, "blocking");
@@ -494,8 +494,8 @@ bump ()
       bytes += text.length;
       writeFileSync(join(files, `file${i}.txt`), text);
     }
-    // 2 * (1 + ... + 8) from the callbacks
-    const expected = `rounds=1000 slept\ncallbacks=72\nfiles=${bytes}\n`;
+    // 2 * (1 + ... + 8) from the callbacks, and the same through the export
+    const expected = `rounds=1000 slept\ncallbacks=72\nexports=72\nfiles=${bytes}\n`;
     for (const optimization of ["-O0", "-O3"]) {
       const executable = join(temporary, `blocking${optimization}`);
       cli(["build", blocking, optimization, "--link", host, "-o", executable]);

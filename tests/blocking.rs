@@ -1,6 +1,6 @@
 // TZ08: in a native program that spawns tzroutines, every call of an extern function is a blocking
-// call (between `tsuzuri_tz_blocking_enter` and `_exit`), and a callback that the host calls takes
-// the P back for its body. A program that does not spawn keeps its IR as it was.
+// call (between `tsuzuri_tz_blocking_enter` and `_exit`), and a callback or an export that the host
+// calls takes the P back for its body. A program that does not spawn keeps its IR as it was.
 use tsuzuri::{analyze, llvm};
 
 fn ir(source: &str) -> String {
@@ -106,6 +106,47 @@ fn a_callback_takes_the_p_back_for_its_body() {
         assert_eq!(before, "call void @tsuzuri_tz_blocking_enter()");
         assert_eq!(after, "call void @tsuzuri_tz_blocking_exit()");
     }
+}
+
+#[test]
+fn an_export_takes_the_p_back_as_a_callback_does() {
+    // A host may call an export inside an extern call that a tzroutine made: the public wrapper
+    // takes the P back first (before its boundary starts) and goes back into the call last (after
+    // the boundary waited for its tzroutines).
+    let source = "extern def host_call :: i64 -> i64\n\
+                  export def run :: own i64 -> i64\nfn run n =\n    tzroutine {\n        let _value = host_call n\n    }\n    n\n";
+    let text = ir(source);
+    let wrapper = text
+        .split("\ndefine ")
+        .find(|function| function.contains(" @tz_run("))
+        .unwrap_or_else(|| panic!("{text}"));
+    let lines: Vec<&str> = wrapper.lines().map(str::trim).collect();
+    assert_eq!(
+        lines[2], "%tz.callback = call i32 @tsuzuri_tz_callback_enter()",
+        "{wrapper}"
+    );
+    let enter = wrapper.find("@tsuzuri_tz_callback_enter()").unwrap();
+    let scope = wrapper
+        .find("@tsuzuri_tz_scope_enter()")
+        .unwrap_or_else(|| panic!("{wrapper}"));
+    assert!(enter < scope, "{wrapper}");
+    let mut rets = 0;
+    for (at, line) in lines.iter().enumerate() {
+        if line.starts_with("ret ") {
+            rets += 1;
+            assert_eq!(
+                lines[at - 1],
+                "call void @tsuzuri_tz_callback_exit(i32 %tz.callback)",
+                "{wrapper}"
+            );
+        }
+    }
+    assert!(rets > 0, "{wrapper}");
+    // a program without an extern call has no call that an export could come from
+    let plain = ir(
+        "export def run :: own i64 -> i64\nfn run n =\n    tzroutine {\n        let _value = n\n    }\n    n\n",
+    );
+    assert!(!plain.contains("tsuzuri_tz_callback"), "{plain}");
 }
 
 #[test]

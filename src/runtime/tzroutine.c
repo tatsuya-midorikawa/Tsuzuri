@@ -668,7 +668,7 @@ static struct {
     _Atomic int npidle;
     tzr_m *midle;
     int nmidle;
-    tzr_m *pwait;                 /* Ms back from a blocking call, waiting for a P */
+    tzr_m *pwait, *pwait_tail;    /* Ms back from a blocking call, waiting for a P (first in, first out) */
     _Atomic int npwait;           /* their number, read without the lock by the scheduling loop */
     int nmblocked;                /* Ms in a blocking call: their threads count as pseudo-Gs */
     _Atomic int nmsys;            /* Ms in a blocking call that let sysmon take their P (TZ08) */
@@ -908,14 +908,32 @@ static tzr_p *tzr_pidleget(void) {
     return p;
 }
 
+/* The Ms that wait for a P, served in the order they came (tzr_sched.lock held): an M that waits
+ * again after a turn goes behind the others. */
+static void tzr_pwait_push(tzr_m *m) {
+    m->link = NULL;
+    if (tzr_sched.pwait_tail != NULL) tzr_sched.pwait_tail->link = m;
+    else tzr_sched.pwait = m;
+    tzr_sched.pwait_tail = m;
+    atomic_fetch_add(&tzr_sched.npwait, 1);
+}
+
+static tzr_m *tzr_pwait_pop(void) {
+    tzr_m *m = tzr_sched.pwait;
+    if (m != NULL) {
+        tzr_sched.pwait = m->link;
+        if (tzr_sched.pwait == NULL) tzr_sched.pwait_tail = NULL;
+        atomic_fetch_sub(&tzr_sched.npwait, 1);
+    }
+    return m;
+}
+
 /* tzr_sched.lock held (or the scheduler not started). An M that is back from a blocking call and
  * waits for a P takes it first. */
 static void tzr_pidleput(tzr_p *p) {
     atomic_store_explicit(&p->status, TZR_P_IDLE, memory_order_relaxed);
-    tzr_m *waiter = tzr_sched.pwait;
+    tzr_m *waiter = tzr_pwait_pop();
     if (waiter) {
-        tzr_sched.pwait = waiter->link;
-        atomic_fetch_sub(&tzr_sched.npwait, 1);
         waiter->nextp = p;
         tzr_note_wake(&waiter->park);
         return;
@@ -1162,13 +1180,11 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
 static void tzr_serve_pwait(tzr_m *m) {
     if (atomic_load(&tzr_sched.npwait) == 0) return;
     tzr_mutex_lock(&tzr_sched.lock);
-    tzr_m *waiter = tzr_sched.pwait;
+    tzr_m *waiter = tzr_pwait_pop();
     if (waiter == NULL) {
         tzr_mutex_unlock(&tzr_sched.lock);
         return;
     }
-    tzr_sched.pwait = waiter->link;
-    atomic_fetch_sub(&tzr_sched.npwait, 1);
     waiter->nextp = m->p;
     m->p = NULL;
     tzr_note_wake(&waiter->park);
@@ -1485,16 +1501,22 @@ static void tzr_after_yield(tzr_m *m, tzr_g *g) {
     tzr_mutex_unlock(&tzr_sched.lock);
 }
 
-/* A locked G lets what is queued run on its P, or an M back from a blocking call that waits for a P
- * have it, and takes a P again after them: it stays on its thread. */
+/* A locked G lets what is queued run on its P, or else an M back from a blocking call that waits for
+ * a P have it, and takes a P again after them: it stays on its thread. What is queued comes first:
+ * the M that runs it serves the waiting Ms between two Gs (tzr_serve_pwait), so two locked Gs that
+ * yield in turn hand the P to the queue too, and not only to each other. */
 static void tzr_yield_locked(tzr_m *m) {
     tzr_p *p = m->p;
+    if (!tzr_runq_empty(p) || atomic_load(&tzr_sched.runq_size) > 0) {
+        m->p = NULL;
+        tzr_startm(p, 0);
+        tzr_acquirep(m); /* behind the Ms that wait already */
+        return;
+    }
     if (atomic_load(&tzr_sched.npwait) > 0) {
         tzr_mutex_lock(&tzr_sched.lock);
-        tzr_m *waiter = tzr_sched.pwait;
+        tzr_m *waiter = tzr_pwait_pop();
         if (waiter != NULL) {
-            tzr_sched.pwait = waiter->link;
-            atomic_fetch_sub(&tzr_sched.npwait, 1);
             waiter->nextp = p;
             m->p = NULL;
             tzr_note_wake(&waiter->park);
@@ -1505,13 +1527,7 @@ static void tzr_yield_locked(tzr_m *m) {
             return;
         }
     }
-    if (tzr_runq_empty(p) && atomic_load(&tzr_sched.runq_size) == 0) {
-        tzr_os_yield();
-        return;
-    }
-    m->p = NULL;
-    tzr_startm(p, 0);
-    tzr_acquirep(m);
+    tzr_os_yield();
 }
 
 TZR_API void tsuzuri_tz_yield(void) {
@@ -1865,9 +1881,7 @@ static void tzr_acquirep(tzr_m *m) {
     tzr_mutex_lock(&tzr_sched.lock);
     tzr_p *p = tzr_pidleget();
     if (p == NULL) {
-        m->link = tzr_sched.pwait;
-        tzr_sched.pwait = m;
-        atomic_fetch_add(&tzr_sched.npwait, 1);
+        tzr_pwait_push(m);
         tzr_mutex_unlock(&tzr_sched.lock);
         tzr_note_sleep(&m->park);
         p = m->nextp;

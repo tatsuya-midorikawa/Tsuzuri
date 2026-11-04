@@ -1418,7 +1418,7 @@ fn emit_program(
     };
     // TZ08: on WebAssembly the tzroutines of JSPI share one thread, and a call holds no P there.
     let output = if spawning && !wasm {
-        with_blocking_externs(output, &extern_symbols(module))
+        with_blocking_externs(output, &extern_symbols(module), &tzroutine_exports(module))
     } else {
         output
     };
@@ -1582,13 +1582,29 @@ fn direct_callee(body: &str) -> Option<&str> {
     Some(&name[..end])
 }
 
+/// The public wrappers of the exports (`tz_<name>`), which a host may also call from inside an extern
+/// function that a tzroutine called.
+fn tzroutine_exports(module: &CheckedModule) -> BTreeSet<String> {
+    module
+        .functions
+        .iter()
+        .filter(|function| function.exported)
+        .map(|function| format!("tz_{}", function.name))
+        .collect()
+}
+
 /// Makes every call of an extern function a blocking call in a native program that spawns (TZ08): it
 /// is between `tsuzuri_tz_blocking_enter` and `_exit`, so that sysmon can give the P of a tzroutine
 /// that waits in it to another M. A callback that the host calls inside such a call (the C wrapper
-/// `tz.callback.*`) takes the P back for its body (`tsuzuri_tz_callback_enter`) and goes back into
-/// the call before each `ret` (`tsuzuri_tz_callback_exit`). On a thread that is not a scheduler
-/// worker each of them does nothing.
-pub(crate) fn with_blocking_externs(ir: String, symbols: &BTreeSet<String>) -> String {
+/// `tz.callback.*`), and an export that it calls there (`entries`), takes the P back for its body
+/// (`tsuzuri_tz_callback_enter`) and goes back into the call before each `ret`
+/// (`tsuzuri_tz_callback_exit`). On a thread that is not a scheduler worker in such a call, each of
+/// them does nothing.
+pub(crate) fn with_blocking_externs(
+    ir: String,
+    symbols: &BTreeSet<String>,
+    entries: &BTreeSet<String>,
+) -> String {
     if symbols.is_empty() {
         return ir;
     }
@@ -1600,7 +1616,11 @@ pub(crate) fn with_blocking_externs(ir: String, symbols: &BTreeSet<String>) -> S
         let header = line.trim_end();
         if header.starts_with("define ")
             && header.ends_with('{')
-            && header.contains(" @tz.callback.")
+            && (header.contains(" @tz.callback.")
+                || header
+                    .split_once(" @")
+                    .and_then(|(_, name)| name.split_once('('))
+                    .is_some_and(|(name, _)| entries.contains(name)))
         {
             callbacks = true;
             output.push_str(line);
