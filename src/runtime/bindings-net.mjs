@@ -581,7 +581,7 @@
     }
 
     // What can wait is a JSPI import; the rest returns at once, and the try-once calls are among them.
-    const suspending = (call) => new WebAssembly.Suspending(call);
+    const suspending = (call) => hostSuspending(owner, call);
     const negated = (error) => -failed(error);
     return Object.assign(Object.create(null), {
       resolve: suspending(guardAsync(lookup, failed)),

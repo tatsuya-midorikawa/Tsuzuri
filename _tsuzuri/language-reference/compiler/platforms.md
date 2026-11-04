@@ -82,7 +82,7 @@ tsuzuri build lib --target aarch64-pc-windows-msvc --emit object -o lib.obj
 | Linux x64・Arm64（glibc、musl） | `*-unknown-linux-*` | なし | `.o` | `.so` | 受け付ける | 受け付ける |
 | Windows x64・Arm64（MinGW、MSVC） | `*-pc-windows-*` | `.exe` | `.obj` | なし（`E2000`） | `E2002` | 受け付ける |
 
-[tzroutine](../async-tasks-and-lazy/tzroutine.md) は、表のすべての native の target（aarch64・x86-64）で動き、Windows では Fiber で実行します。WebAssembly の target では、tzroutine を起動するプログラムが `E2000` です（[Channel](../built-in-types-and-modules/channel.md) は、起動しないプログラムなら既定の WebAssembly で 1 本の実行として動きます）。
+[tzroutine](../async-tasks-and-lazy/tzroutine.md) は、表のすべての native の target（aarch64・x86-64）で動き、Windows では Fiber で実行します。WebAssembly の target では、tzroutine を起動するプログラムは `--wasm-feature jspi` の wasm32 で、生成したグルーが 1 本のスレッドの上で交代に走らせます。`jspi` がないと `E2000` です（[Channel](../built-in-types-and-modules/channel.md) は、起動しないプログラムなら既定の WebAssembly で 1 本の実行として動きます）。
 
 「OS API」は `File`、`Dir`、`Env`、`Time`、`Random`、`Process` です。Windows 向けの実装がないため、これらに到達するビルドは、ランタイムの C をコンパイルする前に `E2002` です。対応するホストでも、すべての API が使えるという意味ではありません。
 

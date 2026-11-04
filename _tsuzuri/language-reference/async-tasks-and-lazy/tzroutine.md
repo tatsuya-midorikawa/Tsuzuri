@@ -13,12 +13,12 @@
 - 境界（`main`・`export` の呼び出し・`test`・`bench`）は、その中で起動した tzroutine がすべて終わるまで戻りません。 <!-- rule: TSK-012 -->
 - ただし、トップレベルの最後の式や `export` の戻り値は、**待つ前に**計算されます。子の結果を読むときは、子の完了を数えて待ってから読みます。
 - `Routine` モジュール（`go`・`yield`・`count`・`max_procs`・`cpu_count`・`with_locked_thread`）で、関数値の起動、実行の譲渡、数の問い合わせ、OS スレッドへの固定ができます（[Routine](../built-in-types-and-modules/routine.md)）。
-- 待たずに計算し続ける tzroutine も、10 ms ほどで P を譲ります（[横取り](#横取りプリエンプション)）。
+- ネイティブでは、待たずに計算し続ける tzroutine も、10 ms ほどで P を譲ります（[横取り](#横取りプリエンプション)）。
 - `extern` 関数・ファイル・ソケットなど、OS で待つ呼び出しの間も、ほかの tzroutine は走り続けます（[OS を待つ呼び出し](#os-を待つ呼び出し)）。
 - tzroutine の間の値の受け渡しには [Channel](../built-in-types-and-modules/channel.md) を使います（Go の `chan T`）。
 - `task { }`・型 `Task<T>`・`Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope` は削除しました（`E1040`）。書き換え方は [Task からの移行](#task-からの移行) です。
 - `Async { }`・`async { }`・型 `Async<T>`・`Async.*` と、`Net` の `_async` の関数も削除しました（`E1040`）。I/O を待ちながらほかの計算を進める仕事は tzroutine で書きます。書き換え方は [Async からの移行](#async-からの移行) です。
-- 対応するのはネイティブの macOS・Linux・Windows（aarch64・x86-64）です。WebAssembly で tzroutine を起動するプログラムは `E2000` です。
+- 対応するのはネイティブの macOS・Linux・Windows（aarch64・x86-64）と、`--wasm-feature jspi` の wasm32 です。wasm32 では JavaScript のグルーが 1 本のスレッドの上で tzroutine を交代に走らせます（並行で、並列ではありません。[WebAssembly](#webassemblyjspi)）。
 
 ## 基本の書き方
 
@@ -217,7 +217,7 @@ tzroutine は M:N のスケジューラーで走ります。
 
 - 同時に tzroutine を走らせる OS スレッドの数（P の数）は、既定でオンラインの CPU 数（256 まで）です。環境変数 `TSUZURI_MAXPROCS`（1〜256 の 10 進）で、起動時に 1 回だけ決められます。`Routine.max_procs ()` がその値です。
 - 待つ tzroutine（`Routine.yield`・`Time.sleep`・`Time.sleep_ms`・境界の待ちなど）は OS スレッドを止めないので、待つ tzroutine の数はスレッド数に縛られません。周期の処理は [Ticker](../built-in-types-and-modules/ticker.md#周期の処理を止める)、遅らせた処理は [`Time.after_func`](../built-in-types-and-modules/time.md#遅らせて呼ぶtimeafter_func) で書きます。
-- 待たずに計算し続ける tzroutine も、10 ms ほどで P をほかの tzroutine に譲ります（[横取り](#横取りプリエンプション)）。OS で待つ呼び出しは [OS を待つ呼び出し](#os-を待つ呼び出し) です。
+- ネイティブでは、待たずに計算し続ける tzroutine も、10 ms ほどで P をほかの tzroutine に譲ります（[横取り](#横取りプリエンプション)）。OS で待つ呼び出しは [OS を待つ呼び出し](#os-を待つ呼び出し) です。
 - `Parallel.*` は、このスケジューラーの上で、呼び出し元と手伝いの tzroutine（呼び出し元が tzroutine なら最大 `min(チャンク数, P) - 1` 個、tzroutine でないスレッドなら最大 `min(チャンク数, P)` 個）がチャンクを分けます（[Parallel](../built-in-types-and-modules/parallel.md)）。`Routine.scope` は子ごとに tzroutine を起動します。どちらも、終わりを待つ tzroutine は P を手放すので、`TSUZURI_MAXPROCS=1` でも、ほかの tzroutine は走ります。
 - 各 tzroutine のスタックは、既定で 1 MiB の予約です（触れたページだけが実メモリになります）。下端の 128 KiB はガードで、溢れると `trap: stack overflow` と報告して終わります（Windows では理由なしで終わります）。tzroutine を起動するプログラムは、すべての関数が大きな frame のページを確保の時に順に触れる（stack probe）ので、ガードより大きな frame もガードを飛び越えません。深い再帰には `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576 の 10 進、KiB）で予約を増やします。範囲外の値は無視して既定値を使います。
 - Linux では、1 つのスタックが mapping を 2 つ使うので、同時に生きる tzroutine はおよそ 3 万個（`vm.max_map_count` の既定 65,530 の半分）が上限です。超えると `Tsuzuri runtime: cannot allocate a tzroutine stack (out of memory or address space)` と書いて終わります。
@@ -335,12 +335,57 @@ $"{first} {second}"
 | 構成 | 結果 |
 | --- | --- |
 | native の macOS・Linux・Windows（aarch64・x86-64） | 動く |
-| wasm32・wasm64 | tzroutine を起動するプログラムは `E2000`（`tzroutine on WebAssembly needs --wasm-feature jspi`）。起動しないプログラムの `Channel` と `Routine` の問い合わせは 1 本の実行として動く（`Routine.count ()`・`max_procs ()`・`cpu_count ()` は 1、`Routine.yield ()` は何もしない） |
-| wasm32 + `--wasm-feature jspi` | `E2000`（`tzroutine with --wasm-feature jspi is not implemented yet`） |
+| wasm32 + `--wasm-feature jspi`（`wasm`・`object`・`llvm`・`bindings-js`） | 動く。生成したグルーが JSPI で tzroutine を交代に走らせる（[WebAssembly](#webassemblyjspi)） |
+| wasm32・wasm64（`jspi` なし） | tzroutine を起動するプログラムは `E2000`（`tzroutine on WebAssembly needs --wasm-feature jspi`）。起動しないプログラムの `Channel` と `Routine` の問い合わせは 1 本の実行として動く（`Routine.count ()`・`max_procs ()`・`cpu_count ()` は 1、`Routine.yield ()` は何もしない） |
+| wasm64 + `--wasm-feature jspi` | `E2000`（`tzroutine with --wasm-feature jspi requires --target wasm32: ...`。グルーは wasm32 だけ） |
+| `--wasm-feature webgpu` と `jspi` | `E2000`（`tzroutine cannot be combined with --wasm-feature webgpu: ...`） |
 | `--wasm-feature threads` | `E2000`（`option_conflict`） |
+| `tsuzuri test --target wasm32`・`wasm64` | `E2000`（`the WebAssembly test runner cannot run tzroutines: ...`。テストの実行器は JSPI を回さない） |
 | `--freestanding` | `E2000`（`--freestanding cannot use tzroutine: ...`） |
 | `--trap-mode return` | `E2000`（`option_conflict`） |
 | `--emit llvm`・`--emit header` | 拒否しない（ホストが `src/runtime/tzroutine.c` を連結する） |
+
+## WebAssembly（JSPI）
+
+wasm32 で tzroutine を起動するプログラムは、`.wasm` とグルー（`--emit bindings-js`）の両方に `--wasm-feature jspi` を付けてビルドします。tzroutine は JavaScript の 1 本のスレッドの上で、1 つずつ交代に走ります。tzroutine が待つ（`Channel`・`select`・同期の型・`Time.sleep`・タイマー・`--wasm-feature net` のソケット）と、JSPI（JavaScript Promise Integration）でその tzroutine の WebAssembly のスタックだけを中断し、グルーが次に走れる tzroutine を再開します。
+
+```tsuzuri
+export def sum :: i64 -> string
+fn sum n =
+    let jobs: Channel<i64> = Channel.make 0
+    let producer = Channel.share jobs
+    tzroutine {
+        for i in 1 ..= n do
+            Channel.send producer i
+        Channel.close producer
+    }
+    let mut total = 0i64
+    for job in jobs do
+        total = total + job
+    $"sum={total}"
+```
+
+```sh
+tsuzuri build app --target wasm32 --wasm-feature jspi --emit bindings-js -o app.mjs
+tsuzuri build app --target wasm32 --wasm-feature jspi -O3 -o app.wasm
+```
+
+```js
+import { readFileSync } from "node:fs";
+import { load } from "./app.mjs";
+
+const bindings = await load(readFileSync("app.wasm"));
+console.log(await bindings.exports.sum(100n)); // sum=5050
+```
+
+- export の呼び出しが境界で、その中で起動した tzroutine がすべて終わってから `Promise` が解決します。呼び出しは直列化され、前の呼び出しの tzroutine が終わるまで次の呼び出しは始まりません。
+- 走るのはいつも 1 つで、ほかの tzroutine に替わるのは待つ点か `Routine.yield ()` だけです（プリエンプションはありません）。`Routine.max_procs ()` と `Routine.cpu_count ()` は 1 です。`Parallel.*` はその tzroutine の上で添字の順に逐次に走ります。
+- tzroutine が待つ間、ホストのイベントループは止まりません。走り続ける tzroutine があっても、グルーは数ミリ秒ごとにホストのタイマーと I/O に順番を渡します。タイマー（`Time.sleep`・`Time.after`・`Timer` など）はグルーの `setTimeout` で期限に発火します。
+- tzroutine のスタック（線形メモリ）は 64 KiB の固定です。関数の入口で検査し、溢れるとトラップします（隣の tzroutine のスタックやヒープを壊しません。`--trap-info` なら種類は `stack overflow`）。スタックは tzroutine が最初に走るときに取り、終わった tzroutine のものを使い回すので、メモリを使うのは始まっていて終わっていない tzroutine だけです。既定の 16 MiB のメモリには、同時に約 200 個が入ります。それより多くを同時に待たせるときは `--wasm-max-memory` を増やします。
+- `-O0` では、128 bit の浮動小数点数・十進数（`f128`・`d128`）のソフトウェア演算の frame が 60 KiB 近くになり、tzroutine の中ではスタックが足りずにトラップします。tzroutine の中でそれらを計算するときは `-O1` 以上でビルドします。
+- すべての tzroutine が待ち、タイマーもソケットの待ちも残っていないと、export の `Promise` が `RuntimeError("all tzroutines are asleep - deadlock!")` で拒否され、インスタンスは捨てられます（次の呼び出しは新しいインスタンスで動きます）。ほかのトラップは、ネイティブの報告の文を出さずに `TsuzuriTrap` で拒否します。
+- `extern` 関数のコールバックの中では待てません（JSPI は JavaScript の frame をまたいで中断できず、トラップします）。
+- import と export、エンジンの要件は [WebAssembly の JSPI の tzroutine](../compiler/webassembly.md#jspi-の-tzroutine) です。
 
 ## Task からの移行
 
@@ -528,7 +573,7 @@ Atomic.load (ref hits)
 
 - 子はそれぞれ自分の tzroutine で走るので、互いを `Channel` などで待てます。`TSUZURI_MAXPROCS=1` でも終わります（[Routine.scope](../built-in-types-and-modules/routine.md#routinescope)）。呼び出しは、子が起動した tzroutine の終わりも待ちます。
 - `shared` は `Sync`、結果は `Send` の所有値、コールバックは借用した環境を持てない、直接の呼び出しだけ、という規則は `Task.scope` と同じです。
-- tzroutine を起動するので、WebAssembly、`--freestanding`、`--trap-mode return` では `E2000`、`pure def` の中では `E1029` です。これらで `Task.scope` を使っていた配列の計算は、`Parallel.*` に書き換えます。
+- tzroutine を起動するので、`--wasm-feature jspi` のない WebAssembly、`--freestanding`、`--trap-mode return` では `E2000`、`pure def` の中では `E1029` です。これらで `Task.scope` を使っていた配列の計算は、`Parallel.*` に書き換えます。
 
 ## Async からの移行
 
@@ -825,7 +870,7 @@ server 5 client 5
 
 - 時間制限（`Maybe.Some ms`）は、同期版でも呼び出し全体の期限で、切れると `TimedOut` です。
 - `_async` の操作は、兄弟の失敗で取り消せました。tzroutine で待っている操作を途中でやめるには、ほかの tzroutine がそのソケットを閉じます。待ちは閉じたハンドルの誤り（`InvalidInput`）で終わります。
-- wasm32 の `--wasm-feature jspi --wasm-feature net` では、同期版の操作が JSPI でモジュールを中断します。tzroutine は WebAssembly ではまだ起動できません（`E2000`。[ターゲット](#ターゲット)）。
+- wasm32 の `--wasm-feature jspi --wasm-feature net` では、同期版の操作が JSPI で、それを呼んだ tzroutine だけを中断します。1 つのモジュールの中のサーバーとクライアントも、それぞれの tzroutine で同時に待てます（[WebAssembly](#webassemblyjspi)）。
 
 ### Async.start とホストの poll
 
@@ -911,7 +956,7 @@ clang -O2 host.c app.o -o host -pthread
 ```
 
 - 結果を待たずにイベントループへ戻りたいときは、上のように export を呼ぶスレッドを分け、終わったらそのスレッドからイベントループへ知らせます（ホストの仕組みで）。
-- WebAssembly では、`--wasm-feature jspi` のグルーの export が `Promise` を返します。JavaScript は `await` で結果を待ち、その間もイベントループは動きます。グルーの中でモジュールが中断するのは、今は `--wasm-feature net` のソケットの待ちだけです（[WebAssembly の JSPI](../compiler/webassembly.md#jspi)）。WebAssembly の tzroutine は、まだ `E2000` です。
+- WebAssembly では、`--wasm-feature jspi` のグルーの export が `Promise` を返します。JavaScript は `await` で結果を待ち、その間もイベントループは動きます。モジュールの中の tzroutine の待ちとソケットの待ちは、その tzroutine だけを JSPI で中断します（[WebAssembly](#webassemblyjspi)）。
 
 ## 他の言語との比較
 
@@ -931,7 +976,7 @@ Go の `go f(x)` は引数 `x` を呼び出し側で評価しますが、Tsuzuri
 - 捕捉は所有値のムーブか Copy で、`Send` でなければなりません。借用は `E1013` です。
 - `main`・`export` の呼び出し・`test`・`bench` は、その中で起動した tzroutine がすべて終わるまで戻りません。最後の式の値はその前に計算されます。
 - P の数は `TSUZURI_MAXPROCS`、スタックの予約は `TSUZURI_TZROUTINE_STACK_KIB` で変えられます。
-- WebAssembly、`--freestanding`、`--trap-mode return` とは組み合わせられません（`E2000`）。
+- WebAssembly では `--wasm-feature jspi` の wasm32 で動き、1 本のスレッドの上で交代に走ります。tzroutine のスタックは 64 KiB です。`--freestanding`、`--trap-mode return` とは組み合わせられません（`E2000`）。
 - 削除した `Task` の書き換えは、[Task からの移行](#task-からの移行) の表と例のとおりです。`Task.scope` だけは `tsuzuri fix` が `Routine.scope` へ書き換えます。
 - 削除した `Async` と `Net` の `_async` の書き換えは、[Async からの移行](#async-からの移行) のとおりです。ホストが駆動する実行器と、`Async.run` の仮想時刻には後継がありません。
 

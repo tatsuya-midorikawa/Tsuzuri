@@ -26,11 +26,11 @@
 
 `Routine.go` で起動した tzroutine も、`tzroutine { }` と同じく、それを起動した境界（`main`・`export` の呼び出し・`test`・`bench`）が終わりを待ちます。
 
-既定の WebAssembly では、tzroutine を起動しないプログラムの `Routine.count ()`・`Routine.max_procs ()`・`Routine.cpu_count ()` は 1 で、`Routine.yield ()` は何もしません（1 本の実行）。`Routine.go` を含むプログラムは `E2000` です。
+既定の WebAssembly では、tzroutine を起動しないプログラムの `Routine.count ()`・`Routine.max_procs ()`・`Routine.cpu_count ()` は 1 で、`Routine.yield ()` は何もしません（1 本の実行）。`Routine.go` を含むプログラムは、wasm32 で `--wasm-feature jspi` を付けると動き（[tzroutine の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi)）、付けないと `E2000` です。`--wasm-feature jspi` では tzroutine が 1 本のスレッドの上で交代に走るので、`max_procs ()` と `cpu_count ()` は 1、`Routine.yield ()` はほかの走れる tzroutine に順番を譲ります。
 
 ## 使い方
 
-`Routine.yield` は、待っているほかの tzroutine に実行を譲ります。子の完了を数えて待つときに使います。長い計算は、`Routine.yield` を呼ばなくても 10 ms ほどで横取りされます。ただし、信号による横取りのない構成（Windows、`--emit object`・`shared`、`--backend fast`、`tsuzuri test`・`bench`）の呼び出しのないループは横取りされないので、そこでは途中で `Routine.yield ()` を呼びます（[横取り](../async-tasks-and-lazy/tzroutine.md#横取りプリエンプション)）。
+`Routine.yield` は、待っているほかの tzroutine に実行を譲ります。子の完了を数えて待つときに使います。長い計算は、`Routine.yield` を呼ばなくても 10 ms ほどで横取りされます。ただし、信号による横取りのない構成（Windows、`--emit object`・`shared`、`--backend fast`、`tsuzuri test`・`bench`）の呼び出しのないループは横取りされないので、そこでは途中で `Routine.yield ()` を呼びます。WebAssembly（JSPI）の tzroutine は横取りされないので、待たない長い計算にはいつも `Routine.yield ()` を入れます（[横取り](../async-tasks-and-lazy/tzroutine.md#横取りプリエンプション)）。
 
 ```tsuzuri run=done%3D3
 let done = Arc.new (Atomic.create 0i64)
@@ -123,7 +123,7 @@ results[0]
 - `count` が 0 なら空の配列です。負なら結果の確保でトラップします。
 - 子がトラップすると、ほかのトラップと同じく、プロセス全体の失敗です。
 - 子が作ったタイマーは、呼び出し元の境界のものです（`Routine.scope` の終わりでは止まりません）。
-- tzroutine を起動するので、`pure def` の中では使えず（`E1029`）、WebAssembly では `E2000` です。
+- tzroutine を起動するので、`pure def` の中では使えず（`E1029`）、WebAssembly では `--wasm-feature jspi` の wasm32 だけで動きます（ほかは `E2000`）。
 
 ## Routine.with_locked_thread
 

@@ -201,7 +201,7 @@ flowchart TD
 - コールバックが待つ（`Channel` や `DataChannel` など）と、待つのはその tzroutine だけです。誰も起こせない待ちは、デッドロックの判定がトラップにします（[DataChannel](datachannel.md#待ちの規則)）。
 - トラップの境界（[`Domain.run`](domain.md) の中と、`--trap-mode return` で作った `export` の呼び出しの中）では、チャンクの中のトラップをその境界へ戻すために、手伝いを起動せず、すべてのチャンクを呼んだスレッドで添字の順に走らせます。結果は同じですが、並列にならないので遅くなることがあります。
 
-既定の WASM は、同じチャンク順の逐次実装です。`src/runtime/task-wasm.ll` が入力順にコールバックを呼び、ホストのスレッド import は要りません。
+既定の WASM は、同じチャンク順の逐次実装です。`src/runtime/task-wasm.ll` が入力順にコールバックを呼び、ホストのスレッド import は要りません。tzroutine を起動する wasm32 のプログラム（`--wasm-feature jspi`）でも同じで、チャンクは呼び出した tzroutine の上で添字の順に走ります。コールバックが待つと、その tzroutine が中断し、ほかの tzroutine が走ります。
 
 スレッドが欲しいときは、オブジェクトか WASM 出力で明示します。
 

@@ -378,3 +378,4 @@ error[E1013]: a channel item cannot hold a borrow, including a borrowed function
 - 最後の `Sender` の drop が、チャンネルを閉じます。drop し忘れた `Sender` は、受け手を待たせ続けますが、誰も起こせなくなった時点で、判定のトラップになります。
 - ネイティブでは待つのは待つ tzroutine だけで、待つ数はスレッドの数に縛られません。ロックを持ったまま待つこともできます。
 - WebAssembly の規則は変わりません。既定の wasm32 は 1 本の実行で、満たされない待ちはすぐトラップします。tzroutine のランタイムを使わないプログラムでは、`Mutex.with_lock` の中の `DataChannel` の操作もトラップです。
+- tzroutine を起動する wasm32 のプログラム（`--wasm-feature jspi`）では、ネイティブと同じく、待つのは待つ tzroutine だけで、ロックを持ったまま待てます（[tzroutine の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi)）。

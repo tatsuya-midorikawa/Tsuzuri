@@ -17,6 +17,10 @@
  *
  * TZR_SINGLE (TZ03) builds the channels alone for the default WebAssembly target, where one thread
  * runs the whole program and nothing is imported; see the section "one thread" below.
+ *
+ * TZR_JSPI (TZ09) builds the whole runtime for --wasm-feature jspi: src/runtime/tzroutine-jspi.h
+ * replaces the OS calls and the M:N scheduler below with the Gs of one thread that suspend through
+ * JSPI, and the blocking calls, sysmon and the netpoller are left out.
  */
 #if defined(TZR_SINGLE)
 /* ---------------------------------------------------------------- one thread (TZR_SINGLE) */
@@ -145,6 +149,9 @@ TZR_API int32_t tsuzuri_tz_waitgroup_wait(_Atomic uint64_t *word) {
     return atomic_load_explicit(word, memory_order_relaxed) == 0 ? 0 : 2;
 }
 
+#else
+#if defined(TZR_JSPI)
+#include "tzroutine-jspi.h"
 #else
 #if defined(_WIN32)
 static void tzr_fatal(const char *message);
@@ -1855,6 +1862,7 @@ TZR_API void tsuzuri_tz_go(void (*code)(void *), void *env) {
     tzr_start();
     tzr_spawn(tzr_spawn_scope(tzr_current()), code, env, 0);
 }
+#endif /* !TZR_JSPI */
 
 /* ---------------------------------------------------------------- scopes */
 
@@ -1918,6 +1926,7 @@ TZR_API void tsuzuri_tz_boundary_leave(void *opaque) {
     free(scope);
 }
 
+#if !defined(TZR_JSPI) /* tzroutine-jspi.h has its own of these, to tsuzuri_tz_cpu_count */
 /* ---------------------------------------------------------------- blocking calls */
 
 /* Takes an idle P for the M, or waits until an M gives one back (tzr_pidleput, tzr_serve_pwait).
@@ -2628,6 +2637,7 @@ TZR_API int64_t tsuzuri_tz_cpu_count(void) {
     long cpus = tzr_online_cpus();
     return cpus < 1 ? 1 : cpus;
 }
+#endif /* !TZR_JSPI */
 
 /* ---------------------------------------------------------------- parking lot (sync) */
 
@@ -2878,6 +2888,9 @@ struct tzr_dchan {
     uint64_t owners;
     tzr_lock lock;
     tzr_dwaiter *waiters[2]; /* 0 receivers, 1 senders */
+#if defined(TZR_JSPI)
+    uint32_t reserved[2]; /* the two waiter words are 8 bytes each in the block: wasm32 has 4-byte pointers */
+#endif
 };
 _Static_assert(sizeof(struct tzr_dchan) == 80, "DataChannel block layout");
 _Static_assert(sizeof(tzr_lock) == 8, "DataChannel lock word");
@@ -3140,7 +3153,7 @@ TZR_API void tsuzuri_tz_held_restore(int32_t depth) {
     }
 }
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(TZR_JSPI)
 /* A trap that a boundary of --trap-mode return caught leaves its call: the locks that the call's
  * thread took are released (its thread held none when it entered the boundary). */
 static void tzr_abandon(void) { tsuzuri_tz_held_restore(0); }
@@ -3498,6 +3511,22 @@ static struct {
 #endif
 };
 
+#if defined(TZR_JSPI)
+/* WebAssembly has no timer thread (TZ09): the glue sets a setTimeout to the earliest deadline that
+ * the runtime tells it, which calls tsuzuri_tz_fire. The deadline that it was told last, -1 for none. */
+static int64_t tzr_jspi_deadline = -1;
+TZR_JSPI_IMPORT("timer") void tzr_jspi_timer(int64_t deadline);
+
+static void tzr_jspi_timer_set(int64_t deadline) {
+    if (deadline == tzr_jspi_deadline) return;
+    tzr_jspi_deadline = deadline;
+    tzr_jspi_timer(deadline);
+}
+
+/* The last timer is gone (tzr_timers_gone): the glue's deadlock detector may look again. */
+static void tzr_jspi_timers_report(void) { tzr_jspi_timer_set(tzr_timers.count > 0 ? tzr_timers.heap[0]->when : -1); }
+#endif
+
 static void tzr_heap_set(size_t i, tzr_timer *t) {
     tzr_timers.heap[i] = t;
     t->index = i;
@@ -3527,17 +3556,21 @@ static void tzr_heap_down(size_t i) {
     }
 }
 
+#if !defined(TZR_JSPI)
 static void *tzr_timerproc(void *arg);
+#endif
 static int tzr_netwait_post(tzr_netwait *w, int outcome);
 enum { TZR_NW_ARMED, TZR_NW_PARKED, TZR_NW_READY, TZR_NW_TIMEDOUT };
 
 /* Adds t to the heap as PENDING and wakes the thread when t is the earliest (tzr_timers.lock). */
 static void tzr_heap_push(tzr_timer *t) {
+#if !defined(TZR_JSPI)
     if (!tzr_timers.started) {
         tzr_timer_cond_init(&tzr_timers.wake);
         tzr_thread_start(tzr_timerproc, NULL, 0, "cannot start the timer thread");
         tzr_timers.started = 1;
     }
+#endif
     if (tzr_timers.count == tzr_timers.capacity) {
         size_t capacity = tzr_timers.capacity ? tzr_timers.capacity * 2 : 64;
         tzr_timer **heap = realloc(tzr_timers.heap, capacity * sizeof *heap);
@@ -3549,10 +3582,14 @@ static void tzr_heap_push(tzr_timer *t) {
     tzr_heap_set(tzr_timers.count, t);
     tzr_heap_up(tzr_timers.count++);
     if (tzr_timers.heap[0] == t) {
+#if defined(TZR_JSPI)
+        tzr_jspi_timer_set(t->when);
+#else
         tzr_mutex_lock(&tzr_timers.wake_mutex);
         tzr_timers.kicked = 1;
         tzr_cond_signal(&tzr_timers.wake);
         tzr_mutex_unlock(&tzr_timers.wake_mutex);
+#endif
     }
 }
 
@@ -3637,8 +3674,10 @@ static void tzr_timer_unref(tzr_chan *c, void (*release)(void *)) {
  * timer's reference. */
 static void tzr_ctx_expire(void *ctx);
 
-static void *tzr_timerproc(void *arg) {
-    (void)arg;
+/* Fires the timers that are due, in batches: a FUNC timer's spawn and a context's expiry end a batch
+ * and run outside the timers' lock. Returns the next deadline (-1: none) once nothing more is due.
+ * The timer thread calls it, and tsuzuri_tz_fire on WebAssembly (TZ09). */
+static int64_t tzr_timers_run(void) {
     for (;;) {
         tzr_lock_acquire(&tzr_timers.lock);
         int64_t now = tzr_nanotime();
@@ -3718,6 +3757,22 @@ static void *tzr_timerproc(void *arg) {
             continue;
         }
         tzr_timers_gone(gone);
+        return next;
+    }
+}
+
+#if defined(TZR_JSPI)
+/* tsuzuri_tz_fire (tzroutine-jspi.ll) calls it on the scheduler's stack when the glue's setTimeout
+ * comes: the glue's timer is spent, so the next deadline is told whatever it is. */
+TZR_API void tzr_jspi_fire(void) {
+    tzr_jspi_deadline = -2;
+    tzr_jspi_timer_set(tzr_timers_run());
+}
+#else
+static void *tzr_timerproc(void *arg) {
+    (void)arg;
+    for (;;) {
+        int64_t next = tzr_timers_run();
         tzr_mutex_lock(&tzr_timers.wake_mutex);
         if (!tzr_timers.kicked) {
             if (next < 0) {
@@ -3733,6 +3788,7 @@ static void *tzr_timerproc(void *arg) {
     }
     return NULL;
 }
+#endif
 
 static void tzr_unlock_timers(void *arg) {
     (void)arg;
@@ -3752,7 +3808,7 @@ TZR_API int32_t tsuzuri_tz_sleep(int64_t ns) {
     return tzr_park(tzr_unlock_timers, NULL, "Time.sleep");
 }
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(TZR_JSPI)
 static int32_t tzr_sleep_if_routine(int64_t ns) {
     tzr_m *m = tzr_this_m();
     if (m == NULL || m->curg == NULL) return 0; /* a thread: os.c stops it */
@@ -3929,7 +3985,7 @@ static int tzr_netwait_post(tzr_netwait *w, int outcome) {
     return 0;
 }
 
-#if !defined(_WIN32) || defined(TZ_NET_WINSOCK)
+#if (!defined(_WIN32) && !defined(TZR_JSPI)) || defined(TZ_NET_WINSOCK)
 static void tzr_netwait_commit(void *arg) {
     tzr_netwait *w = arg;
     int s = TZR_NW_ARMED;
@@ -3937,7 +3993,7 @@ static void tzr_netwait_commit(void *arg) {
 }
 #endif
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(TZR_JSPI)
 /* The waits of one descriptor: at most a reader and a writer (a Net handle has one owner; a second
  * waiter of a kind polls). `seq` numbers the registrations, so that an event of an earlier one, or of
  * a descriptor that was closed and taken again, is ignored; a number is taken only when the kernel
@@ -4704,11 +4760,22 @@ typedef struct tzr_scase {
     void *elem;      /* send: the value; recv: where the item goes */
     int32_t send;    /* 1 send, 0 recv */
     int32_t pad;
+#if defined(TZR_JSPI)
+    union {
+        tzr_sudog sudog;      /* 28 bytes on wasm32 */
+        uint64_t scratch[6];
+    };
+#else
     tzr_sudog sudog;  /* scratch for the runtime */
+#endif
 } tzr_scase;
 
+#if defined(TZR_JSPI)
+_Static_assert(sizeof(tzr_scase) == 64, "the generated code lays out a case as { ptr, ptr, i32, i32, [6 x i64] }");
+#else
 _Static_assert(sizeof(tzr_sudog) == 48, "a sudog is 6 words");
 _Static_assert(sizeof(tzr_scase) == 72, "the generated code lays out a case as { ptr, ptr, i32, i32, [6 x i64] }");
+#endif
 
 typedef struct {
     tzr_scase *cases;

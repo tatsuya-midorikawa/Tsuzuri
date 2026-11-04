@@ -120,7 +120,7 @@ called
 - `Context` と `Context.AfterFunc` は非 Copy の不透明なハンドルです（構築・分解は `E1022`）。`Send`・`Sync` で、何度も呼べる関数値には捕捉できません（`E1005`）。
 - `Context.with_timeout` と `Context.with_deadline` は時計を読むので、権限 `time` が要ります。ほかの関数は権限が要りません。
 - `Context` の木は 1 つのロックで守られ、取り消しは再帰しません（10 万段の木も取り消せます）。期限のタイマーは、境界の終わりで止まります（[タイマー](./timer.md)と同じ規則）。止まった後も、ハンドルの `cancel`・`err`・`done` は使えます。
-- ネイティブの macOS・Linux・Windows で動きます。`Context` は tzroutine のスケジューラーのタイマーを使うので、WebAssembly では `E2000` です。
+- ネイティブの macOS・Linux・Windows と、`--wasm-feature jspi` の wasm32 で動きます。`Context` は tzroutine のスケジューラーのタイマーを使うので、`jspi` のない WebAssembly では `E2000` です。
 
 ## Go との対応
 

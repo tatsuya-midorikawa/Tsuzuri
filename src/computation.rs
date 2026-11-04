@@ -195,7 +195,12 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
                 return bounded_depth(expression.depth, span);
             }
             names.check_module(module, &builder.text, builder.span)?;
-            let lowered = lower(&resolved_builder(builder, names, module)?, body, names)?;
+            let lowered = lower_from(
+                &resolved_builder(builder, names, module)?,
+                body,
+                names,
+                Some(module),
+            )?;
             expression.depth = lowered.depth;
             expression.kind = ExprKind::ComputationBoundary(Box::new(lowered));
             bounded_depth(expression.depth, span)?;
@@ -210,7 +215,12 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
                 depth: 1,
             };
             names.check_module(module, &name.text, name.span)?;
-            let lowered = lower(&resolved_builder(name, names, module)?, &body, names)?;
+            let lowered = lower_from(
+                &resolved_builder(name, names, module)?,
+                &body,
+                names,
+                Some(module),
+            )?;
             expression.depth = lowered.depth;
             expression.kind = ExprKind::ComputationBoundary(Box::new(lowered));
             bounded_depth(expression.depth, span)?;
@@ -418,6 +428,18 @@ fn expand_block(
 }
 
 fn lower(builder: &Ident, body: &ComputationBlock, names: &Names) -> Result<Expr, Diagnostic> {
+    lower_from(builder, body, names, None)
+}
+
+/// `lower` for an expression that `module` writes (`None`: a builder that is resolved already, so
+/// it is never missing): a module named `Async` decides the error of `Async { }` only where
+/// `module` sees it.
+fn lower_from(
+    builder: &Ident,
+    body: &ComputationBlock,
+    names: &Names,
+    module: Option<&str>,
+) -> Result<Expr, Diagnostic> {
     let methods = names.builders.get(&builder.text).ok_or_else(|| {
         // TZ12: `task { }` was the language's own; a builder `@alias task` of the program comes first.
         if builder.text == "task" {
@@ -435,10 +457,7 @@ fn lower(builder: &Ident, body: &ComputationBlock, names: &Names) -> Result<Expr
         // no builder gets the message of any other module.
         if builder.text == "async"
             || (builder.text == "Async"
-                && !names
-                    .full_modules
-                    .keys()
-                    .any(|module| module_stem(module) == "Async"))
+                && !module.is_some_and(|module| names.module_path(module, "Async").is_some()))
         {
             return Diagnostic::of(
                 DiagnosticKind::RemovedAsync,

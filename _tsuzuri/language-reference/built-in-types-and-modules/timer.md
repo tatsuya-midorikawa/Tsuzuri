@@ -69,7 +69,7 @@ drop すると、まだ発火していなければ止め、`after_func` の関�
 
 ## ターゲット
 
-ネイティブ（macOS・Linux・Windows）で動きます。WebAssembly は tzroutine と同じく `E2000` です（`--wasm-feature jspi` が必要。まだ実装されていません）。
+ネイティブ（macOS・Linux・Windows）と、`--wasm-feature jspi` の wasm32 で動きます。WebAssembly の期限はグルーの `setTimeout` が知らせます。`jspi` のない WebAssembly は tzroutine と同じく `E2000` です（[JSPI の tzroutine](../compiler/webassembly.md#jspi-の-tzroutine)）。
 
 ## API リファレンス
 
