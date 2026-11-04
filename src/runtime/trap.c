@@ -60,8 +60,14 @@ typedef struct {
 
 #ifndef TSUZURI_TRAP_HOOKS_DEFINED
 #define TSUZURI_TRAP_HOOKS_DEFINED
+/* Five pointers, as the IR of the host ABI reads them (`[5 x ptr]`, src/llvm_abi.rs): the public
+   tsuzuri_alloc and tsuzuri_free call `allocate` and `release` when they are set. The two reserved
+   slots were the item and resume hooks of the task pool, which TZ12 removed. */
 struct tz_trap_hooks {
     void *(*owner)(void);
+    void *reserved[2];
+    void *(*allocate)(size_t);
+    void (*release)(void *);
 };
 __attribute__((weak, visibility("hidden"))) struct tz_trap_hooks tsuzuri_trap_hooks;
 #endif
@@ -369,5 +375,7 @@ __attribute__((constructor))
 static void tz_boundary_install(void) {
     tsuzuri_trap_hooks = (struct tz_trap_hooks) {
         .owner = tsuzuri_boundary_owner,
+        .allocate = tsuzuri_tracked_malloc,
+        .release = tsuzuri_tracked_free,
     };
 }

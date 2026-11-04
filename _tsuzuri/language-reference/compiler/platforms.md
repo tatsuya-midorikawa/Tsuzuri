@@ -53,7 +53,7 @@ tsuzuri build lib --target aarch64-pc-windows-msvc --emit object -o lib.obj
 | 1 | CI がその target と同じ環境で `-O0` と `-O3` の `build`、`run`、`test` を実行する |
 | 2 | CI がビルドして出力のヘッダーを検査する。実行は表に書いた方法だけ |
 
-次の表が tier の記録です。[targets.yml](../../../.github/workflows/targets.yml) は `macos-15`、`ubuntu-24.04`、`ubuntu-24.04-arm` の 3 job、[windows.yml](../../../.github/workflows/windows.yml) は `windows-2022`、`windows-11-arm` の 2 job です。macOS・Linux は `tests/targets.mjs`、Windows は `tests/windows.mjs` で、`examples/tasks` と `examples/control` の実行、`run` と `test`、`--target native` との出力の一致を検査します。
+次の表が tier の記録です。[targets.yml](../../../.github/workflows/targets.yml) は `macos-15`、`ubuntu-24.04`、`ubuntu-24.04-arm` の 3 job、[windows.yml](../../../.github/workflows/windows.yml) は `windows-2022`、`windows-11-arm` の 2 job です。macOS・Linux は `tests/targets.mjs`、Windows は `tests/windows.mjs` で、`examples/tzroutines` と `examples/control` の実行、`run` と `test`、`--target native` との出力の一致を検査します。
 
 | CLI 名 | Clang の `--target` | tier | 確認 |
 | --- | --- | --- | --- |
@@ -172,7 +172,7 @@ TSUZURI_RUNNER=qemu-aarch64 tsuzuri run app --target aarch64-unknown-linux-musl
 
 - `ci.yml` は、Linux x64 の Clippy と Rust テストに加え、Windows x64・Arm64、Linux Arm64、macOS Arm64 を型検査します。`tests/platforms.mjs` が配布物と CI マトリクスの対応環境を照合します。
 - `targets.yml` の 3 job は、ホストの実行、9 triple の object の形式と CPU、同梱ツールチェーンの 7 triple のリンク、Linux での qemu-user を検査します。
-- `windows.yml` の 2 job は、LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 で、native と名前を付けた MSVC の target の `-O0`・`-O3`、Win32 のタスク、UTF-8、ファイル保護、object の ABI、トラップ、WASM、Rust テストを検査します。Visual Studio は x64 が 2022、Arm64 が 2026 です。
+- `windows.yml` の 2 job は、LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 で、native と名前を付けた MSVC の target の `-O0`・`-O3`、Win32 の tzroutine、UTF-8、ファイル保護、object の ABI、トラップ、WASM、Rust テストを検査します。Visual Studio は x64 が 2022、Arm64 が 2026 です。
 - `vscode.yml` の 5 job は、ホストに対応する CLI archive と VSIX、そのインストール、LSP、Async、Net を検査します。Windows Arm64 のソースデバッグは対象外です。
 
 ## まとめ

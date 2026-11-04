@@ -367,7 +367,7 @@ fn parser_recovers_only_at_balanced_top_level_declarations() {
         "fn rec first =\nand second x =\nfn third =\n",
         "let first =\nlet second =\n",
         "record Bad<'a 'b> { value: 'a }\nrecord Good<'a> { value: 'a }\nfn second =\n",
-        "def first :: Task<Maybe<i64>>=>\nfn second =\n",
+        "def first :: Maybe<Maybe<i64>>=>\nfn second =\n",
     ] {
         let set =
             parser::parse_with_source_all(source, 7, tsuzuri::syntax::Edition::LATEST).unwrap_err();
@@ -430,7 +430,7 @@ fn poisoned_signatures_suppress_dependent_errors_on_every_expression_surface() {
         "match bad 1 with | Some x -> x | None -> 0",
         "for x in bad 1 do ()",
         "let f = x -> bad x; f 1",
-        "Task.run (task { return bad 1 })",
+        "tzroutine { let _value = bad 1 }",
     ] {
         let source = format!(
             "record Pair<'a, 'b> {{ first: 'a, second: 'b }}

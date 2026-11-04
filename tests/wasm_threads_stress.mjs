@@ -1,6 +1,6 @@
-// PR06 Phase 2: the WASM threads pool under many groups, nested groups, failing groups, scopes and pipelines, on pools of
-// 1 to 7 workers. Every check has an exact expected value from a closed form, so a child that ran twice or never, a lost
-// wakeup or a wrong deadlock verdict fails whatever the schedule. A lost wakeup blocks the main thread inside the module,
+// PR06 Phase 2: the WASM threads pool under many groups, nested groups, groups of Results, cells shared by the jobs of a
+// group and pipelines, on pools of 1 to 7 workers. Every check has an exact expected value from a closed form, so a job
+// that ran twice or never, a lost wakeup or a wrong deadlock verdict fails whatever the schedule. A lost wakeup blocks the main thread inside the module,
 // where no timer runs, so a watchdog thread ends the process.
 // Usage: node tests/wasm_threads_stress.mjs [compiler] [rounds]
 import assert from "node:assert/strict";
@@ -55,17 +55,16 @@ const stacks = (workers) => BigInt(workers) * (262144n + 16n);
 
 try {
   for (const optimization of [0, 3]) {
-    const tasks = build("tasks", optimization), shared = build("concurrency_threads", optimization), piped = build("data_channel_threads", optimization);
+    const shared = build("concurrency_threads", optimization), piped = build("data_channel_threads", optimization);
     for (const workers of [1, 2, 3, 5, 7]) {
-      const pool = await createThreadPool(tasks, { workers });
+      const pool = await createThreadPool(shared, { workers });
       try {
         for (let round = 0; round < rounds; round++) {
           for (const count of [0n, 1n, 2n, 3n, 63n, 64n, 257n, 1024n, 2048n]) assert.equal(pool.call("tz_parallel_sum", count), sumOfSquares(count), `parallel_sum ${count}`);
-          assert.equal(pool.call("tz_parallel_results_ok", 257n), 5625216n);
-          assert.equal(pool.call("tz_parallel_results_lowest"), 2n);
-          assert.equal(pool.call("tz_parallel_results_owned", 2048n), 6n);
-          assert.equal(pool.call("tz_parallel_results_nested"), 2016n);
-          assert.equal(pool.call("tz_parallel_results_first_class"), 42n);
+          assert.equal(pool.call("tz_results_ok", 257n), 5625216n);
+          assert.equal(pool.call("tz_results_lowest"), 2n);
+          assert.equal(pool.call("tz_results_owned", 2048n), 6n);
+          assert.equal(pool.call("tz_results_nested"), 2016n);
           assert.equal(pool.call("tz_ordered", 128n), 1);
           assert.equal(pool.call("tz_nested", 5n), 2336n);
         }
@@ -73,22 +72,22 @@ try {
       } finally {
         await pool.close();
       }
-      const scopes = await createThreadPool(shared, { workers });
+      const cells = await createThreadPool(shared, { workers });
       try {
         for (let round = 0; round < rounds; round++) {
           for (const count of [0n, 1n, 4n, 64n, 257n, 1000n]) {
-            assert.equal(scopes.call("tz_atomic_counter", count), count * (count + 1n) / 2n);
-            assert.equal(scopes.call("tz_scope_results_order", count), checksum(count));
+            assert.equal(cells.call("tz_atomic_counter", count), count * (count + 1n) / 2n);
+            assert.equal(cells.call("tz_results_order", count), checksum(count));
           }
           for (const count of [0n, 1n, 3n, 64n]) {
-            assert.equal(scopes.call("tz_atomic_contended", count), count * 1000n);
-            assert.equal(scopes.call("tz_mutex_contended", count), count * 1000n);
+            assert.equal(cells.call("tz_atomic_contended", count), count * 1000n);
+            assert.equal(cells.call("tz_mutex_contended", count), count * 1000n);
           }
         }
-        assert.equal(scopes.call("tz_atomic_counter", 5000n), 5000n * 5001n / 2n);
-        assert.equal(scopes.call("tsuzuri_thread_heap_live_bytes"), stacks(workers));
+        assert.equal(cells.call("tz_atomic_counter", 5000n), 5000n * 5001n / 2n);
+        assert.equal(cells.call("tsuzuri_thread_heap_live_bytes"), stacks(workers));
       } finally {
-        await scopes.close();
+        await cells.close();
       }
       const channels = await createThreadPool(piped, { workers });
       try {
@@ -115,7 +114,7 @@ try {
         } finally {
           await crowded.close();
         }
-        const busy = await createThreadPool(tasks, { workers });
+        const busy = await createThreadPool(shared, { workers });
         try {
           for (let round = 0; round < rounds; round++) assert.equal(busy.call("tz_parallel_sum", 1024n), sumOfSquares(1024n));
         } finally {
@@ -125,7 +124,7 @@ try {
     } finally {
       await stopBurners();
     }
-    console.log(`WASM threads stress O${optimization}: groups, scopes and pipelines on 1 to 7 workers are exact (${rounds} rounds)`);
+    console.log(`WASM threads stress O${optimization}: groups, shared cells and pipelines on 1 to 7 workers are exact (${rounds} rounds)`);
   }
 } finally {
   Atomics.store(stop, 0, 1);

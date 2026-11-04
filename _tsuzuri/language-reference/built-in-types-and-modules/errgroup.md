@@ -86,7 +86,7 @@ given back: 7
 ## 型とターゲット
 
 - `ErrGroup` は std の Tsuzuri で書かれています（`WaitGroup`・容量 1 の `Channel<'e>`・`Arc<Mutex<…>>`・`Cond`・`Context`）。中身は std の外から見えません（`E1022`）。非 Copy で、何度も呼べる関数値には捕捉できません（`E1005`）。
-- 「最初の誤り」は完了の時刻の順です。旧 `Task.parallel_results` の「入力の添字が最小の誤り」とは違います。
+- 「最初の誤り」は完了の時刻の順です。TZ12 で消えた `Task.parallel_results` の「入力の添字が最小の誤り」とは違います（[Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行)）。
 - ネイティブの macOS・Linux・Windows で動きます。tzroutine を起動するので、WebAssembly では `E2000` です。
 
 ## Go との対応

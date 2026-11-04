@@ -145,12 +145,8 @@ export def closures_and_tasks :: i64
 fn closures_and_tasks =
     let read = \i -> Primes[i] + Squares[i]
     let scaled = Parallel.map (\value -> value * Primes[1]) (ref Primes)
-    let task_total = Task.run task {
-        let! a = task { Primes[1] }
-        let! b = task { Squares[10] }
-        return a + b
-    }
-    read 2 + Array.sum (ref scaled) + Parallel.sum (ref Primes) + task_total
+    let parts = Parallel.init 2 (\index -> if index == 0 then Primes[1] else Squares[10])
+    read 2 + Array.sum (ref scaled) + Parallel.sum (ref Primes) + parts[0] + parts[1]
 
 export def owned_copies :: i64
 fn owned_copies =

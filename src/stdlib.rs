@@ -814,7 +814,7 @@ mod tests {
         assert_eq!(loaded("x |> Cbor.encode"), ["Cbor", "Json"]);
         assert_eq!(loaded("record P { x: i64 } deriving (Encode)"), ["Json"]);
         assert_eq!(loaded("let a: Arena<i64> = Arena.empty()"), ["Arena"]);
-        // F10: each shared-state type loads only its own module; `Task.scope` needs none.
+        // F10: each shared-state type loads only its own module; `Routine.scope` needs none.
         assert_eq!(loaded("let c = Atomic.create 0i64"), ["Atomic"]);
         assert_eq!(loaded("record Hits { count: Atomic<i64> }"), ["Atomic"]);
         assert_eq!(loaded("let m = Mutex.create 0i64"), ["Mutex"]);

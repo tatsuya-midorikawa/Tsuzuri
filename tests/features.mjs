@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -563,7 +563,7 @@ const suites = {
   pure_parallel: {
     cases: [
       ...[0n, 1n, 4095n, 4096n, 4097n, 8192n].map((n) => ["parallel_sum", [n], n * (n + 1n)]),
-      ...[0n, 1n, 99n].flatMap((n) => [["run_task", [n], n + 1n], ["run_pair", [n], 3n * n + 1n]]),
+      ...[0n, 1n, 99n].flatMap((n) => [["run_job", [n], n + 1n], ["run_pair", [n], 3n * n + 1n]]),
     ],
     traps: [["parallel_trap", [4097n]]],
   },
@@ -824,7 +824,7 @@ const suites = {
       ["owned_failure", [5n], 2n * 10n + 1n], ["owned_failure", [-1n], -6n],
       ["borrows_end", [4n], 3n * 100n + 4n],
       ["implicit_body", [21n], 42n],
-      ["task_inside", [3n], 4n + 3n],
+      ["deferred_run", [3n], 4n + 3n],
       // Both spellings sleep n, read now = n, and add 1: 6 * 1000 + 6 for n = 5.
       ["alias_spelling", [5n], 6n * 1000n + 6n], ["alias_spelling", [0n], 1n * 1000n + 1n],
     ],
@@ -1093,7 +1093,7 @@ const suites = {
       ...[0n, 1n, 100000n].map((n) => ["arc_chain", [n], n * (n - 1n) / 2n]),
       ...[0n, 1n, 1000n, 4097n].map((n) => ["arc_parallel", [n], n * (n - 1n) / 2n * 10n + 1n]),
       ...[0n, 1n, 1000n].map((n) => ["arc_weak_parallel", [n], 4n * (n * (n - 1n) / 2n) * 10n]),
-      // The last task to finish drops the shared value.
+      // The last job to finish drops the shared value.
       ...[0n, 1n, 1000n, 100000n].map((n) => ["arc_parallel_last", [n], n * (n - 1n) / 2n]),
       ...[0n, 1n, 1000n, 50000n].map((n) => ["arc_chain_parallel", [n], 4n * (n * (n - 1n) / 2n)]),
     ],
@@ -1599,7 +1599,7 @@ const suites = {
       ...[0n, 12345n, 54321n].map((n) => ["match_borrowed", [n], n === 12345n ? 1n : 2n]),
       ...[-1n, 0n, 1n, 12345n].map((n) => ["match_maybe", [n], n > 0n ? 1n : 2n]),
       ...[0n, 7n, -3n].map((n) => ["generic_earlier", [n], n]),
-      // The members of a group in the body of a task are bound together.
+      // The members of a group in the body of a computation are bound together.
       ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["task_group", [n], n % 2n === 0n ? 1n : 0n]),
       ...[0n, 1n, 10n, 7n, 1000n].map((n) => ["task_group_after_bind", [n], n % 2n === 0n ? 1n : 0n]),
     ],
@@ -2464,9 +2464,13 @@ const suites = {
       assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
     },
   },
-  // F10: Atomic, Mutex and Task.scope. Every case is a closed expression that does not depend on the
-  // schedule: sums of commutative updates and results in index order.
+  // F10: Atomic and Mutex; since TZ12 Routine.scope and tzroutines share them (Task.scope and Task.parallel
+  // before). Every case is a closed expression that does not depend on the schedule: sums of commutative
+  // updates and results in index order. WebAssembly builds the part of the fixture above its "native only"
+  // line (Routine.scope and tzroutine { } are native until TZ09), at one and at four Ps natively.
   concurrency: {
+    environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
+    nativeFrom: "// native only:",
     cases: [
       ["atomic_i8", [], atomicSequence(8, true, 100n, 100n, 90n)],
       ["atomic_i16", [], atomicSequence(16, true, 30000n, 20000n, 12345n)],
@@ -2476,11 +2480,17 @@ const suites = {
       ["atomic_u16", [], atomicSequence(16, false, 60000n, 20000n, 12345n)],
       ["atomic_u32", [], atomicSequence(32, false, 4000000000n, 1500000000n, 123456789n)],
       ["atomic_u64", [], atomicSequence(64, false, 18000000000000000000n, 4000000000000000000n, 1234567890123456789n)],
-      ...[0n, 1n, 4n, 64n, 257n].map((n) => ["atomic_counter", [n], n * (n + 1n) / 2n]),
       ["atomic_compare_exchange", [], 5n * 10000n + 9n * 100n + 9n],
       ["atomic_wrapping_i32", [], -2147483648n],
       ["atomic_bool_flag", [], 1n],
       ["atomic_into_inner", [], 42n],
+      ["mutex_text", [], 6n * 100n + 6n],
+      // The builtins are asked for Send and Sync of `'f<i64>`, and a holder of plain values passes.
+      ["hkt_parallel", [], 6n],
+      ["hkt_mutex", [], 42n],
+    ],
+    nativeCases: [
+      ...[0n, 1n, 4n, 64n, 257n].map((n) => ["atomic_counter", [n], n * (n + 1n) / 2n]),
       ...[0n, 1n, 10n, 100n, 1000n].map((n) => {
         const misses = (n + 2n) / 3n;
         return ["counters_record", [n], 2n * (n - misses) * 1000000n + misses];
@@ -2500,19 +2510,21 @@ const suites = {
       ...[0n, 1n, 4n, 64n, 257n].map((n) => ["mutex_total", [n], n * n]),
       ...[0n, 1n, 4n, 257n].map((n) => ["mutex_owned_array", [n], n * n]),
       ...[0n, 1n, 257n].map((n) => ["mutex_record", [n], n * 1000000n + n * (n - 1n) / 2n]),
-      ["mutex_text", [], 6n * 100n + 6n],
-      // The tasks drop their Arcs before the call returns, so one owner is left.
-      ...[0n, 1n, 4n, 64n].map((n) => ["arc_mutex_tasks", [n], n * (n + 1n) / 2n * 1000n + 1n]),
-      ...[0n, 1n, 4n, 64n].map((n) => ["arc_atomic_tasks", [n], n * (n + 1n) / 2n * 1000n + 1n]),
+      // The tzroutines drop their Arcs before the wait returns, so one owner is left.
+      ...[0n, 1n, 4n, 64n].map((n) => ["arc_mutex_routines", [n], n * (n + 1n) / 2n * 1000n + 1n]),
+      ...[0n, 1n, 4n, 64n].map((n) => ["arc_atomic_routines", [n], n * (n + 1n) / 2n * 1000n + 1n]),
       ...[0n, 1n, 4n, 64n, 257n].map((n) => ["scope_arc_mutex", [n], n * (n + 1n) / 2n]),
-      // The task takes `head` with it, and dropping it releases the Arc that it holds of `tail`.
+      // The tzroutine takes `head` with it, and dropping it releases the Arc that it holds of `tail`.
       ["linked_mutex", [], 2n * 10n + 1n],
-      // The builtins are asked for Send and Sync of `'f<i64>`, and a holder of plain values passes.
-      ["hkt_parallel", [], 6n],
-      ["hkt_mutex", [], 42n],
       ["hkt_scope", [], 6n],
+      // Natively the lock of another mutex nests and parallel work starts inside a lock (TZ06, TZ12): the
+      // inner value 2, and the chunks' 0 + 1. WebAssembly traps on both (wasmTraps).
+      ["mutex_nested", [], 2n],
+      ["mutex_parallel_inside", [], 1n],
     ],
-    traps: [["mutex_nested", []], ["mutex_parallel_inside", []], ["scope_negative", []]],
+    traps: [["mutex_nested_same", []]],
+    nativeTraps: [["scope_negative", []]],
+    wasmTraps: [["mutex_nested", []], ["mutex_parallel_inside", []]],
     inspect(ir) {
       // One sequentially consistent instruction per operation, and no runtime call for it.
       assert.match(ir, /atomicrmw add ptr %[\w.]+, i64 %[\w.]+ seq_cst, align 8/);
@@ -2521,15 +2533,14 @@ const suites = {
       assert.match(ir, /load atomic i8, ptr %[\w.]+ seq_cst, align 1/);
       assert.match(ir, /load atomic i64, ptr %[\w.]+ seq_cst, align 8/);
       assert.doesNotMatch(ir, /call [^\n]*@tsuzuri_atomic/);
-      // The lock and the parallel entries come from the runtime that the driver links.
-      for (const declaration of ["declare i32 @tsuzuri_mutex_lock(ptr)", "declare void @tsuzuri_mutex_unlock(ptr)", "declare i32 @tsuzuri_mutex_parallel_ok()",
-        "declare void @tsuzuri_task_parallel(ptr, ptr, i64)"]) {
+      // Natively the lock, the parallel entry and the scope are the tzroutine scheduler's (TZ06, TZ11, TZ12).
+      for (const declaration of ["declare i32 @tsuzuri_tz_mutex32_lock(ptr)", "declare void @tsuzuri_tz_mutex32_unlock(ptr)",
+        "declare i32 @tsuzuri_tz_parallel(ptr, ptr, i64)", "declare i32 @tsuzuri_tz_scope_run(ptr, ptr, i64)"]) {
         assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
       }
-      // Parallel work starts through the wrappers that refuse to start inside a lock.
-      assert.match(ir, /^define internal void @tz\.mutex\.parallel\(ptr %run, ptr %context, i64 %length\)/m);
-      assert.doesNotMatch(ir, /call void @tsuzuri_task_parallel\(ptr @tz\.parallel/);
-      assert.match(ir, /call void @tz\.mutex\.parallel\(ptr @tz\.parallel\.chunk\.\d+/);
+      // No wrapper refuses parallel work inside a lock, and the task runtime is gone.
+      assert.match(ir, /call i32 @tsuzuri_tz_parallel\(ptr @tz\.parallel\.chunk\.\d+/);
+      assert.doesNotMatch(ir, /tz\.mutex\.parallel|@tsuzuri_task_parallel|@tsuzuri_mutex_/);
     },
   },
   // F10 Phase 2: DataChannel (the Channel of F10, renamed in TZ03). The exports need no second thread: up to the capacity a channel is a ring,
@@ -2547,8 +2558,26 @@ const suites = {
       ["counts", [], 1n],
     ],
   },
-  // TZ03: Go's channel between tzroutines and Task workers, at one and at four Ps (native only:
-  // every export spawns or may wait for another thread).
+  // TZ12: the value cases of the deleted tests/fixtures/tasks on Routine.scope (native only: the children are
+  // tzroutines). nested_scopes(7) is 64 * 7 + (0 + ... + 63); record_children is "hello".length + (2 + 10);
+  // function_children is (10 + 5 + 0) + (21 + 5 + 1).
+  tzroutine_values: {
+    nativeOnly: true,
+    environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
+    cases: [
+      ...[0n, 1n, 257n].map((count) => ["ordered_children", [count], 1]),
+      ["nested_scopes", [7n], 64n * 7n + 63n * 64n / 2n],
+      ["record_children", [], 17n],
+      ["function_children", [], 42n],
+      ["unit_children", [], 16n],
+      ["integer_boundary", [], 1],
+      ["wide_numbers", [], 1],
+      ["negative_zero", [], 1],
+      ["nan_result", [], 1],
+    ],
+  },
+  // TZ03: Go's channel between tzroutines, the children of Routine.scope among them, at one and at four Ps
+  // (native only: every export spawns or may wait for another thread).
   channel: {
     nativeOnly: true,
     environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
@@ -2561,8 +2590,8 @@ const suites = {
       ["for_break", [], 1610n],
       ["unit_channel", [], 100n],
       ["both_kinds", [], 3n * 10n + 5n * 26n],
-      ["task_worker", [], 5050n],
-      ["routine_tasks", [], 1275n],
+      ["scope_children", [], 5050n],
+      ["routine_scope", [], 1275n],
       ...[0n, 1n, 1000n].map((n) => ["directions", [n], n * (n + 1n) / 2n]),
     ],
     traps: [["send_closed", []], ["close_twice", []], ["recv_deadlock", []]],
@@ -2740,15 +2769,20 @@ const suites = {
       // The channel is made through a constructor variable, and its items are plain values.
       ["hkt_channel", [], 42n],
     ],
-    traps: [["bounded_zero", []], ["bounded_negative", []], ["full_deadlock", []], ["empty_deadlock", []],
-      ["send_inside_lock", []], ["recv_inside_lock", []]],
+    // Natively a wait inside a lock is allowed (TZ06, TZ12: the lock is the waiting tzroutine's): the send finds
+    // room (1) and the receive the item 9. WebAssembly's lock still refuses a channel operation.
+    nativeCases: [["send_inside_lock", [], 1n], ["recv_inside_lock", [], 9n]],
+    // A deadlock is the scheduler's report and a trap (TZ12).
+    traps: [["bounded_zero", []], ["bounded_negative", []], ["full_deadlock", []], ["empty_deadlock", []]],
+    wasmTraps: [["send_inside_lock", []], ["recv_inside_lock", []]],
     inspect(ir) {
-      // The channel runtime comes from the runtime that the driver links; the lowering only calls it.
+      // The channel runtime is in the tzroutine scheduler that the driver links (TZ12); the lowering only calls it,
+      // and asks no lock whether it may wait.
       for (const declaration of ["declare i32 @tsuzuri_channel_send(ptr, ptr)", "declare i32 @tsuzuri_channel_recv(ptr, ptr)",
-        "declare void @tsuzuri_channel_clone_sender(ptr)", "declare i32 @tsuzuri_channel_close(ptr, i32)",
-        "declare i32 @tsuzuri_mutex_wait_ok()", "declare void @tsuzuri_task_parallel(ptr, ptr, i64)"]) {
+        "declare void @tsuzuri_channel_clone_sender(ptr)", "declare i32 @tsuzuri_channel_close(ptr, i32)"]) {
         assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
       }
+      assert.doesNotMatch(ir, /@tsuzuri_mutex_wait_ok|@tsuzuri_task_parallel/);
     },
   },
 };
@@ -3132,6 +3166,19 @@ for (const count of [0, 1, 10000]) {
   suites.deriving.cases.push(["display_large", [BigInt(count)], canonicalTextHash(`[${Array.from({ length: count }, (_, index) => index).join(", ")}]`)]);
 }
 
+// The fixture without the part of its Main.tz from the line `marker` on (the exports that are native only), for
+// WebAssembly; the suite's `cases` are the exports above the line.
+function wasmPart(fixture, marker, directory) {
+  mkdirSync(directory, { recursive: true });
+  for (const file of readdirSync(fixture).filter((file) => /\.t[zt]$/.test(file))) {
+    const text = readFileSync(join(fixture, file), "utf8");
+    const at = file === "Main.tz" ? text.indexOf(`\n${marker}`) : -1;
+    assert.ok(file !== "Main.tz" || at >= 0, `${fixture}/Main.tz has no line ${marker}`);
+    writeFileSync(join(directory, file), at >= 0 ? text.slice(0, at + 1) : text);
+  }
+  return directory;
+}
+
 function run(name, suite) {
   const fixture = join(root, "tests/fixtures", suite.input ?? name);
   const temporary = mkdtempSync(join(tmpdir(), `tsuzuri-${name}-`));
@@ -3156,6 +3203,8 @@ function run(name, suite) {
     if (sanitizerKind) trackedIr = trackedIr.replace(/ nounwind(?=[^{}\n]* \{)/g, ` nounwind sanitize_${sanitizerKind}`);
     writeFileSync(ir, trackedIr);
     const traps = suite.traps ?? [];
+    // Natively the traps of `traps`, then those of `nativeTraps` (WebAssembly runs `traps` and `wasmTraps`).
+    const nativeTraps = [...traps, ...suite.nativeTraps ?? []];
     // Entries that must finish at once (a loop over an empty window). They are not in `cases`: native, each one runs in
     // its own process and WASM in a child Node process, both under a SIGKILL timer, never in this process.
     const bounded = suite.bounded ?? [];
@@ -3222,8 +3271,8 @@ void *tsuzuri_host_realloc(void *value, uint64_t old_size, uint64_t new_size, ui
 int main(int argc, char **argv) {
     if (argc == 2) {
         switch (atoi(argv[1])) {
-            ${traps.map(([trap, args], index) => `case ${index}: (void)tz_${trap}(${args.map(cValue).join(", ")}); break;`).join("\n")}
-            ${bounded.map(([exported, args, expected], index) => `case ${traps.length + index}: return tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)} && NO_LEAK ? 0 : 1;`).join("\n")}
+            ${nativeTraps.map(([trap, args], index) => `case ${index}: (void)tz_${trap}(${args.map(cValue).join(", ")}); break;`).join("\n")}
+            ${bounded.map(([exported, args, expected], index) => `case ${nativeTraps.length + index}: return tz_${exported}(${args.map(cValue).join(", ")}) == ${cValue(expected)} && NO_LEAK ? 0 : 1;`).join("\n")}
         }
         return 0;
     }
@@ -3235,33 +3284,29 @@ int main(int argc, char **argv) {
     for (const optimization of ["0", "3"]) {
       const native = join(temporary, `${name}-O${optimization}${executableSuffix}`);
       execute(clang, [`-O${optimization}`, "-Wno-override-module", "-ffp-contract=off", ...sanitizer, ...nativeOptions,
-        `-I${temporary}`, ir, host, ...(sourceIr.includes("declare void @tsuzuri_task_parallel(") ? [join(root, "src/runtime/task.c"), "-pthread"] : []),
-        // TZ02: the scheduler of the tzroutines.
-        ...(sourceIr.includes("@tsuzuri_tz_") ? [join(root, "src/runtime/tzroutine.c"), ...(process.platform === "win32" ? [] : ["-pthread"])] : []),
+        `-I${temporary}`, ir, host,
+        // The tzroutine scheduler (TZ02), which natively runs Parallel, Mutex and Routine.scope too (TZ11) and
+        // holds DataChannel's waits (TZ12): linked when the IR names it, as the driver links it.
+        ...(/@tsuzuri_(tz|channel)_/.test(sourceIr) ? [join(root, "src/runtime/tzroutine.c"), ...(process.platform === "win32" ? [] : ["-pthread"])] : []),
         ...nativeLibraries, "-o", native]);
       for (const environment of suite.environments ?? [{}]) execute(native, [], true, environment);
       for (const [index, [exported]] of bounded.entries()) {
-        const result = executeBounded(native, [String(traps.length + index)]);
+        const result = executeBounded(native, [String(nativeTraps.length + index)]);
         assert.equal(result.status, 0, `${name} native O${optimization}: ${exported} returned a wrong value or leaked`);
       }
+      // Natively Parallel runs on the Ps of the tzroutine scheduler (TZ12): one, and four.
       if ((name === "parallel" || name === "matrix") && optimization === "3") {
-        for (const processors of [1, 4]) {
-          const runtime = join(temporary, `runtime-${processors}.c`);
-          const binary = join(temporary, `parallel-cpus-${processors}${executableSuffix}`);
-          writeFileSync(runtime, `#define TZ_TASK_SYSCONF(name) ${processors}\n#include ${JSON.stringify(join(root, "src/runtime/task.c"))}\n`);
-          execute(clang, ["-O3", "-Wno-override-module", "-ffp-contract=off", ...sanitizer,
-            `-I${temporary}`, ir, host, runtime, "-pthread", ...nativeLibraries, "-o", binary]);
-          execute(binary, []);
-        }
+        for (const processors of ["1", "4"]) execute(native, [], true, { TSUZURI_MAXPROCS: processors });
       }
-      for (let index = 0; index < traps.length; index++) {
+      for (let index = 0; index < nativeTraps.length; index++) {
         const result = execute(native, [String(index)], false);
-        assert.ok(result.status !== 0 || result.signal, `${name} native O${optimization}: ${traps[index][0]} must trap`);
+        assert.ok(result.status !== 0 || result.signal, `${name} native O${optimization}: ${nativeTraps[index][0]} must trap`);
       }
       // A suite of tzroutines is native until WebAssembly has them (TZ09).
       if (suite.nativeOnly) continue;
       const wasm = join(temporary, `${name}-O${optimization}.wasm`);
-      cli(["build", fixture, ...(suite.options ?? []), "--target", wasmTarget, ...wasmOptions, `-O${optimization}`, "-o", wasm]);
+      const wasmFixture = suite.nativeFrom ? wasmPart(fixture, suite.nativeFrom, join(temporary, "wasm-part")) : fixture;
+      cli(["build", wasmFixture, ...(suite.options ?? []), "--target", wasmTarget, ...wasmOptions, `-O${optimization}`, "-o", wasm]);
       const module = new WebAssembly.Module(readFileSync(wasm));
       assert.deepEqual(WebAssembly.Module.imports(module), [], `${name}: WASM has no imports`);
       const exports = new WebAssembly.Instance(module).exports;
@@ -3338,7 +3383,8 @@ function debugOutputChecks() {
     assert.deepEqual(readFileSync(base), readFileSync(opted));
     const parallel = mkdtempSync(join(directory, "parallel-"));
     const parallelSource = join(parallel, "Main.tz");
-    writeFileSync(parallelSource, "let tasks = new [Task<i64>](16, \\index -> task { return Debug.trace index })\nlet results = Task.run (Task.parallel tasks)\nArray.sum (ref results)");
+    // Sixteen tzroutines of one scope trace at once, on several Ps.
+    writeFileSync(parallelSource, "let unit_value = 0i64\nlet results = Routine.scope (ref unit_value) 16 (\\_shared index -> Debug.trace index)\nArray.sum (ref results)");
     for (const optimization of [0, 3]) {
       const native = join(directory, `parallel-${optimization}`);
       cli(["build", parallelSource, `-O${optimization}`, "-o", native]);
@@ -3474,8 +3520,8 @@ async function constStaticsWasmThreadsChecks() {
   console.log("const_statics: static data on WASM threads at O0/O3 passed");
 }
 
-// Arc counts with atomic instructions on WASM threads: the tasks share and drop the counts on
-// worker threads, and the heap returns to the worker stacks alone.
+// Arc counts with atomic instructions on WASM threads: the jobs of Parallel.for_each_chunk share and drop the
+// counts on worker threads, and the heap returns to the worker stacks alone.
 async function rcWasmThreadsChecks() {
   if (wasmTarget !== "wasm32") return;
   const { createThreadPool } = await import("../src/runtime/wasm-threads.mjs");

@@ -157,9 +157,9 @@ fn unit_channel =
         count = count + 1
     count
 
-// Both channels in one program: a tzroutine and a task relay from Channels to one DataChannel.
-// DataChannel's waits stay in the task runtime until TZ12, which does not see tzroutines, so the
-// DataChannel always has room and main takes only items that are in it already.
+// Both channels in one program: two tzroutines relay from Channels to one DataChannel. The first
+// relay ends before main receives; the items of the second may come after main waits for them, a
+// wait on the DataChannel that the tzroutine scheduler ends (TZ12).
 export def both_kinds :: i64
 fn both_kinds =
     let source: Channel<i64> = Channel.make 0
@@ -181,18 +181,15 @@ fn both_kinds =
         let second: Channel<i64> = Channel.make 0
         let feed = Channel.share second
         let drain = Channel.share second
-        let send_all = task {
+        tzroutine {
             for i in 5 ..= 8 do
                 Channel.send feed (i as i64)
             Channel.close feed
-            return 0i64
         }
-        let forward = task {
+        tzroutine {
             for value in drain do
                 let _sent = DataChannel.send (ref sender) (value * 5)
-            return 0i64
         }
-        let _joined = Task.run (Task.parallel [send_all, forward])
         let mut sum = 0i64
         for _i in 0 ..< 8 do
             sum = sum + (match DataChannel.recv (ref receiver) with
@@ -200,49 +197,46 @@ fn both_kinds =
                 | Maybe.None -> 0)
         sum
 
-// Two tasks of Task.parallel hand values over an unbuffered channel (pseudo-G waits).
-export def task_worker :: i64
-fn task_worker =
-    let shared: Channel<i64> = Channel.make 0
-    let producer = Channel.share shared
-    let consumer = Channel.share shared
-    let send_all = task {
-        for i in 1 ..= 100 do
-            Channel.send producer (i as i64)
-        Channel.close producer
-        return 0i64
-    }
-    let receive_all = task {
+// The two children of a Routine.scope hand values over an unbuffered channel that the scope
+// shares: each child is a tzroutine, so one waits for the other.
+def exchange :: ref Channel<i64> -> i64 -> i64
+fn exchange shared index =
+    if index == 0 then
         let mut sum = 0i64
-        for value in consumer do
+        for value in shared do
             sum = sum + value
-        return sum
-    }
-    let results = Task.run (Task.parallel [receive_all, send_all])
+        sum
+    else
+        for i in 1 ..= 100 do
+            Channel.send shared (i as i64)
+        Channel.close shared
+        0
+
+export def scope_children :: i64
+fn scope_children =
+    let shared: Channel<i64> = Channel.make 0
+    let results = Routine.scope (ref shared) 2 exchange
     results[0]
 
-// A tzroutine that joins two tasks talking over a channel: the join gives its P away.
-export def routine_tasks :: i64
-fn routine_tasks =
+// A tzroutine that waits for a scope of two children talking over a channel.
+export def routine_scope :: i64
+fn routine_scope =
     let answers: Channel<i64> = Channel.make 1
     let answer = Channel.share answers
     tzroutine {
         let shared: Channel<i64> = Channel.make 0
-        let producer = Channel.share shared
-        let consumer = Channel.share shared
-        let send_all = task {
-            for i in 1 ..= 50 do
-                Channel.send producer (i as i64)
-            Channel.close producer
-            return 0i64
-        }
-        let receive_all = task {
-            let mut sum = 0i64
-            for value in consumer do
-                sum = sum + value
-            return sum
-        }
-        let results = Task.run (Task.parallel [send_all, receive_all])
+        let results = Routine.scope (ref shared) 2 (\channel index ->
+            if index == 1 then {
+                let mut sum = 0i64;
+                for value in channel do
+                    sum = sum + value;
+                sum
+            } else {
+                for i in 1 ..= 50 do
+                    Channel.send channel (i as i64);
+                Channel.close channel;
+                0
+            })
         Channel.send answer results[1]
     }
     match Channel.recv answers with

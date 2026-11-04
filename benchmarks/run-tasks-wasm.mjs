@@ -1,10 +1,11 @@
-// Times Task.parallel groups of benchmarks/tasks/Main.tz on the WASM threads pool (Node worker_threads), with the same
-// shapes as run-tasks.mjs. The compiler embeds src/runtime/task-wasm-threads.c, so two compilers compare two pools.
+// Times the Parallel.init batches of benchmarks/tasks/Main.tz on the WASM threads pool (Node worker_threads), with the same
+// shapes as run-tasks.mjs. The compiler embeds src/runtime/task-wasm-threads.c, so two compilers compare two pools. Until TZ12
+// it timed Task.parallel (parallel_batch); WebAssembly has no tzroutines, so the build leaves out that Routine.scope export.
 // Usage: node benchmarks/run-tasks-wasm.mjs <compiler> [--quick] [--workers n] [--samples n] [--gap-us microseconds]
 // Prints one JSON line. Each sample is a new pool: cold_ms is its first call, warm_ms the mean of back-to-back calls,
 // p50_ms the median of calls timed one by one (with --gap-us, after an idle gap, and warm_ms is their mean).
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,7 +54,13 @@ const sleeper = new Int32Array(new SharedArrayBuffer(4));
 const directory = mkdtempSync(join(tmpdir(), "tsuzuri-task-wasm-benchmark-"));
 try {
   const output = join(directory, "tasks.wasm");
-  execFileSync(compiler, ["build", join(root, "benchmarks/tasks/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", "-O3", "-o", output], { cwd: root, stdio: "inherit" });
+  const project = join(directory, "portable");
+  mkdirSync(project);
+  const source = readFileSync(join(root, "benchmarks/tasks/Main.tz"), "utf8");
+  const portable = source.replace(/^export def parallel_batch [^]*?\n\n/m, "");
+  if (portable === source || portable.includes("Routine.")) throw new Error("benchmarks/tasks/Main.tz: parallel_batch not found");
+  writeFileSync(join(project, "Main.tz"), portable);
+  execFileSync(compiler, ["build", project, "--target", "wasm32", "--wasm-feature", "threads", "-O3", "-o", output], { cwd: root, stdio: "inherit" });
   const bytes = readFileSync(output);
   const results = [];
   for (const workload of workloads) {
@@ -63,7 +70,7 @@ try {
     for (let sample = 0; sample < samples; sample++) {
       const pool = await createThreadPool(bytes, { workers });
       const call = () => {
-        const value = pool.call("tz_parallel_batch", BigInt(workload.count), BigInt(workload.rounds));
+        const value = pool.call("tz_data_parallel_batch", BigInt(workload.count), BigInt(workload.rounds));
         if (value !== expected) throw new Error(`${workload.name}: wrong result ${value}, expected ${expected}`);
       };
       let start = now();

@@ -2888,7 +2888,7 @@ fn apply_attributes(globals: &Globals) -> &'static str {
 
 /// The clone and drop entries of the closure of `function` with `count` captures, `null` where there
 /// is nothing to call: a closure without captures owns no memory, an immediate capture is its own
-/// copy and owns none either, a task is never cloned, and a function that borrows owned captures is
+/// copy and owns none either, a tzroutine body is never cloned, and a function that borrows owned captures is
 /// not cloned either (B07). A closure with an environment and a `null` drop is therefore an
 /// immediate one, which `@tz.closure.clone` and `@tz.closure.drop` leave alone.
 fn closure_slots(
@@ -4940,8 +4940,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 .into_iter()
                 .all(|child| small(child, remaining))
         }
-        // A loop that waits on a `Channel` (TZ03) runs until a receive or a send says so: it has no
-        // trip count to unroll by.
+        // A loop that waits on a `Channel` (TZ03) or a `DataChannel` runs until a receive or a send says
+        // so: it has no trip count to unroll by.
         fn waits(expression: &TypedExpr, module: &CheckedModule) -> bool {
             let channel = match &expression.kind {
                 TypedExprKind::SelectWait(_) => true,
@@ -4952,7 +4952,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 TypedExprKind::Function(FunctionRef::User(id)) => {
                     let function = &module.functions[*id];
                     function.module == "$builtin"
-                        && ["Channel.", "SendOnly.", "ReceiveOnly."]
+                        && ["Channel.", "DataChannel.", "SendOnly.", "ReceiveOnly."]
                             .iter()
                             .any(|module| function.name.starts_with(module))
                 }
@@ -5106,7 +5106,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
 
     /// The callee of a call at the end of this function that the language guarantees to be a tail
     /// call (PM09 D1), or `None`. It is a full call of a function of the same direct-call group
-    /// (the cycle of a mutual recursion), by name; neither function has captures or is a task body or
+    /// (the cycle of a mutual recursion), by name; neither function has captures or is a tzroutine body or
     /// takes a value that may hold a borrow, since the callee must not reach this frame; both take the
     /// same parameters; and the result is, by its language type, a flag, a character, `unit` or a
     /// number of at most 64 bits (`escape::guaranteed_result`), which stays in a register on every

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-// PM02: LLDB shows a function value or a `Task` by its shape: a `descriptor` that points to a
+// PM02: LLDB shows a function value by its shape: a `descriptor` that points to a
 // structure whose first member `code` is a function pointer, and an `environment`. This asks the
 // formatter about the types of a `-g` executable without starting it, so it needs no debugger session
 // that can run a process. A record that names its fields alike is not a function value.
@@ -37,8 +37,7 @@ try {
     "    let plain = Plain { descriptor: 5, environment: 6 }",
     "    let old = Old { code: 1, environment: 2, clone: 3, drop: 4 }",
     "    let add = \\offset -> seed + offset",
-    "    let job = task { return seed }",
-    "    shaped.environment + plain.descriptor + old.code + add 1 + Task.run job - seed - 14",
+    "    shaped.environment + plain.descriptor + old.code + add 1 - 14",
     "",
     "inspect 5",
     "",
@@ -51,14 +50,13 @@ try {
     "import tsuzuri_lldb",
     "def find(name):",
     "    return lldb.target.FindTypes(name).GetTypeAtIndex(0)",
-    "for name in ['i64 -> i64', 'Task<i64>', 'Main.Plain', 'Main.Old', 'Main.Shaped', 'Main.Entries']:",
+    "for name in ['i64 -> i64', 'Main.Plain', 'Main.Old', 'Main.Shaped', 'Main.Entries']:",
     "    print('shape', name, tsuzuri_lldb.is_function(find(name), None), tsuzuri_lldb.field_names(find(name)))",
-    // A function value whose descriptor is null, and a task: no memory is read.
+    // A function value whose descriptor is null: no memory is read.
     "def blank(name):",
     "    data = lldb.SBData.CreateDataFromUInt64Array(lldb.eByteOrderLittle, 8, [0, 0])",
     "    return lldb.target.CreateValueFromData('probe', data, find(name))",
     "print('summary', tsuzuri_lldb.function_summary(blank('i64 -> i64'), None))",
-    "print('summary', tsuzuri_lldb.function_summary(blank('Task<i64>'), None))",
     "descriptor = find('i64 -> i64').GetFieldAtIndex(0).GetType().GetPointeeType()",
     "print('descriptor', descriptor.GetName(), tsuzuri_lldb.field_names(descriptor), descriptor.GetByteSize())",
     "print('code', descriptor.GetFieldAtIndex(0).GetType().GetPointeeType().IsFunctionType())",
@@ -71,17 +69,15 @@ try {
   assert.doesNotMatch(output, /Traceback|error:/, output);
   for (const line of [
     "shape i64 -> i64 True ['descriptor', 'environment']",
-    "shape Task<i64> True ['descriptor', 'environment']",
     "shape Main.Plain False ['descriptor', 'environment']",
     "shape Main.Old False ['code', 'environment', 'clone', 'drop']",
     "shape Main.Shaped False ['descriptor', 'environment']",
     "shape Main.Entries False ['code', 'clone', 'drop']",
     "summary <fn 0x0>",
-    "summary <task>",
     "descriptor closure.descriptor ['code', 'clone', 'drop'] 24",
     "code True",
   ]) assert.ok(output.includes(line + "\n"), `${line}\n${output}`);
-  console.log("debugger_static: function values and Task are told from records that name their fields alike");
+  console.log("debugger_static: function values are told from records that name their fields alike");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

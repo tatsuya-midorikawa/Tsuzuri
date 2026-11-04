@@ -15,6 +15,6 @@ instance Functor<Result<'a>> {
 instance Keep<Array> { fn keep value = value }
 instance Keep<List> { fn keep value = value }
 instance Keep<Vec> { fn keep value = value }
-instance Keep<Task> { fn keep value = value }
+instance Keep<Maybe> { fn keep value = value }
 instance Keep<Box> { fn keep value = value }
 instance BinaryKeep<Result> { fn keep value = value }

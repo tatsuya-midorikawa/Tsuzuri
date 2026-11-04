@@ -173,22 +173,21 @@ jobs:
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/features.mjs target/release/tsuzuri monoid
           node tests/features.mjs target/release/tsuzuri parallel_equivalence
-      # PM02: a function value or a Task is { descriptor, environment }. primitives.mjs runs the four kinds of function value
+      # PM02: a function value is { descriptor, environment }. primitives.mjs runs the four kinds of function value
       # through a C host that asserts live == 0; debugger_static.mjs asks the LLDB formatter about the DWARF types of a -g build
       # without running a process (LLDB is on the macOS runners only).
-      - name: Function values and tasks (PM02)
+      - name: Function values (PM02)
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         timeout-minutes: 30
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/primitives.mjs target/release/tsuzuri
-          node tests/tasks.mjs target/release/tsuzuri
           if [ "$RUNNER_OS" = macOS ]; then node tests/debugger_static.mjs target/release/tsuzuri; fi
-      # TZ01: the tzroutine runtime on its own (tests/tzroutine_runtime.c includes src/runtime/tzroutine.c): -O0 and -O3 with
-      # 1, 2 and 4 Ps, the build with src/runtime/stack.c that reports a tzroutine's overflow, and on Linux the ThreadSanitizer
-      # and AddressSanitizer + UBSan builds (the Homebrew LLVM 21 of the macOS runners builds sanitizer programs that never
-      # start; see the size-class allocator step below).
+      # TZ01: the tzroutine runtime on its own (tests/tzroutine_runtime.c includes src/runtime/tzroutine.c, and since TZ12 its
+      # DataChannel): -O0 and -O3 with 1, 2 and 4 Ps, the build with src/runtime/stack.c that reports a tzroutine's overflow, and
+      # on Linux the ThreadSanitizer and AddressSanitizer + UBSan builds (the Homebrew LLVM 21 of the macOS runners builds
+      # sanitizer programs that never start; see the size-class allocator step below).
       - name: tzroutine, Channel and select (TZ01, TZ02, TZ03, TZ04)
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         timeout-minutes: 20
@@ -200,6 +199,7 @@ jobs:
           unset TSUZURI_TSAN TSUZURI_ASAN
           node tests/tzroutine.mjs target/release/tsuzuri
           node tests/features.mjs target/release/tsuzuri tzroutine
+          node tests/features.mjs target/release/tsuzuri tzroutine_values
           node tests/features.mjs target/release/tsuzuri channel
           node tests/features.mjs target/release/tsuzuri channel_single
           node tests/features.mjs target/release/tsuzuri select

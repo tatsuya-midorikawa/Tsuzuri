@@ -7,7 +7,7 @@
 | 規模 | L。Phase 1（ネイティブの `Parallel`・`Mutex`・`DataChannel` を全プログラムで新しいランタイムへ）M、Phase 2（`Task` の構文・型・組み込みの削除と `E1040`）L、Phase 3（テスト・ベンチマーク・文書・CI の整理）L。旧 `Channel` は TZ03 で `DataChannel` に改名済み |
 | 依存 | TZ04, TZ07, TZ11 |
 | 後続 | TZ13 |
-| 状態 | todo |
+| 状態 | done（2026-11-04。Phase 1〜3。下の「着手時の再検討」と「実装と検証」） |
 | 起票 | 2026-11-01（D-61。HEAD `9a76d8ac` で確認） |
 | 承認 | 承認済み（D-61 の決定 4: 即削除。非推奨の期間なし）。決定事項 D1〜D8 は既定案 |
 | 手本にする既存実装 | 削除の手本はない（初めての言語機能の削除）。診断の追加は G23 の仕様 S1（kind の登録）と D-51（`help`）、規則 ID の退役は `spec/README.md`（番号を再利用せず `retired`）、kind を消さない規則は `src/diagnostic_kinds.rs` の先頭の注記 |
@@ -248,3 +248,17 @@ D-61 の決定 4 のとおり、Task を削除する（旧 Channel は TZ03 で 
 | D6 | 規則 `TSK-001`〜`010` は `retired` | `spec/README.md` の規則 | 既定案 |
 | D7 | ベンチマークの指標の名前は残し、実装を tzroutine にする | 時系列の比較を保つ（`docs/benchmarks.md` に切り替わりを書く） | 既定案 |
 | D8 | WASM の `Parallel`・`Mutex`・`Atomic` の実装は変えない | WASM の tzroutine は JSPI だけで、threads のワーカーとは別 | 既定案 |
+
+## 着手時の再検討（2026-11-04、HEAD `2f5cc59c`。TZ08 の上）
+
+起票（HEAD `9a76d8ac`）のあとに入った TZ02〜TZ08・TZ11 と照らして、次のとおり合わせた。
+
+1. **`sync.ll` は消さず、WebAssembly の分だけ残した**: 設計の表は `sync.ll`（`@tz.mutex.parallel` の検査）を消すとしているが、D8 と仕様 2 は「WASM の `Mutex` は変えない」で、既定の WASM と `--wasm-feature threads` は、ロックの中の `Parallel` をこの包みで今も拒む。ネイティブの部分（`tsuzuri_mutex_*` の宣言と置換）だけを消した。
+2. **`DataChannel` の C のテストは `tests/tzroutine_runtime.c` に入れた**: 設計の「`tests/channel_runtime.c` を書き直す」の代わりに、`tzroutine.c` を含める既存の runner（`-O0`・`-O3`、P 1・2・4、TSan・ASan）に `dchan_*` の場合を足し、`tests/channel_runtime.c` は消した。手伝いとスレッド数の場合は、`TSUZURI_MAXPROCS=1` で待つ子が多くても終わる場合に置き換えた。
+3. **翻訳単位の 9 つの部分の書式は変えない**: 6 番目の部分（`task.c`）は空の文字列として場所を残した。事前ビルドのランタイムの照合（`scripts/toolchain/runtime.mjs` の mask）がそのまま使え、`tests/prebuilt_runtime.mjs` で確かめた。ドライバーの一時ファイルの名前は `task.c`／`task.o` から `runtime.c`／`runtime.o` にした（キャッシュの鍵は名前を含まない）。
+4. **`tests/tasks.mjs` の値と捕捉の場合**: 捕捉の `function_captures`・`partial_move`・`snapshot` は `tests/tzroutine.mjs` へ（tzroutine の結果を `Channel` で受ける。tzroutine は record の field を使うと record 全体を取る）、値の場合（添字の順・入れ子・record・関数・`unit`・整数の境界・128 ビットと十進・負のゼロ・NaN）は、export を確保の追跡つきで P 1・4 で呼ぶ `features.mjs` の新しい suite `tzroutine_values`（`tests/fixtures/tzroutine_values`、`Routine.scope`）へ移した。WASM threads の `Parallel` の場合は `tests/fixtures/concurrency_threads` が引き継いだ。Task だけの性質の場合（`nested_task`・`nested_group`・`curried`・`cold`・`sequence`・`monad_laws`。遅延の Task の値と Task の入れ子）は、後継がないので移していない。`tests/windows_runtime.c`（`task.c` のプールの `CreateThread` などの失敗の注入）は、注入の対象がなくなったので消した。
+5. **`benchmarks/cpp/Kernels.tz`**: `task_parallel` は `Routine.scope`、`task_sequence` は C++ の側（lambda を作って呼ぶ）と同じ「関数値を作って呼ぶ」にした（`Routine.scope` を回ごとに呼ぶと、C++ と違う仕事になる）。`benchmarks/tasks/Main.tz` の WASM のビルド（`run-tasks.mjs --data-parallel` と `run-tasks-wasm.mjs`）は、tzroutine を持たない WebAssembly（`E2000`）のために `Routine.scope` の export を除いた写しを使い、`run-tasks-wasm.mjs` は `Parallel.init` を測る。`benchmarks/run-build.mjs` の実プロジェクトの一覧からは、消した `examples/tasks` を外した（`examples/tzroutines` は wasm32 で `E2000` で、run-build はそれを飛ばさない）。
+6. **`targets.yml` の「Function values and tasks (PM02)」**は、`tests/tasks.mjs` の行を消して「Function values (PM02)」にした。tzroutine の suite は同じファイルの TZ01〜TZ04 の手順がすでに走らせている。
+7. **`--freestanding`**: `Parallel.*`・`Mutex`・`Routine.scope` は `--freestanding cannot use tzroutine: ...`（`@tsuzuri_tz_` の行）、`DataChannel` は自分の行（`--freestanding cannot use DataChannel: ...`）のまま。
+8. **残した名前**: `Effect::Task` の語 `task`（D-53）、ベンチマークの suite と variant の名前（`tasks`・`pool` など。D7）、出なくなった kind と `task_*` の kind の名前（D-51）。LLDB と natvis の `Task<` の表示は消した（`tzroutine body` の値は利用者の変数にならない）。
+9. **ほかに直したもの**: `pure def`・`Domain.run` の文（`a function, 'dyn', or a task` → `a function or 'dyn'`、`starts or waits for a tzroutine or a parallel operation`）、`--contracts prove` の未対応の理由、`--help` の 2 か所、`tsuzuri explain` の `E1013`・`E1023`・`E1038`・`E1040`・`invalid_module_name`・`task_capture_retains_borrow` のページ、VS Code の予約語と名前空間の検査（`task` と `Task` を許す）。

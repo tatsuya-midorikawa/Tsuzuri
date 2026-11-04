@@ -114,9 +114,9 @@ fn regex_values_are_opaque_noncopy_owned() {
         "export def bad :: Regex\nfn bad =\n    let pattern = \"a\"\n    Result.get (Regex.compile (ref pattern))",
         "E1008",
     );
-    // Matching only borrows the compiled program, so it can be shared and moved into a task.
+    // Matching only borrows the compiled program, so it can be shared and moved into a tzroutine.
     let module = accepts(&format!(
-        "{compiled}let text = \"aaa\"\nlet both = Regex.is_match (ref re) (ref text) && Regex.is_match (ref re) (ref text)\nlet job = task {{ let owned = re; return Regex.group_count (ref owned) }}\nif both then Task.run job else 0"
+        "{compiled}let text = \"aaa\"\nlet both = Regex.is_match (ref re) (ref text) && Regex.is_match (ref re) (ref text)\ntzroutine {{ let owned = re; let _groups = Regex.group_count (ref owned) }}\nif both then 1 else 0"
     ));
     library(&module);
     // The error record is public: its fields can be read and matched.

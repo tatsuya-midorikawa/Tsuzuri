@@ -37,28 +37,20 @@ try {
     const failed = cli(["build", input, "-o", executable, ...flags, "--json"], false, { TSUZURI_CLANG: join(directory, "missing-clang.exe") });
     assert.equal(diagnostic(failed).code, "E2002");
     assert.deepEqual(readFileSync(executable), previous);
-    assert.equal(cli(["run", "examples/tasks", ...flags]).stdout, "21325334000\n");
+    // Routine.scope and Parallel on the tzroutine scheduler (TZ12); the scheduler's own C tests on fibers are
+    // tests/tzroutine_runtime.mjs, which the Windows job runs too.
+    assert.equal(cli(["run", "examples/tzroutines", ...flags]).stdout, "21325334000\n");
     assert.equal(cli(["run", "examples/control", ...flags]).stdout, "42\n");
-    const scheduler = join(directory, `scheduler-${optimization}.exe`);
-    execute(clang, [...nativeFlags, "-std=c11", "-Wall", "-Wextra", "-Werror", ...flags, "tests/task_runtime.c", "-o", scheduler]);
-    for (const topology of ["-1", "1", "4", "1000"]) execute(scheduler, [topology]);
-    const failures = join(directory, `failures-${optimization}.exe`);
-    execute(clang, [...nativeFlags, "-std=c11", ...flags, "tests/windows_runtime.c", "-o", failures]);
-    execute(failures, []);
-    for (const [mode, name] of [["create", "CreateThread"], ["wait", "WaitForSingleObject"], ["close", "CloseHandle"]]) {
-      const result = execute(failures, [mode], false);
-      assert.notEqual(result.status, 0);
-      assert.ok(result.stderr.includes(`${name} failed`));
-    }
-    const ir = join(directory, `tasks-${optimization}.ll`);
-    cli(["build", "tests/fixtures/tasks/Main.tz", "--emit", "llvm", "--trap-info", "-o", ir, ...flags]);
-    assert.match(readFileSync(ir, "utf8"), /define dllexport i64 @tz_parallel_results_lowest/);
+    // The LLVM output of a program that spawns, linked by a host with src/runtime/tzroutine.c.
+    const ir = join(directory, `tzroutine-${optimization}.ll`);
+    cli(["build", "tests/fixtures/tzroutine/Main.tz", "--emit", "llvm", "--trap-info", "-o", ir, ...flags]);
+    assert.match(readFileSync(ir, "utf8"), /define dllexport i64 @tz_sum_atomic/);
     const host = join(directory, "host.c");
-    writeFileSync(host, '#include <stdint.h>\n#include <assert.h>\nextern int64_t tz_parallel_results_lowest(void), tz_parallel_results_owned(int64_t), tz_parallel_results_nested(void), tz_wide_numbers(void);\nint main(void) { assert(tz_parallel_results_lowest() == 2); assert(tz_parallel_results_owned(2048) == 6); assert(tz_parallel_results_nested() == 2016); assert(tz_wide_numbers()); return 0; }\n');
-    const tasks = join(directory, `tasks-${optimization}.exe`);
-    execute(clang, [...nativeFlags, ...flags, host, ir, "src/runtime/task.c", "-o", tasks]);
-    execute(tasks, []);
-    const rejected = cli(["build", "tests/fixtures/tasks/Main.tz", "--emit", "object", "-o", join(directory, "rejected.obj"), "--json"], false);
+    writeFileSync(host, '#include <stdint.h>\n#include <assert.h>\nextern int64_t tz_sum_atomic(int64_t), tz_nested(int64_t), tz_moves_owned(void), tz_go_owned(void), tz_counts(void);\nint main(void) { assert(tz_sum_atomic(100) == 4950); assert(tz_nested(10) == 2047); assert(tz_moves_owned() == 13); assert(tz_go_owned() == 11); assert(tz_counts() == 1); return 0; }\n');
+    const spawning = join(directory, `tzroutine-${optimization}.exe`);
+    execute(clang, [...nativeFlags, ...flags, host, ir, "src/runtime/tzroutine.c", "-o", spawning]);
+    execute(spawning, []);
+    const rejected = cli(["build", "tests/fixtures/tzroutine/Main.tz", "--emit", "object", "-o", join(directory, "rejected.obj"), "--json"], false);
     assert.equal(diagnostic(rejected).code, "E2002");
   }
   const alias = join(directory, "source-alias.ll");
@@ -86,7 +78,7 @@ try {
   writeFileSync(join(suite, "Main.tz"), 'test "passes" = assert true\ntest "adds" = assert (40 + 2 == 42)\n');
   const unused = { TSUZURI_RUNNER: "tsuzuri-runner-that-does-not-exist" };
   for (const optimization of ["-O0", "-O3"]) {
-    for (const [example, output] of [["tasks", "21325334000\n"], ["control", "42\n"]]) {
+    for (const [example, output] of [["tzroutines", "21325334000\n"], ["control", "42\n"]]) {
       const executable = join(directory, `${example}-named${optimization}.exe`);
       cli(["build", `examples/${example}`, "--no-cache", optimization, "--target", named, "-o", executable]);
       assert.equal(execute(executable, []).stdout, output, `${example} ${optimization}`);
@@ -107,7 +99,7 @@ try {
     assert.equal(trapped.span.line, 2);
   }
   console.log("Windows MSVC: a trap reports its position and ends the process with 0xC000001D at -O0 and -O3");
-  console.log("Windows MSVC: native O0/O3, Win32 tasks/results/failure injection, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
+  console.log("Windows MSVC: native O0/O3, tzroutines and Parallel, linked IR, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }

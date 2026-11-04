@@ -46,7 +46,7 @@ const wasmInstance = (file) => {
 };
 
 const LEVELS = ["-O3", "-Os", "-Oz"];
-const PROJECTS = ["hello", "point", "tasks"];
+const PROJECTS = ["hello", "point", "tzroutines"];
 
 section("-Os and -Oz executables and run print what -O3 prints", () => {
   for (const name of PROJECTS) {

@@ -155,7 +155,7 @@ Decode<'a> { decode :: ref Json.Value -> Result<'a, Json.Error> }
 `Map<string, 'v>` は常に object です。`Map<i64, 'v>` のようにキーが文字列にならないマップは `[[1, "a"], [2, "b"]]` の形になり、キーが 1 つも無いときだけ `{}` になります（decode はどちらの形も受理します）。文字列のキーとそれ以外のキーに別々のインスタンスを置くことは、型クラスの重複規則（同じヘッドに単一化できるインスタンスは 1 つ）ではできないので、形は encode したキーで決まります。ペイロードのない case だけの共用体をキーにすると、そのマップは object になります。`Map` の decode には `Ord<'k>`、`HashMap` には `Hash<'k>` と `Eq<'k>` が要ります。
 キーや要素が重なったときの `DuplicateKey` は、文書順で前の要素とキーが等しい最初の要素を、文書でのその要素の字句（object のキーはそのまま、配列の要素と組のキーは JSON テキスト）で示します（`[2.0, 1, 2]` を `Set<f64>` にすると `duplicate key "2"`）。
 
-`Maybe<Maybe<'a>>` の `Some None` は `null` になり、decode では `None` に戻ります（serde と同じく往復しません）。数値は `to_string` の最短表現なので、`-0.0` は `-0`、`10000000.0` は `1e+7` です（`JSON.stringify` は `0` と `10000000`）。インスタンスのない型（`char`、`utf8char`、`unit`、関数、`Task`、固定長配列、5 要素以上のタプルなど）を直接使うと `E1005` です。
+`Maybe<Maybe<'a>>` の `Some None` は `null` になり、decode では `None` に戻ります（serde と同じく往復しません）。数値は `to_string` の最短表現なので、`-0.0` は `-0`、`10000000.0` は `1e+7` です（`JSON.stringify` は `0` と `10000000`）。インスタンスのない型（`char`、`utf8char`、`unit`、関数、固定長配列、5 要素以上のタプルなど）を直接使うと `E1005` です。
 
 ```tsuzuri run=%7B%22name%22%3A%22a%22%2C%22points%22%3A%5B%7B%22x%22%3A1%2C%22y%22%3A0.5%7D%5D%2C%22shapes%22%3A%5B%7B%22Circle%22%3A2%7D%2C%7B%22Rect%22%3A%5B1%2C2.5%5D%7D%2C%22Empty%22%5D%2C%22note%22%3Anull%7D%20round%3Dtrue
 record Point { x: i64, y: f64 } deriving (Encode, Decode)

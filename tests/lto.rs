@@ -497,15 +497,15 @@ int main() {
 "#;
 
 #[cfg(unix)]
-const TASKS_HOST: &str = r#"#include <stdint.h>
+const TZROUTINE_HOST: &str = r#"#include <stdint.h>
 #include <stdio.h>
 
-int64_t tz_task_parallel(void);
-int64_t tz_parallel_sum(int64_t count);
-int64_t tz_sequence(int64_t n);
+int64_t tz_sum_atomic(int64_t n);
+int64_t tz_nested(int64_t depth);
+int64_t tz_go_owned(void);
 
 int main(void) {
-    printf("%lld %lld %lld\n", (long long)tz_task_parallel(), (long long)tz_parallel_sum(10), (long long)tz_sequence(5));
+    printf("%lld %lld %lld\n", (long long)tz_sum_atomic(10), (long long)tz_nested(3), (long long)tz_go_owned());
     return 0;
 }
 "#;
@@ -916,8 +916,11 @@ fn the_c_runtime_is_merged_into_the_bitcode_and_hidden() {
         return;
     }
     let directory = scratch("runtime");
-    let source = root().join("tests/fixtures/tasks/Main.tz");
-    let (bitcode, object) = (directory.join("tasks.bc"), directory.join("tasks.o"));
+    let source = root().join("tests/fixtures/tzroutine/Main.tz");
+    let (bitcode, object) = (
+        directory.join("tzroutine.bc"),
+        directory.join("tzroutine.o"),
+    );
     build(&source, &bitcode, bitcode_options()).unwrap();
     build(
         &source,
@@ -928,8 +931,8 @@ fn the_c_runtime_is_merged_into_the_bitcode_and_hidden() {
         },
     )
     .unwrap();
-    // The program's exports are the only strong symbols: the tasks, the CPU detection, and the rest of the C
-    // runtime are inside, and a second library built the same way would not collide with them.
+    // The program's exports are the only strong symbols: the tzroutine scheduler, the CPU detection, and the rest
+    // of the C runtime are inside, and a second library built the same way would not collide with them.
     let module = Project::load(&source).unwrap().analyze().unwrap();
     let exports: BTreeSet<String> = module
         .functions
@@ -937,7 +940,7 @@ fn the_c_runtime_is_merged_into_the_bitcode_and_hidden() {
         .filter(|function| function.exported)
         .map(|function| format!("tz_{}", function.name))
         .collect();
-    assert!(exports.len() >= 30, "{exports:?}");
+    assert!(exports.len() >= 7, "{exports:?}");
     assert_eq!(defined(&nm, &bitcode, "TDBR"), exports);
     let weak = defined(&nm, &bitcode, "WV");
     assert!(
@@ -945,7 +948,7 @@ fn the_c_runtime_is_merged_into_the_bitcode_and_hidden() {
             .all(|name| name.starts_with("tz_soft_") || name.starts_with("tsuzuri_")),
         "{weak:?}"
     );
-    let host = write(&directory, "host.c", TASKS_HOST);
+    let host = write(&directory, "host.c", TZROUTINE_HOST);
     let linked = link(
         &clang(),
         &directory,
@@ -962,8 +965,9 @@ fn the_c_runtime_is_merged_into_the_bitcode_and_hidden() {
         true,
         &["-pthread"],
     );
-    assert_eq!(run(&linked), "42 285 11\n");
-    assert_eq!(run(&inlined), "42 285 11\n");
+    // 0 + 1 + ... + 9, the 2^4 - 1 nodes of a tree of depth 3, and one call and one drop of Routine.go.
+    assert_eq!(run(&linked), "45 15 11\n");
+    assert_eq!(run(&inlined), "45 15 11\n");
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -1118,7 +1122,7 @@ fn bitcode_is_the_same_bytes_every_time() {
     let directory = scratch("determinism");
     for source in [
         write(&directory, "Main.tz", BUFFERS),
-        root().join("tests/fixtures/tasks/Main.tz"),
+        root().join("tests/fixtures/tzroutine/Main.tz"),
     ] {
         let name = source.parent().unwrap().file_name().unwrap().to_owned();
         let first = directory.join(format!("{}-1.bc", name.to_string_lossy()));
@@ -1190,8 +1194,8 @@ fn a_missing_llvm_link_names_the_variable() {
     let directory = scratch("no-llvm-link");
     let missing = directory.join("no-such-llvm-link");
     let message = build_failure(
-        &root().join("tests/fixtures/tasks/Main.tz"),
-        &directory.join("tasks.bc"),
+        &root().join("tests/fixtures/tzroutine/Main.tz"),
+        &directory.join("tzroutine.bc"),
         &[],
         &[("TSUZURI_LLVM_LINK", missing.as_os_str())],
     );
@@ -1643,8 +1647,8 @@ fn a_failed_final_compile_names_llvm_link_only_when_it_ran() {
     };
     environment.push(("TSUZURI_LLVM_LINK", link.as_os_str()));
     let message = build_failure(
-        &root().join("tests/fixtures/tasks/Main.tz"),
-        &directory.join("tasks.bc"),
+        &root().join("tests/fixtures/tzroutine/Main.tz"),
+        &directory.join("tzroutine.bc"),
         &[],
         &environment,
     );

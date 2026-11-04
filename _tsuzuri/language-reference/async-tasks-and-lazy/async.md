@@ -10,7 +10,7 @@
 - `Async.block_on`: 実時間で待ちながら実行します。待っている間はスレッドを止めます。
 - `Async.start`: ホストのイベントループが駆動する実行器へ渡し、すぐ戻ります。
 
-CPU のコアを並列に使う [Task 式](task.md) とは目的が違います。`Task` は同期的なフォーク・ジョインです。`Async` は、待ち時間をほかの計算へ譲る協調的な中断です。
+CPU のコアを並列に使う [tzroutine 式](tzroutine.md) や [Parallel](../built-in-types-and-modules/parallel.md) とは目的が違います。`Async` は、待ち時間をほかの計算へ譲る協調的な中断です。
 
 ## この記事のポイント
 
@@ -163,7 +163,7 @@ match outcome with
 -2
 ```
 
-2 つ目の子が時刻 1 で `Error 2` を返すので、1 つ目と 3 つ目はそこで止まります。最小の入力インデックスの `Error` を返す [Task.parallel_results](task.md#失敗の伝播) と違い、時刻の順で最初の `Error` を返します。中断している子は、その場で止められるからです。
+2 つ目の子が時刻 1 で `Error 2` を返すので、1 つ目と 3 つ目はそこで止まります。入力インデックスの最小の `Error` ではなく、時刻の順で最初の `Error` を返します。中断している子は、その場で止められるからです。
 
 子がホストの操作（[後述](#ホストが駆動する実行asyncstart)）を待っている間に止まったときは、実行器がその操作の `cancel` を呼びます。取り消しトークンはありません。
 
@@ -219,7 +219,7 @@ Async.run (total [1, 2, 3])
 
 `Async { }` のブロックは、ラムダと同じように外の値を捕捉します。Copy の値はコピーし、そうでない値はブロックへ移します。ブロックの中の `ref` は、そのコピーか移した値を借用します。たとえば `let text = "coffee"` を `Async { return String.length (ref text) }` で使うと、`text` はブロックへ移り、そのあと外で使うと `E1012` です。
 
-`Async` の値は借用を持たないので、`Task` へ移せます。`Task` の本体で `Async.run` を呼べます。`Async` 自身はスレッドを使わず、複数のスレッドで共有もしません。
+`Async` の値は借用を持たないので、`tzroutine { }` の本体へ移せます。本体で `Async.run` を呼べます。`Async` 自身はスレッドを使わず、複数のスレッドで共有もしません。
 
 ```tsuzuri run=9
 let computation = Async {
@@ -227,7 +227,14 @@ let computation = Async {
     let! time = Async.now ()
     return time + 7
 }
-Task.run (task { return Async.run computation })
+let results: Channel<i64> = Channel.make 1
+let out = Channel.share results
+tzroutine {
+    Channel.send out (Async.run computation)
+}
+match Channel.recv results with
+| Maybe.Some value -> value
+| Maybe.None -> 0
 ```
 
 実行結果:
@@ -364,7 +371,7 @@ await api.async.settled();
 - 非末尾の `let!` の入れ子は、1 段ごとにスタックを使います。ネイティブでは、`-O0` と `-O3` の両方で 4000 段まで確かめました。WebAssembly の関数のフレームは JavaScript エンジンのスタックに積まれます。Node.js 20 の既定では、`-O0` でおよそ 500 段、`-O3` でおよそ 2000 段で `RangeError: Maximum call stack size exceeded` になりました。エンジンの最適化の段階によって前後します。長い繰り返しは、末尾の `return!` か `for` で書きます。
 - 計測（Apple M1 Max、macOS、`-O3`、9 回の中央値）: 末尾の `return!` で 100 万回 `yield` するループは 0.18 秒、最大常駐メモリ約 1.7 MB でした。非末尾の入れ子は、1000 段で 0.03 秒、2000 段で 0.11 秒、4000 段で 0.40 秒でした。条件と生データの保存先は [性能測定](../../../docs/benchmarks.md#async-の中断と継続のコストb08) にあります。
 - 計算の中のトラップは、プログラム全体を止めます。計算ごとの隔離や巻き戻しはありません。
-- `Async` はスレッドを使いません。CPU の並列は [Task 式](task.md) を使います。
+- `Async` はスレッドを使いません。CPU の並列は [tzroutine 式](tzroutine.md) と [Parallel](../built-in-types-and-modules/parallel.md) を使います。
 
 ## 他の言語との比較
 
@@ -386,7 +393,7 @@ await api.async.settled();
 
 ## 関連項目
 
-- [Task 式](task.md)
+- [tzroutine 式](tzroutine.md)
 - [Lazy 式](lazy.md)
 - [IO](../built-in-types-and-modules/io.md)
 - [コンピュテーション式](../computation-expressions/computation-expressions.md)

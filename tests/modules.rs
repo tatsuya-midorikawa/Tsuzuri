@@ -306,7 +306,6 @@ fn module_paths_map_to_bounded_dotted_names() {
         "Geometry/fn/Point.tz",
         "Geometry/_/Point.tz",
         "Maybe/Point.tz",
-        "Geometry/Task/Point.tz",
     ] {
         assert_eq!(
             analyze_modules(&[(path, "fn value() -> i64 { 42 }")])
@@ -316,6 +315,8 @@ fn module_paths_map_to_bounded_dotted_names() {
             "{path}"
         );
     }
+    // `Task` names nothing since TZ12, so it is a folder name like any other.
+    analyze_modules(&[("Geometry/Task/Point.tz", "fn value() -> i64 { 42 }")]).unwrap();
     let deep = format!("{}Point.tz", "Nested/".repeat(16));
     assert_eq!(analyze_modules(&[(&deep, "")]).unwrap_err().code, "E1017");
     let long = format!("{}.tz", "A".repeat(256));
@@ -1087,11 +1088,11 @@ def checked :: std::Result<i64, string> -> i64 = \\result ->
     | std::Result.Ok value -> value
     | std::Result.Error _ -> 0
 let local = Result { value: 2 }
-let work: std::Task<i64> = task { 3 }
+let work: std::Owned.Function<unit, i64> = std::Owned.function (\\() -> 3)
 let values: std::Vec<i64> = std::Vec.empty()
 let sum = std::Int.checked_add 1 2 |> std::Maybe.default_value 0
 let next = std::Maybe.get (std::Maybe.map (\\n -> n + 1) (Maybe.Some 0))
-checked (std::Result.Ok 40) + local.value + std::Task.run work + values.length + sum + next",
+checked (std::Result.Ok 40) + local.value + std::Owned.call (ref work) () + values.length + sum + next",
     )])
     .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
     llvm::emit(&module, llvm::Entry::Console).unwrap();

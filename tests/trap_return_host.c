@@ -138,12 +138,12 @@ static void parallel_cases(void) {
     LIVE_IS(0);
     trapped("parallel_div", tsuzuri_try_parallel_div(&trap, &result, 64, 0), &trap);
 
-    /* Task.parallel_results: the trap of an item that ran is reported even after an earlier Err
-       (a trapped task is in no defined state), so an Err before a trap may show either outcome. */
+    /* Parallel.init: every index runs (in order, on this thread, inside the boundary), so the trap
+       of one is reported whatever the Result of another. */
     assert(tsuzuri_try_parallel_mixed(&trap, &result, -1, -1) == 0 && result == 120);
     trap.site = 0;
     int32_t status = tsuzuri_try_parallel_mixed(&trap, &result, 3, 9);
-    assert((status == 0 && result == 1003) || (status == 1 && trap.site != 0));
+    assert(status == 1 && trap.site != 0);
     LIVE_IS(0);
     trapped("mixed_trap_first", tsuzuri_try_parallel_mixed(&trap, &result, 12, 4), &trap);
     assert(tsuzuri_try_parallel_mixed(&trap, &result, 3, -1) == 0 && result == 1003);

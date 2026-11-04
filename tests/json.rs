@@ -182,7 +182,7 @@ fn unsupported_types_report_e1005() {
         "[i64; 2]",
         "i64 -> i64",
         "(i64 * i64 * i64 * i64 * i64)",
-        "Task<i64>",
+        "Owned.Function<unit, i64>",
     ] {
         let message = rejects(
             &format!(
@@ -290,7 +290,7 @@ fn derive_components_without_instances_report_e1025() {
         "record R { f: i64 -> i64 } deriving (Encode)\n()",
         "record R { c: char } deriving (Decode)\n()",
         "union U = A of utf8char | B deriving (Encode)\n()",
-        "union U = A of i64 | B of Task<i64> deriving (Decode)\n()",
+        "union U = A of i64 | B of Owned.Function<unit, i64> deriving (Decode)\n()",
     ] {
         let message = rejects(source, "E1025");
         assert!(

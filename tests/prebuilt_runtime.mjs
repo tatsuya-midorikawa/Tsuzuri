@@ -137,11 +137,11 @@ fn main() {
       `${emit} output must stay independent of runtime object selection`);
   }
   for (const optimization of ['-O0', '-O3']) {
-    const output = join(directory, `tasks${suffix}`);
-    const args = ['build', resolve('examples/tasks'), optimization, '-o', output];
+    const output = join(directory, `tzroutines${suffix}`);
+    const args = ['build', resolve('examples/tzroutines'), optimization, '-o', output];
     const start = calls().length;
     run(compiler, args);
-    assert.equal(calls().slice(start).filter(line => line.includes('"task.c"')).length, 1);
+    assert.equal(calls().slice(start).filter(line => line.includes('"runtime.c"')).length, 1);
     miss();
     const warm = calls().length;
     run(compiler, args);

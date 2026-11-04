@@ -459,7 +459,7 @@ fn f a b c d = 0",
 }
 
 #[test]
-fn shares_angle_syntax_with_unions_classes_constraints_instances_and_tasks() {
+fn shares_angle_syntax_with_unions_classes_constraints_instances_and_computations() {
     accepts(
         "record Pair<
     'a, /* the second type */ 'b,
@@ -471,23 +471,23 @@ instance Measure<Pair<i64, string>> {
 }
 def measure :: Measure<'a>=>ref 'a -> i64
 fn measure value = Measure.measure value
-def deferred :: 'a -> Task<Wrapped<'a>>
-fn deferred value = task { return Wrap value }
+def deferred :: 'a -> Maybe<Wrapped<'a>>
+fn deferred value = Maybe { return Wrap value }
 def constrained :: (Copy<Pair<i64, i64>>, Add<i64>) => i64 -> i64
 fn constrained x = x + 1
 def answer :: i64
 fn answer =
-    let wrapped: Wrapped<Pair<i64, string>>=Task.run (deferred (Pair { first: 39, second: \"abc\" }))
+    let wrapped: Wrapped<Pair<i64, string>>=Maybe.get (deferred (Pair { first: 39, second: \"abc\" }))
     match wrapped with
     | Wrap pair -> constrained (measure ref pair)",
     );
 }
 
 #[test]
-fn displays_nested_named_types_tasks_and_borrows_with_angle_brackets() {
+fn displays_nested_named_types_builtin_constructors_and_borrows_with_angle_brackets() {
     let module = analyze(
         "record Box<'a> { value: 'a }
-def inspect :: ref Box<Maybe<i64>> -> Task<Box<i64 -> i64>> -> unit
+def inspect :: ref Box<Maybe<i64>> -> Vec<Box<i64 -> i64>> -> unit
 fn inspect value pending = ()",
     )
     .unwrap();
@@ -498,13 +498,13 @@ fn inspect value pending = ()",
     );
     assert_eq!(
         signature.parameters[1].display(&module.types()),
-        "Task<Main.Box<i64 -> i64>>"
+        "Vec<Main.Box<i64 -> i64>>"
     );
     let error = rejects(
-        "let work: Task<unit> = task {}\nlet x: i64 = work\n0",
+        "let work: Vec<unit> = Vec.empty()\nlet x: i64 = work\n0",
         "E1003",
     );
-    assert!(error.message.contains("Task<unit>"), "{}", error.message);
+    assert!(error.message.contains("Vec<unit>"), "{}", error.message);
     rejects("def f :: Add<i64, i64> -> i64\nfn f x = 0", "E1016");
 }
 
@@ -516,7 +516,7 @@ fn rejects_legacy_and_malformed_generic_syntax() {
         "class C 'a { def f :: 'a -> i64 }",
         "instance C i64 { fn f x = x }",
         "def f :: Pair i64 string -> i64\nfn f p = 0",
-        "def f :: Task i64 -> i64\nfn f t = 0",
+        "def f :: Vec i64 -> i64\nfn f t = 0",
         "def f :: Add 'a -> 'a\nfn f x = x",
         "def f :: Add 'a => 'a -> 'a\nfn f x = x",
         "record R<> {}",
@@ -533,7 +533,6 @@ fn rejects_legacy_and_malformed_generic_syntax() {
         "let x: Result<i64 string> = Ok 1\n0",
         "let x: Result<i64,, string> = Ok 1\n0",
         "let x: Maybe<i64 = Some 1\n0",
-        "def f :: Task<i64, string> -> i64\nfn f t = 0",
         "def f :: Copy<> => i64\nfn f = 0",
         "def f :: Copy<i64, string> => i64\nfn f = 0",
         "instance C<> { fn f x = x }",

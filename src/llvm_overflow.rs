@@ -38,7 +38,7 @@ impl Report {
         }
     }
 
-    /// Whether the report covers the arithmetic of `function`: a function, lambda, task or test of
+    /// Whether the report covers the arithmetic of `function`: a function, lambda, tzroutine body or test of
     /// the root package's sources, not a benchmark or a helper that the compiler made (D6).
     pub(super) fn covers(&self, function: &CheckedFunction) -> bool {
         function.origin.module == ModuleOrigin::User

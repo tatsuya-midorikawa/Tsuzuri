@@ -21,7 +21,7 @@ pub(crate) enum Niche {
     /// reference is null, but linear memory starts at address 0, where `--stack-first` can put a
     /// valid object, so WebAssembly has no such niche (see `webassembly`).
     NullPointer,
-    /// A function value or a task, `{ ptr, ptr }`: a null descriptor is the nullary case. Every
+    /// A function value or a tzroutine body, `{ ptr, ptr }`: a null descriptor is the nullary case. Every
     /// function value points to a static descriptor, which is never at address 0 whatever the
     /// target (PM02).
     NullDescriptor,
@@ -354,7 +354,7 @@ fn work_out_union_layout(id: usize, arguments: &[Type], module: &CheckedModule) 
 }
 
 /// The niche layout of union `id` at `arguments`, if it has one: exactly two cases, one nullary and
-/// one whose payload is a string, `utf8string`, array, function value, task, or (outside
+/// one whose payload is a string, `utf8string`, array, function value, tzroutine body, or (outside
 /// WebAssembly) reference to one value, in a union that is neither recursive (its value is a node
 /// pointer) nor a Drop union (it keeps a live flag). `cases` are the payloads of its cases.
 fn niche_layout(

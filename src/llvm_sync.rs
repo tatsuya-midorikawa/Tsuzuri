@@ -286,7 +286,7 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// Defines the bodies of `DataChannel.*` (F10 Phase 2; the `Channel` of then, renamed in TZ03). A channel is one block that the runtime
-    /// of the target operates on under its own lock: a header of nine words, then the ring of
+    /// of the target operates on under its own lock: a header of ten words, then the ring of
     /// items, which the runtime copies in and out. This code allocates and initializes the
     /// block, moves items through stack slots, and drops what is left when the last owner of
     /// the block closes it.

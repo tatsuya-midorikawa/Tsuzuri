@@ -65,12 +65,12 @@ fn wait_on_thread request =
     let! value = Async.block_on (wait_host request)
     value
 
-// Each worker of Task.parallel waits on its own executor for an operation that another thread
+// Each chunk of Parallel.init waits on its own executor for an operation that another thread
 // completes; the host posts each completion to the thread that began the operation.
 export def parallel_completed :: own i64 -> i64
 fn parallel_completed n =
-    let jobs = new [Task<i64>](4, \index -> task { return wait_on_thread (n + index) })
-    Array.sum ref (Task.run (Task.parallel jobs))
+    let values = Parallel.init 4 (\index -> wait_on_thread (n + index))
+    Array.sum ref values
 
 export def buffered :: ref [i64] -> own i64 -> [i64]
 fn buffered values delay =

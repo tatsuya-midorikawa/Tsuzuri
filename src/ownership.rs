@@ -2756,7 +2756,7 @@ impl<'a> Checker<'a, '_> {
             self.event_targets(mark, argument.span, callee);
             // The callback runs under the lock, so a result that holds a borrow of the locked value
             // would use it after the lock is released: the value may be replaced and freed, or be
-            // written by another task, by then. Only a result that is proven free of borrows made
+            // written by another tzroutine, by then. Only a result that is proven free of borrows made
             // inside the callback may hold borrows at all (F10). The generated function that
             // applies the builtin to its own parameters proves nothing: its callers are checked.
             // `OnceValue.get` keeps the value in the cell, which outlives any borrow: its
@@ -3223,7 +3223,7 @@ impl<'a> Checker<'a, '_> {
                 } else {
                     Some(arguments.len() - 1)
                 };
-                // The callbacks of `reduce`, `Task.scope` and `Routine.scope` take two arguments.
+                // The callbacks of `reduce` and `Routine.scope` take two arguments.
                 let result_arity =
                     usize::from(*operation == crate::check::Builtin::ParallelReduce || scope);
                 let base = self.held.len();
@@ -3236,7 +3236,7 @@ impl<'a> Checker<'a, '_> {
                         let referent = argument
                             .ty
                             .dereferenced()
-                            .expect("a task scope shares a borrow");
+                            .expect("Routine.scope shares a borrow");
                         if referent.carries_loans(&self.module.types())
                             && self.shares_borrowed_environment(argument, &value)
                         {

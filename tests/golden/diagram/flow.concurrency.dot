@@ -2,7 +2,7 @@ digraph tsuzuri {
     rankdir=LR;
     node [shape=box, fontname="monospace"];
     edge [fontname="monospace"];
-    n1 [label="Main.$entry · Task.scope", shape=box, peripheries=2, fillcolor="#fff1e5", style="filled"];
+    n1 [label="Main.$entry · Routine.scope", shape=box, peripheries=2, fillcolor="#fff1e5", style="filled"];
     n2 [label="Worker.bump", shape=box];
     n3 [label="Worker.drain", shape=box];
     n4 [label="Worker.feed", shape=box];

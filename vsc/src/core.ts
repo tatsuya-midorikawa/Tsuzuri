@@ -129,19 +129,19 @@ export function defaultNamespace(folder: string): string {
 }
 
 /** The lexer's reserved words and the reserved standard library module names, as `tsuzuri new` checks them. */
-export const reservedWords = new Set('fn def rec and export extern private record union type const test bench class instance deriving dyn let task do return yield for in to downto while break continue mut ref deref new as if then elif else match with when true false'.split(' '));
+export const reservedWords = new Set('fn def rec and export extern private record union type const test bench class instance deriving dyn let do return yield for in to downto while break continue mut ref deref new as if then elif else match with when true false'.split(' '));
 export const libraryModules = new Set('Maybe Result Array List Vec String Utf8String Char Utf8Char Math Int Debug Parallel Simd Map Set HashMap HashSet Seq Test Gpu IO Owned File Dir Path Env Time Random Os Process Net Format Exception BigInt FixedArray Dyn Arena Rc Arc Regex Unicode Json Cbor Bench Gen Async Matrix Atomic Mutex MatrixView Tensor Channel Alloc Text RegexText Domain Monoid Monoids Routine DataChannel SendOnly ReceiveOnly Timer Ticker WaitGroup Once OnceValue RwMutex Cond Semaphore SyncMap Context ErrGroup'.split(' '));
 
 /**
  * Whether `tsuzuri new` accepts `text` as a namespace such as `Acme::Tools`: at most 16 identifiers joined by `::`
- * and 255 bytes, none a reserved word, `_`, or `Task`, and the first neither the `std` namespace nor a standard
- * library module.
+ * and 255 bytes, none a reserved word or `_`, and the first neither the `std` namespace nor a standard library
+ * module.
  */
 export function isNamespace(text: string): boolean {
 	const segments = text.split('::');
 	return text.length <= 255 && segments.length <= 16 && segments[0] !== 'std' && !libraryModules.has(segments[0])
 		&& segments.every(segment => /^[A-Za-z_][A-Za-z0-9_]*$/.test(segment)
-			&& segment !== '_' && segment !== 'Task' && !reservedWords.has(segment));
+			&& segment !== '_' && !reservedWords.has(segment));
 }
 
 /**

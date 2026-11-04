@@ -1,7 +1,7 @@
 // E14 Phase 2: `--trap-mode return` for native objects. A C host calls the tsuzuri_try_<name> exports,
 // a trap comes back as status 1 with a site of the .trap.json table, every block a call allocated is
-// freed, nested boundaries answer status 2, and a Task.parallel worker trap reaches the call that
-// submitted the group. Usage: node tests/trap_return.mjs [path/to/tsuzuri]
+// freed, nested boundaries answer status 2, and a trap in an item of Parallel (which runs every item on
+// the calling thread inside the boundary, TZ12) reaches the call. Usage: node tests/trap_return.mjs [path/to/tsuzuri]
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -42,7 +42,7 @@ const expected = {
   imported_div: ["integer division by zero", lineOf("numbers[count - 1] / divisor")],
   make_negative: [/^allocation/, 0],
   label_div: ["integer division by zero", lineOf("fn label_div")],
-  parallel_div: ["integer division by zero", lineOf("return (scratch[1] + i) /")],
+  parallel_div: ["integer division by zero", lineOf("(scratch[1] + i) / (if i == 5")],
   mixed_trap_first: ["integer division by zero", lineOf("Result.Ok (1 / (index - trap_at))")],
   nested_div: ["integer division by zero", lineOf("100 / (i * 4 + j - trap_at)")],
 };
@@ -111,10 +111,7 @@ fn ordinary_make count = new [i64](count, \\index -> index)
 export def ordinary_sum :: ref [i64] -> i64
 fn ordinary_sum values = Array.sum values
 export def ordinary_parallel :: i64 -> i64
-fn ordinary_parallel count = Task.run task {
-    let! results = Task.parallel (new [Task<i64>](count, \\index -> task { index }))
-    return Array.sum (ref results)
-}
+fn ordinary_parallel count = Array.sum (ref (Parallel.init count (\\index -> index)))
 `);
 
   for (const optimization of ["-O0", "-O3"]) {
@@ -152,27 +149,29 @@ fn ordinary_parallel count = Task.run task {
       }
     }
 
-    // A host that links the LLVM output supplies the trap runtime and the scheduler itself.
+    // A host that links the LLVM output supplies the trap runtime and the scheduler itself: the IR
+    // declares the tzroutine runtime's Parallel, as every native Parallel does (TZ12).
+    assert.match(text, /^declare i32 @tsuzuri_tz_parallel\(ptr, ptr, i64\)$/m);
     const linked = join(root, `linked${optimization}`);
     execute(clang, ["-std=c11", optimization, "-Wno-override-module", "-pthread", "-DCOUNTING", `-I${headers}`, "tests/trap_return_host.c", ir,
-      "-x", "c", "-DTZ_TRAP_BOUNDARY", "src/runtime/task.c", "-o", linked]);
+      "-x", "c", "src/runtime/tzroutine.c", "-o", linked]);
     checkRun(execute(linked, [String(rounds)]), `${ir}.trap.json`);
   }
 
-  // The runtime on its own: counted allocation, groups, nesting and concurrent hosts.
-  const unit = (name, flags, topologies) => {
+  // The runtime on its own: counted allocation, Parallel inside a boundary, nesting and concurrent hosts.
+  const unit = (name, flags) => {
     const program = join(root, name);
     execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", ...flags, "-pthread", "tests/trap_boundary_runtime.c", "-o", program]);
-    for (const topology of topologies) assert.match(execute(program, [topology]).stdout, /^trap boundary runtime: \d+ checks passed\n$/);
+    assert.match(execute(program, []).stdout, /^trap boundary runtime: \d+ checks passed\n$/);
   };
-  unit("unit-O0", ["-O0"], ["0", "1", "2", "4", "32"]);
-  unit("unit-O3", ["-O3"], ["0", "1", "2", "4", "32"]);
+  unit("unit-O0", ["-O0"]);
+  unit("unit-O3", ["-O3"]);
   // TSUZURI_NO_SANITIZERS=1 leaves the sanitizer builds out, for a clang whose sanitizer runtime does not start (the
   // Homebrew LLVM of the macOS CI; tests/small_allocator.mjs does the same). The plain and -O3 builds always run.
   const sanitizers = process.env.TSUZURI_NO_SANITIZERS !== "1";
   if (sanitizers) {
-    unit("unit-asan", ["-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"], ["0", "1", "4"]);
-    unit("unit-tsan", ["-g", "-O1", "-fsanitize=thread"], ["0", "2"]);
+    unit("unit-asan", ["-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"]);
+    unit("unit-tsan", ["-g", "-O1", "-fsanitize=thread"]);
   }
   // B10: the failure domains of Domain.run, nested in boundaries, items and one another.
   const domain = (name, flags) => {

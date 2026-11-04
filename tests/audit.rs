@@ -88,11 +88,12 @@ fn audit_text_matches_the_examples() {
         stdout(&hello),
         "audit: hello\npolicy: none\npackages: 1\n\npackage hello (root)\n  allowed: all\n  used: stdio\n    stdio: 1 site\n      Main.tz:11:9  IO.write_line\n  denied: none\n  externs: none\n\nsummary: used=stdio denied=0 untrusted_externs=0\n"
     );
-    let tasks = audit(&["examples/tasks"], repository);
+    let tasks = audit(&["examples/tzroutines"], repository);
     assert_eq!(
         stdout(&tasks),
-        // Review of #65: the printed result of the top-level code writes to the standard output.
-        "audit: tasks\npolicy: none\npackages: 1\n\npackage tasks (root)\n  allowed: all\n  used: stdio\n    stdio: 1 site\n      Main.tz:5:1  the printed result of the top-level code\n  denied: none\n  externs: none\n\nsummary: used=stdio denied=0 untrusted_externs=0\n"
+        // Review of #65: the printed result of the top-level code writes to the standard output, at
+        // the first statement of the top-level code.
+        "audit: tzroutines\npolicy: none\npackages: 1\n\npackage tzroutines (root)\n  allowed: all\n  used: stdio\n    stdio: 1 site\n      Main.tz:7:1  the printed result of the top-level code\n  denied: none\n  externs: none\n\nsummary: used=stdio denied=0 untrusted_externs=0\n"
     );
     let root = scratch("text");
     d4(&root);
@@ -151,14 +152,14 @@ fn audit_json_matches_the_examples() {
              {{\"type\":\"summary\",\"packages\":1,\"used\":[\"stdio\"],\"denied\":0,\"untrusted_externs\":0,\"exit\":0}}\n"
         )
     );
-    let tasks = audit(&["examples/tasks", "--json"], repository);
+    let tasks = audit(&["examples/tzroutines", "--json"], repository);
     let lines: Vec<&str> = std::str::from_utf8(&tasks.stdout)
         .unwrap()
         .lines()
         .collect();
     assert_eq!(lines.len(), 3);
     assert!(
-        lines[1].contains("\"used\":[{\"capability\":\"stdio\",\"count\":1,\"sites\":[{\"path\":\"Main.tz\",\"line\":5,\"column\":1,\"callee\":\"the printed result of the top-level code\",\"function\":\"Main\",\"scope\":\"program\"}]}],\"denied\":[],\"unused\":[]"),
+        lines[1].contains("\"used\":[{\"capability\":\"stdio\",\"count\":1,\"sites\":[{\"path\":\"Main.tz\",\"line\":7,\"column\":1,\"callee\":\"the printed result of the top-level code\",\"function\":\"Main\",\"scope\":\"program\"}]}],\"denied\":[],\"unused\":[]"),
         "{}",
         lines[1]
     );

@@ -100,7 +100,7 @@ fn debug_ir(source: &str, entry: tsuzuri::llvm::Entry, wasm: bool) -> String {
 
 #[test]
 fn debug_subprogram_names_are_readable() {
-    let source = "def twice :: Add<'a> -> 'a = \\v -> v + v\nexport def answer :: i64 -> i64\nfn answer input =\n    let add = \\offset -> input + offset\n    let small = twice 2.0\n    let waited = Task.run (task { return input })\n    add (twice waited) + (small as i64)\n\nanswer 40\n";
+    let source = "def twice :: Add<'a> -> 'a = \\v -> v + v\nexport def answer :: i64 -> i64\nfn answer input =\n    let add = \\offset -> input + offset\n    let small = twice 2.0\n    tzroutine { let _started = input }\n    let next = Owned.function (\\value -> value)\n    let waited = Owned.call (ref next) input\n    add (twice waited) + (small as i64)\n\nanswer 40\n";
     for wasm in [false, true] {
         for entry in [tsuzuri::llvm::Entry::Library, tsuzuri::llvm::Entry::Console] {
             let ir = debug_ir(source, entry, wasm);
@@ -117,9 +117,9 @@ fn debug_subprogram_names_are_readable() {
                 "{ir}"
             );
             assert!(ir.contains("!DISubprogram(name: \"Main.answer.lambda@4:15\","));
-            assert!(ir.contains("!DISubprogram(name: \"Main.answer.task@6:27\","));
-            // Glue such as the builtin wrapper of `Task.run` has no source, so no subprogram.
-            assert!(ir.contains("define internal i64 @tz.fn.$builtin.Task.run."));
+            assert!(ir.contains("!DISubprogram(name: \"Main.answer.tzroutine@6:5\","));
+            // Glue such as the builtin wrapper of `Owned.call` has no source, so no subprogram.
+            assert!(ir.contains("define internal i64 @tz.fn.$builtin.Owned.call."));
             assert!(!ir.contains("!DISubprogram(name: \"$builtin."), "{ir}");
             // The export and entry wrappers take their symbol names and are artificial.
             let mut wrappers = vec!["tz_answer"];

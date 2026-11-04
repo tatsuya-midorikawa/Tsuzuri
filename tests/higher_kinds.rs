@@ -25,7 +25,7 @@ fn parses_explicit_kinds_and_variable_application_heads() {
             .kind,
         Kind::Type
     );
-    for constructor in ["Maybe", "Result<string>", "Array", "List", "Vec", "Task"] {
+    for constructor in ["Maybe", "Result<string>", "Array", "List", "Vec"] {
         parser::parse(&format!(
             "instance Functor<{constructor}> {{ fn map transform value = value }}"
         ))

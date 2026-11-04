@@ -21,11 +21,11 @@ fn recursive_patterns_and_loans_keep_existing_safety_rules() {
             "E1013",
         ),
         (
-            "def send :: ref i64 -> Task<Chain<ref i64>>\nfn send number = task { return Link (number, End) }",
+            "def send :: ref i64 -> unit\nfn send number = tzroutine { let _tree = Link (number, End) }",
             "E1013",
         ),
         (
-            "def send :: ref i64 -> Task<Chain<i64 -> i64>>\nfn send number = { let callback = value -> value + deref number; let tree = Link (callback, End); task { return tree } }",
+            "def send :: ref i64 -> unit\nfn send number = { let callback = value -> value + deref number; let tree = Link (callback, End); tzroutine { let _moved = tree } }",
             "E1013",
         ),
         ("record Holder { tree: Chain<ref mut i64> }", "E1013"),

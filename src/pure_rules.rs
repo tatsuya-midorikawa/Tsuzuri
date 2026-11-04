@@ -38,7 +38,7 @@ pub(super) fn check_function_type(
             return Err(failure(
                 DiagnosticKind::PureFunctionTypeParameterNotAllowed,
                 span,
-                "a pure function type takes only shared data and pure callbacks; mutable references, ordinary callbacks, dyn and task inputs are not supported",
+                "a pure function type takes only shared data and pure callbacks; mutable references, ordinary callbacks and dyn inputs are not supported",
             ));
         }
         if !matches!(parameter, Type::Reference(..))
@@ -117,7 +117,7 @@ pub(crate) fn what(ty: &Type, types: &TypeContext<'_>) -> &'static str {
         Type::Reference(..) => "a reference",
         Type::Shared(..) => "an 'Rc' or 'Arc'",
         Type::Handle(_) => "an extern handle",
-        Type::Function(..) | Type::Dyn(_) | Type::Once(_) => "a function, 'dyn', or a task",
+        Type::Function(..) | Type::Dyn(_) | Type::Once(_) => "a function or 'dyn'",
         _ if ty.has_user_drop(types) => "a value with a user Drop",
         _ => "a type that is not plain data",
     }
@@ -147,7 +147,7 @@ pub(super) fn check_parameter(
         ))
     } else if opaque_input(ty, types, true) {
         Some(format!(
-            "a pure def cannot take a value that holds a function, 'dyn', or a task ('{}'); pass the data it needs instead",
+            "a pure def cannot take a value that holds a function or 'dyn' ('{}'); pass the data it needs instead",
             ty.display(types)
         ))
     } else {
@@ -498,7 +498,9 @@ impl Effect {
                         )
                     }
                     Category::Task => {
-                        format!("starts or waits for a task or a parallel operation ('{name}')")
+                        format!(
+                            "starts or waits for a tzroutine or a parallel operation ('{name}')"
+                        )
                     }
                     Category::State => format!("uses shared mutable state ('{name}')"),
                     Category::Gpu => format!("uses the GPU ('{name}')"),
@@ -506,7 +508,7 @@ impl Effect {
                     Category::Domain => "runs a failure domain ('Domain.run')".into(),
                 }
             }
-            Self::Concurrency => "starts or waits for a task or a parallel operation".into(),
+            Self::Concurrency => "starts or waits for a tzroutine or a parallel operation".into(),
             Self::Dyn => "uses dyn dispatch".into(),
             Self::UserDrop(ty) => format!("holds a value whose type has a user Drop ('{ty}')"),
             Self::Io => "may read or write the outside world by executing an I/O action".into(),

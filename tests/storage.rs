@@ -414,17 +414,20 @@ fn recursive_functions_keep_heap_storage() {
 }
 
 #[test]
-fn task_bodies_keep_heap_storage() {
+fn tzroutine_bodies_keep_heap_storage() {
     for wasm in [false, true] {
         let ir = emit(
             "def f :: i64 -> i64
-             fn f n = Task.run task {
-                 let joined = (if n > 0 then \"ab\" else \"abc\") + \"x\";
-                 joined.length + joined[0] as i64
+             fn f n = {
+                 tzroutine {
+                     let joined = (if n > 0 then \"ab\" else \"abc\") + \"x\";
+                     let _size = joined.length + joined[0] as i64
+                 };
+                 0
              }",
             wasm,
         );
-        assert!(ir.contains("@tz.fn.$task."));
+        assert!(ir.contains("@tz.fn.$once."));
         assert!(!ir.contains("call %tz.string @tz.string.concat_into("));
     }
 }

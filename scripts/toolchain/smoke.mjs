@@ -55,7 +55,8 @@ try {
   const runtime = JSON.parse(await readFile(path.join(tools, 'share/runtime/manifest.json'), 'utf8'));
   assert.equal(runtime.format, 2);
   assert.match(runtime.resource_fingerprint, /^[0-9a-f]{64}$/);
-  assert.equal(runtime.objects.length, 52);
+  // numeric/math and the three C combinations of cpu.c and io.c (TZ12 removed task.c), at O0-O3.
+  assert.equal(runtime.objects.length, 36);
   let compiler = path.join(tools, 'bin', `tsuzuri${suffix}`);
   if (discover) {
     // Only the compiler is on PATH; it must find the bundled tools itself.

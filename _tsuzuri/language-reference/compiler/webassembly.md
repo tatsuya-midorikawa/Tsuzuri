@@ -72,7 +72,7 @@ flowchart TD
 | ポインタ（wasm32） | i32 | `Number`。2 GiB 以上は負になるので `>>> 0` |
 | ポインタ（wasm64） | i64 | `BigInt` |
 
-`i128`、`f16`、`f128`、decimal、文字型、共用体、タプル、リスト、関数値、タスクは、この ABI では出せません。`unit` は引数にはできません。
+`i128`、`f16`、`f128`、decimal、文字型、共用体、タプル、リスト、関数値は、この ABI では出せません。`unit` は引数にはできません。
 
 スカラーだけのモジュールは、`tsuzuri_alloc` と `tsuzuri_free` を export しません（`memory` はリンカーの既定で export されます）。配列、文字列、レコードを受け渡すと、それらが足されます。
 
@@ -355,15 +355,15 @@ api.tsuzuri_free(out);
 
 COOP / COEP が使えないからといって、スレッド要求を黙って逐次実行へ置き換えないでください。WASI と threads、`--allocator host` と threads は、同時には指定できません。
 
-共有状態と `DataChannel`・`Channel` の型は、既定の wasm32 では import を増やしません（`Channel` は `src/runtime/tzroutine.c` を 1 本の実行向けに作ったものが入ります。`--emit object` でもオブジェクトに入り、wasm64 では wasm64 として連結します。待つべき操作はその場でトラップします。`--wasm-feature threads` では `Channel` は `E2000` で、`DataChannel` を使います）。`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグ、`Task.scope` の子どもは `index` の昇順の逐次実行で、`DataChannel` の操作はモジュールの中の IR です（満たされない待ちはその場でトラップします）。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令（`i64.atomic.rmw.add` など）になり、`Task.scope` の子どもは Workers で動きます。`Mutex` と `DataChannel` も使えます。
+共有状態と `DataChannel`・`Channel` の型は、既定の wasm32 では import を増やしません（`Channel` は `src/runtime/tzroutine.c` を 1 本の実行向けに作ったものが入ります。`--emit object` でもオブジェクトに入り、wasm64 では wasm64 として連結します。待つべき操作はその場でトラップします。`--wasm-feature threads` では `Channel` は `E2000` で、`DataChannel` を使います）。`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグ、`Parallel.*` のチャンクは添字の昇順の逐次実行で、`DataChannel` の操作はモジュールの中の IR です（満たされない待ちはその場でトラップします）。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令（`i64.atomic.rmw.add` など）になり、`Parallel.*` のチャンクは Workers で動きます。`Mutex` と `DataChannel` も使えます。ネイティブの `Mutex` と `DataChannel` は TZ12 から tzroutine のランタイムで動きますが、WebAssembly のこれらの規則（ロックの中の `Parallel.*` と `DataChannel` の操作はトラップ）は変わりません。
 
 - ランタイムは `task-wasm-threads.c` の C で、`tsuzuri_mutex_lock`・`tsuzuri_mutex_unlock`・`tsuzuri_mutex_parallel_ok`・`tsuzuri_mutex_wait_ok` と `tsuzuri_channel_send`・`recv`・`clone_sender`・`close` を定義します。import は増えず、ホストのグルー（`wasm-threads.mjs`、`bindings-threads.mjs`）は変わりません。
 - `Mutex` のロックの語は、セルの先頭にあります（0 解放、1 保持、2 保持して待ちがいる）。待つスレッドは、プール共有の `epoch` の語で `memory.atomic.wait32` します。ロックを解放して待ちがいたとき、`epoch` を進めて全員を起こします。ホストが失敗を伝えるときも、同じ語を進めて起こすので、ロックを待つスレッドも、失敗したプールでは待ち続けずにトラップします。
 - ヒープは共有メモリの 1 つで、確保・解放・再確保は `tsuzuri_threads_heap_lock` と `tsuzuri_threads_heap_unlock` の間だけで行います。ヒープが上限（既定 16 MiB、`--wasm-max-memory` で変えます）に達したトラップは、threads でも `--trap-info` の表で `allocation failed` です。
 - スレッドごとの状態（いま持っているロック、チャンネルの待ちで手伝っている仕事の深さ）は、C の `address_space(1)` の変数、つまりインスタンスごとの WebAssembly のグローバルです。各 Worker は自分のインスタンスを作るので、グローバルはスレッドごとの変数になり、TLS（`__wasm_init_tls`）の領域を作って初期化する手順は要りません。
-- `DataChannel` の待ちは、`epoch` で眠り、チャンネルが変わるたび（待っている者がいるとき）に全員を起こして、各自が条件を見直します。待っているスレッドが手伝う仕事は、仕事を取っていないワーカーがいないときだけ、最も古いグループの未着手の子どもです。`Task.parallel` や `Task.scope` を呼んだスレッドは、グループを公開する前に最初の子どもを自分のものにし、結合を待つあいだは自分のグループの子どもだけを走らせます（native と同じです。ほかのグループの仕事を結合のフレームの上に載せると、結合のあとのコードが作るものを待ちうるからです）。「全員が待っている」の判定は、`epoch` を進めた時点からの、待ちの登録の数で行います。眠るスレッドは、登録した `epoch` が動くまで眠り続けるので、遅れて届いた通知で二重に数えられることはありません。通知は、ランタイムの lock を放してから送ります。スレッド数は、プールを始めた後はメインとワーカーの数、始める前は 1 です。最後に登録したスレッドが、チャンネルの待ちを含む全員の待ちを見つけると、その待ちスレッド全員に判定を伝え、各自がトラップします。トラップは、プール全体を止めます。
+- `DataChannel` の待ちは、`epoch` で眠り、チャンネルが変わるたび（待っている者がいるとき）に全員を起こして、各自が条件を見直します。待っているスレッドが手伝う仕事は、仕事を取っていないワーカーがいないときだけ、最も古いグループの未着手のチャンクです（深さは 16 まで）。`Parallel.*` を呼んだスレッドは、グループを公開する前に最初のチャンクを自分のものにし、結合を待つあいだは自分のグループのチャンクだけを走らせます。ほかのグループの仕事を結合のフレームの上に載せると、結合のあとのコードが作るものを待ちうるからです。「全員が待っている」の判定は、`epoch` を進めた時点からの、待ちの登録の数で行います。眠るスレッドは、登録した `epoch` が動くまで眠り続けるので、遅れて届いた通知で二重に数えられることはありません。通知は、ランタイムの lock を放してから送ります。スレッド数は、プールを始めた後はメインとワーカーの数、始める前は 1 です。最後に登録したスレッドが、チャンネルの待ちを含む全員の待ちを見つけると、その待ちスレッド全員に判定を伝え、各自がトラップします。トラップは、プール全体を止めます。
 - ブラウザの UI スレッドは atomic wait できないので、計算を呼ぶ側を Worker に置きます（上の「COOP / COEP」の節のとおりです）。`Mutex` と `DataChannel` の待ちも、同じ制約を受けます。
-- 検証は `tests/wasm_threads.mjs`（本物の Worker の `createThreadPool` で、`Mutex` のロックの競合、生産者と消費者、3 段のパイプライン、複数の生産者、作業キュー、ピンポン、入れ子のグループの結果を別のタスクへ送る形、確保したのと別のスレッドで解放する混在サイズのヒープの負荷（終わったあとに生きているのはワーカーのスタックだけ）、満杯のヒープのトラップの種類、デッドロックのトラップを 1 から 4 スレッドで）と、`tests/bindings_threads.mjs`（グルーのコーディネーターとヘルパーで、ロックとパイプライン）です。
+- 検証は `tests/wasm_threads.mjs`（本物の Worker の `createThreadPool` で、`Mutex` のロックの競合、`DataChannel` の受け渡しとデッドロックのトラップ、確保したのと別のスレッドで解放する混在サイズのヒープの負荷（終わったあとに生きているのはワーカーのスタックだけ）、満杯のヒープのトラップの種類）と、`tests/bindings_threads.mjs`（グルーのコーディネーターとヘルパーで、ロックとパイプライン）です。
 
 （[Mutex](../built-in-types-and-modules/mutex.md)、[DataChannel](../built-in-types-and-modules/datachannel.md)）
 
@@ -378,7 +378,7 @@ tsuzuri build shop --target wasm32 --wasm-feature threads -O3 -o shop.wasm
 
 `load` は最初に、ページが cross-origin isolated か（`crossOriginIsolated` が true で、`SharedArrayBuffer` があるか）を確かめます。COOP / COEP の無いページでは、ワーカーを起動せずに `Error`（`WASM threads need a cross-origin isolated page: ...`）を投げます。逐次実行には切り替えません。
 
-プールの手順は `src/runtime/wasm-threads.mjs` と同じです。共有の `WebAssembly.Memory` を `.wasm` の要求する最大ページ数で作り、`workers` 個の補助ワーカーと、export を実行する調整役のワーカーを 1 つ起動します。`WebAssembly.Module` を渡したときは上限を読めないので、既定の 256 ページです。`memory` で自分のメモリを渡すこともできます。ブラウザのメインスレッドは atomic wait できないので、export は調整役のワーカーで動き、すべて `Promise` を返します。`workers` は 0 から 31 で、既定は `navigator.hardwareConcurrency - 1` です。0 なら、調整役がすべてのタスクを自分で実行します。グルーは自分のファイル（`import.meta.url`）を module worker として起動するので、`.mjs` はバンドルせずに、そのまま同じオリジンから配信します。
+プールの手順は `src/runtime/wasm-threads.mjs` と同じです。共有の `WebAssembly.Memory` を `.wasm` の要求する最大ページ数で作り、`workers` 個の補助ワーカーと、export を実行する調整役のワーカーを 1 つ起動します。`WebAssembly.Module` を渡したときは上限を読めないので、既定の 256 ページです。`memory` で自分のメモリを渡すこともできます。ブラウザのメインスレッドは atomic wait できないので、export は調整役のワーカーで動き、すべて `Promise` を返します。`workers` は 0 から 31 で、既定は `navigator.hardwareConcurrency - 1` です。0 なら、調整役がすべてのチャンクを自分で実行します。グルーは自分のファイル（`import.meta.url`）を module worker として起動するので、`.mjs` はバンドルせずに、そのまま同じオリジンから配信します。
 
 ホスト関数は、ワーカーごとのインスタンスに渡します。関数の代わりに、`createImports({ workerId, data })` を export するモジュールの URL を `importsModule` に渡します。`workerId` は調整役が 0、補助ワーカーが 1 からです。`data` は `importData` の構造化複製で、`SharedArrayBuffer` は共有されます。import を持つモジュールでは、`importsModule` が必須です。
 

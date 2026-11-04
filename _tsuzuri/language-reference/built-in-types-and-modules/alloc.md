@@ -51,7 +51,7 @@ test "a mapped array takes one block" =
 各フィールドは `i64` です。内部の符号なし 64-bit 累計をそのまま読むので、2<sup>63</sup> 以上では負になります。
 
 単一スレッドの同じ処理では決定的です。カウンターはプロセス全体で共有され、
-`Task`・`Parallel` の worker など、同じ heap を使う他のスレッドの確保も含みます。
+tzroutine や `Parallel` の helper など、同じ heap を使う他のスレッドの確保も含みます。
 C ライブラリ自身の `malloc` など、この heap を通らない確保は数えません。
 並行処理の独立した窓や、4 フィールドを同時に読む原子的 snapshot は提供しません。
 内部の `Alloc.__counter` は std 専用で、利用者から呼ぶと `E1022` です。
@@ -169,4 +169,4 @@ Vec の消費する更新には、両版で同じ契約の `Vec.push_owned` を�
 
 規則の出典は [配列](array.md)・[Vec](vec.md)・[文字列](string.md)・[Rc](rc.md)・
 [スタックとヒープ](../ownership-and-memory/stack-and-heap.md)・[所有権](../ownership-and-memory/ownership.md) です。
-Map・Set・HashMap・Task・Parallel の確保数、リーク検査、確保場所の報告はこの契約の対象外です。
+Map・Set・HashMap・tzroutine・Parallel の確保数、リーク検査、確保場所の報告はこの契約の対象外です。

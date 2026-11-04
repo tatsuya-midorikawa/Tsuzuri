@@ -93,7 +93,7 @@ impl FunctionEmitter<'_, '_> {
         ))
     }
 
-    /// Reads a count. `Arc` counts change on other tasks, so they are read atomically.
+    /// Reads a count. `Arc` counts change on other threads, so they are read atomically.
     fn shared_load(&mut self, counter: &str, atomic: bool) -> String {
         if atomic {
             self.value(format!("load atomic i64, ptr {counter} monotonic, align 8"))

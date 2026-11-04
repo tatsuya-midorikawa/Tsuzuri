@@ -187,7 +187,7 @@ after
 外部リソースの安全性を保つため、`Drop` を実装した型にはいくつかの重要な制約が課されます。
 
 - **非 Copy**: `Drop` を実装した型は、フィールドの構成にかかわらず自動的に Copy 型ではなくなります。
-- **通常のクロージャへの捕捉禁止（E1005）**: 通常の関数値は Copy です。Drop 型を捕捉すると、複製のたびに同じ資源を解放しかねません。そのため `E1005` になります。`task` へ所有権を渡すことはできます。
+- **通常のクロージャへの捕捉禁止（E1005）**: 通常の関数値は Copy です。Drop 型を捕捉すると、複製のたびに同じ資源を解放しかねません。そのため `E1005` になります。1 回だけ走る `tzroutine { ... }` の本体へは、所有権を渡せます。
   > [!TIP]
   > Drop 型を捕捉して持ち運ぶ関数値が必要なときは、[Owned](../built-in-types-and-modules/owned.md) モジュールの `Owned.function` を使用します。
 - **部分ムーブの禁止（E1012）**: Drop 型から非 Copy フィールドだけを取り出すことはできません。途中までムーブした値に `drop` が呼ばれるのを防ぐためです。メッセージは `cannot move a field or payload out of a value whose type implements Drop` です。
@@ -195,9 +195,8 @@ after
 - **`drop` 本体での全体置換・排他貸出の禁止（E1012）**: `deref value = ...` で引数全体を置き換えると、古い値の解放が同じ `drop` を再帰します。別の関数へ `ref mut` で渡すと、呼び出し先が中身を置換できます。どちらも `E1012` です。メッセージは `cannot replace the whole value inside Drop.drop` と `cannot pass the value on as 'ref mut' inside Drop.drop` です。
 - **公開境界**: `export` や `extern` の引数・戻り値に Drop 型を置くと `E1008` です。
 
-## 未実行の Task とトラップ時の挙動
+## トラップ時の挙動
 
-- **未実行の Task の破棄**: `task { ... }` で作成されたタスクが `Task.run` や `Task.await` で実行されずにスコープを抜けた場合、タスクがキャプチャしていた所有リソースのみが安全に解放されて消滅します。
 - **トラップ時の巻き戻し**: `assert` の失敗やゼロ除算でトラップしたときは、スタックを巻き戻しません。まだ実行していない `drop` は呼ばれません。後始末の完了をトラップに頼らないでください。`drop` の中でトラップしたときは、通常のトラップとして処理されます。
 
 ## 外部リソースと File.Handle の注意点
@@ -212,7 +211,7 @@ Tsuzuri の標準ライブラリにおけるファイル操作型 `File.Handle` 
 
 同じデータを複数の場所から読みたいときは、所有者を親のスコープに残し、共有借用（`ref T`）を渡します。
 
-同じ値を複数の所有者で持ちたいときは、参照カウントの [Rc と Arc](../built-in-types-and-modules/rc.md) を使います。`Rc.share` で所有者を明示的に増やし、最後の所有者がスコープを抜けたときに値の drop が 1 回走ります。`Arc` は計数が atomic で、複数のタスクで共有できます。共有した値は共有されている間は変わらないので、`Rc`／`Arc` だけでは循環は作れません。共有した値を書き換えるには [Atomic](../built-in-types-and-modules/atomic.md) か [Mutex](../built-in-types-and-modules/mutex.md) を入れます。`Arc` を `Mutex` に入れると循環を作れて、解放されないので、循環の一方は `Arc.Weak` で持ちます。
+同じ値を複数の所有者で持ちたいときは、参照カウントの [Rc と Arc](../built-in-types-and-modules/rc.md) を使います。`Rc.share` で所有者を明示的に増やし、最後の所有者がスコープを抜けたときに値の drop が 1 回走ります。`Arc` は計数が atomic で、複数の tzroutine やスレッドで共有できます。共有した値は共有されている間は変わらないので、`Rc`／`Arc` だけでは循環は作れません。共有した値を書き換えるには [Atomic](../built-in-types-and-modules/atomic.md) か [Mutex](../built-in-types-and-modules/mutex.md) を入れます。`Arc` を `Mutex` に入れると循環を作れて、解放されないので、循環の一方は `Arc.Weak` で持ちます。
 
 グラフやキャッシュのように、複数の値から同じ値を指す構造や、循環する構造は [Arena](../built-in-types-and-modules/arena.md) で表します。値は arena がまとめて所有し、ほかの値は Copy のハンドル `Arena.Handle<T>` で指します。ハンドルは値の寿命を延ばさないので、循環しても解放漏れは起きず、arena の drop で循環を含むすべての値が再帰なしで解放されます。削除済みや別の arena のハンドルは、実行時に世代と arena ID で検出します。
 

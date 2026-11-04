@@ -279,11 +279,11 @@ def scalar :: ref i64 -> i64 = \value -> deref value
 }
 
 #[test]
-fn captured_workers_and_task_bodies_keep_their_existing_contracts() {
+fn captured_workers_and_tzroutine_bodies_keep_their_existing_contracts() {
     let module = analyze(
         "def make :: ref i64 -> bool -> (unit -> i64) = \\value flag -> \
          if flag then \\unused -> deref value else \\unused -> deref value\n\
-             def work :: i64 -> Task<i64> = \\value -> task { return value + 1 }\n",
+             def work :: i64 -> unit = \\value -> tzroutine { let _next = value + 1 }\n",
     )
     .unwrap();
     for wasm in [false, true] {
@@ -291,7 +291,7 @@ fn captured_workers_and_task_bodies_keep_their_existing_contracts() {
         let mut excluded = 0;
         for header in ir.lines().filter(|line| {
             line.starts_with("define internal ")
-                && (line.contains("@tz.fn.$lambda.") || line.contains("@tz.fn.$task."))
+                && (line.contains("@tz.fn.$lambda.") || line.contains("@tz.fn.$once."))
         }) {
             excluded += 1;
             for fact in [
@@ -307,6 +307,6 @@ fn captured_workers_and_task_bodies_keep_their_existing_contracts() {
         }
         assert!(excluded >= 2);
         assert!(ir.contains("@tz.fn.$lambda."));
-        assert!(ir.contains("@tz.fn.$task."));
+        assert!(ir.contains("@tz.fn.$once."));
     }
 }

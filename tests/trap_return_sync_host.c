@@ -56,12 +56,13 @@ static void single_thread(int rounds) {
         assert(tsuzuri_try_lock_again(&trap, &result) == 0 && result == 42);
         LIVE_IS(0);
     }
-    /* The misuse traps are ordinary traps: a status, and the thread is usable afterwards. */
+    /* The misuse traps are ordinary traps: a status, and the thread is usable afterwards. Parallel
+       inside a lock is no misuse since TZ12: it runs on the thread that holds the lock. */
     for (int round = 0; round < 3; ++round) {
         assert(tsuzuri_try_nested_lock(&trap, &result) == 1 && trap.site != 0);
         LIVE_IS(0);
         assert(tsuzuri_try_lock_again(&trap, &result) == 0 && result == 42);
-        assert(tsuzuri_try_start_inside(&trap, &result) == 1 && trap.site != 0);
+        assert(tsuzuri_try_start_inside(&trap, &result) == 0 && result == 3);
         LIVE_IS(0);
         assert(tsuzuri_try_lock_again(&trap, &result) == 0 && result == 42);
     }

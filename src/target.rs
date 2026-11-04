@@ -290,7 +290,7 @@ impl Platform {
         self.0.is_some_and(|triple| Some(triple) != Triple::host())
     }
 
-    /// COFF output: `.exe`, `.obj` and `.dll`, no C math library, the Win32 task runtime.
+    /// COFF output: `.exe`, `.obj` and `.dll`, no C math library, the Win32 adapter of the tzroutine runtime.
     pub const fn windows(self) -> bool {
         match self.0 {
             Some(triple) => matches!(triple.os(), Os::Windows),
@@ -411,7 +411,7 @@ impl Platform {
         self.net()
     }
 
-    /// Whether the target has threads for `Task.parallel`.
+    /// Whether the target has threads for the tzroutine scheduler.
     pub const fn threads(self) -> bool {
         match self.0 {
             Some(_) => true,

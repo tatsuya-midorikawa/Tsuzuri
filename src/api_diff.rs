@@ -1254,7 +1254,7 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
 }
 
 /// Whether a parameter of this type may carry a function value that the function can call, or
-/// makes the attribute depend on the caller: a function, task or `dyn` type, a named type that
+/// makes the attribute depend on the caller: a function, tzroutine body or `dyn` type, a named type that
 /// the syntax alone cannot show to be closed (records and unions may hold functions), or a type
 /// variable (each instance is checked with the caller's type, which may be a function or copy an
 /// array; review of #63). Scalars, strings and the standard collections of closed types are

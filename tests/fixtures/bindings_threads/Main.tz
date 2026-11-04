@@ -9,26 +9,26 @@ fn rec total values index sum =
     if index == values.length { sum }
     else { total values (index + 1) (sum + values[index]) }
 
+// `Parallel.for_each_chunk 1` over n slots gives each index a job of its own (up to 1024 jobs), which
+// the coordinator or any helper may take, and the job writes its result into its slot.
 export def squares :: ref Range -> i64
 fn squares range =
     let start = range.start
-    let count = range.count
-    Task.run task {
-        let! results = Task.parallel (new [Task<i64>](count, \i -> task { (start + i) * (start + i) }))
-        return total (ref results) 0 0
-    }
+    let mut results = new [i64](range.count, \_index -> 0)
+    Parallel.for_each_chunk 1 (\i slot -> Array.write 0 ((start + i) * (start + i)) slot) (ref mut results)
+    total (ref results) 0 0
 
 export def concurrent :: i64
-fn concurrent = Task.run task {
-    let! results = Task.parallel (new [Task<i64>](3, \index -> task { barrier index }))
-    return results[0] * 100 + results[1] * 10 + results[2]
-}
+fn concurrent =
+    let mut results = new [i64](3, \_index -> 0)
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (barrier index) slot) (ref mut results)
+    results[0] * 100 + results[1] * 10 + results[2]
 
 export def workers_seen :: own i64 -> i64
-fn workers_seen count = Task.run task {
-    let! results = Task.parallel (new [Task<i64>](count, \_index -> task { worker_id () }))
-    return total (ref results) 0 0
-}
+fn workers_seen count =
+    let mut results = new [i64](count, \_index -> 0)
+    Parallel.for_each_chunk 1 (\_index slot -> Array.write 0 (worker_id ()) slot) (ref mut results)
+    total (ref results) 0 0
 
 export def doubled :: ref [f64] -> [f64]
 fn doubled values =
@@ -42,51 +42,73 @@ export def divide :: own i64 -> own i64 -> i64
 fn divide a b = a / b
 
 export def worker_trap :: own i64 -> i64
-fn worker_trap count = Task.run task {
-    let! results = Task.parallel (new [Task<i64>](count, \i -> task { assert (i < count - 1); i }))
-    return total (ref results) 0 0
-}
+fn worker_trap count =
+    let mut results = new [i64](count, \_index -> 0)
+    Parallel.for_each_chunk 1 (\i slot -> {
+        assert (i < count - 1);
+        Array.write 0 i slot
+    }) (ref mut results)
+    total (ref results) 0 0
 
 export def helper_results :: i64
-fn helper_results = Task.run task {
-    let! results = Task.parallel (new [Task<i64>](3, \index -> task { (narrow_on_helpers (barrier index)) as i64 }))
-    return results[0] + results[1] + results[2]
-}
+fn helper_results =
+    let mut results = new [i64](3, \_index -> 0)
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 ((narrow_on_helpers (barrier index)) as i64) slot) (ref mut results)
+    results[0] + results[1] + results[2]
 
 // F10: shared state and channels on the pool of the glue. Every helper has its own instance, so the
 // lock and the wait state of each thread are per worker, and the deadlock rule counts all of them.
+// The jobs share the lock through an Arc, since a callback cannot keep a borrow; once every job has
+// let go of its share, the lock is the caller's alone again (-1 if not).
 export def locked_total :: own i64 -> i64
 fn locked_total n =
-    let total = Mutex.create 0i64
-    let indices = Task.scope (ref total) n (\shared index -> Mutex.with_lock shared (\value -> {
+    let total = Arc.new (Mutex.create 0i64)
+    let mine = Arc.share (ref total)
+    let mut indices = new [i64](n, \_index -> 0)
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (Mutex.with_lock (Arc.get (ref mine)) (\value -> {
         deref value = deref value + index + 1;
         index
-    }))
-    Mutex.into_inner total + Array.sum (ref indices)
+    })) slot) (ref mut indices)
+    match Arc.try_unwrap total with
+    | Result.Ok lock -> Mutex.into_inner lock + Array.sum (ref indices)
+    | Result.Error _still -> -1
 
-def produce :: own DataChannel.Sender<i64> -> own i64 -> Task<i64>
-fn produce sender count = task {
+// The two ends of a pipeline, each in the slot of its job: the job writes its result over its end,
+// which drops the end on the job's thread, so the end of the producer closes the channel.
+union Stage = Produce of DataChannel.Sender<i64> * i64 | Consume of DataChannel.Receiver<i64> | Finished of i64
+
+def produce :: ref DataChannel.Sender<i64> -> own i64 -> i64
+fn produce sender count =
     let mut index = 0
     while index < count do
-        let _sent = DataChannel.send (ref sender) (index + 1)
+        let _sent = DataChannel.send sender (index + 1)
         index = index + 1
-    return count
-}
+    count
 
-def consume :: own DataChannel.Receiver<i64> -> Task<i64>
-fn consume receiver = task {
+def consume :: ref DataChannel.Receiver<i64> -> i64
+fn consume receiver =
     let mut sum = 0
     let mut open = true
     while open do
-        match DataChannel.recv (ref receiver) with
+        match DataChannel.recv receiver with
         | Maybe.Some value -> sum = sum + value
         | Maybe.None -> open = false
-    return sum
-}
+    sum
+
+def stage :: i64 -> ref mut [Stage..] -> unit
+fn stage _index slot =
+    let result = match slot[0] with
+        | Produce (sender, count) -> produce (ref sender) count
+        | Consume receiver -> consume (ref receiver)
+        | Finished value -> value
+    Array.write 0 (Finished result) slot
 
 export def piped :: own i64 -> own i64 -> i64
 fn piped capacity count =
     match DataChannel.bounded capacity with
     | (sender, receiver) ->
-        let results = Task.run (Task.parallel [produce sender count, consume receiver])
-        results[1]
+        let mut stages = [Produce (sender, count), Consume receiver]
+        Parallel.for_each_chunk 1 stage (ref mut stages)
+        match stages[1] with
+        | Finished sum -> sum
+        | _ -> -1

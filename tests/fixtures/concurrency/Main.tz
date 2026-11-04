@@ -2,6 +2,10 @@ record Counters { hits: Atomic<i64>, misses: Atomic<i64> }
 record Node { value: i64, next: Maybe<Arc<Mutex<Node>>> }
 record Totals { count: i64, sum: i64 }
 
+// F10: Atomic and Mutex, and since TZ12 Routine.scope and tzroutines for the work that shares them.
+// The exports above the line "native only" build for WebAssembly too (tests/features.mjs builds that
+// part alone): Routine.scope and tzroutine { } are native until TZ09.
+
 // A fixed sequence of operations on one cell, so that every width, sign and operation is covered:
 // it returns what each operation saw, then the final value.
 def sequence :: (AtomicValue<'a>, Integer<'a>, Copy<'a>) => own 'a -> own 'a -> own 'a -> ['a]
@@ -49,13 +53,6 @@ fn atomic_u32 = widen (ref (sequence 4000000000i32u 1500000000i32u 123456789i32u
 export def atomic_u64 :: i64
 fn atomic_u64 = widen (ref (sequence 18000000000000000000i64u 4000000000000000000i64u 1234567890123456789i64u))
 
-// Every child adds its index plus one, so the total is n(n+1)/2 whatever the schedule.
-export def atomic_counter :: own i64 -> i64
-fn atomic_counter n =
-    let counter = Atomic.create 0i64
-    let _previous = Task.scope (ref counter) n (\shared index -> Atomic.fetch_add shared (index + 1))
-    Atomic.load (ref counter)
-
 export def atomic_compare_exchange :: i64
 fn atomic_compare_exchange =
     let cell = Atomic.create 5i64
@@ -92,140 +89,13 @@ fn atomic_into_inner =
     let _previous = Atomic.fetch_add (ref cell) 1
     Atomic.into_inner cell
 
-// Two atomics in one record: a record of Sync fields is Sync, and the shared borrow reaches both.
-export def counters_record :: own i64 -> i64
-fn counters_record n =
-    let counters = Counters { hits: Atomic.create 0i64, misses: Atomic.create 0i64 }
-    let _seen = Task.scope (ref counters) n (\shared index ->
-        if index % 3 == 0 then Atomic.fetch_add (ref shared.misses) 1 else Atomic.fetch_add (ref shared.hits) 2)
-    Atomic.load (ref counters.hits) * 1000000 + Atomic.load (ref counters.misses)
-
-// The children of a scope hand their results back in index order.
-export def scope_results_order :: own i64 -> i64
-fn scope_results_order n =
-    let unit_value = 0i64
-    let results = Task.scope (ref unit_value) n (\_shared index -> index * 3 + 1)
-    let mut checksum = 0;
-    for position in 0i64 ..= (results.length - 1) do
-        checksum = checksum * 31 + results[position] + position
-    checksum
-
-export def scope_shared_array :: own i64 -> i64
-fn scope_shared_array n =
-    let numbers = new [i64](n, \index -> index + 1)
-    let doubled = Task.scope (ref numbers) n (\shared index -> shared[index] * 2)
-    Array.sum (ref doubled)
-
-export def scope_shared_function :: own i64 -> i64
-fn scope_shared_function n =
-    let offset = 7i64
-    let add = \value -> value + offset
-    let results = Task.scope (ref add) n (\shared index -> (deref shared) index)
-    Array.sum (ref results)
-
-// A child of a scope may start parallel work of its own.
-export def scope_nested_parallel :: i64
-fn scope_nested_parallel =
-    let unit_value = 0i64
-    let sums = Task.scope (ref unit_value) 4 (\_shared _index -> Parallel.sum (ref (Parallel.init 4097 (\i -> i))))
-    Array.sum (ref sums)
-
-export def scope_empty :: i64
-fn scope_empty =
-    let unit_value = 0i64
-    let results = Task.scope (ref unit_value) 0 (\_shared index -> index)
-    results.length
-
-// The shared borrow may be a temporary: it lives until the children finish and is dropped then.
-export def scope_temporary :: own i64 -> i64
-fn scope_temporary n =
-    let sums = Task.scope (ref (Array.init n (\i -> i * 2))) 4 (\shared index -> Array.sum shared + index)
-    let lengths = Task.scope (ref $"{n}ab") 2 (\text index -> text.length + index)
-    Array.sum (ref sums) * 1000 + Array.sum (ref lengths)
-
-export def mutex_total :: own i64 -> i64
-fn mutex_total n =
-    let total = Mutex.create 0i64
-    let indices = Task.scope (ref total) n (\shared index -> Mutex.with_lock shared (\value -> {
-        deref value = deref value + index + 1;
-        index
-    }))
-    Mutex.into_inner total + Array.sum (ref indices)
-
-// Owned data under the lock: each child writes its own slot of a shared array.
-export def mutex_owned_array :: own i64 -> i64
-fn mutex_owned_array n =
-    let slots = Mutex.create (new [i64](n, \_index -> 0))
-    let _done = Task.scope (ref slots) n (\shared index -> Mutex.with_lock shared (\values -> {
-        Array.write index (index * 2 + 1) values;
-        0
-    }))
-    Array.sum (ref (Mutex.into_inner slots))
-
-export def mutex_record :: own i64 -> i64
-fn mutex_record n =
-    let totals = Mutex.create (Totals { count: 0, sum: 0 })
-    let _done = Task.scope (ref totals) n (\shared index -> Mutex.with_lock shared (\value -> {
-        let current = deref value;
-        deref value = Totals { count: current.count + 1, sum: current.sum + index };
-        0
-    }))
-    let final = Mutex.into_inner totals
-    final.count * 1000000 + final.sum
-
 export def mutex_text :: i64
 fn mutex_text =
     let text = Mutex.create "locked"
     let length = Mutex.with_lock (ref text) (\value -> (deref value).length)
     length * 100 + (Mutex.into_inner text).length
 
-// The tasks hold the mutex through an Arc, which is Send because a Mutex of a Send value is Sync.
-def bump :: own Arc<Mutex<i64>> -> own i64 -> Task<i64>
-fn bump shared amount = task {
-    return Mutex.with_lock (Arc.get (ref shared)) (\value -> { deref value = deref value + amount; deref value })
-}
-
-export def arc_mutex_tasks :: own i64 -> i64
-fn arc_mutex_tasks n =
-    let shared = Arc.new (Mutex.create 0i64)
-    let tasks = bumps (ref shared) n
-    let _seen = Task.run (Task.parallel tasks)
-    Mutex.with_lock (Arc.get (ref shared)) (\value -> deref value) * 1000 + Arc.strong_count (ref shared)
-
-def bumps :: ref Arc<Mutex<i64>> -> own i64 -> [Task<i64>]
-fn bumps shared n = new [Task<i64>](n, \index -> bump (Arc.share shared) (index + 1))
-
-def count :: own Arc<Atomic<i64>> -> own i64 -> Task<i64>
-fn count shared amount = task { return Atomic.fetch_add (Arc.get (ref shared)) amount }
-
-def counts :: ref Arc<Atomic<i64>> -> own i64 -> [Task<i64>]
-fn counts shared n = new [Task<i64>](n, \index -> count (Arc.share shared) (index + 1))
-
-export def arc_atomic_tasks :: own i64 -> i64
-fn arc_atomic_tasks n =
-    let shared = Arc.new (Atomic.create 0i64)
-    let tasks = counts (ref shared) n
-    let _seen = Task.run (Task.parallel tasks)
-    Atomic.load (Arc.get (ref shared)) * 1000 + Arc.strong_count (ref shared)
-
-// A scope may share an Arc of a Mutex: the Arc is Sync, so each child borrows it and locks.
-export def scope_arc_mutex :: own i64 -> i64
-fn scope_arc_mutex n =
-    let shared = Arc.new (Mutex.create 0i64)
-    let _done = Task.scope (ref shared) n (\arc index -> Mutex.with_lock (Arc.get arc) (\value -> {
-        deref value = deref value + index + 1;
-        0
-    }))
-    Mutex.with_lock (Arc.get (ref shared)) (\value -> deref value)
-
-// A recursive type through Arc and Mutex is Send and Sync.
-export def linked_mutex :: i64
-fn linked_mutex =
-    let tail = Arc.new (Mutex.create (Node { value: 1, next: Maybe.None }))
-    let head = Arc.new (Mutex.create (Node { value: 2, next: Maybe.Some (Arc.share (ref tail)) }))
-    let seen = Task.run (task { return Mutex.with_lock (Arc.get (ref head)) (\node -> (deref node).value) })
-    seen * 10 + Arc.strong_count (ref tail)
-
+// Locks of different mutexes nest natively (TZ06); the lock of WebAssembly traps on any nesting.
 export def mutex_nested :: i64
 fn mutex_nested =
     let outer = Mutex.create 1i64
@@ -233,20 +103,22 @@ fn mutex_nested =
     let inner_borrow = ref inner
     Mutex.with_lock (ref outer) (\_a -> Mutex.with_lock inner_borrow (\b -> deref b))
 
+// The same mutex locked again by its holder traps on every target.
+export def mutex_nested_same :: i64
+fn mutex_nested_same =
+    let lock = Mutex.create 1i64
+    let borrowed = ref lock
+    Mutex.with_lock borrowed (\_outer -> Mutex.with_lock borrowed (\inner -> deref inner))
+
+// Parallel work inside a lock runs natively (TZ12: the lock belongs to the tzroutine that waits for
+// the chunks); WebAssembly refuses to start it inside a lock.
 export def mutex_parallel_inside :: i64
 fn mutex_parallel_inside =
     let total = Mutex.create 0i64
-    let unit_value = 0i64
-    Mutex.with_lock (ref total) (\_value -> Array.sum (ref (Task.scope (ref unit_value) 2 (\_shared index -> index))))
+    Mutex.with_lock (ref total) (\_value -> Array.sum (ref (Parallel.init 2 (\index -> index))))
 
-export def scope_negative :: i64
-fn scope_negative =
-    let unit_value = 0i64
-    let results = Task.scope (ref unit_value) (0 - 1) (\_shared index -> index)
-    results.length
-
-// A constructor variable applied to arguments (`'f<i64>`): what Parallel.init, Mutex.create and a
-// scope ask of it (Send, Sync) is asked where the constructor is known, and a holder of plain
+// A constructor variable applied to arguments (`'f<i64>`): what Parallel.init, Mutex.create and
+// Routine.scope ask of it (Send, Sync) is asked where the constructor is known, and a holder of plain
 // values passes.
 record Cased<'a> { value: 'a }
 instance Cell.Cell<Cased> {
@@ -269,8 +141,166 @@ fn hkt_mutex =
     let lock: Mutex<Cased<i64>> = keep 40
     Mutex.with_lock (ref lock) (\held -> (deref held).value + 2)
 
+// native only: Routine.scope and tzroutine { } below.
+
+// Every child adds its index plus one, so the total is n(n+1)/2 whatever the schedule.
+export def atomic_counter :: own i64 -> i64
+fn atomic_counter n =
+    let counter = Atomic.create 0i64
+    let _previous = Routine.scope (ref counter) n (\shared index -> Atomic.fetch_add shared (index + 1))
+    Atomic.load (ref counter)
+
+// Two atomics in one record: a record of Sync fields is Sync, and the shared borrow reaches both.
+export def counters_record :: own i64 -> i64
+fn counters_record n =
+    let counters = Counters { hits: Atomic.create 0i64, misses: Atomic.create 0i64 }
+    let _seen = Routine.scope (ref counters) n (\shared index ->
+        if index % 3 == 0 then Atomic.fetch_add (ref shared.misses) 1 else Atomic.fetch_add (ref shared.hits) 2)
+    Atomic.load (ref counters.hits) * 1000000 + Atomic.load (ref counters.misses)
+
+// The children of a scope hand their results back in index order.
+export def scope_results_order :: own i64 -> i64
+fn scope_results_order n =
+    let unit_value = 0i64
+    let results = Routine.scope (ref unit_value) n (\_shared index -> index * 3 + 1)
+    let mut checksum = 0;
+    for position in 0i64 ..= (results.length - 1) do
+        checksum = checksum * 31 + results[position] + position
+    checksum
+
+export def scope_shared_array :: own i64 -> i64
+fn scope_shared_array n =
+    let numbers = new [i64](n, \index -> index + 1)
+    let doubled = Routine.scope (ref numbers) n (\shared index -> shared[index] * 2)
+    Array.sum (ref doubled)
+
+export def scope_shared_function :: own i64 -> i64
+fn scope_shared_function n =
+    let offset = 7i64
+    let add = \value -> value + offset
+    let results = Routine.scope (ref add) n (\shared index -> (deref shared) index)
+    Array.sum (ref results)
+
+// A child of a scope may start parallel work of its own.
+export def scope_nested_parallel :: i64
+fn scope_nested_parallel =
+    let unit_value = 0i64
+    let sums = Routine.scope (ref unit_value) 4 (\_shared _index -> Parallel.sum (ref (Parallel.init 4097 (\i -> i))))
+    Array.sum (ref sums)
+
+export def scope_empty :: i64
+fn scope_empty =
+    let unit_value = 0i64
+    let results = Routine.scope (ref unit_value) 0 (\_shared index -> index)
+    results.length
+
+// The shared borrow may be a temporary: it lives until the children finish and is dropped then.
+export def scope_temporary :: own i64 -> i64
+fn scope_temporary n =
+    let sums = Routine.scope (ref (Array.init n (\i -> i * 2))) 4 (\shared index -> Array.sum shared + index)
+    let lengths = Routine.scope (ref $"{n}ab") 2 (\text index -> text.length + index)
+    Array.sum (ref sums) * 1000 + Array.sum (ref lengths)
+
+export def mutex_total :: own i64 -> i64
+fn mutex_total n =
+    let total = Mutex.create 0i64
+    let indices = Routine.scope (ref total) n (\shared index -> Mutex.with_lock shared (\value -> {
+        deref value = deref value + index + 1;
+        index
+    }))
+    Mutex.into_inner total + Array.sum (ref indices)
+
+// Owned data under the lock: each child writes its own slot of a shared array.
+export def mutex_owned_array :: own i64 -> i64
+fn mutex_owned_array n =
+    let slots = Mutex.create (new [i64](n, \_index -> 0))
+    let _done = Routine.scope (ref slots) n (\shared index -> Mutex.with_lock shared (\values -> {
+        Array.write index (index * 2 + 1) values;
+        0
+    }))
+    Array.sum (ref (Mutex.into_inner slots))
+
+export def mutex_record :: own i64 -> i64
+fn mutex_record n =
+    let totals = Mutex.create (Totals { count: 0, sum: 0 })
+    let _done = Routine.scope (ref totals) n (\shared index -> Mutex.with_lock shared (\value -> {
+        let current = deref value;
+        deref value = Totals { count: current.count + 1, sum: current.sum + index };
+        0
+    }))
+    let final = Mutex.into_inner totals
+    final.count * 1000000 + final.sum
+
+// The tzroutines hold the mutex through an Arc, which is Send because a Mutex of a Send value is
+// Sync. Each drops its share before it tells the group that it is done, so one owner is left.
+export def arc_mutex_routines :: own i64 -> i64
+fn arc_mutex_routines n =
+    let shared = Arc.new (Mutex.create 0i64)
+    let group = WaitGroup.create ()
+    for index in 0 ..< n do
+        WaitGroup.add (ref group) 1
+        let done = WaitGroup.share (ref group)
+        let mine = Arc.share (ref shared)
+        tzroutine {
+            let _seen = Mutex.with_lock (Arc.get (ref mine)) (\value -> { deref value = deref value + index + 1; deref value })
+            Owned.drop mine
+            WaitGroup.done (ref done)
+        }
+    WaitGroup.wait (ref group)
+    Mutex.with_lock (Arc.get (ref shared)) (\value -> deref value) * 1000 + Arc.strong_count (ref shared)
+
+export def arc_atomic_routines :: own i64 -> i64
+fn arc_atomic_routines n =
+    let shared = Arc.new (Atomic.create 0i64)
+    let group = WaitGroup.create ()
+    for index in 0 ..< n do
+        WaitGroup.add (ref group) 1
+        let done = WaitGroup.share (ref group)
+        let mine = Arc.share (ref shared)
+        tzroutine {
+            let _previous = Atomic.fetch_add (Arc.get (ref mine)) (index + 1)
+            Owned.drop mine
+            WaitGroup.done (ref done)
+        }
+    WaitGroup.wait (ref group)
+    Atomic.load (Arc.get (ref shared)) * 1000 + Arc.strong_count (ref shared)
+
+// A scope may share an Arc of a Mutex: the Arc is Sync, so each child borrows it and locks.
+export def scope_arc_mutex :: own i64 -> i64
+fn scope_arc_mutex n =
+    let shared = Arc.new (Mutex.create 0i64)
+    let _done = Routine.scope (ref shared) n (\arc index -> Mutex.with_lock (Arc.get arc) (\value -> {
+        deref value = deref value + index + 1;
+        0
+    }))
+    Mutex.with_lock (Arc.get (ref shared)) (\value -> deref value)
+
+// A recursive type through Arc and Mutex is Send and Sync. The tzroutine takes `head` with it, and
+// dropping it releases the Arc that it holds of `tail` before the value is sent.
+export def linked_mutex :: i64
+fn linked_mutex =
+    let tail = Arc.new (Mutex.create (Node { value: 1, next: Maybe.None }))
+    let head = Arc.new (Mutex.create (Node { value: 2, next: Maybe.Some (Arc.share (ref tail)) }))
+    let answers: Channel<i64> = Channel.make 1
+    let answer = Channel.share answers
+    tzroutine {
+        let value = Mutex.with_lock (Arc.get (ref head)) (\node -> (deref node).value)
+        Owned.drop head
+        Channel.send answer value
+    }
+    let seen = match Channel.recv answers with
+        | Maybe.Some value -> value
+        | Maybe.None -> 0
+    seen * 10 + Arc.strong_count (ref tail)
+
+export def scope_negative :: i64
+fn scope_negative =
+    let unit_value = 0i64
+    let results = Routine.scope (ref unit_value) (0 - 1) (\_shared index -> index)
+    results.length
+
 def spread :: Cell.Cell<'f> => ref 'f<i64> -> i64
-fn spread held = Array.sum (ref (Task.scope held 3 (\_shared index -> index + 1)))
+fn spread held = Array.sum (ref (Routine.scope held 3 (\_shared index -> index + 1)))
 
 export def hkt_scope :: i64
 fn hkt_scope =

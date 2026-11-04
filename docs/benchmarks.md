@@ -14,7 +14,7 @@ WebAssembly の SIMD128 機能は明示的なオプトイン（opt-in）制と�
 ただし、これはコード生成の正しさを検証したものであり、速度向上の厳密な測定ではありません。SIMD による高速化を報告する場合は、機能フラグの有無、同一の入力データ／配列長／最適化レベル、実行エンジンおよびバージョンの条件を揃えた中央値と、生成された機械語命令を併記し、共有 CI に恣意的な速度閾値を設けることはしません。
 
 WASM のマルチスレッド（threads）機能については、2026-09-28 に Node.js の Worker におけるアトミックバリアを用いた並行実行への参加、およびヒープメモリの正常な回収を確認しました（速度の優位性自体は未測定です）。
-性能比較を行う際は同一の Task／Parallel 入力データを用い、WASM 逐次実行と threads の実経過時間（wall time）、スレッドプールの初回起動時間を含むケース、およびプール再利用時のケースを明確に分離して評価します。
+性能比較を行う際は同一の `Parallel` 入力データを用い、WASM 逐次実行と threads の実経過時間（wall time）、スレッドプールの初回起動時間を含むケース、およびプール再利用時のケースを明確に分離して評価します。
 ワーカー数、Node.js バージョン、CPU アーキテクチャ、最適化レベル、SIMD 指定、ならびにメモリ／スタック容量を記録し、生成された WASM 内のアトミックな wait/notify 経路を確認します。
 なお、グローバルなヒープおよびキューのロックは競合時の性能上限要因となり得ます。ワーカーごとの独立アロケータやワークスティーリング機構は現時点で未実装であり、実機での厳密な計測なしに並列による高速化を主張することはありません。
 
@@ -313,6 +313,8 @@ kernel を一つの accumulator で書いた途中の版は、同じ条件の di
 `-` は未測定です。すべて wall time（ms/呼び出し）で、起動時間は含みません。C#/JavaScript は別プロセス、管理メモリの回収条件は言語ごとに異なります。詳細な比較条件は後述します。
 <!-- /generated:benchmark-summary -->
 
+`cpp/task_*` の 3 行は、2026-10-13 に TZ12 で削除した Task の実装（`Task.run`・`Task.parallel` と `src/runtime/task.c` の常駐プール）で測った値です。TZ12 から、Tsuzuri 側の `task_sequence` は反復ごとに関数値 `let job = \() -> current` を作って `job ()` を呼び（C++ のラムダと同じ形）、`task_parallel` は `Routine.scope (ref seed) 16 (...)`（16 個の子をそれぞれ tzroutine で走らせる）で、`task_sequential` は変わりません。C++・Rust・C#・JavaScript の側も変わりません。この 3 行は TZ12 の後に測り直していません。
+
 ## C/C++・Rust・C#・JavaScript の横断比較
 
 ```sh
@@ -353,22 +355,22 @@ C 言語は control 系列の 15 種目に対応し、C++、Rust、C#、JavaScri
 | union・Maybe/Result・型クラス・ユーザービルダー | checked、std_option、std_result、9 種類の computations |
 | UTF-16/UTF-8・連結・複製・走査・比較・検査・修復・変換 | utf16_scan、utf16_compare、utf16_validate、utf8_roundtrip |
 | Display/Parse | format_parse（u64 の十進表示と解析）。全数値型の表示・解析速度は未測定 |
-| cold task・bind・Task.run・Task.parallel | task_sequence、task_sequential、task_parallel |
+| 関数値の生成と呼び出し・`Routine.scope`（TZ12 より前は cold task・bind・`Task.run`・`Task.parallel`） | task_sequence、task_sequential、task_parallel。サマリーの値は TZ12 より前の Task の実装で測ったもの（サマリーの下の注） |
 | f16/f128・decimal32/64/128 の正確な演算 | 正確性の参照検査は実施済み。5 言語で同一の標準型・丸め・表示契約が揃わないため横断速度比較は未実施（C# decimal は Tsuzuri d128 の代替ではない） |
 | モジュール・private・型推論・借用検査・網羅性・診断 | 主にコンパイル時の機能であり実行時ディスパッチではない。コンパイル時間は今回未測定 |
 | C ABI・WASM・コンソール | 外部 ABI 経由の測定と native/WASM O0/O3 の検証。I/O・GUI 全体の速度比較ではない |
-| GPU・常駐 worker pool・自動並列化 | 過去の計測時点では未実装。常駐 pool の後続測定は下の専用節に分離 |
+| GPU・tzroutine のスケジューラー・自動並列化 | この表を作った計測の時点では未実装（自動並列化は今も未実装）。GPU は冒頭の F09 の節、スケジューラー（`Routine.scope`）の測定は下の「Routine.scope と tzroutine のスケジューラー」の節に分離 |
 
 ### 条件と読み方
 
-- 統合 JSON の比率計算には、すべての言語・実装において単調時計による **wall time（実経過時間）** のみを採用しています。ネイティブ環境の従来の CPU 時間は参考値として別フィールドに保持します。`Task.parallel` の CPU 時間は全ワーカースレッドの CPU 時間を合算してしまうため、実効的な高速化率の指標としては使用できません。
+- 統合 JSON の比率計算には、すべての言語・実装において単調時計による **wall time（実経過時間）** のみを採用しています。ネイティブ環境の従来の CPU 時間は参考値として別フィールドに保持します。並列の種目（`task_parallel`）の CPU 時間は、走ったすべてのスレッドの CPU 時間を合算してしまうため、実効的な高速化率の指標としては使用できません。
 - 各種目において 25 組の境界入力値を用意し、計測中も乱数シードごとのチェックサムを厳密に照合します。独立した JavaScript／BigInt 参照実装との等価性検証も常時実施します。反復回数は、極端に短い呼び出しを約 20 ms のバッチにまとめて計測できるよう自動調整されます（上限 10,000 回）。プロセスの起動時間やコンパイル時間は計測区間に含みません。
 - `--scale` オプションは各ベンチマーク系列の既定仕事量に対する乗数です。統合ランナーの既定値は `0.01`、許容範囲は $0 < \text{scale} \le 5$ です。Mandelbrot 種目では画素数に対応させるため、一辺の解像度にスケール値の平方根を乗じます。`--quick` は正しさの確認のみを目的とし、速度の評価には使用しません。
 - ネイティブ実装群は同一プロセス内で実行順序を均等にローテーションさせて測定します。一方、C# と JavaScript は別プロセスとして順番に起動して測定します。このため、OS のスケジューリング、CPU 温度、およびシステム負荷による揺らぎが残存します。僅差の数値を過剰に勝敗として解釈しないよう配慮が必要です。
 - C# は .NET 10 の Release JIT（`DOTNET_TieredCompilation=0`、ウォームアップ完了後）で計測しています。NativeAOT による測定ではありません。制御系列の配列・リスト操作では `NativeMemory`、`Span`、およびポインタを用いて明示的なメモリ確保・解放に揃えています。`allocated_bytes` はマネージドヒープの確保量のみを反映し、NativeMemory のバイト数は含みません。スカラー種目への不要なクロージャ環境の混入は回避しています。
 - JavaScript の 64/128-bit 整数演算は `BigInt` と明示的なビットマスク（折り返し）を用い、f32 は `Math.fround`、UTF-16 はコード単位として厳密に扱います。安易に `Number` へ置き換えて精度を犠牲にするような測定は行いません。配列は `BigUint64Array`、リストは単方向リンクのオブジェクトで表現しています。`string.slice` は物理的なメモリコピーを保証せず、各 JavaScript エンジン固有のロープ（rope）構造、文字列共有、および短小文字列最適化（SSO）の特性がそのまま現れます。
 - C# および JavaScript の計測中に発生した GC（ガベージコレクション）の時間は測定結果に含まれ、発生回数等も記録されます（計測完了後の強制 GC は別枠で記録）。したがって、マネージド言語の測定結果は「全メモリ領域が明示的に解放されるまで」のライフサイクルを完全に再現したものではありません。
-- 並列処理種目では、すべての実装で同一の 16 個の独立タスクを実行します。C++ は有界の `std::thread`、Rust は `scoped threads`、Tsuzuri は有界の `pthread fork/join`、C# は有界な `Parallel.For` の常駐プール、JavaScript は有界の `worker_threads` を使用します。スレッドやワーカーの新規起動、全ジョイン・終了待機、および結果の回収がすべて計測時間に含まれます。C# の常駐プールと他言語の都度起動スレッドを同一のスケジューラ特性として混同してはなりません。また JavaScript のメインスレッド側の GC 記録にはワーカー内部の GC は含まれませんが、タスク完了までの実経過時間には適切に反映されます。
+- 並列処理種目では、すべての実装で同一の 16 個の独立した仕事を実行します。C++ は有界の `std::thread`、Rust は `scoped threads`、Tsuzuri は `Routine.scope`（子ごとに 1 つの tzroutine。tzroutine を走らせる OS スレッドはスケジューラーが最初の使用で起こし、呼び出しをまたいで使い続けます。サマリーの値は TZ12 で削除した Task の常駐プール）、C# は有界な `Parallel.For` の常駐プール、JavaScript は有界の `worker_threads` を使用します。スレッドやワーカーの新規起動、全ジョイン・終了待機、および結果の回収がすべて計測時間に含まれます。C# の常駐プールや Tsuzuri のスケジューラーと、他言語の都度起動スレッドを同一のスケジューラ特性として混同してはなりません。また JavaScript のメインスレッド側の GC 記録にはワーカー内部の GC は含まれませんが、タスク完了までの実経過時間には適切に反映されます。
 - 2026-10-13 の PX02 以後、`std_option_owned` は全実装がソース上で 2 回の所有文字列の連結、長さの読み出し、解放（管理言語は GC）を行います。最適化で確保が消えた場合も、その実装の結果として記録します。以前の定数長の参照は `std_option_length` に分けました。2026-09-26 の旧い owned の値は条件の異なる履歴であり、新しい owned と直接比較しません。
 - `--cpu native` オプションは C/C++、Rust、および Tsuzuri に適用されます。C# および V8（JavaScript）は実行マシン向け JIT コンパイラとして動作し、generic な命令セットを強制することはありません。また Clang と rustc 同梱の LLVM のバージョン差も存在します。実際のビルド条件は出力 JSON の `environment` および `native_options` に記録されます。
 - `--baseline` オプションは control および computations 系列の同一プロセス比較に適用されます。cpp 系列では保存済みのコンパイラバイナリを個別に指定して比較します。`--artifacts` はネイティブのコンパイル成果物、入力プラン、元のネイティブ JSON、および統合 JSON を指定ディレクトリへ保存します。
@@ -551,7 +553,7 @@ CPU を明示指定したことによる極端な性能変化は見られませ�
 1. 動的クロージャのアダプタ関数に、環境借用の内部フラグ（`i1 borrow`）を追加しました。読み取りのみを行う捕捉変数は複製せず、消費的な捕捉時や特殊化予算の上限到達時にのみアダプタ内部で必要な複製を実行します。後続の引数が状態を変更し得る場合は事前のスナップショット保持を継続します。配列やリストの動的初期化にも同様のロジックを適用し、関数記述子の 4 ポインタ表現、公開 ABI、および Task ABI は一切変更していません。同一プロセス内での新旧比較では、generic 設定で 9.51〜10.70 倍、native 設定で 9.88〜10.77 倍の高速化を確認しました。
 2. すべての数値型の文字列表現において、ASCII 確定の文字列を直接 UTF-16 バッファへ拡張する高速パスを導入しました。整数の十進変換は値が 64-bit に収まる範囲で 64-bit 除算へと早期に移行させ、狭幅整数の解析における cutoff 計算も 64-bit で行います。128-bit 整数、decimal 型、NaN、符号付きゼロ、および厳密な最近接偶数丸めの意味論は完全に維持されます。
 3. UTF-16 および UTF-8 の一致比較において、バッファ境界内の 64-bit 一括読み出しを採用しました。辞書順比較は最初の不一致位置における 16-bit 符号なしコード単位の値で決定します。UTF 変換処理では、検証済みの入出力文字長が等しい場合にのみ ASCII 直接書き込みパスへ進み、非 ASCII 文字を含む場合は従来の復号ループへ安全に分岐します（各位置で ASCII を先読みする試作コードは、混在 Unicode テキストで性能低下を招いたため破棄されました）。
-4. `Task.parallel` は、未割り当てのタスクが存在しなくなった時点で不要な追加ワーカースレッドの起動を即座に停止します。固定サイズやベンチマーク名による恣意的な閾値判定は行わず、既に起動したワーカーは確実にジョインして終了します。最大並列度、ネスト実行、同時呼び出し、およびタスクの早期枯渇の各条件下での決定論的動作をテストで確認しました。
+4. 当時の `Task.parallel`（TZ12 で削除）は、未割り当てのタスクが存在しなくなった時点で不要な追加ワーカースレッドの起動を即座に停止します。固定サイズやベンチマーク名による恣意的な閾値判定は行わず、既に起動したワーカーは確実にジョインして終了します。最大並列度、ネスト実行、同時呼び出し、およびタスクの早期枯渇の各条件下での決定論的動作をテストで確認しました。
 
 同一の計測マシン、`--scale 0.1`、別プロセスによる新旧比較では、UTF-16 比較が 0.029318 ms → 0.017442 ms、UTF 往復変換が 0.164931 ms → 0.144685 ms、整数表示・解析が 1.085425 ms → 0.567830 ms へと短縮されました。
 この新旧比較は 1 回ずつの試行であるため、僅かな数値差のみを過大に評価することは避けています。
@@ -621,51 +623,39 @@ WASM については、ウォームアップ完了後の関数呼び出しを `p
 単発の微小な測定差、測定環境が異なる結果同士の単純比率、あるいはブラウザデモにおける FPS の数値を、一般的なプログラミング言語間の性能差として短絡的に解釈してはなりません。
 上記の C／WASM 比較は、ガベージコレクション、動的メモリ確保、文字列処理、巨大配列操作、I/O、GUI、あるいはゲームループ全体を網羅した C++／F#／C# との包括的ベンチマークではありません。
 
-`Task.parallel` はネイティブの常駐スレッドプールによる有界 fork/join を実装していますが、上記の基本比較はタスク並列処理の速度比較を含むものではありません。`examples/tasks` やタスクの単体テストも、並行実行の正確性、計算結果、およびリソース回収を検証するためのものであり、高速化の証拠として提示するものではありません。
-並列処理の正当な性能比較を行う場合は、同一のタスク粒度、分割手法、およびメモリコピー条件の下で、タスク生成、クロージャ捕捉の複製、結果メモリの確保、スレッド起動、同期、全ジョイン、およびメモリ解放に至るすべての実経過時間（wall time）を測定する必要があります。
-CPU 時間は複数スレッドの実行時間を合算してしまうため、シングルスレッド逐次実行との経過時間比較には使用できません。また、常駐プールの起動および同期オーバーヘッドも入力サイズに依存するため、初回起動時とプール再利用時を明確に分離して評価する必要があります。なお、WASM におけるタスクは現状逐次フォールバックであり、マルチコア並列性能として報告することはありません。
-| `wasm.median_ms` | WASM の wall time 中央値（ms、小さいほど高速） |
-| `wasm.bytes` / `wasm.imports` | モジュールサイズ／インポート数 |
-| `raw` / `raw_ms` | 全サンプルの値 |
+ネイティブの `Parallel.*`・`Routine.scope`・tzroutine は M:N のスケジューラー（`src/runtime/tzroutine.c`）の上で走りますが、上記の基本比較は並列処理の速度比較を含むものではありません。`examples/tzroutines` や tzroutine・`Parallel` のテストも、並行実行の正確性、計算結果、およびリソース回収を検証するためのものであり、高速化の証拠として提示するものではありません。
+並列処理の正当な性能比較を行う場合は、同一の仕事の粒度、分割手法、およびメモリコピー条件の下で、tzroutine の生成、クロージャ捕捉の複製、結果メモリの確保、スケジューラーのスレッドの起動、同期、全ジョイン、およびメモリ解放に至るすべての実経過時間（wall time）を測定する必要があります。
+CPU 時間は複数スレッドの実行時間を合算してしまうため、シングルスレッド逐次実行との経過時間比較には使用できません。また、スケジューラーの起動および同期オーバーヘッドも入力サイズに依存するため、初回起動時とスレッド再利用時を明確に分離して評価する必要があります。なお、既定の WASM の `Parallel.*` は逐次フォールバックで（tzroutine と `Routine.scope` は WebAssembly で `E2000`）、マルチコア並列性能として報告することはありません。`--wasm-feature threads` の Worker プールは下の `run-tasks-wasm.mjs` で測ります。
 
-ネイティブの CPU time と WASM の wall time は同じ時計ではありません。
-単発の僅かな差、別々の環境の比、ブラウザー例の FPS を一般的な言語性能差と解釈しないでください。
-上の C／WASM 比較は GC、動的メモリ、文字列、巨大配列、I/O、GUI、ゲーム全体、
-C++／F#／C# の包括的比較を測っていません。
-
-`Task.parallel` は現在ネイティブの常駐 pool による bounded fork/join を実装していますが、上の既存比較は
-タスクの速度比較ではありません。`examples/tasks` とタスクのテストも、同時実行・結果・
-資源回収を示すもので、速度向上の証拠には使いません。
-並列処理を比較する場合は同じ仕事・分割・コピー条件で、タスクの生成、捕捉の複製、
-結果領域の確保、スレッドの起動、同期、全 join／解放を含む wall time を測ります。
-CPU time は複数スレッドの時間を合計するため、逐次版との経過時間比較には使えません。
-常駐 pool の起動・同期費用も入力依存であり、初回と再利用時を分けて測る必要があります。
-WASM のタスクは逐次フォールバックであり、マルチコア性能として報告しません。
-
-## Task プール
+## Routine.scope と tzroutine のスケジューラー
 
 ```sh
 cargo build --release --locked
 node benchmarks/run-tasks.mjs target/release/tsuzuri --quick
-node benchmarks/run-tasks.mjs target/release/tsuzuri --baseline-runtime target/f01-task-before.o --artifacts target/benchmarks/f01-measured
-node benchmarks/run-tasks.mjs target/release/tsuzuri --runtime <task.c> --baseline-runtime <before-task.c> --metrics target/perf/<run>
-node benchmarks/run-tasks.mjs target/release/tsuzuri --sweep           # 32 タスクで 1 件の長さを変える（粒度）
-node benchmarks/run-tasks.mjs target/release/tsuzuri --gap-us 1000     # 各呼び出しの前に 1 ms 休み、worker を眠らせる（起床の遅延）
-node benchmarks/run-tasks-wasm.mjs target/release/tsuzuri --quick       # WASM threads の pool（Node.js の worker_threads）
+node benchmarks/run-tasks.mjs target/release/tsuzuri --baseline-runtime <before の tzroutine.c> --artifacts target/benchmarks/tasks-measured
+node benchmarks/run-tasks.mjs target/release/tsuzuri --runtime <tzroutine.c> --baseline-runtime <before の tzroutine.c> --metrics target/perf/<run>
+node benchmarks/run-tasks.mjs target/release/tsuzuri --sweep           # 32 個の子で 1 件の長さを変える（粒度）
+node benchmarks/run-tasks.mjs target/release/tsuzuri --gap-us 1000     # 各呼び出しの前に 1 ms 休み、スケジューラーのスレッドを眠らせる（起床の遅延）
+node benchmarks/run-tasks-wasm.mjs target/release/tsuzuri --quick       # Parallel.init を WASM threads の pool（Node.js の worker_threads）で
 ```
 
-`--baseline-runtime` オプションには、同一ターゲット、Clang、`-O3`/PIC 設定で事前にビルド・保存した変更前のタスクランタイム（オブジェクトまたは C ファイル）を指定します。
-`--runtime` は測定側のランタイムの C ファイルを指定します（既定は `src/runtime/task.c`）。コンパイラの埋め込みランタイムと切り離して、同じコンパイラ・同じ IR で前後のランタイムを比べられます。
-同一の LLVM IR を新旧両ランタイムへリンクし、タスク生成、クロージャ捕捉、結果メモリ確保、並行実行、完了待機、およびリソース解放に至る全行程を測定対象に含めます。
-IR は `--allocator system` で作ります（既定の確保器が変わっても比較の対象が変わらないようにするためです）。
-コールド測定（cold）は初回呼び出しおよびスレッドプールの遅延起動時間を計測し、ウォーム測定（warm）は同一プロセス内でのプール再利用時の時間を計測します。コンパイル時間、プロセス起動時間、およびプロセス終了時のシャットダウン時間は計測区間外です。
+TZ12 から `run-tasks.mjs` は tzroutine のスケジューラーで測ります。測る関数は `benchmarks/tasks/Main.tz` の `parallel_batch` で、`Routine.scope (ref rounds) count (\shared index -> work (deref shared) index)` が子ごとに 1 つの tzroutine を作り、すべての子の終わりを待ちます（TZ12 より前は、同じ仕事を `Task.parallel` で常駐プールに渡していました）。
+コンパイラは `--emit llvm --allocator system` で 1 つの IR を作り（既定の確保器が変わっても比較の対象が変わらないようにするためです）、C のホストと C ランタイムの C ファイルとともに Clang（`-O3 -fPIC -fno-fast-math -ffp-contract=off -pthread`）で 1 つの実行ファイルにします。
+`--runtime` は測る側の C ファイル（既定は `src/runtime/tzroutine.c`）、`--baseline-runtime` は比べる側の C ファイルで、どちらもスケジューラーの C ランタイムだけを差し替えます。コンパイラの埋め込みランタイムと切り離して、同じコンパイラ・同じ IR で前後のランタイムを比べられます（IR が呼ぶ `tsuzuri_tz_*` の ABI が合う C ファイルに限ります。TZ12 で削除した `src/runtime/task.c` は、今の IR とは比べられません）。`--data-parallel` は `--baseline-runtime` を取りません。
+コールド測定（cold）は初回呼び出しで、スケジューラーの起動（P の用意と OS スレッドの起動）を含みます。ウォーム測定（warm）は同一プロセス内での連続呼び出しで、子の tzroutine の生成、クロージャ捕捉、結果メモリ確保、並行実行、完了待機、およびリソース解放を含みます。コンパイル時間、プロセス起動時間、およびプロセス終了時のシャットダウン時間は計測区間外です。
 `--quick` オプションは独立した整数参照実装との結果一致を確認するスモークテストであり、速度に関する合否判定閾値は設けていません。
 通常の測定では 9 サンプルを採取し、新旧の実行順序を交互にローテーションさせ、動作環境、IR およびランタイムのハッシュ値、ならびに全サンプルの生データを `result.json` へ記録します。
 1 サンプルは 1 プロセスで、`warm_ms_per_call`（連続呼び出しの平均）、`warm_p50_ms`（1 回ごとに計った呼び出しの中央値）、`cpu_ms_per_call`（プロセスの CPU 時間を呼び出し数で割った値）を出します。
-`--gap-us` は 1 回ごとの呼び出しの前に休みを入れます。休みは時間に含めません。worker が眠った後の起床の遅延を見るための設定です。休みなしの連続呼び出しでは、HEAD の tiny の p50 は測った全 run で 0.2 µs 前後のままで、この遅延が現れません。
-`--metrics` の生データは、モードごとに別の suite（`tasks`・`tasks-data`・`tasks-sweep`・`tasks-gap`）へ書きます。
-仕事は tiny（4 添字×0 反復）、small（32 添字×16 反復）、bulk（1024 添字×256 反復）に、`cpp/task_parallel` と同じ形の coarse（16 添字×60000 反復、1 件あたり約 80 µs）を加えた 4 つです。
-`run-tasks-wasm.mjs` は、同じ kernel の `Task.parallel` を WASM threads の pool（Node の `worker_threads`）で測り、JSON を 1 行出力します。測る対象はコンパイラが埋め込む `task-wasm-threads.c` なので、2 つのコンパイラを比べると 2 つの pool を比べられます。
+`--gap-us` は 1 回ごとの呼び出しの前に休みを入れます。休みは時間に含めません。スケジューラーのスレッドが眠った後の起床の遅延を見るための設定です。
+`--metrics` の生データは、モードごとに別の suite（`tasks`・`tasks-data`・`tasks-sweep`・`tasks-gap`）へ書きます。既定のモードの測る側の variant は `pool-cold`・`pool-warm`・`pool-warm-p50` のままで、比べる側は `baseline-*` です（`--data-parallel` は `parallel-init`・`array-init` などの 6 つ、`--sweep` は `parallel`・`sequential` の前置きです）。時系列を続けるため、suite と variant の名前は TZ12 より前と同じにしました。TZ12 から tzroutine のスケジューラーで測るので、TZ12 の前後の値は別の実装の値です。
+仕事は tiny（4 個の子×0 反復）、small（32 個×16 反復）、bulk（1024 個×256 反復）に、`cpp/task_parallel` と同じ形の coarse（16 個×60000 反復、1 件あたり約 80 µs）を加えた 4 つです。`--sweep` は 32 個の子の長さを 16〜16384 反復に変え、同じ IR の逐次版（`sequential_batch`）と比べます。
+WebAssembly には tzroutine がないので（`Routine.scope` は `E2000`）、`--data-parallel` の WASM の正しさの検査は、`parallel_batch` を除いた `benchmarks/tasks/Main.tz` の複製を build します。
+`run-tasks-wasm.mjs` は、同じ形の tiny・small・bulk を `data_parallel_batch`（`Parallel.init`）で WASM threads の pool（Node の `worker_threads`）の上で測り、JSON を 1 行出力します（TZ12 より前は `parallel_batch` の `Task.parallel` を測っていました。こちらも build の前に `parallel_batch` を除きます）。測る対象はコンパイラが埋め込む `task-wasm-threads.c` なので、2 つのコンパイラを比べると 2 つの pool を比べられます。
+TZ12 の後、`run-tasks.mjs` と `run-tasks-wasm.mjs` のどちらの値もまだ測っていません。この測定結果を冒頭の言語間ベンチマークサマリーに混入させることはせず、共有 CI に恣意的な速度閾値を設定することもありません。
+
+### 履歴: F01 の Task プール（TZ12 で削除）
+
+次の表は、チケット F01 のときに、TZ12 で削除した Task の常駐プール（`src/runtime/task.c`。`Task.parallel` の新しい pool と、それより前の runtime）を当時の `run-tasks.mjs` で測った記録です。今の `run-tasks.mjs`（`Routine.scope` と tzroutine のスケジューラー）の値ではありません。
 
 チケット F01 実装時における測定結果（Apple M1 Max、10 logical CPUs、macOS Darwin 27、Apple Clang 21、`-O3 generic`、fast-math なし）:
 
@@ -691,9 +681,9 @@ node benchmarks/run-tasks.mjs target/release/tsuzuri --data-parallel --artifacts
 既存ハーネスのデータ並列比較モードを使用し、Array と Parallel の `init`、`map`、`sum` を同一の入力データおよび整数演算で比較します。
 入出力メモリの確保、クロージャ捕捉、並行計算、スレッド間同期、およびリソース解放の全所要時間を計測します。`sum` の計測には入力データの生成時間も含まれるため、純粋な加算カーネル単体の演算速度比較ではない点に留意してください。
 整数の加算演算は結合法則により処理順序が異なっても同一の合計値となり、各測定結果は独立した参照リファレンスと厳密に照合されます。WASM 環境においては 18 件の正確性検証のみを実施し、並列による高速化として報告することはありません。
-9 サンプルの生データ、実行環境、ハッシュ値、生成 IR、およびアセンブリコードを保存します。アセンブリ解析により、専用のチャンクコールバックおよび `tsuzuri_task_parallel` の呼び出しが正しく生成されていることを確認しました。
+9 サンプルの生データ、実行環境、ハッシュ値、生成 IR、およびアセンブリコードを保存します。アセンブリ解析により、専用のチャンクコールバックおよび `tsuzuri_task_parallel` の呼び出しが正しく生成されていることを確認しました（F02 のときの確認です。TZ12 から、ネイティブの `Parallel.*` は tzroutine のスケジューラーの `tsuzuri_tz_parallel` を呼び、`tsuzuri_task_parallel` を呼ぶのは WebAssembly だけです）。
 
-チケット F02 実装時における Apple M1 Max（10 logical CPUs）、Apple Clang 21、`-O3 generic` のウォーム中央値（ms/call、数値が小さいほど高速）:
+チケット F02 実装時における Apple M1 Max（10 logical CPUs）、Apple Clang 21、`-O3 generic` のウォーム中央値（ms/call、数値が小さいほど高速）です。`Parallel` が、TZ12 で削除した Task の常駐プール（`src/runtime/task.c`）の上で走っていたときの値で、tzroutine のスケジューラーの上では測り直していません:
 
 | 要素数／計算反復 | Parallel.init | Array.init | Parallel.map | Array.map | Parallel.sum | Array.sum |
 |---|---|---|---|---|---|---|
@@ -718,7 +708,7 @@ node benchmarks/run-cpp.mjs target/release/tsuzuri --quick
 ```
 
 環境変数 `TSUZURI_CLANG`（デフォルトは `clang`）を両言語で共通して使用し、C++ は同一の Clang ドライバーを `--driver-mode=g++` で起動してコンパイルします。実行には C++20 標準ライブラリ、Rust、および Node.js 24 以降が必要です。
-以下の基本 3 種目に加え、現在は UTF 系列 4 種目、format_parse、math_intrinsics、タスク系列 3 種目を計測しています。追加種目の測定条件は冒頭の横断比較の節を参照してください。以下の測定結果は当時の基本 3 種目の条件に基づくものです。
+以下の基本 3 種目に加え、現在は UTF 系列 4 種目、format_parse、math_intrinsics、`task_*` 系列 3 種目（TZ12 から Tsuzuri 側は関数値と `Routine.scope`。サマリーの下の注）を計測しています。追加種目の測定条件は冒頭の横断比較の節を参照してください。以下の測定結果は当時の基本 3 種目の条件に基づくものです。
 
 | 種目 | 既定の仕事量 | 含める処理 |
 |---|---|---|
@@ -1406,7 +1396,7 @@ native `-O0` の 250 ms 前後は、2,000 万回の末尾呼び出し（`b` の�
 ### 測っていないもの
 
 - macOS の x86-64（Intel）の実行、Linux の arm64 の `--backend fast`（Linux のコンテナで確かめたのは x86-64 の `--backend fast` と、arm64・x86-64 の `llvm` の object だけです。上の 5）、ネイティブの Windows の実行。`targets.yml` の macOS と Linux の 4 つの host が、`tests/stack.mjs` と fast backend のテストを実行します。Windows の CI（`windows.yml`）が実行するのは Rust のテスト（IR の形の `tests/tail_recursion.rs`・`tests/stack_frames.rs`）だけで、`tests/stack.mjs` は実行せず、`--backend fast` はホストが Windows のとき `E2000` なので、その翻訳を実行する Windows の CI はありません。
-- `Task.parallel` と WASM threads のワーカーのスタックの大きさと、枯渇の挙動（前から文書にある値で、今回は測っていません）。
+- `Task.parallel`（TZ12 で削除）と WASM threads のワーカーのスタックの大きさと、枯渇の挙動（前から文書にある値で、今回は測っていません）。
 - Binaryen の `wasm-opt`（`--enable-tail-call` を渡す実装だけで、実行は確かめていません）、wasm64 の実行（Node.js 20 は memory64 を既定で持ちません。wasm64 は object の生成だけを確かめました）。
 - ブラウザの WebAssembly エンジン（Node.js 20.19.6 の V8 だけで `return_call` を実行しました）。
 - フレームの大きさの前後比較は、IR を共有する clang の後段の値で、`-O3` のフレーム全体の改善の主張は「展開されない関数で 1 つの再帰関数が 42% 小さくなった」と「108 プロジェクトの合計が −464 bytes（−0.008%）」までです。
@@ -1582,7 +1572,7 @@ Phase 3 では、値を表示するプログラムを先に検査し、`Display`
 
 ## 行列積（C11）
 
-`node benchmarks/run-matrix.mjs target/release/tsuzuri [--quick] [--fused-all]` は、`Matrix` の積（`benchmarks/matrix/Main.tz`）を素朴な C の行列積と同じ条件で比べ、同じプログラムを wasm32 でも Node で実行します。`n × n` の入力 2 つ（式は両側で同じ）から `repeats` 回積を作り、積ごとに checksum（`f64` と `f32` は `total * 0.999 + x` を左から右に畳み込んだ値、`i64` は `total * 31 + x`）を足し合わせます。C 側は `-O3 -std=c11 -ffp-contract=off -fno-lto` でコンパイルし、Tsuzuri 側は `build --emit object -O3` の object を、ホストと `src/runtime/task.c` と同じ実行ファイルにリンクします。
+`node benchmarks/run-matrix.mjs target/release/tsuzuri [--quick] [--fused-all]` は、`Matrix` の積（`benchmarks/matrix/Main.tz`）を素朴な C の行列積と同じ条件で比べ、同じプログラムを wasm32 でも Node で実行します。`n × n` の入力 2 つ（式は両側で同じ）から `repeats` 回積を作り、積ごとに checksum（`f64` と `f32` は `total * 0.999 + x` を左から右に畳み込んだ値、`i64` は `total * 31 + x`）を足し合わせます。C 側は `-O3 -std=c11 -ffp-contract=off -fno-lto` でコンパイルし、Tsuzuri 側は `build --emit object -O3` の object（`Matrix.mul_parallel` の `Parallel` が呼ぶ tzroutine のランタイムを埋め込む）を、ホストと同じ実行ファイルにリンクします。
 
 比べる実装は次のとおりです。
 
@@ -1923,7 +1913,7 @@ native Windows Clang の標準 COFF object は `TimeDateStamp`（offset 4 の 4 
 この時刻を生成後に書き換えたり、compiler flags やコードの byte を変更したりはしません。
 
 Phase 2 の tasks・simd・dispatch・mix も `--metrics <dir>` を受け付けます。
-Task は cold と warm を別 variant にし、SIMD・dispatch の標本は反復回数で割った 1 呼び出しの wall time です。
+tasks（`run-tasks.mjs`）は cold と warm を別 variant にし、SIMD・dispatch の標本は反復回数で割った 1 呼び出しの wall time です。
 `run.mjs` の native は wall と CPU、WASM は wall を記録します。
 既定の stdout は変えず、9 標本が必要な runner は metrics 指定時だけ標本を増やします。
 
@@ -2465,7 +2455,7 @@ node benchmarks/run-build.mjs target/release/tsuzuri --sizes 200,1000 --language
 node benchmarks/build/generate.mjs --modules 1000 --out /tmp/tsuzuri-synthetic
 ```
 
-通常は 200・1,000 module と 11 の実プロジェクト、quick は 10 module と hello です。
+通常は 200・1,000 module と 10 の実プロジェクト（`run-build.mjs` の `REAL_PROJECTS`。TZ12 で削除した `examples/tasks` を外しました。後継の `examples/tzroutines` は wasm32 に build できない（`E2000`）ので入れていません）、quick は 10 module と hello です。
 Tsuzuri は check、LLVM IR、native `-O0`・`-O3`、WASM `-O0`・`-O3`、変更なし、本体の編集、公開 API の編集の 9 組を測ります。
 初回の組は両 cache を無効にし、warm と編集の組は専用の一時 cache を使います。
 warm は外部ツールが無いこと、編集は外部ツールが走ることを標本ごとに検査します。
@@ -2795,7 +2785,7 @@ Apple Clang 21、LLVM 21 の `opt -O3` と arm64 の逆アセンブルも確認�
 それらについて通常の `-O3` 実行が新たに速くなったという主張はしません。
 `tests/features.mjs ... storage` は 24 件（`to_string<string>` の identity、局所連結、明示 clone を含む）を native/WASM の `-O0`・`-O3` で照合し、
 native では `ASAN_OPTIONS=detect_stack_use_after_return=1 TSUZURI_ASAN=1` でも確認します。
-再帰・Task・大きすぎる環境・4 KiB の予算超過時の経路は `tests/storage.rs` で別に検査します。
+再帰・tzroutine の本体・大きすぎる環境・4 KiB の予算超過時の経路は `tests/storage.rs` で別に検査します。
 
 `benchmarks/allocation/Main.tz` は、長さだけの連結、局所連結、局所環境、外へ逃がす対照を各 100 万回実行します。
 期待する出力は独立に計算した `667000000` です。プロセス起動込みの時間と RSS は次の共通 runner で再現できます。
@@ -3208,6 +3198,8 @@ node benchmarks/metrics.mjs report target/perf/PB04-after/t8 --baseline target/p
 TSUZURI_BASELINE=target/perf/PB04/tsuzuri-before node tests/parallel_frontend.mjs target/release/tsuzuri
 
 ### Task プールのスケジューラ（PR06、2026-10-16）
+
+**記録（TZ12 で削除した実装）。** この節は、TZ12 で削除した Task の常駐プール（`src/runtime/task.c`）と、当時の `run-tasks.mjs`・`benchmarks/tasks/Main.tz`（`Task.parallel`）で測った記録です。数は当時のままで、今の実装（`Routine.scope` と tzroutine のスケジューラー。[Routine.scope と tzroutine のスケジューラー](#routinescope-と-tzroutine-のスケジューラー)）の値ではありません。下のコマンドと `tests/task_runtime.c`・`tests/task_stress.c` は TZ12 より前の作業木でだけ動きます。
 
 native の `Task.parallel`・`Task.parallel_results` の pool（`src/runtime/task.c`）は、添字の取得を group ごとの atomic な加算に、完了の数え方を参加者ごとの 1 回の減算に、
 起床を signal と木の形の連鎖に変えました（設計は [アーキテクチャ](architecture.md)）。WASM threads の pool（`src/runtime/task-wasm-threads.c`）は、添字の取得と完了を同じ形にしました。
@@ -4233,6 +4225,8 @@ after は実時間で 1/72、CPU 時間で 1/58 です（範囲は重なりま�
 
 #### Task pool のスケジューラ（PR06）
 
+**記録（TZ12 で削除した実装）。** この項は、TZ12 で削除した Task の常駐プール（`src/runtime/task.c`）を測った記録で、今の `run-tasks.mjs`（`Routine.scope` と tzroutine のスケジューラー）の値ではありません。
+
 before は main `6d15b437` の `src/runtime/task.c`（SHA-256 `d9b3692c05cc6dd64d4922f15d9a095bbca5698f17d2dd9c881cf18b6d889d34`）、after は統合 branch の `src/runtime/task.c`（`ac27826f0366c1863049f4c03a5c846a760793832904eb0f02ba44d5d6f3d4b0`。PR06 の節の最終の runtime と同じ）です。
 `benchmarks/run-tasks.mjs $BEFORE --runtime <after の task.c> --baseline-runtime <before の task.c> --metrics DIR` は、before のコンパイラが出す同じ IR に C の runtime だけを差し替え（native、`-O3 --cpu generic`、`--allocator system`、9 標本、1 標本ごとに順序を反転）、
 休まない run と `--gap-us 1000`（各呼び出しの前に 1 ms 休む。worker が眠った状態からの起床）の run をそれぞれ 3 回測りました。A/A は両方に before の runtime を渡した run です。
@@ -5028,12 +5022,12 @@ n = 1,000 では 0.002〜0.48 倍（`string_list` が 0.48、`compare_list` が 
 
 ### 範囲の判断（D6）と trap の分岐（D9）
 
-- **数値・数学のランタイム（D6）は PGO の対象にしません。** `Math.sin`・`Math.exp`・`Math.sqrt` を 3,000 万回呼ぶ例を、既定（数学のランタイムは別の prebuilt object）と `--no-cache`（IR のまま埋め込む）で、それぞれ plain と PGO で作り、15 回交互に実行しました（最小／中央値 ms）。既定: 284.9／302.0 → PGO 285.8／309.4。埋め込み: 262.9／288.7 → PGO 266.7／291.3（既定のビルドの profile を埋め込みのビルドに使っても 266.1／276.3）。埋め込みは PGO と無関係に約 8% 速く（呼び出しに inline されるため）、プロファイルは `tz_math_sin_f64`・`tz_math_exp_f64` の分岐を数えても、使った成果物に差が出ません。PGO のビルドだけ埋め込む案は、プロファイルの効果ではない差を混ぜ、コンパイルが約 0.4 秒増えるので取り下げました。C のランタイム（task など）は計装していません。
+- **数値・数学のランタイム（D6）は PGO の対象にしません。** `Math.sin`・`Math.exp`・`Math.sqrt` を 3,000 万回呼ぶ例を、既定（数学のランタイムは別の prebuilt object）と `--no-cache`（IR のまま埋め込む）で、それぞれ plain と PGO で作り、15 回交互に実行しました（最小／中央値 ms）。既定: 284.9／302.0 → PGO 285.8／309.4。埋め込み: 262.9／288.7 → PGO 266.7／291.3（既定のビルドの profile を埋め込みのビルドに使っても 266.1／276.3）。埋め込みは PGO と無関係に約 8% 速く（呼び出しに inline されるため）、プロファイルは `tz_math_sin_f64`・`tz_math_exp_f64` の分岐を数えても、使った成果物に差が出ません。PGO のビルドだけ埋め込む案は、プロファイルの効果ではない差を混ぜ、コンパイルが約 0.4 秒増えるので取り下げました。C のランタイム（当時の `task.c` など。今の `tzroutine.c` も同じ）は計装していません。
 - **trap の分岐への `!prof`・`llvm.expect`（D9）は足しません。** `node benchmarks/run-trap-layout.mjs target/release/tsuzuri` は 21 の corpus（`benchmarks/` の 11、`tests/fixtures/control`、`examples/` の 9）の `-O3` の asm で、trap の命令 177 個（arm64 と x86-64 で同じ数）を分類します。arm64 では out of line（直前が無条件の jump か return）132、関数の末尾で条件分岐の直後 9、失敗の経路の連鎖（`free` の後など）14、ループが尽きたときの fall-through（ループの back edge の直後）21、hot path が飛び越える形は 1（`examples/functional` の失敗の経路の中）です。x86-64 は 129・10・16・21・1。`control` と `computations` は全部 out of line です。hot path が trap の block を飛び越す形はなく、重みを足す根拠がありません。
 
 ### 並列に動くプログラムのカウンター
 
-計装のカウンターは原子的に更新しません（Clang の既定の `-fprofile-update=single`）。4 つの Task が同じ関数の 1 億回のループを回す次のプログラムで、`llvm-profdata show --all-functions --counts` の Task の本体（`tz.apply.$task.2.1`）の回数を、更新の方法を替えて比べました（M1 Max、Apple clang 21.0.0、load average 30〜50 の共有機。`clang` を呼ぶ wrapper が `-fprofile-update=…` を足しました）。
+計装のカウンターは原子的に更新しません（Clang の既定の `-fprofile-update=single`）。次の測定は PR07 のときに、TZ12 で削除した `task { }`・`Task.parallel` で書いたプログラムで行った記録で、TZ12 の後は測り直していません（今は tzroutine や `Parallel.*` のチャンクが同じ関数を同時に走らせるときに、同じ理由で回数が失われえます）。4 つの Task が同じ関数の 1 億回のループを回す次のプログラムで、`llvm-profdata show --all-functions --counts` の Task の本体（`tz.apply.$task.2.1`）の回数を、更新の方法を替えて比べました（M1 Max、Apple clang 21.0.0、load average 30〜50 の共有機。`clang` を呼ぶ wrapper が `-fprofile-update=…` を足しました）。
 
 ```text
 def rec spin :: i64 -> i64 -> i64 = \n total ->

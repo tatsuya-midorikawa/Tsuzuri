@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use tsuzuri::{analyze, analyze_all};
+use tsuzuri::{analyze, analyze_all, analyze_modules};
 
 const HELP: &str = "the channel with separate Sender and Receiver ends was renamed to DataChannel; the name Channel is now Go's two-way channel (Channel.make)";
 
@@ -192,5 +192,149 @@ fn a_function_of_the_program_keeps_its_mismatch() {
     assert!(!check.status.success());
     assert!(stderr.contains("error[E1003]"), "{stderr}");
     assert!(!stderr.contains("E1040"), "{stderr}");
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// The `E1040` of a form that TZ12 removed: its kind, message, help, and the text of its certain fix,
+/// if it has one.
+fn removed_task(source: &str) -> (&'static str, String, String, Option<String>) {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, "E1040", "{source}\n{}", error.message);
+    let fix = match error.fixes.as_slice() {
+        [] => None,
+        [fix] => {
+            assert_eq!(fix.applicability.as_str(), "certain", "{source}");
+            assert_eq!(fix.edits.len(), 1, "{source}");
+            let edit = &fix.edits[0];
+            assert_eq!(edit.span.start, error.span.start, "{source}");
+            assert_eq!(edit.span.end, error.span.end, "{source}");
+            Some(edit.text.clone())
+        }
+        fixes => panic!("{source}: {} fixes", fixes.len()),
+    };
+    (
+        error.kind.expect(source),
+        error.message.clone(),
+        error.help.clone().expect(source),
+        fix,
+    )
+}
+
+#[test]
+fn names_the_removed_task_forms() {
+    for (source, kind, message, help, fix) in [
+        (
+            "let job = task { return 1 }\n0\n",
+            "removed_task_expression",
+            "'task { }' was removed",
+            "run the work directly, or spawn it with 'tzroutine { ... }' and wait with WaitGroup or a Channel",
+            None,
+        ),
+        (
+            "def f :: ref Task<i64> -> i64\nfn f job = 0\n\n0\n",
+            "removed_task_type",
+            "the type 'Task' was removed",
+            "return the value directly; to run work concurrently, use 'tzroutine { ... }'",
+            None,
+        ),
+        (
+            "let value = Task.run (\\() -> 1)\n0\n",
+            "removed_task_api",
+            "'Task.run' was removed",
+            "call the work directly",
+            None,
+        ),
+        (
+            "let values = Task.parallel [1, 2]\n0\n",
+            "removed_task_api",
+            "'Task.parallel' was removed",
+            "use Parallel.init or Parallel.map for data parallelism, or tzroutines with a WaitGroup",
+            None,
+        ),
+        (
+            "let values = Task.parallel_results [1, 2]\n0\n",
+            "removed_task_api",
+            "'Task.parallel_results' was removed",
+            "use ErrGroup: ErrGroup.go for each job and ErrGroup.wait for the first error",
+            None,
+        ),
+        (
+            "let base = 10i64\nlet values = Task.scope (ref base) 4 (\\shared index -> deref shared + index)\nArray.sum (ref values)\n",
+            "removed_task_api",
+            "'Task.scope' was removed",
+            "use Routine.scope, which takes the same arguments",
+            Some("Routine.scope"),
+        ),
+    ] {
+        assert_eq!(
+            removed_task(source),
+            (
+                kind,
+                message.to_owned(),
+                help.to_owned(),
+                fix.map(str::to_owned)
+            ),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn a_task_of_the_program_is_its_own() {
+    // `task` is an identifier, and the program may define `Task` as a type or a module.
+    for source in [
+        "let task = 5\ntask + 1\n",
+        "record Task { id: i64 }\n\ndef id :: ref Task -> i64\nfn id job = job.id\n\nlet job = Task { id: 4 }\nid (ref job)\n",
+    ] {
+        analyze(source).unwrap_or_else(|e| panic!("{source}\n{}: {}", e.code, e.message));
+    }
+    analyze_modules(&[
+        ("Main.tz", "Task.run 4\n"),
+        ("Task.tz", "def run :: i64 -> i64\nfn run n = n + 1\n"),
+    ])
+    .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+    // A builder `@alias task` of the program names `task { }`.
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "def one :: i64 -> i64\nfn one n = task { let! a = n; return a + 1 }\n\none 1\n",
+        ),
+        (
+            "Steps.tc",
+            "@alias task\n\ndef Return :: 'a -> 'a\nfn Return value = value\n\ndef Bind :: 'a -> ('a -> 'b) -> 'b\nfn Bind value next = next value\n",
+        ),
+    ])
+    .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+}
+
+#[test]
+fn tsuzuri_fix_writes_routine_scope() {
+    // Only `Task.scope` has a fix: `Routine.scope` takes the same arguments and means the same.
+    let directory =
+        std::env::temp_dir().join(format!("tsuzuri-removed-task-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let program = "let base = 10i64\nlet values = Task.scope (ref base) 4 (\\shared index -> deref shared + index)\nArray.sum (ref values)\n";
+    std::fs::write(directory.join("Main.tz"), program).unwrap();
+    let tsuzuri = |arguments: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args(arguments)
+            .arg(&directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{arguments:?}\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    tsuzuri(&["fix"]);
+    assert_eq!(
+        std::fs::read_to_string(directory.join("Main.tz")).unwrap(),
+        program.replace("Task.scope", "Routine.scope")
+    );
+    // 10 + 11 + 12 + 13.
+    assert_eq!(tsuzuri(&["run"]), "46\n");
     std::fs::remove_dir_all(&directory).unwrap();
 }

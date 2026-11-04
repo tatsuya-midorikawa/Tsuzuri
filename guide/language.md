@@ -101,11 +101,12 @@ def main :: unit -> i32 = \() ->
 - `return` only ends a builder block; it is not an early exit. `and!` runs left to right. `match! m with` unwraps, then matches.
 - A `.tc` file is one builder (`Bind`, `Return`...). `Async { }` interleaves waits: `Async.run`, `Async.sleep`.
 
-## Tasks and parallelism
-- `task { ... }` is a lazy `Task<T>`; `Task.run t` waits and returns its result. A task runs once (again: E1012).
-- `Task.parallel tasks` runs an array of tasks on the thread pool; results keep the input order.
-- A task takes owned (moved) and Copy values; a captured reference is E1013. Share data with `Arc.share`, borrow with `Task.scope`, mutate through `Atomic` or `Mutex`.
+## Concurrency and parallelism
+- `tzroutine { ... }` starts a tzroutine (a goroutine) and returns `()`; `main`, export calls, tests and benches wait for theirs.
+- It captures owned or Copy `Send` values (a reference or `Rc` is E1013); share with `Arc.share`, mutate through `Atomic` or `Mutex`.
+- Use `WaitGroup`, `Channel` and `select`, `ErrGroup` (first error); `Routine.scope (ref s) n f` returns `n` results in order.
 - `Parallel.init n f`, `Parallel.map f xs`, `Parallel.reduce z f xs`, `Parallel.sum xs` split arrays into fixed chunks; call them with every argument.
+- `task { }` and `Task` were removed (E1040).
 ```tsuzuri run=7%20is%20odd
 def half :: i64 -> Result<i64, string> = \n ->
     if n % 2 == 0 then Ok (n / 2) else Error $"{n} is odd"
@@ -116,8 +117,7 @@ def quarter :: i64 -> Result<i64, string> = \n ->
     return q
 
 def main :: unit -> i32 = \() ->
-    let jobs = new [Task<i64>](4, \i -> task { return i * i })
-    let squares = Task.run (Task.parallel jobs)
+    let squares = Parallel.init 4 (\i -> i * i)
     match quarter (Array.sum squares) with
     | Ok q -> do! IO.writeln q
     | Error e -> do! IO.writeln e
@@ -137,4 +137,4 @@ Call std functions qualified, subject last: `Map.insert k v m`. Signatures: `tsu
 - `Maybe`, `Result`, `Seq` (lazy). `Map`, `Set` (ordered), `HashMap`, `HashSet`: `insert`, `get` or `contains`, `remove`, `iter`.
 - `Int` (`abs`, `min`, `checked_add`), `Math` (`sqrt`, `pi`), `BigInt`, `Random`.
 - `IO`, `File` (`read_text`, `write_text`), `Dir`, `Path`, `Env` (`args`), `Process`, `Time`, `Json`, `Regex`, `Format`, `Debug`.
-- `Task`, `Parallel`, `Async`, `Atomic`, `Mutex`, `DataChannel`, `Rc`, `Arc`, `Arena`, `Owned`; `Test`, `Gen`, `Bench`.
+- `Routine`, `Parallel`, `Channel`, `Async`, `Atomic`, `Mutex`, `DataChannel`, `Rc`, `Arc`, `Arena`, `Owned`; `Test`, `Gen`, `Bench`.

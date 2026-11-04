@@ -6,7 +6,7 @@ fn sequences_are_opaque_linear_values_with_owned_or_borrowed_elements() {
         "let sequence = Seq.once 42\nmatch Seq.next sequence with | (rest, Maybe.Some value) -> value | (_, Maybe.None) -> 0",
         "let sequence: Seq<i64> = Seq.empty()\nmatch Seq.next sequence with | (_, value) -> Maybe.is_none (&value)",
         "let text = \"borrowed\"\nlet sequence = Seq.once (ref text)\nmatch Seq.next sequence with | (_, Maybe.Some value) -> value.length | (_, Maybe.None) -> 0",
-        "let sequence = Seq.once (task { return 42 })\nmatch Seq.next sequence with | (_, Maybe.Some value) -> Task.run value | (_, Maybe.None) -> 0",
+        "let sequence = Seq.once (Owned.function (\\() -> 42))\nmatch Seq.next sequence with | (_, Maybe.Some value) -> Owned.call (ref value) () | (_, Maybe.None) -> 0",
         "let sequence = Seq.defer (\\() -> (Seq.empty(), Maybe.Some 42))\nmatch Seq.next sequence with | (_, value) -> Maybe.get value",
     ] {
         let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
@@ -25,7 +25,7 @@ fn sequences_are_opaque_linear_values_with_owned_or_borrowed_elements() {
             "E1013",
         ),
         (
-            "let value = 1\nlet sequence = Seq.once (ref value)\ntask { return Seq.next sequence }",
+            "let value = 1\nlet sequence = Seq.once (ref value)\ntzroutine { let _next = Seq.next sequence }\n0",
             "E1013",
         ),
     ] {
@@ -94,7 +94,7 @@ fn lazy_combinators_and_explicit_iterators_preserve_loans() {
     }
     for source in [
         "fn bad() -> Seq<ref string> { let values = [\"x\"]; Array.to_seqr (&values) }",
-        "let values = [1]\nlet sequence = Array.to_seqr (&values)\ntask { return Seq.to_array sequence }",
+        "let values = [1]\nlet sequence = Array.to_seqr (&values)\ntzroutine { let _values = Seq.to_array sequence }\n0",
     ] {
         assert_eq!(analyze(source).unwrap_err().code, "E1013", "{source}");
     }

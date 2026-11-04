@@ -300,8 +300,14 @@ __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_net_close_hoo
  * a boundary caught, the locks that the trap left held (F10, TZ12). */
 #ifndef TSUZURI_TRAP_HOOKS_DEFINED
 #define TSUZURI_TRAP_HOOKS_DEFINED
+/* Five pointers, as the IR of the host ABI reads them (`[5 x ptr]`, src/llvm_abi.rs): the public
+   tsuzuri_alloc and tsuzuri_free call `allocate` and `release` when they are set. The two reserved
+   slots were the item and resume hooks of the task pool, which TZ12 removed. */
 struct tz_trap_hooks {
     void *(*owner)(void);
+    void *reserved[2];
+    void *(*allocate)(size_t);
+    void (*release)(void *);
 };
 __attribute__((weak, visibility("hidden"))) struct tz_trap_hooks tsuzuri_trap_hooks;
 #endif
@@ -2327,8 +2333,9 @@ TZR_API int32_t tsuzuri_tz_waitgroup_wait(_Atomic uint64_t *word) {
 /* ---------------------------------------------------------------- DataChannel (TZ12) */
 
 /* DataChannel (F10 Phase 2, renamed in TZ03) on the scheduler: the generated code allocates and
- * initializes the block (src/llvm_sync.rs) and calls these with the ABI and statuses that the task pool's runtime (task.c, removed in TZ12) had
- * (0 done, 1 no receiver or no sender is left, 2 deadlock). The header of the block is ten words;
+ * initializes the block (src/llvm_sync.rs) and calls these with the ABI and statuses that the task
+ * pool (task.c, removed in TZ12) had: 0 done, 1 no receiver or no sender is left, 2 deadlock. The
+ * header of the block is ten words;
  * the reserved word (offset 56) is the channel's tzr_lock and the two waiter words (64 and 72) are
  * the heads of the receivers' and the senders' queues, all zero from the generated code. A G or a
  * pseudo-G that cannot go on waits in its queue and tries again when it is woken: the one that adds

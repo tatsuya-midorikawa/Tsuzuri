@@ -1,26 +1,24 @@
 # DataChannel
 
 > **旧 `Channel`**: TZ03 で `DataChannel` に改名しました。API と意味は変わりません。今の `Channel` は Go と同じ双方向のチャンネル（[Channel](./channel.md)）です。旧の名前で書いたプログラムは `E1040` になり、`tsuzuri fix` で `DataChannel` の名前に直せます。使い分けは [Channel と DataChannel](./channel.md#datachannel-との使い分け) を見てください。
->
-> `DataChannel` の待ちは Task のプールの規則のままで、tzroutine を数えません。tzroutine が送るのを `DataChannel.recv` で待つと（送る側が tzroutine だけのとき）、`deadlock: every task is waiting on a channel` と誤って判定されることがあります。tzroutine の間では `Channel` を使います。
 
-`DataChannel.bounded` は、容量の決まったキューを作り、送る側 `Sender` と受ける側 `Receiver` を返します。タスクの間で、所有する値を 1 つずつ受け渡すときに使います。共有した 1 つの値を書き換えるなら [Mutex](./mutex.md) や [Atomic](./atomic.md)、結果を集めるだけなら `Task.parallel` の戻り値で足ります。
+`DataChannel.bounded` は、容量の決まったキューを作り、送る側 `Sender` と受ける側 `Receiver` を返します。tzroutine やスレッドの間で、所有する値を 1 つずつ受け渡すときに使います。共有した 1 つの値を書き換えるなら [Mutex](./mutex.md) や [Atomic](./atomic.md)、結果を集めるだけなら [`Routine.scope`](./routine.md#routinescope) や [Parallel](./parallel.md) の戻り値で足ります。
 
 ## この記事のポイント
 
-- `DataChannel.bounded capacity` は `(Sender<T> * Receiver<T>)` を返します。容量は 1 以上で、0 以下はトラップです。要素の型 `T` は、タスクへ渡せる（`Send`）ものに限ります。
+- `DataChannel.bounded capacity` は `(Sender<T> * Receiver<T>)` を返します。容量は 1 以上で、0 以下はトラップです。要素の型 `T` は、ほかの tzroutine へ渡せる（`Send`）ものに限ります。
 - `DataChannel.send (ref sender) item` は、キューに空きがなければ待ち、`Ok ()` を返します。受け手が 1 つも残っていないときは、待たずに `Error item` で要素を返します。
 - `DataChannel.recv (ref receiver)` は、要素があれば `Some item` を返し、空なら送り手が来るのを待ちます。すべての `Sender` が drop され、残りの要素も取り尽くしたら `None` です。
 - `DataChannel.clone_sender (ref sender)` は、独立した所有者の `Sender` を作ります。**最後の `Sender` が drop されると、チャンネルは閉じます**。最後の `Receiver` が drop されると、以後の `send` は `Error` を返します。
 - 要素は FIFO で、1 つの要素は 1 つの受け手だけに届きます。どちらの端も `Sync` で、`ref` を共有してもよく、`Arc` に入れてもかまいません。複数の送り手と複数の受け手（MPMC）が使えます。
-- 両端は所有値です。関数値には捕捉できません（`E1005`）。借用 `ref sender` なら捕捉できます。
+- 両端は所有値です。関数値には捕捉できません（`E1005`）。借用 `ref sender` なら捕捉できます。`tzroutine { }` の本体へはムーブで持ち込めます。
 - 要素は借用を持てません。関数値は、環境が借用を持たないときだけ送れます（`E1013`、[要素と借用](#要素と借用)）。
-- 待つスレッドは、先にプールの未着手の仕事を手伝い、それでも進めなければ眠ります。**どのスレッドも待っていて、動かせる仕事もないとき**は、無限に待たず、`deadlock: every task is waiting on a channel` というトラップになります。完了するかどうかは、スレッド数に左右されます（[待ちの規則](#待ちの規則)）。
+- ネイティブでは、待つのは待つ tzroutine だけです（`main` のトップレベルや、`export` を呼んだホストのスレッドでは、そのスレッド）。待つ数に上限はありません。**誰も起こせない待ち**は、無限に待たず、`Tsuzuri runtime: all tzroutines are asleep - deadlock! (1 waiting: DataChannel.recv)` と書いてトラップします（[待ちの規則](#待ちの規則)）。
 - チャンネルに残った要素は、最後の端が drop されるとき、ちょうど 1 回ずつ drop されます。
 
 ## 基本の書き方
 
-要素は先に入れたものから順に出ます。容量の範囲内なら、2 つ目のスレッドは要りません。
+要素は先に入れたものから順に出ます。容量の範囲内なら、送る側と受ける側が同じ 1 本の実行でもかまいません。
 
 ```tsuzuri run=first%3D10%20rest%3D90
 def take :: ref DataChannel.Receiver<i64> -> i64
@@ -120,84 +118,93 @@ match DataChannel.bounded 3 with
 first=5 second=-1
 ```
 
-## タスクの間で使う
+## tzroutine の間で使う
 
 ### 生産者と消費者
 
-端を所有するタスクを `Task.parallel` に渡すのが、最も素直な書き方です。タスクが終わると、タスクが持つ `Sender` が drop され、最後の 1 つなら受け手に終わりが伝わります。
+`Sender` を `tzroutine { }` の本体へムーブするのが、最も素直な書き方です。本体が終わると、本体が持つ `Sender` が drop され、最後の 1 つなら受け手に終わりが伝わります。
 
-```tsuzuri run=sent%3D100%20sum%3D5050
-def produce :: own DataChannel.Sender<i64> -> i64 -> Task<i64>
-fn produce sender count = task {
+```tsuzuri run=sum%3D5050
+def produce :: own DataChannel.Sender<i64> -> i64 -> unit
+fn produce sender count =
     let mut index = 1
     while index <= count do
         let _sent = DataChannel.send (ref sender) index
         index = index + 1
-    return count
-}
 
-def consume :: own DataChannel.Receiver<i64> -> Task<i64>
-fn consume receiver = task {
+def consume :: ref DataChannel.Receiver<i64> -> i64
+fn consume receiver =
     let mut sum = 0
     let mut open = true
     while open do
-        match DataChannel.recv (ref receiver) with
+        match DataChannel.recv receiver with
         | Maybe.Some value -> sum = sum + value
         | Maybe.None -> open = false
-    return sum
-}
+    sum
 
-match DataChannel.bounded 100 with
+match DataChannel.bounded 4 with
 | (sender, receiver) ->
-    let results = Task.run (Task.parallel [produce sender 100, consume receiver])
-    $"sent={results[0]} sum={results[1]}"
+    tzroutine {
+        produce sender 100
+    }
+    $"sum={consume (ref receiver)}"
 ```
 
 実行結果:
 
 ```text
-sent=100 sum=5050
+sum=5050
 ```
 
-容量が要素の数以上なので、生産者は待たずに終わります。スレッドが 1 つでも、先頭のタスクから順に走るので完了します。容量が要素の数より小さいと、生産者は空きを待ち、消費者は要素を待ちます。2 つのタスクが同時に走る必要があり、スレッドが 2 つ以上ないと完了しません（[待ちの規則](#待ちの規則)）。
+容量 4 は要素の数より小さいので、生産者は空きを待ち、消費者（`main` のトップレベル）は要素を待ちます。待つのは待つ側だけなので、`TSUZURI_MAXPROCS=1` でも完了します。
 
 ### 作業キュー
 
-受け手は `Sync` なので、`Arc` に入れると、複数のタスクが 1 つの `Receiver` から取れます。要素は 1 つのワーカーにだけ届きます。ワーカーの結果は、`Arc<Mutex<T>>` に集めます。
+受け手は `Sync` なので、`Arc` に入れると、複数の tzroutine が 1 つの `Receiver` から取れます。要素は 1 つのワーカーにだけ届きます。ワーカーの結果は `Arc<Mutex<T>>` と `Arc<Atomic<T>>` に集め、全員の終わりを [WaitGroup](./waitgroup.md) で待ちます。
 
 ```tsuzuri run=jobs%3D20%20squares%3D2870
-def produce :: own DataChannel.Sender<i64> -> i64 -> Task<i64>
-fn produce sender count = task {
+def produce :: own DataChannel.Sender<i64> -> i64 -> unit
+fn produce sender count =
     let mut index = 1
     while index <= count do
         let _sent = DataChannel.send (ref sender) index
         index = index + 1
-    return count
-}
 
-def work :: own Arc<DataChannel.Receiver<i64>> -> own Arc<Mutex<i64>> -> Task<i64>
-fn work receiver total = task {
+def work :: ref DataChannel.Receiver<i64> -> ref Mutex<i64> -> i64
+fn work receiver total =
     let mut done = 0
     let mut open = true
     while open do
-        match DataChannel.recv (Arc.get (ref receiver)) with
+        match DataChannel.recv receiver with
         | Maybe.Some job ->
-            let _seen = Mutex.with_lock (Arc.get (ref total)) (\value -> {
-                deref value = deref value + job * job;
-                0
-            })
+            Mutex.with_lock total (\value -> deref value = deref value + job * job)
             done = done + 1
         | Maybe.None -> open = false
-    return done
-}
+    done
 
-match DataChannel.bounded 64 with
+match DataChannel.bounded 4 with
 | (sender, receiver) ->
-    let shared = Arc.new receiver
+    let queue = Arc.new receiver
     let total = Arc.new (Mutex.create 0i64)
-    let results = Task.run (Task.parallel [produce sender 20, work (Arc.share (ref shared)) (Arc.share (ref total)), work (Arc.share (ref shared)) (Arc.share (ref total))])
+    let jobs = Arc.new (Atomic.create 0i64)
+    let group = WaitGroup.create ()
+    tzroutine {
+        produce sender 20
+    }
+    for _worker in 0 ..< 2 do
+        WaitGroup.add (ref group) 1
+        let finished = WaitGroup.share (ref group)
+        let mine = Arc.share (ref queue)
+        let sums = Arc.share (ref total)
+        let counts = Arc.share (ref jobs)
+        tzroutine {
+            let done = work (Arc.get (ref mine)) (Arc.get (ref sums))
+            let _before = Atomic.fetch_add (Arc.get (ref counts)) done
+            WaitGroup.done (ref finished)
+        }
+    WaitGroup.wait (ref group)
     let squares = Mutex.with_lock (Arc.get (ref total)) (\value -> deref value)
-    $"jobs={results[1] + results[2]} squares={squares}"
+    $"jobs={Atomic.load (Arc.get (ref jobs))} squares={squares}"
 ```
 
 実行結果:
@@ -206,16 +213,16 @@ match DataChannel.bounded 64 with
 jobs=20 squares=2870
 ```
 
-2 つのワーカーが何件ずつ処理するかは、実行ごとに変わります。合計は変わりません。`Mutex.with_lock` の中の `DataChannel` の操作はトラップするか（[ロックの中](#ロックの中)）、スレッドを止めたまま待つので、`recv` はロックの外で行い、受け取った値だけをロックの中で使います。
+2 つのワーカーが何件ずつ処理するかは、実行ごとに変わります。合計は変わりません。ワーカーは `recv` をロックの外で行い、受け取った値だけをロックの中で使います。ロックを持ったまま待つこともできますが（[ロックの中](#ロックの中)）、待つあいだ、ほかのワーカーがロックを取れないからです。
 
 ### 端を共有する
 
-`Task.scope` の `shared` に端を入れると、全員が `ref` で同じ端を使えます。1 つの端を複数の子どもが使うときは、子どもが `Sender` を所有できないので、チャンネルを閉じる drop は、`Task.scope` を呼んだ側で行います。
+[`Routine.scope`](./routine.md#routinescope) の `shared` に端を入れると、全員が `ref` で同じ端を使えます。子どもは `Sender` を所有しないので、チャンネルを閉じる drop は、`Routine.scope` を呼んだ側で行います。
 
 ```tsuzuri run=total%3D36
 match DataChannel.bounded 8 with
 | (sender, receiver) ->
-    let _sent = Task.scope (ref sender) 8 (\shared index -> match DataChannel.send shared (index + 1) with | Result.Ok _unit -> 1 | Result.Error _item -> 0)
+    let _sent = Routine.scope (ref sender) 8 (\shared index -> match DataChannel.send shared (index + 1) with | Result.Ok _unit -> 1 | Result.Error _item -> 0)
     Owned.drop sender
     let mut total = 0
     let mut open = true
@@ -232,51 +239,70 @@ match DataChannel.bounded 8 with
 total=36
 ```
 
-`Task.scope` の子どもが受け取る側で待つとき、閉じるのは `Task.scope` が返ったあとなので、子どもは閉じるのを待てません。そのときは、受け取る件数を決めて受ける（`recv` を件数だけ呼ぶ）か、端を所有するタスクを `Task.parallel` で使います。
+この例は、呼んだ側が `Routine.scope` の終わりを待ってから受け取るので、容量が送る件数（8）以上でなければ終わりません（満杯で待つ子を起こす受け手がいないため、デッドロックの判定になります）。容量を小さくするときは、受け取る側も tzroutine にします。`Routine.scope` の子どもが受け取る側で待つときも、閉じるのは `Routine.scope` が返ったあとなので、子どもは閉じるのを待てません。そのときは、受け取る件数を決めて受ける（`recv` を件数だけ呼ぶ）か、`Sender` を所有する tzroutine から送ります。
 
 ## 待ちの規則
 
-`send` が満杯、`recv` が空のときに、スレッドは次の順で動きます。
+ネイティブのターゲットでは、`DataChannel` は tzroutine のスケジューラーの上で待ちます（TZ12）。規則は [Channel](./channel.md#待ちとデッドロック) と同じです。
 
-1. **手伝う**: プールに、どのスレッドも始めていない仕事（`Task.parallel` や `Task.scope` の子ども）があれば、その 1 つを自分のスタックの上で走らせます。仕事は、最も古いグループの、まだ始まっていない子どもから取ります。仕事が終わったら、チャンネルをもう一度見ます。ただし、空いているワーカー（仕事を取っていないワーカー）がいるときは手伝いません。空いているワーカーが引き受けるからです。手伝いを重ねる深さは 16 までです。
-2. **眠る**: 手伝う仕事がなければ、チャンネルが変わるまで眠ります。要素が入る、空きができる、端が drop される、のどれかで起こされます。
-3. **見つける**: スレッドがすべて待っていて（チャンネルの待ち、`Task.parallel` や `Task.scope` の結合の待ち、仕事を待つワーカー）、動かせる仕事もないとき、もうチャンネルを変えられるスレッドはいません。待っているスレッドすべてを起こし、標準エラーへ `Tsuzuri runtime: deadlock: every task is waiting on a channel` と出して、トラップします（種類は assert）。待ちを止められない `Sender` を drop し忘れた場合も、ここで見つかります。
+1. **待つ**: `send` が満杯、`recv` が空のとき、待つのは呼んだ tzroutine だけです。その OS スレッドは、ほかの tzroutine を走らせ続けます。`main` のトップレベルや、`export` を呼んだホストのスレッドのような tzroutine でないスレッドは、そのスレッドで待ちます。待つ数は、スレッドの数にも P の数（`TSUZURI_MAXPROCS`）にも縛られません。
+2. **起きる**: 要素を入れた側は待っている受け手を 1 つ、要素を取った側は待っている送り手を 1 つ起こします。最後の `Sender` の drop は待っている受け手すべてを、最後の `Receiver` の drop は待っている送り手すべてを起こします。起きた側は、チャンネルをもう一度見ます。
+3. **見つける**: すべての tzroutine とスレッドが待っていて、走るものもタイマーもないとき、もうチャンネルを変えられるものはいません。tzroutine のランタイムのデッドロックの判定が、待っている数と理由（`DataChannel.send`・`DataChannel.recv`、ほかの待ちなら `Channel.recv`・`WaitGroup.wait` など）を標準エラーへ書いて、待っていた呼び出しの位置でトラップします（種類は assert）。待ちを止められない `Sender` を drop し忘れた場合も、ここで見つかります。
 
-`Task.parallel` や `Task.scope` でグループを始めたスレッドは、グループを公開するときに、最初の子どもを自分で取ります（ワーカーに先を越されません）。そのあとは、**自分のグループの子どもだけ** を走らせ、終わりを待つあいだも、ほかのグループの仕事は取りません。取った仕事は、結合を待っているフレームの上に載ります。その仕事が、結合のあとのコード（同じスタックの下にあるコード）しか作れないものを待つと、先へ進めなくなるからです（たとえば、生産者の中の `Task.parallel` を待つスレッドが、その生産者に送られるのを待つ消費者を取ると、行き詰まります）。native とスレッド付きの wasm32 は、この規則も、グループを古い順に取ることも、同じです。
+```text
+Tsuzuri runtime: all tzroutines are asleep - deadlock! (1 waiting: DataChannel.recv)
+```
+
+`Parallel.*` のコールバックの中で待つのも同じ規則です。ただし、同じチャンクの要素は 1 つの実行で順に呼ばれる（[チャンク境界](./parallel.md#チャンク境界)）ので、ほかの要素のコールバックを待つ形は完了しません。互いを待つ子どもには `Routine.scope` を使います。子ごとに tzroutine なので、子がいくつあっても、`TSUZURI_MAXPROCS=1` でも完了します。
+
+WebAssembly の規則は、これまでと同じです。
 
 | 環境 | 待ちが満たされないとき |
 | --- | --- |
-| native（CPU が複数） | 上の規則どおり。最後の待ちスレッドが、判定を出す |
-| native（CPU が 1 つ） | 子どもは `index` の順に 1 つのスレッドで走り、待ちはすぐ判定になる（トラップ） |
-| 既定の wasm32 | 子どもは `index` の順に 1 つずつ走り、満たされない待ちは、すぐトラップする（コンソールがないので、メッセージは出ない） |
-| `--wasm-feature threads` | native と同じ規則で、メインとワーカーのスレッドを数える。トラップは `RuntimeError` |
-
-**完了するかどうかは、スレッド数に左右されます。** プールのスレッド数は固定で、子どもごとの専用スレッドは保証されません。待っている仕事の数がスレッド数を超えると、足りない分の仕事は、待っているスレッドのスタックの上で走るか、走れないままになります。
-
-- 生産者と消費者の 2 つのタスクで、容量が足りないとき: スレッドが 2 つ以上必要です。
-- 生産者、変換、消費の 3 段のパイプラインで、どの段も隣を待つとき: スレッドが 3 つ以上必要です。
-- 1 つのスレッドでは、容量が足りない生産者は、消費者が動く前に満杯で待つので、判定になります。
-
-スレッドが足りないとトラップになるだけで、ハングもデータの破損もありません。ただし、別の理由でトラップするより見つけにくいので、パイプラインの段数と、各段が待ちうるチャンネルの数は、スレッド数に合わせて設計します。たとえば、`Task.parallel` に渡すタスクの数を CPU 数以下にします。
-
-```text
-Tsuzuri runtime: deadlock: every task is waiting on a channel
-```
+| native | 上の規則。誰も起こせなければ判定のトラップ |
+| 既定の wasm32 | 1 本の実行なので、満たされない待ちは、すぐトラップする（コンソールがないので、メッセージは出ない） |
+| `--wasm-feature threads` | 待つスレッドは、先に `Parallel.*` の未着手のチャンクを自分のスタックの上で手伝い（空いているワーカーがいないときだけ。深さは 16 まで）、それでも進めなければ眠る。メインとワーカーのスレッドがすべて待ったときは、判定のトラップ（`RuntimeError`） |
 
 ### ロックの中
 
-tzroutine のランタイムを使わないプログラムでは、`Mutex.with_lock`（タスクのランタイムのロック）の中で `DataChannel.send`・`DataChannel.recv` を呼ぶと、待つことになるかどうかにかかわらず、トラップします。ロックを持ったまま待つと、ロックを待つスレッドと、ロックの持ち主が待つチャンネルの相手が、互いを待つ形になりうるからです。native では、トラップの前に `a Channel operation may wait; move it outside Mutex.with_lock` と出します。
+ネイティブでは、`Mutex.with_lock` のロックは tzroutine のものなので（[Mutex](./mutex.md#ロックの規則)）、ロックを持ったまま `DataChannel.send`・`DataChannel.recv` で待てます。待つあいだ、そのロックを待つほかの tzroutine は止まったままなので、ロックの中で待つのは、そのつもりのときだけにします。次の例は、ロックを持ったまま、ほかの tzroutine が送る値を待ちます。
 
-tzroutine のランタイムを使うプログラム（`Channel`・`select`・タイマー・同期の型を使うもの）の `Mutex.with_lock` は tzroutine のロックで（[Mutex](./mutex.md#tzroutine-のプログラムのロック)）、この検査はなく、トラップしません。ただし `DataChannel` の待ちはそのスレッドを止めるので、ロックを持ったまま `DataChannel` で待つと、同じ形の待ち合いになりえます。ロックの外で待ちます。
+```tsuzuri run=total%3D42
+def add_next :: ref Mutex<i64> -> ref DataChannel.Receiver<i64> -> i64
+fn add_next total receiver =
+    Mutex.with_lock total (\value -> {
+        let item = match DataChannel.recv receiver with
+            | Maybe.Some item -> item
+            | Maybe.None -> 0;
+        deref value = deref value + item;
+        deref value
+    })
+
+let total = Mutex.create 1i64
+match DataChannel.bounded 1 with
+| (sender, receiver) ->
+    tzroutine {
+        let _sent = DataChannel.send (ref sender) 41
+    }
+    $"total={add_next (ref total) (ref receiver)}"
+```
+
+実行結果:
+
+```text
+total=42
+```
+
+WebAssembly（tzroutine のランタイムを使わないプログラム）では、これまでどおり、`Mutex.with_lock` の中で `DataChannel.send`・`DataChannel.recv` を呼ぶと、待つことになるかどうかにかかわらずトラップします。ロックを持ったまま待つと、ロックを待つスレッドと、ロックの持ち主が待つチャンネルの相手が、互いを待つ形になりうるからです。
 
 ### トラップ
 
 - 既定（`--trap-mode abort`）では、判定はプロセスを終わらせます。
-- `--trap-mode return` では、判定は、呼び出しの境界へ返るトラップになります。待っていたスレッドは全員起き、グループは終わり、境界は、その呼び出しが確保したもの（チャンネルのブロックを含む）を解放します。次の呼び出しは、普通に動きます。端を持つタスクがトラップしたときは、その端の drop が走らないので、待っている受け手は、判定で終わります。呼び出しに返るのは、`index` が最小のトラップです。
+- `--trap-mode return` では、判定は、呼び出しの境界へ返るトラップになります。境界は、その呼び出しが確保したもの（チャンネルのブロックを含む）と、呼び出しが取ったロックを解放します。次の呼び出しは、普通に動きます。トラップの境界の中の `Parallel.*` は、すべてのチャンクを呼んだスレッドで添字の順に走らせるので、その呼び出しの中で待つのは、呼んだスレッドだけです。
 
 ## 要素と借用
 
-要素は、`DataChannel.send` が戻ったあともチャンネルに残り、あとで、別のスレッドで、借用元のデータがなくなったあとに受け取られることがあります。そのため、要素は借用を持てません。コンパイラーは、`DataChannel.send` の呼び出しで、要素が借用を持たないことを調べます。整数、文字列、配列などの所有値は、いつも通ります。関数値（と、それを含む `Maybe`・タプル・配列・レコード・`Seq`）は、環境が借用を持たないときだけ通ります。`Sender<T>` は整数 1 つの不透明な値で、型からは要素の型が見えないので、この呼び出しが唯一の検査です。
+要素は、`DataChannel.send` が戻ったあともチャンネルに残り、あとで、別の tzroutine で、借用元のデータがなくなったあとに受け取られることがあります。そのため、要素は借用を持てません。コンパイラーは、`DataChannel.send` の呼び出しで、要素が借用を持たないことを調べます。整数、文字列、配列などの所有値は、いつも通ります。関数値（と、それを含む `Maybe`・タプル・配列・レコード・`Seq`）は、環境が借用を持たないときだけ通ります。`Sender<T>` は整数 1 つの不透明な値で、型からは要素の型が見えないので、この呼び出しが唯一の検査です。
 
 - 通るもの: 値のコピーを捕捉した関数、何も捕捉しない関数、名前を付けた関数、その場で作った `Owned.function`。
 - `E1013` になるもの: `ref` で借りた値（引数で受け取った `ref` も含む）を捕捉した関数と、それを含む値。
@@ -312,13 +338,13 @@ error[E1013]: a channel item cannot hold a borrow, including a borrowed function
 ```
 
 - 呼び出しは、送り手と要素を一度に渡す直接の形で行います。要素の型が借用を持ちうる（関数値を含む）ときは、`DataChannel.send (ref sender)` のように引数を一部だけ渡すことも、`DataChannel.send` 自体を関数値にすることも、`item |> DataChannel.send (ref sender)` も、`E1013`（`DataChannel.send must be fully applied directly when its item may hold a borrow`）です。要素が整数や文字列などなら、どの形でも書けます。
-- 関数値を引数で受け取って送る関数（`def push :: ref DataChannel.Sender<'a> -> 'a -> bool`）は、`'a` が関数型のとき、呼び出し側の関数が借用を持つかどうかを本体からは知れないので、`E1013` です。引数の関数値を `task` に持ち込むのと同じ扱いです。関数は、送る場所で作ります。`'a` が整数や文字列などなら、`push` は書けます。
+- 関数値を引数で受け取って送る関数（`def push :: ref DataChannel.Sender<'a> -> 'a -> bool`）は、`'a` が関数型のとき、呼び出し側の関数が借用を持つかどうかを本体からは知れないので、`E1013` です。引数の関数値を `tzroutine { }` に持ち込むのと同じ扱いです。関数は、送る場所で作ります。`'a` が整数や文字列などなら、`push` は書けます。
 - 受け手が取り出した要素は、借用を持たず、受け手を借りてもいません。取り出した関数を別のチャンネルへ送ることも、関数から返すこともできます。
 - `Mutex.create` に借用を捕捉した関数を入れると、借用はロックの値に残り、そのロックは借用元より長く生きる場所へ出せません（[Mutex](./mutex.md)）。
 
 ## 型の規則
 
-- `DataChannel.bounded` は `Send<'a>` を要求します。`Rc` を運ぶチャンネルは作れません（`E1013`、`tasks require Send values`）。型変数は `Send` かどうか分からないので、`DataChannel.bounded` を包んだジェネリック関数は、その要求を制約として持ち続け、関数を使う型ごとに検査されます。`make :: i64 -> (DataChannel.Sender<'a> * DataChannel.Receiver<'a>)` を `Rc<i64>` で使うのも `E1013` です。型変数に型引数を適用した型（高カインドの型変数の `'f<i64>`）が要素のときも同じで、`'f` に `Rc` を持つ型が決まった使用箇所で `E1013` です（[制約](../types-and-type-inference/constraints.md)）。
+- `DataChannel.bounded` は `Send<'a>` を要求します。`Rc` を運ぶチャンネルは作れません（`E1013`、`values that move to another tzroutine or thread must be Send`）。型変数は `Send` かどうか分からないので、`DataChannel.bounded` を包んだジェネリック関数は、その要求を制約として持ち続け、関数を使う型ごとに検査されます。`make :: i64 -> (DataChannel.Sender<'a> * DataChannel.Receiver<'a>)` を `Rc<i64>` で使うのも `E1013` です。型変数に型引数を適用した型（高カインドの型変数の `'f<i64>`）が要素のときも同じで、`'f` に `Rc` を持つ型が決まった使用箇所で `E1013` です（[制約](../types-and-type-inference/constraints.md)）。
 - `Sender<T>` と `Receiver<T>` は、どちらも `Sync` で、`Send` です（`T` が `Send` の間だけ作れるので）。共有借用から使う操作は、ランタイムのロックで守られます。
 - 両端は非 Copy の所有値です。複製できず、代入や引数渡しはムーブです（`E1012`）。関数値は複製されることがあるので、端そのものの捕捉は `E1005` です。借用 `ref sender` を捕捉するか、`Arc` に入れるか、引数で渡します。
 - 両端は中身が不透明です。構築、フィールド参照、パターン分解、更新構文は `E1022`、`export def` と `extern def` の境界は `E1008`、`const` の初期化は `E1026` です。`Eq`・`Ord`・`Hash`・`Display` の instance はありません。
@@ -327,12 +353,12 @@ error[E1013]: a channel item cannot hold a borrow, including a borrowed function
 
 ## 表現と性能
 
-- チャンネルは 1 つのブロックです。先頭の 80 バイトに容量、要素の大きさ、先頭の位置、要素数、送り手・受け手・所有者の数があり、その後ろにリングバッファ（要素 × 容量）が続きます。確保は `DataChannel.bounded` で 1 回、解放は最後の端の drop で 1 回です。
+- チャンネルは 1 つのブロックです。先頭の 80 バイトに容量、要素の大きさ、先頭の位置、要素数、送り手・受け手・所有者の数、チャンネルのロック、待っている受け手と送り手の列があり、その後ろにリングバッファ（要素 × 容量）が続きます。確保は `DataChannel.bounded` で 1 回、解放は最後の端の drop で 1 回です。
 - 要素は、ランタイムがバイト列としてコピーします。要素の型ごとの drop は、コンパイラーが、ブロックを解放するときに生成します。大きい要素はコピーされるので、小さい値か、所有する配列や文字列のように、小さな表現の値を送ります。
-- ネイティブのランタイム（`task.c`）は、スレッドプールの mutex 1 つで、すべてのチャンネルの操作と、待ちの数え上げを守ります。待ちは、スレッドごとの条件変数で、チャンネルの変化を知る 1 つのスレッドだけを起こします。チャンネルの数が多く、操作が非常に頻繁なプログラムでは、この 1 つの mutex が競合します。
-- `--wasm-feature threads` のランタイムは、同じ規則を WebAssembly の atomic 命令で実装します。待つスレッドは、プール共有の `epoch` の語で眠ります。起こすのは、新しい仕事、グループの終わり、チャンネルの変化（待っている者がいるとき）、競合したロックの解放のときだけで、そのとき全員が起きて、条件を見直します。グループのほかのアイテムがまだ走っているあいだに 1 つが終わっても、だれも起こしません。スレッドごとの状態は、インスタンスごとの WebAssembly のグローバルで、TLS は要りません。
+- ネイティブのランタイムは tzroutine のランタイム（`src/runtime/tzroutine.c`）です。ロックはチャンネルごとに 1 つで、ほかのチャンネルの操作とは競合しません。待つ tzroutine は、チャンネルの受け手の列か送り手の列に並んで眠り、要素の出し入れは、反対側の列の先頭の 1 つだけを起こします。
+- `--wasm-feature threads` のランタイム（`src/runtime/task-wasm-threads.c`）は、ワーカーのプールの mutex 1 つで、すべてのチャンネルの操作と待ちの数え上げを守り、WebAssembly の atomic 命令で実装します。待つスレッドは、プール共有の `epoch` の語で眠ります。起こすのは、新しい仕事、グループの終わり、チャンネルの変化（待っている者がいるとき）、競合したロックの解放のときだけで、そのとき全員が起きて、条件を見直します。グループのほかのチャンクがまだ走っているあいだに 1 つが終わっても、だれも起こしません。スレッドごとの状態は、インスタンスごとの WebAssembly のグローバルで、TLS は要りません。
 - 既定の wasm32 は 1 スレッドで、`DataChannel` の操作はモジュール内の IR です。ネイティブの C のランタイムも、threads の C のランタイムも使いません。
-- `DataChannel` は、ソースに名前が現れたプログラムだけに読み込まれます。`DataChannel` を書かないプログラムの出力は変わりません。`--freestanding` で `DataChannel` を使うと `E2000` です（タスクのランタイムが要ります）。
+- `DataChannel` は、ソースに名前が現れたプログラムだけに読み込まれます。`DataChannel` を書かないプログラムの出力は変わりません。`--freestanding` で `DataChannel` を使うと `E2000` です（tzroutine のランタイムが要ります）。
 
 ## API リファレンス
 
@@ -348,7 +374,7 @@ error[E1013]: a channel item cannot hold a borrow, including a borrowed function
 
 ## まとめ
 
-- タスクの間で所有値を受け渡すときは `DataChannel` を使い、端を所有するタスクを `Task.parallel` に渡します。
-- 最後の `Sender` の drop が、チャンネルを閉じます。drop し忘れた `Sender` は、受け手を待たせ続けますが、すべてのスレッドが待った時点で、判定のトラップになります。
-- 待つタスクの数がスレッド数を超えるパイプラインは、完了しないことがあります。判定のトラップは、そのときの合図です。
-- tzroutine のランタイムを使わないプログラムの `Mutex.with_lock` の中では `DataChannel` を使えません（トラップ）。使うプログラムでもロックの外で待ちます。
+- tzroutine やスレッドの間で所有値を受け渡すときは `DataChannel` を使い、`Sender` を送る側の `tzroutine { }` の本体へムーブします。
+- 最後の `Sender` の drop が、チャンネルを閉じます。drop し忘れた `Sender` は、受け手を待たせ続けますが、誰も起こせなくなった時点で、判定のトラップになります。
+- ネイティブでは待つのは待つ tzroutine だけで、待つ数はスレッドの数に縛られません。ロックを持ったまま待つこともできます。
+- WebAssembly の規則は変わりません。既定の wasm32 は 1 本の実行で、満たされない待ちはすぐトラップします。tzroutine のランタイムを使わないプログラムでは、`Mutex.with_lock` の中の `DataChannel` の操作もトラップです。

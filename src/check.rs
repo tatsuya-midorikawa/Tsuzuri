@@ -890,7 +890,7 @@ impl Type {
         match self {
             Self::Reference(_, true) | Self::Once(_) | Self::Handle(_) => false,
             // Function values are Send whatever they capture, so they hold only values that may
-            // move to another task: an `Arc` whose value tasks may share, never an `Rc` (C10).
+            // move to another tzroutine: an `Arc` whose value tzroutines may share, never an `Rc` (C10).
             Self::Shared(value, kind) => kind.atomic() && value.can_sync(types),
             // Copying a function value clones its captures, which needs the vtable's clone slot.
             Self::Dyn(dyn_type) => dyn_type.copy,
@@ -997,7 +997,7 @@ impl Type {
     }
 
     /// Whether several threads may hold shared borrows of a value of this type at once, which is
-    /// what a task scope asks of the value it shares and what an `Arc` asks of its value (F10).
+    /// what `Routine.scope` asks of the value it shares and what an `Arc` asks of its value (F10).
     ///
     /// Immutable data is shared freely. Memory changes under a shared borrow in three places:
     /// an `Atomic` (Sync), a `Mutex<T>` (Sync: `Mutex.create` admits only a `T` that may move
@@ -1094,7 +1094,7 @@ impl Type {
         )
     }
 
-    /// Whether a value of this type owns an `Arc` or `Arc.Weak` whose value tasks may not share
+    /// Whether a value of this type owns an `Arc` or `Arc.Weak` whose value tzroutines may not share
     /// (C10, F10).
     pub(crate) fn holds_unsync_arc(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all(self, |ty| {
@@ -10795,7 +10795,7 @@ fn size_error(span: Span) -> Diagnostic {
 /// measured once when they are declared; a generic record instance is
 /// measured when it is used because its size depends on its arguments.
 /// Heap elements are visited to reject recursive types, but function,
-/// task, and reference targets do not belong to the layout.
+/// tzroutine body, and reference targets do not belong to the layout.
 struct Layouts<'a> {
     types: TypeContext<'a>,
     sizes: BTreeMap<Type, usize>,
@@ -10966,7 +10966,7 @@ impl<'a> Layouts<'a> {
 }
 
 /// Validates a type at a construction boundary: value size, deep collection
-/// immutability, owned task results, and record instances whose type
+/// immutability, owned tzroutine results, and record instances whose type
 /// arguments would put a reference into a field.
 fn validate_size(ty: &Type, types: &TypeContext<'_>, span: Span) -> Result<usize, Diagnostic> {
     if ty.contains_error() {

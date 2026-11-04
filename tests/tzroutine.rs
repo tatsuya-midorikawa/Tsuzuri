@@ -139,11 +139,11 @@ fn emits_a_spawn_and_declares_the_runtime_once() {
     for entry in [llvm::Entry::Library, llvm::Entry::Console] {
         let ir = llvm::emit(&module, entry).unwrap();
         assert!(
-            ir.contains("call void @tsuzuri_tz_go(ptr @tz.tzroutine.start.$task."),
+            ir.contains("call void @tsuzuri_tz_go(ptr @tz.tzroutine.start.$once."),
             "{ir}"
         );
         assert!(
-            ir.contains("define internal void @tz.tzroutine.start.$task."),
+            ir.contains("define internal void @tz.tzroutine.start.$once."),
             "{ir}"
         );
         assert!(
@@ -269,24 +269,26 @@ fn probes_the_stack_only_when_the_program_spawns() {
 }
 
 #[test]
-fn pool_workers_wait_for_their_tzroutines() {
-    // A child of Task.scope (and a task of Task.parallel) runs on a pool worker, outside every
-    // boundary: the function that the worker runs waits for the tzroutines it spawned.
+fn scope_children_are_waited_for_with_their_tzroutines() {
+    // TZ02 made the function that a pool worker ran (a child of Task.scope) a boundary of its own. A
+    // child of Routine.scope is a tzroutine of the scope (TZ11): tsuzuri_tz_scope_run returns after
+    // every child and every tzroutine that they spawned (run in tests/tzroutine.mjs), so the child's
+    // function is called as it is, and the status of the wait is checked.
     let module = accepts(
-        "let counter = Arc.new (Atomic.create 0i64)\nlet _seen = Task.scope (ref counter) 4 (\\shared index -> {\n    let mine = Arc.share shared;\n    tzroutine {\n        let _n = Atomic.fetch_add (Arc.get (ref mine)) 1i64\n    };\n    index\n})\n0\n",
+        "let counter = Arc.new (Atomic.create 0i64)\nlet _seen = Routine.scope (ref counter) 4 (\\shared index -> {\n    let mine = Arc.share shared;\n    tzroutine {\n        let _n = Atomic.fetch_add (Arc.get (ref mine)) 1i64\n    };\n    index\n})\n0\n",
     );
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
     let call = ir
         .lines()
-        .find(|line| line.contains("@tsuzuri_task_parallel(ptr @"))
+        .find(|line| line.contains("@tsuzuri_tz_scope_run(ptr @"))
         .unwrap_or_else(|| panic!("{ir}"));
     let callback: String = call[call.find("(ptr @").unwrap() + 6..]
         .chars()
         .take_while(|c| !matches!(c, ',' | ')' | ' '))
         .collect();
-    // The runtime calls the callback's guard (TZ03), which calls the callback.
-    let callback = callback.strip_suffix(".guard").unwrap_or(&callback);
-    assert_wrapped(definition(&ir, callback));
+    let child = definition(&ir, &callback);
+    assert!(!child.contains("@tsuzuri_tz_scope_enter"), "{child}");
+    assert!(!ir.contains("tsuzuri_task_parallel"), "{ir}");
 }
 
 #[test]
@@ -306,34 +308,43 @@ fn a_tzroutine_may_yield_inside_a_mutex() {
         !ir.contains("tz.mutex.locked") && !ir.contains("tz.routine.unlocked"),
         "{ir}"
     );
-    // Without a spawn, nothing changes for Mutex.
+    // Without a spawn the lock is the same: every native program takes the runtime's lock (TZ12).
     let plain = accepts(
         "let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> deref value)\n",
     );
     let ir = llvm::emit(&plain, llvm::Entry::Console).unwrap();
-    assert!(ir.contains("call i32 @tsuzuri_mutex_lock(ptr") && !ir.contains("tsuzuri_tz_"));
+    assert!(
+        ir.contains("call i32 @tsuzuri_tz_mutex32_lock(ptr") && !ir.contains("tsuzuri_mutex_"),
+        "{ir}"
+    );
+}
+
+/// The program of the fixture `name` of tests/fixtures, checked.
+fn fixture(name: &str) -> tsuzuri::check::CheckedModule {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(root.join(name)).unwrap() {
+        let path = entry.unwrap().path();
+        if matches!(path.extension().and_then(|e| e.to_str()), Some("tz" | "tt")) {
+            let file = path.file_name().unwrap().to_str().unwrap().to_owned();
+            files.push((file, std::fs::read_to_string(&path).unwrap()));
+        }
+    }
+    files.sort();
+    let sources: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(file, text)| (file.as_str(), text.as_str()))
+        .collect();
+    analyze_modules(&sources).unwrap_or_else(|e| panic!("{name}: {}", e.message))
 }
 
 #[test]
 fn programs_without_tzroutine_keep_their_ir() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    for fixture in ["tasks", "concurrency", "data_channel", "control", "async"] {
-        let mut files = Vec::new();
-        for entry in std::fs::read_dir(root.join(fixture)).unwrap() {
-            let path = entry.unwrap().path();
-            if matches!(path.extension().and_then(|e| e.to_str()), Some("tz" | "tt")) {
-                let name = path.file_name().unwrap().to_str().unwrap().to_owned();
-                files.push((name, std::fs::read_to_string(&path).unwrap()));
-            }
-        }
-        files.sort();
-        let sources: Vec<(&str, &str)> = files
-            .iter()
-            .map(|(name, text)| (name.as_str(), text.as_str()))
-            .collect();
-        let module =
-            analyze_modules(&sources).unwrap_or_else(|e| panic!("{fixture}: {}", e.message));
-        assert!(!llvm::spawns(&module), "{fixture}");
+    // Natively a Mutex takes the scheduler's lock (TZ12): data_channel names tsuzuri_tz_ for it, and
+    // waits for no tzroutine either.
+    for name in ["data_channel", "control", "async"] {
+        let module = fixture(name);
+        assert!(!llvm::spawns(&module), "{name}");
         for entry in [
             llvm::Entry::Library,
             llvm::Entry::Console,
@@ -343,10 +354,27 @@ fn programs_without_tzroutine_keep_their_ir() {
                 continue;
             }
             let ir = llvm::emit(&module, entry).unwrap();
-            assert!(!ir.contains("tsuzuri_tz_"), "{fixture}: {ir}");
-            assert!(!ir.contains("%tz.scope"), "{fixture}");
+            if name != "data_channel" {
+                assert!(!ir.contains("tsuzuri_tz_"), "{name}: {ir}");
+            }
+            assert!(!ir.contains("%tz.scope"), "{name}");
+            assert!(!ir.contains("probe-stack"), "{name}");
         }
     }
+    // Native parallel work starts helper tzroutines without a spawn of the program (TZ11, TZ12):
+    // the boundaries wait for them and the frames are probed, natively only.
+    let module = fixture("pure_parallel");
+    assert!(!llvm::spawns(&module));
+    let native = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert!(
+        native.contains("call ptr @tsuzuri_tz_scope_enter()") && native.contains("probe-stack"),
+        "{native}"
+    );
+    let wasm = llvm::emit_target(&module, llvm::Entry::Library, true).unwrap();
+    assert!(
+        !wasm.contains("%tz.scope") && !wasm.contains("probe-stack"),
+        "{wasm}"
+    );
     // A program that only yields or counts does not spawn: its boundaries do not wait.
     let module = accepts("Routine.yield ()\nRoutine.count ()\n");
     assert!(!llvm::spawns(&module));
@@ -455,28 +483,22 @@ fn the_lock_list_of_the_g_replaces_the_thread_mark() {
 }
 
 #[test]
-fn a_join_of_the_task_runtime_is_a_blocking_call() {
-    // A tzroutine gives its P away while it joins pool items, and a failure domain restores the
-    // spawn scope that a trap in an item left behind.
+fn a_failure_domain_restores_the_spawn_scope_around_parallel_work() {
+    // Natively parallel work runs on the scheduler (TZ12), so a tzroutine that waits for it makes no
+    // blocking call; a trap in a chunk inside a failure domain skips the leaves of what the chunk
+    // entered, and the domain restores the spawn scope that it was entered with.
     let module = accepts(
-        "def joined :: i64 -> i64\nfn joined n =\n    let jobs = new [Task<i64>](2, \\index -> task { return index + n })\n    let results = Task.run (Task.parallel jobs)\n    results[0]\n\ntzroutine { () }\nlet failed = match Domain.run (\\() -> joined 1) with\n    | Result.Ok value -> value\n    | Result.Error _ -> 0\nfailed\n",
+        "def joined :: i64 -> i64\nfn joined n =\n    let results = Parallel.init 2 (\\index -> index + n)\n    results[0]\n\ntzroutine { () }\nlet failed = match Domain.run (\\() -> joined 1) with\n    | Result.Ok value -> value\n    | Result.Error _ -> 0\nfailed\n",
     );
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
-    let lines: Vec<&str> = ir.lines().collect();
-    let joins: Vec<usize> = (0..lines.len())
-        .filter(|&at| {
-            lines[at].contains("@tsuzuri_task_parallel(ptr @")
-                || lines[at].contains("@tsuzuri_task_parallel_results(ptr @")
-        })
-        .collect();
-    assert!(!joins.is_empty());
-    for at in joins {
-        // TZ03: the items are announced inside the blocking call.
-        assert_eq!(lines[at - 2].trim(), "call void @tsuzuri_tz_block_enter()");
-        assert!(lines[at - 1].contains("call void @tsuzuri_tz_parallel_begin(ptr %"));
-        assert!(lines[at + 1].contains("call void @tsuzuri_tz_parallel_end(ptr %"));
-        assert_eq!(lines[at + 2].trim(), "call void @tsuzuri_tz_block_leave()");
-    }
+    assert!(
+        ir.contains("call i32 @tsuzuri_tz_parallel(ptr @tz.parallel.chunk."),
+        "{ir}"
+    );
+    assert!(
+        !ir.contains("@tsuzuri_tz_block_enter") && !ir.contains("tsuzuri_task_parallel"),
+        "{ir}"
+    );
     let run = ir.find("@tsuzuri_domain_run(ptr").expect("a domain");
     let before = &ir[..run];
     assert!(

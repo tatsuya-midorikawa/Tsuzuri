@@ -86,7 +86,7 @@ flowchart LR
 1. **代入**: `let b = a`
 2. **関数の引数**: 所有値を要求する仮引数へ渡す
 3. **関数の戻り値**: `return a`、またはブロック末尾の式
-4. **別の値の中へ入れる**: レコードの非 Copy フィールド、コレクションの要素、`task` への送信
+4. **別の値の中へ入れる**: レコードの非 Copy フィールド、コレクションの要素、`tzroutine { ... }` の捕捉
 
 通常のラムダ式は Copy なので、非 Copy 値を捕捉しようとするとエラー `E1005` になります。所有したまま持ち運ぶ関数値が欲しいときは [Owned](../built-in-types-and-modules/owned.md) の `Owned.function` を使います。
 
@@ -172,7 +172,7 @@ x + y
 | 文字列型 | `string`（UTF-16）、`utf8string`（UTF-8） | 非 Copy（所有権がムーブ） |
 | コレクション | `Vec<T>`、`Map<K, V>`、`Set<T>`、`HashMap<K, V>`、`HashSet<T>`、`Seq<T>` | 常に非 Copy。中身が Copy でも所有バッファごとムーブします |
 | 排他参照 | `ref mut T`（`&mut T`）、排他スライス `ref mut [T..]` | 非 Copy。一意性を保つため複製できません |
-| 特殊型 | `Task<T>`、再帰の共用体、`Drop` を実装した型、`Owned.Function` | 常に非 Copy |
+| 特殊型 | `Channel<T>`、再帰の共用体、`Drop` を実装した型、`Owned.Function` | 常に非 Copy |
 
 `derive(Copy)` を書く必要はありません。コンパイラがフィールドと要素から判定します。再帰的な共用体は、ペイロードが Copy でも Copy にはなりません。子ノードをヒープで所有しているためです。
 

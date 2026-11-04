@@ -40,8 +40,8 @@ const ALL_MODES = ["header", "llvm", "object", "wasm", "shared", "wasmt", "wasi"
 // The modes that run with the build cache on, each in a cache directory of its own.
 const CACHED_MODES = new Set(["wasmt", "wasi", "exegc", "libc"]);
 const isExecutable = (mode) => mode.startsWith("exe") || mode in LIBRARY_MODES;
-const QUICK = ["examples/hello", "examples/tasks", "tests/fixtures/dyn_dispatch", "tests/fixtures/cpu_versions",
-  "tests/fixtures/debug_info", "llvm_handoff/prune", "llvm_handoff/reach", "llvm_handoff/channel_std", "llvm_handoff/tree_lock"];
+const QUICK = ["examples/hello", "examples/tzroutines", "tests/fixtures/dyn_dispatch", "tests/fixtures/cpu_versions",
+  "tests/fixtures/debug_info", "llvm_handoff/prune", "llvm_handoff/reach", "llvm_handoff/channel_std", "llvm_handoff/tree_channel"];
 const sharedExtension = platform() === "darwin" ? "dylib" : "so";
 
 export function parseArguments(argv) {

@@ -163,13 +163,12 @@ match answer with
 
 ゼロ除算や範囲外アクセスのトラップは、`Maybe` や `Result` には自動でなりません。整数オーバーフローを失敗として受け取るには、`@checked` と、同じ関数の `try` を使います。詳しくは[Maybe](../built-in-types-and-modules/maybe.md)、[Result](../built-in-types-and-modules/result.md)、[コンピュテーション式](../computation-expressions/computation-expressions.md)、[例外処理](../exception-handling/exception-handling.md)を見てください。
 
-## タスクと並列
+## 並行と並列
 
-`task { ... }` は、作っただけでは実行されない一回きりの計算です。`Task.run` がそれを消費します。複数のタスクは `Task.parallel` でまとめ、結果は入力の順に返ります。
+`Parallel.init n f` は、添字ごとの計算 `f index` を分けて並列に走らせ、結果を添字の順に返します。
 
 ```tsuzuri run=42
-let jobs = new [Task<i64>](3, \index -> task { return (index + 1) * 7 })
-let totals = Task.run (Task.parallel jobs)
+let totals = Parallel.init 3 (\index -> (index + 1) * 7)
 Array.sum ref totals
 ```
 
@@ -179,9 +178,32 @@ Array.sum ref totals
 42
 ```
 
-ネイティブでは、常駐スレッドプールが仕事を分けます。既定の WebAssembly では、同じ計算を逐次で実行します。どちらも結果の順序は同じです。画面を止めない待ち時間を扱う非同期計算は [Async 式](../async-tasks-and-lazy/async.md) で、CPU の並列計算は `Task` で表します。
+形の違う仕事を同時に進めるときは、`tzroutine { ... }` で軽量な実行単位（Go の goroutine に当たります）を起動します。捕捉した値は tzroutine へ移ります。共有して書き換える値は `Arc` と `Atomic` に入れ、[WaitGroup](../built-in-types-and-modules/waitgroup.md) で全員の終わりを待ってから読みます。
 
-詳しくは[Task 式](../async-tasks-and-lazy/task.md)と[Parallel](../built-in-types-and-modules/parallel.md)を見てください。
+```tsuzuri run=sum%3D42
+let group = WaitGroup.create ()
+let total = Arc.new (Atomic.create 0i64)
+for index in 0 ..< 3 do
+    WaitGroup.add (ref group) 1
+    let finished = WaitGroup.share (ref group)
+    let mine = Arc.share (ref total)
+    tzroutine {
+        let _old = Atomic.fetch_add (Arc.get (ref mine)) (((index + 1) * 7) as i64)
+        WaitGroup.done (ref finished)
+    }
+WaitGroup.wait (ref group)
+$"sum={Atomic.load (Arc.get (ref total))}"
+```
+
+実行結果:
+
+```text
+sum=42
+```
+
+ネイティブでは、tzroutine と `Parallel` のチャンクは、同じ M:N のスケジューラーの上で走ります。既定の WebAssembly では、`Parallel` は同じ計算を逐次で実行し、結果の順序は同じです（tzroutine の起動は WebAssembly では `E2000` です）。画面を止めない待ち時間を扱う非同期計算は [Async 式](../async-tasks-and-lazy/async.md) で、CPU の並列計算は `Parallel` と tzroutine で表します。
+
+詳しくは[tzroutine 式](../async-tasks-and-lazy/tzroutine.md)と[Parallel](../built-in-types-and-modules/parallel.md)を見てください。以前の `task { ... }` と `Task.parallel` は削除しました（[Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行)）。
 
 ## 入出力
 

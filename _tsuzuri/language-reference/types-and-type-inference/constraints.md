@@ -64,10 +64,10 @@ def total_of :: 'value -> 'result
 
 | 制約 | 意味 | 満たさないものの例 |
 | --- | --- | --- |
-| `Copy` | 所有値を複製できる | `string`、`Vec`、`Task`、排他参照、`Drop` を実装した型 |
-| `Capture` | 再利用できる関数環境へ保存できる | `ref mut T`、`Task`、ハンドル、`Drop` を実装した型 |
-| `Send` | タスクへ所有値として渡せる | 共有借用や排他借用を含む値 |
-| `Sync` | 複数のタスクが共有借用で同時に使える | `Rc`、ハンドル、`Task`、排他参照、Copy でない `dyn`、`Owned.Function` |
+| `Copy` | 所有値を複製できる | `string`、`Vec`、排他参照、`Drop` を実装した型 |
+| `Capture` | 再利用できる関数環境へ保存できる | `ref mut T`、ハンドル、`Drop` を実装した型、`Owned.Function`、`Atomic`、`Mutex` |
+| `Send` | ほかの tzroutine やスレッドへ所有値として渡せる | 共有借用や排他借用を含む値、`Rc` |
+| `Sync` | 複数の tzroutine やスレッドが共有借用で同時に使える | `Rc`、ハンドル、排他参照、Copy でない `dyn`、`Owned.Function` |
 | `AtomicValue` | `Atomic` に入れられる | 浮動小数点、`string`、レコード（整数 8〜64 ビットと `bool` だけが満たします） |
 | `Integer` | 整数である | 浮動小数点、`string` |
 | `SignedInteger` | 符号付き整数である | `i64u` などの符号なし |
@@ -78,11 +78,11 @@ def total_of :: 'value -> 'result
 
 `Copy` は「ビットをコピーしてよい」ではなく、言語の複製です。配列、リスト、タプル、レコード、共用体は、中身がすべて `Copy` のときだけ `Copy` です。`string` は `Copy` ではありません。関数値自体は `Copy` で、環境ごと複製されます。詳しくは[ラムダ式](../values-and-functions/lambda-expressions.md)です。
 
-`Capture` は `Copy` とは別です。`string` は `Copy` ではありませんが、ラムダへムーブして保存できます。`ref mut` と `Task` は保存できず、`E1005`（cannot capture）です。関数の引数型に `ref` があることと、関数値が借用を捕捉していることも別の検査です。
+`Capture` は `Copy` とは別です。`string` は `Copy` ではありませんが、ラムダへムーブして保存できます。`ref mut` と `Drop` 型の値は保存できず、`E1005`（cannot capture）です。関数の引数型に `ref` があることと、関数値が借用を捕捉していることも別の検査です。
 
-`Send` は、タスクへ渡す値が所有値であることを要求します。参照を含む値は `E1013` です。`dyn (C, Send)` のように印を並べた dyn 値だけが `Send` です。region 付きの `dyn C {r}` は借用を保持できる代わりに `Send` ではありません。
+`Send` は、`tzroutine { ... }` の捕捉や `Parallel.*` の結果のように、ほかの tzroutine やスレッドへ渡す値が所有値であることを要求します。参照を含む値は `E1013` です。`dyn (C, Send)` のように印を並べた dyn 値だけが `Send` です。region 付きの `dyn C {r}` は借用を保持できる代わりに `Send` ではありません。
 
-型変数は `Send` かどうか分かりません。そのため、`Send` を求める操作（`Parallel.*`、`Task.scope` の結果、`Mutex.create`、`DataChannel.bounded`）を本体に持つジェネリック関数は、その要求を制約として持ち続け、関数を使う型ごとに検査します。`Sync` と同じ扱いで、関数に `Send` と書いていなくても同じです。ラッパー関数を通しても、`Rc` を運ぶチャンネルや `Mutex` は作れません。
+型変数は `Send` かどうか分かりません。そのため、`Send` を求める操作（`Parallel.*`、`Routine.scope` の結果、`Mutex.create`、`DataChannel.bounded`）を本体に持つジェネリック関数は、その要求を制約として持ち続け、関数を使う型ごとに検査します。`Sync` と同じ扱いで、関数に `Send` と書いていなくても同じです。ラッパー関数を通しても、`Rc` を運ぶチャンネルや `Mutex` は作れません。
 
 ```text
 def make :: i64 -> (DataChannel.Sender<'a> * DataChannel.Receiver<'a>) = \capacity -> DataChannel.bounded capacity
@@ -93,11 +93,11 @@ match make 2 with
     0
 ```
 
-この `make` は `Rc<i64>` で使われるので、`E1013`（`tasks require Send values; Rc<i64> holds an Rc or Rc.Weak, ...`）です。`i64` で使えば通ります。利用者が書いた `Send<'a>` 制約（`def need :: Send<'a> => 'a -> i64`）も、使う型ごとに同じ検査を受けます。
+この `make` は `Rc<i64>` で使われるので、`E1013`（`values that move to another tzroutine or thread must be Send; Rc<i64> holds an Rc or Rc.Weak, ...`）です。`i64` で使えば通ります。利用者が書いた `Send<'a>` 制約（`def need :: Send<'a> => 'a -> i64`）も、使う型ごとに同じ検査を受けます。
 
-型変数に型引数を適用した型（高カインドの型変数 `'f` を使った `'f<i64>`、型構築子の一部の適用）も、まだ分かっていない型なので、型変数と同じ扱いです。`DataChannel.Sender<'f<i64>>` を返す関数や、`Parallel.init`・`Mutex.create` に `'f<i64>` を渡す関数、`Task.scope` で `ref 'f<i64>` を共有する関数は、`'f` に `Holder` を与えて使われたとき、`Holder<i64>` が `Send`（`Task.scope` の共有は `Sync`）かどうかを検査されます。`record Holder<'a> { counted: Rc<'a> }` なら `E1013`、`record Holder<'a> { value: 'a }` なら通ります。この検査が要らない関数（`'f<i64>` を作って返すだけの関数など）は、`Send` や `Sync` を求められません。
+型変数に型引数を適用した型（高カインドの型変数 `'f` を使った `'f<i64>`、型構築子の一部の適用）も、まだ分かっていない型なので、型変数と同じ扱いです。`DataChannel.Sender<'f<i64>>` を返す関数や、`Parallel.init`・`Mutex.create` に `'f<i64>` を渡す関数、`Routine.scope` で `ref 'f<i64>` を共有する関数は、`'f` に `Holder` を与えて使われたとき、`Holder<i64>` が `Send`（`Routine.scope` の共有は `Sync`）かどうかを検査されます。`record Holder<'a> { counted: Rc<'a> }` なら `E1013`、`record Holder<'a> { value: 'a }` なら通ります。この検査が要らない関数（`'f<i64>` を作って返すだけの関数など）は、`Send` や `Sync` を求められません。
 
-`Sync` は、複数のタスクが同じ値の共有借用を同時に使ってよいことを要求します。`Task.scope` が共有する値と、`Arc` の中の値がそうです。整数、`string`、配列、レコード、関数値は `Sync` で、`Atomic<T>`、`Mutex<T>`、`DataChannel.Sender<T>`・`DataChannel.Receiver<T>` も `Sync` です（共有借用から更新できるのは、`Atomic` と `Mutex` と、ランタイムのロックで守られる `Channel` の端です）。TZ06 の `WaitGroup`・`Once`・`Cond`・`Semaphore` のハンドルも `Sync` で、`RwMutex<T>`・`OnceValue<T>`・`SyncMap<K, V>` は中身が `Sync` のとき `Sync` です（読み手が同時に `ref T` を持つため。`Mutex<T>` は `T` が `Send` なら `Sync`）。`Rc`、extern ハンドル、`Task`、排他参照、`Seq`、`Async`、GPU のハンドル、Copy でない `dyn` 値、`Owned.Function` は `Sync` ではなく、`E1013`（`tasks can share only Sync values; ... is not Sync`）です。`Arc<T>` は `T` が `Sync` のとき `Sync` で、`T` が `Send` かつ `Sync` のとき `Send` です。`dyn (C, Sync)` のように `Sync` を印として並べることはできません（`E1028`）。
+`Sync` は、複数の tzroutine やスレッドが同じ値の共有借用を同時に使ってよいことを要求します。`Routine.scope` と `Parallel.*` が共有する値と、`Arc` の中の値がそうです。整数、`string`、配列、レコード、関数値は `Sync` で、`Atomic<T>`、`Mutex<T>`、`DataChannel.Sender<T>`・`DataChannel.Receiver<T>` も `Sync` です（共有借用から更新できるのは、`Atomic` と `Mutex` と、ランタイムのロックで守られる `Channel` の端です）。TZ06 の `WaitGroup`・`Once`・`Cond`・`Semaphore` のハンドルも `Sync` で、`RwMutex<T>`・`OnceValue<T>`・`SyncMap<K, V>` は中身が `Sync` のとき `Sync` です（読み手が同時に `ref T` を持つため。`Mutex<T>` は `T` が `Send` なら `Sync`）。`Rc`、extern ハンドル、排他参照、`Seq`、`Async`、GPU のハンドル、Copy でない `dyn` 値、`Owned.Function` は `Sync` ではなく、`E1013`（`tzroutines and threads can share only Sync values; ... is not Sync`）です。`Arc<T>` は `T` が `Sync` のとき `Sync` で、`T` が `Send` かつ `Sync` のとき `Send` です。`dyn (C, Sync)` のように `Sync` を印として並べることはできません（`E1028`）。
 
 `AtomicValue` は、`Atomic<T>` の `T` が `i8`・`i16`・`i32`・`i64`・`i8u`・`i16u`・`i32u`・`i64u`・`bool` のどれかであることを要求します。ほかの型は `E1005`（`atomic values must be ...; use Mutex for ...`）です（[Atomic](../built-in-types-and-modules/atomic.md)）。
 
@@ -109,9 +109,9 @@ flowchart TD
     copy -->|yes| copyOk["Copy を要求する"]
     value --> save{"ラムダへ保存する?"}
     save -->|yes| cap["Capture を要求する"]
-    value --> task{"タスクへ渡す?"}
-    task -->|yes| send["Send を要求する"]
-    value --> share{"複数のタスクで共有借用する?"}
+    value --> move{"ほかの tzroutine やスレッドへ渡す?"}
+    move -->|yes| send["Send を要求する"]
+    value --> share{"複数の tzroutine やスレッドで共有借用する?"}
     share -->|yes| sync["Sync を要求する"]
 ```
 
@@ -225,7 +225,7 @@ def name :: 型
 
 - 制約はインライン、`=>`、インデントした `@` 行で書き、推論結果へ足されます。
 - `#関数名` は `@` 行で、定義元モジュールの関数を静的に要求します。
-- `Copy`、`Capture`、`Send`、`Sync` は複製、捕捉、タスク送信、タスク間の共有借用の印です。`AtomicValue` は `Atomic` に入れられる型の印です。
+- `Copy`、`Capture`、`Send`、`Sync` は複製、捕捉、tzroutine やスレッドへの送信、それらの間の共有借用の印です。`AtomicValue` は `Atomic` に入れられる型の印です。
 - 分類の印は整数、浮動小数点、`f32` / `f64` を区別します。
 - よく使う診断は `E1015`、`E1016`、`E1005`、`E1027`、`E1028` です。
 - `@literal` などの属性は、制約行とは別ページです。
@@ -238,7 +238,7 @@ def name :: 型
 - [ラムダ式](../values-and-functions/lambda-expressions.md)
 - [属性](../values-and-functions/attributes.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
-- [Task 式](../async-tasks-and-lazy/task.md)
+- [tzroutine 式](../async-tasks-and-lazy/tzroutine.md)
 - [診断メッセージとエラーコード](../compiler/diagnostics.md)
 - [多相関数と型クラス](../../../docs/language.md#多相関数と型クラス)
 - [モジュール関数の制約](../../../docs/language.md#モジュール関数の制約)

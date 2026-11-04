@@ -10,7 +10,7 @@
 - `\(left, right) ->` はタプル 1 つの分解で、2 引数関数ではありません。
 - `()` は `unit` を 1 つ受け取るパターンです。引数なし関数の `f()` とは違います。
 - Copy の値はコピーされ、`string` などの非 Copy は関数値へムーブされます。
-- `ref mut` と `Task` は、後から何度も呼ぶ関数値へ保存できません。
+- `ref mut` と、`Drop` を実装した型の値は、後から何度も呼ぶ関数値へ保存できません。
 
 ## 基本の書き方
 
@@ -183,14 +183,14 @@ let again = label
 
 捕捉の無い関数値は環境を確保しません。ポインタ幅に収まるスカラーを一つだけ捕捉した場合は、ヒープ確保を省く実装上の最適化があります。意味は、独立したコピーのままです。
 
-関数値そのものの大きさは、ポインター 2 つです（ネイティブは 16 バイト、wasm32 は 8 バイト）。1 つ目は、呼び出す関数と環境の複製・解放のしかたを持つ静的な表（関数と捕捉の数ごとに 1 つ）への参照で、2 つ目は環境です。環境を確保しない関数値と、スカラーを 1 つだけ環境の欄に入れた関数値は、複製も解放も何もしません。`Maybe<i64 -> i64>` のように、関数値だけをペイロードに持つ option はタグを持たず、関数値と同じ大きさです（[Union](../built-in-types-and-modules/union.md#メモリ上の大きさ)）。値のインラインレイアウトの上限（`E1010`）の検査は、関数値と `Task` を 32 バイトと数える保守的な見積もりのままです。
+関数値そのものの大きさは、ポインター 2 つです（ネイティブは 16 バイト、wasm32 は 8 バイト）。1 つ目は、呼び出す関数と環境の複製・解放のしかたを持つ静的な表（関数と捕捉の数ごとに 1 つ）への参照で、2 つ目は環境です。環境を確保しない関数値と、スカラーを 1 つだけ環境の欄に入れた関数値は、複製も解放も何もしません。`Maybe<i64 -> i64>` のように、関数値だけをペイロードに持つ option はタグを持たず、関数値と同じ大きさです（[Union](../built-in-types-and-modules/union.md#メモリ上の大きさ)）。値のインラインレイアウトの上限（`E1010`）の検査は、関数値を 32 バイトと数える保守的な見積もりのままです。
 
 ```mermaid
 flowchart TD
     use["ラムダが外側の変数を使う"] --> kind{"その値は保存できる?"}
     kind -->|Copy| copy["コピーして環境へ入れる"]
     kind -->|string など非 Copy| moved["ムーブして環境へ入れる"]
-    kind -->|ref mut または Task| reject["E1005 で拒否する"]
+    kind -->|ref mut または Drop 型| reject["E1005 で拒否する"]
 ```
 
 外側の `let mut` を捕捉しても、ラムダの中からその変数へ代入し直すことはできません。環境の中では不変です。代入したいローカルは、引数を `\mut value ->` で受けるか、ラムダの内側で `let mut` します。
@@ -225,7 +225,7 @@ def leak :: unit -> unit -> i64 = \() ->
 
 ## 保存できない値
 
-排他借用 `ref mut T` と、一度だけ実行する `Task<T>` は、再利用できる関数値の環境へ保存できません。`Capture` 制約で拒否され、`E1005` になります。
+排他借用 `ref mut T` と、`Drop` を実装した型の値は、再利用できる関数値の環境へ保存できません。`Capture` 制約で拒否され、`E1005` になります。関数値は複製されることがあり、複製すると排他借用が 2 つになったり、同じ資源を 2 回解放したりするからです。
 
 ```text
 let mut text = "answer"
@@ -234,15 +234,21 @@ let later = \() -> borrowed
 ```
 
 ```text
-let pending = task { return 1 }
-let later = \() -> pending
+record Ticket { id: i64 }
+
+instance Drop<Ticket> {
+    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+}
+
+let ticket = Ticket { id: 1 }
+let later = \() -> ticket.id
 ```
 
-どちらも `cannot capture ... in a reusable function` です。排他借用は、その場で完全に適用します。タスクは `task` ブロックの中で一度消費します。後で呼ぶ関数値にはしないでください。
+どちらも `cannot capture ... in a reusable function; fully apply exclusive borrows, or move the value into a tzroutine body, which runs once` です。排他借用は、その場で完全に適用します。`Drop` 型の値は、1 回だけ走る `tzroutine { ... }` の本体へムーブするか、[Owned](../built-in-types-and-modules/owned.md) の `Owned.function` で包みます。`Drop` を持つ std の型（`Channel` など）と `Owned.Function` も捕捉できません。`Atomic` と `Mutex` も、複製すると別のカウンターやロックになるので捕捉できません。
 
-`Rc<T>` と `Rc.Weak<T>`、それを持つ値も捕捉できません（`E1005`）。関数値はどのタスクへも渡せるので、atomic でない計数がタスクをまたぐのを防ぐためです。`Arc<T>` は、`T` が `Rc`、extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function` を持たなければ捕捉でき、関数値を複製すると `Arc.share` と同じく所有者が増えます（[Rc と Arc](../built-in-types-and-modules/rc.md)）。
+`Rc<T>` と `Rc.Weak<T>`、それを持つ値も捕捉できません（`E1005`）。関数値はほかの tzroutine やスレッドへも渡せるので、atomic でない計数がスレッドをまたぐのを防ぐためです。`Arc<T>` は、`T` が `Rc`、extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function` を持たなければ捕捉でき、関数値を複製すると `Arc.share` と同じく所有者が増えます（[Rc と Arc](../built-in-types-and-modules/rc.md)）。
 
-`Drop` を実装した型も、複製すると解放が二重になるため `Capture` を満たしません。そのような値を関数として扱う方法は [Drop](../ownership-and-memory/drop.md) と [Owned](../built-in-types-and-modules/owned.md) を参照してください。
+`Drop` 型の値を関数として扱う方法は [Drop](../ownership-and-memory/drop.md) と [Owned](../built-in-types-and-modules/owned.md) を参照してください。
 
 引数の型が `ref T` であることと、関数値が `ref` を捕捉していることは別の検査です。`String.length` のような関数値自体は、呼び出しのあいだだけ借用します。
 
@@ -284,7 +290,7 @@ let shift: i64 -> i64 = \value -> value + 1
 - 型注釈、タプル分解、`unit` パターン、`when` を引数位置に書けます。
 - Copy はコピー、非 Copy はムーブです。関数値の複製は環境の独立したコピーです。
 - 共有借用の捕捉は、所有者の寿命に束縛されます。
-- `ref mut` と `Task` は再利用可能なラムダへ保存できません。
+- `ref mut` と `Drop` 型の値は再利用可能なラムダへ保存できません。
 
 ## 関連項目
 
@@ -293,7 +299,7 @@ let shift: i64 -> i64 = \value -> value + 1
 - [制約 と 属性](../types-and-type-inference/constraints.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [借用と参照](../ownership-and-memory/borrowing.md)
-- [Task 式](../async-tasks-and-lazy/task.md)
+- [tzroutine 式](../async-tasks-and-lazy/tzroutine.md)
 - [匿名関数と捕捉](../../../docs/language.md#匿名関数と捕捉)
 - [言語リファレンスの目次](../index.md)
 

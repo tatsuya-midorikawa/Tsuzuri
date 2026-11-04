@@ -18,7 +18,7 @@
     { "name": "keyword.control.tsuzuri", "match": "\\bselect\\b(?=\\s*(?:$|//|\\|\\s*(?:recv|send|default)\\b))" },
     { "match": "^\\s*(\\|)\\s*(recv)\\s+([A-Za-z_][A-Za-z_0-9']*)\\s+(from)\\b", "captures": { "2": { "name": "keyword.control.tsuzuri" }, "4": { "name": "keyword.control.tsuzuri" } } },
     { "match": "^\\s*(\\|)\\s*(recv|send|default)\\b", "captures": { "2": { "name": "keyword.control.tsuzuri" } } },
-    { "name": "keyword.declaration.tsuzuri", "match": "\\b(?:def|fn|rec|export|extern|private|record|union|type|const|test|bench|class|instance|deriving|dyn|task|mut|ref|deref|new|as|of)\\b" },
+    { "name": "keyword.declaration.tsuzuri", "match": "\\b(?:def|fn|rec|export|extern|private|record|union|type|const|test|bench|class|instance|deriving|dyn|mut|ref|deref|new|as|of)\\b" },
     { "match": "(@alias)[ \\t]+([a-z][A-Za-z_0-9]*)", "captures": { "1": { "name": "storage.modifier.attribute.tsuzuri" }, "2": { "name": "entity.name.namespace.tsuzuri" } } },
     { "name": "storage.modifier.attribute.tsuzuri", "match": "@(?:alias|checked|cpu|literal)\\b" },
     { "name": "support.function.builtin.tsuzuri", "match": "\\b(?:not|ignore)\\b" },

@@ -1,13 +1,13 @@
 # Atomic
 
-`Atomic<T>` は、整数か `bool` を 1 つ入れるセルです。複数のタスクが共有借用 `ref Atomic<T>` を通して、分割できない操作で読み書きします。ロックを使わずに、カウンター、フラグ、通し番号、最大値のような小さな共有状態を持つときに使います。
+`Atomic<T>` は、整数か `bool` を 1 つ入れるセルです。複数の tzroutine やスレッドが共有借用 `ref Atomic<T>` を通して、分割できない操作で読み書きします。ロックを使わずに、カウンター、フラグ、通し番号、最大値のような小さな共有状態を持つときに使います。
 
 ## この記事のポイント
 
 - `Atomic.create value` で作ります。`T` は `i8`・`i16`・`i32`・`i64`・`i8u`・`i16u`・`i32u`・`i64u`・`bool` のどれかです（組み込みのクラス `AtomicValue`）。ほかの型は `E1005` で、`string` やレコードの共有は [Mutex](./mutex.md) に入れます。
 - `load`・`store`・`swap`・`compare_exchange`・`fetch_add`・`fetch_sub`・`fetch_and`・`fetch_or`・`fetch_xor` は、どれも共有借用 `ref Atomic<T>` で呼べます。順序は常に sequentially consistent で、弱い順序は選べません。
 - `fetch_*` は更新前の値を返し、オーバーフローは 2 の補数でラップします（通常の整数演算と同じです）。
-- `Atomic<T>` は非 Copy の所有値です。複製できず（`E1005`）、関数値に捕捉できません（`E1005`）。複数のタスクで使うときは、[Task.scope](../async-tasks-and-lazy/task.md#共有状態と-taskscope) の共有借用か、`Arc<Atomic<T>>` を使います。
+- `Atomic<T>` は非 Copy の所有値です。複製できず（`E1005`）、関数値に捕捉できません（`E1005`）。複数の tzroutine で使うときは、[Routine.scope](./routine.md#routinescope) の共有借用か、`Arc<Atomic<T>>` を使います。
 - 更新は 1 つの atomic 命令に下がります。既定の wasm32 は 1 スレッドで動くので通常の命令になり、WASM の import は増えません。
 
 ## 基本の書き方
@@ -37,13 +37,13 @@ first=0 second=5 old=10 swapped=20 refused=30 now=30
 
 整数リテラルは注釈がなければ `i32` です。`Atomic<i64>` に使う値は、`0i64` のような接尾辞か、型が決まる文脈で書きます。
 
-## タスクで共有する
+## tzroutine で共有する
 
-`Task.scope` は、外の値を借用したまま、子どもたちに共有させます。各子どもは共有借用と自分の番号を受け取ります。足し算は順序によらないので、スケジュールが違っても合計は同じです。
+`Routine.scope` は、外の値を借用したまま、子どもたち（子ごとに 1 つの tzroutine）に共有させます。各子どもは共有借用と自分の番号を受け取ります。足し算は順序によらないので、スケジュールが違っても合計は同じです。
 
 ```tsuzuri run=36
 let hits = Atomic.create 0i64
-let _seen = Task.scope (ref hits) 8 (\shared index -> Atomic.fetch_add shared (index + 1))
+let _seen = Routine.scope (ref hits) 8 (\shared index -> Atomic.fetch_add shared (index + 1))
 Atomic.load (ref hits)
 ```
 
@@ -53,7 +53,7 @@ Atomic.load (ref hits)
 36
 ```
 
-`Task.parallel` で作ったタスクのように、借用を持ち込めない場所では、`Arc<Atomic<T>>` を `Arc.share` してタスクごとに渡します。`Arc<Atomic<T>>` は `Send` で、中の `Atomic` に共有借用 `Arc.get` で触れます（[Rc と Arc](./rc.md#送信と捕捉の規則)）。
+`tzroutine { }` の本体のように、借用を持ち込めない場所では、`Arc<Atomic<T>>` を `Arc.share` して tzroutine ごとに渡します。`Arc<Atomic<T>>` は `Send` で、中の `Atomic` に共有借用 `Arc.get` で触れます（[Rc と Arc](./rc.md#送信と捕捉の規則)、[tzroutine 式](../async-tasks-and-lazy/tzroutine.md) の例）。
 
 ## compare_exchange で更新を作る
 
@@ -70,7 +70,7 @@ fn rec raise_to cell value =
         | Result.Error _current -> raise_to cell value
 
 let highest = Atomic.create 0i64
-let _seen = Task.scope (ref highest) 8 (\shared index -> raise_to shared (index * 10))
+let _seen = Routine.scope (ref highest) 8 (\shared index -> raise_to shared (index * 10))
 $"max={Atomic.load (ref highest)}"
 ```
 
@@ -84,7 +84,7 @@ max=70
 
 - `Atomic<T>` は `Send` で、`Sync` です。共有借用から更新できるのは、この型と [Mutex](./mutex.md)、そして [DataChannel](./datachannel.md) の端（`Sender`・`Receiver`。ランタイムのロックで守られます）だけです。`Atomic` を持つレコードや共用体も、非 Copy で、関数値に捕捉できません。
 - 関数値は複製されることがあり、複製した `Atomic` は別のセルになるので、捕捉は `E1005` です。メッセージは `cannot capture Atomic<i64> in a function value; a function value may be copied, and a copy of an Atomic or Mutex would be a separate cell; capture a borrow of it, share it through an Arc, or pass it as an argument` です。借用 `ref cell` を捕捉するか、`Arc` に入れるか、引数で渡します。
-- `task { ... }` は、`Atomic` を持ち込めます。所有値のムーブなので、その 1 つのタスクだけが所有します。
+- `tzroutine { ... }` の本体へは、`Atomic` を持ち込めます。所有値のムーブなので、その 1 つの tzroutine だけが所有します。
 - `Atomic<T>` は中身が不透明です。構築、フィールド参照、パターン分解、更新構文は `E1022`、`export def` と `extern def` の境界は `E1008`、`const` の初期化は `E1026` です。`Eq`・`Ord`・`Hash`・`Display` の instance はなく、比較や表示は `Atomic.load` で取り出した値に対して行います。
 - `Atomic<T>` を作る関数をジェネリックにするときは、`AtomicValue<'a>` の制約を書きます。`fetch_*` には、さらに `Integer<'a>` が要ります（`bool` の `fetch_add` は `E1005`）。
 
@@ -94,7 +94,7 @@ max=70
 - ネイティブでは `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`（すべて `seq_cst`）に下がり、ランタイムの関数は呼びません。たとえば `fetch_add` は、AArch64 では LSE の `ldaddal` 1 命令、x86-64 では `lock` 付きの 1 命令（更新前の値を使うと `lock xadd`、使わないと `lock add`）です。命令の選択は LLVM のターゲット設定に従います。
 - `--wasm-feature threads` では WASM の atomic 命令（`i64.atomic.rmw.add` など）です。既定の wasm32 は 1 スレッドなので、LLVM が通常の命令へ下げます。どちらも import は増えません。
 - `bool` は 1 バイトです。セルの確保は 16 バイト境界で、8 バイトの atomic 命令に必要な整列を満たします（`--allocator host`・`counting`・`small` も同じ保証です）。
-- 同じセルを多数のスレッドが更新すると、キャッシュラインの奪い合いで遅くなります。更新の回数を減らせるなら、タスクごとに集計してから 1 回足す方が速いのが一般的です。性能の優位は主張しません。
+- 同じセルを多数のスレッドが更新すると、キャッシュラインの奪い合いで遅くなります。更新の回数を減らせるなら、tzroutine ごとに集計してから 1 回足す方が速いのが一般的です。性能の優位は主張しません。
 
 ## API リファレンス
 
@@ -119,13 +119,14 @@ max=70
 ## まとめ
 
 - 整数と `bool` の共有状態は `Atomic` に入れ、共有借用から `fetch_*`・`compare_exchange` などで更新します。順序は常に sequentially consistent です。
-- 複数のタスクへは、`Task.scope` の共有借用か `Arc<Atomic<T>>` で渡します。関数値には捕捉できません。
+- 複数の tzroutine へは、`Routine.scope` の共有借用か `Arc<Atomic<T>>` で渡します。関数値には捕捉できません。
 - 整数と `bool` 以外の値や、複数の値を 1 つの不変条件で守りたいときは [Mutex](./mutex.md) を使います。
 
 ## 関連項目
 
 - [Mutex](./mutex.md) — ロックで守る共有状態
-- [Task 式](../async-tasks-and-lazy/task.md#共有状態と-taskscope) — `Task.scope`
+- [Routine](./routine.md) — `Routine.scope`
+- [tzroutine 式](../async-tasks-and-lazy/tzroutine.md)
 - [Rc と Arc](./rc.md) — `Arc` による共有
 - [Parallel](./parallel.md) — 配列の並列処理
 - [型クラス](../types-and-type-inference/type-classes.md) — `Sync` と `AtomicValue`

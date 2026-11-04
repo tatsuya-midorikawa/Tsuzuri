@@ -40,7 +40,7 @@ fn break_continue_type_contexts() {
             format!("for index = 0 to 1 do {jump}"),
             format!("for index in [1, 2] do {jump}"),
             format!("Maybe {{ let value = {{ while false do {jump}; 42 }}; return value }}"),
-            format!("let work = task {{ while false do {jump}; return 42 }}\nTask.run work"),
+            format!("tzroutine {{ while false do {jump}; () }}\n42"),
             format!("let run = value -> {{ while false do {jump}; value }}\nrun 42"),
         ] {
             analyze(&source)
@@ -49,7 +49,7 @@ fn break_continue_type_contexts() {
         for source in [
             jump.to_owned(),
             format!("while true do {{ let run = value -> {jump}; run 0 }}"),
-            format!("while true do {{ let work = task {{ {jump} }}; () }}"),
+            format!("while true do {{ tzroutine {{ {jump} }}; () }}"),
             format!("while true do {{ let value = Maybe {{ return {jump} }}; () }}"),
             format!("Maybe {{ while true do {jump} }}"),
         ] {
@@ -143,7 +143,7 @@ fn conditional_keywords_and_optional_else() {
         "def f :: i64 -> i64 = \\foo::Bar -> 1",
         "for foo::Bar in [1, 2] do ()",
         "for foo.Bar in [1, 2] do ()",
-        "def work :: Task<i64>\nfn work =\n    let mut sum = 0\n    for foo::Bar in [20, 22] do\n        let! value = task { return 1 }\n        sum = sum + value\n    return sum\nTask.run (work())",
+        "def work :: Maybe<i64>\nfn work =\n    for foo::Bar in [20, 22] do\n        let! value = Some 1\n        ()\n    return 1\nMaybe.get (work())",
     ] {
         rejects(source, "E1020");
     }

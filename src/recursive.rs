@@ -360,7 +360,7 @@ impl TypeContext<'_> {
     }
 
     /// Whether `found` holds for a type reachable from `root` through stored values and the
-    /// targets of references (A13). Function and task types describe calls, not stored values.
+    /// targets of references (A13). Function and tzroutine body types describe calls, not stored values.
     pub(crate) fn reaches(&self, root: &Type, found: impl Fn(&Type) -> bool) -> bool {
         !self.walk_types(root, |ty| !found(ty), |_| false, true)
     }

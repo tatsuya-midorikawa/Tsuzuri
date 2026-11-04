@@ -5,12 +5,12 @@
 ## この記事のポイント
 
 - `Routine.go` は `Owned.Function<unit, unit>` を新しい tzroutine で 1 回呼び、そのあと drop します。`tzroutine { }` の関数版です。
-- `Routine.scope shared count f` は、子ごとに 1 つの tzroutine で `f shared index` を呼び、全員が終わってから結果を添字の順の配列で返します（`Task.scope` の後継、TZ11）。子は `Channel` や同期の型で待て、待つ子の数に上限はありません。
+- `Routine.scope shared count f` は、子ごとに 1 つの tzroutine で `f shared index` を呼び、全員が終わってから結果を添字の順の配列で返します（TZ11）。子は `Channel` や同期の型で待て、待つ子の数に上限はありません。TZ12 で消えた `Task.scope` は `E1040` で、同じ引数の `Routine.scope` へ `tsuzuri fix` が書き換えます（[Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行)）。
 - `Routine.yield ()` は、実行をほかの tzroutine に譲ります（Go の `runtime.Gosched`）。
 - `Routine.count ()` は、生きている tzroutine の数に、呼んだスレッドの 1 を足した数です（Go の `runtime.NumGoroutine` は `main` を数えます）。
 - `Routine.max_procs ()` は同時に tzroutine を走らせる OS スレッドの数、`Routine.cpu_count ()` はオンラインの CPU 数です。
 - `Routine.with_locked_thread f` は、`f ()` を呼ぶ間、呼んだ tzroutine をその OS スレッドに固定します（Go の `runtime.LockOSThread`）。スレッドに結び付いたホストの API を `extern` で呼ぶときに使います。
-- `Routine.scope` 以外は関数値として渡せます（`let f: unit -> unit = Routine.yield`）。`Routine.scope` は `Task.scope` と同じく直接の呼び出しだけです（`E1013`）。`pure def` の中では使えません（`E1029`）。`Routine.yield` は `Mutex.with_lock` の中でも譲れます（ロックは tzroutine のもの。TZ06）。
+- `Routine.scope` 以外は関数値として渡せます（`let f: unit -> unit = Routine.yield`）。`Routine.scope` は引数をすべて渡す直接の呼び出しだけです（`E1013`）。`pure def` の中では使えません（`E1029`）。`Routine.yield` は `Mutex.with_lock` の中でも譲れます（ロックは tzroutine のもの。TZ06）。
 
 ## 提供 API 一覧
 
@@ -59,7 +59,7 @@ spawn (Owned.function (\() -> {
 
 ## Routine.scope
 
-`Routine.scope shared count f` は、`count` 個の子を、それぞれ自分の tzroutine で `f shared index` として呼びます。子は同じ共有借用 `shared` を読み、結果は添字の順の配列になります。呼び出しは、子と、子が起動した tzroutine がすべて終わってから戻ります。型・借用の規則・診断は [`Task.scope`](../async-tasks-and-lazy/task.md) と同じです（`shared` は `Sync`、結果は `Send` の所有値、コールバックは借用した環境を持てない、直接の呼び出しだけ）。
+`Routine.scope shared count f` は、`count` 個の子を、それぞれ自分の tzroutine で `f shared index` として呼びます。子は同じ共有借用 `shared` を読み、結果は添字の順の配列になります。呼び出しは、子と、子が起動した tzroutine がすべて終わってから戻ります。`shared` は呼び出しの間だけ全員に貸す借用なので、外の値をコピーせず、持ち込まずに共有できます。
 
 ```tsuzuri run=partial%3D1225%2C1250%2C1275%2C1300%20total%3D5050
 def stride_sum :: ref [i64] -> i64 -> i64
@@ -82,7 +82,7 @@ $"partial={partial[0]},{partial[1]},{partial[2]},{partial[3]} total={Array.sum (
 partial=1225,1250,1275,1300 total=5050
 ```
 
-`Task.scope` の子はスレッドプールの仕事なので、待つ子がプールのスレッドの数を超えると終わりません。`Routine.scope` の子は tzroutine なので、互いを待っても、`TSUZURI_MAXPROCS=1` でも終わります。次の 8 個の子は、輪になったチャンネルで値を 1 周回します。
+`Routine.scope` の子はそれぞれ tzroutine なので、互いを待っても、子がいくつあっても、`TSUZURI_MAXPROCS=1` でも終わります。次の 8 個の子は、輪になったチャンネルで値を 1 周回します。
 
 ```tsuzuri run=8
 def received :: ref Channel<i64> -> i64
@@ -113,7 +113,15 @@ results[0]
 8
 ```
 
-- `count` が 0 なら空の配列です。負なら結果の確保でトラップします（`Task.scope` と同じ）。
+規則は次のとおりです。
+
+- `shared` の型は `Sync` でなければなりません。`Rc`、extern ハンドル、排他参照、Copy でない `dyn` 値、`Owned.Function`、`Seq`、`Async`、GPU のハンドルは `Sync` ではなく、`E1013`（`tzroutines and threads can share only Sync values; ... is not Sync`）です。整数、文字列、配列、レコード、関数値、`Atomic`、`Mutex`、`Sync` な値の `Arc` は `Sync` です（[組み込みの印](../types-and-type-inference/constraints.md#組み込みの印)）。
+- `shared` が関数値、または関数値を含む値のときは、その環境が借用を持たない所有値であると証明できなければなりません。証明できないとき（引数で受け取った未知の関数値など）は `E1013`（`Routine.scope can share only values with proven owned environments`）です。
+- `f` は借用を持った環境を捕捉できません（`E1013`、`parallel callbacks and values cannot retain borrowed environments`）。共有したい値は、引数の `shared` で受け取ります。
+- 結果は `Send` の所有値です。`shared` を返すことはできません（`E1013`、`values that move to another tzroutine or thread must be owned`）。
+- 引数をすべて渡して直接呼びます。`Routine.scope (ref value)` のように一部だけ渡すことも、関数値にすることもできません（`E1013`、`parallel operations must be fully applied directly`）。
+- `count` が 0 なら空の配列です。負なら結果の確保でトラップします。
+- 子がトラップすると、ほかのトラップと同じく、プロセス全体の失敗です。
 - 子が作ったタイマーは、呼び出し元の境界のものです（`Routine.scope` の終わりでは止まりません）。
 - tzroutine を起動するので、`pure def` の中では使えず（`E1029`）、WebAssembly では `E2000` です。
 
@@ -163,7 +171,7 @@ $"{label} {total}"
 ## まとめ
 
 - `Routine.go` は所有する関数を tzroutine で 1 回呼びます。
-- `Routine.scope` は借用を共有する子を tzroutine で呼び、全員を待ちます（`Task.scope` の後継）。
+- `Routine.scope` は借用を共有する子を tzroutine で呼び、全員を待ちます。旧 `Task.scope` は `Routine.scope` に書き換えます（`tsuzuri fix`）。
 - `Routine.yield`・`count`・`max_procs`・`cpu_count` は、譲渡とスケジューラーへの問い合わせです。
 - `Routine.with_locked_thread` は、関数の間 tzroutine を OS スレッドに固定します。
 - 予約されたモジュール名で、std のファイルはありません。

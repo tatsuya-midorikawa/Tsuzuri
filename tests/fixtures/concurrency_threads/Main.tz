@@ -1,18 +1,29 @@
-// F10 on real worker threads (tests/wasm_threads.mjs): atomics and locks must not lose updates between
-// workers, and the children of a scope run on the pool. Every result is independent of the schedule.
+// F10 on real worker threads (tests/wasm_threads.mjs, tests/wasm_threads_stress.mjs): atomics and
+// locks must not lose updates between workers, and the jobs of a parallel call run on the pool. Every
+// result is independent of the schedule.
+//
+// `Parallel.for_each_chunk 1` over n slots gives each index a job of its own (up to 1024 jobs; above
+// that a job takes a run of consecutive indexes), which any thread of the pool may take, and the job
+// writes its result into its slot. A callback cannot keep a borrow, so the jobs share a cell through
+// an Arc that the callback owns, or a job owns what its slot holds and drops it on its own thread
+// when it writes its result.
 
 export def atomic_counter :: own i64 -> i64
 fn atomic_counter n =
-    let counter = Atomic.create 0i64
-    let _previous = Task.scope (ref counter) n (\shared index -> Atomic.fetch_add shared (index + 1))
-    Atomic.load (ref counter)
+    let counter = Arc.new (Atomic.create 0i64)
+    let mine = Arc.share (ref counter)
+    let mut previous = new [i64](n, \_index -> 0)
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (Atomic.fetch_add (Arc.get (ref mine)) (index + 1)) slot) (ref mut previous)
+    Atomic.load (Arc.get (ref counter))
 
-// Each child adds one a thousand times: a plain, non-atomic add would lose updates between workers.
+// Each job adds one a thousand times: a plain, non-atomic add would lose updates between workers.
 export def atomic_contended :: own i64 -> i64
 fn atomic_contended n =
-    let counter = Atomic.create 0i64
-    let _done = Task.scope (ref counter) n (\shared _index -> add_many shared 1000)
-    Atomic.load (ref counter)
+    let counter = Arc.new (Atomic.create 0i64)
+    let mine = Arc.share (ref counter)
+    let mut done = new [i64](n, \_index -> 0)
+    Parallel.for_each_chunk 1 (\_index slot -> Array.write 0 (add_many (Arc.get (ref mine)) 1000) slot) (ref mut done)
+    Atomic.load (Arc.get (ref counter))
 
 def add_many :: ref Atomic<i64> -> own i64 -> i64
 fn add_many cell count =
@@ -22,12 +33,14 @@ fn add_many cell count =
         round = round + 1
     round
 
-// One compare-exchange loop: every child wins its update once, whatever the order.
+// One compare-exchange loop: every job wins its update once, whatever the order.
 export def atomic_compare_exchange_loop :: own i64 -> i64
 fn atomic_compare_exchange_loop n =
-    let counter = Atomic.create 0i64
-    let _done = Task.scope (ref counter) n (\shared index -> increment shared (index + 1))
-    Atomic.load (ref counter)
+    let counter = Arc.new (Atomic.create 0i64)
+    let mine = Arc.share (ref counter)
+    let mut done = new [i64](n, \_index -> 0)
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (increment (Arc.get (ref mine)) (index + 1)) slot) (ref mut done)
+    Atomic.load (Arc.get (ref counter))
 
 def rec increment :: ref Atomic<i64> -> own i64 -> i64
 fn rec increment cell amount =
@@ -36,31 +49,46 @@ fn rec increment cell amount =
     | Result.Ok _previous -> amount
     | Result.Error _current -> increment cell amount
 
-export def scope_results_order :: own i64 -> i64
-fn scope_results_order n =
-    let unit_value = 0i64
-    let results = Task.scope (ref unit_value) n (\_shared index -> index * 3 + 1)
+// The job of each index writes the slot of that index, whichever thread runs it.
+export def results_order :: own i64 -> i64
+fn results_order n =
+    let mut results = new [i64](n, \_index -> 0)
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (index * 3 + 1) slot) (ref mut results)
     let mut checksum = 0;
     for position in 0i64 ..= (results.length - 1) do
         checksum = checksum * 31 + results[position] + position
     checksum
 
-def count :: own Arc<Atomic<i64>> -> own i64 -> Task<i64>
-fn count shared amount = task {
-    let _previous = Atomic.fetch_add (Arc.get (ref shared)) amount
-    return amount
-}
+// A job that owns a share of an Arc, which it drops on its own thread when it writes its result.
+union AtomicJob = Count of (Arc<Atomic<i64>> * i64) | Counted of i64
 
-def counts :: ref Arc<Atomic<i64>> -> own i64 -> [Task<i64>]
-fn counts shared n = new [Task<i64>](n, \index -> count (Arc.share shared) (index + 1))
+def count :: i64 -> ref mut [AtomicJob..] -> unit
+fn count _index slot =
+    let amount = match slot[0] with
+        | Count (shared, amount) ->
+            let _previous = Atomic.fetch_add (Arc.get (ref shared)) amount
+            amount
+        | Counted amount -> amount
+    Array.write 0 (Counted amount) slot
 
-export def arc_atomic_tasks :: own i64 -> i64
-fn arc_atomic_tasks n =
+def counts :: ref Arc<Atomic<i64>> -> own i64 -> [AtomicJob]
+fn counts shared n = new [AtomicJob](n, \index -> Count (Arc.share shared, index + 1))
+
+def rec counted :: ref [AtomicJob] -> own i64 -> own i64 -> i64
+fn rec counted jobs index sum =
+    if index == jobs.length then sum
+    else match jobs[index] with
+        | Counted amount -> counted jobs (index + 1) (sum + amount)
+        | Count (_shared, _amount) -> -1
+
+export def arc_atomic_jobs :: own i64 -> i64
+fn arc_atomic_jobs n =
     let shared = Arc.new (Atomic.create 0i64)
-    let results = Task.run (Task.parallel (counts (ref shared) n))
-    Array.sum (ref results) * 1000 + Atomic.load (Arc.get (ref shared))
+    let mut jobs = counts (ref shared) n
+    Parallel.for_each_chunk 1 count (ref mut jobs)
+    counted (ref jobs) 0 0 * 1000 + Atomic.load (Arc.get (ref shared))
 
-// Mutex on real workers (F10 Phase 2): every child reads, adds and writes under the lock, so a lock
+// Mutex on real workers (F10 Phase 2): every job reads, adds and writes under the lock, so a lock
 // that is not exclusive would lose updates, and a waiter that is never woken would hang.
 def add_locked :: ref Mutex<i64> -> own i64 -> i64
 fn add_locked cell count =
@@ -73,46 +101,67 @@ fn add_locked cell count =
         round = round + 1
     round
 
+// The value of the lock once every job has let go of its share of the Arc (-1 while one holds it).
+def unshared :: own Arc<Mutex<i64>> -> i64
+fn unshared shared =
+    match Arc.try_unwrap shared with
+    | Result.Ok lock -> Mutex.into_inner lock
+    | Result.Error _still -> -1
+
 export def mutex_contended :: own i64 -> i64
 fn mutex_contended n =
-    let total = Mutex.create 0i64
-    let _done = Task.scope (ref total) n (\shared _index -> add_locked shared 1000)
-    Mutex.into_inner total
+    let total = Arc.new (Mutex.create 0i64)
+    let mine = Arc.share (ref total)
+    let mut done = new [i64](n, \_index -> 0)
+    Parallel.for_each_chunk 1 (\_index slot -> Array.write 0 (add_locked (Arc.get (ref mine)) 1000) slot) (ref mut done)
+    unshared total
 
 export def mutex_total :: own i64 -> i64
 fn mutex_total n =
-    let total = Mutex.create 0i64
-    let indices = Task.scope (ref total) n (\shared index -> Mutex.with_lock shared (\value -> {
+    let total = Arc.new (Mutex.create 0i64)
+    let mine = Arc.share (ref total)
+    let mut indices = new [i64](n, \_index -> 0)
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (Mutex.with_lock (Arc.get (ref mine)) (\value -> {
         deref value = deref value + index + 1;
         index
-    }))
-    Mutex.into_inner total + Array.sum (ref indices)
+    })) slot) (ref mut indices)
+    unshared total + Array.sum (ref indices)
 
-// Owned data under the lock: each child writes its own slot of a shared array.
+// Owned data under the lock: each job writes its own slot of a shared array.
 export def mutex_owned_array :: own i64 -> i64
 fn mutex_owned_array n =
-    let slots = Mutex.create (new [i64](n, \_index -> 0))
-    let _done = Task.scope (ref slots) n (\shared index -> Mutex.with_lock shared (\values -> {
+    let slots = Arc.new (Mutex.create (new [i64](n, \_index -> 0)))
+    let mine = Arc.share (ref slots)
+    let mut done = new [i64](n, \_index -> 0)
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (Mutex.with_lock (Arc.get (ref mine)) (\values -> {
         Array.write index (index * 2 + 1) values;
         0
-    }))
-    Array.sum (ref (Mutex.into_inner slots))
+    })) slot) (ref mut done)
+    match Arc.try_unwrap slots with
+    | Result.Ok lock -> Array.sum (ref (Mutex.into_inner lock))
+    | Result.Error _still -> -1
 
-def bump :: own Arc<Mutex<i64>> -> own i64 -> Task<i64>
-fn bump shared amount = task {
-    return Mutex.with_lock (Arc.get (ref shared)) (\value -> { deref value = deref value + amount; deref value })
-}
+union MutexJob = Bump of (Arc<Mutex<i64>> * i64) | Bumped of i64
 
-def bumps :: ref Arc<Mutex<i64>> -> own i64 -> [Task<i64>]
-fn bumps shared n = new [Task<i64>](n, \index -> bump (Arc.share shared) (index + 1))
+def bump :: i64 -> ref mut [MutexJob..] -> unit
+fn bump _index slot =
+    let seen = match slot[0] with
+        | Bump (shared, amount) -> Mutex.with_lock (Arc.get (ref shared)) (\value -> { deref value = deref value + amount; deref value })
+        | Bumped seen -> seen
+    Array.write 0 (Bumped seen) slot
 
-export def arc_mutex_tasks :: own i64 -> i64
-fn arc_mutex_tasks n =
+def bumps :: ref Arc<Mutex<i64>> -> own i64 -> [MutexJob]
+fn bumps shared n = new [MutexJob](n, \index -> Bump (Arc.share shared, index + 1))
+
+export def arc_mutex_jobs :: own i64 -> i64
+fn arc_mutex_jobs n =
     let shared = Arc.new (Mutex.create 0i64)
-    let _seen = Task.run (Task.parallel (bumps (ref shared) n))
+    let mut jobs = bumps (ref shared) n
+    Parallel.for_each_chunk 1 bump (ref mut jobs)
     Mutex.with_lock (Arc.get (ref shared)) (\value -> deref value) * 1000 + Arc.strong_count (ref shared)
 
-// A critical section never waits, so these are refused on every schedule: a trap.
+// On WebAssembly a critical section never waits, so these are refused on every schedule: a trap.
+// (Natively, different locks nest, and parallel work inside a lock runs.)
 export def mutex_nested :: i64
 fn mutex_nested =
     let outer = Mutex.create 1i64
@@ -123,13 +172,189 @@ fn mutex_nested =
 export def mutex_parallel_inside :: i64
 fn mutex_parallel_inside =
     let total = Mutex.create 0i64
-    let unit_value = 0i64
-    Mutex.with_lock (ref total) (\_value -> Array.sum (ref (Task.scope (ref unit_value) 2 (\_shared index -> index))))
+    Mutex.with_lock (ref total) (\_value -> Array.sum (ref (Parallel.init 2 (\index -> index))))
 
 // A lock that was released by the end of a call can be taken again: the flag of the thread is clear.
 export def mutex_twice :: own i64 -> i64
 fn mutex_twice n =
-    let total = Mutex.create 0i64
-    let _first = Task.scope (ref total) n (\shared _index -> add_locked shared 10)
-    let _second = Task.scope (ref total) n (\shared _index -> add_locked shared 10)
-    Mutex.into_inner total
+    let total = Arc.new (Mutex.create 0i64)
+    let first = Arc.share (ref total)
+    let second = Arc.share (ref total)
+    let mut done = new [i64](n, \_index -> 0)
+    Parallel.for_each_chunk 1 (\_index slot -> Array.write 0 (add_locked (Arc.get (ref first)) 10) slot) (ref mut done)
+    Parallel.for_each_chunk 1 (\_index slot -> Array.write 0 (add_locked (Arc.get (ref second)) 10) slot) (ref mut done)
+    unshared total
+
+// Groups of jobs on the pool: results in index order, nested groups, and owned values (strings,
+// arrays, records, lists, function values, Results) that a job allocates on its thread and the
+// caller frees on another.
+
+def rec total :: ref [i64] -> own i64 -> own i64 -> i64
+fn rec total values index sum =
+    if index == values.length { sum }
+    else { total values (index + 1) (sum + values[index]) }
+
+export def parallel_sum :: own i64 -> i64
+fn parallel_sum count =
+    let mut results = new [i64](count, \_index -> 0)
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (index * index) slot) (ref mut results)
+    total (ref results) 0 0
+
+export def ordered :: own i64 -> bool
+fn ordered count =
+    let mut results = new [i64](count, \_index -> -1)
+    Parallel.for_each_chunk 1 (\index slot -> {
+        let values = new [i64](count - index, \n -> n);
+        Array.write 0 (index + values.length - (count - index)) slot
+    }) (ref mut results)
+    check_order (ref results) 0
+
+def rec check_order :: ref [i64] -> own i64 -> bool
+fn rec check_order values index =
+    if index == values.length { true }
+    else { values[index] == index && check_order values (index + 1) }
+
+// The values of 8 groups of 8, each group started by a job of the outer group.
+def inner_sum :: own i64 -> own i64 -> i64
+fn inner_sum n outer =
+    let mut results = new [i64](8, \_index -> 0)
+    Parallel.for_each_chunk 1 (\inner slot -> Array.write 0 (n + outer * 8 + inner) slot) (ref mut results)
+    total (ref results) 0 0
+
+export def nested :: own i64 -> i64
+fn nested n =
+    let mut results = new [i64](8, \_index -> 0)
+    Parallel.for_each_chunk 1 (\outer slot -> Array.write 0 (inner_sum n outer) slot) (ref mut results)
+    total (ref results) 0 0
+
+record Report { text: string, numbers: [i64] }
+
+export def owned_results :: i64
+fn owned_results =
+    let prefix = "owned"
+    let mut results = new [string](2, \_index -> "")
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (if index == 0 then prefix + "!" else "second") slot) (ref mut results)
+    results[0].length + results[1].length
+
+export def record_results :: i64
+fn record_results =
+    let mut results = new [Report](3, \_index -> Report { text: "", numbers: [] })
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (Report { text: "hello", numbers: new [i64](index + 1, \n -> n + 10) }) slot) (ref mut results)
+    results[0].text.length + results[2].numbers[2]
+
+export def list_results :: i64
+fn list_results =
+    let mut results: [[|i64|]] = new [[|i64|]](2, \_index -> [||])
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (if index == 0 then [|1, 2|] else [|20, 40|]) slot) (ref mut results)
+    results[0][1] + results[1][1]
+
+export def function_results :: i64
+fn function_results =
+    let mut functions: [i64 -> i64] = new [i64 -> i64](2, \_index -> \n -> n)
+    Parallel.for_each_chunk 1 (\index slot -> {
+        let text = "hello";
+        Array.write 0 (\n -> n + text.length + index) slot
+    }) (ref mut functions)
+    functions[0] 10 + functions[1] 21
+
+// Results that a job may fail: the first error in index order, or the values.
+
+// The index of the first error, or the length when every job succeeded.
+def rec first_error :: ref [Result<'a, 'e>] -> own i64 -> i64
+fn rec first_error results index =
+    if index == results.length then index
+    else match results[index] with
+        | Result.Error _error -> index
+        | Result.Ok _value -> first_error results (index + 1)
+
+def rec sum_ok :: ref [Result<i64, i64>] -> own i64 -> own i64 -> i64
+fn rec sum_ok results index sum =
+    if index == results.length then sum
+    else match results[index] with
+        | Result.Ok value -> sum_ok results (index + 1) (sum + value)
+        | Result.Error _error -> sum_ok results (index + 1) sum
+
+def settle :: ref [Result<i64, i64>] -> i64
+fn settle results =
+    let failed = first_error results 0
+    if failed == results.length then sum_ok results 0 0
+    else match results[failed] with
+        | Result.Error error -> error
+        | Result.Ok _value -> -1
+
+export def results_ok :: own i64 -> i64
+fn results_ok count =
+    let mut results: [Result<i64, i64>] = new [Result<i64, i64>](count, \_index -> Result.Error (0 - 1))
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (Result.Ok (index * index)) slot) (ref mut results)
+    settle (ref results)
+
+export def results_lowest :: i64
+fn results_lowest =
+    let mut results: [Result<i64, i64>] = new [Result<i64, i64>](64, \_index -> Result.Error (0 - 1))
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (if index == 2 || index == 7 then Result.Error index else Result.Ok index) slot) (ref mut results)
+    settle (ref results)
+
+def captured_result :: own i64 -> Result<string, string>
+fn captured_result index =
+    let values = new [i64](128, \offset -> index + offset)
+    let text = "captured" + "!"
+    if index == 0 || index == 2 then Result.Error ("error" + "!")
+    else Result.Ok (text + to_string values[0])
+
+export def results_owned :: own i64 -> i64
+fn results_owned count =
+    let mut results: [Result<string, string>] = new [Result<string, string>](count, \_index -> Result.Error "")
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (captured_result index) slot) (ref mut results)
+    let failed = first_error (ref results) 0
+    if failed == results.length then results.length
+    else match results[failed] with
+        | Result.Error error -> error.length
+        | Result.Ok _value -> -1
+
+export def results_values :: i64
+fn results_values =
+    let mut results: [Result<[string], string>] = new [Result<[string], string>](2, \_index -> Result.Error "")
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (Result.Ok (if index == 0 then ["hello", "!"] else ["world", "!"])) slot) (ref mut results)
+    let first = match results[0] with
+        | Result.Ok words -> words[0].length
+        | Result.Error _error -> -100
+    let second = match results[1] with
+        | Result.Ok words -> words[0].length
+        | Result.Error _error -> -100
+    first + second
+
+export def results_functions :: i64
+fn results_functions =
+    let mut results: [Result<i64 -> i64, string>] = new [Result<i64 -> i64, string>](1, \_index -> Result.Error "")
+    Parallel.for_each_chunk 1 (\_index slot -> {
+        let text = "hello";
+        Array.write 0 (Result.Ok (\value -> value + text.length)) slot
+    }) (ref mut results)
+    match results[0] with
+    | Result.Ok f -> f 37
+    | Result.Error _error -> 0
+
+def inner_results :: own i64 -> Result<i64, i64>
+fn inner_results outer =
+    let mut nested: [Result<i64, i64>] = new [Result<i64, i64>](8, \_index -> Result.Error (0 - 1))
+    Parallel.for_each_chunk 1 (\inner slot -> Array.write 0 (Result.Ok (outer * 8 + inner)) slot) (ref mut nested)
+    if first_error (ref nested) 0 == nested.length then Result.Ok (sum_ok (ref nested) 0 0)
+    else Result.Error outer
+
+export def results_nested :: i64
+fn results_nested =
+    let mut results: [Result<i64, i64>] = new [Result<i64, i64>](8, \_index -> Result.Error (0 - 1))
+    Parallel.for_each_chunk 1 (\outer slot -> Array.write 0 (inner_results outer) slot) (ref mut results)
+    settle (ref results)
+
+union ResultCycle = Cycle of Result<ResultCycle, string> | End
+
+export def results_recursive :: own bool -> i64
+fn results_recursive fail =
+    let mut results: [Result<ResultCycle, string>] = new [Result<ResultCycle, string>](2, \_index -> Result.Ok End)
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (if index == 0 then Result.Ok (Cycle (Result.Ok End)) else if fail then Result.Error "error" else Result.Ok End) slot) (ref mut results)
+    let failed = first_error (ref results) 0
+    if failed == results.length then results.length
+    else match results[failed] with
+        | Result.Error error -> error.length
+        | Result.Ok _value -> -1

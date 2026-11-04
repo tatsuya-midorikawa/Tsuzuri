@@ -152,7 +152,7 @@ try {
     assert.ok(frames.some(frame => frame.name === name), `${name}: ${JSON.stringify(frames)}`);
   }
 
-  // Edge cases: nesting limit, truncation, escapes, slices, sets, tasks, and references.
+  // Edge cases: nesting limit, truncation, escapes, slices, sets, and references.
   const extras = join(root, "extras");
   mkdirSync(extras);
   writeFileSync(join(extras, "Main.tz"), [
@@ -172,12 +172,12 @@ try {
     "    let wide = u8'\\u{e9}'",
     "    let empty = ()",
     "    let keys = Set.insert 2 (Set.insert 1 (Set.singleton 3))",
-    "    let job = task { return seed }",
+    "    let job = seed",
     '    let holder = Holder { name: "h", tags: ["t"] }',
     "    let label = ref holder.name",
     "    let lookalike = Lookalike { code: 1, environment: 2, clone: 3, drop: 4 }",
     "    let descriptive = Descriptive { descriptor: 5, environment: 6 }",
-    "    let total = Array.length window + long.length + escaped.length + Task.run job",
+    "    let total = Array.length window + long.length + escaped.length + job",
     "    total + (if wide == u8'\\u{e9}' then 1 else 0) + label.length - seed + lookalike.code - 1 + descriptive.descriptor - 5",
     "",
     "inspect 5",
@@ -193,7 +193,6 @@ try {
     "(utf8char) wide = u8'\u00e9'",
     "(unit) empty = ()",
     "(Set<i32>) keys = size=3 {\n  [0] = 1\n  [1] = 2\n  [2] = 3\n}",
-    "(Task<i64>) job = <task>",
     '  tags = length=1 {\n    [0] = "t"\n  }',
     "(i64) total = 1222",
   ]) assert.ok(edge.includes(line), `${line}\n${edge}`);

@@ -66,8 +66,10 @@ its `MODULES` table does not classify. Record of the decision: `_features/GUIDE.
   parameter `text` (`parts` for a list of texts); the test checks the name.
 - **Exemptions are these four kinds and nothing else** (a `std/` file's exemption carries its reason in its `MODULES`
   row; a module that is only a compiler builtin has no file, so this list is its record):
-  resource handles (`File`, `Net`, `Process`, `Atomic`, `Mutex`, `Channel`, `Rc`, `Arc`, `Owned`, `Task`: the handle
-  comes first, like the receiver of a .NET method); numeric functions (`Int`, `Math`, `Simd`, `Char`: operand order of
+  resource handles (`File`, `Net`, `Process`, `Atomic`, `Mutex`, `Channel`, `DataChannel`, `Rc`, `Arc`, `Owned`, and
+  the handles of the tzroutine types: `WaitGroup`, `Once`, `OnceValue`, `RwMutex`, `Cond`, `Semaphore`, `SyncMap`,
+  `Context`, `ErrGroup`, `Timer`, `Ticker`, `SendOnly`, `ReceiveOnly`: the handle comes first, like the receiver of a
+  .NET method); numeric functions (`Int`, `Math`, `Simd`, `Char`: operand order of
   the formula); compiler protocol (the capitalised builder operations `Bind`, `Return`..., and the helpers that
   `src/derive.rs` calls); test and benchmark entry points (`Gen.for_all`, `Test.*`, `Bench.*`). A pure
   transformation is never exempt.

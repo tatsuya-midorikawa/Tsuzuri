@@ -63,7 +63,7 @@ try {
   // objects in the cache now: compiled once, restored afterwards, and the artifact does not change.
   const cases = [
     { name: "threads.c", unit: "WASM threads", hint: "WASM threads require Clang atomics and bulk-memory support",
-      args: [resolve("tests/fixtures/tasks"), "--target", "wasm32", "--wasm-feature", "threads"], extension: ".wasm" },
+      args: [resolve("examples/hello"), "--target", "wasm32", "--wasm-feature", "threads"], extension: ".wasm" },
     { name: "wasi.c", unit: "WASI", hint: "the WASI host needs Clang with WebAssembly support",
       args: [resolve("examples/hello"), "--target", "wasm32", "--wasm-host", "wasi"], extension: ".wasm" },
   ];
@@ -219,7 +219,7 @@ try {
     // Objects and relocatable links are never given the flag.
     for (const flags of [["--emit", "object"], ["--emit", "object", "--cpu", "generic"]]) {
       const start = calls().length;
-      run(compiler, ["build", resolve("tests/fixtures/tasks"), "-O0", "--no-cache", ...flags, "-o", join(directory, "tasks.o")], { env: { ...base, TSUZURI_LINKER: "lld" } });
+      run(compiler, ["build", resolve("examples/tzroutines"), "-O0", "--no-cache", ...flags, "-o", join(directory, "tzroutines.o")], { env: { ...base, TSUZURI_LINKER: "lld" } });
       assert.ok(calls().length > start);
       assert.equal(withFlag(start).length, 0, `${flags}: an object is not linked`);
     }

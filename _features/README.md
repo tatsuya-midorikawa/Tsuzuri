@@ -296,7 +296,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | TZ09 | [WebAssembly（JSPI）の tzroutine](TZ09-wasm-jspi.md) | P2 | L | TZ04, TZ05, TZ06 | todo |
 | TZ10 | [プリエンプション（長く走る tzroutine の横取り）](TZ10-preemption.md) | P2 | L | TZ08 | todo |
 | TZ11 | [`Parallel` と `Routine.scope` を tzroutine のスケジューラーへ移す](_completed/TZ11-parallel-on-scheduler.md) | P1 | M | TZ06 | done（tzroutine を使うネイティブのプログラムの `Parallel.*` はスケジューラーの上。`Domain.run` の中はプール。`Routine.scope` を追加） |
-| TZ12 | [`Task`・`task { }` の削除と移行（`DataChannel` の待ちの移設を含む）](TZ12-remove-task.md) | P1 | L | TZ04, TZ07, TZ11 | todo |
+| TZ12 | [`Task`・`task { }` の削除と移行（`DataChannel` の待ちの移設を含む）](_completed/TZ12-remove-task.md) | P1 | L | TZ04, TZ07, TZ11 | done（`task { }`・`Task<T>`・`Task.*` は `E1040`（`removed_task_*`。`tsuzuri fix` が `Task.scope` を `Routine.scope` に）。ネイティブの `Parallel`・`Mutex`・`DataChannel` は全プログラムで tzroutine のランタイム。`task.c` を削除） |
 | TZ13 | [`Async` と Net の `_async` の削除と移行](TZ13-remove-async.md) | P1 | M | TZ08, TZ12 | todo |
 
 ## 推奨フェーズ

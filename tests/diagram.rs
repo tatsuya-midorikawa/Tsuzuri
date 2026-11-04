@@ -422,17 +422,14 @@ fn concurrency_reads_every_cell_of_a_signature() {
     assert_eq!(validate_mermaid(&text), Ok(()));
 }
 
-/// `Task.parallel_results` forks and joins as `Task.parallel` does: its caller is a region.
+/// `ErrGroup.go` forks and joins as `Parallel.*` does: its caller is a region.
 #[test]
-fn concurrency_regions_include_parallel_results() {
+fn concurrency_regions_include_errgroup_go() {
     let nodes = node("M", "module", "M") + &def("M.run", "M", "i64", "i64");
-    let edges = "{\"rel\":\"calls\",\"from\":\"M.run\",\"to\":\"Task.parallel_results\",\"args\":[],\"span\":{\"line\":2,\"column\":1}}\n";
+    let edges = "{\"rel\":\"calls\",\"from\":\"M.run\",\"to\":\"ErrGroup.go\",\"args\":[],\"span\":{\"line\":2,\"column\":1}}\n";
     let input = Input::from_texts(&nodes, edges, &[], &[], "").unwrap();
     let text = draw(&input, &request(Kind::Concurrency, None));
-    assert!(
-        text.contains("M.run \u{b7} Task.parallel_results"),
-        "{text}"
-    );
+    assert!(text.contains("M.run \u{b7} ErrGroup.go"), "{text}");
     assert_eq!(validate_mermaid(&text), Ok(()));
 }
 
@@ -1249,7 +1246,7 @@ fn concurrency_keeps_regions_within_max_nodes() {
         nodes.push_str(&node(&format!("M{index}"), "module", &format!("M{index}")));
         nodes.push_str(&def(&id, &format!("M{index}"), "i64", "i64"));
         edges.push_str(&format!(
-            "{{\"rel\":\"calls\",\"from\":\"{id}\",\"to\":\"Task.scope\",\"args\":[],\"span\":{{\"line\":2,\"column\":1}}}}\n"
+            "{{\"rel\":\"calls\",\"from\":\"{id}\",\"to\":\"Routine.scope\",\"args\":[],\"span\":{{\"line\":2,\"column\":1}}}}\n"
         ));
     }
     let input = Input::from_texts(&nodes, &edges, &[], &[], "").unwrap();
@@ -1277,7 +1274,7 @@ fn concurrency_keeps_regions_within_max_nodes() {
         nodes.push_str(&def(&id, &format!("M{index}"), "Mutex<i64>", "i64"));
         if index < 3 {
             edges.push_str(&format!(
-                "{{\"rel\":\"calls\",\"from\":\"{id}\",\"to\":\"Task.scope\",\"args\":[],\"span\":{{\"line\":2,\"column\":1}}}}\n"
+                "{{\"rel\":\"calls\",\"from\":\"{id}\",\"to\":\"Routine.scope\",\"args\":[],\"span\":{{\"line\":2,\"column\":1}}}}\n"
             ));
         }
     }

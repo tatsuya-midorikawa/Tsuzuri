@@ -181,15 +181,15 @@ fn explicit_array_bind =
     Identity.Bind [1i64, 2, 3] (\values -> Identity.Return values.length)
 
 export def nested_task :: i64
-fn nested_task = Task.run task {
-    let! value = task { return Identity { return 20 } }
+fn nested_task = Maybe.get (Maybe {
+    let! value = Maybe { return Identity { return 20 } }
     return Flow { yield value; return 22 }
-}
+})
 
 export def task_payload :: i64
 fn task_payload = Identity {
-    let! work = task { return 42 }
-    return Task.run work
+    let! work = Owned.function (\() -> 42)
+    return Owned.call (ref work) ()
 }
 
 export def while_delegate :: i64
@@ -305,20 +305,23 @@ fn implicit_match_work valid =
 export def implicit_match :: own bool -> i64
 fn implicit_match valid = Maybe.default_value (-1) (implicit_match_work valid)
 
-def implicit_task_work :: own bool -> Task<Maybe<i64>>
+// A bound source that is None short-circuits the body: the later binds do not run, so the assert
+// does not run for an invalid input.
+def implicit_task_work :: own bool -> Maybe<i64>
 fn implicit_task_work valid =
-    let! source = task { return if valid then Maybe.Some 20 else Maybe.None }
+    let! source = Maybe.Some (if valid then Maybe.Some 20 else Maybe.None)
     let! first = source
-    let! second = task { assert valid; return 22 }
+    let! second = Maybe.Some ({ assert valid; 22 })
     return first + second
 
 export def implicit_task :: own bool -> i64
-fn implicit_task valid = Maybe.default_value (-1) (Task.run (implicit_task_work valid))
+fn implicit_task valid = Maybe.default_value (-1) (implicit_task_work valid)
 
-def implicit_cold_work :: Task<i64>
+// An IO value is cold: making it does not run its body.
+def implicit_cold_work :: IO<i64>
 fn implicit_cold_work =
     do assert false
-    let! value = task { return 42 }
+    let! value = IO.pure 42
     return value
 
 export def implicit_cold :: i64

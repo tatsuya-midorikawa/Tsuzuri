@@ -1,6 +1,6 @@
 # Rc と Arc
 
-`Rc<T>` と `Arc<T>` は、1 つの値を複数の所有者で共有する参照カウントのポインターです。永続データ構造の末尾、木やグラフで共有する部分木、読み取り専用のキャッシュのように、同じ値を複数の場所から所有したいときに使います。`Arc<T>` は計数に atomic 命令を使い、複数のタスクで共有できます。
+`Rc<T>` と `Arc<T>` は、1 つの値を複数の所有者で共有する参照カウントのポインターです。永続データ構造の末尾、木やグラフで共有する部分木、読み取り専用のキャッシュのように、同じ値を複数の場所から所有したいときに使います。`Arc<T>` は計数に atomic 命令を使い、複数の tzroutine やスレッドで共有できます。
 
 Tsuzuri に GC はありません。共有はいつも明示的です。`Rc.share` を呼んだときだけ所有者が増え、最後の所有者がスコープを抜けると値がその場で解放されます。
 
@@ -9,7 +9,7 @@ Tsuzuri に GC はありません。共有はいつも明示的です。`Rc.shar
 - `Rc<T>` と `Arc<T>` は非 Copy の所有値です。所有者を増やすのは `Rc.share (ref rc)` だけで、代入や引数渡しはムーブです（ムーブ後の使用は `E1012`）。
 - 中の値は共有借用 `Rc.get (ref rc)` で読みます。共有した値を書き換えられるのは、中に [Atomic](./atomic.md) か [Mutex](./mutex.md) を入れたときだけです（`Arc<Atomic<i64>>`、`Arc<Mutex<T>>`）。ほかの値は、共有されている間は変わりません。
 - 弱参照 `Rc.Weak<T>`／`Arc.Weak<T>` は値の寿命を延ばしません。`Rc.upgrade` は、値が生きていれば新しい `Rc` を `Some` で返し、解放済みなら `None` を返します。
-- `Rc` はタスクへ渡せず（`E1013`）、関数値にも捕捉できません（`E1005`）。`Arc<T>` は、`T` が `Send` かつ `Sync` のとき、両方できます（Rust の `Arc<T>: Send` と同じ規則です）。タスクの間で状態を共有する標準の書き方は、`Arc<Atomic<T>>` と `Arc<Mutex<T>>` です。複数のワーカーが 1 つの受け手から取るときは、`Arc<DataChannel.Receiver<T>>` です（[Channel](./datachannel.md)）。
+- `Rc` はほかの tzroutine へ渡せず（`E1013`）、関数値にも捕捉できません（`E1005`）。`Arc<T>` は、`T` が `Send` かつ `Sync` のとき、両方できます（Rust の `Arc<T>: Send` と同じ規則です）。tzroutine の間で状態を共有する標準の書き方は、`Arc<Atomic<T>>` と `Arc<Mutex<T>>` です。複数のワーカーが 1 つの受け手から取るときは、`Arc<DataChannel.Receiver<T>>` です（[DataChannel](./datachannel.md)）。
 - `Rc`／`Arc` だけでは循環を作れません。ただし `Mutex` の中に `Arc` を入れると循環を作れ、サイクルコレクターはないので、そのブロックは解放されません。循環の一方は `Arc.Weak` で持ちます。循環するグラフは [Arena](./arena.md) でも表せます。
 - 長い鎖（連結リストなど）の解放は再帰しません。100 万要素の鎖も native のスタックを溢れさせずに解放します。
 
@@ -111,28 +111,42 @@ before=6 after=-1
 
 値を解放した後もブロック（2 つの計数）は弱参照が残る間だけ残り、最後の弱参照とともに解放されます。
 
-## Arc とタスク
+## Arc と tzroutine
 
-`Arc<T>` の API は `Rc<T>` と同じ名前・同じ型で、モジュール名が `Arc` に変わるだけです。計数を atomic 命令で更新するので、`T` が `Send` で、後述のとおりタスク間で共有できる値なら `Arc<T>` も `Send` です。タスクごとに `Arc.share` で所有者を作って渡すと、配列を複製せずに複数のタスクで読めます。
+`Arc<T>` の API は `Rc<T>` と同じ名前・同じ型で、モジュール名が `Arc` に変わるだけです。計数を atomic 命令で更新するので、`T` が `Send` で、後述のとおり tzroutine の間で共有できる値なら `Arc<T>` も `Send` です。tzroutine ごとに `Arc.share` で所有者を作って渡すと、配列を複製せずに複数の tzroutine で読めます。
 
 ```tsuzuri run=even%3D2450%20odd%3D2500%20owners%3D1
-def part :: own Arc<[i64]> -> i64 -> Task<i64>
-fn part values offset = task {
-    let numbers = Arc.get (ref values);
-    let mut total = 0;
-    let mut index = offset;
+def part_sum :: ref [i64] -> i64 -> i64
+fn part_sum numbers offset =
+    let mut total = 0
+    let mut index = offset
     while index < numbers.length do
-        total = total + numbers[index];
+        total = total + numbers[index]
         index = index + 2
-    return total
-}
+    total
 
-def parts :: ref Arc<[i64]> -> [Task<i64>]
-fn parts shared = new [Task<i64>](2, \offset -> part (Arc.share shared) offset)
+def spawn_part :: own Arc<[i64]> -> i64 -> own Channel<i64> -> unit
+fn spawn_part values offset out =
+    tzroutine {
+        let total = part_sum (Arc.get (ref values)) offset
+        Owned.drop values
+        Channel.send out total
+    }
+
+def received :: ref Channel<i64> -> i64
+fn received channel =
+    match Channel.recv channel with
+    | Maybe.Some value -> value
+    | Maybe.None -> -1
 
 let shared = Arc.new (new [i64](100, \index -> index))
-let sums = Task.run (Task.parallel (parts (ref shared)))
-$"even={sums[0]} odd={sums[1]} owners={Arc.strong_count (ref shared)}"
+let even: Channel<i64> = Channel.make 1
+let odd: Channel<i64> = Channel.make 1
+spawn_part (Arc.share (ref shared)) 0 (Channel.share even)
+spawn_part (Arc.share (ref shared)) 1 (Channel.share odd)
+let even_sum = received even
+let odd_sum = received odd
+$"even={even_sum} odd={odd_sum} owners={Arc.strong_count (ref shared)}"
 ```
 
 実行結果:
@@ -141,19 +155,19 @@ $"even={sums[0]} odd={sums[1]} owners={Arc.strong_count (ref shared)}"
 even=2450 odd=2500 owners=1
 ```
 
-各タスクの `Arc` はタスクの終わりに解放され、`Task.run` が返った時点で所有者は `shared` だけです。最後の所有者がどのタスクでも、値の解放は他のタスクのすべての読み取りの後に起きます。
+各 tzroutine は、結果を送る前に `Owned.drop` で自分の `Arc` を解放するので、2 つの結果を受け取った時点で所有者は `shared` だけです（drop を書かなければ、本体の終わりに解放されます）。最後の所有者がどの tzroutine でも、値の解放はほかの tzroutine のすべての読み取りの後に起きます。
 
 ## 送信と捕捉の規則
 
-| 型 | 所有者を増やす | タスクへ移す（`Send`） | 関数値に捕捉する |
+| 型 | 所有者を増やす | ほかの tzroutine へ移す（`Send`） | 関数値に捕捉する |
 | --- | --- | --- | --- |
 | `Rc<T>`・`Rc.Weak<T>` | `Rc.share`・`Rc.downgrade` | できない（`E1013`） | できない（`E1005`） |
 | `Arc<T>`・`Arc.Weak<T>` | `Arc.share`・`Arc.downgrade` | `T` が `Send` かつ `Sync` のとき | `T` が `Sync` のとき |
 
-- `Rc` の計数は atomic ではないので、`Rc` はそれを作ったタスクから出ません。`Rc` を持つレコード・共用体・配列、`Arc<Rc<T>>` も同じです。
-- 関数値の型は捕捉した値を表さず、どの関数値もタスクへ渡せます。そのため `Rc` は関数値（ラムダ、部分適用、`Owned.function`）に捕捉できません。`Rc` は引数として渡します。
+- `Rc` の計数は atomic ではないので、`Rc` はそれを作った tzroutine から出ません。`Rc` を持つレコード・共用体・配列、`Arc<Rc<T>>` も同じです。
+- 関数値の型は捕捉した値を表さず、どの関数値もほかの tzroutine へ渡せます。そのため `Rc` は関数値（ラムダ、部分適用、`Owned.function`）に捕捉できません。`Rc` は引数として渡します。
 - `Arc` を捕捉した関数値を複製すると、`Arc.share` と同じく所有者が 1 増えます。値は複製しません。
-- `Arc` を持つタスクはどれも、`Arc.get` で同時に値を借用できます。そのため `Arc<T>` をタスクへ渡せるのは、`T` が `Send` であり、かつ `Sync`（複数のタスクが共有借用で同時に使ってよい値）のときだけです。`Sync` でないのは、`Rc`、extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function`、`Task`、排他参照、`Seq`、`Async`、GPU のハンドルを、入れ子の中にも含む値です。ホストのライブラリーのハンドルは複数のスレッドから同時に使えるとは限らないためです。`Sync` でない値の `Arc` は、それを持つレコードや共用体も含めて、タスクへ渡せず（`E1013`）、関数値にも捕捉できません（`E1005`）。同じタスクの中で `Arc.share` するのは自由です。ハンドルを別のタスクで使うときは、`Arc` に入れずに値そのものを 1 つのタスクへ移します。`Atomic<T>` と `Mutex<T>` は `Sync` で、`Mutex<T>` は `T` が `Send` なら作れるので、`Arc<Atomic<T>>` と `Arc<Mutex<T>>` はタスクへ渡せます。`Sync` は組み込みの型クラスです（[組み込みの印](../types-and-type-inference/constraints.md#組み込みの印)）。
+- `Arc` を持つ tzroutine はどれも、`Arc.get` で同時に値を借用できます。そのため `Arc<T>` をほかの tzroutine へ渡せるのは、`T` が `Send` であり、かつ `Sync`（複数の tzroutine が共有借用で同時に使ってよい値）のときだけです。`Sync` でないのは、`Rc`、extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function`、排他参照、`Seq`、`Async`、GPU のハンドルを、入れ子の中にも含む値です。ホストのライブラリーのハンドルは複数のスレッドから同時に使えるとは限らないためです。`Sync` でない値の `Arc` は、それを持つレコードや共用体も含めて、ほかの tzroutine へ渡せず（`E1013`）、関数値にも捕捉できません（`E1005`）。同じ tzroutine の中で `Arc.share` するのは自由です。ハンドルを別の tzroutine で使うときは、`Arc` に入れずに値そのものを 1 つの tzroutine へ移します。`Atomic<T>` と `Mutex<T>` は `Sync` で、`Mutex<T>` は `T` が `Send` なら作れるので、`Arc<Atomic<T>>` と `Arc<Mutex<T>>` はほかの tzroutine へ渡せます。`Sync` は組み込みの型クラスです（[組み込みの印](../types-and-type-inference/constraints.md#組み込みの印)）。
 - `Rc` と `Arc` には排他参照 `ref mut` を入れられません（`E1005`）。`Rc<ref string>` のように共有参照を入れた値は、参照先より長く生きられません（`E1013`）。
 - `Rc` と `Arc` は公開 ABI（`export def`・`extern def`）に使えず（`E1008`）、const にもできません（`E1026`）。
 
@@ -258,7 +272,7 @@ parent=7 after=-1
 
 - `Rc<T>` の値は 1 つのポインターです。`Rc.new` はブロック `{ 強い参照の数, 弱い参照の数, T }` を 1 回確保し、強い所有者全体で弱い参照を 1 つ持ちます（Rust と同じ）。`Rc.weak_count` が返すのは `Rc.Weak` の数で、この 1 つを含みません。
 - 自分自身を含みうる型（再帰型を含む `T`）のブロックは、解放の待ちリストのために先頭に 16 バイトの見出しを持ちます。共用体が `Rc` を通って自分自身を含むとき、その共用体の値も再帰型のヒープノードになるので、`Cons` 1 つにつき確保は 2 回です。
-- `Arc` は、所有者の追加に `monotonic`、解放に `release` の atomic 加減算を使い、計数が 0 になったタスクは `fence acquire` の後で値を解放します。`Arc.upgrade` は計数が 0 でないときだけ増やす比較交換（`cmpxchg`）を繰り返します。`Rc` は通常のロード・ストアだけです。
+- `Arc` は、所有者の追加に `monotonic`、解放に `release` の atomic 加減算を使い、計数を 0 にした側が `fence acquire` の後で値を解放します。`Arc.upgrade` は計数が 0 でないときだけ増やす比較交換（`cmpxchg`）を繰り返します。`Rc` は通常のロード・ストアだけです。
 - 既定の wasm32 では atomic 命令を LLVM が通常の命令へ下げ、`--wasm-feature threads` では WASM の atomic 命令になります。どちらも WASM の import は増えません。
 - 計数が `i64` の最大値を超えるとトラップします。
 - WASM では既定の 16 MiB のヒープに収まる数だけ確保できます。`union List = Nil | Cons of (i64 * Rc<List>)` の鎖はおよそ 16 万要素までで、それを超えると確保の失敗でトラップします。
@@ -286,8 +300,8 @@ parent=7 after=-1
 
 ## まとめ
 
-- 同じ値を複数の所有者で読むときは `Rc`、複数のタスクで読むときは `Arc` を使います。共有は `share` で明示します。
-- 中の値は `get` の共有借用で読みます。共有した値を書き換えるには `Atomic` か `Mutex` を入れ、`Arc<Atomic<T>>`・`Arc<Mutex<T>>` をタスクへ渡します。`Rc`／`Arc` だけでは循環できませんが、`Arc` と `Mutex` では循環でき、解放されません。循環の一方は `Arc.Weak` で持ちます。
+- 同じ値を複数の所有者で読むときは `Rc`、複数の tzroutine やスレッドで読むときは `Arc` を使います。共有は `share` で明示します。
+- 中の値は `get` の共有借用で読みます。共有した値を書き換えるには `Atomic` か `Mutex` を入れ、`Arc<Atomic<T>>`・`Arc<Mutex<T>>` を tzroutine へ渡します。`Rc`／`Arc` だけでは循環できませんが、`Arc` と `Mutex` では循環でき、解放されません。循環の一方は `Arc.Weak` で持ちます。
 - 弱参照は値の寿命を延ばさず、`upgrade` で生きているかを確かめます。
 
 ## 関連項目
@@ -296,6 +310,6 @@ parent=7 after=-1
 - [Mutex](./mutex.md) — ロックで守る共有状態
 - [Arena](./arena.md) — 循環するグラフ
 - [Drop とリソースの解放](../ownership-and-memory/drop.md) — 共有所有の選び方
-- [Task 式](../async-tasks-and-lazy/task.md) — タスクへ渡せる値
+- [tzroutine 式](../async-tasks-and-lazy/tzroutine.md) — tzroutine へ渡せる値
 - [Union](./union.md) — 再帰型の表現
 - [言語リファレンスの目次](../index.md)

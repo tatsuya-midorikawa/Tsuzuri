@@ -1742,8 +1742,11 @@ static void nested_outer(void *ctx, uint64_t i) {
 #if !defined(_WIN32)
 static void *test_owner(void) { return &nested_total; }
 static _Atomic int64_t ordered_next;
+static pthread_t ordered_thread;
+/* Inside a trap boundary every index runs on the calling thread, in order (no helper). */
 static void ordered(void *ctx, uint64_t i) {
     CHECK(ctx == claims && (int64_t)i == atomic_fetch_add(&ordered_next, 1));
+    CHECK(pthread_equal(pthread_self(), ordered_thread));
     claim(ctx, i);
 }
 #endif
@@ -1762,9 +1765,9 @@ static void test_parallel(void) {
 #if !defined(_WIN32)
     tsuzuri_trap_hooks.owner = test_owner;
     atomic_store(&ordered_next, 0);
-    int64_t before = tsuzuri_tz_count();
+    ordered_thread = pthread_self();
     CHECK(tsuzuri_tz_parallel(ordered, claims, 50) == 0);
-    CHECK(tsuzuri_tz_count() == before);
+    CHECK(atomic_load(&ordered_next) == 50);
     tsuzuri_trap_hooks.owner = NULL;
     check_claims(50);
 #endif

@@ -253,7 +253,7 @@ struct Parser<'a> {
     position: usize,
     previous_end: usize,
     nesting: usize,
-    /// Inside the block of a `tzroutine { }` (TZ02): as in a task block, a newline ends a `let`.
+    /// Inside the block of a `tzroutine { }` (TZ02): as in a computation block, a newline ends a `let`.
     in_routine: bool,
     stop_at_arm: bool,
     stop_at_arrow: bool,
@@ -2942,7 +2942,7 @@ impl Parser<'_> {
     }
 
     /// `tzroutine { body }`: the body is an ordinary block, where `let!` and `do!` run IO at once
-    /// as in a function body, not the binds of a task (TZ02).
+    /// as in a function body, not the binds of a computation expression (TZ02).
     fn tzroutine(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.take().span;
         let outer = self.in_routine;

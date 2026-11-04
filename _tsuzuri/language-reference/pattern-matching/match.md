@@ -152,7 +152,7 @@ match Some 42 with
 
 ## match! 式（コンピュテーション式内）
 
-タスク、`Maybe`、`Result` などの [コンピュテーション式](../computation-expressions/computation-expressions.md) の中では、`match!` が使えます。`let!` と同じようにビルダーで中身を取り出してから、その値を照合します。
+`Maybe`、`Result`、`IO` などの [コンピュテーション式](../computation-expressions/computation-expressions.md) の中では、`match!` が使えます。`let!` と同じようにビルダーで中身を取り出してから、その値を照合します。
 
 ```tsuzuri run=42
 def fetch :: unit -> Maybe<i64> = \() -> Some 40
@@ -169,7 +169,7 @@ Maybe.get (Maybe {
 42
 ```
 
-`Result` の `Ok` / `Error` や `task { ... }` でも、同じ形で書けます。
+`Result` の `Ok` / `Error` でも、同じ形で書けます。
 
 詳しくは [コンピュテーション式](../computation-expressions/computation-expressions.md) を参照してください。
 

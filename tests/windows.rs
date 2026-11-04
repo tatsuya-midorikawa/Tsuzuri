@@ -56,17 +56,19 @@ fn cross_links_with_microsoft_sdk_when_requested() {
         return;
     };
     let sdk = std::path::PathBuf::from(sdk);
-    // The task runtime, and the Mutex and DataChannel runtime that task.c holds too (F10).
+    // The tzroutine runtime, which runs Parallel, Routine.scope, Mutex, ErrGroup and DataChannel
+    // natively (TZ12).
     for source in [
-        "export def answer :: i64\nfn answer = { let value = 42; Debug.print (&value); let jobs: [Task<Result<i64, string>>] = [task { Result.Ok value }]; let values = Result.get (Task.run (Task.parallel_results jobs)); values[0] }",
-        "export def answer :: i64\nfn answer =\n    let lock = Mutex.create 40i64\n    let seen = Task.scope (ref lock) 2 (\\shared index -> Mutex.with_lock shared (\\value -> { deref value = deref value + 1; index }))\n    Mutex.into_inner lock + Array.length (ref seen) - 2",
+        "export def answer :: i64\nfn answer =\n    let value = 42\n    Debug.print (&value)\n    let group: ErrGroup<string> = ErrGroup.create ()\n    ErrGroup.go group (Owned.function (\\() -> Result.Ok ()))\n    let values = Parallel.init 1 (\\_index -> value)\n    match ErrGroup.wait group with\n    | Result.Ok _ -> values[0]\n    | Result.Error _ -> 0",
+        "export def answer :: i64\nfn answer =\n    let lock = Mutex.create 40i64\n    let seen = Routine.scope (ref lock) 2 (\\shared index -> Mutex.with_lock shared (\\value -> { deref value = deref value + 1; index }))\n    Mutex.into_inner lock + Array.length (ref seen) - 2",
         "export def answer :: i64\nfn answer =\n    match DataChannel.bounded 2 with\n    | (sender, receiver) ->\n        let _sent = DataChannel.send (ref sender) 42\n        match DataChannel.recv (ref receiver) with\n        | Maybe.Some item -> item\n        | Maybe.None -> 0",
     ] {
         cross_link(&sdk, source);
     }
 }
 
-/// Builds `source`, whose `answer` returns 42, with the Microsoft SDK and links it with `task.c`.
+/// Builds `source`, whose `answer` returns 42, with the Microsoft SDK and links it with `tzroutine.c`
+/// (compiled where it is, next to the `tzroutine-windows.h` that it includes).
 fn cross_link(sdk: &std::path::Path, source: &str) {
     use std::{
         fs,
@@ -125,8 +127,8 @@ fn cross_link(sdk: &std::path::Path, source: &str) {
         for (source, object) in [
             (root.join("host.c"), "host.obj"),
             (
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/runtime/task.c"),
-                "task.obj",
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/runtime/tzroutine.c"),
+                "tzroutine.obj",
             ),
         ] {
             let mut command = Command::new(&clang);
@@ -169,7 +171,7 @@ fn cross_link(sdk: &std::path::Path, source: &str) {
             command.arg(format!("/libpath:{}", sdk.join(library).display()));
         }
         command.arg(format!("/out:{}", root.join("program.exe").display()));
-        for object in ["host.obj", "module.obj", "task.obj"] {
+        for object in ["host.obj", "module.obj", "tzroutine.obj"] {
             command.arg(root.join(object));
         }
         check(&mut command);

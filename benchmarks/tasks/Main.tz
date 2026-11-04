@@ -7,8 +7,7 @@ fn work rounds index =
 
 export def parallel_batch :: own i64 -> own i64 -> i64
 fn parallel_batch count rounds =
-    let tasks = new [Task<i64>](count, \index -> task { return work rounds index })
-    let results = Task.run (Task.parallel tasks)
+    let results = Routine.scope (ref rounds) count (\shared index -> work (deref shared) index)
     Array.sum (ref results)
 
 export def sequential_batch :: own i64 -> own i64 -> i64

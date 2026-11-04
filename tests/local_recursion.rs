@@ -568,12 +568,12 @@ fn local_let_rec_in_computation_expressions() {
         // The builder is the first `let!` source, after the `let rec` that precedes it.
         "def main :: unit -> i32 = \\() ->\n    let rec sum = \\k -> if k == 0 then 0 else k + sum (k - 1)\n    let! _line = IO.read_line ()\n    do! IO.write_line (to_string (sum 10))\n    0\n",
         "let compute = \\n ->\n    let rec fib = \\k -> if k < 2 then k else fib (k - 1) + fib (k - 2)\n    let! start = Maybe.Some n\n    return fib start\ncompute 6\n",
-        // A group in the body of a task, whose builder is the expected result type: the members are
-        // bound together, before and after a `let!`, and in the middle of the statements.
-        "def job :: i64 -> Task<bool> = \\n ->\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    return even n\n",
-        "def job :: Task<i64> -> Task<bool> = \\source ->\n    let! m = source\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    return even m\n",
-        "def job :: i64 -> Task<i64> = \\n ->\n    let base = n + 1\n    let rec a = \\k -> if k == 0 then base else b (k - 1)\n    and b = \\k -> if k == 0 then base else a (k - 1)\n    let rec c = \\k -> a k + 1\n    return c n\n",
-        "let job = task {\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    return even 6\n}\nTask.run job\n",
+        // A group in the body of a computation whose builder is the expected result type: the
+        // members are bound together, before and after a `let!`, and in the middle of the statements.
+        "def job :: i64 -> Maybe<bool> = \\n ->\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    return even n\n",
+        "def job :: Maybe<i64> -> Maybe<bool> = \\source ->\n    let! m = source\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    return even m\n",
+        "def job :: i64 -> Maybe<i64> = \\n ->\n    let base = n + 1\n    let rec a = \\k -> if k == 0 then base else b (k - 1)\n    and b = \\k -> if k == 0 then base else a (k - 1)\n    let rec c = \\k -> a k + 1\n    return c n\n",
+        "let job = Maybe {\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    return even 6\n}\nMaybe.get job\n",
         // The other lowerings bind consecutive statements together: IO run directly, a builder
         // with groups before and after a `let!`, and `Async`.
         "def main :: unit -> i32 = \\() ->\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    do! IO.write_line (to_string (even 10))\n    0\n",
@@ -586,7 +586,7 @@ fn local_let_rec_in_computation_expressions() {
         let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
         assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
     }
-    // `let! rec` stays a syntax error in a computation, as it is in a task block.
+    // `let! rec` stays a syntax error in a computation.
     let error = parse_error("let r = Maybe {\n    let! rec go = \\m -> m\n    return 1\n}\nr\n");
     assert_eq!(error.code, "E0002");
 }

@@ -250,7 +250,7 @@ int main(void) {
     }
   };
   freestanding("io", "IO { do! IO.write_line 42 }\n", "--freestanding cannot use the standard IO");
-  freestanding("tasks", "export def total :: i64 -> i64\nfn total count =\n    let tasks = new [Task<i64>](4, \\index -> task { return index * count })\n    let results = Task.run (Task.parallel tasks)\n    Array.sum (ref results)\n", "--freestanding cannot use parallel tasks");
+  freestanding("parallel", "export def total :: i64 -> i64\nfn total count =\n    let results = Parallel.init 4 (\\index -> index * count)\n    Array.sum (ref results)\n", "--freestanding cannot use tzroutine");
   freestanding("debug", "export def traced :: i64 -> i64\nfn traced value = Debug.trace value\n", "--freestanding cannot use Debug output");
   console.log("allocator: ok");
 } finally {

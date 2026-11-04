@@ -4720,7 +4720,7 @@ fn build_complete(
                 fs::write(&ir, &text).map_err(|error| io_error("write LLVM IR", &ir, error))?;
             }
         }
-        let runtime_object = temporary.path.join("task.o");
+        let runtime_object = temporary.path.join("runtime.o");
         // The Clang run that links the units reads their objects; a debug build on macOS links in a step of its own,
         // after which dsymutil reads the objects again, so the objects stay where they are until the end of the build.
         let units_linked_by_clang =
@@ -4749,7 +4749,7 @@ fn build_complete(
         // Bitcode is one file, so its C runtime is merged as IR too (PR08 D4).
         let merge_runtime_ir = merge_debug_ir || options.emit == Emit::Bitcode;
         if native_runtime {
-            let runtime_source = temporary.path.join("task.c");
+            let runtime_source = temporary.path.join("runtime.c");
             let mut source = format!(
                 "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 // The feature macros of os.c and net.c are the same and must precede every include, so
@@ -4803,7 +4803,7 @@ fn build_complete(
                 source.push_str(&tzroutine_runtime_source_for(platform));
             }
             fs::write(&runtime_source, &source)
-                .map_err(|error| io_error("write task runtime", &runtime_source, error))?;
+                .map_err(|error| io_error("write C runtime", &runtime_source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             // `-S -emit-llvm` writes the IR; `-c` beside it is an unused argument that Clang warns about.
             runtime.arg("-std=c11");
@@ -4843,7 +4843,7 @@ fn build_complete(
                 let cached = compile_runtime_object(
                     "native-c",
                     &source,
-                    "task.c",
+                    "runtime.c",
                     &args,
                     &temporary.path,
                     clang_identity.as_ref(),
@@ -8674,7 +8674,7 @@ mod tests {
         assert!(!wasi.exists());
         // A unit with a name of its own is moved to the staging name.
         let cached = directory.path.join("native-c.o");
-        let staged = directory.path.join("task.o");
+        let staged = directory.path.join("runtime.o");
         fs::write(&cached, b"object").unwrap();
         stage_runtime_object(&cached, &staged, "stage native runtime").unwrap();
         assert!(!cached.exists());

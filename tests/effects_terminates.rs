@@ -83,7 +83,7 @@ fn terminates_rejects_unknown_callees() {
         verdict(prelude, "def f :: ref Box -> i64 -> i64 = \\b x -> b.run x").unwrap_err();
     assert_eq!(kind, Some("effect_unknown_callee"));
     assert!(
-        message.contains("runs a function or task value that its caller can choose"),
+        message.contains("runs a function value that its caller can choose"),
         "{message}"
     );
 }

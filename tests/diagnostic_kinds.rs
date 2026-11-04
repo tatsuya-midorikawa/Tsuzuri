@@ -313,6 +313,10 @@ fn emitted_variants(directory: &Path, found: &mut std::collections::BTreeSet<Str
     }
 }
 
+/// Kinds that stay registered, so that their ids and `tsuzuri explain` pages keep working, but that
+/// no source emits any more: TZ12 removed the implicit `task` builder.
+const RETIRED: &[&str] = &["implicit_task_needs_builder"];
+
 #[test]
 fn every_kind_has_an_emission_site() {
     let mut found = std::collections::BTreeSet::new();
@@ -325,8 +329,5 @@ fn every_kind_has_an_emission_site() {
         .filter(|kind| !found.contains(&format!("{kind:?}")))
         .map(|kind| kind.id())
         .collect();
-    assert!(
-        unemitted.is_empty(),
-        "kinds that no source emits: {unemitted:?}"
-    );
+    assert_eq!(unemitted, RETIRED, "kinds that no source emits");
 }

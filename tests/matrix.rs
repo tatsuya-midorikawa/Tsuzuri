@@ -189,6 +189,7 @@ fn matrix_ir_keeps_multiply_and_add_separate() {
             // The sequential product needs neither threads nor reference counts.
             for word in [
                 "tsuzuri_task_parallel",
+                "tsuzuri_tz_parallel",
                 "atomicrmw",
                 "@tz.fn.Matrix.fma_rows",
             ] {
@@ -269,8 +270,19 @@ fn explicit_fma_and_parallel_products_are_separate_apis() {
         let parallel = format!(
             "let a = Matrix.init 2 2 (\\i j -> {literal})\nlet p = Matrix.mul_parallel (ref a) (ref a)\nlet q = Matrix.mul_fma_parallel (ref a) (ref a)\nMatrix.rows (ref p) + Matrix.rows (ref q)"
         );
-        for ir in emits(&parallel) {
-            assert!(ir.contains("@tsuzuri_task_parallel"), "{element}: {ir}");
+        let [native, wasm] = emits(&parallel);
+        // Natively the rows run on the tzroutine scheduler (TZ12), on WebAssembly in order or on the
+        // workers of `--wasm-feature threads`.
+        assert!(
+            native.contains("call i32 @tsuzuri_tz_parallel(")
+                && !native.contains("tsuzuri_task_parallel"),
+            "{element}: {native}"
+        );
+        assert!(
+            wasm.contains("call void @tsuzuri_task_parallel("),
+            "{element}: {wasm}"
+        );
+        for ir in [native, wasm] {
             for word in ["fmuladd", " fast ", "contract", "reassoc"] {
                 assert!(!ir.contains(word), "{element}: {word}\n{ir}");
             }

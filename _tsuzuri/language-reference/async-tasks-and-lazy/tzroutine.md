@@ -8,13 +8,14 @@
 
 - `tzroutine { 文 }` は捕捉を移して tzroutine を起動し、本体の終わりを待たずに `()` を返します。本体はちょうど 1 回走ります。 <!-- rule: TSK-011 -->
 - 本体の型は `unit` です。ほかの型は `E1003` です。 <!-- rule: TSK-014 -->
-- 本体は関数の本体と同じ通常のブロックです。`let!`・`do!` は IO をその場で実行します（`task { }` の bind とは違います）。 <!-- rule: TSK-015 -->
+- 本体は関数の本体と同じ通常のブロックです。`let!`・`do!` は IO をその場で実行します。 <!-- rule: TSK-015 -->
 - 捕捉は所有値のムーブか Copy の複製で、`Send` でなければなりません。借用（`ref` など）を捕捉すると `E1013`、`Rc` も `E1013` です。 <!-- rule: TSK-013 -->
 - 境界（`main`・`export` の呼び出し・`test`・`bench`）は、その中で起動した tzroutine がすべて終わるまで戻りません。 <!-- rule: TSK-012 -->
 - ただし、トップレベルの最後の式や `export` の戻り値は、**待つ前に**計算されます。子の結果を読むときは、子の完了を数えて待ってから読みます。
 - `Routine` モジュール（`go`・`yield`・`count`・`max_procs`・`cpu_count`・`with_locked_thread`）で、関数値の起動、実行の譲渡、数の問い合わせ、OS スレッドへの固定ができます（[Routine](../built-in-types-and-modules/routine.md)）。
 - `extern` 関数・ファイル・ソケットなど、OS で待つ呼び出しの間も、ほかの tzroutine は走り続けます（[OS を待つ呼び出し](#os-を待つ呼び出し)）。
 - tzroutine の間の値の受け渡しには [Channel](../built-in-types-and-modules/channel.md) を使います（Go の `chan T`）。
+- `task { }`・型 `Task<T>`・`Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope` は削除しました（`E1040`）。書き換え方は [Task からの移行](#task-からの移行) です。
 - 対応するのはネイティブの macOS・Linux・Windows（aarch64・x86-64）です。WebAssembly で tzroutine を起動するプログラムは `E2000` です。
 
 ## 基本の書き方
@@ -67,7 +68,7 @@ child
 
 本体は関数の本体と同じ通常のブロックです。
 
-- `let`・`let mut`・`let rec`・`use`・`while`・`for`・`match`・`if` を書けます。文の区切りは改行か `;` です（`task { }` と同じく、`let` も改行で終わります）。
+- `let`・`let mut`・`let rec`・`use`・`while`・`for`・`match`・`if` を書けます。文の区切りは改行か `;` です（`let` も改行で終わります）。
 - `let!`・`do!` は、その場で IO を実行します。
 - `return` は関数の本体と同じ扱いで、本体の型 `unit` を返すものだけが通ります（`return 1` は `E1003`）。
 - 本体の中の `break`・`continue` で、外のループへは出られません（`E1023`）。
@@ -75,7 +76,7 @@ child
 
 ## 捕捉と所有権
 
-本体が使う外の値は、`task { }` と同じ規則で捕捉されます。
+本体が使う外の値は、次の規則で捕捉されます。
 
 | 規則 | 診断 |
 | --- | --- |
@@ -89,7 +90,7 @@ child
 let x = 5
 let r = ref x
 tzroutine {
-    let _y = deref r      // E1013: tasks require owned values; ref i32 contains a reference
+    let _y = deref r      // E1013: values that move to another tzroutine or thread must be owned; ref i32 contains a reference
 }
 ```
 
@@ -132,7 +133,7 @@ WaitGroup.wait (ref group)
 $"sum={Mutex.with_lock (Arc.get (ref total)) (\value -> deref value)}"
 ```
 
-tzroutine を使うプログラムの `Mutex.with_lock` は tzroutine のロックで、ロックを持ったまま待てます（[Mutex](../built-in-types-and-modules/mutex.md#tzroutine-のプログラムのロック)）。ほかの同期の型は [Once](../built-in-types-and-modules/once.md)・[OnceValue](../built-in-types-and-modules/oncevalue.md)・[RwMutex](../built-in-types-and-modules/rwmutex.md)・[Cond](../built-in-types-and-modules/cond.md)・[Semaphore](../built-in-types-and-modules/semaphore.md)・[SyncMap](../built-in-types-and-modules/syncmap.md) です。
+ネイティブの `Mutex.with_lock` は tzroutine のランタイムのロックで、ロックを持ったまま待てます（[Mutex](../built-in-types-and-modules/mutex.md#ロックの規則)）。ほかの同期の型は [Once](../built-in-types-and-modules/once.md)・[OnceValue](../built-in-types-and-modules/oncevalue.md)・[RwMutex](../built-in-types-and-modules/rwmutex.md)・[Cond](../built-in-types-and-modules/cond.md)・[Semaphore](../built-in-types-and-modules/semaphore.md)・[SyncMap](../built-in-types-and-modules/syncmap.md) です。
 
 子の結果は、[Channel](../built-in-types-and-modules/channel.md) で受け取ると、数えて待つ必要がありません。受け取ること自体が待ち合わせです。
 
@@ -151,7 +152,7 @@ for _i in 0 ..< 4 do
 $"total={total}"
 ```
 
-`Task.parallel` のタスク、`Task.scope` の子ども、`Parallel.*` のコールバックはスレッドプールのワーカーで走り、どの境界の中でもありません。そこで起動した tzroutine は、そのタスク（子ども、コールバックの 1 回）が終わる前に待たれます。したがって、それらの呼び出しが戻るのは、中で起動した tzroutine が終わった後です。
+[`Routine.scope`](../built-in-types-and-modules/routine.md#routinescope) は、子と、子が起動した tzroutine がすべて終わってから戻ります。`Parallel.*` のコールバックが起動した tzroutine は、`Parallel.*` の呼び出しを待たず、呼び出し元の境界（`main` など）が待ちます。`Parallel.*` の呼び出しが戻った時点では、まだ走っていることがあります。
 
 > **Go から来た人への注意**: 終わらない tzroutine（無限ループ、来ない値を待つもの）を残すと、境界が待ち続けます（止め方は次の節）。全員が待ちに入って誰も起こせなくなったときは、デッドロックの判定が次の文を標準エラーへ書いて、プロセスを終えます。
 >
@@ -215,7 +216,7 @@ tzroutine は M:N のスケジューラーで走ります。
 - 同時に tzroutine を走らせる OS スレッドの数（P の数）は、既定でオンラインの CPU 数（256 まで）です。環境変数 `TSUZURI_MAXPROCS`（1〜256 の 10 進）で、起動時に 1 回だけ決められます。`Routine.max_procs ()` がその値です。
 - 待つ tzroutine（`Routine.yield`・`Time.sleep`・`Time.sleep_ms`・境界の待ちなど）は OS スレッドを止めないので、待つ tzroutine の数はスレッド数に縛られません。周期の処理は [Ticker](../built-in-types-and-modules/ticker.md#周期の処理を止める)、遅らせた処理は [`Time.after_func`](../built-in-types-and-modules/time.md#遅らせて呼ぶtimeafter_func) で書きます。
 - プリエンプションはまだありません。待たずに計算し続ける tzroutine は、その OS スレッドを離しません。長い計算では、ときどき `Routine.yield ()` を呼びます。OS で待つ呼び出しは次の節です。
-- tzroutine の中の `Task.run (Task.parallel …)`・`Task.scope`・`Parallel.*` は、終わりを待つ間、P を手放します。`TSUZURI_MAXPROCS=1` でも、ほかの tzroutine と、そのタスクの中で起動した tzroutine は走ります。待っている間に呼び出したスレッドで走るタスクは、tzroutine でないスレッドと同じく、そのスレッドを止めて待ちます。
+- `Parallel.*` は、このスケジューラーの上で、呼び出し元と手伝いの tzroutine（呼び出し元が tzroutine なら最大 `min(チャンク数, P) - 1` 個、tzroutine でないスレッドなら最大 `min(チャンク数, P)` 個）がチャンクを分けます（[Parallel](../built-in-types-and-modules/parallel.md)）。`Routine.scope` は子ごとに tzroutine を起動します。どちらも、終わりを待つ tzroutine は P を手放すので、`TSUZURI_MAXPROCS=1` でも、ほかの tzroutine は走ります。
 - 各 tzroutine のスタックは、既定で 1 MiB の予約です（触れたページだけが実メモリになります）。下端の 128 KiB はガードで、溢れると `trap: stack overflow` と報告して終わります（Windows では理由なしで終わります）。tzroutine を起動するプログラムは、すべての関数が大きな frame のページを確保の時に順に触れる（stack probe）ので、ガードより大きな frame もガードを飛び越えません。深い再帰には `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576 の 10 進、KiB）で予約を増やします。範囲外の値は無視して既定値を使います。
 - Linux では、1 つのスタックが mapping を 2 つ使うので、同時に生きる tzroutine はおよそ 3 万個（`vm.max_map_count` の既定 65,530 の半分）が上限です。超えると `Tsuzuri runtime: cannot allocate a tzroutine stack (out of memory or address space)` と書いて終わります。
 
@@ -281,7 +282,7 @@ $"{first} {second}"
 
 - tzroutine の本体のトラップ（`assert`、範囲外の添字、0 での除算など）は、ほかのトラップと同じく、プロセス全体の失敗です。報告は、トラップした tzroutine の OS スレッドが標準エラーへ書きます（`--trap-info` なら位置を含みます）。
 - `--trap-mode return` とは組み合わせられません（`E2000`）。ある tzroutine のトラップを、それを起動した呼び出しから返せないからです。
-- tzroutine を起動するプログラムの `Mutex.with_lock` は tzroutine のロックなので、ロックの中で `Routine.yield` や待つ操作を呼べます（TZ06。TZ05 まではトラップでした）。
+- ネイティブの `Mutex.with_lock` は tzroutine のランタイムのロックなので、ロックの中で `Routine.yield` や待つ操作を呼べます。同じ `Mutex` をロックの中でもう一度取るとトラップします（`Mutex.with_lock cannot be nested`）。
 
 ## ターゲット
 
@@ -295,16 +296,193 @@ $"{first} {second}"
 | `--trap-mode return` | `E2000`（`option_conflict`） |
 | `--emit llvm`・`--emit header` | 拒否しない（ホストが `src/runtime/tzroutine.c` を連結する） |
 
-## Task との違い
+## Task からの移行
 
-| | `tzroutine { }` | `task { }` |
-| --- | --- | --- |
-| 起動 | 評価した時点で起動する（ホット） | `Task.run` か `let!` まで始まらない（コールド） |
-| 結果 | `unit`。値は `Atomic` などで受け渡す | `Task<T>` の結果 `T` |
-| 待ち | 境界がまとめて待つ | 実行した呼び出しが待つ |
-| 待つ数とスレッド | 待つ tzroutine は OS スレッドを止めない | 待つタスクはスレッドプールのスレッドを止める |
-| 本体の `let!`・`do!` | IO をその場で実行する | 別のタスクを実行する |
-| WebAssembly | `E2000` | 既定は逐次、threads はワーカー |
+`task { … }`、型 `Task<T>`、`Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope` は、言語から削除しました（TZ12）。並行の仕事は tzroutine で、配列のデータ並列は [Parallel](../built-in-types-and-modules/parallel.md) で、借用を共有する子は [Routine.scope](../built-in-types-and-modules/routine.md#routinescope) で、最初の誤りで残りを止める仕事は [ErrGroup](../built-in-types-and-modules/errgroup.md) で書きます。
+
+削除した形を書くと `E1040` です。診断の `help` が書き換え先を示します。
+
+| 書いたもの | kind | メッセージ | help（書き換え先） |
+| --- | --- | --- | --- |
+| `task { … }` | `removed_task_expression` | `'task { }' was removed` | 仕事をその場で実行するか、`tzroutine { ... }` で起動して `WaitGroup` か `Channel` で待ちます（`run the work directly, or spawn it with 'tzroutine { ... }' and wait with WaitGroup or a Channel`） |
+| 型 `Task<T>` | `removed_task_type` | `the type 'Task' was removed` | 値をそのまま返します。並行に走らせるなら `tzroutine { ... }` を使います（`return the value directly; to run work concurrently, use 'tzroutine { ... }'`） |
+| `Task.run` | `removed_task_api` | `'Task.run' was removed` | 仕事を直接呼びます（`call the work directly`） |
+| `Task.parallel` | `removed_task_api` | `'Task.parallel' was removed` | データ並列は `Parallel.init` か `Parallel.map`、それ以外は tzroutine と `WaitGroup` です（`use Parallel.init or Parallel.map for data parallelism, or tzroutines with a WaitGroup`） |
+| `Task.parallel_results` | `removed_task_api` | `'Task.parallel_results' was removed` | `ErrGroup` です。仕事ごとに `ErrGroup.go` を呼び、最初の誤りを `ErrGroup.wait` で受け取ります（`use ErrGroup: ErrGroup.go for each job and ErrGroup.wait for the first error`） |
+| `Task.scope` | `removed_task_api` | `'Task.scope' was removed` | 同じ引数をとる `Routine.scope` です（`use Routine.scope, which takes the same arguments`） |
+
+- `tsuzuri fix` が自動で書き換えるのは、`Task.scope` を `Routine.scope` にする 1 つだけです（確かな修正案）。ほかの形は、書き換えると始まる時点、結果の受け取り方、選ばれる誤りが変わるので、次の例を見て手で直します。`tsuzuri fix --dry-run <ファイルかディレクトリ>` で、書き換えの差分だけを表示できます（[fix](../compiler/usage.md#fix)）。
+- `task` は予約語ではなくなり、普通の名前です（`let task = 1`）。`.tc` に `@alias task` を書いた利用者のビルダーがあれば、`task { … }` はそのビルダーの式です（[ビルダーの別名](../computation-expressions/computation-expressions.md#ビルダーの別名)）。
+- 利用者が定義した `Task` という名前のモジュール・型・名前空間は、そのまま使えます。`E1040` になるのは、その名前が利用者の定義に解決しないときだけです。
+
+### Task.run を外す
+
+`Task.run (task { … })` は、本体をその場で実行して終わりを待つ同期の呼び出しでした。本体をそのまま書くのと同じです。
+
+書き換える前（今は `E1040`）:
+
+```text
+let answer = Task.run (task {
+    let base = 40
+    return base + 2
+})
+$"answer={answer}"
+```
+
+書き換えた後:
+
+```tsuzuri run=answer%3D42
+def compute :: i64 -> i64
+fn compute base = base + 2
+
+let answer = compute 40
+$"answer={answer}"
+```
+
+実行結果:
+
+```text
+answer=42
+```
+
+作っておいて後で走らせるためのタスク（コールドな遅延）は、`unit -> T` の関数（サンク）にします（[Lazy 式](lazy.md)）。別の実行単位で走らせたいときは `tzroutine { }` で起動し、結果を `Channel` で受け取ります（[終了の待ち](#終了の待ち)）。
+
+### Task.parallel を Parallel か tzroutine にする
+
+同じ形の仕事を添字ごとに分けるなら、`Parallel.init n (\i -> …)` です。結果は添字の順で、`Task.parallel` の結果の並びと同じです。
+
+書き換える前（今は `E1040`）:
+
+```text
+let jobs = new [Task<i64>](4, \index -> task { return (index + 1) * 10 })
+let results = Task.run (Task.parallel jobs)
+$"{results[0]},{results[1]},{results[2]},{results[3]}"
+```
+
+書き換えた後:
+
+```tsuzuri run=10%2C20%2C30%2C40
+let results = Parallel.init 4 (\index -> (index + 1) * 10)
+$"{results[0]},{results[1]},{results[2]},{results[3]}"
+```
+
+実行結果:
+
+```text
+10,20,30,40
+```
+
+仕事が待つ操作（`Channel`、`Time.sleep` など）を含むときや、仕事ごとに中身が違うときは、tzroutine を起動して [WaitGroup](../built-in-types-and-modules/waitgroup.md) で終わりを待ちます。結果は `Arc<Mutex<[T]>>`（または `Mutex<Vec<T>>`）に書くか、[Channel](../built-in-types-and-modules/channel.md) で受け取ります。次の例は、各 tzroutine が自分の添字の要素を書くので、結果は添字の順です。
+
+```tsuzuri run=10%2C20%2C30%2C40
+def work :: i64 -> i64
+fn work index = (index + 1) * 10
+
+let results = Arc.new (Mutex.create (new [i64](4, \_index -> 0)))
+let group = WaitGroup.create ()
+for index in 0 ..< 4 do
+    WaitGroup.add (ref group) 1
+    let finished = WaitGroup.share (ref group)
+    let mine = Arc.share (ref results)
+    tzroutine {
+        let value = work index
+        Mutex.with_lock (Arc.get (ref mine)) (\values -> Array.write index value values)
+        WaitGroup.done (ref finished)
+    }
+WaitGroup.wait (ref group)
+Mutex.with_lock (Arc.get (ref results)) (\values -> $"{values[0]},{values[1]},{values[2]},{values[3]}")
+```
+
+実行結果:
+
+```text
+10,20,30,40
+```
+
+- `Task.parallel` のタスクは `Task.run` まで始まりませんでしたが、tzroutine は `tzroutine { }` を評価した時点で始まります。
+- 外の値を借用のまま読む子と、添字の順の結果が欲しいときは、`Routine.scope` も使えます（[Task.scope を Routine.scope にする](#taskscope-を-routinescope-にする)）。
+
+### Task.parallel_results を ErrGroup にする
+
+`Result` を返す仕事を並べ、最初の誤りで残りを止めるなら [ErrGroup](../built-in-types-and-modules/errgroup.md) です。仕事ごとに `ErrGroup.go` で関数を起動し、`ErrGroup.wait` で全員の終わりを待って、最初の誤りか `Ok` を受け取ります。
+
+書き換える前（今は `E1040`）:
+
+```text
+def job :: i64 -> Task<Result<i64, string>> = \value -> task {
+    if value == 2 { return Result.Error "stopped" }
+    else { return Result.Ok (value * 2) }
+}
+
+let jobs = new [Task<Result<i64, string>>](4, \index -> job index)
+match Task.run (Task.parallel_results jobs) with
+| Result.Ok values -> $"sum={Array.sum ref values}"
+| Result.Error error -> $"error={error}"
+```
+
+書き換えた後:
+
+```tsuzuri run=error%3Dstopped
+def job :: i64 -> Result<i64, string>
+fn job value =
+    if value == 2 then Result.Error "stopped" else Result.Ok (value * 2)
+
+let group: ErrGroup<string> = ErrGroup.create ()
+let total = Arc.new (Atomic.create 0i64)
+for i in 0 ..< 4 do
+    let mine = Arc.share (ref total)
+    ErrGroup.go group (Owned.function (\() ->
+        match job i with
+        | Result.Ok value -> {
+            let _old = Atomic.fetch_add (Arc.get (ref mine)) value;
+            Result.Ok ()
+        }
+        | Result.Error error -> Result.Error error))
+match ErrGroup.wait group with
+| Result.Ok _ -> $"sum={Atomic.load (Arc.get (ref total))}"
+| Result.Error error -> $"error={error}"
+```
+
+実行結果:
+
+```text
+error=stopped
+```
+
+- `ErrGroup.wait` が返すのは、**終わった時刻の順で最初**の誤りです。`Task.parallel_results` の「入力の添字が最小の誤り」とは違います。誤りを返す仕事が 2 つ以上あると、どれが選ばれるかは実行ごとに変わりえます。
+- `Task.parallel_results` は、誤りのあと未開始のタスクを始めませんでした。`ErrGroup.go` は呼んだ時点で関数を起動します。最初の誤りはグループの `Context`（`ErrGroup.context`）を取り消すので、長い仕事はそれを見て自分で止まります（[ErrGroup](../built-in-types-and-modules/errgroup.md#基本の書き方)）。
+- 関数の型は `Owned.Function<unit, Result<unit, 'e>>` で、`Ok` の値は返せません。値は `Atomic`・`Mutex`・`Channel` で受け渡します。
+- 添字が最小の誤りが要るときは、`Parallel.init` で `Result` の配列を作り、添字の順に調べます（[並列処理の失敗](../built-in-types-and-modules/result.md#並列処理の失敗)）。この形は、誤りがあっても全件を走らせます。
+
+### Task.scope を Routine.scope にする
+
+`Routine.scope` は、`Task.scope` と同じ引数と型（`(Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]`）をとります。`tsuzuri fix` が名前を書き換えます。
+
+書き換える前（今は `E1040`。`tsuzuri fix` で直せます）:
+
+```text
+let hits = Atomic.create 0i64
+let _seen = Task.scope (ref hits) 8 (\shared index -> Atomic.fetch_add shared (index + 1))
+Atomic.load (ref hits)
+```
+
+書き換えた後:
+
+```tsuzuri run=36
+let hits = Atomic.create 0i64
+let _seen = Routine.scope (ref hits) 8 (\shared index -> Atomic.fetch_add shared (index + 1))
+Atomic.load (ref hits)
+```
+
+実行結果:
+
+```text
+36
+```
+
+- 子はそれぞれ自分の tzroutine で走るので、互いを `Channel` などで待てます。`TSUZURI_MAXPROCS=1` でも終わります（[Routine.scope](../built-in-types-and-modules/routine.md#routinescope)）。呼び出しは、子が起動した tzroutine の終わりも待ちます。
+- `shared` は `Sync`、結果は `Send` の所有値、コールバックは借用した環境を持てない、直接の呼び出しだけ、という規則は `Task.scope` と同じです。
+- tzroutine を起動するので、WebAssembly、`--freestanding`、`--trap-mode return` では `E2000`、`pure def` の中では `E1029` です。これらで `Task.scope` を使っていた配列の計算は、`Parallel.*` に書き換えます。
 
 ## 他の言語との比較
 
@@ -321,15 +499,18 @@ Go の `go f(x)` は引数 `x` を呼び出し側で評価しますが、Tsuzuri
 ## まとめ
 
 - `tzroutine { ... }` は捕捉を移して tzroutine を起動し、`()` を返します。本体の型は `unit` です。
-- 捕捉は `task { }` と同じく、所有値のムーブか Copy で、`Send` でなければなりません。借用は `E1013` です。
+- 捕捉は所有値のムーブか Copy で、`Send` でなければなりません。借用は `E1013` です。
 - `main`・`export` の呼び出し・`test`・`bench` は、その中で起動した tzroutine がすべて終わるまで戻りません。最後の式の値はその前に計算されます。
 - P の数は `TSUZURI_MAXPROCS`、スタックの予約は `TSUZURI_TZROUTINE_STACK_KIB` で変えられます。
 - WebAssembly、`--freestanding`、`--trap-mode return` とは組み合わせられません（`E2000`）。
+- 削除した `Task` の書き換えは、[Task からの移行](#task-からの移行) の表と例のとおりです。`Task.scope` だけは `tsuzuri fix` が `Routine.scope` へ書き換えます。
 
 ## 関連項目
 
 - [Routine](../built-in-types-and-modules/routine.md)
-- [Task 式](task.md)
+- [Parallel](../built-in-types-and-modules/parallel.md)
+- [WaitGroup](../built-in-types-and-modules/waitgroup.md)
+- [Channel](../built-in-types-and-modules/channel.md)
 - [Atomic](../built-in-types-and-modules/atomic.md)
 - [Mutex](../built-in-types-and-modules/mutex.md)
 - [Rc と Arc](../built-in-types-and-modules/rc.md)

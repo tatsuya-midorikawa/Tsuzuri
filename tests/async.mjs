@@ -19,8 +19,8 @@ const clang = process.env.TSUZURI_CLANG ?? "clang";
 const sanitizer = process.env.TSUZURI_ASAN === "1" ? ["-fsanitize=address"] : [];
 const MAX = (1n << 63n) - 1n;
 
-function execute(program, args, success = true) {
-  const result = spawnSync(program, args, { cwd: root, encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024 });
+function execute(program, args, success = true, env = process.env) {
+  const result = spawnSync(program, args, { cwd: root, encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024, env });
   if (result.error) throw result.error;
   if (success) assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result;
@@ -367,7 +367,7 @@ function wasmHost(module, optimization) {
 
 // The C host of tests/fixtures/async_reactor: operations complete 20 ms later on threads of
 // their own through tsuzuri_async_post, except those with a negative request. Operations start on
-// the workers of Task.parallel too, so the host counts them atomically.
+// the threads that run the chunks of Parallel.init too, so the host counts them atomically.
 const REACTOR = `${TRACKING}${PORTABLE}
 #include "tz-async_reactor.h"
 static int64_t started_operation[16], cancelled[16], report_tag[16], report_value[16];
@@ -443,15 +443,16 @@ function reactor(directory) {
   const host = join(directory, "reactor.c");
   writeFileSync(host, REACTOR);
   for (const optimization of ["0", "3"]) {
+    // Parallel.init runs its chunks on the tzroutine scheduler; the number of Ps is TSUZURI_MAXPROCS.
+    const native = exe(join(directory, `async_reactor-O${optimization}`));
+    execute(clang, [`-O${optimization}`, "-Wno-override-module", ...sanitizer, `-I${directory}`, ir, host,
+      join(root, "src/runtime/async.c"), join(root, "src/runtime/tzroutine.c"), ...threads,
+      ...(windows ? ["-lws2_32"] : []), "-o", native]);
     for (const processors of [undefined, 1, 2]) {
-      const task = join(root, "src/runtime/task.c");
-      const runtime = processors === undefined ? task : join(directory, `task-${processors}.c`);
-      // A header name is not a string literal: forward slashes keep a Windows path as it is.
-      if (processors !== undefined) writeFileSync(runtime, `#define TZ_TASK_SYSCONF(name) ${processors}\n#include "${task.replaceAll("\\", "/")}"\n`);
-      const native = exe(join(directory, `async_reactor-O${optimization}-${processors ?? "host"}`));
-      execute(clang, [`-O${optimization}`, "-Wno-override-module", ...sanitizer, `-I${directory}`, ir, host,
-        join(root, "src/runtime/async.c"), runtime, ...threads, "-o", native]);
-      execute(native, []);
+      const env = { ...process.env };
+      if (processors === undefined) delete env.TSUZURI_MAXPROCS;
+      else env.TSUZURI_MAXPROCS = String(processors);
+      execute(native, [], true, env);
     }
   }
   // The driver links the reactor into executables, objects, and shared libraries by itself.

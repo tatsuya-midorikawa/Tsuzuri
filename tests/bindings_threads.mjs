@@ -32,7 +32,7 @@ function run(args) {
 writeFileSync(join(root, "host.mjs"), `export function createImports({ workerId, data }) {
   const counters = new Int32Array(data.counters);
   return {
-    // Three participants meet before any returns: the tasks run on three threads at once.
+    // Three participants meet before any returns: the jobs run on three threads at once.
     "Main.barrier": (value) => {
       Atomics.or(counters, 1, 1 << workerId);
       if (Atomics.add(counters, 0, 1) === 2) {
@@ -169,7 +169,7 @@ try {
     await assert.rejects(failing.exports.worker_trap(64n), (error) => error instanceof TsuzuriTrap && error.trap.reason === "trap" && error.trap.kind === "assertion failed");
     await assert.rejects(failing.exports.divide(1n, 1n), /stopped after a failure/);
     await failing.close();
-    // Without workers the coordinator runs every task itself: the count is the caller's choice.
+    // Without workers the coordinator runs every job itself: the count is the caller's choice.
     const alone = await load(new WebAssembly.Module(bytes), { workers: 0, importsModule, importData: { counters: new SharedArrayBuffer(16) }, sites });
     assert.equal(alone.workerCount, 0);
     assert.equal(await alone.exports.squares({ start: 1n, count: 10n }), sumOfSquares(1n, 10n));

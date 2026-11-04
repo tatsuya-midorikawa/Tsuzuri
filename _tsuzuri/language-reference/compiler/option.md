@@ -108,7 +108,7 @@
 
 - ビルドする target にない OS API、`Net`、`Async.block_on` を、未使用の公開関数だけが使うとき。`File.read_text` だけを使う関数は、`--target x86_64-pc-windows-gnu` で `E2002` でしたが、出ません（[対応プラットフォーム](platforms.md#診断)）。
 - どのライブラリにもない `extern` のシンボルを、未使用の公開関数だけが呼ぶとき。リンクが未定義のシンボルで失敗していましたが、通ります（[ネイティブ連携](native-interop.md#ホスト関数を-import-する)）。
-- タスク、`Net`、GPU などの C のランタイムを、未使用の公開関数だけが使うとき。そのランタイムのコンパイルもリンクもしません。
+- tzroutine（`Parallel.*`・`Mutex` を含む）、`Net`、GPU などの C のランタイムを、未使用の公開関数だけが使うとき。そのランタイムのコンパイルもリンクもしません。
 
 入口か `export def` から到達するなら、今までどおり失敗します。`--emit object`、`llvm`、`header`、`wasm`、`shared` は、公開関数をすべて出力するので、今までどおりです。デバッグ情報とトラップ位置への影響は [デバッグ](debugging.md) にあります。
 
@@ -217,7 +217,7 @@ profile data does not match 1 function(s) in this build; they are optimized with
 
 `run` は `--trap-info` を付けてビルドするので、`run --profile-generate` のプロファイルは `build --trap-info --profile-use` に合います。Apple の Clang と Homebrew の Clang のように、LLVM が違う Clang どうしでは、プロファイルが合わない関数が出ることがあります。コンパイラ、Clang、ソースを替えたら、プロファイルを作り直してください。
 
-**何が対象か。** 対象は、Tsuzuri が出したモジュールの IR です。`--no-cache`、`--emit object`、`--trap-info`、`-g` のビルドと `run` では、数値と数学のランタイムも IR のままモジュールに入るので、その関数もプロファイルに入ります。ほかの既定のビルドでは、これらは別の object で、プロファイルの対象外です。C のランタイム（タスク、IO など）は、どのビルドでも対象外です。数学関数を呼ぶ例（`Math.sin`・`Math.exp` を 3,000 万回）では、数学のランタイムを埋め込んで計装しても、プロファイルを使った成果物は使わないものと差がありませんでした（[性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo)）。
+**何が対象か。** 対象は、Tsuzuri が出したモジュールの IR です。`--no-cache`、`--emit object`、`--trap-info`、`-g` のビルドと `run` では、数値と数学のランタイムも IR のままモジュールに入るので、その関数もプロファイルに入ります。ほかの既定のビルドでは、これらは別の object で、プロファイルの対象外です。C のランタイム（tzroutine、IO など）は、どのビルドでも対象外です。数学関数を呼ぶ例（`Math.sin`・`Math.exp` を 3,000 万回）では、数学のランタイムを埋め込んで計装しても、プロファイルを使った成果物は使わないものと差がありませんでした（[性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo)）。
 
 **`llvm-profdata` と Clang。** ディレクトリを渡すとき、`llvm-profdata` は、環境変数 `TSUZURI_LLVM_PROFDATA`、`TSUZURI_CLANG` の Clang の実行ファイルと同じディレクトリ、Clang が報告する toolchain の `bin/` の順で探します。PATH は探しません。別の LLVM の `llvm-profdata` が、この Clang のプロファイルを読めるのは偶然だからです。見つからないと `E2002` で、使う Clang と同じ LLVM のものを `TSUZURI_LLVM_PROFDATA` に指定します。merge 済みの `.profdata` を渡すときは、このツールを使いません。LLVM 22 以降が作った `.profdata` は、LLVM 21 の Clang が読めません（`E2002`）。`TSUZURI_CLANG` は LLVM の Clang（17 以降）で、同梱の `tsuzuri-clang` は旗を渡さず、プロファイルのランタイムも持たないので、両方の旗を `E2002` で拒否します。計装した実行ファイルのリンクはプロファイルのランタイム（`libclang_rt.profile`。Linux の apt では `libclang-rt-21-dev` など）を読みます。
 
@@ -225,7 +225,7 @@ profile data does not match 1 function(s) in this build; they are optimized with
 
 `--emit object` を計装すると、オブジェクトはプロファイルのランタイムを持たないので、最後のリンクに `-fprofile-generate=DIR` を付けます。付けないと、macOS では `___llvm_profile_runtime` が未定義です。
 
-**並列に動くプログラムの回数は少なく数えます。** 計装のカウンターは原子的に更新しません（Clang の既定の `-fprofile-update=single` と同じです）。`Task` や `Parallel` が複数のスレッドで同じ関数を動かすと、更新が重なって失われ、回数が実際より少なくなります（実行ごとに変わります）。4 つの Task が同じ 1 億回のループを回す例では、ループの回数は 4 億ではなく 1 億でした（関数に入った回数は正確に 4）。プログラムの結果とプロファイルの形（`W2001`）には影響しませんが、`--profile-use` は少ない回数をそのまま使います。正確な回数が要るときは、`-fprofile-update=atomic` を足して Clang を呼ぶスクリプトを `TSUZURI_CLANG` に指定して計装してください。その例では回数が 4 億になり、そのプロファイルは通常の Clang の `--profile-use` でそのまま使えました。ただし、計装したプログラムは 0.1 秒から 6 秒へ約 60 倍遅くなったので、Tsuzuri は原子的な更新を付けません（[性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo)）。
+**並列に動くプログラムの回数は少なく数えます。** 計装のカウンターは原子的に更新しません（Clang の既定の `-fprofile-update=single` と同じです）。tzroutine や `Parallel` が複数のスレッドで同じ関数を動かすと、更新が重なって失われ、回数が実際より少なくなります（実行ごとに変わります）。4 つのスレッドが同じ 1 億回のループを回す例（TZ12 で削除した `Task.parallel` の 4 つのタスクで測りました）では、ループの回数は 4 億ではなく 1 億でした（関数に入った回数は正確に 4）。プログラムの結果とプロファイルの形（`W2001`）には影響しませんが、`--profile-use` は少ない回数をそのまま使います。正確な回数が要るときは、`-fprofile-update=atomic` を足して Clang を呼ぶスクリプトを `TSUZURI_CLANG` に指定して計装してください。その例では回数が 4 億になり、そのプロファイルは通常の Clang の `--profile-use` でそのまま使えました。ただし、計装したプログラムは 0.1 秒から 6 秒へ約 60 倍遅くなったので、Tsuzuri は原子的な更新を付けません（[性能測定](../../../docs/benchmarks.md#pr07-プロファイル誘導最適化pgo)）。
 
 **使えない組み合わせ**は、`E2000` か `E2002` です（[組み合わせがエラーになる場合](#組み合わせがエラーになる場合)）。`--emit` は native の `exe` と `object`、wasm32 の `wasm` だけです。Windows と、ビルド機と違う `--target TRIPLE`（その機械でプログラムを訓練できない）は拒否し、`--profile-generate` と `--freestanding`（ランタイムが C ライブラリを要る）は一緒に使えません。ほかの出力が増えても、許可リストにない形は拒否します。
 
@@ -357,7 +357,7 @@ Tsuzuri は `-O0` のビルドでも、生成した LLVM IR を 1 つのモジ�
 error[E2000]: invalid TSUZURI_CODEGEN_UNITS value 'fast'; use 'auto', 'single' or 'split'
 ```
 
-IR に unit が持てない形があると、`split` のビルドも 1 つのモジュールで作ります（常に正しい経路です）。unit の object の保存は `--no-cache` が止めます。保存先は `TSUZURI_CACHE_DIR` の下の `units/` で、上限と掃除の方針は成果物のキャッシュと同じです。保存していない unit は、同時に動かす Clang の数を、`TSUZURI_THREADS`（未設定なら使える core 数）までにして並列にコンパイルします。unit の Clang は unit の一時ディレクトリで動くので、`TSUZURI_CLANG` に `./clang` や `toolchain/bin/clang` のようにディレクトリを含む相対パスを指定したときは、コンパイラの作業ディレクトリからの相対パスとして絶対パスに直して起動します（名前だけのときは PATH で探します）。なお、C のランタイム（`IO` やタスクなど）が要るプログラムをキャッシュ有りでビルドするときの、ランタイムの object は、今も一時ディレクトリで Clang を起動するので、相対パスのままでは `E2002`（`cannot execute './clang'`）になります。その場合は絶対パスを指定してください。
+IR に unit が持てない形があると、`split` のビルドも 1 つのモジュールで作ります（常に正しい経路です）。unit の object の保存は `--no-cache` が止めます。保存先は `TSUZURI_CACHE_DIR` の下の `units/` で、上限と掃除の方針は成果物のキャッシュと同じです。保存していない unit は、同時に動かす Clang の数を、`TSUZURI_THREADS`（未設定なら使える core 数）までにして並列にコンパイルします。unit の Clang は unit の一時ディレクトリで動くので、`TSUZURI_CLANG` に `./clang` や `toolchain/bin/clang` のようにディレクトリを含む相対パスを指定したときは、コンパイラの作業ディレクトリからの相対パスとして絶対パスに直して起動します（名前だけのときは PATH で探します）。なお、C のランタイム（`IO` や tzroutine など）が要るプログラムをキャッシュ有りでビルドするときの、ランタイムの object は、今も一時ディレクトリで Clang を起動するので、相対パスのままでは `E2002`（`cannot execute './clang'`）になります。その場合は絶対パスを指定してください。
 
 `--trap-info` を付けた分けるビルドは、トラップの site の番号を、ソースファイルのパスとファイルの中の範囲から決めます（分けない `-O0` のビルドは、これまでどおり出現順の通し番号です）。`<出力>.trap.json` の位置表も、コードに書いた番号から作るので、`kind`・`path`・位置は同じで、`id` だけが違います。別のファイルを編集しても、ほかのファイルの番号は変わりません。
 
@@ -401,7 +401,7 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 | `--wasm-max-memory SIZE` | 16 MiB | `wasm32` は 4 GiB − 64 KiB まで、`wasm64` は 16 GiB まで。64 KiB の倍数 |
 | `--wasm-stack-size SIZE` | 1 MiB | WASM 出力だけ。16 の倍数で、64 KiB 以上。メモリ上限はスタック + 64 KiB 以上 |
 | `--wasm-feature simd128` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm` |
-| `--wasm-feature threads` | オフ | `wasm32` の `object` か `wasm`。WASI や `--allocator host` とは排他 |
+| `--wasm-feature threads` | オフ | `wasm32` の `object` か `wasm`。`Parallel.*`・`Mutex`・`Atomic`・`DataChannel` を Worker と共有メモリで動かす（tzroutine・`Routine.scope`・`Channel` は `E2000`）。WASI や `--allocator host` とは排他 |
 | `--wasm-feature jspi` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm` と、wasm32 の `bindings-js`。`Async.block_on` 用。threads / WASI とは排他 |
 | `--wasm-feature webgpu` | オフ | `wasm32` の `object`、`llvm`、`wasm`。`Gpu.request Gpu.WebGpu` 用。threads / WASI / `bindings-js` とは排他 |
 | `--wasm-feature net` | オフ | wasm32 の `object`、`llvm`、`wasm`、`bindings-js`。`jspi` が必要。`Net` のソケットを、Node.js 向けのグルーが実装する `tsuzuri_net` の import にする。threads / WASI / wasm64 とは排他 |
@@ -453,7 +453,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 
 `--allocator small` は、native の 64-bit で 0〜512 バイトの確保を 16 バイト刻みの 32 区分から返し、それより大きい確保は C ライブラリの `malloc` に任せます。実行ファイル（`--emit exe`）、`object`、`llvm`、`header`、`shared`、`bitcode` に付けられます。WASM、`wgsl`、`spirv`、`--trap-mode return`、`--freestanding` とは排他です（いずれも `E2000`）。既定ではありません。設計と制限は [スタックとヒープ](../ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) にあります。`run`・`check`・`test` は付けられません（`build` だけです）。
 
-`--freestanding` は IO、OS API、タスク、`Debug`、プログラム引数、`Gpu.WebGpu`・`Gpu.Vulkan`・`Gpu.Auto` のデバイスを `E2000` で拒否します。`--trap-info` と `--debug-output` とも一緒には使えません。トラップは `llvm.trap` だけです。
+`--freestanding` は IO、OS API、tzroutine とそのランタイムを使う `Parallel.*`・`Routine.scope`・`Mutex`・`DataChannel`、`Debug`、プログラム引数、`Gpu.WebGpu`・`Gpu.Vulkan`・`Gpu.Auto` のデバイスを `E2000` で拒否します。`--trap-info` と `--debug-output` とも一緒には使えません。トラップは `llvm.trap` だけです。
 
 ## 組み合わせがエラーになる場合
 
@@ -589,7 +589,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | Windows の target で `TSUZURI_LINKER=lld` | `TSUZURI_LINKER=lld is not supported for Windows targets; unset it` |
 | Mach-O の target で `TSUZURI_LINKER=lld` と `-Os`／`-Oz` | `TSUZURI_LINKER=lld cannot be combined with -Os for a Mach-O target (Clang passes the size level to ld64.lld, which rejects it); use -O2 or unset TSUZURI_LINKER` |
 
-ビルドがソースを読んでから出す `E2000` には、既定の wasm32 で `File` や `Env` などに到達した場合と、`--freestanding` で IO やタスクに到達した場合があります。前者は、native にするか、`--wasm-host wasi` にするか、ホスト不要の `Path` と `Random.Pcg` に限る、というメッセージです。
+ビルドがソースを読んでから出す `E2000` には、既定の wasm32 で `File` や `Env` などに到達した場合と、`--freestanding` で IO や tzroutine のランタイム（`Parallel.*`・`Mutex` など）に到達した場合があります。前者は、native にするか、`--wasm-host wasi` にするか、ホスト不要の `Path` と `Random.Pcg` に限る、というメッセージです。
 
 > [!WARNING]
 > 終了コード 2 の `E2000` は、まだファイルを書いていません。終了コード 1 の `E2000` は、解析やリンクの途中です。既存の成果物は、コンパイルエラーでは置き換えません。
@@ -611,7 +611,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | `TSUZURI_CLANG` | `clang` | `tsuzuri-clang` | コンパイルとリンク、`bindgen` のヘッダー解析。LLVM 17 以降 |
 | `TSUZURI_WASM_LD` | `wasm-ld` | `wasm-ld` | WebAssembly のリンク |
-| `TSUZURI_LLVM_LINK` | `llvm-link` | `llvm-link`（macOS の配布物だけ） | macOS で、タスクを含むデバッグ用オブジェクト。`--emit bitcode` で、C ランタイムを IR のまま 1 つにまとめる（探す順は環境変数、配布物、Clang と同じディレクトリ、PATH）。Clang と同じ LLVM のものを使う |
+| `TSUZURI_LLVM_LINK` | `llvm-link` | `llvm-link`（macOS の配布物だけ） | macOS で、C ランタイムを含むデバッグ用オブジェクト。`--emit bitcode` で、C ランタイムを IR のまま 1 つにまとめる（探す順は環境変数、配布物、Clang と同じディレクトリ、PATH）。Clang と同じ LLVM のものを使う |
 | `TSUZURI_DSYMUTIL` | `dsymutil` | `dsymutil` | macOS のデバッグ実行ファイル |
 | `TSUZURI_LLVM_SYMBOLIZER` | `llvm-symbolizer` | なし（同梱しない） | `run` のトラップの呼び出しの連鎖に関数名と行を付ける。起動できなければ名前のないアドレスだけになり、エラーにはしない（[トラップのバックトレース](debugging.md#トラップのバックトレース)） |
 | `TSUZURI_WASM_OPT` | `wasm-opt` | なし（同梱しない） | `--wasm-opt` が実行する Binaryen の `wasm-opt`。この変数だけでは何も実行しない |
@@ -633,7 +633,7 @@ flowchart TD
 ### コンパイラのスレッド数
 
 `TSUZURI_THREADS=4 tsuzuri check Main.tz` のように指定します。CLI のフラグではありません。
-コンパイラが型検査などで使うスレッドの上限で、作ったプログラムが使うスレッド（`Task`）には作用しません。
+コンパイラが型検査などで使うスレッドの上限で、作ったプログラムが使うスレッド（tzroutine と `Parallel.*`。数は [`TSUZURI_MAXPROCS`](../async-tasks-and-lazy/tzroutine.md#スケジューラー) で決めます）には作用しません。
 
 | 値 | 意味 |
 | --- | --- |

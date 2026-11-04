@@ -87,7 +87,7 @@ fn set_algebra_and_borrowed_map_values_preserve_ownership() {
         "let left = Set.insert 2 (Set.singleton 1)\nlet right = Set.insert 3 (Set.singleton 2)\nlet common = Set.intersect (&left) (&right)\nlet different = Set.difference (&left) (&right)\nlet both = Set.union left right\nSet.length (&common) + Set.length (&different) + Set.length (&both)",
         "let set = Set.union (Set.singleton \"x\") (Set.insert \"y\" (Set.singleton \"x\"))\nSet.fold (\\total key -> total + key.length) 0 (&set)",
         "let text = \"borrowed\"\nlet map = Map.singleton 1 (ref text)\nlet value = Map.at 1 (&map)\nvalue.length",
-        "let map = Map.singleton 1 (task { return 42 })\nlet map = Map.remove 1 map\nMap.length (&map)",
+        "let map = Map.singleton 1 (Owned.function (\\() -> 42))\nlet map = Map.remove 1 map\nMap.length (&map)",
     ] {
         let module = analyze(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
         for wasm in [false, true] {

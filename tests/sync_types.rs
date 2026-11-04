@@ -89,12 +89,17 @@ if finished && tried then got + inner else 0
 }
 
 #[test]
-fn the_mutex_of_a_program_without_the_tzroutine_runtime_keeps_its_ir() {
-    let old =
+fn the_mutex_of_every_native_program_is_the_runtime_lock() {
+    // TZ12: a program that starts no tzroutine takes the tzroutine runtime's lock too, and only it.
+    let alone =
         ir("let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> deref value)\n");
-    assert!(old.contains("call i32 @tsuzuri_mutex_lock(ptr"), "{old}");
-    assert!(!old.contains("tsuzuri_tz_"), "{old}");
-    // A program that uses the runtime takes the runtime's lock, and the thread's mark is gone.
+    assert!(
+        alone.contains("call i32 @tsuzuri_tz_mutex32_lock(ptr"),
+        "{alone}"
+    );
+    assert!(!alone.contains("@tsuzuri_mutex_lock("), "{alone}");
+    assert!(!alone.contains("@tsuzuri_tz_go"), "{alone}");
+    // A program that uses the runtime takes the same lock, and the thread's mark is gone.
     let new = ir(
         "let lock = Mutex.create 0i64\nlet group = WaitGroup.create ()\nMutex.with_lock (ref lock) (\\value -> deref value)\n",
     );
@@ -248,13 +253,29 @@ fn another_handle_is_no_allocation() {
 
 #[test]
 fn a_length_alone_uses_no_scheduler() {
-    // `Time.second()` is a constant: the Mutex stays the task runtime's lock, and --trap-mode
-    // return stays allowed.
+    // `Time.second()` is a constant: the program calls the runtime only for its lock (TZ12) and
+    // starts no tzroutine and no timer, so --trap-mode return stays allowed.
     let text = ir(
         "let lock = Mutex.create 0i64\nlet wait = Time.second()\nMutex.with_lock (ref lock) (\\value -> deref value + wait)\n",
     );
-    assert!(text.contains("call i32 @tsuzuri_mutex_lock(ptr"), "{text}");
-    assert!(!text.contains("tsuzuri_tz_"), "{text}");
+    let called: std::collections::BTreeSet<&str> = text
+        .match_indices("@tsuzuri_tz_")
+        .map(|(start, _)| {
+            let name = &text[start + 1..];
+            &name[..name
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap()]
+        })
+        .collect();
+    assert_eq!(
+        called,
+        std::collections::BTreeSet::from([
+            "tsuzuri_tz_mutex32_lock",
+            "tsuzuri_tz_mutex32_unlock",
+            "tsuzuri_tz_report"
+        ]),
+        "{text}"
+    );
 }
 
 #[test]

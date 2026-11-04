@@ -262,10 +262,15 @@ fn hash_borrowed_values =
     let value = HashMap.at 1 (ref map)
     value.length
 
+// A value that owns a string and has a user Drop: removing it from the map drops it once.
+record Pending { text: string }
+
+instance Drop<Pending> { fn drop _pending = () }
+
 export def hash_task_drop :: i64
 fn hash_task_drop =
     let text = "owned capture"
-    let map = HashMap.insert 1 (task { return text.length }) HashMap.empty()
+    let map = HashMap.insert 1 (Pending { text: text }) HashMap.empty()
     let empty = HashMap.remove 1 map
     HashMap.length (ref empty)
 

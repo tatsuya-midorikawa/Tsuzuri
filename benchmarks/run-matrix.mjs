@@ -184,7 +184,7 @@ int main(void) {
 }
 `);
   const executable = join(temporary, "benchmark");
-  execute(clang, ["-O3", "-std=c11", "-ffp-contract=off", "-fno-lto", "-Wno-override-module", host, object, join(root, "src/runtime/task.c"), "-pthread", "-lm", "-o", executable]);
+  execute(clang, ["-O3", "-std=c11", "-ffp-contract=off", "-fno-lto", "-Wno-override-module", host, object, "-pthread", "-lm", "-o", executable]);
   const load = () => loadavg().map((value) => value.toFixed(2)).join(" ");
   console.log(`environment: ${platform()} ${arch()} ${cpus()[0]?.model ?? "unknown cpu"} x${cpus().length}, node ${process.version}, ${execute(clang, ["--version"]).split("\n")[0]}`);
   console.log(softFma

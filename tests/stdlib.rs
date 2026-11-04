@@ -332,11 +332,12 @@ fn prunes_unused_std_functions_types_and_helpers() {
 }
 
 #[test]
-fn keeps_builtins_and_task_functions_working() {
+fn keeps_builtins_and_parallel_functions_working() {
     let module = analyze(
         "export def answer :: i64\nfn answer = {\n    assert (sqrt 4.0 == 2.0);\n    \
          let s = \"text\";\n    let t = clone_string ref s;\n    \
-         Task.run (task { 20 }) + (Task.run (Task.parallel [task { 22 }]))[0] + t.length - 4\n}",
+         let parts = Parallel.init 2 (\\index -> 20 + index * 2);\n    \
+         parts[0] + parts[1] + t.length - 4\n}",
     )
     .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
     let ir = library(&module);

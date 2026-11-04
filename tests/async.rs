@@ -325,12 +325,19 @@ fn doubled n = Async.run (worker n) * 2",
 }
 
 #[test]
-fn tasks_can_run_and_receive_async_computations() {
+fn tzroutines_can_run_and_receive_async_computations() {
     accepts(
-        "export def in_task :: i64 -> i64
-fn in_task n =
+        "export def in_routine :: i64 -> i64
+fn in_routine n =
     let computation = Async { do! Async.sleep 2; let! t = Async.now (); return t + n }
-    Task.run (task { return Async.run computation })",
+    let results: Channel<i64> = Channel.make 1
+    let out = Channel.share results
+    tzroutine {
+        Channel.send out (Async.run computation)
+    }
+    match Channel.recv results with
+    | Maybe.Some value -> value
+    | Maybe.None -> 0",
     );
 }
 

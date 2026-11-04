@@ -179,9 +179,10 @@ define void @probe_escape(i64 %x) {
   assert.deepEqual(readFileSync(again), readFileSync(executables.small), "a second build of the same program is the same artifact");
   assert.notDeepEqual(readFileSync(executables.small), readFileSync(executables.system), "the allocator is part of the build");
 
-  // D. The fixtures of the other suites through objects built with --allocator small: the answers are the ones of
-  // tests/primitives.mjs and tests/tasks.mjs, and afterwards every block that was cut from a region is back in a cache or in
-  // the central stack (tz_small_stats is for tests; it is hidden, so it is only reachable from the program it is linked into).
+  // D. The fixtures of the other suites, and a program whose blocks cross threads, through objects built with --allocator small:
+  // the answers are the ones of tests/primitives.mjs and the ones worked out below, and afterwards every block that was cut from a
+  // region is back in a cache or in the central stack (tz_small_stats is for tests; it is hidden, so it is only reachable from the
+  // program it is linked into).
   const header = (source, name, extra) => {
     const path = join(work, `tz-${name}.h`);
     cli(["build", source, "--emit", "header", ...extra, "-o", path]);
@@ -218,6 +219,55 @@ ${body}
   for (const [from, to] of [["currying/Functions.tz", "Curried.tz"], ["currying/Classes.tt", "Classes.tt"], ["arrays/Arrays.tz", "Arrays.tz"], ["lists/Lists.tz", "Lists.tz"], ["primitives/Main.tz", "Main.tz"]]) {
     copyFileSync(join(root, "tests/fixtures", from), join(primitives, to));
   }
+  // Parallel.init runs its chunks on tzroutines of other threads, and a tzroutine frees the array it owns where it runs.
+  const threaded = join(work, "threaded");
+  mkdirSync(threaded);
+  writeFileSync(join(threaded, "Main.tz"), `export def parallel_sum :: own i64 -> i64
+fn parallel_sum count =
+    let squares = Parallel.init count (\\i -> i * i)
+    Array.sum (ref squares)
+
+export def owned_results :: i64
+fn owned_results =
+    let prefix = "owned"
+    let results = Parallel.init 2 (\\i -> if i == 0 { prefix + "!" } else { "second" })
+    results[0].length + results[1].length
+
+export def list_results :: i64
+fn list_results =
+    let results = Parallel.init 2 (\\i -> if i == 0 { [|1, 2|] } else { [|20, 40|] })
+    results[0][1] + results[1][1]
+
+export def heap_cycles :: own i64 -> i64
+fn heap_cycles count = cycles count 0
+
+def rec cycles :: own i64 -> own i64 -> i64
+fn rec cycles n sum =
+    if n == 0 { sum }
+    else {
+        let values = new [i64](1024, \\i -> i + n);
+        let results: Channel<i64> = Channel.make 1;
+        let out = Channel.share results;
+        tzroutine {
+            Channel.send out values[n % 1024]
+        };
+        let result = match Channel.recv results with
+            | Maybe.Some value -> value
+            | Maybe.None -> 0;
+        cycles (n - 1) (sum + result)
+    }
+
+export def parallel_cycles :: own i64 -> i64
+fn parallel_cycles count = repeated count 0
+
+def rec repeated :: own i64 -> own i64 -> i64
+fn rec repeated n sum =
+    if n == 0 { sum }
+    else {
+        let results = Parallel.init 8 (\\i -> if i % 2 == 0 { "even" } else { "odd" });
+        repeated (n - 1) (sum + results[0].length + results[1].length)
+    }
+`);
   const fixtures = {
     grow: { source: library, body: "    assert(tz_grow(100) == 5050); settled(); assert(tz_grow(0) == 0); settled(); assert(tz_grow(20000) == 200010000); settled();" },
     primitives: {
@@ -230,17 +280,18 @@ ${body}
     assert(tz_list_churn(100000) == 8); settled();
     assert(tz_strings(1) == 18 && tz_strings(0) == 17); settled();`,
     },
-    tasks: {
-      source: join(root, "tests/fixtures/tasks"),
+    threaded: {
+      source: threaded,
       // parallel_sum(c) = 0^2 + ... + (c-1)^2 = c(c-1)(2c-1)/6; heap_cycles(2048) is the sum of (n % 1024) + n over n = 1..2048,
-      // 1047552 + 2098176; parallel_cycles(128) adds "even" (4) and "odd" (3) per round.
+      // 1047552 + 2098176; parallel_cycles(128) adds "even" (4) and "odd" (3) per round; owned_results is "owned!" and "second",
+      // list_results 2 + 40.
       body: `    assert(tz_parallel_sum(257) == 5625216); settled();
     assert(tz_heap_cycles(2048) == 3145728); settled();
     assert(tz_parallel_cycles(128) == 896); settled();
     assert(tz_owned_results() == 12 && tz_list_results() == 42); settled();`,
     },
   };
-  // A Windows COFF object cannot embed the runtime that these programs need (E2002: the trap runtime; the thread pool of the tasks),
+  // A Windows COFF object cannot embed the runtime that these programs need (E2002: the trap runtime; the tzroutine scheduler),
   // so Windows runs the unit tests (including their threads), the IR checks, and the executables of section C, not these objects.
   for (const [name, { source, body }] of windows ? [] : Object.entries(fixtures)) {
     const headerPath = header(source, name, ["--allocator", "small"]);
