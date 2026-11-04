@@ -2615,6 +2615,122 @@ static void test_preempt_sysmon(void) {
     printf("preempt sysmon: %lld checks\n", (long long)atomic_load(&preempt_busy_checks));
 }
 
+/* TZ10 Phase 2: functions of the section of generated code stand for what the compiler emits. A loop
+ * without calls there is stopped by sysmon's signal; the same loop elsewhere (the runtime's code) is
+ * not. The stopped G keeps every register: a computation with many live integer and floating-point
+ * values gives the same result as on a thread that nobody stops. */
+#if defined(TZR_ASYNC)
+#if defined(__APPLE__)
+#define GENERATED __attribute__((section("__TEXT,__tz_text,regular,pure_instructions"), noinline))
+#else
+#define GENERATED __attribute__((section("tz_text"), noinline))
+#endif
+static _Atomic int async_stop;
+GENERATED static uint64_t async_spin(_Atomic int *stop) {
+    uint64_t x = 1;
+    while (!atomic_load_explicit(stop, memory_order_relaxed)) x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+    return x;
+}
+static void async_spinner(void *env) {
+    (void)env;
+    CHECK(async_spin(&async_stop) != 0);
+}
+static void async_ticker(void *env) {
+    int64_t *wakes = env;
+    for (int i = 0; i < 20; i++) {
+        CHECK(tsuzuri_tz_sleep(10000000) == 0);
+        (*wakes)++;
+    }
+    atomic_store(&async_stop, 1);
+}
+static void test_preempt_async(void) {
+    start_watchdog();
+    atomic_store(&async_stop, 0);
+    uint64_t before = atomic_load(&tzr_async.yielded);
+    int64_t wakes = 0;
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int64_t i = 0; i < tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(async_spinner, NULL);
+    tsuzuri_tz_go(async_ticker, &wakes);
+    join(scope);
+    CHECK(wakes == 20);
+    CHECK(atomic_load(&tzr_async.yielded) > before);
+    printf("preempt async: %llu stops\n", (unsigned long long)(atomic_load(&tzr_async.yielded) - before));
+}
+
+/* Integer and floating-point accumulators that stay in registers across the whole loop. */
+GENERATED static void async_mix(int64_t rounds, uint64_t *ints, double *floats) {
+    uint64_t a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7, h = 8;
+    double p = 1.0, q = 0.5, r = 0.25, s = 0.125, t = 3.0, u = 5.0, v = 7.0, w = 11.0;
+    for (int64_t i = 0; i < rounds; i++) {
+        a = a * 6364136223846793005ULL + 1442695040888963407ULL;
+        b ^= a >> 7;
+        c += b * 3;
+        d = (d << 1) ^ c;
+        e += d >> 3;
+        f ^= e * 5;
+        g += f >> 11;
+        h ^= g + a;
+        p = p * 0.999999 + (double)(a & 1023) * 1e-6;
+        q = q * 0.999998 + (double)(b & 511) * 1e-6;
+        r = r + p * 1e-9 - q * 1e-9;
+        s = s * 0.5 + r;
+        t = t + s * 1e-12;
+        u = u * 1.0000001 - t * 1e-15;
+        v = v + (double)(h & 7);
+        w = w - (double)(g & 3) * 0.5;
+    }
+    ints[0] = a ^ b ^ c ^ d;
+    ints[1] = e ^ f ^ g ^ h;
+    floats[0] = p + q + r + s;
+    floats[1] = t + u + v + w;
+}
+typedef struct { uint64_t ints[2]; double floats[2]; } async_mixed;
+static void async_mixer(void *env) {
+    async_mixed *out = env;
+    async_mix(40000000, out->ints, out->floats);
+}
+static void test_preempt_async_values(void) {
+    async_mixed expected;
+    async_mix(40000000, expected.ints, expected.floats); /* on the main thread: never stopped */
+    uint64_t before = atomic_load(&tzr_async.yielded);
+    enum { N = 6 };
+    async_mixed results[N];
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < N; i++) tsuzuri_tz_go(async_mixer, &results[i]);
+    join(scope);
+    for (int i = 0; i < N; i++) {
+        CHECK(results[i].ints[0] == expected.ints[0] && results[i].ints[1] == expected.ints[1]);
+        CHECK(memcmp(results[i].floats, expected.floats, sizeof expected.floats) == 0);
+    }
+    printf("preempt async values: %llu stops\n", (unsigned long long)(atomic_load(&tzr_async.yielded) - before));
+}
+
+/* The same loop in the runtime's code: sysmon's signals arrive, and none stops it. */
+static uint64_t async_spin_runtime(int64_t until) {
+    uint64_t x = 1;
+    while (tzr_nanotime() < until)
+        for (int i = 0; i < 1000; i++) x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+    return x;
+}
+static void async_runtime_spinner(void *env) {
+    CHECK(async_spin_runtime(*(int64_t *)env) != 0);
+}
+static void test_preempt_async_runtime(void) {
+    uint64_t stops = atomic_load(&tzr_async.stopped), signals = atomic_load(&tzr_async.signals);
+    int64_t until = tzr_nanotime() + 300000000;
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int64_t i = 0; i < tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(async_runtime_spinner, &until);
+    join(scope);
+    CHECK(atomic_load(&tzr_async.signals) > signals);
+    CHECK(atomic_load(&tzr_async.stopped) == stops);
+    printf("preempt async runtime: %llu signals, no stop\n", (unsigned long long)(atomic_load(&tzr_async.signals) - signals));
+}
+#else
+static void test_preempt_async(void) { printf("preempt async: not built (Phase 1 only)\n"); }
+static void test_preempt_async_values(void) { printf("preempt async values: not built\n"); }
+static void test_preempt_async_runtime(void) { printf("preempt async runtime: not built\n"); }
+#endif
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -2700,6 +2816,9 @@ int main(int argc, char **argv) {
     RUN("netpoll_race", test_netpoll_race());
     RUN("preempt_flag", test_preempt_flag());
     RUN("preempt_sysmon", test_preempt_sysmon());
+    RUN("preempt_async", test_preempt_async());
+    RUN("preempt_async_values", test_preempt_async_values());
+    RUN("preempt_async_runtime", test_preempt_async_runtime());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

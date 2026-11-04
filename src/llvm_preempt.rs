@@ -612,6 +612,38 @@ pub(crate) fn with_preemption_checks(ir: String, opaque: &BTreeSet<String>) -> S
     output
 }
 
+/// The section of the generated code (TZ10 Phase 2): the only code where the runtime's signal
+/// handler may stop a tzroutine. Every function emitted from source goes there, after the checks
+/// (whose cold call LLVM inlines into it); the runtime's functions in IR stay in `.text`.
+pub(super) const MACH_O_SECTION: &str = "__TEXT,__tz_text,regular,pure_instructions";
+pub(super) const ELF_SECTION: &str = "tz_text";
+
+pub(crate) fn with_generated_section(ir: String, mach_o: bool) -> String {
+    let section = format!(
+        " section \"{}\"",
+        if mach_o { MACH_O_SECTION } else { ELF_SECTION }
+    );
+    let mut output = String::with_capacity(ir.len() + ir.len() / 64);
+    for line in ir.split_inclusive('\n') {
+        let header = line.trim_end();
+        let at = (header.starts_with("define ")
+            && header.ends_with('{')
+            && !header.contains(" section \"")
+            && callable(line, true).is_some_and(|call| emitted_from_source(call.name)))
+        .then(|| header.find(" !dbg ").or_else(|| header.rfind(" {")))
+        .flatten();
+        match at {
+            Some(at) => {
+                output.push_str(&line[..at]);
+                output.push_str(&section);
+                output.push_str(&line[at..]);
+            }
+            None => output.push_str(line),
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,6 +714,20 @@ define internal i64 @tz.fn.M.walk(i64 %arg0) nounwind {\nentry:\n  %slot = alloc
                 "@tz.fn.M.walk br label %loop",
             ]
         );
+    }
+
+    #[test]
+    fn generated_functions_go_to_their_section_and_the_runtime_stays() {
+        let ir = "define internal i64 @tz.fn.M.f(i64 %arg0) nounwind \"probe-stack\"=\"inline-asm\" !dbg !7 {\nentry:\n  ret i64 0\n}\n\
+define internal i64 @tz.specialized.3(i64 %arg0) nounwind {\nentry:\n  ret i64 0\n}\n\
+define internal ptr @tz.alloc(i64 %size) nounwind {\nentry:\n  ret ptr null\n}\n";
+        let elf = with_generated_section(ir.to_owned(), false);
+        assert!(elf.contains("@tz.fn.M.f(i64 %arg0) nounwind \"probe-stack\"=\"inline-asm\" section \"tz_text\" !dbg !7 {\n"));
+        assert!(elf.contains("@tz.specialized.3(i64 %arg0) nounwind section \"tz_text\" {\n"));
+        assert!(elf.contains("@tz.alloc(i64 %size) nounwind {\n"));
+        let mach_o = with_generated_section(ir.to_owned(), true);
+        assert_eq!(mach_o.matches(MACH_O_SECTION).count(), 2);
+        assert_eq!(with_generated_section(elf.clone(), false), elf);
     }
 
     #[test]
