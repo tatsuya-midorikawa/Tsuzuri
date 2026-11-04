@@ -2705,7 +2705,8 @@ static void test_preempt_async_values(void) {
     printf("preempt async values: %llu stops\n", (unsigned long long)(atomic_load(&tzr_async.yielded) - before));
 }
 
-/* The same loop in the runtime's code: sysmon's signals arrive, and none stops it. */
+/* The same loop in the runtime's code: sysmon's signals arrive (one more spinner than Ps waits for a
+ * P, so sysmon asks), and none stops it. */
 static uint64_t async_spin_runtime(int64_t until) {
     uint64_t x = 1;
     while (tzr_nanotime() < until)
@@ -2719,7 +2720,7 @@ static void test_preempt_async_runtime(void) {
     uint64_t stops = atomic_load(&tzr_async.stopped), signals = atomic_load(&tzr_async.signals);
     int64_t until = tzr_nanotime() + 300000000;
     void *scope = tsuzuri_tz_scope_enter();
-    for (int64_t i = 0; i < tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(async_runtime_spinner, &until);
+    for (int64_t i = 0; i <= tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(async_runtime_spinner, &until);
     join(scope);
     CHECK(atomic_load(&tzr_async.signals) > signals);
     CHECK(atomic_load(&tzr_async.stopped) == stops);

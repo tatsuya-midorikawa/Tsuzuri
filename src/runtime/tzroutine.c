@@ -2475,7 +2475,7 @@ static int tzr_retake(int64_t now) {
 }
 
 /* TZ10 Phase 1: asks each P whose G has run for 10 ms (the same schedtick in two rounds that far
- * apart, D3) to give it up. The request is the P's, not the G's: a G may end and be freed while
+ * apart, D3) while other work waits for it to give it up. The request is the P's, not the G's: a G may end and be freed while
  * sysmon looks, a P never is. The G sees it at its next check (tsuzuri_tz_preempt_check) and
  * yields to the end of the global run queue (D6). A G that does not answer is asked again 10 ms
  * later. Returns 1 when it asked. */
@@ -2498,6 +2498,12 @@ static int tzr_preempt_scan(int64_t now) {
             continue;
         }
         if (now - p->seen_at < TZR_PREEMPT_AFTER) continue;
+        /* Only for work that waits for this P: its own queue, or the global queue or an M back from
+         * a blocking call while no P is idle (an idle P takes those). A G that computes alone keeps
+         * its P, with no yield and no signal. */
+        if (tzr_runq_empty(p) && atomic_load(&tzr_sched.npwait) == 0
+            && (atomic_load(&tzr_sched.runq_size) == 0 || atomic_load(&tzr_sched.npidle) > 0))
+            continue;
         p->seen_at = now;
         int expected = 0;
         if (atomic_compare_exchange_strong_explicit(&p->preempt, &expected, 1, memory_order_relaxed,
