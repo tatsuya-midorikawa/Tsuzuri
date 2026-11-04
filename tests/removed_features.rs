@@ -548,4 +548,25 @@ fn an_async_of_the_program_is_its_own() {
         "{}",
         error.message
     );
+    // A module `Async` that the expression's module does not see changes nothing: `Async { }` is
+    // still the removed one.
+    let error = analyze_modules(&[
+        (
+            "Main.tz",
+            "let job = Async { return 1 }
+0
+",
+        ),
+        (
+            "Other/Async.tz",
+            "namespace Other
+
+def run :: i64 -> i64
+fn run n = n + 1
+",
+        ),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert_eq!(error.kind, Some("removed_async"), "{}", error.message);
 }
