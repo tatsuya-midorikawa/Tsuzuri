@@ -2614,6 +2614,23 @@ static void test_preempt_sysmon(void) {
     printf("preempt sysmon: %lld checks\n", (long long)atomic_load(&preempt_busy_checks));
 }
 
+/* A request whose G ends without a check: when every P is idle sysmon clears it before it sleeps, or
+ * the count would stay up and keep every check on its slow path. */
+static void preempt_ask_and_leave(void *env) {
+    (void)env;
+    preempt_ask(tzr_this_m()->p);
+}
+static void test_preempt_idle(void) {
+    for (int round = 0; round < 50; round++) {
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(preempt_ask_and_leave, NULL);
+        join(scope);
+        for (int i = 0; i < 2000 && atomic_load(&tsuzuri_tz_preempt_pending) != 0; i++) block_ms(1);
+        CHECK(atomic_load(&tsuzuri_tz_preempt_pending) == 0);
+    }
+    printf("preempt idle: ok\n");
+}
+
 /* TZ10 Phase 2: functions of the section of generated code stand for what the compiler emits. A loop
  * without calls there is stopped by sysmon's signal; the same loop elsewhere (the runtime's code) is
  * not. The stopped G keeps every register: a computation with many live integer and floating-point
@@ -2762,6 +2779,57 @@ static void urgent_ignored_body(void) {
     raise(SIGURG);
     _exit(48);
 }
+/* A handler of the program's own without SA_RESTART and with SIGUSR1 in its mask: the runtime passes
+ * it a SIGURG with SIGUSR1 blocked, and a read that the SIGURG interrupts fails with EINTR, as before
+ * the runtime's handler. */
+static _Atomic int urgent_masked;
+static void urgent_checked(int sig) {
+    (void)sig;
+    sigset_t now;
+    pthread_sigmask(SIG_BLOCK, NULL, &now);
+    if (sigismember(&now, SIGUSR1) == 1) atomic_store(&urgent_masked, 1);
+    atomic_fetch_add(&urgent_foreign, 1);
+}
+static int urgent_pipe[2];
+static void *urgent_poke(void *reader) {
+    struct timespec t = {0, 50000000};
+    nanosleep(&t, NULL);
+    pthread_kill(*(pthread_t *)reader, SIGURG);
+    t.tv_sec = 2;
+    t.tv_nsec = 0;
+    nanosleep(&t, NULL);
+    char byte = 1;
+    (void)!write(urgent_pipe[1], &byte, 1); /* ends a read that was restarted instead */
+    return NULL;
+}
+static void urgent_forward_body(void) {
+    struct sigaction checked;
+    memset(&checked, 0, sizeof checked);
+    checked.sa_handler = urgent_checked;
+    sigemptyset(&checked.sa_mask);
+    sigaddset(&checked.sa_mask, SIGUSR1);
+    checked.sa_flags = 0;
+    sigaction(SIGURG, &checked, NULL);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(urgent_nothing, NULL);
+    join(scope);
+    for (int i = 0; i < 2000 && !atomic_load(&tzr_async.enabled); i++) {
+        struct timespec t = {0, 1000000};
+        nanosleep(&t, NULL);
+    }
+    if (!atomic_load(&tzr_async.enabled) || pipe(urgent_pipe) != 0) _exit(3);
+    pthread_t self = pthread_self(), poker;
+    if (pthread_create(&poker, NULL, urgent_poke, &self) != 0) _exit(3);
+    char byte;
+    ssize_t n = read(urgent_pipe[0], &byte, 1);
+    int interrupted = n < 0 && errno == EINTR;
+    pthread_join(poker, NULL);
+    _exit(interrupted && atomic_load(&urgent_foreign) == 1 && atomic_load(&urgent_masked) ? 49 : 4);
+}
+static void test_preempt_async_forward(void) {
+    CHECK(exited_with(run_child("child-urgent-forward"), 49));
+    printf("preempt async forward: ok\n");
+}
 static void test_preempt_async_ignored(void) {
     CHECK(exited_with(run_child("child-urgent-ignored"), 48));
     printf("preempt async ignored: ok\n");
@@ -2771,6 +2839,7 @@ static void test_preempt_async(void) { printf("preempt async: not built (Phase 1
 static void test_preempt_async_values(void) { printf("preempt async values: not built\n"); }
 static void test_preempt_async_runtime(void) { printf("preempt async runtime: not built\n"); }
 static void test_preempt_async_ignored(void) { printf("preempt async ignored: not built\n"); }
+static void test_preempt_async_forward(void) { printf("preempt async forward: not built\n"); }
 #endif
 
 int main(int argc, char **argv) {
@@ -2785,6 +2854,7 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-report") == 0) report_body();
 #if defined(TZR_ASYNC)
     if (only && strcmp(only, "child-urgent-ignored") == 0) urgent_ignored_body();
+    if (only && strcmp(only, "child-urgent-forward") == 0) urgent_forward_body();
 #endif
 #if !defined(_WIN32)
     if (only && strcmp(only, "child-dchan-deadlock") == 0) dchan_deadlock_body();
@@ -2873,6 +2943,8 @@ int main(int argc, char **argv) {
     RUN("preempt_async_values", test_preempt_async_values());
     RUN("preempt_async_runtime", test_preempt_async_runtime());
     RUN("preempt_async_ignored", test_preempt_async_ignored());
+    RUN("preempt_async_forward", test_preempt_async_forward());
+    RUN("preempt_idle", test_preempt_idle());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

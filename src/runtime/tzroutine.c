@@ -708,6 +708,7 @@ struct tzr_m {
     _Atomic(void *) async_resume;   /* the frame that this M's G resumes from, while it does */
     _Atomic(tzr_m *) all_next;      /* every M, for the signal handler */
     _Atomic int async_kicks;        /* sysmon's SIGURGs to this M that its handler has not taken */
+    _Atomic int async_ready;        /* its alternate signal stack is in place: sysmon may signal it */
 #endif
 };
 
@@ -2383,8 +2384,12 @@ __attribute__((no_sanitize("address"))) static void tzr_async_handler(int sig, s
     /* SIG_DFL and SIG_IGN are dispositions whatever the flags say (they share the union with
      * sa_sigaction): neither is called */
     if (tzr_async_previous.sa_handler == SIG_DFL || tzr_async_previous.sa_handler == SIG_IGN) return;
+    /* with the signals that its own action blocked while it runs */
+    sigset_t saved;
+    pthread_sigmask(SIG_BLOCK, &tzr_async_previous.sa_mask, &saved);
     if (tzr_async_previous.sa_flags & SA_SIGINFO) tzr_async_previous.sa_sigaction(sig, info, context);
     else tzr_async_previous.sa_handler(sig);
+    pthread_sigmask(SIG_SETMASK, &saved, NULL);
 }
 
 #if defined(TZR_ASAN)
@@ -2421,11 +2426,20 @@ static void tzr_async_thread(tzr_m *m) {
     tzr_m *head = atomic_load_explicit(&tzr_sched.allm, memory_order_relaxed);
     do atomic_store_explicit(&m->all_next, head, memory_order_relaxed);
     while (!atomic_compare_exchange_weak_explicit(&tzr_sched.allm, &head, m, memory_order_release, memory_order_relaxed));
+    /* Without an alternate stack the handler would run on the stack of the G that it stops, where the
+     * copy of the context could overwrite the kernel's own frame: such an M keeps the checks only. */
     stack_t current;
-    if (sigaltstack(NULL, &current) == 0 && (current.ss_flags & SS_DISABLE)) {
-        stack_t alternate = {.ss_sp = malloc(64 * 1024), .ss_size = 64 * 1024, .ss_flags = 0};
-        if (alternate.ss_sp != NULL && sigaltstack(&alternate, NULL) != 0) free(alternate.ss_sp);
+    int ready = 0;
+    if (sigaltstack(NULL, &current) == 0) {
+        if (!(current.ss_flags & SS_DISABLE)) {
+            ready = 1; /* stack.c's */
+        } else {
+            stack_t alternate = {.ss_sp = malloc(64 * 1024), .ss_size = 64 * 1024, .ss_flags = 0};
+            if (alternate.ss_sp != NULL && sigaltstack(&alternate, NULL) == 0) ready = 1;
+            else free(alternate.ss_sp);
+        }
     }
+    atomic_store_explicit(&m->async_ready, ready, memory_order_release);
     sigset_t urgent;
     sigemptyset(&urgent);
     sigaddset(&urgent, SIGURG);
@@ -2437,10 +2451,16 @@ static void tzr_async_thread(tzr_m *m) {
  * generated code in the section (an empty range) nothing is stopped and no signal is sent. */
 static void tzr_async_init(void) {
     if ((uintptr_t)tzr_text_start >= (uintptr_t)tzr_text_end) return;
+    /* A handler that the program had keeps its system calls' behavior for its own signals: restarted
+     * only if it asked for that. Without one (SIGURG is ignored by default, so nothing was ever
+     * interrupted) they restart. Sysmon signals only Ms that run a G outside a blocking call. */
+    struct sigaction before;
+    if (sigaction(SIGURG, NULL, &before) != 0) return;
+    int handled = before.sa_handler != SIG_DFL && before.sa_handler != SIG_IGN;
     struct sigaction action;
     memset(&action, 0, sizeof action);
     action.sa_sigaction = tzr_async_handler;
-    action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK | (handled ? before.sa_flags & SA_RESTART : SA_RESTART);
     sigemptyset(&action.sa_mask);
     if (sigaction(SIGURG, &action, &tzr_async_previous) != 0) return;
     sigset_t urgent;
@@ -2459,7 +2479,9 @@ static void tzr_async_kick(tzr_p *p) {
 #if defined(TZR_ASYNC)
     if (!atomic_load_explicit(&tzr_async.enabled, memory_order_acquire)) return;
     tzr_m *m = atomic_load_explicit(&p->runm, memory_order_acquire);
-    if (m == NULL || atomic_load_explicit(&p->run_lo, memory_order_relaxed) == 0) return;
+    if (m == NULL || !atomic_load_explicit(&m->async_ready, memory_order_acquire)
+        || atomic_load_explicit(&p->run_lo, memory_order_relaxed) == 0)
+        return;
     atomic_store_explicit(&p->async_armed, 1, memory_order_release);
     /* One signal for the kicks that its handler has not taken: a SIGURG that is pending already
      * takes them all, and a second would reach the handler with none, as if it were someone else's. */
@@ -2577,6 +2599,9 @@ static void *tzr_sysmon(void *arg) {
     tzr_mutex_lock(&tzr_sysmon_state.lock);
     for (;;) {
         if (atomic_load(&tzr_sched.npidle) == tzr_sched.nprocs) {
+            /* A request whose G ended without a check would keep the count up, and every check on
+             * its slow path, while sysmon sleeps: nothing runs on an idle P to answer it. */
+            for (int i = 0; i < tzr_sched.nprocs; i++) tzr_preempt_clear(tzr_sched.allp[i]);
             /* Dekker with tzr_pidleget: either it sees `parked`, or this sees the P it took. */
             atomic_store(&tzr_sysmon_state.parked, 1);
             while (atomic_load(&tzr_sysmon_state.parked) && atomic_load(&tzr_sched.npidle) == tzr_sched.nprocs)
