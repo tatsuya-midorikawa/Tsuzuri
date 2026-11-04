@@ -470,7 +470,7 @@ tzroutine を起動する wasm32 のプログラム（`tzroutine { }`・`Routine
 
 - tzroutine は JavaScript の 1 本のスレッドの上で 1 つずつ走ります（M:1。並行で、並列ではありません）。tzroutine が待つと、その tzroutine の WebAssembly のスタックだけを JSPI で中断し、グルーの実行器が次に走れる tzroutine を再開するか、新しい tzroutine を始めます。export の呼び出しは、それ自体が 1 つの tzroutine（境界）です。
 - 線形メモリのスタックは tzroutine ごとに 64 KiB で、モジュールのヒープ（`tsuzuri_alloc`）から取ります。関数の入口でその範囲と比べ、溢れるとトラップします。export の呼び出しは、モジュール自身のスタック（`--wasm-stack-size`）の上で走ります。スタックの指す大域変数（`__stack_pointer`）は 1 つなので、tzroutine を中断する点のすべてで、その tzroutine のスタックの位置と範囲を保ち、再開するときに戻します（`src/runtime/tzroutine-jspi.ll`）。
-- グルーは、走り続ける tzroutine があっても数ミリ秒ごとにホストのタイマーと I/O に順番を渡します。期限の過ぎたタイマーは、`setTimeout` を待たずに発火させます。
+- グルーは、待つ点や `Routine.yield ()` で替わりながら tzroutine が走り続けても、数ミリ秒ごとにホストのタイマーと I/O に順番を渡します。期限の過ぎたタイマーは、`setTimeout` を待たずに発火させます。グルーに戻るのは tzroutine が止まったときだけなので、待たずに計算し続ける tzroutine は、止まるまで JavaScript のスレッドを持ち続けます（横取りはありません）。
 - すべての tzroutine が待ち、タイマーもホストの待ち（ソケット）も残っていないとき、グルーは export の `Promise` を `RuntimeError("all tzroutines are asleep - deadlock!")` で拒否し、インスタンスを捨てます。ほかの失敗（閉じた `Channel` への `send` など）は、ネイティブの報告の文を出さずに、その場のトラップ（`TsuzuriTrap`）になります。
 - `tsuzuri test --target wasm32` の実行器は JSPI を回さないので、tzroutine を起動するテストは `E2000` です。wasm64、`--wasm-feature threads`、`--wasm-feature webgpu` とも組み合わせられません（`E2000`）。
 
