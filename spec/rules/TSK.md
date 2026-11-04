@@ -34,3 +34,4 @@ The rules of this area, one sentence each, with the document that states them an
 | TSK-028 | A tzroutine MAY wait while it holds a `Mutex`. | [mutex.md](../../_tsuzuri/language-reference/built-in-types-and-modules/mutex.md) | TSK-028-tzroutine-may-wait-while | active |
 | TSK-029 | Canceling a `Context` MUST close the `done` channel of it and of every descendant. | [context.md](../../_tsuzuri/language-reference/built-in-types-and-modules/context.md) | TSK-029-canceling-a-context-must | active |
 | TSK-030 | `ErrGroup.wait` MUST return only after every function given to `go` has returned. | [errgroup.md](../../_tsuzuri/language-reference/built-in-types-and-modules/errgroup.md) | TSK-030-errgroup-wait-must-return | active |
+| TSK-031 | A tzroutine blocked in an `extern` call MUST NOT stop the other tzroutines from running. | [tzroutine.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) | TSK-031-tzroutine-blocked-in-extern | active |

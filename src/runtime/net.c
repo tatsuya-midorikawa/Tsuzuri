@@ -45,6 +45,8 @@
 #if defined(_MSC_VER)
 #pragma comment(lib, "ws2_32.lib")
 #endif
+// The scheduler's netpoller (src/runtime/tzroutine.c, TZ08) polls sockets when this file is in the unit.
+#define TZ_NET_WINSOCK 1
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -143,9 +145,11 @@ typedef struct pollfd tz_net_pollfd;
 #ifndef TSUZURI_BLOCKING_HOOKS_DEFINED
 #define TSUZURI_BLOCKING_HOOKS_DEFINED
 #include <stdatomic.h>
+/* Windows has no weak data: a selectany definition is shared by the units that define it (the runner of
+ * `tsuzuri test` compiles each part of the runtime alone). */
 #if defined(_WIN32)
-static void (*_Atomic tsuzuri_blocking_enter_hook)(void);
-static void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_enter_hook)(void) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_exit_hook)(void) = 0;
 #else
 __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_enter_hook)(void);
 __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit_hook)(void);
@@ -165,8 +169,8 @@ __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit
 #ifndef TSUZURI_NET_HOOKS_DEFINED
 #define TSUZURI_NET_HOOKS_DEFINED
 #if defined(_WIN32)
-static int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write, int64_t timeout);
-static void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor);
+__attribute__((selectany)) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write, int64_t timeout) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor) = 0;
 #else
 __attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write,
                                                                                      int64_t timeout);

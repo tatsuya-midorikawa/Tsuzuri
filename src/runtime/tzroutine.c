@@ -259,9 +259,11 @@ TZR_API int32_t tsuzuri_tz_stack_guard_hit(uintptr_t address);
 #ifndef TSUZURI_BLOCKING_HOOKS_DEFINED
 #define TSUZURI_BLOCKING_HOOKS_DEFINED
 #include <stdatomic.h>
+/* Windows has no weak data: a selectany definition is shared by the units that define it (the runner of
+ * `tsuzuri test` compiles each part of the runtime alone). */
 #if defined(_WIN32)
-static void (*_Atomic tsuzuri_blocking_enter_hook)(void);
-static void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_enter_hook)(void) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_exit_hook)(void) = 0;
 #else
 __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_enter_hook)(void);
 __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit_hook)(void);
@@ -281,8 +283,8 @@ __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit
 #ifndef TSUZURI_NET_HOOKS_DEFINED
 #define TSUZURI_NET_HOOKS_DEFINED
 #if defined(_WIN32)
-static int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write, int64_t timeout);
-static void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor);
+__attribute__((selectany)) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write, int64_t timeout) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_net_close_hook)(intptr_t descriptor) = 0;
 #else
 __attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_net_wait_hook)(intptr_t descriptor, int32_t write,
                                                                                      int64_t timeout);
@@ -1232,7 +1234,7 @@ static int32_t tzr_sleep_if_routine(int64_t ns);
 #endif
 TZR_API void tsuzuri_tz_blocking_enter(void);
 TZR_API void tsuzuri_tz_blocking_exit(void);
-#if !defined(_WIN32)
+#if !defined(_WIN32) || defined(TZ_NET_WINSOCK)
 static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout);
 static void tzr_netpoll_close(intptr_t fd);
 #endif
@@ -1253,7 +1255,7 @@ static void tzr_init(void) {
 #endif
     atomic_store_explicit(&tsuzuri_blocking_enter_hook, tsuzuri_tz_blocking_enter, memory_order_release);
     atomic_store_explicit(&tsuzuri_blocking_exit_hook, tsuzuri_tz_blocking_exit, memory_order_release);
-#if !defined(_WIN32)
+#if !defined(_WIN32) || defined(TZ_NET_WINSOCK)
     atomic_store_explicit(&tsuzuri_net_wait_hook, tzr_netpoll_wait, memory_order_release);
     atomic_store_explicit(&tsuzuri_net_close_hook, tzr_netpoll_close, memory_order_release);
 #endif
@@ -3466,11 +3468,13 @@ static int tzr_netwait_post(tzr_netwait *w, int outcome) {
     return 0;
 }
 
+#if !defined(_WIN32) || defined(TZ_NET_WINSOCK)
 static void tzr_netwait_commit(void *arg) {
     tzr_netwait *w = arg;
     int s = TZR_NW_ARMED;
     if (!atomic_compare_exchange_strong(&w->state, &s, TZR_NW_PARKED)) tzr_ready(w->g); /* settled already */
 }
+#endif
 
 #if !defined(_WIN32)
 /* The waits of one descriptor: at most a reader and a writer (a Net handle has one owner; a second
@@ -3683,6 +3687,185 @@ static void tzr_netpoll_close(intptr_t fd) {
     tzr_pd_wake(pd, 0);
     tzr_pd_wake(pd, 1);
     tzr_lock_release(&pd->lock);
+}
+#elif defined(TZ_NET_WINSOCK)
+/* Windows (Phase 3): net.c is in the unit (it includes winsock2.h and defines TZ_NET_WINSOCK). One
+ * thread polls every waited socket with WSAPoll, and a UDP socket that sends to itself wakes it when
+ * the set changes, as net.c's own poller does (D6: no IOCP). A waiter is in the list until it leaves
+ * (the poller settles it and takes it out, or the G takes it out after its timer); the poller reads a
+ * waiter only under the list's lock, as the G removes it. */
+typedef struct {
+    SOCKET socket;
+    short events;   /* POLLRDNORM or POLLWRNORM */
+    uint64_t serial; /* the order of registration */
+    tzr_netwait *w;
+} tzr_winwait;
+
+static struct {
+    tzr_lock lock;
+    tzr_winwait *waits;
+    size_t count, capacity;
+    uint64_t serial;
+    SOCKET wake;
+    struct sockaddr_in wake_address;
+} tzr_winpoll = {.wake = INVALID_SOCKET};
+
+static tzr_once tzr_netpoll_once = TZR_ONCE_INIT;
+static _Atomic int tzr_netpoll_state; /* 0 not started, 1 running, 2 cannot start (net.c polls) */
+
+static void tzr_winpoll_kick(void) {
+    char byte = 1;
+    sendto(tzr_winpoll.wake, &byte, 1, 0, (const struct sockaddr *)&tzr_winpoll.wake_address, sizeof tzr_winpoll.wake_address);
+}
+
+/* Settles and removes the waits of `socket`, or every wait when it is INVALID_SOCKET (the list's lock
+ * held). */
+static void tzr_winpoll_wake_all(SOCKET socket) {
+    size_t kept = 0;
+    for (size_t i = 0; i < tzr_winpoll.count; i++) {
+        tzr_winwait wait = tzr_winpoll.waits[i];
+        if (socket == INVALID_SOCKET || wait.socket == socket) tzr_netwait_post(wait.w, TZR_NW_READY);
+        else tzr_winpoll.waits[kept++] = wait;
+    }
+    tzr_winpoll.count = kept;
+}
+
+static void *tzr_netpoller(void *arg) {
+    (void)arg;
+    WSAPOLLFD *entries = NULL;
+    uint64_t *serials = NULL;
+    size_t capacity = 0;
+    for (;;) {
+        tzr_lock_acquire(&tzr_winpoll.lock);
+        size_t count = tzr_winpoll.count;
+        if (count + 1 > capacity) {
+            size_t next = capacity ? capacity * 2 : 64;
+            while (next < count + 1) next *= 2;
+            WSAPOLLFD *more_entries = realloc(entries, next * sizeof *entries);
+            uint64_t *more_serials = more_entries ? realloc(serials, next * sizeof *serials) : NULL;
+            if (more_entries) entries = more_entries;
+            if (more_serials) serials = more_serials;
+            if (!more_entries || !more_serials) {
+                tzr_winpoll_wake_all(INVALID_SOCKET); /* the retries poll in net.c */
+                tzr_lock_release(&tzr_winpoll.lock);
+                continue;
+            }
+            capacity = next;
+        }
+        entries[0].fd = tzr_winpoll.wake;
+        entries[0].events = POLLRDNORM;
+        entries[0].revents = 0;
+        for (size_t i = 0; i < count; i++) {
+            entries[1 + i].fd = tzr_winpoll.waits[i].socket;
+            entries[1 + i].events = tzr_winpoll.waits[i].events;
+            entries[1 + i].revents = 0;
+            serials[i] = tzr_winpoll.waits[i].serial;
+        }
+        tzr_lock_release(&tzr_winpoll.lock);
+        int ready = WSAPoll(entries, (ULONG)(count + 1), -1);
+        tzr_lock_acquire(&tzr_winpoll.lock);
+        if (ready == SOCKET_ERROR) {
+            if (WSAGetLastError() != WSAEINTR) tzr_winpoll_wake_all(INVALID_SOCKET); /* the retries report it */
+        } else if (ready > 0) {
+            if (entries[0].revents != 0) {
+                char bytes[64];
+                while (recv(tzr_winpoll.wake, bytes, sizeof bytes, 0) > 0) {
+                }
+            }
+            /* the list is in the order of `serial`, as the snapshot: a wait that left is skipped */
+            size_t kept = 0, seen = 0;
+            for (size_t i = 0; i < tzr_winpoll.count; i++) {
+                tzr_winwait wait = tzr_winpoll.waits[i];
+                while (seen < count && serials[seen] < wait.serial) seen++;
+                short revents = seen < count && serials[seen] == wait.serial ? entries[1 + seen].revents : 0;
+                if (revents != 0) tzr_netwait_post(wait.w, TZR_NW_READY); /* an error or the end counts */
+                else tzr_winpoll.waits[kept++] = wait;
+            }
+            tzr_winpoll.count = kept;
+        }
+        tzr_lock_release(&tzr_winpoll.lock);
+    }
+    return NULL;
+}
+
+static void tzr_netpoll_init(void) {
+    SOCKET wake = WSASocketW(AF_INET, SOCK_DGRAM, 0, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+    struct sockaddr_in address;
+    int length = sizeof address;
+    memset(&address, 0, sizeof address);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    u_long nonblocking = 1;
+    if (wake == INVALID_SOCKET || ioctlsocket(wake, FIONBIO, &nonblocking) != 0
+        || bind(wake, (struct sockaddr *)&address, sizeof address) != 0
+        || getsockname(wake, (struct sockaddr *)&address, &length) != 0) {
+        if (wake != INVALID_SOCKET) closesocket(wake);
+        atomic_store(&tzr_netpoll_state, 2);
+        return;
+    }
+    tzr_winpoll.wake = wake;
+    tzr_winpoll.wake_address = address;
+    tzr_thread_start(tzr_netpoller, NULL, 256 * 1024, "cannot start the netpoller thread");
+    atomic_store(&tzr_netpoll_state, 1);
+}
+
+static int32_t tzr_netpoll_wait(intptr_t fd, int32_t write, int64_t timeout) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked || m->syscall_depth > 0) return -1;
+    if (atomic_load(&tzr_netpoll_state) == 0) tzr_run_once(&tzr_netpoll_once, tzr_netpoll_init);
+    if (atomic_load(&tzr_netpoll_state) != 1) return -1;
+    tzr_netwait w = {.g = m->curg, .state = TZR_NW_ARMED};
+    tzr_lock_acquire(&tzr_winpoll.lock);
+    if (tzr_winpoll.count == tzr_winpoll.capacity) {
+        size_t next = tzr_winpoll.capacity ? tzr_winpoll.capacity * 2 : 64;
+        tzr_winwait *more = realloc(tzr_winpoll.waits, next * sizeof *more);
+        if (more == NULL) {
+            tzr_lock_release(&tzr_winpoll.lock);
+            return -1;
+        }
+        tzr_winpoll.waits = more;
+        tzr_winpoll.capacity = next;
+    }
+    tzr_winpoll.waits[tzr_winpoll.count++] =
+        (tzr_winwait){(SOCKET)fd, write ? POLLWRNORM : POLLRDNORM, ++tzr_winpoll.serial, &w};
+    tzr_lock_release(&tzr_winpoll.lock);
+    tzr_winpoll_kick();
+    atomic_fetch_add(&tzr_sched.nnetwait, 1);
+    if (timeout >= 0) {
+        w.timer.when = tzr_deadline(tzr_nanotime(), timeout);
+        w.timer.kind = TZR_TIMER_NET;
+        w.timer.net = &w;
+        tzr_lock_acquire(&tzr_timers.lock);
+        tzr_heap_push(&w.timer);
+        atomic_fetch_add(&tzr_sched.ntimers, 1);
+        tzr_lock_release(&tzr_timers.lock);
+    }
+    tzr_park(tzr_netwait_commit, &w, "Net wait");
+    if (timeout >= 0) {
+        tzr_lock_acquire(&tzr_timers.lock);
+        int taken = tzr_timer_take(&w.timer);
+        tzr_lock_release(&tzr_timers.lock);
+        if (taken == 2) tzr_timers_gone(1);
+    }
+    tzr_lock_acquire(&tzr_winpoll.lock);
+    for (size_t i = 0; i < tzr_winpoll.count; i++) {
+        if (tzr_winpoll.waits[i].w == &w) { /* timed out: still listed */
+            memmove(&tzr_winpoll.waits[i], &tzr_winpoll.waits[i + 1], (tzr_winpoll.count - i - 1) * sizeof *tzr_winpoll.waits);
+            tzr_winpoll.count--;
+            break;
+        }
+    }
+    tzr_lock_release(&tzr_winpoll.lock);
+    atomic_fetch_sub(&tzr_sched.nnetwait, 1);
+    return atomic_load(&w.state) == TZR_NW_TIMEDOUT;
+}
+
+static void tzr_netpoll_close(intptr_t fd) {
+    if (atomic_load(&tzr_netpoll_state) != 1) return;
+    tzr_lock_acquire(&tzr_winpoll.lock);
+    tzr_winpoll_wake_all((SOCKET)fd);
+    tzr_lock_release(&tzr_winpoll.lock);
+    tzr_winpoll_kick();
 }
 #endif /* !_WIN32 */
 

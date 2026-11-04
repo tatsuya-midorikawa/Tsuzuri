@@ -573,6 +573,10 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         RoutineCount | RoutineMaxProcs | RoutineCpuCount => {
             facts(Some(Effect::Task), false, false, false, false, false, None)
         }
+        // TZ08: the function runs on the calling thread, which is all that changes.
+        RoutineWithLockedThread => {
+            facts(Some(Effect::Task), false, false, false, true, false, None)
+        }
         // TZ05: the timers read the clock; a period of 0 or less traps; a timer's channel is allocated.
         TimeSleep => facts(Some(Effect::Os), false, false, false, false, false, None),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {

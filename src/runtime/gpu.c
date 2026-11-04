@@ -65,9 +65,11 @@
 #ifndef TSUZURI_BLOCKING_HOOKS_DEFINED
 #define TSUZURI_BLOCKING_HOOKS_DEFINED
 #include <stdatomic.h>
+/* Windows has no weak data: a selectany definition is shared by the units that define it (the runner of
+ * `tsuzuri test` compiles each part of the runtime alone). */
 #if defined(_WIN32)
-static void (*_Atomic tsuzuri_blocking_enter_hook)(void);
-static void (*_Atomic tsuzuri_blocking_exit_hook)(void);
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_enter_hook)(void) = 0;
+__attribute__((selectany)) void (*_Atomic tsuzuri_blocking_exit_hook)(void) = 0;
 #else
 __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_enter_hook)(void);
 __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit_hook)(void);

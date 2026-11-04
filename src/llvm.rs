@@ -7115,6 +7115,28 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     /// then drops the closure and frees the box.
     fn routine_builtin(&mut self, builtin: Builtin, ty: &Type) -> String {
         let (declaration, call) = match builtin {
+            Builtin::RoutineWithLockedThread => {
+                let Type::Function(parameters, _) = ty else {
+                    unreachable!("builtin has function type")
+                };
+                // TZ08: a native G stays on its M from the lock to the unlock; WebAssembly runs one
+                // thread, so the function is just called there.
+                let native = !self.globals.wasm;
+                if native {
+                    self.intrinsics
+                        .insert("declare void @tsuzuri_tz_lock_thread()".into());
+                    self.intrinsics
+                        .insert("declare void @tsuzuri_tz_unlock_thread()".into());
+                    self.instruction("call void @tsuzuri_tz_lock_thread()");
+                }
+                let (value, _) =
+                    self.apply_value("%arg0", &parameters[0], Some((&Type::Unit, "0")), true);
+                if native {
+                    self.instruction("call void @tsuzuri_tz_unlock_thread()");
+                }
+                self.drop_value(&parameters[0], "%arg0");
+                return value;
+            }
             Builtin::RoutineGo => {
                 let Type::Function(parameters, _) = ty else {
                     unreachable!("builtin has function type")

@@ -1,0 +1,51 @@
+// One tzroutine waits 300 ms in libc's usleep; meanwhile two others make 1,000 round trips, which
+// they could not on the same processor if the call kept it. They start once the sleeper is about to
+// call it.
+extern "usleep" def c_usleep :: i32u -> i32
+
+def run :: unit -> string
+fn run _ =
+    let order: Channel<string> = Channel.make 2
+    let started: Channel<unit> = Channel.make 1
+    let sleeper_started = Channel.share started
+    let sleeper_order = Channel.share order
+    tzroutine {
+        Channel.send sleeper_started ()
+        let _slept = c_usleep 300000i32u
+        Channel.send sleeper_order "slept"
+    }
+    let requests: Channel<i64> = Channel.make 0
+    let replies: Channel<i64> = Channel.make 0
+    let server_requests = Channel.share requests
+    let server_replies = Channel.share replies
+    tzroutine {
+        for value in server_requests do
+            Channel.send server_replies (value + 1)
+    }
+    let pinger_started = Channel.share started
+    let pinger_requests = Channel.share requests
+    let pinger_replies = Channel.share replies
+    let pinger_order = Channel.share order
+    tzroutine {
+        let _go = Channel.recv pinger_started
+        let mut value = 0i64
+        for _round in 0 ..< 1000 do
+            Channel.send pinger_requests value
+            value = match Channel.recv pinger_replies with
+                | Maybe.Some next -> next
+                | Maybe.None -> -1
+        Channel.close pinger_requests
+        Channel.send pinger_order "rounds"
+    }
+    let first = match Channel.recv order with
+        | Maybe.Some text -> text
+        | Maybe.None -> "none"
+    let second = match Channel.recv order with
+        | Maybe.Some text -> text
+        | Maybe.None -> "none"
+    first + " " + second
+
+run ()
+
+// rule: TSK-031
+// expect: stdout "rounds slept\n"

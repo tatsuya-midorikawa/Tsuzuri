@@ -1682,6 +1682,9 @@ pub enum Builtin {
     RoutineMaxProcs,
     /// `Routine.cpu_count :: unit -> i64`: the online CPUs.
     RoutineCpuCount,
+    /// `Routine.with_locked_thread :: (unit -> 'a) -> 'a` (TZ08): calls the function with the calling
+    /// tzroutine kept on its OS thread (Go's `runtime.LockOSThread`), for host APIs bound to a thread.
+    RoutineWithLockedThread,
     /// `Channel.make :: Send<'a> => i64 -> Channel<'a>` (TZ03): Go's `make(chan T, n)`; 0 is unbuffered.
     ChannelMake,
     /// `Channel.send :: ref Channel<'a> -> 'a -> unit`: waits for a receiver or room; traps on a
@@ -2198,6 +2201,7 @@ impl Builtin {
         Self::RoutineCount,
         Self::RoutineMaxProcs,
         Self::RoutineCpuCount,
+        Self::RoutineWithLockedThread,
         Self::ChannelMake,
         Self::ChannelSend,
         Self::ChannelRecv,
@@ -2534,6 +2538,7 @@ impl Builtin {
             Self::RoutineCount => "Routine.count",
             Self::RoutineMaxProcs => "Routine.max_procs",
             Self::RoutineCpuCount => "Routine.cpu_count",
+            Self::RoutineWithLockedThread => "Routine.with_locked_thread",
             Self::ChannelMake => "Channel.make",
             Self::ChannelSend => "Channel.send",
             Self::ChannelRecv => "Channel.recv",
@@ -3748,6 +3753,14 @@ impl Builtin {
             Self::RoutineCount | Self::RoutineMaxProcs | Self::RoutineCpuCount => {
                 (vec![Concrete(Type::Unit)], Concrete(Type::I64), Vec::new())
             }
+            Self::RoutineWithLockedThread => (
+                vec![BuiltinType::Function(
+                    vec![Concrete(Type::Unit)],
+                    Box::new(Var("a")),
+                )],
+                Var("a"),
+                Vec::new(),
+            ),
             Self::ChannelMake
             | Self::ChannelSend
             | Self::ChannelRecv

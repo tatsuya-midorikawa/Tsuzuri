@@ -117,3 +117,31 @@ fn a_callback_of_a_program_that_does_not_spawn_is_unchanged() {
     assert!(ir.contains("@tz.callback.Main.twice("), "{ir}");
     assert!(!ir.contains("tsuzuri_tz_"), "{ir}");
 }
+
+#[test]
+fn with_locked_thread_locks_around_the_call_natively() {
+    let source =
+        "export def run :: own i64 -> i64\nfn run n = Routine.with_locked_thread (\\() -> n + 1)\n";
+    let native = ir(source);
+    let lock = native
+        .find("call void @tsuzuri_tz_lock_thread()")
+        .unwrap_or_else(|| panic!("{native}"));
+    let unlock = native
+        .find("call void @tsuzuri_tz_unlock_thread()")
+        .unwrap_or_else(|| panic!("{native}"));
+    assert!(lock < unlock);
+    assert_eq!(
+        native
+            .matches("declare void @tsuzuri_tz_lock_thread()")
+            .count(),
+        1
+    );
+    // WebAssembly runs one thread: the function is called directly.
+    let module = analyze(source).unwrap();
+    let wasm = llvm::emit_target(&module, llvm::Entry::Library, true).unwrap();
+    assert!(!wasm.contains("tsuzuri_tz_lock_thread"), "{wasm}");
+    assert!(
+        analyze("let x: string = Routine.with_locked_thread (\\() -> 1)\nx\n").is_err(),
+        "the result is the function's"
+    );
+}

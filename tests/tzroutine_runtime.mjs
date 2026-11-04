@@ -32,7 +32,7 @@ const platformFlags = windows
   ? [`--target=${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "-fuse-ld=lld", "-D_CRT_SECURE_NO_WARNINGS"]
   : ["-pthread"];
 // After the inputs, for linkers with --as-needed: glibc keeps fegetround and fesetround in libm.
-const libraries = windows ? [] : ["-lm"];
+const libraries = windows ? ["-lws2_32"] : ["-lm"];
 // The cases whose children end by a signal, which a sanitizer reports in its own way.
 const signalled = new Set(["stack_size", "failures"]);
 
