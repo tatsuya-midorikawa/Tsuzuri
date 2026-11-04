@@ -412,7 +412,7 @@ fn classifies_applied_names_as_constraints_or_records() {
 fn parses_nested_angle_bracket_type_applications() {
     let program = parser::parse(
         "record Pair<'a, 'b> { first: 'a, second: 'b }
-def f :: [Pair<i64, Pair<string, i64>>] -> Task<Pair<i64, i64>> -> ref Pair<i64, i64> -> Pair<ref i64, i64> -> i64
+def f :: [Pair<i64, Pair<string, i64>>] -> Maybe<Pair<i64, i64>> -> ref Pair<i64, i64> -> Pair<ref i64, i64> -> i64
 fn f a b c d = 0",
     )
     .unwrap();
@@ -444,8 +444,10 @@ fn f a b c d = 0",
         matches!(&arguments[1].kind, TypeExprKind::Apply(inner, nested)
         if inner.text == "Pair" && nested.len() == 2)
     );
-    assert!(matches!(&parameters[1].kind, TypeExprKind::Task(inner)
-        if matches!(inner.kind, TypeExprKind::Apply(..))));
+    assert!(
+        matches!(&parameters[1].kind, TypeExprKind::Apply(head, inner)
+        if head.text == "Maybe" && matches!(inner[0].kind, TypeExprKind::Apply(..)))
+    );
     assert!(
         matches!(&parameters[2].kind, TypeExprKind::Reference(inner, false)
         if matches!(inner.kind, TypeExprKind::Apply(..)))

@@ -1,7 +1,8 @@
-/* Unit tests of the trap boundary runtime (E14 Phase 2): src/runtime/trap.c over the task
-   scheduler of src/runtime/task.c. Every allocation is counted, so each case ends with the
-   number of live blocks, which must be zero once the host has released its results.
-   Usage: trap_boundary_runtime [parallelism]   (1 runs groups on the calling thread) */
+/* Unit tests of the trap boundary runtime (E14 Phase 2): src/runtime/trap.c, with the Parallel of the
+   tzroutine scheduler (src/runtime/tzroutine.c, TZ12), which inside a boundary runs every index on the
+   calling thread. Every allocation is counted, so each case ends with the number of live blocks,
+   which must be zero once the host has released its results.
+   Usage: trap_boundary_runtime */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
@@ -47,7 +48,7 @@ static void *counted_realloc(void *pointer, size_t size) {
 #define TZ_TRAP_API
 #define TZ_TRAP_BOUNDARY
 #include "../src/runtime/trap.c"
-#include "../src/runtime/task.c"
+#include "../src/runtime/tzroutine.c"
 
 static unsigned checks;
 #define CHECK(condition) do { assert(condition); ++checks; } while (0)
@@ -133,45 +134,29 @@ static void item(void *context, uint64_t index) {
     tsuzuri_tracked_free(scratch);
 }
 
-static uint32_t item_result(void *context, uint64_t index) {
-    struct plan *plan = context;
-    atomic_fetch_add(&plan->started, 1);
-    void *scratch = tsuzuri_tracked_malloc(64 + (size_t)index);
-    if (plan->wait && index == plan->fail_at) {
-        /* Fail only after a later item has trapped, so the trap is discarded after it happened. */
-        for (unsigned spin = 0; spin < 20000 && atomic_load(&plan->trapped) == 0; ++spin) usleep(100);
-    }
-    leak_and_trap(plan, index);
-    tsuzuri_tracked_free(scratch);
-    return index == plan->fail_at;
-}
-
 static struct plan inner_plans[8];
 
 static void outer_item(void *context, uint64_t index) {
     (void)context;
-    tsuzuri_task_parallel(item, &inner_plans[index], 6);
+    tsuzuri_tz_parallel(item, &inner_plans[index], 6);
 }
 
 struct group {
     uint64_t length;
     struct plan plan;
-    uint64_t failed;
-    int results;
     int nested;
 };
 
+/* Parallel.* inside the boundary: on the calling thread, in index order. */
 static void submit(void *argument) {
     struct group *group = argument;
-    if (group->nested) tsuzuri_task_parallel(outer_item, NULL, group->length);
-    else if (group->results) group->failed = tsuzuri_task_parallel_results(item_result, &group->plan, group->length);
-    else tsuzuri_task_parallel(item, &group->plan, group->length);
+    if (group->nested) tsuzuri_tz_parallel(outer_item, NULL, group->length);
+    else tsuzuri_tz_parallel(item, &group->plan, group->length);
 }
 
 static int32_t submit_group(struct group *group, tsuzuri_trap_info *trap) {
     trap->site = 0;
     trap->kind = 0;
-    group->failed = UINT64_MAX;
     atomic_store(&group->plan.started, 0);
     atomic_store(&group->plan.trapped, 0);
     return tsuzuri_boundary_run(submit, group, trap);
@@ -182,10 +167,7 @@ static struct plan no_traps(void) {
     return plan;
 }
 
-static void check_clean(void) {
-    CHECK(atomic_load(&live) == 0);
-    CHECK(tz_task_pool.groups == NULL && tz_task_pool.tail == NULL);
-}
+static void check_clean(void) { CHECK(atomic_load(&live) == 0); }
 
 static void metadata_edges(void *argument) {
     (void)argument;
@@ -287,20 +269,23 @@ static void single_calls(void) {
 
 static void groups(void) {
     tsuzuri_trap_info trap;
-    struct group group = { 64, no_traps(), 0, 0, 0 };
+    struct group group = { 64, no_traps(), 0 };
+    int64_t before = tsuzuri_tz_count();
 
     CHECK(submit_group(&group, &trap) == 0);
     CHECK(atomic_load(&group.plan.started) == 64);
+    CHECK(tsuzuri_tz_count() == before); /* no helper tzroutine inside a boundary */
     check_clean();
 
-    /* One trapping item: the call that submitted the group returns status 1 with its site. */
+    /* One trapping index: the indices run in order, so it is the last one that started, and the
+       call returns status 1 with its site. */
     group.plan.trap_at[0] = 5;
     CHECK(submit_group(&group, &trap) == 1);
     CHECK(trap.site == 1005 && trap.kind == 4);
-    CHECK(atomic_load(&group.plan.started) >= 6 && atomic_load(&group.plan.started) <= 64);
+    CHECK(atomic_load(&group.plan.started) == 6);
     check_clean();
 
-    /* Several: the lowest index wins, whichever worker finishes first. */
+    /* Several: the lowest index traps first. */
     for (unsigned round = 0; round < 200; ++round) {
         group.plan.trap_at[0] = 12;
         group.plan.trap_at[1] = 3;
@@ -310,50 +295,13 @@ static void groups(void) {
         CHECK(atomic_load(&live) == 0);
     }
 
-    /* The trapped group leaves the scheduler usable. */
+    /* The trapped call leaves the scheduler usable. */
     group.plan = no_traps();
     CHECK(submit_group(&group, &trap) == 0);
     CHECK(atomic_load(&group.plan.started) == 64);
     check_clean();
 
-    /* A single item runs on the calling thread without a group. */
-    group.length = 1;
-    group.plan.trap_at[0] = 0;
-    CHECK(submit_group(&group, &trap) == 1 && trap.site == 1000);
-    check_clean();
-
-    /* Task.parallel_results. A trap in an item that ran is reported even if an earlier item
-       returned Err, because a trapped item leaves its task in no defined state; so with an Err
-       before a trap either may be seen, unless the Err waits for the trap to have happened. */
-    group.length = 16;
-    group.results = 1;
-    group.plan = no_traps();
-    group.plan.fail_at = 2;
-    group.plan.trap_at[0] = 7;
-    int32_t status = submit_group(&group, &trap);
-    CHECK((status == 0 && group.failed == 2) || (status == 1 && trap.site == 1007));
-    check_clean();
-    group.plan = no_traps();
-    group.plan.fail_at = 2;
-    group.plan.trap_at[0] = 7;
-    group.plan.wait = tz_task_parallelism() > 1;
-    status = submit_group(&group, &trap);
-    if (group.plan.wait) CHECK(status == 1 && trap.site == 1007 && atomic_load(&group.plan.trapped) == 1);
-    else CHECK(status == 0 && group.failed == 2);
-    check_clean();
-    group.plan = no_traps();
-    group.plan.fail_at = 9;
-    group.plan.trap_at[0] = 4;
-    CHECK(submit_group(&group, &trap) == 1);
-    CHECK(trap.site == 1004);
-    check_clean();
-    group.plan = no_traps();
-    group.plan.fail_at = 6;
-    CHECK(submit_group(&group, &trap) == 0 && group.failed == 6);
-    check_clean();
-
-    /* A trap in a group nested in an item reaches the boundary of the outermost call. */
-    group.results = 0;
+    /* A trap in a Parallel nested in an index reaches the boundary of the outermost call. */
     group.nested = 1;
     group.length = 8;
     for (unsigned index = 0; index < 8; ++index) inner_plans[index] = no_traps();
@@ -375,7 +323,7 @@ struct host {
 static void *host_thread(void *argument) {
     struct host *host = argument;
     tsuzuri_trap_info trap;
-    struct group group = { 24, no_traps(), 0, 0, 0 };
+    struct group group = { 24, no_traps(), 0 };
     struct work work = { 4, NULL };
     for (unsigned round = 0; round < 300; ++round) {
         switch ((round + host->id) % 4) {
@@ -415,17 +363,11 @@ static void concurrent_hosts(void) {
     check_clean();
 }
 
-int main(int argc, char **argv) {
-    unsigned parallelism = 0;
-    if (argc == 2) {
-        parallelism = (unsigned)strtoul(argv[1], NULL, 10);
-        atomic_store(&tz_task_limit, parallelism);
-    }
+int main(void) {
     single_calls();
     groups();
     concurrent_hosts();
     CHECK(atomic_load(&total) > 1000);
-    tz_task_shutdown();
     check_clean();
     printf("trap boundary runtime: %u checks passed\n", checks);
     return 0;

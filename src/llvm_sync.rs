@@ -416,6 +416,7 @@ impl FunctionEmitter<'_, '_> {
             (CHANNEL_SENDERS, "1"),
             (CHANNEL_RECEIVERS, "1"),
             (CHANNEL_OWNERS, "2"),
+            (CHANNEL_LOCK, "0"),
             (CHANNEL_WAITERS, "0"),
             (CHANNEL_WAITERS + 8, "0"),
         ] {
@@ -483,7 +484,8 @@ impl FunctionEmitter<'_, '_> {
 /// Byte offsets in a channel block. The runtimes (`tzroutine.c` since TZ12, `task-wasm-threads.c`,
 /// `channel-wasm.ll`) lay it out the same way: the capacity, the size of an item, the index of
 /// the oldest item, the number of items, the live senders, the live receivers, the live handles
-/// of either kind, two words for the runtime's waiting lists, and then the ring of items.
+/// of either kind, the word of the runtime's lock (`tzroutine.c`'s `tzr_lock`, free at 0; the other
+/// runtimes leave it alone), two words for the runtime's waiting lists, and then the ring of items.
 const CHANNEL_CAPACITY: u64 = 0;
 const CHANNEL_ITEM_SIZE: u64 = 8;
 const CHANNEL_HEAD: u64 = 16;
@@ -491,5 +493,6 @@ const CHANNEL_COUNT: u64 = 24;
 const CHANNEL_SENDERS: u64 = 32;
 const CHANNEL_RECEIVERS: u64 = 40;
 const CHANNEL_OWNERS: u64 = 48;
+const CHANNEL_LOCK: u64 = 56;
 const CHANNEL_WAITERS: u64 = 64;
 const CHANNEL_ITEMS: u64 = 80;

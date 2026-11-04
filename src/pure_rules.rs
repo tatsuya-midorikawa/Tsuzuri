@@ -1543,7 +1543,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            182
+            178
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }
@@ -1573,10 +1573,10 @@ mod tests {
     }
 
     #[test]
-    fn shared_queries_reject_opaque_callback_and_task_inputs() {
+    fn shared_queries_reject_opaque_callback_and_owned_function_inputs() {
         let module = crate::analyze(
             "def apply :: (i64 -> i64) -> i64 -> i64 = \\f n -> f n\n\
-             def run :: Task<i64> -> i64 = \\job -> Task.run job\n",
+             def run :: own Owned.Function<unit, i64> -> i64 = \\job -> Owned.call (ref job) ()\n",
         )
         .unwrap();
         for name in ["apply", "run"] {

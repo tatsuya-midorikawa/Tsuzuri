@@ -828,7 +828,7 @@ mod tests {
             ["DataChannel"]
         );
         assert_eq!(
-            loaded("Task.scope (ref 1) 2 (s -> i -> i)"),
+            loaded("Routine.scope (ref 1) 2 (s -> i -> i)"),
             Vec::<&str>::new()
         );
         // Bare names of opt-in declarations never resolve to them, so they load nothing.
@@ -878,7 +878,7 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("{}", error.message));
         crate::llvm::emit(&module, crate::llvm::Entry::Console).unwrap();
-        let error = crate::analyze("let action = IO.pure 42\nTask.run action.work").unwrap_err();
+        let error = crate::analyze("let action = IO.pure 42\naction.work ()").unwrap_err();
         assert!(error.message.contains("opaque"), "{}", error.message);
         for source in [
             "IO.__read_line ()",

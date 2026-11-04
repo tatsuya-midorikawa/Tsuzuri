@@ -1045,7 +1045,6 @@ fn use n =
     let callback = Words \"a\"
     let h: Maybe<i64 -> i64> = None
     let i: Result<i64 -> i64, string> = Error \"x\"
-    let job: Task<i64> = task {{ return n }}
     n
 ",
             many = many(300)
@@ -1140,7 +1139,7 @@ fn use n =
             ("Lanes8", record("Main.Lanes8")),
             ("Resource", record("Main.Resource")),
             ("Closure", closure.clone()),
-            ("Task<i64>", Type::Once(Box::new(Type::I64))),
+            ("Once<i64>", Type::Once(Box::new(Type::I64))),
             ("Handlers", record("Main.Handlers")),
             ("Choice", union("Main.Choice", &[])),
             ("Callback", union("Main.Callback", &[])),
@@ -1279,7 +1278,7 @@ fn use n =
         assert_eq!(measure(&name, &wasm_named, MACHINES[3].1), (8, 4));
     }
 
-    /// The number of pointers in a function value and in a `Task` (PM02): the static descriptor
+    /// The number of pointers in a function value and in a run-once body (PM02): the static descriptor
     /// (code, clone, and drop) and the environment. Every model of its size follows this number.
     const CLOSURE_POINTERS: usize = 2;
 
@@ -1300,7 +1299,7 @@ fn use n =
             let ir = crate::llvm::emit_target(&module, crate::llvm::Entry::Library, wasm).unwrap();
             let named = definitions(&ir);
             let _target = target_scope(wasm);
-            for label in ["Closure", "Task<i64>"] {
+            for label in ["Closure", "Once<i64>"] {
                 let ty = find(label);
                 assert_eq!(llvm_type(&ty, &module), "%tz.closure", "{label}");
                 assert_eq!(

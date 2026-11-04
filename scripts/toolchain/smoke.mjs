@@ -84,7 +84,7 @@ try {
     'def main :: Array<string> -> i32 = \\args ->\n    let! _line = IO.read_line ()\n    do! IO.write_line "42"\n'
     + '    let separator = "]["\n    do! IO.write_line ("[" + String.join (ref separator) (ref args) + "]")\n    args.length as i32\n\n'
     + 'test "same" = assert false\ntest "same" = assert true\n'
-    + 'test "tasks" = { let tasks = new [task { return 1 }, task { return 2 }]; let values = Task.run (Task.parallel tasks); assert (values.length == 2) }\n');
+    + 'test "parallel" = { let values = Parallel.init 2 (\\index -> index + 1); assert (values.length == 2) }\n');
   run(compiler, ['check', project, '--json']);
   const discovery = run(compiler, ['test', project, '--list', '--json'], {
     env: { ...environment, TSUZURI_CLANG: path.join(directory, 'not-a-compiler') },
@@ -103,11 +103,11 @@ try {
     assert.match(passed.stdout, /"passed":2,"failed":0,"ignored":1/);
     const failed = run(compiler, ['test', project, optimization, '--json', '--index', '0'], { expectedCode: 1 });
     assert.match(failed.stdout, /"status":"failed"/);
-    console.log(`Bundled native ${optimization}: IO, arguments, DWARF, duplicate test selection, parallel tasks, failures passed.`);
+    console.log(`Bundled native ${optimization}: IO, arguments, DWARF, duplicate test selection, Parallel, failures passed.`);
   }
   // Async.block_on waits on the real clock on every platform (B08, Windows: D-43), with one
-  // executor per thread: the compiler links its reactor, which runs on Win32 threads and locks
-  // on Windows. A test and a program both wait.
+  // executor per thread (the tzroutines of Routine.scope run on several): the compiler links its
+  // reactor, which runs on Win32 threads and locks on Windows. A test and a program both wait.
   const waiting = path.join(directory, 'waiting');
   await mkdir(waiting);
   await writeFile(path.join(waiting, 'Main.tz'), [
@@ -125,8 +125,8 @@ try {
     '    value',
     '',
     'def main :: unit -> i32 = \\() ->',
-    '    let jobs = new [Task<i64>](3, \\index -> task { return worker (10 + index) })',
-    '    let spans = Task.run (Task.parallel jobs)',
+    '    let base = 10',
+    '    let spans = Routine.scope (ref base) 3 (\\first index -> worker (deref first + index))',
     '    let! timed = Async.block_on (Async.all [span 20, span 40])',
     '    if spans[0] >= 10 && spans[1] >= 11 && spans[2] >= 12 && timed[0] >= 20 && timed[1] >= 40 then',
     '        do! IO.write_line "waited"',
@@ -184,13 +184,11 @@ try {
         }
       }
     }
-    const taskProject = path.join(directory, 'prebuilt-tasks');
+    // The native C runtime of a program that writes through IO is the bundle's io.c part.
+    const taskProject = path.join(directory, 'prebuilt-io');
     await mkdir(taskProject);
-    await writeFile(path.join(taskProject, 'Main.tz'),
-      'let computation = task {\n'
-      + '    let jobs = new [Task<i64>](2, \\index -> task { return index + 1 })\n'
-      + '    let! values = Task.parallel jobs\n    return values.length\n}\nTask.run computation\n');
-    const taskArtifact = path.join(directory, `prebuilt-tasks-app${suffix}`);
+    await writeFile(path.join(taskProject, 'Main.tz'), 'IO {\n    do! IO.write_line "2"\n}\n');
+    const taskArtifact = path.join(directory, `prebuilt-io-app${suffix}`);
     run(compiler, ['build', taskProject, '-O0', '-o', taskArtifact], { env: bundled });
     assert.equal(run(taskArtifact, []).stdout, '2\n');
     const runtimeCache = path.join(bundled.TSUZURI_CACHE_DIR, 'runtime');

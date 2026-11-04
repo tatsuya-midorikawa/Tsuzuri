@@ -1,0 +1,11 @@
+def rec sum_squares :: own i64 -> own i64 -> own i64 -> i64 = \first last total ->
+    if first >= last { total }
+    else { sum_squares (first + 1) last (total + first * first) }
+
+// The squares below 4000 in four chunks: each chunk on a tzroutine of its own (Routine.scope), and
+// the same chunks again with Parallel.init. Both wait for their chunks before they return.
+let chunk_size = 1000
+let scoped = Routine.scope (ref chunk_size) 4 (\size chunk -> sum_squares (chunk * deref size) ((chunk + 1) * deref size) 0)
+let parallel = Parallel.init 4 (\chunk -> sum_squares (chunk * 1000) ((chunk + 1) * 1000) 0)
+let total = scoped[0] + scoped[1] + scoped[2] + scoped[3]
+if total == Array.sum (ref parallel) then total else 0
