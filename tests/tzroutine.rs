@@ -234,9 +234,11 @@ fn probes_the_stack_only_when_the_program_spawns() {
             .filter(|line| line.starts_with("define "))
             .collect();
         assert!(!defines.is_empty());
+        // Windows probes with __chkstk itself
         for define in defines {
-            assert!(
+            assert_eq!(
                 define.contains(" \"probe-stack\"=\"inline-asm\" "),
+                !cfg!(windows),
                 "{define}"
             );
         }
@@ -367,7 +369,8 @@ fn programs_without_tzroutine_keep_their_ir() {
     assert!(!llvm::spawns(&module));
     let native = llvm::emit(&module, llvm::Entry::Library).unwrap();
     assert!(
-        native.contains("call ptr @tsuzuri_tz_scope_enter()") && native.contains("probe-stack"),
+        native.contains("call ptr @tsuzuri_tz_scope_enter()")
+            && native.contains("probe-stack") != cfg!(windows),
         "{native}"
     );
     let wasm = llvm::emit_target(&module, llvm::Entry::Library, true).unwrap();
