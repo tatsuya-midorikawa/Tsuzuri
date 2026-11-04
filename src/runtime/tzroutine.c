@@ -3842,8 +3842,11 @@ static void *tzr_netpoller(void *arg) {
     return NULL;
 }
 
+/* The wake socket is overlapped, as socket() makes them and net.c does: Windows runs the calls on a
+ * socket made without WSA_FLAG_OVERLAPPED (a synchronous handle) one at a time, so a kick's sendto
+ * would wait for the WSAPoll of the netpoller thread on the same socket, which only the kick ends. */
 static void tzr_netpoll_init(void) {
-    SOCKET wake = WSASocketW(AF_INET, SOCK_DGRAM, 0, NULL, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+    SOCKET wake = WSASocketW(AF_INET, SOCK_DGRAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
     struct sockaddr_in address;
     int length = sizeof address;
     memset(&address, 0, sizeof address);
