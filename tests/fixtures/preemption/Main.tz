@@ -25,7 +25,8 @@ fn tick50 stop received =
     }
 
 // busy_does_not_starve: one tzroutine calls `fib 25` until the other has received its 50 ticks.
-// It yields at the checks of Phase 1 (the entry of fib, the back edge of the loop).
+// It yields at the checks of Phase 1 (the entry of fib, the back edge of the loop). It calls once
+// before it looks at `stop`, so it counts at least one call even if the ticks end before it starts.
 def busy :: unit -> string
 fn busy _ =
     let stop = Arc.new (Atomic.create 0i64)
@@ -34,7 +35,7 @@ fn busy _ =
     let busy_stop = Arc.share (ref stop)
     let busy_calls = Arc.share (ref calls)
     tzroutine {
-        let mut total = 0i64
+        let mut total = fib 25
         while Atomic.load (Arc.get (ref busy_stop)) == 0i64 do
             total = total + fib 25
         let _n = Atomic.fetch_add (Arc.get (ref busy_calls)) (total / 75025)
@@ -187,9 +188,9 @@ fn closure_spin _ =
     tzroutine {
         match Channel.recv received with
         | Maybe.Some count -> {
-            let first = Owned.call (ref count) 1;
+            let _first = Owned.call (ref count) 1;
             Owned.drop count;
-            Atomic.store (Arc.get (ref spin_done)) first
+            Atomic.store (Arc.get (ref spin_done)) 1i64
         }
         | Maybe.None -> ()
     }
