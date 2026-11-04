@@ -11,7 +11,7 @@
 | 起票 | 2026-09-29。旧計画の基準は `f8dc655` |
 | 実装の基準 | `ce7e8a1`、2026-10-09 |
 | 承認 | 全フェーズと必要な判断への包括承認。[GUIDE D-42](../GUIDE.md#d-42-b08-の全フェーズと現行仕様の確定) |
-| 利用者向け仕様 | [Async 式](../../_tsuzuri/language-reference/async-tasks-and-lazy/async.md)、[言語仕様](../../docs/language.md#非同期計算async) |
+| 利用者向け仕様 | [Async 式（TZ13 で削除。Async からの移行）](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md#async-からの移行)、[言語仕様](../../docs/language.md#非同期計算async) |
 
 ## 目的と実装範囲
 
