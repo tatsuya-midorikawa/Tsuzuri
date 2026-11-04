@@ -1,0 +1,176 @@
+// TZ09: the sockets of --wasm-feature net on the tzroutines of --wasm-feature jspi. A tzroutine that waits for its socket
+// suspends alone (the glue resumes the others meanwhile), so a server and its clients run in one module.
+// tests/tzroutine_wasm.mjs builds it with both features and calls the exports through the glue.
+
+def message :: own i64 -> [ubyte]
+fn message index = Array.init (index % 7 + 1) (\at -> ((index + at) % 251) as ubyte)
+
+def sum_of :: ref [ubyte] -> i64
+fn sum_of bytes =
+    let mut total = 0
+    for at in 0 ..< bytes.length do
+        total = total + (bytes[at] as i64)
+    total
+
+def loopback :: unit -> Net.Address
+fn loopback _ = Maybe.get (Net.parse_address (ref "127.0.0.1:0"))
+
+// A server with a tzroutine per connection and `clients` clients, each a tzroutine: the echoes that came back whole.
+export def echo_server :: i64 -> i64
+fn echo_server clients =
+    let! bound = Net.bind (loopback ())
+    let listener = Result.get bound
+    let address = Net.local_addr listener
+    let results: Channel<bool> = Channel.make 0
+    tzroutine {
+        for _connection in 0 ..< clients do
+            let! accepted = Net.accept listener Maybe.None
+            let stream = Result.get accepted
+            tzroutine {
+                let! received = Net.read stream 64 Maybe.None
+                let! _sent = Net.write stream (Result.get received) Maybe.None
+                let! _closed = Net.close stream
+            }
+        let! _closed = Net.close_listener listener
+    }
+    for index in 0 ..< clients do
+        let out = Channel.share results
+        tzroutine {
+            let! connected = Net.connect address Maybe.None
+            let stream = Result.get connected
+            let sent = message index
+            let length = sent.length
+            let expected = sum_of (ref sent)
+            let! _sent = Net.write stream sent Maybe.None
+            let! received = Net.read stream 64 Maybe.None
+            let bytes = Result.get received
+            let! _closed = Net.close stream
+            Channel.send out (bytes.length == length && sum_of (ref bytes) == expected)
+        }
+    let mut echoes = 0
+    for _client in 0 ..< clients do
+        match Channel.recv results with
+        | Maybe.Some true -> echoes = echoes + 1
+        | _ -> ()
+    echoes
+
+// A read that waits for a write that comes later, from another tzroutine of the module: 1000 when the reader was
+// waiting before the write, plus the sum of the bytes (1 + 2 + 3 + 4).
+export def read_waits_for_write :: i64
+fn read_waits_for_write =
+    let! bound = Net.bind (loopback ())
+    let listener = Result.get bound
+    let! connected = Net.connect (Net.local_addr listener) Maybe.None
+    let client = Result.get connected
+    let! accepted = Net.accept listener Maybe.None
+    let server = Result.get accepted
+    let waiting = Arc.new (Atomic.create false)
+    let started = Arc.share (ref waiting)
+    let sums: Channel<i64> = Channel.make 1
+    let out = Channel.share sums
+    tzroutine {
+        Atomic.store (Arc.get (ref started)) true
+        let! received = Net.read server 16 Maybe.None
+        Channel.send out (match received with
+            | Result.Ok bytes -> sum_of (ref bytes)
+            | Result.Error _ -> -1)
+    }
+    while !Atomic.load (Arc.get (ref waiting)) do
+        Routine.yield ()
+    Time.sleep (10 * Time.millisecond())
+    let! _written = Net.write client [1 as ubyte, 2 as ubyte, 3 as ubyte, 4 as ubyte] Maybe.None
+    let sum = match Channel.recv sums with
+        | Maybe.Some value -> value
+        | Maybe.None -> -2
+    let! _client_closed = Net.close client
+    let! _server_closed = Net.close server
+    let! _listener_closed = Net.close_listener listener
+    1000 + sum
+
+// A tzroutine writes 64 KiB at a time to a peer that never reads, while the peer, another tzroutine of the module,
+// closes its end: a write ends with an error instead of waiting for ever (1).
+export def write_races_close :: i64
+fn write_races_close =
+    let! bound = Net.bind (loopback ())
+    let listener = Result.get bound
+    let address = Net.local_addr listener
+    let wrote: Channel<unit> = Channel.make 1
+    let signal = Channel.share wrote
+    let outcomes: Channel<i64> = Channel.make 1
+    let out = Channel.share outcomes
+    tzroutine {
+        let! connected = Net.connect address Maybe.None
+        let stream = Result.get connected
+        let mut failed = false
+        let mut rounds = 0
+        while !failed && rounds < 10000 do
+            let! written = Net.write stream (Array.init 65536 (\at -> (at % 256) as ubyte)) Maybe.None
+            failed = Result.is_error (ref written)
+            if rounds == 0 then
+                Channel.send signal ()
+            rounds = rounds + 1
+        let! _closed = Net.close stream
+        Channel.send out (if failed then 1 else 0)
+    }
+    let! accepted = Net.accept listener Maybe.None
+    let peer = Result.get accepted
+    let _first = Channel.recv wrote
+    let! _peer_closed = Net.close peer
+    let! _listener_closed = Net.close_listener listener
+    match Channel.recv outcomes with
+    | Maybe.Some value -> value
+    | Maybe.None -> -1
+
+// A read that waits for its stream ends when another tzroutine closes the stream (1: the closed handle, or the end of
+// the stream that the close makes), and a read with nobody writing times out while the other tzroutines run (10).
+export def close_and_timeout :: i64
+fn close_and_timeout =
+    let! bound = Net.bind (loopback ())
+    let listener = Result.get bound
+    let address = Net.local_addr listener
+    let! peer_connected = Net.connect address Maybe.None
+    let peer = Result.get peer_connected
+    let! accepted = Net.accept listener Maybe.None
+    let shared = Result.get accepted
+    let reads: Channel<i64> = Channel.make 1
+    let read_out = Channel.share reads
+    tzroutine {
+        let! received = Net.read shared 16 Maybe.None
+        Channel.send read_out (match received with
+            | Result.Ok bytes -> if bytes.length == 0 then 1 else 0
+            | Result.Error error -> match error.kind with
+                | Os.InvalidInput -> 1
+                | _ -> 0)
+    }
+    Time.sleep (20 * Time.millisecond())
+    let! _closed_shared = Net.close shared
+    let closed = match Channel.recv reads with
+        | Maybe.Some value -> value
+        | Maybe.None -> -1
+    let ticks = Arc.new (Atomic.create 0i64)
+    let ticker = Arc.share (ref ticks)
+    let stop = Arc.new (Atomic.create false)
+    let stopped = Arc.share (ref stop)
+    tzroutine {
+        while !Atomic.load (Arc.get (ref stopped)) do
+            let _tick = Atomic.fetch_add (Arc.get (ref ticker)) 1i64
+            Time.sleep Time.millisecond()
+    }
+    let! quiet_connected = Net.connect address Maybe.None
+    let quiet = Result.get quiet_connected
+    let! quiet_accepted = Net.accept listener Maybe.None
+    let quiet_server = Result.get quiet_accepted
+    let before = Atomic.load (Arc.get (ref ticks))
+    let! received = Net.read quiet 16 (Maybe.Some 50)
+    let timed_out = match received with
+        | Result.Ok _ -> false
+        | Result.Error error -> match Net.error_kind error with
+            | Net.TimedOut -> true
+            | _ -> false
+    let others_ran = Atomic.load (Arc.get (ref ticks)) > before
+    Atomic.store (Arc.get (ref stop)) true
+    let! _closed_quiet = Net.close quiet
+    let! _closed_quiet_server = Net.close quiet_server
+    let! _closed_peer = Net.close peer
+    let! _closed_listener = Net.close_listener listener
+    closed + (if timed_out && others_ran then 10 else 0)

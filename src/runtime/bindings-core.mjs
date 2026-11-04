@@ -347,6 +347,9 @@ const UNSUPPORTED = {
 const DEADLOCK = "all tzroutines are asleep - deadlock!";
 // The exports that a module with tzroutines adds for its glue (TZ09).
 const TZROUTINE_EXPORTS = ["tsuzuri_tz_entry", "tsuzuri_tz_fire"];
+// The longest that the tzroutines run in turn before the host's own tasks (its timers and I/O) get a turn, in ms.
+const TZROUTINE_SLICE = 4;
+const macrotask = typeof setImmediate === "function" ? setImmediate : (task) => setTimeout(task, 0);
 
 // The exports that a module of --wasm-feature threads adds for its host.
 const POOL_EXPORTS = ["__stack_pointer", "tsuzuri_thread_entry", "tsuzuri_thread_stack_alloc", "tsuzuri_thread_stack_size", "tsuzuri_threads_control", "tsuzuri_threads_init"];
@@ -638,6 +641,7 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
       due: false, // the setTimeout of the deadline has come
       handle: undefined, // that setTimeout
       scheduled: false,
+      slice: 0, // when the tzroutines got this turn of the host, on performance.now
       boundary: undefined, // the settlement of the export call under way
       entry: undefined, // WebAssembly.promising(tsuzuri_tz_entry)
     };
@@ -647,10 +651,19 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
       if (tz.handle !== undefined) clearTimeout(tz.handle);
       tz.handle = undefined;
     };
+    // The next turn of the executor: at once (a microtask), or after the host's own tasks when the tzroutines have run for a
+    // slice (a G that yields in a loop would starve the host's timers and I/O otherwise).
     const schedule = () => {
       if (tz.scheduled) return;
       tz.scheduled = true;
-      queueMicrotask(dispatch);
+      if (performance.now() - tz.slice < TZROUTINE_SLICE) {
+        queueMicrotask(dispatch);
+      } else {
+        macrotask(() => {
+          tz.slice = performance.now();
+          dispatch();
+        });
+      }
     };
     // The G on the stack leaves it: it suspends, waits for the host, or has returned.
     const stopped = () => {
@@ -669,6 +682,8 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
     function dispatch() {
       tz.scheduled = false;
       while (owner.alive && tz.running === undefined) {
+        // A deadline that passed fires now, before the setTimeout comes.
+        if (!tz.due && tz.deadline >= 0n && clock() >= tz.deadline) tz.due = true;
         if (tz.due) {
           tz.due = false;
           try {
@@ -718,6 +733,7 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
       const boundary = { resolve, reject };
       tz.boundary = boundary;
       tz.running = boundary;
+      tz.slice = performance.now();
       let started;
       try {
         started = start();
@@ -789,6 +805,7 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
         tz.handle = setTimeout(() => {
           tz.handle = undefined;
           tz.due = true;
+          tz.slice = performance.now();
           schedule();
         }, milliseconds);
       },

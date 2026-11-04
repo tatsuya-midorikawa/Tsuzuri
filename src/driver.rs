@@ -8424,6 +8424,23 @@ mod tests {
         }
     }
     #[test]
+    fn tzroutine_jspi_source_inlines_the_webassembly_half() {
+        // TZ09: the runtime of JSPI has its header inlined, and the native sources skip it.
+        let include = "#include \"tzroutine-jspi.h\"";
+        assert_eq!(
+            include_str!("runtime/tzroutine.c").matches(include).count(),
+            1
+        );
+        let source = tzroutine_jspi_source();
+        assert!(!source.contains(include));
+        assert!(source.contains("#ifndef TZR_JSPI_H"));
+        assert!(source.contains("TZR_JSPI_IMPORT(\"spawn\")"));
+        for triple in Triple::ALL {
+            let native = tzroutine_runtime_source_for(Platform::new(Some(triple)));
+            assert!(native.contains(include) && !native.contains("#ifndef TZR_JSPI_H"));
+        }
+    }
+    #[test]
     fn validates_native_cpu_tuning_and_selects_architecture_flags() {
         assert_eq!(
             native_compile_args(true, "x86_64"),

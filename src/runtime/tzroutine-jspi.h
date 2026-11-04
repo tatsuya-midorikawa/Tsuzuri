@@ -12,7 +12,9 @@
  * queue next, or starts a new one by calling the export `tsuzuri_tz_entry` through
  * WebAssembly.promising. A G's frames in linear memory are on a stack of its own (64 KiB from the
  * module's allocator, D3), whose bounds the stack checks of the generated code compare against; an
- * export call is the boundary G and runs on the module's stack (bounds 0, 0).
+ * export call is the boundary G and runs on the module's stack (bounds 0, 0). A G gets its stack
+ * when it first runs, so a G that waits in the queue to start costs its record alone, and one that
+ * finishes leaves its stack to the next.
  *
  * The imports of `tsuzuri_tz` (TZ09 spec 3): suspend (in tzroutine-jspi.ll), spawn and ready (a G
  * can run: the glue queues it), clock (the monotonic nanoseconds of performance.now) and timer (the
@@ -43,8 +45,10 @@
 #define TZR_JSPI_IMPORT(name) __attribute__((import_module("tsuzuri_tz"), import_name(name)))
 /* A G's stack in linear memory (D3). */
 #define TZR_JSPI_STACK (64u * 1024u)
-/* Finished Gs kept with their stacks for the next spawn (a stack is 64 KiB of a 16 MiB memory). */
-#define TZR_JSPI_CACHE 16
+/* The stacks of finished Gs kept for the next G that starts (a stack is 64 KiB of a 16 MiB memory),
+ * and their records kept for the next spawn. */
+#define TZR_JSPI_STACKS 16
+#define TZR_JSPI_RECORDS 256
 
 /* ---------------------------------------------------------------- failure, memory, time */
 
@@ -160,11 +164,16 @@ static struct {
     _Atomic int64_t nnetwait;    /* none: a socket wait of WebAssembly is the glue's */
     int nprocs;
     uint64_t next_id;
-    tzr_g *cur;    /* the G on the stack */
-    tzr_g *gfree;  /* finished Gs with their stacks, at most TZR_JSPI_CACHE */
-    int gfree_count;
-    tzr_g *zombie; /* the G that finished last, when it was not cached: its stack goes at the next exit */
+    tzr_g *records;               /* the records of finished Gs, at most TZR_JSPI_RECORDS */
+    int nrecords;
+    unsigned char *stacks;        /* the stacks of finished Gs (linked through their first word) */
+    int nstacks;
+    unsigned char *zombie;        /* the stack of the G that finished last, when the cache was full */
 } tzr_sched = {.nprocs = 1};
+
+/* The G on the stack (NULL: the boundary G). tzr_park and tsuzuri_tz_yield set it again when the G
+ * goes on, and tzroutine-jspi.ll keeps it across a socket's import, which suspends the G too. */
+__attribute__((visibility("hidden"))) tzr_g *tzr_jspi_current;
 
 /* The boundary G: every export call runs on the module's stack as this G. */
 static tzr_g tzr_jspi_main = {.kind = TZR_KIND_THREAD, .status = TZR_G_RUNNING, .rand = 0x2545F4914F6CDD1DULL};
@@ -181,7 +190,7 @@ static uint64_t tzr_rand(uint64_t *state) {
 
 static void tzr_start(void) {}
 
-static tzr_g *tzr_current(void) { return tzr_sched.cur != NULL ? tzr_sched.cur : &tzr_jspi_main; }
+static tzr_g *tzr_current(void) { return tzr_jspi_current != NULL ? tzr_jspi_current : &tzr_jspi_main; }
 
 /* The deadlock detector is the glue's. tzroutine.c asks it to look again when the last timer is
  * gone: the glue learns that no timer is left. */
@@ -206,7 +215,7 @@ static int tzr_park(void (*unlock)(void *), void *arg, const char *reason) {
     atomic_store_explicit(&g->status, TZR_G_WAITING, memory_order_relaxed);
     if (unlock) unlock(arg);
     tzr_jspi_suspend(g);
-    tzr_sched.cur = g;
+    tzr_jspi_current = g;
     atomic_store_explicit(&g->status, TZR_G_RUNNING, memory_order_relaxed);
     return 0;
 }
@@ -228,7 +237,7 @@ TZR_API void tsuzuri_tz_yield(void) {
     atomic_store_explicit(&g->status, TZR_G_RUNNABLE, memory_order_relaxed);
     tzr_jspi_ready(g);
     tzr_jspi_suspend(g);
-    tzr_sched.cur = g;
+    tzr_jspi_current = g;
     atomic_store_explicit(&g->status, TZR_G_RUNNING, memory_order_relaxed);
 }
 
@@ -257,41 +266,46 @@ static void tzr_scope_release(tzr_scope *scope) {
     }
 }
 
-/* A G with its stack: a finished one, or a new one. A stack is never given back while the G that
- * finished on it is still on it (tzr_jspi_exit), so it is freed later, from another stack. */
+/* A G's record: a finished one's, or a new one. Its stack comes when it starts (tzr_jspi_prepare),
+ * so a G that waits in the queue to start holds no stack. */
 static tzr_g *tzr_galloc(void) {
-    tzr_g *g = tzr_sched.gfree;
+    tzr_g *g = tzr_sched.records;
     if (g != NULL) {
-        tzr_sched.gfree = g->link;
-        tzr_sched.gfree_count--;
+        tzr_sched.records = g->link;
+        tzr_sched.nrecords--;
         return g;
     }
     g = calloc(1, sizeof *g);
     if (g == NULL) return NULL;
-    g->stack = tsuzuri_alloc(TZR_JSPI_STACK);
-    if (g->stack == NULL) {
-        free(g);
-        return NULL;
-    }
-    uintptr_t base = (uintptr_t)g->stack;
-    g->stack_base = (uint32_t)base;
-    g->stack_top = (uint32_t)((base + TZR_JSPI_STACK) & ~(uintptr_t)15);
     g->kind = TZR_KIND_ROUTINE;
-    g->rand = 0x9E3779B97F4A7C15ULL ^ (uint64_t)base;
+    g->rand = 0x9E3779B97F4A7C15ULL ^ (uint64_t)(uintptr_t)g;
     return g;
 }
 
-static void tzr_gdestroy(tzr_g *g) {
-    tsuzuri_free(g->stack);
-    free(g->held);
-    free(g);
+/* tsuzuri_tz_entry (tzroutine-jspi.ll) calls it on the scheduler's stack before the G's first run:
+ * a stack that a finished G left (the zombie's first: no G is on any stack now), or a new one. The
+ * stacks are reused rather than freed, which would let the small blocks of the heap cut them up. */
+TZR_API void tzr_jspi_prepare(tzr_g *g) {
+    unsigned char *stack = tzr_sched.zombie;
+    if (stack != NULL) {
+        tzr_sched.zombie = NULL;
+    } else if ((stack = tzr_sched.stacks) != NULL) {
+        tzr_sched.stacks = *(unsigned char **)stack;
+        tzr_sched.nstacks--;
+    } else if ((stack = tsuzuri_alloc(TZR_JSPI_STACK)) == NULL) {
+        tzr_fatal("cannot allocate a tzroutine stack");
+    }
+    g->stack = stack;
+    uintptr_t base = (uintptr_t)stack;
+    g->stack_base = (uint32_t)base;
+    g->stack_top = (uint32_t)((base + TZR_JSPI_STACK) & ~(uintptr_t)15);
 }
 
 /* Starts `code(env)` on a new G counted in `scope` (already counted when `reserved`): the glue
  * queues it and calls tsuzuri_tz_entry when its turn comes. */
 static void tzr_spawn(tzr_scope *scope, void (*code)(void *), void *env, int reserved) {
     tzr_g *g = tzr_galloc();
-    if (g == NULL) tzr_fatal("cannot allocate a tzroutine stack");
+    if (g == NULL) tzr_fatal("cannot allocate a tzroutine");
     g->code = code;
     g->env = env;
     g->scope = scope;
@@ -306,34 +320,46 @@ static void tzr_spawn(tzr_scope *scope, void (*code)(void *), void *env, int res
 TZR_API void tsuzuri_tz_go(void (*code)(void *), void *env) { tzr_spawn(tzr_spawn_scope(tzr_current()), code, env, 0); }
 
 /* The end of a G, on its own stack (tzroutine.c's tzr_after_exit runs on g0, which WebAssembly has
- * not): the G is cached or left as the zombie, whose stack the next exit frees, and its scope
- * counts it off. Nothing runs on this stack after tsuzuri_tz_entry returns. */
+ * not): its scope counts it off, its stack is cached, or left as the zombie when the cache is full
+ * (a free would write into the stack that the G is on, so the zombie's stack is freed at the next
+ * exit, on another stack, unless a G that starts takes it), and its record is cached or freed. No
+ * G runs before tsuzuri_tz_entry has returned: the glue starts the next one after that. */
 static void tzr_jspi_exit(tzr_g *g) {
     atomic_store_explicit(&g->status, TZR_G_DEAD, memory_order_relaxed);
     tzr_scope *scope = g->scope;
+    atomic_fetch_sub(&tzr_sched.ngoroutines, 1);
+    tzr_jspi_current = NULL;
+    tzr_scope_release(scope);
+    if (tzr_sched.zombie != NULL) {
+        tsuzuri_free(tzr_sched.zombie);
+        tzr_sched.zombie = NULL;
+    }
+    if (tzr_sched.nstacks < TZR_JSPI_STACKS) {
+        *(unsigned char **)g->stack = tzr_sched.stacks;
+        tzr_sched.stacks = g->stack;
+        tzr_sched.nstacks++;
+    } else {
+        tzr_sched.zombie = g->stack;
+    }
+    g->stack = NULL;
+    g->stack_base = g->stack_top = 0;
     g->scope = NULL;
     g->spawn_scope = NULL;
     g->code = NULL;
     g->env = NULL;
-    if (tzr_sched.zombie != NULL) {
-        tzr_gdestroy(tzr_sched.zombie);
-        tzr_sched.zombie = NULL;
-    }
-    if (tzr_sched.gfree_count < TZR_JSPI_CACHE) {
-        g->link = tzr_sched.gfree;
-        tzr_sched.gfree = g;
-        tzr_sched.gfree_count++;
+    if (tzr_sched.nrecords < TZR_JSPI_RECORDS) {
+        g->link = tzr_sched.records;
+        tzr_sched.records = g;
+        tzr_sched.nrecords++;
     } else {
-        tzr_sched.zombie = g;
+        free(g->held);
+        free(g);
     }
-    atomic_fetch_sub(&tzr_sched.ngoroutines, 1);
-    tzr_sched.cur = &tzr_jspi_main;
-    tzr_scope_release(scope);
 }
 
 /* tsuzuri_tz_entry (tzroutine-jspi.ll) calls it on the new G's stack. */
 TZR_API void tzr_jspi_run(tzr_g *g) {
-    tzr_sched.cur = g;
+    tzr_jspi_current = g;
     atomic_store_explicit(&g->status, TZR_G_RUNNING, memory_order_relaxed);
     g->code(g->env);
     tzr_jspi_exit(g);

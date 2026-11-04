@@ -15,8 +15,11 @@
 
 @__stack_pointer = external addrspace(1) global ptr
 @tz.jspi.stack = internal global [16384 x i8] zeroinitializer, align 16
+; The runtime's current G (tzroutine-jspi.h), which the socket imports keep as they keep the stack.
+@tzr_jspi_current = external hidden global ptr
 
 declare void @tz.jspi.import.suspend(ptr) "wasm-import-module"="tsuzuri_tz" "wasm-import-name"="suspend"
+declare void @tzr_jspi_prepare(ptr)
 declare void @tzr_jspi_run(ptr)
 declare void @tzr_jspi_fire()
 
@@ -58,12 +61,13 @@ entry:
   ret void
 }
 
-; The first run of a G, which the glue calls through WebAssembly.promising: the G's stack and its
-; bounds (offsets 0 and 4 of its record), the G's code and its end (tzr_jspi_run), then the
-; scheduler's stack again.
+; The first run of a G, which the glue calls through WebAssembly.promising on the scheduler's
+; stack: the G's stack (tzr_jspi_prepare) and its bounds (offsets 0 and 4 of its record), the G's
+; code and its end (tzr_jspi_run), then the scheduler's stack again.
 define void @tsuzuri_tz_entry(i32 %g) nounwind {
 entry:
   %record = inttoptr i32 %g to ptr
+  call void @tzr_jspi_prepare(ptr %record)
   %base = load i32, ptr %record, align 4
   %field = getelementptr inbounds i8, ptr %record, i32 4
   %top = load i32, ptr %field, align 4
@@ -82,8 +86,10 @@ entry:
   %sp = load volatile ptr, ptr addrspace(1) @__stack_pointer
   %base = load volatile i32, ptr addrspace(1) @tsuzuri_stack_base
   %top = load volatile i32, ptr addrspace(1) @tsuzuri_stack_top
+  %g = load volatile ptr, ptr @tzr_jspi_current
   call void @tz.jspi.leave(ptr %sp)
   call void @tzr_jspi_fire()
+  store volatile ptr %g, ptr @tzr_jspi_current
   store volatile i32 %base, ptr addrspace(1) @tsuzuri_stack_base
   store volatile i32 %top, ptr addrspace(1) @tsuzuri_stack_top
   store volatile ptr %sp, ptr addrspace(1) @__stack_pointer

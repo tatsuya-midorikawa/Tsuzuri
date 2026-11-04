@@ -260,10 +260,11 @@ pub(crate) fn with_net_imports(ir: &str) -> String {
 
 /// TZ09: the Net imports of a wasm32 module that spawns (`--wasm-feature jspi`), which suspend the G
 /// that calls them. Each declaration becomes the import `@tz.jspi.net.<name>`, and `@tsuzuri_net_<name>`
-/// a function that keeps the G's stack pointer and stack bounds across the call, with the scheduler's
-/// stack in place meanwhile (`src/runtime/tzroutine-jspi.ll`, which the driver appends): the Gs that run
-/// while it is suspended move the stack pointer, which JSPI does not keep. The function is `noinline`,
-/// so that the caller's stack checks never see the scheduler's bounds.
+/// a function that keeps the G's stack pointer, stack bounds and record (the runtime's current G)
+/// across the call, with the scheduler's stack in place meanwhile (`src/runtime/tzroutine-jspi.ll`,
+/// which the driver appends): the Gs that run while it is suspended change them, and JSPI keeps only
+/// the engine's stack. The function is `noinline`, so that the caller's stack checks never see the
+/// scheduler's bounds.
 pub(crate) fn with_switching_net_imports(ir: &str) -> String {
     let mut output = String::with_capacity(ir.len() + 1024);
     let mut wrappers = String::new();
@@ -303,8 +304,10 @@ pub(crate) fn with_switching_net_imports(ir: &str) -> String {
              \x20 %sp = load volatile ptr, ptr addrspace(1) @__stack_pointer\n\
              \x20 %base = load volatile i32, ptr addrspace(1) @tsuzuri_stack_base\n\
              \x20 %top = load volatile i32, ptr addrspace(1) @tsuzuri_stack_top\n\
+             \x20 %g = load volatile ptr, ptr @tzr_jspi_current\n\
              \x20 call void @tz.jspi.leave(ptr %sp)\n\
              \x20 {call}call {result} @tz.jspi.net.{name}({formals})\n\
+             \x20 store volatile ptr %g, ptr @tzr_jspi_current\n\
              \x20 store volatile i32 %base, ptr addrspace(1) @tsuzuri_stack_base\n\
              \x20 store volatile i32 %top, ptr addrspace(1) @tsuzuri_stack_top\n\
              \x20 store volatile ptr %sp, ptr addrspace(1) @__stack_pointer\n\
