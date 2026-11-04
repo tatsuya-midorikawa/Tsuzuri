@@ -77,9 +77,19 @@ const LIGHT: [&str; 11] = [
     "@tsuzuri_tracked_free",
 ];
 
+/// A symbol without its `@` and the quotes of `@"name"`: the versions of a `@cpu` function are
+/// `@"tz.fn.M.f.cpu.avx2"` (`llvm_cpu.rs`).
+fn bare(name: &str) -> &str {
+    let name = name.strip_prefix('@').unwrap_or(name);
+    name.strip_prefix('"')
+        .and_then(|name| name.strip_suffix('"'))
+        .unwrap_or(name)
+}
+
 /// The functions whose code is Tsuzuri source: the ones that get checks.
 pub(super) fn emitted_from_source(name: &str) -> bool {
-    name.starts_with("@tz.fn.") || name.starts_with("@tz.specialized.")
+    let name = bare(name);
+    name.starts_with("tz.fn.") || name.starts_with("tz.specialized.")
 }
 
 /// The functions that the signal of Phase 2 may stop: the source's, and the generated functions that
@@ -88,10 +98,11 @@ pub(super) fn emitted_from_source(name: &str) -> bool {
 /// `Routine.scope` (a callback that is only a loop ends up in its `@tz.parallel.chunk.*`). None of
 /// them holds a runtime lock or reads thread storage itself.
 fn preemptible(name: &str) -> bool {
+    let bare = bare(name);
     emitted_from_source(name)
-        || name.starts_with("@tz.apply.")
-        || name.starts_with("@tz.tzroutine.start.")
-        || name.starts_with("@tz.parallel.chunk.")
+        || bare.starts_with("tz.apply.")
+        || bare.starts_with("tz.tzroutine.start.")
+        || bare.starts_with("tz.parallel.chunk.")
 }
 
 /// The symbols of the functions whose cycles the IR may not show: a function in a cycle of the
@@ -734,13 +745,24 @@ define internal i64 @tz.fn.M.walk(i64 %arg0) nounwind {\nentry:\n  %slot = alloc
     }
 
     #[test]
+    fn the_quoted_versions_of_a_cpu_function_are_source() {
+        // `@cpu` versions have quoted symbols (`llvm_cpu.rs`; Copilot on #91).
+        let ir = "define internal void @\"tz.fn.M.spin.cpu.avx2\"(ptr %arg0) nounwind {\nentry:\n  br label %b0\nb0:\n  call void @tsuzuri_tz_yield()\n  br label %b1\nb1:\n  %x = load i1, ptr %arg0\n  br i1 %x, label %b0, label %b2\nb2:\n  ret void\n}\ndeclare void @tsuzuri_tz_yield()\n";
+        assert_eq!(
+            checks(ir, &[]),
+            ["@\"tz.fn.M.spin.cpu.avx2\" br i1 %x, label %b0, label %b2"]
+        );
+    }
+
+    #[test]
     fn generated_functions_go_to_their_section_and_the_runtime_stays() {
         let ir = "define internal i64 @tz.fn.M.f(i64 %arg0) nounwind \"probe-stack\"=\"inline-asm\" !dbg !7 {\nentry:\n  ret i64 0\n}\n\
 define internal i64 @tz.specialized.3(i64 %arg0) nounwind {\nentry:\n  ret i64 0\n}\n\
 define internal ptr @tz.alloc(i64 %size) nounwind {\nentry:\n  ret ptr null\n}\n\
 define internal i8 @tz.apply.$once.4.1(ptr %env) nounwind alwaysinline {\nentry:\n  ret i8 0\n}\n\
 define internal void @tz.tzroutine.start.$once.4.1(ptr %env) {\nentry:\n  ret void\n}\n\
-define internal void @tz.parallel.chunk.0(ptr %context, i64 %start, i64 %end) {\nentry:\n  ret void\n}\n";
+define internal void @tz.parallel.chunk.0(ptr %context, i64 %start, i64 %end) {\nentry:\n  ret void\n}\n\
+define internal i64 @\"tz.fn.M.spin.cpu.avx2\"(i64 %arg0) nounwind {\nentry:\n  ret i64 0\n}\n";
         let elf = with_generated_section(ir.to_owned(), false);
         // The adapter and the entry of a tzroutine, into which -O3 inlines a body that is only a
         // loop (Copilot on #91).
@@ -755,7 +777,11 @@ define internal void @tz.parallel.chunk.0(ptr %context, i64 %start, i64 %end) {\
         assert!(elf.contains("@tz.specialized.3(i64 %arg0) nounwind section \"tz_text\" {\n"));
         assert!(elf.contains("@tz.alloc(i64 %size) nounwind {\n"));
         let mach_o = with_generated_section(ir.to_owned(), true);
-        assert_eq!(mach_o.matches(MACH_O_SECTION).count(), 5);
+        // the quoted symbol of a `@cpu` version (Copilot on #91)
+        assert!(
+            elf.contains("@\"tz.fn.M.spin.cpu.avx2\"(i64 %arg0) nounwind section \"tz_text\" {\n")
+        );
+        assert_eq!(mach_o.matches(MACH_O_SECTION).count(), 6);
         assert_eq!(with_generated_section(elf.clone(), false), elf);
     }
 

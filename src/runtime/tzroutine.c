@@ -1144,8 +1144,21 @@ TZR_API _Atomic int32_t tsuzuri_tz_preempt_pending;
 /* Takes back sysmon's request to p, if there is one: its G answered, or another G runs there. */
 static void tzr_preempt_clear(tzr_p *p) {
     if (atomic_load_explicit(&p->preempt, memory_order_relaxed)
-        && atomic_exchange_explicit(&p->preempt, 0, memory_order_relaxed))
+        && atomic_exchange_explicit(&p->preempt, 0, memory_order_acquire))
         atomic_fetch_sub_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
+}
+
+/* Sysmon asks the G on p to yield; 0 when p was asked already. The count goes up before the request
+ * is published (release), so whoever takes the request (acquire) subtracts one that is counted: the
+ * count is never below the requests that wait, and a check that finds it above them takes nothing. */
+static int tzr_preempt_ask(tzr_p *p) {
+    atomic_fetch_add_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
+    int expected = 0;
+    if (atomic_compare_exchange_strong_explicit(&p->preempt, &expected, 1, memory_order_release,
+                                                memory_order_relaxed))
+        return 1;
+    atomic_fetch_sub_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
+    return 0;
 }
 
 /* What runs on p now: G g on M m, or nothing. Sysmon reads the M (to signal it) and the handler of
@@ -2367,11 +2380,11 @@ __attribute__((no_sanitize("address"))) static void tzr_async_handler(int sig, s
         return;
     }
     /* Not this runtime's: whoever had SIGURG before. Its default is to ignore it. */
-    if (tzr_async_previous.sa_flags & SA_SIGINFO) {
-        if (tzr_async_previous.sa_sigaction) tzr_async_previous.sa_sigaction(sig, info, context);
-    } else if (tzr_async_previous.sa_handler != SIG_DFL && tzr_async_previous.sa_handler != SIG_IGN) {
-        tzr_async_previous.sa_handler(sig);
-    }
+    /* SIG_DFL and SIG_IGN are dispositions whatever the flags say (they share the union with
+     * sa_sigaction): neither is called */
+    if (tzr_async_previous.sa_handler == SIG_DFL || tzr_async_previous.sa_handler == SIG_IGN) return;
+    if (tzr_async_previous.sa_flags & SA_SIGINFO) tzr_async_previous.sa_sigaction(sig, info, context);
+    else tzr_async_previous.sa_handler(sig);
 }
 
 #if defined(TZR_ASAN)
@@ -2548,12 +2561,7 @@ static int tzr_preempt_scan(int64_t now) {
             && (atomic_load(&tzr_sched.runq_size) == 0 || atomic_load(&tzr_sched.npidle) > 0))
             continue;
         p->seen_at = now;
-        int expected = 0;
-        if (atomic_compare_exchange_strong_explicit(&p->preempt, &expected, 1, memory_order_relaxed,
-                                                    memory_order_relaxed))
-            atomic_fetch_add_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
-        else
-            tzr_async_kick(p); /* Phase 2: asked 10 ms ago, and no check answered */
+        if (!tzr_preempt_ask(p)) tzr_async_kick(p); /* Phase 2: asked 10 ms ago, and no check answered */
         asked = 1;
     }
     return asked;
@@ -2616,7 +2624,7 @@ TZR_API void tsuzuri_tz_preempt_check(void) {
     if (m == NULL || m->curg == NULL || m->p == NULL) return;
     tzr_p *p = m->p;
     if (!atomic_load_explicit(&p->preempt, memory_order_relaxed)
-        || !atomic_exchange_explicit(&p->preempt, 0, memory_order_relaxed))
+        || !atomic_exchange_explicit(&p->preempt, 0, memory_order_acquire))
         return;
     atomic_fetch_sub_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
     if (tzr_trap_boundary()) return;

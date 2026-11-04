@@ -2542,10 +2542,7 @@ static void test_dchan_deadlock(void) {
 
 /* TZ10: a request of sysmon (made by hand here) makes the G that checks yield, takes itself back,
  * and leaves the global count at 0; a check without a request, or on a pseudo-G, does nothing. */
-static void preempt_ask(tzr_p *p) {
-    int expected = 0;
-    if (atomic_compare_exchange_strong(&p->preempt, &expected, 1)) atomic_fetch_add(&tsuzuri_tz_preempt_pending, 1);
-}
+static void preempt_ask(tzr_p *p) { (void)tzr_preempt_ask(p); }
 static _Atomic int preempt_flag_moved;
 static void preempt_flag_body(void *env) {
     (void)env;
@@ -2740,10 +2737,38 @@ static void test_preempt_async_runtime(void) {
     CHECK(atomic_load(&urgent_foreign) == foreign + 1);
     printf("preempt async runtime: %llu signals, no stop\n", (unsigned long long)(atomic_load(&tzr_async.signals) - signals));
 }
+
+/* A program that ignores SIGURG and left SA_SIGINFO in the flags: the runtime's handler passes a
+ * SIGURG of the program's own to that disposition, which calls nothing (SIG_IGN shares the union
+ * with sa_sigaction). */
+static void urgent_nothing(void *env) { (void)env; }
+static void urgent_ignored_body(void) {
+    struct sigaction ignored;
+    memset(&ignored, 0, sizeof ignored);
+    ignored.sa_handler = SIG_IGN;
+    ignored.sa_flags = SA_SIGINFO;
+    sigemptyset(&ignored.sa_mask);
+    sigaction(SIGURG, &ignored, NULL);
+    void *scope = tsuzuri_tz_scope_enter(); /* the first spawn starts sysmon, which installs its handler */
+    tsuzuri_tz_go(urgent_nothing, NULL);
+    join(scope);
+    for (int i = 0; i < 2000 && !atomic_load(&tzr_async.enabled); i++) {
+        struct timespec t = {0, 1000000};
+        nanosleep(&t, NULL);
+    }
+    if (!atomic_load(&tzr_async.enabled)) _exit(3);
+    raise(SIGURG);
+    _exit(48);
+}
+static void test_preempt_async_ignored(void) {
+    CHECK(exited_with(run_child("child-urgent-ignored"), 48));
+    printf("preempt async ignored: ok\n");
+}
 #else
 static void test_preempt_async(void) { printf("preempt async: not built (Phase 1 only)\n"); }
 static void test_preempt_async_values(void) { printf("preempt async values: not built\n"); }
 static void test_preempt_async_runtime(void) { printf("preempt async runtime: not built\n"); }
+static void test_preempt_async_ignored(void) { printf("preempt async ignored: not built\n"); }
 #endif
 
 int main(int argc, char **argv) {
@@ -2756,6 +2781,9 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-timer-deadlock") == 0) timer_deadlock_body();
     if (only && strcmp(only, "child-recover") == 0) recover_body();
     if (only && strcmp(only, "child-report") == 0) report_body();
+#if defined(TZR_ASYNC)
+    if (only && strcmp(only, "child-urgent-ignored") == 0) urgent_ignored_body();
+#endif
 #if !defined(_WIN32)
     if (only && strcmp(only, "child-dchan-deadlock") == 0) dchan_deadlock_body();
 #endif
@@ -2842,6 +2870,7 @@ int main(int argc, char **argv) {
     RUN("preempt_async", test_preempt_async());
     RUN("preempt_async_values", test_preempt_async_values());
     RUN("preempt_async_runtime", test_preempt_async_runtime());
+    RUN("preempt_async_ignored", test_preempt_async_ignored());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;
