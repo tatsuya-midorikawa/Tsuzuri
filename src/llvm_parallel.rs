@@ -234,15 +234,13 @@ impl FunctionEmitter<'_, '_> {
         self.begin(&done);
     }
 
-    /// Runs `symbol(context, chunk)` for each chunk and returns when they have all run: on the task
-    /// runtime's pool, or, in a native program that uses the tzroutine runtime, on its scheduler
-    /// (TZ11), whose `tsuzuri_tz_parallel` has the caller and helper tzroutines claim the chunks.
-    /// Inside a trap boundary it answers 3, and the pool runs them, each item under the boundary. A
-    /// `Routine.scope` gives each child a tzroutine of its own, whose children may wait for each
-    /// other, so a deadlock among them traps at the call; `Task.scope` stays on the pool (TZ12).
+    /// Runs `symbol(context, chunk)` for each chunk and returns when they have all run: natively on
+    /// the tzroutine scheduler (TZ11; every native program since TZ12), whose `tsuzuri_tz_parallel`
+    /// has the caller and helper tzroutines claim the chunks (inside a trap boundary the caller runs
+    /// them all), and on WebAssembly on the target's `tsuzuri_task_parallel` (in order, or on the
+    /// workers of `--wasm-feature threads`). A `Routine.scope` gives each child a tzroutine of its
+    /// own, whose children may wait for each other, so a deadlock among them traps at the call.
     fn parallel_call(&mut self, operation: Builtin, symbol: &str, context: &str, chunks: &str) {
-        let pool =
-            format!("call void @tsuzuri_task_parallel(ptr {symbol}, ptr {context}, i64 {chunks})");
         if operation == Builtin::RoutineScope {
             self.intrinsics
                 .insert("declare i32 @tsuzuri_tz_scope_run(ptr, ptr, i64)".into());
@@ -252,23 +250,17 @@ impl FunctionEmitter<'_, '_> {
             self.channel_not_deadlocked(&status);
             return;
         }
-        if operation == Builtin::TaskScope || !self.globals.tzroutine || self.globals.wasm {
-            self.instruction(pool);
+        if self.globals.wasm {
+            self.instruction(format!(
+                "call void @tsuzuri_task_parallel(ptr {symbol}, ptr {context}, i64 {chunks})"
+            ));
             return;
         }
         self.intrinsics
             .insert("declare i32 @tsuzuri_tz_parallel(ptr, ptr, i64)".into());
-        let status = self.value(format!(
+        self.instruction(format!(
             "call i32 @tsuzuri_tz_parallel(ptr {symbol}, ptr {context}, i64 {chunks})"
         ));
-        let bounded = self.value(format!("icmp eq i32 {status}, 3"));
-        let on_pool = self.label();
-        let after = self.label();
-        self.branch(&bounded, &on_pool, &after);
-        self.begin(&on_pool);
-        self.instruction(pool);
-        self.jump(&after);
-        self.begin(&after);
     }
 
     /// One job of `Parallel.for_each_chunk`: a contiguous range of chunks, run in order. Chunk `c` holds

@@ -1393,21 +1393,11 @@ fn emit_program(
     // The passes over the whole text run once, on the program that is kept: the text of a large
     // program has hundreds of thousands of lines, and the first pass of an exhausted budget is
     // thrown away.
-    // TZ11: in a native program that uses the tzroutine runtime, Parallel.* starts helper
-    // tzroutines without a spawn of its own: their frames need the probes, and a pool call inside a
-    // chunk the blocking wrapper, as in a program that spawns.
-    let spawning =
-        spawns(module) || (!wasm && uses_tzroutine(module) && scheduler_parallel(module));
+    // TZ11, TZ12: a native Parallel.* starts helper tzroutines without a spawn of its own: their
+    // frames need the probes, as in a program that spawns.
+    let spawning = spawns(module) || (!wasm && scheduler_parallel(module));
     let output = if spawning {
-        let mut boundaries = tzroutine_boundaries(module);
-        boundaries.extend(worker_callbacks(&output));
-        with_blocking_calls(with_tzroutine_scopes(output, &boundaries))
-    } else {
-        output
-    };
-    // After `with_blocking_calls`, so that a join announces its items inside the blocking call.
-    let output = if !wasm && output.contains("@tsuzuri_tz_") {
-        with_task_accounting(output, spawning)
+        with_tzroutine_scopes(output, &tzroutine_boundaries(module))
     } else {
         output
     };
@@ -1441,29 +1431,6 @@ fn tzroutine_boundaries(module: &CheckedModule) -> BTreeSet<String> {
         boundaries.insert(format!("tz_{}", function.name));
     }
     boundaries
-}
-
-/// The functions that the task runtime runs on its pool workers (the tasks of `Task.parallel`, the
-/// children of `Task.scope`, the chunks of `Parallel.*`). A worker belongs to no boundary, so each of
-/// them waits, before it returns, for the tzroutines that it spawned (TZ02): the parallel call, and so
-/// the boundary around it, ends after them.
-fn worker_callbacks(ir: &str) -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    for callee in [
-        "@tsuzuri_task_parallel(ptr @",
-        "@tsuzuri_task_parallel_results(ptr @",
-        "@tz.mutex.parallel(ptr @",
-        "@tz.mutex.parallel_results(ptr @",
-    ] {
-        for (at, _) in ir.match_indices(callee) {
-            let name: String = ir[at + callee.len()..]
-                .chars()
-                .take_while(|c| !matches!(c, ',' | ')' | ' '))
-                .collect();
-            found.insert(name);
-        }
-    }
-    found
 }
 
 /// Makes every function of a program that spawns probe the pages of a frame larger than a page as
@@ -1642,209 +1609,6 @@ pub(crate) fn with_blocking_externs(ir: String, symbols: &BTreeSet<String>) -> S
     output
 }
 
-/// Makes a tzroutine give its P away while it waits in the task runtime (TZ02): each call that hands
-/// items to the pool and joins them is between `tsuzuri_tz_block_enter` and `_leave`, so the work
-/// that the join waits for (a pool worker's child tzroutine) runs even with one P.
-pub(crate) fn with_blocking_calls(ir: String) -> String {
-    // The runtime's own calls: the `tz.mutex.parallel*` wrappers of a program with a Mutex make them.
-    const CALLS: [&str; 2] = [
-        "call void @tsuzuri_task_parallel(",
-        "call i64 @tsuzuri_task_parallel_results(",
-    ];
-    let mut output = String::with_capacity(ir.len() + 256);
-    let mut wrapped = false;
-    for line in ir.split_inclusive('\n') {
-        if CALLS.iter().any(|call| line.contains(call)) {
-            wrapped = true;
-            output.push_str("  call void @tsuzuri_tz_block_enter()\n");
-            output.push_str(line);
-            output.push_str("  call void @tsuzuri_tz_block_leave()\n");
-        } else {
-            output.push_str(line);
-        }
-    }
-    if wrapped {
-        output.push_str(
-            "declare void @tsuzuri_tz_block_enter()\ndeclare void @tsuzuri_tz_block_leave()\n",
-        );
-    }
-    output
-}
-
-/// Tells the deadlock detector of the tzroutine runtime about the items of the task runtime, in a
-/// native program that uses the tzroutine runtime (TZ03): each call that hands items to the task
-/// runtime announces them (`tsuzuri_tz_parallel_begin` and `_end`, by the call's context), and the
-/// task runtime calls a guard of each worker callback instead of the callback, which marks its
-/// thread as running while it runs an item (`tsuzuri_tz_task_enter` and `_leave`). Without it, a
-/// `Channel` wait in one item could be judged a deadlock before the item that would wake it has
-/// started on another thread.
-///
-/// In a program with a failure domain, the guard of an item that runs under a trap frame (one whose
-/// call was made inside a domain) catches the item's trap (`tsuzuri_boundary_item` of
-/// src/runtime/trap.c, with the frame's owner), sets back what the trap skipped (in a spawning
-/// program the blocking depth and the spawn scope, then the mark of a `Mutex.with_lock`), ends the
-/// item, which drops the batches announced in it, and raises the trap again
-/// (`tsuzuri_boundary_resume`): the task runtime sees it as before, and the thread is as before the
-/// item.
-pub(crate) fn with_task_accounting(ir: String, spawning: bool) -> String {
-    // The runtime's own calls only: the `tz.mutex.parallel*` wrappers of a program with a Mutex make
-    // them, so announcing the wrapper's call too would count the batch twice.
-    const CALLS: [&str; 2] = [
-        "call void @tsuzuri_task_parallel(",
-        "call i64 @tsuzuri_task_parallel_results(",
-    ];
-    // The references that hand a callback to the task runtime, and whether it returns a failure.
-    const REFERENCES: [(&str, bool); 4] = [
-        ("@tsuzuri_task_parallel(ptr @", false),
-        ("@tsuzuri_task_parallel_results(ptr @", true),
-        ("@tz.mutex.parallel(ptr @", false),
-        ("@tz.mutex.parallel_results(ptr @", true),
-    ];
-    let callbacks = worker_callbacks(&ir);
-    let domain = ir.contains("@tsuzuri_domain_run(");
-    // TZ06: the locks of the tzroutine runtime that a trap left held are released.
-    let locks = ir.contains("@tsuzuri_tz_mutex32_lock(") || ir.contains("@tsuzuri_tz_rw_");
-    let mut results = BTreeSet::new();
-    let mut output = String::with_capacity(ir.len() + 256 + callbacks.len() * 1024);
-    let mut wrapped = false;
-    for line in ir.split_inclusive('\n') {
-        let mut line = std::borrow::Cow::Borrowed(line);
-        for (reference, result) in REFERENCES {
-            let Some(at) = line.find(reference) else {
-                continue;
-            };
-            let name_at = at + reference.len();
-            let name: String = line[name_at..]
-                .chars()
-                .take_while(|c| !matches!(c, ',' | ')' | ' '))
-                .collect();
-            if result {
-                results.insert(name.clone());
-            }
-            line.to_mut().insert_str(name_at + name.len(), ".guard");
-        }
-        let body = line.trim_start();
-        let call = CALLS
-            .iter()
-            .find_map(|call| body.find(call).map(|at| &body[at + call.len()..]));
-        if let Some(arguments) = call {
-            // `(ptr @callback, ptr %context, i64 <items>)`
-            let arguments: Vec<&str> = arguments
-                .split_once(')')
-                .map_or("", |(inside, _)| inside)
-                .split(", ")
-                .collect();
-            if let [_, context, items] = arguments[..] {
-                wrapped = true;
-                let _ = writeln!(
-                    output,
-                    "  call void @tsuzuri_tz_parallel_begin({context}, {items})"
-                );
-                output.push_str(&line);
-                let _ = writeln!(
-                    output,
-                    "  call void @tsuzuri_tz_parallel_end({context}, {items})"
-                );
-                continue;
-            }
-        }
-        output.push_str(&line);
-    }
-    for callback in &callbacks {
-        wrapped = true;
-        output.push_str(&item_guard(
-            callback,
-            results.contains(callback),
-            domain,
-            spawning,
-            locks,
-        ));
-    }
-    if wrapped {
-        output.push_str(
-            "declare void @tsuzuri_tz_parallel_begin(ptr, i64)\ndeclare void @tsuzuri_tz_parallel_end(ptr, i64)\ndeclare void @tsuzuri_tz_task_enter(ptr, ptr)\ndeclare void @tsuzuri_tz_task_leave(ptr, ptr)\n",
-        );
-    }
-    if domain && !callbacks.is_empty() {
-        output.push_str(
-            "declare ptr @tsuzuri_boundary_owner()\ndeclare i32 @tsuzuri_boundary_item(ptr, ptr, ptr, ptr, i64, ptr, ptr)\ndeclare void @tsuzuri_boundary_resume(ptr)\n",
-        );
-        if spawning {
-            output.push_str(
-                "declare i32 @tsuzuri_tz_block_depth()\ndeclare void @tsuzuri_tz_block_restore(i32)\ndeclare ptr @tsuzuri_tz_scope_current()\ndeclare void @tsuzuri_tz_scope_reset(ptr)\n",
-            );
-        }
-        if locks && !output.contains("declare i32 @tsuzuri_tz_held_depth()") {
-            output.push_str(
-                "declare i32 @tsuzuri_tz_held_depth()\ndeclare void @tsuzuri_tz_held_restore(i32)\n",
-            );
-        }
-    }
-    output
-}
-
-/// The guard that the task runtime calls instead of the worker callback `name` (see
-/// [`with_task_accounting`]). The state of the item, `{ i64, i32, i32 }`, is `tzr_item_frame` of
-/// src/runtime/tzroutine.c.
-fn item_guard(name: &str, result: bool, domain: bool, spawning: bool, locks: bool) -> String {
-    let ty = if result { "i32" } else { "void" };
-    let mut text = format!(
-        "define internal {ty} @{name}.guard(ptr %context, i64 %index) nounwind {{\nentry:\n  %item = alloca {{ i64, i32, i32 }}, align 8\n"
-    );
-    if result || domain {
-        text.push_str("  %failed = alloca i32, align 4\n");
-    }
-    if domain {
-        text.push_str(
-            "  %trap = alloca { i32, i32 }, align 4\n  store i32 0, ptr %failed, align 4\n",
-        );
-    }
-    text.push_str("  call void @tsuzuri_tz_task_enter(ptr %context, ptr %item)\n");
-    let call = if result {
-        format!(
-            "  %value = call i32 @{name}(ptr %context, i64 %index)\n  store i32 %value, ptr %failed, align 4\n"
-        )
-    } else {
-        format!("  call void @{name}(ptr %context, i64 %index)\n")
-    };
-    if domain {
-        let mut restore = String::new();
-        if spawning {
-            text.push_str(
-                "  %depth = call i32 @tsuzuri_tz_block_depth()\n  %scope = call ptr @tsuzuri_tz_scope_current()\n",
-            );
-            restore.push_str(
-                "  call void @tsuzuri_tz_block_restore(i32 %depth)\n  call void @tsuzuri_tz_scope_reset(ptr %scope)\n",
-            );
-        }
-        if locks {
-            text.push_str("  %held = call i32 @tsuzuri_tz_held_depth()\n");
-            restore.push_str("  call void @tsuzuri_tz_held_restore(i32 %held)\n");
-        }
-        let (run, run_result) = if result {
-            ("null".to_owned(), format!("@{name}"))
-        } else {
-            (format!("@{name}"), "null".to_owned())
-        };
-        let _ = write!(
-            text,
-            "  %owner = call ptr @tsuzuri_boundary_owner()\n  %framed = icmp ne ptr %owner, null\n  br i1 %framed, label %guarded, label %direct\n\
-             direct:\n{call}  br label %done\n\
-             guarded:\n  %trapped = call i32 @tsuzuri_boundary_item(ptr %owner, ptr {run}, ptr {run_result}, ptr %context, i64 %index, ptr %failed, ptr %trap)\n  %caught = icmp ne i32 %trapped, 0\n  br i1 %caught, label %raise, label %done\n\
-             raise:\n{restore}  call void @tsuzuri_tz_task_leave(ptr %context, ptr %item)\n  call void @tsuzuri_boundary_resume(ptr %trap)\n  unreachable\n\
-             done:\n"
-        );
-    } else {
-        text.push_str(&call);
-    }
-    text.push_str("  call void @tsuzuri_tz_task_leave(ptr %context, ptr %item)\n");
-    text.push_str(if result {
-        "  %failure = load i32, ptr %failed, align 4\n  ret i32 %failure\n}\n"
-    } else {
-        "  ret void\n}\n"
-    });
-    text
-}
 
 /// Emits the program once, up to the passes over its whole text. `exhausted` tells whether a worker
 /// request found the budget spent.
@@ -2403,59 +2167,52 @@ fn emit_program_in(
             let _ = writeln!(output, "declare {result} @{symbol}(ptr, i64)");
         }
     }
-    // A program that calls `Mutex.with_lock` starts parallel work only through wrappers that check
-    // that no lock is held, so the renaming happens before the runtime text is appended (F10).
+    // WebAssembly keeps the runtime of F10 for `Parallel`, `Mutex` and `DataChannel`: there a program
+    // that calls `Mutex.with_lock` starts parallel work only through a wrapper that checks that no
+    // lock is held, so the renaming happens before the runtime text is appended. A native program
+    // calls the tzroutine runtime for all three (TZ12): only its channels are declared here.
     let mutex = runtime_symbols.contains("tsuzuri_mutex_lock");
     let channel = runtime_symbols.prefix("tsuzuri_channel_");
-    let parallel = runtime_symbols.contains("tsuzuri_task_parallel")
-        || runtime_symbols.contains("tsuzuri_task_parallel_results");
+    let parallel = runtime_symbols.contains("tsuzuri_task_parallel");
     if mutex && parallel {
-        output = output
-            .replace(
-                "call void @tsuzuri_task_parallel(",
-                "call void @tz.mutex.parallel(",
-            )
-            .replace(
-                "call i64 @tsuzuri_task_parallel_results(",
-                "call i64 @tz.mutex.parallel_results(",
-            );
+        output = output.replace(
+            "call void @tsuzuri_task_parallel(",
+            "call void @tz.mutex.parallel(",
+        );
     }
     if parallel || mutex || channel {
         // The runtime text above may end without a newline.
         if (mutex || channel) && !output.ends_with('\n') {
             output.push('\n');
         }
-        // The native runtime, and the declarations that the driver and the test runner link it
-        // for, are the same for a program that only locks or only uses a channel.
         let sequential = wasm && !instrumentation.wasm_threads;
         if parallel && sequential {
             runtime_symbols.append(&mut output, include_str!("runtime/task-wasm.ll"));
-        } else if !sequential {
-            output.push_str(
-                "declare void @tsuzuri_task_parallel(ptr, ptr, i64)\ndeclare i64 @tsuzuri_task_parallel_results(ptr, ptr, i64)\n",
-            );
+        } else if parallel {
+            output.push_str("declare void @tsuzuri_task_parallel(ptr, ptr, i64)\n");
         }
-        if mutex || channel {
-            if sequential {
-                runtime_symbols.append(&mut output, include_str!("runtime/sync-wasm.ll"));
-                if channel {
-                    runtime_symbols.append(&mut output, include_str!("runtime/channel-wasm.ll"));
-                }
-            } else {
-                if mutex {
-                    output.push_str(
-                        "declare i32 @tsuzuri_mutex_lock(ptr)\ndeclare void @tsuzuri_mutex_unlock(ptr)\ndeclare i32 @tsuzuri_mutex_parallel_ok()\n",
-                    );
-                }
-                if channel {
-                    output.push_str(
-                        "declare i32 @tsuzuri_mutex_wait_ok()\ndeclare i32 @tsuzuri_channel_send(ptr, ptr)\ndeclare i32 @tsuzuri_channel_recv(ptr, ptr)\ndeclare void @tsuzuri_channel_clone_sender(ptr)\ndeclare i32 @tsuzuri_channel_close(ptr, i32)\n",
-                    );
-                }
+        if (mutex || channel) && sequential {
+            runtime_symbols.append(&mut output, include_str!("runtime/sync-wasm.ll"));
+            if channel {
+                runtime_symbols.append(&mut output, include_str!("runtime/channel-wasm.ll"));
             }
-            if mutex && parallel {
-                runtime_symbols.append(&mut output, include_str!("runtime/sync.ll"));
+        } else if mutex || channel {
+            if mutex {
+                output.push_str(
+                    "declare i32 @tsuzuri_mutex_lock(ptr)\ndeclare void @tsuzuri_mutex_unlock(ptr)\ndeclare i32 @tsuzuri_mutex_parallel_ok()\n",
+                );
             }
+            if channel && wasm {
+                output.push_str("declare i32 @tsuzuri_mutex_wait_ok()\n");
+            }
+            if channel {
+                output.push_str(
+                    "declare i32 @tsuzuri_channel_send(ptr, ptr)\ndeclare i32 @tsuzuri_channel_recv(ptr, ptr)\ndeclare void @tsuzuri_channel_clone_sender(ptr)\ndeclare i32 @tsuzuri_channel_close(ptr, i32)\n",
+                );
+            }
+        }
+        if mutex && parallel {
+            runtime_symbols.append(&mut output, include_str!("runtime/sync.ll"));
         }
     }
     if runtime_symbols.prefix("tz.debug.write") {

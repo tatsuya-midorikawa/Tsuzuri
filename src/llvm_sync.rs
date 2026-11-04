@@ -89,9 +89,10 @@ impl FunctionEmitter<'_, '_> {
                 };
                 let tuple = Type::Tuple(vec![Type::Integer(32, false), value.clone()]);
                 let cell = self.shared_cell(record, "%arg0");
-                // TZ06: a program that uses the tzroutine runtime locks with the runtime's lock,
-                // which belongs to the G: a holder may wait, and only the same mutex again traps.
-                if self.globals.tzroutine {
+                // TZ06, TZ12: a native program, and a WebAssembly one that uses the tzroutine
+                // runtime, lock with the runtime's lock, which belongs to the G: a holder may wait,
+                // and only the same mutex again traps.
+                if self.globals.tzroutine || !self.globals.wasm {
                     self.runtime_lock("tsuzuri_tz_mutex32_lock", &cell, 4);
                 } else {
                     // The status is zero unless this thread holds a mutex already; the runtime has
@@ -108,7 +109,7 @@ impl FunctionEmitter<'_, '_> {
                 let borrow = Type::Reference(Box::new(value), true);
                 let (output, _) =
                     self.apply_value("%arg1", &parameters[1], Some((&borrow, &pointer)), false);
-                if self.globals.tzroutine {
+                if self.globals.tzroutine || !self.globals.wasm {
                     self.runtime_unlock("tsuzuri_tz_mutex32_unlock", &cell);
                 } else {
                     self.instruction(format!("call void @tsuzuri_mutex_unlock(ptr {cell})"));
@@ -266,8 +267,13 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// Traps unless this thread holds no `Mutex` lock: a critical section never waits, so a
-    /// channel operation, which may wait, is refused inside one on every schedule (F10 D7).
+    /// channel operation, which may wait, is refused inside one on every schedule (F10 D7). Only
+    /// WebAssembly keeps that lock: a native `DataChannel` waits on the scheduler, where a G may
+    /// wait while it holds a lock (TZ12).
     fn channel_unlocked(&mut self) {
+        if !self.globals.wasm {
+            return;
+        }
         let status = self.value("call i32 @tsuzuri_mutex_wait_ok()".to_owned());
         let free = self.value(format!("icmp ne i32 {status}, 0"));
         self.guard(&free, TrapKind::Assert);

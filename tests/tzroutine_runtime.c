@@ -898,9 +898,8 @@ static void test_select_same(void) {
     free(feed.c);
 }
 
-/* TZ02: a G inside a blocking call acts as its thread's pseudo-G. With one P, the tzroutines that
- * it spawns there run (the P went away), its wait there stops the thread instead of switching the G
- * away, the calls nest, and afterwards the G has a P again and can switch. */
+/* TZ08: blocking calls nest, and after the outer exit the G has a P again: it spawns and switches,
+ * and with one P the tzroutines that it spawned run. */
 static _Atomic int64_t blocking_hits;
 static void blocking_child(void *env) {
     (void)env;
@@ -908,15 +907,16 @@ static void blocking_child(void *env) {
 }
 static void blocking_routine(void *env) {
     (void)env;
-    tsuzuri_tz_block_enter();
-    void *scope = tsuzuri_tz_scope_enter(); /* as a pool callback on the joining thread does */
+    tsuzuri_tz_blocking_enter();
+    tsuzuri_tz_blocking_enter();
+    for (volatile int spin = 0; spin < 20000; spin++) {
+    }
+    tsuzuri_tz_blocking_exit();
+    tsuzuri_tz_blocking_exit();
+    void *scope = tsuzuri_tz_scope_enter();
     for (int i = 0; i < 4; i++) tsuzuri_tz_go(blocking_child, NULL);
-    tsuzuri_tz_yield(); /* the thread's yield: the G stays */
-    join(scope);
-    tsuzuri_tz_block_enter();
-    tsuzuri_tz_block_leave();
-    tsuzuri_tz_block_leave();
     tsuzuri_tz_yield();
+    join(scope);
     atomic_fetch_add(&blocking_hits, 100);
 }
 static void test_blocking(void) {
@@ -929,10 +929,10 @@ static void test_blocking(void) {
     }
 }
 
-/* TZ02: the spawn of the main thread gives the idle P of a blocking call to an M that tzr_wakep starts
- * spinning, and the G leaves its call before that M runs, so it waits for the P. The M hands the P
- * over and parks: it stops spinning, or tzr_wakep would never start an M again and the next spawn of
- * the main thread would wait for nobody. With one P, the first round sets this up. */
+/* TZ02, TZ08: the spawn of the main thread makes sysmon give the P of a blocking call to an M, and
+ * the G leaves its call before that M runs, so it waits for the P. The M hands the P over and parks:
+ * it stops spinning, or tzr_wakep would never start an M again and the next spawn of the main thread
+ * would wait for nobody. With one P, the first round sets this up. */
 static _Atomic int donor_inside;
 static _Atomic int donor_leave;
 static _Atomic int64_t donor_hits;
@@ -942,11 +942,11 @@ static void donor_child(void *env) {
 }
 static void donor_blocker(void *env) {
     (void)env;
-    tsuzuri_tz_block_enter();
+    tsuzuri_tz_blocking_enter();
     atomic_store(&donor_inside, 1);
     while (!atomic_load(&donor_leave)) {
     }
-    tsuzuri_tz_block_leave();
+    tsuzuri_tz_blocking_exit();
     atomic_fetch_add(&donor_hits, 100);
 }
 static void test_donor(void) {
@@ -966,72 +966,6 @@ static void test_donor(void) {
         while (atomic_load(&tzr_sched.nmspinning) != 0 && seconds() - t < 2.0) tzr_os_yield();
         CHECK(atomic_load(&tzr_sched.nmspinning) == 0);
     }
-}
-
-/* TZ03: the mark of a failure domain is the number of the last batch announced. A batch that
- * another thread announced before the mark and ended before the reset, and one that this thread
- * announced before the mark (the enclosing batch of an item that calls Domain.run), stay; what this
- * thread announced after the mark, which a trap left, goes. An item's end drops what was announced
- * in the item in the same way, and puts its thread back in the state it had before the item. */
-static char batch_outer, batch_other, batch_inner, batch_item;
-static void (*batch_step)(void);
-static void batch_other_begin(void) { tsuzuri_tz_parallel_begin(&batch_other, 1); }
-static void batch_other_end(void) { tsuzuri_tz_parallel_end(&batch_other, 1); }
-#if defined(_WIN32)
-static DWORD WINAPI batch_thread(LPVOID arg) {
-    (void)arg;
-    batch_step();
-    return 0;
-}
-#else
-static void *batch_thread(void *arg) {
-    (void)arg;
-    batch_step();
-    return NULL;
-}
-#endif
-static void on_other_thread(void (*step)(void)) {
-    batch_step = step;
-#if defined(_WIN32)
-    HANDLE thread = CreateThread(NULL, 0, batch_thread, NULL, 0, NULL);
-    CHECK(thread != NULL && WaitForSingleObject(thread, INFINITE) == WAIT_OBJECT_0 && CloseHandle(thread));
-#else
-    pthread_t thread;
-    CHECK(pthread_create(&thread, NULL, batch_thread, NULL) == 0 && pthread_join(thread, NULL) == 0);
-#endif
-}
-static int64_t pending(void) {
-    tzr_mutex_lock(&tzr_sched.lock);
-    int64_t n = tzr_sched.npending;
-    tzr_mutex_unlock(&tzr_sched.lock);
-    return n;
-}
-static void test_batches(void) {
-    tsuzuri_tz_parallel_begin(&batch_outer, 2); /* this thread waits for the batch */
-    /* it runs one item, which announces a batch and traps: the item's end drops that batch */
-    tzr_item_frame frame;
-    tsuzuri_tz_task_enter(&batch_outer, &frame);
-    CHECK(frame.idle && pending() == 1);
-    tsuzuri_tz_parallel_begin(&batch_item, 4);
-    tsuzuri_tz_task_leave(&batch_outer, &frame);
-    CHECK(pending() == 1);
-    tzr_mutex_lock(&tzr_sched.lock);
-    CHECK(tzr_batch_of(&batch_item) == NULL && tzr_pseudo()->idle); /* waiting for the batch again */
-    tzr_mutex_unlock(&tzr_sched.lock);
-    /* a failure domain inside the wait, while another thread's batch comes and goes */
-    on_other_thread(batch_other_begin);
-    uint64_t mark = tsuzuri_tz_parallel_mark();
-    on_other_thread(batch_other_end);
-    tsuzuri_tz_parallel_begin(&batch_inner, 3);
-    CHECK(pending() == 4);
-    tsuzuri_tz_parallel_reset(mark);
-    CHECK(pending() == 1);
-    tzr_mutex_lock(&tzr_sched.lock);
-    CHECK(tzr_batch_of(&batch_outer) != NULL && tzr_batch_of(&batch_inner) == NULL);
-    CHECK(!tzr_pseudo()->idle); /* it runs again */
-    tzr_mutex_unlock(&tzr_sched.lock);
-    tsuzuri_tz_parallel_end(&batch_outer, 2);
-    CHECK(pending() == 0);
 }
 
 /* 25. timers (TZ05). The channel blocks come from the caller, as the generated code allocates them;
@@ -1778,8 +1712,8 @@ static void test_context_after(void) {
 /* ---------------------------------------------------------------- Parallel and Routine.scope (TZ11) */
 
 /* tsuzuri_tz_parallel calls every index once, from a pseudo-G and from a tzroutine, with any number
- * of Ps; a nested call inside a callback works on its own; inside a trap boundary it asks for the
- * task runtime's pool (3) and calls nothing. */
+ * of Ps; a nested call inside a callback works on its own; inside a trap boundary (TZ12) the caller
+ * calls every index itself, in order, and no helper tzroutine starts. */
 enum { CLAIMS_MAX = 10000 };
 static _Atomic int64_t claims[CLAIMS_MAX];
 static void claim(void *ctx, uint64_t i) {
@@ -1807,6 +1741,11 @@ static void nested_outer(void *ctx, uint64_t i) {
 }
 #if !defined(_WIN32)
 static void *test_owner(void) { return &nested_total; }
+static _Atomic int64_t ordered_next;
+static void ordered(void *ctx, uint64_t i) {
+    CHECK(ctx == claims && (int64_t)i == atomic_fetch_add(&ordered_next, 1));
+    claim(ctx, i);
+}
 #endif
 static void test_parallel(void) {
     uint64_t sizes[] = {0, 1, 7, 10000};
@@ -1822,9 +1761,12 @@ static void test_parallel(void) {
     CHECK(atomic_load(&nested_total) == 16 * 5050);
 #if !defined(_WIN32)
     tsuzuri_trap_hooks.owner = test_owner;
-    CHECK(tsuzuri_tz_parallel(claim, claims, 5) == 3);
+    atomic_store(&ordered_next, 0);
+    int64_t before = tsuzuri_tz_count();
+    CHECK(tsuzuri_tz_parallel(ordered, claims, 50) == 0);
+    CHECK(tsuzuri_tz_count() == before);
     tsuzuri_trap_hooks.owner = NULL;
-    check_claims(0);
+    check_claims(50);
 #endif
     printf("parallel: ok\n");
 }
@@ -2319,7 +2261,6 @@ int main(int argc, char **argv) {
     RUN("report", test_report());
     RUN("blocking", test_blocking());
     RUN("donor", test_donor());
-    RUN("batches", test_batches());
     RUN("timer_channel", test_timer_channel());
     RUN("timer_stop", test_timer_stop());
     RUN("timer_senders", test_timer_senders());

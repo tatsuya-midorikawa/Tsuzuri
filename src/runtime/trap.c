@@ -4,7 +4,7 @@
    unwinds, so no destructor is skipped; the runtime releases its own locks before any callback
    runs, and the one lock that Tsuzuri code holds while it runs, Mutex.with_lock's, is released
    by the boundary through `tsuzuri_sync_hooks` (F10). A domain (B10, `Domain.run`) is the same
-   frame for the call of a pure closure; it nests inside a boundary, an item, or another domain. */
+   frame for the call of a pure closure; it nests inside a boundary or another domain. */
 #include <pthread.h>
 #include <setjmp.h>
 #include <stddef.h>
@@ -62,17 +62,12 @@ typedef struct {
 #define TSUZURI_TRAP_HOOKS_DEFINED
 struct tz_trap_hooks {
     void *(*owner)(void);
-    int32_t (*item)(void *, void (*)(void *, uint64_t), uint32_t (*)(void *, uint64_t),
-                    void *, uint64_t, uint32_t *, tsuzuri_trap_info *);
-    void (*resume)(const tsuzuri_trap_info *);
-    void *(*allocate)(size_t);
-    void (*release)(void *);
 };
 __attribute__((weak, visibility("hidden"))) struct tz_trap_hooks tsuzuri_trap_hooks;
 #endif
 
-/* The runtime of Mutex.with_lock (task.c) installs this when it is linked: the boundary calls it
-   on the thread whose call trapped, so that a lock that thread held is released. */
+/* The runtime of Mutex.with_lock (tzroutine.c, TZ12) installs this when it starts: the boundary calls
+   it on the thread whose call trapped, so that the locks that thread took in the call are released. */
 #ifndef TSUZURI_SYNC_HOOKS_DEFINED
 #define TSUZURI_SYNC_HOOKS_DEFINED
 struct tz_sync_hooks {
@@ -83,8 +78,8 @@ __attribute__((weak, visibility("hidden"))) struct tz_sync_hooks tsuzuri_sync_ho
 
 struct tz_block;
 
-/* The owner of the blocks allocated while one tsuzuri_try_<name> call runs. Worker threads of a
-   Task.parallel group allocate into the owner of the thread that submitted the group. */
+/* The owner of the blocks allocated while one tsuzuri_try_<name> call runs (Parallel runs on the
+   calling thread inside it). */
 struct tz_boundary {
     pthread_mutex_t lock;
     struct tz_block *volatile blocks;
@@ -119,7 +114,7 @@ void tsuzuri_trap_raise(uint32_t site, uint32_t kind) {
     TZ_LONGJMP(frame->env);
 }
 
-/* The boundary a Task.parallel group submitted from this thread belongs to, or NULL. */
+/* The boundary or domain that this thread runs in, or NULL (Parallel runs on the caller inside one). */
 TZ_TRAP_API
 void *tsuzuri_boundary_owner(void) {
     return tz_frame ? tz_frame->owner : NULL;
@@ -138,41 +133,6 @@ static void tz_boundary_release(struct tz_boundary *boundary, int discard) {
     }
     TZ_TRAP_FREE(boundary->buckets);
     boundary->buckets = NULL;
-}
-
-/* Runs one item of a group on a worker (or the submitting thread) under its own frame, so a trap
-   stops that item only; the group then reports it to the call that submitted the group. Returns
-   1 and fills `trap` if the item trapped. */
-TZ_TRAP_API
-int32_t tsuzuri_boundary_item(void *owner, void (*run)(void *, uint64_t),
-                              uint32_t (*run_result)(void *, uint64_t), void *context,
-                              uint64_t index, uint32_t *failed, tsuzuri_trap_info *trap) {
-    struct tz_frame frame;
-    frame.owner = owner;
-    frame.outer = tz_frame;
-    frame.site = 0;
-    frame.kind = 0;
-    tz_frame = &frame;
-    int32_t trapped = 0;
-    if (TZ_SETJMP(frame.env) == 0) {
-        if (run_result) *failed = run_result(context, index);
-        else run(context, index);
-    } else {
-        trapped = 1;
-    }
-    tz_frame = frame.outer;
-    if (trapped) {
-        if (tsuzuri_sync_hooks.abandon) tsuzuri_sync_hooks.abandon();
-        trap->site = frame.site;
-        trap->kind = frame.kind;
-    }
-    return trapped;
-}
-
-/* Raises the trap of a finished group in the thread that submitted it. */
-TZ_TRAP_API
-void tsuzuri_boundary_resume(const tsuzuri_trap_info *trap) {
-    tsuzuri_trap_raise(trap->site, trap->kind);
 }
 
 /* 0: finished, 1: trapped (`trap` filled), 2: this thread is already inside a boundary. */
@@ -293,7 +253,7 @@ static void tz_domain_hand_over(struct tz_boundary *domain, struct tz_boundary *
 
 /* B10: 0: the closure finished (the blocks that are left belong to the caller), 1: it trapped
    (`trap` is filled and every block allocated inside is freed). Unlike tsuzuri_boundary_run it
-   nests: a domain may run inside a boundary, a worker item, or another domain, and a trap goes to
+   nests: a domain may run inside a boundary or another domain, and a trap goes to
    the innermost frame. It never calls tsuzuri_sync_hooks.abandon: a lock that the caller holds
    is not the domain's to release (a pure closure takes none). */
 TZ_TRAP_API
@@ -409,9 +369,5 @@ __attribute__((constructor))
 static void tz_boundary_install(void) {
     tsuzuri_trap_hooks = (struct tz_trap_hooks) {
         .owner = tsuzuri_boundary_owner,
-        .item = tsuzuri_boundary_item,
-        .resume = tsuzuri_boundary_resume,
-        .allocate = tsuzuri_tracked_malloc,
-        .release = tsuzuri_tracked_free,
     };
 }

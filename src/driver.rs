@@ -1417,30 +1417,16 @@ fn native_ir_cpu_args(arch: &str, f16: llvm::F16Path) -> Result<Vec<&'static str
 /// holds the scheduler.
 const TZROUTINE_FEATURES: &str = "#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)\n#define _DARWIN_C_SOURCE\n#endif\n#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n";
 
-/// The tzroutine runtime (TZ01) with its Win32 half inlined for a Windows target, as
-/// `task_runtime_source_for` does for the pool.
+/// The tzroutine runtime (TZ01) with its Win32 half inlined for a Windows target: Clang cannot
+/// resolve quoted includes next to verbatim (`\\?\`) source paths, and canonical temporary paths are
+/// verbatim. A Windows target needs it on any host: the temporary directory has no
+/// `tzroutine-windows.h` for a quoted include.
 pub(crate) fn tzroutine_runtime_source_for(platform: Platform) -> String {
     let source = include_str!("runtime/tzroutine.c");
     if platform.windows() {
         source.replacen(
             "#include \"tzroutine-windows.h\"",
             include_str!("runtime/tzroutine-windows.h"),
-            1,
-        )
-    } else {
-        source.to_owned()
-    }
-}
-
-/// Inlines the Win32 adapter: Clang cannot resolve quoted includes next to
-/// verbatim (`\\?\`) source paths, and canonical temporary paths are verbatim. A Windows target
-/// needs it on any host: the temporary directory has no `task-windows.h` for a quoted include.
-pub(crate) fn task_runtime_source_for(platform: Platform) -> String {
-    let source = include_str!("runtime/task.c");
-    if platform.windows() {
-        source.replacen(
-            "#include \"task-windows.h\"",
-            include_str!("runtime/task-windows.h"),
             1,
         )
     } else {
@@ -4168,11 +4154,11 @@ fn build_complete(
         llvm::duplicate_declarations(&text)
     );
     let runtime_symbols = crate::runtime_cache::RuntimeSymbols::collect(&text);
-    let task_runtime =
-        options.target == Target::Native && runtime_symbols.contains("tsuzuri_task_parallel");
-    // tzroutine (TZ02): src/runtime/tzroutine.c is linked when the IR names one of its symbols.
+    // tzroutine (TZ02): src/runtime/tzroutine.c is linked when the IR names one of its symbols. A
+    // native DataChannel waits on its scheduler too (TZ12).
     let tzroutine_symbols = runtime_symbols.prefix("tsuzuri_tz_");
-    let tzroutine_runtime = options.target == Target::Native && tzroutine_symbols;
+    let tzroutine_runtime = options.target == Target::Native
+        && (tzroutine_symbols || runtime_symbols.prefix("tsuzuri_channel_"));
     // TZ03: on the default WebAssembly target, a program that uses a `Channel` (or asks `Routine`)
     // without spawning links the channels of the same file built for one thread (`TZR_SINGLE`).
     let tzroutine_single = options.target.is_wasm()
@@ -4218,9 +4204,7 @@ fn build_complete(
             text.as_str()
         };
         if let Some((_, feature)) = [
-            ("declare i32 @tsuzuri_mutex_lock(", "Mutex"),
             ("declare i32 @tsuzuri_channel_send(", "DataChannel"),
-            ("declare void @tsuzuri_task_parallel(", "parallel tasks"),
             ("@tsuzuri_tz_", "tzroutine"),
             ("declare i32 @tsuzuri_io_", "the standard IO"),
             ("declare i64 @tsuzuri_os_", "the operating-system APIs"),
@@ -4267,8 +4251,7 @@ fn build_complete(
         ]
         .iter()
         .any(|symbol| runtime_symbols.prefix(symbol));
-    let native_runtime = task_runtime
-        || tzroutine_runtime
+    let native_runtime = tzroutine_runtime
         || cpu_runtime
         || trap_runtime
         || gpu_runtime
@@ -4289,16 +4272,10 @@ fn build_complete(
     let debug_import = options.target.is_wasm() && runtime_symbols.contains("tsuzuri_debug_write");
     // A callback's address is a table index the host resolves through the exported table.
     let callback_table = options.target.is_wasm() && runtime_symbols.prefix("tz.callback.");
-    if task_runtime && !platform.threads() && !matches!(options.emit, Emit::Llvm | Emit::Header) {
-        return Err(driver_error_of(
-            DiagnosticKind::ToolchainMissingFeature,
-            "native parallel tasks require a POSIX or Windows toolchain; wasm32 provides the portable sequential backend",
-        ));
-    }
     // TZ02: the tzroutine runtime switches stacks on aarch64 and x86-64 under POSIX and Windows.
     // On WebAssembly it will suspend through JSPI (TZ09).
-    if tzroutine_symbols && !matches!(options.emit, Emit::Llvm | Emit::Header) {
-        if options.target.is_wasm() && options.wasm_threads {
+    if (tzroutine_symbols || tzroutine_runtime) && !matches!(options.emit, Emit::Llvm | Emit::Header) {
+        if tzroutine_symbols && options.target.is_wasm() && options.wasm_threads {
             return Err(if runtime_symbols.prefix("tsuzuri_tz_chan_") {
                 driver_error_of(
                     DiagnosticKind::OptionConflict,
@@ -4311,7 +4288,7 @@ fn build_complete(
                 )
             });
         }
-        if options.target.is_wasm() && !tzroutine_single {
+        if tzroutine_symbols && options.target.is_wasm() && !tzroutine_single {
             return Err(if options.wasm_jspi {
                 driver_error_of(
                     DiagnosticKind::OptionConflict,
@@ -4798,11 +4775,9 @@ fn build_complete(
                 } else {
                     ""
                 },
-                if task_runtime {
-                    task_runtime_source_for(platform)
-                } else {
-                    String::new()
-                },
+                // The sixth part was the task pool (task.c), which TZ12 removed: the parts keep their
+                // places, so that the text of a unit matches the prebuilt runtimes.
+                String::new(),
                 if cpu_runtime {
                     include_str!("runtime/cpu.c")
                 } else {
@@ -4839,8 +4814,7 @@ fn build_complete(
                 .args(compile_args(platform))
                 .args(sdk_args(platform)?)
                 .arg(options.optimization.flag());
-            if (task_runtime
-                || tzroutine_runtime
+            if (tzroutine_runtime
                 || trap_runtime
                 || async_reactor
                 || net_runtime
@@ -5210,7 +5184,7 @@ fn build_complete(
         }
         if native_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang.args(["-x", "none"]).arg(&runtime_object);
-            if (task_runtime || tzroutine_runtime || net_runtime || trap_runtime)
+            if (tzroutine_runtime || net_runtime || trap_runtime)
                 && !platform.windows()
             {
                 clang.arg("-pthread");
@@ -5328,7 +5302,7 @@ fn build_complete(
             }
             if native_runtime {
                 linker.arg(&runtime_object);
-                if task_runtime || tzroutine_runtime || net_runtime || trap_runtime {
+                if tzroutine_runtime || net_runtime || trap_runtime {
                     linker.arg("-pthread");
                 }
                 if gpu_runtime && platform.linux() {
@@ -8386,7 +8360,7 @@ mod tests {
         let source = include_str!("runtime/stack.c");
         assert!(source.contains(&format!("\"{STACK_OVERFLOW_REPORT}\\n\"")));
         assert!(source.contains("tsuzuri_stack_thread"));
-        assert!(include_str!("runtime/task.c").contains("tsuzuri_stack_thread();"));
+        assert!(include_str!("runtime/tzroutine.c").contains("tsuzuri_stack_scheduler_thread();"));
     }
 
     #[test]
@@ -8423,26 +8397,17 @@ mod tests {
     }
 
     #[test]
-    fn task_runtime_source_inlines_the_win32_adapter() {
-        let include = "#include \"task-windows.h\"";
-        assert!(include_str!("runtime/task.c").contains(include));
-        let source = task_runtime_source_for(Platform::HOST);
-        assert_eq!(source.contains(include), !cfg!(windows));
-        assert_eq!(source.contains("TZ_TASK_WINDOWS_H"), cfg!(windows));
+    fn tzroutine_runtime_source_inlines_the_win32_adapter() {
+        let include = "#include \"tzroutine-windows.h\"";
+        assert!(include_str!("runtime/tzroutine.c").contains(include));
         // A Windows target inlines it on every host, and no other target does.
         for triple in Triple::ALL {
-            let source = task_runtime_source_for(Platform::new(Some(triple)));
-            assert_eq!(
-                source.contains(include),
-                !Platform::new(Some(triple)).windows()
-            );
-            assert_eq!(
-                source.contains("TZ_TASK_WINDOWS_H"),
-                Platform::new(Some(triple)).windows()
-            );
+            let platform = Platform::new(Some(triple));
+            let source = tzroutine_runtime_source_for(platform);
+            assert_eq!(source.contains(include), !platform.windows());
+            assert_eq!(source.contains("TZR_WINDOWS_H"), platform.windows());
         }
     }
-
     #[test]
     fn validates_native_cpu_tuning_and_selects_architecture_flags() {
         assert_eq!(

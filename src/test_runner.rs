@@ -632,16 +632,8 @@ fn native_runtime_sources(
         }
         sources.push(("trap.c", include_str!("runtime/trap.c").to_owned()));
     }
-    if text.contains("declare void @tsuzuri_task_parallel(") {
-        if !platform.threads() {
-            return Err(driver_error_of(
-                DiagnosticKind::ToolchainMissingFeature,
-                "native parallel tasks require POSIX or Windows threads",
-            ));
-        }
-        sources.push(("task.c", crate::driver::task_runtime_source_for(platform)));
-    }
-    if text.contains("@tsuzuri_tz_") {
+    // A native DataChannel waits on the scheduler too (TZ12).
+    if text.contains("@tsuzuri_tz_") || text.contains("@tsuzuri_channel_") {
         tzroutine_platform(platform)?;
         sources.push((
             "tzroutine.c",
@@ -1000,15 +992,9 @@ fn compile_native_runner(
     if platform.windows() {
         text = llvm::windows_abi(text, module);
     }
-    let task_runtime = text.contains("declare void @tsuzuri_task_parallel(");
-    if task_runtime && !platform.threads() {
-        return Err(driver_error_of(
-            DiagnosticKind::ToolchainMissingFeature,
-            "native parallel tasks require POSIX or Windows threads",
-        ));
-    }
-    // TZ02: a test that spawns waits for its tzroutines in the scheduler of src/runtime/tzroutine.c.
-    let tzroutine_runtime = text.contains("@tsuzuri_tz_");
+    // TZ02: a test that spawns waits for its tzroutines in the scheduler of src/runtime/tzroutine.c,
+    // which a native DataChannel waits on too (TZ12).
+    let tzroutine_runtime = text.contains("@tsuzuri_tz_") || text.contains("@tsuzuri_channel_");
     if tzroutine_runtime {
         tzroutine_platform(platform)?;
     }
@@ -1085,15 +1071,6 @@ fn compile_native_runner(
     if !platform.windows() {
         clang.arg("-lm");
     }
-    if task_runtime {
-        let runtime = directory.join("task.c");
-        fs::write(&runtime, crate::driver::task_runtime_source_for(platform))
-            .map_err(|error| io_error("write task runtime", &runtime, error))?;
-        clang.arg(&runtime);
-        if !platform.windows() {
-            clang.arg("-pthread");
-        }
-    }
     for (needed, name, source) in [
         (os_runtime, "os.c", include_str!("runtime/os.c")),
         (net_runtime, "net.c", include_str!("runtime/net.c")),
@@ -1119,7 +1096,6 @@ fn compile_native_runner(
         clang.arg(&runtime);
     }
     if (async_runtime || net_runtime || gpu_runtime || trap_runtime || tzroutine_runtime)
-        && !task_runtime
         && !platform.windows()
     {
         clang.arg("-pthread");
