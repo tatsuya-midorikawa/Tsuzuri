@@ -3525,6 +3525,7 @@ static void tzr_jspi_timer_set(int64_t deadline) {
 
 /* The last timer is gone (tzr_timers_gone): the glue's deadlock detector may look again. */
 static void tzr_jspi_timers_report(void) { tzr_jspi_timer_set(tzr_timers.count > 0 ? tzr_timers.heap[0]->when : -1); }
+static void tzr_jspi_fire_timers(void);
 #endif
 
 static void tzr_heap_set(size_t i, tzr_timer *t) {
@@ -3569,6 +3570,11 @@ static void tzr_heap_push(tzr_timer *t) {
         tzr_timer_cond_init(&tzr_timers.wake);
         tzr_thread_start(tzr_timerproc, NULL, 0, "cannot start the timer thread");
         tzr_timers.started = 1;
+    }
+#else
+    if (tzr_jspi_report == NULL) {
+        tzr_jspi_report = tzr_jspi_timers_report;
+        tzr_jspi_fire_due = tzr_jspi_fire_timers;
     }
 #endif
     if (tzr_timers.count == tzr_timers.capacity) {
@@ -3762,11 +3768,17 @@ static int64_t tzr_timers_run(void) {
 }
 
 #if defined(TZR_JSPI)
-/* tsuzuri_tz_fire (tzroutine-jspi.ll) calls it on the scheduler's stack when the glue's setTimeout
- * comes: the glue's timer is spent, so the next deadline is told whatever it is. */
-TZR_API void tzr_jspi_fire(void) {
+/* The glue's timer is spent, so the next deadline is told whatever it is. */
+static void tzr_jspi_fire_timers(void) {
     tzr_jspi_deadline = -2;
     tzr_jspi_timer_set(tzr_timers_run());
+}
+
+/* tsuzuri_tz_fire (tzroutine-jspi.ll) calls it on the scheduler's stack when the glue's setTimeout
+ * comes. Before the first timer there is nothing to fire (tzr_jspi_fire_due). */
+TZR_API void tzr_jspi_fire(void) {
+    void (*fire)(void) = tzr_jspi_fire_due;
+    if (fire != NULL) fire();
 }
 #else
 static void *tzr_timerproc(void *arg) {

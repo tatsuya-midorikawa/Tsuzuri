@@ -678,14 +678,18 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
       tz.boundary = undefined;
       boundary?.reject(thrown);
     }
-    // Runs what can run until a G is on the stack again, or nothing can.
+    // Runs what can run until a G is on the stack again, or nothing can. The timers fire once a turn: a deadline that is
+    // past again at once (a ticker of a short period) would keep this loop firing, and starve the Gs that they woke and the
+    // host, otherwise. A later deadline that is due fires in the next turn, or with the setTimeout when no G can run.
     function dispatch() {
       tz.scheduled = false;
+      let fired = false;
       while (owner.alive && tz.running === undefined) {
         // A deadline that passed fires now, before the setTimeout comes.
-        if (!tz.due && tz.deadline >= 0n && clock() >= tz.deadline) tz.due = true;
+        if (!fired && !tz.due && tz.deadline >= 0n && clock() >= tz.deadline) tz.due = true;
         if (tz.due) {
           tz.due = false;
+          fired = true;
           try {
             owner.exports.tsuzuri_tz_fire();
           } catch (error) {

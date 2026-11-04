@@ -244,7 +244,17 @@ try {
     execute(["build", single, "--target", "wasm32", ...extra, "-o", wasm]);
     assert.deepEqual(WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(wasm))), [], extra.join(" "));
   }
-  console.log("tzroutine wasm: the refusals and the import-less default module passed");
+  // A module that spawns but makes no timer imports neither `clock` nor `timer`, and keeps its tsuzuri_tz_fire.
+  const timerless = project("export def f :: i64 -> i64\nfn f n =\n    tzroutine { () }\n    n\n");
+  for (const optimization of ["-O0", "-O3"]) {
+    const wasm = join(root, `timerless${optimization}.wasm`);
+    execute(["build", timerless, ...jspi, optimization, "-o", wasm]);
+    const module = new WebAssembly.Module(readFileSync(wasm));
+    const names = WebAssembly.Module.imports(module).map((entry) => `${entry.module}.${entry.name}`).sort();
+    assert.deepEqual(names, ["tsuzuri_tz.ready", "tsuzuri_tz.spawn", "tsuzuri_tz.suspend"], optimization);
+    assert.ok(WebAssembly.Module.exports(module).some((entry) => entry.name === "tsuzuri_tz_fire"), optimization);
+  }
+  console.log("tzroutine wasm: the refusals, the import-less default module and a timer-free module passed");
 
   if (typeof WebAssembly.Suspending !== "function" || typeof WebAssembly.promising !== "function") {
     console.log("tzroutine wasm: JSPI runs skipped (WebAssembly.Suspending needs Node.js 24 or newer)");
@@ -288,6 +298,8 @@ try {
         assert.equal(await within(e.timeout(30n), "timeout"), 1n);
         assert.ok(performance.now() - started >= 29, "the call took the timeout");
         assert.equal(await within(e.sleep_lets_others_run(), "sleep"), 11n);
+        // A deadline that is past again as soon as it fires does not keep the glue firing (Copilot on #90).
+        assert.equal(await within(e.short_ticker(100n), "short_ticker"), 100n);
       });
       await check(`deadlock ${optimization}`, async () => {
         await expectDeadlock(e.deadlock(5n), "deadlock");
