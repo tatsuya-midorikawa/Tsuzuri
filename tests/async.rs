@@ -553,7 +553,7 @@ fn hosts_without_an_embeddable_reactor_report_why_before_linking() {
     assert_eq!(
         error.message,
         if cfg!(windows) {
-            "Windows COFF objects with embedded task, CPU, IO, or Async runtime are not supported; emit LLVM and link the runtime once, or build an executable"
+            "Windows COFF objects with embedded tzroutine, CPU, IO, or Async runtime are not supported; emit LLVM and link the runtime once, or build an executable"
         } else {
             "Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform"
         }
