@@ -592,6 +592,8 @@ fn jspi_modules_that_spawn_get_the_stack_switch() {
         "define internal i32 @tsuzuri_channel_send(",
         "@tsuzuri_mutex_wait_ok",
         "@tsuzuri_os_sleep",
+        // the stack switch writes the bounds, so they are not invariant (Copilot on #90)
+        "!invariant.load",
     ] {
         assert!(!ir.contains(absent), "{absent}\n{ir}");
     }

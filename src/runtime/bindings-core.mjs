@@ -708,7 +708,8 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
           resume();
           return;
         }
-        // A new G runs here until it first stops; its end settles the promise.
+        // A new G runs here until it first stops; its end settles the promise. The next turn comes from its stop, as for a
+        // resumed G: a chain of new Gs that each spawn and wait would run past the slice in this loop otherwise.
         let started;
         try {
           tz.entry ??= WebAssembly.promising(owner.exports.tsuzuri_tz_entry);
@@ -720,6 +721,7 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
         started.then(() => {
           if (tz.running === g) stopped();
         }, failed);
+        return;
       }
       if (owner.alive && tz.running === undefined && tz.queue.length === 0 && !tz.due && tz.deadline < 0n
         && tz.hostWaits === 0 && tz.pending.size > 0) {
