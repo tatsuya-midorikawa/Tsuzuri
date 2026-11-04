@@ -709,6 +709,8 @@ struct tzr_m {
     _Atomic(tzr_m *) all_next;      /* every M, for the signal handler */
     _Atomic int async_kicks;        /* sysmon's SIGURGs to this M that its handler has not taken */
     _Atomic int async_ready;        /* its alternate signal stack is in place: sysmon may signal it */
+    _Atomic int async_gate;         /* 1 in a blocking call: sysmon sends it nothing */
+    _Atomic int async_self;         /* the SIGURG that tzr_async_entry sends itself is on its way */
 #endif
 };
 
@@ -1987,6 +1989,15 @@ static void tzr_handoffp(tzr_p *p) {
  * never leaves its M inside the call. Calls nest (a callback's extern), and a pseudo-G, which holds
  * no P, does nothing. */
 static void tzr_entersyscall(tzr_m *m) {
+#if defined(TZR_ASYNC)
+    /* Dekker with tzr_async_kick: either sysmon sees the gate closed and sends nothing, or this sees
+     * its kick and waits until the handler took it, so that no SIGURG of sysmon interrupts the call
+     * (EINTR, or a nanosleep cut short). Bounded: a handler that the program put over the runtime's
+     * never takes it. */
+    atomic_store_explicit(&m->async_gate, 1, memory_order_seq_cst);
+    for (int i = 0; i < 1000 && atomic_load_explicit(&m->async_kicks, memory_order_seq_cst) != 0; i++)
+        tzr_os_yield(); /* into the kernel and back: a pending signal is delivered then */
+#endif
     tzr_p *p = m->p;
     m->oldp = p;
     m->p = NULL;
@@ -1996,6 +2007,9 @@ static void tzr_entersyscall(tzr_m *m) {
 }
 
 static void tzr_exitsyscall(tzr_m *m) {
+#if defined(TZR_ASYNC)
+    atomic_store_explicit(&m->async_gate, 0, memory_order_release);
+#endif
     tzr_p *p = m->oldp;
     m->oldp = NULL;
     atomic_fetch_sub_explicit(&tzr_sched.nmsys, 1, memory_order_relaxed);
@@ -2139,6 +2153,7 @@ static struct {
     _Atomic uint64_t yielded; /* yields of tzr_async_entry */
 } tzr_async;
 static struct sigaction tzr_async_previous;
+static _Atomic int tzr_async_oneshot; /* the previous handler had SA_RESETHAND, and it has run */
 
 #if defined(__linux__) && defined(__aarch64__)
 /* The records of the floating-point and vector state after the registers of the kernel's frame
@@ -2341,6 +2356,9 @@ __attribute__((no_sanitize("address"))) static int tzr_async_resume(ucontext_t *
          m = atomic_load_explicit(&m->all_next, memory_order_relaxed)) {
         tzr_async_frame *frame = atomic_load_explicit(&m->async_resume, memory_order_relaxed);
         if (frame == NULL || sp >= (uintptr_t)frame || (uintptr_t)frame - sp > TZR_ASYNC_BUDGET) continue;
+        /* the frame is published before tzr_async_entry sends its signal: one that comes in between
+         * is someone else's, and the entry's own comes after it (this thread, so no ordering) */
+        if (!atomic_exchange_explicit(&m->async_self, 0, memory_order_relaxed)) return 0;
         if (frame->magic != TZR_ASYNC_MAGIC || !tzr_async_load(uc, frame->state, frame->size)) tzr_async_lost();
         frame->magic = 0;
         atomic_store_explicit(&m->async_resume, NULL, memory_order_relaxed);
@@ -2384,6 +2402,10 @@ __attribute__((no_sanitize("address"))) static void tzr_async_handler(int sig, s
     /* SIG_DFL and SIG_IGN are dispositions whatever the flags say (they share the union with
      * sa_sigaction): neither is called */
     if (tzr_async_previous.sa_handler == SIG_DFL || tzr_async_previous.sa_handler == SIG_IGN) return;
+    /* SA_RESETHAND: once, then the default (SIGURG's ignores it), as the kernel would have done */
+    if ((tzr_async_previous.sa_flags & SA_RESETHAND)
+        && atomic_exchange_explicit(&tzr_async_oneshot, 1, memory_order_relaxed))
+        return;
     /* with the signals that its own action blocked while it runs */
     sigset_t saved;
     pthread_sigmask(SIG_BLOCK, &tzr_async_previous.sa_mask, &saved);
@@ -2414,6 +2436,7 @@ static void tzr_async_entry(tzr_async_frame *frame) {
     __asan_handle_no_return();
 #endif
     atomic_store_explicit(&m->async_resume, frame, memory_order_relaxed);
+    atomic_store_explicit(&m->async_self, 1, memory_order_relaxed);
     atomic_signal_fence(memory_order_seq_cst);
     pthread_kill(pthread_self(), SIGURG);
     tzr_async_lost();
@@ -2484,8 +2507,19 @@ static void tzr_async_kick(tzr_p *p) {
         return;
     atomic_store_explicit(&p->async_armed, 1, memory_order_release);
     /* One signal for the kicks that its handler has not taken: a SIGURG that is pending already
-     * takes them all, and a second would reach the handler with none, as if it were someone else's. */
-    if (atomic_fetch_add_explicit(&m->async_kicks, 1, memory_order_release) != 0) return;
+     * takes them all, and a second would reach the handler with none, as if it were someone else's.
+     * Counted before the gate is read (Dekker with tzr_entersyscall): an M in a blocking call gets
+     * no signal. */
+    int before = atomic_fetch_add_explicit(&m->async_kicks, 1, memory_order_seq_cst);
+    if (atomic_load_explicit(&m->async_gate, memory_order_seq_cst)) {
+        /* this kick back, unless a handler took the kicks meanwhile (never below 0) */
+        int kicks = atomic_load_explicit(&m->async_kicks, memory_order_relaxed);
+        while (kicks > 0 && !atomic_compare_exchange_weak_explicit(&m->async_kicks, &kicks, kicks - 1,
+                                                                   memory_order_relaxed, memory_order_relaxed)) {
+        }
+        return;
+    }
+    if (before != 0) return;
     atomic_fetch_add_explicit(&tzr_async.signals, 1, memory_order_relaxed);
     pthread_kill(m->thread, SIGURG);
 #else

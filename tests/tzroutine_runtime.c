@@ -2826,6 +2826,108 @@ static void urgent_forward_body(void) {
     pthread_join(poker, NULL);
     _exit(interrupted && atomic_load(&urgent_foreign) == 1 && atomic_load(&urgent_masked) ? 49 : 4);
 }
+/* The runtime's handler installed and sysmon running: the first spawn starts both. */
+static void urgent_runtime_ready(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(urgent_nothing, NULL);
+    join(scope);
+    for (int i = 0; i < 2000 && !atomic_load(&tzr_async.enabled); i++) {
+        struct timespec t = {0, 1000000};
+        nanosleep(&t, NULL);
+    }
+    if (!atomic_load(&tzr_async.enabled)) _exit(3);
+}
+static void urgent_install(void (*handler)(int), int flags) {
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_handler = handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = flags;
+    sigaction(SIGURG, &action, NULL);
+}
+
+/* A SIGURG of the program's own between the publication of a resume frame and the signal that
+ * tzr_async_entry sends itself goes to the program's handler, and resumes nothing. */
+static _Atomic int urgent_window_ok;
+static void urgent_window_g(void *env) {
+    (void)env;
+    tzr_m *m = tzr_this_m();
+    _Alignas(64) unsigned char space[sizeof(tzr_async_frame) + 64];
+    tzr_async_frame *frame = (tzr_async_frame *)space;
+    memset(space, 0, sizeof space);
+    frame->magic = TZR_ASYNC_MAGIC;
+    atomic_store(&m->async_resume, frame);
+    raise(SIGURG);
+    atomic_store(&m->async_resume, NULL);
+    atomic_store(&urgent_window_ok, frame->magic == TZR_ASYNC_MAGIC && atomic_load(&urgent_foreign) == 1);
+}
+static void urgent_window_body(void) {
+    urgent_install(urgent_counted, SA_RESTART);
+    urgent_runtime_ready();
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(urgent_window_g, NULL);
+    join(scope);
+    _exit(atomic_load(&urgent_window_ok) ? 50 : 4);
+}
+
+/* A handler of the program's own with SA_RESETHAND runs once, however many SIGURGs come. Linux only:
+ * macOS's sigaction does not report SA_RESETHAND in the action that it returns. */
+static void urgent_oneshot_body(void) {
+    urgent_install(urgent_counted, SA_RESETHAND);
+    urgent_runtime_ready();
+    raise(SIGURG);
+    raise(SIGURG);
+    _exit(atomic_load(&urgent_foreign) == 1 ? 51 : 4);
+}
+
+/* A kick of sysmon that comes after the G entered a blocking call (sysmon saw it running just
+ * before) sends nothing: a read in the call, under a handler without SA_RESTART, is not cut short. */
+static tzr_p *urgent_kicked_p;
+static _Atomic int urgent_reading;
+static void *urgent_kicker(void *env) {
+    (void)env;
+    while (!atomic_load(&urgent_reading)) {
+    }
+    struct timespec t = {0, 50000000};
+    nanosleep(&t, NULL);
+    tzr_async_kick(urgent_kicked_p);
+    t.tv_nsec = 200000000;
+    nanosleep(&t, NULL);
+    char byte = 1;
+    (void)!write(urgent_pipe[1], &byte, 1);
+    return NULL;
+}
+static _Atomic int urgent_read;
+static void urgent_syscall_g(void *env) {
+    (void)env;
+    urgent_kicked_p = tzr_this_m()->p;
+    tsuzuri_tz_blocking_enter();
+    atomic_store(&urgent_reading, 1);
+    char byte;
+    ssize_t n = read(urgent_pipe[0], &byte, 1);
+    tsuzuri_tz_blocking_exit();
+    atomic_store(&urgent_read, (int)n);
+}
+static void urgent_syscall_body(void) {
+    urgent_install(urgent_counted, 0);
+    urgent_runtime_ready();
+    if (pipe(urgent_pipe) != 0) _exit(3);
+    pthread_t kicker;
+    if (pthread_create(&kicker, NULL, urgent_kicker, NULL) != 0) _exit(3);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(urgent_syscall_g, NULL);
+    join(scope);
+    pthread_join(kicker, NULL);
+    _exit(atomic_load(&urgent_read) == 1 && atomic_load(&urgent_foreign) == 0 ? 52 : 4);
+}
+static void test_preempt_async_edges(void) {
+    CHECK(exited_with(run_child("child-urgent-window"), 50));
+#if !defined(__APPLE__)
+    CHECK(exited_with(run_child("child-urgent-oneshot"), 51));
+#endif
+    CHECK(exited_with(run_child("child-urgent-syscall"), 52));
+    printf("preempt async edges: ok\n");
+}
 static void test_preempt_async_forward(void) {
     CHECK(exited_with(run_child("child-urgent-forward"), 49));
     printf("preempt async forward: ok\n");
@@ -2840,6 +2942,7 @@ static void test_preempt_async_values(void) { printf("preempt async values: not 
 static void test_preempt_async_runtime(void) { printf("preempt async runtime: not built\n"); }
 static void test_preempt_async_ignored(void) { printf("preempt async ignored: not built\n"); }
 static void test_preempt_async_forward(void) { printf("preempt async forward: not built\n"); }
+static void test_preempt_async_edges(void) { printf("preempt async edges: not built\n"); }
 #endif
 
 int main(int argc, char **argv) {
@@ -2855,6 +2958,9 @@ int main(int argc, char **argv) {
 #if defined(TZR_ASYNC)
     if (only && strcmp(only, "child-urgent-ignored") == 0) urgent_ignored_body();
     if (only && strcmp(only, "child-urgent-forward") == 0) urgent_forward_body();
+    if (only && strcmp(only, "child-urgent-window") == 0) urgent_window_body();
+    if (only && strcmp(only, "child-urgent-oneshot") == 0) urgent_oneshot_body();
+    if (only && strcmp(only, "child-urgent-syscall") == 0) urgent_syscall_body();
 #endif
 #if !defined(_WIN32)
     if (only && strcmp(only, "child-dchan-deadlock") == 0) dchan_deadlock_body();
@@ -2944,6 +3050,7 @@ int main(int argc, char **argv) {
     RUN("preempt_async_runtime", test_preempt_async_runtime());
     RUN("preempt_async_ignored", test_preempt_async_ignored());
     RUN("preempt_async_forward", test_preempt_async_forward());
+    RUN("preempt_async_edges", test_preempt_async_edges());
     RUN("preempt_idle", test_preempt_idle());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
