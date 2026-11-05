@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | G07, G12 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-05（TZ13 の作業中に発見。HEAD `5ee6b0f2` で確認） |
 | 承認 | 不要（LSP の応答を正しくする修正。言語・CLI は変えない） |
 | 改善する劣位 | 不具合: `)`・`]`・`}`・補間の閉じ（`$"v{n}"`）で終わる行の次の行で、`Steps.yield ()` のような呼び出しの引数の位置にいても、`textDocument/signatureHelp` が `null` を返す |
@@ -158,11 +158,11 @@ loop の先頭で、`depth == 0` かつ行頭より前の token が `(` でな�
 
 ## 受け入れ条件
 
-- [ ] 「再現」の 4 通りの前の行で、シグネチャヘルプが `yield (_unit: unit) -> i64` を返す。
-- [ ] `signature_help_after_a_line_that_ends_with_a_closer` が修正前に失敗し、修正後に成功する。
-- [ ] `tests/lsp.rs` の既存のテストが期待値を変えずに成功する。
-- [ ] `keyword_member_yield_has_completion_hover_and_signature_help` が、`Routine.yield ()` の次の行の呼び出しで成功する。
-- [ ] fmt・clippy・T1 が成功する。
+- [x] 「再現」の 4 通りの前の行で、シグネチャヘルプが `yield (_unit: unit) -> i64` を返す。
+- [x] `signature_help_after_a_line_that_ends_with_a_closer` が修正前に失敗し、修正後に成功する。
+- [x] `tests/lsp.rs` の既存のテストが期待値を変えずに成功する。
+- [x] `keyword_member_yield_has_completion_hover_and_signature_help` が、`Routine.yield ()` の次の行の呼び出しで成功する。
+- [x] fmt・clippy・T1 が成功する。
 
 ## 落とし穴
 
@@ -183,4 +183,39 @@ loop の先頭で、`depth == 0` かつ行頭より前の token が `(` でな�
 
 - 決定: 深さ 0 で行頭より前の token は、`(` を除いて、括弧の対応をたどる前に止まる。
 - 理由: 前の行の括弧の中身は、カーソルの行の呼び出しの引数になりえない。`(` を除くのは、`f (` で改行した呼び出しの既存の振る舞いを保つため。
-- 状態: 既定案（実装者はこの案に従う）。
+- 状態: 既定案（実装者はこの案に従う）。実装では、前の行で開いた `(` の中の行の結果を変えないように精密化した（「実装と検証」の判断 1）。
+
+## 実装と検証（2026-11-06）
+
+- **範囲**: 手順 1〜5 をすべて実装した（1 つのブランチ `fix/g37-signature-help-after-closer`）。
+- **手順 1**: `cargo test --locked --test lsp` が 49 件すべて成功（ベースライン）。
+- **手順 2**: `tests/lsp.rs` に `signature_help_after_a_line_that_ends_with_a_closer` を足した。`Steps.tz`（`/// Gives way.`・`def yield :: unit -> i64`・`fn yield _unit = 0`）と、3 行目を
+  `Routine.yield ()`・`let xs = [1, 2]`・`let s = $"v{n}"`・`let t = (n, n)`・`let ys = [|1, 2|]`・`let m = 1`・`let r = Pair { a: n, b: n }`（`record Pair` は `Main.tz` の末尾）にした `Main.tz`、
+  `Routine.yield ()` の版を CRLF にした文書、複数行の `Steps.yield(` の 2 通り（`Steps.yield(` の次の行の `())` の前と、`()` の次の行の `)` の前）の 10 通りで、
+  `Steps.yield (` の `)`（複数行の 2 通りはそれぞれの位置）にシグネチャヘルプを送り、結果全体が
+  `{"signatures": [{"label": "yield (_unit: unit) -> i64", "parameters": [{"label": "_unit: unit"}]}], "activeSignature": 0, "activeParameter": 0}` に一致することを確かめる
+  （形は `signature_help_counts_curried_arguments` の `read (number: i64) -> i64` と同じ規則から手で書いた）。修正前は `cargo test --locked --test lsp signature_help_after_a_line` が
+  `1 failed`（閉じ括弧の 6 通りと CRLF の 1 通りの 7 通りが `null`。`let m = 1` と複数行の 2 通りは修正前から成功）。
+- **手順 3**: `src/lsp.rs` の `call_context` を直した（下の判断 1。チケットの D1 をそのままにはしていない）。手順 2 のテストが成功し、`cargo test --locked --test lsp` が 50 件すべて成功（49 + 1）。
+- **手順 4**: `keyword_member_yield_has_completion_hover_and_signature_help` の source を
+  `"def work :: i64 -> i64\nfn work n =\n    Routine.yield ()\n    Steps.yield () + n\n"` に戻した。`position(source, …)` の 4 つの目印（`"yield () +"`・`") +"`・`" () +"`・`"yield ()\n"`）は、
+  新しい source でも同じ呼び出し（4 行目の `Steps.yield` と 3 行目の `Routine.yield`）を指すので変えていない。コメントは残した。修正前のコードではこのテストが失敗し（シグネチャヘルプが `null` で label の
+  `unwrap` が panic）、修正後は `cargo test --locked --test lsp keyword_member_yield` が 1 件成功。
+- **手順 5 と T2**: `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` が成功。`cargo nextest run --locked` が 2935 件すべて成功（4 件 skip）。
+  `cargo build` の後の `node tests/lsp_sessions.mjs target/debug/tsuzuri` が成功（utf-16・utf-8 の session と features の 4 つ）。VS Code 拡張のテストは手順 5 のとおり走らせていない。
+- **差分の検査**（追加）: 修正前と修正後の dev のバイナリで、`tests/fixtures/*` と `examples/*` の 176 のプロジェクトの 8,000 byte 以下のすべての `.tz` の、すべての位置（400,803 か所）に
+  `textDocument/signatureHelp` を送って比べた。変わったのは 1,914 か所で、すべて修正前の `null` が、カーソルの行の呼び出しのシグネチャになったもの（たとえば
+  `assert (point == point)` の次の行の `score ref point`、`tzroutine { … }` の中の `Channel.send sleeper_started ()` の次の行の `host_wait_released ()`）。修正前に `null` でなかった結果は 1 つも変わらない。
+  手で作った 10 のプロジェクトでは、`Routine.yield ()` の次の行の各位置の結果が、`let m = 1` の次の行の同じ位置の結果と一致した（`Steps.yield ()` の直後の `activeParameter` 1 も同じ）。
+- **判断 1（D1 の精密化）**: チケットの D1 のとおり「深さ 0 で行頭より前の `(` でない token で止まる」判定を `closes` の前に置くと、`Steps.yield(\n        ()\n    ) + n` の 3 行目の `)` の前
+  （前の行で開いた `name(` の中で、前の行が `()` で終わる）が、修正前の `yield` から `null` に変わった（手順 2 のテストの最後の 1 通りで確かめた）。これは停止条件の「複数行にまたがる括弧の中の呼び出しの結果が変わる」に当たる。
+  そこで、戻る loop は今の判定の順のままにして、深さ 0 で行頭より前の閉じ括弧に最初に会ったところで、その次の token の位置（`boundary`）を覚え、loop が開いたままの `(`（`open`）に届かなかったときだけ、
+  `start` を `boundary` にする。前の行で開いた `(` の中の行は、改行が意味を持たないので、修正前と同じ結果になる。それ以外では D1 と同じ結果になり、仕様の 3 つの項（前の行の閉じ括弧で止まる・行頭より前の `(` は開き括弧・
+  行の中の閉じ括弧は変えない）を満たす。修正前と結果が変わるのは、修正前の loop が開いた `(` に届かずに前の行の token で止まった場合だけで、そのとき修正前の `tokens[start]` は前の行の括弧の開きになり、結果は `null` だった
+  （括弧の釣り合わない編集中の文書を除く）。上の差分の検査もこれと合う。
+- **判断 2**: 閉じ括弧の種類として、チケットの 5 通りにリストの `|]`（`TokenKind::RightList`）を足し、`closes` が扱う 5 種類（`)`・`]`・`}`・`|]`・補間の終わり）をすべて覆った。CRLF は落とし穴のとおり 1 通り確かめた。
+- **判断 3**: `Steps.yield (` のように空白を空けた `(` で改行した呼び出しの次の行は、修正の前後とも `null` のまま（2 回目の loop で、行頭より前の `yield` で止まるため）。対象外の「複数行にまたがる括弧の中の呼び出しの改善」に当たるので直さず、
+  テストにも固定していない（`null` を期待値にすると、正しくない振る舞いを固定するため）。差分の検査で修正の前後が同じであることだけを確かめた。
+- **文書**: 変更なし。言語リファレンスと `docs/language.md`・`docs/architecture.md`・`README.md` のシグネチャヘルプの記述（`grep -rn "シグネチャヘルプ\|signature help" _tsuzuri/language-reference docs README.md`）は行の位置による制限を書いていない。
+  `_features/README.md` の行を更新した。言語リファレンスのページを変えていないので `check-docs` は走らせていない。
+- **変更したファイル**: `src/lsp.rs`（`call_context`）、`tests/lsp.rs`（新しいテスト 1 件と `keyword_member_yield_has_completion_hover_and_signature_help` の source）、`_features/README.md`、このチケット（`_features/_completed/` へ移動）。
