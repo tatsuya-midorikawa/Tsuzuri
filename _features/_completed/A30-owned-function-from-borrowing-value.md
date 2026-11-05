@@ -262,3 +262,30 @@ def main :: unit -> i32 = \() ->
 ### 変更したファイル
 
 `src/ownership.rs`, `src/explain/codes/E1013.md`, `tests/tzroutine.rs`, `tests/timers.rs`, `tests/user_drop.rs`, `tests/tzroutine.mjs`, `_tsuzuri/language-reference/built-in-types-and-modules/owned.md`, `_tsuzuri/language-reference/built-in-types-and-modules/routine.md`, `_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md`, `docs/language.md`, `docs/architecture.md`, `_features/README.md`, このチケット。
+
+### レビューの指摘への対応（2026-11-06）
+
+独立したレビューの 3 件の指摘に対応した。どれも、まず指摘の evidence を修正前の dev バイナリで再現し、回帰テストを書いてから直した。期待値は手で求めた値と、`main` のバイナリが受理して正しく実行するプログラムの結果から取った。
+
+1. **`Owned.call` の結果から作る `Owned.function` が拒否される（誤検出）。** `let f = Owned.call (ref factory) ()` の `f` が `factory` の loan を持ち、`Owned.function f` が `E1013`（`this function value holds a borrow`、note は `ref factory`）だった。`main` は受理し、`tsuzuri run` は `hello` を出力する。
+   - 修正: `eval_call` で、組み込み関数 `Owned.call` を最後まで適用した呼び出し（引数 2 つ以上）は、第 1 引数（`ref Owned.Function`）の loan を結果に入れない。第 2 引数の loan は今までどおり結果に入る。パイプライン `x |> Owned.call (ref f)` も同じにした（`E::Binary` で、右辺が引数 1 つの `Owned.call` の呼び出しなら callee の loan を足さない）。`Owned.call (ref f)` だけの部分適用は `f` を借用したまま。
+   - 根拠と、壊す試み: `Owned.Function` は借用を持たない（A30）。その本体が環境を借用する結果を返せるかを、修正後のバイナリで次の形を試した。捕捉への参照を返す（`ref text`・`[ref text]`・`Maybe.Some (ref text)`・`(ref text, 1)`・`ref job.name`・`if … then s else ref text`・`id_ref (ref text)`・部分適用 `keep (ref text)`）、捕捉の参照を捕捉したクロージャを返す、捕捉した所有関数値への参照を返す（`ref inner`）はどれも `E1013`（`cannot return a reference to a local value`）。捕捉を捕捉するクロージャを返す形（`\() -> String.length (ref text)`）と、入れ子の `Owned.function` は `E1012`（`cannot move 'text' out of an owned function`）。`Copy<'t>` のジェネリックな `mk x = Owned.function (\() -> x)` を `'t = ref string` で使う形は、実体の検査で A30 の `E1013`。結果が環境を借用できる形は見つからなかったので、どの形にも loan を残していない。捕捉の値をコピーしたクロージャを返す形（`let n = String.length (ref text); \() -> n`）は新しく受理され、`Owned.drop` の後に呼んで `32` を出力する（`main` は `E1014` の誤検出）。
+   - テスト: `tests/tzroutine.rs` の `the_result_of_owned_call_borrows_only_its_input`（指摘のプログラムとパイプラインの形を受理、コピーを捕捉したクロージャを受理、第 2 引数の借用が結果に残ることを `E1013` で、部分適用が `f` を借用することを `E1013` で、本体が環境の借用を返す 6 形が `E1012`/`E1013` であることを確かめる）。修正を外すと失敗することを確かめた（`git stash` で `src/ownership.rs` を戻して実行）。`tests/tzroutine.mjs` に指摘のプログラムとパイプラインの形を足し、`hello` が 2 行出ることを native の `-O0`・`-O3`（1 P と 4 P）で確かめる。
+   - 修正後の evidence: 指摘のプログラムは `tsuzuri check` で診断なし、`tsuzuri run` は `hello`。
+2. **直接書いたラムダが借用を持つ関数値を捕捉する場合の拒否が文書にない。** `owned.md` の「捕捉できるのは所有値だけ」に、`Owned.function (\n -> size n)`（`size` が `ref text` を捕捉）の例と message `a captured value holds a borrow`・note を足した（修正後のバイナリの出力を確認。`main` は受理する）。「Owned.call による借用呼び出し」に結果の借用の説明と `run=32` の例、まとめに 2 行を足した。`docs/language.md` の `E1013` の行と `Owned.function` の項、`Owned.call` の表、`docs/architecture.md` の `Owned.Function` の段落、`src/explain/codes/E1013.md` の Fixes（`from a lambda or function value whose captures hold no borrow`。1414 バイトで上限 1500 の内）を直した。
+3. **ジェネリックな本体の実体で、直接書いたラムダの message が `this function value holds a borrow` になる（nit）。** 実体の検査の時点でラムダは `E::Closure` に持ち上がっている。`owned_function_holds_borrow` は、`E::Lambda` と、関数の `owned_captures` が真の `E::Closure`（`Owned.function` に直接書いたラムダだけがそうなる。`let rec` の関数は偽）をラムダとして扱う。テスト `an_owned_lambda_in_a_generic_instance_reports_its_capture`（`(Send<'t>, Copy<'t>) => … Routine.go (Owned.function (\() -> Channel.send ch x))` を `'t = unit -> unit` で使う形が `a captured value holds a borrow`。`let rec` の関数を渡す形は `this function value holds a borrow`）は修正前に失敗し、修正後に成功する。指摘の program の message も `a captured value holds a borrow` になった。
+
+検証:
+
+- T0: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` 成功。
+- T1: `cargo nextest run --locked` 2938 件成功（4 skipped）。
+- `node tests/tzroutine.mjs target/debug/tsuzuri`: 163 runs passed。`node tests/features.mjs target/debug/tsuzuri` の `tzroutine`（13 件）・`context`（15 件）・`timers`（9 件）成功。
+- `tests/fixtures/*/`・`examples/*/`（176）と `tests/conformance` の 251 の `.tz` の `tsuzuri check --json` を `main` のバイナリと比べ、すべて一致。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs owned.md`: 1 page, 7 links, 7 checked examples, 14 native runs（O0/O3）。`cargo test --locked --test explain` 16 件成功。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`（19 blocks, 0 stale）・`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-cli-docs.mjs`（4 checks, 0 failed）・`node scripts/check-guide-lite.mjs`（88 references, 0 failed）。
+- 生成コードは変えていない（借用検査だけ）。
+
+判断:
+
+- 結果の loan を外すのは `Owned.call` を組み込み関数として直接呼ぶ（またはパイプラインで最後まで適用する）ときだけ。`let c = Owned.call` のように関数値にしてから呼ぶ形は今までどおり第 1 引数の loan を結果に入れる（保守的な誤検出が残るだけで、健全性は変わらない）。
+- 第 1 引数が呼び出し側の `ref Owned.Function` の引数でも同じ。結果の型が参照を含み、loan がなければ、今までどおり静的なデータへの loan になる。

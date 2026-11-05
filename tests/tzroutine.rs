@@ -287,6 +287,79 @@ fn an_owned_function_from_a_function_value_holds_no_borrow() {
 }
 
 #[test]
+fn an_owned_lambda_in_a_generic_instance_reports_its_capture() {
+    // A30: the lambda written as the argument is lifted before the body of `later` is checked for
+    // the instance with `'t = unit -> unit`, and its capture `x` holds the caller's borrow.
+    let error = analyze(&format!(
+        "def later :: (Send<'t>, Copy<'t>) => own 't -> own Channel<'t> -> unit\nfn later x ch = Routine.go (Owned.function (\\() -> Channel.send ch x))\n\n{BORROWING_G}    let ch: Channel<unit -> unit> = Channel.make 1\n    later g ch\n\nspawn 4\n0\n"
+    ))
+    .expect_err("the owned lambda captures a borrowing function value");
+    assert_eq!(error.code, "E1013", "{}", error.message);
+    assert_eq!(error.kind, Some("owned_function_captures_reference"));
+    assert_eq!(
+        error.message,
+        "an owned function captures only owned values; a captured value holds a borrow"
+    );
+    // A `let rec` function is a function value, not a lambda written in place, also when it is
+    // lifted.
+    rejects_a_borrowing_owned_function(&format!(
+        "{BORROWING_G}    let rec h: unit -> unit = \\() -> g ()\n    Routine.go (Owned.function h)\n\nspawn 4\n0\n"
+    ));
+}
+
+#[test]
+fn the_result_of_owned_call_borrows_only_its_input() {
+    // A30: an owned function holds no borrow and its body cannot return one of its environment, so
+    // the result of `Owned.call (ref factory) ()` does not borrow `factory`.
+    let factory = "def make :: own Owned.Function<unit, unit -> unit> -> unit\nfn make factory =\n    let f = Owned.call (ref factory) ()\n    Routine.go (Owned.function f)\n\ndef hello :: unit -> unit = \\() -> {\n    do! IO.write_line \"hello\"\n}\n\nmake (Owned.function (\\() -> hello))\n0\n";
+    accepts(factory);
+    accepts(&factory.replace(
+        "Owned.call (ref factory) ()",
+        "() |> Owned.call (ref factory)",
+    ));
+    // A function that the owned function returns and that captures a copy outlives the owned
+    // function.
+    accepts(
+        "let text = String.repeat 4 (ref \"abcdefgh\")\nlet f = Owned.function (\\() -> {\n    let n = String.length (ref text);\n    \\() -> n\n})\nlet r = Owned.call (ref f) ()\nOwned.drop f\nr ()\n",
+    );
+    // What the input lends still flows into the result: `f` is the caller's, so only `text` can
+    // keep the result from leaving `keep`.
+    rejects(
+        "def keep :: ref Owned.Function<ref string, ref string> -> ref string = \\f ->\n    let text = String.repeat 4 (ref \"abcdefgh\")\n    Owned.call f (ref text)\n\nlet f = Owned.function (\\(s: ref string) -> s)\nString.length (keep (ref f))\n",
+        "E1013",
+    );
+    accepts(
+        "def keep :: ref Owned.Function<ref string, ref string> -> ref string -> ref string = \\f s ->\n    Owned.call f s\n\nlet f = Owned.function (\\(s: ref string) -> s)\nlet t = \"abc\"\nString.length (keep (ref f) (ref t))\n",
+    );
+    // `Owned.call (ref f)` alone is a function that borrows `f`.
+    rejects(
+        "def keep :: unit -> (unit -> i64) = \\() ->\n    let f = Owned.function (\\() -> 3)\n    Owned.call (ref f)\n\nkeep () ()\n",
+        "E1013",
+    );
+    // The body of an owned function cannot return a borrow of its environment, directly, in a
+    // value or through a function, nor move a capture into a function that it returns.
+    for body in [
+        "ref text",
+        "[ref text]",
+        "Maybe.Some (ref text)",
+        "(ref text, 1)",
+        "{\n    let b = ref text;\n    let g: unit -> i64 = \\() -> String.length b;\n    g\n}",
+        "\\() -> String.length (ref text)",
+    ] {
+        let source = format!(
+            "let text = String.repeat 4 (ref \"abcdefgh\")\nlet f = Owned.function (\\() -> {body})\nlet r = Owned.call (ref f) ()\nOwned.drop f\nr\n"
+        );
+        let error = analyze(&source).expect_err(&source);
+        assert!(
+            matches!(error.code, "E1012" | "E1013"),
+            "{source}\n{}: {}",
+            error.code,
+            error.message
+        );
+    }
+}
+
+#[test]
 fn emits_a_spawn_and_declares_the_runtime_once() {
     let module = accepts(
         "let shared = Arc.new (Atomic.create 0i64)\nfor _i in 0 ..< 3 do\n    let mine = Arc.share (ref shared)\n    tzroutine {\n        let _old = Atomic.fetch_add (Arc.get (ref mine)) 1i64\n    }\nRoutine.go (Owned.function (\\() -> ()))\nRoutine.yield ()\nRoutine.count () + Routine.max_procs () + Routine.cpu_count ()\n",

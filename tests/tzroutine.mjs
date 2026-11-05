@@ -99,6 +99,29 @@ def main :: unit -> i32 = \\() ->
     later (h |> Owned.function)
     0
 `, "piped\n"],
+  // The result of \`Owned.call\` does not borrow the owned function (A30): \`f\` becomes an owned
+  // function of its own, here and through a pipeline.
+  [`def make :: own Owned.Function<unit, unit -> unit> -> unit
+fn make factory =
+    let f = Owned.call (ref factory) ()
+    Routine.go (Owned.function f)
+
+def remake :: own Owned.Function<unit, unit -> unit> -> unit
+fn remake factory =
+    let f = () |> Owned.call (ref factory)
+    Routine.go (Owned.function f)
+
+def hello :: unit -> unit = \\() -> {
+    do! IO.write_line "hello"
+}
+
+def main :: unit -> i32 = \\() ->
+    make (Owned.function (\\() -> hello))
+    Time.sleep 50000000
+    remake (Owned.function (\\() -> hello))
+    Time.sleep 50000000
+    0
+`, "hello\nhello\n"],
   // A tzroutine spawned by a child of Routine.scope is waited for by the scope, so Routine.scope
   // returns after it.
   [`let counter = Arc.new (Atomic.create 0i64)
