@@ -171,6 +171,34 @@ even=2450 odd=2500 owners=1
 - `Rc` と `Arc` には排他参照 `ref mut` を入れられません（`E1005`）。`Rc<ref string>` のように共有参照を入れた値は、参照先より長く生きられません（`E1013`）。
 - `Rc` と `Arc` は公開 ABI（`export def`・`extern def`）に使えず（`E1008`）、const にもできません（`E1026`）。
 
+## 所有者を増やした値の借用
+
+`Rc.share`・`Rc.downgrade`・`Rc.upgrade`（`Arc` も同じ）の結果は、ブロックの新しい所有者（弱参照）です。引数の `ref shared` の借用は呼び出しの間だけで、結果は `shared` を借用しません。結果が借用を持つのは、ブロックの値が持つ借用（借用を捕捉した関数など）だけです。そのため結果を持ったまま `shared` をムーブ・解放でき、関数から結果を返せます。`Rc.get` の結果は `shared` が指すブロックへの参照なので、`shared` の借用のままです。
+
+```tsuzuri run=42
+let shared = Rc.new (\value -> value + 1)
+let mine = Rc.share (ref shared)
+let moved = shared
+(deref (Rc.get (ref mine))) 40 + Rc.strong_count (ref moved) - 1
+```
+
+実行結果:
+
+```text
+42
+```
+
+ブロックの値が借用を持つときは、結果もその借用を持ちます。次の `mine` は `text` を借用する関数を共有するので、`text` より長く生きられず、`text` のムーブや、`mine` を捕捉する tzroutine は `E1013`・`E1014` のままです。
+
+```text
+let text = "abc"
+let borrowed = ref text
+let shared = Arc.new (\() -> String.length borrowed)
+let mine = Arc.share (ref shared)
+let moved = text       // E1014: mine は text の借用を持つ
+Arc.strong_count (ref mine) + moved.length
+```
+
 ## 循環と解放
 
 `Rc` と `Arc` の値は、共有されている間は変更できないので、値ができる前にその値を指す `Rc`・`Arc` は作れません。`Rc` と `Arc` だけでは循環は作れず、参照カウントの循環による解放漏れも起きません。循環するグラフは [Arena](./arena.md) とハンドルでも表せます。

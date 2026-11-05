@@ -292,6 +292,8 @@ error[E1014]: access conflicts with a live borrow; use the reference or end its 
 
 「直接呼ぶと `right` をすぐ書き換えられるのに、関数値として渡すと借用が残る」ときは、この制限です。呼び出しを直接にするか、所有値を返す API にします。
 
+名前付き region がない関数の結果は、型が参照を含むなら、すべての参照引数の借用を持ちます（本体がどれを返すかは見ません）。型が参照を含まず、借用を関数の環境にだけ持ちうる結果（関数値、関数を値に持つ `HashMap` など）は、直接の完全適用なら、呼び出す関数の本体が結果に入れうる引数の借用だけを持ちます（[共有借用の寿命](../values-and-functions/lambda-expressions.md#共有借用の寿命)）。`Rc.share`・`Arc.share` などの結果は、`shared` の借用ではなく、`shared` が持つ借用だけを持ちます（[所有者を増やした値の借用](../built-in-types-and-modules/rc.md#所有者を増やした値の借用)）。
+
 複数 region のレコードを `let mut` で束縛すると、region は 1 つにまとまります。共有フィールドの読み出しと排他フィールドの再借用を同じ式で行うと `E1014` になることがあるので、先に `let` で読み出します。
 
 ## 他の言語との比較

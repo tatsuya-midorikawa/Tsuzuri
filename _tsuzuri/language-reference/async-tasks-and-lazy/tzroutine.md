@@ -106,6 +106,27 @@ String.length (ref s)     // E1012: use of moved or partially moved value 's'
 
 複数の tzroutine で値を共有するときは、[Arc](../built-in-types-and-modules/rc.md) を tzroutine ごとに `Arc.share` して渡し、書き換える値は [Atomic](../built-in-types-and-modules/atomic.md) か [Mutex](../built-in-types-and-modules/mutex.md) に入れます。本体の中では、本体の値（持ち込んだ値を含む）を自由に `ref` で借用できます。本体が使わなかった捕捉は、本体の終わりに 1 回だけ drop されます。
 
+`Arc.share (ref shared)` の結果は新しい所有者で、`shared` の借用ではありません。そのため関数の `Arc` も、tzroutine ごとに `Arc.share` して渡せます。関数が借用を捕捉しているときは、その借用を `Arc.share` の結果も持つので、捕捉は `E1013` のままです（[所有者を増やした値の借用](../built-in-types-and-modules/rc.md#所有者を増やした値の借用)）。
+
+```tsuzuri run=4
+let shared = Arc.new (\value -> value + 1)
+let total = Arc.new (Atomic.create 0i64)
+let mine = Arc.share (ref shared)
+let counter = Arc.share (ref total)
+tzroutine {
+    let _old = Atomic.fetch_add (Arc.get (ref counter)) ((deref (Arc.get (ref mine))) 3)
+}
+while Atomic.load (Arc.get (ref total)) == 0 do
+    Routine.yield ()
+Atomic.load (Arc.get (ref total))
+```
+
+実行結果:
+
+```text
+4
+```
+
 ## 終了の待ち
 
 次の境界は、その中で起動した tzroutine（孫を含む）がすべて終わるまで戻りません。待つ間、境界のスレッドは眠ります。

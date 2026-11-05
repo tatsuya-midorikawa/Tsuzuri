@@ -214,6 +214,27 @@ measure ()
 
 `measure` は `text` が生きている間だけ使えます。所有者のブロックを出る関数値として返そうとすると、`E1013`（borrowed value does not live long enough to leave this block）になります。
 
+関数値を返す関数の呼び出しでは、関数の型が環境の借用を表さないので、コンパイラーは呼び出す関数の本体を見ます。結果が持つのは、本体が結果に入れうる引数（捕捉する、返す、そうしうる関数へ渡す）の借用だけです。次の `pass` は `key` を結果に入れないので、`wrap` は自分の `key` を借用して渡した呼び出しの結果を返せます。同じ型の `def keep :: ref string -> (unit -> i64)` で `fn keep text = \() -> String.length text` と書けば、結果は `text` の借用を持ち、`keep (ref text)` を `text` の所有者の外へ返すと `E1013` です。
+
+```tsuzuri run=42
+def pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)
+fn pass _key f = f
+
+def wrap :: i64 -> (unit -> i64)
+fn wrap key = pass (ref key) (\() -> 42)
+
+let f = wrap 1
+f ()
+```
+
+実行結果:
+
+```text
+42
+```
+
+この規則は、呼び出しの結果の型が参照を含まないとき（関数値、関数を持つレコード、`Maybe<unit -> i64>`、関数を値に持つ `HashMap` など）だけです。部分適用の結果は、渡した引数をすべて捕捉します。結果の型が参照を含むとき（`ref T`、`Maybe<ref T>` など）は、本体ではなくシグネチャが契約で、名前付き region がなければ、結果はすべての参照引数の借用を持ちます（[ライフタイムと region](../ownership-and-memory/lifetimes.md#なぜ名前付き-region-が必要なのか)）。
+
 ```text
 def leak :: unit -> unit -> i64 = \() ->
     let text = "answer"
