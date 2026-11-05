@@ -436,7 +436,7 @@ fn owned_call_results_are_lent_to_reference_parameters() {
     let prefix = format!(
         "{RESOURCE}{MAKE}def peek :: Copy<'a> => ref 'a -> 'a = \\v -> deref v\n\
          def len :: ref string -> i64 = \\s -> s.length\n{OWNED}    \
-         let show = Owned.function (\\amount -> to_string (amount + held.id))\n"
+         let show = Owned.function (\\amount -> to_string (amount * 2))\n"
     );
     for (direct, explicit) in [
         (

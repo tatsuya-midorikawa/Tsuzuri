@@ -576,6 +576,41 @@ impl Inference {
                 .any(|id| self.resolve(&Type::Infer(*id)) == root)
     }
 
+    /// Whether the open variable `root` occurs in `ty` once its solved variables are followed (A27).
+    pub(super) fn mentions(&self, ty: &Type, root: usize) -> bool {
+        let mut ty = ty;
+        while let Type::Infer(id) = ty {
+            match &self.solutions[*id] {
+                Some(solution) => ty = solution,
+                None => return *id == root,
+            }
+        }
+        match ty {
+            Type::Partial(partial) => partial.trailing.iter().any(|ty| self.mentions(ty, root)),
+            Type::Application(head, arguments) => {
+                self.mentions(head, root) || arguments.iter().any(|ty| self.mentions(ty, root))
+            }
+            Type::Array(inner)
+            | Type::ArrayView(inner)
+            | Type::List(inner)
+            | Type::Vec(inner)
+            | Type::Shared(inner, _)
+            | Type::Once(inner)
+            | Type::Reference(inner, _) => self.mentions(inner, root),
+            Type::FixedArray(element, length) => {
+                self.mentions(element, root) || self.mentions(length, root)
+            }
+            Type::Tuple(elements) => elements.iter().any(|ty| self.mentions(ty, root)),
+            Type::Function(parameters, result) => {
+                parameters.iter().any(|ty| self.mentions(ty, root)) || self.mentions(result, root)
+            }
+            Type::Record(_, arguments) | Type::Union(_, arguments) => {
+                arguments.iter().any(|ty| self.mentions(ty, root))
+            }
+            _ => false,
+        }
+    }
+
     /// The default that the open type of a number literal takes when nothing decides it.
     pub(super) fn numeric_default(&self, ty: &Type) -> Option<Type> {
         let root = self.resolve(ty);

@@ -11258,6 +11258,15 @@ struct ActiveResult {
     cases: BTreeMap<String, usize>,
 }
 
+/// A27: the argument hint of a call passed to a `ref T` parameter while its result type is still
+/// open. It waits until an argument could see the result (`Checker::settle_argument_hint`).
+struct PendingHint {
+    expected: Type,
+    /// The number of arguments, for `partial_application`.
+    passed: usize,
+    span: Span,
+}
+
 #[derive(Clone, Copy)]
 struct RecoveryMark {
     scopes: usize,
@@ -12170,16 +12179,26 @@ impl<'a> Checker<'a> {
             .map_err(|error| Self::operator_spacing_hint(error, arguments));
         let (mut parameters, result) =
             self.recover_signature(signature, arguments.len(), expression.span)?;
+        let parallel = matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce | Builtin::ParallelForEachChunk) && arguments.len() == instance.builtin.scheme().parameters.len());
+        let mut pending = None;
         if let Some(expected) = expected {
-            let hint = if argument {
-                self.argument_hint(&result, expected)
+            if argument && !parallel && self.defers_argument_hint(&result, expected) {
+                pending = Some(PendingHint {
+                    expected: expected.clone(),
+                    passed: arguments.len(),
+                    span: expression.span,
+                });
             } else {
-                expected.clone()
-            };
-            self.same(&result, &hint, expression.span)
-                .map_err(|error| {
-                    self.partial_application(error, &callee.ty, arguments.len(), &result, &hint)
-                })?;
+                let hint = if argument {
+                    self.argument_hint(&result, expected)
+                } else {
+                    expected.clone()
+                };
+                self.same(&result, &hint, expression.span)
+                    .map_err(|error| {
+                        self.partial_application(error, &callee.ty, arguments.len(), &result, &hint)
+                    })?;
+            }
         }
         if self.recovering && expected.is_some_and(|ty| matches!(ty, Type::Error)) {
             self.unknown_parameters(&mut parameters);
@@ -12188,8 +12207,7 @@ impl<'a> Checker<'a> {
             self.apply_piped(piped, &result, expression.span)?;
         }
         let owned = matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin == Builtin::OwnedFunction);
-        let mut arguments: Vec<_> = if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce | Builtin::ParallelForEachChunk) && arguments.len() == instance.builtin.scheme().parameters.len())
-        {
+        let mut arguments: Vec<_> = if parallel {
             self.parallel_arguments(arguments, &parameters)?
         } else {
             // A plain loop keeps iterator adapter frames off the recursion through nested calls.
@@ -12199,6 +12217,14 @@ impl<'a> Checker<'a> {
             let mut deferred = false;
             let mut callbacks = Vec::new();
             for (index, (argument, parameter)) in arguments.iter().zip(&parameters).enumerate() {
+                if !Self::deferred_lambda(arguments, index) {
+                    self.settle_argument_hint(
+                        &mut pending,
+                        &callee,
+                        &result,
+                        Some((parameter, argument)),
+                    )?;
+                }
                 checked.push(match &argument.kind {
                     _ if Self::deferred_lambda(arguments, index) => {
                         deferred = true;
@@ -12241,14 +12267,27 @@ impl<'a> Checker<'a> {
                 });
             }
             for index in callbacks {
+                self.settle_argument_hint(
+                    &mut pending,
+                    &callee,
+                    &result,
+                    Some((&parameters[index], &arguments[index])),
+                )?;
                 checked[index] =
                     self.noted_argument(&callee, index, &arguments[index], &parameters[index])?;
             }
             if deferred {
-                self.lambda_arguments(&callee, arguments, &parameters, &mut checked)?;
+                self.lambda_arguments(
+                    &callee,
+                    arguments,
+                    &parameters,
+                    &mut checked,
+                    (&mut pending, &result),
+                )?;
             }
             checked
         };
+        self.settle_argument_hint(&mut pending, &callee, &result, None)?;
         self.solve_families(false)?;
         self.temporary_borrows(&callee, &mut arguments, &result, expression.span)?;
         if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin == Builtin::DynOf)
@@ -13031,9 +13070,11 @@ impl<'a> Checker<'a> {
         arguments: &[Expr],
         parameters: &[Type],
         checked: &mut [TypedExpr],
+        (pending, result): (&mut Option<PendingHint>, &Type),
     ) -> Result<(), Diagnostic> {
         for (index, (argument, parameter)) in arguments.iter().zip(parameters).enumerate() {
             if Self::deferred_lambda(arguments, index) {
+                self.settle_argument_hint(pending, callee, result, Some((parameter, argument)))?;
                 checked[index] = self.noted_argument(callee, index, argument, parameter)?;
             }
         }
@@ -13153,6 +13194,100 @@ impl<'a> Checker<'a> {
             (_, Type::Reference(inner, _)) => (**inner).clone(),
             _ => expected,
         }
+    }
+
+    /// A27: whether a call passed to a `ref T` parameter waits with its argument hint. Its result
+    /// must be open, not the type of a number literal (`argument_hint` decides that one), and not
+    /// shared with a local, whose uses in the arguments would see it.
+    fn defers_argument_hint(&self, result: &Type, expected: &Type) -> bool {
+        if let (Type::Reference(..), Type::Infer(root)) = (
+            self.inference.resolve(expected),
+            self.inference.resolve(result),
+        ) {
+            !self.inference.is_numeric_literal(result) && !self.locals_mention(root)
+        } else {
+            false
+        }
+    }
+
+    fn locals_mention(&self, root: usize) -> bool {
+        self.scopes
+            .iter()
+            .flat_map(BTreeMap::values)
+            .chain(self.old_locals.iter().map(|(_, local)| local))
+            .any(|local| self.inference.mentions(&local.ty, root))
+    }
+
+    /// A27: applies a waiting argument hint before the argument `next` (`None`: after the last
+    /// argument) when that argument could see the result, as the hint has done before every
+    /// argument so far. A result that the arguments made a value is lent by `coerce_argument`
+    /// instead, as a value's is: unifying it with `ref T` would fail.
+    fn settle_argument_hint(
+        &mut self,
+        pending: &mut Option<PendingHint>,
+        callee: &TypedExpr,
+        result: &Type,
+        next: Option<(&Type, &Expr)>,
+    ) -> Result<(), Diagnostic> {
+        if pending.is_none() {
+            return Ok(());
+        }
+        let actual = self.inference.resolve(result);
+        if let (Type::Infer(root), Some((parameter, argument))) = (&actual, next)
+            && !self.inference.is_numeric_literal(&actual)
+            && !self.argument_sees_result(*root, parameter, argument)
+        {
+            return Ok(());
+        }
+        let Some(hint) = pending.take() else {
+            return Ok(());
+        };
+        if matches!(
+            actual,
+            Type::Infer(_)
+                | Type::Reference(..)
+                | Type::Error
+                | Type::Application(..)
+                | Type::Partial(_)
+        ) {
+            let target = self.argument_hint(result, &hint.expected);
+            self.same(result, &target, hint.span).map_err(|error| {
+                self.partial_application(error, &callee.ty, hint.passed, result, &target)
+            })?;
+        }
+        Ok(())
+    }
+
+    /// A27: whether checking `argument` against `parameter` could see the open result `root`: the
+    /// parameter passes the result (the result, a reference to it, or a function type with it, D1),
+    /// the argument is not a place whose checking reads only the parameter's outer type (a call or a
+    /// literal pushes the parameter's type arguments into its own arguments: `Maybe.Some x` lends
+    /// `x` to `Maybe<ref T>`), or a local holds the result.
+    fn argument_sees_result(&self, root: usize, parameter: &Type, argument: &Expr) -> bool {
+        let parameter = self.inference.resolve(parameter);
+        let mut passed = &parameter;
+        while let Type::Reference(inner, _) = passed {
+            passed = inner;
+        }
+        matches!(passed, Type::Infer(id) if *id == root)
+            || (matches!(passed, Type::Function(..)) && self.inference.mentions(passed, root))
+            || (!Self::outer_type_argument(argument) && self.inference.mentions(&parameter, root))
+            || self.locals_mention(root)
+    }
+
+    /// A place, or a keyword `ref` of any operand, which `argument` checks without the parameter's
+    /// type and then coerces by its outer type only (`place_argument`).
+    fn outer_type_argument(argument: &Expr) -> bool {
+        matches!(
+            argument.kind,
+            ExprKind::Name(_)
+                | ExprKind::QualifiedFunction(_)
+                | ExprKind::TypeFunction(..)
+                | ExprKind::Field(..)
+                | ExprKind::Index(..)
+                | ExprKind::Dereference(..)
+                | ExprKind::Borrow(_, false, Notation::Keyword)
+        )
     }
 
     fn coerce_argument(
