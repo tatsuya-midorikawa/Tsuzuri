@@ -66,6 +66,8 @@ try {
     for (const line of output.trim().split(/\r?\n/)) {
       const [kernel, nanoseconds, value] = line.split(" ");
       assert.equal(Number(value), want[kernel], `${build.name} ${kernel}`);
+      // a clock that could not be read is no sample (`clock_error`), and neither is a zero
+      assert.match(nanoseconds, /^[1-9][0-9]*$/, `${build.name} ${kernel}: no duration`);
       (build.times[kernel] ??= []).push(Number(nanoseconds) / 1e6);
     }
   };

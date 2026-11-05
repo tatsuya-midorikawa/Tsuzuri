@@ -1,7 +1,8 @@
 // TZ10 (S3, D1): compute kernels that run on a tzroutine, so that the program spawns and its code has
 // the preemption checks. benchmarks/run-tzroutine.mjs builds this file with two compilers and runs
 // them in turn; each kernel is timed here with the monotonic clock, around its own work only, and
-// prints `name nanoseconds result`. The results are checked against independent values by the runner.
+// prints `name nanoseconds result` (`clock_error` for the nanoseconds when the clock could not be read,
+// which the runner refuses). The results are checked against independent values by the runner.
 
 def rec fib :: i64 -> i64
 fn rec fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
@@ -78,7 +79,7 @@ fn timed name work =
     let! after = Time.monotonic_ns ()
     match (before, after) with
     | (Result.Ok first, Result.Ok last) -> $"{name} {last - first} {value}"
-    | _ -> $"{name} 0 {value}"
+    | _ -> $"{name} clock_error {value}"
 
 def run :: unit -> string
 fn run _ =
