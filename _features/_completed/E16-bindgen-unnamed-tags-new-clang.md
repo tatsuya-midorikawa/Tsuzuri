@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | E11 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-05（TZ12 の作業中に `tests/bindgen.mjs` の `skipped` の golden の差として発見。HEAD `5ee6b0f2` で確認） |
 | 承認 | 不要（文書が約束している振る舞いに戻す修正） |
 | 改善する劣位 | 不具合: Clang 23.1.4 で `tsuzuri bindgen` を動かすと、`typedef struct { int small; } tagged;` を引数に取る C 関数が、別の型 `struct tagged { double big; }` の `ref Tagged` として生成される（ABI の合わない extern。呼ぶと C の側が違う配置の値を読む）。無名の enum の typedef を引数に取る関数は、Clang 21 なら `i32` で生成されるのに、Clang 23 では `W2002` で skip される |
@@ -17,7 +17,7 @@
 ## 目的
 
 `tsuzuri bindgen` が、Clang の版によらず、無名の struct・union・enum を名付ける typedef を正しく見分けるようにする。
-[ネイティブ連携](../_tsuzuri/language-reference/compiler/native-interop.md) の「`typedef struct { ... } S;` の無名の struct は、引数で `S` と書いても変換しません」という約束が、
+[ネイティブ連携](../../_tsuzuri/language-reference/compiler/native-interop.md) の「`typedef struct { ... } S;` の無名の struct は、引数で `S` と書いても変換しません」という約束が、
 新しい Clang では破れている。bindgen の目的は「ABI の一致を確かめられる C の宣言だけを生成し、推測で型を当てはめない」ことなので、
 合わない extern を黙って出すのは最も重い種類の誤りである。
 
@@ -192,10 +192,10 @@ Clang 21 の結果は変わらない。
 
 ## 受け入れ条件
 
-- [ ] 「再現」の `m.h` が、Clang 21 と 23 で同じ本文（Clang 21 の今の出力）になる。
-- [ ] `tests/bindgen.rs` の Clang 23 の形のケースが、修正前に失敗し、修正後に成功する。
-- [ ] `tests/bindgen.mjs` が Clang 21 と 23 の両方で成功する。
-- [ ] fmt・clippy・T1 が成功する。
+- [x] 「再現」の `m.h` が、Clang 21 と 23 で同じ本文（Clang 21 の今の出力）になる。
+- [x] `tests/bindgen.rs` の Clang 23 の形のケースが、修正前に失敗し、修正後に成功する。
+- [x] `tests/bindgen.mjs` が Clang 21 と 23 の両方で成功する。
+- [x] fmt・clippy・T1 が成功する。
 
 ## 落とし穴
 
@@ -218,3 +218,56 @@ Clang 21 の結果は変わらない。
 - 決定: 翻訳単位の名前の無い `RecordDecl`・`EnumDecl` の `id` を集め、typedef の型の節点の `ownedTagDecl` か `decl` がその `id` を指すとき、typedef が無名の tag を名付けるとみなす。
 - 理由: Clang 21 の形（`ownedTagDecl`）と Clang 23 の形（`decl`）の両方を、同じ規則で読める。版の番号で分岐する案は、22 などの未確認の版で誤る。
 - 状態: 既定案（実装者はこの案に従う）。
+
+## 実装と検証（2026-11-06）
+
+Clang 21.1.8（Homebrew `llvm@21`）と Clang 23.1.4（Homebrew `llvm`）、macOS arm64 で、手順 1〜5 をすべて行いました。
+
+### 手順と結果
+
+- 手順 1: 「再現」の `m.h` が、Clang 21 では上の本文、Clang 23 では `skipped pick`・`skipped (anonymous struct)`・`extern "use_tagged" … ref Tagged` になることを確かめました。
+  `TSUZURI_CLANG=<clang 21> node tests/bindgen.mjs target/debug/tsuzuri` は成功、Clang 23 は golden `skipped` の 3 行の差で失敗しました。5 つの golden の Clang 21 の出力を保存しました。
+- 手順 2: `tests/bindgen.rs` に AST の形 `Shape`（`Elaborated` が Clang 21、`Direct` が Clang 23）と、型のノードを作る `tag_ref`・`tag_type`・`typedef_over` を足し、
+  `generates_scalar_records_and_ref_parameters`（`anon_t`）、`does_not_read_unnamed_struct_typedefs_as_tags`、新しい `reads_unnamed_enum_typedefs_from_either_ast_shape` を 2 つの形で回すようにしました。
+  修正前の `cargo test --locked --test bindgen` は `running 27 tests`、24 passed・3 failed で、3 件とも `Direct` の形だけが失敗しました（`Elaborated` は先に回って成功）。`Direct` の失敗には、`extern "use_typedef" def use_typedef :: ref S -> f64` という ABI の合わない extern が出ていました。
+- 手順 3: `Tables::new` の最初の走査で、名前のない `RecordDecl`・`EnumDecl` の `id` の集合を作り、`unnamed_tag` が `ownedTagDecl`（Clang 21）に加えて、`decl` の `id` がその集合にある型のノード（Clang 23）も返すようにしました（D1）。
+  `Typedef` と `unnamed_tag` の doc comment に 2 つの形を書きました。`cargo test --locked --test bindgen` は 27 passed、`cargo test --locked --lib bindgen` は 5 passed です。
+  落とし穴の 1 つ目は、`id` の集合で絞る条件を外す変更（`decl` の `id` があれば常に名付けるとみなす）で `does_not_read_unnamed_struct_typedefs_as_tags` が失敗する（`typedef struct S S_named;` を展開しなくなる）ことを確かめてから、元に戻しました。
+- 手順 4: `skipped.h` に `typedef enum { PICK_A, PICK_B } pick_mode; int pick_mode_value(pick_mode value);` を足し、`expected.tz` に `const PICK_A: i32 = 0`・`const PICK_B: i32 = 1`・`extern "pick_mode_value" def pick_mode_value :: i32 -> i32` を足しました（名前は既存の宣言と衝突しません）。
+  修正の前後で、Clang 21 の 5 つの golden と `m.h` の出力は（足した行を除いて）1 byte も変わりません。修正後は Clang 21 と 23 の出力が 5 つの golden と `m.h` のすべてで一致します。
+- 手順 5: `cargo fmt --all -- --check` と `cargo clippy --locked --all-targets -- -D warnings` は成功。`cargo nextest run --locked` は 2935 tests run: 2935 passed、4 skipped。
+  `cargo build` の後、`TSUZURI_CLANG=/opt/homebrew/opt/llvm@21/bin/clang node tests/bindgen.mjs target/debug/tsuzuri` と `TSUZURI_CLANG=/opt/homebrew/opt/llvm/bin/clang …` は、どちらも golden・決定性・`check`／`fmt --check`・W2002、native の往復（`-O0`／`-O3`）、CLI のすべてが成功しました。
+  `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/native-interop.md` は成功（1 ページ、36 リンク、8 例、4 回の native 実行）。
+
+### チケットを補った判断
+
+1. **Clang 23 の無名の tag の綴りも直しました（落とし穴の 3 つ目）。** Clang 23 は `qualType` で無名の tag を `struct (unnamed at …)` と綴り、Clang 21 の `struct (unnamed struct at …)` から種類の語が抜けます。
+   golden には出ませんが、無名の struct をフィールドの型に持つ struct の skip が `'struct (unnamed)'`（Clang 23）と `'struct (unnamed struct)'`（Clang 21）で食い違いました。
+   停止条件の 2 つ目は「golden がまだ一致しない」場合で、これには当たりません。仕様の「Clang の AST の形によらず、Clang 21 の今の出力と同じ」に合わせるため、`scrub` が `(unnamed at …)` の直前の `struct`・`union`・`enum` を補って `(unnamed struct)` などにするようにしました（数行の変更で、Clang 21 の出力は変わりません）。
+   `src/bindgen.rs` の単体テスト `splits_function_types` に Clang 23 の綴りを足しました。
+2. **golden `skipped` に、無名の struct をフィールドに持つ struct を 1 つ足しました。** `struct nested_unnamed { struct { int a; } inner; };`（`// skipped nested_unnamed: field 'inner' has unsupported type 'struct (unnamed struct)'`）で、1 の綴りを実際の Clang 23 でも golden で確かめるためです。
+   skip が 1 つ増えるので、`tests/bindgen.mjs` の `--json` の W2002 の件数を 37 から 38 にしました（ほかの期待値は変わりません）。
+3. **Rust のテストに、落とし穴を確かめるケースを足しました。** `does_not_read_unnamed_struct_typedefs_as_tags` に、名前のある tag の typedef `typedef struct S S_named;`（展開して `ref S` になる。落とし穴の 1 つ目）、
+   `typedef struct { ... } *P;`（仕様の 1 つ目の例）、無名の struct をフィールドに持つ struct と、どの typedef も名付けない無名の struct（`(anonymous struct)` で報告。落とし穴の 2 つ目）を足しました。
+   `Elaborated` の形は、Clang 21 が実際に書くとおり `ElaboratedType` の下に `decl` を持つ `RecordType`・`EnumType` を置くので、新しい `decl` の判定が Clang 21 の形で結果を変えないことも同じテストで確かめています。
+   `reads_unnamed_enum_typedefs_from_either_ast_shape` は、定数名を `MODE_A`・`MODE_B` にし、typedef の別名（`typedef mode mode_alias;`）を引数に取る関数も足しました。
+4. Clang 23 は型のノードに `isTagOwned` も書きますが、D1 のとおり `id` の集合で判定し、`isTagOwned` は読みません。どちらの形も同じ規則で読めて、未確認の版（22）にも版の番号で分岐しないからです。
+
+### Clang 23 の AST のほかの違い
+
+5 つの golden は、修正後に Clang 21 と 23 で一致します（停止条件の 2 つ目には当たりません）。golden のほかに、次の形のヘッダーで両方の Clang の出力が一致し、Clang 21 の出力が修正の前後で変わらないことを確かめました:
+`typedef struct { ... } A, *PA;`、`typedef A B;`、`typedef __typeof__(A) C;`、`const A *` を取る関数ポインターの typedef、`typedef struct named { ... } named_t;` と `typedef struct named named2_t;`、
+`typedef enum { ... } E, *PE;` と `typedef E E2;`、無名の union の typedef、`typedef const struct { ... } *CP;`、struct の中の無名の struct・union・enum のフィールド、無名のメンバー（`struct { int a; };`）、無名の struct の大域変数。
+Clang 22 は手元に無く、確かめていません（D1 は版によらない規則です）。CI は今までどおり Clang 21 だけで、Clang 23 の形は Rust のテストが確かめます。
+
+### 更新した文書
+
+- `_tsuzuri/language-reference/compiler/native-interop.md`: 無名の struct の typedef の項に、判定と `// skipped` 行の無名の tag の表記が Clang 21 と 23 で同じになることを書きました（版を書く節は無かったので、この項に足しました）。
+- `docs/language.md`: bindgen の無名の tag の段落に、同じことを 1 文で足しました。
+- `docs/architecture.md`: 無名の tag を `id` の集合と `ownedTagDecl`／`decl` で見分ける規則と、Clang 23 の無名の tag の綴りを `scrub` がそろえることを書きました。
+- `_features/README.md`: 状態とリンクを更新しました。
+
+### 変更したファイル
+
+`src/bindgen.rs`、`tests/bindgen.rs`、`tests/bindgen.mjs`、`tests/fixtures/bindgen/skipped/skipped.h`、`tests/fixtures/bindgen/skipped/expected.tz`、
+`_tsuzuri/language-reference/compiler/native-interop.md`、`docs/language.md`、`docs/architecture.md`、`_features/README.md`、このチケット（`_features/_completed/` へ移動）。
