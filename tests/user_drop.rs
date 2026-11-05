@@ -491,6 +491,18 @@ fn owned_function_lambdas_only_borrow_their_captures() {
         "E1005",
         "cannot capture Main.Resource in a reusable function",
     );
+    // A30: a function value given to `Owned.function` holds no borrow, so the owned function
+    // cannot outlive what it reads (a lambda that captures a reference is the E1013 above).
+    rejects(
+        &format!(
+            "{prefix}    let borrowed = ref held\n    let add = \\x -> x + borrowed.id\n    let owned = Owned.function add\n    Owned.call (ref owned) 1\n"
+        ),
+        "E1013",
+        "an owned function captures only owned values; this function value holds a borrow",
+    );
+    accepts(&format!(
+        "{prefix}    let id = held.id\n    let add = \\x -> x + id\n    let owned = Owned.function add\n    Owned.call (ref owned) 1\n"
+    ));
     accepts(&format!(
         "{prefix}    let shape = Maybe.Some 3\n    let base = 10\n    let scale = \\x -> x * base\n    let inner = Owned.function (\\x -> scale x + held.id + String.length (ref held.name))\n    let outer = Owned.function (\\x -> match ref shape with | Maybe.Some size -> Owned.call (ref inner) x + size | Maybe.None -> 0)\n    Owned.call (ref outer) 1\n"
     ));

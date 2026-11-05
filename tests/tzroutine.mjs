@@ -72,6 +72,33 @@ $"sum={Atomic.load (Arc.get (ref total))}"
 }))
 7
 `, "go\n7\n"],
+  // A30: a function value that captures only owned values becomes an owned function, directly and
+  // through a pipeline. The string is the function's own, so the tzroutine reads it after
+  // \`spawn\` returned (a function value that borrowed it is E1013).
+  [`def spawn :: i64 -> unit
+fn spawn count =
+    let text = String.repeat count (ref "abcdefgh")
+    let g: unit -> unit = \\() -> {
+        Time.sleep 20000000;
+        do! IO.write_line $"{String.length (ref text)} {text}"
+    }
+    Routine.go (Owned.function g)
+
+def main :: unit -> i32 = \\() ->
+    spawn 4
+    0
+`, "32 abcdefghabcdefghabcdefghabcdefgh\n"],
+  [`def later :: own Owned.Function<unit, unit> -> unit = \\work -> Routine.go work
+
+def main :: unit -> i32 = \\() ->
+    let label = "piped"
+    let h: unit -> unit = \\() -> {
+        Time.sleep 20000000;
+        do! IO.write_line label
+    }
+    later (h |> Owned.function)
+    0
+`, "piped\n"],
   // A tzroutine spawned by a child of Routine.scope is waited for by the scope, so Routine.scope
   // returns after it.
   [`let counter = Arc.new (Atomic.create 0i64)

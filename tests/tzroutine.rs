@@ -130,6 +130,122 @@ fn tzroutine_module_functions() {
     assert_eq!(error.code, "E1011", "{}", error.message);
 }
 
+/// The message of `owned_function_captures_reference` for an argument of `Owned.function` that is
+/// not a lambda (A30 D2).
+const HOLDS_A_BORROW: &str =
+    "an owned function captures only owned values; this function value holds a borrow";
+
+/// Asserts that `source` is rejected because `Owned.function` gets a function value that holds a
+/// borrow: the code, kind and message of A30 D2, a note at the borrow and a help that names
+/// `own Owned.Function<…>`.
+fn rejects_a_borrowing_owned_function(source: &str) {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, "E1013", "{source}\n{}", error.message);
+    assert_eq!(
+        error.kind,
+        Some("owned_function_captures_reference"),
+        "{source}\n{}",
+        error.message
+    );
+    assert_eq!(error.message, HOLDS_A_BORROW, "{source}");
+    assert!(!error.related.is_empty(), "{source}: a note at the borrow");
+    assert!(
+        error
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains("own Owned.Function<")),
+        "{source}\n{:?}",
+        error.help
+    );
+}
+
+/// The head of a function that borrows a string it owns and makes `g`, a function value that
+/// captures the borrow (A30).
+const BORROWING_G: &str = "def spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    let borrowed = ref text\n    let g: unit -> unit = \\() -> {\n        do! IO.write_line $\"{String.length borrowed} {borrowed}\"\n    }\n";
+
+#[test]
+fn an_owned_function_from_a_function_value_holds_no_borrow() {
+    // The repro of A30: the tzroutine would read `text` after `spawn` freed it.
+    rejects_a_borrowing_owned_function(&format!(
+        "{BORROWING_G}    Routine.go (Owned.function g)\n\nspawn 4\n0\n"
+    ));
+    rejects_a_borrowing_owned_function(&format!(
+        "{BORROWING_G}    let group = WaitGroup.create ()\n    WaitGroup.go (ref group) (Owned.function g)\n    WaitGroup.wait (ref group)\n\nspawn 4\n0\n"
+    ));
+    rejects_a_borrowing_owned_function(&format!(
+        "{BORROWING_G}    let root = Context.background ()\n    let ctx = Context.with_cancel root\n    let _after = Context.after_func ctx (Owned.function g)\n    ()\n\nspawn 4\n0\n"
+    ));
+    rejects_a_borrowing_owned_function(
+        "def spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    let borrowed = ref text\n    let group: ErrGroup<string> = ErrGroup.create ()\n    let g: unit -> Result<unit, string> = \\() ->\n        if String.length borrowed == 3 then Result.Error \"three\" else Result.Ok ()\n    ErrGroup.go group (Owned.function g)\n\nspawn 4\n0\n",
+    );
+    // Made and never used: the check is where the owned function is made.
+    rejects_a_borrowing_owned_function(&format!(
+        "{BORROWING_G}    let _owned = Owned.function g\n    ()\n\nspawn 4\n0\n"
+    ));
+    // A parameter may hold a borrow of its caller's values.
+    rejects_a_borrowing_owned_function(
+        "def spawn :: (unit -> unit) -> unit\nfn spawn f = Routine.go (Owned.function f)\n\nspawn (\\() -> ())\n0\n",
+    );
+    // A partial application that keeps a reference.
+    rejects_a_borrowing_owned_function(
+        "def show :: ref string -> unit -> unit = \\text _u -> {\n    do! IO.write_line $\"{text}\"\n}\n\ndef spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    Routine.go (Owned.function (show (ref text)))\n\nspawn 4\n0\n",
+    );
+    // Through a pipeline.
+    rejects_a_borrowing_owned_function(&format!(
+        "{BORROWING_G}    Routine.go (g |> Owned.function)\n\nspawn 4\n0\n"
+    ));
+    // A lambda written as the argument that captures `g`: its environment holds `g`'s borrow.
+    let error = analyze(&format!(
+        "{BORROWING_G}    Routine.go (Owned.function (\\() -> g ()))\n\nspawn 4\n0\n"
+    ))
+    .expect_err("the owned lambda captures a borrowing function value");
+    assert_eq!(error.code, "E1013", "{}", error.message);
+    assert_eq!(error.kind, Some("owned_function_captures_reference"));
+    assert_eq!(
+        error.message,
+        "an owned function captures only owned values; a captured value holds a borrow"
+    );
+    // `Owned.function` as a value would hide its argument from the check.
+    let error = analyze(&format!(
+        "{BORROWING_G}    let make = Owned.function\n    Routine.go (make g)\n\nspawn 4\n0\n"
+    ))
+    .expect_err("Owned.function must be applied directly");
+    assert_eq!(error.code, "E1013", "{}", error.message);
+    assert_eq!(error.kind, Some("must_apply_directly"), "{}", error.message);
+
+    // A named function, and function values that capture only owned values, stay owned.
+    accepts(
+        "def hello :: unit -> unit = \\() -> {\n    do! IO.write_line \"hello\"\n}\nRoutine.go (Owned.function hello)\n0\n",
+    );
+    accepts(
+        "def spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    let g: unit -> unit = \\() -> {\n        do! IO.write_line $\"{String.length (ref text)} {text}\"\n    }\n    Routine.go (Owned.function g)\n\nspawn 4\n0\n",
+    );
+    accepts(
+        "record Job { name: string, size: i64 }\ndef spawn :: i64 -> unit\nfn spawn size =\n    let job = Job { name: \"job\", size: size }\n    let g: unit -> unit = \\() -> {\n        do! IO.write_line $\"{job.name} {job.size}\"\n    }\n    Routine.go (g |> Owned.function)\n\nspawn 4\n0\n",
+    );
+    // A function that makes a function from owned values.
+    accepts(
+        "def printer :: string -> unit -> unit = \\text _u -> {\n    do! IO.write_line $\"{text}\"\n}\nRoutine.go (Owned.function (printer \"owned\"))\n0\n",
+    );
+    // An owned function parameter is passed on as it is (the example of routine.md).
+    accepts(
+        "def spawn :: own Owned.Function<unit, unit> -> unit = \\work -> Routine.go work\n\nspawn (Owned.function (\\() -> {\n    do! IO.write_line \"hello from Routine.go\"\n}))\n0\n",
+    );
+    // An owned function holds no borrow, so an owned lambda (as in `ErrGroup.start`) or a
+    // tzroutine body may capture an owned function parameter.
+    accepts(
+        "def twice :: own Owned.Function<unit, unit> -> unit\nfn twice work =\n    Routine.go (Owned.function (\\() -> {\n        Owned.call (ref work) ();\n        Owned.call (ref work) ()\n    }))\n\ntwice (Owned.function (\\() -> ()))\n0\n",
+    );
+    accepts(
+        "def later :: own Owned.Function<unit, unit> -> unit\nfn later work =\n    tzroutine {\n        Owned.call (ref work) ()\n    }\n\nlater (Owned.function (\\() -> ()))\n0\n",
+    );
+    // A borrow of an owned function is still a borrow.
+    rejects(
+        "def later :: ref Owned.Function<unit, unit> -> unit\nfn later work =\n    let g: unit -> unit = \\() -> Owned.call work ()\n    Routine.go (Owned.function g)\n\nlet owned = Owned.function (\\() -> ())\nlater (ref owned)\n0\n",
+        "E1013",
+    );
+}
+
 #[test]
 fn emits_a_spawn_and_declares_the_runtime_once() {
     let module = accepts(

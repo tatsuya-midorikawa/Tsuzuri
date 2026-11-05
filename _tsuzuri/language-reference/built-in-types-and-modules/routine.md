@@ -55,7 +55,7 @@ spawn (Owned.function (\() -> {
 0
 ```
 
-`Owned.function` の本体は捕捉を借りて呼ばれるので、捕捉をムーブする処理は `tzroutine { }` で書きます。
+`Owned.function` の本体は捕捉を借りて呼ばれるので、捕捉をムーブする処理は `tzroutine { }` で書きます。 新しい tzroutine は関数を作った関数より長く生きることがあるので、借用を持つ関数値（`ref` を捕捉した関数値や関数の引数の関数値）からは `Owned.function` を作れません（`E1013`。[Owned](./owned.md#捕捉できるのは所有値だけ)）。関数の引数で仕事を受け取るときは、上の例のように `own Owned.Function<unit, unit>` にします。
 
 ## Routine.scope
 
