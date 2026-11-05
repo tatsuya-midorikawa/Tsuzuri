@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | A14, TZ03 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-05（TZ10 の作業中に発見。HEAD `5ee6b0f2` で確認） |
 | 承認 | 不要（言語の意味は変えない。生成 IR のシンボル名を正しくする修正） |
 | 改善する劣位 | 不具合: `Channel<dyn (C, Send)>` のように、`+copy`・`+send`・`+ref` の印を持つ dyn 型を型引数にした組み込み関数を使うと、clang が `E2002` で失敗する。チャンネルは `Send` の値しか運べず、印の無い `dyn C` は `E1013` なので、dyn 値を運ぶチャンネルはどの書き方でも作れない |
@@ -90,7 +90,7 @@ error[E2002]: 'clang' failed (exit status: 1):
 ```
 
 印の無い `Channel<dyn Spin.Spin>` は `E1013`（`values that move to another tzroutine or thread must be owned; dyn Spin contains a reference`）で、
-これは仕様どおりである（[型の制約](../_tsuzuri/language-reference/types-and-type-inference/constraints.md) の `Send`）。
+これは仕様どおりである（[型の制約](../../_tsuzuri/language-reference/types-and-type-inference/constraints.md) の `Send`）。
 
 ## 仕様
 
@@ -207,7 +207,7 @@ done
 ## ドキュメント
 
 - `_tsuzuri/language-reference/`: 変更不要。`dyn (C, Send)` の値がチャンネルで運べないという既知の不具合の記述は無く
-  （`grep -rn "Channel<dyn" _tsuzuri/language-reference` が 0 件）、[型の制約](../_tsuzuri/language-reference/types-and-type-inference/constraints.md) の `Send` の説明は直した後の振る舞いと一致する。
+  （`grep -rn "Channel<dyn" _tsuzuri/language-reference` が 0 件）、[型の制約](../../_tsuzuri/language-reference/types-and-type-inference/constraints.md) の `Send` の説明は直した後の振る舞いと一致する。
   チャンネルのページに dyn 値の例を足すなら、`check-docs.mjs` を通す。
 - `docs/architecture.md`: 組み込み関数のシンボルの綴りに `$P` を足す。
 - `_features/README.md`: 状態を更新する。
@@ -253,3 +253,58 @@ done
 - 決定: `tests/fixtures/preemption/Main.tz` の `Boxed` を消し、dyn 値を直接チャンネルで運ぶ形に戻す。
 - 理由: 回避策は不具合を隠す。直した形を、TZ10 の横取りのテストが日常的に通る経路にする。
 - 状態: 既定案。
+
+## 実装と検証（2026-11-06）
+
+手順 1〜7 をすべて実施しました。`src/` の変更は `mangled_type` の 1 行（と doc comment）だけです。
+
+### 手順と結果
+
+- 手順 1: `cargo build --locked` の後、「再現」のプログラムが `E2002`（`@tz.builtin.Channel.make.dyn$LSpin.Spin+send$R`）になることを確かめました。比較用の IR は、チケットの 3 つに限らず、`Main.tz` を持つ `tests/fixtures` の 139 個すべてを native と `--target wasm32` で `--emit llvm` しました（278 ファイル。`domain`・`domain_host` の native は `--trap-mode return`。wasm32 が `E2000` になる 10 個（OS の API・`net`・`Domain.run`）は両方の版で同じく除外）。
+- 停止条件 1 の確認: 修正前の 278 ファイルの、引用符なしの `@` の名前を `[-a-zA-Z$._][-a-zA-Z$._0-9]*`（と無名の `@N`）で調べ、0 件でした。`+` のほかに識別子でない文字はありません。`Domain.run` の閉包は dyn 値を作れない（`Dyn.of` も `E1038` の `uses dyn dispatch`）ので、`@tz.domain.thunk.` に印を持つ dyn 型は現れません。
+- 手順 2: `tests/dyn_dispatch.rs` に `assert_identifier_symbols`（と、最初の違反を返す `non_identifier_symbol`）を足し、`accepts` を通るすべてのプログラムと `runtime_fixture_lowers_for_both_targets` の native・WASM の IR にかけました。`marked_dyn_type_arguments_spell_identifier_symbols` は修正前に `1 failed`（`'@tz.builtin.Channel.make.dyn$LMain.Shape+send$R' is not an LLVM identifier`）、ほかの 23 件は成功でした。
+- 手順 3: `mangled_type` に `.replace('+', "$P")` を足しました。`cargo test --locked --test dyn_dispatch`: 24 passed（23 + 新規 1）。
+- 手順 4: 修正後の 278 ファイルを同じコマンドで書き直し、`cmp` で 278 件すべて一致しました（`preemption`・`dyn_dispatch` を含む。どれも印を持つ dyn 型を組み込み関数の型引数にしていません）。修正後の 278 ファイルの違反も 0 件です。
+- 「再現」のプログラム: native の `-O0`・`-O3` で `7`。
+- チャンネル以外の確認: `Channel<dyn (C, Send)>`・`Channel<dyn (C, Copy, Send)>`・`Vec<dyn (C, Copy)>`・`dyn C {r}` の `Vec` を使う一時のプロジェクト（`target/scratch/a29/`。作業後に削除）が、native の `tsuzuri run` と wasm32 の export（import なし）の `-O0`・`-O3` で、手で数えた `9 + 16 + 1 + 1 = 27` を返しました。
+- 手順 5: `tests/fixtures/dyn_dispatch/Main.tz` に `channel_ops` と `channel_area` を足し、`node tests/features.mjs target/debug/tsuzuri dyn_dispatch` が成功しました（`dyn_dispatch: native/WASM at O0/O3 passed`、58 cases）。`node tests/tzroutine_wasm.mjs target/debug/tsuzuri` の `dyn_dispatch -O0`・`-O3`（JSPI）も成功しました。
+- 手順 6: `tests/fixtures/preemption/Main.tz` の `record Boxed` を消し、`Channel<dyn (Spin.Spin, Send)>` で直接運ぶ形にしました。`cargo test --locked --test preemption`: 6 passed。`node tests/tzroutine.mjs target/debug/tsuzuri`: 151 runs passed（macOS arm64 なので `dyn_spin`・`drop_spin` を P1・P4、`-O0`・`-O3` で実行）。
+- 手順 7（T2）: 下記。
+
+### 実行したコマンド（T0〜T2）
+
+- `cargo fmt --all -- --check`: 成功。
+- `cargo clippy --all-targets -- -D warnings`: 成功。
+- `cargo nextest run --locked`: 2935 tests run: 2935 passed, 4 skipped。
+- `node tests/features.mjs target/debug/tsuzuri dyn_dispatch`: 成功（58 cases、native と既定の WASM の `-O0`・`-O3`。native は `channel_area` も）。
+- `node tests/tzroutine_wasm.mjs target/debug/tsuzuri`: 成功（`tzroutines through JSPI passed at -O0 and -O3`。`dyn_dispatch` を含む）。
+- `node tests/tzroutine.mjs target/debug/tsuzuri`: 151 runs passed。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/built-in-types-and-modules/channel.md _tsuzuri/language-reference/types-and-type-inference/type-classes.md`: 成功（2 pages, 41 links, 14 checked examples, 28 native runs）。
+- `node scripts/check-guide-lite.mjs`: 成功。
+
+### チケットから外れた判断・詳細化
+
+- 不具合の範囲はチャンネルに限りませんでした。`Vec<dyn (C, Copy)>`（`@tz.builtin.Vec.empty.dyn$L…+copy$R`）や、region 付きの `dyn C {r}` を要素にした `Vec`（`+ref`）も、修正前は同じ `E2002` でした。修正はどれにも効き、`marked_dyn_type_arguments_spell_identifier_symbols` は `+send`（`Channel`）・`+copy+send`（`Channel`）・`+copy`（`Vec`）・`+ref`（`Vec`）の 4 つの印の組み合わせを、`$P` で綴った期待のシンボルで確かめます（期待値は D1 の規則から手で書いたもの）。`+copy+ref` は region 付きの dyn に `Copy` 印を付ける形で、組み込み関数の型引数に置く経路を作る必要がないので足していません。
+- 手順 5 の `channel_area` は tzroutine を起動するので、既定の WebAssembly ではビルドできません（`E2000`、`tzroutine on WebAssembly needs --wasm-feature jspi`）。チケットの「native と WASM の `-O0`・`-O3`」を次のように満たしました。
+  - suite `dyn_dispatch` に `nativeFrom: "// native only:"` を足し、`channel_area` をその行の下に置いて `nativeCases` にしました（`concurrency` と同じ仕組み）。
+  - 1 本の実行で済む `channel_ops` を行の上に足し、`cases` にしました。`make`・`share`・`send_only`・`receive_only`・`SendOnly.send`・`select`（受け取る腕と、選ばれず drop される送る腕）・`SendOnly.close`・`for x in ch` を `dyn (Shapes.Shape, Send)` で通し、native と既定の WASM の `-O0`・`-O3` で走ります（確保の追跡 `live == 0` も）。期待値は `x² · 10⁶ + 2x · 10³ + (x + 1)²`（JavaScript の BigInt の式）。
+  - 仕様の「`--wasm-feature jspi`」は `tests/tzroutine_wasm.mjs` に suite `dyn_dispatch`（`channel_area` と `channel_ops`）を足して確かめました。このため、その `fixture()` が `Main.tz` だけでなく fixture の `.tz`・`.tt`・`.tc` をすべて写すようにしました（ほかの fixture は `Main.tz` だけなので結果は変わりません）。
+- `assert_identifier_symbols` は、引用符の中（文字列定数・引用符付きの名前）と `;` の注釈を飛ばし、名前を空白か `(),[]{}<>"` までとします。ヘルパー自身の確認（`+` を見つけること、引用符の中の `@` と `+` を数えないこと）を新しいテストに入れました。
+- 文書: チケットは参照の変更を不要としていましたが、チャンネルで dyn 値を運べることが実際に動くようになったので、[Channel](../../_tsuzuri/language-reference/built-in-types-and-modules/channel.md#要素と借用) に `Channel<dyn (Display, Send)>` の `run=` の例と、印の無い `dyn C`・`dyn C {r}` が `E1013` であること（実行して確認）を足し、[型クラス](../../_tsuzuri/language-reference/types-and-type-inference/type-classes.md#動的ディスパッチ) と `docs/language.md` の dyn の節に `Send` の dyn 値の移し先を 1 文足しました。
+
+### 更新した文書
+
+- `docs/architecture.md`（組み込み関数のシンボル: `builtin_symbol` と `mangled_type` の綴り、`$P`、引用符付きの名前は `+` のまま）
+- `docs/language.md`（dyn 値の節）
+- `_tsuzuri/language-reference/built-in-types-and-modules/channel.md`（要素と借用）
+- `_tsuzuri/language-reference/types-and-type-inference/type-classes.md`（動的ディスパッチ）
+- `_features/README.md`（状態）
+
+### 変更したファイル
+
+- `src/llvm.rs`（`mangled_type`、`dyn_name` の doc comment）
+- `tests/dyn_dispatch.rs`
+- `tests/fixtures/dyn_dispatch/Main.tz`、`tests/features.mjs`
+- `tests/tzroutine_wasm.mjs`
+- `tests/fixtures/preemption/Main.tz`
+- 上の文書
