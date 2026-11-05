@@ -202,7 +202,7 @@ loop の先頭で、`depth == 0` かつ行頭より前の token が `(` でな�
   新しい source でも同じ呼び出し（4 行目の `Steps.yield` と 3 行目の `Routine.yield`）を指すので変えていない。コメントは残した。修正前のコードではこのテストが失敗し（シグネチャヘルプが `null` で label の
   `unwrap` が panic）、修正後は `cargo test --locked --test lsp keyword_member_yield` が 1 件成功。
 - **手順 5 と T2**: `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` が成功。`cargo nextest run --locked` が 2935 件すべて成功（4 件 skip）。
-  `cargo build` の後の `node tests/lsp_sessions.mjs target/debug/tsuzuri` が成功（utf-16・utf-8 の session と features の 4 つ）。VS Code 拡張のテストは手順 5 のとおり走らせていない。
+  `cargo build` の後の `node tests/lsp_sessions.mjs target/debug/tsuzuri` が成功（utf-16・utf-8 の session と features の 4 つ）。チケットの移動の後に `node scripts/check-guide-lite.mjs`（88 件の参照すべて成功）と `node tests/repo_kb.mjs`（84 件成功）。VS Code 拡張のテストは手順 5 のとおり走らせていない。
 - **差分の検査**（追加）: 修正前と修正後の dev のバイナリで、`tests/fixtures/*` と `examples/*` の 176 のプロジェクトの 8,000 byte 以下のすべての `.tz` の、すべての位置（400,803 か所）に
   `textDocument/signatureHelp` を送って比べた。変わったのは 1,914 か所で、すべて修正前の `null` が、カーソルの行の呼び出しのシグネチャになったもの（たとえば
   `assert (point == point)` の次の行の `score ref point`、`tzroutine { … }` の中の `Channel.send sleeper_started ()` の次の行の `host_wait_released ()`）。修正前に `null` でなかった結果は 1 つも変わらない。
