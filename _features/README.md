@@ -151,7 +151,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A27 | [結果の型が未定の呼び出しを `ref T` の引数へ直接渡すと、結果を `ref T` と推測して `E1003` になる（`id (Owned.call (ref next) input)`）](A27-call-argument-reference-hint.md) | P1 | M | A18, D14 | todo |
 | A28 | [関数を含む型の呼び出し結果が `ref` 引数の借用をすべて持つとみなされる（`HashMap.remove` と、関数の `Arc` の `Arc.share` が誤って `E1013`）](A28-function-results-retain-ref-arguments.md) | P1 | M | C09, TZ02 | todo |
 | A29 | [印を持つ dyn 型を型引数にした組み込み関数の LLVM シンボルが不正になる（`Channel<dyn (C, Send)>` がビルドできない）](A29-dyn-marker-builtin-symbols.md) | P1 | S | A14, TZ03 | todo |
-| A30 | [借用を持つ関数値から `Owned.function` を作れてしまい、`Routine.go` などで解放後の読み出しになる](_completed/A30-owned-function-from-borrowing-value.md) | P0 | S | TZ02, TZ05, TZ06 | done（`Owned.function` は借用を持つ関数値（変数・部分適用・引数・借用を持つ関数値を捕捉したラムダ）を `E1013` で拒否する。パイプラインは同じ検査、関数値にすると `must_apply_directly`。`own Owned.Function` の引数は借用を持たず、所有のラムダや tzroutine で捕捉できる） |
+| A30 | [借用を持つ関数値から `Owned.function` を作れてしまい、`Routine.go` などで解放後の読み出しになる](_completed/A30-owned-function-from-borrowing-value.md) | P0 | S | TZ02, TZ05, TZ06 | done（`Owned.function` は借用を持つ関数値（変数・部分適用・引数・借用を持つ関数値を捕捉したラムダ）を `E1013` で拒否する。パイプラインは同じ検査、関数値にすると `must_apply_directly`。`own Owned.Function` の引数は借用を持たず、所有のラムダや tzroutine で捕捉できる。`Owned.call` の結果は所有関数値を借用しない） |
 
 ### B. エラー処理・制御
 
