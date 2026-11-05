@@ -223,7 +223,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | E13 | [ホスト言語バインディングと Web glue の生成](_completed/E13-host-bindings.md) | P2 | L | E05, E12, (F06), (F11) | done |
 | E14 | [埋め込み時のトラップ境界とスタック枯渇の報告](_completed/E14-trap-boundary.md) | P1 | L | G04, E05, (B06) | done |
 | E15 | [信頼境界と権限（`@trusted`・`tsuzuri audit`・`[capabilities]`）](_completed/E15-trust-boundary-and-capabilities.md) | P2 | L | (A20) | done（全 Phase） |
-| E16 | [新しい Clang の AST で、bindgen が無名の struct の typedef を tag の struct と取り違える](_completed/E16-bindgen-unnamed-tags-new-clang.md) | P1 | S | E11 | done（無名の struct・union・enum を名付ける typedef を、名前のない tag の `id` の集合と `ownedTagDecl`（Clang 21）・`decl`（Clang 23）で見分け、Clang 21 と 23 で同じ出力にする。Clang 23 の `struct (unnamed at …)` の綴りも `struct (unnamed struct)` にそろえる） |
+| E16 | [新しい Clang の AST で、bindgen が無名の struct の typedef を tag の struct と取り違える](_completed/E16-bindgen-unnamed-tags-new-clang.md) | P1 | S | E11 | done（無名の struct・union・enum を名付ける typedef を、名前のない `ownedTagDecl`（Clang 21）か、名前のない tag の `id` の集合にある `decl`（Clang 21 と 23）で見分け、Clang 21 と 23 で同じ出力にする。Clang 23 の `struct (unnamed at …)` の綴りも `struct (unnamed struct)` にそろえる） |
 
 ### F. 並列・性能バックエンド
 

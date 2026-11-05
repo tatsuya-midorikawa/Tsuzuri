@@ -1392,10 +1392,13 @@ fn visit_all<'a>(node: &'a Value, depth: usize, visit: &mut impl FnMut(&'a Value
 
 /// The unnamed struct, union, or enum that a typedef names (`typedef struct { ... } S;`,
 /// `typedef struct { ... } *P;`), found anywhere in the typedef's type nodes: an
-/// `ownedTagDecl` without a name (Clang 21), or a type's `decl` that is one of the
-/// `unnamed` declarations of the translation unit (Clang 23, which writes no
-/// `ElaboratedType`). Every reference to a tag has a `decl`, so only the ids of
-/// declarations without a name count: `typedef struct S T;` names the tag `S`.
+/// `ownedTagDecl` without a name, or a `decl` that is one of the `unnamed` declarations
+/// of the translation unit. Either one is enough. Clang 21 writes both (an
+/// `ElaboratedType` with the `ownedTagDecl` above the `RecordType` or `EnumType` with the
+/// `decl`); Clang 23 writes no `ElaboratedType`, only the `decl`. An `ownedTagDecl` is
+/// the tag that the typedef declares, so its empty name is enough. Every reference to a
+/// tag has a `decl`, so a `decl` counts only by its id: `typedef struct S T;` names the
+/// tag `S`.
 fn unnamed_tag<'v>(node: &'v Value, unnamed: &BTreeSet<&str>) -> Option<&'v Value> {
     let mut pending: Vec<(&Value, usize)> = children(node).map(|child| (child, 0)).collect();
     while let Some((child, depth)) = pending.pop() {

@@ -1754,7 +1754,8 @@ fn converts_only_types_whose_attributes_keep_the_layout() {
 fn does_not_read_unnamed_struct_typedefs_as_tags() {
     // `typedef struct { int small; } S;` is spelled `struct S`, but the tag `struct S` is
     // another type: C keeps tags and typedef names in separate namespaces. Clang 21 marks
-    // the unnamed tag with `ownedTagDecl`, Clang 23 only with the `decl` of its type.
+    // the unnamed tag with `ownedTagDecl` and with the `decl` of its type, Clang 23 only
+    // with the `decl`.
     let unnamed = |id: &str, kind: &str, tag_used: &str| {
         json!({ "kind": kind, "id": id, "tagUsed": tag_used, "completeDefinition": true,
                 "inner": [{ "kind": "FieldDecl", "name": "small", "type": { "qualType": "int" } }] })
@@ -1898,6 +1899,60 @@ fn reads_unnamed_enum_typedefs_from_either_ast_shape() {
             "{shape:?}"
         );
     }
+}
+
+#[test]
+fn reads_an_owned_tag_decl_without_a_decl_below_it() {
+    // A typedef names an unnamed tag when its type nodes have an `ownedTagDecl` without a
+    // name, or a `decl` that is an unnamed declaration. Clang 21 writes both, so the
+    // `Elaborated` shape above cannot tell the two apart. Here the type below the
+    // `ElaboratedType` has no `decl`, and only `ownedTagDecl` names the tag. No Clang we
+    // have seen writes this shape; it keeps the `ownedTagDecl` rule tested on its own. The
+    // lines are those of `Shape::Elaborated` in the two tests above (E16).
+    let owned = |id: &str, kind: &str| {
+        let below = if kind == "EnumDecl" {
+            "EnumType"
+        } else {
+            "RecordType"
+        };
+        json!({ "kind": "ElaboratedType", "ownedTagDecl": tag_ref(id, kind, ""),
+                "inner": [{ "kind": below }] })
+    };
+    let unnamed = |id: &str| {
+        json!({ "kind": "RecordDecl", "id": id, "tagUsed": "struct", "completeDefinition": true,
+                "inner": [{ "kind": "FieldDecl", "name": "small", "type": { "qualType": "int" } }] })
+    };
+    let mut tag = record("S", &[("big", "double")]);
+    tag["id"] = json!("0x10");
+    assert_eq!(
+        lines(vec![
+            tag,
+            unnamed("0x1"),
+            typedef_over("S", "struct S", owned("0x1", "RecordDecl")),
+            function("use_typedef", "double (const S *)", &["const S *"]),
+            unnamed("0x2"),
+            typedef_over(
+                "P",
+                "struct (unnamed struct at /h/main.h:3:9) *",
+                json!({ "kind": "PointerType", "inner": [owned("0x2", "RecordDecl")] })
+            ),
+            function("use_pointer", "void (P)", &["P"]),
+            json!({ "kind": "EnumDecl", "id": "0x3",
+                    "inner": [constant("MODE_A", None), constant("MODE_B", None)] }),
+            typedef_over("mode", "enum mode", owned("0x3", "EnumDecl")),
+            function("pick", "int (mode)", &["mode"]),
+        ]),
+        [
+            "record S { big: f64 }",
+            "// skipped S: anonymous struct; give the struct a tag",
+            "// skipped use_typedef: parameter 1 has unsupported type 'const S *'",
+            "// skipped P: anonymous struct; give the struct a tag",
+            "// skipped use_pointer: parameter 1 has unsupported type 'P'",
+            "const MODE_A: i32 = 0",
+            "const MODE_B: i32 = 1",
+            "extern \"pick\" def pick :: i32 -> i32",
+        ]
+    );
 }
 
 #[test]

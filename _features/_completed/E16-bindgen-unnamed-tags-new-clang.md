@@ -218,6 +218,7 @@ Clang 21 の結果は変わらない。
 - 決定: 翻訳単位の名前の無い `RecordDecl`・`EnumDecl` の `id` を集め、typedef の型の節点の `ownedTagDecl` か `decl` がその `id` を指すとき、typedef が無名の tag を名付けるとみなす。
 - 理由: Clang 21 の形（`ownedTagDecl`）と Clang 23 の形（`decl`）の両方を、同じ規則で読める。版の番号で分岐する案は、22 などの未確認の版で誤る。
 - 状態: 既定案（実装者はこの案に従う）。
+- 実装での形（2026-11-06 のレビューの後に書き足し）: `ownedTagDecl` は、アルゴリズムの 2 のとおり今までどおり `name` が空であることで判定し、`id` の集合は `decl` にだけ使う。`ownedTagDecl` は typedef 自身が宣言する tag なので、名前が空ならそれが無名の tag で、実際の Clang 21 の AST ではその `id` も集合にある（結果は同じ）。どちらか一方が見つかれば名付けるとみなす。
 
 ## 実装と検証（2026-11-06）
 
@@ -230,7 +231,7 @@ Clang 21.1.8（Homebrew `llvm@21`）と Clang 23.1.4（Homebrew `llvm`）、macO
 - 手順 2: `tests/bindgen.rs` に AST の形 `Shape`（`Elaborated` が Clang 21、`Direct` が Clang 23）と、型のノードを作る `tag_ref`・`tag_type`・`typedef_over` を足し、
   `generates_scalar_records_and_ref_parameters`（`anon_t`）、`does_not_read_unnamed_struct_typedefs_as_tags`、新しい `reads_unnamed_enum_typedefs_from_either_ast_shape` を 2 つの形で回すようにしました。
   修正前の `cargo test --locked --test bindgen` は `running 27 tests`、24 passed・3 failed で、3 件とも `Direct` の形だけが失敗しました（`Elaborated` は先に回って成功）。`Direct` の失敗には、`extern "use_typedef" def use_typedef :: ref S -> f64` という ABI の合わない extern が出ていました。
-- 手順 3: `Tables::new` の最初の走査で、名前のない `RecordDecl`・`EnumDecl` の `id` の集合を作り、`unnamed_tag` が `ownedTagDecl`（Clang 21）に加えて、`decl` の `id` がその集合にある型のノード（Clang 23）も返すようにしました（D1）。
+- 手順 3: `Tables::new` の最初の走査で、名前のない `RecordDecl`・`EnumDecl` の `id` の集合を作り、`unnamed_tag` が、名前のない `ownedTagDecl`（今までの判定。集合は見ません）に加えて、`decl` の `id` がその集合にある型のノード（Clang 23 の形）も返すようにしました（D1）。
   `Typedef` と `unnamed_tag` の doc comment に 2 つの形を書きました。`cargo test --locked --test bindgen` は 27 passed、`cargo test --locked --lib bindgen` は 5 passed です。
   落とし穴の 1 つ目は、`id` の集合で絞る条件を外す変更（`decl` の `id` があれば常に名付けるとみなす）で `does_not_read_unnamed_struct_typedefs_as_tags` が失敗する（`typedef struct S S_named;` を展開しなくなる）ことを確かめてから、元に戻しました。
 - 手順 4: `skipped.h` に `typedef enum { PICK_A, PICK_B } pick_mode; int pick_mode_value(pick_mode value);` を足し、`expected.tz` に `const PICK_A: i32 = 0`・`const PICK_B: i32 = 1`・`extern "pick_mode_value" def pick_mode_value :: i32 -> i32` を足しました（名前は既存の宣言と衝突しません）。
@@ -249,7 +250,7 @@ Clang 21.1.8（Homebrew `llvm@21`）と Clang 23.1.4（Homebrew `llvm`）、macO
    skip が 1 つ増えるので、`tests/bindgen.mjs` の `--json` の W2002 の件数を 37 から 38 にしました（ほかの期待値は変わりません）。
 3. **Rust のテストに、落とし穴を確かめるケースを足しました。** `does_not_read_unnamed_struct_typedefs_as_tags` に、名前のある tag の typedef `typedef struct S S_named;`（展開して `ref S` になる。落とし穴の 1 つ目）、
    `typedef struct { ... } *P;`（仕様の 1 つ目の例）、無名の struct をフィールドに持つ struct と、どの typedef も名付けない無名の struct（`(anonymous struct)` で報告。落とし穴の 2 つ目）を足しました。
-   `Elaborated` の形は、Clang 21 が実際に書くとおり `ElaboratedType` の下に `decl` を持つ `RecordType`・`EnumType` を置くので、新しい `decl` の判定が Clang 21 の形で結果を変えないことも同じテストで確かめています。
+   `Elaborated` の形は、Clang 21 が実際に書くとおり `ElaboratedType` の下に `decl` を持つ `RecordType`・`EnumType` を置くので、新しい `decl` の判定が Clang 21 の形で結果を変えないことも同じテストで確かめています。ただしこの形では `decl` の判定だけでも同じ結果になり、`ownedTagDecl` の判定を確かめていませんでした（「レビューの指摘への対応」で、それだけを確かめるテストを足しました）。
    `reads_unnamed_enum_typedefs_from_either_ast_shape` は、定数名を `MODE_A`・`MODE_B` にし、typedef の別名（`typedef mode mode_alias;`）を引数に取る関数も足しました。
 4. Clang 23 は型のノードに `isTagOwned` も書きますが、D1 のとおり `id` の集合で判定し、`isTagOwned` は読みません。どちらの形も同じ規則で読めて、未確認の版（22）にも版の番号で分岐しないからです。
 
