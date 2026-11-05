@@ -2650,6 +2650,32 @@ static void test_preempt_idle(void) {
 #else
 #define GENERATED __attribute__((section("tz_text"), noinline))
 #endif
+#if defined(__linux__) && defined(__aarch64__)
+#include <sys/auxv.h>
+#include <sys/prctl.h>
+#if !defined(HWCAP_SVE)
+#define HWCAP_SVE (1UL << 22)
+#endif
+#if !defined(HWCAP2_SME)
+#define HWCAP2_SME (1UL << 23)
+#endif
+#if !defined(PR_SVE_GET_VL)
+#define PR_SVE_GET_VL 51
+#endif
+#endif
+/* Linux aarch64 with SME keeps Phase 1 only (every signal frame has a ZA record, which the probe
+ * refuses): the cases of Phase 2 say so and check nothing. Taken from the CPU, not from the runtime,
+ * so that a probe that fails elsewhere still fails them. */
+static int async_skipped(const char *name) {
+#if defined(__linux__) && defined(__aarch64__)
+    if (getauxval(AT_HWCAP2) & HWCAP2_SME) {
+        printf("%s: Phase 1 only (SME)\n", name);
+        return 1;
+    }
+#endif
+    (void)name;
+    return 0;
+}
 static _Atomic int async_stop;
 /* SIGURGs that reach the handler the program had before the runtime's (main installs it first): only
  * the ones that are not sysmon's. */
@@ -2676,6 +2702,7 @@ static void async_ticker(void *env) {
     atomic_store(&async_stop, 1);
 }
 static void test_preempt_async(void) {
+    if (async_skipped("preempt async")) return;
     start_watchdog();
     atomic_store(&async_stop, 0);
     uint64_t before = atomic_load(&tzr_async.yielded);
@@ -2722,6 +2749,7 @@ static void async_mixer(void *env) {
     async_mix(40000000, out->ints, out->floats);
 }
 static void test_preempt_async_values(void) {
+    if (async_skipped("preempt async values")) return;
     async_mixed expected;
     async_mix(40000000, expected.ints, expected.floats); /* on the main thread: never stopped */
     uint64_t before = atomic_load(&tzr_async.yielded);
@@ -2740,14 +2768,6 @@ static void test_preempt_async_values(void) {
 }
 
 #if defined(__linux__) && defined(__aarch64__)
-#include <sys/auxv.h>
-#include <sys/prctl.h>
-#if !defined(HWCAP_SVE)
-#define HWCAP_SVE (1UL << 22)
-#endif
-#if !defined(PR_SVE_GET_VL)
-#define PR_SVE_GET_VL 51
-#endif
 /* Linux aarch64 with SVE: a loop of the section that holds a predicate and a vector register of SVE
  * (live from its first SVE instruction until a system call, so the kernel's frame has them) is
  * stopped, and goes on with both, maybe on another thread. Returns the lanes and predicate bits that
@@ -2778,8 +2798,16 @@ static void async_sve_spinner(void *env) {
     CHECK(async_sve_spin(&async_stop) == 0);
 }
 static void test_preempt_async_sve(void) {
+    if (async_skipped("preempt async sve")) return;
     if (!(getauxval(AT_HWCAP) & HWCAP_SVE)) {
         printf("preempt async sve: no SVE\n");
+        return;
+    }
+    /* the kernel's records fit in __reserved, with room for its end and extra records, up to 768-bit
+     * vectors: longer live ones are not stopped */
+    int vl = (int)prctl(PR_SVE_GET_VL) & 0xffff;
+    if (vl > 96) {
+        printf("preempt async sve: vector length %d bytes, too long to stop\n", vl);
         return;
     }
     start_watchdog();
@@ -2793,7 +2821,7 @@ static void test_preempt_async_sve(void) {
     CHECK(wakes == 20);
     CHECK(atomic_load(&tzr_async.yielded) > before);
     printf("preempt async sve: %llu stops, vector length %d bytes\n",
-           (unsigned long long)(atomic_load(&tzr_async.yielded) - before), (int)prctl(PR_SVE_GET_VL) & 0xffff);
+           (unsigned long long)(atomic_load(&tzr_async.yielded) - before), vl);
 }
 #else
 static void test_preempt_async_sve(void) { printf("preempt async sve: not Linux aarch64\n"); }
@@ -2811,6 +2839,7 @@ static void async_runtime_spinner(void *env) {
     CHECK(async_spin_runtime(*(int64_t *)env) != 0);
 }
 static void test_preempt_async_runtime(void) {
+    if (async_skipped("preempt async runtime")) return;
     uint64_t stops = atomic_load(&tzr_async.stopped), signals = atomic_load(&tzr_async.signals);
     int foreign = atomic_load(&urgent_foreign);
     int64_t until = tzr_nanotime() + 300000000;
@@ -3053,6 +3082,7 @@ static void urgent_nodefer_body(void) {
 }
 
 static void test_preempt_async_edges(void) {
+    if (async_skipped("preempt async edges")) return;
     CHECK(exited_with(run_child("child-urgent-window"), 50));
 #if !defined(__APPLE__)
     CHECK(exited_with(run_child("child-urgent-oneshot"), 51));
@@ -3063,10 +3093,12 @@ static void test_preempt_async_edges(void) {
     printf("preempt async edges: ok\n");
 }
 static void test_preempt_async_forward(void) {
+    if (async_skipped("preempt async forward")) return;
     CHECK(exited_with(run_child("child-urgent-forward"), 49));
     printf("preempt async forward: ok\n");
 }
 static void test_preempt_async_ignored(void) {
+    if (async_skipped("preempt async ignored")) return;
     CHECK(exited_with(run_child("child-urgent-ignored"), 48));
     printf("preempt async ignored: ok\n");
 }

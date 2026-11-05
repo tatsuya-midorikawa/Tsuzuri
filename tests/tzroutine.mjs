@@ -688,6 +688,16 @@ $"{sum} {trapped}"
       drop_spin: "drop_spin: 1\n",
       closure_spin: "closure_spin: 1\n",
     };
+    // Every signal frame of Linux aarch64 with SME has a ZA record, which the runtime does not save.
+    let sme = false;
+    if (process.platform === "linux" && process.arch === "arm64") {
+      try {
+        sme = /^Features\s*:.*\bsme\b/m.test(readFileSync("/proc/cpuinfo", "utf8"));
+      } catch {
+        // without /proc, as if it had none
+      }
+    }
+    const phaseOneOnly = process.platform === "win32" || sme;
     const fixture = join(temporary, "preemption");
     mkdirSync(fixture);
     for (const file of ["Main.tz", "Spin.tt"])
@@ -696,8 +706,9 @@ $"{sum} {trapped}"
       const executable = join(temporary, `preemption${optimization}${process.platform === "win32" ? ".exe" : ""}`);
       cli(["build", fixture, optimization, "-o", executable]);
       for (const name of Object.keys(expected)) {
-        // Windows has the checks of Phase 1 only: a loop without calls keeps its P there.
-        if (["tight", "inlined", "scope_spin", "dyn_spin", "drop_spin", "closure_spin"].includes(name) && process.platform === "win32") continue;
+        // Windows and Linux aarch64 with SME have the checks of Phase 1 only: a loop without calls
+        // keeps its P there.
+        if (["tight", "inlined", "scope_spin", "dyn_spin", "drop_spin", "closure_spin"].includes(name) && phaseOneOnly) continue;
         for (const procs of ["1", "4"]) {
           const run = spawnSync(executable, [name], { cwd: fixture, encoding: "utf8", timeout: 120_000, env: { ...process.env, TSUZURI_MAXPROCS: procs } });
           assert.equal(run.status, 0, `preemption ${name} ${optimization} P${procs}: ${run.signal ?? ""}\n${run.stdout}\n${run.stderr}`);
