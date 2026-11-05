@@ -2881,7 +2881,7 @@ static void urgent_ignored_body(void) {
     _exit(48);
 }
 /* A handler of the program's own without SA_RESTART and with SIGUSR1 in its mask: the runtime passes
- * it every SIGURG with SIGUSR1 blocked, and a read that one interrupts fails with EINTR, as before the
+ * it the SIGURGs with SIGUSR1 blocked, and a read that one interrupts fails with EINTR, as before the
  * runtime's handler. The signals go on until the read returns: one that comes before the read starts
  * only runs the handler. */
 static _Atomic int urgent_masked, urgent_sent, urgent_returned;
@@ -2928,14 +2928,12 @@ static void urgent_forward_body(void) {
     int interrupted = n < 0 && errno == EINTR;
     atomic_store(&urgent_returned, 1);
     pthread_join(poker, NULL);
-    /* a signal still pending is handled at the latest on the return of a system call */
-    for (int i = 0; i < 1000 && atomic_load(&urgent_foreign) != atomic_load(&urgent_sent); i++) {
-        struct timespec t = {0, 1000000};
-        nanosleep(&t, NULL);
-    }
-    _exit(interrupted && atomic_load(&urgent_foreign) == atomic_load(&urgent_sent) && atomic_load(&urgent_masked)
-              ? 49
-              : 4);
+    /* a signal still pending is handled when this system call returns */
+    struct timespec t = {0, 10000000};
+    nanosleep(&t, NULL);
+    /* SIGURGs that come while one is pending merge into one: at most as many calls as signals sent */
+    int calls = atomic_load(&urgent_foreign);
+    _exit(interrupted && calls >= 1 && calls <= atomic_load(&urgent_sent) && atomic_load(&urgent_masked) ? 49 : 4);
 }
 /* The runtime's handler installed and sysmon running: the first spawn starts both. */
 static void urgent_runtime_ready(void) {
