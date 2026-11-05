@@ -32,7 +32,9 @@
 //! A check may move its tzroutine to another thread. A runtime function in IR that reads a thread's
 //! local storage (`@llvm.threadlocal.address`, the caches of `--allocator small`) is made `noinline`,
 //! so that no address of one thread's storage is kept in a function across a check (LLVM may reuse
-//! the intrinsic's result across calls).
+//! the intrinsic's result across calls). A wait moves a tzroutine too, also the helper of a
+//! `Parallel.*` in a program that does not spawn: there `with_thread_storage_noinline` adds the
+//! `noinline` alone (TZ14).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -585,20 +587,12 @@ pub(crate) fn with_preemption_checks(ir: String, opaque: &BTreeSet<String>) -> S
         _ => false,
     };
     let mut sites = BTreeSet::new();
-    let mut thread_bound = BTreeSet::new();
+    let thread_bound = thread_bound(&lines, &functions);
     for function in &functions {
-        if !emitted_from_source(function.name) {
-            let body = &lines[function.header + 1..function.close];
-            if body
-                .iter()
-                .any(|line| line.contains("@llvm.threadlocal.address"))
-                && !lines[function.header].contains(" noinline")
-            {
-                thread_bound.insert(function.header);
-            }
-            continue;
-        }
-        if !heavies.contains(function.name) || lines[function.header].contains(" memory(") {
+        if !emitted_from_source(function.name)
+            || !heavies.contains(function.name)
+            || lines[function.header].contains(" memory(")
+        {
             continue;
         }
         let rules = Rules {
@@ -622,21 +616,60 @@ pub(crate) fn with_preemption_checks(ir: String, opaque: &BTreeSet<String>) -> S
         if sites.contains(&index) {
             output.push_str(POLL_CALL);
         }
-        if thread_bound.contains(&index)
-            && let Some(at) = line.rfind(" {")
-        {
-            output.push_str(&line[..at]);
-            output.push_str(" noinline");
-            output.push_str(&line[at..]);
-            continue;
-        }
-        output.push_str(line);
+        push_line(&mut output, line, thread_bound.contains(&index));
     }
     if !sites.is_empty() {
         if !output.ends_with('\n') {
             output.push('\n');
         }
         output.push_str(POLL_DEFINITION);
+    }
+    output
+}
+
+/// The headers of the runtime's functions in IR (not emitted from source) that read a thread's local
+/// storage (`@llvm.threadlocal.address`: the caches of `--allocator small`, `tz_small_realloc`) and
+/// are not `noinline` yet.
+fn thread_bound(lines: &[&str], functions: &[Definition<'_>]) -> BTreeSet<usize> {
+    functions
+        .iter()
+        .filter(|function| {
+            !emitted_from_source(function.name)
+                && !lines[function.header].contains(" noinline")
+                && lines[function.header + 1..function.close]
+                    .iter()
+                    .any(|line| line.contains("@llvm.threadlocal.address"))
+        })
+        .map(|function| function.header)
+        .collect()
+}
+
+/// Copies `line`, with ` noinline` before the ` {` of a header of `thread_bound`.
+fn push_line(output: &mut String, line: &str, thread_bound: bool) {
+    match line.rfind(" {").filter(|_| thread_bound) {
+        Some(at) => {
+            output.push_str(&line[..at]);
+            output.push_str(" noinline");
+            output.push_str(&line[at..]);
+        }
+        None => output.push_str(line),
+    }
+}
+
+/// TZ14: the `noinline` of `with_preemption_checks` alone, for a native program whose tzroutines
+/// are only the helpers of `Parallel.*`. It gets no check (TZ10 D1, S1), but a helper that waits in
+/// a callback (a nested `Parallel.*`, a `Channel`, `Routine.yield`, `Time.sleep`) may go on on
+/// another thread, and LLVM may keep the address that `@llvm.threadlocal.address` returned across
+/// the wait. Without such a function the IR is returned as it is.
+pub(crate) fn with_thread_storage_noinline(ir: String) -> String {
+    let lines: Vec<&str> = ir.split_inclusive('\n').collect();
+    let thread_bound = thread_bound(&lines, &definitions(&lines));
+    if thread_bound.is_empty() {
+        return ir;
+    }
+    let mut output = String::with_capacity(ir.len() + thread_bound.len() * " noinline".len());
+    for (index, line) in lines.iter().enumerate() {
+        push_line(&mut output, line, thread_bound.contains(&index));
     }
     output
 }
@@ -897,5 +930,35 @@ define internal i64 @tz.fn.M.leaf(i64 %arg0) nounwind {\nentry:\n  ret i64 %arg0
                 "@tz.cache(i64 %size) nounwind noinline {"
             )
         );
+    }
+
+    #[test]
+    fn thread_storage_stays_out_of_line_without_the_checks() {
+        // TZ14: the helpers of `Parallel.*` move between threads in a program that does not spawn,
+        // which gets no check: only the runtime's function that reads thread storage changes.
+        let ir = "define internal ptr @tz.cache(i64 %size) nounwind {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  ret ptr %t\n}\n\
+define internal ptr @tz.kept(i64 %size) nounwind noinline {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  ret ptr %t\n}\n\
+define internal i64 @tz.fn.M.spin(i64 %arg0) nounwind {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  br label %b0\nb0:\n  call void @tsuzuri_tz_yield()\n  br i1 true, label %b0, label %b1\nb1:\n  ret i64 %arg0\n}\n\
+define internal i64 @\"tz.fn.M.spin.cpu.avx2\"(i64 %arg0) nounwind {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  ret i64 %arg0\n}\n\
+@tls = internal thread_local global i64 0\ndeclare void @tsuzuri_tz_yield()\n";
+        let output = with_thread_storage_noinline(ir.to_owned());
+        assert_eq!(
+            output,
+            ir.replace(
+                "@tz.cache(i64 %size) nounwind {",
+                "@tz.cache(i64 %size) nounwind noinline {"
+            )
+        );
+        // The functions that the checks of a program that spawns keep out of line (TZ10).
+        let checked = with_preemption_checks(ir.to_owned(), &BTreeSet::new());
+        assert!(checked.contains(POLL_CALL));
+        assert_eq!(
+            checked.replace(POLL_CALL, "").replace(POLL_DEFINITION, ""),
+            output
+        );
+        // Without such a function the IR is returned as it is.
+        let plain = "define internal i64 @tz.fn.M.leaf(i64 %arg0) nounwind {\nentry:\n  ret i64 %arg0\n}\n\
+define internal void @tz.free(ptr %block) nounwind {\nentry:\n  ret void\n}\n";
+        assert_eq!(with_thread_storage_noinline(plain.to_owned()), plain);
     }
 }

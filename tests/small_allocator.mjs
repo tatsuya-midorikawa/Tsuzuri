@@ -268,6 +268,31 @@ fn rec repeated n sum =
         repeated (n - 1) (sum + results[0].length + results[1].length)
     }
 `);
+  // TZ14: a program that calls Parallel.* and spawns nothing (the program above spawns). The outer callback runs on the helper
+  // tzroutines of 10 chunks and waits for its inner Parallel.init of 2 chunks; with 8 Ps the helpers often go on on another
+  // thread, where -O3 used the cache of the thread that they left (a crash; a data race under TSan) while tz_small_realloc was
+  // inlined into the callback.
+  const nested = join(work, "nested");
+  mkdirSync(nested);
+  writeFileSync(join(nested, "Main.tz"), `export def nested_growth :: own i64 -> i64
+fn nested_growth count =
+    let outer = Parallel.init count (\\i -> grown i)
+    Array.sum (ref outer)
+
+def grown :: i64 -> i64
+fn grown i =
+    let mut values: Vec<i64> = Vec.empty()
+    for k in 1 ..= 40 do
+        values = Vec.add k values
+    let inner = Parallel.init 8192 (\\j -> j + i)
+    let shift = Array.sum (ref inner)
+    for k in 1 ..= 40 do
+        values = Vec.add (k + shift) values
+    let mut total = 0i64
+    for k in 0 ..< Vec.length (ref values) do
+        total = total + values[k]
+    total
+`);
   const fixtures = {
     grow: { source: library, body: "    assert(tz_grow(100) == 5050); settled(); assert(tz_grow(0) == 0); settled(); assert(tz_grow(20000) == 200010000); settled();" },
     primitives: {
@@ -290,10 +315,17 @@ fn rec repeated n sum =
     assert(tz_parallel_cycles(128) == 896); settled();
     assert(tz_owned_results() == 12 && tz_list_results() == 42); settled();`,
     },
+    nested: {
+      source: nested,
+      // grown(i) is (1 + ... + 40) plus the sum of k + shift over k = 1..40, where shift, the sum of j + i over j < 8192, is
+      // 33550336 + 8192 i: 1640 + 40 * shift. nested_growth(40000) is 40000 * 1342015080 + 327680 * (0 + ... + 39999).
+      body: "    assert(tz_nested_growth(40000) == 315818049600000LL); settled();",
+      environments: [{}, { TSUZURI_MAXPROCS: "8" }],
+    },
   };
   // A Windows COFF object cannot embed the runtime that these programs need (E2002: the trap runtime; the tzroutine scheduler),
   // so Windows runs the unit tests (including their threads), the IR checks, and the executables of section C, not these objects.
-  for (const [name, { source, body }] of windows ? [] : Object.entries(fixtures)) {
+  for (const [name, { source, body, environments = [{}] }] of windows ? [] : Object.entries(fixtures)) {
     const headerPath = header(source, name, ["--allocator", "small"]);
     assert.ok(headerPath);
     for (const optimization of ["-O0", "-O3"]) {
@@ -301,11 +333,14 @@ fn rec repeated n sum =
       build(source, ["--emit", "object", "--allocator", "small", optimization], object);
       const binary = join(work, `${name}${optimization}${suffix}`);
       execute(clang, ["-std=c11", "-O1", `-I${work}`, host(name, body), object, ...threadFlags, ...mathFlags, "-o", binary]);
-      const output = execute(binary, []).stdout.trim();
-      const match = /^carved=(\d+) regions=(\d+)$/.exec(output);
-      // The size classes were used: something was cut from at least one region.
-      assert.ok(match && Number(match[1]) > 0 && Number(match[2]) >= 1, `${name} ${optimization}: ${output}`);
-      console.log(`small allocator: ${name} ${optimization} ${output}`);
+      for (const environment of environments) {
+        const output = execute(binary, [], true, environment).stdout.trim();
+        const match = /^carved=(\d+) regions=(\d+)$/.exec(output);
+        const label = `${name} ${optimization}${Object.entries(environment).map(([key, value]) => ` ${key}=${value}`).join("")}`;
+        // The size classes were used: something was cut from at least one region.
+        assert.ok(match && Number(match[1]) > 0 && Number(match[2]) >= 1, `${label}: ${output}`);
+        console.log(`small allocator: ${label} ${output}`);
+      }
     }
   }
 

@@ -1491,7 +1491,8 @@ fn emit_program(
     // thrown away.
     // TZ11, TZ12: a native Parallel.* starts helper tzroutines without a spawn of its own: their
     // frames need the probes, as in a program that spawns.
-    let spawning = spawns(module) || (!wasm && scheduler_parallel(module));
+    let spawn = spawns(module);
+    let spawning = spawn || (!wasm && scheduler_parallel(module));
     let output = if spawning {
         with_tzroutine_scopes(output, &tzroutine_boundaries(module))
     } else {
@@ -1511,10 +1512,17 @@ fn emit_program(
         output
     };
     // TZ10: the tzroutines that a native program spawns check sysmon's requests to yield. A program
-    // whose only tzroutines are the helpers of `Parallel.*` has nothing that waits for them: its
-    // other threads hold no P. WebAssembly's JSPI tzroutines are not preempted (TZ09).
-    let output = if !wasm && spawns(module) {
+    // whose only tzroutines are the helpers of `Parallel.*` needs no check, since nothing waits for
+    // them: its other threads hold no P. But a helper that waits in its callback (a nested
+    // `Parallel.*`) may go on on another thread, so the runtime's functions that read thread storage
+    // are `noinline` there too (TZ14). WebAssembly's JSPI tzroutines share one thread and are not
+    // preempted (TZ09).
+    let output = if wasm {
+        output
+    } else if spawn {
         preempt::with_preemption_checks(output, &preempt::opaque_functions(module))
+    } else if spawning {
+        preempt::with_thread_storage_noinline(output)
     } else {
         output
     };

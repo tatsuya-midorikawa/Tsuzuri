@@ -160,6 +160,78 @@ fn small_allocator_swaps_only_the_heap_runtime() {
     assert_eq!(emit(&module, false, Allocator::System), system);
 }
 
+/// TZ14: the callback of `Parallel.*` grows a `Vec` (`tz_small_realloc`, which finds its thread's
+/// cache through `@llvm.threadlocal.address`) on either side of a nested `Parallel.init` of two
+/// chunks, where the helper tzroutine that runs it waits and may go on on another thread.
+const NESTED_GROWTH: &str = "export def grow :: i64 -> i64
+fn grow i =
+    let mut v: Vec<i64> = Vec.empty()
+    for k in 1 ..= 40 do
+        v = Vec.add k v
+    let inner = Parallel.init 8192 (\\j -> j + i)
+    let s = Array.sum (ref inner)
+    for k in 1 ..= 40 do
+        v = Vec.add (k + s) v
+    Vec.length (ref v)
+
+export def run :: i64 -> i64
+fn run n =
+    let outer = Parallel.init n (\\i -> grow i)
+    Array.sum (ref outer)
+";
+
+/// TZ14: LLVM may keep the address that `@llvm.threadlocal.address` returns across a call, so a
+/// native program in which a tzroutine may move to another thread keeps the runtime's function that
+/// reads thread storage out of line: a program that spawns (TZ10), and one that calls `Parallel.*`,
+/// whose helper tzroutines wait inside a callback. A program without tzroutines keeps its IR.
+#[test]
+fn parallel_programs_keep_thread_storage_out_of_callbacks() {
+    const REALLOC: &str = "define internal ptr @tz_small_realloc(";
+    // The header of src/runtime/heap-small.ll, and the same with ` noinline` before its ` {`.
+    let generated = SMALL_HEAP
+        .lines()
+        .find(|line| line.starts_with(REALLOC))
+        .unwrap();
+    let out_of_line = format!("{} noinline {{", generated.strip_suffix(" {").unwrap());
+    let header = |source: &str| -> String {
+        let module = tsuzuri::analyze(source)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+        // The other allocators read no thread storage in IR, so their IR has nothing to change.
+        for allocator in [Allocator::System, Allocator::Host] {
+            let ir = emit(&module, false, allocator);
+            assert!(!ir.contains("@llvm.threadlocal.address"), "{allocator:?}");
+        }
+        let small = emit(&module, false, Allocator::Small);
+        assert_eq!(small, emit(&module, false, Allocator::Small));
+        let headers: Vec<&str> = small
+            .lines()
+            .filter(|line| line.starts_with(REALLOC))
+            .collect();
+        assert_eq!(headers.len(), 1, "{source}");
+        // A program with tzroutines probes its frames (TZ02); Windows probes with `__chkstk` instead.
+        headers[0].replace(" \"probe-stack\"=\"inline-asm\"", "")
+    };
+    let sequential = NESTED_GROWTH.replace("Parallel.init", "Array.init");
+    assert_eq!(
+        header(&sequential),
+        generated,
+        "a program without tzroutines"
+    );
+    let spawning = format!(
+        "{NESTED_GROWTH}export def go :: i64 -> i64\nfn go n =\n    tzroutine {{ () }}\n    n\n"
+    );
+    assert_eq!(
+        header(&spawning),
+        out_of_line,
+        "a program that spawns (TZ10)"
+    );
+    assert_eq!(
+        header(NESTED_GROWTH),
+        out_of_line,
+        "Parallel.* without a spawn"
+    );
+}
+
 #[test]
 fn counting_allocator_wraps_the_target_heap() {
     let module = fixture();
