@@ -446,7 +446,7 @@ wasm32 の UDP の送信は、1 回の送信が 1 つのデータグラムで、
 ## まとめ
 
 - アドレスの解析と表示は純粋で、どの target でも使えます。解析は厳密で、`127.1` のような書き方は受けません。
-- ソケットは macOS・Linux・Windows の native と、`--wasm-feature jspi --wasm-feature net` の wasm32（Node.js）で、`IO<Result<T, Os.Error>>` として動きます。tzroutine の中のソケットの待ちは、その tzroutine だけを待たせます（netpoller）。ハンドルは `Copy` で、閉じ忘れはプロセス終了まで漏れます。`with_*` を使うと全経路で閉じます。
+- ソケットは macOS・Linux・Windows の native と、`--wasm-feature jspi --wasm-feature net` の wasm32（Node.js）で、`IO<Result<T, Os.Error>>` として動きます。tzroutine の中のソケットの待ちは、その tzroutine だけを待たせます（native は netpoller、wasm32 は JSPI でその tzroutine だけを中断します）。ハンドルは `Copy` で、閉じ忘れはプロセス終了まで漏れます。`with_*` を使うと全経路で閉じます。
 - 時間制限は呼び出し全体の期限で、受信は最大長が必須、`write` は全部を送ります。
 - 通信は平文です。`bind` で `0.0.0.0` を使うとネットワークへ公開されます。
 

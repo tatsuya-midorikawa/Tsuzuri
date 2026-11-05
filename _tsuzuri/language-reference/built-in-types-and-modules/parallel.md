@@ -189,7 +189,7 @@ flowchart TD
 
 要素と結果には `Send` が要ります。ほかの tzroutine やスレッドへ渡せる所有値、という意味です。`ref` を要素に含めることはできません。
 
-コールバックは `Atomic` と `Mutex` を捕捉できません（`E1005`）。全員で 1 つの状態を更新するときは、共有借用を子どもに渡す [Routine.scope](routine.md#routinescope) を使います。ネイティブでは、`Mutex.with_lock` の中でもこのページの API を呼べます（ロックを持ったまま、すべてのチャンクの終わりを待ちます）。WebAssembly では、`Mutex.with_lock` の中で呼ぶとトラップします（[Mutex](mutex.md#webassembly-のロック)）。
+コールバックは `Atomic` と `Mutex` を捕捉できません（`E1005`）。全員で 1 つの状態を更新するときは、共有借用を子どもに渡す [Routine.scope](routine.md#routinescope) を使います。ネイティブでは、`Mutex.with_lock` の中でもこのページの API を呼べます（ロックを持ったまま、すべてのチャンクの終わりを待ちます）。WebAssembly では、tzroutine のランタイムを使わないプログラムで `Mutex.with_lock` の中で呼ぶとトラップします。使うプログラム（`Channel`・`select`・タイマー・同期の型を使うもの、`--wasm-feature jspi` で tzroutine を起動するもの）では、ネイティブと同じく呼べます（[Mutex](mutex.md#webassembly-のロック)）。
 
 ## スレッドと WASM
 
@@ -201,7 +201,7 @@ flowchart TD
 - コールバックが待つ（`Channel` や `DataChannel` など）と、待つのはその tzroutine だけです。誰も起こせない待ちは、デッドロックの判定がトラップにします（[DataChannel](datachannel.md#待ちの規則)）。
 - トラップの境界（[`Domain.run`](domain.md) の中と、`--trap-mode return` で作った `export` の呼び出しの中）では、チャンクの中のトラップをその境界へ戻すために、手伝いを起動せず、すべてのチャンクを呼んだスレッドで添字の順に走らせます。結果は同じですが、並列にならないので遅くなることがあります。
 
-既定の WASM は、同じチャンク順の逐次実装です。`src/runtime/task-wasm.ll` が入力順にコールバックを呼び、ホストのスレッド import は要りません。
+既定の WASM は、同じチャンク順の逐次実装です。`src/runtime/task-wasm.ll` が入力順にコールバックを呼び、ホストのスレッド import は要りません。tzroutine を起動する wasm32 のプログラム（`--wasm-feature jspi`）でも同じで、チャンクは呼び出した tzroutine の上で添字の順に走ります。コールバックが待つと、その tzroutine が中断し、ほかの tzroutine が走ります。
 
 スレッドが欲しいときは、オブジェクトか WASM 出力で明示します。
 

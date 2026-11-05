@@ -255,12 +255,13 @@ Tsuzuri runtime: all tzroutines are asleep - deadlock! (1 waiting: DataChannel.r
 
 `Parallel.*` のコールバックの中で待つのも同じ規則です。ただし、同じチャンクの要素は 1 つの実行で順に呼ばれる（[チャンク境界](./parallel.md#チャンク境界)）ので、ほかの要素のコールバックを待つ形は完了しません。互いを待つ子どもには `Routine.scope` を使います。子ごとに tzroutine なので、子がいくつあっても、`TSUZURI_MAXPROCS=1` でも完了します。
 
-WebAssembly の規則は、これまでと同じです。
+tzroutine を起動しない WebAssembly のプログラムの規則は、これまでと同じです。
 
 | 環境 | 待ちが満たされないとき |
 | --- | --- |
 | native | 上の規則。誰も起こせなければ判定のトラップ |
 | 既定の wasm32 | 1 本の実行なので、満たされない待ちは、すぐトラップする（コンソールがないので、メッセージは出ない） |
+| `--wasm-feature jspi` で tzroutine を起動する wasm32 | 待つのは待つ tzroutine だけで、ほかの tzroutine が走る。どの tzroutine も起こせなければ、グルーが export の `Promise` を `RuntimeError("all tzroutines are asleep - deadlock!")` で拒否する |
 | `--wasm-feature threads` | 待つスレッドは、先に `Parallel.*` の未着手のチャンクを自分のスタックの上で手伝い（空いているワーカーがいないときだけ。深さは 16 まで）、それでも進めなければ眠る。メインとワーカーのスレッドがすべて待ったときは、判定のトラップ（`RuntimeError`） |
 
 ### ロックの中
@@ -357,7 +358,7 @@ error[E1013]: a channel item cannot hold a borrow, including a borrowed function
 - 要素は、ランタイムがバイト列としてコピーします。要素の型ごとの drop は、コンパイラーが、ブロックを解放するときに生成します。大きい要素はコピーされるので、小さい値か、所有する配列や文字列のように、小さな表現の値を送ります。
 - ネイティブのランタイムは tzroutine のランタイム（`src/runtime/tzroutine.c`）です。ロックはチャンネルごとに 1 つで、ほかのチャンネルの操作とは競合しません。待つ tzroutine は、チャンネルの受け手の列か送り手の列に並んで眠り、要素の出し入れは、反対側の列の先頭の 1 つだけを起こします。
 - `--wasm-feature threads` のランタイム（`src/runtime/task-wasm-threads.c`）は、ワーカーのプールの mutex 1 つで、すべてのチャンネルの操作と待ちの数え上げを守り、WebAssembly の atomic 命令で実装します。待つスレッドは、プール共有の `epoch` の語で眠ります。起こすのは、新しい仕事、グループの終わり、チャンネルの変化（待っている者がいるとき）、競合したロックの解放のときだけで、そのとき全員が起きて、条件を見直します。グループのほかのチャンクがまだ走っているあいだに 1 つが終わっても、だれも起こしません。スレッドごとの状態は、インスタンスごとの WebAssembly のグローバルで、TLS は要りません。
-- 既定の wasm32 は 1 スレッドで、`DataChannel` の操作はモジュール内の IR です。ネイティブの C のランタイムも、threads の C のランタイムも使いません。
+- 既定の wasm32 は 1 スレッドで、tzroutine を起動しないプログラムでは、`DataChannel` の操作はモジュール内の IR です。ネイティブの C のランタイムも、threads の C のランタイムも使いません。`--wasm-feature jspi` で tzroutine を起動するプログラムでは、ネイティブと同じ tzroutine のランタイム（`src/runtime/tzroutine.c` を JSPI の 1 本のスレッド向けに作ったもの）で、待つ tzroutine はチャンネルの列に並んで中断します（[tzroutine の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi)）。
 - `DataChannel` は、ソースに名前が現れたプログラムだけに読み込まれます。`DataChannel` を書かないプログラムの出力は変わりません。`--freestanding` で `DataChannel` を使うと `E2000` です（tzroutine のランタイムが要ります）。
 
 ## API リファレンス
@@ -377,4 +378,5 @@ error[E1013]: a channel item cannot hold a borrow, including a borrowed function
 - tzroutine やスレッドの間で所有値を受け渡すときは `DataChannel` を使い、`Sender` を送る側の `tzroutine { }` の本体へムーブします。
 - 最後の `Sender` の drop が、チャンネルを閉じます。drop し忘れた `Sender` は、受け手を待たせ続けますが、誰も起こせなくなった時点で、判定のトラップになります。
 - ネイティブでは待つのは待つ tzroutine だけで、待つ数はスレッドの数に縛られません。ロックを持ったまま待つこともできます。
-- WebAssembly の規則は変わりません。既定の wasm32 は 1 本の実行で、満たされない待ちはすぐトラップします。tzroutine のランタイムを使わないプログラムでは、`Mutex.with_lock` の中の `DataChannel` の操作もトラップです。
+- tzroutine を起動しない WebAssembly のプログラムの規則は変わりません。既定の wasm32 は 1 本の実行で、満たされない待ちはすぐトラップします。tzroutine のランタイムを使わないプログラムでは、`Mutex.with_lock` の中の `DataChannel` の操作もトラップです。
+- tzroutine を起動する wasm32 のプログラム（`--wasm-feature jspi`）では、ネイティブと同じく、待つのは待つ tzroutine だけで、ロックを持ったまま待てます（[tzroutine の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi)）。

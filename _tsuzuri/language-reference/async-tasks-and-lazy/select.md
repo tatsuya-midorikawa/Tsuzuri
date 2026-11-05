@@ -186,7 +186,7 @@ canceled after 5
 
 ## ターゲット
 
-ネイティブの macOS・Linux・Windows で動きます。既定の WebAssembly では、tzroutine を起動しないプログラムの `select` が 1 本の実行として動きます。待つべき `select`（`default` がなく、どの腕もすぐにはできない）はその場でトラップします。
+ネイティブの macOS・Linux・Windows で動きます。既定の WebAssembly では、tzroutine を起動しないプログラムの `select` が 1 本の実行として動きます。待つべき `select`（`default` がなく、どの腕もすぐにはできない）はその場でトラップします。tzroutine を起動する wasm32 のプログラム（`--wasm-feature jspi`）では、待つ `select` はその tzroutine だけを中断します（[tzroutine の WebAssembly](tzroutine.md#webassemblyjspi)）。
 
 ## 表現と性能
 

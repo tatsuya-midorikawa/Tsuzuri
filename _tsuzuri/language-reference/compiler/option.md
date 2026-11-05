@@ -402,7 +402,7 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 | `--wasm-stack-size SIZE` | 1 MiB | WASM 出力だけ。16 の倍数で、64 KiB 以上。メモリ上限はスタック + 64 KiB 以上 |
 | `--wasm-feature simd128` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm` |
 | `--wasm-feature threads` | オフ | `wasm32` の `object` か `wasm`。`Parallel.*`・`Mutex`・`Atomic`・`DataChannel` を Worker と共有メモリで動かす（tzroutine・`Routine.scope`・`Channel` は `E2000`）。WASI や `--allocator host` とは排他 |
-| `--wasm-feature jspi` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm` と、wasm32 の `bindings-js`。グルーの export が `Promise` を返し、モジュールは JSPI で待つ（`net` のソケット）。threads / WASI とは排他 |
+| `--wasm-feature jspi` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm` と、wasm32 の `bindings-js`。グルーの export が `Promise` を返し、モジュールは JSPI で待つ（`net` のソケット、tzroutine）。tzroutine は wasm32 だけ。threads / WASI とは排他 |
 | `--wasm-feature webgpu` | オフ | `wasm32` の `object`、`llvm`、`wasm`。`Gpu.request Gpu.WebGpu` 用。threads / WASI / `bindings-js` とは排他 |
 | `--wasm-feature net` | オフ | wasm32 の `object`、`llvm`、`wasm`、`bindings-js`。`jspi` が必要。`Net` のソケットを、Node.js 向けのグルーが実装する `tsuzuri_net` の import にする。threads / WASI / wasm64 とは排他 |
 | `--wasm-feature tail-call` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm`。保証された末尾呼び出しを `return_call` にする。ほかの機能と併用できる。`bindings-js` と `--backend fast` には付けられない |
@@ -413,6 +413,8 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 `--wasm-stack-size` は、リンク済みの WASM にだけ埋めます。オブジェクトや LLVM IR を自分でリンクするときは、`wasm-ld -z stack-size` を使います。`test` でメモリやスタックを変えるときは、`--target wasm32` か `wasm64` が必要です。
 
 `--wasm-feature jspi` は、グルーの export を `Promise` を返す関数にし、呼び出しを直列化します。待つ import のないモジュールでは、`.wasm` は付けないときと同じです（[WebAssembly への出力](webassembly.md#jspi)）。
+
+tzroutine を起動する wasm32 のプログラムは、`.wasm` と `--emit bindings-js` の両方に `--wasm-feature jspi` が要ります。モジュールは `tsuzuri_tz` の import と `tsuzuri_tz_entry`・`tsuzuri_tz_fire` の export を持ち、グルーが tzroutine を 1 本のスレッドの上で交代に走らせます。tzroutine のスタックは 64 KiB で、多くの tzroutine を同時に待たせるときは `--wasm-max-memory` を増やします（[JSPI の tzroutine](webassembly.md#jspi-の-tzroutine)）。
 
 `--wasm-feature webgpu` は、`Gpu.request Gpu.WebGpu` を使うプログラムのモジュールに、`tsuzuri_gpu.open` と `tsuzuri_gpu.run` の 2 つの import を足します。付けなければ import は増えず、`Gpu.request Gpu.WebGpu` は `Unavailable` です。ホスト側は `src/runtime/webgpu.mjs` の `createGpuImports` が作ります（[WebAssembly への出力](webassembly.md#webgpu-デバイス)）。
 
@@ -480,8 +482,10 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--wasm-feature` を `build` 以外に付ける | `--wasm-feature is only valid with build` |
 | `threads` なのに wasm32 の object / wasm でない | `--wasm-feature threads requires wasm32 object or WASM output` |
 | `jspi` なのに WASM の object / llvm / wasm / bindings-js でない | `--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output` |
-| WebAssembly で `tzroutine` を使う（`jspi` なし） | `tzroutine on WebAssembly needs --wasm-feature jspi` |
-| WebAssembly で `tzroutine` と `--wasm-feature jspi` | `tzroutine with --wasm-feature jspi is not implemented yet` |
+| WebAssembly で `tzroutine` を使う（`jspi` なし。`--emit bindings-js` も） | `tzroutine on WebAssembly needs --wasm-feature jspi` |
+| wasm64 で `tzroutine` と `--wasm-feature jspi` | `tzroutine with --wasm-feature jspi requires --target wasm32: the JavaScript glue that runs the tzroutines loads wasm32 modules only` |
+| `tzroutine` と `--wasm-feature webgpu` | `tzroutine cannot be combined with --wasm-feature webgpu: the WebGPU imports come from webgpu.mjs, whose host does not run tzroutines; use the JavaScript bindings of --emit bindings-js without webgpu` |
+| `tsuzuri test --target wasm32`・`wasm64` で `tzroutine` を起動するテスト | `the WebAssembly test runner cannot run tzroutines: they suspend with --wasm-feature jspi, which only build takes; run the tests natively, or build the module with --target wasm32 --wasm-feature jspi --emit bindings-js and call its exports` |
 | `tzroutine` と `--wasm-feature threads` | `tzroutine cannot be combined with --wasm-feature threads: the tzroutine runtime has no WebAssembly threads backend` |
 | `Channel` と `--wasm-feature threads` | `Channel cannot be used with --wasm-feature threads; use DataChannel, which runs on the threads backend` |
 | `Channel`・`Time.sleep`・TZ06 の同期の型（`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap`）を使うプログラムと `--trap-mode return` | `--trap-mode return cannot be combined with Channel, Time.sleep or the sync types of the tzroutine runtime (WaitGroup, Once, OnceValue, RwMutex, Cond, Semaphore, SyncMap): a trap would leave the runtime's state of the call behind` |

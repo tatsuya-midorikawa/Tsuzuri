@@ -414,14 +414,34 @@ fn rejects_unsupported_targets() {
     .unwrap();
     let output = directory.join("out.bin");
     let output = output.to_str().unwrap();
+    let glue = directory.join("out.mjs");
+    let glue = glue.to_str().unwrap();
     for (args, kind) in [
         (
             vec!["--target", "wasm32", "-o", output],
             "option_requires_option",
         ),
+        // TZ09: jspi runs tzroutines on wasm32 only, and not with the WebGPU imports.
         (
-            vec!["--target", "wasm32", "--wasm-feature", "jspi", "-o", output],
+            vec!["--target", "wasm64", "--wasm-feature", "jspi", "-o", output],
             "option_conflict",
+        ),
+        (
+            vec![
+                "--target",
+                "wasm32",
+                "--wasm-feature",
+                "jspi",
+                "--wasm-feature",
+                "webgpu",
+                "-o",
+                output,
+            ],
+            "option_conflict",
+        ),
+        (
+            vec!["--target", "wasm32", "--emit", "bindings-js", "-o", glue],
+            "option_requires_option",
         ),
         (
             vec![
@@ -508,4 +528,178 @@ fn a_failure_domain_restores_the_spawn_scope_around_parallel_work() {
         before[before.rfind("define ").unwrap()..].contains("call ptr @tsuzuri_tz_scope_current()")
     );
     assert!(ir[run..].contains("call void @tsuzuri_tz_scope_reset(ptr"));
+}
+
+/// The IR of `tsuzuri build --emit llvm` of a one-file project with `args`.
+fn emitted_ir(name: &str, source: &str, args: &[&str]) -> String {
+    let directory = std::env::temp_dir().join(format!(
+        "tsuzuri-tzroutine-ir-{name}-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("Main.tz"), source).unwrap();
+    let output = directory.join("out.ll");
+    let result = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("build")
+        .arg(&directory)
+        .args(["--emit", "llvm", "-o"])
+        .arg(&output)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{args:?}\n{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let ir = std::fs::read_to_string(&output).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+    ir
+}
+
+const JSPI: [&str; 4] = ["--target", "wasm32", "--wasm-feature", "jspi"];
+
+#[test]
+fn jspi_modules_that_spawn_get_the_stack_switch() {
+    // TZ09: a wasm32 module of --wasm-feature jspi that spawns has the stack switch, the per-G stack
+    // checks, the allocator of the runtime, the scheduler's DataChannel and Time.sleep.
+    let source = "export def f :: i64 -> i64\nfn f n =\n    match DataChannel.bounded 1 with\n    | (sender, receiver) ->\n        tzroutine {\n            Time.sleep Time.millisecond()\n            let _sent = DataChannel.send (ref sender) n\n        }\n        match DataChannel.recv (ref receiver) with\n        | Maybe.Some value -> value\n        | Maybe.None -> 0\n";
+    let ir = emitted_ir("spawn", source, &JSPI);
+    assert_eq!(
+        ir,
+        emitted_ir("spawn-again", source, &JSPI),
+        "deterministic"
+    );
+    for line in [
+        "define void @tsuzuri_tz_entry(i32 %g) nounwind {",
+        "define void @tsuzuri_tz_fire() nounwind {",
+        "define hidden void @tzr_jspi_suspend(ptr %g) noinline nounwind {",
+        "declare void @tz.jspi.import.suspend(ptr) \"wasm-import-module\"=\"tsuzuri_tz\" \"wasm-import-name\"=\"suspend\"",
+        "@__stack_pointer = external addrspace(1) global ptr",
+        "@tsuzuri_stack_top = addrspace(1) global i32 0",
+        "declare i32 @tsuzuri_channel_send(ptr, ptr)",
+        "declare i32 @tsuzuri_tz_sleep(i64)",
+    ] {
+        assert_eq!(
+            ir.lines().filter(|text| *text == line).count(),
+            1,
+            "{line}\n{ir}"
+        );
+    }
+    assert!(ir.contains("define weak ptr @tsuzuri_alloc(i64 %size)"));
+    assert!(ir.contains("call void @tz.stack.check()"));
+    for absent in [
+        "define internal i32 @tsuzuri_channel_send(",
+        "@tsuzuri_mutex_wait_ok",
+        "@tsuzuri_os_sleep",
+        // the stack switch writes the bounds, so they are not invariant (Copilot on #90)
+        "!invariant.load",
+    ] {
+        assert!(!ir.contains(absent), "{absent}\n{ir}");
+    }
+    // A module that spawns nothing keeps the IR that it has without jspi: no stack switch, no import.
+    let single = "export def g :: i64 -> i64\nfn g n =\n    let values: Channel<i64> = Channel.make 1\n    Channel.send values n\n    match Channel.recv values with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0\n";
+    let with_jspi = emitted_ir("single-jspi", single, &JSPI);
+    assert_eq!(
+        with_jspi,
+        emitted_ir("single", single, &["--target", "wasm32"])
+    );
+    for absent in [
+        "tsuzuri_tz_entry",
+        "tz.jspi",
+        "tsuzuri_stack_top",
+        "wasm-import-module",
+    ] {
+        assert!(!with_jspi.contains(absent), "{absent}\n{with_jspi}");
+    }
+}
+
+#[test]
+fn jspi_net_imports_keep_the_stack_pointer_of_the_g() {
+    // TZ09: under --wasm-feature net a socket call is an import that suspends the G alone: its
+    // wrapper keeps the G's stack pointer and bounds across the call.
+    let source = "export def f :: i64 -> i64\nfn f port =\n    tzroutine { () }\n    let address = Maybe.get (Net.parse_ip port (ref \"127.0.0.1\"))\n    let! connected = Net.connect address Maybe.None\n    if Result.is_ok (ref connected) then 1 else 0\n";
+    let ir = emitted_ir(
+        "net",
+        source,
+        &[
+            "--target",
+            "wasm32",
+            "--wasm-feature",
+            "jspi",
+            "--wasm-feature",
+            "net",
+        ],
+    );
+    assert!(
+        ir.contains("declare i64 @tz.jspi.net.open(ptr, i32, i64, i64, i64, i64) \"wasm-import-module\"=\"tsuzuri_net\" \"wasm-import-name\"=\"open\""),
+        "{ir}"
+    );
+    let wrapper = &ir[ir
+        .find("define hidden i64 @tsuzuri_net_open(")
+        .expect("the wrapper of open")..];
+    let wrapper = &wrapper[..wrapper.find("\n}\n").unwrap()];
+    assert!(wrapper.contains("noinline"), "{wrapper}");
+    let order = [
+        "load volatile ptr, ptr addrspace(1) @__stack_pointer",
+        "call void @tz.jspi.leave(ptr %sp)",
+        "call i64 @tz.jspi.net.open(",
+        "store volatile ptr %sp, ptr addrspace(1) @__stack_pointer",
+    ];
+    let mut at = 0;
+    for step in order {
+        at += wrapper[at..]
+            .find(step)
+            .unwrap_or_else(|| panic!("{step}\n{wrapper}"));
+    }
+    assert!(!ir.contains("declare i64 @tsuzuri_net_open("), "{ir}");
+}
+
+#[test]
+fn the_webassembly_test_runner_refuses_tzroutines() {
+    // TZ09 D6: the runner of `tsuzuri test --target wasm32` does not drive JSPI.
+    let directory =
+        std::env::temp_dir().join(format!("tsuzuri-tzroutine-test-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("Main.tz"),
+        "test \"spawns\" =\n    tzroutine { () }\n    assert true\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("test")
+        .arg(&directory)
+        .args(["--target", "wasm32", "--json"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let line = stderr
+        .lines()
+        .rfind(|line| line.starts_with('{'))
+        .unwrap_or_else(|| panic!("no JSON diagnostic in\n{stderr}"));
+    let error: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(error["code"], "E2000", "{error}");
+    assert_eq!(error["kind"], "option_conflict", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("the WebAssembly test runner cannot run tzroutines"),
+        "{error}"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn jspi_bindings_of_a_module_that_spawns_run_its_tzroutines() {
+    // TZ09: the table of the glue says so, and only for a module that spawns.
+    let spawning = accepts("export def f :: i64 -> i64\nfn f n =\n    tzroutine { () }\n    n\n");
+    let glue = tsuzuri::bindings::javascript_for(&spawning, tsuzuri::bindings::JsFlavor::Jspi);
+    assert!(glue.contains("\"tzroutine\":true"), "{glue}");
+    let single = tsuzuri::bindings::javascript_for(&spawning, tsuzuri::bindings::JsFlavor::Single);
+    assert!(!single.contains("\"tzroutine\""));
+    let plain = accepts("export def f :: i64 -> i64\nfn f n = n + 1\n");
+    let glue = tsuzuri::bindings::javascript_for(&plain, tsuzuri::bindings::JsFlavor::Jspi);
+    assert!(!glue.contains("\"tzroutine\""));
 }

@@ -187,8 +187,9 @@ jobs:
       # TZ01: the tzroutine runtime on its own (tests/tzroutine_runtime.c includes src/runtime/tzroutine.c, and since TZ12 its
       # DataChannel): -O0 and -O3 with 1, 2 and 4 Ps, the build with src/runtime/stack.c that reports a tzroutine's overflow, and
       # on Linux the ThreadSanitizer and AddressSanitizer + UBSan builds (the Homebrew LLVM 21 of the macOS runners builds
-      # sanitizer programs that never start; see the size-class allocator step below).
-      - name: tzroutine, Channel and select (TZ01, TZ02, TZ03, TZ04)
+      # sanitizer programs that never start; see the size-class allocator step below). TZ09: the tzroutines of wasm32 with
+      # --wasm-feature jspi through the generated glue, on the Node.js 24 of this job.
+      - name: tzroutine, Channel and select (TZ01, TZ02, TZ03, TZ04, TZ09)
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         timeout-minutes: 20
         run: |
@@ -198,6 +199,7 @@ jobs:
           node tests/tzroutine_runtime.mjs
           unset TSUZURI_TSAN TSUZURI_ASAN
           node tests/tzroutine.mjs target/release/tsuzuri
+          node tests/tzroutine_wasm.mjs target/release/tsuzuri
           node tests/features.mjs target/release/tsuzuri tzroutine
           node tests/features.mjs target/release/tsuzuri tzroutine_values
           node tests/features.mjs target/release/tsuzuri channel

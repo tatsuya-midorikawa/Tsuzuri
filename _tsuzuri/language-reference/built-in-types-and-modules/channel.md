@@ -264,6 +264,7 @@ match Channel.recv ch with      // ← ここでトラップする
 | --- | --- |
 | native の macOS・Linux・Windows | 動く |
 | 既定の wasm32・wasm64（import なし） | tzroutine を起動しないプログラムは、1 本の実行として使える。待つべき操作（空のバッファなしの `recv` など）はトラップする |
+| wasm32 + `--wasm-feature jspi` | tzroutine を起動するプログラムで動く。待つ操作はその tzroutine だけを JSPI で中断する（[tzroutine の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi)） |
 | `--wasm-feature threads` | `E2000`（`Channel cannot be used with --wasm-feature threads; use DataChannel, which runs on the threads backend`） |
 | `--freestanding` | `E2000` |
 | `--trap-mode return` | `E2000`（`--trap-mode return cannot be combined with Channel: ...`。トラップがランタイムの状態を残すため） |

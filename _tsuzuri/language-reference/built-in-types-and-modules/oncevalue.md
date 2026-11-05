@@ -42,7 +42,7 @@ first * 0 + second
 ## 型とターゲット
 
 - `OnceValue<T>` は非 Copy の不透明な値です（構築・分解は `E1022`）。セルは配列の中にあるので、ムーブしても動きません。関数値には捕捉できません（`E1005`）。
-- ネイティブの macOS・Linux・Windows と既定の WebAssembly（1 本の実行）で使えます。
+- ネイティブの macOS・Linux・Windows と既定の WebAssembly（tzroutine を起動しないプログラムは 1 本の実行）で使えます。`--wasm-feature jspi` で tzroutine を起動する wasm32 のプログラムでは、ネイティブと同じく、待つのはその tzroutine だけです（[tzroutine の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi)）。
 
 ## 関連項目
 

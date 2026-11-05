@@ -110,10 +110,11 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// `Time.sleep`: the scheduler's timer, which parks a tzroutine without its thread (a sleep
-    /// in a critical section traps, as a yield does). The default WebAssembly target has no timer
-    /// (TZ09): it waits as `Time.sleep_ms` does, for the milliseconds rounded up.
+    /// in a critical section traps, as a yield does). A WebAssembly program that spawns has the
+    /// timers of the tzroutine runtime of JSPI (TZ09); any other has no timer: it waits as
+    /// `Time.sleep_ms` does, for the milliseconds rounded up.
     fn time_sleep(&mut self) {
-        if self.globals.wasm {
+        if self.globals.wasm && !self.globals.spawns {
             let quotient = self.value("sdiv i64 %arg0, 1000000");
             let remainder = self.value("srem i64 %arg0, 1000000");
             let partial = self.value(format!("icmp sgt i64 {remainder}, 0"));

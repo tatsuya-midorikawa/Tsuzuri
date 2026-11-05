@@ -74,7 +74,7 @@ Atomic.load (Arc.get (ref total))
 ## 型とターゲット
 
 - `WaitGroup` は非 Copy の不透明なハンドルです（構築・分解は `E1022`）。`Send`・`Sync` で、何度も呼べる関数値には捕捉できません（`E1005`）。
-- ネイティブの macOS・Linux・Windows で動きます。既定の WebAssembly では、tzroutine を起動しないプログラムが 1 本の実行として使えます（待つべき `wait` はトラップ）。`WaitGroup.go` は tzroutine を起動するので、WebAssembly では `E2000` です。
+- ネイティブの macOS・Linux・Windows で動きます。既定の WebAssembly では、tzroutine を起動しないプログラムが 1 本の実行として使えます（待つべき `wait` はトラップ）。`WaitGroup.go` は tzroutine を起動するので、WebAssembly では `--wasm-feature jspi` の wasm32 で動き、`jspi` がないと `E2000` です。`--wasm-feature jspi` では `wait` がその tzroutine だけを待たせます。
 
 ## Go との対応
 

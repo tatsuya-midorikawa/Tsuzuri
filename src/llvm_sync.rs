@@ -269,9 +269,10 @@ impl FunctionEmitter<'_, '_> {
     /// Traps unless this thread holds no `Mutex` lock: a critical section never waits, so a
     /// channel operation, which may wait, is refused inside one on every schedule (F10 D7). Only
     /// WebAssembly keeps that lock: a native `DataChannel` waits on the scheduler, where a G may
-    /// wait while it holds a lock (TZ12).
+    /// wait while it holds a lock (TZ12), and so does the `DataChannel` of a WebAssembly program
+    /// that spawns, on the tzroutine runtime of JSPI (TZ09).
     fn channel_unlocked(&mut self) {
-        if !self.globals.wasm {
+        if !self.globals.wasm || self.globals.spawns {
             return;
         }
         let status = self.value("call i32 @tsuzuri_mutex_wait_ok()".to_owned());

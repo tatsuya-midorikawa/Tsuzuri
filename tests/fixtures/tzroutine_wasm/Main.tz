@@ -1,0 +1,385 @@
+// TZ09: tzroutines on WebAssembly with JSPI. tests/tzroutine_wasm.mjs builds this project with --target wasm32
+// --wasm-feature jspi, loads it through the glue of --emit bindings-js and calls its exports, which return promises.
+// Every export computes its result from what it received, so the result never depends on the order of the turns.
+
+// Tells the host where a call is (serialized).
+extern def report :: i64 -> unit
+
+// The example of TZ03's quick guide as an export: "sum=5050" for 100.
+export def sum :: i64 -> string
+fn sum n =
+    let jobs: Channel<i64> = Channel.make 0
+    let producer = Channel.share jobs
+    tzroutine {
+        for i in 1 ..= n do
+            Channel.send producer i
+        Channel.close producer
+    }
+    let mut total = 0i64
+    for job in jobs do
+        total = total + job
+    $"sum={total}"
+
+// `n` round trips on two unbuffered channels: a tzroutine adds 1 to each value and sends it back.
+export def ping_pong :: i64 -> i64
+fn ping_pong n =
+    let requests: Channel<i64> = Channel.make 0
+    let replies: Channel<i64> = Channel.make 0
+    let server_requests = Channel.share requests
+    let server_replies = Channel.share replies
+    tzroutine {
+        for value in server_requests do
+            Channel.send server_replies (value + 1)
+    }
+    let mut value = 0i64
+    for _round in 0 ..< n do
+        Channel.send requests value
+        value = match Channel.recv replies with
+            | Maybe.Some next -> next
+            | Maybe.None -> -1
+    Channel.close requests
+    value
+
+// Generate, square and sum in three stages joined by a buffered and an unbuffered channel.
+export def pipeline :: i64 -> i64
+fn pipeline n =
+    let numbers: Channel<i64> = Channel.make 4
+    let squares: Channel<i64> = Channel.make 0
+    let source = Channel.share numbers
+    tzroutine {
+        for i in 1 ..= n do
+            Channel.send source i
+        Channel.close source
+    }
+    let inputs = Channel.share numbers
+    let outputs = Channel.share squares
+    tzroutine {
+        for value in inputs do
+            Channel.send outputs (value * value)
+        Channel.close outputs
+    }
+    let mut total = 0i64
+    for value in squares do
+        total = total + value
+    total
+
+// Two producers and a select: `a` sends 1 .. n and `b` sends 1000 * (1 .. n), then each closes its channel; the
+// select takes from whichever is ready until both are closed.
+export def select_two :: i64 -> i64
+fn select_two n =
+    let a: Channel<i64> = Channel.make 0
+    let b: Channel<i64> = Channel.make 0
+    let a_out = Channel.share a
+    tzroutine {
+        for i in 1 ..= n do
+            Channel.send a_out i
+        Channel.close a_out
+    }
+    let b_out = Channel.share b
+    tzroutine {
+        for i in 1 ..= n do
+            Channel.send b_out (1000 * i)
+        Channel.close b_out
+    }
+    let mut total = 0i64
+    let mut open_a = true
+    let mut open_b = true
+    while open_a || open_b do
+        select
+        | recv x from a when open_a -> match x with
+            | Maybe.Some value -> total = total + value
+            | Maybe.None -> open_a = false
+        | recv y from b when open_b -> match y with
+            | Maybe.Some value -> total = total + value
+            | Maybe.None -> open_b = false
+    total
+
+// `n` tzroutines add 0 .. n - 1 under a Mutex, waited for with a WaitGroup.
+export def wait_group_sum :: i64 -> i64
+fn wait_group_sum n =
+    let total = Arc.new (Mutex.create 0i64)
+    let group = WaitGroup.create ()
+    for i in 0 ..< n do
+        WaitGroup.add (ref group) 1
+        let done = WaitGroup.share (ref group)
+        let mine = Arc.share (ref total)
+        tzroutine {
+            Mutex.with_lock (Arc.get (ref mine)) (\value -> deref value = deref value + i)
+            WaitGroup.done (ref done)
+        }
+    WaitGroup.wait (ref group)
+    Mutex.with_lock (Arc.get (ref total)) (\value -> deref value)
+
+// A DataChannel of one slot between two tzroutines: the sender waits for room and the receiver for an item, each
+// suspending alone; the last sender's drop closes it (1 + ... + n).
+def produce :: own DataChannel.Sender<i64> -> own i64 -> unit
+fn produce sender n =
+    for i in 1 ..= n do
+        let _sent = DataChannel.send (ref sender) i
+
+export def data_channel_sum :: i64 -> i64
+fn data_channel_sum n =
+    match DataChannel.bounded 1 with
+    | (sender, receiver) ->
+        tzroutine {
+            produce sender n
+        }
+        let mut total = 0i64
+        let mut open = true
+        while open do
+            match DataChannel.recv (ref receiver) with
+            | Maybe.Some value -> total = total + value
+            | Maybe.None -> open = false
+        total
+
+// The time of the runtime's clock: the time that a timer fired now sends.
+def now :: unit -> i64
+fn now _ =
+    let fired = Time.after 0
+    match Channel.recv fired with
+    | Maybe.Some time -> time
+    | Maybe.None -> 0
+
+// Nobody sends on `never`, so the deadline's arm is chosen, no earlier than the deadline: 1.
+export def timeout :: i64 -> i64
+fn timeout milliseconds =
+    let never: Channel<i64> = Channel.make 0
+    let start = now ()
+    let deadline = Time.after (milliseconds * Time.millisecond())
+    let fired = select
+        | recv _ from never -> 0
+        | recv _ from deadline -> 1
+    if fired == 1 && now () - start >= milliseconds * Time.millisecond() then 1 else 0
+
+// A sleeper and a ticker that runs while it sleeps: the sleeper wakes no earlier than its nap, and the ticker counted
+// at least once meanwhile (11).
+export def sleep_lets_others_run :: i64
+fn sleep_lets_others_run =
+    let ticks = Arc.new (Atomic.create 0i64)
+    let stop = Arc.new (Atomic.create false)
+    let ticker = Arc.share (ref ticks)
+    let stopped = Arc.share (ref stop)
+    tzroutine {
+        while !Atomic.load (Arc.get (ref stopped)) do
+            let _tick = Atomic.fetch_add (Arc.get (ref ticker)) 1i64
+            Time.sleep Time.millisecond()
+    }
+    let start = now ()
+    Time.sleep (20 * Time.millisecond())
+    let slept = now () - start >= 20 * Time.millisecond()
+    Atomic.store (Arc.get (ref stop)) true
+    (if slept then 10 else 0) + (if Atomic.load (Arc.get (ref ticks)) > 0 then 1 else 0)
+
+// A ticker of 1 ns is due again as soon as it fires: the call that receives from it still runs, takes `n` ticks, each
+// later than the one before, and stops it (n).
+export def short_ticker :: i64 -> i64
+fn short_ticker n =
+    let ticker = Ticker.create 1
+    let ticks = Ticker.channel ticker
+    let mut count = 0i64
+    let mut last = 0i64
+    for _ in 1 ..= n do
+        match Channel.recv ticks with
+        | Maybe.Some time ->
+            if time > last then count = count + 1
+            last = time
+        | Maybe.None -> ()
+    Ticker.stop ticker
+    count
+
+// Two receivers of a channel that nobody sends on: every tzroutine waits, and the call is rejected.
+export def deadlock :: i64 -> i64
+fn deadlock n =
+    let never: Channel<i64> = Channel.make 0
+    let listener = Channel.share never
+    tzroutine {
+        let _value = Channel.recv listener
+    }
+    match Channel.recv never with
+    | Maybe.Some value -> value
+    | Maybe.None -> n
+
+// A frame of 4 KiB in linear memory at each level (the index is not known at compile time): deep n = n + deep (n - 1)
+// % 512, deep 0 = 0.
+def rec deep :: i64 -> i64
+fn rec deep n =
+    let pad: [i64; 512] = FixedArray.init (\i -> i + n)
+    if n == 0 then 0 else pad[deep (n - 1) % 512]
+
+// A tzroutine keeps 256 values on its stack while it waits; a second one, started after it (its stack is allocated
+// after the first one's), recurses `depth` levels and sends deep depth. The first sums its values when the second has
+// closed `go`: deep depth + seed * (0 + 1 + ... + 255), and a recursion deeper than the 64 KiB of a stack traps before
+// it writes below its stack.
+export def neighbors :: i64 -> i64 -> i64
+fn neighbors depth seed =
+    let go: Channel<i64> = Channel.make 0
+    let results: Channel<i64> = Channel.make 2
+    let wait_go = Channel.share go
+    let first_out = Channel.share results
+    tzroutine {
+        let held: [i64; 256] = FixedArray.init (\i -> i * seed)
+        let _signal = Channel.recv wait_go
+        let mut total = 0i64
+        for k in 0 ..< 256 do
+            total = total + held[(k * 7) % 256]
+        Channel.send first_out total
+    }
+    let second_out = Channel.share results
+    let closer = Channel.share go
+    tzroutine {
+        Channel.send second_out (deep depth)
+        Channel.close closer
+    }
+    let mut total = 0i64
+    for _ in 0 ..< 2 do
+        total = total + (match Channel.recv results with
+            | Maybe.Some value -> value
+            | Maybe.None -> 0)
+    total
+
+// `n` tzroutines each keep 64 values of their own on their stacks and call a function between their turns (which
+// puts a frame below the resumed stack pointer): every one finds its values intact (n).
+def sum_of_slots :: ref [i64; 64] -> i64
+fn sum_of_slots slots =
+    let mut total = 0i64
+    for k in 0 ..< 64 do
+        total = total + slots[(k * 5) % 64]
+    total
+
+export def interleaved :: i64 -> i64
+fn interleaved n =
+    let intact = Arc.new (Atomic.create 0i64)
+    let group = WaitGroup.create ()
+    for id in 0 ..< n do
+        WaitGroup.add (ref group) 1
+        let done = WaitGroup.share (ref group)
+        let count = Arc.share (ref intact)
+        tzroutine {
+            let slots: [i64; 64] = FixedArray.init (\k -> k * 1000 + id)
+            let expected = 63 * 64 / 2 * 1000 + 64 * id
+            let mut good = true
+            for _turn in 0 ..< 20 do
+                Routine.yield ()
+                if sum_of_slots (ref slots) != expected then
+                    good = false
+            if good then
+                let _intact = Atomic.fetch_add (Arc.get (ref count)) 1i64
+            WaitGroup.done (ref done)
+        }
+    WaitGroup.wait (ref group)
+    Atomic.load (Arc.get (ref intact))
+
+// Reports `tag` when it starts and -tag when it ends; between them a tzroutine sleeps, so a second call that
+// started before this one ended would report in between.
+export def serialized :: i64 -> i64
+fn serialized tag =
+    report tag
+    let done: Channel<i64> = Channel.make 0
+    let out = Channel.share done
+    tzroutine {
+        Time.sleep (5 * Time.millisecond())
+        Channel.send out (tag * 10)
+    }
+    let value = match Channel.recv done with
+        | Maybe.Some received -> received
+        | Maybe.None -> 0
+    report (0 - tag)
+    value
+
+// Parallel runs its chunks in index order on the caller (WebAssembly has one thread), here on several tzroutines at
+// once: each sums 1 .. 1000 with Parallel and sends it (4 * 500500).
+export def parallel_in_routines :: i64
+fn parallel_in_routines =
+    let sums: Channel<i64> = Channel.make 0
+    for _routine in 0 ..< 4 do
+        let out = Channel.share sums
+        tzroutine {
+            let values = Parallel.init 1000 (\index -> index + 1)
+            Routine.yield ()
+            Channel.send out (Parallel.sum (ref values))
+        }
+    let mut total = 0i64
+    for _ in 0 ..< 4 do
+        total = total + (match Channel.recv sums with
+            | Maybe.Some value -> value
+            | Maybe.None -> 0)
+    total
+
+// In a module that spawns, a lock is the tzroutine's: a DataChannel operation and Parallel run inside it, as natively
+// (mutex.md, WebAssembly のロック): 1 + 1 + (0 + 1) = 3.
+export def inside_lock :: i64
+fn inside_lock =
+    let lock = Mutex.create 0i64
+    match DataChannel.bounded 1 with
+    | (sender, receiver) ->
+        let sent = ref sender
+        let received = ref receiver
+        Mutex.with_lock (ref lock) (\_value -> {
+            let ok = match DataChannel.send sent 1 with | Result.Ok _unit -> 1 | Result.Error _item -> 0;
+            let got = match DataChannel.recv received with | Maybe.Some item -> item | Maybe.None -> 0;
+            ok + got + Array.sum (ref (Parallel.init 2 (\index -> index)))
+        })
+
+// A Mutex held across a wait: the holder waits on a channel inside the critical section while another tzroutine
+// waits for the lock; the second adds after the first (12).
+export def mutex_across_wait :: i64
+fn mutex_across_wait =
+    let cell = Arc.new (Mutex.create 1i64)
+    let go: Channel<i64> = Channel.make 0
+    let holder = Arc.share (ref cell)
+    let wait_go = Channel.share go
+    let group = WaitGroup.create ()
+    WaitGroup.add (ref group) 2
+    let first_done = WaitGroup.share (ref group)
+    tzroutine {
+        let receiver = ref wait_go
+        Mutex.with_lock (Arc.get (ref holder)) (\value -> {
+            let received = match Channel.recv receiver with
+                | Maybe.Some amount -> amount
+                | Maybe.None -> 0;
+            deref value = deref value * received
+        })
+        WaitGroup.done (ref first_done)
+    }
+    let other = Arc.share (ref cell)
+    let second_done = WaitGroup.share (ref group)
+    tzroutine {
+        Routine.yield ()
+        Mutex.with_lock (Arc.get (ref other)) (\value -> deref value = deref value + 2)
+        WaitGroup.done (ref second_done)
+    }
+    Routine.yield ()
+    Channel.send go 10
+    WaitGroup.wait (ref group)
+    Mutex.with_lock (Arc.get (ref cell)) (\value -> deref value)
+
+// A trap in a tzroutine (a send on a closed channel) rejects the call.
+export def trap_in_routine :: i64 -> i64
+fn trap_in_routine n =
+    let items: Channel<i64> = Channel.make 1
+    let sender = Channel.share items
+    Channel.close items
+    tzroutine {
+        Channel.send sender n
+    }
+    n
+
+// The tzroutines that are alive: the caller's and its two children that wait (3), then the caller alone (1): 31.
+export def counts :: i64
+fn counts =
+    let gate: Channel<unit> = Channel.make 0
+    for _child in 0 ..< 2 do
+        let waiting = Channel.share gate
+        tzroutine {
+            let _opened = Channel.recv waiting
+        }
+    Routine.yield ()
+    let during = Routine.count ()
+    Channel.close gate
+    let group = WaitGroup.create ()
+    WaitGroup.wait (ref group)
+    let mut after = Routine.count ()
+    while after > 1 do
+        Routine.yield ()
+        after = Routine.count ()
+    during * 10 + after + (if Routine.max_procs () == 1 && Routine.cpu_count () == 1 then 0 else 100)

@@ -201,7 +201,7 @@ $"sum={Atomic.load (Arc.get (ref total))}"
 sum=42
 ```
 
-ネイティブでは、tzroutine と `Parallel` のチャンクは、同じ M:N のスケジューラーの上で走ります。既定の WebAssembly では、`Parallel` は同じ計算を逐次で実行し、結果の順序は同じです（tzroutine の起動は WebAssembly では `E2000` です）。I/O の待ち時間のあいだにほかの計算を進める処理も、CPU の並列計算も、tzroutine と `Parallel` で表します。tzroutine の中のソケットの待ちは、その tzroutine だけを待たせます。
+ネイティブでは、tzroutine と `Parallel` のチャンクは、同じ M:N のスケジューラーの上で走ります。既定の WebAssembly では、`Parallel` は同じ計算を逐次で実行し、結果の順序は同じです（tzroutine は `--wasm-feature jspi` の wasm32 で、1 本のスレッドの上を交代に走ります）。I/O の待ち時間のあいだにほかの計算を進める処理も、CPU の並列計算も、tzroutine と `Parallel` で表します。tzroutine の中のソケットの待ちは、その tzroutine だけを待たせます。
 
 詳しくは[tzroutine 式](../async-tasks-and-lazy/tzroutine.md)と[Parallel](../built-in-types-and-modules/parallel.md)を見てください。以前の `task { ... }` と `Task.parallel` は削除しました（[Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行)）。以前の `Async { ... }` と `Net` の `_async` の関数も削除しました（[Async からの移行](../async-tasks-and-lazy/tzroutine.md#async-からの移行)）。
 

@@ -7,7 +7,7 @@
 - `Mutex.create value` で作り、共有借用 `ref Mutex<T>` に対する `Mutex.with_lock mutex callback` の中でだけ値に触れます。`callback` は排他借用 `ref mut T` を受け取り、その結果を返します。ロックは `callback` が終わると解放されます。
 - 結果は `Send` でなければならず、ロック中の値への借用を持てません。`ref` を返すことは `E1013`（`values that move to another tzroutine or thread must be owned`）で、借用を捕捉した関数値と、それを含む `Maybe`・タプル・配列・レコード・`Seq` も `E1013`（`Mutex.with_lock results must be proven free of borrowed environments`）です。ロックが外れた後で、置き換えられたり別の tzroutine に書かれたりした値を読むことになるからです。値のコピーを捕捉した関数のように、借用を持たないと証明できる結果は返せます（[結果とロック](#結果とロック)）。`Mutex.create` も、ほかの tzroutine へ渡せる `T`（`Send`）だけを受け取ります。
 - ネイティブでは、ロックは tzroutine のランタイムのもので、Go の `sync.Mutex` と同じ規則です。同じ `Mutex` をもう一度取るとトラップ（`Tsuzuri runtime: Mutex.with_lock cannot be nested`）ですが、違う `Mutex` は入れ子にでき、ロックを持ったまま `Channel`・`DataChannel`・`select`・`Time.sleep`・`Parallel.*` などで待てます（[ロックの規則](#ロックの規則)）。
-- WebAssembly は従来の規則のままです。ロックを持ったまま別の（または同じ）`Mutex.with_lock` を呼ぶこと、並列処理（`Parallel.*`）を始めること、`DataChannel` の操作は、トラップです（[WebAssembly のロック](#webassembly-のロック)）。
+- WebAssembly で tzroutine のランタイムを使うプログラム（`Channel`・`select`・タイマー・同期の型を使うもの、`--wasm-feature jspi` で tzroutine を起動するもの）は、ネイティブと同じ規則です。使わないプログラムは従来の規則のままで、ロックを持ったまま別の（または同じ）`Mutex.with_lock` を呼ぶこと、並列処理（`Parallel.*`）を始めること、`DataChannel` の操作は、トラップです（[WebAssembly のロック](#webassembly-のロック)）。
 - `Mutex<T>` は非 Copy の所有値で、`Send` かつ `Sync` です。関数値には捕捉できません（`E1005`）。複数の tzroutine へは、[Routine.scope](./routine.md#routinescope) の共有借用か `Arc<Mutex<T>>` で渡します。
 - `Mutex` のポイズンはありません。トラップが起きたときの扱いは[トラップとロック](#トラップとロック)に書きます。
 - `Arc` と `Mutex` を組み合わせると循環を作れます。サイクルコレクターはないので、循環の一方は `Arc.Weak` で持ちます（[Rc と Arc](./rc.md#循環と解放)）。
@@ -153,7 +153,10 @@ Tsuzuri runtime: Mutex.with_lock cannot be nested
 
 ### WebAssembly のロック
 
-WebAssembly の `Mutex` は、従来の規則のままです（tzroutine のランタイムを使うプログラム、つまり `Channel`・`select`・タイマー・同期の型を使うものは、1 本の実行の上の、ネイティブと同じ規則のランタイムのロックです）。
+WebAssembly の `Mutex` の規則は、プログラムが tzroutine のランタイムを使うかどうかで決まります。
+
+- tzroutine のランタイムを使うプログラム（`Channel`・`select`・タイマー・同期の型を使うもの、`--wasm-feature jspi` で tzroutine を起動するもの）では、ネイティブと同じ規則のランタイムのロックです。同じ `Mutex` の入れ子だけがトラップで、違う `Mutex` の入れ子、ロックの中の `Parallel.*` と `DataChannel` の操作はトラップしません。tzroutine を起動する wasm32 のプログラムでは、ロックはその tzroutine のもので、持ったまま待てます。ロックを待つ別の tzroutine は、持ち主が `with_lock` を抜けるまで待ちます（[tzroutine の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi)）。
+- 使わないプログラムは従来の規則のままで、次の表のとおりです。
 
 | 操作 | 結果 |
 | --- | --- |
@@ -206,7 +209,7 @@ WebAssembly の `Mutex` は、従来の規則のままです（tzroutine のラ�
 ## まとめ
 
 - 整数や `bool` 以外の共有状態、または 2 つ以上の値を 1 つの不変条件で守る共有状態は `Mutex` に入れ、`Mutex.with_lock` の中だけで触れます。
-- ネイティブでは、同じ `Mutex` の入れ子だけがトラップで、ロックを持ったまま待てます。WebAssembly では、ロックの入れ子、ロック中の並列開始と `DataChannel` の操作がトラップです。
+- ネイティブと、tzroutine のランタイムを使う WebAssembly のプログラムでは、同じ `Mutex` の入れ子だけがトラップで、ロックを持ったまま待てます。それ以外の WebAssembly のプログラムでは、ロックの入れ子、ロック中の並列開始と `DataChannel` の操作がトラップです。
 - 結果は `Send` で、ロック中の値への借用（借用を捕捉した関数値を含む）を持てません。
 - 複数の tzroutine へは、`Routine.scope` の共有借用か `Arc<Mutex<T>>` で渡します。`Arc` と `Mutex` で循環を作ると解放されないので、`Arc.Weak` を使います。
 

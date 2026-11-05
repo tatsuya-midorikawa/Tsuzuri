@@ -8,7 +8,7 @@
 
 - `--emit bindings-js` が `<name>.mjs` と `<name>.d.mts` を出します。型の検査、バッファの確保と解放、トラップの扱いはこのグルーが行います。
 - `--wasm-feature threads` を足すと、ブラウザで Web Worker のスレッドプールを作るグルーになります。COOP / COEP の無いページでは `Error` で、逐次実行には切り替えません。
-- `--wasm-feature jspi` を足すと、グルーの export が `Promise` を返す関数になります（JavaScript Promise Integration）。`--wasm-feature net` のソケットは、待つ間 JSPI でモジュールを中断し、その間も JavaScript は動きます（[JSPI](#jspi)）。
+- `--wasm-feature jspi` を足すと、グルーの export が `Promise` を返す関数になります（JavaScript Promise Integration）。`--wasm-feature net` のソケットは、待つ間 JSPI でモジュールを中断し、その間も JavaScript は動きます（[JSPI](#jspi)）。tzroutine を起動するプログラムも、このグルーが 1 本のスレッドの上で交代に走らせます（[JSPI の tzroutine](#jspi-の-tzroutine)）。
 - `--wasm-feature webgpu` を足すと、`Gpu.request Gpu.WebGpu` のプログラムが `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import します。既定の出力は import を持ちません。WebAssembly には Vulkan のホストがなく、`Gpu.request Gpu.Vulkan` は常に `Unavailable`、`Gpu.Auto` は CPU 参照が動かし、どちらも import を増やしません。
 - 公開名は C と同じ `tz_` 接頭辞です。`export def add` は `tz_add` になります。
 - `i64` は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は 0 か 1 の `Number` です。グルーは `bool` を `boolean` に直します。
@@ -355,7 +355,7 @@ api.tsuzuri_free(out);
 
 COOP / COEP が使えないからといって、スレッド要求を黙って逐次実行へ置き換えないでください。WASI と threads、`--allocator host` と threads は、同時には指定できません。
 
-共有状態と `DataChannel`・`Channel` の型は、既定の wasm32 では import を増やしません（`Channel` は `src/runtime/tzroutine.c` を 1 本の実行向けに作ったものが入ります。`--emit object` でもオブジェクトに入り、wasm64 では wasm64 として連結します。待つべき操作はその場でトラップします。`--wasm-feature threads` では `Channel` は `E2000` で、`DataChannel` を使います）。`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグ、`Parallel.*` のチャンクは添字の昇順の逐次実行で、`DataChannel` の操作はモジュールの中の IR です（満たされない待ちはその場でトラップします）。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令（`i64.atomic.rmw.add` など）になり、`Parallel.*` のチャンクは Workers で動きます。`Mutex` と `DataChannel` も使えます。ネイティブの `Mutex` と `DataChannel` は TZ12 から tzroutine のランタイムで動きますが、WebAssembly のこれらの規則（ロックの中の `Parallel.*` と `DataChannel` の操作はトラップ）は変わりません。
+共有状態と `DataChannel`・`Channel` の型は、既定の wasm32 では import を増やしません（`Channel` は `src/runtime/tzroutine.c` を 1 本の実行向けに作ったものが入ります。`--emit object` でもオブジェクトに入り、wasm64 では wasm64 として連結します。待つべき操作はその場でトラップします。`--wasm-feature threads` では `Channel` は `E2000` で、`DataChannel` を使います）。tzroutine を起動するプログラムは `--wasm-feature jspi` で動き、その `Channel`・`DataChannel`・`Mutex`・同期の型の待ちは、tzroutine の待ちです（[JSPI の tzroutine](#jspi-の-tzroutine)）。`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグ、`Parallel.*` のチャンクは添字の昇順の逐次実行で、`DataChannel` の操作はモジュールの中の IR です（満たされない待ちはその場でトラップします）。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令（`i64.atomic.rmw.add` など）になり、`Parallel.*` のチャンクは Workers で動きます。`Mutex` と `DataChannel` も使えます。ネイティブの `Mutex` と `DataChannel` は TZ12 から tzroutine のランタイムで動きますが、WebAssembly のこれらの規則（ロックの中の `Parallel.*` と `DataChannel` の操作はトラップ）は変わりません。
 
 - ランタイムは `task-wasm-threads.c` の C で、`tsuzuri_mutex_lock`・`tsuzuri_mutex_unlock`・`tsuzuri_mutex_parallel_ok`・`tsuzuri_mutex_wait_ok` と `tsuzuri_channel_send`・`recv`・`clone_sender`・`close` を定義します。import は増えず、ホストのグルー（`wasm-threads.mjs`、`bindings-threads.mjs`）は変わりません。
 - `Mutex` のロックの語は、セルの先頭にあります（0 解放、1 保持、2 保持して待ちがいる）。待つスレッドは、プール共有の `epoch` の語で `memory.atomic.wait32` します。ロックを解放して待ちがいたとき、`epoch` を進めて全員を起こします。ホストが失敗を伝えるときも、同じ語を進めて起こすので、ロックを待つスレッドも、失敗したプールでは待ち続けずにトラップします。
@@ -459,11 +459,35 @@ tsuzuri build app --target wasm32 --wasm-feature jspi -O3 -o app.wasm
 ```
 
 - JSPI のグルーは、すべての export を `WebAssembly.promising` で包み、`Promise` を返す関数にします。宣言の戻り値も `Promise<T>` です（`export def add :: i64 -> i64 -> i64` なら `add(arg0: bigint, arg1: bigint): Promise<bigint>`）。ホストは結果を `await` します。
-- モジュールが中断するのは、`WebAssembly.Suspending` で包んだ import を呼んだときだけです。このグルーで今それに当たるのは、`--wasm-feature net` のソケットの待ち（[Net のソケット](#net-のソケットnodejs)）です（`--wasm-feature webgpu` の import も JSPI で中断しますが、グルーではなく `createGpuImports` のホストで使います。[WebGPU デバイス](#webgpu-デバイス)）。中断している間も、JavaScript のイベントループは動きます。待つ import のないモジュールでは、`.wasm` は `--wasm-feature jspi` を付けないものと同じで、グルーだけが違います。
+- モジュールが中断するのは、`WebAssembly.Suspending` で包んだ import を呼んだときだけです。このグルーでそれに当たるのは、`--wasm-feature net` のソケットの待ち（[Net のソケット](#net-のソケットnodejs)）と tzroutine の待ち（[JSPI の tzroutine](#jspi-の-tzroutine)）です（`--wasm-feature webgpu` の import も JSPI で中断しますが、グルーではなく `createGpuImports` のホストで使います。[WebGPU デバイス](#webgpu-デバイス)）。中断している間も、JavaScript のイベントループは動きます。待つ import のないモジュールでは、`.wasm` は `--wasm-feature jspi` を付けないものと同じで、グルーだけが違います。
 - JSPI のグルーは export を呼び出し順に直列化し、待っている間に次の呼び出しで同じスタックや結果を使いません。入力は呼び出し時点のコピーで、`withBorrowed` はありません。生の `WebAssembly.promising` で呼ぶホストも、前の呼び出しを await してから次を呼びます。
 - `--wasm-feature jspi` は、`wasm32` と `wasm64` の `object`、`llvm`、`wasm` と、wasm32 の `bindings-js` で使えます。`--wasm-feature threads` や `--wasm-host wasi` とは同時に指定できません（`E2000`）。
-- tzroutine を起動するプログラムは、`--wasm-feature jspi` を付けても `E2000`（`tzroutine with --wasm-feature jspi is not implemented yet`）です（[tzroutine 式](../async-tasks-and-lazy/tzroutine.md#ターゲット)）。
-- JSPI（`WebAssembly.Suspending` と `WebAssembly.promising`）を持つエンジンが要ります。持たないエンジンでは、グルーの `load` が `JSPI bindings require WebAssembly.Suspending and WebAssembly.promising; use a JSPI-capable engine` で失敗します。リポジトリの `tests/net_wasm.mjs` で、Node.js 24 で動くことを確かめました。Node.js 20 にはありません。
+- JSPI（`WebAssembly.Suspending` と `WebAssembly.promising`）を持つエンジンが要ります。持たないエンジンでは、グルーの `load` が `JSPI bindings require WebAssembly.Suspending and WebAssembly.promising; use a JSPI-capable engine` で失敗します。リポジトリの `tests/net_wasm.mjs` と `tests/tzroutine_wasm.mjs` で、Node.js 24 で動くことを確かめました。Node.js 20 にはありません。
+
+### JSPI の tzroutine
+
+tzroutine を起動する wasm32 のプログラム（`tzroutine { }`・`Routine.go`・`Routine.scope`・`WaitGroup.go`・タイマー・`Context`・`ErrGroup`）は、`--wasm-feature jspi` を付けてビルドし、そのグルー（`--emit bindings-js --wasm-feature jspi`）で読み込みます。付けないと `E2000`（`tzroutine on WebAssembly needs --wasm-feature jspi`）です。書き方と振る舞いは [tzroutine 式の WebAssembly](../async-tasks-and-lazy/tzroutine.md#webassemblyjspi) です。
+
+- tzroutine は JavaScript の 1 本のスレッドの上で 1 つずつ走ります（M:1。並行で、並列ではありません）。tzroutine が待つと、その tzroutine の WebAssembly のスタックだけを JSPI で中断し、グルーの実行器が次に走れる tzroutine を再開するか、新しい tzroutine を始めます。export の呼び出しは、それ自体が 1 つの tzroutine（境界）です。
+- 線形メモリのスタックは tzroutine ごとに 64 KiB で、モジュールのヒープ（`tsuzuri_alloc`）から取ります。関数の入口でその範囲と比べ、溢れるとトラップします。export の呼び出しは、モジュール自身のスタック（`--wasm-stack-size`）の上で走ります。スタックの指す大域変数（`__stack_pointer`）は 1 つなので、tzroutine を中断する点のすべてで、その tzroutine のスタックの位置と範囲を保ち、再開するときに戻します（`src/runtime/tzroutine-jspi.ll`）。
+- グルーは、待つ点や `Routine.yield ()` で替わりながら tzroutine が走り続けても、数ミリ秒ごとにホストのタイマーと I/O に順番を渡します。期限の過ぎたタイマーは、`setTimeout` を待たずに発火させます。グルーに戻るのは tzroutine が止まったときだけなので、待たずに計算し続ける tzroutine は、止まるまで JavaScript のスレッドを持ち続けます（横取りはありません）。
+- すべての tzroutine が待ち、タイマーもホストの待ち（ソケット）も残っていないとき、グルーは export の `Promise` を `RuntimeError("all tzroutines are asleep - deadlock!")` で拒否し、インスタンスを捨てます。ほかの失敗（閉じた `Channel` への `send` など）は、ネイティブの報告の文を出さずに、その場のトラップ（`TsuzuriTrap`）になります。
+- `tsuzuri test --target wasm32` の実行器は JSPI を回さないので、tzroutine を起動するテストは `E2000` です。wasm64、`--wasm-feature threads`、`--wasm-feature webgpu` とも組み合わせられません（`E2000`）。
+
+モジュールは、tzroutine のための import をモジュール `tsuzuri_tz` から取り、export を 2 つ足します。tzroutine を起動しないモジュールには、どちらもありません（既定の wasm32 は import を持ちません）。グルーを使わないホストは、次の約束を自分で守ります。
+
+| 名前 | 向き | 型 | 意味 |
+| --- | --- | --- | --- |
+| `tsuzuri_tz.suspend` | import（`WebAssembly.Suspending`） | `(i32 g) -> ()` | tzroutine `g` が待つ。ホストがその再開を許すまで戻らない |
+| `tsuzuri_tz.spawn` | import | `(i32 g) -> ()` | 新しい tzroutine `g` が走れる（`tsuzuri_tz_entry` で始める） |
+| `tsuzuri_tz.ready` | import | `(i32 g) -> ()` | 待っていた tzroutine `g` が走れる（`suspend` の `Promise` を解決して再開する） |
+| `tsuzuri_tz.clock` | import | `() -> i64` | 単調時計のナノ秒（グルーは `performance.now()`） |
+| `tsuzuri_tz.timer` | import | `(i64 deadline) -> ()` | いちばん早いタイマーの期限（`clock` のナノ秒）が変わった。`-1` はタイマーなし |
+| `tsuzuri_tz_entry` | export | `(i32 g) -> ()` | tzroutine `g` の最初の実行（`WebAssembly.promising` で呼ぶ）。終わると戻る |
+| `tsuzuri_tz_fire` | export | `() -> ()` | 期限の過ぎたタイマーを発火させる（同期に呼ぶ） |
+
+- ホストは、同時に 1 つの tzroutine しか走らせません。走らせるのは、走っている tzroutine が `suspend` を呼んだか、ソケットの import で中断したか、`tsuzuri_tz_entry` から戻った後だけです。`tsuzuri_tz_fire` と `tsuzuri_alloc` などの同期の呼び出しも、tzroutine が走っていないときだけにします。
+- 実際に使う import は、プログラムが到達する操作だけです（タイマーを使わないプログラムに `clock`・`timer` はありません）。
 
 TZ13 で、`Async` の実行器を削除しました。`Async.start` の export（`tsuzuri_async_poll`・`tsuzuri_async_complete`・`tsuzuri_async_set_epoch`）、`Async.block_on` の import（`tsuzuri_async.clock`・`tsuzuri_async.wait`）、グルーの `bindings.async`（`complete`・`settled`）は、もうありません。ホストのイベントループで計算を進める形には後継がなく、ホストは export の `Promise` を待ちます（[Async からの移行](../async-tasks-and-lazy/tzroutine.md#asyncstart-とホストの-poll)）。
 
@@ -613,7 +637,7 @@ for (let i = 0; i < exports.tsuzuri_overflow_count(); i += 1) {
 - バッファはポインタと長さ、所有結果は 16 バイトの記述子です。呼び出しのあとビューを取り直します。
 - `simd128` は許可、`threads` は共有メモリとワーカーのホストが必要です。ブラウザでは、`--emit bindings-js --wasm-feature threads` のグルーがプールを作ります。
 - `--wasm-feature tail-call` は、相互再帰の末尾呼び出しを `return_call` にして定数スタックにします。実行環境が tail-call 提案を持つときだけ使えます（[末尾呼び出し](#末尾呼び出しtail-call)）。
-- `--wasm-feature jspi` のグルーは export を `Promise` を返す関数にし、呼び出しを直列化します。モジュールは `--wasm-feature net` のソケットの待ちで中断します（[JSPI](#jspi)）。
+- `--wasm-feature jspi` のグルーは export を `Promise` を返す関数にし、呼び出しを直列化します。モジュールは `--wasm-feature net` のソケットの待ちと tzroutine の待ちで中断し、グルーが tzroutine を 1 本のスレッドの上で交代に走らせます（[JSPI](#jspi)、[JSPI の tzroutine](#jspi-の-tzroutine)）。
 - `Gpu.request Gpu.WebGpu` は `--wasm-feature webgpu` が要り、JSPI のホスト（`createGpuImports`）が WebGPU を呼びます。`Gpu.Vulkan` は WebAssembly では使えず（`Unavailable`）、`Gpu.Auto` は CPU 参照です。
 - `--trap-info` の `.trap.json` とサイト ID で位置を引き、トラップしたインスタンスは捨てます。
 - `--overflow-report` のモジュールは、`tsuzuri_overflow_count`・`tsuzuri_overflow_hit` と `.overflow.json` で、折り返した整数の演算を知らせます。

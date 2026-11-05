@@ -339,8 +339,17 @@ const UNSUPPORTED = {
   tsuzuri_io: "build a library without IO main or --debug-output",
   tsuzuri_debug: "build a library without IO main or --debug-output",
   tsuzuri_heap: "build the .wasm without --allocator host",
+  tsuzuri_tz: "its tzroutines need the glue of --wasm-feature jspi; generate the bindings with --wasm-feature jspi from the same sources",
   wasi_snapshot_preview1: "build the .wasm without --wasm-host wasi",
 };
+
+// The message of the RuntimeError that rejects an export call when every tzroutine of the module waits (TZ09).
+const DEADLOCK = "all tzroutines are asleep - deadlock!";
+// The exports that a module with tzroutines adds for its glue (TZ09).
+const TZROUTINE_EXPORTS = ["tsuzuri_tz_entry", "tsuzuri_tz_fire"];
+// The longest that the tzroutines run in turn before the host's own tasks (its timers and I/O) get a turn, in ms.
+const TZROUTINE_SLICE = 4;
+const macrotask = typeof setImmediate === "function" ? setImmediate : (task) => setTimeout(task, 0);
 
 // The exports that a module of --wasm-feature threads adds for its host.
 const POOL_EXPORTS = ["__stack_pointer", "tsuzuri_thread_entry", "tsuzuri_thread_stack_alloc", "tsuzuri_thread_stack_size", "tsuzuri_threads_control", "tsuzuri_threads_init"];
@@ -365,6 +374,7 @@ function inspect(module, threads) {
   const present = new Set();
   for (const { module: namespace, name, kind } of moduleImports) {
     if (threads && (namespace === "tsuzuri_threads" || (namespace === "env" && name === "memory" && kind === "memory"))) continue;
+    if (namespace === "tsuzuri_tz" && kind === "function" && TABLE.tzroutine === true) continue;
     // Here javascript_with_net (src/bindings.rs) accepts the socket imports of --wasm-feature net.
     if (kind === "function" && declared.has(key(namespace, name))) {
       present.add(key(namespace, name));
@@ -381,6 +391,7 @@ function inspect(module, threads) {
   if (TABLE.hostAbi) required.push("memory", "tsuzuri_alloc", "tsuzuri_free");
   if (used.some(([, , parameters]) => parameters.some(Array.isArray))) required.push("__indirect_function_table");
   if (threads) required.push(...POOL_EXPORTS);
+  if (TABLE.tzroutine === true) required.push(...TZROUTINE_EXPORTS);
   for (const name of required) {
     if (!exported.has(name)) throw new Error(`module does not match bindings: missing export '${name}'; regenerate the bindings from the same sources`);
   }
@@ -460,6 +471,8 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
   const resolve = resolver();
   const jspi = TABLE.jspi === true;
   let jspiQueue = Promise.resolve();
+  // The RuntimeErrors of a deadlock of the tzroutines, which `fail` passes on as they are.
+  const deadlocks = new WeakSet();
   const siteTable = new Map(sites.map((site) => [site.id, site]));
   // Identifies these bindings to their Borrowed buffers.
   const bindings = {};
@@ -481,6 +494,8 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
       thrown = error;
     } else if (!failed.alive) {
       return failed.failure;
+    } else if (deadlocks.has(error)) {
+      thrown = error;
     } else if (error instanceof WebAssembly.RuntimeError) {
       let site = 0;
       try {
@@ -497,8 +512,10 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
     if (failed.alive) {
       failed.alive = false;
       failed.failure = thrown;
-      // What the instance holds outside it (the sockets of --wasm-feature net) cannot be used or closed any more.
+      // What the instance holds outside it (the sockets of --wasm-feature net, the timer of its tzroutines) cannot be used
+      // or closed any more.
       failed.dispose?.();
+      failed.tz?.stop();
       if (state === failed) state = undefined;
       if (!recreate) final ??= thrown;
     }
@@ -608,9 +625,209 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
     owner.exports = exports;
   }
 
+  // The tzroutines of a module that spawns (TZ09): its Gs run one at a time on this thread. A G that waits suspends its
+  // WebAssembly stack through the JSPI import `tsuzuri_tz.suspend`; the executor resumes the next G that can run, starts a
+  // new one with `tsuzuri_tz_entry` (through WebAssembly.promising), and fires the runtime's timers with `tsuzuri_tz_fire`
+  // when the setTimeout of their earliest deadline comes. An export call is the boundary G, which waits for the Gs that it
+  // spawned before it returns. Its promise is rejected when a G traps, or with a RuntimeError when every G waits and no
+  // timer or host wait (a socket of --wasm-feature net) can wake one: the instance is discarded then.
+  function tzImports(owner) {
+    const tz = {
+      queue: [], // the Gs that can run, in order
+      pending: new Map(), // a suspended G -> the function that resumes it
+      running: undefined, // the G on the stack, or one whose resumption is under way
+      hostWaits: 0, // the Gs suspended in a host import
+      deadline: -1n, // the runtime's earliest timer, on the clock below (-1n: none)
+      due: false, // the setTimeout of the deadline has come
+      handle: undefined, // that setTimeout
+      scheduled: false,
+      slice: 0, // when the tzroutines got this turn of the host, on performance.now
+      boundary: undefined, // the settlement of the export call under way
+      entry: undefined, // WebAssembly.promising(tsuzuri_tz_entry)
+    };
+    owner.tz = tz;
+    const clock = () => BigInt(Math.round(performance.now() * 1e6));
+    const clearTimer = () => {
+      if (tz.handle !== undefined) clearTimeout(tz.handle);
+      tz.handle = undefined;
+    };
+    // The next turn of the executor: at once (a microtask), or after the host's own tasks when the tzroutines have run for a
+    // slice (a G that yields in a loop would starve the host's timers and I/O otherwise).
+    const schedule = () => {
+      if (tz.scheduled) return;
+      tz.scheduled = true;
+      if (performance.now() - tz.slice < TZROUTINE_SLICE) {
+        queueMicrotask(dispatch);
+      } else {
+        macrotask(() => {
+          tz.slice = performance.now();
+          dispatch();
+        });
+      }
+    };
+    // The G on the stack leaves it: it suspends, waits for the host, or has returned.
+    const stopped = () => {
+      tz.running = undefined;
+      schedule();
+    };
+    // A G or a timer failed: the instance goes, and so does the export call.
+    function failed(error) {
+      tz.running = undefined;
+      const thrown = fail(owner, error);
+      const boundary = tz.boundary;
+      tz.boundary = undefined;
+      boundary?.reject(thrown);
+    }
+    // Runs what can run until a G is on the stack again, or nothing can. The timers fire once a turn: a deadline that is
+    // past again at once (a ticker of a short period) would keep this loop firing, and starve the Gs that they woke and the
+    // host, otherwise. A later deadline that is due fires in the next turn, or with the setTimeout when no G can run.
+    function dispatch() {
+      tz.scheduled = false;
+      let fired = false;
+      while (owner.alive && tz.running === undefined) {
+        // A deadline that passed fires now, before the setTimeout comes.
+        if (!fired && !tz.due && tz.deadline >= 0n && clock() >= tz.deadline) tz.due = true;
+        if (tz.due) {
+          tz.due = false;
+          fired = true;
+          try {
+            owner.exports.tsuzuri_tz_fire();
+          } catch (error) {
+            failed(error);
+            return;
+          }
+          continue;
+        }
+        if (tz.queue.length === 0) break;
+        const g = tz.queue.shift();
+        tz.running = g;
+        const resume = tz.pending.get(g);
+        if (resume !== undefined) {
+          // The G goes on in a later microtask, until it stops again.
+          tz.pending.delete(g);
+          resume();
+          return;
+        }
+        // A new G runs here until it first stops; its end settles the promise. The next turn comes from its stop, as for a
+        // resumed G: a chain of new Gs that each spawn and wait would run past the slice in this loop otherwise.
+        let started;
+        try {
+          tz.entry ??= WebAssembly.promising(owner.exports.tsuzuri_tz_entry);
+          started = tz.entry(g);
+        } catch (error) {
+          failed(error);
+          return;
+        }
+        started.then(() => {
+          if (tz.running === g) stopped();
+        }, failed);
+        return;
+      }
+      if (owner.alive && tz.running === undefined && tz.queue.length === 0 && !tz.due && tz.deadline < 0n
+        && tz.hostWaits === 0 && tz.pending.size > 0) {
+        const error = new WebAssembly.RuntimeError(DEADLOCK);
+        deadlocks.add(error);
+        failed(error);
+      }
+    }
+    // The export call `start`, as the boundary G. One call at a time: the exports are queued.
+    tz.call = (start) => new Promise((resolve, reject) => {
+      if (tz.running !== undefined || tz.boundary !== undefined) {
+        reject(new Error("the tzroutines of the previous call are still running"));
+        return;
+      }
+      const boundary = { resolve, reject };
+      tz.boundary = boundary;
+      tz.running = boundary;
+      tz.slice = performance.now();
+      let started;
+      try {
+        started = start();
+      } catch (error) {
+        tz.running = undefined;
+        tz.boundary = undefined;
+        reject(error);
+        return;
+      }
+      started.then((raw) => {
+        if (tz.boundary !== boundary) return;
+        tz.boundary = undefined;
+        tz.running = undefined;
+        resolve(raw);
+      }, (error) => {
+        if (tz.boundary !== boundary) return;
+        tz.boundary = undefined;
+        tz.running = undefined;
+        reject(error);
+      });
+    });
+    // A host import that may wait suspends the G that called it; the other Gs run meanwhile, and the G goes on in its turn.
+    tz.suspending = (call) => new WebAssembly.Suspending(async (...args) => {
+      const g = tz.running;
+      tz.hostWaits++;
+      stopped();
+      let value;
+      let thrown;
+      let threw = false;
+      try {
+        value = await call(...args);
+      } catch (error) {
+        threw = true;
+        thrown = error;
+      }
+      tz.hostWaits--;
+      await new Promise((resolve) => {
+        tz.pending.set(g, resolve);
+        tz.queue.push(g);
+        schedule();
+      });
+      if (threw) throw thrown;
+      return value;
+    });
+    // The instance is discarded: its timer must not keep the host alive.
+    tz.stop = () => {
+      clearTimer();
+      tz.due = false;
+      tz.queue.length = 0;
+    };
+    return Object.assign(Object.create(null), {
+      suspend: new WebAssembly.Suspending((g) => new Promise((resolve) => {
+        tz.pending.set(g, resolve);
+        stopped();
+      })),
+      spawn: (g) => {
+        tz.queue.push(g);
+      },
+      ready: (g) => {
+        tz.queue.push(g);
+      },
+      clock,
+      timer: (deadline) => {
+        tz.deadline = deadline;
+        clearTimer();
+        if (deadline < 0n) return;
+        // setTimeout waits at most 2^31 - 1 ms; a timer after that fires nothing, and the runtime gives the deadline again.
+        const milliseconds = Math.min(2147483647, Math.max(0, Math.ceil(Number(deadline - clock()) / 1e6)));
+        tz.handle = setTimeout(() => {
+          tz.handle = undefined;
+          tz.due = true;
+          tz.slice = performance.now();
+          schedule();
+        }, milliseconds);
+      },
+    });
+  }
+
+  // A host import that may wait for the host (a socket of --wasm-feature net): a JSPI import, which in a module with
+  // tzroutines suspends only the G that called it.
+  function hostSuspending(owner, call) {
+    return owner.tz !== undefined ? owner.tz.suspending(call) : new WebAssembly.Suspending(call);
+  }
+
   function importObject(owner) {
     const object = wrapImports(owner);
     for (const [namespace, values] of Object.entries(extra?.(owner) ?? {})) object[namespace] = Object.assign(Object.create(null), object[namespace], values);
+    if (TABLE.tzroutine === true) object.tsuzuri_tz = tzImports(owner);
     // Here javascript_with_net (src/bindings.rs) gives the instance the socket imports.
     return object;
   }
@@ -735,7 +952,8 @@ function bind(module, used, hostImports, sites, { extra, recreate = true, trapOf
           const calls = owner.promising ??= new Map();
           if (!calls.has(target)) calls.set(target, WebAssembly.promising(owner.exports[target]));
           try {
-            const raw = await calls.get(target)(...prepared.lowered);
+            const call = calls.get(target);
+            const raw = await (owner.tz !== undefined ? owner.tz.call(() => call(...prepared.lowered)) : call(...prepared.lowered));
             return enter(owner, () => lift(owner, raw, prepared));
           } catch (error) {
             throw fail(owner, error);

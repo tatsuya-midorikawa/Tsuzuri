@@ -1401,6 +1401,16 @@ fn native_ir_cpu_args(arch: &str, f16: llvm::F16Path) -> Result<Vec<&'static str
 /// holds the scheduler.
 const TZROUTINE_FEATURES: &str = "#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)\n#define _DARWIN_C_SOURCE\n#endif\n#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n";
 
+/// The tzroutine runtime built for `--wasm-feature jspi` (TZ09, `TZR_JSPI`), with its WebAssembly
+/// half inlined: the temporary directory has no `tzroutine-jspi.h` for a quoted include.
+pub(crate) fn tzroutine_jspi_source() -> String {
+    include_str!("runtime/tzroutine.c").replacen(
+        "#include \"tzroutine-jspi.h\"",
+        include_str!("runtime/tzroutine-jspi.h"),
+        1,
+    )
+}
+
 /// The tzroutine runtime (TZ01) with its Win32 half inlined for a Windows target: Clang cannot
 /// resolve quoted includes next to verbatim (`\\?\`) source paths, and canonical temporary paths are
 /// verbatim. A Windows target needs it on any host: the temporary directory has no
@@ -3859,8 +3869,20 @@ fn build_complete(
     let mut trap_sites = Vec::new();
     // Whether the sites of the IR have the numbering that a build from codegen units needs.
     let mut stable_traps = false;
+    // TZ09: a wasm32 module that spawns runs its tzroutines on stacks of 64 KiB in linear memory,
+    // each of which its functions check against, as the workers of `--wasm-feature threads` do.
+    let spawning = llvm::spawns(module);
     let stack_checks = options.emit != Emit::Header
-        && wasm_stack_checks(options.target, options.wasm_threads, max_memory);
+        && (wasm_stack_checks(options.target, options.wasm_threads, max_memory)
+            || (options.target == Target::Wasm32 && spawning));
+    // The tzroutines of `--wasm-feature jspi` (TZ09): the runtime suspends a G through JSPI, the IR
+    // gets the stack switch of src/runtime/tzroutine-jspi.ll, and src/runtime/tzroutine.c is built
+    // with TZR_JSPI.
+    let jspi_tzroutines = options.target == Target::Wasm32
+        && options.wasm_jspi
+        && !options.wasm_threads
+        && options.emit != Emit::Header
+        && spawning;
     // A relocatable object that is made of units needs a tool that makes symbols local; the probe is for builds that
     // may be cut.
     let can_localize = options.emit == Emit::Object
@@ -4085,7 +4107,11 @@ fn build_complete(
             text = llvm::with_wasi_host(&text);
         }
         if options.wasm_net {
-            text = llvm::with_net_imports(&text);
+            text = if jspi_tzroutines {
+                llvm::with_switching_net_imports(&text)
+            } else {
+                llvm::with_net_imports(&text)
+            };
         }
         // The notes tell whoever compiles the IR by hand which flags its instructions need.
         if options.wasm_tail_call {
@@ -4104,6 +4130,9 @@ fn build_complete(
         // "unavailable" without it, so the default module has no import (F09 Phase 2).
         text = llvm::with_wasm_gpu_host(text, options.wasm_webgpu);
         text.push_str(include_str!("runtime/wasm.ll"));
+        if jspi_tzroutines {
+            text.push_str(include_str!("runtime/tzroutine-jspi.ll"));
+        }
     }
     // `llvm::emit_*` keeps one `declare` per symbol, so a repeat here comes from a pass above (D12).
     debug_assert!(
@@ -4121,10 +4150,10 @@ fn build_complete(
         && (tzroutine_symbols || runtime_symbols.prefix("tsuzuri_channel_"));
     // TZ03: on the default WebAssembly target, a program that uses a `Channel` (or asks `Routine`)
     // without spawning links the channels of the same file built for one thread (`TZR_SINGLE`).
-    let tzroutine_single = options.target.is_wasm()
-        && !options.wasm_threads
-        && tzroutine_symbols
-        && !llvm::spawns(module);
+    let tzroutine_single =
+        options.target.is_wasm() && !options.wasm_threads && tzroutine_symbols && !spawning;
+    // TZ09: a wasm32 program of `--wasm-feature jspi` that spawns links the runtime built for JSPI.
+    let tzroutine_jspi = jspi_tzroutines && tzroutine_symbols && !options.wasm_webgpu;
     // A kernel call or a multiversioned function's stub declares a `tsuzuri_cpu_` function (F08).
     let cpu_runtime = options.target == Target::Native && runtime_symbols.prefix("tsuzuri_cpu_");
     let io_runtime = runtime_symbols.prefix("tsuzuri_io_");
@@ -4230,7 +4259,7 @@ fn build_complete(
     // A callback's address is a table index the host resolves through the exported table.
     let callback_table = options.target.is_wasm() && runtime_symbols.prefix("tz.callback.");
     // TZ02: the tzroutine runtime switches stacks on aarch64 and x86-64 under POSIX and Windows.
-    // On WebAssembly it will suspend through JSPI (TZ09).
+    // On wasm32 it suspends through JSPI (TZ09).
     if (tzroutine_symbols || tzroutine_runtime)
         && !matches!(options.emit, Emit::Llvm | Emit::Header)
     {
@@ -4247,20 +4276,27 @@ fn build_complete(
                 )
             });
         }
-        if tzroutine_symbols && options.target.is_wasm() && !tzroutine_single {
-            return Err(if options.wasm_jspi {
-                driver_error_of(
-                    DiagnosticKind::OptionConflict,
-                    "tzroutine with --wasm-feature jspi is not implemented yet",
-                )
-            } else {
+        if tzroutine_symbols && options.target.is_wasm() && !tzroutine_single && !tzroutine_jspi {
+            return Err(if !options.wasm_jspi {
                 driver_error_of(
                     DiagnosticKind::OptionRequiresOption,
                     "tzroutine on WebAssembly needs --wasm-feature jspi",
                 )
+            } else if options.target == Target::Wasm64 {
+                driver_error_of(
+                    DiagnosticKind::OptionConflict,
+                    "tzroutine with --wasm-feature jspi requires --target wasm32: the JavaScript glue that runs the tzroutines loads wasm32 modules only",
+                )
+            } else {
+                driver_error_of(
+                    DiagnosticKind::OptionConflict,
+                    "tzroutine cannot be combined with --wasm-feature webgpu: the WebGPU imports come from webgpu.mjs, whose host does not run tzroutines; use the JavaScript bindings of --emit bindings-js without webgpu",
+                )
             });
         }
-        if !platform.threads() || !matches!(platform.arch_name(), "aarch64" | "x86_64") {
+        if options.target == Target::Native
+            && (!platform.threads() || !matches!(platform.arch_name(), "aarch64" | "x86_64"))
+        {
             return Err(driver_error_of(
                 DiagnosticKind::ToolchainMissingFeature,
                 "tzroutine requires a POSIX or Windows toolchain on aarch64 or x86-64",
@@ -4997,6 +5033,44 @@ fn build_complete(
                 collect_message(&mut messages, run_tool(&mut runtime, hint)?);
             }
         }
+        let jspi_object = temporary.path.join("tzroutine-jspi.o");
+        if tzroutine_jspi {
+            let text = tzroutine_jspi_source();
+            let source = temporary.path.join("tzroutine-jspi.c");
+            fs::write(&source, &text)
+                .map_err(|error| io_error("write the tzroutine runtime of JSPI", &source, error))?;
+            let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            runtime
+                .args([
+                    "--target=wasm32-unknown-unknown",
+                    "-std=c11",
+                    "-ffreestanding",
+                    "-fno-stack-protector",
+                    "-mbulk-memory",
+                    "-DTZR_JSPI",
+                    "-c",
+                ])
+                .arg(options.optimization.flag());
+            let hint =
+                "tzroutine on WebAssembly needs Clang with WebAssembly and bulk-memory support";
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                let cached = compile_runtime_object(
+                    "wasm-tzroutine-jspi",
+                    &text,
+                    "tzroutine-jspi.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    hint,
+                    &mut messages,
+                )?;
+                stage_runtime_object(&cached, &jspi_object, "stage the tzroutine runtime of JSPI")?;
+            } else {
+                runtime.arg(&source).arg("-o").arg(&jspi_object);
+                collect_message(&mut messages, run_tool(&mut runtime, hint)?);
+            }
+        }
         let threads_object = temporary.path.join("threads.o");
         if options.wasm_threads {
             let source = temporary.path.join("threads.c");
@@ -5084,7 +5158,7 @@ fn build_complete(
         clang.arg("-o").arg(
             if matches!(options.emit, Emit::Wasm | Emit::Shared)
                 || dwarf_sidecar.is_some()
-                || ((options.wasm_threads || wasi_runtime || tzroutine_single)
+                || ((options.wasm_threads || wasi_runtime || tzroutine_single || tzroutine_jspi)
                     && options.emit == Emit::Object)
                 || (native_runtime && options.emit == Emit::Object && !merge_debug_ir)
             {
@@ -5324,7 +5398,7 @@ fn build_complete(
                 )?;
             }
         }
-        if (options.wasm_threads || wasi_runtime || tzroutine_single)
+        if (options.wasm_threads || wasi_runtime || tzroutine_single || tzroutine_jspi)
             && options.emit == Emit::Object
         {
             let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
@@ -5338,6 +5412,9 @@ fn build_complete(
             if tzroutine_single {
                 linker.arg(&single_object);
             }
+            if tzroutine_jspi {
+                linker.arg(&jspi_object);
+            }
             if wasi_runtime {
                 linker.arg(&wasi_object);
             }
@@ -5346,7 +5423,7 @@ fn build_complete(
                 &mut messages,
                 run_tool(
                     &mut linker,
-                    "WASM threads, the WASI host and the one-thread channels require wasm-ld relocatable linking",
+                    "WASM threads, the WASI host and the tzroutine runtimes require wasm-ld relocatable linking",
                 )?,
             );
         }
@@ -5384,6 +5461,12 @@ fn build_complete(
             }
             if tzroutine_single {
                 linker.arg(&single_object);
+            }
+            // TZ09: the glue starts a G with tsuzuri_tz_entry and fires the timers with tsuzuri_tz_fire.
+            if tzroutine_jspi {
+                linker
+                    .arg(&jspi_object)
+                    .args(["--export=tsuzuri_tz_entry", "--export=tsuzuri_tz_fire"]);
             }
             if !options.debug_info {
                 linker.arg("--strip-all");
@@ -5640,6 +5723,21 @@ fn build_bindings(
     } else {
         crate::bindings::JsFlavor::Single
     };
+    // TZ09: the glue of a module that spawns runs its tzroutines with JSPI, as the module's build does.
+    if options.emit == Emit::BindingsJs && llvm::spawns(module) {
+        if options.wasm_threads {
+            return Err(driver_error_of(
+                DiagnosticKind::OptionConflict,
+                "tzroutine cannot be combined with --wasm-feature threads: the tzroutine runtime has no WebAssembly threads backend",
+            ));
+        }
+        if !options.wasm_jspi {
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresOption,
+                "tzroutine on WebAssembly needs --wasm-feature jspi",
+            ));
+        }
+    }
     // The file stem names the shared library of the native bindings, and the C++ header includes
     // the C header of the same stem.
     let stem = output
@@ -8323,6 +8421,23 @@ mod tests {
             let source = tzroutine_runtime_source_for(platform);
             assert_eq!(source.contains(include), !platform.windows());
             assert_eq!(source.contains("TZR_WINDOWS_H"), platform.windows());
+        }
+    }
+    #[test]
+    fn tzroutine_jspi_source_inlines_the_webassembly_half() {
+        // TZ09: the runtime of JSPI has its header inlined, and the native sources skip it.
+        let include = "#include \"tzroutine-jspi.h\"";
+        assert_eq!(
+            include_str!("runtime/tzroutine.c").matches(include).count(),
+            1
+        );
+        let source = tzroutine_jspi_source();
+        assert!(!source.contains(include));
+        assert!(source.contains("#ifndef TZR_JSPI_H"));
+        assert!(source.contains("TZR_JSPI_IMPORT(\"spawn\")"));
+        for triple in Triple::ALL {
+            let native = tzroutine_runtime_source_for(Platform::new(Some(triple)));
+            assert!(native.contains(include) && !native.contains("#ifndef TZR_JSPI_H"));
         }
     }
     #[test]
