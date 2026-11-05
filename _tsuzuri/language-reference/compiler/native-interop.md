@@ -655,7 +655,7 @@ clang app.o sample.c host.c -lm -o host
 - 符号がターゲットで変わる素の `char`、`long double`、`__int128`、`_Float16`、複素数、ベクトル、配列、union、ほかのポインターは変換しません。
 - 大域変数、static・inline・可変長引数・プロトタイプなし（`int f();`）・`returns_twice`（`setjmp` の類）の関数も省きます。
 - `packed`、`aligned`、`mode`、`#pragma pack`、`randomize_layout` のように型の大きさや配置を変えうる属性を持つ enum・typedef・struct・フィールドは変換しません。許すのは、availability、`deprecated`、`flag_enum`、`enum_extensibility`、Swift と Objective-C の注釈など、配置を変えないと分かっている属性だけです。
-- `typedef struct { ... } S;` の無名の struct は、引数で `S` と書いても変換しません。Clang はこの型を `struct S` と表記しますが、tag の `struct S` とは別の型だからです。struct に tag を付けてください（`typedef struct S { ... } S;`）。無名の enum の typedef も、同じ名前の enum の tag があれば変換しません。`typeof` で書いた型も変換しません。
+- `typedef struct { ... } S;` の無名の struct は、引数で `S` と書いても変換しません。Clang はこの型を `struct S` と表記しますが、tag の `struct S` とは別の型だからです。struct に tag を付けてください（`typedef struct S { ... } S;`）。無名の enum の typedef も、同じ名前の enum の tag があれば変換しません。`typeof` で書いた型も変換しません。この判定と、`// skipped` 行に出る無名の tag の表記（`struct (unnamed struct)`）は、typedef の AST の形と無名の tag の綴りが違う Clang 21 と Clang 23 で同じになることを確かめています。
 
 ### マクロの定数
 
