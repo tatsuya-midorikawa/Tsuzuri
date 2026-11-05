@@ -130,8 +130,6 @@ instance Drop<Spinner> {
             x = x + 1
 }
 
-record Boxed { value: dyn (Spin.Spin, Send) }
-
 def set_later :: own Arc<Atomic<i64>> -> unit
 fn set_later flag =
     tzroutine {
@@ -143,15 +141,15 @@ def dyn_spin :: unit -> string
 fn dyn_spin _ =
     let stop = Arc.new (Atomic.create 0i64)
     let done = Arc.new (Atomic.create 0i64)
-    let spinners: Channel<Boxed> = Channel.make 1
+    let spinners: Channel<dyn (Spin.Spin, Send)> = Channel.make 1
     let received = Channel.share spinners
     let spin_done = Arc.share (ref done)
     tzroutine {
         match Channel.recv received with
-        | Maybe.Some boxed -> Atomic.store (Arc.get (ref spin_done)) (Spin.Spin.spin (ref boxed.value))
+        | Maybe.Some spinner -> Atomic.store (Arc.get (ref spin_done)) (Spin.Spin.spin (ref spinner))
         | Maybe.None -> ()
     }
-    Channel.send spinners (Boxed { value: Dyn.of (Flag { shared: Arc.share (ref stop) }) })
+    Channel.send spinners (Dyn.of (Flag { shared: Arc.share (ref stop) }))
     set_later (Arc.share (ref stop))
     while Atomic.load (Arc.get (ref done)) == 0i64 do
         Routine.yield ()
@@ -161,18 +159,18 @@ def drop_spin :: unit -> string
 fn drop_spin _ =
     let stop = Arc.new (Atomic.create 0i64)
     let done = Arc.new (Atomic.create 0i64)
-    let spinners: Channel<Boxed> = Channel.make 1
+    let spinners: Channel<dyn (Spin.Spin, Send)> = Channel.make 1
     let received = Channel.share spinners
     let spin_done = Arc.share (ref done)
     tzroutine {
         match Channel.recv received with
-        | Maybe.Some boxed -> {
-            Owned.drop boxed;
+        | Maybe.Some spinner -> {
+            Owned.drop spinner;
             Atomic.store (Arc.get (ref spin_done)) 1i64
         }
         | Maybe.None -> ()
     }
-    Channel.send spinners (Boxed { value: Dyn.of (Spinner { shared: Arc.share (ref stop) }) })
+    Channel.send spinners (Dyn.of (Spinner { shared: Arc.share (ref stop) }))
     set_later (Arc.share (ref stop))
     while Atomic.load (Arc.get (ref done)) == 0i64 do
         Routine.yield ()
