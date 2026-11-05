@@ -513,6 +513,29 @@ fn pass_through_calls_keep_their_types() {
     }
 }
 
+/// A27: a call that stays rejected reports the error of its `let` form. `Array.get` copies the
+/// element it returns, so lending the result of `Array.get 1 xs` to `String.length` needs
+/// `Copy<string>` (`E1005` at the inner call), as `let t = Array.get 1 xs` does. The guess before
+/// the arguments reported `E1003 expected ref string, found string` at `xs` instead.
+#[test]
+fn rejected_call_results_report_the_error_of_their_let_form() {
+    let program = |body: &str| {
+        format!("export def answer :: i64\nfn answer =\n    let xs = [\"ab\", \"cde\"]\n{body}")
+    };
+    let direct = program("    String.length (Array.get 1 xs)\n");
+    let split = program("    let t = Array.get 1 xs\n    String.length t\n");
+    for source in [&direct, &split] {
+        let error = check("2027", source).unwrap_err();
+        assert_eq!(error.code, "E1005", "{source}\n{}", error.message);
+        assert!(error.message.contains("Copy<string>"), "{}", error.message);
+        assert!(
+            source[error.span.start..].starts_with("Array.get 1 xs"),
+            "{source}\n{:?}",
+            error.span
+        );
+    }
+}
+
 #[test]
 fn value_expression_temporaries_keep_their_boundaries() {
     for edition in ["2026", "2027"] {
