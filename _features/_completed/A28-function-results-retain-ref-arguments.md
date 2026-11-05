@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | C09, TZ02 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-05（TZ12 の作業中に発見。HEAD `5ee6b0f2` で確認・原因を調査） |
 | 承認 | 不要（健全なまま、誤って拒否しているプログラムを受理する。受理していたプログラムは変えない） |
 | 改善する劣位 | 不具合: 値の型が関数を含む `HashMap`（`HashMap<i64, unit -> i64>`・`Owned.Function`・`Maybe<fn>`・関数を持つレコード）の `HashMap.remove` が、std の中で `E1013`（`cannot return a reference to a local value`）になる。関数の `Arc` を `Arc.share` した値を tzroutine が捕捉すると `E1013`（`the captures of a tzroutine cannot retain borrowed values, ...`）になる。利用者の関数でも、`ref` 引数を使わずに関数値を返すだけの呼び出しが同じく拒否される |
@@ -17,7 +17,7 @@
 ## 目的
 
 呼び出しの結果が関数を含む型のとき、`ref` で渡した引数の借用を結果がすべて持つとみなす保守的な規則を、callee の本文から分かる事実で狭める。
-`HashMap.remove` を関数の値の表で使えるようにし、[tzroutine](../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) のページが勧める「各 tzroutine に `Arc.share` を渡す」書き方を、
+`HashMap.remove` を関数の値の表で使えるようにし、[tzroutine](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) のページが勧める「各 tzroutine に `Arc.share` を渡す」書き方を、
 関数の `Arc` でも書けるようにする。健全性（借用が持ち主より長く生きないこと）は保つ。
 
 ## 着手条件と停止条件
@@ -259,3 +259,89 @@ tzroutine {
 - 決定: 拒否し続けるプログラムの code と kind は今のまま。`HashMap.remove` の不具合で tzroutine と関係なく `task_result_retains_borrow` が出ていた点も、このチケットでは変えない。
 - 理由: 誤って拒否されていたものが受理されれば、その kind は出なくなる。kind の名前の整理は別の問題。
 - 状態: 既定案。
+
+## 実装と検証（2026-11-06）
+
+A30 のブランチ（`fix/a30-owned-function-borrow`、`03cb108e`）の上に積みました。手順 1〜6 をすべて行いました。
+
+### 手順 1: ベースライン（A30 の先端のバイナリ、`tsuzuri check <dir> --json`）
+
+「再現」「同じ原因の別の形」「拒否し続けるプログラム」を `target/scratch/a28/p/<名前>/Main.tz` に書いて記録しました（CLI の既定の edition 2027。読むだけの引数は借用です）。表と食い違いはありませんでした。
+
+| 名前 | 修正前 | 修正後 |
+| --- | --- | --- |
+| 再現 1（`HashMap.remove`） | `E1013`/`task_result_retains_borrow`（`std/HashMap.tz:396`） | 受理 |
+| 再現 2（関数の `Arc.share` を tzroutine が捕捉） | `E1013`/`task_capture_retains_borrow` | 受理 |
+| `remove_ref (ref key)` の後に tzroutine が表を捕捉 | `E1013`/`task_capture_retains_borrow` | 受理 |
+| string の `key` で `remove_ref` の後に `key` を move | `E1014`/`borrow_conflict` | 受理 |
+| `Rc.share (ref shared)` を返す（`Arc` も） | `E1013`/`borrow_outlives_block` | 受理 |
+| `Arc.share` の後に `shared` を move | `E1014`/`borrow_conflict` | 受理 |
+| `pass`・generic な `pass` の `wrap`（関数だけ） | `E1013`/`task_result_retains_borrow` | 受理 |
+| 同じ `wrap` を `wrap 1 (\() -> 42)` と呼ぶ（edition 2027） | 上と `E1013`/`borrow_of_temporary` | `borrow_of_temporary` だけ（`wrap` の `f` は読むだけなので借用で、結果はその一時値を持つ。edition 2026 の `analyze` では受理） |
+| generic な `pass` を `i64` で使う | 受理 | 受理 |
+| `keep_leak`（`own string` の `leak`） | `E1013`/`task_result_retains_borrow` | 同じ |
+| `keep_leak`（読むだけの `leak "abc"`） | `E1013`/`borrow_of_temporary` | 同じ |
+| `keep_tz` | `E1013`/`task_capture_retains_borrow` | 同じ |
+| `class_escape`（`own string` の `leak`） | `E1013`/`task_result_retains_borrow` | 同じ |
+| `class_escape`（ブロックの局所値） | `E1013`/`borrow_outlives_block` | 同じ |
+| `arc_env_tz`（`mine` を捕捉・`shared` を直接捕捉） | `E1013`/`task_capture_retains_borrow` | 同じ |
+| `arc_env_return` | `E1013`/`borrow_outlives_block` | 同じ |
+| `rc_get_return` | `E1013`/`borrow_outlives_block` | 同じ |
+| `hashmap_env_return` | `E1013`/`borrow_outlives_block` | 同じ |
+| `mapr_leak` | `E1013`/`borrow_outlives_block` | 同じ |
+| `copy_out_tz` | `E1013`/`task_capture_retains_borrow` | 同じ |
+| `arc_get_env_tz` | `E1013`/`task_capture_retains_borrow` | 同じ |
+
+### 実装（`src/ownership.rs`、`src/check.rs`）
+
+- `CallFacts`（`closed` と `retained`）が `closed_returns` の結果を置き換え、`check_body`・`Checker` に渡ります。`closed_returns` の 4 か所（`check_functions`・`check_recovered`・`copy_reads`・`events_abstract`）で `call_facts(module, infer)` を計算します。
+- `check_body` の前半を `start_checker`（`Checker` を作り、引数に呼び出し元の loan を置く）に分けました。`retained_parameters` は同じ `start_checker` で本文を評価し、結果の `Value` の loan とその `parents` をたどって、外部ルートに届く引数を「保持」にします。本文の検査が失敗するか、結果が局所値の loan を持てば、すべて保持です。
+- `parameter_retention` は、完全な直接呼び出しで、結果の型が `retention_applies`（`carries_loans` で `contains_stored_reference` でない）で、`closed` でない callee（`$builtin` の生成関数・`is_once`・region の契約・`Drop.drop`・引数のない関数を除く）を集め、すべて「一時」から始めて、callee を先にした後順と、変わった関数の呼び出し元を戻す作業リストで最小不動点を求めます。loan を受け取らないのに借用を持ちうる引数（型変数の引数と `Owned.Function`）は最初から保持です。検査の回数が「関数の数 × 8 + 1024」を超えれば、事実をすべて捨てて以前の規則に戻ります。
+- `eval_call`: 事実が「一時」の引数は loan を結果に足しません（引数は `held` にあるので、呼び出しの間は貸したままです）。`Rc`／`Arc` の `share`・`downgrade`・`upgrade` の第 1 引数は `read_through` で、局所値の loan は `parents`、外部ルートと静的データの loan はそれ自身を足します。
+- `Type::contains_unknown`（`src/check.rs`）: 型変数・未解決の型を含むか。
+
+### チケットから外れた判断
+
+1. **結果の型が参照を含む呼び出しには事実を使いません（`retention_applies`）。** 最初の実装（事実をすべての結果に使う）は、`tests/maybe_result.rs` の `choose :: ref i64 -> ref i64 -> Maybe<ref i64>`（`fn choose left right = Some left`）と `tests/types_ownership.rs` の同じ形の拒否を受理に変えました。`ownership-and-memory/lifetimes.md` は「名前付き region がない、2 つ以上の参照を受け取る関数の結果は両方の入力に拘束される」と、参照の結果ではシグネチャを契約にしています（本体を変えても呼び出し側が壊れない）。これは停止条件（既存の拒否の期待が変わる）に当たるので、チケットの目的（関数の型は環境の借用を表せず、名前付き region も書けない）に合わせて、型が参照を含まず、借用を関数の環境にだけ持ちうる結果に限りました。チケットの再現と別の形はすべてこの範囲です。
+2. **事実は「読み通し」以外を、本文の検査そのもので求めます。** チケットの設計の (a)〜(d) を構文の位置で判定する代わりに、callee の本文を通常の借用検査（外部 loan を置いた `start_checker`）で評価し、結果の loan に残る引数を保持にしました。`check_result` が局所値の逃げを拒む根拠と、A12 の region の契約（`check_result` が結果の loan の持ち主を照合し、呼び出し側は `argument_regions` で選ぶ）が頼っているのと同じ追跡なので、新しい健全性の仮定を足しません。(c)（未知の callee・クラスのメソッド・高階の組み込み・保持の callee）は、その呼び出しの結果が引数の loan を持つことで、(b)（捕捉・部分適用・借用の `dyn`）は閉包と部分適用の値が捕捉の loan を持つことで、(d)（`ref mut` を通した書き込み）は、外部の参照を通した格納が名前付き region（`region_slots`）を要し、その関数を対象外にすることで、それぞれ保持になります。
+3. **抽象本文（`infer`）の事実は Copy 制約の推論だけに効きます。** generic な `pass` の `ref 'k` は外部 loan を受け取るので一時になり、推論の段で `wrap` が通ります。型変数の値が隠す借用（`class_escape` の `'v`）は抽象本文では見えませんが、受理・拒否を決めるのは特殊化した本文の検査で、そこでは型が具体です（`class_escape` は特殊化した `pick<Holder>` が `text` を保持して拒否されます）。全 fixture と `examples/` で、事実ありと事実なし（以前の規則）の `check_body` の結果（Copy 制約と診断）が、推論の段と最後の段の両方ですべての関数で一致することを、一時的な検査で確かめました（コミットしていません）。
+4. **部分適用と、`()` まで取る関数。** `fn keep text = \() -> ...` は `()` まで引数に取るので `keep (ref text)` は部分適用で、事実を使いません（単体テストで確認）。
+5. **`Rc.get`・`Arc.get` は保持のまま**（`rc_get_return` が拒否のまま）。`read_places` との共通化は、`read_places` が場所の値（`stored_value`）を読むのに対し、読み通しは借用した時点の loan（`parents`）を読むので、小さな helper（`read_through`）を別に足しました。
+
+### テスト
+
+- 手順 2: 新しいテストを先に書き、修正前のコードで受理の部分だけが失敗し、拒否の部分が成功することを確かめました（受理の部分を一時的に外した版で 5 件すべて成功）。
+  - `tests/hash_map.rs` `removing_from_a_map_of_functions_does_not_borrow_the_key`（値が関数・`Owned.Function`・`Maybe<fn>`・関数を持つレコードの表、`remove_ref` の後の move と tzroutine、拒否 3 件: `hashmap_env_return`・借用する関数を持つ表の tzroutine・その借用元の move）
+  - `tests/rc.rs` `sharing_a_function_keeps_the_borrows_of_its_environment_only`（`Rc`・`Arc` の両方。share の後の move、share・upgrade を返す、拒否 5 件: `arc_env_return`・downgrade を返す・`rc_get_return`・環境の持ち主の move・`get` の後の move）
+  - `tests/tzroutine.rs` `a_tzroutine_captures_a_share_of_a_function`（再現 2 ほか 3 件、拒否: `arc_env_tz` 2 形・`arc_get_env_tz`・downgrade・`copy_out_tz`）
+  - `tests/currying.rs` `function_results_retain_only_the_arguments_that_reach_them`（`pass`・generic・再帰・相互再帰・`pick`、拒否: `keep_leak`・`keep_tz`・`mapr_leak`・再帰で上がる 2 形・コールバック）、`function_result_facts_follow_each_specialization`（`class_escape` を `analyze_modules` で 2 形、捕捉しない `Counter` の具体化は受理）
+  - `src/ownership.rs` `retention_tests::parameter_retention_is_the_least_fixed_point_of_the_bodies`（相互再帰の 2 組と `pass`、推論の段と最後の段）
+- 拒否の kind はすべて手順 1 の記録と同じです。A30 の拒否のテスト（`an_owned_function_from_a_function_value_holds_no_borrow` など）も成功します。
+- E2E: `tests/fixtures/hash_map`（`hash_remove_functions`・`hash_remove_ref_then_move`・`hash_owned_function_drop`。`Owned.Function` の値の表を戻しました。TZ12 の `Pending` も残します）、`tests/fixtures/rc`（`rc_share_function`・`arc_share_function_return`）、`tests/fixtures/tzroutine`（`shares_a_function`）。期待値は JavaScript の BigInt と手計算です。
+
+### 実行したコマンド
+
+- `cargo test --locked --no-fail-fast --test hash_map --test rc --test tzroutine --test currying`（修正前）: 新しい 5 件だけ失敗。修正後: hash_map 6/6、rc 12/12、tzroutine 20/20、currying 11/11。`--test maybe_result` 9/9、`--test types_ownership` 12/12、`--test user_drop` 26/26、`--test timers` 12/12。
+- `cargo nextest run --locked`: 手順 3 の後は（読み通しの前なので）rc・tzroutine の新しいテストと、上の判断 1 の 2 件が失敗。判断 1 と手順 4 の後 2941 passed、最後（T2）2942 passed、4 skipped。
+- `cargo test --locked --lib retention_tests`: 1 passed。
+- `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`: ok。
+- 手順 5: `tests/fixtures/*`（164）と `examples/*`（13）の `tsuzuri check --json` と `tsuzuri build --no-cache --emit llvm`（151 件が IR を出力）が、A30 の先端のバイナリと最後のバイナリで byte 単位で一致（fixture は A30 の版で比較）。
+- `node scripts/conformance.mjs target/debug/tsuzuri --area OWN`: 30 ok。`--area TSK`: 21 ok。
+- 検査の時間（`TSUZURI_TIME_PASSES=1 tsuzuri check`、15 回の中央値、A30 の版の fixture）: `check` の段は hash_map 98.2→98.9 ms、list_fsharp 114.6→112.5、array_fsharp 108.8→106.0、vec_dotnet 111.9→112.9、rc 101.6→101.1、tzroutine 91.1→89.7、examples/tzroutines 86.5→84.7。`ownership` の段は 0.1〜0.8 ms 増えます（list_fsharp 3.05→3.87 ms）。全体は −8〜+4 %（ゆれの範囲）で、10 % を超えません。増えた分の大半は呼び出しを集める本文の走査です。
+- `node tests/features.mjs target/debug/tsuzuri hash_map`: 199 cases（native/WASM、-O0/-O3）。`rc`: 39 cases（WASM threads を含む）。`tzroutine`: 16 cases（native -O0/-O3）。`context` 15、`timers` 9、`channel` 15。`node tests/tzroutine.mjs target/debug/tsuzuri`: 159 runs。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs`（tzroutine.md・rc.md・lifetimes.md・lambda-expressions.md）: 4 pages、127 links、47 examples、88 native runs ok。`gen-docs.mjs --check`: 19 blocks、0 stale。`check-cli-docs.mjs`: 4 checks、0 failed。
+- `node scripts/check-guide-lite.mjs`（チケットを `_completed/` へ移した後）: 88 references、0 failed。
+
+### 更新した文書
+
+- `_tsuzuri/language-reference/values-and-functions/lambda-expressions.md`（共有借用の寿命: 関数値を返す呼び出しの規則と `pass` の例）
+- `_tsuzuri/language-reference/built-in-types-and-modules/rc.md`（新しい節「所有者を増やした値の借用」）
+- `_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md`（関数の `Arc` を tzroutine ごとに `Arc.share` する例）
+- `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`（現在の制限の後に、参照の結果はシグネチャ、関数の環境だけの結果は本体、という規則。チケットが確かめるよう求めた制限の表には、この制限は書かれていませんでした）
+- `docs/language.md`（新しい小節「関数の結果が持つ借用」、ラムダの捕捉の段落、`Rc / Arc` の「結果の借用」）
+- `docs/architecture.md`（名前付き region の段落の後に `CallFacts`・`parameter_retention`・読み通し）
+
+### 変更したファイル
+
+`src/ownership.rs`、`src/check.rs`、`tests/hash_map.rs`、`tests/rc.rs`、`tests/tzroutine.rs`、`tests/currying.rs`、`tests/features.mjs`、`tests/fixtures/hash_map/Main.tz`、`tests/fixtures/rc/Main.tz`、`tests/fixtures/tzroutine/Main.tz`、上の文書、`_features/README.md`、このチケット。
+
