@@ -11301,6 +11301,11 @@ struct Checker<'a> {
     scopes: Vec<BTreeMap<String, Local>>,
     /// A21 Phase 6: the locals that hold the `@old` values of the `@ensures` line being checked.
     old_locals: Vec<(Span, Local)>,
+    /// A27: the id and the scope key of each local that `bind` gave a type with an open variable,
+    /// until `locals_mention` finds the type closed or the local out of scope. A closed type stays
+    /// closed (a solved variable stays solved), and a scope entry that has been replaced or popped
+    /// never comes back, so the locals left out cannot mention an open result.
+    open_locals: Vec<(usize, String)>,
     kinds: BTreeMap<String, usize>,
     next_local: usize,
     normal_loop_depth: usize,
@@ -11373,6 +11378,7 @@ impl<'a> Checker<'a> {
             active_result: None,
             scopes: vec![BTreeMap::new()],
             old_locals: Vec::new(),
+            open_locals: Vec::new(),
             kinds: BTreeMap::new(),
             next_local: 0,
             normal_loop_depth: 0,
@@ -11503,6 +11509,9 @@ impl<'a> Checker<'a> {
         };
         self.next_local += 1;
         if name.text != "_" {
+            if self.inference.is_open(&local.ty) {
+                self.open_locals.push((local.id, name.text.clone()));
+            }
             self.scopes
                 .last_mut()
                 .unwrap()
@@ -13199,7 +13208,7 @@ impl<'a> Checker<'a> {
     /// A27: whether a call passed to a `ref T` parameter waits with its argument hint. Its result
     /// must be open, not the type of a number literal (`argument_hint` decides that one), and not
     /// shared with a local, whose uses in the arguments would see it.
-    fn defers_argument_hint(&self, result: &Type, expected: &Type) -> bool {
+    fn defers_argument_hint(&mut self, result: &Type, expected: &Type) -> bool {
         if let (Type::Reference(..), Type::Infer(root)) = (
             self.inference.resolve(expected),
             self.inference.resolve(result),
@@ -13210,12 +13219,31 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn locals_mention(&self, root: usize) -> bool {
-        self.scopes
+    /// Whether a local in scope, or an `@old` local, has a type that mentions the open `root`. It
+    /// looks only at `open_locals`, and drops from it the locals that are closed or out of scope.
+    fn locals_mention(&mut self, root: usize) -> bool {
+        if self
+            .old_locals
             .iter()
-            .flat_map(BTreeMap::values)
-            .chain(self.old_locals.iter().map(|(_, local)| local))
-            .any(|local| self.inference.mentions(&local.ty, root))
+            .any(|(_, local)| self.inference.mentions(&local.ty, root))
+        {
+            return true;
+        }
+        let mut index = 0;
+        while let Some((id, key)) = self.open_locals.get(index) {
+            let local = self
+                .scopes
+                .iter()
+                .find_map(|scope| scope.get(key).filter(|local| local.id == *id));
+            match local {
+                Some(local) if self.inference.mentions(&local.ty, root) => return true,
+                Some(local) if self.inference.is_open(&local.ty) => index += 1,
+                _ => {
+                    self.open_locals.swap_remove(index);
+                }
+            }
+        }
+        false
     }
 
     /// A27: applies a waiting argument hint before the argument `next` (`None`: after the last
@@ -13263,7 +13291,7 @@ impl<'a> Checker<'a> {
     /// the argument is not a place whose checking reads only the parameter's outer type (a call or a
     /// literal pushes the parameter's type arguments into its own arguments: `Maybe.Some x` lends
     /// `x` to `Maybe<ref T>`), or a local holds the result.
-    fn argument_sees_result(&self, root: usize, parameter: &Type, argument: &Expr) -> bool {
+    fn argument_sees_result(&mut self, root: usize, parameter: &Type, argument: &Expr) -> bool {
         let parameter = self.inference.resolve(parameter);
         let mut passed = &parameter;
         while let Type::Reference(inner, _) = passed {
