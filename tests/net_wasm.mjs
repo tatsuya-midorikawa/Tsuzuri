@@ -11,8 +11,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 // E2E for the sockets of Net on WebAssembly (E09 Phase 3): a module built with --wasm-feature jspi --wasm-feature net imports
 // `tsuzuri_net`, and the generated JavaScript glue implements those imports on node:net, node:dgram, and node:dns, so the
-// blocking API and the async operations both work, end to end, on loopback, against Node peers on ephemeral ports. It needs
-// JSPI (Node.js 24 or newer) and is skipped without it. No result depends on how long something took.
+// API works end to end, on loopback, against Node peers on ephemeral ports. It needs JSPI (Node.js 24 or newer) and is
+// skipped without it. No result depends on how long something took.
 //   node tests/net_wasm.mjs target/release/tsuzuri
 // It runs from the repository whatever the directory it is started in (the CI starts it in vsc/): the compiler and the
 // tools that the environment names by a path are made absolute first, then the working directory moves to the repository.
@@ -171,14 +171,18 @@ fn probe port =
       execute(["build", fixture, "--target", "wasm32", ...features, optimization, "-o", wasm]);
       execute(["build", fixture, "--target", "wasm32", ...features, optimization, "--emit", "bindings-js", "-o", glue]);
 
-      // Only what the program reaches is imported, from `tsuzuri_net`, beside the host's own `report` and the reactor's JSPI imports.
+      // Only what the program reaches is imported, from `tsuzuri_net`, beside the host's own `report`. Each accept and read has
+      // a branch to the plain `try_` import for a timeout of 0, which std's Net never passes (`wait_of` gives -1 or 1 to
+      // 2147483647): at -O0 both are imported, and an optimizer that sees the timeout removes the branch (LLVM does for the
+      // accept, whose test of the timeout stands alone, and not for the read, which tests the count in the same condition).
       const module = new WebAssembly.Module(readFileSync(wasm));
       const imports = WebAssembly.Module.imports(module).map(({ module: namespace, name }) => `${namespace}.${name}`).sort();
-      assert.deepEqual(imports, [
-        "tsuzuri.Main.report", "tsuzuri_async.clock", "tsuzuri_async.wait", "tsuzuri_net.accept", "tsuzuri_net.classify", "tsuzuri_net.close",
-        "tsuzuri_net.connect", "tsuzuri_net.names", "tsuzuri_net.open", "tsuzuri_net.read", "tsuzuri_net.resolve", "tsuzuri_net.send",
-        "tsuzuri_net.try_accept", "tsuzuri_net.try_read", "tsuzuri_net.unwatch", "tsuzuri_net.watch", "tsuzuri_net.write",
+      const tries = ["tsuzuri_net.try_accept", "tsuzuri_net.try_read"];
+      assert.deepEqual(imports.filter(name => !tries.includes(name)), [
+        "tsuzuri.Main.report", "tsuzuri_net.accept", "tsuzuri_net.classify", "tsuzuri_net.close", "tsuzuri_net.open", "tsuzuri_net.read",
+        "tsuzuri_net.resolve", "tsuzuri_net.write",
       ]);
+      if (optimization === "-O0") assert.deepEqual(imports.filter(name => tries.includes(name)), tries);
 
       const reported = [];
       let onReport = () => {};
@@ -191,19 +195,18 @@ fn probe port =
       // cases after it, and is bounded.
       const alone = (name, argument = 0n) => within((async () => (await instantiate()).exports[name](BigInt(argument)))(), `${name} to finish`, callWait);
 
-      // The echo of 1024 bytes, through the blocking API and through the async operations.
+      // The echo of 1024 bytes.
       {
         const received = [];
         const server = await listen(socket => { socket.on("data", data => { received.push(data); socket.write(data); }); socket.on("end", () => socket.end()); socket.on("error", () => {}); });
         const port = server.address().port;
         assert.equal(await call("echo", port), 130560n, "echo");
-        assert.equal(await call("echo_async", port), 130560n, "echo_async");
-        assert.deepEqual(Buffer.concat(received), Buffer.concat([pattern(1024), pattern(1024)]));
+        assert.deepEqual(Buffer.concat(received), pattern(1024));
         await stop(server);
       }
 
       // The program listens and a Node client connects: the greeting arrives, the answer goes back, and both sides end.
-      for (const [name, expected] of [["serve_once", 6542n], ["serve_async", 542n]]) {
+      {
         let reply = "";
         let ended;
         const clientEnded = new Promise(resolveEnded => { ended = resolveEnded; });
@@ -213,12 +216,12 @@ fn probe port =
           client.on("end", () => ended());
           client.on("error", () => ended());
         };
-        assert.equal(await call(name), expected, name);
+        assert.equal(await call("serve_once"), 6542n, "serve_once");
         await clientEnded;
-        assert.equal(reply, "HELLO\n", name);
+        assert.equal(reply, "HELLO\n", "serve_once");
       }
 
-      // Datagrams: a Node peer sends to the port that the program reports, and gets an answer; two sockets of one program.
+      // Datagrams: a Node peer sends to the port that the program reports, and gets an answer.
       {
         const peer = dgram.createSocket("udp4");
         const answer = new Promise(resolveAnswer => peer.once("message", message => resolveAnswer(message.toString())));
@@ -226,7 +229,6 @@ fn probe port =
         assert.equal(await call("udp_once"), 41n, "udp_once");
         assert.equal(await answer, "pong");
         peer.close();
-        assert.equal(await call("udp_async"), 31n, "udp_async");
       }
 
       // Name resolution: a name goes to the host's resolver, and address text (even what a system would read as an address
@@ -245,16 +247,10 @@ fn probe port =
         const late = await listen(socket => { socket.on("error", () => {}); setTimeout(() => socket.write("x"), 400); });
         assert.equal(await call("quiet", late.address().port), 101n, "quiet");
         await stop(late);
-        const slow = await listen(socket => { socket.on("error", () => {}); setTimeout(() => socket.write("y"), 400); });
-        assert.equal(await call("cancel", slow.address().port), 9901n, "cancel");
-        await stop(slow);
         const idle = await listen(socket => { socket.on("error", () => {}); });
         assert.equal(await call("lifecycle", idle.address().port), BigInt(errno.EBADF), "lifecycle");
         await stop(idle);
       }
-
-      // Thirty clients and one server in one program, all in one executor.
-      assert.equal(await call("crowd"), 30030n, "crowd");
 
       // IPv6 where the machine has it, a datagram that does not fit, and transfers bigger than one read or one write.
       {
@@ -331,7 +327,7 @@ console.log("leaked " + await loaded.exports.leak(0n));
         assert.equal(child.stdout, "leaked 7\n");
       });
 
-      // A datagram to port 0 (which Node refuses by throwing) is a failure of that call, through both sends.
+      // A datagram to port 0 (which Node refuses by throwing) is a failure of that call, and so is the next send of the socket.
       await check("zero_port", async () => {
         assert.equal(await call("zero_port"), BigInt(errno.EINVAL) * 1000n + BigInt(errno.EINVAL), "zero_port");
       });
@@ -443,64 +439,27 @@ console.log("leaked " + await loaded.exports.leak(0n));
         }
       });
 
-      // Under Async.start the host polls the executor outside JSPI, where a call that suspends the stack is an error, so the
-      // operations that try once (a read, an accept, a receive) must not use one.
-      await check("Async.start", async () => {
-        assert.ok(loaded.async, "the executor of Async.start is the host's");
-        const results = [];
-        const peers = [];
-        const sender = dgram.createSocket("udp4");
-        const started = async (name, argument, expected, what) => {
-          await call(name, argument);
-          await within(loaded.async.settled(), `${what} to finish`);
-          assert.deepEqual(results.splice(0), expected, `${what} under Async.start`);
-        };
-        let greeter;
-        try {
-          onReport = value => {
-            if (value >= 1000000) results.push(value - 1000000);
-            else {
-              const peer = net.connect({ host: "127.0.0.1", port: value });
-              peer.on("error", () => {});
-              peers.push(peer);
-            }
-          };
-          greeter = await listen(socket => { socket.on("error", () => {}); socket.write("hello"); });
-          await started("started_read", greeter.address().port, [5], "read_async");
-          await started("started_accept", 0, [1], "accept_async");
-          onReport = value => {
-            if (value >= 1000000) results.push(value - 1000000);
-            else sender.send("ping", value, "127.0.0.1");
-          };
-          await started("started_recv", 0, [4], "recv_from_async");
-        } finally {
-          for (const peer of peers) peer.destroy();
-          sender.close();
-          if (greeter) await stop(greeter);
-        }
-      });
-
-      // A datagram send hands exactly one datagram to the system and has a result of its own, however it waits. A peer counts what
-      // arrives for one async send, one blocking send, twelve async sends of the same bytes in a row, fifty at once from one
-      // executor (a hundred distinct bytes each), and an end marker: 65 sends that said Ok, and 65 datagrams.
+      // A datagram send hands exactly one datagram to the system and has a result of its own. A peer counts what arrives for one
+      // send, twelve sends of the same bytes in a row, fifty in a row of a hundred distinct bytes each, and an end marker: 64 sends
+      // that said Ok, and 64 datagrams.
       await check("udp_counts", async () => {
         const peer = await collector();
         try {
-          assert.equal(await alone("udp_counts", peer.port), 65n, "udp_counts: the sends that said Ok");
+          assert.equal(await alone("udp_counts", peer.port), 64n, "udp_counts: the sends that said Ok");
           await peer.fence();
         } finally {
           peer.socket.close();
         }
         const texts = peer.texts();
         const times = word => texts.filter(item => item === word).length;
-        assert.deepEqual([times("one"), times("blocking"), times("same"), times("end")], [1, 1, 12, 1], `datagrams per send: ${texts.filter(item => item.length < 100).join(" ")}`);
+        assert.deepEqual([times("one"), times("same"), times("end")], [1, 12, 1], `datagrams per send: ${texts.filter(item => item.length < 100).join(" ")}`);
         const burst = peer.messages.filter(message => message.length === 100);
         assert.deepEqual(burst.map(message => message[0]).sort((a, b) => a - b), Array.from({ length: 50 }, (_, index) => index), "the fifty datagrams of the burst, each once");
         assert.ok(burst.every(message => message.subarray(1).every(byte => byte === 85)), "the burst's datagrams arrived whole");
-        assert.equal(peer.messages.length, 65, "a datagram for each send and no other");
+        assert.equal(peer.messages.length, 64, "a datagram for each send and no other");
       });
 
-      // An echo server of recv_from_async and send_to_async: fifty requests, and each answered once.
+      // A datagram echo server: fifty requests, and each answered once.
       await check("udp_echo", async () => {
         const peer = await collector();
         onReport = port => { for (let index = 0; index < 50; index++) peer.socket.send(`request ${index}`, port, "127.0.0.1"); };
@@ -513,21 +472,20 @@ console.log("leaked " + await loaded.exports.leak(0n));
         assert.deepEqual(peer.texts(), Array.from({ length: 50 }, (_, index) => `request ${index}`).sort(), "each request answered once");
       });
 
-      // A close right after a send does not cancel it, and the send still says how it went: after a send that has ended (async,
-      // blocking), and with the close racing the async send in one executor.
-      await check("udp_close_race", async () => {
+      // A close right after a send does not cancel it, and the send still says how it went.
+      await check("udp_close_after_send", async () => {
         const peer = await collector();
         try {
-          assert.equal(await alone("udp_close_race", peer.port), 6n, "udp_close_race: the calls that said Ok");
+          assert.equal(await alone("udp_close_after_send", peer.port), 2n, "udp_close_after_send: the calls that said Ok");
           await peer.fence();
         } finally {
           peer.socket.close();
         }
-        assert.deepEqual(peer.texts(), ["after-async", "after-blocking", "racing-close"], "each datagram arrived, once");
+        assert.deepEqual(peer.texts(), ["after-send"], "the datagram arrived, once");
       });
 
-      // The `udp` case of the native async fixture (tests/fixtures/net_async, run_udp) through the glue: the same lines that the
-      // native program prints, which are the numbers of this system.
+      // Two datagram sockets of one program, line by line, with the numbers of this system in the failures: the lines that a
+      // native program prints.
       await check("udp_lines", async () => {
         const timedOut = `TimedOut Other ${errno.ETIMEDOUT}`;
         assert.deepEqual((await alone("udp_lines")).split("\n"), [
@@ -596,6 +554,31 @@ console.log("leaked " + await loaded.exports.leak(0n));
         }
       });
 
+      // One JSPI call owns the instance until it returns: calls made while one is suspended wait for it, in order, and keep
+      // the bytes that they were given when they were made. Each call reports the port when it starts and its negation when its
+      // answer is back, and suspends in between (an instance that two calls entered would report the port twice first). The
+      // exports return promises, in the declarations too, and no borrowed buffer can span a call.
+      await check("jspi_queue", async () => {
+        const declarations = readFileSync(glue.replace(/\.mjs$/, ".d.mts"), "utf8");
+        assert.match(declarations, /^  echo_bytes\(arg0: Uint8Array, arg1: bigint\): Promise<bigint>;$/m);
+        assert.doesNotMatch(declarations, /withBorrowed/);
+        const server = await listen(socket => { socket.on("data", data => socket.write(data)); socket.on("end", () => socket.end()); socket.on("error", () => {}); });
+        const port = server.address().port;
+        const order = [];
+        onReport = value => order.push(value);
+        try {
+          const own = await instantiate();
+          assert.equal(own.withBorrowed, undefined);
+          const input = Uint8Array.of(1, 2, 3);
+          const calls = [own.exports.echo_bytes(input, BigInt(port)), own.exports.echo_bytes(input, BigInt(port)), own.exports.echo_bytes(Uint8Array.of(7), BigInt(port))];
+          input[0] = 100;
+          assert.deepEqual(await within(Promise.all(calls), "the three calls", callWait), [6n, 6n, 7n]);
+          assert.deepEqual(order, [port, -port, port, -port, port, -port]);
+        } finally {
+          await stop(server);
+        }
+      });
+
       // An address at or above 2 GiB reaches the host as a negative number: with two gibibytes of capacity held, the buffers of
       // the calls are up there. Built once, at -O3, with a heap that can hold them, where the machine has the memory.
       if (optimization === "-O3" && (process.env.TSUZURI_NET_WASM_HIGH === "0" || os.totalmem() < 8 * 2 ** 30)) {
@@ -615,7 +598,7 @@ console.log("leaked " + await loaded.exports.leak(0n));
       await pause(20);
     }
     assert.deepEqual(failures, [], `Net wasm cases that failed: ${failures.join(", ")}`);
-    console.log("Net wasm: blocking and async sockets on Node.js through JSPI passed at -O0 and -O3");
+    console.log("Net wasm: sockets on Node.js through JSPI passed at -O0 and -O3");
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

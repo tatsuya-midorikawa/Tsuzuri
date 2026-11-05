@@ -18,7 +18,6 @@ const FLOORS: &[(&str, usize)] = &[
     ("Alloc", 3),
     ("Arena", 10),
     ("Array", 154),
-    ("Async", 9),
     ("Atomic", 0),
     ("Bench", 2),
     ("BigInt", 4),
@@ -51,7 +50,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Monoid", 0),
     ("Monoids", 0),
     ("Mutex", 0),
-    ("Net", 40),
+    ("Net", 28),
     ("Once", 1),
     ("OnceValue", 0),
     ("Os", 6),
@@ -103,7 +102,7 @@ const EXEMPT: &[(&str, &[&str], &str)] = &[(
 )];
 
 /// The `.tc` modules whose `Bind` carries at least this many examples.
-const BUILDER_FLOORS: &[(&str, usize)] = &[("Async", 1), ("IO", 1), ("Maybe", 1), ("Result", 1)];
+const BUILDER_FLOORS: &[(&str, usize)] = &[("IO", 1), ("Maybe", 1), ("Result", 1)];
 
 struct Tally {
     /// The public functions that must have an example.

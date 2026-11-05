@@ -480,7 +480,7 @@ def main :: Array<string> -> i32 = \args ->
 
 この内容を `greet` に保存して `chmod +x greet` し、`./greet x y` を実行すると、標準出力は `hi x y` です。`env -S` は、shebang 行の残りを 1 つの引数として渡す Linux でも `tsuzuri` と `script` を分けるために要ります。macOS は自分で分けるので `#!/usr/bin/env tsuzuri script` でも動きます。シンボリックリンクを経由した実行もできます。
 
-- 読むのは指定したファイルだけです。同じディレクトリのほかの `.tz`、`Tsuzuri.toml`、`Tsuzuri.lock` は読まず、std は `run` と同じく、ソースが名前（`Async` の別名 `async` を含む）を書いた opt-in のモジュールだけを足します。依存やほかのモジュールを使うなら、プロジェクトを作って `run` を使います。
+- 読むのは指定したファイルだけです。同じディレクトリのほかの `.tz`、`Tsuzuri.toml`、`Tsuzuri.lock` は読まず、std は `run` と同じく、ソースが名前を書いた opt-in のモジュールだけを足します。依存やほかのモジュールを使うなら、プロジェクトを作って `run` を使います。
 - 拡張子はなくてもかまいません。`.tt` と `.tc` は型クラスとビルダーのモジュールなので `E2000` です。
 - 標準入力と標準出力はプログラムと共有し、標準エラーと警告、`E2005`、終了コードは `run` と同じです。`def main` が 0 以外を返すと `E2005` で、`tsuzuri script` の終了コードは 1 です。
 - 診断とトラップの位置は、shebang 行を 1 行目として数えた、指定したパスのファイルの行と列です。
@@ -1051,7 +1051,7 @@ Price.price()
 コンパイルし、同じ保存先の `runtime/` で再利用します。キーは実際のランタイムソース、target、
 最適化レベル、CPU／SIMD 機能、Clang の内容と版、SDK に関係する環境変数から作ります。
 利用者のソースを編集して成果物キャッシュが外れても、同じランタイムの再コンパイルは不要です。
-C ランタイム（native の tzroutine・OS・非同期など、`--wasm-feature threads` の WASM スレッド、`--wasm-host wasi` の WASI、
+C ランタイム（native の tzroutine・OS・ネットワークなど、`--wasm-feature threads` の WASM スレッド、`--wasm-host wasi` の WASI、
 `-g` の実行ファイルのスタック検査）も、連結するソースとコンパイル引数が同じなら再利用します。
 `runtime/` は成果物・構文解析のキャッシュとは独立して掃除し、上限 2 GiB、未使用 30 日、
 1 エントリ 256 MiB の同じ方針を使います。部分的な保存や checksum の不一致は再コンパイルします。

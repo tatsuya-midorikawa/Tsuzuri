@@ -201,9 +201,9 @@ $"sum={Atomic.load (Arc.get (ref total))}"
 sum=42
 ```
 
-ネイティブでは、tzroutine と `Parallel` のチャンクは、同じ M:N のスケジューラーの上で走ります。既定の WebAssembly では、`Parallel` は同じ計算を逐次で実行し、結果の順序は同じです（tzroutine の起動は WebAssembly では `E2000` です）。画面を止めない待ち時間を扱う非同期計算は [Async 式](../async-tasks-and-lazy/async.md) で、CPU の並列計算は `Parallel` と tzroutine で表します。
+ネイティブでは、tzroutine と `Parallel` のチャンクは、同じ M:N のスケジューラーの上で走ります。既定の WebAssembly では、`Parallel` は同じ計算を逐次で実行し、結果の順序は同じです（tzroutine の起動は WebAssembly では `E2000` です）。I/O の待ち時間のあいだにほかの計算を進める処理も、CPU の並列計算も、tzroutine と `Parallel` で表します。tzroutine の中のソケットの待ちは、その tzroutine だけを待たせます。
 
-詳しくは[tzroutine 式](../async-tasks-and-lazy/tzroutine.md)と[Parallel](../built-in-types-and-modules/parallel.md)を見てください。以前の `task { ... }` と `Task.parallel` は削除しました（[Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行)）。
+詳しくは[tzroutine 式](../async-tasks-and-lazy/tzroutine.md)と[Parallel](../built-in-types-and-modules/parallel.md)を見てください。以前の `task { ... }` と `Task.parallel` は削除しました（[Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行)）。以前の `Async { ... }` と `Net` の `_async` の関数も削除しました（[Async からの移行](../async-tasks-and-lazy/tzroutine.md#async-からの移行)）。
 
 ## 入出力
 
@@ -303,7 +303,7 @@ flowchart TD
 
 ## 今の範囲
 
-Tsuzuri 0.1.0 は、計算処理を切り出して検証・実行できる初版です。依存パッケージはローカルの `path` 指定のみに対応し、GPU 連携は実験的です。Windows 上で OS API に到達するネイティブビルドは `E2002` エラーとなります。また、非同期 I/O は `Net` のソケット（`_async` の関数）だけで、TLS と HTTP はありません。REPL（`tsuzuri repl`）は、入力ごとにプログラムを作り直して実行する方式で、JIT はありません（[コンパイラの使い方](../compiler/usage.md#repl)）。設計方針は[Tsuzuri 言語の戦略](./strategy.md)、他言語との比較は[なぜ Tsuzuri なのか](./why-tsuzuri.md)を参照してください。
+Tsuzuri 0.1.0 は、計算処理を切り出して検証・実行できる初版です。依存パッケージはローカルの `path` 指定のみに対応し、GPU 連携は実験的です。Windows 上で OS API に到達するネイティブビルドは `E2002` エラーとなります。また、tzroutine が OS スレッドを止めずに待てる I/O は `Net` のソケットだけで、TLS と HTTP はありません。REPL（`tsuzuri repl`）は、入力ごとにプログラムを作り直して実行する方式で、JIT はありません（[コンパイラの使い方](../compiler/usage.md#repl)）。設計方針は[Tsuzuri 言語の戦略](./strategy.md)、他言語との比較は[なぜ Tsuzuri なのか](./why-tsuzuri.md)を参照してください。
 
 ## まとめ
 

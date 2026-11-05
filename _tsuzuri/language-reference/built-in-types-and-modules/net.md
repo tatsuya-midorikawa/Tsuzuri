@@ -2,7 +2,7 @@
 
 `Net` は、TCP と UDP のソケット、IP アドレスの解析と表示、名前解決を扱うモジュールです。ソケットの操作はすべて `IO<Result<T, Os.Error>>` で、実行するまでシステムコールは出ません。失敗は例外やトラップではなく、[Os](./os.md) の `Os.Error` です。
 
-必要な権限: `net`（接続・待ち受け・送受信・名前解決とその非同期版）。`Net.parse_address`・`Net.ip_text`・`Net.port` などのアドレスの操作と、ソケットのアドレスの取り出しは権限を要りません。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
+必要な権限: `net`（接続・待ち受け・送受信・名前解決）。`Net.parse_address`・`Net.ip_text`・`Net.port` などのアドレスの操作と、ソケットのアドレスの取り出しは権限を要りません。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
 
 通信は暗号化しません。受け取ったデータも送り元のアドレスも、認証されていません。TLS は std に入れず、パッケージとして提供する方針です（[E09](../../../_features/_completed/E09-network.md) の D13）。
 
@@ -12,7 +12,7 @@
 
 - アドレスの解析と表示（`parse_address`・`address_text` など）は純粋な計算です。どの target でも、import なしで動きます。
 - ソケット（`connect`・`read`・`write`・`bind`・`accept`・`bind_udp`・`send_to`・`recv_from`）は、macOS・Linux・Windows の native で動きます。wasm32 は、`--wasm-feature jspi --wasm-feature net` を付けた Node.js 向けのビルドだけです。付けないと、ソケットに到達するビルドは `E2000` です。
-- `Async.block_on` の中では、`_async` を付けた双子（`connect_async`・`read_async` など）を使います。実行器のスレッドは待たず、native では 1 本の監視スレッドがソケットの準備を見て、待っている計算を再開します（wasm32 では、グルーが Node.js の `node:net` のイベントで完了します）。
+- [tzroutine](../async-tasks-and-lazy/tzroutine.md) の中では、ソケットを待つ操作はその tzroutine だけを待たせ、ほかの tzroutine は走り続けます（[tzroutine の中の Net](#tzroutine-の中の-net)）。`_async` を付けた双子（`connect_async`・`read_async` など）は削除しました（`E1040`）。
 - ハンドル（`TcpStream`・`TcpListener`・`UdpSocket`）は `Copy` の不透明な値です。自動では閉じません。`close` か `with_connection` などを使います。
 - 閉じたハンドルを使うと `InvalidInput` です。別のソケットに当たることはありません。
 - 時間制限は、呼び出し全体の期限（ミリ秒）です。`None` は無期限です。
@@ -185,7 +185,7 @@ timeout of 0: Unclassified/InvalidInput
 
 ハンドルは `Drop` の型ではありません（std の型は `Drop` を持てず、`Drop` の値は `let!` をまたげないためです）。**閉じ忘れたソケットは、プロセスが終わるまで開いたままです。**プロセスの終了時に OS が閉じます。長く動くプログラムでは、`close` するか `with_*` を使ってください。`with_*` は全部の経路で閉じます。
 
-`Async.all_results` のように、失敗した兄弟の結果を捨てる合成では、成功した側が作ったハンドルも捨てられます。捨てる前に閉じるか、`with_*` の中で完結させてください。
+[ErrGroup](./errgroup.md) の取り消しで tzroutine が途中で戻るときのように、結果を捨てる経路でも、作ったハンドルは閉じてから戻るか、`with_*` の中で完結させてください。
 
 `close` は、システムが失敗を報告しても、ハンドルを無効にします（EINTR の再試行はしません）。ソケットはすべて `FD_CLOEXEC` 付きなので、`Process.run` の子へ漏れません。
 
@@ -336,156 +336,7 @@ def main :: unit -> i32 = \() ->
 - tzroutine でないスレッド（トップレベルのコード、`export` を呼んだホストのスレッド）では、今までどおり、そのスレッドが待ちます。
 - 1 つのソケットを、読むのと書くのとで 2 つの tzroutine が同時に待つことはできます。同じ向きに 2 つが同時に待つと、2 つ目は OS スレッドを止めて待ちます（`Net` のハンドルは 1 つの所有者が使う前提です）。
 
-## 非同期のソケット（Async）
-
-`Async` の計算の中では `IO` を実行できません。計算が必要とする操作には、`_async` を付けた双子があります。結果の型は同期版と同じで、`IO<...>` が `Async<...>` になるだけです。`Net` を使うプログラムは `Async` も読み込みます（`Net` が `Async` を使うためです）。
-
-| 関数 | 型 |
-| --- | --- |
-| `Net.connect_async` | `Address -> Maybe<i64> -> Async<Result<TcpStream, Os.Error>>` |
-| `Net.accept_async` | `TcpListener -> Maybe<i64> -> Async<Result<TcpStream, Os.Error>>` |
-| `Net.read_async` | `TcpStream -> i64 -> Maybe<i64> -> Async<Result<[ubyte], Os.Error>>` |
-| `Net.write_async` | `TcpStream -> [ubyte] -> Maybe<i64> -> Async<Result<unit, Os.Error>>` |
-| `Net.recv_from_async` | `UdpSocket -> i64 -> Maybe<i64> -> Async<Result<([ubyte] * Address), Os.Error>>` |
-| `Net.send_to_async` | `UdpSocket -> [ubyte] -> Address -> Async<Result<unit, Os.Error>>` |
-| `Net.bind_async`・`Net.bind_udp_async` | `Address -> Async<Result<TcpListener, Os.Error>>`・`Address -> Async<Result<UdpSocket, Os.Error>>` |
-| `Net.close_async`・`Net.close_listener_async`・`Net.close_udp_async` | 閉じるハンドルを取り、`Async<Result<unit, Os.Error>>` |
-| `Net.shutdown_async` | `TcpStream -> Shutdown -> Async<Result<unit, Os.Error>>` |
-
-次の 6 つは待ちません。同期版と同じシステムコールを、計算が動いたときに 1 回出します（`bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async`）。残りの 6 つは、待つ必要があるときに、ソケットの準備ができるまで計算を中断します。`Async.block_on` で実行します。`Async.run` や `Async.start` に渡すと `E2000` です（完了を受け取る反応器が無いためです。native の場合で、wasm32 のホストが進める `Async.start` は使えます。[wasm32（Node.js）](#wasm32nodejs)）。
-
-```tsuzuri run=server%205%20client%205%0Adone
-def bytes_of :: ref string -> [ubyte]
-fn bytes_of text = Utf8String.to_bytes (Utf8String.from_string text)
-
-def echo_one :: own Net.TcpStream -> Async<i64>
-fn echo_one stream = Async {
-    match! Net.read_async stream 100 (Maybe.Some 5000) with
-    | Result.Error _ -> return -1
-    | Result.Ok bytes ->
-        let count = bytes.length
-        let! _written = Net.write_async stream bytes (Maybe.Some 5000)
-        let! _closed = Net.close_async stream
-        return count
-}
-
-def serve :: own Net.TcpListener -> Async<i64>
-fn serve listener = Async {
-    match! Net.accept_async listener (Maybe.Some 5000) with
-    | Result.Error _ -> return -2
-    | Result.Ok stream -> return! echo_one stream
-}
-
-def exchange :: own Net.TcpStream -> Async<i64>
-fn exchange stream = Async {
-    let! _written = Net.write_async stream (bytes_of (ref "hello")) (Maybe.Some 5000)
-    match! Net.read_async stream 100 (Maybe.Some 5000) with
-    | Result.Error _ -> return -3
-    | Result.Ok bytes ->
-        let! _closed = Net.close_async stream
-        return bytes.length
-}
-
-def client :: own Net.Address -> Async<i64>
-fn client target = Async {
-    match! Net.connect_async target (Maybe.Some 5000) with
-    | Result.Error _ -> return -4
-    | Result.Ok stream -> return! exchange stream
-}
-
-def main :: unit -> i32 = \() ->
-    let loopback = Maybe.get (Net.parse_address (ref "127.0.0.1:0"))
-    let! bound = Net.bind loopback
-    match bound with
-    | Result.Error _ -> do! IO.write_line "bind failed"
-    | Result.Ok listener ->
-        let target = Net.local_addr listener
-        let! counts = Async.block_on (Async.all [serve listener, client target])
-        do! IO.write_line ("server " + to_string counts[0] + " client " + to_string counts[1])
-        let! _closed = Net.close_listener listener
-        do! IO.write_line "done"
-    0
-```
-
-実行結果:
-
-```text
-server 5 client 5
-done
-```
-
-サーバーとクライアントは、1 つのスレッドの 1 つの実行器で並行に動きます。`bind` は待たないので、`block_on` の前に同期版を使っています。
-
-**しくみ（native）。**実行器のスレッドは、ソケットで待ちません。操作はまず待たずに試し（時間制限 0 の「1 回だけ試す」呼び出しで、待つ必要があれば「待つ」という状態が返ります）、待つ必要があれば、準備の監視を頼んで計算を中断します。監視は、最初の待ちで始まり、待ちが無くなると終わる 1 本のスレッドが、すべての待ちをまとめて `poll`（Windows は `WSAPoll`）で行います。準備ができた（またはエラーや切断が見えた）ら、スレッドが完了を実行器の mailbox（`tsuzuri_async_post`）へ入れます。再開した計算が、もう一度システムコールを試します。したがって、完了は何も所有しません。バイト列もディスクリプタも、監視のスレッドを通りません。準備の知らせは目安で、もう一度試して `EAGAIN` なら、また待ちます。
-
-**しくみ（wasm32）。**監視スレッドも `net.c` もありません。`--wasm-feature net` のグルーが、`watch` と `connect` の完了を、呼び出しが戻ったあとに `tsuzuri_async_complete` で渡します（[wasm32（Node.js）](#wasm32nodejs)）。
-
-- 時間制限は同期版と同じ範囲の `Maybe<i64>` で、**操作全体の期限**です。`Async.now ()`（実行器の単調時計）で測ります。期限が来ると `TimedOut` で、ソケットは壊れません。
-- 待っている操作は、**取り消せます**。`Async.all_results` で兄弟の計算が失敗すると、待っていた操作は取り消され、監視から外れます。接続の途中の `connect_async` は、そのソケットも閉じます。取り消しても、ソケットのデータは減りません。同じストリームで、あとから読めます。
-- 待っているソケットを（`close_async` や `Net.close` で）閉じると、待っていた操作は `InvalidInput`（`code` は `EBADF`）で再開します。
-- 成功した結果は、同期版と同じく、受け取った計算が閉じます。`Async.all_results` が捨てた成功の結果（`connect_async` や `accept_async` が返した `TcpStream`）は、閉じられないままプロセスの終了まで残ります。完了が届く前に捨てられた接続も同じです。
-- `resolve` の非同期版はありません。名前の解決は同期で、`block_on` の前に済ませてください。
-
-```tsuzuri run=cancelled%3A%20error%2099%0Astill%20works%3A%20read%3A1%0Atimeout%3A%20TimedOut
-def failing :: i64 -> Async<Result<i64, Os.Error>>
-fn failing delay = Async {
-    do! Async.sleep delay
-    return Result.Error (Os.Error { kind: Os.Other, code: 99i32 })
-}
-
-def idle_read :: own Net.TcpStream -> Async<Result<i64, Os.Error>>
-fn idle_read stream = Async {
-    match! Net.read_async stream 16 Maybe.None with
-    | Result.Error error -> return Result.Error error
-    | Result.Ok bytes -> return Result.Ok bytes.length
-}
-
-def timed_read :: own Net.TcpStream -> Async<string>
-fn timed_read stream = Async {
-    match! Net.read_async stream 16 (Maybe.Some 30) with
-    | Result.Error error -> return to_string (Net.error_kind error)
-    | Result.Ok bytes -> return "read:" + to_string bytes.length
-}
-
-def say_outcome :: own Result<[i64], Os.Error> -> IO<unit>
-fn say_outcome outcome =
-    match outcome with
-    | Result.Error error -> IO.write_line ("cancelled: error " + to_string error.code)
-    | Result.Ok _ -> IO.write_line "cancelled: no"
-
-def main :: unit -> i32 = \() ->
-    let loopback = Maybe.get (Net.parse_address (ref "127.0.0.1:0"))
-    let! bound = Net.bind loopback
-    match bound with
-    | Result.Error _ -> do! IO.write_line "bind failed"
-    | Result.Ok listener ->
-        let! connected = Net.connect (Net.local_addr listener) (Maybe.Some 5000)
-        let! accepted = Net.accept listener (Maybe.Some 5000)
-        match (connected, accepted) with
-        | (Result.Ok client, Result.Ok server) ->
-            let! outcome = Async.block_on (Async.all_results [idle_read client, failing 20])
-            do! say_outcome outcome
-            let! _sent = Net.write server [1ubyte] (Maybe.Some 1000)
-            let! after = Net.read client 16 (Maybe.Some 1000)
-            do! IO.write_line ("still works: " + (match after with | Result.Ok bytes -> "read:" + to_string bytes.length | Result.Error _ -> "failed"))
-            let! quiet = Async.block_on (timed_read client)
-            do! IO.write_line ("timeout: " + quiet)
-            let! _closed_client = Net.close client
-            let! _closed_server = Net.close server
-            let! _closed_listener = Net.close_listener listener
-        | _ -> do! IO.write_line "no connection"
-    0
-```
-
-実行結果:
-
-```text
-cancelled: error 99
-still works: read:1
-timeout: TimedOut
-```
-
-何も届かない `idle_read` は、兄弟の `failing` が 20 ミリ秒後に失敗した時点で取り消されます。そのあと、同じストリームに届いたバイトを、同期の `read` が受け取ります。30 ミリ秒の `timed_read` は、何も来ないので `TimedOut` です。
+`Async.block_on` の中で使った `_async` の双子（`connect_async`・`accept_async`・`read_async`・`write_async`・`recv_from_async`・`send_to_async`・`bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async`）は、`Async` と一緒に削除しました（TZ13）。書くと `E1040`（`removed_net_async`、`'Net.read_async' was removed`）で、help は `_async` の付かない同期版を tzroutine の中で呼ぶよう示します。同期版を tzroutine の中で呼ぶ書き換えの例は [Async からの移行](../async-tasks-and-lazy/tzroutine.md#net-の-_async-を-tzroutine-の中の-net-にする) にあります。
 
 ## エラーの読み方
 
@@ -517,9 +368,8 @@ timeout: TimedOut
 - Windows は、送ったデータグラムの宛先のポートが閉じていると、同じソケットの次の受信を `ConnectionReset`（`WSAECONNRESET`）で失敗させます（ICMP の「ポート到達不能」の報告）。ほかの OS は、接続していない UDP ソケットにそうしません。`bind_udp` は Windows の `SIO_UDP_CONNRESET` でその報告を切り、それでも報告された受信は飛ばして次を待つので、いなくなった相手へ返信した UDP サーバーの `recv_from` が、見知らぬ `ConnectionReset` で終わることはありません。
 - 接続してすぐ RST した相手の接続は、`accept` をエラーにしません（OS が `ECONNABORTED` や、Windows の `WSAECONNRESET` で知らせる接続は、`accept` が飛ばして次の接続を返します）。OS によっては、その接続がそのまま返ってきて、最初の `read` が `ConnectionReset` になります。どちらでも、健全な listener の `accept` ループはその接続のために終わりません。Windows の実行は CI だけで確かめます。
 - 平文の TCP で秘密を送らないでください。
-- 非同期の操作が使う監視のスレッドは、プロセスに 1 本だけです（最初の待ちで始まり、待ちが無くなると終わります）。待ちの数に上限はなく、OS のディスクリプタの数に従います。
 
-`TcpStream` などを 2 つのスレッドから同時に同じハンドルへ使うことはできません（IO は入口のスレッドで順に実行します）。tzroutine でないスレッドの同期版のソケット操作は、待っている間そのスレッドが止まります。待たせたくないときは、[tzroutine の中で](#tzroutine-の中の-net)同期版を使うか、`Async.block_on` の中で `_async` の双子を使います。
+`TcpStream` などを 2 つのスレッドから同時に同じハンドルへ使うことはできません（IO は入口のスレッドで順に実行します）。tzroutine でないスレッドの同期版のソケット操作は、待っている間そのスレッドが止まります。待たせたくないときは、[tzroutine の中で](#tzroutine-の中の-net)使います。
 
 ## 対応環境
 
@@ -537,7 +387,7 @@ timeout: TimedOut
 
 ### wasm32（Node.js）
 
-wasm32 の既定の出力は、import を 1 つも持ちません。ソケットを使うときは、`.wasm` と `--emit bindings-js` の両方に `--wasm-feature jspi --wasm-feature net` を付けます。モジュールは、到達したソケット操作だけを、モジュール `tsuzuri_net` の import として宣言し、グルーが Node.js の `net`・`dgram`・`dns` で実装します。待つ操作は JSPI で WebAssembly のスタックを中断するので、同期版の API も `_async` の双子も、ソースを変えずに使えます。
+wasm32 の既定の出力は、import を 1 つも持ちません。ソケットを使うときは、`.wasm` と `--emit bindings-js` の両方に `--wasm-feature jspi --wasm-feature net` を付けます。モジュールは、到達したソケット操作だけを、モジュール `tsuzuri_net` の import として宣言し、グルーが Node.js の `net`・`dgram`・`dns` で実装します。待つ操作は JSPI で WebAssembly のスタックを中断するので、同期版の API を、ソースを変えずに使えます。
 
 ```sh
 tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net --emit bindings-js -o app.mjs
@@ -546,13 +396,13 @@ tsuzuri build app --target wasm32 --wasm-feature jspi --wasm-feature net -O3 -o 
 
 `resolve` では、名前だけが Node.js の `dns.lookup` に渡ります。アドレスに読める host の分類（[名前解決](#名前解決)）は std のコードにあるので、wasm32 でも同じです。Node.js は、host を IDNA で変換してから OS に渡すので、全角の `１２７．０．０．１` なども 127.0.0.1 に引けてしまいます。そこで ASCII 以外のバイトを含む host は、分類で `InvalidInput` にします（ネイティブも同じです）。グルーは、この分類と同じ規則を自分でも持っていて、`dns.lookup` の前に数値のアドレスに読める host と ASCII 以外を断ります。`AI_NUMERICHOST` による断りは native のランタイムだけです（`dns.lookup` はそのフラグを受け取れません）。`tests/net_wasm.mjs` は、`127.1`・`fe80::1%lo0`・`１２７．０．０．１`・`127。0。0。1`・`127｡0｡0｡1`・U+00AD や U+200B が付いた `127.0.0.1`・`２１３０７０６４３３`・`０x7f000001`・`127.0.0.１` などが `dns.lookup` に届かないことを確かめています。
 
-wasm32 のソケットの寿命と上限は、ネイティブと違います。待っていないソケットは Node.js のプロセスを生かさず、モジュールが例外で止まると、そのインスタンスのソケットはすべて閉じます。UDP は 1 MiB と 4096 個、listener は 128 接続までを、読まれないまま保ちます（[WebAssembly への出力](../compiler/webassembly.md#net-のソケットnodejs)）。`bind_async` と `bind_udp_async` は `Async.start` の実行器からは使えません。
+wasm32 のソケットの寿命と上限は、ネイティブと違います。待っていないソケットは Node.js のプロセスを生かさず、モジュールが例外で止まると、そのインスタンスのソケットはすべて閉じます。UDP は 1 MiB と 4096 個、listener は 128 接続までを、読まれないまま保ちます（[WebAssembly への出力](../compiler/webassembly.md#net-のソケットnodejs)）。
 
-wasm32 の UDP の送信は、1 回の送信が 1 つのデータグラムで、結果もその送信自身のものです。`send_to_async` は、Node.js へ渡した送信が終わるのを待ち、その結果を返します（始めた送信は、操作を取り消しても取り戻せません）。UDP のソケットは、Node.js がまだ終えていない送信があれば、それが終わってから閉じるので、送信の直後に `close_udp` しても、データグラムは出ます。`accept` した接続の `peer_addr` は、接続が届いた時点のアドレスで、相手が `accept` の前に RST で切っても残ります。エラーの分類は、ネイティブと同じ表です（libuv だけが名前を付ける `EHOSTDOWN` も `Unreachable` です）。
+wasm32 の UDP の送信は、1 回の送信が 1 つのデータグラムで、結果もその送信自身のものです。`send_to` は、Node.js へ渡した送信が終わるのを待ち、その結果を返します。UDP のソケットは、Node.js がまだ終えていない送信があれば、それが終わってから閉じるので、送信の直後に `close_udp` しても、データグラムは出ます。`accept` した接続の `peer_addr` は、接続が届いた時点のアドレスで、相手が `accept` の前に RST で切っても残ります。エラーの分類は、ネイティブと同じ表です（libuv だけが名前を付ける `EHOSTDOWN` も `Unreachable` です）。
 
 ブラウザーは、生の TCP と UDP を使えません。ブラウザーで `net` のグルーの `load` を呼ぶと、`Net sockets need Node.js` で始まるエラーで失敗します（アドレスの解析と表示は import なしなので、ブラウザーでも動きます）。WASI preview 1 には `connect`・`bind`・`listen` がなく、preview 2 のソケットはコンポーネントモデルを要するので、どちらにも下げていません。ネイティブとの細かな違いと条件は [WebAssembly への出力](../compiler/webassembly.md#net-のソケットnodejs) にあります。
 
-ホストと native target は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 に限ります。Windows の `WSAPoll` は、失敗した非同期の接続を正しく報告する Windows 10 バージョン 2004 以降を前提にします。
+ホストと native target は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 に限ります。Windows の `WSAPoll` は、待たずに始めた接続（ノンブロッキングの `connect`）の失敗を正しく報告する Windows 10 バージョン 2004 以降を前提にします。
 
 ## 公開 API
 
@@ -579,8 +429,6 @@ wasm32 の UDP の送信は、1 回の送信が 1 つのデータグラムで、
 | `Net.with_listener` | `Capture<'a> => Address -> (TcpListener -> IO<'a>) -> IO<Result<'a, Os.Error>>` |
 | `Net.with_udp` | `Capture<'a> => Address -> (UdpSocket -> IO<'a>) -> IO<Result<'a, Os.Error>>` |
 | `Net.error_kind` | `Os.Error -> ErrorKind` |
-| `Net.connect_async`・`accept_async`・`read_async`・`write_async`・`recv_from_async`・`send_to_async` | 同期版の `IO<...>` を `Async<...>` にした型（[非同期のソケット](#非同期のソケットasync)） |
-| `Net.bind_async`・`bind_udp_async`・`close_async`・`close_listener_async`・`close_udp_async`・`shutdown_async` | 同上。待たない |
 
 `ErrorKind` は `TimedOut`・`ConnectionRefused`・`ConnectionReset`・`AddressInUse`・`AddressNotAvailable`・`Unreachable`・`Unclassified` です。`Shutdown` は `Read`・`Write`・`Both` です。`Address`・`TcpStream`・`TcpListener`・`UdpSocket` は不透明で、内部のフィールドへは触れません（`E1022`）。`Net.__open` などの内部の関数も、std の `Net` 以外からは `E1022` です。
 
@@ -598,7 +446,7 @@ wasm32 の UDP の送信は、1 回の送信が 1 つのデータグラムで、
 ## まとめ
 
 - アドレスの解析と表示は純粋で、どの target でも使えます。解析は厳密で、`127.1` のような書き方は受けません。
-- ソケットは macOS・Linux・Windows の native と、`--wasm-feature jspi --wasm-feature net` の wasm32（Node.js）で、`IO<Result<T, Os.Error>>` として動きます。`Async.block_on` の中では `_async` の双子を使い、native では 1 本の監視スレッドが準備を見ます。ハンドルは `Copy` で、閉じ忘れはプロセス終了まで漏れます。`with_*` を使うと全経路で閉じます。
+- ソケットは macOS・Linux・Windows の native と、`--wasm-feature jspi --wasm-feature net` の wasm32（Node.js）で、`IO<Result<T, Os.Error>>` として動きます。tzroutine の中のソケットの待ちは、その tzroutine だけを待たせます（netpoller）。ハンドルは `Copy` で、閉じ忘れはプロセス終了まで漏れます。`with_*` を使うと全経路で閉じます。
 - 時間制限は呼び出し全体の期限で、受信は最大長が必須、`write` は全部を送ります。
 - 通信は平文です。`bind` で `0.0.0.0` を使うとネットワークへ公開されます。
 
@@ -608,6 +456,6 @@ wasm32 の UDP の送信は、1 回の送信が 1 つのデータグラムで、
 - [File](./file.md)
 - [IO](./io.md)
 - [Process](./process.md)
-- [Async 式](../async-tasks-and-lazy/async.md)
+- [tzroutine 式](../async-tasks-and-lazy/tzroutine.md)
 - [言語仕様のネットワーク](../../../docs/language.md#ネットワークnet)
 - [言語リファレンスの目次](../index.md)

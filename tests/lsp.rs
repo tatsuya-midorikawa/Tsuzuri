@@ -502,28 +502,40 @@ fn signature_help_counts_curried_arguments() {
 #[test]
 fn keyword_member_yield_has_completion_hover_and_signature_help() {
     use serde_json::json;
-    let source =
-        "def work :: i64 -> Async<i64>\nfn work n = Async { do! Async.yield (); return n }\n";
-    let responses = scripted(&[("Main.tz", source)], "utf-16", |uri| {
-        let main = uri("Main.tz");
-        vec![
-            json!({"id":1,"method":"textDocument/hover","params":{"textDocument":{"uri":main},"position":position(source,"yield", "utf-16")}}),
-            json!({"id":2,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":main},"position":position(source,");", "utf-16")}}),
-            json!({"id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":main},"position":position(source," ();", "utf-16")}}),
-        ]
-    });
+    // `yield` after a dot is a name: a function `yield` of a module of the program has hover, signature help and
+    // completion, and the builtin `Routine.yield`, which has no definition to offer, has hover.
+    let steps = "/// Gives way to the other work.\ndef yield :: unit -> i64\nfn yield _unit = 0\n";
+    let source = "def work :: i64 -> i64\nfn work n =\n    let m = Steps.yield () + n\n    Routine.yield ()\n    m\n";
+    let responses = scripted(
+        &[("Main.tz", source), ("Steps.tz", steps)],
+        "utf-16",
+        |uri| {
+            let main = uri("Main.tz");
+            vec![
+                json!({"id":1,"method":"textDocument/hover","params":{"textDocument":{"uri":main},"position":position(source,"yield () +", "utf-16")}}),
+                json!({"id":2,"method":"textDocument/signatureHelp","params":{"textDocument":{"uri":main},"position":position(source,") +", "utf-16")}}),
+                json!({"id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":main},"position":position(source," () +", "utf-16")}}),
+                json!({"id":4,"method":"textDocument/hover","params":{"textDocument":{"uri":main},"position":position(source,"yield ()\n", "utf-16")}}),
+            ]
+        },
+    );
+    assert_eq!(
+        responses[3]["result"]["contents"]["value"],
+        json!("```tsuzuri\nunit -> unit\n```"),
+        "{responses:?}"
+    );
     assert!(
         responses[0]["result"]["contents"]["value"]
             .as_str()
             .unwrap()
-            .contains("Async<unit>"),
+            .contains("unit -> i64"),
         "{responses:?}"
     );
     let label = responses[1]["result"]["signatures"][0]["label"]
         .as_str()
         .unwrap();
     assert!(
-        label.starts_with("yield ") && label.contains("Async<unit>"),
+        label.starts_with("yield ") && label.contains("i64"),
         "{label}"
     );
     assert_eq!(responses[1]["result"]["activeParameter"], json!(0));

@@ -314,8 +314,15 @@ fn emitted_variants(directory: &Path, found: &mut std::collections::BTreeSet<Str
 }
 
 /// Kinds that stay registered, so that their ids and `tsuzuri explain` pages keep working, but that
-/// no source emits any more: TZ12 removed the implicit `task` builder.
-const RETIRED: &[&str] = &["implicit_task_needs_builder"];
+/// no source emits any more: TZ12 removed the implicit `task` builder, and TZ13 `Async` (the borrow
+/// across one of its suspensions, `Async.block_on` for Net's `_async` operations, and Async in the
+/// tests of a WebAssembly runner).
+const RETIRED: &[&str] = &[
+    "borrow_across_async_boundary",
+    "implicit_task_needs_builder",
+    "net_async_needs_block_on",
+    "wasm_test_runner_async",
+];
 
 #[test]
 fn every_kind_has_an_emission_site() {

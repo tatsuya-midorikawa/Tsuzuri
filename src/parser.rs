@@ -1400,13 +1400,13 @@ impl Parser<'_> {
         if self.at(&TokenKind::End) || self.newline_before_current() {
             return Err(Diagnostic::of(
                 DiagnosticKind::AliasNameOnSameLine,
-                "write the alias name on the same line as '@alias', as in '@alias async'",
+                "write the alias name on the same line as '@alias', as in '@alias query'",
                 keyword.span,
             ));
         }
         if !matches!(self.current().kind, TokenKind::Ident(_)) {
             return Err(self.error_of(DiagnosticKind::ExpectedBuilderAlias,
-                "'@alias' takes a builder alias such as 'async': an identifier that is not a reserved word",
+                "'@alias' takes a builder alias such as 'query': an identifier that is not a reserved word",
             ));
         }
         let name = self.ident()?;
@@ -1415,7 +1415,7 @@ impl Parser<'_> {
             .starts_with(|first: char| first.is_ascii_lowercase())
         {
             let mut message = String::from(
-                "a builder alias starts with a lowercase letter, as in '@alias async'",
+                "a builder alias starts with a lowercase letter, as in '@alias query'",
             );
             if name
                 .text
@@ -1689,7 +1689,7 @@ impl Parser<'_> {
     }
 
     /// A function or member name. The keywords `union` and `yield` name members such as
-    /// `Set.union` and `Async.yield` (B08); unqualified, they stay keywords.
+    /// `Set.union` and `Routine.yield` (B08, TZ02); unqualified, they stay keywords.
     fn member_ident(&mut self) -> Result<Ident, Diagnostic> {
         let text = match self.current().kind {
             TokenKind::Union => "union",

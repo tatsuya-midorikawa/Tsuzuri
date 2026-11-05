@@ -174,11 +174,6 @@ fn net_primitives_are_private_to_std() {
         "Net.__write",
         "Net.__close",
         "Net.__classify",
-        "Net.__watch",
-        "Net.__unwatch",
-        "Net.__connect",
-        "Net.__names",
-        "Net.__send",
     ] {
         let error = analyze(&format!("let call = {name}\n0")).expect_err(name);
         assert_eq!(error.code, "E1022", "{name}: {}", error.message);
@@ -192,142 +187,6 @@ fn net_primitives_are_private_to_std() {
     }
     let error = analyze("Net.__close 0i32 3").unwrap_err();
     assert_eq!(error.code, "E1022", "{}", error.message);
-    let error = analyze("Net.__watch 1 1 1i32 -1").unwrap_err();
-    assert_eq!(error.code, "E1022", "{}", error.message);
-}
-
-#[test]
-fn types_the_async_api() {
-    // Every async operation is an `Async` computation of the same result that its blocking twin has.
-    module(
-        "def main :: unit -> i32 = \\() ->
-    let connect: Net.Address -> Maybe<i64> -> Async<Result<Net.TcpStream, Os.Error>> = Net.connect_async
-    let accept: Net.TcpListener -> Maybe<i64> -> Async<Result<Net.TcpStream, Os.Error>> = Net.accept_async
-    let read: Net.TcpStream -> i64 -> Maybe<i64> -> Async<Result<[ubyte], Os.Error>> = Net.read_async
-    let write: Net.TcpStream -> [ubyte] -> Maybe<i64> -> Async<Result<unit, Os.Error>> = Net.write_async
-    let recv_from: Net.UdpSocket -> i64 -> Maybe<i64> -> Async<Result<([ubyte] * Net.Address), Os.Error>> = Net.recv_from_async
-    let send_to: Net.UdpSocket -> [ubyte] -> Net.Address -> Async<Result<unit, Os.Error>> = Net.send_to_async
-    let bind: Net.Address -> Async<Result<Net.TcpListener, Os.Error>> = Net.bind_async
-    let bind_udp: Net.Address -> Async<Result<Net.UdpSocket, Os.Error>> = Net.bind_udp_async
-    let close: Net.TcpStream -> Async<Result<unit, Os.Error>> = Net.close_async
-    let close_listener: Net.TcpListener -> Async<Result<unit, Os.Error>> = Net.close_listener_async
-    let close_udp: Net.UdpSocket -> Async<Result<unit, Os.Error>> = Net.close_udp_async
-    let shutdown: Net.TcpStream -> Net.Shutdown -> Async<Result<unit, Os.Error>> = Net.shutdown_async
-    do! IO.write_line \"typed\"
-    0
-",
-    );
-    // A computation of several operations is an ordinary `Async` block.
-    module(
-        "def fetch :: Net.Address -> Async<i64>
-fn fetch address = Async {
-    match! Net.connect_async address (Maybe.Some 100) with
-    | Result.Error _ -> return -1
-    | Result.Ok stream ->
-        let! _written = Net.write_async stream [1ubyte] (Maybe.Some 100)
-        match! Net.read_async stream 8 (Maybe.Some 100) with
-        | Result.Error _ -> return -2
-        | Result.Ok bytes ->
-            let! _closed = Net.close_async stream
-            return bytes.length
-}
-def main :: unit -> i32 = \\() ->
-    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
-    let! outcome = Async.block_on (Async.all [fetch address, fetch address])
-    do! IO.write_line outcome[0]
-    0
-",
-    );
-}
-
-#[test]
-fn async_operations_declare_what_they_reach_and_need_the_reactor() {
-    // `read_async` waits for readiness and tries to read; it never connects, and it hands the poller the function
-    // that completes an operation.
-    let reading = module(
-        "def main :: unit -> i32 = \\() ->
-    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
-    let! connected = Net.connect address Maybe.None
-    match connected with
-    | Result.Error _ -> do! IO.write_line \"none\"
-    | Result.Ok stream ->
-        let! count = Async.block_on (Async {
-            match! Net.read_async stream 8 (Maybe.Some 10) with
-            | Result.Error _ -> return -1
-            | Result.Ok bytes -> return bytes.length
-        })
-        do! IO.write_line count
-    0
-",
-    );
-    let native = ir(&reading, llvm::Entry::Console, false);
-    for declaration in [
-        "declare void @tsuzuri_net_watch(ptr, i64, i64, i32, i64)\n",
-        "declare void @tsuzuri_net_unwatch(i64)\n",
-        "declare i32 @tsuzuri_async_post(i64, i64)\n",
-        "declare i64 @tsuzuri_net_read(ptr, i32, i64, i64, i64)\n",
-    ] {
-        assert!(native.contains(declaration), "{declaration}\n{native}");
-    }
-    assert!(!native.contains("@tsuzuri_net_connect"), "{native}");
-    assert!(!native.contains("@tsuzuri_net_send"), "{native}");
-    assert!(
-        llvm::uses_net(&native) && llvm::uses_net_async(&native) && llvm::uses_reactor(&native)
-    );
-    // The two completions that net.c posts go through the pointer that the call passes.
-    assert!(
-        native.contains("call void @tsuzuri_net_watch(ptr @tsuzuri_async_post, "),
-        "{native}"
-    );
-
-    // A connect is its own primitive, which names its target and hands over the socket, and sends need no wait.
-    let connecting = module(
-        "def main :: unit -> i32 = \\() ->
-    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
-    let! outcome = Async.block_on (Net.connect_async address Maybe.None)
-    do! IO.write_line (Result.is_ok (ref outcome))
-    0
-",
-    );
-    let native = ir(&connecting, llvm::Entry::Console, false);
-    for declaration in [
-        "declare void @tsuzuri_net_connect(ptr, i64, i64, i64, i64, i64)\n",
-        "declare i64 @tsuzuri_net_names(ptr, i64)\n",
-    ] {
-        assert!(native.contains(declaration), "{declaration}\n{native}");
-    }
-    assert!(!native.contains("@tsuzuri_net_watch"), "{native}");
-
-    // Without Async.block_on nothing receives the completion: the checker accepts it, and the driver reports E2000.
-    let unaided = module(
-        "def main :: unit -> i32 = \\() ->
-    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
-    let outcome = Async.run (Net.connect_async address Maybe.None)
-    do! IO.write_line (Result.is_ok (ref outcome))
-    0
-",
-    );
-    let text = ir(&unaided, llvm::Entry::Console, false);
-    assert!(
-        llvm::uses_net_async(&text) && !llvm::uses_reactor(&text),
-        "{text}"
-    );
-
-    // The blocking operations need neither the reactor nor the poller entry points, though Net loads Async.
-    let blocking = module(
-        "def main :: unit -> i32 = \\() ->
-    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
-    let! opened = Net.connect address Maybe.None
-    do! IO.write_line (Result.is_ok (ref opened))
-    0
-",
-    );
-    for wasm in [false, true] {
-        let text = ir(&blocking, llvm::Entry::Library, wasm);
-        assert!(!llvm::uses_net_async(&text), "{text}");
-        assert!(!text.contains("tsuzuri_async"), "{text}");
-        assert!(!text.contains("tsuzuri_net_watch"), "{text}");
-    }
 }
 
 #[test]
@@ -357,11 +216,10 @@ fn net_glue_adds_the_sockets_and_leaves_other_glue_alone() {
         assert!(glue.contains(part), "{part}");
     }
     assert_eq!(glue, bindings::javascript_with_net(&sockets));
-    // The sockets sit inside the runtime's `bind`, before its JSPI imports.
-    assert!(
-        glue.find("function netImports(owner)").unwrap()
-            < glue.find("function asyncImports(owner)").unwrap()
-    );
+    // The sockets sit inside the runtime's `bind`, after the imports of an instance and before the instance of a call.
+    let imports = glue.find("function importObject(owner)").unwrap();
+    let sockets = glue.find("function netImports(owner)").unwrap();
+    assert!(imports < sockets && sockets < glue.find("function current()").unwrap());
 }
 
 /// An export that opens a socket.
@@ -371,34 +229,6 @@ fn probe port =
     let! connected = Net.connect address Maybe.None
     if Result.is_ok (ref connected) then 1 else 0
 ";
-
-#[test]
-fn std_and_glue_agree_on_the_status_of_an_accepted_datagram_send() {
-    use std::path::Path;
-    // The wasm32 host answers a datagram send that Node has taken with ACCEPTED plus a token, and `send_loop` in std/Net.tz
-    // tells it by the same number: a disagreement would make every async UDP send on wasm32 a failure, or send it twice.
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let std_source = std::fs::read_to_string(root.join("std/Net.tz")).unwrap();
-    let glue = std::fs::read_to_string(root.join("src/runtime/bindings-net.mjs")).unwrap();
-    let accepted = (7u64 << 32) + 16_777_216;
-    assert!(
-        std_source.contains(&format!("fn accepted _unit = {accepted}\n")),
-        "accepted () in std/Net.tz"
-    );
-    assert!(
-        glue.contains("const ACCEPTED = status(7, 16777216);"),
-        "ACCEPTED in the glue"
-    );
-    // The token travels in `events` as 2 + 4 * token (an i32) and in the code of a status (below 2^32, and not an errno).
-    let maximum: u64 = glue
-        .split("const MAX_TOKEN = ")
-        .nth(1)
-        .and_then(|rest| rest.split(';').next())
-        .and_then(|number| number.trim().parse().ok())
-        .expect("MAX_TOKEN in the glue");
-    assert!(2 + 4 * maximum <= i32::MAX as u64);
-    assert!(16_777_216 + maximum < 1 << 32);
-}
 
 #[test]
 fn reaching_a_socket_is_decided_on_the_module_as_the_ir_does() {
@@ -450,15 +280,6 @@ fn lookup port =
     match found with
     | Result.Ok addresses -> addresses.length
     | Result.Error _ -> 0
-",
-            true,
-        ),
-        (
-            "export def echo :: i64 -> i64
-fn echo port =
-    let address = Maybe.get (Net.parse_ip port (ref \"127.0.0.1\"))
-    let! opened = Async.block_on (Net.connect_async address Maybe.None)
-    if Result.is_ok (ref opened) then 1 else 0
 ",
             true,
         ),
@@ -517,9 +338,10 @@ fn net_bindings_follow_the_sockets_that_a_module_reaches() {
 
 #[test]
 fn wasm_tries_once_through_plain_imports_and_native_does_not() {
-    // The waiting import of WebAssembly is a JSPI import, which cannot run in a poll of the executor of Async.start. A read or
-    // an accept with a timeout of 0, which the async operations make, goes to a plain `try_` import on WebAssembly, chosen at
-    // run time by the timeout; natively one function does both, and the IR has no `try_`.
+    // The waiting import of WebAssembly is a JSPI import, which suspends the stack. A read or an accept with a timeout of 0
+    // goes to a plain `try_` import on WebAssembly, chosen at run time by the timeout; natively one function does both, and
+    // the IR has no `try_`. The std `Net` never passes 0 (`wait_of` makes a timeout -1 or 1 to 2147483647), so the plain
+    // import is only a branch of the IR, which an optimizer may remove where it sees the timeout.
     let program = module(
         "def main :: unit -> i32 = \\() ->
     let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
@@ -527,9 +349,9 @@ fn wasm_tries_once_through_plain_imports_and_native_does_not() {
     match bound with
     | Result.Error _ -> 1
     | Result.Ok listener ->
-        let! outcome = Async.block_on (Net.accept_async listener Maybe.None)
+        let! waiting = Net.accept listener Maybe.None
         let! blocking = Net.accept listener (Maybe.Some 5)
-        do! IO.write_line (Result.is_ok (ref outcome) && Result.is_ok (ref blocking))
+        do! IO.write_line (Result.is_ok (ref waiting) && Result.is_ok (ref blocking))
         0
 ",
     );
@@ -563,26 +385,6 @@ fn net_declarations_are_not_imports_by_default() {
     let wasm = ir(&program, llvm::Entry::Library, true);
     assert!(wasm.contains("declare i64 @tsuzuri_net_open("), "{wasm}");
     assert!(!wasm.contains("tsuzuri_net\""), "{wasm}");
-    // On WebAssembly the async primitives take no completion function: the host completes the operation.
-    let reading = module(
-        "def main :: unit -> i32 = \\() ->
-    let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
-    let! outcome = Async.block_on (Net.connect_async address Maybe.None)
-    do! IO.write_line (Result.is_ok (ref outcome))
-    0
-",
-    );
-    let wasm = ir(&reading, llvm::Entry::Library, true);
-    assert!(
-        wasm.contains("declare void @tsuzuri_net_connect(i64, i64, i64, i64, i64)\n"),
-        "{wasm}"
-    );
-    assert!(!wasm.contains("tsuzuri_async_post"), "{wasm}");
-    let native = ir(&reading, llvm::Entry::Library, false);
-    assert!(
-        native.contains("declare void @tsuzuri_net_connect(ptr, i64, i64, i64, i64, i64)\n"),
-        "{native}"
-    );
 }
 
 #[test]

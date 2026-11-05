@@ -1,11 +1,10 @@
   // The sockets of the Net module under --wasm-feature net (E09 Phase 3): the imports of `tsuzuri_net`, on Node's net, dgram,
   // and dns. They keep the contract of src/runtime/net.c: a handle is a generation and a slot of a table, a status is
-  // (kind << 32) | code, a timeout covers a whole call, 0 means "try once" (and PENDING says that the call would have
-  // to wait), and a readiness wait or a connect completes an Async operation with `tsuzuri_async_complete`.
-  // The calls that can wait are JSPI imports, so the module is suspended while Node does the work; the try-once reads and
-  // accepts (`try_read`, `try_accept`) are plain imports, because the executor of Async.start polls outside JSPI.
-  // What a socket costs Node: it keeps the process alive only while the module waits on it (a blocking call, a watch, a
-  // connect), so a socket that was never closed ends with the process as it does natively; the instance's sockets are all
+  // (kind << 32) | code, a timeout covers a whole call, and 0 means "try once" (PENDING says that the call would have
+  // to wait). The calls that can wait are JSPI imports, so the module is suspended while Node does the work; the try-once
+  // reads and accepts (`try_read`, `try_accept`) are plain imports.
+  // What a socket costs Node: it keeps the process alive only while the module waits on it (a blocking call or a connect),
+  // so a socket that was never closed ends with the process as it does natively; the instance's sockets are all
   // destroyed when the instance is discarded (`owner.dispose`, called by `fail`), because nothing could close them then.
   function netImports(owner) {
     if (NODE_NET === undefined) throw new Error("Net sockets need Node.js (node:net, node:dgram, and node:dns); a browser has no raw TCP or UDP");
@@ -30,14 +29,8 @@
     const BAD_HANDLE = status(4, errno.EBADF);
     const INVALID = status(4, 0);
     const PENDING = status(7, 0);
-    // What a datagram send answers (negated) when Node has taken the datagram and has not yet said how it went: ACCEPTED plus the
-    // token of that send, which `watch` takes (events 2 + 4 * token) and completes with the send's own status. No error number
-    // is as large as ACCEPTED, and its kind is the last, so that the compiler's check of a status lets it through.
-    const ACCEPTED = status(7, 16777216);
-    const MAX_TOKEN = 268435455;
     const RECORD = 20;
     const LIMIT = 1048576;
-    const SEND_CHUNK = 65536n;
     // What the host keeps for a module that does not read or accept: the kernel drops a datagram when its receive buffer is
     // full and holds a bounded queue of connections, and so does the glue (the kernel's own limits come on top).
     const DATAGRAM_BYTES = 1048576;
@@ -82,10 +75,6 @@
     const free = [];
     // The sockets that a call is still making: not in the table, but the instance's all the same.
     const making = new Set();
-    // The datagram sends that Node has taken and not finished, by token: a send is over when its callback has run, and its
-    // outcome is waited for by the operation that started it (`watch` with that token), which deletes the flight.
-    const flights = new Map();
-    let nextToken = 0;
     let generation = 0n;
     const slotOf = (handle) => Number(handle & 0xffffffffn) - 1;
     function register(entry) {
@@ -139,11 +128,8 @@
       notify(entry);
     }
     function dispose() {
-      for (const cancel of [...operations.values()]) cancel();
-      operations.clear();
       for (const entry of [...making, ...slots]) if (entry !== undefined) destroy(entry);
       making.clear();
-      flights.clear();
       slots.length = 0;
       free.length = 0;
     }
@@ -240,7 +226,6 @@
         const timer = timeout >= 0n ? setTimeout(() => { socket.destroy(); done(TIMED_OUT); }, Number(timeout)) : undefined;
         socket.once("connect", () => { entry.names = streamNames(socket, record(host, port)); done(0n); });
         socket.once("error", (error) => done(failed(error)));
-        entry.cancel = () => { clearTimeout(timer); making.delete(entry); socket.destroy(); };
       });
       try {
         socket.connect({ host, port, family: familyOf(meta) });
@@ -285,11 +270,6 @@
       bytes.set(next.data, RECORD);
       return bytes;
     }
-    // Whether a call on the entry can go on now: it has something to read or accept, or can take a write.
-    const readable = (entry) => (entry.kind === 1 ? entry.chunks.length > 0 || entry.ended || entry.readShut || (entry.error !== undefined && !entry.reported)
-      : entry.kind === 2 ? entry.queue.length > 0 || entry.error !== undefined : entry.messages.length > 0 || entry.error !== undefined);
-    // A datagram socket takes a send at any time (Node queues it); what a module waits for after one is that send's own end.
-    const writable = (entry) => (entry.kind === 1 ? !entry.socket.writableNeedDrain || entry.socket.destroyed || entry.error !== undefined : true);
 
     // The connection that waits in the queue of a listener, as a handle, or the negated status of what went wrong with
     // the listener; undefined when none waits. A connection that is gone before it is taken is skipped, as natively. The
@@ -411,10 +391,9 @@
       return handle;
     }
 
-    // The handle of a connection that waits, the negated status of what went wrong with the listener, or undefined.
-    // The calls that wait are JSPI imports and so cannot run in a poll of the executor of Async.start, which is not
-    // entered through `promising`; the async operations try once through `try_accept` and `try_read` instead, which answer
-    // at once whether they have a result or not.
+    // The handle of a connection that waits, the negated status of what went wrong with the listener, or undefined. A
+    // call with a timeout of 0 tries once through `try_accept` and `try_read`, plain imports that answer at once whether
+    // they have a result or not.
     function tryAccept(pointer, handle) {
       pointer >>>= 0;
       deliver(pointer, undefined);
@@ -517,80 +496,6 @@
       return Promise.race([written, late]).finally(() => { clearTimeout(timer); release(entry); });
     }
 
-    // Sends without waiting: the bytes taken, or the negated status. Node queues what it takes and hands it to the system as
-    // the system has room, so one call takes at most SEND_CHUNK bytes, and the caller waits (PENDING, then a drain) for the
-    // rest: what is accepted but not yet with the system stays small, and `close` delivers it before it closes.
-    // A datagram is the system's to send in a later turn and a call cannot wait for it: the call hands it to Node, once, and
-    // answers ACCEPTED plus a token (never the datagram again); the caller then waits for that token (`watch`), which completes
-    // with how this very send went. So a send has its own result, a failed one leaves no datagram, and nothing is sent twice.
-    function send(operation, handle, data, length, offset, meta, high, low) {
-      data >>>= 0;
-      if ((operation !== 0 && operation !== 1) || length < 0n || offset < 0n || offset > length) return -INVALID;
-      const entry = find(handle, operation === 0 ? 1 : 3);
-      if (entry === undefined) return -BAD_HANDLE;
-      if (operation === 1) return startSend(entry, data, length, meta, high, low);
-      if (offset === length) return 0n;
-      if (entry.error !== undefined) return -failed(entry.error);
-      if (entry.writeShut || entry.socket.destroyed) return -named("EPIPE");
-      if (entry.socket.writableNeedDrain) return -PENDING;
-      const taken = length - offset > SEND_CHUNK ? SEND_CHUNK : length - offset;
-      entry.socket.write(copyOf(data + Number(offset), taken));
-      return taken;
-    }
-    function startSend(entry, data, length, meta, high, low) {
-      if (length > 65536n) return -named("EMSGSIZE");
-      if (portOf(meta) === 0) return -ZERO_PORT;
-      do nextToken = nextToken === MAX_TOKEN ? 1 : nextToken + 1; while (flights.has(nextToken));
-      const token = nextToken;
-      const flight = { handle: entry.handle, done: false, status: 0n, attached: undefined, abandoned: false };
-      flights.set(token, flight);
-      try {
-        sendDatagram(entry, copyOf(data, length), meta, high, low, (outcome) => {
-          flight.done = true;
-          flight.status = outcome;
-          if (flight.attached !== undefined) flight.attached();
-          else if (flight.abandoned) flights.delete(token);
-        });
-      } catch (error) {
-        flights.delete(token);
-        throw error;
-      }
-      return -(ACCEPTED + BigInt(token));
-    }
-    // The wait of an async operation for the end of the send with `token` on the socket `handle`: it completes with the status
-    // of that send (0, or why it failed), whatever happened to the handle meanwhile (a close waits for the send, and the send
-    // has a result of its own). A wait that is cancelled or times out leaves the send going, and its flight is dropped when it ends.
-    function watchSend(operation, handle, token, timeout) {
-      const flight = flights.get(token);
-      if (flight === undefined || flight.handle !== handle || flight.attached !== undefined) return later(operation, INVALID);
-      if (flight.done) {
-        flights.delete(token);
-        return later(operation, flight.status);
-      }
-      if (timeout === 0n) {
-        flight.abandoned = true;
-        return later(operation, TIMED_OUT);
-      }
-      let timer;
-      flight.attached = () => {
-        clearTimeout(timer);
-        flights.delete(token);
-        later(operation, flight.status);
-      };
-      if (timeout > 0n) {
-        timer = setTimeout(() => {
-          flight.attached = undefined;
-          flight.abandoned = true;
-          finish(operation, TIMED_OUT);
-        }, Number(timeout));
-      }
-      operations.set(operation, () => {
-        clearTimeout(timer);
-        flight.attached = undefined;
-        flight.abandoned = true;
-      });
-    }
-
     function close(operation, handle) {
       if (operation < 0 || operation > 3) return INVALID;
       if (operation === 0) {
@@ -675,94 +580,7 @@
       return 0n;
     }
 
-    function namesOf(pointer, handle) {
-      pointer >>>= 0;
-      deliver(pointer, undefined);
-      const entry = find(handle, 0);
-      if (entry === undefined) return BAD_HANDLE;
-      deliver(pointer, entry.names);
-      return 0n;
-    }
-
-    // ---- Async operations: waits and connects that complete an operation of the executor ----
-    const operations = new Map();
-    // A completion is delivered after the call that started or ended the operation has returned. A trap of the module in it
-    // has discarded the instance by then, and its failure reaches the module's callers (`settled()`, the next call); here
-    // nobody could catch it.
-    function finish(operation, value) {
-      operations.delete(operation);
-      if (!owner.alive || !owner.current()) return;
-      try {
-        enter(owner, () => owner.exports.tsuzuri_async_complete(operation, value));
-      } catch {
-        return;
-      }
-      owner.wake?.();
-      asyncHost?.schedule();
-    }
-    function later(operation, value) {
-      const timer = setImmediate(() => finish(operation, value));
-      operations.set(operation, () => clearImmediate(timer));
-    }
-    // `events` 1 waits until the socket can read (or accept), 2 until it can write; 2 + 4 * token waits for the end of the datagram
-    // send that `send` answered with that token, and completes with the status of that send.
-    function watch(operation, handle, events, timeout) {
-      const wanted = events & 3;
-      const token = events >>> 2;
-      if (events < 1 || (wanted !== 1 && wanted !== 2) || (token !== 0 && wanted !== 2) || timeout < -1n) return later(operation, INVALID);
-      if (token !== 0) return watchSend(operation, handle, token, timeout);
-      if (timeout === 0n) return later(operation, TIMED_OUT);
-      const entry = find(handle, 0);
-      if (entry === undefined) return later(operation, BAD_HANDLE);
-      const ready = () => (wanted === 1 ? readable(entry) : writable(entry));
-      if (ready()) return later(operation, 0n);
-      let timer;
-      retain(entry);
-      const stop = () => {
-        if (!entry.waiters.delete(check)) return;
-        clearTimeout(timer);
-        release(entry);
-      };
-      const check = () => {
-        if (find(entry.handle, 0) === entry && !ready()) return;
-        stop();
-        later(operation, 0n);
-      };
-      if (timeout > 0n) {
-        timer = setTimeout(() => {
-          stop();
-          finish(operation, TIMED_OUT);
-        }, Number(timeout));
-      }
-      entry.waiters.add(check);
-      operations.set(operation, stop);
-    }
-    function connect(operation, meta, high, low, timeout) {
-      if (timeout === 0n) return later(operation, -TIMED_OUT);
-      if (timeout < -1n) return later(operation, -INVALID);
-      const { entry, settled } = connectSocket(meta, high, low, timeout);
-      operations.set(operation, () => entry.cancel());
-      settled.then((outcome) => {
-        if (!operations.has(operation) || !owner.alive) {
-          entry.socket.destroy();
-          return;
-        }
-        if (outcome !== 0n) {
-          entry.socket.destroy();
-          finish(operation, -outcome);
-          return;
-        }
-        release(entry);
-        finish(operation, register(entry));
-      });
-    }
-    function unwatch(operation) {
-      operations.get(operation)?.();
-      operations.delete(operation);
-    }
-
-    // What can wait is a JSPI import; the rest returns at once, and the try-once calls are among them, because an executor that
-    // the host polls (Async.start) is not inside `promising`.
+    // What can wait is a JSPI import; the rest returns at once, and the try-once calls are among them.
     const suspending = (call) => new WebAssembly.Suspending(call);
     const negated = (error) => -failed(error);
     return Object.assign(Object.create(null), {
@@ -775,10 +593,5 @@
       try_read: guard(tryRead, failed),
       close: guard(close, failed),
       classify,
-      names: guard(namesOf, failed),
-      send: guard(send, negated),
-      watch: guard(watch, (error, [operation]) => later(operation, failed(error))),
-      unwatch: guard(unwatch, () => undefined),
-      connect: guard(connect, (error, [operation]) => later(operation, -failed(error))),
     });
   }

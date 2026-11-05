@@ -344,7 +344,7 @@ fn fixture(name: &str) -> tsuzuri::check::CheckedModule {
 fn programs_without_tzroutine_keep_their_ir() {
     // Natively a Mutex takes the scheduler's lock (TZ12): data_channel names tsuzuri_tz_ for it, and
     // waits for no tzroutine either.
-    for name in ["data_channel", "control", "async"] {
+    for name in ["data_channel", "control", "net_sockets"] {
         let module = fixture(name);
         assert!(!llvm::spawns(&module), "{name}");
         for entry in [

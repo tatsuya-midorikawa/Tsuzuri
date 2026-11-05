@@ -405,30 +405,6 @@ fn sum_to count =
     Array.sum (ref values)
 "#;
 
-/// A program that waits on the clock of the reactor (`tsuzuri_async_post` is its host entry) and one that the host
-/// drives (`tsuzuri_async_poll` and `tsuzuri_async_complete`), without a host function of its own.
-#[cfg(unix)]
-const ASYNC: &str = r#"def span :: i64 -> Async<i64>
-fn span delay = Async {
-    let! start = Async.now ()
-    do! Async.sleep delay
-    let! finish = Async.now ()
-    return finish - start
-}
-
-export def timers :: i64 -> i64
-fn timers delay =
-    let! spans = Async.block_on (Async.all [span delay, span (delay * 2)])
-    if spans[0] >= delay && spans[1] >= delay * 2 then 1 else 0
-
-export def started :: i64 -> unit
-fn started n =
-    do! Async.start (Async {
-        do! Async.sleep n
-        ()
-    })
-"#;
-
 fn write(directory: &Path, name: &str, text: &str) -> PathBuf {
     let path = directory.join(name);
     fs::write(&path, text).unwrap();
@@ -589,47 +565,6 @@ int main(void) {
     int64_t quotient = result;
     int trapped = tsuzuri_try_div(&trap, &result, 1, 0);
     printf("%d %lld %d %lld %lld\n", ok, (long long)quotient, trapped != 0, (long long)tz_div(9, 3), (long long)tz_sum_to(100));
-    return 0;
-}
-"#;
-
-/// The host of `tests/fixtures/async_reactor`: each operation that the program starts completes 20 ms later, on a thread of
-/// the host's own, through `tsuzuri_async_post`, which only the C runtime defines.
-#[cfg(unix)]
-const REACTOR_HOST: &str = r#"#include <pthread.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-
-int32_t tsuzuri_async_post(int64_t operation, int64_t value);
-int64_t tz_completed(int64_t n);
-
-struct job { int64_t operation, value; };
-
-static void *complete_later(void *argument) {
-    struct job job = *(struct job *)argument;
-    free(argument);
-    usleep(20000);
-    if (tsuzuri_async_post(job.operation, job.value) != 1) abort();
-    return NULL;
-}
-
-void tsuzuri_host_Main_start_operation(int64_t operation, int64_t request) {
-    struct job *job = malloc(sizeof *job);
-    pthread_t thread;
-    if (!job) abort();
-    job->operation = operation;
-    job->value = request * 10;
-    if (pthread_create(&thread, NULL, complete_later, job) != 0) abort();
-    pthread_detach(thread);
-}
-
-void tsuzuri_host_Main_cancel_operation(int64_t operation) { (void)operation; }
-void tsuzuri_host_Main_report(int64_t tag, int64_t value) { (void)tag; (void)value; }
-
-int main(void) {
-    printf("%lld %d\n", (long long)tz_completed(4), (int)tsuzuri_async_post(5, 0));
     return 0;
 }
 "#;
@@ -1461,68 +1396,6 @@ fn wasm32_bitcode_keeps_its_simd_through_the_link() {
 
 #[test]
 #[cfg(unix)]
-fn a_host_thread_posts_to_the_reactor_of_the_bitcode() {
-    let Some(nm) = llvm_tool("llvm-nm") else {
-        return;
-    };
-    if llvm_tool("llvm-link").is_none() || !thinlto_link_works() {
-        return;
-    }
-    let directory = scratch("reactor");
-    let source = root().join("tests/fixtures/async_reactor/Main.tz");
-    let (bitcode, object) = (directory.join("reactor.bc"), directory.join("reactor.o"));
-    build(&source, &bitcode, bitcode_options()).unwrap();
-    build(
-        &source,
-        &object,
-        BuildOptions {
-            emit: Emit::Object,
-            ..bitcode_options()
-        },
-    )
-    .unwrap();
-    // Only the C runtime defines `tsuzuri_async_post`, and the host calls it from its own threads: the merge of the
-    // runtime must not hide it, as it hides the rest of the runtime.
-    let external = externals(&nm, &bitcode);
-    for name in [
-        "tsuzuri_async_post",
-        "tsuzuri_async_poll",
-        "tsuzuri_async_complete",
-    ] {
-        assert!(
-            external.contains(name),
-            "{name} is not external: {external:?}"
-        );
-    }
-    assert!(
-        !external.contains("tsuzuri_async_wait"),
-        "the rest of the reactor stays inside the bitcode: {external:?}"
-    );
-    let host = write(&directory, "host.c", REACTOR_HOST);
-    let linked = link(
-        &clang(),
-        &directory,
-        "from-object",
-        &[&host, &object],
-        false,
-        &["-pthread"],
-    );
-    let inlined = link(
-        &clang(),
-        &directory,
-        "from-bitcode",
-        &[&host, &bitcode],
-        true,
-        &["-pthread"],
-    );
-    // 4 * 10 * 1000 + 5 * 10 from the two operations that the host completes later; a post of an unknown id is refused.
-    assert_eq!(run(&linked), "40050 0\n");
-    assert_eq!(run(&inlined), "40050 0\n");
-    fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-#[cfg(unix)]
 fn the_bitcode_defines_every_symbol_that_a_shared_library_exports() {
     let Some(nm) = llvm_tool("llvm-nm") else {
         return;
@@ -1538,11 +1411,12 @@ fn the_bitcode_defines_every_symbol_that_a_shared_library_exports() {
         write(&folder, "Main.tz", text)
     };
     let cases = [
+        // The C runtime of the tzroutines is merged into the bitcode, and its exports stay.
         (
-            "async",
-            project("async", ASYNC),
+            "tzroutine",
+            root().join("tests/fixtures/tzroutine/Main.tz"),
             bitcode_options(),
-            vec!["tsuzuri_async_post", "tsuzuri_async_poll", "tz_timers"],
+            vec!["tz_sum_atomic", "tz_go_owned"],
         ),
         (
             "hello",

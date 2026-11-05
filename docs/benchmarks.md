@@ -172,7 +172,11 @@ CPU 参照の 1 命令あたりの時間は、cell ごとに 6〜11 倍ほど違
 - 適合プローブの費用（厳密な `f32` の要求で 1 回、小さなパイプラインの作成と 1 回の dispatch）は、測っていません。float controls をすべて報告するデバイスが、この環境にないからです。
 - 共有 CI に、速度の合否の閾値は入れません。`tests/gpu_vulkan.mjs` と `tests/gpu_vulkan_language.mjs` は、規則が決めたとおりに選ぶこと、能力・上限・デバイスの種類の確認を飛ばさないこと、失敗したときに CPU 参照へ戻ることを、モックと実機で確かめるだけで、速度は見ません。
 
-## Async の中断と継続のコスト（B08）
+## 履歴: TZ13 で削除した Async
+
+次の記録は、TZ13 で削除した `Async`（`std/Async.tc` の継続と `Async.run`）の B08 のときの測定です。`Async` は今の言語になく、下のプログラムはコンパイルできません（`E1040`）。入力の fixture `tests/fixtures/async` も TZ13 で削除しました。今の言語で待ちを扱う tzroutine の値ではありません。
+
+### Async の中断と継続のコスト（B08）
 
 2026-10-09、Apple M1 Max（10 論理 CPU）、macOS 27.0.1、Apple Clang 21.0.0、Rust 1.98.1、Node 24.21.0 で測定しました。
 コンパイラは `ce7e8a1` に B08 の未コミット変更を加えた release 版、生成プログラムは native / generic / O3 です。
@@ -186,11 +190,11 @@ CPU 参照の 1 命令あたりの時間は、cell ごとに 6〜11 倍ほど違
 | 同、2,000 段 | 0.11 秒（0.10–0.16） | 3,325,952 bytes |
 | 同、4,000 段 | 0.40 秒（0.40–0.57） | 4,882,432 bytes |
 
-入力は [Async fixture](../tests/fixtures/async/Main.tz) の `tail_loop_from` と `deep_from` です。
+入力は、当時の `tests/fixtures/async/Main.tz` の `tail_loop_from` と `deep_from` です。
 各関数と、`Async.run` の結果が入力の回数と一致したら終了コード 0 を返す main だけを、別々のプロジェクトに置きます。
 末尾のプログラムの main は次のとおりです。非末尾では呼び出しを `deep_from 1000`（または 2000 / 4000）、期待値を同じ数にします。
 
-```tsuzuri
+```text
 def main :: unit -> i32 = \() ->
     let result = Async.run (tail_loop_from 0 1000000)
     if result == 1000000 then 0 else 1
@@ -3496,7 +3500,7 @@ bitcode は IR のテキストと同じ意味・同じ決定性を保てても�
 
 **WASM の剪定（D9）。** 採用しません。試作（`--emit wasm` だけ根を限る）の 1,000 モジュール `-O0` では、成果物が 5,905,346 bytes で変わらず（`wasm-ld` が未使用の関数を
 元から捨てるため）、効果は Clang の時間だけで、W2 のように一部だけ使う形でしか出ないと見込みますが、その形では測っていません。`host_entries`・`reaches_reactor` の根の整合と 33 か所の `EmitOptions`、
-Async・host の glue の到達性の検証が要り、得に見合いません。
+Async・host の glue の到達性の検証が要り、得に見合いません（`host_entries`・`reaches_reactor` と Async の glue は、TZ13 で `Async` とともに削除しました）。
 
 再現: `node benchmarks/check-handoff-equivalence.mjs --before <旧> --after <新> --out <dir> [--quick] [--modes ...]`（差分の検査。`wasmt`・`wasi`・`exegc`・`libc` が cache あり。`lib0`・`lib3`・`libg`・`libt`・`libc` は入口のないプロジェクトを実行ファイルにする）、
 `node tests/handoff_tools.mjs <compiler>`・`node tests/llvm_handoff.mjs <compiler>`・`node tests/bundle_identity.mjs <compiler>`（プロセスの数・引数・失敗の検査）。

@@ -103,7 +103,7 @@ static int64_t tzr_nanotime(void) {
     LARGE_INTEGER frequency, counter;
     QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&counter);
-    /* Whole seconds and the rest apart, so that the product stays far below 2^63 (async.c does the same). */
+    /* Whole seconds and the rest apart, so that the product stays far below 2^63 (net.c does the same). */
     int64_t seconds = counter.QuadPart / frequency.QuadPart;
     int64_t rest = counter.QuadPart % frequency.QuadPart;
     return seconds * 1000000000 + rest * 1000000000 / frequency.QuadPart;

@@ -181,9 +181,9 @@ fn cross_link(sdk: &std::path::Path, source: &str) {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// The socket runtime of the Net module (E09) compiles and links for Windows: the Winsock calls, the poller thread,
-/// and the reactor it posts to, on x86_64 (linked into an executable) and on aarch64 (compiled to objects, because the
-/// SDK of the machine has no ARM64 import libraries). It does not run: Windows execution is verified by the CI jobs.
+/// The socket runtime of the Net module (E09) compiles and links for Windows: the Winsock calls, on x86_64 (linked into an
+/// executable) and on aarch64 (compiled to objects, because the SDK of the machine has no ARM64 import libraries). It does
+/// not run: Windows execution is verified by the CI jobs.
 #[test]
 fn cross_links_the_net_runtime_with_microsoft_sdk_when_requested() {
     let Some(sdk) = std::env::var_os("TSUZURI_WINDOWS_SDK") else {
@@ -207,7 +207,7 @@ fn cross_links_the_net_runtime_with_microsoft_sdk_when_requested() {
     fs::create_dir(&root).unwrap();
     let source = "def main :: unit -> i32 = \\() ->
     let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
-    let! outcome = Async.block_on (Net.connect_async address (Maybe.Some 100))
+    let! outcome = Net.connect address (Maybe.Some 100)
     do! IO.write_line (Result.is_ok (ref outcome))
     0
 ";
@@ -226,13 +226,12 @@ fn cross_links_the_net_runtime_with_microsoft_sdk_when_requested() {
         llvm::ExportStyle::Dllexport,
     )
     .unwrap();
-    assert!(ir.contains("declare void @tsuzuri_net_connect("));
-    assert!(ir.contains("declare void @tsuzuri_net_unwatch("));
+    assert!(ir.contains("declare i64 @tsuzuri_net_open("));
     // The allocator of a Windows host has no POSIX-only hooks that a host of another kind adds to the IR.
     let ir = ir.replace(" weak hidden global ", " internal global ");
     fs::write(root.join("module.ll"), ir).unwrap();
     // The driver concatenates the runtimes of one program into one translation unit, with net.c first.
-    let runtime: String = ["net.c", "async.c", "io.c"]
+    let runtime: String = ["net.c", "io.c"]
         .iter()
         .map(|name| {
             fs::read_to_string(

@@ -145,7 +145,6 @@ cached_result
 
 ## 関連項目
 
-- [Async 式](async.md)
 - [tzroutine 式](tzroutine.md)
 - [Seq](../built-in-types-and-modules/seq.md)
 - [IO](../built-in-types-and-modules/io.md)

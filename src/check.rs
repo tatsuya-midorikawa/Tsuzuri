@@ -680,7 +680,7 @@ impl Type {
 
     pub(crate) fn is_noncopy_record(&self, types: &TypeContext<'_>) -> bool {
         self.has_user_drop(types)
-            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex" | "Async.Async" | "Async.Next" | "Matrix.Matrix" | "Tensor.Tensor" | "Tensor.View" | "Atomic.Atomic" | "Mutex.Mutex" | "RwMutex.RwMutex" | "OnceValue.OnceValue"))
+            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex" | "Matrix.Matrix" | "Tensor.Tensor" | "Tensor.View" | "Atomic.Atomic" | "Mutex.Mutex" | "RwMutex.RwMutex" | "OnceValue.OnceValue"))
     }
 
     /// The std `Atomic.Atomic`, `Mutex.Mutex` and, since TZ06, `RwMutex.RwMutex` and
@@ -696,16 +696,10 @@ impl Type {
         matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && types.records[*id].name == "Mutex.Mutex")
     }
 
-    /// Std records that borrows must not share between threads: a lazy sequence and an async
-    /// computation hold function values whose environments are not visible, and GPU handles are
-    /// not thread-safe (F10 D6).
+    /// Std records that borrows must not share between threads: a lazy sequence holds function
+    /// values whose environments are not visible, and GPU handles are not thread-safe (F10 D6).
     fn is_unsync_record(&self, types: &TypeContext<'_>) -> bool {
-        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Async.Async" | "Async.Next" | "Owned.Function"))
-    }
-
-    /// The std `Async.Async`, whose values hold no loans (B08 D6).
-    pub(crate) fn is_async(&self, types: &TypeContext<'_>) -> bool {
-        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && types.records[*id].name == "Async.Async")
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function"))
     }
 
     /// The std `Owned.Function`, whose environment has no clone (B07).
@@ -1007,7 +1001,7 @@ impl Type {
     /// capture only values that tzroutines may hold, and `Routine.scope` checks that the environment of
     /// a function it shares is proven owned. Not Sync are an extern handle (host libraries are
     /// rarely thread-safe), a dyn value that is not Copy (it may hide one), a tzroutine body, an exclusive
-    /// reference, an `Owned.Function`, a lazy sequence, an async computation and the GPU handles.
+    /// reference, an `Owned.Function`, a lazy sequence and the GPU handles.
     pub(crate) fn can_sync(&self, types: &TypeContext<'_>) -> bool {
         types.stored_all_closed(self, |ty| ty.sync_here(types), |ty| ty.sync_closed(types))
     }
@@ -1356,20 +1350,6 @@ pub enum Builtin {
     NetClose,
     /// `Net.__classify :: i32 -> i64`: an `errno` as the declaration-order index of `Net.ErrorKind`.
     NetClassify,
-    /// `Net.__watch :: i64 -> i64 -> i32 -> i64 -> unit` (E09 Phase 2): starts a wait of an async operation (its id)
-    /// for a socket to be readable (1) or writable (2) within a timeout in milliseconds (-1: none). The runtime
-    /// completes the operation: 0 when ready, otherwise a status.
-    NetWatch,
-    /// `Net.__unwatch :: i64 -> unit`: takes the operation back; a connect that is under way is closed.
-    NetUnwatch,
-    /// `Net.__connect :: i64 -> i64 -> i64 -> i64 -> i64 -> unit`: starts a connect for an async operation (id, address,
-    /// timeout); the runtime completes it with a new handle or the negated status.
-    NetConnect,
-    /// `Net.__names :: i64 -> (i64 * [ubyte])`: the 40 bytes of local and peer address records of an open socket.
-    NetNames,
-    /// `Net.__send :: i32 -> i64 -> ref [ubyte] -> i64 -> i64 -> i64 -> i64 -> i64`: sends without waiting from an
-    /// offset: the bytes sent, or the negated status (the "would wait" status among them).
-    NetSend,
     /// `Unicode.__table_length :: i64 -> i64`: the number of entries of a generated Unicode table
     /// (`src/runtime/unicode.ll`). Private to the std Unicode and Regex modules (D09).
     UnicodeTableLength,
@@ -1591,33 +1571,6 @@ pub enum Builtin {
     ArcDowngrade,
     ArcUpgrade,
     ArcPtrEq,
-    /// `Async.__resume :: Async.Next<'a, 'b> -> 'a -> 'b` calls a continuation once, moving
-    /// its environment into the call instead of copying it (B08). Only the std `Async`
-    /// module may call it.
-    AsyncResume,
-    /// `Async.__take :: Maybe<'a>`, called as `Async.__take()`: takes the host executor's state of
-    /// type `'a` out of its per-thread slot and locks it until `Async.__put`; taking a locked
-    /// slot traps on re-entry (B08 Phase 2). Only the std `Async` module may call it.
-    AsyncTake,
-    /// `Async.__put :: Maybe<'a> -> unit` stores the state of a slot that `Async.__take`
-    /// locked, or leaves it empty, and unlocks it; putting into an unlocked slot traps.
-    AsyncPut,
-    /// `Async.__next_id :: i64`, called as `Async.__next_id()`: the next host operation id from a
-    /// per-thread counter, tagged with the thread's never-reused index.
-    AsyncNextId,
-    /// `Async.__clock :: i64`, called as `Async.__clock()`: milliseconds of the monotonic clock
-    /// of `Async.block_on` (B08 Phase 3): `src/runtime/async.c` natively, and the import
-    /// `tsuzuri_async.clock` under `--wasm-feature jspi`.
-    AsyncClock,
-    /// `Async.__wait :: i64 -> unit` blocks until the clock reaches the deadline or a host
-    /// operation completes: natively in `src/runtime/async.c`, and under `--wasm-feature jspi`
-    /// through the import `tsuzuri_async.wait`, which suspends the WebAssembly stack.
-    AsyncWait,
-    /// `Async.__posted :: (i64 * i64)`, called as `Async.__posted()`: the earliest completion
-    /// that another thread posted with `tsuzuri_async_post`, or `(0, 0)`. WASM has none.
-    AsyncPosted,
-    /// Removes a completed or cancelled operation from the native reactor's mailbox.
-    AsyncRetire,
     /// `Routine.scope :: (Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]`
     /// (TZ11): runs the callback once per index below a count, each on a tzroutine of its own,
     /// which may wait (for the others too), lending every child the same shared borrow, and returns
@@ -2007,11 +1960,6 @@ impl Builtin {
         Self::NetWrite,
         Self::NetClose,
         Self::NetClassify,
-        Self::NetWatch,
-        Self::NetUnwatch,
-        Self::NetConnect,
-        Self::NetNames,
-        Self::NetSend,
         Self::UnicodeTableLength,
         Self::UnicodeTableEntry,
         Self::Display,
@@ -2158,14 +2106,6 @@ impl Builtin {
         Self::ArcDowngrade,
         Self::ArcUpgrade,
         Self::ArcPtrEq,
-        Self::AsyncResume,
-        Self::AsyncTake,
-        Self::AsyncPut,
-        Self::AsyncNextId,
-        Self::AsyncClock,
-        Self::AsyncWait,
-        Self::AsyncPosted,
-        Self::AsyncRetire,
         Self::RoutineScope,
         Self::AtomicCreate,
         Self::AtomicLoad,
@@ -2369,11 +2309,6 @@ impl Builtin {
             Self::NetWrite => "Net.__write",
             Self::NetClose => "Net.__close",
             Self::NetClassify => "Net.__classify",
-            Self::NetWatch => "Net.__watch",
-            Self::NetUnwatch => "Net.__unwatch",
-            Self::NetConnect => "Net.__connect",
-            Self::NetNames => "Net.__names",
-            Self::NetSend => "Net.__send",
             Self::UnicodeTableLength => "Unicode.__table_length",
             Self::UnicodeTableEntry => "Unicode.__table_entry",
             Self::Display => "$builtin.display",
@@ -2491,14 +2426,6 @@ impl Builtin {
             Self::Not => "not",
             Self::Ignore => "ignore",
             Self::ArenaNextId => "Arena.__next_id",
-            Self::AsyncResume => "Async.__resume",
-            Self::AsyncTake => "Async.__take",
-            Self::AsyncPut => "Async.__put",
-            Self::AsyncNextId => "Async.__next_id",
-            Self::AsyncClock => "Async.__clock",
-            Self::AsyncWait => "Async.__wait",
-            Self::AsyncPosted => "Async.__posted",
-            Self::AsyncRetire => "Async.__retire",
             Self::RoutineScope => "Routine.scope",
             Self::AtomicCreate => "Atomic.create",
             Self::AtomicLoad => "Atomic.load",
@@ -2758,7 +2685,7 @@ impl Builtin {
                 ]),
                 Vec::new(),
             ),
-            Self::NetResolve | Self::NetOpen | Self::NetAccept | Self::NetRead | Self::NetNames => {
+            Self::NetResolve | Self::NetOpen | Self::NetAccept | Self::NetRead => {
                 let integers = |count: usize| vec![Concrete(Type::I64); count];
                 let parameters = match self {
                     Self::NetResolve => vec![
@@ -2769,7 +2696,6 @@ impl Builtin {
                         [vec![Concrete(Type::Integer(32, true))], integers(4)].concat()
                     }
                     Self::NetAccept => integers(2),
-                    Self::NetNames => integers(1),
                     _ => [vec![Concrete(Type::Integer(32, true))], integers(3)].concat(),
                 };
                 (
@@ -2781,7 +2707,7 @@ impl Builtin {
                     Vec::new(),
                 )
             }
-            Self::NetWrite | Self::NetSend => (
+            Self::NetWrite => (
                 vec![
                     Concrete(Type::Integer(32, true)),
                     Concrete(Type::I64),
@@ -2795,22 +2721,6 @@ impl Builtin {
                     Concrete(Type::I64),
                 ],
                 Concrete(Type::I64),
-                Vec::new(),
-            ),
-            Self::NetWatch => (
-                vec![
-                    Concrete(Type::I64),
-                    Concrete(Type::I64),
-                    Concrete(Type::Integer(32, true)),
-                    Concrete(Type::I64),
-                ],
-                Concrete(Type::Unit),
-                Vec::new(),
-            ),
-            Self::NetUnwatch => (vec![Concrete(Type::I64)], Concrete(Type::Unit), Vec::new()),
-            Self::NetConnect => (
-                vec![Concrete(Type::I64); 5],
-                Concrete(Type::Unit),
                 Vec::new(),
             ),
             Self::NetClose => (
@@ -3519,29 +3429,7 @@ impl Builtin {
             Self::OwnedDrop | Self::Ignore | Self::BenchConsume => {
                 (vec![a()], Concrete(Type::Unit), Vec::new())
             }
-            Self::ArenaNextId | Self::BenchNow | Self::AsyncNextId | Self::AsyncClock => {
-                (Vec::new(), Concrete(Type::I64), Vec::new())
-            }
-            Self::AsyncWait | Self::AsyncRetire => {
-                (vec![Concrete(Type::I64)], Concrete(Type::Unit), Vec::new())
-            }
-            Self::AsyncPosted => (
-                Vec::new(),
-                Concrete(Type::Tuple(vec![Type::I64, Type::I64])),
-                Vec::new(),
-            ),
-            Self::AsyncTake | Self::AsyncPut => {
-                let state = BuiltinType::Std {
-                    module: "Maybe",
-                    name: "Maybe",
-                    args: vec![a()],
-                };
-                if self == Self::AsyncTake {
-                    (Vec::new(), state, Vec::new())
-                } else {
-                    (vec![state], Concrete(Type::Unit), Vec::new())
-                }
-            }
+            Self::ArenaNextId | Self::BenchNow => (Vec::new(), Concrete(Type::I64), Vec::new()),
             Self::AllocCounter => (vec![Concrete(Type::I64)], Concrete(Type::I64), Vec::new()),
             Self::GenSeed => (Vec::new(), Concrete(Type::Integer(64, false)), Vec::new()),
             Self::GpuOpen => (
@@ -3658,18 +3546,6 @@ impl Builtin {
                 }
             }
             Self::Not => (vec![Concrete(Type::Bool)], Concrete(Type::Bool), Vec::new()),
-            Self::AsyncResume => (
-                vec![
-                    BuiltinType::Std {
-                        module: "Async",
-                        name: "Next",
-                        args: vec![a(), Var("b")],
-                    },
-                    a(),
-                ],
-                Var("b"),
-                Vec::new(),
-            ),
             Self::OwnedFunction | Self::OwnedCall => {
                 let run = BuiltinType::Function(vec![a()], Box::new(Var("b")));
                 let owned = BuiltinType::Std {
@@ -5862,6 +5738,13 @@ fn key_path(qualified: &str) -> String {
 
 /// A dotted full name or namespace as source code writes it, as
 /// `Sample::Features::Shape` for `Sample.Features.Shape`.
+/// The help of `E1040` for `Async { }` and `async { }` and the builder operations of `Async` (TZ13).
+pub(crate) const ASYNC_EXPRESSION_HELP: &str =
+    "run the work directly; to wait for I/O while other work runs, spawn tzroutines";
+
+/// The help of `E1040` for the types of `Async` (TZ13).
+const ASYNC_TYPE_HELP: &str = "return the value directly, or use a Channel to deliver it later";
+
 /// A name that the language had and has no longer (TZ03; TZ12 and TZ13 add theirs): the kind of
 /// its `E1040`, the message, the help, and the name to write instead. It is asked only when
 /// `module.name` resolves to nothing, so a definition of the program with that name wins.
@@ -5896,6 +5779,67 @@ pub(crate) fn removed_feature(
             "use Routine.scope, which takes the same arguments",
             Some("Routine.scope".to_owned()),
         )),
+        // TZ13: the module `Async` and the async twins of the Net operations, which TZ13 removed. None
+        // has a replacement that means the same.
+        ("Async", "run" | "block_on") => Some((
+            DiagnosticKind::RemovedAsync,
+            format!("'Async.{name}' was removed"),
+            "call the work directly (in a tzroutine, I/O waits without stopping other tzroutines)",
+            None,
+        )),
+        ("Async", "all" | "all_results") => Some((
+            DiagnosticKind::RemovedAsync,
+            format!("'Async.{name}' was removed"),
+            "spawn a tzroutine per job and wait with WaitGroup, or with ErrGroup for the first error",
+            None,
+        )),
+        ("Async", "sleep" | "now" | "yield") => Some((
+            DiagnosticKind::RemovedAsync,
+            format!("'Async.{name}' was removed"),
+            "use Time.sleep, Time.monotonic_ns, or Routine.yield",
+            None,
+        )),
+        ("Async", "start" | "host") => Some((
+            DiagnosticKind::RemovedAsync,
+            format!("'Async.{name}' was removed"),
+            "the host-driven executor was removed; call exports from host threads (native) or await the export's Promise (WebAssembly with --wasm-feature jspi)",
+            None,
+        )),
+        ("Async", "Async" | "Operation" | "Step" | "Next") => Some((
+            DiagnosticKind::RemovedAsync,
+            format!("the type 'Async.{name}' was removed"),
+            ASYNC_TYPE_HELP,
+            None,
+        )),
+        // The builder's operations, which a program could call by name.
+        ("Async", "Return" | "ReturnFrom" | "Bind" | "Delay" | "Zero" | "Combine" | "For") => {
+            Some((
+                DiagnosticKind::RemovedAsync,
+                format!("'Async.{name}' was removed"),
+                ASYNC_EXPRESSION_HELP,
+                None,
+            ))
+        }
+        (
+            "Net",
+            "connect_async"
+            | "accept_async"
+            | "read_async"
+            | "write_async"
+            | "recv_from_async"
+            | "send_to_async"
+            | "bind_async"
+            | "bind_udp_async"
+            | "close_async"
+            | "close_listener_async"
+            | "close_udp_async"
+            | "shutdown_async",
+        ) => Some((
+            DiagnosticKind::RemovedNetAsync,
+            format!("'Net.{name}' was removed"),
+            "call Net.connect (and the others without '_async') in a tzroutine; it waits without stopping other tzroutines",
+            None,
+        )),
         ("Channel", "bounded" | "clone_sender" | "Sender" | "Receiver") => Some((
             DiagnosticKind::RenamedToDataChannel,
             format!("'Channel.{name}' is now 'DataChannel.{name}'"),
@@ -5904,6 +5848,23 @@ pub(crate) fn removed_feature(
         )),
         _ => None,
     }
+}
+
+/// The `E1040` of a type of the removed `Async` (TZ13) named `name` at `span`: the bare `Async`
+/// (`Async.Async`) or a qualified name of the module.
+fn removed_async_type(name: &str, span: Span) -> Option<Diagnostic> {
+    if name == "Async" {
+        return Some(
+            Diagnostic::of(
+                DiagnosticKind::RemovedAsync,
+                "the type 'Async' was removed",
+                span,
+            )
+            .with_help(ASYNC_TYPE_HELP),
+        );
+    }
+    let (module, member) = name.rsplit_once('.')?;
+    (module == "Async").then(|| removed_name(module, member, span))?
 }
 
 /// The `E1040` of a removed name at `span`, which covers the whole qualified name, with the fix
@@ -6395,8 +6356,8 @@ impl Names {
     /// The computation builder that `name` names from `requester`: a builder module's name, which
     /// may be qualified by namespaces, or one of its `@alias` names. An alias is another spelling
     /// of its builder's name, so it is in sight wherever that name is. User builders take an alias
-    /// before std ones, as for declarations, and the opt-in rule for std types does not apply: the
-    /// std builder `Async` is reached as `async` once the program writes it (D-43).
+    /// before std ones, as for declarations, and the opt-in rule for std types does not apply: an
+    /// opt-in std builder is reached through its alias once the program writes it (D-43).
     fn builder_name(&self, requester: &str, name: &str) -> BuilderName<'_> {
         if let Some(key) = self
             .module_path(requester, name)
@@ -6577,6 +6538,10 @@ impl Names {
             .with_help(
                 "return the value directly; to run work concurrently, use 'tzroutine { ... }'",
             )),
+            // TZ13: `Async<T>` was the std type `Async.Async`, reached by its bare name.
+            _ if head.text == "Async" => {
+                Err(removed_async_type(&head.text, head.span).expect("the bare name"))
+            }
             _ => Err(Diagnostic::of(
                 DiagnosticKind::UnknownTypeName,
                 format!(
@@ -6781,11 +6746,15 @@ impl Names {
         match choice {
             Choice::Found(named, _) => Ok(named),
             Choice::Hidden(named) => Err(named.info().private_error("type", span)),
-            Choice::Missing => Err(Diagnostic::of(
-                DiagnosticKind::UnknownTypeName,
-                format!("unknown record, union, or type alias '{name}'"),
-                span,
-            )),
+            // TZ13: a type of the removed `Async` (`Async`, `Async.Operation`) is `E1040` here
+            // too, where a record literal or a type without arguments looks it up.
+            Choice::Missing => Err(removed_async_type(name, span).unwrap_or_else(|| {
+                Diagnostic::of(
+                    DiagnosticKind::UnknownTypeName,
+                    format!("unknown record, union, or type alias '{name}'"),
+                    span,
+                )
+            })),
             Choice::Ambiguous(visible, _) => {
                 let kind = if visible
                     .iter()
@@ -14356,8 +14325,10 @@ impl<'a> Checker<'a> {
                     module.starts_with(&prefix) && self.names.searchable(self.module, module)
                 })
             || crate::stdlib::is_reserved_module(name)
-            // TZ12: `Task.run` and the other removed functions report `E1040` (`removed_feature`).
+            // TZ12, TZ13: `Task.run`, `Async.run` and the other removed functions report `E1040`
+            // (`removed_feature`).
             || name == "Task"
+            || name == "Async"
             || Builtin::ALL.iter().any(|builtin| {
                 builtin
                     .name()

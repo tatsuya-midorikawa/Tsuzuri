@@ -7,7 +7,7 @@
 ## この記事のポイント
 
 - `.tc` が 1 ファイルにつき 1 ビルダーです。ファイル名がビルダー名になります。`.tz` に関数を並べただけではビルダーになりません。
-- `.tc` に `@alias async` と書くと、`async { ... }` が `Async { ... }` と同じ意味になります。別名は小文字で始め、ビルダー名の代わりに `{` の前へ書けます。標準の `Async` はこの別名を宣言済みです。
+- `Identity.tc` に `@alias identity` と書くと、`identity { ... }` が `Identity { ... }` と同じ意味になります。別名は小文字で始め、ビルダー名の代わりに `{` の前へ書けます。標準のビルダーは別名を宣言していません。
 - `let!` や `return` は、`Bind` や `Return` などの操作へコンパイル時に展開されます。
 - 標準では `Result`、`Maybe`、`IO` が `.tc` です。
 - 関数本体、式ブロック、トップレベルではビルダー名を省略できます。型からビルダーを選びます。
@@ -126,7 +126,7 @@ Identity {
 
 ## ビルダーの別名
 
-ビルダーの `.tc` に `@alias 名前` と書くと、`名前 { ... }` でそのビルダーを呼べます。別名はビルダー名のもう 1 つの綴りです。展開も生成されるコードも、ビルダー名で書いたときと同じです。標準の `Async` は `@alias async` を宣言しているので、`async { ... }` と `Async { ... }` は同じ計算になります。
+ビルダーの `.tc` に `@alias 名前` と書くと、`名前 { ... }` でそのビルダーを呼べます。別名はビルダー名のもう 1 つの綴りです。展開も生成されるコードも、ビルダー名で書いたときと同じです。標準のビルダー（`Result`・`Maybe`・`IO`）は別名を宣言していません。
 
 `Identity.tc`:
 
@@ -173,11 +173,10 @@ upper + lower
 - `@alias` は `.tc` のトップレベルに、名前を同じ行に置いて 1 行で書きます。`def` などの宣言と並べられ、複数の名前を宣言できます。`.tz` や `.tt` に書くと `E1018` です。ドキュメントコメントは付けられません。
 - 別名は小文字で始まる識別子です。ビルダー名は `.tc` のファイル名で、モジュール名は大文字で始まるので、別名がビルダー名とぶつかりません。大文字で始まる名前は、モジュール名や型名と区別できないので使えません。予約語と、`finally`、`is`、`namespace`、`of`、`try`、`using`、`where` も使えず、同じファイルで同じ名前を 2 回宣言することもできません。違反は `E0002` です。
 - 別名を使えるのは、そのビルダー名が見える場所です。同じ名前空間、`using` した名前空間、標準ライブラリのビルダーはどこからでも見えます。
-- 別名は `{` の前にだけ書けます。値や型としては使えず、`async.run` のような修飾もできません（`Async.run` と書きます）。`Ns::async` のように名前空間をつなぐ書き方もありません。`name { field: value }` はこれまでどおりレコードリテラルです。本体が空の `name {}` は別名が先に選ばれ、同名の（小文字の）空レコードがあっても変わりません。`Name.tc` と空レコード `Name` の関係と同じです。
+- 別名は `{` の前にだけ書けます。値や型としては使えず、`identity.Return` のような修飾もできません（`E1002`。`Identity.Return` と書きます）。`Ns::identity` のように名前空間をつなぐ書き方もありません。`name { field: value }` はこれまでどおりレコードリテラルです。本体が空の `name {}` は別名が先に選ばれ、同名の（小文字の）空レコードがあっても変わりません。`Name.tc` と空レコード `Name` の関係と同じです。
 - 見えているビルダーが複数で同じ別名を宣言していると、どれも選ばずに `E1004` です。ビルダー自身の名前（`Acme::Tools::Parser { ... }`）で選びます。`using` した 2 つの名前空間に同じ名前のビルダーがあっても、別名は宣言したほうを選び、両方が宣言していれば `E1004` です。
-- 利用者のビルダーの別名は、標準のビルダーの同名の別名より先に選ばれます。標準のビルダーは元の名前（`Async { ... }`）で呼べます。
 - `task` は削除された `task { ... }` 式の名前でしたが、今は普通の名前で、別名にも使えます。`@alias task` を宣言したビルダーがあれば `task { ... }` はそのビルダーの計算で、なければ `E1040`（`'task { }' was removed`）です（[Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行)）。
-- 標準の `Async.tc` は、ソースに `Async` か `async` の語があるときだけ読み込まれます。`asynchronous` や `async_work` のように別の語の一部では読み込まれません。コメントや文字列の中の語も数えます。
+- `async` は削除した `Async` ビルダーの別名でしたが、今は普通の名前で、別名にも使えます。`@alias async` を宣言したビルダーがあれば `async { ... }` はそのビルダーの計算で、なければ `E1040`（`'async { }' was removed`）です。`Async { ... }` も、利用者の `Async.tc` がなければ `E1040` です（[Async からの移行](../async-tasks-and-lazy/tzroutine.md#async-からの移行)）。
 
 宣言のない小文字の名前は `E1018` です。本体が空の `name {}` も、その名前のレコードがなければ同じです。
 
@@ -192,36 +191,8 @@ error[E1018]: unknown computation builder 'widget'; declare '@alias widget' in t
 | `Result` | `std/Result.tc` | 理由つきの成功と失敗 | 最初の `Error` で継続を呼ばない |
 | `Maybe` | `std/Maybe.tc` | 値の有無 | `None` で継続を呼ばない |
 | `IO` | `std/IO.tc` | 副作用の遅延合成 | 実行するまで副作用は起きない |
-| `Async` | `std/Async.tc` | 協調的な中断とホスト駆動 | `run` は仮想時刻、`block_on` は実時間、`start` はホスト駆動 |
 
 `Maybe` と `Result` は `Bind`、`Return`、`ReturnFrom`、`Zero`、`Combine`、`Delay`、`Run`、`For`、`While`、`MergeSources`、`BindReturn`、`Bind2` を定義しています。`IO` はこれらに加え `Using` を定義しています。公開の `IO.run` はありません。実行するのは `main`、`do!`、`let!`、トップレベルの `IO` 式です。
-
-### 標準 Async ビルダー
-
-`Async { ... }` は標準の `Async` ビルダーです。`Return`、`ReturnFrom`、`Bind`、`Delay`、`Zero`、`Combine`、`For` を定義し、`While`、`MergeSources`、`Yield` は定義しません。値を一度譲る操作は `Async.yield ()` と書きます。`Async.tc` は `@alias async` を宣言しているので、`async { ... }` と小文字でも書けます。同じ計算で、`Async.run` や `Async.block_on` のような操作は `Async` で修飾します（[ビルダーの別名](#ビルダーの別名)）。
-
-```tsuzuri run=7
-def worker :: i64 -> Async<i64>
-fn worker n =
-    do! Async.yield ()
-    return n + 1
-
-Async.run (worker 6)
-```
-
-```tsuzuri run=14
-let lower = async {
-    do! Async.yield ()
-    return 6
-}
-let upper = Async {
-    do! Async.yield ()
-    return 8
-}
-Async.run lower + Async.run upper
-```
-
-`Async` の値は作成時には動きません。`Async.run`、`Async.block_on`、`Async.start` のどれかで明示的に実行します。`Async` ビルダーの詳細、`all` / `all_results`、仮想時刻、ホストの再開、借用規則は [Async 式](../async-tasks-and-lazy/async.md) を参照してください。
 
 ```tsuzuri run=42
 let answer: Result<i64, string> = Result {
@@ -394,7 +365,6 @@ match answer with
 1. 継続は再利用できる関数です。`ref mut` や `Drop` 型の値を継続へ捕捉すると `E1005` です。
 2. 外の `let mut` への代入は、継続の中では可変束縛として見えず `E1014` です。
 3. `let! mut x = expr` は、その継続の中のローカルを可変にするだけです。後続の `let!` をまたいで、外の可変変数を共有する機能ではありません。
-4. `Async<T>` の式が借用を持つことはできません。`let!`、`do!`、または計算の開始をまたぐ借用は `E1013` です。値をブロックへ移すか、次の中断点より前に借用を終えます。
 
 ```tsuzuri run=42
 let answer = Maybe {
@@ -413,7 +383,7 @@ match answer with
 42
 ```
 
-裸の `do expr` は `unit` の通常式です。モナドを実行する `do!` とは別です。`Async` の暗黙本体は戻り値が `Async<T>` のときに選ばれます。詳しくは [Async 式](../async-tasks-and-lazy/async.md) を見てください。
+裸の `do expr` は `unit` の通常式です。モナドを実行する `do!` とは別です。
 
 ## 性能
 
@@ -433,15 +403,15 @@ match answer with
 
 ## まとめ
 
-- ビルダーは `.tc` のファイル名です。実行時オブジェクトではありません。`@alias` で小文字の別名を足せます。標準の `Async` の別名は `async` です。
-- `let!`、`do!`、`return`、`yield`、`for`、`while` は、対応する操作へ展開されます。無い操作は `E1018` です。標準の `Async` では `Async.yield ()` が中断点であり、文の `yield` は未定義です。
+- ビルダーは `.tc` のファイル名です。実行時オブジェクトではありません。`@alias` で小文字の別名を足せます。
+- `let!`、`do!`、`return`、`yield`、`for`、`while` は、対応する操作へ展開されます。無い操作は `E1018` です。
 - 関数本体ではビルダー名を省略できます。曖昧なときは型注釈か明示的な `Builder { ... }` が要ります。
 - `and!` は左から右の結合で、スレッド並列ではありません。
 - 継続は普通の関数です。`ref mut`、`Drop` 型は捕捉できません。
 
 ## 関連項目
 
-- [Async 式](../async-tasks-and-lazy/async.md)
+- [tzroutine 式](../async-tasks-and-lazy/tzroutine.md)（[Async からの移行](../async-tasks-and-lazy/tzroutine.md#async-からの移行)）
 - [Lazy 式](../async-tasks-and-lazy/lazy.md)
 - [Result](../built-in-types-and-modules/result.md)
 - [Maybe](../built-in-types-and-modules/maybe.md)

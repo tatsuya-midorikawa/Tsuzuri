@@ -111,7 +111,7 @@ Box.value
 
 ## 予約モジュール名
 
-標準ライブラリ（std）用に、以下の 74 個のモジュール名が予約されています。
+標準ライブラリ（std）用に、以下の 73 個のモジュール名が予約されています。
 
 ```text
 Maybe       Result      Array       List        Vec         String
@@ -121,12 +121,12 @@ Seq         Test        Gpu         IO          Owned       File
 Dir         Path        Env         Time        Random      Os
 Process     Net         Format      Exception   BigInt      FixedArray
 Dyn         Arena       Rc          Arc         Regex       Unicode
-Json        Cbor        Bench       Gen         Async       Matrix
-MatrixView  Tensor      Atomic      Mutex       Channel     Alloc
-Text        RegexText   Domain      Monoid      Monoids     Routine
-DataChannel SendOnly    ReceiveOnly Timer       Ticker      WaitGroup
-Once        OnceValue   RwMutex     Cond        Semaphore   SyncMap
-Context     ErrGroup
+Json        Cbor        Bench       Gen         Matrix      MatrixView
+Tensor      Atomic      Mutex       Channel     Alloc       Text
+RegexText   Domain      Monoid      Monoids     Routine     DataChannel
+SendOnly    ReceiveOnly Timer       Ticker      WaitGroup   Once
+OnceValue   RwMutex     Cond        Semaphore   SyncMap     Context
+ErrGroup
 ```
 
 `FixedArray`、`Dyn`、`Rc`、`Arc`、`Routine` は、対応するソースが無くても予約です（組み込みの関数と型だけを持ちます）。次の位置に使うと `E1011` です。
@@ -137,7 +137,7 @@ Context     ErrGroup
 
 サブディレクトリのファイル名（`Tools/Maybe.tz`）や、先頭以外の名前空間要素（`namespace App::Maybe`）には使えます。関数名やレコード名にも使えます。自ファイルで `record Result` を宣言すると、そのファイルではローカル宣言が標準ライブラリより優先されます。標準側は `std::Result` と書きます。
 
-`_` 単独と予約語（ディレクトリ名 `match` など）は、パスの各要素で `E1011` です。`Task` は予約ではなく、利用者のモジュール名・ディレクトリ名・名前空間に使えます（組み込みの `Task` は削除されました）。
+`_` 単独と予約語（ディレクトリ名 `match` など）は、パスの各要素で `E1011` です。`Task` と `Async` は予約ではなく、利用者のモジュール名・ディレクトリ名・名前空間に使えます（組み込みの `Task` は TZ12 で、std の `Async` は TZ13 で削除されました）。
 
 ## 探索の規則
 

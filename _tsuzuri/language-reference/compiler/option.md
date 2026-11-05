@@ -106,7 +106,7 @@
 
 ネイティブの実行ファイル（`--emit exe`。`build` と `run`）に入るのは、入口（`def main` かトップレベルのコード）、`export def`、`Drop` の実装（std のものを含む）と、そこから到達する関数だけです。どこからも呼ばれない公開関数は、実行ファイルの内部関数で外から呼べないので、コンパイルしません。未使用の公開関数も、型検査と所有権の検査は今までどおり受け、型エラーは `check` が報告します。コンパイルしないので、その関数だけが使うものは、実行ファイルのビルドを妨げません。以前は失敗したビルドが、次のように通ります。
 
-- ビルドする target にない OS API、`Net`、`Async.block_on` を、未使用の公開関数だけが使うとき。`File.read_text` だけを使う関数は、`--target x86_64-pc-windows-gnu` で `E2002` でしたが、出ません（[対応プラットフォーム](platforms.md#診断)）。
+- ビルドする target にない OS API や `Net` を、未使用の公開関数だけが使うとき。`File.read_text` だけを使う関数は、`--target x86_64-pc-windows-gnu` で `E2002` でしたが、出ません（[対応プラットフォーム](platforms.md#診断)）。
 - どのライブラリにもない `extern` のシンボルを、未使用の公開関数だけが呼ぶとき。リンクが未定義のシンボルで失敗していましたが、通ります（[ネイティブ連携](native-interop.md#ホスト関数を-import-する)）。
 - tzroutine（`Parallel.*`・`Mutex` を含む）、`Net`、GPU などの C のランタイムを、未使用の公開関数だけが使うとき。そのランタイムのコンパイルもリンクもしません。
 
@@ -402,7 +402,7 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 | `--wasm-stack-size SIZE` | 1 MiB | WASM 出力だけ。16 の倍数で、64 KiB 以上。メモリ上限はスタック + 64 KiB 以上 |
 | `--wasm-feature simd128` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm` |
 | `--wasm-feature threads` | オフ | `wasm32` の `object` か `wasm`。`Parallel.*`・`Mutex`・`Atomic`・`DataChannel` を Worker と共有メモリで動かす（tzroutine・`Routine.scope`・`Channel` は `E2000`）。WASI や `--allocator host` とは排他 |
-| `--wasm-feature jspi` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm` と、wasm32 の `bindings-js`。`Async.block_on` 用。threads / WASI とは排他 |
+| `--wasm-feature jspi` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm` と、wasm32 の `bindings-js`。グルーの export が `Promise` を返し、モジュールは JSPI で待つ（`net` のソケット）。threads / WASI とは排他 |
 | `--wasm-feature webgpu` | オフ | `wasm32` の `object`、`llvm`、`wasm`。`Gpu.request Gpu.WebGpu` 用。threads / WASI / `bindings-js` とは排他 |
 | `--wasm-feature net` | オフ | wasm32 の `object`、`llvm`、`wasm`、`bindings-js`。`jspi` が必要。`Net` のソケットを、Node.js 向けのグルーが実装する `tsuzuri_net` の import にする。threads / WASI / wasm64 とは排他 |
 | `--wasm-feature tail-call` | オフ | `wasm32` / `wasm64` の `object`、`llvm`、`wasm`。保証された末尾呼び出しを `return_call` にする。ほかの機能と併用できる。`bindings-js` と `--backend fast` には付けられない |
@@ -412,7 +412,7 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 
 `--wasm-stack-size` は、リンク済みの WASM にだけ埋めます。オブジェクトや LLVM IR を自分でリンクするときは、`wasm-ld -z stack-size` を使います。`test` でメモリやスタックを変えるときは、`--target wasm32` か `wasm64` が必要です。
 
-`Async.block_on` を使う WASM では、`.wasm` と `--emit bindings-js` のどちらを作るときも `--wasm-feature jspi` が必要です。省略は生成前に `E2000` となり、同期型のグルーへ置き換えません。
+`--wasm-feature jspi` は、グルーの export を `Promise` を返す関数にし、呼び出しを直列化します。待つ import のないモジュールでは、`.wasm` は付けないときと同じです（[WebAssembly への出力](webassembly.md#jspi)）。
 
 `--wasm-feature webgpu` は、`Gpu.request Gpu.WebGpu` を使うプログラムのモジュールに、`tsuzuri_gpu.open` と `tsuzuri_gpu.run` の 2 つの import を足します。付けなければ import は増えず、`Gpu.request Gpu.WebGpu` は `Unavailable` です。ホスト側は `src/runtime/webgpu.mjs` の `createGpuImports` が作ります（[WebAssembly への出力](webassembly.md#webgpu-デバイス)）。
 
@@ -480,7 +480,6 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--wasm-feature` を `build` 以外に付ける | `--wasm-feature is only valid with build` |
 | `threads` なのに wasm32 の object / wasm でない | `--wasm-feature threads requires wasm32 object or WASM output` |
 | `jspi` なのに WASM の object / llvm / wasm / bindings-js でない | `--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output` |
-| `Async.block_on` に `jspi` がない | `Async.block_on on WebAssembly needs --wasm-feature jspi` |
 | WebAssembly で `tzroutine` を使う（`jspi` なし） | `tzroutine on WebAssembly needs --wasm-feature jspi` |
 | WebAssembly で `tzroutine` と `--wasm-feature jspi` | `tzroutine with --wasm-feature jspi is not implemented yet` |
 | `tzroutine` と `--wasm-feature threads` | `tzroutine cannot be combined with --wasm-feature threads: the tzroutine runtime has no WebAssembly threads backend` |

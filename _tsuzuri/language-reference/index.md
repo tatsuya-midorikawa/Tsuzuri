@@ -139,7 +139,6 @@
 - [Gen](./built-in-types-and-modules/gen.md)
 - [Gpu](./built-in-types-and-modules/gpu.md)
 - [IO](./built-in-types-and-modules/io.md)
-- [Async（型と API）](./async-tasks-and-lazy/async.md#api)
 - [Owned](./built-in-types-and-modules/owned.md)
 - [Routine](./built-in-types-and-modules/routine.md)
 - [File](./built-in-types-and-modules/file.md)
@@ -158,10 +157,9 @@
 - [Json](./built-in-types-and-modules/json.md)
 - [Cbor](./built-in-types-and-modules/cbor.md)
 
-#### 非同期処理
+#### 並行処理と遅延評価
 
-- [Async 式（協調的な中断とホスト駆動）](./async-tasks-and-lazy/async.md)
-- [tzroutine 式](./async-tasks-and-lazy/tzroutine.md) — 軽量な実行単位の起動と、[Task からの移行](./async-tasks-and-lazy/tzroutine.md#task-からの移行)
+- [tzroutine 式](./async-tasks-and-lazy/tzroutine.md) — 軽量な実行単位の起動と、[Task からの移行](./async-tasks-and-lazy/tzroutine.md#task-からの移行)・[Async からの移行](./async-tasks-and-lazy/tzroutine.md#async-からの移行)
 - [select 式](./async-tasks-and-lazy/select.md) — 複数のチャンネルの送受信を同時に待つ
 - [Lazy 式](./async-tasks-and-lazy/lazy.md)
 

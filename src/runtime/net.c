@@ -1,6 +1,6 @@
-// Sockets of the standard Net module (E09): TCP streams and listeners, UDP sockets, name resolution, and the
-// readiness waits of the async operations. macOS and Linux use POSIX sockets and Windows uses Winsock (the
-// driver links ws2_32). The driver links this file when the program reaches Net.__*.
+// Sockets of the standard Net module (E09): TCP streams and listeners, UDP sockets, and name resolution. macOS
+// and Linux use POSIX sockets and Windows uses Winsock (the driver links ws2_32). The driver links this file when
+// the program reaches Net.__*.
 //
 // A socket is a handle, (generation << 32) | (slot + 1), into a table of open sockets. Every open gets the
 // next generation, which wraps only after 2^31 opens, so a closed or stale handle is rejected (InvalidInput,
@@ -15,13 +15,9 @@
 // An address crosses as a 20-byte record: family 4 or 6, 0, the port (big endian), and 16 address bytes (an
 // IPv4 address is the last 4). The feature macros must come before the first include.
 //
-// The async operations do their I/O on the thread that runs the executor and never wait there: a timeout of 0
-// means "try once", and a call that would have to wait returns TZ_NET_PENDING (kind Other, code 0), which no
-// system failure has. What the executor waits for is readiness, and one poller thread watches it for all the
-// waits: it starts with the first wait, sleeps in poll until a descriptor is ready, a deadline passes, or a
-// change wakes it, and ends when no wait is left. It posts the completion of a wait, 0 for ready or a status,
-// with the `tsuzuri_async_post` that the IR passes in, so a completion owns nothing and a completion that
-// nobody receives costs nothing. Only a connect that is under way is owned by its wait, until it finishes.
+// A timeout of 0 means "try once": a call that would have to wait returns TZ_NET_PENDING (kind Other, code 0),
+// which no system failure has. A wait on a tzroutine waits in the scheduler's netpoller (TZ08), and any other
+// wait in poll.
 #if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
 #define _DARWIN_C_SOURCE
 #endif
@@ -204,9 +200,6 @@ __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_net_close_hoo
 extern void *tsuzuri_alloc(int64_t size);
 extern void tsuzuri_free(void *pointer);
 
-// The runtime's way to complete an async operation; the IR passes `tsuzuri_async_post`.
-typedef int32_t (*tz_net_post_function)(int64_t operation, int64_t value);
-
 struct tz_net_buffer {
     unsigned char *data;
     int64_t length;
@@ -222,9 +215,6 @@ enum {
 };
 
 enum { TZ_NET_STREAM = 1, TZ_NET_LISTENER = 2, TZ_NET_DATAGRAM = 3 };
-
-// What a wait is for: the `events` argument of tsuzuri_net_watch.
-enum { TZ_NET_WATCH_READ = 1, TZ_NET_WATCH_WRITE = 2 };
 
 #define TZ_NET_RECORD 20
 #define TZ_NET_MAX_READ (INT64_C(1) << 24)
@@ -391,7 +381,6 @@ struct tz_net_socket {
     int family;
     int64_t generation;
     size_t next_free; // for a free slot: the next free slot + 1, or 0
-    unsigned char names[2 * TZ_NET_RECORD]; // the local address record, then the peer's
 };
 
 static tz_net_mutex tz_net_table_lock = TZ_NET_MUTEX_INIT;
@@ -409,9 +398,8 @@ static void tz_net_release(void) {
     tz_net_mutex_unlock(&tz_net_table_lock);
 }
 
-// Opens a slot for `descriptor` with the 40 bytes of addresses `names` (NULL: zeros): 0 and the handle, or an
-// error number (the descriptor stays the caller's).
-static int tz_net_register(tz_net_fd descriptor, int kind, int family, const unsigned char *names, int64_t *handle) {
+// Opens a slot for `descriptor`: 0 and the handle, or an error number (the descriptor stays the caller's).
+static int tz_net_register(tz_net_fd descriptor, int kind, int family, int64_t *handle) {
     int status = 0;
     tz_net_acquire();
     if (tz_net_free_head == 0) {
@@ -440,8 +428,6 @@ static int tz_net_register(tz_net_fd descriptor, int kind, int family, const uns
         entry->family = family;
         entry->generation = tz_net_generation;
         entry->next_free = 0;
-        if (names != NULL) memcpy(entry->names, names, sizeof entry->names);
-        else memset(entry->names, 0, sizeof entry->names);
         tz_net_open_count++;
         *handle = (entry->generation << 32) | (int64_t)(slot + 1);
     }
@@ -687,7 +673,7 @@ static int tz_net_names(tz_net_fd descriptor, unsigned char *records, const stru
     return 0;
 }
 
-// Closes a handle that nobody has seen yet: the socket of a connect whose completion nobody wants.
+// Closes a handle that nobody has seen yet: the socket whose addresses could not be delivered.
 static void tz_net_discard(int64_t handle) {
     tz_net_fd descriptor;
     if (tz_net_forget(handle, &descriptor)) tz_net_close_fd(descriptor);
@@ -698,7 +684,7 @@ static int64_t tz_net_publish(struct tz_net_buffer *output, tz_net_fd descriptor
     unsigned char records[2 * TZ_NET_RECORD];
     int error = tz_net_names(descriptor, records, peer);
     int64_t handle = 0;
-    if (error == 0) error = tz_net_register(descriptor, kind, family, records, &handle);
+    if (error == 0) error = tz_net_register(descriptor, kind, family, &handle);
     if (error != 0) {
         tz_net_close_fd(descriptor);
         return -tz_net_error(error);
@@ -709,338 +695,6 @@ static int64_t tz_net_publish(struct tz_net_buffer *output, tz_net_fd descriptor
         return -status;
     }
     return handle;
-}
-
-// ---- The readiness waits and the poller thread ----
-
-// A wait is one registered interest of an async operation: its socket ready for `events`, or a connect that the
-// wait owns until it finishes. `serial` orders the waits by registration.
-struct tz_net_wait {
-    uint64_t serial;
-    int64_t operation;
-    int64_t handle; // the socket of a readiness wait; 0 for a connect
-    tz_net_fd descriptor;
-    short events;
-    int connecting; // the wait owns `descriptor`, a socket that connects
-    int family;
-    int64_t deadline; // monotonic nanoseconds, or -1
-    unsigned char peer[TZ_NET_RECORD]; // a connect's target
-};
-
-static tz_net_mutex tz_net_poll_lock = TZ_NET_MUTEX_INIT;
-static struct tz_net_wait *tz_net_waits = NULL; // in the order of `serial`
-static size_t tz_net_wait_count = 0;
-static size_t tz_net_wait_capacity = 0;
-static uint64_t tz_net_wait_serial = 0;
-static int tz_net_poller_running = 0;
-static tz_net_post_function tz_net_post = NULL;
-
-// The poller sleeps in poll on its wake channel too, so that a new or removed wait changes what it watches at
-// once: a pipe, or on Windows (where poll waits on sockets only) a UDP socket that sends to itself.
-#if defined(_WIN32)
-static SOCKET tz_net_wake_socket = INVALID_SOCKET;
-static struct sockaddr_in tz_net_wake_address;
-
-static int tz_net_wake_open(void) {
-    SOCKET descriptor = tz_net_create(AF_INET, SOCK_DGRAM);
-    if (descriptor == INVALID_SOCKET) return tz_net_errno();
-    struct sockaddr_in address;
-    int length = sizeof address;
-    memset(&address, 0, sizeof address);
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(descriptor, (struct sockaddr *)&address, sizeof address) != 0 || getsockname(descriptor, (struct sockaddr *)&address, &length) != 0) {
-        int error = tz_net_errno();
-        closesocket(descriptor);
-        return error;
-    }
-    tz_net_wake_address = address;
-    tz_net_wake_socket = descriptor;
-    return 0;
-}
-
-static tz_net_fd tz_net_wake_descriptor(void) { return tz_net_wake_socket; }
-
-static void tz_net_wake_signal(void) {
-    char byte = 1;
-    sendto(tz_net_wake_socket, &byte, 1, 0, (const struct sockaddr *)&tz_net_wake_address, sizeof tz_net_wake_address);
-}
-
-static void tz_net_wake_drain(void) {
-    char bytes[64];
-    while (recv(tz_net_wake_socket, bytes, sizeof bytes, 0) > 0) {
-    }
-}
-
-static void tz_net_wake_close(void) {
-    if (tz_net_wake_socket != INVALID_SOCKET) closesocket(tz_net_wake_socket);
-    tz_net_wake_socket = INVALID_SOCKET;
-}
-#else
-static int tz_net_wake_pipe[2] = {-1, -1};
-
-static int tz_net_wake_open(void) {
-#if defined(__linux__)
-    if (pipe2(tz_net_wake_pipe, O_CLOEXEC | O_NONBLOCK) != 0) return errno;
-#else
-    if (pipe(tz_net_wake_pipe) != 0) return errno;
-    for (int index = 0; index < 2; index++) {
-        int flags = fcntl(tz_net_wake_pipe[index], F_GETFD);
-        int status = flags < 0 ? -1 : fcntl(tz_net_wake_pipe[index], F_SETFD, flags | FD_CLOEXEC);
-        if (status == 0) {
-            flags = fcntl(tz_net_wake_pipe[index], F_GETFL);
-            status = flags < 0 ? -1 : fcntl(tz_net_wake_pipe[index], F_SETFL, flags | O_NONBLOCK);
-        }
-        if (status != 0) {
-            int error = errno;
-            close(tz_net_wake_pipe[0]);
-            close(tz_net_wake_pipe[1]);
-            tz_net_wake_pipe[0] = tz_net_wake_pipe[1] = -1;
-            return error;
-        }
-    }
-#endif
-    return 0;
-}
-
-static tz_net_fd tz_net_wake_descriptor(void) { return tz_net_wake_pipe[0]; }
-
-static void tz_net_wake_signal(void) {
-    char byte = 1;
-    // A full pipe already has a wake-up in it.
-    if (write(tz_net_wake_pipe[1], &byte, 1) < 0) {
-    }
-}
-
-static void tz_net_wake_drain(void) {
-    char bytes[64];
-    while (read(tz_net_wake_pipe[0], bytes, sizeof bytes) > 0) {
-    }
-}
-
-static void tz_net_wake_close(void) {
-    if (tz_net_wake_pipe[0] >= 0) close(tz_net_wake_pipe[0]);
-    if (tz_net_wake_pipe[1] >= 0) close(tz_net_wake_pipe[1]);
-    tz_net_wake_pipe[0] = tz_net_wake_pipe[1] = -1;
-}
-#endif
-
-// Settles a wait that has left the list. A connect that is under way ends here: its result is a new handle
-// (positive) or the negated status; a rejected post means that the operation is gone, so the new socket is closed.
-// A wait for readiness completes with 0, or with the status of why it did not.
-static void tz_net_settle(const struct tz_net_wait *wait, int expired) {
-    if (!wait->connecting) {
-        tz_net_post(wait->operation, expired ? tz_net_error(TZ_NET_E_TIMEDOUT) : 0);
-        return;
-    }
-    int64_t result = 0;
-    int error = expired ? TZ_NET_E_TIMEDOUT : 0;
-    if (error == 0) {
-        int pending = 0;
-        socklen_t size = sizeof pending;
-        error = getsockopt(wait->descriptor, SOL_SOCKET, SO_ERROR, (char *)&pending, &size) != 0 ? tz_net_errno() : pending;
-    }
-    if (error == 0) {
-        unsigned char records[2 * TZ_NET_RECORD];
-        error = tz_net_names(wait->descriptor, records, NULL);
-        memcpy(records + TZ_NET_RECORD, wait->peer, TZ_NET_RECORD);
-        if (error == 0) error = tz_net_register(wait->descriptor, TZ_NET_STREAM, wait->family, records, &result);
-    }
-    if (error != 0) {
-        tz_net_close_fd(wait->descriptor);
-        result = -tz_net_error(error);
-    }
-    if (tz_net_post(wait->operation, result) == 0 && result > 0) tz_net_discard(result);
-}
-
-// The caller holds the poll lock. Settles every wait with the failure `error` (an error number).
-static void tz_net_settle_all(int error) {
-    for (size_t index = 0; index < tz_net_wait_count; index++) {
-        const struct tz_net_wait *wait = &tz_net_waits[index];
-        if (wait->connecting) {
-            tz_net_close_fd(wait->descriptor);
-            tz_net_post(wait->operation, -tz_net_error(error));
-        } else {
-            tz_net_post(wait->operation, tz_net_error(error));
-        }
-    }
-    tz_net_wait_count = 0;
-}
-
-// The caller holds the poll lock, and `entries` and `serials` are what the poller watched: its wake channel and
-// then one entry per wait, as of `snapshot` waits. A wait that is ready or past its deadline is settled and leaves
-// the list; waits registered since are checked against their deadlines only.
-static void tz_net_process(const tz_net_pollfd *entries, const uint64_t *serials, size_t snapshot) {
-    int64_t now = tz_net_now();
-    size_t kept = 0;
-    size_t seen = 0;
-    for (size_t index = 0; index < tz_net_wait_count; index++) {
-        const struct tz_net_wait wait = tz_net_waits[index];
-        while (seen < snapshot && serials[seen] < wait.serial) seen++;
-        short events = seen < snapshot && serials[seen] == wait.serial ? entries[1 + seen].revents : 0;
-        if (events != 0) {
-            tz_net_settle(&wait, 0);
-        } else if (wait.deadline >= 0 && wait.deadline <= now) {
-            tz_net_settle(&wait, 1);
-        } else {
-            tz_net_waits[kept++] = wait;
-        }
-    }
-    tz_net_wait_count = kept;
-}
-
-static void tz_net_poller_main(void) {
-    tz_net_pollfd *entries = NULL;
-    uint64_t *serials = NULL;
-    size_t capacity = 0;
-    for (;;) {
-        tz_net_mutex_lock(&tz_net_poll_lock);
-        if (tz_net_wait_count == 0) {
-            tz_net_wake_close();
-            free(tz_net_waits);
-            tz_net_waits = NULL;
-            tz_net_wait_capacity = 0;
-            tz_net_poller_running = 0;
-            tz_net_mutex_unlock(&tz_net_poll_lock);
-            free(entries);
-            free(serials);
-            return;
-        }
-        size_t count = tz_net_wait_count;
-        if (count + 1 > capacity) {
-            size_t next = capacity == 0 ? 16 : capacity * 2;
-            while (next < count + 1) next *= 2;
-            tz_net_pollfd *larger_entries = realloc(entries, next * sizeof *entries);
-            if (larger_entries != NULL) entries = larger_entries;
-            uint64_t *larger_serials = realloc(serials, next * sizeof *serials);
-            if (larger_serials != NULL) serials = larger_serials;
-            if (larger_entries == NULL || larger_serials == NULL) {
-                tz_net_settle_all(TZ_NET_E_NOMEM);
-                tz_net_mutex_unlock(&tz_net_poll_lock);
-                continue;
-            }
-            capacity = next;
-        }
-        int64_t earliest = -1;
-        entries[0].fd = tz_net_wake_descriptor();
-        entries[0].events = TZ_NET_POLL_READ;
-        entries[0].revents = 0;
-        for (size_t index = 0; index < count; index++) {
-            const struct tz_net_wait *wait = &tz_net_waits[index];
-            entries[1 + index].fd = wait->descriptor;
-            entries[1 + index].events = wait->events;
-            entries[1 + index].revents = 0;
-            serials[index] = wait->serial;
-            if (wait->deadline >= 0 && (earliest < 0 || wait->deadline < earliest)) earliest = wait->deadline;
-        }
-        int timeout = -1;
-        if (earliest >= 0) {
-            int64_t remaining = earliest - tz_net_now();
-            int64_t milliseconds = remaining <= 0 ? 0 : (remaining + 999999) / 1000000;
-            timeout = milliseconds > INT_MAX ? INT_MAX : (int)milliseconds;
-        }
-        tz_net_mutex_unlock(&tz_net_poll_lock);
-        int ready = tz_net_poll(entries, count + 1, timeout);
-        int error = ready < 0 ? tz_net_errno() : 0;
-        tz_net_mutex_lock(&tz_net_poll_lock);
-        if (ready < 0 && error != TZ_NET_E_INTR) {
-            tz_net_settle_all(error);
-        } else {
-            if (ready > 0 && entries[0].revents != 0) tz_net_wake_drain();
-            tz_net_process(entries, serials, count);
-        }
-        tz_net_mutex_unlock(&tz_net_poll_lock);
-    }
-}
-
-#if defined(_WIN32)
-static DWORD WINAPI tz_net_poller_entry(LPVOID unused) {
-    (void)unused;
-    tz_net_poller_main();
-    return 0;
-}
-
-// Starts the poller on a thread that nobody joins: 0 or an error number.
-static int tz_net_spawn(void) {
-    HANDLE thread = CreateThread(NULL, 0, tz_net_poller_entry, NULL, 0, NULL);
-    if (thread == NULL) return (int)GetLastError();
-    CloseHandle(thread);
-    return 0;
-}
-#else
-static void *tz_net_poller_entry(void *unused) {
-    (void)unused;
-    tz_net_poller_main();
-    return NULL;
-}
-
-static int tz_net_spawn(void) {
-    pthread_attr_t attributes;
-    pthread_t thread;
-    int error = pthread_attr_init(&attributes);
-    if (error != 0) return error;
-    error = pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
-    if (error == 0) error = pthread_create(&thread, &attributes, tz_net_poller_entry, NULL);
-    pthread_attr_destroy(&attributes);
-    return error;
-}
-#endif
-
-// The caller holds the poll lock. Adds a wait and makes the poller notice it, starting the poller if it is not
-// running: 0 or an error number (the wait is not added, and a connect's socket stays the caller's).
-static int tz_net_add_wait(const struct tz_net_wait *wait) {
-    if (tz_net_wait_count == tz_net_wait_capacity) {
-        size_t next = tz_net_wait_capacity == 0 ? 16 : tz_net_wait_capacity * 2;
-        struct tz_net_wait *larger = realloc(tz_net_waits, next * sizeof *larger);
-        if (larger == NULL) return TZ_NET_E_NOMEM;
-        tz_net_waits = larger;
-        tz_net_wait_capacity = next;
-    }
-    if (tz_net_poller_running) {
-        tz_net_wake_signal();
-    } else {
-        int error = tz_net_wake_open();
-        if (error == 0) {
-            error = tz_net_spawn();
-            if (error != 0) tz_net_wake_close();
-        }
-        if (error != 0) return error;
-        tz_net_poller_running = 1;
-    }
-    tz_net_waits[tz_net_wait_count] = *wait;
-    tz_net_waits[tz_net_wait_count].serial = ++tz_net_wait_serial;
-    tz_net_wait_count++;
-    return 0;
-}
-
-// Removes the waits of `operation`, or, when `handle` is not 0, the readiness waits on that socket (the caller
-// holds the poll lock): how many. `settle` completes a removed wait as ready; otherwise a removed connect gives
-// up its socket.
-static size_t tz_net_remove_waits(int64_t operation, int64_t handle, int settle) {
-    size_t kept = 0;
-    size_t removed = 0;
-    for (size_t index = 0; index < tz_net_wait_count; index++) {
-        const struct tz_net_wait wait = tz_net_waits[index];
-        int selected = handle != 0 ? !wait.connecting && wait.handle == handle : wait.operation == operation;
-        if (!selected) {
-            tz_net_waits[kept++] = wait;
-            continue;
-        }
-        removed++;
-        if (settle) tz_net_post(wait.operation, 0);
-        else if (wait.connecting) tz_net_close_fd(wait.descriptor);
-    }
-    tz_net_wait_count = kept;
-    if (removed > 0 && tz_net_poller_running) tz_net_wake_signal();
-    return removed;
-}
-
-// A wait on a socket that is being closed ends as ready, and the retry reports the closed handle. Called before
-// the descriptor is closed, so that no wait can watch a descriptor number that another socket takes over.
-static void tz_net_cancel_handle(int64_t handle) {
-    tz_net_mutex_lock(&tz_net_poll_lock);
-    if (tz_net_wait_count > 0) tz_net_remove_waits(0, handle, 1);
-    tz_net_mutex_unlock(&tz_net_poll_lock);
 }
 
 // ---- Opening, accepting, reading, writing, and closing ----
@@ -1305,47 +959,11 @@ TZ_NET_API int64_t tsuzuri_net_write(int32_t operation, int64_t handle, const un
     return 0;
 }
 
-// Sends from `data[offset, length)` without waiting. op 0 sends as much of a stream's bytes as the system takes
-// and returns how many (0 when nothing remains); op 1 sends all of `data` as one datagram to the address and
-// returns `length`. A call that would have to wait returns -TZ_NET_PENDING (when nothing was sent), and any other
-// failure the negated status; a failure after some bytes were sent is left to the next call.
-TZ_NET_API int64_t tsuzuri_net_send(int32_t operation, int64_t handle, const unsigned char *data, int64_t length, int64_t offset, int64_t meta, int64_t high, int64_t low) {
-    if ((operation != 0 && operation != 1) || length < 0 || offset < 0 || offset > length) return -tz_net_invalid_input();
-    struct tz_net_socket socket_entry;
-    if (!tz_net_find(handle, operation == 0 ? TZ_NET_STREAM : TZ_NET_DATAGRAM, &socket_entry)) return -tz_net_bad_handle();
-    tz_net_fd descriptor = socket_entry.descriptor;
-    if (operation == 1) {
-        if (length > TZ_NET_MAX_DATAGRAM) return -tz_net_error(TZ_NET_E_MSGSIZE);
-        struct sockaddr_storage target;
-        socklen_t size = tz_net_address(&target, meta, high, low);
-        for (;;) {
-            if (tz_net_send_datagram(descriptor, data, (size_t)length, (struct sockaddr *)&target, size) == 0) return length;
-            int error = tz_net_errno();
-            if (error != TZ_NET_E_INTR) return -tz_net_error(TZ_NET_WOULD_BLOCK(error) ? TZ_NET_E_PENDING : error);
-        }
-    }
-    int64_t sent = 0;
-    while (offset + sent < length) {
-        int64_t chunk = length - offset - sent < TZ_NET_MAX_SEND ? length - offset - sent : TZ_NET_MAX_SEND;
-        int64_t count = tz_net_send_stream(descriptor, data + offset + sent, (size_t)chunk);
-        if (count > 0) {
-            sent += count;
-            continue;
-        }
-        int error = count < 0 ? tz_net_errno() : TZ_NET_E_WOULDBLOCK;
-        if (error == TZ_NET_E_INTR) continue;
-        if (sent > 0) return sent;
-        return -tz_net_error(TZ_NET_WOULD_BLOCK(error) ? TZ_NET_E_PENDING : error);
-    }
-    return sent;
-}
-
 // Closes a handle: the handle is dead afterwards even when the system reports a failure. Waits on the socket end
 // first, and the descriptor closes after that.
 static int64_t tz_net_close_handle(int64_t handle) {
     tz_net_fd descriptor;
     if (!tz_net_forget(handle, &descriptor)) return tz_net_bad_handle();
-    tz_net_cancel_handle(handle);
     // A tzroutine that waits on the socket wakes and reports the closed handle; a wait that starts later finds
     // the handle forgotten above and does not start (TZ08).
     void (*closing)(intptr_t) = atomic_load_explicit(&tsuzuri_net_close_hook, memory_order_acquire);
@@ -1368,108 +986,6 @@ TZ_NET_API int64_t tsuzuri_net_close(int32_t operation, int64_t handle) {
     if (!tz_net_find(handle, TZ_NET_STREAM, &socket_entry)) return tz_net_bad_handle();
     int how = operation == 1 ? TZ_NET_SHUTDOWN_READ : operation == 2 ? TZ_NET_SHUTDOWN_WRITE : TZ_NET_SHUTDOWN_BOTH;
     return shutdown(socket_entry.descriptor, how) == 0 ? 0 : tz_net_error(tz_net_errno());
-}
-
-// The 40 bytes of addresses of an open socket: its local address record, then its peer's (zeros for a listener
-// and a UDP socket), as they were when it was opened.
-TZ_NET_API int64_t tsuzuri_net_names(struct tz_net_buffer *output, int64_t handle) {
-    tz_net_clear(output);
-    struct tz_net_socket socket_entry;
-    if (!tz_net_find(handle, 0, &socket_entry)) return tz_net_bad_handle();
-    return tz_net_deliver(output, socket_entry.names, sizeof socket_entry.names);
-}
-
-// ---- Async operations ----
-
-// Starts a wait for `handle` to be ready for `events` (TZ_NET_WATCH_READ or TZ_NET_WATCH_WRITE) within `timeout`
-// milliseconds (-1: no limit), and completes `operation` through `post`: with 0 when the socket is ready (an
-// error or a hang-up counts, and the retry reports it) or closed, and otherwise with the status of why it is not:
-// ETIMEDOUT at the deadline, EBADF for a handle that is not open. Several waits may be for one socket.
-TZ_NET_API void tsuzuri_net_watch(tz_net_post_function post, int64_t operation, int64_t handle, int32_t events, int64_t timeout) {
-    int64_t failure = 0;
-    int added = 0;
-    if ((events != TZ_NET_WATCH_READ && events != TZ_NET_WATCH_WRITE) || timeout < -1) {
-        failure = tz_net_invalid_input();
-    } else if (timeout == 0) {
-        failure = tz_net_error(TZ_NET_E_TIMEDOUT);
-    } else {
-        // The descriptor is looked up under the poll lock, and a close takes that lock before it closes the
-        // descriptor, so a wait never watches a descriptor number that another socket has taken over.
-        tz_net_mutex_lock(&tz_net_poll_lock);
-        struct tz_net_socket socket_entry;
-        if (!tz_net_find(handle, 0, &socket_entry)) {
-            failure = tz_net_bad_handle();
-        } else {
-            struct tz_net_wait wait;
-            memset(&wait, 0, sizeof wait);
-            wait.operation = operation;
-            wait.handle = handle;
-            wait.descriptor = socket_entry.descriptor;
-            wait.events = events == TZ_NET_WATCH_READ ? TZ_NET_POLL_READ : TZ_NET_POLL_WRITE;
-            wait.deadline = timeout < 0 ? -1 : tz_net_now() + timeout * INT64_C(1000000);
-            tz_net_post = post;
-            int error = tz_net_add_wait(&wait);
-            if (error != 0) failure = tz_net_error(error);
-            else added = 1;
-        }
-        tz_net_mutex_unlock(&tz_net_poll_lock);
-    }
-    if (!added) post(operation, failure);
-}
-
-// Connects without waiting here: completes `operation` through `post` with a new handle (positive) when the
-// connection is made, or the negated status when it fails or `timeout` milliseconds (-1: for the system) pass.
-// The socket belongs to the operation until then: `tsuzuri_net_unwatch` closes it, and a completion that
-// `post` refuses closes the new socket, so the connect never leaves a descriptor that nobody can close.
-TZ_NET_API void tsuzuri_net_connect(tz_net_post_function post, int64_t operation, int64_t meta, int64_t high, int64_t low, int64_t timeout) {
-    int64_t result = 0;
-    int error = tz_net_start();
-    struct sockaddr_storage target;
-    socklen_t length = tz_net_address(&target, meta, high, low);
-    int family = target.ss_family;
-    tz_net_fd descriptor = TZ_NET_NO_FD;
-    if (error == 0 && timeout == 0) error = TZ_NET_E_TIMEDOUT;
-    if (error == 0 && timeout < -1) error = TZ_NET_E_INVAL;
-    if (error == 0) {
-        descriptor = tz_net_create(family, SOCK_STREAM);
-        if (descriptor == TZ_NET_NO_FD) error = tz_net_errno();
-    }
-    if (error == 0 && connect(descriptor, (struct sockaddr *)&target, length) != 0) {
-        error = tz_net_errno();
-        if (TZ_NET_CONNECT_PENDING(error)) {
-            struct tz_net_wait wait;
-            memset(&wait, 0, sizeof wait);
-            wait.operation = operation;
-            wait.descriptor = descriptor;
-            wait.events = TZ_NET_POLL_WRITE;
-            wait.connecting = 1;
-            wait.family = family;
-            wait.deadline = timeout < 0 ? -1 : tz_net_now() + timeout * INT64_C(1000000);
-            tz_net_record(wait.peer, (const struct sockaddr *)&target);
-            tz_net_mutex_lock(&tz_net_poll_lock);
-            tz_net_post = post;
-            error = tz_net_add_wait(&wait);
-            tz_net_mutex_unlock(&tz_net_poll_lock);
-            if (error == 0) return;
-        }
-    } else if (error == 0) {
-        unsigned char records[2 * TZ_NET_RECORD];
-        error = tz_net_names(descriptor, records, (const struct sockaddr *)&target);
-        if (error == 0) error = tz_net_register(descriptor, TZ_NET_STREAM, family, records, &result);
-    }
-    if (error != 0) {
-        if (descriptor != TZ_NET_NO_FD) tz_net_close_fd(descriptor);
-        result = -tz_net_error(error);
-    }
-    if (post(operation, result) == 0 && result > 0) tz_net_discard(result);
-}
-
-// Takes `operation` back: a wait that has not completed is removed, and a connect that is under way is closed.
-// An operation that has completed or never started is left alone.
-TZ_NET_API void tsuzuri_net_unwatch(int64_t operation) {
-    tz_net_mutex_lock(&tz_net_poll_lock);
-    if (tz_net_wait_count > 0) tz_net_remove_waits(operation, 0, 0);
-    tz_net_mutex_unlock(&tz_net_poll_lock);
 }
 
 // ---- Error classes and name resolution ----

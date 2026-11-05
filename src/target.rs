@@ -406,11 +406,6 @@ impl Platform {
         }
     }
 
-    /// Whether `src/runtime/async.c` has an implementation for the target.
-    pub const fn reactor(self) -> bool {
-        self.net()
-    }
-
     /// Whether the target has threads for the tzroutine scheduler.
     pub const fn threads(self) -> bool {
         match self.0 {
@@ -695,8 +690,8 @@ mod tests {
                 triple.name()
             );
         }
-        // The socket and reactor runtimes are written for macOS, Linux, and Windows, and the
-        // operating-system runtime for macOS and Linux.
+        // The socket runtime is written for macOS, Linux, and Windows, and the operating-system
+        // runtime for macOS and Linux.
         for triple in Triple::ALL {
             let platform = Platform::new(Some(triple));
             assert_eq!(
@@ -705,7 +700,6 @@ mod tests {
                 "{}",
                 triple.name()
             );
-            assert_eq!(platform.reactor(), platform.net());
             assert_eq!(
                 platform.os_apis(),
                 triple.os() != Os::Windows,

@@ -90,7 +90,7 @@ C# と F# は、静的な型と .NET のライブラリでアプリケーショ�
 - .NET の標準ライブラリ、NuGet、GUI、Web、データベース、ネットワーク API を、そのままは使えません。標準の OS API は、ファイル、ディレクトリ、環境、時刻、乱数、プロセスに限られます。
 - 直列化は JSON（[Json](../built-in-types-and-modules/json.md)）と CBOR（[Cbor](../built-in-types-and-modules/cbor.md)）を `deriving (Encode, Decode)` で扱えますが、.NET の `System.Text.Json` のような多くの形式・属性・変換器の生態系はありません。文字列補間と、線形時間の正規表現 [Regex](../built-in-types-and-modules/regex.md) は使えます。
 - GC に任せられる共有データや循環構造は、所有権に沿って設計し直す必要があります。共有は [Rc と Arc](../built-in-types-and-modules/rc.md) で明示し、循環するグラフは [Arena](../built-in-types-and-modules/arena.md) とハンドルで表します。共有した値を書き換えるときは、[Atomic](../built-in-types-and-modules/atomic.md)（整数と `bool`）か [Mutex](../built-in-types-and-modules/mutex.md) に入れます。
-- C# の `async` / `await` と同じ構文ではありませんが、標準の [Async 式](../async-tasks-and-lazy/async.md) で協調的な中断、仮想時刻、ホストによる再開を扱えます。CPU の並列は `Parallel` と tzroutine と分担します。
+- C# の `async` / `await` はありません。I/O を待ちながらほかの計算を進める処理は、[tzroutine](../async-tasks-and-lazy/tzroutine.md) と `Channel` で書きます（Go の goroutine に近い形です）。CPU の並列は `Parallel` と tzroutine です。
 - 対話環境の [`tsuzuri repl`](../compiler/usage.md#repl) は、`dotnet fsi` と違って JIT を持たず、入力ごとにプログラムを作り直して Clang でコンパイルし、別プロセスで実行します。1 回の評価に Clang の起動を含む時間がかかり、値は持ち越さず、受け付けた `let` を毎回実行し直します。`;;` ではなく空行で複数行の入力を終え、`#r` のような外部参照の読み込みはありません。
 - 記法が F# に近い部分があっても、所有権の移動と、失敗の扱いが同じとは限りません。`tzroutine { }` は C# の `Task.Run` と違って値を返さず、結果は `Channel` などで受け渡します。
 
@@ -101,7 +101,7 @@ C# には Native AOT があるため、ネイティブ出力だけを固有の�
 | 実行基盤 | LLVM 経由のネイティブ / 独立 WebAssembly | .NET ランタイム（CLR）/ Native AOT |
 | メモリ管理 | 所有権と借用（GC なし）。共有は `Rc` / `Arc`、循環は `Arena` | ガベージコレクション（GC） |
 | 関数型機能 | カリー化、パイプ、共用体、コンピュテーション式 | F# に同等の表現力あり、C# にもパターンマッチ等 |
-| 非同期・並行 | tzroutine（M:N のスケジューラー）、`Parallel`、`Channel`、`Async` | `async` / `await`、非同期ワークフロー、Task |
+| 非同期・並行 | tzroutine（M:N のスケジューラー）、`Parallel`、`Channel`、`select` | `async` / `await`、非同期ワークフロー、Task |
 | エコシステム | 標準 OS API は最小限（ファイル、環境、時刻等） | .NET の膨大な標準ライブラリ、NuGet、GUI / Web 基盤 |
 
 ## TypeScript と比べる
@@ -131,7 +131,7 @@ Tsuzuri は、型エラーがあるとコードを出しません。数値型の
 
 - GUI、Web、データベース、ネットワークが本体のアプリケーション。
 - npm、NuGet、crates.io のライブラリを、そのまま依存にしたい開発。
-- ファイルを含む汎用の非同期 I/O、成熟した GPU カーネル開発。非同期にできる I/O は、`Net` のソケットだけです。
+- ファイルを含む汎用の非同期 I/O、成熟した GPU カーネル開発。tzroutine が OS スレッドを止めずに待てる I/O は、`Net` のソケットだけです。
 - GC に任せた共有グラフや、循環するオブジェクトをそのまま写すモデル。循環は [Arena](../built-in-types-and-modules/arena.md) のハンドルで表し直します。
 - Windows の OS API に依存するネイティブアプリ。到達すると `E2002` です。
 
@@ -182,6 +182,6 @@ flowchart TD
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [ネイティブ連携 (C ABI)](../compiler/native-interop.md)
 - [WebAssembly への出力](../compiler/webassembly.md)
-- [Async 式](../async-tasks-and-lazy/async.md)
+- [tzroutine 式](../async-tasks-and-lazy/tzroutine.md)
 - [性能測定](../../../docs/benchmarks.md)
 - [言語リファレンスの目次](../index.md)

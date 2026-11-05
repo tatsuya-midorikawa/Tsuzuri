@@ -1,0 +1,429 @@
+// The socket cases of the Net module that run on every platform, Windows too (the cases of tests/fixtures/net_sockets need
+// POSIX descriptors): a client and a server of a Node peer, the accept after a connection that was reset, timeouts, arguments
+// out of range, the end of a stream, a refused connect, big transfers, datagrams (one to a closed port too), a half-close, and
+// every operation on a closed handle. tests/net.mjs (block "portable") gives the case and the peer on the standard input.
+
+def os_kind_text :: own Os.ErrorKind -> string
+fn os_kind_text kind =
+	match kind with
+	| Os.NotFound -> "NotFound"
+	| Os.PermissionDenied -> "PermissionDenied"
+	| Os.AlreadyExists -> "AlreadyExists"
+	| Os.InvalidInput -> "InvalidInput"
+	| Os.InvalidEncoding -> "InvalidEncoding"
+	| Os.Interrupted -> "Interrupted"
+	| Os.Other -> "Other"
+
+/// "<Net.ErrorKind> <Os.ErrorKind> <system code>".
+def failure_text :: own Os.Error -> string
+fn failure_text error = to_string (Net.error_kind error) + " " + os_kind_text error.kind + " " + to_string error.code
+
+def unit_text :: own Result<unit, Os.Error> -> string
+fn unit_text result =
+	match result with
+	| Result.Ok _ -> "ok"
+	| Result.Error error -> failure_text error
+
+def read_text :: own Result<[ubyte], Os.Error> -> string
+fn read_text result =
+	match result with
+	| Result.Ok bytes -> "read:" + to_string bytes.length
+	| Result.Error error -> failure_text error
+
+def bytes_of :: ref string -> [ubyte]
+fn bytes_of text = Utf8String.to_bytes (Utf8String.from_string text)
+
+def pattern :: own i64 -> [ubyte]
+fn pattern count = Array.init count (\index -> (index % 256) as ubyte)
+
+def sum_of :: ref [ubyte] -> i64
+fn sum_of bytes =
+	let mut total = 0
+	let mut index = 0
+	while index < bytes.length do
+		total = total + (bytes[index] as i64)
+		index = index + 1
+	total
+
+def say :: own string -> IO<unit>
+fn say text = IO.write_line text
+
+/// Reads until `wanted` bytes have arrived, the stream ends, or a read fails: "<count> <sum>", or the failure.
+def rec collect :: own Net.TcpStream -> own i64 -> own i64 -> own i64 -> own i64 -> IO<string>
+fn rec collect stream size wanted total sum = IO {
+	match! Net.read stream size (Maybe.Some 20000) with
+	| Result.Error error -> return failure_text error
+	| Result.Ok bytes ->
+		let count = total + bytes.length
+		let all = sum + sum_of (ref bytes)
+		if bytes.length == 0 || count >= wanted then return to_string count + " " + to_string all
+		else return! collect stream size wanted count all
+}
+
+/// An echo server (the peer) answers a client: addresses, a write, a read, a half-close, the end of the
+/// stream, a close, and the stale handle.
+def echo_client :: own Net.Address -> IO<string>
+fn echo_client address = IO {
+	match! Net.connect address (Maybe.Some 5000) with
+	| Result.Error error -> return failure_text error
+	| Result.Ok stream ->
+		let here = Net.stream_local_addr stream
+		let! written = Net.write stream (pattern 1024) (Maybe.Some 5000)
+		let! outcome = collect stream 4096 1024 0 0
+		let! shut = Net.shutdown stream Net.Write
+		let! rest = collect stream 4096 1000000 0 0
+		let! closed = Net.close stream
+		let! stale = Net.read stream 16 (Maybe.Some 100)
+		return "peer=" + to_string (Net.peer_addr stream == address) + " local_port=" + to_string (Net.port here != 0) + "\n" + unit_text written + "\n" + outcome + "\n" + unit_text shut + " rest=" + rest + "\n" + unit_text closed + " stale=" + read_text stale
+}
+
+def run_echo :: own Net.Address -> IO<unit>
+fn run_echo address = IO {
+	let! lines = (echo_client address)
+	do! say lines
+}
+
+/// A listener that waits for a peer's connection: the greeting arrives, the answer goes back, and both sides end.
+def serve_one :: own Net.TcpListener -> IO<string>
+fn serve_one listener = IO {
+	match! Net.accept listener (Maybe.Some 10000) with
+	| Result.Error error -> return failure_text error
+	| Result.Ok stream ->
+		let! got = collect stream 4096 6 0 0
+		let! written = Net.write stream (bytes_of (ref "HELLO\n")) (Maybe.Some 5000)
+		let! shut = Net.shutdown stream Net.Write
+		let! rest = collect stream 4096 1000000 0 0
+		let! closed = Net.close stream
+		let! closed_listener = Net.close_listener listener
+		return "got=" + got + "\n" + unit_text written + " " + unit_text shut + "\nrest=" + rest + "\n" + unit_text closed + " " + unit_text closed_listener
+}
+
+def run_server :: own unit -> IO<unit>
+fn run_server _unit = IO {
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
+	let! bound = Net.bind loopback
+	match bound with
+	| Result.Error error -> do! say (failure_text error)
+	| Result.Ok listener ->
+		do! say ("port=" + to_string (Net.port (Net.local_addr listener)))
+		let! lines = (serve_one listener)
+		do! say lines
+}
+
+/// An empty byte array, which the checker cannot type from a bare `[]` in an argument.
+def nothing :: own unit -> [ubyte]
+fn nothing _unit = []
+
+/// One connected pair on a listener of its own: the listener, the client end, and the server end.
+def make_pair :: own unit -> IO<Maybe<(Net.TcpListener * Net.TcpStream * Net.TcpStream)>>
+fn make_pair _unit =
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
+	IO.bind (\bound ->
+		match bound with
+		| Result.Error _ -> IO.pure Maybe.None
+		| Result.Ok listener ->
+			IO.bind (\connected ->
+				IO.bind (\accepted ->
+					match (connected, accepted) with
+					| (Result.Ok client, Result.Ok server) -> IO.pure (Maybe.Some (listener, client, server))
+					| _ -> IO.pure Maybe.None) (Net.accept listener (Maybe.Some 5000))) (Net.connect (Net.local_addr listener) (Maybe.Some 5000))) (Net.bind loopback)
+
+/// A read and an accept that wait past their timeouts report TimedOut, and the socket works after that: the
+/// same read with room in its timeout gets a byte that was sent after the timeout.
+def run_timeouts :: own unit -> IO<unit>
+fn run_timeouts _unit = IO {
+	let! made = make_pair ()
+	match made with
+	| Maybe.None -> do! say "no pair"
+	| Maybe.Some (listener, client, server) ->
+		let! quiet = Net.read client 16 (Maybe.Some 40)
+		do! say ("read: " + read_text quiet)
+		let! idle = Net.accept listener (Maybe.Some 40)
+		do! say ("accept: " + unit_text (Result.map (\_ -> ()) idle))
+		let! sent = Net.write server [7ubyte] (Maybe.Some 20000)
+		let! late = Net.read client 8 (Maybe.Some 20000)
+		let value = match late with
+			| Result.Error _ -> -1000
+			| Result.Ok bytes -> sum_of (ref bytes)
+		do! say ("late: " + to_string value + " " + (if unit_text sent == "ok" then "1" else "0"))
+		let! _closed_client = Net.close client
+		let! _closed_server = Net.close server
+		let! _closed_listener = Net.close_listener listener
+		do! say "closed"
+}
+
+/// Arguments that are out of range are InvalidInput, and the operation never waits.
+def validation :: own Net.Address -> own Net.TcpStream -> own Net.TcpListener -> IO<string>
+fn validation address stream listener = IO {
+	let! connect_zero = Net.connect address (Maybe.Some 0)
+	let! connect_negative = Net.connect address (Maybe.Some (-1))
+	let! accept_big = Net.accept listener (Maybe.Some 2147483648)
+	let! read_zero = Net.read stream 0 (Maybe.Some 100)
+	let! read_big = Net.read stream 16777217 (Maybe.Some 100)
+	let! read_timeout = Net.read stream 1 (Maybe.Some 0)
+	let! write_timeout = Net.write stream (pattern 4) (Maybe.Some (-7))
+	let! empty = Net.write stream (nothing ()) (Maybe.Some 100)
+	let! accepted = Net.accept listener (Maybe.Some 0)
+	return (unit_text (Result.map (\_ -> ()) connect_zero) + "\n" + unit_text (Result.map (\_ -> ()) connect_negative) + "\n" + unit_text (Result.map (\_ -> ()) accept_big) + "\n"
+		+ read_text read_zero + "\n" + read_text read_big + "\n" + read_text read_timeout + "\n" + unit_text write_timeout + "\n" + unit_text empty + "\n" + unit_text (Result.map (\_ -> ()) accepted))
+}
+
+def run_validate :: own Net.Address -> IO<unit>
+fn run_validate address = IO {
+	let! made = make_pair ()
+	match made with
+	| Maybe.None -> do! say "no pair"
+	| Maybe.Some (listener, client, server) ->
+		let! text = (validation address client listener)
+		do! say text
+		let! _closed_client = Net.close client
+		let! _closed_server = Net.close server
+		let! _closed_listener = Net.close_listener listener
+		do! say "closed"
+}
+
+/// A peer that sends three bytes and ends: the bytes, then the end of the stream, again and again.
+def run_eof :: own Net.Address -> IO<unit>
+fn run_eof address = IO {
+	let! text = IO {
+		match! Net.connect address (Maybe.Some 5000) with
+		| Result.Error error -> return failure_text error
+		| Result.Ok stream ->
+			let! first = collect stream 4096 1000000 0 0
+			let! again = Net.read stream 16 (Maybe.Some 5000)
+			let! third = Net.read stream 16 (Maybe.Some 5000)
+			let! closed = Net.close stream
+			return first + "\nagain: " + read_text again + " " + read_text third + "\n" + unit_text closed
+	}
+	do! say text
+}
+
+/// A port that nobody listens on.
+def run_refused :: own Net.Address -> IO<unit>
+fn run_refused address = IO {
+	let! text = IO {
+		match! Net.connect address (Maybe.Some 5000) with
+		| Result.Error error -> return failure_text error
+		| Result.Ok _ -> return "connected"
+	}
+	do! say text
+}
+
+/// Eight mebibytes to a peer that reads slowly: the write waits for room again and again.
+def run_bigwrite :: own Net.Address -> IO<unit>
+fn run_bigwrite address = IO {
+	let! text = IO {
+		match! Net.connect address (Maybe.Some 5000) with
+		| Result.Error error -> return failure_text error
+		| Result.Ok stream ->
+			let! written = Net.write stream (pattern 8388608) (Maybe.Some 30000)
+			let! closed = Net.close stream
+			return "write: " + unit_text written + " " + unit_text closed
+	}
+	do! say text
+}
+
+/// Three mebibytes from a peer, read in pieces of 64 KiB.
+def run_bigread :: own Net.Address -> IO<unit>
+fn run_bigread address = IO {
+	let! text = IO {
+		match! Net.connect address (Maybe.Some 5000) with
+		| Result.Error error -> return failure_text error
+		| Result.Ok stream ->
+			let! outcome = collect stream 65536 100000000 0 0
+			let! closed = Net.close stream
+			return "read: " + outcome + " " + unit_text closed
+	}
+	do! say text
+}
+
+def datagram_receive :: own Net.UdpSocket -> own Net.Address -> IO<i64>
+fn datagram_receive socket sender = IO {
+	match! Net.recv_from socket 64 (Maybe.Some 5000) with
+	| Result.Error _ -> return -1
+	| Result.Ok (bytes, source) -> return bytes.length * 10 + (if source == sender then 1 else 0)
+}
+
+def datagram_send :: own Net.UdpSocket -> own Net.Address -> own [ubyte] -> IO<i64>
+fn datagram_send socket target data = IO {
+	let! sent = Net.send_to socket data target
+	return (if unit_text sent == "ok" then 1 else 0)
+}
+
+def udp_text :: own Result<([ubyte] * Net.Address), Os.Error> -> string
+fn udp_text result =
+	match result with
+	| Result.Ok (bytes, _) -> "datagram:" + to_string bytes.length
+	| Result.Error error -> failure_text error
+
+/// Two UDP sockets: a datagram and its source, then a timeout, a datagram to a closed port, a datagram that does not fit
+/// (consumed, InvalidInput), the next one, an empty one, and the closes.
+def run_udp :: own unit -> IO<unit>
+fn run_udp _unit = IO {
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
+	let! first = Net.bind_udp loopback
+	let! second = Net.bind_udp loopback
+	match (first, second) with
+	| (Result.Ok receiver, Result.Ok sender) ->
+		let target = Net.udp_local_addr receiver
+		let origin = Net.udp_local_addr sender
+		let! sent = datagram_send sender target (bytes_of (ref "udp"))
+		let! received = datagram_receive receiver origin
+		do! say ("exchange: " + to_string received + " " + to_string sent)
+		let! quiet = IO {
+			let! result = Net.recv_from receiver 64 (Maybe.Some 40)
+			return udp_text result
+		}
+		do! say ("quiet: " + quiet)
+		// A datagram to a port that nobody listens on (Windows reports the ICMP "port unreachable" as WSAECONNRESET from the
+		// next receive of the same socket unless that is turned off) is no failure of the receive that follows.
+		let! spare = Net.bind_udp loopback
+		match spare with
+		| Result.Error error -> do! say ("vanished: " + failure_text error)
+		| Result.Ok gone ->
+			let vanished_target = Net.udp_local_addr gone
+			let! _closed_spare = Net.close_udp gone
+			let! vanished = IO {
+				let! _sent = Net.send_to receiver (bytes_of (ref "x")) vanished_target
+				let! result = Net.recv_from receiver 64 (Maybe.Some 40)
+				return udp_text result
+			}
+			do! say ("vanished: " + vanished)
+		let! truncated = IO {
+			let! _sent = Net.send_to sender (pattern 100) target
+			let! result = Net.recv_from receiver 10 (Maybe.Some 5000)
+			let! _next = Net.send_to sender (bytes_of (ref "ok")) target
+			let! after = Net.recv_from receiver 10 (Maybe.Some 5000)
+			let! _empty = Net.send_to sender (nothing ()) target
+			let! blank = Net.recv_from receiver 10 (Maybe.Some 5000)
+			return udp_text result + " then " + udp_text after + " then " + udp_text blank
+		}
+		do! say ("truncated: " + truncated)
+		let! closed = IO {
+			let! a = Net.close_udp receiver
+			let! b = Net.close_udp sender
+			let! c = Net.close_udp sender
+			return unit_text a + " " + unit_text b + " " + unit_text c
+		}
+		do! say ("closed: " + closed)
+	| _ -> do! say "no sockets"
+}
+
+/// Accepts until a connection says something, at most `rounds` of them: the connection that its peer reset before the accept
+/// took it may come first (Linux hands it over, and its read fails or ends at once), or never (macOS drops it, Windows reports
+/// it as WSAECONNRESET from accept, which the runtime skips). A failure of the accept itself is what the case is about.
+def rec accept_greeted :: own Net.TcpListener -> own i64 -> IO<string>
+fn rec accept_greeted listener rounds = IO {
+	if rounds == 0 then return "no connection said anything"
+	else
+		match! Net.accept listener (Maybe.Some 10000) with
+		| Result.Error error -> return "accept: " + failure_text error
+		| Result.Ok stream ->
+			match! Net.read stream 16 (Maybe.Some 10000) with
+			| Result.Ok bytes ->
+				let! _closed = Net.close stream
+				if bytes.length == 0 then return! accept_greeted listener (rounds - 1)
+				else return "accept: ok read:" + to_string bytes.length
+			| Result.Error _ ->
+				let! _closed = Net.close stream
+				return! accept_greeted listener (rounds - 1)
+}
+
+/// The accept after a connection that its peer reset. The peer makes that connection and resets it, makes a good one, and then
+/// sends a datagram to the gate socket, which the program waits for before it accepts: the program says the ports of its
+/// listener and its gate first.
+def run_accept_reset :: own unit -> IO<unit>
+fn run_accept_reset _unit = IO {
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
+	let! bound = Net.bind loopback
+	let! opened = Net.bind_udp loopback
+	match (bound, opened) with
+	| (Result.Ok listener, Result.Ok gate) ->
+		do! say ("ports=" + to_string (Net.port (Net.local_addr listener)) + " " + to_string (Net.port (Net.udp_local_addr gate)))
+		let! signal = Net.recv_from gate 16 (Maybe.Some 30000)
+		do! say ("gate: " + udp_text signal)
+		let! outcome = (accept_greeted listener 4)
+		do! say outcome
+		let! _closed_listener = Net.close_listener listener
+		let! _closed_gate = Net.close_udp gate
+	| _ -> do! say "no sockets"
+}
+
+/// A half-close: the other side reads the end of the stream and can still answer.
+def run_shutdown :: own unit -> IO<unit>
+fn run_shutdown _unit = IO {
+	let! made = make_pair ()
+	match made with
+	| Maybe.None -> do! say "no pair"
+	| Maybe.Some (listener, client, server) ->
+		let! text = IO {
+			let! shut = Net.shutdown client Net.Write
+			let! ended = Net.read server 16 (Maybe.Some 5000)
+			let! replied = Net.write server (bytes_of (ref "bye")) (Maybe.Some 5000)
+			let! heard = Net.read client 16 (Maybe.Some 5000)
+			let! writing = Net.write client (bytes_of (ref "late")) (Maybe.Some 5000)
+			return unit_text shut + " " + read_text ended + " " + unit_text replied + " " + read_text heard + " " + unit_text writing
+		}
+		do! say text
+		let! _closed_client = Net.close client
+		let! _closed_server = Net.close server
+		let! _closed_listener = Net.close_listener listener
+		do! say "closed"
+}
+
+/// Every operation on a handle that was closed.
+def run_stale :: own Net.Address -> IO<unit>
+fn run_stale address = IO {
+	let! made = make_pair ()
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
+	let! bound = Net.bind_udp loopback
+	match (made, bound) with
+	| (Maybe.Some (listener, client, server), Result.Ok socket) ->
+		let! _closed = Net.close client
+		let! _closed_server = Net.close server
+		let! _closed_listener = Net.close_listener listener
+		let! _closed_socket = Net.close_udp socket
+		let! text = IO {
+			let! read = Net.read client 16 (Maybe.Some 100)
+			let! write = Net.write client (pattern 4) (Maybe.Some 100)
+			let! shut = Net.shutdown client Net.Both
+			let! closed = Net.close client
+			let! accepted = Net.accept listener (Maybe.Some 100)
+			let! closed_listener = Net.close_listener listener
+			let! received = Net.recv_from socket 16 (Maybe.Some 100)
+			let! sent = Net.send_to socket (pattern 4) address
+			let! closed_socket = Net.close_udp socket
+			return read_text read + "\n" + unit_text write + "\n" + unit_text shut + "\n" + unit_text closed + "\n" + unit_text (Result.map (\_ -> ()) accepted) + "\n" + unit_text closed_listener + "\n" + udp_text received + "\n" + unit_text sent + "\n" + unit_text closed_socket
+		}
+		do! say text
+	| _ -> do! say "no sockets"
+}
+
+def run_case :: ref string -> own Net.Address -> IO<unit>
+fn run_case name address =
+	match deref name with
+	| "echo" -> run_echo address
+	| "server" -> run_server ()
+	| "timeouts" -> run_timeouts ()
+	| "validate" -> run_validate address
+	| "eof" -> run_eof address
+	| "refused" -> run_refused address
+	| "bigwrite" -> run_bigwrite address
+	| "bigread" -> run_bigread address
+	| "udp" -> run_udp ()
+	| "accept_reset" -> run_accept_reset ()
+	| "shutdown" -> run_shutdown ()
+	| "stale" -> run_stale address
+	| _ -> say "unknown case"
+
+/// The case name, the port of the peer, and the peer's host come on three lines of the standard input.
+def main :: own unit -> i32 = \() ->
+	let! name = IO.read_line ()
+	let! port_text = IO.read_line ()
+	let! host_text = IO.read_line ()
+	let case = Maybe.default_value "" name
+	let port: Maybe<i64> = Parse.parse (ref (Maybe.default_value "0" port_text))
+	match Net.parse_ip (Maybe.default_value 0 port) (ref (Maybe.default_value "127.0.0.1" host_text)) with
+	| Maybe.None -> do! say "bad target"
+	| Maybe.Some address -> do! run_case (ref case) address
+	0

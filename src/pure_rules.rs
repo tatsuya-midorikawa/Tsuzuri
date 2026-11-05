@@ -186,15 +186,11 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         DebugPrintString | AllocCounter => Some(Debug),
         IOReadLine | IOWrite | OsRead | OsArgs | OsWrite | OsRandom | OsClock | OsSleep
         | OsOpen | OsHandle | OsClose | OsSpawn | NetResolve | NetOpen | NetAccept | NetRead
-        | NetWrite | NetClose | NetClassify | NetWatch | NetUnwatch | NetConnect | NetNames
-        | NetSend => Some(Outside),
+        | NetWrite | NetClose | NetClassify => Some(Outside),
         BenchNow | BenchConsume | GenSeed => Some(Clock),
         RoutineScope | ParallelInit | ParallelMap | ParallelMapRef | ParallelReduce
-        | ParallelForEachChunk | AsyncResume | AsyncTake | AsyncPut | AsyncNextId | AsyncClock
-        | AsyncWait | AsyncPosted | AsyncRetire | RoutineGo | WaitGroupGo | RoutineYield
-        | RoutineCount | RoutineMaxProcs | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => {
-            Some(Task)
-        }
+        | ParallelForEachChunk | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount
+        | RoutineMaxProcs | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => Some(Task),
         // TZ08: the function runs on the calling tzroutine's own thread.
         RoutineWithLockedThread => Some(Task),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
@@ -1545,7 +1541,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            178
+            165
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

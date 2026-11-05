@@ -1958,7 +1958,7 @@ declare void @llvm.trap()
 declare i32 @putchar(i32)
 
 @tsuzuri_trap_hooks = weak hidden global [5 x ptr] zeroinitializer, align 8
-@tz.async.next_id = internal thread_local global i64 0, align 8
+@tz.thread.counter = internal thread_local global i64 0, align 8
 @tz.literal.7 = private unnamed_addr constant [2 x i16] [i16 97, i16 98]
 @tz.table.0 = internal unnamed_addr constant [4 x i32] [
   i32 1, i32 2,
@@ -1977,7 +1977,7 @@ define internal i64 @tz.fn.Main.f(i64 noundef %arg0) nounwind {
 entry:
   %v0 = call i64 @tz.fn.Helper.twice(i64 %arg0)
   %v1 = call i64 @tz.fn.$lambda.12(i64 %v0)
-  %v2 = load i64, ptr @tz.async.next_id
+  %v2 = load i64, ptr @tz.thread.counter
   %v3 = getelementptr [2 x i16], ptr @tz.literal.7, i32 0, i32 1
   %v4 = insertvalue %tz.closure zeroinitializer, ptr @tz.desc.$lambda.12.0, 0
   %v5 = alloca %"tz.record.Main.Pair", align 16
@@ -2416,7 +2416,7 @@ entry:
             other => panic!("{name} is {other:?}"),
         };
         assert_eq!(form("tsuzuri_trap_hooks"), &GlobalForm::Single);
-        assert_eq!(form("tz.async.next_id"), &GlobalForm::Single);
+        assert_eq!(form("tz.thread.counter"), &GlobalForm::Single);
         assert_eq!(form("tz.literal.7"), &GlobalForm::Copyable);
         assert_eq!(form("tz.table.0"), &GlobalForm::Copyable);
         assert_eq!(form("tz.desc.Main.f.0"), &GlobalForm::Copyable);
@@ -2694,7 +2694,7 @@ entry:
             "tz.fn.Main.f",
             "tz.fn.Helper.twice",
             "tz.apply.Main.f.0",
-            "tz.async.next_id",
+            "tz.thread.counter",
         ] {
             assert!(listed.contains(name), "{name} in {listed:?}");
         }
@@ -3019,13 +3019,13 @@ entry:
         // The thread-local variable has one owner and is declared `external hidden thread_local` here.
         assert!(
             main.text
-                .contains("@tz.async.next_id = external hidden thread_local global i64, align 8")
+                .contains("@tz.thread.counter = external hidden thread_local global i64, align 8")
         );
         let owners: Vec<_> = units
             .iter()
             .filter(|unit| {
                 unit.text
-                    .contains("@tz.async.next_id = hidden thread_local global i64 0, align 8")
+                    .contains("@tz.thread.counter = hidden thread_local global i64 0, align 8")
             })
             .collect();
         assert_eq!(owners.len(), 1);
