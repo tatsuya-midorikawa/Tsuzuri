@@ -3487,7 +3487,8 @@ fn static_definition(id: usize, value: &TypedExpr, module: &CheckedModule) -> Op
 }
 
 /// The spelling of a `dyn` type in LLVM names (A14): `dyn[Shapes.Shape]`, with `+copy`, `+send`,
-/// and `+ref` for its markers and region, which no class name contains.
+/// and `+ref` for its markers and region, which no class name contains. Quoted names keep the `+`;
+/// `mangled_type` writes it as `$P` in unquoted symbols (A29).
 fn dyn_name(dyn_type: &crate::check::DynType) -> String {
     let mut name = format!("dyn[{}", dyn_type.classes.join(","));
     for (written, marker) in [
@@ -7891,14 +7892,16 @@ fn builtin_symbol(instance: &BuiltinInstance, module: &CheckedModule) -> String 
     symbol
 }
 
-/// `canonical_type` spelled with LLVM identifier characters only; `$` never
-/// occurs in canonical types, so the escapes keep the spelling injective.
+/// `canonical_type` spelled with LLVM identifier characters only: `->`, `[`, `]`, `,`, and the
+/// `+` of a dyn type's markers (A29) become `$A`, `$L`, `$R`, `$C`, and `$P`. `$` never occurs in
+/// canonical types, so the escapes keep the spelling injective.
 fn mangled_type(ty: &Type, module: &CheckedModule) -> String {
     canonical_type(ty, module)
         .replace("->", "$A")
         .replace('[', "$L")
         .replace(']', "$R")
         .replace(',', "$C")
+        .replace('+', "$P")
 }
 
 /// Defines one builtin instance, whose callee type `ty` is concrete.

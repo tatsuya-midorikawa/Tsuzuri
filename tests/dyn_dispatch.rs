@@ -1,12 +1,61 @@
 use tsuzuri::{analyze, diagnostic::Diagnostic, llvm};
 
-/// Checks `source`, emits it twice to check determinism, and returns the native IR.
+/// Checks `source`, emits it twice to check determinism, checks its symbols, and returns the
+/// native IR.
 fn accepts(source: &str) -> String {
     let module = analyze(source)
         .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
     let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
     assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    assert_identifier_symbols(&ir);
     ir
+}
+
+/// Fails for an unquoted global name of `ir` that is not an LLVM identifier (A29), naming it.
+fn assert_identifier_symbols(ir: &str) {
+    if let Some((name, line)) = non_identifier_symbol(ir) {
+        panic!("'@{name}' is not an LLVM identifier:\n{line}");
+    }
+}
+
+/// The first unquoted global name of `ir` (an `@` that no `"` follows) that is neither an LLVM
+/// identifier, `[-a-zA-Z$._][-a-zA-Z$._0-9]*`, nor the number of an unnamed global, with its line.
+/// Quoted text and comments are skipped, so an `@` inside a string constant or a quoted name is
+/// not a symbol. A name runs to the next space or `(),[]{}<>"`, so any other character in it counts.
+fn non_identifier_symbol(ir: &str) -> Option<(String, &str)> {
+    let starts = |byte: u8| byte.is_ascii_alphabetic() || b"-$._".contains(&byte);
+    let continues = |byte: u8| starts(byte) || byte.is_ascii_digit();
+    for line in ir.lines() {
+        let bytes = line.as_bytes();
+        let mut quoted = false;
+        let mut at = 0;
+        while at < bytes.len() {
+            match bytes[at] {
+                b'"' => quoted = !quoted,
+                b';' if !quoted => break,
+                b'@' if !quoted && bytes.get(at + 1) != Some(&b'"') => {
+                    let end = bytes[at + 1..]
+                        .iter()
+                        .position(|byte| {
+                            byte.is_ascii_whitespace() || b"(),[]{}<>\"".contains(byte)
+                        })
+                        .map_or(bytes.len(), |length| at + 1 + length);
+                    let name = &bytes[at + 1..end];
+                    let numbered = !name.is_empty() && name.iter().all(u8::is_ascii_digit);
+                    let identifier = name.first().is_some_and(|&byte| starts(byte))
+                        && name.iter().all(|&byte| continues(byte));
+                    if !numbered && !identifier {
+                        return Some((String::from_utf8_lossy(name).into_owned(), line));
+                    }
+                    at = end;
+                    continue;
+                }
+                _ => {}
+            }
+            at += 1;
+        }
+    }
+    None
 }
 
 fn diagnostic(source: &str) -> Diagnostic {
@@ -435,6 +484,77 @@ fn accepts_dyn_values_in_collections() {
 }
 
 #[test]
+fn marked_dyn_type_arguments_spell_identifier_symbols() {
+    // A dyn type's markers are `+copy`, `+send` and `+ref` in its spelling; a builtin's symbol
+    // writes each `+` as `$P` (A29 D1), so `accepts` finds only identifiers. A channel carries
+    // Send dyn values, so the Copy one alone and the borrowed one (which cannot be Send) go into a
+    // Vec. `Domain.run` cannot make a dyn value (E1038), so no `@tz.domain.thunk.` names one.
+    let ir = accepts(&with_shape(
+        "record Ruler {r} { side: ref {r} i64 }
+instance Shape<Ruler> { fn area r = deref r.side * deref r.side }
+def measure {r} :: ref {r} i64 -> dyn Shape {r}
+fn measure side = Dyn.of (Ruler { side: side })
+def sent :: i64 -> i64
+fn sent x =
+    let shapes: Channel<dyn (Shape, Send)> = Channel.make 2
+    let other = Channel.share shapes
+    let out = Channel.send_only shapes
+    let input = Channel.receive_only shapes
+    SendOnly.send out (Dyn.of (Square { side: x }))
+    Channel.send other (Dyn.of (Square { side: x + 1 }))
+    let spare: dyn (Shape, Send) = Dyn.of (Square { side: 0 })
+    let first = select
+        | recv shape from input -> match shape with | Maybe.Some s -> Shape.area (ref s) | Maybe.None -> 0
+        | send spare to shapes -> 0
+    SendOnly.close out
+    let mut total = first
+    for shape in shapes do
+        total = total + Shape.area (ref shape)
+    total
+def copied :: i64 -> i64
+fn copied x =
+    let shapes: Channel<dyn (Shape, Copy, Send)> = Channel.make 1
+    Channel.send shapes (Dyn.of (Square { side: x }))
+    Channel.close shapes
+    match Channel.recv shapes with
+    | Maybe.Some shape -> Shape.area (ref shape)
+    | Maybe.None -> 0
+def copies :: i64 -> i64
+fn copies x =
+    let shape: dyn (Shape, Copy) = Dyn.of (Square { side: x })
+    let shapes: Vec<dyn (Shape, Copy)> = Vec.push shape (Vec.empty())
+    shapes.length
+def borrowed :: i64 -> i64
+fn borrowed x =
+    let shape = measure (ref x)
+    let shapes = Vec.push shape (Vec.empty())
+    shapes.length",
+    ));
+    for symbol in [
+        "@tz.builtin.Channel.make.dyn$LMain.Shape$Psend$R(",
+        "@tz.builtin.Channel.make.dyn$LMain.Shape$Pcopy$Psend$R(",
+        "@tz.builtin.Vec.empty.dyn$LMain.Shape$Pcopy$R(",
+        "@tz.builtin.Vec.empty.dyn$LMain.Shape$Pref$R(",
+    ] {
+        assert!(ir.contains(symbol), "{symbol}\n{ir}");
+    }
+    // The check finds a marker that reaches a symbol unescaped, and skips quoted text and comments.
+    assert_eq!(
+        non_identifier_symbol(
+            "  call void @tz.builtin.Channel.send.dyn$LMain.Shape+send$R(ptr %v1)"
+        )
+        .map(|(name, _)| name),
+        Some("tz.builtin.Channel.send.dyn$LMain.Shape+send$R".into())
+    );
+    assert_eq!(
+        non_identifier_symbol(
+            "@\"tz.vtable.Main.Shape+send[Main.Square]\" = c\"a@b+c\" ; @+\n  store ptr @0, ptr @tz.x-1.$y"
+        ),
+        None
+    );
+}
+
+#[test]
 fn dyn_values_count_two_pointers_in_the_value_limit() {
     // Data and vtable pointers: 16 bytes in records and signatures alike (64 KiB, E1010).
     for (accepted, rejected) in [
@@ -525,5 +645,6 @@ fn runtime_fixture_lowers_for_both_targets() {
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
         assert!(ir.contains("%tz.dyn = type { ptr, ptr }"), "{ir}");
+        assert_identifier_symbols(&ir);
     }
 }
