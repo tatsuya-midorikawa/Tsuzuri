@@ -1966,10 +1966,20 @@ const suites = {
       ["builtin_display", [-7n], 2n * 10n + 4n],
       ["builtin_display", [0n], 1n * 10n + 4n],
       ...[0n, 42n].map((x) => ["builtin_hash", [x], 1n]),
+      // A29: a channel of Send dyn values on one thread. The receive arm of the select is the ready one (the channel
+      // is full); it takes Square x, and the loop takes Rect x by 2, then Square (x + 1).
+      ...[3n, -2n, 0n].map((x) => ["channel_ops", [x], x * x * 1000000n + 2n * x * 1000n + (x + 1n) * (x + 1n)]),
     ],
+    // A29: a tzroutine sends the dyn value, which WebAssembly runs only with --wasm-feature jspi
+    // (tests/tzroutine_wasm.mjs); the default WebAssembly module is the fixture above its "native only" line.
+    nativeFrom: "// native only:",
+    nativeCases: [...[3n, -4n].map((x) => ["channel_area", [x], x * x])],
     traps: [["faulty_area", [0n]]],
     inspect(ir) {
       assert.match(ir, /^%tz\.dyn = type \{ ptr, ptr \}$/m);
+      // A29: the `+` of a dyn type's marker is `$P` in a builtin's unquoted symbol, and stays in quoted names.
+      assert.match(ir, /@tz\.builtin\.Channel\.make\.dyn\$LShapes\.Shape\$Psend\$R\(/);
+      assert.match(ir, /%"tz\.record\.Channel\.Channel\[dyn\[Shapes\.Shape\+send\]\]"/);
       // Named.id, then Shape's area, grow, into_area, and describe; `upcast_area` upcasts to Named.
       assert.match(ir, /@"tz\.vtable\.Shapes\.Shape\[Main\.Square\]" = internal unnamed_addr constant \{ ptr, ptr, i64, i64, \[5 x ptr\], \[1 x ptr\] \}/);
       // The copy vtable has a clone slot; the vtable of two classes has an upcast table.
