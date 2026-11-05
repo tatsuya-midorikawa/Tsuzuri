@@ -214,7 +214,7 @@ measure ()
 
 `measure` は `text` が生きている間だけ使えます。所有者のブロックを出る関数値として返そうとすると、`E1013`（borrowed value does not live long enough to leave this block）になります。
 
-関数値を返す関数の呼び出しでは、関数の型が環境の借用を表さないので、コンパイラーは呼び出す関数の本体を見ます。結果が持つのは、本体が結果に入れうる引数（捕捉する、返す、そうしうる関数へ渡す）の借用だけです。次の `pass` は `key` を結果に入れないので、`wrap` は自分の `key` を借用して渡した呼び出しの結果を返せます。同じ型の `def keep :: ref string -> (unit -> i64)` で `fn keep text = \() -> String.length text` と書けば、結果は `text` の借用を持ち、`keep (ref text)` を `text` の所有者の外へ返すと `E1013` です。
+関数値を返す関数の呼び出しでは、関数の型が環境の借用を表さないので、コンパイラーは呼び出す関数の本体を見ます。全引数を渡す呼び出しの結果が持つのは、本体が結果に入れうる引数（捕捉する、返す、そうしうる関数へ渡す、結果へ届く配列などへ書き込む）の借用だけです。次の `pass` は `key` を結果に入れないので、`wrap` は自分の `key` を借用して渡した呼び出しの結果を返せます。同じ型の `def keep :: ref string -> (unit -> i64)` でも、`fn keep text =` に続けて `let g = \() -> String.length text` と `g` を書けば、結果は `text` の借用を持ち、`keep (ref text)` を `text` の所有者の外へ返すと `E1013` です。パイプライン `f |> pass (ref key)` は `pass (ref key) f` と同じ扱いです。
 
 ```tsuzuri run=42
 def pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)
@@ -233,7 +233,7 @@ f ()
 42
 ```
 
-この規則は、呼び出しの結果の型が参照を含まないとき（関数値、関数を持つレコード、`Maybe<unit -> i64>`、関数を値に持つ `HashMap` など）だけです。部分適用の結果は、渡した引数をすべて捕捉します。結果の型が参照を含むとき（`ref T`、`Maybe<ref T>` など）は、本体ではなくシグネチャが契約で、名前付き region がなければ、結果はすべての参照引数の借用を持ちます（[ライフタイムと region](../ownership-and-memory/lifetimes.md#なぜ名前付き-region-が必要なのか)）。
+この規則は、呼び出しの結果の型が参照を含まないとき（関数値、関数を持つレコード、`Maybe<unit -> i64>`、関数を値に持つ `HashMap` など）だけです。部分適用の結果は、渡した引数をすべて捕捉します。`fn keep2 text = \() -> String.length text` のように本体をラムダで書くと、そのラムダの引数 `()` も関数の引数になるので、`keep2 (ref text)` は部分適用で、本体が `text` を使わなくても（`fn keep2 _text = \() -> 42`）結果は `text` の借用を持ちます。結果の型が参照を含むとき（`ref T`、`Maybe<ref T>` など）は、名前付き region がなければ、結果はすべての参照引数の借用を持ちます。例外は、本体が借用をまったく返さないと示せる関数（`fn nothing _x = Maybe.None` など）で、その結果は何も借用しません（[ライフタイムと region](../ownership-and-memory/lifetimes.md#現在の制限)）。
 
 ```text
 def leak :: unit -> unit -> i64 = \() ->

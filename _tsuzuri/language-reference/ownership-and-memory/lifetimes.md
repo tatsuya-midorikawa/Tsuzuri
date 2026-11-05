@@ -225,6 +225,22 @@ note.text.length * 10 + old.length
 
 `swap_text` では、参照先へ新しい `Note { text: text }` を書き込んでいます。これが安全に行えるのは、書き込む新しい借用（`text`）が、参照先の保持する借用と同じ region `{s}` を持っているためです。呼び出し側では、`second` の生存期間が `note` に関連付けられます。
 
+### 可変スライスと排他参照への書き込み
+
+`values[i] = v` と同じく、可変スライスや排他参照の先へ値を書き込む組み込み関数（`Array.write`・`Vec.push_mut`）と std の関数（`Array.set`・`Array.fill`・`Array.blit`・`Vec.copy_to` など）の呼び出しでは、書き込む値が持つ借用（借用を捕捉した関数、`ref string` の要素など）を、書き込み先の持ち主が持ちます。次の `arr` は `text` を借用する関数を持つので、`arr` を使う間は `text` をムーブできません（`E1014`）。
+
+```text
+let text = "abc"
+let borrowed = ref text
+let mut arr = [\() -> 0]
+Array.set 0 (\() -> String.length borrowed) (ref mut arr)
+let moved = text       // E1014: arr は text の借用を持つ
+arr[0] ()
+```
+
+- 要素の型が借用を持ちうるとき（関数、参照）、これらの関数は全引数を渡して直接呼ぶか、呼び出しを完成させるパイプライン（`ref mut arr |> Array.set 0 f`）で呼びます。部分適用や関数値として使うと、書き込んだ借用を追跡できないので `E1013`（`region_callback_stores_exclusive_input`）です。
+- 利用者の関数が、自分の `ref mut` 引数の先へ借用を持つ値を書き込むには、`ref mut {r} T {s}` の参照先の region が要ります（`E1013`、`store_region_unnamed`）。関数の型には region を書けないので、関数を要素に持つスライスへ、引数から受け取った関数を書き込む利用者の関数は書けません。借用を持たない値（捕捉のないラムダなど）は書き込めます。
+
 ## region 量化関数
 
 高階関数の引数において、「渡された関数が特定のライフタイム契約を満たしていること」を型で要求できます。関数型の直前に波括弧で region リストを記述します。
@@ -292,7 +308,7 @@ error[E1014]: access conflicts with a live borrow; use the reference or end its 
 
 「直接呼ぶと `right` をすぐ書き換えられるのに、関数値として渡すと借用が残る」ときは、この制限です。呼び出しを直接にするか、所有値を返す API にします。
 
-名前付き region がない関数の結果は、型が参照を含むなら、すべての参照引数の借用を持ちます（本体がどれを返すかは見ません）。型が参照を含まず、借用を関数の環境にだけ持ちうる結果（関数値、関数を値に持つ `HashMap` など）は、直接の完全適用なら、呼び出す関数の本体が結果に入れうる引数の借用だけを持ちます（[共有借用の寿命](../values-and-functions/lambda-expressions.md#共有借用の寿命)）。`Rc.share`・`Arc.share` などの結果は、`shared` の借用ではなく、`shared` が持つ借用だけを持ちます（[所有者を増やした値の借用](../built-in-types-and-modules/rc.md#所有者を増やした値の借用)）。
+名前付き region がない関数の結果は、型が参照を含むなら、すべての参照引数の借用を持ちます。本体がどの引数を返すかは見ませんが、本体が借用をまったく返さないと示せるとき（`fn nothing _x = Maybe.None` の `Maybe<ref i64>` など）だけは、結果は何も借用しません。そのため本体を借用を返しうる形に変えると、呼び出し側が `E1014` などになることがあります。型が参照を含まず、借用を関数の環境にだけ持ちうる結果（関数値、関数を値に持つ `HashMap` など）は、名前付き関数の直接の完全適用（それを完成させるパイプライン `x |> f a` を含む）なら、呼び出す関数の本体が結果に入れうる引数の借用だけを持ちます（[共有借用の寿命](../values-and-functions/lambda-expressions.md#共有借用の寿命)）。`Rc.share`・`Arc.share` などの結果は、`shared` の借用ではなく、`shared` が持つ借用だけを持ちます（[所有者を増やした値の借用](../built-in-types-and-modules/rc.md#所有者を増やした値の借用)）。
 
 複数 region のレコードを `let mut` で束縛すると、region は 1 つにまとまります。共有フィールドの読み出しと排他フィールドの再借用を同じ式で行うと `E1014` になることがあるので、先に `let` で読み出します。
 

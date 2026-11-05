@@ -173,7 +173,7 @@ even=2450 odd=2500 owners=1
 
 ## 所有者を増やした値の借用
 
-`Rc.share`・`Rc.downgrade`・`Rc.upgrade`（`Arc` も同じ）の結果は、ブロックの新しい所有者（弱参照）です。引数の `ref shared` の借用は呼び出しの間だけで、結果は `shared` を借用しません。結果が借用を持つのは、ブロックの値が持つ借用（借用を捕捉した関数など）だけです。そのため結果を持ったまま `shared` をムーブ・解放でき、関数から結果を返せます。`Rc.get` の結果は `shared` が指すブロックへの参照なので、`shared` の借用のままです。
+`Rc.share`・`Rc.downgrade`・`Rc.upgrade`（`Arc` も同じ）の結果は、ブロックの新しい所有者（弱参照）です。引数の `ref shared` の借用は呼び出しの間だけで、結果は `shared` を借用しません。結果が借用を持つのは、ブロックの値が持つ借用（借用を捕捉した関数など）だけです。そのため結果を持ったまま `shared` をムーブ・解放でき、関数から結果を返せます。`Rc.get (ref shared)` や `ref shared` が生きている間も、結果をムーブできます。パイプライン `ref shared |> Rc.share` も同じです。`Rc.get` の結果は `shared` が指すブロックへの参照なので、`shared` の借用のままです。
 
 ```tsuzuri run=42
 let shared = Rc.new (\value -> value + 1)
