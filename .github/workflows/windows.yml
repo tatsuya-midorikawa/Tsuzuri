@@ -142,7 +142,8 @@ jobs:
       - name: W2 cargo clippy
         if: ${{ !cancelled() }}
         run: cargo clippy --locked --all-targets -- -D warnings
-      # TZ01 Phase 2: the tzroutine runtime on fibers (tests/tzroutine_runtime.c with the MSVC ABI clang and lld).
+      # TZ01 Phase 2: the tzroutine runtime on fibers (tests/tzroutine_runtime.c with the MSVC ABI clang and lld). TZ10: the
+      # preemption cases of Phase 1 (Windows has no signal stops: the cases of Phase 2 report that they are not built).
       - name: tzroutine runtime (TZ01)
         if: ${{ !cancelled() }}
         run: node tests/tzroutine_runtime.mjs

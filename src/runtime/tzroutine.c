@@ -226,6 +226,14 @@ static void tzr_fatal(const char *message);
 #error "tzroutine: unsupported architecture"
 #endif
 
+/* TZ10 Phase 2: the asynchronous preemption of a G that runs generated code without checks. The
+ * driver defines TZ_ASYNC_PREEMPT for an executable whose generated code is in its own section;
+ * ThreadSanitizer delivers a signal later, with a copy of the context, so it keeps Phase 1. */
+#if defined(TZ_ASYNC_PREEMPT) && !defined(TZR_TSAN) && (defined(__APPLE__) || defined(__linux__))
+#define TZR_ASYNC 1
+#include <signal.h>
+#endif
+
 #ifndef TZR_API
 #define TZR_API __attribute__((weak, visibility("hidden")))
 #endif
@@ -654,7 +662,7 @@ struct tzr_p {
     _Atomic(tzr_g *) runq[TZR_RUNQ];
     _Atomic(tzr_g *) runnext;
     tzr_p *link;
-    uint32_t schedtick;
+    _Atomic uint32_t schedtick;    /* one more at each G that the P starts (the owner writes, sysmon reads) */
     uint32_t runnext_streak; /* owner only: tzr_runqget's takes from runnext in a row */
     tzr_g *gfree;
     int gfree_count;
@@ -662,6 +670,13 @@ struct tzr_p {
     _Atomic uint32_t syscall_tick; /* one more at each blocking call (TZ08) */
     uint32_t sysmon_tick;          /* sysmon only: syscall_tick when it last looked */
     int64_t sysmon_when;           /* sysmon only: when it first saw that call */
+    _Atomic(tzr_m *) runm;         /* the M that runs a G on this P now, or NULL (TZ10) */
+    _Atomic int preempt;           /* 1: sysmon asked the G that runs here to yield (TZ10) */
+    uint32_t seen_tick;            /* sysmon only: schedtick when it last looked (TZ10) */
+    int64_t seen_at;               /* sysmon only: when it first saw that tick */
+    _Atomic uintptr_t run_lo;      /* the usable stack of the G that runs here (TZ10 Phase 2) */
+    _Atomic uintptr_t run_hi;
+    _Atomic int async_armed;       /* 1: sysmon signalled the M of this P's G (TZ10 Phase 2) */
 };
 
 struct tzr_m {
@@ -687,6 +702,15 @@ struct tzr_m {
 #if defined(TZR_ASAN)
     const void *g0_bottom; /* the bounds of this M's own stack, for ASan's switches */
     size_t g0_size;
+#endif
+#if defined(TZR_ASYNC)
+    pthread_t thread;               /* where sysmon sends its signal (TZ10 Phase 2) */
+    _Atomic(void *) async_resume;   /* the frame that this M's G resumes from, while it does */
+    _Atomic(tzr_m *) all_next;      /* every M, for the signal handler */
+    _Atomic int async_kicks;        /* sysmon's SIGURGs to this M that its handler has not taken */
+    _Atomic int async_ready;        /* its alternate signal stack is in place: sysmon may signal it */
+    _Atomic int async_gate;         /* 1 in a blocking call: sysmon sends it nothing */
+    _Atomic int async_self;         /* the SIGURG that tzr_async_entry sends itself is on its way */
 #endif
 };
 
@@ -721,6 +745,9 @@ static struct {
     tzr_lock gfree_lock;
     size_t stack_size;
     int deadlocked;
+#if defined(TZR_ASYNC)
+    _Atomic(tzr_m *) allm;         /* every M (never freed), newest first (TZ10 Phase 2) */
+#endif
 } tzr_sched = {.lock = TZR_MUTEX_INIT, .once = TZR_ONCE_INIT};
 
 static _Thread_local tzr_m *tzr_tls_m;
@@ -728,6 +755,12 @@ static _Thread_local tzr_g *tzr_tls_pseudo;
 
 /* R2: every TLS read goes through these noinline functions. */
 static TZR_NOINLINE tzr_m *tzr_this_m(void) { return tzr_tls_m; }
+
+/* errno around a yield, after which the G may run on another thread (R2): glibc declares
+ * __errno_location const, so the compiler may keep the slot that it found before the yield and write
+ * the old thread's errno. Each access is a call that finds the slot of the thread it runs on. */
+static TZR_NOINLINE int tzr_errno_get(void) { return errno; }
+static TZR_NOINLINE void tzr_errno_set(int value) { errno = value; }
 
 static uint64_t tzr_rand(uint64_t *state) {
     /* xorshift64*; the state is never zero */
@@ -971,9 +1004,12 @@ static void tzr_pidleput(tzr_p *p) {
     atomic_fetch_add(&tzr_sched.npidle, 1);
 }
 
-/* The M runs Gs on p from now on. */
+/* The M runs Gs on p from now on. It starts in the scheduler: no G runs on p yet (TZ10). */
 static void tzr_wirep(tzr_m *m, tzr_p *p) {
     m->p = p;
+    atomic_store_explicit(&p->runm, NULL, memory_order_relaxed);
+    atomic_store_explicit(&p->run_lo, 0, memory_order_relaxed);
+    atomic_store_explicit(&p->run_hi, 0, memory_order_relaxed);
     atomic_store_explicit(&p->status, TZR_P_RUNNING, memory_order_relaxed);
 }
 
@@ -1101,11 +1137,53 @@ static void tzr_checkdead(void) {
     tzr_sched.deadlocked = 0;
 }
 
+/* ---------------------------------------------------------------- preemption requests (TZ10) */
+
+/* How many Ps sysmon has asked to give up their G, of those that have not answered (TZ10). The
+ * generated code of a program that spawns reads it at function entries and at the back edges of
+ * loops that call (load atomic monotonic), and calls tsuzuri_tz_preempt_check when it is not 0. */
+TZR_API _Atomic int32_t tsuzuri_tz_preempt_pending;
+
+/* Takes back sysmon's request to p, if there is one: its G answered, or another G runs there. */
+static void tzr_preempt_clear(tzr_p *p) {
+    if (atomic_load_explicit(&p->preempt, memory_order_relaxed)
+        && atomic_exchange_explicit(&p->preempt, 0, memory_order_acquire))
+        atomic_fetch_sub_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
+}
+
+/* Sysmon asks the G on p to yield; 0 when p was asked already. The count goes up before the request
+ * is published (release), so whoever takes the request (acquire) subtracts one that is counted: the
+ * count is never below the requests that wait, and a check that finds it above them takes nothing. */
+static int tzr_preempt_ask(tzr_p *p) {
+    atomic_fetch_add_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
+    int expected = 0;
+    if (atomic_compare_exchange_strong_explicit(&p->preempt, &expected, 1, memory_order_release,
+                                                memory_order_relaxed))
+        return 1;
+    atomic_fetch_sub_explicit(&tsuzuri_tz_preempt_pending, 1, memory_order_relaxed);
+    return 0;
+}
+
+/* What runs on p now: G g on M m, or nothing. Sysmon reads the M (to signal it) and the handler of
+ * the signal reads the stack (TZ10 Phase 2); both are published before the G runs. A pseudo-G and a
+ * fiber (Windows) have no stack of the runtime's. */
+static void tzr_p_running(tzr_p *p, tzr_m *m, tzr_g *g) {
+    uintptr_t lo = g && g->stack ? (uintptr_t)g->stack + TZR_GUARD : 0;
+    atomic_store_explicit(&p->async_armed, 0, memory_order_relaxed);
+    atomic_store_explicit(&p->run_lo, lo, memory_order_relaxed);
+    atomic_store_explicit(&p->run_hi, lo ? lo + g->stack_size : 0, memory_order_relaxed);
+    atomic_store_explicit(&p->runm, m, memory_order_release);
+}
+
 /* ---------------------------------------------------------------- scheduling */
 
 static void tzr_execute(tzr_m *m, tzr_g *g) {
+    tzr_p *p = m->p;
     m->curg = g;
-    m->p->schedtick++;
+    atomic_store_explicit(&p->schedtick, atomic_load_explicit(&p->schedtick, memory_order_relaxed) + 1,
+                          memory_order_relaxed);
+    tzr_preempt_clear(p); /* asked of the G before: this is a new one */
+    tzr_p_running(p, m, g);
     atomic_store(&g->status, TZR_G_RUNNING);
 #if defined(TZR_TSAN)
     TZR_TSAN_SWITCH(g->tsan_fiber);
@@ -1118,7 +1196,8 @@ static void tzr_execute(tzr_m *m, tzr_g *g) {
 #if defined(TZR_ASAN)
     TZR_ASAN_FINISH(fake, NULL, NULL);
 #endif
-    /* back on g0: the G parked, yielded or exited */
+    /* back on g0: the G parked, yielded or exited (on this M, which may hold another P by now) */
+    if (m->p) tzr_p_running(m->p, NULL, NULL);
     tzr_g *prev = m->curg;
     m->curg = NULL;
     void (*after)(tzr_m *, tzr_g *) = m->after;
@@ -1130,7 +1209,7 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
     for (;;) {
         tzr_p *p = m->p;
         tzr_g *g;
-        if (p->schedtick % 61 == 0 && atomic_load(&tzr_sched.runq_size) > 0) {
+        if (atomic_load_explicit(&p->schedtick, memory_order_relaxed) % 61 == 0 && atomic_load(&tzr_sched.runq_size) > 0) {
             tzr_mutex_lock(&tzr_sched.lock);
             g = tzr_globrunqget(p, 1);
             tzr_mutex_unlock(&tzr_sched.lock);
@@ -1239,6 +1318,10 @@ static void tzr_schedule(tzr_m *m) {
     }
 }
 
+#if defined(TZR_ASYNC)
+static void tzr_async_thread(tzr_m *m);
+#endif
+
 static void *tzr_mstart(void *arg) {
     tzr_m *m = arg;
     tzr_tls_m = m;
@@ -1251,6 +1334,9 @@ static void *tzr_mstart(void *arg) {
 #endif
 #if defined(TZ_STACK_GUARD)
     tsuzuri_stack_scheduler_thread(); /* the alternate stack on which stack.c reports an overflow */
+#endif
+#if defined(TZR_ASYNC)
+    tzr_async_thread(m);
 #endif
     tzr_wirep(m, m->nextp);
     m->nextp = NULL;
@@ -1877,6 +1963,8 @@ static void tzr_acquirep(tzr_m *m) {
         tzr_mutex_unlock(&tzr_sched.lock);
     }
     tzr_wirep(m, p);
+    /* back from a blocking call or a locked G's wait: its G goes on running here (TZ10) */
+    if (m->curg) tzr_p_running(p, m, m->curg);
 }
 
 /* A P that its M gave up (a blocking call that sysmon took it from, a locked G that waits): to an M
@@ -1900,7 +1988,27 @@ static void tzr_handoffp(tzr_p *p) {
  * P again when sysmon has not taken it (a compare-exchange), or an idle one, or waits for one; the G
  * never leaves its M inside the call. Calls nest (a callback's extern), and a pseudo-G, which holds
  * no P, does nothing. */
+#if defined(TZR_ASYNC)
+static int tzr_async_deliverable(void);
+#endif
+
 static void tzr_entersyscall(tzr_m *m) {
+#if defined(TZR_ASYNC)
+    /* Dekker with tzr_async_kick: either sysmon sees the gate closed and sends nothing, or this sees
+     * its kick and waits until the handler took it (sysmon may be descheduled before it sends), so
+     * that no SIGURG of sysmon interrupts the call (EINTR, or a nanosleep cut short). Only if the
+     * handler can never take it (the program put its own over the runtime's, or blocks SIGURG on
+     * this thread) does the M give up its signals and go on. */
+    atomic_store_explicit(&m->async_gate, 1, memory_order_seq_cst);
+    for (int i = 1; atomic_load_explicit(&m->async_kicks, memory_order_seq_cst) != 0; i++) {
+        tzr_os_yield(); /* into the kernel and back: a pending signal is delivered then */
+        if (i % 1024 == 0 && !tzr_async_deliverable()) {
+            atomic_store_explicit(&m->async_ready, 0, memory_order_relaxed);
+            atomic_store_explicit(&m->async_kicks, 0, memory_order_relaxed);
+            break;
+        }
+    }
+#endif
     tzr_p *p = m->p;
     m->oldp = p;
     m->p = NULL;
@@ -1910,6 +2018,9 @@ static void tzr_entersyscall(tzr_m *m) {
 }
 
 static void tzr_exitsyscall(tzr_m *m) {
+#if defined(TZR_ASYNC)
+    atomic_store_explicit(&m->async_gate, 0, memory_order_release);
+#endif
     tzr_p *p = m->oldp;
     m->oldp = NULL;
     atomic_fetch_sub_explicit(&tzr_sched.nmsys, 1, memory_order_relaxed);
@@ -1995,6 +2106,491 @@ TZR_API void tsuzuri_tz_unlock_thread(void) {
     tzr_unlockm(m->curg);
 }
 
+/* ---------------------------------------------------------------- asynchronous preemption (TZ10 Phase 2) */
+
+/* A G that keeps running generated code without passing a check (a loop without calls) for 10 ms
+ * after sysmon's request gets a SIGURG on its M (tzr_async_kick). The handler runs on the M's
+ * alternate stack and stops the G only when it is in generated code, which the compiler puts in its
+ * own section (__TEXT,__tz_text on Mach-O, tz_text on ELF): never in the runtime, the C library or
+ * a host's code, which may hold a lock or a thread's storage. Tsuzuri has no garbage collector, so
+ * any instruction of generated code is a safe point: nothing scans its stack, and the generated code
+ * keeps no lock of the runtime and no address of a thread's storage (src/llvm_preempt.rs).
+ *
+ * The handler (tzr_async_stop) copies the whole interrupted context, as the kernel saved it (every
+ * general register, the flags, the floating-point and vector state with its control and status
+ * registers), into a frame on the G's own stack below the red zone, and returns into
+ * tzr_async_entry as if the G had called it. That function runs in normal context: it yields (as a
+ * check does) and then raises SIGURG on its own thread, whose handler (tzr_async_resume) puts the
+ * saved context back into the signal frame, so that the kernel's return restores all of it exactly,
+ * on whichever thread the G runs by then. Two signals, but no register has to be free for the jump
+ * back, which AArch64 code never leaves. A context that cannot be saved whole (SME state, live SVE
+ * vectors too long for the records of a frame, a frame of another shape than the probe at the start
+ * saw, AMX state) is not stopped; Phase 1's checks and sysmon's next request remain. */
+#if defined(TZR_ASYNC)
+static int tzr_trap_boundary(void);
+#if defined(__APPLE__)
+#include <sys/ucontext.h>
+extern const char tzr_text_start[] __asm("section$start$__TEXT$__tz_text");
+extern const char tzr_text_end[] __asm("section$end$__TEXT$__tz_text");
+#else
+#include <ucontext.h>
+extern const char __start_tz_text[] __attribute__((weak, visibility("hidden")));
+extern const char __stop_tz_text[] __attribute__((weak, visibility("hidden")));
+#define tzr_text_start __start_tz_text
+#define tzr_text_end __stop_tz_text
+#endif
+
+#define TZR_ASYNC_REDZONE 128            /* x86-64 System V, and Apple's arm64 */
+#define TZR_ASYNC_STATE (12 * 1024)       /* the most bytes of a saved context */
+#define TZR_ASYNC_BUDGET (32 * 1024)      /* the stack that tzr_async_entry may use below the frame */
+#define TZR_ASYNC_MARGIN (16 * 1024)      /* left above the guard */
+#define TZR_ASYNC_MAGIC 0x545a313050726565ULL
+
+typedef struct tzr_async_frame {
+    uint64_t magic;
+    uint64_t size;      /* bytes of `state` */
+    uintptr_t pc, sp;   /* where the G was stopped */
+    uint64_t shape;     /* tzr_async_measure's */
+    unsigned char pad[24];
+    unsigned char state[]; /* 64-byte aligned */
+} tzr_async_frame;
+
+static struct {
+    _Atomic int enabled;
+    _Atomic int probing;
+    pthread_t prober;         /* the thread of sysmon, while it probes */
+    _Atomic uint64_t probed;  /* the shape of a context that the thread of sysmon saw, 0: unusable */
+    _Atomic uint64_t signals; /* sent by sysmon */
+    _Atomic uint64_t stopped; /* stops in generated code */
+    _Atomic uint64_t refused; /* in generated code, but not saved */
+    _Atomic uint64_t yielded; /* yields of tzr_async_entry */
+} tzr_async;
+static struct sigaction tzr_async_previous;
+static _Atomic int tzr_async_oneshot; /* the previous handler had SA_RESETHAND, and it has run */
+
+#if defined(__linux__) && defined(__aarch64__)
+/* The records of the floating-point and vector state after the registers of the kernel's frame
+ * (arch/arm64/include/uapi/asm/sigcontext.h). */
+enum { TZR_FPSIMD_MAGIC = 0x46508001, TZR_ESR_MAGIC = 0x45535201, TZR_SVE_MAGIC = 0x53564501,
+       TZR_TPIDR2_MAGIC = 0x54504902, TZR_FPSIMD_SIZE = 528, TZR_SVE_FLAG_SM = 1 };
+#if defined(FPSIMD_MAGIC)
+_Static_assert(FPSIMD_MAGIC == TZR_FPSIMD_MAGIC && ESR_MAGIC == TZR_ESR_MAGIC && SVE_MAGIC == TZR_SVE_MAGIC,
+               "the kernel's record magics");
+_Static_assert(offsetof(struct sve_context, vl) == 8, "the vector length of the kernel's SVE record");
+#endif
+#if defined(SVE_SIG_FLAG_SM)
+_Static_assert(SVE_SIG_FLAG_SM == TZR_SVE_FLAG_SM && offsetof(struct sve_context, flags) == 10,
+               "the kernel's flag of SME's streaming mode in the SVE record");
+#endif
+#if defined(TPIDR2_MAGIC)
+_Static_assert(TPIDR2_MAGIC == TZR_TPIDR2_MAGIC, "the kernel's TPIDR2 record magic");
+#endif
+#define TZR_GREGS_BYTES (34 * 8) /* regs[31], sp, pc, pstate */
+_Static_assert(offsetof(mcontext_t, pstate) - offsetof(mcontext_t, regs) == 33 * 8, "regs, sp, pc and pstate in a row");
+/* The bytes of the records of a frame, through the header of the end record, or 0 when one of them
+ * holds state that the frame of another thread could not take back: SME's streaming mode or ZA (whose
+ * record is unknown here), an extra record (live SVE vectors too long for `__reserved`; 512 bits
+ * fit), or an unknown record. The kernel puts the SVE registers into the frame of a thread that used
+ * them since its last system call (the C library's string functions do), and at sigreturn it takes
+ * them from the records that the frame holds then: the records go to the frame of the resume whole,
+ * which takes them when its SVE vector length, `vl` (0 without SVE), is the same. */
+static size_t tzr_async_records(mcontext_t *mc, uint16_t *vl) {
+    unsigned char *base = (unsigned char *)mc->__reserved;
+    size_t end = sizeof mc->__reserved, at = 0;
+    int fpsimd = 0;
+    *vl = 0;
+    while (at + 8 <= end) {
+        uint32_t magic, size;
+        memcpy(&magic, base + at, 4);
+        memcpy(&size, base + at + 4, 4);
+        if (magic == 0) return size == 0 && fpsimd ? at + 8 : 0;
+        if (size < 8 || size > end - at) return 0;
+        if (magic == TZR_FPSIMD_MAGIC) {
+            if (size != TZR_FPSIMD_SIZE) return 0;
+            fpsimd = 1;
+        } else if (magic == TZR_SVE_MAGIC) {
+            uint16_t flags;
+            if (size < 16) return 0;
+            memcpy(vl, base + at + 8, 2);
+            memcpy(&flags, base + at + 10, 2);
+            if (flags & TZR_SVE_FLAG_SM) return 0;
+        } else if (magic != TZR_ESR_MAGIC && magic != TZR_TPIDR2_MAGIC) {
+            return 0;
+        }
+        at += size;
+    }
+    return 0;
+}
+#elif defined(__linux__) && defined(__x86_64__)
+#define TZR_GREGS_BYTES (NGREG * 8)
+/* The bytes of the kernel's floating-point area (the FXSAVE image, and the XSAVE one with its end
+ * marker when the software bytes say so), or 0 when it holds AMX state, which a frame of another
+ * thread may not have room for. */
+static size_t tzr_async_fpbytes(const unsigned char *fp) {
+    uint32_t magic1, xstate;
+    memcpy(&magic1, fp + 464, 4);
+    if (magic1 != 0x46505853u) return 512;
+    memcpy(&xstate, fp + 480, 4);
+    uint64_t features;
+    memcpy(&features, fp + 512, 8);
+    if (features & (3ull << 17)) return 0;
+    uint32_t magic2;
+    memcpy(&magic2, fp + xstate, 4);
+    return magic2 == 0x46505845u ? (size_t)xstate + 4 : 0;
+}
+#endif
+
+/* The size of the saved context of `uc`, or 0 when it cannot be saved whole. `shape` gets what it must
+ * have in common with the probe's context and with the frame that it is written back to (0 with a size
+ * of 0): its size, or on Linux aarch64, whose records grow with live SVE registers and go to that frame
+ * whole, the SVE vector length plus one. */
+__attribute__((no_sanitize("address"))) static size_t tzr_async_measure(ucontext_t *uc, uint64_t *shape) {
+#if defined(__APPLE__)
+    size_t size = uc->uc_mcsize > 0 && uc->uc_mcsize <= TZR_ASYNC_STATE ? (size_t)uc->uc_mcsize : 0;
+    *shape = size;
+#elif defined(__aarch64__)
+    uint16_t vl;
+    size_t records = tzr_async_records(&uc->uc_mcontext, &vl);
+    size_t size = records ? TZR_GREGS_BYTES + records : 0;
+    *shape = records ? (uint64_t)vl + 1 : 0;
+#else
+    size_t fp = uc->uc_mcontext.fpregs ? tzr_async_fpbytes((const unsigned char *)uc->uc_mcontext.fpregs) : 0;
+    size_t size = fp && TZR_GREGS_BYTES + fp <= TZR_ASYNC_STATE ? TZR_GREGS_BYTES + fp : 0;
+    *shape = size;
+#endif
+    return size;
+}
+
+__attribute__((no_sanitize("address"))) static void tzr_async_copy(void *to, const void *from, size_t size) {
+    volatile unsigned char *t = to;
+    const volatile unsigned char *f = from;
+    for (size_t i = 0; i < size; i++) t[i] = f[i];
+}
+
+/* Copies the context of `uc` (measured as `size`) to `state`. */
+__attribute__((no_sanitize("address"))) static void tzr_async_save(ucontext_t *uc, unsigned char *state, size_t size) {
+#if defined(__APPLE__)
+    tzr_async_copy(state, uc->uc_mcontext, size);
+#elif defined(__aarch64__)
+    tzr_async_copy(state, &uc->uc_mcontext.regs[0], TZR_GREGS_BYTES);
+    tzr_async_copy(state + TZR_GREGS_BYTES, uc->uc_mcontext.__reserved, size - TZR_GREGS_BYTES);
+#else
+    tzr_async_copy(state, uc->uc_mcontext.gregs, TZR_GREGS_BYTES);
+    tzr_async_copy(state + TZR_GREGS_BYTES, uc->uc_mcontext.fpregs, size - TZR_GREGS_BYTES);
+#endif
+}
+
+/* Puts the context that `frame` saved back into `uc`; 0 when its frame has another shape. */
+__attribute__((no_sanitize("address"))) static int tzr_async_load(ucontext_t *uc, const tzr_async_frame *frame) {
+    const unsigned char *state = frame->state;
+    size_t size = frame->size;
+    uint64_t shape;
+    if (tzr_async_measure(uc, &shape) == 0 || shape != frame->shape) return 0;
+#if defined(__APPLE__)
+    tzr_async_copy(uc->uc_mcontext, state, size);
+#elif defined(__aarch64__)
+    tzr_async_copy(&uc->uc_mcontext.regs[0], state, TZR_GREGS_BYTES);
+    tzr_async_copy(uc->uc_mcontext.__reserved, state + TZR_GREGS_BYTES, size - TZR_GREGS_BYTES);
+#else
+    tzr_async_copy(uc->uc_mcontext.gregs, state, TZR_GREGS_BYTES);
+    tzr_async_copy(uc->uc_mcontext.fpregs, state + TZR_GREGS_BYTES, size - TZR_GREGS_BYTES);
+#endif
+    return 1;
+}
+
+#if defined(__APPLE__) && defined(__aarch64__)
+#define TZR_UC_PC(uc) ((uc)->uc_mcontext->__ss.__pc)
+#define TZR_UC_SP(uc) ((uc)->uc_mcontext->__ss.__sp)
+#elif defined(__APPLE__)
+#define TZR_UC_PC(uc) ((uc)->uc_mcontext->__ss.__rip)
+#define TZR_UC_SP(uc) ((uc)->uc_mcontext->__ss.__rsp)
+#elif defined(__aarch64__)
+#define TZR_UC_PC(uc) ((uc)->uc_mcontext.pc)
+#define TZR_UC_SP(uc) ((uc)->uc_mcontext.sp)
+#else
+#define TZR_UC_PC(uc) ((uc)->uc_mcontext.gregs[REG_RIP])
+#define TZR_UC_SP(uc) ((uc)->uc_mcontext.gregs[REG_RSP])
+#endif
+
+static void tzr_async_entry(tzr_async_frame *frame) __attribute__((noreturn, noinline, used));
+
+/* Makes the stopped G call tzr_async_entry(frame) when the handler returns: the first argument, a
+ * return address that is the stopped instruction (for a debugger's backtrace; the function never
+ * returns), no BTI branch type and no direction flag (C's convention). */
+__attribute__((no_sanitize("address"))) static void tzr_async_redirect(ucontext_t *uc, tzr_async_frame *frame) {
+    uintptr_t pc = (uintptr_t)TZR_UC_PC(uc);
+#if defined(__APPLE__) && defined(__aarch64__)
+    uc->uc_mcontext->__ss.__x[0] = (uintptr_t)frame;
+    uc->uc_mcontext->__ss.__lr = pc;
+    uc->uc_mcontext->__ss.__sp = (uintptr_t)frame;
+    uc->uc_mcontext->__ss.__cpsr &= ~(3u << 10);
+    uc->uc_mcontext->__ss.__pc = (uintptr_t)tzr_async_entry;
+#elif defined(__APPLE__)
+    uintptr_t *slot = (uintptr_t *)frame - 1;
+    *slot = pc;
+    uc->uc_mcontext->__ss.__rdi = (uintptr_t)frame;
+    uc->uc_mcontext->__ss.__rsp = (uintptr_t)slot;
+    uc->uc_mcontext->__ss.__rflags &= ~(1ull << 10);
+    uc->uc_mcontext->__ss.__rip = (uintptr_t)tzr_async_entry;
+#elif defined(__aarch64__)
+    uc->uc_mcontext.regs[0] = (uintptr_t)frame;
+    uc->uc_mcontext.regs[30] = pc;
+    uc->uc_mcontext.sp = (uintptr_t)frame;
+    uc->uc_mcontext.pstate &= ~(3ull << 10);
+    uc->uc_mcontext.pc = (uintptr_t)tzr_async_entry;
+#else
+    uintptr_t *slot = (uintptr_t *)frame - 1;
+    *slot = pc;
+    uc->uc_mcontext.gregs[REG_RDI] = (greg_t)(uintptr_t)frame;
+    uc->uc_mcontext.gregs[REG_RSP] = (greg_t)(uintptr_t)slot;
+    uc->uc_mcontext.gregs[REG_EFL] &= ~(greg_t)(1 << 10);
+    uc->uc_mcontext.gregs[REG_RIP] = (greg_t)(uintptr_t)tzr_async_entry;
+#endif
+}
+
+/* The first signal: stops a G that runs generated code on the stack of a P that sysmon armed.
+ * Returns 0 when the signal is not this runtime's to handle. */
+__attribute__((no_sanitize("address"))) static int tzr_async_stop(ucontext_t *uc) {
+    uintptr_t pc = (uintptr_t)TZR_UC_PC(uc), sp = (uintptr_t)TZR_UC_SP(uc);
+    if (pc < (uintptr_t)tzr_text_start || pc >= (uintptr_t)tzr_text_end) return 0;
+    for (int i = 0; i < tzr_sched.nprocs; i++) {
+        tzr_p *p = tzr_sched.allp[i];
+        if (!atomic_load_explicit(&p->async_armed, memory_order_acquire)) continue;
+        uintptr_t lo = atomic_load_explicit(&p->run_lo, memory_order_relaxed);
+        uintptr_t hi = atomic_load_explicit(&p->run_hi, memory_order_relaxed);
+        if (lo == 0 || sp <= lo || sp > hi) continue;
+        atomic_store_explicit(&p->async_armed, 0, memory_order_relaxed);
+        uint64_t shape;
+        size_t size = tzr_async_measure(uc, &shape);
+        uintptr_t at = (sp - TZR_ASYNC_REDZONE - sizeof(tzr_async_frame) - size) & ~(uintptr_t)63;
+        if (size == 0 || shape != atomic_load_explicit(&tzr_async.probed, memory_order_relaxed)
+            || at < lo + TZR_ASYNC_MARGIN + TZR_ASYNC_BUDGET) {
+            atomic_fetch_add_explicit(&tzr_async.refused, 1, memory_order_relaxed);
+            return 1;
+        }
+        tzr_async_frame *frame = (tzr_async_frame *)at;
+        frame->magic = TZR_ASYNC_MAGIC;
+        frame->size = size;
+        frame->pc = pc;
+        frame->sp = sp;
+        frame->shape = shape;
+        tzr_async_save(uc, frame->state, size);
+        tzr_async_redirect(uc, frame);
+        atomic_fetch_add_explicit(&tzr_async.stopped, 1, memory_order_relaxed);
+        return 1;
+    }
+    return 0;
+}
+
+__attribute__((noreturn)) static void tzr_async_lost(void) {
+    static const char message[] = "Tsuzuri runtime: a preempted tzroutine cannot be resumed\n";
+    (void)!write(2, message, sizeof message - 1);
+    abort();
+}
+
+/* The second signal: raised by tzr_async_entry on its own thread, whose interrupted stack pointer is
+ * just below the frame that it resumes. Returns 0 for any other signal. */
+__attribute__((no_sanitize("address"))) static int tzr_async_resume(ucontext_t *uc) {
+    uintptr_t sp = (uintptr_t)TZR_UC_SP(uc);
+    for (tzr_m *m = atomic_load_explicit(&tzr_sched.allm, memory_order_acquire); m;
+         m = atomic_load_explicit(&m->all_next, memory_order_relaxed)) {
+        tzr_async_frame *frame = atomic_load_explicit(&m->async_resume, memory_order_relaxed);
+        if (frame == NULL || sp >= (uintptr_t)frame || (uintptr_t)frame - sp > TZR_ASYNC_BUDGET) continue;
+        /* the frame is published before tzr_async_entry sends its signal: one that comes in between
+         * is someone else's, and the entry's own comes after it (this thread, so no ordering) */
+        if (!atomic_exchange_explicit(&m->async_self, 0, memory_order_relaxed)) return 0;
+        if (frame->magic != TZR_ASYNC_MAGIC || !tzr_async_load(uc, frame)) tzr_async_lost();
+        frame->magic = 0;
+        atomic_store_explicit(&m->async_resume, NULL, memory_order_relaxed);
+        return 1;
+    }
+    return 0;
+}
+
+/* Takes the kicks that sysmon sent to the M of this thread (found without TLS): whether this SIGURG
+ * is sysmon's, even when the G cannot be stopped where it is (in the runtime or the C library). */
+__attribute__((no_sanitize("address"))) static int tzr_async_kicked(void) {
+    pthread_t self = pthread_self();
+    for (tzr_m *m = atomic_load_explicit(&tzr_sched.allm, memory_order_acquire); m;
+         m = atomic_load_explicit(&m->all_next, memory_order_relaxed)) {
+        if (pthread_equal(m->thread, self)) return atomic_exchange_explicit(&m->async_kicks, 0, memory_order_acquire) > 0;
+    }
+    return 0;
+}
+
+__attribute__((no_sanitize("address"))) static void tzr_async_handler(int sig, siginfo_t *info, void *context) {
+    ucontext_t *uc = context;
+    if (atomic_load_explicit(&tzr_async.probing, memory_order_acquire) && pthread_equal(pthread_self(), tzr_async.prober)) {
+        uint64_t shape;
+        (void)tzr_async_measure(uc, &shape);
+        atomic_store_explicit(&tzr_async.probed, shape, memory_order_relaxed);
+        return;
+    }
+    if (tzr_async_resume(uc)) {
+        /* a kick of sysmon that this signal brought as well was for the G that goes on now: taken,
+         * or later kicks would wait for a signal that its handler never takes */
+        (void)tzr_async_kicked();
+        return;
+    }
+    /* Only a kick of sysmon stops a G (a SIGURG of the program's own can find a P still armed), and
+     * it is taken even when the G cannot be stopped where it is. A kick that sysmon counts while a
+     * handler runs, before it sends the signal, can go to this handler, and its signal then reaches
+     * the previous handler instead of one of the program's: as many reach it either way. */
+    if (tzr_async_kicked()) {
+        (void)tzr_async_stop(uc);
+        return;
+    }
+    /* Not this runtime's: whoever had SIGURG before. Its default is to ignore it. */
+    /* SIG_DFL and SIG_IGN are dispositions whatever the flags say (they share the union with
+     * sa_sigaction): neither is called */
+    if (tzr_async_previous.sa_handler == SIG_DFL || tzr_async_previous.sa_handler == SIG_IGN) return;
+    /* SA_RESETHAND: once, then the default (SIGURG's ignores it), as the kernel would have done */
+    if ((tzr_async_previous.sa_flags & SA_RESETHAND)
+        && atomic_exchange_explicit(&tzr_async_oneshot, 1, memory_order_relaxed))
+        return;
+    /* with the signals that its own action blocked while it runs, and SIGURG itself unblocked if it
+     * asked for SA_NODEFER (this handler runs with it blocked) */
+    sigset_t saved;
+    pthread_sigmask(SIG_BLOCK, &tzr_async_previous.sa_mask, &saved);
+    if ((tzr_async_previous.sa_flags & SA_NODEFER) && sigismember(&tzr_async_previous.sa_mask, SIGURG) != 1) {
+        sigset_t urgent;
+        sigemptyset(&urgent);
+        sigaddset(&urgent, SIGURG);
+        pthread_sigmask(SIG_UNBLOCK, &urgent, NULL);
+    }
+    if (tzr_async_previous.sa_flags & SA_SIGINFO) tzr_async_previous.sa_sigaction(sig, info, context);
+    else tzr_async_previous.sa_handler(sig);
+    pthread_sigmask(SIG_SETMASK, &saved, NULL);
+}
+
+/* Whether a SIGURG sent to this thread now reaches tzr_async_handler (tzr_entersyscall). */
+static int tzr_async_deliverable(void) {
+    struct sigaction now;
+    sigset_t mask;
+    if (sigaction(SIGURG, NULL, &now) != 0 || pthread_sigmask(SIG_BLOCK, NULL, &mask) != 0) return 0;
+    return (now.sa_flags & SA_SIGINFO) && now.sa_sigaction == tzr_async_handler && sigismember(&mask, SIGURG) != 1;
+}
+
+#if defined(TZR_ASAN)
+void __asan_handle_no_return(void);
+#endif
+
+/* What the stopped G runs, on its own stack below its saved context: a yield, unless the G may not
+ * move (inside a trap boundary, whose frame is its thread's, or in a blocking call), then the
+ * resume. Its frames are left behind when the second signal returns into the generated code. */
+static void tzr_async_entry(tzr_async_frame *frame) {
+    tzr_m *m = tzr_this_m();
+    if (m != NULL && m->curg != NULL && m->p != NULL && m->syscall_depth == 0 && !tzr_trap_boundary()) {
+        tzr_preempt_clear(m->p);
+        atomic_fetch_add_explicit(&tzr_async.yielded, 1, memory_order_relaxed);
+        int saved = tzr_errno_get();
+        tsuzuri_tz_yield();
+        tzr_errno_set(saved);
+        m = tzr_this_m(); /* R2: maybe another M */
+    }
+    if (m == NULL) tzr_async_lost();
+#if defined(TZR_ASAN)
+    __asan_handle_no_return();
+#endif
+    atomic_store_explicit(&m->async_resume, frame, memory_order_relaxed);
+    atomic_store_explicit(&m->async_self, 1, memory_order_relaxed);
+    atomic_signal_fence(memory_order_seq_cst);
+    pthread_kill(pthread_self(), SIGURG);
+    tzr_async_lost();
+}
+
+/* An M takes SIGURG, on an alternate stack (stack.c's when it is linked, else one of its own). */
+static void tzr_async_thread(tzr_m *m) {
+    m->thread = pthread_self();
+    /* listed for the handlers once its thread is known: the release publishes it with the M */
+    tzr_m *head = atomic_load_explicit(&tzr_sched.allm, memory_order_relaxed);
+    do atomic_store_explicit(&m->all_next, head, memory_order_relaxed);
+    while (!atomic_compare_exchange_weak_explicit(&tzr_sched.allm, &head, m, memory_order_release, memory_order_relaxed));
+    /* Without an alternate stack the handler would run on the stack of the G that it stops, where the
+     * copy of the context could overwrite the kernel's own frame: such an M keeps the checks only. */
+    stack_t current;
+    int ready = 0;
+    if (sigaltstack(NULL, &current) == 0) {
+        if (!(current.ss_flags & SS_DISABLE)) {
+            ready = 1; /* stack.c's */
+        } else {
+            stack_t alternate = {.ss_sp = malloc(64 * 1024), .ss_size = 64 * 1024, .ss_flags = 0};
+            if (alternate.ss_sp != NULL && sigaltstack(&alternate, NULL) == 0) ready = 1;
+            else free(alternate.ss_sp);
+        }
+    }
+    atomic_store_explicit(&m->async_ready, ready, memory_order_release);
+    sigset_t urgent;
+    sigemptyset(&urgent);
+    sigaddset(&urgent, SIGURG);
+    pthread_sigmask(SIG_UNBLOCK, &urgent, NULL);
+}
+
+/* On the thread of sysmon, once: the handler, and a probe of the shape of a context (a frame of a
+ * thread whose state is larger, AVX-512 on an Intel Mac, AMX on Linux, or whose SVE vector length is
+ * another on Linux aarch64, is refused; with SME, whose record every frame has, nothing is stopped).
+ * Without generated code in the section (an empty range) nothing is stopped and no signal is sent. */
+static void tzr_async_init(void) {
+    if ((uintptr_t)tzr_text_start >= (uintptr_t)tzr_text_end) return;
+    /* A handler that the program had keeps its system calls' behavior for its own signals: restarted
+     * only if it asked for that. Without one (SIGURG is ignored by default, so nothing was ever
+     * interrupted) they restart. Sysmon signals only Ms that run a G outside a blocking call. */
+    struct sigaction before;
+    if (sigaction(SIGURG, NULL, &before) != 0) return;
+    int handled = before.sa_handler != SIG_DFL && before.sa_handler != SIG_IGN;
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_sigaction = tzr_async_handler;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK | (handled ? before.sa_flags & SA_RESTART : SA_RESTART);
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGURG, &action, &tzr_async_previous) != 0) return;
+    sigset_t urgent;
+    sigemptyset(&urgent);
+    sigaddset(&urgent, SIGURG);
+    pthread_sigmask(SIG_UNBLOCK, &urgent, NULL);
+    tzr_async.prober = pthread_self();
+    atomic_store_explicit(&tzr_async.probing, 1, memory_order_release);
+    raise(SIGURG);
+    atomic_store(&tzr_async.probing, 0);
+    if (atomic_load(&tzr_async.probed) != 0) atomic_store_explicit(&tzr_async.enabled, 1, memory_order_release);
+}
+#endif
+
+#if defined(TZR_ASYNC) && !defined(TZR_KICK_PAUSE)
+#define TZR_KICK_PAUSE() ((void)0)
+#endif
+
+/* Sysmon: the G of p did not answer the request of 10 ms ago. */
+static void tzr_async_kick(tzr_p *p) {
+#if defined(TZR_ASYNC)
+    if (!atomic_load_explicit(&tzr_async.enabled, memory_order_acquire)) return;
+    tzr_m *m = atomic_load_explicit(&p->runm, memory_order_acquire);
+    if (m == NULL || !atomic_load_explicit(&m->async_ready, memory_order_acquire)
+        || atomic_load_explicit(&p->run_lo, memory_order_relaxed) == 0)
+        return;
+    atomic_store_explicit(&p->async_armed, 1, memory_order_release);
+    /* One signal for the kicks that its handler has not taken: a SIGURG that is pending already
+     * takes them all, and a second would reach the handler with none, as if it were someone else's.
+     * Counted before the gate is read (Dekker with tzr_entersyscall): an M in a blocking call gets
+     * no signal. */
+    int before = atomic_fetch_add_explicit(&m->async_kicks, 1, memory_order_seq_cst);
+    if (atomic_load_explicit(&m->async_gate, memory_order_seq_cst)) {
+        /* this kick back, unless a handler took the kicks meanwhile (never below 0) */
+        int kicks = atomic_load_explicit(&m->async_kicks, memory_order_relaxed);
+        while (kicks > 0 && !atomic_compare_exchange_weak_explicit(&m->async_kicks, &kicks, kicks - 1,
+                                                                   memory_order_relaxed, memory_order_relaxed)) {
+        }
+        return;
+    }
+    if (before != 0) return;
+    TZR_KICK_PAUSE(); /* tests: sysmon descheduled between the gate and the signal */
+    atomic_fetch_add_explicit(&tzr_async.signals, 1, memory_order_relaxed);
+    pthread_kill(m->thread, SIGURG);
+#else
+    (void)p;
+#endif
+}
+
 /* ---------------------------------------------------------------- sysmon (TZ08) */
 
 /* One thread, started by the first spawn, that takes the P of a blocking call (tzr_retake). It looks
@@ -2054,13 +2650,56 @@ static int tzr_retake(int64_t now) {
     return took;
 }
 
+/* TZ10 Phase 1: asks each P whose G has run for 10 ms (the same schedtick in two rounds that far
+ * apart, D3) while other work waits for it to give it up. The request is the P's, not the G's: a G may end and be freed while
+ * sysmon looks, a P never is. The G sees it at its next check (tsuzuri_tz_preempt_check) and
+ * yields to the end of the global run queue (D6). A G that does not answer is asked again 10 ms
+ * later. Returns 1 when it asked. */
+#define TZR_PREEMPT_AFTER 10000000 /* ns */
+static int tzr_preempt_scan(int64_t now) {
+    int asked = 0;
+    for (int i = 0; i < tzr_sched.nprocs; i++) {
+        tzr_p *p = tzr_sched.allp[i];
+        uint32_t tick = atomic_load_explicit(&p->schedtick, memory_order_relaxed);
+        if (atomic_load_explicit(&p->status, memory_order_relaxed) != TZR_P_RUNNING
+            || atomic_load_explicit(&p->runm, memory_order_relaxed) == NULL) {
+            tzr_preempt_clear(p); /* nothing runs there to answer */
+            p->seen_tick = tick;
+            p->seen_at = now;
+            continue;
+        }
+        if (tick != p->seen_tick) {
+            p->seen_tick = tick;
+            p->seen_at = now;
+            continue;
+        }
+        if (now - p->seen_at < TZR_PREEMPT_AFTER) continue;
+        /* Only for work that waits for this P: its own queue, or the global queue or an M back from
+         * a blocking call while no P is idle (an idle P takes those). A G that computes alone keeps
+         * its P, with no yield and no signal. */
+        if (tzr_runq_empty(p) && atomic_load(&tzr_sched.npwait) == 0
+            && (atomic_load(&tzr_sched.runq_size) == 0 || atomic_load(&tzr_sched.npidle) > 0))
+            continue;
+        p->seen_at = now;
+        if (!tzr_preempt_ask(p)) tzr_async_kick(p); /* Phase 2: asked 10 ms ago, and no check answered */
+        asked = 1;
+    }
+    return asked;
+}
+
 static void *tzr_sysmon(void *arg) {
     (void)arg;
+#if defined(TZR_ASYNC)
+    tzr_async_init();
+#endif
     int64_t delay = TZR_SYSMON_MIN;
     int quiet = 0;
     tzr_mutex_lock(&tzr_sysmon_state.lock);
     for (;;) {
         if (atomic_load(&tzr_sched.npidle) == tzr_sched.nprocs) {
+            /* A request whose G ended without a check would keep the count up, and every check on
+             * its slow path, while sysmon sleeps: nothing runs on an idle P to answer it. */
+            for (int i = 0; i < tzr_sched.nprocs; i++) tzr_preempt_clear(tzr_sched.allp[i]);
             /* Dekker with tzr_pidleget: either it sees `parked`, or this sees the P it took. */
             atomic_store(&tzr_sysmon_state.parked, 1);
             while (atomic_load(&tzr_sysmon_state.parked) && atomic_load(&tzr_sched.npidle) == tzr_sched.nprocs)
@@ -2071,7 +2710,9 @@ static void *tzr_sysmon(void *arg) {
         }
         tzr_cond_wait_for(&tzr_sysmon_state.wake, &tzr_sysmon_state.lock, delay);
         tzr_mutex_unlock(&tzr_sysmon_state.lock);
-        int took = tzr_retake(tzr_nanotime());
+        int64_t now = tzr_nanotime();
+        int took = tzr_retake(now);
+        took |= tzr_preempt_scan(now);
         tzr_mutex_lock(&tzr_sysmon_state.lock);
         if (took) {
             delay = TZR_SYSMON_MIN;
@@ -2092,6 +2733,35 @@ static void tzr_sysmon_init(void) {
 static void tzr_sysmon_start(void) {
     if (!atomic_load_explicit(&tzr_sysmon_state.started, memory_order_acquire))
         tzr_run_once(&tzr_sysmon_state.once, tzr_sysmon_init);
+}
+
+/* The check that the generated code calls when tsuzuri_tz_preempt_pending is not 0 (TZ10), with the
+ * count's address (its declaration says that it writes only through that and to the runtime's own
+ * memory, which the module does not declare): a G whose P sysmon asked yields, as Routine.yield does
+ * (to the end of the global run queue, D6), unless it is inside a trap boundary, whose frame belongs
+ * to its thread (a failure domain's closure; the request is taken back and comes again in 10 ms). A
+ * pseudo-G, a G that nobody asked and a G whose M holds no P do nothing. The yield keeps errno (and
+ * Windows's last error), which a later call in the generated code may still read for the C call
+ * before the check. */
+static int tzr_trap_boundary(void);
+TZR_API void tsuzuri_tz_preempt_check(_Atomic int32_t *pending) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->p == NULL) return;
+    tzr_p *p = m->p;
+    if (!atomic_load_explicit(&p->preempt, memory_order_relaxed)
+        || !atomic_exchange_explicit(&p->preempt, 0, memory_order_acquire))
+        return;
+    atomic_fetch_sub_explicit(pending, 1, memory_order_relaxed);
+    if (tzr_trap_boundary()) return;
+    int saved = tzr_errno_get();
+#if defined(_WIN32)
+    DWORD last = GetLastError();
+#endif
+    tsuzuri_tz_yield();
+#if defined(_WIN32)
+    SetLastError(last);
+#endif
+    tzr_errno_set(saved);
 }
 
 /* The spawn scope of the calling G, and setting it back: a failure domain that a trap left

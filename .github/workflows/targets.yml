@@ -185,7 +185,8 @@ jobs:
           node tests/primitives.mjs target/release/tsuzuri
           if [ "$RUNNER_OS" = macOS ]; then node tests/debugger_static.mjs target/release/tsuzuri; fi
       # TZ01: the tzroutine runtime on its own (tests/tzroutine_runtime.c includes src/runtime/tzroutine.c, and since TZ12 its
-      # DataChannel): -O0 and -O3 with 1, 2 and 4 Ps, the build with src/runtime/stack.c that reports a tzroutine's overflow, and
+      # DataChannel; TZ10: the preemption cases, with the SIGURG stops of Phase 2 built in on macOS and Linux, outside TSan):
+      # -O0 and -O3 with 1, 2 and 4 Ps, the build with src/runtime/stack.c that reports a tzroutine's overflow, and
       # on Linux the ThreadSanitizer and AddressSanitizer + UBSan builds (the Homebrew LLVM 21 of the macOS runners builds
       # sanitizer programs that never start; see the size-class allocator step below). TZ09: the tzroutines of wasm32 with
       # --wasm-feature jspi through the generated glue, on the Node.js 24 of this job.
@@ -369,6 +370,7 @@ jobs:
           node benchmarks/run-computations.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
           node benchmarks/metrics.mjs process target/release/tsuzuri --quick --out target/perf/ci-core
           node benchmarks/run-tasks.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
+          node benchmarks/run-tzroutine.mjs target/release/tsuzuri --quick
           node benchmarks/run-simd.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
           node benchmarks/run-dispatch.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
           node benchmarks/run.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core

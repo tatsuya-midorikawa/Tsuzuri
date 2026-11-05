@@ -4251,6 +4251,19 @@ fn build_complete(
         && options.emit == Emit::Executable
         && platform.unix()
         && (llvm::has_recursion(&text) || tzroutine_runtime);
+    // TZ10 Phase 2: an executable that spawns stops a tzroutine that runs generated code without a
+    // check with SIGURG (macOS and Linux). The generated code goes into its own section, which tells
+    // the signal handler where it may stop a thread; the runtime is built with the handler. Objects
+    // and libraries leave the host's signals alone (as stack.c does), and the fast backend cannot place
+    // a function in a section: both keep the checks of Phase 1 only.
+    let async_preempt = stack_runtime && tzroutine_runtime && !fast && llvm::spawns(module);
+    if async_preempt {
+        text = llvm::preempt::with_generated_section(
+            text,
+            platform.mach_o(),
+            &llvm::tzroutine_exports(module),
+        );
+    }
     // B10: the report of an executable built with --trap-info writes the chain of frames when
     // TSUZURI_TRAP_REPORT names a file (src/runtime/backtrace.c); only the executable's IR asks for it.
     let backtrace_runtime = options.emit == Emit::Executable
@@ -4795,6 +4808,9 @@ fn build_complete(
             }
             if stack_runtime {
                 runtime.arg("-DTZ_STACK_GUARD");
+            }
+            if async_preempt {
+                runtime.arg("-DTZ_ASYNC_PREEMPT");
             }
             // The runtime has no debug information, like the stack guard below: stepping never
             // stops in it, and the program's DWARF is the compiler's unit alone, whose version a

@@ -1,0 +1,3 @@
+class Spin<'a> {
+    def spin :: ref 'a -> i64
+}

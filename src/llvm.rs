@@ -512,6 +512,8 @@ mod math;
 mod overflow_emit;
 #[path = "llvm_parallel.rs"]
 mod parallel;
+#[path = "llvm_preempt.rs"]
+pub(crate) mod preempt;
 #[path = "llvm_ranges.rs"]
 mod range_flags;
 #[path = "llvm_recursive.rs"]
@@ -1508,6 +1510,14 @@ fn emit_program(
     } else {
         output
     };
+    // TZ10: the tzroutines that a native program spawns check sysmon's requests to yield. A program
+    // whose only tzroutines are the helpers of `Parallel.*` has nothing that waits for them: its
+    // other threads hold no P. WebAssembly's JSPI tzroutines are not preempted (TZ09).
+    let output = if !wasm && spawns(module) {
+        preempt::with_preemption_checks(output, &preempt::opaque_functions(module))
+    } else {
+        output
+    };
     Ok((
         simd::with_vector_alignment(unique_declarations(limit_worker_inlining(output))),
         marks,
@@ -1650,7 +1660,7 @@ fn direct_callee(body: &str) -> Option<&str> {
 
 /// The public wrappers of the exports (`tz_<name>`), which a host may also call from inside an extern
 /// function that a tzroutine called.
-fn tzroutine_exports(module: &CheckedModule) -> BTreeSet<String> {
+pub(crate) fn tzroutine_exports(module: &CheckedModule) -> BTreeSet<String> {
     module
         .functions
         .iter()

@@ -1,5 +1,6 @@
 // The tzroutine runtime on its own (TZ01): builds tests/tzroutine_runtime.c, which includes
-// src/runtime/tzroutine.c, at -O0 and -O3 and runs every case with 1, 2 and 4 Ps. TSUZURI_TSAN=1
+// src/runtime/tzroutine.c with the asynchronous preemption of TZ10 Phase 2, at -O0 and -O3 and runs
+// every case with 1, 2 and 4 Ps. TSUZURI_TSAN=1
 // adds a ThreadSanitizer build and TSUZURI_ASAN=1 an AddressSanitizer and UBSan build (each case
 // once, with 4 Ps). On an Apple silicon Mac with Rosetta it also runs the x86-64 build. A build with
 // src/runtime/stack.c and -DTZ_STACK_GUARD checks that a tzroutine's overflow is reported. On Windows
@@ -27,6 +28,8 @@ const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", 
   "blocking_handoff", "blocking_reacquire", "blocking_deadlock", "blocking_callback", "locked_thread", "locked_yield", "locked_yielders",
   "netpoll_pipe", "netpoll_timeout", "netpoll_close", "netpoll_race",
   "dchan_ring", "dchan_waits", "dchan_close", "dchan_lock", "dchan_deadlock",
+  "preempt_flag", "preempt_sysmon", "preempt_async", "preempt_async_values", "preempt_async_sve", "preempt_async_runtime",
+  "preempt_async_ignored", "preempt_async_forward", "preempt_async_edges", "preempt_idle",
   "long_sleep"];
 const windows = process.platform === "win32";
 const platformFlags = windows
@@ -49,7 +52,9 @@ function execute(program, args, environment = {}, success = true) {
 
 function build(name, flags, extra = []) {
   const binary = join(temporary, windows ? `${name}.exe` : name);
-  execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", ...flags, ...platformFlags, source, ...extra, ...libraries, "-o", binary]);
+  // TZ10 Phase 2: the asynchronous preemption that the driver builds into an executable; the cases
+  // put their "generated code" in its section. Windows and ThreadSanitizer keep Phase 1.
+  execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", "-DTZ_ASYNC_PREEMPT", ...flags, ...platformFlags, source, ...extra, ...libraries, "-o", binary]);
   return binary;
 }
 
@@ -59,7 +64,9 @@ try {
     const binary = build(`tzroutine${optimization}`, [optimization]);
     for (const procs of ["1", "2", "4"]) {
       for (const name of cases) {
-        execute(binary, [name], { TSUZURI_MAXPROCS: procs });
+        const result = execute(binary, [name], { TSUZURI_MAXPROCS: procs });
+        // Whether the machine had SVE, which only CI's linux-arm64 has: the case says so.
+        if (name === "preempt_async_sve" && procs === "1") console.log(`${optimization}: ${result.stdout.trim()}`);
         runs++;
       }
     }

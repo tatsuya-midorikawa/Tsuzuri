@@ -30,7 +30,7 @@
 
 ## 使い方
 
-`Routine.yield` は、待っているほかの tzroutine に実行を譲ります。子の完了を数えて待つときに使います。
+`Routine.yield` は、待っているほかの tzroutine に実行を譲ります。子の完了を数えて待つときに使います。長い計算は、`Routine.yield` を呼ばなくても 10 ms ほどで横取りされます。ただし、信号による横取りのない構成（Windows、`--emit object`・`shared`、`--backend fast`、`tsuzuri test`・`bench`）の呼び出しのないループは横取りされないので、そこでは途中で `Routine.yield ()` を呼びます。WebAssembly（JSPI）の tzroutine は横取りされないので、待たない長い計算にはいつも `Routine.yield ()` を入れます（[横取り](../async-tasks-and-lazy/tzroutine.md#横取りプリエンプション)）。
 
 ```tsuzuri run=done%3D3
 let done = Arc.new (Atomic.create 0i64)

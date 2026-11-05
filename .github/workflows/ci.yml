@@ -127,8 +127,10 @@ jobs:
       # TZ04: select, the same two ways. TZ05: the timers (native). TZ06: the sync types, at 1 and 4 Ps and on the one
       # thread of the default WebAssembly target. TZ07: Context and ErrGroup (native). TZ11: Parallel on the scheduler
       # and Routine.scope (native). TZ12: the value cases of the removed Task, on Routine.scope (tzroutine_values). TZ09: the
-      # tzroutines of wasm32 with --wasm-feature jspi (the same fixtures through the generated glue, on Node.js 24).
-      - name: tzroutine, Channel, select, timers, sync, Context and Parallel (TZ02 to TZ07, TZ09, TZ11)
+      # tzroutines of wasm32 with --wasm-feature jspi (the same fixtures through the generated glue, on Node.js 24). TZ10:
+      # tzroutine.mjs runs tests/fixtures/preemption with 1 and 4 Ps (the checks of Phase 1 and the SIGURG stops of Phase 2;
+      # counts, never times).
+      - name: tzroutine, Channel, select, timers, sync, Context and Parallel (TZ02 to TZ07, TZ09 to TZ11)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           node scripts/slot.mjs -- node tests/tzroutine.mjs target/debug/tsuzuri

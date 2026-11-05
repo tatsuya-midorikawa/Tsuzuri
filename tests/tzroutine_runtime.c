@@ -10,6 +10,9 @@
 #include <ws2tcpip.h>
 #define TZ_NET_WINSOCK 1
 #endif
+/* TZ10: a test pauses sysmon's kick between its read of the gate and its signal. */
+static void urgent_kick_pause(void) __attribute__((unused));
+#define TZR_KICK_PAUSE() urgent_kick_pause()
 #include "../src/runtime/tzroutine.c"
 
 #include <assert.h>
@@ -961,9 +964,11 @@ static void test_donor(void) {
         atomic_store(&donor_leave, 1);
         join(scope);
         CHECK(atomic_load(&donor_hits) == 101);
-        /* the Ms that looked for work park within microseconds */
+        /* the Ms that looked for work park within microseconds; a loaded runner may not run a woken
+         * M for a while (the windows.yml run of #88 waited longer than 2 s once), and the bound is only
+         * for a spinner that never parks */
         double t = seconds();
-        while (atomic_load(&tzr_sched.nmspinning) != 0 && seconds() - t < 2.0) tzr_os_yield();
+        while (atomic_load(&tzr_sched.nmspinning) != 0 && seconds() - t < 10.0) tzr_os_yield();
         CHECK(atomic_load(&tzr_sched.nmspinning) == 0);
     }
 }
@@ -2086,8 +2091,10 @@ static void test_locked_yielders(void) {
         tsuzuri_tz_go(flag_setter, NULL);
         atomic_store(&setter_queued, 1);
         join(scope);
-        /* a few yields of each until the M that runs the queue gets the P (thousands before) */
-        CHECK(atomic_load(&yields_after_queued) < 100);
+        /* a few yields of each until the M that runs the queue gets the P (thousands before). With
+         * more Ps than the two locked Gs hold, an idle P runs the queue whatever they do, and they
+         * count how soon the OS wakes its thread, which under TSan can take more than 100 yields */
+        if (tzr_sched.nprocs <= 2) CHECK(atomic_load(&yields_after_queued) < 100);
     }
     printf("locked yielders: ok\n");
 }
@@ -2540,6 +2547,583 @@ static void test_dchan_deadlock(void) {
     printf("DataChannel deadlock: ok\n");
 }
 
+/* TZ10: a request of sysmon (made by hand here) makes the G that checks yield, takes itself back,
+ * and leaves the global count at 0; a check without a request, or on a pseudo-G, does nothing.
+ * Sysmon takes back the request of a P that it sees between two Gs, and a scan that saw p so before
+ * this G started there can take back the request made here: then the check takes nothing, and the G
+ * asks again (sysmon asks again 10 ms later in the same case). */
+static void preempt_ask(tzr_p *p) { (void)tzr_preempt_ask(p); }
+static _Atomic int preempt_flag_moved;
+static void preempt_flag_body(void *env) {
+    (void)env;
+    for (int round = 0; round < 100; round++) {
+        tsuzuri_tz_preempt_check(&tsuzuri_tz_preempt_pending); /* nobody asked (unless sysmon did, if the OS stopped the thread) */
+        for (int attempt = 0;; attempt++) {
+            tzr_p *p = tzr_this_m()->p;
+            uint32_t tick = atomic_load(&p->schedtick);
+            preempt_ask(p);
+            tsuzuri_tz_preempt_check(&tsuzuri_tz_preempt_pending); /* yields: back on another P, or on p after another start there */
+            tzr_p *now = tzr_this_m()->p;
+            if (now != p || atomic_load(&p->schedtick) != tick) break;
+            CHECK(attempt < 100); /* a stale scan took the request back */
+        }
+        atomic_fetch_add(&preempt_flag_moved, 1);
+    }
+}
+static void test_preempt_flag(void) {
+    atomic_store(&preempt_flag_moved, 0);
+    tsuzuri_tz_preempt_check(&tsuzuri_tz_preempt_pending); /* a pseudo-G */
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 4; i++) tsuzuri_tz_go(preempt_flag_body, NULL);
+    join(scope);
+    CHECK(atomic_load(&preempt_flag_moved) == 400);
+    CHECK(atomic_load(&tsuzuri_tz_preempt_pending) == 0);
+    printf("preempt flag: ok\n");
+}
+
+/* TZ10: with every P running a G that never waits and checks only when the global count says so
+ * (as the generated code does), a G that sleeps 10 ms at a time still wakes, 50 times in a row,
+ * while they run: sysmon asks them to yield. Without the requests it would never run again (the
+ * watchdog ends the case). Afterwards the count goes back to 0. Lower bounds only. */
+static _Atomic int preempt_busy_stop;
+static _Atomic int64_t preempt_busy_checks;
+static void preempt_busy(void *env) {
+    (void)env;
+    uint64_t x = 1;
+    while (!atomic_load_explicit(&preempt_busy_stop, memory_order_relaxed)) {
+        for (int i = 0; i < 1000; i++) x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+        if (atomic_load_explicit(&tsuzuri_tz_preempt_pending, memory_order_relaxed)) {
+            atomic_fetch_add(&preempt_busy_checks, 1);
+            tsuzuri_tz_preempt_check(&tsuzuri_tz_preempt_pending);
+        }
+    }
+    CHECK(x != 0);
+}
+static void preempt_ticker(void *env) {
+    int64_t *wakes = env;
+    for (int i = 0; i < 50; i++) {
+        CHECK(tsuzuri_tz_sleep(10000000) == 0);
+        (*wakes)++;
+    }
+    atomic_store(&preempt_busy_stop, 1);
+}
+static void test_preempt_sysmon(void) {
+    start_watchdog();
+    atomic_store(&preempt_busy_stop, 0);
+    atomic_store(&preempt_busy_checks, 0);
+    int64_t wakes = 0;
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int64_t i = 0; i < tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(preempt_busy, NULL);
+    tsuzuri_tz_go(preempt_ticker, &wakes);
+    join(scope);
+    CHECK(wakes == 50);
+    CHECK(atomic_load(&preempt_busy_checks) > 0);
+    for (int i = 0; i < 2000 && atomic_load(&tsuzuri_tz_preempt_pending) != 0; i++) block_ms(1);
+    CHECK(atomic_load(&tsuzuri_tz_preempt_pending) == 0);
+    printf("preempt sysmon: %lld checks\n", (long long)atomic_load(&preempt_busy_checks));
+}
+
+/* A request whose G ends without a check: when every P is idle sysmon clears it before it sleeps, or
+ * the count would stay up and keep every check on its slow path. */
+static void preempt_ask_and_leave(void *env) {
+    (void)env;
+    preempt_ask(tzr_this_m()->p);
+}
+static void test_preempt_idle(void) {
+    for (int round = 0; round < 50; round++) {
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(preempt_ask_and_leave, NULL);
+        join(scope);
+        for (int i = 0; i < 2000 && atomic_load(&tsuzuri_tz_preempt_pending) != 0; i++) block_ms(1);
+        CHECK(atomic_load(&tsuzuri_tz_preempt_pending) == 0);
+    }
+    printf("preempt idle: ok\n");
+}
+
+/* TZ10 Phase 2: functions of the section of generated code stand for what the compiler emits. A loop
+ * without calls there is stopped by sysmon's signal; the same loop elsewhere (the runtime's code) is
+ * not. The stopped G keeps every register: a computation with many live integer and floating-point
+ * values gives the same result as on a thread that nobody stops. */
+#if defined(TZR_ASYNC)
+#if defined(__APPLE__)
+#define GENERATED __attribute__((section("__TEXT,__tz_text,regular,pure_instructions"), noinline))
+#else
+#define GENERATED __attribute__((section("tz_text"), noinline))
+#endif
+#if defined(__linux__) && defined(__aarch64__)
+#include <sys/auxv.h>
+#include <sys/prctl.h>
+#if !defined(HWCAP_SVE)
+#define HWCAP_SVE (1UL << 22)
+#endif
+#if !defined(HWCAP2_SME)
+#define HWCAP2_SME (1UL << 23)
+#endif
+#if !defined(PR_SVE_GET_VL)
+#define PR_SVE_GET_VL 51
+#endif
+#endif
+/* Linux aarch64 with SME keeps Phase 1 only (every signal frame has a ZA record, which the probe
+ * refuses): the cases of Phase 2 say so and check nothing. Taken from the CPU, not from the runtime,
+ * so that a probe that fails elsewhere still fails them. */
+static int async_skipped(const char *name) {
+#if defined(__linux__) && defined(__aarch64__)
+    if (getauxval(AT_HWCAP2) & HWCAP2_SME) {
+        printf("%s: Phase 1 only (SME)\n", name);
+        return 1;
+    }
+#endif
+    (void)name;
+    return 0;
+}
+static _Atomic int async_stop;
+/* SIGURGs that reach the handler the program had before the runtime's (main installs it first): only
+ * the ones that are not sysmon's. */
+static _Atomic int urgent_foreign;
+static void urgent_counted(int sig) {
+    (void)sig;
+    atomic_fetch_add(&urgent_foreign, 1);
+}
+GENERATED static uint64_t async_spin(_Atomic int *stop) {
+    uint64_t x = 1;
+    while (!atomic_load_explicit(stop, memory_order_relaxed)) x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+    return x;
+}
+static void async_spinner(void *env) {
+    (void)env;
+    CHECK(async_spin(&async_stop) != 0);
+}
+static void async_ticker(void *env) {
+    int64_t *wakes = env;
+    for (int i = 0; i < 20; i++) {
+        CHECK(tsuzuri_tz_sleep(10000000) == 0);
+        (*wakes)++;
+    }
+    atomic_store(&async_stop, 1);
+}
+static void test_preempt_async(void) {
+    if (async_skipped("preempt async")) return;
+    start_watchdog();
+    atomic_store(&async_stop, 0);
+    uint64_t before = atomic_load(&tzr_async.yielded);
+    int64_t wakes = 0;
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int64_t i = 0; i < tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(async_spinner, NULL);
+    tsuzuri_tz_go(async_ticker, &wakes);
+    join(scope);
+    CHECK(wakes == 20);
+    CHECK(atomic_load(&tzr_async.yielded) > before);
+    printf("preempt async: %llu stops\n", (unsigned long long)(atomic_load(&tzr_async.yielded) - before));
+}
+
+/* Integer and floating-point accumulators that stay in registers across the whole loop. */
+GENERATED static void async_mix(int64_t rounds, uint64_t *ints, double *floats) {
+    uint64_t a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7, h = 8;
+    double p = 1.0, q = 0.5, r = 0.25, s = 0.125, t = 3.0, u = 5.0, v = 7.0, w = 11.0;
+    for (int64_t i = 0; i < rounds; i++) {
+        a = a * 6364136223846793005ULL + 1442695040888963407ULL;
+        b ^= a >> 7;
+        c += b * 3;
+        d = (d << 1) ^ c;
+        e += d >> 3;
+        f ^= e * 5;
+        g += f >> 11;
+        h ^= g + a;
+        p = p * 0.999999 + (double)(a & 1023) * 1e-6;
+        q = q * 0.999998 + (double)(b & 511) * 1e-6;
+        r = r + p * 1e-9 - q * 1e-9;
+        s = s * 0.5 + r;
+        t = t + s * 1e-12;
+        u = u * 1.0000001 - t * 1e-15;
+        v = v + (double)(h & 7);
+        w = w - (double)(g & 3) * 0.5;
+    }
+    ints[0] = a ^ b ^ c ^ d;
+    ints[1] = e ^ f ^ g ^ h;
+    floats[0] = p + q + r + s;
+    floats[1] = t + u + v + w;
+}
+typedef struct { uint64_t ints[2]; double floats[2]; } async_mixed;
+static void async_mixer(void *env) {
+    async_mixed *out = env;
+    async_mix(40000000, out->ints, out->floats);
+}
+static void test_preempt_async_values(void) {
+    if (async_skipped("preempt async values")) return;
+    async_mixed expected;
+    async_mix(40000000, expected.ints, expected.floats); /* on the main thread: never stopped */
+    uint64_t before = atomic_load(&tzr_async.yielded);
+    enum { N = 6 };
+    async_mixed results[N];
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < N; i++) tsuzuri_tz_go(async_mixer, &results[i]);
+    join(scope);
+    for (int i = 0; i < N; i++) {
+        CHECK(results[i].ints[0] == expected.ints[0] && results[i].ints[1] == expected.ints[1]);
+        CHECK(memcmp(results[i].floats, expected.floats, sizeof expected.floats) == 0);
+    }
+    /* the comparison holds only for a kernel that was stopped */
+    CHECK(atomic_load(&tzr_async.yielded) > before);
+    printf("preempt async values: %llu stops\n", (unsigned long long)(atomic_load(&tzr_async.yielded) - before));
+}
+
+#if defined(__linux__) && defined(__aarch64__)
+/* Linux aarch64 with SVE: a loop of the section that holds a predicate and a vector register of SVE
+ * (live from its first SVE instruction until a system call, so the kernel's frame has them) is
+ * stopped, and goes on with both, maybe on another thread. Returns the lanes and predicate bits that
+ * changed: 0. */
+uint64_t async_sve_spin(_Atomic int *stop);
+__asm__(".pushsection tz_text,\"ax\",%progbits\n"
+        ".arch_extension sve\n"
+        ".p2align 2\n"
+        ".type async_sve_spin, %function\n"
+        "async_sve_spin:\n"
+        "    ptrue p6.s, vl3\n"
+        "    index z23.s, #1, #3\n"
+        "1:  ldr w1, [x0]\n"
+        "    cbz w1, 1b\n"
+        "    ptrue p7.b\n"
+        "    index z24.s, #1, #3\n"
+        "    cmpne p5.s, p7/z, z23.s, z24.s\n"
+        "    cntp x2, p7, p5.s\n"
+        "    ptrue p4.s, vl3\n"
+        "    eor p3.b, p7/z, p6.b, p4.b\n"
+        "    cntp x3, p7, p3.b\n"
+        "    add x0, x2, x3\n"
+        "    ret\n"
+        ".size async_sve_spin, .-async_sve_spin\n"
+        ".popsection\n");
+static void async_sve_spinner(void *env) {
+    (void)env;
+    CHECK(async_sve_spin(&async_stop) == 0);
+}
+static void test_preempt_async_sve(void) {
+    if (async_skipped("preempt async sve")) return;
+    if (!(getauxval(AT_HWCAP) & HWCAP_SVE)) {
+        printf("preempt async sve: no SVE\n");
+        return;
+    }
+    /* the kernel's records fit in __reserved, with room for its end and extra records, up to 768-bit
+     * vectors: longer live ones are not stopped */
+    int vl = (int)prctl(PR_SVE_GET_VL) & 0xffff;
+    if (vl > 96) {
+        printf("preempt async sve: vector length %d bytes, too long to stop\n", vl);
+        return;
+    }
+    start_watchdog();
+    atomic_store(&async_stop, 0);
+    uint64_t before = atomic_load(&tzr_async.yielded);
+    int64_t wakes = 0;
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int64_t i = 0; i < tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(async_sve_spinner, NULL);
+    tsuzuri_tz_go(async_ticker, &wakes);
+    join(scope);
+    CHECK(wakes == 20);
+    CHECK(atomic_load(&tzr_async.yielded) > before);
+    printf("preempt async sve: %llu stops, vector length %d bytes\n",
+           (unsigned long long)(atomic_load(&tzr_async.yielded) - before), vl);
+}
+#else
+static void test_preempt_async_sve(void) { printf("preempt async sve: not Linux aarch64\n"); }
+#endif
+
+/* The same loop in the runtime's code: sysmon's signals arrive (one more spinner than Ps waits for a
+ * P, so sysmon asks), and none stops it. The spinners go on until sysmon has sent a few signals, not
+ * until a time, so that one that starts late still spins while they come (60 s at most, and then the
+ * check of the signals fails). */
+typedef struct { uint64_t signals; int64_t limit; } async_runtime_goal;
+static uint64_t async_spin_runtime(const async_runtime_goal *goal) {
+    uint64_t x = 1;
+    while (atomic_load(&tzr_async.signals) < goal->signals && tzr_nanotime() < goal->limit)
+        for (int i = 0; i < 1000; i++) x = x * 6364136223846793005ULL + 1442695040888963407ULL;
+    return x;
+}
+static void async_runtime_spinner(void *env) {
+    CHECK(async_spin_runtime(env) != 0);
+}
+static void test_preempt_async_runtime(void) {
+    if (async_skipped("preempt async runtime")) return;
+    uint64_t stops = atomic_load(&tzr_async.stopped), signals = atomic_load(&tzr_async.signals);
+    int foreign = atomic_load(&urgent_foreign);
+    async_runtime_goal goal = {signals + 5, tzr_nanotime() + 60000000000LL};
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int64_t i = 0; i <= tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(async_runtime_spinner, &goal);
+    join(scope);
+    CHECK(atomic_load(&tzr_async.signals) >= goal.signals);
+    CHECK(atomic_load(&tzr_async.stopped) == stops);
+    /* sysmon's signals that stopped nothing are not the program's; a SIGURG of its own still is */
+    CHECK(atomic_load(&urgent_foreign) == foreign);
+    raise(SIGURG);
+    CHECK(atomic_load(&urgent_foreign) == foreign + 1);
+    printf("preempt async runtime: %llu signals, no stop\n", (unsigned long long)(atomic_load(&tzr_async.signals) - signals));
+}
+
+/* A program that ignores SIGURG and left SA_SIGINFO in the flags: the runtime's handler passes a
+ * SIGURG of the program's own to that disposition, which calls nothing (SIG_IGN shares the union
+ * with sa_sigaction). */
+static void urgent_nothing(void *env) { (void)env; }
+static void urgent_ignored_body(void) {
+    struct sigaction ignored;
+    memset(&ignored, 0, sizeof ignored);
+    ignored.sa_handler = SIG_IGN;
+    ignored.sa_flags = SA_SIGINFO;
+    sigemptyset(&ignored.sa_mask);
+    sigaction(SIGURG, &ignored, NULL);
+    void *scope = tsuzuri_tz_scope_enter(); /* the first spawn starts sysmon, which installs its handler */
+    tsuzuri_tz_go(urgent_nothing, NULL);
+    join(scope);
+    for (int i = 0; i < 2000 && !atomic_load(&tzr_async.enabled); i++) {
+        struct timespec t = {0, 1000000};
+        nanosleep(&t, NULL);
+    }
+    if (!atomic_load(&tzr_async.enabled)) _exit(3);
+    raise(SIGURG);
+    _exit(48);
+}
+/* A handler of the program's own without SA_RESTART and with SIGUSR1 in its mask: the runtime passes
+ * it the SIGURGs with SIGUSR1 blocked, and a read that one interrupts fails with EINTR, as before the
+ * runtime's handler. The signals go on until the read returns: one that comes before the read starts
+ * only runs the handler. */
+static _Atomic int urgent_masked, urgent_sent, urgent_returned;
+static void urgent_checked(int sig) {
+    (void)sig;
+    sigset_t now;
+    pthread_sigmask(SIG_BLOCK, NULL, &now);
+    if (sigismember(&now, SIGUSR1) == 1) atomic_store(&urgent_masked, 1);
+    atomic_fetch_add(&urgent_foreign, 1);
+}
+static int urgent_pipe[2];
+static void *urgent_poke(void *reader) {
+    struct timespec t = {0, 20000000};
+    for (int i = 0; i < 250; i++) {
+        nanosleep(&t, NULL);
+        if (atomic_load(&urgent_returned)) break;
+        atomic_fetch_add(&urgent_sent, 1);
+        pthread_kill(*(pthread_t *)reader, SIGURG);
+    }
+    char byte = 1;
+    (void)!write(urgent_pipe[1], &byte, 1); /* ends a read that was restarted instead */
+    return NULL;
+}
+static void urgent_forward_body(void) {
+    struct sigaction checked;
+    memset(&checked, 0, sizeof checked);
+    checked.sa_handler = urgent_checked;
+    sigemptyset(&checked.sa_mask);
+    sigaddset(&checked.sa_mask, SIGUSR1);
+    checked.sa_flags = 0;
+    sigaction(SIGURG, &checked, NULL);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(urgent_nothing, NULL);
+    join(scope);
+    for (int i = 0; i < 2000 && !atomic_load(&tzr_async.enabled); i++) {
+        struct timespec t = {0, 1000000};
+        nanosleep(&t, NULL);
+    }
+    if (!atomic_load(&tzr_async.enabled) || pipe(urgent_pipe) != 0) _exit(3);
+    pthread_t self = pthread_self(), poker;
+    if (pthread_create(&poker, NULL, urgent_poke, &self) != 0) _exit(3);
+    char byte;
+    ssize_t n = read(urgent_pipe[0], &byte, 1);
+    int interrupted = n < 0 && errno == EINTR;
+    atomic_store(&urgent_returned, 1);
+    pthread_join(poker, NULL);
+    /* a signal still pending is handled when this system call returns */
+    struct timespec t = {0, 10000000};
+    nanosleep(&t, NULL);
+    /* SIGURGs that come while one is pending merge into one: at most as many calls as signals sent */
+    int calls = atomic_load(&urgent_foreign);
+    _exit(interrupted && calls >= 1 && calls <= atomic_load(&urgent_sent) && atomic_load(&urgent_masked) ? 49 : 4);
+}
+/* The runtime's handler installed and sysmon running: the first spawn starts both. */
+static void urgent_runtime_ready(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(urgent_nothing, NULL);
+    join(scope);
+    for (int i = 0; i < 2000 && !atomic_load(&tzr_async.enabled); i++) {
+        struct timespec t = {0, 1000000};
+        nanosleep(&t, NULL);
+    }
+    if (!atomic_load(&tzr_async.enabled)) _exit(3);
+}
+static void urgent_install(void (*handler)(int), int flags) {
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_handler = handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = flags;
+    sigaction(SIGURG, &action, NULL);
+}
+
+/* A SIGURG of the program's own between the publication of a resume frame and the signal that
+ * tzr_async_entry sends itself goes to the program's handler, and resumes nothing. */
+static _Atomic int urgent_window_ok;
+static void urgent_window_g(void *env) {
+    (void)env;
+    tzr_m *m = tzr_this_m();
+    _Alignas(64) unsigned char space[sizeof(tzr_async_frame) + 64];
+    tzr_async_frame *frame = (tzr_async_frame *)space;
+    memset(space, 0, sizeof space);
+    frame->magic = TZR_ASYNC_MAGIC;
+    atomic_store(&m->async_resume, frame);
+    raise(SIGURG);
+    atomic_store(&m->async_resume, NULL);
+    atomic_store(&urgent_window_ok, frame->magic == TZR_ASYNC_MAGIC && atomic_load(&urgent_foreign) == 1);
+}
+static void urgent_window_body(void) {
+    urgent_install(urgent_counted, SA_RESTART);
+    urgent_runtime_ready();
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(urgent_window_g, NULL);
+    join(scope);
+    _exit(atomic_load(&urgent_window_ok) ? 50 : 4);
+}
+
+/* A handler of the program's own with SA_RESETHAND runs once, however many SIGURGs come. Linux only:
+ * macOS's sigaction does not report SA_RESETHAND in the action that it returns. */
+static void urgent_oneshot_body(void) {
+    urgent_install(urgent_counted, SA_RESETHAND);
+    urgent_runtime_ready();
+    raise(SIGURG);
+    raise(SIGURG);
+    _exit(atomic_load(&urgent_foreign) == 1 ? 51 : 4);
+}
+
+/* A kick of sysmon that comes after the G entered a blocking call (sysmon saw it running just
+ * before) sends nothing: a read in the call, under a handler without SA_RESTART, is not cut short. */
+static tzr_p *urgent_kicked_p;
+static _Atomic int urgent_reading;
+static void *urgent_kicker(void *env) {
+    (void)env;
+    while (!atomic_load(&urgent_reading)) {
+    }
+    struct timespec t = {0, 50000000};
+    nanosleep(&t, NULL);
+    tzr_async_kick(urgent_kicked_p);
+    t.tv_nsec = 200000000;
+    nanosleep(&t, NULL);
+    char byte = 1;
+    (void)!write(urgent_pipe[1], &byte, 1);
+    return NULL;
+}
+static _Atomic int urgent_read;
+static void urgent_syscall_g(void *env) {
+    (void)env;
+    urgent_kicked_p = tzr_this_m()->p;
+    tsuzuri_tz_blocking_enter();
+    atomic_store(&urgent_reading, 1);
+    char byte;
+    ssize_t n = read(urgent_pipe[0], &byte, 1);
+    tsuzuri_tz_blocking_exit();
+    atomic_store(&urgent_read, (int)n);
+}
+static void urgent_syscall_body(void) {
+    urgent_install(urgent_counted, 0);
+    urgent_runtime_ready();
+    if (pipe(urgent_pipe) != 0) _exit(3);
+    pthread_t kicker;
+    if (pthread_create(&kicker, NULL, urgent_kicker, NULL) != 0) _exit(3);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(urgent_syscall_g, NULL);
+    join(scope);
+    pthread_join(kicker, NULL);
+    _exit(atomic_load(&urgent_read) == 1 && atomic_load(&urgent_foreign) == 0 ? 52 : 4);
+}
+/* The kick reads the gate open and is paused (sysmon descheduled) before it sends; meanwhile the G
+ * enters a blocking call. It waits for the signal and its handler, however long the pause, so a read
+ * in the call under a handler without SA_RESTART is not cut short. */
+static _Atomic int urgent_pause_armed, urgent_pause_reached, urgent_kick_go;
+static void urgent_kick_pause(void) {
+    if (!atomic_load(&urgent_pause_armed)) return;
+    atomic_store(&urgent_pause_reached, 1);
+    struct timespec t = {0, 100000000};
+    nanosleep(&t, NULL);
+}
+static void *urgent_paused_kicker(void *env) {
+    (void)env;
+    while (!atomic_load(&urgent_kick_go)) {
+    }
+    atomic_store(&urgent_pause_armed, 1);
+    tzr_async_kick(urgent_kicked_p);
+    struct timespec t = {0, 200000000};
+    nanosleep(&t, NULL);
+    char byte = 1;
+    (void)!write(urgent_pipe[1], &byte, 1);
+    return NULL;
+}
+static void urgent_paused_g(void *env) {
+    (void)env;
+    urgent_kicked_p = tzr_this_m()->p;
+    atomic_store(&urgent_kick_go, 1);
+    while (!atomic_load(&urgent_pause_reached)) {
+    }
+    tsuzuri_tz_blocking_enter();
+    char byte;
+    ssize_t n = read(urgent_pipe[0], &byte, 1);
+    tsuzuri_tz_blocking_exit();
+    atomic_store(&urgent_read, (int)n);
+}
+static void urgent_paused_body(void) {
+    urgent_install(urgent_counted, 0);
+    urgent_runtime_ready();
+    if (pipe(urgent_pipe) != 0) _exit(3);
+    pthread_t kicker;
+    if (pthread_create(&kicker, NULL, urgent_paused_kicker, NULL) != 0) _exit(3);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(urgent_paused_g, NULL);
+    join(scope);
+    pthread_join(kicker, NULL);
+    _exit(atomic_load(&urgent_read) == 1 && atomic_load(&urgent_foreign) == 0 ? 53 : 4);
+}
+
+/* A handler of the program's own with SA_NODEFER runs with SIGURG unblocked. */
+static _Atomic int urgent_unblocked;
+static void urgent_nodefer(int sig) {
+    (void)sig;
+    sigset_t now;
+    pthread_sigmask(SIG_BLOCK, NULL, &now);
+    if (sigismember(&now, SIGURG) == 0) atomic_store(&urgent_unblocked, 1);
+    atomic_fetch_add(&urgent_foreign, 1);
+}
+static void urgent_nodefer_body(void) {
+    urgent_install(urgent_nodefer, SA_NODEFER);
+    urgent_runtime_ready();
+    raise(SIGURG);
+    _exit(atomic_load(&urgent_foreign) == 1 && atomic_load(&urgent_unblocked) ? 54 : 4);
+}
+
+static void test_preempt_async_edges(void) {
+    if (async_skipped("preempt async edges")) return;
+    CHECK(exited_with(run_child("child-urgent-window"), 50));
+#if !defined(__APPLE__)
+    CHECK(exited_with(run_child("child-urgent-oneshot"), 51));
+#endif
+    CHECK(exited_with(run_child("child-urgent-syscall"), 52));
+    CHECK(exited_with(run_child("child-urgent-paused"), 53));
+    CHECK(exited_with(run_child("child-urgent-nodefer"), 54));
+    printf("preempt async edges: ok\n");
+}
+static void test_preempt_async_forward(void) {
+    if (async_skipped("preempt async forward")) return;
+    CHECK(exited_with(run_child("child-urgent-forward"), 49));
+    printf("preempt async forward: ok\n");
+}
+static void test_preempt_async_ignored(void) {
+    if (async_skipped("preempt async ignored")) return;
+    CHECK(exited_with(run_child("child-urgent-ignored"), 48));
+    printf("preempt async ignored: ok\n");
+}
+#else
+static void test_preempt_async(void) { printf("preempt async: not built (Phase 1 only)\n"); }
+static void test_preempt_async_values(void) { printf("preempt async values: not built\n"); }
+static void test_preempt_async_sve(void) { printf("preempt async sve: not built\n"); }
+static void test_preempt_async_runtime(void) { printf("preempt async runtime: not built\n"); }
+static void test_preempt_async_ignored(void) { printf("preempt async ignored: not built\n"); }
+static void test_preempt_async_forward(void) { printf("preempt async forward: not built\n"); }
+static void test_preempt_async_edges(void) { printf("preempt async edges: not built\n"); }
+static void urgent_kick_pause(void) {}
+#endif
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -2550,6 +3134,15 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-timer-deadlock") == 0) timer_deadlock_body();
     if (only && strcmp(only, "child-recover") == 0) recover_body();
     if (only && strcmp(only, "child-report") == 0) report_body();
+#if defined(TZR_ASYNC)
+    if (only && strcmp(only, "child-urgent-ignored") == 0) urgent_ignored_body();
+    if (only && strcmp(only, "child-urgent-forward") == 0) urgent_forward_body();
+    if (only && strcmp(only, "child-urgent-window") == 0) urgent_window_body();
+    if (only && strcmp(only, "child-urgent-oneshot") == 0) urgent_oneshot_body();
+    if (only && strcmp(only, "child-urgent-syscall") == 0) urgent_syscall_body();
+    if (only && strcmp(only, "child-urgent-paused") == 0) urgent_paused_body();
+    if (only && strcmp(only, "child-urgent-nodefer") == 0) urgent_nodefer_body();
+#endif
 #if !defined(_WIN32)
     if (only && strcmp(only, "child-dchan-deadlock") == 0) dchan_deadlock_body();
 #endif
@@ -2557,6 +3150,14 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-deep-100") == 0) { stack_body(100); return 0; }
     if (only && strcmp(only, "child-deep-900") == 0) { stack_body(900); return 0; }
     if (only && strcmp(only, "child-deep-3500") == 0) { stack_body(3500); return 0; }
+#if defined(TZR_ASYNC)
+    /* before the first spawn, whose sysmon installs the runtime's handler over this one */
+    struct sigaction counted;
+    memset(&counted, 0, sizeof counted);
+    counted.sa_handler = urgent_counted;
+    sigemptyset(&counted.sa_mask);
+    sigaction(SIGURG, &counted, NULL);
+#endif
 #define RUN(name, call) if (!only || strcmp(only, name) == 0) call
     RUN("spawn", test_spawn());
     RUN("tree", test_tree());
@@ -2623,6 +3224,16 @@ int main(int argc, char **argv) {
     RUN("netpoll_timeout", test_netpoll_timeout());
     RUN("netpoll_close", test_netpoll_close());
     RUN("netpoll_race", test_netpoll_race());
+    RUN("preempt_flag", test_preempt_flag());
+    RUN("preempt_sysmon", test_preempt_sysmon());
+    RUN("preempt_async", test_preempt_async());
+    RUN("preempt_async_values", test_preempt_async_values());
+    RUN("preempt_async_sve", test_preempt_async_sve());
+    RUN("preempt_async_runtime", test_preempt_async_runtime());
+    RUN("preempt_async_ignored", test_preempt_async_ignored());
+    RUN("preempt_async_forward", test_preempt_async_forward());
+    RUN("preempt_async_edges", test_preempt_async_edges());
+    RUN("preempt_idle", test_preempt_idle());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;
