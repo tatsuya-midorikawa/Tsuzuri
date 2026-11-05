@@ -151,6 +151,7 @@ struct Value {
     closed_result: [bool; 2],
 }
 
+#[derive(Clone)]
 struct Loan {
     place: Place,
     mutable: bool,
@@ -739,6 +740,20 @@ fn retention_applies(result: &Type, types: &crate::check::TypeContext<'_>) -> bo
     result.carries_loans(types) && !result.contains_stored_reference(types)
 }
 
+/// Whether `parameter_retention` computes the facts of function `id`: not those whose results
+/// named regions already decide (A12, A13), the generated functions that apply builtins, tzroutine
+/// bodies and `Drop.drop` bodies.
+fn retention_eligible(module: &CheckedModule, id: usize) -> bool {
+    let function = &module.functions[id];
+    function.module != "$builtin"
+        && !function.is_once
+        && !function.parameters.is_empty()
+        && function.region_sources.is_none()
+        && function.region_slots.is_none()
+        && function.callback_contracts.is_empty()
+        && !module.user_drops.values().any(|drop| *drop == id)
+}
+
 /// The function that a call's callee names directly.
 fn direct_callee(callee: &TypedExpr) -> Option<usize> {
     match callee.kind {
@@ -776,31 +791,39 @@ fn parameter_retention(
     closed: &[bool],
     infer: bool,
 ) -> Vec<Option<Box<[bool]>>> {
+    parameter_retention_within(module, closed, infer, None)
+}
+
+/// `parameter_retention` with `budget` checks of bodies in place of the default.
+fn parameter_retention_within(
+    module: &CheckedModule,
+    closed: &[bool],
+    infer: bool,
+    budget: Option<usize>,
+) -> Vec<Option<Box<[bool]>>> {
     let count = module.functions.len();
     let types = module.types();
-    let drops: BTreeSet<usize> = module.user_drops.values().copied().collect();
-    let eligible = |id: usize| {
-        let function = &module.functions[id];
-        function.module != "$builtin"
-            && !function.is_once
-            && !function.parameters.is_empty()
-            && function.region_sources.is_none()
-            && function.region_slots.is_none()
-            && function.callback_contracts.is_empty()
-            && !drops.contains(&id)
-    };
-    // The complete direct calls whose results may hold loans and are not proven closed.
+    // The complete direct calls whose results may hold loans and are not proven closed, and the
+    // pipelines that complete one (`f |> pass (ref key)`).
     let mut callers: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     let mut callees: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     for (caller, function) in module.functions.iter().enumerate() {
         let mut pending = vec![&function.body];
         while let Some(expression) = pending.pop() {
-            if let E::Call(callee, arguments) = &expression.kind
+            let call = match &expression.kind {
+                E::Call(callee, arguments) => Some((callee, arguments.len())),
+                E::Binary(BinaryOp::Pipe, _, right) => match &right.kind {
+                    E::Call(callee, arguments) => Some((callee, arguments.len() + 1)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some((callee, arguments)) = call
                 && let Some(id) = direct_callee(callee)
                 && !closed[id]
-                && eligible(id)
-                && arguments.len() >= module.functions[id].parameters.len()
-                && if arguments.len() == module.functions[id].parameters.len() {
+                && retention_eligible(module, id)
+                && arguments >= module.functions[id].parameters.len()
+                && if arguments == module.functions[id].parameters.len() {
                     retention_applies(&expression.ty, &types)
                 } else {
                     retention_applies(
@@ -876,12 +899,28 @@ fn parameter_retention(
     }
     let mut queued: BTreeSet<usize> = order.iter().copied().collect();
     let mut work: std::collections::VecDeque<usize> = order.into();
-    let mut budget = callers.len() * RETENTION_CHECKS_PER_FUNCTION + RETENTION_EXTRA_CHECKS;
+    let mut budget =
+        budget.unwrap_or(callers.len() * RETENTION_CHECKS_PER_FUNCTION + RETENTION_EXTRA_CHECKS);
     while let Some(id) = work.pop_front() {
-        queued.remove(&id);
         if budget == 0 {
-            return vec![None; count];
+            // The functions still to check, and every function whose facts were computed from
+            // theirs, keep all their arguments' loans. The others were checked under the facts
+            // that their callees have now, so they stay a fixed point of their part of the graph.
+            let mut unsettled = queued;
+            let mut pending: Vec<usize> = unsettled.iter().copied().collect();
+            while let Some(callee) = pending.pop() {
+                for caller in callers.get(&callee).into_iter().flatten() {
+                    if callers.contains_key(caller) && unsettled.insert(*caller) {
+                        pending.push(*caller);
+                    }
+                }
+            }
+            for id in unsettled {
+                facts.retained[id] = None;
+            }
+            return facts.retained;
         }
+        queued.remove(&id);
         budget -= 1;
         let old = facts.retained[id].as_deref().expect("a computed function");
         let new: Box<[bool]> = match retained_parameters(module, id, infer, &facts) {
@@ -946,7 +985,11 @@ fn retained_parameters(
     }) {
         return None;
     }
-    let mut retained = vec![false; function.parameters.len()];
+    let mut retained = if infer {
+        hidden_parameters(module, function)
+    } else {
+        vec![false; function.parameters.len()]
+    };
     let mut pending: Vec<usize> = result.loans.iter().copied().collect();
     let mut seen = BTreeSet::new();
     while let Some(loan) = pending.pop() {
@@ -960,6 +1003,138 @@ fn retained_parameters(
         pending.extend(&loan.parents);
     }
     Some(retained.into_boxed_slice())
+}
+
+/// The parameters of an abstract body whose loans may pass through a value whose type has a type
+/// variable and carries no loans, as `x` does in `wrap (f x)` with `f x : 'v`: the check of the
+/// abstract body gives such a value no loans, although an instance whose `'v` is a function holds
+/// there what `x` lends. The abstract body does not see the stores of `Array.write` and of the
+/// functions that write through an exclusive reference either. The inference keeps these
+/// parameters, as the checks of the instances may. A parameter reaches such a value when the
+/// value's expression uses it, or a local bound from it, other than through a part whose concrete
+/// type carries no loans (`hash_of key : i64`); a value that such a part consumes whole cannot
+/// reach the result, unless it is bound, assigned or stored.
+fn hidden_parameters(
+    module: &CheckedModule,
+    function: &crate::check::CheckedFunction,
+) -> Vec<bool> {
+    let types = module.types();
+    let plain = |expression: &TypedExpr| {
+        !expression.ty.contains_unknown() && !expression.ty.carries_loans(&types)
+    };
+    let mentioned = |expression: &TypedExpr| -> BTreeSet<usize> {
+        let mut found = BTreeSet::new();
+        let mut pending = vec![expression];
+        while let Some(expression) = pending.pop() {
+            if plain(expression) {
+                continue;
+            }
+            if let E::Local(id) = expression.kind {
+                found.insert(id);
+            }
+            pending.extend(expression.children());
+        }
+        found
+    };
+    // A call that may store an argument through an exclusive reference.
+    let stores = |callee: &TypedExpr| match &callee.ty {
+        Type::Function(parameters, _) => parameters
+            .iter()
+            .any(|parameter| matches!(parameter, Type::Reference(_, true))),
+        _ => false,
+    };
+    // The locals that each binding makes from the locals that its value uses, and the locals that
+    // each hiding value uses.
+    let mut bindings: Vec<(Vec<usize>, BTreeSet<usize>)> = Vec::new();
+    let mut hiding: Vec<BTreeSet<usize>> = Vec::new();
+    // Each expression, and whether a part of a plain type consumes its value whole.
+    let mut pending = vec![(&function.body, false)];
+    while let Some((expression, consumed)) = pending.pop() {
+        if !consumed
+            && !matches!(expression.kind, E::Local(_))
+            && expression.ty.contains_unknown()
+            && !expression.ty.carries_loans(&types)
+        {
+            hiding.push(mentioned(expression));
+        }
+        // The values that escape the expression's own value.
+        let mut escaping: Vec<&TypedExpr> = Vec::new();
+        match &expression.kind {
+            E::Block {
+                bindings: block, ..
+            } => {
+                for (local, value) in block {
+                    bindings.push((vec![local.id], mentioned(value)));
+                    escaping.push(value);
+                }
+            }
+            E::Match { local, value, arms } => {
+                bindings.push((vec![local.id], mentioned(value)));
+                escaping.push(value);
+                for alternative in arms.iter().flat_map(|arm| &arm.alternatives) {
+                    for step in &alternative.steps {
+                        if let crate::check::PatternStep::Bind(bound, value) = step {
+                            bindings.push((vec![bound.id], mentioned(value)));
+                        }
+                    }
+                    for (bound, value) in &alternative.bindings {
+                        bindings.push((vec![bound.id], mentioned(value)));
+                    }
+                }
+            }
+            E::ForEach {
+                owner,
+                local,
+                source,
+                ..
+            } => bindings.push((vec![owner.id, local.id], mentioned(source))),
+            E::Assign(place, value) => {
+                let mut root = &**place;
+                while let E::Field(inner, _) | E::Index(inner, _) | E::Dereference(inner) =
+                    &root.kind
+                {
+                    root = inner;
+                }
+                if let E::Local(id) = root.kind {
+                    bindings.push((vec![id], mentioned(value)));
+                }
+                escaping.push(value);
+            }
+            E::Call(callee, arguments) if stores(callee) => {
+                for argument in arguments {
+                    hiding.push(mentioned(argument));
+                }
+            }
+            _ => {}
+        }
+        let consumed = consumed || plain(expression);
+        for child in expression.children() {
+            let escapes = escaping.iter().any(|value| std::ptr::eq(*value, child));
+            pending.push((child, consumed && !escapes));
+        }
+    }
+    if hiding.iter().all(BTreeSet::is_empty) {
+        return vec![false; function.parameters.len()];
+    }
+    function
+        .parameters
+        .iter()
+        .map(|parameter| {
+            let mut reached = BTreeSet::from([parameter.id]);
+            loop {
+                let before = reached.len();
+                for (bound, uses) in &bindings {
+                    if !uses.is_disjoint(&reached) {
+                        reached.extend(bound);
+                    }
+                }
+                if reached.len() == before {
+                    break;
+                }
+            }
+            hiding.iter().any(|uses| !uses.is_disjoint(&reached))
+        })
+        .collect()
 }
 
 /// Source declarations outlive every branch snapshot. Evaluation also visits synthetic
@@ -1265,6 +1440,105 @@ impl<'a> Checker<'a, '_> {
         }
     }
 
+    /// A28: the function whose call the pipeline `expression`, `x |> right`, completes, when its
+    /// facts decide the loans of the result: `right` applies a function that has facts to all its
+    /// arguments but the last.
+    fn piped_callee(&self, expression: &TypedExpr, right: &TypedExpr) -> Option<usize> {
+        let E::Call(callee, arguments) = &right.kind else {
+            return None;
+        };
+        let id = direct_callee(callee)?;
+        (retention_eligible(self.module, id)
+            && arguments.len() + 1 == self.module.functions[id].parameters.len()
+            && retention_applies(&expression.ty, &self.module.types()))
+        .then_some(id)
+    }
+
+    /// The loans that `right`, the partial application of function `id` that a pipeline
+    /// completes, passes to the result of the call: those of the callee and of each argument that
+    /// the facts of `id` do not show to be temporary. Each argument is evaluated, and stays lent
+    /// while the next ones are, as in `eval_call`.
+    fn eval_piped_arguments(
+        &mut self,
+        id: usize,
+        right: &TypedExpr,
+        live: &BTreeSet<usize>,
+    ) -> Result<Value, Diagnostic> {
+        let E::Call(callee, arguments) = &right.kind else {
+            unreachable!("piped_callee takes calls")
+        };
+        let mut during = live.clone();
+        uses(right, &mut during);
+        let start = self.held.len();
+        let mut result = self.eval(callee, Use::Consume, &during)?;
+        self.held.push(result.clone());
+        for (index, argument) in arguments.iter().enumerate() {
+            let mark = self.events.as_ref().map_or(0, |events| events.len());
+            let value = self.eval(argument, Use::Consume, &during)?;
+            self.event_targets(mark, argument.span, callee);
+            if !self.facts.temporary(id, index) {
+                result.loans.extend(&value.loans);
+            }
+            self.held.push(value);
+        }
+        self.held.truncate(start);
+        result.regions = None;
+        Ok(result)
+    }
+
+    /// The function that stores an input through an exclusive reference (A13 Phase 2) whose call
+    /// the pipeline `x |> right` completes.
+    fn piped_store(&self, right: &TypedExpr) -> Option<usize> {
+        let E::Call(callee, arguments) = &right.kind else {
+            return None;
+        };
+        let id = direct_callee(callee)?;
+        let function = &self.module.functions[id];
+        (function
+            .region_slots
+            .as_ref()
+            .is_some_and(|slots| slots.writes)
+            && function.callback_contracts.is_empty()
+            && arguments.len() + 1 == function.parameters.len())
+        .then_some(id)
+    }
+
+    /// `x |> f a` for a function `f` that stores an input through an exclusive reference: the
+    /// partial application `right` is evaluated as a value, with its arguments lent, and the
+    /// complete call `f a x` stores its inputs as a direct call does (`store_arguments`). `x` was
+    /// evaluated first, as the pipeline does, and its value is `piped`.
+    fn eval_piped_store(
+        &mut self,
+        id: usize,
+        left: &TypedExpr,
+        piped: &Value,
+        right: &TypedExpr,
+        live: &BTreeSet<usize>,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        let E::Call(callee, arguments) = &right.kind else {
+            unreachable!("piped_store takes calls")
+        };
+        let mut during = live.clone();
+        uses(right, &mut during);
+        let start = self.held.len();
+        let mut result = self.eval(callee, Use::Consume, &during)?;
+        self.held.push(result.clone());
+        for argument in arguments {
+            let mark = self.events.as_ref().map_or(0, |events| events.len());
+            let value = self.eval(argument, Use::Consume, &during)?;
+            self.event_targets(mark, argument.span, callee);
+            result.loans.extend(&value.loans);
+            self.held.push(value);
+        }
+        self.held.push(piped.clone());
+        let all: Vec<TypedExpr> = arguments.iter().chain([left]).cloned().collect();
+        self.store_arguments(id, &all, start, span)?;
+        self.held.truncate(start);
+        result.regions = None;
+        Ok(result)
+    }
+
     /// A28: whether `callee` is `share`, `downgrade` or `upgrade` of `Rc` or `Arc` (or the generated
     /// function that applies one). Each makes a new owner of the block that its first argument
     /// borrows, so its result holds what the block holds, not the borrow of the owner: the owner
@@ -1284,17 +1558,42 @@ impl<'a> Checker<'a, '_> {
     /// borrow of a local holds the loans that the local held when it was borrowed (its parents);
     /// a borrow from the caller, or of static data, says nothing about what its target holds, so
     /// it stands for itself.
-    fn read_through(&self, loans: &BTreeSet<usize>) -> BTreeSet<usize> {
+    ///
+    /// The result holds a copy of each of those loans, with the same place, mutability and
+    /// parents: it keeps the same data borrowed, and the block checks and conflicts see it as they
+    /// see the original. It is not the original because a live borrow of the owner (`Rc.get (ref
+    /// shared)`, `let r = ref shared`) has the original as a parent, and a value that holds a loan
+    /// that some active loan reborrows cannot move; moving the new owner reborrows nothing.
+    fn read_through(&mut self, loans: &BTreeSet<usize>) -> BTreeSet<usize> {
         let mut held = BTreeSet::new();
-        for id in loans {
-            let loan = &self.loans[*id];
+        let mut pending: Vec<usize> = loans.iter().copied().collect();
+        let mut seen = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let loan = &self.loans[id];
             if self.external.contains(&loan.place.root) || is_static_root(loan.place.root) {
-                held.insert(*id);
-            } else {
-                held.extend(&loan.parents);
+                held.insert(id);
+                continue;
+            }
+            // A reborrow of the same place, as `(ref shared) |> Arc.share` makes, has the borrow
+            // that it reborrows as a parent: read through that one too.
+            for parent in &loan.parents {
+                if self.loans[*parent].place == loan.place {
+                    pending.push(*parent);
+                } else {
+                    held.insert(*parent);
+                }
             }
         }
-        held
+        held.into_iter()
+            .map(|id| {
+                let copy = self.loans[id].clone();
+                self.loans.push(copy);
+                self.loans.len() - 1
+            })
+            .collect()
     }
 
     /// What `Mutex.with_lock` returns when `callee` is that builtin, or the generated function
@@ -2484,6 +2783,10 @@ impl<'a> Checker<'a, '_> {
     ) -> Result<(), Diagnostic> {
         const UNNAMED: &str =
             "assigning borrowed values through references requires explicit lifetimes";
+        // A value without borrows may go anywhere, as an assignment of one does.
+        if self.external.contains(&place.root) && value.loans.is_empty() {
+            return Ok(());
+        }
         if self.external.contains(&place.root) {
             let Some(target) = self
                 .slots
@@ -2569,6 +2872,14 @@ impl<'a> Checker<'a, '_> {
         value: &Value,
     ) -> BTreeSet<usize> {
         if slots.is_some_and(|slots| slots.targets.get(index) == Some(&true)) {
+            // A borrowed temporary's value has the temporary's own loans: what its target holds.
+            if matches!(argument.kind, E::BorrowOperand(_)) {
+                return if slot == 0 {
+                    BTreeSet::new()
+                } else {
+                    value.loans.clone()
+                };
+            }
             return if slot == 0 {
                 value.loans.clone()
             } else {
@@ -2615,7 +2926,10 @@ impl<'a> Checker<'a, '_> {
                 let mut stored = Value::default();
                 for (input, input_slots) in slots.parameters.iter().enumerate() {
                     for (input_slot, region) in input_slots.iter().enumerate() {
-                        if region.is_some_and(|region| regions.contains(&region)) {
+                        // What the target already holds adds nothing to it.
+                        let own_contents =
+                            input == index && slots.targets[index] && input_slot == 1;
+                        if !own_contents && region.is_some_and(|region| regions.contains(&region)) {
                             stored.loans.extend(self.input_slot_loans(
                                 Some(slots),
                                 input,
@@ -3217,7 +3531,12 @@ impl<'a> Checker<'a, '_> {
                 // A28: the callee's body never puts this argument in its result. The argument
                 // stays lent until the call returns (it is on `held`).
                 None if index == 0 && read_through => {
-                    let loans = self.read_through(&value.loans);
+                    // A borrowed temporary's value already has only what the temporary holds.
+                    let loans = if matches!(argument.kind, E::BorrowOperand(_)) {
+                        value.loans.clone()
+                    } else {
+                        self.read_through(&value.loans)
+                    };
                     current.loans.extend(loans);
                 }
                 None if retention.is_some_and(|boundary| index < boundary)
@@ -3725,8 +4044,19 @@ impl<'a> Checker<'a, '_> {
                     return Err(self.owned_function_holds_borrow(left, &value, &expression.ty));
                 }
                 self.held.push(value.clone());
+                // A28: `x |> f a` completes `f a x`, so the facts of `f` select its arguments'
+                // loans as in `eval_call`.
+                let completed = (*operator == BinaryOp::Pipe)
+                    .then(|| self.piped_callee(expression, right))
+                    .flatten();
                 let callee = if owned_function {
                     Value::default()
+                } else if let Some(id) = completed {
+                    self.eval_piped_arguments(id, right, &during)?
+                } else if *operator == BinaryOp::Pipe
+                    && let Some(id) = self.piped_store(right)
+                {
+                    self.eval_piped_store(id, left, &value, right, &during, expression.span)?
                 } else {
                     self.eval(right, usage, &during)?
                 };
@@ -3739,7 +4069,25 @@ impl<'a> Checker<'a, '_> {
                     let owned_call = matches!(&right.kind, E::Call(inner, arguments)
                         if arguments.len() == 1
                             && self.builtin_called(inner) == Some(crate::check::Builtin::OwnedCall));
-                    if !owned_call {
+                    if let Some(id) = completed {
+                        let piped = match &right.kind {
+                            E::Call(_, arguments) => arguments.len(),
+                            _ => 0,
+                        };
+                        if self.facts.closed[id] {
+                            result.loans.clear();
+                        } else if self.facts.temporary(id, piped) {
+                            result.loans = callee.loans;
+                        } else {
+                            result.loans.extend(callee.loans);
+                        }
+                    } else if self.reads_through(right) {
+                        // `ref shared |> Arc.share` is `Arc.share (ref shared)`.
+                        if !matches!(left.kind, E::BorrowOperand(_)) {
+                            result.loans = self.read_through(&result.loans);
+                        }
+                        result.loans.extend(callee.loans);
+                    } else if !owned_call {
                         result.loans.extend(callee.loans);
                     }
                     result.regions = None;
@@ -4913,5 +5261,57 @@ mod retention_tests {
             assert_eq!(retained("a28_up"), Some(vec![false, true]));
             assert_eq!(retained("a28_down"), Some(vec![false, true]));
         }
+    }
+
+    /// A28 review: when the checks run out, the functions still to check and their callers keep
+    /// all their arguments' loans, and every other function keeps the facts of the fixed point.
+    #[test]
+    fn an_exhausted_budget_discards_only_the_unsettled_facts() {
+        let module = crate::analyze(
+            "def a28_pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn a28_pass _key f = f\n\
+             def rec a28_up :: i64 -> ref string -> (unit -> i64)\nfn rec a28_up n text = if n == 0 then \\() -> 0 else a28_down (n - 1) text\n\
+             def rec a28_down :: i64 -> ref string -> (unit -> i64)\nfn rec a28_down n text = if n == 0 then \\() -> String.length text else a28_up n text\n\
+             def a28_top :: ref string -> (unit -> i64)\nfn a28_top text = a28_up 1 text\n\
+             let one = 1\nlet text = \"abc\"\n\
+             let a = a28_pass (ref one) (\\() -> 1)\nlet d = a28_top (ref text)\n\
+             a () + d ()",
+        )
+        .unwrap();
+        let closed = closed_returns(&module);
+        let full = parameter_retention(&module, &closed, false);
+        let id = |name: &str| {
+            module
+                .functions
+                .iter()
+                .position(|function| function.name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        let [pass, up, down, top] = ["a28_pass", "a28_up", "a28_down", "a28_top"].map(id);
+        assert_eq!(full[pass].as_deref(), Some(&[false, true][..]));
+        assert_eq!(full[top].as_deref(), Some(&[true][..]));
+        assert!(
+            parameter_retention_within(&module, &closed, false, Some(0))
+                .iter()
+                .all(Option::is_none)
+        );
+        let mut partial = false;
+        for budget in 1..16 {
+            let facts = parameter_retention_within(&module, &closed, false, Some(budget));
+            for (function, fact) in facts.iter().enumerate() {
+                assert!(
+                    fact.is_none() || *fact == full[function],
+                    "{budget} {function}"
+                );
+            }
+            // The callers of an unsettled function are unsettled.
+            if facts[up].is_none() || facts[down].is_none() {
+                assert!(facts[top].is_none(), "{budget}");
+            }
+            partial |= facts[pass].is_some() && facts[up].is_none();
+        }
+        assert!(
+            partial,
+            "some budget settles `a28_pass` but not the recursive pair"
+        );
     }
 }

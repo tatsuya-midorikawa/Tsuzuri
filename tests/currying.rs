@@ -233,6 +233,107 @@ fn function_result_facts_follow_each_specialization() {
     }
 }
 
+/// A28 review: `x |> f a` completes `f a x`, so the facts of `f` select the arguments' loans as
+/// in the call.
+#[test]
+fn a_pipeline_that_completes_a_call_uses_its_facts() {
+    const PASS: &str =
+        "def pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn pass _key f = f\n";
+    accepts(&format!(
+        "{PASS}def wrap :: own i64 -> own (unit -> i64) -> (unit -> i64)\nfn wrap key f = f |> pass (ref key)\nlet g = wrap 1 (\\() -> 42)\ng ()"
+    ));
+    // The piped argument is the one that the result keeps.
+    rejects_with_kind(
+        "def keep :: own (unit -> i64) -> ref string -> (unit -> i64)\nfn keep f text =\n    let g = \\() -> String.length text\n    g\ndef leak :: own string -> (unit -> i64)\nfn leak text = ref text |> keep (\\() -> 1)\n0",
+        "E1013",
+        "task_result_retains_borrow",
+    );
+    rejects_with_kind(
+        "def keep :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn keep text f =\n    let g = \\() -> String.length text\n    g\ndef leak :: own string -> (unit -> i64)\nfn leak text = (\\() -> 1) |> keep (ref text)\n0",
+        "E1013",
+        "task_result_retains_borrow",
+    );
+}
+
+/// A28 review: in the abstract body of a generic function, a value of type `'v` has no loans,
+/// although an instance whose `'v` is a function holds there what the argument lends. The facts
+/// of the inference keep every argument of such a body, so `g` needs `Copy<'a>` as before A28:
+/// the base reports `E1005` at the call, and the instance on `i64` is accepted.
+#[test]
+fn inferred_facts_keep_what_a_type_variable_may_hold() {
+    const SNEAKY: &str = "def sneaky :: ref 'k -> own (ref 'k -> 'v) -> own ('v -> (unit -> i64)) -> (unit -> i64)\nfn sneaky x f wrap = wrap (f x)\ndef g :: own 'a -> own (ref 'a -> 'v) -> own ('v -> (unit -> i64)) -> i64\nfn g x f w =\n    let h = sneaky (ref x) f w\n    let moved = x\n    h ()\n";
+    let source = format!("{SNEAKY}g \"abc\" (\\t -> \\() -> String.length t) (\\k -> k)");
+    let error = analyze(&source).expect_err(&source);
+    assert_eq!(error.code, "E1005", "{source}\n{}", error.message);
+    assert_eq!(
+        error.kind,
+        Some("no_instance"),
+        "{source}\n{}",
+        error.message
+    );
+    // At the call of `g`, not at the move inside its body.
+    assert_eq!(
+        error.span.start,
+        source.rfind("g \"abc\"").unwrap(),
+        "{source}\n{}",
+        error.message
+    );
+    accepts(&format!("{SNEAKY}g 5 (\\t -> \\() -> deref t) (\\k -> k)"));
+    // The abstract body does not see what `Array.write` stores either.
+    let stash = "def stash :: ref 'k -> own (ref 'k -> (unit -> i64)) -> (unit -> i64)\nfn stash x f =\n    let mut arr = [\\() -> 0]\n    Array.write 0 (f x) (ref mut arr)\n    arr[0]\ndef g :: own 'a -> own (ref 'a -> (unit -> i64)) -> i64\nfn g x f =\n    let h = stash (ref x) f\n    let moved = x\n    h ()\ng \"abc\" (\\t -> \\() -> String.length t)";
+    let error = analyze(stash).expect_err(stash);
+    assert_eq!(error.code, "E1005", "{stash}\n{}", error.message);
+    assert_eq!(
+        error.span.start,
+        stash.rfind("g \"abc\"").unwrap(),
+        "{stash}"
+    );
+}
+
+/// A28 review: when the fixed point runs out of checks, only the functions still to check and
+/// their callers keep all their arguments' loans. A ring of 201 functions with 16 references each
+/// exhausts the budget; the facts of `HashMap.remove`, which does not call the ring, survive.
+#[test]
+fn an_exhausted_fixed_point_keeps_the_facts_that_settled() {
+    let count = 201;
+    let parameters: Vec<String> = (0..16).map(|index| format!("t{index}")).collect();
+    let rotated: Vec<String> = (0..16)
+        .map(|index| format!("t{}", (index + 1) % 16))
+        .collect();
+    let signature = vec!["ref string"; 16].join(" -> ");
+    let mut source = String::new();
+    for index in 0..count {
+        let next = (index + 1) % count;
+        source.push_str(&format!(
+            "def rec f{index} :: {signature} -> (unit -> i64)\nfn rec f{index} {} = ",
+            parameters.join(" ")
+        ));
+        if index == 0 {
+            source.push_str(&format!(
+                "if String.length t0 > 100 then f{next} {} else\n    let g = \\() -> String.length t0\n    g\n",
+                rotated.join(" ")
+            ));
+        } else {
+            source.push_str(&format!("f{next} {}\n", rotated.join(" ")));
+        }
+    }
+    source.push_str(&format!(
+        "let s = \"abc\"\nlet hr = (f0 {}) ()\nlet map = HashMap.insert 1 (\\() -> 42) (HashMap.empty())\nlet map = HashMap.remove 1 map\nhr + HashMap.length (ref map)",
+        vec!["(ref s)"; 16].join(" ")
+    ));
+    analyze(&source).unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    // The ring itself keeps its arguments: `f0` captures `t0`, which must outlive the result.
+    let leak = source.replace(
+        "let s = \"abc\"\nlet hr = (f0",
+        "def leak :: own string -> (unit -> i64)\nfn leak s = f0",
+    );
+    let leak = leak.replace(
+        &format!("{}) ()\nlet map", vec!["(ref s)"; 16].join(" ")),
+        &format!("{}\nlet hr = 0\nlet map", vec!["(ref s)"; 16].join(" ")),
+    );
+    rejects_with_kind(&leak, "E1013", "task_result_retains_borrow");
+}
+
 #[test]
 fn borrows_dynamic_calls_without_changing_owned_capture_fallbacks() {
     for (case, captures) in [

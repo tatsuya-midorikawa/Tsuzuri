@@ -9269,13 +9269,16 @@ fn check_modules_collect(
     let module = closures::lower(module);
     drop(closures_time);
     let mut module = module?;
-    if module.functions.iter().any(|function| {
-        function.module == "$builtin"
-            && function
-                .region_slots
-                .as_ref()
-                .is_some_and(|slots| slots.writes)
-    }) {
+    let std_writes = closures::derive_store_slots(&mut module);
+    if std_writes
+        || module.functions.iter().any(|function| {
+            function.module == "$builtin"
+                && function
+                    .region_slots
+                    .as_ref()
+                    .is_some_and(|slots| slots.writes)
+        })
+    {
         regions::validate_contract_calls(&module)?;
     }
     let ownership_time = crate::timings::Phase::start("ownership");

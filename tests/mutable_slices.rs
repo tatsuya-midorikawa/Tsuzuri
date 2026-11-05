@@ -329,3 +329,90 @@ fn parallel_chunks_lend_disjoint_exclusive_slices() {
         rejects(source, code, fragment);
     }
 }
+
+fn rejects_with_kind(source: &str, code: &str, kind: &str) {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, code, "{source}\n{}", error.message);
+    assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
+}
+
+/// A28 review: a write through an exclusive slice keeps what it stores in the slice's owner, as
+/// an index assignment does. `Array.write`, and the std functions that write through it (`set`,
+/// `fill`, `blit`, `Vec.copy_to`...), stored a function that borrows `text` or a `ref string`
+/// without the owner keeping the borrow, so `text` could move or be freed while the array held
+/// it.
+#[test]
+fn in_place_writes_keep_the_borrows_that_they_store() {
+    const BORROW: &str =
+        "let text = \"abc\"\nlet borrowed = ref text\nlet mut arr = [\\() -> 0, \\() -> 0]\n";
+    const AFTER: &str = "let moved = text\narr[0] ()\n";
+    for write in [
+        "Array.write 0 (\\() -> String.length borrowed) (ref mut arr)",
+        "Array.write 0 (\\() -> String.length borrowed) (ref mut arr[0..1])",
+        "Array.set 0 (\\() -> String.length borrowed) (ref mut arr)",
+        "Array.fill 0 2 (\\() -> String.length borrowed) (ref mut arr)",
+        "Array.blit 0 0 1 [\\() -> String.length borrowed] (ref mut arr)",
+        "Vec.copy_to (ref mut arr) (ref (Vec.of_array [\\() -> String.length borrowed]))",
+        "Vec.copy_to_at (ref mut arr) 1 (ref (Vec.of_array [\\() -> String.length borrowed]))",
+        "ref mut arr |> Array.set 0 (\\() -> String.length borrowed)",
+        "let view = ref mut arr\nArray.write 1 (\\() -> String.length borrowed) view",
+    ] {
+        rejects_with_kind(
+            &format!("{BORROW}{write}\n{AFTER}"),
+            "E1014",
+            "borrow_conflict",
+        );
+    }
+    // A slice of references, and a function that writes into its own local array.
+    rejects_with_kind(
+        "let text = \"abc\"\nlet other = \"de\"\nlet mut refs = [ref other]\nArray.write 0 (ref text) (ref mut refs)\nlet moved = text\nrefs[0].length\n",
+        "E1014",
+        "borrow_conflict",
+    );
+    for (write, kind) in [
+        (
+            "Array.write 0 (\\() -> String.length text) (ref mut arr)",
+            "borrow_outlives_block",
+        ),
+        (
+            "Array.set 0 (\\() -> String.length text) (ref mut arr)",
+            "borrow_outlives_block",
+        ),
+        (
+            "Array.fill 0 1 (\\() -> String.length text) (ref mut arr)",
+            "borrow_outlives_block",
+        ),
+        (
+            "Array.write 0 (\\() -> String.length text) (ref mut arr[0..1])",
+            "borrow_outlives_block",
+        ),
+    ] {
+        // A28: the facts of `stash` follow the write, so `text` stays lent by its result.
+        let source = format!(
+            "def stash :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn stash text g =\n    let mut arr = [g]\n    {write}\n    arr[0]\ndef leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    stash (ref text) (\\() -> 1)\nlet f = leak 123456789\nf ()\n"
+        );
+        rejects_with_kind(&source, "E1013", kind);
+        // The same write in one function, of a function that borrows the local `text`.
+        let single = format!(
+            "def leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [\\() -> 1]\n    {}\n    arr[0]\nlet f = leak 123456789\nf ()\n",
+            write.replace("String.length text", "String.length borrowed")
+        );
+        rejects_with_kind(&single, "E1013", kind);
+    }
+    // A function that writes a value with borrows through its own exclusive reference needs named
+    // regions, as an index assignment does; a function type cannot name one.
+    rejects_with_kind(
+        "def put :: own (unit -> i64) -> ref mut [(unit -> i64)..] -> unit\nfn put f target = Array.write 0 f target\n0\n",
+        "E1013",
+        "store_region_unnamed",
+    );
+    // The std writers on functions that hold no borrow, a borrow that outlives the array, and the
+    // pipeline form.
+    accepts(
+        "def run :: unit -> i64\nfn run _unit =\n    let base = 1000\n    let mut arr = [\\() -> 1, \\() -> 2, \\() -> 3]\n    Array.set 0 (\\() -> 10) (ref mut arr)\n    Array.fill 1 1 (\\() -> 20) (ref mut arr)\n    let source = [\\() -> 100, \\() -> 200]\n    Array.blit 0 1 2 (ref source) (ref mut arr)\n    Array.random_shuffle_in_place_by (\\() -> 0.5) (ref mut arr)\n    let v = Vec.of_array [\\() -> 7, \\() -> 8]\n    Vec.copy_to_at (ref mut arr) 1 (ref v)\n    ref mut arr |> Array.set 2 (\\() -> base)\n    Array.write 0 (\\() -> base + 1) (ref mut arr)\n    arr[0] () + arr[1] () + arr[2] ()\n",
+    );
+    // A write of a value without borrows through a parameter's exclusive slice.
+    accepts(
+        "def reset :: ref mut [(unit -> i64)..] -> unit\nfn reset target = Array.write 0 (\\() -> 0) target\n",
+    );
+}

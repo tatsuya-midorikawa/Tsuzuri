@@ -229,6 +229,54 @@ fn sharing_a_function_keeps_the_borrows_of_its_environment_only() {
     }
 }
 
+/// A28 review: the result of `share`, `downgrade` and `upgrade` holds copies of the loans that the
+/// block holds, not the loans themselves, which a live borrow of the owner reborrows: moving the
+/// new owner while `Rc.get (ref shared)` or `ref shared` is live is not a move of a reborrowed
+/// value. The base accepts these programs and prints 5, 5, 5, 4, 4 and 5.
+#[test]
+fn a_new_owner_moves_while_the_owner_is_borrowed() {
+    for source in [
+        "let text = \"abc\"\nlet shared = Rc.new (ref text)\nlet view = Rc.get (ref shared)\nlet mine = Rc.share (ref shared)\nlet moved = mine\nString.length (deref view) + Rc.strong_count (ref moved)",
+        "let text = \"abc\"\nlet borrowed = ref text\nlet shared = Rc.new (\\() -> String.length borrowed)\nlet r = ref shared\nlet mine = Rc.share (ref shared)\nlet moved = mine\nRc.strong_count r + (deref (Rc.get (ref moved))) ()",
+        "let text = \"abc\"\nlet borrowed = ref text\nlet shared = Rc.new (\\() -> String.length borrowed)\nlet mine = Rc.share (ref shared)\nlet r = ref shared\nlet moved = mine\nRc.strong_count r + (deref (Rc.get (ref moved))) ()",
+        "def total :: own Rc<ref string> -> i64\nfn total value = String.length (deref (Rc.get (ref value)))\nlet text = \"abcd\"\nlet shared = Rc.new (ref text)\nlet r = ref shared\nlet mine = Rc.share (ref shared)\ntotal mine + 0 * Rc.strong_count r",
+        "let text = \"abc\"\nlet shared = Rc.new (ref text)\nlet view = Rc.get (ref shared)\nlet weak = Rc.downgrade (ref shared)\nlet moved = weak\nString.length (deref view) + Rc.strong_count (ref shared)",
+        "let text = \"abc\"\nlet shared = Rc.new (ref text)\nlet view = Rc.get (ref shared)\nlet mine = Rc.share (ref shared)\nlet pair = (mine, 1)\nString.length (deref view) + Rc.strong_count (ref shared)",
+        // The pipeline form reads through as the call does.
+        "let text = \"abc\"\nlet shared = Rc.new (ref text)\nlet view = Rc.get (ref shared)\nlet mine = ref shared |> Rc.share\nlet moved = mine\nString.length (deref view) + Rc.strong_count (ref moved)",
+    ] {
+        for source in [
+            source.to_owned(),
+            source.replace("Rc.", "Arc.").replace("Rc<", "Arc<"),
+        ] {
+            emits(&source);
+        }
+    }
+    // The copies keep the borrowed data lent, as the originals do.
+    for source in [
+        "let text = \"abc\"\nlet shared = Rc.new (ref text)\nlet view = Rc.get (ref shared)\nlet mine = Rc.share (ref shared)\nlet moved = mine\nlet gone = text\nString.length (deref view) + Rc.strong_count (ref moved)",
+        "def make :: unit -> Rc<ref string>\nfn make _unit =\n    let text = \"abc\"\n    let shared = Rc.new (ref text)\n    let mine = ref shared |> Rc.share\n    mine\nRc.strong_count (ref (make ()))",
+    ] {
+        let error = analyze(source).expect_err(source);
+        assert!(
+            error.code == "E1014" || error.code == "E1013",
+            "{source}\n{}",
+            error.message
+        );
+    }
+}
+
+/// A28 review: `Array.write` keeps the stored value's borrows in the array, so `Rc.share (ref
+/// arr[0])` reads them through. Before, the share did not hold `text`, which the function frees.
+#[test]
+fn a_share_of_an_element_holds_what_was_written_in() {
+    rejects_with_kind(
+        "def make :: own i64 -> Rc<unit -> i64>\nfn make n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [Rc.new (\\() -> 0)]\n    Array.write 0 (Rc.new (\\() -> String.length borrowed)) (ref mut arr)\n    Rc.share (ref arr[0])\nlet f = make 123456789\n(deref (Rc.get (ref f))) ()",
+        "E1013",
+        "borrow_outlives_block",
+    );
+}
+
 #[test]
 fn shared_types_have_reserved_names_and_no_abi() {
     for source in [

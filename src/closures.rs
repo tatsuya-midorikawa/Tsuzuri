@@ -305,6 +305,85 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
     Ok(module)
 }
 
+/// The region slots of the specialized std functions that may store through an exclusive
+/// reference whose target holds borrows, as `Array.set`, `Array.fill` and `Array.blit` do through
+/// `Array.write`. A type variable cannot name a region, so std cannot declare what these functions
+/// store, as `def set { r s } :: own i64 -> own 'a { s } -> ref mut { r } ['a..] { s } -> unit`
+/// would; each instance whose element type carries loans gets that contract here: every input
+/// with borrows, and the borrows inside the target of every reference, may be stored in the
+/// target of every exclusive reference. Their bodies are checked against it, and their callers keep
+/// the stored loans in those targets (`store_arguments`), as they do for `Vec.push_mut`. Returns
+/// whether some function may store an input, so that every call of it must be direct.
+pub(super) fn derive_store_slots(module: &mut CheckedModule) -> bool {
+    let types = TypeContext {
+        records: &module.records,
+        unions: &module.unions,
+    };
+    // The data behind a reference holds borrows; `[T..]` holds what its elements hold.
+    let holds_loans = |target: &Type| match target {
+        Type::ArrayView(element) => element.carries_loans(&types),
+        target => target.carries_loans(&types),
+    };
+    let mut writes = false;
+    for function in &mut module.functions {
+        if function.origin.module != ModuleOrigin::Std
+            || function.module.starts_with('$')
+            || function.region_slots.is_some()
+            || function.region_sources.is_some()
+            || !function.callback_contracts.is_empty()
+            || !function.parameters.iter().any(|parameter| {
+                matches!(&parameter.ty, Type::Reference(target, true) if holds_loans(target))
+            })
+            // The slots of a record with several regions have regions of their own.
+            || function.parameters.iter().any(|parameter| {
+                matches!(&parameter.ty, Type::Record(id, _) if types.records[*id].region_count >= 2)
+            })
+        {
+            continue;
+        }
+        let mut next = 1;
+        let mut parameters = Vec::with_capacity(function.parameters.len());
+        let mut targets = Vec::with_capacity(function.parameters.len());
+        for parameter in &function.parameters {
+            match &parameter.ty {
+                Type::Reference(target, _) if holds_loans(target) => {
+                    parameters.push(vec![Some(next), Some(0)]);
+                    targets.push(true);
+                    next += 1;
+                }
+                Type::Reference(..) => {
+                    parameters.push(vec![None]);
+                    targets.push(false);
+                }
+                ty => {
+                    let region = ty.carries_loans(&types).then_some(0);
+                    parameters.push(vec![region]);
+                    targets.push(false);
+                }
+            }
+        }
+        let mut slots = RegionSlots {
+            parameters,
+            targets,
+            result_target: false,
+            writes: false,
+        };
+        for (index, parameter) in function.parameters.iter().enumerate() {
+            for (_, contents) in slots.written_targets(index, &parameter.ty, types) {
+                slots.writes |= slots.parameters.iter().enumerate().any(|(input, regions)| {
+                    regions.iter().enumerate().any(|(slot, region)| {
+                        region.is_some_and(|region| contents.contains(&region))
+                            && !(input == index && slot == 1)
+                    })
+                });
+            }
+        }
+        writes |= slots.writes;
+        function.region_slots = Some(slots);
+    }
+    writes
+}
+
 fn local_value(local: &Local) -> TypedExpr {
     TypedExpr {
         kind: TypedExprKind::Local(local.id),
@@ -443,22 +522,33 @@ fn lower_expression(
                     span: expression.span,
                 };
                 let id = functions.len();
-                let region_slots = if builtin == Builtin::VecPushMut
-                    && signature.parameters[0].carries_loans(types)
-                {
-                    let count = match &signature.parameters[0] {
-                        Type::Record(id, _) => types.records[*id].region_count.max(1),
-                        _ => 1,
-                    };
-                    Some(RegionSlots {
-                        parameters: vec![vec![Some(0); count], vec![Some(1), Some(0)]],
-                        targets: vec![false, true],
-                        result_target: false,
-                        writes: true,
-                    })
-                } else {
-                    None
+                // The builtins that store an input in the target of an exclusive reference: the
+                // index of the stored value and of the reference. Their callers keep the stored
+                // value's loans in the target, as an assignment through the reference does.
+                let stored = match builtin {
+                    Builtin::VecPushMut | Builtin::SyncMapReplace => Some((0, 1)),
+                    Builtin::ArrayWrite => Some((1, 2)),
+                    _ => None,
                 };
+                let region_slots = stored
+                    .filter(|(value, _)| signature.parameters[*value].carries_loans(types))
+                    .map(|(value, target)| {
+                        let count = match &signature.parameters[value] {
+                            Type::Record(id, _) => types.records[*id].region_count.max(1),
+                            _ => 1,
+                        };
+                        let mut parameters = vec![vec![None]; arity];
+                        parameters[value] = vec![Some(0); count];
+                        parameters[target] = vec![Some(1), Some(0)];
+                        let mut targets = vec![false; arity];
+                        targets[target] = true;
+                        RegionSlots {
+                            parameters,
+                            targets,
+                            result_target: false,
+                            writes: true,
+                        }
+                    });
                 functions.push(CheckedFunction {
                     read_by_default: Vec::new(),
                     module: "$builtin".into(),

@@ -139,6 +139,21 @@ fn a_tzroutine_captures_a_share_of_a_function() {
             "task_capture_retains_borrow",
         );
     }
+    // A28 review: a share of a borrowing function made through a borrow of the owner, and the
+    // pipeline form, still hold the environment's borrow (not a move of a reborrowed value).
+    for capture in [
+        "let r = ref shared\nlet mine = Arc.share r\ntzroutine {\n    let _n = Arc.strong_count (ref mine)\n}\n0\n",
+        "let mine = ref shared |> Arc.share\ntzroutine {\n    let _n = Arc.strong_count (ref mine)\n}\n0\n",
+    ] {
+        rejects_with_kind(
+            &format!("{BORROWING}{capture}"),
+            "E1013",
+            "task_capture_retains_borrow",
+        );
+    }
+    accepts(
+        "let shared = Arc.new (\\value -> value + 1)\nlet mine = ref shared |> Arc.share\ntzroutine {\n    let _n = Arc.strong_count (ref mine)\n}\n0\n",
+    );
     // A user function that copies a function value out of a reference keeps the borrow.
     rejects_with_kind(
         "def copy_out :: ref (unit -> i64) -> (unit -> i64)\nfn copy_out f = deref f\nlet text = \"abc\"\nlet borrowed = ref text\nlet g = \\() -> String.length borrowed\nlet h = copy_out (ref g)\ntzroutine {\n    let _n = h ()\n}\n0\n",
