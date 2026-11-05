@@ -180,10 +180,27 @@ fn run n =
     Array.sum (ref outer)
 ";
 
+/// TZ14: the callback of `Parallel.*` grows a `Vec` and does nothing that can wait: no call through
+/// a closure, no extern, no runtime function other than the allocator, no nested `Parallel.*`.
+const FLAT_GROWTH: &str = "export def grow :: i64 -> i64
+fn grow i =
+    let mut v: Vec<i64> = Vec.empty()
+    for k in 1 ..= 64 do
+        v = Vec.add (k + i) v
+    Vec.length (ref v)
+
+export def run :: i64 -> i64
+fn run n =
+    let outer = Parallel.init n (\\i -> grow i)
+    Array.sum (ref outer)
+";
+
 /// TZ14: LLVM may keep the address that `@llvm.threadlocal.address` returns across a call, so a
 /// native program in which a tzroutine may move to another thread keeps the runtime's function that
-/// reads thread storage out of line: a program that spawns (TZ10), and one that calls `Parallel.*`,
-/// whose helper tzroutines wait inside a callback. A program without tzroutines keeps its IR.
+/// reads thread storage out of line: a program that spawns (TZ10), and one that calls `Parallel.*`
+/// and whose helper tzroutines may wait inside a callback (a nested `Parallel.*`). A program whose
+/// helpers cannot wait keeps its IR (a helper moves only at a wait, and the caller of a top-level
+/// `Parallel.*` is a thread's pseudo-G), and so does a program without tzroutines.
 #[test]
 fn parallel_programs_keep_thread_storage_out_of_callbacks() {
     const REALLOC: &str = "define internal ptr @tz_small_realloc(";
@@ -211,25 +228,30 @@ fn parallel_programs_keep_thread_storage_out_of_callbacks() {
         // A program with tzroutines probes its frames (TZ02); Windows probes with `__chkstk` instead.
         headers[0].replace(" \"probe-stack\"=\"inline-asm\"", "")
     };
+    let spawn = "export def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\n";
     let sequential = NESTED_GROWTH.replace("Parallel.init", "Array.init");
     assert_eq!(
         header(&sequential),
         generated,
         "a program without tzroutines"
     );
-    let spawning = format!(
-        "{NESTED_GROWTH}export def go :: i64 -> i64\nfn go n =\n    tzroutine {{ () }}\n    n\n"
-    );
     assert_eq!(
-        header(&spawning),
-        out_of_line,
-        "a program that spawns (TZ10)"
+        header(FLAT_GROWTH),
+        generated,
+        "Parallel.* without a spawn, whose helpers cannot wait"
     );
     assert_eq!(
         header(NESTED_GROWTH),
         out_of_line,
-        "Parallel.* without a spawn"
+        "Parallel.* without a spawn, whose helpers wait for a nested Parallel.*"
     );
+    for source in [FLAT_GROWTH, NESTED_GROWTH] {
+        assert_eq!(
+            header(&format!("{source}{spawn}")),
+            out_of_line,
+            "a program that spawns (TZ10)"
+        );
+    }
 }
 
 #[test]

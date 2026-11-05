@@ -34,7 +34,7 @@
 //! so that no address of one thread's storage is kept in a function across a check (LLVM may reuse
 //! the intrinsic's result across calls). A wait moves a tzroutine too, also the helper of a
 //! `Parallel.*` in a program that does not spawn: there `with_thread_storage_noinline` adds the
-//! `noinline` alone (TZ14).
+//! `noinline` alone, when the code that the helpers run may wait (TZ14).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -247,13 +247,21 @@ struct Definition<'a> {
 }
 
 fn definitions<'a>(lines: &[&'a str]) -> Vec<Definition<'a>> {
+    definitions_closed_by(lines, |line| line.trim_end() == "}")
+}
+
+/// `definitions`, with the closing brace found by `closes`.
+fn definitions_closed_by<'a>(
+    lines: &[&'a str],
+    closes: impl Fn(&str) -> bool,
+) -> Vec<Definition<'a>> {
     let mut found = Vec::new();
     let mut index = 0;
     while index < lines.len() {
         let header = lines[index].trim_end();
         if header.starts_with("define ") && header.ends_with('{') {
             let close = (index + 1..lines.len())
-                .find(|&line| lines[line].trim_end() == "}")
+                .find(|&line| closes(lines[line]))
                 .unwrap_or(lines.len() - 1);
             if let Some(call) = callable(lines[index], true) {
                 found.push(Definition {
@@ -656,15 +664,128 @@ fn push_line(output: &mut String, line: &str, thread_bound: bool) {
     }
 }
 
+/// The runtime's entry that runs the chunks of `Parallel.*` on helper tzroutines
+/// (src/runtime/tzroutine.c, `src/llvm_parallel.rs`).
+const PARALLEL: &str = "@tsuzuri_tz_parallel";
+
+/// The declared functions that a helper of `Parallel.*` may call without waiting (TZ14): the C
+/// library's allocator, which `src/runtime/heap-small.ll` and the runtime's other IR call, and its
+/// memory functions. None of them enters the tzroutine runtime. Every other declared function, the
+/// runtime's included, counts as a wait.
+const NEVER_WAITS: [&str; 10] = [
+    "@malloc",
+    "@calloc",
+    "@realloc",
+    "@free",
+    "@posix_memalign",
+    "@aligned_alloc",
+    "@memcpy",
+    "@memmove",
+    "@memset",
+    "@memcmp",
+];
+
+/// TZ14: whether a helper tzroutine of `Parallel.*` may wait in a native program that does not
+/// spawn, that is whether some code that `@tsuzuri_tz_parallel` runs on a helper may call into
+/// something that parks it. The entries are the chunks that the IR passes to `@tsuzuri_tz_parallel`;
+/// from them the analysis follows the direct calls to defined functions. It answers `true`, and errs
+/// that way, for a reachable call through a pointer, inline assembly, an `invoke` or `callbr`, a
+/// call that it does not parse, a call of `@tsuzuri_tz_parallel` (a nested `Parallel.*`, whose
+/// helper waits for its own), a call of a declared function other than the intrinsics and
+/// `NEVER_WAITS`, and for a use of `@tsuzuri_tz_parallel` other than a direct call with a defined
+/// function as its first operand.
+fn helpers_may_wait(lines: &[&str], functions: &[Definition<'_>]) -> bool {
+    helper_wait(lines, functions).is_some()
+}
+
+/// The line that makes `helpers_may_wait` answer `true`, or `None`.
+fn helper_wait<'a>(lines: &[&'a str], functions: &[Definition<'_>]) -> Option<&'a str> {
+    let defined: BTreeMap<&str, &Definition<'_>> = functions
+        .iter()
+        .map(|function| (function.name, function))
+        .collect();
+    let mut work = Vec::new();
+    for &line in lines {
+        let body = line.trim_start();
+        if !line.contains(PARALLEL) || body.starts_with("declare ") || body.starts_with(';') {
+            continue;
+        }
+        let Some(call) = callable(line, false).filter(|call| call.name == PARALLEL) else {
+            return Some(line);
+        };
+        let chunk = line[call.open + 1..call.close]
+            .split(',')
+            .next()
+            .and_then(|operand| operand.trim().strip_prefix("ptr "))
+            .map(str::trim);
+        match chunk.and_then(|chunk| defined.get(chunk)) {
+            Some(function) => work.push(*function),
+            None => return Some(line),
+        }
+    }
+    let mut seen = BTreeSet::new();
+    while let Some(function) = work.pop() {
+        if !seen.insert(function.name) {
+            continue;
+        }
+        for &line in &lines[function.header + 1..function.close] {
+            let body = line.trim_start();
+            if body.starts_with(';') {
+                continue;
+            }
+            if body.contains("invoke ") || body.contains("callbr ") {
+                return Some(line);
+            }
+            let Some(at) = body.find("call ") else {
+                continue;
+            };
+            if body[at..].contains(" asm ") {
+                return Some(line);
+            }
+            let Some(call) = callable(line, false) else {
+                return Some(line);
+            };
+            if call.name.starts_with("@llvm.") || NEVER_WAITS.contains(&call.name) {
+                continue;
+            }
+            if call.name == PARALLEL {
+                return Some(line);
+            }
+            match defined.get(call.name) {
+                Some(callee) => work.push(*callee),
+                // A pointer (`%name`) or a declared function.
+                None => return Some(line),
+            }
+        }
+    }
+    None
+}
+
+/// `definitions` for `with_thread_storage_noinline`, which also ends a function at a closing brace
+/// with a comment after it: a piece of the runtime's IR may start on that line (`}; PM08: ...`, the
+/// first line of src/runtime/integer.ll), and `definitions` would take that next function into the
+/// one before, so that its calls looked like calls of a declared function. (`with_preemption_checks`
+/// keeps `definitions`, so that the checks of TZ10 stay where they are.)
+fn runtime_definitions<'a>(lines: &[&'a str]) -> Vec<Definition<'a>> {
+    definitions_closed_by(lines, |line| {
+        line.strip_prefix('}').is_some_and(|rest| {
+            let rest = rest.trim();
+            rest.is_empty() || rest.starts_with(';')
+        })
+    })
+}
+
 /// TZ14: the `noinline` of `with_preemption_checks` alone, for a native program whose tzroutines
-/// are only the helpers of `Parallel.*`. It gets no check (TZ10 D1, S1), but a helper that waits in
-/// a callback (a nested `Parallel.*`, a `Channel`, `Routine.yield`, `Time.sleep`) may go on on
-/// another thread, and LLVM may keep the address that `@llvm.threadlocal.address` returned across
-/// the wait. Without such a function the IR is returned as it is.
+/// are only the helpers of `Parallel.*`. It gets no check (TZ10 D1, S1), and only a wait moves a
+/// helper to another thread: then LLVM may have kept the address that `@llvm.threadlocal.address`
+/// returned across the wait. A helper whose code cannot wait (`helpers_may_wait`) runs each chunk to
+/// its end on one thread, and the caller of a top-level `Parallel.*` is a thread's pseudo-G, which
+/// never leaves its thread: then, as without such a function, the IR is returned as it is.
 pub(crate) fn with_thread_storage_noinline(ir: String) -> String {
     let lines: Vec<&str> = ir.split_inclusive('\n').collect();
-    let thread_bound = thread_bound(&lines, &definitions(&lines));
-    if thread_bound.is_empty() {
+    let functions = runtime_definitions(&lines);
+    let thread_bound = thread_bound(&lines, &functions);
+    if thread_bound.is_empty() || !helpers_may_wait(&lines, &functions) {
         return ir;
     }
     let mut output = String::with_capacity(ir.len() + thread_bound.len() * " noinline".len());
@@ -934,13 +1055,16 @@ define internal i64 @tz.fn.M.leaf(i64 %arg0) nounwind {\nentry:\n  ret i64 %arg0
 
     #[test]
     fn thread_storage_stays_out_of_line_without_the_checks() {
-        // TZ14: the helpers of `Parallel.*` move between threads in a program that does not spawn,
-        // which gets no check: only the runtime's function that reads thread storage changes.
+        // TZ14: a helper of `Parallel.*` whose chunk may wait (here `@tz.fn.M.spin` yields) moves
+        // between threads in a program that does not spawn, which gets no check: only the runtime's
+        // function that reads thread storage changes.
         let ir = "define internal ptr @tz.cache(i64 %size) nounwind {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  ret ptr %t\n}\n\
 define internal ptr @tz.kept(i64 %size) nounwind noinline {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  ret ptr %t\n}\n\
 define internal i64 @tz.fn.M.spin(i64 %arg0) nounwind {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  br label %b0\nb0:\n  call void @tsuzuri_tz_yield()\n  br i1 true, label %b0, label %b1\nb1:\n  ret i64 %arg0\n}\n\
 define internal i64 @\"tz.fn.M.spin.cpu.avx2\"(i64 %arg0) nounwind {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  ret i64 %arg0\n}\n\
-@tls = internal thread_local global i64 0\ndeclare void @tsuzuri_tz_yield()\n";
+define internal void @tz.parallel.chunk.0(ptr %context, i64 %chunk) nounwind {\nentry:\n  %v = call i64 @tz.fn.M.spin(i64 %chunk)\n  ret void\n}\n\
+define internal i64 @tz.fn.M.run(i64 %arg0) nounwind {\nentry:\n  call i32 @tsuzuri_tz_parallel(ptr @tz.parallel.chunk.0, ptr null, i64 %arg0)\n  ret i64 %arg0\n}\n\
+@tls = internal thread_local global i64 0\ndeclare void @tsuzuri_tz_yield()\ndeclare i32 @tsuzuri_tz_parallel(ptr, ptr, i64)\n";
         let output = with_thread_storage_noinline(ir.to_owned());
         assert_eq!(
             output,
@@ -960,5 +1084,87 @@ define internal i64 @\"tz.fn.M.spin.cpu.avx2\"(i64 %arg0) nounwind {\nentry:\n  
         let plain = "define internal i64 @tz.fn.M.leaf(i64 %arg0) nounwind {\nentry:\n  ret i64 %arg0\n}\n\
 define internal void @tz.free(ptr %block) nounwind {\nentry:\n  ret void\n}\n";
         assert_eq!(with_thread_storage_noinline(plain.to_owned()), plain);
+    }
+
+    /// A program that does not spawn and calls `Parallel.*`: `@tz.fn.M.run` passes
+    /// `@tz.parallel.chunk.0` to the runtime, and `@tz.fn.M.nested` calls `Parallel.*` itself.
+    /// `{chunk}` is the chunk's code, `{operand}` the chunk that `@tz.fn.M.run` passes.
+    const PARALLEL_PROGRAM: &str = "define internal ptr @tz.cache(i64 %size) nounwind {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  ret ptr %t\n}\n\
+define internal i64 @tz.fn.M.grow(i64 %arg0) nounwind {\nentry:\n  %p = call ptr @tz.cache(i64 %arg0)\n  call void @llvm.memset.p0.i64(ptr %p, i8 0, i64 8, i1 false)\n  %q = tail call ptr @malloc(i64 16) nounwind\n  call void @free(ptr %q)\n  %d = call i32 @tz.digits(i64 %arg0)\n  ret i64 %arg0\n}\n\
+define internal i64 @tz.text(i64 %arg0) nounwind {\nentry:\n  ret i64 %arg0\n}; a piece of the runtime's IR\n\
+define internal i32 @tz.digits(i64 %value) nounwind {\nentry:\n  ret i32 1\n}\n\
+define internal void @tz.parallel.chunk.0(ptr %context, i64 %chunk) nounwind {\nentry:\n  %v = call i64 @tz.fn.M.grow(i64 %chunk)\n{chunk}  ret void\n}\n\
+define internal i64 @tz.fn.M.nested(i64 %arg0) nounwind {\nentry:\n  call i32 @tsuzuri_tz_parallel(ptr @tz.parallel.chunk.0, ptr null, i64 %arg0)\n  ret i64 %arg0\n}\n\
+define internal i64 @tz.fn.M.run(i64 %arg0) nounwind {\nentry:\n  %p = call ptr @tz.cache(i64 %arg0)\n  call i32 @tsuzuri_tz_parallel(ptr {operand}, ptr null, i64 %arg0)\n  ret i64 %arg0\n}\n\
+@tls = internal thread_local global i64 0\ndeclare i32 @tsuzuri_tz_parallel(ptr, ptr, i64)\ndeclare void @tsuzuri_tz_yield()\ndeclare ptr @malloc(i64)\ndeclare void @free(ptr)\n";
+
+    #[test]
+    fn helpers_that_cannot_wait_keep_the_ir_of_main() {
+        let program = |chunk: &str, operand: &str| {
+            PARALLEL_PROGRAM
+                .replace("{chunk}", chunk)
+                .replace("{operand}", operand)
+        };
+        let reason = |ir: &str| {
+            let lines: Vec<&str> = ir.split_inclusive('\n').collect();
+            helper_wait(&lines, &runtime_definitions(&lines)).map(|line| line.trim().to_owned())
+        };
+        // A chunk that allocates, fills, frees and calls a defined function after a closing brace
+        // with a comment: it runs to its end on one thread, and the caller of `Parallel.*` is a
+        // pseudo-G, so the IR stays as it is.
+        let pure = program("", "@tz.parallel.chunk.0");
+        assert_eq!(reason(&pure), None);
+        assert_eq!(with_thread_storage_noinline(pure.clone()), pure);
+        // Each of these may wait, or the analysis cannot tell: the function that reads thread
+        // storage becomes `noinline`.
+        let nested = "  %n = call i64 @tz.fn.M.nested(i64 %chunk)\n";
+        let indirect = "  %f = load ptr, ptr %context\n  call void %f(ptr %context)\n";
+        let assembly = "  call void asm sideeffect \"yield\", \"\"()\n";
+        let external = "  call void @tsuzuri_tz_yield()\n";
+        let invoke = "  invoke void @tz.text(i64 0) to label %a unwind label %b\n";
+        let stored = "  store ptr @tsuzuri_tz_parallel, ptr %context\n";
+        for (ir, line) in [
+            (
+                program(nested, "@tz.parallel.chunk.0"),
+                "call i32 @tsuzuri_tz_parallel(ptr @tz.parallel.chunk.0, ptr null, i64 %arg0)",
+            ),
+            (
+                program(indirect, "@tz.parallel.chunk.0"),
+                "call void %f(ptr %context)",
+            ),
+            (
+                program(assembly, "@tz.parallel.chunk.0"),
+                "call void asm sideeffect \"yield\", \"\"()",
+            ),
+            (
+                program(external, "@tz.parallel.chunk.0"),
+                "call void @tsuzuri_tz_yield()",
+            ),
+            (
+                program(invoke, "@tz.parallel.chunk.0"),
+                "invoke void @tz.text(i64 0) to label %a unwind label %b",
+            ),
+            (
+                program(stored, "@tz.parallel.chunk.0"),
+                "store ptr @tsuzuri_tz_parallel, ptr %context",
+            ),
+            (
+                program("", "%chunk"),
+                "call i32 @tsuzuri_tz_parallel(ptr %chunk, ptr null, i64 %arg0)",
+            ),
+            (
+                program("", "@tz.missing"),
+                "call i32 @tsuzuri_tz_parallel(ptr @tz.missing, ptr null, i64 %arg0)",
+            ),
+        ] {
+            assert_eq!(reason(&ir).as_deref(), Some(line), "{ir}");
+            assert_eq!(
+                with_thread_storage_noinline(ir.clone()),
+                ir.replace(
+                    "@tz.cache(i64 %size) nounwind {",
+                    "@tz.cache(i64 %size) nounwind noinline {"
+                )
+            );
+        }
     }
 }

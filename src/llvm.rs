@@ -1514,9 +1514,9 @@ fn emit_program(
     // TZ10: the tzroutines that a native program spawns check sysmon's requests to yield. A program
     // whose only tzroutines are the helpers of `Parallel.*` needs no check, since nothing waits for
     // them: its other threads hold no P. But a helper that waits in its callback (a nested
-    // `Parallel.*`) may go on on another thread, so the runtime's functions that read thread storage
-    // are `noinline` there too (TZ14). WebAssembly's JSPI tzroutines share one thread and are not
-    // preempted (TZ09).
+    // `Parallel.*`) may go on on another thread, so there the runtime's functions that read thread
+    // storage are `noinline` when the code that the helpers run may wait (TZ14); otherwise its IR
+    // stays as it is. WebAssembly's JSPI tzroutines share one thread and are not preempted (TZ09).
     let output = if wasm {
         output
     } else if spawn {

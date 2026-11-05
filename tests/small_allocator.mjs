@@ -293,6 +293,13 @@ fn grown i =
         total = total + values[k]
     total
 `);
+  // Its helpers may wait (the nested Parallel.init), so tz_small_realloc stays out of line (the header of heap-small.ll with
+  // noinline before its brace); a program whose helpers cannot wait keeps the header as it is (tests/allocator.rs).
+  const nestedIr = join(work, "nested.ll");
+  build(nested, ["--emit", "llvm", "--allocator", "small"], nestedIr);
+  const realloc = readFileSync(join(root, "src/runtime/heap-small.ll"), "utf8").split(/\r?\n/).find((line) => line.startsWith("define internal ptr @tz_small_realloc("));
+  const nestedRealloc = readFileSync(nestedIr, "utf8").split(/\r?\n/).filter((line) => line.startsWith("define internal ptr @tz_small_realloc("));
+  assert.deepEqual(nestedRealloc.map((line) => line.replace(' "probe-stack"="inline-asm"', "")), [realloc.replace(/ \{$/, " noinline {")], "nested: tz_small_realloc is noinline");
   const fixtures = {
     grow: { source: library, body: "    assert(tz_grow(100) == 5050); settled(); assert(tz_grow(0) == 0); settled(); assert(tz_grow(20000) == 200010000); settled();" },
     primitives: {
