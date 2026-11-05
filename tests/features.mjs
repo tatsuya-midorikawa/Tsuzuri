@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { casesPath as regexCasesPath, casesSource as regexCasesSource, expectedCases as regexCases } from "./regex-cases.mjs";
 import { cases as regexV8 } from "./regex-v8.mjs";
-import { expectedCases as unicodeCases } from "./unicode-cases.mjs";
+import { checkUcdData as checkUnicodeData, expectedCases as unicodeCases } from "./unicode-cases.mjs";
 import * as unicodeData from "./unicode-ucd.mjs";
 import { cases as unicodeV8 } from "./unicode-v8.mjs";
 import { cases as matrixCases, traps as matrixTraps, productEntry } from "./matrix-cases.mjs";
@@ -1679,7 +1679,10 @@ const suites = {
   // D09 Phase 2: the UCD conformance tests (tests/unicode-ucd.mjs) and V8 references from tests/unicode-cases.mjs, the
   // latter as committed in tests/unicode-v8.mjs (G38: recomputed and compared only by a Node with std's Unicode version).
   unicode: {
-    get cases() { return (this.computed ??= unicodeCases(unicodeData, unicodeV8)); },
+    get cases() {
+      checkUnicodeData();
+      return (this.computed ??= unicodeCases(unicodeData, unicodeV8));
+    },
     inspect(ir) {
       assert.match(ir, /^@tz\.unicode\.table\.17 = internal unnamed_addr constant/m);
       assert.equal(ir.match(/^define internal i64 @tz\.unicode\.entry\(/gm).length, 1);
