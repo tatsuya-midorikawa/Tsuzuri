@@ -125,9 +125,11 @@ try {
   assert.equal(ir, (execute(compiler, ["build", extendedProject, "--emit", "llvm", "-o", irPath]), readFileSync(irPath, "utf8")));
   writeFileSync(irPath, ir.replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc"));
   const extendedSources = [join(fixtures, "extended", "ext.c"), join(fixtures, "extended", "host.c"), "-I", join(fixtures, "extended"), "-I", root, "-lm"];
+  // The tzroutine runtime, when the IR calls it (Parallel, Mutex, DataChannel or a tzroutine).
+  const scheduler = /@tsuzuri_(tz|channel)_/.test(ir) ? ["src/runtime/tzroutine.c"] : [];
   for (const optimization of ["-O0", "-O3"]) {
     const tracked = join(root, `extended-ir${optimization}`);
-    execute(clang, [optimization, "-Wno-override-module", irPath, "src/runtime/task.c", ...extendedSources, "-pthread", "-o", tracked]);
+    execute(clang, [optimization, "-Wno-override-module", irPath, ...scheduler, ...extendedSources, "-pthread", "-o", tracked]);
     assert.equal(execute(tracked, []).stdout, "bindgen extended round trip ok\n");
     const object = join(root, `extended${optimization}.o`);
     execute(compiler, ["build", extendedProject, "--emit", "object", optimization, "-o", object]);

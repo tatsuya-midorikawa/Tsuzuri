@@ -154,9 +154,9 @@ fn drop_types_cannot_be_captured_by_function_values() {
 }
 
 #[test]
-fn drop_types_can_be_sent_to_tasks() {
+fn drop_types_can_be_sent_to_tzroutines() {
     accepts(&format!(
-        "{COUNTER}export def sent :: i64\nfn sent =\n    let r = Counter {{ id: 7 }}\n    Task.run (task {{ return r.id }})\n"
+        "{COUNTER}export def sent :: i64\nfn sent =\n    let r = Counter {{ id: 7 }}\n    tzroutine {{ let _id = r.id }}\n    0\n"
     ));
 }
 
@@ -181,7 +181,7 @@ fn specializes_drop_once_per_concrete_type() {
 #[test]
 fn programs_without_drop_have_no_user_drops() {
     let module = accepts(
-        "record Point { x: i64, label: string }\nunion Shape = Empty | Dot of Point\nunion Chain = End | Link of i64 * Chain\nexport def shapes :: i64\nfn shapes =\n    let shape = Dot (Point { x: 1, label: \"a\" })\n    let chain = Link (2, Link (3, End))\n    let total = Task.run (task { return 4 })\n    total + (match shape with | Dot point -> point.x | Empty -> 0) + (match chain with | Link (value, _) -> value | End -> 0)\n",
+        "record Point { x: i64, label: string }\nunion Shape = Empty | Dot of Point\nunion Chain = End | Link of i64 * Chain\nexport def shapes :: i64\nfn shapes =\n    let shape = Dot (Point { x: 1, label: \"a\" })\n    let chain = Link (2, Link (3, End))\n    let total = (Parallel.init 1 (\\_index -> 4))[0]\n    total + (match shape with | Dot point -> point.x | Empty -> 0) + (match chain with | Link (value, _) -> value | End -> 0)\n",
     );
     assert!(module.user_drops.is_empty());
     assert!(module.records.iter().all(|record| !record.user_drop));
@@ -336,7 +336,7 @@ fn fingerprint(source: &str) -> String {
 #[test]
 fn use_bindings_bind_drop_values_in_blocks_and_computations() {
     let module = accepts(&format!(
-        "{RESOURCE}{MAKE}export def scoped :: i64\nfn scoped =\n    use first = make 1\n    use second: Resource = make 2\n    first.id + second.id\nexport def braced :: i64\nfn braced = {{ use first = make 3; use _guard = make 4; first.id }}\nexport def computed :: i64\nfn computed =\n    let result = Maybe {{\n        use _held = make 5\n        let! value = Maybe.Some 10\n        return value + 1\n    }}\n    Maybe.default_value 0 result\nexport def bound :: i64\nfn bound =\n    let result = Maybe {{\n        use! resource = Maybe.Some (make 6)\n        return resource.id\n    }}\n    Maybe.default_value 0 result\nexport def spawned :: i64\nfn spawned =\n    let work = task {{\n        use! inner = task {{ return make 7 }}\n        return inner.id\n    }}\n    Task.run work\n"
+        "{RESOURCE}{MAKE}export def scoped :: i64\nfn scoped =\n    use first = make 1\n    use second: Resource = make 2\n    first.id + second.id\nexport def braced :: i64\nfn braced = {{ use first = make 3; use _guard = make 4; first.id }}\nexport def computed :: i64\nfn computed =\n    let result = Maybe {{\n        use _held = make 5\n        let! value = Maybe.Some 10\n        return value + 1\n    }}\n    Maybe.default_value 0 result\nexport def bound :: i64\nfn bound =\n    let result = Maybe {{\n        use! resource = Maybe.Some (make 6)\n        return resource.id\n    }}\n    Maybe.default_value 0 result\nexport def spawned :: i64\nfn spawned =\n    tzroutine {{\n        use inner = make 7\n        let _id = inner.id\n    }}\n    0\nexport def resulted :: i64\nfn resulted =\n    let result: Result<i64, string> = Result {{\n        use! resource = Result.Ok (make 8)\n        return resource.id\n    }}\n    Result.get result\n"
     ));
     assert_eq!(module.user_drops.len(), 1);
     assert!(fingerprint("use x = 1\nx").contains("using: true"));

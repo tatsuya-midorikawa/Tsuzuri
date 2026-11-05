@@ -509,8 +509,9 @@ fn captured i =
 
 export def tasked :: own i64 -> i64
 fn tasked i =
-    let result = Task.run (task { return text_option i })
-    text_option_length (ref result)
+    // The option comes back through the result array of Parallel.init, written by a worker.
+    let results = Parallel.init 1 (\_index -> text_option i)
+    text_option_length (ref results[0])
 
 // An option of a reference is the pointer itself on a native target, with the null pointer for
 // `None`, and a tag and a pointer on WebAssembly. A result does not depend on which.

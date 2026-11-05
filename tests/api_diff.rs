@@ -174,7 +174,7 @@ fn effective_pure_callback_obligations_reach_ordinary_generic_functions() {
             "f (Ticket { id: 1 })\n",
         ),
         (
-            "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = () }\ndef f :: own 'a -> i64 = \\_ -> { let k: unit -> i64 = \\() -> { let t = task { let value: Maybe<'a> = None; 0 }; Task.run t }; k () }\n",
+            "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = () }\ndef f :: own 'a -> i64 = \\_ -> { let k: unit -> i64 = \\() -> { let t = Owned.function (\\() -> { let value: Maybe<'a> = None; 0 }); Owned.call (ref t) () }; k () }\n",
             "f (Ticket { id: 1 })\n",
         ),
         (

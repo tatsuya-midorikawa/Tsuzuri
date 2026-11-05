@@ -412,9 +412,9 @@ let values = [1, 2, 3]
 $\"{values} {size (Tree.Node (Tree.Leaf, 1, Tree.Leaf))}\"
 ";
 
-/// The same program with an unused public function that locks a `Mutex`, whose runtime part (`sync.ll`) stands between the two
-/// runtime parts until the function is pruned.
-const TREE_WITH_LOCK: &str = "\
+/// The same program with an unused public function that sends on a `DataChannel`, whose runtime declarations stand between
+/// the two runtime parts until the function is pruned.
+const TREE_WITH_CHANNEL: &str = "\
 union Tree =
     | Leaf
     | Node of Tree * i64 * Tree
@@ -425,12 +425,13 @@ def rec size :: Tree -> i64 = \\tree ->
     | Tree.Node (left, _, right) -> size left + 1 + size right
 
 def bump :: i64 -> i64 = \\n ->
-    let total = Mutex.create 0i64
-    let _seen = Task.scope (ref total) 4 (shared -> index -> Mutex.with_lock shared (value -> {
-        deref value = deref value + index + n;
-        index
-    }))
-    Mutex.into_inner total
+    match DataChannel.bounded 1 with
+    | (sender, receiver) ->
+        let _sent = DataChannel.send (ref sender) n
+        Owned.drop sender
+        match DataChannel.recv (ref receiver) with
+        | Some value -> value
+        | None -> 0
 
 let values = [1, 2, 3]
 $\"{values} {size (Tree.Node (Tree.Leaf, 1, Tree.Leaf))}\"
@@ -447,14 +448,14 @@ fn the_trap_instrumentation_reads_runtime_parts_that_share_a_line() {
 
 #[test]
 fn an_unused_function_does_not_decide_whether_a_trap_info_build_still_works() {
-    // The lock stands between the two runtime parts, so the unpruned program (which `tsuzuri run` built before
+    // The channel stands between the two runtime parts, so the unpruned program (which `tsuzuri run` built before
     // pruning) has the line break that the pruned one lost with the function.
-    assert_eq!(
-        context_without_parameter(&unpruned(TREE_WITH_LOCK, true).ir),
-        BTreeSet::new()
-    );
-    let pruned = executable(TREE_WITH_LOCK, true).ir;
+    let whole = unpruned(TREE_WITH_CHANNEL, true).ir;
+    assert!(whole.contains("declare i32 @tsuzuri_channel_send(ptr, ptr)"));
+    assert_eq!(context_without_parameter(&whole), BTreeSet::new());
+    let pruned = executable(TREE_WITH_CHANNEL, true).ir;
     assert!(!defined(&pruned).contains("tz.fn.Main.bump"));
+    assert!(!pruned.contains("call i32 @tsuzuri_channel_send("));
     assert_eq!(context_without_parameter(&pruned), BTreeSet::new());
 }
 

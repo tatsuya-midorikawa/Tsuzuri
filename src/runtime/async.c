@@ -13,7 +13,7 @@
 #endif
 
 #if defined(_WIN32)
-// The task runtime of the same translation unit defines this macro too, to the same value.
+// Another part of the same translation unit may define this macro too, to the same value.
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif

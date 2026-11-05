@@ -1053,8 +1053,8 @@ fn function_edges(builder: &mut Builder<'_, '_>, budget: &mut usize) {
                         children.pop();
                     }
                 }
-                // The builtins that check into nodes of their own (G30): `Task.scope`,
-                // `Parallel.*` and the task runners are calls too.
+                // The builtins that check into nodes of their own (G30): `Routine.scope`,
+                // `Parallel.*` and the tzroutine starts are calls too.
                 TypedExprKind::Parallel(operation, arguments) => edges.push(CapturedEdge {
                     rel: "calls",
                     from: id.clone(),
@@ -1089,16 +1089,8 @@ fn function_edges(builder: &mut Builder<'_, '_>, budget: &mut usize) {
                         });
                     }
                 }
-                TypedExprKind::TaskRun(argument)
-                | TypedExprKind::RoutineGo(argument)
-                | TypedExprKind::TaskParallel(argument)
-                | TypedExprKind::TaskParallelResults(argument) => {
-                    let builtin = match &expression.kind {
-                        TypedExprKind::TaskRun(_) => crate::check::Builtin::TaskRun,
-                        TypedExprKind::RoutineGo(_) => crate::check::Builtin::RoutineGo,
-                        TypedExprKind::TaskParallel(_) => crate::check::Builtin::TaskParallel,
-                        _ => crate::check::Builtin::TaskParallelResults,
-                    };
+                TypedExprKind::RoutineGo(argument) => {
+                    let builtin = crate::check::Builtin::RoutineGo;
                     edges.push(CapturedEdge {
                         rel: "calls",
                         from: id.clone(),

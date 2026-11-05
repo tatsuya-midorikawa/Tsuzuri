@@ -439,8 +439,6 @@ mod simd;
 mod strings;
 #[path = "llvm_sync.rs"]
 mod sync;
-#[path = "llvm_task.rs"]
-mod task;
 #[path = "llvm_timer.rs"]
 mod timer;
 #[path = "llvm_wait.rs"]
@@ -1393,26 +1391,18 @@ fn emit_program(
     // The passes over the whole text run once, on the program that is kept: the text of a large
     // program has hundreds of thousands of lines, and the first pass of an exhausted budget is
     // thrown away.
-    // TZ11: in a native program that uses the tzroutine runtime, Parallel.* starts helper
-    // tzroutines without a spawn of its own: their frames need the probes, and a pool call inside a
-    // chunk the blocking wrapper, as in a program that spawns.
-    let spawning =
-        spawns(module) || (!wasm && uses_tzroutine(module) && scheduler_parallel(module));
+    // TZ11, TZ12: a native Parallel.* starts helper tzroutines without a spawn of its own: their
+    // frames need the probes, as in a program that spawns.
+    let spawning = spawns(module) || (!wasm && scheduler_parallel(module));
     let output = if spawning {
-        let mut boundaries = tzroutine_boundaries(module);
-        boundaries.extend(worker_callbacks(&output));
-        with_blocking_calls(with_tzroutine_scopes(output, &boundaries))
+        with_tzroutine_scopes(output, &tzroutine_boundaries(module))
     } else {
         output
     };
-    // After `with_blocking_calls`, so that a join announces its items inside the blocking call.
-    let output = if !wasm && output.contains("@tsuzuri_tz_") {
-        with_task_accounting(output, spawning)
-    } else {
-        output
-    };
+    // Windows probes a frame larger than a page with `__chkstk` already, and there LLVM reads the
+    // value of `probe-stack` as the name of the function to call instead.
     let output = if spawning {
-        with_stack_probes(output)
+        with_stack_probes(output, wasm || !crate::target::current_platform().windows())
     } else {
         output
     };
@@ -1443,34 +1433,12 @@ fn tzroutine_boundaries(module: &CheckedModule) -> BTreeSet<String> {
     boundaries
 }
 
-/// The functions that the task runtime runs on its pool workers (the tasks of `Task.parallel`, the
-/// children of `Task.scope`, the chunks of `Parallel.*`). A worker belongs to no boundary, so each of
-/// them waits, before it returns, for the tzroutines that it spawned (TZ02): the parallel call, and so
-/// the boundary around it, ends after them.
-fn worker_callbacks(ir: &str) -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    for callee in [
-        "@tsuzuri_task_parallel(ptr @",
-        "@tsuzuri_task_parallel_results(ptr @",
-        "@tz.mutex.parallel(ptr @",
-        "@tz.mutex.parallel_results(ptr @",
-    ] {
-        for (at, _) in ir.match_indices(callee) {
-            let name: String = ir[at + callee.len()..]
-                .chars()
-                .take_while(|c| !matches!(c, ',' | ')' | ' '))
-                .collect();
-            found.insert(name);
-        }
-    }
-    found
-}
-
 /// Makes every function of a program that spawns probe the pages of a frame larger than a page as
-/// it allocates the frame (TZ02). A frame can be larger than the 128 KiB guard of a tzroutine's
+/// it allocates the frame (TZ02). With `probe` false (Windows, whose code probes with `__chkstk`
+/// anyway) only the allocas move. A frame can be larger than the 128 KiB guard of a tzroutine's
 /// stack (the slots of the locals are outside `MAX_FRAME_BYTES`); probed, it faults in the guard,
 /// which `stack.c` reports, instead of jumping over it into another mapping.
-pub(crate) fn with_stack_probes(ir: String) -> String {
+pub(crate) fn with_stack_probes(ir: String, probe: bool) -> String {
     const PROBE: &str = " \"probe-stack\"=\"inline-asm\"";
     let mut output = String::with_capacity(ir.len() + ir.len() / 16);
     let mut lines = ir.split_inclusive('\n').peekable();
@@ -1484,7 +1452,9 @@ pub(crate) fn with_stack_probes(ir: String) -> String {
             continue;
         };
         output.push_str(&line[..at]);
-        output.push_str(PROBE);
+        if probe {
+            output.push_str(PROBE);
+        }
         output.push_str(&line[at..]);
         // The constant allocas of the entry block go to its top. One after a call would leave the
         // entry block when the call is inlined and become a dynamic alloca, which the probed
@@ -1660,210 +1630,6 @@ pub(crate) fn with_blocking_externs(
         output.push_str("declare i32 @tsuzuri_tz_callback_enter()\ndeclare void @tsuzuri_tz_callback_exit(i32)\n");
     }
     output
-}
-
-/// Makes a tzroutine give its P away while it waits in the task runtime (TZ02): each call that hands
-/// items to the pool and joins them is between `tsuzuri_tz_block_enter` and `_leave`, so the work
-/// that the join waits for (a pool worker's child tzroutine) runs even with one P.
-pub(crate) fn with_blocking_calls(ir: String) -> String {
-    // The runtime's own calls: the `tz.mutex.parallel*` wrappers of a program with a Mutex make them.
-    const CALLS: [&str; 2] = [
-        "call void @tsuzuri_task_parallel(",
-        "call i64 @tsuzuri_task_parallel_results(",
-    ];
-    let mut output = String::with_capacity(ir.len() + 256);
-    let mut wrapped = false;
-    for line in ir.split_inclusive('\n') {
-        if CALLS.iter().any(|call| line.contains(call)) {
-            wrapped = true;
-            output.push_str("  call void @tsuzuri_tz_block_enter()\n");
-            output.push_str(line);
-            output.push_str("  call void @tsuzuri_tz_block_leave()\n");
-        } else {
-            output.push_str(line);
-        }
-    }
-    if wrapped {
-        output.push_str(
-            "declare void @tsuzuri_tz_block_enter()\ndeclare void @tsuzuri_tz_block_leave()\n",
-        );
-    }
-    output
-}
-
-/// Tells the deadlock detector of the tzroutine runtime about the items of the task runtime, in a
-/// native program that uses the tzroutine runtime (TZ03): each call that hands items to the task
-/// runtime announces them (`tsuzuri_tz_parallel_begin` and `_end`, by the call's context), and the
-/// task runtime calls a guard of each worker callback instead of the callback, which marks its
-/// thread as running while it runs an item (`tsuzuri_tz_task_enter` and `_leave`). Without it, a
-/// `Channel` wait in one item could be judged a deadlock before the item that would wake it has
-/// started on another thread.
-///
-/// In a program with a failure domain, the guard of an item that runs under a trap frame (one whose
-/// call was made inside a domain) catches the item's trap (`tsuzuri_boundary_item` of
-/// src/runtime/trap.c, with the frame's owner), sets back what the trap skipped (in a spawning
-/// program the blocking depth and the spawn scope, then the mark of a `Mutex.with_lock`), ends the
-/// item, which drops the batches announced in it, and raises the trap again
-/// (`tsuzuri_boundary_resume`): the task runtime sees it as before, and the thread is as before the
-/// item.
-pub(crate) fn with_task_accounting(ir: String, spawning: bool) -> String {
-    // The runtime's own calls only: the `tz.mutex.parallel*` wrappers of a program with a Mutex make
-    // them, so announcing the wrapper's call too would count the batch twice.
-    const CALLS: [&str; 2] = [
-        "call void @tsuzuri_task_parallel(",
-        "call i64 @tsuzuri_task_parallel_results(",
-    ];
-    // The references that hand a callback to the task runtime, and whether it returns a failure.
-    const REFERENCES: [(&str, bool); 4] = [
-        ("@tsuzuri_task_parallel(ptr @", false),
-        ("@tsuzuri_task_parallel_results(ptr @", true),
-        ("@tz.mutex.parallel(ptr @", false),
-        ("@tz.mutex.parallel_results(ptr @", true),
-    ];
-    let callbacks = worker_callbacks(&ir);
-    let domain = ir.contains("@tsuzuri_domain_run(");
-    // TZ06: the locks of the tzroutine runtime that a trap left held are released.
-    let locks = ir.contains("@tsuzuri_tz_mutex32_lock(") || ir.contains("@tsuzuri_tz_rw_");
-    let mut results = BTreeSet::new();
-    let mut output = String::with_capacity(ir.len() + 256 + callbacks.len() * 1024);
-    let mut wrapped = false;
-    for line in ir.split_inclusive('\n') {
-        let mut line = std::borrow::Cow::Borrowed(line);
-        for (reference, result) in REFERENCES {
-            let Some(at) = line.find(reference) else {
-                continue;
-            };
-            let name_at = at + reference.len();
-            let name: String = line[name_at..]
-                .chars()
-                .take_while(|c| !matches!(c, ',' | ')' | ' '))
-                .collect();
-            if result {
-                results.insert(name.clone());
-            }
-            line.to_mut().insert_str(name_at + name.len(), ".guard");
-        }
-        let body = line.trim_start();
-        let call = CALLS
-            .iter()
-            .find_map(|call| body.find(call).map(|at| &body[at + call.len()..]));
-        if let Some(arguments) = call {
-            // `(ptr @callback, ptr %context, i64 <items>)`
-            let arguments: Vec<&str> = arguments
-                .split_once(')')
-                .map_or("", |(inside, _)| inside)
-                .split(", ")
-                .collect();
-            if let [_, context, items] = arguments[..] {
-                wrapped = true;
-                let _ = writeln!(
-                    output,
-                    "  call void @tsuzuri_tz_parallel_begin({context}, {items})"
-                );
-                output.push_str(&line);
-                let _ = writeln!(
-                    output,
-                    "  call void @tsuzuri_tz_parallel_end({context}, {items})"
-                );
-                continue;
-            }
-        }
-        output.push_str(&line);
-    }
-    for callback in &callbacks {
-        wrapped = true;
-        output.push_str(&item_guard(
-            callback,
-            results.contains(callback),
-            domain,
-            spawning,
-            locks,
-        ));
-    }
-    if wrapped {
-        output.push_str(
-            "declare void @tsuzuri_tz_parallel_begin(ptr, i64)\ndeclare void @tsuzuri_tz_parallel_end(ptr, i64)\ndeclare void @tsuzuri_tz_task_enter(ptr, ptr)\ndeclare void @tsuzuri_tz_task_leave(ptr, ptr)\n",
-        );
-    }
-    if domain && !callbacks.is_empty() {
-        output.push_str(
-            "declare ptr @tsuzuri_boundary_owner()\ndeclare i32 @tsuzuri_boundary_item(ptr, ptr, ptr, ptr, i64, ptr, ptr)\ndeclare void @tsuzuri_boundary_resume(ptr)\n",
-        );
-        if spawning {
-            output.push_str(
-                "declare i32 @tsuzuri_tz_block_depth()\ndeclare void @tsuzuri_tz_block_restore(i32)\ndeclare ptr @tsuzuri_tz_scope_current()\ndeclare void @tsuzuri_tz_scope_reset(ptr)\n",
-            );
-        }
-        if locks && !output.contains("declare i32 @tsuzuri_tz_held_depth()") {
-            output.push_str(
-                "declare i32 @tsuzuri_tz_held_depth()\ndeclare void @tsuzuri_tz_held_restore(i32)\n",
-            );
-        }
-    }
-    output
-}
-
-/// The guard that the task runtime calls instead of the worker callback `name` (see
-/// [`with_task_accounting`]). The state of the item, `{ i64, i32, i32 }`, is `tzr_item_frame` of
-/// src/runtime/tzroutine.c.
-fn item_guard(name: &str, result: bool, domain: bool, spawning: bool, locks: bool) -> String {
-    let ty = if result { "i32" } else { "void" };
-    let mut text = format!(
-        "define internal {ty} @{name}.guard(ptr %context, i64 %index) nounwind {{\nentry:\n  %item = alloca {{ i64, i32, i32 }}, align 8\n"
-    );
-    if result || domain {
-        text.push_str("  %failed = alloca i32, align 4\n");
-    }
-    if domain {
-        text.push_str(
-            "  %trap = alloca { i32, i32 }, align 4\n  store i32 0, ptr %failed, align 4\n",
-        );
-    }
-    text.push_str("  call void @tsuzuri_tz_task_enter(ptr %context, ptr %item)\n");
-    let call = if result {
-        format!(
-            "  %value = call i32 @{name}(ptr %context, i64 %index)\n  store i32 %value, ptr %failed, align 4\n"
-        )
-    } else {
-        format!("  call void @{name}(ptr %context, i64 %index)\n")
-    };
-    if domain {
-        let mut restore = String::new();
-        if spawning {
-            text.push_str(
-                "  %depth = call i32 @tsuzuri_tz_block_depth()\n  %scope = call ptr @tsuzuri_tz_scope_current()\n",
-            );
-            restore.push_str(
-                "  call void @tsuzuri_tz_block_restore(i32 %depth)\n  call void @tsuzuri_tz_scope_reset(ptr %scope)\n",
-            );
-        }
-        if locks {
-            text.push_str("  %held = call i32 @tsuzuri_tz_held_depth()\n");
-            restore.push_str("  call void @tsuzuri_tz_held_restore(i32 %held)\n");
-        }
-        let (run, run_result) = if result {
-            ("null".to_owned(), format!("@{name}"))
-        } else {
-            (format!("@{name}"), "null".to_owned())
-        };
-        let _ = write!(
-            text,
-            "  %owner = call ptr @tsuzuri_boundary_owner()\n  %framed = icmp ne ptr %owner, null\n  br i1 %framed, label %guarded, label %direct\n\
-             direct:\n{call}  br label %done\n\
-             guarded:\n  %trapped = call i32 @tsuzuri_boundary_item(ptr %owner, ptr {run}, ptr {run_result}, ptr %context, i64 %index, ptr %failed, ptr %trap)\n  %caught = icmp ne i32 %trapped, 0\n  br i1 %caught, label %raise, label %done\n\
-             raise:\n{restore}  call void @tsuzuri_tz_task_leave(ptr %context, ptr %item)\n  call void @tsuzuri_boundary_resume(ptr %trap)\n  unreachable\n\
-             done:\n"
-        );
-    } else {
-        text.push_str(&call);
-    }
-    text.push_str("  call void @tsuzuri_tz_task_leave(ptr %context, ptr %item)\n");
-    text.push_str(if result {
-        "  %failure = load i32, ptr %failed, align 4\n  ret i32 %failure\n}\n"
-    } else {
-        "  ret void\n}\n"
-    });
-    text
 }
 
 /// Emits the program once, up to the passes over its whole text. `exhausted` tells whether a worker
@@ -2423,59 +2189,52 @@ fn emit_program_in(
             let _ = writeln!(output, "declare {result} @{symbol}(ptr, i64)");
         }
     }
-    // A program that calls `Mutex.with_lock` starts parallel work only through wrappers that check
-    // that no lock is held, so the renaming happens before the runtime text is appended (F10).
+    // WebAssembly keeps the runtime of F10 for `Parallel`, `Mutex` and `DataChannel`: there a program
+    // that calls `Mutex.with_lock` starts parallel work only through a wrapper that checks that no
+    // lock is held, so the renaming happens before the runtime text is appended. A native program
+    // calls the tzroutine runtime for all three (TZ12): only its channels are declared here.
     let mutex = runtime_symbols.contains("tsuzuri_mutex_lock");
     let channel = runtime_symbols.prefix("tsuzuri_channel_");
-    let parallel = runtime_symbols.contains("tsuzuri_task_parallel")
-        || runtime_symbols.contains("tsuzuri_task_parallel_results");
+    let parallel = runtime_symbols.contains("tsuzuri_task_parallel");
     if mutex && parallel {
-        output = output
-            .replace(
-                "call void @tsuzuri_task_parallel(",
-                "call void @tz.mutex.parallel(",
-            )
-            .replace(
-                "call i64 @tsuzuri_task_parallel_results(",
-                "call i64 @tz.mutex.parallel_results(",
-            );
+        output = output.replace(
+            "call void @tsuzuri_task_parallel(",
+            "call void @tz.mutex.parallel(",
+        );
     }
     if parallel || mutex || channel {
         // The runtime text above may end without a newline.
         if (mutex || channel) && !output.ends_with('\n') {
             output.push('\n');
         }
-        // The native runtime, and the declarations that the driver and the test runner link it
-        // for, are the same for a program that only locks or only uses a channel.
         let sequential = wasm && !instrumentation.wasm_threads;
         if parallel && sequential {
             runtime_symbols.append(&mut output, include_str!("runtime/task-wasm.ll"));
-        } else if !sequential {
-            output.push_str(
-                "declare void @tsuzuri_task_parallel(ptr, ptr, i64)\ndeclare i64 @tsuzuri_task_parallel_results(ptr, ptr, i64)\n",
-            );
+        } else if parallel {
+            output.push_str("declare void @tsuzuri_task_parallel(ptr, ptr, i64)\n");
         }
-        if mutex || channel {
-            if sequential {
-                runtime_symbols.append(&mut output, include_str!("runtime/sync-wasm.ll"));
-                if channel {
-                    runtime_symbols.append(&mut output, include_str!("runtime/channel-wasm.ll"));
-                }
-            } else {
-                if mutex {
-                    output.push_str(
-                        "declare i32 @tsuzuri_mutex_lock(ptr)\ndeclare void @tsuzuri_mutex_unlock(ptr)\ndeclare i32 @tsuzuri_mutex_parallel_ok()\n",
-                    );
-                }
-                if channel {
-                    output.push_str(
-                        "declare i32 @tsuzuri_mutex_wait_ok()\ndeclare i32 @tsuzuri_channel_send(ptr, ptr)\ndeclare i32 @tsuzuri_channel_recv(ptr, ptr)\ndeclare void @tsuzuri_channel_clone_sender(ptr)\ndeclare i32 @tsuzuri_channel_close(ptr, i32)\n",
-                    );
-                }
+        if (mutex || channel) && sequential {
+            runtime_symbols.append(&mut output, include_str!("runtime/sync-wasm.ll"));
+            if channel {
+                runtime_symbols.append(&mut output, include_str!("runtime/channel-wasm.ll"));
             }
-            if mutex && parallel {
-                runtime_symbols.append(&mut output, include_str!("runtime/sync.ll"));
+        } else if mutex || channel {
+            if mutex {
+                output.push_str(
+                    "declare i32 @tsuzuri_mutex_lock(ptr)\ndeclare void @tsuzuri_mutex_unlock(ptr)\ndeclare i32 @tsuzuri_mutex_parallel_ok()\n",
+                );
             }
+            if channel && wasm {
+                output.push_str("declare i32 @tsuzuri_mutex_wait_ok()\n");
+            }
+            if channel {
+                output.push_str(
+                    "declare i32 @tsuzuri_channel_send(ptr, ptr)\ndeclare i32 @tsuzuri_channel_recv(ptr, ptr)\ndeclare void @tsuzuri_channel_clone_sender(ptr)\ndeclare i32 @tsuzuri_channel_close(ptr, i32)\n",
+                );
+            }
+        }
+        if mutex && parallel {
+            runtime_symbols.append(&mut output, include_str!("runtime/sync.ll"));
         }
     }
     if runtime_symbols.prefix("tz.debug.write") {
@@ -2988,7 +2747,7 @@ fn environment_type(function: &CheckedFunction, count: usize, module: &CheckedMo
 }
 
 fn immediate_capture(function: &CheckedFunction, count: usize, globals: &Globals) -> bool {
-    if function.is_task || count != 1 {
+    if function.is_once || count != 1 {
         return false;
     }
     let width = match function.signature.parameters[0] {
@@ -3154,7 +2913,7 @@ fn apply_attributes(globals: &Globals) -> &'static str {
 
 /// The clone and drop entries of the closure of `function` with `count` captures, `null` where there
 /// is nothing to call: a closure without captures owns no memory, an immediate capture is its own
-/// copy and owns none either, a task is never cloned, and a function that borrows owned captures is
+/// copy and owns none either, a tzroutine body is never cloned, and a function that borrows owned captures is
 /// not cloned either (B07). A closure with an environment and a `null` drop is therefore an
 /// immediate one, which `@tz.closure.clone` and `@tz.closure.drop` leave alone.
 fn closure_slots(
@@ -3166,7 +2925,7 @@ fn closure_slots(
     let name = function.qualified_name();
     if count == 0 || immediate {
         ("null".to_owned(), "null".to_owned())
-    } else if !function.is_task
+    } else if !function.is_once
         && !function.owned_captures
         && function.signature.parameters[..count]
             .iter()
@@ -3214,7 +2973,7 @@ fn closure_wrappers(
         let environment = environment_type(function, count, module);
         let immediate = immediate_capture(function, count, globals);
         if count != 0 && !immediate {
-            if !function.is_task
+            if !function.is_once
                 && !function.owned_captures
                 && function.signature.parameters[..count]
                     .iter()
@@ -3325,7 +3084,7 @@ fn closure_wrappers(
         );
         let mut env = "%env".to_owned();
         if !immediate
-            && !function.is_task
+            && !function.is_once
             && count != 0
             && function.signature.parameters[..count]
                 .iter()
@@ -3426,7 +3185,7 @@ fn closure_wrappers(
         } else {
             String::new()
         };
-        let borrow = if function.is_task { "" } else { ", i1 %borrow" };
+        let borrow = if function.is_once { "" } else { ", i1 %borrow" };
         output.push_str(&apply.auxiliary_with(
             &format!(
                 "{} @tz.apply.{name}.{count}({argument}ptr %env{borrow})",
@@ -3504,7 +3263,7 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        Type::Function(..) | Type::Task(_) => "%tz.closure".into(),
+        Type::Function(..) | Type::Once(_) => "%tz.closure".into(),
         Type::Dyn(_) => "%tz.dyn".into(),
         Type::Reference(..) if ty.slice_element().is_some() => "%tz.array".into(),
         Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => "ptr".into(),
@@ -3908,7 +3667,7 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         ),
         Type::Reference(value, false) => format!("ref[{}]", canonical_type(value, module)),
         Type::Reference(value, true) => format!("refmut[{}]", canonical_type(value, module)),
-        Type::Task(result) => format!("task[{}]", canonical_type(result, module)),
+        Type::Once(result) => format!("once[{}]", canonical_type(result, module)),
         Type::Shared(value, kind) => format!(
             "{}[{}]",
             match kind {
@@ -4290,7 +4049,7 @@ fn named_types(module: &CheckedModule, emitted: &[bool]) -> BTreeSet<Type> {
             Type::Array(ty)
             | Type::List(ty)
             | Type::Vec(ty)
-            | Type::Task(ty)
+            | Type::Once(ty)
             | Type::FixedArray(ty, _)
             | Type::Shared(ty, _)
             | Type::Reference(ty, _) => visit(ty, pending),
@@ -4534,7 +4293,7 @@ pub fn waits(module: &CheckedModule) -> bool {
 /// Whether the program uses the waits of the tzroutine runtime (TZ06): it waits (`waits`), or a
 /// function that it reaches uses a timer (TZ05) or a sync type of TZ06. Then `Mutex.with_lock` is
 /// the runtime's lock, which a tzroutine may hold while it waits; every other program keeps the
-/// thread's lock of the task runtime (TZ12 moves them all).
+/// lock of F10 on WebAssembly (natively every program uses the runtime's lock since TZ12).
 pub fn uses_tzroutine(module: &CheckedModule) -> bool {
     let reachable = reachable_functions(module, None, true);
     module.functions.iter().enumerate().any(|(id, function)| {
@@ -5206,8 +4965,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 .into_iter()
                 .all(|child| small(child, remaining))
         }
-        // A loop that waits on a `Channel` (TZ03) runs until a receive or a send says so: it has no
-        // trip count to unroll by.
+        // A loop that waits on a `Channel` (TZ03) or a `DataChannel` runs until a receive or a send says
+        // so: it has no trip count to unroll by.
         fn waits(expression: &TypedExpr, module: &CheckedModule) -> bool {
             let channel = match &expression.kind {
                 TypedExprKind::SelectWait(_) => true,
@@ -5218,7 +4977,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 TypedExprKind::Function(FunctionRef::User(id)) => {
                     let function = &module.functions[*id];
                     function.module == "$builtin"
-                        && ["Channel.", "SendOnly.", "ReceiveOnly."]
+                        && ["Channel.", "DataChannel.", "SendOnly.", "ReceiveOnly."]
                             .iter()
                             .any(|module| function.name.starts_with(module))
                 }
@@ -5372,7 +5131,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
 
     /// The callee of a call at the end of this function that the language guarantees to be a tail
     /// call (PM09 D1), or `None`. It is a full call of a function of the same direct-call group
-    /// (the cycle of a mutual recursion), by name; neither function has captures or is a task body or
+    /// (the cycle of a mutual recursion), by name; neither function has captures or is a tzroutine body or
     /// takes a value that may hold a borrow, since the callee must not reach this frame; both take the
     /// same parameters; and the result is, by its language type, a flag, a character, `unit` or a
     /// number of at most 64 bits (`escape::guaranteed_result`), which stays in a register on every
@@ -5408,8 +5167,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             && same_parameters
             && self.function.capture_count == 0
             && target.capture_count == 0
-            && !self.function.is_task
-            && !target.is_task
+            && !self.function.is_once
+            && !target.is_once
             && !dispatched
             && !own
                 .parameters
@@ -6043,20 +5802,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 self.interpolation(interpolation, &expression.ty)
             }
             TypedExprKind::Call(callee, arguments) => self.call(callee, arguments),
-            TypedExprKind::TaskRun(task) => {
-                let task = self.expression(task);
-                let (code, environment) = self.closure_parts(&task);
-                self.value(format!(
-                    "call {} {code}(ptr {environment})",
-                    self.ty(&expression.ty)
-                ))
-            }
             TypedExprKind::RoutineGo(task) => self.routine_go(task),
             TypedExprKind::SelectWait(wait) => self.select_wait(wait, &expression.ty),
-            TypedExprKind::TaskParallel(tasks) => self.parallel_tasks(tasks, &expression.ty),
-            TypedExprKind::TaskParallelResults(tasks) => {
-                self.parallel_result_tasks(tasks, &expression.ty)
-            }
             TypedExprKind::If {
                 condition,
                 then_branch,
@@ -6462,7 +6209,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     self.instruction(format!("call void @tz.rec.drop(ptr {value})"));
                 }
             }
-            Type::Function(..) | Type::Task(_) => {
+            Type::Function(..) | Type::Once(_) => {
                 self.instruction(format!("call void @tz.closure.drop(%tz.closure {value})"))
             }
             // A14: the vtable's drop slot drops the stored value and frees its data.
@@ -6603,7 +6350,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             Type::Vec(element) => self.clone_vector(element, value),
             Type::Shared(shared, kind) => self.clone_shared(shared, *kind, value),
-            Type::Task(_) => unreachable!("single-use tasks cannot be cloned"),
+            Type::Once(_) => unreachable!("run-once functions cannot be cloned"),
             Type::Handle(_) => unreachable!("extern handles cannot be cloned"),
             // A14 Phase 2: only a `Copy` dyn value has a clone slot.
             Type::Dyn(dyn_type) => {
@@ -7055,57 +6802,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         self.closure_descriptor(target.function, target.bound, &environment)
     }
 
-    fn parallel_tasks(&mut self, tasks: &TypedExpr, result: &Type) -> String {
-        let tasks = self.expression(tasks);
-        let source = self.value(format!("extractvalue %tz.array {tasks}, 0"));
-        let length = self.value(format!("extractvalue %tz.array {tasks}, 1"));
-        let Type::Array(element) = result else {
-            unreachable!()
-        };
-        let (array, target) = self.allocate_array(element, &length);
-        let ty = self.ty(element);
-        let callback = format!("@tz.task.item.{}", ty.trim_start_matches('%'));
-        if let Some(marks) = &mut self.globals.traps {
-            marks
-                .sources
-                .entry(callback.clone())
-                .or_insert((self.current_span, false));
-        }
-        self.intrinsics.insert(format!(
-            "define internal void {callback}(ptr %context, i64 %index) nounwind {{\n\
-             entry:\n\
-               %source = load ptr, ptr %context\n\
-               %target.slot = getelementptr inbounds {{ ptr, ptr }}, ptr %context, i32 0, i32 1\n\
-               %target = load ptr, ptr %target.slot\n\
-               %slot = getelementptr inbounds %tz.closure, ptr %source, i64 %index\n\
-               %task = load %tz.closure, ptr %slot\n\
-               %descriptor = extractvalue %tz.closure %task, 0\n\
-               %code = load ptr, ptr %descriptor\n\
-               %env = extractvalue %tz.closure %task, 1\n\
-               %result = call {ty} %code(ptr %env)\n\
-               %destination = getelementptr inbounds {ty}, ptr %target, i64 %index\n\
-               store {ty} %result, ptr %destination\n\
-               ret void\n\
-             }}\n"
-        ));
-        let context = self.fresh();
-        self.allocas
-            .push(format!("{context} = alloca {{ ptr, ptr }}, align 16"));
-        self.instruction(format!("store ptr {source}, ptr {context}"));
-        let slot = self.value(format!(
-            "getelementptr inbounds {{ ptr, ptr }}, ptr {context}, i32 0, i32 1"
-        ));
-        self.instruction(format!("store ptr {target}, ptr {slot}"));
-        self.instruction(format!(
-            "call void @tsuzuri_task_parallel(ptr {callback}, ptr {context}, i64 {length})"
-        ));
-        self.instruction(format!("call void @tz.free(ptr {source})"));
-        array
-    }
-
-    /// `tzroutine { body }` (TZ02): moves the captures into the closure of the lifted `Task<unit>`
+    /// `tzroutine { body }` (TZ02): moves the captures into the closure of the lifted run-once
     /// body and hands it to the runtime, which runs it once on a tzroutine and returns at once. The
-    /// task's adapter returns the `i8` of `unit` and frees the environment, and the runtime calls a
+    /// body's adapter returns the `i8` of `unit` and frees the environment, and the runtime calls a
     /// `void (ptr)`, so each site has a start function that forwards to its adapter.
     fn routine_go(&mut self, task: &TypedExpr) -> String {
         let closure = self.expression(task);

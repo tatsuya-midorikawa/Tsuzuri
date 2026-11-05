@@ -14,8 +14,7 @@ fn children(expression: &TypeExpr) -> Vec<&TypeExpr> {
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
         | TypeExprKind::ArrayView(inner)
-        | TypeExprKind::List(inner)
-        | TypeExprKind::Task(inner) => vec![inner],
+        | TypeExprKind::List(inner) => vec![inner],
         TypeExprKind::FixedArray(element, _) => vec![element],
         TypeExprKind::Tuple(elements) => elements.iter().collect(),
         TypeExprKind::Function(parameters, result) => parameters
@@ -108,7 +107,7 @@ fn labels(
                 ));
             }
             let ty = resolve_type(inner, module, names)?;
-            if !ty.carries_loans(&types) || matches!(ty, Type::Function(..) | Type::Task(_)) {
+            if !ty.carries_loans(&types) || matches!(ty, Type::Function(..) | Type::Once(_)) {
                 return Err(failure(
                     DiagnosticKind::RegionOnNonBorrow,
                     expression.span,

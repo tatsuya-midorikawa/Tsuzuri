@@ -187,9 +187,11 @@ fn fixed_arrays_copy_or_move_by_element() {
         "def f :: [string; 2] -> i64\nfn f v =\n    let moved = v\n    v[0].length + moved[1].length",
         "E1012",
     );
-    accepts("def f :: [string; 2] -> Task<i64>\nfn f v = task { return v[0].length }");
+    accepts(
+        "def f :: [string; 2] -> i64\nfn f v =\n    tzroutine { let _length = v[0].length }\n    0",
+    );
     rejects(
-        "def f :: [ref string; 1] -> Task<i64>\nfn f v = task { return v[0].length }",
+        "def f :: [ref string; 1] -> i64\nfn f v =\n    tzroutine { let _length = v[0].length }\n    0",
         "E1013",
     );
 }

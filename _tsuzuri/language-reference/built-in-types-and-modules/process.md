@@ -93,7 +93,7 @@ record Output { code: i32, signal: i32, stdout: [ubyte], stderr: [ubyte] }
 
 Windows のネイティブビルドは、OS API に到達すると `E2002` で失敗します。また、`/bin/echo` は POSIX 環境のコマンドであるため、Windows 環境では動作しません。
 
-子プロセスの起動はメインスレッド（エントリーポイント）で行います。並行 `Task` の中から直接呼び出すことはできません。
+子プロセスは、入口のスレッドのほか、`tzroutine { ... }` の本体からも `let!` で起動できます。子の終了を待つ間も、ほかの tzroutine は走り続けます（[OS を待つ呼び出し](../async-tasks-and-lazy/tzroutine.md#os-を待つ呼び出し)）。
 
 ## 他の言語との比較
 

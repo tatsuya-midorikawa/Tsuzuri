@@ -325,7 +325,7 @@ try {
     run(clang, ["-std=c11", ...flags, "-Wall", "-Wextra", "-Werror", "-DTRACKING",
       `${fixture}/host.c`, "-I", temporary,
       ...["control.tracked.o", "tracked_alloc.o", "c.o", "cpp.o", "control_reference.o"].map((name) => join(temporary, name)),
-      ...(optimized.includes("declare void @tsuzuri_task_parallel(") ? ["src/runtime/task.c", "-pthread"] : []), "-lm", "-o", tracked]);
+      ...(/@tsuzuri_tz_/.test(optimized) ? ["src/runtime/tzroutine.c", "-pthread"] : []), "-lm", "-o", tracked]);
     const tracking = JSON.parse(run(tracked, quick ? ["--quick"] : ["--scale", String(scale)]));
     assert.deepEqual(tracking.workloads.map((work) => [work.name, work.size]), result.workloads.map((work) => [work.name, work.size]));
     const records = inProcessRecords(context, "control", result.workloads,

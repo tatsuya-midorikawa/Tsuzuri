@@ -34,7 +34,8 @@ function project(name, source) {
 const depth = "def rec depth :: i64 -> i64\nfn rec depth n = if n == 0 then 0 else depth (n - 1) * 3 + n\n\n";
 const projects = {
   deep: project("deep", `${depth}let result = depth 100000000\nresult\n`),
-  worker: project("worker", `${depth}let results = Task.run (Task.parallel (new [Task<i64>](4, \\i -> task { depth (100000000 + i) })))\nresults[0]\n`),
+  // Four tzroutines, each on a stack of its own with a guard page (TZ02).
+  routine: project("routine", `${depth}for i in 0 ..< 4 do\n    tzroutine {\n        let _r = depth (100000000 + (i as i64))\n    }\n0\n`),
   shallow: project("shallow", `${depth}let result = depth 20\nresult\n`),
   hello: project("hello", "let value = 6 * 7\nvalue\n"),
   foreign: project("foreign", `${depth}extern "e14_crash" def crash :: i64 -> i64\n\ncrash (depth 4)\n`),
@@ -66,14 +67,14 @@ let cases = 0;
 
 try {
   for (const optimization of ["-O0", "-O3"]) {
-    // A deep recursion on the main thread and on a worker: the report, then abort.
-    for (const name of ["deep", "worker"]) {
+    // A deep recursion on the main thread and in tzroutines: the report, then abort.
+    for (const name of ["deep", "routine"]) {
       const program = join(root, `${name}${optimization}`);
       execute(compiler, ["build", projects[name], optimization, "-o", program]);
       const result = execute(program, [], false);
       assert.ok(aborted(result), `${name} ${optimization}: ${result.signal} ${result.status}`);
       assert.match(result.stderr, new RegExp(`^${report}\\n`), `${name} ${optimization}`);
-      // Every worker that overflows may write it before the first fault ends the process.
+      // Every tzroutine that overflows may write it before the first fault ends the process.
       if (name === "deep") assert.equal(result.stderr.split(report).length, 2, "the report is written once");
       cases++;
     }

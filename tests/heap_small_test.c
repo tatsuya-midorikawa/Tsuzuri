@@ -14,7 +14,38 @@
 #include <stdlib.h>
 #include <string.h>
 #if defined(_WIN32)
-#include "../src/runtime/task-windows.h"
+/* The two pthread calls that the threaded case uses, on Win32 (the task runtime's adapter did this
+ * until TZ12 removed that runtime). */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+typedef HANDLE pthread_t;
+struct test_start { void *(*run)(void *); void *context; };
+static DWORD WINAPI test_thread(LPVOID pointer) {
+    struct test_start start = *(struct test_start *)pointer;
+    free(pointer);
+    start.run(start.context);
+    return 0;
+}
+static int pthread_create(pthread_t *thread, const void *attributes, void *(*run)(void *), void *context) {
+    (void)attributes;
+    struct test_start *start = malloc(sizeof *start);
+    if (!start) return 1;
+    start->run = run;
+    start->context = context;
+    *thread = CreateThread(NULL, 0, test_thread, start, 0, NULL);
+    if (!*thread) {
+        free(start);
+        return 1;
+    }
+    return 0;
+}
+static int pthread_join(pthread_t thread, void **result) {
+    (void)result;
+    if (WaitForSingleObject(thread, INFINITE) != WAIT_OBJECT_0) return 1;
+    return CloseHandle(thread) ? 0 : 1;
+}
 #else
 #include <pthread.h>
 #endif

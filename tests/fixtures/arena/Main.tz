@@ -236,7 +236,9 @@ export def arena_task :: i64
 fn arena_task =
     let empty: Arena<i64> = Arena.empty()
     match Arena.insert 42 empty with
-    | (arena, handle) -> Task.run (task { return deref (Arena.at handle (ref arena)) })
+    | (arena, handle) ->
+        let work = Owned.function (\() -> deref (Arena.at handle (ref arena)))
+        Owned.call (ref work) ()
 
 def fill_sum :: own i64 -> own i64 -> i64
 fn fill_sum offset count =
@@ -252,7 +254,7 @@ fn fill_sum offset count =
 
 export def arena_parallel :: own i64 -> i64
 fn arena_parallel count =
-    let results = Task.run (Task.parallel (new [Task<i64>](4, \index -> task { return fill_sum index count })))
+    let results = Parallel.init 4 (\index -> fill_sum index count)
     Array.sum (ref results)
 
 export def arena_borrowed_values :: i64

@@ -9,7 +9,7 @@ import { expectedOutput, moduleFiles, writeProject } from "./build/generate.mjs"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const REAL_PROJECTS = Object.freeze(["examples/computations", "examples/control", "examples/currying", "examples/functional",
-  "examples/hello", "examples/io", "examples/point", "examples/polymorphism", "examples/tasks", "benchmarks/control", "benchmarks/computations"]);
+  "examples/hello", "examples/io", "examples/point", "examples/polymorphism", "benchmarks/control", "benchmarks/computations"]);
 export const VARIANTS = Object.freeze([
   ["check", "native", "none"], ["emit-llvm", "native", "O0"], ["build", "native", "O0"], ["build", "native", "O3"],
   ["build-wasm", "wasm32", "O0"], ["build-wasm", "wasm32", "O3"], ["build-warm", "native", "O0"],

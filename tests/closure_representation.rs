@@ -180,8 +180,9 @@ fn closure_values_are_a_descriptor_and_an_environment() {
 
 /// A descriptor keeps its adapter alive, which takes away LLVM's bonus for inlining the last call of a
 /// local function; so that a known closure still folds, native code inlines the adapter and the worker
-/// of a lambda into the call (PM02). Specialized workers, tasks, and ordinary functions are left to
-/// LLVM, and so is every function on WebAssembly, where the attribute made programs 30 to 50 % larger.
+/// of a lambda into the call (PM02). Specialized workers, tzroutine bodies, and ordinary functions are
+/// left to LLVM, and so is every function on WebAssembly, where the attribute made programs 30 to 50 %
+/// larger.
 /// A worker that several calls name is left to LLVM too (`a_lambda_that_several_calls_name_...`).
 #[test]
 fn native_adapters_and_lambda_workers_inline_into_known_calls() {
@@ -333,10 +334,10 @@ fn optional n =
     }
 }
 
-/// A task is never cloned, and a function that borrows owned captures is not cloned either:
-/// neither descriptor names a clone function, which does not exist.
+/// A tzroutine body is never cloned, and a function that borrows owned captures is not cloned
+/// either: neither descriptor names a clone function, which does not exist.
 #[test]
-fn tasks_and_owned_captures_have_no_clone_entry() {
+fn tzroutine_bodies_and_owned_captures_have_no_clone_entry() {
     let source = "extern def drop_log :: i64 -> unit
 record Resource { id: i64, name: string }
 instance Drop<Resource> { fn drop value = drop_log value.id }
@@ -345,8 +346,8 @@ export def owned :: i64 -> i64
 fn owned n =
     let held = make n
     let add = Owned.function (\\amount -> amount + held.id)
-    let waited = Task.run (task { return n + 1 })
-    Owned.call (ref add) 1 + waited
+    tzroutine { drop_log (n + 1) }
+    Owned.call (ref add) 1
 ";
     let module =
         analyze(source).unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
@@ -354,15 +355,15 @@ fn owned n =
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
         let (_, owned) = closures_built(&ir);
         assert!(owned > 0, "wasm: {wasm}");
-        assert!(!ir.contains("@tz.env.clone.$task."), "{ir}");
+        assert!(!ir.contains("@tz.env.clone.$once."), "{ir}");
         assert!(!ir.contains("@tz.env.clone.$lambda."), "{ir}");
         let mut seen = (false, false);
         for line in ir.lines().filter(|line| line.starts_with("@tz.desc.")) {
             let name = line["@tz.desc.".len()..].split(' ').next().unwrap();
-            if name.starts_with("$task.") && !name.ends_with(".0") {
+            if name.starts_with("$once.") && !name.ends_with(".0") {
                 seen.0 = true;
                 assert!(
-                    line.contains(", ptr null, ptr @tz.env.drop.$task."),
+                    line.contains(", ptr null, ptr @tz.env.drop.$once."),
                     "{line}"
                 );
             }

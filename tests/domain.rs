@@ -62,7 +62,7 @@ fn domain_rejects_each_rule_with_e1038() {
     let message = rejects(
         "let log = \\(text: string) -> Debug.print text\nlet c = Domain.run (\\() -> { log \"x\"; 1 })\n",
         "domain_capture_not_plain",
-        "captures 'log', which holds a function, 'dyn', or a task",
+        "captures 'log', which holds a function or 'dyn'",
     );
     assert!(message.ends_with("capture plain data or compute the value inside the closure"));
     // Rule 3: debug output, directly and through a function.

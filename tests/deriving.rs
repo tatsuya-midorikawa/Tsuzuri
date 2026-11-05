@@ -43,13 +43,13 @@ fn defaults_have_zero_argument_signatures() {
         "char",
         "utf8char",
         "[i64]",
-        "[|Task<i64>|]",
+        "[|Owned.Function<unit, i64>|]",
         "i64 * string",
     ] {
         accepts(&format!("def make :: {ty}\nfn make = Default.default()"));
     }
     accepts("let create: fn() -> [i64] = Default.default\nlet values = create()\nvalues.length");
-    for ty in ["ref i64", "Task<i64>", "i64 -> i64"] {
+    for ty in ["ref i64", "Owned.Function<unit, i64>", "i64 -> i64"] {
         let error = analyze(&format!("let value: {ty} = Default.default()\n()")).unwrap_err();
         assert_eq!(error.code, "E1005", "{ty}: {error:?}");
     }
@@ -68,7 +68,10 @@ fn comparisons_and_defaults_use_normal_instance_synthesis() {
     }
     for (source, code) in [
         ("record R { callback: i64 -> i64 } deriving (Eq)", "E1025"),
-        ("record R { work: Task<i64> } deriving (Default)", "E1025"),
+        (
+            "record R { work: Owned.Function<unit, i64> } deriving (Default)",
+            "E1025",
+        ),
         ("record R { value: i64 } deriving (Ord)", "E1025"),
         (
             "record R { value: i64 } deriving (Eq)\ninstance Eq<R> { fn eq _left _right = true; fn ne _left _right = false }",

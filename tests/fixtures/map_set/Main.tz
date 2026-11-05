@@ -86,7 +86,7 @@ fn first_representative =
 export def map_task_drop :: i64
 fn map_task_drop =
     let text = "owned capture"
-    let map = Map.singleton 1 (task { return text.length })
+    let map = Map.singleton 1 (Owned.function (\() -> text.length))
     let empty = Map.remove 1 map
     Map.length (ref empty)
 

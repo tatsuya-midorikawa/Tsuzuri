@@ -381,25 +381,25 @@ fn dyn_values_are_owned() {
         "def twice :: Copy<'a> => 'a -> i64\nfn twice _x = 0\ndef f :: dyn (Shape, Copy) -> i64\nfn f x = twice x",
     ));
     // A reusable function value cannot capture a dyn value without a clone slot.
-    let task = diagnostic(
-        "def f :: Task<i64> -> i64\nfn f t =\n    let g = \\k -> k\n    let h = \\k -> { let u = t; k }\n    h 1",
+    let owned = diagnostic(
+        "def f :: Owned.Function<unit, i64> -> i64\nfn f t =\n    let g = \\k -> k\n    let h = \\k -> { let u = t; k }\n    h 1",
     );
     let stored = diagnostic(&with_shape(
         "def f :: dyn Shape -> i64\nfn f s =\n    let h = \\k -> Shape.area (ref s) * k\n    h 1 + h 2",
     ));
-    assert_eq!(stored.code, task.code, "{}", stored.message);
+    assert_eq!(stored.code, owned.code, "{}", stored.message);
     accepts(&with_shape(
         "def f :: dyn (Shape, Copy) -> i64\nfn f s =\n    let h = \\k -> Shape.area (ref s) * k\n    h 1 + h 2",
     ));
-    // A task takes only a Send dyn value.
+    // A tzroutine takes only a Send dyn value.
     assert!(
         analyze(&with_shape(
-            "def f :: dyn Shape -> i64\nfn f s = Task.run (task { Shape.area (ref s) })"
+            "def f :: dyn Shape -> i64\nfn f s =\n    tzroutine { let _area = Shape.area (ref s) }\n    0"
         ))
         .is_err()
     );
     accepts(&with_shape(
-        "def f :: dyn (Shape, Send) -> i64\nfn f s = Task.run (task { Shape.area (ref s) })",
+        "def f :: dyn (Shape, Send) -> i64\nfn f s =\n    tzroutine { let _area = Shape.area (ref s) }\n    0",
     ));
 }
 

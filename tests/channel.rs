@@ -192,81 +192,39 @@ fn a_wait_inside_a_lock_waits_in_a_program_with_channels() {
 
 #[test]
 fn programs_without_a_channel_keep_their_ir() {
+    // Natively a Mutex, Parallel and a DataChannel use the tzroutine scheduler (TZ12), but not its
+    // channels, and no program marks a lock for them.
     for source in [
         "let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> deref value)\n",
-        "let jobs = new [Task<i64>](4, \\index -> task { return index * index })\nlet results = Task.run (Task.parallel jobs)\nArray.sum ref results\n",
+        "let results = Parallel.init 4 (\\index -> index * index)\nArray.sum ref results\n",
         "let pair: (DataChannel.Sender<i64> * DataChannel.Receiver<i64>) = DataChannel.bounded 1\n0\n",
     ] {
         let ir = llvm::emit(&accepts(source), llvm::Entry::Console).unwrap();
-        assert!(!ir.contains("tsuzuri_tz_"), "{source}\n{ir}");
+        assert!(!ir.contains("tsuzuri_tz_chan_"), "{source}\n{ir}");
         assert!(!ir.contains("tz.mutex.mark"), "{source}");
     }
 }
 
 #[test]
-fn announces_the_items_of_the_task_runtime() {
-    // A Channel program that hands items to the task runtime tells the deadlock detector.
-    let module = accepts(
-        "let ch: Channel<i64> = Channel.make 0\nlet a = Channel.share ch\nlet send = task {\n    Channel.send a 1\n    return 0i64\n}\nlet receive = task {\n    return match Channel.recv ch with\n        | Maybe.Some v -> v\n        | Maybe.None -> 0\n}\nlet results = Task.run (Task.parallel [send, receive])\nresults[1]\n",
-    );
-    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
-    let lines: Vec<&str> = ir.lines().collect();
-    let call = lines
-        .iter()
-        .position(|line| line.contains("call void @tsuzuri_task_parallel(ptr @"))
-        .expect("a parallel call");
-    assert!(lines[call - 1].contains("call void @tsuzuri_tz_parallel_begin(ptr %"));
-    assert!(lines[call + 1].contains("call void @tsuzuri_tz_parallel_end(ptr %"));
-    // The task runtime calls the callback's guard, which marks the item.
-    assert!(
-        lines[call].contains("(ptr @tz.task.item.") && lines[call].contains(".guard, ptr %"),
-        "{}",
-        lines[call]
-    );
-    assert!(ir.contains("call void @tsuzuri_tz_task_enter(ptr %context, ptr %item)"));
-    assert!(ir.contains("call void @tsuzuri_tz_task_leave(ptr %context, ptr %item)"));
-    // Without a failure domain no trap returns, and src/runtime/trap.c is not needed.
-    assert!(!ir.contains("@tsuzuri_boundary_item"));
-}
-
-#[test]
-fn an_item_that_traps_in_a_failure_domain_sets_its_thread_back() {
-    // In a program with a failure domain, the guard of an item catches its trap, ends the item and
-    // raises the trap again.
-    let module = accepts(
-        "let ch: Channel<i64> = Channel.make 1\nlet r = Domain.run (\\() -> 1)\nlet jobs = new [Task<i64>](2, \\index -> task { return index })\nlet results = Task.run (Task.parallel jobs)\nChannel.send ch results[1]\nmatch r with\n| Result.Ok v -> v\n| Result.Error _ -> 0\n",
-    );
-    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
-    let guard = ir
-        .split("\ndefine ")
-        .find(|function| function.contains(".guard(ptr %context, i64 %index)"))
-        .expect("a guard");
-    assert!(guard.contains("call i32 @tsuzuri_boundary_item(ptr %owner, ptr @tz.task.item."));
-    assert!(guard.contains("call void @tsuzuri_boundary_resume(ptr %trap)"));
-    assert_eq!(
-        guard
-            .matches("call void @tsuzuri_tz_task_leave(ptr %context, ptr %item)")
-            .count(),
-        2,
-        "{guard}"
-    );
-    // A batch announced inside the item, by any thread, and the item that announced it: before
-    // the guards, the trap left the worker's batch, or the worker counted as running, and the
-    // deadlock after the domain hung. Domain.run needs a POSIX build (Windows: E1038).
+fn parallel_work_that_traps_in_a_failure_domain_leaves_the_detector_working() {
+    // Inside Domain.run every chunk of Parallel runs on the calling thread (TZ12). A trap in a chunk,
+    // nested in another one or after a call of parallel work that ended, must leave nothing that
+    // holds off the detector: the deadlock after the domain is reported, not a hang. Domain.run
+    // needs a POSIX build (Windows: E1038).
     if !cfg!(unix) {
         return;
     }
     for (name, item) in [
-        ("nested-batches", "    return inner (n + index)\n"),
+        ("nested-batches", "inner (n + index)"),
         (
             "nested-items",
-            "    let base = fine (n + index)\n    let zero = n - n\n    return base / zero\n",
+            "{\n        let base = fine (n + index);\n        let zero = n - n;\n        base / zero\n    }",
         ),
     ] {
         let directory = project(
             name,
             &format!(
-                "def inner :: i64 -> i64\nfn inner n =\n    let jobs = new [Task<i64>](2, \\index -> task {{\n        let zero = n - n\n        return index / zero\n    }})\n    let results = Task.run (Task.parallel jobs)\n    results[0]\n\ndef fine :: i64 -> i64\nfn fine n =\n    let jobs = new [Task<i64>](2, \\index -> task {{ return n + index }})\n    let results = Task.run (Task.parallel jobs)\n    results[0]\n\ndef outer :: i64 -> i64\nfn outer n =\n    let jobs = new [Task<i64>](8, \\index -> task {{\n{item}    }})\n    let results = Task.run (Task.parallel jobs)\n    results[0]\n\nlet failed = match Domain.run (\\() -> outer 3) with\n    | Result.Ok _ -> 0\n    | Result.Error _ -> 1\nlet ch: Channel<i64> = Channel.make 0\nmatch Channel.recv ch with\n| Maybe.Some v -> v + failed\n| Maybe.None -> failed\n"
+                "def inner :: i64 -> i64\nfn inner n =\n    let results = Parallel.init 2 (\\index -> {{\n        let zero = n - n;\n        index / zero\n    }})\n    results[0]\n\ndef fine :: i64 -> i64\nfn fine n =\n    let results = Parallel.init 2 (\\index -> n + index)\n    results[0]\n\ndef outer :: i64 -> i64\nfn outer n =\n    let results = Parallel.init 8 (\\index -> {item})\n    results[0]\n\nlet failed = match Domain.run (\\() -> outer 3) with\n    | Result.Ok _ -> 0\n    | Result.Error _ -> 1\nlet ch: Channel<i64> = Channel.make 0\nmatch Channel.recv ch with\n| Maybe.Some v -> v + failed\n| Maybe.None -> failed\n"
             ),
         );
         let (status, stderr) = run_bounded(&directory);
@@ -515,12 +473,12 @@ fn run_bounded(directory: &Path) -> (std::process::ExitStatus, String) {
 }
 
 #[test]
-fn the_items_of_a_task_batch_are_announced_once() {
-    // With a Mutex the program calls the task runtime through a wrapper; announcing the wrapper's
-    // call as well kept the batch pending for ever, and these waits hung.
+fn the_children_of_a_scope_that_wait_for_ever_are_a_deadlock() {
+    // Two children of a Routine.scope wait on a channel that nobody sends on, in a program with a
+    // Mutex: the detector sees both children and the scope's wait, and reports them.
     let directory = project(
-        "announce-once",
-        "let lock = Mutex.create 0i64\nlet _x = Mutex.with_lock (ref lock) (\\value -> deref value)\nlet ch: Channel<i64> = Channel.make 0\nlet a = Channel.share ch\nlet b = Channel.share ch\nlet first = task {\n    return match Channel.recv a with\n        | Maybe.Some v -> v\n        | Maybe.None -> 0\n}\nlet second = task {\n    return match Channel.recv b with\n        | Maybe.Some v -> v\n        | Maybe.None -> 0\n}\nlet results = Task.run (Task.parallel [first, second])\nresults[0]\n",
+        "scope-deadlock",
+        "let lock = Mutex.create 0i64\nlet _x = Mutex.with_lock (ref lock) (\\value -> deref value)\nlet ch: Channel<i64> = Channel.make 0\nlet results = Routine.scope (ref ch) 2 (\\shared _index -> match Channel.recv shared with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0)\nresults[0]\n",
     );
     let (status, stderr) = run_bounded(&directory);
     assert!(!status.success());
@@ -534,12 +492,13 @@ fn the_items_of_a_task_batch_are_announced_once() {
 // Domain.run needs a POSIX build: Windows refuses it (E1038).
 #[cfg(unix)]
 #[test]
-fn a_failure_domain_drops_the_batches_that_a_trap_left() {
-    // A pool item traps inside Domain.run: its batch never ends. Without the domain's reset, the
-    // batch held off the verdict, and the deadlock after it hung.
+fn a_failure_domain_leaves_no_parallel_work_that_a_trap_left() {
+    // A chunk of Parallel traps inside Domain.run, where the chunks run on the calling thread
+    // (TZ12): the call never ends, and nothing that it left may hold off the verdict of the deadlock
+    // after it.
     let directory = project(
         "domain-batches",
-        "def explode :: i64 -> i64\nfn explode n =\n    let jobs = new [Task<i64>](2, \\index -> task {\n        let zero = n - n\n        return index / zero\n    })\n    let results = Task.run (Task.parallel jobs)\n    results[0]\n\nlet failed = match Domain.run (\\() -> explode 3) with\n    | Result.Ok _ -> 0\n    | Result.Error _ -> 1\nlet ch: Channel<i64> = Channel.make 0\nmatch Channel.recv ch with\n| Maybe.Some v -> v + failed\n| Maybe.None -> failed\n",
+        "def explode :: i64 -> i64\nfn explode n =\n    let results = Parallel.init 2 (\\index -> {\n        let zero = n - n;\n        index / zero\n    })\n    results[0]\n\nlet failed = match Domain.run (\\() -> explode 3) with\n    | Result.Ok _ -> 0\n    | Result.Error _ -> 1\nlet ch: Channel<i64> = Channel.make 0\nmatch Channel.recv ch with\n| Maybe.Some v -> v + failed\n| Maybe.None -> failed\n",
     );
     let (status, stderr) = run_bounded(&directory);
     assert!(!status.success());

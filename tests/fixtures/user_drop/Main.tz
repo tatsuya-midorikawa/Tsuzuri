@@ -58,10 +58,10 @@ private def resource :: own i64 -> Resource = \id -> Resource { id: id, name: "r
 
 private def take :: own Resource -> i64 = \value -> value.id
 
-private def job :: own i64 -> Task<i64>
+private def job :: own i64 -> i64
 fn job index =
     let owned = resource index
-    task { return owned.id }
+    owned.id
 
 private def rec chain_length :: ref Chain -> i64 = \links ->
     match links with
@@ -136,18 +136,18 @@ fn long_chain count =
 export def task_owned :: i64
 fn task_owned =
     let owned = resource 7
-    Task.run (task { return owned.id })
+    let work = Owned.function (\() -> owned.id)
+    Owned.call (ref work) ()
 
 export def task_unstarted :: i64
 fn task_unstarted =
     let owned = resource 8
-    let _pending = task { return owned.id }
+    let _pending = Owned.function (\() -> owned.id)
     0
 
 export def tasks_parallel :: i64
 fn tasks_parallel =
-    let jobs = new [Task<i64>](16, job)
-    let results = Task.run (Task.parallel jobs)
+    let results = Parallel.init 16 job
     Array.sum (ref results)
 
 export def drop_allocates :: i64
@@ -191,11 +191,11 @@ fn use_computation =
 
 export def use_task :: i64
 fn use_task =
-    let work = task {
-        use! inner = task { return resource 5 }
+    let work: Result<i64, string> = Result {
+        use! inner = Result.Ok (resource 5)
         return inner.id + 1
     }
-    Task.run work
+    Result.get work
 
 export def early_drop :: i64
 fn early_drop =
@@ -218,8 +218,8 @@ export def owned_task :: i64
 fn owned_task =
     let held = resource 8
     let length = Owned.function (\extra -> String.length (ref held.name) + extra)
-    let work = task { return Owned.call (ref length) 1 }
-    Task.run work
+    let work = Owned.function (\() -> Owned.call (ref length) 1)
+    Owned.call (ref work) ()
 
 export def owned_unused :: i64
 fn owned_unused =

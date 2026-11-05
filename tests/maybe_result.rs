@@ -102,7 +102,7 @@ fn shared_union_payloads_preserve_owners_and_input_lifetimes() {
         "let mut value = 42\nlet borrowed = Some (ref value)\nvalue = 1\n*(Maybe.get borrowed)",
         "let mut value = 42\nlet borrowed = Some (ref mut value)\n()",
         "record Stored { value: Maybe<ref mut i64> }",
-        "let value = 42\nlet borrowed = Some (ref value)\nlet work = task { return borrowed }\n()",
+        "let value = 42\nlet borrowed = Some (ref value)\ntzroutine { let _kept = borrowed }\n()",
         "def choose :: ref i64 -> ref i64 -> Maybe<ref i64>\nfn choose left right = Some left\nlet left = 20\nlet borrowed = { let right = 22; choose (ref left) (ref right) }\n*(Maybe.get borrowed)",
     ] {
         let error = analyze(source).expect_err(source);

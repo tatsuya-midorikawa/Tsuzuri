@@ -265,7 +265,8 @@ fn empty_deadlock =
     match DataChannel.bounded 1 with
     | (sender, receiver) -> run_empty sender receiver
 
-// A critical section never waits, so a channel operation inside one is refused on every schedule.
+// WebAssembly refuses a channel operation inside a critical section on every schedule; natively, where
+// the lock is the tzroutine's, the operation runs (TZ12).
 def locked_send :: own DataChannel.Sender<i64> -> own DataChannel.Receiver<i64> -> i64
 fn locked_send sender _receiver =
     let lock = Mutex.create 0i64

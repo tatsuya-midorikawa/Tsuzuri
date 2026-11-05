@@ -4,11 +4,11 @@ No GC: an owned value has one owner, a binding, and is freed when it leaves scop
 
 ## Copy and non-Copy
 - Copy: numbers, `bool`, `char`, `unit`, `ref T`, function values; records, tuples, `[T; N]`, non-recursive unions, `[T]` and `[|T|]` made of Copy parts only.
-- Not Copy: `string`, `Vec`, `Map`, `Set`, `Rc`, `Arc`, `Task`, `ref mut T`, recursive unions, `Drop` types, and whatever holds one.
+- Not Copy: `string`, `Vec`, `Map`, `Set`, `Rc`, `Arc`, `Channel`, `ref mut T`, recursive unions, `Drop` types, and whatever holds one.
 - Copying an array or list is O(n), unless the source is not read again (then it moves).
 
 ## Moves
-- `let b = a`, returning `a`, storing it (field, collection, `task`) and passing it to `own T` move a non-Copy `a`; a later use of `a` is E1012.
+- `let b = a`, returning `a`, storing it (field, collection, `tzroutine` capture) and passing it to `own T` move a non-Copy `a`; a later use of `a` is E1012.
 <!--if edition=2026-->
 - Edition 2026: a plain parameter `T` also moves. Use `ref T` to only read.
 <!--endif-->
@@ -16,7 +16,7 @@ No GC: an owned value has one owner, a binding, and is freed when it leaves scop
 - Edition 2027: a plain parameter of a heap type (`string`, array, `Vec`, record that needs freeing), a bare `'a` or a function borrows like `ref T`; numbers pass by value.
 <!--endif-->
 - A move in one `if`/`match` branch, or in a loop body of an outer value, makes the next use E1012.
-- `let t = r.title` moves one field; the Copy fields of `r` stay readable. A non-Copy element cannot move out of `xs[i]`: use `ref xs[i]`. `{ r with f = v }` consumes a non-Copy `r`. A lambda that names a non-Copy local moves it in (a later use is E1012); a `ref mut` borrow or a task cannot be captured (E1005).
+- `let t = r.title` moves one field; the Copy fields of `r` stay readable. A non-Copy element cannot move out of `xs[i]`: use `ref xs[i]`. `{ r with f = v }` consumes a non-Copy `r`. A lambda that names a non-Copy local moves it in (a later use is E1012); a `ref mut` borrow, an `Atomic` or a `Mutex` cannot be captured (E1005).
 - Fix E1012: borrow (`ref T`), copy (`clone_string s`, `Array.copy (ref xs)`), or move last.
 
 ## Borrows
@@ -64,7 +64,7 @@ def main :: unit -> i32 = \() ->
 ## Sharing and freeing
 - Drops run at scope end in reverse binding order, and on reassignment; not after a trap (no unwinding).
 - `instance Drop<T> { fn drop v = ... }` adds cleanup to your record or union; `Owned.drop x` drops now.
-- `Rc.share (ref rc)` adds an owner to an `Rc.new v`; `Rc.get (ref rc)` reads the value, which stays immutable unless it is an `Atomic` or `Mutex`. Across tasks use `Arc` (`Arc<Mutex<T>>`); `Rc` there is E1013.
+- `Rc.share (ref rc)` adds an owner to an `Rc.new v`; `Rc.get (ref rc)` reads the value, which stays immutable unless it is an `Atomic` or `Mutex`. Across tzroutines use `Arc` (`Arc<Mutex<T>>`); `Rc` there is E1013.
 - Graphs and cycles: an `Arena<T>` owns the values; Copy `Arena.Handle<T>` values point at them.
 
 ## Performance

@@ -89,13 +89,13 @@ fn views_borrow_their_owner_and_cannot_outlive_it() {
             "{source}\n{message}"
         );
     }
-    // A view is Copy and holds only a shared borrow, so a task cannot take it.
+    // A view is Copy and holds only a shared borrow, so a tzroutine cannot take it.
     let message = rejects(
-        &format!("{BASE}Task.run (task {{ return MatrixView.rows whole }})"),
+        &format!("{BASE}tzroutine {{\n    let _rows = MatrixView.rows whole\n}}\n0"),
         "E1013",
     );
     assert!(
-        message.starts_with("tasks require owned values"),
+        message.starts_with("values that move to another tzroutine or thread must be owned"),
         "{message}"
     );
 }
@@ -129,11 +129,11 @@ fn writable_views_hold_an_exclusive_borrow() {
         "{message}"
     );
     let message = rejects(
-        &format!("{prefix}Task.run (task {{ return MatrixView.write 0 0 9 (ref mut view) }})"),
+        &format!("{prefix}tzroutine {{\n    MatrixView.write 0 0 9 (ref mut view)\n}}\n0"),
         "E1013",
     );
     assert!(
-        message.starts_with("tasks require owned values"),
+        message.starts_with("values that move to another tzroutine or thread must be owned"),
         "{message}"
     );
 }

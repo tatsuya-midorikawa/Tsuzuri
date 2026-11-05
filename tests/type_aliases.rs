@@ -9,7 +9,7 @@ fn rejects(source: &str, code: &str) {
 fn alias_names_share_the_type_namespace() {
     for source in [
         "type i64 = i32",
-        "type Task = i64",
+        "type Vec = i64",
         "type _ = i64",
         "type Add = i64",
         "type Name = i64\ntype Name = i32",
@@ -21,6 +21,8 @@ fn alias_names_share_the_type_namespace() {
         rejects(source, "E1001");
     }
     rejects("type lower = i64", "E1024");
+    // `Task` names nothing since TZ12, so a program may define it.
+    analyze("type Task = i64\nlet x: Task = 1\nx").unwrap();
 }
 
 #[test]

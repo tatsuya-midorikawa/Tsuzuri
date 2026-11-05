@@ -573,7 +573,7 @@ pub(crate) fn build_key(
             // The fast backend never gets here: it refuses a macOS debug object that needs the C runtime.
             if options.emit == Emit::Object
                 && options.backend == crate::driver::Backend::Llvm
-                && ir.contains("@tsuzuri_task_parallel(")
+                && (ir.contains("@tsuzuri_tz_") || ir.contains("@tsuzuri_channel_"))
             {
                 tools.push(("TSUZURI_LLVM_LINK", "llvm-link"));
             }

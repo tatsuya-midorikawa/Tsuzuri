@@ -248,8 +248,8 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/runtime/closure.ll` | `@tz.closure.clone/drop` | `@tz.closure.` が現れる |
 | `src/runtime/numeric.c` → `numeric.ll` | f16/f128/decimal/i128 変換のソフトウェア実装、`tz_soft_op/cmp/cast/format` | `@tz_soft_` が現れる。**`numeric.ll` は手編集禁止。`python3 src/runtime/generate.py` で再生成** |
 | `src/runtime/console.ll` | `@tz.console.write`（putchar） | ネイティブのコンソール入口だけ |
-| `src/runtime/task.c` / `task-wasm.ll` | `tsuzuri_task_parallel`（pthread の bounded fork/join／WASM 逐次） | `@tsuzuri_task_parallel(` が現れる。native は driver が task.c をコンパイル |
-| `src/runtime/trap.c` | `--trap-mode return` の境界（`tsuzuri_boundary_run/item/resume`、thread ごとの setjmp frame）、`tsuzuri_trap_raise`、確保の追跡（`tsuzuri_tracked_malloc/free/realloc`） | `--trap-mode return` の native object。driver が trap.c をコンパイルし、`heap-native.ll` の確保名を `tsuzuri_tracked_*` に置き換える |
+| `src/runtime/tzroutine.c` / `task-wasm.ll` | ネイティブの tzroutine・`Parallel`（`tsuzuri_tz_parallel`）・`Mutex`・`DataChannel`（TZ12 で `task.c` を削除）／WASM の逐次の `tsuzuri_task_parallel` | IR に `@tsuzuri_tz_` か native の `@tsuzuri_channel_` が現れると driver が tzroutine.c を連結する／`@tsuzuri_task_parallel(` が現れる（WASM） |
+| `src/runtime/trap.c` | `--trap-mode return` の境界（`tsuzuri_boundary_run`、thread ごとの setjmp frame）、`tsuzuri_trap_raise`、確保の追跡（`tsuzuri_tracked_malloc/free/realloc`） | `--trap-mode return` の native object。driver が trap.c をコンパイルし、`heap-native.ll` の確保名を `tsuzuri_tracked_*` に置き換える |
 | `src/runtime/stack.c` | スタック溢れの signal handler（`sigaltstack`、`trap: stack overflow` を書いて `abort()`） | native の実行ファイルで、再帰するプログラム（`llvm::has_recursion`）だけ。`-g` でなければ driver が同じ clang 呼び出しに `-x c` で足す |
 | `src/runtime/wasm.ll` | 128-bit 乗除算・シフトの補助（`__multi3` は `noinline optnone` 必須） | WASM で driver が常に追加 |
 

@@ -76,7 +76,7 @@ fn slices_reject_escaping_loans_and_source_mutations() {
             "E1012",
         ),
         (
-            "let values = [1, 2]\nlet work = task { return ref values[..1] }\n()",
+            "let values = [1, 2]\nlet slices = Routine.scope (ref values) 1 (\\shared _index -> ref shared[..1])\n()",
             "E1013",
         ),
     ] {

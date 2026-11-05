@@ -31,7 +31,7 @@
 | 所有して返す配列や文字列 | 先頭引数の `tsuzuri_*_buffer *out`。戻り値は `void` |
 | スカラーフィールドだけのレコード | 入力は `const tz_record_* *`、結果は先頭の out ポインタ |
 
-`i128`、`f16`、`f128`、decimal、文字型、共用体、タプル、リスト、関数値、タスク、排他借用、戻り値としての借用は出せません。配列の要素として渡せるのは `i64`、`f64`、`ubyte` と、仕様が許す文字列です。固定長配列そのものは引数にできず、レコードで包みます。長さ 0 の配列フィールドも、ISO C に無いので拒否します。
+`i128`、`f16`、`f128`、decimal、文字型、共用体、タプル、リスト、関数値、排他借用、戻り値としての借用は出せません。配列の要素として渡せるのは `i64`、`f64`、`ubyte` と、仕様が許す文字列です。固定長配列そのものは引数にできず、レコードで包みます。長さ 0 の配列フィールドも、ISO C に無いので拒否します。
 
 `bool` と 8 / 16 bit 整数は、境界で 32 bit に正規化されます。レコードのフィールドも同様で、C コンパイラごとの構造体の詰め方には依存しません。C の構造体のフィールドは、宣言の順に並びます。コンパイラが値を小さくするために格納の順を変えること（[Record](../built-in-types-and-modules/record.md#メモリ上の大きさ)）は、境界で変換されるので、ホストからは見えません。生成される typedef 名は、モジュール名の長さと型引数で一意です。C の予約語になるフィールドには `tz_` が付き、それでも衝突すると `E1008` です。
 
@@ -368,7 +368,7 @@ int main() {
 4
 ```
 
-`--trap-mode return` で作ったライブラリとバインディングでは、トラップが例外になり、次の呼び出しは普通に動きます。`site` の値は `.trap.json` の ID です。`Mutex.with_lock` の中でトラップしたときは、境界がそのスレッドの持つロックを解放してから状態を返します。同じ呼び出しの別の子どもがそのロックを待っていても、グループは完了し、次の呼び出しは通常どおりロックを取れます（[Mutex](../built-in-types-and-modules/mutex.md#トラップとロック)）。`DataChannel` で待つタスクが互いを待つデッドロックも、呼び出しのトラップとして返り、境界がチャンネルのブロックを解放します。次の呼び出しは通常どおり動きます（[DataChannel](../built-in-types-and-modules/datachannel.md#トラップ)）。
+`--trap-mode return` で作ったライブラリとバインディングでは、トラップが例外になり、次の呼び出しは普通に動きます。`site` の値は `.trap.json` の ID です。`Mutex.with_lock` の中でトラップしたときは、境界がその呼び出しの取ったロックを解放してから状態を返すので、次の呼び出しは通常どおりロックを取れます（[Mutex](../built-in-types-and-modules/mutex.md#トラップとロック)）。呼び出しの中の `Parallel.*` は、補助の tzroutine を使わず、すべてのチャンクを呼んだスレッドで添字の順に走らせるので、チャンクのトラップもその呼び出しの状態として返ります（結果は同じで、並列にならない分だけ遅くなることがあります）。誰にも起こせない `DataChannel` の待ちも、呼び出しのトラップとして返ります。次の呼び出しは通常どおり動きます（[DataChannel](../built-in-types-and-modules/datachannel.md#トラップ)）。
 
 ```sh
 tsuzuri build quote --emit shared --trap-mode return -o libquote_trap.dylib
@@ -395,7 +395,7 @@ trap: integer division by zero (site 82)
 
 ## 言語間 LTO と bitcode
 
-`--emit object` をリンクした C のホストは、`tz_add` のような小さな関数も、呼び出しのまま持ちます。リンカーはオブジェクトの中身を見ないので、ホストのループへ inline できません。`--emit bitcode` は、プログラムと、それが使うランタイム（C で書かれたタスク、CPU の検出、標準入出力など）を 1 つにまとめた LLVM bitcode（ThinLTO の要約つき、拡張子 `.bc`）を出します。ホストを `-flto=thin` でビルドしてリンクすると、LLVM が `tz_add` をホストのループへ inline します。
+`--emit object` をリンクした C のホストは、`tz_add` のような小さな関数も、呼び出しのまま持ちます。リンカーはオブジェクトの中身を見ないので、ホストのループへ inline できません。`--emit bitcode` は、プログラムと、それが使うランタイム（C で書かれた tzroutine のスケジューラー、CPU の検出、標準入出力など）を 1 つにまとめた LLVM bitcode（ThinLTO の要約つき、拡張子 `.bc`）を出します。ホストを `-flto=thin` でビルドしてリンクすると、LLVM が `tz_add` をホストのループへ inline します。
 
 ```tsuzuri
 export def add :: i64 -> i64 -> i64
@@ -465,7 +465,7 @@ LLVM は、呼ぶ側の関数の target 属性が呼ばれる側の属性を含�
 
 `--emit object` のオプション（`-O`、`-g`、`--trap-info`、`--trap-mode return`、`--allocator host|small|counting`、`--cpu native`、`--target TRIPLE`）は、同じ意味で bitcode に通ります。リンク入力、`--strip`、`--profile-generate`・`--profile-use`、`--freestanding`、Windows の target は `E2000` です（[診断](option.md#組み合わせがエラーになる場合)）。ビルドキャッシュは使いません（`--no-cache` と同じ）。
 
-C ランタイムを使うプログラム（タスク、`Async`、標準入出力、OS API、`Net`、整数配列の `Array.sum` などの CPU カーネル、`--trap-mode return`）は、ランタイムを IR にして `llvm-link --internalize` で 1 つにまとめます。ランタイムだけが定義する公開の記号（`tsuzuri_async_post`）は、`--internalize` が内部にしないよう、IR に宣言と `@llvm.used` の一覧を足して残します。まとめた後に、それが外部の定義のままかを検査し、そうでなければ `E2002` です。`llvm-link` は、`TSUZURI_LLVM_LINK`、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します。Clang と同じ LLVM のものを使います。見つからないと `E2002` で、`TSUZURI_LLVM_LINK` を勧めます。ランタイムの要らないプログラム（`add` だけなど）には、要りません。配布物の `bin/` に `llvm-link` があるのは macOS だけです（[コンパイラの使い方](usage.md)）。
+C ランタイムを使うプログラム（tzroutine と `Parallel.*`・`Mutex`、`Async`、標準入出力、OS API、`Net`、整数配列の `Array.sum` などの CPU カーネル、`--trap-mode return`）は、ランタイムを IR にして `llvm-link --internalize` で 1 つにまとめます。ランタイムだけが定義する公開の記号（`tsuzuri_async_post`）は、`--internalize` が内部にしないよう、IR に宣言と `@llvm.used` の一覧を足して残します。まとめた後に、それが外部の定義のままかを検査し、そうでなければ `E2002` です。`llvm-link` は、`TSUZURI_LLVM_LINK`、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します。Clang と同じ LLVM のものを使います。見つからないと `E2002` で、`TSUZURI_LLVM_LINK` を勧めます。ランタイムの要らないプログラム（`add` だけなど）には、要りません。配布物の `bin/` に `llvm-link` があるのは macOS だけです（[コンパイラの使い方](usage.md)）。
 
 Clang が bitcode を書かないとき（`-x ir -flto=thin -c` の `-flto=thin` を落とすランチャーなど）は、出力の先頭が bitcode でないので `E2002` で止めます。配布物の `tsuzuri-clang` は `-flto` を同梱の LLVM Clang に渡します。
 
@@ -523,7 +523,7 @@ void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint
 
 `align` は 16 で、戻り値も 16 の倍数です。null や揃っていない戻り値は、その場で確保失敗のトラップになり、再試行はありません。各ブロックの先頭 16 バイトは要求サイズ用なので、`size` は要求より 16 大きく、17 以上です。Tsuzuri が使うポインタは、戻り値の 16 バイト先なので、`Atomic` と `Mutex` のセルも 16 バイト境界に置かれ、8 バイトの atomic 命令の整列を満たします。ホスト側へ返却された所有バッファは、通常どおり `tsuzuri_free` を呼び出して解放します。`tsuzuri_host_free` を直接呼び出すと、先頭の 16 バイト分のアライメント・ヘッダー情報がずれてしまうため呼び出さないでください。
 
-これらの 3 関数は、`Task.parallel` の並列ワーカーから複数のスレッドで同時に呼び出される可能性があります。Tsuzuri 側ではロックを取得しないため、ホスト側でスレッドセーフに実装してください。また、アロケータ関数の中から Tsuzuri の関数を再帰的に呼び出したり、`longjmp` や C++ の例外を送出して関数を抜けたりしてはいけません。
+これらの 3 関数は、tzroutine や `Parallel.*` を走らせる複数の OS スレッドから同時に呼び出される可能性があります。Tsuzuri 側ではロックを取得しないため、ホスト側でスレッドセーフに実装してください。また、アロケータ関数の中から Tsuzuri の関数を再帰的に呼び出したり、`longjmp` や C++ の例外を送出して関数を抜けたりしてはいけません。
 
 `--allocator counting` は system allocator を同じ 16 バイトヘッダーで包み、確保回数、解放回数、現在の要求バイト、その最大を数えます。`tsuzuri_alloc_stats` で読みます。
 
@@ -531,7 +531,7 @@ Tsuzuri のコードからは [Alloc](../built-in-types-and-modules/alloc.md) �
 
 `--allocator small` は、native の 64-bit のサイズ区分 allocator です（`--emit exe`、`object`、`llvm`、`header`、`shared`。WASM、`--trap-mode return`、`--freestanding` とは排他で、`E2000` です）。512 バイト以下を区分から、それより大きいブロックを C ライブラリの `malloc` から取ります。`tsuzuri_alloc` が返すバッファも同じなので、ホストへ返した所有バッファは、これまでどおり `tsuzuri_free` で解放し、C の `free` へは渡さないでください。区分の状態は、1 つのプログラムにリンクした Tsuzuri のオブジェクトで共有されます（macOS と Linux）。`--allocator` はオブジェクトごとに混ぜないでください。設計は [スタックとヒープ](../ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) にあります。
 
-`--freestanding` は、C ライブラリ無しの native object / LLVM IR / header です。`--allocator host` が必須で、参照してよい外部はホストの allocator、宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、タスク、`Mutex`、`DataChannel`、`Debug`、プログラム引数は `E2000` です。トラップは `llvm.trap` だけで、`--trap-info` や `--debug-output` は使えません。
+`--freestanding` は、C ライブラリ無しの native object / LLVM IR / header です。`--allocator host` が必須で、参照してよい外部はホストの allocator、宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、tzroutine とそのランタイムを使う `Parallel.*`・`Routine.scope`・`Mutex`・`DataChannel`、`Debug`、プログラム引数は `E2000` です。トラップは `llvm.trap` だけで、`--trap-info` や `--debug-output` は使えません。
 
 契約の詳細は [言語仕様のホスト提供の allocator](../../../docs/language.md#ホスト提供の-allocator) を見てください。
 
@@ -547,17 +547,17 @@ int32_t tsuzuri_async_post(int64_t operation, int64_t value);
 
 `Async.host` に渡す操作の `start` と `cancel` は、普通の `extern`（`tsuzuri_host_<モジュール>_<名前>`）としてホストが実装します。`tsuzuri_async_poll` は時計を `now` まで進めて計算を再開し、次に poll する時刻を返します。`-1` は計算が残っていないこと、`INT64_MAX` はホストの操作の完了だけを待っていることを表します。規則と C のホストの骨組みは、[Async 式](../async-tasks-and-lazy/async.md#ホストが駆動する実行asyncstart) にあります。
 
-`Async.block_on` に到達する実行ファイルと、macOS / Linux の共有ライブラリには、コンパイラが `src/runtime/async.c`（単調時計、条件変数による待ち、ほかのスレッドからの完了の列）を埋め込みます。`--emit llvm` の IR を自分でリンクするときは、このファイルも一緒にコンパイルします。POSIX では `-pthread` を付けます。Windows は Win32 の同期（SRWLOCK と条件変数）と `QueryPerformanceCounter` だけを使うので、追加のライブラリは要りません。対応するホストは Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 ですが、Windows でコンパイラがリンクするのは実行ファイル（と test / debug-test / bench）だけです。Windows の `--emit shared` は従来どおり `E2000`、runtime を埋め込む COFF の `--emit object` は task・CPU・IO と同じく非対応なので、DLL や静的ライブラリにするときは、LLVM IR を出して、このファイルと一緒に自分でリンクします。test / debug-test / bench も同じ対応範囲です。
+`Async.block_on` に到達する実行ファイルと、macOS / Linux の共有ライブラリには、コンパイラが `src/runtime/async.c`（単調時計、条件変数による待ち、ほかのスレッドからの完了の列）を埋め込みます。`--emit llvm` の IR を自分でリンクするときは、このファイルも一緒にコンパイルします。POSIX では `-pthread` を付けます。Windows は Win32 の同期（SRWLOCK と条件変数）と `QueryPerformanceCounter` だけを使うので、追加のライブラリは要りません。対応するホストは Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 ですが、Windows でコンパイラがリンクするのは実行ファイル（と test / debug-test / bench）だけです。Windows の `--emit shared` は従来どおり `E2000`、runtime を埋め込む COFF の `--emit object` は tzroutine・CPU・IO と同じく非対応なので、DLL や静的ライブラリにするときは、LLVM IR を出して、このファイルと一緒に自分でリンクします。test / debug-test / bench も同じ対応範囲です。
 
-- 実行器はスレッドごとに独立しています。`Task.parallel` の各ワーカーから `Async.block_on` を呼んでも、操作の完了は開始したスレッドへ届きます。`Async.start` を投入したスレッドから poll し、そのスレッドを計算の終了まで生存させます。
+- 実行器はスレッドごとに独立しています。複数のスレッドから `Async.block_on` を呼んでも、操作の完了は開始したスレッドへ届きます。`Async.start` を投入したスレッドから poll し、そのスレッドを計算の終了まで生存させます。
 - ほかのスレッドから操作を完了するときは、`tsuzuri_async_post` を使います。受理すると 1 を返して待機を起こし、未知・二重・完了済み・取り消し済みなら 0 です。`tsuzuri_async_complete` は、実行器を動かしているスレッド（コールバックの中を含む）から呼びます。mailbox の確保も選択した Tsuzuri allocator を通り、終了・取り消しで解放されます。
 - `--trap-mode return` とは組み合わせられません（`E2000`）。トラップした呼び出しのブロックを境界が解放しても、実行器の状態から届いてしまうからです。
 
 ## スレッドとホストの責任
 
-`Task.parallel` は、複数のネイティブスレッドから `extern` を同時に呼ぶことがあります。ホスト関数をスレッド安全にするか、並列タスクの中から呼ばないでください。WASM の現行の Task は、threads を付けない限り逐次です。
+tzroutine と `Parallel.*` のコールバック（`Routine.scope` の子を含む）は、複数のネイティブスレッドから `extern` を同時に呼ぶことがあります。ホスト関数をスレッド安全にするか、それらの中から呼ばないでください。WebAssembly の `Parallel.*` は、`--wasm-feature threads` を付けない限り逐次です。
 
-`extern type` の値は所有値なので、ある時点でそれを使えるタスクは 1 つです。[Arc](../built-in-types-and-modules/rc.md) で包んでも、ハンドル（またはハンドルを隠しうる Copy でない `dyn` 値や `Owned.Function`）を持つ値の `Arc` はタスクへ渡せず（`E1013`）、関数値にも捕捉できない（`E1005`）ので、同じハンドルを複数のタスクから同時に使うことはありません。
+`extern type` の値は所有値なので、ある時点でそれを使える tzroutine は 1 つです。[Arc](../built-in-types-and-modules/rc.md) で包んでも、ハンドル（またはハンドルを隠しうる Copy でない `dyn` 値や `Owned.Function`）を持つ値の `Arc` は tzroutine へ渡せず（`E1013`）、関数値にも捕捉できない（`E1005`）ので、同じハンドルを複数の tzroutine から同時に使うことはありません。
 
 export とコールバックは、利用者から共有して変更する大域的な状態を持ちません。[非同期計算の実行器](#非同期計算の実行器) の状態はスレッドごとに保持し、別スレッドの完了配送だけを runtime が同期します。ホストが渡したバッファを、呼び出しのあいだに別スレッドが書き換えるのは、契約違反です。
 

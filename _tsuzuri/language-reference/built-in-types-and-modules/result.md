@@ -10,7 +10,7 @@
 - `Result { let! ... return ... }` は、最初の `Error` で後続を呼びません。
 - `and!` は右辺も評価してから結合し、両方 `Error` なら左を残します。
 - `try ... with` は `Result` を作る別の式で、ビルダーの `let!` ではありません。
-- `Task.parallel_results` は、`Result` を返すタスク配列の最も小さい失敗インデックスを採用します。
+- 並列に走る仕事の失敗は、`Parallel.*` の結果の配列を入力の順に調べるか、最初の誤りで残りを止める `ErrGroup` で扱います。
 
 ## 基本の書き方
 
@@ -305,43 +305,56 @@ Arithmetic operation resulted in an overflow.
 > [!WARNING]
 > `Result` ブロックの中に書いた整数演算が、自動で `Error` になることはありません。オーバーフローを失敗値にしたい演算には、その式を `@checked` し、`try` で包みます。
 
-## Task.parallel_results
+## 並列処理の失敗
 
-`Task.parallel_results` は、`Task<Result<'a, 'e>>` の配列を消費して実行し、`Task<Result<['a], 'e>>` を返します。すべてのタスクが `Ok` なら、入力と同じ順の配列を `Ok` で包みます。空配列は `Ok []` で、タスク本体は実行しません。
+並列に走る仕事の失敗を `Result` で受け取る方法は 2 つあります。
 
-```tsuzuri run=42
-let jobs: [Task<Result<i64, string>>] = [task { Result.Ok 20 }, task { Result.Ok 22 }]
-match Task.run (Task.parallel_results jobs) with
-| Result.Ok values -> values[0] + values[1]
-| Result.Error _ -> -1
+- 全件を走らせて、入力の順に調べる: [Parallel](parallel.md) の `Parallel.init` などで `Result` の配列を作ります。結果の配列は入力の順なので、最も小さいインデックスの `Error` を決定的に選べます。失敗しても、残りの仕事は止まりません。
+- 最初の誤りで残りを止める: [ErrGroup](errgroup.md) は、仕事ごとに tzroutine を起動し、最初に終わった `Error` を返して、グループの `Context` を取り消します。
+
+```tsuzuri run=total%3D10%20first%20error%3D2
+def check :: i64 -> Result<i64, i64> = \index ->
+    if index >= 2 then Result.Error index else Result.Ok (index * 10)
+
+let results = Parallel.init 4 (\index -> check index)
+let mut total = 0i64
+let mut first_error = -1i64
+for result in results do
+    match result with
+    | Result.Ok value -> total = total + value
+    | Result.Error index -> if first_error < 0 then first_error = index
+$"total={total} first error={first_error}"
 ```
 
 実行結果:
 
 ```text
-42
+total=10 first error=2
 ```
 
-いずれかが `Error` なら、入力配列で最も小さいインデックスの `Error` を返します。完了順では選びません。そのインデックスより後で、まだワーカーへ渡していないタスクは開始しません。開始済みのタスクは完了まで待ちます。
+インデックス 2 と 3 の 2 つが `Error` で、選ばれるのは小さいほうの 2 です。
 
-```tsuzuri run=1
-let jobs: [Task<Result<i64, string>>] = [task { Result.Error "a" }, task { Result.Error "bb" }]
-match Task.run (Task.parallel_results jobs) with
-| Result.Ok _ -> 0
-| Result.Error error -> error.length
+```tsuzuri run=job%203%20failed
+let group: ErrGroup<string> = ErrGroup.create ()
+for i in 1 ..= 4 do
+    ErrGroup.go group (Owned.function (\() ->
+        if i == 3 then Result.Error $"job {i} failed" else Result.Ok ()))
+match ErrGroup.wait group with
+| Result.Ok _ -> "all ok"
+| Result.Error message -> message
 ```
 
 実行結果:
 
 ```text
-1
+job 3 failed
 ```
 
-`"bb"` の長さではなく、先頭の `"a"` の長さです。採用されなかったペイロードと、開始しなかったタスクの捕捉値は解放されます。
+`ErrGroup.wait` が返す誤りは、完了の時刻の順で最初のものです。複数の仕事が失敗するとき、入力のインデックスが最小のものとは限りません。成功した仕事の値も集めるときは、各関数が [Channel](channel.md) へ送るか、`Mutex` の中へ書きます。
 
-この契約はネイティブで確認しています。言語仕様では、既定の WebAssembly は逐次実行で、最初のエラー以降を開始しません。ネイティブと、スレッドを有効にした WebAssembly でも、選ばれるエラーは同じ最小インデックスです。トラップやメモリ不足は `Error` にならず、プロセスが失敗します。タスクそのものの説明は [Task 式](../async-tasks-and-lazy/task.md) を参照してください。
+`Parallel.*` は、既定の WebAssembly では逐次に実行し、結果は同じです。`ErrGroup` は tzroutine を起動するので、WebAssembly では `E2000` です。トラップやメモリ不足は `Error` にならず、プロセスが失敗します。
 
-`and!` はこの関数の代わりにはなりません。`and!` は 1 本の流れで右辺を順に評価するだけです。
+`and!` は並列実行ではありません。1 本の流れで右辺を順に評価するだけです。
 
 ## 所有権
 
@@ -356,7 +369,7 @@ match Task.run (Task.parallel_results jobs) with
 | 失敗ケース | `Error` | `Err` | `Error` |
 | 伝播 | `let!` と `Result { }` | `?` | `result { }` やコンピュテーション式 |
 | 例外 | `@checked` のオーバーフローだけ | `panic` とは別 | 例外と `Result` が併存しうる |
-| 並列の失敗 | 最小インデックスの `Error` | ライブラリによる | ライブラリによる |
+| 並列の失敗 | `Parallel.*` の結果を順に調べる、または `ErrGroup` | ライブラリによる | ライブラリによる |
 
 ## 注意点
 
@@ -365,7 +378,7 @@ match Task.run (Task.parallel_results jobs) with
 - エラー型の暗黙変換はありません。`string` と独自のレコードを同じブロックで混ぜられません。
 - `try` が捕捉するのは `OverflowException` だけです。範囲外アクセスなどはトラップのままです。
 - `For` は要素が Copy な配列（`[T]`）だけを受け付けます。非 Copy な要素を含む配列では `E1005` になります。
-- `Task.parallel_results` の要素は 1 回しか実行できません。同じタスクを配列に 2 回入れるとムーブエラーです。
+- `ErrGroup.wait` が返すのは最初に終わった `Error` で、入力のインデックスが最小のものとは限りません。
 
 ## まとめ
 
@@ -373,7 +386,7 @@ match Task.run (Task.parallel_results jobs) with
 - コンピュテーション式は最初の `Error` で継続を止め、`and!` は左の `Error` を優先します。
 - 借用版の変換は失敗型の Copy が必要です。`Maybe` との変換は明示的な関数です。
 - `try ... with` はオーバーフローを `Err` な値の `Error` にします。トラップは対象外です。
-- `Task.parallel_results` は、最も小さいインデックスの `Error` を決定的に返します。
+- 並列の失敗は、`Parallel.*` の結果を入力の順に調べれば最小のインデックスの `Error`、`ErrGroup` なら最初に終わった `Error` です。
 
 ## 関連項目
 
@@ -382,7 +395,8 @@ match Task.run (Task.parallel_results jobs) with
 - [try 式](../exception-handling/try-with-finally.md)
 - [例外処理](../exception-handling/exception-handling.md)
 - [コンピュテーション式](../computation-expressions/computation-expressions.md)
-- [Task 式](../async-tasks-and-lazy/task.md)
+- [Parallel](parallel.md)
+- [ErrGroup](errgroup.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [言語仕様の Maybe と Result](../../../docs/language.md#maybe-と-result)
 - [言語仕様の検査付き算術と例外](../../../docs/language.md#検査付き算術と例外)

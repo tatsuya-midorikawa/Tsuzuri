@@ -12,7 +12,7 @@ fn parses_implicit_computation_bodies() {
         "def answer :: Maybe<i64>\nfn answer =\n    let! value = Some 42\n    return value",
         "def answer :: Maybe<i64>\nfn answer = { do assert true; let! value = Some 42; return value }",
         "let! value = Some 42\nreturn value",
-        "task { let! value = task { return 42 }; return value }",
+        "Result { let! value = Ok 42; return value }",
         "Maybe { let! value = Some 42; return value }",
     ] {
         tsuzuri::parser::parse(source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
@@ -29,7 +29,7 @@ fn implicit_computation_binds_follow_source_types() {
         "let! line = IO.read_line ()\nlet! value = line\ndo! IO.write_line value",
         "let! value = IO.pure (Some \"owned\")\nlet! text = value\nreturn text",
         "def run :: IO<Maybe<i64>>\nfn run =\n    do! IO.pure ()\n    return! Some 42\nrun()",
-        "do! IO.pure ()\nreturn! task { return 42 }",
+        "do! IO.pure ()\nreturn! Some 42",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])
             .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
@@ -138,12 +138,12 @@ IO {
 }
 
 #[test]
-fn implicit_tasks_preserve_cold_values_and_foreign_short_circuiting() {
+fn implicit_computations_preserve_cold_values_and_foreign_short_circuiting() {
     for source in [
-        "def work :: Task<i64>\nfn work =\n    let! first = task { return 20 }\n    let! second = task { return 22 }\n    return first + second\nTask.run (work())",
-        "def work :: Task<Maybe<i64>>\nfn work =\n    let! option = task { return Some 20 }\n    let! first = option\n    let! second = task { return 22 }\n    return first + second\nMaybe.get (Task.run (work()))",
-        "let! first = IO.pure 20\nlet! second = task { return 22 }\ndo! IO.write_line (first + second)",
-        "def work :: Task<i64>\nfn work =\n    let mut sum = 0\n    for number in [20, 22] do\n        let! value = task { return number }\n        sum = sum + value\n    while false do do! task {}\n    return sum\nTask.run (work())",
+        "def work :: IO<i64>\nfn work =\n    let! first = IO.pure 20\n    let! second = IO.pure 22\n    return first + second\nwork()",
+        "def work :: IO<Maybe<i64>>\nfn work =\n    let! option = IO.pure (Some 20)\n    let! first = option\n    let! second = IO.pure 22\n    return first + second\nwork()",
+        "let! first = IO.pure 20\nlet! second = Some 22\ndo! IO.write_line (first + second)",
+        "def main :: unit -> i32 = \\() ->\n    let mut sum = 0\n    for number in [20, 22] do\n        let! value = IO.pure number\n        sum = sum + value\n    while false do do! IO.pure ()\n    do! IO.write_line (to_string sum)\n    0\n",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])
             .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
@@ -233,11 +233,11 @@ fn implicit_computations_reject_ambiguity_and_preserve_safety_limits() {
             "E1014",
         ),
         (
-            "def answer :: Maybe<i64>\nfn answer =\n    let work = task { return 22 }\n    let! first = Some 20\n    let! second = work\n    return first + second",
+            "def answer :: Maybe<i64>\nfn answer =\n    let work = Owned.function (\\() -> 22)\n    let! first = Some 20\n    let! second = Some (Owned.call (ref work) ())\n    return first + second",
             "E1005",
         ),
         (
-            "def work :: Task<i64>\nfn work =\n    let source = task { return 21 }\n    let! first = source\n    let! second = source\n    return first + second",
+            "def work :: Maybe<i64>\nfn work =\n    let source = Some \"21\"\n    let! first = source\n    let! second = source\n    return first.length + second.length",
             "E1012",
         ),
         (
@@ -248,7 +248,7 @@ fn implicit_computations_reject_ambiguity_and_preserve_safety_limits() {
         let error = analyze_modules(&[("Main.tz", source)]).unwrap_err();
         assert_eq!(error.code, code, "{source}\n{error:?}");
     }
-    for (result, binding) in [("Maybe<i64>", "Some 1"), ("Task<i64>", "task { return 1 }")] {
+    for (result, binding) in [("Maybe<i64>", "Some 1"), ("IO<i64>", "IO.pure 1")] {
         let source = format!(
             "def answer :: {result}\nfn answer =\n{}    return 42",
             format!("    let! _value = {binding}\n").repeat(128)
@@ -327,9 +327,6 @@ fn match_bang_uses_bind_and_normal_pattern_semantics() {
     assert_eq!(
         analyze_modules(&[("Main.tz", source)]).unwrap_err().code,
         "E1021"
-    );
-    assert!(
-        tsuzuri::analyze("task { match! task { return 1 } with | value -> return value }").is_err()
     );
 }
 
@@ -589,8 +586,8 @@ fn preserves_ordinary_bindings_shadowing_annotations_and_curried_results() {
          f 41",
     );
     accepts(
-        "let work = Identity { return task { return 42 } }
-         Task.run work",
+        "let work = Identity { return Owned.function (\\() -> 42) }
+         Owned.call (ref work) ()",
     );
     accepts(
         "let text = \"hello\"
@@ -635,7 +632,7 @@ fn translates_yield_combine_branches_loops_delay_and_run() {
 }
 
 #[test]
-fn supports_nested_builders_records_and_builtin_tasks() {
+fn supports_nested_builders_records_and_builtin_builders() {
     accepts(
         "let result = Choice {
              let! x = Choice { return 20 }
@@ -643,8 +640,8 @@ fn supports_nested_builders_records_and_builtin_tasks() {
          }
          result.value",
     );
-    accepts("Task.run task { let! n = task { return Identity { return 42 } }; return n }");
-    accepts("Identity { return Task.run task { return 42 } }");
+    accepts("Maybe.get (Maybe { let! n = Maybe { return Identity { return 42 } }; return n })");
+    accepts("Identity { return Maybe.get (Maybe { return 42 }) }");
     accepts(
         "record Empty {}
          record R { value: i64 }
@@ -685,7 +682,7 @@ fn preserves_owned_values_and_borrow_lifetimes() {
         "E1005",
     );
     rejects(
-        "let work = task { 42 }\nIdentity { let! x = 1; return Task.run work + x }",
+        "let work = Owned.function (\\() -> 42)\nIdentity { let! x = 1; return Owned.call (ref work) () + x }",
         "E1005",
     );
     rejects("Identity { let! x = 1; return &x }", "E1013");
@@ -820,7 +817,6 @@ fn implicit_bodies_do_not_relax_malformed_computation_syntax() {
         "while false {}",
         "Identity { return 1; return 2 }",
         "Identity { return! 1; let x = 2 }",
-        "task { yield 1 }",
         "Identity { let x = 1 let y = 2; return x + y }",
     ] {
         rejects(source, "E0002");
@@ -871,7 +867,7 @@ fn enforces_file_kinds_and_one_module_or_builder_per_stem() {
     ])
     .unwrap_err();
     assert_eq!(error.code, "E1018");
-    let error = analyze_modules(&[("Task.tc", IDENTITY)]).unwrap_err();
+    let error = analyze_modules(&[("Vec.tc", IDENTITY)]).unwrap_err();
     assert_eq!(error.code, "E1011");
 }
 

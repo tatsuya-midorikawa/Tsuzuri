@@ -64,7 +64,7 @@ GC に依存しないメモリ管理、所有権、ネイティブと WebAssembl
 - 借用で表せる構造には制限があります。排他スライス、排他借用フィールド、レコード内の複数 region は実装済みです。要素単位の排他借用と、region 間の outlives はありません。
 - Rust の `Copy` はビット単位の複製です。Tsuzuri では、Copy な配列や捕捉を持つ関数値の複製が、ヒープ確保や深いコピーを伴うことがあります。配列とリストの暗黙の複製は、`--warn implicit-copy` で見つけられます。
 - 固定長配列 `[T; N]` はヒープを確保しません。それでも、値の大きさの分はコピーされます。
-- Cargo、crates.io、非同期 I/O、低水準 API、開発ツールの選択肢では及びません。パッケージはローカル path だけで、`Task` は非同期 I/O の executor ではありません。
+- Cargo、crates.io、非同期 I/O、低水準 API、開発ツールの選択肢では及びません。パッケージはローカル path だけで、tzroutine が OS スレッドを止めずに待てる I/O はソケット（[Net](../built-in-types-and-modules/net.md)。TLS なし）に限られ、Tokio のような非同期 I/O の生態系はありません。
 
 関数の合成を中心に書きたい計算には、記法が合うことがあります。所有権を使う汎用アプリケーションを、豊富なライブラリと一緒に組むなら、現在の Rust の方が選べる構成は広いです。
 
@@ -74,7 +74,7 @@ GC に依存しないメモリ管理、所有権、ネイティブと WebAssembl
 | 合成構文 | `let!` とビルダー（`Maybe`、`Result`、`IO`） | `?` 演算子、マクロ、async/await |
 | 借用モデル | 複数 region、排他借用フィールド | 任意のライフタイム、要素単位の排他借用、outlives |
 | コピーの性質 | 配列などの Copy は要素複製コストを伴い得る | `Copy` は純粋なビット単位の複製（浅いコピー） |
-| パッケージ・非同期 | ローカル path のみ、`Task` は 1 回の計算（CPU 並列） | Cargo、crates.io、非同期ランタイム（Tokio 等） |
+| パッケージ・非同期 | ローカル path のみ、並行は tzroutine（M:N のスケジューラー）と `Parallel` | Cargo、crates.io、非同期ランタイム（Tokio 等） |
 
 ## C# と F# と比べる
 
@@ -90,9 +90,9 @@ C# と F# は、静的な型と .NET のライブラリでアプリケーショ�
 - .NET の標準ライブラリ、NuGet、GUI、Web、データベース、ネットワーク API を、そのままは使えません。標準の OS API は、ファイル、ディレクトリ、環境、時刻、乱数、プロセスに限られます。
 - 直列化は JSON（[Json](../built-in-types-and-modules/json.md)）と CBOR（[Cbor](../built-in-types-and-modules/cbor.md)）を `deriving (Encode, Decode)` で扱えますが、.NET の `System.Text.Json` のような多くの形式・属性・変換器の生態系はありません。文字列補間と、線形時間の正規表現 [Regex](../built-in-types-and-modules/regex.md) は使えます。
 - GC に任せられる共有データや循環構造は、所有権に沿って設計し直す必要があります。共有は [Rc と Arc](../built-in-types-and-modules/rc.md) で明示し、循環するグラフは [Arena](../built-in-types-and-modules/arena.md) とハンドルで表します。共有した値を書き換えるときは、[Atomic](../built-in-types-and-modules/atomic.md)（整数と `bool`）か [Mutex](../built-in-types-and-modules/mutex.md) に入れます。
-- C# の `async` / `await` と同じ構文ではありませんが、標準の [Async 式](../async-tasks-and-lazy/async.md) で協調的な中断、仮想時刻、ホストによる再開を扱えます。CPU の並列は `Task` と分担します。
+- C# の `async` / `await` と同じ構文ではありませんが、標準の [Async 式](../async-tasks-and-lazy/async.md) で協調的な中断、仮想時刻、ホストによる再開を扱えます。CPU の並列は `Parallel` と tzroutine と分担します。
 - 対話環境の [`tsuzuri repl`](../compiler/usage.md#repl) は、`dotnet fsi` と違って JIT を持たず、入力ごとにプログラムを作り直して Clang でコンパイルし、別プロセスで実行します。1 回の評価に Clang の起動を含む時間がかかり、値は持ち越さず、受け付けた `let` を毎回実行し直します。`;;` ではなく空行で複数行の入力を終え、`#r` のような外部参照の読み込みはありません。
-- 記法が F# に近い部分があっても、所有権の移動と、失敗の扱いが同じとは限りません。`Task` は非同期ではなく、一回実行の計算です。
+- 記法が F# に近い部分があっても、所有権の移動と、失敗の扱いが同じとは限りません。`tzroutine { }` は C# の `Task.Run` と違って値を返さず、結果は `Channel` などで受け渡します。
 
 C# には Native AOT があるため、ネイティブ出力だけを固有の優位にはしません。違いは、所有権と、ホストへ組み込む計算を中心に設計していることです。
 
@@ -101,7 +101,7 @@ C# には Native AOT があるため、ネイティブ出力だけを固有の�
 | 実行基盤 | LLVM 経由のネイティブ / 独立 WebAssembly | .NET ランタイム（CLR）/ Native AOT |
 | メモリ管理 | 所有権と借用（GC なし）。共有は `Rc` / `Arc`、循環は `Arena` | ガベージコレクション（GC） |
 | 関数型機能 | カリー化、パイプ、共用体、コンピュテーション式 | F# に同等の表現力あり、C# にもパターンマッチ等 |
-| 非同期・並行 | `Task`（1 回きりの計算、常駐スレッドプール） | `async` / `await`、非同期ワークフロー、Task |
+| 非同期・並行 | tzroutine（M:N のスケジューラー）、`Parallel`、`Channel`、`Async` | `async` / `await`、非同期ワークフロー、Task |
 | エコシステム | 標準 OS API は最小限（ファイル、環境、時刻等） | .NET の膨大な標準ライブラリ、NuGet、GUI / Web 基盤 |
 
 ## TypeScript と比べる

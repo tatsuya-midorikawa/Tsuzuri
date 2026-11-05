@@ -1,7 +1,7 @@
-// The WASM heap on real worker threads (tests/wasm_threads.mjs): every task allocates blocks of many
+// The WASM heap on real worker threads (tests/wasm_threads.mjs): every job allocates blocks of many
 // sizes (a Vec that grows by reallocation, strings, arrays of 4, 12, 75 and 625 elements), frees most
-// of them at once and returns one array, which the caller frees on another thread than the one that
-// allocated it. Every result is independent of the schedule.
+// of them at once and leaves one array in its slot, which the caller frees on another thread than the
+// one that allocated it. Every result is independent of the schedule.
 
 def block :: own i64 -> own i64 -> [i64]
 fn block seed count = new [i64](count, \n -> seed + n)
@@ -26,10 +26,12 @@ fn rec sum_rows rows row total =
     if row == rows.length then total
     else sum_rows rows (row + 1) (total + Array.sum (ref rows[row]))
 
-// `tasks` tasks of `rounds` rounds each; the total over all of them.
+// `jobs` jobs of `rounds` rounds each; the total over all of them. `Parallel.for_each_chunk 1` gives
+// each job a slot and a job of its own on the pool, and the job replaces the empty array of its slot.
 export def cross_free :: own i64 -> own i64 -> i64
-fn cross_free tasks rounds =
-    let results = Task.run (Task.parallel (new [Task<[i64]>](tasks, \index -> task { churn index rounds })))
+fn cross_free jobs rounds =
+    let mut results: [[i64]] = new [[i64]](jobs, \_index -> [])
+    Parallel.for_each_chunk 1 (\index slot -> Array.write 0 (churn index rounds) slot) (ref mut results)
     sum_rows (ref results) 0 0
 
 // More than the heap of 16 MiB holds: a trap that reports an allocation failure.

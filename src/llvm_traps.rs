@@ -559,7 +559,6 @@ pub(super) fn instrument_with(
             "@tsuzuri_test_count",
             "@tsuzuri_test_run",
             "@tsuzuri_task_parallel",
-            "@tsuzuri_task_parallel_results",
             "@tsuzuri_mutex_lock",
             "@tsuzuri_mutex_unlock",
             "@tsuzuri_mutex_parallel_ok",
@@ -577,7 +576,6 @@ pub(super) fn instrument_with(
         .filter(|name| {
             !external.contains(*name)
                 && !name.starts_with("@__")
-                && !name.starts_with("@tz.task.item.")
                 && !name.starts_with("@tz.parallel.chunk.")
                 && !name.starts_with("@tz.domain.thunk.")
                 // TZ02: the tzroutine runtime calls these as `void (*)(void *)`.
@@ -651,11 +649,7 @@ pub(super) fn instrument_with(
                     };
                     let _ = writeln!(output, "  call void @tz.trap.report(i32 {site})");
                 } else if managed.contains(call.name)
-                    || call.name.starts_with('%')
-                        && !matches!(
-                            function.as_str(),
-                            "@tsuzuri_task_parallel" | "@tsuzuri_task_parallel_results"
-                        )
+                    || call.name.starts_with('%') && function != "@tsuzuri_task_parallel"
                 {
                     let context = if inherited {
                         "%tz.context".into()

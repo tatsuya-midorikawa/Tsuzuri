@@ -165,6 +165,8 @@ define void @test_concat(i64 %left, i64 %right) {
   cli(["build", fixture, "--target", "wasm32", "--emit", "llvm", "-o", wasmRuntimeIr]);
   writeFileSync(wasmRuntimeIr, readFileSync(wasmRuntimeIr, "utf8") + runtimeBridges);
   const runtimeHarness = join(root, "tests/strings_runtime.c");
+  // The tzroutine runtime, when the IR calls it (Parallel, Mutex, DataChannel or a tzroutine).
+  const scheduler = /@tsuzuri_(tz|channel)_/.test(sourceIr) ? [join(root, "src/runtime/tzroutine.c")] : [];
 
   // Exercise the real length guards without attempting petabyte allocations.
   const maxLength = BigInt(Number.MAX_SAFE_INTEGER);
@@ -321,7 +323,7 @@ int main(void) { assert(tz_value() == 42); return 0; }
     const native = join(scratch, `strings-O${optimization}`);
     execute(clang, [
       "-std=c11", `-O${optimization}`, "-Wno-override-module", host, ir,
-      join(root, "src/runtime/task.c"), "-pthread", "-lm", "-o", native,
+      ...scheduler, "-pthread", "-lm", "-o", native,
     ]);
     execute(native, []);
     for (const [index, [name, args]] of traps.entries()) {
@@ -379,7 +381,7 @@ int main(void) { assert(tz_value() == 42); return 0; }
     const nativeRuntime = join(scratch, `runtime-O${optimization}`);
     execute(clang, [
       "-std=c11", `-O${optimization}`, "-Wno-override-module", runtimeHarness, nativeRuntimeIr,
-      join(root, "src/runtime/task.c"), "-pthread", "-lm", "-o", nativeRuntime,
+      ...scheduler, "-pthread", "-lm", "-o", nativeRuntime,
     ]);
     execute(nativeRuntime, []);
     for (let index = 0; index < 6; ++index) {

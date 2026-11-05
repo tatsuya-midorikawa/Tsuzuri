@@ -107,7 +107,7 @@ flowchart TD
 | SIMD | `-O3` の自動ベクトル化に加え、128-bit と 256-bit の明示的な SIMD 型があります。既定の `--cpu generic` は、そのアーキテクチャの基準命令です。 |
 | `--cpu native` | ビルド機の命令セットに合わせます。古い CPU へはそのバイナリを配布できません。 |
 | 実行時の命令選択 | 同梱の整数配列の和、最小、最大だけが、実行時に命令セットを選びます。選べない環境は基準実装です。利用者の関数が版を持つのが `@cpu` です。 |
-| 複数コア | `Task.parallel` が明示的な並列です。ネイティブは常駐プール、既定の WebAssembly は逐次です。自動並列化はありません。コンパイラ自身がフロントエンドで使うスレッドは別で、`TSUZURI_THREADS` が上限です（[コンパイラのスレッド数](../compiler/option.md#コンパイラのスレッド数)）。 |
+| 複数コア | `Parallel.*`・`Routine.scope`・`tzroutine { }` が明示的な並列です。ネイティブは tzroutine の M:N のスケジューラー（P の数は `TSUZURI_MAXPROCS`）の上で走り、既定の WebAssembly の `Parallel.*` は逐次です。自動並列化はありません。コンパイラ自身がフロントエンドで使うスレッドは別で、`TSUZURI_THREADS` が上限です（[コンパイラのスレッド数](../compiler/option.md#コンパイラのスレッド数)）。 |
 | GPU | 厳密な `i32` と `i32u` の WGSL 生成、厳密な `i32`・`i32u`・`i64`・`i64u`・`f32` の SPIR-V 生成、名前で選ぶ緩い `f32`・`f16` の WGSL 生成と緩い `f32` の SPIR-V 生成（`Gpu.map_relaxed`・`--emit wgsl-relaxed`・`--emit spirv-relaxed`）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行（native は wgpu-native を実行時に読み込み、WebAssembly は `--wasm-feature webgpu`）、`Gpu.request Gpu.Vulkan` による Vulkan 上の実行（native だけ。厳密な `f32` は、デバイスが float controls を報告して適合プローブを通るときだけ）、呼び出しごとに測ったコストで CPU 参照と Vulkan を選ぶ `Gpu.Auto`、Node.js の WebGPU ホスト試作までです。実行できないときは `Unavailable` で、CPU への切り替えはプログラムが書きます。`Gpu.Auto` だけが、バックエンドを呼び出しごとに選びます。 |
 | WebAssembly | 既定は SIMD なし、threads なし、OS API の import なしです。それぞれ明示したときだけ有効になります。 |
 
@@ -160,7 +160,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | 整数の範囲証明と `nsw`／`nuw` の旗 | オプトインで実装済み（既定は `off`） | PR02。`TSUZURI_RANGE_FLAGS=off\|proven\|audit`。ループの形と区間から証明できた整数の `+ - *` だけ。`let mut`・呼び出しの結果・128-bit は対象外。旗が変えた assembly は、Matrix と `String.split`／`String.join` の関数ごとに 1〜8 命令、utf の wasm32 `-O3`（7 bytes 増）、旗の候補を集めた `range_flags` の arm64 `-O1`（24 行。命令数は同じ）だけで、速度の向上は主張しない（[整数の範囲証明の旗](../compiler/option.md#整数の範囲証明の旗)） |
 | 内部の文字列表現（コンパクト文字列） | オプトインで実装済み（既定は `utf16`） | PM03。`TSUZURI_STRINGS=utf16\|compact`。`compact` は全単位が 0xFF 以下の `string` を 1 単位 1 byte（Latin-1）で保存し、ASCII・Latin-1 の確保量を約半分にする。値・順序・hash・host との ABI（常に UTF-16）は変えない。runtime の IR（31〜49%）・小さな WebAssembly（hello で約 17%）・ビルド時間（約 23%）が増え、host へ短い文字列を返す呼び出しが遅くなるので、既定は `utf16` のまま（[コンパクト文字列の旗](../compiler/option.md#コンパクト文字列の旗)） |
 | 型クラスの単相化、deriving、限定的な `dyn`、ランク 1 の HKT | 実装済み | A06、A07、A14、A10。標準の Functor 導入は対象外 |
-| `Maybe` / `Result`、コンピュテーション式、`task` | 実装済み | B01、B02、B05、B06。非同期 I/O ではない |
+| `Maybe` / `Result`、コンピュテーション式 | 実装済み | B01、B02、B05。B06 の `task { }` と `Task` は TZ12 で削除し、tzroutine・`Parallel`・`Routine.scope` に置き換えた（[Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行)） |
 | 明示 SIMD、`@cpu`、自動ベクトル化、実行時ディスパッチ | 実装済み | F04、F08。x86 実機の速度は未測定 |
 | ローカル path、commit 固定の git、自前の index による registry のパッケージ（最小版選択、`tsuzuri fetch`・`publish`、`Tsuzuri.lock`）、ビルドキャッシュ、構文解析の結果のキャッシュ、JSON 診断、fmt、test、doc、lsp | 実装済み | E04、E10、G11、G12、G14、G17、G20。公開の registry は運営しない |
 | `HashMap`、文字列補間、OS API、C 連携の `extern` と `--link` | 実装済み | C09、D07、E08、E12。Windows の OS API は除く |
@@ -176,8 +176,9 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | Vulkan の厳密な `f32` の実機での一致、離散 GPU、Linux・Windows・Apple 以外の GPU での Vulkan 実行 | 検証未完了 | [F09](../../../_features/_completed/F09-gpu-float-runtime.md) の Phase 3。float controls をすべて報告して適合プローブを通る実機がなく、確かめていない |
 | 共有所有の `Rc` / `Arc` / `Weak`、循環する構造の `Arena` | 実装済み | C10。共有した値の書き換えは F10 の `Atomic` / `Mutex` |
 | 多次元配列 `Matrix`・借用の窓 `MatrixView`・N 次元の `Tensor`（行優先の連続バッファ、行列積の演算順序を固定、FMA 版と行分割の並列版は別名） | 実装済み | [Matrix](../built-in-types-and-modules/matrix.md)・[MatrixView](../built-in-types-and-modules/matrix-view.md)・[Tensor](../built-in-types-and-modules/tensor.md)、C11。行列積の GPU カーネルと、x86-64 の速度は含まない |
-| `Atomic`、`Mutex`、`Task.scope`、`Sync` | 実装済み。`--wasm-feature threads` でも使える（Worker でロックを待つ） | F10 の Phase 1 |
-| `DataChannel`（容量付きの MPMC、待ちとデッドロックのトラップ） | 実装済み | F10 の Phase 2 |
+| `Atomic`、`Mutex`、`Sync` | 実装済み。ネイティブの `Mutex` は tzroutine のランタイムのロック（TZ06・TZ12）。`--wasm-feature threads` でも使える（Worker でロックを待つ） | F10 の Phase 1 |
+| tzroutine、`Routine.scope`、スケジューラーの上の `Parallel` | 実装済み。ネイティブの macOS・Linux・Windows だけ（WebAssembly の tzroutine と `Routine.scope` は `E2000`） | TZ01・TZ02・TZ11・TZ12 |
+| `DataChannel`（容量付きの MPMC、待ちとデッドロックの報告） | 実装済み。ネイティブは tzroutine のスケジューラーで待つ（TZ12） | F10 の Phase 2 |
 | REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行） | 実装済み | G13。入力ごとに `Main.tz` を作り直して検査・実行する。JIT はない |
 | ベンチマーク（`tsuzuri bench`）、カバレッジ（`tsuzuri test --coverage`）、プロパティテスト（`Gen`） | 実装済み | G18。ネイティブだけ。速さの合否の閾値はない |
 | デバッガーでの Tsuzuri の値の表示（LLDB の formatter、テストのデバッグ、Windows の PDB と natvis） | 実装済み | G16。`-O0` のネイティブ。WASM と `-O3` の変数の表示は保証しない |

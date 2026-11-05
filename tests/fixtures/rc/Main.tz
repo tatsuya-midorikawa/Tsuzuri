@@ -189,41 +189,72 @@ fn arc_capture =
     let copy = read
     read () * 10 + copy ()
 
-def part :: own Arc<[i64]> -> own i64 -> Task<i64>
-fn part values offset = task {
-    let numbers = Arc.get (ref values);
-    let mut total = 0;
-    let mut index = offset;
-    while index < numbers.length do
-        total = total + numbers[index];
-        index = index + 4
-    return total
-}
+// The parallel jobs below share an Arc between threads (on WASM threads too, where the jobs of
+// `Parallel.for_each_chunk 1` go to the workers of the pool). A slot holds what its job owns, and the
+// job writes its result over the slot, so the shares are dropped on the job's thread; a slot that
+// still holds a share at the end is -1.
+union Part = Pending of (Arc<[i64]> * i64) | Summed of i64
 
-def parts :: ref Arc<[i64]> -> [Task<i64>]
-fn parts shared = new [Task<i64>](4, \offset -> part (Arc.share shared) offset)
+// Every fourth number of the shared array, from the job's offset.
+def part :: i64 -> ref mut [Part..] -> unit
+fn part _index slot =
+    let total = match slot[0] with
+        | Pending (values, offset) ->
+            let numbers = Arc.get (ref values)
+            let mut total = 0
+            let mut index = offset
+            while index < numbers.length do
+                total = total + numbers[index]
+                index = index + 4
+            total
+        | Summed total -> total
+    Array.write 0 (Summed total) slot
+
+def parts :: ref Arc<[i64]> -> [Part]
+fn parts shared = new [Part](4, \offset -> Pending (Arc.share shared, offset))
+
+def rec summed :: ref [Part] -> own i64 -> own i64 -> i64
+fn rec summed jobs index sum =
+    if index == jobs.length then sum
+    else match jobs[index] with
+        | Summed total -> summed jobs (index + 1) (sum + total)
+        | Pending (_values, _offset) -> -1
 
 export def arc_parallel :: own i64 -> i64
 fn arc_parallel count =
     let shared = Arc.new (new [i64](count, \index -> index))
-    let results = Task.run (Task.parallel (parts (ref shared)))
-    Array.sum (ref results) * 10 + Arc.strong_count (ref shared)
+    let mut jobs = parts (ref shared)
+    Parallel.for_each_chunk 1 part (ref mut jobs)
+    summed (ref jobs) 0 0 * 10 + Arc.strong_count (ref shared)
 
-def peek :: own Arc.Weak<[i64]> -> Task<i64>
-fn peek weak = task {
-    return match Arc.upgrade (ref weak) with
-        | Maybe.Some strong -> Array.sum (Arc.get (ref strong))
-        | Maybe.None -> 0
-}
+union Peek = Watching of Arc.Weak<[i64]> | Seen of i64
 
-def peeks :: ref Arc<[i64]> -> [Task<i64>]
-fn peeks shared = new [Task<i64>](4, \_index -> peek (Arc.downgrade shared))
+def peek :: i64 -> ref mut [Peek..] -> unit
+fn peek _index slot =
+    let seen = match slot[0] with
+        | Watching weak ->
+            match Arc.upgrade (ref weak) with
+            | Maybe.Some strong -> Array.sum (Arc.get (ref strong))
+            | Maybe.None -> 0
+        | Seen total -> total
+    Array.write 0 (Seen seen) slot
+
+def peeks :: ref Arc<[i64]> -> [Peek]
+fn peeks shared = new [Peek](4, \_index -> Watching (Arc.downgrade shared))
+
+def rec seen :: ref [Peek] -> own i64 -> own i64 -> i64
+fn rec seen jobs index sum =
+    if index == jobs.length then sum
+    else match jobs[index] with
+        | Seen total -> seen jobs (index + 1) (sum + total)
+        | Watching _weak -> -1
 
 export def arc_weak_parallel :: own i64 -> i64
 fn arc_weak_parallel count =
     let shared = Arc.new (new [i64](count, \index -> index))
-    let results = Task.run (Task.parallel (peeks (ref shared)))
-    Array.sum (ref results) * 10 + Arc.weak_count (ref shared)
+    let mut jobs = peeks (ref shared)
+    Parallel.for_each_chunk 1 peek (ref mut jobs)
+    seen (ref jobs) 0 0 * 10 + Arc.weak_count (ref shared)
 
 export def rc_upgrade_dead :: i64
 fn rc_upgrade_dead =
@@ -233,33 +264,51 @@ fn rc_upgrade_dead =
     let strong = Maybe.get (Rc.upgrade (ref weak))
     deref (Rc.get (ref strong))
 
-def owned_parts :: own Arc<[i64]> -> [Task<i64>]
+// The caller's share is gone before the jobs run: the job that finishes last frees the array.
+def owned_parts :: own Arc<[i64]> -> [Part]
 fn owned_parts shared = parts (ref shared)
 
 export def arc_parallel_last :: own i64 -> i64
 fn arc_parallel_last count =
-    let results = Task.run (Task.parallel (owned_parts (Arc.new (new [i64](count, \index -> index)))))
-    Array.sum (ref results)
+    let mut jobs = owned_parts (Arc.new (new [i64](count, \index -> index)))
+    Parallel.for_each_chunk 1 part (ref mut jobs)
+    summed (ref jobs) 0 0
 
-def walk :: own Arc<AList> -> Task<i64>
-fn walk list = task {
-    let mut total = 0;
-    let mut cursor = list;
-    let mut walking = true;
+// A loop, not a recursion: a chain is longer than a worker's stack is deep.
+def walk :: own Arc<AList> -> i64
+fn walk list =
+    let mut total = 0
+    let mut cursor = list
+    let mut walking = true
     while walking do
         let next = match Arc.get (ref cursor) with
             | ACons (value, rest) ->
                 total = total + value
                 Maybe.Some (Arc.share (ref rest))
-            | ANil -> Maybe.None;
+            | ANil -> Maybe.None
         match next with
         | Maybe.Some rest -> cursor = rest
         | Maybe.None -> walking = false
-    return total
-}
+    total
 
-def walkers :: own Arc<AList> -> [Task<i64>]
-fn walkers list = new [Task<i64>](4, \_index -> walk (Arc.share (ref list)))
+union Walk = Walking of Arc<AList> | Walked of i64
+
+def walker :: i64 -> ref mut [Walk..] -> unit
+fn walker _index slot =
+    let total = match slot[0] with
+        | Walking list -> walk (Arc.share (ref list))
+        | Walked total -> total
+    Array.write 0 (Walked total) slot
+
+def walkers :: own Arc<AList> -> [Walk]
+fn walkers list = new [Walk](4, \_index -> Walking (Arc.share (ref list)))
+
+def rec walked :: ref [Walk] -> own i64 -> own i64 -> i64
+fn rec walked jobs index sum =
+    if index == jobs.length then sum
+    else match jobs[index] with
+        | Walked total -> walked jobs (index + 1) (sum + total)
+        | Walking _list -> -1
 
 export def arc_chain_parallel :: own i64 -> i64
 fn arc_chain_parallel count =
@@ -268,8 +317,9 @@ fn arc_chain_parallel count =
     while index < count do
         list = Arc.new (ACons (index, list))
         index = index + 1
-    let results = Task.run (Task.parallel (walkers list))
-    Array.sum (ref results)
+    let mut jobs = walkers list
+    Parallel.for_each_chunk 1 walker (ref mut jobs)
+    walked (ref jobs) 0 0
 
 def inner_product :: ref Arc<(i64 * Maybe<Arc<i64>>)> -> i64
 fn inner_product outer =

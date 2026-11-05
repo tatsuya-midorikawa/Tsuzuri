@@ -223,14 +223,8 @@ export def task_values :: bool
 fn task_values =
     let text = "\uD800" + "A"
     let bytes = u8"😀" + u8"\0"
-    let texts = Task.run (Task.parallel [
-        task { return text + "\uDC00" },
-        task { return "\uDC00\uD800" }
-    ])
-    let byte_values = Task.run (Task.parallel [
-        task { return bytes + u8"é" },
-        task { return combine u8"日" u8"本" }
-    ])
+    let texts = Parallel.init 2 (\index -> if index == 0 then text + "\uDC00" else "\uDC00\uD800")
+    let byte_values = Parallel.init 2 (\index -> if index == 0 then bytes + u8"é" else combine u8"日" u8"本")
     texts[0] == "\uD800A\uDC00" && texts[1] == "\uDC00\uD800" &&
         byte_values[0] == u8"😀\0é" && byte_values[1] == u8"日本"
 

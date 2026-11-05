@@ -20,9 +20,11 @@ try {
   execute(compiler, ["build", fixture, "--emit", "llvm", "-o", irPath]);
   const ir = readFileSync(irPath, "utf8").replaceAll("@malloc", "@tracked_alloc").replaceAll("@free", "@tracked_free").replaceAll("@realloc", "@tracked_realloc");
   writeFileSync(irPath, ir);
+  // The tzroutine runtime, when the IR calls it (Parallel, Mutex, DataChannel or a tzroutine).
+  const scheduler = /@tsuzuri_(tz|channel)_/.test(ir) ? ["src/runtime/tzroutine.c"] : [];
   for (const optimization of ["-O0", "-O3"]) {
     const executable = join(root, `imports${optimization}`);
-    execute(clang, [optimization, "-Wno-override-module", irPath, "tests/host_imports_runtime.c", "src/runtime/task.c", "-I", root, "-pthread", "-lm", "-o", executable]);
+    execute(clang, [optimization, "-Wno-override-module", irPath, "tests/host_imports_runtime.c", ...scheduler, "-I", root, "-pthread", "-lm", "-o", executable]);
     execute(executable, []);
     for (const mode of ["0", "1", "2"]) assert.notEqual(execute(executable, [mode], false).status, 0);
     const object = join(root, `imports${optimization}.o`);

@@ -898,9 +898,8 @@ static void test_select_same(void) {
     free(feed.c);
 }
 
-/* TZ02: a G inside a blocking call acts as its thread's pseudo-G. With one P, the tzroutines that
- * it spawns there run (the P went away), its wait there stops the thread instead of switching the G
- * away, the calls nest, and afterwards the G has a P again and can switch. */
+/* TZ08: blocking calls nest, and after the outer exit the G has a P again: it spawns and switches,
+ * and with one P the tzroutines that it spawned run. */
 static _Atomic int64_t blocking_hits;
 static void blocking_child(void *env) {
     (void)env;
@@ -908,15 +907,16 @@ static void blocking_child(void *env) {
 }
 static void blocking_routine(void *env) {
     (void)env;
-    tsuzuri_tz_block_enter();
-    void *scope = tsuzuri_tz_scope_enter(); /* as a pool callback on the joining thread does */
+    tsuzuri_tz_blocking_enter();
+    tsuzuri_tz_blocking_enter();
+    for (volatile int spin = 0; spin < 20000; spin++) {
+    }
+    tsuzuri_tz_blocking_exit();
+    tsuzuri_tz_blocking_exit();
+    void *scope = tsuzuri_tz_scope_enter();
     for (int i = 0; i < 4; i++) tsuzuri_tz_go(blocking_child, NULL);
-    tsuzuri_tz_yield(); /* the thread's yield: the G stays */
-    join(scope);
-    tsuzuri_tz_block_enter();
-    tsuzuri_tz_block_leave();
-    tsuzuri_tz_block_leave();
     tsuzuri_tz_yield();
+    join(scope);
     atomic_fetch_add(&blocking_hits, 100);
 }
 static void test_blocking(void) {
@@ -929,10 +929,10 @@ static void test_blocking(void) {
     }
 }
 
-/* TZ02: the spawn of the main thread gives the idle P of a blocking call to an M that tzr_wakep starts
- * spinning, and the G leaves its call before that M runs, so it waits for the P. The M hands the P
- * over and parks: it stops spinning, or tzr_wakep would never start an M again and the next spawn of
- * the main thread would wait for nobody. With one P, the first round sets this up. */
+/* TZ02, TZ08: the spawn of the main thread makes sysmon give the P of a blocking call to an M, and
+ * the G leaves its call before that M runs, so it waits for the P. The M hands the P over and parks:
+ * it stops spinning, or tzr_wakep would never start an M again and the next spawn of the main thread
+ * would wait for nobody. With one P, the first round sets this up. */
 static _Atomic int donor_inside;
 static _Atomic int donor_leave;
 static _Atomic int64_t donor_hits;
@@ -942,11 +942,11 @@ static void donor_child(void *env) {
 }
 static void donor_blocker(void *env) {
     (void)env;
-    tsuzuri_tz_block_enter();
+    tsuzuri_tz_blocking_enter();
     atomic_store(&donor_inside, 1);
     while (!atomic_load(&donor_leave)) {
     }
-    tsuzuri_tz_block_leave();
+    tsuzuri_tz_blocking_exit();
     atomic_fetch_add(&donor_hits, 100);
 }
 static void test_donor(void) {
@@ -966,72 +966,6 @@ static void test_donor(void) {
         while (atomic_load(&tzr_sched.nmspinning) != 0 && seconds() - t < 2.0) tzr_os_yield();
         CHECK(atomic_load(&tzr_sched.nmspinning) == 0);
     }
-}
-
-/* TZ03: the mark of a failure domain is the number of the last batch announced. A batch that
- * another thread announced before the mark and ended before the reset, and one that this thread
- * announced before the mark (the enclosing batch of an item that calls Domain.run), stay; what this
- * thread announced after the mark, which a trap left, goes. An item's end drops what was announced
- * in the item in the same way, and puts its thread back in the state it had before the item. */
-static char batch_outer, batch_other, batch_inner, batch_item;
-static void (*batch_step)(void);
-static void batch_other_begin(void) { tsuzuri_tz_parallel_begin(&batch_other, 1); }
-static void batch_other_end(void) { tsuzuri_tz_parallel_end(&batch_other, 1); }
-#if defined(_WIN32)
-static DWORD WINAPI batch_thread(LPVOID arg) {
-    (void)arg;
-    batch_step();
-    return 0;
-}
-#else
-static void *batch_thread(void *arg) {
-    (void)arg;
-    batch_step();
-    return NULL;
-}
-#endif
-static void on_other_thread(void (*step)(void)) {
-    batch_step = step;
-#if defined(_WIN32)
-    HANDLE thread = CreateThread(NULL, 0, batch_thread, NULL, 0, NULL);
-    CHECK(thread != NULL && WaitForSingleObject(thread, INFINITE) == WAIT_OBJECT_0 && CloseHandle(thread));
-#else
-    pthread_t thread;
-    CHECK(pthread_create(&thread, NULL, batch_thread, NULL) == 0 && pthread_join(thread, NULL) == 0);
-#endif
-}
-static int64_t pending(void) {
-    tzr_mutex_lock(&tzr_sched.lock);
-    int64_t n = tzr_sched.npending;
-    tzr_mutex_unlock(&tzr_sched.lock);
-    return n;
-}
-static void test_batches(void) {
-    tsuzuri_tz_parallel_begin(&batch_outer, 2); /* this thread waits for the batch */
-    /* it runs one item, which announces a batch and traps: the item's end drops that batch */
-    tzr_item_frame frame;
-    tsuzuri_tz_task_enter(&batch_outer, &frame);
-    CHECK(frame.idle && pending() == 1);
-    tsuzuri_tz_parallel_begin(&batch_item, 4);
-    tsuzuri_tz_task_leave(&batch_outer, &frame);
-    CHECK(pending() == 1);
-    tzr_mutex_lock(&tzr_sched.lock);
-    CHECK(tzr_batch_of(&batch_item) == NULL && tzr_pseudo()->idle); /* waiting for the batch again */
-    tzr_mutex_unlock(&tzr_sched.lock);
-    /* a failure domain inside the wait, while another thread's batch comes and goes */
-    on_other_thread(batch_other_begin);
-    uint64_t mark = tsuzuri_tz_parallel_mark();
-    on_other_thread(batch_other_end);
-    tsuzuri_tz_parallel_begin(&batch_inner, 3);
-    CHECK(pending() == 4);
-    tsuzuri_tz_parallel_reset(mark);
-    CHECK(pending() == 1);
-    tzr_mutex_lock(&tzr_sched.lock);
-    CHECK(tzr_batch_of(&batch_outer) != NULL && tzr_batch_of(&batch_inner) == NULL);
-    CHECK(!tzr_pseudo()->idle); /* it runs again */
-    tzr_mutex_unlock(&tzr_sched.lock);
-    tsuzuri_tz_parallel_end(&batch_outer, 2);
-    CHECK(pending() == 0);
 }
 
 /* 25. timers (TZ05). The channel blocks come from the caller, as the generated code allocates them;
@@ -1778,8 +1712,8 @@ static void test_context_after(void) {
 /* ---------------------------------------------------------------- Parallel and Routine.scope (TZ11) */
 
 /* tsuzuri_tz_parallel calls every index once, from a pseudo-G and from a tzroutine, with any number
- * of Ps; a nested call inside a callback works on its own; inside a trap boundary it asks for the
- * task runtime's pool (3) and calls nothing. */
+ * of Ps; a nested call inside a callback works on its own; inside a trap boundary (TZ12) the caller
+ * calls every index itself, in order, and no helper tzroutine starts. */
 enum { CLAIMS_MAX = 10000 };
 static _Atomic int64_t claims[CLAIMS_MAX];
 static void claim(void *ctx, uint64_t i) {
@@ -1807,6 +1741,14 @@ static void nested_outer(void *ctx, uint64_t i) {
 }
 #if !defined(_WIN32)
 static void *test_owner(void) { return &nested_total; }
+static _Atomic int64_t ordered_next;
+static pthread_t ordered_thread;
+/* Inside a trap boundary every index runs on the calling thread, in order (no helper). */
+static void ordered(void *ctx, uint64_t i) {
+    CHECK(ctx == claims && (int64_t)i == atomic_fetch_add(&ordered_next, 1));
+    CHECK(pthread_equal(pthread_self(), ordered_thread));
+    claim(ctx, i);
+}
 #endif
 static void test_parallel(void) {
     uint64_t sizes[] = {0, 1, 7, 10000};
@@ -1822,9 +1764,12 @@ static void test_parallel(void) {
     CHECK(atomic_load(&nested_total) == 16 * 5050);
 #if !defined(_WIN32)
     tsuzuri_trap_hooks.owner = test_owner;
-    CHECK(tsuzuri_tz_parallel(claim, claims, 5) == 3);
+    atomic_store(&ordered_next, 0);
+    ordered_thread = pthread_self();
+    CHECK(tsuzuri_tz_parallel(ordered, claims, 50) == 0);
+    CHECK(atomic_load(&ordered_next) == 50);
     tsuzuri_trap_hooks.owner = NULL;
-    check_claims(0);
+    check_claims(50);
 #endif
     printf("parallel: ok\n");
 }
@@ -2414,6 +2359,187 @@ static void test_netpoll_race(void) {
            (long long)atomic_load(&netpoll_outcomes[1]));
 }
 
+/* 32. DataChannel on the scheduler (TZ12): the block that the generated code makes (the header of ten
+ * words, the lock and the two queues zero), its ring, its close by either end, its waits (a waiter
+ * stops its G or its thread only), the deadlock verdict, and a wait while holding a Mutex. */
+static struct tzr_dchan *dchan_make(uint64_t capacity, uint64_t item_size) {
+    struct tzr_dchan *c = malloc(sizeof *c + capacity * (item_size ? item_size : 1));
+    memset(c, 0xAB, sizeof *c + capacity * (item_size ? item_size : 1)); /* not zeroed, as tz.alloc */
+    c->capacity = capacity;
+    c->item_size = item_size;
+    c->head = c->count = 0;
+    c->senders = c->receivers = 1;
+    c->owners = 2;
+    memset(&c->lock, 0, sizeof c->lock);
+    c->waiters[0] = c->waiters[1] = NULL;
+    return c;
+}
+static void test_dchan_ring(void) {
+    struct tzr_dchan *c = dchan_make(3, 8);
+    for (int64_t round = 0; round < 10; round++) {
+        for (int64_t i = 0; i < 3; i++) {
+            int64_t v = round * 10 + i;
+            CHECK(tsuzuri_channel_send(c, &v) == 0);
+        }
+        for (int64_t i = 0; i < 3; i++) {
+            int64_t v = -1;
+            CHECK(tsuzuri_channel_recv(c, &v) == 0 && v == round * 10 + i);
+        }
+    }
+    /* zero-sized items count and move nothing */
+    struct tzr_dchan *units = dchan_make(2, 0);
+    CHECK(tsuzuri_channel_send(units, NULL) == 0 && tsuzuri_channel_send(units, NULL) == 0);
+    CHECK(units->count == 2 && tsuzuri_channel_recv(units, NULL) == 0 && units->count == 1);
+    /* the last sender closes it for the receivers once it is empty, and the last owner frees it */
+    int64_t v = 7;
+    CHECK(tsuzuri_channel_send(c, &v) == 0);
+    tsuzuri_channel_clone_sender(c);
+    CHECK(c->senders == 2 && c->owners == 3);
+    CHECK(tsuzuri_channel_close(c, 0) == 0);
+    CHECK(tsuzuri_channel_close(c, 0) == 0);
+    CHECK(tsuzuri_channel_recv(c, &v) == 0 && v == 7);
+    CHECK(tsuzuri_channel_recv(c, &v) == 1);
+    CHECK(tsuzuri_channel_close(c, 1) == 1);
+    /* without a receiver, a send keeps its item */
+    struct tzr_dchan *d = dchan_make(1, 8);
+    CHECK(tsuzuri_channel_close(d, 1) == 0);
+    CHECK(tsuzuri_channel_send(d, &v) == 1);
+    CHECK(tsuzuri_channel_close(d, 0) == 1);
+    free(c);
+    free(d);
+    free(units);
+    printf("DataChannel ring: ok\n");
+}
+
+typedef struct { struct tzr_dchan *c; int64_t count; _Atomic int64_t *sum; } dchan_job;
+static void dchan_sender(void *env) {
+    dchan_job *job = env;
+    for (int64_t i = 1; i <= job->count; i++) CHECK(tsuzuri_channel_send(job->c, &i) == 0);
+}
+static void dchan_receiver(void *env) {
+    dchan_job *job = env;
+    int64_t v, local = 0;
+    for (int64_t i = 0; i < job->count; i++) {
+        CHECK(tsuzuri_channel_recv(job->c, &v) == 0);
+        local += v;
+    }
+    atomic_fetch_add(job->sum, local);
+}
+/* Waits on both sides, with any number of Ps: the waiters are tzroutines, which wait without their
+ * threads, so more of them than threads complete (with one P too). */
+static void test_dchan_waits(void) {
+    for (uint64_t capacity = 1; capacity <= 8; capacity *= 8) {
+        struct tzr_dchan *c = dchan_make(capacity, 8);
+        _Atomic int64_t sum = 0;
+        dchan_job job = {c, 5000, &sum};
+        void *scope = tsuzuri_tz_scope_enter();
+        for (int i = 0; i < 16; i++) {
+            tsuzuri_tz_go(dchan_sender, &job);
+            tsuzuri_tz_go(dchan_receiver, &job);
+        }
+        join(scope);
+        CHECK(atomic_load(&sum) == 16 * 5000 * 5001 / 2);
+        free(c);
+    }
+    /* the thread that runs main waits too, as a pseudo-G */
+    struct tzr_dchan *c = dchan_make(1, 8);
+    _Atomic int64_t sum = 0;
+    dchan_job job = {c, 3000, &sum};
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(dchan_sender, &job);
+    dchan_receiver(&job);
+    join(scope);
+    CHECK(atomic_load(&sum) == 3000 * 3001 / 2);
+    free(c);
+    printf("DataChannel waits: ok\n");
+}
+
+/* The last sender wakes every receiver that waits for an item; the last receiver every sender that
+ * waits for room, which keeps its item. */
+static _Atomic int dchan_closed_seen;
+static void dchan_waiting_receiver(void *env) {
+    int64_t v;
+    CHECK(tsuzuri_channel_recv(env, &v) == 1);
+    atomic_fetch_add(&dchan_closed_seen, 1);
+}
+static void dchan_waiting_sender(void *env) {
+    int64_t v = 9;
+    CHECK(tsuzuri_channel_send(env, &v) == 1);
+    atomic_fetch_add(&dchan_closed_seen, 1);
+}
+static int dchan_waiters(struct tzr_dchan *c, int side) {
+    tzr_lock_acquire(&c->lock);
+    int n = 0;
+    for (tzr_dwaiter *w = c->waiters[side]; w; w = w->next) n++;
+    tzr_lock_release(&c->lock);
+    return n;
+}
+static void test_dchan_close(void) {
+    struct tzr_dchan *c = dchan_make(1, 8);
+    atomic_store(&dchan_closed_seen, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 3; i++) tsuzuri_tz_go(dchan_waiting_receiver, c);
+    while (dchan_waiters(c, 0) < 3) tzr_os_yield();
+    CHECK(tsuzuri_channel_close(c, 0) == 0);
+    join(scope);
+    CHECK(atomic_load(&dchan_closed_seen) == 3);
+    CHECK(tsuzuri_channel_close(c, 1) == 1);
+    free(c);
+    struct tzr_dchan *d = dchan_make(1, 8);
+    int64_t v = 1;
+    CHECK(tsuzuri_channel_send(d, &v) == 0); /* full */
+    atomic_store(&dchan_closed_seen, 0);
+    scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 3; i++) tsuzuri_tz_go(dchan_waiting_sender, d);
+    while (dchan_waiters(d, 1) < 3) tzr_os_yield();
+    CHECK(tsuzuri_channel_close(d, 1) == 0);
+    join(scope);
+    CHECK(atomic_load(&dchan_closed_seen) == 3);
+    CHECK(tsuzuri_channel_close(d, 0) == 1);
+    free(d);
+    printf("DataChannel close: ok\n");
+}
+
+/* A tzroutine may wait on a DataChannel while it holds a Mutex (the old pool's lock refused it). */
+static _Atomic uint32_t dchan_mutex;
+static void dchan_locked_receiver(void *env) {
+    CHECK(tsuzuri_tz_mutex32_lock(&dchan_mutex) == 0);
+    int64_t v = 0;
+    CHECK(tsuzuri_channel_recv(env, &v) == 0 && v == 42);
+    tsuzuri_tz_mutex32_unlock(&dchan_mutex);
+}
+static void dchan_late_sender(void *env) {
+    CHECK(tsuzuri_tz_sleep(2000000) == 0);
+    int64_t v = 42;
+    CHECK(tsuzuri_channel_send(env, &v) == 0);
+}
+static void test_dchan_lock(void) {
+    struct tzr_dchan *c = dchan_make(1, 8);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(dchan_locked_receiver, c);
+    tsuzuri_tz_go(dchan_late_sender, c);
+    join(scope);
+    free(c);
+    printf("DataChannel in a lock: ok\n");
+}
+
+#if !defined(_WIN32)
+/* Everybody waits: the detector reports the DataChannel wait and the operation returns 2. */
+static void dchan_deadlock_body(void) {
+    start_watchdog();
+    struct tzr_dchan *c = dchan_make(1, 8);
+    int64_t v;
+    _exit(tsuzuri_channel_recv(c, &v) == 2 ? 48 : 1);
+}
+#endif
+static void test_dchan_deadlock(void) {
+#if !defined(_WIN32)
+    int s = run_child("child-dchan-deadlock");
+    CHECK(exited_with(s, 48));
+#endif
+    printf("DataChannel deadlock: ok\n");
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -2424,6 +2550,9 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-timer-deadlock") == 0) timer_deadlock_body();
     if (only && strcmp(only, "child-recover") == 0) recover_body();
     if (only && strcmp(only, "child-report") == 0) report_body();
+#if !defined(_WIN32)
+    if (only && strcmp(only, "child-dchan-deadlock") == 0) dchan_deadlock_body();
+#endif
     if (only && strcmp(only, "child-big-select") == 0) { big_select_body(); return 0; }
     if (only && strcmp(only, "child-deep-100") == 0) { stack_body(100); return 0; }
     if (only && strcmp(only, "child-deep-900") == 0) { stack_body(900); return 0; }
@@ -2456,7 +2585,6 @@ int main(int argc, char **argv) {
     RUN("report", test_report());
     RUN("blocking", test_blocking());
     RUN("donor", test_donor());
-    RUN("batches", test_batches());
     RUN("timer_channel", test_timer_channel());
     RUN("timer_stop", test_timer_stop());
     RUN("timer_senders", test_timer_senders());
@@ -2486,6 +2614,11 @@ int main(int argc, char **argv) {
     RUN("locked_thread", test_locked_thread());
     RUN("locked_yield", test_locked_yield());
     RUN("locked_yielders", test_locked_yielders());
+    RUN("dchan_ring", test_dchan_ring());
+    RUN("dchan_waits", test_dchan_waits());
+    RUN("dchan_close", test_dchan_close());
+    RUN("dchan_lock", test_dchan_lock());
+    RUN("dchan_deadlock", test_dchan_deadlock());
     RUN("netpoll_pipe", test_netpoll_pipe());
     RUN("netpoll_timeout", test_netpoll_timeout());
     RUN("netpoll_close", test_netpoll_close());

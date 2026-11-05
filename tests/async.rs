@@ -325,12 +325,19 @@ fn doubled n = Async.run (worker n) * 2",
 }
 
 #[test]
-fn tasks_can_run_and_receive_async_computations() {
+fn tzroutines_can_run_and_receive_async_computations() {
     accepts(
-        "export def in_task :: i64 -> i64
-fn in_task n =
+        "export def in_routine :: i64 -> i64
+fn in_routine n =
     let computation = Async { do! Async.sleep 2; let! t = Async.now (); return t + n }
-    Task.run (task { return Async.run computation })",
+    let results: Channel<i64> = Channel.make 1
+    let out = Channel.share results
+    tzroutine {
+        Channel.send out (Async.run computation)
+    }
+    match Channel.recv results with
+    | Maybe.Some value -> value
+    | Maybe.None -> 0",
     );
 }
 
@@ -546,7 +553,7 @@ fn hosts_without_an_embeddable_reactor_report_why_before_linking() {
     assert_eq!(
         error.message,
         if cfg!(windows) {
-            "Windows COFF objects with embedded task, CPU, IO, or Async runtime are not supported; emit LLVM and link the runtime once, or build an executable"
+            "Windows COFF objects with embedded tzroutine, CPU, IO, or Async runtime are not supported; emit LLVM and link the runtime once, or build an executable"
         } else {
             "Async.block_on is only available on macOS, Linux, and Windows; use Async.run on this platform"
         }

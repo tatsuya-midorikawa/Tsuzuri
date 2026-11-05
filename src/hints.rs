@@ -341,19 +341,20 @@ pub static TABLE: &[Hint] = &[
     },
     Hint {
         id: "return-after-then",
-        title: "A task choice uses braces",
-        kind: "expected_expression",
-        message_has: &[],
-        patterns: &[&["then", "@return"]],
-        help: "write a task choice as 'if c { return a } else { return b }'",
-        bad: r#"def f :: bool -> Task<i64> = \c ->
-    task {
+        title: "A choice in a computation expression uses braces",
+        // `if c then return 1` without `else` must be `unit`: the value of `return` is the mismatch.
+        kind: "type_mismatch",
+        message_has: &["expected unit"],
+        patterns: &[&["then", "return", "@<any>"]],
+        help: "write a choice in a computation expression as 'if c { return a } else { return b }'",
+        bad: r#"def f :: bool -> Maybe<i64> = \c ->
+    Maybe {
         if c then return 1
         return 2
     }
 "#,
-        good: r#"def f :: bool -> Task<i64> = \c ->
-    task {
+        good: r#"def f :: bool -> Maybe<i64> = \c ->
+    Maybe {
         if c { return 1 } else { return 2 }
     }
 "#,

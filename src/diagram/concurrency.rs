@@ -1,7 +1,7 @@
 //! `concurrency` (G30, D8): an approximation of what runs in parallel and what it shares, from the
 //! signatures (`Channel<T>`, `DataChannel.Sender<T>`, `DataChannel.Receiver<T>`, `Mutex<T>`, `Atomic<T>`) and the calls
-//! (`Task.scope`, `Task.parallel`, `Task.parallel_results`, `Parallel.*`, the creators of the
-//! cells). A note says so.
+//! (`Routine.scope`, `Routine.go`, `tzroutine { }`, `Parallel.*`, the creators of the cells). A note
+//! says so.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -110,10 +110,7 @@ pub fn graph(
         }
         if matches!(
             edge.to.as_str(),
-            "Task.parallel"
-                | "Task.parallel_results"
-                | "Task.scope"
-                | "Routine.scope"
+            "Routine.scope"
                 | "Routine.go"
                 | "Time.after_func"
                 | "WaitGroup.go"

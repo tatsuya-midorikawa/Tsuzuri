@@ -53,7 +53,7 @@ text.length
 外へ逃げない文字列連結の結果は、関数入口の 256 bytes の領域に置けます。容量は UTF-16 の `string` では
 128 code unit、`TSUZURI_STRINGS=compact` で結果が Latin-1 の `string` では 256 code unit、`utf8string` では 256 bytes で、実行時に超えればヒープへ戻ります。
 外へ逃げない局所の関数値の捕捉環境も、保守的な大きさが 1 KiB 以下なら入口のスタックに置きます。
-追加領域の予算は関数あたり合計 4 KiB で、関数がスタックフレームに置く領域の合計の上限 64 KiB に含めて数えます（[スタック配置の基本](#スタック配置の基本)）。再帰の循環に入る関数と Task の本体は対象外です。
+追加領域の予算は関数あたり合計 4 KiB で、関数がスタックフレームに置く領域の合計の上限 64 KiB に含めて数えます（[スタック配置の基本](#スタック配置の基本)）。再帰の循環に入る関数と `tzroutine { ... }` の本体は対象外です。
 値を返す・値渡しする・捕捉する・排他借用する束縛は、これらの最適化でスタックに置きません。
 native Windows では、ローカル束縛の初期化で使う追加領域をスタックへ置かず、通常のヒープ経路を使います。これは保守的な実装上の fallback で、型や言語上の意味は変わりません。
 
@@ -132,7 +132,7 @@ sized[1] + sized[2] + sized[3]
 - 関数の戻り値として返却する
 - 値渡しの引数として別の関数へ渡す
 - 別の変数や可変変数（`let mut`）へムーブする
-- クロージャや並行タスク（`task`）へ捕捉する
+- クロージャや `tzroutine { ... }` の本体へ捕捉する
 - 別のコレクションの要素として格納する
 - 排他借用（`ref mut`）として貸し出す（置換可能にするため）
 
@@ -240,7 +240,7 @@ tsuzuri build --emit object --allocator host Main.tz
 
 [Alloc](../built-in-types-and-modules/alloc.md) は確保・再確保・解放の回数と要求バイト数を読みます。選んだテストが使うときだけ `tsuzuri test` が counting を自動で連結し、普通のビルドと `run` には明示の `--allocator counting` が必要です。通常のコードが黙って遅い計数 heap に変わることはありません。ホスト向けの `tsuzuri_alloc_stats` の 32 バイト・4 フィールドは変わりません。
 
-`--freestanding` は、C 標準ライブラリに依存しない native の `object` / `llvm` / `header` を出します。`--allocator host` が必須です。残ってよい外部は、ホストの allocator、自分で宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、タスク、`Debug`、プログラム引数は `E2000` で拒否されます。
+`--freestanding` は、C 標準ライブラリに依存しない native の `object` / `llvm` / `header` を出します。`--allocator host` が必須です。残ってよい外部は、ホストの allocator、自分で宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、tzroutine と `Parallel.*`（tzroutine のランタイムを使います）、`Debug`、プログラム引数は `E2000` で拒否されます。
 
 関数の契約とリンク方法は [ネイティブ連携 (C ABI)](../compiler/native-interop.md) と [コンパイラ オプション](../compiler/option.md) を見てください。
 

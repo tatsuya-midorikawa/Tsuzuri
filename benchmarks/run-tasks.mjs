@@ -26,7 +26,7 @@ for (let index = 0; index < args.length; index++) {
   } else if (!argument.startsWith("-")) positional.push(argument);
   else throw new Error(usage);
 }
-// Idle time before every measured call, so that the workers have parked: it measures the wake-up, not a hot pool.
+// Idle time before every measured call, so that the scheduler's threads have parked: it measures the wake-up, not a hot one.
 const gap = options["--gap-us"] === undefined ? 0 : Number(options["--gap-us"]);
 if (!Number.isInteger(gap) || gap < 0 || gap > 1_000_000) throw new Error(usage);
 if (positional.length > 1 || dataParallel && (sweep || options["--baseline-runtime"])) throw new Error(usage);
@@ -38,7 +38,8 @@ const hash = (path) => createHash("sha256").update(readFileSync(path)).digest("h
 const context = options["--metrics"] ? captureRun(options["--metrics"], { compiler, clang, mode: quick ? "quick" : "benchmark" }) : null;
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-task-benchmark-"));
 const artifacts = options["--artifacts"];
-const poolRuntime = options["--runtime"] ?? join(root, "src/runtime/task.c");
+// Since TZ12, parallel_batch runs Routine.scope on the tzroutine scheduler; the variant names stay "pool" for the time series.
+const poolRuntime = options["--runtime"] ?? join(root, "src/runtime/tzroutine.c");
 const baselineRuntime = options["--baseline-runtime"];
 // The suite of a PX01 run that the records belong to: a run directory keeps one file per suite and refuses to overwrite it.
 const suite = sweep ? "tasks-sweep" : dataParallel ? "tasks-data" : gap > 0 ? "tasks-gap" : "tasks";
@@ -47,15 +48,25 @@ const workloads = dataParallel ? [
   { name: "chunk-boundary", count: 8193, rounds: 16, repetitions: quick ? 2 : 32 },
   { name: "bulk", count: quick ? 16384 : 262144, rounds: 32, repetitions: quick ? 2 : 8 },
 ] : sweep ? [16, 64, 256, 1024, 4096, 16384].map((rounds) => (
-  // 32 tasks whose sequential time grows with `rounds`: where does the pool stop costing more than it saves?
+  // 32 tzroutines whose sequential time grows with `rounds`: where does the scheduler stop costing more than it saves?
   { name: `rounds-${rounds}`, count: 32, rounds, repetitions: quick ? 2 : rounds <= 256 ? 512 : rounds <= 1024 ? 256 : 64 }
 )) : [
   { name: "tiny", count: 4, rounds: 0, repetitions: quick ? 10 : 1000 },
   { name: "small", count: 32, rounds: 16, repetitions: quick ? 8 : 256 },
   { name: "bulk", count: 1024, rounds: 256, repetitions: quick ? 3 : 64 },
-  // 16 tasks of about 80 us each, the shape of cpp/task_parallel: fewer tasks than CPUs, each one long.
+  // 16 tzroutines of about 80 us each, the shape of cpp/task_parallel: fewer children than CPUs, each one long.
   { name: "coarse", count: 16, rounds: 60000, repetitions: quick ? 3 : 128 },
 ];
+// WebAssembly has no tzroutines (E2000), so its builds leave out parallel_batch, the one export that calls Routine.scope.
+function portable(directory) {
+  const project = join(directory, "portable");
+  mkdirSync(project, { recursive: true });
+  const source = readFileSync(join(root, "benchmarks/tasks/Main.tz"), "utf8");
+  const without = source.replace(/^export def parallel_batch [^]*?\n\n/m, "");
+  assert.ok(without !== source && !without.includes("Routine."));
+  writeFileSync(join(project, "Main.tz"), without);
+  return project;
+}
 function reference(count, rounds) {
   let total = 0n;
   for (let index = 0; index < count; index++) {
@@ -139,7 +150,7 @@ int main(int argc, char **argv) {
     return 0;
 }
 `;
-// [name, runtime, function index]. The sweep compares the pool with the sequential loop of the same IR.
+// [name, runtime, function index]. The sweep compares the scheduler with the sequential loop of the same IR.
 const backends = dataParallel
   ? ["parallel-init", "array-init", "parallel-map", "array-map", "parallel-sum", "array-sum"].map((name, index) => [name, poolRuntime, index + 1])
   : sweep ? [["parallel", poolRuntime, 0], ["sequential", poolRuntime, 2]] : [["pool", poolRuntime, 0]];
@@ -183,7 +194,7 @@ try {
   const wasmChecks = [];
   if (dataParallel) {
     const wasm = join(temporary, "parallel.wasm");
-    run(compiler, ["build", join(root, "benchmarks/tasks/Main.tz"), "--target", "wasm32", "-O3", "-o", wasm]);
+    run(compiler, ["build", portable(temporary), "--target", "wasm32", "-O3", "-o", wasm]);
     const module = new WebAssembly.Module(readFileSync(wasm));
     assert.deepEqual(WebAssembly.Module.imports(module), []);
     const api = new WebAssembly.Instance(module).exports;
@@ -197,13 +208,13 @@ try {
   }
   const report = {
     mode: quick ? "correctness-smoke" : "measurement", optimization: "O3 generic, no fast-math, fp-contract=off, allocator system",
-    workload_family: dataParallel ? "Array versus Parallel" : sweep ? "Task granularity sweep" : "Task runtime comparison",
+    workload_family: dataParallel ? "Array versus Parallel" : sweep ? "Routine.scope granularity sweep" : "Routine.scope runtime comparison",
     gap_us: gap,
     environment: { os: platform(), release: release(), arch: arch(), cpu: cpus()[0]?.model, logical_cpus: cpus().length, clang: run(clang, ["--version"]).split("\n")[0] },
     ir_sha256: hash(ir), runtime_sha256: hash(poolRuntime), baseline_runtime_sha256: baselineRuntime ? hash(baselineRuntime) : null,
-    notes: (dataParallel ? "Array/Parallel pairs use the same input and arithmetic; timings include input/output allocation, captures, work, synchronization and cleanup. Reduction is integer addition, so both orders have the same result. Cold includes lazy pool startup, but the common sequential reference is computed first. WASM is correctness-only sequential fallback. No SIMD claims or speed thresholds."
-      : sweep ? "32 tasks of growing length: the pool against the sequential loop of the same IR. Warm includes allocation, dispatch, join and cleanup. No speed thresholds."
-        : "Same LLVM and allocations across runtime variants. Cold includes lazy pool startup; warm includes allocation, dispatch, join and cleanup. Compilation, process startup and process-exit shutdown are outside the timing. No speed thresholds.")
+    notes: (dataParallel ? "Array/Parallel pairs use the same input and arithmetic; timings include input/output allocation, captures, work, synchronization and cleanup. Reduction is integer addition, so both orders have the same result. Cold includes the scheduler's startup, but the common sequential reference is computed first. WASM is correctness-only sequential fallback. No SIMD claims or speed thresholds."
+      : sweep ? "32 tzroutines of growing length (Routine.scope): the scheduler against the sequential loop of the same IR. Warm includes allocation, dispatch, join and cleanup. No speed thresholds."
+        : "Same LLVM and allocations across runtime variants. Cold includes the scheduler's startup; warm includes allocation, dispatch, join and cleanup. Compilation, process startup and process-exit shutdown are outside the timing. No speed thresholds.")
       + " warm_ms_per_call is the mean of back-to-back calls (the idle gap, if any, is excluded), warm_p50_ms the median of calls timed one by one, cpu_ms_per_call the process CPU time per call.",
     results,
     wasm_sequential_checks: wasmChecks,

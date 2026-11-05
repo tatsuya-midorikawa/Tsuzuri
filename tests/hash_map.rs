@@ -74,7 +74,7 @@ fn hash_lookup_and_updates_use_only_required_constraints() {
         "let set = HashSet.remove \"a\" (HashSet.insert \"b\" (HashSet.insert \"a\" (HashSet.empty())))\nHashSet.fold (\\total key -> total + key.length) 0 (&set)",
         "let set = HashSet.insert 7 (HashSet.empty())\nlet values = HashSet.to_array (&set)\nlet mut total = 0\nfor key in HashSet.iter (&set) do total = total + deref key\ntotal + values[0] + (if HashSet.contains 7 (&set) then 1 else 0) + (if HashSet.is_empty (&set) then 1 else 0)",
         "let text = \"borrowed\"\nlet map = HashMap.insert 1 (ref text) (HashMap.empty())\nlet value = HashMap.at 1 (&map)\nvalue.length",
-        "let map = HashMap.insert 1 (task { return 42 }) (HashMap.empty())\nlet map = HashMap.remove 1 map\nHashMap.length (&map)",
+        "record Pending { id: i64 }\ninstance Drop<Pending> { fn drop _value = () }\nlet map = HashMap.insert 1 (Pending { id: 42 }) (HashMap.empty())\nlet map = HashMap.remove 1 map\nHashMap.length (&map)",
         "let map = HashMap.insert 1 2 (HashMap.empty())\nlet total = HashMap.fold (\\sum key value -> sum + deref key + deref value) 0 (&map)\nlet mut count = 0\nfor pair in HashMap.iter (&map) do count = count + 1\ntotal + count",
     ] {
         accepts(source);

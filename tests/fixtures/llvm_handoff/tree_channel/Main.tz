@@ -1,0 +1,24 @@
+// The same program with an unused public function that sends on a `DataChannel`. Its runtime declarations stand between the two
+// runtime parts of the `tree` fixture, so the unpruned program (which `tsuzuri run` built before PB03 D1) had a line break there
+// that the pruned executable loses with the function: it must still build. (Until TZ12 the function locked a `Mutex`, whose
+// `sync.ll` did the same.)
+union Tree =
+    | Leaf
+    | Node of Tree * i64 * Tree
+
+def rec size :: Tree -> i64 = \tree ->
+    match tree with
+    | Tree.Leaf -> 0
+    | Tree.Node (left, _, right) -> size left + 1 + size right
+
+def bump :: i64 -> i64 = \n ->
+    match DataChannel.bounded 1 with
+    | (sender, receiver) ->
+        let _sent = DataChannel.send (ref sender) n
+        Owned.drop sender
+        match DataChannel.recv (ref receiver) with
+        | Some value -> value
+        | None -> 0
+
+let values = [1, 2, 3]
+$"{values} {size (Tree.Node (Tree.Leaf, 1, Tree.Leaf))}"

@@ -16,7 +16,7 @@
 - **直感的で表現力豊かな関数型構文**: カリー化、強力な型推論、代数的データ型（`union`）、網羅性を検証するパターンマッチ、パイプライン演算子（`|>`）、関数合成（`>>` / `<<`）をサポートしています。
 - **ゼロコストの型クラス**: 型クラスはコンパイル時に静的に単相化（モノモーフィゼーション）され、動的ディスパッチやランタイム辞書のオーバーヘッドを生じさせません。異なる型の値を一つのコレクションへ入れるときだけ、`dyn` 型で実行時のディスパッチを明示できます。
 - **拡張可能なコンピュテーション式**: `.tc` ファイルでビルダーを定義することで、`Result` や `Maybe`、非同期処理などのモナディックな制御フローを言語本来の構文のように扱えます。
-- **安全で軽量な並列処理**: 遅延評価・一回実行のタスク（`task { ... }`）と常駐スレッドプールにより、データ競合のない安全な並列計算を提供します。Go の goroutine に相当する `tzroutine { ... }`（専用のスタックを持つ M:N のスケジューリング。`main` や `export` の呼び出しは、その中で起動した tzroutine の終了を待ちます）と、Go の `chan T` に当たる `Channel<T>`（`for x in ch`、`close`、バッファなしの受け渡し）、複数のチャンネルを同時に待つ `select` 式、Go の `time` と同じタイマー（`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker`）、Go の `sync` に当たる同期の型（`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap`）、取り消しと期限の `Context`、最初の誤りで残りを止める `ErrGroup` も使えます。
+- **安全で軽量な並列処理**: Go の goroutine に相当する `tzroutine { ... }`（専用のスタックを持つ M:N のスケジューリング。捕捉は所有値のムーブか Copy です。`main` や `export` の呼び出しは、その中で起動した tzroutine の終了を待ちます）と、同じスケジューラーの上で配列を分けて並列に計算する `Parallel.*`、借用を共有する子を tzroutine で呼ぶ `Routine.scope` により、データ競合のない安全な並列計算を提供します。Go の `chan T` に当たる `Channel<T>`（`for x in ch`、`close`、バッファなしの受け渡し）、複数のチャンネルを同時に待つ `select` 式、Go の `time` と同じタイマー（`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker`）、Go の `sync` に当たる同期の型（`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap`）、取り消しと期限の `Context`、最初の誤りで残りを止める `ErrGroup` も使えます。
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
 - **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。対応環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 つだけです。`--target` は、Linux の glibc/musl と Windows の MSVC/MinGW を区別した 9 個の native triple を受け付け、同梱ツールチェーンか `TSUZURI_SYSROOT` でクロスリンクします。検証範囲と機能の制限は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
@@ -82,18 +82,18 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 **Tsuzuri は性能を最優先の設計要件の一つとしており、CPU 命令・SIMD・並列 CPU・GPU のうち、プログラムの意味を保ちつつ実処理が最も速くなる経路をコンパイラ内部で選択することを目指しています。**
 この方針はコンパイラ本体だけでなく、組み込み関数や標準ライブラリの設計にも一貫して適用されます。
 
-現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、`Task.parallel` による明示的な CPU 並列処理も利用可能です。また、実験的な機能として厳密な整数演算に基づく WGSL 生成、名前で選ぶ緩い `f32`・`f16` の WGSL 生成（`Gpu.map_relaxed`・`--emit wgsl-relaxed`）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行（native は wgpu-native を実行時に読み込み、WebAssembly は `--wasm-feature webgpu`）、WebGPU ホスト試作、SPIR-V の生成（`--emit spirv`。厳密な `i32`・`i32u`・`i64`・`i64u`・`f32`）、`Gpu.request Gpu.Vulkan` による Vulkan 上の実行（native だけ。厳密な `f32` は、デバイスが float controls を報告して適合プローブを通るときだけ）、呼び出しごとに測ったコストで CPU 参照と Vulkan を選ぶ `Gpu.Auto` に対応しています（WebGPU での厳密な浮動小数点と 64 bit 整数、GPU 常駐バッファ、自動オフロードは未実装です。確かめたのは Apple M1 Max だけです）。
+現状は LLVM の CPU 最適化・自動ベクトル化と `--cpu native` に対応し、`Parallel.*`・`Routine.scope`・tzroutine による明示的な CPU 並列処理も利用可能です。また、実験的な機能として厳密な整数演算に基づく WGSL 生成、名前で選ぶ緩い `f32`・`f16` の WGSL 生成（`Gpu.map_relaxed`・`--emit wgsl-relaxed`）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行（native は wgpu-native を実行時に読み込み、WebAssembly は `--wasm-feature webgpu`）、WebGPU ホスト試作、SPIR-V の生成（`--emit spirv`。厳密な `i32`・`i32u`・`i64`・`i64u`・`f32`）、`Gpu.request Gpu.Vulkan` による Vulkan 上の実行（native だけ。厳密な `f32` は、デバイスが float controls を報告して適合プローブを通るときだけ）、呼び出しごとに測ったコストで CPU 参照と Vulkan を選ぶ `Gpu.Auto` に対応しています（WebGPU での厳密な浮動小数点と 64 bit 整数、GPU 常駐バッファ、自動オフロードは未実装です。確かめたのは Apple M1 Max だけです）。
 
 ### 設計と実装済みの範囲
 
 | 項目 | 初版の実装状況 |
 | --- | --- |
-| 状態管理 | 変数は既定で不変（`let`）。ローカル変数の再代入・置換は `let mut` と排他借用 `ref mut T` で行います。標準入出力と OS API は `IO`、外部連携は `extern` で分離します。タスクの間で状態を共有して書き換えるときは、共有借用から更新できる `Atomic` と `Mutex` に入れます。 |
+| 状態管理 | 変数は既定で不変（`let`）。ローカル変数の再代入・置換は `let mut` と排他借用 `ref mut T` で行います。標準入出力と OS API は `IO`、外部連携は `extern` で分離します。tzroutine の間で状態を共有して書き換えるときは、共有借用から更新できる `Atomic` と `Mutex` に入れます。 |
 | 型システム | 基本数値型（`bool`, `unit`, `i8`〜`i128`, `i8u`〜`i128u`, `f16`〜`f128`, `d32`〜`d128`, `byte`/`ubyte`/`sbyte`）、任意精度整数 `bigint`、ECMA-262 準拠の UTF-16 `string`、UTF-8 バイト列 `utf8string`、文字型 `char`/`utf8char`、タプル、不変レコード、共用体（`union`）、配列、連結リスト、環境を捕捉する関数値に対応。 |
 | 構文と表現 | `def ... = ラムダ式`、カリー化と部分適用、`\引数 -> 式`、`if…then…else`、`match` とガード式、`for…in`、`for…to`／`downto`、`while…do`、`break`／`continue`、レコード更新、インデント構文、パイプライン `\|>`、関数合成 `>>`／`<<`、組み込み関数 `not`／`ignore`、累乗演算子 `**`、ビット演算（`&&&`／`\|\|\|`／`^^^`／`~~~`／`<<<`／`>>>`）、数値接尾辞、高階関数、明示的再帰（`rec`／`and`）、関数の中の `let rec`。 |
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型エイリアス（`type`）、型クラスおよび具体型インスタンスによるアドホック多相。制約推論と静的単相化。ランク1高階型（HKT）。`dyn C` と `Dyn.of` による vtable を使った動的ディスパッチ。 |
 | コンピュテーション式 | `.tc` によるユーザー定義ビルダー（`@alias` による小文字の別名を含む）。明示的ブロックと型推論による暗黙本体。束縛・短絡・分岐・反復を標準の関数呼び出しへ展開。 |
-| タスクと並列処理 | `task { ... }`、`let!`／`return`／`return!`／`do!`。所有値を持つ一回実行の計算を組み合わせ、`Task.parallel` でスレッド数を制限して安全に並列実行。 |
+| 並行処理と並列処理 | `tzroutine { ... }` と `Routine`（M:N のスケジューラー、P の数は `TSUZURI_MAXPROCS`）、借用を共有する子の `Routine.scope`、データ並列の `Parallel.*`、`Channel`・`select`・`WaitGroup`・`ErrGroup`・`Context`・`Mutex`・`Atomic`。旧 `task { ... }`・`Task<T>`・`Task.*` は削除済み（`E1040`）。 |
 | モジュール構成 | 1 ファイル = 1 モジュール。同一ディレクトリ内の自動解決と `Main.tz` によるエントリーポイント。ローカルパッケージ、commit 固定の git 依存、自前の index による registry 依存と最小版選択（`Tsuzuri.toml`、`tsuzuri fetch`、`tsuzuri publish`、`Tsuzuri.lock`）。言語版（`Tsuzuri.toml` の `edition`）、非推奨の印（`@deprecated`、警告 `W1005`）、公開 API の差分（`tsuzuri api-diff`）と互換性の方針（[docs/stability.md](docs/stability.md)）。 |
 | メモリモデル | 所有権の移動（move）と借用検査（`ref T`／`ref mut T`、Rust 互換の `&T`／`&mut T` も可）。最後の使用と非重複の match 束縛でのコピー省略。明示的なヒープ確保（`new`）とスタック配置の区別。文字列・配列・リスト・環境の自動解放、`instance Drop` による RAII（GC は不使用。共有は明示的な `Rc` / `Arc`）。 |
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。所有権・借用から証明した内部参照属性、scoped alias、限定した scalar TBAA・値・memory effects の情報を付与（public wrapper・slice ABI は維持）。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化し、同じ再帰グループへの末尾呼び出しは native で保証された末尾呼び出し（`musttail`）。 |
@@ -266,7 +266,7 @@ let pair: Pair<string, i64> = swap (Pair { first: 42, second: "answer" })
 pair.second
 ```
 
-- **代数的データ型 (`union`)**: 各ケース（variant）は 0 個または 1 個のペイロードを持ちます。ペイロードを持つケースは 1 引数のコンストラクタ関数値としても扱えます。値はタグ（ケースの数に応じて 1・2・4 バイト）と、最大のペイロードのアライメントに揃えた共有領域で、たとえば下の `Shape` は 24 バイトです。`Maybe<string>` のように、ペイロードなしのケースと文字列・配列のペイロードだけを持つ共用体はタグを持たず、ペイロードそのもの（16 バイト）です。ネイティブのターゲットでは、`ref` のペイロードも null ポインターを `None` にして 8 バイトです。関数値と `Task` のペイロードも、どのターゲットでも null の記述子を `None` にして、関数値と同じ大きさ（ネイティブは 16 バイト）です。詳細は [メモリ上の大きさ](_tsuzuri/language-reference/built-in-types-and-modules/union.md#メモリ上の大きさ) を参照してください。
+- **代数的データ型 (`union`)**: 各ケース（variant）は 0 個または 1 個のペイロードを持ちます。ペイロードを持つケースは 1 引数のコンストラクタ関数値としても扱えます。値はタグ（ケースの数に応じて 1・2・4 バイト）と、最大のペイロードのアライメントに揃えた共有領域で、たとえば下の `Shape` は 24 バイトです。`Maybe<string>` のように、ペイロードなしのケースと文字列・配列のペイロードだけを持つ共用体はタグを持たず、ペイロードそのもの（16 バイト）です。ネイティブのターゲットでは、`ref` のペイロードも null ポインターを `None` にして 8 バイトです。関数値のペイロードも、どのターゲットでも null の記述子を `None` にして、関数値と同じ大きさ（ネイティブは 16 バイト）です。詳細は [メモリ上の大きさ](_tsuzuri/language-reference/built-in-types-and-modules/union.md#メモリ上の大きさ) を参照してください。
 
 ```text
 union Shape =
@@ -338,45 +338,54 @@ match answer with
 - **暗黙のコンピュテーション式**: 通常の関数や `main` の本体において、明示的なビルダーブロックを省略して `let!` や `do!` を直接記述することも可能です。コンパイラが戻り値の型に基づいて適切なビルダーを自動合成します。詳細は [暗黙の計算式](docs/language.md#ビルダー名を省略した本体) を参照してください。
 - **最適化**: スコープを脱出しないローカルな継続はコンパイラによって特殊化・インライン化され、不要なクロージャのメモリ確保や間接関数呼び出しが完全に消去されます。特殊化した関数（worker）の数には 1,024 個の予算があり、使い切る program では、予算で完成できる連鎖を完成させ、残りは通常の経路になります（[測定](docs/benchmarks.md#抽象化コストの除去pr032026-10-16)）。詳細は [ビルダーの仕様](docs/language.md#コンピュテーション式) および [コンピュテーション式の比較](docs/benchmarks.md#コンピュテーション式の比較) を参照してください。実行例は `tsuzuri run examples/computations` で確認できます。
 
-### タスクと並列処理
+### 並行処理と並列処理
 
-```text
-let computation = task {
-    let! values = Task.parallel [
-        task { return 20 },
-        task { return 22 }
-    ]
-    return values[0] + values[1]
-}
+```tsuzuri
+// データ並列: 添字ごとの計算を、tzroutine のスケジューラーの上でチャンクに分けて走らせる
+let values = Parallel.init 2 (\index -> 20 + index * 2)
 
-Task.run computation
+// tzroutine: 起動してすぐ戻る。結果は Channel で受け取る（受け取りが待ち合わせ）
+let results: Channel<i64> = Channel.make 0
+for index in 0 ..< 2 do
+    let out = Channel.share results
+    let value = values[index]
+    tzroutine {
+        Channel.send out value
+    }
+let mut total = 0i64
+for _ in 0 ..< 2 do
+    total = total + (match Channel.recv results with
+        | Maybe.Some value -> value
+        | Maybe.None -> 0)
+total
 // 出力: 42
 ```
 
-- **遅延・一回実行のタスク**: `task { ... }` は `Task<T>` 型の値を生成します。定義時点では実行されず、`Task.run` を呼び出した時点で初めて実行が開始されます。二重実行はコンパイルエラーとして検出されます。また、未実行のままスコープを抜けたタスクは本体を実行せずに捕捉リソースを安全に解放します。
-- **安全なスレッド分離**: タスクが捕捉する値は所有権の移動（move）または Copy に限定され、参照と `Rc` の持ち込みはコンパイル時に拒否されます。これにより、共有可変状態によるデータ競合の発生を根本から防ぎます。共有して書き換える状態は、`Atomic`（整数と `bool`）と `Mutex`（ほかの値）に限られ、`Arc<Atomic<T>>`、`Arc<Mutex<T>>`、または次の `Task.scope` の共有借用でタスク間に渡します。値の受け渡しは、容量付きの `DataChannel`（最後の `Sender` の drop で閉じ、全スレッドが待ったらデッドロックのトラップ）です。`DataChannel` の要素は借用を持てず（関数値は、環境が借用を持たないものだけ）、`Send` の検査は、ジェネリック関数を通しても、使う型ごとに行われます。`Sync` でない値（`Rc`、ホストのハンドルなど）は共有できません。
-- **借用を共有する並列区間 (`Task.scope`)**: `Task.scope (ref shared) count callback` は、`Sync` な値の共有借用を `count` 個の子どもに貸し、`callback shared index` の結果を添字順に返します。すべての子どもが終わってから戻るので、外の値を持ち込まずに共有できます。
-- **並列実行とスレッドプール**: `Task.parallel` はタスクの配列を受け取り、入力順と同一の結果配列を返します。ネイティブ環境では POSIX threads を基盤とした常駐スレッドプール（最大 32 スレッド）をオンデマンドで起動し、効率よくタスクを分散します。
-- **データ並列 API**: タスクオブジェクトの生成オーバーヘッドを抑えたい大量のデータ処理には、`Parallel.init`、`Parallel.map`、`Parallel.map_ref`、`Parallel.reduce`、`Parallel.sum`、`Parallel.fold` を使用します。配列を固定チャンクに分割し、最小限の同期コストで高速に処理します。結合的な還元を `Monoid`（`Monoids.Sum`・`Monoids.MaxOf`）で書くと、`Parallel.fold` は逐次の `Array.fold_monoid` とビットまで同じ値を返します（浮動小数点を含む型は `E1039` で拒否されます）。`tsuzuri check PATH --report parallel` は、`Parallel` に置き換えられる `Array` の呼び出しを提案として一覧にします（自動では書き換えません）。詳細は [データ並列 API](docs/language.md#データ並列-api) を参照してください。実行例は `tsuzuri run examples/tasks` で確認できます。
-- **tzroutine (`tzroutine { ... }`)**: ブロックを Go の goroutine に相当する軽量な実行単位として起動し、`()` を返します。捕捉の規則は `task { }` と同じで、`main`・`export` の呼び出し・`test`・`bench` は、その中で起動した tzroutine（孫を含む）がすべて終わるまで戻りません。`Routine.go`・`yield`・`count`・`max_procs`・`cpu_count`・`with_locked_thread` を持つ組み込みの `Routine` モジュールがあり、P の数は `TSUZURI_MAXPROCS` で決めます。`extern` 関数・ファイル・標準入出力の呼び出しの間は P をほかの OS スレッドへ渡し、ソケットの待ちは tzroutine だけが待ちます（netpoller）。ネイティブの macOS・Linux・Windows だけで、WebAssembly は未対応です（[tzroutine 式](./_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md)）。
+- **tzroutine (`tzroutine { ... }`)**: ブロックを Go の goroutine に相当する軽量な実行単位として起動し、`()` を返します。捕捉は所有値のムーブか Copy の複製で、`Send` でなければなりません（借用と `Rc` の捕捉は `E1013`）。`main`・`export` の呼び出し・`test`・`bench` は、その中で起動した tzroutine（孫を含む）がすべて終わるまで戻りません。`Routine.go`・`yield`・`count`・`max_procs`・`cpu_count`・`with_locked_thread` を持つ組み込みの `Routine` モジュールがあり、P の数は `TSUZURI_MAXPROCS` で決めます。`extern` 関数・ファイル・標準入出力の呼び出しの間は P をほかの OS スレッドへ渡し、ソケットの待ちは tzroutine だけが待ちます（netpoller）。ネイティブの macOS・Linux・Windows だけで、WebAssembly は未対応です（[tzroutine 式](./_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md)）。
+- **安全なスレッド分離**: tzroutine の捕捉と `Parallel.*` のコールバックは借用した環境を持てず、`Rc` の持ち込みはコンパイル時に拒否されます。これにより、共有可変状態によるデータ競合の発生を根本から防ぎます。共有して書き換える状態は、`Atomic`（整数と `bool`）と `Mutex`（ほかの値）に限られ、`Arc<Atomic<T>>`、`Arc<Mutex<T>>`、または次の `Routine.scope` の共有借用で渡します。ネイティブの `Mutex.with_lock` は tzroutine のランタイムのロックで、ロックを持ったまま待てます（同じ `Mutex` をもう一度取るとトラップ）。容量付きの `DataChannel`（最後の `Sender` の drop で閉じる）も、待つのはその tzroutine（tzroutine でないスレッドではそのスレッド）だけで、誰も起こせない待ちはデッドロックの報告で終わります。`DataChannel` の要素は借用を持てず（関数値は、環境が借用を持たないものだけ）、`Send` の検査は、ジェネリック関数を通しても、使う型ごとに行われます。`Sync` でない値（`Rc`、ホストのハンドルなど）は共有できません。
+- **借用を共有する子 (`Routine.scope`)**: `Routine.scope (ref shared) count callback` は、`Sync` な値の共有借用を `count` 個の子に貸し、子ごとに 1 つの tzroutine で `callback shared index` を呼んで、結果を添字順に返します。すべての子が終わってから戻るので、外の値を持ち込まずに共有できます。子は互いを待てます。
+- **データ並列 API**: 配列の要素ごとの大量の処理には、`Parallel.init`、`Parallel.map`、`Parallel.map_ref`、`Parallel.reduce`、`Parallel.sum`、`Parallel.fold` を使用します。配列を固定チャンクに分割し、ネイティブでは tzroutine のスケジューラーの上で、呼び出し元と最大 `min(チャンク数, P) - 1` 個の補助の tzroutine が処理します（P は `TSUZURI_MAXPROCS`）。結合的な還元を `Monoid`（`Monoids.Sum`・`Monoids.MaxOf`）で書くと、`Parallel.fold` は逐次の `Array.fold_monoid` とビットまで同じ値を返します（浮動小数点を含む型は `E1039` で拒否されます）。`tsuzuri check PATH --report parallel` は、`Parallel` に置き換えられる `Array` の呼び出しを提案として一覧にします（自動では書き換えません）。詳細は [データ並列 API](docs/language.md#データ並列-api) を参照してください。実行例は `tsuzuri run examples/tzroutines` で確認できます。
 - **Channel (`Channel<T>`)**: tzroutine の間で値を受け渡す Go と同じ双方向のチャンネルです。`Channel.make n`（0 はバッファなし）・`send`・`recv`（`Maybe`）・`try_send`・`try_recv`・`close`・`length`・`capacity`・`share` と `for x in ch` があり、閉じるのは `close` だけ、閉じた後の `send` はトラップです。待つのは tzroutine だけで、誰も起こせない待ちはその場所でトラップします。tzroutine を起動しないプログラムは、既定の WebAssembly でも 1 本の実行として使えます。旧 `Channel`（送り手と受け手の端が分かれたもの）は `DataChannel` に改名し、旧の名前は `E1040` と `tsuzuri fix` で直せます（[Channel](./_tsuzuri/language-reference/built-in-types-and-modules/channel.md)）。
 - **select 式**: `select | recv x from ch -> … | send v to ch -> … | default -> …` で複数のチャンネルの送受信を同時に待ち、すぐにできる腕を一様乱数で 1 つ選びます。`when` で腕を止め（Go の nil チャンネルの代わり）、`default` で待たずに試します。選ばれなかった送る値は drop されます（[select 式](./_tsuzuri/language-reference/async-tasks-and-lazy/select.md)）。
 - **タイマー**: 長さはナノ秒の `i64`（`50 * Time.millisecond()`）です。`Time.sleep` は tzroutine だけを待たせ（`Time.sleep_ms` も tzroutine の中では同じ）、`Time.after` は `select` のタイムアウト、`Time.tick` と `Ticker` は周期、`Time.after_func` は遅らせた呼び出し、`Timer` は止められる 1 回のタイマーです。境界はまだ発火していないタイマーを待たずに止めます（[Time](./_tsuzuri/language-reference/built-in-types-and-modules/time.md)）。
-- **エラー短絡 (`Task.parallel_results`)**: 複数の `Task<Result<T, E>>` を並列実行し、いずれかが失敗した時点で未開始のタスクを即座にキャンセルして最小インデックスのエラーを返します。
+- **最初の誤りで止める (`ErrGroup`)**: `ErrGroup.go` で関数ごとに tzroutine を起動し、`ErrGroup.wait` で全員の終わりを待って最初の誤り（完了の時刻の順）を返します。最初の誤りはグループの `Context` を取り消すので、ほかの関数はそれを見て早く止まれます。
 
-```text
-let jobs: [Task<Result<i64, string>>] = [
-    task { Result.Ok 20 },
-    task { Result.Error "failed" }
-]
-match Task.run (Task.parallel_results jobs) with
-| Result.Ok values -> Array.sum (&values)
-| Result.Error _ -> -1
+```tsuzuri
+let group: ErrGroup<string> = ErrGroup.create ()
+for value in 1 ..= 2 do
+    ErrGroup.go group (Owned.function (\() ->
+        if value == 2 then Result.Error "failed" else Result.Ok ()))
+match ErrGroup.wait group with
+| Result.Ok _ -> "ok"
+| Result.Error message -> message
+// 出力: failed
 ```
+
+- **削除した Task**: 以前の `task { ... }`、`Task<T>`、`Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope` は削除しました。書くと `E1040` で、`tsuzuri fix` は `Task.scope` を `Routine.scope` に書き換えます。書き換え方は [Task からの移行](_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md#task-からの移行) にあります。
 
 ### 非同期計算 (`Async`)
 
-待ち時間のあいだに同じスレッドで別の計算を進めるには、標準の `Async` を使います。`Async.run` は仮想時刻、`Async.block_on` は実時間、`Async.start` はホストの poll で実行します。CPU のコアを使う並列処理は、上の `Task.parallel` と分担します。
+待ち時間のあいだに同じスレッドで別の計算を進めるには、標準の `Async` を使います。`Async.run` は仮想時刻、`Async.block_on` は実時間、`Async.start` はホストの poll で実行します。CPU のコアを使う並列処理は、上の `Parallel.*` と tzroutine と分担します。
 
 ```text
 let work = Async {
@@ -497,21 +506,21 @@ def main :: unit -> i32 = \() ->
 #### モジュールの可視性と予約モジュール名
 
 - **可視性**: 宣言は既定で外部モジュールへ公開されます（public）。モジュール内でのみ使用する補助関数やデータ構造には `private` キーワードを付与します。ホスト言語（C や WebAssembly）へシンボルを公開する場合は `export` を指定します。
-- **標準ライブラリの名前空間 `std`**: 標準ライブラリは名前空間 `std` に属しており、`std::Maybe` や `std::Task.run` のように完全修飾することも可能です。以下の名前は予約されており、ユーザーが同一名のモジュールを作成することはできません（`E1011` エラー）。
+- **標準ライブラリの名前空間 `std`**: 標準ライブラリは名前空間 `std` に属しており、`std::Maybe` や `std::Int.checked_add` のように完全修飾することも可能です。以下の名前は予約されており、ユーザーが同一名のモジュールを作成することはできません（`E1011` エラー）。
 
 | 予約名 | 用途 |
 | --- | --- |
 | `Maybe`, `Result` | 成功・失敗および値の存在・欠落を表現する基本データ型 |
 | `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet`, `Arena`, `Matrix`, `MatrixView`, `Tensor` | 各種コレクションおよびデータ構造 |
 | `Rc`, `Arc` | 参照カウントによる共有所有 |
-| `Atomic`, `Mutex` | 共有借用から更新できる整数・`bool` のセルと、ロックで守る値（`Task.scope`、`Arc` と組み合わせる） |
+| `Atomic`, `Mutex` | 共有借用から更新できる整数・`bool` のセルと、ロックで守る値（`Routine.scope`、`Arc` と組み合わせる） |
 | `Domain` | 純粋な計算のトラップを `Result.Error` にする失敗の領域（macOS・Linux のネイティブ） |
 | `Channel` | Go の双方向のチャンネル。`make`（0 はバッファなし）・`send`・`recv`・`try_send`・`try_recv`・`close`・`length`・`capacity`・`share`、`for x in ch`。向きのあるハンドル `send_only`・`receive_only` |
 | `SendOnly`・`ReceiveOnly` | `Channel` の送るだけ・受け取るだけのハンドル（Go の `chan<- T`・`<-chan T`）と、その操作 |
 | `Timer`・`Ticker` | 1 回送るタイマーと周期のティッカー（Go の `time.Timer`・`time.Ticker`）。`create`・`channel`・`stop`・`reset` |
 | `WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` | Go の `sync` と `x/sync/semaphore` に当たる同期の型。待つのは tzroutine だけ |
 | `Context`・`ErrGroup` | Go の `context` と `x/sync/errgroup` に当たる取り消し・期限と tzroutine のグループ |
-| `DataChannel` | 容量付きの MPMC キュー（旧 `Channel`）。`Sender`／`Receiver`、`bounded`・`send`・`recv`・`clone_sender`。最後の `Sender` の drop で閉じ、全スレッドが待ったらデッドロックのトラップ |
+| `DataChannel` | 容量付きの MPMC キュー（旧 `Channel`）。`Sender`／`Receiver`、`bounded`・`send`・`recv`・`clone_sender`。最後の `Sender` の drop で閉じ、誰も起こせない待ちはデッドロックの報告で終わる |
 | `String`, `Utf8String`, `Char` | UTF-16 / UTF-8 文字列および文字操作 |
 | `Text`, `RegexText` | `string` と `utf8string` に共通の操作の型クラス（`Text.find`・`Text.split`・`Text.trim` の形。`String`・`Utf8String` の同名の関数への直接の呼び出し）。opt-in の `RegexText` は `Regex.*_text` が使う |
 | `Regex`, `Unicode` | 線形時間の正規表現、Unicode 17.0.0 の文字データ |
@@ -607,7 +616,7 @@ console.log(instance.exports.tz_transform(1n, 2n, 3n, 4n)); // 42n
   ```
 - **型変換の規則**: 64-bit 整数（`i64` / `i64u`）は JavaScript の `BigInt`、`f32` / `f64` は `Number`、`bool` は `i32`（0 = false, 1 = true）に対応します（生成したグルーは `boolean` に直します）。
 - **メモリとスタックのカスタマイズ**: `--wasm-max-memory SIZE`（既定 16MiB、最大 4GiB-64KiB / wasm64 は 16GiB）や `--wasm-stack-size SIZE`（既定 1MiB）で線形メモリの上限やメインスタックサイズを調整できます。これらは `Tsuzuri.toml` の `[wasm]` セクションでも設定可能です。
-- **マルチスレッド (`threads`)**: `--wasm-feature threads` を指定することで、Task や Parallel による並列計算を Web Worker や Node.js の Worker Threads に分散できます。`Atomic`、`Mutex`、`DataChannel`、`Task.scope` も Worker で動きます（ロックとチャンネルの待ちは共有メモリの `memory.atomic.wait32` で、スレッドごとの状態はインスタンスごとのグローバルです）。詳細は [Webホスト要件](examples/web/README.md) を参照してください。
+- **マルチスレッド (`threads`)**: `--wasm-feature threads` を指定することで、`Parallel` による並列計算を Web Worker や Node.js の Worker Threads に分散できます。`Atomic`、`Mutex`、`DataChannel` も Worker で動きます（tzroutine と `Routine.scope` は `E2000` です。ロックとチャンネルの待ちは共有メモリの `memory.atomic.wait32` で、スレッドごとの状態はインスタンスごとのグローバルです）。詳細は [Webホスト要件](examples/web/README.md) を参照してください。
 
 ### GPU カーネル連携（実験的）
 
@@ -1157,7 +1166,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | コンパイル時評価（`const`・`const def`・静的データ） | `tests/constants.rs` | `features.mjs constants`・`const_functions`・`const_statics`、`progfuzz.mjs`（const と実行時の一致） |
 | 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite）、`codegen_units.mjs`（codegen unit への分割。PB07。`TSUZURI_CODEGEN_UNITS=split` で、ほかの suite も分けたビルドで確かめられます）、`progfuzz.mjs`（言語全体の差分ファズ。G36） |
 | スタックのフレーム・末尾呼び出し（PM09） | `tests/stack_frames.rs`（寿命の印と関数ごとの上限）、`tests/tail_recursion.rs`（`musttail`・drop の順序・対象外の形）、`tests/fast_backend.rs`・`tests/fast_backend_ops.rs`（`return_call` への翻訳） | `stack.mjs`（深さ 10,000,000 の相互再帰。native・`--backend fast`・`--wasm-feature tail-call`）、`control.mjs`（`TSUZURI_ASAN=1` も）、`user_drop.mjs` |
-| Task・並列・WASM threads・同期 | `tests/tasks.rs`、`tests/parallel.rs`、`tests/concurrency.rs`（`Atomic`・`Mutex`・`DataChannel`・`Task.scope`） | `tasks.mjs`、`wasm_threads.mjs`、`wasm_threads_stress.mjs`、`trap_return_sync.mjs`、`features.mjs concurrency`・`data_channel`、`TSUZURI_TSAN=1` の実行 |
+| 並列・WASM threads・同期 | `tests/parallel.rs`、`tests/concurrency.rs`（`Atomic`・`Mutex`・`DataChannel`）、`tests/removed_features.rs`（削除した `task { }`・`Task<T>`・`Task.*` の `E1040`） | `wasm_threads.mjs`、`wasm_threads_stress.mjs`、`trap_return_sync.mjs`、`features.mjs concurrency`・`data_channel`、`TSUZURI_TSAN=1` の実行。`tests/tasks.mjs`・`tests/tasks.rs` は TZ12 で Task と一緒に削除し、その値の場合は `features.mjs tzroutine_values`（native、P 1・4）へ移しました。ネイティブの `Parallel`・`Mutex`・`DataChannel` は tzroutine のランタイムで動くので、下の tzroutine・`Channel`・同期の型・`Parallel`（TZ11）の行の suite が確かめます |
 | tzroutine のランタイム（TZ01） | —（C だけ） | `tzroutine_runtime.mjs`（`src/runtime/tzroutine.c` の C の単体テスト。`TSUZURI_TSAN=1`・`TSUZURI_ASAN=1` で sanitizer も） |
 | tzroutine 式・`Routine`（TZ02） | `tests/tzroutine.rs` | `tzroutine.mjs`、`features.mjs tzroutine`（native だけ）、`tzroutine_runtime.mjs` |
 | `Channel`・`E1040`（TZ03） | `tests/channel.rs`、`tests/removed_features.rs` | `features.mjs channel`（native、P 1・4）・`channel_single`（native と既定の WebAssembly）、`tzroutine_runtime.mjs` |
@@ -1234,7 +1243,6 @@ node tests/compact_strings_raw.mjs target/release/tsuzuri --quick   # compact �
 node tests/compact_strings_modes.mjs target/release/tsuzuri quick compact utf16   # 既存の文字列に関わる node の suite を TSUZURI_STRINGS=compact と utf16 の両方で実行する（full は到達しうる suite すべて）
 python3 tests/lldb_strings.py   # LLDB の formatter（scripts/lldb/tsuzuri_lldb.py）が UTF-16 と Latin-1 の string を読むことを、LLDB のセッションなしで確かめる
 python3 tests/lldb_lists.py   # PM04: 同じ formatter の `ListProvider` が、`head` から `next` の連鎖をたどって各要素の address を返すこと（先頭側の空き slot、短い length の view、alignment 16 の要素の slot の offset 32）、chunk を二分探索で見つけて読んだ chunk を覚えていること、壊れたメモリ（範囲外の head、循環する `next`、合わない header、不正な長さ）で例外にならないことを、LLDB のセッションなしで確かめる（python3 だけで動く）
-node tests/tasks.mjs target/release/tsuzuri   # Task・DataChannel・Mutex の native／WASM と、pool の C 検査（task_runtime.c の lock・signal の数と、最初の添字・worker の完了の数え方の順序、task_stress.c の複数 host の stress）。TSUZURI_TSAN=1・TSUZURI_ASAN=1 で sanitizer も
 node tests/tzroutine.mjs target/release/tsuzuri   # tzroutine 式（TZ02）の run・test を -O0／-O3 × P 1・4 で（main の終了の待ち、Routine.go、tzroutine の中のトラップ、WebAssembly の拒否）
 node tests/tzroutine_runtime.mjs   # tzroutine のランタイム（TZ01）の C の単体テスト。-O0／-O3 × P 1・2・4、stack.c との連結（溢れの報告）、Apple silicon では Rosetta の x86-64、Windows では Fiber。TSUZURI_TSAN=1・TSUZURI_ASAN=1 で sanitizer も
 node tests/async.mjs target/release/tsuzuri   # JSPI の検証には Node.js 24 以降
@@ -1271,7 +1279,7 @@ node tests/packages.mjs target/release/tsuzuri
 node tests/bindgen.mjs target/release/tsuzuri
 node tests/debug_info.mjs target/release/tsuzuri   # llvm-dwarfdump が必要（TSUZURI_DWARFDUMP で指定できる）
 node tests/debugger.mjs target/release/tsuzuri   # lldb が必要（TSUZURI_LLDB で指定できる）
-node tests/debugger_static.mjs target/release/tsuzuri   # PM02: lldb が必要（TSUZURI_LLDB で指定できる）。プロセスを起動せず、-g の実行ファイルの型を lldb に読ませて、関数値と Task（descriptor と environment の 2 メンバー）を formatter の is_function が見分けること、同じ名前のフィールドを持つ record（古い 4 欄の形、descriptor が整数や ref の record）は見分けないこと、descriptor が closure.descriptor（code・clone・drop）を指すことを確かめる
+node tests/debugger_static.mjs target/release/tsuzuri   # PM02: lldb が必要（TSUZURI_LLDB で指定できる）。プロセスを起動せず、-g の実行ファイルの型を lldb に読ませて、関数値（descriptor と environment の 2 メンバー）を formatter の is_function が見分けること、同じ名前のフィールドを持つ record（古い 4 欄の形、descriptor が整数や ref の record）は見分けないこと、descriptor が closure.descriptor（code・clone・drop）を指すことを確かめる
 node tests/frontend_cache.mjs target/release/tsuzuri
 node tests/parallel_frontend.mjs target/release/tsuzuri   # PB04: TSUZURI_THREADS が 1・2・8・未設定のどれでも、診断（順序・重複の除去・上限）、IR、終了コード、frontend cache の bytes が同じこと（examples・fixtures・合成 200／1,000 module・上限を超える誤り・入れ子の上限）。不正な値は E2000 で終了コード 2。TSUZURI_BASELINE=<PB04 より前の compiler> を付けるとその compiler とも比べる
 node tests/ai_cost.mjs target/release/tsuzuri   # G31: AI 作業コストの定義・独立 golden・導出・診断・外部実測・静的サイズ・KB/MCP アダプター。LLM なしで決定的。結果は docs/ai-cost.md
@@ -1280,7 +1288,7 @@ node tests/server.mjs target/release/tsuzuri   # PB06: tsuzuri serve（Unix だ�
 
 # WebAssembly & GPU テスト
 node tests/wasm_threads.mjs target/release/tsuzuri
-node tests/wasm_threads_stress.mjs target/release/tsuzuri   # WASM threads の pool を 1〜7 ワーカーで、グループ・入れ子・Task.scope・pipeline の厳密な値と照合する（PR06）。引数は [コンパイラ] [rounds（既定 12）]。止まったら watchdog が終了させる
+node tests/wasm_threads_stress.mjs target/release/tsuzuri   # WASM threads の pool を 1〜7 ワーカーで、グループ・入れ子・共有状態・pipeline の厳密な値と照合する（PR06）。引数は [コンパイラ] [rounds（既定 12）]。止まったら watchdog が終了させる
 node tests/wasm_memory.mjs target/release/tsuzuri
 node tests/wasm_heap.mjs   # WASM の heap だけを wasm32・wasm64 で検査（compiler は不要。wasm64 は Node.js 24 以降。PM05）。手で導いたアドレス、不変条件の検査、穴を複数残す確保（大きな一時配列を解放したあとに小さなブロックが生き残る列）、取っておく穴の上限（最近の最大の要求の 2 倍まで、1/64 ずつ忘れる）、生きているデータが一定の乱数列や、数十 KB のブロックの無作為な置き換えで heap が上限まで伸びないこと
 node tests/bindings.mjs target/release/tsuzuri   # 生成グルー（TSUZURI_TSC で TypeScript の bin/tsc を指定できる）
@@ -1351,8 +1359,8 @@ node benchmarks/run-lto.mjs target/release/tsuzuri --metrics target/perf/PR08-af
 node benchmarks/run-heap.mjs target/release/tsuzuri --baseline OLDER_COMPILER --capacity   # WASM の heap（PM05）。確保の多い kernel と PX02 の app を wasm32 で走らせ、時間とメモリの大きさ、上限までに収まる最大のサイズを比べる。--quick は動作確認だけ
 node benchmarks/run-list-memory.mjs target/release/tsuzuri --baseline OLDER_COMPILER --wasm   # リスト（PM04）。12 の kernel の確保の回数と要求 bytes（決定的）、時間、peak RSS、wasm32 の heap の高水位を、2 つのコンパイラを交互に測って比べる。--opt O0 は -O0 の build、--only で kernel を選ぶ
 node benchmarks/run-managed.mjs target/release/tsuzuri --scale 0.1
-node benchmarks/run-tasks.mjs target/release/tsuzuri --quick   # Task.parallel の native の時間。--runtime・--baseline-runtime で pool の C ランタイムだけを差し替え、--sweep・--gap-us・--data-parallel で粒度・起床の遅延・Array との比較を測る（PR06）
-node benchmarks/run-tasks-wasm.mjs target/release/tsuzuri --quick   # 同じ kernel を WASM threads の pool（Node の worker_threads）で測る。2 つのコンパイラを比べて 2 つの pool を比べる（PR06）
+node benchmarks/run-tasks.mjs target/release/tsuzuri --quick   # Routine.scope の native の時間（PR06。TZ12 までは Task.parallel を測った。指標の名前は同じ）。--runtime・--baseline-runtime で tzroutine のスケジューラーの C ランタイムだけを差し替え、--sweep・--gap-us・--data-parallel で粒度・起床の遅延・Array との比較を測る
+node benchmarks/run-tasks-wasm.mjs target/release/tsuzuri --quick   # 同じ kernel の Parallel.init を WASM threads の pool（Node の worker_threads）で測る。2 つのコンパイラを比べて 2 つの pool を比べる（PR06）
 node benchmarks/run-repl.mjs target/release/tsuzuri   # REPL の 1 入力の待ち時間と内訳（G13）
 node benchmarks/run-matrix.mjs target/release/tsuzuri   # Matrix の積（mul・mul_fma・mul_parallel）と C の行列積の同条件比較。WASM も実行する（C11。--quick は動作確認だけ。Math.fma がソフトウェアの環境では mul_fma を n = 64 までしか測らず、--fused-all で全サイズを測る）
 node benchmarks/run-gpu-vulkan.mjs target/release/tsuzuri   # Gpu.Auto の規則の定数（CPU 参照と Vulkan の転送込みの時間。Vulkan のデバイスが要る）
@@ -1377,7 +1385,7 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
   保証のない呼び出し消去や結果共有は実装せず、必要な追加条件と未実装の範囲を区別します。
 - A19 の後続項目のうち診断の強化は A18 と同じ補完マスクを共有します。
   明示の `ref` の診断は変えず、`pure def` の補完による拒否にだけ `own` の案内を付けます。
-- A19 の明示した `Task`／`Parallel` の許可は、入力から不透明な関数・Task・dyn を受け取らない
+- A19 の明示した `Parallel` の許可は、入力から不透明な関数・dyn を受け取らない
   閉じた根に限定し、生成・参照するコールバックをすべて検査します。外部の問い合わせもこの根の条件を検査します。
   実行器の内部状態だけを例外とし、利用者の Atomic／Rc や非同期の時計・入出力は引き続き拒否します。
   通常の Array 呼び出しを並列化する変更ではありません。明示した並行 API の既存のトラップ・待機の意味を保ち、
@@ -1492,7 +1500,7 @@ CI **14 項目 green**。Copilot は未解決の指摘なしで、人による r
   未解決の型クラス呼び出しをそのままコード生成することや、未知の実行時呼び先を純粋と仮定することはしません。
 - `IO` の構築だけは標準 `IO` の不透明な遅延アクションとして扱い、closure の本体を実行効果と混ぜません。
   捕捉値の評価・所有・解放は通常どおり検査します。`IO.Run` や取り出した未知の thunk の実行は許可しません。
-  利用者の同名 record、通常の callback、Task の実行までこの例外を広げません。
+  利用者の同名 record、通常の callback の実行までこの例外を広げません。
 - 2026-10-24 のレビュー照合: 純粋な宣言の呼び出し段階と実装の引数数を一致させます。
   `pure def f :: A -> B -> C` の実装は同じ段階で両引数を束縛し、本体の block から残りの関数を返して
   段階を短縮する形は `E1029` です。途中の計算を後ろへ移す eta 展開は行いません。
@@ -1512,7 +1520,7 @@ CI **14 項目 green**。Copilot は未解決の指摘なしで、人による r
   `--effective` は doc と同じ依存解決を使って両側を完全に解析し、解析・依存のエラーを構文比較で隠しません。
   純粋性の追加が実効 ABI も変えるときは互換な追加と報告しません。ABI が同じでも、generic template に
   純粋性の特殊化証明を新しく課す追加は保守的に破壊的とします。所有引数の plain-data 条件だけでなく、
-  共有入力の不透明な callback／Task や、結果・呼び先を含む特殊化の効果検査もあるためです。
+  共有入力の不透明な callback や、結果・呼び先を含む特殊化の効果検査もあるためです。
   特殊化義務のない、解決済みの共有入力や平たい所有型だけの追加とは区別します。
   非公開 helper を経由する保留義務も型引数の対応に沿って公開関数・class の既定実装・instance へ伝播し、再帰でも固定点まで求めます。
   通常の generic 関数内の明示的な純粋 callback についても、値の型・capture・実行する本体の型に由来する保留義務を同じ伝播へ含めます。

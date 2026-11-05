@@ -386,7 +386,7 @@ fn const_def_signatures_must_be_concrete_values() {
             "plain values",
         ),
         (
-            "const def spawn :: i64 -> Task<i64>\nfn spawn n = task { return n }",
+            "const def spawn :: i64 -> Owned.Function<unit, i64>\nfn spawn n = Owned.function (\\() -> n)",
             "plain values",
         ),
     ] {
@@ -1118,16 +1118,16 @@ fn static_borrows_do_not_hide_a_dangling_reference() {
 }
 
 #[test]
-fn tasks_keep_their_rules_for_static_borrows() {
+fn tzroutines_keep_their_rules_for_static_borrows() {
     for source in [
-        "const Table: [i64] = [1, 2]\ndef run :: unit -> i64\nfn run _ =\n    let r = ref Table\n    Task.run task {\n        r[0]\n    }\nrun ()",
-        "const Table: [i64] = [1, 2]\ndef run :: unit -> i64\nfn run _ =\n    let r = Task.run task {\n        ref Table\n    }\n    r[0]\nrun ()",
+        "const Table: [i64] = [1, 2]\ndef run :: unit -> i64\nfn run _ =\n    let r = ref Table\n    tzroutine {\n        let _first = r[0]\n    }\n    0\nrun ()",
+        "const Table: [i64] = [1, 2]\ndef run :: unit -> i64\nfn run _ =\n    let r = Routine.scope (ref Table) 1 (\\_shared _index -> ref Table)\n    r[0][0]\nrun ()",
     ] {
         assert_eq!(analyze(source).unwrap_err().code, "E1013", "{source}");
     }
-    // A task reads the constant by name, without a capture.
+    // A tzroutine (and one that it starts) reads the constant by name, without a capture.
     analyze(
-        "const Table: [i64] = [1, 2]\ndef run :: unit -> i64\nfn run _ =\n    Task.run task {\n        let! a = task { Table[0] }\n        return a + Table[1]\n    }\nrun ()",
+        "const Table: [i64] = [1, 2]\ndef run :: unit -> i64\nfn run _ =\n    tzroutine {\n        tzroutine { let _a = Table[0] }\n        let _b = Table[1]\n    }\n    0\nrun ()",
     )
     .unwrap();
 }

@@ -177,7 +177,7 @@ deref (Matrix.at 1 2 (ref changed))
 | 窓が生きている間に、持ち主の行列を move・置換・`Matrix.to_array` する | `E1014` |
 | 書き込める窓が生きている間に、元の配列を読む、2 つ目の窓を作る、`row_mut` の行を残して窓に書く | `E1014` |
 | 書き込める窓を move した後で使う | `E1012` |
-| タスクの本体で窓を使う | `E1013`（`tasks require owned values`） |
+| `tzroutine { }` の本体で窓を使う | `E1013`（`values that move to another tzroutine or thread must be owned`） |
 | フィールド参照、パターン分解、`{ view with ... }`、リテラルでの構築 | `E1022` |
 | 非 Copy の要素に `get`・`map`・`fold`・`to_matrix`・`mul`・`fill`・`copy_from`・`map_in_place` | `E1005` |
 

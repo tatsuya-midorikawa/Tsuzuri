@@ -222,7 +222,7 @@ impl<'a> Translator<'a> {
             | Type::List(_)
             | Type::Vec(_) => return Err("an array or list".into()),
             Type::Function(..) => return Err("a closure".into()),
-            Type::Task(_) => return Err("a task".into()),
+            Type::Once(_) => return Err("a tzroutine body".into()),
             Type::Dyn(_) => return Err("a dyn value".into()),
             Type::Shared(..) => return Err("a shared pointer".into()),
             Type::Handle(_) => return Err("an extern handle".into()),
@@ -586,11 +586,9 @@ impl<'a> Translator<'a> {
                 Err(unsupported("a loop", span))
             }
             K::Lambda { .. } | K::Closure(..) => Err(unsupported("a closure", span)),
-            K::TaskRun(_)
-            | K::RoutineGo(_)
-            | K::TaskParallel(_)
-            | K::TaskParallelResults(_)
-            | K::Parallel(..) => Err(unsupported("a task", span)),
+            K::RoutineGo(_) | K::Parallel(..) => {
+                Err(unsupported("a tzroutine or a parallel operation", span))
+            }
             K::SelectWait(_) => Err(unsupported("a select", span)),
             K::HostCall(..) => Err(unsupported("an extern call", span)),
             K::Static(_) => Err(unsupported("a static value", span)),

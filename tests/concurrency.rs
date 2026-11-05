@@ -59,7 +59,8 @@ fn atomic_programs_type_check_and_emit() {
         "def bump :: (AtomicValue<'a>, Integer<'a>) => ref Atomic<'a> -> 'a -> 'a = \\cell amount -> Atomic.fetch_add cell amount\nlet cell = Atomic.create 4i32\nbump (ref cell) 3",
         "record Counters { hits: Atomic<i64>, misses: Atomic<i32> }\nlet counters = Counters { hits: Atomic.create 0i64, misses: Atomic.create 0i32 }\nlet _hit = Atomic.fetch_add (ref counters.hits) 1\nAtomic.load (ref counters.hits)",
         "let cells = Vec.push (Atomic.create 2i64) (Vec.push (Atomic.create 1i64) (Vec.empty()))\nAtomic.load (ref cells[0]) + Atomic.load (ref cells[1])",
-        "let cell = Atomic.create 7i64\nTask.run (task { return Atomic.load (ref cell) })",
+        // An Atomic moves into a tzroutine.
+        "let cell = Atomic.create 7i64\ntzroutine {\n    let _seen = Atomic.load (ref cell)\n}\n0",
     ] {
         emits(source);
     }
@@ -183,7 +184,7 @@ fn a_cell_behind_an_arc_is_captured_in_a_recursive_type_as_in_any_other() {
 }
 
 #[test]
-fn sync_marks_what_tasks_may_share() {
+fn sync_marks_what_tzroutines_may_share() {
     for body in [
         "let values = [1i64, 2i64]\nshare (ref values) + share (ref \"text\") + share (ref 5i64)",
         "let cell = Atomic.create 0i64\nlet lock = Mutex.create 0i64\nshare (ref cell) + share (ref lock)",
@@ -193,16 +194,17 @@ fn sync_marks_what_tasks_may_share() {
     ] {
         emits(&format!("{SYNC_PARAMETER}{body}"));
     }
-    let not_sync = "tasks can share only Sync values";
+    let not_sync = "tzroutines and threads can share only Sync values";
     for (body, ty) in [
         ("let counted = Rc.new 1\nshare (ref counted)", "Rc<i32>"),
         (
             "let counted = Arc.new (Rc.new 1)\nshare (ref counted)",
             "Arc<Rc<i32>>",
         ),
+        // An owned function runs once, in one place: it is Send, not Sync.
         (
-            "let pending = task { return 1 }\nshare (ref pending)",
-            "Task<i32>",
+            "let pending = Owned.function (\\() -> 1)\nshare (ref pending)",
+            "Owned.Function<unit, i32>",
         ),
         (
             "let mut number = 5i64\nshare (ref mut number)",
@@ -262,35 +264,35 @@ fn sync_marks_what_tasks_may_share() {
 }
 
 #[test]
-fn arc_shares_only_sync_values_between_tasks() {
+fn arc_shares_only_sync_values_between_tzroutines() {
     let sync_send = "Arc<Rc<i32>> holds an Rc or Rc.Weak, whose counts are not atomic";
     for body in [
-        "let shared = Arc.new (Atomic.create 0i64)\nlet other = Arc.share (ref shared)\nTask.run (task { return Atomic.fetch_add (Arc.get (ref other)) 1 }) + Atomic.load (Arc.get (ref shared))",
-        "let shared = Arc.new (Mutex.create 0i64)\nlet other = Arc.share (ref shared)\nTask.run (task { return Mutex.with_lock (Arc.get (ref other)) (\\value -> deref value) })",
-        "let shared = Arc.new (Arc.new (Atomic.create 0i64))\nTask.run (task { return Arc.strong_count (ref shared) })",
-        "record Counters { hits: Atomic<i64> }\nlet shared = Arc.new (Counters { hits: Atomic.create 0i64 })\nTask.run (task { return Atomic.load (ref (Arc.get (ref shared)).hits) })",
-        "let shared = Arc.new (\\value -> value + 1)\nTask.run (task { return Arc.strong_count (ref shared) })",
-        "let shared = Arc.new [1i64, 2i64]\nTask.run (task { return Array.sum (Arc.get (ref shared)) })",
+        "let shared = Arc.new (Atomic.create 0i64)\nlet other = Arc.share (ref shared)\ntzroutine {\n    let _added = Atomic.fetch_add (Arc.get (ref other)) 1\n}\nAtomic.load (Arc.get (ref shared))",
+        "let shared = Arc.new (Mutex.create 0i64)\nlet other = Arc.share (ref shared)\ntzroutine {\n    let _seen = Mutex.with_lock (Arc.get (ref other)) (\\value -> deref value)\n}\n0",
+        "let shared = Arc.new (Arc.new (Atomic.create 0i64))\ntzroutine {\n    let _count = Arc.strong_count (ref shared)\n}\n0",
+        "record Counters { hits: Atomic<i64> }\nlet shared = Arc.new (Counters { hits: Atomic.create 0i64 })\ntzroutine {\n    let _hits = Atomic.load (ref (Arc.get (ref shared)).hits)\n}\n0",
+        "let shared = Arc.new (\\value -> value + 1)\ntzroutine {\n    let _count = Arc.strong_count (ref shared)\n}\n0",
+        "let shared = Arc.new [1i64, 2i64]\ntzroutine {\n    let _sum = Array.sum (Arc.get (ref shared))\n}\n0",
     ] {
         emits(body);
     }
     // The recursive node holds a Mutex that holds the next Arc: cycles are possible, and typed.
     emits(&format!(
-        "{NODE}let tail = Arc.new (Mutex.create (Node {{ value: 1, next: Maybe.None }}))\nlet head = Arc.new (Mutex.create (Node {{ value: 2, next: Maybe.Some (Arc.share (ref tail)) }}))\nTask.run (task {{ return Mutex.with_lock (Arc.get (ref head)) (\\node -> (deref node).value) }})"
+        "{NODE}let tail = Arc.new (Mutex.create (Node {{ value: 1, next: Maybe.None }}))\nlet head = Arc.new (Mutex.create (Node {{ value: 2, next: Maybe.Some (Arc.share (ref tail)) }}))\ntzroutine {{\n    let _value = Mutex.with_lock (Arc.get (ref head)) (\\node -> (deref node).value)\n}}\n0"
     ));
     let message = rejects(
-        "let shared = Arc.new (Rc.new 1)\nTask.run (task { return Arc.strong_count (ref shared) })",
+        "let shared = Arc.new (Rc.new 1)\ntzroutine {\n    let _count = Arc.strong_count (ref shared)\n}\n0",
         "E1013",
     );
     assert!(message.contains(sync_send), "{message}");
     for (source, shape) in [
         (
-            "let shared = Arc.new (task { return 1 })\nTask.run (task { return Arc.strong_count (ref shared) })",
-            "shares a task, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc",
+            "let shared = Arc.new (Seq.unfold (\\n -> if n < 3 then Some (n, n + 1) else None) 0)\ntzroutine {\n    let _count = Arc.strong_count (ref shared)\n}\n0",
+            "shares a tzroutine body, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc",
         ),
         (
-            "let shared = Arc.new (async { return 1 })\nTask.run (task { return Arc.strong_count (ref shared) })",
-            "shares a task, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc",
+            "let shared = Arc.new (async { return 1 })\ntzroutine {\n    let _count = Arc.strong_count (ref shared)\n}\n0",
+            "shares a tzroutine body, an exclusive reference, a lazy sequence, an Async computation or a GPU handle through an Arc",
         ),
     ] {
         let message = rejects(source, "E1013");
@@ -298,14 +300,14 @@ fn arc_shares_only_sync_values_between_tasks() {
     }
     let message = rejects(
         &format!(
-            "{HANDLE}let shared = Arc.new (counter_new 1)\nTask.run (task {{ return Arc.strong_count (ref shared) }})"
+            "{HANDLE}let shared = Arc.new (counter_new 1)\ntzroutine {{\n    let _count = Arc.strong_count (ref shared)\n}}\n0"
         ),
         "E1013",
     );
     assert!(message.contains("shares an extern handle"), "{message}");
-    // A task that holds an Arc of an Rc could drop it on another thread; so could a plain Rc.
+    // A tzroutine that holds an Arc of an Rc could drop it on another thread; so could a plain Rc.
     rejects(
-        "let shared = Rc.new 1\nTask.run (task { return Rc.strong_count (ref shared) })",
+        "let shared = Rc.new 1\ntzroutine {\n    let _count = Rc.strong_count (ref shared)\n}\n0",
         "E1013",
     );
 }
@@ -316,14 +318,14 @@ fn arc_shares_only_sync_values_between_tasks() {
 // parallel operation, and a constraint that a program writes, must not let an `Rc` through.
 #[test]
 fn send_is_checked_at_the_types_a_generic_function_is_used_at() {
-    let send = "tasks require Send values";
+    let send = "values that move to another tzroutine or thread must be Send";
     let programs = |item: &str| {
         [
             // The channel is made by a wrapper, and the item is sent where the type is known.
             format!(
                 "def make :: i64 -> (DataChannel.Sender<'a> * DataChannel.Receiver<'a>)\nfn make capacity = DataChannel.bounded capacity\nmatch make 2 with\n| (sender, _receiver) ->\n    let _sent = DataChannel.send (ref sender) ({item})\n    0"
             ),
-            // The wrapper of a wrapper, with the ends kept in a record that tasks may share.
+            // The wrapper of a wrapper, with the ends kept in a record that tzroutines may share.
             format!(
                 "record Pipe<'a> {{ sender: DataChannel.Sender<'a>, receiver: DataChannel.Receiver<'a> }}\ndef make :: i64 -> (DataChannel.Sender<'a> * DataChannel.Receiver<'a>)\nfn make capacity = DataChannel.bounded capacity\ndef open :: i64 -> Pipe<'a>\nfn open capacity =\n    match make capacity with\n    | (sender, receiver) -> Pipe {{ sender: sender, receiver: receiver }}\nlet pipe = open 4\nlet _sent = DataChannel.send (ref pipe.sender) ({item})\n0"
             ),
@@ -355,7 +357,7 @@ fn send_is_checked_at_the_types_a_generic_function_is_used_at() {
         "Arc.new (Atomic.create 0i64)",
         "Arc.new (Mutex.create [1i64])",
         "\\x -> x + 1i64",
-        "task { return 1 }",
+        "Owned.function (\\() -> 1i64)",
     ] {
         emits(&format!("{need}need ({item})"));
     }
@@ -368,8 +370,9 @@ fn send_is_checked_at_the_types_a_generic_function_is_used_at() {
         let message = rejects(&format!("{need}need ({item})"), "E1013");
         assert!(message.contains(send), "{item}: {message}");
     }
+    // An owned function is Send, but not Sync: an Arc of it is not Send.
     let message = rejects(
-        &format!("{need}need (Arc.new (task {{ return 1 }}))"),
+        &format!("{need}need (Arc.new (Owned.function (\\() -> 1i64)))"),
         "E1013",
     );
     assert!(message.contains(send), "{message}");
@@ -377,7 +380,10 @@ fn send_is_checked_at_the_types_a_generic_function_is_used_at() {
         &format!("{need}let mut number = 1i64\nneed (ref number)"),
         "E1013",
     );
-    assert!(message.contains("tasks require owned values"), "{message}");
+    assert!(
+        message.contains("values that move to another tzroutine or thread must be owned"),
+        "{message}"
+    );
     // A parallel operation whose result type the function takes from a class.
     let fill = |ty: &str| {
         format!(
@@ -438,7 +444,9 @@ fn send_and_sync_are_checked_at_the_types_that_a_constructor_variable_stands_for
         let error = build(RC_HOLDER, main).expect_err(name);
         assert_eq!(error.code, "E1013", "{name}\n{}", error.message);
         assert!(
-            error.message.contains("tasks require Send values")
+            error
+                .message
+                .contains("values that move to another tzroutine or thread must be Send")
                 && error.message.contains("holds an Rc"),
             "{name}: {}",
             error.message
@@ -450,11 +458,13 @@ fn send_and_sync_are_checked_at_the_types_that_a_constructor_variable_stands_for
         }
     }
     // `Sync` of a shared borrow of the application, which a scope asks for.
-    let scope = "def spread :: Cell.Cell<'f> => ref 'f<i64> -> i64\nfn spread held = Array.sum (ref (Task.scope held 2 (\\_shared index -> index)))\nlet held: Holder<i64> = Cell.wrap 5\nspread (ref held)";
+    let scope = "def spread :: Cell.Cell<'f> => ref 'f<i64> -> i64\nfn spread held = Array.sum (ref (Routine.scope held 2 (\\_shared index -> index)))\nlet held: Holder<i64> = Cell.wrap 5\nspread (ref held)";
     let error = build(RC_HOLDER, scope).expect_err("a scope that shares the application");
     assert_eq!(error.code, "E1013", "{}", error.message);
     assert!(
-        error.message.contains("tasks can share only Sync values")
+        error
+            .message
+            .contains("tzroutines and threads can share only Sync values")
             && error.message.contains("is not Sync"),
         "{}",
         error.message
@@ -469,41 +479,47 @@ fn send_and_sync_are_checked_at_the_types_that_a_constructor_variable_stands_for
 }
 
 #[test]
-fn task_scope_shares_a_sync_borrow() {
+fn routine_scope_shares_a_sync_borrow() {
     for source in [
-        "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 4 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref seen)",
-        "let table = [1i64, 2i64, 3i64]\nlet sums = Task.scope (ref table) 3 (\\shared index -> Array.sum shared + index)\nArray.sum (ref sums)",
-        "let text = \"shared\"\nlet lengths = Task.scope (ref text) 2 (\\shared index -> shared.length + index)\nArray.sum (ref lengths)",
-        "let shared = Arc.new (Atomic.create 0i64)\nlet seen = Task.scope (ref shared) 2 (\\arc index -> Atomic.fetch_add (Arc.get arc) index)\nArray.sum (ref seen)",
-        "let lock = Mutex.create 0i64\nlet seen = Task.scope (ref lock) 4 (\\shared index -> Mutex.with_lock shared (\\value -> { deref value = deref value + index; deref value }))\nArray.length (ref seen)",
-        "let seen = Task.scope (ref 5i64) 0 (\\shared index -> deref shared + index)\nArray.length (ref seen)",
-        "let outer = Task.scope (ref 1i64) 2 (\\shared index -> Array.sum (ref (Task.scope shared 2 (\\inner position -> deref inner + position + index))))\nArray.sum (ref outer)",
+        "let counter = Atomic.create 0i64\nlet seen = Routine.scope (ref counter) 4 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref seen)",
+        "let table = [1i64, 2i64, 3i64]\nlet sums = Routine.scope (ref table) 3 (\\shared index -> Array.sum shared + index)\nArray.sum (ref sums)",
+        "let text = \"shared\"\nlet lengths = Routine.scope (ref text) 2 (\\shared index -> shared.length + index)\nArray.sum (ref lengths)",
+        "let shared = Arc.new (Atomic.create 0i64)\nlet seen = Routine.scope (ref shared) 2 (\\arc index -> Atomic.fetch_add (Arc.get arc) index)\nArray.sum (ref seen)",
+        "let lock = Mutex.create 0i64\nlet seen = Routine.scope (ref lock) 4 (\\shared index -> Mutex.with_lock shared (\\value -> { deref value = deref value + index; deref value }))\nArray.length (ref seen)",
+        "let seen = Routine.scope (ref 5i64) 0 (\\shared index -> deref shared + index)\nArray.length (ref seen)",
+        "let outer = Routine.scope (ref 1i64) 2 (\\shared index -> Array.sum (ref (Routine.scope shared 2 (\\inner position -> deref inner + position + index))))\nArray.sum (ref outer)",
     ] {
         emits(source);
     }
-    let not_sync = "tasks can share only Sync values";
+    let not_sync = "tzroutines and threads can share only Sync values";
     for source in [
-        "let counted = Rc.new 1\nlet seen = Task.scope (ref counted) 2 (\\_shared index -> index)\n0",
-        "let pending = task { return 1 }\nlet seen = Task.scope (ref pending) 2 (\\_shared index -> index)\n0",
+        "let counted = Rc.new 1\nlet seen = Routine.scope (ref counted) 2 (\\_shared index -> index)\n0",
+        "let pending = Owned.function (\\() -> 1)\nlet seen = Routine.scope (ref pending) 2 (\\_shared index -> index)\n0",
     ] {
         let message = rejects(source, "E1013");
         assert!(message.contains(not_sync), "{message}");
     }
     // Each child returns an owned Send value; the shared borrow cannot leave the scope.
     let message = rejects(
-        "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 4 (\\shared _index -> shared)\n0",
+        "let counter = Atomic.create 0i64\nlet seen = Routine.scope (ref counter) 4 (\\shared _index -> shared)\n0",
         "E1013",
     );
-    assert!(message.contains("tasks require owned values"), "{message}");
+    assert!(
+        message.contains("values that move to another tzroutine or thread must be owned"),
+        "{message}"
+    );
     let message = rejects(
-        "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 4 (\\_shared index -> Rc.new index)\n0",
+        "let counter = Atomic.create 0i64\nlet seen = Routine.scope (ref counter) 4 (\\_shared index -> Rc.new index)\n0",
         "E1013",
     );
-    assert!(message.contains("tasks require Send values"), "{message}");
+    assert!(
+        message.contains("values that move to another tzroutine or thread must be Send"),
+        "{message}"
+    );
     // The callback keeps no borrowed environment, as in every parallel operation.
     for source in [
-        "let counter = Atomic.create 0i64\nlet other = Atomic.create 0i64\nlet borrowed = ref other\nlet seen = Task.scope (ref counter) 4 (\\_shared _index -> Atomic.load borrowed)\n0",
-        "let counter = Atomic.create 0i64\nlet step = 5i64\nlet borrowed = ref step\nlet seen = Task.scope (ref counter) 4 (\\shared _index -> Atomic.fetch_add shared (deref borrowed))\n0",
+        "let counter = Atomic.create 0i64\nlet other = Atomic.create 0i64\nlet borrowed = ref other\nlet seen = Routine.scope (ref counter) 4 (\\_shared _index -> Atomic.load borrowed)\n0",
+        "let counter = Atomic.create 0i64\nlet step = 5i64\nlet borrowed = ref step\nlet seen = Routine.scope (ref counter) 4 (\\shared _index -> Atomic.fetch_add shared (deref borrowed))\n0",
     ] {
         let message = rejects(source, "E1013");
         assert!(
@@ -513,7 +529,7 @@ fn task_scope_shares_a_sync_borrow() {
     }
     // The call is one ownership boundary and cannot be erased into a function value.
     let message = rejects(
-        "let counter = Atomic.create 0i64\nlet partial: (ref Atomic<i64> -> i64 -> i64) -> [i64] = Task.scope (ref counter) 4\n0",
+        "let counter = Atomic.create 0i64\nlet partial: (ref Atomic<i64> -> i64 -> i64) -> [i64] = Routine.scope (ref counter) 4\n0",
         "E1013",
     );
     assert!(
@@ -522,31 +538,31 @@ fn task_scope_shares_a_sync_borrow() {
     );
 }
 
-// A function value that a scope shares runs in several tasks at once, so what it borrows must be
+// A function value that a scope shares runs in several tzroutines at once, so what it borrows must be
 // shared too. The environment is proven to hold no borrow, and a temporary has to meet the same
 // proof as a name does.
 const BORROWING_CLOSURE: &str = "\\x -> { let again = Rc.share r; deref (Rc.get (ref again)) + x }";
 
 #[test]
 fn a_shared_temporary_must_hold_no_borrow_just_as_a_named_value_must_not() {
-    let owned = "task scopes can share only values with proven owned environments";
+    let owned = "Routine.scope can share only values with proven owned environments";
     let prelude = "let rc = Rc.new 5i64\nlet r = ref rc\n";
     for source in [
         // The closure bound to a name first: refused (and was before).
-        format!("{prelude}let f = {BORROWING_CLOSURE}\nlet seen = Task.scope (ref f) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)"),
+        format!("{prelude}let f = {BORROWING_CLOSURE}\nlet seen = Routine.scope (ref f) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)"),
         // The same closure as a temporary: its loan on the Rc has no parents, and was accepted.
-        format!("{prelude}let seen = Task.scope (ref ({BORROWING_CLOSURE})) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)"),
-        format!("record Holder {{ f: i64 -> i64 }}\n{prelude}let seen = Task.scope (ref (Holder {{ f: {BORROWING_CLOSURE} }})) 4 (\\shared index -> shared.f index)\nArray.sum (ref seen)"),
-        format!("{prelude}let seen = Task.scope (ref [{BORROWING_CLOSURE}]) 4 (\\shared index -> (shared[0]) index)\nArray.sum (ref seen)"),
-        format!("{prelude}let seen = Task.scope (ref (Maybe.Some ({BORROWING_CLOSURE}))) 4 (\\shared index -> match shared with | Maybe.Some f -> f index | Maybe.None -> 0)\nArray.sum (ref seen)"),
+        format!("{prelude}let seen = Routine.scope (ref ({BORROWING_CLOSURE})) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)"),
+        format!("record Holder {{ f: i64 -> i64 }}\n{prelude}let seen = Routine.scope (ref (Holder {{ f: {BORROWING_CLOSURE} }})) 4 (\\shared index -> shared.f index)\nArray.sum (ref seen)"),
+        format!("{prelude}let seen = Routine.scope (ref [{BORROWING_CLOSURE}]) 4 (\\shared index -> (shared[0]) index)\nArray.sum (ref seen)"),
+        format!("{prelude}let seen = Routine.scope (ref (Maybe.Some ({BORROWING_CLOSURE}))) 4 (\\shared index -> match shared with | Maybe.Some f -> f index | Maybe.None -> 0)\nArray.sum (ref seen)"),
         // A borrow of a Sync place would be sound to share, but the rule is the one that a name
         // meets, whatever the pointee.
-        "let counter = Atomic.create 0i64\nlet b = ref counter\nlet seen = Task.scope (ref (\\x -> Atomic.fetch_add b x)) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)".to_owned(),
+        "let counter = Atomic.create 0i64\nlet b = ref counter\nlet seen = Routine.scope (ref (\\x -> Atomic.fetch_add b x)) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)".to_owned(),
     ] {
         let message = rejects(&source, "E1013");
         assert!(message.contains(owned), "{source}\n{message}");
     }
-    // The elements that Parallel.map_ref shares between its tasks meet the same rule.
+    // The elements that Parallel.map_ref shares between its chunks meet the same rule.
     let message = rejects(
         &format!(
             "{prelude}let seen = Parallel.map_ref (\\f -> (deref f) 1) (ref [{BORROWING_CLOSURE}])\nArray.sum (ref seen)"
@@ -559,10 +575,10 @@ fn a_shared_temporary_must_hold_no_borrow_just_as_a_named_value_must_not() {
     );
     // A temporary whose environment owns what it holds is shared as before.
     emits(
-        "let base = 10i64\nlet seen = Task.scope (ref (\\x -> x + base)) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)",
+        "let base = 10i64\nlet seen = Routine.scope (ref (\\x -> x + base)) 4 (\\shared index -> (deref shared) index)\nArray.sum (ref seen)",
     );
     emits(
-        "let shared = Arc.new (Atomic.create 0i64)\nlet seen = Task.scope (ref (\\x -> Atomic.fetch_add (Arc.get (ref shared)) x)) 4 (\\f index -> (deref f) index)\nArray.sum (ref seen)",
+        "let shared = Arc.new (Atomic.create 0i64)\nlet seen = Routine.scope (ref (\\x -> Atomic.fetch_add (Arc.get (ref shared)) x)) 4 (\\f index -> (deref f) index)\nArray.sum (ref seen)",
     );
     analyze("let base = 10i64\nlet seen = Parallel.map_ref (\\f -> (deref f) 1) (ref [\\x -> x + base])\nArray.sum (ref seen)")
         .expect("an owned environment is shared");
@@ -577,7 +593,7 @@ fn a_mutex_result_never_holds_a_borrow_of_the_locked_value() {
         )
     };
     // A function value, alone or in a container, that reads the locked value after the lock is gone:
-    // the value could have been replaced and freed, or be written by another task, by then.
+    // the value could have been replaced and freed, or be written by another tzroutine, by then.
     for result in [
         "\\x -> deref view + x",
         "Maybe.Some (\\x -> deref view + x)",
@@ -610,7 +626,7 @@ fn a_mutex_result_never_holds_a_borrow_of_the_locked_value() {
     assert!(message.contains(free), "{message}");
     // A child of a scope keeps the function after its own lock is released.
     let message = rejects(
-        "let lock = Mutex.create 5i64\nlet seen = Task.scope (ref lock) 2 (\\shared index -> {\n    let kept = Mutex.with_lock shared (\\value -> { let view = ref (deref value); \\x -> deref view + x });\n    kept index\n})\nArray.sum (ref seen)",
+        "let lock = Mutex.create 5i64\nlet seen = Routine.scope (ref lock) 2 (\\shared index -> {\n    let kept = Mutex.with_lock shared (\\value -> { let view = ref (deref value); \\x -> deref view + x });\n    kept index\n})\nArray.sum (ref seen)",
         "E1013",
     );
     assert!(message.contains(free), "{message}");
@@ -635,7 +651,7 @@ fn a_mutex_result_never_holds_a_borrow_of_the_locked_value() {
         "let other = 7i64\nlet outside = ref other\nlet lock = Mutex.create 5i64\nlet adder = Mutex.with_lock (ref lock) (\\value -> { let copy = deref value; \\x -> copy + deref outside + x })\nadder 1",
         "let lock = Mutex.create 5i64\nlet locker = Mutex.with_lock (ref lock)\nlocker (\\value -> deref value)",
         "let lock = Mutex.create 5i64\nlet locker = Mutex.with_lock\nlocker (ref lock) (\\value -> deref value + 1)",
-        "let lock = Mutex.create [1i64, 2i64, 3i64]\nlet seen = Task.scope (ref lock) 2 (\\shared index -> Mutex.with_lock shared (\\values -> { let items = ref (deref values); items[index] }))\nArray.sum (ref seen)",
+        "let lock = Mutex.create [1i64, 2i64, 3i64]\nlet seen = Routine.scope (ref lock) 2 (\\shared index -> Mutex.with_lock shared (\\values -> { let items = ref (deref values); items[index] }))\nArray.sum (ref seen)",
     ] {
         emits(source);
     }
@@ -648,7 +664,7 @@ fn mutex_programs_type_check_and_the_closure_result_is_owned() {
         "let lock = Mutex.create 5i64\nlet seen = Mutex.with_lock (ref lock) (\\value -> { deref value = deref value + 1; deref value })\nseen + Mutex.into_inner lock",
         "record Totals { count: i64, sum: i64 }\nlet lock = Mutex.create (Totals { count: 0, sum: 0 })\nMutex.with_lock (ref lock) (\\totals -> { deref totals = Totals { count: (deref totals).count + 1, sum: (deref totals).sum + 5 }; (deref totals).sum })",
         "let outer = Mutex.create 1i64\nlet inner = Mutex.create 2i64\nlet borrowed = ref inner\nMutex.with_lock (ref outer) (\\_a -> Mutex.with_lock borrowed (\\b -> deref b))",
-        "let lock = Mutex.create 0i64\nTask.run (task { return Mutex.with_lock (ref lock) (\\value -> deref value) })",
+        "let lock = Mutex.create 0i64\ntzroutine {\n    let _seen = Mutex.with_lock (ref lock) (\\value -> deref value)\n}\n0",
         "let lock = Mutex.create \"text\"\nMutex.with_lock (ref lock) (\\text -> (deref text).length)",
     ] {
         emits(source);
@@ -659,15 +675,19 @@ fn mutex_programs_type_check_and_the_closure_result_is_owned() {
         "let lock = Mutex.create [1i64]\nMutex.with_lock (ref lock) (\\values -> ref (deref values))",
     ] {
         let message = rejects(source, "E1013");
-        assert!(message.contains("tasks require owned values"), "{message}");
+        assert!(
+            message.contains("values that move to another tzroutine or thread must be owned"),
+            "{message}"
+        );
     }
+    let send = "values that move to another tzroutine or thread must be Send";
     let message = rejects("let lock = Mutex.create (Rc.new 1)\n0", "E1013");
-    assert!(message.contains("tasks require Send values"), "{message}");
+    assert!(message.contains(send), "{message}");
     let message = rejects(
         "let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\_value -> Rc.new 1)",
         "E1013",
     );
-    assert!(message.contains("tasks require Send values"), "{message}");
+    assert!(message.contains(send), "{message}");
 }
 
 // An item stays in a channel after the call that sent it, and it is received later, perhaps on
@@ -710,7 +730,7 @@ fn a_channel_item_never_holds_a_borrow() {
     assert!(message.contains(held), "{message}");
     // The function is a child's own, and the record that holds the end looks loan-free.
     let message = rejects(
-        "record Pipe { sender: DataChannel.Sender<i64 -> i64>, receiver: DataChannel.Receiver<i64 -> i64> }\ndef child :: ref Pipe -> i64 -> i64\nfn child shared index =\n    let local = [index, 1]\n    let view = ref local\n    match DataChannel.send (ref shared.sender) (\\x -> x + view[0]) with\n    | Result.Ok _unit -> 0\n    | Result.Error _item -> 1\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let pipe = Pipe { sender: sender, receiver: receiver }\n    let seen = Task.scope (ref pipe) 2 child\n    Array.sum (ref seen)",
+        "record Pipe { sender: DataChannel.Sender<i64 -> i64>, receiver: DataChannel.Receiver<i64 -> i64> }\ndef child :: ref Pipe -> i64 -> i64\nfn child shared index =\n    let local = [index, 1]\n    let view = ref local\n    match DataChannel.send (ref shared.sender) (\\x -> x + view[0]) with\n    | Result.Ok _unit -> 0\n    | Result.Error _item -> 1\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let pipe = Pipe { sender: sender, receiver: receiver }\n    let seen = Routine.scope (ref pipe) 2 child\n    Array.sum (ref seen)",
         "E1013",
     );
     assert!(message.contains(held), "{message}");
@@ -765,7 +785,7 @@ fn a_channel_item_never_holds_a_borrow() {
     // cannot be returned or shared by a scope, as with any other value that holds a function.
     for source in [
         "def make :: ref [i64] -> Mutex<i64 -> i64>\nfn make data = Mutex.create (\\x -> x + data[0])\ndef leak :: i64 -> Mutex<i64 -> i64>\nfn leak n =\n    let local = [n, n]\n    make (ref local)\nlet _kept = leak 5i64\n0",
-        "def keep :: ref [i64] -> i64\nfn keep data =\n    let lock = Mutex.create (\\x -> x + data[0])\n    let seen = Task.scope (ref lock) 2 (\\shared index -> Mutex.with_lock shared (\\f -> (deref f) index))\n    Array.sum (ref seen)\nlet local = [40i64, 41i64]\nkeep (ref local)",
+        "def keep :: ref [i64] -> i64\nfn keep data =\n    let lock = Mutex.create (\\x -> x + data[0])\n    let seen = Routine.scope (ref lock) 2 (\\shared index -> Mutex.with_lock shared (\\f -> (deref f) index))\n    Array.sum (ref seen)\nlet local = [40i64, 41i64]\nkeep (ref local)",
     ] {
         rejects(source, "E1013");
     }
@@ -828,18 +848,20 @@ fn atomics_lower_to_sequentially_consistent_instructions() {
 
 #[test]
 fn mutex_lowering_adds_no_runtime_to_other_programs() {
-    let plain = "let values = Task.run (Task.parallel [task { return 1 }, task { return 2 }])\nArray.sum (ref values)";
+    let plain = "let values = Parallel.init 2 (\\index -> index + 1)\nArray.sum (ref values)";
     for ir in emits(plain) {
         assert!(
-            !ir.contains("tz.mutex") && !ir.contains("tsuzuri_mutex"),
+            !ir.contains("tz.mutex") && !ir.contains("tsuzuri_mutex") && !ir.contains("_mutex32_"),
             "no Mutex, no lock\n{ir}"
         );
     }
     let locked = "let lock = Mutex.create 0i64\nlet held = Mutex.with_lock (ref lock) (\\value -> deref value)\n";
     let [native, wasm] = emits(&format!("{locked}held"));
+    // Natively every program takes the lock of the tzroutine scheduler (TZ12).
     assert!(
-        native.contains("declare i32 @tsuzuri_mutex_lock(ptr)")
-            && native.contains("declare void @tsuzuri_mutex_unlock(ptr)"),
+        native.contains("declare i32 @tsuzuri_tz_mutex32_lock(ptr)")
+            && native.contains("declare void @tsuzuri_tz_mutex32_unlock(ptr)")
+            && !native.contains("tsuzuri_mutex_"),
         "{native}"
     );
     assert!(
@@ -851,72 +873,74 @@ fn mutex_lowering_adds_no_runtime_to_other_programs() {
         !wasm.contains("tsuzuri_task_parallel") && !wasm.contains("tz.mutex.parallel"),
         "no parallel work, no wrapper\n{wasm}"
     );
-    // With parallel work in the program, a start inside a lock is refused by the wrappers.
+    // With parallel work in the program, WASM refuses a start inside a lock in a wrapper; natively
+    // the lock belongs to the tzroutine that waits for the chunks, and the work starts directly.
     let with_work = format!(
-        "{locked}let values = Task.run (Task.parallel [task {{ return 1 }}, task {{ return 2 }}])\nheld + Array.sum (ref values)"
+        "{locked}let values = Parallel.init 2 (\\index -> index + 1)\nheld + Array.sum (ref values)"
     );
-    for ir in emits(&with_work) {
-        assert!(
-            ir.contains("call void @tz.mutex.parallel(")
-                || ir.contains("call i64 @tz.mutex.parallel_results("),
-            "{ir}"
-        );
-        // The one direct call of each entry is inside its wrapper.
-        assert!(
-            ir.matches("call void @tsuzuri_task_parallel(").count() <= 1,
-            "calls go through the wrappers\n{ir}"
-        );
-        assert!(
-            ir.matches("call i64 @tsuzuri_task_parallel_results(")
-                .count()
-                <= 1,
-            "calls go through the wrappers\n{ir}"
-        );
-    }
+    let [native, wasm] = emits(&with_work);
+    assert!(
+        wasm.contains("call void @tz.mutex.parallel(ptr @tz.parallel.chunk."),
+        "{wasm}"
+    );
+    // The one direct call of the entry is inside its wrapper.
+    assert_eq!(
+        wasm.matches("call void @tsuzuri_task_parallel(").count(),
+        1,
+        "calls go through the wrapper\n{wasm}"
+    );
+    assert!(
+        native.contains("call i32 @tsuzuri_tz_parallel(ptr @tz.parallel.chunk.")
+            && !native.contains("tz.mutex.parallel")
+            && !native.contains("tsuzuri_task_parallel"),
+        "{native}"
+    );
 }
 
-/// The length operand of each call that starts a group of items in the IR of a program.
+/// The length operand of each call that starts the children of a `Routine.scope` in the IR of a
+/// program.
 fn group_lengths(ir: &str) -> Vec<&str> {
     ir.lines()
-        .map(str::trim_start)
-        .filter(|line| line.starts_with("call void @tsuzuri_task_parallel("))
-        .map(|line| {
-            let (_, length) = line.rsplit_once("i64 ").expect(line);
-            length.strip_suffix(')').expect(line)
+        .filter_map(|line| {
+            let (_, call) = line.split_once("call i32 @tsuzuri_tz_scope_run(")?;
+            let (_, length) = call.rsplit_once("i64 ").expect(line);
+            Some(length.strip_suffix(')').expect(line))
         })
         .collect()
 }
 
 #[test]
-fn task_scope_is_one_group_of_children() {
-    let source = "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 4 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref seen)";
+fn routine_scope_is_one_group_of_children() {
+    let source = "let counter = Atomic.create 0i64\nlet seen = Routine.scope (ref counter) 4 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref seen)";
     let [native, wasm] = emits(source);
     for ir in [&native, &wasm] {
-        assert!(ir.contains("@tsuzuri_task_parallel("), "{ir}");
-        assert!(!ir.contains("tz.mutex"), "{ir}");
+        assert!(
+            !ir.contains("tz.mutex") && !ir.contains("tsuzuri_task_parallel"),
+            "{ir}"
+        );
     }
-    assert!(
-        native.contains("declare void @tsuzuri_task_parallel("),
-        "{native}"
-    );
-    assert!(
-        wasm.contains("define internal void @tsuzuri_task_parallel("),
-        "standalone WASM runs the children in index order\n{wasm}"
-    );
-    // One item per child, so that any thread may take any child and the pool hands them out one
-    // at a time: the group is as long as the count, never a number of chunks of it.
+    // The scheduler runs the children (TZ11); WebAssembly declares it too, which the driver refuses
+    // until TZ09 (E2000, tests/tzroutine.mjs).
+    for ir in [&native, &wasm] {
+        assert!(
+            ir.contains("declare i32 @tsuzuri_tz_scope_run(ptr, ptr, i64)"),
+            "{ir}"
+        );
+    }
+    // One tzroutine per child, so that a child may wait for another: the group is as long as the
+    // count, never a number of chunks of it.
     for ir in [&native, &wasm] {
         assert_eq!(group_lengths(ir), ["4"], "{ir}");
     }
     let [native, wasm] = emits(
-        "let counter = Atomic.create 0i64\nlet few = Task.scope (ref counter) 3 (\\shared index -> Atomic.fetch_add shared index)\nlet many = Task.scope (ref counter) 5000 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref few) + Array.length (ref many)",
+        "let counter = Atomic.create 0i64\nlet few = Routine.scope (ref counter) 3 (\\shared index -> Atomic.fetch_add shared index)\nlet many = Routine.scope (ref counter) 5000 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref few) + Array.length (ref many)",
     );
     for ir in [&native, &wasm] {
         assert_eq!(group_lengths(ir), ["3", "5000"], "{ir}");
     }
     // A count that is not known is the same value that sizes the array of results: one slot, one child.
     let [native, wasm] = emits(
-        "def spread :: i64 -> i64\nfn spread n =\n    let counter = Atomic.create 0i64\n    let seen = Task.scope (ref counter) n (\\shared index -> Atomic.fetch_add shared index)\n    Array.length (ref seen)\nspread 6",
+        "def spread :: i64 -> i64\nfn spread n =\n    let counter = Atomic.create 0i64\n    let seen = Routine.scope (ref counter) n (\\shared index -> Atomic.fetch_add shared index)\n    Array.length (ref seen)\nspread 6",
     );
     for ir in [&native, &wasm] {
         let lengths = group_lengths(ir);
@@ -946,13 +970,14 @@ fn channel_programs_type_check_and_emit() {
         "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) \"text\"\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some text -> text.length\n    | Maybe.None -> 0",
         "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) ()\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some _signal -> 1\n    | Maybe.None -> 0",
         "match DataChannel.bounded 3 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) (1i64, \"text\")\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some _pair -> 1\n    | Maybe.None -> 0",
-        // The ends in a record, and a task that owns an end.
+        // The ends in a record, and a tzroutine that owns an end.
         "record Ends { sender: DataChannel.Sender<i64>, receiver: DataChannel.Receiver<i64> }\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let ends = Ends { sender: sender, receiver: receiver }\n    let _sent = DataChannel.send (ref ends.sender) 3i64\n    match DataChannel.recv (ref ends.receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
-        "def produce :: DataChannel.Sender<i64> -> Task<i64>\nfn produce sender = task {\n    let _sent = DataChannel.send (ref sender) 5i64\n    return 1\n}\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let results = Task.run (Task.parallel [produce sender])\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some value -> value + results[0]\n    | Maybe.None -> 0",
-        // Both ends are Sync: a scope borrows them, and an Arc of an end goes to tasks.
-        "match DataChannel.bounded 4 with\n| (sender, receiver) ->\n    let seen = Task.scope (ref sender) 2 (\\shared index -> match DataChannel.send shared index with | Result.Ok _unit -> 1 | Result.Error _item -> 0)\n    let _first = DataChannel.recv (ref receiver)\n    Array.sum (ref seen)",
-        "def count :: Arc<DataChannel.Receiver<i64>> -> Task<i64>\nfn count receiver = task {\n    match DataChannel.recv (Arc.get (ref receiver)) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0\n}\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let shared = Arc.new receiver\n    let _sent = DataChannel.send (ref sender) 4i64\n    let results = Task.run (Task.parallel [count (Arc.share (ref shared))])\n    results[0]",
-        // A channel operation inside a lock type-checks, and traps when it runs: a critical section never waits.
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    tzroutine {\n        let _sent = DataChannel.send (ref sender) 5i64\n    }\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
+        // Both ends are Sync: a scope borrows them, and an Arc of an end goes to tzroutines.
+        "match DataChannel.bounded 4 with\n| (sender, receiver) ->\n    let seen = Routine.scope (ref sender) 2 (\\shared index -> match DataChannel.send shared index with | Result.Ok _unit -> 1 | Result.Error _item -> 0)\n    let _first = DataChannel.recv (ref receiver)\n    Array.sum (ref seen)",
+        "def count :: Arc<DataChannel.Receiver<i64>> -> i64\nfn count receiver =\n    match DataChannel.recv (Arc.get (ref receiver)) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let shared = Arc.new receiver\n    let mine = Arc.share (ref shared)\n    let _sent = DataChannel.send (ref sender) 4i64\n    tzroutine {\n        let _value = count mine\n    }\n    0",
+        // A channel operation inside a lock type-checks. Natively it may wait there (TZ12: the lock is
+        // the waiting tzroutine's); the lock of standalone WASM traps when it runs.
         "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let lock = Mutex.create 0i64\n    let borrowed = ref sender\n    let _seen = Mutex.with_lock (ref lock) (\\_value -> match DataChannel.send borrowed 1i64 with | Result.Ok _unit -> 1 | Result.Error _item -> 0)\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
     ] {
         emits(source);
@@ -1013,13 +1038,16 @@ fn channel_ends_are_opaque_owned_and_sync() {
     emits(
         "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let borrowed = ref sender\n    let send = \\x -> DataChannel.send borrowed x\n    let _taken = DataChannel.recv (ref receiver)\n    match send 1i64 with\n    | Result.Ok _unit -> 1\n    | Result.Error _item -> 0",
     );
-    // Only what may move between tasks goes in: an Rc has no atomic count.
+    // Only what may move between tzroutines goes in: an Rc has no atomic count.
     let message = rejects(
         "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) (Rc.new 1i64)\n    0",
         "E1013",
     );
-    assert!(message.contains("tasks require Send values"), "{message}");
-    // Sync: both ends may be shared by tasks.
+    assert!(
+        message.contains("values that move to another tzroutine or thread must be Send"),
+        "{message}"
+    );
+    // Sync: both ends may be shared by tzroutines.
     emits(&format!(
         "{SYNC_PARAMETER}match DataChannel.bounded 3 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) 1i64\n    let _taken = DataChannel.recv (ref receiver)\n    share (ref sender) + share (ref receiver)"
     ));
@@ -1030,13 +1058,13 @@ fn channel_ends_are_opaque_owned_and_sync() {
 #[test]
 fn channel_lowering_calls_the_runtime_and_closes_by_drop() {
     let [native, wasm] = emits(CHANNEL_ROUNDTRIP);
-    // Native links the runtime of task.c, so the IR only declares it.
+    // Native links the runtime of tzroutine.c (TZ12), so the IR only declares it, and asks no lock
+    // whether it may wait: a wait inside a lock is the waiting tzroutine's.
     for declaration in [
         "declare i32 @tsuzuri_channel_send(ptr, ptr)",
         "declare i32 @tsuzuri_channel_recv(ptr, ptr)",
         "declare void @tsuzuri_channel_clone_sender(ptr)",
         "declare i32 @tsuzuri_channel_close(ptr, i32)",
-        "declare i32 @tsuzuri_mutex_wait_ok()",
     ] {
         assert_eq!(
             native.lines().filter(|line| *line == declaration).count(),
@@ -1044,6 +1072,7 @@ fn channel_lowering_calls_the_runtime_and_closes_by_drop() {
             "{declaration}\n{native}"
         );
     }
+    assert!(!native.contains("tsuzuri_mutex_wait_ok"), "{native}");
     // Standalone WASM has one thread: the operations are IR in the module, and a wait that cannot
     // end is a trap.
     for definition in [
@@ -1056,8 +1085,8 @@ fn channel_lowering_calls_the_runtime_and_closes_by_drop() {
         assert!(wasm.contains(definition), "{definition}\n{wasm}");
     }
     assert!(!wasm.contains("declare i32 @tsuzuri_channel"), "{wasm}");
-    // A sender and a receiver that go out of scope are released with the kind of each, and a send
-    // or a receive asks first whether a channel operation may wait here.
+    // A sender and a receiver that go out of scope are released with the kind of each. On WASM a
+    // send or a receive asks first whether a channel operation may wait here.
     for ir in [&native, &wasm] {
         assert!(
             ir.contains("call i32 @tsuzuri_channel_close(ptr %v2, i32 0)"),
@@ -1067,10 +1096,10 @@ fn channel_lowering_calls_the_runtime_and_closes_by_drop() {
             ir.contains("call i32 @tsuzuri_channel_close(ptr %v2, i32 1)"),
             "{ir}"
         );
-        assert!(ir.contains("call i32 @tsuzuri_mutex_wait_ok()"), "{ir}");
         assert!(ir.contains("call i32 @tsuzuri_channel_send("), "{ir}");
         assert!(ir.contains("call i32 @tsuzuri_channel_recv("), "{ir}");
     }
+    assert!(wasm.contains("call i32 @tsuzuri_mutex_wait_ok()"), "{wasm}");
     let [native, _] = emits(
         "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let clone = DataChannel.clone_sender (ref sender)\n    let _sent = DataChannel.send (ref clone) 7i64\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
     );
@@ -1080,9 +1109,9 @@ fn channel_lowering_calls_the_runtime_and_closes_by_drop() {
     );
     // Without a mention of DataChannel, no runtime and no lowering is added, whatever else is used.
     for source in [
-        "let values = Task.run (Task.parallel [task { return 1 }, task { return 2 }])\nArray.sum (ref values)",
+        "let values = Parallel.init 2 (\\index -> index + 1)\nArray.sum (ref values)",
         "let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> deref value)",
-        "let counter = Atomic.create 0i64\nlet seen = Task.scope (ref counter) 2 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref seen)",
+        "let counter = Atomic.create 0i64\nlet seen = Routine.scope (ref counter) 2 (\\shared index -> Atomic.fetch_add shared index)\nArray.length (ref seen)",
     ] {
         for ir in emits(source) {
             assert!(

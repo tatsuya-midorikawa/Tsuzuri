@@ -144,7 +144,7 @@ order=04235 reused=true
 
 値 1 を削除すると末尾の 4 が位置 1 へ移り、5 は末尾に入ります。5 は空いた slot 1 を世代 1 で再利用します。
 
-ハンドルの `Eq`・`Ord`・`Hash` は添字と世代だけを使い、arena ID を含みません（`Ord` は添字、次に世代の辞書順）。arena ID の数値は並列の task では実行ごとに変わり得るためで、比較やハッシュの結果、`Map`・`HashMap` のキー順は API の呼び出し列だけで決まります。`Eq` だけに arena ID を入れると、`Ord` と食い違って `Map` の不変条件が壊れます。ハンドルに `Display` と `Debug` の表示はありません。
+ハンドルの `Eq`・`Ord`・`Hash` は添字と世代だけを使い、arena ID を含みません（`Ord` は添字、次に世代の辞書順）。arena ID の数値は並列に動く tzroutine や `Parallel.*` では実行ごとに変わり得るためで、比較やハッシュの結果、`Map`・`HashMap` のキー順は API の呼び出し列だけで決まります。`Eq` だけに arena ID を入れると、`Ord` と食い違って `Map` の不変条件が壊れます。ハンドルに `Display` と `Debug` の表示はありません。
 
 そのため、別の arena で同じ slot・同じ世代のハンドルは等しく比較されます（Rust の `slotmap` のキーと同じです）。ハンドルをキーにする `Map`・`HashMap`・`Set` には 1 つの arena のハンドルだけを入れます。複数の arena のハンドルを 1 つの表で扱うときは、`(arena の番号, ハンドル)` のタプルのように、自分で決めた arena の区別をキーに含めます。arena への読み書きは、別の arena のハンドルを常に検出します。
 
@@ -154,15 +154,24 @@ order=04235 reused=true
 - `get`・`at`・`iter` の結果は arena の共有借用を持ちます。その間に arena を消費すると `E1014` です。必要な整数やハンドル（Copy）を先に取り出し、借用を終えてから更新します。
 - `remove` は値の所有権を呼び出し元へ返し、`update` は値を `change` に渡して戻り値を同じ位置へ戻します。`update` に渡す関数は arena を参照できないので、更新中に arena が変わることはありません。
 - arena の drop は、値を詰めた領域の先頭から順に各値の drop を呼び、続いて内部のバッファを解放します。循環を含むグラフでも再帰しないので、深さの制限を受けません。
-- `Arena<T>` を捕捉した関数値・task の可否は要素型 `T` に従います。`T` が `Send` なら arena を task へ移せます。ハンドルは常に Copy で、task も捕捉できます。`ref Arena<T>` を task が捕捉すると `E1013` です。複数の task で 1 つの arena を共有して読む手段はありません。
+- `Arena<T>` を捕捉した関数値・tzroutine の可否は要素型 `T` に従います。`T` が `Send` なら arena を `tzroutine { ... }` へ移せます。ハンドルは常に Copy で、tzroutine も捕捉できます。`ref Arena<T>` を tzroutine が捕捉すると `E1013` です。複数の tzroutine で 1 つの arena を読むときは、`T` が `Sync` なら `Routine.scope (ref arena) count f` で共有借用を貸します（`Arena<Rc<i64>>` などは `E1013`）。
 - `Arena<ref string>` のように参照を入れた arena は、参照先より長く生きられません（`Map` と同じ規則）。
+
+次の例は、更新した arena を tzroutine へムーブし、その中で読んだ値を [Channel](./channel.md) で受け取ります。
 
 ```tsuzuri run=42
 let empty: Arena<i64> = Arena.empty()
+let results: Channel<i64> = Channel.make 1
 match Arena.insert 40 empty with
 | (arena, handle) ->
     let updated = Arena.update handle (\value -> value + 2) arena
-    Task.run (task { return deref (Arena.at handle (ref updated)) })
+    let out = Channel.share results
+    tzroutine {
+        Channel.send out (deref (Arena.at handle (ref updated)))
+    }
+    match Channel.recv results with
+    | Maybe.Some value -> value
+    | Maybe.None -> 0
 ```
 
 実行結果:

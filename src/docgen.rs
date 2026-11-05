@@ -120,7 +120,6 @@ pub(crate) fn type_text(ty: &TypeExpr) -> String {
                 .collect::<Vec<_>>()
                 .join(" * ")
         ),
-        TypeExprKind::Task(result) => format!("Task<{}>", type_text(result)),
         TypeExprKind::Function(parameters, result) => {
             let arguments = if parameters.is_empty() {
                 "fn()".into()

@@ -124,7 +124,4 @@
       <Item Name="[error]" Condition="$tag == 1">$payload.Error</Item>
     </Expand>
   </Type>
-  <Type Name="Task&lt;*&gt;">
-    <DisplayString>&lt;task&gt;</DisplayString>
-  </Type>
 </AutoVisualizer>

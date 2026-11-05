@@ -53,7 +53,7 @@ namespace = "GeometryTools"
 `namespace` を省略すると、`name` を PascalCase にした名前が既定になります。`geometry-tools` なら `GeometryTools` です。PascalCase は自動変換の形であり、書いた名前が小文字でも、識別子なら受理されます。
 
 > [!WARNING]
-> `Acme.Tools` のようにドットで区切ると `E1011` です。先頭要素に `std`、`Task`、予約モジュール名（`Maybe`、`Array` など）も `E1011` です。どの要素も `_` 単独、`Task`、予約語にはできません。
+> `Acme.Tools` のようにドットで区切ると `E1011` です。先頭要素に `std`、予約モジュール名（`Maybe`、`Array` など）も `E1011` です。どの要素も `_` 単独、予約語にはできません。
 
 ### 言語版（edition）
 
@@ -354,7 +354,7 @@ allow = ["fs", "net", "stdio", "time"]
 | `stdio` | `IO` の読み書き、`Debug.print`・`Debug.trace`、`Gen.for_all` などの失敗の報告、結果を表示するトップレベルのコード（`Main.tz` の `42` のように、`unit` でない値で終わるもの） |
 | `time` | `Time` の関数、`Async.block_on`、`Bench.of`・`Bench.with_input` |
 
-`Path`、`Task`・`Parallel`・`Atomic`・`Mutex`・`DataChannel`（CPU の資源）、`Random.pcg` のような純粋な関数は権限を要りません。std の関数の権限は、その本体が参照する私的な組み込み関数と std の関数から推移的に決まります。
+`Path`、`Parallel`・`Atomic`・`Mutex`・`DataChannel`（CPU の資源）、`Random.pcg` のような純粋な関数は権限を要りません。std の関数の権限は、その本体が参照する私的な組み込み関数と std の関数から推移的に決まります。
 
 - **有効にする条件**: ルートのマニフェストに `[capabilities]` がある、またはルートの依存の項目のどれかに `capabilities` があるときだけ検査します。どちらもなければ何も検査せず、出力は宣言のないときと 1 byte も変わりません。依存のマニフェストの `[capabilities]` は無視します。
 - **ルート**: `allow` に書いた権限だけを使えます。`[capabilities]` がなければ全権限、`allow = []` なら何も使えません。`[capabilities]` を書くなら `allow` は必須です。

@@ -385,7 +385,7 @@ try {
 
   // 24-26 and the other load-time checks.
   const threads = join(root, "threads.wasm");
-  run(["build", join(repository, "tests/fixtures/tasks"), "--target", "wasm32", "--wasm-feature", "threads", "-o", threads]);
+  run(["build", join(repository, "examples/hello"), "--target", "wasm32", "--wasm-feature", "threads", "-o", threads]);
   await assert.rejects(load(readFileSync(threads), { imports: hostImports }), { name: "Error", message: /^bindings do not support modules built with --wasm-feature threads/ });
   const plain = readFileSync(join(root, "plain-O3.wasm"));
   await assert.rejects(load(plain), { name: "TypeError", message: "missing import 'Main.host_fail'" });

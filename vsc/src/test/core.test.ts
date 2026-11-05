@@ -104,10 +104,10 @@ test('new projects suggest a PascalCase namespace and accept identifiers joined 
 	for (const [folder, namespace] of [['my-app', 'MyApp'], ['MyApp', 'MyApp'], ['hello_world', 'HelloWorld'], ['ex1', 'Ex1'], ['2024 app', 'App'], ['\u65e5\u672c', 'App']]) {
 		assert.equal(defaultNamespace(folder), namespace, folder);
 	}
-	for (const text of ['Sample', 'Acme::Tools', 'lower::case_1', 'Acme::_internal', 'Acme::Maybe', 'Acme::std', 'Std', 'Tasks']) {
+	for (const text of ['Sample', 'Acme::Tools', 'lower::case_1', 'Acme::_internal', 'Acme::Maybe', 'Acme::std', 'Std', 'Tasks', 'Task', 'Acme::Task', 'task']) {
 		assert.ok(isNamespace(text), text);
 	}
-	for (const text of ['', '1st', 'Acme.Tools', 'Acme::::Tools', 'Acme:Tools', 'Acme::', 'my-app', 'A::'.repeat(16) + 'A', 'Task', 'Acme::Task', 'Acme::_', 'Acme::match', 'Maybe', 'IO::Extra', 'std', 'std::Extra']) {
+	for (const text of ['', '1st', 'Acme.Tools', 'Acme::::Tools', 'Acme:Tools', 'Acme::', 'my-app', 'A::'.repeat(16) + 'A', 'Acme::_', 'Acme::match', 'Maybe', 'IO::Extra', 'std', 'std::Extra']) {
 		assert.ok(!isNamespace(text), text);
 	}
 });

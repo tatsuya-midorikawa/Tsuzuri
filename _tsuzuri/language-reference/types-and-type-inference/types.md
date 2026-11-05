@@ -14,7 +14,7 @@ Tsuzuri は静的型付きの関数型言語です。式と変数の型はコン
 
 ## 型システムの全体像
 
-組み込みの数値や文字列から、自分で宣言するレコード、参照、並行タスクまで、型は次のように分かれます。
+組み込みの数値や文字列から、自分で宣言するレコード、参照、チャンネルまで、型は次のように分かれます。
 
 ```mermaid
 flowchart TD
@@ -27,7 +27,7 @@ flowchart TD
     root --> dynamic["動的ディスパッチ<br>(dyn C)"]
     composite --> structural["構造的型<br>(タプル / [T] / [T; N] / [|T|])"]
     composite --> nominal["名前で区別する型<br>レコード / 共用体"]
-    composite --> stdlib["標準ライブラリ<br>(Maybe / Result / Vec / Task)"]
+    composite --> stdlib["標準ライブラリ<br>(Maybe / Result / Vec / Channel)"]
 ```
 
 ### 型の分類一覧
@@ -56,7 +56,7 @@ Copy の列は、値を複製して元の変数も使えるかを示します。
 | オプショナル | `Maybe<T>` | 条件付き | 値がある（`Some`）かない（`None`）かを表す標準の共用体 | [Maybe](../built-in-types-and-modules/maybe.md) |
 | 結果型 | `Result<T, E>` | 条件付き | 成功（`Ok`）または失敗（`Error`）を表す標準の共用体 | [Result](../built-in-types-and-modules/result.md) |
 | 可変長バッファ | `Vec<T>` | × | 伸長可能なヒープ確保の所有バッファ（常に非 Copy） | [Vec](../built-in-types-and-modules/vec.md) |
-| 並行タスク | `Task<T>` | × | 一回限りの実行を担う遅延並行タスク（所有権を持つ非 Copy 値） | [Task 式](../async-tasks-and-lazy/task.md) |
+| チャンネル | `Channel<T>` | × | tzroutine の間で値を受け渡すハンドル（`Channel.share` で端を増やす非 Copy 値） | [Channel](../built-in-types-and-modules/channel.md) |
 | 共有ポインター | `Rc<T>`・`Arc<T>`・`Rc.Weak<T>`・`Arc.Weak<T>` | × | 参照カウントで値を共有する所有ポインター。所有者は `share` で明示的に増やす | [Rc と Arc](../built-in-types-and-modules/rc.md) |
 | 入出力操作 | `IO<T>` | ○ | 副作用を包んだアクション。中身は `unit -> T` の関数値で、Copy | [IO](../built-in-types-and-modules/io.md) |
 | 動的オブジェクト | `dyn C` | 条件付き | 型クラス `C` を実装する値へのファットポインタ。Copy になるかは `C` による | [型クラス](type-classes.md) |
@@ -72,7 +72,7 @@ Copy の列は、値を複製して元の変数も使えるかを示します。
 ```text
 Pair<i64, string>
 Maybe<[f64; 3]>
-Task<Result<i32, string>>
+Vec<Result<i32, string>>
 ```
 
 - 型名と `<` の間に空白は置けません。`Pair <i64>` は構文エラー `E0002` です。
@@ -204,7 +204,7 @@ error[E1003]: expected Main.Vector2, found Main.Point
 - 型の不一致はコンパイル時に分かります。暗黙の数値変換はありません。
 - レコードと共用体は宣言の名前で区別します。タプルと配列は中身の型で区別します。
 - 関数のシグネチャとレコードのフィールドには型を書きます。関数の中の `let` は推論できます。
-- 関数値と `IO` は Copy です。`string`、`Vec`、`Task`、`ref mut` は Copy ではありません。
+- 関数値と `IO` は Copy です。`string`、`Vec`、`Channel`、`ref mut` は Copy ではありません。
 - 固定長配列の長さは 1024 まで、インラインの値は 64 KiB までです。どちらも `E1010` です。
 
 ## 関連項目

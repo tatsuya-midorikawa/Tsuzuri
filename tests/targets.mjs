@@ -56,7 +56,7 @@ const machine = {
   elf: { aarch64: 183, x86_64: 62 },
   coff: { aarch64: 0xaa64, x86_64: 0x8664 },
 };
-const expected = { tasks: "21325334000\n", control: "42\n" };
+const expected = { tzroutines: "21325334000\n", control: "42\n" };
 
 const work = mkdtempSync(join(tmpdir(), "tsuzuri-targets-"));
 const baseEnvironment = { ...process.env, TSUZURI_CACHE_DIR: join(work, "cache") };
@@ -178,7 +178,7 @@ try {
 
   // The machine's own target, named explicitly: the same programs as `--target native`, at -O0 and -O3.
   for (const optimization of ["-O0", "-O3"]) {
-    for (const example of ["tasks", "control"]) {
+    for (const example of ["tzroutines", "control"]) {
       const named = join(work, `${example}-${host}${optimization}`);
       const native = join(work, `${example}-native${optimization}`);
       cli(["build", `examples/${example}`, "--no-cache", optimization, "--target", host, "-o", named], { env: { TSUZURI_CLANG: systemClang } });
@@ -227,7 +227,7 @@ try {
     for (const [name, target] of triples) {
       if (name === host || target.libc === "msvc") continue;
       const exe = join(work, `tasks-cross-${name}${target.os === "windows" ? ".exe" : ""}`);
-      cli(["build", "examples/tasks", "--no-cache", "--target", name, "-o", exe], { env: cross });
+      cli(["build", "examples/tzroutines", "--no-cache", "--target", name, "-o", exe], { env: cross });
       check(name, exe, "executable");
       record(name, "linked", `${target.format} linked with ${crossClang.split("/").pop()}`);
       // A program that needs no runtime also builds as an object and as a shared library, where the target has them.
@@ -240,19 +240,19 @@ try {
       }
       // A static musl executable of the host's architecture runs on any Linux.
       if (process.platform === "linux" && target.libc === "musl" && target.arch === hostArch) {
-        assert.equal(execute(exe, []).stdout, expected.tasks, name);
+        assert.equal(execute(exe, []).stdout, expected.tzroutines, name);
         record(name, "executed", "static musl executable, run directly");
       }
     }
     // The Windows MSVC targets need the MSVC SDK, which no bundle has, and the bundle says so.
     for (const name of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]) {
-      const refused = failure(["build", "examples/tasks", "--no-cache", "--target", name, "-o", join(work, "msvc")], cross);
+      const refused = failure(["build", "examples/tzroutines", "--no-cache", "--target", name, "-o", join(work, "msvc")], cross);
       assert.equal(refused.code, "E2002", name);
       assert.match(refused.message, /MinGW, not the MSVC runtime/);
       assert.match(refused.message, /pc-windows-gnu/);
     }
     // A sysroot and the bundled toolchain do not mix: the bundle brings its own C library.
-    const sysroot = failure(["build", "examples/tasks", "--no-cache", "--target", "x86_64-unknown-linux-gnu", "-o", join(work, "sysroot")], { ...cross, TSUZURI_SYSROOT: work });
+    const sysroot = failure(["build", "examples/tzroutines", "--no-cache", "--target", "x86_64-unknown-linux-gnu", "-o", join(work, "sysroot")], { ...cross, TSUZURI_SYSROOT: work });
     assert.equal(sysroot.code, "E2002");
     assert.match(sysroot.message, /cannot use a sysroot/);
     console.log("cross link: every target the bundled toolchain can link was linked and inspected");
@@ -270,7 +270,7 @@ try {
       const env = { ...cross, TSUZURI_RUNNER: program };
       for (const optimization of ["-O0", "-O3"]) {
         assert.equal(cli(["run", "examples/control", "--no-cache", optimization, "--target", name], { env }).stdout, expected.control, `${name} ${optimization}`);
-        assert.equal(cli(["run", "examples/tasks", "--no-cache", optimization, "--target", name], { env }).stdout, expected.tasks, `${name} ${optimization}`);
+        assert.equal(cli(["run", "examples/tzroutines", "--no-cache", optimization, "--target", name], { env }).stdout, expected.tzroutines, `${name} ${optimization}`);
         assert.match(cli(["test", suite, optimization, "--target", name, "--json"], { env }).stdout, /"passed":2,"failed":0/, `${name} ${optimization}`);
       }
       record(name, "executed", `under ${program} (TSUZURI_RUNNER)`);

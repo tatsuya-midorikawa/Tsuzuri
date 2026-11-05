@@ -619,7 +619,7 @@ class UnionProvider:
 
 
 def is_function(sbtype, _dict):
-    """Only the generated function value and `Task` types: a record may name its fields the same,
+    """Only the generated function value types: a record may name its fields the same,
     but its `descriptor` never points to a structure whose `code` is a function pointer, and its
     type name has no `->`."""
     try:
@@ -637,7 +637,7 @@ def is_function(sbtype, _dict):
         return (
             code.IsPointerType()
             and code.GetPointeeType().IsFunctionType()
-            and ("->" in name or name.startswith("Task<"))
+            and "->" in name
         )
     except Exception:
         return False
@@ -646,8 +646,6 @@ def is_function(sbtype, _dict):
 @guarded
 def function_summary(valobj):
     value = target(valobj)
-    if (strip(value.GetType()).GetName() or "").startswith("Task<"):
-        return "<task>"
     descriptor = member(value, "descriptor")
     code = 0
     if descriptor.GetValueAsUnsigned() != 0:

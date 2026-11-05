@@ -8,7 +8,7 @@
 - `WaitGroup.wait` は、待つ tzroutine だけを止めます（OS スレッドは止めません）。`main` などのスレッドでは、そのスレッドが待ちます。 <!-- rule: TSK-026 -->
 - 数が負になると `Tsuzuri runtime: negative WaitGroup counter` を書いてトラップします（Go の panic）。
 - Go と同じく、`wait` が戻る前に数を 0 から増やす使い方は誤りです（待ち手が戻らないことがあります）。実行時には検査しません。
-- `Task.scope`・`Task.parallel`・`Parallel.*` の項目の中の `wait` は、そのスレッドプールのスレッドを止めます。待つ項目がスレッドの数を超えると、残りの項目を始めるスレッドがなく、待ち続けます（[Channel](./channel.md) の待ちと同じ。Task は TZ12 で tzroutine に置き換わります）。子が互いを待つ形は tzroutine で書きます。
+- `Routine.scope` の子や `Parallel.*` のコールバックの中の `wait` も、待つのはその tzroutine だけです（[Channel](./channel.md#待ちとデッドロック) の待ちと同じ）。子が互いを待つ形は tzroutine か [`Routine.scope`](./routine.md#routinescope) で書きます（`Parallel.*` の同じチャンクの要素は順に呼ばれるので、互いを待てません）。
 
 ## 基本の書き方
 

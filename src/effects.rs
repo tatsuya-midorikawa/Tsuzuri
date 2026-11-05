@@ -554,12 +554,8 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             false,
             Some("host_status"),
         ),
-        // B22
-        TaskRun | TaskParallel | TaskParallelResults => {
-            facts(Some(Effect::Task), true, false, false, false, false, None)
-        }
         // B23
-        ParallelInit | ParallelMap | ParallelMapRef | ParallelReduce | TaskScope => {
+        ParallelInit | ParallelMap | ParallelMapRef | ParallelReduce => {
             facts(Some(Effect::Task), true, false, false, true, false, None)
         }
         // TZ11: the children may wait for each other, and a deadlock among them traps at the call.
@@ -1132,7 +1128,7 @@ fn argument<'a>(
 /// Whether a value of this type can carry a function or task value into the function.
 fn open_type(ty: &Type, types: &TypeContext<'_>) -> bool {
     types.reaches(ty, |part| {
-        matches!(part, Type::Function(..) | Type::Dyn(_) | Type::Task(_))
+        matches!(part, Type::Function(..) | Type::Dyn(_) | Type::Once(_))
             || part.is_owned_function(types)
             || matches!(part, Type::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std
                 && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Async.Async" | "Async.Next"))
@@ -1793,23 +1789,12 @@ impl<'s, 'a> Scan<'s, 'a> {
             }
             K::Closure(id, captures) => {
                 self.local.edges.push((*id, span));
-                if !captures.is_empty() || matches!(expression.ty, Type::Task(_)) {
+                if !captures.is_empty() || matches!(expression.ty, Type::Once(_)) {
                     self.source(Effect::Alloc, span, "closure-environment");
                 }
                 if !captures.is_empty() {
                     self.call_site(*id, captures, &[], span);
                 }
-                false
-            }
-            K::TaskRun(_) => {
-                self.source(Effect::Task, span, "task");
-                self.source(Effect::Alloc, span, "task");
-                self.unknown(VALUE_CALL, span, "value-call");
-                false
-            }
-            K::TaskParallel(_) | K::TaskParallelResults(_) => {
-                self.source(Effect::Task, span, "task");
-                self.source(Effect::Alloc, span, "task");
                 false
             }
             K::RoutineGo(_) => {
@@ -2718,9 +2703,10 @@ fn phrase(effect: Effect, code: &str) -> (&'static str, &'static str) {
             "passes a string to an extern function, which may copy it for the host",
             "pass the bytes as a 'ref [i8u]' buffer, or remove the attribute",
         ),
-        (Effect::Alloc, "task" | "parallel") => {
-            ("creates tasks", "remove the tasks, or remove the attribute")
-        }
+        (Effect::Alloc, "task" | "parallel") => (
+            "starts tzroutines or parallel work",
+            "remove the tzroutines or the parallel calls, or remove the attribute",
+        ),
         (Effect::Alloc, _) => (
             "allocates",
             "use a non-allocating alternative, or remove the attribute",
@@ -2763,7 +2749,7 @@ fn unknown_phrase(unknown: Unknown) -> &'static str {
     match unknown {
         Unknown::Dyn => "uses dynamic dispatch ('dyn')",
         Unknown::Unresolved => "contains an expression that is not resolved",
-        Unknown::ValueCall => "runs a function or task value that its caller can choose",
+        Unknown::ValueCall => "runs a function value that its caller can choose",
     }
 }
 
@@ -3352,7 +3338,7 @@ fn impurity_reason(effect: Effect, why: Why) -> String {
         (_, Some(Builtin::AllocCounter)) => "reads allocation counters".into(),
         (Effect::Io | Effect::Os | Effect::Net, _) => named("reads or writes the outside world"),
         (Effect::Debug, _) => "prints debug output".into(),
-        (Effect::Task, _) => named("starts or waits for a task or a parallel operation"),
+        (Effect::Task, _) => named("starts or waits for a tzroutine or a parallel operation"),
         (Effect::Atomic | Effect::Rc, _) => named("uses shared mutable state"),
         (Effect::Gpu, _) => named("uses the GPU"),
         (Effect::UserDrop, _) => "holds a value whose type has a user Drop".into(),
@@ -3602,8 +3588,8 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 357);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 182);
+        assert_eq!(Builtin::ALL.len(), 353);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 178);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 175);
     }
 
@@ -3613,7 +3599,7 @@ mod tests {
         assert_eq!(by(Effect::Io), 10);
         assert_eq!(by(Effect::Os), 21);
         assert_eq!(by(Effect::Net), 12);
-        assert_eq!(by(Effect::Task), 20);
+        assert_eq!(by(Effect::Task), 16);
         assert_eq!(by(Effect::Atomic), 92);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
@@ -3623,7 +3609,7 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 80);
+        assert_eq!(count(|facts| facts.alloc), 76);
     }
 
     #[test]
@@ -3639,7 +3625,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 30);
+        assert_eq!(count(|facts| facts.callbacks), 29);
     }
 
     fn checked(source: &str) -> CheckedModule {

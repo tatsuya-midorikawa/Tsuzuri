@@ -1,22 +1,26 @@
-# Task that captures a borrow
+# Borrow captured by a tzroutine
 
 ## Why
-A `task { ... }` captures only owned values: a captured value that holds a borrow is rejected (`E1013`). That includes a closure that captured a borrowed parameter, because the closure's environment holds that borrow.
+A `tzroutine { ... }` captures only owned values: a captured value that holds a borrow is rejected (`E1013`). That includes a closure that captured a borrowed parameter, because the closure's environment holds that borrow.
 
 ## Bad
 ```tsuzuri
-def total :: ref [i64] -> i64 = \values ->
+def report :: ref [i64] -> unit = \values ->
     let size = \_ -> values.length
-    Task.run (task { return size () })
+    tzroutine {
+        let _count = size ()
+    }
 ```
 
 ## Good
 ```tsuzuri
-def total :: ref [i64] -> i64 = \values ->
+def report :: ref [i64] -> unit = \values ->
     let size = values.length
-    Task.run (task { return size })
+    tzroutine {
+        let _count = size
+    }
 ```
-Compute what the task needs before it starts, and let the task capture the owned result.
+Compute what the tzroutine needs before it starts, and let the tzroutine capture the owned result.
 
 ## See also
 - `task_requires_owned_value`

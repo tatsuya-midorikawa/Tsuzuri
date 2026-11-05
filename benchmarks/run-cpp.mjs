@@ -144,7 +144,7 @@ const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-cpp-benchmark-"));
 
 try {
   const objects = [], trackedObjects = [];
-  let trackedTaskRuntime = false;
+  let trackedScheduler = false;
   for (const [source, name] of [["benchmarks/Mix.tz", "mix"], ["benchmarks/cpp/Kernels.tz", "kernels"]]) {
     const object = join(temporary, `${name}.o`);
     const inputDirectory = join(temporary, name);
@@ -158,7 +158,7 @@ try {
       run(compiler, ["build", input, "--emit", "llvm", ...tsuzuriFlags, "-o", ir]);
       run(clang, [...flags.filter((flag) => !flag.startsWith("-std=")), "-Wno-override-module", "-S", "-emit-llvm", ir, "-o", optimized]);
       const text = readFileSync(optimized, "utf8");
-      trackedTaskRuntime ||= text.includes("declare void @tsuzuri_task_parallel(");
+      trackedScheduler ||= /@tsuzuri_tz_/.test(text);
       const tracked = join(temporary, `${name}.tracked.ll`), trackedObject = join(temporary, `${name}.tracked.o`);
       writeFileSync(tracked, instrumentAllocations(text));
       run(clang, ["-O0", "-fPIC", "-Wno-override-module", "-c", tracked, "-o", trackedObject]);
@@ -205,11 +205,11 @@ try {
   if (metrics) {
     const allocator = join(temporary, "tracked_alloc.o");
     run(clang, ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-c", "benchmarks/tracked_alloc.c", "-o", allocator]);
-    const runtime = join(temporary, "tracked_task.o");
-    if (trackedTaskRuntime) run(clang, ["-x", "c", "-std=c11", "-O3", "-fPIC", "-pthread", "-c", "src/runtime/task.c", "-o", runtime]);
+    const runtime = join(temporary, "tracked_tzroutine.o");
+    if (trackedScheduler) run(clang, ["-x", "c", "-std=c11", "-O3", "-fPIC", "-pthread", "-c", "src/runtime/tzroutine.c", "-o", runtime]);
     const tracked = join(temporary, "tracked");
     run(clang, ["--driver-mode=g++", ...flags, "-DTRACKING", "benchmarks/cpp/native.cpp", "-I", temporary,
-      ...trackedObjects, allocator, rustLibrary, ...(trackedTaskRuntime ? [runtime] : []), "-lm", "-pthread",
+      ...trackedObjects, allocator, rustLibrary, ...(trackedScheduler ? [runtime] : []), "-lm", "-pthread",
       ...(platform() === "linux" ? ["-ldl"] : []), "-o", tracked]);
     const tracking = JSON.parse(run(tracked, quick ? ["--quick"] : ["--scale", String(scale)]));
     assert.deepEqual(tracking.workloads.map((work) => [work.name, work.size]), result.workloads.map((work) => [work.name, work.size]));

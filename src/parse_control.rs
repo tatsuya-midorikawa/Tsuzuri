@@ -626,8 +626,8 @@ impl Parser<'_> {
                 "a lambda requires at least one parameter; use '\\() -> ...' for unit",
             ));
         }
-        let outer = (self.in_task, self.in_routine);
-        (self.in_task, self.in_routine) = (false, false);
+        let outer = self.in_routine;
+        self.in_routine = false;
         // A21: the innermost lambda of a function's body holds its contract lines, unless it
         // destructures or guards its parameters.
         if at_site && guard.is_none() && patterns.is_empty() {
@@ -639,7 +639,7 @@ impl Parser<'_> {
         } else {
             self.body_expression()?
         };
-        (self.in_task, self.in_routine) = outer;
+        self.in_routine = outer;
         if let Some(guard) = guard {
             // The guard sees the destructured names, so it wraps the body inside the patterns.
             let span = guard.span.through(body.span);
@@ -1601,11 +1601,7 @@ impl Parser<'_> {
     fn pattern_argument_expression(&self) -> bool {
         if matches!(
             self.current().kind,
-            TokenKind::Ampersand
-                | TokenKind::If
-                | TokenKind::Backslash
-                | TokenKind::Task
-                | TokenKind::New
+            TokenKind::Ampersand | TokenKind::If | TokenKind::Backslash | TokenKind::New
         ) {
             return true;
         }

@@ -94,7 +94,7 @@ impl Specializations {
     pub fn can_borrow(&mut self, target: ClosureTarget, module: &CheckedModule) -> bool {
         *self.readable.entry(target).or_insert_with(|| {
             let function = &module.functions[target.function];
-            !function.is_task
+            !function.is_once
                 && !function.owned_captures
                 && target.bound <= function.parameters.len()
                 && !function.signature.result.carries_loans(&module.types())

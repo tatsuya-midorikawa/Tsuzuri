@@ -9,10 +9,10 @@
 - `.tc` が 1 ファイルにつき 1 ビルダーです。ファイル名がビルダー名になります。`.tz` に関数を並べただけではビルダーになりません。
 - `.tc` に `@alias async` と書くと、`async { ... }` が `Async { ... }` と同じ意味になります。別名は小文字で始め、ビルダー名の代わりに `{` の前へ書けます。標準の `Async` はこの別名を宣言済みです。
 - `let!` や `return` は、`Bind` や `Return` などの操作へコンパイル時に展開されます。
-- 標準では `Result`、`Maybe`、`IO` が `.tc` です。`task` は別の組み込み構文です。
+- 標準では `Result`、`Maybe`、`IO` が `.tc` です。
 - 関数本体、式ブロック、トップレベルではビルダー名を省略できます。型からビルダーを選びます。
 - `and!` はスレッド並列ではありません。左から右へ評価して結合します。
-- 継続は再利用できる関数です。`Task<T>` や `ref mut`、`Drop` 型は継続の中へ捕捉できません。
+- 継続は再利用できる関数です。`ref mut` や `Drop` 型は継続の中へ捕捉できません。
 
 ## ビルダーの定義
 
@@ -176,6 +176,7 @@ upper + lower
 - 別名は `{` の前にだけ書けます。値や型としては使えず、`async.run` のような修飾もできません（`Async.run` と書きます）。`Ns::async` のように名前空間をつなぐ書き方もありません。`name { field: value }` はこれまでどおりレコードリテラルです。本体が空の `name {}` は別名が先に選ばれ、同名の（小文字の）空レコードがあっても変わりません。`Name.tc` と空レコード `Name` の関係と同じです。
 - 見えているビルダーが複数で同じ別名を宣言していると、どれも選ばずに `E1004` です。ビルダー自身の名前（`Acme::Tools::Parser { ... }`）で選びます。`using` した 2 つの名前空間に同じ名前のビルダーがあっても、別名は宣言したほうを選び、両方が宣言していれば `E1004` です。
 - 利用者のビルダーの別名は、標準のビルダーの同名の別名より先に選ばれます。標準のビルダーは元の名前（`Async { ... }`）で呼べます。
+- `task` は削除された `task { ... }` 式の名前でしたが、今は普通の名前で、別名にも使えます。`@alias task` を宣言したビルダーがあれば `task { ... }` はそのビルダーの計算で、なければ `E1040`（`'task { }' was removed`）です（[Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行)）。
 - 標準の `Async.tc` は、ソースに `Async` か `async` の語があるときだけ読み込まれます。`asynchronous` や `async_work` のように別の語の一部では読み込まれません。コメントや文字列の中の語も数えます。
 
 宣言のない小文字の名前は `E1018` です。本体が空の `name {}` も、その名前のレコードがなければ同じです。
@@ -192,7 +193,6 @@ error[E1018]: unknown computation builder 'widget'; declare '@alias widget' in t
 | `Maybe` | `std/Maybe.tc` | 値の有無 | `None` で継続を呼ばない |
 | `IO` | `std/IO.tc` | 副作用の遅延合成 | 実行するまで副作用は起きない |
 | `Async` | `std/Async.tc` | 協調的な中断とホスト駆動 | `run` は仮想時刻、`block_on` は実時間、`start` はホスト駆動 |
-| `task` | 言語組み込み | 並行タスク | コールドで 1 回消費。`.tc` ではない |
 
 `Maybe` と `Result` は `Bind`、`Return`、`ReturnFrom`、`Zero`、`Combine`、`Delay`、`Run`、`For`、`While`、`MergeSources`、`BindReturn`、`Bind2` を定義しています。`IO` はこれらに加え `Using` を定義しています。公開の `IO.run` はありません。実行するのは `main`、`do!`、`let!`、トップレベルの `IO` 式です。
 
@@ -300,7 +300,7 @@ def Using :: (('a -> 'b) -> 'c) -> ('a -> IO<'b>) -> IO<'c>
 
 ## and! と融合
 
-`and!` は、直前の `let!` と独立した計算をまとめます。スレッドは起動しません。`Task.parallel` の代わりにもなりません。
+`and!` は、直前の `let!` と独立した計算をまとめます。スレッドは起動しません。並列に計算するときは [Parallel](../built-in-types-and-modules/parallel.md) か [tzroutine 式](../async-tasks-and-lazy/tzroutine.md) を使います。
 
 ```tsuzuri run=42
 let answer = Maybe {
@@ -373,11 +373,11 @@ match answer with
 42
 ```
 
-網羅していない `match!` は `E1021` です。`task` に `match!` を足すことはありません。
+網羅していない `match!` は `E1021` です。
 
 ## use と use!
 
-コンピュテーション式と `task` の中でも、`use` と `use!` が使えます。
+コンピュテーション式の中でも、`use` と `use!` が使えます。
 
 - `use x = expr` は通常の式を評価し、スコープを抜けるときに `Drop` します。
 - `use! x = expr` は `let!` と同様に値を取り出してから、`use` で束縛します。
@@ -391,7 +391,7 @@ match answer with
 
 ## 所有権
 
-1. 継続は再利用できる関数です。`Task<T>` や `ref mut` を継続へ捕捉すると `E1005` です。
+1. 継続は再利用できる関数です。`ref mut` や `Drop` 型の値を継続へ捕捉すると `E1005` です。
 2. 外の `let mut` への代入は、継続の中では可変束縛として見えず `E1014` です。
 3. `let! mut x = expr` は、その継続の中のローカルを可変にするだけです。後続の `let!` をまたいで、外の可変変数を共有する機能ではありません。
 4. `Async<T>` の式が借用を持つことはできません。`let!`、`do!`、または計算の開始をまたぐ借用は `E1013` です。値をブロックへ移すか、次の中断点より前に借用を終えます。
@@ -413,7 +413,7 @@ match answer with
 42
 ```
 
-裸の `do expr` は `unit` の通常式です。モナドを実行する `do!` とは別です。`task` の暗黙本体は `Task<T>` を作り、`and!` や計算式の `yield` は付きません。`Async` の暗黙本体は戻り値が `Async<T>` のときに選ばれます。詳しくは [Task 式](../async-tasks-and-lazy/task.md) と [Async 式](../async-tasks-and-lazy/async.md) を見てください。
+裸の `do expr` は `unit` の通常式です。モナドを実行する `do!` とは別です。`Async` の暗黙本体は戻り値が `Async<T>` のときに選ばれます。詳しくは [Async 式](../async-tasks-and-lazy/async.md) を見てください。
 
 ## 性能
 
@@ -437,11 +437,10 @@ match answer with
 - `let!`、`do!`、`return`、`yield`、`for`、`while` は、対応する操作へ展開されます。無い操作は `E1018` です。標準の `Async` では `Async.yield ()` が中断点であり、文の `yield` は未定義です。
 - 関数本体ではビルダー名を省略できます。曖昧なときは型注釈か明示的な `Builder { ... }` が要ります。
 - `and!` は左から右の結合で、スレッド並列ではありません。
-- 継続は普通の関数です。`Task`、`ref mut`、`Drop` 型は捕捉できません。
+- 継続は普通の関数です。`ref mut`、`Drop` 型は捕捉できません。
 
 ## 関連項目
 
-- [Task 式](../async-tasks-and-lazy/task.md)
 - [Async 式](../async-tasks-and-lazy/async.md)
 - [Lazy 式](../async-tasks-and-lazy/lazy.md)
 - [Result](../built-in-types-and-modules/result.md)

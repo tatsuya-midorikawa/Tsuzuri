@@ -58,7 +58,7 @@ fn rejects_kernel_effects_allocations_captures_and_recursion() {
         "export def kernel :: i32 -> i32\nfn kernel value = { let values = new [value]; values[0] }",
         "export def kernel :: i32 -> i32\nfn kernel value = { assert (value > 0); value }",
         "export def kernel :: i32 -> i32\nfn kernel value = { let mut total = value; while total > 0 do total = total - 1; total }",
-        "export def kernel :: i32 -> i32\nfn kernel value = Task.run task { value }",
+        "export def kernel :: i32 -> i32\nfn kernel value = { tzroutine { let _copy = value }; value }",
         "extern def external :: i32 -> i32\nexport def kernel :: i32 -> i32\nfn kernel value = external value",
         "def rec recur :: i32 -> i32\nfn rec recur value = if value > 0 then recur (value - 1) else value\nexport def kernel :: i32 -> i32\nfn kernel value = recur value",
     ] {

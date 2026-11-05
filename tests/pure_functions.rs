@@ -730,13 +730,13 @@ fn rejects_external_io_debug_extern_and_shared_state() {
 }
 
 #[test]
-fn permits_closed_tasks_and_parallelism_but_checks_every_callback() {
+fn permits_closed_deferred_bodies_and_parallelism_but_checks_every_callback() {
     accepted(
         "pure def parallel :: [i64] -> [i64] = \\xs -> Parallel.map (\\x -> x + 1) xs\n\
-         pure def run :: i64 -> i64 = \\n -> { let t = task { n + 1 }; Task.run t }\n",
+         pure def run :: i64 -> i64 = \\n -> { let t = Owned.function (\\() -> n + 1); Owned.call (ref t) () }\n",
     );
     for source in [
-        "pure def f :: i64 -> i64 = \\n -> { let t = task { Debug.print (ref n); n }; Task.run t }",
+        "pure def f :: i64 -> i64 = \\n -> { let t = Owned.function (\\() -> { Debug.print (ref n); n }); Owned.call (ref t) () }",
         "pure def f :: [i64] -> [i64] = \\xs -> Parallel.map (\\x -> { Debug.print (ref x); x }) xs",
     ] {
         rejected(source, "debug output");
@@ -861,7 +861,7 @@ fn pure_defs_reach_no_effectful_runtime_symbol() {
                 "@tz.gpu",
                 "@tz.mutex",
                 "@tz.debug",
-                "@tz.task",
+                "@tz.tzroutine",
                 "atomicrmw",
                 "cmpxchg",
                 "fence ",

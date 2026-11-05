@@ -193,7 +193,7 @@ called
 
 ## 境界でのタイマー
 
-`main`・`export`・`test`・`bench`（と `Task` のプールの項目）の終わりは、その中で作られた tzroutine の終わりを待ってから、まだ発火していないタイマーをすべて止め、ランタイムが持つ参照とチャンネルを解放します。タイマーは待ちません。1 時間後のタイマーを作って `main` が終わっても、プログラムはすぐ終わります（Go の `main` と同じ）。`Time.after_func` の関数は呼ばれずに drop されます。`Timer`・`Ticker` のハンドルは境界の外へ出られ、止められたまま drop を待ちます。
+`main`・`export`・`test`・`bench` の終わりは、その中で作られた tzroutine の終わりを待ってから、まだ発火していないタイマーをすべて止め、ランタイムが持つ参照とチャンネルを解放します。タイマーは待ちません。1 時間後のタイマーを作って `main` が終わっても、プログラムはすぐ終わります（Go の `main` と同じ）。`Time.after_func` の関数は呼ばれずに drop されます。`Timer`・`Ticker` のハンドルは境界の外へ出られ、止められたまま drop を待ちます。
 
 ```tsuzuri run=done
 def leave :: unit -> string
@@ -253,7 +253,7 @@ Go の `time.Time`（壁時計の時刻・書式・時差）に当たる型は�
 
 Windows のネイティブビルドは、`monotonic_ns`・`unix_ns`・`sleep_ms` の OS API に到達すると `E2002` で失敗します。`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker` は tzroutine のランタイムで動くので、Windows でも使えます（時計は `QueryPerformanceCounter`）。
 
-並行 `Task` の中から、これらのアクションを直接実行することはできません。測定はメインスレッド（エントリーポイント）で行います。
+tzroutine の本体の中でも、`let!`・`do!` でこれらのアクションを実行できます（[tzroutine 式](../async-tasks-and-lazy/tzroutine.md)）。
 
 ## 他の言語との比較
 

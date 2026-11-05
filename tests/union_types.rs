@@ -342,7 +342,7 @@ fn rejects_invalid_declarations_patterns_and_uses() {
         ("union Pair = Pair of i64 * i64", "E1001", "'Pair'"),
         ("union U = A\nunion U = B", "E1001", ""),
         ("record U { x: i64 }\nunion U = A", "E1001", ""),
-        ("union U = Task", "E1001", ""),
+        ("union U = Vec", "E1001", ""),
         ("union Add<'a> = Value of 'a", "E1001", ""),
         (
             "class C<'a> { def f :: 'a -> i64 }\nunion C<'a> = Value of 'a",
@@ -536,17 +536,20 @@ fn f value =
 f (Some (1, \"ab\"))
 "
         ),
-        // Tasks may capture and return owned unions.
+        // A tzroutine may capture an owned union and move its payload out, and the children of
+        // Routine.scope may return owned unions.
         format!(
             "{MAYBE}def answer :: i64
 fn answer =
     let value = Some \"sent\"
-    let job = task {{
+    tzroutine {{
         match value with
-        | Some text -> Some text.length
-        | None -> None
+        | Some text -> assert (text.length == 4)
+        | None -> ()
     }}
-    match Task.run job with
+    let text = \"sent\"
+    let lengths = Routine.scope (ref text) 1 (\\shared _index -> Some shared.length)
+    match lengths[0] with
     | Some n -> n
     | None -> 0
 "

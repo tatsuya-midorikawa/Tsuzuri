@@ -124,10 +124,10 @@ fn task_sequence count seed =
     assert (count >= 0 && count <= 100000000)
     let mut state = seed as i64u
     for index in 0 ..= count - 1 do
-        state = Task.run task {
-            let! value = task { state }
-            return (value ^ (value >>> 13)) * 6364136223846793005 + 1442695040888963407
-        }
+        let current = state
+        let job = \() -> current
+        let value = job ()
+        state = (value ^ (value >>> 13)) * 6364136223846793005 + 1442695040888963407
     state as i64
 
 export def task_sequential :: own i64 -> own i64 -> i64
@@ -140,8 +140,7 @@ fn task_sequential count seed =
 export def task_parallel :: own i64 -> own i64 -> i64
 fn task_parallel count seed =
     assert (count >= 0 && count <= 100000000)
-    let work = new [Task<i64u>](16, \index -> task { task_mix count (seed as i64u ^ index as i64u) })
-    let results = Task.run (Task.parallel work)
+    let results = Routine.scope (ref seed) 16 (\shared index -> task_mix count (deref shared as i64u ^ index as i64u))
     let mut total = 0i64u
     for value in results do total = total + value
     total as i64

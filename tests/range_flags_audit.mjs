@@ -28,7 +28,7 @@ if (!["quick", "full"].includes(size) || !modes.every((mode) => ["audit", "prove
 
 const quick = ["control", "numeric_casts", "integer_intrinsics", "primitives", "computations", "strings", "e2e"];
 const full = [
-  "e2e", "primitives", "prebuilt_runtime", "display_parse", "strings", "tasks", "async", "features", "json", "computations",
+  "e2e", "primitives", "prebuilt_runtime", "display_parse", "strings", "tzroutine", "async", "features", "json", "computations",
   "control", "lsp_sessions", "io", "repl", "script", "os", "targets", "cpu_kernels", "f16_hardware", "packages", "bindgen",
   "debug_info", "frontend_cache", "wasm_threads", "wasm_memory", "wasm_simd", "wasm64", "numeric_casts", "integer_intrinsics",
   "user_drop", "trap_boundary", "trap_return", "trap_return_sync", "stack_overflow", "allocator", "cache", "examples",

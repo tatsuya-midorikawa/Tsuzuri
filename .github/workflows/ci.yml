@@ -123,15 +123,16 @@ jobs:
           node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri map_set
           node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri map_set_chunks
       # TZ02: tzroutine { } and Routine, end to end, and the exports of tests/fixtures/tzroutine with live == 0. TZ03: Channel
-      # between tzroutines and tasks at 1 and 4 Ps (native), and the one-thread Channel of the default WebAssembly target.
+      # between tzroutines and threads at 1 and 4 Ps (native), and the one-thread Channel of the default WebAssembly target.
       # TZ04: select, the same two ways. TZ05: the timers (native). TZ06: the sync types, at 1 and 4 Ps and on the one
       # thread of the default WebAssembly target. TZ07: Context and ErrGroup (native). TZ11: Parallel on the scheduler
-      # and Routine.scope (native).
+      # and Routine.scope (native). TZ12: the value cases of the removed Task, on Routine.scope (tzroutine_values).
       - name: tzroutine, Channel, select, timers, sync, Context and Parallel (TZ02 to TZ07, TZ11)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           node scripts/slot.mjs -- node tests/tzroutine.mjs target/debug/tsuzuri
           node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri tzroutine
+          node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri tzroutine_values
           node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri channel
           node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri channel_single
           node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri select

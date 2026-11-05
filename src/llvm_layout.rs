@@ -21,7 +21,7 @@ pub(crate) enum Niche {
     /// reference is null, but linear memory starts at address 0, where `--stack-first` can put a
     /// valid object, so WebAssembly has no such niche (see `webassembly`).
     NullPointer,
-    /// A function value or a task, `{ ptr, ptr }`: a null descriptor is the nullary case. Every
+    /// A function value or a tzroutine body, `{ ptr, ptr }`: a null descriptor is the nullary case. Every
     /// function value points to a static descriptor, which is never at address 0 whatever the
     /// target (PM02).
     NullDescriptor,
@@ -236,7 +236,7 @@ pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (u
         Type::Char => (2, 2),
         Type::Utf8Char => (4, 4),
         Type::String | Type::Utf8String | Type::Array(_) | Type::List(_) => (16, 8),
-        Type::Function(..) | Type::Task(_) => {
+        Type::Function(..) | Type::Once(_) => {
             if lower {
                 (8, 4)
             } else {
@@ -354,7 +354,7 @@ fn work_out_union_layout(id: usize, arguments: &[Type], module: &CheckedModule) 
 }
 
 /// The niche layout of union `id` at `arguments`, if it has one: exactly two cases, one nullary and
-/// one whose payload is a string, `utf8string`, array, function value, task, or (outside
+/// one whose payload is a string, `utf8string`, array, function value, tzroutine body, or (outside
 /// WebAssembly) reference to one value, in a union that is neither recursive (its value is a node
 /// pointer) nor a Drop union (it keeps a live flag). `cases` are the payloads of its cases.
 fn niche_layout(
@@ -374,7 +374,7 @@ fn niche_layout(
         Type::Reference(..) if payload.slice_element().is_none() && !webassembly() => {
             Niche::NullPointer
         }
-        Type::Function(..) | Type::Task(_) => Niche::NullDescriptor,
+        Type::Function(..) | Type::Once(_) => Niche::NullDescriptor,
         _ => return None,
     };
     if module.unions[id].user_drop || module.types().recursive(&Type::Union(id, arguments.into())) {
@@ -1045,7 +1045,6 @@ fn use n =
     let callback = Words \"a\"
     let h: Maybe<i64 -> i64> = None
     let i: Result<i64 -> i64, string> = Error \"x\"
-    let job: Task<i64> = task {{ return n }}
     n
 ",
             many = many(300)
@@ -1140,7 +1139,7 @@ fn use n =
             ("Lanes8", record("Main.Lanes8")),
             ("Resource", record("Main.Resource")),
             ("Closure", closure.clone()),
-            ("Task<i64>", Type::Task(Box::new(Type::I64))),
+            ("Once<i64>", Type::Once(Box::new(Type::I64))),
             ("Handlers", record("Main.Handlers")),
             ("Choice", union("Main.Choice", &[])),
             ("Callback", union("Main.Callback", &[])),
@@ -1279,7 +1278,7 @@ fn use n =
         assert_eq!(measure(&name, &wasm_named, MACHINES[3].1), (8, 4));
     }
 
-    /// The number of pointers in a function value and in a `Task` (PM02): the static descriptor
+    /// The number of pointers in a function value and in a run-once body (PM02): the static descriptor
     /// (code, clone, and drop) and the environment. Every model of its size follows this number.
     const CLOSURE_POINTERS: usize = 2;
 
@@ -1300,7 +1299,7 @@ fn use n =
             let ir = crate::llvm::emit_target(&module, crate::llvm::Entry::Library, wasm).unwrap();
             let named = definitions(&ir);
             let _target = target_scope(wasm);
-            for label in ["Closure", "Task<i64>"] {
+            for label in ["Closure", "Once<i64>"] {
                 let ty = find(label);
                 assert_eq!(llvm_type(&ty, &module), "%tz.closure", "{label}");
                 assert_eq!(

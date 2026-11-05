@@ -193,7 +193,7 @@ pub fn extract_kernel(
             ));
         }
         if function.capture_count != 0
-            || function.is_task
+            || function.is_once
             || !scalar(&function.signature.result)
             || !function.signature.parameters.iter().all(scalar)
         {
@@ -265,7 +265,7 @@ pub fn extract_kernel(
                 _ => {
                     return Err(unsupported(
                         DiagnosticKind::GpuUnsupportedConstruct,
-                        "GPU kernels do not support allocation, borrows, host calls, loops, tasks, or assertions",
+                        "GPU kernels do not support allocation, borrows, host calls, loops, tzroutines, or assertions",
                         expression.span,
                     ));
                 }

@@ -8,7 +8,7 @@
 
 - `Domain.run (\() -> 計算)` は、値が返れば `Result.Ok 値`、トラップしたら `Result.Error failure` です。
 - `failure.kind` はトラップの種類の番号（1 はゼロ除算、3 は添字の範囲外）、`failure.site` は `.trap.json` の位置の番号、`failure.message` は理由と位置の文です。
-- 引数はその場で書いたラムダか `pure def` の名前で、捕捉する値も結果も平たいデータ（関数・`dyn`・タスク・`Rc`・`Arc`・extern のハンドル・利用者の `Drop` を持たない値）です。本体は純粋でなければなりません。違反は `E1038` です。
+- 引数はその場で書いたラムダか `pure def` の名前で、捕捉する値も結果も平たいデータ（関数・`dyn`・`Rc`・`Arc`・extern のハンドル・利用者の `Drop` を持たない値）です。本体は純粋でなければなりません。違反は `E1038` です。
 - 閉じ込めないもの: スタック枯渇（プロセスが終わる）、終わらない計算、確保量の上限、領域の外のトラップ。
 - macOS と Linux のネイティブのビルドだけです。WebAssembly・Windows・`--freestanding`・システム以外の allocator は `E1038` です。
 
@@ -118,7 +118,7 @@ let work = \() -> 1 / 0
 let a = Domain.run work                                  // E1038: 変数ではなくラムダを直接渡す
 let b = Domain.run (\() -> { Debug.print "x"; 1 })       // E1038: ... it prints debug output
 let log = \(text: string) -> Debug.print text
-let c = Domain.run (\() -> { log "x"; 1 })               // E1038: captures 'log', which holds a function, 'dyn', or a task
+let c = Domain.run (\() -> { log "x"; 1 })               // E1038: captures 'log', which holds a function or 'dyn'
 ```
 
 捕捉に関数値を許さないのは、外から入る関数値の本体を、純粋性の検査（[純粋関数](../values-and-functions/functions.md#純粋関数pure-def)と同じ検査）が調べられないからです。`check` と LSP はターゲットを見ないので、最後の規則は `build`・`run`・`test` が調べます。

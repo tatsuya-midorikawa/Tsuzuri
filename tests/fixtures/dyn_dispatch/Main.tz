@@ -190,8 +190,10 @@ fn hash_agrees x =
 
 export def send_area :: own i64 -> i64
 fn send_area x =
-    let shape: dyn (Shapes.Shape, Send) = Dyn.of (Square { side: x })
-    Task.run (task { Shapes.Shape.area (ref shape) })
+    // A Send dyn value can move between threads: a worker of Parallel.init makes it, and it moves
+    // back to the caller.
+    let shapes = Parallel.init 1 (\_index -> { let shape: dyn (Shapes.Shape, Send) = Dyn.of (Square { side: x }); shape })
+    Shapes.Shape.area (ref shapes[0])
 
 export def copy_area :: own i64 -> i64
 fn copy_area x =

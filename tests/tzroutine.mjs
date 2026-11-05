@@ -72,10 +72,10 @@ $"sum={Atomic.load (Arc.get (ref total))}"
 }))
 7
 `, "go\n7\n"],
-  // A tzroutine spawned by a child of Task.scope on a pool worker is waited for by that child, so
-  // Task.scope returns after it.
+  // A tzroutine spawned by a child of Routine.scope is waited for by the scope, so Routine.scope
+  // returns after it.
   [`let counter = Arc.new (Atomic.create 0i64)
-let _seen = Task.scope (ref counter) 4 (\\shared index -> {
+let _seen = Routine.scope (ref counter) 4 (\\shared index -> {
     let mine = Arc.share shared;
     tzroutine {
         for _i in 0 ..< 2000 do
@@ -92,35 +92,33 @@ tzroutine {
     do! IO.write_line "second"
 }
 `, "first\nsecond\n"],
-  // A tzroutine that joins Task.parallel gives its P away: with one P, the children that the
-  // items spawn (one item runs on the joining thread, one on a pool worker) still run.
+  // A tzroutine that waits for a Routine.scope gives its P away: with one P, the children of the
+  // scope and the tzroutines that they spawn still run.
   [`let done = Arc.new (Atomic.create 0i64)
 let outer = Arc.share (ref done)
 tzroutine {
     let shared = Arc.share (ref outer)
-    let jobs = new [Task<i64>](2, \\index -> task {
-        let mine = Arc.share (ref shared)
+    let _results = Routine.scope (ref shared) 2 (\\arc index -> {
+        let mine = Arc.share arc;
         tzroutine {
             let _added = Atomic.fetch_add (Arc.get (ref mine)) 1i64
-        }
-        return index
+        };
+        index
     })
-    let _results = Task.run (Task.parallel jobs)
     let _last = Atomic.fetch_add (Arc.get (ref outer)) 10i64
 }
 while Atomic.load (Arc.get (ref done)) < 12i64 do
     Routine.yield ()
 $"done={Atomic.load (Arc.get (ref done))}"
 `, "done=12\n"],
-  // A trap in a pool item of a failure domain skips the item's scope leave; the domain restores
-  // the scope, so main still waits for the tzroutine spawned after it.
+  // A trap in a chunk of Parallel inside a failure domain skips what the chunk would have left; the
+  // domain restores the spawn scope, so main still waits for the tzroutine spawned after it.
   [`def explode :: i64 -> i64
 fn explode n =
-    let jobs = new [Task<i64>](1, \\index -> task {
-        let zero = n - n
-        return index / zero
+    let results = Parallel.init 1 (\\index -> {
+        let zero = n - n;
+        index / zero
     })
-    let results = Task.run (Task.parallel jobs)
     results[0]
 
 let failed = match Domain.run (\\() -> explode 3) with
@@ -134,16 +132,15 @@ tzroutine {
 }
 $"failed={failed}"
 `, "child\nfailed=1\n"],
-  // A tzroutine back from Task.parallel gets a P even when the only one keeps running a tzroutine
-  // that yields until the returning one sets a flag.
+  // A tzroutine back from parallel work (three chunks on the scheduler) gets a P even when the only
+  // one keeps running a tzroutine that yields until the returning one sets a flag: the sum.
   [`let flag = Arc.new (Atomic.create 0i64)
 let done = Arc.new (Atomic.create 0i64)
 let setter = Arc.share (ref flag)
 let first = Arc.share (ref done)
 tzroutine {
-    let jobs = new [Task<i64>](2, \\index -> task { return index })
-    let _results = Task.run (Task.parallel jobs)
-    Atomic.store (Arc.get (ref setter)) 1i64
+    let values = Parallel.init 10000 (\\index -> index)
+    Atomic.store (Arc.get (ref setter)) (Parallel.sum (ref values))
     let _n = Atomic.fetch_add (Arc.get (ref first)) 1i64
 }
 let watcher = Arc.share (ref flag)
@@ -155,17 +152,16 @@ tzroutine {
 }
 while Atomic.load (Arc.get (ref done)) < 2i64 do
     Routine.yield ()
-$"done={Atomic.load (Arc.get (ref done))}"
-`, "done=2\n"],
-  // A failure domain inside a tzroutine whose pool items trap: the blocking call that the trap left
-  // is left, so the tzroutine yields and spawns again.
+$"done={Atomic.load (Arc.get (ref done))} sum={Atomic.load (Arc.get (ref flag))}"
+`, "done=2 sum=49995000\n"],
+  // A failure domain inside a tzroutine whose parallel work traps: nothing that the trap left keeps
+  // the tzroutine from yielding and spawning again.
   [`def explode :: i64 -> i64
 fn explode n =
-    let jobs = new [Task<i64>](2, \\index -> task {
-        let zero = n - n
-        return index / zero
+    let results = Parallel.init 2 (\\index -> {
+        let zero = n - n;
+        index / zero
     })
-    let results = Task.run (Task.parallel jobs)
     results[0]
 
 let done = Arc.new (Atomic.create 0i64)
@@ -209,6 +205,47 @@ while Atomic.load (Arc.get (ref done)) < 16i64 do
 let total = Mutex.with_lock (Arc.get (ref lock)) (\\value -> deref value)
 $"total={total}"
 `, "total=3200\n"],
+  // The function values and captures of tests/tasks.mjs (TZ12 removed Task), with the same values.
+  // A record of a function value that captured a string is captured, and called in the tzroutine.
+  [`record Callback { call: i64 -> i64 }
+let text = "hello"
+let callback = Callback { call: \\n -> n + text.length }
+let answers: Channel<i64> = Channel.make 1
+let answer = Channel.share answers
+tzroutine {
+    Channel.send answer (callback.call 37)
+}
+match Channel.recv answers with
+| Maybe.Some value -> value
+| Maybe.None -> -1
+`, "42\n"],
+  // One owned function moves out of a record into the tzroutine; the other is dropped with the rest.
+  [`record Pending { first: Owned.Function<unit, string>, second: Owned.Function<unit, string> }
+let pending = Pending { first: Owned.function (\\() -> "first"), second: Owned.function (\\() -> "second") }
+let first = pending.first
+let answers: Channel<i64> = Channel.make 1
+let answer = Channel.share answers
+tzroutine {
+    let text = Owned.call (ref first) ()
+    Channel.send answer text.length
+}
+match Channel.recv answers with
+| Maybe.Some value -> value
+| Maybe.None -> -1
+`, "5\n"],
+  // The tzroutine copies the value at the spawn: the assignment after it is not seen.
+  [`let mut value = 20
+let answers: Channel<i64> = Channel.make 1
+let answer = Channel.share answers
+tzroutine {
+    Channel.send answer value
+}
+value = 22
+let seen = match Channel.recv answers with
+    | Maybe.Some first -> first
+    | Maybe.None -> -1
+seen + value
+`, "42\n"],
   // TZ05: the ticket's example of a timeout.
   [`let never: Channel<i64> = Channel.make 0
 let deadline = Time.after (50 * Time.millisecond())
@@ -592,8 +629,8 @@ run ()
   assert.match(contextReturn.stderr, /"code":"E2000"/);
   runs += 2;
 
-  // TZ11: inside Domain.run, Parallel stays on the pool, which runs each chunk under the boundary:
-  // the sum is the same, and a trap in a chunk is the domain's Result.Error.
+  // TZ12: inside Domain.run, Parallel runs every chunk on the calling thread in index order: the sum
+  // is the same, and a trap in a chunk is the domain's Result.Error.
   const domained = project(`tzroutine { () }
 let sum = match Domain.run (\\() -> Parallel.sum (ref (Parallel.init 10000 (\\index -> index)))) with
     | Result.Ok total -> total

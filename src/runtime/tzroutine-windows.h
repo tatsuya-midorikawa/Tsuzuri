@@ -2,7 +2,8 @@
  * mapped to Win32. A tzroutine is a Fiber (its stack, guard and registers, including the
  * floating-point state with FIBER_FLAG_FLOAT_SWITCH, are the OS's); waiting uses SRW locks and
  * condition variables. Every name starts with tzr_ or TZR_, so that the driver can put this file in
- * the same translation unit as task-windows.h. tzroutine.c declares tzr_fatal before including it. */
+ * the same translation unit as the other parts of the runtime. tzroutine.c declares tzr_fatal before
+ * including it. */
 #ifndef TZR_WINDOWS_H
 #define TZR_WINDOWS_H
 #ifndef WIN32_LEAN_AND_MEAN
@@ -20,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* No weak definitions on COFF (task.c does the same). */
+/* No weak definitions on COFF. */
 #define TZR_API
 
 /* The scheduler's lock and the timer thread's wakeup. */

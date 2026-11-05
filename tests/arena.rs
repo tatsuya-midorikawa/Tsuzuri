@@ -86,10 +86,10 @@ fn arena_types_are_opaque_noncopy_owned_values() {
 #[test]
 fn handles_are_typed_copy_and_send() {
     emits(
-        "let arena: Arena<string> = Arena.empty()\nmatch Arena.insert \"x\" arena with\n| (filled, handle) ->\n    let copy = handle\n    let checked = Task.run (task { return copy == handle })\n    assert (checked && Arena.contains copy (ref filled) && Arena.contains handle (ref filled))\n    Arena.length (ref filled)",
+        "let arena: Arena<string> = Arena.empty()\nmatch Arena.insert \"x\" arena with\n| (filled, handle) ->\n    let copy = handle\n    let checked = (Parallel.init 1 (\\_index -> copy))[0] == handle\n    assert (checked && Arena.contains copy (ref filled) && Arena.contains handle (ref filled))\n    Arena.length (ref filled)",
     );
     emits(
-        "let arena: Arena<ref string> = Arena.empty()\nlet text = \"borrowed\"\nmatch Arena.insert (ref text) arena with\n| (filled, handle) -> Task.run (task { return handle == handle })",
+        "let arena: Arena<ref string> = Arena.empty()\nlet text = \"borrowed\"\nmatch Arena.insert (ref text) arena with\n| (filled, handle) -> (Parallel.init 1 (\\_index -> handle))[0] == handle",
     );
     rejects(
         "let numbers: Arena<i64> = Arena.empty()\nlet words: Arena<string> = Arena.empty()\nmatch Arena.insert \"x\" words with\n| (filled, handle) -> Arena.get handle (ref numbers)",
@@ -108,11 +108,11 @@ fn arena_borrows_follow_ownership_rules() {
         "{message}"
     );
     let message = rejects(
-        "let arena: Arena<string> = Arena.empty()\nlet view = ref arena\nTask.run (task { return Arena.length view })",
+        "let arena: Arena<string> = Arena.empty()\nlet view = ref arena\ntzroutine { let _length = Arena.length view }\n0",
         "E1013",
     );
     assert!(
-        message.starts_with("tasks require owned values"),
+        message.starts_with("values that move to another tzroutine or thread must be owned"),
         "{message}"
     );
     let message = rejects(

@@ -229,10 +229,11 @@ fn implicit_worker n =
 export def implicit_body :: own i64 -> i64
 fn implicit_body n = Async.run (implicit_worker n)
 
-export def task_inside :: own i64 -> i64
-fn task_inside n =
-    let job = task { return Async.run (Async { do! Async.sleep 4; let! t = Async.now (); return t + n }) }
-    Task.run job
+// A function value that runs a computation when it is called, after it was made.
+export def deferred_run :: own i64 -> i64
+fn deferred_run n =
+    let job = \() -> Async.run (Async { do! Async.sleep 4; let! t = Async.now (); return t + n })
+    job ()
 
 // `async { ... }` is the `@alias async` spelling of `Async { ... }`; both build the same computation.
 export def alias_spelling :: own i64 -> i64

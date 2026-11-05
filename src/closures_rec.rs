@@ -381,7 +381,7 @@ fn lower_group(
             constraints: Vec::new(),
             members: Vec::new(),
             capture_count: captured.len(),
-            is_task: false,
+            is_once: false,
             owned_captures: false,
             contracts: Default::default(),
         });

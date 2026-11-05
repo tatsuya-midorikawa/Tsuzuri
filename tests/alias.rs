@@ -191,6 +191,18 @@ fn user_aliases_take_a_name_before_std_aliases() {
     ]);
 }
 
+/// TZ12 removed `task { }`: `task` is an ordinary word, so a user builder may take it as its alias.
+#[test]
+fn a_user_builder_may_be_called_task() {
+    let mine = builder("@alias task");
+    let program =
+        |name: &str| format!("export def one :: i64 -> i64\nfn one n = {name} {{ return n + 1 }}");
+    assert_eq!(
+        ir(&[("Main.tz", &program("task")), ("Mine.tc", &mine)]),
+        ir(&[("Main.tz", &program("Mine")), ("Mine.tc", &mine)])
+    );
+}
+
 #[test]
 fn malformed_alias_declarations_are_rejected() {
     for (header, message) in [
@@ -203,7 +215,7 @@ fn malformed_alias_declarations_are_rejected() {
             "a builder alias starts with a lowercase letter, as in '@alias async'",
         ),
         (
-            "@alias task",
+            "@alias match",
             "'@alias' takes a builder alias such as 'async': an identifier that is not a reserved word",
         ),
         (

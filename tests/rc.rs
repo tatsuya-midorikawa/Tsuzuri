@@ -88,11 +88,11 @@ fn shared_pointers_are_owned_and_never_copied() {
 }
 
 #[test]
-fn rc_stays_on_its_task_and_arc_moves_when_its_value_is_send() {
+fn rc_stays_on_its_tzroutine_and_arc_moves_when_its_value_is_send() {
     for source in [
-        "let shared = Rc.new 5\nTask.run (task { return deref (Rc.get (ref shared)) })",
-        "let shared = Rc.new 5\nlet weak = Rc.downgrade (ref shared)\nTask.run (task { return match Rc.upgrade (ref weak) with | Maybe.Some _strong -> 1 | Maybe.None -> 0 })",
-        "let shared = Arc.new (Rc.new 5)\nTask.run (task { return Arc.strong_count (ref shared) })",
+        "let shared = Rc.new 5\ntzroutine {\n    let _value = deref (Rc.get (ref shared))\n}\n0",
+        "let shared = Rc.new 5\nlet weak = Rc.downgrade (ref shared)\ntzroutine {\n    let _alive = match Rc.upgrade (ref weak) with | Maybe.Some _strong -> 1 | Maybe.None -> 0\n}\n0",
+        "let shared = Arc.new (Rc.new 5)\ntzroutine {\n    let _count = Arc.strong_count (ref shared)\n}\n0",
         "let shared = Rc.new 5\nlet keep = Owned.function (\\() -> Rc.strong_count (ref shared))\nOwned.call (ref keep) ()",
     ] {
         let message = rejects(source, "E1013");
@@ -108,21 +108,22 @@ fn rc_stays_on_its_task_and_arc_moves_when_its_value_is_send() {
     ] {
         let message = rejects(source, "E1005");
         assert!(
-            message.contains("function values may move to other tasks"),
+            message.contains("function values may move to other tzroutines or threads"),
             "{message}"
         );
     }
     let message = rejects(
-        "let text = \"x\"\nlet shared = Arc.new (ref text)\nTask.run (task { return Arc.strong_count (ref shared) })",
+        "let text = \"x\"\nlet shared = Arc.new (ref text)\ntzroutine {\n    let _count = Arc.strong_count (ref shared)\n}\n0",
         "E1013",
     );
     assert!(message.contains("contains a reference"), "{message}");
     for source in [
-        "let shared = Arc.new 21\nTask.run (task { return deref (Arc.get (ref shared)) })",
-        "let shared = Arc.new 21\nlet weak = Arc.downgrade (ref shared)\nTask.run (task { return match Arc.upgrade (ref weak) with | Maybe.Some strong -> Arc.strong_count (ref strong) | Maybe.None -> 0 })",
+        "let shared = Arc.new 21\ntzroutine {\n    let _value = deref (Arc.get (ref shared))\n}\n0",
+        "let shared = Arc.new 21\nlet weak = Arc.downgrade (ref shared)\ntzroutine {\n    let _count = match Arc.upgrade (ref weak) with | Maybe.Some strong -> Arc.strong_count (ref strong) | Maybe.None -> 0\n}\n0",
         "let shared = Arc.new [1, 2]\nlet read = \\() -> Array.sum (Arc.get (ref shared))\nlet copy = read\nread () + copy ()",
-        "union AList = ANil | ACons of (i64 * Arc<AList>)\nlet list = Arc.new (ACons (1, Arc.new ANil))\nTask.run (task { return Arc.strong_count (ref list) })",
-        "def part :: Arc<[i64]> -> Task<i64>\nfn part values = task { return Array.sum (Arc.get (ref values)) }\ndef parts :: ref Arc<[i64]> -> [Task<i64>]\nfn parts shared = new [Task<i64>](4, \\_index -> part (Arc.share shared))\nlet shared = Arc.new [1, 2, 3]\nlet results = Task.run (Task.parallel (parts (ref shared)))\nArray.sum (ref results)",
+        "union AList = ANil | ACons of (i64 * Arc<AList>)\nlet list = Arc.new (ACons (1, Arc.new ANil))\ntzroutine {\n    let _count = Arc.strong_count (ref list)\n}\n0",
+        // A function that spawns a tzroutine with the share it was given, once for each of four shares.
+        "def part :: Arc<[i64]> -> unit\nfn part values =\n    tzroutine {\n        let _sum = Array.sum (Arc.get (ref values))\n    }\nlet shared = Arc.new [1, 2, 3]\nfor _index in 0 ..< 4 do\n    part (Arc.share (ref shared))\nArc.strong_count (ref shared)",
     ] {
         emits(source);
     }
@@ -305,24 +306,24 @@ extern \"c10_counter_peek\" def counter_peek :: ref Counter -> i64 -> i64\n";
 const SHAPE: &str = "class Shape<'a> {\n    def area :: ref 'a -> i64\n}\nrecord Square { side: i64 }\ninstance Shape<Square> {\n    fn area s = s.side * s.side\n}\n";
 
 #[test]
-fn arc_does_not_share_host_handles_between_tasks() {
+fn arc_does_not_share_host_handles_between_tzroutines() {
     let sharing = "shares an extern handle, a dyn value that is not Copy, or an Owned.Function through an Arc";
     for body in [
-        "let shared = Arc.new (counter_new 1)\nTask.run (task { return counter_peek (Arc.get (ref shared)) 0 })",
-        "let shared = Arc.new (counter_new 1)\nlet weak = Arc.downgrade (ref shared)\nTask.run (task { return match Arc.upgrade (ref weak) with | Maybe.Some strong -> Arc.strong_count (ref strong) | Maybe.None -> 0 })",
-        "let shared = Arc.new (Arc.new (counter_new 1))\nTask.run (task { return Arc.strong_count (ref shared) })",
-        "record Holder { counter: Arc<Counter> }\nlet holder = Holder { counter: Arc.new (counter_new 1) }\nTask.run (task { return Arc.strong_count (ref holder.counter) })",
-        "union Counters = Done | More of (Arc<Counter> * Counters)\nlet counters = More (Arc.new (counter_new 1), Done)\nTask.run (task { return match counters with | More (_, _) -> 1 | Done -> 0 })",
-        "def peek :: Arc<Counter> -> Task<i64>\nfn peek shared = task { return counter_peek (Arc.get (ref shared)) 0 }\nlet shared = Arc.new (counter_new 1)\nTask.run (peek (Arc.share (ref shared))) + counter_peek (Arc.get (ref shared)) 0",
+        "let shared = Arc.new (counter_new 1)\ntzroutine {\n    let _value = counter_peek (Arc.get (ref shared)) 0\n}\n0",
+        "let shared = Arc.new (counter_new 1)\nlet weak = Arc.downgrade (ref shared)\ntzroutine {\n    let _count = match Arc.upgrade (ref weak) with | Maybe.Some strong -> Arc.strong_count (ref strong) | Maybe.None -> 0\n}\n0",
+        "let shared = Arc.new (Arc.new (counter_new 1))\ntzroutine {\n    let _count = Arc.strong_count (ref shared)\n}\n0",
+        "record Holder { counter: Arc<Counter> }\nlet holder = Holder { counter: Arc.new (counter_new 1) }\ntzroutine {\n    let _count = Arc.strong_count (ref holder.counter)\n}\n0",
+        "union Counters = Done | More of (Arc<Counter> * Counters)\nlet counters = More (Arc.new (counter_new 1), Done)\ntzroutine {\n    let _more = match counters with | More (_, _) -> 1 | Done -> 0\n}\n0",
+        "def peek :: Arc<Counter> -> unit\nfn peek shared =\n    tzroutine {\n        let _value = counter_peek (Arc.get (ref shared)) 0\n    }\nlet shared = Arc.new (counter_new 1)\npeek (Arc.share (ref shared))\ncounter_peek (Arc.get (ref shared)) 0",
         "let shared = Arc.new (counter_new 1)\nlet keep = Owned.function (\\() -> counter_peek (Arc.get (ref shared)) 0)\nOwned.call (ref keep) ()",
-        "let counter = counter_new 1\nlet shared = Arc.new (Owned.function (\\() -> counter_peek (ref counter) 0))\nTask.run (task { return Owned.call (Arc.get (ref shared)) () })",
+        "let counter = counter_new 1\nlet shared = Arc.new (Owned.function (\\() -> counter_peek (ref counter) 0))\ntzroutine {\n    let _value = Owned.call (Arc.get (ref shared)) ()\n}\n0",
     ] {
         let source = format!("{HANDLE}{body}");
         let message = rejects(&source, "E1013");
         assert!(message.contains(sharing), "{message}");
     }
     let dynamic = format!(
-        "{SHAPE}let shape: dyn (Shape, Send) = Dyn.of (Square {{ side: 3 }})\nlet shared = Arc.new shape\nTask.run (task {{ return Shape.area (Arc.get (ref shared)) }})"
+        "{SHAPE}let shape: dyn (Shape, Send) = Dyn.of (Square {{ side: 3 }})\nlet shared = Arc.new shape\ntzroutine {{\n    let _area = Shape.area (Arc.get (ref shared))\n}}\n0"
     );
     let message = rejects(&dynamic, "E1013");
     assert!(message.contains(sharing), "{message}");
@@ -336,23 +337,23 @@ fn arc_does_not_share_host_handles_between_tasks() {
     ] {
         let message = rejects(&source, "E1005");
         assert!(
-            message.contains("function values may move to other tasks")
+            message.contains("function values may move to other tzroutines or threads")
                 && message.contains(sharing),
             "{message}"
         );
     }
-    // One task may share a handle with itself, and a handle may move to one other task.
+    // One tzroutine may share a handle with itself, and a handle may move to one other tzroutine.
     for source in [
         format!(
             "{HANDLE}let shared = Arc.new (counter_new 1)\nlet other = Arc.share (ref shared)\ncounter_peek (Arc.get (ref other)) 0 + Arc.strong_count (ref shared)"
         ),
         format!(
-            "{HANDLE}let counter = counter_new 1\nTask.run (task {{ return counter_peek (ref counter) 0 }})"
+            "{HANDLE}let counter = counter_new 1\ntzroutine {{\n    let _value = counter_peek (ref counter) 0\n}}\n0"
         ),
         format!(
             "{SHAPE}let shape: dyn (Shape, Copy) = Dyn.of (Square {{ side: 3 }})\nlet shared = Arc.new shape\nlet read = \\() -> Shape.area (Arc.get (ref shared))\nread ()"
         ),
-        "def apply :: Arc<i64 -> i64> -> i64\nfn apply shared =\n    let function = deref (Arc.get (ref shared))\n    function 41\nlet shared = Arc.new (\\value -> value + 1)\nTask.run (task { return apply (Arc.share (ref shared)) })".to_owned(),
+        "def apply :: Arc<i64 -> i64> -> i64\nfn apply shared =\n    let function = deref (Arc.get (ref shared))\n    function 41\nlet shared = Arc.new (\\value -> value + 1)\ntzroutine {\n    let _value = apply (Arc.share (ref shared))\n}\n0".to_owned(),
     ] {
         emits(&source);
     }

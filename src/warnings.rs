@@ -232,11 +232,8 @@ fn collect_locals<'a>(
         | Call(..)
         | HostCall(..)
         | Closure(..)
-        | TaskRun(_)
         | RoutineGo(_)
         | SelectWait(_)
-        | TaskParallel(_)
-        | TaskParallelResults(_)
         | If { .. }
         | While { .. }
         | Record(_)
@@ -491,7 +488,6 @@ impl TypeReferences<'_> {
             TypeExprKind::Array(inner)
             | TypeExprKind::ArrayView(inner)
             | TypeExprKind::List(inner)
-            | TypeExprKind::Task(inner)
             | TypeExprKind::Own(inner)
             | TypeExprKind::Mut(inner)
             | TypeExprKind::Pure(inner)
@@ -541,7 +537,7 @@ impl TypeReferences<'_> {
             Type::Array(inner)
             | Type::List(inner)
             | Type::Vec(inner)
-            | Type::Task(inner)
+            | Type::Once(inner)
             | Type::FixedArray(inner, _)
             | Type::Shared(inner, _)
             | Type::Reference(inner, _) => self.checked_type(inner),
@@ -642,9 +638,7 @@ impl TypeReferences<'_> {
             Computation(_, body) => self.computation(body),
             Unary(_, value)
             | Lambda(_, value)
-            | Task(value)
             | Routine(value)
-            | TaskRun(value)
             | ComputationBoundary(value)
             | Checked(value)
             | NewLiteral(value)

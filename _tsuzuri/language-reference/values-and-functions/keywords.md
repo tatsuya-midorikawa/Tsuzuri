@@ -1,6 +1,6 @@
 # キーワード
 
-Tsuzuri にはプログラムの構造を決定する 43 個の「予約語（Reserved Keywords）」と、特定の構文でのみ特別な意味を持つ「文脈キーワード（Contextual Keywords）」があります。
+Tsuzuri にはプログラムの構造を決定する 42 個の「予約語（Reserved Keywords）」と、特定の構文でのみ特別な意味を持つ「文脈キーワード（Contextual Keywords）」があります。
 
 このページでは、予約語の一覧、文脈キーワード、識別子の規則、`union`・`yield`・`new` がドットの直後に書ける例外を説明します。
 
@@ -30,11 +30,11 @@ extern def get :: own
 get().n
 ```
 
-- Tsuzuri には 43 個の予約語があり、原則として変数名や関数名などの識別子に使えません。予約語はソースの言語版（edition）で決まり、今ある edition `2026` の予約語がこの一覧です。 <!-- rule: LEX-005 --> <!-- rule: EDN-006 -->
+- Tsuzuri には 42 個の予約語があり、原則として変数名や関数名などの識別子に使えません。予約語はソースの言語版（edition）で決まり、今ある edition `2026` の予約語がこの一覧です。 <!-- rule: LEX-005 --> <!-- rule: EDN-006 -->
 - `of`、`where`、`namespace`、`using`、`use`、`try`、`finally`、`is`、`otherwise`、`tzroutine`、`select` は文脈キーワードであり、所定の構文以外では通常の変数名として利用できます。 <!-- rule: LEX-006 -->
 - 例外として、`union`・`yield`・`new` はドット直後のメンバー名（`Set.union`、`Async.yield`、`Rc.new`）として利用可能です。
 - `not`、`ignore`、`assert` は予約語ではなく、値として渡せる組み込み関数です。 <!-- rule: LEX-007 -->
-- 小文字の `task`（予約語）と大文字始まりの `Task`（組み込みモジュール名）は区別されます。
+- `task` と `Task` は予約語でも組み込みの名前でもなく、変数名・関数名・モジュール名に使えます（`task { ... }` 式と `Task` モジュールは削除されました）。
 
 ## 予約語と文脈キーワードの違い
 
@@ -45,7 +45,7 @@ get().n
 ```mermaid
 flowchart TD
     ident["ソースコード中の単語"]
-    is_res{"43 個の予約語に含まれるか？"}
+    is_res{"42 個の予約語に含まれるか？"}
     res_kw["予約語トークン<br/>（fn, def, let, match など）"]
     ident_token["識別子トークン (Ident)"]
     is_ctx{"特定の構文位置にあるか？<br/>（try の開始、union ケースの of など）"}
@@ -62,7 +62,7 @@ flowchart TD
 
 ## 予約語の一覧（分類別）
 
-Tsuzuri の全 43 個の予約語を用途別に分けて示します。
+Tsuzuri の全 42 個の予約語を用途別に分けて示します。
 
 ### 宣言と定義
 
@@ -128,12 +128,11 @@ Tsuzuri の全 43 個の予約語を用途別に分けて示します。
 | `as` | 明示的な数値型のキャスト | `value as f64` | [型キャスト](../types-and-type-inference/cast.md) |
 | `dyn` | 型クラスの動的ディスパッチ | `dyn Show` | [型クラス](../types-and-type-inference/type-classes.md) |
 
-### 非同期、タスク、コンピュテーション式
+### コンピュテーション式
 
 | キーワード | 概要 | 使用例 | 関連ページ |
 | --- | --- | --- | --- |
-| `task` | 並行タスクブロックの定義 | `task { return 42 }` | [Task 式](../async-tasks-and-lazy/task.md) |
-| `return` | タスクやコンピュテーション式での値返却 | `return result` | [コンピュテーション式](../computation-expressions/computation-expressions.md) |
+| `return` | コンピュテーション式での値返却 | `return result` | [コンピュテーション式](../computation-expressions/computation-expressions.md) |
 | `yield` | シーケンスビルダーなどでの要素生成 | `yield item` | [コンピュテーション式](../computation-expressions/computation-expressions.md) |
 
 ### 真理値リテラル
@@ -221,7 +220,7 @@ Tsuzuri の識別子は以下の規則に従います。
 
 ### 予約語は識別子に使えない
 
-43 個の予約語を変数名、関数名、型名、レコードのフィールド名に使うと、`E0002`（expected an identifier）になります。
+42 個の予約語を変数名、関数名、型名、レコードのフィールド名に使うと、`E0002`（expected an identifier）になります。
 
 ```text
 // コンパイルエラー E0002
@@ -266,12 +265,12 @@ Async.run (Async {
 - **`not`**: 論理否定の組み込み関数（`bool -> bool`）です。`!` と同じ働きで、関数値として渡せます。
 - **`ignore`**: 引数を捨てて `unit` を返す組み込み関数（`'a -> unit`）です。
 - **`assert`**: 条件が偽ならトラップする組み込み関数（`bool -> unit`）です。予約語ではなく、関数値として渡せます。
-- **`Task`**: タスクの組み込みモジュールおよび型名です。小文字の `task` は予約語、大文字の `Task` は別の名前です。
+- **`task`・`Task`**: 予約語ではなく、組み込みの名前でもありません（`task { ... }` 式、型 `Task<T>`、`Task.run` などは削除されました）。`let task = 1` や、利用者のモジュール `Task` も書けます。`task { ... }` と書くと、`@alias task` を宣言した利用者のビルダー（[ビルダーの別名](../computation-expressions/computation-expressions.md#ビルダーの別名)）がそれを使い、なければ `E1040`（`'task { }' was removed`）です。書き換え方は [Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行) にあります。
 - **予約モジュール名**: `Maybe` や `Array` などはキーワードではありません。ファイル名（モジュール名）として使うと `E1011` です。関数名やレコード名には使えます。
 
 ## まとめ
 
-- Tsuzuri には 43 個の予約語があり、構文構造の基本を定義しています。
+- Tsuzuri には 42 個の予約語があり、構文構造の基本を定義しています。
 - 予約語は変数名や関数名などの識別子に使えません。
 - `union`・`yield`・`new` は予約語ですが、`Set.union`、`Async.yield`、`Rc.new` のようなメンバー名としては利用可能です。
 - `where`、`of`、`use`、`try`、`finally`、`is`、`otherwise`、`namespace`、`using` は文脈キーワードです。所定の位置以外では普通の名前です。`with` は予約語です。

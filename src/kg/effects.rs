@@ -12,7 +12,7 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 181;
+const IMPURE_BUILTINS: usize = 177;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
@@ -25,10 +25,11 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | OsSpawn | BenchNow | GenSeed => Some("os"),
         NetResolve | NetOpen | NetAccept | NetRead | NetWrite | NetClose | NetClassify
         | NetWatch | NetUnwatch | NetConnect | NetNames | NetSend => Some("net"),
-        TaskRun | TaskParallel | TaskParallelResults | TaskScope | RoutineScope | ParallelInit
-        | ParallelMap | ParallelMapRef | ParallelReduce | ParallelForEachChunk | DomainRun
-        | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs
-        | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => Some("task"),
+        RoutineScope | ParallelInit | ParallelMap | ParallelMapRef | ParallelReduce
+        | ParallelForEachChunk | DomainRun | RoutineGo | WaitGroupGo | RoutineYield
+        | RoutineCount | RoutineMaxProcs | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => {
+            Some("task")
+        }
         // TZ08: the function runs on the calling tzroutine's own thread.
         RoutineWithLockedThread => Some("task"),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
@@ -334,11 +335,9 @@ pub(crate) fn scan(
             }
             TypedExprKind::Closure(id, _) => found.references.push((*id, expression.span)),
             TypedExprKind::HostCall(..) => note("extern", expression.span, &mut found),
-            TypedExprKind::TaskRun(_)
-            | TypedExprKind::RoutineGo(_)
-            | TypedExprKind::TaskParallel(_)
-            | TypedExprKind::TaskParallelResults(_)
-            | TypedExprKind::Parallel(..) => note("task", expression.span, &mut found),
+            TypedExprKind::RoutineGo(_) | TypedExprKind::Parallel(..) => {
+                note("task", expression.span, &mut found)
+            }
             // TZ04: the channel operations of a select, and the drop of what `recv _` receives,
             // whose type is in no expression.
             TypedExprKind::SelectWait(wait) => {

@@ -49,7 +49,7 @@ sh scripts/check-runtime-includes.sh                                      # src/
 ## 4. 一段ずつ進める
 
 - チケットの手順は「変更 → 内容 → 確認」の順に**1 段ずつ**進める。複数段をまとめて書いてから一度にテストしない。段ごとに T1（`cargo nextest run --locked`。無ければ `cargo test --locked`）と、その段に書かれたテストを実行し、通った件数を控える（完了報告に使う）。
-- 既存の似た機能（`NewLiteral`・`Task`・`ConstDef`・`W1006` など、チケットが「手本」に挙げたもの）を**必ず読み**、同じ形で書く。新しい抽象化を発明しない。
+- 既存の似た機能（`NewLiteral`・`Routine`・`ConstDef`・`W1006` など、チケットが「手本」に挙げたもの）を**必ず読み**、同じ形で書く。新しい抽象化を発明しない。
 - `match` の `_ =>` が新しい variant を黙って無視する箇所が多い。新しい variant や field を足したら、近い既存の名前で全体を `grep`（例: `grep -rn "ExprKind::RecordUpdate" src/`）し、出てきた match をすべて確かめる（GUIDE §6.9）。
 - 迷ったら、チケットの「決定事項」→ GUIDE の台帳 → 最も保守的な選択（拒否・何もしない）の順に従う。
 

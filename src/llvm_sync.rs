@@ -89,9 +89,10 @@ impl FunctionEmitter<'_, '_> {
                 };
                 let tuple = Type::Tuple(vec![Type::Integer(32, false), value.clone()]);
                 let cell = self.shared_cell(record, "%arg0");
-                // TZ06: a program that uses the tzroutine runtime locks with the runtime's lock,
-                // which belongs to the G: a holder may wait, and only the same mutex again traps.
-                if self.globals.tzroutine {
+                // TZ06, TZ12: a native program, and a WebAssembly one that uses the tzroutine
+                // runtime, lock with the runtime's lock, which belongs to the G: a holder may wait,
+                // and only the same mutex again traps.
+                if self.globals.tzroutine || !self.globals.wasm {
                     self.runtime_lock("tsuzuri_tz_mutex32_lock", &cell, 4);
                 } else {
                     // The status is zero unless this thread holds a mutex already; the runtime has
@@ -108,7 +109,7 @@ impl FunctionEmitter<'_, '_> {
                 let borrow = Type::Reference(Box::new(value), true);
                 let (output, _) =
                     self.apply_value("%arg1", &parameters[1], Some((&borrow, &pointer)), false);
-                if self.globals.tzroutine {
+                if self.globals.tzroutine || !self.globals.wasm {
                     self.runtime_unlock("tsuzuri_tz_mutex32_unlock", &cell);
                 } else {
                     self.instruction(format!("call void @tsuzuri_mutex_unlock(ptr {cell})"));
@@ -266,21 +267,26 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// Traps unless this thread holds no `Mutex` lock: a critical section never waits, so a
-    /// channel operation, which may wait, is refused inside one on every schedule (F10 D7).
+    /// channel operation, which may wait, is refused inside one on every schedule (F10 D7). Only
+    /// WebAssembly keeps that lock: a native `DataChannel` waits on the scheduler, where a G may
+    /// wait while it holds a lock (TZ12).
     fn channel_unlocked(&mut self) {
+        if !self.globals.wasm {
+            return;
+        }
         let status = self.value("call i32 @tsuzuri_mutex_wait_ok()".to_owned());
         let free = self.value(format!("icmp ne i32 {status}, 0"));
         self.guard(&free, TrapKind::Assert);
     }
 
-    /// Traps when the runtime found that every task is waiting (status 2).
+    /// Traps when the runtime found that every tzroutine and thread is waiting (status 2).
     pub(super) fn channel_not_deadlocked(&mut self, status: &str) {
         let progress = self.value(format!("icmp ne i32 {status}, 2"));
         self.guard(&progress, TrapKind::Assert);
     }
 
     /// Defines the bodies of `DataChannel.*` (F10 Phase 2; the `Channel` of then, renamed in TZ03). A channel is one block that the runtime
-    /// of the target operates on under its own lock: a header of nine words, then the ring of
+    /// of the target operates on under its own lock: a header of ten words, then the ring of
     /// items, which the runtime copies in and out. This code allocates and initializes the
     /// block, moves items through stack slots, and drops what is left when the last owner of
     /// the block closes it.
@@ -410,6 +416,7 @@ impl FunctionEmitter<'_, '_> {
             (CHANNEL_SENDERS, "1"),
             (CHANNEL_RECEIVERS, "1"),
             (CHANNEL_OWNERS, "2"),
+            (CHANNEL_LOCK, "0"),
             (CHANNEL_WAITERS, "0"),
             (CHANNEL_WAITERS + 8, "0"),
         ] {
@@ -474,10 +481,11 @@ impl FunctionEmitter<'_, '_> {
     }
 }
 
-/// Byte offsets in a channel block. The runtimes (`task.c`, `task-wasm-threads.c`,
+/// Byte offsets in a channel block. The runtimes (`tzroutine.c` since TZ12, `task-wasm-threads.c`,
 /// `channel-wasm.ll`) lay it out the same way: the capacity, the size of an item, the index of
 /// the oldest item, the number of items, the live senders, the live receivers, the live handles
-/// of either kind, two words for the runtime's waiting lists, and then the ring of items.
+/// of either kind, the word of the runtime's lock (`tzroutine.c`'s `tzr_lock`, free at 0; the other
+/// runtimes leave it alone), two words for the runtime's waiting lists, and then the ring of items.
 const CHANNEL_CAPACITY: u64 = 0;
 const CHANNEL_ITEM_SIZE: u64 = 8;
 const CHANNEL_HEAD: u64 = 16;
@@ -485,5 +493,6 @@ const CHANNEL_COUNT: u64 = 24;
 const CHANNEL_SENDERS: u64 = 32;
 const CHANNEL_RECEIVERS: u64 = 40;
 const CHANNEL_OWNERS: u64 = 48;
+const CHANNEL_LOCK: u64 = 56;
 const CHANNEL_WAITERS: u64 = 64;
 const CHANNEL_ITEMS: u64 = 80;

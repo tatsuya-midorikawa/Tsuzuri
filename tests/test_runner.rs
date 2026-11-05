@@ -340,7 +340,7 @@ fn shared_specializations_work_in_normal_and_selected_test_roots() {
     let module = tsuzuri::analyze("def identity :: 'a -> 'a\nfn identity value = value\n\
         export def answer :: i64\nfn answer = identity 42\n\
         test \"one\" = assert (identity 1 == 1)\ntest \"two\" = assert (identity 2 == 2)\n\
-        test \"tasks\" = { let tasks = new [task { return identity 3 }]; let results = Task.run (Task.parallel tasks); assert (results[0] == 3) }").unwrap();
+        test \"parallel\" = { let results = Parallel.init 1 (\\_index -> identity 3); assert (results[0] == 3) }").unwrap();
     for target in [
         tsuzuri::driver::Target::Native,
         tsuzuri::driver::Target::Wasm32,

@@ -50,7 +50,8 @@ fn parallel_apis_are_typed_and_keep_their_ownership_boundary() {
 fn parallel_codegen_uses_fixed_chunks_and_the_existing_runtime() {
     let module = analyze("export def calculate :: i64 -> i64\nfn calculate length = { let offset = 3; let values = Parallel.init length (index -> index + offset); Parallel.sum (ref values) }").unwrap();
     let ir = llvm::emit_target(&module, llvm::Entry::Library, false).unwrap();
-    assert!(ir.contains("@tsuzuri_task_parallel"));
+    // Natively the chunks run on the tzroutine scheduler (TZ12).
+    assert!(ir.contains("call i32 @tsuzuri_tz_parallel(ptr @tz.parallel.chunk."));
     assert!(ir.contains("@tz.parallel.chunk."));
     assert!(ir.contains("@tz.specialized."));
     assert!(ir.contains(", 4096") && ir.contains(", 1024"));

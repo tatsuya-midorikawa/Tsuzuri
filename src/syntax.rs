@@ -113,7 +113,6 @@ pub enum TokenKind {
     /// `dyn` before the class names of a dynamically dispatched value type (A14).
     Dyn,
     Let,
-    Task,
     Do,
     Return,
     Yield,
@@ -781,7 +780,6 @@ pub enum TypeExprKind {
     Length(u64),
     List(Box<TypeExpr>),
     Tuple(Vec<TypeExpr>),
-    Task(Box<TypeExpr>),
     Function(Vec<TypeExpr>, Box<TypeExpr>),
     Reference(Box<TypeExpr>, bool),
     Own(Box<TypeExpr>),
@@ -854,9 +852,7 @@ impl Expr {
         match &mut self.kind {
             Unary(_, value)
             | Lambda(_, value)
-            | Task(value)
             | Routine(value)
-            | TaskRun(value)
             | ComputationBoundary(value)
             | Checked(value)
             | NewLiteral(value)
@@ -1002,9 +998,7 @@ impl Expr {
         match &self.kind {
             Unary(_, value)
             | Lambda(_, value)
-            | Task(value)
             | Routine(value)
-            | TaskRun(value)
             | ComputationBoundary(value)
             | Checked(value)
             | NewLiteral(value)
@@ -1168,13 +1162,11 @@ pub enum ExprKind {
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
     Lambda(Vec<(Ident, bool)>, Box<Expr>),
-    Task(Box<Expr>),
     /// `tzroutine { body }`: spawns the block as a new tzroutine and returns `()` (TZ02).
     Routine(Box<Expr>),
     /// `select | recv x from ch -> e | send v to ch -> e | default -> e` (TZ04): waits for one of
     /// the arms' channel operations.
     Select(Vec<SelectArm>),
-    TaskRun(Box<Expr>),
     Computation(Ident, Box<ComputationBlock>),
     ComputationBoundary(Box<Expr>),
     If {

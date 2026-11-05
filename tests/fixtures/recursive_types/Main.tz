@@ -90,11 +90,11 @@ fn constructor_value =
     let tree = apply Node (Leaf, 42i64, Leaf)
     root (ref tree)
 
-union Jobs = Done | Job of Task<i64> * Jobs
+union Jobs = Done | Job of Owned.Function<unit, i64> * Jobs
 export def task_payload :: i64
 fn task_payload =
-    let jobs = Job (task { return 42 }, Done)
-    match jobs with | Done -> 0 | Job (work, _tail) -> Task.run work
+    let jobs = Job (Owned.function (\() -> 42), Done)
+    match jobs with | Done -> 0 | Job (work, _tail) -> Owned.call (ref work) ()
 
 union BufferTree = Children of Vec<BufferTree>
 export def vec_clone :: own i64 -> i64
@@ -126,10 +126,9 @@ fn guard_cleanup =
 
 export def task_tree :: own i64 -> i64
 fn task_tree count =
-    let tree = build count
-    let work = task { return tree }
-    let result = Task.run work
-    root (ref result)
+    // A worker of Parallel.init returns the owned tree, which is not a borrow.
+    let trees = Parallel.init 1 (\_index -> build count)
+    root (ref trees[0])
 
 export def constructor_order :: own i64 -> i64
 fn constructor_order mode =

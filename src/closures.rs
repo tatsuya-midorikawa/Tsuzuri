@@ -8,8 +8,9 @@ mod letrec;
 pub(super) enum LambdaKind {
     /// A reusable function value. Copying it copies the captures, which need `Capture`.
     Function,
-    /// A single-use `task`. Its captures and result need `Send`.
-    Task,
+    /// The body of a `tzroutine { }` (TZ02), which runs once: its captures and result need `Send`.
+    /// It was the `task { }` of the language until TZ12 removed `Task`.
+    Once,
     /// The argument of `Owned.function` (B07): one parameter and borrowed `Send` captures.
     Owned,
 }
@@ -34,10 +35,10 @@ impl Checker<'_> {
                 span,
             ));
         }
-        let (parameter_types, result) = if kind == LambdaKind::Task {
+        let (parameter_types, result) = if kind == LambdaKind::Once {
             let result = self.inference.fresh();
             if let Some(expected) = expected {
-                self.same(&Type::Task(Box::new(result.clone())), expected, span)?;
+                self.same(&Type::Once(Box::new(result.clone())), expected, span)?;
             }
             (Vec::new(), self.inference.resolve(&result))
         } else {
@@ -113,7 +114,7 @@ impl Checker<'_> {
         kind: LambdaKind,
         recursive: &[Local],
     ) -> Result<TypedExpr, Diagnostic> {
-        let task = kind == LambdaKind::Task;
+        let task = kind == LambdaKind::Once;
         let mut used = Vec::new();
         free_locals(&body, &mut used);
         let mut captures = Vec::new();
@@ -151,7 +152,7 @@ impl Checker<'_> {
         }
         let ty = if task {
             self.require("Send", body.ty.clone(), body.span)?;
-            Type::Task(Box::new(body.ty.clone()))
+            Type::Once(Box::new(body.ty.clone()))
         } else {
             let pure = expected.is_some_and(|ty| ty.function_purity() == Some(true));
             self.pure_values |= pure;
@@ -293,7 +294,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
                 constraints: Vec::new(),
                 members: Vec::new(),
                 capture_count: 0,
-                is_task: false,
+                is_once: false,
                 owned_captures: false,
                 contracts: Default::default(),
             });
@@ -363,8 +364,8 @@ fn lower_expression(
                 region_sources: None,
                 callback_contracts: Vec::new(),
                 region_slots: None,
-                module: if matches!(expression.ty, Type::Task(_)) {
-                    "$task"
+                module: if matches!(expression.ty, Type::Once(_)) {
+                    "$once"
                 } else {
                     "$lambda"
                 }
@@ -387,7 +388,7 @@ fn lower_expression(
                 constraints: Vec::new(),
                 members: Vec::new(),
                 capture_count: captures.len(),
-                is_task: matches!(expression.ty, Type::Task(_)),
+                is_once: matches!(expression.ty, Type::Once(_)),
                 owned_captures: *owned,
                 contracts: Default::default(),
             });
@@ -432,44 +433,15 @@ fn lower_expression(
                     ty: signature.as_type(),
                     span: expression.span,
                 };
-                let kind = match builtin {
-                    Builtin::TaskRun => TaskRun(Box::new(local_value(&parameters[0]))),
-                    Builtin::TaskParallel | Builtin::TaskParallelResults => {
-                        let Type::Task(result) = &signature.result else {
-                            unreachable!()
-                        };
-                        Lambda {
-                            parameters: Vec::new(),
-                            captures: vec![parameters[0].clone()],
-                            body: Box::new(TypedExpr {
-                                kind: if builtin == Builtin::TaskParallelResults {
-                                    TaskParallelResults(Box::new(local_value(&parameters[0])))
-                                } else {
-                                    TaskParallel(Box::new(local_value(&parameters[0])))
-                                },
-                                ty: (**result).clone(),
-                                span: expression.span,
-                            }),
-                            owned: false,
-                            recursive: Vec::new(),
-                        }
-                    }
-                    _ => Call(
-                        Box::new(callee),
-                        parameters.iter().map(local_value).collect(),
-                    ),
-                };
-                let mut body = TypedExpr {
+                let kind = Call(
+                    Box::new(callee),
+                    parameters.iter().map(local_value).collect(),
+                );
+                let body = TypedExpr {
                     kind,
                     ty: signature.result.clone(),
                     span: expression.span,
                 };
-                if matches!(
-                    builtin,
-                    Builtin::TaskParallel | Builtin::TaskParallelResults
-                ) {
-                    lower_expression(&mut body, functions, types, generated, origin)?;
-                }
                 let id = functions.len();
                 let region_slots = if builtin == Builtin::VecPushMut
                     && signature.parameters[0].carries_loans(types)
@@ -510,7 +482,7 @@ fn lower_expression(
                     constraints: Vec::new(),
                     members: Vec::new(),
                     capture_count: 0,
-                    is_task: false,
+                    is_once: false,
                     owned_captures: false,
                     contracts: Default::default(),
                 });
@@ -577,7 +549,7 @@ fn lower_expression(
                     constraints: Vec::new(),
                     members: Vec::new(),
                     capture_count: 0,
-                    is_task: false,
+                    is_once: false,
                     owned_captures: false,
                     contracts: Default::default(),
                 });

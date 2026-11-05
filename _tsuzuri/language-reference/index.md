@@ -161,8 +161,7 @@
 #### 非同期処理
 
 - [Async 式（協調的な中断とホスト駆動）](./async-tasks-and-lazy/async.md)
-- [Task 式](./async-tasks-and-lazy/task.md)
-- [tzroutine 式](./async-tasks-and-lazy/tzroutine.md)
+- [tzroutine 式](./async-tasks-and-lazy/tzroutine.md) — 軽量な実行単位の起動と、[Task からの移行](./async-tasks-and-lazy/tzroutine.md#task-からの移行)
 - [select 式](./async-tasks-and-lazy/select.md) — 複数のチャンネルの送受信を同時に待つ
 - [Lazy 式](./async-tasks-and-lazy/lazy.md)
 

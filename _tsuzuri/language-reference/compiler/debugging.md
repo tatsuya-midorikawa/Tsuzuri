@@ -103,9 +103,8 @@ show 40
 | 再帰する union | `Node(Leaf, 40, Leaf)`。値を持たない case はノードを持たず、その case 名を表示します |
 | `Map`・`Set` | `size=1` と、キー順の要素 `[0]`、`[1]`… |
 | 関数値 | `<fn Main.show.lambda@12:15>` のように呼び出す関数の名前 |
-| `Task` | `<task>` |
 
-LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読み込まない LLDB や GDB でも、DWARF だけで整数などの型名、値を持たない union の case 名、union の `$tag` の case 名が読めます。union の DWARF は、タグを `$tag`、値を `$payload`（case 名をメンバー名とする C の union）に持つ構造体です。`Maybe<string>` のように、値を持たない case と文字列・配列の値を持つ case だけの union（ネイティブでは `ref` の値を持つ case だけの union も）はタグを持たないので、`$tag` の代わりに `$niche` を持ちます。`$niche` は `$payload` に重なる列挙型で、値を持たない case の列挙子が、文字列・配列では `-1`（負の長さ）、`ref` では `0`（null ポインター）、関数値と `Task` では `0`（null の記述子。`$niche` はポインターの幅）です。`$niche` の値がその列挙子と等しければその case、そうでなければ `$payload` の case です。formatter を読み込まない LLDB でも、`$niche` が値を持たない case の列挙子なら case 名が読めます。`$` は Tsuzuri の識別子に使えないので、record のフィールドとは衝突しません。record の DWARF のメンバーは宣言の順に並び、offset はフィールドを格納している位置です（アライメントの大きい順に並べ替えて格納する record では、宣言の順と offset の順が違います。[Record](../built-in-types-and-modules/record.md#メモリ上の大きさ)）。デバッガーはその offset から値を読むので、表示は宣言の順のままです。
+LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読み込まない LLDB や GDB でも、DWARF だけで整数などの型名、値を持たない union の case 名、union の `$tag` の case 名が読めます。union の DWARF は、タグを `$tag`、値を `$payload`（case 名をメンバー名とする C の union）に持つ構造体です。`Maybe<string>` のように、値を持たない case と文字列・配列の値を持つ case だけの union（ネイティブでは `ref` の値を持つ case だけの union も）はタグを持たないので、`$tag` の代わりに `$niche` を持ちます。`$niche` は `$payload` に重なる列挙型で、値を持たない case の列挙子が、文字列・配列では `-1`（負の長さ）、`ref` では `0`（null ポインター）、関数値では `0`（null の記述子。`$niche` はポインターの幅）です。`$niche` の値がその列挙子と等しければその case、そうでなければ `$payload` の case です。formatter を読み込まない LLDB でも、`$niche` が値を持たない case の列挙子なら case 名が読めます。`$` は Tsuzuri の識別子に使えないので、record のフィールドとは衝突しません。record の DWARF のメンバーは宣言の順に並び、offset はフィールドを格納している位置です（アライメントの大きい順に並べ替えて格納する record では、宣言の順と offset の順が違います。[Record](../built-in-types-and-modules/record.md#メモリ上の大きさ)）。デバッガーはその offset から値を読むので、表示は宣言の順のままです。
 
 ### 読めない値と上限
 
@@ -136,7 +135,7 @@ Latin-1 は byte、そうでなければ 2 byte をコード単位として読�
 | 関数 | `Main.show` |
 | ジェネリックな関数の各実体 | 元の関数と同じ `Array.sum`。名前のブレークポイントがすべての実体に当たります |
 | ラムダ式 | `<外側の関数>.lambda@<行>:<列>`。例: `Main.show.lambda@12:15` |
-| `task` | `<外側の関数>.task@<行>:<列>` |
+| `tzroutine { }` の本体 | `<外側の関数>.tzroutine@<行>:<列>`。例: トップレベルの 1 行目なら `Main.$entry.tzroutine@1:1` |
 | `test` の本体 | `<モジュール>.test@<行>:<列>`（テスト名の位置） |
 | `export def` の公開関数・`main` などの入口 | シンボル名（`tz_view`、`main`、`tsuzuri_main`）。コンパイラーが作った関数として印が付きます |
 
@@ -144,7 +143,7 @@ Latin-1 は byte、そうでなければ 2 byte をコード単位として読�
 
 - `let` の束縛は宣言の位置にあります。束縛の後で前の行へ戻りません。
 - 関数のブレークポイントと関数へのステップインは、引数を束縛した後の本体の最初の行で止まります。
-- ランタイム（C で書いたタスク・入出力などと、LLVM IR のメモリ管理）と、コンパイラーが生成した補助関数（組み込み関数のラッパー、case のコンストラクター、関数値の呼び出しアダプター、解放と複製）はデバッグ情報を持たないので、LLDB の既定の設定ではステップインで入りません。
+- ランタイム（C で書いた tzroutine・入出力などと、LLVM IR のメモリ管理）と、コンパイラーが生成した補助関数（組み込み関数のラッパー、case のコンストラクター、関数値の呼び出しアダプター、解放と複製）はデバッグ情報を持たないので、LLDB の既定の設定ではステップインで入りません。
 - 標準ライブラリの関数（`Array.sum` など）にはデバッグ情報があり、ステップインで入ります。標準ライブラリのソースはコンパイラーに埋め込まれているので、デバッガーは `<プロジェクト>/std/Array.tz` のソースを見つけられず、逆アセンブルを表示します。
 
 ## テストをデバッグする
@@ -164,7 +163,7 @@ VS Code 拡張では、Testing ビューでテストを 1 件選んで **Debug**
 
 Windows で、MSVC のリンカー（`link.exe`）でリンクする Clang（配布物の `tsuzuri-clang` 以外。たとえば `TSUZURI_CLANG` に指定した LLVM の `clang`）を使うと、`-g` のネイティブのビルドは DWARF に加えて CodeView も出します。実行ファイルでは、リンカーが出力の拡張子を `.pdb` にした PDB（`app.exe` なら `app.pdb`）を隣に書きます。実行ファイルは PDB をディレクトリなしの名前で指すので、Visual Studio や WinDbg は隣の PDB を見つけます。PDB の関数と型の名前は DWARF と同じ Tsuzuri の名前（`Main.show`、`Main.Shape`、`$tag`）です。`tsuzuri test --index N -g -o PATH` のランナーにも PDB を書きます。
 
-PDB には、Tsuzuri の値の表示を定義した natvis が埋め込まれます。natvis は `string`、`utf8string`、`Vec`、`Map`、`Set`、`Maybe`、`Result`、`Task` を Tsuzuri の値として表示します。`TSUZURI_STRINGS=compact` の `string`（長さの語の bit 62 が立っているもの）は、natvis が `s8`（UTF-8）の文字列として表示するので、ASCII の文字列はそのまま読めますが、ASCII でない Latin-1 の文字は文字化けします（natvis に ISO-8859-1 の指定子がありません）。要素の表示（`[0]`、`[1]`…）はバイトの値で、長さは低位 62 bit です。この natvis は Windows で確かめていません。natvis の型名のワイルドカードはテンプレートの引数にしか使えないので、配列、リスト、利用者の union には natvis の表示がありません。これらはデバッガーの既定の表示になり、union の `$tag` は case 名を表示します。`Maybe<string>` と `Maybe<utf8string>` はタグを持たない（`$niche` が `-1` なら `None`）ので、型名を指定した専用の定義があります。`Maybe<[T]>`、ネイティブの `Maybe<ref T>`、`Maybe` の値が関数値や `Task` のもの、タグを持たない利用者の union は既定の表示で、`$niche` が値を持たない case の列挙子のときだけ case 名になります。
+PDB には、Tsuzuri の値の表示を定義した natvis が埋め込まれます。natvis は `string`、`utf8string`、`Vec`、`Map`、`Set`、`Maybe`、`Result` を Tsuzuri の値として表示します。`TSUZURI_STRINGS=compact` の `string`（長さの語の bit 62 が立っているもの）は、natvis が `s8`（UTF-8）の文字列として表示するので、ASCII の文字列はそのまま読めますが、ASCII でない Latin-1 の文字は文字化けします（natvis に ISO-8859-1 の指定子がありません）。要素の表示（`[0]`、`[1]`…）はバイトの値で、長さは低位 62 bit です。この natvis は Windows で確かめていません。natvis の型名のワイルドカードはテンプレートの引数にしか使えないので、配列、リスト、利用者の union には natvis の表示がありません。これらはデバッガーの既定の表示になり、union の `$tag` は case 名を表示します。`Maybe<string>` と `Maybe<utf8string>` はタグを持たない（`$niche` が `-1` なら `None`）ので、型名を指定した専用の定義があります。`Maybe<[T]>`、ネイティブの `Maybe<ref T>`、`Maybe` の値が関数値のもの、タグを持たない利用者の union は既定の表示で、`$niche` が値を持たない case の列挙子のときだけ case 名になります。
 
 ネイティブの実行ファイルには、入口（`def main` かトップレベルのコード）、`export def`、`Drop` の実装から到達できる関数だけが入ります。どこからも呼ばれない公開関数は、実行ファイルの内部関数で外から呼べないのに `-O0` ではコンパイルされていたので、入れません。そのため DWARF にもトラップ位置の表にも載りません。すべての公開関数を含めて確かめたいときは、`--emit object` か `--emit llvm` でビルドします。未使用の公開関数の型エラーは `check` が今までどおり報告します。その関数だけが使う OS API や `extern` のシンボルで失敗していたビルドが通る点は [出力とターゲット](option.md#出力とターゲット) にあります。
 

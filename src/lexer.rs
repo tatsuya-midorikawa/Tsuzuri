@@ -657,7 +657,6 @@ impl Lexer<'_> {
             "deriving" => TokenKind::Deriving,
             "dyn" => TokenKind::Dyn,
             "let" => TokenKind::Let,
-            "task" => TokenKind::Task,
             "do" => TokenKind::Do,
             "return" => TokenKind::Return,
             "yield" => TokenKind::Yield,

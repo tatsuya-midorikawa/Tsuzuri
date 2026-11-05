@@ -3,7 +3,7 @@
 ; of items, the live senders, the live receivers, the live handles of either kind, two words that the
 ; native runtime uses for its waiting lists, and then the ring of items at offset 80. No other thread
 ; can change a channel, so a wait that cannot end at once can never end: the status asks the caller
-; to trap (2), which is what the other targets do when every task is waiting.
+; to trap (2), which is what the other targets do when every waiter is asleep.
 
 define internal void @tsuzuri_channel_copy(ptr %to, ptr %from, i64 %size) nounwind {
 entry:

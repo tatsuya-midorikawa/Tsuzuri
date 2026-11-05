@@ -1,0 +1,81 @@
+// The value cases of the deleted tests/fixtures/tasks (TZ12) on tzroutines: the children of
+// Routine.scope return records, functions, units and wide or special numbers in index order
+// (`function_captures`, `partial_move` and `snapshot` are in tests/tzroutine.mjs).
+record Report { text: string, numbers: [i64] }
+
+def rec added :: ref [i64] -> own i64 -> own i64 -> i64
+fn rec added values index sum =
+    if index == values.length { sum }
+    else { added values (index + 1) (sum + values[index]) }
+
+def rec in_order :: ref [i64] -> own i64 -> bool
+fn rec in_order values index =
+    if index == values.length { true }
+    else { values[index] == index && in_order values (index + 1) }
+
+export def ordered_children :: own i64 -> bool
+fn ordered_children count =
+    let results = Routine.scope (ref count) count (\shared i -> {
+        let values = new [i64](deref shared - i, \n -> n);
+        i + values.length - (deref shared - i)
+    })
+    in_order (ref results) 0
+
+export def nested_scopes :: own i64 -> i64
+fn nested_scopes n =
+    let results = Routine.scope (ref n) 8 (\outer i -> {
+        let inner = Routine.scope outer 8 (\base j -> deref base + i * 8 + j);
+        added (ref inner) 0 0
+    })
+    added (ref results) 0 0
+
+export def record_children :: i64
+fn record_children =
+    let width = 1i64
+    let results = Routine.scope (ref width) 3 (\shared i -> Report { text: "hello", numbers: new [i64](i + deref shared, \n -> n + 10) })
+    results[0].text.length + results[2].numbers[2]
+
+export def function_children :: i64
+fn function_children =
+    let width = 0i64
+    let functions = Routine.scope (ref width) 2 (\shared i -> {
+        let text = "hello";
+        let offset = i + deref shared;
+        \n -> n + text.length + offset
+    })
+    functions[0] 10 + functions[1] 21
+
+export def unit_children :: i64
+fn unit_children =
+    let limit = 16i64
+    let values = Routine.scope (ref limit) 16 (\shared i -> assert (i < deref shared))
+    values.length
+
+export def integer_boundary :: bool
+fn integer_boundary =
+    let one = 1i8
+    let values = Routine.scope (ref one) 2 (\shared i -> if i == 0 { 127i8 + deref shared } else { -128i8 - deref shared })
+    values[0] == -128i8 && values[1] == 127i8
+
+export def wide_numbers :: bool
+fn wide_numbers =
+    let one = 1i128u
+    let integers = Routine.scope (ref one) 2 (\shared i -> if i == 0 { 340282366920938463463374607431768211455i128u + deref shared } else { 170141183460469231731687303715884105728i128u })
+    let tenth = 0.1d128
+    let decimals = Routine.scope (ref tenth) 1 (\shared _i -> deref shared + 0.2d128)
+    let unit_value = 1.0f128
+    let binaries = Routine.scope (ref unit_value) 1 (\shared _i -> deref shared + 0.0000000000000000000000000000000002f128)
+    integers[0] == 0i128u && integers[1] == 170141183460469231731687303715884105728i128u && decimals[0] == 0.3d128 && binaries[0] > 1.0f128
+
+// The sign of a zero that a child returns survives (the host compares doubles with ==).
+export def negative_zero :: bool
+fn negative_zero =
+    let zero = 0.0
+    let values = Routine.scope (ref zero) 1 (\shared _i -> -(deref shared))
+    values[0] == 0.0 && 1.0 / values[0] < 0.0
+
+export def nan_result :: bool
+fn nan_result =
+    let zero = 0.0
+    let values = Routine.scope (ref zero) 1 (\shared _i -> deref shared / deref shared)
+    values[0] != values[0]

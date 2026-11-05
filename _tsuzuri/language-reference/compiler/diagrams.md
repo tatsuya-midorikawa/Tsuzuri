@@ -111,7 +111,7 @@ classDiagram
 
 ### `calls`
 
-起点の関数から、呼び出しを `--depth` の段まで幅優先にたどります。辺のラベルは引数の渡し方（`ref`・`copy`・`own`）で、同じ相手を 2 回以上呼ぶと `×n` が付きます。知識グラフにない呼び先（std・組み込み）は丸い灰色、`--depth` で切った先があるノードは末尾に ` …` が付きます。関数は効果で色を分けます: 入出力・タスクなど（青）、確保・複製（黄）、トラップ（赤）、効果がないと分かっているもの（`pure` か、効果の一覧が完全なもの。緑）。起点は太枠です。
+起点の関数から、呼び出しを `--depth` の段まで幅優先にたどります。辺のラベルは引数の渡し方（`ref`・`copy`・`own`）で、同じ相手を 2 回以上呼ぶと `×n` が付きます。知識グラフにない呼び先（std・組み込み）は丸い灰色、`--depth` で切った先があるノードは末尾に ` …` が付きます。関数は効果で色を分けます: 入出力・tzroutine や並列の起動など（青）、確保・複製（黄）、トラップ（赤）、効果がないと分かっているもの（`pure` か、効果の一覧が完全なもの。緑）。起点は太枠です。
 
 ```mermaid
 flowchart TD
@@ -151,11 +151,11 @@ stateDiagram-v2
 
 ### `concurrency`
 
-並行の近似です。値の流れは知識グラフにないので、署名の型（`DataChannel.Sender<T>`・`DataChannel.Receiver<T>`・`Mutex<T>`・`Atomic<T>`）と呼び出し（`Task.scope`・`Task.parallel`・`Task.parallel_results`・`Parallel.*`・`DataChannel.bounded`・`Mutex.create`・`Atomic.create`）から作り、図に「approximate」の注記を必ず付けます。並行の区画を作る関数は二重枠、共有するセルは紫です。生成の呼び出しの型 `T` は、署名に同じ種類のセルの型が 1 つしかないときだけ書き、2 つ以上なら `?` です（`DataChannel.Sender<(i64 -> i64)>` の `->` の `>` は型の終わりではありません）。ID にモジュールを渡すと、そのモジュールの関数だけを描きます（ほかのモジュールの区画からの呼び出しは描きません）。区画とセルはまとめません: `--max-nodes` に区画とセル、ほかの関数のまとめ 1 つ、注記が収まらなければ `diagram_too_large` です。
+並行の近似です。値の流れは知識グラフにないので、署名の型（`Channel<T>`・`SendOnly<T>`・`ReceiveOnly<T>`・`DataChannel.Sender<T>`・`DataChannel.Receiver<T>`・`Mutex<T>`・`Atomic<T>`・`RwMutex<T>`・`OnceValue<T>`・`SyncMap<…>`）と呼び出し（区画を作る `Routine.scope`・`Routine.go`・`WaitGroup.go`・`ErrGroup.go`・`ErrGroup.try_go`・`Time.after_func`・`Context.after_func`・`Parallel.*`、セルを作る `Channel.make`・`DataChannel.bounded`・`Mutex.create`・`Atomic.create`・`RwMutex.create`・`OnceValue.create`・`SyncMap.create`）から作り、図に「approximate」の注記を必ず付けます。並行の区画を作る関数は二重枠、共有するセルは紫です。生成の呼び出しの型 `T` は、署名に同じ種類のセルの型が 1 つしかないときだけ書き、2 つ以上なら `?` です（`DataChannel.Sender<(i64 -> i64)>` の `->` の `>` は型の終わりではありません）。ID にモジュールを渡すと、そのモジュールの関数だけを描きます（ほかのモジュールの区画からの呼び出しは描きません）。区画とセルはまとめません: `--max-nodes` に区画とセル、ほかの関数のまとめ 1 つ、注記が収まらなければ `diagram_too_large` です。
 
 ```mermaid
 flowchart LR
-    n1[["Flow::Main.$entry · Task.scope"]]
+    n1[["Flow::Main.$entry · Routine.scope"]]
     n2["Flow::Worker.bump"]
     n3["Flow::Worker.drain"]
     n4["Flow::Worker.feed"]

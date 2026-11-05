@@ -64,13 +64,11 @@ export async function bundleRuntime(destination, { clang = null, native = true }
         }
       }
       if (native) {
-        let task = await runtime('task.c');
-        if (process.platform === 'win32') task = task.replace('#include "task-windows.h"', await runtime('task-windows.h'));
+        // The nine parts of the driver's unit; the sixth was the task pool, which TZ12 removed, and stays empty.
         const cpu = await runtime('cpu.c'), io = await runtime('io.c');
-        for (let mask = 1; mask < 8; mask++) {
-          const source = ['', '', '', '', '', mask & 1 ? task : '', mask & 2 ? cpu : '', mask & 4 ? io : '', ''].join('\n');
-          const args = ['-std=c11', '-c', ...nativeArgs, `-O${optimization}`,
-            ...(mask & 1 && process.platform !== 'win32' ? ['-pthread'] : []), ...sections];
+        for (const mask of [2, 4, 6]) {
+          const source = ['', '', '', '', '', '', mask & 2 ? cpu : '', mask & 4 ? io : '', ''].join('\n');
+          const args = ['-std=c11', '-c', ...nativeArgs, `-O${optimization}`, ...sections];
           await compile('native-c', source, args, `native-c-${mask}-O${optimization}`, 'c');
         }
       }

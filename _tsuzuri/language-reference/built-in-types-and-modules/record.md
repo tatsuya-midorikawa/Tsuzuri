@@ -206,7 +206,7 @@ match point with
 
 ## Copy になる条件
 
-レコードが Copy になるのは、再帰しておらず、利用者定義の `Drop` もなく、すべてのフィールドが Copy のときです。`i64` や `bool`、共有借用は Copy です。`string`、`utf8string`、`Vec`、タスク、排他借用は Copy ではありません。
+レコードが Copy になるのは、再帰しておらず、利用者定義の `Drop` もなく、すべてのフィールドが Copy のときです。`i64` や `bool`、共有借用は Copy です。`string`、`utf8string`、`Vec`、`Channel`、排他借用は Copy ではありません。
 
 Copy でないレコードは、フィールドごとにムーブできます。比較や表示は自動では付きません。必要なら `deriving` か、手書きのインスタンスを足します。
 

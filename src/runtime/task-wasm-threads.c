@@ -319,10 +319,6 @@ void tsuzuri_task_parallel(void (*run)(void *, uint64_t), void *context, uint64_
     (void)submit(run, 0, context, length);
 }
 
-uint64_t tsuzuri_task_parallel_results(uint32_t (*run)(void *, uint64_t), void *context, uint64_t length) {
-    return submit(0, run, context, length);
-}
-
 /* Mutex.with_lock (F10). The lock word is the first field of a cell: 0 free, 1 held, 2 held and
    somebody may wait. A critical section never waits (the generated code refuses to nest a lock, to
    start parallel work or to run a channel operation inside one), so a waiter always gets the lock
@@ -362,7 +358,7 @@ int32_t tsuzuri_mutex_parallel_ok(void) { return mutex_held == 0; }
 int32_t tsuzuri_mutex_wait_ok(void) { return mutex_held == 0; }
 
 /* Channel (F10 Phase 2): the block that the generated code allocates (src/llvm_sync.rs), as in the
-   native runtime (src/runtime/task.c). Every operation runs under `queue_mutex`, which also guards
+   native runtime (src/runtime/tzroutine.c since TZ12). Every operation runs under `queue_mutex`, which also guards
    the counts of `waiting`, so that "every task is waiting" is decided on one consistent view. */
 typedef struct {
     uint64_t capacity;

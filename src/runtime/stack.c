@@ -150,19 +150,13 @@ static int tz_stack_alternate(void) {
 
 /* Called first by every scheduler thread of src/runtime/tzroutine.c (TZ01). Its tzroutines'
    guards are known to the hook, so the thread gets an alternate stack, but no window of its own
-   (its stack only runs the scheduler, and the 64 windows stay for the task workers), and the
+   (its stack only runs the scheduler; since TZ12 only the main thread registers a window), and the
    handler is installed in any case (also when the constructor below found no bounds for the main
    thread, as under an unlimited stack limit on Linux). */
 __attribute__((visibility("hidden")))
 void tsuzuri_stack_scheduler_thread(void) {
     (void)tz_stack_alternate();
     tz_stack_handle();
-}
-
-/* Called first by every thread the task runtime starts. */
-__attribute__((visibility("hidden")))
-void tsuzuri_stack_thread(void) {
-    (void)tz_stack_prepare(0);
 }
 
 __attribute__((constructor))

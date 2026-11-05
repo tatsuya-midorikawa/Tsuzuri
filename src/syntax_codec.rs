@@ -1414,10 +1414,6 @@ impl Wire for TypeExprKind {
                 out.tag("TypeExprKind", 10);
                 elements.put(out)
             }
-            Task(result) => {
-                out.tag("TypeExprKind", 11);
-                result.put(out)
-            }
             Function(parameters, result) => {
                 out.tag("TypeExprKind", 12);
                 parameters.put(out)?;
@@ -1469,7 +1465,8 @@ impl Wire for TypeExprKind {
             8 => variant(input, |input| Ok(Length(u64::get(input)?))),
             9 => variant(input, |input| Ok(List(Box::get(input)?))),
             10 => variant(input, |input| Ok(Tuple(Vec::get(input)?))),
-            11 => variant(input, |input| Ok(Task(Box::get(input)?))),
+            // 11 was `Task<T>` (TZ12): the number is not used again.
+            11 => Err(Invalid),
             12 => variant(input, |input| {
                 Ok(Function(Vec::get(input)?, Box::get(input)?))
             }),
@@ -1618,14 +1615,6 @@ impl Wire for ExprKind {
             Lambda(parameters, body) => {
                 out.tag("ExprKind", 16);
                 parameters.put(out)?;
-                body.put(out)
-            }
-            Task(body) => {
-                out.tag("ExprKind", 17);
-                body.put(out)
-            }
-            TaskRun(body) => {
-                out.tag("ExprKind", 18);
                 body.put(out)
             }
             Computation(builder, block) => {
@@ -1844,8 +1833,8 @@ impl Wire for ExprKind {
             16 => variant(input, |input| {
                 Ok(Lambda(Vec::get(input)?, Box::get(input)?))
             }),
-            17 => variant(input, |input| Ok(Task(Box::get(input)?))),
-            18 => variant(input, |input| Ok(TaskRun(Box::get(input)?))),
+            // 17 and 18 were `task { }` and its binds (TZ12): the numbers are not used again.
+            17 | 18 => Err(Invalid),
             19 => variant(input, |input| {
                 Ok(Computation(Ident::get(input)?, Box::get(input)?))
             }),
@@ -2746,8 +2735,10 @@ mod tests {
             ("FormatAlign", 3),
             ("FormatKind", 6),
         ] {
+            // The tags of removed variants stay unused (TZ12: `Task<T>`, `task { }` and its binds).
+            let retired = [("TypeExprKind", 11), ("ExprKind", 17), ("ExprKind", 18)];
             let missing: Vec<_> = (0..count)
-                .filter(|tag| !seen.contains(&(name, *tag)))
+                .filter(|tag| !seen.contains(&(name, *tag)) && !retired.contains(&(name, *tag)))
                 .collect();
             assert!(
                 missing.is_empty(),

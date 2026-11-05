@@ -311,7 +311,7 @@ Build options:
                          from per-thread size classes (native 64-bit targets, also executables
                          and shared libraries; not WASM, --freestanding, or --trap-mode return)
     --freestanding         Native object, llvm, or header output that needs no C library;
-                         requires --allocator host and rejects IO, OS APIs, Net sockets, tasks, and Debug
+                         requires --allocator host and rejects IO, OS APIs, Net sockets, tzroutines, and Debug
     --strip                Link a native executable without its local symbols (build only; not with -g;
                          a Windows link is left as it is)
     --wasm-opt             Run Binaryen's wasm-opt -Oz over the linked .wasm (build with --target wasm32
@@ -324,7 +324,7 @@ Build options:
                          -fprofile-generate at its final link. A wasm32 module has no runtime: its host
                          calls writeProfile(instance) of the app.wasm.profile.mjs that the build writes
                          beside it (Clang 21; no indirect-call profile). The counters are not atomic:
-                         Tasks that run in parallel are counted too low
+                         code that runs on several threads at once is counted too low
     --profile-use PATH     Native executable or object output, run, and a wasm32 module: optimize with the
                          profile PATH, an indexed .profdata file or a directory of .profraw files that
                          llvm-profdata merges. Build both times with the same Clang and options; a profile
@@ -344,7 +344,7 @@ Threads:
 Toolchain:
   TSUZURI_CLANG          Clang executable (default: clang; LLVM 17+)
   TSUZURI_WASM_LD        WebAssembly linker (default: wasm-ld)
-  TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug task objects and for --emit bitcode with the
+  TSUZURI_LLVM_LINK      LLVM IR linker for macOS debug objects and --emit bitcode with the
                          C runtime (default: llvm-link; --emit bitcode also tries the directory of Clang)
   TSUZURI_DSYMUTIL       macOS debug symbol linker (default: dsymutil)
   TSUZURI_WASM_OPT       Binaryen optimizer that --wasm-opt runs (default: wasm-opt). Setting it alone

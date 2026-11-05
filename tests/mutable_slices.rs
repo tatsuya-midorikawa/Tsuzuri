@@ -141,7 +141,7 @@ fn exclusive_slices_reborrow_and_read_like_shared_slices() {
             "cannot capture ref mut [i64..] in a reusable function",
         ),
         (
-            "def f :: ref mut [i64..] -> i64 = \\values ->\n    let work = task { return values.length }\n    Task.run work\n",
+            "def f :: ref mut [i64..] -> i64 = \\values ->\n    tzroutine {\n        let _n = values.length\n    }\n    0\n",
             "E1013",
             "ref mut [i64..] contains a reference",
         ),
@@ -293,7 +293,7 @@ fn parallel_chunks_lend_disjoint_exclusive_slices() {
     let ir = accepts(
         "def scale :: i64 -> ref mut [i64..] -> unit = \\start chunk ->\n    for index in 0i64 .. (chunk.length - 1) do Array.write index (start + index) chunk\n\nlet mut values: [i64] = [1, 2, 3]\nlet offset = 7i64\nParallel.for_each_chunk 2 scale (ref mut values)\nParallel.for_each_chunk 2 (\\start chunk -> Array.write 0 (start + offset) chunk) (ref mut values)\nlet mut words: [string] = [\"b\", \"a\"]\nParallel.for_each_chunk 1 (\\_start chunk -> Array.sort_in_place chunk) (ref mut words)\nvalues[0]\n",
     );
-    assert!(ir.contains("@tsuzuri_task_parallel("), "{ir}");
+    assert!(ir.contains("@tsuzuri_tz_parallel("), "{ir}");
     for (source, code, fragment) in [
         (
             "let mut values: [i64] = [1, 2, 3]\nlet other: [i64] = [5]\nlet shared = ref other\nParallel.for_each_chunk 2 (\\start chunk -> Array.write 0 shared[0] chunk) (ref mut values)\nvalues[0]\n",

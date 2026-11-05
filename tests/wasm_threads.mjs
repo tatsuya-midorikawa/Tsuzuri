@@ -89,12 +89,14 @@ export def deep_call :: i64 -> i64 = \\n -> deep n
 extern def worker_failure :: i64 -> i64
 export def concurrent :: i64
 fn concurrent = {
-    let results = Task.run (Task.parallel (new [Task<i64>](3, \\index -> task { barrier index })));
+    let mut results = new [i64](3, \\_index -> 0);
+    Parallel.for_each_chunk 1 (\\index slot -> Array.write 0 (barrier index) slot) (ref mut results);
     results[0] * 100 + results[1] * 10 + results[2]
 }
 export def fail :: i64
 fn fail = {
-    let results = Task.run (Task.parallel (new [Task<i64>](2, \\index -> task { worker_failure index })));
+    let mut results = new [i64](2, \\_index -> 0);
+    Parallel.for_each_chunk 1 (\\index slot -> Array.write 0 (worker_failure index) slot) (ref mut results);
     results[0]
 }
 export def bulk :: i64
@@ -191,12 +193,14 @@ fn bulk = {
         for (const line of readFileSync(object.replace(/\.o$/, ".su"), "utf8").trim().split("\n")) unchecked += Number(line.split("\t")[1]);
       }
       assert.ok(unchecked > 0 && unchecked <= 4096, `${unchecked}`);
-      const tasks = join(directory, `tasks-${optimization}.wasm`);
-      cli(["build", resolve("tests/fixtures/tasks/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", tasks]);
+      // Groups of jobs (Parallel.for_each_chunk 1, one job per slot) on the pool: the results of a
+      // group in index order, nested groups, and owned values that a job allocates and the caller frees.
+      const shared = join(directory, `concurrency-${optimization}.wasm`);
+      cli(["build", resolve("tests/fixtures/concurrency_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", shared]);
       const repeated = join(directory, `repeated-${optimization}.wasm`);
-      cli(["build", resolve("tests/fixtures/tasks/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", repeated]);
-      assert.deepEqual(readFileSync(tasks), readFileSync(repeated));
-      const pool = await createThreadPool(readFileSync(tasks), { workers: 2 });
+      cli(["build", resolve("tests/fixtures/concurrency_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", repeated]);
+      assert.deepEqual(readFileSync(shared), readFileSync(repeated));
+      const pool = await createThreadPool(readFileSync(shared), { workers: 2 });
       try {
         assert.equal(pool.memory.buffer.byteLength, 16 * 1024 * 1024);
         assert.equal(pool.workerCount, 0);
@@ -204,9 +208,8 @@ fn bulk = {
           assert.equal(pool.call("tz_parallel_sum", count), count * (count - 1n) * (2n * count - 1n) / 6n);
         }
         assert.equal(pool.workerCount, 2);
-        assert.equal(pool.call("tz_parallel_results_ok", 257n), 5625216n);
-        assert.equal(pool.call("tz_parallel_results_nested"), 2016n);
-        assert.equal(pool.call("tz_parallel_results_first_class"), 42n);
+        assert.equal(pool.call("tz_results_ok", 257n), 5625216n);
+        assert.equal(pool.call("tz_results_nested"), 2016n);
         assert.equal(pool.call("tz_ordered", 128n), 1);
         assert.equal(pool.call("tz_nested", 5n), 2336n);
         const reserved = 2n * (262144n + 16n);
@@ -216,26 +219,26 @@ fn bulk = {
           assert.equal(pool.call("tz_record_results"), 17n);
           assert.equal(pool.call("tz_function_results"), 42n);
           assert.equal(pool.call("tz_list_results"), 42n);
-          assert.equal(pool.call("tz_parallel_results_lowest"), 2n);
-          assert.equal(pool.call("tz_parallel_results_owned", 257n), 6n);
-          assert.equal(pool.call("tz_parallel_results_values"), 10n);
-          assert.equal(pool.call("tz_parallel_results_functions"), 42n);
-          assert.equal(pool.call("tz_parallel_results_recursive", 0), 2n);
-          assert.equal(pool.call("tz_parallel_results_recursive", 1), 5n);
+          assert.equal(pool.call("tz_results_lowest"), 2n);
+          assert.equal(pool.call("tz_results_owned", 257n), 6n);
+          assert.equal(pool.call("tz_results_values"), 10n);
+          assert.equal(pool.call("tz_results_functions"), 42n);
+          assert.equal(pool.call("tz_results_recursive", 0), 2n);
+          assert.equal(pool.call("tz_results_recursive", 1), 5n);
           assert.equal(pool.call("tsuzuri_thread_heap_live_bytes"), reserved);
         }
         assert.ok(pool.memory.buffer.byteLength <= 16 * 1024 * 1024);
-        console.log(`WASM tasks O${optimization}: ordered results, nested groups, 2 persistent workers and owned allocation stress`);
+        console.log(`WASM groups O${optimization}: ordered results, nested groups, 2 persistent workers and owned allocation stress`);
       } finally {
         await pool.close();
       }
-      const large = join(directory, `tasks-64-${optimization}.wasm`);
-      cli(["build", resolve("tests/fixtures/tasks/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", "--wasm-max-memory", "64MiB", `-O${optimization}`, "-o", large]);
+      const large = join(directory, `concurrency-64-${optimization}.wasm`);
+      cli(["build", resolve("tests/fixtures/concurrency_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", "--wasm-max-memory", "64MiB", `-O${optimization}`, "-o", large]);
       const largeBytes = readFileSync(large);
       const declared = importedMemory(largeBytes);
       assert.equal(declared.flags, 3);
       assert.equal(declared.maximum, 1024);
-      assert.equal(declared.minimum, importedMemory(readFileSync(tasks)).minimum);
+      assert.equal(declared.minimum, importedMemory(readFileSync(shared)).minimum);
       const largePool = await createThreadPool(largeBytes, { workers: 2 });
       try {
         assert.equal(largePool.memory.buffer.byteLength, 67108864);
@@ -247,8 +250,8 @@ fn bulk = {
         await largePool.close();
       }
       console.log(`WASM threads O${optimization}: --wasm-max-memory 64MiB declares 1024 shared pages and the host reserves them`);
-      assert.throws(() => new WebAssembly.Instance(new WebAssembly.Module(readFileSync(tasks)), { env: { memory } }));
-      const unavailable = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(tasks)), { env: { memory: new WebAssembly.Memory({ initial: 256, maximum: 256, shared: true }) }, tsuzuri_threads: { spawn_workers: () => -1, worker_ready() {} } });
+      assert.throws(() => new WebAssembly.Instance(new WebAssembly.Module(readFileSync(shared)), { env: { memory } }));
+      const unavailable = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(shared)), { env: { memory: new WebAssembly.Memory({ initial: 256, maximum: 256, shared: true }) }, tsuzuri_threads: { spawn_workers: () => -1, worker_ready() {} } });
       unavailable.exports.tsuzuri_threads_init(2);
       assert.throws(() => unavailable.exports.tz_parallel_sum(2n), WebAssembly.RuntimeError);
       const barrierOutput = join(directory, `barrier-${optimization}.wasm`);
@@ -266,17 +269,15 @@ fn bulk = {
         await barrierPool.close();
       }
       console.log(`WASM threads O${optimization}: atomic barrier proves 3 participants; bulk callbacks, worker failure, unavailable host and SIMD/debug options passed`);
-      // F10: atomics and the children of a scope on real workers. A lost update or a child that runs
-      // twice or never would change a total, whatever the schedule.
-      const shared = join(directory, `concurrency-${optimization}.wasm`);
-      cli(["build", resolve("tests/fixtures/concurrency_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", shared]);
+      // F10: atomics and locks shared by the jobs of a group on real workers. A lost update or a job
+      // that runs twice or never would change a total, whatever the schedule.
       const sharedPool = await createThreadPool(readFileSync(shared), { workers: 2 });
       try {
         for (const count of [0n, 1n, 4n, 64n, 257n]) {
           const total = count * (count + 1n) / 2n;
           assert.equal(sharedPool.call("tz_atomic_counter", count), total);
           assert.equal(sharedPool.call("tz_atomic_compare_exchange_loop", count), total);
-          assert.equal(sharedPool.call("tz_arc_atomic_tasks", count), total * 1001n);
+          assert.equal(sharedPool.call("tz_arc_atomic_jobs", count), total * 1001n);
         }
         for (const count of [0n, 1n, 3n, 64n]) assert.equal(sharedPool.call("tz_atomic_contended", count), count * 1000n);
         // Mutex: a read-modify-write under the lock loses no update between workers, whatever the schedule.
@@ -284,13 +285,13 @@ fn bulk = {
         for (const count of [0n, 1n, 4n, 64n, 257n]) {
           assert.equal(sharedPool.call("tz_mutex_total", count), count * count);
           assert.equal(sharedPool.call("tz_mutex_owned_array", count), count * count);
-          assert.equal(sharedPool.call("tz_arc_mutex_tasks", count), count * (count + 1n) / 2n * 1000n + 1n);
+          assert.equal(sharedPool.call("tz_arc_mutex_jobs", count), count * (count + 1n) / 2n * 1000n + 1n);
           assert.equal(sharedPool.call("tz_mutex_twice", count), count * 20n);
         }
         for (const count of [0n, 1n, 2n, 1000n]) {
           let checksum = 0n;
           for (let position = 0n; position < count; position++) checksum = BigInt.asIntN(64, checksum * 31n + (3n * position + 1n) + position);
-          assert.equal(sharedPool.call("tz_scope_results_order", count), checksum);
+          assert.equal(sharedPool.call("tz_results_order", count), checksum);
         }
         // What sleeps on the epoch waits for new work, the end of a group, a channel or a lock, so an
         // item that is done while others of its group still run wakes nobody: the epoch moves a few
@@ -299,14 +300,14 @@ fn bulk = {
         const epoch = () => Atomics.load(new Int32Array(sharedPool.memory.buffer, epochAddress, 7), 1);
         const startedAt = epoch();
         assert.equal(sharedPool.call("tz_atomic_counter", 5000n), 5000n * 5001n / 2n);
-        assert.ok(epoch() - startedAt <= 8, `the epoch moved ${epoch() - startedAt} times for the 5,000 children of one scope`);
+        assert.ok(epoch() - startedAt <= 8, `the epoch moved ${epoch() - startedAt} times for the 1,024 jobs of one group`);
         assert.equal(sharedPool.call("tsuzuri_thread_heap_live_bytes"), 2n * (262144n + 16n));
       } finally {
         await sharedPool.close();
       }
-      console.log(`WASM threads O${optimization}: Atomic, Mutex and Task.scope on 2 workers lose no update and run every child once`);
-      // A critical section never waits, so a nested lock and parallel work inside one are refused on
-      // the workers too. A trap stops the whole pool, so each case has a pool of its own.
+      console.log(`WASM threads O${optimization}: Atomic, Mutex and the jobs of a group on 2 workers lose no update and run every job once`);
+      // On WebAssembly a critical section never waits, so a nested lock and parallel work inside one
+      // are refused on the workers too. A trap stops the whole pool, so each case has a pool of its own.
       for (const name of ["mutex_nested", "mutex_parallel_inside"]) {
         const refused = await createThreadPool(readFileSync(shared), { workers: 2 });
         try {
@@ -316,7 +317,7 @@ fn bulk = {
         }
       }
       console.log(`WASM threads O${optimization}: a nested Mutex.with_lock and parallel work inside one trap`);
-      // F10 Phase 2: channels between tasks that run at the same time, on 2 to 4 threads. The tasks
+      // F10 Phase 2: channels between jobs that run at the same time, on 2 to 4 threads. The jobs
       // that wait on each other need a thread each, so the exports that need 3 are run from 3 up.
       const piped = join(directory, `channel-threads-${optimization}.wasm`);
       cli(["build", resolve("tests/fixtures/data_channel_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", piped]);
@@ -366,7 +367,7 @@ fn bulk = {
         await stopBurners();
       }
       console.log(`WASM threads O${optimization}: three stages on the 3 threads that they need complete on a busy machine`);
-      // A task that starts a group of its own and then sends what the group computed to a task of the
+      // A job that starts a group of its own and then sends what the group computed to a job of the
       // outer group (nested_then_send). The thread that waits for the end of the nested group runs
       // that group's items and no others, as in the native pool, and the group's first item is taken
       // under the lock that publishes it. A thread that waits for the nested group and takes the
@@ -402,7 +403,7 @@ fn bulk = {
       } finally {
         await single.close();
       }
-      console.log(`WASM threads O${optimization}: a task that starts a group and then feeds a task of the outer group completes on 1 to 4 threads`);
+      console.log(`WASM threads O${optimization}: a job that starts a group and then feeds a job of the outer group completes on 1 to 4 threads`);
       // With every thread waiting on a channel, no thread can ever send: a trap instead of a hang,
       // however many threads there are. The pipelines that need more threads than there are trap too.
       for (const [name, args, workers] of [["leaked_sender", [], 0], ["leaked_sender", [], 1], ["leaked_sender", [], 3],
@@ -417,7 +418,7 @@ fn bulk = {
         }
       }
       console.log(`WASM threads O${optimization}: pipelines, fan-in, job queue and ping-pong on 2 to 4 threads, drops once, and deadlocks trap`);
-      // The single-task exports of the channel suite on a pool, and the refusals inside a lock.
+      // The exports of the channel suite, which run on one thread, on a pool, and the refusals inside a lock.
       const sequential = join(directory, `channel-${optimization}.wasm`);
       cli(["build", resolve("tests/fixtures/data_channel/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", sequential]);
       const sequentialBytes = readFileSync(sequential);
@@ -443,27 +444,27 @@ fn bulk = {
           await trapped.close();
         }
       }
-      console.log(`WASM threads O${optimization}: the DataChannel exports of one task and the refusals inside a lock`);
-      // PM05: the heap under its lock. Each task allocates blocks of many sizes (a Vec that grows by
+      console.log(`WASM threads O${optimization}: the DataChannel exports of one thread and the refusals inside a lock`);
+      // PM05: the heap under its lock. Each job allocates blocks of many sizes (a Vec that grows by
       // reallocation, strings, arrays of 4, 12, 75 and 625 elements) and returns an array that the
       // caller frees on another thread than the one that allocated it. Whatever the schedule, the
       // totals are the same and only the stacks of the workers stay live.
       const heapOutput = join(directory, `heap-${optimization}.wasm`);
       cli(["build", resolve("tests/fixtures/heap_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", "--trap-info", `-O${optimization}`, "-o", heapOutput]);
       const heapBytes = readFileSync(heapOutput);
-      // Round r of task t pushes the last elements of the four blocks, 4t + 712 together, and the length of "<r>-<t>".
-      const crossTotal = (tasks, rounds) => {
+      // Round r of job j pushes the last elements of the four blocks, 4j + 712 together, and the length of "<r>-<j>".
+      const crossTotal = (jobs, rounds) => {
         let total = 0n;
-        for (let task = 0n; task < tasks; task++) {
-          for (let round = 0n; round < rounds; round++) total += 4n * task + 712n + BigInt(`${round}-${task}`.length);
+        for (let job = 0n; job < jobs; job++) {
+          for (let round = 0n; round < rounds; round++) total += 4n * job + 712n + BigInt(`${round}-${job}`.length);
         }
         return total;
       };
       for (const workers of [1, 2, 3]) {
         const heapPool = await createThreadPool(heapBytes, { workers });
         try {
-          for (const [tasks, rounds] of [[1n, 1n], [4n, 120n], [7n, 1000n], [16n, 40n], [3n, 3000n]]) {
-            assert.equal(heapPool.call("tz_cross_free", tasks, rounds), crossTotal(tasks, rounds), `${tasks} tasks of ${rounds} rounds on ${workers + 1} threads`);
+          for (const [jobs, rounds] of [[1n, 1n], [4n, 120n], [7n, 1000n], [16n, 40n], [3n, 3000n]]) {
+            assert.equal(heapPool.call("tz_cross_free", jobs, rounds), crossTotal(jobs, rounds), `${jobs} jobs of ${rounds} rounds on ${workers + 1} threads`);
           }
           assert.equal(heapPool.call("tsuzuri_thread_heap_live_bytes"), BigInt(workers) * (262144n + 16n));
         } finally {

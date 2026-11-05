@@ -245,8 +245,8 @@ sum=5050
 ## 待ちとデッドロック
 
 - 待つのは tzroutine だけです。待っている間、その OS スレッドはほかの tzroutine を走らせます。
-- `main` や `export` を呼んだスレッド、`Task.parallel` のタスクのような tzroutine でないスレッドが待つと、そのスレッドが止まります。
-- `Task.parallel`・`Task.scope`・`Parallel.*` の項目がまだ始まっていない間は、判定をしません（始まった項目がほかの待ちを起こしうるため）。タスクのプールのスレッドがすべて `Channel` で待ち、残りの項目を始めるスレッドがないときや、CPU が 1 つで項目が呼んだスレッドで順に走るときは、トラップせずに待ち続けます（プールの待ち行列はランタイムから見えません。Task は TZ12 で tzroutine に置き換わります）。
+- `main` のトップレベルや、`export` を呼んだホストのスレッドのような tzroutine でないスレッドが待つと、そのスレッドが止まります。
+- `Parallel.*` のコールバックと `Routine.scope` の子も tzroutine の上で走るので、その中の待ちも同じ規則で、判定の対象です。
 - 誰も起こせない待ち（すべての tzroutine とスレッドが待っていて、走るものもタイマーもない）は、`Tsuzuri runtime: all tzroutines are asleep - deadlock! (1 waiting: Channel.recv)` を書き、待っていた呼び出しの位置でトラップします。`--trap-info` の `tsuzuri run` は、その行を `E2005` の位置にします。
 
 ```text
@@ -256,7 +256,7 @@ match Channel.recv ch with      // ← ここでトラップする
 | Maybe.None -> 0
 ```
 
-- `Channel` を使うプログラムの `Mutex.with_lock` は tzroutine のランタイムのロックで、ロックを持ったまま待つ操作（`send`・`recv`・`for`・`select`）を呼べます（TZ06。[Mutex](./mutex.md#tzroutine-のプログラムのロック)）。
+- ネイティブの `Mutex.with_lock` は tzroutine のランタイムのロックで、ロックを持ったまま待つ操作（`send`・`recv`・`for`・`select`）を呼べます（TZ06・TZ12。[Mutex](./mutex.md#ロックの規則)）。
 
 ## ターゲット
 
@@ -312,10 +312,10 @@ match Channel.recv ch with      // ← ここでトラップする
 | 受け手がいないときの `send` | 待つ（受け手を数えない） | `Error item` |
 | バッファなし | 容量 0 | なし（容量は 1 以上） |
 | `for` | 使える | 使えない |
-| 待ち | tzroutine だけが待つ | OS スレッドを止める（Task のプールの規則） |
+| 待ち（native） | tzroutine だけが待つ | tzroutine だけが待つ（TZ12） |
 | `--wasm-feature threads` | 使えない | 使える |
 
-tzroutine の間の受け渡しには `Channel` を使います。`DataChannel` の待ちは Task のプールの規則のままで、tzroutine を数えません。
+ネイティブでは、どちらも tzroutine のスケジューラーの上で待ち、誰も起こせない待ちは同じデッドロックの判定がトラップにします（[DataChannel の待ちの規則](./datachannel.md#待ちの規則)）。Go と同じ書き方をするなら `Channel`、`--wasm-feature threads` でも使う、または drop で閉じる送り手が欲しいなら `DataChannel` を使います。
 
 ## 旧 Channel のプログラム
 

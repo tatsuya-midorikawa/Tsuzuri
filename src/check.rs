@@ -167,7 +167,9 @@ pub enum Type {
     List(Box<Type>),
     Vec(Box<Type>),
     Tuple(Vec<Type>),
-    Task(Box<Type>),
+    /// The body of a `tzroutine { }` (TZ02), a function that runs once with its result type: the
+    /// rules of its captures are those of `task { }`, which TZ12 removed. No program writes it.
+    Once(Box<Type>),
     /// An `extern type`: an opaque host handle named by its qualified name.
     Handle(Box<str>),
     Function(Box<FunctionParameters>, Box<Type>),
@@ -521,7 +523,7 @@ impl Type {
                     .collect::<Vec<_>>()
                     .join(" * ")
             ),
-            Self::Task(result) => format!("Task<{}>", result.display(types)),
+            Self::Once(_) => "tzroutine body".into(),
             Self::Handle(name) => type_display(name),
             Self::Dyn(dyn_type) => dyn_type.display(),
             Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display(types)),
@@ -565,7 +567,7 @@ impl Type {
             | Self::ArrayView(ty)
             | Self::List(ty)
             | Self::Vec(ty)
-            | Self::Task(ty)
+            | Self::Once(ty)
             | Self::Shared(ty, _)
             | Self::Reference(ty, _) => ty.contains_error(),
             Self::Function(parameters, result) => {
@@ -588,7 +590,7 @@ impl Type {
             | Self::FixedArray(ty, _)
             | Self::List(ty)
             | Self::Vec(ty)
-            | Self::Task(ty)
+            | Self::Once(ty)
             | Self::Shared(ty, _)
             | Self::Reference(ty, _) => ty.contains_constructor(),
             Self::Function(parameters, result) => {
@@ -630,7 +632,7 @@ impl Type {
             Self::String
             | Self::Utf8String
             | Self::Vec(_)
-            | Self::Task(_)
+            | Self::Once(_)
             | Self::Handle(_)
             // Sharing is explicit (`Rc.share`), never an implicit copy (C10).
             | Self::Shared(..)
@@ -659,7 +661,7 @@ impl Type {
             Self::String
             | Self::Utf8String
             | Self::Function(..)
-            | Self::Task(_)
+            | Self::Once(_)
             | Self::Dyn(_)
             | Self::Shared(..) => true,
             Self::Record(id, args) => {
@@ -874,7 +876,7 @@ impl Type {
                 |ty| {
                     !matches!(
                         ty,
-                        Type::Reference(_, true) | Type::Task(_) | Type::Handle(_)
+                        Type::Reference(_, true) | Type::Once(_) | Type::Handle(_)
                     ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                         && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
                         && !matches!(ty, Type::Shared(value, kind) if !value.can_sync(types) && kind.atomic())
@@ -886,9 +888,9 @@ impl Type {
             );
         }
         match self {
-            Self::Reference(_, true) | Self::Task(_) | Self::Handle(_) => false,
+            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_) => false,
             // Function values are Send whatever they capture, so they hold only values that may
-            // move to another task: an `Arc` whose value tasks may share, never an `Rc` (C10).
+            // move to another tzroutine: an `Arc` whose value tzroutines may share, never an `Rc` (C10).
             Self::Shared(value, kind) => kind.atomic() && value.can_sync(types),
             // Copying a function value clones its captures, which needs the vtable's clone slot.
             Self::Dyn(dyn_type) => dyn_type.copy,
@@ -959,7 +961,7 @@ impl Type {
             Self::Tuple(elements) => elements.iter().all(|ty| ty.can_send(types)),
             Self::Record(id, args) => types.record_fields_all(*id, args, |ty| ty.can_send(types)),
             Self::Union(id, args) => types.union_payloads_all(*id, args, |ty| ty.can_send(types)),
-            // Plain data, a task (its result was judged where the task was made) and a function
+            // Plain data, a tzroutine body (its result was judged where it was made) and a function
             // value, whose environment is checked by ownership, not by its call signature.
             Self::Error
             | Self::Integer(..)
@@ -974,7 +976,7 @@ impl Type {
             | Self::Utf8String
             | Self::ArrayView(_)
             | Self::Length(_)
-            | Self::Task(_)
+            | Self::Once(_)
             | Self::Handle(_)
             | Self::Function(..) => true,
         }
@@ -995,16 +997,16 @@ impl Type {
     }
 
     /// Whether several threads may hold shared borrows of a value of this type at once, which is
-    /// what a task scope asks of the value it shares and what an `Arc` asks of its value (F10).
+    /// what `Routine.scope` asks of the value it shares and what an `Arc` asks of its value (F10).
     ///
     /// Immutable data is shared freely. Memory changes under a shared borrow in three places:
     /// an `Atomic` (Sync), a `Mutex<T>` (Sync: `Mutex.create` admits only a `T` that may move
     /// between threads, so the type stands for `T` without being looked into), and the counts of
     /// shared pointers (an `Arc` counts atomically and is Sync when its value is; an `Rc` counts
     /// through `Rc.share`'s shared borrow and is never Sync). Function values are Sync: they
-    /// capture only values that tasks may hold, and `Task.scope` checks that the environment of
+    /// capture only values that tzroutines may hold, and `Routine.scope` checks that the environment of
     /// a function it shares is proven owned. Not Sync are an extern handle (host libraries are
-    /// rarely thread-safe), a dyn value that is not Copy (it may hide one), a task, an exclusive
+    /// rarely thread-safe), a dyn value that is not Copy (it may hide one), a tzroutine body, an exclusive
     /// reference, an `Owned.Function`, a lazy sequence, an async computation and the GPU handles.
     pub(crate) fn can_sync(&self, types: &TypeContext<'_>) -> bool {
         types.stored_all_closed(self, |ty| ty.sync_here(types), |ty| ty.sync_closed(types))
@@ -1017,7 +1019,7 @@ impl Type {
             // function, which is checked again for every type that it is used at. Every kind of
             // type is named here, so that a new one has to be judged.
             Self::Variable(_) | Self::Infer(_) | Self::Partial(_) | Self::Application(..) => false,
-            Self::Reference(_, true) | Self::Task(_) | Self::Handle(_) => false,
+            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_) => false,
             Self::Reference(value, false) => value.can_sync(types),
             // A Copy dyn value holds plain data; any other may hide a host handle.
             Self::Dyn(dyn_type) => dyn_type.copy && !dyn_type.borrowed,
@@ -1076,7 +1078,7 @@ impl Type {
                         | Self::Shared(..)
                         | Self::Handle(_)
                         | Self::Function(..)
-                        | Self::Task(_)
+                        | Self::Once(_)
                         | Self::Dyn(_)
                         | Self::Reference(_, true)
                 )
@@ -1092,7 +1094,7 @@ impl Type {
         )
     }
 
-    /// Whether a value of this type owns an `Arc` or `Arc.Weak` whose value tasks may not share
+    /// Whether a value of this type owns an `Arc` or `Arc.Weak` whose value tzroutines may not share
     /// (C10, F10).
     pub(crate) fn holds_unsync_arc(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all(self, |ty| {
@@ -1305,9 +1307,6 @@ pub enum Builtin {
     Utf8StringFromString,
     StringIsWellFormed,
     StringToWellFormed,
-    TaskRun,
-    TaskParallel,
-    TaskParallelResults,
     ParallelInit,
     ParallelMap,
     ParallelMapRef,
@@ -1619,13 +1618,10 @@ pub enum Builtin {
     AsyncPosted,
     /// Removes a completed or cancelled operation from the native reactor's mailbox.
     AsyncRetire,
-    /// `Task.scope :: (Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]`
-    /// runs the callback once per index below a count, in parallel, lending every child the
-    /// same shared borrow, and returns the results in index order (F10).
-    TaskScope,
     /// `Routine.scope :: (Sync<'s>, Send<'a>) => ref 's -> i64 -> (ref 's -> i64 -> 'a) -> ['a]`
-    /// (TZ11): `Task.scope`'s type and rules, with each child on a tzroutine of its own, which may
-    /// wait (for the others too).
+    /// (TZ11): runs the callback once per index below a count, each on a tzroutine of its own,
+    /// which may wait (for the others too), lending every child the same shared borrow, and returns
+    /// the results in index order (the successor of `Task.scope`, which TZ12 removed).
     RoutineScope,
     /// `Atomic.create :: AtomicValue<'a> => 'a -> Atomic<'a>` (F10).
     AtomicCreate,
@@ -1898,7 +1894,6 @@ pub enum BuiltinType {
     List(Box<BuiltinType>),
     Vec(Box<BuiltinType>),
     Tuple(Vec<BuiltinType>),
-    Task(Box<BuiltinType>),
     /// `Rc<T>` and the other shared pointers (C10).
     Shared(Box<BuiltinType>, SharedKind),
     Reference(Box<BuiltinType>, bool),
@@ -1985,9 +1980,6 @@ impl Builtin {
         Self::Utf8StringFromString,
         Self::StringIsWellFormed,
         Self::StringToWellFormed,
-        Self::TaskRun,
-        Self::TaskParallel,
-        Self::TaskParallelResults,
         Self::ParallelInit,
         Self::ParallelMap,
         Self::ParallelMapRef,
@@ -2174,7 +2166,6 @@ impl Builtin {
         Self::AsyncWait,
         Self::AsyncPosted,
         Self::AsyncRetire,
-        Self::TaskScope,
         Self::RoutineScope,
         Self::AtomicCreate,
         Self::AtomicLoad,
@@ -2351,9 +2342,6 @@ impl Builtin {
             Self::Utf8StringFromString => "Utf8String.from_string",
             Self::StringIsWellFormed => "String.is_well_formed",
             Self::StringToWellFormed => "String.to_well_formed",
-            Self::TaskRun => "Task.run",
-            Self::TaskParallel => "Task.parallel",
-            Self::TaskParallelResults => "Task.parallel_results",
             Self::ParallelInit => "Parallel.init",
             Self::ParallelMap => "Parallel.map",
             Self::ParallelMapRef => "Parallel.map_ref",
@@ -2511,7 +2499,6 @@ impl Builtin {
             Self::AsyncWait => "Async.__wait",
             Self::AsyncPosted => "Async.__posted",
             Self::AsyncRetire => "Async.__retire",
-            Self::TaskScope => "Task.scope",
             Self::RoutineScope => "Routine.scope",
             Self::AtomicCreate => "Atomic.create",
             Self::AtomicLoad => "Atomic.load",
@@ -2668,7 +2655,7 @@ impl Builtin {
     }
 
     pub fn scheme(self) -> BuiltinScheme {
-        use BuiltinType::{Array, Concrete, Reference, Task, Var};
+        use BuiltinType::{Array, Concrete, Reference, Var};
         let a = || Var("a");
         #[cfg(test)]
         let integer = || BuiltinConstraint {
@@ -3409,24 +3396,6 @@ impl Builtin {
                 Concrete(Type::Bool),
                 Vec::new(),
             ),
-            Self::TaskRun => (vec![Task(Box::new(a()))], a(), Vec::new()),
-            Self::TaskParallel => (
-                vec![Array(Box::new(Task(Box::new(a()))))],
-                Task(Box::new(Array(Box::new(a())))),
-                Vec::new(),
-            ),
-            Self::TaskParallelResults => {
-                let result = |value| BuiltinType::Std {
-                    module: "Result",
-                    name: "Result",
-                    args: vec![value, Var("e")],
-                };
-                (
-                    vec![Array(Box::new(Task(Box::new(result(a())))))],
-                    Task(Box::new(result(Array(Box::new(a()))))),
-                    Vec::new(),
-                )
-            }
             Self::ParallelInit => (
                 vec![
                     Concrete(Type::I64),
@@ -3718,8 +3687,7 @@ impl Builtin {
                     )
                 }
             }
-            Self::TaskScope
-            | Self::RoutineScope
+            Self::RoutineScope
             | Self::AtomicCreate
             | Self::AtomicLoad
             | Self::AtomicStore
@@ -3896,7 +3864,6 @@ impl BuiltinType {
             | Self::ArrayView(ty)
             | Self::List(ty)
             | Self::Vec(ty)
-            | Self::Task(ty)
             | Self::Shared(ty, _)
             | Self::Reference(ty, _)
             | Self::UnsignedOf(ty)
@@ -3961,7 +3928,6 @@ impl Builtin {
                 | Self::ParallelMapRef
                 | Self::ParallelReduce
                 | Self::ParallelForEachChunk
-                | Self::TaskScope
                 | Self::RoutineScope
         )
     }
@@ -3969,7 +3935,7 @@ impl Builtin {
     /// The argument of a parallel operation that holds the callback.
     pub(crate) fn parallel_callback(self) -> usize {
         match self {
-            Self::TaskScope | Self::RoutineScope => 2,
+            Self::RoutineScope => 2,
             Self::ParallelInit | Self::ParallelReduce | Self::ParallelForEachChunk => 1,
             _ => 0,
         }
@@ -4098,10 +4064,10 @@ impl Builtin {
         self.name().starts_with("Routine.") && self != Self::RoutineScope
     }
 
-    /// Whether this builtin is `Task.scope` or its successor `Routine.scope` (TZ11): a parallel
-    /// operation whose children share a borrow and return a result each.
+    /// Whether this builtin is `Routine.scope` (TZ11): a parallel operation whose children share a
+    /// borrow and return a result each.
     pub(crate) fn is_scope(self) -> bool {
-        matches!(self, Self::TaskScope | Self::RoutineScope)
+        self == Self::RoutineScope
     }
 
     /// Whether this builtin is an operation of the timers (TZ05): `Time.sleep`, `after`, `tick`,
@@ -4374,7 +4340,7 @@ impl Builtin {
         }
     }
 
-    /// The schemes of `Task.scope`, `Atomic.*`, and `Mutex.*` (F10), kept out of `scheme` so
+    /// The schemes of `Routine.scope`, `Atomic.*`, and `Mutex.*` (F10), kept out of `scheme` so
     /// that its frame stays small.
     #[inline(never)]
     fn sync_scheme(self) -> (Vec<BuiltinType>, BuiltinType, Vec<BuiltinConstraint>) {
@@ -4404,7 +4370,7 @@ impl Builtin {
         let atomic_value = || vec![constraint("AtomicValue", a())];
         let borrowed = |ty| Reference(Box::new(ty), false);
         match self {
-            Self::TaskScope | Self::RoutineScope => {
+            Self::RoutineScope => {
                 let shared = || Reference(Box::new(Var("s")), false);
                 (
                     vec![
@@ -4770,7 +4736,7 @@ impl CheckedUnion {
 fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
     !matches!(
         ty,
-        Type::Reference(..) | Type::Infer(_) | Type::Task(_) | Type::Dyn(_) | Type::Simd(_)
+        Type::Reference(..) | Type::Infer(_) | Type::Once(_) | Type::Dyn(_) | Type::Simd(_)
     ) && (ty.needs_drop(types)
         || types.reaches(ty, |part| {
             matches!(part, Type::Variable(_) | Type::Function(..))
@@ -4809,7 +4775,7 @@ pub struct CheckedFunction {
     constraints: Vec<Constraint>,
     members: Vec<polymorph::MemberConstraint>,
     pub(crate) capture_count: usize,
-    pub(crate) is_task: bool,
+    pub(crate) is_once: bool,
     /// A lambda passed directly to `Owned.function` (B07); its body borrows the captures.
     pub(crate) owned_captures: bool,
     /// A21: how the body weaves in the function's contract lines; empty without them.
@@ -5029,13 +4995,11 @@ pub enum TypedExprKind {
         recursive: Vec<Local>,
     },
     Closure(usize, Vec<TypedExpr>),
-    TaskRun(Box<TypedExpr>),
-    /// `tzroutine { body }` (TZ02): spawns the `Task<unit>` lambda as a new tzroutine; the value is `()`.
+    /// `tzroutine { body }` (TZ02): spawns the run-once lambda (`Type::Once`) as a new tzroutine; the
+    /// value is `()`.
     RoutineGo(Box<TypedExpr>),
     /// The waiting part of a `select` (TZ04); the arms' bodies are a `match` on its value.
     SelectWait(Box<SelectWait>),
-    TaskParallel(Box<TypedExpr>),
-    TaskParallelResults(Box<TypedExpr>),
     Parallel(Builtin, Vec<TypedExpr>),
     StructuralCompare(BinaryOp, Vec<TypedExpr>),
     StructuralHash(Vec<TypedExpr>),
@@ -5309,10 +5273,7 @@ impl TypedExpr {
             | Field(value, _)
             | Length(value)
             | StringLength(value)
-            | TaskRun(value)
             | RoutineGo(value)
-            | TaskParallel(value)
-            | TaskParallelResults(value)
             | NewLiteral(value)
             | UnionTag(value)
             | Checked(value)
@@ -5413,10 +5374,7 @@ impl TypedExpr {
             | Field(value, _)
             | Length(value)
             | StringLength(value)
-            | TaskRun(value)
             | RoutineGo(value)
-            | TaskParallel(value)
-            | TaskParallelResults(value)
             | NewLiteral(value)
             | UnionTag(value)
             | Checked(value)
@@ -5569,10 +5527,7 @@ impl TypedExpr {
             | Field(value, _)
             | Length(value)
             | StringLength(value)
-            | TaskRun(value)
             | RoutineGo(value)
-            | TaskParallel(value)
-            | TaskParallelResults(value)
             | NewLiteral(value)
             | UnionTag(value)
             | Checked(value)
@@ -5915,6 +5870,32 @@ pub(crate) fn removed_feature(
     name: &str,
 ) -> Option<(DiagnosticKind, String, &'static str, Option<String>)> {
     match (module, name) {
+        // TZ12: the functions of `Task`, which TZ12 removed. Only `Task.scope` has a replacement that
+        // means the same (`Routine.scope`, with the same arguments).
+        ("Task", "run") => Some((
+            DiagnosticKind::RemovedTaskApi,
+            "'Task.run' was removed".to_owned(),
+            "call the work directly",
+            None,
+        )),
+        ("Task", "parallel") => Some((
+            DiagnosticKind::RemovedTaskApi,
+            "'Task.parallel' was removed".to_owned(),
+            "use Parallel.init or Parallel.map for data parallelism, or tzroutines with a WaitGroup",
+            None,
+        )),
+        ("Task", "parallel_results") => Some((
+            DiagnosticKind::RemovedTaskApi,
+            "'Task.parallel_results' was removed".to_owned(),
+            "use ErrGroup: ErrGroup.go for each job and ErrGroup.wait for the first error",
+            None,
+        )),
+        ("Task", "scope") => Some((
+            DiagnosticKind::RemovedTaskApi,
+            "'Task.scope' was removed".to_owned(),
+            "use Routine.scope, which takes the same arguments",
+            Some("Routine.scope".to_owned()),
+        )),
         ("Channel", "bounded" | "clone_sender" | "Sender" | "Receiver") => Some((
             DiagnosticKind::RenamedToDataChannel,
             format!("'Channel.{name}' is now 'DataChannel.{name}'"),
@@ -6056,8 +6037,8 @@ pub(crate) const BORROWING_APIS: &[(&str, &str, &str)] = &[
     ("Vec.push", "Vec.push_mut", "Vec.push_owned"),
 ];
 
-/// The builtin module function that `path` names, as `Task.run` or, with the
-/// std namespace, `std::Task.run`.
+/// The builtin module function that `path` names, as `Routine.go` or, with the
+/// std namespace, `std::Routine.go`.
 fn qualified_builtin(path: &str) -> Option<Builtin> {
     let path = path
         .strip_prefix(crate::stdlib::NAMESPACE)
@@ -6587,6 +6568,15 @@ impl Names {
                     _ => Err(removed),
                 }
             }
+            // TZ12: `Task<T>` was a builtin type; a program that defines its own `Task` has it above.
+            _ if head.text == "Task" => Err(Diagnostic::of(
+                DiagnosticKind::RemovedTaskType,
+                "the type 'Task' was removed",
+                head.span,
+            )
+            .with_help(
+                "return the value directly; to run work concurrently, use 'tzroutine { ... }'",
+            )),
             _ => Err(Diagnostic::of(
                 DiagnosticKind::UnknownTypeName,
                 format!(
@@ -7340,8 +7330,7 @@ fn validate_public_type(
         | TypeExprKind::Array(inner)
         | TypeExprKind::ArrayView(inner)
         | TypeExprKind::FixedArray(inner, _)
-        | TypeExprKind::List(inner)
-        | TypeExprKind::Task(inner) => validate_public_type(inner, module, owner, names),
+        | TypeExprKind::List(inner) => validate_public_type(inner, module, owner, names),
         TypeExprKind::Tuple(elements) => elements
             .iter()
             .try_for_each(|element| validate_public_type(element, module, owner, names)),
@@ -7490,7 +7479,7 @@ fn check_modules_collect(
                 matches!(
                     tokens.as_slice(),
                     [Token { kind: TokenKind::Ident(text), .. }, Token { kind: TokenKind::End, .. }]
-                        if text == name && name != "_" && name != "Task"
+                        if text == name && name != "_"
                 )
             })
         });
@@ -7567,7 +7556,7 @@ fn check_modules_collect(
         if !valid || previous.is_some() {
             diagnostics.push(Diagnostic::of(DiagnosticKind::InvalidModuleName,
                 format!(
-                    "invalid or duplicate module name '{name}'; each .tz, .tt, or .tc filename must have a unique ASCII identifier stem, not '_', 'Task', or a keyword"
+                    "invalid or duplicate module name '{name}'; each .tz, .tt, or .tc filename must have a unique ASCII identifier stem, not '_' or a keyword"
                 ),
                 Span::default().in_source(source),
             ));
@@ -7991,7 +7980,7 @@ fn check_modules_collect(
                 || polymorph::BUILTIN_CLASSES.contains(&class.name.text.as_str())
                 || matches!(
                     class.name.text.as_str(),
-                    "_" | "Array" | "Task" | "Vec" | "Rc" | "Arc"
+                    "_" | "Array" | "Vec" | "Rc" | "Arc"
                 )
             {
                 diagnostics.push(duplicate(&class.name));
@@ -8968,7 +8957,7 @@ fn check_modules_collect(
                     constraints: scheme.constraints.clone(),
                     members: Vec::new(),
                     capture_count: 0,
-                    is_task: false,
+                    is_once: false,
                     owned_captures: false,
                     contracts: shape,
                 })
@@ -9071,7 +9060,7 @@ fn check_modules_collect(
                 constraints: Vec::new(),
                 members: Vec::new(),
                 capture_count: 0,
-                is_task: false,
+                is_once: false,
                 owned_captures: false,
                 contracts: Default::default(),
             })
@@ -9614,7 +9603,7 @@ fn recovery_module(
             constraints: Vec::new(),
             members: Vec::new(),
             capture_count: 0,
-            is_task: false,
+            is_once: false,
             owned_captures: false,
             contracts: Default::default(),
         })
@@ -9805,11 +9794,11 @@ pub(super) fn recursive_group_len(bindings: &[Binding]) -> usize {
 }
 
 /// Whether no record, extern type, or type alias may be named `name` (`E1001`):
-/// primitive and SIMD type names, `_`, the built-in `Array`, `Task`, and `Vec`,
+/// primitive and SIMD type names, `_`, the built-in `Array` and `Vec`,
 /// and the built-in type classes. `tsuzuri bindgen` renames generated types with it.
 pub fn reserved_type_name(name: &str) -> bool {
     crate::numeric::primitive(name).is_some()
-        || matches!(name, "_" | "Array" | "Task" | "Vec" | "Rc" | "Arc")
+        || matches!(name, "_" | "Array" | "Vec" | "Rc" | "Arc")
         || polymorph::BUILTIN_CLASSES.contains(&name)
 }
 
@@ -9891,7 +9880,7 @@ fn collect_unions(
                 ));
             }
             let qualified = format!("{module}.{}", name.text);
-            if matches!(name.text.as_str(), "Array" | "Task" | "Vec" | "Rc" | "Arc")
+            if matches!(name.text.as_str(), "Array" | "Vec" | "Rc" | "Arc")
                 || polymorph::BUILTIN_CLASSES.contains(&name.text.as_str())
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
@@ -9964,7 +9953,7 @@ fn collect_unions(
                     ));
                 }
                 let qualified = format!("{module}.{}", name.text);
-                if matches!(name.text.as_str(), "Array" | "Task" | "Vec" | "Rc" | "Arc")
+                if matches!(name.text.as_str(), "Array" | "Vec" | "Rc" | "Arc")
                     || names.records.contains_key(&qualified)
                     || names.unions.contains_key(&qualified)
                     || names.handles.contains_key(&qualified)
@@ -10312,7 +10301,6 @@ fn resolve_type_with_kinds(
         TypeExprKind::Tuple(elements) => {
             Type::Tuple(elements.iter().map(resolve).collect::<Result<_, _>>()?)
         }
-        TypeExprKind::Task(result) => Type::Task(Box::new(resolve(result)?)),
         TypeExprKind::Function(parameters, result) => Type::function(
             parameters.iter().map(resolve).collect::<Result<_, _>>()?,
             resolve(result)?,
@@ -10583,9 +10571,6 @@ impl TypeAliasExpansion<'_> {
             TypeExprKind::List(inner) => {
                 TypeExprKind::List(Box::new(self.expand(inner, module, depth + 1)?))
             }
-            TypeExprKind::Task(inner) => {
-                TypeExprKind::Task(Box::new(self.expand(inner, module, depth + 1)?))
-            }
             TypeExprKind::Tuple(elements) => TypeExprKind::Tuple(
                 elements
                     .iter()
@@ -10713,8 +10698,7 @@ impl TypeAliasExpansion<'_> {
             | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Array(inner)
             | TypeExprKind::ArrayView(inner)
-            | TypeExprKind::List(inner)
-            | TypeExprKind::Task(inner) => vec![inner],
+            | TypeExprKind::List(inner) => vec![inner],
             TypeExprKind::FixedArray(element, length) => vec![element, length],
             TypeExprKind::Tuple(elements) => elements.iter_mut().collect(),
             TypeExprKind::Function(parameters, result) => parameters
@@ -10783,8 +10767,7 @@ fn reject_expanded_field_constraints(
         | TypeExprKind::Array(inner)
         | TypeExprKind::ArrayView(inner)
         | TypeExprKind::FixedArray(inner, _)
-        | TypeExprKind::List(inner)
-        | TypeExprKind::Task(inner) => vec![inner],
+        | TypeExprKind::List(inner) => vec![inner],
         TypeExprKind::Tuple(elements) => elements.iter().collect(),
         TypeExprKind::Function(parameters, result) => parameters
             .iter()
@@ -10812,7 +10795,7 @@ fn size_error(span: Span) -> Diagnostic {
 /// measured once when they are declared; a generic record instance is
 /// measured when it is used because its size depends on its arguments.
 /// Heap elements are visited to reject recursive types, but function,
-/// task, and reference targets do not belong to the layout.
+/// tzroutine body, and reference targets do not belong to the layout.
 struct Layouts<'a> {
     types: TypeContext<'a>,
     sizes: BTreeMap<Type, usize>,
@@ -10975,7 +10958,7 @@ impl<'a> Layouts<'a> {
             | Type::String
             | Type::Utf8String
             | Type::Dyn(_) => 16,
-            Type::Function(..) | Type::Task(_) => 32,
+            Type::Function(..) | Type::Once(_) => 32,
             // Small values conservatively occupy at least one pointer-sized slot.
             _ => 8,
         })
@@ -10983,7 +10966,7 @@ impl<'a> Layouts<'a> {
 }
 
 /// Validates a type at a construction boundary: value size, deep collection
-/// immutability, owned task results, and record instances whose type
+/// immutability, owned tzroutine results, and record instances whose type
 /// arguments would put a reference into a field.
 fn validate_size(ty: &Type, types: &TypeContext<'_>, span: Span) -> Result<usize, Diagnostic> {
     if ty.contains_error() {
@@ -11252,11 +11235,11 @@ impl Validation<'_> {
                 self.check(value, span)?;
                 8
             }
-            Type::Task(result) => {
+            Type::Once(result) => {
                 if result.contains_stored_reference(&self.layouts.types) {
                     return Err(Diagnostic::of(
                         DiagnosticKind::TaskResultIsReference,
-                        "task results must be owned values, not references",
+                        "the result of a tzroutine body must be an owned value, not a reference",
                         span,
                     ));
                 }
@@ -11823,7 +11806,6 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Binary(..) => self.binary_expression(expression, expected),
             ExprKind::Lambda(..)
-            | ExprKind::Task(_)
             | ExprKind::Routine(_)
             | ExprKind::Select(_)
             | ExprKind::Call(..)
@@ -12009,20 +11991,17 @@ impl<'a> Checker<'a> {
                     &[],
                 );
             }
-            ExprKind::Task(body) => {
-                return self.lambda(&[], body, expected, expression.span, LambdaKind::Task, &[]);
-            }
             ExprKind::Select(arms) => return self.select(arms, expected, expression.span),
             ExprKind::Routine(body) => {
-                // The body is the one-shot lambda of a `Task<unit>`: its captures follow the rules of
-                // `task { }` (moved or copied, `Send`, no borrow), and the `unit` result checks the
-                // body against `unit`, so that `let!` and `do!` run IO at once (TZ02).
+                // The body is a run-once lambda (`Type::Once`): its captures are moved or copied, `Send`
+                // and no borrow (the rules of the `task { }` of before TZ12), and the `unit` result
+                // checks the body against `unit`, so that `let!` and `do!` run IO at once (TZ02).
                 let closure = self.lambda(
                     &[],
                     body,
-                    Some(&Type::Task(Box::new(Type::Unit))),
+                    Some(&Type::Once(Box::new(Type::Unit))),
                     expression.span,
-                    LambdaKind::Task,
+                    LambdaKind::Once,
                     &[],
                 )?;
                 if let Some(expected) = expected {
@@ -12440,7 +12419,7 @@ impl<'a> Checker<'a> {
             _ => None,
         };
         // `Module.name` names a module function or a qualified builtin such
-        // as `Task.run` before any class method.
+        // as `Routine.go` before any class method.
         let namespace = if case.is_none() && matches!(expression.kind, ExprKind::Field(..)) {
             self.namespace_value(expression)?
         } else {
@@ -12559,11 +12538,6 @@ impl<'a> Checker<'a> {
             ExprKind::Name(name) => self.name(name)?,
             ExprKind::TypeFunction(variable, name) => self.type_function(variable, name)?,
             ExprKind::QualifiedFunction(name) => self.qualified_function(name)?,
-            ExprKind::TaskRun(value) => {
-                let result = expected.cloned().unwrap_or_else(|| self.inference.fresh());
-                let value = self.expression(value, Some(&Type::Task(Box::new(result.clone()))))?;
-                (TypedExprKind::TaskRun(Box::new(value)), result)
-            }
             ExprKind::Computation(..) => unreachable!("computations expand before type checking"),
             ExprKind::BigInt(_)
             | ExprKind::Checked(_)
@@ -12655,7 +12629,7 @@ impl<'a> Checker<'a> {
                     return Err(Diagnostic::of(
                         DiagnosticKind::JumpOutsideLoop,
                         format!(
-                            "{keyword} can only target an enclosing for or while loop in the same function, task, or computation; return a value across boundaries"
+                            "{keyword} can only target an enclosing for or while loop in the same function, tzroutine, or computation; return a value across boundaries"
                         ),
                         expression.span,
                     ));
@@ -12759,12 +12733,7 @@ impl<'a> Checker<'a> {
                 let module = self.value_path(value).unwrap();
                 let spelled = namespace_display(&module);
                 let mut member = false;
-                let message = if module == "Task" {
-                    format!(
-                        "Task has no function '{}'; use Task.run, Task.parallel, or Task.parallel_results",
-                        field.text
-                    )
-                } else if self.names.module_path(self.module, &spelled).is_none()
+                let message = if self.names.module_path(self.module, &spelled).is_none()
                     && self.names.namespace_path(self.module, &spelled).is_some()
                 {
                     format!(
@@ -12960,7 +12929,6 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Binary(..)
             | ExprKind::Lambda(..)
-            | ExprKind::Task(_)
             | ExprKind::Routine(_)
             | ExprKind::Select(_)
             | ExprKind::Call(..)
@@ -13441,7 +13409,7 @@ impl<'a> Checker<'a> {
                 | Type::FixedArray(ty, _)
                 | Type::List(ty)
                 | Type::Vec(ty)
-                | Type::Task(ty)
+                | Type::Once(ty)
                 | Type::Shared(ty, _)
                 | Type::Reference(ty, _) => closed(checker, ty, open),
                 Type::Function(parameters, result) => {
@@ -14372,7 +14340,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Whether `name.x` can only mean a function or case of the namespace
-    /// `name`: a visible module, a std module, or a builtin prefix such as `Task`.
+    /// `name`: a visible module, a std module, or a builtin prefix such as `Routine`.
     fn is_namespace(&self, name: &str) -> bool {
         let prefix = format!("{name}.");
         self.names
@@ -14388,6 +14356,8 @@ impl<'a> Checker<'a> {
                     module.starts_with(&prefix) && self.names.searchable(self.module, module)
                 })
             || crate::stdlib::is_reserved_module(name)
+            // TZ12: `Task.run` and the other removed functions report `E1040` (`removed_feature`).
+            || name == "Task"
             || Builtin::ALL.iter().any(|builtin| {
                 builtin
                     .name()

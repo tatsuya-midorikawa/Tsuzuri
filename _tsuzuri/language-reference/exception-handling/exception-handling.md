@@ -183,7 +183,8 @@ show (Domain.run (\() -> at squares 4)) + " / " + show (Domain.run (\() -> at sq
 | `File` の書き込み | 書いた分は残る（1 回ごとに `write`） | 本体が書けない | 残る | 同上（`write` を直接呼ぶ） |
 | ロック（`Mutex.with_lock`） | プロセスごと終わる | 本体が取れない | 境界が解放する | E14 の仕様 |
 | ヒープ | OS が回収する | 領域の中で確保した block をすべて解放する。成功なら結果の block が残る | 境界の中で確保した block をすべて解放する。成功なら結果はホストの物 | `tests/domain_runtime.c`・`tests/trap_return.mjs`（生きた block が 0） |
-| `Task.parallel` の仲間 | プロセスごと終わる | 本体が使えない | worker のトラップは投入した呼び出しの status 1 になる | E14 の仕様 |
+| `Parallel.*` | プロセスごと終わる | 使える。補助の tzroutine を使わず、すべてのチャンクを呼んだスレッドで添字の順に走らせるので、チャンクのトラップは `Result.Error` になる（結果は同じで、並列にならない分だけ遅くなることがある） | 同じく呼んだスレッドで走らせ、チャンクのトラップは呼び出しの status 1 になる | `Domain.run` の中の `Parallel.init` のゼロ除算が `Result.Error`（kind 1）になる（`run`）。`--trap-mode return` は TZ12 の仕様 |
+| tzroutine（`tzroutine { }`・`Routine.scope`） | プロセスごと終わる（トラップした tzroutine の OS スレッドが報告する） | 本体が起動できない（純粋でない） | 使えない（`--trap-mode return` との組み合わせは `E2000`） | [tzroutine 式](../async-tasks-and-lazy/tzroutine.md#失敗) |
 | stack | プロセスごと終わる | 捨てる | 捨てる | `tests/domain_runtime.c` |
 
 ## 検査付き算術だけが例外になる

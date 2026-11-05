@@ -1,8 +1,8 @@
 # Parallel
 
-`Parallel` は、配列の生成、変換、集計、および排他スライスへの分割書き込みを、決定論的なチャンク分割で行う同期 API です。呼び出し元へ制御が戻った時点で全ワーカースレッドの処理が完了していることが保証されます。各チャンクの処理開始順や完了順は未規定ですが、結果配列の添字順は入力と一致します。
+`Parallel` は、配列の生成、変換、集計、および排他スライスへの分割書き込みを、決定論的なチャンク分割で行う同期 API です。呼び出し元へ制御が戻った時点ですべてのチャンクの処理が完了していることが保証されます。各チャンクの処理開始順や完了順は未規定ですが、結果配列の添字順は入力と一致します。
 
-[`Task.parallel`](../async-tasks-and-lazy/task.md) が「別々のタスクを揃えて待つ」API なのに対し、こちらは「同じ形の配列要素を分ける」API です。自動でループを並列にはしません。
+中身の違う仕事を揃えて待つ [`Routine.scope`](routine.md#routinescope) や、[tzroutine](../async-tasks-and-lazy/tzroutine.md) と [WaitGroup](waitgroup.md)・[ErrGroup](errgroup.md) に対し、こちらは「同じ形の配列要素を分ける」API です。自動でループを並列にはしません。
 
 ## この記事のポイント
 
@@ -11,6 +11,7 @@
 - `reduce` の結合順はチャンク順で固定です。浮動小数点では `Array.reduce` とビットが違うことがあります。
 - `fold` は、`Monoid` の法則（結合律と単位元）が成り立ち、`empty`・`combine` が出力や共有状態への書き込みなどの作用を持たなければ、`Array.fold_monoid` とビットまで同じ値を返します。浮動小数点を含む型の `Monoid` は `E1039` で拒否されます。[Monoid](monoid.md) を見てください。
 - コールバックが純粋なら、`map`・`map_ref`・`init`・`for_each_chunk` と整数の `sum` は逐次の対応する関数と同じ結果です（[逐次と同じ結果になる条件](#逐次と同じ結果になる条件)）。
+- ネイティブでは tzroutine のスケジューラーの上で、呼び出し元と最大 P 個（`TSUZURI_MAXPROCS`）の手伝いの tzroutine がチャンクを分けます（[スレッドと WASM](#スレッドと-wasm)）。
 - 既定の WASM は逐次です。スレッドが欲しいときは `--wasm-feature threads` を明示します。
 
 ## 添字から配列を作る
@@ -91,7 +92,7 @@ Array.sum ref values
 
 実装は溢れを避けた整数演算で、`n / 4096` の切り上げを計算します。チャンク番号 `c`（`0 <= c < k`）の開始位置は `(n / k) * c + ((n % k) * c) / k`、終了位置は `c` を `c + 1` にした同じ式です。終端は含みません。
 
-CPU コア数、SIMD 幅、WASM バックエンドの有無によって分割境界が変わることはありません。4,096 要素未満の場合は 1 チャンクとなり、1 つのワーカーで処理されます。
+CPU コア数、SIMD 幅、WASM バックエンドの有無によって分割境界が変わることはありません。4,096 要素未満の場合は 1 チャンクとなり、1 本の実行で添字の順に処理されます。
 
 `for_each_chunk` の塊は利用者が決めた `size` です。仕事の数はこちらも最大 1024 で、チャンクがそれより多ければ、1 つの仕事が連続するチャンクを順に処理します。`size` を小さくしても、コールバックの複製は仕事の数までです。
 
@@ -156,43 +157,49 @@ false
 
 `tsuzuri check PATH --report parallel` は、`Array.map`・`Array.mapr`・`Array.fold_monoid`・整数の `Array.sum` のうち `Parallel` に置き換えられる呼び出しを提案として一覧にし、既存の `Parallel` の呼び出しごとにコールバックが純粋と示せるか（`parallel_safe`）を出します。提案だけで、書き換えは自動では行いません（[check](../compiler/usage.md#check)）。
 
-## Task.parallel との使い分け
+## Routine.scope・tzroutine との使い分け
 
 ```mermaid
 flowchart TD
   goal["独立した仕事を同時に進めたい"]
   goal --> array["同じ関数を配列の各要素へ"]
-  goal --> jobs["中身の違う Task を揃える"]
+  goal --> jobs["中身の違う仕事を揃える"]
+  goal --> errors["Result を返す仕事を、最初の誤りで止める"]
   array --> parallel["Parallel.map や reduce"]
-  jobs --> task["Task.parallel"]
+  jobs --> scope["Routine.scope、または tzroutine と WaitGroup"]
+  errors --> group["ErrGroup"]
   parallel --> join["戻るまでに全部終わる"]
-  task --> join
+  scope --> join
+  group --> join
 ```
 
-| 点 | `Parallel` | `Task.parallel` |
+| 点 | `Parallel` | `Routine.scope` |
 | --- | --- | --- |
-| 入力 | 配列かスライス | `Task` の配列 |
-| 仕事の形 | 要素ごとに同じコールバック | タスクごとに本体が違ってよい |
-| いつ始まる | 呼んだその場で同期実行 | `Task.parallel` は遅延。`Task.run` や `let!` で始まる |
-| 結果 | 添字順。`reduce` はチャンク順の結合 | 入力と同じ順の配列 |
-| 失敗 | トラップ。`Result` にはまとめない | `Task.parallel_results` なら最小添字の `Error` |
-| 関数値 | `init` などは直接の完全適用だけ | `Task.parallel` 自体は関数値にできる |
+| 入力 | 配列かスライス | 共有借用 1 つと子の数 |
+| 仕事の形 | 要素ごとに同じコールバック | 子ごとに添字で分けてよい（`f shared index`） |
+| 並列の度合い | 呼び出し元と最大 P 個の手伝いが、チャンクを 1 つずつ取る | 子ごとに 1 つの tzroutine |
+| 互いを待つ | 同じチャンクの要素は順に呼ばれるので、ほかの要素を待つ形は完了しない | 子が互いを待ってよい |
+| 結果 | 添字順。`reduce` はチャンク順の結合 | 添字順の配列 |
+| 失敗 | トラップ。`Result` にはまとめない | トラップ。最初の `Error` で残りを止めるのは [ErrGroup](errgroup.md) |
+| 関数値 | `init` などは直接の完全適用だけ | 直接の完全適用だけ |
 
-コールバックが借用を捕捉すること、結果が借用を持つことはできません。入力の共有借用と、`for_each_chunk` の排他借用は、フォーク・ジョインの区間の中だけです。所有環境を証明できない未知の関数値は `E1013` です。入力の配列の要素が関数値のときも、環境が借用を持たない所有値と証明できなければなりません。これは `let` で名前を付けた配列でも、`ref [\x -> ...]` のように一時値として渡した配列でも同じで、借用を捕捉した関数をすべてのタスクが同時に使う形は `E1013`（`parallel input elements must have proven owned environments`）です。
+コールバックが借用を捕捉すること、結果が借用を持つことはできません。入力の共有借用と、`for_each_chunk` の排他借用は、フォーク・ジョインの区間の中だけです。所有環境を証明できない未知の関数値は `E1013` です。入力の配列の要素が関数値のときも、環境が借用を持たない所有値と証明できなければなりません。これは `let` で名前を付けた配列でも、`ref [\x -> ...]` のように一時値として渡した配列でも同じで、借用を捕捉した関数をすべてのチャンクが同時に使う形は `E1013`（`parallel input elements must have proven owned environments`）です。
 
 `let make = Parallel.init` も `E1013` です。一方、コールバックに渡す関数は、所有環境を証明できる通常の関数、部分適用、ラムダで構いません。引数は書いた順に 1 回だけ評価します。
 
-要素と結果には `Send` が要ります。スレッドへ渡せる所有値、という意味です。`ref` を要素に含めることはできません。
+要素と結果には `Send` が要ります。ほかの tzroutine やスレッドへ渡せる所有値、という意味です。`ref` を要素に含めることはできません。
 
-コールバックは `Atomic` と `Mutex` を捕捉できません（`E1005`）。全員で 1 つの状態を更新するときは、共有借用を子どもに渡す [Task.scope](../async-tasks-and-lazy/task.md#共有状態と-taskscope) を使います。`Mutex.with_lock` の中でこのページの API を呼ぶとトラップします。
+コールバックは `Atomic` と `Mutex` を捕捉できません（`E1005`）。全員で 1 つの状態を更新するときは、共有借用を子どもに渡す [Routine.scope](routine.md#routinescope) を使います。ネイティブでは、`Mutex.with_lock` の中でもこのページの API を呼べます（ロックを持ったまま、すべてのチャンクの終わりを待ちます）。WebAssembly では、`Mutex.with_lock` の中で呼ぶとトラップします（[Mutex](mutex.md#webassembly-のロック)）。
 
 ## スレッドと WASM
 
-tzroutine のランタイムを使うネイティブのプログラム（tzroutine の起動・`Channel`・`select`・タイマー・同期の型・`Context` のどれかに届くもの）では、`Parallel.*` は tzroutine のスケジューラーの上で走ります（TZ11）。呼び出し元と、`min(チャンク数, Routine.max_procs ()) - 1` 個の手伝いの tzroutine（呼び出し元が tzroutine でないスレッドなら `min(チャンク数, Routine.max_procs ())` 個）がチャンクを 1 つずつ取り、全部が終わるまで戻りません。チャンクの分け方と結果は、プールのときと同じです。ただし、[`Domain.run`](./domain.md) の中から呼んだときは、チャンクの中のトラップを `Domain.run` へ戻すために、次の常駐プールで走ります。
+ネイティブのプログラムでは、`Parallel.*` は tzroutine のスケジューラーの上で走ります（`tsuzuri_tz_parallel`、TZ11・TZ12）。呼び出し元と手伝いの tzroutine がチャンクを 1 つずつ取り、全部が終わるまで戻りません。手伝いの数は、呼び出し元が tzroutine なら `min(チャンク数, P) - 1` 個、`main` のトップレベルや `export` を呼んだホストのスレッドのような tzroutine でないスレッド（P を持たない）なら `min(チャンク数, P)` 個です。P は `Routine.max_procs ()` の値で、既定はオンラインの CPU 数（256 まで）、環境変数 `TSUZURI_MAXPROCS` で起動時に決められます（[Routine](routine.md)）。
 
-それ以外のネイティブのプログラムでは、`Task` と同じ常駐プールを使います（TZ12 で、すべてスケジューラーへ移ります）。追加で起動するワーカーは `min(オンラインの CPU 数, 32) - 1` 以下で、呼び出し元のスレッドも仕事をします。CPU 数が取れなければ追加ワーカーを作らず、逐次に倒れます。0 件や 1 件の `Task.parallel` はプールを起動しません。`Parallel` の短い配列は 1 チャンクになることが多く、そのときはワーカーを増やしても境界は 1 つのままです。
-
-入れ子になっても、呼び出し元が自分の区間を進めるので、ワーカー枯渇のデッドロックは避ける構造です。制御が戻ったあと、OS スレッドはプールに残ります。切り離す API はありません。
+- 結果、チャンクの分け方、`reduce` の結合順、トラップの扱いは、TZ12 より前の常駐プール（追加のワーカーが `min(オンラインの CPU 数, 32) - 1` 個）と同じです。常駐プールはなくなりました。
+- 空の入力では手伝いを起動しません。`Parallel` の短い配列は 1 チャンクになることが多く、そのときは手伝いを増やしても走るのは 1 つです。
+- 呼び出し元は、自分の取ったチャンクを終えたあと、手伝いの終わりを待ちます。tzroutine の呼び出し元は待つあいだ P を手放すので、ほかの tzroutine が走り続けます。コールバックの中の入れ子の `Parallel.*` も同じで、スレッドが尽きてデッドロックすることはありません。
+- コールバックが待つ（`Channel` や `DataChannel` など）と、待つのはその tzroutine だけです。誰も起こせない待ちは、デッドロックの判定がトラップにします（[DataChannel](datachannel.md#待ちの規則)）。
+- トラップの境界（[`Domain.run`](domain.md) の中と、`--trap-mode return` で作った `export` の呼び出しの中）では、チャンクの中のトラップをその境界へ戻すために、手伝いを起動せず、すべてのチャンクを呼んだスレッドで添字の順に走らせます。結果は同じですが、並列にならないので遅くなることがあります。
 
 既定の WASM は、同じチャンク順の逐次実装です。`src/runtime/task-wasm.ll` が入力順にコールバックを呼び、ホストのスレッド import は要りません。
 
@@ -204,20 +211,23 @@ tsuzuri build --target wasm32 --emit wasm --wasm-feature threads -o app.wasm
 
 `run` や `check` にこのフラグは付けられません。`E2000` です。実行には、共有メモリに対応したホストが要ります。Node.js 20 以降では同梱の `src/runtime/wasm-threads.mjs` が `worker_threads` でプールを作り、ブラウザでは `--emit bindings-js --wasm-feature threads` で生成したグルーが Web Worker でプールを作ります（[スレッドのグルー](../compiler/webassembly.md#スレッドのグルー)）。ワーカーの初期化に失敗したとき、逐次の成功へすり替えることはありません。
 
-処理途中でトラップが発生した場合、部分結果の即時解放や未完了タスクの強制キャンセルは保証されません。また、計算量が極めて小さい処理では、メモリ確保やスレッド同期のオーバーヘッドが並列化の効果を上回ることがあります。ベンチマークを測定する際は、データ規模、要素のコピー費用、プールの初期化、同期コストをそれぞれ切り分けて評価してください。
+処理途中でトラップが発生した場合、部分結果の即時解放や未完了のチャンクの強制キャンセルは保証されません。また、計算量が極めて小さい処理では、メモリ確保や tzroutine の起動、同期のオーバーヘッドが並列化の効果を上回ることがあります。ベンチマークを測定する際は、データ規模、要素のコピー費用、スケジューラーの起動、同期コストをそれぞれ切り分けて評価してください。
 
 ## まとめ
 
 - 配列を同じ関数で分ける同期 API です。戻るまでに完了しています。
 - `map` は要素を複製します。複製を避けたいときは `map_ref` です。
 - チャンク境界と `reduce` の結合順は、コア数で変わりません。
-- `Task.parallel` は別々のタスク用です。配列の要素変換には `Parallel` を使います。
-- 全員で 1 つの状態を更新するときは、`Task.scope` と `Atomic`・`Mutex` を使います。
+- ネイティブでは、呼び出し元と最大 P 個の手伝いの tzroutine がチャンクを分けます。トラップの境界の中では、呼び出し元が順に走らせます。
+- 中身の違う仕事は `Routine.scope` か tzroutine で、`Result` を返す仕事は `ErrGroup` で揃えます。配列の要素変換には `Parallel` を使います。
+- 全員で 1 つの状態を更新するときは、`Routine.scope` と `Atomic`・`Mutex` を使います。
 - 既定の WASM は逐次です。スレッドは `--wasm-feature threads` の明示が要ります。
 
 ## 関連項目
 
-- [Task 式](../async-tasks-and-lazy/task.md)
+- [Routine](routine.md) — `Routine.scope` と `TSUZURI_MAXPROCS`
+- [tzroutine 式](../async-tasks-and-lazy/tzroutine.md)
+- [ErrGroup](errgroup.md)
 - [Atomic](atomic.md)
 - [Mutex](mutex.md)
 - [Array](array.md)

@@ -19,7 +19,7 @@ fn answer input =
 
 export def parallel :: i64
 fn parallel =
-    let results = Task.run (Task.parallel [task { return 20 }, task { return 22 }])
+    let results = Parallel.init 2 (\index -> 20 + index * 2)
     Array.sum (ref results)
 
 answer 40

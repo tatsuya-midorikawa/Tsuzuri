@@ -251,7 +251,7 @@ impl DebugContext {
 
     /// The name that debuggers show for `function` (G16 D3). A monomorphized instance drops its
     /// `.$mono.N`, so a breakpoint by name reaches every instance. A test is `<module>.test@`, a
-    /// lambda or task `<enclosing function>.lambda@` or `.task@`, followed by the `line:column`
+    /// lambda or tzroutine body `<enclosing function>.lambda@` or `.tzroutine@`, followed by the `line:column`
     /// of the function's span.
     fn subprogram_name(&self, module: &CheckedModule, function: &CheckedFunction) -> String {
         let position = |function: &CheckedFunction| {
@@ -267,8 +267,8 @@ impl DebugContext {
             let name = function.qualified_name();
             name.split(".$mono.").next().unwrap_or(&name).to_owned()
         };
-        let kind = if function.is_task {
-            "task"
+        let kind = if function.is_once {
+            "tzroutine"
         } else if function.module == "$lambda" {
             "lambda"
         } else {
@@ -415,7 +415,7 @@ impl DebugContext {
                         Member::new("length", length, 8, 8),
                     ]
                 }
-                Type::Function(..) | Type::Task(_) => {
+                Type::Function(..) | Type::Once(_) => {
                     let descriptor = self.descriptor_pointer(next, definitions);
                     let opaque = self.opaque_pointer(next, definitions);
                     vec![
@@ -1001,7 +1001,7 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
         Type::Vec(_) => (24, 8),
         Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
         Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => (pointer, pointer),
-        Type::Function(..) | Type::Task(_) => (2 * pointer, pointer),
+        Type::Function(..) | Type::Once(_) => (2 * pointer, pointer),
         Type::Dyn(_) => (2 * pointer, pointer),
         Type::Record(..) => aggregate(
             super::layout::physical_fields(ty, module)

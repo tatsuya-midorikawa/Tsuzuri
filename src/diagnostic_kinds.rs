@@ -676,6 +676,9 @@ diagnostic_kinds! {
         // E1039
         (MonoidFloatInstance, "monoid_float_instance", "E1039"),
         // E1040
+        (RemovedTaskApi, "removed_task_api", "E1040"),
+        (RemovedTaskExpression, "removed_task_expression", "E1040"),
+        (RemovedTaskType, "removed_task_type", "E1040"),
         (RenamedToDataChannel, "renamed_to_data_channel", "E1040"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),

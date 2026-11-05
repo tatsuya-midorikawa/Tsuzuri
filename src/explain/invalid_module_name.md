@@ -1,7 +1,7 @@
 # File name that is not a valid module name
 
 ## Why
-Each `.tz`, `.tt` or `.tc` file is a module named after its file name, so the name must be an identifier that starts with an uppercase ASCII letter and is not `_`, `Task` or a keyword (`E1011`). The examples are `text` because the condition needs a second file.
+Each `.tz`, `.tt` or `.tc` file is a module named after its file name, so the name must be an identifier that starts with an uppercase ASCII letter and is not `_` or a keyword (`E1011`). The examples are `text` because the condition needs a second file.
 
 ## Bad
 ```text

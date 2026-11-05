@@ -100,7 +100,7 @@ fn borrowed_records_preserve_owner_lifetimes_and_exclusivity() {
             "E1014",
         ),
         (
-            "record View { text: ref string }\nlet text = \"x\"\nlet view = View { text: ref text }\ntask { return view }",
+            "record View { text: ref string }\nlet text = \"x\"\nlet view = View { text: ref text }\ntzroutine { let _view = view }\n0",
             "E1013",
         ),
         (
@@ -485,7 +485,7 @@ fn multiple_regions_stay_conservative_through_values() {
         ),
         program(
             &declarations,
-            "let view = make_pair (ref long) (ref long)\ntask { return view }",
+            "let view = make_pair (ref long) (ref long)\ntzroutine { let _view = view }\n0",
         ),
         program(
             &declarations,
@@ -954,7 +954,7 @@ fn exclusive_borrow_fields_preserve_exclusivity() {
             "Counter in a reusable function",
         ),
         (
-            "let mut total = 0\nlet counter = Counter { value: ref mut total, step: 1 }\ntask { return counter.step }",
+            "let mut total = 0\nlet counter = Counter { value: ref mut total, step: 1 }\ntzroutine { let _step = counter.step }\n0",
             "E1013",
             "",
         ),

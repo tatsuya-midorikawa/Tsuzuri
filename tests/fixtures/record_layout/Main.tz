@@ -41,8 +41,9 @@ fn captured n =
 
 export def tasked :: own i64 -> i64
 fn tasked n =
-    let g = Task.run (task { return gauge_of n })
-    gauge_sum (ref g)
+    // The record comes back through the result array of Parallel.init, written by a worker.
+    let gauges = Parallel.init 1 (\_index -> gauge_of n)
+    gauge_sum (ref gauges[0])
 
 def lend_tag :: ref i8 -> i64
 fn lend_tag t = deref t as i64
