@@ -2504,15 +2504,16 @@ fn count_terms(tokens: &[Token]) -> (usize, Option<usize>) {
     (count, end)
 }
 
-/// The token index of the called name and the active argument around `offset`.
-fn call_context(tokens: &[Token], text: &str, offset: usize) -> Option<(usize, usize)> {
+/// The calls around `offset`, innermost first: the token index of each called name and its active argument.
+/// A second call is the `name(` call that an earlier line opened around the cursor's line, which applies when
+/// the head that the cursor's line writes names no function.
+fn call_context(tokens: &[Token], text: &str, offset: usize) -> Vec<(usize, usize)> {
     let line_start = text[..offset].rfind('\n').map_or(0, |at| at + 1);
     let mut end = tokens.partition_point(|token| token.span.start < offset);
     let mut in_progress = false;
     loop {
         let (mut depth, mut start, mut open) = (0usize, 0, None);
-        // A bracket that closes an earlier line belongs to that line, not to the call of the cursor's line,
-        // unless the walk reaches the unclosed `(` of a call that the cursor's line continues.
+        // After the first bracket at depth 0 that closes an earlier line: where the cursor's line starts.
         let mut boundary = None;
         let mut index = end;
         while index > 0 {
@@ -2539,16 +2540,7 @@ fn call_context(tokens: &[Token], text: &str, offset: usize) -> Option<(usize, u
                 break;
             }
         }
-        if open.is_none()
-            && let Some(boundary) = boundary
-        {
-            start = boundary;
-        }
-        if let Some(open) = open
-            && open > 0
-            && name_token(tokens, open - 1)
-            && adjacent(&tokens[open - 1], &tokens[open])
-        {
+        let compatible = |open: usize| {
             let mut depth = 0usize;
             let mut commas = 0;
             for token in &tokens[open + 1..end] {
@@ -2560,7 +2552,26 @@ fn call_context(tokens: &[Token], text: &str, offset: usize) -> Option<(usize, u
                     commas += 1;
                 }
             }
-            return Some((open - 1, commas));
+            (open - 1, commas)
+        };
+        let mut call = open.filter(|&open| {
+            open > 0 && name_token(tokens, open - 1) && adjacent(&tokens[open - 1], &tokens[open])
+        });
+        // The brackets that close an earlier line are not arguments of the call of the cursor's line, which
+        // starts at `boundary`. A `(` that the walk reached has only such brackets after it, so it contains
+        // the line: a tuple or a group adds no call, and a `name(` call is the call when the line writes no
+        // head of its own before the cursor, and the fallback when that head names no function.
+        let mut outer = None;
+        if let Some(boundary) = boundary
+            && (call.is_none()
+                || (boundary < end && matches!(tokens[boundary].kind, TokenKind::Ident(_))))
+        {
+            outer = call.take().map(compatible);
+            open = None;
+            start = boundary;
+        }
+        if let Some(open) = call {
+            return vec![compatible(open)];
         }
         if start < end && matches!(tokens[start].kind, TokenKind::Ident(_)) {
             let mut head = start;
@@ -2578,10 +2589,12 @@ fn call_context(tokens: &[Token], text: &str, offset: usize) -> Option<(usize, u
             } else {
                 count
             };
-            return Some((head, active));
+            return std::iter::once((head, active)).chain(outer).collect();
         }
         // An empty `(` is an argument still being written to the enclosing call.
-        let open = open.filter(|_| start == end)?;
+        let Some(open) = open.filter(|_| start == end) else {
+            return Vec::new();
+        };
         in_progress = true;
         end = open;
     }
@@ -2592,14 +2605,19 @@ fn signature_help(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
         return Value::Null;
     };
     let tokens = tokens(text, view.edition());
-    let Some((head, active)) = call_context(&tokens, text, offset) else {
-        return Value::Null;
-    };
+    call_context(&tokens, text, offset)
+        .into_iter()
+        .find_map(|(head, active)| signature(view, &tokens, head, active))
+        .unwrap_or(Value::Null)
+}
+
+/// The signature help of the call whose name is `tokens[head]`, or `None` when the name is no function.
+fn signature(view: &View<'_>, tokens: &[Token], head: usize, active: usize) -> Option<Value> {
     let index = view.index;
-    let chain = path_chain(&tokens, head);
+    let chain = path_chain(tokens, head);
     let module = view.module().unwrap_or_default();
     let owner = if chain.len() > 1 {
-        let qualifier = path_text(&tokens, &chain[..chain.len() - 1]);
+        let qualifier = path_text(tokens, &chain[..chain.len() - 1]);
         view.module_path(&qualifier)
             .map_or(qualifier.clone(), str::to_owned)
     } else {
@@ -2614,12 +2632,9 @@ fn signature_help(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
                 && item.name == ident(&tokens[head])
         })
     });
-    let Some(item) = definition
+    let item = definition
         .map(|definition| &index.definitions[definition])
-        .filter(|item| callable(item.kind))
-    else {
-        return Value::Null;
-    };
+        .filter(|item| callable(item.kind))?;
     let parameters = if item.parameters.is_empty() {
         "()".to_owned()
     } else {
@@ -2629,14 +2644,14 @@ fn signature_help(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
             .collect::<Vec<_>>()
             .join(" ")
     };
-    json!({
+    Some(json!({
         "signatures": [{
             "label": format!("{} {parameters} -> {}", item.name, item.result),
             "parameters": item.parameters.iter().map(|parameter| json!({"label": parameter})).collect::<Vec<_>>(),
         }],
         "activeSignature": 0,
         "activeParameter": active,
-    })
+    }))
 }
 
 fn semantic_tokens(view: &View<'_>, text: &str, encoding: PositionEncoding) -> Vec<u32> {
