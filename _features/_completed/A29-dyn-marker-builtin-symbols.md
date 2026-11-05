@@ -311,3 +311,77 @@ done
 - `tests/tzroutine_wasm.mjs`
 - `tests/fixtures/preemption/Main.tz`
 - 上の文書
+
+### レビューの指摘への対応（2026-11-06）
+
+独立したレビューの 4 件の指摘に対応しました。比較の基準は `main` のソースで作った base の binary（`target/debug/tsuzuri`、作り直していない）です。
+
+#### 1（major）: `canonical_type` が関数型の純粋性と引数規約を綴らず、単射でなかった
+
+- 再現: レビューの 2 つのプログラム（`Vec<i64 -> i64>` と `Vec<pure (i64 -> i64)>` の `Vec.empty`、`Box<i64 -> i64>` と `Box<pure (i64 -> i64)>`）は、修正前の binary と base の binary の両方で
+  `E2002`（`invalid redefinition of function 'tz.builtin.Vec.empty.fn$Li64$Ai64$R'`、`redefinition of type %"tz.record.Main.Box[fn[i64->i64]]"`）でした。
+  引数規約でも同じく衝突することを確かめました: edition 2027 の `def text_length :: string -> i64`（規約 `[Read]`）と `\(text: ref string) -> …` の `Box`（`redefinition of type`）、
+  `def bump :: i64 -> mut Counter -> unit`（規約 `[Own, Mut]`）と `\(step: i64) (counter: ref mut Counter) -> …` の `Vec`（`invalid redefinition of function`）。
+- `Type` の監査: `Type` の `Eq` が比べるフィールドのうち、`canonical_type` が落としていたのは `FunctionParameters::pure` と `::conventions` だけでした。
+  参照の可変性（`ref`／`refmut`）、`SharedKind`（`rc`・`rc.weak`・`arc`・`arc.weak`）、dyn の印と region（`+copy`・`+send`・`+ref`。region の名前は `Type` に無い）、固定長配列の長さ（`fixed[N,T]`）、
+  整数の符号と幅（`i64`／`i64u`）、SIMD（`ty.name()`）はすでに綴られています。レコード・共用体の region は `Type::Record` の引数に現れません。
+- 修正（`src/llvm.rs` の `canonical_type`）: 関数型を、純粋なら `pure.fn[…]`、規約を持つなら `fn.<規約>[…]`（保持している規約の並びのとおり 1 つごとに `o`・`r`・`m`）と綴ります。既定（純粋でなく、規約が空）は
+  `fn[…]` のままです。`pure.` と `fn.` で始まる綴りはほかに無く（レコード・共用体はモジュール名の大文字で始まり、組み込みの型の綴りは `fn` の後に `[` が続くか `f` の後に数字が続く）、
+  使う文字は `.` と英小文字だけなので `mangled_type` の置換も変えていません。規約は `convention(i)` でなく保持している並びのまま綴るので、`Eq` が区別する `[Read]` と `[Read, Own]` も別の綴りになります
+  （`function_with_conventions` が規約をすべて `Own` のとき空にするので、解決後の型で空でない並びは既定でない規約を含みます）。
+- 綴りが変わる名前: 純粋な関数型か規約を持つ関数型を（入れ子も含めて）含む型の綴りだけです。引用符で囲む `%"tz.record.…"`・`%"tz.union.…"`・`%"tz.rec.node.…"`・`@"tz.<op>.rec.…"`・
+  `@"tz.shared.drop.…"`・`@"tz.vtable.…[格納型]"`、引用符なしの `@tz.builtin.…` と `@tz.domain.thunk.…` です。ホストの ABI のレコード名（`llvm_abi.rs` の `record_name`。C ヘッダーと bindings）も
+  `canonical_type` を使いますが、ABI のレコードは型引数をすべてフィールドで使い（使わない型引数は `E1024`）、フィールドはスカラーかレコードなので、関数型が現れることはありません。debug 情報と
+  `llvm_split`・trap の表示はこの綴りを使いません。利用者に見える出力（診断・ヘッダー・ドキュメント）は変わりません。
+- テスト（修正前に失敗することを確かめました）:
+  - `src/llvm.rs` の unit test `canonical_types_are_injective_and_mangled_types_are_identifiers`: 純粋性・規約（`[]`・`[Read]`・`[Mut]`・`[Own]`・`[Own, Read]`・`[Read, Own]`・`[Read, Read]`・`[Own, Mut]`）・
+    参照の可変性・4 つの `SharedKind`・dyn の印と region の 8 通り × 2 つのクラスの組・固定長 2 と 3・整数の符号と幅などだけが違う型と、それを record・`Vec`・関数などの引数にした 895 個の型で、
+    `canonical_type` と `mangled_type` がどれも違い、`mangled_type` が識別子の文字だけであることを確かめます。修正前は
+    `Record(0, [Function(… pure: false …)]) and Record(0, [Function(… pure: true …)]) are both spelled Main.Box[fn[->i64]]` で失敗しました。期待の綴り（`fn[i64->i64]`・`pure.fn$Li64$Ai64$R`・
+    `fn.om[i64,string->unit]`）は上の規則から手で書いたものです。
+  - suite `generic_records`（`tests/features.mjs`、native と WASM の `-O0`・`-O3`）に export `function_instances` を足しました。純粋と非純粋の `Box`・`Vec`、規約 `[Read]` の `Box` と規約の無い `ref string` の `Box`、
+    規約 `[Own, Mut]` の `Vec` と規約の無い `ref mut Counter` の `Vec` を作って呼びます。期待値は手で数えた `(1 + n) + 80 + 500 + 15000 + ((7 - n) + 6) · 10⁵ + (n + 100n) · 10⁷`
+    （`n = 5` で `5050815586`、`n = -2` で `-2018484421`）。`inspect` は、`%"tz.record.Main.Box[pure.fn[i64->i64]]"`・`%"tz.record.Main.Box[fn.r[ref[string]->i64]]"` などの型と、
+    `@tz.builtin.Vec.empty.pure.fn$Li64$Ai64$R`・`@tz.builtin.Vec.empty.fn.om$Li64$Crefmut$LMain.Counter$R$Aunit$R` などの定義がそれぞれ 1 回だけであることを確かめます。base の binary では
+    `%"tz.record.Main.Box[fn[i64->i64]]" = type { %tz.closure } is defined once` で失敗します。
+- 修正後の証拠: レビューの `Vec` のプログラムは `0`、`Box` のプログラム（`a.v 3 + b.v 4`）は `12`、規約の 2 つは `16` と `2` を native の `-O0`・`-O3` で返し、IR には
+  `@tz.builtin.Vec.empty.fn$Li64$Ai64$R` と `@tz.builtin.Vec.empty.pure.fn$Li64$Ai64$R` が 1 つずつ定義されます。WASM は suite `generic_records` の `function_instances` で確かめました。
+- 手順 4 の IR の比較のやり直し: `Main.tz` を持つ fixture の 139 個を、native（`domain`・`domain_host` は `--trap-mode return`）と `--target wasm32` で `--emit llvm` しました。
+  - `main` のソースの fixture: base の binary とこの branch の binary で 278 ファイルすべて byte 単位で一致しました。失敗は両方で同じ wasm32 の 10 個（`blocking`・`domain`・`domain_host`・`effects_sweep`・`net_*` の 5 個・`tzroutine_net_wasm`）です。
+  - この branch の fixture: 違うのは 6 ファイルで、どれも綴りだけです。`dyn_dispatch`・`preemption`（native と wasm32）は A29 本体が足した印を持つ dyn 型の `$P`（新しい IR の `$P` を `+` に戻すと base の IR と一致）、
+    `generic_records`（native と wasm32）はこの修正の `pure.fn`・`fn.r`・`fn.om`（新しい IR の綴りを `fn` に戻すと base の IR と一致。base の IR はその型と関数を 2 回定義していて clang が拒否する）です。
+  - 同じ入力で 2 回出力した `generic_records` の IR は一致しました（決定的）。
+- 判断: 停止条件の「引用符で囲む名前の綴りまで変えたくなった」は、引用符付きの名前も衝突する（`redefinition of type`）ので、オーケストレーターの判断で上書きし、該当する型の綴りだけを変えました。
+  意味が同じで `Eq` が違う規約の並び（`[Read]` と `[Read, Own]`）を 1 つにまとめる正規化は、型検査の振る舞いに関わるので行っていません（綴りは `Eq` に合わせて分けます）。
+
+#### 2（minor）: 「`$` は `canonical_type` の綴りに現れない」は誤りだった
+
+- 再現: レビューの active pattern のプログラム（`(|C|P|)`）は両方の binary で `20` を返し、修正後の IR に `@tz.builtin.Vec.empty.Main.Active$active$C$P$total$result` と
+  `%"tz.union.Main.Active$active$C$P$total$result"` が現れることを確かめました。衝突は起きていません。
+- 対応: `docs/architecture.md`（組み込み関数のシンボル）、`mangled_type` の doc comment、この文書の「アルゴリズム」と D1 の理由を直しました。`$` が現れるのは複数の case を持つ
+  active pattern の暗黙の union の名前（`src/parse_control.rs`。部分 active pattern は case が 1 つで union を作らないので、名前は必ず `$total$result` で終わる）の中だけで、
+  モジュールの後の `.Active$active$` で始まり `$total$result` で終わり、間には大文字で始まる識別子の case 名と区切りの `$` しか無く、置換する記号を含みません。そのため case 名が `C` や `P` でも
+  綴りの読み方は 1 通りに決まり、単射は保たれる、と書きました。`canonical_type` の doc comment にも、`Eq` が区別する型を別に綴ることを書きました。`docs/architecture.md` の generic record の型名の節には
+  `pure.fn[T->R]`・`fn.rm[T,U->R]` を足しました。
+
+#### 3（minor）: tzroutine のページが「Copy でない `dyn` は捕捉できない」と書いていた
+
+- 再現: レビューのプログラムで、`dyn (Display, Send)` と `dyn (Display, Copy, Send)` の捕捉は `42`、`dyn (Display, Copy)` と `dyn Display` は
+  `E1013`（`values that move to another tzroutine or thread must be owned; dyn (Display, Copy) contains a reference`）でした。
+- 対応: [tzroutine](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) の捕捉の規則の表を、`Send` の印を持たない `dyn`（`dyn C`・`dyn (C, Copy)`）が不可で、`dyn (C, Send)` は Copy でなくても捕捉できる、に直しました。
+  参照と `docs/language.md` の「Copy でない `dyn`」をすべて grep し、残りは `Sync`（`Arc` の中身・`Routine.scope` の共有）と、関数値への捕捉の `Capture` の規則で、tzroutine の捕捉の話ではないので変えていません。
+
+#### 4（nit）: A24 のエスケープの一覧に `$P` が無かった
+
+- 対応: `_features/A24-anonymous-unions.md` の一覧に `$P` と `P` を足し、`canonical_type`・`mangled_type` の行番号を今の `src/llvm.rs:3729`・`src/llvm.rs:7923` に直しました。合成した名前を足すときは、
+  `$` の現れる場所を説明している `mangled_type` の doc comment と `docs/architecture.md` も更新するよう 1 文足しました。
+
+#### 実行したコマンド
+
+- `cargo fmt --all -- --check`: 成功。`cargo clippy --all-targets -- -D warnings`: 成功。
+- `cargo test --locked --lib canonical_types_are_injective`: 1 passed（修正の関数型の腕を戻すと 1 failed）。
+- `cargo nextest run --locked`: 2936 tests run: 2935 passed, 1 failed, 4 skipped。失敗した `alloc_contracts::std_allocation_contracts_hold_on_native_and_wasm32_at_o0_and_o3` は、ほかの worktree と共有する
+  machine の負荷で wasm32 の実行が 30 秒の timeout になったもので、単独の再実行 `cargo nextest run --locked --test alloc_contracts` は 2 passed でした。
+- `node tests/features.mjs target/debug/tsuzuri <suite>`: `generic_records`（12 cases）・`dyn_dispatch`（58）・`pure_functions`（302）・`conventions`（36）・`active_patterns`（17）・`unions`（27）が native と WASM の `-O0`・`-O3` で成功。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md`: 成功（1 page, 82 links, 20 checked examples, 34 native runs）。
+- `node scripts/check-guide-lite.mjs`: 成功（88 references）。診断と generated block は変えていないので、`gen-docs.mjs --check` と `check-cli-docs.mjs` は対象外です。
