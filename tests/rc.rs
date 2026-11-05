@@ -167,6 +167,62 @@ fn shared_values_follow_the_borrow_rules() {
     }
 }
 
+fn rejects_with_kind(source: &str, code: &str, kind: &str) {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, code, "{source}\n{}", error.message);
+    assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
+}
+
+/// A28: `share`, `downgrade` and `upgrade` make a new owner of the block, so their result holds
+/// what the block holds (the loans that the borrow of `shared` keeps as parents), not a borrow of
+/// `shared` itself. `get` still borrows `shared`.
+#[test]
+fn sharing_a_function_keeps_the_borrows_of_its_environment_only() {
+    for source in [
+        "let shared = Rc.new (\\v -> v + 1)\nlet mine = Rc.share (ref shared)\nlet moved = shared\n(deref (Rc.get (ref mine))) 1 + (deref (Rc.get (ref moved))) 1",
+        "def make :: unit -> Rc<i64 -> i64>\nfn make _unit =\n    let shared = Rc.new (\\v -> v + 1)\n    Rc.share (ref shared)\nlet f = make ()\n(deref (Rc.get (ref f))) 41",
+        "let shared = Rc.new (\\v -> v + 1)\nlet weak = Rc.downgrade (ref shared)\nlet moved = shared\nmatch Rc.upgrade (ref weak) with\n    | Maybe.Some strong -> (deref (Rc.get (ref strong))) 1\n    | Maybe.None -> Rc.strong_count (ref moved)",
+        "def make :: unit -> Maybe<Rc<i64 -> i64>>\nfn make _unit =\n    let shared = Rc.new (\\v -> v + 1)\n    let weak = Rc.downgrade (ref shared)\n    Rc.upgrade (ref weak)\nmatch make () with\n    | Maybe.Some f -> (deref (Rc.get (ref f))) 41\n    | Maybe.None -> 0",
+        // The environment's owner outlives every share.
+        "let text = \"abc\"\nlet borrowed = ref text\nlet shared = Rc.new (\\() -> String.length borrowed)\nlet mine = Rc.share (ref shared)\nlet moved = shared\n(deref (Rc.get (ref mine))) () + Rc.strong_count (ref moved)",
+    ] {
+        for source in [source.to_owned(), source.replace("Rc.", "Arc.").replace("Rc<", "Arc<")] {
+            emits(&source);
+        }
+    }
+    for (source, code, kind) in [
+        (
+            "def make :: unit -> Rc<unit -> i64>\nfn make _unit =\n    let text = \"abc\"\n    let borrowed = ref text\n    let shared = Rc.new (\\() -> String.length borrowed)\n    Rc.share (ref shared)\nlet f = make ()\nRc.strong_count (ref f)",
+            "E1013",
+            "borrow_outlives_block",
+        ),
+        (
+            "def make :: unit -> Rc.Weak<unit -> i64>\nfn make _unit =\n    let text = \"abc\"\n    let borrowed = ref text\n    let shared = Rc.new (\\() -> String.length borrowed)\n    Rc.downgrade (ref shared)\nlet f = make ()\nmatch Rc.upgrade (ref f) with\n    | Maybe.Some strong -> Rc.strong_count (ref strong)\n    | Maybe.None -> 0",
+            "E1013",
+            "borrow_outlives_block",
+        ),
+        (
+            "def make :: unit -> i64\nfn make _unit =\n    let f = { let shared = Rc.new (\\v -> v + 1); Rc.get (ref shared) }\n    (deref f) 1\nmake ()",
+            "E1013",
+            "borrow_outlives_block",
+        ),
+        (
+            "let text = \"abc\"\nlet borrowed = ref text\nlet shared = Rc.new (\\() -> String.length borrowed)\nlet mine = Rc.share (ref shared)\nlet moved = text\nRc.strong_count (ref mine) + moved.length",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "let shared = Rc.new (\\v -> v + 1)\nlet read = Rc.get (ref shared)\nlet moved = shared\n(deref read) 1 + Rc.strong_count (ref moved)",
+            "E1014",
+            "borrow_conflict",
+        ),
+    ] {
+        for source in [source.to_owned(), source.replace("Rc.", "Arc.").replace("Rc<", "Arc<")] {
+            rejects_with_kind(&source, code, kind);
+        }
+    }
+}
+
 #[test]
 fn shared_types_have_reserved_names_and_no_abi() {
     for source in [

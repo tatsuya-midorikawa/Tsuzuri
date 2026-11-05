@@ -136,6 +136,101 @@ fn checks_capture_lifetimes_moves_and_mutability() {
     );
 }
 
+fn rejects_with_kind(source: &str, code: &str, kind: &str) {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, code, "{source}\n{}", error.message);
+    assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
+}
+
+/// A28: a call's result holds the borrows of the arguments that the callee's body can put in its
+/// result. `pass` and `keep` have one signature; only `keep` puts its reference in its result.
+#[test]
+fn function_results_retain_only_the_arguments_that_reach_them() {
+    const PASS: &str = "def pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn pass _key f = f\n";
+    const PASS_GENERIC: &str = "def pass :: ref 'k -> own 'v -> 'v\nfn pass _key f = f\n";
+    const WRAP: &str = "def wrap :: i64 -> (unit -> i64) -> (unit -> i64)\nfn wrap key f = pass (ref key) f\nlet g = wrap 1 (\\() -> 42)\ng ()";
+    for source in [
+        format!("{PASS}{WRAP}"),
+        format!("{PASS_GENERIC}{WRAP}"),
+        format!(
+            "{PASS_GENERIC}def wrap :: i64 -> i64 -> i64\nfn wrap key value = pass (ref key) value\nwrap 1 42"
+        ),
+        // The fixed point of a recursive function and of two mutually recursive ones.
+        "def rec pass_n :: i64 -> ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn rec pass_n n key f = if n == 0 then f else pass_n (n - 1) key f\ndef wrap :: i64 -> (unit -> i64) -> (unit -> i64)\nfn wrap key f = pass_n 3 (ref key) f\nlet g = wrap 1 (\\() -> 42)\ng ()".to_owned(),
+        "def rec ping :: i64 -> ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn rec ping n key f = if n == 0 then f else pong (n - 1) key f\ndef rec pong :: i64 -> ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn rec pong n key f = ping n key f\ndef wrap :: i64 -> (unit -> i64) -> (unit -> i64)\nfn wrap key f = ping 3 (ref key) f\nlet g = wrap 1 (\\() -> 42)\ng ()".to_owned(),
+        // The text decides which function comes back; neither holds it.
+        "def pick :: ref string -> own (unit -> i64) -> own (unit -> i64) -> (unit -> i64)\nfn pick text f g = if String.length text > 2 then f else g\ndef choose :: i64 -> (unit -> i64)\nfn choose n =\n    let text = to_string n\n    pick (ref text) (\\() -> 1) (\\() -> 2)\nlet g = choose 100\ng ()".to_owned(),
+    ] {
+        accepts(&source);
+    }
+    const KEEP: &str = "def keep :: ref string -> (unit -> i64)\nfn keep text = \\() -> String.length text\n";
+    for (source, code, kind) in [
+        (
+            format!("{KEEP}def leak :: own string -> (unit -> i64)\nfn leak text = keep (ref text)\n0"),
+            "E1013",
+            "task_result_retains_borrow",
+        ),
+        (
+            format!("{KEEP}let text = \"abc\"\nlet f = keep (ref text)\ntzroutine {{\n    let _n = f ()\n}}\n0"),
+            "E1013",
+            "task_capture_retains_borrow",
+        ),
+        (
+            "def make :: unit -> [unit -> i64]\nfn make _unit =\n    let texts = [\"a\", \"bc\"]\n    Array.mapr (\\text -> \\() -> String.length text) (ref texts)\nlet fs = make ()\nArray.length (ref fs)".to_owned(),
+            "E1013",
+            "borrow_outlives_block",
+        ),
+        // The fixed point raises a recursive function to retaining when one path captures.
+        (
+            "def rec keep_n :: i64 -> ref string -> (unit -> i64)\nfn rec keep_n n text = if n == 0 then \\() -> String.length text else keep_n (n - 1) text\ndef leak :: own string -> (unit -> i64)\nfn leak text = keep_n 3 (ref text)\n0".to_owned(),
+            "E1013",
+            "task_result_retains_borrow",
+        ),
+        (
+            "def rec ping :: i64 -> ref string -> (unit -> i64)\nfn rec ping n text = if n == 0 then \\() -> 0 else pong (n - 1) text\ndef rec pong :: i64 -> ref string -> (unit -> i64)\nfn rec pong n text = if n == 0 then \\() -> String.length text else ping n text\ndef leak :: own string -> (unit -> i64)\nfn leak text = ping 3 (ref text)\n0".to_owned(),
+            "E1013",
+            "task_result_retains_borrow",
+        ),
+        // A callback that receives the reference may put it in what it returns.
+        (
+            "def apply_key :: ref string -> own (ref string -> unit -> i64) -> (unit -> i64)\nfn apply_key text f = f text\ndef leak :: own string -> (unit -> i64)\nfn leak text = apply_key (ref text) (\\t -> \\() -> String.length t)\n0".to_owned(),
+            "E1013",
+            "task_result_retains_borrow",
+        ),
+    ] {
+        rejects_with_kind(&source, code, kind);
+    }
+}
+
+/// A28: the facts are computed for each specialization; one instance of a generic function may
+/// put its reference in its result through a class method while another does not.
+#[test]
+fn function_result_facts_follow_each_specialization() {
+    const TRAITS: &str = "class Make<'value> {\n    def make :: ref string -> 'value\n}\n";
+    const MAIN: &str = "record Holder { run: unit -> i64 }\ninstance Traits.Make<Holder> {\n    fn make text = Holder { run: \\() -> String.length text }\n}\nrecord Counter { run: unit -> i64 }\ninstance Traits.Make<Counter> {\n    fn make text =\n        let length = String.length text\n        Counter { run: \\() -> length }\n}\ndef pick :: ref string -> own HashMap<i64, 'v> -> HashMap<i64, 'v>\n  @'v : Traits.Make\nfn pick text map = HashMap.insert 1 (Traits.Make.make text) map\n";
+    let accepted = format!(
+        "{MAIN}def count :: own string -> HashMap<i64, Counter>\nfn count text = pick (ref text) (HashMap.empty())\nlet map = count \"abc\"\nHashMap.length (ref map)"
+    );
+    analyze_modules(&[("Main.tz", &accepted), ("Traits.tt", TRAITS)])
+        .unwrap_or_else(|error| panic!("{accepted}\n{}: {}", error.code, error.message));
+    for (tail, kind) in [
+        (
+            "def leak :: own string -> HashMap<i64, Holder>\nfn leak text = pick (ref text) (HashMap.empty())\nlet map = leak \"abc\"\nHashMap.length (ref map)",
+            "task_result_retains_borrow",
+        ),
+        (
+            "def leak :: i64 -> HashMap<i64, Holder>\nfn leak n =\n    let text = to_string n\n    pick (ref text) (HashMap.empty())\nlet map = leak 1\nHashMap.length (ref map)",
+            "borrow_outlives_block",
+        ),
+    ] {
+        let source = format!("{MAIN}{tail}");
+        let error = analyze_modules(&[("Main.tz", &source), ("Traits.tt", TRAITS)])
+            .expect_err(&source);
+        assert_eq!(error.code, "E1013", "{source}\n{}", error.message);
+        assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
+    }
+}
+
 #[test]
 fn borrows_dynamic_calls_without_changing_owned_capture_fallbacks() {
     for (case, captures) in [
