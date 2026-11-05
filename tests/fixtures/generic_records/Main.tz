@@ -1,6 +1,7 @@
 record Pair<'a, 'b> { first: 'a, second: 'b }
 record Box<'a> { value: 'a }
 record Wrap<'a> { value: 'a }
+record Counter { count: i64 }
 
 def add_pair :: own Pair<i64, i64> -> own Pair<i64, i64> -> Pair<i64, i64>
 fn add_pair a b =
@@ -19,6 +20,12 @@ fn nested_length wrapped = wrapped.value.first + wrapped.value.second.length
 
 def apply_boxed :: own Box<i64 -> i64> -> own i64 -> i64
 fn apply_boxed boxed x = boxed.value x
+
+def text_length :: string -> i64
+fn text_length text = text.length
+
+def bump :: i64 -> mut Counter -> unit
+fn bump step counter = counter.count = counter.count + step
 
 def weighted :: own [Pair<i64, i64>] -> i64
 fn weighted pairs =
@@ -64,3 +71,27 @@ fn nested_syntax n =
     match Maybe.get work with
     | Some pair -> pair.first + pair.second.length
     | None -> 0
+
+// Instances whose function type arguments differ only in purity or in parameter conventions
+// (`text_length` reads its parameter, `bump` writes its second): each is its own record type and
+// builtin instance (A29).
+export def function_instances :: own i64 -> i64
+fn function_instances n =
+    let impure: Box<i64 -> i64> = Box { value: \x -> x + n }
+    let pure_box: Box<pure (i64 -> i64)> = Box { value: \x -> x * 2 }
+    let mut impure_fns: Vec<i64 -> i64> = Vec.empty()
+    Vec.push (\x -> x - n) impure_fns
+    let mut pure_fns: Vec<pure (i64 -> i64)> = Vec.empty()
+    Vec.push (\x -> x * 3) pure_fns
+    let read_box = Box { value: text_length }
+    let ref_box = Box { value: \(text: ref string) -> text.length + 10 }
+    let mut bumps = Vec.empty()
+    Vec.push bump bumps
+    let mut writes = Vec.empty()
+    Vec.push (\(step: i64) (counter: ref mut Counter) -> counter.count = counter.count + step * 100) writes
+    let mut counter = Counter { count: 0 }
+    bumps[0] n (ref mut counter)
+    writes[0] n (ref mut counter)
+    let text = "hello"
+    let boxed = impure.value 1 + pure_box.value 4 * 10 + read_box.value text * 100 + ref_box.value (ref text) * 1000
+    boxed + (impure_fns[0] 7 + pure_fns[0] 2) * 100000 + counter.count * 10000000

@@ -3,7 +3,7 @@ use std::fmt::Write;
 
 use crate::check::{
     Builtin, BuiltinInstance, CheckedFunction, CheckedModule, FunctionRef, Local, ModuleOrigin,
-    SharedKind, Type, TypedExpr, TypedExprKind,
+    ParameterConvention, SharedKind, Type, TypedExpr, TypedExprKind,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::interval::Flags;
@@ -3723,7 +3723,9 @@ fn dyn_adapter(
     ))
 }
 
-/// The injective Tsuzuri spelling of a concrete type used in LLVM type names.
+/// The injective Tsuzuri spelling of a concrete type used in LLVM type names: two types that
+/// `Type`'s `Eq` tells apart are spelled differently (A29), so their instances and quoted type
+/// names never collide.
 fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
     let list = |types: &[Type]| {
         types
@@ -3753,11 +3755,30 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         Type::List(element) => format!("list[{}]", canonical_type(element, module)),
         Type::Vec(element) => format!("vec[{}]", canonical_type(element, module)),
         Type::Tuple(elements) => format!("tuple[{}]", list(elements)),
-        Type::Function(parameters, result) => format!(
-            "fn[{}->{}]",
-            list(parameters),
-            canonical_type(result, module)
-        ),
+        // Purity and the parameter conventions are part of the type (A29): `pure.fn[...]`, and
+        // `fn.<letters>[...]` with one of `o`, `r`, `m` per stored convention. No other spelling
+        // starts with `pure.` or `fn.`, and the defaults (impure, no conventions) keep `fn[...]`.
+        Type::Function(parameters, result) => {
+            let mut name = String::from(if parameters.pure { "pure.fn" } else { "fn" });
+            if !parameters.conventions.is_empty() {
+                name.push('.');
+                name.extend(
+                    parameters
+                        .conventions
+                        .iter()
+                        .map(|convention| match convention {
+                            ParameterConvention::Own => 'o',
+                            ParameterConvention::Read => 'r',
+                            ParameterConvention::Mut => 'm',
+                        }),
+                );
+            }
+            format!(
+                "{name}[{}->{}]",
+                list(parameters),
+                canonical_type(result, module)
+            )
+        }
         Type::Reference(value, false) => format!("ref[{}]", canonical_type(value, module)),
         Type::Reference(value, true) => format!("refmut[{}]", canonical_type(value, module)),
         Type::Once(result) => format!("once[{}]", canonical_type(result, module)),
@@ -7893,8 +7914,12 @@ fn builtin_symbol(instance: &BuiltinInstance, module: &CheckedModule) -> String 
 }
 
 /// `canonical_type` spelled with LLVM identifier characters only: `->`, `[`, `]`, `,`, and the
-/// `+` of a dyn type's markers (A29) become `$A`, `$L`, `$R`, `$C`, and `$P`. `$` never occurs in
-/// canonical types, so the escapes keep the spelling injective.
+/// `+` of a dyn type's markers (A29) become `$A`, `$L`, `$R`, `$C`, and `$P`. The only `$` in a
+/// canonical type is inside the implicit union of a multi-case active pattern,
+/// `Main.Active$active$C$P$total$result` (`src/parse_control.rs`): it starts with `.Active$active$`
+/// after the module, ends with `$total$result`, and holds only uppercase case names between `$`s,
+/// none of the escaped characters. So a case named `C` or `P` reads back one way only, and the
+/// escapes keep the spelling injective.
 fn mangled_type(ty: &Type, module: &CheckedModule) -> String {
     canonical_type(ty, module)
         .replace("->", "$A")
@@ -10433,5 +10458,152 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
                 .replace("67108864", "16777216");
             assert_eq!(restored, text);
         }
+    }
+
+    /// `canonical_type` and `mangled_type` are injective on the fields that `Type`'s `Eq` compares
+    /// (A29): every type below differs from another only in purity, the parameter conventions
+    /// (stored as written, so `[Read]` and `[Read, Own]` differ), reference mutability, the
+    /// shared kind, the dyn markers and region, a fixed length, or integer signedness, and each
+    /// also appears as the argument of a record, a `Vec`, and a function.
+    #[test]
+    fn canonical_types_are_injective_and_mangled_types_are_identifiers() {
+        use crate::check::{DynType, FunctionParameters};
+        use ParameterConvention::{Mut, Own, Read};
+        let module = analyze("record Box<'a> { value: 'a }\n0").unwrap();
+        let record = module
+            .records
+            .iter()
+            .position(|record| record.name == "Main.Box")
+            .unwrap();
+        let function = |types: Vec<Type>, conventions: &[ParameterConvention], pure, result| {
+            Type::Function(
+                Box::new(FunctionParameters {
+                    types,
+                    conventions: conventions.into(),
+                    pure,
+                }),
+                Box::new(result),
+            )
+        };
+        let mut leaves = vec![
+            Type::I64,
+            Type::Integer(64, false),
+            Type::I32,
+            Type::F64,
+            Type::Binary(32),
+            Type::Decimal(64),
+            Type::Bool,
+            Type::Unit,
+            Type::Char,
+            Type::Utf8Char,
+            Type::String,
+            Type::Utf8String,
+            Type::Handle("Main.File".into()),
+            Type::Tuple(Vec::new()),
+            Type::Tuple(vec![Type::I64]),
+            Type::Tuple(vec![Type::I64, Type::I64]),
+        ];
+        for length in [2, 3] {
+            leaves.push(Type::FixedArray(
+                Box::new(Type::I64),
+                Box::new(Type::Length(length)),
+            ));
+        }
+        for classes in [&["Main.Show"][..], &["Main.Show", "Main.Size"]] {
+            for markers in 0..8 {
+                leaves.push(Type::Dyn(Box::new(DynType {
+                    classes: classes.iter().map(|name| (*name).into()).collect(),
+                    copy: markers & 1 != 0,
+                    send: markers & 2 != 0,
+                    borrowed: markers & 4 != 0,
+                })));
+            }
+        }
+        for pure in [false, true] {
+            for conventions in [
+                &[][..],
+                &[Read],
+                &[Mut],
+                &[Own],
+                &[Own, Read],
+                &[Read, Own],
+                &[Read, Read],
+                &[Own, Mut],
+            ] {
+                leaves.push(function(
+                    vec![Type::I64, Type::String],
+                    conventions,
+                    pure,
+                    Type::I64,
+                ));
+            }
+            leaves.push(function(vec![Type::I64], &[], pure, Type::I64));
+            leaves.push(function(Vec::new(), &[], pure, Type::I64));
+            // A curried result stays nested only when one of the two is pure.
+            leaves.push(function(
+                vec![Type::I64],
+                &[],
+                pure,
+                function(vec![Type::I64], &[], !pure, Type::I64),
+            ));
+        }
+        let mut types = leaves.clone();
+        for leaf in &leaves {
+            types.push(Type::Reference(Box::new(leaf.clone()), false));
+            types.push(Type::Reference(Box::new(leaf.clone()), true));
+            for kind in SharedKind::ALL {
+                types.push(Type::Shared(Box::new(leaf.clone()), kind));
+            }
+            types.push(Type::Array(Box::new(leaf.clone())));
+            types.push(Type::ArrayView(Box::new(leaf.clone())));
+            types.push(Type::List(Box::new(leaf.clone())));
+            types.push(Type::Vec(Box::new(leaf.clone())));
+            types.push(Type::Once(Box::new(leaf.clone())));
+            types.push(Type::Record(record, vec![leaf.clone()].into()));
+            types.push(function(vec![leaf.clone()], &[], false, Type::Unit));
+            types.push(function(vec![leaf.clone()], &[Read], true, Type::Unit));
+            types.push(function(Vec::new(), &[], false, leaf.clone()));
+        }
+        let distinct: BTreeSet<Type> = types.into_iter().collect();
+        let mut canonical = BTreeMap::new();
+        let mut mangled = BTreeMap::new();
+        for ty in &distinct {
+            let name = canonical_type(ty, &module);
+            if let Some(other) = canonical.insert(name.clone(), ty) {
+                panic!("{other:?} and {ty:?} are both spelled {name}");
+            }
+            let symbol = mangled_type(ty, &module);
+            assert!(
+                symbol
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '$' | '.' | '_')),
+                "{symbol} is not an LLVM identifier"
+            );
+            if let Some(other) = mangled.insert(symbol.clone(), ty) {
+                panic!("{other:?} and {ty:?} are both mangled {symbol}");
+            }
+        }
+        assert!(distinct.len() > 800, "{} types", distinct.len());
+        // Functions with the default purity and conventions keep their spelling.
+        assert_eq!(
+            canonical_type(&function(vec![Type::I64], &[], false, Type::I64), &module),
+            "fn[i64->i64]"
+        );
+        assert_eq!(
+            mangled_type(&function(vec![Type::I64], &[], true, Type::I64), &module),
+            "pure.fn$Li64$Ai64$R"
+        );
+        assert_eq!(
+            canonical_type(
+                &function(
+                    vec![Type::I64, Type::String],
+                    &[Own, Mut],
+                    false,
+                    Type::Unit
+                ),
+                &module
+            ),
+            "fn.om[i64,string->unit]"
+        );
     }
 }

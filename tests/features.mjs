@@ -2036,6 +2036,9 @@ const suites = {
       ["collections", [5n], 3022n],
       ["nested_syntax", [39n], 42n],
       ["nested_syntax", [-3n], 0n],
+      // (1 + n) + 80 + 500 + 15000 + ((7 - n) + 6) * 10^5 + (n + 100n) * 10^7 (A29)
+      ["function_instances", [5n], 5050815586n],
+      ["function_instances", [-2n], -2018484421n],
     ],
     inspect(ir, header) {
       assert.doesNotMatch(header, /Pair|Box|Wrap/);
@@ -2043,11 +2046,23 @@ const suites = {
         '%"tz.record.Main.Pair[i64,string]" = type { i64, %tz.string }',
         '%"tz.record.Main.Pair[i64,i64]" = type { i64, i64 }',
         '%"tz.record.Main.Box[fn[i64->i64]]" = type { %tz.closure }',
+        // Purity and conventions are spelled only when not the default (A29).
+        '%"tz.record.Main.Box[pure.fn[i64->i64]]" = type { %tz.closure }',
+        '%"tz.record.Main.Box[fn.r[ref[string]->i64]]" = type { %tz.closure }',
+        '%"tz.record.Main.Box[fn[ref[string]->i64]]" = type { %tz.closure }',
         '%"tz.record.Main.Wrap[Main.Pair[i64,string]]" = type { %"tz.record.Main.Pair[i64,string]" }',
       ]) {
         assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
       }
       assert.doesNotMatch(ir, /tz\.record\.Main\.(Pair|Box|Wrap) = type/);
+      for (const symbol of [
+        "@tz.builtin.Vec.empty.fn$Li64$Ai64$R",
+        "@tz.builtin.Vec.empty.pure.fn$Li64$Ai64$R",
+        "@tz.builtin.Vec.empty.fn$Li64$Crefmut$LMain.Counter$R$Aunit$R",
+        "@tz.builtin.Vec.empty.fn.om$Li64$Crefmut$LMain.Counter$R$Aunit$R",
+      ]) {
+        assert.equal(ir.split(`define internal %tz.vec ${symbol}() `).length, 2, `${symbol} is defined once`);
+      }
     },
   },
   unions: {
