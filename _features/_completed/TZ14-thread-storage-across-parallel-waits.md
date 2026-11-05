@@ -162,7 +162,7 @@ G が待ちで別の M へ移ると、この仮定が破れ、size class の all
 ## 受け入れ条件
 
 - [x] 手順 1 の調査結果がチケットに追記されている。
-- [x] spawn せず `Parallel.*` を呼ぶネイティブのプログラムで、`tz_small_realloc` が `noinline` になる。
+- [x] spawn せず `Parallel.*` を呼ぶネイティブのプログラムで、手伝いの tzroutine が待ちうる（`helpers_may_wait`）とき、`tz_small_realloc` が `noinline` になる（D1 の見直しで狭めた。待てないときは IR が `main` と同じ）。
 - [x] spawn するプログラムと、tzroutine のランタイムを使わないプログラムの IR が修正の前後で同じ。
 - [x] 手順 4 の測定が 1 % 以内で、`docs/benchmarks.md` に記録されている（最初の実装は `Vec` を伸ばす核で +17.1 % で停止条件に当たり、D1 を狭めた。狭めた後、その核と手伝いが待てないプログラムの IR は `main` と byte 単位で同じなので費用は 0（同じ IR なので測り直していない）。測定と判断は `docs/benchmarks.md` の TZ14 の節と末尾の「手順 4 と D1 の見直し」）。
 - [x] T2 が成功する。
@@ -290,6 +290,60 @@ orchestrator が、負荷の無い Apple M3 で、`main`（`72f06862`）と `7bc
 変更前の中央値 2172.8 ms（15 回、最小 2070.5）に対し変更後 2544.5 ms（最小 2390.6）、+17.1 %。2 回目の 11 回でも 2179.0 ms と 2550.7 ms、+17.1 %。停止条件の 1 % を大きく超えた。
 原因: インライン展開されると、LLVM は TLS の address（macOS では TLV の getter の呼び出し）をコールバックのループの外へ出す。それはまさに、待ちをまたぐと危険で、待ちが無ければ安全な使い回しである。
 
+### レビューの指摘への対応（2026-11-06）
+
+`9758ef96` の後、独立したレビューが 2 件を指摘した。どちらも、利用者から委ねられた権限で orchestrator が対応を決めた。
+
+1. **major: `helpers_may_wait` の関数の分け方の穴で、手伝いが待てないプログラムの `tz_small_realloc` が `noinline` になる（+14〜17 %）**
+   - 指摘: ランタイムの IR の断片のうち `src/runtime/character.ll`・`display.ll`・`debug.ll`・`recursive.ll` は末尾に改行が無く、次の断片がその最後の `}` と同じ行で始まる（`}define internal void @tz.string.copy(...) nounwind {`、`}@tz.debug.newline = ...`）。
+     `definitions` は `define ` で始まる行だけを見出しにし、`runtime_definitions` は `}` の後に注釈が続く形（`}; PM08: ...`）しか閉じなかったので、`@tz.string.copy` などは定義に入らず、その呼び出しが宣言された関数の呼び出し（待ち）に見えた。
+     `Char` を表示するプログラムなどで、手伝いが待てないのに ` noinline` が付き、IR が `main` と違った（D1 の見直しの「待てなければ IR は `main` と byte 単位で同じ」に反する）。誤りは安全な側で、不健全ではない。
+   - 再現（直す前の `9758ef96` の dev のコンパイラ）: レビューの `strjoin2`（`Parallel.init` のコールバックが `Vec` を 64 回伸ばして文字列を連結し、別の `export def letter` が `(to_string 'x').length` を返す）を `build --emit llvm --allocator small --no-cache` で出すと、
+     `main` の出力と違うのは `tz_small_realloc` の見出しの ` noinline` の 1 行だけで、754 行目が `}define internal void @tz.string.copy(...)` だった。`letter` の無い `strplain` は `main` と同じ。
+   - 失敗するテストを先に: `src/llvm_preempt.rs` の単体テスト `runtime_pieces_after_a_closing_brace_are_functions_of_their_own`。`}define`（2 回。2 回目は `@llvm.threadlocal.address` を読む `@tz.cache` の見出し）・`}@` の大域変数・`}%` の型・`}` と空白の後の注釈・`}declare`・`}attributes` の後にそれぞれ関数を置き、
+     チャンクがそのすべてを呼ぶ IR で、(a) 分けた行をつなぐと元の IR、(b) 9 個の関数がすべて見つかり、それぞれが自分の `}` で閉じ、自分の印の行を持つ、(c) 待ちが無いので `helper_wait` は `None` で、IR はそのまま、
+     (d) 7 個のランタイムの関数のどれに `tsuzuri_tz_yield` の呼び出しを入れても、その行が理由になり、`}` の後にある `@tz.cache` の見出しに ` noinline` が付く、を確かめる。期待値は IR の文法（`}` の後の top-level の形は前の関数に属さない）と D1 の規則から書き、コンパイラの出力は写していない。
+     直す前の `runtime_definitions` では (b) で失敗した（見つかる関数が `@tz.text`・`@tz.integer.digits`・`@tz.fn.M.run` の 3 個だけ）。
+   - 修正: `runtime_definitions(ir)` は行と定義を返す。`}` で始まり、空白の後に top-level の形（`TOP_LEVEL`: `define `・`declare `・`@`・`%`・`$`・`!`・`;`・`attributes `・`source_filename `・`target `・`module `・`uselistorder`）が続く行を、`}` と空白の後で 2 つに分け、そのうえで `definitions`（`}` だけの行で閉じる）を使う。
+     分けた行は `ir` の切れ端なので、つなぐと `ir` に戻り、` noinline` を足さないときの出力は byte 単位で同じ。前の実装の `definitions_closed_by` は要らなくなったので消し、`definitions` を `main` の形に戻した。
+     関数の本体の中で `}` から始まる行は閉じ括弧だけなので（`grep -n '^}.' src/runtime/*.ll` は該当なし。生成した IR の命令は字下げされる）、分けても本体の行を落とさない。top-level の形でないものが続く行は分けず、前のとおり次の関数を前の関数に含める（保守的な側）。
+     ランタイムの `.ll` は変えていない（改行を足すと、それを含むすべてのプログラムの IR が変わる。停止条件の 1 つ目）。`with_preemption_checks` は `definitions` のままで、TZ10 の検査の位置は変わらない。
+   - 修正後の証拠: `strjoin2` の IR は `-O0`（既定）と `-O3` の `--emit llvm --allocator small` で `main` と byte 単位で同じで、` noinline` が無い（`}define` の行はそのまま残る）。`strplain` も同じ。
+     レビューが測った核（`docs/benchmarks.md` の `flat_growth` の `grown` に文字列の連結、`main` に `to_string 'x'` の表示を足したもの）も `-O0`・`-O3` で `main` と同じ。
+     待つ版は、`}define` の行があっても ` noinline` が付く（`strjoin2` のコールバックに入れ子の `Parallel.init 8192` を足したもの、`Routine.yield ()` を足したもの）。
+   - IR の比較: `main` のコンパイラ（`/Users/tmidorikawa/pj/Tsuzuri/target/debug/tsuzuri`）と修正後の dev のコンパイラで、`tests/fixtures/*` と `examples/*` の `Main.tz` を持つ 180 の project を `-O0` の `build --emit llvm --no-cache`、既定の確保器と `--allocator small` で出した（360 個）。
+     333 個が byte 単位で同じ、12 個は前後で同じ診断で build できない（前の比較と同じ 6 project の 2 通り）、15 個が違う。違う 15 個は前の比較と同じ組で、どれも `--allocator small` の `tz_small_realloc` の見出しの ` noinline` の 1 行だけが違う。
+     それぞれの手伝いが待ちうる理由（修正後の `helper_wait` が返す行。チャンクから直接の呼び出しで届く関数の中の行）:
+
+     | project | `helper_wait` の行 | 待ちうる理由 |
+     | --- | --- | --- |
+     | `arena`・`trap_return_sync` | `call void %destroy(ptr %env)` | ポインターを通す呼び出し（`closure.ll` のクロージャの環境の drop） |
+     | `dyn_dispatch` | `call void %destroy(ptr %data)` | ポインターを通す呼び出し（`@tz.dyn.drop` の `dyn` の値の drop） |
+     | `concurrency_threads`・`rc`・`recursive_types` | `call void %action(ptr %node, ptr %pending)` | ポインターを通す呼び出し（`recursive.ll` の再帰型の節の drop） |
+     | `parallel` | `%v38 = call i64 %v36(i64 %v33, ptr %v37, i1 false)` | クロージャの呼び出し |
+     | `mutable_slices` | `%v49 = call %tz.closure %v47(i64 %v37, ptr %v48, i1 false)` | クロージャの呼び出し |
+     | `strings` | `%v36 = call %tz.utf8string %v34(i64 %v31, ptr %v35, i1 false)` | クロージャの呼び出し |
+     | `bindings_threads`・`data_channel_threads` | `%v3 = call i32 @tsuzuri_channel_close(ptr %v2, i32 1)` | tzroutine のランタイムの関数（`Channel`） |
+     | `host_imports`・`user_drop` | `call void @tsuzuri_tz_blocking_enter()` | extern の呼び出し（ブロッキング呼び出しの包み） |
+     | `parallel_report/basic` | `%written = call i64 @write(i32 2, ptr %pointer, i64 %remaining)` | `NEVER_WAITS` に無い宣言された関数（`write`） |
+     | `trap_return` | `call i32 @tsuzuri_tz_parallel(ptr @tz.parallel.chunk.4, ptr %v27, i64 %v15)` | 入れ子の `Parallel.*`（本当に待つ） |
+
+     15 個のうち 5 個（`concurrency_threads`・`parallel_report/basic`・`rc`・`recursive_types`・`user_drop`）は IR に `}` の後に断片が続く行を 1 つ持ち、修正後は関数が 1 つ多く見つかるが、理由の行は前の比較と同じ。
+2. **nit: 受け入れ条件の 2 つ目が、D1 の見直しの後の規則と合わない**: 「手伝いの tzroutine が待ちうる（`helpers_may_wait`）とき」と書き直した。上の「実装」の「関数の分け方」にも、レビューの後の分け方を足した。
+
+- 実行したコマンドと結果: `cargo fmt --all -- --check`（成功）、`cargo clippy --locked --all-targets -- -D warnings`（警告なし）、`cargo test --locked --lib preempt`（10 件成功。新しい単体テストを含む）、
+  `cargo nextest run --locked --no-fail-fast`（2938 件すべて成功、4 件 skip）、`node tests/small_allocator.mjs target/debug/tsuzuri`（単体テストの O0・O3・ASan + UBSan・TSan、`grow`・`primitives`・`threaded`・`nested`（`-O0`・`-O3` × 既定の P・P 8、IR の ` noinline`）、2 つの object の共有。成功）、
+  `TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/debug/tsuzuri <suite>`（native と WASM の `-O0`・`-O3`。`parallel` 36 件・`parallel_equivalence` 48 件・`pure_parallel` 12 件・`recursive_types` 23 件・`rc` 37 件、すべて成功。後の 2 つは `}` の後に断片が続く行を持つ）、
+  上の IR の比較、`node scripts/check-guide-lite.mjs`（88 件の参照、失敗 0）・`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`（19 ブロック、古いもの 0）・`node scripts/check-cli-docs.mjs`（4 件、失敗 0）。
+  言語リファレンスのページは変えていないので `check-docs` の対象は無い。文書: このチケット（受け入れ条件、「実装」の「関数の分け方」、この節）、`docs/architecture.md`（`helpers_may_wait` の段落に行の分け方）、`docs/benchmarks.md`（TZ14 の節にレビューの核と修正後の IR）。
+- 決定:
+  1. 分ける行を `}` の後に top-level の形が続く行に限った。`}` の後に何か続く行をすべて分けると、本体の途中で関数を閉じる誤りが（今の IR には無いが）不健全な側に出うる。限っておけば、知らない形は前のとおり次の関数を前の関数に含め、保守的な側に倒れる。
+  2. 行の分け方は `runtime_definitions`（`with_thread_storage_noinline` だけが使う）に閉じ込め、`with_preemption_checks` の `definitions` と `src/llvm.rs` の `with_stack_probes`（TZ02）の見出しの判定には入れなかった。spawn するプログラムの IR を変えないため（停止条件の 2 つ目）。
+  3. `_features/README.md` の TZ14 の行は変えていない。行の要約（待ちうるときだけ ` noinline`、ほかのプログラムの IR は変わらない）は、この修正でそのとおりになった。
+  4. 費用は測り直していない。修正後、レビューの核の IR が `-O0`・`-O3` で `main` と同じなので、機械語も同じである。
+- 残したこと（前からのことで、TZ14 では直さない）: ランタイムの IR の断片の連結の改行の欠けは、`with_preemption_checks` の `definitions`（TZ10 の検査の位置）と `with_stack_probes`（TZ02。`define ` で始まる行だけを見出しとみるので、`}define` の後の `@tz.string.copy` に probe が付かない。`strjoin2` の IR で確かめた）にも効く。
+  直すにはランタイムの `.ll` か連結に改行を足すことになり、それを含むすべてのプログラムの IR が変わるので、TZ14 の範囲の外とした（チケットは起票していない）。
+
 ## 手順 4 と D1 の見直し（2026-11-06）
 
 ### 決定
@@ -307,6 +361,7 @@ spawn せず `Parallel.*` を呼ぶネイティブのプログラムは、手伝
   ほかの `tsuzuri_*` のランタイムの関数はすべて待ちとみなす。trap と abort の関数は一覧に入れていない（見た fixture のコールバックは `@llvm.trap` で trap し、`--trap-mode return` などのランタイムの関数は待ちとみなす）。
 - 関数の分け方: `definitions` は `}` だけの行で関数を閉じるが、ランタイムの IR の断片が閉じ括弧と同じ行で始まることがある（`}; PM08: ...`。`src/runtime/integer.ll` の 1 行目が前の断片の `}` の後に続く）。
   そのままだと `@tz.integer.digits` が前の関数に呑まれ、整数を表示するコールバックが宣言された関数を呼ぶように見えて真になった（`value_layout`）。`with_thread_storage_noinline` は、`}` の後に注釈だけが続く行でも閉じる `runtime_definitions` を使う。
+  レビューの後、`}` の後に注釈以外の top-level の形（`}define ...`・`}@...`・`}declare ...` など）が続く行も分けるようにした（上の「実装と検証」の「レビューの指摘への対応（2026-11-06）」の 1）。
   `with_preemption_checks` は TZ10 の検査の位置を変えないよう `definitions` のまま（この連結の改行の欠けは前からある。直すと全プログラムの IR が変わるので、このチケットでは直さない）。
 
 ### 確かめた前提

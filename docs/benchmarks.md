@@ -763,6 +763,7 @@ def main :: own unit -> i32 = \() ->
 チケットの停止条件（1 %）を大きく超えました。インライン展開されると、LLVM は TLS の address（macOS では TLV の getter の呼び出し）をコールバックのループの外へ出し、`noinline` はそれを `Vec.add` ごとの呼び出しに戻します。
 その使い回しが危険なのは、コールバックの途中で手伝いの G が待って別のスレッドへ移るときだけです。そこで TZ14 は `noinline` を、手伝いの tzroutine が待ちうるプログラム（`llvm_preempt.rs` の `helpers_may_wait`: 入れ子の `Parallel.*`、ポインターを通す呼び出し、extern やランタイムの関数などに届く）に限りました。
 この核の IR は、`-O0`・`-O3` の `--emit llvm --allocator small` で `main` と byte 単位で同じなので、変更後の費用は 0 です（同じ IR なので測り直していません）。
+狭めた後の最初の版は、ランタイムの IR の断片が前の断片の閉じ括弧と同じ行で始まると（`Char` を表示するプログラムで `}define internal void @tz.string.copy(...)`）、その関数の呼び出しを待ちとみなしました。この核の `grown` に文字列の連結、`main` に `to_string 'x'` の表示を足すと、待てないのに `noinline` が付き、レビューの交互の実行（共有機）で中央値が +17.4 %（9 組）と +14.0 %（7 組）でした。その行を分けるように直した後、この版の IR も `-O0`・`-O3` で `main` と同じです。
 `tests/fixtures/*` と `examples/*` の 180 の project を `-O0` で、既定の確保器と `--allocator small` の両方で比べると、`main` と違うのは手伝いが待ちうる `--allocator small` の 15 個だけで、どれも `tz_small_realloc` の見出しの 1 行です。
 
 ## データ並列 API
