@@ -608,6 +608,7 @@ const suites = {
       ["owned_text", [], BigInt("hello!".length + "hello".length)],
       ["generic_read", [], 18n],
       ["generic_scalar", [], 42n],
+      ["call_result_temporaries", [], 42n + 42n + 41n + BigInt("1234".length) + BigInt("hello".length)],
       ...[-3, 0, 1, 5].map((n) => {
         const wide = BigInt(n), flag = n > 0;
         const a = wide + wide + wide;
