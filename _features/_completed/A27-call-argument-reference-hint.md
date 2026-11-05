@@ -194,7 +194,7 @@ f 41
 
 ### 性能
 
-- 型検査の時間だけ。推測の保留は呼び出しごとに定数の手間しか足さない。
+- 型検査の時間だけ。保留の判定は、型に未定の変数を持つ局所（`open_locals`）だけを見る。実装した当初は判定のたびにすべての局所の型をたどっていたので、局所の多い関数では保留する呼び出しごとに局所の数に比例する手間が足された（6,000 個の局所と 6,000 個の呼び出しで、型検査の段が明示の `ref` の形の約 3〜4.5 倍）。直した後の実測は、明示の `ref` の形と同じ範囲だった（「レビューの指摘への対応（2026-11-06）」の 2）。
 
 ## ドキュメント
 
@@ -254,7 +254,7 @@ f 41
    `settle_argument_hint` が、通常の引数・コールバック・後回しのラムダのそれぞれの検査の直前と、最後の引数の後（`solve_families` の前）で決める。`Parallel.*` の引数の分岐は保留しない。
 5. 保存した出力との比較: `tests/fixtures/`・`examples/` と今通るプログラムの `--emit llvm` と `check --json` は、手順 3・4 の後とも `cmp` で一致した。違ったのは、今まで拒否していたプログラム
    （`ann_lambda`・`ann_next`・`array_get`・`implicit_next`・`lambda_direct`・`lambda_local`・`len26`・`peek26`・`repro27`・`strlen26`・`strlen27`、`String.length (Maybe.get m)`、
-   2026 の `len (unbox b)`）が通るようになったことと、拒否のままのプログラムの診断の文面（`id (Array.get 0 (Array.get 0 xss))`）だけ。
+   2026 の `len (unbox b)`）が通るようになったことと、拒否のままのプログラムの一部の診断（コード・文面・位置。`id (Array.get 0 (Array.get 0 xss))` のほかにもある。種類と例は「レビューの指摘への対応（2026-11-06）」の 6）だけ。
 6. ドキュメントと E2E: `tests/fixtures/conventions` に `call_result_temporaries`（`Owned.call`・ラムダ・`Array.get`・`String.length (Owned.call …)`・`String.length (Maybe.get m)`。期待値 134 は手で数えた値）を足した。
 
 ### 判断（チケットを細かくしたもの）
@@ -292,3 +292,67 @@ f 41
 
 `src/check.rs`、`src/polymorph.rs`、`tests/parameter_conventions.rs`、`tests/user_drop.rs`、`tests/borrow_syntax.rs`、`tests/fixtures/conventions/Main.tz`、`tests/features.mjs`、
 `docs/language.md`、`_tsuzuri/language-reference/built-in-types-and-modules/text.md`、`_tsuzuri/language-reference/ownership-and-memory/borrowing.md`、`_features/README.md`、このチケット。
+
+### レビューの指摘への対応（2026-11-06）
+
+独立したレビューの指摘 6 件（軽微 3・nit 3）に対応した。比べた基準は `main` のソースの dev バイナリ（以下「main」）で、指摘の証拠はどれも、まず main と直す前のこのブランチ（`f20b7dc7`）のバイナリで再現した。
+
+1. **利用者向けの文書が「通り抜けの形だけが残る」と書いていた（軽微）。**
+   - 再現（2027）: `id (Array.get 0 [input, 2])` は両方で `E1003 expected ref i64, found i64`。`id (Array.get 0 (Array.get 0 xss))` はこのブランチで `5:21 E1003 expected ref i64, found i64`（main は `5:34 expected ref [ref i64], found [i64]`）。`String.length (Maybe.get (Maybe.Some "hi"))` は両方で `E1013`。`let` で束縛した形は、このブランチでどれも通る。
+     引数が場所でない呼び出しやリテラルで、その仮引数が結果の型変数を含むと、「判断」の規則 (b) がその引数の前に推測を入れるからである。
+   - 対応: `borrowing.md` の項目を「引数が結果を値の型に決める呼び出しは一時値として貸される」に狭め、結果が参照の型に決まる 3 つの形（通り抜け、結果の型変数を含む仮引数へ呼び出しやリテラルを直接渡す形、下の 3 の形）を下位の項目に分けた。`docs/language.md` の同じ段落の書き出しを同じく直し、残る 2 つの形を足した。
+   - 後の確認: 文書に書いた直し方を両方のバイナリで実行した: `id (ref (Array.get 0 [input, 2]))` は `41`、`String.length (ref (Maybe.get (Maybe.Some s)))` は `2`。
+2. **`locals_mention` が保留した呼び出しの引数ごとにすべての局所をたどっていた（軽微）。**
+   - 再現: レビューと同じ形の関数（`target/scratch/a27-review` に生成。`let m0 = Maybe.Some input` から `m6` までの入れ子の後に `let _c_i = Maybe.Some m6` を 6,000 個、`let _r_i = id (Array.get 0 xs)` を 6,000 個。対照は `id (ref (Array.get 0 xs))`）を
+     `TSUZURI_CACHE_DIR= TSUZURI_TIME_PASSES=1 tsuzuri check` で測った。直す前のこのブランチの check の段は、保留する形が 8,434・7,763・13,496 ms、明示の形が 2,816・1,936・3,016 ms、main の明示の形が 3,009・2,056・2,900 ms（3 回を交互に）。
+   - 対応: `bind` が、型に未定の変数を持つ局所の id と scope のキーを `Checker::open_locals` に記録し、`locals_mention` はそれだけを見る。見たときに型が閉じていた局所と、scope から外れた局所（キーの指す局所の id が違うか、どの scope にもない）は取り除く。
+     解かれた変数は解かれたまま（`Inference` の解は足されるだけで、試しの単一化も複製を成功のときだけ戻す）なので、閉じた型は閉じたままで、置き換えられたか pop された scope の項目は戻らない（scope へ入れるのは `bind` と、`$contract.result` を別のキーで入れ直す `contracts.rs` だけで、後者の元の項目は条件の検査の間 scope に残る）。
+     そのため答えは今までと同じ。`Inference::mentions` は、未定の変数を探す `reaches` と、それを使う `is_open` に分けた。
+   - 後の確認（同じ測り方。マシンの load average は 14〜58 で、ほかの作業と共有）: 6,000/6,000 は、保留する形 3,470・4,251・2,979 ms、明示の形 3,456・3,647・3,314 ms、main の明示の形 3,280・3,329・3,306 ms。
+     10,000/10,000 は、保留する形 8,114・8,322 ms、明示の形 12,191・8,646 ms、main の明示の形 8,694・8,162 ms。保留する形は明示の形と同じ範囲になった。この形の型検査は main でも局所の数の 2 乗で増える（6,000 から 10,000 で約 2.5 倍）が、保留はそれに足さない。
+     プロセス全体の命令数（`/usr/bin/time -l`）は、どちらのバイナリでも同じプログラムで 2 つの値（6,000 で約 69e9 と 130e9）に分かれたので、比べるのには使わなかった。
+   - 「テスト計画」の「性能」の記述を、実測に合わせて直した。
+3. **`borrowing.md` が、文脈だけが結果を決める呼び出しまで一時値として貸されると読めた（nit）。**
+   - 再現: レビューの `id (Monoid.empty ()) + 1` は、`Monoid<i64>` の instance が無いことでも失敗する（`let r: i64 = Monoid.empty ()` も両方で `E1005 no instance for Monoid.Monoid<i64>`）。そこで instance のある型で確かめた: `def check :: ref Monoids.All -> bool` に `check (Monoid.empty ())` は両方で `E1005 no instance for Monoid.Monoid<ref Monoids.All>`、
+     `let r = Monoid.empty ()` と `check r` も同じ。`let r: Monoids.All = Monoid.empty ()` と `check (ref (Monoid.empty ()))` は両方で通る。ユーザーのクラスのメソッド（`def make :: i64 -> 't`）はレビューの再現のとおり。
+   - 対応: 1 の下位の項目の 3 つめにこの形を書き、`docs/language.md` にも足した（型を書いた `let` か `ref (...)` で通る）。
+4. **`text.md` が `String.length (Text.clone text)` を `E1005` とだけ書いていた（nit）。**
+   - 再現: 2027 で `text` が関数の仮引数（`ref string`）なら両方で `E1005 no instance for Text.Text<ref string>`、局所の `string` なら両方で `E1003 expected ref string, found string`。
+   - 対応: 2 つを書き分けた。
+5. **新しく型検査を通る直接の形が、既存のコンパイラの panic に届いていた（軽微）。**
+   - 再現: `Array.sum (Parallel.map (\a -> a + 1) (Array.get 0 xss))`（2026・2027）は、main では `E1003 expected ref [an undetermined type], found [i64]`、直す前のこのブランチでは `check` が通り、`build`・`run` が `src/llvm.rs:5591` の `internal error: entered unreachable code: polymorphism is resolved before LLVM` で落ちた。
+     main も明示の `ref (Array.get 0 xss)` と `Array.map (\x -> x) xs` の形で同じく落ちる。`Parallel.map_ref` と `Parallel.reduce 0 f (Array.get 0 rows)` も同じだった（`Parallel.sum` は通常の組み込みの呼び出しなので落ちない）。
+   - 原因: `temporary_borrows` は一時値の共有借用を `BorrowOperand` にする。`src/llvm_parallel.rs` の `parallel_expression`（`Parallel.init`・`map`・`map_ref`・`reduce`）は引数を `expression` で評価していたが、`expression` には `BorrowOperand` の生成が無い。
+     通常の呼び出し（`comparison_call`）と `Routine.scope`（`parallel_scope`、TZ11）は `operand_borrow` で一時値を slot に置き、終わった後に `release_operands` で解放する。所有権の検査はすでに `BorrowOperand` の入力を扱っている（`shares_borrowed_environment`）。
+   - 対応: `parallel_expression` も、`BorrowOperand` の引数を `operand_borrow` で評価し、chunk の実行・`finish_borrowed_call`・callback の解放の後に `release_operands` で解放する。変更はこの関数だけで、`parallel_scope` と同じ形である。
+     このチケットで直したのは、A27 がこの形を `check` に通すようにしたからである。直さないと、A27 は `E1003` だったプログラムを、型検査は通るのにコンパイラが落ちるプログラムに変える。
+   - テスト: `tests/parallel.rs` の `parallel_inputs_borrow_temporaries`（2026・2027。`map`・`map_ref`・`reduce` について、直接の形の IR が明示の `ref (...)` の形の IR と native・WASM で同じ。2027 で `Array.map` の作る文字列の配列を `map_ref` へ渡す形が IR を出す）は、直す前に `src/llvm.rs:5591` の panic で失敗した。
+     E2E は `tests/fixtures/parallel` と `tests/fixtures/parallel_scheduler`（同じ case を持つ）に `parallel_temporary_inputs` を足した。明示の形・直接の形・`String.repeat` の一時配列・`reduce` を合わせ、期待値は `n(n+1)/2 + n(n-1) + 10n + 5`（`n` = 0, 1, 4097 で 5・16・25,217,040。chunk の境目 4,096 をまたぐ）を手で数えた式。直す前のバイナリでは `build --emit llvm` が同じ panic で落ちる。
+6. **拒否のままのプログラムの診断が、記録より多くの場合に変わっていた（nit）。** 手順 5 の記述を直した。変わる種類は次の 3 つで、どれも main が拒否するプログラムであり、main が受理するプログラムの型・診断・IR は変わらない（下の比較）。
+   - 推測を待つので結果が値に決まり、後の検査の誤りになる（多くは `let` の形と同じ誤り）: 2027 の `String.length (Array.get 1 xs)`（`xs = ["ab", "cde"]`）は main の `4:32 E1003 expected ref string, found string` から `4:20 E1005 no instance for Copy<string>` に変わる（`let t = Array.get 1 xs` の形は両方で `4:13 E1005` の同じ文面）。
+     2027 の `record Box<'a>` と `unbox :: Box<'a> -> 'a` の `len (unbox b)` は `7:16 E1003 expected Main.Box<ref string>, found Main.Box<string>` から `7:10 E1005 no instance for Copy<string>`。`Text<'s> =>` の本体の `Text.length (Maybe.get m)` は main の `2:33 E1003 expected ref an undetermined type, found 's` から、2027 では呼び出し側（`3:1`）の `E1005 no instance for Copy<string>`（`let` の形の main と同じ）になり、2026 では通る（`let` の形も main で通る）。
+   - 引数の不一致の位置と文面: `id (Array.get 0 (Array.get 0 xss))` は `5:34 expected ref [ref i64], found [i64]` から `5:21 expected ref i64, found i64`。
+   - 仕様 1 は `apply_piped` にも働く（`argument_hint` を呼ぶ）: `add :: i64 -> ref i64 -> i64` への `41 |> add 1`（2026・2027）は `3:14 E1003 expected an integer, found ref i64` から同じ位置の `E1003 expected ref i64, found i64`。`let n = 41` と `n |> add 1` では、位置もリテラル（`4:13`）から `n`（`5:5`）に移る。`let n: i64 = 41` なら両方で通る。
+   - テスト: `tests/parameter_conventions.rs` の `rejected_call_results_report_the_error_of_their_let_form` が、直接の形と `let` の形の両方で `E1005`・`Copy<string>`・`Array.get 1 xs` の位置を固定する（main では直接の形が `E1003` なので失敗する。期待は main の `let` の形の診断）。
+
+#### 実行したコマンドと結果
+
+- `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`: 成功。
+- `cargo test --locked --test parallel`（`src/llvm_parallel.rs` を直す前）: 3 件中 2 件成功、`parallel_inputs_borrow_temporaries` が `src/llvm.rs:5591:17` の panic で失敗。
+- `cargo test --locked --no-fail-fast --test parallel --test parameter_conventions --test user_drop --test borrow_syntax`: 3・37・27・13 件成功。
+- `node tests/features.mjs target/debug/tsuzuri <suite>`: `conventions` 37 件（native/WASM の O0/O3）、`parallel` 39 件（native/WASM の O0/O3）、`parallel_scheduler` 65 件（native の O0/O3、P 1・4）、`pure_parallel` 12 件、`parallel_equivalence` 48 件。`node tests/wasm_threads.mjs target/debug/tsuzuri`: 成功。
+- 手順 5 の比較のやり直し: `main` の `tests/fixtures/`・`examples/` を `git archive` で取り出し、`.tz` を持つ 199 個のディレクトリで、main とこのブランチのバイナリの `check --json`（出力と終了コード）と `build --emit llvm -O0`（出力・終了コード・`.ll`）を比べた。572 個のファイルがすべて byte 単位で同じ（build できるのは 174 個、25 個は両方で同じ診断）。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/built-in-types-and-modules/text.md _tsuzuri/language-reference/ownership-and-memory/borrowing.md`: 2 ページ、31 リンク、14 例、28 回の native 実行（O0/O3）が成功。
+  `TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`: 19 ブロック、古いもの 0。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-cli-docs.mjs`: 4 検査が成功。`node scripts/check-guide-lite.mjs`: 88 参照、失敗 0。
+- `cargo nextest run --locked --no-fail-fast`（すべての変更の後）: 2939 件すべて成功（4 件 skip。この対応で 2 件増えた）。
+
+#### 判断
+
+- 5 の panic は、変更が 1 つの関数に収まり、`parallel_scope` と同じ既存の形で直せるので、別のチケットにせずここで直した。
+- 2 の cache は scope の入れ子の構造（`scopes` の型）を変えず、`bind` と `locals_mention` の中だけで保つ。scope 外の局所も数える近似（答えが変わり、推測が早く入る）は採らなかった。
+- 6 で固定する診断には、`let` の形と同じ誤りになる `String.length (Array.get 1 xs)` を選んだ。期待値を main の `let` の形の診断から取れるからである。
+
+#### 変更したファイル（この対応）
+
+`src/check.rs`、`src/polymorph.rs`、`src/llvm_parallel.rs`、`tests/parallel.rs`、`tests/parameter_conventions.rs`、`tests/fixtures/parallel/Main.tz`、`tests/fixtures/parallel_scheduler/Main.tz`、`tests/features.mjs`、`docs/language.md`、
+`_tsuzuri/language-reference/ownership-and-memory/borrowing.md`、`_tsuzuri/language-reference/built-in-types-and-modules/text.md`、`_features/README.md`、このチケット。

@@ -148,7 +148,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A24 | [匿名共用体 `(A \| B)`（型で区別する共用体・期待型での注入・型テストのパターン `:?`）](A24-anonymous-unions.md) | P1 | L | A02, A03, A05 | todo |
 | A25 | [匿名共用体どうしの変換（部分集合からの拡大と `:? (A \| B)` の絞り込み）](A25-anonymous-union-conversions.md) | P2 | M | A24 | todo |
 | A26 | [匿名共用体の型クラス（`Eq`・`Ord`・`Hash`・`Display`）と JSON（`Encode`・`Decode`）](A26-anonymous-union-classes.md) | P2 | M | A24, A06, A07 | todo |
-| A27 | [結果の型が未定の呼び出しを `ref T` の引数へ直接渡すと、結果を `ref T` と推測して `E1003` になる（`id (Owned.call (ref next) input)`）](_completed/A27-call-argument-reference-hint.md) | P1 | M | A18, D14 | done（結果が引数から来ない呼び出し（`Owned.call`・ラムダ・`Array.get`・`Maybe.get m`）は `ref T` の引数へ一時値として貸す。推測は結果を見うる引数の直前か最後の引数の後まで待つ。通り抜けの形（`Text.trim`・`id (id x)`）は今までどおり） |
+| A27 | [結果の型が未定の呼び出しを `ref T` の引数へ直接渡すと、結果を `ref T` と推測して `E1003` になる（`id (Owned.call (ref next) input)`）](_completed/A27-call-argument-reference-hint.md) | P1 | M | A18, D14 | done（引数が結果を値に決める呼び出し（`Owned.call`・ラムダ・`Array.get 0 xs`・`Maybe.get m`）は `ref T` の引数へ一時値として貸す。推測は結果を見うる引数の直前か最後の引数の後まで待つ。`Parallel.map`・`map_ref`・`reduce` の入力の一時値も build できる。通り抜けの形（`Text.trim`・`id (id x)`）と、引数に呼び出しやリテラルを直接書く形（`id (Array.get 0 [a, b])`）は今までどおり） |
 | A28 | [関数を含む型の呼び出し結果が `ref` 引数の借用をすべて持つとみなされる（`HashMap.remove` と、関数の `Arc` の `Arc.share` が誤って `E1013`）](A28-function-results-retain-ref-arguments.md) | P1 | M | C09, TZ02 | todo |
 | A29 | [印を持つ dyn 型を型引数にした組み込み関数の LLVM シンボルが不正になる（`Channel<dyn (C, Send)>` がビルドできない）](A29-dyn-marker-builtin-symbols.md) | P1 | S | A14, TZ03 | todo |
 | A30 | [借用を持つ関数値から `Owned.function` を作れてしまい、`Routine.go` などで解放後の読み出しになる](A30-owned-function-from-borrowing-value.md) | P0 | S | TZ02, TZ05, TZ06 | todo |
