@@ -63,7 +63,10 @@ try {
   });
   const sample = (build) => {
     const output = execFileSync(build.executable, [], { encoding: "utf8", timeout: 300_000 });
-    for (const line of output.trim().split(/\r?\n/)) {
+    const lines = output.trim().split(/\r?\n/);
+    // one line for every kernel, or the sample is incomplete
+    assert.deepEqual(lines.map((line) => line.split(" ")[0]).sort(), Object.keys(want).sort(), `${build.name}: the kernels of a sample`);
+    for (const line of lines) {
       const [kernel, nanoseconds, value] = line.split(" ");
       assert.equal(Number(value), want[kernel], `${build.name} ${kernel}`);
       // a clock that could not be read is no sample (`clock_error`), and neither is a zero
