@@ -28,7 +28,7 @@ const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", 
   "blocking_handoff", "blocking_reacquire", "blocking_deadlock", "blocking_callback", "locked_thread", "locked_yield", "locked_yielders",
   "netpoll_pipe", "netpoll_timeout", "netpoll_close", "netpoll_race",
   "dchan_ring", "dchan_waits", "dchan_close", "dchan_lock", "dchan_deadlock",
-  "preempt_flag", "preempt_sysmon", "preempt_async", "preempt_async_values", "preempt_async_runtime",
+  "preempt_flag", "preempt_sysmon", "preempt_async", "preempt_async_values", "preempt_async_sve", "preempt_async_runtime",
   "preempt_async_ignored", "preempt_async_forward", "preempt_async_edges", "preempt_idle",
   "long_sleep"];
 const windows = process.platform === "win32";
@@ -64,7 +64,9 @@ try {
     const binary = build(`tzroutine${optimization}`, [optimization]);
     for (const procs of ["1", "2", "4"]) {
       for (const name of cases) {
-        execute(binary, [name], { TSUZURI_MAXPROCS: procs });
+        const result = execute(binary, [name], { TSUZURI_MAXPROCS: procs });
+        // Whether the machine had SVE, which only CI's linux-arm64 has: the case says so.
+        if (name === "preempt_async_sve" && procs === "1") console.log(`${optimization}: ${result.stdout.trim()}`);
         runs++;
       }
     }

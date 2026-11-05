@@ -2123,9 +2123,9 @@ TZR_API void tsuzuri_tz_unlock_thread(void) {
  * check does) and then raises SIGURG on its own thread, whose handler (tzr_async_resume) puts the
  * saved context back into the signal frame, so that the kernel's return restores all of it exactly,
  * on whichever thread the G runs by then. Two signals, but no register has to be free for the jump
- * back, which AArch64 code never leaves. A context that cannot be saved whole (live SVE or SME state,
- * a frame of a size that the probe at the start did not see, AMX state) is not stopped; Phase 1's
- * checks and sysmon's next request remain. */
+ * back, which AArch64 code never leaves. A context that cannot be saved whole (SME state, live SVE
+ * vectors too long for the records of a frame, a frame of another shape than the probe at the start
+ * saw, AMX state) is not stopped; Phase 1's checks and sysmon's next request remain. */
 #if defined(TZR_ASYNC)
 static int tzr_trap_boundary(void);
 #if defined(__APPLE__)
@@ -2150,7 +2150,8 @@ typedef struct tzr_async_frame {
     uint64_t magic;
     uint64_t size;      /* bytes of `state` */
     uintptr_t pc, sp;   /* where the G was stopped */
-    unsigned char pad[32];
+    uint64_t shape;     /* tzr_async_measure's */
+    unsigned char pad[24];
     unsigned char state[]; /* 64-byte aligned */
 } tzr_async_frame;
 
@@ -2158,7 +2159,7 @@ static struct {
     _Atomic int enabled;
     _Atomic int probing;
     pthread_t prober;         /* the thread of sysmon, while it probes */
-    _Atomic uint64_t probed;  /* the size of a context that the thread of sysmon saw, 0: unusable */
+    _Atomic uint64_t probed;  /* the shape of a context that the thread of sysmon saw, 0: unusable */
     _Atomic uint64_t signals; /* sent by sysmon */
     _Atomic uint64_t stopped; /* stops in generated code */
     _Atomic uint64_t refused; /* in generated code, but not saved */
@@ -2171,39 +2172,54 @@ static _Atomic int tzr_async_oneshot; /* the previous handler had SA_RESETHAND, 
 /* The records of the floating-point and vector state after the registers of the kernel's frame
  * (arch/arm64/include/uapi/asm/sigcontext.h). */
 enum { TZR_FPSIMD_MAGIC = 0x46508001, TZR_ESR_MAGIC = 0x45535201, TZR_SVE_MAGIC = 0x53564501,
-       TZR_TPIDR2_MAGIC = 0x54504902, TZR_FPSIMD_SIZE = 528, TZR_SVE_EMPTY = 16 };
+       TZR_TPIDR2_MAGIC = 0x54504902, TZR_FPSIMD_SIZE = 528, TZR_SVE_FLAG_SM = 1 };
 #if defined(FPSIMD_MAGIC)
 _Static_assert(FPSIMD_MAGIC == TZR_FPSIMD_MAGIC && ESR_MAGIC == TZR_ESR_MAGIC && SVE_MAGIC == TZR_SVE_MAGIC,
                "the kernel's record magics");
+_Static_assert(offsetof(struct sve_context, vl) == 8, "the vector length of the kernel's SVE record");
+#endif
+#if defined(SVE_SIG_FLAG_SM)
+_Static_assert(SVE_SIG_FLAG_SM == TZR_SVE_FLAG_SM && offsetof(struct sve_context, flags) == 10,
+               "the kernel's flag of SME's streaming mode in the SVE record");
 #endif
 #if defined(TPIDR2_MAGIC)
 _Static_assert(TPIDR2_MAGIC == TZR_TPIDR2_MAGIC, "the kernel's TPIDR2 record magic");
 #endif
 #define TZR_GREGS_BYTES (34 * 8) /* regs[31], sp, pc, pstate */
 _Static_assert(offsetof(mcontext_t, pstate) - offsetof(mcontext_t, regs) == 33 * 8, "regs, sp, pc and pstate in a row");
-/* The fpsimd record of a frame, or NULL when another record holds state that a copy of it would
- * lose (live SVE or SME registers, an extra record) or that is unknown. */
-static unsigned char *tzr_async_fpsimd(mcontext_t *mc) {
+/* The bytes of the records of a frame, through the header of the end record, or 0 when one of them
+ * holds state that the frame of another thread could not take back: SME's streaming mode or ZA (whose
+ * record is unknown here), an extra record (live SVE vectors too long for `__reserved`; 512 bits
+ * fit), or an unknown record. The kernel puts the SVE registers into the frame of a thread that used
+ * them since its last system call (the C library's string functions do), and at sigreturn it takes
+ * them from the records that the frame holds then: the records go to the frame of the resume whole,
+ * which takes them when its SVE vector length, `vl` (0 without SVE), is the same. */
+static size_t tzr_async_records(mcontext_t *mc, uint16_t *vl) {
     unsigned char *base = (unsigned char *)mc->__reserved;
     size_t end = sizeof mc->__reserved, at = 0;
-    unsigned char *fpsimd = NULL;
+    int fpsimd = 0;
+    *vl = 0;
     while (at + 8 <= end) {
         uint32_t magic, size;
         memcpy(&magic, base + at, 4);
         memcpy(&size, base + at + 4, 4);
-        if (magic == 0) break;
-        if (size < 8 || size > end - at) return NULL;
+        if (magic == 0) return size == 0 && fpsimd ? at + 8 : 0;
+        if (size < 8 || size > end - at) return 0;
         if (magic == TZR_FPSIMD_MAGIC) {
-            if (size != TZR_FPSIMD_SIZE) return NULL;
-            fpsimd = base + at;
+            if (size != TZR_FPSIMD_SIZE) return 0;
+            fpsimd = 1;
         } else if (magic == TZR_SVE_MAGIC) {
-            if (size > TZR_SVE_EMPTY) return NULL; /* live SVE registers */
+            uint16_t flags;
+            if (size < 16) return 0;
+            memcpy(vl, base + at + 8, 2);
+            memcpy(&flags, base + at + 10, 2);
+            if (flags & TZR_SVE_FLAG_SM) return 0;
         } else if (magic != TZR_ESR_MAGIC && magic != TZR_TPIDR2_MAGIC) {
-            return NULL;
+            return 0;
         }
         at += size;
     }
-    return fpsimd;
+    return 0;
 }
 #elif defined(__linux__) && defined(__x86_64__)
 #define TZR_GREGS_BYTES (NGREG * 8)
@@ -2224,17 +2240,25 @@ static size_t tzr_async_fpbytes(const unsigned char *fp) {
 }
 #endif
 
-/* The size of the saved context of `uc`, or 0 when it cannot be saved whole. */
-__attribute__((no_sanitize("address"))) static size_t tzr_async_measure(ucontext_t *uc) {
+/* The size of the saved context of `uc`, or 0 when it cannot be saved whole. `shape` gets what it must
+ * have in common with the probe's context and with the frame that it is written back to (0 with a size
+ * of 0): its size, or on Linux aarch64, whose records grow with live SVE registers and go to that frame
+ * whole, the SVE vector length plus one. */
+__attribute__((no_sanitize("address"))) static size_t tzr_async_measure(ucontext_t *uc, uint64_t *shape) {
 #if defined(__APPLE__)
-    return uc->uc_mcsize > 0 && uc->uc_mcsize <= TZR_ASYNC_STATE ? (size_t)uc->uc_mcsize : 0;
+    size_t size = uc->uc_mcsize > 0 && uc->uc_mcsize <= TZR_ASYNC_STATE ? (size_t)uc->uc_mcsize : 0;
+    *shape = size;
 #elif defined(__aarch64__)
-    return tzr_async_fpsimd(&uc->uc_mcontext) ? TZR_GREGS_BYTES + TZR_FPSIMD_SIZE : 0;
+    uint16_t vl;
+    size_t records = tzr_async_records(&uc->uc_mcontext, &vl);
+    size_t size = records ? TZR_GREGS_BYTES + records : 0;
+    *shape = records ? (uint64_t)vl + 1 : 0;
 #else
-    if (uc->uc_mcontext.fpregs == NULL) return 0;
-    size_t fp = tzr_async_fpbytes((const unsigned char *)uc->uc_mcontext.fpregs);
-    return fp && TZR_GREGS_BYTES + fp <= TZR_ASYNC_STATE ? TZR_GREGS_BYTES + fp : 0;
+    size_t fp = uc->uc_mcontext.fpregs ? tzr_async_fpbytes((const unsigned char *)uc->uc_mcontext.fpregs) : 0;
+    size_t size = fp && TZR_GREGS_BYTES + fp <= TZR_ASYNC_STATE ? TZR_GREGS_BYTES + fp : 0;
+    *shape = size;
 #endif
+    return size;
 }
 
 __attribute__((no_sanitize("address"))) static void tzr_async_copy(void *to, const void *from, size_t size) {
@@ -2248,23 +2272,25 @@ __attribute__((no_sanitize("address"))) static void tzr_async_save(ucontext_t *u
 #if defined(__APPLE__)
     tzr_async_copy(state, uc->uc_mcontext, size);
 #elif defined(__aarch64__)
-    (void)size; /* TZR_GREGS_BYTES + TZR_FPSIMD_SIZE */
     tzr_async_copy(state, &uc->uc_mcontext.regs[0], TZR_GREGS_BYTES);
-    tzr_async_copy(state + TZR_GREGS_BYTES, tzr_async_fpsimd(&uc->uc_mcontext), TZR_FPSIMD_SIZE);
+    tzr_async_copy(state + TZR_GREGS_BYTES, uc->uc_mcontext.__reserved, size - TZR_GREGS_BYTES);
 #else
     tzr_async_copy(state, uc->uc_mcontext.gregs, TZR_GREGS_BYTES);
     tzr_async_copy(state + TZR_GREGS_BYTES, uc->uc_mcontext.fpregs, size - TZR_GREGS_BYTES);
 #endif
 }
 
-/* Puts a saved context back into `uc`; 0 when its frame has another shape. */
-__attribute__((no_sanitize("address"))) static int tzr_async_load(ucontext_t *uc, const unsigned char *state, size_t size) {
-    if (tzr_async_measure(uc) != size) return 0;
+/* Puts the context that `frame` saved back into `uc`; 0 when its frame has another shape. */
+__attribute__((no_sanitize("address"))) static int tzr_async_load(ucontext_t *uc, const tzr_async_frame *frame) {
+    const unsigned char *state = frame->state;
+    size_t size = frame->size;
+    uint64_t shape;
+    if (tzr_async_measure(uc, &shape) == 0 || shape != frame->shape) return 0;
 #if defined(__APPLE__)
     tzr_async_copy(uc->uc_mcontext, state, size);
 #elif defined(__aarch64__)
     tzr_async_copy(&uc->uc_mcontext.regs[0], state, TZR_GREGS_BYTES);
-    tzr_async_copy(tzr_async_fpsimd(&uc->uc_mcontext), state + TZR_GREGS_BYTES, TZR_FPSIMD_SIZE);
+    tzr_async_copy(uc->uc_mcontext.__reserved, state + TZR_GREGS_BYTES, size - TZR_GREGS_BYTES);
 #else
     tzr_async_copy(uc->uc_mcontext.gregs, state, TZR_GREGS_BYTES);
     tzr_async_copy(uc->uc_mcontext.fpregs, state + TZR_GREGS_BYTES, size - TZR_GREGS_BYTES);
@@ -2334,9 +2360,10 @@ __attribute__((no_sanitize("address"))) static int tzr_async_stop(ucontext_t *uc
         uintptr_t hi = atomic_load_explicit(&p->run_hi, memory_order_relaxed);
         if (lo == 0 || sp <= lo || sp > hi) continue;
         atomic_store_explicit(&p->async_armed, 0, memory_order_relaxed);
-        size_t size = tzr_async_measure(uc);
+        uint64_t shape;
+        size_t size = tzr_async_measure(uc, &shape);
         uintptr_t at = (sp - TZR_ASYNC_REDZONE - sizeof(tzr_async_frame) - size) & ~(uintptr_t)63;
-        if (size == 0 || size != atomic_load_explicit(&tzr_async.probed, memory_order_relaxed)
+        if (size == 0 || shape != atomic_load_explicit(&tzr_async.probed, memory_order_relaxed)
             || at < lo + TZR_ASYNC_MARGIN + TZR_ASYNC_BUDGET) {
             atomic_fetch_add_explicit(&tzr_async.refused, 1, memory_order_relaxed);
             return 1;
@@ -2346,6 +2373,7 @@ __attribute__((no_sanitize("address"))) static int tzr_async_stop(ucontext_t *uc
         frame->size = size;
         frame->pc = pc;
         frame->sp = sp;
+        frame->shape = shape;
         tzr_async_save(uc, frame->state, size);
         tzr_async_redirect(uc, frame);
         atomic_fetch_add_explicit(&tzr_async.stopped, 1, memory_order_relaxed);
@@ -2371,7 +2399,7 @@ __attribute__((no_sanitize("address"))) static int tzr_async_resume(ucontext_t *
         /* the frame is published before tzr_async_entry sends its signal: one that comes in between
          * is someone else's, and the entry's own comes after it (this thread, so no ordering) */
         if (!atomic_exchange_explicit(&m->async_self, 0, memory_order_relaxed)) return 0;
-        if (frame->magic != TZR_ASYNC_MAGIC || !tzr_async_load(uc, frame->state, frame->size)) tzr_async_lost();
+        if (frame->magic != TZR_ASYNC_MAGIC || !tzr_async_load(uc, frame)) tzr_async_lost();
         frame->magic = 0;
         atomic_store_explicit(&m->async_resume, NULL, memory_order_relaxed);
         return 1;
@@ -2393,7 +2421,9 @@ __attribute__((no_sanitize("address"))) static int tzr_async_kicked(void) {
 __attribute__((no_sanitize("address"))) static void tzr_async_handler(int sig, siginfo_t *info, void *context) {
     ucontext_t *uc = context;
     if (atomic_load_explicit(&tzr_async.probing, memory_order_acquire) && pthread_equal(pthread_self(), tzr_async.prober)) {
-        atomic_store_explicit(&tzr_async.probed, tzr_async_measure(uc), memory_order_relaxed);
+        uint64_t shape;
+        (void)tzr_async_measure(uc, &shape);
+        atomic_store_explicit(&tzr_async.probed, shape, memory_order_relaxed);
         return;
     }
     if (tzr_async_resume(uc)) {
@@ -2496,9 +2526,10 @@ static void tzr_async_thread(tzr_m *m) {
     pthread_sigmask(SIG_UNBLOCK, &urgent, NULL);
 }
 
-/* On the thread of sysmon, once: the handler, and a probe of the size of a context (a frame of a
- * thread whose state is larger, AVX-512 on an Intel Mac, AMX on Linux, is refused). Without
- * generated code in the section (an empty range) nothing is stopped and no signal is sent. */
+/* On the thread of sysmon, once: the handler, and a probe of the shape of a context (a frame of a
+ * thread whose state is larger, AVX-512 on an Intel Mac, AMX on Linux, or whose SVE vector length is
+ * another on Linux aarch64, is refused; with SME, whose record every frame has, nothing is stopped).
+ * Without generated code in the section (an empty range) nothing is stopped and no signal is sent. */
 static void tzr_async_init(void) {
     if ((uintptr_t)tzr_text_start >= (uintptr_t)tzr_text_end) return;
     /* A handler that the program had keeps its system calls' behavior for its own signals: restarted

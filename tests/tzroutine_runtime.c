@@ -2739,6 +2739,66 @@ static void test_preempt_async_values(void) {
     printf("preempt async values: %llu stops\n", (unsigned long long)(atomic_load(&tzr_async.yielded) - before));
 }
 
+#if defined(__linux__) && defined(__aarch64__)
+#include <sys/auxv.h>
+#include <sys/prctl.h>
+#if !defined(HWCAP_SVE)
+#define HWCAP_SVE (1UL << 22)
+#endif
+#if !defined(PR_SVE_GET_VL)
+#define PR_SVE_GET_VL 51
+#endif
+/* Linux aarch64 with SVE: a loop of the section that holds a predicate and a vector register of SVE
+ * (live from its first SVE instruction until a system call, so the kernel's frame has them) is
+ * stopped, and goes on with both, maybe on another thread. Returns the lanes and predicate bits that
+ * changed: 0. */
+uint64_t async_sve_spin(_Atomic int *stop);
+__asm__(".pushsection tz_text,\"ax\",%progbits\n"
+        ".arch_extension sve\n"
+        ".p2align 2\n"
+        ".type async_sve_spin, %function\n"
+        "async_sve_spin:\n"
+        "    ptrue p6.s, vl3\n"
+        "    index z23.s, #1, #3\n"
+        "1:  ldr w1, [x0]\n"
+        "    cbz w1, 1b\n"
+        "    ptrue p7.b\n"
+        "    index z24.s, #1, #3\n"
+        "    cmpne p5.s, p7/z, z23.s, z24.s\n"
+        "    cntp x2, p7, p5.s\n"
+        "    ptrue p4.s, vl3\n"
+        "    eor p3.b, p7/z, p6.b, p4.b\n"
+        "    cntp x3, p7, p3.b\n"
+        "    add x0, x2, x3\n"
+        "    ret\n"
+        ".size async_sve_spin, .-async_sve_spin\n"
+        ".popsection\n");
+static void async_sve_spinner(void *env) {
+    (void)env;
+    CHECK(async_sve_spin(&async_stop) == 0);
+}
+static void test_preempt_async_sve(void) {
+    if (!(getauxval(AT_HWCAP) & HWCAP_SVE)) {
+        printf("preempt async sve: no SVE\n");
+        return;
+    }
+    start_watchdog();
+    atomic_store(&async_stop, 0);
+    uint64_t before = atomic_load(&tzr_async.yielded);
+    int64_t wakes = 0;
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int64_t i = 0; i < tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(async_sve_spinner, NULL);
+    tsuzuri_tz_go(async_ticker, &wakes);
+    join(scope);
+    CHECK(wakes == 20);
+    CHECK(atomic_load(&tzr_async.yielded) > before);
+    printf("preempt async sve: %llu stops, vector length %d bytes\n",
+           (unsigned long long)(atomic_load(&tzr_async.yielded) - before), (int)prctl(PR_SVE_GET_VL) & 0xffff);
+}
+#else
+static void test_preempt_async_sve(void) { printf("preempt async sve: not Linux aarch64\n"); }
+#endif
+
 /* The same loop in the runtime's code: sysmon's signals arrive (one more spinner than Ps waits for a
  * P, so sysmon asks), and none stops it. */
 static uint64_t async_spin_runtime(int64_t until) {
@@ -3013,6 +3073,7 @@ static void test_preempt_async_ignored(void) {
 #else
 static void test_preempt_async(void) { printf("preempt async: not built (Phase 1 only)\n"); }
 static void test_preempt_async_values(void) { printf("preempt async values: not built\n"); }
+static void test_preempt_async_sve(void) { printf("preempt async sve: not built\n"); }
 static void test_preempt_async_runtime(void) { printf("preempt async runtime: not built\n"); }
 static void test_preempt_async_ignored(void) { printf("preempt async ignored: not built\n"); }
 static void test_preempt_async_forward(void) { printf("preempt async forward: not built\n"); }
@@ -3124,6 +3185,7 @@ int main(int argc, char **argv) {
     RUN("preempt_sysmon", test_preempt_sysmon());
     RUN("preempt_async", test_preempt_async());
     RUN("preempt_async_values", test_preempt_async_values());
+    RUN("preempt_async_sve", test_preempt_async_sve());
     RUN("preempt_async_runtime", test_preempt_async_runtime());
     RUN("preempt_async_ignored", test_preempt_async_ignored());
     RUN("preempt_async_forward", test_preempt_async_forward());
