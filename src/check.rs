@@ -13142,6 +13142,13 @@ impl<'a> Checker<'a> {
             (Type::Reference(inner, mutable), _) => {
                 Type::Reference(Box::new(self.argument_hint(inner, &expected)), *mutable)
             }
+            // A27: the open type of a number literal never becomes a reference (no reference type
+            // has an `Integer` or `Float` instance), so it takes the referenced type and is lent.
+            (Type::Infer(_), Type::Reference(inner, _))
+                if self.inference.is_numeric_literal(&actual) =>
+            {
+                (**inner).clone()
+            }
             (Type::Infer(_) | Type::Error, _) => expected,
             (_, Type::Reference(inner, _)) => (**inner).clone(),
             _ => expected,
