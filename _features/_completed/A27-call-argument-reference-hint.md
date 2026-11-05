@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | A18, D14 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-05（TZ12 の作業中に `Owned.call` で発見。D14 が既知の制限として記録していたもの。HEAD `5ee6b0f2` で確認・原因を調査） |
 | 承認 | 不要（今型エラーになるプログラムを受理するだけで、今受理しているプログラムの型と IR は変えない） |
 | 改善する劣位 | 不具合: `id (Owned.call (ref next) input)` が `E1003 expected an integer, found ref i64` になる。edition 2027 では型変数の引数が既定で読み取り（`'a -> 'a` は `ref 'a -> 'a`）なので、ジェネリックな関数の引数に呼び出しを直接書くだけで起きる。明示の `ref` の引数（`String.length (Owned.call …)`、2026 の `def len :: ref string -> i64`）でも起きる。`let` で束縛すると通る |
@@ -17,7 +17,7 @@
 ## 目的
 
 呼び出しを引数に直接書く形（`f (g x)`）を、`let` で束縛する形（`let r = g x` と `f r`）と同じ型で受理する。値の呼び出し結果を `ref T` の引数へ渡すと一時的に貸すという
-規則（[借用](../_tsuzuri/language-reference/ownership-and-memory/borrowing.md) の「呼び出し引数の暗黙の借用」）は文書どおりにあるのに、結果の型が未定の呼び出しでは、
+規則（[借用](../../_tsuzuri/language-reference/ownership-and-memory/borrowing.md) の「呼び出し引数の暗黙の借用」）は文書どおりにあるのに、結果の型が未定の呼び出しでは、
 型検査が先に「結果は `ref T`」と推測してしまうので、この規則まで届かない。
 
 ## 着手条件と停止条件
@@ -42,7 +42,7 @@
 - `docs/language.md:1842`: 結果の型が型変数そのもの（`Maybe.get :: own Maybe<'a> -> 'a`、`Text.trim :: ref 's -> 's`）の呼び出しを `ref T` の仮引数へそのまま渡すと、
   型変数が `ref T` に決まって `E1003` になる。`let` で束縛するか `ref` を明示する。
 - `_tsuzuri/language-reference/built-in-types-and-modules/text.md:195`: 同じ制限（`Text.length (Text.trim text)`）。
-- [D14](_completed/D14-text-class.md) の「見つけた不具合」（589 行）: 原因を `Checker::argument_hint` とし、後続に回した。これまでチケットは無かった。
+- [D14](D14-text-class.md) の「見つけた不具合」（589 行）: 原因を `Checker::argument_hint` とし、後続に回した。これまでチケットは無かった。
 
 ### 原因
 
@@ -238,3 +238,57 @@ f 41
 - 決定: 仕様 1 を、推測を遅らせる規則とは別に入れる。
 - 理由: `Inference::is_numeric_literal` の doc comment がすでにこの性質を述べており、今この形で `ref` に決まるプログラムは必ず失敗する。ラムダと局所の閉包の形はこれだけで直る。
 - 状態: 既定案。
+
+## 実装と検証（2026-11-06）
+
+### 実装した手順
+
+1. ベースライン: HEAD（`src/` は `5ee6b0f2` と同じ）の dev バイナリで、`tests/fixtures/`・`examples/` の 203 個のビルドできるプログラム（対象は 243。残りは単体ではビルドできない module）と、
+   「再現」「同じ原因の形」「今の推測に頼って通るプログラム」と追加の調査用プログラム（計 59 個。`target/scratch/a27/progs`・`progs2`）の `build --emit llvm -O0` と `check --json` を保存した。
+   記録は「現状」と一致した（`peek (id input)` だけは、2027 では今も `E1003` の通り抜けの形だった。下の「判断」）。
+2. 失敗するテストを先に足した: `tests/parameter_conventions.rs` の `call_results_without_a_known_type_are_lent_to_read_parameters`（2027。8 つの形の IR が明示の `ref (…)` の形の IR と一致）と
+   `pass_through_calls_keep_their_types`、`tests/user_drop.rs` の `owned_call_results_are_lent_to_reference_parameters`（2026 の `peek`・`len`）、`tests/borrow_syntax.rs` の
+   `implicit_arguments_preserve_inference_and_owned_parameters` への追記（2026 の `String.length (identity s) + s.length`）。旧コードでは受理のテスト 2 件だけが失敗した。
+3. 仕様 1: `argument_hint` で、数値リテラルの未定の型と `ref T` の期待型から `T` を返す。ラムダと局所の閉包の形が通り、ほかの保存した出力は byte 単位で同じ。T1: 2937 件中 2935 件成功（失敗は手順 2 の受理のテスト 2 件）。
+4. 仕様 2: `call_expression` が、引数で期待型が参照、結果が数値リテラルでない未定の型（局所の型に現れないもの）のとき、推測を `PendingHint` として保留する。
+   `settle_argument_hint` が、通常の引数・コールバック・後回しのラムダのそれぞれの検査の直前と、最後の引数の後（`solve_families` の前）で決める。`Parallel.*` の引数の分岐は保留しない。
+5. 保存した出力との比較: `tests/fixtures/`・`examples/` と今通るプログラムの `--emit llvm` と `check --json` は、手順 3・4 の後とも `cmp` で一致した。違ったのは、今まで拒否していたプログラム
+   （`ann_lambda`・`ann_next`・`array_get`・`implicit_next`・`lambda_direct`・`lambda_local`・`len26`・`peek26`・`repro27`・`strlen26`・`strlen27`、`String.length (Maybe.get m)`、
+   2026 の `len (unbox b)`）が通るようになったことと、拒否のままのプログラムの診断の文面（`id (Array.get 0 (Array.get 0 xss))`）だけ。
+6. ドキュメントと E2E: `tests/fixtures/conventions` に `call_result_temporaries`（`Owned.call`・ラムダ・`Array.get`・`String.length (Owned.call …)`・`String.length (Maybe.get m)`。期待値 134 は手で数えた値）を足した。
+
+### 判断（チケットを細かくしたもの）
+
+- **「結果を見うる引数」を D1 より広げた。** チケットの規則（仮引数が結果そのもの・その参照・結果を含む関数の型のときだけ先に決める）では、今通る
+  `id (Maybe.get (Maybe.Some x))`（2027）と `len (Maybe.get (Maybe.Some s)) + s.length`（2026）が変わる（前者は `x` を借りずに一時値を貸す IR に変わり、後者は `s` が move されて `E1012` になる）。
+  呼び出しやリテラルの引数は、期待型の型引数を自分の引数へ渡す（`Maybe.Some x` は `Maybe<ref T>` から `x` を借りる）ので、「設計」の健全性の節の「型引数の中は強制が見ない」は成り立たない。
+  停止条件に当たるので、規則を次のように直した: 引数の検査の直前に、(a) 今の解決済みの仮引数が結果を通す（D1。参照を外した型が結果そのものか、結果を含む関数の型）、
+  (b) 引数が場所（名前・`Module.f`・フィールド・添字・`deref`）かキーワードの `ref` でなく、仮引数が結果をどこかに含む、(c) 結果の型変数が局所（と `@old` の局所）の型に現れる、のどれかなら決める。
+  (b) の場所とキーワードの `ref` は、`argument` が期待型なしで検査して外側の型だけで強制する（`place_argument`・`coerce_argument`）ので、型引数に結果があっても見ない。(c) は、局所を読む引数が結果を見うる経路を塞ぐ。
+  `Owned.call (ref next) input` では、`ref next` の後で `next` の型を通して結果が局所に現れるので、`input` の前で決まる（`'p` は数値リテラルの型なので仕様 1 で `i64`）。
+- 決めるときに結果が値に決まっていれば単一化しない。未定・参照・`Error`・型構築子の適用（`Application`・`Partial`）なら、今と同じく `argument_hint` と単一化し、失敗は `partial_application` で対応付ける。
+  数値リテラルの型なら仕様 1 で参照先の型に決まる（今は必ず失敗する形）。
+- 保留の判定は呼び出しの最初でも、結果が局所の型に現れれば保留しない（今と同じ時点で推測する）。
+- `pass_through_calls_keep_their_types` の 2027 の `peek (id input)` は今も `E1003` だった（通り抜けの形。「対象外」）。2026 の `peek (id input)`（`input` を借りる）を、明示の `peek (id (ref input))` と同じ IR として固定した。
+  2027 の `size (id r)` は綴りで同じ型を書けない（2027 のキーワードの `ref r` は再借用）ので、`id` の特殊化が参照（`ptr`）を返すことと、`let` に分けると `E1005` になることで固定した。
+- `Inference::mentions`（`src/polymorph.rs`）を足した。解かれた変数をたどりながら、型を複製せずに未定の変数を探す。
+
+### 実行したコマンドと結果
+
+- `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`: 成功。
+- `cargo test --locked --test parameter_conventions --test user_drop --test borrow_syntax`: 36・27・13 件成功（手順 4 の後）。
+- `cargo nextest run --locked --no-fail-fast`: 手順 3 の後 2937 件中 2935 件成功（失敗 2 件は手順 2 の受理のテスト）、手順 4 とドキュメントの後 2937 件すべて成功（4 件 skip）。
+- `node tests/features.mjs target/debug/tsuzuri conventions`: native/WASM の O0/O3 で成功。
+- 「再現」: `tsuzuri run` で `42`（2027。2026 も `42`）。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/built-in-types-and-modules/text.md _tsuzuri/language-reference/ownership-and-memory/borrowing.md`: 2 ページ、14 例、28 回の native 実行が成功。
+
+### 更新した文書
+
+- `docs/language.md`（暗黙の借用の節の既知の制限）: 直した範囲（結果が引数から来ない呼び出し）と、残る通り抜けの形を書き分けた。
+- `_tsuzuri/language-reference/built-in-types-and-modules/text.md`（注意点）: `Text.trim`・`Text.clone` の制限は残し、2027 の `String.length (Text.clone text)` が `E1005` であることを正した。結果が引数から来ない呼び出しが通ることを足した。
+- `_tsuzuri/language-reference/ownership-and-memory/borrowing.md`（呼び出し引数の暗黙の借用）: 結果の型が未定の呼び出しの一時的な貸しと、残る形を 1 項目で足した。`owned.md` は変更不要だった。
+
+### 変更したファイル
+
+`src/check.rs`、`src/polymorph.rs`、`tests/parameter_conventions.rs`、`tests/user_drop.rs`、`tests/borrow_syntax.rs`、`tests/fixtures/conventions/Main.tz`、`tests/features.mjs`、
+`docs/language.md`、`_tsuzuri/language-reference/built-in-types-and-modules/text.md`、`_tsuzuri/language-reference/ownership-and-memory/borrowing.md`、`_features/README.md`、このチケット。
