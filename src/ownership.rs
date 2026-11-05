@@ -1786,7 +1786,15 @@ impl<'a> Checker<'a, '_> {
         value: &Value,
         owned: &Type,
     ) -> Diagnostic {
-        let message = if matches!(argument.kind, E::Lambda { .. }) {
+        // A lambda written as the argument is lifted into an `E::Closure` of an owned function
+        // before a generic body is checked for an instance; a lifted `let rec` function is not
+        // owned.
+        let lambda = match &argument.kind {
+            E::Lambda { .. } => true,
+            E::Closure(id, _) => self.module.functions[*id].owned_captures,
+            _ => false,
+        };
+        let message = if lambda {
             "an owned function captures only owned values; a captured value holds a borrow"
         } else {
             "an owned function captures only owned values; this function value holds a borrow"
@@ -2749,6 +2757,11 @@ impl<'a> Checker<'a, '_> {
         // callee is not evaluated as a value, which `eval_value` rejects.
         let owned_function = !arguments.is_empty()
             && self.builtin_called(callee) == Some(crate::check::Builtin::OwnedFunction);
+        // The result of a full call of `Owned.call` borrows only what its input lends: the owned
+        // function holds no borrow (A30), and its body cannot return one of its own environment.
+        // `Owned.call (ref f)` alone is a function that keeps the borrow of `f`.
+        let owned_call = arguments.len() >= 2
+            && self.builtin_called(callee) == Some(crate::check::Builtin::OwnedCall);
         // What comes out of a channel was checked when it went in; `Channel.try_send` gives back
         // the item that it checked. Only a full call gives that: `Channel.try_send ch` is a function
         // that borrows the channel.
@@ -2861,6 +2874,7 @@ impl<'a> Checker<'a, '_> {
                 ));
             }
             match region_sources {
+                _ if owned_call && index == 0 => {}
                 Some(sources) => {
                     self.argument_regions(sources, slots, index, argument, &value, &mut current)
                 }
@@ -3379,7 +3393,14 @@ impl<'a> Checker<'a, '_> {
                 if *operator == BinaryOp::Pipe && expression.ty.carries_loans(&self.module.types())
                 {
                     result = value;
-                    result.loans.extend(callee.loans);
+                    // `x |> Owned.call (ref f)` is `Owned.call (ref f) x`, whose result does not
+                    // borrow `f` (see `eval_call`).
+                    let owned_call = matches!(&right.kind, E::Call(inner, arguments)
+                        if arguments.len() == 1
+                            && self.builtin_called(inner) == Some(crate::check::Builtin::OwnedCall));
+                    if !owned_call {
+                        result.loans.extend(callee.loans);
+                    }
                     result.regions = None;
                 }
             }

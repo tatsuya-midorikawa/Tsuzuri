@@ -111,6 +111,25 @@ first + second
 
 所有関数値を借用で呼び出すので、関数値自体は消費されません。何度でも呼べます。
 
+`Owned.call (ref f) x` の結果が持つ借用は、`x` が貸すものだけです。所有関数値は借用を持たず、その本体は捕捉した値への参照を返せない（`E1013`）ので、結果は `f` を借用しません。結果は `f` を解放した後も使え、結果の関数値から別の `Owned.function` を作ることもできます。`Owned.call (ref f)` だけを部分適用した関数値は `f` を借用します。
+
+```tsuzuri run=32
+let text = String.repeat 4 (ref "abcdefgh")
+let make = Owned.function (\() -> {
+    let n = String.length (ref text);
+    \() -> n
+})
+let size = Owned.call (ref make) ()
+Owned.drop make
+size ()
+```
+
+実行結果:
+
+```text
+32
+```
+
 ## Owned.drop による早期解放
 
 `Owned.drop` は、スコープの終端を待たずに所有値をその場で即座に解放するための組み込み関数です。
@@ -258,6 +277,22 @@ error[E1013]: an owned function captures only owned values; this function value 
   note: value borrowed here
 ```
 
+`Owned.function` に直接書いたラムダが、借用を持つ関数値を捕捉するときも同じです。捕捉する `size` の型 `i64 -> i64` は参照を含みませんが、`size` は `borrowed` を借用しているので、ラムダの捕捉が借用を持ちます。message は `a captured value holds a borrow` です。
+
+```text
+let text = "hello"
+let borrowed = ref text
+let size: i64 -> i64 = \n -> String.length borrowed + n
+let owned = Owned.function (\n -> size n)
+```
+
+コンパイル結果:
+
+```text
+error[E1013]: an owned function captures only owned values; a captured value holds a borrow
+  note: value borrowed here
+```
+
 関数の引数の関数値は、呼び出し側の借用を持っているかもしれないので、`Owned.function` に渡せません（`E1013`）。後で実行する仕事を受け取る関数は、引数の型を `own Owned.Function<…>` にして、呼び出し側で `Owned.function` を作ります。
 
 ```text
@@ -343,7 +378,8 @@ error[E1005]: cannot capture Owned.Function<i64, i64> in a reusable function; fu
 - 通常の関数値と異なり非 Copy であり、環境の意図しない複製や二重解放を防ぎます。
 - `Owned.function` で生成し、`Owned.call` で借用経由で実行します。
 - ラムダは呼び出しの位置に直接書き、引数は 1 つです。本体は捕捉値を借用するだけで、ムーブはできません。
-- 渡す関数値は借用を持てません。関数の引数で受け取るときは `own Owned.Function<…>` にします（`E1013`）。
+- 渡す関数値も、直接書いたラムダが捕捉する関数値も、借用を持てません。関数の引数で受け取るときは `own Owned.Function<…>` にします（`E1013`）。
+- `Owned.call` の結果は、第 2 引数が貸す借用だけを持ち、所有関数値を借用しません。
 - `Owned.drop` を用いることで、スコープ終端を待たずに所有値を早期解放できます。
 
 ## 関連項目
