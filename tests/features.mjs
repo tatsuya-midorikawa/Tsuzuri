@@ -1575,6 +1575,8 @@ const suites = {
       ["parallel_callback_snapshots", [4097n], 8194n], ["parallel_float_special", [], 1n], ["parallel_order", [], 1203n],
       ["parallel_capture_order", [], 53n],
       ["parallel_wrapping", [], -16n],
+      // explicit: the sum of index + 1, direct: of 2 * index, lengths: "hellohello" per word, total: the row [5].
+      ...[0n, 1n, 4097n].map((n) => ["parallel_temporary_inputs", [n], n * (n + 1n) / 2n + n * (n - 1n) + 10n * n + 5n]),
     ],
     traps: [["parallel_large_length", [-1n]], ["parallel_trap", []]],
   },
@@ -1591,6 +1593,8 @@ const suites = {
       ["parallel_callback_snapshots", [4097n], 8194n], ["parallel_float_special", [], 1n], ["parallel_order", [], 1203n],
       ["parallel_capture_order", [], 53n],
       ["parallel_wrapping", [], -16n],
+      // explicit: the sum of index + 1, direct: of 2 * index, lengths: "hellohello" per word, total: the row [5].
+      ...[0n, 1n, 4097n].map((n) => ["parallel_temporary_inputs", [n], n * (n + 1n) / 2n + n * (n - 1n) + 10n * n + 5n]),
       ["scope_ring", [], 2143n],
       ["scope_shares_borrow", [], 1225130000n],
       ["scope_shares_an_atomic", [], 36n],
