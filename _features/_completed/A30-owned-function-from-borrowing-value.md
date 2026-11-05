@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | TZ02, TZ05, TZ06 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-05（A28 の原因の調査中に発見。HEAD `5ee6b0f2` で確認） |
 | 承認 | 不要（健全性の穴を塞ぐ。文書の「捕捉できるのは所有値だけ」の約束どおりに拒否する。今受理している危険なプログラムが `E1013` になる） |
 | 改善する劣位 | 不具合（メモリ安全性）: `let g: unit -> unit = \() -> ... borrowed ...`（`borrowed` は局所の `ref`）のように、借用を捕捉した関数値を変数に置いてから `Owned.function g` に渡すと、検査を通る。それを `Routine.go` に渡すと、tzroutine が関数の終わりで解放された文字列を読み、ごみを出力するか `SIGSEGV` で落ちる。ラムダを `Owned.function` に直接書けば正しく `E1013`（`owned_function_captures_reference`）になる |
@@ -16,7 +16,7 @@
 
 ## 目的
 
-`Owned.Function` が「捕捉した値を所有する関数」であるという約束（[Owned](../_tsuzuri/language-reference/built-in-types-and-modules/owned.md) の「捕捉できるのは所有値だけ」）を、
+`Owned.Function` が「捕捉した値を所有する関数」であるという約束（[Owned](../../_tsuzuri/language-reference/built-in-types-and-modules/owned.md) の「捕捉できるのは所有値だけ」）を、
 引数がラムダ式でない場合にも守る。`Routine.go` などの、関数を別の tzroutine やタイマーへ渡す組み込み関数は、`Owned.Function` が借用を持たないことを前提にしているので、
 約束が破れると、安全なコードだけで解放後の読み出しが起きる。
 
@@ -32,7 +32,7 @@
 次の場合は即興で回避せず、作業を止めて状況と候補案を報告する（GUIDE §13）。
 
 - `Owned.function` に名前付きの関数（`Owned.function double`。`tests/user_drop.rs:429`）や、所有値だけを捕捉する関数値を渡すプログラムが拒否される。
-- `own Owned.Function<…>` の引数をそのまま `Routine.go` に渡すプログラム（[Routine](../_tsuzuri/language-reference/built-in-types-and-modules/routine.md) の `spawn` の例）が拒否される。
+- `own Owned.Function<…>` の引数をそのまま `Routine.go` に渡すプログラム（[Routine](../../_tsuzuri/language-reference/built-in-types-and-modules/routine.md) の `spawn` の例）が拒否される。
 - `std/`・`examples/`・`tests/fixtures/` のプログラムが新しく拒否される（調べた範囲では、ラムダ式でない引数の `Owned.function` は `tests/user_drop.rs` の名前付き関数の 2 か所と `owned.md:189` だけ）。
 - `Owned.function` を通らずに `Owned.Function` の値を作る経路（レコードの literal や更新）が見つかった。その経路も塞ぐかを決めてから進める。
 
@@ -151,7 +151,7 @@ def main :: unit -> i32 = \() ->
 - 受理:
   - `Owned.function double`（名前付きの関数。`tests/user_drop.rs:429` の既存のテスト）。
   - 所有値（`string`・レコード）だけを捕捉する関数値 `g` の `Owned.function g` と、その `Routine.go`。
-  - `def spawn :: own Owned.Function<unit, unit> -> unit = \work -> Routine.go work`（[Routine](../_tsuzuri/language-reference/built-in-types-and-modules/routine.md) の例）。
+  - `def spawn :: own Owned.Function<unit, unit> -> unit = \work -> Routine.go work`（[Routine](../../_tsuzuri/language-reference/built-in-types-and-modules/routine.md) の例）。
 
 ### E2E
 
@@ -205,3 +205,60 @@ def main :: unit -> i32 = \() ->
 - 決定: `E1013` の `owned_function_captures_reference` を使い、message はラムダ式の場合（`{型} contains a reference`）と区別して `this function value holds a borrow` にする。
 - 理由: 利用者にとっては同じ規則（所有関数は借用を捕捉できない）である。新しい kind は診断の索引（`src/diagnostic_kinds.rs`、生成した文書）を増やすだけになる。
 - 状態: 既定案。
+
+## 実装と検証（2026-11-06）
+
+### 手順 1: ベースラインと残りの API
+
+`main` の最新の `ci.yml` は緑（基準）。HEAD `5ee6b0f2` と同じ `src/` の dev バイナリで、`target/scratch/a30/` の program を `tsuzuri check` した結果:
+
+- 受理されていた（穴）: 「再現」の `Routine.go (Owned.function g)`（`tsuzuri run` は 2 回とも `32 釀Ŧ …` のようなごみを出力）、`ErrGroup.go group (Owned.function g)`（`g: unit -> Result<unit, string>` が `borrowed` を読む）、
+  `Context.after_func ctx (Owned.function g)`、`Time.after_func`、引数の関数 `fn spawn f = Routine.go (Owned.function f)`、部分適用 `Owned.function (show (ref text))`、
+  パイプライン `g |> Owned.function`、関数値にした `let make = Owned.function` からの `make g`、そして **`Owned.function` に直接書いたラムダが借用を持つ関数値を捕捉する形**
+  `Owned.function (\() -> g ())`（捕捉の型 `unit -> unit` は参照を含まないので `src/closures.rs` は通す）。
+- 塞がっていた: レコードの literal `Owned.Function { run: g }`・更新 `{ base with run = g }`・フィールドの読み出しはどれも `E1022`（表現が不透明）。停止条件の 4 つ目には当たらない。
+
+### 手順 2〜3: テストと検査
+
+- `src/ownership.rs`:
+  - `eval_call`: 組み込み関数 `Owned.function` を直接呼ぶとき、第 1 引数を評価した `Value` の loan が空でなければ `owned_function_captures_reference`（`E1013`）。位置は引数、loan を親へたどった最初の借用の位置を note（`borrowed_here`。呼び出し側の借用なら `a parameter may hold a borrow of its caller's values`）、
+    help は `capture an owned value, such as the owner itself or a copy, instead of a borrow; a function that receives work to run later takes an 'own Owned.Function<unit, unit>' parameter instead of a function value`（型は呼び出しの結果の型）。
+    callee は値として評価しない（`Mutex.with_lock` と同じ形）。
+  - `E::Binary` の `Pipe`: `g |> Owned.function` に同じ検査（D-59 のパイプラインを保つ）。
+  - `eval_value`: `Owned.function` を関数値として評価すると `must_apply_directly`（`Owned.function must be applied directly, so that its argument can be checked for borrows: call it with the function value together`）。生成した組み込みの包み関数の引数は検査しない（`is_generated_parameter`。その呼び出し側がここで拒否される）。
+  - `check_body`: `Owned.Function` 型の引数（と本体から見た捕捉）には呼び出し側の loan を与えない（`Type::is_owned_function`）。
+- テスト: `tests/tzroutine.rs` の `an_owned_function_from_a_function_value_holds_no_borrow`（拒否 9 形・受理 7 形。message・kind・note・help を照合）、`tests/timers.rs` の `the_function_of_a_timer_holds_no_borrow`、`tests/user_drop.rs` の `owned_function_lambdas_only_borrow_their_captures` に拒否 1・受理 1。
+  修正前は拒否の 3 テストだけが失敗することを確かめた（`cargo test --locked --no-fail-fast --test tzroutine --test user_drop --test timers`: 18/19・25/26・11/12）。修正後は 19・26・12 件すべて成功。
+
+### 手順 4: 既存のプログラム
+
+`tests/fixtures/*/`（164）と `examples/*/`（13）の `tsuzuri check --json` を修正の前（HEAD `5ee6b0f2` と同じ `src/` の dev バイナリ）と後で比べ、一致した。途中で一度 `std/ErrGroup.tz` の `start` が拒否された（下の判断 3）ので、それを直してから比べ直した。
+
+### 手順 5: ドキュメントと T2
+
+- T0: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` 成功。
+- T1: `cargo nextest run --locked` 2936 件成功（4 skipped）。
+- `node tests/tzroutine.mjs target/debug/tsuzuri`: 159 runs passed（native の `-O0`・`-O3`。所有値だけを捕捉する関数値の `Routine.go` と、`h |> Owned.function` を `own Owned.Function` の引数へ渡す program を足した）。
+- `node tests/features.mjs target/debug/tsuzuri tzroutine`（13 件）・`context`（15 件。`errgroup_*` を含む）・`timers`（9 件）成功。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs` を `owned.md`・`routine.md`・`tzroutine.md`・`timer.md` に: 4 pages, 110 links, 33 checked examples, 60 native runs（O0/O3）。
+- `node scripts/gen-docs.mjs --check`（19 blocks, 0 stale）・`node scripts/check-cli-docs.mjs`（4 checks, 0 failed）。診断の登録簿は変えていない（既存の kind だけを使う、D2）。
+- 生成コードは変えていない（検査だけ）ので、WASM と性能の確認はしていない。
+
+### チケットから外れた・細かくした判断
+
+1. **直接書いたラムダも loan を見る。** チケットは「ラムダ式の引数は二重に報告しない」としていたが、所有のラムダが借用を持つ関数値を捕捉する形（`Owned.function (\() -> g ())`）は型の検査を通るので、同じ解放後の読み出しになる。
+   ラムダ式の引数も loan を見て、message を `an owned function captures only owned values; a captured value holds a borrow` にした。参照の捕捉は型の検査（`src/closures.rs`）が先に報告して借用検査まで来ないので、同じ位置に 2 つの診断は出ない（`tsuzuri check --json` で 1 件を確認）。
+2. **`Owned.function` を関数値にすることを拒否し、パイプラインは直接の呼び出しと同じに扱う。** 関数値にした `Owned.function` は生成した包み関数を通り、その引数は検査できない（`make g` の結果の loan は `Routine.go` で消える）。`Mutex.with_lock` と同じ `must_apply_directly` にした。
+   `g |> Owned.function` は、`std`・`examples`・`tests/fixtures` に使う所がなく、D-59（パイプラインがどのモジュールでも働く）に従って受理し、同じ検査をする。
+3. **`own Owned.Function` の引数は loan を持たない。** 検査を足すと、`std/ErrGroup.tz` の `start`（所有のラムダが `own Owned.Function` の引数 `f` を捕捉する）が拒否された。引数の値には呼び出し側の loan が付くためで（チケットの落とし穴の 1 つ目）、`tzroutine { Owned.call (ref f) () }` も以前から `task_capture_retains_borrow` で拒否されていた。
+   `Owned.Function` は `Owned.function` でしか作れず（表現は不透明）、それが借用を拒否するようになったので、`check_body` はこの型の引数に loan を与えない。結果、`own Owned.Function<…>` の引数を所有のラムダや `tzroutine { }` で捕捉できるようになった（`owned.md` に例）。`ref Owned.Function<…>` は今までどおり借用。
+4. help は `src/diagnostic_kinds.rs` ではなく診断を作る所に書いた（登録簿は kind・code・版だけを持ち、help の欄がない）。
+5. `src/explain/` の kind ごとのページは足していない（ページを持つ kind は `tests/explain.rs` の `CURATED` に固定）。`E1013.md` の「What it covers」と「Fixes」に足した。
+
+### 更新した文書
+
+`_tsuzuri/language-reference/built-in-types-and-modules/owned.md`（API の表、インラインのラムダ、「捕捉できるのは所有値だけ」に関数値・引数・`own Owned.Function` の例と実行結果、まとめ）、`routine.md`・`async-tasks-and-lazy/tzroutine.md`（`Routine.go` の節に 1 文）、`src/explain/codes/E1013.md`、`docs/language.md`（`Owned.function` の説明と `E1013` の表）、`docs/architecture.md`（`Owned.Function` の段落）、`_features/README.md`。
+
+### 変更したファイル
+
+`src/ownership.rs`, `src/explain/codes/E1013.md`, `tests/tzroutine.rs`, `tests/timers.rs`, `tests/user_drop.rs`, `tests/tzroutine.mjs`, `_tsuzuri/language-reference/built-in-types-and-modules/owned.md`, `_tsuzuri/language-reference/built-in-types-and-modules/routine.md`, `_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md`, `docs/language.md`, `docs/architecture.md`, `_features/README.md`, このチケット。

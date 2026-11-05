@@ -151,7 +151,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A27 | [結果の型が未定の呼び出しを `ref T` の引数へ直接渡すと、結果を `ref T` と推測して `E1003` になる（`id (Owned.call (ref next) input)`）](A27-call-argument-reference-hint.md) | P1 | M | A18, D14 | todo |
 | A28 | [関数を含む型の呼び出し結果が `ref` 引数の借用をすべて持つとみなされる（`HashMap.remove` と、関数の `Arc` の `Arc.share` が誤って `E1013`）](A28-function-results-retain-ref-arguments.md) | P1 | M | C09, TZ02 | todo |
 | A29 | [印を持つ dyn 型を型引数にした組み込み関数の LLVM シンボルが不正になる（`Channel<dyn (C, Send)>` がビルドできない）](A29-dyn-marker-builtin-symbols.md) | P1 | S | A14, TZ03 | todo |
-| A30 | [借用を持つ関数値から `Owned.function` を作れてしまい、`Routine.go` などで解放後の読み出しになる](A30-owned-function-from-borrowing-value.md) | P0 | S | TZ02, TZ05, TZ06 | todo |
+| A30 | [借用を持つ関数値から `Owned.function` を作れてしまい、`Routine.go` などで解放後の読み出しになる](_completed/A30-owned-function-from-borrowing-value.md) | P0 | S | TZ02, TZ05, TZ06 | done（`Owned.function` は借用を持つ関数値（変数・部分適用・引数・借用を持つ関数値を捕捉したラムダ）を `E1013` で拒否する。パイプラインは同じ検査、関数値にすると `must_apply_directly`。`own Owned.Function` の引数は借用を持たず、所有のラムダや tzroutine で捕捉できる） |
 
 ### B. エラー処理・制御
 
@@ -771,7 +771,7 @@ TZ08・TZ12・TZ13・TZ09・TZ10 の実装中に見つけ、その PR では直�
 
 | チケット | 種別 | 概要 |
 | --- | --- | --- |
-| [A30](A30-owned-function-from-borrowing-value.md) | 不具合（メモリ安全性） | 借用を捕捉した関数値を変数に置いてから `Owned.function` に渡すと検査を通り、`Routine.go`・`WaitGroup.go`・`Time.after_func` で解放した値を読む。`Owned.function` を作る時点で借用を拒否する |
+| [A30](_completed/A30-owned-function-from-borrowing-value.md) | 不具合（メモリ安全性） | 借用を捕捉した関数値を変数に置いてから `Owned.function` に渡すと検査を通り、`Routine.go`・`WaitGroup.go`・`Time.after_func` で解放した値を読む。`Owned.function` を作る時点で借用を拒否する |
 | [A27](A27-call-argument-reference-hint.md) | 不具合（D14 が記録した既知の制限） | 結果の型が未定の呼び出しを `ref T` の引数へ直接渡すと、引数を見る前に結果を `ref T` と推測して `E1003`（`id (Owned.call (ref next) input)`。edition 2027 では型変数の引数が読み取りなので、ジェネリックな関数へ渡すだけで起きる）。推測を、結果を通す引数の直前か最後の引数の後まで遅らせる |
 | [A28](A28-function-results-retain-ref-arguments.md) | 不具合 | 関数を含む型の呼び出し結果が `ref` 引数の借用をすべて持つとみなされ、`HashMap.remove`（関数の値の表）と、関数の `Arc` の `Arc.share` を捕捉する tzroutine が誤って `E1013`。callee の本文から引数ごとの「保持」「一時」と、`Arc.share` などの「読み通し」を求める |
 | [A29](A29-dyn-marker-builtin-symbols.md) | 不具合 | `Channel<dyn (C, Send)>` のように印を持つ dyn 型を型引数にした組み込み関数のシンボルが `+` を含み、clang が `E2002`。`mangled_type` で `+` を `$P` にする |
