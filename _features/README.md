@@ -150,7 +150,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A26 | [匿名共用体の型クラス（`Eq`・`Ord`・`Hash`・`Display`）と JSON（`Encode`・`Decode`）](A26-anonymous-union-classes.md) | P2 | M | A24, A06, A07 | todo |
 | A27 | [結果の型が未定の呼び出しを `ref T` の引数へ直接渡すと、結果を `ref T` と推測して `E1003` になる（`id (Owned.call (ref next) input)`）](A27-call-argument-reference-hint.md) | P1 | M | A18, D14 | todo |
 | A28 | [関数を含む型の呼び出し結果が `ref` 引数の借用をすべて持つとみなされる（`HashMap.remove` と、関数の `Arc` の `Arc.share` が誤って `E1013`）](A28-function-results-retain-ref-arguments.md) | P1 | M | C09, TZ02 | todo |
-| A29 | [印を持つ dyn 型を型引数にした組み込み関数の LLVM シンボルが不正になる（`Channel<dyn (C, Send)>` がビルドできない）](_completed/A29-dyn-marker-builtin-symbols.md) | P1 | S | A14, TZ03 | done（組み込み関数の引用符なしのシンボルは dyn 型の印の `+` を `$P` と綴る。`Channel<dyn (C, Send)>`・`Vec<dyn (C, Copy)>`・`dyn C {r}` の `Vec` が native と WebAssembly でビルドでき、印の無いプログラムの IR は変わらない） |
+| A29 | [印を持つ dyn 型を型引数にした組み込み関数の LLVM シンボルが不正になる（`Channel<dyn (C, Send)>` がビルドできない）](_completed/A29-dyn-marker-builtin-symbols.md) | P1 | S | A14, TZ03 | done（組み込み関数の引用符なしのシンボルは dyn 型の印の `+` を `$P` と綴る。`Channel<dyn (C, Send)>`・`Vec<dyn (C, Copy)>`・`dyn C {r}` の `Vec` が native と WebAssembly でビルドでき、印の無いプログラムの IR は変わらない。型の綴りは関数型の純粋性と引数規約も既定でないときだけ `pure.fn[…]`・`fn.<規約>[…]` と綴り、`Box<i64 -> i64>` と `Box<pure (i64 -> i64)>` の型名・組み込み関数の具体化が衝突しない） |
 | A30 | [借用を持つ関数値から `Owned.function` を作れてしまい、`Routine.go` などで解放後の読み出しになる](A30-owned-function-from-borrowing-value.md) | P0 | S | TZ02, TZ05, TZ06 | todo |
 
 ### B. エラー処理・制御
