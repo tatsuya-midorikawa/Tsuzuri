@@ -305,7 +305,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | TZ11 | [`Parallel` と `Routine.scope` を tzroutine のスケジューラーへ移す](_completed/TZ11-parallel-on-scheduler.md) | P1 | M | TZ06 | done（tzroutine を使うネイティブのプログラムの `Parallel.*` はスケジューラーの上。`Domain.run` の中はプール。`Routine.scope` を追加） |
 | TZ12 | [`Task`・`task { }` の削除と移行（`DataChannel` の待ちの移設を含む）](_completed/TZ12-remove-task.md) | P1 | L | TZ04, TZ07, TZ11 | done（`task { }`・`Task<T>`・`Task.*` は `E1040`（`removed_task_*`。`tsuzuri fix` が `Task.scope` を `Routine.scope` に）。ネイティブの `Parallel`・`Mutex`・`DataChannel` は全プログラムで tzroutine のランタイム。`task.c` を削除） |
 | TZ13 | [`Async` と Net の `_async` の削除と移行](_completed/TZ13-remove-async.md) | P1 | M | TZ08, TZ12 | done（`Async`・`async { }`・`Async.*` と Net の `_async` は `E1040`（`removed_async`・`removed_net_async`）。reactor（`async.c`）とホスト駆動の実行器を削除し、後継はない（D2）） |
-| TZ14 | [spawn しないプログラムの `Parallel.*` でも、スレッドの記憶域を読むランタイムの IR 関数を `noinline` にする](_completed/TZ14-thread-storage-across-parallel-waits.md) | P2 | S | TZ10, TZ11 | done（spawn せず `Parallel.*` を呼ぶネイティブのプログラムでも、`--allocator small` の `tz_small_realloc` を `noinline` にする。横取りの検査は入れず、ほかのプログラムの IR は 1 byte も変わらない。`-O3` の SIGSEGV と TSan のデータ競合を再現して直した。手順 4 の計時は別に行う） |
+| TZ14 | [spawn しないプログラムの `Parallel.*` でも、スレッドの記憶域を読むランタイムの IR 関数を `noinline` にする](_completed/TZ14-thread-storage-across-parallel-waits.md) | P2 | S | TZ10, TZ11 | done（spawn せず `Parallel.*` を呼ぶネイティブのプログラムのうち、手伝いの tzroutine が待ちうるもの（入れ子の `Parallel.*`、ポインターを通す呼び出しや extern に届くコールバック。IR の保守的な解析）で、`--allocator small` の `tz_small_realloc` を `noinline` にする。横取りの検査は入れず、ほかのプログラムの IR は 1 byte も変わらない。すべてに付けると `Vec` を伸ばす核が 17 % 遅くなったので D1 を狭めた。`-O3` の SIGSEGV と TSan のデータ競合を再現して直した） |
 
 ## 推奨フェーズ
 

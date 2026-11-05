@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | TZ10, TZ11 |
 | 後続 | – |
-| 状態 | done（2026-11-06。手順 4 の測定は別に行う） |
+| 状態 | done（2026-11-06。手順 4 の測定で D1 を狭めた: 手伝いの tzroutine が待ちうるプログラムだけ） |
 | 起票 | 2026-11-05（TZ10 の作業中に発見。TZ10 のチケットの「残したこと」の続き。HEAD `5ee6b0f2` で確認） |
 | 承認 | 不要（言語の意味は変えない。生成 IR の属性だけを変える） |
 | 改善する劣位 | 潜在的な不具合（失敗の再現は未確認）: spawn しないネイティブのプログラムでも、`Parallel.*` の helper の tzroutine は待つと別のスレッドで再開しうる。そのとき、`--allocator small` の `tz_small_realloc`（`@llvm.threadlocal.address` で自分のスレッドの cache を読む）がインライン展開された関数は、前のスレッドの cache の address を使い続けうる。TZ10 は spawn するプログラムだけを `noinline` で塞いだ |
@@ -67,6 +67,7 @@ G が待ちで別の M へ移ると、この仮定が破れ、size class の all
 ## 仕様
 
 - spawn するか、`Parallel.*` を呼ぶネイティブのプログラム（`src/llvm.rs` の `spawning`）では、`@llvm.threadlocal.address` を使うランタイムの IR 関数は `noinline` である。
+  手順 4 の測定の後、spawn しないプログラムでは手伝いの tzroutine が待ちうるときだけに狭めた（D1 の見直し。末尾の「手順 4 と D1 の見直し」）。
 - spawn するプログラムの IR は今と同じ（TZ10 の `with_preemption_checks` がすでに付ける）。
 - tzroutine のランタイムを使わないプログラムと WebAssembly の IR は今と同じ。
 - spawn せず `Parallel.*` を呼ぶプログラムでも、既定の allocator と `--allocator host` の IR は今と同じ（TLS を IR で読む関数が無い）。変わるのは `--allocator small` の `tz_small_realloc` の見出しの ` noinline` だけで、`tests/preemption.rs` の S1 の比較（`grep -n allocator tests/preemption.rs` で、比べる組み合わせを確かめる）は通る。
@@ -163,7 +164,7 @@ G が待ちで別の M へ移ると、この仮定が破れ、size class の all
 - [x] 手順 1 の調査結果がチケットに追記されている。
 - [x] spawn せず `Parallel.*` を呼ぶネイティブのプログラムで、`tz_small_realloc` が `noinline` になる。
 - [x] spawn するプログラムと、tzroutine のランタイムを使わないプログラムの IR が修正の前後で同じ。
-- [ ] 手順 4 の測定が 1 % 以内で、`docs/benchmarks.md` に記録されている（別に行う。既存の `Parallel` のベンチマークのカーネルは、修正の前後で `-O3` の object が byte 単位で同じ）。
+- [x] 手順 4 の測定が 1 % 以内で、`docs/benchmarks.md` に記録されている（最初の実装は `Vec` を伸ばす核で +17.1 % で停止条件に当たり、D1 を狭めた。狭めた後、その核と手伝いが待てないプログラムの IR は `main` と byte 単位で同じなので費用は 0（同じ IR なので測り直していない）。測定と判断は `docs/benchmarks.md` の TZ14 の節と末尾の「手順 4 と D1 の見直し」）。
 - [x] T2 が成功する。
 
 ## 落とし穴
@@ -185,6 +186,7 @@ G が待ちで別の M へ移ると、この仮定が破れ、size class の all
 - 決定: TLS を読むランタイムの IR 関数の `noinline` を、`spawns` から `spawning`（spawn するか `Parallel.*` を呼ぶネイティブのプログラム）に広げる。横取りの検査は今のまま spawn するプログラムに限る。
 - 理由: G が移るのは helper の tzroutine があるすべてのプログラムで、横取りの要否とは別の条件である。`noinline` は `tz_small_realloc` だけに効き、確保の伸長のたびの呼び出しの費用しか足さない。
 - 状態: 既定案（実装者はこの案に従う）。手順 4 の測定で 1 % を超えたら見直す。
+- 見直し（2026-11-06）: 手順 4 で +17.1 % だったので、利用者から委ねられた権限で orchestrator が狭めた。spawn するプログラムは TZ10 のまま。spawn せず `Parallel.*` を呼ぶネイティブのプログラムは、手伝いの tzroutine が走らせるコードが待ちに届きうるときだけ `noinline` にし、そうでなければ IR を `main` と byte 単位で同じに保つ。理由: spawn しないプログラムの G は `tsuzuri_tz_parallel` の手伝いだけで（最上位の `Parallel.*` の呼び出し側は自分のスレッドを離れない擬似 G）、G が M を離れるのは待つときだけ（spawn しないプログラムには横取りの検査も SIGURG も無い）。待てないコールバックは 1 つの M の上で終わるので、その中で TLS の address を使い回しても安全である（末尾の「手順 4 と D1 の見直し」）。
 
 ## 手順 1 の調査結果（2026-11-06）
 
@@ -234,7 +236,7 @@ spawn しないネイティブのプログラムで tzroutine として走るの
 
 ## 実装と検証（2026-11-06）
 
-- **範囲**: 手順 1・2・3・5。**手順 4 の測定は別に行う**（この作業の間、共有機（8 コア）で 7 つのエージェントが同時に build と test を走らせていて、load average が 20〜27 あり、計時に意味がないため）。
+- **範囲**（最初の実装 `7bc7b6b4` まで）: 手順 1・2・3・5。**手順 4 の測定は別に行う**（この作業の間、共有機（8 コア）で 7 つのエージェントが同時に build と test を走らせていて、load average が 20〜27 あり、計時に意味がないため）。
   代わりに、既存の `Parallel` のベンチマークのカーネルの機械語が変わらないことを確かめた（下の「手順 4 に代わる確認」）。
 - **手順 1**: 上の「手順 1 の調査結果」。G が移る経路は手伝いの G の待ちだけで、擬似 G は移らない（停止条件 4 に当たらない）。失敗は、変更前のコンパイラの出力のままで、`-O3` の `--allocator small` の SIGSEGV と TSan のデータ競合として再現した。
 - **手順 2（失敗するテストを先に）**: `src/llvm_preempt.rs` の単体テスト `thread_storage_stays_out_of_line_without_the_checks`（`@tz.cache` に ` noinline` を足し、`noinline` 済みの関数、ソース由来の `@tz.fn.M.spin`
@@ -252,7 +254,7 @@ spawn しないネイティブのプログラムで tzroutine として走るの
   build できない 16 個は前後で同じ）。437 個が byte 単位で同じ: 既定の native の 159 個すべて、wasm32 の 149 個すべて、`--allocator small` のうち spawn する 18 個（TZ10 の `noinline` が前から付いている）と
   `Parallel.*` を呼ばない 111 個（tzroutine のランタイムを使わない 106 個、`Channel`・同期の型・タイマーだけを使う 5 個）。変わった 30 個は、spawn せず `Parallel.*` を呼ぶプログラムの
   `--allocator small` の IR のちょうど全部で、どれも `define internal ptr @tz_small_realloc(` の見出しに ` noinline` が付いた 1 行だけが違う。`-O3 --emit llvm` も既定と同じ IR だった。
-- **手順 4**: 手順 4 の測定は別に行う（計時の手順は末尾の「手順 4 の測定の手順（未実施）」。`docs/benchmarks.md` はまだ変えていない）。
+- **手順 4**: orchestrator が別に測り、+17.1 % で停止条件に当たった。D1 を狭めた（末尾の「手順 4 と D1 の見直し」）。
 - **手順 4 に代わる確認（計時ではない）**: 既存のハーネスで `Parallel.*` を測るものは、どれも変更の影響を受けない。`benchmarks/run-tasks.mjs`（`--data-parallel` を含む）は `--allocator system` を
   名指しし、program は `parallel_batch` の `Routine.scope` で spawn するので IR が前後で同じ。`benchmarks/run-matrix.mjs` も既定の allocator で IR が同じ。`--allocator small` でも、
   `run-tasks.mjs` の `portable()` と同じく `parallel_batch` を除いた spawn しない `benchmarks/tasks/Main.tz` と `benchmarks/matrix` は、`build --emit object -O3 --allocator small` の object が
@@ -273,46 +275,74 @@ spawn しないネイティブのプログラムで tzroutine として走るの
      `--allocator small` を end to end で build する suite で（`targets.yml` が走らせる）、`features.mjs` の suite の `options` は WASM の build にも渡るので `--allocator small` を名指せない。
      既存の `threaded` の program は spawn する（`heap_cycles` の `tzroutine`）ので TZ10 で塞がっており、spawn しない別の program `nested` にした。P 8 は、CI の 3〜4 コアの機械でも
      手伝いの数を増やすため（失敗は確率的なので、確定的な検査は Rust の IR のテスト）。
-  4. 停止条件の「1 % を超えて遅くなる」は、この作業では判定していない（手順 4 は別に行う）。チケットの手順 4 が挙げた `run-tasks.mjs` と `run-tzroutine.mjs` は、このままでは
+  4. 停止条件の「1 % を超えて遅くなる」は、この作業では判定していない（手順 4 は別に行った。結果と D1 の見直しは末尾）。チケットの手順 4 が挙げた `run-tasks.mjs` と `run-tzroutine.mjs` は、このままでは
      変更を測らない（`run-tasks.mjs` は `--allocator system` を名指し、program は spawn する。`run-tzroutine.mjs` の `benchmarks/tzroutine/Main.tz` は `Parallel.*` を呼ばず、tzroutine を spawn する）ので、測るのは下の手順のカーネルにする。
 - **文書**: `docs/architecture.md`（tzroutine の「横取り（TZ10）」の `noinline` の段落に TZ14 の範囲と再現、`Small` の `tz_small_realloc` の段落に `noinline` になる条件）、
   `_features/_completed/TZ10-preemption.md`（「残したこと」）、`_features/README.md`（TZ14 の行と追加チケットの表のリンク）。言語リファレンス・`docs/language.md`・README は変更不要
   （`grep -rn "threadlocal\|スレッドの記憶域\|noinline\|tz_small_realloc"` で該当なし。`--allocator small` の説明（スレッドごとのキャッシュ、別のスレッドの解放）は、修正でそのとおりになる）。
 - **変更したファイル**: `src/llvm_preempt.rs`、`src/llvm.rs`、`tests/allocator.rs`、`tests/small_allocator.mjs`、`docs/architecture.md`、`_features/_completed/TZ10-preemption.md`、`_features/README.md`、このチケット。
 
-### 手順 4 の測定の手順（未実施）
+### 手順 4 の測定（2026-11-06）
 
-変更前（`72f06862`）と変更後の release のコンパイラで、`Parallel.init` のコールバックが `Vec` を伸ばす spawn しないカーネルを `-O3 --allocator small` で build し、交互に実行します
-（GUIDE §14。順を毎回入れ替える。どちらも `128000000` を出力する。手順 1 の program（`tests/small_allocator.mjs` の `nested`）も同じ形で測れる）。コマンドはこの worktree の root で実行します。
+orchestrator が、負荷の無い Apple M3 で、`main`（`72f06862`）と `7bc7b6b4` の release のコンパイラを使って測った。核は `docs/benchmarks.md` の TZ14 の節にある
+`flat_growth`（200 万要素の `Parallel.init` のコールバックが `Vec` を 64 回伸ばす。それを 100 回。出力 `12800000000`）で、`build -O3 --allocator small` の実行ファイル。
+2 つの IR の違いは `@tz_small_realloc` の見出しの ` noinline` だけ。交互の実行（順を毎回入れ替える。Node の `process.hrtime` で 1 プロセスずつ）で、
+変更前の中央値 2172.8 ms（15 回、最小 2070.5）に対し変更後 2544.5 ms（最小 2390.6）、+17.1 %。2 回目の 11 回でも 2179.0 ms と 2550.7 ms、+17.1 %。停止条件の 1 % を大きく超えた。
+原因: インライン展開されると、LLVM は TLS の address（macOS では TLV の getter の呼び出し）をコールバックのループの外へ出す。それはまさに、待ちをまたぐと危険で、待ちが無ければ安全な使い回しである。
 
-```sh
-git worktree add target/wt/tz14-base 72f06862
-(cd target/wt/tz14-base && node scripts/slot.mjs -- cargo build --release --locked)
-node scripts/slot.mjs -- cargo build --release --locked
-mkdir -p target/scratch/tz14-bench/growth
-cat > target/scratch/tz14-bench/growth/Main.tz <<'TZ'
-export def flat_growth :: own i64 -> i64
-fn flat_growth count =
-    let outer = Parallel.init count (\i -> grown i)
-    Array.sum (ref outer)
+## 手順 4 と D1 の見直し（2026-11-06）
 
-def grown :: i64 -> i64
-fn grown i =
-    let mut values: Vec<i64> = Vec.empty()
-    for k in 1 ..= 64 do
-        values = Vec.add (k + i) values
-    Vec.length (ref values)
+### 決定
 
-def main :: own unit -> i32 = \() ->
-    do! IO.write_line (flat_growth 2000000)
-    0
-TZ
-target/wt/tz14-base/target/release/tsuzuri build target/scratch/tz14-bench/growth -O3 --allocator small --no-cache -o target/scratch/tz14-bench/base
-target/release/tsuzuri build target/scratch/tz14-bench/growth -O3 --allocator small --no-cache -o target/scratch/tz14-bench/head
-for i in $(seq 1 15); do
-  if [ $((i % 2)) = 1 ]; then order="base head"; else order="head base"; fi
-  for c in $order; do /usr/bin/time -p target/scratch/tz14-bench/$c 2>&1 >/dev/null | awk -v c=$c '/^real/ { print c, $2 }'; done
-done
-```
+利用者から委ねられた権限で、orchestrator は費用を受け入れずに D1 を狭めた（上の D1 の「見直し」）。spawn するネイティブのプログラムは TZ10 のまま（`with_preemption_checks`）。
+spawn せず `Parallel.*` を呼ぶネイティブのプログラムは、手伝いの tzroutine が待ちうるとき、つまり手伝いが走らせるコードが待ちに届きうるときだけ `noinline` にし、そうでなければ IR を `main` と byte 単位で同じに保つ。
 
-既存の `Parallel` のカーネル（`run-tasks.mjs --data-parallel` など）は、上の「手順 4 に代わる確認」のとおり IR か `-O3` の機械語が前後で同じなので、測っても差は雑音です。
+### 実装
+
+`src/llvm_preempt.rs` の `with_thread_storage_noinline` は、`thread_bound` が空か `helpers_may_wait` が偽なら IR をそのまま返す。`helpers_may_wait`（理由の行を返す `helper_wait`）は IR の保守的な解析で、迷えば真と答える（保守的すぎても速さを失うだけで、待ちを見落とすとデータ競合になる）。
+
+- 入口: `@tsuzuri_tz_parallel` のすべての呼び出しの第 1 引数（チャンク）。それが定義された関数の定数でないか、`@tsuzuri_tz_parallel` が直接の呼び出し以外で現れれば（`store` など）真。
+- 入口から、定義された関数への直接の呼び出しをたどる。届く関数に、ポインター（レジスター）を通す呼び出し、インラインのアセンブリ、`invoke`・`callbr`、読めない呼び出し、`@tsuzuri_tz_parallel` の呼び出し（入れ子）、
+  宣言された関数のうち `@llvm.*` の intrinsic と `NEVER_WAITS`（`malloc`・`calloc`・`realloc`・`free`・`posix_memalign`・`aligned_alloc`・`memcpy`・`memmove`・`memset`・`memcmp`）でないものの呼び出しがあれば真。
+  ほかの `tsuzuri_*` のランタイムの関数はすべて待ちとみなす。trap と abort の関数は一覧に入れていない（見た fixture のコールバックは `@llvm.trap` で trap し、`--trap-mode return` などのランタイムの関数は待ちとみなす）。
+- 関数の分け方: `definitions` は `}` だけの行で関数を閉じるが、ランタイムの IR の断片が閉じ括弧と同じ行で始まることがある（`}; PM08: ...`。`src/runtime/integer.ll` の 1 行目が前の断片の `}` の後に続く）。
+  そのままだと `@tz.integer.digits` が前の関数に呑まれ、整数を表示するコールバックが宣言された関数を呼ぶように見えて真になった（`value_layout`）。`with_thread_storage_noinline` は、`}` の後に注釈だけが続く行でも閉じる `runtime_definitions` を使う。
+  `with_preemption_checks` は TZ10 の検査の位置を変えないよう `definitions` のまま（この連結の改行の欠けは前からある。直すと全プログラムの IR が変わるので、このチケットでは直さない）。
+
+### 確かめた前提
+
+- 擬似 G は別のスレッドで再開しない: `tzr_park` の `TZR_KIND_THREAD` の道は自分の `note` の上でそのスレッドが眠り、`tzr_ready` はその `note` を起こすだけ。`tsuzuri_tz_yield` は `m == NULL || m->curg == NULL` で `tzr_os_yield` するだけ（`src/runtime/tzroutine.c`）。
+- spawn しないプログラムの手伝いは横取りで止まらない: `with_preemption_checks` は `spawns(module)` のときだけ（`src/llvm.rs` の `emit_program`）、`with_generated_section`（`tz_text`）と `-DTZ_ASYNC_PREEMPT` は `async_preempt`（`llvm::spawns(module)` が条件。`src/driver.rs`）のときだけで、
+  `TZR_ASYNC`（SIGURG の handler と sysmon の `tzr_async_kick`）は `TZ_ASYNC_PREEMPT` のときだけ定義される。`tsuzuri_tz_preempt_check` を呼ぶのは検査の `@tz.preempt.poll` だけ。
+- 手伝いの G が M を離れるのは待つときだけ: G から g0 へ戻るのは `tzr_switch_out`（`tzr_park` の `TZR_KIND_ROUTINE` の道（`lockedm` が無いとき）と `tsuzuri_tz_yield`。後者は `Routine.yield`・`tsuzuri_tz_preempt_check`・SIGURG の再開から）と G の終わり（`tzr_after_exit`）だけ。
+  ブロッキング呼び出し（`tsuzuri_tz_blocking_enter`・`_exit`）は P を手放すが G は M に残り、`tsuzuri_tz_callback_enter` は G を M に固定する。
+- spawn しないプログラムで生成コードを G の上で走らせるランタイムの入口は `tsuzuri_tz_parallel` だけ: `tzr_spawn` を呼ぶのは `tsuzuri_tz_go`（`Routine.go`・`tzroutine { }`・`WaitGroup.go`、`ErrGroup.go` は `WaitGroup.go` を使う）、`tsuzuri_tz_parallel`、
+  `tsuzuri_tz_scope_run`（`Routine.scope`）、タイマーの `after_func`（`Time.after_func`・`Context.after_func`）で、`tsuzuri_tz_parallel` 以外はどれも `Builtin::spawns`（`RoutineGo`・`WaitGroupGo`・`RoutineScope`、`Time.sleep` 以外のタイマー、`Context`）か `RoutineGo` の式で `spawns(module)` を真にする。
+- 前提の外（前からのことで、TZ14 は変えない）: 最上位の `Parallel.*` の呼び出し側が擬似 G なのは、実行ファイルとホストのスレッドから呼ぶとき。spawn する別の Tsuzuri の object を同じ実行ファイルにリンクし、その tzroutine のブロッキングの extern 呼び出しの中から、
+  extern を持たない（したがって `tsuzuri_tz_callback_enter` の包みが無い）この object の export を呼ぶと、`tzr_current` はその G を返す。その G は P を手放している（`tzr_entersyscall`）ので、そこでの待ちはランタイムが前から扱っていない道である。
+
+### 検証（2026-11-06）
+
+- 単体テスト（`src/llvm_preempt.rs`）: `thread_storage_stays_out_of_line_without_the_checks` を、待ちうるチャンク（`tsuzuri_tz_yield` を呼ぶ関数を呼ぶ）を `@tsuzuri_tz_parallel` に渡す IR にした。
+  `helpers_that_cannot_wait_keep_the_ir_of_main`: 確保・`llvm.memset`・`malloc`・`free`、`}; ...` の後の関数を呼ぶチャンクは偽で IR が同一。入れ子の `Parallel.*` に届く関数、ポインターを通す呼び出し、インラインのアセンブリ、未知の外部関数、`invoke`、
+  `@tsuzuri_tz_parallel` の `store`、定数でない第 1 引数（`%chunk`）、定義の無い第 1 引数はどれも真で、その理由の行と、`@tz.cache` の見出しの ` noinline` を確かめる。
+- `tests/allocator.rs` の `parallel_programs_keep_thread_storage_out_of_callbacks`: 期待値は `heap-small.ll` の見出しと規則から作る。tzroutine の無い版と、コールバックが `Vec` を伸ばすだけの `FLAT_GROWTH` は見出しのまま、
+  入れ子の `Parallel.init` の `NESTED_GROWTH` は ` noinline`、spawn する 2 つの版（`FLAT_GROWTH`・`NESTED_GROWTH` に `tzroutine { }`）は ` noinline`（TZ10）。
+- `tests/small_allocator.mjs` の `nested`: 実行の回帰はそのまま。その IR の `tz_small_realloc` の見出しが ` noinline` であることを足した。
+- IR の比較: `main`（`src/` を `72f06862` に戻して build した dev のコンパイラ）と変更後の dev のコンパイラで、`tests/fixtures/` と `examples/` の `Main.tz` を持つ 180 の project を `-O0` の `build --emit llvm --no-cache`、既定の確保器と `--allocator small` で出した（360 個）。
+  build できない 12 個（`bindgen/basic`・`bindgen/extended`・`domain`・`domain_host`・`llvm_handoff/dead_os`・`parallel_report/error` の 2 通り）は前後で同じ診断。333 個が byte 単位で同じ（既定の確保器のすべて、spawn する 4 つ（`examples/tzroutines`・`concurrency`・`parallel_scheduler`・`tzroutine_wasm`）、
+  手伝いが待てない 11 個（`const_statics`・`cpu_dispatch`・`debug_info`・`heap_threads`・`matrix`・`monoid`・`parallel_equivalence`・`parallel_report/rules`・`pure_parallel`・`record_layout`・`value_layout`）を含む）。
+  違う 15 個は、どれも spawn せず `Parallel.*` を呼び手伝いが待ちうる `--allocator small` の IR で、`tz_small_realloc` の見出しの ` noinline` の 1 行だけが違う。理由（`helper_wait` の行）:
+  `arena`・`dyn_dispatch`・`trap_return_sync`（drop の `%destroy` を通す呼び出し）、`concurrency_threads`・`rc`・`recursive_types`（`%action` を通す呼び出し）、`parallel`・`mutable_slices`・`strings`（クロージャを通す呼び出し）、
+  `bindings_threads`・`data_channel_threads`（`tsuzuri_channel_close`）、`host_imports`・`user_drop`（extern の `tsuzuri_tz_blocking_enter`）、`parallel_report/basic`（`write`）、`trap_return`（入れ子の `Parallel.init`）。
+  手順 4 の核は `-O0` と `-O3` の `--emit llvm --allocator small` で `main` と同じ。
+- 実行したコマンドと結果: 下の「最終確認」。
+
+### 最終確認（2026-11-06）
+
+`cargo fmt --all -- --check`（成功）、`cargo clippy --locked --all-targets -- -D warnings`（警告なし）、`cargo test --locked --lib preempt`（9 件成功）、`cargo test --locked --test allocator --test preemption`（10 件・6 件成功）、
+`cargo nextest run --locked --no-fail-fast`（2937 件のうち 2936 件成功、4 件 skip。`formatter::corpus_is_idempotent_and_semantically_unchanged` が、同時に走ったほかのテストが木の中のファイルを消した `NotFound` で 1 回失敗し、単独の再実行で成功）、
+`node tests/small_allocator.mjs target/debug/tsuzuri`（単体テストの O0・O3・ASan + UBSan・TSan、`grow`・`primitives`・`threaded`・`nested`（`-O0`・`-O3` × 既定の P・P 8、IR の ` noinline`）、2 つの object の共有。すべて成功）、
+`TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/debug/tsuzuri <suite>`（`parallel` 36 件・`parallel_equivalence` 48 件・`pure_parallel` 12 件、すべて成功）、上の IR の比較、
+`node scripts/check-guide-lite.mjs`・`node scripts/gen-docs.mjs --check`・`node scripts/check-cli-docs.mjs`（成功）。言語リファレンスのページは変えていない（利用者から見える振る舞いは変わらない）。計時はしていない（測定は上の orchestrator のもの）。
+文書: `docs/architecture.md`（TZ10 の `noinline` の段落と `Small` の `tz_small_realloc`）、`docs/benchmarks.md`（TZ14 の節）、`_features/_completed/TZ10-preemption.md`（「残したこと」）、`_features/README.md`（TZ14 の行）。
