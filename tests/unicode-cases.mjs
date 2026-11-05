@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { casesWithReferences, referencesSource, requirePinnedNode, v8CasesOf } from "./pinned-unicode.mjs";
+import { casesWithReferences, isScript, referencesSource, requirePinnedNode, v8CasesOf } from "./pinned-unicode.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const dataPath = join(root, "tests/unicode-ucd.mjs");
@@ -329,7 +329,7 @@ export function expectedCases(ucd, references) {
   return casesWithReferences((v8) => suiteCases(ucd, v8), references, "tests/unicode-v8.mjs", WRITE_V8, () => v8Cases(ucd));
 }
 
-const main = process.argv[1] === fileURLToPath(import.meta.url);
+const main = isScript(import.meta.url);
 if (main && process.argv.includes("--write")) {
   const directory = process.argv[process.argv.indexOf("--write") + 1];
   assert.ok(directory, "usage: node tests/unicode-cases.mjs --write <UCD 17.0.0 directory>");

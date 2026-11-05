@@ -14,7 +14,7 @@
 // depends only on the pinned inputs, so two runs produce the same bytes.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,13 +48,23 @@ const LAST = 0x10ffff;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = join(root, "src/runtime/unicode.ll");
-if (process.argv[1] === fileURLToPath(import.meta.url)) generate(process.argv.slice(2));
+if (isScript(import.meta.url)) generate(process.argv.slice(2));
+
+/// Whether Node runs the module of `url` (its `import.meta.url`) as the script instead of importing it. For
+/// `import.meta.url`, Node's loader resolves the symlinks of the script's path (unless `--preserve-symlinks-main`),
+/// so both are compared as real paths: a script reached through a symlinked directory runs too (G38).
+/// tests/unicode-cases.mjs and tests/regex-cases.mjs use it through tests/pinned-unicode.mjs.
+export function isScript(url) {
+  const script = process.argv[1];
+  // `node -e` has no script, and `node -` reads it from stdin.
+  return script !== undefined && existsSync(script) && realpathSync(script) === realpathSync(fileURLToPath(url));
+}
 
 function generate(args) {
   const check = args.includes("--check");
   const directory = args.find((arg) => !arg.startsWith("--"));
   if (!directory) {
-    console.error("usage: node scripts/generate-unicode.mjs [--check] <UCD 17.0.0 directory>");
+    console.error(`usage: node scripts/generate-unicode.mjs [--check] <UCD ${VERSION} directory>`);
     process.exit(2);
   }
 

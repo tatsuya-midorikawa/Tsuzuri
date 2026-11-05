@@ -5,7 +5,10 @@
 // and compares. The cases modules build their cases with `build(v8)`, which returns the cases of the suite in order
 // and gives each one whose expectation V8 computes as `v8(name, args, compute)`.
 import assert from "node:assert/strict";
-import { UNICODE_VERSION } from "../scripts/generate-unicode.mjs";
+import { isScript, UNICODE_VERSION } from "../scripts/generate-unicode.mjs";
+
+// The cases modules read these from here.
+export { isScript, UNICODE_VERSION };
 
 /// std's Unicode version as `process.versions.unicode` writes it (`17.0`).
 export const PINNED_UNICODE = UNICODE_VERSION.split(".").slice(0, 2).join(".");

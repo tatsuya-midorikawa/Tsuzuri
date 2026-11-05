@@ -215,3 +215,112 @@ fn generated_unicode_tables_are_private_and_linked_on_use() {
         assert!(!ir.contains("@tz.fn.Regex."), "{ir}");
     }
 }
+
+/// std's Unicode version: `UNICODE_VERSION` of scripts/generate-unicode.mjs, the one place that names it (G38).
+fn unicode_version() -> &'static str {
+    const GENERATOR: &str = include_str!("../scripts/generate-unicode.mjs");
+    let (_, rest) = GENERATOR
+        .split_once("export const UNICODE_VERSION = \"")
+        .expect("scripts/generate-unicode.mjs exports UNICODE_VERSION");
+    let version = rest.split_once('"').unwrap().0;
+    assert!(
+        version.split('.').count() == 3
+            && version
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())),
+        "{version}"
+    );
+    version
+}
+
+/// The generator and the two cases modules run as scripts when they are reached through a symlinked directory (G38):
+/// Node's loader gives `import.meta.url` as the real path, so the check that a module is the script compares real
+/// paths. Before, `--check` passed without checking and the write commands wrote nothing, all with exit status 0.
+#[cfg(unix)]
+#[test]
+fn unicode_scripts_run_through_a_symlinked_directory() {
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            // remove_dir_all removes the symlinks, not the directories that they name.
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let scratch = Scratch(root.join("target/scratch/unicode-scripts-symlinked"));
+    let _ = std::fs::remove_dir_all(&scratch.0);
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    for directory in ["scripts", "tests"] {
+        std::os::unix::fs::symlink(root.join(directory), scratch.0.join(directory)).unwrap();
+    }
+    let node = |args: &[&str]| {
+        std::process::Command::new("node")
+            .args(args)
+            .current_dir(&scratch.0)
+            .output()
+    };
+    let Ok(unicode) = node(&["-p", "process.versions.unicode"]) else {
+        eprintln!("skipped: node is not available");
+        return;
+    };
+    let script = |path: &str| scratch.0.join(path).to_str().unwrap().to_owned();
+    let missing = scratch.0.join("missing");
+    let missing = missing.to_str().unwrap();
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    // Without a UCD directory, the generator prints its usage.
+    let usage = node(&[&script("scripts/generate-unicode.mjs"), "--check"]).unwrap();
+    assert_eq!(usage.status.code(), Some(2), "{usage:?}");
+    assert!(
+        text(&usage.stderr).contains("usage: node scripts/generate-unicode.mjs [--check] <UCD"),
+        "{usage:?}"
+    );
+    // `--check` with a directory that does not exist fails instead of passing.
+    let check = node(&[&script("scripts/generate-unicode.mjs"), "--check", missing]).unwrap();
+    assert_eq!(check.status.code(), Some(1), "{check:?}");
+    assert!(text(&check.stderr).contains("ENOENT"), "{check:?}");
+    // `--write` without a UCD directory prints its usage.
+    let write = node(&[&script("tests/unicode-cases.mjs"), "--write"]).unwrap();
+    assert_eq!(write.status.code(), Some(1), "{write:?}");
+    assert!(
+        text(&write.stderr).contains("usage: node tests/unicode-cases.mjs --write <UCD"),
+        "{write:?}"
+    );
+    // Without a command, the regex cases module checks Cases.tz and counts the expectations.
+    let cases = node(&[&script("tests/regex-cases.mjs")]).unwrap();
+    assert!(cases.status.success(), "{cases:?}");
+    assert!(text(&cases.stdout).contains("regex cases: "), "{cases:?}");
+    // On a Node whose Unicode is not std's, the write commands refuse and write nothing.
+    let pinned = unicode_version().rsplit_once('.').unwrap().0;
+    if text(&unicode.stdout).trim() == pinned {
+        eprintln!("the refusal is not checked: this Node has std's Unicode {pinned}");
+        return;
+    }
+    let written = [
+        "tests/unicode-v8.mjs",
+        "tests/regex-v8.mjs",
+        "tests/fixtures/regex/Cases.tz",
+        "tests/unicode-ucd.mjs",
+    ];
+    let before = written.map(|path| std::fs::read(root.join(path)).unwrap());
+    for command in [
+        &["tests/unicode-cases.mjs", "--write-v8"][..],
+        &["tests/unicode-cases.mjs", "--write", missing],
+        &["tests/regex-cases.mjs", "--write"],
+    ] {
+        let script = script(command[0]);
+        let mut args = vec![script.as_str()];
+        args.extend_from_slice(&command[1..]);
+        let refused = node(&args).unwrap();
+        assert_eq!(refused.status.code(), Some(1), "{command:?}: {refused:?}");
+        assert!(
+            text(&refused.stderr).contains(&format!(
+                "is not std's ({pinned}); use a Node with Unicode {pinned}"
+            )),
+            "{command:?}: {refused:?}"
+        );
+    }
+    assert_eq!(
+        written.map(|path| std::fs::read(root.join(path)).unwrap()),
+        before
+    );
+}

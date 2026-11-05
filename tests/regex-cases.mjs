@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { casesWithReferences, referencesSource, requirePinnedNode, v8CasesOf } from "./pinned-unicode.mjs";
+import { casesWithReferences, isScript, referencesSource, requirePinnedNode, v8CasesOf } from "./pinned-unicode.mjs";
 
 // JavaScript spellings of the constructs whose meaning differs from V8's.
 const W = "[\\p{Alphabetic}\\p{M}\\p{Nd}\\p{Pc}\\p{Join_Control}]";
@@ -520,7 +520,7 @@ function foldOrbitHash() {
   return mix(hash, orbits);
 }
 
-const main = process.argv[1] === fileURLToPath(import.meta.url);
+const main = isScript(import.meta.url);
 if (main && process.argv.includes("--write")) {
   requirePinnedNode();
   const cases = v8Cases();
