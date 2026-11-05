@@ -272,3 +272,39 @@ Clang 22 は手元に無く、確かめていません（D1 は版によらな�
 
 `src/bindgen.rs`、`tests/bindgen.rs`、`tests/bindgen.mjs`、`tests/fixtures/bindgen/skipped/skipped.h`、`tests/fixtures/bindgen/skipped/expected.tz`、
 `_tsuzuri/language-reference/compiler/native-interop.md`、`docs/language.md`、`docs/architecture.md`、`_features/README.md`、このチケット（`_features/_completed/` へ移動）。
+
+### レビューの指摘への対応（2026-11-06）
+
+独立したレビューの指摘は 1 件（nit）でした。macOS arm64、Clang 21.1.8 と 23.1.4 で確かめました。
+
+#### 指摘: Clang 21 の `ownedTagDecl` の判定を、それだけで確かめるテストが無い
+
+- 指摘の内容: `unnamed_tag` は、名前のない `ownedTagDecl` と、`id` が名前のない宣言の集合にある `decl` の 2 つを見ます。テストの `Shape::Elaborated` は Clang 21 が実際に書くとおり `ElaboratedType` の下に `decl` を持つ `RecordType`・`EnumType` を置くので、`decl` の判定だけでも同じ行になり、`ownedTagDecl` の判定を消してもどのテストも失敗しません。
+  あわせて `docs/architecture.md` は「`ownedTagDecl` か `decl` がその `id` を指すとき」と、`ownedTagDecl` も `id` の集合で判定するように書いていましたが、コードは `ownedTagDecl` を名前が空であることで判定します（実際の AST ではどちらも同じ結果です）。
+- 再現: `unnamed_tag` の `ownedTagDecl` の 3 行（`if let Some(tag) = child.get("ownedTagDecl").filter(|tag| name(tag).is_empty()) { return Some(tag); }`）を消すと、`cargo test --locked --test bindgen` は `running 27 tests`、27 passed・0 failed のままでした。
+- 対応（判定の規則は変えず、テストで固定し、文書をコードに合わせました）:
+  1. `tests/bindgen.rs` に `reads_an_owned_tag_decl_without_a_decl_below_it` を足しました。`ElaboratedType` に名前のない `ownedTagDecl` だけを持たせ、その下の `RecordType`・`EnumType` には `decl` を書かない形で、
+     tag の `struct S { double big; }` と同じ名前の無名の struct の typedef `S`（とそれを取る `use_typedef`）、ポインターの typedef `typedef struct { ... } *P;`（と `use_pointer`）、無名の enum の typedef `mode`（と `pick`）を読みます。
+     名前のない宣言の `RecordDecl`・`EnumDecl` は実際の AST と同じく翻訳単位に置くので、`id` の集合にはありますが、`decl` が無いので `decl` の判定は当たりません。
+     期待値は C の名前空間の規則から手で書いた 8 行で、上の 2 つのテストの `Shape::Elaborated` の同じ宣言の行と同じです（`skipped S`・`skipped use_typedef`・`skipped P`・`skipped use_pointer`・`const MODE_A`・`const MODE_B`・`extern "pick" def pick :: i32 -> i32`）。
+     独立した参照として、`ownedTagDecl` の判定だけを持つ `main` の `src/bindgen.rs` でもこのテストが成功することを確かめました（そのときの結果は 25 passed・3 failed で、失敗は修正前と同じ `Direct` の形の 3 件）。
+     この形は、確かめたどの Clang も書きません（Clang 21 は下の型にも `decl` を書きます）。そのことをテストのコメントに書きました。
+  2. 規則の記述を、コードが保つ規則（名前のない `ownedTagDecl` か、`id` が名前のない `RecordDecl`・`EnumDecl` の集合にある `decl` のどちらか一方で足りる。Clang 21 は両方を書き、Clang 23 は `decl` だけを書く）に合わせました。
+     直したのは `src/bindgen.rs` の `unnamed_tag` の doc comment、`docs/architecture.md` の bindgen の段落の文、`tests/bindgen.rs` の `does_not_read_unnamed_struct_typedefs_as_tags` のコメント、このチケットの D1（「実装での形」を書き足し）・手順 3・「チケットを補った判断」の 3、`_features/README.md` の E16 の行の要約です。
+- 根拠（修正後）: 同じ 3 行を消すと、`cargo test --locked --test bindgen` は `running 28 tests`、27 passed・1 failed で、`reads_an_owned_tag_decl_without_a_decl_below_it` が失敗します。
+  消した版の出力には `extern "use_typedef" def use_typedef :: ref S -> f64`（ABI の合わない extern）、`// skipped (anonymous struct): …`、`// skipped pick: parameter 1 has unsupported type 'mode'` が出ます。元に戻すと 28 passed です。
+
+#### 実行したコマンドと結果
+
+- `cargo fmt --all -- --check`: 成功。`cargo clippy --locked --all-targets -- -D warnings`: 成功（警告なし）。
+- `cargo test --locked --test bindgen`: `running 28 tests`、28 passed。`cargo test --locked --lib bindgen`: 5 passed。
+- `cargo nextest run --locked`: 2936 tests run: 2936 passed、4 skipped（前回の 2935 から、足した 1 件の分だけ増えました）。
+- `cargo build` の後、`TSUZURI_CLANG=/opt/homebrew/opt/llvm@21/bin/clang node tests/bindgen.mjs target/debug/tsuzuri` と `TSUZURI_CLANG=/opt/homebrew/opt/llvm/bin/clang …`: どちらも 6 つの段（golden・決定性・`check`／`fmt`・W2002、native の往復 `-O0`／`-O3` の 2 組、CLI と出力保護）がすべて成功。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-cli-docs.mjs`: 4 checks、0 failed。`node scripts/check-guide-lite.mjs`: 88 references、0 failed。
+- 言語リファレンスのページ、診断、生成ブロックは変えていないので、`check-docs.mjs` と `gen-docs.mjs --check` は回していません（`native-interop.md` は前回の検証のままです）。
+
+#### 判断
+
+1. **`ownedTagDecl` の判定は消さず、テストで固定しました。** `main` から続く判定そのもので、`decl` を下の型に書かない Clang の版があったときにも、Clang 21 の形の AST で無名の tag を見落として ABI の合わない extern を出さないための、保守的な二重の手がかりだからです。
+2. **`ownedTagDecl` を `id` の集合でも絞る形（D1 の文字どおり）にはしませんでした。** 実際の AST では結果が同じで、今までの判定（名前が空）を変えないほうが、Clang 21 の出力が変わらないことが明らかだからです。D1 には、実装での形を書き足しました。
+3. **`_features/README.md` の行の要約も直しました。** 出荷する振る舞いは変わりませんが、前の言い回しは `docs/architecture.md` と同じく「`ownedTagDecl` も集合で判定する」と読めたからです。
