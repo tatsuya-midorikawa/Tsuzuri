@@ -1,16 +1,21 @@
 // The Unicode cases of the `unicode` suite in tests/features.mjs (D09 Phase 2). Expected values come from the
 // official UCD test files (committed in compact form in tests/unicode-ucd.mjs, which
-// `node tests/unicode-cases.mjs --write <UCD 17.0.0 directory>` regenerates) and from V8 (Node with Unicode 17.0):
-// `\p{...}` for categories, `String.prototype.normalize`, `toUpperCase`/`toLowerCase` and `Intl.Segmenter`.
-// tests/features.mjs never copies the compiler's output.
+// `node tests/unicode-cases.mjs --write <UCD 17.0.0 directory>` regenerates) and from V8 with std's Unicode version:
+// `\p{...}` for categories, `String.prototype.normalize`, `toUpperCase`/`toLowerCase` and `Intl.Segmenter`. The V8
+// ones are committed in tests/unicode-v8.mjs, which `node tests/unicode-cases.mjs --write-v8` rewrites; both commands
+// need a Node with std's Unicode version (G38, tests/pinned-unicode.mjs). tests/features.mjs never copies the
+// compiler's output.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { casesWithReferences, referencesSource, requirePinnedNode, v8CasesOf } from "./pinned-unicode.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const dataPath = join(root, "tests/unicode-ucd.mjs");
+export const v8Path = join(root, "tests/unicode-v8.mjs");
+const WRITE_V8 = "node tests/unicode-cases.mjs --write-v8";
 const SOURCES = {
   "NormalizationTest.txt": "5019ffd530751a741900c849c0e010332f142a3612234639bd200b82138a87db",
   "auxiliary/GraphemeBreakTest.txt": "e2d134d2c52919bace503ebb6a551c1855fe1a1faec18478c78fff254a1793ec",
@@ -159,8 +164,18 @@ const GRAPHEME_POOL = [0x41, 0x0d, 0x0a, 0x01, 0x0301, 0x200d, 0x1f1ef, 0x1f1f5,
 const CASE_POOL = [0x3a3, 0x3c3, 0x3c2, 0x391, 0x41, 0x61, 0x20, 0x2e, 0x27, 0x0301, 0x0345, 0xdf, 0x1e9e, 0x130, 0x131,
   0x69, 0x49, 0xfb01, 0x1f80, 0x1f88, 0x149, 0x1c5, 0x1c4, 0x1c6, 0x2d, 0x30, 0xad, 0x2019, 0x10400, 0x10428];
 
-/// The cases of the suite, from the committed UCD data (`import * as ucd from "./unicode-ucd.mjs"`).
-export function expectedCases(ucd) {
+// The NormalizationTest.txt lines of tests/unicode-ucd.mjs: c1..c5 of each, as arrays of scalars.
+function normalizationRows(ucd) {
+  return ucd.normalizationTests.split(",").map((test) => {
+    const columns = [];
+    for (const digits of test.split("|")) columns.push(digits.length === 1 ? columns[Number(digits)] : expand(ucd.normalizationPalette, digits, 3));
+    return columns;
+  });
+}
+
+// The cases of the suite in order, from the committed UCD data (`import * as ucd from "./unicode-ucd.mjs"`). An
+// expectation that V8 computes is the case `v8(name, args, compute)` (tests/pinned-unicode.mjs).
+function suiteCases(ucd, v8) {
   const cases = [];
   const units = (text, encode) => encode(text);
   const hashText = (hash, text, encode) => units(text, encode).reduce(mix, mix(hash, units(text, encode).length));
@@ -192,20 +207,30 @@ export function expectedCases(ucd) {
     "Po", "Sm", "Sc", "Sk", "So", "Zs", "Zl", "Zp", "Cc", "Cf", "Cs", "Co", "Cn"].map((name) => [name, new RegExp(`^\\p{${name}}$`, "u")]);
   for (let start = 0; start <= LAST; start += CHUNK) {
     const stop = Math.min(start + CHUNK, LAST + 1);
-    let hash = 0n;
-    for (let code = start; code < stop; code++) {
-      if (code >= 0xd800 && code <= 0xdfff) continue;
-      const char = String.fromCodePoint(code);
-      hash = utf16(categories.find(([, re]) => re.test(char))[0]).reduce(mix, hash);
-    }
-    cases.push(["category_chunk", [BigInt(start)], hash]);
+    cases.push(v8("category_chunk", [BigInt(start)], () => {
+      let hash = 0n;
+      for (let code = start; code < stop; code++) {
+        if (code >= 0xd800 && code <= 0xdfff) continue;
+        const char = String.fromCodePoint(code);
+        hash = utf16(categories.find(([, re]) => re.test(char))[0]).reduce(mix, hash);
+      }
+      return hash;
+    }));
     // Every scalar in every normalization form and case conversion (V8), each followed by a space; the UTF-8
     // entry points take every 9th scalar.
-    const text = chunkText(start, stop, 1);
-    const sparse = chunkText(start, stop, 9);
-    cases.push(["normalize_chunk", [BigInt(start), 1n, 0n], FORMS.reduce((hash, form) => hashText(hash, text.normalize(form), utf16), 0n)]);
-    cases.push(["normalize_chunk", [BigInt(start), 9n, 1n], FORMS.reduce((hash, form) => hashText(hash, sparse.normalize(form), utf8), 0n)]);
-    cases.push(["case_chunk", [0n, BigInt(start), 1n], caseHash([text.toLowerCase(), text.toUpperCase()], false)]);
+    const text = () => chunkText(start, stop, 1);
+    cases.push(v8("normalize_chunk", [BigInt(start), 1n, 0n], () => {
+      const whole = text();
+      return FORMS.reduce((hash, form) => hashText(hash, whole.normalize(form), utf16), 0n);
+    }));
+    cases.push(v8("normalize_chunk", [BigInt(start), 9n, 1n], () => {
+      const sparse = chunkText(start, stop, 9);
+      return FORMS.reduce((hash, form) => hashText(hash, sparse.normalize(form), utf8), 0n);
+    }));
+    cases.push(v8("case_chunk", [0n, BigInt(start), 1n], () => {
+      const whole = text();
+      return caseHash([whole.toLowerCase(), whole.toUpperCase()], false);
+    }));
     cases.push(["case_chunk", [3n, BigInt(start), 1n], ucd.foldHashes[start / CHUNK]]);
   }
   // UCD conformance tests.
@@ -220,9 +245,7 @@ export function expectedCases(ucd) {
       cases.push(["segments_packed", [which, ...pack(codes)], segmentsHash(codes, breaks, piecesOf(codes, breaks))]);
     }
   }
-  for (const test of ucd.normalizationTests.split(",")) {
-    const columns = [];
-    for (const digits of test.split("|")) columns.push(digits.length === 1 ? columns[Number(digits)] : expand(ucd.normalizationPalette, digits, 3));
+  for (const columns of normalizationRows(ucd)) {
     if (columns[0].length > 15) continue;
     const source = String.fromCodePoint(...columns[0]);
     const expected = FORMS.reduce((hash, _, index) => {
@@ -238,17 +261,19 @@ export function expectedCases(ucd) {
   const segmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
   for (let index = 0; index < 300; index++) {
     const text = String.fromCodePoint(...sequence(NORMALIZATION_POOL));
-    cases.push(["normalize_packed", pack([...text].map((char) => char.codePointAt(0))), normalizeHash(text)]);
+    cases.push(v8("normalize_packed", pack([...text].map((char) => char.codePointAt(0))), () => normalizeHash(text)));
     const graphemeCodes = sequence(GRAPHEME_POOL);
-    const graphemeText = String.fromCodePoint(...graphemeCodes);
-    const breaks = new Set();
-    let position = 0;
-    const starts = new Set([...segmenter.segment(graphemeText)].map((segment) => segment.index));
-    graphemeCodes.forEach((code, scalar) => { if (starts.has(position)) breaks.add(scalar); position += String.fromCodePoint(code).length; });
-    breaks.add(graphemeCodes.length);
-    cases.push(["segments_packed", [0n, ...pack(graphemeCodes)], segmentsHash(graphemeCodes, breaks, [...segmenter.segment(graphemeText)].map((segment) => segment.segment))]);
+    cases.push(v8("segments_packed", [0n, ...pack(graphemeCodes)], () => {
+      const graphemeText = String.fromCodePoint(...graphemeCodes);
+      const breaks = new Set();
+      let position = 0;
+      const starts = new Set([...segmenter.segment(graphemeText)].map((segment) => segment.index));
+      graphemeCodes.forEach((code, scalar) => { if (starts.has(position)) breaks.add(scalar); position += String.fromCodePoint(code).length; });
+      breaks.add(graphemeCodes.length);
+      return segmentsHash(graphemeCodes, breaks, [...segmenter.segment(graphemeText)].map((segment) => segment.segment));
+    }));
     const caseText = String.fromCodePoint(...sequence(CASE_POOL));
-    cases.push(["case_packed", [0n, ...pack([...caseText].map((char) => char.codePointAt(0)))], caseHash([caseText.toLowerCase(), caseText.toUpperCase()], true)]);
+    cases.push(v8("case_packed", [0n, ...pack([...caseText].map((char) => char.codePointAt(0)))], () => caseHash([caseText.toLowerCase(), caseText.toUpperCase()], true)));
   }
   // Titlecase, written by hand from Unicode §3.13 (toTitlecase with UAX #29 words) and SpecialCasing.txt.
   for (const [input, expected] of [
@@ -270,25 +295,54 @@ export function expectedCases(ucd) {
   for (const [first, middle, last, joined] of [["a", "'", "b", true], ["a", "'", "1", false], ["1", ".", "2", true],
     ["a", " ", "b", false], ["\u05d0", "\"", "\u05d1", true], ["a", ":", "b", true], ["\u05d0", "'", "x", true], ["1", ",", "a", false]]) {
     for (const run of [0, 1, 2000]) {
-      const extend = "\u0301".repeat(run);
-      const text = first + extend + middle + extend + last;
-      const starts = joined ? [0] : [0, 1 + run, 2 + 2 * run];
-      assert.deepEqual([...words.segment(text)].map((segment) => segment.index), starts, `V8 words of ${first}${middle}${last} with ${run}`);
-      const title = starts.map((start, index) => titlecase(text.slice(start, starts[index + 1] ?? text.length))).join("");
-      const offsets = [...starts, text.length];
-      let hash = offsets.reduce(mix, mix(0n, offsets.length));
-      hash = offsets.map((offset) => Buffer.byteLength(text.slice(0, offset), "utf8")).reduce(mix, mix(hash, offsets.length));
-      cases.push(["word_run", [first, middle, last].map((char) => BigInt(char.codePointAt(0))).concat([BigInt(run)]), hashText(hashText(hash, title, utf16), title, utf8)]);
+      cases.push(v8("word_run", [first, middle, last].map((char) => BigInt(char.codePointAt(0))).concat([BigInt(run)]), () => {
+        const extend = "\u0301".repeat(run);
+        const text = first + extend + middle + extend + last;
+        const starts = joined ? [0] : [0, 1 + run, 2 + 2 * run];
+        assert.deepEqual([...words.segment(text)].map((segment) => segment.index), starts, `V8 words of ${first}${middle}${last} with ${run}`);
+        const title = starts.map((start, index) => titlecase(text.slice(start, starts[index + 1] ?? text.length))).join("");
+        const offsets = [...starts, text.length];
+        let hash = offsets.reduce(mix, mix(0n, offsets.length));
+        hash = offsets.map((offset) => Buffer.byteLength(text.slice(0, offset), "utf8")).reduce(mix, mix(hash, offsets.length));
+        return hashText(hashText(hash, title, utf16), title, utf8);
+      }));
     }
   }
   return cases;
 }
 
-if (process.argv.includes("--write")) {
+/// The cases whose expectations V8 computes, in the order of the suite: what `--write-v8` writes to
+/// tests/unicode-v8.mjs. V8 must also agree with the NormalizationTest.txt lines of tests/unicode-ucd.mjs (`--write`
+/// checks it against the whole file).
+export function v8Cases(ucd) {
+  for (const columns of normalizationRows(ucd)) {
+    const source = String.fromCodePoint(...columns[0]);
+    FORMS.forEach((form, index) => assert.deepEqual([...source.normalize(form)].map((char) => char.codePointAt(0)), columns[index + 1], `V8 ${form} of ${columns[0].map((code) => code.toString(16))}`));
+  }
+  return v8CasesOf((v8) => suiteCases(ucd, v8));
+}
+
+/// The cases of the suite, from the committed UCD data (`import * as ucd from "./unicode-ucd.mjs"`) and V8
+/// expectations (`references`: the `cases` of tests/unicode-v8.mjs), which a Node with std's Unicode version first
+/// recomputes and compares.
+export function expectedCases(ucd, references) {
+  return casesWithReferences((v8) => suiteCases(ucd, v8), references, "tests/unicode-v8.mjs", WRITE_V8, () => v8Cases(ucd));
+}
+
+const main = process.argv[1] === fileURLToPath(import.meta.url);
+if (main && process.argv.includes("--write")) {
   const directory = process.argv[process.argv.indexOf("--write") + 1];
   assert.ok(directory, "usage: node tests/unicode-cases.mjs --write <UCD 17.0.0 directory>");
+  // `write` checks V8 against NormalizationTest.txt, so it needs std's Unicode version too.
+  requirePinnedNode();
   write(directory);
-} else if (process.argv[1] === fileURLToPath(import.meta.url)) {
+} else if (main && process.argv.includes("--write-v8")) {
+  requirePinnedNode();
+  const cases = v8Cases(await import(dataPath));
+  writeFileSync(v8Path, referencesSource(WRITE_V8, "unicode", cases));
+  console.log(`wrote ${v8Path}: ${cases.length} cases, ${readFileSync(v8Path).length} bytes`);
+} else if (main) {
   assert.ok(existsSync(dataPath), "run node tests/unicode-cases.mjs --write <UCD directory>");
-  console.log(`unicode cases: ${expectedCases(await import(dataPath)).length} expectations`);
+  const { cases } = await import(v8Path);
+  console.log(`unicode cases: ${expectedCases(await import(dataPath), cases).length} expectations`);
 }
