@@ -204,7 +204,7 @@ pub(crate) fn infer_copy_all(
 
 // ponytail: access errors only while types are broken; Error stubs lack loans, so lifetimes wait.
 pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
-    let closed = closed_returns(module);
+    let facts = call_facts(module, true);
     let mut recovered = Vec::new();
     for function in &module.functions {
         let _ = check_body(
@@ -212,7 +212,7 @@ pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
             function.parameters.iter(),
             &function.body,
             true,
-            &closed,
+            &facts,
             function.is_once,
             false,
             Contract::of(function),
@@ -226,7 +226,7 @@ pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
 
 /// The consuming reads of Copy values that need a drop, per function of a checked module (A15).
 pub(crate) fn copy_reads(module: &CheckedModule) -> Vec<Vec<CopyRead>> {
-    let closed = closed_returns(module);
+    let facts = call_facts(module, false);
     let mut reads = Vec::with_capacity(module.functions.len());
     for (id, function) in module.functions.iter().enumerate() {
         let mut copies = Vec::new();
@@ -235,7 +235,7 @@ pub(crate) fn copy_reads(module: &CheckedModule) -> Vec<Vec<CopyRead>> {
             function.parameters.iter(),
             &function.body,
             false,
-            &closed,
+            &facts,
             function.is_once,
             module.user_drops.values().any(|drop| *drop == id),
             Contract::of(function),
@@ -262,7 +262,7 @@ fn check_functions(
     infer: bool,
     parallelism: Parallelism,
 ) -> Result<Vec<BTreeSet<String>>, Vec<Diagnostic>> {
-    let closed = closed_returns(module);
+    let facts = call_facts(module, infer);
     let mut constraints = Vec::new();
     let mut diagnostics = Diagnostics::new(0);
     let count = module.functions.len();
@@ -283,7 +283,7 @@ fn check_functions(
                 function.parameters.iter(),
                 &function.body,
                 infer,
-                &closed,
+                &facts,
                 function.is_once,
                 module.user_drops.values().any(|drop| *drop == id),
                 Contract::of(function),
@@ -448,7 +448,7 @@ fn check_body<'a>(
     parameters: impl Clone + Iterator<Item = &'a Local>,
     body: &'a TypedExpr,
     infer: bool,
-    closed: &[bool],
+    facts: &CallFacts,
     task: bool,
     user_drop: bool,
     contract: Contract<'a>,
@@ -456,6 +456,54 @@ fn check_body<'a>(
     copies: Option<&mut Vec<CopyRead>>,
     events: Option<&mut Vec<OwnershipEvent>>,
 ) -> Result<BTreeSet<String>, Diagnostic> {
+    let mut checker = start_checker(
+        module,
+        parameters.clone(),
+        body,
+        infer,
+        facts,
+        task,
+        user_drop,
+        contract,
+        recovered,
+        copies,
+        events,
+    );
+    let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
+    if checker.events.is_some() {
+        let end = Span {
+            start: body.span.end,
+            ..body.span
+        };
+        let ids: Vec<usize> = parameters.clone().map(|parameter| parameter.id).collect();
+        checker.drop_events(&ids, end);
+    }
+    checker.check_result(parameters, body, task, contract, result)?;
+    if let Some(events) = checker.events.take() {
+        // With the Copy variables that the whole body needs, a move of a type that is Copy (a type
+        // variable, or an array, tuple, record or union of such) is a copy.
+        events.retain(|event| !event.moved.as_ref().is_some_and(|ty| checker.is_copy(ty)));
+        events.sort_by_key(|event| (event.span.start, event.span.end, event.kind));
+        events.dedup();
+    }
+    Ok(checker.copy_variables)
+}
+
+/// A checker for `body` whose parameters hold the loans that stand for their callers' borrows.
+#[allow(clippy::too_many_arguments)]
+fn start_checker<'a, 'run>(
+    module: &'a CheckedModule,
+    parameters: impl Clone + Iterator<Item = &'a Local>,
+    body: &'a TypedExpr,
+    infer: bool,
+    facts: &'run CallFacts,
+    task: bool,
+    user_drop: bool,
+    contract: Contract<'a>,
+    recovered: &'run mut Vec<Diagnostic>,
+    copies: Option<&'run mut Vec<CopyRead>>,
+    events: Option<&'run mut Vec<OwnershipEvent>>,
+) -> Checker<'a, 'run> {
     let mut declarations: BTreeMap<_, _> =
         parameters.clone().map(|local| (local.id, local)).collect();
     collect_declarations(body, &mut declarations);
@@ -473,7 +521,7 @@ fn check_body<'a>(
         slots: BTreeMap::new(),
         infer,
         copy_variables: BTreeSet::new(),
-        closed,
+        facts,
         recovered,
         copies,
         events,
@@ -507,24 +555,7 @@ fn check_body<'a>(
             .locals
             .insert(parameter.id, (parameter, value));
     }
-    let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
-    if checker.events.is_some() {
-        let end = Span {
-            start: body.span.end,
-            ..body.span
-        };
-        let ids: Vec<usize> = parameters.clone().map(|parameter| parameter.id).collect();
-        checker.drop_events(&ids, end);
-    }
-    checker.check_result(parameters, body, task, contract, result)?;
-    if let Some(events) = checker.events.take() {
-        // With the Copy variables that the whole body needs, a move of a type that is Copy (a type
-        // variable, or an array, tuple, record or union of such) is a copy.
-        events.retain(|event| !event.moved.as_ref().is_some_and(|ty| checker.is_copy(ty)));
-        events.sort_by_key(|event| (event.span.start, event.span.end, event.kind));
-        events.dedup();
-    }
-    Ok(checker.copy_variables)
+    checker
 }
 
 /// The ownership events of the abstract bodies of `functions` (G26 phase 5): each body is
@@ -533,7 +564,7 @@ pub(crate) fn events_abstract(
     module: &CheckedModule,
     functions: &[usize],
 ) -> BTreeMap<usize, Vec<OwnershipEvent>> {
-    let closed = closed_returns(module);
+    let facts = call_facts(module, true);
     let mut result = BTreeMap::new();
     for &id in functions {
         let Some(function) = module.functions.get(id) else {
@@ -545,7 +576,7 @@ pub(crate) fn events_abstract(
             function.parameters.iter(),
             &function.body,
             true,
-            &closed,
+            &facts,
             function.is_once,
             module.user_drops.values().any(|drop| *drop == id),
             Contract::of(function),
@@ -671,6 +702,262 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
     }
 }
 
+/// What the bodies of the functions prove about their direct calls: the results that hold no
+/// borrow at all (`closed_returns`) and, for the others, the arguments whose loans a result can
+/// hold (A28, `parameter_retention`).
+struct CallFacts {
+    closed: Vec<bool>,
+    /// By function: whether its result can hold each argument's loans. `None` holds them all.
+    retained: Vec<Option<Box<[bool]>>>,
+}
+
+impl CallFacts {
+    /// Whether a complete direct call of `function` passes none of the loans of its argument
+    /// `index` to its result.
+    fn temporary(&self, function: usize, index: usize) -> bool {
+        self.retained
+            .get(function)
+            .and_then(Option::as_deref)
+            .is_some_and(|retained| retained.get(index) == Some(&false))
+    }
+}
+
+fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
+    let closed = closed_returns(module);
+    let retained = parameter_retention(module, &closed, infer);
+    CallFacts { closed, retained }
+}
+
+/// Whether the facts of `parameter_retention` decide the loans of a call result of type `result`:
+/// one that may hold borrows only through function environments (and type variables, in the
+/// abstract bodies). A result whose type stores a reference keeps the borrows of every argument
+/// unless named regions say otherwise: the signature, not the body, is the contract of a reference
+/// (`ownership-and-memory/lifetimes.md`), so a caller does not break when the body changes which
+/// input it returns. A function type cannot name the borrows of its environment, so only the body
+/// can tell which arguments it captures.
+fn retention_applies(result: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    result.carries_loans(types) && !result.contains_stored_reference(types)
+}
+
+/// The function that a call's callee names directly.
+fn direct_callee(callee: &TypedExpr) -> Option<usize> {
+    match callee.kind {
+        E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => Some(id),
+        _ => None,
+    }
+}
+
+/// How many bodies `parameter_retention` may check for each function that it computes, and in
+/// all beyond that; past it every result keeps all its arguments' loans, as before A28.
+const RETENTION_CHECKS_PER_FUNCTION: usize = 8;
+const RETENTION_EXTRA_CHECKS: usize = 1024;
+
+/// A28: for each function that some complete direct call needs it for, which arguments its result
+/// can hold the loans of. The body is checked as any body is, with a loan standing for each
+/// parameter's borrows from its caller, and the parameters whose loans reach its result (directly
+/// or as the parents of a loan in it) are retained. Signatures alone cannot tell `pass _key f = f`
+/// from `keep text = \() -> String.length text`; the specialized bodies can, so each instance of a
+/// generic function has its own facts.
+///
+/// The facts are the least fixed point over the call graph: every argument starts temporary and is
+/// raised to retained when a check of the body, under the current facts of its callees, shows that
+/// it reaches the result. A recursive call is thus assumed not to retain until its own body shows
+/// that it does, which holds by induction on the depth of the calls. A body that fails its check
+/// retains everything, as does a parameter that gets no loan in the body although it may hold
+/// borrows: one of a type variable, whose borrows the abstract body of a generic function does not
+/// see, and an `Owned.Function`, which is checked where it is made (A30). The abstract bodies give
+/// facts only to the inference of the Copy constraints; the specialized bodies, whose types are
+/// concrete, give the facts of the check that accepts or rejects the program.
+/// Functions whose results named regions already decide (A12, A13), the generated functions that
+/// apply builtins, `Drop.drop` bodies and tzroutine bodies keep all their arguments' loans.
+#[inline(never)]
+fn parameter_retention(
+    module: &CheckedModule,
+    closed: &[bool],
+    infer: bool,
+) -> Vec<Option<Box<[bool]>>> {
+    let count = module.functions.len();
+    let types = module.types();
+    let drops: BTreeSet<usize> = module.user_drops.values().copied().collect();
+    let eligible = |id: usize| {
+        let function = &module.functions[id];
+        function.module != "$builtin"
+            && !function.is_once
+            && !function.parameters.is_empty()
+            && function.region_sources.is_none()
+            && function.region_slots.is_none()
+            && function.callback_contracts.is_empty()
+            && !drops.contains(&id)
+    };
+    // The complete direct calls whose results may hold loans and are not proven closed.
+    let mut callers: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    let mut callees: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for (caller, function) in module.functions.iter().enumerate() {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            if let E::Call(callee, arguments) = &expression.kind
+                && let Some(id) = direct_callee(callee)
+                && !closed[id]
+                && eligible(id)
+                && arguments.len() >= module.functions[id].parameters.len()
+                && retention_applies(
+                    &callee
+                        .ty
+                        .after_arguments(module.functions[id].parameters.len()),
+                    &types,
+                )
+            {
+                callers.entry(id).or_default().insert(caller);
+                callees.entry(caller).or_default().insert(id);
+            }
+            expression
+                .try_for_each_child(&mut |child| {
+                    pending.push(child);
+                    Ok(())
+                })
+                .expect("collecting calls cannot fail");
+        }
+    }
+    let mut facts = CallFacts {
+        closed: closed.to_vec(),
+        retained: vec![None; count],
+    };
+    for &id in callers.keys() {
+        facts.retained[id] = Some(
+            module.functions[id]
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    // The parameters that get no loan in the body but may hold borrows.
+                    if parameter.ty.carries_loans(&types) {
+                        parameter.ty.is_owned_function(&types)
+                    } else {
+                        parameter.ty.contains_unknown()
+                    }
+                })
+                .collect(),
+        );
+    }
+    // Callees before their callers, so that a chain without recursion settles in one pass.
+    let mut order = Vec::with_capacity(callers.len());
+    let mut visited = BTreeSet::new();
+    let children = |id: usize| -> Vec<usize> {
+        callees
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|callee| callers.contains_key(callee))
+            .rev()
+            .collect()
+    };
+    for &root in callers.keys() {
+        if !visited.insert(root) {
+            continue;
+        }
+        let mut stack = vec![(root, children(root))];
+        while let Some((_, next)) = stack.last_mut() {
+            match next.pop() {
+                Some(child) => {
+                    if visited.insert(child) {
+                        stack.push((child, children(child)));
+                    }
+                }
+                None => {
+                    let (id, _) = stack.pop().expect("the stack is not empty");
+                    order.push(id);
+                }
+            }
+        }
+    }
+    let mut queued: BTreeSet<usize> = order.iter().copied().collect();
+    let mut work: std::collections::VecDeque<usize> = order.into();
+    let mut budget = callers.len() * RETENTION_CHECKS_PER_FUNCTION + RETENTION_EXTRA_CHECKS;
+    while let Some(id) = work.pop_front() {
+        queued.remove(&id);
+        if budget == 0 {
+            return vec![None; count];
+        }
+        budget -= 1;
+        let old = facts.retained[id].as_deref().expect("a computed function");
+        let new: Box<[bool]> = match retained_parameters(module, id, infer, &facts) {
+            Some(found) => old
+                .iter()
+                .zip(&found)
+                .map(|(old, new)| *old || *new)
+                .collect(),
+            None => vec![true; old.len()].into_boxed_slice(),
+        };
+        if *old == *new {
+            continue;
+        }
+        facts.retained[id] = Some(new);
+        for caller in callers.get(&id).into_iter().flatten() {
+            if callers.contains_key(caller) && queued.insert(*caller) {
+                work.push_back(*caller);
+            }
+        }
+    }
+    facts.retained
+}
+
+/// The parameters of `function` whose loans its result holds, under the facts so far; `None`
+/// when the body does not check, or when its result holds a loan of its own locals.
+fn retained_parameters(
+    module: &CheckedModule,
+    id: usize,
+    infer: bool,
+    facts: &CallFacts,
+) -> Option<Box<[bool]>> {
+    let function = &module.functions[id];
+    let mut recovered = Vec::new();
+    let mut checker = start_checker(
+        module,
+        function.parameters.iter(),
+        &function.body,
+        infer,
+        facts,
+        false,
+        false,
+        Contract::of(function),
+        &mut recovered,
+        None,
+        None,
+    );
+    let result = checker
+        .eval(&function.body, Use::Consume, &BTreeSet::new())
+        .ok()?;
+    if !checker.recovered.is_empty() {
+        return None;
+    }
+    let roots: BTreeMap<usize, usize> = function
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(index, parameter)| (usize::MAX - parameter.id, index))
+        .collect();
+    if result.loans.iter().any(|loan| {
+        let root = checker.loans[*loan].place.root;
+        !roots.contains_key(&root) && !is_static_root(root)
+    }) {
+        return None;
+    }
+    let mut retained = vec![false; function.parameters.len()];
+    let mut pending: Vec<usize> = result.loans.iter().copied().collect();
+    let mut seen = BTreeSet::new();
+    while let Some(loan) = pending.pop() {
+        if !seen.insert(loan) {
+            continue;
+        }
+        let loan = &checker.loans[loan];
+        if let Some(index) = roots.get(&loan.place.root) {
+            retained[*index] = true;
+        }
+        pending.extend(&loan.parents);
+    }
+    Some(retained.into_boxed_slice())
+}
+
 /// Source declarations outlive every branch snapshot. Evaluation also visits synthetic
 /// capture expressions, so its expression borrows must remain shorter than these borrows.
 fn collect_declarations<'a>(body: &'a TypedExpr, locals: &mut BTreeMap<usize, &'a Local>) {
@@ -744,7 +1031,8 @@ struct Checker<'a, 'run> {
     slots: BTreeMap<(usize, usize), ExternalSlot>,
     infer: bool,
     copy_variables: BTreeSet<String>,
-    closed: &'run [bool],
+    /// What the bodies of the callees prove about their results (`call_facts`).
+    facts: &'run CallFacts,
     recovered: &'run mut Vec<Diagnostic>,
     /// Collects the copied consuming reads for `copies::sites`; the checks stay the same.
     copies: Option<&'run mut Vec<CopyRead>>,
@@ -880,7 +1168,7 @@ impl<'a> Checker<'a, '_> {
                         function.parameters.iter(),
                         &function.body,
                         false,
-                        self.closed,
+                        self.facts,
                         function.is_once,
                         false,
                         Contract {
@@ -947,7 +1235,7 @@ impl<'a> Checker<'a, '_> {
             })
             .collect();
         locals.extend(captures.iter().map(|capture| (capture.id, true)));
-        closed(body, self.module, self.closed, &locals)
+        closed(body, self.module, &self.facts.closed, &locals)
     }
 
     /// The builtin that `callee` is, or that the generated function it names calls on its own
@@ -971,6 +1259,38 @@ impl<'a> Checker<'a, '_> {
                 }
             }
         }
+    }
+
+    /// A28: whether `callee` is `share`, `downgrade` or `upgrade` of `Rc` or `Arc` (or the generated
+    /// function that applies one). Each makes a new owner of the block that its first argument
+    /// borrows, so its result holds what the block holds, not the borrow of the owner: the owner
+    /// may move or be dropped while the result lives. `get` returns the borrow itself, and other
+    /// builtins may pass their references to callbacks, so they keep every argument's loans.
+    fn reads_through(&self, callee: &TypedExpr) -> bool {
+        use crate::check::Builtin::{
+            ArcDowngrade, ArcShare, ArcUpgrade, RcDowngrade, RcShare, RcUpgrade,
+        };
+        matches!(
+            self.builtin_called(callee),
+            Some(RcShare | ArcShare | RcDowngrade | ArcDowngrade | RcUpgrade | ArcUpgrade)
+        )
+    }
+
+    /// What a value read through the borrows `loans` holds, as `read_places` reads a place: a
+    /// borrow of a local holds the loans that the local held when it was borrowed (its parents);
+    /// a borrow from the caller, or of static data, says nothing about what its target holds, so
+    /// it stands for itself.
+    fn read_through(&self, loans: &BTreeSet<usize>) -> BTreeSet<usize> {
+        let mut held = BTreeSet::new();
+        for id in loans {
+            let loan = &self.loans[*id];
+            if self.external.contains(&loan.place.root) || is_static_root(loan.place.root) {
+                held.insert(*id);
+            } else {
+                held.extend(&loan.parents);
+            }
+        }
+        held
     }
 
     /// What `Mutex.with_lock` returns when `callee` is that builtin, or the generated function
@@ -2778,6 +3098,15 @@ impl<'a> Checker<'a, '_> {
         let boundary = known
             .map(|id| self.module.functions[id].parameters.len())
             .filter(|count| *count <= arguments.len());
+        // A28: the arguments of a complete call whose result holds borrows only through function
+        // environments, which the callee's facts select.
+        let retention = boundary.filter(|boundary| {
+            !callee
+                .ty
+                .after_arguments(*boundary)
+                .contains_stored_reference(&self.module.types())
+        });
+        let read_through = self.reads_through(callee);
         // A region-quantified parameter's result borrows only from the inputs that its type names.
         let mut current = if callback {
             Value::default()
@@ -2867,13 +3196,21 @@ impl<'a> Checker<'a, '_> {
                 // The reference of `OnceValue.get` points into the cell, never into what its
                 // initializer borrowed: that was checked above to stay out of the cell.
                 None if kept && index == 1 => {}
+                // A28: the callee's body never puts this argument in its result. The argument
+                // stays lent until the call returns (it is on `held`).
+                None if index == 0 && read_through => {
+                    let loans = self.read_through(&value.loans);
+                    current.loans.extend(loans);
+                }
+                None if retention.is_some_and(|boundary| index < boundary)
+                    && known.is_some_and(|id| self.facts.temporary(id, index)) => {}
                 None => current.loans.extend(&value.loans),
             }
             self.held.push(value);
             if boundary == Some(index + 1) {
                 let id = known.unwrap();
                 self.store_arguments(id, arguments, start, expression.span)?;
-                if self.closed[id]
+                if self.facts.closed[id]
                     || !callee
                         .ty
                         .after_arguments(index + 1)
@@ -2949,7 +3286,7 @@ impl<'a> Checker<'a, '_> {
             locals.into_iter(),
             body,
             self.infer,
-            self.closed,
+            self.facts,
             matches!(expression.ty, Type::Once(_)),
             false,
             Contract::default(),
@@ -4467,9 +4804,10 @@ mod event_tests {
             let Ok(module) = project.analyze_all() else {
                 continue;
             };
-            let closed = closed_returns(&module);
+            let facts = [false, true].map(|infer| call_facts(&module, infer));
             for (id, function) in module.functions.iter().enumerate() {
                 for infer in [false, true] {
+                    let facts = &facts[usize::from(infer)];
                     let run = |events: Option<&mut Vec<OwnershipEvent>>| {
                         let mut recovered = Vec::new();
                         let result = check_body(
@@ -4477,7 +4815,7 @@ mod event_tests {
                             function.parameters.iter(),
                             &function.body,
                             infer,
-                            &closed,
+                            facts,
                             function.is_once,
                             module.user_drops.values().any(|drop| *drop == id),
                             Contract::of(function),

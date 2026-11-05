@@ -146,7 +146,8 @@ fn rejects_with_kind(source: &str, code: &str, kind: &str) {
 /// result. `pass` and `keep` have one signature; only `keep` puts its reference in its result.
 #[test]
 fn function_results_retain_only_the_arguments_that_reach_them() {
-    const PASS: &str = "def pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn pass _key f = f\n";
+    const PASS: &str =
+        "def pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn pass _key f = f\n";
     const PASS_GENERIC: &str = "def pass :: ref 'k -> own 'v -> 'v\nfn pass _key f = f\n";
     const WRAP: &str = "def wrap :: i64 -> (unit -> i64) -> (unit -> i64)\nfn wrap key f = pass (ref key) f\nlet g = wrap 1 (\\() -> 42)\ng ()";
     for source in [
@@ -163,7 +164,8 @@ fn function_results_retain_only_the_arguments_that_reach_them() {
     ] {
         accepts(&source);
     }
-    const KEEP: &str = "def keep :: ref string -> (unit -> i64)\nfn keep text = \\() -> String.length text\n";
+    const KEEP: &str =
+        "def keep :: ref string -> (unit -> i64)\nfn keep text = \\() -> String.length text\n";
     for (source, code, kind) in [
         (
             format!("{KEEP}def leak :: own string -> (unit -> i64)\nfn leak text = keep (ref text)\n0"),
@@ -224,8 +226,8 @@ fn function_result_facts_follow_each_specialization() {
         ),
     ] {
         let source = format!("{MAIN}{tail}");
-        let error = analyze_modules(&[("Main.tz", &source), ("Traits.tt", TRAITS)])
-            .expect_err(&source);
+        let error =
+            analyze_modules(&[("Main.tz", &source), ("Traits.tt", TRAITS)]).expect_err(&source);
         assert_eq!(error.code, "E1013", "{source}\n{}", error.message);
         assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
     }

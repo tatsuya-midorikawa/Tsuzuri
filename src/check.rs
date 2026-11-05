@@ -707,6 +707,17 @@ impl Type {
         matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && types.records[*id].name == "Owned.Function")
     }
 
+    /// Whether a type variable or an unsolved type occurs in the type: a value of it may hold
+    /// borrows that `carries_loans` does not see until the type is specialized (A28).
+    pub(crate) fn contains_unknown(&self) -> bool {
+        let mut unknown = false;
+        polymorph::map_type(self, &mut |ty| {
+            unknown |= polymorph::is_unknown(ty);
+            ty.clone()
+        });
+        unknown
+    }
+
     /// A record or union with a user `Drop` instance, whatever its type arguments (B07).
     pub(crate) fn has_user_drop(&self, types: &TypeContext<'_>) -> bool {
         match self {

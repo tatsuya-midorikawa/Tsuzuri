@@ -186,7 +186,10 @@ fn sharing_a_function_keeps_the_borrows_of_its_environment_only() {
         // The environment's owner outlives every share.
         "let text = \"abc\"\nlet borrowed = ref text\nlet shared = Rc.new (\\() -> String.length borrowed)\nlet mine = Rc.share (ref shared)\nlet moved = shared\n(deref (Rc.get (ref mine))) () + Rc.strong_count (ref moved)",
     ] {
-        for source in [source.to_owned(), source.replace("Rc.", "Arc.").replace("Rc<", "Arc<")] {
+        for source in [
+            source.to_owned(),
+            source.replace("Rc.", "Arc.").replace("Rc<", "Arc<"),
+        ] {
             emits(&source);
         }
     }
@@ -217,7 +220,10 @@ fn sharing_a_function_keeps_the_borrows_of_its_environment_only() {
             "borrow_conflict",
         ),
     ] {
-        for source in [source.to_owned(), source.replace("Rc.", "Arc.").replace("Rc<", "Arc<")] {
+        for source in [
+            source.to_owned(),
+            source.replace("Rc.", "Arc.").replace("Rc<", "Arc<"),
+        ] {
             rejects_with_kind(&source, code, kind);
         }
     }
