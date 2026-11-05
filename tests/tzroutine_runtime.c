@@ -2828,25 +2828,28 @@ static void test_preempt_async_sve(void) { printf("preempt async sve: not Linux 
 #endif
 
 /* The same loop in the runtime's code: sysmon's signals arrive (one more spinner than Ps waits for a
- * P, so sysmon asks), and none stops it. */
-static uint64_t async_spin_runtime(int64_t until) {
+ * P, so sysmon asks), and none stops it. The spinners go on until sysmon has sent a few signals, not
+ * until a time, so that one that starts late still spins while they come (60 s at most, and then the
+ * check of the signals fails). */
+typedef struct { uint64_t signals; int64_t limit; } async_runtime_goal;
+static uint64_t async_spin_runtime(const async_runtime_goal *goal) {
     uint64_t x = 1;
-    while (tzr_nanotime() < until)
+    while (atomic_load(&tzr_async.signals) < goal->signals && tzr_nanotime() < goal->limit)
         for (int i = 0; i < 1000; i++) x = x * 6364136223846793005ULL + 1442695040888963407ULL;
     return x;
 }
 static void async_runtime_spinner(void *env) {
-    CHECK(async_spin_runtime(*(int64_t *)env) != 0);
+    CHECK(async_spin_runtime(env) != 0);
 }
 static void test_preempt_async_runtime(void) {
     if (async_skipped("preempt async runtime")) return;
     uint64_t stops = atomic_load(&tzr_async.stopped), signals = atomic_load(&tzr_async.signals);
     int foreign = atomic_load(&urgent_foreign);
-    int64_t until = tzr_nanotime() + 300000000;
+    async_runtime_goal goal = {signals + 5, tzr_nanotime() + 60000000000LL};
     void *scope = tsuzuri_tz_scope_enter();
-    for (int64_t i = 0; i <= tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(async_runtime_spinner, &until);
+    for (int64_t i = 0; i <= tsuzuri_tz_max_procs(); i++) tsuzuri_tz_go(async_runtime_spinner, &goal);
     join(scope);
-    CHECK(atomic_load(&tzr_async.signals) > signals);
+    CHECK(atomic_load(&tzr_async.signals) >= goal.signals);
     CHECK(atomic_load(&tzr_async.stopped) == stops);
     /* sysmon's signals that stopped nothing are not the program's; a SIGURG of its own still is */
     CHECK(atomic_load(&urgent_foreign) == foreign);
