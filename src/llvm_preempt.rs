@@ -247,21 +247,13 @@ struct Definition<'a> {
 }
 
 fn definitions<'a>(lines: &[&'a str]) -> Vec<Definition<'a>> {
-    definitions_closed_by(lines, |line| line.trim_end() == "}")
-}
-
-/// `definitions`, with the closing brace found by `closes`.
-fn definitions_closed_by<'a>(
-    lines: &[&'a str],
-    closes: impl Fn(&str) -> bool,
-) -> Vec<Definition<'a>> {
     let mut found = Vec::new();
     let mut index = 0;
     while index < lines.len() {
         let header = lines[index].trim_end();
         if header.starts_with("define ") && header.ends_with('{') {
             let close = (index + 1..lines.len())
-                .find(|&line| closes(lines[line]))
+                .find(|&line| lines[line].trim_end() == "}")
                 .unwrap_or(lines.len() - 1);
             if let Some(call) = callable(lines[index], true) {
                 found.push(Definition {
@@ -761,18 +753,50 @@ fn helper_wait<'a>(lines: &[&'a str], functions: &[Definition<'_>]) -> Option<&'
     None
 }
 
-/// `definitions` for `with_thread_storage_noinline`, which also ends a function at a closing brace
-/// with a comment after it: a piece of the runtime's IR may start on that line (`}; PM08: ...`, the
-/// first line of src/runtime/integer.ll), and `definitions` would take that next function into the
-/// one before, so that its calls looked like calls of a declared function. (`with_preemption_checks`
-/// keeps `definitions`, so that the checks of TZ10 stay where they are.)
-fn runtime_definitions<'a>(lines: &[&'a str]) -> Vec<Definition<'a>> {
-    definitions_closed_by(lines, |line| {
-        line.strip_prefix('}').is_some_and(|rest| {
-            let rest = rest.trim();
-            rest.is_empty() || rest.starts_with(';')
-        })
-    })
+/// The starts of LLVM's top-level forms: what may follow the closing brace of a function on its
+/// line in the runtime's IR (`runtime_definitions`).
+const TOP_LEVEL: [&str; 12] = [
+    "define ",
+    "declare ",
+    "@",
+    "%",
+    "$",
+    "!",
+    ";",
+    "attributes ",
+    "source_filename ",
+    "target ",
+    "module ",
+    "uselistorder",
+];
+
+/// The lines of `ir` and its definitions, for `with_thread_storage_noinline`. The pieces of the
+/// runtime's IR are joined as they are, and some end without a newline (src/runtime/character.ll,
+/// display.ll, debug.ll, recursive.ll): the next piece then starts on the line of their last closing
+/// brace (`}define internal void @tz.string.copy(...) nounwind {`, `}; PM08: ...`,
+/// `}@tz.debug.newline = ...`). Such a line, a brace and then a top-level form (`TOP_LEVEL`), is
+/// split after the brace and the blanks that follow it, so that the function closes there and the
+/// next one is a definition of its own: `definitions` would take what follows into the function
+/// before, so that the calls of a function after the brace looked like calls of a declared function.
+/// The lines are slices of `ir` and make `ir` again. (`with_preemption_checks` keeps the lines of
+/// `ir`, so that the checks of TZ10 stay where they are.)
+fn runtime_definitions(ir: &str) -> (Vec<&str>, Vec<Definition<'_>>) {
+    let mut lines = Vec::new();
+    for line in ir.split_inclusive('\n') {
+        let form = line
+            .strip_prefix('}')
+            .map(|rest| line.len() - rest.trim_start().len())
+            .filter(|&at| TOP_LEVEL.iter().any(|form| line[at..].starts_with(form)));
+        match form {
+            Some(at) => {
+                lines.push(&line[..at]);
+                lines.push(&line[at..]);
+            }
+            None => lines.push(line),
+        }
+    }
+    let functions = definitions(&lines);
+    (lines, functions)
 }
 
 /// TZ14: the `noinline` of `with_preemption_checks` alone, for a native program whose tzroutines
@@ -782,8 +806,7 @@ fn runtime_definitions<'a>(lines: &[&'a str]) -> Vec<Definition<'a>> {
 /// its end on one thread, and the caller of a top-level `Parallel.*` is a thread's pseudo-G, which
 /// never leaves its thread: then, as without such a function, the IR is returned as it is.
 pub(crate) fn with_thread_storage_noinline(ir: String) -> String {
-    let lines: Vec<&str> = ir.split_inclusive('\n').collect();
-    let functions = runtime_definitions(&lines);
+    let (lines, functions) = runtime_definitions(&ir);
     let thread_bound = thread_bound(&lines, &functions);
     if thread_bound.is_empty() || !helpers_may_wait(&lines, &functions) {
         return ir;
@@ -1106,8 +1129,8 @@ define internal i64 @tz.fn.M.run(i64 %arg0) nounwind {\nentry:\n  %p = call ptr 
                 .replace("{operand}", operand)
         };
         let reason = |ir: &str| {
-            let lines: Vec<&str> = ir.split_inclusive('\n').collect();
-            helper_wait(&lines, &runtime_definitions(&lines)).map(|line| line.trim().to_owned())
+            let (lines, functions) = runtime_definitions(ir);
+            helper_wait(&lines, &functions).map(|line| line.trim().to_owned())
         };
         // A chunk that allocates, fills, frees and calls a defined function after a closing brace
         // with a comment: it runs to its end on one thread, and the caller of `Parallel.*` is a
@@ -1164,6 +1187,107 @@ define internal i64 @tz.fn.M.run(i64 %arg0) nounwind {\nentry:\n  %p = call ptr 
                     "@tz.cache(i64 %size) nounwind {",
                     "@tz.cache(i64 %size) nounwind noinline {"
                 )
+            );
+        }
+    }
+
+    /// The runtime's IR is joined piece by piece, and a piece that ends without a newline (as
+    /// src/runtime/character.ll, display.ll, debug.ll and recursive.ll do) puts the next piece on the
+    /// line of its last closing brace. Here each top-level form follows a brace in that way, and
+    /// `@tz.parallel.chunk.0` calls every function. `  ; <name>` marks a line of each function.
+    const JOINED_PROGRAM: &str = "define internal i64 @tz.text(i64 %arg0) nounwind {\nentry:\n  ; tz.text\n  ret i64 %arg0\n\
+}define internal ptr @tz.cache(i64 %size) nounwind {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  ; tz.cache\n  ret ptr %t\n\
+}define internal void @tz.string.copy(ptr %to, ptr %from, i64 %length) nounwind {\nentry:\n  call void @llvm.memcpy.p0.p0.i64(ptr %to, ptr %from, i64 %length, i1 false)\n  ; tz.string.copy\n  ret void\n\
+}@tz.debug.newline = private unnamed_addr constant [1 x i8] c\"\\0A\"\n\
+define internal i64 @tz.debug.line(i64 %arg0) nounwind {\nentry:\n  ; tz.debug.line\n  ret i64 %arg0\n\
+}%tz.rec.header = type { ptr, ptr, ptr }\n\
+define internal i64 @tz.rec.size(i64 %arg0) nounwind {\nentry:\n  ; tz.rec.size\n  ret i64 %arg0\n\
+}  ; PM08: a piece of the runtime's IR\n\
+define internal i32 @tz.integer.digits(i64 %value) nounwind {\nentry:\n  ; tz.integer.digits\n  ret i32 1\n\
+}declare i32 @tsuzuri_tz_parallel(ptr, ptr, i64)\n\
+define internal void @tz.closure.drop(ptr %env) nounwind {\nentry:\n  ; tz.closure.drop\n  ret void\n\
+}attributes #0 = { nounwind }\n\
+define internal void @tz.parallel.chunk.0(ptr %context, i64 %chunk) nounwind {\nentry:\n  %p = call ptr @tz.cache(i64 %chunk)\n  call void @tz.string.copy(ptr %p, ptr %context, i64 8)\n  %a = call i64 @tz.debug.line(i64 %chunk)\n  %b = call i64 @tz.rec.size(i64 %a)\n  %c = call i32 @tz.integer.digits(i64 %b)\n  call void @tz.closure.drop(ptr %context)\n  %d = call i64 @tz.text(i64 %chunk)\n  ret void\n}\n\
+define internal i64 @tz.fn.M.run(i64 %arg0) nounwind {\nentry:\n  call i32 @tsuzuri_tz_parallel(ptr @tz.parallel.chunk.0, ptr null, i64 %arg0)\n  ret i64 %arg0\n}\n\
+@tls = internal thread_local global i64 0\ndeclare void @tsuzuri_tz_yield()\n";
+
+    #[test]
+    fn runtime_pieces_after_a_closing_brace_are_functions_of_their_own() {
+        // The lines, each function's name and the text from its header to its closing brace, and
+        // the line that makes `helpers_may_wait` true.
+        let pieces = |ir: &str| -> (String, Vec<(String, String)>, Option<String>) {
+            let (lines, functions) = runtime_definitions(ir);
+            (
+                lines.concat(),
+                functions
+                    .iter()
+                    .map(|function| {
+                        let text = lines[function.header..=function.close].concat();
+                        (function.name.to_owned(), text)
+                    })
+                    .collect(),
+                helper_wait(&lines, &functions).map(|line| line.trim().to_owned()),
+            )
+        };
+        // The lines make the IR again, and every function is found and closes at its own brace.
+        let (text, functions, reason) = pieces(JOINED_PROGRAM);
+        assert_eq!(text, JOINED_PROGRAM);
+        for (name, text) in &functions {
+            assert!(text.starts_with("define internal "), "{text}");
+            assert!(text.trim_end().ends_with("\n}"), "{text}");
+            assert_eq!(text.matches("define ").count(), 1, "{text}");
+            if name.starts_with("@tz.parallel.") || name.starts_with("@tz.fn.") {
+                continue;
+            }
+            assert!(text.contains(&format!("  ; {}\n", &name[1..])), "{text}");
+        }
+        assert_eq!(
+            functions
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "@tz.text",
+                "@tz.cache",
+                "@tz.string.copy",
+                "@tz.debug.line",
+                "@tz.rec.size",
+                "@tz.integer.digits",
+                "@tz.closure.drop",
+                "@tz.parallel.chunk.0",
+                "@tz.fn.M.run",
+            ]
+        );
+        // The chunk reaches only those functions and an intrinsic, and nothing waits: the IR stays
+        // as it is.
+        assert_eq!(reason, None);
+        assert_eq!(
+            with_thread_storage_noinline(JOINED_PROGRAM.to_owned()),
+            JOINED_PROGRAM
+        );
+        // A wait in any of them, before or after a brace that a piece follows, is seen, and the
+        // header of `@tz.cache`, which a closing brace precedes, gets the `noinline`.
+        for name in [
+            "tz.text",
+            "tz.cache",
+            "tz.string.copy",
+            "tz.debug.line",
+            "tz.rec.size",
+            "tz.integer.digits",
+            "tz.closure.drop",
+        ] {
+            let marker = format!("  ; {name}\n");
+            let wait = format!("  call void @tsuzuri_tz_yield() ; {name}\n");
+            let ir = JOINED_PROGRAM.replace(&marker, &wait);
+            assert_ne!(ir, JOINED_PROGRAM);
+            assert_eq!(pieces(&ir).2.as_deref(), Some(wait.trim()), "{name}");
+            assert_eq!(
+                with_thread_storage_noinline(ir.clone()),
+                ir.replace(
+                    "}define internal ptr @tz.cache(i64 %size) nounwind {",
+                    "}define internal ptr @tz.cache(i64 %size) nounwind noinline {"
+                ),
+                "{name}"
             );
         }
     }
