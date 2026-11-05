@@ -2511,11 +2511,17 @@ fn call_context(tokens: &[Token], text: &str, offset: usize) -> Option<(usize, u
     let mut in_progress = false;
     loop {
         let (mut depth, mut start, mut open) = (0usize, 0, None);
+        // A bracket that closes an earlier line belongs to that line, not to the call of the cursor's line,
+        // unless the walk reaches the unclosed `(` of a call that the cursor's line continues.
+        let mut boundary = None;
         let mut index = end;
         while index > 0 {
             index -= 1;
             let token = &tokens[index];
             if closes(&token.kind) {
+                if depth == 0 && token.span.start < line_start {
+                    boundary.get_or_insert(index + 1);
+                }
                 depth += 1;
             } else if opens(&token.kind) && depth > 0 {
                 depth -= 1;
@@ -2532,6 +2538,11 @@ fn call_context(tokens: &[Token], text: &str, offset: usize) -> Option<(usize, u
                 start = index + 1;
                 break;
             }
+        }
+        if open.is_none()
+            && let Some(boundary) = boundary
+        {
+            start = boundary;
         }
         if let Some(open) = open
             && open > 0
