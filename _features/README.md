@@ -305,7 +305,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | TZ11 | [`Parallel` と `Routine.scope` を tzroutine のスケジューラーへ移す](_completed/TZ11-parallel-on-scheduler.md) | P1 | M | TZ06 | done（tzroutine を使うネイティブのプログラムの `Parallel.*` はスケジューラーの上。`Domain.run` の中はプール。`Routine.scope` を追加） |
 | TZ12 | [`Task`・`task { }` の削除と移行（`DataChannel` の待ちの移設を含む）](_completed/TZ12-remove-task.md) | P1 | L | TZ04, TZ07, TZ11 | done（`task { }`・`Task<T>`・`Task.*` は `E1040`（`removed_task_*`。`tsuzuri fix` が `Task.scope` を `Routine.scope` に）。ネイティブの `Parallel`・`Mutex`・`DataChannel` は全プログラムで tzroutine のランタイム。`task.c` を削除） |
 | TZ13 | [`Async` と Net の `_async` の削除と移行](_completed/TZ13-remove-async.md) | P1 | M | TZ08, TZ12 | done（`Async`・`async { }`・`Async.*` と Net の `_async` は `E1040`（`removed_async`・`removed_net_async`）。reactor（`async.c`）とホスト駆動の実行器を削除し、後継はない（D2）） |
-| TZ14 | [spawn しないプログラムの `Parallel.*` でも、スレッドの記憶域を読むランタイムの IR 関数を `noinline` にする](TZ14-thread-storage-across-parallel-waits.md) | P2 | S | TZ10, TZ11 | todo |
+| TZ14 | [spawn しないプログラムの `Parallel.*` でも、スレッドの記憶域を読むランタイムの IR 関数を `noinline` にする](_completed/TZ14-thread-storage-across-parallel-waits.md) | P2 | S | TZ10, TZ11 | done（spawn せず `Parallel.*` を呼ぶネイティブのプログラムでも、`--allocator small` の `tz_small_realloc` を `noinline` にする。横取りの検査は入れず、ほかのプログラムの IR は 1 byte も変わらない。`-O3` の SIGSEGV と TSan のデータ競合を再現して直した。手順 4 の計時は別に行う） |
 
 ## 推奨フェーズ
 
@@ -778,7 +778,7 @@ TZ08・TZ12・TZ13・TZ09・TZ10 の実装中に見つけ、その PR では直�
 | [E16](E16-bindgen-unnamed-tags-new-clang.md) | 不具合 | Clang 23 の AST（`ElaboratedType` が無い）では、`tsuzuri bindgen` が `typedef struct { ... } S;` の無名の struct を tag の `struct S` と取り違え、ABI の合わない extern を生成する |
 | [G37](G37-lsp-signature-help-after-closer.md) | 不具合 | 閉じ括弧で終わる行の次の行の呼び出しで、LSP のシグネチャヘルプが `null` を返す |
 | [G38](G38-unicode-test-references-pinned.md) | テスト基盤 | `features.mjs` の `regex`・`unicode` が V8 の Unicode の版に依存し、Unicode 18.0 の Node（Homebrew の `node@24`）で失敗する。V8 の参照値を std と同じ版の Node で書き出して commit する |
-| [TZ14](TZ14-thread-storage-across-parallel-waits.md) | 潜在的な不具合 | spawn しないプログラムの `Parallel.*` の helper も別のスレッドで再開しうるのに、`--allocator small` の `tz_small_realloc`（TLS を読む）は spawn するプログラムでしか `noinline` にならない |
+| [TZ14](_completed/TZ14-thread-storage-across-parallel-waits.md) | 潜在的な不具合 | spawn しないプログラムの `Parallel.*` の helper も別のスレッドで再開しうるのに、`--allocator small` の `tz_small_realloc`（TLS を読む）は spawn するプログラムでしか `noinline` にならない |
 
 ### 進め方
 

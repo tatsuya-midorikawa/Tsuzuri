@@ -51,11 +51,11 @@ G が待ちで別の M へ移ると、この仮定が破れ、size class の all
   tzroutine として起こし、呼び出し側は `tzr_addr_wait` で待つ。helper が実行するコールバックの中で `Parallel.*` をもう一度呼ぶと、helper は G として
   `tzr_addr_wait` で待ち、起こされると別の M で再開しうる。入れ子の `Parallel.init` は spawn しないプログラムでビルドでき、実行できる（`Parallel.init 4` の中で
   `Parallel.init 2` を呼ぶプログラムを `--allocator small -O3` で確かめた）。
-- `Parallel.*` のコールバックは `Atomic` と `Mutex` を捕捉できない（`E1005`。[Parallel](../_tsuzuri/language-reference/built-in-types-and-modules/parallel.md)）ので、helper が待つ経路は、
+- `Parallel.*` のコールバックは `Atomic` と `Mutex` を捕捉できない（`E1005`。[Parallel](../../_tsuzuri/language-reference/built-in-types-and-modules/parallel.md)）ので、helper が待つ経路は、
   入れ子の `Parallel.*` など、コールバックの中で待ちを起こす操作に限られる。
-- [TZ10](_completed/TZ10-preemption.md) の「着手時の再検討」4 は、検査を spawn するプログラムに限り、spawn しないプログラムの IR を 1 byte も変えないこと（TZ10 の S1。`tests/preemption.rs` と `examples/*` の IR の比較）を決めた。
+- [TZ10](TZ10-preemption.md) の「着手時の再検討」4 は、検査を spawn するプログラムに限り、spawn しないプログラムの IR を 1 byte も変えないこと（TZ10 の S1。`tests/preemption.rs` と `examples/*` の IR の比較）を決めた。
   このチケットは、その範囲のうち `--allocator small` の `Parallel.*` のプログラムだけを、意図して変える（D1）。
-- [TZ10](_completed/TZ10-preemption.md) の「着手時の再検討」9 と「残したこと」は、この危険が TZ10 の検査より前からの tzroutine の待ちにもあったこと、spawn するプログラムでだけ `noinline` にしたことを記録している。
+- [TZ10](TZ10-preemption.md) の「着手時の再検討」9 と「残したこと」は、この危険が TZ10 の検査より前からの tzroutine の待ちにもあったこと、spawn するプログラムでだけ `noinline` にしたことを記録している。
 
 ### 観察（失敗はまだ再現していない）
 
