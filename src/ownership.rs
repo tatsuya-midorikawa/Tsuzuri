@@ -800,12 +800,16 @@ fn parameter_retention(
                 && !closed[id]
                 && eligible(id)
                 && arguments.len() >= module.functions[id].parameters.len()
-                && retention_applies(
-                    &callee
-                        .ty
-                        .after_arguments(module.functions[id].parameters.len()),
-                    &types,
-                )
+                && if arguments.len() == module.functions[id].parameters.len() {
+                    retention_applies(&expression.ty, &types)
+                } else {
+                    retention_applies(
+                        &callee
+                            .ty
+                            .after_arguments(module.functions[id].parameters.len()),
+                        &types,
+                    )
+                }
             {
                 callers.entry(id).or_default().insert(caller);
                 callees.entry(caller).or_default().insert(id);
@@ -4844,5 +4848,49 @@ mod event_tests {
             checked += 1;
         }
         assert!(checked >= 20, "only {checked} projects were checked");
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    /// A28: the facts are the least fixed point of the checks of the bodies. A pair of mutually
+    /// recursive functions that only pass `text` on keeps it temporary; a pair in which one
+    /// captures it retains it in both.
+    #[test]
+    fn parameter_retention_is_the_least_fixed_point_of_the_bodies() {
+        let module = crate::analyze(
+            "def a28_pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn a28_pass _key f = f\n\
+             def a28_keep :: ref string -> (unit -> i64)\nfn a28_keep text = \\() -> String.length text\n\
+             def rec a28_ping :: i64 -> ref string -> own (unit -> i64) -> (unit -> i64)\nfn rec a28_ping n text f = if n == 0 then f else a28_pong (n - 1) text f\n\
+             def rec a28_pong :: i64 -> ref string -> own (unit -> i64) -> (unit -> i64)\nfn rec a28_pong n text f = a28_ping n text f\n\
+             def rec a28_up :: i64 -> ref string -> (unit -> i64)\nfn rec a28_up n text = if n == 0 then \\() -> 0 else a28_down (n - 1) text\n\
+             def rec a28_down :: i64 -> ref string -> (unit -> i64)\nfn rec a28_down n text = if n == 0 then \\() -> String.length text else a28_up n text\n\
+             let one = 1\nlet text = \"abc\"\n\
+             let a = a28_pass (ref one) (\\() -> 1)\nlet b = a28_keep (ref text)\n\
+             let c = a28_ping 2 (ref text) (\\() -> 2)\nlet d = a28_up 2 (ref text)\n\
+             a () + b () + c () + d ()",
+        )
+        .unwrap();
+        for infer in [false, true] {
+            let facts = call_facts(&module, infer);
+            let retained = |name: &str| {
+                let id = module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == name)
+                    .unwrap_or_else(|| panic!("{name}"));
+                facts.retained[id].as_deref().map(<[bool]>::to_vec)
+            };
+            assert_eq!(retained("a28_pass"), Some(vec![false, true]));
+            // `a28_keep text = \() -> ...` takes its `()` too, so `a28_keep (ref text)` is a partial
+            // application, which keeps every argument's loans without facts.
+            assert_eq!(retained("a28_keep"), None);
+            assert_eq!(retained("a28_ping"), Some(vec![false, false, true]));
+            assert_eq!(retained("a28_pong"), Some(vec![false, false, true]));
+            assert_eq!(retained("a28_up"), Some(vec![false, true]));
+            assert_eq!(retained("a28_down"), Some(vec![false, true]));
+        }
     }
 }

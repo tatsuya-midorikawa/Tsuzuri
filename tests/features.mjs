@@ -1037,6 +1037,9 @@ const suites = {
       ["shared_named_types", [], (2n * 10n + BigInt("four".length)) * 1000000n + (1n * 100n + 3n * 5n) * 1000n + 7n * 11n],
       // Both children reach the root (7) until it drops; then upgrading gives None (-1 + 1).
       ["rc_weak_parent", [], (7n + 7n) * 1000n + 2n * 100n + (2n + 3n) * 10n + 0n],
+      // A28: the share (41), two owners (the share and the moved original), the upgrade (1001).
+      ["rc_share_function", [], 41n + 2n * 100n + 1001n * 10n],
+      ["arc_share_function_return", [], (37n + 5n) + 1n * 100n],
       ...[0n, 1n, 2n, 100000n].map((n) => ["rc_chain", [n], n * (n - 1n) / 2n]),
       ...[0n, 1n, 100000n].map((n) => ["rc_long_drop", [n], n]),
       ...[0n, 1n, 100000n].map((n) => ["arc_chain", [n], n * (n - 1n) / 2n]),
@@ -1090,6 +1093,14 @@ const suites = {
       ...[0n, 1n, 7n, 8n, 9n, 1000n].map((count) => ["hash_capacity", [count], count]),
       ["hash_iter_order", [], 58732n], ["first_representative", [], 1], ["owned_record_keys", [], 42n],
       ["hash_capture", [], 84n], ["hash_borrowed_values", [], 8n], ["hash_task_drop", [], 0n],
+      // A28: the odd keys k < count stay, each with the function value -> value + k applied to 1.
+      ...[0n, 1n, 2n, 9n, 100n].map((count) => {
+        let total = 0n;
+        for (let key = 1n; key < count; key += 2n) total += 1n + key;
+        return ["hash_remove_functions", [count], (count / 2n) * 1000000n + total];
+      }),
+      ["hash_remove_ref_then_move", [], 2n + 1n * 10n + BigInt("a".length) * 100n],
+      ["hash_owned_function_drop", [], 0n],
     ],
     traps: [["hash_at_missing", []], ["hash_nan_insert", []], ["hash_nan_query_empty", []], ["hash_set_nan", []],
       ["hash_capacity_negative", []], ["hash_capacity_huge", []]],
@@ -2505,6 +2516,8 @@ const suites = {
       ...[1n, 64n, 1000n].map((count) => ["yields", [count], 3n * count]),
       ["go_owned", [], 11n],
       ["counts", [], 1n],
+      // A28: the children add 2 * i + 1 for i < n, which is n * n.
+      ...[0n, 1n, 100n].map((n) => ["shares_a_function", [n], n * n]),
     ],
   },
   // TZ12: the value cases of the deleted tests/fixtures/tasks on Routine.scope (native only: the children are

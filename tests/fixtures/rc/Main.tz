@@ -372,3 +372,26 @@ fn rc_weak_parent =
     Owned.drop root
     let after = parent_value (ref left)
     before * 1000 + weak * 100 + children * 10 + (after + 1)
+
+// A28: a share of a function is a new owner, so `shared` moves while the share lives; a weak
+// reference made before the move upgrades to the same function.
+export def rc_share_function :: i64
+fn rc_share_function =
+    let shared = Rc.new (\value -> value + 1)
+    let mine = Rc.share (ref shared)
+    let weak = Rc.downgrade (ref shared)
+    let moved = shared
+    let upgraded = match Rc.upgrade (ref weak) with
+        | Maybe.Some strong -> (deref (Rc.get (ref strong))) 1000
+        | Maybe.None -> 0
+    (deref (Rc.get (ref mine))) 40 + Rc.strong_count (ref moved) * 100 + upgraded * 10
+
+def make_shared :: i64 -> Arc<i64 -> i64>
+fn make_shared offset =
+    let shared = Arc.new (\value -> value + offset)
+    Arc.share (ref shared)
+
+export def arc_share_function_return :: i64
+fn arc_share_function_return =
+    let f = make_shared 5
+    (deref (Arc.get (ref f))) 37 + Arc.strong_count (ref f) * 100
