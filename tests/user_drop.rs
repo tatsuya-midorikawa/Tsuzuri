@@ -430,6 +430,33 @@ fn owned_functions_keep_drop_captures_across_calls() {
     );
 }
 
+/// A27: the result of `Owned.call` is lent to a `ref` parameter as a `let` binding's would be.
+#[test]
+fn owned_call_results_are_lent_to_reference_parameters() {
+    let prefix = format!(
+        "{RESOURCE}{MAKE}def peek :: Copy<'a> => ref 'a -> 'a = \\v -> deref v\n\
+         def len :: ref string -> i64 = \\s -> s.length\n{OWNED}    \
+         let show = Owned.function (\\amount -> to_string (amount + held.id))\n"
+    );
+    for (direct, explicit) in [
+        (
+            "peek (Owned.call (ref add) 1)",
+            "peek (ref (Owned.call (ref add) 1))",
+        ),
+        (
+            "len (Owned.call (ref show) 1)",
+            "len (ref (Owned.call (ref show) 1))",
+        ),
+    ] {
+        let direct = accepts(&format!("{prefix}    {direct}\n"));
+        let explicit = accepts(&format!("{prefix}    {explicit}\n"));
+        assert_eq!(
+            llvm::emit(&direct, llvm::Entry::Library).unwrap(),
+            llvm::emit(&explicit, llvm::Entry::Library).unwrap()
+        );
+    }
+}
+
 #[test]
 fn owned_functions_are_unique_opaque_values() {
     let prefix = format!("{RESOURCE}{MAKE}{OWNED}");

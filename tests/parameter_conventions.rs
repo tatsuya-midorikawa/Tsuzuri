@@ -423,6 +423,96 @@ fn value_expressions_are_lent_like_operator_temporaries() {
     assert_eq!(check("2027", source).unwrap_err().code, "E1003");
 }
 
+/// A27: a call whose result type is still open when it is passed to a `ref T` parameter (in 2027,
+/// a type parameter such as `id`'s) is lent like a value, as the explicit `ref (...)` and a `let`
+/// binding are: the result does not pass through the call's arguments.
+#[test]
+fn call_results_without_a_known_type_are_lent_to_read_parameters() {
+    let program = |body: &str| {
+        format!(
+            "def id :: 'a -> 'a = \\v -> v\n\
+             export def answer :: i64 -> i64\nfn answer input =\n{body}"
+        )
+    };
+    let next = "    let next = Owned.function (\\value -> value + 1)\n";
+    let forms = [
+        (next, "id (Owned.call (ref next) input)"),
+        (
+            "    let next = Owned.function (\\(value: i64) -> value + 1)\n",
+            "id (Owned.call (ref next) input)",
+        ),
+        (
+            "    let next: Owned.Function<i64, i64> = Owned.function (\\value -> value + 1)\n",
+            "id (Owned.call (ref next) input)",
+        ),
+        (next, "id (Owned.call next input)"),
+        ("", "id ((\\value -> value + 1) input)"),
+        ("    let g = \\value -> value + 1\n", "id (g input)"),
+        ("    let xs = [input, 2]\n", "id (Array.get 0 xs)"),
+        (
+            "    let mk = Owned.function (\\(n: i64) -> to_string n)\n",
+            "String.length (Owned.call (ref mk) input)",
+        ),
+    ];
+    for (prelude, call) in forms {
+        let (callee, argument) = call.split_once(' ').unwrap();
+        let explicit = format!("{callee} (ref {argument})");
+        assert_eq!(
+            ir("2027", &program(&format!("{prelude}    {call}\n"))),
+            ir("2027", &program(&format!("{prelude}    {explicit}\n"))),
+            "{call}"
+        );
+    }
+}
+
+/// A27: a call whose result comes from its arguments keeps the type the expected `ref T` gives it,
+/// so `id` lends its argument instead of the call lending a temporary.
+#[test]
+fn pass_through_calls_keep_their_types() {
+    // `id r` is `ref string` and lends `r` as `ref (ref string)`: `id` returns a reference.
+    let size = "def id :: 'a -> 'a = \\v -> v\n\
+                def size :: ref string -> i64 = \\s -> s.length\n\
+                export def answer :: i64\nfn answer =\n    let s = \"hello\"\n    let r = ref s\n";
+    let direct = ir("2027", &format!("{size}    size (id r)\n"));
+    let id = direct
+        .lines()
+        .find(|line| line.starts_with("define ") && line.contains("@tz.fn.Main.id."))
+        .expect("id is specialized");
+    assert!(id.starts_with("define internal ptr "), "{id}");
+    // A `let` takes `id r` by value, which needs `Copy<string>`.
+    let split = format!("{size}    let t = id r\n    size t\n");
+    assert_eq!(check("2027", &split).unwrap_err().code, "E1005");
+    // The constructor argument of the call is lent too.
+    let maybe = "def id :: 'a -> 'a = \\v -> v\n\
+                 export def answer :: i64 -> i64\nfn answer input =\n    let x = input\n";
+    assert_eq!(
+        ir(
+            "2027",
+            &format!("{maybe}    id (Maybe.get (Maybe.Some x))\n")
+        ),
+        ir(
+            "2027",
+            &format!("{maybe}    id (Maybe.get (Maybe.Some (ref x)))\n")
+        )
+    );
+    // 2026: `id input` passes `input` through to `peek`, which borrows it.
+    let peek = "def id :: 'a -> 'a = \\v -> v\n\
+                def peek :: Copy<'a> => ref 'a -> 'a = \\v -> deref v\n\
+                export def answer :: i64 -> i64\nfn answer input =\n";
+    assert_eq!(
+        ir("2026", &format!("{peek}    peek (id input)\n")),
+        ir("2026", &format!("{peek}    peek (id (ref input))\n"))
+    );
+    // The pass-through forms that a later rule would need stay rejected.
+    for call in ["id (id input)", "id (id 41)"] {
+        let source = format!(
+            "def id :: 'a -> 'a = \\v -> v\n\
+             export def answer :: i64 -> i64\nfn answer input =\n    {call}\n"
+        );
+        assert_eq!(check("2027", &source).unwrap_err().code, "E1003", "{call}");
+    }
+}
+
 #[test]
 fn value_expression_temporaries_keep_their_boundaries() {
     for edition in ["2026", "2027"] {

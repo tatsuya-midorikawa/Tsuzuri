@@ -166,6 +166,24 @@ fn implicit_arguments_preserve_inference_and_owned_parameters() {
         "E1003",
         "expected i64",
     );
+    // A27: a call passed to a `ref` parameter whose result comes from its argument borrows that
+    // argument, so `s` is not moved; a `let` takes `id s` by value and moves it.
+    let identity = "def identity :: 'a -> 'a\nfn identity x = x\n";
+    same_ir(&[
+        &format!(
+            "{identity}def f :: i64\nfn f = {{ let s = \"text\"; String.length (identity s) + s.length }}"
+        ),
+        &format!(
+            "{identity}def f :: i64\nfn f = {{ let s = \"text\"; String.length (identity (ref s)) + s.length }}"
+        ),
+    ]);
+    rejects(
+        &format!(
+            "{identity}def f :: i64\nfn f = {{ let s = \"text\"; let t = identity s; String.length t + s.length }}"
+        ),
+        "E1012",
+        "moved",
+    );
 }
 
 #[test]
