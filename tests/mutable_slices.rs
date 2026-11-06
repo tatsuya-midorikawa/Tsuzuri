@@ -416,3 +416,120 @@ fn in_place_writes_keep_the_borrows_that_they_store() {
         "def reset :: ref mut [(unit -> i64)..] -> unit\nfn reset target = Array.write 0 (\\() -> 0) target\n",
     );
 }
+
+/// A28 review, second round: the values that the std writers, the generic writers of the program
+/// and `MatrixView`'s writers store get the derived contract when the element type comes from a
+/// type variable. A reference that a `own 'a` parameter becomes (`Array.set 0 (ref b) values`) is
+/// a value that may be stored, and a value read from the target and written back stores nothing
+/// new. Main accepts every program here; the rejected ones moved or dropped what the array kept.
+#[test]
+fn derived_contracts_store_references_and_functions_of_type_variables() {
+    for source in [
+        "let a = 1\nlet b = 2\nlet mut arr = [ref a]\nArray.set 0 (ref b) (ref mut arr)\nderef arr[0]\n",
+        "let a = 1\nlet b = 2\nlet c = 3\nlet mut arr = [ref a, ref b]\nArray.fill 0 1 (ref c) (ref mut arr)\nderef arr[0]\n",
+        "let a = 1\nlet b = 2\nlet c = 3\nlet mut arr = [ref a, ref b]\nref mut arr |> Array.set 1 (ref c)\nderef arr[1]\n",
+        "def pick :: ref i64 -> ref i64 -> i64\nfn pick a b =\n    let mut arr = [a]\n    Array.set 0 b (ref mut arr)\n    deref arr[0]\nlet x = 1\nlet y = 7\npick (ref x) (ref y)\n",
+        "let a = \"ab\"\nlet b = \"cde\"\nlet mut arr = [ref a, ref a]\nArray.set 1 (ref b) (ref mut arr)\nArray.fill 0 1 (ref b) (ref mut arr)\narr[0].length * 10 + arr[1].length\n",
+        // Generic writers of the program, on function, reference and plain elements.
+        "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.write 0 x arr\nlet base = 5\nlet mut a = [\\() -> 1]\nput (\\() -> 9) (ref mut a)\nref mut a |> put (\\() -> base)\nlet p = 1\nlet q = 2\nlet mut refs = [ref p]\nput (ref q) (ref mut refs)\nlet mut numbers = [1]\nput 5 (ref mut numbers)\na[0] () + deref refs[0] + numbers[0]\n",
+        "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.set 0 x arr\ndef twice :: own 'a -> ref mut ['a..] -> unit\nfn twice x arr = put x arr\nlet mut a = [\\() -> 1]\ntwice (\\() -> 4) (ref mut a)\na[0] ()\n",
+        "def put :: own i64 -> ref mut ['a..] -> unit\nfn put index arr =\n    let last = arr[index]\n    Array.write 0 last arr\nlet mut a = [\\() -> 1, \\() -> 2]\nput 1 (ref mut a)\na[0] ()\n",
+        "def rotate :: ref mut [(unit -> i64)..] -> unit\nfn rotate arr =\n    let second = arr[1]\n    Array.write 0 second arr\nlet mut a = [\\() -> 1, \\() -> 2]\nrotate (ref mut a)\na[0] ()\n",
+        // MatrixView's writers on function and reference elements.
+        "let base = 1000\nlet source = [\\() -> 7, \\() -> 8]\nlet mut data = [\\() -> 1, \\() -> 2]\nlet mut grid = MatrixView.of_array_mut 1 2 (ref mut data)\nMatrixView.write 0 1 (\\() -> 20) (ref mut grid)\nMatrixView.fill (\\() -> base) (ref mut grid)\nMatrixView.copy_from (MatrixView.of_array 1 2 source) (ref mut grid)\nMatrixView.map_in_place (\\f -> \\() -> f () + 1) (ref mut grid)\nref mut grid |> MatrixView.write 0 0 (\\() -> base)\ndata[0] () + data[1] ()\n",
+        "let a = 1\nlet b = 2\nlet mut data = [ref a, ref a]\nlet mut grid = MatrixView.of_array_mut 1 2 (ref mut data)\nMatrixView.write 0 1 (ref b) (ref mut grid)\nderef data[1]\n",
+    ] {
+        accepts(source);
+    }
+    for (source, code, kind) in [
+        (
+            "let a = \"ab\"\nlet b = \"cde\"\nlet mut arr = [ref a]\nArray.set 0 (ref b) (ref mut arr)\nlet moved = b\narr[0].length\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "let a = \"ab\"\nlet b = \"cde\"\nlet mut arr = [ref a]\nArray.fill 0 1 (ref b) (ref mut arr)\nlet moved = b\narr[0].length\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "let a = \"ab\"\nlet b = \"cde\"\nlet mut arr = [ref a]\nref mut arr |> Array.set 0 (ref b)\nlet moved = b\narr[0].length\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "let a = 1\nlet mut b = 2\nlet mut arr = [ref a]\nArray.set 0 (ref b) (ref mut arr)\nb = 5\nderef arr[0]\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "let other = \"x\"\nlet mut arr = [ref other]\nif other.length > 0 then\n    let local = \"abc\"\n    Array.set 0 (ref local) (ref mut arr)\narr[0].length\n",
+            "E1013",
+            "assignment_extends_borrow",
+        ),
+        (
+            "let other = 1\nlet mut arr = [ref other]\nif other > 0 then\n    let local = 5\n    Array.fill 0 1 (ref local) (ref mut arr)\nderef arr[0]\n",
+            "E1013",
+            "assignment_extends_borrow",
+        ),
+        (
+            "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.write 0 x arr\nlet text = \"abc\"\nlet borrowed = ref text\nlet mut a = [\\() -> 1]\nput (\\() -> String.length borrowed) (ref mut a)\nlet moved = text\na[0] ()\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.write 0 x arr\ndef leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut a = [\\() -> 1]\n    put (\\() -> String.length borrowed) (ref mut a)\n    a[0]\nlet f = leak 123456789\nf ()\n",
+            "E1013",
+            "borrow_outlives_block",
+        ),
+        (
+            "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.write 0 x arr\nlet a = \"ab\"\nlet b = \"cde\"\nlet mut refs = [ref a]\nput (ref b) (ref mut refs)\nlet moved = b\nrefs[0].length\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        // A partial application loses what the call stores, as for the std writers.
+        (
+            "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.write 0 x arr\nlet f = put (\\() -> 1)\nlet mut a = [\\() -> 2]\nf (ref mut a)\na[0] ()\n",
+            "E1013",
+            "region_callback_stores_exclusive_input",
+        ),
+        // The stores of MatrixView's writers stay in the window's array after the window.
+        (
+            "let text = \"abc\"\nlet borrowed = ref text\nlet mut data = [\\() -> 1, \\() -> 2]\nlet mut grid = MatrixView.of_array_mut 1 2 (ref mut data)\nMatrixView.write 0 1 (\\() -> String.length borrowed) (ref mut grid)\nlet moved = text\ndata[1] ()\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "let a = \"ab\"\nlet b = \"cde\"\nlet mut data = [ref a, ref a]\nlet mut grid = MatrixView.of_array_mut 1 2 (ref mut data)\nMatrixView.write 0 1 (ref b) (ref mut grid)\nlet moved = b\ndata[1].length\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "let text = \"abc\"\nlet borrowed = ref text\nlet source = [\\() -> String.length borrowed]\nlet mut data = [\\() -> 1]\nlet mut grid = MatrixView.of_array_mut 1 1 (ref mut data)\nMatrixView.copy_from (MatrixView.of_array 1 1 source) (ref mut grid)\nlet moved = text\ndata[0] ()\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "let text = \"abc\"\nlet borrowed = ref text\nlet mut data = [\\() -> 1]\nlet mut grid = MatrixView.of_array_mut 1 1 (ref mut data)\nMatrixView.map_in_place (\\f -> \\() -> f () + String.length borrowed) (ref mut grid)\nlet moved = text\ndata[0] ()\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "let text = \"abc\"\nlet borrowed = ref text\nlet mut data = [\\() -> 1]\nlet mut grid = MatrixView.of_array_mut 1 1 (ref mut data)\nref mut grid |> MatrixView.fill (\\() -> String.length borrowed)\nlet moved = text\ndata[0] ()\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "def leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut data = [\\() -> 1]\n    let mut grid = MatrixView.of_array_mut 1 1 (ref mut data)\n    MatrixView.fill (\\() -> String.length borrowed) (ref mut grid)\n    data[0]\nlet f = leak 123456789\nf ()\n",
+            "E1013",
+            "borrow_outlives_block",
+        ),
+        (
+            "let mut data = [\\() -> 1]\nlet mut grid = MatrixView.of_array_mut 1 1 (ref mut data)\nlet w = MatrixView.write 0 0 (\\() -> 2)\nw (ref mut grid)\ndata[0] ()\n",
+            "E1013",
+            "region_callback_stores_exclusive_input",
+        ),
+    ] {
+        rejects_with_kind(source, code, kind);
+    }
+}

@@ -1813,7 +1813,7 @@ impl<'a> Checker<'a, '_> {
         } else {
             self.region_count(&parameter.ty)
         };
-        let (exclusive, targets) = match &parameter.ty {
+        let (mut exclusive, targets) = match &parameter.ty {
             Type::Reference(_, mutable) => (RegionMask::from(*mutable), vec![2]),
             Type::Record(id, _) => {
                 let record = &self.module.records[*id];
@@ -1821,6 +1821,15 @@ impl<'a> Checker<'a, '_> {
             }
             _ => (0, Vec::new()),
         };
+        // A derived contract: the borrows behind the target's own exclusive references (the
+        // array of a `MatrixView.Mut`) have the region of the target's borrows, and stay
+        // exclusive.
+        let deep = target
+            && slots.is_some_and(|slots| slots.derived)
+            && matches!(&parameter.ty, Type::Reference(inner, true) if inner.reaches_exclusive(&self.module.types()));
+        if deep {
+            exclusive |= 2;
+        }
         let mut loans = Vec::new();
         for slot in 0..count {
             let fields = if count >= 2 {
@@ -1861,6 +1870,13 @@ impl<'a> Checker<'a, '_> {
                     .target_regions
                     .extend(regions.and_then(|regions| regions[target]));
             }
+        }
+        if deep {
+            let entry = self.slots.entry((root, 1)).or_default();
+            entry.target.insert(loans[1]);
+            entry
+                .target_regions
+                .extend(regions.and_then(|regions| regions[1]));
         }
     }
 
@@ -2779,12 +2795,23 @@ impl<'a> Checker<'a, '_> {
     /// A13 Phase 2: stores a value with `value`'s loans in `place` through a reference. A local
     /// owner keeps the new loans with its old ones; a parameter's target accepts only borrows of
     /// the inputs with the region that its type names for the target, which callers keep.
-    #[inline(never)]
     fn store_through(
         &mut self,
         place: &Place,
         value: &Value,
         span: Span,
+    ) -> Result<(), Diagnostic> {
+        self.store_through_from(place, value, span, &mut BTreeSet::from([place.root]))
+    }
+
+    /// `store_through`, after the owners `visited`.
+    #[inline(never)]
+    fn store_through_from(
+        &mut self,
+        place: &Place,
+        value: &Value,
+        span: Span,
+        visited: &mut BTreeSet<usize>,
     ) -> Result<(), Diagnostic> {
         const UNNAMED: &str =
             "assigning borrowed values through references requires explicit lifetimes";
@@ -2833,13 +2860,33 @@ impl<'a> Checker<'a, '_> {
             }
             return Ok(());
         }
-        let Some((_, owner)) = self.state.locals.get_mut(&place.root) else {
+        let Some((_, owner)) = self.state.locals.get(&place.root) else {
             return Err(error(DiagnosticKind::StoreRegionUnnamed, UNNAMED, span));
         };
-        owner.loans.extend(&value.loans);
-        owner.regions = None;
-        for (owned, stored) in owner.closed_result.iter_mut().zip(value.closed_result) {
-            *owned &= stored;
+        // A store into a value that holds exclusive references (a `MatrixView.Mut` of a local
+        // array) may land behind them, so their owners keep the loans too.
+        let behind: Vec<Place> = if value.loans.is_empty() {
+            Vec::new()
+        } else {
+            owner
+                .loans
+                .iter()
+                .map(|id| &self.loans[*id])
+                .filter(|loan| loan.mutable && loan.place.root != place.root)
+                .map(|loan| loan.place.clone())
+                .collect()
+        };
+        if let Some((_, owner)) = self.state.locals.get_mut(&place.root) {
+            owner.loans.extend(&value.loans);
+            owner.regions = None;
+            for (owned, stored) in owner.closed_result.iter_mut().zip(value.closed_result) {
+                *owned &= stored;
+            }
+        }
+        for held in behind {
+            if visited.insert(held.root) {
+                self.store_through_from(&held, value, span, visited)?;
+            }
         }
         Ok(())
     }
@@ -2951,7 +2998,12 @@ impl<'a> Checker<'a, '_> {
                         continue;
                     }
                     let place = loan.place.clone();
-                    if stored
+                    // A value read from the target and written back (`Array.write 0 values[1]
+                    // values`) stores what the target already holds, which adds nothing to it.
+                    let contents = self.own_contents(reference);
+                    let mut added = stored.clone();
+                    added.loans.retain(|id| !contents.contains(id));
+                    if added
                         .loans
                         .iter()
                         .any(|id| *id != reference && self.loans[*id].place.overlaps(&place))
@@ -2962,11 +3014,36 @@ impl<'a> Checker<'a, '_> {
                             span,
                         ));
                     }
-                    self.store_through(&place, &stored, span)?;
+                    self.store_through(&place, &added, span)?;
                 }
             }
         }
         Ok(())
+    }
+
+    /// The loans that stand for what the target of the exclusive reference `reference` already
+    /// holds: the target's borrows (`target_loans`) and, through a parameter without a target
+    /// region, the parameter's own loan, which the values read through it carry. A copy of the
+    /// exclusive parameter itself cannot be stored, and a new borrow of it is a loan of its own.
+    fn own_contents(&self, reference: usize) -> BTreeSet<usize> {
+        let mut contents = self.target_loans(&BTreeSet::from([reference]));
+        let mut pending = vec![reference];
+        let mut seen = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let loan = &self.loans[id];
+            if loan.parents.is_empty()
+                && loan.mutable
+                && self.external.contains(&loan.place.root)
+                && loan.place.fields.is_empty()
+            {
+                contents.insert(id);
+            }
+            pending.extend(&loan.parents);
+        }
+        contents
     }
 
     fn is_place(expression: &TypedExpr) -> bool {

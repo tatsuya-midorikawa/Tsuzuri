@@ -1901,6 +1901,12 @@ const suites = {
       // 1,024 jobs, unevenly for 2,049 and 5,000 chunks.
       ...[[0n, 1n], [1n, 1n], [10n, 4n], [2049n, 1n], [4098n, 2n], [5000n, 1n], [5000n, 3n], [100n, 1000n]].map(([count, size]) =>
         ["parallel_dynamic", [count, size], count * (count - 1n) / 2n + count * (10n * count + size % 2n)]),
+      // refs [b, c, c] = [2, 3, 3], pick_second gives 7, texts ["ab", "cde", "cde"].
+      ["reference_writes", [], 2n * 100000n + 3n * 10000n + 3n * 1000n + 7n * 100n + 2n * 10n + 3n],
+      // put 9, then base + 5 = 105, then [2, 2] from the last element; others [4, 4]; refs [q]; numbers [5].
+      ["generic_writes", [], 9n * 10000000n + 105n * 10000n + 2n * 1000n + 4n * 100n + 2n * 10n + 5n],
+      // write 20; fill base twice = 2000; copy [7, 8, 9, 6] gives 7 * 10 + 6; map + 1 gives 8 * 10 + 7; cells[1] = b.
+      ["matrix_writes", [], 20n * 1000000000n + 2000n * 100000n + 76n * 1000n + 87n * 10n + 2n],
     ],
     traps: [["trap_write_index", []], ["trap_split_past", []], ["trap_split_negative", []], ["trap_swap_index", []], ["trap_slice_order", []], ["trap_chunk_size", []]],
     inspect(ir) {
