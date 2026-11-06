@@ -416,6 +416,163 @@ fn a_share_of_an_element_holds_what_was_written_in() {
     );
 }
 
+/// A28 review (5th round): the lock builtins write into a body's own `Mutex` or `RwMutex` through a
+/// shared reference, in a callback that is a function value (`put text`, a lambda given to a
+/// helper) or in a helper that takes the lock by `ref`, and the check does not see what the
+/// callback stores (A31). A body that passes a mutable cell whose contents may hold a borrow, or a
+/// function whose type reaches an exclusive reference or such a cell, lends a way to write
+/// (`Type::lends_mutable`): it has no facts and reads nothing through. Each program keeps the A30
+/// tip's diagnostic at its position. Accepted by the 4th round, `m_partial` printed 2 at `-O0`
+/// (it reads the freed `text`; 11 is right) and `rt_partial` a pointer. `m_named_owned` writes an
+/// owned closure and is the A30 tip's false positive, which A28 keeps. A lambda cannot capture an
+/// exclusive borrow (`E1005`), so the capture form of a writer is rejected before the ownership
+/// check.
+#[test]
+fn a_lock_callback_lends_a_way_to_write() {
+    for (source, code, kind, (line, column)) in [
+        // m_partial
+        (
+            "def put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn put text slot = Array.write 0 (\\() -> String.length text) slot\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let m = Mutex.create [\\() -> 0]\n    Mutex.with_lock (ref m) (put text)\n    let arr = Mutex.into_inner m\n    let f = arr[0]\n    \\() -> f () + String.length other\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (13, 5),
+        ),
+        // rw_partial
+        (
+            "def put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn put text slot = Array.write 0 (\\() -> String.length text) slot\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let m = RwMutex.create [\\() -> 0]\n    RwMutex.with_write (ref m) (put text)\n    let arr = RwMutex.into_inner m\n    let f = arr[0]\n    \\() -> f () + String.length other\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (13, 5),
+        ),
+        // m_partial_set
+        (
+            "def put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn put text slot = Array.set 0 (\\() -> String.length text) slot\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let m = Mutex.create [\\() -> 0]\n    Mutex.with_lock (ref m) (put text)\n    let arr = Mutex.into_inner m\n    let f = arr[0]\n    \\() -> f () + String.length other\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (13, 5),
+        ),
+        // m_partial_pipe
+        (
+            "def put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn put text slot = Array.write 0 (\\() -> String.length text) slot\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let m = Mutex.create [\\() -> 0]\n    Mutex.with_lock (ref m) (put text)\n    let arr = Mutex.into_inner m\n    let f = arr[0]\n    \\() -> f () + String.length other\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    keep |> stash (ref text)\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (13, 5),
+        ),
+        // m_helper_fill
+        (
+            "def put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn put text slot = Array.write 0 (\\() -> String.length text) slot\ndef fill_lock :: ref string -> ref Mutex<[(unit -> i64)]> -> unit\nfn fill_lock text m = Mutex.with_lock m (put text)\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let m = Mutex.create [\\() -> 0]\n    fill_lock text (ref m)\n    let arr = Mutex.into_inner m\n    let f = arr[0]\n    \\() -> f () + String.length other\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (15, 5),
+        ),
+        // cond_partial
+        (
+            "def put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn put text slot = Array.write 0 (\\() -> String.length text) slot\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let m = Mutex.create [\\() -> 0]\n    let c = Cond.create ()\n    Cond.wait_with (ref c) (ref m) (\\_ -> true) (put text)\n    let arr = Mutex.into_inner m\n    let f = arr[0]\n    \\() -> f () + String.length other\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (14, 5),
+        ),
+        // record_mutex_helper
+        (
+            "record Holder { m: Mutex<[(unit -> i64)]>, n: i64 }\ndef put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn put text slot = Array.write 0 (\\() -> String.length text) slot\ndef fill :: ref string -> ref Holder -> unit\nfn fill text holder = Mutex.with_lock (ref holder.m) (put text)\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let holder = Holder { m: Mutex.create [\\() -> 0], n: 1 }\n    fill text (ref holder)\n    let arr = Mutex.into_inner holder.m\n    let f = arr[0]\n    \\() -> f () + String.length other\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (16, 5),
+        ),
+        // arc_mutex_helper
+        (
+            "def put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn put text slot = Array.write 0 (\\() -> String.length text) slot\ndef fill :: ref string -> ref Arc<Mutex<[(unit -> i64)]>> -> unit\nfn fill text am = Mutex.with_lock (Arc.get am) (put text)\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let am = Arc.new (Mutex.create [\\() -> 0])\n    fill text (ref am)\n    match Arc.try_unwrap am with\n    | Ok m ->\n        let arr = Mutex.into_inner m\n        let f = arr[0]\n        \\() -> f () + String.length other\n    | Error _ -> \\() -> 0\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (18, 5),
+        ),
+        // closure_param_writer
+        (
+            "def run :: ref Mutex<[(unit -> i64)]> -> own (ref mut [(unit -> i64)] -> unit) -> unit\nfn run m g = Mutex.with_lock m g\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let m = Mutex.create [\\() -> 0]\n    run (ref m) (\\slot -> Array.write 0 (\\() -> String.length text) slot)\n    let arr = Mutex.into_inner m\n    let f = arr[0]\n    \\() -> f () + String.length other\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (13, 5),
+        ),
+        // lambda_lock_lifted
+        (
+            "def apply :: ref Mutex<[(unit -> i64)]> -> own (ref Mutex<[(unit -> i64)]> -> unit) -> unit\nfn apply m g = g m\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let m = Mutex.create [\\() -> 0]\n    apply (ref m) (\\mm -> Mutex.with_lock mm (\\slot -> Array.write 0 (\\() -> String.length text) slot))\n    let arr = Mutex.into_inner m\n    let f = arr[0]\n    \\() -> f () + String.length other\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (13, 5),
+        ),
+        // arc_mutex_capture
+        (
+            "def run :: own (unit -> unit) -> unit\nfn run g = g ()\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let am = Arc.new (Mutex.create [\\() -> 0])\n    let mine = Arc.share (ref am)\n    run (\\() -> Mutex.with_lock (Arc.get (ref mine)) (\\slot -> Array.write 0 (\\() -> String.length text) slot))\n    match Arc.try_unwrap am with\n    | Ok m ->\n        let arr = Mutex.into_inner m\n        let f = arr[0]\n        \\() -> f () + String.length other\n    | Error _ -> \\() -> 0\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (17, 5),
+        ),
+        // m_named_owned
+        (
+            "def writer :: ref mut [(unit -> i64)] -> unit\nfn writer slot = Array.write 0 (\\() -> 5) slot\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let m = Mutex.create [\\() -> 0]\n    Mutex.with_lock (ref m) writer\n    let arr = Mutex.into_inner m\n    let f = arr[0]\n    \\() -> f () + String.length other\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1013",
+            "borrow_outlives_block",
+            (13, 5),
+        ),
+        // rt_partial
+        (
+            "def put :: ref string -> ref mut [Arc<unit -> i64>] -> unit\nfn put text slot = Array.write 0 (Arc.new (\\() -> String.length text)) slot\ndef make :: own i64 -> Arc<unit -> i64>\nfn make n =\n    let text = to_string n\n    let m = Mutex.create [Arc.new (\\() -> 0)]\n    Mutex.with_lock (ref m) (put (ref text))\n    let arr = Mutex.into_inner m\n    Arc.share (ref arr[0])\nlet g = make 123456789\n(deref (Arc.get (ref g))) ()",
+            "E1013",
+            "borrow_outlives_block",
+            (9, 5),
+        ),
+        // rt_helper
+        (
+            "def put :: ref string -> ref mut [Arc<unit -> i64>] -> unit\nfn put text slot = Array.write 0 (Arc.new (\\() -> String.length text)) slot\ndef fill_lock :: ref string -> ref Mutex<[Arc<unit -> i64>]> -> unit\nfn fill_lock text m = Mutex.with_lock m (put text)\ndef make :: own i64 -> Arc<unit -> i64>\nfn make n =\n    let text = to_string n\n    let m = Mutex.create [Arc.new (\\() -> 0)]\n    fill_lock (ref text) (ref m)\n    let arr = Mutex.into_inner m\n    Arc.share (ref arr[0])\nlet g = make 123456789\n(deref (Arc.get (ref g))) ()",
+            "E1013",
+            "borrow_outlives_block",
+            (11, 5),
+        ),
+        // cond_rt
+        (
+            "def put :: ref string -> ref mut [Arc<unit -> i64>] -> unit\nfn put text slot = Array.write 0 (Arc.new (\\() -> String.length text)) slot\ndef make :: own i64 -> Arc<unit -> i64>\nfn make n =\n    let text = to_string n\n    let m = Mutex.create [Arc.new (\\() -> 0)]\n    let c = Cond.create ()\n    Cond.wait_with (ref c) (ref m) (\\_ -> true) (put (ref text))\n    let arr = Mutex.into_inner m\n    Arc.share (ref arr[0])\nlet g = make 123456789\n(deref (Arc.get (ref g))) ()",
+            "E1013",
+            "borrow_outlives_block",
+            (10, 5),
+        ),
+        // rt_tz
+        (
+            "def put :: ref string -> ref mut [Arc<unit -> i64>] -> unit\nfn put text slot = Array.write 0 (Arc.new (\\() -> String.length text)) slot\ndef wait_for :: ref Arc<Atomic<i64>> -> i64 -> unit\nfn wait_for counter target =\n    while Atomic.load (Arc.get counter) < target do\n        Routine.yield ()\ndef start :: own i64 -> ref Arc<Atomic<i64>> -> ref Arc<Atomic<i64>> -> unit\nfn start n result done =\n    let text = to_string n\n    let m = Mutex.create [Arc.new (\\() -> 0)]\n    Mutex.with_lock (ref m) (put (ref text))\n    let arr = Mutex.into_inner m\n    let s = Arc.share (ref arr[0])\n    let mine = Arc.share result\n    let finished = Arc.share done\n    tzroutine {\n        let _sum = Atomic.fetch_add (Arc.get (ref mine)) ((deref (Arc.get (ref s))) ())\n        let _count = Atomic.fetch_add (Arc.get (ref finished)) 1i64\n    }\nlet result = Arc.new (Atomic.create 0i64)\nlet done = Arc.new (Atomic.create 0i64)\nstart 123456789 (ref result) (ref done)\nwait_for (ref done) 1\nAtomic.load (Arc.get (ref result))",
+            "E1013",
+            "task_capture_retains_borrow",
+            (16, 5),
+        ),
+        // closure_capture_refmut
+        (
+            "def run :: own (unit -> unit) -> unit\nfn run g = g ()\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let mut arr = [\\() -> 0]\n    let slot = ref mut arr\n    run (\\() -> Array.write 0 (\\() -> String.length text) slot)\n    let f = arr[0]\n    \\() -> f () + String.length other\ndef leak :: ref string -> own i64 -> (unit -> i64)\nfn leak keep n =\n    let text = to_string n\n    stash (ref text) keep\nlet k = \"ab\"\nlet f = leak (ref k) 123456789\nf ()",
+            "E1005",
+            "capture_exclusive_in_reusable_function",
+            (7, 9),
+        ),
+    ] {
+        let error = analyze(source).expect_err(source);
+        assert_eq!(error.code, code, "{source}\n{}", error.message);
+        assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
+        let before = &source[..error.span.start];
+        let position = (
+            before.matches('\n').count() + 1,
+            before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1,
+        );
+        assert_eq!(position, (line, column), "{source}\n{}", error.message);
+    }
+    // The controls: the same writes while `text` is alive (they print 11 and 9), a counter whose
+    // `Atomic<i64>` holds no borrow (the A30 tip rejects it: the share of `shared` keeps its
+    // borrow), and a writer that is passed but never called.
+    for source in [
+        "def put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn put text slot = Array.write 0 (\\() -> String.length text) slot\ndef stash :: ref string -> ref string -> (unit -> i64)\nfn stash text other =\n    let m = Mutex.create [\\() -> 0]\n    Mutex.with_lock (ref m) (put text)\n    let arr = Mutex.into_inner m\n    let f = arr[0]\n    \\() -> f () + String.length other\nlet k = \"ab\"\nlet t = to_string 123456789\nlet f = stash (ref t) (ref k)\nf ()",
+        "def put :: ref string -> ref mut [Arc<unit -> i64>] -> unit\nfn put text slot = Array.write 0 (Arc.new (\\() -> String.length text)) slot\nlet text = to_string 123456789\nlet m = Mutex.create [Arc.new (\\() -> 0)]\nMutex.with_lock (ref m) (put (ref text))\nlet arr = Mutex.into_inner m\nlet g = Arc.share (ref arr[0])\n(deref (Arc.get (ref g))) ()",
+        "let counter = Arc.new (Atomic.create 0i64)\nlet mine = Arc.share (ref counter)\nlet shared = Arc.new (\\v -> v + 1)\nlet f = Arc.share (ref shared)\ntzroutine {\n    let _x = Atomic.fetch_add (Arc.get (ref mine)) ((deref (Arc.get (ref f))) 1)\n}\n0",
+        "def put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn put text slot = Array.write 0 (\\() -> String.length text) slot\ndef via :: own (ref mut [(unit -> i64)] -> unit) -> own (unit -> i64) -> (unit -> i64)\nfn via _g f = f\ndef wrap :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn wrap text f = via (put text) f\nlet t = \"abc\"\nlet g = wrap (ref t) (\\() -> 42)\ng ()",
+    ] {
+        emits(source);
+    }
+}
+
 #[test]
 fn shared_types_have_reserved_names_and_no_abi() {
     for source in [

@@ -422,9 +422,10 @@ struct Contract<'a> {
     /// The body is the generated function that applies a builtin to its own parameters
     /// (`src/closures.rs`, module `$builtin`), whose callers are checked instead.
     builtin_wrapper: bool,
-    /// Whether the body, or one that encloses it, lends an exclusive borrow to a call (A28,
-    /// `lending_bodies`); `None` asks the body alone when a read through needs it.
-    lends_exclusive: Option<bool>,
+    /// Whether the body, or one that it is lifted from or that is lifted from it, lends a way to
+    /// write (an exclusive reference or a mutable cell) to other code (A28, `lending_bodies`);
+    /// `None` asks the body alone when a read through needs it.
+    lends_mutable: Option<bool>,
 }
 
 impl<'a> Contract<'a> {
@@ -434,7 +435,7 @@ impl<'a> Contract<'a> {
             callbacks: &function.callback_contracts,
             slots: function.region_slots.as_ref(),
             builtin_wrapper: function.module == "$builtin",
-            lends_exclusive: None,
+            lends_mutable: None,
         }
     }
 }
@@ -549,7 +550,7 @@ fn start_checker<'a, 'run>(
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         later_use_budget: LATER_USE_NODES,
         builtin_wrapper: contract.builtin_wrapper,
-        lends_exclusive: contract.lends_exclusive,
+        lends_mutable: contract.lends_mutable,
     };
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
@@ -721,8 +722,8 @@ struct CallFacts {
     closed: Vec<bool>,
     /// By function: whether its result can hold each argument's loans. `None` holds them all.
     retained: Vec<Option<Box<[bool]>>>,
-    /// By function: whether its body, or a body that encloses it (that of the function a lambda
-    /// is lifted from), lends an exclusive borrow to a call (`lending_bodies`).
+    /// By function: whether its body, a body that encloses it (that of the function a lambda is
+    /// lifted from) or the body of a lambda lifted from it, lends a way to write (`lending_bodies`).
     lending: Vec<bool>,
 }
 
@@ -736,11 +737,11 @@ impl CallFacts {
             .is_some_and(|retained| retained.get(index) == Some(&false))
     }
 
-    /// The contract of the body of function `id`, with whether it or a body that encloses it
-    /// lends an exclusive borrow.
+    /// The contract of the body of function `id`, with whether it or a related body lends a way
+    /// to write.
     fn contract<'a>(&self, module: &'a CheckedModule, id: usize) -> Contract<'a> {
         Contract {
-            lends_exclusive: Some(self.lending[id]),
+            lends_mutable: Some(self.lending[id]),
             ..Contract::of(&module.functions[id])
         }
     }
@@ -978,7 +979,7 @@ fn parameter_retention_within(
 
 /// The parameters of `function` whose loans its result holds, under the facts so far; `None`
 /// when the body does not check, when its result holds a loan of its own locals, or when it lends
-/// an exclusive borrow to a call (`lending_bodies`).
+/// a way to write (`lending_bodies`).
 fn retained_parameters(
     module: &CheckedModule,
     id: usize,
@@ -1041,49 +1042,64 @@ fn retained_parameters(
     Some(retained.into_boxed_slice())
 }
 
-/// Whether `body` passes to a call an argument whose type reaches an exclusive reference: an
-/// exclusive borrow (`ref mut values`, `ref mut values[0..1]`), a `ref mut` parameter or local, or
-/// a value that holds one (a tuple, a record with an exclusive region, a `MatrixView.Mut`), in a
-/// call, a pipeline that completes one, a host or parallel call, or the captures of a closure.
+/// Whether `body` hands to other code a way to write into a place that its values reach: an
+/// operand of a call, a pipeline, an operator, a host or parallel call, or the captures of a
+/// closure, whose type `lends_mutable` (`Type::lends_mutable`): it reaches an exclusive reference
+/// (`ref mut values`, `ref mut values[0..1]`, a `ref mut` parameter or local, a tuple or a record
+/// that holds one, a `MatrixView.Mut`) or a mutable cell (a `Mutex`, `RwMutex`, `OnceValue`,
+/// `SyncMap`, channel or `ErrGroup` whose contents may hold a borrow), through stored values, the
+/// targets of references, the contents of `Rc` and `Arc`, and the parameter and result types of
+/// function types (a callback `put text : ref mut [T] -> unit`).
 ///
 /// A28 trusts the loans that the check of a body gives its result: the facts drop the arguments
 /// that do not reach it, and `read_through` takes what a borrowed local owner holds. Both are
-/// sound only when the check sees every value that the body stores where its result can read it. The check
-/// does not track the stores of the in-place writers `Array.write` (and `Array.set`, `Array.fill`,
-/// `Array.blit` and the other std functions built on it) and `SyncMap.__replace`: the stored
-/// value's loans do not reach the owner of the target (A31). Each of them takes its target as an
-/// exclusive reference argument, and a function that writes into a place that its caller lends
-/// it (a callback, a std function) gets that place only through an exclusive borrow too; such a
-/// callee keeps all its arguments' loans because its own body lends one. Other stores are tracked
-/// (an assignment, `deref r = v`, `Vec.push_mut`, a function with a region contract). So a body
-/// that passes no exclusive borrow to any call stores nothing that its check misses, and a body
-/// that passes one keeps the rule from before A28: its result holds every argument's loans, and
-/// `Rc.share` and its kin hold the borrow of the owner.
+/// sound only when the check sees every value that the body stores where its result can read it.
+/// The check does not track every store: `Array.write` (and `Array.set`, `Array.fill`,
+/// `Array.blit` and the other std functions built on it) and `SyncMap.__replace` do not add the
+/// stored value's loans to the owner of the target, nor does a callback of `Mutex.with_lock`,
+/// `RwMutex.with_write` or `Cond.wait_with` that writes into the contents of the lock (A31). The
+/// argument does not enumerate these writers. A store that the check does not track writes
+/// through an exclusive reference or through a mutable cell: other stores (an assignment,
+/// `deref r = v`, `Vec.push_mut`, a function with a region contract) are tracked, and a shared
+/// reference to anything else lends no way to write. The code that makes such a store is the
+/// body itself (a call in it to a writer), a function that it calls, or a lambda that it makes; in
+/// each case the exclusive reference or the cell that leads to the body's value comes from the
+/// body, and the only ways a body hands a value to code are the operands above and the captures of
+/// the lambdas that it makes. A function that the body calls can reach the body's values only
+/// through what its arguments hold: a function value among them (`put text`, `Mutex.with_lock m`)
+/// writes only into what it captured, which the body that made it handed it as operands, and into
+/// what it gets when it is called, which its parameter types show. A
+/// lambda's captures are the operands of its `E::Closure`; `lending_bodies` also marks a body
+/// lending when a lambda made in it lends. So a body for which this is false makes no store that
+/// its check misses into its own values, and a body for which it is true keeps the rule from before
+/// A28: its result holds every argument's loans, and `Rc.share` and its kin hold the borrow of
+/// the owner.
 ///
 /// That makes the loans of the body's own values complete, not those of its parameters: a
-/// parameter's external loans stand for what the caller's value holds, and a caller that lends an
-/// exclusive borrow may have stored in that value what its loans miss. The facts do not depend on
+/// parameter's external loans stand for what the caller's value holds, and a caller that lends a
+/// way to write may have stored in that value what its loans miss. The facts do not depend on
 /// that (a callee that leaves an argument out of its result leaves it out whatever it holds), but
 /// a read through a parameter's contents would, so `read_through` keeps the borrow of an owner
 /// whose contents come from the caller.
 ///
-/// In an abstract body a type variable counts as no exclusive reference: those facts only infer
-/// Copy constraints, and each instance, whose types are concrete, is checked with its own facts.
-fn lends_exclusive(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> bool {
-    let exclusive = |argument: &TypedExpr| {
-        argument.ty.reaches_exclusive(types) || argument.ty.holds_exclusive_record(types)
-    };
+/// In an abstract body a type variable counts as neither an exclusive reference nor the contents
+/// of a cell that may hold a borrow: those facts only infer Copy constraints, and each instance,
+/// whose types are concrete, is checked with its own facts.
+fn lends_mutable(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> bool {
+    let lends = |operand: &TypedExpr| operand.ty.lends_mutable(types);
     let mut pending = vec![body];
     while let Some(expression) = pending.pop() {
-        let lends = match &expression.kind {
+        let lending = match &expression.kind {
             E::Call(_, arguments)
             | E::HostCall(_, arguments)
             | E::Parallel(_, arguments)
-            | E::Closure(_, arguments) => arguments.iter().any(exclusive),
-            E::Binary(BinaryOp::Pipe, left, _) => exclusive(left),
+            | E::Closure(_, arguments) => arguments.iter().any(lends),
+            // The right side of a pipeline is the callee; its argument is the left side.
+            E::Binary(BinaryOp::Pipe, left, _) => lends(left),
+            E::Binary(_, left, right) => lends(left) || lends(right),
             _ => false,
         };
-        if lends {
+        if lending {
             return true;
         }
         expression
@@ -1096,41 +1112,46 @@ fn lends_exclusive(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> b
     false
 }
 
-/// By function: whether its body lends an exclusive borrow to a call (`lends_exclusive`), or the
-/// body of a lambda lifted from a function for which this holds. A lambda's captures hold what the
-/// enclosing body gave them, and that misses what an in-place writer stored there, so a lambda
-/// whose captures were made in such a body reads nothing through them either: in
-/// `let mut arr = [Arc.new f]`, `Array.write 0 (Arc.new borrowing) (ref mut arr)` and
+/// By function: whether its body lends a way to write (`lends_mutable`), or the body of a lambda
+/// lifted from it, or of the function that it was lifted from, does. Downward: a lambda's
+/// captures hold what the enclosing body gave them, and that misses what an untracked store put
+/// there, so a lambda whose captures were made in such a body reads nothing through them either:
+/// in `let mut arr = [Arc.new f]`, `Array.write 0 (Arc.new borrowing) (ref mut arr)` and
 /// `\() -> Arc.share (ref arr[0])`, the share would hold what `arr` held before the write (and
 /// `read_through` keeps the borrow of a capture in any lambda, since a capture is a parameter of
-/// the lifted function; this mark also drops the lambda's facts, as for its enclosing body). Each
-/// body is scanned once; the lifted lambdas follow the `E::Closure` that makes them, through the
-/// lambdas in lambdas and the groups of `let rec`.
+/// the lifted function; this mark also drops the lambda's facts, as for its enclosing body).
+/// Upward: a lambda that lends a way to write (it passes a captured cell, or its own exclusive
+/// parameter, to a writer) may write into what the enclosing body gave it, so the enclosing body
+/// keeps the rule from before A28 too; the scan of an unlifted body sees the bodies of its
+/// `E::Lambda`s already. Each body is scanned once; the lifted lambdas follow the `E::Closure`
+/// that makes them, through the lambdas in lambdas and the groups of `let rec`.
 fn lending_bodies(module: &CheckedModule) -> Vec<bool> {
     let types = module.types();
     let mut lending: Vec<bool> = module
         .functions
         .iter()
-        .map(|function| lends_exclusive(&function.body, &types))
+        .map(|function| lends_mutable(&function.body, &types))
         .collect();
-    let mut lifted: Vec<Vec<usize>> = vec![Vec::new(); lending.len()];
+    // Both directions: the lambdas lifted from a function, and the functions they are lifted from.
+    let mut related: Vec<Vec<usize>> = vec![Vec::new(); lending.len()];
     for (id, function) in module.functions.iter().enumerate() {
         let mut pending = vec![&function.body];
         while let Some(expression) = pending.pop() {
             if let E::Closure(lambda, _) = expression.kind
                 && lambda != id
             {
-                lifted[id].push(lambda);
+                related[id].push(lambda);
+                related[lambda].push(id);
             }
             pending.extend(expression.children());
         }
     }
     let mut work: Vec<usize> = (0..lending.len()).filter(|id| lending[*id]).collect();
     while let Some(id) = work.pop() {
-        for &lambda in &lifted[id] {
-            if !lending[lambda] {
-                lending[lambda] = true;
-                work.push(lambda);
+        for &other in &related[id] {
+            if !lending[other] {
+                lending[other] = true;
+                work.push(other);
             }
         }
     }
@@ -1359,9 +1380,9 @@ struct Checker<'a, 'run> {
     later_use_budget: usize,
     /// The body is a generated function that applies a builtin to its own parameters (A30).
     builtin_wrapper: bool,
-    /// Whether the body, or one that encloses it, lends an exclusive borrow to a call
-    /// (`lending_bodies`); the body alone is asked when the contract does not say.
-    lends_exclusive: Option<bool>,
+    /// Whether the body, or one that it is lifted from or that is lifted from it, lends a way to
+    /// write (`lending_bodies`); the body alone is asked when the contract does not say.
+    lends_mutable: Option<bool>,
 }
 
 /// How many expressions the diagnostics of one function may look at, in all, to find where a
@@ -1492,7 +1513,7 @@ impl<'a> Checker<'a, '_> {
                             callbacks: &[],
                             slots: None,
                             builtin_wrapper: function.module == "$builtin",
-                            lends_exclusive: Some(self.facts.lending[*id]),
+                            lends_mutable: Some(self.facts.lending[*id]),
                         },
                         &mut Vec::new(),
                         None,
@@ -1640,13 +1661,14 @@ impl<'a> Checker<'a, '_> {
         )
     }
 
-    /// Whether the checked body, or one that encloses it, lends an exclusive borrow to a call: an
-    /// in-place writer may then have stored in the owner, or in a value that a lambda captured,
-    /// what its loans miss, so nothing is read through the owner's borrow (`lending_bodies`).
-    fn body_lends_exclusive(&mut self) -> bool {
+    /// Whether the checked body, or a related one, lends a way to write (`lends_mutable`): a store
+    /// that the check does not track may then have put in the owner, or in a value that a lambda
+    /// captured, what its loans miss, so nothing is read through the owner's borrow
+    /// (`lending_bodies`).
+    fn body_lends_mutable(&mut self) -> bool {
         *self
-            .lends_exclusive
-            .get_or_insert_with(|| lends_exclusive(self.body, &self.module.types()))
+            .lends_mutable
+            .get_or_insert_with(|| lends_mutable(self.body, &self.module.types()))
     }
 
     /// What a value read through the borrows `loans` holds, as `read_places` reads a place: a
@@ -1656,11 +1678,11 @@ impl<'a> Checker<'a, '_> {
     ///
     /// A borrow whose target holds a loan from the caller (an external loan: the target is a
     /// parameter, a capture of a lifted lambda, or a local that took a value from one) is not read
-    /// through: it stands for itself, as before A28. The guard (`body_lends_exclusive`) makes the
-    /// loans of this body's own values complete: the body lends no exclusive borrow, so no
-    /// in-place writer stored in them what their loans miss (A31). An external loan stands for
-    /// what the caller's value holds, and the caller's loans may miss what its own in-place
-    /// writers stored there: in `fn wrap arr = Arc.share (ref arr[0])`, a caller that wrote a
+    /// through: it stands for itself, as before A28. The guard (`body_lends_mutable`) makes the
+    /// loans of this body's own values complete: the body lends no way to write, so no untracked
+    /// store put in them what their loans miss (A31). An external loan stands for what the
+    /// caller's value holds, and the caller's loans may miss what its own untracked stores put
+    /// there: in `fn wrap arr = Arc.share (ref arr[0])`, a caller that wrote a
     /// borrowing value into `arr` with `Array.write` passes `arr` with the loans that it held
     /// before the write. Reading through, the share held only `arr`'s external loan, the caller's
     /// result held the caller's incomplete loans, and the share outlived the borrowed value. Kept
@@ -3565,7 +3587,7 @@ impl<'a> Checker<'a, '_> {
                 .after_arguments(*boundary)
                 .contains_stored_reference(&self.module.types())
         });
-        let read_through = self.reads_through(callee) && !self.body_lends_exclusive();
+        let read_through = self.reads_through(callee) && !self.body_lends_mutable();
         // A region-quantified parameter's result borrows only from the inputs that its type names.
         let mut current = if callback {
             Value::default()
@@ -3748,9 +3770,9 @@ impl<'a> Checker<'a, '_> {
         };
         // The functions of a `let rec` group are in scope in the body like captured function values.
         let locals: Vec<_> = captures.iter().chain(recursive).chain(parameters).collect();
-        // The captures hold what they held here, which misses what an in-place writer stored
-        // when this body lends an exclusive borrow (`lending_bodies`).
-        let lends_exclusive = self.body_lends_exclusive().then_some(true);
+        // The captures hold what they held here, which misses what an untracked store put there
+        // when this body lends a way to write (`lending_bodies`).
+        let lends_mutable = self.body_lends_mutable().then_some(true);
         self.copy_variables.extend(check_body(
             self.module,
             locals.into_iter(),
@@ -3760,7 +3782,7 @@ impl<'a> Checker<'a, '_> {
             matches!(expression.ty, Type::Once(_)),
             false,
             Contract {
-                lends_exclusive,
+                lends_mutable,
                 ..Contract::default()
             },
             self.recovered,
@@ -4213,7 +4235,7 @@ impl<'a> Checker<'a, '_> {
                         } else {
                             result.loans.extend(callee.loans);
                         }
-                    } else if self.reads_through(right) && !self.body_lends_exclusive() {
+                    } else if self.reads_through(right) && !self.body_lends_mutable() {
                         // `ref shared |> Arc.share` is `Arc.share (ref shared)`.
                         if !matches!(left.kind, E::BorrowOperand(_)) {
                             result.loans = self.read_through(&result.loans);
@@ -5422,6 +5444,35 @@ mod retention_tests {
             assert_eq!(retained("a28_stash"), Some(vec![true, true]), "{infer}");
             assert_eq!(retained("a28_piped"), Some(vec![true, true]), "{infer}");
             assert_eq!(retained("a28_read"), Some(vec![false, true]), "{infer}");
+        }
+    }
+
+    /// A28 review (5th round): a body that passes its `Mutex` to a lock builtin lends a way to
+    /// write, whatever the callback's form, since the callback stores what the check does not see
+    /// (A31). An `Atomic<i64>` holds no borrow, so a body that only counts with one keeps its facts.
+    #[test]
+    fn a_body_that_lends_a_mutable_cell_has_no_facts() {
+        let module = crate::analyze(
+            "def a28_put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn a28_put text slot = Array.write 0 (\\() -> String.length text) slot\n\
+             def a28_locked :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_locked text g =\n    let m = Mutex.create [g]\n    Mutex.with_lock (ref m) (a28_put text)\n    let arr = Mutex.into_inner m\n    arr[0]\n\
+             def a28_counted :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_counted _text g =\n    let c = Atomic.create 0i64\n    let _n = Atomic.fetch_add (ref c) 1i64\n    g\n\
+             let text = \"abc\"\n\
+             let a = a28_locked (ref text) (\\() -> 1)\nlet b = a28_counted (ref text) (\\() -> 2)\n\
+             a () + b ()",
+        )
+        .unwrap();
+        for infer in [false, true] {
+            let facts = call_facts(&module, infer);
+            let retained = |name: &str| {
+                let id = module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == name)
+                    .unwrap_or_else(|| panic!("{name}"));
+                facts.retained[id].as_deref().map(<[bool]>::to_vec)
+            };
+            assert_eq!(retained("a28_locked"), Some(vec![true, true]), "{infer}");
+            assert_eq!(retained("a28_counted"), Some(vec![false, true]), "{infer}");
         }
     }
 
