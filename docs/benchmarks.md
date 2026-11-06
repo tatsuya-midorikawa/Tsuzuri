@@ -720,6 +720,52 @@ node benchmarks/run-tzroutine.mjs target/release/tsuzuri --baseline <変更前�
 - Phase 2 の信号の 1 回の費用（2 回の信号と `yield`）。sysmon は待つ仕事のあるときだけ求めるので、上の核（1 つの tzroutine）では起きません。
 - Windows と Linux の値（Linux の Phase 2 は CI の `targets.yml` が正しさを確かめます）。
 
+## `Parallel.*` の手伝いと TLS の `noinline` の費用（TZ14）
+
+[TZ14](../_features/_completed/TZ14-thread-storage-across-parallel-waits.md) の最初の実装（`7bc7b6b4`）は、spawn せず `Parallel.*` を呼ぶネイティブのプログラムのすべてで、`--allocator small` の `tz_small_realloc` を `noinline` にしました。
+その費用を、`Parallel.init` のコールバックが `Vec` を伸ばす核で測りました（チケットの手順 4）。
+
+```tsuzuri
+export def flat_growth :: own i64 -> i64
+fn flat_growth count =
+    let outer = Parallel.init count (\i -> grown i)
+    Array.sum (ref outer)
+
+def grown :: i64 -> i64
+fn grown i =
+    let mut values: Vec<i64> = Vec.empty()
+    for k in 1 ..= 64 do
+        values = Vec.add (k + i) values
+    Vec.length (ref values)
+
+def main :: own unit -> i32 = \() ->
+    let mut total = 0i64
+    for round in 1 ..= 100 do
+        total = total + flat_growth 2000000
+    do! IO.write_line total
+    0
+```
+
+```sh
+<compiler> build <dir> -O3 --allocator small --no-cache -o <binary>   # 変更前と変更後の release のコンパイラで 1 つずつ
+```
+
+200 万要素の `Parallel.init` を 100 回（各要素で `Vec.add` を 64 回）。出力は `12800000000` で、計測のスクリプトが毎回照合します。
+1 サンプルは 1 プロセスの起動から終了まで（Node の `process.hrtime`）で、変更前と変更後を交互に、順を毎回入れ替えて走らせました。
+
+計測の環境: 負荷の無い Apple M3（8 論理 CPU）、macOS。変更前は `main` の `72f06862`、変更後は `7bc7b6b4` の release のコンパイラです。2 つの実行ファイルの IR の違いは `@tz_small_realloc` の見出しの ` noinline` だけでした。
+
+| 実行 | サンプル | 変更前の中央値（最小） | 変更後の中央値（最小） | 差（中央値） |
+| --- | --- | --- | --- | --- |
+| 1 回目 | 15 | 2172.8 ms（2070.5） | 2544.5 ms（2390.6） | +17.1 % |
+| 2 回目 | 11 | 2179.0 ms | 2550.7 ms | +17.1 % |
+
+チケットの停止条件（1 %）を大きく超えました。インライン展開されると、LLVM は TLS の address（macOS では TLV の getter の呼び出し）をコールバックのループの外へ出し、`noinline` はそれを `Vec.add` ごとの呼び出しに戻します。
+その使い回しが危険なのは、コールバックの途中で手伝いの G が待って別のスレッドへ移るときだけです。そこで TZ14 は `noinline` を、手伝いの tzroutine が待ちうるプログラム（`llvm_preempt.rs` の `helpers_may_wait`: 入れ子の `Parallel.*`、ポインターを通す呼び出し、extern やランタイムの関数などに届く）に限りました。
+この核の IR は、`-O0`・`-O3` の `--emit llvm --allocator small` で `main` と byte 単位で同じなので、変更後の費用は 0 です（同じ IR なので測り直していません）。
+狭めた後の最初の版は、ランタイムの IR の断片が前の断片の閉じ括弧と同じ行で始まると（`Char` を表示するプログラムで `}define internal void @tz.string.copy(...)`）、その関数の呼び出しを待ちとみなしました。この核の `grown` に文字列の連結、`main` に `to_string 'x'` の表示を足すと、待てないのに `noinline` が付き、レビューの交互の実行（共有機）で中央値が +17.4 %（9 組）と +14.0 %（7 組）でした。その行を分けるように直した後、この版の IR も `-O0`・`-O3` で `main` と同じです。
+`tests/fixtures/*` と `examples/*` の 180 の project を `-O0` で、既定の確保器と `--allocator small` の両方で比べると、`main` と違うのは手伝いが待ちうる `--allocator small` の 15 個だけで、どれも `tz_small_realloc` の見出しの 1 行です。
+
 ## データ並列 API
 
 ```sh
