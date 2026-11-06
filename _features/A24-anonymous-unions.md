@@ -379,7 +379,7 @@ describe first        // "int 42"（(string | bool | i64) と (i64 | string | bo
 ### 生成 IR
 
 新しい命令の形はない。注入は `Construct`、型テストは `UnionTag` の比較と `UnionPayload` で、既存の union の emission（`llvm_layout.rs:566-617` の `construct`、`634-768` のタグ、`732` のペイロード）をそのまま通る。
-LLVM の型名は既存の `canonical_type`（`src/llvm.rs:3729`。`unions[id].name` と `[args]`）で `%"tz.union.$anonymous.Union$2[...]"` のようになる。`mangled_type`（`src/llvm.rs:7923`）のエスケープ `$A`・`$L`・`$R`・`$C`・`$P`（A29 が足した dyn の印の `+`）と重ならないよう、合成する名前には `$` の直後に大文字の `A`・`L`・`R`・`C`・`P` を置かない（`$anonymous`・`Union$n`・`$t{k}` は満たす）。`mangled_type` の doc comment と `docs/architecture.md`（組み込み関数のシンボル）は、`canonical_type` に `$` が現れる場所を active pattern の union の名前だけとして単射を説明しているので、合成した名前を足すときはその説明も更新する。
+LLVM の型名は既存の `canonical_type`（`src/llvm.rs:3795`。`unions[id].name` と `[args]`）で `%"tz.union.$anonymous.Union$2[...]"` のようになる。`mangled_type`（`src/llvm.rs:7980`）のエスケープ `$A`・`$L`・`$R`・`$C`・`$P`（A29 が足した dyn の印の `+`）と重ならないよう、合成する名前には `$` の直後に大文字の `A`・`L`・`R`・`C`・`P` を置かない（`$anonymous`・`Union$n`・`$t{k}` は満たす）。`mangled_type` の doc comment と `docs/architecture.md`（組み込み関数のシンボル）は、`canonical_type` に `$` が現れる場所を active pattern の union の名前だけとして単射を説明しているので、合成した名前を足すときはその説明も更新する。
 
 ### アルゴリズム
 

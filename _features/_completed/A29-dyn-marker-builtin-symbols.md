@@ -305,7 +305,8 @@ done
 
 ### 変更したファイル
 
-- `src/llvm.rs`（`mangled_type`、`dyn_name` の doc comment）
+- `src/llvm.rs`（`mangled_type`、`dyn_name` の doc comment。レビュー後に `canonical_type`・`codegen_identity` と型で数える集合）、`src/llvm_abi.rs`・`src/llvm_debug.rs`・`src/llvm_recursive.rs`・`src/llvm_shared.rs`（2 回目）
+- `tests/fixtures/generic_records/Main.tz`（レビュー後）
 - `tests/dyn_dispatch.rs`
 - `tests/fixtures/dyn_dispatch/Main.tz`、`tests/features.mjs`
 - `tests/tzroutine_wasm.mjs`
@@ -353,6 +354,7 @@ done
   - 同じ入力で 2 回出力した `generic_records` の IR は一致しました（決定的）。
 - 判断: 停止条件の「引用符で囲む名前の綴りまで変えたくなった」は、引用符付きの名前も衝突する（`redefinition of type`）ので、オーケストレーターの判断で上書きし、該当する型の綴りだけを変えました。
   意味が同じで `Eq` が違う規約の並び（`[Read]` と `[Read, Own]`）を 1 つにまとめる正規化は、型検査の振る舞いに関わるので行っていません（綴りは `Eq` に合わせて分けます）。
+  （この判断の規約の部分は 2 回目で改めました。型検査の `unify` は規約をまったく比べないので、規約を綴ると 1 つの値が 2 つの LLVM 型を持ちます。下の「2 回目」を見てください。）
 
 #### 2（minor）: 「`$` は `canonical_type` の綴りに現れない」は誤りだった
 
@@ -385,3 +387,66 @@ done
 - `node tests/features.mjs target/debug/tsuzuri <suite>`: `generic_records`（12 cases）・`dyn_dispatch`（58）・`pure_functions`（302）・`conventions`（36）・`active_patterns`（17）・`unions`（27）が native と WASM の `-O0`・`-O3` で成功。
 - `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md`: 成功（1 page, 82 links, 20 checked examples, 34 native runs）。
 - `node scripts/check-guide-lite.mjs`: 成功（88 references）。診断と generated block は変えていないので、`gen-docs.mjs --check` と `check-cli-docs.mjs` は対象外です。
+
+#### 2 回目: 規約だけが違う関数型が 2 つの LLVM 型になった（検証の指摘、major）
+
+1 回目の修正の検証で、新しい問題の指摘が 1 件ありました。型検査の `unify`（`src/polymorph.rs` の `(Type::Function(a, x), Type::Function(b, y))` の腕）は関数型の純粋性を比べますが、
+引数規約は比べません。そのため 1 回目のように規約を `fn.r[…]`・`fn.om[…]` と綴ると、規約だけが違う 2 つの型を持つ 1 つの値が 2 つの LLVM の struct 型を持ち、phi や `ret` で出会うと
+clang が拒否しました（`E2002`。base の binary では `redefinition of type`）。
+
+- 再現（2 回目の修正前の binary、native の `-O0`。期待値は手で数えたもの）:
+  - c11: `Box { value: text_length }`（`def text_length :: string -> i64`。規約 `[Read]`）と `Box { value: \(t: ref string) -> t.length * 10 }` を if/else で選んで呼ぶ（期待 `5005`）。
+    `'%v12' defined with type '%"tz.record.Main.Box[fn[ref[string]->i64]]"' but expected '%"tz.record.Main.Box[fn.r[ref[string]->i64]]"'`。
+  - c12: `def get :: own i64 -> Box<ref string -> i64>` が `Box { value: text_length }` を返す（期待 `7`）。`value doesn't match function result type`（`ret %"…Box[fn.r[…]]"`）。
+  - c16: `def bump :: i64 -> mut Counter -> unit`（規約 `[Own, Mut]`）と `\(step: i64) (counter: ref mut Counter) -> …` の `Box` を if/else で選ぶ（期待 `4301`）。同じく phi の型の不一致。
+- ABI の確認: 規約だけが違う関数型は同じ ABI です。規約は引数の書き方の記録で、引数の型そのものは型検査がすでに変えています（`src/check.rs` の scheme の構築で、既定で読む引数と `mut T` の引数は
+  `Type::Reference(T, false)`・`Type::Reference(T, true)` になる）。そのため規約 `[Read]` の `string -> i64` と明示の `ref string -> i64` は、どちらも引数の型が `ref[string]` で、
+  `[Own, Mut]` の `i64 -> mut Counter -> unit` と `i64 -> ref mut Counter -> unit` はどちらも `refmut[Main.Counter]` です。`src/llvm*.rs` で `FunctionParameters::conventions` を読むのは
+  1 回目の `canonical_type` だけで、関数型の LLVM の型（`%tz.closure`）も呼び出しの引数の型も `parameters.types` と結果の型だけから決まります。生成コードの外で規約を読むのは型検査
+  （`closures.rs`・`contracts.rs`・`check.rs`）と `call_specialization.rs` の `transparent_calls`（規約が一致するときだけ関数型の cast を見通す、保守的な最適化）です。ABI が違う規約は
+  見つからなかったので、すべての規約を正規化しました。
+- 修正（`src/llvm.rs`）:
+  - `codegen_identity`: 型の中のすべての関数型から引数規約を除いた型を返します（純粋性は残す）。生成コード上の型の同一性です。
+  - `canonical_type` は規約を綴らず、純粋性だけを `pure.fn[…]` と綴ります。どの型の綴りも `codegen_identity` の綴りと同じで、同一性が違う型は別の綴りです。`mangled_type` の doc comment にも書きました。
+  - 型で数える集合とキーを `codegen_identity` で数えます: 組み込み関数の具体化のキー（`Builtins`。キーの型引数と、定義に使う型）、レコードと共用体の定義の集合（`named_types`）、
+    再帰型の helper の集合（`recursive_types`）、共有ブロックの helper の集合（`shared_types`）、vtable（`emit_dyn_tables`。規約だけが違う格納型の vtable は最初の 1 つだけを出し、
+    `tz.dyn.drop[…]`・`tz.dyn.clone[…]` の集合も同一性で数える）、ホストの ABI のレコード（`llvm_abi.rs` の `record_types`）、debug 情報の型（`llvm_debug.rs` の `types`）。
+  - `emit_typed_builtin` は具体化のキーと同じ checked wrapper を探していたので、キーが同一性になった後は規約の付いた wrapper が見つからず panic しました（c20 で再現）。型引数の同一性が
+    キーと等しい wrapper を探すようにしました。
+  - ユーザーのジェネリック関数の具体化（`polymorph.rs` の `request`）は型検査の側にあり、`$mono.N` の番号で名前が決まるので衝突しません。規約だけが違う型引数では同じ本体が 2 つ出ますが、
+    正しさには影響しないので変えていません（vtable のスロット関数も、出さない方の vtable の adapter は出しません）。
+- テスト（どれも base の binary で失敗します）:
+  - suite `generic_records` に export を 2 つ足しました。`convention_mix` は c11・c12・c16 を 1 つにしたもので、期待値は `n > 0` で `5 + 500 + 301 · 10⁴`、それ以外で `50 + 500 + 4 · 10⁴`。
+    `convention_instances` は規約だけが違う `Box` を再帰的な union（`Chain`）・`Rc`・region 付きの `dyn Display {r}`（vtable）・`Vec` に入れて混ぜるもので、期待値は手で数えた
+    `n > 0` で `3 + 3 · 10⁴ + 12 · 10⁶ + 3000 · 10⁸`、それ以外で `33 + 300 · 10⁴ + 12 · 10⁶ + 3000 · 10⁸` です。`inspect` は、`%"tz.record.Main.Box[fn[ref[string]->i64]]"`・
+    `%"tz.record.Main.Box[fn[i64,refmut[Main.Counter]->unit]]"`・`%"tz.record.Main.Box[pure.fn[i64->i64]]"`、`Vec.empty` の 4 つの具体化、
+    `@"tz.vtable.Display[Main.Box[fn[ref[string]->i64]]]"` がそれぞれ 1 回だけ定義され、`fn.r`・`fn.om` のような規約の綴りがどこにも無いことを確かめます。
+    1 回目の `function_instances` の `inspect` の期待（`fn.r`・`fn.om` の定義）は、規約を綴らない形に直しました。
+  - unit test `canonical_types_are_injective_and_mangled_types_are_identifiers` を、同一性の上の単射に直しました。すべての型で `codegen_identity` が冪等で、`canonical_type` が同一性の綴りと
+    同じであること、同一性の異なる型（純粋性・参照の可変性・`SharedKind`・dyn の印・長さ・整数の符号など）の綴りがどれも違うこと、規約 `[Read]` の `Box` の同一性が規約の無い `Box` と等しく、
+    純粋な `Box` とは違うことを確かめます。`fn.om[i64,string->unit]` の期待は `fn[i64,string->unit]` に直しました。
+- 修正後の証拠: c11 は `5005`、c12 は `7`、c16 は `4301`、c20（`convention_instances` と同じ形を整数のあふれる式で返したもの）は手で数えた `-8455817821460796237` を native の `-O0`・`-O3` で返します。
+  1 回目のプログラム（`Vec.empty` の純粋と非純粋、`Box` の純粋と非純粋）と規約の衝突（`redefinition`）は suite `generic_records` の `function_instances` で、native と WASM の `-O0`・`-O3` で動きます。
+  純粋と非純粋を混ぜる if/else は、どちらの binary でも型検査の `E1003` のままです（純粋性は `unify` が区別します）。
+- 手順 4 の IR の比較のやり直し: `tests/fixtures/*` と `examples/*` の 176 個のディレクトリ（`Main.tz` を持つのは 153 個）と、`main` の版の `dyn_dispatch`・`preemption`・`generic_records` を、
+  native と `--target wasm32` で `--emit llvm` し、base の binary とこの branch の binary の出力を比べました。
+  - `main` のソースの fixture と example: 両方が出力したファイルはすべて byte 単位で一致しました。両方で同じく失敗したのは、`Main.tz` を持たないディレクトリと、wasm32 の 10 個（`blocking`・
+    `domain`・`domain_host`・`effects_sweep`・`net_*` の 5 個・`tzroutine_net_wasm`）、`--trap-mode return` の要る native の `domain`・`domain_host` です（`--trap-mode return` を付けると一致）。
+    `main` の fixture に純粋な関数型を型引数に持つプログラムは無いので、変わらないのが期待どおりです。
+  - この branch の fixture で違うのは 6 ファイルです。`dyn_dispatch`・`preemption`（native と wasm32）は A29 本体の `$P`（新しい IR の `$P` を `+` に戻すと base の IR と一致）。
+    `generic_records`（native と wasm32）は、純粋な関数型の `pure.fn` の綴り（13 行）と、base の IR が規約の変種ごとに 2 回定義していた 14 個の定義（型 4 つ、`Vec.empty`・`Vec.push_mut`・`Rc.new` の
+    具体化、再帰型の helper 3 つ、`tz.dyn.drop`、vtable とそのスロット）を 1 回にしたことだけです（新しい IR の `pure.fn` を `fn` に戻すと、新しい IR の定義はすべて base の IR にあります）。
+  - 同じ入力で 2 回出力した `generic_records` の IR は native と wasm32 で一致しました（決定的）。
+- 見つけた既存の問題（`main` でも同じなので変えていません）: 期待の型が規約 `[Read]` の関数型のとき、引数に `ref string` と注釈したラムダを直接書くと `E1003`（`expected ref string, found string`）
+  になります（`if n > 0 then first else Box { value: \(text: ref string) -> … }`）。ラムダをいったん変数に束縛すると通ります。型検査の側の問題なので、この branch では扱いません。
+
+##### 2 回目に実行したコマンド
+- `cargo fmt --all -- --check`: 成功。`cargo clippy --all-targets -- -D warnings`: 成功。
+- `cargo test --locked --lib canonical_types_are_injective`: 1 passed。
+- `cargo nextest run --locked`: 2936 tests run: 2936 passed (9 slow), 4 skipped。
+- `node tests/features.mjs target/debug/tsuzuri <suite>`: `dyn_dispatch`（58 cases）・`generic_records`（16。base の binary では `inspect` の「1 回だけ定義」で失敗）・`conventions`（36）・
+  `pure_functions`（302）・`unions`（27）・`active_patterns`（17）が native と WASM の `-O0`・`-O3` で成功。
+- 手順 4 の IR の比較（上のとおり）と、`generic_records` の 2 回の出力の比較。
+- `node scripts/check-guide-lite.mjs`: 成功（88 references）。`_features/A24-anonymous-unions.md` の `canonical_type`・`mangled_type` の行番号を `src/llvm.rs:3795`・`src/llvm.rs:7980` に直しました。
+- 参照（`_tsuzuri/language-reference/`）は変えていません。規約の綴りは利用者に見えず、1 回目も参照に書いていないためです。`docs/architecture.md` の組み込み関数のシンボルの節と
+  generic record の型名の節を、規約を綴らず `codegen_identity` で数える形に直しました。
