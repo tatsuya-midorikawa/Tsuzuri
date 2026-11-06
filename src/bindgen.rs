@@ -1237,7 +1237,9 @@ fn attribute_group(tokens: &[(usize, Token<'_>)], start: usize) -> Option<(Strin
 }
 
 /// Replaces Clang's `(unnamed struct at /abs/path:1:2)` with `(unnamed struct)`, so
-/// generated text and warnings never contain absolute paths.
+/// generated text and warnings never contain absolute paths. Clang 23 no longer repeats
+/// the kind (`struct (unnamed at /abs/path:1:2)`); the kind before it is put back, so
+/// the text is the same as with Clang 21.
 fn scrub(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut rest = text;
@@ -1250,8 +1252,17 @@ fn scrub(text: &str) -> String {
             break;
         };
         let inside = &rest[start..end];
-        result.push_str(&rest[..start]);
-        result.push_str(inside.split(" at ").next().unwrap_or(inside));
+        let before = &rest[..start];
+        result.push_str(before);
+        let kept = inside.split(" at ").next().unwrap_or(inside);
+        result.push_str(kept);
+        let keyword = before
+            .strip_suffix(' ')
+            .and_then(|before| before.rsplit([' ', '(', ',']).next());
+        if let (Some(keyword @ ("struct" | "union" | "enum")), "(unnamed") = (keyword, kept) {
+            result.push(' ');
+            result.push_str(keyword);
+        }
         result.push(')');
         rest = &rest[end + 1..];
     }
@@ -1345,7 +1356,10 @@ struct Typedef<'a> {
     /// layout, which its spelling does not show (`aligned`, `mode`, ...), or it names an
     /// unnamed struct or union. Clang spells `typedef struct { ... } S;` as `struct S`,
     /// which would otherwise be read as the unrelated tag `struct S` (tags and typedef
-    /// names are separate C namespaces).
+    /// names are separate C namespaces). `unnamed_tag` finds the unnamed tag in either
+    /// shape of Clang's AST for the typedef's type: Clang 21 writes an `ElaboratedType`
+    /// whose `ownedTagDecl` is the tag, above a `RecordType` whose `decl` is the tag;
+    /// Clang 23 writes only the `RecordType`.
     poisoned: bool,
 }
 
@@ -1376,12 +1390,25 @@ fn visit_all<'a>(node: &'a Value, depth: usize, visit: &mut impl FnMut(&'a Value
     }
 }
 
-/// The unnamed struct, union, or enum that a typedef declares inline
-/// (`typedef struct { ... } S;`), found anywhere in the typedef's type nodes.
-fn unnamed_tag(node: &Value) -> Option<&Value> {
+/// The unnamed struct, union, or enum that a typedef names (`typedef struct { ... } S;`,
+/// `typedef struct { ... } *P;`), found anywhere in the typedef's type nodes: an
+/// `ownedTagDecl` without a name, or a `decl` that is one of the `unnamed` declarations
+/// of the translation unit. Either one is enough. Clang 21 writes both (an
+/// `ElaboratedType` with the `ownedTagDecl` above the `RecordType` or `EnumType` with the
+/// `decl`); Clang 23 writes no `ElaboratedType`, only the `decl`. An `ownedTagDecl` is
+/// the tag that the typedef declares, so its empty name is enough. Every reference to a
+/// tag has a `decl`, so a `decl` counts only by its id: `typedef struct S T;` names the
+/// tag `S`.
+fn unnamed_tag<'v>(node: &'v Value, unnamed: &BTreeSet<&str>) -> Option<&'v Value> {
     let mut pending: Vec<(&Value, usize)> = children(node).map(|child| (child, 0)).collect();
     while let Some((child, depth)) = pending.pop() {
         if let Some(tag) = child.get("ownedTagDecl").filter(|tag| name(tag).is_empty()) {
+            return Some(tag);
+        }
+        if let Some(tag) = child
+            .get("decl")
+            .filter(|tag| text(tag, "id").is_some_and(|id| unnamed.contains(id)))
+        {
             return Some(tag);
         }
         if depth < MAX_TYPE_NESTING {
@@ -1394,21 +1421,28 @@ fn unnamed_tag(node: &Value) -> Option<&Value> {
 impl<'a> Tables<'a> {
     fn new(nodes: &'a [Value]) -> Self {
         // The tags of every struct definition, and every enum tag, defined or not. A tag
-        // declared inside a struct has file scope in C, so both look at every depth.
+        // declared inside a struct has file scope in C, so both look at every depth, and
+        // so does the set of the struct, union, and enum declarations without a name.
         let mut complete = BTreeSet::new();
         let mut enum_tags = BTreeSet::new();
+        let mut unnamed = BTreeSet::new();
         for node in nodes {
-            visit_all(node, 0, &mut |node| match kind(node) {
-                "RecordDecl"
-                    if flag(node, "completeDefinition")
-                        && text(node, "tagUsed") == Some("struct") =>
-                {
-                    complete.insert(name(node));
+            visit_all(node, 0, &mut |node| {
+                match kind(node) {
+                    "RecordDecl"
+                        if flag(node, "completeDefinition")
+                            && text(node, "tagUsed") == Some("struct") =>
+                    {
+                        complete.insert(name(node));
+                    }
+                    "EnumDecl" if !name(node).is_empty() => {
+                        enum_tags.insert(name(node));
+                    }
+                    _ => {}
                 }
-                "EnumDecl" if !name(node).is_empty() => {
-                    enum_tags.insert(name(node));
+                if matches!(kind(node), "RecordDecl" | "EnumDecl") && name(node).is_empty() {
+                    unnamed.extend(text(node, "id"));
                 }
-                _ => {}
             });
         }
         let mut tables = Self {
@@ -1430,7 +1464,7 @@ impl<'a> Tables<'a> {
                 .collect(),
         };
         for node in nodes.iter().filter(|node| kind(node) == "TypedefDecl") {
-            let owned = unnamed_tag(node);
+            let owned = unnamed_tag(node, &unnamed);
             let unnamed_record = owned.is_some_and(|tag| kind(tag) == "RecordDecl");
             tables.typedefs.entry(name(node)).or_insert(Typedef {
                 spelled: node_type(node),
@@ -2541,6 +2575,20 @@ mod tests {
             scrub("struct (unnamed struct at /h/a.h:1:1) *"),
             "struct (unnamed struct) *"
         );
+        // Clang 23 spells the same types without the repeated kind (E16).
+        assert_eq!(
+            scrub("const struct (unnamed at /h/a.h:1:1) *"),
+            "const struct (unnamed struct) *"
+        );
+        assert_eq!(
+            scrub("void (union (unnamed at /h/a.h:1:1), enum (unnamed at /h/a.h:2:3))"),
+            "void (union (unnamed union), enum (unnamed enum))"
+        );
+        assert_eq!(
+            scrub("struct outer::(anonymous at /h/a.h:1:1)"),
+            "struct outer::(anonymous)"
+        );
+        assert_eq!(scrub("outer::(unnamed at /h/a.h:1:1)"), "outer::(unnamed)");
     }
 
     #[test]

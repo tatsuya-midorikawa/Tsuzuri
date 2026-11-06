@@ -505,7 +505,8 @@ fn keyword_member_yield_has_completion_hover_and_signature_help() {
     // `yield` after a dot is a name: a function `yield` of a module of the program has hover, signature help and
     // completion, and the builtin `Routine.yield`, which has no definition to offer, has hover.
     let steps = "/// Gives way to the other work.\ndef yield :: unit -> i64\nfn yield _unit = 0\n";
-    let source = "def work :: i64 -> i64\nfn work n =\n    let m = Steps.yield () + n\n    Routine.yield ()\n    m\n";
+    let source =
+        "def work :: i64 -> i64\nfn work n =\n    Routine.yield ()\n    Steps.yield () + n\n";
     let responses = scripted(
         &[("Main.tz", source), ("Steps.tz", steps)],
         "utf-16",
@@ -546,6 +547,114 @@ fn keyword_member_yield_has_completion_hover_and_signature_help() {
             .iter()
             .any(|item| item["label"] == "yield")
     );
+}
+
+#[test]
+fn signature_help_after_a_line_that_ends_with_a_closer() {
+    use serde_json::json;
+    // The brackets that end the line before a call are not its arguments, whichever bracket closes that line,
+    // and a CRLF document reads the same. A line that has no call of its own before the cursor, inside a `name(`
+    // that an earlier line opened, continues that call.
+    let steps = "/// Gives way.\ndef yield :: unit -> i64\nfn yield _unit = 0\n";
+    let expected = json!({"signatures": [{"label": "yield (_unit: unit) -> i64", "parameters": [{"label": "_unit: unit"}]}], "activeSignature": 0, "activeParameter": 0});
+    let body = |previous: &str| {
+        format!("def work :: i64 -> i64\nfn work n =\n    {previous}\n    Steps.yield () + n\n")
+    };
+    let mut cases: Vec<(String, &str)> = [
+        "Routine.yield ()",
+        "let xs = [1, 2]",
+        "let s = $\"v{n}\"",
+        "let t = (n, n)",
+        "let ys = [|1, 2|]",
+        "let m = 1",
+    ]
+    .into_iter()
+    .map(|previous| (body(previous), ") + n"))
+    .collect();
+    cases.push((
+        body("let r = Pair { a: n, b: n }") + "record Pair { a: i64, b: i64 }\n",
+        ") + n",
+    ));
+    cases.push((body("Routine.yield ()").replace('\n', "\r\n"), ") + n"));
+    cases.push((
+        "def work :: i64 -> i64\nfn work n =\n    Routine.yield ()\n    Steps.yield(\n        ()) + n\n"
+            .to_owned(),
+        "()) + n",
+    ));
+    cases.push((
+        "def work :: i64 -> i64\nfn work n =\n    Routine.yield ()\n    Steps.yield(\n        ()\n    ) + n\n"
+            .to_owned(),
+        ") + n",
+    ));
+    let wrong: Vec<_> = cases
+        .iter()
+        .filter_map(|(source, needle)| {
+            let responses = scripted(
+                &[("Main.tz", source), ("Steps.tz", steps)],
+                "utf-16",
+                |uri| {
+                    vec![json!({"id": 1, "method": "textDocument/signatureHelp", "params": {"textDocument": {"uri": uri("Main.tz")}, "position": position(source, needle, "utf-16")}})]
+                },
+            );
+            let result = &responses[0]["result"];
+            (*result != expected).then(|| format!("{source:?}: {result}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn signature_help_inside_brackets_that_an_earlier_line_opened() {
+    use serde_json::json;
+    // Each text is an edit in progress after a good analysis, at the end of its last line. Below a line that
+    // ends with a closer, a call of the cursor's line is the innermost one, whether an earlier line opened a
+    // tuple, a group after a space, a `name(` call, or a `name(` call that a comma continues. A line whose own
+    // head names no function, or that starts with a group, stays inside the `name(` call. A stray `)` does not
+    // make the first name of the document the call.
+    let steps = "def yield :: unit -> i64\nfn yield _unit = 0\ndef add :: i64 -> i64 -> i64\nfn add a b = a + b\ndef one :: i64 -> i64\nfn one a = a\n";
+    let primer = "def work :: i64 -> i64\nfn work n =\n    n\n";
+    let one = json!({"signatures": [{"label": "one (a: i64) -> i64", "parameters": [{"label": "a: i64"}]}], "activeSignature": 0, "activeParameter": 0});
+    let add = json!({"signatures": [{"label": "add (a: i64) (b: i64) -> i64", "parameters": [{"label": "a: i64"}, {"label": "b: i64"}]}], "activeSignature": 0, "activeParameter": 0});
+    let body = |lines: &[&str]| {
+        let lines: Vec<_> = lines.iter().map(|line| format!("    {line}\n")).collect();
+        format!("def work :: i64 -> i64\nfn work n =\n{}", lines.concat())
+    };
+    let cases = [
+        (body(&["let t = (", "    (n)", "    Steps.one ("]), &one),
+        (body(&["Steps.add (", "    (n)", "    Steps.one ("]), &one),
+        (body(&["Steps.add(", "    (n)", "    Steps.one ("]), &one),
+        (body(&["Steps.add(", "    ()", "    Steps.one n"]), &one),
+        (body(&["Steps.add(n,", "    (n)", "    Steps.one ("]), &one),
+        (body(&["let t = ((n),", "    (n)", "    Steps.one ("]), &one),
+        (body(&["Steps.add(", "    ()", "    n"]), &add),
+        (body(&["Steps.add(", "    ()", "    (n) "]), &add),
+        ("Steps.add n)\n    Steps.one (\n".to_owned(), &one),
+    ];
+    let responses = scripted(
+        &[("Main.tz", primer), ("Steps.tz", steps)],
+        "utf-16",
+        |uri| {
+            let main = uri("Main.tz");
+            let mut steps = vec![
+                json!({"id": 0, "method": "textDocument/signatureHelp", "params": {"textDocument": {"uri": main}, "position": {"line": 2, "character": 5}}}),
+            ];
+            for (version, (text, _)) in cases.iter().enumerate() {
+                let last = text.trim_end();
+                let line = last.matches('\n').count();
+                let character = last.len() - last.rfind('\n').map_or(0, |at| at + 1);
+                steps.push(json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": main, "version": version + 2}, "contentChanges": [{"text": text}]}}));
+                steps.push(json!({"id": version + 1, "method": "textDocument/signatureHelp", "params": {"textDocument": {"uri": main}, "position": {"line": line, "character": character}}}));
+            }
+            steps
+        },
+    );
+    let wrong: Vec<_> = cases
+        .iter()
+        .zip(&responses[1..])
+        .filter(|((_, expected), response)| response["result"] != **expected)
+        .map(|((text, _), response)| format!("{text:?}: {}", response["result"]))
+        .collect();
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 #[test]

@@ -223,7 +223,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | E13 | [ホスト言語バインディングと Web glue の生成](_completed/E13-host-bindings.md) | P2 | L | E05, E12, (F06), (F11) | done |
 | E14 | [埋め込み時のトラップ境界とスタック枯渇の報告](_completed/E14-trap-boundary.md) | P1 | L | G04, E05, (B06) | done |
 | E15 | [信頼境界と権限（`@trusted`・`tsuzuri audit`・`[capabilities]`）](_completed/E15-trust-boundary-and-capabilities.md) | P2 | L | (A20) | done（全 Phase） |
-| E16 | [新しい Clang の AST で、bindgen が無名の struct の typedef を tag の struct と取り違える](E16-bindgen-unnamed-tags-new-clang.md) | P1 | S | E11 | todo |
+| E16 | [新しい Clang の AST で、bindgen が無名の struct の typedef を tag の struct と取り違える](_completed/E16-bindgen-unnamed-tags-new-clang.md) | P1 | S | E11 | done（無名の struct・union・enum を名付ける typedef を、名前のない `ownedTagDecl`（Clang 21）か、名前のない tag の `id` の集合にある `decl`（Clang 21 と 23）で見分け、Clang 21 と 23 で同じ出力にする。Clang 23 の `struct (unnamed at …)` の綴りも `struct (unnamed struct)` にそろえる） |
 
 ### F. 並列・性能バックエンド
 
@@ -285,8 +285,8 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G34 | [doc-test（`///` の例を実行する）と std の例](_completed/G34-doc-tests.md) | P2 | M | – | done（全 Phase。std の公開関数 819 個に例） |
 | G35 | [生成物による文書の単一情報源化（診断コード表・std 索引・benchmarks の JSON 化）](_completed/G35-generated-docs-single-source.md) | P2 | L | (G23) | done（全 Phase。std 8 モジュール 441 関数に `@complexity`） |
 | G36 | [言語全体の差分ファズ（プログラム生成型。コンパイル時評価を参照実装に）](_completed/G36-language-differential-fuzz.md) | P2 | L | D11, (F14) | done（全 Phase。edition 2027 の正準形で生成） |
-| G37 | [LSP のシグネチャヘルプが、閉じ括弧で終わる行の次の行の呼び出しで何も返さない](G37-lsp-signature-help-after-closer.md) | P2 | S | G07, G12 | todo |
-| G38 | [`features.mjs` の `regex`・`unicode` の期待値が、テストを動かす Node の Unicode の版で変わる](G38-unicode-test-references-pinned.md) | P2 | S | D09 | todo |
+| G37 | [LSP のシグネチャヘルプが、閉じ括弧で終わる行の次の行の呼び出しで何も返さない](_completed/G37-lsp-signature-help-after-closer.md) | P2 | S | G07, G12 | done（前の行が `)`・`]`・`}`・`\|]`・補間の閉じで終わっても、カーソルの行の呼び出しのシグネチャヘルプを返す。前の行で開いた組・括弧・`name(` の中の行でも同じで、`name(` の中では、カーソルの行のカーソルの前が識別子で始まり、その頭が関数を指すのでなければ、その `name(` の呼び出しを返す（`-Steps.one (` のように前置の演算子やリテラルで始まる行は、外側の `name(` のまま）） |
+| G38 | [`features.mjs` の `regex`・`unicode` の期待値が、テストを動かす Node の Unicode の版で変わる](_completed/G38-unicode-test-references-pinned.md) | P2 | S | D09 | done（V8 の期待値を std と同じ Unicode 17.0 の Node で `tests/unicode-v8.mjs`・`tests/regex-v8.mjs` に書き出して commit した。どの Node でも suite が通り、版が同じ Node は計算し直して比べる） |
 
 ### TZ. tzroutine（Go の goroutine に相当する並行処理。第4期）
 
@@ -776,9 +776,9 @@ TZ08・TZ12・TZ13・TZ09・TZ10 の実装中に見つけ、その PR では直�
 | [A27](A27-call-argument-reference-hint.md) | 不具合（D14 が記録した既知の制限） | 結果の型が未定の呼び出しを `ref T` の引数へ直接渡すと、引数を見る前に結果を `ref T` と推測して `E1003`（`id (Owned.call (ref next) input)`。edition 2027 では型変数の引数が読み取りなので、ジェネリックな関数へ渡すだけで起きる）。推測を、結果を通す引数の直前か最後の引数の後まで遅らせる |
 | [A28](A28-function-results-retain-ref-arguments.md) | 不具合 | 関数を含む型の呼び出し結果が `ref` 引数の借用をすべて持つとみなされ、`HashMap.remove`（関数の値の表）と、関数の `Arc` の `Arc.share` を捕捉する tzroutine が誤って `E1013`。callee の本文から引数ごとの「保持」「一時」と、`Arc.share` などの「読み通し」を求める |
 | [A29](A29-dyn-marker-builtin-symbols.md) | 不具合 | `Channel<dyn (C, Send)>` のように印を持つ dyn 型を型引数にした組み込み関数のシンボルが `+` を含み、clang が `E2002`。`mangled_type` で `+` を `$P` にする |
-| [E16](E16-bindgen-unnamed-tags-new-clang.md) | 不具合 | Clang 23 の AST（`ElaboratedType` が無い）では、`tsuzuri bindgen` が `typedef struct { ... } S;` の無名の struct を tag の `struct S` と取り違え、ABI の合わない extern を生成する |
-| [G37](G37-lsp-signature-help-after-closer.md) | 不具合 | 閉じ括弧で終わる行の次の行の呼び出しで、LSP のシグネチャヘルプが `null` を返す |
-| [G38](G38-unicode-test-references-pinned.md) | テスト基盤 | `features.mjs` の `regex`・`unicode` が V8 の Unicode の版に依存し、Unicode 18.0 の Node（Homebrew の `node@24`）で失敗する。V8 の参照値を std と同じ版の Node で書き出して commit する |
+| [E16](_completed/E16-bindgen-unnamed-tags-new-clang.md) | 不具合 | Clang 23 の AST（`ElaboratedType` が無い）では、`tsuzuri bindgen` が `typedef struct { ... } S;` の無名の struct を tag の `struct S` と取り違え、ABI の合わない extern を生成する |
+| [G37](_completed/G37-lsp-signature-help-after-closer.md) | 不具合 | 閉じ括弧で終わる行の次の行の呼び出しで、LSP のシグネチャヘルプが `null` を返す |
+| [G38](_completed/G38-unicode-test-references-pinned.md) | テスト基盤 | `features.mjs` の `regex`・`unicode` が V8 の Unicode の版に依存し、Unicode 18.0 の Node（Homebrew の `node@24`）で失敗する。V8 の参照値を std と同じ版の Node で書き出して commit する |
 | [TZ14](_completed/TZ14-thread-storage-across-parallel-waits.md) | 潜在的な不具合 | spawn しないプログラムの `Parallel.*` の helper も別のスレッドで再開しうるのに、`--allocator small` の `tz_small_realloc`（TLS を読む）は spawn するプログラムでしか `noinline` にならない |
 | [TZ15](TZ15-runtime-ir-pieces-newline.md) | 潜在的な不具合 | ランタイムの IR の断片のうち 4 個（`character.ll`・`display.ll`・`debug.ll`・`recursive.ll`）が改行で終わらず、次の断片が `}define ...` のように閉じ括弧の行から始まる。spawn するプログラムでその関数に `"probe-stack"` が付かず（TZ02）、その関数を呼ぶループに要らない横取りの検査が入る（TZ10） |
 
