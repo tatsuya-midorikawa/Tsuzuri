@@ -286,7 +286,7 @@ Clang 22 は手元に無く、確かめていません（D1 は版によらな�
   1. `tests/bindgen.rs` に `reads_an_owned_tag_decl_without_a_decl_below_it` を足しました。`ElaboratedType` に名前のない `ownedTagDecl` だけを持たせ、その下の `RecordType`・`EnumType` には `decl` を書かない形で、
      tag の `struct S { double big; }` と同じ名前の無名の struct の typedef `S`（とそれを取る `use_typedef`）、ポインターの typedef `typedef struct { ... } *P;`（と `use_pointer`）、無名の enum の typedef `mode`（と `pick`）を読みます。
      名前のない宣言の `RecordDecl`・`EnumDecl` は実際の AST と同じく翻訳単位に置くので、`id` の集合にはありますが、`decl` が無いので `decl` の判定は当たりません。
-     期待値は C の名前空間の規則から手で書いた 8 行で、上の 2 つのテストの `Shape::Elaborated` の同じ宣言の行と同じです（`skipped S`・`skipped use_typedef`・`skipped P`・`skipped use_pointer`・`const MODE_A`・`const MODE_B`・`extern "pick" def pick :: i32 -> i32`）。
+     期待値は C の名前空間の規則から手で書いた 8 行で、上の 2 つのテストの `Shape::Elaborated` の同じ宣言の行と同じです（`record S { big: f64 }`・`skipped S`・`skipped use_typedef`・`skipped P`・`skipped use_pointer`・`const MODE_A`・`const MODE_B`・`extern "pick" def pick :: i32 -> i32`）。
      独立した参照として、`ownedTagDecl` の判定だけを持つ `main` の `src/bindgen.rs` でもこのテストが成功することを確かめました（そのときの結果は 25 passed・3 failed で、失敗は修正前と同じ `Direct` の形の 3 件）。
      この形は、確かめたどの Clang も書きません（Clang 21 は下の型にも `decl` を書きます）。そのことをテストのコメントに書きました。
   2. 規則の記述を、コードが保つ規則（名前のない `ownedTagDecl` か、`id` が名前のない `RecordDecl`・`EnumDecl` の集合にある `decl` のどちらか一方で足りる。Clang 21 は両方を書き、Clang 23 は `decl` だけを書く）に合わせました。
@@ -308,3 +308,23 @@ Clang 22 は手元に無く、確かめていません（D1 は版によらな�
 1. **`ownedTagDecl` の判定は消さず、テストで固定しました。** `main` から続く判定そのもので、`decl` を下の型に書かない Clang の版があったときにも、Clang 21 の形の AST で無名の tag を見落として ABI の合わない extern を出さないための、保守的な二重の手がかりだからです。
 2. **`ownedTagDecl` を `id` の集合でも絞る形（D1 の文字どおり）にはしませんでした。** 実際の AST では結果が同じで、今までの判定（名前が空）を変えないほうが、Clang 21 の出力が変わらないことが明らかだからです。D1 には、実装での形を書き足しました。
 3. **`_features/README.md` の行の要約も直しました。** 出荷する振る舞いは変わりませんが、前の言い回しは `docs/architecture.md` と同じく「`ownedTagDecl` も集合で判定する」と読めたからです。
+
+#### 2 回目の確認の指摘への対応
+
+`bd05ff7f` の確認は、上の指摘が直ったことを認め、nit を 2 件挙げました。
+
+1. **`ownedTagDecl` の規則の「名前のない」の半分を、どのテストも固定していませんでした。** `child.get("ownedTagDecl").filter(|tag| name(tag).is_empty())` を `child.get("ownedTagDecl")` に変えた変異でも、`cargo test --locked --test bindgen` は 28 passed のままでした（名前のある `ownedTagDecl` を持つ `ElaboratedType` は、テストにも `tests/fixtures/bindgen` にもありませんでした）。
+   その変異は、Clang 21 で名前のある tag の typedef（`typedef struct pt { ... } pt_t;`）を無名として扱い、それを取る関数を W2002 で落とします。
+   - 実際の AST: `typedef struct pt { double x; } pt_t; double norm(const pt_t *p);` を `clang -x c -fsyntax-only -Xclang -ast-dump=json` で出すと、Clang 21.1.8 は `ElaboratedType{ownedTagDecl: {name: "pt"}, inner: [RecordType{decl: {同じ id, name: "pt"}}]}` を書き、
+     Clang 23.1.4 は `RecordType{decl: {name: "pt"}, isTagOwned: true}` を書きます。どちらもテストの `tag_type(shape, tag_ref(id, "RecordDecl", "pt"), true)` の形です。
+   - 対応: 2 つの形を回す `does_not_read_unnamed_struct_typedefs_as_tags` に、この宣言（`struct pt` の `RecordDecl`、typedef `pt_t`、それを取る `norm`）を足しました。
+     期待値は C の規則と既存の期待値から手で書いた 2 行です。tag の行は、`names` の golden の `struct point` → `record Point` と同じ名前の規則で `record Pt { x: f64 }` です。
+     名前のある tag の typedef は `S_named` と同じく展開されて自分の行を持たないので、関数の行は `extern "norm" def norm :: ref Pt -> f64` です。
+     `reads_an_owned_tag_decl_without_a_decl_below_it` のコメントに、名前のある `ownedTagDecl` の場合はこのテストにあると書き足しました。判定のコードは変えていません。
+   - 根拠: 上の変異では `cargo test --locked --test bindgen` が `running 28 tests`、27 passed・1 failed で、`does_not_read_unnamed_struct_typedefs_as_tags` が `Shape::Elaborated` の回で失敗します（`norm` の行が `// skipped norm: parameter 1 has unsupported type 'const pt_t *'` になる）。元に戻すと 28 passed です。
+     同じヘッダーを dev のバイナリの `tsuzuri bindgen named.h -o Named.tz` に、`TSUZURI_CLANG` を Clang 21 と Clang 23 にして通すと、どちらも `record Pt { x: f64 }` と `extern "norm" def norm :: ref Pt -> f64` だけを出しました。
+2. **上の 1 の「8 行」の括弧の中に 7 行しか挙げていませんでした。** 先頭の `record S { big: f64 }` を足しました。
+
+- 実行したコマンドと結果: `cargo fmt --all -- --check`（成功）、`cargo clippy --locked --all-targets -- -D warnings`（警告なし）、`cargo test --locked --test bindgen`（`running 28 tests`、28 passed。変異では 27 passed・1 failed）、
+  `cargo nextest run --locked --no-fail-fast`（2936 tests run: 2936 passed、4 skipped。足したのは既存のテストの中の 1 つの宣言なので、件数は変わりません）、`node scripts/check-guide-lite.mjs`（88 references、0 failed）。
+- 変更したファイル: `tests/bindgen.rs`（`does_not_read_unnamed_struct_typedefs_as_tags` の宣言と期待値、`reads_an_owned_tag_decl_without_a_decl_below_it` のコメント）、このチケット。

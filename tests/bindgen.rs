@@ -1766,6 +1766,8 @@ fn does_not_read_unnamed_struct_typedefs_as_tags() {
         };
         let mut tag = record("S", &[("big", "double"), ("other", "double")]);
         tag["id"] = json!("0x10");
+        let mut pt = record("pt", &[("x", "double")]);
+        pt["id"] = json!("0x11");
         assert_eq!(
             lines(vec![
                 tag,
@@ -1794,6 +1796,15 @@ fn does_not_read_unnamed_struct_typedefs_as_tags() {
                     "double (const S_named *)",
                     &["const S_named *"]
                 ),
+                // `typedef struct pt { double x; } pt_t;` declares a named tag: Clang 21's
+                // `ownedTagDecl` has the name `pt`, so the typedef expands like `S_named`.
+                pt,
+                typedef_over(
+                    "pt_t",
+                    "struct pt",
+                    tag_type(shape, tag_ref("0x11", "RecordDecl", "pt"), true)
+                ),
+                function("norm", "double (const pt_t *)", &["const pt_t *"]),
                 json!({ "kind": "RecordDecl", "name": "H", "tagUsed": "struct" }),
                 unnamed("0x2", "RecordDecl", "struct"),
                 named_by("H", "struct H", "0x2", "RecordDecl"),
@@ -1846,6 +1857,8 @@ fn does_not_read_unnamed_struct_typedefs_as_tags() {
                 "extern \"use_tag\" def use_tag :: ref S -> f64",
                 "// skipped use_alias: parameter 1 has unsupported type 'const S_alias *'",
                 "extern \"use_named\" def use_named :: ref S -> f64",
+                "record Pt { x: f64 }",
+                "extern \"norm\" def norm :: ref Pt -> f64",
                 "extern type H",
                 "// skipped H: anonymous struct; give the struct a tag",
                 "// skipped use_handle_typedef: parameter 1 has unsupported type 'H *'",
@@ -1908,7 +1921,8 @@ fn reads_an_owned_tag_decl_without_a_decl_below_it() {
     // `Elaborated` shape above cannot tell the two apart. Here the type below the
     // `ElaboratedType` has no `decl`, and only `ownedTagDecl` names the tag. No Clang we
     // have seen writes this shape; it keeps the `ownedTagDecl` rule tested on its own. The
-    // lines are those of `Shape::Elaborated` in the two tests above (E16).
+    // lines are those of `Shape::Elaborated` in the two tests above (E16). An `ownedTagDecl`
+    // with a name (`typedef struct pt { ... } pt_t;`) is in the struct test above.
     let owned = |id: &str, kind: &str| {
         let below = if kind == "EnumDecl" {
             "EnumType"
