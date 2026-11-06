@@ -370,6 +370,11 @@ impl DebugContext {
         next: &mut usize,
         definitions: &mut Vec<String>,
     ) -> usize {
+        // The convention variants of a type are one debug type (A29); the keys are identities.
+        if let Some(id) = self.types.get(ty) {
+            return *id;
+        }
+        let ty = &codegen_identity(ty);
         if let Some(id) = self.types.get(ty) {
             return *id;
         }

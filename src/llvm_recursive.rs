@@ -186,7 +186,7 @@ impl FunctionEmitter<'_, '_> {
         case: usize,
         payload: Option<(String, String)>,
     ) -> String {
-        self.globals.recursive_types.insert(ty.clone());
+        self.globals.recursive_types.insert(codegen_identity(ty));
         if empty_case(ty, self.module) == Some(case) {
             return "null".into();
         }

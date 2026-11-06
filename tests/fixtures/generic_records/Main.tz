@@ -1,6 +1,24 @@
 record Pair<'a, 'b> { first: 'a, second: 'b }
 record Box<'a> { value: 'a }
 record Wrap<'a> { value: 'a }
+record Counter { count: i64 }
+union Chain<'a> = | End | Link of 'a * Chain<'a>
+// Adds its weight to the tally when it drops (A29).
+record Guard<'a> { tally: Arc<Atomic<i64>>, weight: i64, call: 'a }
+record Holder<'a> { label: i64, guard: Guard<'a> }
+
+instance Display<Box<'a>> {
+    fn display _boxed = "boxed!"
+}
+
+instance Drop<Guard<'a>> {
+    fn drop guard =
+        let _previous = Atomic.fetch_add (Arc.get (ref guard.tally)) guard.weight
+}
+
+instance Display<Guard<'a>> {
+    fn display _guard = "guard"
+}
 
 def add_pair :: own Pair<i64, i64> -> own Pair<i64, i64> -> Pair<i64, i64>
 fn add_pair a b =
@@ -19,6 +37,64 @@ fn nested_length wrapped = wrapped.value.first + wrapped.value.second.length
 
 def apply_boxed :: own Box<i64 -> i64> -> own i64 -> i64
 fn apply_boxed boxed x = boxed.value x
+
+def text_length :: string -> i64
+fn text_length text = text.length
+
+def bump :: i64 -> mut Counter -> unit
+fn bump step counter = counter.count = counter.count + step
+
+def text_reader :: own i64 -> Box<ref string -> i64>
+fn text_reader _n =
+    let reader = Box { value: text_length }
+    reader
+
+def rec chain_total :: own Chain<Box<ref string -> i64>> -> ref string -> i64
+fn rec chain_total chain text =
+    match chain with
+    | End -> 0
+    | Link (boxed, rest) -> boxed.value text + chain_total rest text
+
+def shown_reader {r} :: ref {r} i64 -> dyn Display {r}
+fn shown_reader _side = Dyn.of (Box { value: text_length })
+
+def shown_ref {r} :: ref {r} i64 -> dyn Display {r}
+fn shown_ref _side = Dyn.of (Box { value: \(text: ref string) -> text.length })
+
+def shown_guard {r} :: ref {r} i64 -> ref Arc<Atomic<i64>> -> dyn Display {r}
+fn shown_guard _side tally = Dyn.of (Guard { tally: Arc.share tally, weight: 1, call: text_length })
+
+// Each Guard holds `text_length` or `bump`, whose types carry parameter conventions, and no
+// type in the program names a Guard of the plain function type. The weights are powers of ten, so
+// the tally shows that each Guard dropped once: the dyn value through its vtable, the Vec element
+// that `Vec.remove_at` removes, the one left in the Vec, the recursive union and the shared block
+// at the end, the Holder in a Maybe that `Vec.clear` drops, `ignore`, and the received Guard.
+def guard_drops :: ref Arc<Atomic<i64>> -> own i64 -> i64
+fn guard_drops tally n =
+    let side = n
+    let shown = shown_guard (ref side) tally
+    let mut guards = Vec.empty()
+    Vec.push (Guard { tally: Arc.share tally, weight: 10, call: text_length }) guards
+    Vec.push (Guard { tally: Arc.share tally, weight: 100, call: text_length }) guards
+    guards = Vec.remove_at 0 guards
+    let _chain = Link (Guard { tally: Arc.share tally, weight: 1000, call: text_length }, End)
+    let shared = Rc.new (Link (Guard { tally: Arc.share tally, weight: 10000, call: text_length }, End))
+    let mut holders = Vec.empty()
+    Vec.push (Maybe.Some (Holder { label: n, guard: Guard { tally: Arc.share tally, weight: 100000, call: text_length } })) holders
+    Vec.push Maybe.None holders
+    let holders = Vec.clear holders
+    let bumper = Guard { tally: Arc.share tally, weight: 1000000, call: bump }
+    let mut counter = Counter { count: 1 }
+    bumper.call n (ref mut counter)
+    ignore bumper
+    let channel = Channel.make 2
+    Channel.send channel (Guard { tally: Arc.share tally, weight: 10000000, call: text_length })
+    let received = match Channel.recv channel with
+        | Maybe.Some guard -> guard.call "abcdef"
+        | Maybe.None -> -1
+    let text = "abc"
+    let shown_length = (Display.display (ref shown)).length
+    guards[0].call text + shown_length * 10 + counter.count * 100 + received * 10000 + Vec.length (ref holders) * 100000 + Rc.strong_count (ref shared) * 1000000
 
 def weighted :: own [Pair<i64, i64>] -> i64
 fn weighted pairs =
@@ -64,3 +140,84 @@ fn nested_syntax n =
     match Maybe.get work with
     | Some pair -> pair.first + pair.second.length
     | None -> 0
+
+// Instances whose function type arguments differ only in purity or in parameter conventions
+// (`text_length` reads its parameter, `bump` writes its second): each is its own record type and
+// builtin instance (A29).
+export def function_instances :: own i64 -> i64
+fn function_instances n =
+    let impure: Box<i64 -> i64> = Box { value: \x -> x + n }
+    let pure_box: Box<pure (i64 -> i64)> = Box { value: \x -> x * 2 }
+    let mut impure_fns: Vec<i64 -> i64> = Vec.empty()
+    Vec.push (\x -> x - n) impure_fns
+    let mut pure_fns: Vec<pure (i64 -> i64)> = Vec.empty()
+    Vec.push (\x -> x * 3) pure_fns
+    let read_box = Box { value: text_length }
+    let ref_box = Box { value: \(text: ref string) -> text.length + 10 }
+    let mut bumps = Vec.empty()
+    Vec.push bump bumps
+    let mut writes = Vec.empty()
+    Vec.push (\(step: i64) (counter: ref mut Counter) -> counter.count = counter.count + step * 100) writes
+    let mut counter = Counter { count: 0 }
+    bumps[0] n (ref mut counter)
+    writes[0] n (ref mut counter)
+    let text = "hello"
+    let boxed = impure.value 1 + pure_box.value 4 * 10 + read_box.value text * 100 + ref_box.value (ref text) * 1000
+    boxed + (impure_fns[0] 7 + pure_fns[0] 2) * 100000 + counter.count * 10000000
+
+// Function types that differ only in parameter conventions are one type to the type checker, so
+// one value can hold either: `text_length` reads its `string` parameter by default where the lambda
+// takes `ref string`, and `bump` writes its second (`mut Counter`) where the lambda takes
+// `ref mut Counter`. Both are one LLVM type (A29): an if/else mixes them, and `text_reader`
+// returns one through the other.
+export def convention_mix :: own i64 -> i64
+fn convention_mix n =
+    let reader = Box { value: text_length }
+    let scaled = Box { value: \(text: ref string) -> text.length * 10 }
+    let chosen = if n > 0 then reader else scaled
+    let returned = text_reader n
+    let bumper = Box { value: bump }
+    let writer = Box { value: \(step: i64) (counter: ref mut Counter) -> counter.count = counter.count + step * 100 }
+    let written = if n > 0 then writer else bumper
+    let mut counter = Counter { count: 1 }
+    written.value 3 (ref mut counter)
+    let text = "hello"
+    chosen.value (ref text) + returned.value (ref text) * 100 + counter.count * 10000
+
+// The convention variants meet in a recursive union, a shared block, a dyn value with its vtable,
+// and a `Vec` (A29).
+export def convention_instances :: own i64 -> i64
+fn convention_instances n =
+    let first = Box { value: text_length }
+    let scaled = Box { value: \(text: ref string) -> text.length * 10 }
+    let chain = if n > 0 then Link (first, End) else Link (scaled, Link (Box { value: text_length }, End))
+    let shared = Rc.new (Box { value: text_length })
+    let other = Rc.new (Box { value: \(text: ref string) -> text.length * 100 })
+    let picked = if n > 0 then shared else other
+    let side = n
+    let reader = shown_reader (ref side)
+    let viewer = shown_ref (ref side)
+    let mut boxes = Vec.empty()
+    Vec.push (Box { value: text_length }) boxes
+    Vec.push (Box { value: \(text: ref string) -> text.length * 1000 }) boxes
+    let text = "abc"
+    let shown = (Display.display (ref reader)).length + (Display.display (ref viewer)).length
+    chain_total chain (ref text) + (Rc.get (ref picked)).value (ref text) * 10000 + shown * 1000000 + boxes[1].value (ref text) * 100000000
+
+// The convention variants of Drop types drop through the helpers keyed by codegen identity
+// (A29): `guard_drops` returns its reads, and the tally counts its drops after it returns. A
+// channel of Boxes is a Drop type through std's `Drop<Channel<'a>>`, and `Vec.clear` drops it.
+export def convention_drops :: own i64 -> i64
+fn convention_drops n =
+    let tally = Arc.new (Atomic.create 0i64)
+    let read = guard_drops (ref tally) n
+    let channel = Channel.make 2
+    let out = Channel.share channel
+    Channel.send out (Box { value: text_length })
+    let mut channels = Vec.empty()
+    Vec.push channel channels
+    let received = match Channel.recv out with
+        | Maybe.Some boxed -> boxed.value "abcdefghi"
+        | Maybe.None -> -1
+    let channels = Vec.clear channels
+    (read + received * 10000000 + Vec.length (ref channels)) * 100000000 + Atomic.load (Arc.get (ref tally))

@@ -100,6 +100,8 @@ fn record_types(module: &CheckedModule) -> Vec<Type> {
             ty
         };
         if let Type::Record(id, arguments) = ty {
+            // The convention variants of a record are one type (A29).
+            let ty = &codegen_identity(ty);
             if !seen.insert(ty.clone()) {
                 return;
             }

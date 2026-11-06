@@ -251,3 +251,39 @@ export def builtin_hash :: own i64 -> i64
 fn builtin_hash x =
     let hashed: dyn Hash = Dyn.of x
     if Hash.hash (ref hashed) == Hash.hash (ref x) then 1 else 0
+
+// A29: a channel carries Send dyn values. On one thread, so on every target: two items fill the channel, the select
+// takes the first through the receive-only handle (the send arm cannot run, and its item is dropped), and the loop takes
+// the rest after the send-only handle closes the channel.
+export def channel_ops :: own i64 -> i64
+fn channel_ops x =
+    let shapes: Channel<dyn (Shapes.Shape, Send)> = Channel.make 2
+    let other = Channel.share shapes
+    let out = Channel.send_only shapes
+    let input = Channel.receive_only shapes
+    SendOnly.send out (Dyn.of (Square { side: x }))
+    Channel.send other (Dyn.of (Rect { width: x, height: 2 }))
+    let spare: dyn (Shapes.Shape, Send) = Dyn.of (Label { text: "spare", weight: 1 })
+    let first = select
+        | recv shape from input -> match shape with | Maybe.Some s -> Shapes.Shape.area (ref s) | Maybe.None -> -1
+        | send spare to shapes -> -2
+    Channel.send other (Dyn.of (Square { side: x + 1 }))
+    SendOnly.close out
+    let mut total = first
+    for shape in shapes do
+        total = total * 1000 + Shapes.Shape.area (ref shape)
+    total
+
+// native only: the exports below spawn a tzroutine, which WebAssembly runs only with --wasm-feature jspi.
+
+// A29: a tzroutine sends a Send dyn value through an unbuffered channel, and the caller receives it.
+export def channel_area :: own i64 -> i64
+fn channel_area x =
+    let shapes: Channel<dyn (Shapes.Shape, Send)> = Channel.make 0
+    let out = Channel.share shapes
+    tzroutine {
+        Channel.send out (Dyn.of (Square { side: x }))
+    }
+    match Channel.recv shapes with
+    | Maybe.Some shape -> Shapes.Shape.area (ref shape)
+    | Maybe.None -> -1

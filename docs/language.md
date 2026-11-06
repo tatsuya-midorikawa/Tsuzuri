@@ -993,6 +993,8 @@ Shapes.Shape.area (ref shapes[1])
 | Send | なし | なし | あり | なし（`Send` 印は `E1028`） |
 | 借用の保持 | なし | なし | なし | region `r` |
 
+`Send` の dyn 値は、ほかの `Send` の値と同じく tzroutine の捕捉・`Parallel.*` の結果・`Channel<dyn (C, Send)>` の要素としてほかの tzroutine やスレッドへ移せます。
+
 値は `{ data, vtable }` の 2 ポインターです。export・extern の引数と結果には使えず（`E1008`）、dyn 値の比較、downcast、実行時の型情報はありません。dyn 値を使わないプログラムの生成コードは変わりません。
 
 ### ジェネリックなレコード

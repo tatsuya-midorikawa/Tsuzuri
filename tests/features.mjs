@@ -1995,10 +1995,20 @@ const suites = {
       ["builtin_display", [-7n], 2n * 10n + 4n],
       ["builtin_display", [0n], 1n * 10n + 4n],
       ...[0n, 42n].map((x) => ["builtin_hash", [x], 1n]),
+      // A29: a channel of Send dyn values on one thread. The receive arm of the select is the ready one (the channel
+      // is full); it takes Square x, and the loop takes Rect x by 2, then Square (x + 1).
+      ...[3n, -2n, 0n].map((x) => ["channel_ops", [x], x * x * 1000000n + 2n * x * 1000n + (x + 1n) * (x + 1n)]),
     ],
+    // A29: a tzroutine sends the dyn value, which WebAssembly runs only with --wasm-feature jspi
+    // (tests/tzroutine_wasm.mjs); the default WebAssembly module is the fixture above its "native only" line.
+    nativeFrom: "// native only:",
+    nativeCases: [...[3n, -4n].map((x) => ["channel_area", [x], x * x])],
     traps: [["faulty_area", [0n]]],
     inspect(ir) {
       assert.match(ir, /^%tz\.dyn = type \{ ptr, ptr \}$/m);
+      // A29: the `+` of a dyn type's marker is `$P` in a builtin's unquoted symbol, and stays in quoted names.
+      assert.match(ir, /@tz\.builtin\.Channel\.make\.dyn\$LShapes\.Shape\$Psend\$R\(/);
+      assert.match(ir, /%"tz\.record\.Channel\.Channel\[dyn\[Shapes\.Shape\+send\]\]"/);
       // Named.id, then Shape's area, grow, into_area, and describe; `upcast_area` upcasts to Named.
       assert.match(ir, /@"tz\.vtable\.Shapes\.Shape\[Main\.Square\]" = internal unnamed_addr constant \{ ptr, ptr, i64, i64, \[5 x ptr\], \[1 x ptr\] \}/);
       // The copy vtable has a clone slot; the vtable of two classes has an upcast table.
@@ -2055,6 +2065,22 @@ const suites = {
       ["collections", [5n], 3022n],
       ["nested_syntax", [39n], 42n],
       ["nested_syntax", [-3n], 0n],
+      // (1 + n) + 80 + 500 + 15000 + ((7 - n) + 6) * 10^5 + (n + 100n) * 10^7 (A29)
+      ["function_instances", [5n], 5050815586n],
+      ["function_instances", [-2n], -2018484421n],
+      // n > 0: "hello".length 5, 5 * 100, the lambda writes 1 + 3 * 100; else 5 * 10, 500, bump writes 1 + 3 (A29)
+      ["convention_mix", [2n], 5n + 500n + 301n * 10000n],
+      ["convention_mix", [-2n], 50n + 500n + 4n * 10000n],
+      // "abc".length 3: the chain sums 3 or 30 + 3, the Rc gives 3 or 300, "boxed!".length 6 twice, boxes[1] 3000 (A29)
+      ["convention_instances", [1n], 3n + 3n * 10000n + 12n * 1000000n + 3000n * 100000000n],
+      ["convention_instances", [-1n], 33n + 300n * 10000n + 12n * 1000000n + 3000n * 100000000n],
+      // guard_drops reads "abc".length 3, "guard".length 5, the counter 1 + n, "abcdef".length 6, no holders, and one
+      // Rc; the channel's Box reads "abcdefghi".length 9; the eight Guards add 1 + 10 + ... + 10^7 to the tally (A29)
+      ...[2n, -3n].map((n) => [
+        "convention_drops",
+        [n],
+        (3n + 5n * 10n + (1n + n) * 100n + 6n * 10000n + 1000000n + 9n * 10000000n) * 100000000n + 11111111n,
+      ]),
     ],
     inspect(ir, header) {
       assert.doesNotMatch(header, /Pair|Box|Wrap/);
@@ -2062,11 +2088,31 @@ const suites = {
         '%"tz.record.Main.Pair[i64,string]" = type { i64, %tz.string }',
         '%"tz.record.Main.Pair[i64,i64]" = type { i64, i64 }',
         '%"tz.record.Main.Box[fn[i64->i64]]" = type { %tz.closure }',
+        // Purity is spelled when the function is pure; the parameter conventions are not, so the
+        // variants are one type and one instance (A29).
+        '%"tz.record.Main.Box[pure.fn[i64->i64]]" = type { %tz.closure }',
+        '%"tz.record.Main.Box[fn[ref[string]->i64]]" = type { %tz.closure }',
+        '%"tz.record.Main.Box[fn[i64,refmut[Main.Counter]->unit]]" = type { %tz.closure }',
         '%"tz.record.Main.Wrap[Main.Pair[i64,string]]" = type { %"tz.record.Main.Pair[i64,string]" }',
       ]) {
         assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
       }
       assert.doesNotMatch(ir, /tz\.record\.Main\.(Pair|Box|Wrap) = type/);
+      assert.doesNotMatch(ir, /(\[|,|\.|\$L|\$C)fn\.[orm]+(\[|\$L)/);
+      for (const symbol of [
+        "@tz.builtin.Vec.empty.fn$Li64$Ai64$R",
+        "@tz.builtin.Vec.empty.pure.fn$Li64$Ai64$R",
+        "@tz.builtin.Vec.empty.fn$Li64$Crefmut$LMain.Counter$R$Aunit$R",
+        "@tz.builtin.Vec.empty.Main.Box$Lfn$Lref$Lstring$R$Ai64$R$R",
+      ]) {
+        assert.equal(ir.split(`define internal %tz.vec ${symbol}() `).length, 2, `${symbol} is defined once`);
+      }
+      // One vtable serves both variants of the stored Box.
+      assert.equal(
+        ir.split('@"tz.vtable.Display[Main.Box[fn[ref[string]->i64]]]" = internal').length,
+        2,
+        "the vtable of Box<ref string -> i64> is defined once",
+      );
     },
   },
   unions: {

@@ -184,7 +184,7 @@ Go では `select` と `default` で書く操作です。複数のチャンネ�
 
 要素は、`send` が戻ったあともチャンネルに残り、あとで別の tzroutine に受け取られます。そのため、要素は借用を持てません。`Channel.send` と `Channel.try_send` の呼び出しで、要素が借用を持たないことを調べます（[DataChannel](./datachannel.md#要素と借用) と同じ規則）。
 
-- 通るもの: 整数・文字列・配列などの所有値、値のコピーを捕捉した関数、何も捕捉しない関数、その場で作った `Owned.function`。
+- 通るもの: 整数・文字列・配列などの所有値、値のコピーを捕捉した関数、何も捕捉しない関数、その場で作った `Owned.function`、`Send` 印を持つ dyn 値（`dyn (C, Send)`。下の例）。
 - `E1013`（`a channel item cannot hold a borrow, ...`）になるもの: `ref` で借りた値を捕捉した関数と、それを含む値。
 
 ```text
@@ -195,6 +195,31 @@ fn push ch data =
 
 ```text
 error[E1013]: a channel item cannot hold a borrow, including a borrowed function environment: it is received later, perhaps after the borrowed data is gone; send an owned value, or a function that captures a copy, or an Owned.Function built where it is sent
+```
+
+要素の型を `dyn (C, Send)` にすると、型の違う値をクラス `C` のメソッドで扱いながら、1 つのチャンネルで運べます（[動的ディスパッチ](../types-and-type-inference/type-classes.md#動的ディスパッチ)）。印の無い `dyn C` と region 付きの `dyn C {r}` は `Send` ではないので、要素にできません（`E1013`）。
+
+```tsuzuri run=42%20text
+let items: Channel<dyn (Display, Send)> = Channel.make 2
+let out = Channel.share items
+tzroutine {
+    Channel.send out (Dyn.of 42)
+    Channel.send out (Dyn.of "text")
+    Channel.close out
+}
+let first = match Channel.recv items with
+    | Maybe.Some item -> Display.display (ref item)
+    | Maybe.None -> ""
+let second = match Channel.recv items with
+    | Maybe.Some item -> Display.display (ref item)
+    | Maybe.None -> ""
+$"{first} {second}"
+```
+
+実行結果:
+
+```text
+42 text
 ```
 
 要素の型が借用を持ちうる（関数値を含む）ときは、`Channel.send ch` のような部分適用や関数値にすることも `E1013`（`Channel.send must be fully applied directly when its item may hold a borrow, ...`。`try_send` では `Channel.try_send ...`）です。受け取った要素は借用を持たず、チャンネルを借りてもいません。要素の型が借用を持たないときの部分適用 `Channel.try_send ch` は、`ch` を借りる関数です（`ch` の有効範囲の外へは出せません。`E1013`）。
