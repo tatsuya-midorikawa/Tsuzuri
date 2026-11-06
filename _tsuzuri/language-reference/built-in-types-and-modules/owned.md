@@ -111,7 +111,7 @@ first + second
 
 所有関数値を借用で呼び出すので、関数値自体は消費されません。何度でも呼べます。
 
-`Owned.call (ref f) x` の結果が持つ借用は、`x` が貸すものだけです。所有関数値は借用を持たず、その本体は捕捉した値への参照を返せない（`E1013`）ので、結果は `f` を借用しません。結果は `f` を解放した後も使え、結果の関数値から別の `Owned.function` を作ることもできます。`Owned.call (ref f)` だけを部分適用した関数値は `f` を借用します。
+`Owned.call` を 2 つの引数に直接適用した呼び出し（`Owned.call (ref f) x`）と、パイプラインの `x |> Owned.call (ref f)` では、結果が持つ借用は `x` が貸すものだけです。所有関数値は借用を持たず、その本体は捕捉した値への参照を返せない（`E1013`）ので、結果は `f` を借用しません。結果は `f` を解放した後も使え、結果の関数値から別の `Owned.function` を作ることもできます。
 
 ```tsuzuri run=32
 let text = String.repeat 4 (ref "abcdefgh")
@@ -128,6 +128,21 @@ size ()
 
 ```text
 32
+```
+
+`Owned.call` から作った関数値を通して呼んだ結果は、`f` を借用したままです。`Owned.call (ref f)` だけを部分適用した関数値、`let c = Owned.call` のように値にした `Owned.call`、パイプラインの `ref f |> Owned.call` がこれにあたります。その結果を使い終わるまで、`f` は解放できません。上の例の `let size = …` を次のように書き換えると、`Owned.drop make` が `E1014` になります。
+
+```text
+let c = Owned.call
+let size = c (ref make) ()
+Owned.drop make
+size ()
+```
+
+コンパイル結果:
+
+```text
+error[E1014]: access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively
 ```
 
 ## Owned.drop による早期解放
@@ -293,6 +308,8 @@ error[E1013]: an owned function captures only owned values; a captured value hol
   note: value borrowed here
 ```
 
+ラムダをパイプラインで渡す形（`(\n -> size n) |> Owned.function`）も、ジェネリックな関数の中で書いた形も、message は同じ `a captured value holds a borrow` です。
+
 関数の引数の関数値は、呼び出し側の借用を持っているかもしれないので、`Owned.function` に渡せません（`E1013`）。後で実行する仕事を受け取る関数は、引数の型を `own Owned.Function<…>` にして、呼び出し側で `Owned.function` を作ります。
 
 ```text
@@ -379,7 +396,7 @@ error[E1005]: cannot capture Owned.Function<i64, i64> in a reusable function; fu
 - `Owned.function` で生成し、`Owned.call` で借用経由で実行します。
 - ラムダは呼び出しの位置に直接書き、引数は 1 つです。本体は捕捉値を借用するだけで、ムーブはできません。
 - 渡す関数値も、直接書いたラムダが捕捉する関数値も、借用を持てません。関数の引数で受け取るときは `own Owned.Function<…>` にします（`E1013`）。
-- `Owned.call` の結果は、第 2 引数が貸す借用だけを持ち、所有関数値を借用しません。
+- `Owned.call` を 2 つの引数に直接適用した結果（`Owned.call (ref f) x`・`x |> Owned.call (ref f)`）は、第 2 引数が貸す借用だけを持ち、所有関数値を借用しません。`Owned.call` から作った関数値を通して呼んだ結果は、所有関数値を借用します。
 - `Owned.drop` を用いることで、スコープ終端を待たずに所有値を早期解放できます。
 
 ## 関連項目

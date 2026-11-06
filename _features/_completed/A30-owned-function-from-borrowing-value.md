@@ -289,3 +289,22 @@ def main :: unit -> i32 = \() ->
 
 - 結果の loan を外すのは `Owned.call` を組み込み関数として直接呼ぶ（またはパイプラインで最後まで適用する）ときだけ。`let c = Owned.call` のように関数値にしてから呼ぶ形は今までどおり第 1 引数の loan を結果に入れる（保守的な誤検出が残るだけで、健全性は変わらない）。
 - 第 1 引数が呼び出し側の `ref Owned.Function` の引数でも同じ。結果の型が参照を含み、loan がなければ、今までどおり静的なデータへの loan になる。
+
+2 巡目（検証者の 2 件の nit）:
+
+1. **ジェネリックな本体の実体で、パイプラインで渡したラムダの message が `this function value holds a borrow` になる。** `fn later x = Routine.go ((\() -> { let _y = x; () }) |> Owned.function)` を `'t = unit -> unit`（借用を持つ `g`）で使う形が `this function value` だった。同じ形をジェネリックでない関数に書くと `a captured value holds a borrow`。パイプラインのラムダは所有のラムダではないので、持ち上げた関数の `owned_captures` は偽になる。
+   - テストを先に足した: `an_owned_lambda_in_a_generic_instance_reports_its_capture` に、この形が `a captured value holds a borrow` になることと、借用を持たない値（`later 3`）では受理されることを足した。修正前に失敗した（`left: "...this function value holds a borrow"`）。
+   - 修正: `owned_function_holds_borrow` は、関数の span が引数の span と等しい `E::Closure` もラムダとして扱う。`closures::lower` はラムダをその場で `E::Closure` に置き換え、持ち上げた関数の span は式の span なので、ソースでラムダだった引数はこの条件を満たす。`let rec` の名前が `E::Closure` になるのは群の本体の中だけで（`closures_rec.rs` の `rewrite`）、その span は名前の位置で、関数の span（束縛の右辺）の内側にあるので等しくならない。`CheckedFunction` に印を足す方法は、`CheckedFunction` を作る 10 か所すべてを変えるので採らなかった。
+   - 修正後の evidence（dev バイナリ）: 上の形は `2:26: error[E1013]: ... a captured value holds a borrow`。直接書く形（`Owned.function (\() -> …)`）、ジェネリックでないパイプライン（`(\() -> g ()) |> Owned.function`）も同じ message。`let rec h` の本体の中の `Owned.function h` は、ジェネリックでない関数でもジェネリックな関数でも `this function value holds a borrow` のまま。
+   - 文書: `owned.md` の「捕捉できるのは所有値だけ」に、パイプラインの形とジェネリックな関数の中の形も同じ message だと 1 文足した（`(\n -> size n) |> Owned.function` の出力を確認）。`docs/architecture.md` の message の選び方を直した。
+2. **`Owned.call` の結果が所有関数値を借用しない、という文書に条件がない。** 借用が外れるのは、`Owned.call` を 2 つの引数に直接適用したとき（`Owned.call (ref f) x`、`(Owned.call (ref f)) x` も同じ）と `x |> Owned.call (ref f)` のときだけ。dev バイナリで、`make` がコピーを捕捉したクロージャを返し、その後 `Owned.drop make` する形を確かめた。直接適用・パイプライン・括弧付きの形は `32` を出力する。`let c = Owned.call; c (ref make) ()`・`(ref make |> Owned.call) ()`・`let p = Owned.call (ref make); p ()`・`() |> (ref make |> Owned.call)` は `Owned.drop make` で `E1014` になる。
+   - `owned.md` の「Owned.call による借用呼び出し」の段落を、直接適用とパイプラインの場合に限った。その後に、`Owned.call` から作った関数値を通した結果は `f` を借用したままだという段落と、`let c = Owned.call` の形の `E1014` の例（コンパイル結果つき）を足した。まとめの行も直した。`docs/language.md` の `Owned.function` の項と `Owned.call` の表の行、`_features/README.md` の A30 の行も同じ条件にした。
+
+検証（2 巡目）:
+
+- T0: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` 成功。
+- `cargo test --locked --test tzroutine`: 21 件成功。
+- T1: `cargo nextest run --locked` 2938 件成功（4 skipped）。
+- `node tests/tzroutine.mjs target/debug/tsuzuri`: 163 runs passed。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs owned.md`: 1 page, 7 links, 7 checked examples, 14 native runs（O0/O3）。`check-cli-docs`（4 checks, 0 failed）・`check-guide-lite`（88 references, 0 failed）。
+- 生成コードは変えていない（診断の message の選び方だけ）。

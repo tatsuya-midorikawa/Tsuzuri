@@ -315,6 +315,19 @@ fn an_owned_lambda_in_a_generic_instance_reports_its_capture() {
         error.message,
         "an owned function captures only owned values; a captured value holds a borrow"
     );
+    // A lambda piped into `Owned.function` is an ordinary lambda, lifted the same way; the message
+    // follows the source form, as it does outside a generic body.
+    let piped = "def later :: (Send<'t>, Copy<'t>) => own 't -> unit\nfn later x = Routine.go ((\\() -> { let _y = x; () }) |> Owned.function)\n\n";
+    let error = analyze(&format!("{piped}{BORROWING_G}    later g\n\nspawn 4\n0\n"))
+        .expect_err("the piped lambda captures a borrowing function value");
+    assert_eq!(error.code, "E1013", "{}", error.message);
+    assert_eq!(error.kind, Some("owned_function_captures_reference"));
+    assert_eq!(
+        error.message,
+        "an owned function captures only owned values; a captured value holds a borrow"
+    );
+    // The same instance with a value that holds no borrow is accepted.
+    accepts(&format!("{piped}later 3\n0\n"));
     // A `let rec` function is a function value, not a lambda written in place, also when it is
     // lifted.
     rejects_a_borrowing_owned_function(&format!(
