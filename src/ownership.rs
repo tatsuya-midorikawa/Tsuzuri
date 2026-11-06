@@ -3529,8 +3529,7 @@ impl<'a> Checker<'a, '_> {
                 // The reference of `OnceValue.get` points into the cell, never into what its
                 // initializer borrowed: that was checked above to stay out of the cell.
                 None if kept && index == 1 => {}
-                // A28: the callee's body never puts this argument in its result. The argument
-                // stays lent until the call returns (it is on `held`).
+                // A28: `Rc.share` and its kin hold what the borrowed owner holds.
                 None if index == 0 && read_through => {
                     // A borrowed temporary's value already has only what the temporary holds.
                     let loans = if matches!(argument.kind, E::BorrowOperand(_)) {
@@ -3540,6 +3539,8 @@ impl<'a> Checker<'a, '_> {
                     };
                     current.loans.extend(loans);
                 }
+                // A28: the callee's body never puts this argument in its result. The argument
+                // stays lent until the call returns (it is on `held`).
                 None if retention.is_some_and(|boundary| index < boundary)
                     && known.is_some_and(|id| self.facts.temporary(id, index)) => {}
                 None => current.loans.extend(&value.loans),

@@ -260,14 +260,11 @@ tzroutine {
 - 理由: 誤って拒否されていたものが受理されれば、その kind は出なくなる。kind の名前の整理は別の問題。
 - 状態: 既定案。
 
-### D3: 可変スライスと排他参照への書き込みは、書き込む値の借用を書き込み先の持ち主に残す（レビューの後に追加）
+### D3: 本体が排他借用を呼び出しへ渡す関数は、事実も読み通しも使わない（3 回目のレビュー対応で決定）
 
-- 決定: `Array.write`・`Vec.push_mut`・`SyncMap.__replace` と、参照先が借用を持ちうる `ref mut` 引数を持つ std の関数（`Array.set`・`Array.fill`・`Array.blit`・`Vec.copy_to*` など）の呼び出しは、`values[i] = v` と同じく、書き込む値の loan を書き込み先の持ち主へ足す。std の関数の契約は特殊化ごとにコンパイラーが与える（`closures::derive_store_slots`）。2 回目のレビューの後は、型変数の値の引数（`own 'a`）が参照に具体化されても書き込みうる値とし、`MatrixView` の書き込み関数と、型変数を含む `ref mut` の先へ書き込む利用者の generic な関数の具体化にも同じ契約を与える。
-- 理由: これは A28 より前からの穴（1 つの関数の中で `Array.write` した借用する関数が、借用元のムーブ・解放の後に呼べる）で、A28 の事実と読み通しは callee の本文の loan の追跡を信頼するので、塞がなければ A28 が関数の境界を越えて穴を広げる（基準が拒否していた解放後の読み出しを受理する）。健全性はこのチケットの前提。
-- 代償（2 回目のレビューの後の、出荷する形）: 要素の型が借用を持ちうる（関数・参照）ときだけ、次が新たに拒否される。
-  - 健全でないので拒否するもの: 書き込んだ借用の借用元を、書き込み先の配列（`MatrixView.Mut` の窓の配列を含む）が生きている間にムーブ・変更する（`E1014`/`borrow_conflict`）、配列より先に解放する（`E1013`/`assignment_extends_borrow`・`borrow_outlives_block`）。基準はこれらを受理し、解放後の値を読みました。
-  - 健全だが拒否するもの: 型変数を持たない利用者の関数が自分の `ref mut` 引数の先へ借用を持つ値を書く（`fn put f target = Array.write 0 f target` を `own (unit -> i64) -> ref mut [(unit -> i64)..]` で宣言、`E1013`/`store_region_unnamed`。`target[i] = v` は以前から同じ。generic に `own 'a -> ref mut ['a..]` と書けば通ります）。書き込む関数（`Array.write` などの組み込み関数、std の書き込み関数、`MatrixView` の書き込み関数、利用者の generic な書き込み関数）の部分適用・関数値（書き込む値が借用を持たなくても `E1013`/`region_callback_stores_exclusive_input`。直接の完全適用とそれを完成させるパイプラインは通ります）。関数を要素に持つ `Array.sort_in_place_with`・`sort_in_place_by`（と `Vec.sort_with`）は基準でも std の中で `E1013`/`E1014` で、診断が 1 つ増えます（`self_referential_store`）。
-  - 1 回目の修正で std の中の拒否になっていた `Array.set`・`Array.fill` の参照の要素、`MatrixView.write`・`fill`・`copy_from`・`map_in_place` の関数・参照の要素、generic な利用者の書き込み関数の関数・参照の具体化、書き込み先から読んだ要素の書き戻しは、2 回目の修正で受理に戻りました（基準と同じ値）。std・`examples/`・`tests/fixtures/` には新たな拒否は現れません（手順 5）。
+- 決定: `retained_parameters` は、本体が排他参照に届く型の引数（`ref mut values`、`ref mut` の引数、それを持つ値）を呼び出しへ渡す関数に事実を与えない（結果はすべての引数の借用を持つ）。そうした本体では `Rc`／`Arc` の `share`・`downgrade`・`upgrade` も読み通さない。特殊化した本文と抽象本文の両方に適用する。`Array.write` などの書き込みの追跡は、A30 の先端のまま変えない。
+- 理由: 所有権検査は `Array.write`（とそれで書き込む std の関数）と `SyncMap.__replace` が書き込む値の借用を書き込み先の持ち主に残さない（A28 より前からの穴、[A31](../A31-in-place-writes-keep-stored-borrows.md)）。A28 の事実と読み通しは本文の結果の loan を信頼するので、そのままでは穴を関数の境界の外へ広げる。これらの書き込み関数はどれも書き込み先を排他借用の引数で受け取るので、排他借用を呼び出しへ渡さない本文の結果の loan は完全で、渡す本文を A28 より前の規則に戻せば、A28 は基準が受理するプログラムを変えず、基準が拒否する危険なプログラムを受理しない。
+- 取り下げた案: 1〜2 回目の対応では、書き込みを追跡して穴そのものを塞ぎました（書き込み関数に region の契約を与える。旧 D3）。どの回も基準が受理する安全なプログラムを拒否し、A28 の承認（誤った拒否を受理に変えるだけ）を超えるので、オーケストレーターの判断で全部を取り下げ、穴は A31 に分けました。拒否した形の一覧は A31 の「落とし穴」にあります。
 - 状態: 実装済み（オーケストレーターの判断、2026-11-06）。
 
 ## 実装と検証（2026-11-06）
@@ -361,6 +358,8 @@ A30 のブランチ（`fix/a30-owned-function-borrow`、`03cb108e`）の上に�
 
 #### 1. 重大: in-place の書き込みが格納した値の借用を残さない（以前からの穴を A28 が広げた）
 
+（この項の書き込みの追跡は 3 回目の対応で取り下げました。下の「3 回目の対応」を見てください。）
+
 - 再現: レビューの `stash`/`leak`（`Array.write 0 (\() -> String.length text) (ref mut arr)` の後に `arr[0]` を返す）は、基準で `E1013`/`borrow_outlives_block`、修正前の A28 で受理（実行すると解放後の `text` を読み、9 ではなく 0）。`Rc.share (ref arr[0])` の形も同じ。1 つの関数の中の穴（`Array.write` の後に `text` をムーブして `arr[0] ()`）は、基準でも受理でした。
 - 原因: `region_slots.writes` を持つのは `Vec.push_mut` の生成関数だけで、`Array.write` と、それを通して書く std の関数（`Array.set`・`Array.fill`・`Array.blit`・`Vec.copy_to*` など）は、書き込み先の持ち主へ格納した値の loan を足していませんでした。A28 以前は、呼び出し側がすべての引数の loan を結果に残す規則がこれを関数の境界で隠していました。
 - 対応（根本原因）:
@@ -371,7 +370,7 @@ A30 のブランチ（`fix/a30-owned-function-borrow`、`03cb108e`）の上に�
   - 借用した一時値（`BorrowOperand`）の値は一時値が持つ loan そのものなので、参照先の loan としてそのまま扱います（`Array.blit 0 0 1 [\() -> ...] (ref mut arr)` の穴）。
 - テスト: `tests/mutable_slices.rs` `in_place_writes_keep_the_borrows_that_they_store`（`Array.write`・スライス・`Array.set`・`Array.fill`・`Array.blit`（一時値も）・`Vec.copy_to`・`Vec.copy_to_at`・パイプライン・`ref mut` の束縛経由で `text` のムーブが `E1014`、`ref string` の要素、`stash` の 4 形と 1 つの関数の 4 形が `E1013`/`borrow_outlives_block`、利用者の関数の格納が `store_region_unnamed`、関数を要素に持つ std の書き込み関数とパイプラインの受理）、`tests/rc.rs` `a_share_of_an_element_holds_what_was_written_in`（読み通しの形）。
 - 証拠（修正後）: `stash`/`leak` は `E1013`/`borrow_outlives_block`（9:5、基準と同じ）、読み通しの形は 7:5 で同じ。1 つの関数の穴は `E1014`/`borrow_conflict`。関数を要素に持つ `Array.set`・`fill`・`blit`・`random_shuffle_in_place_*`・`Vec.copy_to*`・`Vec.reverse`・`Vec.remove_all` を使うプログラムは受理され、`-O0`・`-O3` で基準と同じ 1024。
-- 判断（決定事項の D3）: 以前からの穴（基準でも受理していた解放後の読み出し）を塞ぎます。A28 の事実はこの追跡に依存するので、塞がなければ A28 が穴を広げます。代わりに次のプログラムが新たに拒否されます。どれも要素の型が借用を持ちうる（関数・参照）ときだけで、std・`examples/`・`tests/fixtures/` には現れません（手順 5）。
+- 判断（旧 D3。3 回目の対応で取り下げ、穴は A31 に分けました）: 以前からの穴（基準でも受理していた解放後の読み出し）を塞ぎます。A28 の事実はこの追跡に依存するので、塞がなければ A28 が穴を広げます。代わりに次のプログラムが新たに拒否されます。どれも要素の型が借用を持ちうる（関数・参照）ときだけで、std・`examples/`・`tests/fixtures/` には現れません（手順 5）。
   - 利用者の関数が、自分の `ref mut` 引数の先へ、借用を持つ値を `Array.write` で書く（`fn put f target = Array.write 0 f target`）: `E1013`/`store_region_unnamed`。同じ関数を `target[0] = f` で書くと基準でも同じ診断です。
   - 関数を要素に持つ std の書き込み関数の部分適用・関数値: `E1013`/`region_callback_stores_exclusive_input`（`Vec.push_mut` と同じ）。
   - 関数を要素に持つ `Array.sort_in_place_with`・`sort_in_place_by`（と `Vec.sort_with`）は基準でも std の中で `E1013`/`E1014` で、診断が 1 つ増えます（`self_referential_store`）。
@@ -428,6 +427,8 @@ A30 のブランチ（`fix/a30-owned-function-borrow`、`03cb108e`）の上に�
 - `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs`（lambda-expressions.md・lifetimes.md・rc.md・borrowing.md・tzroutine.md）: 5 pages、142 links、56 examples、106 native runs ok（lifetimes.md は最後の変更の後にもう一度: 1 page、11 links、6 examples、12 native runs ok）。`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`: 19 blocks、0 stale。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-cli-docs.mjs`: 4 checks、0 failed。`node scripts/check-guide-lite.mjs`: 88 references、0 failed。
 
 #### 2 回目の対応（検証者の判定の新しい問題 2 件と、前回の懸念 1 件）
+
+（この回の派生の契約も 3 回目の対応で取り下げました。）
 
 先に `fix/a30-owned-function-borrow` の最新（`36196cd6`）をマージし、A30 のバイナリを作り直して基準にしました。前回の修正（D3）が新たに拒否していた、健全なプログラムを受理に戻しました。証拠のプログラムは `target/scratch/r2/`（作業の後に削除）に書き、基準と、この修正の前のブランチで再現してから直しました。
 
