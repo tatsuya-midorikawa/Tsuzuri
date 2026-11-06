@@ -106,7 +106,7 @@ String.length (ref s)     // E1012: use of moved or partially moved value 's'
 
 複数の tzroutine で値を共有するときは、[Arc](../built-in-types-and-modules/rc.md) を tzroutine ごとに `Arc.share` して渡し、書き換える値は [Atomic](../built-in-types-and-modules/atomic.md) か [Mutex](../built-in-types-and-modules/mutex.md) に入れます。本体の中では、本体の値（持ち込んだ値を含む）を自由に `ref` で借用できます。本体が使わなかった捕捉は、本体の終わりに 1 回だけ drop されます。
 
-`Arc.share (ref shared)` の結果は新しい所有者で、`shared` の借用ではありません。そのため関数の `Arc` も、tzroutine ごとに `Arc.share` して渡せます。関数が借用を捕捉しているときは、その借用を `Arc.share` の結果も持つので、捕捉は `E1013` のままです（[所有者を増やした値の借用](../built-in-types-and-modules/rc.md#所有者を増やした値の借用)）。
+`Arc.share (ref shared)` の結果は新しい所有者で、`shared` の借用ではありません。そのため関数の `Arc` も、tzroutine ごとに `Arc.share` して渡せます。関数が借用を捕捉しているときは、その借用を `Arc.share` の結果も持つので、捕捉は `E1013` のままです。また、`shared` が関数の引数やラムダの捕捉（その値を受け取った局所値を含む）のときは、結果が `shared` の借用を持つので、その共有を捕捉する tzroutine も `E1013` です（[所有者を増やした値の借用](../built-in-types-and-modules/rc.md#所有者を増やした値の借用)）。次の例のように、tzroutine を起動する本文で `Arc.new` した値を共有します。
 
 ```tsuzuri run=4
 let shared = Arc.new (\value -> value + 1)

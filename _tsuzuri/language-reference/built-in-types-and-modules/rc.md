@@ -173,7 +173,17 @@ even=2450 odd=2500 owners=1
 
 ## 所有者を増やした値の借用
 
-`Rc.share`・`Rc.downgrade`・`Rc.upgrade`（`Arc` も同じ）の結果は、ブロックの新しい所有者（弱参照）です。引数の `ref shared` の借用は呼び出しの間だけで、結果は `shared` を借用しません。結果が借用を持つのは、ブロックの値が持つ借用（借用を捕捉した関数など）だけです。そのため結果を持ったまま `shared` をムーブ・解放でき、関数から結果を返せます。`Rc.get (ref shared)` や `ref shared` が生きている間も、結果をムーブできます。パイプライン `ref shared |> Rc.share` も同じです。`Rc.get` の結果は `shared` が指すブロックへの参照なので、`shared` の借用のままです。ただし、本体が排他借用（`ref mut values`、`ref mut` の引数、それを持つ値）を呼び出しへ渡す関数の中（その中で作るラムダの本体を含む）では、`Array.write` などが書き込んだ借用を追跡できないので、結果は `shared` の借用を持ちます（[現在の制限](../ownership-and-memory/lifetimes.md#現在の制限)）。
+`Rc.share`・`Rc.downgrade`・`Rc.upgrade`（`Arc` も同じ）の結果は、ブロックの新しい所有者（弱参照）です。引数の `ref shared` の借用は呼び出しの間だけで、結果は `shared` を借用しません。結果が借用を持つのは、ブロックの値が持つ借用（借用を捕捉した関数など）だけです。そのため結果を持ったまま `shared` をムーブ・解放でき、関数から結果を返せます。`Rc.get (ref shared)` や `ref shared` が生きている間も、結果をムーブできます。パイプライン `ref shared |> Rc.share` も同じです。`Rc.get` の結果は `shared` が指すブロックへの参照なので、`shared` の借用のままです。ただし、次の 2 つの場合、結果は `shared` の借用を持ちます。どちらも、`Array.write` などが書き込んだ借用を追跡できない（[現在の制限](../ownership-and-memory/lifetimes.md#現在の制限)）ので、`shared` の値が持つ借用が見えているとは限らないためです。
+
+- `shared` の値が呼び出し元から来たもので、借用を持ちうる型のとき: 関数の引数、ラムダが捕捉した値、それらの値を受け取った局所値（`let a = arr`）や、その要素・フィールド（`ref arr[0]`）。引数の値が持つ借用は呼び出し元の値が持つものを表し、呼び出し元が書き込んだ借用を含まないことがあります。
+- 本体が排他借用（`ref mut values`、`ref mut` の引数、それを持つ値）を呼び出しへ渡す関数の中（その中で作るラムダの本体を含む）。
+
+そのため次の `again` は、`shared` の借用を返すので `E1013` です（A28 より前と同じ）。関数の中で `Rc.new` した値の共有（次の例）は返せます。
+
+```text
+def again :: own Rc<i64 -> i64> -> Rc<i64 -> i64>
+fn again shared = Rc.share (ref shared)   // E1013: 結果は shared の借用を持つ
+```
 
 ```tsuzuri run=42
 let shared = Rc.new (\value -> value + 1)
