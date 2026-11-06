@@ -255,6 +255,61 @@ fn a_pipeline_that_completes_a_call_uses_its_facts() {
     );
 }
 
+/// A28, Copilot's review of #100: `x |> f` into a unary `f` completes `f x` as well, so it uses
+/// the facts of `f` with no argument bound before the piped one, and keeps every guard of the
+/// call. Each program is checked in both forms with the same result.
+#[test]
+fn a_pipeline_into_a_unary_function_uses_its_facts() {
+    const PASS: &str = "def pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn pass _key f = f\ndef make :: ref i64 -> (unit -> i64)\nfn make key = pass key (\\() -> 42)\n";
+    let both = |source: &str, direct: &str, piped: &str| {
+        assert!(source.contains(direct), "{source}");
+        [source.to_owned(), source.replace(direct, piped)]
+    };
+    for source in both(
+        &format!(
+            "{PASS}def wrap :: own i64 -> (unit -> i64)\nfn wrap key = make (ref key)\nlet g = wrap 1\ng ()"
+        ),
+        "make (ref key)",
+        "ref key |> make",
+    ) {
+        accepts(&source);
+    }
+    const KEEP: &str =
+        "def keep :: ref string -> (unit -> i64)\nfn keep text = \\() -> String.length text\n";
+    const MARK: &str =
+        "def mark :: ref mut (unit -> i64) -> unit\nfn mark r = deref r = \\() -> 2\n";
+    for (source, direct, piped) in [
+        // keep_leak: the result captures the reference.
+        (
+            format!(
+                "{KEEP}def leak :: own string -> (unit -> i64)\nfn leak text = keep (ref text)\n0"
+            ),
+            "keep (ref text)",
+            "ref text |> keep",
+        ),
+        // A body that lends a way to write has no facts (`lending_bodies`).
+        (
+            format!(
+                "{MARK}def make :: ref string -> (unit -> i64)\nfn make _text =\n    let mut g = \\() -> 0\n    mark (ref mut g)\n    g\ndef leak :: own string -> (unit -> i64)\nfn leak text = make (ref text)\n0"
+            ),
+            "make (ref text)",
+            "ref text |> make",
+        ),
+        // A program with an untracked store of a value that may hold loans has no facts.
+        (
+            format!(
+                "{PASS}def wrap :: own i64 -> (unit -> i64)\nfn wrap key = make (ref key)\nlet mut arr = [\\() -> 0]\nArray.write 0 (\\() -> 1) (ref mut arr)\nlet g = wrap 1\ng ()"
+            ),
+            "make (ref key)",
+            "ref key |> make",
+        ),
+    ] {
+        for source in both(&source, direct, piped) {
+            rejects_with_kind(&source, "E1013", "task_result_retains_borrow");
+        }
+    }
+}
+
 /// A28 review: in the abstract body of a generic function, a value of type `'v` has no loans,
 /// although an instance whose `'v` is a function holds there what the argument lends. The facts
 /// of the inference keep every argument of such a body, so `g` needs `Copy<'a>` as before A28:

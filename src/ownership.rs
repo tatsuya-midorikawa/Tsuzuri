@@ -798,6 +798,15 @@ fn retention_eligible(module: &CheckedModule, id: usize) -> bool {
         && !module.user_drops.values().any(|drop| *drop == id)
 }
 
+/// The callee and the arguments that the right side of a pipeline, `x |> right`, applies before
+/// the piped one: those of `f a` in `x |> f a`, and none for a bare `f` in `x |> f`.
+fn piped_application(right: &TypedExpr) -> (&TypedExpr, &[TypedExpr]) {
+    match &right.kind {
+        E::Call(callee, arguments) => (callee, arguments),
+        _ => (right, &[]),
+    }
+}
+
 /// The function that a call's callee names directly.
 fn direct_callee(callee: &TypedExpr) -> Option<usize> {
     match callee.kind {
@@ -855,18 +864,19 @@ fn parameter_retention_within(
     }
     let types = module.types();
     // The complete direct calls whose results may hold loans and are not proven closed, and the
-    // pipelines that complete one (`f |> pass (ref key)`).
+    // pipelines that complete one (`f |> pass (ref key)`, and `ref key |> make` into a unary
+    // function, which binds no argument before the piped one).
     let mut callers: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     let mut callees: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     for (caller, function) in module.functions.iter().enumerate() {
         let mut pending = vec![&function.body];
         while let Some(expression) = pending.pop() {
             let call = match &expression.kind {
-                E::Call(callee, arguments) => Some((callee, arguments.len())),
-                E::Binary(BinaryOp::Pipe, _, right) => match &right.kind {
-                    E::Call(callee, arguments) => Some((callee, arguments.len() + 1)),
-                    _ => None,
-                },
+                E::Call(callee, arguments) => Some((&**callee, arguments.len())),
+                E::Binary(BinaryOp::Pipe, _, right) => {
+                    let (callee, arguments) = piped_application(right);
+                    Some((callee, arguments.len() + 1))
+                }
                 _ => None,
             };
             if let Some((callee, arguments)) = call
@@ -2237,11 +2247,9 @@ impl<'a> Checker<'a, '_> {
 
     /// A28: the function whose call the pipeline `expression`, `x |> right`, completes, when its
     /// facts decide the loans of the result: `right` applies a function that has facts to all its
-    /// arguments but the last.
+    /// arguments but the last, or is a unary function itself (`ref key |> make`).
     fn piped_callee(&self, expression: &TypedExpr, right: &TypedExpr) -> Option<usize> {
-        let E::Call(callee, arguments) = &right.kind else {
-            return None;
-        };
+        let (callee, arguments) = piped_application(right);
         let id = direct_callee(callee)?;
         (retention_eligible(self.module, id)
             && arguments.len() + 1 == self.module.functions[id].parameters.len()
@@ -2250,18 +2258,16 @@ impl<'a> Checker<'a, '_> {
     }
 
     /// The loans that `right`, the partial application of function `id` that a pipeline
-    /// completes, passes to the result of the call: those of the callee and of each argument that
-    /// the facts of `id` do not show to be temporary. Each argument is evaluated, and stays lent
-    /// while the next ones are, as in `eval_call`.
+    /// completes (or the unary function itself), passes to the result of the call: those of the
+    /// callee and of each argument that the facts of `id` do not show to be temporary. Each
+    /// argument is evaluated, and stays lent while the next ones are, as in `eval_call`.
     fn eval_piped_arguments(
         &mut self,
         id: usize,
         right: &TypedExpr,
         live: &BTreeSet<usize>,
     ) -> Result<Value, Diagnostic> {
-        let E::Call(callee, arguments) = &right.kind else {
-            unreachable!("piped_callee takes calls")
-        };
+        let (callee, arguments) = piped_application(right);
         let mut during = live.clone();
         uses(right, &mut during);
         let start = self.held.len();
@@ -4898,8 +4904,8 @@ impl<'a> Checker<'a, '_> {
                     return Err(self.owned_function_holds_borrow(left, &value, &expression.ty));
                 }
                 self.held.push(value.clone());
-                // A28: `x |> f a` completes `f a x`, so the facts of `f` select its arguments'
-                // loans as in `eval_call`.
+                // A28: `x |> f a` completes `f a x`, and `x |> f` into a unary `f` completes
+                // `f x`, so the facts of `f` select its arguments' loans as in `eval_call`.
                 let completed = (*operator == BinaryOp::Pipe)
                     .then(|| self.piped_callee(expression, right))
                     .flatten();
@@ -4920,10 +4926,7 @@ impl<'a> Checker<'a, '_> {
                         if arguments.len() == 1
                             && self.builtin_called(inner) == Some(crate::check::Builtin::OwnedCall));
                     if let Some(id) = completed {
-                        let piped = match &right.kind {
-                            E::Call(_, arguments) => arguments.len(),
-                            _ => 0,
-                        };
+                        let piped = piped_application(right).1.len();
                         if self.facts.closed[id] {
                             result.loans.clear();
                         } else if self.facts.temporary(id, piped) {

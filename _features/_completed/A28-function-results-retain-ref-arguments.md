@@ -539,3 +539,10 @@ A30 のブランチ（`fix/a30-owned-function-borrow`、`03cb108e`）の上に�
 - 手順 5（基準 = A30 の先端）: この木の `tests/fixtures/*` と `examples/*` の 176 個のディレクトリの `check --json`（終了コードを含む）と `build --no-cache --emit llvm`（基準で 148 件が IR を出力）は、A28 が関数を足した `hash_map`・`rc`・`tzroutine` だけが違い（基準は拒否、このブランチは受理）、ほかの 173 個は一致。その 3 つの IR は 2 回の生成で一致。
 - 実行したコマンド: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`: ok。`cargo nextest run --locked`: 2961 passed（8 slow）、4 skipped。`node tests/features.mjs target/debug/tsuzuri hash_map`: 199 cases、`rc`: 39、`tzroutine`: 16。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs`（`lifetimes.md`・`rc.md`・`lambda-expressions.md`・`drop.md`）: 4 pages、75 links、29 examples、58 native runs ok。`node scripts/check-guide-lite.mjs`: 88 references、0 failed。
 - 文書: `lifetimes.md`・`lambda-expressions.md`（2 つの規則はプログラムに追跡されない借用の格納が無いときだけ、A31 との関係、局所の除外は念のため残すもの）、`rc.md`（結果が `shared` の借用を持つ場合の 1 つめ）、`drop.md`（プログラム全体の条件を先に書き、例を関数値を呼ぶ `Drop.drop` に変えた。`drop` が何もしなければ受理）、`docs/language.md`（プログラム全体の条件の箇条、`Rc / Arc` の結果の借用の除外）、`docs/architecture.md`（`untracked_loan_store` の実装）、このチケットの D3、`_features/README.md` の A28 の行、A31 の手順 4。
+
+#### Copilot のレビュー（#100）への対応
+
+- 指摘（`src/ownership.rs` の `piped_callee`）: 1 引数の名前付き関数へのパイプライン `x |> f` も `f x` の完全な直接呼び出しですが、右が `E::Call` でない（関数そのもの）ときは事実を使っていませんでした。`pass _key f = f`、`make key = pass key (\() -> 42)` で、`make (ref key)` は `key` を借用しない関数を返すのに、`ref key |> make` は借用を持ち、`wrap` から返すと `E1013`/`task_result_retains_borrow` でした（このブランチのバイナリで再現）。
+- 対応: `piped_application` が、パイプラインの右から callee と先に束縛した引数を取り出します（`f a` なら `f` と `[a]`、裸の `f` なら `f` と `[]`）。`parameter_retention_within` の呼び出しの収集と、`piped_callee`・`eval_piped_arguments`・パイプラインの評価の `piped` がこれを使うので、`x |> f` は束縛した引数が 0 個の場合として `f x` と同じ事実（とその除外: プログラム全体の追跡されない格納、書き込める場所を渡す本体、見えない呼び出し、破棄、読み通しの制限）を使います。2 引数以上の関数への `x |> f` は部分適用なので、今までどおり事実を使わず、借用を持ちます。
+- テスト: `tests/currying.rs` `a_pipeline_into_a_unary_function_uses_its_facts`（直接の形とパイプライン形が同じ結果: `make` の受理、`keep_leak`・書き込める場所を渡す本体・`Array.write` のあるプログラムの `E1013`/`task_result_retains_borrow`）。
+- 文書: `docs/language.md` と `lifetimes.md` の「それを完成させるパイプライン」に `x |> f`（1 引数の関数）を足した。
