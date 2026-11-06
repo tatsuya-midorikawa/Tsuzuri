@@ -1,11 +1,13 @@
 // The regex cases of the `regex` suite in tests/features.mjs: the single source of truth for the patterns
 // and inputs of tests/fixtures/regex/Cases.tz, which `node tests/regex-cases.mjs --write` regenerates.
 // Expected values are computed here with V8 (`u` flag) or written by hand from the D09 specification;
-// tests/features.mjs never copies the compiler's output.
+// tests/features.mjs never copies the compiler's output. The V8 ones are committed in tests/regex-v8.mjs, which
+// `--write` rewrites too and so needs a Node with std's Unicode version (G38, tests/pinned-unicode.mjs).
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { casesWithReferences, isScript, referencesSource, requirePinnedNode, v8CasesOf } from "./pinned-unicode.mjs";
 
 // JavaScript spellings of the constructs whose meaning differs from V8's.
 const W = "[\\p{Alphabetic}\\p{M}\\p{Nd}\\p{Pc}\\p{Join_Control}]";
@@ -330,6 +332,8 @@ export function casesSource() {
 }
 
 export const casesPath = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/regex/Cases.tz");
+export const v8Path = resolve(dirname(fileURLToPath(import.meta.url)), "regex-v8.mjs");
+const WRITE = "node tests/regex-cases.mjs --write";
 
 // The hash of the fixture: mix h v = (h * 31 + v + 1) mod 1000000007.
 const MOD = 1000000007n;
@@ -339,6 +343,7 @@ const utf8 = (text) => [...Buffer.from(text, "utf8")];
 const byteOffset = (text, offset) => Buffer.byteLength(text.slice(0, offset), "utf8");
 const hashUnits = (hash, units) => units.reduce(mix, mix(hash, units.length));
 const span = ([first, last]) => BigInt(first) * 1000000n + BigInt(last);
+const hashRanges = (ranges) => ranges.reduce((hash, range) => mix(mix(hash, range[0]), range[1]), mix(0n, ranges.length));
 
 function jsRegex(item, extra) {
   return new RegExp(item.js ?? item.pattern, `u${item.flags ?? ""}${extra}`);
@@ -347,6 +352,14 @@ function jsRegex(item, extra) {
 function allMatches(item) {
   const re = jsRegex(item, "gd");
   return [...item.input.matchAll(re)];
+}
+
+// V8's first match at `offset`, as [first, last], or null.
+function findAt(item, offset) {
+  const re = jsRegex(item, "g");
+  re.lastIndex = offset;
+  const found = re.exec(item.input);
+  return found ? [found.index, found.index + found[0].length] : null;
 }
 
 function expand(replacement, groups) {
@@ -368,61 +381,62 @@ function expand(replacement, groups) {
 const scalarStart = (text, offset) => offset >= 0 && offset <= text.length
   && !(offset > 0 && offset < text.length && /[\uDC00-\uDFFF]/.test(text[offset]) && /[\uD800-\uDBFF]/.test(text[offset - 1]));
 
-export function expectedCases() {
+// V8's matches of a match case and what its expectations take from them.
+function matchFacts(item) {
+  const matches = allMatches(item);
+  const first = matches[0];
+  const firstSpan = first ? [first.index, first.index + first[0].length] : null;
+  const captures = first ? first.indices.map((range) => range ?? [-1, -1]) : null;
+  const ranges = matches.map((match) => [match.index, match.index + match[0].length]);
+  const pieces = [];
+  let start = 0;
+  for (const [first, last] of ranges) { pieces.push(item.input.slice(start, first)); start = last; }
+  pieces.push(item.input.slice(start));
+  let replaced = "";
+  start = 0;
+  for (const match of matches) {
+    replaced += item.input.slice(start, match.index) + expand(item.replacement ?? "<${0}>", match);
+    start = match.index + match[0].length;
+  }
+  replaced += item.input.slice(start);
+  return { firstSpan, captures, ranges, pieces, replaced };
+}
+
+// The cases of the suite in order. An expectation that V8 computes is the case `v8(name, args, compute)`
+// (tests/pinned-unicode.mjs).
+function suiteCases(v8) {
   const cases = [];
   matchCases.forEach((item, which) => {
     const w = BigInt(which);
     const lone = /[\uD800-\uDFFF]/u.test(item.input.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ""));
-    const matches = allMatches(item);
-    const first = matches[0];
-    const firstSpan = first ? [first.index, first.index + first[0].length] : null;
-    const groups = first?.indices ?? [];
-    const captures = item.captures ?? (first ? groups.map((range) => range ?? [-1, -1]) : null);
-    const ranges = matches.map((match) => [match.index, match.index + match[0].length]);
-    const pieces = [];
-    let start = 0;
-    for (const [first, last] of ranges) { pieces.push(item.input.slice(start, first)); start = last; }
-    pieces.push(item.input.slice(start));
-    let replaced = "";
-    start = 0;
-    for (const match of matches) {
-      replaced += item.input.slice(start, match.index) + expand(item.replacement ?? "<${0}>", match);
-      start = match.index + match[0].length;
-    }
-    replaced += item.input.slice(start);
+    let facts;
+    const matched = () => (facts ??= matchFacts(item));
     const repeatGroups = item.captures !== undefined;
-    cases.push(["is_match16", [w], first ? 1 : 0]);
-    cases.push(["find16", [w], firstSpan ? span(firstSpan) : -1n]);
-    if (captures) cases.push(["captures16", [w], captures.reduce((hash, range) => mix(mix(hash, range[0]), range[1]), mix(0n, captures.length))]);
-    else cases.push(["captures16", [w], -1n]);
-    cases.push(["find_all16", [w], ranges.reduce((hash, range) => mix(mix(hash, range[0]), range[1]), mix(0n, ranges.length))]);
-    cases.push(["split16", [w], pieces.reduce((hash, piece) => hashUnits(hash, utf16(piece)), mix(0n, pieces.length))]);
-    if (!repeatGroups) cases.push(["replace16", [w], hashUnits(0n, utf16(replaced))]);
+    cases.push(v8("is_match16", [w], () => matched().firstSpan ? 1 : 0));
+    cases.push(v8("find16", [w], () => matched().firstSpan ? span(matched().firstSpan) : -1n));
+    if (repeatGroups) cases.push(["captures16", [w], hashRanges(item.captures)]);
+    else cases.push(v8("captures16", [w], () => matched().captures ? hashRanges(matched().captures) : -1n));
+    cases.push(v8("find_all16", [w], () => hashRanges(matched().ranges)));
+    cases.push(v8("split16", [w], () => matched().pieces.reduce((hash, piece) => hashUnits(hash, utf16(piece)), mix(0n, matched().pieces.length))));
+    if (!repeatGroups) cases.push(v8("replace16", [w], () => hashUnits(0n, utf16(matched().replaced))));
     for (const offset of item.starts ?? [0, 1]) {
-      let expected = -1n;
-      if (scalarStart(item.input, offset)) {
-        const re = jsRegex(item, "g");
-        re.lastIndex = offset;
-        const found = re.exec(item.input);
-        if (found) expected = span([found.index, found.index + found[0].length]);
-      }
-      cases.push(["find_at16", [w, BigInt(offset)], expected]);
+      if (!scalarStart(item.input, offset)) cases.push(["find_at16", [w, BigInt(offset)], -1n]);
+      else cases.push(v8("find_at16", [w, BigInt(offset)], () => { const found = findAt(item, offset); return found ? span(found) : -1n; }));
     }
     if (lone) return;
     const toBytes = ([first, last]) => [byteOffset(item.input, first), byteOffset(item.input, last)];
-    cases.push(["is_match8", [w], first ? 1 : 0]);
-    cases.push(["find8", [w], firstSpan ? span(toBytes(firstSpan)) : -1n]);
-    cases.push(["captures8", [w], captures ? captures.map((range) => range[0] < 0 ? range : toBytes(range)).reduce((hash, range) => mix(mix(hash, range[0]), range[1]), mix(0n, captures.length)) : -1n]);
-    cases.push(["find_all8", [w], ranges.map(toBytes).reduce((hash, range) => mix(mix(hash, range[0]), range[1]), mix(0n, ranges.length))]);
-    cases.push(["split8", [w], pieces.reduce((hash, piece) => hashUnits(hash, utf8(piece)), mix(0n, pieces.length))]);
-    if (!repeatGroups) cases.push(["replace8", [w], hashUnits(0n, utf8(replaced))]);
+    const bytesOfCaptures = (captures) => captures.map((range) => range[0] < 0 ? range : toBytes(range));
+    cases.push(v8("is_match8", [w], () => matched().firstSpan ? 1 : 0));
+    cases.push(v8("find8", [w], () => matched().firstSpan ? span(toBytes(matched().firstSpan)) : -1n));
+    if (repeatGroups) cases.push(["captures8", [w], hashRanges(bytesOfCaptures(item.captures))]);
+    else cases.push(v8("captures8", [w], () => matched().captures ? hashRanges(bytesOfCaptures(matched().captures)) : -1n));
+    cases.push(v8("find_all8", [w], () => hashRanges(matched().ranges.map(toBytes))));
+    cases.push(v8("split8", [w], () => matched().pieces.reduce((hash, piece) => hashUnits(hash, utf8(piece)), mix(0n, matched().pieces.length))));
+    if (!repeatGroups) cases.push(v8("replace8", [w], () => hashUnits(0n, utf8(matched().replaced))));
     for (const offset of item.starts ?? [0, 1]) {
       if (!scalarStart(item.input, offset)) continue;
-      const re = jsRegex(item, "g");
-      re.lastIndex = offset;
-      const found = re.exec(item.input);
       const bytes = byteOffset(item.input, offset);
-      cases.push(["find_at8", [w, BigInt(bytes)], found ? span(toBytes([found.index, found.index + found[0].length])) : -1n]);
+      cases.push(v8("find_at8", [w, BigInt(bytes)], () => { const found = findAt(item, offset); return found ? span(toBytes(found)) : -1n; }));
       // A byte offset inside a scalar is not a boundary.
       if (offset < item.input.length && item.input.codePointAt(offset) > 0x7f) cases.push(["find_at8", [w, BigInt(bytes + 1)], -1n]);
     }
@@ -451,25 +465,33 @@ export function expectedCases() {
     assert.ok(new RegExp(`^(?:${escaped})$`, "u").test(input), escaped);
     cases.push(["escape16", [BigInt(which)], hashUnits(0n, utf16(escaped))]);
   });
-  propertyNames.forEach((name, which) => {
-    let expected = -1n;
+  propertyNames.forEach((name, which) => cases.push(v8("property_hash", [BigInt(which)], () => {
     let re = null;
     try { re = new RegExp(`^\\p{${name}}$`, "u"); } catch { re = null; }
-    if (re && !["Greek"].includes(name)) {
-      const ranges = [];
-      for (let code = 0; code <= 0x10ffff; code++) {
-        const text = code >= 0xd800 && code <= 0xdfff ? String.fromCharCode(code) : String.fromCodePoint(code);
-        if (!re.test(text)) continue;
-        const last = ranges.at(-1);
-        if (last && last[1] + 1 === code) last[1] = code; else ranges.push([code, code]);
-      }
-      expected = ranges.reduce((hash, range) => mix(mix(hash, range[0]), range[1]), mix(0n, ranges.length));
+    if (!re || ["Greek"].includes(name)) return -1n;
+    const ranges = [];
+    for (let code = 0; code <= 0x10ffff; code++) {
+      const text = code >= 0xd800 && code <= 0xdfff ? String.fromCharCode(code) : String.fromCodePoint(code);
+      if (!re.test(text)) continue;
+      const last = ranges.at(-1);
+      if (last && last[1] + 1 === code) last[1] = code; else ranges.push([code, code]);
     }
-    cases.push(["property_hash", [BigInt(which)], expected]);
-  });
-  cases.push(["fold_orbit_hash", [], foldOrbitHash()]);
+    return hashRanges(ranges);
+  })));
+  cases.push(v8("fold_orbit_hash", [], foldOrbitHash));
   linearCases.forEach((_, which) => cases.push(["linear", [BigInt(which)], 1]));
   return cases;
+}
+
+/// The cases whose expectations V8 computes, in the order of the suite: what `--write` writes to tests/regex-v8.mjs.
+export function v8Cases() {
+  return v8CasesOf(suiteCases);
+}
+
+/// The cases of the suite with the V8 expectations of `references` (the `cases` of tests/regex-v8.mjs), which a
+/// Node with std's Unicode version first recomputes and compares.
+export function expectedCases(references) {
+  return casesWithReferences(suiteCases, references, "tests/regex-v8.mjs", WRITE, v8Cases);
 }
 
 // The orbits of simple case folding, as V8's `iu` matching sees them: every scalar that a case mapping
@@ -498,10 +520,16 @@ function foldOrbitHash() {
   return mix(hash, orbits);
 }
 
-if (process.argv.includes("--write")) {
+const main = isScript(import.meta.url);
+if (main && process.argv.includes("--write")) {
+  requirePinnedNode();
+  const cases = v8Cases();
+  const references = referencesSource(WRITE, "regex", cases);
   writeFileSync(casesPath, casesSource());
-  console.log(`wrote ${casesPath}`);
-} else if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  writeFileSync(v8Path, references);
+  console.log(`wrote ${casesPath} and ${v8Path}: ${cases.length} cases, ${Buffer.byteLength(references)} bytes`);
+} else if (main) {
   assert.equal(readFileSync(casesPath, "utf8"), casesSource(), "run node tests/regex-cases.mjs --write");
-  console.log(`regex cases: ${expectedCases().length} expectations`);
+  const { cases } = await import(pathToFileURL(v8Path).href);
+  console.log(`regex cases: ${expectedCases(cases).length} expectations`);
 }
