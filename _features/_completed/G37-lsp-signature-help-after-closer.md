@@ -348,10 +348,25 @@ main と修正後で結果が違う位置の数。
   行は呼び出しを書いていないので、main の `add @0` が正しい結果で、それを残すため。
 - **判断 R3（直さなかった形）**: main から変わらず、前の行の閉じ括弧が原因でない次の形は直していない（対象外の「複数行にまたがる括弧の中の呼び出しの改善」）。
   34・35（空白の後の `(` の中で、行が自分の呼び出しを書いていない。判断 3）、43（`Steps.add (n,⏎    n) n`。前の行で開いた組がカーソルの行で閉じ、頭が前の行にある。正しくは `add @1`）、
-  67〜69（`name(` の中で前の行が項で終わり、行の頭が関数でない。`null` だが、前の行が `()` なら 36・38・58 の `add @0`）。また、`Steps.add(n, ` のように `name(` の中でコンマの後に書く位置は、1 行でも main・修正後とも
+  67〜69（`name(` の中で前の行が項で終わり、行の頭が関数でない。`null` だが、前の行が `()` なら 36・38・58 の `add @0`）。
+  `name(` の中で、カーソルの行が前置の演算子やリテラルで始まる行（`Steps.add(⏎    (n)⏎    -Steps.one (`、`1 Steps.one (`、`ref Steps.one (`）は、判断 1 の 3 つめの項のとおり外側の `add @0` で、前の行が項（`n`）なら `null`（main・修正後とも同じ。正しくは `one @0`）。
+  前置の演算子で始まる行は括弧の外（`let v =⏎    n⏎    -Steps.one (`・`ref Steps.one (`）でも main・修正後とも `null` で、カーソルの行の呼び出しの頭を識別子の token からしか探さない `call_context` の制限であり、閉じ括弧が原因ではない。また、`Steps.add(n, ` のように `name(` の中でコンマの後に書く位置は、1 行でも main・修正後とも
   `null` で（loop が深さ 0 のコンマで止まる）、括弧の釣り合った文書では `activeParameter` がコンマを数えることは無い。G12 の走査の問題で、このチケットの範囲ではない。
 - **コマンド**: `cargo fmt --all -- --check` 成功。`cargo clippy --locked --all-targets -- -D warnings` 成功。`cargo test --locked --test lsp -- signature_help keyword_member_yield` が修正前 `3 passed; 1 failed`、
   修正後 `4 passed`。`cargo nextest run --locked` が 2936 件すべて成功（4 件 skip。前の 2935 件 + 新しいテスト 1 件）。`cargo build` の後の `node tests/lsp_sessions.mjs target/debug/tsuzuri` が成功（utf-16・utf-8 の session と features の 4 つ）。`node scripts/check-guide-lite.mjs` が 88 件の参照すべて成功、`node tests/repo_kb.mjs` が 84 件成功。
   言語リファレンス・`docs/`・`README.md` のシグネチャヘルプの記述は行の位置による違いを書いていないので変更せず、`check-docs`・`gen-docs.mjs --check`・`check-cli-docs.mjs` は対象のページ・生成物が無いので走らせていない。
 - **変更したファイル**: `src/lsp.rs`（`call_context` が呼び出しを内側から順に返す。`signature_help` と、定義を引く `signature`）、`tests/lsp.rs`（新しいテスト 1 件と、前のテストのコメント）、`_features/README.md`（G37 の行）、
   このチケット（D1 の状態・判断 1・判断 3・この節）。
+
+#### 2 回目の確認の指摘への対応
+
+`bca615c1` の確認は、上の 2 件が直ったことを認め、nit を 1 件挙げた: `_features/README.md` の行の「カーソルの行がカーソルの前に関数の頭を書いていなければ」が、出荷する規則（判断 1 の 3 つめの項: カーソルの行のカーソルの前が空か、識別子で始まらなければ `name(` の呼び出し）より緩く、
+`-Steps.one (` のように前置の演算子やリテラルで始まる行は関数の頭を書いているのに外側の `name(` が返る。判断 R3 の残した形にも、この形は無かった。
+
+- 再現（上と同じ primer と `Steps.tz` を開き、`didChange` の後に最後の行の末尾で `textDocument/signatureHelp`。`target/scratch/g37-residual` に生成した Node の driver で `tsuzuri lsp` を動かした。main（`72f06862`）と修正後（`bca615c1`）の dev のバイナリで同じ結果）:
+  `Steps.add(⏎    (n)⏎    -Steps.one (`・`1 Steps.one (`・`ref Steps.one (` は `add @0`。2 行目が `n` なら 3 つとも `null`。括弧の外の `let v =⏎    n⏎    -Steps.one (`・`ref Steps.one (` も `null`。
+  比べた `Steps.add(⏎    (n)⏎    Steps.one (` は、main が `add @0`、修正後が `one @0`（表の 22）。
+- 対応: 両方を直した。`_features/README.md` の行を「`name(` の中では、カーソルの行のカーソルの前が識別子で始まり、その頭が関数を指すのでなければ、その `name(` の呼び出しを返す（`-Steps.one (` のように前置の演算子やリテラルで始まる行は、外側の `name(` のまま）」にした。
+  判断 R3 に、この形と、括弧の外でも `null` になること（`call_context` は呼び出しの頭を識別子の token からしか探さない。`src/lsp.rs` の `matches!(tokens[start].kind, TokenKind::Ident(_))`）を足した。コードは変えていない。
+- 実行したコマンドと結果: `cargo fmt --all -- --check`（成功）、`cargo clippy --locked --all-targets -- -D warnings`（成功）、`cargo test --locked --test lsp`（51 件成功）、`node scripts/check-guide-lite.mjs`（88 件の参照、失敗 0）。コードを変えていないので、T1 は回していない。
+- 変更したファイル: `_features/README.md`（G37 の行）、このチケット（判断 R3 とこの節）。
