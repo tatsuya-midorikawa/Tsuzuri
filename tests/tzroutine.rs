@@ -299,6 +299,25 @@ fn an_owned_function_from_a_function_value_holds_no_borrow() {
         "def later :: ref Owned.Function<unit, unit> -> unit\nfn later work =\n    let g: unit -> unit = \\() -> Owned.call work ()\n    Routine.go (Owned.function g)\n\nlet owned = Owned.function (\\() -> ())\nlater (ref owned)\n0\n",
         "E1013",
     );
+    // A parameter that holds owned functions only in its fields, elements or payloads lends its
+    // caller's nothing either (Copilot's review of #94).
+    accepts(
+        "record Job { name: string, work: Owned.Function<unit, unit> }\ndef start :: own Job -> unit\nfn start job =\n    Routine.go (Owned.function (\\() -> Owned.call (ref job.work) ()))\n\nstart (Job { name: \"job\", work: Owned.function (\\() -> ()) })\n0\n",
+    );
+    accepts(
+        "def start :: own [Owned.Function<unit, unit>] -> unit\nfn start jobs =\n    Routine.go (Owned.function (\\() -> Owned.call (ref jobs[0]) ()))\n\nstart [Owned.function (\\() -> ())]\n0\n",
+    );
+    // A field that is a plain function value may still hold its caller's borrow.
+    let error = analyze(
+        "record Task { name: string, work: unit -> unit }\ndef start :: own Task -> unit\nfn start task =\n    Routine.go (Owned.function (\\() -> task.work ()))\n\nstart (Task { name: \"task\", work: \\() -> () })\n0\n",
+    )
+    .expect_err("a plain function field may hold the caller's borrow");
+    assert_eq!(error.code, "E1013", "{}", error.message);
+    assert_eq!(error.kind, Some("owned_function_captures_reference"));
+    assert_eq!(
+        error.message,
+        "an owned function captures only owned values; a captured value holds a borrow"
+    );
 }
 
 #[test]

@@ -821,6 +821,38 @@ impl Type {
         }
     }
 
+    /// `carries_loans`, with an `Owned.Function` counted as a value that holds no borrow: its
+    /// representation is opaque, so only `Owned.function` makes one, and that rejects an argument
+    /// that holds a borrow (A30). A record, tuple, container or union whose borrows can only be in
+    /// owned functions thus carries none. A recursive type keeps `carries_loans`'s answer.
+    pub(crate) fn carries_loans_beside_owned_functions(&self, types: &TypeContext<'_>) -> bool {
+        if self.is_owned_function(types) {
+            return false;
+        }
+        if types.recursive(self) {
+            return self.carries_loans(types);
+        }
+        match self {
+            Self::Reference(..) | Self::Function(..) => true,
+            Self::Dyn(dyn_type) => dyn_type.borrowed,
+            Self::Array(element)
+            | Self::List(element)
+            | Self::Vec(element)
+            | Self::FixedArray(element, _)
+            | Self::Shared(element, _) => element.carries_loans_beside_owned_functions(types),
+            Self::Tuple(elements) => elements
+                .iter()
+                .any(|ty| ty.carries_loans_beside_owned_functions(types)),
+            Self::Record(id, args) => !types.record_fields_all(*id, args, |ty| {
+                !ty.carries_loans_beside_owned_functions(types)
+            }),
+            Self::Union(id, args) => !types.union_payloads_all(*id, args, |ty| {
+                !ty.carries_loans_beside_owned_functions(types)
+            }),
+            _ => false,
+        }
+    }
+
     pub(crate) fn contains_stored_reference(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all(self, |ty| {
             !matches!(ty, Self::Reference(..))

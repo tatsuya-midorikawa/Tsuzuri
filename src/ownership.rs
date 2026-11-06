@@ -546,10 +546,11 @@ fn start_checker<'a, 'run>(
         let mut value = Value::default();
         // An `Owned.Function` holds no borrow: `Owned.function` rejects an argument that holds one
         // (A30), and its representation is opaque, so nothing else makes one. A parameter of that
-        // type, or a capture of one, lends the caller's nothing; an owned lambda or a tzroutine
-        // body may then capture it, as `ErrGroup.start` does.
+        // type, or of a record, tuple, container or union that can hold borrows only in owned
+        // functions, or a capture of one, lends the caller's nothing; an owned lambda or a
+        // tzroutine body may then capture it, as `ErrGroup.start` does.
         let types = module.types();
-        if !task && parameter.ty.carries_loans(&types) && !parameter.ty.is_owned_function(&types) {
+        if !task && parameter.ty.carries_loans_beside_owned_functions(&types) {
             checker.external_loans(parameter, index, contract.slots, &mut value);
         }
         checker
@@ -856,12 +857,11 @@ fn parameter_retention_within(
                 .parameters
                 .iter()
                 .map(|parameter| {
-                    // The parameters that get no loan in the body but may hold borrows.
-                    if parameter.ty.carries_loans(&types) {
-                        parameter.ty.is_owned_function(&types)
-                    } else {
-                        parameter.ty.contains_unknown()
-                    }
+                    // The parameters that may hold borrows but get no loan in the body: those
+                    // that `start_checker` gives no caller loan (borrows only in owned
+                    // functions, as A30 has it) and type variables of an abstract body.
+                    (parameter.ty.carries_loans(&types) || parameter.ty.contains_unknown())
+                        && !parameter.ty.carries_loans_beside_owned_functions(&types)
                 })
                 .collect(),
         );

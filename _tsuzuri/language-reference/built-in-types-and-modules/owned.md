@@ -341,7 +341,7 @@ hello
 0
 ```
 
-`Owned.Function` は借用を持たないので、`own Owned.Function<…>` の引数は、別の `Owned.function` のラムダや `tzroutine { }` の本体でそのまま捕捉できます。
+`Owned.Function` は借用を持たないので、`own Owned.Function<…>` の引数は、別の `Owned.function` のラムダや `tzroutine { }` の本体でそのまま捕捉できます。所有関数値をフィールド・要素・ペイロードに持つだけの引数（`record Job { name: string, work: Owned.Function<unit, unit> }` の `own Job`、`own [Owned.Function<unit, unit>]` など）も同じです。普通の関数値（`unit -> unit`）や参照のフィールドを持つ引数は、呼び出し側の借用を持ちうるので、今までどおり捕捉すると `E1013` です。
 
 ```tsuzuri run=twice%0Atwice%0A0
 def twice :: own Owned.Function<unit, unit> -> unit

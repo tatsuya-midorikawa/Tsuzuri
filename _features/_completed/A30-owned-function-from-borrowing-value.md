@@ -308,3 +308,11 @@ def main :: unit -> i32 = \() ->
 - `node tests/tzroutine.mjs target/debug/tsuzuri`: 163 runs passed。
 - `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs owned.md`: 1 page, 7 links, 7 checked examples, 14 native runs（O0/O3）。`check-cli-docs`（4 checks, 0 failed）・`check-guide-lite`（88 references, 0 failed）。
 - 生成コードは変えていない（診断の message の選び方だけ）。
+
+### Copilot のレビュー（#94）への対応（2026-11-06）
+
+- **指摘**: 呼び出し側の loan を与えない引数が `Owned.Function` そのものだけだったので、`record Job { name: string, work: Owned.Function<unit, unit> }` の `own Job` の引数には、`work` の不透明な `run` を通して loan が付いた。そのため `Routine.go (Owned.function (\() -> Owned.call (ref job.work) ()))` が `E1013` になった（`main` は受理し、実行すると `job ran` を出力する。安全なプログラムの回帰）。
+- **対応**: `Type::carries_loans_beside_owned_functions`（`src/check.rs`）を足した。`carries_loans` と同じく型をたどり、`Owned.Function` を借用を持たない葉として数える（再帰型は `carries_loans` の答えのまま）。`check_body` はこれが偽の引数に呼び出し側の loan を与えない。所有関数値をフィールド・要素・ペイロードに持つだけの引数（`own Job`、`own [Owned.Function<unit, unit>]`）は捕捉でき、普通の関数値のフィールドを持つ引数（`record Task { name: string, work: unit -> unit }` の `own Task`）は今までどおり `E1013`（`a captured value holds a borrow`）。
+- **テスト**: `tests/tzroutine.rs` の `an_owned_function_from_a_function_value_holds_no_borrow` に、`own Job` と `own [Owned.Function<unit, unit>]` の受理と、`own Task` の拒否を足した。修正前は `own Job` の受理で失敗した。`own Job` と配列の形は、修正後の dev のバイナリで `-O0`・`-O3` とも `main` と同じ出力（`job ran`・`first ran`）。
+- **確認**: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked --test tzroutine --test user_drop --test timers`（21・26・12 件成功）、`cargo nextest run --locked`（2938 件成功、4 件 skip）、`tests/fixtures/*/` と `examples/*/` の 176 個の `tsuzuri check --json` が `main` のバイナリと同じ、`check-docs.mjs owned.md`（7 examples、14 native runs）。
+- **文書**: `owned.md`（`own Owned.Function<…>` の引数の段落に、所有関数値だけを持つ引数の場合と、普通の関数値のフィールドの場合）、`docs/architecture.md`（`check_body` の規則）。
