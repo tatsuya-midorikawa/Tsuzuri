@@ -418,6 +418,9 @@ struct Contract<'a> {
     result: Option<&'a RegionSources>,
     callbacks: &'a [CallbackContract],
     slots: Option<&'a RegionSlots>,
+    /// The body is the generated function that applies a builtin to its own parameters
+    /// (`src/closures.rs`, module `$builtin`), whose callers are checked instead.
+    builtin_wrapper: bool,
 }
 
 impl<'a> Contract<'a> {
@@ -426,6 +429,7 @@ impl<'a> Contract<'a> {
             result: function.region_sources.as_ref(),
             callbacks: &function.callback_contracts,
             slots: function.region_slots.as_ref(),
+            builtin_wrapper: function.module == "$builtin",
         }
     }
 }
@@ -491,10 +495,17 @@ fn check_body<'a>(
         // `Drop.drop` borrows the dropped value through its only parameter.
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         later_use_budget: LATER_USE_NODES,
+        builtin_wrapper: contract.builtin_wrapper,
     };
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
-        if !task && parameter.ty.carries_loans(&module.types()) {
+        // An `Owned.Function` holds no borrow: `Owned.function` rejects an argument that holds one
+        // (A30), and its representation is opaque, so nothing else makes one. A parameter of that
+        // type, or of a record, tuple, container or union that can hold borrows only in owned
+        // functions, or a capture of one, lends the caller's nothing; an owned lambda or a
+        // tzroutine body may then capture it, as `ErrGroup.start` does.
+        let types = module.types();
+        if !task && parameter.ty.carries_loans_beside_owned_functions(&types) {
             checker.external_loans(parameter, index, contract.slots, &mut value);
         }
         checker
@@ -753,6 +764,8 @@ struct Checker<'a, 'run> {
     /// How many more steps the diagnostics may take in this function to find where a moved value
     /// or a borrow came from (`Flow`).
     later_use_budget: usize,
+    /// The body is a generated function that applies a builtin to its own parameters (A30).
+    builtin_wrapper: bool,
 }
 
 /// How many expressions the diagnostics of one function may look at, in all, to find where a
@@ -882,6 +895,7 @@ impl<'a> Checker<'a, '_> {
                             result: Some(&shifted),
                             callbacks: &[],
                             slots: None,
+                            builtin_wrapper: function.module == "$builtin",
                         },
                         &mut Vec::new(),
                         None,
@@ -1036,6 +1050,13 @@ impl<'a> Checker<'a, '_> {
     fn is_generated_parameter(&self, argument: &TypedExpr) -> bool {
         matches!(&argument.kind, E::Local(id)
             if self.state.locals.get(id).is_some_and(|(local, _)| local.provenance == crate::syntax::Provenance::Generated))
+    }
+
+    /// A parameter of the generated function that applies a builtin to its own parameters
+    /// (`$builtin`): it passes on what its callers gave it, and they are checked. Other generated
+    /// locals, such as the result of `do!`, hold what the program put in them (A30).
+    fn is_builtin_wrapper_parameter(&self, argument: &TypedExpr) -> bool {
+        self.builtin_wrapper && self.is_generated_parameter(argument)
     }
 
     /// Whether the tasks of a parallel operation that share the borrow `argument`, which evaluated
@@ -1767,6 +1788,68 @@ impl<'a> Checker<'a, '_> {
             diagnostic.add_related(RelatedRole::BorrowedHere, "value borrowed here", loan.span);
         }
         diagnostic
+    }
+
+    /// The `E1013` of `Owned.function argument` whose `value` holds a borrow (A30 D2): the message
+    /// says whether a lambda's capture or the function value holds it, a note shows where the
+    /// borrow was taken (the parameter, for a borrow of the caller's), and the help names the
+    /// parameter type that takes an owned function, `own {owned}`.
+    #[cold]
+    #[inline(never)]
+    fn owned_function_holds_borrow(
+        &self,
+        argument: &TypedExpr,
+        value: &Value,
+        owned: &Type,
+    ) -> Diagnostic {
+        // The message follows the source form. A generic body is checked for an instance after its
+        // lambdas are lifted: a lambda written as the argument, or piped into `Owned.function`,
+        // becomes an `E::Closure` in place, which keeps the lambda's span, the span of the lifted
+        // function. A `let rec` name becomes an `E::Closure` only inside the bodies of its group,
+        // at the name's span, which lies inside the span of its function.
+        let lambda = match &argument.kind {
+            E::Lambda { .. } => true,
+            E::Closure(id, _) => {
+                let function = &self.module.functions[*id];
+                function.owned_captures || function.span == argument.span
+            }
+            _ => false,
+        };
+        let message = if lambda {
+            "an owned function captures only owned values; a captured value holds a borrow"
+        } else {
+            "an owned function captures only owned values; this function value holds a borrow"
+        };
+        let mut diagnostic = Diagnostic::of(
+            DiagnosticKind::OwnedFunctionCapturesReference,
+            message,
+            argument.span,
+        );
+        // The first loan, followed through its parents to the borrow that it was taken from. The
+        // loans are a set and the parents point at older loans, so the choice is deterministic and
+        // the walk ends.
+        if let Some(&first) = value.loans.first() {
+            let mut id = first;
+            for _ in 0..self.loans.len() {
+                match self.loans[id].parents.first() {
+                    Some(&parent) => id = parent,
+                    None => break,
+                }
+            }
+            let loan = &self.loans[id];
+            if loan.span.end > loan.span.start && loan.span != argument.span {
+                let note = if self.external.contains(&loan.place.root) {
+                    "a parameter may hold a borrow of its caller's values"
+                } else {
+                    "value borrowed here"
+                };
+                diagnostic.add_related(RelatedRole::BorrowedHere, note, loan.span);
+            }
+        }
+        diagnostic.with_help(format!(
+            "capture an owned value, such as the owner itself or a copy, instead of a borrow; a function that receives work to run later takes an 'own {}' parameter instead of a function value",
+            owned.display(&self.module.types())
+        ))
     }
 
     /// The `E1014` of an access at `span` that conflicts with the live loan `loan`: where the loan
@@ -2691,6 +2774,15 @@ impl<'a> Checker<'a, '_> {
             .locked_result(callee)
             .filter(|(_, callback)| arguments.len() > *callback);
         let sent = self.sent_item(callee).filter(|_| arguments.len() >= 2);
+        // A direct call of `Owned.function` checks its argument for borrows below (A30), so the
+        // callee is not evaluated as a value, which `eval_value` rejects.
+        let owned_function = !arguments.is_empty()
+            && self.builtin_called(callee) == Some(crate::check::Builtin::OwnedFunction);
+        // The result of a full call of `Owned.call` borrows only what its input lends: the owned
+        // function holds no borrow (A30), and its body cannot return one of its own environment.
+        // `Owned.call (ref f)` alone is a function that keeps the borrow of `f`.
+        let owned_call = arguments.len() >= 2
+            && self.builtin_called(callee) == Some(crate::check::Builtin::OwnedCall);
         // What comes out of a channel was checked when it went in; `Channel.try_send` gives back
         // the item that it checked. Only a full call gives that: `Channel.try_send ch` is a function
         // that borrows the channel.
@@ -2707,7 +2799,7 @@ impl<'a> Checker<'a, '_> {
             ) => arguments.len() >= 2,
             _ => false,
         };
-        let value = if locked.is_some() || sent.is_some() {
+        let value = if locked.is_some() || sent.is_some() || owned_function {
             Value::default()
         } else {
             self.eval(callee, Use::Consume, &during)?
@@ -2763,6 +2855,21 @@ impl<'a> Checker<'a, '_> {
                     argument.span,
                 ));
             }
+            // A30: an `Owned.Function` owns what it captures, and `Routine.go`, `WaitGroup.go`,
+            // `ErrGroup.go`, `Time.after_func` and `Context.after_func` run it later, perhaps after
+            // the data it borrows is gone, without looking at its loans (D1: the check is where it
+            // is made). A named function holds no loan. A lambda written here whose captures are
+            // references is reported by `src/closures.rs` before this check runs; one that gets
+            // here holds a loan only through a captured value, such as a function value that
+            // captured a reference. A parameter of the generated function that applies the builtin
+            // passes on what its callers gave it, and `eval_value` rejects those callers.
+            if owned_function
+                && index == 0
+                && !value.loans.is_empty()
+                && !self.is_builtin_wrapper_parameter(argument)
+            {
+                return Err(self.owned_function_holds_borrow(argument, &value, &expression.ty));
+            }
             if !value.loans.is_empty() && owned_dyn_of(callee) {
                 return Err(error(
                     DiagnosticKind::DynHoldsBorrowWithoutRegion,
@@ -2788,6 +2895,7 @@ impl<'a> Checker<'a, '_> {
                 ));
             }
             match region_sources {
+                _ if owned_call && index == 0 => {}
                 Some(sources) => {
                     self.argument_regions(sources, slots, index, argument, &value, &mut current)
                 }
@@ -2987,6 +3095,17 @@ impl<'a> Checker<'a, '_> {
                 let end = if builtin.is_data_channel() { "sender" } else { "channel" };
                 return Err(error(DiagnosticKind::MustApplyDirectly,
                     format!("{} must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the {end} and the item together", builtin.name()),
+                    expression.span,
+                ));
+            }
+            // `Owned.function` checks its argument at the direct call (A30); as a function value,
+            // the borrows of its argument would pass into an `Owned.Function` unchecked.
+            E::Function(_)
+                if self.builtin_called(expression)
+                    == Some(crate::check::Builtin::OwnedFunction) =>
+            {
+                return Err(error(DiagnosticKind::MustApplyDirectly,
+                    "Owned.function must be applied directly, so that its argument can be checked for borrows: call it with the function value together",
                     expression.span,
                 ));
             }
@@ -3275,13 +3394,34 @@ impl<'a> Checker<'a, '_> {
                     // `text |> consume` gives its argument to `consume`, as `consume text` does.
                     self.event_targets(mark, left.span, right);
                 }
+                // `g |> Owned.function` is `Owned.function g`: its argument is checked here as in
+                // `eval_call` (A30), and the builtin is not evaluated as a value.
+                let owned_function = *operator == BinaryOp::Pipe
+                    && self.builtin_called(right) == Some(crate::check::Builtin::OwnedFunction);
+                if owned_function
+                    && !value.loans.is_empty()
+                    && !self.is_builtin_wrapper_parameter(left)
+                {
+                    return Err(self.owned_function_holds_borrow(left, &value, &expression.ty));
+                }
                 self.held.push(value.clone());
-                let callee = self.eval(right, usage, &during)?;
+                let callee = if owned_function {
+                    Value::default()
+                } else {
+                    self.eval(right, usage, &during)?
+                };
                 self.held.pop();
                 if *operator == BinaryOp::Pipe && expression.ty.carries_loans(&self.module.types())
                 {
                     result = value;
-                    result.loans.extend(callee.loans);
+                    // `x |> Owned.call (ref f)` is `Owned.call (ref f) x`, whose result does not
+                    // borrow `f` (see `eval_call`).
+                    let owned_call = matches!(&right.kind, E::Call(inner, arguments)
+                        if arguments.len() == 1
+                            && self.builtin_called(inner) == Some(crate::check::Builtin::OwnedCall));
+                    if !owned_call {
+                        result.loans.extend(callee.loans);
+                    }
                     result.regions = None;
                 }
             }

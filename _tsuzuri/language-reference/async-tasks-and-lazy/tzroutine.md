@@ -209,7 +209,7 @@ Routine.go (Owned.function (\() -> {
 7
 ```
 
-`Owned.function` の本体は捕捉を借りて呼ぶので、捕捉をムーブする処理は `tzroutine { }` で書きます。
+`Owned.function` の本体は捕捉を借りて呼ぶので、捕捉をムーブする処理は `tzroutine { }` で書きます。 新しい tzroutine は関数を作った関数より長く生きることがあるので、借用を持つ関数値（`ref` を捕捉した関数値や関数の引数の関数値）からは `Owned.function` を作れません（`E1013`。[Owned](../built-in-types-and-modules/owned.md#捕捉できるのは所有値だけ)）。関数の引数で仕事を受け取るときは、引数の型を `own Owned.Function<unit, unit>` にします。
 
 ## スケジューラー
 
