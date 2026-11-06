@@ -239,6 +239,7 @@ arr[0] ()
 ```
 
 - 要素の型が借用を持ちうるとき（関数、参照）、これらの関数は全引数を渡して直接呼ぶか、呼び出しを完成させるパイプライン（`ref mut arr |> Array.set 0 f`）で呼びます。部分適用や関数値として使うと、書き込んだ借用を追跡できないので `E1013`（`region_callback_stores_exclusive_input`）です。
+- `MatrixView.write`・`MatrixView.fill`・`MatrixView.copy_from`・`MatrixView.map_in_place` は、要素の型が借用を持ちうるとき、std の中で `E1013`（`store_region_unnamed` など）になります。宣言した region の契約が、書き込む要素の借用を表さないためです。数値の要素では変わりません。
 - 利用者の関数が、自分の `ref mut` 引数の先へ借用を持つ値を書き込むには、`ref mut {r} T {s}` の参照先の region が要ります（`E1013`、`store_region_unnamed`）。関数の型には region を書けないので、関数を要素に持つスライスへ、引数から受け取った関数を書き込む利用者の関数は書けません。借用を持たない値（捕捉のないラムダなど）は書き込めます。
 
 ## region 量化関数

@@ -788,12 +788,16 @@ pub(super) fn validate_contract_calls(module: &CheckedModule) -> Result<(), Diag
     for function in &module.functions {
         let mut pending = vec![&function.body];
         while let Some(expression) = pending.pop() {
-            // `x |> f a` is `f a x`, so a pipeline that completes a call of a function that stores
-            // an input calls it directly; the ownership check stores its inputs there too.
+            // `x |> f a` is `f a x`, so a pipeline that completes a call of a builtin or std
+            // function that stores an input (`ref mut values |> Array.set 0 f`) calls it
+            // directly; the ownership check stores its inputs there too. A function of the program
+            // with named regions is called directly with all of its arguments.
             if let TypedExprKind::Binary(crate::syntax::BinaryOp::Pipe, left, right) =
                 &expression.kind
                 && let TypedExprKind::Call(callee, arguments) = &right.kind
                 && let Some(id) = target(callee)
+                && (module.functions[id].module == "$builtin"
+                    || module.functions[id].origin.module == ModuleOrigin::Std)
                 && module.functions[id].callback_contracts.is_empty()
                 && arguments.len() + 1 == module.functions[id].parameters.len()
             {
