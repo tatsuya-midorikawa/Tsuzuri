@@ -723,8 +723,9 @@ struct CallFacts {
     /// By function: whether its result can hold each argument's loans. `None` holds them all.
     retained: Vec<Option<Box<[bool]>>>,
     /// By function: whether its body, a body that encloses it (that of the function a lambda is
-    /// lifted from) or the body of a lambda lifted from it, lends a way to write (`lending_bodies`).
-    lending: Vec<bool>,
+    /// lifted from) or the body of a lambda lifted from it, lends a way to write or hands a value
+    /// to code that the analysis does not see (`lending_bodies`).
+    lending: Lending,
 }
 
 impl CallFacts {
@@ -738,10 +739,10 @@ impl CallFacts {
     }
 
     /// The contract of the body of function `id`, with whether it or a related body lends a way
-    /// to write.
+    /// to write or hands a value that may hold loans to code that the analysis does not see.
     fn contract<'a>(&self, module: &'a CheckedModule, id: usize) -> Contract<'a> {
         Contract {
-            lends_mutable: Some(self.lending[id]),
+            lends_mutable: Some(self.lending.reads[id]),
             ..Contract::of(&module.functions[id])
         }
     }
@@ -820,7 +821,7 @@ const RETENTION_EXTRA_CHECKS: usize = 1024;
 fn parameter_retention(
     module: &CheckedModule,
     closed: &[bool],
-    lending: &[bool],
+    lending: &Lending,
     infer: bool,
 ) -> Vec<Option<Box<[bool]>>> {
     parameter_retention_within(module, closed, lending, infer, None)
@@ -830,7 +831,7 @@ fn parameter_retention(
 fn parameter_retention_within(
     module: &CheckedModule,
     closed: &[bool],
-    lending: &[bool],
+    lending: &Lending,
     infer: bool,
     budget: Option<usize>,
 ) -> Vec<Option<Box<[bool]>>> {
@@ -881,7 +882,7 @@ fn parameter_retention_within(
     let mut facts = CallFacts {
         closed: closed.to_vec(),
         retained: vec![None; count],
-        lending: lending.to_vec(),
+        lending: lending.clone(),
     };
     for &id in callers.keys() {
         facts.retained[id] = Some(
@@ -979,7 +980,7 @@ fn parameter_retention_within(
 
 /// The parameters of `function` whose loans its result holds, under the facts so far; `None`
 /// when the body does not check, when its result holds a loan of its own locals, or when it lends
-/// a way to write (`lending_bodies`).
+/// a way to write or makes an opaque call (`lending_bodies`).
 fn retained_parameters(
     module: &CheckedModule,
     id: usize,
@@ -987,7 +988,7 @@ fn retained_parameters(
     facts: &CallFacts,
 ) -> Option<Box<[bool]>> {
     let function = &module.functions[id];
-    if facts.lending[id] {
+    if facts.lending.facts[id] {
         return None;
     }
     let mut recovered = Vec::new();
@@ -1061,19 +1062,31 @@ fn retained_parameters(
 /// argument does not enumerate these writers. A store that the check does not track writes
 /// through an exclusive reference or through a mutable cell: other stores (an assignment,
 /// `deref r = v`, `Vec.push_mut`, a function with a region contract) are tracked, and a shared
-/// reference to anything else lends no way to write. The code that makes such a store is the
-/// body itself (a call in it to a writer), a function that it calls, or a lambda that it makes; in
-/// each case the exclusive reference or the cell that leads to the body's value comes from the
-/// body, and the only ways a body hands a value to code are the operands above and the captures of
-/// the lambdas that it makes. A function that the body calls can reach the body's values only
-/// through what its arguments hold: a function value among them (`put text`, `Mutex.with_lock m`)
-/// writes only into what it captured, which the body that made it handed it as operands, and into
-/// what it gets when it is called, which its parameter types show. A
-/// lambda's captures are the operands of its `E::Closure`; `lending_bodies` also marks a body
-/// lending when a lambda made in it lends. So a body for which this is false makes no store that
-/// its check misses into its own values, and a body for which it is true keeps the rule from before
-/// A28: its result holds every argument's loans, and `Rc.share` and its kin hold the borrow of
-/// the owner.
+/// reference to anything else lends no way to write.
+///
+/// A body's value (a parameter's loan included) can thus reach a place that its result does not
+/// show in three ways only, and each of them makes the body lending (`lending_bodies`: no facts,
+/// no read-through, the rule from before A28; a call that is opaque only through the callee's
+/// environment drops the facts alone, `OpaqueCalls::environment`):
+///
+/// - (a) A store through an exclusive reference or a cell that the body hands to code as one of
+///   the operands above, which this function finds. The reference or the cell comes from the body:
+///   a parameter, a capture, a local, or a value made from them, and the only ways a body hands a
+///   value to code are those operands and the captures of the lambdas that it makes.
+/// - (b) Code whose body the analysis does not see, which receives the value and may store it in a
+///   cell that it captured and that another input of the body reaches as well (a writer and a
+///   reader closure over one `Arc<Mutex<…>>`, `w` and `r` of `pass w r text`): a function type,
+///   a dyn type or an `Owned.Function` does not show its environment, so neither its parameter
+///   types nor `lends_mutable` can tell. `opaque_calls` finds these calls, and a named callee
+///   that makes one (`opaque_bodies`) counts as one when it gets a value that can run code.
+/// - (c) A lambda that the body makes, whose body does (a) or (b) with what it captured or gets:
+///   `lending_bodies` marks the bodies related to it.
+///
+/// Nothing else runs code with the body's values: a tzroutine's captures, a channel's items, an
+/// `OnceValue`'s initializer and an `Owned.function`'s argument are checked to hold no borrow, and
+/// a named callee that does none of the three keeps its facts, which hold whatever its arguments
+/// hold. So a body for which neither this function nor `opaque_bodies` is true makes no store that
+/// its check misses into a place that its result or another input reaches.
 ///
 /// That makes the loans of the body's own values complete, not those of its parameters: a
 /// parameter's external loans stand for what the caller's value holds, and a caller that lends a
@@ -1084,7 +1097,7 @@ fn retained_parameters(
 ///
 /// In an abstract body a type variable counts as neither an exclusive reference nor the contents
 /// of a cell that may hold a borrow: those facts only infer Copy constraints, and each instance,
-/// whose types are concrete, is checked with its own facts.
+/// whose types are concrete, is checked with its own facts. The same holds for `opaque_calls`.
 fn lends_mutable(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> bool {
     let lends = |operand: &TypedExpr| operand.ty.lends_mutable(types);
     let mut pending = vec![body];
@@ -1112,28 +1125,250 @@ fn lends_mutable(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> boo
     false
 }
 
-/// By function: whether its body lends a way to write (`lends_mutable`), or the body of a lambda
-/// lifted from it, or of the function that it was lifted from, does. Downward: a lambda's
-/// captures hold what the enclosing body gave them, and that misses what an untracked store put
-/// there, so a lambda whose captures were made in such a body reads nothing through them either:
-/// in `let mut arr = [Arc.new f]`, `Array.write 0 (Arc.new borrowing) (ref mut arr)` and
-/// `\() -> Arc.share (ref arr[0])`, the share would hold what `arr` held before the write (and
-/// `read_through` keeps the borrow of a capture in any lambda, since a capture is a parameter of
-/// the lifted function; this mark also drops the lambda's facts, as for its enclosing body).
-/// Upward: a lambda that lends a way to write (it passes a captured cell, or its own exclusive
-/// parameter, to a writer) may write into what the enclosing body gave it, so the enclosing body
-/// keeps the rule from before A28 too; the scan of an unlifted body sees the bodies of its
-/// `E::Lambda`s already. Each body is scanned once; the lifted lambdas follow the `E::Closure`
-/// that makes them, through the lambdas in lambdas and the groups of `let rec`.
-fn lending_bodies(module: &CheckedModule) -> Vec<bool> {
+/// Whether a value of type `ty` can run code when other code gets it: it reaches a function value
+/// (an `Owned.Function`, a lazy sequence and an `IO` action hold one), a dyn value (its methods
+/// are the vtable's) or a tzroutine body. A type variable counts as none, as in `lends_mutable`.
+fn may_run_code(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    types.reaches(ty, |ty| {
+        matches!(ty, Type::Function(..) | Type::Dyn(_) | Type::Once(_))
+    })
+}
+
+/// Whether the value of `expression` may hold loans: a closure holds those of its captures, a
+/// named function none; anything else as its type says.
+fn value_may_carry_loans(expression: &TypedExpr, types: &crate::check::TypeContext<'_>) -> bool {
+    match &expression.kind {
+        E::Closure(_, captures) => captures
+            .iter()
+            .any(|capture| capture.ty.carries_loans(types)),
+        E::Function(_) | E::GenericFunction(..) => false,
+        _ => expression.ty.carries_loans(types),
+    }
+}
+
+/// Whether a parameter of a builtin's scheme can hold code that the builtin may run: a function
+/// type, a std type whose declaration holds one (`Owned.Function`, `Seq`), or a container of
+/// them. A scheme variable cannot: the builtin knows nothing of its values, beyond the instances
+/// of its constraints (`builtin_runs_arguments`).
+fn scheme_runs_code(ty: &crate::check::BuiltinType, types: &crate::check::TypeContext<'_>) -> bool {
+    use crate::check::BuiltinType as B;
+    match ty {
+        B::Function(..) => true,
+        B::Var(_) => false,
+        B::Concrete(ty) => may_run_code(ty, types),
+        B::Std { module, name, args } => {
+            let name = format!("{module}.{name}");
+            let declared = types
+                .records
+                .iter()
+                .find(|record| {
+                    record.origin == crate::check::ModuleOrigin::Std && record.name == name
+                })
+                .map(|record| record.fields.iter().any(|(_, ty)| may_run_code(ty, types)))
+                .or_else(|| {
+                    types
+                        .unions
+                        .iter()
+                        .find(|union| {
+                            union.origin == crate::check::ModuleOrigin::Std && union.name == name
+                        })
+                        .map(|union| {
+                            union
+                                .cases
+                                .iter()
+                                .flat_map(|(_, payload)| payload)
+                                .any(|ty| may_run_code(ty, types))
+                        })
+                });
+            // A std type that this module does not declare cannot be an argument here; judge it
+            // as one that holds code.
+            declared.unwrap_or(true) || args.iter().any(|ty| scheme_runs_code(ty, types))
+        }
+        B::Array(element)
+        | B::ArrayView(element)
+        | B::List(element)
+        | B::Vec(element)
+        | B::Shared(element, _)
+        | B::Reference(element, _)
+        | B::FixedArrayOf(element) => scheme_runs_code(element, types),
+        B::Tuple(elements) => elements.iter().any(|ty| scheme_runs_code(ty, types)),
+        B::UnsignedOf(_) | B::WidenOf(_) | B::SimdLane(..) | B::SimdMask(_) => false,
+    }
+}
+
+/// Whether `builtin` may run code that it gets: a parameter of its scheme holds code
+/// (`scheme_runs_code`: `Array.map`, `Mutex.with_lock`, `Owned.call`, `Seq.next`), or it has a
+/// constraint, whose instance for a dyn value is the vtable's.
+fn builtin_runs_arguments(
+    builtin: crate::check::Builtin,
+    types: &crate::check::TypeContext<'_>,
+    cache: &mut BTreeMap<crate::check::Builtin, bool>,
+) -> bool {
+    *cache.entry(builtin).or_insert_with(|| {
+        let scheme = builtin.scheme();
+        !scheme.constraints.is_empty()
+            || scheme
+                .parameters
+                .iter()
+                .any(|parameter| scheme_runs_code(parameter, types))
+    })
+}
+
+/// The calls of a body that hand its values to code whose body the analysis does not see
+/// (`lends_mutable`, way (b)).
+#[derive(Default)]
+struct OpaqueCalls {
+    /// The body makes such a call itself, with an argument that may hold loans.
+    direct: bool,
+    /// The body calls a value whose environment may hold loans, with no argument that may: the
+    /// environment may store what it holds where another input of the body reaches it, so the
+    /// body has no facts, but none of the body's own values gets a loan that it lacks (what the
+    /// environment holds came to it through a value that the check followed), so the body still
+    /// reads through.
+    environment: bool,
+    /// The named functions that the body calls with all their arguments, one of which may hold
+    /// loans and one of which can run code: the body makes such a call when one of them does
+    /// (`opaque_bodies`).
+    callees: Vec<usize>,
+}
+
+/// The calls of `body` that may hand a value that holds loans to code whose body the analysis does
+/// not see. A call is opaque when its callee is not a direct reference to a named function or
+/// builtin (a parameter, capture, local, field, element, call result, or a named function given
+/// more arguments than it has parameters, whose result is called), when it is the dispatch of a
+/// dyn method (`E::DynDispatch`), when a builtin that may run its arguments
+/// (`builtin_runs_arguments`: `Owned.call`, `Array.map`, `Mutex.with_lock`, `Parallel.*`, a host
+/// function that takes a callback) gets one that can run code, and when a collection made with
+/// `new` runs its initializer. The callee's environment counts as well (`environment`): a closure
+/// that captured a writer and a borrow (`\() -> w (\() -> String.length text)`) stores the borrow
+/// when it is called with `()`. In an abstract body, a method of a class whose receiver reaches a dyn
+/// value is opaque too. A type variable counts as neither a value that can run code nor one that
+/// holds loans, and a method of a class whose receiver is one as a named function, as in
+/// `lends_mutable`: the abstract body's facts only infer Copy constraints, and the abstract check
+/// must not reject what its instances accept (a body that is not generic is checked in both, and
+/// `HashMap.remove_ref` calls `Hash.hash` and `Eq.eq` on its key). Each instance, where the
+/// method is a named instance or the vtable's dispatch, is checked with its own facts. A call of a
+/// named function that may make such a call itself is recorded in `callees`.
+fn opaque_calls(
+    body: &TypedExpr,
+    module: &CheckedModule,
+    cache: &mut BTreeMap<crate::check::Builtin, bool>,
+) -> OpaqueCalls {
     let types = module.types();
-    let mut lending: Vec<bool> = module
-        .functions
-        .iter()
-        .map(|function| lends_mutable(&function.body, &types))
-        .collect();
-    // Both directions: the lambdas lifted from a function, and the functions they are lifted from.
-    let mut related: Vec<Vec<usize>> = vec![Vec::new(); lending.len()];
+    let mut found = OpaqueCalls::default();
+    let loans = |arguments: &[&TypedExpr]| {
+        arguments
+            .iter()
+            .any(|argument| value_may_carry_loans(argument, &types))
+    };
+    let code = |arguments: &[&TypedExpr]| {
+        arguments
+            .iter()
+            .any(|argument| may_run_code(&argument.ty, &types))
+    };
+    let call = |callee: &TypedExpr,
+                arguments: &[&TypedExpr],
+                found: &mut OpaqueCalls,
+                cache: &mut BTreeMap<crate::check::Builtin, bool>| {
+        match &callee.kind {
+            E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => {
+                let arity = module.functions[*id].parameters.len();
+                if arguments.len() > arity {
+                    // The result, which holds only the arguments, is called with the rest.
+                    found.direct |= loans(arguments);
+                } else if arguments.len() == arity && loans(arguments) && code(arguments) {
+                    found.callees.push(*id);
+                }
+            }
+            E::Function(crate::check::FunctionRef::Builtin(instance)) => {
+                if loans(arguments)
+                    && (arguments.len() > instance.builtin.scheme().parameters.len()
+                        || (builtin_runs_arguments(instance.builtin, &types, cache)
+                            && code(arguments)))
+                {
+                    found.direct = true;
+                }
+            }
+            E::Method(_, _, receiver) | E::TypeFunction { receiver, .. } => {
+                if types.reaches(receiver, |ty| matches!(ty, Type::Dyn(_))) && loans(arguments) {
+                    found.direct = true;
+                }
+            }
+            E::CaseConstructor { .. } => {}
+            _ => {
+                if loans(arguments) {
+                    found.direct = true;
+                } else if value_may_carry_loans(callee, &types) {
+                    found.environment = true;
+                }
+            }
+        }
+    };
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        match &expression.kind {
+            E::Call(callee, arguments) => {
+                let arguments: Vec<&TypedExpr> = arguments.iter().collect();
+                call(callee, &arguments, &mut found, cache);
+            }
+            E::Binary(BinaryOp::Pipe, left, right) => match &right.kind {
+                E::Call(callee, arguments) => {
+                    let arguments: Vec<&TypedExpr> = arguments.iter().chain([&**left]).collect();
+                    call(callee, &arguments, &mut found, cache);
+                }
+                _ => call(right, &[&**left], &mut found, cache),
+            },
+            E::HostCall(import, arguments) => {
+                let arguments: Vec<&TypedExpr> = arguments.iter().collect();
+                if import.callbacks && loans(&arguments) && code(&arguments) {
+                    found.direct = true;
+                }
+            }
+            E::Parallel(_, arguments) => {
+                let arguments: Vec<&TypedExpr> = arguments.iter().collect();
+                if loans(&arguments) {
+                    found.direct = true;
+                }
+            }
+            E::NewArray(_, initializer) | E::NewList(_, initializer) => {
+                call(initializer, &[], &mut found, cache);
+            }
+            E::Interpolated(interpolation) => {
+                for hole in &interpolation.holes {
+                    if let Some(method) = &hole.method {
+                        call(method, &[&hole.operand], &mut found, cache);
+                    }
+                }
+            }
+            E::StructuralCompare(_, operands)
+            | E::StructuralHash(operands)
+            | E::StructuralDisplay(operands) => {
+                let operands: Vec<&TypedExpr> = operands.iter().collect();
+                if loans(&operands)
+                    && operands
+                        .iter()
+                        .any(|operand| types.reaches(&operand.ty, |ty| matches!(ty, Type::Dyn(_))))
+                {
+                    found.direct = true;
+                }
+            }
+            E::DynDispatch { .. } => found.direct = true,
+            _ => {}
+        }
+        expression
+            .try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })
+            .expect("collecting calls cannot fail");
+    }
+    found
+}
+
+/// The lambdas lifted from each function and the functions they are lifted from, in both
+/// directions, through the lambdas in lambdas and the groups of `let rec`.
+fn related_bodies(module: &CheckedModule) -> Vec<Vec<usize>> {
+    let mut related: Vec<Vec<usize>> = vec![Vec::new(); module.functions.len()];
     for (id, function) in module.functions.iter().enumerate() {
         let mut pending = vec![&function.body];
         while let Some(expression) = pending.pop() {
@@ -1146,16 +1381,93 @@ fn lending_bodies(module: &CheckedModule) -> Vec<bool> {
             pending.extend(expression.children());
         }
     }
-    let mut work: Vec<usize> = (0..lending.len()).filter(|id| lending[*id]).collect();
+    related
+}
+
+/// Marks every function that `edges` reaches from a marked one.
+fn close_marks(marks: &mut [bool], edges: &[Vec<usize>]) {
+    let mut work: Vec<usize> = (0..marks.len()).filter(|id| marks[*id]).collect();
     while let Some(id) = work.pop() {
-        for &other in &related[id] {
-            if !lending[other] {
-                lending[other] = true;
+        for &other in &edges[id] {
+            if !marks[other] {
+                marks[other] = true;
                 work.push(other);
             }
         }
     }
-    lending
+}
+
+/// By function: whether calling it may hand an argument's value to code whose body the analysis
+/// does not see (`opaque_calls`), or the body of a lambda lifted from it, or of the function that
+/// it was lifted from, does. Upward: `Array.map` runs the lambda that it makes (in `new`), whose
+/// body calls `transform`. Through calls: a body that calls such a function with all its arguments,
+/// one of which may hold loans and one of which can run code, may hand the first to the second
+/// (`fn pass w text = Array.iter w (ref [\() -> String.length text])` calls `Array.iter`, whose
+/// body calls `w`). The least fixed points over these edges: the first vector counts the calls
+/// that only an environment makes opaque (`OpaqueCalls::environment`), the second does not.
+fn opaque_bodies(module: &CheckedModule, related: &[Vec<usize>]) -> (Vec<bool>, Vec<bool>) {
+    let mut cache = BTreeMap::new();
+    let mut edges = related.to_vec();
+    let mut any = Vec::with_capacity(module.functions.len());
+    let mut direct = Vec::with_capacity(module.functions.len());
+    for (id, function) in module.functions.iter().enumerate() {
+        let found = opaque_calls(&function.body, module, &mut cache);
+        any.push(found.direct || found.environment);
+        direct.push(found.direct);
+        for callee in found.callees {
+            edges[callee].push(id);
+        }
+    }
+    close_marks(&mut any, &edges);
+    close_marks(&mut direct, &edges);
+    (any, direct)
+}
+
+/// What `lending_bodies` finds, by function.
+#[derive(Clone)]
+struct Lending {
+    /// The body has no facts: it lends a way to write, or makes an opaque call.
+    facts: Vec<bool>,
+    /// Nothing is read through in the body: it lends a way to write, or makes an opaque call with
+    /// an argument that may hold loans.
+    reads: Vec<bool>,
+    /// `opaque_bodies` without the environments, for the bodies that are not functions of the
+    /// module.
+    opaque: Vec<bool>,
+}
+
+/// By function: whether its body lends a way to write (`lends_mutable`) or may hand a value to
+/// code whose body the analysis does not see (`opaque_bodies`), or the body of a lambda lifted from
+/// it, or of the function that it was lifted from, does. Downward: a lambda's captures hold what
+/// the enclosing body gave them, and that misses what an untracked store put there, so a lambda
+/// whose captures were made in such a body reads nothing through them either: in
+/// `let mut arr = [Arc.new f]`, `Array.write 0 (Arc.new borrowing) (ref mut arr)` and
+/// `\() -> Arc.share (ref arr[0])`, the share would hold what `arr` held before the write (and
+/// `read_through` keeps the borrow of a capture in any lambda, since a capture is a parameter of
+/// the lifted function; this mark also drops the lambda's facts, as for its enclosing body).
+/// Upward: a lambda that lends a way to write (it passes a captured cell, or its own exclusive
+/// parameter, to a writer) may write into what the enclosing body gave it, so the enclosing body
+/// keeps the rule from before A28 too; the scan of an unlifted body sees the bodies of its
+/// `E::Lambda`s already. Each body is scanned once; the lifted lambdas follow the `E::Closure`
+/// that makes them, through the lambdas in lambdas and the groups of `let rec`.
+fn lending_bodies(module: &CheckedModule) -> Lending {
+    let types = module.types();
+    let related = related_bodies(module);
+    let (any, direct) = opaque_bodies(module, &related);
+    let lends: Vec<bool> = module
+        .functions
+        .iter()
+        .map(|function| lends_mutable(&function.body, &types))
+        .collect();
+    let mut facts: Vec<bool> = lends.iter().zip(&any).map(|(a, b)| *a || *b).collect();
+    let mut reads: Vec<bool> = lends.iter().zip(&direct).map(|(a, b)| *a || *b).collect();
+    close_marks(&mut facts, &related);
+    close_marks(&mut reads, &related);
+    Lending {
+        facts,
+        reads,
+        opaque: direct,
+    }
 }
 
 /// The parameters of an abstract body whose loans may pass through a value whose type has a type
@@ -1513,7 +1825,7 @@ impl<'a> Checker<'a, '_> {
                             callbacks: &[],
                             slots: None,
                             builtin_wrapper: function.module == "$builtin",
-                            lends_mutable: Some(self.facts.lending[*id]),
+                            lends_mutable: Some(self.facts.lending.reads[*id]),
                         },
                         &mut Vec::new(),
                         None,
@@ -1661,14 +1973,25 @@ impl<'a> Checker<'a, '_> {
         )
     }
 
-    /// Whether the checked body, or a related one, lends a way to write (`lends_mutable`): a store
+    /// Whether the checked body, or a related one, lends a way to write (`lends_mutable`) or hands
+    /// a value to code that the analysis does not see (`opaque_calls`, `opaque_bodies`): a store
     /// that the check does not track may then have put in the owner, or in a value that a lambda
     /// captured, what its loans miss, so nothing is read through the owner's borrow
     /// (`lending_bodies`).
     fn body_lends_mutable(&mut self) -> bool {
-        *self
-            .lends_mutable
-            .get_or_insert_with(|| lends_mutable(self.body, &self.module.types()))
+        if let Some(lends) = self.lends_mutable {
+            return lends;
+        }
+        let lends = lends_mutable(self.body, &self.module.types()) || {
+            let found = opaque_calls(self.body, self.module, &mut BTreeMap::new());
+            found.direct
+                || found
+                    .callees
+                    .iter()
+                    .any(|callee| self.facts.lending.opaque[*callee])
+        };
+        self.lends_mutable = Some(lends);
+        lends
     }
 
     /// What a value read through the borrows `loans` holds, as `read_places` reads a place: a
@@ -5473,6 +5796,62 @@ mod retention_tests {
             };
             assert_eq!(retained("a28_locked"), Some(vec![true, true]), "{infer}");
             assert_eq!(retained("a28_counted"), Some(vec![false, true]), "{infer}");
+        }
+    }
+
+    /// A28 review (6th round): a body that hands a borrowing value to code that the analysis does not
+    /// see (a function-valued parameter, a builtin that runs its callback, a named function that
+    /// does either) has no facts and reads nothing through. A body that calls a closure with `()`
+    /// has no facts either, since the closure may store what it captured, but it still reads
+    /// through. A body that only passes a function value on keeps its facts.
+    #[test]
+    fn a_body_that_calls_unseen_code_has_no_facts() {
+        let module = crate::analyze(
+            "def a28_calls :: own ((unit -> i64) -> unit) -> ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_calls w text r =\n    w (\\() -> String.length text)\n    r\n\
+             def a28_thunk :: own (unit -> unit) -> own (unit -> i64) -> (unit -> i64)\nfn a28_thunk t r =\n    t ()\n    r\n\
+             def a28_iter :: own ((unit -> i64) -> unit) -> ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_iter w text r =\n    let arr = [\\() -> String.length text]\n    Array.iter w (ref arr)\n    r\n\
+             def a28_through :: own ((unit -> i64) -> unit) -> ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_through w text r = a28_calls w text r\n\
+             def a28_plain :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_plain _text g = g\n\
+             let text = \"abc\"\n\
+             let a = a28_calls (\\_ -> ()) (ref text) (\\() -> 1)\nlet b = a28_thunk (\\() -> ()) (\\() -> 2)\n\
+             let c = a28_iter (\\_ -> ()) (ref text) (\\() -> 3)\nlet d = a28_through (\\_ -> ()) (ref text) (\\() -> 4)\n\
+             let e = a28_plain (ref text) (\\() -> 5)\n\
+             a () + b () + c () + d () + e ()",
+        )
+        .unwrap();
+        let id = |name: &str| {
+            module
+                .functions
+                .iter()
+                .position(|function| function.name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        for infer in [false, true] {
+            let facts = call_facts(&module, infer);
+            let retained = |name: &str| facts.retained[id(name)].as_deref().map(<[bool]>::to_vec);
+            assert_eq!(
+                retained("a28_calls"),
+                Some(vec![true, true, true]),
+                "{infer}"
+            );
+            assert_eq!(retained("a28_thunk"), Some(vec![true, true]), "{infer}");
+            assert_eq!(
+                retained("a28_iter"),
+                Some(vec![true, true, true]),
+                "{infer}"
+            );
+            assert_eq!(
+                retained("a28_through"),
+                Some(vec![true, true, true]),
+                "{infer}"
+            );
+            assert_eq!(retained("a28_plain"), Some(vec![false, true]), "{infer}");
+            for name in ["a28_calls", "a28_iter", "a28_through"] {
+                assert!(facts.lending.reads[id(name)], "{name} {infer}");
+            }
+            assert!(facts.lending.facts[id("a28_thunk")], "{infer}");
+            assert!(!facts.lending.reads[id("a28_thunk")], "{infer}");
+            assert!(!facts.lending.facts[id("a28_plain")], "{infer}");
         }
     }
 

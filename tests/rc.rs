@@ -573,6 +573,116 @@ fn a_lock_callback_lends_a_way_to_write() {
     }
 }
 
+/// A28 review (6th round): a function type, a dyn type and an `Owned.Function` do not show their
+/// environments, so a body that hands a borrowing value to such code (a function-valued parameter,
+/// a field, a partial application, `Owned.call`, a dyn method, a builtin that runs its callback
+/// such as `Array.iter`, `Array.map` and `Array.fold`) may have it stored in a cell that the
+/// code captured, where another input (a reader closure over the same `Arc<Mutex<...>>`, the dyn
+/// value) reads it back. Such a body has no facts and reads nothing through, and a call of a
+/// function whose body is one counts as one when it passes a value that can run code. A closure
+/// called with `()` stores what it captured (`thunk_env`), so a call that only the callee's
+/// environment makes opaque drops the facts too. Each program keeps the A30 tip's diagnostic at its
+/// position; accepted by the 5th round, they printed garbage at `-O0` (`String.length` of the
+/// freed `text`; 11 is right) and the dyn form aborted.
+#[test]
+fn an_opaque_call_hands_a_borrow_to_unseen_code() {
+    let at = |source: &str, error: &tsuzuri::diagnostic::Diagnostic| {
+        let before = &source[..error.span.start];
+        (
+            before.matches('\n').count() + 1,
+            before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1,
+        )
+    };
+    for (source, (line, column)) in [
+        // mx_leak
+        (
+            "def writer :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn writer a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> ref string -> ref string -> (unit -> i64)\nfn pass w r text other =\n    w (\\() -> String.length text)\n    \\() -> r () + String.length other\ndef leak :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> ref string -> own i64 -> (unit -> i64)\nfn leak w r keep n =\n    let text = to_string n\n    pass w r (ref text) keep\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let k = \"ab\"\n    let w = writer a1\n    let r = reader a2\n    let f = leak w r (ref k) 123456789\n    f ()\nrun ()",
+            (12, 5),
+        ),
+        // rw_leak
+        (
+            "def writer :: own Arc<RwMutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn writer a = \\g -> RwMutex.with_write (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef reader :: own Arc<RwMutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> RwMutex.with_write (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> ref string -> ref string -> (unit -> i64)\nfn pass w r text other =\n    w (\\() -> String.length text)\n    \\() -> r () + String.length other\ndef leak :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> ref string -> own i64 -> (unit -> i64)\nfn leak w r keep n =\n    let text = to_string n\n    pass w r (ref text) keep\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (RwMutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let k = \"ab\"\n    let w = writer a1\n    let r = reader a2\n    let f = leak w r (ref k) 123456789\n    f ()\nrun ()",
+            (12, 5),
+        ),
+        // mxi_leak
+        (
+            "def pass :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> ref string -> ref string -> (unit -> i64)\nfn pass w r text other =\n    w (\\() -> String.length text)\n    \\() -> r () + String.length other\ndef leak :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> ref string -> own i64 -> (unit -> i64)\nfn leak w r keep n =\n    let text = to_string n\n    pass w r (ref text) keep\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let k = \"ab\"\n    let w = \\g -> Mutex.with_lock (Arc.get (ref a1)) (\\slot -> Array.write 0 g slot)\n    let r = \\() -> Mutex.with_lock (Arc.get (ref a2)) (\\slot -> slot[0] ())\n    let f = leak w r (ref k) 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+            (8, 5),
+        ),
+        // owned_call
+        (
+            "def pass :: ref Owned.Function<Maybe<(unit -> i64)>, i64> -> ref string -> ref string -> (unit -> i64)\nfn pass w text other =\n    let _stored = Owned.call w (Maybe.Some (\\() -> String.length text))\n    \\() -> Owned.call w Maybe.None + String.length other\ndef leak :: ref Owned.Function<Maybe<(unit -> i64)>, i64> -> ref string -> own i64 -> (unit -> i64)\nfn leak w keep n =\n    let text = to_string n\n    pass w (ref text) keep\ndef run :: unit -> i64\nfn run u =\n    let k = \"ab\"\n    let m = Mutex.create [\\() -> 0]\n    let w = Owned.function (\\x -> match x with\n        | Maybe.Some g -> Mutex.with_lock (ref m) (\\slot -> { Array.write 0 g slot; 0 })\n        | Maybe.None -> Mutex.with_lock (ref m) (\\slot -> slot[0] ()))\n    let f = leak (ref w) (ref k) 123456789\n    f ()\nrun ()",
+            (8, 5),
+        ),
+        // array_iter
+        (
+            "def writer :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn writer a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> ref string -> ref string -> (unit -> i64)\nfn pass w r text other =\n    let arr = [\\() -> String.length text]\n    Array.iter w (ref arr)\n    \\() -> r () + String.length other\ndef leak :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> ref string -> own i64 -> (unit -> i64)\nfn leak w r keep n =\n    let text = to_string n\n    pass w r (ref text) keep\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let k = \"ab\"\n    let w = writer a1\n    let r = reader a2\n    let f = leak w r (ref k) 123456789\n    f ()\nrun ()",
+            (13, 5),
+        ),
+        // array_map
+        (
+            "def writer :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn writer a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> ref string -> ref string -> (unit -> i64)\nfn pass w r text other =\n    let arr = [\\() -> String.length text]\n    let _units = Array.map w (ref arr)\n    \\() -> r () + String.length other\ndef leak :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> ref string -> own i64 -> (unit -> i64)\nfn leak w r keep n =\n    let text = to_string n\n    pass w r (ref text) keep\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let k = \"ab\"\n    let w = writer a1\n    let r = reader a2\n    let f = leak w r (ref k) 123456789\n    f ()\nrun ()",
+            (13, 5),
+        ),
+        // array_fold
+        (
+            "def writer :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)\nfn writer a = \\n g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> { Array.write 0 g slot; n + 1 })\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own (i64 -> (unit -> i64) -> i64) -> own (unit -> i64) -> ref string -> ref string -> (unit -> i64)\nfn pass w r text other =\n    let arr = [\\() -> String.length text]\n    let _count = Array.fold w 0 (ref arr)\n    \\() -> r () + String.length other\ndef leak :: own (i64 -> (unit -> i64) -> i64) -> own (unit -> i64) -> ref string -> own i64 -> (unit -> i64)\nfn leak w r keep n =\n    let text = to_string n\n    pass w r (ref text) keep\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let k = \"ab\"\n    let w = writer a1\n    let r = reader a2\n    let f = leak w r (ref k) 123456789\n    f ()\nrun ()",
+            (13, 5),
+        ),
+        // field_partial
+        (
+            "record Sink { put: (unit -> i64) -> unit }\ndef store :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> unit\nfn store a g = Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: ref Sink -> own (unit -> i64) -> ref string -> ref string -> (unit -> i64)\nfn pass s r text other =\n    s.put (\\() -> String.length text)\n    \\() -> r () + String.length other\ndef leak :: ref Sink -> own (unit -> i64) -> ref string -> own i64 -> (unit -> i64)\nfn leak s r keep n =\n    let text = to_string n\n    pass s r (ref text) keep\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let k = \"ab\"\n    let s = Sink { put: store a1 }\n    let r = reader a2\n    let f = leak (ref s) r (ref k) 123456789\n    f ()\nrun ()",
+            (13, 5),
+        ),
+        // thunk_env
+        (
+            "def writer :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn writer a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own (unit -> unit) -> own (unit -> i64) -> (unit -> i64)\nfn pass t r =\n    t ()\n    \\() -> r ()\ndef leak :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> own i64 -> (unit -> i64)\nfn leak w r n =\n    let text = to_string n\n    let borrowed = ref text\n    pass (\\() -> w (\\() -> String.length borrowed)) r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let w = writer a1\n    let r = reader a2\n    let f = leak w r 123456789\n    f ()\nrun ()",
+            (13, 5),
+        ),
+    ] {
+        let error = analyze(source).expect_err(source);
+        assert_eq!(
+            error.code, "E1013",
+            "{source}
+{}",
+            error.message
+        );
+        assert_eq!(
+            error.kind,
+            Some("borrow_outlives_block"),
+            "{source}
+{}",
+            error.message
+        );
+        assert_eq!(
+            at(source, &error),
+            (line, column),
+            "{source}
+{}",
+            error.message
+        );
+    }
+    // dyn_generic: a generic `pass` specialized at `dyn Sinks.Sink {r}` calls the vtable.
+    let sinks = "class Sink<'value> {\n    def put :: ref 'value -> own (unit -> i64) -> unit\n    def read :: ref 'value -> i64\n}";
+    let main = "record Cell {r} { m: ref {r} Mutex<[unit -> i64]> }\ninstance Sinks.Sink<Cell> {\n    fn put cell g = Mutex.with_lock cell.m (\\slot -> Array.write 0 g slot)\n    fn read cell = Mutex.with_lock cell.m (\\slot -> slot[0] ())\n}\ndef make {r} :: ref {r} Mutex<[unit -> i64]> -> dyn Sinks.Sink {r}\nfn make m = Dyn.of (Cell { m: m })\ndef pass :: Sinks.Sink<'a> => ref 'a -> ref string -> ref string -> (unit -> i64)\nfn pass w text other =\n    Sinks.Sink.put w (\\() -> String.length text)\n    \\() -> Sinks.Sink.read w + String.length other\ndef leak :: Sinks.Sink<'a> => ref 'a -> ref string -> own i64 -> (unit -> i64)\nfn leak w keep n =\n    let text = to_string n\n    pass w (ref text) keep\ndef run :: unit -> i64\nfn run u =\n    let k = \"ab\"\n    let m = Mutex.create [\\() -> 0]\n    let w = make (ref m)\n    let f = leak (ref w) (ref k) 123456789\n    f ()\nrun ()";
+    let error = analyze_modules(&[("Sinks.tt", sinks), ("Main.tz", main)]).expect_err(main);
+    assert_eq!(error.code, "E1013", "{}", error.message);
+    assert_eq!(
+        error.kind,
+        Some("borrow_outlives_block"),
+        "{}",
+        error.message
+    );
+    assert_eq!(at(main, &error), (15, 5), "{}", error.message);
+    // The controls: the same programs while `text` is alive (they print 11).
+    for source in [
+        "def writer :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn writer a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> ref string -> ref string -> (unit -> i64)\nfn pass w r text other =\n    w (\\() -> String.length text)\n    \\() -> r () + String.length other\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let k = \"ab\"\n    let t = to_string 123456789\n    let w = writer a1\n    let r = reader a2\n    let f = pass w r (ref t) (ref k)\n    f ()\nrun ()",
+        "def pass :: ref Owned.Function<Maybe<(unit -> i64)>, i64> -> ref string -> ref string -> (unit -> i64)\nfn pass w text other =\n    let _stored = Owned.call w (Maybe.Some (\\() -> String.length text))\n    \\() -> Owned.call w Maybe.None + String.length other\ndef run :: unit -> i64\nfn run u =\n    let k = \"ab\"\n    let t = to_string 123456789\n    let m = Mutex.create [\\() -> 0]\n    let w = Owned.function (\\x -> match x with\n        | Maybe.Some g -> Mutex.with_lock (ref m) (\\slot -> { Array.write 0 g slot; 0 })\n        | Maybe.None -> Mutex.with_lock (ref m) (\\slot -> slot[0] ()))\n    let f = pass (ref w) (ref t) (ref k)\n    f ()\nrun ()",
+    ] {
+        emits(source);
+    }
+}
+
 #[test]
 fn shared_types_have_reserved_names_and_no_abi() {
     for source in [
