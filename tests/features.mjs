@@ -5,8 +5,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { casesPath as regexCasesPath, casesSource as regexCasesSource, expectedCases as regexCases } from "./regex-cases.mjs";
-import { expectedCases as unicodeCases } from "./unicode-cases.mjs";
+import { cases as regexV8 } from "./regex-v8.mjs";
+import { checkUcdData as checkUnicodeData, expectedCases as unicodeCases } from "./unicode-cases.mjs";
 import * as unicodeData from "./unicode-ucd.mjs";
+import { cases as unicodeV8 } from "./unicode-v8.mjs";
 import { cases as matrixCases, traps as matrixTraps, productEntry } from "./matrix-cases.mjs";
 import { cases as matrixViewCases, traps as matrixViewTraps, bounded as matrixViewBounded } from "./matrix-view-cases.mjs";
 import { cases as tensorCases, traps as tensorTraps, bounded as tensorBounded } from "./tensor-cases.mjs";
@@ -608,6 +610,7 @@ const suites = {
       ["owned_text", [], BigInt("hello!".length + "hello".length)],
       ["generic_read", [], 18n],
       ["generic_scalar", [], 42n],
+      ["call_result_temporaries", [], 42n + 42n + 41n + BigInt("1234".length) + BigInt("hello".length)],
       ...[-3, 0, 1, 5].map((n) => {
         const wide = BigInt(n), flag = n > 0;
         const a = wide + wide + wide;
@@ -1585,6 +1588,8 @@ const suites = {
       ["parallel_callback_snapshots", [4097n], 8194n], ["parallel_float_special", [], 1n], ["parallel_order", [], 1203n],
       ["parallel_capture_order", [], 53n],
       ["parallel_wrapping", [], -16n],
+      // explicit: the sum of index + 1, direct: of 2 * index, lengths: "hellohello" per word, total: the row [5].
+      ...[0n, 1n, 4097n].map((n) => ["parallel_temporary_inputs", [n], n * (n + 1n) / 2n + n * (n - 1n) + 10n * n + 5n]),
     ],
     traps: [["parallel_large_length", [-1n]], ["parallel_trap", []]],
   },
@@ -1601,6 +1606,8 @@ const suites = {
       ["parallel_callback_snapshots", [4097n], 8194n], ["parallel_float_special", [], 1n], ["parallel_order", [], 1203n],
       ["parallel_capture_order", [], 53n],
       ["parallel_wrapping", [], -16n],
+      // explicit: the sum of index + 1, direct: of 2 * index, lengths: "hellohello" per word, total: the row [5].
+      ...[0n, 1n, 4097n].map((n) => ["parallel_temporary_inputs", [n], n * (n + 1n) / 2n + n * (n - 1n) + 10n * n + 5n]),
       ["scope_ring", [], 2143n],
       ["scope_shares_borrow", [], 1225130000n],
       ["scope_shares_an_atomic", [], 36n],
@@ -1671,11 +1678,12 @@ const suites = {
     ],
     traps: [["trap_decode_end", []], ["trap_decode_continuation", []], ["trap_repeat_negative", []], ["trap_repeat_overflow", []]],
   },
-  // D09: the cases and their V8 or hand-written expectations come from tests/regex-cases.mjs.
+  // D09: the cases and their V8 or hand-written expectations come from tests/regex-cases.mjs, the V8 ones as committed in
+  // tests/regex-v8.mjs (G38: recomputed and compared only by a Node with std's Unicode version).
   regex: {
     get cases() {
       assert.equal(readFileSync(regexCasesPath, "utf8"), regexCasesSource(), "run node tests/regex-cases.mjs --write");
-      return (this.computed ??= regexCases());
+      return (this.computed ??= regexCases(regexV8));
     },
     inspect(ir) {
       const matching = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Regex\.(?:add_thread|search|copy_slots|in_class|holds|consumes)\([^\n]*\{([\s\S]*?)^\}/gm)];
@@ -1684,9 +1692,13 @@ const suites = {
       assert.match(ir, /^@tz\.unicode\.table\.0 = internal unnamed_addr constant/m);
     },
   },
-  // D09 Phase 2: the UCD conformance tests (tests/unicode-ucd.mjs) and V8 references from tests/unicode-cases.mjs.
+  // D09 Phase 2: the UCD conformance tests (tests/unicode-ucd.mjs) and V8 references from tests/unicode-cases.mjs, the
+  // latter as committed in tests/unicode-v8.mjs (G38: recomputed and compared only by a Node with std's Unicode version).
   unicode: {
-    get cases() { return (this.computed ??= unicodeCases(unicodeData)); },
+    get cases() {
+      checkUnicodeData();
+      return (this.computed ??= unicodeCases(unicodeData, unicodeV8));
+    },
     inspect(ir) {
       assert.match(ir, /^@tz\.unicode\.table\.17 = internal unnamed_addr constant/m);
       assert.equal(ir.match(/^define internal i64 @tz\.unicode\.entry\(/gm).length, 1);

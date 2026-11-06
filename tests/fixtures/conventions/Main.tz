@@ -37,6 +37,16 @@ export def generic_read :: i64 =
 
 export def generic_scalar :: i64 = generic_identity 42
 
+// A27: a call whose result is still open is lent to a read parameter like a value.
+export def call_result_temporaries :: i64 =
+    let next = Owned.function (\value -> value + 1)
+    let show = Owned.function (\(n: i64) -> to_string n)
+    let xs = [41i64, 2]
+    let m = Maybe.Some "hello"
+    let a = generic_identity (Owned.call (ref next) 41)
+    let b = generic_identity ((\value -> value * 2) 21)
+    a + b + generic_identity (Array.get 0 xs) + String.length (Owned.call (ref show) 1234) + String.length (Maybe.get m)
+
 def read_i64 :: ref i64 -> i64 = \value -> deref value
 def read_text :: ref string -> i64 = \text -> text.length
 def read_result :: ref Result<i32, Exception> -> i64 = \result ->

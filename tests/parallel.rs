@@ -1,4 +1,5 @@
-use tsuzuri::{analyze, llvm};
+use tsuzuri::syntax::Edition;
+use tsuzuri::{analyze, analyze_with_edition, llvm};
 
 #[test]
 fn parallel_apis_are_typed_and_keep_their_ownership_boundary() {
@@ -59,4 +60,57 @@ fn parallel_codegen_uses_fixed_chunks_and_the_existing_runtime() {
         !ir.lines()
             .any(|line| line.contains("call ") && line.contains("ptr @tz.alloc(i64 32)"))
     );
+}
+
+/// A borrowed temporary is the input of `Parallel.map`, `map_ref` and `reduce`: it lives in a slot
+/// until the chunks finish and is dropped after them, as the shared value of `Routine.scope` is.
+/// A27 made the direct form (`Array.get 0 rows` passed to `ref ['a]`) reach it without `ref`, so its
+/// IR is the IR of the explicit `ref (...)` form.
+#[test]
+fn parallel_inputs_borrow_temporaries() {
+    let program = |result: &str| {
+        format!(
+            "export def run :: i64 -> i64\nfn run n =\n    let rows = [[n, 1], [2]]\n    \
+             let words = [\"a\", \"bc\"]\n    {result}\n"
+        )
+    };
+    let operations = [
+        ("Array.sum (Parallel.map (\\value -> value + 1) ", ")"),
+        (
+            "Array.sum (Parallel.map_ref (\\value -> deref value * 2) ",
+            ")",
+        ),
+        ("Parallel.reduce 0 (\\left right -> left + right) ", ""),
+    ];
+    for edition in [Edition::E2026, Edition::E2027] {
+        for (call, close) in operations {
+            let explicit = program(&format!("{call}(ref (Array.get 0 rows)){close}"));
+            let direct = program(&format!("{call}(Array.get 0 rows){close}"));
+            let explicit = analyze_with_edition(&explicit, edition)
+                .unwrap_or_else(|error| panic!("{explicit}\n{error:?}"));
+            let direct = analyze_with_edition(&direct, edition)
+                .unwrap_or_else(|error| panic!("{direct}\n{error:?}"));
+            for wasm in [false, true] {
+                let ir = llvm::emit_target(&explicit, llvm::Entry::Library, wasm).unwrap();
+                assert_eq!(
+                    ir,
+                    llvm::emit_target(&direct, llvm::Entry::Library, wasm).unwrap(),
+                    "{call}"
+                );
+                assert_eq!(
+                    ir,
+                    llvm::emit_target(&explicit, llvm::Entry::Library, wasm).unwrap()
+                );
+            }
+        }
+    }
+    // A temporary that owns heap values, made by another call (2027: `Array.map` lends the strings).
+    let source = program(
+        "Array.sum (Parallel.map_ref (\\word -> word.length) (Array.map (\\word -> String.repeat 2 word) (ref words)))",
+    );
+    let module = analyze_with_edition(&source, Edition::E2027)
+        .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    for wasm in [false, true] {
+        llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+    }
 }
