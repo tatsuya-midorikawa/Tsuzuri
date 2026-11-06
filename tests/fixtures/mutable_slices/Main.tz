@@ -248,9 +248,10 @@ fn trap_chunk_size =
     Parallel.for_each_chunk 0 (\_start chunk -> Array.write 0 1 chunk) (ref mut values)
     values[0]
 
-// A28: std writers on reference elements, a generic writer of the program on function and
-// reference elements, and MatrixView's writers on function elements, which hold no borrow or a
-// borrow that outlives the array.
+// Writes that main accepts and that tracking the in-place writes must keep (A31): std writers on
+// reference elements, a generic writer of the program on function and reference elements, and
+// MatrixView's writers on function elements, which hold no borrow or a borrow that outlives the
+// array.
 def pick_second :: ref i64 -> ref i64 -> i64
 fn pick_second first second =
     let mut refs = [first]

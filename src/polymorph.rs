@@ -4916,14 +4916,6 @@ impl Specializer<'_> {
             self.member_target(&member)?;
         }
         if !substitutions.is_empty() {
-            function.instance = Some(Box::new(crate::check::Instance {
-                parameters: function
-                    .parameters
-                    .iter()
-                    .map(|parameter| parameter.ty.clone())
-                    .collect(),
-                arguments: types.to_vec(),
-            }));
             for parameter in &mut function.parameters {
                 parameter.ty = substitute(&parameter.ty, &substitutions);
             }
@@ -5492,7 +5484,6 @@ impl Specializer<'_> {
             is_once: false,
             owned_captures: false,
             contracts: Default::default(),
-            instance: None,
         });
         self.intrinsics.insert(key, id);
         self.request(id, Vec::new(), span)
@@ -5559,7 +5550,6 @@ impl Specializer<'_> {
             is_once: false,
             owned_captures: false,
             contracts: Default::default(),
-            instance: None,
         });
         self.to_strings.insert(ty.clone(), id);
         self.request(id, Vec::new(), span)

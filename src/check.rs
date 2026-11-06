@@ -96,10 +96,6 @@ pub(crate) struct RegionSlots {
     /// A call may store some input in the target of an exclusive reference, so the function only
     /// runs in direct calls with every argument.
     pub writes: bool,
-    /// `closures::derive_store_slots` gave the slots to an instance whose type variables cannot
-    /// name a region. The borrows behind the exclusive references inside a target (the array of
-    /// a `MatrixView.Mut`) then have the region of the target's borrows.
-    pub derived: bool,
 }
 
 impl RegionSlots {
@@ -4671,18 +4667,6 @@ pub struct CheckedFunction {
     pub(crate) owned_captures: bool,
     /// A21: how the body weaves in the function's contract lines; empty without them.
     pub contracts: contracts::ContractShape,
-    /// The declaration that a specialized instance comes from; `None` for other functions.
-    pub(crate) instance: Option<Box<Instance>>,
-}
-
-/// What specialization knows of an instance's declaration: the parameter types before their
-/// type variables were substituted, and the types that replaced those variables. A type variable
-/// cannot name a region, so `closures::derive_store_slots` reads them to find the values that a
-/// writer may store.
-#[derive(Clone, Debug)]
-pub(crate) struct Instance {
-    pub parameters: Vec<Type>,
-    pub arguments: Vec<Type>,
 }
 
 impl CheckedFunction {
@@ -8956,7 +8940,6 @@ fn check_modules_collect(
                     is_once: false,
                     owned_captures: false,
                     contracts: shape,
-                    instance: None,
                 })
             })();
             let recovered: Vec<_> = std::mem::take(&mut checker.recovered)
@@ -9060,7 +9043,6 @@ fn check_modules_collect(
                 is_once: false,
                 owned_captures: false,
                 contracts: Default::default(),
-                instance: None,
             })
         })();
         diagnostics.extend(std::mem::take(&mut checker.recovered));
@@ -9287,16 +9269,13 @@ fn check_modules_collect(
     let module = closures::lower(module);
     drop(closures_time);
     let mut module = module?;
-    let std_writes = closures::derive_store_slots(&mut module);
-    if std_writes
-        || module.functions.iter().any(|function| {
-            function.module == "$builtin"
-                && function
-                    .region_slots
-                    .as_ref()
-                    .is_some_and(|slots| slots.writes)
-        })
-    {
+    if module.functions.iter().any(|function| {
+        function.module == "$builtin"
+            && function
+                .region_slots
+                .as_ref()
+                .is_some_and(|slots| slots.writes)
+    }) {
         regions::validate_contract_calls(&module)?;
     }
     let ownership_time = crate::timings::Phase::start("ownership");
@@ -9607,7 +9586,6 @@ fn recovery_module(
             is_once: false,
             owned_captures: false,
             contracts: Default::default(),
-            instance: None,
         })
         .collect();
     for (id, function) in checked {

@@ -384,7 +384,6 @@ fn lower_group(
             is_once: false,
             owned_captures: false,
             contracts: Default::default(),
-            instance: None,
         });
         generated.recursive.functions.insert(
             members[position].0.id,

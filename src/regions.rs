@@ -604,7 +604,6 @@ fn region_slots(
         targets,
         result_target: target_form(&function.result).is_some(),
         writes: false,
-        derived: false,
     };
     // A call may store any input with a written target's region in that target.
     for (index, parameter) in function.parameters.iter().enumerate() {
@@ -789,28 +788,6 @@ pub(super) fn validate_contract_calls(module: &CheckedModule) -> Result<(), Diag
     for function in &module.functions {
         let mut pending = vec![&function.body];
         while let Some(expression) = pending.pop() {
-            // `x |> f a` is `f a x`, so a pipeline that completes a call of a builtin or std
-            // function that stores an input (`ref mut values |> Array.set 0 f`), or of an
-            // instance with a derived contract, calls it directly; the ownership check stores its
-            // inputs there too. A function of the program with named regions is called directly
-            // with all of its arguments.
-            if let TypedExprKind::Binary(crate::syntax::BinaryOp::Pipe, left, right) =
-                &expression.kind
-                && let TypedExprKind::Call(callee, arguments) = &right.kind
-                && let Some(id) = target(callee)
-                && (module.functions[id].module == "$builtin"
-                    || module.functions[id].origin.module == ModuleOrigin::Std
-                    || module.functions[id]
-                        .region_slots
-                        .as_ref()
-                        .is_some_and(|slots| slots.derived))
-                && module.functions[id].callback_contracts.is_empty()
-                && arguments.len() + 1 == module.functions[id].parameters.len()
-            {
-                pending.extend(arguments);
-                pending.push(left);
-                continue;
-            }
             if let TypedExprKind::Call(callee, arguments) = &expression.kind
                 && let Some(id) = target(callee)
             {

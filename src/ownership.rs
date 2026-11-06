@@ -540,6 +540,7 @@ fn start_checker<'a, 'run>(
         // `Drop.drop` borrows the dropped value through its only parameter.
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         later_use_budget: LATER_USE_NODES,
+        lends_exclusive: None,
     };
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
@@ -945,7 +946,8 @@ fn parameter_retention_within(
 }
 
 /// The parameters of `function` whose loans its result holds, under the facts so far; `None`
-/// when the body does not check, or when its result holds a loan of its own locals.
+/// when the body does not check, when its result holds a loan of its own locals, or when it lends
+/// an exclusive borrow to a call (`lends_exclusive`).
 fn retained_parameters(
     module: &CheckedModule,
     id: usize,
@@ -953,6 +955,9 @@ fn retained_parameters(
     facts: &CallFacts,
 ) -> Option<Box<[bool]>> {
     let function = &module.functions[id];
+    if lends_exclusive(&function.body, &module.types()) {
+        return None;
+    }
     let mut recovered = Vec::new();
     let mut checker = start_checker(
         module,
@@ -1003,6 +1008,54 @@ fn retained_parameters(
         pending.extend(&loan.parents);
     }
     Some(retained.into_boxed_slice())
+}
+
+/// Whether `body` passes to a call an argument whose type reaches an exclusive reference: an
+/// exclusive borrow (`ref mut values`, `ref mut values[0..1]`), a `ref mut` parameter or local, or
+/// a value that holds one (a tuple, a record with an exclusive region, a `MatrixView.Mut`), in a
+/// call, a pipeline that completes one, a host or parallel call, or the captures of a closure.
+///
+/// A28 trusts the loans that the check of a body gives its result: the facts drop the arguments
+/// that do not reach it, and `read_through` takes what a borrowed owner holds. Both are sound only
+/// when the check sees every value that the body stores where its result can read it. The check
+/// does not track the stores of the in-place writers `Array.write` (and `Array.set`, `Array.fill`,
+/// `Array.blit` and the other std functions built on it) and `SyncMap.__replace`: the stored
+/// value's loans do not reach the owner of the target (A31). Each of them takes its target as an
+/// exclusive reference argument, and a function that writes into a place that its caller lends
+/// it (a callback, a std function) gets that place only through an exclusive borrow too; such a
+/// callee keeps all its arguments' loans because its own body lends one. Other stores are tracked
+/// (an assignment, `deref r = v`, `Vec.push_mut`, a function with a region contract). So a body
+/// that passes no exclusive borrow to any call stores nothing that its check misses, and a body
+/// that passes one keeps the rule from before A28: its result holds every argument's loans, and
+/// `Rc.share` and its kin hold the borrow of the owner.
+///
+/// In an abstract body a type variable counts as no exclusive reference: those facts only infer
+/// Copy constraints, and each instance, whose types are concrete, is checked with its own facts.
+fn lends_exclusive(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> bool {
+    let exclusive = |argument: &TypedExpr| {
+        argument.ty.reaches_exclusive(types) || argument.ty.holds_exclusive_record(types)
+    };
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        let lends = match &expression.kind {
+            E::Call(_, arguments)
+            | E::HostCall(_, arguments)
+            | E::Parallel(_, arguments)
+            | E::Closure(_, arguments) => arguments.iter().any(exclusive),
+            E::Binary(BinaryOp::Pipe, left, _) => exclusive(left),
+            _ => false,
+        };
+        if lends {
+            return true;
+        }
+        expression
+            .try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })
+            .expect("collecting calls cannot fail");
+    }
+    false
 }
 
 /// The parameters of an abstract body whose loans may pass through a value whose type has a type
@@ -1225,6 +1278,8 @@ struct Checker<'a, 'run> {
     /// How many more steps the diagnostics may take in this function to find where a moved value
     /// or a borrow came from (`Flow`).
     later_use_budget: usize,
+    /// Whether the body lends an exclusive borrow to a call (`lends_exclusive`), once asked.
+    lends_exclusive: Option<bool>,
 }
 
 /// How many expressions the diagnostics of one function may look at, in all, to find where a
@@ -1486,59 +1541,6 @@ impl<'a> Checker<'a, '_> {
         Ok(result)
     }
 
-    /// The function that stores an input through an exclusive reference (A13 Phase 2) whose call
-    /// the pipeline `x |> right` completes.
-    fn piped_store(&self, right: &TypedExpr) -> Option<usize> {
-        let E::Call(callee, arguments) = &right.kind else {
-            return None;
-        };
-        let id = direct_callee(callee)?;
-        let function = &self.module.functions[id];
-        (function
-            .region_slots
-            .as_ref()
-            .is_some_and(|slots| slots.writes)
-            && function.callback_contracts.is_empty()
-            && arguments.len() + 1 == function.parameters.len())
-        .then_some(id)
-    }
-
-    /// `x |> f a` for a function `f` that stores an input through an exclusive reference: the
-    /// partial application `right` is evaluated as a value, with its arguments lent, and the
-    /// complete call `f a x` stores its inputs as a direct call does (`store_arguments`). `x` was
-    /// evaluated first, as the pipeline does, and its value is `piped`.
-    fn eval_piped_store(
-        &mut self,
-        id: usize,
-        left: &TypedExpr,
-        piped: &Value,
-        right: &TypedExpr,
-        live: &BTreeSet<usize>,
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
-        let E::Call(callee, arguments) = &right.kind else {
-            unreachable!("piped_store takes calls")
-        };
-        let mut during = live.clone();
-        uses(right, &mut during);
-        let start = self.held.len();
-        let mut result = self.eval(callee, Use::Consume, &during)?;
-        self.held.push(result.clone());
-        for argument in arguments {
-            let mark = self.events.as_ref().map_or(0, |events| events.len());
-            let value = self.eval(argument, Use::Consume, &during)?;
-            self.event_targets(mark, argument.span, callee);
-            result.loans.extend(&value.loans);
-            self.held.push(value);
-        }
-        self.held.push(piped.clone());
-        let all: Vec<TypedExpr> = arguments.iter().chain([left]).cloned().collect();
-        self.store_arguments(id, &all, start, span)?;
-        self.held.truncate(start);
-        result.regions = None;
-        Ok(result)
-    }
-
     /// A28: whether `callee` is `share`, `downgrade` or `upgrade` of `Rc` or `Arc` (or the generated
     /// function that applies one). Each makes a new owner of the block that its first argument
     /// borrows, so its result holds what the block holds, not the borrow of the owner: the owner
@@ -1552,6 +1554,15 @@ impl<'a> Checker<'a, '_> {
             self.builtin_called(callee),
             Some(RcShare | ArcShare | RcDowngrade | ArcDowngrade | RcUpgrade | ArcUpgrade)
         )
+    }
+
+    /// Whether the checked body lends an exclusive borrow to a call: an in-place writer may then
+    /// have stored in the owner what its loans miss, so nothing is read through the owner's
+    /// borrow (`lends_exclusive`).
+    fn body_lends_exclusive(&mut self) -> bool {
+        *self
+            .lends_exclusive
+            .get_or_insert_with(|| lends_exclusive(self.body, &self.module.types()))
     }
 
     /// What a value read through the borrows `loans` holds, as `read_places` reads a place: a
@@ -1813,7 +1824,7 @@ impl<'a> Checker<'a, '_> {
         } else {
             self.region_count(&parameter.ty)
         };
-        let (mut exclusive, targets) = match &parameter.ty {
+        let (exclusive, targets) = match &parameter.ty {
             Type::Reference(_, mutable) => (RegionMask::from(*mutable), vec![2]),
             Type::Record(id, _) => {
                 let record = &self.module.records[*id];
@@ -1821,15 +1832,6 @@ impl<'a> Checker<'a, '_> {
             }
             _ => (0, Vec::new()),
         };
-        // A derived contract: the borrows behind the target's own exclusive references (the
-        // array of a `MatrixView.Mut`) have the region of the target's borrows, and stay
-        // exclusive.
-        let deep = target
-            && slots.is_some_and(|slots| slots.derived)
-            && matches!(&parameter.ty, Type::Reference(inner, true) if inner.reaches_exclusive(&self.module.types()));
-        if deep {
-            exclusive |= 2;
-        }
         let mut loans = Vec::new();
         for slot in 0..count {
             let fields = if count >= 2 {
@@ -1870,13 +1872,6 @@ impl<'a> Checker<'a, '_> {
                     .target_regions
                     .extend(regions.and_then(|regions| regions[target]));
             }
-        }
-        if deep {
-            let entry = self.slots.entry((root, 1)).or_default();
-            entry.target.insert(loans[1]);
-            entry
-                .target_regions
-                .extend(regions.and_then(|regions| regions[1]));
         }
     }
 
@@ -2795,30 +2790,15 @@ impl<'a> Checker<'a, '_> {
     /// A13 Phase 2: stores a value with `value`'s loans in `place` through a reference. A local
     /// owner keeps the new loans with its old ones; a parameter's target accepts only borrows of
     /// the inputs with the region that its type names for the target, which callers keep.
+    #[inline(never)]
     fn store_through(
         &mut self,
         place: &Place,
         value: &Value,
         span: Span,
     ) -> Result<(), Diagnostic> {
-        self.store_through_from(place, value, span, &mut BTreeSet::from([place.root]))
-    }
-
-    /// `store_through`, after the owners `visited`.
-    #[inline(never)]
-    fn store_through_from(
-        &mut self,
-        place: &Place,
-        value: &Value,
-        span: Span,
-        visited: &mut BTreeSet<usize>,
-    ) -> Result<(), Diagnostic> {
         const UNNAMED: &str =
             "assigning borrowed values through references requires explicit lifetimes";
-        // A value without borrows may go anywhere, as an assignment of one does.
-        if self.external.contains(&place.root) && value.loans.is_empty() {
-            return Ok(());
-        }
         if self.external.contains(&place.root) {
             let Some(target) = self
                 .slots
@@ -2860,33 +2840,13 @@ impl<'a> Checker<'a, '_> {
             }
             return Ok(());
         }
-        let Some((_, owner)) = self.state.locals.get(&place.root) else {
+        let Some((_, owner)) = self.state.locals.get_mut(&place.root) else {
             return Err(error(DiagnosticKind::StoreRegionUnnamed, UNNAMED, span));
         };
-        // A store into a value that holds exclusive references (a `MatrixView.Mut` of a local
-        // array) may land behind them, so their owners keep the loans too.
-        let behind: Vec<Place> = if value.loans.is_empty() {
-            Vec::new()
-        } else {
-            owner
-                .loans
-                .iter()
-                .map(|id| &self.loans[*id])
-                .filter(|loan| loan.mutable && loan.place.root != place.root)
-                .map(|loan| loan.place.clone())
-                .collect()
-        };
-        if let Some((_, owner)) = self.state.locals.get_mut(&place.root) {
-            owner.loans.extend(&value.loans);
-            owner.regions = None;
-            for (owned, stored) in owner.closed_result.iter_mut().zip(value.closed_result) {
-                *owned &= stored;
-            }
-        }
-        for held in behind {
-            if visited.insert(held.root) {
-                self.store_through_from(&held, value, span, visited)?;
-            }
+        owner.loans.extend(&value.loans);
+        owner.regions = None;
+        for (owned, stored) in owner.closed_result.iter_mut().zip(value.closed_result) {
+            *owned &= stored;
         }
         Ok(())
     }
@@ -2924,14 +2884,6 @@ impl<'a> Checker<'a, '_> {
         value: &Value,
     ) -> BTreeSet<usize> {
         if slots.is_some_and(|slots| slots.targets.get(index) == Some(&true)) {
-            // A borrowed temporary's value has the temporary's own loans: what its target holds.
-            if matches!(argument.kind, E::BorrowOperand(_)) {
-                return if slot == 0 {
-                    BTreeSet::new()
-                } else {
-                    value.loans.clone()
-                };
-            }
             return if slot == 0 {
                 value.loans.clone()
             } else {
@@ -2978,10 +2930,7 @@ impl<'a> Checker<'a, '_> {
                 let mut stored = Value::default();
                 for (input, input_slots) in slots.parameters.iter().enumerate() {
                     for (input_slot, region) in input_slots.iter().enumerate() {
-                        // What the target already holds adds nothing to it.
-                        let own_contents =
-                            input == index && slots.targets[index] && input_slot == 1;
-                        if !own_contents && region.is_some_and(|region| regions.contains(&region)) {
+                        if region.is_some_and(|region| regions.contains(&region)) {
                             stored.loans.extend(self.input_slot_loans(
                                 Some(slots),
                                 input,
@@ -2998,12 +2947,7 @@ impl<'a> Checker<'a, '_> {
                         continue;
                     }
                     let place = loan.place.clone();
-                    // A value read from the target and written back (`Array.write 0 values[1]
-                    // values`) stores what the target already holds, which adds nothing to it.
-                    let contents = self.own_contents(reference);
-                    let mut added = stored.clone();
-                    added.loans.retain(|id| !contents.contains(id));
-                    if added
+                    if stored
                         .loans
                         .iter()
                         .any(|id| *id != reference && self.loans[*id].place.overlaps(&place))
@@ -3014,36 +2958,11 @@ impl<'a> Checker<'a, '_> {
                             span,
                         ));
                     }
-                    self.store_through(&place, &added, span)?;
+                    self.store_through(&place, &stored, span)?;
                 }
             }
         }
         Ok(())
-    }
-
-    /// The loans that stand for what the target of the exclusive reference `reference` already
-    /// holds: the target's borrows (`target_loans`) and, through a parameter without a target
-    /// region, the parameter's own loan, which the values read through it carry. A copy of the
-    /// exclusive parameter itself cannot be stored, and a new borrow of it is a loan of its own.
-    fn own_contents(&self, reference: usize) -> BTreeSet<usize> {
-        let mut contents = self.target_loans(&BTreeSet::from([reference]));
-        let mut pending = vec![reference];
-        let mut seen = BTreeSet::new();
-        while let Some(id) = pending.pop() {
-            if !seen.insert(id) {
-                continue;
-            }
-            let loan = &self.loans[id];
-            if loan.parents.is_empty()
-                && loan.mutable
-                && self.external.contains(&loan.place.root)
-                && loan.place.fields.is_empty()
-            {
-                contents.insert(id);
-            }
-            pending.extend(&loan.parents);
-        }
-        contents
     }
 
     fn is_place(expression: &TypedExpr) -> bool {
@@ -3519,7 +3438,7 @@ impl<'a> Checker<'a, '_> {
                 .after_arguments(*boundary)
                 .contains_stored_reference(&self.module.types())
         });
-        let read_through = self.reads_through(callee);
+        let read_through = self.reads_through(callee) && !self.body_lends_exclusive();
         // A region-quantified parameter's result borrows only from the inputs that its type names.
         let mut current = if callback {
             Value::default()
@@ -4135,10 +4054,6 @@ impl<'a> Checker<'a, '_> {
                     Value::default()
                 } else if let Some(id) = completed {
                     self.eval_piped_arguments(id, right, &during)?
-                } else if *operator == BinaryOp::Pipe
-                    && let Some(id) = self.piped_store(right)
-                {
-                    self.eval_piped_store(id, left, &value, right, &during, expression.span)?
                 } else {
                     self.eval(right, usage, &during)?
                 };
@@ -4163,7 +4078,7 @@ impl<'a> Checker<'a, '_> {
                         } else {
                             result.loans.extend(callee.loans);
                         }
-                    } else if self.reads_through(right) {
+                    } else if self.reads_through(right) && !self.body_lends_exclusive() {
                         // `ref shared |> Arc.share` is `Arc.share (ref shared)`.
                         if !matches!(left.kind, E::BorrowOperand(_)) {
                             result.loans = self.read_through(&result.loans);
@@ -5342,6 +5257,36 @@ mod retention_tests {
             assert_eq!(retained("a28_pong"), Some(vec![false, false, true]));
             assert_eq!(retained("a28_up"), Some(vec![false, true]));
             assert_eq!(retained("a28_down"), Some(vec![false, true]));
+        }
+    }
+
+    /// A28 review: a body that lends an exclusive borrow to a call has no facts, in the checks of
+    /// the instances and in the inference: the check does not see what `Array.write` stores (A31).
+    /// A body that only reads its array keeps them.
+    #[test]
+    fn a_body_that_lends_an_exclusive_borrow_has_no_facts() {
+        let module = crate::analyze(
+            "def a28_stash :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_stash text g =\n    let mut arr = [g]\n    Array.write 0 (\\() -> String.length text) (ref mut arr)\n    arr[0]\n\
+             def a28_piped :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_piped text g =\n    let mut arr = [g]\n    ref mut arr |> Array.set 0 (\\() -> String.length text)\n    arr[0]\n\
+             def a28_read :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_read _text g =\n    let arr = [g]\n    arr[0]\n\
+             let text = \"abc\"\n\
+             let a = a28_stash (ref text) (\\() -> 1)\nlet b = a28_piped (ref text) (\\() -> 2)\nlet c = a28_read (ref text) (\\() -> 3)\n\
+             a () + b () + c ()",
+        )
+        .unwrap();
+        for infer in [false, true] {
+            let facts = call_facts(&module, infer);
+            let retained = |name: &str| {
+                let id = module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == name)
+                    .unwrap_or_else(|| panic!("{name}"));
+                facts.retained[id].as_deref().map(<[bool]>::to_vec)
+            };
+            assert_eq!(retained("a28_stash"), Some(vec![true, true]), "{infer}");
+            assert_eq!(retained("a28_piped"), Some(vec![true, true]), "{infer}");
+            assert_eq!(retained("a28_read"), Some(vec![false, true]), "{infer}");
         }
     }
 

@@ -266,15 +266,21 @@ fn a_new_owner_moves_while_the_owner_is_borrowed() {
     }
 }
 
-/// A28 review: `Array.write` keeps the stored value's borrows in the array, so `Rc.share (ref
-/// arr[0])` reads them through. Before, the share did not hold `text`, which the function frees.
+/// A28 review: the check does not track what `Array.write` stores in `arr` (A31), so a body that
+/// lends an exclusive borrow to a call reads nothing through a borrowed owner: the share holds the
+/// borrow of `arr`, as before A28, and cannot leave `make`. Reading through, it held what `arr`
+/// held before the write, not `text`, which `make` frees. The A30 tip rejects both forms here.
 #[test]
 fn a_share_of_an_element_holds_what_was_written_in() {
-    rejects_with_kind(
-        "def make :: own i64 -> Rc<unit -> i64>\nfn make n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [Rc.new (\\() -> 0)]\n    Array.write 0 (Rc.new (\\() -> String.length borrowed)) (ref mut arr)\n    Rc.share (ref arr[0])\nlet f = make 123456789\n(deref (Rc.get (ref f))) ()",
-        "E1013",
-        "borrow_outlives_block",
-    );
+    for share in ["Rc.share (ref arr[0])", "ref arr[0] |> Rc.share"] {
+        rejects_with_kind(
+            &format!(
+                "def make :: own i64 -> Rc<unit -> i64>\nfn make n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [Rc.new (\\() -> 0)]\n    Array.write 0 (Rc.new (\\() -> String.length borrowed)) (ref mut arr)\n    {share}\nlet f = make 123456789\n(deref (Rc.get (ref f))) ()"
+            ),
+            "E1013",
+            "borrow_outlives_block",
+        );
+    }
 }
 
 #[test]

@@ -297,203 +297,12 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
                 is_once: false,
                 owned_captures: false,
                 contracts: Default::default(),
-                instance: None,
             });
             function.exported = false;
         }
     }
     module.functions.extend(bridges);
     Ok(module)
-}
-
-/// The region slots of the specialized functions that may store through an exclusive reference
-/// whose target holds borrows, as `Array.set`, `Array.fill` and `Array.blit` do through
-/// `Array.write`. A type variable cannot name a region, so a declaration cannot say what these
-/// functions store, as `def set { r s } :: own i64 -> own 'a { s } -> ref mut { r } ['a..] { s } -> unit`
-/// would; each instance whose target carries loans gets that contract here: every input with
-/// borrows, and the borrows inside the target of every reference, may be stored in the target of
-/// every exclusive reference. Their bodies are checked against it, and their callers keep the
-/// stored loans in those targets (`store_arguments`), as they do for `Vec.push_mut`. These are
-/// the std functions without regions; the std functions whose regions name their references
-/// but whose type variables hold the borrows that they store (`MatrixView.write`); and the
-/// instances of the program's generic functions that store through an exclusive reference of a
-/// type with a type variable. Returns whether some function may store an input, so that every
-/// call of it must be direct.
-pub(super) fn derive_store_slots(module: &mut CheckedModule) -> bool {
-    let types = TypeContext {
-        records: &module.records,
-        unions: &module.unions,
-    };
-    let mut writes = false;
-    for function in &mut module.functions {
-        if function.origin.module != ModuleOrigin::Std || !derivable(function, types) {
-            continue;
-        }
-        let eligible = match &function.region_slots {
-            None => true,
-            // The regions of `MatrixView.write` name the window and its array, but not the
-            // borrows inside the elements, which come from the type variable.
-            Some(declared) => {
-                !declared.writes
-                    && !declared.result_target
-                    && carries_variable_loans(function, types)
-                    && function.parameters.iter().any(|parameter| {
-                        matches!(&parameter.ty, Type::Reference(target, true) if target.reaches_exclusive(&types))
-                    })
-            }
-        };
-        if eligible {
-            let slots = store_slots(function, types);
-            writes |= slots.writes;
-            function.region_slots = Some(slots);
-        }
-    }
-    // A generic function of the program writes through a `ref mut ['a..]` as std does, and calls
-    // of one such function make another one a writer, so they are derived to a fixed point.
-    loop {
-        let mut changed = false;
-        for id in 0..module.functions.len() {
-            let function = &module.functions[id];
-            if function.origin.module == ModuleOrigin::Std
-                || function.region_slots.is_some()
-                || !derivable(function, types)
-                || !carries_variable_loans(function, types)
-                || !function.instance.as_ref().is_some_and(|instance| {
-                    function.parameters.iter().zip(&instance.parameters).any(
-                        |(parameter, declared)| {
-                            matches!(&parameter.ty, Type::Reference(target, true) if holds_loans(target, types))
-                                && contains_variable(declared)
-                        },
-                    )
-                })
-            {
-                continue;
-            }
-            if !stores(&function.body, &module.functions) {
-                continue;
-            }
-            let slots = store_slots(function, types);
-            writes |= slots.writes;
-            module.functions[id].region_slots = Some(slots);
-            changed = true;
-        }
-        if !changed {
-            break;
-        }
-    }
-    writes
-}
-
-/// The data behind a reference holds borrows; `[T..]` holds what its elements hold.
-fn holds_loans(target: &Type, types: TypeContext<'_>) -> bool {
-    match target {
-        Type::ArrayView(element) => element.carries_loans(&types),
-        target => target.carries_loans(&types),
-    }
-}
-
-/// A function that `derive_store_slots` may give slots: an exclusive reference to data with
-/// borrows, no result regions, no region-quantified callbacks, and no record parameter with
-/// several regions, whose slots have regions of their own.
-fn derivable(function: &CheckedFunction, types: TypeContext<'_>) -> bool {
-    !function.module.starts_with('$')
-        && function.region_sources.is_none()
-        && function.callback_contracts.is_empty()
-        && function.parameters.iter().any(|parameter| {
-            matches!(&parameter.ty, Type::Reference(target, true) if holds_loans(target, types))
-        })
-        && !function.parameters.iter().any(|parameter| {
-            matches!(&parameter.ty, Type::Record(id, _) if types.records[*id].region_count >= 2)
-        })
-}
-
-/// Some type variable of the instance stands for a type with borrows.
-fn carries_variable_loans(function: &CheckedFunction, types: TypeContext<'_>) -> bool {
-    function.instance.as_ref().is_some_and(|instance| {
-        instance
-            .arguments
-            .iter()
-            .any(|argument| argument.carries_loans(&types))
-    })
-}
-
-fn contains_variable(ty: &Type) -> bool {
-    !polymorph::variables(ty).is_empty()
-}
-
-/// The body stores through a reference: it calls a function that may store an input, or it
-/// assigns through an index, a field or a dereference.
-fn stores(body: &TypedExpr, functions: &[CheckedFunction]) -> bool {
-    let mut pending = vec![body];
-    while let Some(expression) = pending.pop() {
-        match &expression.kind {
-            TypedExprKind::Call(callee, _)
-                if matches!(
-                    callee.kind,
-                    TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::GenericFunction(id, _)
-                        if functions[id].region_slots.as_ref().is_some_and(|slots| slots.writes)
-                ) =>
-            {
-                return true;
-            }
-            TypedExprKind::Assign(target, _) if !matches!(target.kind, TypedExprKind::Local(_)) => {
-                return true;
-            }
-            _ => pending.extend(expression.children()),
-        }
-    }
-    false
-}
-
-/// The derived contract of `function`: region 0 for every input with borrows and for the borrows
-/// inside the target of every reference, and a region of its own for each such reference. A
-/// parameter declared with a bare type variable is a value that the function may store, even
-/// when the instance makes it a reference (`Array.set 0 (ref b) values`).
-fn store_slots(function: &CheckedFunction, types: TypeContext<'_>) -> RegionSlots {
-    let mut next = 1;
-    let mut parameters = Vec::with_capacity(function.parameters.len());
-    let mut targets = Vec::with_capacity(function.parameters.len());
-    for (index, parameter) in function.parameters.iter().enumerate() {
-        let value = function.instance.as_ref().is_some_and(|instance| {
-            matches!(instance.parameters.get(index), Some(Type::Variable(_)))
-        });
-        match &parameter.ty {
-            Type::Reference(target, mutable)
-                if (*mutable || !value) && holds_loans(target, types) =>
-            {
-                parameters.push(vec![Some(next), Some(0)]);
-                targets.push(true);
-                next += 1;
-            }
-            Type::Reference(..) if !value => {
-                parameters.push(vec![None]);
-                targets.push(false);
-            }
-            ty => {
-                let region = ty.carries_loans(&types).then_some(0);
-                parameters.push(vec![region]);
-                targets.push(false);
-            }
-        }
-    }
-    let mut slots = RegionSlots {
-        parameters,
-        targets,
-        result_target: false,
-        writes: false,
-        derived: true,
-    };
-    for (index, parameter) in function.parameters.iter().enumerate() {
-        for (_, contents) in slots.written_targets(index, &parameter.ty, types) {
-            slots.writes |= slots.parameters.iter().enumerate().any(|(input, regions)| {
-                regions.iter().enumerate().any(|(slot, region)| {
-                    region.is_some_and(|region| contents.contains(&region))
-                        && !(input == index && slot == 1)
-                })
-            });
-        }
-    }
-    slots
 }
 
 fn local_value(local: &Local) -> TypedExpr {
@@ -582,7 +391,6 @@ fn lower_expression(
                 is_once: matches!(expression.ty, Type::Once(_)),
                 owned_captures: *owned,
                 contracts: Default::default(),
-                instance: None,
             });
             expression.kind = Closure(id, captures.iter().map(local_value).collect());
         }
@@ -635,34 +443,22 @@ fn lower_expression(
                     span: expression.span,
                 };
                 let id = functions.len();
-                // The builtins that store an input in the target of an exclusive reference: the
-                // index of the stored value and of the reference. Their callers keep the stored
-                // value's loans in the target, as an assignment through the reference does.
-                let stored = match builtin {
-                    Builtin::VecPushMut | Builtin::SyncMapReplace => Some((0, 1)),
-                    Builtin::ArrayWrite => Some((1, 2)),
-                    _ => None,
+                let region_slots = if builtin == Builtin::VecPushMut
+                    && signature.parameters[0].carries_loans(types)
+                {
+                    let count = match &signature.parameters[0] {
+                        Type::Record(id, _) => types.records[*id].region_count.max(1),
+                        _ => 1,
+                    };
+                    Some(RegionSlots {
+                        parameters: vec![vec![Some(0); count], vec![Some(1), Some(0)]],
+                        targets: vec![false, true],
+                        result_target: false,
+                        writes: true,
+                    })
+                } else {
+                    None
                 };
-                let region_slots = stored
-                    .filter(|(value, _)| signature.parameters[*value].carries_loans(types))
-                    .map(|(value, target)| {
-                        let count = match &signature.parameters[value] {
-                            Type::Record(id, _) => types.records[*id].region_count.max(1),
-                            _ => 1,
-                        };
-                        let mut parameters = vec![vec![None]; arity];
-                        parameters[value] = vec![Some(0); count];
-                        parameters[target] = vec![Some(1), Some(0)];
-                        let mut targets = vec![false; arity];
-                        targets[target] = true;
-                        RegionSlots {
-                            parameters,
-                            targets,
-                            result_target: false,
-                            writes: true,
-                            derived: false,
-                        }
-                    });
                 functions.push(CheckedFunction {
                     read_by_default: Vec::new(),
                     module: "$builtin".into(),
@@ -689,7 +485,6 @@ fn lower_expression(
                     is_once: false,
                     owned_captures: false,
                     contracts: Default::default(),
-                    instance: None,
                 });
                 generated.builtins.insert(key, id);
                 id
@@ -757,7 +552,6 @@ fn lower_expression(
                     is_once: false,
                     owned_captures: false,
                     contracts: Default::default(),
-                    instance: None,
                 });
                 generated.cases.insert(key, id);
                 id
