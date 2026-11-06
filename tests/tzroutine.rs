@@ -249,6 +249,11 @@ fn an_owned_function_from_a_function_value_holds_no_borrow() {
     rejects_a_borrowing_owned_function(&format!(
         "{BORROWING_G}    Routine.go (g |> Owned.function)\n\nspawn 4\n0\n"
     ));
+    // Through the generated local of `do!` (Copilot's review of #94): only the parameters of the
+    // generated function that applies the builtin pass on their callers' values unchecked.
+    rejects_a_borrowing_owned_function(&format!(
+        "{BORROWING_G}    do! IO.pure g |> Owned.function |> Routine.go\n\nspawn 4\n0\n"
+    ));
     // A lambda written as the argument that captures `g`: its environment holds `g`'s borrow.
     let error = analyze(&format!(
         "{BORROWING_G}    Routine.go (Owned.function (\\() -> g ()))\n\nspawn 4\n0\n"
