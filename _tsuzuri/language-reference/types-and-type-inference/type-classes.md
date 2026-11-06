@@ -291,6 +291,8 @@ vtable のスロットは、スーパークラスを宣言順に深さ優先で�
 | `dyn (C, Send)` | なし | あり | 保持できない |
 | `dyn C {r}` | なし | なし。`Send` 印は `E1028` | region `r` の共有借用を保持できる |
 
+`dyn (C, Send)` の値は tzroutine の捕捉や `Parallel.*` の結果としてほかの tzroutine・スレッドへ移せ、[Channel](../built-in-types-and-modules/channel.md#要素と借用) の要素（`Channel<dyn (C, Send)>`）にもなります。
+
 region の無い `dyn` へ借用を含む値を入れると `E1013` です。排他借用を含む値は格納できません。スコープの終わりには、格納した値の `Drop` を実行して領域を解放します。
 
 `Dyn.of` の入力がすでに dyn 値で、その vtable が期待型の全クラスを含むときは、領域を確保し直さず vtable だけを替えます。含まないときは、dyn 値も普通の値として、利用者のインスタンスで格納します。

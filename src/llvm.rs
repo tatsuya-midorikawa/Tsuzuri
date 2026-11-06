@@ -1958,6 +1958,7 @@ fn emit_program_in(
         range_flags,
         strings: string_form,
         overflow: crate::overflow::active().map(overflow_emit::Report::new),
+        user_drops: std::rc::Rc::new(identity_drops(module, &emitted)),
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -2758,6 +2759,8 @@ struct Globals {
     /// The values of the deferred shared blocks that the program drops, with whether they
     /// count atomically (C10).
     shared_types: BTreeSet<(Type, bool)>,
+    /// The user drop of each Drop type's `codegen_identity`, `identity_drops` (A29).
+    user_drops: std::rc::Rc<BTreeMap<Type, usize>>,
     /// User functions the program hands to the host as C function pointers.
     callbacks: BTreeSet<usize>,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
@@ -2819,6 +2822,7 @@ impl Default for Globals {
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
             shared_types: BTreeSet::new(),
+            user_drops: std::rc::Rc::default(),
             callbacks: BTreeSet::new(),
             coverage: None,
             seed: None,
@@ -3495,7 +3499,8 @@ fn static_definition(id: usize, value: &TypedExpr, module: &CheckedModule) -> Op
 }
 
 /// The spelling of a `dyn` type in LLVM names (A14): `dyn[Shapes.Shape]`, with `+copy`, `+send`,
-/// and `+ref` for its markers and region, which no class name contains.
+/// and `+ref` for its markers and region, which no class name contains. Quoted names keep the `+`;
+/// `mangled_type` writes it as `$P` in unquoted symbols (A29).
 fn dyn_name(dyn_type: &crate::check::DynType) -> String {
     let mut name = format!("dyn[{}", dyn_type.classes.join(","));
     for (written, marker) in [
@@ -3564,8 +3569,14 @@ fn emit_dyn_tables(
     let mut adapters = BTreeSet::new();
     let mut drops = BTreeSet::new();
     let mut clones = BTreeSet::new();
+    let mut tables = BTreeSet::new();
     for ((key, ty), functions) in &module.vtables {
         if !functions.iter().all(|id| emitted[*id]) {
+            continue;
+        }
+        // The convention variants of a stored type have one vtable, the first one's (A29).
+        let ty = &codegen_identity(ty);
+        if !tables.insert((key, ty.clone())) {
             continue;
         }
         let name = canonical_type(ty, module);
@@ -3730,7 +3741,91 @@ fn dyn_adapter(
     ))
 }
 
-/// The injective Tsuzuri spelling of a concrete type used in LLVM type names.
+/// `ty` as the generated code identifies it (A29): without the parameter conventions of its
+/// function types. A convention records how a parameter was written (a `string` that the edition
+/// reads by default, `mut T`), not what the call passes: the parameter type already holds the
+/// `ref` or `ref mut`, and no lowering reads the conventions, so the variants have one LLVM type
+/// and one calling convention. The type checker's `unify` treats them as one type, so one value
+/// can have either. Builtin instances, record and union definitions, vtables, and the helpers
+/// keyed by type use this identity, so the variants are one instance with one symbol. Purity
+/// stays: `unify` keeps pure and impure function types apart.
+pub(crate) fn codegen_identity(ty: &Type) -> Type {
+    fn erase(ty: &mut Type) {
+        match ty {
+            Type::Function(parameters, result) => {
+                parameters.conventions = Box::default();
+                parameters.types.iter_mut().for_each(erase);
+                erase(result);
+            }
+            Type::Record(_, arguments) | Type::Union(_, arguments) => {
+                arguments.iter_mut().for_each(erase)
+            }
+            Type::Tuple(elements) => elements.iter_mut().for_each(erase),
+            Type::FixedArray(element, length) => {
+                erase(element);
+                erase(length);
+            }
+            Type::Array(inner)
+            | Type::ArrayView(inner)
+            | Type::List(inner)
+            | Type::Vec(inner)
+            | Type::Once(inner)
+            | Type::Reference(inner, _)
+            | Type::Shared(inner, _) => erase(inner),
+            Type::Partial(partial) => partial.trailing.iter_mut().for_each(erase),
+            Type::Application(head, arguments) => {
+                erase(head);
+                arguments.iter_mut().for_each(erase);
+            }
+            Type::Error
+            | Type::Variable(_)
+            | Type::Infer(_)
+            | Type::Integer(..)
+            | Type::Binary(_)
+            | Type::Decimal(_)
+            | Type::Simd(_)
+            | Type::Bool
+            | Type::Unit
+            | Type::Char
+            | Type::Utf8Char
+            | Type::String
+            | Type::Utf8String
+            | Type::Length(_)
+            | Type::Handle(_)
+            | Type::Dyn(_) => {}
+        }
+    }
+    let mut ty = ty.clone();
+    erase(&mut ty);
+    ty
+}
+
+/// `CheckedModule::user_drops` by `codegen_identity` (A29). Specialization keys `user_drops` by the
+/// Drop types that the specialized functions hold, conventions included, so an identity is a key
+/// there only when a variant without conventions occurs; but the helpers keyed by identity
+/// (builtin instances, vtables, the recursive and shared helpers) drop identity types. The variants
+/// have one layout and one calling convention, so the drop of any of them serves. The first one
+/// in key order that the program emits is the one, so the choice is deterministic and its function
+/// is defined: outside the bench runner, a drop that only bench code holds is not emitted (G18).
+/// A program without convention variants has one variant per identity, whose drop stays the one.
+fn identity_drops(module: &CheckedModule, emitted: &[bool]) -> BTreeMap<Type, usize> {
+    let mut drops = BTreeMap::new();
+    for (ty, &drop) in &module.user_drops {
+        let identity = codegen_identity(ty);
+        if drops
+            .get(&identity)
+            .is_none_or(|&chosen: &usize| !emitted[chosen] && emitted[drop])
+        {
+            drops.insert(identity, drop);
+        }
+    }
+    drops
+}
+
+/// The injective Tsuzuri spelling of a concrete type's `codegen_identity`, used in LLVM type
+/// names and symbols: two types whose identities `Type`'s `Eq` tells apart are spelled
+/// differently (A29), so their instances and quoted type names never collide, and the convention
+/// variants of one type share one spelling.
 fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
     let list = |types: &[Type]| {
         types
@@ -3760,8 +3855,11 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         Type::List(element) => format!("list[{}]", canonical_type(element, module)),
         Type::Vec(element) => format!("vec[{}]", canonical_type(element, module)),
         Type::Tuple(elements) => format!("tuple[{}]", list(elements)),
+        // Purity is part of the type (A29): a pure function type is `pure.fn[...]`, and no other
+        // spelling starts with `pure.`. The parameter conventions are not (`codegen_identity`).
         Type::Function(parameters, result) => format!(
-            "fn[{}->{}]",
+            "{}[{}->{}]",
+            if parameters.pure { "pure.fn" } else { "fn" },
             list(parameters),
             canonical_type(result, module)
         ),
@@ -4144,7 +4242,8 @@ fn restricted_use(
 fn named_types(module: &CheckedModule, emitted: &[bool]) -> BTreeSet<Type> {
     fn visit(ty: &Type, pending: &mut Vec<Type>) {
         match ty {
-            Type::Record(..) | Type::Union(..) => pending.push(ty.clone()),
+            // The convention variants of a type are one definition (A29).
+            Type::Record(..) | Type::Union(..) => pending.push(codegen_identity(ty)),
             // A shared block stores its value, whose named types need definitions (C10).
             Type::Array(ty)
             | Type::List(ty)
@@ -6237,7 +6336,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             .unwrap_or_else(|| value.to_owned());
         match ty {
             Type::Union(..) if self.module.types().recursive(ty) => {
-                self.globals.recursive_types.insert(ty.clone());
+                self.globals.recursive_types.insert(codegen_identity(ty));
                 if let Some(pending) = &self.drop_pending {
                     self.instruction(format!(
                         "call void @tz.rec.enqueue(ptr {value}, ptr {pending})"
@@ -6356,10 +6455,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     /// Runs `Drop.drop` on `value` in a slot and reads the value back, since `drop` takes
-    /// `ref mut` and its fields drop afterwards.
+    /// `ref mut` and its fields drop afterwards. The drop is found by `ty`'s codegen identity
+    /// (A29), since the helpers keyed by identity drop identities that `user_drops` may not hold;
+    /// a `ty` without parameter conventions is its own identity, and the lookup by `ty` first
+    /// saves the clone.
     pub(super) fn call_user_drop(&mut self, ty: &Type, value: &str) -> String {
         let module = self.module;
-        let function = &module.functions[module.user_drops[ty]];
+        let drops = &self.globals.user_drops;
+        let id = match drops.get(ty) {
+            Some(id) => *id,
+            None => drops[&codegen_identity(ty)],
+        };
+        let function = &module.functions[id];
         let slot = self.spill(ty, value);
         self.instruction(format!(
             "call {} @tz.fn.{}(ptr {slot})",
@@ -6376,7 +6483,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         );
         match ty {
             Type::Union(..) if self.module.types().recursive(ty) => {
-                self.globals.recursive_types.insert(ty.clone());
+                self.globals.recursive_types.insert(codegen_identity(ty));
                 if let Some(pending) = &self.clone_pending {
                     self.value(format!(
                         "call ptr @tz.rec.clone.enqueue(ptr {value}, ptr {pending})"
@@ -7184,9 +7291,13 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     parameters: parameters[..count].to_vec(),
                     result: callee.ty.after_arguments(count),
                 };
+                // The convention variants of an instance are one definition (A29).
                 self.builtins
-                    .entry(instance.clone())
-                    .or_insert_with(|| callee.ty.clone());
+                    .entry(BuiltinInstance {
+                        builtin: instance.builtin,
+                        types: instance.types.iter().map(codegen_identity).collect(),
+                    })
+                    .or_insert_with(|| codegen_identity(&callee.ty));
                 Some((builtin_symbol(instance, self.module), signature, Vec::new()))
             }
             _ => None,
@@ -7899,14 +8010,22 @@ fn builtin_symbol(instance: &BuiltinInstance, module: &CheckedModule) -> String 
     symbol
 }
 
-/// `canonical_type` spelled with LLVM identifier characters only; `$` never
-/// occurs in canonical types, so the escapes keep the spelling injective.
+/// `canonical_type` spelled with LLVM identifier characters only: `->`, `[`, `]`, `,`, and the
+/// `+` of a dyn type's markers (A29) become `$A`, `$L`, `$R`, `$C`, and `$P`. The only `$` in a
+/// canonical type is inside the implicit union of a multi-case active pattern,
+/// `Main.Active$active$C$P$total$result` (`src/parse_control.rs`): it starts with `.Active$active$`
+/// after the module, ends with `$total$result`, and holds only uppercase case names between `$`s,
+/// none of the escaped characters. So a case named `C` or `P` reads back one way only, and the
+/// escapes keep the spelling injective. Like `canonical_type`, it spells the `codegen_identity`:
+/// a pure function type is `pure.fn$L...$R`, and the convention variants of a type share one
+/// symbol, as the `Builtins` keys share one instance.
 fn mangled_type(ty: &Type, module: &CheckedModule) -> String {
     canonical_type(ty, module)
         .replace("->", "$A")
         .replace('[', "$L")
         .replace(']', "$R")
         .replace(',', "$C")
+        .replace('+', "$P")
 }
 
 /// Defines one builtin instance, whose callee type `ty` is concrete.
@@ -8147,9 +8266,19 @@ fn emit_typed_builtin(
     intrinsics: &mut BTreeSet<String>,
     shared_globals: &mut Globals,
 ) -> String {
+    // The instance key is a codegen identity, and the wrapper of any convention variant serves (A29).
+    let serves = |found: &BuiltinInstance| {
+        found.builtin == instance.builtin
+            && found.types.len() == instance.types.len()
+            && found
+                .types
+                .iter()
+                .zip(&instance.types)
+                .all(|(found, key)| found == key || codegen_identity(found) == *key)
+    };
     let (id, function) = module.functions.iter().enumerate().find(|(_, function)| {
         matches!(&function.body.kind, TypedExprKind::Call(callee, _)
-            if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(found)) if found == instance))
+            if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(found)) if serves(found)))
     }).expect("a builtin has its checked function wrapper");
     let mut builtins = Builtins::new();
     let mut local_globals = Globals {
@@ -8161,6 +8290,7 @@ fn emit_typed_builtin(
         spawns: shared_globals.spawns,
         waits: shared_globals.waits,
         tzroutine: shared_globals.tzroutine,
+        user_drops: std::rc::Rc::clone(&shared_globals.user_drops),
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();
@@ -10438,5 +10568,173 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
                 .replace("67108864", "16777216");
             assert_eq!(restored, text);
         }
+    }
+
+    /// `canonical_type` and `mangled_type` are injective on codegen identities (A29): every type
+    /// below differs from another only in purity, the parameter conventions (stored as written, so
+    /// `[Read]` and `[Read, Own]` differ), reference mutability, the shared kind, the dyn markers
+    /// and region, a fixed length, or integer signedness, and each also appears as the argument of
+    /// a record, a `Vec`, and a function. Types whose identities differ are spelled differently,
+    /// and the convention variants of a type have its identity and spelling.
+    #[test]
+    fn canonical_types_are_injective_and_mangled_types_are_identifiers() {
+        use crate::check::{DynType, FunctionParameters, ParameterConvention};
+        use ParameterConvention::{Mut, Own, Read};
+        let module = analyze("record Box<'a> { value: 'a }\n0").unwrap();
+        let record = module
+            .records
+            .iter()
+            .position(|record| record.name == "Main.Box")
+            .unwrap();
+        let function = |types: Vec<Type>, conventions: &[ParameterConvention], pure, result| {
+            Type::Function(
+                Box::new(FunctionParameters {
+                    types,
+                    conventions: conventions.into(),
+                    pure,
+                }),
+                Box::new(result),
+            )
+        };
+        let mut leaves = vec![
+            Type::I64,
+            Type::Integer(64, false),
+            Type::I32,
+            Type::F64,
+            Type::Binary(32),
+            Type::Decimal(64),
+            Type::Bool,
+            Type::Unit,
+            Type::Char,
+            Type::Utf8Char,
+            Type::String,
+            Type::Utf8String,
+            Type::Handle("Main.File".into()),
+            Type::Tuple(Vec::new()),
+            Type::Tuple(vec![Type::I64]),
+            Type::Tuple(vec![Type::I64, Type::I64]),
+        ];
+        for length in [2, 3] {
+            leaves.push(Type::FixedArray(
+                Box::new(Type::I64),
+                Box::new(Type::Length(length)),
+            ));
+        }
+        for classes in [&["Main.Show"][..], &["Main.Show", "Main.Size"]] {
+            for markers in 0..8 {
+                leaves.push(Type::Dyn(Box::new(DynType {
+                    classes: classes.iter().map(|name| (*name).into()).collect(),
+                    copy: markers & 1 != 0,
+                    send: markers & 2 != 0,
+                    borrowed: markers & 4 != 0,
+                })));
+            }
+        }
+        for pure in [false, true] {
+            for conventions in [
+                &[][..],
+                &[Read],
+                &[Mut],
+                &[Own],
+                &[Own, Read],
+                &[Read, Own],
+                &[Read, Read],
+                &[Own, Mut],
+            ] {
+                leaves.push(function(
+                    vec![Type::I64, Type::String],
+                    conventions,
+                    pure,
+                    Type::I64,
+                ));
+            }
+            leaves.push(function(vec![Type::I64], &[], pure, Type::I64));
+            leaves.push(function(Vec::new(), &[], pure, Type::I64));
+            // A curried result stays nested only when one of the two is pure.
+            leaves.push(function(
+                vec![Type::I64],
+                &[],
+                pure,
+                function(vec![Type::I64], &[], !pure, Type::I64),
+            ));
+        }
+        let mut types = leaves.clone();
+        for leaf in &leaves {
+            types.push(Type::Reference(Box::new(leaf.clone()), false));
+            types.push(Type::Reference(Box::new(leaf.clone()), true));
+            for kind in SharedKind::ALL {
+                types.push(Type::Shared(Box::new(leaf.clone()), kind));
+            }
+            types.push(Type::Array(Box::new(leaf.clone())));
+            types.push(Type::ArrayView(Box::new(leaf.clone())));
+            types.push(Type::List(Box::new(leaf.clone())));
+            types.push(Type::Vec(Box::new(leaf.clone())));
+            types.push(Type::Once(Box::new(leaf.clone())));
+            types.push(Type::Record(record, vec![leaf.clone()].into()));
+            types.push(function(vec![leaf.clone()], &[], false, Type::Unit));
+            types.push(function(vec![leaf.clone()], &[Read], true, Type::Unit));
+            types.push(function(Vec::new(), &[], false, leaf.clone()));
+        }
+        for ty in &types {
+            let identity = codegen_identity(ty);
+            assert_eq!(codegen_identity(&identity), identity);
+            assert_eq!(
+                canonical_type(ty, &module),
+                canonical_type(&identity, &module)
+            );
+        }
+        let distinct: BTreeSet<Type> = types.iter().map(codegen_identity).collect();
+        let mut canonical = BTreeMap::new();
+        let mut mangled = BTreeMap::new();
+        for ty in &distinct {
+            let name = canonical_type(ty, &module);
+            if let Some(other) = canonical.insert(name.clone(), ty) {
+                panic!("{other:?} and {ty:?} are both spelled {name}");
+            }
+            let symbol = mangled_type(ty, &module);
+            assert!(
+                symbol
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '$' | '.' | '_')),
+                "{symbol} is not an LLVM identifier"
+            );
+            if let Some(other) = mangled.insert(symbol.clone(), ty) {
+                panic!("{other:?} and {ty:?} are both mangled {symbol}");
+            }
+        }
+        assert!(distinct.len() > 500, "{} types", distinct.len());
+        // Functions with the default purity keep their spelling.
+        assert_eq!(
+            canonical_type(&function(vec![Type::I64], &[], false, Type::I64), &module),
+            "fn[i64->i64]"
+        );
+        assert_eq!(
+            mangled_type(&function(vec![Type::I64], &[], true, Type::I64), &module),
+            "pure.fn$Li64$Ai64$R"
+        );
+        assert_eq!(
+            canonical_type(
+                &function(
+                    vec![Type::I64, Type::String],
+                    &[Own, Mut],
+                    false,
+                    Type::Unit
+                ),
+                &module
+            ),
+            "fn[i64,string->unit]"
+        );
+        // The convention variants are one identity, nested in a record too; purity stays apart.
+        let boxed = |ty: Type| Type::Record(record, vec![ty].into());
+        let read = boxed(function(vec![Type::String], &[Read], false, Type::I64));
+        let plain = boxed(function(vec![Type::String], &[], false, Type::I64));
+        let pure = boxed(function(vec![Type::String], &[Read], true, Type::I64));
+        assert_ne!(read, plain);
+        assert_eq!(codegen_identity(&read), plain);
+        assert_eq!(
+            codegen_identity(&pure),
+            boxed(function(vec![Type::String], &[], true, Type::I64))
+        );
+        assert_ne!(codegen_identity(&pure), plain);
     }
 }

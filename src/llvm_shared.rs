@@ -166,7 +166,9 @@ impl FunctionEmitter<'_, '_> {
             self.begin(&destroy);
             self.shared_acquire(atomic);
             if layout.deferred {
-                self.globals.shared_types.insert((value.clone(), atomic));
+                self.globals
+                    .shared_types
+                    .insert((codegen_identity(value), atomic));
                 let slot = self.shared_field(&layout, block, 1);
                 self.instruction(format!(
                     "store ptr {}, ptr {slot}",

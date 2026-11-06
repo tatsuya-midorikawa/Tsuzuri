@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -28,11 +28,13 @@ function execute(args, success = true) {
   if (success) assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result;
 }
-// A copy of a fixture, so that a build leaves nothing in the repository.
+// A copy of a fixture's sources, so that a build leaves nothing in the repository.
 function fixture(name) {
   const directory = join(root, name);
   mkdirSync(directory, { recursive: true });
-  cpSync(join("tests/fixtures", name, "Main.tz"), join(directory, "Main.tz"));
+  for (const file of readdirSync(join("tests/fixtures", name)).filter((file) => /\.t[ztc]$/.test(file))) {
+    cpSync(join("tests/fixtures", name, file), join(directory, file));
+  }
   return directory;
 }
 let projects = 0;
@@ -83,7 +85,8 @@ async function expectTrap(promise, TsuzuriTrap, what) {
 
 // The native suites of the scheduler's fixtures (tests/features.mjs, where they are native only), with the same
 // expected values: each is computed from the case, not taken from a run. `deadlocks` are the traps that are a deadlock
-// natively, which the glue reports as one.
+// natively, which the glue reports as one. `dyn_dispatch` adds the channels of dyn values of A29: its native-only
+// `channel_area` and its one-thread `channel_ops` of tests/features.mjs.
 // A tzroutine that has started and not finished holds a stack of 64 KiB (D3): `yields` keeps 1000 of them at once, more
 // than the default 16 MiB has room for. At -O0 the soft arithmetic of a 128-bit decimal has frames of about 60 KiB, more
 // than a tzroutine's stack, so `wide_numbers` traps there as a stack overflow (`o0Traps`) instead of writing below it.
@@ -177,6 +180,12 @@ const suites = {
     traps: [["negative_counter", []], ["mutex_same_nested", []], ["rw_nested", []], ["semaphore_over", []],
       ["semaphore_weight", []]],
     deadlocks: [["mutex_order_deadlock", []]],
+  },
+  dyn_dispatch: {
+    cases: [
+      ...[3n, -4n].map((x) => ["channel_area", [x], x * x]),
+      ...[3n, -2n].map((x) => ["channel_ops", [x], x * x * 1000000n + 2n * x * 1000n + (x + 1n) * (x + 1n)]),
+    ],
   },
   context: {
     cases: [
