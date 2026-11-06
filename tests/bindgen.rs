@@ -98,6 +98,70 @@ fn enumeration(name: &str, constants: Vec<Value>) -> Value {
     json!({ "kind": "EnumDecl", "name": name, "inner": constants })
 }
 
+/// How Clang's JSON AST writes the type of a typedef that refers to a struct, union, or
+/// enum (E16). Clang 21 is what CI runs; Clang 23 cannot be run there, so these tests
+/// build its shape by hand.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    /// Clang 21: an `ElaboratedType` above the tag's type. When the typedef declares the
+    /// tag (`typedef struct { ... } S;`), the `ElaboratedType` carries `ownedTagDecl`.
+    Elaborated,
+    /// Clang 23: only the tag's type (`RecordType`, `EnumType`) with its `decl`, marked
+    /// `isTagOwned` when the typedef declares the tag.
+    Direct,
+}
+
+const SHAPES: [Shape; 2] = [Shape::Elaborated, Shape::Direct];
+
+impl Shape {
+    /// How Clang spells an unnamed tag in a `qualType`: `struct (unnamed struct at ...)`
+    /// in Clang 21, `struct (unnamed at ...)` in Clang 23.
+    fn unnamed(self, keyword: &str, at: &str) -> String {
+        match self {
+            Self::Elaborated => format!("{keyword} (unnamed {keyword} at {at})"),
+            Self::Direct => format!("{keyword} (unnamed at {at})"),
+        }
+    }
+}
+
+/// A tag declaration as a type node refers to it; `tag` is "" for an unnamed one.
+fn tag_ref(id: &str, kind: &str, tag: &str) -> Value {
+    json!({ "id": id, "kind": kind, "name": tag })
+}
+
+/// The type node of a typedef that refers to `tag`, as Clang writes it in `shape`.
+/// `owned`: the typedef declares the tag.
+fn tag_type(shape: Shape, tag: Value, owned: bool) -> Value {
+    let kind = if tag["kind"] == "EnumDecl" {
+        "EnumType"
+    } else {
+        "RecordType"
+    };
+    let mut ty = json!({ "kind": kind, "decl": tag.clone() });
+    match shape {
+        Shape::Elaborated => {
+            let mut elaborated = json!({ "kind": "ElaboratedType", "inner": [ty] });
+            if owned {
+                elaborated["ownedTagDecl"] = tag;
+            }
+            elaborated
+        }
+        Shape::Direct => {
+            if owned {
+                ty["isTagOwned"] = json!(true);
+            }
+            ty
+        }
+    }
+}
+
+/// `typedef <spelled> name;` with the type node `ty` below it.
+fn typedef_over(name: &str, spelled: &str, ty: Value) -> Value {
+    let mut node = typedef(name, spelled);
+    node["inner"] = json!([ty]);
+    node
+}
+
 #[test]
 fn accepts_only_lp64_targets() {
     for triple in [
@@ -372,79 +436,85 @@ fn resolves_typedef_chains_and_stops_after_32() {
 
 #[test]
 fn generates_scalar_records_and_ref_parameters() {
-    let mut union = record("u", &[("a", "int")]);
-    union["tagUsed"] = json!("union");
-    let mut anonymous = record("", &[("x", "int")]);
-    anonymous["id"] = json!("0x2");
-    let mut bits = record("bits", &[("a", "int"), ("b", "int")]);
-    bits["inner"][0]["isBitfield"] = json!(true);
-    let mut packed = record("packed", &[("a", "int")]);
-    packed["inner"]
-        .as_array_mut()
-        .unwrap()
-        .insert(0, json!({ "kind": "PackedAttr" }));
-    assert_eq!(
-        lines(vec![
-            // Declared before its definition: functions may borrow it before it is complete.
-            json!({ "kind": "RecordDecl", "name": "point", "tagUsed": "struct" }),
-            function(
-                "before",
-                "double (const struct point *)",
-                &["const struct point *"]
-            ),
-            record(
-                "point",
-                &[
-                    ("x", "double"),
-                    ("y", "double"),
-                    ("tag", "int"),
-                    ("kind", "enum kind"),
-                    ("count", "unsigned long")
-                ]
-            ),
-            enumeration("kind", vec![constant("ONE", Some(value("1", "int")))]),
-            typedef("point_t", "struct point"),
-            function("norm", "double (const point_t *)", &["const point_t *"]),
-            function(
-                "constant",
-                "double (const struct point *const)",
-                &["const struct point *const"]
-            ),
-            function("mutable", "void (struct point *)", &["struct point *"]),
-            function("by_value", "double (struct point)", &["struct point"]),
-            function("make", "struct point (void)", &[]),
-            record("narrow", &[("small", "signed char"), ("x", "int")]),
-            record("flags", &[("on", "_Bool")]),
-            union,
-            anonymous,
-            json!({ "kind": "TypedefDecl", "name": "anon_t", "type": { "qualType": "struct anon_t" },
-                    "inner": [{ "kind": "ElaboratedType", "ownedTagDecl": { "id": "0x2", "kind": "RecordDecl", "name": "" } }] }),
-            bits,
-            packed,
-            record("pointer", &[("next", "struct pointer *")]),
-            record("array", &[("values", "int[4]")]),
-            json!({ "kind": "RecordDecl", "name": "empty", "tagUsed": "struct", "completeDefinition": true }),
-        ]),
-        [
-            "extern \"before\" def before :: ref Point -> f64",
-            "record Point { x: f64, y: f64, tag: i32, kind: i32, count: i64u }",
-            "const ONE: i32 = 1",
-            "extern \"norm\" def norm :: ref Point -> f64",
-            "extern \"constant\" def constant :: ref Point -> f64",
-            "// skipped mutable: parameter 1 has unsupported type 'struct point *'",
-            "// skipped by_value: parameter 1 has unsupported type 'struct point'",
-            "// skipped make: result has unsupported type 'struct point'",
-            "// skipped narrow: field 'small' has unsupported type 'signed char'",
-            "// skipped flags: field 'on' has unsupported type '_Bool'",
-            "// skipped u: C union",
-            "// skipped anon_t: anonymous struct; give the struct a tag",
-            "// skipped bits: bit-field 'a'",
-            "// skipped packed: struct has __attribute__((packed)), which may change its layout",
-            "// skipped pointer: field 'next' has unsupported type 'struct pointer *'",
-            "// skipped array: field 'values' has unsupported type 'int[4]'",
-            "// skipped empty: struct has no fields",
-        ]
-    );
+    for shape in SHAPES {
+        let mut union = record("u", &[("a", "int")]);
+        union["tagUsed"] = json!("union");
+        let mut anonymous = record("", &[("x", "int")]);
+        anonymous["id"] = json!("0x2");
+        let mut bits = record("bits", &[("a", "int"), ("b", "int")]);
+        bits["inner"][0]["isBitfield"] = json!(true);
+        let mut packed = record("packed", &[("a", "int")]);
+        packed["inner"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, json!({ "kind": "PackedAttr" }));
+        assert_eq!(
+            lines(vec![
+                // Declared before its definition: functions may borrow it before it is complete.
+                json!({ "kind": "RecordDecl", "name": "point", "tagUsed": "struct" }),
+                function(
+                    "before",
+                    "double (const struct point *)",
+                    &["const struct point *"]
+                ),
+                record(
+                    "point",
+                    &[
+                        ("x", "double"),
+                        ("y", "double"),
+                        ("tag", "int"),
+                        ("kind", "enum kind"),
+                        ("count", "unsigned long")
+                    ]
+                ),
+                enumeration("kind", vec![constant("ONE", Some(value("1", "int")))]),
+                typedef("point_t", "struct point"),
+                function("norm", "double (const point_t *)", &["const point_t *"]),
+                function(
+                    "constant",
+                    "double (const struct point *const)",
+                    &["const struct point *const"]
+                ),
+                function("mutable", "void (struct point *)", &["struct point *"]),
+                function("by_value", "double (struct point)", &["struct point"]),
+                function("make", "struct point (void)", &[]),
+                record("narrow", &[("small", "signed char"), ("x", "int")]),
+                record("flags", &[("on", "_Bool")]),
+                union,
+                anonymous,
+                typedef_over(
+                    "anon_t",
+                    "struct anon_t",
+                    tag_type(shape, tag_ref("0x2", "RecordDecl", ""), true)
+                ),
+                bits,
+                packed,
+                record("pointer", &[("next", "struct pointer *")]),
+                record("array", &[("values", "int[4]")]),
+                json!({ "kind": "RecordDecl", "name": "empty", "tagUsed": "struct", "completeDefinition": true }),
+            ]),
+            [
+                "extern \"before\" def before :: ref Point -> f64",
+                "record Point { x: f64, y: f64, tag: i32, kind: i32, count: i64u }",
+                "const ONE: i32 = 1",
+                "extern \"norm\" def norm :: ref Point -> f64",
+                "extern \"constant\" def constant :: ref Point -> f64",
+                "// skipped mutable: parameter 1 has unsupported type 'struct point *'",
+                "// skipped by_value: parameter 1 has unsupported type 'struct point'",
+                "// skipped make: result has unsupported type 'struct point'",
+                "// skipped narrow: field 'small' has unsupported type 'signed char'",
+                "// skipped flags: field 'on' has unsupported type '_Bool'",
+                "// skipped u: C union",
+                "// skipped anon_t: anonymous struct; give the struct a tag",
+                "// skipped bits: bit-field 'a'",
+                "// skipped packed: struct has __attribute__((packed)), which may change its layout",
+                "// skipped pointer: field 'next' has unsupported type 'struct pointer *'",
+                "// skipped array: field 'values' has unsupported type 'int[4]'",
+                "// skipped empty: struct has no fields",
+            ],
+            "{shape:?}"
+        );
+    }
 }
 
 #[test]
@@ -1683,78 +1753,218 @@ fn converts_only_types_whose_attributes_keep_the_layout() {
 #[test]
 fn does_not_read_unnamed_struct_typedefs_as_tags() {
     // `typedef struct { int small; } S;` is spelled `struct S`, but the tag `struct S` is
-    // another type: C keeps tags and typedef names in separate namespaces.
+    // another type: C keeps tags and typedef names in separate namespaces. Clang 21 marks
+    // the unnamed tag with `ownedTagDecl` and with the `decl` of its type, Clang 23 only
+    // with the `decl`.
     let unnamed = |id: &str, kind: &str, tag_used: &str| {
         json!({ "kind": kind, "id": id, "tagUsed": tag_used, "completeDefinition": true,
                 "inner": [{ "kind": "FieldDecl", "name": "small", "type": { "qualType": "int" } }] })
     };
-    let named_by = |name: &str, spelled: &str, id: &str, kind: &str| {
-        json!({ "kind": "TypedefDecl", "name": name, "type": { "qualType": spelled },
-                "inner": [{ "kind": "ElaboratedType", "ownedTagDecl": { "id": id, "kind": kind, "name": "" } }] })
+    for shape in SHAPES {
+        let named_by = |name: &str, spelled: &str, id: &str, kind: &str| {
+            typedef_over(name, spelled, tag_type(shape, tag_ref(id, kind, ""), true))
+        };
+        let mut tag = record("S", &[("big", "double"), ("other", "double")]);
+        tag["id"] = json!("0x10");
+        let mut pt = record("pt", &[("x", "double")]);
+        pt["id"] = json!("0x11");
+        assert_eq!(
+            lines(vec![
+                tag,
+                unnamed("0x1", "RecordDecl", "struct"),
+                named_by("S", "struct S", "0x1", "RecordDecl"),
+                function("use_typedef", "double (const S *)", &["const S *"]),
+                function(
+                    "use_tag",
+                    "double (const struct S *)",
+                    &["const struct S *"]
+                ),
+                typedef("S_alias", "S"),
+                function(
+                    "use_alias",
+                    "double (const S_alias *)",
+                    &["const S_alias *"]
+                ),
+                // A typedef of the named tag refers to it with `decl` too, and expands.
+                typedef_over(
+                    "S_named",
+                    "struct S",
+                    tag_type(shape, tag_ref("0x10", "RecordDecl", "S"), false)
+                ),
+                function(
+                    "use_named",
+                    "double (const S_named *)",
+                    &["const S_named *"]
+                ),
+                // `typedef struct pt { double x; } pt_t;` declares a named tag: Clang 21's
+                // `ownedTagDecl` has the name `pt`, so the typedef expands like `S_named`.
+                pt,
+                typedef_over(
+                    "pt_t",
+                    "struct pt",
+                    tag_type(shape, tag_ref("0x11", "RecordDecl", "pt"), true)
+                ),
+                function("norm", "double (const pt_t *)", &["const pt_t *"]),
+                json!({ "kind": "RecordDecl", "name": "H", "tagUsed": "struct" }),
+                unnamed("0x2", "RecordDecl", "struct"),
+                named_by("H", "struct H", "0x2", "RecordDecl"),
+                function("use_handle_typedef", "void (H *)", &["H *"]),
+                function("use_handle", "void (struct H *)", &["struct H *"]),
+                unnamed("0x3", "RecordDecl", "union"),
+                named_by("U", "union U", "0x3", "RecordDecl"),
+                // `typedef struct { ... } *P;` names the unnamed struct below a pointer.
+                unnamed("0x9", "RecordDecl", "struct"),
+                typedef_over(
+                    "P",
+                    &format!("{} *", shape.unnamed("struct", "/h/main.h:9:9")),
+                    json!({ "kind": "PointerType",
+                            "inner": [tag_type(shape, tag_ref("0x9", "RecordDecl", ""), true)] })
+                ),
+                function("use_pointer", "void (P)", &["P"]),
+                // No typedef names an unnamed struct that is a field's type, or one that
+                // declares a variable.
+                json!({ "kind": "RecordDecl", "name": "nest", "tagUsed": "struct", "completeDefinition": true,
+                        "inner": [
+                            unnamed("0x7", "RecordDecl", "struct"),
+                            { "kind": "FieldDecl", "name": "inner",
+                              "type": { "qualType": shape.unnamed("struct", "/h/main.h:11:15") } },
+                        ] }),
+                unnamed("0x8", "RecordDecl", "struct"),
+                // An anonymous enum named like an enum tag (here only declared) is ambiguous.
+                json!({ "kind": "EnumDecl", "name": "E" }),
+                json!({ "kind": "EnumDecl", "id": "0x4", "inner": [{ "kind": "EnumConstantDecl", "name": "E_ZERO" }] }),
+                named_by("E", "enum E", "0x4", "EnumDecl"),
+                function("use_enum", "int (E)", &["E"]),
+                json!({ "kind": "EnumDecl", "id": "0x5", "inner": [{ "kind": "EnumConstantDecl", "name": "F_ZERO" }] }),
+                named_by("F", "enum F", "0x5", "EnumDecl"),
+                function("use_anonymous_enum", "int (F)", &["F"]),
+                // A tag declared inside a struct has file scope, so it is ambiguous too.
+                json!({ "kind": "RecordDecl", "name": "outer", "tagUsed": "struct", "completeDefinition": true,
+                        "inner": [
+                            { "kind": "EnumDecl", "name": "G", "inner": [{ "kind": "EnumConstantDecl", "name": "G_WIDE",
+                                "inner": [{ "kind": "ConstantExpr", "value": "140737488355327" }] }] },
+                            { "kind": "FieldDecl", "name": "g", "type": { "qualType": "enum G" } },
+                        ] }),
+                json!({ "kind": "EnumDecl", "id": "0x6", "inner": [{ "kind": "EnumConstantDecl", "name": "G_ZERO" }] }),
+                named_by("G", "enum G", "0x6", "EnumDecl"),
+                function("use_nested_tag", "int (enum G)", &["enum G"]),
+                function("use_nested_typedef", "int (G)", &["G"]),
+            ]),
+            [
+                "record S { big: f64, other: f64 }",
+                "// skipped S: anonymous struct; give the struct a tag",
+                "// skipped use_typedef: parameter 1 has unsupported type 'const S *'",
+                "extern \"use_tag\" def use_tag :: ref S -> f64",
+                "// skipped use_alias: parameter 1 has unsupported type 'const S_alias *'",
+                "extern \"use_named\" def use_named :: ref S -> f64",
+                "record Pt { x: f64 }",
+                "extern \"norm\" def norm :: ref Pt -> f64",
+                "extern type H",
+                "// skipped H: anonymous struct; give the struct a tag",
+                "// skipped use_handle_typedef: parameter 1 has unsupported type 'H *'",
+                "extern \"use_handle\" def use_handle :: ref H -> unit",
+                "// skipped U: C union",
+                "// skipped P: anonymous struct; give the struct a tag",
+                "// skipped use_pointer: parameter 1 has unsupported type 'P'",
+                "// skipped nest: field 'inner' has unsupported type 'struct (unnamed struct)'",
+                "// skipped (anonymous struct): anonymous struct; give the struct a tag",
+                "const E_ZERO: i32 = 0",
+                "// skipped use_enum: parameter 1 has unsupported type 'E'",
+                "const F_ZERO: i32 = 0",
+                "extern \"use_anonymous_enum\" def use_anonymous_enum :: i32 -> i32",
+                "// skipped outer: field 'g' has unsupported type 'enum G'",
+                "const G_ZERO: i32 = 0",
+                "// skipped use_nested_tag: parameter 1 has unsupported type 'enum G'",
+                "// skipped use_nested_typedef: parameter 1 has unsupported type 'G'",
+            ],
+            "{shape:?}"
+        );
+    }
+}
+
+#[test]
+fn reads_unnamed_enum_typedefs_from_either_ast_shape() {
+    // `typedef enum { MODE_A, MODE_B } mode; typedef mode mode_alias;` and two functions
+    // that take them: Clang spells the enum `enum mode`, which the typedef gives its key.
+    for shape in SHAPES {
+        let unnamed = tag_ref("0x1", "EnumDecl", "");
+        assert_eq!(
+            lines(vec![
+                json!({ "kind": "EnumDecl", "id": "0x1",
+                        "inner": [constant("MODE_A", None), constant("MODE_B", None)] }),
+                typedef_over("mode", "enum mode", tag_type(shape, unnamed.clone(), true)),
+                function("pick", "int (mode)", &["mode"]),
+                // Clang writes the typedef's type below the alias in both versions.
+                typedef_over(
+                    "mode_alias",
+                    "mode",
+                    json!({ "kind": "TypedefType", "decl": { "id": "0x2", "kind": "TypedefDecl", "name": "mode" },
+                            "inner": [tag_type(shape, unnamed.clone(), true)] })
+                ),
+                function("pick_alias", "int (mode_alias)", &["mode_alias"]),
+            ]),
+            [
+                "const MODE_A: i32 = 0",
+                "const MODE_B: i32 = 1",
+                "extern \"pick\" def pick :: i32 -> i32",
+                "extern \"pick_alias\" def pick_alias :: i32 -> i32",
+            ],
+            "{shape:?}"
+        );
+    }
+}
+
+#[test]
+fn reads_an_owned_tag_decl_without_a_decl_below_it() {
+    // A typedef names an unnamed tag when its type nodes have an `ownedTagDecl` without a
+    // name, or a `decl` that is an unnamed declaration. Clang 21 writes both, so the
+    // `Elaborated` shape above cannot tell the two apart. Here the type below the
+    // `ElaboratedType` has no `decl`, and only `ownedTagDecl` names the tag. No Clang we
+    // have seen writes this shape; it keeps the `ownedTagDecl` rule tested on its own. The
+    // lines are those of `Shape::Elaborated` in the two tests above (E16). An `ownedTagDecl`
+    // with a name (`typedef struct pt { ... } pt_t;`) is in the struct test above.
+    let owned = |id: &str, kind: &str| {
+        let below = if kind == "EnumDecl" {
+            "EnumType"
+        } else {
+            "RecordType"
+        };
+        json!({ "kind": "ElaboratedType", "ownedTagDecl": tag_ref(id, kind, ""),
+                "inner": [{ "kind": below }] })
     };
+    let unnamed = |id: &str| {
+        json!({ "kind": "RecordDecl", "id": id, "tagUsed": "struct", "completeDefinition": true,
+                "inner": [{ "kind": "FieldDecl", "name": "small", "type": { "qualType": "int" } }] })
+    };
+    let mut tag = record("S", &[("big", "double")]);
+    tag["id"] = json!("0x10");
     assert_eq!(
         lines(vec![
-            record("S", &[("big", "double"), ("other", "double")]),
-            unnamed("0x1", "RecordDecl", "struct"),
-            named_by("S", "struct S", "0x1", "RecordDecl"),
+            tag,
+            unnamed("0x1"),
+            typedef_over("S", "struct S", owned("0x1", "RecordDecl")),
             function("use_typedef", "double (const S *)", &["const S *"]),
-            function(
-                "use_tag",
-                "double (const struct S *)",
-                &["const struct S *"]
+            unnamed("0x2"),
+            typedef_over(
+                "P",
+                "struct (unnamed struct at /h/main.h:3:9) *",
+                json!({ "kind": "PointerType", "inner": [owned("0x2", "RecordDecl")] })
             ),
-            typedef("S_alias", "S"),
-            function(
-                "use_alias",
-                "double (const S_alias *)",
-                &["const S_alias *"]
-            ),
-            json!({ "kind": "RecordDecl", "name": "H", "tagUsed": "struct" }),
-            unnamed("0x2", "RecordDecl", "struct"),
-            named_by("H", "struct H", "0x2", "RecordDecl"),
-            function("use_handle_typedef", "void (H *)", &["H *"]),
-            function("use_handle", "void (struct H *)", &["struct H *"]),
-            unnamed("0x3", "RecordDecl", "union"),
-            named_by("U", "union U", "0x3", "RecordDecl"),
-            // An anonymous enum named like an enum tag (here only declared) is ambiguous.
-            json!({ "kind": "EnumDecl", "name": "E" }),
-            json!({ "kind": "EnumDecl", "id": "0x4", "inner": [{ "kind": "EnumConstantDecl", "name": "E_ZERO" }] }),
-            named_by("E", "enum E", "0x4", "EnumDecl"),
-            function("use_enum", "int (E)", &["E"]),
-            json!({ "kind": "EnumDecl", "id": "0x5", "inner": [{ "kind": "EnumConstantDecl", "name": "F_ZERO" }] }),
-            named_by("F", "enum F", "0x5", "EnumDecl"),
-            function("use_anonymous_enum", "int (F)", &["F"]),
-            // A tag declared inside a struct has file scope, so it is ambiguous too.
-            json!({ "kind": "RecordDecl", "name": "outer", "tagUsed": "struct", "completeDefinition": true,
-                    "inner": [
-                        { "kind": "EnumDecl", "name": "G", "inner": [{ "kind": "EnumConstantDecl", "name": "G_WIDE",
-                            "inner": [{ "kind": "ConstantExpr", "value": "140737488355327" }] }] },
-                        { "kind": "FieldDecl", "name": "g", "type": { "qualType": "enum G" } },
-                    ] }),
-            json!({ "kind": "EnumDecl", "id": "0x6", "inner": [{ "kind": "EnumConstantDecl", "name": "G_ZERO" }] }),
-            named_by("G", "enum G", "0x6", "EnumDecl"),
-            function("use_nested_tag", "int (enum G)", &["enum G"]),
-            function("use_nested_typedef", "int (G)", &["G"]),
+            function("use_pointer", "void (P)", &["P"]),
+            json!({ "kind": "EnumDecl", "id": "0x3",
+                    "inner": [constant("MODE_A", None), constant("MODE_B", None)] }),
+            typedef_over("mode", "enum mode", owned("0x3", "EnumDecl")),
+            function("pick", "int (mode)", &["mode"]),
         ]),
         [
-            "record S { big: f64, other: f64 }",
+            "record S { big: f64 }",
             "// skipped S: anonymous struct; give the struct a tag",
             "// skipped use_typedef: parameter 1 has unsupported type 'const S *'",
-            "extern \"use_tag\" def use_tag :: ref S -> f64",
-            "// skipped use_alias: parameter 1 has unsupported type 'const S_alias *'",
-            "extern type H",
-            "// skipped H: anonymous struct; give the struct a tag",
-            "// skipped use_handle_typedef: parameter 1 has unsupported type 'H *'",
-            "extern \"use_handle\" def use_handle :: ref H -> unit",
-            "// skipped U: C union",
-            "const E_ZERO: i32 = 0",
-            "// skipped use_enum: parameter 1 has unsupported type 'E'",
-            "const F_ZERO: i32 = 0",
-            "extern \"use_anonymous_enum\" def use_anonymous_enum :: i32 -> i32",
-            "// skipped outer: field 'g' has unsupported type 'enum G'",
-            "const G_ZERO: i32 = 0",
-            "// skipped use_nested_tag: parameter 1 has unsupported type 'enum G'",
-            "// skipped use_nested_typedef: parameter 1 has unsupported type 'G'",
+            "// skipped P: anonymous struct; give the struct a tag",
+            "// skipped use_pointer: parameter 1 has unsupported type 'P'",
+            "const MODE_A: i32 = 0",
+            "const MODE_B: i32 = 1",
+            "extern \"pick\" def pick :: i32 -> i32",
         ]
     );
 }

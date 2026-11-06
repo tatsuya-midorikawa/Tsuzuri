@@ -18,7 +18,7 @@
 | 名前 | 型シグネチャ | 説明 |
 | --- | --- | --- |
 | `Owned.Function<'a, 'b>` | 型 | 捕捉値を所有する不透明な関数値型（非 Copy） |
-| `Owned.function` | `('a -> 'b) -> Owned.Function<'a, 'b>` | 1 引数のインラインラムダ式から所有関数値を生成 |
+| `Owned.function` | `('a -> 'b) -> Owned.Function<'a, 'b>` | 1 引数の関数（インラインのラムダ式、名前付きの関数、借用を持たない関数値）から所有関数値を生成 |
 | `Owned.call` | `ref Owned.Function<'a, 'b> -> 'a -> 'b` | 共有借用を経由して所有関数値を呼び出す |
 | `Owned.drop` | `'a -> unit` | 任意の所有値を消費し、その場でデストラクタを実行 |
 
@@ -111,6 +111,40 @@ first + second
 
 所有関数値を借用で呼び出すので、関数値自体は消費されません。何度でも呼べます。
 
+`Owned.call` を 2 つの引数に直接適用した呼び出し（`Owned.call (ref f) x`）と、パイプラインの `x |> Owned.call (ref f)` では、結果が持つ借用は `x` が貸すものだけです。所有関数値は借用を持たず、その本体は捕捉した値への参照を返せない（`E1013`）ので、結果は `f` を借用しません。結果は `f` を解放した後も使え、結果の関数値から別の `Owned.function` を作ることもできます。
+
+```tsuzuri run=32
+let text = String.repeat 4 (ref "abcdefgh")
+let make = Owned.function (\() -> {
+    let n = String.length (ref text);
+    \() -> n
+})
+let size = Owned.call (ref make) ()
+Owned.drop make
+size ()
+```
+
+実行結果:
+
+```text
+32
+```
+
+`Owned.call` から作った関数値を通して呼んだ結果は、`f` を借用したままです。`Owned.call (ref f)` だけを部分適用した関数値、`let c = Owned.call` のように値にした `Owned.call`、パイプラインの `ref f |> Owned.call` がこれにあたります。その結果を使い終わるまで、`f` は解放できません。上の例の `let size = …` を次のように書き換えると、`Owned.drop make` が `E1014` になります。
+
+```text
+let c = Owned.call
+let size = c (ref make) ()
+Owned.drop make
+size ()
+```
+
+コンパイル結果:
+
+```text
+error[E1014]: access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively
+```
+
 ## Owned.drop による早期解放
 
 `Owned.drop` は、スコープの終端を待たずに所有値をその場で即座に解放するための組み込み関数です。
@@ -177,6 +211,8 @@ error[E1022]: the representation of 'Owned.Function' is opaque; use its module A
 
 `Owned.function` に渡すラムダは、呼び出しの引数の位置に直接書きます。変数に入れた関数値や、パイプラインの途中のラムダは通常の関数値として扱われ、非 Copy の捕捉は `E1005` になります。
 
+`Owned.function` そのものも、引数と一緒に直接適用します（`Owned.function g` か `g |> Owned.function`）。`let make = Owned.function` のように関数値として扱うと、引数の借用を調べられないので `E1013`（`must_apply_directly`）になります。
+
 引数は 1 つだけです。2 つ以上だと `E1006` になります。
 
 ```text
@@ -225,6 +261,110 @@ let f = Owned.function (\n -> r.length + n)
 error[E1013]: an owned function captures only owned values; ref string contains a reference
 ```
 
+ラムダ式ではない関数値（変数に入れた関数値・部分適用・関数の引数）を渡すときも同じです。その関数値が借用を持っていれば `E1013`（`owned_function_captures_reference`）になり、借用を作った位置を note で示します。`Routine.go`・`WaitGroup.go`・`ErrGroup.go`・`Time.after_func`・`Context.after_func` は受け取った関数を後で、借用の持ち主が解放された後に呼ぶことがあるからです。所有値だけを捕捉する関数値と、名前付きの関数はそのまま渡せます。
+
+```tsuzuri run=7
+let text = "hello"
+let size: i64 -> i64 = \n -> String.length (ref text) + n
+let owned = Owned.function size
+Owned.call (ref owned) 2
+```
+
+実行結果:
+
+```text
+7
+```
+
+借用を捕捉した関数値は拒否されます。
+
+```text
+let text = "hello"
+let borrowed = ref text
+let size: i64 -> i64 = \n -> String.length borrowed + n
+let owned = Owned.function size
+```
+
+コンパイル結果:
+
+```text
+error[E1013]: an owned function captures only owned values; this function value holds a borrow
+  note: value borrowed here
+```
+
+`Owned.function` に直接書いたラムダが、借用を持つ関数値を捕捉するときも同じです。捕捉する `size` の型 `i64 -> i64` は参照を含みませんが、`size` は `borrowed` を借用しているので、ラムダの捕捉が借用を持ちます。message は `a captured value holds a borrow` です。
+
+```text
+let text = "hello"
+let borrowed = ref text
+let size: i64 -> i64 = \n -> String.length borrowed + n
+let owned = Owned.function (\n -> size n)
+```
+
+コンパイル結果:
+
+```text
+error[E1013]: an owned function captures only owned values; a captured value holds a borrow
+  note: value borrowed here
+```
+
+ラムダをパイプラインで渡す形（`(\n -> size n) |> Owned.function`）も、ジェネリックな関数の中で書いた形も、message は同じ `a captured value holds a borrow` です。
+
+関数の引数の関数値は、呼び出し側の借用を持っているかもしれないので、`Owned.function` に渡せません（`E1013`）。後で実行する仕事を受け取る関数は、引数の型を `own Owned.Function<…>` にして、呼び出し側で `Owned.function` を作ります。
+
+```text
+def spawn :: (unit -> unit) -> unit
+fn spawn work = Routine.go (Owned.function work)
+```
+
+コンパイル結果:
+
+```text
+error[E1013]: an owned function captures only owned values; this function value holds a borrow
+  note: a parameter may hold a borrow of its caller's values
+  help: capture an owned value, such as the owner itself or a copy, instead of a borrow; a function that receives work to run later takes an 'own Owned.Function<unit, unit>' parameter instead of a function value
+```
+
+```tsuzuri run=hello%0A0
+def spawn :: own Owned.Function<unit, unit> -> unit = \work -> Routine.go work
+
+spawn (Owned.function (\() -> {
+    do! IO.write_line "hello"
+}))
+0
+```
+
+実行結果:
+
+```text
+hello
+0
+```
+
+`Owned.Function` は借用を持たないので、`own Owned.Function<…>` の引数は、別の `Owned.function` のラムダや `tzroutine { }` の本体でそのまま捕捉できます。所有関数値をフィールド・要素・ペイロードに持つだけの引数（`record Job { name: string, work: Owned.Function<unit, unit> }` の `own Job`、`own [Owned.Function<unit, unit>]` など）も同じです。普通の関数値（`unit -> unit`）や参照のフィールドを持つ引数は、呼び出し側の借用を持ちうるので、今までどおり捕捉すると `E1013` です。
+
+```tsuzuri run=twice%0Atwice%0A0
+def twice :: own Owned.Function<unit, unit> -> unit
+fn twice work =
+    Routine.go (Owned.function (\() -> {
+        Owned.call (ref work) ();
+        Owned.call (ref work) ()
+    }))
+
+twice (Owned.function (\() -> {
+    do! IO.write_line "twice"
+}))
+0
+```
+
+実行結果:
+
+```text
+twice
+twice
+0
+```
+
 ### 通常のクロージャへの再捕捉の禁止
 
 `Owned.Function` を通常の関数値（クロージャ）の中に再捕捉することはできません（`E1005`）。
@@ -255,6 +395,8 @@ error[E1005]: cannot capture Owned.Function<i64, i64> in a reusable function; fu
 - 通常の関数値と異なり非 Copy であり、環境の意図しない複製や二重解放を防ぎます。
 - `Owned.function` で生成し、`Owned.call` で借用経由で実行します。
 - ラムダは呼び出しの位置に直接書き、引数は 1 つです。本体は捕捉値を借用するだけで、ムーブはできません。
+- 渡す関数値も、直接書いたラムダが捕捉する関数値も、借用を持てません。関数の引数で受け取るときは `own Owned.Function<…>` にします（`E1013`）。
+- `Owned.call` を 2 つの引数に直接適用した結果（`Owned.call (ref f) x`・`x |> Owned.call (ref f)`）は、第 2 引数が貸す借用だけを持ち、所有関数値を借用しません。`Owned.call` から作った関数値を通して呼んだ結果は、所有関数値を借用します。
 - `Owned.drop` を用いることで、スコープ終端を待たずに所有値を早期解放できます。
 
 ## 関連項目
