@@ -281,6 +281,32 @@ fn a_share_of_an_element_holds_what_was_written_in() {
             "borrow_outlives_block",
         );
     }
+    // A lambda that the writing body makes captures `arr` as it was before the write, so the
+    // lambda's body reads nothing through it either (`lending_bodies`). Reading through, its share
+    // held nothing, `make` returned it, and `g` read the freed `text`. The A30 tip rejects these.
+    for share in [
+        "\\() -> Arc.share (ref arr[0])",
+        "\\() -> ref arr[0] |> Arc.share",
+        "\\() -> \\() -> Arc.share (ref arr[0])",
+    ] {
+        let nested = share.matches("\\()").count() == 2;
+        let (result, call) = if nested {
+            ("unit -> unit -> Arc<unit -> i64>", "f () ()")
+        } else {
+            ("unit -> Arc<unit -> i64>", "f ()")
+        };
+        rejects_with_kind(
+            &format!(
+                "def make :: own i64 -> ({result})\nfn make n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [Arc.new (\\() -> 0)]\n    Array.write 0 (Arc.new (\\() -> String.length borrowed)) (ref mut arr)\n    {share}\nlet f = make 123456789\nlet g = {call}\n(deref (Arc.get (ref g))) ()"
+            ),
+            "E1013",
+            "task_result_retains_borrow",
+        );
+    }
+    // Without the write, the lambda owns `arr` and its share holds nothing of `make`'s.
+    emits(
+        "def make :: own i64 -> (unit -> Arc<unit -> i64>)\nfn make n =\n    let arr = [Arc.new (\\() -> n)]\n    \\() -> Arc.share (ref arr[0])\nlet f = make 41\nlet g = f ()\n(deref (Arc.get (ref g))) ()",
+    );
 }
 
 #[test]

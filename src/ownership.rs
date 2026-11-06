@@ -207,7 +207,7 @@ pub(crate) fn infer_copy_all(
 pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
     let facts = call_facts(module, true);
     let mut recovered = Vec::new();
-    for function in &module.functions {
+    for (id, function) in module.functions.iter().enumerate() {
         let _ = check_body(
             module,
             function.parameters.iter(),
@@ -216,7 +216,7 @@ pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
             &facts,
             function.is_once,
             false,
-            Contract::of(function),
+            facts.contract(module, id),
             &mut recovered,
             None,
             None,
@@ -239,7 +239,7 @@ pub(crate) fn copy_reads(module: &CheckedModule) -> Vec<Vec<CopyRead>> {
             &facts,
             function.is_once,
             module.user_drops.values().any(|drop| *drop == id),
-            Contract::of(function),
+            facts.contract(module, id),
             &mut Vec::new(),
             Some(&mut copies),
             None,
@@ -287,7 +287,7 @@ fn check_functions(
                 &facts,
                 function.is_once,
                 module.user_drops.values().any(|drop| *drop == id),
-                Contract::of(function),
+                facts.contract(module, id),
                 &mut recovered,
                 None,
                 None,
@@ -422,6 +422,9 @@ struct Contract<'a> {
     /// The body is the generated function that applies a builtin to its own parameters
     /// (`src/closures.rs`, module `$builtin`), whose callers are checked instead.
     builtin_wrapper: bool,
+    /// Whether the body, or one that encloses it, lends an exclusive borrow to a call (A28,
+    /// `lending_bodies`); `None` asks the body alone when a read through needs it.
+    lends_exclusive: Option<bool>,
 }
 
 impl<'a> Contract<'a> {
@@ -431,6 +434,7 @@ impl<'a> Contract<'a> {
             callbacks: &function.callback_contracts,
             slots: function.region_slots.as_ref(),
             builtin_wrapper: function.module == "$builtin",
+            lends_exclusive: None,
         }
     }
 }
@@ -545,7 +549,7 @@ fn start_checker<'a, 'run>(
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         later_use_budget: LATER_USE_NODES,
         builtin_wrapper: contract.builtin_wrapper,
-        lends_exclusive: None,
+        lends_exclusive: contract.lends_exclusive,
     };
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
@@ -587,7 +591,7 @@ pub(crate) fn events_abstract(
             &facts,
             function.is_once,
             module.user_drops.values().any(|drop| *drop == id),
-            Contract::of(function),
+            facts.contract(module, id),
             &mut Vec::new(),
             None,
             Some(&mut events),
@@ -717,6 +721,9 @@ struct CallFacts {
     closed: Vec<bool>,
     /// By function: whether its result can hold each argument's loans. `None` holds them all.
     retained: Vec<Option<Box<[bool]>>>,
+    /// By function: whether its body, or a body that encloses it (that of the function a lambda
+    /// is lifted from), lends an exclusive borrow to a call (`lending_bodies`).
+    lending: Vec<bool>,
 }
 
 impl CallFacts {
@@ -728,12 +735,26 @@ impl CallFacts {
             .and_then(Option::as_deref)
             .is_some_and(|retained| retained.get(index) == Some(&false))
     }
+
+    /// The contract of the body of function `id`, with whether it or a body that encloses it
+    /// lends an exclusive borrow.
+    fn contract<'a>(&self, module: &'a CheckedModule, id: usize) -> Contract<'a> {
+        Contract {
+            lends_exclusive: Some(self.lending[id]),
+            ..Contract::of(&module.functions[id])
+        }
+    }
 }
 
 fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
     let closed = closed_returns(module);
-    let retained = parameter_retention(module, &closed, infer);
-    CallFacts { closed, retained }
+    let lending = lending_bodies(module);
+    let retained = parameter_retention(module, &closed, &lending, infer);
+    CallFacts {
+        closed,
+        retained,
+        lending,
+    }
 }
 
 /// Whether the facts of `parameter_retention` decide the loans of a call result of type `result`:
@@ -798,15 +819,17 @@ const RETENTION_EXTRA_CHECKS: usize = 1024;
 fn parameter_retention(
     module: &CheckedModule,
     closed: &[bool],
+    lending: &[bool],
     infer: bool,
 ) -> Vec<Option<Box<[bool]>>> {
-    parameter_retention_within(module, closed, infer, None)
+    parameter_retention_within(module, closed, lending, infer, None)
 }
 
 /// `parameter_retention` with `budget` checks of bodies in place of the default.
 fn parameter_retention_within(
     module: &CheckedModule,
     closed: &[bool],
+    lending: &[bool],
     infer: bool,
     budget: Option<usize>,
 ) -> Vec<Option<Box<[bool]>>> {
@@ -857,6 +880,7 @@ fn parameter_retention_within(
     let mut facts = CallFacts {
         closed: closed.to_vec(),
         retained: vec![None; count],
+        lending: lending.to_vec(),
     };
     for &id in callers.keys() {
         facts.retained[id] = Some(
@@ -954,7 +978,7 @@ fn parameter_retention_within(
 
 /// The parameters of `function` whose loans its result holds, under the facts so far; `None`
 /// when the body does not check, when its result holds a loan of its own locals, or when it lends
-/// an exclusive borrow to a call (`lends_exclusive`).
+/// an exclusive borrow to a call (`lending_bodies`).
 fn retained_parameters(
     module: &CheckedModule,
     id: usize,
@@ -962,7 +986,7 @@ fn retained_parameters(
     facts: &CallFacts,
 ) -> Option<Box<[bool]>> {
     let function = &module.functions[id];
-    if lends_exclusive(&function.body, &module.types()) {
+    if facts.lending[id] {
         return None;
     }
     let mut recovered = Vec::new();
@@ -974,7 +998,7 @@ fn retained_parameters(
         facts,
         false,
         false,
-        Contract::of(function),
+        facts.contract(module, id),
         &mut recovered,
         None,
         None,
@@ -1063,6 +1087,45 @@ fn lends_exclusive(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> b
             .expect("collecting calls cannot fail");
     }
     false
+}
+
+/// By function: whether its body lends an exclusive borrow to a call (`lends_exclusive`), or the
+/// body of a lambda lifted from a function for which this holds. A lambda's captures hold what the
+/// enclosing body gave them, and that misses what an in-place writer stored there, so a lambda
+/// whose captures were made in such a body reads nothing through them either: in
+/// `let mut arr = [Arc.new f]`, `Array.write 0 (Arc.new borrowing) (ref mut arr)` and
+/// `\() -> Arc.share (ref arr[0])`, the share would hold what `arr` held before the write. Each
+/// body is scanned once; the lifted lambdas follow the `E::Closure` that makes them, through the
+/// lambdas in lambdas and the groups of `let rec`.
+fn lending_bodies(module: &CheckedModule) -> Vec<bool> {
+    let types = module.types();
+    let mut lending: Vec<bool> = module
+        .functions
+        .iter()
+        .map(|function| lends_exclusive(&function.body, &types))
+        .collect();
+    let mut lifted: Vec<Vec<usize>> = vec![Vec::new(); lending.len()];
+    for (id, function) in module.functions.iter().enumerate() {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            if let E::Closure(lambda, _) = expression.kind
+                && lambda != id
+            {
+                lifted[id].push(lambda);
+            }
+            pending.extend(expression.children());
+        }
+    }
+    let mut work: Vec<usize> = (0..lending.len()).filter(|id| lending[*id]).collect();
+    while let Some(id) = work.pop() {
+        for &lambda in &lifted[id] {
+            if !lending[lambda] {
+                lending[lambda] = true;
+                work.push(lambda);
+            }
+        }
+    }
+    lending
 }
 
 /// The parameters of an abstract body whose loans may pass through a value whose type has a type
@@ -1287,7 +1350,8 @@ struct Checker<'a, 'run> {
     later_use_budget: usize,
     /// The body is a generated function that applies a builtin to its own parameters (A30).
     builtin_wrapper: bool,
-    /// Whether the body lends an exclusive borrow to a call (`lends_exclusive`), once asked.
+    /// Whether the body, or one that encloses it, lends an exclusive borrow to a call
+    /// (`lending_bodies`); the body alone is asked when the contract does not say.
     lends_exclusive: Option<bool>,
 }
 
@@ -1419,6 +1483,7 @@ impl<'a> Checker<'a, '_> {
                             callbacks: &[],
                             slots: None,
                             builtin_wrapper: function.module == "$builtin",
+                            lends_exclusive: Some(self.facts.lending[*id]),
                         },
                         &mut Vec::new(),
                         None,
@@ -1566,9 +1631,9 @@ impl<'a> Checker<'a, '_> {
         )
     }
 
-    /// Whether the checked body lends an exclusive borrow to a call: an in-place writer may then
-    /// have stored in the owner what its loans miss, so nothing is read through the owner's
-    /// borrow (`lends_exclusive`).
+    /// Whether the checked body, or one that encloses it, lends an exclusive borrow to a call: an
+    /// in-place writer may then have stored in the owner, or in a value that a lambda captured,
+    /// what its loans miss, so nothing is read through the owner's borrow (`lending_bodies`).
     fn body_lends_exclusive(&mut self) -> bool {
         *self
             .lends_exclusive
@@ -3637,6 +3702,9 @@ impl<'a> Checker<'a, '_> {
         };
         // The functions of a `let rec` group are in scope in the body like captured function values.
         let locals: Vec<_> = captures.iter().chain(recursive).chain(parameters).collect();
+        // The captures hold what they held here, which misses what an in-place writer stored
+        // when this body lends an exclusive borrow (`lending_bodies`).
+        let lends_exclusive = self.body_lends_exclusive().then_some(true);
         self.copy_variables.extend(check_body(
             self.module,
             locals.into_iter(),
@@ -3645,7 +3713,10 @@ impl<'a> Checker<'a, '_> {
             self.facts,
             matches!(expression.ty, Type::Once(_)),
             false,
-            Contract::default(),
+            Contract {
+                lends_exclusive,
+                ..Contract::default()
+            },
             self.recovered,
             None,
             None,
@@ -5206,7 +5277,7 @@ mod event_tests {
                             facts,
                             function.is_once,
                             module.user_drops.values().any(|drop| *drop == id),
-                            Contract::of(function),
+                            facts.contract(&module, id),
                             &mut recovered,
                             None,
                             events,
@@ -5323,7 +5394,8 @@ mod retention_tests {
         )
         .unwrap();
         let closed = closed_returns(&module);
-        let full = parameter_retention(&module, &closed, false);
+        let lending = lending_bodies(&module);
+        let full = parameter_retention(&module, &closed, &lending, false);
         let id = |name: &str| {
             module
                 .functions
@@ -5335,13 +5407,13 @@ mod retention_tests {
         assert_eq!(full[pass].as_deref(), Some(&[false, true][..]));
         assert_eq!(full[top].as_deref(), Some(&[true][..]));
         assert!(
-            parameter_retention_within(&module, &closed, false, Some(0))
+            parameter_retention_within(&module, &closed, &lending, false, Some(0))
                 .iter()
                 .all(Option::is_none)
         );
         let mut partial = false;
         for budget in 1..16 {
-            let facts = parameter_retention_within(&module, &closed, false, Some(budget));
+            let facts = parameter_retention_within(&module, &closed, &lending, false, Some(budget));
             for (function, fact) in facts.iter().enumerate() {
                 assert!(
                     fact.is_none() || *fact == full[function],
