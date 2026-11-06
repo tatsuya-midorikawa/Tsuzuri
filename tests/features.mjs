@@ -2039,6 +2039,12 @@ const suites = {
       // (1 + n) + 80 + 500 + 15000 + ((7 - n) + 6) * 10^5 + (n + 100n) * 10^7 (A29)
       ["function_instances", [5n], 5050815586n],
       ["function_instances", [-2n], -2018484421n],
+      // n > 0: "hello".length 5, 5 * 100, the lambda writes 1 + 3 * 100; else 5 * 10, 500, bump writes 1 + 3 (A29)
+      ["convention_mix", [2n], 5n + 500n + 301n * 10000n],
+      ["convention_mix", [-2n], 50n + 500n + 4n * 10000n],
+      // "abc".length 3: the chain sums 3 or 30 + 3, the Rc gives 3 or 300, "boxed!".length 6 twice, boxes[1] 3000 (A29)
+      ["convention_instances", [1n], 3n + 3n * 10000n + 12n * 1000000n + 3000n * 100000000n],
+      ["convention_instances", [-1n], 33n + 300n * 10000n + 12n * 1000000n + 3000n * 100000000n],
     ],
     inspect(ir, header) {
       assert.doesNotMatch(header, /Pair|Box|Wrap/);
@@ -2046,23 +2052,31 @@ const suites = {
         '%"tz.record.Main.Pair[i64,string]" = type { i64, %tz.string }',
         '%"tz.record.Main.Pair[i64,i64]" = type { i64, i64 }',
         '%"tz.record.Main.Box[fn[i64->i64]]" = type { %tz.closure }',
-        // Purity and conventions are spelled only when not the default (A29).
+        // Purity is spelled when the function is pure; the parameter conventions are not, so the
+        // variants are one type and one instance (A29).
         '%"tz.record.Main.Box[pure.fn[i64->i64]]" = type { %tz.closure }',
-        '%"tz.record.Main.Box[fn.r[ref[string]->i64]]" = type { %tz.closure }',
         '%"tz.record.Main.Box[fn[ref[string]->i64]]" = type { %tz.closure }',
+        '%"tz.record.Main.Box[fn[i64,refmut[Main.Counter]->unit]]" = type { %tz.closure }',
         '%"tz.record.Main.Wrap[Main.Pair[i64,string]]" = type { %"tz.record.Main.Pair[i64,string]" }',
       ]) {
         assert.equal(ir.split(`${definition}\n`).length, 2, `${definition} is defined once`);
       }
       assert.doesNotMatch(ir, /tz\.record\.Main\.(Pair|Box|Wrap) = type/);
+      assert.doesNotMatch(ir, /(\[|,|\.|\$L|\$C)fn\.[orm]+(\[|\$L)/);
       for (const symbol of [
         "@tz.builtin.Vec.empty.fn$Li64$Ai64$R",
         "@tz.builtin.Vec.empty.pure.fn$Li64$Ai64$R",
         "@tz.builtin.Vec.empty.fn$Li64$Crefmut$LMain.Counter$R$Aunit$R",
-        "@tz.builtin.Vec.empty.fn.om$Li64$Crefmut$LMain.Counter$R$Aunit$R",
+        "@tz.builtin.Vec.empty.Main.Box$Lfn$Lref$Lstring$R$Ai64$R$R",
       ]) {
         assert.equal(ir.split(`define internal %tz.vec ${symbol}() `).length, 2, `${symbol} is defined once`);
       }
+      // One vtable serves both variants of the stored Box.
+      assert.equal(
+        ir.split('@"tz.vtable.Display[Main.Box[fn[ref[string]->i64]]]" = internal').length,
+        2,
+        "the vtable of Box<ref string -> i64> is defined once",
+      );
     },
   },
   unions: {
