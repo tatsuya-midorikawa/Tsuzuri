@@ -1047,8 +1047,8 @@ fn retained_parameters(
 /// call, a pipeline that completes one, a host or parallel call, or the captures of a closure.
 ///
 /// A28 trusts the loans that the check of a body gives its result: the facts drop the arguments
-/// that do not reach it, and `read_through` takes what a borrowed owner holds. Both are sound only
-/// when the check sees every value that the body stores where its result can read it. The check
+/// that do not reach it, and `read_through` takes what a borrowed local owner holds. Both are
+/// sound only when the check sees every value that the body stores where its result can read it. The check
 /// does not track the stores of the in-place writers `Array.write` (and `Array.set`, `Array.fill`,
 /// `Array.blit` and the other std functions built on it) and `SyncMap.__replace`: the stored
 /// value's loans do not reach the owner of the target (A31). Each of them takes its target as an
@@ -1059,6 +1059,13 @@ fn retained_parameters(
 /// that passes no exclusive borrow to any call stores nothing that its check misses, and a body
 /// that passes one keeps the rule from before A28: its result holds every argument's loans, and
 /// `Rc.share` and its kin hold the borrow of the owner.
+///
+/// That makes the loans of the body's own values complete, not those of its parameters: a
+/// parameter's external loans stand for what the caller's value holds, and a caller that lends an
+/// exclusive borrow may have stored in that value what its loans miss. The facts do not depend on
+/// that (a callee that leaves an argument out of its result leaves it out whatever it holds), but
+/// a read through a parameter's contents would, so `read_through` keeps the borrow of an owner
+/// whose contents come from the caller.
 ///
 /// In an abstract body a type variable counts as no exclusive reference: those facts only infer
 /// Copy constraints, and each instance, whose types are concrete, is checked with its own facts.
@@ -1094,7 +1101,9 @@ fn lends_exclusive(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> b
 /// enclosing body gave them, and that misses what an in-place writer stored there, so a lambda
 /// whose captures were made in such a body reads nothing through them either: in
 /// `let mut arr = [Arc.new f]`, `Array.write 0 (Arc.new borrowing) (ref mut arr)` and
-/// `\() -> Arc.share (ref arr[0])`, the share would hold what `arr` held before the write. Each
+/// `\() -> Arc.share (ref arr[0])`, the share would hold what `arr` held before the write (and
+/// `read_through` keeps the borrow of a capture in any lambda, since a capture is a parameter of
+/// the lifted function; this mark also drops the lambda's facts, as for its enclosing body). Each
 /// body is scanned once; the lifted lambdas follow the `E::Closure` that makes them, through the
 /// lambdas in lambdas and the groups of `let rec`.
 fn lending_bodies(module: &CheckedModule) -> Vec<bool> {
@@ -1645,14 +1654,56 @@ impl<'a> Checker<'a, '_> {
     /// a borrow from the caller, or of static data, says nothing about what its target holds, so
     /// it stands for itself.
     ///
-    /// The result holds a copy of each of those loans, with the same place, mutability and
+    /// A borrow whose target holds a loan from the caller (an external loan: the target is a
+    /// parameter, a capture of a lifted lambda, or a local that took a value from one) is not read
+    /// through: it stands for itself, as before A28. The guard (`body_lends_exclusive`) makes the
+    /// loans of this body's own values complete: the body lends no exclusive borrow, so no
+    /// in-place writer stored in them what their loans miss (A31). An external loan stands for
+    /// what the caller's value holds, and the caller's loans may miss what its own in-place
+    /// writers stored there: in `fn wrap arr = Arc.share (ref arr[0])`, a caller that wrote a
+    /// borrowing value into `arr` with `Array.write` passes `arr` with the loans that it held
+    /// before the write. Reading through, the share held only `arr`'s external loan, the caller's
+    /// result held the caller's incomplete loans, and the share outlived the borrowed value. Kept
+    /// as the borrow of `arr`, the share is a borrow of a local that `wrap` drops, which the check
+    /// rejects as the A30 tip does.
+    ///
+    /// The result holds a copy of each loan read through, with the same place, mutability and
     /// parents: it keeps the same data borrowed, and the block checks and conflicts see it as they
     /// see the original. It is not the original because a live borrow of the owner (`Rc.get (ref
     /// shared)`, `let r = ref shared`) has the original as a parent, and a value that holds a loan
-    /// that some active loan reborrows cannot move; moving the new owner reborrows nothing.
+    /// that some active loan reborrows cannot move; moving the new owner reborrows nothing. A
+    /// borrow kept for itself stays the original, as it is without the read-through.
     fn read_through(&mut self, loans: &BTreeSet<usize>) -> BTreeSet<usize> {
+        let mut kept = BTreeSet::new();
         let mut held = BTreeSet::new();
-        let mut pending: Vec<usize> = loans.iter().copied().collect();
+        for &loan in loans {
+            let through = self.read_through_loan(loan);
+            let from_caller = !self.external.contains(&self.loans[loan].place.root)
+                && through
+                    .iter()
+                    .any(|id| self.external.contains(&self.loans[*id].place.root));
+            if from_caller {
+                kept.insert(loan);
+            } else {
+                held.extend(through);
+            }
+        }
+        let copies: Vec<usize> = held
+            .into_iter()
+            .map(|id| {
+                let copy = self.loans[id].clone();
+                self.loans.push(copy);
+                self.loans.len() - 1
+            })
+            .collect();
+        kept.extend(copies);
+        kept
+    }
+
+    /// The loans that the target of the borrow `loan` holds (`read_through`).
+    fn read_through_loan(&self, loan: usize) -> BTreeSet<usize> {
+        let mut held = BTreeSet::new();
+        let mut pending = vec![loan];
         let mut seen = BTreeSet::new();
         while let Some(id) = pending.pop() {
             if !seen.insert(id) {
@@ -1673,13 +1724,7 @@ impl<'a> Checker<'a, '_> {
                 }
             }
         }
-        held.into_iter()
-            .map(|id| {
-                let copy = self.loans[id].clone();
-                self.loans.push(copy);
-                self.loans.len() - 1
-            })
-            .collect()
+        held
     }
 
     /// What `Mutex.with_lock` returns when `callee` is that builtin, or the generated function
@@ -3611,7 +3656,8 @@ impl<'a> Checker<'a, '_> {
                 // The reference of `OnceValue.get` points into the cell, never into what its
                 // initializer borrowed: that was checked above to stay out of the cell.
                 None if kept && index == 1 => {}
-                // A28: `Rc.share` and its kin hold what the borrowed owner holds.
+                // A28: `Rc.share` and its kin hold what the borrowed owner holds, when that is
+                // the body's own (`read_through`).
                 None if index == 0 && read_through => {
                     // A borrowed temporary's value already has only what the temporary holds.
                     let loans = if matches!(argument.kind, E::BorrowOperand(_)) {

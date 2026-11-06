@@ -303,9 +303,116 @@ fn a_share_of_an_element_holds_what_was_written_in() {
             "task_result_retains_borrow",
         );
     }
-    // Without the write, the lambda owns `arr` and its share holds nothing of `make`'s.
-    emits(
+    // Without the write too: `arr` is a capture of the lifted lambda, and a capture's loans stand
+    // for what the enclosing body's value holds, so the share keeps the borrow of `arr` (the A30
+    // tip's false positive, which A28 keeps; `read_through`).
+    rejects_with_kind(
         "def make :: own i64 -> (unit -> Arc<unit -> i64>)\nfn make n =\n    let arr = [Arc.new (\\() -> n)]\n    \\() -> Arc.share (ref arr[0])\nlet f = make 41\nlet g = f ()\n(deref (Arc.get (ref g))) ()",
+        "E1013",
+        "task_result_retains_borrow",
+    );
+    // A helper that shares out of its own parameter: an `own` parameter's loans stand for what the
+    // caller's value holds, and a caller that wrote a borrowing value into `arr` with
+    // `Array.write` passes the loans that `arr` held before the write. Reading through, `make`
+    // returned a share of the function that borrows the freed `text`. Each keeps the A30 tip's
+    // diagnostic at the share in the helper, except the upgrade, which the A30 tip reports at the
+    // borrow of `weak` (4:5, `borrow_outlives_block`): the upgrade reads through `weak`, a local of
+    // `wrap`, and holds the borrow of `arr` that `weak` kept.
+    let make = |kind: &str, result: &str, call: &str| {
+        format!(
+            "def make :: own i64 -> {result}\nfn make n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [{kind}.new (\\() -> 0)]\n    Array.write 0 ({kind}.new (\\() -> String.length borrowed)) (ref mut arr)\n    {call}\n"
+        )
+    };
+    let arc = "Arc<unit -> i64>";
+    let read = "let g = make 123456789\n(deref (Arc.get (ref g))) ()";
+    let wrap = "def wrap :: own [Arc<unit -> i64>] -> Arc<unit -> i64>\nfn wrap arr = Arc.share (ref arr[0])\n";
+    for (source, (line, column)) in [
+        (
+            format!("{wrap}{}{read}", make("Arc", arc, "wrap arr")),
+            (2, 15),
+        ),
+        (
+            format!(
+                "def wrap :: own [Rc<unit -> i64>] -> Rc<unit -> i64>\nfn wrap arr = Rc.share (ref arr[0])\n{}let g = make 123456789\n(deref (Rc.get (ref g))) ()",
+                make("Rc", "Rc<unit -> i64>", "wrap arr")
+            ),
+            (2, 15),
+        ),
+        (
+            format!(
+                "def wrap :: own [Arc<unit -> i64>] -> Arc<unit -> i64>\nfn wrap arr = ref arr[0] |> Arc.share\n{}{read}",
+                make("Arc", arc, "wrap arr")
+            ),
+            (2, 15),
+        ),
+        (
+            format!("{wrap}{}{read}", make("Arc", arc, "arr |> wrap")),
+            (2, 15),
+        ),
+        (
+            format!(
+                "def first_share :: own [Arc<'a>] -> Arc<'a>\nfn first_share arr = Arc.share (ref arr[0])\n{}{read}",
+                make("Arc", arc, "first_share arr")
+            ),
+            (2, 22),
+        ),
+        (
+            format!(
+                "record Bag {{ items: [Arc<unit -> i64>] }}\ndef wrap :: own Bag -> Arc<unit -> i64>\nfn wrap bag = Arc.share (ref bag.items[0])\n{}{read}",
+                make("Arc", arc, "wrap (Bag { items: arr })")
+            ),
+            (3, 15),
+        ),
+        (
+            format!(
+                "def wrap :: own [Arc<unit -> i64>] -> (unit -> Arc<unit -> i64>)\nfn wrap arr = \\() -> Arc.share (ref arr[0])\n{}let h = make 123456789\nlet g = h ()\n(deref (Arc.get (ref g))) ()",
+                make("Arc", "(unit -> Arc<unit -> i64>)", "wrap arr")
+            ),
+            (2, 16),
+        ),
+        (
+            format!(
+                "def wrap :: own Arc<[Arc<unit -> i64>]> -> Arc<[Arc<unit -> i64>]>\nfn wrap shared = Arc.share (ref shared)\n{}let g = make 123456789\nlet items = Arc.get (ref g)\n(deref (Arc.get (ref items[0]))) ()",
+                make("Arc", "Arc<[Arc<unit -> i64>]>", "wrap (Arc.new arr)")
+            ),
+            (2, 18),
+        ),
+        (
+            format!(
+                "def wrap :: own [Arc<unit -> i64>] -> Maybe<Arc<unit -> i64>>\nfn wrap arr =\n    let weak = Arc.downgrade (ref arr[0])\n    Arc.upgrade (ref weak)\n{}match make 123456789 with\n    | Maybe.Some g -> (deref (Arc.get (ref g))) ()\n    | Maybe.None -> 0",
+                make("Arc", "Maybe<Arc<unit -> i64>>", "wrap arr")
+            ),
+            (3, 5),
+        ),
+        // Without the write, the A30 tip's false positive stays.
+        (
+            format!("{wrap}let g = wrap [Arc.new (\\() -> 41)]\n(deref (Arc.get (ref g))) ()"),
+            (2, 15),
+        ),
+    ] {
+        let error = analyze(&source).expect_err(&source);
+        assert_eq!(error.code, "E1013", "{source}\n{}", error.message);
+        assert_eq!(
+            error.kind,
+            Some("task_result_retains_borrow"),
+            "{source}\n{}",
+            error.message
+        );
+        let before = &source[..error.span.start];
+        let position = (
+            before.matches('\n').count() + 1,
+            before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1,
+        );
+        assert_eq!(position, (line, column), "{source}\n{}", error.message);
+    }
+    // A local that takes the parameter's value holds the caller's loans too.
+    rejects_with_kind(
+        &format!(
+            "def wrap :: own [Arc<unit -> i64>] -> Arc<unit -> i64>\nfn wrap arr =\n    let a = arr\n    Arc.share (ref a[0])\n{}{read}",
+            make("Arc", arc, "wrap arr")
+        ),
+        "E1013",
+        "borrow_outlives_block",
     );
 }
 
