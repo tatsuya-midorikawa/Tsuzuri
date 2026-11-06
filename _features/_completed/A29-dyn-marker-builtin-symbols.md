@@ -301,12 +301,13 @@ done
 - `docs/language.md`（dyn 値の節）
 - `_tsuzuri/language-reference/built-in-types-and-modules/channel.md`（要素と借用）
 - `_tsuzuri/language-reference/types-and-type-inference/type-classes.md`（動的ディスパッチ）
-- `_features/README.md`（状態）
+- `_features/README.md`（状態。3 回目に A32 の行）
+- `_features/A32-annotated-reference-lambda-under-conventions.md`（3 回目。2 回目に見つけた既存の問題の起票）
 
 ### 変更したファイル
 
-- `src/llvm.rs`（`mangled_type`、`dyn_name` の doc comment。レビュー後に `canonical_type`・`codegen_identity` と型で数える集合）、`src/llvm_abi.rs`・`src/llvm_debug.rs`・`src/llvm_recursive.rs`・`src/llvm_shared.rs`（2 回目）
-- `tests/fixtures/generic_records/Main.tz`（レビュー後）
+- `src/llvm.rs`（`mangled_type`、`dyn_name` の doc comment。レビュー後に `canonical_type`・`codegen_identity` と型で数える集合、3 回目に `identity_drops` と `call_user_drop`）、`src/llvm_abi.rs`・`src/llvm_debug.rs`・`src/llvm_recursive.rs`・`src/llvm_shared.rs`（2 回目）
+- `tests/fixtures/generic_records/Main.tz`（レビュー後）、`tests/generic_records.rs`（3 回目）
 - `tests/dyn_dispatch.rs`
 - `tests/fixtures/dyn_dispatch/Main.tz`、`tests/features.mjs`
 - `tests/tzroutine_wasm.mjs`
@@ -438,7 +439,7 @@ clang が拒否しました（`E2002`。base の binary では `redefinition of 
     具体化、再帰型の helper 3 つ、`tz.dyn.drop`、vtable とそのスロット）を 1 回にしたことだけです（新しい IR の `pure.fn` を `fn` に戻すと、新しい IR の定義はすべて base の IR にあります）。
   - 同じ入力で 2 回出力した `generic_records` の IR は native と wasm32 で一致しました（決定的）。
 - 見つけた既存の問題（`main` でも同じなので変えていません）: 期待の型が規約 `[Read]` の関数型のとき、引数に `ref string` と注釈したラムダを直接書くと `E1003`（`expected ref string, found string`）
-  になります（`if n > 0 then first else Box { value: \(text: ref string) -> … }`）。ラムダをいったん変数に束縛すると通ります。型検査の側の問題なので、この branch では扱いません。
+  になります（`if n > 0 then first else Box { value: \(text: ref string) -> … }`）。ラムダをいったん変数に束縛すると通ります。型検査の側の問題なので、この branch では扱いません。3 回目に [A32](../A32-annotated-reference-lambda-under-conventions.md) として起票しました。
 
 ##### 2 回目に実行したコマンド
 - `cargo fmt --all -- --check`: 成功。`cargo clippy --all-targets -- -D warnings`: 成功。
@@ -450,3 +451,80 @@ clang が拒否しました（`E2002`。base の binary では `redefinition of 
 - `node scripts/check-guide-lite.mjs`: 成功（88 references）。`_features/A24-anonymous-unions.md` の `canonical_type`・`mangled_type` の行番号を `src/llvm.rs:3795`・`src/llvm.rs:7980` に直しました。
 - 参照（`_tsuzuri/language-reference/`）は変えていません。規約の綴りは利用者に見えず、1 回目も参照に書いていないためです。`docs/architecture.md` の組み込み関数のシンボルの節と
   generic record の型名の節を、規約を綴らず `codegen_identity` で数える形に直しました。
+
+#### 3 回目: 規約の変種だけを持つ Drop 型を、同一性で数える helper が落とすと panic した（検証の指摘、major）
+
+2 回目の修正の検証で、新しい問題の指摘が 2 件（major 1 件、nit 1 件）ありました。比較の基準は 1 回目と同じ base の binary（`main` の `72f06862`）です。
+
+- 再現（2 回目の修正の binary。どれも base の binary ではビルドでき、手で数えた値を返します）: Drop 型の型引数が規約を持つ関数型で、規約の無い変種がプログラムに現れないとき、
+  同一性で数える helper の中でその値を落とすと、`call_user_drop` が `module.user_drops[ty]` を同一性の型で引き、`no entry found for key` で panic しました。
+  `record Guard<'a> { …, f: 'a }` と `instance Drop<Guard<'a>>` に edition 2027 の `def text_length :: string -> i64`（規約 `[Read]`）を入れた値を、`dyn Display {r}` の vtable の drop、
+  `Vec.remove_at`・`Vec.clear`、再帰的な union、`Rc` の共有ブロック、`ignore`、`Channel` で送って受け取る形で落とすもの、`def bump :: i64 -> mut Counter -> unit`（規約 `[Own, Mut]`）を入れたもの、
+  ユーザーの Drop の無い `Channel<Box<…>>` を `Vec` に入れて `Vec.clear` するもの（std の `Drop<Channel<'a>>`）、edition 2026 の `pure def text_length :: string -> i64` の dyn と `Vec` です。
+  wasm32 も同じ場所で panic しました。
+- 原因: 特殊化（`src/polymorph.rs`）は `user_drops` を、特殊化した関数が持つ Drop 型（規約を含む型）で数えます。2 回目から、組み込み関数の具体化・vtable・再帰型と共有ブロックの helper は
+  同一性の型の値を落とすので、規約の無い変種が現れないプログラムでは、同一性が `user_drops` のキーにありませんでした。規約の無い変種を bench のコードだけが持つときは、同一性はキーにありますが、
+  その drop は bench runner の外では出力されない（G18 の `bench_drops`）ので、panic の代わりに定義の無い関数を呼ぶ IR になりました（下の `identity_drops_are_emitted_drops`）。
+- 修正（`src/llvm.rs`）: `identity_drops` が `CheckedModule::user_drops` から同一性をキーにした表を作り（`Globals::user_drops`。`emit_typed_builtin` の局所の `Globals` も同じ表を共有します）、
+  `call_user_drop` はこの表を `codegen_identity(ty)` で引きます。規約の変種は 1 つの layout と呼び出し規約なので、どの変種の drop でも同じく働きます。同じ同一性の変種が複数あるときは、
+  キーの順で最初の、プログラムが出力する（`program_reach` が届く）drop を使うので、選び方は決定的で、呼ぶ関数は必ず定義されます。base でビルドできるプログラムでは、出力される Drop 型の変種は
+  同一性ごとに 1 つ（2 つあると型の定義が衝突する）なので、呼ぶ drop は変わりません。
+- 監査（生の型をキーにする表を、同一性の型で引く場所）: `call_user_drop` のほかにはありませんでした。
+  - `CheckedModule::user_drops` のほかの読み手: `program_reach`（drop を root にする。値だけを読む）、`restricted_error` の root の名前（値で探し、生のキーを表示する）、`src/ownership.rs`（値だけ）、
+    `src/effects.rs` の `drop_functions`（生成コードの前に、式の生の型で引く。キーに無ければ保守的に「ユーザーのコードを走らせる」とする）。
+  - `CheckedModule::vtables`: `dyn_of` と `direct_references` は、式の `Dyn.of` の具体化の型（生の型）で引きます。`emit_typed_builtin` が出す wrapper の本文の式も生の型で、
+    特殊化はどの関数の `Dyn.of` にも vtable を作っています。`emit_dyn_tables` は生のキーをたどり、同一性で 1 つにします。
+  - `dyn_layouts` のキー（`DynType`）は型を含まず、`Specializations` のキーは関数の番号と closure の対象です。layout の memo（`src/llvm_layout.rs`）と debug の型（`src/llvm_debug.rs`）は、
+    キーに無ければ計算するので、引けずに panic することはありません。
+- テスト:
+  - suite `generic_records`（native と WASM の `-O0`・`-O3`）に export `convention_drops` を足しました。重みが 10 の冪の `Guard` 8 つ（`text_length` か `bump` を持つ）を、dyn 値の vtable、
+    `Vec.remove_at`、`Vec` に残る値、再帰的な union、`Rc` の共有ブロック、`Vec.clear` で落とす `Maybe` の中の `Holder`、`ignore`、`Channel` で受け取った値で落とし、tally が `11111111` になることで、
+    どれも 1 回ずつ落ちたことを確かめます。`Channel<Box<…>>` を `Vec` に入れて `Vec.clear` する形も含みます。期待値は手で数えた
+    `(3 + 5 · 10 + (1 + n) · 100 + 6 · 10⁴ + 10⁶ + 9 · 10⁷) · 10⁸ + 11111111`（`n = 2`・`-3`）です。
+  - `tests/generic_records.rs`: `convention_variants_of_drop_types_drop_through_their_identity`（edition 2026 の `pure def`。vtable の drop、`Vec.clear`・`Vec.__splice`、再帰的な union の drop が
+    ユーザーの drop を呼び、IR が呼ぶ `@tz.fn.…` がすべて定義されていること。native と wasm32）と、`identity_drops_are_emitted_drops`（規約の無い変種を bench のコードだけが持つとき、
+    Console と bench runner の両方で、呼ぶ drop が定義されていて、2 回の出力が一致すること）。
+  - 修正前に失敗することの確認: `call_user_drop` を `module.user_drops[ty]` に戻すと、2 つの Rust テストが失敗し（`no entry found for key` と `@tz.fn.Main.$instance.817.drop.$mono.5 is called but not defined`）、
+    suite `generic_records` も `no entry found for key` で失敗しました。`identity_drops` の、出力されるかを見る条件を外して最初の drop を選ぶと、`identity_drops_are_emitted_drops` だけが失敗しました。
+- 修正後の証拠（native の `tsuzuri run` と wasm32 の export（import なし）の、それぞれ `-O0`・`-O3`。値はどれも手で数えたもの）:
+  - 指摘の形: dyn（`51`）、`Vec.remove_at`・`Vec.clear`（`21107`）、再帰的な union（`6011`）、`Rc` の共有ブロックの中の union（`33007`）、`ignore`（`5009`）、`[Own, Mut]` の `bump`（`4008`）、
+    `Channel` で受け取った値（`9009`）、`Channel<Box<…>>` の `Vec.clear`（`12`）、edition 2026 の dyn（`51`）と `Vec`（`21107`）。
+  - ほかの入れ物: `Vec<Maybe<Guard<…>>>`（`11013`）、`Guard` を持つレコードの `Vec`（`103218`）、`Guard` を持つ共用体の `Vec`（`13213`）、`Rc<Guard<…>>`（`7005`）、`Vec<Vec<Guard<…>>>`（`1113`）、
+    `Guard` を入れた dyn 値の `Vec`（`111150`）。
+  - 規約の変種を混ぜる形: 2 つの変種の `Guard` を if/else と `Vec` で混ぜる（`n = 3` で `306011011111`、`n = -1` で `333011101111`）、dyn・再帰的な union・`Rc`・`Maybe` で混ぜる（`122001111111`）、
+    規約の無い変種を bench のコードだけが持つ（`8011`）。`convention_variants_of_drop_types_drop_through_their_identity` と同じ形の edition 2026 のプログラムは native で `5401` です。
+  - base の binary（native）は、混ぜる 2 つ（2 回目の問題の `E2002`）と dyn 値の `Vec`（A29 本体の `+ref` の `E2002`）を除いて、同じ値を返しました。
+- nit（定義の並び）: 「純粋な関数型を型引数に持たないプログラムの IR は変わらない」は、綴りについては正しいのですが、IR 全体については正確ではありませんでした。base と比べると、
+  引数規約を持つ関数型を型引数に持つプログラムでは、型・組み込み関数・helper の定義の並びが変わることがあります。集合のキーが同一性になり、base では規約（`[]` < `[Read]`）で決まっていた順序が、
+  結果の型などで決まるようになったためです。綴りと定義の集合は変わりません。検証の形（`Box { value: text_length }`・`Box { value: \(text: ref string) -> text.length > 2 }`・`Box { value: bump }` と、
+  `text_length` とその `bool` のラムダの `Vec`）は両方の binary で `13413` を返し、IR は native と wasm32 のどちらも 10 行（型 2 つと `Vec.empty`・`Vec.push_mut` の 2 組）の並びだけが違い、
+  行を並べ替えると一致しました。`docs/architecture.md` の組み込み関数のシンボルの節に、この並びと、ユーザーの drop を同一性で探すことを足しました。
+- 2 回目に見つけた既存の問題（規約 `[Read]` の関数型が期待される位置の、`ref string` と注釈したラムダの `E1003`）を、[A32](../A32-annotated-reference-lambda-under-conventions.md) として起票しました
+  （`_features/README.md` の A の表、状態 todo）。チケットの「再現」と「同じ原因の形」の表は、base の binary で実行して確かめた結果です。`match` の腕の形の値（`pick 0 + pick 1 * 100` で `5005`）と、
+  束縛した形の値もそれぞれ確かめました。A31 はほかの branch で起票中なので、番号は A32 です。
+- 手順 4 の IR の比較のやり直し: `tests/fixtures/*` と `examples/*` の 176 個のディレクトリ（`Main.tz` を持つのは 153 個）と、`main` の版の `dyn_dispatch`・`generic_records`・`preemption` を、
+  native（`domain`・`domain_host` は `--trap-mode return`）と `--target wasm32` で `--emit llvm` し、base の binary とこの branch の binary の出力を比べました。
+  - 両方が出力した 302 ファイルのうち 296 が byte 単位で一致しました（`main` のソースの fixture・example と、`main` の版の 3 つの fixture はすべて一致）。失敗した 56 件は両方で同じエラーです
+    （`Main.tz` を持たない 23 個のディレクトリの native と wasm32、wasm32 の 10 個: `blocking`・`domain`・`domain_host`・`effects_sweep`・`net_*` の 5 個・`tzroutine_net_wasm`）。
+  - 違うのはこの branch の fixture の 6 ファイルで、2 回目と同じです。`dyn_dispatch`・`preemption`（native と wasm32）は A29 本体の `$P`（`$P` を `+` に戻すと base の IR と一致）。
+    `generic_records`（native と wasm32）は、純粋な関数型の `pure.fn` の綴り（13 行）と、base の IR が規約の変種ごとに 2 回定義していた定義（型 3 つと再帰型の node の型、`tz.dyn.drop`、
+    vtable とそのスロット、`Vec.empty` 1 つ・`Vec.push_mut` 2 つ・`Rc.new` の具体化、再帰型の helper 3 つ）を 1 回にしたことだけです。新しい IR の `pure.fn` を `fn` に戻すと、新しい IR の項目は
+    すべて base の IR にあり、base の IR に余る項目はその 2 回目の定義だけです。3 回目の `convention_drops` の `Guard` の helper は、変種が 1 つなので base の IR と同じです。
+  - 同じ入力で 2 回出力した `generic_records` の IR は native と wasm32 で一致しました（決定的）。
+- 参照（`_tsuzuri/language-reference/`）と `docs/language.md` は変えていません。直したのはコンパイラの panic で、利用者に見える振る舞いの説明は変わらないためです。
+
+##### 3 回目に実行したコマンド
+
+- `cargo fmt --all -- --check`: 成功。`cargo clippy --all-targets -- -D warnings`: 成功。
+- `cargo nextest run --locked`: 2938 tests run: 2938 passed (14 slow), 4 skipped。
+- `cargo nextest run --locked --test generic_records`: 18 passed（新規 2）。修正を外した 2 つの実験（上の「修正前に失敗することの確認」）では、`call_user_drop` を戻すと 2 failed、
+  `identity_drops` の出力の条件を外すと 1 failed（`identity_drops_are_emitted_drops`）でした。
+- `node tests/features.mjs target/debug/tsuzuri <suite>`: `generic_records`（18 cases。`call_user_drop` を戻すと `no entry found for key` で失敗）・`dyn_dispatch`（58）・`rc`（37）・`vec`（15）・
+  `unions`（27）・`conventions`（36）が native と WASM の `-O0`・`-O3` で、`channel`（15）が native の `-O0`・`-O3` で成功。
+- 指摘の形とその変種のプログラム（上の「修正後の証拠」）: native の `tsuzuri run` と、wasm32 の export を node で import なしに呼ぶ形の、それぞれ `-O0`・`-O3`。
+  base の binary の native の値も上のとおりです（dyn 値の `Vec` の base の `E2002` は、`@tz.builtin.Vec.empty.dyn$LDisplay+ref$R` の `+`）。
+- 手順 4 の IR の比較と、`generic_records` の 2 回の出力の比較（上のとおり）。定義の並びの nit の形は、両方の binary の IR を native と wasm32 で比べ、違う行が 10 行で、並べ替えると一致しました。
+- A32 の「再現」と「同じ原因の形」の表のプログラム: base の binary とこの branch の binary で実行し、表のとおりでした（この branch では、base で A29 の `E2002` だった束縛した形の 2 つが
+  `5005`・`51005` を返し、ほかは base と同じ結果です）。
+- `node scripts/check-guide-lite.mjs`: 成功（88 references）。`_features/A24-anonymous-unions.md` の `canonical_type`・`mangled_type` の行番号を `src/llvm.rs:3821`・`src/llvm.rs:8014` に直しました。
+- 参照のページは変えていないので、`check-docs.mjs` は対象外です。診断と generated block も変えていません。
