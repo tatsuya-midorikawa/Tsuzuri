@@ -5,8 +5,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { casesPath as regexCasesPath, casesSource as regexCasesSource, expectedCases as regexCases } from "./regex-cases.mjs";
-import { expectedCases as unicodeCases } from "./unicode-cases.mjs";
+import { cases as regexV8 } from "./regex-v8.mjs";
+import { checkUcdData as checkUnicodeData, expectedCases as unicodeCases } from "./unicode-cases.mjs";
 import * as unicodeData from "./unicode-ucd.mjs";
+import { cases as unicodeV8 } from "./unicode-v8.mjs";
 import { cases as matrixCases, traps as matrixTraps, productEntry } from "./matrix-cases.mjs";
 import { cases as matrixViewCases, traps as matrixViewTraps, bounded as matrixViewBounded } from "./matrix-view-cases.mjs";
 import { cases as tensorCases, traps as tensorTraps, bounded as tensorBounded } from "./tensor-cases.mjs";
@@ -1660,11 +1662,12 @@ const suites = {
     ],
     traps: [["trap_decode_end", []], ["trap_decode_continuation", []], ["trap_repeat_negative", []], ["trap_repeat_overflow", []]],
   },
-  // D09: the cases and their V8 or hand-written expectations come from tests/regex-cases.mjs.
+  // D09: the cases and their V8 or hand-written expectations come from tests/regex-cases.mjs, the V8 ones as committed in
+  // tests/regex-v8.mjs (G38: recomputed and compared only by a Node with std's Unicode version).
   regex: {
     get cases() {
       assert.equal(readFileSync(regexCasesPath, "utf8"), regexCasesSource(), "run node tests/regex-cases.mjs --write");
-      return (this.computed ??= regexCases());
+      return (this.computed ??= regexCases(regexV8));
     },
     inspect(ir) {
       const matching = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Regex\.(?:add_thread|search|copy_slots|in_class|holds|consumes)\([^\n]*\{([\s\S]*?)^\}/gm)];
@@ -1673,9 +1676,13 @@ const suites = {
       assert.match(ir, /^@tz\.unicode\.table\.0 = internal unnamed_addr constant/m);
     },
   },
-  // D09 Phase 2: the UCD conformance tests (tests/unicode-ucd.mjs) and V8 references from tests/unicode-cases.mjs.
+  // D09 Phase 2: the UCD conformance tests (tests/unicode-ucd.mjs) and V8 references from tests/unicode-cases.mjs, the
+  // latter as committed in tests/unicode-v8.mjs (G38: recomputed and compared only by a Node with std's Unicode version).
   unicode: {
-    get cases() { return (this.computed ??= unicodeCases(unicodeData)); },
+    get cases() {
+      checkUnicodeData();
+      return (this.computed ??= unicodeCases(unicodeData, unicodeV8));
+    },
     inspect(ir) {
       assert.match(ir, /^@tz\.unicode\.table\.17 = internal unnamed_addr constant/m);
       assert.equal(ir.match(/^define internal i64 @tz\.unicode\.entry\(/gm).length, 1);

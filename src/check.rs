@@ -810,6 +810,24 @@ impl Type {
         }
     }
 
+    /// `carries_loans`, with an `Owned.Function` counted as a value that holds no borrow: its
+    /// representation is opaque, so only `Owned.function` makes one, and that rejects an argument
+    /// that holds a borrow (A30). A record, tuple, container or union whose borrows can only be in
+    /// owned functions thus carries none. The walk visits each type once (`stored_all_closed`), so
+    /// types that share parts are not walked again for every path to a part, and it stops at an
+    /// owned function.
+    pub(crate) fn carries_loans_beside_owned_functions(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all_closed(
+            self,
+            |ty| {
+                ty.is_owned_function(types)
+                    || !matches!(ty, Type::Reference(..) | Type::Function(..))
+                        && !matches!(ty, Type::Dyn(dyn_type) if dyn_type.borrowed)
+            },
+            |ty| ty.is_owned_function(types),
+        )
+    }
+
     pub(crate) fn contains_stored_reference(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all(self, |ty| {
             !matches!(ty, Self::Reference(..))

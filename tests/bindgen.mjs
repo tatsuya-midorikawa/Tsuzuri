@@ -84,7 +84,7 @@ try {
   const json = execute(compiler, ["bindgen", join(fixtures, "skipped", "skipped.h"), "-o", join(root, "out-skipped", "Skipped.tz"), "--json"]);
   const warnings = json.stderr.trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(warnings.length, skipped.skipped.length);
-  assert.equal(warnings.length, 37);
+  assert.equal(warnings.length, 38);
   warnings.forEach((warning, index) => {
     const [, name, reason] = /^\/\/ skipped ([^:]+): (.*)$/.exec(skipped.skipped[index]);
     assert.equal(warning.severity, "warning");

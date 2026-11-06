@@ -51,6 +51,11 @@ int take_wide_tag(enum wide_tag value);
 typedef long long wide_aligned __attribute__((aligned(16)));
 struct with_typeof { int a; __typeof__((wide_aligned)0) b; };
 int fork_twice(void) __attribute__((returns_twice));
+/* E16: Clang 23 writes no ElaboratedType for these types and spells an unnamed struct
+   `struct (unnamed at ...)`; the output is the same as with Clang 21. */
+typedef enum { PICK_A, PICK_B } pick_mode;
+int pick_mode_value(pick_mode value);
+struct nested_unnamed { struct { int a; } inner; };
 #define LEVEL 1
 #pragma push_macro("LEVEL")
 #undef LEVEL

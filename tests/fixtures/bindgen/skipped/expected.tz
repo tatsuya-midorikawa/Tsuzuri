@@ -50,4 +50,8 @@ const WIDE_TAG_ZERO: i32 = 0
 // skipped take_wide_tag: parameter 1 has unsupported type 'enum wide_tag'
 // skipped with_typeof: field 'b' has unsupported type 'typeof ((wide_aligned)0)'
 // skipped fork_twice: function returns twice (returns_twice), which a Tsuzuri call cannot follow
+const PICK_A: i32 = 0
+const PICK_B: i32 = 1
+extern "pick_mode_value" def pick_mode_value :: i32 -> i32
+// skipped nested_unnamed: field 'inner' has unsupported type 'struct (unnamed struct)'
 // skipped LEVEL: the macro does not end with this #define (#pragma push_macro and pop_macro can restore another value)
