@@ -479,6 +479,16 @@ fn check_body<'a>(
         copies,
         events,
     );
+    checker.drops_stop_reads = drops_stop_reads(
+        module,
+        parameters.clone(),
+        body,
+        infer,
+        facts,
+        task,
+        user_drop,
+        contract,
+    );
     let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
     if checker.events.is_some() {
         let end = Span {
@@ -551,6 +561,10 @@ fn start_checker<'a, 'run>(
         later_use_budget: LATER_USE_NODES,
         builtin_wrapper: contract.builtin_wrapper,
         lends_mutable: contract.lends_mutable,
+        dropped: None,
+        drop_types: BTreeMap::new(),
+        read_through_used: false,
+        drops_stop_reads: false,
     };
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
@@ -1005,6 +1019,17 @@ fn retained_parameters(
         None,
         None,
     );
+    checker.drops_stop_reads = drops_stop_reads(
+        module,
+        function.parameters.iter(),
+        &function.body,
+        infer,
+        facts,
+        false,
+        false,
+        facts.contract(module, id),
+    );
+    checker.collect_drops();
     let result = checker
         .eval(&function.body, Use::Consume, &BTreeSet::new())
         .ok()?;
@@ -1028,7 +1053,11 @@ fn retained_parameters(
     } else {
         vec![false; function.parameters.len()]
     };
-    let mut pending: Vec<usize> = result.loans.iter().copied().collect();
+    // A value that the body drops, or hands to a callee that may drop it, runs its `Drop.drop`,
+    // which may store what the value holds in a cell inside it that the result reaches as well
+    // (`drop_runs_code`): the parameters whose loans such a value holds are retained.
+    let dropped = checker.dropped.take().unwrap_or_default();
+    let mut pending: Vec<usize> = result.loans.iter().chain(&dropped).copied().collect();
     let mut seen = BTreeSet::new();
     while let Some(loan) = pending.pop() {
         if !seen.insert(loan) {
@@ -1065,9 +1094,10 @@ fn retained_parameters(
 /// reference to anything else lends no way to write.
 ///
 /// A body's value (a parameter's loan included) can thus reach a place that its result does not
-/// show in three ways only, and each of them makes the body lending (`lending_bodies`: no facts,
-/// no read-through, the rule from before A28; a call that is opaque only through the callee's
-/// environment drops the facts alone, `OpaqueCalls::environment`):
+/// show in four ways only. Each of the first three makes the body lending (`lending_bodies`: no
+/// facts, no read-through, the rule from before A28; a call that is opaque only through the
+/// callee's environment drops the facts alone, `OpaqueCalls::environment`), and the fourth keeps
+/// the facts but retains what the dropped values hold:
 ///
 /// - (a) A store through an exclusive reference or a cell that the body hands to code as one of
 ///   the operands above, which this function finds. The reference or the cell comes from the body:
@@ -1081,12 +1111,51 @@ fn retained_parameters(
 ///   that makes one (`opaque_bodies`) counts as one when it gets a value that can run code.
 /// - (c) A lambda that the body makes, whose body does (a) or (b) with what it captured or gets:
 ///   `lending_bodies` marks the bodies related to it.
+/// - (d) A drop. Dropping a value runs the `Drop.drop` of every value with a user `Drop` instance
+///   that it stores, with no call in the body: at the end of a scope, at a reassignment, for a
+///   moved-in parameter that is not moved on, for a temporary, for the elements of a container, in
+///   `Owned.drop`, before a tail call, and in a callee that the value is handed to. `Drop.drop`
+///   gets only the dropped value, so what it stores is what that value holds, and the place is a
+///   cell inside the value, which another input or the result may share (`Stash { cell: a, f }`
+///   with `r` reading `a`). Its body makes a store that its check misses only as (a), (b) or (c)
+///   do, which `Lending::drops_store` asks of every `Drop.drop` of the module. When one may, every
+///   value that the body gets or makes whose type may run code when it is dropped
+///   (`Type::drop_runs_code`: it stores a user `Drop` type, or a function value, dyn value,
+///   `Owned.Function` or tzroutine body, whose environment or vtable may hold one) counts as
+///   dropped: `retained_parameters` retains the parameters whose loans it holds, and
+///   `drops_stop_reads` keeps a body that drops one that holds loans from reading through. A
+///   parameter that reaches such a value through an exclusive reference counts too
+///   (`deref target = value` drops the old one). Counting every such value, not only those that
+///   the body drops itself, covers a value handed to a named callee that drops it and returns
+///   what cannot hold its loans (`consume s; r`): the callee's facts keep the loans in its result,
+///   and that result has none. `HashMap.remove` keeps its facts: the entry that it drops holds
+///   the loans of `map`, which its result holds anyway.
 ///
-/// Nothing else runs code with the body's values: a tzroutine's captures, a channel's items, an
-/// `OnceValue`'s initializer and an `Owned.function`'s argument are checked to hold no borrow, and
-/// a named callee that does none of the three keeps its facts, which hold whatever its arguments
-/// hold. So a body for which neither this function nor `opaque_bodies` is true makes no store that
-/// its check misses into a place that its result or another input reaches.
+/// Nothing else runs code with the body's values. The code that the language runs without a call
+/// in the source is analyzed as the body of a named function, counted as code that the analysis
+/// does not see, or checked to get no borrow:
+///
+/// - Operators on user types (`+`, `-x`, `==`, `<`) are direct calls of the named instance
+///   functions (`polymorph::operator_call`).
+/// - Class methods (`Display` in an interpolation hole, the `Eq`, `Hash`, `Ord` and `Default`
+///   that std collections call, the instances that `src/derive.rs` derives, which are checked as
+///   written instances) are named instance functions after specialization, or the vtable's
+///   dispatch of a dyn value (`E::DynDispatch`, opaque). An interpolation hole's method is a call
+///   for `opaque_calls`; structural comparison, hashing and display run no user code beside that
+///   of the dyn values they reach, which `opaque_calls` counts.
+/// - `for x in seq` is a loop of calls of `Seq` functions (`control::sequence_loop`), and `for x
+///   in channel` calls `recv`; a loop over an array, list or string runs no code.
+/// - `as` (`E::Cast`) converts numbers and the purity of a function type only, `deref` reads a
+///   place, and a pattern guard or a `finally` block is an expression of the body.
+/// - `new [T](n, f)` runs `f` (`opaque_calls`).
+/// - A tzroutine's captures, a channel's items, an `OnceValue`'s initializer and an
+///   `Owned.function`'s argument are checked to hold no borrow.
+/// - A named callee that does none of the four keeps its facts, which hold whatever its arguments
+///   hold.
+///
+/// So a body for which neither this function nor `opaque_bodies` is true makes no store that its
+/// check misses into a place that its result or another input reaches, beside those of its drops,
+/// whose loans its facts keep.
 ///
 /// That makes the loans of the body's own values complete, not those of its parameters: a
 /// parameter's external loans stand for what the caller's value holds, and a caller that lends a
@@ -1132,6 +1201,15 @@ fn may_run_code(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
     types.reaches(ty, |ty| {
         matches!(ty, Type::Function(..) | Type::Dyn(_) | Type::Once(_))
     })
+}
+
+/// Whether dropping a value of type `ty` may run code that the body does not show: the value
+/// stores (not through a reference) a value of a type with a user `Drop` instance, a function
+/// value (its environment may hold one), an `Owned.Function`, a dyn value (its drop is the
+/// vtable's) or a tzroutine body (`runs_on_drop`). A type variable counts as none, as in
+/// `lends_mutable`.
+fn drop_runs_code(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    ty.drop_runs_code(types)
 }
 
 /// Whether the value of `expression` may hold loans: a closure holds those of its captures, a
@@ -1434,6 +1512,10 @@ struct Lending {
     /// `opaque_bodies` without the environments, for the bodies that are not functions of the
     /// module.
     opaque: Vec<bool>,
+    /// Some `Drop.drop` body of the module has no facts (`facts`): it lends a way to write or
+    /// hands a value to code that the analysis does not see, so dropping a value may make a store
+    /// that the check does not track (`drop_runs_code`).
+    drops_store: bool,
 }
 
 /// By function: whether its body lends a way to write (`lends_mutable`) or may hand a value to
@@ -1463,10 +1545,12 @@ fn lending_bodies(module: &CheckedModule) -> Lending {
     let mut reads: Vec<bool> = lends.iter().zip(&direct).map(|(a, b)| *a || *b).collect();
     close_marks(&mut facts, &related);
     close_marks(&mut reads, &related);
+    let drops_store = module.user_drops.values().any(|drop| facts[*drop]);
     Lending {
         facts,
         reads,
         opaque: direct,
+        drops_store,
     }
 }
 
@@ -1659,6 +1743,105 @@ fn owned_dyn_of(callee: &TypedExpr) -> bool {
             && matches!(instance.types.get(1), Some(Type::Dyn(dyn_type)) if !dyn_type.borrowed))
 }
 
+/// The builtin that `callee` is, or that the generated function it names calls on its own
+/// parameters after lowering (every builtin is called through one).
+fn builtin_called(module: &CheckedModule, callee: &TypedExpr) -> Option<crate::check::Builtin> {
+    let E::Function(function) = &callee.kind else {
+        return None;
+    };
+    match function {
+        crate::check::FunctionRef::Builtin(instance) => Some(instance.builtin),
+        crate::check::FunctionRef::User(id) => {
+            let wrapper = &module.functions[*id];
+            match &wrapper.body.kind {
+                E::Call(inner, _) if wrapper.module == "$builtin" => match &inner.kind {
+                    E::Function(crate::check::FunctionRef::Builtin(instance)) => {
+                        Some(instance.builtin)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
+    }
+}
+
+/// A28: whether `callee` is `share`, `downgrade` or `upgrade` of `Rc` or `Arc`, whose result the
+/// check may read through the borrow of its owner (`Checker::reads_through`).
+fn reads_through(module: &CheckedModule, callee: &TypedExpr) -> bool {
+    use crate::check::Builtin::{
+        ArcDowngrade, ArcShare, ArcUpgrade, RcDowngrade, RcShare, RcUpgrade,
+    };
+    matches!(
+        builtin_called(module, callee),
+        Some(RcShare | ArcShare | RcDowngrade | ArcDowngrade | RcUpgrade | ArcUpgrade)
+    )
+}
+
+/// Whether `body` calls a function whose result the check may read through (`reads_through`),
+/// directly or as the right side of a pipeline, in the body or in a lambda in it.
+fn calls_read_through(module: &CheckedModule, body: &TypedExpr) -> bool {
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        let found = match &expression.kind {
+            E::Call(callee, _) => reads_through(module, callee),
+            E::Binary(BinaryOp::Pipe, _, right) => reads_through(module, right),
+            _ => false,
+        };
+        if found {
+            return true;
+        }
+        pending.extend(expression.children());
+    }
+    false
+}
+
+/// A28, implicit drops: whether the body of a check drops a value that holds loans and whose type
+/// may run code when it is dropped (`drop_runs_code`), under the read-through: a `Drop.drop` that
+/// it runs may then store what the value holds in a cell inside the value, and that cell may be in
+/// a block that the body reads through (`Rc.share (ref owner)`), whose loans miss the store. Only a
+/// body that reads something through (`calls_read_through`) is checked for it, once without the
+/// guard; a body whose check fails keeps the read-through, since the check with it fails as well.
+#[allow(clippy::too_many_arguments)]
+fn drops_stop_reads<'a>(
+    module: &'a CheckedModule,
+    parameters: impl Clone + Iterator<Item = &'a Local>,
+    body: &'a TypedExpr,
+    infer: bool,
+    facts: &CallFacts,
+    task: bool,
+    user_drop: bool,
+    contract: Contract<'a>,
+) -> bool {
+    if !facts.lending.drops_store
+        || contract.lends_mutable == Some(true)
+        || !calls_read_through(module, body)
+    {
+        return false;
+    }
+    let mut recovered = Vec::new();
+    let mut checker = start_checker(
+        module,
+        parameters,
+        body,
+        infer,
+        facts,
+        task,
+        user_drop,
+        contract,
+        &mut recovered,
+        None,
+        None,
+    );
+    checker.collect_drops();
+    checker.eval(body, Use::Consume, &BTreeSet::new()).is_ok()
+        && checker.read_through_used
+        && checker
+            .dropped
+            .as_ref()
+            .is_some_and(|dropped| !dropped.is_empty())
+}
+
 struct Checker<'a, 'run> {
     module: &'a CheckedModule,
     /// The body that is checked, searched for the later uses of a borrow when a diagnostic names them.
@@ -1695,6 +1878,17 @@ struct Checker<'a, 'run> {
     /// Whether the body, or one that it is lifted from or that is lifted from it, lends a way to
     /// write (`lending_bodies`); the body alone is asked when the contract does not say.
     lends_mutable: Option<bool>,
+    /// A28, implicit drops: the loans of the values that the body gets or makes whose types may
+    /// run code when they are dropped (`drop_runs_code`), when the caller asks for them
+    /// (`retained_parameters`, `drops_stop_reads`).
+    dropped: Option<BTreeSet<usize>>,
+    /// `drop_runs_code` by type, for `dropped`.
+    drop_types: BTreeMap<Type, bool>,
+    /// Whether the check read something through the borrow of an owner (`read_through`).
+    read_through_used: bool,
+    /// Nothing is read through: the body drops a value that holds loans and may run code when it
+    /// is dropped (`drops_stop_reads`).
+    drops_stop_reads: bool,
 }
 
 /// How many expressions the diagnostics of one function may look at, in all, to find where a
@@ -1892,24 +2086,7 @@ impl<'a> Checker<'a, '_> {
     /// The builtin that `callee` is, or that the generated function it names calls on its own
     /// parameters after lowering (every builtin is called through one).
     fn builtin_called(&self, callee: &TypedExpr) -> Option<crate::check::Builtin> {
-        let E::Function(function) = &callee.kind else {
-            return None;
-        };
-        match function {
-            crate::check::FunctionRef::Builtin(instance) => Some(instance.builtin),
-            crate::check::FunctionRef::User(id) => {
-                let wrapper = &self.module.functions[*id];
-                match &wrapper.body.kind {
-                    E::Call(inner, _) if wrapper.module == "$builtin" => match &inner.kind {
-                        E::Function(crate::check::FunctionRef::Builtin(instance)) => {
-                            Some(instance.builtin)
-                        }
-                        _ => None,
-                    },
-                    _ => None,
-                }
-            }
-        }
+        builtin_called(self.module, callee)
     }
 
     /// A28: the function whose call the pipeline `expression`, `x |> right`, completes, when its
@@ -1964,13 +2141,7 @@ impl<'a> Checker<'a, '_> {
     /// may move or be dropped while the result lives. `get` returns the borrow itself, and other
     /// builtins may pass their references to callbacks, so they keep every argument's loans.
     fn reads_through(&self, callee: &TypedExpr) -> bool {
-        use crate::check::Builtin::{
-            ArcDowngrade, ArcShare, ArcUpgrade, RcDowngrade, RcShare, RcUpgrade,
-        };
-        matches!(
-            self.builtin_called(callee),
-            Some(RcShare | ArcShare | RcDowngrade | ArcDowngrade | RcUpgrade | ArcUpgrade)
-        )
+        reads_through(self.module, callee)
     }
 
     /// Whether the checked body, or a related one, lends a way to write (`lends_mutable`) or hands
@@ -2001,9 +2172,10 @@ impl<'a> Checker<'a, '_> {
     ///
     /// A borrow whose target holds a loan from the caller (an external loan: the target is a
     /// parameter, a capture of a lifted lambda, or a local that took a value from one) is not read
-    /// through: it stands for itself, as before A28. The guard (`body_lends_mutable`) makes the
-    /// loans of this body's own values complete: the body lends no way to write, so no untracked
-    /// store put in them what their loans miss (A31). An external loan stands for what the
+    /// through: it stands for itself, as before A28. The guards (`body_lends_mutable`,
+    /// `drops_stop_reads`) make the loans of this body's own values complete: the body lends no way
+    /// to write and drops no value that may store what it holds, so no untracked store put in them
+    /// what their loans miss (A31). An external loan stands for what the
     /// caller's value holds, and the caller's loans may miss what its own untracked stores put
     /// there: in `fn wrap arr = Arc.share (ref arr[0])`, a caller that wrote a
     /// borrowing value into `arr` with `Array.write` passes `arr` with the loans that it held
@@ -3647,7 +3819,7 @@ impl<'a> Checker<'a, '_> {
         usage: Use,
         live: &BTreeSet<usize>,
     ) -> Result<Value, Diagnostic> {
-        match expression.kind {
+        let value = match expression.kind {
             E::While { .. } | E::ForRange { .. } | E::ForEach { .. } | E::Match { .. } => {
                 self.eval_control(expression, live)
             }
@@ -3655,7 +3827,59 @@ impl<'a> Checker<'a, '_> {
             E::Call(..) => self.eval_call(expression, live),
             E::Lambda { .. } => self.eval_lambda(expression, live),
             _ => self.eval_value(expression, usage, live),
+        }?;
+        if self.dropped.is_some() && !value.loans.is_empty() && self.drop_runs(&expression.ty) {
+            let dropped = self.dropped.as_mut().expect("checked above");
+            dropped.extend(&value.loans);
         }
+        Ok(value)
+    }
+
+    /// `drop_runs_code`, cached by type; no type when no `Drop.drop` of the module may make a store
+    /// that the check does not track (`Lending::drops_store`).
+    fn drop_runs(&mut self, ty: &Type) -> bool {
+        if !self.facts.lending.drops_store {
+            return false;
+        }
+        if let Some(known) = self.drop_types.get(ty) {
+            return *known;
+        }
+        let runs = drop_runs_code(ty, &self.module.types());
+        self.drop_types.insert(ty.clone(), runs);
+        runs
+    }
+
+    /// Starts `dropped` with the parameters' loans: a parameter whose type may run code when it is
+    /// dropped, or that reaches through an exclusive reference a value whose type may (the body
+    /// can replace it, `deref target = value`, and so drop it), may be dropped in the body.
+    fn collect_drops(&mut self) {
+        let types = self.module.types();
+        let mut dropped = BTreeSet::new();
+        let locals = self
+            .state
+            .locals
+            .values()
+            .filter(|_| self.facts.lending.drops_store);
+        for (local, value) in locals {
+            if !value.loans.is_empty()
+                && (drop_runs_code(&local.ty, &types)
+                    || (local.ty.reaches_exclusive(&types)
+                        && types.reaches(&local.ty, |part| part.runs_on_drop(&types))))
+            {
+                dropped.extend(&value.loans);
+            }
+        }
+        self.dropped = Some(dropped);
+    }
+
+    /// Whether a call of `Rc.share` or its kin may read through the borrow of its owner: the body
+    /// lends no way to write and hands no value to code that the analysis does not see
+    /// (`body_lends_mutable`), and drops no value that holds loans and may run code when it is
+    /// dropped (`drops_stop_reads`).
+    fn may_read_through(&mut self) -> bool {
+        let allowed = !self.drops_stop_reads && !self.body_lends_mutable();
+        self.read_through_used |= allowed;
+        allowed
     }
 
     /// Records an ownership event of the variable at `root` (G26 phase 5).
@@ -3910,7 +4134,7 @@ impl<'a> Checker<'a, '_> {
                 .after_arguments(*boundary)
                 .contains_stored_reference(&self.module.types())
         });
-        let read_through = self.reads_through(callee) && !self.body_lends_mutable();
+        let read_through = self.reads_through(callee) && self.may_read_through();
         // A region-quantified parameter's result borrows only from the inputs that its type names.
         let mut current = if callback {
             Value::default()
@@ -4558,7 +4782,7 @@ impl<'a> Checker<'a, '_> {
                         } else {
                             result.loans.extend(callee.loans);
                         }
-                    } else if self.reads_through(right) && !self.body_lends_mutable() {
+                    } else if self.reads_through(right) && self.may_read_through() {
                         // `ref shared |> Arc.share` is `Arc.share (ref shared)`.
                         if !matches!(left.kind, E::BorrowOperand(_)) {
                             result.loans = self.read_through(&result.loans);
@@ -5852,6 +6076,81 @@ mod retention_tests {
             assert!(facts.lending.facts[id("a28_thunk")], "{infer}");
             assert!(!facts.lending.reads[id("a28_thunk")], "{infer}");
             assert!(!facts.lending.facts[id("a28_plain")], "{infer}");
+        }
+    }
+
+    /// A28, seventh review: dropping a value runs its `Drop.drop`, which may store what the value
+    /// holds where the result reaches it. When a `Drop.drop` of the module makes a store that the
+    /// check does not track, the parameters whose loans a value of a type that may run code when it
+    /// is dropped holds are retained: a moved-in parameter that is never used, a local made from a
+    /// borrowed parameter, and a value handed to a callee that drops it. A borrowed one is not
+    /// dropped, and a parameter whose loans no such value holds stays temporary. Without such a
+    /// `Drop.drop` (the second module), the same functions keep the facts from before.
+    #[test]
+    fn a_dropped_value_keeps_the_loans_that_it_holds() {
+        let functions = "def a28_unused :: own Stash -> own (unit -> i64) -> (unit -> i64)\nfn a28_unused _s r = r\n\
+             def a28_local :: own ((unit -> i64) -> unit) -> ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_local w text r =\n    let _held = Stash { w: w, f: \\() -> String.length text }\n    r\n\
+             def a28_consume :: own Stash -> unit\nfn a28_consume _s = ()\n\
+             def a28_consumes :: own Stash -> own (unit -> i64) -> (unit -> i64)\nfn a28_consumes s r =\n    a28_consume s\n    r\n\
+             def a28_key :: ref string -> own Stash -> own (unit -> i64) -> (unit -> i64)\nfn a28_key _key s r =\n    let _held = s\n    r\n\
+             def a28_lent :: ref string -> ref Stash -> own (unit -> i64) -> (unit -> i64)\nfn a28_lent _key _s r = r\n\
+             let text = \"abc\"\n\
+             let s = a28_unused (Stash { w: \\_ -> (), f: \\() -> 1 }) (\\() -> 1)\n\
+             let l = a28_local (\\_ -> ()) (ref text) (\\() -> 2)\n\
+             let c = a28_consumes (Stash { w: \\_ -> (), f: \\() -> 3 }) (\\() -> 3)\n\
+             let k = a28_key (ref text) (Stash { w: \\_ -> (), f: \\() -> 4 }) (\\() -> 4)\n\
+             let held = Stash { w: \\_ -> (), f: \\() -> 5 }\n\
+             let b = a28_lent (ref text) (ref held) (\\() -> 5)\n\
+             s () + l () + c () + k () + b ()";
+        let stash = "record Stash { w: (unit -> i64) -> unit, f: unit -> i64 }\n";
+        // The first `Drop.drop` calls a function value that it holds (code that the analysis does
+        // not see), the second does nothing.
+        for (drop, storing) in [
+            (
+                "instance Drop<Stash> {\n    fn drop s = { let w = s.w; let g = s.f; w g }\n}\n",
+                true,
+            ),
+            ("instance Drop<Stash> {\n    fn drop _s = ()\n}\n", false),
+        ] {
+            let module = crate::analyze(&format!("{stash}{drop}{functions}")).unwrap();
+            let id = |name: &str| {
+                module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == name)
+                    .unwrap_or_else(|| panic!("{name}"))
+            };
+            for infer in [false, true] {
+                let facts = call_facts(&module, infer);
+                assert_eq!(facts.lending.drops_store, storing, "{infer}");
+                let retained =
+                    |name: &str| facts.retained[id(name)].as_deref().map(<[bool]>::to_vec);
+                assert_eq!(
+                    retained("a28_unused"),
+                    Some(vec![storing, true]),
+                    "{storing} {infer}"
+                );
+                assert_eq!(
+                    retained("a28_local"),
+                    Some(vec![storing, storing, true]),
+                    "{storing} {infer}"
+                );
+                assert_eq!(
+                    retained("a28_consumes"),
+                    Some(vec![storing, true]),
+                    "{storing} {infer}"
+                );
+                assert_eq!(
+                    retained("a28_key"),
+                    Some(vec![false, storing, true]),
+                    "{storing} {infer}"
+                );
+                assert_eq!(
+                    retained("a28_lent"),
+                    Some(vec![false, false, true]),
+                    "{storing} {infer}"
+                );
+            }
         }
     }
 

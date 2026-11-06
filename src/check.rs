@@ -733,6 +733,23 @@ impl Type {
         !types.stored_all(self, |part| !part.has_user_drop(types))
     }
 
+    /// A28: whether destroying a value of this type may run code that the body which drops it
+    /// does not show: the type, or a type that it stores (not through a reference), runs code when
+    /// it is dropped (`runs_on_drop`).
+    pub(crate) fn drop_runs_code(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |part| !part.runs_on_drop(types))
+    }
+
+    /// Whether destroying a value of this type itself, beside what it stores, may run code: a
+    /// user `Drop` instance, a function value or a tzroutine body (its environment may hold a
+    /// value with one), an `Owned.Function`, or a dyn value (its drop is the vtable's). A type
+    /// variable counts as none.
+    pub(crate) fn runs_on_drop(&self, types: &TypeContext<'_>) -> bool {
+        self.has_user_drop(types)
+            || self.is_owned_function(types)
+            || matches!(self, Self::Function(..) | Self::Dyn(_) | Self::Once(_))
+    }
+
     /// The function that `for x in ch` receives with and the item type, when `ch` is the std
     /// `Channel<'a>` or its receiving handle `ReceiveOnly<'a>` (TZ03). The name is the standard
     /// library's (`std::`): a module `Channel` of the program, or two that `using` declarations make

@@ -683,6 +683,110 @@ fn an_opaque_call_hands_a_borrow_to_unseen_code() {
     }
 }
 
+/// A28, seventh review: dropping a value runs its `Drop.drop` without a call in the body, and the
+/// instance may store what the value holds in a cell inside it that the caller reads through
+/// another value (`r`). The parameters whose loans a dropped value holds are retained, as the A30
+/// tip has it: an unused or moved-in parameter, a local made from a borrowed parameter, a
+/// reassigned local, a container of such values, `Owned.drop`, and a named callee that drops its
+/// argument and returns `unit`. Only a program with a `Drop.drop` that makes a store that the check
+/// does not track (through a cell, or by calling a function value) is affected.
+#[test]
+fn an_implicit_drop_keeps_what_the_dropped_value_holds() {
+    let at = |source: &str, error: &tsuzuri::diagnostic::Diagnostic| {
+        let before = &source[..error.span.start];
+        (
+            before.matches('\n').count() + 1,
+            before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1,
+        )
+    };
+    for (source, (line, column)) in [
+        // drop_unused
+        (
+            "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass _s r = r\ndef leak :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> own i64 -> (unit -> i64)\nfn leak a r n =\n    let text = to_string n\n    let borrowed = ref text\n    pass (Stash { cell: a, f: \\() -> String.length borrowed }) r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let r = reader a2\n    let f = leak a1 r 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+            (13, 5),
+        ),
+        // drop_param
+        (
+            "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass s r =\n    let _held = s\n    r\ndef leak :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> own i64 -> (unit -> i64)\nfn leak a r n =\n    let text = to_string n\n    let borrowed = ref text\n    pass (Stash { cell: a, f: \\() -> String.length borrowed }) r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let r = reader a2\n    let f = leak a1 r 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+            (15, 5),
+        ),
+        // drop_local
+        (
+            "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own Arc<Mutex<[unit -> i64]>> -> ref string -> own (unit -> i64) -> (unit -> i64)\nfn pass a text r =\n    let _held = Stash { cell: a, f: \\() -> String.length text }\n    r\ndef leak :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> own i64 -> (unit -> i64)\nfn leak a r n =\n    let text = to_string n\n    pass a (ref text) r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let r = reader a2\n    let f = leak a1 r 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+            (14, 5),
+        ),
+        // drop_reassign
+        (
+            "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own Stash -> own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass s t r =\n    let mut held = s\n    held = t\n    r\ndef leak :: own Arc<Mutex<[unit -> i64]>> -> own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> own i64 -> (unit -> i64)\nfn leak a b r n =\n    let text = to_string n\n    let borrowed = ref text\n    pass (Stash { cell: a, f: \\() -> String.length borrowed }) (Stash { cell: b, f: \\() -> 0 }) r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let a3 = Arc.new (Mutex.create [\\() -> 0])\n    let r = reader a2\n    let f = leak a1 a3 r 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+            (16, 5),
+        ),
+        // drop_nested_array
+        (
+            "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\nrecord Outer { items: [Stash] }\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own Outer -> own (unit -> i64) -> (unit -> i64)\nfn pass _o r = r\ndef leak :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> own i64 -> (unit -> i64)\nfn leak a r n =\n    let text = to_string n\n    let borrowed = ref text\n    pass (Outer { items: [Stash { cell: a, f: \\() -> String.length borrowed }] }) r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let r = reader a2\n    let f = leak a1 r 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+            (14, 5),
+        ),
+        // drop_rc_repro
+        (
+            "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef pass :: own Stash -> own Arc<Mutex<[unit -> i64]>> -> Arc<Mutex<[unit -> i64]>>\nfn pass _s a = a\ndef leak :: own Arc<Mutex<[unit -> i64]>> -> own Arc<Mutex<[unit -> i64]>> -> own i64 -> Arc<Mutex<[unit -> i64]>>\nfn leak a b n =\n    let text = to_string n\n    let borrowed = ref text\n    pass (Stash { cell: a, f: \\() -> String.length borrowed }) b\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let got = leak a1 a2 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    Mutex.with_lock (Arc.get (ref got)) (\\slot -> slot[0] ()) + junk.length\nrun ()",
+            (11, 5),
+        ),
+        // drop_opaque_field
+        (
+            "record Stash { w: (unit -> i64) -> unit, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let w = s.w; let g = s.f; w g }\n}\ndef writer :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn writer a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass _s r = r\ndef leak :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> own i64 -> (unit -> i64)\nfn leak w r n =\n    let text = to_string n\n    let borrowed = ref text\n    pass (Stash { w: w, f: \\() -> String.length borrowed }) r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let w = writer a1\n    let r = reader a2\n    let f = leak w r 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+            (15, 5),
+        ),
+        // owned_drop_opaque
+        (
+            "record Stash { w: (unit -> i64) -> unit, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let w = s.w; let g = s.f; w g }\n}\ndef writer :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn writer a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass s r =\n    Owned.drop s\n    r\ndef leak :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> own i64 -> (unit -> i64)\nfn leak w r n =\n    let text = to_string n\n    let borrowed = ref text\n    pass (Stash { w: w, f: \\() -> String.length borrowed }) r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let w = writer a1\n    let r = reader a2\n    let f = leak w r 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+            (17, 5),
+        ),
+        // drop_consume
+        (
+            "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef consume :: own Stash -> unit\nfn consume _s = ()\ndef pass :: own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass s r =\n    consume s\n    r\ndef leak :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> own i64 -> (unit -> i64)\nfn leak a r n =\n    let text = to_string n\n    let borrowed = ref text\n    pass (Stash { cell: a, f: \\() -> String.length borrowed }) r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let r = reader a2\n    let f = leak a1 r 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+            (17, 5),
+        ),
+        // drop_consume_opaque: the same with a `Drop.drop` that calls a function value it holds
+        (
+            "record Stash { w: (unit -> i64) -> unit, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let w = s.w; let g = s.f; w g }\n}\ndef writer :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn writer a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef consume :: own Stash -> unit\nfn consume _s = ()\ndef pass :: own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass s r =\n    consume s\n    r\ndef leak :: own ((unit -> i64) -> unit) -> own (unit -> i64) -> own i64 -> (unit -> i64)\nfn leak w r n =\n    let text = to_string n\n    let borrowed = ref text\n    pass (Stash { w: w, f: \\() -> String.length borrowed }) r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let w = writer a1\n    let r = reader a2\n    let f = leak w r 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+            (19, 5),
+        ),
+    ] {
+        let error = analyze(source).expect_err(source);
+        assert_eq!(error.code, "E1013", "{source}\n{}", error.message);
+        assert_eq!(
+            error.kind,
+            Some("borrow_outlives_block"),
+            "{source}\n{}",
+            error.message
+        );
+        assert_eq!(
+            at(source, &error),
+            (line, column),
+            "{source}\n{}",
+            error.message
+        );
+    }
+    // With such a `Drop.drop` in the program, a function value that holds a borrow may run it when
+    // it is dropped (its environment does not show), so nothing is read through it: the share of
+    // `shared` is its borrow, as on the A30 tip, and moving `shared` conflicts with it.
+    let source = "record Stash { w: (unit -> i64) -> unit, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let w = s.w; let g = s.f; w g }\n}\nlet text = \"abc\"\nlet borrowed = ref text\nlet shared = Rc.new (\\() -> String.length borrowed)\nlet mine = Rc.share (ref shared)\nlet moved = shared\n(deref (Rc.get (ref mine))) () + Rc.strong_count (ref moved)";
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, "E1014", "{}", error.message);
+    assert_eq!(error.kind, Some("borrow_conflict"), "{}", error.message);
+    assert_eq!(at(source, &error), (9, 13), "{}", error.message);
+    // The controls: the same `pass` while `text` is alive (12), a dropped value that holds no
+    // loan, whose `pass` keeps its facts, so the result of `wrap` holds no borrow of `key` (5), and
+    // `HashMap.remove` and a `pass` that drops only a borrow in a program with such a `Drop.drop`.
+    for source in [
+        "record Stash { w: (unit -> i64) -> unit, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let w = s.w; let g = s.f; w g }\n}\nlet map = HashMap.insert 1 (\\() -> 42) (HashMap.empty())\nlet map = HashMap.remove 1 map\nHashMap.length (ref map)",
+        "record Stash { w: (unit -> i64) -> unit, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let w = s.w; let g = s.f; w g }\n}\ndef pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn pass _key f = f\ndef wrap :: i64 -> own (unit -> i64) -> (unit -> i64)\nfn wrap key f = pass (ref key) f\nwrap 1 (\\() -> 42) ()",
+        "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass s r =\n    let _held = s\n    r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let r = reader a2\n    let text = to_string 123456789\n    let borrowed = ref text\n    let f = pass (Stash { cell: a1, f: \\() -> String.length borrowed }) r\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+        "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: ref string -> own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass _key s r =\n    let _held = s\n    r\ndef wrap :: own string -> own Stash -> own (unit -> i64) -> (unit -> i64)\nfn wrap key s r = pass (ref key) s r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let r = reader (Arc.share (ref a))\n    let f = wrap \"abc\" (Stash { cell: Arc.share (ref a), f: \\() -> 5 }) r\n    f ()\nrun ()",
+    ] {
+        emits(source);
+    }
+}
+
 #[test]
 fn shared_types_have_reserved_names_and_no_abi() {
     for source in [
