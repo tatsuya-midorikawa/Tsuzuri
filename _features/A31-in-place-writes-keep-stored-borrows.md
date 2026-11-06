@@ -267,6 +267,7 @@ A28 の `parameter_retention` と同じく、契約を定義で検査せず、ca
 
 ### 手順 4: A28 の除外を外す
 
+- 先に外すもの（A28 の 8 回目のレビュー対応で入った、プログラム全体の条件）: `src/ownership.rs` の `untracked_loan_store`・`untracked_writer`・`Lending::untracked`。借用を持ちうる値をこれらの組み込み関数で格納する関数がプログラムのどこかにあると、A28 はプログラム全体で事実も読み通しも使わない。この手順で `Array.write`・`SyncMap.__replace` の格納を追跡したら、その 2 つを `untracked_writer` から外し、条件が何も見つけないことを確かめる（A28 の再現と「A28 の事実が広げる形」が、書き込みの事実で拒否のままになる）。下の局所の除外は、その後に外す。
 - 変更: `src/ownership.rs` の `lending_bodies`（と `lends_mutable`・`CallFacts.lending`・`Contract.lends_mutable`）、`src/check.rs` の `Type::lends_mutable`・`is_mutable_cell` と、それを説明する文書（「ドキュメント」）。
 - 確認: `tests/mutable_slices.rs` の `a_function_that_writes_in_place_keeps_its_arguments_loans` と `tests/rc.rs` の `a_share_of_an_element_holds_what_was_written_in` が、拒否の理由を書き込みの事実に変えても成功する。
 
