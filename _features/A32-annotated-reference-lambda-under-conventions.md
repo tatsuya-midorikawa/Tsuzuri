@@ -63,7 +63,7 @@ pick 3 + pick (-3) * 100
 | --- | --- | --- |
 | `if` の枝（上の「再現」） | `E1003 expected ref string, found string` | 束縛した形 `5005` |
 | `match` の腕: `\| 0 -> text_length \| _ -> \(text: ref string) -> text.length * 10`（`pick 0 + pick 1 * 100`） | `E1003`（同じ文言） | 束縛した形 `5005` |
-| ジェネリックなレコード: `if n > 0 then first else Box { value: \(text: ref string) -> text.length * 10 }`（`first = Box { value: text_length }`） | `E1003`（同じ文言） | 束縛した形は `main` では A29 の `E2002`（`redefinition of type`）、A29 の後は `5005` |
+| ジェネリックなレコード: `if n > 0 then first else Box { value: \(text: ref string) -> text.length * 10 }`（`first = Box { value: text_length }`） | `E1003`（同じ文言） | ラムダだけを束縛する形（`let scaled = \(text: ref string) -> text.length * 10` と `if n > 0 then first else Box { value: scaled }`）は `main` でも `5005`（期待型が `Box` を `[Read]` の側に決め、`Box` の型は 1 つ）。`Box` ごと束縛する形（`let second = Box { value: \(text: ref string) -> text.length * 10 }` と `if n > 0 then first else second`）は `main` では A29 の `E2002`（`redefinition of type`）、A29 の後は `5005` |
 | `Vec`: `Vec.push text_length readers` の後の `Vec.push (\(text: ref string) -> text.length * 10 + n) readers` | `E1003`（同じ文言） | 束縛した形は `main` では A29 の `E2002`（`invalid redefinition of function`）、A29 の後は `51005`（`n = 1`） |
 | 規約 `[Own, Mut]`: `if n > 0 then bump else \(step: i64) (counter: ref mut Counter) -> counter.count = counter.count + step * 100` | `E1003 expected ref mut Main.Counter, found Main.Counter` | 束縛した形 `301004`（`pick 3 + pick (-3) * 1000`） |
 | edition 2026: `pure def text_length :: string -> i64` と、上の「再現」の `if` | `E1003`（同じ文言） | 束縛した形は `E1029`（束縛したラムダは純粋と推論されない。別の規則） |
