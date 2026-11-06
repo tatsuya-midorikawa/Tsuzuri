@@ -264,7 +264,7 @@ a + b + c + d
 - `if c then s else t` のように枝が Copy でないローカルを返すと、選ばれたローカルは一時値へ移ります。呼び出しのあとで使うと `E1012` です。使い続けるなら、枝で `ref s` と書きます。
 - 結果の型がまだ決まっていない呼び出しも、引数が結果を値の型に決めれば（`Array.get 0 xs`、`Owned.call (ref next) input`、`Maybe.get m`）、一時値として貸されます。次の 3 つの呼び出しは、結果が参照の型に決まります。どれも `ref (...)` と書けば通ります。
   - 結果を引数から受け取る呼び出し（`Text.trim text`、`'a -> 'a` の関数）。引数が値だと `E1003` です（`Text.length (Text.trim text)`）。`let` で束縛しても通ります。
-  - 結果の型変数を含む仮引数（`Array.get` の `ref ['a]`、`Maybe.get` の `Maybe<'a>`）へ、名前やフィールドではなく呼び出しやリテラルを直接渡す呼び出し。`id (Array.get 0 [a, b])` は `E1003`、`String.length (Maybe.get (Maybe.Some s))` は `E1013` です。`let` で束縛しても通ります。
+  - 結果の型変数を含む仮引数（`Array.get` の `ref ['a]`、`Maybe.get` の `Maybe<'a>`）へ、名前やフィールドではなく呼び出しやリテラルを直接渡す呼び出し。内側の引数が借りられる場所なら、その参照が渡るので通ります（`String.length (Maybe.get (Maybe.Some s))` は `s` を借ります）。一時値や値の配列リテラルだと通りません。`String.length (Maybe.get (Maybe.Some "hi"))` は `E1013`、`id (Array.get 0 [a, b])` は `E1003` です。`let` で束縛しても通ります。
   - 結果の型を引数ではなく文脈だけが決める呼び出し（`ref Monoids.All` の仮引数へ渡す `Monoid.empty ()`、結果だけが型変数のクラスのメソッド）。`Monoid.Monoid<ref Monoids.All>` のような参照の型のインスタンスは無いので `E1005` です。型を書かない `let` で束縛しても同じなので、`let r: Monoids.All = Monoid.empty ()` と型を書きます。
 - 一時値の借用は呼び出しの間だけです。部分適用（`let f = add (n as i64)`）のように借用が呼び出しのあとまで残り得る場合は `E1013` です。先に `let` で束縛します。
 - `if`・`match`・`try`・ブロックの値の型は、仮引数の型から推論しません。edition 2027 で関数型の仮引数へ `if c then \p -> p.x else \p -> p.y` を渡すと、ラムダの仮引数の型が決まらずエラーになります。`\(p: Point) -> p.x` と型を書くか、`let pick: Point -> i64 = if c then …` と束縛してから渡します。

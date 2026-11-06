@@ -356,3 +356,15 @@ f 41
 
 `src/check.rs`、`src/polymorph.rs`、`src/llvm_parallel.rs`、`tests/parallel.rs`、`tests/parameter_conventions.rs`、`tests/fixtures/parallel/Main.tz`、`tests/fixtures/parallel_scheduler/Main.tz`、`tests/features.mjs`、`docs/language.md`、
 `_tsuzuri/language-reference/ownership-and-memory/borrowing.md`、`_tsuzuri/language-reference/built-in-types-and-modules/text.md`、`_features/README.md`、このチケット。
+
+#### 2 回目の確認の指摘への対応
+
+上の 1 で足した文が、`String.length (Maybe.get (Maybe.Some s))` を `E1013` と書いていた（nit）。`s` が局所や仮引数なら、この形は通る。
+
+- 再現（このブランチと main のバイナリ、2026・2027。`target/scratch/a27-docs` に生成）: `let s = "hi"` の後の `String.length (Maybe.get (Maybe.Some s))` は両方で `2`。仮引数（2026 の `ref string`、2027 の `string`）の `fn g s = String.length (Maybe.get (Maybe.Some s))` と `g "abc" + 41` は両方で `44`。
+  `let s = to_string 12345` の後の `String.length (Maybe.get (Maybe.Some s)) * 10 + String.length s` は両方で O0・O3 とも `55`（手で数えた 5 × 10 + 5）なので、`s` は move されずに借りられている。
+  `E1013 borrow requires a local place` になるのは内側の引数が一時値のとき（`String.length (Maybe.get (Maybe.Some "hi"))`、両方の版・両方のバイナリで `1:38`）だけである。`let a: i64 = 41` と `let b: i64 = 2` の後の `id (Array.get 0 [a, b])`（2027）は両方で `5:18 E1003`、`let x = Array.get 0 [a, b]` と `id x` は両方で `41`。
+- 対応: `borrowing.md` の 2 つめの下位の項目と `docs/language.md` の同じ文で、例を一時値の形 `String.length (Maybe.get (Maybe.Some "hi"))`（`E1013`）に替え、内側の引数が借りられる場所ならその参照が渡って通ること（`Maybe.Some s` は `s` を借りる）を足した。値の配列リテラル（`[a, b]`）が `E1003` であることは残した。
+- 後の確認: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/ownership-and-memory/borrowing.md`: 1 ページ、14 リンク、9 例、18 回の native 実行（O0/O3）が成功。
+  `cargo fmt --all -- --check`・`cargo clippy --locked --all-targets -- -D warnings`: 成功。`cargo test --locked --test parameter_conventions --test borrow_syntax`: 37・13 件成功。コードは変えていないので、T1 は回していない。
+- 変更したファイル: `docs/language.md`、`_tsuzuri/language-reference/ownership-and-memory/borrowing.md`、このチケット。
