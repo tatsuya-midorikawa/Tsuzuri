@@ -194,6 +194,21 @@ after
 - **レコード更新の禁止（E1012）**: Drop 型に対して `{ value with ... }` の更新構文を適用することはできません。
 - **`drop` 本体での全体置換・排他貸出の禁止（E1012）**: `deref value = ...` で引数全体を置き換えると、古い値の解放が同じ `drop` を再帰します。別の関数へ `ref mut` で渡すと、呼び出し先が中身を置換できます。どちらも `E1012` です。メッセージは `cannot replace the whole value inside Drop.drop` と `cannot pass the value on as 'ref mut' inside Drop.drop` です。
 - **公開境界**: `export` や `extern` の引数・戻り値に Drop 型を置くと `E1008` です。
+- **関数の結果が持つ借用**: `drop` は本文に呼び出しを書かずに実行されます。プログラムのどれかの `drop` の本体が、`Mutex.with_lock` などのロックや、値が持つ関数値の呼び出しを通して、解放する値の中身を値の中の `Mutex` などへ入れうるとき、借用検査はそうした書き込みを追跡できないので、借用を持ち、破棄でコードを実行しうる値（Drop 型の値と、それを持ちうる関数値・dyn 値・`Owned.Function` を格納された値として持つ値）を受け取る・作る関数の結果は、その値が持つ引数の借用も持ちます（[関数値の共有借用の寿命](../values-and-functions/lambda-expressions.md#共有借用の寿命)）。その関数の中の `Rc.share` なども、所有者の借用を持ちます（[所有者を増やした値の借用](../built-in-types-and-modules/rc.md#所有者を増やした値の借用)）。次の `pass` は `_s` を使いませんが、`_s` の解放が `text` を借用する関数を `a` の `Mutex` へ入れるので、`leak` の結果は `text` の借用を持ち、`E1013` です。
+
+  ```text
+  record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }
+  instance Drop<Stash> {
+      fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\slot -> Array.write 0 g slot) }
+  }
+  def pass :: own Stash -> own (unit -> i64) -> (unit -> i64)
+  fn pass _s r = r
+  def leak :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> own i64 -> (unit -> i64)
+  fn leak a r n =
+      let text = to_string n
+      let borrowed = ref text
+      pass (Stash { cell: a, f: \() -> String.length borrowed }) r   // E1013
+  ```
 
 ## トラップ時の挙動
 
