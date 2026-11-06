@@ -435,6 +435,8 @@ fn derived_contracts_store_references_and_functions_of_type_variables() {
         "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.set 0 x arr\ndef twice :: own 'a -> ref mut ['a..] -> unit\nfn twice x arr = put x arr\nlet mut a = [\\() -> 1]\ntwice (\\() -> 4) (ref mut a)\na[0] ()\n",
         "def put :: own i64 -> ref mut ['a..] -> unit\nfn put index arr =\n    let last = arr[index]\n    Array.write 0 last arr\nlet mut a = [\\() -> 1, \\() -> 2]\nput 1 (ref mut a)\na[0] ()\n",
         "def rotate :: ref mut [(unit -> i64)..] -> unit\nfn rotate arr =\n    let second = arr[1]\n    Array.write 0 second arr\nlet mut a = [\\() -> 1, \\() -> 2]\nrotate (ref mut a)\na[0] ()\n",
+        // A generic writer through `ref mut 'a`, which main rejected as `store_region_unnamed`.
+        "def set_ref :: own 'a -> ref mut 'a -> unit\nfn set_ref v r = deref r = v\nlet mut f = \\() -> 1\nset_ref (\\() -> 2) (ref mut f)\nf ()\n",
         // MatrixView's writers on function and reference elements.
         "let base = 1000\nlet source = [\\() -> 7, \\() -> 8]\nlet mut data = [\\() -> 1, \\() -> 2]\nlet mut grid = MatrixView.of_array_mut 1 2 (ref mut data)\nMatrixView.write 0 1 (\\() -> 20) (ref mut grid)\nMatrixView.fill (\\() -> base) (ref mut grid)\nMatrixView.copy_from (MatrixView.of_array 1 2 source) (ref mut grid)\nMatrixView.map_in_place (\\f -> \\() -> f () + 1) (ref mut grid)\nref mut grid |> MatrixView.write 0 0 (\\() -> base)\ndata[0] () + data[1] ()\n",
         "let a = 1\nlet b = 2\nlet mut data = [ref a, ref a]\nlet mut grid = MatrixView.of_array_mut 1 2 (ref mut data)\nMatrixView.write 0 1 (ref b) (ref mut grid)\nderef data[1]\n",
@@ -484,6 +486,11 @@ fn derived_contracts_store_references_and_functions_of_type_variables() {
         ),
         (
             "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.write 0 x arr\nlet a = \"ab\"\nlet b = \"cde\"\nlet mut refs = [ref a]\nput (ref b) (ref mut refs)\nlet moved = b\nrefs[0].length\n",
+            "E1014",
+            "borrow_conflict",
+        ),
+        (
+            "def set_ref :: own 'a -> ref mut 'a -> unit\nfn set_ref v r = deref r = v\nlet text = \"abc\"\nlet borrowed = ref text\nlet mut f = \\() -> 1\nset_ref (\\() -> String.length borrowed) (ref mut f)\nlet moved = text\nf ()\n",
             "E1014",
             "borrow_conflict",
         ),

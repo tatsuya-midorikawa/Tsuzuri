@@ -238,9 +238,24 @@ let moved = text       // E1014: arr は text の借用を持つ
 arr[0] ()
 ```
 
-- 要素の型が借用を持ちうるとき（関数、参照）、これらの関数は全引数を渡して直接呼ぶか、呼び出しを完成させるパイプライン（`ref mut arr |> Array.set 0 f`）で呼びます。部分適用や関数値として使うと、書き込んだ借用を追跡できないので `E1013`（`region_callback_stores_exclusive_input`）です。
-- `MatrixView.write`・`MatrixView.fill`・`MatrixView.copy_from`・`MatrixView.map_in_place` は、要素の型が借用を持ちうるとき、std の中で `E1013`（`store_region_unnamed` など）になります。宣言した region の契約が、書き込む要素の借用を表さないためです。数値の要素では変わりません。
-- 利用者の関数が、自分の `ref mut` 引数の先へ借用を持つ値を書き込むには、`ref mut {r} T {s}` の参照先の region が要ります（`E1013`、`store_region_unnamed`）。関数の型には region を書けないので、関数を要素に持つスライスへ、引数から受け取った関数を書き込む利用者の関数は書けません。借用を持たない値（捕捉のないラムダなど）は書き込めます。
+- 要素の型が借用を持ちうるとき（関数、参照）、これらの関数は全引数を渡して直接呼ぶか、呼び出しを完成させるパイプライン（`ref mut arr |> Array.set 0 f`）で呼びます。部分適用や関数値として使うと、書き込んだ借用を追跡できないので、書き込む値が借用を持たなくても `E1013`（`region_callback_stores_exclusive_input`）です。
+- `ref` を要素に持つスライスへ参照を書き込む `Array.set 0 (ref b) (ref mut arr)`・`Array.fill` も同じで、`arr` を使う間は `b` をムーブ・変更できません（`E1014`）。`b` が `arr` より先に解放されるブロックの中で書き込むと `E1013` です。
+- `MatrixView.write`・`MatrixView.fill`・`MatrixView.copy_from`・`MatrixView.map_in_place` も、要素の型が借用を持ちうるとき同じ契約を持ちます。窓（`MatrixView.Mut`）へ書き込んだ借用は、窓が借用している配列の持ち主も持つので、窓を使い終えた後も、配列を使う間は借用元をムーブできません。
+- 書き込み先から読み出した要素を同じ書き込み先へ書き戻す（`let last = values[1]` の後の `Array.write 0 last values`）のは、書き込み先がすでに持つ借用なので、region なしで書けます。
+
+利用者の関数のうち、型変数の要素を持つ `ref mut ['a..]` へ書き込む generic な関数は、std の関数と同じく、要素の型が借用を持ちうる具体化ごとにこの契約を持ちます。型変数にも region は書けないためです。呼び出し側は書き込んだ借用を書き込み先の持ち主に残し、呼び出しは直接の完全適用か、それを完成させるパイプラインに限られます。
+
+```tsuzuri run=9
+def put :: own 'a -> ref mut ['a..] -> unit
+fn put value target = Array.write 0 value target
+
+let base = 4
+let mut functions = [\() -> 0]
+put (\() -> base + 5) (ref mut functions)
+functions[0] ()
+```
+
+型変数を持たない利用者の関数が、自分の `ref mut` 引数の先へ借用を持つ値を書き込むには、`ref mut {r} T {s}` の参照先の region が要ります（`E1013`、`store_region_unnamed`）。関数の型には region を書けないので、`def put :: own (unit -> i64) -> ref mut [(unit -> i64)..] -> unit` のように関数を要素に持つスライスへ、引数から受け取った関数を書き込む関数は書けません。上の generic な形にします。借用を持たない値（捕捉のないラムダなど）は、region なしで書き込めます。
 
 ## region 量化関数
 

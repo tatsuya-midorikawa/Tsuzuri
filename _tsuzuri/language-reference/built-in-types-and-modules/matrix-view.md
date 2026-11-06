@@ -180,6 +180,8 @@ deref (Matrix.at 1 2 (ref changed))
 | `tzroutine { }` の本体で窓を使う | `E1013`（`values that move to another tzroutine or thread must be owned`） |
 | フィールド参照、パターン分解、`{ view with ... }`、リテラルでの構築 | `E1022` |
 | 非 Copy の要素に `get`・`map`・`fold`・`to_matrix`・`mul`・`fill`・`copy_from`・`map_in_place` | `E1005` |
+| 関数や参照を要素に持つ窓へ `write`・`fill`・`copy_from`・`map_in_place` で借用を持つ値を書いた後、配列を使う間に借用元を move する（窓を使い終えた後も） | `E1014`（配列の持ち主が書き込んだ借用を持ちます。[可変スライスと排他参照への書き込み](../ownership-and-memory/lifetimes.md#可変スライスと排他参照への書き込み)） |
+| 関数や参照を要素に持つ窓の `write`・`fill`・`copy_from`・`map_in_place` を部分適用・関数値として使う | `E1013`（`region_callback_stores_exclusive_input`） |
 
 局所の行列の窓を返す関数は、次のように拒否されます。
 
