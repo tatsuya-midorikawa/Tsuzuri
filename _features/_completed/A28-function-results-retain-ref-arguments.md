@@ -260,6 +260,13 @@ tzroutine {
 - 理由: 誤って拒否されていたものが受理されれば、その kind は出なくなる。kind の名前の整理は別の問題。
 - 状態: 既定案。
 
+### D3: 可変スライスと排他参照への書き込みは、書き込む値の借用を書き込み先の持ち主に残す（レビューの後に追加）
+
+- 決定: `Array.write`・`Vec.push_mut`・`SyncMap.__replace` と、参照先が借用を持ちうる `ref mut` 引数を持つ std の関数（`Array.set`・`Array.fill`・`Array.blit`・`Vec.copy_to*` など）の呼び出しは、`values[i] = v` と同じく、書き込む値の loan を書き込み先の持ち主へ足す。std の関数の契約は特殊化ごとにコンパイラーが与える（`closures::derive_store_slots`）。
+- 理由: これは A28 より前からの穴（1 つの関数の中で `Array.write` した借用する関数が、借用元のムーブ・解放の後に呼べる）で、A28 の事実と読み通しは callee の本文の loan の追跡を信頼するので、塞がなければ A28 が関数の境界を越えて穴を広げる（基準が拒否していた解放後の読み出しを受理する）。健全性はこのチケットの前提。
+- 代償: 要素の型が借用を持ちうる（関数・参照）ときだけ、次が新たに拒否される。利用者の関数が自分の `ref mut` 引数の先へ借用を持つ値を `Array.write` で書く（`store_region_unnamed`。`target[i] = v` は以前から同じ）、std の書き込み関数の部分適用・関数値（`region_callback_stores_exclusive_input`）、`MatrixView` の書き込み関数（宣言した region の契約が要素の借用を表さない）。std・`examples/`・`tests/fixtures/` には現れない（手順 5 のやり直し）。
+- 状態: 実装済み（オーケストレーターの判断、2026-11-06）。
+
 ## 実装と検証（2026-11-06）
 
 A30 のブランチ（`fix/a30-owned-function-borrow`、`03cb108e`）の上に積みました。手順 1〜6 をすべて行いました。
@@ -345,3 +352,74 @@ A30 のブランチ（`fix/a30-owned-function-borrow`、`03cb108e`）の上に�
 
 `src/ownership.rs`、`src/check.rs`、`tests/hash_map.rs`、`tests/rc.rs`、`tests/tzroutine.rs`、`tests/currying.rs`、`tests/features.mjs`、`tests/fixtures/hash_map/Main.tz`、`tests/fixtures/rc/Main.tz`、`tests/fixtures/tzroutine/Main.tz`、上の文書、`_features/README.md`、このチケット。
 
+### レビューの指摘への対応（2026-11-06）
+
+独立したレビューの指摘 8 件（健全性 2 件、実装と費用 6 件）に対応しました。先に A30 のレビュー修正（`fix/a30-owned-function-borrow` の `3aa1708b`）をマージし、比較の基準は、その A30 を作り直したバイナリです（以下「基準」）。指摘ごとに、レビューの証拠のプログラムを `target/scratch/a28r/p/`（作業の後に削除）に書いて修正前に再現し、回帰テストを書いてから直しました。新しいテスト 7 件は、修正前のブランチ（`39366e2e` を `git archive` で展開し、新しいテストのファイルだけを差し替えたもの）ですべて失敗します。
+
+#### 1. 重大: in-place の書き込みが格納した値の借用を残さない（以前からの穴を A28 が広げた）
+
+- 再現: レビューの `stash`/`leak`（`Array.write 0 (\() -> String.length text) (ref mut arr)` の後に `arr[0]` を返す）は、基準で `E1013`/`borrow_outlives_block`、修正前の A28 で受理（実行すると解放後の `text` を読み、9 ではなく 0）。`Rc.share (ref arr[0])` の形も同じ。1 つの関数の中の穴（`Array.write` の後に `text` をムーブして `arr[0] ()`）は、基準でも受理でした。
+- 原因: `region_slots.writes` を持つのは `Vec.push_mut` の生成関数だけで、`Array.write` と、それを通して書く std の関数（`Array.set`・`Array.fill`・`Array.blit`・`Vec.copy_to*` など）は、書き込み先の持ち主へ格納した値の loan を足していませんでした。A28 以前は、呼び出し側がすべての引数の loan を結果に残す規則がこれを関数の境界で隠していました。
+- 対応（根本原因）:
+  - `closures::lower`: 書き込む値と排他参照を引数に持つ組み込み関数（`Vec.push_mut`・`Array.write`・`SyncMap.__replace`）の生成関数は、書き込む値の型が loan を運ぶとき、`Vec.push_mut` と同じ形の `RegionSlots { writes: true }` を持ちます。呼び出し側の `store_arguments` が、値の loan を書き込み先の持ち主に足します。
+  - std の関数は型変数に region を書けない（`own 'a { s }` は `RegionOnNonBorrow`）ので、`closures::derive_store_slots` が、特殊化した std の名前付き関数のうち、参照先が loan を運ぶ `ref mut` 引数を持ち、region の契約がない関数に同じ形の契約を与えます（loan を運ぶ引数と、参照先が loan を運ぶ参照の参照先が region 0、参照はそれぞれ別の region）。本体はこの契約で検査され、呼び出し側は書き込みを記録します。`writes` を持つ関数は、`regions::validate_contract_calls` で直接の完全適用か、それを完成させるパイプラインに限られます（パイプラインは `piped_store`・`eval_piped_store` が `store_arguments` を呼びます）。
+  - 列挙: `ref mut` を取る組み込み関数は `Vec.push_mut`・`Array.write`・`SyncMap.__replace`（値を格納する）、`Array.swap_in`・`Array.split_at_mut`・`Vec.__view`・`Simd.store`（格納する値がないか数値だけ）、コールバックへ `ref mut` を渡す `Mutex.with_lock`・`RwMutex.with_write`・`Cond.wait_with`・`Parallel.for_each_chunk`（コールバックの中の書き込みは外部の参照への格納で、借用を持つ値は以前から `store_region_unnamed`）です。std で `ref mut` を取る関数は `Array`（`set`・`fill`・`blit`・`sort_in_place*`・`random_shuffle_in_place*` と private の補助関数）、`Vec`（`copy_to*` と private の補助関数）、`Matrix`・`Regex`・`Tensor`（数値の要素だけ）、`MatrixView`（宣言した region の契約を持つので対象外）です。`HashMap`・`Map`・`Set`・`List`・`String` の更新は値で受けて返すので、結果がすべての引数の loan を持ち、対象外です。
+  - `store_arguments` は、書き込み先がすでに持つ loan（その参照の参照先のスロット）を足しません。`store_through` は、外部の参照先へ loan のない値を書くときは何もしません（代入の `E::Assign` と同じ）。この 2 つで、`fn reset target = Array.write 0 (\() -> 0) target` が通り、以前は `store_region_unnamed` だった `Vec.push_mut (\() -> 1) v`（`v` は `ref mut` の引数）も通るようになりました。
+  - 借用した一時値（`BorrowOperand`）の値は一時値が持つ loan そのものなので、参照先の loan としてそのまま扱います（`Array.blit 0 0 1 [\() -> ...] (ref mut arr)` の穴）。
+- テスト: `tests/mutable_slices.rs` `in_place_writes_keep_the_borrows_that_they_store`（`Array.write`・スライス・`Array.set`・`Array.fill`・`Array.blit`（一時値も）・`Vec.copy_to`・`Vec.copy_to_at`・パイプライン・`ref mut` の束縛経由で `text` のムーブが `E1014`、`ref string` の要素、`stash` の 4 形と 1 つの関数の 4 形が `E1013`/`borrow_outlives_block`、利用者の関数の格納が `store_region_unnamed`、関数を要素に持つ std の書き込み関数とパイプラインの受理）、`tests/rc.rs` `a_share_of_an_element_holds_what_was_written_in`（読み通しの形）。
+- 証拠（修正後）: `stash`/`leak` は `E1013`/`borrow_outlives_block`（9:5、基準と同じ）、読み通しの形は 7:5 で同じ。1 つの関数の穴は `E1014`/`borrow_conflict`。関数を要素に持つ `Array.set`・`fill`・`blit`・`random_shuffle_in_place_*`・`Vec.copy_to*`・`Vec.reverse`・`Vec.remove_all` を使うプログラムは受理され、`-O0`・`-O3` で基準と同じ 1024。
+- 判断（決定事項の D3）: 以前からの穴（基準でも受理していた解放後の読み出し）を塞ぎます。A28 の事実はこの追跡に依存するので、塞がなければ A28 が穴を広げます。代わりに次のプログラムが新たに拒否されます。どれも要素の型が借用を持ちうる（関数・参照）ときだけで、std・`examples/`・`tests/fixtures/` には現れません（手順 5）。
+  - 利用者の関数が、自分の `ref mut` 引数の先へ、借用を持つ値を `Array.write` で書く（`fn put f target = Array.write 0 f target`）: `E1013`/`store_region_unnamed`。同じ関数を `target[0] = f` で書くと基準でも同じ診断です。
+  - 関数を要素に持つ std の書き込み関数の部分適用・関数値: `E1013`/`region_callback_stores_exclusive_input`（`Vec.push_mut` と同じ）。
+  - 関数を要素に持つ `Array.sort_in_place_with`・`sort_in_place_by`（と `Vec.sort_with`）は基準でも std の中で `E1013`/`E1014` で、診断が 1 つ増えます（`self_referential_store`）。
+  - 宣言した region の契約を持つ `MatrixView.write`・`fill`・`copy_from`・`map_in_place` は契約を与え直さないので、関数を要素に持つと std の中で `E1013`（`store_region_unnamed`、`map_in_place` は `self_referential_store`）。基準では書き込んだ借用を追跡しないまま受理していました。数値の要素は変わりません。
+  - パイプライン形は組み込み関数と std の書き込み関数だけです。名前付き region を宣言した利用者の書き込み関数は、以前どおり直接の完全適用だけです（`tests/borrowed_records.rs` の期待）。
+
+#### 2. 主要: 所有者の借用が生きている間の share/downgrade の move が誤って `E1014`
+
+- 再現: mv10・mv2・mv6・mv8・mv11（weak）・mv12（tuple）は基準で受理（5・5・5・4・4・5）、修正前の A28 で `E1014`/`move_reborrowed_exclusive_reference`。rt6 は kind が `task_capture_retains_borrow` から変わっていました。
+- 原因: `read_through` が `ref shared` の loan の `parents` をそのまま結果に渡し、`Rc.get (ref shared)` などの生きている借用もそれを親に持つので、move の検査が再借用中の値の move とみなしました。
+- 対応: `read_through` は選んだ loan の写し（同じ `Place`・可変性・`parents` の新しい loan）を返します。写しは同じ場所を借用するので、ブロックの終わり・競合・`check_result` の検査は原本と同じで、誰の親でもないので move を妨げません。同じ場所の再借用（`(ref shared) |> Arc.share` が作る `ref (deref (ref shared))`）は、親をさらにたどります。
+- テスト: `tests/rc.rs` `a_new_owner_moves_while_the_owner_is_borrowed`（6 形を `Rc` と `Arc` で、パイプライン形を含めて受理、写しがムーブ・ブロックの終わりで原本と同じく拒否される 2 形）、`tests/tzroutine.rs` `a_tzroutine_captures_a_share_of_a_function`（rt6 とパイプライン形が `task_capture_retains_borrow`、借用しない関数のパイプライン形を受理）。
+- 証拠: 6 つとも受理、`tsuzuri run` は `-O0`・`-O3` で基準と同じ 5・5・5・4・4・5。rt6・`arc_env_tz` の 2 形は `E1013`/`task_capture_retains_borrow`（基準と同じ位置）。
+
+#### 3. 軽微: パイプライン形に事実と読み通しが効かない
+
+- 対応: `x |> f a` が名前付き関数 `f` の呼び出しを完成させるとき（`piped_callee`）、`eval_piped_arguments` が `eval_call` と同じく引数ごとに事実で loan を選び、渡された値の loan は最後の引数の事実で選びます。`parameter_retention` はこの形も呼び出しとして集めます。右が読み通しの組み込み関数（`ref shared |> Arc.share`）なら左の値を読み通します。書き込む関数のパイプラインは 1 のとおり書き込みを記録します。
+- テスト: `tests/currying.rs` `a_pipeline_that_completes_a_call_uses_its_facts`（`f |> pass (ref key)` の受理、保持する引数を左に置く 2 形の拒否）、2 の rc・tzroutine のパイプライン形。
+- 証拠: pipe2（`f |> pass (ref key)`）は受理、`run` は 42（基準は `E1013`/`task_result_retains_borrow`）。pipe1（`ref shared |> Arc.share` を tzroutine が捕捉）は受理（基準は `task_capture_retains_borrow`）。
+
+#### 4. 軽微: 推論の段の事実が型変数の値を通る流れを見落とす
+
+- 対応: 抽象本文（`infer`）の事実は、`hidden_parameters` が求める引数を最初から保持にします。型変数を含み loan を運ばない型の式（局所値の読み出しを除く）の値が使う局所値を、束縛（`let`・`match` とパターン・`for`・代入）をたどった閉包で引数まで戻します。具体的な型で loan を運ばない式に丸ごと消費される値（`hash_of (ref map) key : i64` の中の `key`）は数えず、束縛・代入の値と、排他参照を引数に取る呼び出しの引数（抽象本文は書き込みを見ないので）は数えます。
+- テスト: `tests/currying.rs` `inferred_facts_keep_what_a_type_variable_may_hold`（sneaky/g が `g` の呼び出しの位置で `E1005`/`no_instance`、`i64` の具体化は受理、同じ形の `Array.write` 版も呼び出しの位置で `E1005`）。
+- 証拠: sneaky は基準と同じ 8:1 `E1005`/`no_instance`、受理する変種は基準と同じ（`run` は 5）。KG の事実は手順 5 の全 fixture・examples で基準と一致。`HashMap.remove_ref (ref key)` の後の `key` の move（string のキー）は受理のまま（最初の版の規則は粗すぎてこれを拒否したので、消費される式を除く形にしました）。
+
+#### 5. 軽微: 予算の打ち切りが黙ってすべての事実を捨てる
+
+- 対応: 予算が尽きたら、作業リストに残る関数と、その推移的な呼び出し元の事実だけを捨てます（すべて保持）。ほかの関数は呼び出す関数の今の事実の下で検査済みなので、その部分グラフの不動点として残ります。`parameter_retention_within` は予算を引数に取ります（単体テスト用）。
+- テスト: `src/ownership.rs` `retention_tests::an_exhausted_budget_discards_only_the_unsettled_facts`（予算 0〜15 のどれでも、事実は完全な不動点と同じか `None`、不安定な再帰の組の呼び出し元は `None`、`a28_pass` だけが残る予算がある）、`tests/currying.rs` `an_exhausted_fixed_point_keeps_the_facts_that_settled`（201 関数・16 引数の環で、`HashMap.remove` を受理、環を外へ返す形は `task_result_retains_borrow`）。
+- 証拠: 201 関数の環は受理（基準と修正前の A28 は `std/HashMap.tz:396:21` `E1013`）。
+- 先送り: 事実を `events_abstract`・`copy_reads` で再計算しない共有は、`CheckedModule` に結果を持たせる変更になり単純でないので、していません（KG の段の増分は下の計測のとおり数 ms）。診断（`E1017` など）も足していません（打ち切りは保守的な側で、残る誤った拒否は打ち切られた関数とその呼び出し元に限られます）。
+
+#### 6. 文書の指摘 3 件
+
+- `keep` と部分適用: `fn keep text = \() -> ...` はラムダの引数も関数の引数になり、`keep (ref text)` は部分適用で、本体が使わなくても借用を持つ、と書き、`keep` の例を `let g = \() -> String.length text` と `g` の形にしました（`lambda-expressions.md`・`docs/language.md`）。
+- 参照の結果と `closed_returns`: 本体が借用をまったく返さないと示せる関数の結果は借用を持たず、本体を変えると呼び出し側が壊れうる、と書き直しました（`lifetimes.md`・`lambda-expressions.md`・`docs/language.md`）。
+- `Rc` と tzroutine: `Arc` の結果だけが tzroutine へ捕捉できる、と直しました（`docs/language.md`）。`rc.md`・`tzroutine.md` の記述は `Arc` だけを tzroutine に渡していて正しいままです。
+- 書き込みの規則: `lifetimes.md` の新しい小節「可変スライスと排他参照への書き込み」、`borrowing.md` の可変スライスの API の後、`docs/language.md` の参照先のリージョンの段落、`docs/architecture.md` に書きました。パイプライン形も `lifetimes.md`・`lambda-expressions.md`・`rc.md`・`docs/language.md`・`docs/architecture.md` に書きました。
+
+#### 手順 5 のやり直し（基準 = A30 のレビュー修正後のバイナリ）
+
+- `tests/fixtures/*`（ディレクトリ 163）と `examples/*`（13）の `tsuzuri check --json`（終了コードを含む）と `tsuzuri build --no-cache --emit llvm`（151 件が IR を出力）を、A30 のブランチの木で基準と最後のバイナリで比べ、503 ファイルすべてが一致しました（途中の版で 3 件に一時ディレクトリの削除の警告が混じったのは並行実行のためで、再実行で一致）。KG の事実（`target/tz/kg/facts`）も 176 件すべてで一致しました。A28 が足した `hash_map`・`rc`・`tzroutine` の fixture（このブランチの木）は受理され、IR は 2 回の生成で一致します。
+- 「拒否し続けるプログラム」は、すべて基準と同じ位置・code・kind です: `keep_leak`（`own string`）4:16 `task_result_retains_borrow`、`keep_leak`（読むだけの引数）5:14 `borrow_of_temporary`、`keep_tz` 5:1 `task_capture_retains_borrow`、`class_escape`（`own string`）9:16 `task_result_retains_borrow`、`class_escape`（ブロックの局所値）11:5 `borrow_outlives_block`、`arc_env_tz`（`mine`）5:1・（`shared`）4:1 `task_capture_retains_borrow`、`arc_env_return` 6:5・`rc_get_return` 3:50・`hashmap_env_return` 5:5・`mapr_leak` 4:5 `borrow_outlives_block`、`copy_out_tz` 7:1・`arc_get_env_tz` 5:1 `task_capture_retains_borrow`。「再現」の 2 つと「同じ原因の別の形」（`remove_ref` の後の tzroutine と move、`Rc.share` を返す、`Arc.share` の後の move、generic な `pass`）は受理のままです。
+- 検査の時間（`TSUZURI_TIME_PASSES=1 tsuzuri check`、基準と交互に 15 回の中央値、A30 の木の fixture。ほかの worktree の作業と同時なのでゆれが大きい）: 全体は hash_map 211.1→220.1 ms、list_fsharp 267.2→277.0、array_fsharp 253.1→259.9、vec_dotnet 230.8→238.3、rc 198.0→209.2、tzroutine 166.5→169.8、examples/tzroutines 156.3→167.9（+2〜7 %、10 % を超えません）。`check` の段は +2〜3 ms、`ownership` は +0〜1 ms、`kg-capture` は +1.6〜2.1 ms（`events_abstract` が推論の段の事実を計算し直すため）。病的な環: 200 関数 325.6→450.6 ms、201 関数（予算が尽きる）330.0→837.6 ms（`ownership` 4.5→120.8、`kg-capture` 11.7→145.2）。予算の打ち切りは検査の回数を数えるので、尽きるまでの検査（推論の段・最後の段・`events_abstract` の 3 回）は残ります。
+
+#### 実行したコマンド
+
+- `cargo test --locked --no-fail-fast --test currying --test rc --test tzroutine --test mutable_slices` を修正前の木（`39366e2e` に新しいテストのファイルだけを入れたもの）で: 新しい 7 件（`a_pipeline_that_completes_a_call_uses_its_facts`・`an_exhausted_fixed_point_keeps_the_facts_that_settled`・`inferred_facts_keep_what_a_type_variable_may_hold`・`in_place_writes_keep_the_borrows_that_they_store`・`a_new_owner_moves_while_the_owner_is_borrowed`・`a_share_of_an_element_holds_what_was_written_in`・`a_tzroutine_captures_a_share_of_a_function`）だけが失敗し、ほかは成功（currying 11/14、rc 12/14、tzroutine 21/22、mutable_slices 9/10）。単体テスト `an_exhausted_budget_discards_only_the_unsettled_facts` は修正前にない `parameter_retention_within` を呼ぶので、修正前には置けません。
+- 修正後: `--test currying` 14/14、`--test rc` 14/14、`--test tzroutine` 22/22、`--test mutable_slices` 10/10、`--test hash_map` 6/6、`--test maybe_result` 9/9、`--test types_ownership` 9/9、`--test borrowed_records` 21/21。`cargo test --locked --lib retention_tests`: 2 passed。
+- `cargo nextest run --locked`: 修正の途中で 2950 passed、1 failed（`borrowed_records::named_target_regions_keep_stored_borrows_alive`: 名前付き region を宣言した利用者の書き込み関数のパイプライン形が受理に変わっていたので、パイプライン形を組み込み関数と std の関数に限りました）。最後は 2951 passed、4 skipped（新しいテスト 9 件を含む）。
+- `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`: ok。
+- `node tests/features.mjs target/debug/tsuzuri hash_map`: 199 cases、`rc`: 39、`tzroutine`: 16、`parallel`: 36、`borrowed_records`: 57（native/WASM、-O0/-O3。tzroutine は native）。`node tests/tzroutine.mjs target/debug/tsuzuri`: 163 runs。`node scripts/conformance.mjs target/debug/tsuzuri --area OWN`: 30 ok、`--area TSK`: 21 ok。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs`（lambda-expressions.md・lifetimes.md・rc.md・borrowing.md・tzroutine.md）: 5 pages、142 links、56 examples、106 native runs ok（lifetimes.md は最後の変更の後にもう一度: 1 page、11 links、6 examples、12 native runs ok）。`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`: 19 blocks、0 stale。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-cli-docs.mjs`: 4 checks、0 failed。`node scripts/check-guide-lite.mjs`: 88 references、0 failed。
