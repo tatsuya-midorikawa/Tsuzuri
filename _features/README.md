@@ -152,6 +152,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A28 | [関数を含む型の呼び出し結果が `ref` 引数の借用をすべて持つとみなされる（`HashMap.remove` と、関数の `Arc` の `Arc.share` が誤って `E1013`）](A28-function-results-retain-ref-arguments.md) | P1 | M | C09, TZ02 | todo |
 | A29 | [印を持つ dyn 型を型引数にした組み込み関数の LLVM シンボルが不正になる（`Channel<dyn (C, Send)>` がビルドできない）](_completed/A29-dyn-marker-builtin-symbols.md) | P1 | S | A14, TZ03 | done（組み込み関数の引用符なしのシンボルは dyn 型の印の `+` を `$P` と綴る。`Channel<dyn (C, Send)>`・`Vec<dyn (C, Copy)>`・`dyn C {r}` の `Vec` が native と WebAssembly でビルドできる。型の綴りは純粋な関数型を `pure.fn[…]` と綴り、`Box<i64 -> i64>` と `Box<pure (i64 -> i64)>` の型名・組み込み関数の具体化が衝突しない。引数規約だけが違う関数型は生成コード上の 1 つの型（`codegen_identity`）で、型名・具体化・vtable・helper・ユーザーの drop を共有する。型引数に印も純粋な関数型も持たないプログラムの綴りは変わらず、引数規約を持つ関数型を型引数に持つプログラムでは定義の並びが変わることがある） |
 | A30 | [借用を持つ関数値から `Owned.function` を作れてしまい、`Routine.go` などで解放後の読み出しになる](A30-owned-function-from-borrowing-value.md) | P0 | S | TZ02, TZ05, TZ06 | todo |
+| A32 | [規約 `[Read]`・`[Mut]` の関数型が期待される位置へ、引数を `ref T`・`ref mut T` と注釈したラムダを直接書くと `E1003` になる（`if n > 0 then text_length else \(text: ref string) -> …`）](A32-annotated-reference-lambda-under-conventions.md) | P2 | S | A18 | todo |
 
 ### B. エラー処理・制御
 
