@@ -688,3 +688,117 @@ fn answer = (norm (Point { x: 3.0, y: 4.0 })) as i64
     assert!(ir.contains("%tz.record.Main.Point = type { double, double }"));
     assert!(!ir.contains("%\"tz.record."));
 }
+
+/// Each `@tz.fn.…` function that `ir` calls is defined in it.
+fn assert_called_functions_are_defined(ir: &str) {
+    for (index, _) in ir.match_indices("call ") {
+        let line = ir[index..].lines().next().unwrap();
+        let Some(start) = line.find("@tz.fn.") else {
+            continue;
+        };
+        let name = &line[start..start + line[start..].find('(').unwrap()];
+        assert!(
+            ir.lines()
+                .any(|line| line.starts_with("define ") && line.contains(&format!("{name}("))),
+            "{name} is called but not defined"
+        );
+    }
+}
+
+/// A29: the convention variants of a Drop type drop through their codegen identity. In edition
+/// 2026 a `pure def` reads its `string`, so `Guard`'s argument is a function type with the
+/// convention `[Read]`, and no type in the program names the variant without it. The helpers keyed
+/// by the identity drop the identity: the vtable's drop, the `Vec` builtins, and the recursive
+/// union's drop; each calls the user drop, which `user_drops` holds under the variant.
+#[test]
+fn convention_variants_of_drop_types_drop_through_their_identity() {
+    let module = accepts(
+        "record Guard<'a> { weight: i64, call: 'a }
+union Chain<'a> = | End | Link of 'a * Chain<'a>
+instance Drop<Guard<'a>> {
+    fn drop _guard = ()
+}
+instance Display<Guard<'a>> {
+    fn display _guard = \"guard\"
+}
+pure def text_length :: string -> i64
+fn text_length text = text.length
+def shown {r} :: ref {r} i64 -> dyn Display {r}
+fn shown _side = Dyn.of (Guard { weight: 1, call: text_length })
+def answer :: i64 -> i64
+fn answer n =
+    let side = n
+    let d = shown (ref side)
+    let mut guards = Vec.empty()
+    guards = Vec.push (Guard { weight: 2, call: text_length }) guards
+    guards = Vec.push (Guard { weight: 3, call: text_length }) guards
+    guards = Vec.remove_at 0 guards
+    let read = guards[0].call \"abcd\"
+    let guards = Vec.clear guards
+    let _chain = Link (Guard { weight: 4, call: text_length }, End)
+    let shared = Rc.new (Link (Guard { weight: 5, call: text_length }, End))
+    (Display.display (ref d)).length * 1000 + read * 100 + Vec.length (ref guards) * 10 + Rc.strong_count (ref shared)
+answer 3
+",
+    );
+    for target in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Console, target).unwrap();
+        for helper in [
+            "void @\"tz.dyn.drop[Main.Guard[pure.fn[ref[string]->i64]]]\"(",
+            "%tz.vec @tz.builtin.Vec.clear.Main.Guard$Lpure.fn$Lref$Lstring$R$Ai64$R$R(",
+            "%tz.vec @tz.builtin.Vec.__splice.Main.Guard$Lpure.fn$Lref$Lstring$R$Ai64$R$R(",
+            "void @\"tz.drop.rec.Main.Chain[Main.Guard[pure.fn[ref[string]->i64]]]\"(",
+        ] {
+            let start = ir
+                .find(&format!("define internal {helper}"))
+                .unwrap_or_else(|| panic!("{helper} is defined"));
+            let body = &ir[start..start + ir[start..].find("\n}\n").unwrap()];
+            assert!(
+                body.contains(".drop.$mono."),
+                "{helper} calls the user drop"
+            );
+        }
+        assert_called_functions_are_defined(&ir);
+    }
+}
+
+/// A29: when only bench code names the variant of a Drop type without conventions, its drop is
+/// emitted only by the bench runner, so the helpers of the other variant, keyed by that identity,
+/// call the drop of a variant that the program emits.
+#[test]
+fn identity_drops_are_emitted_drops() {
+    let module = tsuzuri::analyze_with_edition(
+        "record Guard<'a> { weight: i64, call: 'a }
+instance Drop<Guard<'a>> {
+    fn drop _guard = ()
+}
+def text_length :: string -> i64
+fn text_length text = text.length
+bench \"plain\" = \\n ->
+    let guard: Guard<ref string -> i64> = Guard { weight: 7, call: \\(text: ref string) -> text.length }
+    guard.call \"abc\" + n
+def answer :: own i64 -> i64
+fn answer n =
+    let mut guards = Vec.empty()
+    Vec.push (Guard { weight: 1, call: text_length }) guards
+    let read = guards[0].call \"abcde\" + n
+    let guards = Vec.clear guards
+    read + Vec.length (ref guards)
+answer 3
+",
+        tsuzuri::syntax::Edition::E2027,
+    )
+    .unwrap();
+    assert_eq!(module.user_drops.len(), 2);
+    assert_eq!(module.bench_drops.len(), 1);
+    for entry in [llvm::Entry::Console, llvm::Entry::BenchRunner] {
+        let ir = llvm::emit(&module, entry).unwrap();
+        assert_eq!(ir, llvm::emit(&module, entry).unwrap());
+        // The bench runner emits the benches alone.
+        assert_eq!(
+            ir.contains("define internal %tz.vec @tz.builtin.Vec.clear.Main.Guard$Lfn$Lref$Lstring$R$Ai64$R$R("),
+            entry == llvm::Entry::Console
+        );
+        assert_called_functions_are_defined(&ir);
+    }
+}

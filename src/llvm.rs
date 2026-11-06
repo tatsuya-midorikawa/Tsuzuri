@@ -1950,6 +1950,7 @@ fn emit_program_in(
         range_flags,
         strings: string_form,
         overflow: crate::overflow::active().map(overflow_emit::Report::new),
+        user_drops: std::rc::Rc::new(identity_drops(module, &emitted)),
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -2750,6 +2751,8 @@ struct Globals {
     /// The values of the deferred shared blocks that the program drops, with whether they
     /// count atomically (C10).
     shared_types: BTreeSet<(Type, bool)>,
+    /// The user drop of each Drop type's `codegen_identity`, `identity_drops` (A29).
+    user_drops: std::rc::Rc<BTreeMap<Type, usize>>,
     /// User functions the program hands to the host as C function pointers.
     callbacks: BTreeSet<usize>,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
@@ -2811,6 +2814,7 @@ impl Default for Globals {
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
             shared_types: BTreeSet::new(),
+            user_drops: std::rc::Rc::default(),
             callbacks: BTreeSet::new(),
             coverage: None,
             seed: None,
@@ -3786,6 +3790,28 @@ pub(crate) fn codegen_identity(ty: &Type) -> Type {
     let mut ty = ty.clone();
     erase(&mut ty);
     ty
+}
+
+/// `CheckedModule::user_drops` by `codegen_identity` (A29). Specialization keys `user_drops` by the
+/// Drop types that the specialized functions hold, conventions included, so an identity is a key
+/// there only when a variant without conventions occurs; but the helpers keyed by identity
+/// (builtin instances, vtables, the recursive and shared helpers) drop identity types. The variants
+/// have one layout and one calling convention, so the drop of any of them serves. The first one
+/// in key order that the program emits is the one, so the choice is deterministic and its function
+/// is defined: outside the bench runner, a drop that only bench code holds is not emitted (G18).
+/// A program without convention variants has one variant per identity, whose drop stays the one.
+fn identity_drops(module: &CheckedModule, emitted: &[bool]) -> BTreeMap<Type, usize> {
+    let mut drops = BTreeMap::new();
+    for (ty, &drop) in &module.user_drops {
+        let identity = codegen_identity(ty);
+        if drops
+            .get(&identity)
+            .is_none_or(|&chosen: &usize| !emitted[chosen] && emitted[drop])
+        {
+            drops.insert(identity, drop);
+        }
+    }
+    drops
 }
 
 /// The injective Tsuzuri spelling of a concrete type's `codegen_identity`, used in LLVM type
@@ -6421,10 +6447,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     /// Runs `Drop.drop` on `value` in a slot and reads the value back, since `drop` takes
-    /// `ref mut` and its fields drop afterwards.
+    /// `ref mut` and its fields drop afterwards. The drop is found by `ty`'s codegen identity
+    /// (A29), since the helpers keyed by identity drop identities that `user_drops` may not hold;
+    /// a `ty` without parameter conventions is its own identity, and the lookup by `ty` first
+    /// saves the clone.
     pub(super) fn call_user_drop(&mut self, ty: &Type, value: &str) -> String {
         let module = self.module;
-        let function = &module.functions[module.user_drops[ty]];
+        let drops = &self.globals.user_drops;
+        let id = match drops.get(ty) {
+            Some(id) => *id,
+            None => drops[&codegen_identity(ty)],
+        };
+        let function = &module.functions[id];
         let slot = self.spill(ty, value);
         self.instruction(format!(
             "call {} @tz.fn.{}(ptr {slot})",
@@ -8248,6 +8282,7 @@ fn emit_typed_builtin(
         spawns: shared_globals.spawns,
         waits: shared_globals.waits,
         tzroutine: shared_globals.tzroutine,
+        user_drops: std::rc::Rc::clone(&shared_globals.user_drops),
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();

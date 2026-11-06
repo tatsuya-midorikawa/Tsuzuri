@@ -2045,6 +2045,13 @@ const suites = {
       // "abc".length 3: the chain sums 3 or 30 + 3, the Rc gives 3 or 300, "boxed!".length 6 twice, boxes[1] 3000 (A29)
       ["convention_instances", [1n], 3n + 3n * 10000n + 12n * 1000000n + 3000n * 100000000n],
       ["convention_instances", [-1n], 33n + 300n * 10000n + 12n * 1000000n + 3000n * 100000000n],
+      // guard_drops reads "abc".length 3, "guard".length 5, the counter 1 + n, "abcdef".length 6, no holders, and one
+      // Rc; the channel's Box reads "abcdefghi".length 9; the eight Guards add 1 + 10 + ... + 10^7 to the tally (A29)
+      ...[2n, -3n].map((n) => [
+        "convention_drops",
+        [n],
+        (3n + 5n * 10n + (1n + n) * 100n + 6n * 10000n + 1000000n + 9n * 10000000n) * 100000000n + 11111111n,
+      ]),
     ],
     inspect(ir, header) {
       assert.doesNotMatch(header, /Pair|Box|Wrap/);
