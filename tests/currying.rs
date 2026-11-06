@@ -308,6 +308,15 @@ fn a_pipeline_into_a_unary_function_uses_its_facts() {
             rejects_with_kind(&source, "E1013", "task_result_retains_borrow");
         }
     }
+    // A closed result serves a pipeline only where every store is tracked: here a lock callback
+    // stores a closure that borrows `text` with `Array.write` (A31), which `closed_returns` cannot
+    // see, so the pipeline keeps the borrow of `text`, as before A28. (The direct call keeps the
+    // rule of `main`, which A31 fixes.)
+    rejects_with_kind(
+        "def stash :: ref string -> (unit -> i64)\nfn stash text =\n    let m = Mutex.create [\\() -> 0]\n    Mutex.with_lock (ref m) (\\slot -> Array.write 0 (\\() -> String.length text) slot)\n    let arr = Mutex.into_inner m\n    arr[0]\ndef leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    ref text |> stash\nlet f = leak 123456789\nf ()",
+        "E1013",
+        "borrow_outlives_block",
+    );
 }
 
 /// A28 review: in the abstract body of a generic function, a value of type `'v` has no loans,

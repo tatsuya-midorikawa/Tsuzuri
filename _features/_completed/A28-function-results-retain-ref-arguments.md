@@ -548,3 +548,11 @@ A30 のブランチ（`fix/a30-owned-function-borrow`、`03cb108e`）の上に�
 - 文書: `docs/language.md` と `lifetimes.md` の「それを完成させるパイプライン」に `x |> f`（1 引数の関数）を足した。
 - 証拠（基準 = この修正の前のブランチ `2d96b53f` のバイナリ、`check --json` と `run -O0`/`-O3`）: v4〜v9・r7 の 344 個と、1 引数のパイプラインの 11 個のうち、違うのは 3 個だけです。`ref key |> make`（`pass`、generic な `pass`）が受理されて `42`、本体が何も書き込めない `make` への `ref text |> make` が受理されて `0`（どれも直接の形は基準でも受理）。ほかに、両方が受理し `-O0` の不定の値だけが違う A31 の穴 7 個（`h1`〜`h5_rc_get`・`h7_array_return`・`base_hole_array_return`）。パイプライン形の `keep_leak`（`4:16`）、書き込める場所を渡す本体（`9:16`）、`Array.write` のあるプログラム（`6:15`）は `E1013`/`task_result_retains_borrow`、`keep_tz` は `5:1` `task_capture_retains_borrow` のまま、直接の形と同じです。
 - 実行したコマンド: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`: ok。`cargo nextest run --locked`: 2980 passed（7 slow）、4 skipped。`node tests/features.mjs target/debug/tsuzuri rc`: 39 cases、`hash_map`: 199 cases。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs`（`lifetimes.md`）: ok。`node scripts/check-guide-lite.mjs`: 88 references、0 failed。
+
+### Copilot のレビュー（#100）への対応の検証で見つかったこと（2026-11-07）
+
+- **見つかったこと**: 1 引数の関数への `x |> f` が `piped_callee` の経路を通るようになると、その経路の `closed_returns`（結果が借用を持たない証明）でも loan を消す。追跡されない書き込み（A31）があるプログラムでは、`closed_returns` は lock のコールバックが `Array.write` で書き込んだものを見落とすので、`ref text |> stash`（`stash` は `Mutex.with_lock` の中で `text` を借りる閉包を書き込む）のような A31 の 8 個の形が、`main` と修正前のこの branch では拒否されていたのに受理された（`-O0` と `-O3` で値が違う。解放後の読み出し）。同じ形の直接の呼び出し `stash (ref text)` は、`main` でも受理される（A31 の既知の不具合）。
+- **判断**: パイプラインの経路で `closed_returns` の証明を使うのは、プログラム全体の条件（`Lending::untracked` が偽、追跡されない書き込みが無い）が成り立つときだけにした。追跡されない書き込みの無いプログラムでは、パイプラインと直接の呼び出しは完全に同じに振る舞う。追跡されない書き込みのあるプログラムでは、パイプラインは A28 より前と同じく loan を保つ（`main` と同じ）。直接の呼び出しの `closed_returns` は `main` の規則なので変えない（追跡されない書き込みのあるプログラムで門にすると、`main` が受理する安全なプログラムまで拒否しうる）。直接の呼び出しの穴は A31 が直す。
+- **テスト**: `tests/currying.rs` の `a_pipeline_into_a_unary_function_uses_its_facts` に、`ref text |> stash` の拒否（`E1013`、`borrow_outlives_block`）を足した。門を外すと失敗する。
+- **文書**: `docs/architecture.md` のパイプラインの規則（`x |> f` と、`closed_returns` の門）。
+- **残る、A28 と関係しない違い**（`main` でも同じ）: 参照の型の結果の `closed_returns`（`fn wrap k = ref k |> nothing` は拒否、`nothing (ref k)` は受理）、`ref mut b |> take` と `take (ref mut b)` の診断の違い、`ref (Stash {..}) |> observe` の `borrow_of_temporary`。どれも拒否する側か診断の違いで、このチケットの範囲外。
