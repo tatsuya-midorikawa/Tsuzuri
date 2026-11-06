@@ -496,10 +496,11 @@ fn check_body<'a>(
         let mut value = Value::default();
         // An `Owned.Function` holds no borrow: `Owned.function` rejects an argument that holds one
         // (A30), and its representation is opaque, so nothing else makes one. A parameter of that
-        // type, or a capture of one, lends the caller's nothing; an owned lambda or a tzroutine
-        // body may then capture it, as `ErrGroup.start` does.
+        // type, or of a record, tuple, container or union that can hold borrows only in owned
+        // functions, or a capture of one, lends the caller's nothing; an owned lambda or a
+        // tzroutine body may then capture it, as `ErrGroup.start` does.
         let types = module.types();
-        if !task && parameter.ty.carries_loans(&types) && !parameter.ty.is_owned_function(&types) {
+        if !task && parameter.ty.carries_loans_beside_owned_functions(&types) {
             checker.external_loans(parameter, index, contract.slots, &mut value);
         }
         checker
