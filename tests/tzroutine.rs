@@ -107,6 +107,61 @@ fn checks_the_body_and_the_captures() {
     rejects("const C: unit = tzroutine { () }\n0\n", "E1026");
 }
 
+fn rejects_with_kind(source: &str, code: &str, kind: &str) {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, code, "{source}\n{}", error.message);
+    assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
+}
+
+/// A28: a tzroutine may capture an `Arc.share` of a function, as it may one of any other value;
+/// the share holds the borrows of the function's environment, not a borrow of `shared`.
+#[test]
+fn a_tzroutine_captures_a_share_of_a_function() {
+    accepts(
+        "let shared = Arc.new (\\value -> value + 1)\nlet mine = Arc.share (ref shared)\ntzroutine {\n    let _n = Arc.strong_count (ref mine)\n}\n0\n",
+    );
+    accepts(
+        "let shared = Arc.new (\\value -> value + 1)\nlet mine = Arc.share (ref shared)\ntzroutine {\n    let _n = (deref (Arc.get (ref mine))) 41\n}\n(deref (Arc.get (ref shared))) 1\n",
+    );
+    accepts(
+        "let shared = Arc.new (\\value -> value + 1)\nlet weak = Arc.downgrade (ref shared)\ntzroutine {\n    let _n = Arc.weak_count (ref shared)\n}\nmatch Arc.upgrade (ref weak) with\n    | Maybe.Some strong -> (deref (Arc.get (ref strong))) 1\n    | Maybe.None -> 0\n",
+    );
+    const BORROWING: &str = "let text = \"abc\"\nlet borrowed = ref text\nlet shared = Arc.new (\\() -> String.length borrowed)\n";
+    for capture in [
+        "let mine = Arc.share (ref shared)\ntzroutine {\n    let _n = Arc.strong_count (ref mine)\n}\n0\n",
+        "tzroutine {\n    let _n = Arc.strong_count (ref shared)\n}\n0\n",
+        "let h = deref (Arc.get (ref shared))\ntzroutine {\n    let _n = h ()\n}\n0\n",
+        "let weak = Arc.downgrade (ref shared)\ntzroutine {\n    let _strong = Arc.upgrade (ref weak)\n}\n0\n",
+    ] {
+        rejects_with_kind(
+            &format!("{BORROWING}{capture}"),
+            "E1013",
+            "task_capture_retains_borrow",
+        );
+    }
+    // A28 review: a share of a borrowing function made through a borrow of the owner, and the
+    // pipeline form, still hold the environment's borrow (not a move of a reborrowed value).
+    for capture in [
+        "let r = ref shared\nlet mine = Arc.share r\ntzroutine {\n    let _n = Arc.strong_count (ref mine)\n}\n0\n",
+        "let mine = ref shared |> Arc.share\ntzroutine {\n    let _n = Arc.strong_count (ref mine)\n}\n0\n",
+    ] {
+        rejects_with_kind(
+            &format!("{BORROWING}{capture}"),
+            "E1013",
+            "task_capture_retains_borrow",
+        );
+    }
+    accepts(
+        "let shared = Arc.new (\\value -> value + 1)\nlet mine = ref shared |> Arc.share\ntzroutine {\n    let _n = Arc.strong_count (ref mine)\n}\n0\n",
+    );
+    // A user function that copies a function value out of a reference keeps the borrow.
+    rejects_with_kind(
+        "def copy_out :: ref (unit -> i64) -> (unit -> i64)\nfn copy_out f = deref f\nlet text = \"abc\"\nlet borrowed = ref text\nlet g = \\() -> String.length borrowed\nlet h = copy_out (ref g)\ntzroutine {\n    let _n = h ()\n}\n0\n",
+        "E1013",
+        "task_capture_retains_borrow",
+    );
+}
+
 #[test]
 fn tzroutine_module_functions() {
     accepts("Routine.yield ()\n0\n");

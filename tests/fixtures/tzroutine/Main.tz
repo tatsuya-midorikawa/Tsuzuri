@@ -123,3 +123,21 @@ fn counts =
     let procs = Routine.max_procs () >= 1i64
     let cpus = Routine.cpu_count () >= 1i64
     if alone && procs && cpus then 1 else 0
+
+// A28: each tzroutine captures a share of a function, as it captures a share of any other value;
+// the children add 2 * i + 1 for i = 0 .. n - 1.
+export def shares_a_function :: i64 -> i64
+fn shares_a_function n =
+    let step = Arc.new (\value -> value * 2 + 1)
+    let total = Arc.new (Atomic.create 0i64)
+    let done = Arc.new (Atomic.create 0i64)
+    for i in 0 ..< n do
+        let f = Arc.share (ref step)
+        let mine = Arc.share (ref total)
+        let finished = Arc.share (ref done)
+        tzroutine {
+            let _sum = Atomic.fetch_add (Arc.get (ref mine)) ((deref (Arc.get (ref f))) i)
+            let _count = Atomic.fetch_add (Arc.get (ref finished)) 1i64
+        }
+    wait_for (ref done) n
+    Atomic.load (Arc.get (ref total))

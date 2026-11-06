@@ -121,6 +121,48 @@ fn hash_lookup_and_updates_use_only_required_constraints() {
     }
 }
 
+fn rejects_with_kind(source: &str, code: &str, kind: &str) {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, code, "{source}\n{}", error.message);
+    assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
+}
+
+/// A28: the key that `HashMap.remove` borrows reaches only `hash_of` and `probe`, which return
+/// integers, so the result holds no borrow of it, whatever the values are.
+#[test]
+fn removing_from_a_map_of_functions_does_not_borrow_the_key() {
+    for source in [
+        "let map = HashMap.insert 1 (\\() -> 42) (HashMap.empty())\nlet map = HashMap.remove 1 map\nHashMap.length (&map)",
+        "let map = HashMap.insert 2 (\\() -> 2) (HashMap.insert 1 (\\() -> 42) (HashMap.empty()))\nlet map = HashMap.remove 2 map\n(deref (HashMap.at 1 (&map))) () + HashMap.length (&map)",
+        "let map = HashMap.insert 1 (Owned.function (\\() -> 42)) (HashMap.empty())\nlet map = HashMap.remove 1 map\nHashMap.length (&map)",
+        "let f: i64 -> i64 = \\x -> x + 1\nlet map = HashMap.insert 1 (Maybe.Some f) (HashMap.empty())\nlet map = HashMap.remove 1 map\nHashMap.length (&map)",
+        "record Callback { run: unit -> i64 }\nlet map = HashMap.insert 1 (Callback { run: \\() -> 42 }) (HashMap.empty())\nlet map = HashMap.remove 1 map\nHashMap.length (&map)",
+        "let map = HashMap.insert \"a\" (\\() -> 42) (HashMap.empty())\nlet key = \"a\"\nlet map = HashMap.remove_ref (&key) map\nlet moved = key\nHashMap.length (&map) + moved.length",
+        "let map = HashMap.insert 1 (\\() -> 42) (HashMap.empty())\nlet key = 1\nlet map = HashMap.remove_ref (&key) map\ntzroutine {\n    let _n = HashMap.length (ref map)\n}\n0",
+        // A function that borrows `text` stays in a map that `text` outlives.
+        "let text = \"abc\"\nlet borrowed = ref text\nlet map = HashMap.remove 2 (HashMap.insert 1 (\\() -> String.length borrowed) (HashMap.empty()))\n(deref (HashMap.at 1 (&map))) ()",
+        "let set = HashSet.insert \"a\" (HashSet.empty())\nlet key = \"a\"\nlet set = HashSet.remove_ref (&key) set\nlet moved = key\nHashSet.length (&set) + moved.length",
+    ] {
+        accepts(source);
+    }
+    // The map still holds the borrows of the functions in it.
+    rejects_with_kind(
+        "def make :: unit -> HashMap<i64, unit -> i64>\nfn make _unit =\n    let text = \"abc\"\n    let borrowed = ref text\n    HashMap.remove 2 (HashMap.insert 1 (\\() -> String.length borrowed) (HashMap.empty()))\nlet map = make ()\nHashMap.length (&map)",
+        "E1013",
+        "borrow_outlives_block",
+    );
+    rejects_with_kind(
+        "let text = \"abc\"\nlet borrowed = ref text\nlet map = HashMap.remove 2 (HashMap.insert 1 (\\() -> String.length borrowed) (HashMap.empty()))\ntzroutine {\n    let _n = HashMap.length (ref map)\n}\n0",
+        "E1013",
+        "task_capture_retains_borrow",
+    );
+    rejects_with_kind(
+        "let text = \"abc\"\nlet borrowed = ref text\nlet map = HashMap.remove 2 (HashMap.insert 1 (\\() -> String.length borrowed) (HashMap.empty()))\nlet moved = text\nHashMap.length (&map) + moved.length",
+        "E1014",
+        "borrow_conflict",
+    );
+}
+
 #[test]
 fn seeded_hash_containers_and_borrowed_keys_type_check() {
     for source in [

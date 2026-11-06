@@ -329,3 +329,79 @@ fn parallel_chunks_lend_disjoint_exclusive_slices() {
         rejects(source, code, fragment);
     }
 }
+
+fn rejects_with_kind(source: &str, code: &str, kind: &str) {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, code, "{source}\n{}", error.message);
+    assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
+}
+
+/// A28 review: the check does not track what `Array.write`, and the std functions that write
+/// through it, store in the owner of the target (A31). A function whose body lends an exclusive
+/// borrow to a call therefore gets no facts: its result keeps every argument's loans, as before
+/// A28, so `text` stays lent while `leak`'s result lives. Without that, `stash` stored a function
+/// that borrows `text`, which `leak` frees, and the call `f ()` read freed memory. The A30 tip
+/// rejects each program at the same place with the same kind.
+#[test]
+fn a_function_that_writes_in_place_keeps_its_arguments_loans() {
+    for write in [
+        "Array.write 0 (\\() -> String.length text) (ref mut arr)",
+        "Array.set 0 (\\() -> String.length text) (ref mut arr)",
+        "Array.fill 0 1 (\\() -> String.length text) (ref mut arr)",
+        "Array.write 0 (\\() -> String.length text) (ref mut arr[0..1])",
+        "ref mut arr |> Array.write 0 (\\() -> String.length text)",
+        "Array.blit 0 0 1 [\\() -> String.length text] (ref mut arr)",
+    ] {
+        let stash = format!(
+            "def stash :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn stash text g =\n    let mut arr = [g]\n    {write}\n    arr[0]\n"
+        );
+        rejects_with_kind(
+            &format!(
+                "{stash}def leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    stash (ref text) (\\() -> 1)\nlet f = leak 123456789\nf ()\n"
+            ),
+            "E1013",
+            "borrow_outlives_block",
+        );
+        // While `text` lives, the result may hold its borrow.
+        accepts(&format!(
+            "{stash}let text = to_string 123456789\nlet f = stash (ref text) (\\() -> 1)\nf ()\n"
+        ));
+    }
+    // A function that only passes the borrow to a writer that keeps it lends it too.
+    rejects_with_kind(
+        "def helper :: ref string -> (unit -> i64)\nfn helper text =\n    let mut a = [\\() -> 0]\n    Array.write 0 (\\() -> String.length text) (ref mut a)\n    a[0]\ndef stash :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn stash text _g = helper text\ndef leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    stash (ref text) (\\() -> 1)\nlet f = leak 123456789\nf ()\n",
+        "E1013",
+        "borrow_outlives_block",
+    );
+    // A callback that writes into the exclusive borrow that its caller lends it.
+    rejects_with_kind(
+        "def with_local :: own (ref mut [(unit -> i64)..] -> unit) -> (unit -> i64)\nfn with_local w =\n    let mut a = [\\() -> 0]\n    w (ref mut a)\n    a[0]\ndef stash :: ref string -> (unit -> i64)\nfn stash text = with_local (\\slot -> Array.write 0 (\\() -> String.length text) slot)\ndef leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    stash (ref text)\nlet f = leak 123456789\nf ()\n",
+        "E1013",
+        "borrow_outlives_block",
+    );
+}
+
+/// A28 review: programs that main accepts and that the attempt to track the in-place writes on
+/// this branch (now A31) rejected: std writers on reference elements, generic writers of the
+/// program (also with a declared region, or `ref 'a` elements), writers without type variables,
+/// `MatrixView`'s writers and wrappers of them, and partial applications. A28 leaves them as main
+/// has them.
+#[test]
+fn in_place_writes_that_main_accepts_stay_accepted() {
+    for source in [
+        "let a = 1\nlet b = 2\nlet mut arr = [ref a]\nArray.set 0 (ref b) (ref mut arr)\nderef arr[0]\n",
+        "let a = 1\nlet b = 2\nlet c = 3\nlet mut arr = [ref a, ref b]\nArray.fill 0 1 (ref c) (ref mut arr)\nref mut arr |> Array.set 1 (ref c)\nderef arr[0] + deref arr[1]\n",
+        "def pick :: ref i64 -> ref i64 -> i64\nfn pick a b =\n    let mut arr = [a]\n    Array.set 0 b (ref mut arr)\n    deref arr[0]\nlet x = 1\nlet y = 7\npick (ref x) (ref y)\n",
+        "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.write 0 x arr\nlet base = 5\nlet mut a = [\\() -> 1]\nput (\\() -> 9) (ref mut a)\nref mut a |> put (\\() -> base)\nlet p = 1\nlet q = 2\nlet mut refs = [ref p]\nput (ref q) (ref mut refs)\na[0] () + deref refs[0]\n",
+        "def g {r} :: own 'a -> ref mut {r} ['a..] -> unit\nfn g x d = Array.write 0 x d\nlet base = 4\nlet mut data = [\\() -> 1]\ng (\\() -> base) (ref mut data)\ndata[0] ()\n",
+        "def put :: ref 'a -> ref mut [ref 'a..] -> unit\nfn put x arr = Array.write 0 x arr\nlet p = 1\nlet q = 2\nlet mut a = [ref p]\nput (ref q) (ref mut a)\nderef a[0]\n",
+        "def store {s} :: ref {s} string -> ref mut {s} [ref {s} string..] -> unit = \\x arr -> Array.write 0 x arr\nlet a = \"ab\"\nlet b = \"cde\"\nlet mut arr = [ref a]\nstore (ref b) (ref mut arr)\narr[0].length\n",
+        "def put :: own (unit -> i64) -> ref mut [(unit -> i64)..] -> unit\nfn put f target = Array.write 0 f target\nlet base = 4\nlet mut arr = [\\() -> 1]\nput (\\() -> base) (ref mut arr)\narr[0] ()\n",
+        "def rotate :: ref mut [(unit -> i64)..] -> unit\nfn rotate arr =\n    let second = arr[1]\n    Array.write 0 second arr\nlet mut a = [\\() -> 1, \\() -> 2]\nrotate (ref mut a)\na[0] ()\n",
+        "def g {r} :: own 'a -> ref mut MatrixView.Mut<'a> {r} -> unit\nfn g x m = MatrixView.write 0 0 x m\nlet a = 1\nlet b = 2\nlet base = 4\nlet mut data = [\\() -> 1, \\() -> 2]\nlet mut grid = MatrixView.of_array_mut 1 2 (ref mut data)\ng (\\() -> base) (ref mut grid)\nlet mut cells = [ref a, ref a]\nlet mut row = MatrixView.of_array_mut 1 2 (ref mut cells)\ng (ref b) (ref mut row)\ndata[0] () + deref cells[0]\n",
+        "let base = 1000\nlet source = [\\() -> 7, \\() -> 8]\nlet mut data = [\\() -> 1, \\() -> 2]\nlet mut grid = MatrixView.of_array_mut 1 2 (ref mut data)\nMatrixView.write 0 1 (\\() -> 20) (ref mut grid)\nMatrixView.fill (\\() -> base) (ref mut grid)\nMatrixView.copy_from (MatrixView.of_array 1 2 source) (ref mut grid)\nMatrixView.map_in_place (\\f -> \\() -> f () + 1) (ref mut grid)\nref mut grid |> MatrixView.write 0 0 (\\() -> base)\ndata[0] () + data[1] ()\n",
+        "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.write 0 x arr\nlet f = put (\\() -> 1)\nlet mut a = [\\() -> 2]\nf (ref mut a)\nlet w = Array.set 0 (\\() -> 5)\nw (ref mut a)\na[0] ()\n",
+    ] {
+        accepts(source);
+    }
+}

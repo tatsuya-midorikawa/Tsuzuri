@@ -247,3 +247,88 @@ fn trap_chunk_size =
     let mut values: [i64] = [1, 2, 3]
     Parallel.for_each_chunk 0 (\_start chunk -> Array.write 0 1 chunk) (ref mut values)
     values[0]
+
+// Writes that main accepts and that tracking the in-place writes must keep (A31): std writers on
+// reference elements, a generic writer of the program on function and reference elements, and
+// MatrixView's writers on function elements, which hold no borrow or a borrow that outlives the
+// array.
+def pick_second :: ref i64 -> ref i64 -> i64
+fn pick_second first second =
+    let mut refs = [first]
+    Array.set 0 second (ref mut refs)
+    deref refs[0]
+
+export def reference_writes :: i64
+fn reference_writes =
+    let a = 1
+    let b = 2
+    let c = 3
+    let mut refs = [ref a, ref a, ref a]
+    Array.set 0 (ref b) (ref mut refs)
+    Array.fill 1 1 (ref c) (ref mut refs)
+    ref mut refs |> Array.set 2 (ref c)
+    let x = 4
+    let y = 7
+    let short = "ab"
+    let long = "cde"
+    let mut texts = [ref short, ref short, ref short]
+    Array.set 1 (ref long) (ref mut texts)
+    Array.fill 2 1 (ref long) (ref mut texts)
+    (deref refs[0]) * 100000 + (deref refs[1]) * 10000 + (deref refs[2]) * 1000 + pick_second (ref x) (ref y) * 100 + texts[0].length * 10 + texts[2].length
+
+def put_first :: own 'a -> ref mut ['a..] -> unit
+fn put_first value target = Array.write 0 value target
+
+def put_last_first :: ref mut ['a..] -> unit
+fn put_last_first target =
+    let last = target[target.length - 1]
+    Array.set 0 last target
+
+def rotate_first :: ref mut [(unit -> i64)..] -> unit
+fn rotate_first target =
+    let second = target[1]
+    Array.write 0 second target
+
+export def generic_writes :: i64
+fn generic_writes =
+    let base = 100
+    let mut functions = [\() -> 1, \() -> 2]
+    put_first (\() -> 9) (ref mut functions)
+    let first = functions[0] ()
+    ref mut functions |> put_first (\() -> base + 5)
+    let second = functions[0] ()
+    put_last_first (ref mut functions)
+    let third = functions[0] ()
+    let mut others = [\() -> 3, \() -> 4]
+    rotate_first (ref mut others)
+    let p = 1
+    let q = 2
+    let mut refs = [ref p]
+    put_first (ref q) (ref mut refs)
+    let mut numbers = [1]
+    put_first 5 (ref mut numbers)
+    first * 10000000 + second * 10000 + third * 1000 + others[0] () * 100 + (deref refs[0]) * 10 + numbers[0]
+
+export def matrix_writes :: i64
+fn matrix_writes =
+    let base = 1000
+    let source = [\() -> 7, \() -> 8, \() -> 9, \() -> 6]
+    let mut data = [\() -> 1, \() -> 2, \() -> 3, \() -> 4]
+    let mut grid = MatrixView.of_array_mut 2 2 (ref mut data)
+    MatrixView.write 0 1 (\() -> 20) (ref mut grid)
+    let written = data[1] ()
+    let mut whole = MatrixView.of_array_mut 2 2 (ref mut data)
+    MatrixView.fill (\() -> base) (ref mut whole)
+    let filled = data[0] () + data[3] ()
+    let mut again = MatrixView.of_array_mut 2 2 (ref mut data)
+    MatrixView.copy_from (MatrixView.of_array 2 2 source) (ref mut again)
+    let copied = data[0] () * 10 + data[3] ()
+    let mut last = MatrixView.of_array_mut 2 2 (ref mut data)
+    MatrixView.map_in_place (\f -> \() -> f () + 1) (ref mut last)
+    let mapped = data[0] () * 10 + data[3] ()
+    let a = 1
+    let b = 2
+    let mut cells = [ref a, ref a]
+    let mut row = MatrixView.of_array_mut 1 2 (ref mut cells)
+    ref mut row |> MatrixView.write 0 1 (ref b)
+    written * 1000000000 + filled * 100000 + copied * 1000 + mapped * 10 + deref cells[1]

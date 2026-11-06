@@ -171,6 +171,47 @@ even=2450 odd=2500 owners=1
 - `Rc` と `Arc` には排他参照 `ref mut` を入れられません（`E1005`）。`Rc<ref string>` のように共有参照を入れた値は、参照先より長く生きられません（`E1013`）。
 - `Rc` と `Arc` は公開 ABI（`export def`・`extern def`）に使えず（`E1008`）、const にもできません（`E1026`）。
 
+## 所有者を増やした値の借用
+
+`Rc.share`・`Rc.downgrade`・`Rc.upgrade`（`Arc` も同じ）の結果は、ブロックの新しい所有者（弱参照）です。引数の `ref shared` の借用は呼び出しの間だけで、結果は `shared` を借用しません。結果が借用を持つのは、ブロックの値が持つ借用（借用を捕捉した関数など）だけです。そのため結果を持ったまま `shared` をムーブ・解放でき、関数から結果を返せます。`Rc.get (ref shared)` や `ref shared` が生きている間も、結果をムーブできます。パイプライン `ref shared |> Rc.share` も同じです。`Rc.get` の結果は `shared` が指すブロックへの参照なので、`shared` の借用のままです。ただし、次の 5 つの場合、結果は `shared` の借用を持ちます。どれも、`Array.write` などや `Mutex.with_lock` のコールバックが書き込んだ借用を追跡できない（[現在の制限](../ownership-and-memory/lifetimes.md#現在の制限)）ので、`shared` の値が持つ借用が見えているとは限らないためです。主な条件は 1 つめで、2 つめ以降は、そうした書き込みのないプログラムにも念のため残している条件です。
+
+- 借用を持ちうる値（借用を捕捉した関数、参照など）を `Array.write` や、それで書き込む std の関数（`Array.set`・`Array.fill`・`Array.blit` など）で書き込む所が、プログラムのどこか（std の関数と、その中で作るラムダを含む。`SyncMap` の値の書き込みも数えます）にあるとき: プログラムのどの `Rc.share` なども、A28 より前と同じく `shared` の借用を持ちます。`i64` などの借用を持てない値の書き込みは数えません。書き込みを追跡する [A31](../../../_features/A31-in-place-writes-keep-stored-borrows.md) が入れば、この条件はなくなります。
+- `shared` の値が呼び出し元から来たもので、借用を持ちうる型のとき: 関数の引数、ラムダが捕捉した値、それらの値を受け取った局所値（`let a = arr`）や、その要素・フィールド（`ref arr[0]`）。引数の値が持つ借用は呼び出し元の値が持つものを表し、呼び出し元が書き込んだ借用を含まないことがあります。
+- 本体が、書き込める場所をほかのコードへ渡す関数の中（その中で作るラムダの本体を含み、そうしたラムダを作る関数も同じ）: 排他借用（`ref mut values`、`ref mut` の引数、それを持つ値）、借用を持ちうる値を入れた共有セル（`Mutex.with_lock (ref m) ...` の `ref m`、`Mutex` を持つ `Arc` やレコード。`RwMutex`・`OnceValue`・`SyncMap`・チャネルも同じ）、またはそれらを引数・結果に持つ関数値（`Mutex.with_lock (ref m) (put text)` の `put text : ref mut [T] -> unit`）を、呼び出し・パイプライン・演算子・ラムダの捕捉へ渡す関数です。`Atomic<i64>` や `Mutex<i64>` のように中身が借用を持てないセルは数えません。
+- 本体が、借用を持ちうる値を本体の見えないコードへ渡す関数の中（その中で作るラムダの本体を含み、そうしたラムダを作る関数も同じ）: 名前付き関数でない関数値の呼び出し（`w (\() -> String.length text)`）、dyn 値のメソッド、`Owned.call`、`Array.map`・`Mutex.with_lock`・`Parallel.*` などコールバックを実行する組み込み関数、そうしたコードへ渡す関数を関数値などと一緒に呼ぶことです。関数の型・dyn 型・`Owned.Function` は環境を表さないので、そのコードは受け取った値を、自分が捕捉した `Mutex` などへ入れられます（[共有借用の寿命](../values-and-functions/lambda-expressions.md#共有借用の寿命)）。借用を持つ引数を渡さない呼び出し（`t ()`）だけなら、読み通します。
+- 値を破棄すると追跡されない書き込みをしうるプログラムで、本体が、借用を持ち、破棄でコードを実行しうる値を受け取るか作る関数の中: 値の破棄は、本文に呼び出しを書かずにその値が持つ利用者の `Drop` 型の値の `Drop.drop` を実行し、プログラムのどれかの `Drop.drop`（`Drop.drop` の本体が `Mutex.with_lock` などのロックや捕捉した関数値の呼び出しで、値の中身を値の中の `Mutex` などへ入れうるとき）に当たります。破棄でコードを実行しうる値とは、利用者の `Drop` 型の値と、それを持ちうる関数値・dyn 値・`Owned.Function` を格納された値として持つ値です（[Drop とリソースの解放](../ownership-and-memory/drop.md#drop-型に課される制約)）。そのため、そうした `Drop.drop` があるプログラムでは、借用を捕捉した関数の `Rc` を共有した後で元をムーブすると `E1014` です。
+
+そのため次の `again` は、`shared` の借用を返すので `E1013` です（A28 より前と同じ）。関数の中で `Rc.new` した値の共有（次の例）は返せます。
+
+```text
+def again :: own Rc<i64 -> i64> -> Rc<i64 -> i64>
+fn again shared = Rc.share (ref shared)   // E1013: 結果は shared の借用を持つ
+```
+
+```tsuzuri run=42
+let shared = Rc.new (\value -> value + 1)
+let mine = Rc.share (ref shared)
+let moved = shared
+(deref (Rc.get (ref mine))) 40 + Rc.strong_count (ref moved) - 1
+```
+
+実行結果:
+
+```text
+42
+```
+
+ブロックの値が借用を持つときは、結果もその借用を持ちます。次の `mine` は `text` を借用する関数を共有するので、`text` より長く生きられず、`text` のムーブや、`mine` を捕捉する tzroutine は `E1013`・`E1014` のままです。
+
+```text
+let text = "abc"
+let borrowed = ref text
+let shared = Arc.new (\() -> String.length borrowed)
+let mine = Arc.share (ref shared)
+let moved = text       // E1014: mine は text の借用を持つ
+Arc.strong_count (ref mine) + moved.length
+```
+
 ## 循環と解放
 
 `Rc` と `Arc` の値は、共有されている間は変更できないので、値ができる前にその値を指す `Rc`・`Arc` は作れません。`Rc` と `Arc` だけでは循環は作れず、参照カウントの循環による解放漏れも起きません。循環するグラフは [Arena](./arena.md) とハンドルでも表せます。

@@ -707,6 +707,17 @@ impl Type {
         matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && types.records[*id].name == "Owned.Function")
     }
 
+    /// Whether a type variable or an unsolved type occurs in the type: a value of it may hold
+    /// borrows that `carries_loans` does not see until the type is specialized (A28).
+    pub(crate) fn contains_unknown(&self) -> bool {
+        let mut unknown = false;
+        polymorph::map_type(self, &mut |ty| {
+            unknown |= polymorph::is_unknown(ty);
+            ty.clone()
+        });
+        unknown
+    }
+
     /// A record or union with a user `Drop` instance, whatever its type arguments (B07).
     pub(crate) fn has_user_drop(&self, types: &TypeContext<'_>) -> bool {
         match self {
@@ -720,6 +731,23 @@ impl Type {
     /// stores (not through a reference) has one.
     pub(crate) fn holds_user_drop(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all(self, |part| !part.has_user_drop(types))
+    }
+
+    /// A28: whether destroying a value of this type may run code that the body which drops it
+    /// does not show: the type, or a type that it stores (not through a reference), runs code when
+    /// it is dropped (`runs_on_drop`).
+    pub(crate) fn drop_runs_code(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |part| !part.runs_on_drop(types))
+    }
+
+    /// Whether destroying a value of this type itself, beside what it stores, may run code: a
+    /// user `Drop` instance, a function value or a tzroutine body (its environment may hold a
+    /// value with one), an `Owned.Function`, or a dyn value (its drop is the vtable's). A type
+    /// variable counts as none.
+    pub(crate) fn runs_on_drop(&self, types: &TypeContext<'_>) -> bool {
+        self.has_user_drop(types)
+            || self.is_owned_function(types)
+            || matches!(self, Self::Function(..) | Self::Dyn(_) | Self::Once(_))
     }
 
     /// The function that `for x in ch` receives with and the item type, when `ch` is the std
@@ -870,6 +898,83 @@ impl Type {
             self,
             |ty| matches!(ty, Type::Record(id, _) if types.records[*id].exclusive_regions != 0),
         )
+    }
+
+    /// A28: a std type whose contents a builtin writes through a shared reference to it, while
+    /// the contents may hold a borrow (a type argument carries loans). The audit of the builtins
+    /// of `Builtin` and of `std/` found these: `Mutex.with_lock` and `Cond.wait_with` lend
+    /// `ref mut` of a `Mutex`'s contents to a callback, `RwMutex.with_write` that of an
+    /// `RwMutex`'s, `OnceValue.get` stores the callback's result, `Atomic.store` and its kin write
+    /// the value, `SyncMap.store` and its kin insert into the `RwMutex` that a `SyncMap` holds, and
+    /// `Channel.send`, `SendOnly.send`, `DataChannel.send` and the `ErrGroup` (which holds a
+    /// `Channel` and a `Mutex`) queue an item that a receive gives back. Every other std type is
+    /// written only through `ref mut` or by value: `Rc`, `Arc` and their weak pointers have no
+    /// writer (`Rc.get` lends `ref`), and `Cond`, `WaitGroup`, `Once`, `Semaphore`, `Timer`,
+    /// `Ticker`, `Context` (whose `after_func` keeps an `Owned.Function`, which holds no borrow)
+    /// and the handles of `File`, `Net` and `Process` hold no value of the program that can carry
+    /// a loan. A contents type that carries no loans (`Atomic<i64>`, `Mutex<i64>`) cannot hide a
+    /// borrow, and a type variable counts as none, as in `reaches_exclusive`: an abstract body's
+    /// facts only infer Copy constraints, and each instance is checked with concrete types.
+    pub(crate) fn is_mutable_cell(&self, types: &TypeContext<'_>) -> bool {
+        matches!(self, Self::Record(id, arguments)
+            if types.records[*id].origin == ModuleOrigin::Std
+                && matches!(
+                    types.records[*id].name.as_str(),
+                    "Mutex.Mutex"
+                        | "RwMutex.RwMutex"
+                        | "OnceValue.OnceValue"
+                        | "Atomic.Atomic"
+                        | "SyncMap.SyncMap"
+                        | "Channel.Channel"
+                        | "SendOnly.SendOnly"
+                        | "ReceiveOnly.ReceiveOnly"
+                        | "DataChannel.Sender"
+                        | "DataChannel.Receiver"
+                        | "ErrGroup.ErrGroup"
+                )
+                && arguments.iter().any(|argument| argument.carries_loans(types)))
+    }
+
+    /// A28: whether code that receives a value of this type may write into a place that the giver
+    /// reaches, so that a store that the ownership check does not track (A31) lands where the
+    /// giver's values can read it. That needs an exclusive reference (a `ref mut`, or a record
+    /// with exclusive regions such as `MatrixView.Mut`) or a mutable cell (`is_mutable_cell`),
+    /// reached through stored values, the targets of references, the contents of `Rc`, `Arc` and
+    /// their weak pointers, and the parameter and result types of function types (and the result
+    /// of a tzroutine body): a callback `put text : ref mut [T] -> unit` is a writer although its
+    /// own value holds no exclusive borrow. Each function type is walked once.
+    pub(crate) fn lends_mutable(&self, types: &TypeContext<'_>) -> bool {
+        let functions = std::cell::RefCell::new(Vec::new());
+        let reaches = |root: &Type| {
+            types.reaches(root, |ty| {
+                match ty {
+                    Type::Function(parameters, result) => functions
+                        .borrow_mut()
+                        .extend(parameters.iter().chain([&**result]).cloned()),
+                    Type::Once(result) => functions.borrow_mut().push((**result).clone()),
+                    _ => {}
+                }
+                matches!(ty, Type::Reference(_, true))
+                    || matches!(ty, Type::Record(id, _) if types.records[*id].exclusive_regions != 0)
+                    || ty.is_mutable_cell(types)
+            })
+        };
+        if reaches(self) {
+            return true;
+        }
+        let mut seen = BTreeSet::new();
+        loop {
+            let next = functions.borrow_mut().pop();
+            let Some(ty) = next else {
+                return false;
+            };
+            if !seen.contains(&ty) {
+                if reaches(&ty) {
+                    return true;
+                }
+                seen.insert(ty);
+            }
+        }
     }
 
     pub(crate) fn can_capture(&self, types: &TypeContext<'_>) -> bool {

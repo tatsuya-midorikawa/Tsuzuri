@@ -313,3 +313,41 @@ export def hash_capacity_huge :: i64
 fn hash_capacity_huge =
     let map: HashMap<i64, i64> = HashMap.with_capacity 1152921504606846977
     HashMap.length (ref map)
+
+// A28: removing a function from a map borrows the key only while `remove` runs.
+export def hash_remove_functions :: own i64 -> i64
+fn hash_remove_functions count =
+    let mut map: HashMap<i64, i64 -> i64> = HashMap.empty()
+    let mut index = 0
+    while index < count do
+        let step = index
+        map = HashMap.insert index (\value -> value + step) map
+        index = index + 1
+    let mut removed = 0
+    while removed < count do
+        map = HashMap.remove removed map
+        removed = removed + 2
+    let mut total = 0
+    let mut key = 0
+    while key < count do
+        if HashMap.contains_key key (ref map) then
+            total = total + (deref (HashMap.at key (ref map))) 1
+        key = key + 1
+    HashMap.length (ref map) * 1000000 + total
+
+// The key that `remove_ref` borrowed moves after the call.
+export def hash_remove_ref_then_move :: i64
+fn hash_remove_ref_then_move =
+    let map = HashMap.insert "a" (\() -> 40) (HashMap.insert "b" (\() -> 2) HashMap.empty())
+    let key = "a"
+    let map = HashMap.remove_ref (ref key) map
+    let moved = key
+    (deref (HashMap.at "b" (ref map))) () + HashMap.length (ref map) * 10 + moved.length * 100
+
+// An owned function that owns a string: removing it from the map drops both once.
+export def hash_owned_function_drop :: i64
+fn hash_owned_function_drop =
+    let text = "owned capture"
+    let map = HashMap.insert 1 (Owned.function (\() -> text.length)) HashMap.empty()
+    let empty = HashMap.remove 1 map
+    HashMap.length (ref empty)
