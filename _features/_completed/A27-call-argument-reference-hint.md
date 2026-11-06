@@ -368,3 +368,9 @@ f 41
 - 後の確認: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/ownership-and-memory/borrowing.md`: 1 ページ、14 リンク、9 例、18 回の native 実行（O0/O3）が成功。
   `cargo fmt --all -- --check`・`cargo clippy --locked --all-targets -- -D warnings`: 成功。`cargo test --locked --test parameter_conventions --test borrow_syntax`: 37・13 件成功。コードは変えていないので、T1 は回していない。
 - 変更したファイル: `docs/language.md`、`_tsuzuri/language-reference/ownership-and-memory/borrowing.md`、このチケット。
+
+### Copilot のレビュー（#95）への対応（2026-11-06）
+
+- **指摘**: `borrowing.md` の「結果が参照の型に決まる呼び出し」の一覧に、結果の型変数が局所の値の型にも現れる呼び出しが無い（`defers_argument_hint` は `locals_mention` で意図して待たない）。
+- **確認**: edition 2027、`let xs = [input, 2]` と `let get = Array.get` の後で、`id (get 0 xs)` は `E1003`（`expected ref i64, found i64`）、`let r = get 0 xs` と `id r`、`id (ref (get 0 xs))` はどちらも `41`（A27 の dev のバイナリ）。
+- **対応**: `borrowing.md` の一覧を 4 つにし、`let get = Array.get` の `get 0 xs` の形と、`let` で束縛する回避を書いた。`docs/language.md` の同じ段落にも 1 文を足した。`check-docs.mjs borrowing.md` は成功。
