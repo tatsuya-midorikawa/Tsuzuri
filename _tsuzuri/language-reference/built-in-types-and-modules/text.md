@@ -192,7 +192,8 @@ word=suz loud=SUZ at=2
 > ユーザーのモジュールの名前に `Text` は使えません。`Text.tz`・`Text.tt`・`Text.tc` と `namespace Text` は `E1011` です。同じ名前の record・union・型エイリアス・型クラスは宣言できます。ユーザーが `class Text` か `union Text` を宣言すると、無修飾の `Text.length` はユーザーの宣言を指すので、標準の `Text` は `Text.Text` と書きます（メソッドは `Text.Text.length`）。
 
 > [!WARNING]
-> 結果の型が `'s` のメソッド（`Text.trim`・`Text.clone` など）の呼び出しを、借用を取る引数へそのまま渡すと、`'s` が参照の型に決まってしまい `E1003` になります（`Text.length (Text.trim text)`、`String.length (Text.clone text)`）。`Maybe.get` などほかのジェネリックな関数の結果と同じ制限です。結果を `let` で束縛するか、`Text.length (ref (Text.trim text))` と `ref` を明示します。
+> 結果の型が `'s` のメソッド（`Text.trim`・`Text.clone` など）は結果を引数から受け取るので、その呼び出しを借用を取る引数へそのまま渡すと、`'s` が参照の型に決まってしまい `E1003` になります（`Text.length (Text.trim text)`。`text` が edition 2027 の関数の仮引数（型は `ref string`）なら、`String.length (Text.clone text)` は `Text.Text<ref string>` の instance が無いので `E1005`。局所の `string` なら `E1003`）。結果を `let` で束縛するか、`Text.length (ref (Text.trim text))` と `ref` を明示します。
+> 引数が結果を値の型に決める呼び出し（`String.length (Maybe.get m)`、`Text.length (Owned.call (ref show) 1)`）はこの制限を受けず、結果が一時値として貸されます。残る形は [借用](../ownership-and-memory/borrowing.md#呼び出し引数の暗黙の借用) にまとめてあります。
 
 - 引数を全部そろえない部分適用で一時値を借用すると、直接の関数と同じく `E1013` です。`let f = Text.find "a"` は、先に `let` で束縛してください。
 - `Text<'s> =>` のジェネリックな関数の中では、どの instance が呼ばれるかがまだ決まらないので、引数が 2 つ以上のメソッドへ一時値を借用で渡すと `E1013` です（`Text.contains (ref (Text.trim needle)) text`）。`let trimmed = Text.trim needle` と束縛してから渡します。`string` と `utf8string` に直接使う呼び出しは、この制限を受けません。

@@ -576,6 +576,52 @@ impl Inference {
                 .any(|id| self.resolve(&Type::Infer(*id)) == root)
     }
 
+    /// Whether the open variable `root` occurs in `ty` once its solved variables are followed (A27).
+    pub(super) fn mentions(&self, ty: &Type, root: usize) -> bool {
+        self.reaches(ty, &|id| id == root)
+    }
+
+    /// Whether `ty` still holds an open variable once its solved variables are followed. A type
+    /// that holds none never holds one again: a solved variable stays solved (A27).
+    pub(super) fn is_open(&self, ty: &Type) -> bool {
+        self.reaches(ty, &|_| true)
+    }
+
+    /// Whether an open variable that `open` accepts occurs in `ty`, without copying the type.
+    fn reaches(&self, ty: &Type, open: &impl Fn(usize) -> bool) -> bool {
+        let mut ty = ty;
+        while let Type::Infer(id) = ty {
+            match &self.solutions[*id] {
+                Some(solution) => ty = solution,
+                None => return open(*id),
+            }
+        }
+        match ty {
+            Type::Partial(partial) => partial.trailing.iter().any(|ty| self.reaches(ty, open)),
+            Type::Application(head, arguments) => {
+                self.reaches(head, open) || arguments.iter().any(|ty| self.reaches(ty, open))
+            }
+            Type::Array(inner)
+            | Type::ArrayView(inner)
+            | Type::List(inner)
+            | Type::Vec(inner)
+            | Type::Shared(inner, _)
+            | Type::Once(inner)
+            | Type::Reference(inner, _) => self.reaches(inner, open),
+            Type::FixedArray(element, length) => {
+                self.reaches(element, open) || self.reaches(length, open)
+            }
+            Type::Tuple(elements) => elements.iter().any(|ty| self.reaches(ty, open)),
+            Type::Function(parameters, result) => {
+                parameters.iter().any(|ty| self.reaches(ty, open)) || self.reaches(result, open)
+            }
+            Type::Record(_, arguments) | Type::Union(_, arguments) => {
+                arguments.iter().any(|ty| self.reaches(ty, open))
+            }
+            _ => false,
+        }
+    }
+
     /// The default that the open type of a number literal takes when nothing decides it.
     pub(super) fn numeric_default(&self, ty: &Type) -> Option<Type> {
         let root = self.resolve(ty);

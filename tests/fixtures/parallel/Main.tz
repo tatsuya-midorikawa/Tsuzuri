@@ -86,3 +86,15 @@ export def parallel_wrapping :: i64
 fn parallel_wrapping =
     let values = [120i8, 120i8]
     Parallel.sum (ref values) as i64
+
+// A borrowed temporary is the input: it lives until the chunks finish and is dropped after them.
+// A27 lets the result of `Array.get 0 rows` be one without `ref`.
+export def parallel_temporary_inputs :: own i64 -> i64
+fn parallel_temporary_inputs count =
+    let rows = [new [i64](count, \index -> index), [5i64]]
+    let words = new [string](count, \_index -> "he" + "llo")
+    let explicit = Parallel.map (\value -> value + 1) (ref (Array.get 0 rows))
+    let direct = Parallel.map (\value -> value * 2) (Array.get 0 rows)
+    let lengths = Parallel.map_ref (\word -> word.length) (Array.map (\word -> String.repeat 2 word) (ref words))
+    let total = Parallel.reduce 0 (\left right -> left + right) (Array.get 1 rows)
+    Array.sum (ref explicit) + Array.sum (ref direct) + Array.sum (ref lengths) + total

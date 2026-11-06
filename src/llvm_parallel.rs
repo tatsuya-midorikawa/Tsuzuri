@@ -448,8 +448,13 @@ impl FunctionEmitter<'_, '_> {
         let mut direct = None;
         let mut materialized = None;
         let mut values = Vec::new();
+        // A borrowed temporary input (`Parallel.map f (Array.map g xs)`) lives in a slot until the
+        // chunks finish, as the shared value of `Routine.scope` does.
+        let mut operands = Vec::new();
         for (index, argument) in arguments.iter().enumerate() {
-            if index == callback_index {
+            if let TypedExprKind::BorrowOperand(operand) = &argument.kind {
+                values.push(self.operand_borrow(argument, operand, &mut operands));
+            } else if index == callback_index {
                 let arity = if reduce { 2 } else { 1 };
                 let target =
                     call_specialization::target(argument, &self.known_closures, self.module)
@@ -595,6 +600,7 @@ impl FunctionEmitter<'_, '_> {
         if !callback.is_empty() {
             self.drop_value(callback_type, callback);
         }
+        self.release_operands(operands);
         result
     }
 
