@@ -1786,12 +1786,17 @@ impl<'a> Checker<'a, '_> {
         value: &Value,
         owned: &Type,
     ) -> Diagnostic {
-        // A lambda written as the argument is lifted into an `E::Closure` of an owned function
-        // before a generic body is checked for an instance; a lifted `let rec` function is not
-        // owned.
+        // The message follows the source form. A generic body is checked for an instance after its
+        // lambdas are lifted: a lambda written as the argument, or piped into `Owned.function`,
+        // becomes an `E::Closure` in place, which keeps the lambda's span, the span of the lifted
+        // function. A `let rec` name becomes an `E::Closure` only inside the bodies of its group,
+        // at the name's span, which lies inside the span of its function.
         let lambda = match &argument.kind {
             E::Lambda { .. } => true,
-            E::Closure(id, _) => self.module.functions[*id].owned_captures,
+            E::Closure(id, _) => {
+                let function = &self.module.functions[*id];
+                function.owned_captures || function.span == argument.span
+            }
             _ => false,
         };
         let message = if lambda {
