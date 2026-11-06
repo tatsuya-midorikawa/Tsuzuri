@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { casesWithReferences, isScript, referencesSource, requirePinnedNode, v8CasesOf } from "./pinned-unicode.mjs";
 
 // JavaScript spellings of the constructs whose meaning differs from V8's.
@@ -530,6 +530,6 @@ if (main && process.argv.includes("--write")) {
   console.log(`wrote ${casesPath} and ${v8Path}: ${cases.length} cases, ${Buffer.byteLength(references)} bytes`);
 } else if (main) {
   assert.equal(readFileSync(casesPath, "utf8"), casesSource(), "run node tests/regex-cases.mjs --write");
-  const { cases } = await import(v8Path);
+  const { cases } = await import(pathToFileURL(v8Path).href);
   console.log(`regex cases: ${expectedCases(cases).length} expectations`);
 }

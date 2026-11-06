@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { casesWithReferences, isScript, referencesSource, requirePinnedNode, UNICODE_VERSION, v8CasesOf } from "./pinned-unicode.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -350,11 +350,11 @@ if (main && process.argv.includes("--write")) {
   write(directory);
 } else if (main && process.argv.includes("--write-v8")) {
   requirePinnedNode();
-  const cases = v8Cases(await import(dataPath));
+  const cases = v8Cases(await import(pathToFileURL(dataPath).href));
   writeFileSync(v8Path, referencesSource(WRITE_V8, "unicode", cases));
   console.log(`wrote ${v8Path}: ${cases.length} cases, ${readFileSync(v8Path).length} bytes`);
 } else if (main) {
   checkUcdData();
-  const { cases } = await import(v8Path);
-  console.log(`unicode cases: ${expectedCases(await import(dataPath), cases).length} expectations`);
+  const { cases } = await import(pathToFileURL(v8Path).href);
+  console.log(`unicode cases: ${expectedCases(await import(pathToFileURL(dataPath).href), cases).length} expectations`);
 }
