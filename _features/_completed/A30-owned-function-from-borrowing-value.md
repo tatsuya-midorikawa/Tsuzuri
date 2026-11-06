@@ -316,3 +316,12 @@ def main :: unit -> i32 = \() ->
 - **テスト**: `tests/tzroutine.rs` の `an_owned_function_from_a_function_value_holds_no_borrow` に、`own Job` と `own [Owned.Function<unit, unit>]` の受理と、`own Task` の拒否を足した。修正前は `own Job` の受理で失敗した。`own Job` と配列の形は、修正後の dev のバイナリで `-O0`・`-O3` とも `main` と同じ出力（`job ran`・`first ran`）。
 - **確認**: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked --test tzroutine --test user_drop --test timers`（21・26・12 件成功）、`cargo nextest run --locked`（2938 件成功、4 件 skip）、`tests/fixtures/*/` と `examples/*/` の 176 個の `tsuzuri check --json` が `main` のバイナリと同じ、`check-docs.mjs owned.md`（7 examples、14 native runs）。
 - **文書**: `owned.md`（`own Owned.Function<…>` の引数の段落に、所有関数値だけを持つ引数の場合と、普通の関数値のフィールドの場合）、`docs/architecture.md`（`check_body` の規則）。
+
+### Copilot のレビュー（#94）への対応、2 回目（2026-11-06）
+
+- **指摘 1（健全性）**: 借用を持つ `g` の `do! IO.pure g |> Owned.function |> Routine.go` が検査をすり抜けた。`do!` が作る局所 `$do.result` は `Provenance::Generated` で、組み込み関数を適用する生成関数の引数を除く `is_generated_parameter` に当たっていた（`main` も受理するので、A30 の検査の穴）。
+  - 対応: `Contract` と `Checker` に、検査する本文が `$builtin` の生成関数（`src/closures.rs` が組み込み関数を自分の引数に適用するもの）かを持たせ、`Owned.function` の直接の呼び出しとパイプラインの検査の除外を、その引数だけにした（`is_builtin_wrapper_parameter`）。`Channel.send`・`Mutex.with_lock`・`OnceValue.get` の除外は変えていない（`Channel.send` のパイプラインの形は直接の適用を求めて拒否される。`main` で確かめた）。
+  - テスト: `an_owned_function_from_a_function_value_holds_no_borrow` に `do!` の形の拒否を足した。修正前は受理されて失敗した。
+- **指摘 2（性能）**: `carries_loans_beside_owned_functions` が、共有する部分型を道の数だけたどり直した（`Owned.Function` で偽を返すので、`carries_loans` と違って `all` が最初のフィールドで止まらない）。2 つの配列のフィールドで前のレコードを持つレコードを 20 段重ねた型で、約 420 万回の訪問になる。
+  - 対応: 型を 1 回ずつ訪れる `stored_all_closed` を使い、`Owned.Function` で止まる（再帰型も同じ walk で扱う）。同じ形の 16・20・24・28 段の型の引数を持つ program の `tsuzuri check` は、どの段数でも 0.2〜0.4 秒（負荷のある機械で、`main` と同じ範囲）。
+- **確認**: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked --test tzroutine --test user_drop --test timers`（21・26・12 件成功）、`cargo nextest run --locked`（2938 件成功、4 件 skip）、`tests/fixtures/*/` と `examples/*/` の 176 個の `tsuzuri check --json` が `main` のバイナリと同じ。

@@ -418,6 +418,9 @@ struct Contract<'a> {
     result: Option<&'a RegionSources>,
     callbacks: &'a [CallbackContract],
     slots: Option<&'a RegionSlots>,
+    /// The body is the generated function that applies a builtin to its own parameters
+    /// (`src/closures.rs`, module `$builtin`), whose callers are checked instead.
+    builtin_wrapper: bool,
 }
 
 impl<'a> Contract<'a> {
@@ -426,6 +429,7 @@ impl<'a> Contract<'a> {
             result: function.region_sources.as_ref(),
             callbacks: &function.callback_contracts,
             slots: function.region_slots.as_ref(),
+            builtin_wrapper: function.module == "$builtin",
         }
     }
 }
@@ -491,6 +495,7 @@ fn check_body<'a>(
         // `Drop.drop` borrows the dropped value through its only parameter.
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         later_use_budget: LATER_USE_NODES,
+        builtin_wrapper: contract.builtin_wrapper,
     };
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
@@ -759,6 +764,8 @@ struct Checker<'a, 'run> {
     /// How many more steps the diagnostics may take in this function to find where a moved value
     /// or a borrow came from (`Flow`).
     later_use_budget: usize,
+    /// The body is a generated function that applies a builtin to its own parameters (A30).
+    builtin_wrapper: bool,
 }
 
 /// How many expressions the diagnostics of one function may look at, in all, to find where a
@@ -888,6 +895,7 @@ impl<'a> Checker<'a, '_> {
                             result: Some(&shifted),
                             callbacks: &[],
                             slots: None,
+                            builtin_wrapper: function.module == "$builtin",
                         },
                         &mut Vec::new(),
                         None,
@@ -1042,6 +1050,13 @@ impl<'a> Checker<'a, '_> {
     fn is_generated_parameter(&self, argument: &TypedExpr) -> bool {
         matches!(&argument.kind, E::Local(id)
             if self.state.locals.get(id).is_some_and(|(local, _)| local.provenance == crate::syntax::Provenance::Generated))
+    }
+
+    /// A parameter of the generated function that applies a builtin to its own parameters
+    /// (`$builtin`): it passes on what its callers gave it, and they are checked. Other generated
+    /// locals, such as the result of `do!`, hold what the program put in them (A30).
+    fn is_builtin_wrapper_parameter(&self, argument: &TypedExpr) -> bool {
+        self.builtin_wrapper && self.is_generated_parameter(argument)
     }
 
     /// Whether the tasks of a parallel operation that share the borrow `argument`, which evaluated
@@ -2851,7 +2866,7 @@ impl<'a> Checker<'a, '_> {
             if owned_function
                 && index == 0
                 && !value.loans.is_empty()
-                && !self.is_generated_parameter(argument)
+                && !self.is_builtin_wrapper_parameter(argument)
             {
                 return Err(self.owned_function_holds_borrow(argument, &value, &expression.ty));
             }
@@ -3385,7 +3400,7 @@ impl<'a> Checker<'a, '_> {
                     && self.builtin_called(right) == Some(crate::check::Builtin::OwnedFunction);
                 if owned_function
                     && !value.loans.is_empty()
-                    && !self.is_generated_parameter(left)
+                    && !self.is_builtin_wrapper_parameter(left)
                 {
                     return Err(self.owned_function_holds_borrow(left, &value, &expression.ty));
                 }
