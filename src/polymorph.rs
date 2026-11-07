@@ -335,7 +335,7 @@ pub(super) struct Inference {
 }
 
 /// The `E1003` of a type mismatch; `expected` and `found` are the displayed types.
-fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
+pub(super) fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
     Diagnostic::of(
         DiagnosticKind::TypeMismatch,
         format!("expected {expected}, found {found}"),
@@ -3962,13 +3962,14 @@ impl Checker<'_> {
             }
             other => {
                 // A reference to a function (`f : ref (i64 -> i64)`, as an annotated parameter
-                // binds it, A32) is called through `deref`.
+                // binds it, A32) is called through `deref`. The help names no callee or
+                // argument: the call may be a pipeline (`3 |> r`), whose callee is on the right.
                 let help = if matches!(&other, Type::Reference(target, _)
                     if matches!(**target, Type::Function(..)))
                 {
                     format!(
                         "a value of type {} is a reference to a function, not a function; \
-                         dereference it first, as in `(deref f) x`",
+                         dereference it with `deref` before calling it",
                         other.display(&self.types)
                     )
                 } else {

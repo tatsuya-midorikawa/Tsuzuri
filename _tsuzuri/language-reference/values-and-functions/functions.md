@@ -39,8 +39,11 @@ edition 2027 の通常の `def` では、無印の
 右辺のラムダで引数を参照の型と注釈すると（`def size :: 'a -> i64 = \(value: ref 'a) -> 3`）、
 view ではなく、注釈のとおり `ref 'a` の局所として束縛します。
 関数型の引数を `\(f: ref (i64 -> i64)) n -> …` と注釈したときは、呼び出しを `(deref f) n` と書きます（`f n` は `E1005`）。
+引数の型が `'container<i64>` のような型構築子の適用のときと、借用を持ちうる値を `Array.write` などで書き込む所がプログラムにあるときは、
+注釈は参照を束縛せず `E1015`・`E1003` になります（[ラムダ式](./lambda-expressions.md#型注釈とパターン引数)）。
 消費して返す恒等関数は `def identity :: own 'a -> 'a = \value -> value` と書きます。
 数値などの小さな具体型、`dyn`、SIMD と可変束縛引数は値渡しのままです。
+`\mut (pattern)` と分解する引数も可変束縛引数なので値渡しになり、そのパターンへの参照の注釈は `E1003` です。
 明示の `ref`／`ref mut` と region を指定した引数は変わらず、返却型やコールバックの中の引数も補完しません。
 `const def`・入口の `main`・`extern`・instance のメソッドは従来の契約を使います。
 2026 のパッケージの引数の契約は従来どおりです。
@@ -58,7 +61,7 @@ twice length text + inspect text + text.length
 読み取り callback の明示契約です。2027 の `Array`／`List` の `map`・`mapi`・`iter`・
 `iteri`・`fold`・`fold_back` は読み取り callback を使い、非 Copy の要素も扱えます。
 そこへ直接書くラムダは、要素の引数を `\(text: ref string) -> …` と参照の型でも注釈でき、本体ではその引数が参照になります
-（[ラムダ式](./lambda-expressions.md#型注釈とパターン引数)）。
+（要素がすでに参照のときなどの例外も含めて[ラムダ式](./lambda-expressions.md#型注釈とパターン引数)）。
 `map_owned` などの `_owned` 入口は 2026 の値 callback を保ちます。
 `mapr`／`foldr` などの入口も残り、その callback では従来どおり参照を明示します。
 一時 callback の借用は、一段で完全適用し、結果が借用を持たない呼び出しに限ります。

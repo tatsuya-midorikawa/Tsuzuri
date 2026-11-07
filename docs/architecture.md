@@ -1572,7 +1572,11 @@ region 契約を読む前に宣言の引数型にも同じ表面上の補完を�
 解いた推論変数を戻す試しの `unify` で、`Inference::trial` に解いた変数を記録する）と確かめたときだけ、`lambda` と `def` の引数の束縛は view にしません。
 このとき view は注釈と `unify` で決して合わないので、変わるのは型エラーだったプログラムだけで、その引数の型と生成コードは
 `let` で束縛したラムダと同じです。引数の参照の型と合わない注釈は view のままなので、パターンは A32 の前と同じ
-`E1003`（`expected ref [string], found string`）を報告します。callback の adapter は既存の Copy・loan 検査を通し、callback 自体の構築は 1 回だけです。
+`E1003`（`expected ref [string], found string`）を報告します。参照を束縛した本体は、最初のその引数について A32 の前の
+`E1003` を `Checker::annotated_reference` に残し、`check_modules_collect` が集めます。`closures::lower` の後の所有権検査の直前に、
+`ownership::untracked_loan_store_in`（A28 の `untracked_loan_store` を特殊化した module で問う）が真なら、それらを報告して止めます。
+追跡しない書き込み（A31）が引数の借用を所有者より長く残せるプログラムで、A32 が新しい綴りを受理しないための保守的な規則で、
+A31 が `untracked_loan_store` を消すときに一緒に消します。callback の adapter は既存の Copy・loan 検査を通し、callback 自体の構築は 1 回だけです。
 `BORROWING_APIS` は 2027 の Array／List の読み取り入口と Vec の可変入口、および旧版を保存する `_owned` 入口をまとめます。
 `Vec.push_mut` は `Vec.push_owned` と異なる builtin identity と LLVM helper を持ち、混在版の ABI を衝突させません。
 

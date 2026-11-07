@@ -122,6 +122,15 @@ pick 3 + pick (-3) * 100
 
 期待型の引数がまだ決まっていない型の参照のとき（`def inspect :: 'a -> i64` の値と並べた `if`）は、今も注釈を参照先の値と比べます。`\(text: ref string) -> …` の型は `ref ref string -> i64` になり、`ref string` を渡す呼び出しは `E1003` です。ラムダを先に `let` で束縛すると `ref string -> i64` になります。規約の無い関数型の引数（`def apply :: (string -> i64) -> i64` の `apply (\(text: ref string) -> …)`）は値の引数なので、`ref string` の注釈は `E1003` です。`let` で束縛した関数値なら、値の引数へ合わせる adapter が作られるので渡せます。
 
+次の場合も、注釈を参照先の値と比べます。
+
+- 期待型の引数が参照の参照のとき。たとえば `[ref string]` を `Array.map` に渡すときの callback の要素の引数です。直接書いた `Array.map (\(r: ref (ref string)) -> r.length) rs` は `E1003` で、文言は内側の食い違いの `expected ref string, found string` です。参照先の値の型で `\(r: ref string) -> …` と書くか、ラムダを先に `let` で束縛します。
+- 読み取り引数の型が、型変数を型構築子に適用した型のとき。たとえば `def probe :: Functor<'container> => 'container<i64> -> i64` の `'container<i64>` です。`\(value: ref 'container<i64>) -> …` は `E1015`（`type constructor application has an incompatible kind`）です。注釈を書かないか、値の型で `\(value: 'container<i64>) -> …` と書きます。
+
+借用を持ちうる値（借用を捕捉した関数、参照など）を書き込む所がプログラムのどこかにあるときも、規約が値を読む位置の参照の注釈は参照を束縛しません。数えるのは `Array.write` と、それで書き込む std の関数（`Array.set`・`Array.fill`・`Array.blit` など）による書き込みで、`SyncMap` の値の書き込みも数えます。std の関数と、その中で作るラムダの中の書き込みも数えます。そのとき、注釈を書いた引数は参照先の値を読み、注釈は `E1003`（`expected ref [i64], found [i64]` など）になります。help がこの理由を示します。借用検査はまだそうした書き込みの借用を追跡しません（[既知の不具合](../ownership-and-memory/lifetimes.md#現在の制限)）。参照を束縛すると、書き込んだ値が引数の借用を所有者より長く持てるためです。`i64` などの借用を持てない値の書き込みは数えません。
+
+`\mut (pattern)` の `mut` は、パターンで束縛する名前ではなく、分解する前の引数を可変にします。`def` の右辺では可変束縛引数は値渡しなので、そのパターンへ参照の型を注釈すると `E1003` です（`def size :: 'a -> i64 = \mut (v: ref 'a) -> 3` は `expected ref 'a, found 'a`）。規約を持つ関数型が期待される位置のラムダと、`def` の `mut T` の引数では、`mut` を付けても引数の型は変わりません。そのため `\mut (text: ref string) -> …` や `\mut (counter: ref mut Counter) -> …` と書けます。
+
 `\(left, right) ->` はタプルを 1 つ受けて分解します。カリー化された 2 引数関数ではないので、呼び出しは `total (20, 22)` です。
 
 ```tsuzuri run=42

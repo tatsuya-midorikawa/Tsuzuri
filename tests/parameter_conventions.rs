@@ -1547,7 +1547,8 @@ fn mistyped_reference_annotations_keep_their_diagnostics() {
         );
     }
     // A function parameter annotated `ref (i64 -> i64)` binds a reference: calling it is `E1005`,
-    // whose help says to dereference it, and `(deref f) n` calls the function.
+    // whose help says to dereference it, and `(deref f) n` calls the function. The help names no
+    // callee or argument (review 2 of A32), so it fits a pipeline into a reference as well.
     let call = "def apply :: (i64 -> i64) -> i64 -> i64 = \\(f: ref (i64 -> i64)) n -> f n\n";
     let error = check("2027", call).unwrap_err();
     assert_eq!(error.code, "E1005", "{call}");
@@ -1555,15 +1556,20 @@ fn mistyped_reference_annotations_keep_their_diagnostics() {
         error.help.as_deref(),
         Some(
             "a value of type ref (i64 -> i64) is a reference to a function, not a function; \
-             dereference it first, as in `(deref f) x`"
+             dereference it with `deref` before calling it"
         )
     );
     let explicit = "def apply :: ref (i64 -> i64) -> i64 -> i64 = \\f n -> f n\n";
-    assert_eq!(
-        check("2027", explicit).unwrap_err().help,
-        error.help,
-        "{explicit}"
-    );
+    let piped =
+        "export def answer :: i64 = { let g = \\(x: i64) -> x + 1; let r = ref g; 3 |> r }\n";
+    for source in [explicit, piped] {
+        let other = check("2027", source).unwrap_err();
+        assert_eq!(
+            (other.code, other.help.as_deref()),
+            ("E1005", error.help.as_deref()),
+            "{source}"
+        );
+    }
     let dereferenced = call.replace("-> f n", "-> (deref f) n");
     check("2027", &dereferenced).unwrap_or_else(|error| panic!("{dereferenced}\n{error:?}"));
 }
@@ -1614,5 +1620,260 @@ fn annotated_reference_read_callbacks() {
         "export def answer :: i64 = { let ys = { let xs = [\"a\", \"bb\"]; let f = \\(x: ref string) -> x; xs |> Array.map f }; ys.length }\n",
     ] {
         assert_eq!(check("2027", source).unwrap_err().code, "E1013", "{source}");
+    }
+}
+
+/// The help of the `E1003` that an annotated reference parameter keeps in a program with a store
+/// that the borrow check does not track (review 2 of A32).
+const UNTRACKED_STORE_HELP: &str = "a parameter annotated with a reference type binds the \
+    reference only in a program that stores no value which may hold borrows with an in-place \
+    write (`Array.write`, `SyncMap.__replace`, or a std function that calls one, such as \
+    `Array.set`); this program has such a store, so the parameter reads the value";
+
+#[test]
+fn annotated_reference_parameters_wait_for_tracked_in_place_writes() {
+    // `Array.write` does not add the loans of the value that it stores to the owner of the array
+    // (A31), so a closure that captures an annotated reference parameter could outlive the
+    // parameter's owner in the array. Every spelling that A32 does not change has the same hole
+    // until A31 tracks the store; A32 does not add the annotated spellings to it: in a program that
+    // makes such a store, the annotated pattern keeps the `E1003` that it had before A32, at the
+    // same place and with the same message.
+    let caller = [
+        "export def run :: i64 -> i64 = \\n ->",
+        "    let mut arr = [\\() -> 0]",
+        "    { let local = [n, n + 1, n + 2, n + 3]; put arr local }",
+        "    arr[0] ()",
+    ];
+    let def_form = |put: &str| {
+        let mut lines = vec![put];
+        lines.extend(caller);
+        program(&lines)
+    };
+    let store = "Array.write 0 (\\() -> xs[0] * 1000 + xs.length) slot";
+    let lambda_form = |declaration: &str, lambda: &str, call: &str| {
+        program(&[
+            declaration,
+            "export def run :: i64 -> i64 = \\n ->",
+            "    let mut arr = [\\() -> 0]",
+            &format!("    let chosen = if n > 0 then put else {lambda}"),
+            &format!("    {{ let local = [n, n + 1, n + 2, n + 3]; {call} }}"),
+            "    arr[0] ()",
+        ])
+    };
+    let unannotated =
+        format!("def put :: mut [(unit -> i64)] -> [i64] -> unit = \\slot xs -> {store}");
+    let unannotated_source_last =
+        format!("def put :: [i64] -> mut [(unit -> i64)] -> unit = \\xs slot -> {store}");
+    for (source, marker, message) in [
+        (
+            def_form(&format!(
+                "def put :: mut [(unit -> i64)] -> [i64] -> unit = \\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}"
+            )),
+            "= \\",
+            "expected ref mut [unit -> i64], found [unit -> i64]",
+        ),
+        (
+            lambda_form(
+                &unannotated,
+                &format!("\\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}"),
+                "chosen arr local",
+            ),
+            "else \\",
+            "expected ref mut [unit -> i64], found [unit -> i64]",
+        ),
+        (
+            lambda_form(
+                &unannotated_source_last,
+                &format!("\\(xs: ref [i64]) slot -> {store}"),
+                "chosen local arr",
+            ),
+            "else \\",
+            "expected ref [i64], found [i64]",
+        ),
+        (
+            program(&[
+                "def put :: mut [(unit -> i64)] -> (i64 -> i64) -> unit = \\(slot: ref mut [(unit -> i64)]) (f: ref (i64 -> i64)) -> Array.write 0 (\\() -> (deref f) 1000) slot",
+                "export def run :: i64 -> i64 = \\n ->",
+                "    let mut arr = [\\() -> 0]",
+                "    { let k = [n, n + 1]; let g = \\x -> x + k[0] + k.length; put arr g }",
+                "    arr[0] ()",
+            ]),
+            "= \\",
+            "expected ref mut [unit -> i64], found [unit -> i64]",
+        ),
+        (
+            // A std function that calls `Array.write` stores as well, and the store may be in
+            // another function than the annotated parameter.
+            program(&[
+                TEXT_LENGTH,
+                "def keep :: mut [(unit -> i64)] -> (unit -> i64) -> unit = \\slots f -> Array.set 0 f slots",
+                "export def pick :: i64 -> i64 = \\n ->",
+                "    let chosen = if n > 0 then text_length else \\(text: ref string) -> text.length * 10",
+                "    let mut slots = [\\() -> 0]",
+                "    keep slots (\\() -> n)",
+                "    let text = \"hello\"",
+                "    chosen (ref text) + slots[0] ()",
+            ]),
+            "else \\",
+            "expected ref string, found string",
+        ),
+    ] {
+        let error = check("2027", &source)
+            .err()
+            .unwrap_or_else(|| panic!("accepted:\n{source}"));
+        assert_eq!(
+            (error.code, error.message.as_str(), error.help.as_deref()),
+            ("E1003", message, Some(UNTRACKED_STORE_HELP)),
+            "{source}"
+        );
+        assert_eq!(
+            error.span.start,
+            pattern_offset(&source, marker),
+            "{source}"
+        );
+    }
+    // A store whose value holds no loan, and a program whose stores are all tracked, keep the
+    // annotated reference.
+    for source in [
+        program(&[
+            "def put :: mut [i64] -> [i64] -> unit = \\(slot: ref mut [i64]) (xs: ref [i64]) -> Array.write 0 (xs[0] * 1000 + xs.length) slot",
+            "export def run :: i64 -> i64 = \\n ->",
+            "    let mut arr = [0]",
+            "    { let local = [n, n + 1, n + 2, n + 3]; put arr local }",
+            "    arr[0]",
+        ]),
+        program(&[
+            TEXT_LENGTH,
+            "export def pick :: i64 -> i64 = \\n ->",
+            "    let chosen = if n > 0 then text_length else \\(text: ref string) -> text.length * 10",
+            "    let mut slots = [0]",
+            "    Array.set 0 n (ref mut slots)",
+            "    let text = \"hello\"",
+            "    chosen (ref text) + slots[0]",
+        ]),
+    ] {
+        check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    }
+    // A program with such a store and no annotated reference parameter is checked as before A32.
+    let unannotated_lambda = program(&[
+        TEXT_LENGTH,
+        "def keep :: mut [(unit -> i64)] -> (unit -> i64) -> unit = \\slots f -> Array.set 0 f slots",
+        "export def pick :: i64 -> i64 = \\n ->",
+        "    let chosen = if n > 0 then text_length else \\text -> text.length * 10",
+        "    let mut slots = [\\() -> 0]",
+        "    keep slots (\\() -> n)",
+        "    let text = \"hello\"",
+        "    chosen (ref text) + slots[0] ()",
+    ]);
+    check("2027", &unannotated_lambda)
+        .unwrap_or_else(|error| panic!("{unannotated_lambda}\n{error:?}"));
+}
+
+#[test]
+fn documented_exceptions_of_annotated_reference_parameters() {
+    // The language reference lists these forms as exceptions (review 2 of A32); each keeps the
+    // diagnostic that it had before A32, and the documented alternative is accepted.
+    // A parameter whose expected type is a reference to a reference compares the annotation with
+    // the value read through it.
+    let elements = |callback: &str| {
+        program(&[
+            "export def run :: i64 -> i64 = \\n ->",
+            "    let a = \"hello\"",
+            "    let b = \"hi\"",
+            "    let rs = [ref a, ref b]",
+            callback,
+            "    lens[0] + lens[1] * 10 + n",
+        ])
+    };
+    let nested = elements("    let lens = Array.map (\\(r: ref (ref string)) -> r.length) rs");
+    let error = check("2027", &nested).unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        ("E1003", "expected ref string, found string"),
+        "{nested}"
+    );
+    assert_eq!(
+        error.span.start,
+        pattern_offset(&nested, "Array.map (\\"),
+        "{nested}"
+    );
+    for source in [
+        elements("    let lens = Array.map (\\(r: ref string) -> r.length) rs"),
+        elements(
+            "    let measure = \\(r: ref (ref string)) -> r.length\n    let lens = Array.map measure rs",
+        ),
+    ] {
+        check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    }
+    // A read parameter whose type applies a type variable to arguments keeps the kind error.
+    let functor = "class Functor<'container: * -> *> {\n    def map :: ('input -> 'output) -> 'container<'input> -> 'container<'output>\n}\n";
+    let probe = |lambda: &str| {
+        program(&[
+            "instance Traits.Functor<Maybe> {",
+            "    fn map transform value = Maybe.map transform value",
+            "}",
+            &format!(
+                "def probe :: Traits.Functor<'container> => 'container<i64> -> i64 = {lambda} -> 3"
+            ),
+            "export def answer :: i64 = { let m: Maybe<i64> = Maybe.Some 1; probe m }",
+        ])
+    };
+    let applied = probe("\\(value: ref 'container<i64>)");
+    let error = check_with_files("2027", &applied, &[("Traits.tt", functor)]).unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        (
+            "E1015",
+            "type constructor application has an incompatible kind"
+        ),
+        "{applied}"
+    );
+    for lambda in ["\\(value: 'container<i64>)", "\\value"] {
+        let source = probe(lambda);
+        check_with_files("2027", &source, &[("Traits.tt", functor)])
+            .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    }
+    // `\mut (pattern)` makes the parameter itself mutable, so a `def` takes a read parameter by
+    // value and a reference annotation on the pattern does not match; where the type does not
+    // depend on `mut` (an expected [Read] type, a `mut T` parameter), the annotation binds the
+    // reference.
+    for (source, message) in [
+        (
+            program(&["def size :: 'a -> i64 = \\mut (v: ref 'a) -> 3"]),
+            "expected ref 'a, found 'a",
+        ),
+        (
+            program(&["def size :: string -> i64 = \\mut (t: ref string) -> t.length"]),
+            "expected ref string, found string",
+        ),
+    ] {
+        let error = check("2027", &source).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            ("E1003", message),
+            "{source}"
+        );
+        assert_eq!(
+            error.span.start,
+            pattern_offset(&source, "\\mut "),
+            "{source}"
+        );
+    }
+    for source in [
+        chooser(
+            &[TEXT_LENGTH],
+            &[
+                "    let chosen = if n > 0 then text_length else \\mut (t: ref string) -> t.length * 10",
+                "    let text = \"abc\"",
+                "    chosen (ref text)",
+            ],
+        ),
+        program(&[
+            COUNTER,
+            "def touch :: mut Counter -> unit = \\mut (c: ref mut Counter) -> c.count = c.count + 1",
+            "export def answer :: i64 = { let mut c = Counter { count: 1 }; touch c; c.count }",
+        ]),
+    ] {
+        check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
     }
 }

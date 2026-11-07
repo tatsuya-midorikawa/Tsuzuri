@@ -1709,6 +1709,15 @@ fn untracked_loan_store(
     })
 }
 
+/// Whether some function of the specialized module stores a value that may hold loans with an
+/// untracked writer (`untracked_loan_store`). A32 reports its annotated reference parameters when
+/// one does (`check_modules_collect`): the store can keep a loan of such a parameter past its
+/// owner, as A31 describes, so the program keeps the `E1003` that it had before A32. Once A31
+/// tracks those stores, this guard goes with `untracked_loan_store`.
+pub(crate) fn untracked_loan_store_in(module: &CheckedModule) -> bool {
+    untracked_loan_store(module, &module.types(), false)
+}
+
 /// The parameters of an abstract body whose loans may pass through a value whose type has a type
 /// variable and carries no loans, as `x` does in `wrap (f x)` with `f x : 'v`: the check of the
 /// abstract body gives such a value no loans, although an instance whose `'v` is a function holds
