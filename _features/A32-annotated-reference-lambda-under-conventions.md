@@ -184,6 +184,87 @@ pick 3 + pick (-3) * 100
   `ref T` の引数を値の引数へ合わせる adapter を作るからで、期待型と一緒に検査するラムダには作らない。直接書いたラムダにも adapter を作るかどうかは別の判断なので、必要なら別のチケットにする。
 - 束縛したラムダが純粋と推論されない edition 2026 の `E1029`（「同じ原因の形」の表の最後の行）。
 
+## 着手時の再検討（2026-11-08、HEAD b3dd7f1c）
+
+HEAD の dev binary（`target/scratch/base/tsuzuri`）で、「再現」、「同じ原因の形」の全行、対照の形、監査で見つけた形を実行しました。記録は `target/scratch/audit-A32/baseline.md` です。`main` の最新の `ci.yml`（`b3dd7f1c`）は成功しています。
+
+### 確かめたこと
+
+- 直接書いた形は、表の 2027 の 5 行と 2026 の `pure def` の 4 形（`if`・`match`・`Box`・`Vec`）がすべて今も `E1003` です。文言も同じです。
+- A29 はマージ済みです。束縛した形は `Box` ごとの束縛が `5005`、`Vec` が `51005` になり、`E2002` は出ません。ほかの束縛した形は表の値（`5005`・`5005`・`301004`）のままです。2026 の束縛した形は `E1029` のままです。
+- 次の形は今も通ります: 注釈の無い引数、`\(text: string)`、明示の `ref string -> i64`、`\(a, b)`。
+- 対象外の `apply (\(text: ref string) -> …)` は `E1003` です。束縛した形は `50` で、`callback_adapter`（`src/check.rs:13558`）を通ります。
+- 意味が同じで行番号だけ移ったもの:
+  - `lambda` の規約の判定: `src/closures.rs:62〜82`
+  - `def` の引数: `src/check.rs:8943〜8962`
+  - `finish_expression`: `src/check.rs:12012`（参照外しは 12019）
+  - `explicit_lambda`: ガードの `match` が `src/parse_control.rs:643〜663`、引数のパターンの `match` が 664〜681
+  - `borrowing.md` の該当箇所: 271 行
+- edition 2026 は `Tsuzuri.toml` に `edition = "2026"` と書きます（manifest の無い入力は `--edition 2026`）。
+
+### チケットと食い違った点
+
+1. **仕様 3 の前提「1 の形は今すべて `E1003`」は成り立ちません。** 参照外しした型が推論変数か参照のときは、今通るプログラムがあります。
+   - 期待型が `[Read] ref ?t -> i64`（`def inspect :: 'a -> i64` の値）のとき、`if n > 0 then inspect else \(text: ref string) -> …` は通ります。型は `ref ref string -> i64` です（束縛した形は `ref string -> i64`）。
+   - `Vec` の要素型が先に `[Read] ref (ref string) -> i64` に決まったあとの `Vec.push (\(text: ref string) -> …) readers` も通ります（`501050003`）。
+
+   「設計」のとおり注釈だけで決めると、前者は型と IR が変わり、後者は `E1003` になります。どちらも停止条件に当たります。
+2. **`def` でも同じ原因で失敗します。** `def bump :: i64 -> mut Counter -> unit = \(step: i64) (counter: ref mut Counter) -> …` では、`normalize_definition` が `$lambda…` を `def` の引数にし、本体を同じ `LambdaDestructuring` の `match` にします。`src/check.rs:8945〜8962` は、`Mut` の引数と、型変数・関数型を含む読み取り引数を read value parameter にするので、`E1003` になります。同じく失敗する形:
+   - `def size :: 'a -> i64 = \(value: ref 'a) -> 3`
+   - 2026 の `pure def` の型変数・関数型の引数
+   - `\(a: ref string) (b: ref mut [i64])`
+
+   したがって「def の引数ではこの食い違いは起きない」は誤りです。具体的な型の読み取り引数（`def text_length :: string -> i64 = \(text: ref string) -> …`）は read value parameter ではないので、今も通ります。
+3. 次の形も、直接書くと `E1003`、束縛すると通ります:
+   - 型の別名（`type Borrowed<'a> = ref 'a` の `\(text: Borrowed<string>) -> …`）
+   - `\(_: ref string)`
+   - 参照の注釈で包んだ分解（`\((a, b): ref (string * string)) -> …`）
+   - ガード付き、複数の注釈付き引数、名前と注釈の混在
+   - `['a]` の読み取りに対する `ref [i64]`
+   - `mut [i64]` に対する `ref mut [i64]`
+
+### 更新した方針
+
+- **仕様 1（改）**: 次の条件をすべて満たすとき、その引数を read value parameter にしません。
+  - 期待型の規約が `Read` か `Mut` で、引数の型が `ref inner` である。
+  - 引数の分解パターンの最上位が型注釈 `(p: A)` で、`A` を解決した型が参照の型である（`ref` と `ref mut` のどちらでもよく、別名も含む）。
+  - `inner` を解決した型が `Type::Infer` でも `Type::Reference` でもなく、誤りも含まない。
+
+  最後の条件を満たすとき、参照外しした主語は参照の注釈と `unify`（`src/polymorph.rs:401`）で決して合いません。したがって変わるのは、今型エラーになるプログラムだけです。上の 1 の 2 つのプログラムは今の型のままです。
+- **仕様 2（改）**: 最上位が参照の注釈でないパターン（注釈の無い引数、値の型の注釈、tuple・record・構築子）は、今のままにします。可変性の違う注釈（`Read` の位置の `ref mut string`）も `E1003` のままです。文言は `found ref string` になります。
+- 判定は `lambda`（`src/closures.rs`）と `def` の引数（`src/check.rs:8943〜8962`）の両方に置き、同じ helper を使います。D1 の理由はそのまま当てはまります。`def` の側は、`normalize_definition` がラムダの引数をそのまま移したものです。
+- helper（`src/closures.rs`、`pub(super) fn parameter_annotations(body: &Expr) -> BTreeMap<&str, &TypeExpr>`）:
+  - 本体が `ExprKind::Match { origin: MatchOrigin::LambdaDestructuring, .. }` で、主語が `ExprKind::Name`、腕が 1 つである間だけたどります。
+  - 腕のパターンが `PatternKind::Annotated(_, annotation)` のとき、主語の名前と `annotation` を対にして集めます。
+  - ガードの `match`（主語が `ExprKind::Unit`。連なりの最も内側）で止まります。
+  - 名前だけの引数は連なりに無いので、対象になりません。`derive.rs`・`contracts.rs` が生成するラムダは `MatchOrigin::Explicit` なので、触れません。
+  - `while let` の連鎖は使わず、`loop { let … else { break } }` と書きます。
+- 注釈が参照かどうかは、副作用の無い `resolve_type_with_kinds(annotation, self.module, self.names, &self.kinds)`（`src/check.rs:10166`）が `Ok(Type::Reference(..))` を返すかで決めます。誤りは「参照でない」として扱い、今のとおりパターンの検査に報告させます。`Checker::annotation`（`src/polymorph.rs:3832`）は `self.constraints` に制約を足すので呼びません。
+- `def` の側では、helper の結果を `computation::expand(&mut function.body, …)` の前に作ります。`Mut` の挿入と、型変数・関数型の読み取りの挿入を、同じ条件で外します。`default_reads` への登録はそのままです。
+- 対象外に足すもの: 期待型の引数が `ref ?t` や `ref (ref T)` のときの参照の注釈（上の 1）。直すと今通るプログラムの型が変わるので、必要なら承認を得て別チケットにします。
+- AST・`FRONTEND_FORMAT`・診断の kind は変えません。
+
+### テストの更新
+
+- `annotated_reference_lambdas_meet_convention_function_types`: 表の 2027 の形と 2026 の `pure def` の 4 形に、上の 3 の形と `def both :: string -> string -> i64 = \(a: ref string) -> \(b: ref string) -> …` を足します。
+- `annotated_reference_def_parameters_meet_their_conventions`（新規）: 上の 2 の形を確かめます。
+- `lambda_parameters_without_reference_annotations_keep_reading_values`: 仕様 2 の形に加え、上の 1 の 2 つのプログラムが通ることを固定します。`Read` の位置の `ref mut string` は `E1003` のコードだけを照合します。
+- E2E: fixture の `conventions` には `def bump :: mut i64 -> unit` がすでにあるので、新しい関数には別の名前を付けます（`bump_counter`・`record Counter`）。`def` の形も 1 つ足し、期待値は手で数えます。
+- 手順 4 の IR の比較には、規約の無い位置で注釈付きのラムダを使う `tests/fixtures/generic_records/Main.tz` を必ず含めます。
+
+### ドキュメント
+
+- 「ドキュメント」の節に次の 2 か所を足します:
+  - `values-and-functions/lambda-expressions.md` の「型注釈とパターン引数」
+  - `functions.md` の「書き換える引数（`mut T`）」（`def … = \step (counter: ref mut Counter) -> …` の形）
+
+### 進め方（オーケストレーターの決定）
+
+- この節は上の「着手条件と停止条件」「仕様」「設計」「テスト計画」「ドキュメント」より優先します。古い本文は残します。
+- GUIDE §13 の停止条件は、「健全性を保ち、今受理している安全なプログラムをすべて受理したままにする最も保守的な選択を取り、チケットに記録して続ける」に置き換えます。既存のテストの期待値は弱めません。安全でないプログラムは受理しません。
+- 監査の計画の変更をすべて採ります: 「参照外しした型が参照でないと確かに言える」ときだけ外す条件、`def` の引数への同じ修正、注釈の解決に `resolve_type_with_kinds` を使うこと、上の「テストの更新」の追加のテスト（`x16c`・`x18` が今の値のまま受理される回帰テストを含む）、suite `conventions` の E2E（native と WASM、`-O0` と `-O3`）、`tests/fixtures/`・`examples/`（`generic_records` を含む）の IR を基準の binary と比べること（今受理しているプログラムは byte 単位で一致すること）。
+- 監査の記録は `target/scratch/audit-A32/baseline.md` と、各形のディレクトリです（同じ内容を作業用に `target/scratch/a32/baseline/` へ写して使います）。
+
 ## 決定事項
 
 ### D1: 判定は `src/closures.rs` の `lambda` に置き、パターンの注釈で決める
