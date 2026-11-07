@@ -6143,11 +6143,10 @@ impl<'a> Checker<'a, '_> {
                             && self.builtin_called(inner) == Some(crate::check::Builtin::OwnedCall));
                     if let Some(id) = completed {
                         let piped = piped_application(right).1.len();
-                        // A closed result is used here only where every store is tracked: before
-                        // A28 a pipeline kept its loans, and in a program with an untracked store
-                        // (A31) `closed_returns` can miss what a callee stored, so the pipeline
-                        // keeps them there as before (the direct call keeps main's rule).
-                        if self.facts.closed[id] && !self.facts.lending.untracked {
+                        // A closed result holds no loan, as at a direct call: `joint_facts` revokes
+                        // the closed result of a function whose check returns a loan that a store
+                        // into a local cell put there (A31).
+                        if self.facts.closed[id] {
                             result.clear_loans();
                         } else if self.facts.temporary(id, piped) {
                             result.loans = callee.loans;
