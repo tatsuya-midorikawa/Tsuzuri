@@ -447,8 +447,12 @@ impl Inference {
             | (concrete, Type::Application(head, arguments))
                 if !matches!(concrete, Type::Infer(_)) =>
             {
+                // An anonymous union is not a type constructor (A24): applying a part of it would
+                // build a union out of canonical order or with a repeated member.
                 if let Some((constructor, complete)) = higher_kinds::decompose(concrete)
                     && complete.len() >= arguments.len()
+                    && !matches!(concrete, Type::Union(id, _)
+                        if types.unions.get(*id).is_some_and(CheckedUnion::is_anonymous))
                 {
                     let partial = Type::Partial(Box::new(Partial {
                         constructor,
@@ -1909,6 +1913,20 @@ impl Classes {
                         ));
                     }
                     bounded_type(&ty, instance.ty.span)?;
+                    // D8 (A24): before the checks of built-in, marker, `Drop` and `Format`
+                    // instances, so that every class gives the same error.
+                    if let Type::Union(union, _) = &ty
+                        && names.is_anonymous_union(*union)
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::AnonymousUnionInstance,
+                            format!(
+                                "instances cannot be declared for the anonymous union {}; wrap it in a record, or declare a union with named cases",
+                                ty.display_with(names)
+                            ),
+                            instance.class.span,
+                        ));
+                    }
                     let type_parameters = variables(&ty);
                     let context = self.resolve_constraints(&instance.constraints, module, names)?;
                     if context.iter().any(|constraint| {

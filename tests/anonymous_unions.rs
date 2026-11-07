@@ -1557,3 +1557,101 @@ fn existing_missing_messages_unchanged() {
         );
     }
 }
+
+// Step 8: no user instance for an anonymous union (D8), and the guards that keep the synthesized
+// declaration out of other diagnostics.
+
+#[test]
+fn rejects_instances_for_anonymous_unions() {
+    // Every class, built in or marker or user, gets the same error before its own checks: a
+    // `Copy`, `Drop` or `Format` instance would otherwise report E1016 or its own rule first.
+    for class in ["Display", "Eq", "Copy", "Send", "Drop", "Format", "Hash"] {
+        let source = format!("instance {class}<(string | i64)> {{\n}}\n0\n");
+        let error = rejects(&source, "E1041", "anonymous_union_instance");
+        assert_eq!(
+            error.message,
+            "instances cannot be declared for the anonymous union (i64 | string); wrap it in a record, or declare a union with named cases"
+        );
+        // The location is the class name.
+        assert_eq!(&source[error.span.start..error.span.end], class, "{source}");
+    }
+    // A class of the program, and an alias of the union.
+    let error = rejects_modules(
+        &[
+            ("Shapes.tt", "class Shape<'a> { def area :: 'a -> f64 }\n"),
+            (
+                "Main.tz",
+                "type Value = (i64 | f64)\ninstance Shape<Value> { fn area v = 0.0 }\n0\n",
+            ),
+        ],
+        "E1041",
+        "anonymous_union_instance",
+    );
+    assert!(error.message.contains("(i64 | f64)"), "{}", error.message);
+    // An instance for a type that holds an anonymous union is not rejected by this rule.
+    accepts_modules(&[
+        ("Shapes.tt", "class Shape<'a> { def area :: 'a -> f64 }\n"),
+        (
+            "Main.tz",
+            "record Holder { value: (i64 | f64) }\ninstance Shape<Holder> { fn area h = 1.0 }\ninstance Shape<Maybe<(i64 | f64)>> { fn area m = 2.0 }\n0\n",
+        ),
+    ]);
+}
+
+#[test]
+fn member_function_constraint_has_no_module() {
+    // A function constraint `#f` finds `f` in the module that declares the type. An anonymous union
+    // has none, as a tuple has none: the message never names the pseudo-module.
+    let error = rejects(
+        "def measure :: 'T -> i64\n  @'T : #distance\nfn measure value = 'T.distance value\nlet v: (i64 | string) = 1\nmeasure v\n",
+        "E1005",
+        "function_constraint_unresolvable",
+    );
+    assert_eq!(
+        error.message,
+        "(i64 | string) has no declaring module for function constraint '#distance'"
+    );
+    let tuple = rejects(
+        "def measure :: 'T -> i64\n  @'T : #distance\nfn measure value = 'T.distance value\nlet v: (i64 * string) = (1, \"a\")\nmeasure v\n",
+        "E1005",
+        "function_constraint_unresolvable",
+    );
+    assert_eq!(
+        tuple.message,
+        "(i64 * string) has no declaring module for function constraint '#distance'"
+    );
+}
+
+#[test]
+fn higher_kinded_unification_refuses_anonymous_unions() {
+    let functor = "class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }\n";
+    // `'f<'a>` does not take a part of an anonymous union as a constructor, which would build a
+    // union out of canonical order or with a repeated member, and name the synthesized one.
+    let error = rejects_modules(
+        &[
+            ("Traits.tt", functor),
+            (
+                "Main.tz",
+                "def fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b>\nfn fmap transform value = Functor.map transform value\ndef go :: (i64 | string) -> i64 = \\v ->\n    let w = fmap (\\s -> 1) v\n    0\n0\n",
+            ),
+        ],
+        "E1015",
+        "constructor_kind_mismatch",
+    );
+    assert!(!error.message.contains('$'), "{}", error.message);
+    // A named generic union still decomposes, as before: `'f` takes `P` with its last argument.
+    let named = analyze_modules(&[
+        ("Traits.tt", functor),
+        (
+            "Main.tz",
+            "union P<'a, 'b> = L of 'a | R of 'b\ndef fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b>\nfn fmap transform value = Functor.map transform value\ndef go :: P<i64, string> -> i64 = \\v ->\n    let w = fmap (\\s -> 1) v\n    0\n0\n",
+        ),
+    ])
+    .expect_err("no instance");
+    assert_eq!(named.code, "E1005", "{}", named.message);
+    assert!(
+        named.message.contains("Functor<Main.P<string>>"),
+        "{}",
+        named.message
+    );
+}

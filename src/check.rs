@@ -7289,7 +7289,8 @@ impl Names {
     ) -> Result<usize, Diagnostic> {
         let qualified_type = match receiver {
             Type::Record(id, _) => &types.records[*id].name,
-            Type::Union(id, _) => &types.unions[*id].name,
+            // An anonymous union (A24) has no declaring module of its own, like a tuple.
+            Type::Union(id, _) if !self.is_anonymous_union(*id) => &types.unions[*id].name,
             _ => {
                 return Err(Diagnostic::of(
                     DiagnosticKind::FunctionConstraintUnresolvable,
@@ -10992,6 +10993,17 @@ fn reject_expanded_field_constraints(
         .try_for_each(|child| reject_expanded_field_constraints(child, module, names, owner))
 }
 
+/// The message of a union whose value layout contains itself. A named union reads as its
+/// qualified name, as before; an anonymous union (A24) reads as its members, never as the
+/// synthesized declaration behind it.
+fn recursive_union_layout(ty: &Type, types: &TypeContext<'_>) -> String {
+    let name = match ty {
+        Type::Union(id, _) if !types.unions[*id].is_anonymous() => types.unions[*id].name.clone(),
+        _ => ty.display(types),
+    };
+    format!("recursive union layout for '{name}'; recursive heap types are not supported in 0.1")
+}
+
 fn size_error(span: Span) -> Diagnostic {
     Diagnostic::of(
         DiagnosticKind::ValueLayoutTooLarge,
@@ -11089,10 +11101,7 @@ impl<'a> Layouts<'a> {
         if !self.visiting.insert(ty.clone()) {
             return Err(Diagnostic::of(
                 DiagnosticKind::InfiniteRecursiveLayout,
-                format!(
-                    "recursive union layout for '{}'; recursive heap types are not supported in 0.1",
-                    union.name
-                ),
+                recursive_union_layout(ty, &self.types),
                 span,
             ));
         }
@@ -15351,6 +15360,38 @@ mod tests {
                 .unwrap_err()
                 .code,
             "E1010"
+        );
+    }
+
+    /// The recursive-layout error names an anonymous union by its members (A24). The cycle check
+    /// (`recursive.rs`) makes every cycle through a union a heap node first, so no source reaches
+    /// this message today; the message itself is what the test pins.
+    #[test]
+    fn recursive_layout_error_displays_members() {
+        let module = analyze(
+            "union Shape = Dot | Text of string\ndef f :: (i64 | string) -> i64 = \\v -> 0\n0",
+        )
+        .unwrap();
+        let types = module.types();
+        let id = |name: &str| {
+            module
+                .unions
+                .iter()
+                .position(|union| union.name == name)
+                .unwrap()
+        };
+        let anonymous = Type::Union(
+            id("$anonymous.Union$2"),
+            vec![Type::I64, Type::String].into(),
+        );
+        assert_eq!(
+            super::recursive_union_layout(&anonymous, &types),
+            "recursive union layout for '(i64 | string)'; recursive heap types are not supported in 0.1"
+        );
+        let named = Type::Union(id("Main.Shape"), Box::default());
+        assert_eq!(
+            super::recursive_union_layout(&named, &types),
+            "recursive union layout for 'Main.Shape'; recursive heap types are not supported in 0.1"
         );
     }
 }
