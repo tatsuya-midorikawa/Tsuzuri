@@ -242,7 +242,7 @@ def bump_counter :: i64 -> mut Counter -> unit = \step counter -> counter.count 
 def scale_counter :: i64 -> mut Counter -> unit = \(step: i64) (counter: ref mut Counter) ->
     counter.count = counter.count + step * 10
 def annotated_size :: 'a -> i64 = \(_: ref 'a) -> 3
-def joined :: string -> string -> i64 = \(a: ref string) -> \(b: ref string) -> a.length + b.length * 10
+def store_length :: string -> mut [i64] -> unit = \(text: ref string) (cells: ref mut [i64]) -> cells[1] = text.length
 
 export def annotated_reference_lambdas :: i64 -> i64 = \n ->
     let text = "hello"
@@ -278,9 +278,10 @@ export def annotated_reference_forms :: i64 -> i64 = \n ->
     let change = if n > 0 then put_first else \(xs: ref mut [i64]) -> xs[0] = 9
     let mut values = [1, 2, 3, 4, 5]
     change (ref mut values)
+    store_length other values
     let a = guarded (ref text) + two (ref text) (ref other) + mixed (ref text) (ref other)
     let b = ignored (ref text) + aliased (ref text) + split (ref pair) + counted (ref values)
-    a + b + values[0] * 1000000 + annotated_size text + joined text other * 10000000
+    a + b + values[0] * 1000000 + annotated_size text + values[1] * 10000000
 
 type OwnAlias = own
 (contextual_own_type_name)

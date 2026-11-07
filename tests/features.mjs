@@ -670,9 +670,10 @@ const suites = {
         const split = on ? left + right : left * 10n + right;
         const counted = on ? size : size * 100n;
         const first = on ? 7n : 9n;
-        const joined = text + other * 10n;
+        // `store_length other values` writes the length of "hi" into the second element.
+        const stored = other;
         return ["annotated_reference_forms", [BigInt(n)],
-          guarded + two + mixed + ignored + aliased + split + counted + first * 1000000n + 3n + joined * 10000000n];
+          guarded + two + mixed + ignored + aliased + split + counted + first * 1000000n + 3n + stored * 10000000n];
       }),
       ["trap", [1n], 10n + 20n + 20n],
     ],

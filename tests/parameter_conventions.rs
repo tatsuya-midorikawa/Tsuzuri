@@ -1075,14 +1075,6 @@ fn annotated_reference_lambdas_meet_convention_function_types() {
                 "    chosen (ref text)",
             ],
         ),
-        // the lambda in the body of a `def`
-        program(&[
-            "def both :: string -> string -> i64 = \\(a: ref string) -> \\(b: ref string) -> a.length + b.length * 10",
-            "export def answer :: i64 =",
-            "    let left = \"hello\"",
-            "    let right = \"hi\"",
-            "    both left right",
-        ]),
     ];
     for source in &accepted {
         check("2027", source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
@@ -1134,6 +1126,56 @@ fn annotated_reference_lambdas_meet_convention_function_types() {
     }
 }
 
+/// The functions that the lambdas of `ir` became, and their apply thunks.
+fn lambda_functions(ir: &str) -> Vec<&str> {
+    ir.split("\n\n")
+        .filter(|block| {
+            block.starts_with("define ") && block.lines().next().unwrap().contains("$lambda.")
+        })
+        .collect()
+}
+
+#[test]
+fn annotated_reference_lambdas_compile_like_their_bound_form() {
+    for (declarations, direct, bound, rest) in [
+        (
+            vec![TEXT_LENGTH],
+            "    let chosen = if n > 0 then text_length else \\(text: ref string) -> text.length * 10",
+            [
+                "    let scaled = \\(text: ref string) -> text.length * 10",
+                "    let chosen = if n > 0 then text_length else scaled",
+            ],
+            vec!["    let text = \"hello\"", "    chosen (ref text)"],
+        ),
+        (
+            vec![
+                COUNTER,
+                "def bump :: i64 -> mut Counter -> unit = \\step counter -> counter.count = counter.count + step",
+            ],
+            "    let chosen = if n > 0 then bump else \\(step: i64) (counter: ref mut Counter) -> counter.count = counter.count + step * 100",
+            [
+                "    let scaled = \\(step: i64) (counter: ref mut Counter) -> counter.count = counter.count + step * 100",
+                "    let chosen = if n > 0 then bump else scaled",
+            ],
+            vec![
+                "    let mut counter = Counter { count: 1 }",
+                "    chosen 3 (ref mut counter)",
+                "    counter.count",
+            ],
+        ),
+    ] {
+        let mut direct_body = vec![direct];
+        direct_body.extend(&rest);
+        let mut bound_body = bound.to_vec();
+        bound_body.extend(&rest);
+        let direct = ir("2027", &chooser(&declarations, &direct_body));
+        let bound = ir("2027", &chooser(&declarations, &bound_body));
+        let lambdas = lambda_functions(&direct);
+        assert!(!lambdas.is_empty(), "{direct}");
+        assert_eq!(lambdas, lambda_functions(&bound));
+    }
+}
+
 #[test]
 fn annotated_reference_def_parameters_meet_their_conventions() {
     for (edition, source) in [
@@ -1179,6 +1221,28 @@ fn annotated_reference_def_parameters_meet_their_conventions() {
         ),
     ] {
         check(edition, &source).unwrap_or_else(|error| panic!("{edition}\n{source}\n{error:?}"));
+    }
+    // A function annotated `ref (A -> B)` binds a reference, which cannot be called, as in a
+    // lambda bound by `let`.
+    for (edition, source) in [
+        (
+            "2027",
+            "def apply :: (i64 -> i64) -> i64 -> i64 = \\(f: ref (i64 -> i64)) n -> f n\n",
+        ),
+        (
+            "2026",
+            "pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \\(f: ref (pure (i64 -> i64))) n -> f n\n",
+        ),
+        (
+            "2027",
+            "export def answer :: i64 = { let g = \\(f: ref (i64 -> i64)) (n: i64) -> f n; 0 }\n",
+        ),
+    ] {
+        assert_eq!(
+            check(edition, source).unwrap_err().code,
+            "E1005",
+            "{source}"
+        );
     }
 }
 
@@ -1273,7 +1337,9 @@ fn lambda_parameters_without_reference_annotations_keep_reading_values() {
     );
     check("2027", &fixed_first).unwrap_or_else(|error| panic!("{fixed_first}\n{error:?}"));
     // Mismatches stay errors: an exclusive reference where the convention reads, a value where
-    // it writes, and a reference where the function type has no convention (out of scope).
+    // it writes, and a reference where the function type has no convention (out of scope): the
+    // argument of `apply`, and the second stage of a `def` that binds only its first parameter,
+    // whose type is `ref string -> string -> i64`.
     for (source, code) in [
         (
             chooser(
@@ -1308,7 +1374,76 @@ fn lambda_parameters_without_reference_annotations_keep_reading_values() {
             ]),
             "E1003",
         ),
+        (
+            program(&[
+                "def both :: string -> string -> i64 = \\(a: ref string) -> \\(b: ref string) -> a.length + b.length * 10",
+                "export def answer :: i64 =",
+                "    let left = \"hello\"",
+                "    let right = \"hi\"",
+                "    both left right",
+            ]),
+            "E1003",
+        ),
     ] {
         assert_eq!(check("2027", &source).unwrap_err().code, code, "{source}");
     }
+}
+
+#[test]
+fn annotated_reference_parameters_keep_the_borrow_rules() {
+    // The reference that an annotated parameter binds is checked like that of the bound lambda:
+    // it may be returned while the argument lives, and not past it.
+    let returned = chooser(
+        &["def same_text :: string -> ref string = \\text -> text"],
+        &[
+            "    let chosen = if n > 0 then same_text else \\(text: ref string) -> text",
+            "    let text = \"hello\"",
+            "    let view = chosen (ref text)",
+            "    view.length",
+        ],
+    );
+    check("2027", &returned).unwrap_or_else(|error| panic!("{returned}\n{error:?}"));
+    let escaping = returned.replace(
+        "    let text = \"hello\"\n    let view = chosen (ref text)\n",
+        "    let view = { let text = \"hello\"; chosen (ref text) }\n",
+    );
+    assert_ne!(escaping, returned);
+    assert_eq!(
+        check("2027", &escaping).unwrap_err().code,
+        "E1013",
+        "{escaping}"
+    );
+    let generic = program(&[
+        "def keep :: 'a -> ref 'a = \\(value: ref 'a) -> value",
+        "export def answer :: i64 =",
+        "    let text = \"hello\"",
+        "    let view = keep text",
+        "    view.length",
+    ]);
+    check("2027", &generic).unwrap_or_else(|error| panic!("{generic}\n{error:?}"));
+    let generic_escaping = program(&[
+        "def keep :: 'a -> ref 'a = \\(value: ref 'a) -> value",
+        "export def answer :: i64 =",
+        "    let view = { let text = \"hello\"; keep text }",
+        "    view.length",
+    ]);
+    assert_eq!(
+        check("2027", &generic_escaping).unwrap_err().code,
+        "E1013",
+        "{generic_escaping}"
+    );
+    let exclusive = program(&[
+        COUNTER,
+        "def grab :: mut Counter -> ref mut Counter = \\(counter: ref mut Counter) -> counter",
+        "export def answer :: i64 =",
+        "    let mut a = Counter { count: 1 }",
+        "    let r = grab a",
+        "    a.count = 5",
+        "    r.count",
+    ]);
+    assert_eq!(
+        check("2027", &exclusive).unwrap_err().code,
+        "E1014",
+        "{exclusive}"
+    );
 }
