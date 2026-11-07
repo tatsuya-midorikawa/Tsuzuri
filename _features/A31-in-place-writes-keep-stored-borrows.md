@@ -540,7 +540,7 @@ closed の関数のうち、結果の型が loan を運び（`owned` でない�
 
 #### 暗黙の解放
 
-- `store_through` の局所の枝と、`E::Assign` の局所の枝（`via` が空の `join`）で、持ち主の型が `drop_runs_code` なら、格納した loan を `dropped` に足します（`F_fa_*` 13 形と `xmod_fa` を、`untracked` なしで拒否のまま保ちます）。
+- `store_through` の局所の枝と、`E::Assign` の局所の枝（`via` が空の `join`）で、持ち主の型が `drop_runs_code` なら、格納した loan を `dropped` に足します（`F_fa_*` 12 形と `xmod_fa` を、`untracked` なしで拒否のまま保ちます）。
 - `drop_inleak` のフックを足します: ブロックの終わり（移動していない局所値）、局所値全体への再代入、`Owned.drop`、値で callee へ渡すこと（callee が解放しうる）で、型が書き込む `Drop.drop`（書き込みの事実か見えない呼び出しを持つ）の値を解放するとき、その値の loan のうち場所の型がセルに届くものを書き込み先、値の loan のすべてを格納するものとして、上の「適用」と同じく扱います。
   局所の書き込み先には `store_through` で足し、外部の書き込み先へ本文の局所値に根を持つ loan を格納するなら `E1013`/`store_local_borrow_through_reference` にします。位置は、ブロックの終わりと再代入では解放する局所値の宣言、ほかは呼び出しの位置です。
 - フックは呼び出しの事実を作りません。callee の中の解放は、A28 の `dropped`（解放でコードを実行しうる値の loan を結果に残す）が呼び出し元へ伝えます。
@@ -629,3 +629,22 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 - 決定: 関数値の呼び出しは、loan を運ぶ引数と関数値自身の借用を、排他参照のすべての引数の先へ残す。部分適用を `region_callback_stores_exclusive_input` で拒否しない。
 - 理由: 基準は部分適用を受理している（`let w = Array.set 0 (\() -> 5)` など）。保守的に残すだけなら、拒否は残した借用を破る呼び出しに限られる。
 - 状態: 既定案。
+
+## 手順 1: ベースラインの記録（2026-11-08、HEAD b3dd7f1c）
+
+基準のバイナリ `target/scratch/base/tsuzuri`（HEAD `b3dd7f1c`、dev build、macOS arm64）で、154 個のプログラムの `check --json` と、受理なら `run -O0`・`run -O3`（native）を記録しました。
+プログラムと表は `target/scratch/a31/`（`baseline.md`、各プログラムは `<名前>/Main.tz`）、生の結果は `target/scratch/a31/_tools/results.json` です（監査が `target/scratch/audit-A31/` に作ったものの写し）。
+
+- 再実行: `node scripts/slot.mjs -- env BIN=<binary> node target/scratch/a31/_tools/run.mjs [名前...]`（結果は `BIN` を渡すと `_tools/results-branch.json`、`OUT` で変えられる。`EDITION=2026` で edition 2026、`JOBS` で並列数）。
+- 照合: `node target/scratch/a31/_tools/compare.mjs [分岐の結果] [基準の結果]` が、下の「危険」の 21 個はこの節の上の表の code・kind・位置で拒否、`D_ctl_drop_no_loan`・`W_upgrade`・`T_lambda_nowrite`・`W_nowrite` は基準の診断か列挙した変化、ほかは基準と同じ（受理なら同じ値、拒否なら同じ診断の列）であることを確かめ、違うものを出力して 1 で終わります。基準の結果どうしで照合すると、危険な 21 個だけを出力します（道具の自己検査）。
+- 表の作り直し: `node target/scratch/a31/_tools/report.mjs`（`RESULTS`・`OUT` で入力と出力を変えられる）。
+- 拒否の期待の根拠: 書き込みを代入（`arr[0] = ...`・`data[0] = ...`、lock は `let mut m`）にした双子を `target/scratch/a31/_twins/` に置き、基準のバイナリの診断を `_twins/results-base.txt` に記録しました。
+
+結果の要約:
+
+- 154 個のうち、受理 60 個、拒否 94 個。
+- 受理されて危険なもの（21 個。A31 の後は拒否）: `h1`〜`h4`（`-O0` は 43 億前後の不定の値、`-O3` は 0）、`h5_rc_get`（同じ）、`h7_array_return`（同じ）、`h9_ref_elements`（0/0、期待は 9）、`h6_move_after`（0/0）、`h6b_move_after_sum`（9/9、期待は 909）、`m_lock`（0/9）、`m_lock_return`（1/9）、`rw_write`（0/9）、`rw_write_return`（1/9）、`cond_lock`（0/9）、`tz_capture`（0/9）、`C_direct_stash`（0/9。`m_lock` と同じプログラム）、`D_drop_inleak`（3602879701896396803/12、期待は 12）、`N_generic_put_move`・`N_matrix_window_move`・`N_owned_value_then_move`（9/9、期待は 909）、`N_local_into_param`（0/0、期待は 9）。
+- 受理されて安全なもの（39 個。A31 の後も同じ値で受理）: 落とし穴の `P_acc_1`〜`P_acc_12`（2・6・7・7・4・2・3・4・2・6・1009・5）、`P_ref_string_set` 3、`P_pipe_set` 323、`P_fill_ref` 322、`P_pick_set` 7、`P_partial_set` 5、`P_partial_put` 1、`P_partial_matrix` 2、`P_matrix_wrapper_noregion` 4、`P_matrix_wrapper_fill` 6、`P_put_last_first` 2、`P_map_in_place_body` 5、新しい安全な形の `N_lock_read_then_move` 24、`N_partial_read_then_move` 24、`N_fnvalue_read_then_move` 24、`N_closed_cell_read` 7、`N_blit_then_mutate_source` 12、`N_rotate_then_use` 4、A28 のテストの対照 `L_ctl_1`〜`L_ctl_4`（11・9・0・42）、`O_ctl_1`・`O_ctl_2`（11・11）、`D_ctl_1`〜`D_ctl_3`（0・42・12）、`F_ctl_fa_ref` 12。値はどれも `-O0` と `-O3` で同じです。
+- 拒否されているもの（94 個）: 「A28 の事実が広げる形」と A28 の各回のテスト（`S_*`・`T_*`・`W_*`・`L_*`・`O_*`・`D_*`・`F_*`）は、チケットとテストの表と同じ位置・code・kind です（主に `Lending::untracked` による）。対照（`h0` `7:5`、`h6_assign_control` `5:13`、`h9_assign_control` `4:19`、`S_assign_control` `9:5`、`m_lock_mut_probe` `10:5`）、落とし穴の拒否（`P_sort_with_fn` は `std/Array.tz:2003:32` `task_result_retains_borrow` と `2084:15` `borrow_conflict`、`P_sort_by_fn` は `2098:15`、`P_slice_region_unsized` `1:50`、`P_slice_region_mix` `1:38`、`P_widen_*` は `store_region_unnamed` `2:13`・`2:18`・`2:15`）、`N_arc_cell_write_alias` `8:5`、`N_par_chunk` `4:27` `parallel_callback_borrows_environment`、`N_syncmap_store_fn` `8:5`、`N_local_into_param_assign` `5:5` `store_region_unnamed`。
+- edition 2026（`EDITION=2026`、`_tools/results-base-2026.json`）で違うのは、要素・フィールドへの代入を使う 19 個（`h0`・`h6_assign_control`・`h9_assign_control`・`S_assign_control`・`N_local_into_param_assign`・`F_*` 14 個）だけで、どれも `E1012`/`assign_to_immutable_place` になります。危険な 21 個と安全な 39 個（`F_ctl_fa_ref` を除く）は両方の edition で同じなので、手順 2 の Rust のテストは両方の edition で確かめます。
+- 安全な `P_*`・`N_*` を関数にした `tests/fixtures/in_place_writes/Main.tz`（手順 2 で足す suite `in_place_writes`）は、基準のバイナリで native と WASM の `-O0`・`-O3` の 28 件がすべて通りました（`node tests/features.mjs target/scratch/base/tsuzuri in_place_writes`）。
