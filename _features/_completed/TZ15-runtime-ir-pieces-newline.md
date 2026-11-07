@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | TZ02, TZ10, TZ14 |
 | 後続 | – |
-| 状態 | done（2026-11-08。4 個の `.ll` を改行で終え、単体テストがすべての `.ll` の末尾の改行を保つ。IR の違いは「仕様」の 4 種類だけ） |
+| 状態 | done（2026-11-08。4 個の `.ll` を改行で終え、単体テストがすべての `.ll` の末尾の改行を保つ。IR の違いは「仕様」の 5 種類だけ。5 種類目の wasm32 のスタック検査は第1回のレビューで足した） |
 | 起票 | 2026-11-06（TZ14 の作業中に発見。TZ14 のチケットの「レビューの指摘への対応」の「残したこと」の続き。`main` の `72f06862` と TZ14 のブランチの `2306260c` で確認） |
 | 承認 | 不要（言語の意味は変えない。生成 IR の行の分け方と、それで正しく付くようになる属性・検査だけを変える） |
 | 改善する劣位 | 潜在的な不具合: ランタイムの IR の断片のうち 4 個が改行で終わらないので、次の断片の最初の行がその `}` と同じ行に続く（`}define ...`・`}; ...`・`}@...`）。IR を行ごとに読む処理は、その行の関数を関数として見ない。今起きているのは、spawn するプログラムでその関数に `"probe-stack"` が付かないことと、その関数を呼ぶループに要らない横取りの検査が入ることである |
@@ -97,11 +97,12 @@
 ## 仕様
 
 - ランタイムの IR の断片をつないだ IR に、`}` の後に同じ行で何かが続く行が無い（`grep -n '^}.'` が何も出さない）。
-- 生成 IR の違いは次の 4 種類だけで、言語の意味・実行結果・診断は変わらない。
+- 生成 IR の違いは次の 5 種類だけで、言語の意味・実行結果・診断は変わらない（5 は第1回のレビューで足した）。
   1. `}` の後に続いていた行が、`}` の行と次の行に分かれる。
   2. `with_stack_probes` が動くプログラムで、分かれた行の関数の見出しに `"probe-stack"="inline-asm"` が付く（Windows では付かない）。
   3. spawn するネイティブのプログラムで、見落としていた関数を通してだけ重い呼び出しに数えられていたループの検査（`call void @tz.preempt.poll()`）が消える。検査が 1 つも残らなければ `POLL_DEFINITION` も消える。検査は増えない（見落としていた関数は、重い呼び出しに数えられていた宣言から、定義された関数になるだけである）。
   4. 次の断片が改行で始まるところに空の行が 1 つ増える（D1 の費用）。
+  5. wasm32 で `with_stack_checks` が動く build（spawn するモジュール、`--wasm-feature threads`、2 GiB を超える `--wasm-max-memory`。`tsuzuri test --target wasm32` も 2 GiB を超えるとき）で、分かれた行の関数の入口に `call void @tz.stack.check()`（`--trap-info` では `call void @tz.stack.check(i32 %tz.context)`）が 1 つ入る。「全関数のエントリーブロックに検査を入れる」（`docs/architecture.md`）とおりになるだけで、検査が抜けていた関数は線形メモリに frame を作らないか、作っても余白の 4096 バイトに収まる。
 - `--allocator small` の `tz_small_realloc` の ` noinline`（TZ10・TZ14）の付き方は変わらない。
 
 ## 設計
@@ -186,7 +187,7 @@
 - [x] `src/runtime/` のすべての `.ll` が改行で終わり、単体テストがそれを保つ。
 - [x] 再現 1 のプログラムの IR で、`@tz.string.copy` の見出しが自分の行にあり、`"probe-stack"="inline-asm"` を持つ（Windows を除く）。
 - [x] 再現 2 のプログラムの IR に横取りの検査が無い。
-- [x] 手順 3 の IR の比較の違いが「仕様」の 4 種類だけで、チケットに記録されている。
+- [x] 手順 3 の IR の比較の違いが「仕様」の 5 種類だけで、チケットに記録されている（5 種類目は第1回のレビューで足した）。
 - [x] T2 が成功する。
 
 ## 落とし穴
@@ -346,7 +347,7 @@ HEAD b3dd7f1c の dev ビルド（`target/scratch/base/tsuzuri`）で「現状�
 
 ### 手順 3 の IR の比較
 
-新しいコンパイラ（このブランチの dev ビルド）で、監査と同じコマンド（`build --emit llvm --no-cache -O0`。`find tests/fixtures examples -maxdepth 3 -name Main.tz` の 174 個）で出し、古い IR の `}` の後に続く行を 2 行に分けてから `diff` で比べ、違いを「仕様」の 4 種類に分類しました（作業用のスクリプト `target/scratch/tz15/compare.py` で。commit していません）。分類できない違いは、どの構成でも 0 行でした。
+新しいコンパイラ（このブランチの dev ビルド）で、監査と同じコマンド（`build --emit llvm --no-cache -O0`。`find tests/fixtures examples -maxdepth 3 -name Main.tz` の 174 個）で出し、古い IR の `}` の後に続く行を 2 行に分けてから `diff` で比べ、違いを「仕様」の 4 種類に分類しました（作業用のスクリプト `target/scratch/tz15/compare.py` で。commit していません）。分類できない違いは、どの構成でも 0 行でした。この 3 つの構成ではスタック検査（`with_stack_checks`）が動かないので、種類 5 は出ません。スタック検査の動く wasm32 の構成は、第1回のレビューで種類 5 を見つけて調べ直しました（下の「レビューの指摘への対応（第1回）」の表）。
 
 | 構成 | byte 単位で同じ | 違う | 拒否（前後で同じ診断） | 種類 1（分かれた行） | 種類 2（`"probe-stack"`） | 種類 3（検査） | 種類 4（空の行） | 新しい IR の `^}.` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -424,7 +425,7 @@ HEAD b3dd7f1c の dev ビルド（`target/scratch/base/tsuzuri`）で「現状�
 
 ### チケットから外れた判断
 
-- 停止条件に当たる事態は起きませんでした（IR の違いは「仕様」の 4 種類だけ、`llvm_strings` の加工は末尾の改行に依らない、native と WASM・`-O0` と `-O3` の結果は同じ）。
+- 実装の時点では、停止条件に当たる事態は起きませんでした（調べた構成では IR の違いは「仕様」の 4 種類だけ、`llvm_strings` の加工は末尾の改行に依らない、native と WASM・`-O0` と `-O3` の結果は同じ）。第1回のレビューで、調べていなかったスタック検査の動く wasm32 の構成に 5 種類目の違いが見つかりました。停止条件の読み替えに従って、検査が入るほうを採り（契約どおりで、検査を足すほうが保守的です）、「仕様」に足しました。
 - 再検討のとおり、統合テストの再現 1・2 は `StringForm::Utf16` に固定し、3 つ目の例を足しました。`analyze` は edition 2026 なので、3 つ目の例は `Debug.print 1` でなく `Debug.print (ref 1)` と書きました（edition 2026 の `Debug.print` は `ref` を取ります。継ぎ目は同じ `debug.ll` → `integer.ll` です）。
 - 「すべての `define` が `"probe-stack"` を持つ」の確認は、`@tz.preempt.poll` と `@tz.trap.*` を除きます（再検討の 4）。`define ` を含む行は、行の途中のものも数えます。
 - 性能の節の「`--emit asm`」は、その出力の種類が無いので、`-O3` の実行ファイルの逆アセンブルで代えました（上の「生成コードの確認」）。
@@ -433,7 +434,7 @@ HEAD b3dd7f1c の dev ビルド（`target/scratch/base/tsuzuri`）で「現状�
 
 ### 文書
 
-- `docs/architecture.md`: TZ02 の `with_stack_probes` の段落（見出しとみる行と、`"probe-stack"` が付かない関数が `@tz.preempt.poll`・`@tz.trap.*` だけになったこと）、TZ14 の `helpers_may_wait` の段落（`runtime_definitions` の分け方は備えとして残す）、§フロントエンドのトラップの走査の段落（TZ15 からは継ぎ目が無く、`ir_lines` は備え）、PR08 の `stamp_target_attributes` と B10 の `with_frame_pointers` の `}define` の記述（備えと分かるように）。
+- `docs/architecture.md`: TZ02 の `with_stack_probes` の段落（見出しとみる行と、`"probe-stack"` が付かない関数は probe の後で足す関数だけになったこと。第1回のレビューで、native の `--emit llvm` のほかの出力で後から足す関数も並べました）、TZ14 の `helpers_may_wait` の段落（`runtime_definitions` の分け方は備えとして残す）、§フロントエンドのトラップの走査の段落（TZ15 からは継ぎ目が無く、`ir_lines` は備え）、PR08 の `stamp_target_attributes` と B10 の `with_frame_pointers` の `}define` の記述（備えと分かるように）。
 - `_tsuzuri/language-reference/`・`docs/language.md`・`README.md`: 変更不要（利用者から見える振る舞いは変わりません。`grep -rn "TZ15\|probe-stack\|tz.string.copy" _tsuzuri docs/language.md README.md` で、関係する記述が無いことを確かめました）。
 - `_features/README.md`: TZ15 の 2 つの行を done にし、`_completed/` へのリンクにしました。`_features/_completed/TZ14-thread-storage-across-parallel-waits.md` の TZ15 へのリンクも直しました。
 
@@ -448,3 +449,64 @@ HEAD b3dd7f1c の dev ビルド（`target/scratch/base/tsuzuri`）で「現状�
 - `tests/lto.rs`・`tests/llvm_handoff.rs`・`tests/llvm_handoff.mjs`（注釈）
 - `docs/architecture.md`
 - `_features/README.md`、`_features/_completed/TZ14-thread-storage-across-parallel-waits.md`、このチケット（`_features/_completed/` へ移動）
+
+### レビューの指摘への対応（第1回）
+
+6 件の指摘をすべて再現し、どれも実際の問題でした（1 は記録の漏れ、2・4 は文書の言い過ぎ、3・5・6 は古い注釈）。コードの処理は変えていません。
+
+1. **[minor] wasm32 のスタック検査が、`}` の後に続いていた関数にも入る（「仕様」に無い 5 種類目の違い）**: 再現しました。
+   - 再現 1 のプログラムを `--target wasm32 --wasm-feature jspi` で出すと、`call void @tz.stack.check` は基準の 104 個からこのブランチの 105 個になります。増えたのは `@tz.string.copy` の入口の 1 つです。
+   - `with_stack_checks` は `define ` で始まり `{` で終わる行を見出しとみるので、TZ15 より前は `}define ...` の行の関数に検査が入っていませんでした。
+   - 停止条件の読み替えに従って、検査が入るほうを採りました。`docs/architecture.md` の「全関数のエントリーブロックに検査を入れる」とおりになり、検査を足すほうが保守的です。
+   - 「仕様」に種類 5 を足し、「状態」・受け入れ条件・`_features/README.md` の 2 つの行・「チケットから外れた判断」を直しました。
+   - `docs/architecture.md` のスタック検査の段落に、見出しとみる行と TZ15 の前後の違いを書きました。
+   - 前の抜けに害が無かった理由は、`-O0` の wasm32 の object を逆アセンブルして確かめました。`@tz.string.copy`・`@tz.closure.clone` は `__stack_pointer` を動かしません。`@tz.display.join` は 16 バイトの frame を作りますが、呼び出し元の検査が残す 4096 バイトの余白に収まり、そこから呼ぶ関数はそれぞれ検査します。
+     - 指摘は「これらの関数は線形メモリに frame を持たない」としていました。`@tz.display.join` には当てはまらないので、文書ではこの理由で書きました。
+   - 回帰テスト: `tests/tzroutine.rs` の `wasm_stack_checks_reach_the_function_after_each_runtime_piece`。
+     - 2 つの構成で確かめます。spawn するモジュール（`--wasm-feature jspi`、`StackBounds::Switched`）と、`--wasm-max-memory 3GiB`（`StackBounds::Main`）です。
+     - CLI の `--emit llvm` に `TSUZURI_STRINGS=utf16` を渡します。compact の形では修正の前から継ぎ目が無いので、PM03 の job でも形を固定するためです。
+     - (a) `}` の後に何か続く行が無い、(b) `@tz.string.copy` の見出しが `define ` で始まる、(c) 見出しの次が `entry:` と `  call void @tz.stack.check()` である、を確かめます。spawn するほうでは、見出しが `"probe-stack"="inline-asm"` を持つことも確かめます。
+     - 4 個の `.ll` を `b3dd7f1c` の内容に戻すと、このテストは失敗します（下の「実行したコマンド」）。
+   - スタック検査の動く構成で、174 個の project を調べ直しました（`build --emit llvm --no-cache -O0`。基準と新しいコンパイラで出し、`target/scratch/tz15/compare2.py` で分類）。分類できない違いは、どの構成でも 0 行でした。
+
+     | 構成 | byte 単位で同じ | 違う | 拒否（前後で同じ診断） | 種類 1（分かれた行） | 種類 4（空の行） | 種類 5（スタック検査） | 新しい IR の `^}.` |
+     | --- | --- | --- | --- | --- | --- | --- | --- |
+     | `--target wasm32 --wasm-max-memory 3GiB` | 139 | 19 | 16 | 18 個・22 行 | 1（`concurrency`） | 9 | 0 |
+     | 同じ構成に `--trap-info` | 148 | 10 | 16 | 0（`ir_lines` が前から分けていた） | 1（`concurrency`） | 9（`@tz.stack.check(i32 %tz.context)`） | 0 |
+     | `--target wasm32 --wasm-feature jspi` | 139 | 19 | 16 | 18 個・22 行 | 1（`concurrency`） | 0（wasm32 で build できる fixture は spawn しない） | 0 |
+
+     - 種類 2・3 は、どの構成でも 0 です。
+     - 種類 5 が出る 9 個は、`chars`・`compact_strings`・`compact_strings_raw`・`string_interpolation`（`@tz.string.copy`）、`debug_view`・`generic_records`・`last_use`（`@tz.closure.clone`）、`deriving`・`llvm_handoff/tree`（`@tz.display.join`）です。どれも検査が 1 つ増えるだけです。
+     - `--wasm-feature threads` は `--emit llvm` を受け付けません。そこで、`--emit object` の object の `@tz.stack.check` への再配置を数えました。`debug_view` は 95 → 96、`deriving` は 675 → 676 です。`chars` は 150 のままで、object も byte 単位で同じでした。
+   - 実行結果: `export` した関数（`to_string 'x'` と `to_string [1, 2, 3]` の長さに引数を足す）を `--target wasm32 --wasm-max-memory 3GiB` で build し、Node で呼びました。引数が 5 のとき、基準とこのブランチの `-O0`・`-O3` の 4 つとも 15 でした（手で数えた 1 + 9 + 5）。IR の検査は 76 → 77 個です。
+2. **[minor] `docs/architecture.md` の「`"probe-stack"` が付かないのは `@tz.preempt.poll` と `@tz.trap.*` だけ」は、wasm32 では正しくない**: 再現しました。
+   - 再現 1 の wasm32 の IR では、`"probe-stack"` の無い見出しが 17 個あります。`@tz.stack.check`、`wasm.ll` の i128 の補助関数、`tzroutine-jspi.ll` の関数（`@tsuzuri_tz_entry` など）です。
+   - TZ02 の段落を書き直しました。今の文は次のとおりです。
+     - `with_stack_probes` に渡る IR の関数にはすべて付き、付かないのは probe の後で足す関数です。
+     - native の `--emit llvm` では、それは `@tz.preempt.poll`・`@tz.trap.*` です。
+     - wasm32 の spawn するモジュールでは、`@tz.stack.check`、i128 の補助関数、`tzroutine-jspi.ll` の関数、`--trap-info` の `@tz.trap.report`・`@tsuzuri_trap_site` にも付きません。
+     - native の実行ファイル・object・shared・bitcode では、F08 の `@cpu` の振り分けの関数にも付きません。
+     - どれも TZ15 の前から同じです。
+   - `tests/tzroutine.rs` の `runtime_pieces_start_on_lines_of_their_own` の注釈も、「この native の IR では」と範囲を書きました（テストは native の IR だけを見るので、確認の内容は変えていません）。
+3. **[minor] `tests/fixtures/llvm_handoff/tree/Main.tz` の注釈が、`recursive.ll` は改行で終わらないと書いたまま**: 再現しました（このブランチの IR に `^}.` の行は 0 行で、基準には 2 行）。
+   - 注釈を「TZ15 より前は……」の形に直し、今はすべての断片が改行で終わると書きました。
+   - 注釈の行の数は変えていないので、ソースの位置は変わりません。
+4. **[minor] 2 と同じ文が、wasm32 と `@cpu` の振り分けの関数でも正しくない**: 2 と同じ直しで対応しました。
+   - `src/llvm_cpu.rs` の振り分けの関数は、`emit_native` の中で `emit_program` の後（`cpu::multiversion`）に足され、見出しに `"probe-stack"` を持ちません。
+   - これは native の `--emit llvm` には現れません（`emit_native_build_numbered` を使うのは実行ファイル・object・shared・bitcode だけです）。
+5. **[minor] 3 と同じ fixture の注釈と、`tree_channel/Main.tz` の「改行を関数と一緒に失う」**: 再現しました。
+   - `tests/fixtures/llvm_handoff/tree_channel/Main.tz` の注釈も「TZ15 より前は……失いました」に直しました。行の数は同じです。
+6. **[minor] `tests/llvm_handoff.rs` の `defined` と `context_without_parameter` の注釈が、ランタイムの断片が `}` の後に続くと書いたまま**: 再現しました（`rg` で 2 件）。
+   - 2 つとも「TZ15 より前は続くことがありました。今は改行で終わり、分け方は別の形でつないだ IR への備えとして残します」に直しました。コードは変えていません。
+
+実行したコマンド（第1回の対応）:
+
+- 修正の前の確認: 4 個の `.ll` を `b3dd7f1c` の内容に戻して `cargo test --locked --test tzroutine wasm_stack_checks` を回しました。`running 1 test` で失敗し、`}` の後に続く行 `"}define internal void @tz.string.copy(ptr %to, ptr %from, i64 %length) nounwind {"` を報告しました。戻した後は成功します。
+- T0: `cargo fmt --all -- --check`（成功）、`cargo clippy --all-targets -- -D warnings`（警告なし）。
+- T1: `cargo nextest run --locked --no-fail-fast` で 2,984 件すべて成功しました（新しいテストの 1 件が増えました。4 件 skip）。
+- `TSUZURI_STRINGS=compact cargo test --locked --test tzroutine --test llvm_handoff`（PM03 の job と同じ形）: 24 件と 13 件で、すべて成功しました。
+- node の suite（`cargo build --locked` の dev のバイナリ）: `node tests/tzroutine_wasm.mjs`（JSPI の tzroutine、`-O0`・`-O3`）、`node tests/wasm_memory.mjs`（2 GiB を超えるメモリとスタック検査、`-O0`・`-O3`）、`node tests/llvm_handoff.mjs`（`tree`・`tree_channel` を含む）、`node tests/wasm_threads.mjs`。すべて成功しました。
+- `node scripts/check-guide-lite.mjs`（88 件、失敗 0）、`node scripts/check-links.mjs --into _features/_completed/TZ15-runtime-ir-pieces-newline.md --into _features/README.md`（壊れたもの 0）。
+- 言語リファレンスのページ・`docs/language.md`・`README.md` は変えていません（利用者から見える振る舞いは変わりません）。
+
+変更したファイル（第1回の対応）: `tests/tzroutine.rs`（回帰テストと `emitted_ir_with`、native のテストの注釈）、`tests/llvm_handoff.rs`・`tests/fixtures/llvm_handoff/tree/Main.tz`・`tests/fixtures/llvm_handoff/tree_channel/Main.tz`（注釈）、`docs/architecture.md`（TZ02 の段落とスタック検査の段落）、`_features/README.md`、このチケット。

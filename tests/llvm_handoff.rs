@@ -40,7 +40,8 @@ fn sources(text: &str) -> Vec<TrapSource<'_>> {
 /// The names that `ir` defines, such as `@tz.fn.Main.used`.
 fn defined(ir: &str) -> BTreeSet<String> {
     ir.lines()
-        // A runtime part can follow the closing brace of the function before it on the same line.
+        // Before TZ15 a runtime part could follow the closing brace of the function before it on the same line. The
+        // runtime parts end with a newline now; the split stays as a guard for IR that is joined in another way.
         .map(|line| line.strip_prefix('}').unwrap_or(line))
         .filter(|line| line.starts_with("define "))
         .filter_map(|line| {
@@ -372,7 +373,8 @@ fn context_without_parameter(ir: &str) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     let mut open: Option<(String, bool)> = None;
     for raw in ir.lines() {
-        // A runtime part can follow the closing brace of the function before it on the same line.
+        // Before TZ15 a runtime part could follow the closing brace of the function before it on the same line. The
+        // runtime parts end with a newline now; the split stays as a guard for IR that is joined in another way.
         let line = match raw.strip_prefix('}') {
             Some(rest) if !rest.is_empty() => {
                 open = None;
