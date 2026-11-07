@@ -306,9 +306,12 @@ HEAD の dev binary（`target/scratch/base/tsuzuri`）で、「再現」、「�
 
 - `cargo fmt --all -- --check`: 成功。
 - `cargo clippy --all-targets -- -D warnings`: 成功。
-- `cargo nextest run --locked`: 2985 tests run: 2985 passed, 4 skipped。
+- `cargo nextest run --locked`: 2985 tests run: 2985 passed, 4 skipped（手順 3 の後と、文書とこのチケットを直した後の 2 回。base は 2980 件）。
 - `node tests/features.mjs target/debug/tsuzuri conventions`: 成功（43 cases）。
+- `node tests/features.mjs target/debug/tsuzuri`（全 suite）: `features: 25173 cases passed`（native と WASM の `-O0`・`-O3`）。
 - `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/ownership-and-memory/borrowing.md _tsuzuri/language-reference/values-and-functions/functions.md _tsuzuri/language-reference/values-and-functions/lambda-expressions.md`: 成功（3 pages, 69 links, 46 checked examples, 92 native runs）。
+- `node scripts/check-guide-lite.mjs`: 88 references checked, 0 failed。`node scripts/check-links.mjs --into _features/README.md`: 0 broken。`node scripts/check-links.mjs`: 0 broken。
+- 診断の登録簿と std のタグは変えていないので、`gen-docs`・`check-cli-docs` は要りません。`src/runtime/` も変えていません。
 
 ### チケットから外れた判断
 
