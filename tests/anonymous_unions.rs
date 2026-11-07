@@ -283,3 +283,23 @@ fn parses_in_both_editions() {
         assert_eq!(tree.matches("TypeTest(").count(), 2, "{edition:?}");
     }
 }
+
+// Step 3: the declarations behind anonymous unions.
+
+#[test]
+fn programs_without_the_syntax_synthesize_nothing() {
+    for source in [
+        "def f :: i64 -> i64 = \\x -> x\n",
+        "union Shape = Dot | Line of (i64 * i64)\ndef f :: (i64) -> i64 = \\x -> x\n",
+    ] {
+        let module = tsuzuri::analyze(source).unwrap();
+        assert!(
+            module.unions.iter().all(|union| !union.is_anonymous()),
+            "{source}"
+        );
+        assert!(
+            module.unions.iter().all(|union| !union.name.contains('$')),
+            "{source}"
+        );
+    }
+}

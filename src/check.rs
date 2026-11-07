@@ -9,6 +9,8 @@ use crate::parallel::{Parallelism, ordered_for_each_owned};
 pub use crate::syntax::Provenance;
 use crate::syntax::*;
 
+#[path = "anonymous_union.rs"]
+mod anonymous_union;
 #[path = "closures.rs"]
 mod closures;
 use closures::LambdaKind;
@@ -4730,6 +4732,12 @@ impl CheckedUnion {
     pub fn module(&self) -> &str {
         self.name.rsplit_once('.').map_or("", |(module, _)| module)
     }
+
+    /// Whether this is a synthesized declaration behind anonymous unions `(A | B)` (A24), whose
+    /// name no program can write or show.
+    pub fn is_anonymous(&self) -> bool {
+        anonymous_union::is_anonymous_name(&self.name)
+    }
 }
 
 fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
@@ -5736,6 +5744,9 @@ struct Names {
     handle_aliases: BTreeMap<String, Vec<String>>,
     /// Number of type parameters of each record declaration, by record id.
     record_arities: Vec<usize>,
+    /// The qualified name of each record declaration, by record id: the canonical order of anonymous
+    /// union members compares records by name before they are checked (A24).
+    record_names: Vec<String>,
     /// Whether each type parameter of a record is a length parameter `const N: i64` (A16).
     record_lengths: Vec<Box<[bool]>>,
     /// Unions share the type namespace with records and classes.
@@ -5743,6 +5754,11 @@ struct Names {
     union_aliases: BTreeMap<String, Vec<String>>,
     union_arities: Vec<usize>,
     union_lengths: Vec<Box<[bool]>>,
+    /// The qualified name of each union declaration, by union id, as `record_names` (A24).
+    union_names: Vec<String>,
+    /// The ids of the synthesized declarations `$anonymous.Union$n`, from n = 2: empty unless some
+    /// module writes an anonymous union or a type test (A24).
+    anonymous_unions: Vec<usize>,
     /// Union cases by qualified `Module.Case`; a module declares each case name once.
     cases: BTreeMap<String, CaseInfo>,
     case_aliases: BTreeMap<String, Vec<String>>,
@@ -8007,6 +8023,7 @@ fn check_modules_collect(
             diagnostics.push(duplicate_of(&record.name, first));
             continue;
         }
+        names.record_names.push(qualified.clone());
         names
             .record_aliases
             .entry(record.name.text.clone())
@@ -8048,6 +8065,19 @@ fn check_modules_collect(
         }
     }
     names.flush_renamed(diagnostics).check()?;
+    // The generic declarations behind anonymous unions (A24), after every other union, only when
+    // some module writes the syntax: a program without it keeps every id and output.
+    let anonymous_declarations = if modules
+        .iter()
+        .any(|module| module.program.uses_anonymous_unions)
+    {
+        names
+            .modules
+            .insert(anonymous_union::MODULE.to_owned(), ModuleOrigin::Std);
+        anonymous_union::declarations()
+    } else {
+        Vec::new()
+    };
     let union_declarations: Vec<_> = modules
         .iter()
         .flat_map(|module| {
@@ -8057,8 +8087,15 @@ fn check_modules_collect(
                 .iter()
                 .map(|union| (module.name, union))
         })
+        .chain(
+            anonymous_declarations
+                .iter()
+                .map(|union| (anonymous_union::MODULE, union)),
+        )
         .collect();
     collect_unions(&union_declarations, &mut names, diagnostics)?;
+    let first_anonymous = union_declarations.len() - anonymous_declarations.len();
+    names.anonymous_unions = (first_anonymous..union_declarations.len()).collect();
     // Classes, records, and unions share one type namespace, so `Name<'a>` always has one meaning.
     names.classes.extend(
         polymorph::BUILTIN_CLASSES
@@ -9975,6 +10012,16 @@ fn collect_unions(
                 ));
             }
             let qualified = format!("{module}.{}", name.text);
+            if *module == anonymous_union::MODULE {
+                // A24: only the tables by id. No name table holds the synthesized declarations
+                // or their cases, so no lookup, suggestion or listing can find them.
+                names.union_names.push(qualified);
+                names.union_arities.push(union.parameters.len());
+                names
+                    .union_lengths
+                    .push(vec![false; union.parameters.len()].into());
+                return Ok(());
+            }
             if matches!(name.text.as_str(), "Array" | "Vec" | "Rc" | "Arc")
                 || polymorph::BUILTIN_CLASSES.contains(&name.text.as_str())
                 || names.records.contains_key(&qualified)
@@ -9992,6 +10039,7 @@ fn collect_unions(
                     visibility: union.visibility,
                 },
             );
+            names.union_names.push(qualified.clone());
             names
                 .union_aliases
                 .entry(name.text.clone())
@@ -10013,6 +10061,9 @@ fn collect_unions(
     }
     diagnostics.check()?;
     for (id, (module, union)) in declarations.iter().enumerate() {
+        if *module == anonymous_union::MODULE {
+            continue;
+        }
         for (case, declaration) in union.cases.iter().enumerate() {
             if diagnostics.is_full() {
                 break;
