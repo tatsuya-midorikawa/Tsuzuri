@@ -36,6 +36,8 @@ edition 2027 の通常の `def` では、無印の
 
 裸の型変数と関数型も共有借用です。本体では値の読み取り view を使うため、引数を読むたびに
 `*` を書く必要はありません。借用した型変数の値を返す場合は `Copy` が必要です。
+右辺のラムダで引数を参照の型と注釈すると（`def size :: 'a -> i64 = \(value: ref 'a) -> 3`）、
+view ではなく、注釈のとおり `ref 'a` の局所として束縛します。
 消費して返す恒等関数は `def identity :: own 'a -> 'a = \value -> value` と書きます。
 数値などの小さな具体型、`dyn`、SIMD と可変束縛引数は値渡しのままです。
 明示の `ref`／`ref mut` と region を指定した引数は変わらず、返却型やコールバックの中の引数も補完しません。
@@ -74,6 +76,24 @@ let mut counter = Counter { value: 40 }
 counter |> bump 2
 counter.value
 ```
+
+右辺のラムダで `\step (counter: ref mut Counter) -> …` と排他参照の型を注釈すると、
+引数は値 view ではなく `ref mut Counter` の局所になります。field への代入は同じように書けます。
+同じラムダを、`bump` の型が期待される位置（`if c then bump else \(step: i64) (counter: ref mut Counter) -> …`）へ直接書くこともできます。
+
+```tsuzuri run=42
+record Counter { value: i64 }
+def bump :: i64 -> mut Counter -> unit = \step (counter: ref mut Counter) ->
+    counter.value = counter.value + step
+let mut counter = Counter { value: 40 }
+counter |> bump 2
+counter.value
+```
+
+右辺のラムダの本体にさらにラムダを書き、外側のラムダがパターンの引数を持つと（`\(a: ref string) -> \(b: ref string) -> …`）、
+`def` が受け取るのは外側の引数だけで、内側の引数は規約を補完されない値の引数になります
+（`def both :: string -> string -> i64` の型は `ref string -> string -> i64`）。そのため内側の `ref string` の注釈は `E1003` です。
+引数は 1 つのラムダに並べて書きます（`\(a: ref string) (b: ref string) -> …`）。
 
 可変な所有者または排他参照を通じて、record の field と配列・リスト・Vec・固定長配列の
 要素を代入できます。文字列の要素は不変です。右辺、代入先（添字を含む）、古い値の drop、

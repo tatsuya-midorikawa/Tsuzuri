@@ -101,6 +101,27 @@ add 20 22
 42
 ```
 
+注釈には参照の型（`\(text: ref string) -> …`、`\(counter: ref mut Counter) -> …`、参照の型の別名）も書けます。edition 2027 の `def text_length :: string -> i64` の値のように、引数規約 `[Read]`・`[Mut]` を持つ関数型が期待される位置へ直接書いても、`let` で束縛してから使っても、その引数は注釈のとおり参照になり、ラムダの型も同じです。注釈の無い引数と、`\(text: string) -> …` のように値の型を注釈した引数は、その位置では参照先の値を読みます（[引数の所有権](./functions.md#引数の所有権own-と-edition-2027)）。
+
+```tsuzuri run=5005
+def text_length :: string -> i64 = \text -> text.length
+
+def pick :: i64 -> i64 = \n ->
+    let chosen = if n > 0 then text_length else \(text: ref string) -> text.length * 10
+    let text = "hello"
+    chosen (ref text)
+
+pick 3 + pick (-3) * 100
+```
+
+実行結果:
+
+```text
+5005
+```
+
+期待型の引数がまだ決まっていない型の参照のとき（`def inspect :: 'a -> i64` の値と並べた `if`）は、今も注釈を参照先の値と比べます。`\(text: ref string) -> …` の型は `ref ref string -> i64` になり、`ref string` を渡す呼び出しは `E1003` です。ラムダを先に `let` で束縛すると `ref string -> i64` になります。規約の無い関数型の引数（`def apply :: (string -> i64) -> i64` の `apply (\(text: ref string) -> …)`）は値の引数なので、`ref string` の注釈は `E1003` です。`let` で束縛した関数値なら、値の引数へ合わせる adapter が作られるので渡せます。
+
 `\(left, right) ->` はタプルを 1 つ受けて分解します。カリー化された 2 引数関数ではないので、呼び出しは `total (20, 22)` です。
 
 ```tsuzuri run=42

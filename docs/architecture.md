@@ -1565,7 +1565,12 @@ region 契約を読む前に宣言の引数型にも同じ表面上の補完を�
 `Type::Function` の box 化した `FunctionParameters` は物理引数型と `Own`・`Read`・`Mut` の規約を保持します。
 全引数が `Own` の metadata は空に正規化し、2026 の型同一性を保ちます。規約は型変数の中へ埋めず、
 単相化・部分適用・型の解決で引数リストと一緒に引き継ぎます。読み取り・可変引数の本体と contextual lambda は
-参照先の値 view を使います。callback の adapter は既存の Copy・loan 検査を通し、callback 自体の構築は 1 回だけです。
+参照先の値 view を使います（`read_value_parameters`）。例外は A32 の、参照の型を注釈した引数です。
+`closures::parameter_annotations` が本体の先頭の `MatchOrigin::LambdaDestructuring` の連なりから引数の最上位の注釈を集め、
+`Checker::binds_annotated_reference` が、注釈が `resolve_type_with_kinds` で参照の型に解決され、参照先の型が
+`Infer`・`Reference`・`Application`・`Partial`・誤りのどれでもないと確かめたときだけ、`lambda` と `def` の引数の束縛は view にしません。
+このとき view は注釈と `unify` で決して合わないので、変わるのは型エラーだったプログラムだけで、その引数の型と生成コードは
+`let` で束縛したラムダと同じです。callback の adapter は既存の Copy・loan 検査を通し、callback 自体の構築は 1 回だけです。
 `BORROWING_APIS` は 2027 の Array／List の読み取り入口と Vec の可変入口、および旧版を保存する `_owned` 入口をまとめます。
 `Vec.push_mut` は `Vec.push_owned` と異なる builtin identity と LLVM helper を持ち、混在版の ABI を衝突させません。
 
