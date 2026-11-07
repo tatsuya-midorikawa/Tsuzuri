@@ -336,6 +336,7 @@ diagnostic_kinds! {
         (UpdateDropTypeValue, "update_drop_type_value", "E1012"),
         (UseAfterMove, "use_after_move", "E1012"),
         // E1013
+        (AnonymousUnionBorrowedMember, "anonymous_union_borrowed_member", "E1013"),
         (AssignmentExtendsBorrow, "assignment_extends_borrow", "E1013"),
         (BorrowAcrossAsyncBoundary, "borrow_across_async_boundary", "E1013"),
         (BorrowFieldWithoutRegion, "borrow_field_without_region", "E1013"),
@@ -453,6 +454,7 @@ diagnostic_kinds! {
         (UnknownTypeClass, "unknown_type_class", "E1016"),
         // E1017
         (AndGroupTooLarge, "and_group_too_large", "E1017"),
+        (AnonymousUnionMemberLimit, "anonymous_union_member_limit", "E1017"),
         (CapabilityAnalysisLimit, "capability_analysis_limit", "E1017"),
         (ClassConstraintLimit, "class_constraint_limit", "E1017"),
         (ContractLineLimit, "contract_line_limit", "E1017"),
@@ -684,6 +686,10 @@ diagnostic_kinds! {
         (RemovedTaskExpression, "removed_task_expression", "E1040"),
         (RemovedTaskType, "removed_task_type", "E1040"),
         (RenamedToDataChannel, "renamed_to_data_channel", "E1040"),
+        // E1041
+        (AnonymousUnionDuplicateMember, "anonymous_union_duplicate_member", "E1041"),
+        (AnonymousUnionIndistinctMembers, "anonymous_union_indistinct_members", "E1041"),
+        (AnonymousUnionTypeVariable, "anonymous_union_type_variable", "E1041"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),
         (AuditUsage, "audit_usage", "E2000"),

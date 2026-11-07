@@ -445,6 +445,12 @@ impl Type {
     }
 
     pub fn display(&self, types: &TypeContext<'_>) -> String {
+        self.display_with(types)
+    }
+
+    /// `display` with the declaration names of `names`, which `Names` provides before the
+    /// declarations are checked (A24).
+    pub(crate) fn display_with(&self, names: &dyn DeclarationNames) -> String {
         match self {
             Self::Error => "an erroneous type".into(),
             // A length parameter `#N` (A16) reads as its declared name.
@@ -453,13 +459,13 @@ impl Type {
                 None => format!("'{name}"),
             },
             Self::Infer(_) => "an undetermined type".into(),
-            Self::Partial(partial) => partial.display(types),
+            Self::Partial(partial) => partial.display_with(names),
             Self::Application(head, arguments) => format!(
                 "{}<{}>",
-                head.display(types),
+                head.display_with(names),
                 arguments
                     .iter()
-                    .map(|ty| ty.display(types))
+                    .map(|ty| ty.display_with(names))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -474,7 +480,7 @@ impl Type {
             Self::String => "string".into(),
             Self::Utf8String => "utf8string".into(),
             Self::Reference(ty, mutable) => {
-                let inner = ty.display(types);
+                let inner = ty.display_with(names);
                 let inner = if matches!(**ty, Self::Function(..)) {
                     format!("({inner})")
                 } else {
@@ -482,17 +488,21 @@ impl Type {
                 };
                 format!("ref {}{inner}", if *mutable { "mut " } else { "" })
             }
+            // A24: an anonymous union reads as its members, never as its synthesized declaration.
+            Self::Union(id, args) if anonymous_union::is_anonymous_name(names.union_name(*id)) => {
+                anonymous_union::display(args, names)
+            }
             Self::Record(id, args) | Self::Union(id, args) => {
                 let mut text = type_display(match self {
-                    Self::Record(..) => &types.records[*id].name,
-                    _ => &types.unions[*id].name,
+                    Self::Record(..) => names.record_name(*id),
+                    _ => names.union_name(*id),
                 });
                 if !args.is_empty() {
                     text.push('<');
                     text.push_str(
                         &args
                             .iter()
-                            .map(|arg| arg.display(types))
+                            .map(|arg| arg.display_with(names))
                             .collect::<Vec<_>>()
                             .join(", "),
                     );
@@ -500,22 +510,26 @@ impl Type {
                 }
                 text
             }
-            Self::Vec(element) => format!("Vec<{}>", element.display(types)),
+            Self::Vec(element) => format!("Vec<{}>", element.display_with(names)),
             Self::Array(element) => {
-                format!("[{}]", element.display(types))
+                format!("[{}]", element.display_with(names))
             }
-            Self::ArrayView(element) => format!("[{}..]", element.display(types)),
+            Self::ArrayView(element) => format!("[{}..]", element.display_with(names)),
             Self::FixedArray(element, length) => {
-                format!("[{}; {}]", element.display(types), length.display(types))
+                format!(
+                    "[{}; {}]",
+                    element.display_with(names),
+                    length.display_with(names)
+                )
             }
             Self::Length(length) => length.to_string(),
-            Self::List(element) => format!("[|{}|]", element.display(types)),
+            Self::List(element) => format!("[|{}|]", element.display_with(names)),
             Self::Tuple(elements) => format!(
                 "({})",
                 elements
                     .iter()
                     .map(|ty| {
-                        let text = ty.display(types);
+                        let text = ty.display_with(names);
                         if matches!(ty, Self::Function(..)) {
                             format!("({text})")
                         } else {
@@ -528,23 +542,23 @@ impl Type {
             Self::Once(_) => "tzroutine body".into(),
             Self::Handle(name) => type_display(name),
             Self::Dyn(dyn_type) => dyn_type.display(),
-            Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display(types)),
+            Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display_with(names)),
             Self::Function(parameters, _) if parameters.pure => {
                 let mut ordinary = self.clone();
                 let Self::Function(parameters, _) = &mut ordinary else {
                     unreachable!()
                 };
                 parameters.pure = false;
-                format!("pure ({})", ordinary.display(types))
+                format!("pure ({})", ordinary.display_with(names))
             }
             Self::Function(parameters, result) if parameters.is_empty() => {
-                format!("fn() -> {}", result.display(types))
+                format!("fn() -> {}", result.display_with(names))
             }
             Self::Function(parameters, result) => {
                 let mut parts: Vec<_> = parameters
                     .iter()
                     .map(|parameter| {
-                        let text = parameter.display(types);
+                        let text = parameter.display_with(names);
                         if matches!(parameter, Self::Function(..)) {
                             format!("({text})")
                         } else {
@@ -552,7 +566,7 @@ impl Type {
                         }
                     })
                     .collect();
-                parts.push(result.display(types));
+                parts.push(result.display_with(names));
                 parts.join(" -> ")
             }
         }
@@ -1266,6 +1280,34 @@ impl Type {
 pub struct TypeContext<'a> {
     pub records: &'a [CheckedRecord],
     pub unions: &'a [CheckedUnion],
+}
+
+/// The qualified names of the record and union declarations by id, which `Type::display_with`
+/// writes: the checked declarations have them, and so does `Names` before they are checked, when
+/// an anonymous union type is resolved (A24).
+pub(crate) trait DeclarationNames {
+    fn record_name(&self, id: usize) -> &str;
+    fn union_name(&self, id: usize) -> &str;
+}
+
+impl DeclarationNames for TypeContext<'_> {
+    fn record_name(&self, id: usize) -> &str {
+        &self.records[id].name
+    }
+
+    fn union_name(&self, id: usize) -> &str {
+        &self.unions[id].name
+    }
+}
+
+impl DeclarationNames for Names {
+    fn record_name(&self, id: usize) -> &str {
+        &self.record_names[id]
+    }
+
+    fn union_name(&self, id: usize) -> &str {
+        &self.union_names[id]
+    }
 }
 
 impl TypeContext<'_> {
@@ -6167,6 +6209,13 @@ fn entry_signature(signature: &Signature) -> bool {
 }
 
 impl Names {
+    /// Whether union `id` is a synthesized declaration behind anonymous unions (A24).
+    fn is_anonymous_union(&self, id: usize) -> bool {
+        self.union_names
+            .get(id)
+            .is_some_and(|name| anonymous_union::is_anonymous_name(name))
+    }
+
     /// Moves the `E1040`s of `renamed` into `diagnostics`.
     fn flush_renamed<'d>(&self, diagnostics: &'d mut Diagnostics) -> &'d mut Diagnostics {
         for error in self.renamed.lock().expect("renamed names").drain(..) {
@@ -10451,7 +10500,11 @@ fn resolve_type_with_kinds(
             parameters.iter().map(resolve).collect::<Result<_, _>>()?,
             resolve(result)?,
         ),
-        TypeExprKind::AnonymousUnion(_) => todo!("A24 step 4: anonymous union types"),
+        TypeExprKind::AnonymousUnion(members) => anonymous_union::canonicalize(
+            members.iter().map(resolve).collect::<Result<_, _>>()?,
+            names,
+            expression.span,
+        )?,
     })
 }
 

@@ -3041,6 +3041,15 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
                 inner
             }
         }
+        // A24: an anonymous union is written as its members, which resolve to the same type again.
+        Type::Union(id, arguments) if types.unions[*id].is_anonymous() => {
+            TypeExprKind::AnonymousUnion(
+                arguments
+                    .iter()
+                    .map(|ty| type_expression(ty, types, span))
+                    .collect(),
+            )
+        }
         Type::Record(id, arguments) | Type::Union(id, arguments) if !arguments.is_empty() => {
             let name = match ty {
                 Type::Record(..) => &types.records[*id].name,

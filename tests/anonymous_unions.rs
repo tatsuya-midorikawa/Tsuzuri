@@ -1,8 +1,10 @@
 //! Anonymous unions `(A | B)` and type test patterns `:? T` (A24).
 
+use tsuzuri::check::Type;
 use tsuzuri::diagnostic::Diagnostic;
 use tsuzuri::parser::{parse, parse_with_source};
 use tsuzuri::syntax::{Edition, Program, TypeExpr, TypeExprKind};
+use tsuzuri::{analyze, analyze_modules, llvm};
 
 /// The type as written, with every anonymous union and its members spelled out, so that a test
 /// reads the parse tree without the checker.
@@ -292,7 +294,7 @@ fn programs_without_the_syntax_synthesize_nothing() {
         "def f :: i64 -> i64 = \\x -> x\n",
         "union Shape = Dot | Line of (i64 * i64)\ndef f :: (i64) -> i64 = \\x -> x\n",
     ] {
-        let module = tsuzuri::analyze(source).unwrap();
+        let module = analyze(source).unwrap();
         assert!(
             module.unions.iter().all(|union| !union.is_anonymous()),
             "{source}"
@@ -302,4 +304,382 @@ fn programs_without_the_syntax_synthesize_nothing() {
             "{source}"
         );
     }
+}
+
+// Step 3 and 4: the synthesized declarations, and the types that the checker makes of the syntax.
+
+/// Checks `source` (edition 2026, as `analyze`), emits it twice to check determinism and checks
+/// its symbols; returns the native IR.
+fn accepts(source: &str) -> String {
+    accepts_modules(&[("Main", source)])
+}
+
+fn accepts_modules(sources: &[(&str, &str)]) -> String {
+    let module = analyze_modules(sources)
+        .unwrap_or_else(|error| panic!("{sources:?}\n{}: {}", error.code, error.message));
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    assert_identifier_symbols(&ir);
+    ir
+}
+
+/// Fails for an unquoted global name of `ir` that is not an LLVM identifier (A29), as
+/// `tests/dyn_dispatch.rs` checks: the synthesized names hold `$`, which identifiers allow.
+fn assert_identifier_symbols(ir: &str) {
+    let starts = |byte: u8| byte.is_ascii_alphabetic() || b"-$._".contains(&byte);
+    let continues = |byte: u8| starts(byte) || byte.is_ascii_digit();
+    for line in ir.lines() {
+        let bytes = line.as_bytes();
+        let mut quoted = false;
+        let mut at = 0;
+        while at < bytes.len() {
+            match bytes[at] {
+                b'"' => quoted = !quoted,
+                b';' if !quoted => break,
+                b'@' if !quoted && bytes.get(at + 1) != Some(&b'"') => {
+                    let end = bytes[at + 1..]
+                        .iter()
+                        .position(|byte| {
+                            byte.is_ascii_whitespace() || b"(),[]{}<>\"".contains(byte)
+                        })
+                        .map_or(bytes.len(), |length| at + 1 + length);
+                    let name = &bytes[at + 1..end];
+                    let numbered = !name.is_empty() && name.iter().all(u8::is_ascii_digit);
+                    let identifier = name.first().is_some_and(|&byte| starts(byte))
+                        && name.iter().all(|&byte| continues(byte));
+                    assert!(numbered || identifier, "not an LLVM identifier:\n{line}");
+                    at = end;
+                    continue;
+                }
+                _ => {}
+            }
+            at += 1;
+        }
+    }
+}
+
+fn rejects_modules(sources: &[(&str, &str)], code: &str, kind: &str) -> Diagnostic {
+    let error = analyze_modules(sources).expect_err(&format!("{sources:?}"));
+    assert_eq!(error.code, code, "{sources:?}\n{}", error.message);
+    assert_eq!(error.kind, Some(kind), "{sources:?}\n{}", error.message);
+    error
+}
+
+fn rejects(source: &str, code: &str, kind: &str) -> Diagnostic {
+    rejects_modules(&[("Main", source)], code, kind)
+}
+
+const PLAIN: &str = "def f :: i64 -> i64 = \\x -> x\n";
+
+#[test]
+fn synthesizes_declarations_only_when_used() {
+    let plain = analyze(PLAIN).unwrap();
+    assert!(
+        plain
+            .unions
+            .iter()
+            .all(|union| !union.name.starts_with('$'))
+    );
+    let used = analyze("def f :: (i64 | string) -> (string | i64) = \\x -> x\n").unwrap();
+    assert_eq!(used.unions.len(), plain.unions.len() + 31);
+    // After the user and std unions: `$anonymous.Union$n` for n = 2 to 32, with n type parameters
+    // and n cases whose payloads are the parameters in order.
+    let synthesized = &used.unions[plain.unions.len()..];
+    for (index, union) in synthesized.iter().enumerate() {
+        let members = index + 2;
+        assert_eq!(union.name, format!("$anonymous.Union${members}"));
+        assert!(union.is_anonymous(), "{}", union.name);
+        assert_eq!(union.origin, tsuzuri::check::ModuleOrigin::Std);
+        assert_eq!(union.parameters.len(), members);
+        assert_eq!(union.cases.len(), members);
+        for (case, (name, payload)) in union.cases.iter().enumerate() {
+            assert_eq!(name, &format!("Union${members}${case}"));
+            assert_eq!(
+                payload,
+                &Some(Type::Variable(format!("$t{case}"))),
+                "{}",
+                union.name
+            );
+        }
+    }
+    assert!(plain.unions.iter().all(|union| !union.is_anonymous()));
+    // A use in a function body only, or in a type test, also synthesizes them.
+    let body =
+        analyze("def f :: i64 -> i64 = \\x ->\n    let g = \\(v: (i64 | string)) -> 0\n    x\n")
+            .unwrap();
+    assert_eq!(body.unions.len(), plain.unions.len() + 31);
+}
+
+#[test]
+fn members_commute_and_flatten() {
+    accepts("def f :: (i64 | string) -> (string | i64) = \\v -> v\n");
+    accepts("def f :: (i64 | (string | bool)) -> ((i64 | string) | bool) = \\v -> v\n");
+    accepts("def f :: (i64 | (string | bool)) -> (bool | string | i64) = \\v -> v\n");
+    // Through an alias, and nested in another type.
+    accepts(
+        "type Text = (string | bool)\ndef f :: (i64 | Text) -> (bool | i64 | string) = \\v -> v\n",
+    );
+    accepts(
+        "def f :: Maybe<(i64 | string)> -> Maybe<(string | i64)> = \\v -> v\ndef g :: [(f64 | bool)] -> [(bool | f64)] = \\v -> v\n",
+    );
+    // The same type in every module.
+    accepts_modules(&[
+        (
+            "Main",
+            "def g :: (i64 | string) -> (i64 | string) = \\v -> Other.id v\n",
+        ),
+        (
+            "Other",
+            "def id :: (string | i64) -> (string | i64) = \\v -> v\n",
+        ),
+    ]);
+    // Different members make different types.
+    rejects(
+        "def f :: (i64 | string) -> (i64 | bool) = \\v -> v\n",
+        "E1003",
+        "type_mismatch",
+    );
+    rejects(
+        "def f :: (i64 | string) -> (i64 | string | bool) = \\v -> v\n",
+        "E1003",
+        "type_mismatch",
+    );
+}
+
+#[test]
+fn displays_in_canonical_order() {
+    // The members are ordered by the rank of their heads (integers, floats, bool, unit, char,
+    // string, records, unions, arrays, tuples, functions), integers by width then signedness.
+    let error = rejects(
+        "def f :: (string | (i64 -> i64) | (i64 * i64) | [i64] | Maybe<i64> | char | unit | bool | f64 | i32 | i32u | i64) -> i64 = \\v -> v\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(
+        error.message,
+        "expected i64, found (i32u | i32 | i64 | f64 | bool | unit | char | string | Maybe<i64> | [i64] | (i64 * i64) | (i64 -> i64))"
+    );
+    let error = rejects(
+        "def f :: (string | i64) -> (bool | i64) = \\v -> v\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected (i64 | bool), found (i64 | string)");
+    // Records and unions by their qualified names, not by the order in which modules come.
+    let error = rejects_modules(
+        &[
+            (
+                "Main",
+                "record A { x: i64 }\ndef f :: (A | Alpha.B) -> i64 = \\v -> v\n",
+            ),
+            ("Alpha", "record B { x: i64 }\n"),
+        ],
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected i64, found (Alpha.B | Main.A)");
+}
+
+#[test]
+fn rejects_type_variable_members() {
+    let error = rejects(
+        "def f :: ('a | i64) -> i64 = \\v -> 0\n",
+        "E1041",
+        "anonymous_union_type_variable",
+    );
+    assert_eq!(
+        error.message,
+        "a type variable cannot be a member of an anonymous union: ('a | i64); members must differ without knowing type arguments"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("use a union with named cases, such as union OrInt<'a> = Value of 'a | Int of i64")
+    );
+    rejects(
+        "type OrInt<'a> = ('a | i64)\ndef f :: OrInt<string> -> i64 = \\v -> 0\n",
+        "E1041",
+        "anonymous_union_type_variable",
+    );
+    // A member whose head is no type variable is fine.
+    accepts("def f :: (Maybe<'a> | i64) -> i64 = \\v -> 0\n");
+}
+
+#[test]
+fn rejects_indistinct_members() {
+    let error = rejects(
+        "def f :: (Maybe<'a> | Maybe<i64>) -> i64 = \\v -> 0\n",
+        "E1041",
+        "anonymous_union_indistinct_members",
+    );
+    assert_eq!(
+        error.message,
+        "Maybe<'a> and Maybe<i64> may be the same type for some type arguments, so they cannot both be members of an anonymous union"
+    );
+    rejects(
+        "def f :: (('a * i64) | (bool * 'b)) -> i64 = \\v -> 0\n",
+        "E1041",
+        "anonymous_union_indistinct_members",
+    );
+    accepts("def f :: (Maybe<i64> | Maybe<string>) -> i64 = \\v -> 0\n");
+    // Decided before the variable: the lengths of the tuples differ.
+    accepts("def f :: (('a * i64) | (bool * 'a * i64)) -> i64 = \\v -> 0\n");
+}
+
+#[test]
+fn rejects_duplicate_members_through_aliases() {
+    let error = rejects(
+        "def f :: (i64 | i64) -> i64 = \\v -> 0\n",
+        "E1041",
+        "anonymous_union_duplicate_member",
+    );
+    assert_eq!(
+        error.message,
+        "i64 appears more than once in the anonymous union (i64 | i64)"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("a type alias names the same type as its definition")
+    );
+    rejects(
+        "type Meters = f64\ndef f :: (Meters | f64) -> i64 = \\v -> 0\n",
+        "E1041",
+        "anonymous_union_duplicate_member",
+    );
+    // Flattening may repeat a member.
+    let error = rejects(
+        "type Pair = (string | i64)\ndef f :: (i64 | Pair) -> i64 = \\v -> 0\n",
+        "E1041",
+        "anonymous_union_duplicate_member",
+    );
+    assert_eq!(
+        error.message,
+        "i64 appears more than once in the anonymous union (i64 | i64 | string)"
+    );
+}
+
+#[test]
+fn function_members_ignore_conventions_and_currying() {
+    // An impure curried function type is the same type however it is grouped.
+    rejects(
+        "def f :: ((i64 -> i64 -> i64) | (i64 -> (i64 -> i64))) -> i64 = \\v -> 0\n",
+        "E1041",
+        "anonymous_union_duplicate_member",
+    );
+    // Purity, a pure result, the parameter count and a borrowed parameter make other types.
+    accepts("def f :: ((i64 -> i64) | pure (i64 -> i64)) -> i64 = \\v -> 0\n");
+    accepts("def f :: ((i64 -> pure (i64 -> i64)) | (i64 -> i64 -> i64)) -> i64 = \\v -> 0\n");
+    accepts("def f :: ((i64 -> i64) | (i64 -> i64 -> i64)) -> i64 = \\v -> 0\n");
+    accepts("def f :: ((ref i64 -> i64) | (i64 -> i64)) -> i64 = \\v -> 0\n");
+    let error = rejects(
+        "def f :: ((i64 -> i64) | pure (i64 -> i64) | (fn() -> i64)) -> i64 = \\v -> v\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(
+        error.message,
+        "expected i64, found ((fn() -> i64) | (i64 -> i64) | pure (i64 -> i64))"
+    );
+}
+
+#[test]
+fn rejects_borrowed_members() {
+    let error = rejects(
+        "def f :: (ref string | i64) -> i64 = \\v -> 0\n",
+        "E1013",
+        "anonymous_union_borrowed_member",
+    );
+    assert_eq!(
+        error.message,
+        "an anonymous union holds owned values; ref string is borrowed"
+    );
+    rejects(
+        "def f :: ((ref i64 * i64) | bool) -> i64 = \\v -> 0\n",
+        "E1013",
+        "anonymous_union_borrowed_member",
+    );
+}
+
+/// `[[...[i64]...]]` with `depth` brackets: distinct types for as many members as a test needs.
+fn nested_array(depth: usize) -> String {
+    format!("{}i64{}", "[".repeat(depth), "]".repeat(depth))
+}
+
+fn members(range: std::ops::Range<usize>) -> String {
+    range.map(nested_array).collect::<Vec<_>>().join(" | ")
+}
+
+#[test]
+fn limits_member_count() {
+    accepts(&format!(
+        "def f :: ({}) -> i64 = \\v -> 0\n",
+        members(0..32)
+    ));
+    let error = rejects(
+        &format!("def f :: ({}) -> i64 = \\v -> 0\n", members(0..33)),
+        "E1017",
+        "anonymous_union_member_limit",
+    );
+    assert_eq!(
+        error.message,
+        "an anonymous union has at most 32 members, but this one has 33; declare a union with named cases instead"
+    );
+    // The limit counts the members after flattening.
+    rejects(
+        &format!(
+            "def f :: ({} | ({})) -> i64 = \\v -> 0\n",
+            members(0..20),
+            members(20..34)
+        ),
+        "E1017",
+        "anonymous_union_member_limit",
+    );
+}
+
+#[test]
+fn generic_members_stay_ordered_after_instantiation() {
+    let ir = accepts(
+        "def f :: (Maybe<'a> | i64) -> (i64 | Maybe<'a>) = \\v -> v\n\
+         def g :: (Maybe<string> | i64) -> (i64 | Maybe<string>) = \\v -> f v\n\
+         def h :: (i64 | Maybe<(f64 | bool)>) -> (Maybe<(bool | f64)> | i64) = \\v -> f v\n",
+    );
+    assert!(ir.contains("$anonymous.Union$2"), "{ir}");
+    // An instance with a member type is another type than the generic one with a different member.
+    rejects(
+        "def f :: (Maybe<'a> | i64) -> (i64 | Maybe<'a>) = \\v -> v\n\
+         def g :: (Maybe<string> | i64) -> (i64 | Maybe<bool>) = \\v -> f v\n",
+        "E1003",
+        "type_mismatch",
+    );
+}
+
+#[test]
+fn aliases_inside_members_expand() {
+    // An alias in a member of another module's alias resolves in that module, not in the module
+    // that uses the alias, where `Meters` is another type.
+    accepts_modules(&[
+        (
+            "Main",
+            "type Meters = i64\ndef f :: Units.Value -> (string | f64) = \\v -> v\n",
+        ),
+        (
+            "Units",
+            "type Meters = f64\ntype Value = (Meters | string)\n",
+        ),
+    ]);
+    accepts("type Meters = f64\ndef f :: (Meters | string) -> (string | f64) = \\v -> v\n");
+    accepts(
+        "type Name<'a> = Maybe<'a>\ndef f :: (Name<string> | i64) -> (i64 | Maybe<string>) = \\v -> v\n",
+    );
+}
+
+#[test]
+fn inline_constraints_inside_members_are_kept() {
+    accepts(
+        "def f :: (Maybe<Add<'a>> | i64) -> i64 = \\v -> 0\ndef g :: (Maybe<string> | i64) -> i64 = \\v -> f v\n",
+    );
+    rejects(
+        "def f :: (Maybe<Add<'a>> | i64) -> i64 = \\v -> 0\ndef g :: (Maybe<bool> | i64) -> i64 = \\v -> f v\n",
+        "E1005",
+        "no_instance",
+    );
 }
