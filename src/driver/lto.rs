@@ -223,8 +223,9 @@ fn group_number(line: &str) -> Option<u32> {
         .flatten()
 }
 
-/// Where a definition starts on a line of the IR: at its beginning, or after the `}` of the function before it
-/// (the runtime text that follows a function may end without a newline).
+/// Where a definition starts on a line of the IR: at its beginning, or after the `}` of the function before it (IR
+/// joined from pieces that end without a newline). The runtime pieces end with a newline since TZ15, so the emitter
+/// makes no such line; the second form stays as a guard.
 fn definition_start(line: &str) -> Option<usize> {
     if line.starts_with("define ") {
         Some(0)

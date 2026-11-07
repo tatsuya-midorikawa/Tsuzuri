@@ -2289,8 +2289,9 @@ fn emit_program_in(
             runtime_symbols.append(&mut output, &host_abi::native_allocator());
         }
     }
-    // The driver links `cpu.c` when a line declares a `tsuzuri_cpu_` function (F08), and the
-    // runtime text above may end without a newline.
+    // The driver links `cpu.c` when a line declares a `tsuzuri_cpu_` function (F08). The runtime
+    // pieces end with a newline (TZ15); the check keeps each declaration on a line of its own
+    // after any text above that does not.
     for (symbol, result) in CPU_KERNELS {
         if runtime_symbols.contains(symbol) {
             if !output.ends_with('\n') {
@@ -2313,7 +2314,8 @@ fn emit_program_in(
         );
     }
     if parallel || mutex || channel {
-        // The runtime text above may end without a newline.
+        // The runtime pieces end with a newline (TZ15); this keeps the declarations on lines of
+        // their own after any text above that does not.
         if (mutex || channel) && !output.ends_with('\n') {
             output.push('\n');
         }

@@ -373,10 +373,11 @@ impl Sites {
     }
 }
 
-/// The lines of `ir`. The emitter appends a runtime part right behind the last line of the text before it, and a
-/// part that follows a function without a line break of its own (`}define ...`) shares the line of that function's
-/// closing brace. LLVM reads it, but the instrumentation works line by line: it would take the function for the part
-/// of the one before it. The brace and the rest are the two lines that they are.
+/// The lines of `ir`. A part that is appended right behind a function without a line break of its own (`}define ...`)
+/// shares the line of that function's closing brace. LLVM reads it, but the instrumentation works line by line: it
+/// would take the function for the part of the one before it. The brace and the rest are the two lines that they are.
+/// The runtime parts end with a newline since TZ15, so the emitter makes no such line; the split stays as a guard for
+/// IR that is joined in another way.
 fn ir_lines(ir: &str) -> impl Iterator<Item = &str> {
     ir.lines()
         .flat_map(|line| match line.strip_prefix('}') {
