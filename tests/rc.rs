@@ -1080,6 +1080,20 @@ fn a_cell_written_after_it_was_shared_keeps_the_rule() {
     );
 }
 
+/// A31: a lock callback that stores a borrow of the locked value in a cell of its own (`let m`)
+/// and returns what it reads back holds that borrow, although `m` is not `let mut`: the check of
+/// the lifted lambda returns the borrow, so the closed result that `closed_returns` proved for it is
+/// revoked, and the callback's result is not proven free of borrowed environments (F10). The same
+/// callback storing a function that borrows nothing stays accepted.
+#[test]
+fn a_lock_callback_that_returns_what_it_stored_in_its_own_cell_keeps_the_rule() {
+    let source = "def make :: ref Mutex<[(unit -> i64)]> -> (unit -> i64)\nfn make outer =\n    Mutex.with_lock outer (\\slot -> { let view = ref slot[0]; let m = Mutex.create [\\() -> 0]; Mutex.with_lock (ref m) (\\s -> Array.write 0 (\\() -> (deref view) () + 1) s); let a = Mutex.into_inner m; a[0] })\ndef run :: own i64 -> i64\nfn run n =\n    let outer = Mutex.create [\\() -> n]\n    let f = make (ref outer)\n    Mutex.with_lock (ref outer) (\\slot -> Array.write 0 (\\() -> 100) slot)\n    f ()\nrun 5";
+    rejects_at(source, "E1013", "mutex_result_retains_borrow", (3, 27));
+    let control = source.replace("(\\() -> (deref view) () + 1)", "(\\() -> 7)");
+    assert_ne!(control, source);
+    emits_in_both(&control);
+}
+
 /// A31: the implicit drop of `_s` at the end of `leak` runs `Drop.drop`, which writes the function
 /// that borrows `text` into the cell that `a` shares with `run`'s `a2`, and `r` reads it after
 /// `leak` has freed `text` (`drop_inleak`; main and A28 accept it). The write stores a borrow of a

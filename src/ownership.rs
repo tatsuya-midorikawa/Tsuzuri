@@ -863,6 +863,10 @@ struct CallFacts {
     /// seed builtin (`StoreCandidates::seeded`); without one, no store escapes the checks and the
     /// store facts are not applied at all.
     seeded: bool,
+    /// A31: by function, whether `joint_facts` revoked the closed result that `closed_returns`
+    /// proved: its check returns a loan that a store into a local cell put there, so the same
+    /// syntactic proof of a callback's result (`Checker::callback_returns_closed`) fails as well.
+    revoked: Vec<bool>,
 }
 
 impl CallFacts {
@@ -890,6 +894,11 @@ fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
     let lending = lending_bodies(module, infer);
     let joint = joint_facts(module, &closed, &lending, infer, None);
     CallFacts {
+        revoked: closed
+            .iter()
+            .zip(&joint.closed)
+            .map(|(proved, kept)| *proved && !*kept)
+            .collect(),
         closed: joint.closed,
         retained: joint.retained,
         lending,
@@ -1232,6 +1241,7 @@ fn joint_facts(
         lending: lending.clone(),
         drops_write,
         seeded: candidates.seeded,
+        revoked: vec![false; count],
         stores: (0..count)
             .map(|id| {
                 if candidates.top[id] {
@@ -1339,8 +1349,9 @@ fn joint_facts(
                 if candidates.may_store[id] {
                     facts.stores[id] = StoreFacts::top();
                 }
-                if revocable(id) {
+                if revocable(id) && facts.closed[id] {
                     facts.closed[id] = false;
+                    facts.revoked[id] = true;
                 }
             }
             break;
@@ -1377,6 +1388,7 @@ fn joint_facts(
         }
         if outcome.revoke {
             facts.closed[id] = false;
+            facts.revoked[id] = true;
             changed = true;
             // The callers now need the retention facts that the closed result made needless.
             if callers.contains_key(&id) && retention.insert(id) {
@@ -2690,6 +2702,9 @@ impl<'a> Checker<'a, '_> {
             E::Function(crate::check::FunctionRef::User(id))
             | E::GenericFunction(id, _)
             | E::Closure(id, _) => {
+                if self.facts.revoked.get(*id) == Some(&true) {
+                    return false;
+                }
                 let function = &self.module.functions[*id];
                 (
                     &function.body,
@@ -7325,6 +7340,11 @@ mod retention_tests {
         lending.untracked = false;
         let joint = joint_facts(module, &closed, &lending, infer, None);
         CallFacts {
+            revoked: closed
+                .iter()
+                .zip(&joint.closed)
+                .map(|(proved, kept)| *proved && !*kept)
+                .collect(),
             closed: joint.closed,
             retained: joint.retained,
             lending,
