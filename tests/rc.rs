@@ -399,9 +399,11 @@ fn a_share_of_an_element_holds_what_was_written_in() {
         );
         assert_eq!(position, (line, column), "{source}\n{}", error.message);
     }
-    // The upgrade: `make` stores a borrowing function with `Array.write`, so nothing in the
-    // program reads through (`untracked_loan_store`), and the upgrade holds the borrow of `weak`, a
-    // local of `wrap`, as on the A30 tip.
+    // The upgrade: the weak pointer is a downgrade of `arr`'s element, whose contents come from the
+    // caller, so the upgrade keeps the borrow of `arr`, which `wrap` drops. A31 (step 4): `make`'s
+    // store with `Array.write` no longer drops every fact of the program (A28's eighth review
+    // rejected the upgrade itself, which then held the borrow of `weak`, at 4:5), so the error is
+    // the seventh round's again, at the body of `wrap`.
     let source = format!(
         "def wrap :: own [Arc<unit -> i64>] -> Maybe<Arc<unit -> i64>>\nfn wrap arr =\n    let weak = Arc.downgrade (ref arr[0])\n    Arc.upgrade (ref weak)\n{}match make 123456789 with\n    | Maybe.Some g -> (deref (Arc.get (ref g))) ()\n    | Maybe.None -> 0",
         make("Arc", "Maybe<Arc<unit -> i64>>", "wrap arr")
@@ -410,13 +412,13 @@ fn a_share_of_an_element_holds_what_was_written_in() {
     assert_eq!(error.code, "E1013", "{source}\n{}", error.message);
     assert_eq!(
         error.kind,
-        Some("borrow_outlives_block"),
+        Some("task_result_retains_borrow"),
         "{source}\n{}",
         error.message
     );
     assert_eq!(
         &source[error.span.start..error.span.end],
-        "Arc.upgrade (ref weak)",
+        "let weak = Arc.downgrade (ref arr[0])\n    Arc.upgrade (ref weak)",
         "{}",
         error.message
     );
@@ -704,10 +706,11 @@ fn an_opaque_call_hands_a_borrow_to_unseen_code() {
 /// tip has it: an unused or moved-in parameter, a local made from a borrowed parameter, a
 /// reassigned local, a container of such values, `Owned.drop`, and a named callee that drops its
 /// argument and returns `unit`. Only a program with a `Drop.drop` that makes a store that the check
-/// does not track (through a cell, or by calling a function value) is affected. Since the eighth
-/// review, a program that stores a borrowing function with `Array.write` has no facts at all
-/// (`untracked_loan_store`), which every rejected form here does (in `Drop.drop` or in `writer`);
-/// the `E1014` form and the controls without such a store test the local guard.
+/// does not track (through a cell, or by calling a function value) is affected. From the eighth
+/// review until A31, a program that stored a borrowing function with `Array.write` had no facts at
+/// all (`untracked_loan_store`), which every rejected form here does (in `Drop.drop` or in
+/// `writer`); since A31 tracks that store, the local guard (`Lending::drops_store`, A28's
+/// `dropped`) and A31's own drop hook reject them, at the same positions.
 #[test]
 fn an_implicit_drop_keeps_what_the_dropped_value_holds() {
     let at = |source: &str, error: &tsuzuri::diagnostic::Diagnostic| {
@@ -792,26 +795,18 @@ fn an_implicit_drop_keeps_what_the_dropped_value_holds() {
     assert_eq!(error.code, "E1014", "{}", error.message);
     assert_eq!(error.kind, Some("borrow_conflict"), "{}", error.message);
     assert_eq!(at(source, &error), (9, 13), "{}", error.message);
-    // A dropped value that holds no loan (`ctl_drop_no_loan`): the 7th round gave `pass` its facts,
-    // so the result of `wrap` held no borrow of `key`. Its `Drop.drop` stores a borrowing function
-    // with `Array.write`, so the program has no facts at all (`untracked_loan_store`), and the
-    // result keeps the borrow of `key` as on the A30 tip.
-    let source = "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: ref string -> own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass _key s r =\n    let _held = s\n    r\ndef wrap :: own string -> own Stash -> own (unit -> i64) -> (unit -> i64)\nfn wrap key s r = pass (ref key) s r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let r = reader (Arc.share (ref a))\n    let f = wrap \"abc\" (Stash { cell: Arc.share (ref a), f: \\() -> 5 }) r\n    f ()\nrun ()";
-    let error = analyze(source).expect_err(source);
-    assert_eq!(error.code, "E1013", "{}", error.message);
-    assert_eq!(
-        error.kind,
-        Some("task_result_retains_borrow"),
-        "{}",
-        error.message
-    );
-    assert_eq!(at(source, &error), (12, 19), "{}", error.message);
     // The controls: the same `pass` while `text` is alive (12), and `HashMap.remove` and a `pass`
-    // that drops only a borrow in a program whose `Drop.drop` calls a function value.
+    // that drops only a borrow in a program whose `Drop.drop` calls a function value. Last, a
+    // dropped value that holds no loan (`ctl_drop_no_loan`, which prints 5): the 7th round gave
+    // `pass` its facts, so the result of `wrap` holds no borrow of `key`. A31 (step 4): its
+    // `Drop.drop` stores a function with `Array.write`, which A28's eighth review answered by
+    // dropping every fact of the program (`E1013` `task_result_retains_borrow` at 12:19); the store
+    // facts track that store, so the facts apply again.
     for source in [
         "record Stash { w: (unit -> i64) -> unit, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let w = s.w; let g = s.f; w g }\n}\nlet map = HashMap.insert 1 (\\() -> 42) (HashMap.empty())\nlet map = HashMap.remove 1 map\nHashMap.length (ref map)",
         "record Stash { w: (unit -> i64) -> unit, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let w = s.w; let g = s.f; w g }\n}\ndef pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn pass _key f = f\ndef wrap :: i64 -> own (unit -> i64) -> (unit -> i64)\nfn wrap key f = pass (ref key) f\nwrap 1 (\\() -> 42) ()",
         "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass s r =\n    let _held = s\n    r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let r = reader a2\n    let text = to_string 123456789\n    let borrowed = ref text\n    let f = pass (Stash { cell: a1, f: \\() -> String.length borrowed }) r\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+        "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef pass :: ref string -> own Stash -> own (unit -> i64) -> (unit -> i64)\nfn pass _key s r =\n    let _held = s\n    r\ndef wrap :: own string -> own Stash -> own (unit -> i64) -> (unit -> i64)\nfn wrap key s r = pass (ref key) s r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let r = reader (Arc.share (ref a))\n    let f = wrap \"abc\" (Stash { cell: Arc.share (ref a), f: \\() -> 5 }) r\n    f ()\nrun ()",
     ] {
         emits(source);
     }
@@ -821,12 +816,13 @@ fn an_implicit_drop_keeps_what_the_dropped_value_holds() {
 /// with a user `Drop` (directly, through a nested record, an element, an alias, a branch or a
 /// loop, a `Maybe` field, a wrapper record), and dropping the value at the end of `pass` runs a
 /// `Drop.drop` that stores a function over the loan in a cell that `r` reads. Each `Drop.drop`
-/// stores a borrowing function with `Array.write`, a store that the check does not track, so the
-/// program has no facts and reads nothing through (`untracked_loan_store`): each keeps the A30
+/// stores a borrowing function with `Array.write`. The eighth review rejected them by dropping
+/// every fact of such a program (`untracked_loan_store`); since A31 tracks the store, the value
+/// that a field assignment writes into counts as dropped (A28's `dropped`), which keeps the A30
 /// tip's diagnostic at its position. Accepted by the seventh round, they printed garbage at `-O0`
 /// (`String.length` of the freed `text`; 12 is right).
 #[test]
-fn an_untracked_store_keeps_the_rule_from_before_a28_in_the_whole_program() {
+fn a_field_assignment_into_a_dropped_value_keeps_the_rule_from_before_a28() {
     let at = |source: &str, error: &tsuzuri::diagnostic::Diagnostic| {
         let before = &source[..error.span.start];
         (

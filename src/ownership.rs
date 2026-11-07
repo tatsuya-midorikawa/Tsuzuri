@@ -891,7 +891,7 @@ impl CallFacts {
 
 fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
     let closed = closed_returns(module);
-    let lending = lending_bodies(module, infer);
+    let lending = lending_bodies(module);
     let joint = joint_facts(module, &closed, &lending, infer, None);
     CallFacts {
         revoked: closed
@@ -1012,7 +1012,35 @@ struct JointFacts {
 /// `Array.blit` and the other std functions that write in place call), `SyncMap.__replace` (through
 /// the `ref mut` that `RwMutex.with_write` lends) and `Vec.push_mut`, whose region slots add the
 /// pushed value's loans to the vector's owner only at a direct call (`store_arguments`), not when a
-/// lock or another function calls it. The other builtins of `untracked_writer` store numbers.
+/// lock or another function calls it.
+///
+/// Every builtin of `Builtin::ALL` whose scheme has a `ref mut` parameter, or that takes a shared
+/// reference to a cell and a value, was decided (A28, 8th review; A31):
+///
+/// - Seeds: the three above.
+/// - Store numbers only, so never a loan: `Simd.store` (a lane value: `SimdNumeric` holds only for
+///   SIMD vectors of numbers), and `Atomic.store`, `Atomic.swap`, `Atomic.compare_exchange` and the
+///   `Atomic.fetch_*` operations (`AtomicValue` holds only for the integers and `bool`, and a
+///   program cannot give a builtin class an instance).
+/// - Tracked otherwise: `Channel.send`, `Channel.try_send`, `SendOnly.send`, `SendOnly.try_send`
+///   and `DataChannel.send` (the item is checked to hold no borrow, `Checker::sent_item`),
+///   `OnceValue.get` (the initializer's result is checked to hold no borrow,
+///   `Checker::locked_result`), `WaitGroup.go` and `Context.__after_func` (an `Owned.Function`,
+///   which holds no borrow, A30).
+/// - Store nothing that they get: `Array.swap_in` (exchanges two elements of the same view),
+///   `Array.split_at_mut` and `Vec.__view` (return views of what they get), `RwMutex.with_read`
+///   (lends a shared reference), `Rc.ptr_eq` and `Arc.ptr_eq` (compare), `Owned.call` (runs the
+///   function, whose body is a function of the module), and `Timer.__reset`, `Ticker.__reset`,
+///   `WaitGroup.add`, `Semaphore.acquire`, `Semaphore.try_acquire`, `Semaphore.release`,
+///   `Context.__with_timeout` and `Context.__with_deadline` (take integers).
+/// - Lend a `ref mut` to a callback and store nothing themselves: `Mutex.with_lock`,
+///   `RwMutex.with_write`, `Cond.wait_with` and `Parallel.for_each_chunk`. What the callback
+///   stores, it stores with an assignment (tracked), a seed or a call, and its body is a function
+///   of the module: the facts of the call run it (`Checker::builtin_stores`).
+///
+/// The builtins that take an array, a vector or a map by value and return the updated one
+/// (`Array.__set`, `Array.update`, `Array.swap`, `Vec.push`, ...) store nothing through a reference:
+/// their result holds the loans of every argument.
 fn store_seed(builtin: crate::check::Builtin) -> Option<(usize, usize)> {
     use crate::check::Builtin::{ArrayWrite, SyncMapReplace, VecPushMut};
     match builtin {
@@ -1171,7 +1199,8 @@ fn store_candidates(module: &CheckedModule) -> StoreCandidates {
 /// facts requeues the functions that name it. Past the budget, every function still to check, and
 /// every function whose facts were computed from theirs, keeps all its arguments' loans, stores
 /// anything and returns what it may. The abstract bodies of the inference (`infer`) have no store
-/// facts and no revocation: their type variables carry no loans, as in `untracked_loan_store`.
+/// facts and no revocation: their type variables carry no loans, and each instance of a generic
+/// body is a function of the specialized module, which has them.
 fn joint_facts(
     module: &CheckedModule,
     closed: &[bool],
@@ -1186,43 +1215,41 @@ fn joint_facts(
     // before the piped one). A closed callee needs no facts until a check revokes its result.
     let mut callers: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     let mut callees: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
-    if !lending.untracked {
-        for (caller, function) in module.functions.iter().enumerate() {
-            let mut pending = vec![&function.body];
-            while let Some(expression) = pending.pop() {
-                let call = match &expression.kind {
-                    E::Call(callee, arguments) => Some((&**callee, arguments.len())),
-                    E::Binary(BinaryOp::Pipe, _, right) => {
-                        let (callee, arguments) = piped_application(right);
-                        Some((callee, arguments.len() + 1))
-                    }
-                    _ => None,
-                };
-                if let Some((callee, arguments)) = call
-                    && let Some(id) = direct_callee(callee)
-                    && retention_eligible(module, id)
-                    && arguments >= module.functions[id].parameters.len()
-                    && if arguments == module.functions[id].parameters.len() {
-                        retention_applies(&expression.ty, &types)
-                    } else {
-                        retention_applies(
-                            &callee
-                                .ty
-                                .after_arguments(module.functions[id].parameters.len()),
-                            &types,
-                        )
-                    }
-                {
-                    callers.entry(id).or_default().insert(caller);
-                    callees.entry(caller).or_default().insert(id);
+    for (caller, function) in module.functions.iter().enumerate() {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            let call = match &expression.kind {
+                E::Call(callee, arguments) => Some((&**callee, arguments.len())),
+                E::Binary(BinaryOp::Pipe, _, right) => {
+                    let (callee, arguments) = piped_application(right);
+                    Some((callee, arguments.len() + 1))
                 }
-                expression
-                    .try_for_each_child(&mut |child| {
-                        pending.push(child);
-                        Ok(())
-                    })
-                    .expect("collecting calls cannot fail");
+                _ => None,
+            };
+            if let Some((callee, arguments)) = call
+                && let Some(id) = direct_callee(callee)
+                && retention_eligible(module, id)
+                && arguments >= module.functions[id].parameters.len()
+                && if arguments == module.functions[id].parameters.len() {
+                    retention_applies(&expression.ty, &types)
+                } else {
+                    retention_applies(
+                        &callee
+                            .ty
+                            .after_arguments(module.functions[id].parameters.len()),
+                        &types,
+                    )
+                }
+            {
+                callers.entry(id).or_default().insert(caller);
+                callees.entry(caller).or_default().insert(id);
             }
+            expression
+                .try_for_each_child(&mut |child| {
+                    pending.push(child);
+                    Ok(())
+                })
+                .expect("collecting calls cannot fail");
         }
     }
     let candidates = if infer {
@@ -1558,27 +1585,27 @@ fn check_facts(
 /// sound when the loans that the check gives the values are complete: a value that holds another
 /// holds its loans.
 ///
-/// The primary argument is program-wide (`untracked_loan_store`, `Lending::untracked`). The check
-/// tracks every store that the language makes but those of a few builtins (`untracked_writer`):
-/// `Array.write`, which `Array.set`, `Array.fill`, `Array.blit` and the other std functions that
-/// write in place call, and `SyncMap.__replace` do not add the stored value's loans to the owner
-/// of the place (A31). An assignment, `deref r = v`, `Vec.push_mut` (its region slots) and a
-/// function with a region contract add them; a store through a reference that a body gets
-/// (a `ref mut` parameter, or the `ref mut` that a lock lends its callback) needs a named region
-/// for a value that holds loans; a channel's items, an `OnceValue`'s initializer and an
-/// `Owned.Function` are checked to hold no borrow. Code that runs without a call in the source
-/// (a drop, an operator, a class method, a dyn method) and the code of a function value are bodies
-/// of the module, checked under the same rules, and a store of a value that holds no loan cannot
-/// make a loan incomplete. So when no function of the program, std functions, lifted lambdas and
-/// the generated functions of builtins included, stores a value whose type may carry loans with
-/// an untracked writer, every value's loans are complete wherever the check meets it, through any
-/// number of calls, callbacks, drops and opaque function values: the facts hold (a callee leaves
+/// The primary argument is A31's store facts. The check tracks every store that the language
+/// makes: an assignment, `deref r = v` and a function with a region contract add the stored
+/// value's loans to the owner of the place; a store through a reference that a body gets (a
+/// `ref mut` parameter, or the `ref mut` that a lock lends its callback) needs a named region for
+/// a value that holds loans, and a function with such a contract runs only in direct calls
+/// (`regions::validate_contract_calls`); a channel's items, an `OnceValue`'s initializer and an
+/// `Owned.Function` are checked to hold no borrow; and the builtins that store a value where an
+/// exclusive reference or a cell that they get reaches (`store_seed`: `Array.write`, which
+/// `Array.set`, `Array.fill`, `Array.blit` and the other std functions that write in place call,
+/// `SyncMap.__replace` and `Vec.push_mut`) have store facts, which every call of them or of a
+/// function that calls them applies, directly, through a pipeline, as a callback or as a function
+/// value (`StoreFacts`, `Checker::apply_store`); the other writers store numbers. Code that runs
+/// without a call in the source (a drop, an operator, a class method, a dyn method) and the code of
+/// a function value are bodies of the module, checked under the same rules, and a store of a value
+/// that holds no loan cannot make a loan incomplete. So every value's loans are complete wherever
+/// the check meets it, through any number of calls and callbacks: the facts hold (a callee leaves
 /// out of its result the arguments that do not reach it, whatever they hold) and so does the
-/// read-through (a share holds what its owner's loans say the owner holds). When some function
-/// makes such a store, no body of the program has facts or reads through, the rule from before
-/// A28. A31 (`_features/A31-in-place-writes-keep-stored-borrows.md`) is the ticket that tracks
-/// those stores; once they are tracked, the guard has nothing to find and A28 applies to every
-/// program.
+/// read-through (a share holds what its owner's loans say the owner holds), beside the stores of
+/// code whose body the analysis does not see and of drops, which the local guards below handle.
+/// Before A31 the seeds had no facts, and a program that stored a value that may hold loans with
+/// one had no facts at all and read nothing through (A28, 8th review).
 ///
 /// The local guards of the third to seventh reviews stay as defense in depth: they keep a body
 /// that may make a store its check misses from using facts or reading through, whatever the rest
@@ -1998,8 +2025,7 @@ fn opaque_bodies(module: &CheckedModule, related: &[Vec<usize>]) -> (Vec<bool>, 
 /// What `lending_bodies` finds, by function.
 #[derive(Clone)]
 struct Lending {
-    /// The body has no facts: it lends a way to write, or makes an opaque call (the local guards;
-    /// `untracked` holds for every body beside them, `Lending::no_facts`).
+    /// The body has no facts: it lends a way to write, or makes an opaque call.
     facts: Vec<bool>,
     /// Nothing is read through in the body: it lends a way to write, or makes an opaque call with
     /// an argument that may hold loans.
@@ -2011,28 +2037,25 @@ struct Lending {
     /// hands a value to code that the analysis does not see, so dropping a value may make a store
     /// that the check does not track (`drop_runs_code`).
     drops_store: bool,
-    /// Some function of the module stores a value that may hold loans with a builtin that does
-    /// not track the store (`untracked_loan_store`): no body has facts or reads through.
-    untracked: bool,
 }
 
 impl Lending {
-    /// Whether the body of function `id` has no facts: the program makes a store that the check
-    /// does not track (`untracked`), or the body lends a way to write or makes an opaque call.
+    /// Whether the body of function `id` has no facts: it lends a way to write or makes an opaque
+    /// call.
     fn no_facts(&self, id: usize) -> bool {
-        self.untracked || self.facts[id]
+        self.facts[id]
     }
 
-    /// Whether nothing is read through in the body of function `id` (`untracked`, `reads`).
+    /// Whether nothing is read through in the body of function `id` (`reads`).
     fn no_reads(&self, id: usize) -> bool {
-        self.untracked || self.reads[id]
+        self.reads[id]
     }
 }
 
 /// By function: whether its body lends a way to write (`lends_mutable`) or may hand a value to
 /// code whose body the analysis does not see (`opaque_bodies`), or the body of a lambda lifted from
 /// it, or of the function that it was lifted from, does. Downward: a lambda's captures hold what
-/// the enclosing body gave them, and that misses what an untracked store put there, so a lambda
+/// the enclosing body gave them, and that misses what a store that the check misses put there, so a lambda
 /// whose captures were made in such a body reads nothing through them either: in
 /// `let mut arr = [Arc.new f]`, `Array.write 0 (Arc.new borrowing) (ref mut arr)` and
 /// `\() -> Arc.share (ref arr[0])`, the share would hold what `arr` held before the write (and
@@ -2043,7 +2066,7 @@ impl Lending {
 /// keeps the rule from before A28 too; the scan of an unlifted body sees the bodies of its
 /// `E::Lambda`s already. Each body is scanned once; the lifted lambdas follow the `E::Closure`
 /// that makes them, through the lambdas in lambdas and the groups of `let rec`.
-fn lending_bodies(module: &CheckedModule, infer: bool) -> Lending {
+fn lending_bodies(module: &CheckedModule) -> Lending {
     let types = module.types();
     let related = related_bodies(module);
     let (any, direct) = opaque_bodies(module, &related);
@@ -2057,115 +2080,12 @@ fn lending_bodies(module: &CheckedModule, infer: bool) -> Lending {
     close_marks(&mut facts, &related);
     close_marks(&mut reads, &related);
     let drops_store = module.user_drops.values().any(|drop| facts[*drop]);
-    let untracked = untracked_loan_store(module, &types, infer);
     Lending {
         facts,
         reads,
         opaque: direct,
         drops_store,
-        untracked,
     }
-}
-
-/// The builtins that store a value that they get through an exclusive reference, or into a cell,
-/// without adding its loans to the owner of the place (`untracked_loan_store`), each with the
-/// index of the parameter whose value it stores.
-///
-/// Every builtin of `Builtin::ALL` whose scheme has a `ref mut` parameter, or that takes a shared
-/// reference to a cell and a value, was decided (A28, 8th review):
-///
-/// - Counted: `Array.write` (stores its second argument into the element of the exclusive view:
-///   `Array.set`, `Array.fill`, `Array.blit` and the other std functions that write in place call
-///   it), `SyncMap.__replace` (stores its first argument through the `ref mut` that
-///   `RwMutex.with_write` lends), `Simd.store` (stores a lane value; numbers only, so it never
-///   holds a loan, but it is a write through a view all the same), and `Atomic.store`,
-///   `Atomic.swap` and `Atomic.compare_exchange` (store into the cell through a shared reference;
-///   the contents are numbers or `bool`, counted all the same).
-/// - Tracked, not counted: `Vec.push_mut` (its region slots add the pushed value's loans to the
-///   vector's owner, `src/closures.rs`), `Channel.send`, `Channel.try_send`, `SendOnly.send`,
-///   `SendOnly.try_send` and `DataChannel.send` (the item is checked to hold no borrow,
-///   `Checker::sent_item`), `OnceValue.get` (the initializer's result is checked to hold no borrow,
-///   `Checker::locked_result`), `WaitGroup.go` and `Context.__after_func` (an `Owned.Function`,
-///   which holds no borrow, A30), and the `Atomic.fetch_*` operations (integers).
-/// - Store nothing that they get, so not counted: `Array.swap_in` (exchanges two elements of the
-///   same view), `Array.split_at_mut` and `Vec.__view` (return views of what they get),
-///   `RwMutex.with_read` (lends a shared reference), `Rc.ptr_eq` and `Arc.ptr_eq` (compare),
-///   `Owned.call` (runs the function, whose body is a function of the module), and
-///   `Timer.__reset`, `Ticker.__reset`, `WaitGroup.add`, `Semaphore.acquire`,
-///   `Semaphore.try_acquire`, `Semaphore.release`, `Context.__with_timeout` and
-///   `Context.__with_deadline` (take integers).
-/// - Lend a `ref mut` to a callback and store nothing themselves: `Mutex.with_lock`,
-///   `RwMutex.with_write`, `Cond.wait_with` and `Parallel.for_each_chunk` (the callback's result is
-///   returned or `unit`, not stored). What the callback stores, it stores with an assignment
-///   (tracked), with a counted builtin or by calling a function; the callback is a lambda or a
-///   function value whose body is a function of the module, or the generated function of a
-///   builtin (`$builtin`), and is scanned as one.
-///
-/// The builtins that take an array, a vector or a map by value and return the updated one
-/// (`Array.__set`, `Array.update`, `Array.swap`, `Vec.push`, ...) store nothing through a reference:
-/// their result holds the loans of every argument. A std function is not a writer itself: its body
-/// is a function of the module, scanned like any other.
-fn untracked_writer(builtin: crate::check::Builtin) -> Option<usize> {
-    use crate::check::Builtin::{
-        ArrayWrite, AtomicCompareExchange, AtomicStore, AtomicSwap, SimdStore, SyncMapReplace,
-    };
-    match builtin {
-        SyncMapReplace => Some(0),
-        ArrayWrite | AtomicStore | AtomicSwap => Some(1),
-        SimdStore | AtomicCompareExchange => Some(2),
-        _ => None,
-    }
-}
-
-/// A28's program-wide guard: whether some function of `module` (a std function, a lifted lambda
-/// and the generated function of a builtin, `$builtin`, included) names an untracked writer
-/// (`untracked_writer`) whose stored value has a type that may carry loans (`carries_loans`). When
-/// one does, no body of the module has facts or reads through (`Lending::untracked`), which is the
-/// rule from before A28; the argument is at `lends_mutable`. Every mention of the builtin counts, a
-/// complete call, a pipeline, a partial application or the function value, so the stored type is
-/// read from the builtin's own type at the mention, and a mention whose type does not show the
-/// stored parameter counts.
-///
-/// In the specialized module (`infer` false), which decides whether the program is accepted, a
-/// type variable or an unsolved type in the stored type counts as well. In the abstract module of
-/// the inference it counts as no loans, as in `lends_mutable`: that module holds the generic body
-/// of every std function that the program loads, called or not (`Array.set` writes a `'a`), so
-/// counting it would keep the rule from before A28 in the inference of every such program; the
-/// abstract facts only infer Copy constraints, and each instance of a generic writer is a concrete
-/// function of the specialized module, which this guard sees.
-fn untracked_loan_store(
-    module: &CheckedModule,
-    types: &crate::check::TypeContext<'_>,
-    infer: bool,
-) -> bool {
-    let stores_loans = |expression: &TypedExpr, builtin: crate::check::Builtin, index: usize| {
-        let arity = builtin.scheme().parameters.len();
-        let mut parameters: Vec<&Type> = Vec::with_capacity(arity);
-        let mut ty = &expression.ty;
-        while parameters.len() < arity {
-            let Type::Function(next, result) = ty else {
-                break;
-            };
-            parameters.extend(next.iter());
-            ty = result;
-        }
-        parameters.get(index).is_none_or(|stored| {
-            stored.carries_loans(types) || (!infer && stored.contains_unknown())
-        })
-    };
-    module.functions.iter().any(|function| {
-        let mut pending = vec![&function.body];
-        while let Some(expression) = pending.pop() {
-            if let E::Function(crate::check::FunctionRef::Builtin(instance)) = &expression.kind
-                && let Some(index) = untracked_writer(instance.builtin)
-                && stores_loans(expression, instance.builtin, index)
-            {
-                return true;
-            }
-            pending.extend(expression.children());
-        }
-        false
-    })
 }
 
 /// The parameters of an abstract body whose loans may pass through a value whose type has a type
@@ -2427,8 +2347,7 @@ fn drops_stop_reads<'a>(
     user_drop: bool,
     contract: Contract<'a>,
 ) -> bool {
-    if facts.lending.untracked
-        || !facts.lending.drops_store
+    if !facts.lending.drops_store
         || contract.lends_mutable == Some(true)
         || !calls_read_through(module, body)
     {
@@ -2849,15 +2768,14 @@ impl<'a> Checker<'a, '_> {
         if let Some(lends) = self.lends_mutable {
             return lends;
         }
-        let lends =
-            self.facts.lending.untracked || lends_mutable(self.body, &self.module.types()) || {
-                let found = opaque_calls(self.body, self.module, &mut BTreeMap::new());
-                found.direct
-                    || found
-                        .callees
-                        .iter()
-                        .any(|callee| self.facts.lending.opaque[*callee])
-            };
+        let lends = lends_mutable(self.body, &self.module.types()) || {
+            let found = opaque_calls(self.body, self.module, &mut BTreeMap::new());
+            found.direct
+                || found
+                    .callees
+                    .iter()
+                    .any(|callee| self.facts.lending.opaque[*callee])
+        };
         self.lends_mutable = Some(lends);
         lends
     }
@@ -2869,19 +2787,16 @@ impl<'a> Checker<'a, '_> {
     ///
     /// A borrow whose target holds a loan from the caller (an external loan: the target is a
     /// parameter, a capture of a lifted lambda, or a local that took a value from one) is not read
-    /// through: it stands for itself, as before A28. The guards make the loans of this body's own
-    /// values complete: the program makes no untracked store of a value that may hold loans
-    /// (`Lending::untracked`, which `body_lends_mutable` reads), and, as defense in depth, the body
-    /// lends no way to write and drops no value that may store what it holds
-    /// (`body_lends_mutable`, `drops_stop_reads`), so no untracked store put in them what their
-    /// loans miss (A31). An external loan stands for what the
-    /// caller's value holds, and the caller's loans may miss what its own untracked stores put
-    /// there: in `fn wrap arr = Arc.share (ref arr[0])`, a caller that wrote a
-    /// borrowing value into `arr` with `Array.write` passes `arr` with the loans that it held
-    /// before the write. Reading through, the share held only `arr`'s external loan, the caller's
-    /// result held the caller's incomplete loans, and the share outlived the borrowed value. Kept
-    /// as the borrow of `arr`, the share is a borrow of a local that `wrap` drops, which the check
-    /// rejects as the A30 tip does.
+    /// through: it stands for itself, as before A28. The store facts make the loans of this body's
+    /// own values complete (A31, the argument at `lends_mutable`), and, as defense in depth, the
+    /// body lends no way to write and drops no value that may store what it holds
+    /// (`body_lends_mutable`, `drops_stop_reads`). An external loan stands for what the caller's
+    /// value holds, which this body cannot see: in `fn wrap arr = Arc.share (ref arr[0])`, a caller
+    /// whose loans missed what it stored into `arr` (as with `Array.write` before A31) passes `arr`
+    /// with the loans that it held before the store. Reading through, the share held only `arr`'s
+    /// external loan, the caller's result held the caller's incomplete loans, and the share
+    /// outlived the borrowed value. Kept as the borrow of `arr`, the share is a borrow of a local
+    /// that `wrap` drops, which the check rejects as the A30 tip does.
     ///
     /// The result holds a copy of each loan read through, with the same place, mutability and
     /// parents: it keeps the same data borrowed, and the block checks and conflicts see it as they
@@ -4329,8 +4244,7 @@ impl<'a> Checker<'a, '_> {
 
     /// A31: whether store facts apply in this check: the specialized bodies, whose types are
     /// concrete, of a module that has a seed (`CallFacts::seeded`). The abstract bodies of the
-    /// inference count a type variable as holding no loan, as `untracked_loan_store` does, so their
-    /// Copy constraints do not change.
+    /// inference count a type variable as holding no loan, so their Copy constraints do not change.
     fn tracks_stores(&self) -> bool {
         !self.infer && self.facts.seeded
     }
@@ -4812,7 +4726,7 @@ impl<'a> Checker<'a, '_> {
     /// `SyncMap.__replace` its value where its `ref mut` reaches, when the value's type may hold a
     /// loan; a builtin that runs a callback runs it with what its other arguments reach (the locks
     /// lend their contents). The other builtins store nothing that may hold a loan (the audit at
-    /// `untracked_writer`).
+    /// `store_seed`).
     fn builtin_stores(
         &mut self,
         callee: &TypedExpr,
@@ -5624,8 +5538,8 @@ impl<'a> Checker<'a, '_> {
         };
         // The functions of a `let rec` group are in scope in the body like captured function values.
         let locals: Vec<_> = captures.iter().chain(recursive).chain(parameters).collect();
-        // The captures hold what they held here, which misses what an untracked store put there
-        // when this body lends a way to write (`lending_bodies`).
+        // A lambda of a body that reads nothing through reads nothing through either
+        // (`lending_bodies`).
         let lends_mutable = self.body_lends_mutable().then_some(true);
         self.copy_variables.extend(check_body(
             self.module,
@@ -7330,38 +7244,16 @@ mod event_tests {
 mod retention_tests {
     use super::*;
 
-    /// The facts of the local guards alone, without the program-wide one
-    /// (`untracked_loan_store`), so that a test of a local guard may use `Array.write`.
-    fn local_facts(module: &CheckedModule, infer: bool) -> CallFacts {
-        let closed = closed_returns(module);
-        let mut lending = lending_bodies(module, infer);
-        assert!(lending.untracked, "the program makes an untracked store");
-        lending.untracked = false;
-        let joint = joint_facts(module, &closed, &lending, infer, None);
-        CallFacts {
-            revoked: closed
-                .iter()
-                .zip(&joint.closed)
-                .map(|(proved, kept)| *proved && !*kept)
-                .collect(),
-            closed: joint.closed,
-            retained: joint.retained,
-            lending,
-            stores: joint.stores,
-            drops_write: joint.drops_write,
-            seeded: joint.seeded,
-        }
-    }
-
-    /// A28, eighth review: a program in which some function stores a value that may hold loans
-    /// with a builtin that does not track the store (`Array.write` of a function here, in a
-    /// function that no other one calls, in a partial application, or in the instance of
-    /// `Array.set` that a pipeline calls) has no facts at all and reads nothing through; the same
-    /// program with the store of an `i64` keeps them.
+    /// A31, step 4: a program in which some function stores a value that may hold loans with a
+    /// seed (`Array.write` of a function here, in a function that no other one calls, in a partial
+    /// application, or in the instance of `Array.set` that a pipeline calls) keeps the facts of the
+    /// functions that store nothing, as the same program with the store of an `i64` does. A28's
+    /// eighth review dropped every fact of such a program (`untracked_loan_store`), until A31
+    /// tracked the stores of the seeds.
     #[test]
-    fn an_untracked_store_anywhere_leaves_no_facts() {
+    fn a_tracked_store_anywhere_keeps_the_facts() {
         let functions = "def a28_pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn a28_pass _key f = f\n";
-        for (store, untracked) in [
+        for (store, seeded) in [
             (
                 "def a28_store :: own (unit -> i64) -> i64\nfn a28_store g =\n    let mut arr = [\\() -> 0]\n    Array.write 0 g (ref mut arr)\n    arr[0] ()\n",
                 true,
@@ -7390,24 +7282,17 @@ mod retention_tests {
                 .unwrap();
             for infer in [false, true] {
                 let facts = call_facts(&module, infer);
-                assert_eq!(facts.lending.untracked, untracked, "{source} {infer}");
-                if untracked {
-                    assert!(
-                        facts.retained.iter().all(Option::is_none),
-                        "{source} {infer}"
-                    );
-                    assert!(
-                        (0..module.functions.len())
-                            .all(|id| facts.contract(&module, id).lends_mutable == Some(true)),
-                        "{source} {infer}"
-                    );
-                } else {
-                    assert_eq!(
-                        facts.retained[pass].as_deref(),
-                        Some(&[false, true][..]),
-                        "{source} {infer}"
-                    );
-                }
+                assert_eq!(facts.seeded, seeded && !infer, "{source} {infer}");
+                assert_eq!(
+                    facts.retained[pass].as_deref(),
+                    Some(&[false, true][..]),
+                    "{source} {infer}"
+                );
+                assert_eq!(
+                    facts.contract(&module, pass).lends_mutable,
+                    Some(false),
+                    "{source} {infer}"
+                );
             }
         }
     }
@@ -7466,7 +7351,7 @@ mod retention_tests {
         )
         .unwrap();
         for infer in [false, true] {
-            let facts = local_facts(&module, infer);
+            let facts = call_facts(&module, infer);
             let retained = |name: &str| {
                 let id = module
                     .functions
@@ -7496,7 +7381,7 @@ mod retention_tests {
         )
         .unwrap();
         for infer in [false, true] {
-            let facts = local_facts(&module, infer);
+            let facts = call_facts(&module, infer);
             let retained = |name: &str| {
                 let id = module
                     .functions
@@ -7656,7 +7541,7 @@ mod retention_tests {
         )
         .unwrap();
         let closed = closed_returns(&module);
-        let lending = lending_bodies(&module, false);
+        let lending = lending_bodies(&module);
         let full = parameter_retention(&module, &closed, &lending, false);
         let id = |name: &str| {
             module

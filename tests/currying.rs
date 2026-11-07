@@ -257,7 +257,10 @@ fn a_pipeline_that_completes_a_call_uses_its_facts() {
 
 /// A28, Copilot's review of #100: `x |> f` into a unary `f` completes `f x` as well, so it uses
 /// the facts of `f` with no argument bound before the piped one, and keeps every guard of the
-/// call. Each program is checked in both forms with the same result.
+/// call. Each program is checked in both forms with the same result. A31 (step 4): a program that
+/// stores a function with `Array.write` keeps the facts too, since the store facts track that
+/// store (A28's eighth review dropped every fact of such a program; `wrap 1` returns `\() -> 42`,
+/// which borrows nothing, so `g ()` prints 42).
 #[test]
 fn a_pipeline_into_a_unary_function_uses_its_facts() {
     const PASS: &str = "def pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn pass _key f = f\ndef make :: ref i64 -> (unit -> i64)\nfn make key = pass key (\\() -> 42)\n";
@@ -265,14 +268,17 @@ fn a_pipeline_into_a_unary_function_uses_its_facts() {
         assert!(source.contains(direct), "{source}");
         [source.to_owned(), source.replace(direct, piped)]
     };
-    for source in both(
-        &format!(
+    for program in [
+        format!(
             "{PASS}def wrap :: own i64 -> (unit -> i64)\nfn wrap key = make (ref key)\nlet g = wrap 1\ng ()"
         ),
-        "make (ref key)",
-        "ref key |> make",
-    ) {
-        accepts(&source);
+        format!(
+            "{PASS}def wrap :: own i64 -> (unit -> i64)\nfn wrap key = make (ref key)\nlet mut arr = [\\() -> 0]\nArray.write 0 (\\() -> 1) (ref mut arr)\nlet g = wrap 1\ng ()"
+        ),
+    ] {
+        for source in both(&program, "make (ref key)", "ref key |> make") {
+            accepts(&source);
+        }
     }
     const KEEP: &str =
         "def keep :: ref string -> (unit -> i64)\nfn keep text = \\() -> String.length text\n";
@@ -295,23 +301,15 @@ fn a_pipeline_into_a_unary_function_uses_its_facts() {
             "make (ref text)",
             "ref text |> make",
         ),
-        // A program with an untracked store of a value that may hold loans has no facts.
-        (
-            format!(
-                "{PASS}def wrap :: own i64 -> (unit -> i64)\nfn wrap key = make (ref key)\nlet mut arr = [\\() -> 0]\nArray.write 0 (\\() -> 1) (ref mut arr)\nlet g = wrap 1\ng ()"
-            ),
-            "make (ref key)",
-            "ref key |> make",
-        ),
     ] {
         for source in both(&source, direct, piped) {
             rejects_with_kind(&source, "E1013", "task_result_retains_borrow");
         }
     }
-    // A closed result serves a pipeline only where every store is tracked: here a lock callback
-    // stores a closure that borrows `text` with `Array.write` (A31), which `closed_returns` cannot
-    // see, so the pipeline keeps the borrow of `text`, as before A28. (The direct call keeps the
-    // rule of `main`, which A31 fixes.)
+    // A closed result serves a pipeline as it serves the direct call: here a lock callback stores
+    // a closure that borrows `text` in `stash`'s own `m` with `Array.write`, so the check of
+    // `stash` returns that borrow and revokes the closed result that `closed_returns` proved
+    // (A31), and the pipeline keeps the borrow of `text`.
     rejects_with_kind(
         "def stash :: ref string -> (unit -> i64)\nfn stash text =\n    let m = Mutex.create [\\() -> 0]\n    Mutex.with_lock (ref m) (\\slot -> Array.write 0 (\\() -> String.length text) slot)\n    let arr = Mutex.into_inner m\n    arr[0]\ndef leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    ref text |> stash\nlet f = leak 123456789\nf ()",
         "E1013",
