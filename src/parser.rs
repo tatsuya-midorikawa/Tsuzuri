@@ -275,6 +275,10 @@ struct Parser<'a> {
     pending_statement: Option<ComputationStatement>,
     /// Every `dyn` type parsed so far, for `Program::dyn_types` (A14).
     dyn_types: Vec<TypeExpr>,
+    /// Whether an anonymous union type or a type test pattern was parsed, for
+    /// `Program::uses_anonymous_unions` (A24). Only `own_type_ahead` parses speculatively, on a
+    /// clone that it drops, so the flag never comes from text that is not a type or a pattern.
+    uses_anonymous_unions: bool,
     /// The token where the body of the top-level function being parsed starts, the only place
     /// where its contract lines may begin (A21). An explicit lambda moves it to its own body.
     contract_site: Option<usize>,
@@ -315,6 +319,7 @@ impl<'a> Parser<'a> {
             exception_arms: false,
             pending_statement: None,
             dyn_types: Vec::new(),
+            uses_anonymous_unions: false,
             contract_site: None,
             method_body: false,
             site_contracts: Vec::new(),
@@ -482,6 +487,7 @@ impl Parser<'_> {
             benches: Vec::new(),
             entry: None,
             dyn_types: Vec::new(),
+            uses_anonymous_unions: false,
             cpu_attributes: Vec::new(),
             effect_attributes: Vec::new(),
             trusted: Vec::new(),
@@ -1070,6 +1076,7 @@ impl Parser<'_> {
         program.active_patterns = self.active_patterns.into_values().collect();
         program.noncanonical = self.noncanonical;
         program.dyn_types = self.dyn_types;
+        program.uses_anonymous_unions = self.uses_anonymous_unions;
         Ok(program)
     }
 
@@ -2513,8 +2520,12 @@ impl Parser<'_> {
             self.variable_type()?
         } else if self.eat(&TokenKind::LeftParen) {
             let ty = self.type_expr()?;
-            self.expect(&TokenKind::RightParen, "')' after the type")?;
-            ty.kind
+            if self.at(&TokenKind::Pipe) || self.at(&TokenKind::OrOr) {
+                self.anonymous_union_members(ty)?
+            } else {
+                self.expect(&TokenKind::RightParen, "')' after the type")?;
+                ty.kind
+            }
         } else if self.at(&TokenKind::Fn)
             && self
                 .tokens
@@ -2561,6 +2572,35 @@ impl Parser<'_> {
         };
         self.nesting -= 1;
         self.finish_type_primary(kind, start)
+    }
+
+    /// The members of an anonymous union `(A | B | ...)` after the first one, through the closing
+    /// `)` (A24); kept out of `type_primary` so that its recursive frame stays small. The list is
+    /// capped like every other list of the parser; the checker allows 32 members after flattening.
+    #[inline(never)]
+    fn anonymous_union_members(&mut self, first: TypeExpr) -> Result<TypeExprKind, Diagnostic> {
+        let mut members = vec![first];
+        loop {
+            if self.at(&TokenKind::OrOr) {
+                return Err(self.error_of(
+                    DiagnosticKind::AnonymousUnionDoubleBar,
+                    "use a single '|' between the members of an anonymous union, as in (i64 | string)",
+                ));
+            }
+            if !self.eat(&TokenKind::Pipe) {
+                break;
+            }
+            if members.len() >= MAX_NESTING {
+                return Err(self.error_of(
+                    DiagnosticKind::TooManyAnonymousUnionMembers,
+                    "too many members in an anonymous union",
+                ));
+            }
+            members.push(self.type_expr()?);
+        }
+        self.expect(&TokenKind::RightParen, "')' after the type")?;
+        self.uses_anonymous_unions = true;
+        Ok(TypeExprKind::AnonymousUnion(members.into_boxed_slice()))
     }
 
     /// The rest of `[T]`, `[|T|]`, `[T..]` (C08), or `[T; N]` (A16) after the element type; kept

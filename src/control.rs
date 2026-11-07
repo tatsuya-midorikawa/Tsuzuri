@@ -690,6 +690,7 @@ impl Checker<'_> {
                 )));
                 coverage
             }
+            PatternKind::TypeTest(..) => todo!("A24 step 6: type test patterns"),
             PatternKind::Annotated(inner, annotation) => {
                 let ty = self.annotation(annotation)?;
                 self.same(&matched.ty, &ty, pattern.span)?;

@@ -489,6 +489,9 @@ impl<'a> Renaming<'a> {
             Length(length) => Length(*length),
             List(inner) => List(Box::new(self.ty(inner))),
             Tuple(elements) => Tuple(elements.iter().map(|element| self.ty(element)).collect()),
+            AnonymousUnion(members) => {
+                AnonymousUnion(members.iter().map(|member| self.ty(member)).collect())
+            }
             Function(parameters, result) => Function(
                 parameters
                     .iter()
@@ -653,6 +656,8 @@ fn add_items(
         benches: _,
         entry: _,
         dyn_types: _,
+        // A24: the synthesized declarations behind anonymous unions are no API of the module.
+        uses_anonymous_unions: _,
         cpu_attributes: _,
         effect_attributes,
         // E15: `@trusted` is a reviewer's mark, not part of the API.
@@ -1314,6 +1319,7 @@ fn may_carry_functions(ty: &TypeExpr) -> bool {
         | TypeExprKind::Regions(inner, _) => may_carry_functions(inner),
         TypeExprKind::FixedArray(inner, _) => may_carry_functions(inner),
         TypeExprKind::Tuple(elements) => elements.iter().any(may_carry_functions),
+        TypeExprKind::AnonymousUnion(elements) => elements.iter().any(may_carry_functions),
         _ => true,
     }
 }
@@ -1400,6 +1406,9 @@ fn has_type_variable(ty: &TypeExpr, lengths: &Lengths<'_>) -> bool {
         TypeExprKind::Tuple(elements) => elements
             .iter()
             .any(|element| has_type_variable(element, lengths)),
+        TypeExprKind::AnonymousUnion(members) => members
+            .iter()
+            .any(|member| has_type_variable(member, lengths)),
         TypeExprKind::Function(parameters, result) => {
             parameters
                 .iter()

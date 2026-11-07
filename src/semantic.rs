@@ -1354,6 +1354,7 @@ fn type_entry(
         | TypeExprKind::List(inner) => recurse(inner),
         TypeExprKind::FixedArray(element, _) => recurse(element),
         TypeExprKind::Tuple(elements) => elements.iter().for_each(&mut recurse),
+        TypeExprKind::AnonymousUnion(elements) => elements.iter().for_each(&mut recurse),
         TypeExprKind::Function(parameters, result) => {
             parameters.iter().for_each(&mut recurse);
             recurse(result);

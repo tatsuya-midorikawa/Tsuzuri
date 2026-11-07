@@ -7426,6 +7426,9 @@ fn validate_public_type(
         TypeExprKind::Tuple(elements) => elements
             .iter()
             .try_for_each(|element| validate_public_type(element, module, owner, names)),
+        TypeExprKind::AnonymousUnion(elements) => elements
+            .iter()
+            .try_for_each(|element| validate_public_type(element, module, owner, names)),
         TypeExprKind::Function(parameters, result) => {
             for parameter in parameters.iter() {
                 validate_public_type(parameter, module, owner, names)?;
@@ -10397,6 +10400,7 @@ fn resolve_type_with_kinds(
             parameters.iter().map(resolve).collect::<Result<_, _>>()?,
             resolve(result)?,
         ),
+        TypeExprKind::AnonymousUnion(_) => todo!("A24 step 4: anonymous union types"),
     })
 }
 
@@ -10669,6 +10673,14 @@ impl TypeAliasExpansion<'_> {
                     .map(|element| self.expand(element, module, depth + 1))
                     .collect::<Result<_, _>>()?,
             ),
+            // A24: without this arm an alias inside a member, as in `(Meters | string)`, would
+            // stay unexpanded and unknown.
+            TypeExprKind::AnonymousUnion(members) => TypeExprKind::AnonymousUnion(
+                members
+                    .iter()
+                    .map(|member| self.expand(member, module, depth + 1))
+                    .collect::<Result<_, _>>()?,
+            ),
             TypeExprKind::Function(parameters, result) => TypeExprKind::Function(
                 parameters
                     .iter()
@@ -10793,6 +10805,7 @@ impl TypeAliasExpansion<'_> {
             | TypeExprKind::List(inner) => vec![inner],
             TypeExprKind::FixedArray(element, length) => vec![element, length],
             TypeExprKind::Tuple(elements) => elements.iter_mut().collect(),
+            TypeExprKind::AnonymousUnion(members) => members.iter_mut().collect(),
             TypeExprKind::Function(parameters, result) => parameters
                 .iter_mut()
                 .chain(std::iter::once(result.as_mut()))
@@ -10861,6 +10874,7 @@ fn reject_expanded_field_constraints(
         | TypeExprKind::FixedArray(inner, _)
         | TypeExprKind::List(inner) => vec![inner],
         TypeExprKind::Tuple(elements) => elements.iter().collect(),
+        TypeExprKind::AnonymousUnion(members) => members.iter().collect(),
         TypeExprKind::Function(parameters, result) => parameters
             .iter()
             .chain(std::iter::once(result.as_ref()))

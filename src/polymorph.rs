@@ -1765,7 +1765,13 @@ impl Classes {
                     constraints.extend(self.expanded_inline_constraints(ty, module, names)?);
                 }
             }
+            // A24: an inline constraint inside a member, as in `(Maybe<Add<'a>> | i64)`, is kept.
             TypeExprKind::Tuple(elements) => {
+                for ty in elements {
+                    constraints.extend(self.expanded_inline_constraints(ty, module, names)?);
+                }
+            }
+            TypeExprKind::AnonymousUnion(elements) => {
                 for ty in elements {
                     constraints.extend(self.expanded_inline_constraints(ty, module, names)?);
                 }

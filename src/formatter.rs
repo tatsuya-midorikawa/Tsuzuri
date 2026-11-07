@@ -831,6 +831,11 @@ impl Canonical {
                     self.ty(element);
                 }
             }
+            TypeExprKind::AnonymousUnion(members) => {
+                for member in members {
+                    self.ty(member);
+                }
+            }
             TypeExprKind::FixedArray(element, length) => {
                 self.ty(element);
                 self.ty(length);
@@ -1120,6 +1125,12 @@ impl Canonical {
                 self.ident(name);
             }
             Argument(value) | Literal(value) => self.expression(value),
+            TypeTest(ty, binder) => {
+                self.ty(ty);
+                if let Some(binder) = binder {
+                    self.ident(binder);
+                }
+            }
             Wildcard => {}
         }
     }

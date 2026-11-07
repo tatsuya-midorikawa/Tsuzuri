@@ -52,6 +52,7 @@ diagnostic_kinds! {
         // E0002
         (AliasNameOnSameLine, "alias_name_on_same_line", "E0002"),
         (AngleBracketSpacing, "angle_bracket_spacing", "E0002"),
+        (AnonymousUnionDoubleBar, "anonymous_union_double_bar", "E0002"),
         (BuilderAliasIsContextualKeyword, "builder_alias_is_contextual_keyword", "E0002"),
         (BuilderAliasNameCase, "builder_alias_name_case", "E0002"),
         (CheckedLetRec, "checked_let_rec", "E0002"),
@@ -158,6 +159,7 @@ diagnostic_kinds! {
         (StrayAndMember, "stray_and_member", "E0002"),
         (SyntaxNestingTooDeep, "syntax_nesting_too_deep", "E0002"),
         (TooManyActivePatternCases, "too_many_active_pattern_cases", "E0002"),
+        (TooManyAnonymousUnionMembers, "too_many_anonymous_union_members", "E0002"),
         (TooManyDynClasses, "too_many_dyn_classes", "E0002"),
         (TooManyExternLinkNames, "too_many_extern_link_names", "E0002"),
         (TooManyFunctionParameters, "too_many_function_parameters", "E0002"),

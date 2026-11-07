@@ -564,6 +564,7 @@ impl Wire for Program {
             benches,
             entry,
             dyn_types,
+            uses_anonymous_unions,
             cpu_attributes,
             effect_attributes,
             trusted,
@@ -590,6 +591,9 @@ impl Wire for Program {
             entry.put(out)?;
         }
         dyn_types.put(out)?;
+        // In both modes: a body that writes `(A | B)` or `:? T` makes the checker synthesize
+        // declarations for the whole program (A24), so the interface hash must see it.
+        uses_anonymous_unions.put(out)?;
         cpu_attributes.put(out)?;
         effect_attributes.put(out)?;
         trusted.put(out)?;
@@ -621,6 +625,7 @@ impl Wire for Program {
             benches: Vec::get(input)?,
             entry: Option::get(input)?,
             dyn_types: Vec::get(input)?,
+            uses_anonymous_unions: bool::get(input)?,
             cpu_attributes: Vec::get(input)?,
             effect_attributes: Vec::get(input)?,
             trusted: Vec::get(input)?,
@@ -1440,6 +1445,10 @@ impl Wire for TypeExprKind {
                 out.tag("TypeExprKind", 17);
                 ty.put(out)
             }
+            AnonymousUnion(members) => {
+                out.tag("TypeExprKind", 18);
+                members.put(out)
+            }
         }
     }
 
@@ -1477,7 +1486,10 @@ impl Wire for TypeExprKind {
             15 => variant(input, |input| Ok(Own(Box::get(input)?))),
             16 => variant(input, |input| Ok(Mut(Box::get(input)?))),
             17 => variant(input, |input| Ok(Pure(Box::get(input)?))),
-            18..=u8::MAX => Err(Invalid),
+            18 => variant(input, |input| {
+                Ok(AnonymousUnion(Box::<[TypeExpr]>::get(input)?))
+            }),
+            19..=u8::MAX => Err(Invalid),
         }
     }
 }
@@ -2240,6 +2252,11 @@ impl Wire for PatternKind {
                 pattern.put(out)?;
                 ty.put(out)
             }
+            TypeTest(ty, binder) => {
+                out.tag("PatternKind", 14);
+                ty.put(out)?;
+                binder.put(out)
+            }
         }
     }
 
@@ -2266,7 +2283,10 @@ impl Wire for PatternKind {
             13 => variant(input, |input| {
                 Ok(Annotated(Box::get(input)?, TypeExpr::get(input)?))
             }),
-            14..=u8::MAX => Err(Invalid),
+            14 => variant(input, |input| {
+                Ok(TypeTest(Box::get(input)?, Option::get(input)?))
+            }),
+            15..=u8::MAX => Err(Invalid),
         }
     }
 }
@@ -2664,6 +2684,14 @@ mod tests {
         seen.extend(round_trips("def bump :: mut i64 -> unit = \\n -> n = n + 1\n", 0).unwrap());
         seen.extend(round_trips("let hole = f ?a ?\nhole\n", 0).unwrap());
         seen.extend(round_trips("tzroutine {\n    ()\n}\n", 0).unwrap());
+        // A24: anonymous union types and type test patterns.
+        seen.extend(
+            round_trips(
+                "def f :: (i64 | (string | bool)) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string | :? bool -> 0\n",
+                0,
+            )
+            .unwrap(),
+        );
         seen.extend(
             round_trips(
                 "let ch: Channel<i64> = Channel.make 1\nselect\n| recv x from ch when true -> 1\n| send 2 to ch -> 2\n| default -> 3\n",
@@ -2715,11 +2743,11 @@ mod tests {
         for (name, count) in [
             ("ConstraintName", 2),
             ("Kind", 2),
-            ("TypeExprKind", 18),
+            ("TypeExprKind", 19),
             ("StringLiteral", 2),
             ("ExprKind", 49),
             ("SelectHead", 3),
-            ("PatternKind", 14),
+            ("PatternKind", 15),
             ("ComputationStatementKind", 9),
             ("SourceKind", 0),
             ("Provenance", 2),
@@ -2768,6 +2796,8 @@ mod tests {
                 )
             }),
             deepest(|n| format!("type T = {}i64{}\n", "[".repeat(n), "]".repeat(n))),
+            // A24: anonymous unions nested in their last member.
+            deepest(|n| format!("type T = {}i64{}\n", "(i64 | ".repeat(n), ")".repeat(n))),
             deepest(|n| {
                 format!(
                     "def f :: i64 -> i64 = \\x ->\n    match x with\n    | {}y{} -> y\n",
@@ -2939,6 +2969,26 @@ add_one 41
         }
     }
 
+    /// A24: an anonymous union or a type test written only in a body or the entry makes the checker
+    /// synthesize declarations for the whole program, so the interface changes with it.
+    #[test]
+    fn interface_sees_body_only_anonymous_unions() {
+        let base = interface(BASE);
+        for text in [
+            edited(
+                "\\x -> x + 1",
+                "\\x ->\n    let v: (i64 | string) = x\n    x + 1",
+            ),
+            edited("add_one 41\n", "let v: (i64 | string) = 41\nadd_one 41\n"),
+            edited(
+                "fn size point = point.x",
+                "fn size point = match point.x with\n        | :? i64 -> 1\n        | _ -> 0",
+            ),
+        ] {
+            assert_ne!(interface(&text), base, "{text}");
+        }
+    }
+
     #[test]
     fn pins_encoding_format() {
         // A failure here means the encoding changed: bump `FRONTEND_FORMAT` and update the golden.
@@ -2956,6 +3006,6 @@ add_one 41
         "36341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01000000",
         "03693634323501000e000a01783e3f01003e3f0101000100424301013e430102000000000101664a4d",
         "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
-        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d010300000000000300224500",
+        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d01030000000000000300224500",
     );
 }

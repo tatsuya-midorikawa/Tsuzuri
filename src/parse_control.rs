@@ -1339,6 +1339,11 @@ impl Parser<'_> {
     }
 
     fn guard_predicate(&self) -> bool {
+        // A type test `:? T` before the arrow makes the arm a pattern, at any depth: its type may
+        // hold a `<` that the scan below takes for a comparison (A24).
+        if self.type_test_ahead(false) {
+            return false;
+        }
         if let TokenKind::Ident(name) = &self.current().kind {
             if name.as_bytes()[0].is_ascii_lowercase()
                 && self.tokens.get(self.position + 1).is_some_and(|token| {
@@ -1376,6 +1381,38 @@ impl Parser<'_> {
                 | TokenKind::Bang
                 | TokenKind::Ref
                 | TokenKind::Deref => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Whether the tokens at `index` are `:` and `?` written together, which start a type test
+    /// `:? T` (A24). Apart, `: ?` is no type test.
+    fn type_test_at(&self, index: usize) -> bool {
+        match (self.tokens.get(index), self.tokens.get(index + 1)) {
+            (Some(colon), Some(question)) => {
+                colon.kind == TokenKind::Colon
+                    && question.kind == TokenKind::Question
+                    && colon.span.end == question.span.start
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a type test starts before the arm's `->` or `when` (`group` false), or before the
+    /// `)` that closes the current group (`group` true), at any depth (A24). No expression holds
+    /// `:?`, so such an arm or group is a pattern.
+    fn type_test_ahead(&self, group: bool) -> bool {
+        let mut depth = 0usize;
+        for (index, token) in self.tokens[self.position..].iter().enumerate() {
+            match token.kind {
+                TokenKind::End => return false,
+                TokenKind::Arrow | TokenKind::When if !group => return false,
+                TokenKind::LeftParen => depth += 1,
+                TokenKind::RightParen if group && depth == 0 => return false,
+                TokenKind::RightParen => depth = depth.saturating_sub(1),
+                TokenKind::Colon if self.type_test_at(self.position + index) => return true,
                 _ => {}
             }
         }
@@ -1488,10 +1525,34 @@ impl Parser<'_> {
             | TokenKind::String(_)
             | TokenKind::Char(_)
             | TokenKind::Utf8Char(_) => (PatternKind::Literal(Box::new(self.literal()?)), 1),
+            TokenKind::Colon if self.type_test_at(self.position) => {
+                return self.type_test_pattern();
+            }
             _ => return Err(self.error_of(DiagnosticKind::ExpectedPattern, "expected a pattern")),
         };
         let span = start.through(self.tokens[self.position - 1].span);
         self.make_pattern(kind, span, depth)
+    }
+
+    /// `:? T` or `:? T as x` (A24). The type is a `type_product`, so a function type or an anonymous
+    /// union needs parentheses; the span starts at the `:`, where the formatter keys its spacing.
+    #[inline(never)]
+    fn type_test_pattern(&mut self) -> Result<Pattern, Diagnostic> {
+        let start = self.take().span;
+        self.take();
+        let ty = self.type_product()?;
+        let binder = if self.eat(&TokenKind::As) {
+            Some(self.ident()?)
+        } else {
+            None
+        };
+        self.uses_anonymous_unions = true;
+        let end = binder.as_ref().map_or(ty.span, |binder| binder.span);
+        self.make_pattern(
+            PatternKind::TypeTest(Box::new(ty), binder),
+            start.through(end),
+            1,
+        )
     }
 
     fn named_pattern(&mut self) -> Result<Pattern, Diagnostic> {
@@ -1599,6 +1660,10 @@ impl Parser<'_> {
     }
 
     fn pattern_argument_expression(&self) -> bool {
+        // A type test anywhere in the group makes it a pattern: its type may hold a `<` (A24).
+        if self.type_test_ahead(true) {
+            return false;
+        }
         if matches!(
             self.current().kind,
             TokenKind::Ampersand | TokenKind::If | TokenKind::Backslash | TokenKind::New
