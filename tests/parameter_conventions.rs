@@ -916,3 +916,399 @@ fn own_accepts_every_type_primary_starter() {
         }
     }
 }
+
+/// The lines of a source, each ended by a newline.
+fn program(lines: &[&str]) -> String {
+    lines.iter().map(|line| format!("{line}\n")).collect()
+}
+
+/// A32: `pick n` chooses between a declared function and a lambda written where the declared
+/// function's type, with its conventions, is expected.
+fn chooser(declarations: &[&str], body: &[&str]) -> String {
+    let mut lines = declarations.to_vec();
+    lines.push("export def pick :: i64 -> i64 = \\n ->");
+    lines.extend(body);
+    program(&lines)
+}
+
+const TEXT_LENGTH: &str = "def text_length :: string -> i64 = \\text -> text.length";
+const PURE_TEXT_LENGTH: &str = "pure def text_length :: string -> i64 = \\text -> text.length";
+const BOTH: &str = "def both :: string -> string -> i64 = \\a b -> a.length + b.length";
+const COUNTER: &str = "record Counter { count: i64 }";
+
+#[test]
+fn annotated_reference_lambdas_meet_convention_function_types() {
+    let accepted = [
+        // `if`, with the type of the bound form and a `ref string` local in the body.
+        chooser(
+            &[TEXT_LENGTH],
+            &[
+                "    let chosen = if n > 0 then text_length else \\(text: ref string) -> { let view: ref string = text; view.length * 10 }",
+                "    let probe: ref string -> i64 = chosen",
+                "    let text = \"hello\"",
+                "    probe (ref text)",
+            ],
+        ),
+        // `match`
+        chooser(
+            &[TEXT_LENGTH],
+            &[
+                "    let chosen =",
+                "        match n with",
+                "        | 0 -> text_length",
+                "        | _ -> \\(text: ref string) -> text.length * 10",
+                "    let text = \"hello\"",
+                "    chosen (ref text)",
+            ],
+        ),
+        // a generic record
+        chooser(
+            &["record Box<'a> { value: 'a }", TEXT_LENGTH],
+            &[
+                "    let first = Box { value: text_length }",
+                "    let chosen = if n > 0 then first else Box { value: \\(text: ref string) -> text.length * 10 }",
+                "    let text = \"hello\"",
+                "    let f = chosen.value",
+                "    f (ref text)",
+            ],
+        ),
+        // `Vec`
+        chooser(
+            &[TEXT_LENGTH],
+            &[
+                "    let mut readers = Vec.empty()",
+                "    Vec.push text_length readers",
+                "    Vec.push (\\(text: ref string) -> text.length * 10 + n) readers",
+                "    let text = \"hello\"",
+                "    let second = readers[1]",
+                "    second (ref text)",
+            ],
+        ),
+        // [Own, Mut]
+        chooser(
+            &[
+                COUNTER,
+                "def bump :: i64 -> mut Counter -> unit = \\step counter -> counter.count = counter.count + step",
+            ],
+            &[
+                "    let change = if n > 0 then bump else \\(step: i64) (counter: ref mut Counter) -> counter.count = counter.count + step * 100",
+                "    let mut counter = Counter { count: 1 }",
+                "    change 3 (ref mut counter)",
+                "    counter.count",
+            ],
+        ),
+        // [Mut] alone
+        chooser(
+            &[
+                COUNTER,
+                "def touch :: mut Counter -> unit = \\counter -> counter.count = counter.count + 1",
+            ],
+            &[
+                "    let change = if n > 0 then touch else \\(counter: ref mut Counter) -> counter.count = counter.count + 100",
+                "    let mut counter = Counter { count: 1 }",
+                "    change (ref mut counter)",
+                "    counter.count",
+            ],
+        ),
+        // a guard
+        chooser(
+            &[TEXT_LENGTH],
+            &[
+                "    let chosen = if n > 0 then text_length else \\(text: ref string) when text.length > 0 -> text.length * 10",
+                "    let text = \"hello\"",
+                "    chosen (ref text)",
+            ],
+        ),
+        // two annotated parameters, a name and an annotation, a value annotation and a reference
+        chooser(
+            &[BOTH],
+            &[
+                "    let two = if n > 0 then both else \\(a: ref string) (b: ref string) -> a.length * 10 + b.length * 100",
+                "    let mixed = if n > 0 then both else \\a (b: ref string) -> a.length * 10 + b.length * 100",
+                "    let valued = if n > 0 then both else \\(a: string) (b: ref string) -> a.length * 10 + b.length * 100",
+                "    let left = \"hello\"",
+                "    let right = \"hi\"",
+                "    two (ref left) (ref right) + mixed (ref left) (ref right) + valued (ref left) (ref right)",
+            ],
+        ),
+        // a destructuring pattern under a reference annotation
+        chooser(
+            &[
+                "def pair_size :: (string * string) -> i64 = \\pair -> match pair with | (a, b) -> a.length + b.length",
+            ],
+            &[
+                "    let chosen = if n > 0 then pair_size else \\((a, b): ref (string * string)) -> a.length * 10 + b.length * 100",
+                "    let pair = (\"hello\", \"hi\")",
+                "    chosen (ref pair)",
+            ],
+        ),
+        // a wildcard
+        chooser(
+            &[TEXT_LENGTH],
+            &[
+                "    let chosen = if n > 0 then text_length else \\(_: ref string) -> 7",
+                "    let text = \"hello\"",
+                "    chosen (ref text)",
+            ],
+        ),
+        // an array against a generic read, and an exclusive array
+        chooser(
+            &[
+                "def first_size :: ['a] -> i64 = \\xs -> xs.length",
+                "def put :: mut [i64] -> unit = \\values -> values[0] = 7",
+            ],
+            &[
+                "    let counted = if n > 0 then first_size else \\(xs: ref [i64]) -> xs.length * 10",
+                "    let change = if n > 0 then put else \\(values: ref mut [i64]) -> values[0] = 9",
+                "    let mut values = [1, 2, 3, 4, 5]",
+                "    let size = counted (ref values)",
+                "    change (ref mut values)",
+                "    size + values[0]",
+            ],
+        ),
+        // a type alias of a reference
+        chooser(
+            &["type Borrowed<'a> = ref 'a", TEXT_LENGTH],
+            &[
+                "    let chosen = if n > 0 then text_length else \\(text: Borrowed<string>) -> text.length * 10",
+                "    let text = \"hello\"",
+                "    chosen (ref text)",
+            ],
+        ),
+        // the lambda in the body of a `def`
+        program(&[
+            "def both :: string -> string -> i64 = \\(a: ref string) -> \\(b: ref string) -> a.length + b.length * 10",
+            "export def answer :: i64 =",
+            "    let left = \"hello\"",
+            "    let right = \"hi\"",
+            "    both left right",
+        ]),
+    ];
+    for source in &accepted {
+        check("2027", source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    }
+    let pure = [
+        chooser(
+            &[PURE_TEXT_LENGTH],
+            &[
+                "    let chosen = if n > 0 then text_length else \\(text: ref string) -> text.length * 10",
+                "    let text = \"hello\"",
+                "    chosen (ref text)",
+            ],
+        ),
+        chooser(
+            &[PURE_TEXT_LENGTH],
+            &[
+                "    let chosen =",
+                "        match n with",
+                "        | 0 -> text_length",
+                "        | _ -> \\(text: ref string) -> text.length * 10",
+                "    let text = \"hello\"",
+                "    chosen (ref text)",
+            ],
+        ),
+        chooser(
+            &["record Box<'a> { value: 'a }", PURE_TEXT_LENGTH],
+            &[
+                "    let first = Box { value: text_length }",
+                "    let chosen = if n > 0 then first else Box { value: \\(text: ref string) -> text.length * 10 }",
+                "    let text = \"hello\"",
+                "    let f = chosen.value",
+                "    f (ref text)",
+            ],
+        ),
+        chooser(
+            &[PURE_TEXT_LENGTH],
+            &[
+                "    let mut readers = Vec.empty()",
+                "    readers = Vec.push text_length readers",
+                "    readers = Vec.push (\\(text: ref string) -> text.length * 10 + n) readers",
+                "    let text = \"hello\"",
+                "    let second = readers[1]",
+                "    second (ref text)",
+            ],
+        ),
+    ];
+    for source in &pure {
+        check("2026", source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    }
+}
+
+#[test]
+fn annotated_reference_def_parameters_meet_their_conventions() {
+    for (edition, source) in [
+        (
+            "2027",
+            program(&[
+                COUNTER,
+                "def bump :: i64 -> mut Counter -> unit = \\(step: i64) (counter: ref mut Counter) -> counter.count = counter.count + step",
+                "export def answer :: i64 =",
+                "    let mut counter = Counter { count: 1 }",
+                "    bump 3 counter",
+                "    counter.count",
+            ]),
+        ),
+        (
+            "2027",
+            program(&[
+                "def size :: 'a -> i64 = \\(value: ref 'a) -> 3",
+                "export def answer :: i64 =",
+                "    let text = \"hello\"",
+                "    size text + text.length",
+            ]),
+        ),
+        (
+            "2026",
+            program(&[
+                "pure def size :: 'a -> i64 = \\(value: ref 'a) -> 3",
+                "export def answer :: i64 =",
+                "    let text = \"hello\"",
+                "    size text + text.length",
+            ]),
+        ),
+        (
+            "2027",
+            program(&[
+                "def both :: string -> mut [i64] -> unit = \\(a: ref string) (b: ref mut [i64]) -> b[0] = a.length",
+                "export def answer :: i64 =",
+                "    let left = \"hello\"",
+                "    let mut values = [0]",
+                "    both left values",
+                "    values[0]",
+            ]),
+        ),
+    ] {
+        check(edition, &source).unwrap_or_else(|error| panic!("{edition}\n{source}\n{error:?}"));
+    }
+}
+
+#[test]
+fn lambda_parameters_without_reference_annotations_keep_reading_values() {
+    // A value annotation, no annotation, and a destructuring pattern still read the value: the
+    // lambda has the type of its expected type, and the body sees a `string`.
+    for lambda in [
+        "\\(text: string) -> text.length * 10",
+        "\\text -> text.length * 10",
+    ] {
+        let reads = chooser(
+            &[TEXT_LENGTH],
+            &[
+                &format!("    let chosen = if n > 0 then text_length else {lambda}"),
+                "    let probe: ref string -> i64 = chosen",
+                "    let text = \"hello\"",
+                "    probe (ref text)",
+            ],
+        );
+        check("2027", &reads).unwrap_or_else(|error| panic!("{reads}\n{error:?}"));
+        let body = reads.replace(
+            "text.length * 10",
+            "{ let view: ref string = text; view.length * 10 }",
+        );
+        assert_eq!(check("2027", &body).unwrap_err().code, "E1003", "{body}");
+    }
+    let destructures = chooser(
+        &[
+            "def pair_size :: (string * string) -> i64 = \\pair -> match pair with | (a, b) -> a.length + b.length",
+        ],
+        &[
+            "    let chosen = if n > 0 then pair_size else \\(a, b) -> a.length * 10 + b.length * 100",
+            "    let probe: ref (string * string) -> i64 = chosen",
+            "    let pair = (\"hello\", \"hi\")",
+            "    probe (ref pair)",
+        ],
+    );
+    check("2027", &destructures).unwrap_or_else(|error| panic!("{destructures}\n{error:?}"));
+    // An explicit `ref string` parameter, and a concrete read parameter of a `def`.
+    for source in [
+        chooser(
+            &["def text_length :: ref string -> i64 = \\text -> text.length"],
+            &[
+                "    let chosen = if n > 0 then text_length else \\(text: ref string) -> text.length * 10",
+                "    let text = \"hello\"",
+                "    chosen (ref text)",
+            ],
+        ),
+        program(&[
+            "def text_length :: string -> i64 = \\(text: ref string) -> text.length",
+            "export def answer :: i64 =",
+            "    let text = \"hello\"",
+            "    text_length text + text.length",
+        ]),
+    ] {
+        check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    }
+    // Where the parameter's type may itself be a reference, the annotation is still compared with
+    // the value read through the parameter: a generic read gives `ref ref string`, and a `Vec`
+    // whose element type was fixed first takes the `ref string` lambda for its `ref ref string`.
+    let generic = chooser(
+        &["def inspect :: 'a -> i64 = \\_value -> 3"],
+        &[
+            "    let chosen = if n > 0 then inspect else \\(text: ref string) -> text.length * 10",
+            "    let probe: ref (ref string) -> i64 = chosen",
+            "    let text = \"hello\"",
+            "    let r = ref text",
+            "    probe r",
+        ],
+    );
+    check("2027", &generic).unwrap_or_else(|error| panic!("{generic}\n{error:?}"));
+    let single = generic.replace("ref (ref string) -> i64", "ref string -> i64");
+    assert_eq!(
+        check("2027", &single).unwrap_err().code,
+        "E1003",
+        "{single}"
+    );
+    let fixed_first = chooser(
+        &["def inspect :: 'a -> i64 = \\_value -> 3"],
+        &[
+            "    let mut readers = Vec.empty()",
+            "    Vec.push inspect readers",
+            "    let scaled = \\(text: ref (ref string)) -> text.length * 10",
+            "    Vec.push scaled readers",
+            "    Vec.push (\\(text: ref string) -> text.length * 100 + n) readers",
+            "    let text = \"hello\"",
+            "    let r = ref text",
+            "    let third = readers[2]",
+            "    third r",
+        ],
+    );
+    check("2027", &fixed_first).unwrap_or_else(|error| panic!("{fixed_first}\n{error:?}"));
+    // Mismatches stay errors: an exclusive reference where the convention reads, a value where
+    // it writes, and a reference where the function type has no convention (out of scope).
+    for (source, code) in [
+        (
+            chooser(
+                &[TEXT_LENGTH],
+                &[
+                    "    let chosen = if n > 0 then text_length else \\(text: ref mut string) -> text.length * 10",
+                    "    let text = \"hello\"",
+                    "    chosen (ref text)",
+                ],
+            ),
+            "E1003",
+        ),
+        (
+            chooser(
+                &[
+                    COUNTER,
+                    "def touch :: mut Counter -> unit = \\counter -> counter.count = counter.count + 1",
+                ],
+                &[
+                    "    let change = if n > 0 then touch else \\(counter: Counter) -> counter.count = counter.count + 100",
+                    "    let mut counter = Counter { count: 1 }",
+                    "    change (ref mut counter)",
+                    "    counter.count",
+                ],
+            ),
+            "E1014",
+        ),
+        (
+            program(&[
+                "def apply :: (string -> i64) -> i64 = \\f -> f \"hello\"",
+                "export def answer :: i64 = apply (\\(text: ref string) -> text.length * 10)",
+            ]),
+            "E1003",
+        ),
+    ] {
+        assert_eq!(check("2027", &source).unwrap_err().code, code, "{source}");
+    }
+}

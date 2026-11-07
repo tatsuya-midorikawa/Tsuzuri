@@ -648,6 +648,32 @@ const suites = {
       ["mutable_local_projections", [1n], 9n + 9n + 7n + 11n],
       ["borrowed_callable_temporaries", [], 3n * 42n],
       ["contextual_own_type_name", [], 42n],
+      // A32: each lambda annotated `ref T` (`ref mut T`) gives its own value; the declared
+      // function gives the plain lengths. "hello" has 5 characters, "hi" 2, ("abc", "de") 3 and 2.
+      ...[-3, 0, 1].map((n) => {
+        const text = 5n, w = BigInt(n);
+        const byIf = n > 0 ? text : text * 10n;
+        const byMatch = n === 0 ? text : text * 100n;
+        const byHolder = n > 0 ? text : text * 1000n;
+        const second = text * 10000n + w;
+        const counter = 1n + (n > 0 ? 3n : 300n) + 2n * 10n;
+        return ["annotated_reference_lambdas", [w], byIf + byMatch + byHolder + second + counter];
+      }),
+      ...[-3, 0, 1].map((n) => {
+        const text = 5n, other = 2n, left = 3n, right = 2n, size = 5n;
+        const on = n > 0;
+        const guarded = on ? text : text * 10n;
+        const two = on ? text + other : text * 10n + other * 100n;
+        const mixed = on ? text + other : text * 1000n + other;
+        const ignored = on ? text : 7n;
+        const aliased = on ? text : text * 3n;
+        const split = on ? left + right : left * 10n + right;
+        const counted = on ? size : size * 100n;
+        const first = on ? 7n : 9n;
+        const joined = text + other * 10n;
+        return ["annotated_reference_forms", [BigInt(n)],
+          guarded + two + mixed + ignored + aliased + split + counted + first * 1000000n + 3n + joined * 10000000n];
+      }),
       ["trap", [1n], 10n + 20n + 20n],
     ],
     traps: [
