@@ -543,6 +543,83 @@ fn a_write_of_a_local_borrow_through_a_parameter_is_rejected_where_it_is_made() 
     );
 }
 
+/// A31: a read parameter of edition 2027 is a shared reference to the caller's value. A function
+/// value given to one is called through `deref`, and a value given to one is lent as a borrowed
+/// temporary, whose value is what the temporary holds. The facts follow both: `apply_read` calls
+/// its function-valued read parameter with its array (a higher-order fact, as for an `own`
+/// parameter), and `put_read` stores the value behind its read parameter (the temporary's
+/// contents). Each program reads the freed `text` with the stage 3 compiler in edition 2027 (and
+/// is rejected in edition 2026, whose parameters are values); the diagnostic is the one of
+/// `arr[0] = ...` in place of the write: the array that holds a function borrowing `text` leaves
+/// the block that frees it. A function value that writes an owned function, or that only reads
+/// what it captured, stays accepted (13 and 6 by hand).
+#[test]
+fn a_read_parameter_keeps_what_its_writer_stores() {
+    const APPLY: &str = "def apply_read :: (ref mut [(unit -> i64)..] -> unit) -> ref mut [(unit -> i64)..] -> unit\nfn apply_read w arr = w arr\n";
+    const PUT: &str = "def put_read :: (unit -> i64) -> ref mut [(unit -> i64)..] -> unit\nfn put_read x arr = Array.write 0 x arr\n";
+    const PUT_GENERIC: &str =
+        "def put_read :: 'a -> ref mut ['a..] -> unit\nfn put_read x arr = Array.write 0 x arr\n";
+    for (header, write) in [
+        (
+            APPLY,
+            "apply_read (Array.set 0 (\\() -> String.length borrowed)) (ref mut arr)",
+        ),
+        (
+            APPLY,
+            "apply_read (\\a -> Array.write 0 (\\() -> String.length borrowed) a) (ref mut arr)",
+        ),
+        (
+            APPLY,
+            "apply_read (Array.write 0 (\\() -> String.length borrowed)) (ref mut arr)",
+        ),
+        (
+            PUT,
+            "put_read (\\() -> String.length borrowed) (ref mut arr)",
+        ),
+        (
+            PUT_GENERIC,
+            "put_read (\\() -> String.length borrowed) (ref mut arr)",
+        ),
+    ] {
+        rejects_at(
+            &format!(
+                "{header}def leak :: i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [\\() -> 1]\n    {write}\n    arr[0]\nlet f = leak 123456789\nf ()"
+            ),
+            "E1013",
+            "borrow_outlives_block",
+            (9, 5),
+        );
+    }
+    // A partial application of a named writer over a reference parameter.
+    rejects_at(
+        &format!(
+            "def put :: ref string -> ref mut [(unit -> i64)..] -> unit\nfn put t a = Array.write 0 (\\() -> String.length t) a\n{APPLY}def leak :: i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    let mut arr = [\\() -> 1]\n    apply_read (put (ref text)) (ref mut arr)\n    arr[0]\nlet f = leak 123456789\nf ()"
+        ),
+        "E1013",
+        "borrow_outlives_block",
+        (10, 5),
+    );
+    // The borrowed `text` moves while `arr` lives.
+    rejects_at(
+        &format!(
+            "{APPLY}let text = to_string 123\nlet b = ref text\nlet mut arr = [\\() -> 1]\napply_read (Array.set 0 (\\() -> String.length b)) (ref mut arr)\nlet moved = text\narr[0] () + moved.length"
+        ),
+        "E1014",
+        "borrow_conflict",
+        (7, 13),
+    );
+    for source in [
+        format!(
+            "{APPLY}let text = to_string 123\nlet b = ref text\nlet mut arr = [\\() -> 1]\napply_read (\\_a -> ()) (ref mut arr)\napply_read (\\a -> Array.write 0 (\\() -> 7) a) (ref mut arr)\nlet n = b.length\nlet moved = text\nn + moved.length + arr[0] ()"
+        ),
+        format!(
+            "{APPLY}let text = to_string 123\nlet b = ref text\nlet mut arr = [\\() -> 1]\napply_read (\\a -> {{ let k = b.length; Array.write 0 (\\() -> k) a }}) (ref mut arr)\nlet moved = text\nmoved.length + arr[0] ()"
+        ),
+    ] {
+        accepts_in_both(&source);
+    }
+}
+
 /// A31: writes that store nothing new in the owner stay accepted (main accepts them; the values
 /// are checked by the `in_place_writes` suite of `tests/features.mjs`): reference elements written
 /// with std writers, partial applications of writers, `MatrixView` wrappers, write-backs of an

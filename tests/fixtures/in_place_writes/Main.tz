@@ -335,3 +335,29 @@ export def closed_cell_read :: i64
 fn closed_cell_read =
     let f = leak 123456789
     f ()
+
+// A read parameter (edition 2027: a shared reference to the caller's value) of a function type:
+// `apply_read` calls the function value behind it with its array. A writer that stores an owned
+// function, and one that only reads what it captured, keep the borrowed text free to move.
+def apply_read :: (ref mut [(unit -> i64)..] -> unit) -> ref mut [(unit -> i64)..] -> unit
+fn apply_read w arr = w arr
+
+export def read_parameter_writes_owned :: i64
+fn read_parameter_writes_owned =
+    let text = to_string 123
+    let borrowed = ref text
+    let mut arr = [\() -> 1]
+    apply_read (\_a -> ()) (ref mut arr)
+    apply_read (\a -> Array.write 0 (\() -> 7) a) (ref mut arr)
+    let n = borrowed.length
+    let moved = text
+    n + moved.length + arr[0] ()
+
+export def read_parameter_reads_capture :: i64
+fn read_parameter_reads_capture =
+    let text = to_string 123456789
+    let borrowed = ref text
+    let mut arr = [\() -> 1]
+    apply_read (\a -> { let k = borrowed.length; Array.write 0 (\() -> k) a }) (ref mut arr)
+    let moved = text
+    moved.length + arr[0] ()

@@ -786,12 +786,13 @@ enum Part {
 }
 
 /// A31: where an argument of a call of a function-valued parameter comes from: the parameters
-/// (or the contents of their targets) whose loans it holds, and whether it holds a loan of a local
-/// value of the body.
+/// (or the contents of their targets) whose loans it holds, whether it holds a loan of a local
+/// value of the body, and whether it is a borrowed temporary (`Arg::temporary`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct Source {
     parameters: BTreeSet<(usize, Part)>,
     local: bool,
+    temporary: bool,
 }
 
 /// A31: a call of the function-valued parameter `callee` of a body with `arguments`.
@@ -2487,12 +2488,21 @@ struct Checker<'a, 'run> {
 /// one, its value, and, for an argument of a call of a function-valued parameter that a callee's
 /// facts substitute, whether it holds a loan of a local value of that callee (`local`) and whether
 /// it comes from the callee's parameters (`external`).
+///
+/// `temporary`: the argument is a borrowed temporary (`E::BorrowOperand`: the implicit borrow of a
+/// value that a read parameter of edition 2027 gets, `put (\() -> ...) (ref mut arr)` with
+/// `put :: (unit -> i64) -> ...`), whose value is what the temporary holds, not a borrow of a
+/// place: those loans are already the contents of the reference that the parameter gets, so a
+/// fact that stores the contents (`Part::Contents`) stores them (`Checker::argument_part`). The
+/// captures of a lambda and the arguments of a partial application that `apply_higher` binds
+/// count as temporaries too: their value is that of the whole function value.
 #[derive(Clone)]
 struct Arg<'e> {
     expression: Option<&'e TypedExpr>,
     value: Value,
     local: bool,
     external: bool,
+    temporary: bool,
 }
 
 impl<'e> Arg<'e> {
@@ -2502,6 +2512,7 @@ impl<'e> Arg<'e> {
             value,
             local: false,
             external: false,
+            temporary: expression.is_some_and(|e| matches!(e.kind, E::BorrowOperand(_))),
         }
     }
 }
@@ -4535,6 +4546,18 @@ impl<'a> Checker<'a, '_> {
         }
     }
 
+    /// A31: what a fact's `part` of `argument` stores. The contents of a borrowed temporary
+    /// (`Arg::temporary`) are its value: its loans are what the temporary holds, which is what the
+    /// reference that the parameter gets points at. The targets of those loans are kept as well,
+    /// for a temporary that `apply_higher` approximates by a whole function value.
+    fn argument_part(&self, argument: &Arg<'_>, part: Part) -> Value {
+        let mut value = self.part_value(&argument.value, part);
+        if argument.temporary && part == Part::Contents {
+            value.absorb(&self.part_value(&argument.value, Part::Value));
+        }
+        value
+    }
+
     /// A31: where the loans of `value` come from, for a fact of a call of a function-valued
     /// parameter: the parameters (or the contents of their targets) and the local values.
     fn source_of(&self, value: &Value) -> Source {
@@ -4577,7 +4600,7 @@ impl<'a> Checker<'a, '_> {
             if source.local && target.external {
                 self.defer(Self::local_borrow_stored(span));
             }
-            let stored = self.part_value(&source.value, part);
+            let stored = self.argument_part(source, part);
             let target = target.value.clone();
             self.apply_store(&stored, &target, span);
         }
@@ -4591,11 +4614,15 @@ impl<'a> Checker<'a, '_> {
                 let mut value = Value::default();
                 let mut local = source.local;
                 let mut external = false;
+                // The value passed is at the level of a temporary's contents when the callee
+                // passed a temporary, or passed on the value of an argument that is one.
+                let mut temporary = source.temporary;
                 for &(index, part) in &source.parameters {
                     if let Some(argument) = arguments.get(index) {
-                        value.absorb(&self.part_value(&argument.value, part));
+                        value.absorb(&self.argument_part(argument, part));
                         local |= argument.local;
                         external |= argument.external || argument.expression.is_some();
+                        temporary |= argument.temporary && part == Part::Value;
                     }
                 }
                 sources.push(Arg {
@@ -4603,6 +4630,7 @@ impl<'a> Checker<'a, '_> {
                     value,
                     local,
                     external,
+                    temporary,
                 });
             }
             let callee = callee.clone();
@@ -4636,10 +4664,16 @@ impl<'a> Checker<'a, '_> {
                     value: value.clone(),
                     local: callee.local,
                     external: true,
+                    temporary: true,
                 })
                 .collect()
         };
-        let expression = callee.expression;
+        // A function value lent to a read parameter is a borrowed temporary whose value is the
+        // function value's own.
+        let expression = callee.expression.map(|expression| match &expression.kind {
+            E::BorrowOperand(inner) => &**inner,
+            _ => expression,
+        });
         let substituted: Option<(usize, Vec<Arg<'e>>)> = match expression.map(|e| &e.kind) {
             Some(E::Closure(id, captures))
                 if module.functions[*id].parameters.len() == captures.len() + arguments.len() =>
@@ -4668,11 +4702,22 @@ impl<'a> Checker<'a, '_> {
             self.apply_facts(id, &all, span, depth);
             return;
         }
-        if let Some(E::Local(id)) = expression.map(|e| &e.kind)
-            && let Some(&index) = self.parameter_roots.get(&(usize::MAX - *id))
+        // A parameter of the body that is the function value, or a shared reference to it (a read
+        // parameter of edition 2027, or a `ref` parameter, is called through `deref`): the caller's
+        // argument is the function that runs.
+        let parameter = expression.and_then(|expression| match &expression.kind {
+            E::Local(id) => Some(*id),
+            E::Dereference(reference) => match (&reference.kind, &reference.ty) {
+                (E::Local(id), Type::Reference(_, false)) => Some(*id),
+                _ => None,
+            },
+            _ => None,
+        });
+        if let Some(id) = parameter
+            && let Some(&index) = self.parameter_roots.get(&(usize::MAX - id))
             && self
                 .declarations
-                .get(id)
+                .get(&id)
                 .is_some_and(|local| !local.mutable)
         {
             if self.stores.is_some() {
@@ -4683,6 +4728,7 @@ impl<'a> Checker<'a, '_> {
                         .map(|argument| {
                             let mut source = self.source_of(&argument.value);
                             source.local |= argument.local;
+                            source.temporary |= argument.temporary;
                             source
                         })
                         .collect(),
@@ -7702,6 +7748,7 @@ mod retention_tests {
                     arguments: vec![Source {
                         parameters: BTreeSet::from([(1, Part::Value)]),
                         local: false,
+                        temporary: false,
                     }],
                 }]),
                 ..StoreFacts::default()

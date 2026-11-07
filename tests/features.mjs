@@ -1974,6 +1974,10 @@ const suites = {
       ["function_value_read_then_move", [], 3n + (3n + 9n) + 9n],
       // make returns the array's own first function.
       ["closed_cell_read", [], 7n],
+      // "123" has 3 characters; arr[0] becomes \() -> 7.
+      ["read_parameter_writes_owned", [], 3n + 3n + 7n],
+      // k = 9 is copied into the written function; the moved text still has 9 characters.
+      ["read_parameter_reads_capture", [], 9n + 9n],
     ],
   },
   fixed_arrays: {
