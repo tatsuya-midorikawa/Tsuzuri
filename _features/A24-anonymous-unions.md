@@ -592,6 +592,164 @@ GUIDE §10 と AGENTS.md の T2: `cargo fmt --all -- --check`、`cargo clippy --
 - 型変数そのものを要素にすること（F# の RFC と同じく拒否）。
 - C のヘッダーからの生成・WASM のバインディングでの匿名共用体（既存の `E1008`）。
 
+## 着手時の再検討（2026-11-08、HEAD b3dd7f1c）
+
+起票時（`2f556480`）以降に A27・A29・TZ02〜TZ14・G37・G38 などが入りました。着手の前に、構文・キャッシュ・整形、型検査器、周辺（名前の隠蔽・ツール・生成名・診断・文書・E2E）の 3 つの範囲を HEAD `b3dd7f1c` と照合し、計画を改めました。
+この節は、この節より前の本文と食い違うところでは本文より優先します。本文の古い記述は、記録のため残します。
+停止条件（「着手条件と停止条件」と GUIDE §13）は、このチケットでは次の規則に置き換えます（利用者の指示による）: 健全性を保ち、今受理されている安全なプログラムをすべて受理し続ける、最も保守的な選択を取り、その判断をこのチケットに記録して作業を続けます。テストの期待値を弱めて通すことと、安全でないプログラムを受理することはしません。
+
+### 再現の確認
+
+- 「再現」の表の 6 行は、`b3dd7f1c` の dev ビルドで書いたとおりに再現しました。
+- 追加で確かめた結果:
+  - `(| i64 | string)` は `E0002 expected an identifier`（kind `expected_identifier`。位置は `|`）です。「型が要る」位置の誤りではありません。
+  - `(i64 |> string)` と `(i64 ||| string)`（`|||` は `TriplePipe` の 1 トークン）は、どちらも `E0002 expected ')' after the type` です。
+  - `| : ? i64` と、関数ガードの `| :? i64 as n` は `E0002 expected a pattern` です。
+  - `let (a, b) = (1, 2)` は `E0002 expected an identifier` です。`let` は名前しか取りません（`binding_rest`、`src/parser.rs:3021-3036`）。
+  - 関数ガードの `| (x: Maybe<i64>) -> 1` と、`match` の `| ((x: Maybe<i64>), y) -> ...` は `E0002 expected the closing delimiter` です（既存の誤判定。下の 3）。
+  - 名前付きの union を引数に取る `def describe :: V -> string` の `| S s -> s` は、edition 2027 で `E1012`（kind `move_out_of_reference_binding`）です。`own V` なら `int 42` を出します（下の 30）。
+
+### 新しい位置（HEAD b3dd7f1c）
+
+意味は変わらず、行番号だけが動いたものを、本文の行番号に代えて使います。
+
+- `src/syntax.rs`: `Program` 286-323、`TypeExprKind` 760-792（`Apply` の大きさの注記 763-766）、`PatternKind` 1344-1359、`visit_expressions_mut` 1362・`visit_expressions` 1385、トークン `Question` 163、`Edition::LATEST`（E2027）33-35。
+- `src/parser.rs`: `parse` 198・`parse_with_source` 202・`parse_with_source_all` 210、`Parser.edition` 246、`Program` の構築 467、`type_expr` 2371、`own_type_ahead` 2418、`type_primary` 2450（`(` の分岐 2514-2517）、`close_bracket_type` 2603・`dyn_type` 2662（`#[inline(never)]` の手本）、`binding_rest` 3021。
+- `src/parse_control.rs`: `implicit_active_union` 74-167、`type_product` 479、`guard_predicate` 1341、`pattern` 1401、`pattern_suffix` 1422（型注釈 1430-1441）、`pattern_atom` 1455、`grouped_pattern` 1550、`pattern_argument_expression` 1601。
+- `src/lexer.rs`: `EDITION_KEYWORDS` 10、識別子の `$` の除外 628-636、`|||` 1061、`||` 1076、`|>` 1079、`:` 1094、`?` 1100。
+- `src/syntax_codec.rs`: `Program` の codec 547-631（`Mode::Interface` が本体・テスト・入口を省くのは 586-590）、`TypeExprKind` の put 1365・get 1446・拒否 1480（`18..=u8::MAX`。tag 11 は TZ12 の欠番）、`PatternKind` の put 2176・get 2246・拒否 2269（`14..=u8::MAX`）、`round_trips_every_variant` 2592（数の表 2718・2722、欠番の表 2739）、`pins_encoding_format` 2943（`GOLDEN` 2954）。`src/frontend_cache.rs`: `FRONTEND_FORMAT` 31（現在 18）、`interface_hash` 118。
+- `src/formatter.rs`: `Hints` 323-336、`spacing` 653-741（`Colon` の規則 682-688、`Question` の規則 736）、`Canonical::ty` 791、`arm_owners` 883-886、`Canonical::pattern` 1084。
+- `src/check.rs`（型と宣言）: `Type` 134-185（`Once` 170-172。`Task` はない）、`Type::function_with_conventions` 389-424、`Type::display` 445（record・union の腕 483-499）、`contains_reference` 783、`TypeContext::union_payloads` 1310・`union_payload` 1326、`CheckedUnion` 4714（`module()` 4730）、`Names` 5713、`Names::origin` 6168、`Names::member_function` 7218-7252。
+- `src/check.rs`（収集と解決）: `validate_public_type` 7360、`check_modules_collect` 7502（モジュールの登録 7657-7661、`record_arities.push` 8012、`union_declarations` 8048-8058、型別名の検査 8133-8190、`check_union` の繰り返し 8298-8307）、`collect_unions` 9953（`union_arities.push` 9997）、`check_union` 10088、`resolve_type_with_kinds` 10166、`expand_type_aliases` 10554、`TypeAliasExpansion::expand` 10574（`_` の腕 10724）、`substitute` 10754、`reject_expanded_field_constraints` 10827、`size_error` 10878、`Layouts::union` 10955（再帰の誤り 10972-10980）。
+- `src/check.rs`（式）: `Checker::expression` 11880、`finish_expression` 12011、`call_expression` 12255（A27 の `PendingHint` 12314-12333）、`binary_expression` 12442、`Hole` 12587、配列とリストのリテラル 12786-12830、`Checker::argument` 13104、`place_argument` 13176、`apply_piped` 13242、`temporary_argument` 13275、`argument_hint` 13291、`coerce_argument` 13444、`untyped_number` 14495、`Checker::integer` 14503、`dyn_of` 14772。
+- `src/control.rs`: `match_value` 500（`MatchCoverage` を作る唯一の位置 512-520）、`pattern_alternatives` 629（`PatternKind` の match 650）、`case_pattern` 918-1005。`src/exhaustiveness.rs` は位置が変わっていません。`src/select.rs:214`、`src/exceptions.rs:26-31`。
+- `src/polymorph.rs`: `Inference::unify` 401（`Application` の腕 432-454、関数 533-551）、`is_numeric_literal` 570、`expanded_inline_constraints` 1722-1774、`Classes::instances` 1777（組み込みの上書きの拒否 1904-1916、Drop・Format の検査 1917-1929）、`type_expression` 2988（record・union の腕 3036-3053）、`Checker::annotation` 3832。`src/higher_kinds.rs`: `Partial::display` 37、`decompose` 72-93。
+- 周辺: `src/find.rs`（`hidden` 989、`build` の record 430・case 457-481、`value_pool` 997（case の別名 1041-1048・修飾した case 1046-1060・モジュール 1062-1087）、`member_pool` 1095、`function_pool` 1126、`pattern_pool` 1165-1182、`type_pool` 1205-1231）、`src/semantic.rs`（`type_reference` 246-268、`type_target` 1305-1311、`type_entry` 1313-1361）、`src/semantic_api.rs`（`public_names` 207-221）、`src/api_diff.rs`（`Renaming::ty` 445-512、`let Program` 638、既定の借用 753-775、`may_carry_functions` 1262-1318、`has_type_variable` 1374-1410）、`src/kg_capture.rs` 373・800・1158、`src/kg/ids.rs` 61（union の腕 100）、`src/kg/find.rs`（`Ty` 25-39、`parse` 287-302）、`src/llvm.rs`（`codegen_identity` 3752、`canonical_type` 3829、`mangled_type` 8022、単射のテスト 10580）、`src/llvm_debug.rs`（型名 384、`payload_union` 733-772、`tag_type` 850-880）、`scripts/lldb/tsuzuri_lldb.py`（`is_union` 489、`parts` 553-557）、`src/diagnostic_kinds.rs`（`E1040` 678-684）、`src/explain.rs`（`E1040` の行 362）。
+- 文書: `docs/language.md`（union 1053、パターンの表 2766-2777、`is` / `as` の文 2877、診断の表の `E1013` 4982・`E1017` 4986・`E1040` 5006）、`docs/architecture.md`（ファイルの表 50 付近、生成名 560、デバッグ情報 667-690、union 1289-1304、`FRONTEND_FORMAT` 1533）、`compiler/diagnostics.md`（範囲の文 285、`E0002` 290・`E1013` 296・`E1017` 300・`E1003` 336）、`compiler/debugging.md` 101-102。
+
+### 採用する計画の変更
+
+#### 構文とキャッシュ
+
+1. **`Program` の codec**: `uses_anonymous_unions` は本体からも立ち、合成する宣言はプログラム全体に及びます。そのため `Mode::Full` と `Mode::Interface` の両方で無条件に書きます。関数の本体だけに `(i64 | string)` を足すと `interface_hash` が変わることを、単体テストで確かめます。`FRONTEND_FORMAT` は現在の値 + 1（着手時は 18 → 19）にし、`docs/architecture.md:1533` の現在値の文も直します。
+2. **tag**: `TypeExprKind::AnonymousUnion` は 18、`PatternKind::TypeTest` は 14 です。欠番の 11 は再利用しません。拒否の範囲は `19..=u8::MAX`・`15..=u8::MAX`、数の表は 19・15 です。`round_trips_every_variant` に 2 つの見本を明示して足し、`round_trips_deepest_accepted_nesting` に深い `(i64 | (i64 | ...))` を足します。
+3. **`guard_predicate` と `pattern_argument_expression`**: どちらも `->`（と `when`）の前の `<` で式と判定するので、先頭だけを見ると `| (:? Maybe<i64> as m) -> ...`（関数ガード）と `((:? Maybe<i64> as m), y)`（`match`）が式として読まれます。両関数とも、走査中に**どの深さでも**隣接した `Colon`・`Question`（`colon.span.end == question.span.start`）に出会ったらパターンと判定します。受理を広げるだけの変更です。既存の `| (x: Maybe<i64>) -> 1` の誤判定は、このチケットでは直しません（型テストだけが対象）。
+4. **要素の読み取りと資源上限**: 要素は `#[inline(never)]` の補助関数で読み、`type_primary` の再帰の frame を大きくしません。要素数は `MAX_NESTING` で打ち切り、`E0002`（新しい kind `too_many_anonymous_union_members`）にします（`too_many_tuple_elements` などと同じ形）。
+5. **edition**: D-54 に従い、受理を広げる構文として 2026 と 2027 の両方で同じ意味で受理します。`Parser` の中で実装し、`self.edition` では分岐しません。新しい予約語はありません（`as` は既存のキーワード）。解析と整形のテストは両方の edition で書きます。
+6. **`let` は型テストを書ける位置ではありません**: `let` は名前しか取らないので、仕様の「`match` 以外のパターンの位置」から `let` を外します。実行時のトラップはラムダの引数（`\(:? i64 as n) -> n`。原子が `as` まで読むので `\:? i64 as n -> n` も同じ）と `for` で確かめ、テスト名を `type_test_in_lambda_parameter_traps_at_run_time` にします。
+7. **既存の誤りのまま残す形**: `(| i64 | string)` は `E0002 expected an identifier`（kind `expected_identifier`）、`|||` と `|>` は `E0002 expected ')' after the type`（kind `expected_token`）のままです。仕様の表とテストにこの文言を書きます。
+8. **`TypeTest` の span** は `:` から始めます（整形の `Hints` と `arm_owners` が腕のパターンの開始位置を鍵にするため）。
+
+#### 整形
+
+9. HEAD の `spacing` は `Colon` の前を空白なしにするので、`| :? i64` は `|: ? i64` になり再解析できません。`?` の後の空白は G25 で意味を持つ（`?a` と `? a`）ので、トークンの種類だけの規則にはしません。`Hints` に `type_tests`（型テストのパターンの開始位置、つまり `:` の位置の集合。`Canonical::pattern` が span を消す前に埋める）を足し、次の 3 つをこの集合に結び付けます。
+   - その `:` の前は、`(`・`[`・`[|` の直後を除いて空白 1 つ（汎用の `Colon` の規則より先に調べる）。
+   - その `:` と `?` の間は空白なし。
+   - その `?` の後は空白 1 つ。
+10. **複数行の書き方**: `tsuzuri fmt` は `( i64` を `(i64` に、`string )` を `string)` に直します。言語リファレンスと `formats_anonymous_unions` には、整形の不動点を書きます:
+
+```text
+type Value =
+    (i64
+    | f64
+    | string)
+```
+
+#### 型の正規化と正準順序
+
+11. **`Once`**: `Type::Task` はなくなり、`Tuple` と `Handle` の間に `Once` があります。順位の列は `... < Vec < Tuple < Once < Handle < Function < Reference < Dyn < Shared` で、`Once(t)` は `t` で比べます。`Once`・`ArrayView`・`Length`・`Reference`・借用を持つ `Dyn` は要素になりませんが、順序を全順序に保つためだけに順位を置きます。
+12. **関数型の比較**: `Inference::unify` は引数規約を見ず、純粋でない関数のカリー化の形（`i64 -> i64 -> i64` と `i64 -> (i64 -> i64)`）を同じ型とします（純粋でない関数型は構築時に平らになる。`Type::function_with_conventions`）。A29 の `codegen_identity` も規約を消します。そのため比較の鍵は「`pure`、純粋でなければカリー化を平らにした引数の列、最後の結果」とし、**規約は比べません**。この鍵で等しい 2 要素は `anonymous_union_duplicate_member` です。
+13. **要素数の上限**: 32 個の上限（`E1017`）は平坦化の直後、要素の検査と並べ替えの前に調べます（敵対的な入力で O(n²) の並べ替えをしない）。
+14. **`_` の腕を持つ走査は必須の変更**: 次はコンパイラが腕を求めないので、要素を子として辿る腕を明示して足し、テストで確かめます。`TypeAliasExpansion::expand`（`check.rs:10574`。足さないと入れ子の別名が展開されない）、`Classes::expanded_inline_constraints`（`polymorph.rs:1722`。足さないと `(Maybe<Add<'a>> | i64)` のような要素の中のインラインの制約を黙って落とす）、`semantic.rs` の `type_entry`（1313-1361）、`regions.rs` の `children`（7-26）、`contracts.rs` の `mentions_variable`（772-805）、`api_diff.rs` の `may_carry_functions`（要素を見る）と `has_type_variable`。`_` のままで正しいのは `api_diff.rs:761`、`contracts.rs:728`（`generated`。未知の型は性質テストを作らない既存の経路）、`control.rs:155`・`1015`、`diagram/transitions.rs:110`、`parse_control.rs:598`、`higher_kinds.rs:121` です。コンパイラが腕を求める箇所（`syntax_codec.rs`、`api_diff.rs:454`・`1375`、`check.rs` の `validate_public_type`・`resolve_type_with_kinds`・`substitute`・`reject_expanded_field_constraints`、`contracts.rs:778`、`docgen.rs:69`、`formatter.rs:803`・`1088`、`warnings.rs:480`・`723`、`syntax.rs:1364`・`1387`、`computation.rs:353`、`control.rs:650`、`Program` の `parser.rs:467`・`syntax_codec.rs:549`・`606`・`api_diff.rs:638`・`kg_capture.rs:373`）はすべて直します。
+
+#### 合成と名前の隠蔽
+
+15. **擬似モジュール**: `$anonymous` は `names.modules` にだけ `ModuleOrigin::Std` で登録し、`full_modules`・`module_namespaces` には入れません。`Std` なので、合成した宣言は `recursive.rs`（599-608。利用者の union だけを照会）にも入りません。`Names::modules` を読むモジュール一覧は `find.rs` の `value_pool` だけで、`doc`・`kg`・`kg export --facts`・LSP のワークスペースシンボル・`api-diff`・`guide` は読みません（停止条件 2 には当たりません）。
+16. **名前の隠蔽は登録の時点で行います**: `collect_unions` は `MODULE` の宣言を `names.unions` と arity の表（`union_arities` など）にだけ登録し、`union_aliases`・`cases`・`case_aliases` には入れません。これで `find.rs` の `type_pool`（`Union$2` を出す）・`pattern_pool`（`Union$2$0` を出す）・`value_pool`・`function_pool`・型付き穴の索引 `build` の漏れを 1 か所で塞ぎます。二重の守りとして、`value_pool` のモジュールのループと `build` の case のループにも `hidden()` を通します。`suggestions_skip_synthetic_names` には型名の綴り違い `Union2` も足します。
+17. `names.anonymous_unions` は `collect_unions` が割り当てた id から埋めます（`check_union` は成功したときだけ push するので、検査済みの列の位置は使いません）。
+18. `src/anonymous_union.rs` は `check` の非公開の子モジュールなので、`llvm_debug.rs`・`kg/ids.rs` からは呼べません。`impl CheckedUnion { pub fn is_anonymous(&self) -> bool }` を足して使います。
+19. **`Names::member_function`**（`check.rs:7218`）: 匿名共用体は宣言モジュールを持たない型として、record・union 以外の型と同じ `FunctionConstraintUnresolvable` の分岐へ回します（`module '$anonymous' has no function 'f'` を出さない）。
+20. **高カインド**: `Inference::unify` の `Application` の腕（`polymorph.rs:432-454`）と `higher_kinds::decompose`（72-93）は、匿名共用体を型構築子として分解しません（`None`。既存の `ConstructorKindMismatch` で拒否）。分解すると `Partial` が `$anonymous.Union$2<string>` と表示され、`'f<'b>` が正準順でない、または要素が重複した union を作ります。
+21. **union の名前を出すレイアウトの診断**は、大きさの誤り（`size_error`。型名を出さない）ではなく再帰の誤り（`InfiniteRecursiveLayout`、`check.rs:10972-10980`）です。匿名共用体のときだけ `Type::display` を使い、名前付きの union の文言は変えません。
+22. **不要になった変更**: `prove.rs` は変えません（`prove_smt.rs:207-211` がペイロードを持つ union を拒否し、匿名共用体は必ずペイロードを持つ）。`semantic.rs` の `type_reference`・`union_ids` も変えません（合成した宣言はどの `program.unions` にもないので `links.unions[id]` が `None`）。`type_target` だけは `None` を返すように直します（`Span::default()` を返すと、`lsp.rs:637` の `target.source.unwrap_or(source_id)` で定義への移動が今のファイルの先頭へ飛ぶ）。
+23. `polymorph::type_expression` は本文どおり、匿名共用体を `TypeExprKind::AnonymousUnion` に戻します（`--effective` の api-diff と derive が読む）。
+
+#### 注入
+
+24. **期待型を下へ渡す式**に `Select`（`select.rs:214`）、`Checked`（`exceptions.rs:26-31`）、`Hole`（`check.rs:12587`。型付き穴が `U` を報告するため。穴は包みません）を足します。
+25. **形での事前選択**: 配列のリテラルは配列か固定長配列の要素がちょうど 1 つならそれ、リストのリテラルはリストの要素がちょうど 1 つならそれを選びます。選ばないと `[]` は `EmptyListNeedsAnnotation` になり、`[1, 2, 3]` を `[i64; 3]` の要素へ渡せません。0 個か 2 個以上なら規則 3 へ進みます。
+26. **使わないプログラムの不変**: 注入の 4 つの入口（`Checker::expression`・`Checker::argument`・`coerce_argument`・`apply_piped`）は `self.names.anonymous_unions.is_empty()` なら何もしません。期待型は推論変数の鎖だけを辿って頭を見ます（型全体の `resolve` はしない）。`union_value`・`conform_union` などは `#[inline(never)]` の関数に置き、GUIDE §3.1 の stack の回帰テストの frame を変えません。
+27. **`Checker::argument` の分岐の位置**: `U`・`ref U` の分岐は最初の腕（`ExprKind::Call` の腕より前）に置きます。`union_value` は呼び出しを期待型なしで検査するので、A27 の `PendingHint`・`defers_argument_hint` の経路に入りません。`apply_piped` の早期の戻りは、`ArrayView` の分岐と `argument_hint`・`same` より前に置きます。落とし穴の「呼び出しは引数より先に結果を期待型と単一化する」は、A27 で `ref T` の引数の未定の結果を後回しにする仕組みが入ったことを踏まえて読みます。
+28. `E1003 anonymous_union_not_member` にも `.expected_found(U, T)` を付けます（`diagnostics.md` の `E1003` の契約に合わせる）。
+
+#### 型テスト・網羅性・インスタンス
+
+29. **D7**: 方針どおり実現できます（`MatchCoverage` を作るのは 1 か所で、型テストのペイロードは常にワイルドカード）。要素の型を決められないときは、メッセージだけに `:? _` を出し、`writable` を偽にして修正候補を書きません。
+30. **D8**: 匿名共用体を head とする `instance` の拒否は、`resolve_constructor` と `bounded_type` の直後（`polymorph.rs:1830` 付近）、組み込みの上書き・マーカーのクラスの検査（`E1016`）と Drop・Format の検査より前に置きます。`instance Copy<(i64 | string)>`・`Drop`・`Format` も `E1041` になります。
+
+#### ツール
+
+31. **api-diff**: 既定の `tsuzuri api-diff` は構文だけで比べます（`api` → `api_with_resolution(.., None)`。`semantic_api` の型を使うのは `--effective` だけ）。`Renaming::ty` の比較用の形（正準モード）では、書いた直接の入れ子を平らにし、要素を `docgen::type_text` の順（型変数の改名より前の鍵）に並べます。表示用の形は書いた順のままです。テスト `api_diff_treats_member_order_as_equal` は既定と `--effective` の両方で確かめます。構文モードは型別名を解決しない（G19 の既存の限界）ので、`(Meters | string)` と `(f64 | string)` は構文モードでは違う型として報告されます。これを文書に書きます。
+32. **デバッガー**: `scripts/lldb/tsuzuri_lldb.py` の `parts`（553-557）は型名が `(` で始まるペイロードをタプルとして展開するので、`is_union` でないときだけタプルとして扱うよう直します。`tests/debug_info.rs`（メンバー名・列挙子名が要素の表示）と `tests/debugger.mjs`（`i64(42)` の表示）に例を足し、`docs/architecture.md` の「デバッグ情報」の union の項と `compiler/debugging.md` の表（101-102）を直します。
+33. **`tsuzuri find`**: `src/kg/find.rs` の型の構文解析（`Ty`・`Parser`）は `(A | B)` を読めず、匿名共用体を署名に持つ宣言は索引から落ち、問い合わせは `QueryTypeError` になります。小さく足せれば `Ty::Union`（要素は文字列の順）を足し、足さない場合は `compiler/usage.md` の find に制限として書きます。
+34. **生成名**: `$anonymous.Union$n[…]` では `$` の後が小文字か数字なので、`mangled_type` のエスケープ（`$A`・`$L`・`$R`・`$C`・`$P`）と重ならず、単射は保たれます。`mangled_type` の doc comment と `docs/architecture.md:560` の説明を更新し、単射のテスト（`llvm.rs:10580`）に匿名共用体を足します。起票後に入った `$` の名前（関数の擬似モジュール `$lambda`・`$once`・`$builtin`・`$case`・`$instance`・`$export` と kg の `$once<…>`）を除く `starts_with('$')` は関数にだけ働くので、関数を持たない `$anonymous` とは衝突しません。
+35. `guide/`（AI 向け成果物）は変えません（`guide/language.md` の Patterns の行には `:?` がありませんが、描画は 8,482/8,500 字で余地がない）。`kg/layout.rs` のレイアウトの行は、宣言のノードがない匿名共用体の具体化を出しません（生成した型と同じ扱い）。
+36. `vsc/` の文法は変えません（`tsuzuri.tmLanguage.json:27-28`）。
+
+#### 例と edition 2027
+
+37. 手書きの manifest のない CLI と言語リファレンスは edition 2027 で読まれ、非 Copy の匿名共用体の引数は既定で読み取りになります。そのため本文の例の `| :? string as s -> s` は `E1012`（`move_out_of_reference_binding`）になります。例は `own` の引数で書きます。Rust テストの `tsuzuri::analyze` は E2026 で検査するので、引数規約に関わるテスト（所有権・型テストの束縛・`read_parameter_needs_owned_value`）は `analyze_with_edition(.., Edition::E2027)` で edition を明示します。
+38. 改めた例（「実装者向け早見」の完了の見分け方、「目的」、「例」の代わりに使います）:
+
+```tsuzuri
+def describe :: own (i64 | string | bool) -> string = \value ->
+    match value with
+    | :? i64 as n -> $"int {n}"
+    | :? string as s -> s
+    | :? bool as b -> if b then "yes" else "no"
+
+let first: (string | bool | i64) = 42
+describe first        // "int 42"。腕を 1 つ消すと E1021 match is not exhaustive; missing: :? bool
+```
+
+```text
+def font_size :: own (f64 | i64 | string) -> string = \size ->
+    match size with
+    | :? f64 as points -> $"{points}pt"
+    | :? i64 as pixels -> $"{pixels}px"
+    | :? string as text -> text
+```
+
+   `own` で通ることと、読み取りの引数のまま `| :? string as s -> s` と書くと `E1012` になること（名前付きの union と同じ）を、E2027 のテストで固定します。束縛したビューを読むだけの腕（`string` を外へ move しない腕）は `own` なしで書ける見込みで、これも同じテストで確かめます。
+
+#### E2E と CI
+
+39. suite `anonymous_unions` は、ほかの features の suite と並べて `.github/workflows/targets.yml`（release のバイナリ）に足します。`ci.yml` には足しません（時間の上限）。`inspect(ir)` で `%"tz.union.$anonymous.Union$2[i64,string]" = type` の定義が 1 回だけあることを固定します（正規表現では `$` をエスケープ）。`tests/anonymous_unions.rs` の `accepts` は `tests/dyn_dispatch.rs` の `assert_identifier_symbols` と同じ検査も行います。
+40. 手順 1 のベースラインは、数本ではなく `tests/fixtures/` と `examples/` のすべてのプロジェクト（`Main.tz` を持つディレクトリと、`Main.tz` のない fixture のディレクトリ）について、`b3dd7f1c` のバイナリで `build --emit llvm --no-cache`（native と `--target wasm32`）・`check --json`・`doc`・`kg build`・`api-diff`（既定と `--effective`）の出力を `target/scratch/a24/before/` に保存します。手順 12 で同じ台本を新しいバイナリで回し、1 byte も変わらないことを確かめます（kg の公開の印 `.tsuzuri-kg` だけは実行ごとに変わるので比べません）。
+
+#### 診断と文書
+
+41. 診断の kind は 15 個です（`E0002` 2: `anonymous_union_double_bar`・`too_many_anonymous_union_members`、`E1003` 1、`E1013` 1、`E1017` 1、`E1041` 10）。登録表は `since "0.1.0"` の 1 群だけなので、`E1041` の群を `E1040` の群の後に置き、ほかは各コードの群に id の順で差し込みます。`every_kind_has_an_emission_site` があるので、kind はそれを発行する段で足します。`E1041` の説明は `src/explain.rs:362` の後に足し、`src/explain/codes/E1041.md` は `every_code_has_a_page` の形（見出し「What it covers」「Fixes」（2〜6 項目）と任意の「See also」（`E1041` の kind だけ）、1,500 字以内、コードブロックなし）にします。
+42. `compiler/diagnostics.md` の範囲の文（285）は `E1001`〜`E1041` にし、`E0002`（290）・`E1013`（296）・`E1017`（300）の行と `E1003` の段落（336）に新しい kind を足します。`docs/language.md` の診断の表に `E1041` の行（`E1040` の後）を足し、`E1013`（4982）・`E1017`（4986）の行を直します。`check-cli-docs.mjs` は `E1041` が両方の表の行頭にあることを求めます。
+43. `gen-docs.mjs`・`check-docs.mjs`・`check-cli-docs.mjs` は既定で `target/release/tsuzuri` を使うので、dev ビルドで確かめるときは `TSUZURI_BIN=target/debug/tsuzuri` を付けます。
+44. 新しいファイルの行は GUIDE の §4.3（§4.1 は P1 時点の地図）、`docs/architecture.md` のファイルの表（50 行付近）、README の「変更の種類別」（1140 行）に足します。`docs/language.md` の「実行時型テスト（`is` / `as`）は存在しません」は 2877 行です。
+
+### 改めたテスト一覧
+
+本文の「実装手順」の各段のテストを、次のとおり改めます（足したもの・名前を変えたものを含む全体）。
+
+- 手順 2（構文と codec）: `tests/anonymous_unions.rs` の `parses_anonymous_union_types`、`parses_type_test_patterns`（`match`、関数ガード、`| (:? Maybe<i64> as m) -> ...`、`((:? Maybe<i64> as m), y)`、ラムダの引数、`for`）、`rejects_double_bar`、`keeps_existing_errors_for_other_bars`（`(| i64 | string)` は `expected_identifier`、`|||`・`|>` は `expected_token`、`: ?` は `expected_pattern`）、`limits_parsed_member_count`（`too_many_anonymous_union_members`）、`parses_in_both_editions`。`src/syntax_codec.rs` の `round_trips_every_variant`（数の表と見本）・`round_trips_deepest_accepted_nesting`・`interface_hash_sees_body_only_anonymous_unions`（新規）・`pins_encoding_format`（`GOLDEN`）。
+- 手順 3（合成と名前の表）: `synthesizes_declarations_only_when_used`（使わなければ `types.unions.len()` が変わらない、使えば 31 増える）、`synthetic_names_are_not_registered`（`union_aliases`・`cases`・`case_aliases` に `$anonymous` の名前がない）。
+- 手順 4（正規化と表示）: `members_commute_and_flatten`、`displays_in_canonical_order`、`rejects_type_variable_members`、`rejects_indistinct_members`、`rejects_duplicate_members_through_aliases`、`function_members_ignore_conventions_and_currying`、`rejects_borrowed_members`、`limits_member_count`、`generic_members_stay_ordered_after_instantiation`、`aliases_inside_members_expand`、`inline_constraints_inside_members_are_kept`。
+- 手順 5（注入）: 本文の 15 件に、`injects_through_select_checked_and_holes`（穴は `U` を報告する）、`collection_literals_pick_their_member`（`[]`、`[1, 2, 3]` を `[i64; 3]` の要素へ、リストのリテラル）を足します。`injection_moves_the_value`・`read_parameter_needs_owned_value` は E2027 で書きます。
+- 手順 6（型テスト）: `type_test_binds_member_type`、`type_test_views_through_references`、`type_test_rejections`（4 つの kind）、`type_test_in_function_guards`、`type_test_in_lambda_parameter_traps_at_run_time`（`for` を含む。旧名 `type_test_in_let_traps_at_run_time`）、`read_parameter_type_test_moves_need_own`（E2027）。
+- 手順 7（網羅性）: 本文の 5 件に、`unresolved_member_offers_no_fix`（`:? _` はメッセージだけ）を足します。
+- 手順 8（インスタンス）: `rejects_instances_for_anonymous_unions`（`Display`・`Copy`・`Drop`・`Format` のどれも `E1041`）。
+- 手順 9（名前の隠蔽）: 本文の 6 件（`suggestions_skip_synthetic_names` に `Union2`、`api_diff_treats_member_order_as_equal` は両方のモード）に、`member_function_constraint_has_no_module`、`higher_kinded_unification_refuses_anonymous_unions`、`recursive_layout_error_displays_members`、`definition_of_anonymous_union_has_no_target`、`find_reads_anonymous_unions`（足した場合）、`tests/debug_info.rs` と `tests/debugger.mjs` の例、`llvm.rs` の単射のテストへの追加を足します。
+- 手順 10（整形）: `formats_anonymous_unions`（不動点の複数行の形）、`formats_type_tests`、`format_is_idempotent_for_anonymous_unions`、どれも E2026 と E2027 で。
+- 手順 11（E2E）: 本文の表の関数は edition 2027 の fixture で、非 Copy の要素を取り出す引数は `own` にします。
+- 手順 12: 上の 40 の台本での比較（`target/scratch/a24/baseline.sh`・`compare.sh`）。
+
 ## 決定事項
 
 ### D1: 値の作り方（承認済み）
