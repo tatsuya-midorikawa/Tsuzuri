@@ -443,6 +443,179 @@ A28 のブランチ（`fix/a28-function-result-retention`）の 1〜2 回目の�
 - 関数の型やスライスの型に、環境や要素の借用を表す region を書けるようにすること（言語の変更になる）。
 - `Mutex`・`RwMutex` のコールバックの引数（`ref mut` の中身）への `Array.write` は対象外ではない（「再現」の `m_lock`・`rw_write`）。書き込みの事実は、コールバックの `ref mut` の引数から、`with_lock`・`with_write` の呼び出しを通して lock の持ち主（`m`）へ届ける。`Cond.wait_with` も同じ形で確かめた（「再現」の `cond_lock`、「A28 の事実が広げる形」の `cond_partial`・`cond_rt`）ので、同じく届ける。
 
+## 着手時の再検討（2026-11-08、HEAD b3dd7f1c）
+
+A28（PR #100）のマージ後の HEAD で、コードと「再現」を確かめ直しました。基準のバイナリは HEAD（`target/scratch/base/tsuzuri`、dev build）です。
+154 個のプログラムの結果と本文は `target/scratch/a31/baseline.md`（監査の `target/scratch/audit-A31/` の写し）にあり、これを手順 1 の記録にします（末尾の「手順 1: ベースラインの記録」）。
+この節は、監査（`target/scratch/audit/A31.json`・`A31-revision.md`）とオーケストレーターの決定（`target/scratch/audit/DECISIONS.md`）から作りました。上の古い記述は残しますが、食い違うところはこの節が優先します。
+
+### 進め方の決定
+
+- GUIDE §13 の停止条件と、このチケットの「停止条件」は、次に置き換えます: 健全性を保ち、今受理している安全なプログラムをすべて受理のまま保つ、最も保守的な選択を取り、その判断をこのチケットに記録して続けます。テストの期待を弱めて通すことはせず、危険なプログラムを受理することもしません。
+- 優先順位: (1) このチケットとベースラインの危険なプログラムをすべて拒否する。(2) 受理している安全なプログラムを同じ値のまま受理する。(3) A28 の除外をできるだけ外す。(1)・(2) を壊さずに外せない除外は残し、このチケットと文書に記録します。
+- `drop_inleak` を塞げないときは、保守的な門で拒否のままにします（受理しません）。新しく見つけた穴を黙って受理のまま残すことはしません。
+- 共有の数（診断の kind の数・`Builtin::ALL`・テストの件数など）は、分岐の先端で数えます。
+
+### 位置の移動（意味は同じ）
+
+`src/ownership.rs` の位置は次のとおりです。
+
+- 基本: `store_arguments` 3709、`store_through` 3593、`target_loans` 3655、`input_slot_loans` 3677、`eval_call` 4227（`store_arguments` の呼び出し 4403、closed と unit による loan の消去 4404〜4410）、`closed`・`closed_returns` 645・716
+- A28 の事実: `parameter_retention_within` 854、`retained_parameters` 1011、`piped_callee` 2251、`read_through` 2348、パイプラインの評価 4892〜4950
+- A28 の除外: `lends_mutable` 1205、`opaque_calls` 1365、`Lending` 1541、`lending_bodies` 1587、`untracked_writer` 1649、`untracked_loan_store` 1677、`drops_stop_reads` 1961、`collect_drops` 4010
+
+`src/check.rs` は `drop_runs_code` 739、`is_mutable_cell` 918、`Type::lends_mutable` 946、`Array.write` の scheme 3196、`SyncMap.__replace` の scheme 4226 です。`src/closures.rs:446〜458` と `std/Array.tz` の 1719・1731・1750 は変わっていません。
+
+### 結果が変わっていないもの
+
+- 「再現」は HEAD でもすべて受理され、不定の値を出します（値はチケットどおり）。
+- 「A28 の事実が広げる形」は、表と同じ位置・code・kind で拒否されます。主な理由は A28 の 8 回目のプログラム全体の条件（`Lending::untracked`）です。
+
+### 計画に効く食い違い
+
+1. **m_lock 系は `closed_returns` で受理されている。** m_lock・m_lock_return・rw_write・rw_write_return・cond_lock（と `tests/currying.rs` の直接の呼び出しの形）が対象です。`let m` は `let mut` でないので closed とされ、`eval_call` が結果の loan を消します（4404〜4410）。`let mut m` にしただけの形（`m_lock_mut_probe`）は HEAD でも `10:5` で拒否されます。lock の持ち主へ loan を足すだけでは塞がりません。
+2. **外部の書き込み先へ局所の借用を書く形は、定義の位置で拒否するしかない。** `N_local_into_param` は callee の局所値の借用を `ref mut` の引数へ書く形で、HEAD で受理され、解放後の値を読みます。呼び出し側の事実では表せません（仕様の「書き込み先が外部のとき定義の位置では何も拒否しない」と食い違います）。
+3. **D2 の文言どおりだと安全な形を拒否する。** 関数値の引数へ読むだけのラムダを渡す `N_fnvalue_read_then_move` と、lock の生成関数の事実を使うときの `N_lock_read_then_move`・`N_partial_read_then_move` が `E1014` になります。
+4. **書き込み先は排他参照の引数だけではない。** lock の helper は `ref Mutex`・`ref Holder`・`ref Arc<Mutex<...>>`・`own Arc<Mutex<...>>` で受け取ります。また `ref [T]` の仮引数の外部 loan は 1 つだけなので、「参照そのもの」と「参照先の中身」を loan では区別できません。参照そのものを格納すると、`N_blit_then_mutate_source`（12）が `E1014` になります。
+5. **`Lending` には残す除外も入っている。** 見えないコードの除外と `drops_store` を含むので、`CallFacts.lending` を丸ごとは外せません。また中身がセルの `Rc`/`Arc` を読み通すと、後の書き込みが読み通した写しに届きません（`N_arc_cell_write_alias`）。
+6. **`Drop.drop` の書き込みの事実を呼び出しの位置で使う手段がない。** 暗黙の解放には呼び出しの位置が無く、`retention_eligible` も `Drop.drop` を除きます。書き込み先は値の中の共有された `Arc<Mutex<...>>` です。`drops_store` は外せず、`drop_inleak`（HEAD で受理、不定の値）には別の手段が要ります。
+7. **8 回目のフィールドへの代入の 13 形（`F_fa_*`・`xmod_fa`）がチケットに無い。** どれも `untracked` だけで拒否されています（`Checker::dropped` は、作った後のフィールドへの代入 `held.t = t` を数えません）。
+8. **`untracked` を外すとテストの期待が戻る（推定）。** `D_ctl_drop_no_loan` は受理（5）、`W_upgrade` は `3:5` `task_result_retains_borrow`、`tests/currying.rs` の 3 つめの拒否は受理、`retention_tests::an_untracked_store_anywhere_leaves_no_facts` は不要になります。「A28 のテストがそのまま通る」は文字どおりには成り立ちません。
+9. **パイプラインは `piped_callee` を流用できない。** `piped_callee` は `$builtin` の生成関数と unit の結果を除くので、`ref mut arr |> Array.write ...` に当たりません。パイプラインは `store_arguments` も呼びません。
+10. **不動点の循環は起きない。** 書き込みの事実と A28 の事実はどちらも単調なので、合同の不動点は必ず止まります。危険なのは予算の打ち切りで、書き込みの事実の安全な既定値は全組（top）です。
+11. **監査の Value/Contents の型の規則は健全でない（この再検討で見つけた）。** 監査は「格納した値の型が仮引数の参照の型そのものでなければ Contents」としましたが、`fn put text slot = Array.write 0 (\() -> String.length text) slot` の格納する値は `unit -> i64` で、`text : ref string` の参照そのものを捕捉しています。Contents にすると呼び出し側は `text` の参照先の中身（文字列は何も借用しない）しか格納せず、`m_partial` が受理に戻ります。区別は型ではなく、値がその loan をどう得たか（参照を通して読んだか）で決めます（下の「事実の形」）。
+
+### 更新した計画（D1 は保つ）
+
+#### 事実の形
+
+`CallFacts` に関数ごとの書き込みの事実 `stores: Vec<StoreFacts>` を足します。`StoreFacts` は次を持ちます。
+
+- `stores: BTreeSet<(from, Part, to)>`: 仮引数 `from` の loan が、仮引数 `to` の書き込み先へ入りうる。`Part::Value` は引数の値そのものの loan（呼び出し側は引数の loan）、`Part::Contents` は引数の参照先の中身の loan（呼び出し側は `target_loans`）です。
+- `calls: BTreeSet<HigherOrderCall>`: 関数値の仮引数を、どの仮引数（の値・中身・書き込み先）を渡して呼ぶか（高階の事実）。呼び出し元で実引数の事実に置き換えます。
+- `top: bool`: 分からない（予算の打ち切り、本文の検査の失敗）。loan を運ぶすべての引数が、書き込み先になりうるすべての引数へ入りうる。
+
+`to` は、型が排他参照か、loan を運ぶ可変セル（`is_mutable_cell`。`Rc`/`Arc`・参照・レコードの中を含む）に届く仮引数です。
+`from` の Part は値の来歴で決めます: `Value` に、参照の仮引数を通して読んだ loan の集合 `through` を足し（`read_places` の外部の枝で入れ、`join`・局所値の読み出し・捕捉・配列・レコード・呼び出しの結果へ伝える）、格納する値がその loan を `through` としてだけ持つなら `Contents`、ほかは `Value` です（伝え損ねた所は `Value` になり、保守的です）。
+同じ仮引数の `Contents` から自分への組（`rotate`・`put_last_first`・`sort`・`map_in_place` の書き戻し）は捨てます。
+
+#### 不動点
+
+`parameter_retention_within` を、closed・保持・書き込みの事実の合同の最小不動点にします。
+
+- 本文ごとに一度検査して、保持（今の `retained_parameters`。`Lending::no_facts` の本文は `None`）と書き込みの事実（`no_facts` の本文でも求める）を返します。検査に失敗した本文は保持 `None`・書き込み `top` です。
+- 種: `Array.write` は (1, Value)→2、`SyncMap.__replace` は (0, Value)→1（格納する型が loan を運ぶときだけ。組み込み関数の直接の呼び出しと、その `$builtin` の生成関数）。
+- 呼び出し元: 完全な直接呼び出しとパイプラインの完成（結果の型を見ない）、lock のコールバックの位置と関数値の引数の位置の名前付き関数・部分適用・持ち上げたラムダ。どれかの事実が変われば、その関数を挙げる関数を作業リストへ戻します。
+- 打ち切り: 未確定の関数は保持 `None`・書き込み `top`、closed の取り消しの候補は取り消し（closed でない）にします。
+- 抽象の本文（infer）: 型変数を loan を持たないものと数えます（Copy の制約と IR を変えない）。
+- 前処理: 書き込みうる関数（loan を運ぶ型を格納する `Array.write`・`SyncMap.__replace`、lock の組み込み関数、書き込み先の引数を持つ見えない呼び出し、書き込みうる関数を挙げる関数）だけを検査し、ほかは空の事実にします。
+
+#### closed
+
+`closed_returns` の証明は、局所値の loan が束縛の後に増えないことを前提にします。セルへの書き込み（`let m` の `Mutex` へのコールバックの書き込み）はこれを破ります。
+closed の関数のうち、結果の型が loan を運び（`owned` でない）、書き込みうる本文を持つものを合同の不動点の候補にし、本文の検査の結果が仮引数の loan を持てば closed を取り消します（単調）。`N_closed_cell_read` の `make` は結果が何も借用しないので closed のままです。
+パイプラインの closed の門（4934 の `!lending.untracked`）は、この取り消しの後に外します。
+
+#### 適用
+
+`eval_call` の境界（`store_arguments` と同じ所、closed と unit で loan を消す前）と、新しいパイプラインの完成判定（`piped_application` で callee と束縛した引数を取り、仮引数の数で完全適用を判定。結果の型と `retention_eligible` は見ない）で、組ごとに格納します。
+
+- 書き込み先の解決: `to` の引数の値の loan のうち、排他の loan と、場所の型が loan を運ぶ可変セルに届く loan が書き込み先です。
+- 書き込み先が局所: `store_through` の局所の枝で持ち主へ足します。持ち主が持つ排他借用（`MatrixView.Mut` の窓、`split_at_mut` の半分）と、中身がセルの `Rc`/`Arc` の借用（外部 loan を含む）の先へも推移的に届けます。
+- 書き込み先が外部: その本文の事実として記録します（`E::Assign` の `store_region_unnamed` の枝は変えません）。格納する loan が本文の局所値に根を持つなら、既存の `E1013`/`store_local_borrow_through_reference` にします（書き込んだ呼び出しの位置。下の「遅らせる診断」）。
+
+#### lock のコールバック
+
+`Mutex.with_lock`（lock 0・コールバック 1）、`RwMutex.with_write`（0・1）、`Cond.wait_with`（1・3）は、`locked_result` と同じ判定で見つけ、生成関数の事実を使わず、コールバックの実引数の事実を使います。
+
+- 持ち上げたラムダ `E::Closure(id, captures)`: 捕捉の仮引数を捕捉の値へ、最後の `ref mut` の仮引数を lock の引数の書き込み先へ対応させます。捕捉ごとの値は、コールバックの実引数を捕捉ごとに評価して得ます。
+- 部分適用: 束縛した引数を前の仮引数へ。名前付き関数はそのまま。
+- 見えない関数値（局所値・フィールド・要素・呼び出しの結果・dyn）のときだけ、下の保守的な規則で関数値の loan を lock の持ち主へ残します。
+
+#### 高階の事実と D2 の範囲
+
+関数値の仮引数の呼び出しは、高階の事実として呼び出し元へ伝え、実引数がラムダ・名前付き関数・部分適用なら、その事実で置き換えます（`N_fnvalue_read_then_move` の受理のため）。実引数が呼び出し元の関数値の仮引数なら、呼び出し元の高階の事実にします。
+本当に見えない関数値（フィールド・要素・呼び出しの結果・局所値の関数値・dyn・より多くの引数を受けた結果）の呼び出しだけを、保守的な規則にします: 関数値と loan を運ぶ引数の loan を、排他の値として持つ loan とセルに届く loan のすべての先へ残します（`through` としてだけ持つ loan は書き込み先にしません）。
+高階の呼び出しへ本文の局所値の借用を渡すときは、その引数に「局所」の印を付け、呼び出し元で置き換えた事実がそれを書き込み先へ格納するなら、呼び出し元の呼び出しの位置で `store_local_borrow_through_reference` にします。
+
+#### 暗黙の解放
+
+- `store_through` の局所の枝と、`E::Assign` の局所の枝（`via` が空の `join`）で、持ち主の型が `drop_runs_code` なら、格納した loan を `dropped` に足します（`F_fa_*` 13 形と `xmod_fa` を、`untracked` なしで拒否のまま保ちます）。
+- `drop_inleak` のフックを足します: ブロックの終わり（移動していない局所値）、局所値全体への再代入、`Owned.drop`、値で callee へ渡すこと（callee が解放しうる）で、型が書き込む `Drop.drop`（書き込みの事実か見えない呼び出しを持つ）の値を解放するとき、その値の loan のうち場所の型がセルに届くものを書き込み先、値の loan のすべてを格納するものとして、上の「適用」と同じく扱います。
+  局所の書き込み先には `store_through` で足し、外部の書き込み先へ本文の局所値に根を持つ loan を格納するなら `E1013`/`store_local_borrow_through_reference` にします。位置は、ブロックの終わりと再代入では解放する局所値の宣言、ほかは呼び出しの位置です。
+- フックは呼び出しの事実を作りません。callee の中の解放は、A28 の `dropped`（解放でコードを実行しうる値の loan を結果に残す）が呼び出し元へ伝えます。
+
+#### 遅らせる診断
+
+`store_local_borrow_through_reference` は、見つけた所で返さず、本文の評価が成功した後に、最初に見つけたものを返します。
+`an_implicit_drop_keeps_what_the_dropped_value_holds` の 10 形は、callee へ値で渡す所でもこの診断の条件を満たしますが、同じ本文の末尾の `borrow_outlives_block`（A28 の `dropped` による）が先に見つかるので、位置・code・kind は変わりません。
+
+#### 手順 4（外す除外と残す除外）
+
+- 外す: `untracked_loan_store`・`untracked_writer`・`Lending::untracked`（`ArrayWrite`・`SyncMapReplace` を追跡し、残りの書き込み関数が loan を運ぶ値を格納しえないことを確かめてから）、パイプラインの closed の門、排他参照の lends（事実と読み通し）、セルの lends（事実だけ）。
+- 残す: 見えないコードの除外（`opaque_calls`・`opaque_bodies`、`Lending` の構造）、中身がセルの `Rc`/`Arc` を読み通さない型の規則（`is_mutable_cell` と、`Type::lends_mutable` を狭めたもの）、`drops_store`・`dropped`・`drops_stop_reads`（`drops_store` は `Drop.drop` の書き込みの事実か見えない呼び出しから求め直す）、読み通しの外部 loan の制限（4 回目）、`retention_applies`。
+- 外せない除外があれば残し、理由をこのチケットと文書に書きます。
+
+### 実装手順の改訂
+
+- 手順 1: 済み（末尾の記録）。道具は `target/scratch/a31/_tools/`（`run.mjs` は `BIN`・`OUT`・`EDITION`・`JOBS` を読み、どのバイナリでも 154 個を回せる。`compare.mjs` が基準と分岐の結果を、下の期待で突き合わせる）。
+- 手順 2: 失敗するテストを先に足す（下の「テスト計画の改訂」）。拒否のテストだけが失敗することを確かめる。
+- 手順 3a: 書き込みの事実（事実の形・種・不動点・適用・パイプライン・lock のコールバック・高階の事実・定義の位置の診断・窓）と closed の取り消し。
+- 手順 3b: 暗黙の解放（`dropped` の追加と `drop_inleak` のフック）。
+- 手順 4: 上の「外す除外」。外すたびに A28 の各回のテスト（`F_fa_*`、`drop_*`、lock の形、見えないコードの形）を確かめる。
+- 手順 5・6: 変わらない（`tests/fixtures/*`・`examples/*` の `check --json` と `build --no-cache --emit llvm` を基準と比べる。`compare.mjs` が 154 個の期待を満たす。文書と T2）。
+
+### テスト計画の改訂
+
+拒否（今は受理されるので手順 2 で失敗する）。期待は、同じ場所の書き込みを代入（`arr[0] = ...`。lock は `let mut m`）にした双子のプログラムに基準のバイナリが出す診断で、仕様の「`arr[i] = v` と同じ規則」から決めました。どれも edition 2026 と 2027 で同じです。
+
+| テスト | プログラム | 期待（最初の診断） |
+| --- | --- | --- |
+| `tests/mutable_slices.rs` `an_in_place_write_keeps_the_written_borrow_in_the_owner` | `h1`〜`h4`・`h7` | `E1013`/`borrow_outlives_block` `7:5` |
+| 同上 | `h9` | `E1013`/`assignment_extends_borrow` `4:19` |
+| `a_written_borrow_keeps_its_source_from_moving` | `h6`・`h6b` | `E1014`/`borrow_conflict` `5:13` |
+| 同上 | `N_generic_put_move`・`N_owned_value_then_move` | `E1014`/`borrow_conflict` `7:13` |
+| 同上 | `N_matrix_window_move` | `E1014`/`borrow_conflict` `6:13` |
+| `a_write_of_a_local_borrow_through_a_parameter_is_rejected_where_it_is_made` | `N_local_into_param` | `E1013`/`store_local_borrow_through_reference` `5:5` |
+| `tests/rc.rs` `a_shared_pointer_written_in_place_keeps_its_borrow` | `h5` | `E1013`/`borrow_outlives_block` `7:5` |
+| 同上 | `tz_capture` | `E1013`/`task_capture_retains_borrow` `13:5` |
+| `a_lock_callback_write_stays_in_the_lock` | `m_lock`・`rw_write` | `E1013`/`borrow_outlives_block` `10:5` |
+| 同上 | `m_lock_return`・`rw_write_return` | `E1013`/`borrow_outlives_block` `9:5` |
+| 同上 | `cond_lock` | `E1013`/`borrow_outlives_block` `11:5` |
+| `an_implicit_drop_cannot_store_a_local_borrow_in_a_shared_cell` | `drop_inleak` | `E1013`/`store_local_borrow_through_reference` `11:9`（`_s` の宣言） |
+| `tests/currying.rs` `a_call_of_a_lock_writer_keeps_the_written_borrow_in_both_forms` | `C_direct_stash`（と、今も拒否のパイプラインの形） | `E1013`/`borrow_outlives_block` `10:5` |
+
+m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` の双子と同じ）。
+
+受理（今も受理。値は `tests/features.mjs` の新しい suite `in_place_writes`（`tests/fixtures/in_place_writes/Main.tz`）が native と WASM の `-O0`・`-O3` で確かめる。期待値は手で計算した値）:
+落とし穴の `P_*` のすべて（既存の `in_place_writes_that_main_accepts_stay_accepted` の 12 形と、`tests/mutable_slices.rs` `writes_that_store_nothing_new_stay_accepted`）、`N_blit_then_mutate_source`・`N_rotate_then_use`・`N_fnvalue_read_then_move`（同じテスト）、`N_lock_read_then_move`・`N_partial_read_then_move`・`N_closed_cell_read`（`tests/rc.rs` `a_lock_callback_that_only_reads_stores_nothing`）。
+
+拒否のまま（今も同じ診断）: `P_sort_with_fn`・`P_sort_by_fn`（std の中の診断が増えない）、`P_slice_region_*`、`P_widen_*`（受理を広げない）、`N_par_chunk`（`tests/mutable_slices.rs` `writes_that_main_rejects_keep_their_diagnostics`）、`N_arc_cell_write_alias`・`N_syncmap_store_fn`（`tests/rc.rs` `a_cell_written_after_it_was_shared_keeps_the_rule`）。A28 の各回のテスト（`F_fa_*`・`xmod_fa` を含む）は、そのまま拒否の期待を保ちます。
+
+期待を変えるテスト（手順 4 で `untracked` を外すときに、このチケットに記録してから変える）:
+`D_ctl_drop_no_loan`（`12:19` → 受理 5）、`W_upgrade`（`4:5` `borrow_outlives_block` → `3:5` `task_result_retains_borrow`）、`tests/currying.rs` の 3 つめの拒否（受理）、`retention_tests::an_untracked_store_anywhere_leaves_no_facts`（不要）。
+セルの lends を外すと、A30 の誤った拒否 `m_named_owned`（`a_lock_callback_lends_a_way_to_write`、所有の値だけを書く名前付き関数をコールバックにする形、7）も受理に変わりえます。これも同じく記録してから変えます。
+
+### 受け入れ条件の改訂
+
+- 「再現」・「A28 の事実が広げる形」と、上の表の危険なプログラムが、表の code・kind・位置で拒否される。
+- 落とし穴と `N_*` の安全な形が、基準と同じ値で受理される（`in_place_writes` suite、`compare.mjs`）。
+- `tests/fixtures/`・`examples/` の診断と IR が基準と一致する。
+- A28 の除外のうち「外す」ものを外し、A28 のテストが、上に列挙した期待の変更のほかは成功する。外せなかった除外は記録する。
+- `check-docs.mjs` と T2 が成功する。
+
+### 記録して続ける条件（停止条件の置き換え）
+
+- 予算で `top` になった関数が安全なプログラムを拒否する。
+- `drop_inleak` を塞ぐ手段が、暗黙の解放の 10 形の位置・code・kind を変える。
+- `std/`・`examples/`・`tests/fixtures/` の診断か IR が変わる。
+
+どれも、最も保守的な健全な選択を取り、ここに記録して続けます。
+
+### ドキュメントの追加
+
+上の「ドキュメント」に、`_tsuzuri/language-reference/ownership-and-memory/drop.md:197`（プログラム全体の条件）と `docs/architecture.md:1585`（パイプラインの closed の門）・1586（`untracked_loan_store`）・1587（`lends_mutable`）、`docs/language.md:1977`・1978・2009、`rc.md:178`、`lambda-expressions.md:236`、`lifetimes.md:297` を足します。
+
 ## 決定事項
 
 ### D1: 契約を定義で検査せず、本文から求めた事実を呼び出し側で使う
