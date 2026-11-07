@@ -652,8 +652,30 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
   - `m_named_owned` は計画の「受理に変わりうる」になりません。lock の組み込み関数は関数値（`writer`）を走らせるので、`stash` は見えない呼び出し（`opaque_calls`、残す除外）を持ち、どちらのモジュールでも事実を持たず、`13:5` の拒否のままです。lock にコールバックを渡す本文は、どれもこの除外に当たります。
   - `drops_store` は A28 の求め方（`Drop.drop` とその関係する本文が lends か見えない呼び出しを持つ）のまま残しました。計画の「書き込みの事実から求め直す」は、`Vec.push_mut` だけが種のプログラムなどで基準より広くなり、基準が受理しているプログラムを拒否しうるためです。A31 の解放のフック（`drops_write`）はそれに加えて働きます。
   - 期待を変えたテスト（再検討の一覧に無いもの。変える前にここに記録しました）: `tests/currying.rs` `a_pipeline_into_a_unary_function_uses_its_facts` の 2 つめの拒否（`mark` が `ref mut g` へ借用しない関数 `\() -> 2` を書く形）は、排他参照の lends を外した直接の結果として受理になります。`make` の結果は何も借用しないので安全で、`leak "abc"` の結果を呼ぶと 2 です（手で計算、`-O0`・`-O3` で確認）。受理の列へ移し、拒否の列には、`mark` が `text` を借用する関数を `Array.write` で書く形を足しました（基準と同じ `9:16` の `task_result_retains_borrow`、両方の形）。単体テスト `a_body_that_lends_an_exclusive_borrow_has_no_facts`・`a_body_that_lends_a_mutable_cell_has_no_facts` は、保持の期待を変えずに `a_body_that_lends_an_exclusive_borrow_keeps_what_the_write_stores`・`a_body_that_lends_a_mutable_cell_keeps_what_the_callback_stores` に改名し、前者は特殊化したモジュールでは事実を持ち推論では持たないこと、後者は見えない呼び出しでどちらのモジュールでも事実を持たないことも確かめるようにしました。
+- **lends の走査を必要な本文だけにしました（性能）。** `reads` を尋ねるのは、読み通す本文（`calls_read_through`）とそれに関係する本文だけなので、セルの走査はそこだけで行います。排他参照も数える走査は、`Drop.drop` に関係する本文（`drops_store`）と推論の書き込みうる本文だけで行います。最初の版はすべての本文で、排他参照を見つけても止まらずにセルを探し続けたので、`vec_dotnet` の ownership の相が基準より 14 % 遅くなっていました（下の「手順 5 の記録」）。答えは変わりません（154 個の照合と手順 5 の比較で確認）。手順 4c の後（走査を狭めた版）の T1 は 2993 件すべて成功、154 個は期待と違うもの 0 です。
 - **残した除外:** 見えないコードの除外（`opaque_calls`・`opaque_bodies`・`OpaqueCalls::environment`）、セルを渡す本文の読み通しの禁止、推論の書き込みうる本文の lends、`drops_store`・`dropped`・`drops_stop_reads`、読み通しの外部 loan の制限（4 回目）、`retention_applies`。
 - **段階 2 の「解決していない形」の 1 つめは起きません:** region の契約で入力を排他参照の先へ格納しうる関数（`RegionSlots::writes`）は、直接の呼び出しにしか使えません。関数値・部分適用・コールバックにすると `regions::validate_contract_calls` が `E1013`/`region_callback_stores_exclusive_input` で拒否します（`tests/borrowed_records.rs` `named_target_regions_keep_stored_borrows_alive`）。直接の呼び出しは `store_arguments` が扱います。
+
+### 手順 5 の記録（2026-11-08、段階 3）
+
+手順 4 の後の分岐（`target/scratch/a31/_bin/tsuzuri-4c3`、dev build）で確かめました。
+
+- `tests/fixtures/*`・`examples/*` のうち `Main.tz` か `Tsuzuri.toml` を持つ 154 個で、`check --json` と `build --no-cache --emit llvm` の出力（終了コード、標準出力と標準エラー、`.ll`）を基準のバイナリと比べ、すべてバイト単位で同じでした（`target/scratch/a31/_tools/step5.mjs`）。build が失敗する `domain`・`domain_host` も、両方で同じ `E1038` です。
+- 154 個のプログラムの照合（`compare.mjs`）: edition 2027・2026 とも、期待と違うものは 0 です。段階 2 からの変化は `D_ctl_drop_no_loan`（受理 5）と `W_upgrade`（`3:5`）で、どちらも許した変化です。
+- `in_place_writes` の suite: native と WASM の `-O0`・`-O3` で 28 件すべて成功しました。
+- 性能: `TSUZURI_TIME_PASSES=1 tsuzuri check` の `ownership` の相の中央値です（ms、11 回、基準・手順 4a の後・手順 4 の後を 1 回ずつ交互に実行。負荷平均 40 前後の共有の機械なので揺れがあります。CI の閾値にはしません）。`check` の相（型検査と推論の ownership を含む）は、どれも ±5 % の揺れの中で同じでした。
+
+| fixture | 基準 | 手順 4a の後 | 手順 4 の後 |
+| --- | --- | --- | --- |
+| `hash_map` | 5.8 | 6.3 | 5.2 |
+| `list_fsharp` | 9.1 | 9.5 | 8.0 |
+| `array_fsharp` | 7.5 | 7.8 | 7.0 |
+| `vec_dotnet` | 4.4 | 4.5 | 4.2 |
+| `rc` | 1.4 | 1.5 | 1.4 |
+| `tzroutine` | 0.4 | 0.5 | 0.5 |
+| `examples/tzroutines` | 0.1 | 0.1 | 0.1 |
+
+`tzroutine` の差（0.1 ms）は測定の分解能と同じ大きさです。段階 2 の記録にもあり（0.7 → 1.0）、書き込みの事実の前処理（`store_candidates`）がどのモジュールでも本文を 1 回走査する分と見ています。
 
 ## 決定事項
 

@@ -1580,8 +1580,8 @@ fn check_facts(
 /// that holds one, a `MatrixView.Mut`) or a mutable cell (a `Mutex`, `RwMutex`, `OnceValue`,
 /// `SyncMap`, channel or `ErrGroup` whose contents may hold a borrow), through stored values, the
 /// targets of references, the contents of `Rc` and `Arc`, and the parameter and result types of
-/// function types (a callback `put text : ref mut [T] -> unit`). The second answer counts the cells
-/// alone.
+/// function types (a callback `put text : ref mut [T] -> unit`). Exclusive references count when
+/// `exclusive` is true.
 ///
 /// A28 trusts the loans that the check of a body gives its result: the facts drop the arguments
 /// that do not reach it, and `read_through` takes what a borrowed local owner holds. Both are
@@ -1695,27 +1695,22 @@ fn check_facts(
 /// In an abstract body a type variable counts as neither an exclusive reference nor the contents
 /// of a cell that may hold a borrow: those facts only infer Copy constraints, and each instance,
 /// whose types are concrete, is checked with its own facts. The same holds for `opaque_calls`.
-fn lends_mutable(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> (bool, bool) {
-    let mut lends = false;
+fn lends_mutable(body: &TypedExpr, types: &crate::check::TypeContext<'_>, exclusive: bool) -> bool {
+    let lends = |operand: &TypedExpr| operand.ty.lends_mutable(types, exclusive);
     let mut pending = vec![body];
     while let Some(expression) = pending.pop() {
-        let operands: Vec<&TypedExpr> = match &expression.kind {
+        let lending = match &expression.kind {
             E::Call(_, arguments)
             | E::HostCall(_, arguments)
             | E::Parallel(_, arguments)
-            | E::Closure(_, arguments) => arguments.iter().collect(),
+            | E::Closure(_, arguments) => arguments.iter().any(lends),
             // The right side of a pipeline is the callee; its argument is the left side.
-            E::Binary(BinaryOp::Pipe, left, _) => vec![left],
-            E::Binary(_, left, right) => vec![left, right],
-            _ => Vec::new(),
+            E::Binary(BinaryOp::Pipe, left, _) => lends(left),
+            E::Binary(_, left, right) => lends(left) || lends(right),
+            _ => false,
         };
-        for operand in operands {
-            if operand.ty.lends_mutable(types, false) {
-                return (true, true);
-            }
-            if !lends {
-                lends = operand.ty.lends_mutable(types, true);
-            }
+        if lending {
+            return true;
         }
         expression
             .try_for_each_child(&mut |child| {
@@ -1724,7 +1719,7 @@ fn lends_mutable(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> (bo
             })
             .expect("collecting calls cannot fail");
     }
-    (lends, false)
+    false
 }
 
 /// Whether a value of type `ty` can run code when other code gets it: it reaches a function value
@@ -2075,7 +2070,8 @@ impl Lending {
 /// the copies that a share read through another owner holds (`Arc.share (ref a)` and then
 /// `Mutex.with_lock (Arc.get (ref a)) ...`). An exclusive reference cannot reach into such a block:
 /// the contents of `Rc` and `Arc` are read-only but for cells. A `Drop.drop` that lends any way to
-/// write keeps A28's guard (`drops_store`).
+/// write keeps A28's guard (`drops_store`), and so does a body of the inference that lends any way
+/// to write and may store, since the abstract bodies apply no store facts.
 ///
 /// Downward: a lambda's captures hold what the enclosing body gave them, and that misses what a
 /// store that the check misses put there, so a lambda whose captures were made in such a body reads
@@ -2083,38 +2079,53 @@ impl Lending {
 /// since a capture is a parameter of the lifted function; this mark also drops the lambda's facts,
 /// as for its enclosing body). Upward: a lambda that hands a value to unseen code, or lends a cell,
 /// may write into what the enclosing body gave it, so the enclosing body keeps the same rule; the
-/// scan of an unlifted body sees the bodies of its `E::Lambda`s already. Each body is scanned once;
-/// the lifted lambdas follow the `E::Closure` that makes them, through the lambdas in lambdas and
-/// the groups of `let rec`.
+/// scan of an unlifted body sees the bodies of its `E::Lambda`s already. The lifted lambdas follow
+/// the `E::Closure` that makes them, through the lambdas in lambdas and the groups of `let rec`.
 fn lending_bodies(module: &CheckedModule, infer: bool) -> Lending {
     let types = module.types();
     let related = related_bodies(module);
     let (any, direct) = opaque_bodies(module, &related);
-    let (mut lends, cells): (Vec<bool>, Vec<bool>) = module
+    // Only a body that reads something through, or one related to it, asks `reads`
+    // (`Checker::may_read_through`, and the lambdas that `eval_lambda` checks with its answer), so
+    // the cells are looked for there alone.
+    let mut sharing: Vec<bool> = module
         .functions
         .iter()
-        .map(|function| lends_mutable(&function.body, &types))
-        .unzip();
+        .map(|function| calls_read_through(module, &function.body))
+        .collect();
+    close_marks(&mut sharing, &related);
+    let cells: Vec<bool> = module
+        .functions
+        .iter()
+        .zip(&sharing)
+        .map(|(function, sharing)| *sharing && lends_mutable(&function.body, &types, false))
+        .collect();
+    // Whether the body of function `id` lends any way to write; asked only where it matters.
+    let lends = |id: usize| cells[id] || lends_mutable(&module.functions[id].body, &types, true);
     let or =
         |a: &[bool], b: &[bool]| -> Vec<bool> { a.iter().zip(b).map(|(a, b)| *a || *b).collect() };
-    let mut guarded = or(&lends, &any);
-    close_marks(&mut guarded, &related);
-    let drops_store = module.user_drops.values().any(|drop| guarded[*drop]);
+    // A28's guard for the drops: some body related to a `Drop.drop` (`related` is symmetric, so
+    // these are the bodies that the marks of `close_marks` would carry to it) lends a way to write
+    // or makes an opaque call.
+    let mut dropping = vec![false; module.functions.len()];
+    for drop in module.user_drops.values() {
+        dropping[*drop] = true;
+    }
+    close_marks(&mut dropping, &related);
+    let drops_store = (0..module.functions.len()).any(|id| dropping[id] && (any[id] || lends(id)));
     // The abstract bodies of the inference apply no store facts (their lambdas are not lifted, and
     // a type variable carries no loans): a body there that lends a way to write and may store
     // (`store_candidates`, with the concrete types of the abstract module) keeps the rule from
     // before A28.
-    let (facts, reads) = if infer {
+    let (mut facts, mut reads) = if infer {
         let candidates = store_candidates(module, true);
-        for (id, lending) in lends.iter_mut().enumerate() {
-            *lending &= candidates.may_store[id] || candidates.top[id];
-        }
-        (or(&any, &lends), or(&or(&cells, &lends), &direct))
+        let guarded: Vec<bool> = (0..module.functions.len())
+            .map(|id| (candidates.may_store[id] || candidates.top[id]) && lends(id))
+            .collect();
+        (or(&any, &guarded), or(&or(&cells, &guarded), &direct))
     } else {
         (any, or(&cells, &direct))
     };
-    let mut facts = facts;
-    let mut reads = reads;
     close_marks(&mut facts, &related);
     close_marks(&mut reads, &related);
     Lending {
@@ -2805,7 +2816,7 @@ impl<'a> Checker<'a, '_> {
         if let Some(lends) = self.lends_mutable {
             return lends;
         }
-        let lends = lends_mutable(self.body, &self.module.types()).1 || {
+        let lends = lends_mutable(self.body, &self.module.types(), false) || {
             let found = opaque_calls(self.body, self.module, &mut BTreeMap::new());
             found.direct
                 || found
