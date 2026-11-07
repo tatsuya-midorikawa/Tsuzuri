@@ -337,12 +337,12 @@ fn rejects_with_kind(source: &str, code: &str, kind: &str) {
     assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
 }
 
-/// A28 review: the check does not track what `Array.write`, and the std functions that write
-/// through it, store in the owner of the target (A31). A function whose body lends an exclusive
-/// borrow to a call therefore gets no facts: its result keeps every argument's loans, as before
-/// A28, so `text` stays lent while `leak`'s result lives. Without that, `stash` stored a function
-/// that borrows `text`, which `leak` frees, and the call `f ()` read freed memory. The A30 tip
-/// rejects each program at the same place with the same kind.
+/// A28 review: `Array.write`, and the std functions that write through it, store a function that
+/// borrows `text` in `arr`, and `stash` returns it, so `text` stays lent while `leak`'s result
+/// lives. Without that, `leak` freed `text` and the call `f ()` read freed memory. A28 gave a body
+/// that lends an exclusive borrow to a call no facts; since A31 the store facts put what the write
+/// stores in `arr`'s loans, and the facts of `stash` keep `text` in its result. The A30 tip rejects
+/// each program at the same place with the same kind.
 #[test]
 fn a_function_that_writes_in_place_keeps_its_arguments_loans() {
     for write in [

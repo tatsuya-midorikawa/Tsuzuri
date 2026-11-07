@@ -853,7 +853,7 @@ struct CallFacts {
     /// to code that the analysis does not see (`lending_bodies`).
     lending: Lending,
     /// A31: by function, what a complete call of it may store (`store_facts`); empty in the
-    /// abstract bodies of the inference, whose type variables carry no loans.
+    /// abstract bodies of the inference, which keep A28's guard instead (`lending_bodies`).
     stores: Vec<StoreFacts>,
     /// A31: some `Drop.drop` of the module may store (`store_candidates`), so dropping a value
     /// whose type may run code when it is dropped stores what it holds where it reaches
@@ -891,7 +891,7 @@ impl CallFacts {
 
 fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
     let closed = closed_returns(module);
-    let lending = lending_bodies(module);
+    let lending = lending_bodies(module, infer);
     let joint = joint_facts(module, &closed, &lending, infer, None);
     CallFacts {
         revoked: closed
@@ -1081,7 +1081,7 @@ impl StoreCandidates {
     }
 }
 
-fn store_candidates(module: &CheckedModule) -> StoreCandidates {
+fn store_candidates(module: &CheckedModule, infer: bool) -> StoreCandidates {
     let types = module.types();
     let count = module.functions.len();
     let mut seeded = false;
@@ -1095,10 +1095,12 @@ fn store_candidates(module: &CheckedModule) -> StoreCandidates {
             .iter()
             .any(|parameter| matches!(parameter, crate::check::BuiltinType::Function(..)))
     };
+    // In the abstract bodies of the inference a type variable carries no loans: each instance of
+    // a generic writer is a function of the specialized module, which has its own facts.
     let stores_loans = |expression: &TypedExpr, index: usize| match &expression.ty {
-        Type::Function(parameters, _) => parameters
-            .get(index)
-            .is_none_or(|stored| stored.carries_loans(&types) || stored.contains_unknown()),
+        Type::Function(parameters, _) => parameters.get(index).is_none_or(|stored| {
+            stored.carries_loans(&types) || (!infer && stored.contains_unknown())
+        }),
         _ => true,
     };
     // Whether a call of `callee` with `arguments` arguments runs code that is not a complete call
@@ -1255,7 +1257,7 @@ fn joint_facts(
     let candidates = if infer {
         StoreCandidates::none(count)
     } else {
-        store_candidates(module)
+        store_candidates(module, false)
     };
     let drops_write = candidates.seeded
         && module
@@ -1578,7 +1580,8 @@ fn check_facts(
 /// that holds one, a `MatrixView.Mut`) or a mutable cell (a `Mutex`, `RwMutex`, `OnceValue`,
 /// `SyncMap`, channel or `ErrGroup` whose contents may hold a borrow), through stored values, the
 /// targets of references, the contents of `Rc` and `Arc`, and the parameter and result types of
-/// function types (a callback `put text : ref mut [T] -> unit`).
+/// function types (a callback `put text : ref mut [T] -> unit`). The second answer counts the cells
+/// alone.
 ///
 /// A28 trusts the loans that the check of a body gives its result: the facts drop the arguments
 /// that do not reach it, and `read_through` takes what a borrowed local owner holds. Both are
@@ -1607,18 +1610,22 @@ fn check_facts(
 /// Before A31 the seeds had no facts, and a program that stored a value that may hold loans with
 /// one had no facts at all and read nothing through (A28, 8th review).
 ///
-/// The local guards of the third to seventh reviews stay as defense in depth: they keep a body
-/// that may make a store its check misses from using facts or reading through, whatever the rest
-/// of the program does. The rest of this comment is their argument, which enumerates the ways a
-/// value can reach a place that the check misses rather than the writers. A store that the check
-/// does not track writes through an exclusive reference or through a mutable cell: other stores
-/// are tracked, and a shared reference to anything else lends no way to write.
+/// The local guards of the third to seventh reviews keep a body that may make a store its check
+/// misses from using facts or reading through, whatever the rest of the program does. The rest of
+/// this comment is their argument, which enumerates the ways a value can reach a place that the
+/// check misses rather than the writers. A store that the check does not track writes through an
+/// exclusive reference or through a mutable cell: other stores are tracked, and a shared reference
+/// to anything else lends no way to write.
 ///
 /// A body's value (a parameter's loan included) can thus reach a place that its result does not
 /// show in four ways only. Each of the first three makes the body lending (`lending_bodies`: no
 /// facts, no read-through, the rule from before A28; a call that is opaque only through the
 /// callee's environment drops the facts alone, `OpaqueCalls::environment`), and the fourth keeps
-/// the facts but retains what the dropped values hold:
+/// the facts but retains what the dropped values hold. Since A31, (a) keeps only part of its
+/// guard (`lending_bodies`): what code stores through an exclusive reference or a cell that the
+/// body hands it is applied at the call (the store facts), so the body keeps its facts, and it
+/// reads through unless it hands out a cell, which an `Rc` or `Arc` may share with other owners
+/// whose loans a store into it does not reach. `Lending::drops_store` keeps all four:
 ///
 /// - (a) A store through an exclusive reference or a cell that the body hands to code as one of
 ///   the operands above, which this function finds. The reference or the cell comes from the body:
@@ -1688,22 +1695,27 @@ fn check_facts(
 /// In an abstract body a type variable counts as neither an exclusive reference nor the contents
 /// of a cell that may hold a borrow: those facts only infer Copy constraints, and each instance,
 /// whose types are concrete, is checked with its own facts. The same holds for `opaque_calls`.
-fn lends_mutable(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> bool {
-    let lends = |operand: &TypedExpr| operand.ty.lends_mutable(types);
+fn lends_mutable(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> (bool, bool) {
+    let mut lends = false;
     let mut pending = vec![body];
     while let Some(expression) = pending.pop() {
-        let lending = match &expression.kind {
+        let operands: Vec<&TypedExpr> = match &expression.kind {
             E::Call(_, arguments)
             | E::HostCall(_, arguments)
             | E::Parallel(_, arguments)
-            | E::Closure(_, arguments) => arguments.iter().any(lends),
+            | E::Closure(_, arguments) => arguments.iter().collect(),
             // The right side of a pipeline is the callee; its argument is the left side.
-            E::Binary(BinaryOp::Pipe, left, _) => lends(left),
-            E::Binary(_, left, right) => lends(left) || lends(right),
-            _ => false,
+            E::Binary(BinaryOp::Pipe, left, _) => vec![left],
+            E::Binary(_, left, right) => vec![left, right],
+            _ => Vec::new(),
         };
-        if lending {
-            return true;
+        for operand in operands {
+            if operand.ty.lends_mutable(types, false) {
+                return (true, true);
+            }
+            if !lends {
+                lends = operand.ty.lends_mutable(types, true);
+            }
         }
         expression
             .try_for_each_child(&mut |child| {
@@ -1712,7 +1724,7 @@ fn lends_mutable(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> boo
             })
             .expect("collecting calls cannot fail");
     }
-    false
+    (lends, false)
 }
 
 /// Whether a value of type `ty` can run code when other code gets it: it reaches a function value
@@ -2025,23 +2037,22 @@ fn opaque_bodies(module: &CheckedModule, related: &[Vec<usize>]) -> (Vec<bool>, 
 /// What `lending_bodies` finds, by function.
 #[derive(Clone)]
 struct Lending {
-    /// The body has no facts: it lends a way to write, or makes an opaque call.
+    /// The body has no facts: it makes an opaque call.
     facts: Vec<bool>,
-    /// Nothing is read through in the body: it lends a way to write, or makes an opaque call with
+    /// Nothing is read through in the body: it lends a mutable cell, or makes an opaque call with
     /// an argument that may hold loans.
     reads: Vec<bool>,
     /// `opaque_bodies` without the environments, for the bodies that are not functions of the
     /// module.
     opaque: Vec<bool>,
-    /// Some `Drop.drop` body of the module has no facts (`facts`): it lends a way to write or
-    /// hands a value to code that the analysis does not see, so dropping a value may make a store
-    /// that the check does not track (`drop_runs_code`).
+    /// Some `Drop.drop` body of the module lends a way to write or hands a value to code that the
+    /// analysis does not see (A28's guard, which A31 keeps), so dropping a value may make a store
+    /// that the check does not track where its result does not show it (`drop_runs_code`).
     drops_store: bool,
 }
 
 impl Lending {
-    /// Whether the body of function `id` has no facts: it lends a way to write or makes an opaque
-    /// call.
+    /// Whether the body of function `id` has no facts: it makes an opaque call.
     fn no_facts(&self, id: usize) -> bool {
         self.facts[id]
     }
@@ -2052,34 +2063,60 @@ impl Lending {
     }
 }
 
-/// By function: whether its body lends a way to write (`lends_mutable`) or may hand a value to
-/// code whose body the analysis does not see (`opaque_bodies`), or the body of a lambda lifted from
-/// it, or of the function that it was lifted from, does. Downward: a lambda's captures hold what
-/// the enclosing body gave them, and that misses what a store that the check misses put there, so a lambda
-/// whose captures were made in such a body reads nothing through them either: in
-/// `let mut arr = [Arc.new f]`, `Array.write 0 (Arc.new borrowing) (ref mut arr)` and
-/// `\() -> Arc.share (ref arr[0])`, the share would hold what `arr` held before the write (and
-/// `read_through` keeps the borrow of a capture in any lambda, since a capture is a parameter of
-/// the lifted function; this mark also drops the lambda's facts, as for its enclosing body).
-/// Upward: a lambda that lends a way to write (it passes a captured cell, or its own exclusive
-/// parameter, to a writer) may write into what the enclosing body gave it, so the enclosing body
-/// keeps the rule from before A28 too; the scan of an unlifted body sees the bodies of its
-/// `E::Lambda`s already. Each body is scanned once; the lifted lambdas follow the `E::Closure`
-/// that makes them, through the lambdas in lambdas and the groups of `let rec`.
-fn lending_bodies(module: &CheckedModule) -> Lending {
+/// By function: whether its body has no facts and whether it reads nothing through (`Lending`),
+/// because it may hand a value to code whose body the analysis does not see (`opaque_bodies`) or
+/// lends a mutable cell (`lends_mutable`), or the body of a lambda lifted from it, or of the
+/// function that it was lifted from, does.
+///
+/// The checks apply the store facts of every call (A31), so a body that lends an exclusive
+/// reference or a cell to code keeps its facts: what the code stores there is in the owner's loans
+/// after the call. It reads nothing through when it lends a cell: the cell may be in a block that
+/// an `Rc` or `Arc` shares, and a store into it through one owner reaches that owner's loans, not
+/// the copies that a share read through another owner holds (`Arc.share (ref a)` and then
+/// `Mutex.with_lock (Arc.get (ref a)) ...`). An exclusive reference cannot reach into such a block:
+/// the contents of `Rc` and `Arc` are read-only but for cells. A `Drop.drop` that lends any way to
+/// write keeps A28's guard (`drops_store`).
+///
+/// Downward: a lambda's captures hold what the enclosing body gave them, and that misses what a
+/// store that the check misses put there, so a lambda whose captures were made in such a body reads
+/// nothing through them either (and `read_through` keeps the borrow of a capture in any lambda,
+/// since a capture is a parameter of the lifted function; this mark also drops the lambda's facts,
+/// as for its enclosing body). Upward: a lambda that hands a value to unseen code, or lends a cell,
+/// may write into what the enclosing body gave it, so the enclosing body keeps the same rule; the
+/// scan of an unlifted body sees the bodies of its `E::Lambda`s already. Each body is scanned once;
+/// the lifted lambdas follow the `E::Closure` that makes them, through the lambdas in lambdas and
+/// the groups of `let rec`.
+fn lending_bodies(module: &CheckedModule, infer: bool) -> Lending {
     let types = module.types();
     let related = related_bodies(module);
     let (any, direct) = opaque_bodies(module, &related);
-    let lends: Vec<bool> = module
+    let (mut lends, cells): (Vec<bool>, Vec<bool>) = module
         .functions
         .iter()
         .map(|function| lends_mutable(&function.body, &types))
-        .collect();
-    let mut facts: Vec<bool> = lends.iter().zip(&any).map(|(a, b)| *a || *b).collect();
-    let mut reads: Vec<bool> = lends.iter().zip(&direct).map(|(a, b)| *a || *b).collect();
+        .unzip();
+    let or =
+        |a: &[bool], b: &[bool]| -> Vec<bool> { a.iter().zip(b).map(|(a, b)| *a || *b).collect() };
+    let mut guarded = or(&lends, &any);
+    close_marks(&mut guarded, &related);
+    let drops_store = module.user_drops.values().any(|drop| guarded[*drop]);
+    // The abstract bodies of the inference apply no store facts (their lambdas are not lifted, and
+    // a type variable carries no loans): a body there that lends a way to write and may store
+    // (`store_candidates`, with the concrete types of the abstract module) keeps the rule from
+    // before A28.
+    let (facts, reads) = if infer {
+        let candidates = store_candidates(module, true);
+        for (id, lending) in lends.iter_mut().enumerate() {
+            *lending &= candidates.may_store[id] || candidates.top[id];
+        }
+        (or(&any, &lends), or(&or(&cells, &lends), &direct))
+    } else {
+        (any, or(&cells, &direct))
+    };
+    let mut facts = facts;
+    let mut reads = reads;
     close_marks(&mut facts, &related);
     close_marks(&mut reads, &related);
-    let drops_store = module.user_drops.values().any(|drop| facts[*drop]);
     Lending {
         facts,
         reads,
@@ -2759,7 +2796,7 @@ impl<'a> Checker<'a, '_> {
         reads_through(self.module, callee)
     }
 
-    /// Whether the checked body, or a related one, lends a way to write (`lends_mutable`) or hands
+    /// Whether the checked body, or a related one, lends a mutable cell (`lends_mutable`) or hands
     /// a value to code that the analysis does not see (`opaque_calls`, `opaque_bodies`): a store
     /// that the check does not track may then have put in the owner, or in a value that a lambda
     /// captured, what its loans miss, so nothing is read through the owner's borrow
@@ -2768,7 +2805,7 @@ impl<'a> Checker<'a, '_> {
         if let Some(lends) = self.lends_mutable {
             return lends;
         }
-        let lends = lends_mutable(self.body, &self.module.types()) || {
+        let lends = lends_mutable(self.body, &self.module.types()).1 || {
             let found = opaque_calls(self.body, self.module, &mut BTreeMap::new());
             found.direct
                 || found
@@ -4243,8 +4280,9 @@ impl<'a> Checker<'a, '_> {
     }
 
     /// A31: whether store facts apply in this check: the specialized bodies, whose types are
-    /// concrete, of a module that has a seed (`CallFacts::seeded`). The abstract bodies of the
-    /// inference count a type variable as holding no loan, so their Copy constraints do not change.
+    /// concrete and whose lambdas are lifted, of a module that has a seed (`CallFacts::seeded`).
+    /// The abstract bodies of the inference keep A28's guard where they lend a way to write and
+    /// may store (`lending_bodies`).
     fn tracks_stores(&self) -> bool {
         !self.infer && self.facts.seeded
     }
@@ -7336,11 +7374,13 @@ mod retention_tests {
         }
     }
 
-    /// A28 review: a body that lends an exclusive borrow to a call has no facts, in the checks of
-    /// the instances and in the inference: the check does not see what `Array.write` stores (A31).
-    /// A body that only reads its array keeps them.
+    /// A28 review: a body that lends an exclusive borrow to `Array.write` keeps `text`, which the
+    /// write stores in its array, in its result. A28 gave such a body no facts; since A31 the
+    /// checks of the instances apply the store facts and keep the facts, and the inference, which
+    /// applies none, keeps A28's rule for a body that may store. A body that only reads its array
+    /// keeps its facts in both.
     #[test]
-    fn a_body_that_lends_an_exclusive_borrow_has_no_facts() {
+    fn a_body_that_lends_an_exclusive_borrow_keeps_what_the_write_stores() {
         let module = crate::analyze(
             "def a28_stash :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_stash text g =\n    let mut arr = [g]\n    Array.write 0 (\\() -> String.length text) (ref mut arr)\n    arr[0]\n\
              def a28_piped :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_piped text g =\n    let mut arr = [g]\n    ref mut arr |> Array.set 0 (\\() -> String.length text)\n    arr[0]\n\
@@ -7363,14 +7403,28 @@ mod retention_tests {
             assert_eq!(retained("a28_stash"), Some(vec![true, true]), "{infer}");
             assert_eq!(retained("a28_piped"), Some(vec![true, true]), "{infer}");
             assert_eq!(retained("a28_read"), Some(vec![false, true]), "{infer}");
+            let lending = |name: &str| {
+                let id = module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == name)
+                    .unwrap_or_else(|| panic!("{name}"));
+                facts.lending.facts[id]
+            };
+            assert_eq!(lending("a28_stash"), infer, "{infer}");
+            assert_eq!(lending("a28_piped"), infer, "{infer}");
+            assert!(!lending("a28_read"), "{infer}");
         }
     }
 
-    /// A28 review (5th round): a body that passes its `Mutex` to a lock builtin lends a way to
-    /// write, whatever the callback's form, since the callback stores what the check does not see
-    /// (A31). An `Atomic<i64>` holds no borrow, so a body that only counts with one keeps its facts.
+    /// A28 review (5th round): a body that passes its `Mutex` to a lock builtin keeps what the
+    /// callback stores there in its result, whatever the callback's form. The lock runs a function
+    /// value, code whose body the analysis does not see (`opaque_calls`, which A31 keeps), so the
+    /// body has no facts and reads nothing through in both modules (A31's store facts put what the
+    /// callback stores in `m` as well). An `Atomic<i64>` holds no borrow, so a body that only counts
+    /// with one keeps its facts and its read-through.
     #[test]
-    fn a_body_that_lends_a_mutable_cell_has_no_facts() {
+    fn a_body_that_lends_a_mutable_cell_keeps_what_the_callback_stores() {
         let module = crate::analyze(
             "def a28_put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn a28_put text slot = Array.write 0 (\\() -> String.length text) slot\n\
              def a28_locked :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_locked text g =\n    let m = Mutex.create [g]\n    Mutex.with_lock (ref m) (a28_put text)\n    let arr = Mutex.into_inner m\n    arr[0]\n\
@@ -7392,6 +7446,17 @@ mod retention_tests {
             };
             assert_eq!(retained("a28_locked"), Some(vec![true, true]), "{infer}");
             assert_eq!(retained("a28_counted"), Some(vec![false, true]), "{infer}");
+            let id = |name: &str| {
+                module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == name)
+                    .unwrap_or_else(|| panic!("{name}"))
+            };
+            assert!(facts.lending.facts[id("a28_locked")], "{infer}");
+            assert!(facts.lending.reads[id("a28_locked")], "{infer}");
+            assert!(!facts.lending.facts[id("a28_counted")], "{infer}");
+            assert!(!facts.lending.reads[id("a28_counted")], "{infer}");
         }
     }
 
@@ -7541,7 +7606,7 @@ mod retention_tests {
         )
         .unwrap();
         let closed = closed_returns(&module);
-        let lending = lending_bodies(&module);
+        let lending = lending_bodies(&module, false);
         let full = parameter_retention(&module, &closed, &lending, false);
         let id = |name: &str| {
             module

@@ -269,10 +269,13 @@ fn a_new_owner_moves_while_the_owner_is_borrowed() {
     }
 }
 
-/// A28 review: the check does not track what `Array.write` stores in `arr` (A31), so a body that
-/// lends an exclusive borrow to a call reads nothing through a borrowed owner: the share holds the
-/// borrow of `arr`, as before A28, and cannot leave `make`. Reading through, it held what `arr`
-/// held before the write, not `text`, which `make` frees. The A30 tip rejects both forms here.
+/// A28 review: `Array.write` stores a function that borrows `text` in `arr`, so a share of
+/// `arr[0]` cannot leave `make`, which frees `text`. Before A31 the check did not track that store,
+/// so A28 read nothing through in a body that lends an exclusive borrow to a call (the share held
+/// the borrow of `arr`); reading through, the share held what `arr` held before the write. Since
+/// A31 the store facts put what the write stores in `arr`'s loans, which a read through holds (the
+/// abstract bodies of the inference, which apply no store facts, keep A28's rule). The A30 tip
+/// rejects both forms here.
 #[test]
 fn a_share_of_an_element_holds_what_was_written_in() {
     for share in ["Rc.share (ref arr[0])", "ref arr[0] |> Rc.share"] {
@@ -435,10 +438,11 @@ fn a_share_of_an_element_holds_what_was_written_in() {
 
 /// A28 review (5th round): the lock builtins write into a body's own `Mutex` or `RwMutex` through a
 /// shared reference, in a callback that is a function value (`put text`, a lambda given to a
-/// helper) or in a helper that takes the lock by `ref`, and the check does not see what the
-/// callback stores (A31). A body that passes a mutable cell whose contents may hold a borrow, or a
-/// function whose type reaches an exclusive reference or such a cell, lends a way to write
-/// (`Type::lends_mutable`): it has no facts and reads nothing through. Each program keeps the A30
+/// helper) or in a helper that takes the lock by `ref`. A28 gave a body that passes a mutable cell
+/// whose contents may hold a borrow, or a function whose type reaches an exclusive reference or
+/// such a cell (`Type::lends_mutable`), no facts and no read-through. Since A31 the store facts of
+/// the callback put what it stores in the lock's owner (the abstract bodies of the inference, which
+/// apply no store facts, keep A28's rule where the body may store). Each program keeps the A30
 /// tip's diagnostic at its position. Accepted by the 4th round, `m_partial` printed 2 at `-O0`
 /// (it reads the freed `text`; 11 is right) and `rt_partial` a pointer. `m_named_owned` writes an
 /// owned closure and is the A30 tip's false positive, which A28 keeps. A lambda cannot capture an
