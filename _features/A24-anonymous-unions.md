@@ -779,6 +779,13 @@ def font_size :: own (f64 | i64 | string) -> string = \size ->
 11. **`warnings.rs` の `checked_type`**: 匿名共用体の具体化にも `Dependency::Type("$anonymous.Union$n")` を記録しますが、これは未使用の非公開の宣言の判定にだけ使い、`$anonymous` の宣言は利用者の宣言の一覧にないので、出力に現れません。変えていません。
 12. 手順 7 と手順 8 は別のコミットにし、T1 は両方を含む状態で 1 回走らせました（3037 passed、4 skipped）。
 
+### E2E と生成コードの確認（手順 11・12）
+
+1. **suite `anonymous_unions`**（`tests/fixtures/anonymous_unions/Main.tz`、edition 2027、`tests/features.mjs`）: 本文の表の 8 関数を、期待値を fixture の定義から JavaScript の BigInt で書いた参照関数（`pick`・`mixed`・`owned`・`nested`・`recursive`・`generic`・`common`・`wide`）と比べます。37 件（`pick` 5・`mixed` 5・`owned` 5・`nested` 6・`recursive` 4・`generic` 5・`common` 4・`wide` 3）。手計算の値とも一致を確かめました（`pick 5 = 5`・`pick 0 = 4`・`pick -3 = 1`、`mixed 4 = 6`・`mixed 7 = 18`、`owned 0 = 3000005`・`owned 20 = 4210002`、`nested -3 = 3805`、`recursive 1000 = 1006`、`generic -3 = -592`）。`owned` は `string` と `[i64]` の要素の move・上書き・読まない値の drop で、host が `live == 0` を確かめます。`wide` は 32 要素（数の 17 型、`bool`・`unit`・`char`・`utf8char`・`string`・`utf8string`、`Maybe<i64>`、`[i64]`・`[i64; 2]`・`[|i64|]`、タプル 4 つ、`(i64 -> i64)`）で、正準順序の最後の関数型の要素（タグ 31）を閉包で作ります。`inspect(ir)` は、`%"tz.union.$anonymous.Union$2[i64,string]" = type` の定義が 1 回だけあること（`Labeled` のフィールド・`Maybe` の型引数・配列の要素で共有）、`(i64 | string | bool)` が `Union$3[i64,bool,string]`（正準順序）であること、`(i64 | i64u)` が `{ i8, i64 }`（`Common` のレイアウト）であること、`Tree` の要素がヒープのノード `tz.rec.node.$anonymous.Union$2[i64,Main.Tree]` であること、32 要素の型の最後が `fn[i64->i64]` であることを固定します。native と WASM、`-O0` と `-O3` で通ります（dev バイナリ）。`.github/workflows/targets.yml` に、release のバイナリで回す手順「Anonymous unions (A24)」を、Text class の手順の後に足しました。
+2. **既存の出力の不変**: 手順 1 の台本（`target/scratch/a24/baseline.sh`）をこのブランチの dev バイナリで回し、`compare.sh` で比べました。`tests/fixtures/` と `examples/` の 185 単位すべてで、native と wasm32 の IR・`check --json`・`doc`・`kg build`・`api-diff`（既定と `--effective`）の出力と終了コードが、`b3dd7f1c` のバイナリの出力と 1 byte も違いません（kg の公開の印 `.tsuzuri-kg` を除く）。差分は新しい fixture `tests/fixtures/anonymous_unions` が増えたことだけです。その fixture の `doc`・`kg`・`api-diff`・`check --json` の出力には `$anonymous` も `Union$` も現れません。
+3. **決定性**: suite が `--emit llvm` を 2 回比べるほか、`-O3` の native と wasm32 の IR もそれぞれ 2 回ビルドして一致しました。
+4. **`pick` の生成コード**: 型は `%"tz.union.$anonymous.Union$3[i64,bool,string]" = type { i8, [2 x i64] }` が 1 回だけ定義されます。コンパイラの IR では、`number` の `match` はタグ（`i8`）を腕の順に `icmp eq`（0・2・1。`i64`・`string`・`bool`）で比べる連鎖です。LLVM の `-O3`（`opt -passes='default<O3>'`）は、関数が残る形（`number` に `noinline` を付けて確かめた）では、これを `switch i8 %tag, label %trap [0, 2, 1]`（既定の行き先は `llvm.trap`）にします。実際の fixture では `make` と `number` が `pick` に inline され、タグが経路ごとに定数になるので、照合は消えて `x` の符号の分岐と `phi` だけになります（`pick` に `switch` は残りません）。`common` と `wide` も `select` だけになります。
+
 ## 決定事項
 
 ### D1: 値の作り方（承認済み）
