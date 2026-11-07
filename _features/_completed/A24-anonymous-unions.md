@@ -7,7 +7,7 @@
 | 規模 | L |
 | 依存 | A02, A03, A05 |
 | 後続 | A25, A26 |
-| 状態 | todo |
+| 状態 | done（2026-11-08。下の「実装と検証」） |
 | 起票 | 2026-11-02（利用者の依頼「F# の Anonymous Type-tagged Unions と同様の機能の実装計画も追加して」。HEAD `2f556480`） |
 | 承認 | 値の作り方（期待型で自動的に包む）は、2026-11-02 に利用者が選んだ（GUIDE D-62 の決定 1）。要素数の上限 32（D9）と、注入は値の使用で読み取りの引数には所有値が要ること（D10）は、2026-11-02 の利用者の回答「1~4 について承認します」で承認済み（D-62 の決定 2・3）。ほかの決定事項は既定案 |
 | 手本にする既存実装 | 合成した union 宣言: `Parser::implicit_active_union`（`src/parse_control.rs:74-167`。`$` を含む名前と `Provenance::Generated`）。期待型で選ぶ構築: `Dyn.of`（`Checker::dyn_of`、`src/check.rs:13376`）と数のリテラル（`Checker::integer`、`src/check.rs:13111`）。case のパターン: `Checker::case_pattern`（`src/control.rs:796`） |
@@ -847,3 +847,61 @@ def font_size :: own (f64 | i64 | string) -> string = \size ->
 - 決定: 注入は `Some x` と同じ値の使用で、Copy の値は複製、非 Copy の値は共用体の中へ move する。読み取りの引数へ変数を渡せば、その変数は共用体へ move される。非 Copy の型の読み取りの引数を、そのまま匿名共用体の引数へ渡すことはできない（`own` にするか複製する）。
 - 理由: 共用体の値はペイロードを所有する。借用からの暗黙の深い複製（A15）や、借用を持つ共用体の値は入れない。
 - 状態: 承認済み（2026-11-02 の利用者の回答「1~4 について承認します」。起票時の確認事項 3）。
+
+## 実装と検証（2026-11-08）
+
+ブランチ `feat/a24-anonymous-unions`（`main` の `b3dd7f1c` から）。4 段に分けて、手順 1〜14 をすべて実装しました。未実装の手順はありません。
+
+### 実装した手順
+
+| 手順 | 内容 | コミット |
+| --- | --- | --- |
+| 着手時 | 3 つの監査と調整役の決定から「着手時の再検討」を書き、計画を改めた | `6c655467` |
+| 1 | `b3dd7f1c` のバイナリで、`tests/fixtures/` と `examples/` の 185 単位の出力（native と wasm32 の IR、`check --json`、`doc`、`kg build`、`api-diff` の既定と `--effective`）を保存した。2 回の実行が一致した | （保存のみ。`target/scratch/a24/before/`） |
+| 2 | `TypeExprKind::AnonymousUnion`・`PatternKind::TypeTest`・`Program::uses_anonymous_unions`、パーサー、`guard_predicate`・`pattern_argument_expression`、codec の tag 18・14、`FRONTEND_FORMAT` 19 | `a8a34295` |
+| 3 | `src/anonymous_union.rs` と 31 個の合成した宣言。名前の表には登録しない | `18cd6c76` |
+| 4 | 平坦化・要素の検査・正準順序・表示、`E1013`・`E1017`・`E1041` の kind、`E1041.md` | `abf7c109` |
+| 5・6 | 4 つの入口での注入と、型テストのパターン | `931a36d5`・`435860a3` |
+| 7 | 網羅性の witness に型を通し、`missing: :? T` と修正案 | `28b75945` |
+| 8 | 利用者のインスタンスの拒否、高カインドの単一化・関数の制約・レイアウトの診断の守り | `0bc6d390` |
+| 9 | 名前の隠蔽（find・型付き穴・hover・定義への移動・kg・api-diff・デバッグ情報）と `tsuzuri find` の `(A \| B)` | `5020128f` |
+| 10 | 整形（`\| :? T`、`(A \| B)`、複数行の不動点） | `67814740` |
+| 11 | E2E suite `anonymous_unions` と `targets.yml` の手順 | `865c22f0` |
+| 12 | 既存の出力の不変・決定性・`pick` の生成コード（上の「E2E と生成コードの確認」） | `f4db8fad` |
+| 13 | 言語リファレンス・`docs/language.md`・`docs/architecture.md`・README・GUIDE | `d2e77e81`・`4b9f1214` |
+| 14 | T2 とこの節、チケットの移動 | この節のコミット |
+
+### 実行したコマンドと結果
+
+- T0: `cargo fmt --all -- --check`（差分なし）、`cargo clippy --all-targets -- -D warnings`（警告なし）。どの段でも通しました。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked`）: 手順 2 で 2988 passed、手順 3 で 2991、手順 4 で 3003、手順 5 で 3021、手順 6 で 3027、手順 7・8 で 3037、手順 9・10 で 3050 passed（どれも 4 skipped、失敗なし）。最後の段（手順 11〜13 は Rust のコードを変えていない）では 3050 件のうち 3049 passed、4 skipped で、`diagram_cli::kg_diagram_prints_the_diagram` が 1 件失敗しました。一時ディレクトリの名前 `tsuzuri-diagram-<pid>-0` を、同じ機械のほかの worktree の過去の実行（同じ pid）が残していたためで（`E2009 ... exists and is not a KG`）、`cargo nextest run --locked --test diagram_cli` を回し直すと 12 件すべて通りました。このブランチの変更とは関係がありません。
+- GUIDE §3.1 の回帰テスト 4 件（`bounds_type_growing_polymorphic_recursion`・`bounds_recursive_and_flat_expression_depth`・`bounds_nested_builder_expansion_not_just_source_syntax`・`honors_the_exact_specialization_limit`）は、T1 の中で通りました。
+- `tests/anonymous_unions.rs` は 60 件、`tests/formatter.rs` に 3 件、`src/anonymous_union.rs` の単体テスト 3 件、`src/syntax_codec.rs`・`src/check.rs`・`src/kg/find.rs`・`src/llvm.rs` の単体テストの追加、`tests/debug_info.rs` に 1 件、`tests/debugger.mjs` に 1 例です。
+- T2（dev バイナリ、`target/scratch/a24/t2.sh`）: `features.mjs anonymous_unions`（37 件、native と WASM の `-O0`／`-O3`）、`features.mjs dyn_dispatch`（58 件）、`features.mjs deriving`、`control.mjs`（701 件）、`frontend_cache.mjs`、`docgen.mjs`、`debugger.mjs`（LLDB）がすべて通りました。
+- 文書: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs` を変更した 13 ページに（11 ページで 416 links、43 examples、78 native runs。`tokens.md`・`keywords.md` で 116 links、9 examples、14 runs）、`node scripts/gen-docs.mjs --check`（19 blocks、0 stale）、`node scripts/check-cli-docs.mjs`（4 checks、0 failed。`E1041` は 68 codes に含まれる）、`node scripts/check-links.mjs`（既定と `--into` の `docs/language.md`・`docs/architecture.md`・`README.md`、0 broken）。
+- 手順 12: `sh target/scratch/a24/compare.sh target/scratch/a24/before target/scratch/a24/after` は終了コード 0（185 単位が 1 byte も違わず、増えたのは新しい fixture だけ）。
+
+### チケットと違う判断
+
+- 停止条件は、調整役の決定（`target/scratch/audit/DECISIONS.md`）どおり「健全性を保つ最も保守的な選択を取り、記録して続ける」に置き換えました。各段の判断は「着手時の再検討」の「採用する計画の変更」（1〜44）、「実装中の判断（手順 5・6）」（9 項目）、「実装中の判断（手順 7〜10 と周辺）」（12 項目）、「E2E と生成コードの確認（手順 11・12）」に書きました。主なもの:
+  - `let` は型テストを書けない（名前しか取らない）ので、実行時のトラップはラムダの引数と `for` で確かめました。
+  - 正準順序の `Task` は `Once` に、関数型の要素は規約を比べない鍵にしました。
+  - 合成した宣言は `names.unions` にも入れず、id で引く表にだけ登録しました（`semantic_api` の公開名に除外が要らない）。
+  - 期待型を下へ渡す式に `Select`・`Checked`・`Hole`・`DynDispatch` を、形での事前選択に配列・リスト・タプル・`new` のリテラルを足しました。
+  - `tsuzuri find` は `(A | B)` を読めるようにしました（制限として文書に書く代わりに）。
+  - 既知の制限: 読み取りの引数（`ref U`）へ渡した `if`・`match`・ブロックの腕が匿名共用体への参照だと `E1003` です（言語リファレンスの「注意点」に書きました）。
+- E2E の期待値は、fixture の定義から JavaScript の BigInt で書いた参照関数で、代表的な値は手計算とも照合しました。コンパイラの出力から期待値を取ったものはありません。
+- `pick` の `-O3` の IR には `switch` が残りません（`make` と `number` が inline されてタグが定数になる）。`switch i8` になることは、`number` を out of line に保った場合で確かめました（手順 12 の 4）。
+
+### 更新した文書
+
+- 言語リファレンス: `built-in-types-and-modules/anonymous-union.md`（新規。`run=` の例 6 つ）、`index.md`、`built-in-types-and-modules/union.md`、`pattern-matching/pattern-matching.md`、`pattern-matching/match.md`、`types-and-type-inference/types.md`、`types-and-type-inference/type-inference.md`、`compiler/diagnostics.md`（範囲 `E1001`〜`E1041`、`E0002`・`E1003`・`E1013`・`E1017`・`E1021` の行、`E1041` の行。kind の表は手順 4〜8 で `gen-docs.mjs` が作り直した）、`compiler/debugging.md`、`compiler/usage.md`（find と api-diff）、`compiler/kg.md`、`values-and-functions/tokens.md`、`values-and-functions/keywords.md`。
+- `src/explain/codes/E1041.md`（`tsuzuri explain E1041`）。
+- `docs/language.md`（「### 匿名共用体」、パターンの表、網羅性、`is` / `as` の文、api-diff、診断の表の `E1013`・`E1017`・`E1041`）。
+- `docs/architecture.md`（ファイルの表、「### 匿名共用体（A24）」で D2〜D7 と周辺、デバッグ情報の union の項、`mangled_type` の `$` の説明、`FRONTEND_FORMAT` 19）。
+- `README.md`（設計と実装済みの範囲の型システムの行、匿名共用体の項、パターンマッチの項、「変更の種類別」の行）、`_features/GUIDE.md` の §4.3。
+- `guide/`（AI 向けの成果物）と `vsc/` の文法は変えていません（計画の 35・36）。
+
+### 変更したファイル
+
+`src/anonymous_union.rs`（新規）、`src/syntax.rs`、`src/parser.rs`、`src/parse_control.rs`、`src/syntax_codec.rs`、`src/frontend_cache.rs`、`src/formatter.rs`、`src/check.rs`、`src/control.rs`、`src/polymorph.rs`、`src/higher_kinds.rs`、`src/exhaustiveness.rs`、`src/diagnostic_kinds.rs`、`src/explain.rs`、`src/explain/codes/E1041.md`（新規）、`src/docgen.rs`、`src/api_diff.rs`、`src/contracts.rs`、`src/computation.rs`、`src/regions.rs`、`src/warnings.rs`、`src/semantic.rs`、`src/find.rs`、`src/kg_capture.rs`、`src/kg/ids.rs`、`src/kg/find.rs`、`src/llvm.rs`、`src/llvm_debug.rs`、`scripts/lldb/tsuzuri_lldb.py`、`tests/anonymous_unions.rs`（新規）、`tests/formatter.rs`、`tests/debug_info.rs`、`tests/debugger.mjs`、`tests/features.mjs`、`tests/fixtures/anonymous_unions/Main.tz`（新規）、`.github/workflows/targets.yml`、上の文書、`_features/A25-anonymous-union-conversions.md`・`_features/A26-anonymous-union-classes.md`（依存の A24 への移動先のリンク）、`_features/README.md`。
