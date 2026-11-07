@@ -511,6 +511,7 @@ impl Checker<'_> {
         let slot = coverage.map(|origin| {
             self.coverage.push(MatchCoverage {
                 span,
+                scrutinee: matched.ty.clone(),
                 arms: Vec::new(),
                 append_at: arms
                     .last()

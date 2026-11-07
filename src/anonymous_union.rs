@@ -338,6 +338,42 @@ fn member_display(member: &Type, names: &dyn DeclarationNames) -> String {
     }
 }
 
+/// `:? T`, the type test that names `member` in a witness of a non-exhaustive match (D7). `T` is
+/// read by `type_product`, so an impure function member is parenthesized, as in `display`. `None`
+/// when the member is not known, or holds an inference variable or an erroneous type: the message
+/// then reads `:? _`, which is not a pattern, so no arm is offered.
+pub(super) fn type_test_text(
+    member: Option<&Type>,
+    names: &dyn DeclarationNames,
+) -> Option<String> {
+    member
+        .filter(|member| determined(member))
+        .map(|member| format!(":? {}", member_display(member, names)))
+}
+
+/// Whether `ty` holds no inference variable and no erroneous type, so that a type test can name it.
+fn determined(ty: &Type) -> bool {
+    match ty {
+        Type::Error | Type::Infer(_) => false,
+        Type::Partial(partial) => partial.trailing.iter().all(determined),
+        Type::Application(head, arguments) => determined(head) && arguments.iter().all(determined),
+        Type::Array(ty)
+        | Type::ArrayView(ty)
+        | Type::List(ty)
+        | Type::Vec(ty)
+        | Type::Once(ty)
+        | Type::Shared(ty, _)
+        | Type::Reference(ty, _) => determined(ty),
+        Type::FixedArray(element, length) => determined(element) && determined(length),
+        Type::Function(parameters, result) => {
+            parameters.iter().all(determined) && determined(result)
+        }
+        Type::Tuple(elements) => elements.iter().all(determined),
+        Type::Record(_, args) | Type::Union(_, args) => args.iter().all(determined),
+        _ => true,
+    }
+}
+
 /// `the members are m1, m2, ...`, the help of the diagnostics that name a type outside a union.
 pub(super) fn members_help(members: &[Type], names: &dyn DeclarationNames) -> String {
     let members: Vec<String> = members
@@ -894,6 +930,50 @@ mod tests {
                     assert!(next.is_ascii_lowercase() || next.is_ascii_digit(), "{text}");
                 }
             }
+        }
+    }
+
+    /// Declaration names for `display` without a checked program: `Main.Maybe` is union 0.
+    struct Fixed;
+
+    impl DeclarationNames for Fixed {
+        fn record_name(&self, _: usize) -> &str {
+            "Main.Cell"
+        }
+
+        fn union_name(&self, _: usize) -> &str {
+            "Main.Maybe"
+        }
+    }
+
+    /// D7: a witness names the member that it misses, `:? T`, only when the member type is known.
+    /// Otherwise the message reads `:? _`, which no arm accepts, so no fix is offered. A type test
+    /// needs the scrutinee type when it is checked, so a source cannot reach that branch through
+    /// `check_coverage` today: this test pins the rule itself.
+    #[test]
+    fn unresolved_member_offers_no_fix() {
+        let text = |member: Option<&Type>| type_test_text(member, &Fixed);
+        assert_eq!(text(Some(&Type::I64)).as_deref(), Some(":? i64"));
+        assert_eq!(
+            text(Some(&Type::Union(0, vec![Type::String].into()))).as_deref(),
+            Some(":? Main.Maybe<string>")
+        );
+        // `type_product` reads the type, so an impure function is parenthesized.
+        let function = Type::function(vec![Type::I64], Type::I64);
+        assert_eq!(text(Some(&function)).as_deref(), Some(":? (i64 -> i64)"));
+        // A type variable of the signature can be written in the body.
+        let generic = Type::Union(0, vec![Type::Variable("a".into())].into());
+        assert_eq!(text(Some(&generic)).as_deref(), Some(":? Main.Maybe<'a>"));
+        for unknown in [
+            None,
+            Some(Type::Infer(0)),
+            Some(Type::Error),
+            Some(Type::Union(0, vec![Type::Infer(3)].into())),
+            Some(Type::Array(Box::new(Type::Error))),
+            Some(Type::function(vec![Type::Infer(1)], Type::I64)),
+            Some(Type::Tuple(vec![Type::I64, Type::Infer(2)])),
+        ] {
+            assert_eq!(text(unknown.as_ref()), None, "{unknown:?}");
         }
     }
 }

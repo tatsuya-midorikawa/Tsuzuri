@@ -1,7 +1,7 @@
 //! Anonymous unions `(A | B)` and type test patterns `:? T` (A24).
 
 use tsuzuri::check::{CheckedModule, Type};
-use tsuzuri::diagnostic::Diagnostic;
+use tsuzuri::diagnostic::{Diagnostic, Edit, apply_edits};
 use tsuzuri::driver::{Target, TestOptions, run_tests};
 use tsuzuri::parser::{parse, parse_with_source};
 use tsuzuri::syntax::{Edition, Program, TypeExpr, TypeExprKind};
@@ -1372,4 +1372,188 @@ fn read_parameter_type_test_moves_need_own() {
         "def size :: (i64 | string | bool) -> i64 = \\value ->\n    match value with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n    | :? bool as b -> if b then 1 else 0\n",
         Edition::E2027,
     );
+}
+
+// Step 7: the witness of a non-exhaustive match names the missing member (D7).
+
+/// The `E1021` of `source`, whose message must name `witness`.
+fn missing(source: &str, witness: &str) -> Diagnostic {
+    let error = rejects(source, "E1021", "non_exhaustive_match");
+    assert_eq!(
+        error.message,
+        format!("match is not exhaustive; missing: {witness}"),
+        "{source}"
+    );
+    error
+}
+
+/// `source` with the edits of the first fix of its `E1021`, one arm per missing value.
+fn fixed(source: &str) -> String {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, "E1021", "{source}\n{}", error.message);
+    let edits: Vec<&Edit> = error.fixes[0].edits.iter().collect();
+    apply_edits(source, &edits).unwrap()
+}
+
+#[test]
+fn missing_member_is_named() {
+    // The member's own type, as `Type::display` writes it: never the synthesized case.
+    let error = missing(
+        "def f :: own (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? bool -> 1\n",
+        ":? string",
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("add an arm for ':? string', or end the match with a wildcard arm '| _ -> ...'")
+    );
+    assert!(!error.message.contains('$'), "{}", error.message);
+    // The first missing member in canonical order, whatever order the type was written in.
+    missing(
+        "def f :: own (string | bool | i64) -> i64 = \\v ->\n    match v with\n    | :? bool -> 1\n",
+        ":? i64",
+    );
+    // The example of the ticket without its `bool` arm.
+    missing(
+        "def describe :: own (i64 | string | bool) -> string = \\value ->\n    match value with\n    | :? i64 as n -> $\"int {n}\"\n    | :? string as s -> s\n",
+        ":? bool",
+    );
+    // A function member is parenthesized: `:?` reads a `type_product`.
+    missing(
+        "def f :: own ((i64 -> i64) | string) -> i64 = \\v ->\n    match v with\n    | :? string -> 0\n",
+        ":? (i64 -> i64)",
+    );
+    // Inside a tuple, through a reference, and with a generic member.
+    missing(
+        "def f :: own ((i64 | string) * bool) -> i64 = \\v ->\n    match v with\n    | (:? i64 as n, _) -> n\n    | (:? string, true) -> 0\n",
+        "(:? string, false)",
+    );
+    missing(
+        "def f :: ref (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n",
+        ":? string",
+    );
+    missing(
+        "def f :: own (Maybe<'a> | i64) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n",
+        ":? Maybe<'a>",
+    );
+    // A function guard names it the same way.
+    missing(
+        "def f :: own (i64 | string) -> i64 = \\v ->\n    | :? i64 as n -> n\n",
+        ":? string",
+    );
+}
+
+#[test]
+fn missing_member_inside_maybe() {
+    missing(
+        "def f :: own Maybe<(i64 | string)> -> i64 = \\v ->\n    match v with\n    | Some (:? i64 as n) -> n\n    | None -> 0\n",
+        "Some (:? string)",
+    );
+    // A record field and a list element take the member types of their own declarations.
+    missing(
+        "record Cell { value: (i64 | string), count: i64 }\ndef f :: own Cell -> i64 = \\c ->\n    match c with\n    | { value = :? i64 as n } -> n\n",
+        "{ value = :? string }",
+    );
+    missing(
+        "def f :: own [|(i64 | bool)|] -> i64 = \\xs ->\n    match xs with\n    | [||] -> 0\n    | (:? i64 as n) :: _ -> n\n",
+        "(:? bool) :: _",
+    );
+}
+
+#[test]
+fn missing_member_fix_is_written() {
+    let source = "def f :: own (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n";
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, "E1021");
+    assert_eq!(error.fixes.len(), 1);
+    // Every missing member, one arm each, in canonical order (`bool` before `string`).
+    assert_eq!(
+        error.fixes[0].title,
+        "Add the arms '| :? bool -> unreachable () | :? string -> unreachable ()'"
+    );
+    let fixed_source = fixed(source);
+    assert_eq!(
+        fixed_source,
+        source.replace(
+            "-> n\n",
+            "-> n | :? bool -> unreachable () | :? string -> unreachable ()\n"
+        )
+    );
+    accepts(&fixed_source);
+    // The fixes that name a member inside another pattern, a function member and a generic member
+    // compile as written.
+    for source in [
+        "def f :: own Maybe<(i64 | string)> -> i64 = \\v ->\n    match v with\n    | Some (:? i64 as n) -> n\n    | None -> 0\n",
+        "def f :: own ((i64 | string) * bool) -> i64 = \\v ->\n    match v with\n    | (:? i64 as n, _) -> n\n    | (:? string, true) -> 0\n",
+        "def f :: own ((i64 -> i64) | string) -> i64 = \\v ->\n    match v with\n    | :? string -> 0\n",
+        "def f :: own (Maybe<'a> | i64) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n",
+        "def f :: own (i64 | [string] | (bool * char)) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n",
+    ] {
+        let fixed_source = fixed(source);
+        assert_ne!(fixed_source, source);
+        accepts(&fixed_source);
+    }
+    // A record or list witness is not written, as before.
+    let error = analyze(
+        "record Cell { value: (i64 | string), count: i64 }\ndef f :: own Cell -> i64 = \\c ->\n    match c with\n    | { value = :? i64 as n } -> n\n",
+    )
+    .unwrap_err();
+    assert!(error.fixes.is_empty());
+}
+
+#[test]
+fn duplicate_type_test_is_unreachable() {
+    let source = "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string -> 0\n    | :? i64 -> 1\n    | _ -> 2\n";
+    let module = analyze(source).unwrap();
+    let warnings: Vec<(&str, &str)> = module
+        .warnings
+        .iter()
+        .map(|warning| (warning.code, &source[warning.span.start..warning.span.end]))
+        .collect();
+    assert_eq!(warnings, [("W1003", ":? i64"), ("W1003", "_")]);
+    // A guarded arm covers nothing, so the next test of the member is reachable.
+    let guarded = "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n when n > 0 -> n\n    | :? i64 -> 0\n    | :? string -> 1\n";
+    assert!(analyze(guarded).unwrap().warnings.is_empty());
+}
+
+#[test]
+fn existing_missing_messages_unchanged() {
+    // Named unions, tuples, booleans and lists keep their witnesses when the program also writes
+    // an anonymous union (and so has the synthesized declarations).
+    let union = "def g :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string -> 0\n";
+    for (source, witness) in [
+        (
+            "union Shape = Empty | Circle of f64 | Rect of f64 * f64\ndef f :: Shape -> f64 = \\s ->\n    match s with\n    | Empty -> 0.0\n    | Circle r -> r\n",
+            "Rect _",
+        ),
+        (
+            "def f :: Maybe<bool> -> i64 = \\m ->\n    match m with\n    | Some true -> 1\n    | None -> 0\n",
+            "Some false",
+        ),
+        (
+            "def f :: (bool * bool) -> i64 = \\p ->\n    match p with\n    | (true, _) -> 1\n    | (false, true) -> 0\n",
+            "(false, false)",
+        ),
+        (
+            "def f :: [|i64|] -> i64 = \\xs ->\n    match xs with\n    | [||] -> 0\n",
+            "_ :: _",
+        ),
+    ] {
+        let without = analyze(source).expect_err(source);
+        let with = analyze(&format!("{union}{source}")).expect_err(source);
+        assert_eq!(
+            without.message,
+            format!("match is not exhaustive; missing: {witness}")
+        );
+        assert_eq!(with.message, without.message, "{source}");
+        assert_eq!(with.help, without.help, "{source}");
+        assert_eq!(
+            with.fixes.iter().map(|fix| &fix.title).collect::<Vec<_>>(),
+            without
+                .fixes
+                .iter()
+                .map(|fix| &fix.title)
+                .collect::<Vec<_>>(),
+            "{source}"
+        );
+    }
 }
