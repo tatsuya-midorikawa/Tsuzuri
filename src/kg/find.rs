@@ -35,7 +35,45 @@ enum Ty {
     /// A fixed array and its length: a literal (`Named("4")`) or a variable (`N`).
     Fixed(Box<Ty>, Box<Ty>),
     Tuple(Vec<Ty>),
+    /// An anonymous union `(A | B)` (A24): its members flattened and sorted by `member_key`, so
+    /// that two spellings of one union in different orders compare as one type. A type alias
+    /// is not expanded, as nowhere else in the search.
+    Union(Vec<Ty>),
     Function(Vec<Ty>, Box<Ty>),
+}
+
+/// The order of the members of a `Ty::Union`: the text of the member with every variable written
+/// `_` and every name by its last segment, so that the order does not depend on how variables are
+/// numbered or names qualified. Members that only these tell apart keep their written order.
+fn member_key(ty: &Ty) -> String {
+    let all = |types: &[Ty], separator: &str| {
+        types
+            .iter()
+            .map(member_key)
+            .collect::<Vec<_>>()
+            .join(separator)
+    };
+    match ty {
+        Ty::Var(_) => "_".into(),
+        Ty::Named(name, arguments) if arguments.is_empty() => last_segment(name).to_owned(),
+        Ty::Named(name, arguments) => format!("{}<{}>", last_segment(name), all(arguments, ", ")),
+        Ty::Ref(inner, mutable) => {
+            format!(
+                "ref {}{}",
+                if *mutable { "mut " } else { "" },
+                member_key(inner)
+            )
+        }
+        Ty::Array(inner) => format!("[{}]", member_key(inner)),
+        Ty::View(inner) => format!("[{}..]", member_key(inner)),
+        Ty::List(inner) => format!("[|{}|]", member_key(inner)),
+        Ty::Fixed(inner, length) => format!("[{}; {}]", member_key(inner), member_key(length)),
+        Ty::Tuple(elements) => format!("({})", all(elements, " * ")),
+        Ty::Union(members) => format!("({})", all(members, " | ")),
+        Ty::Function(parameters, result) => {
+            format!("({} -> {})", all(parameters, " -> "), member_key(result))
+        }
+    }
 }
 
 struct Parser<'a> {
@@ -108,6 +146,44 @@ impl Parser<'_> {
         (self.at > start).then(|| self.chars[start..self.at].iter().collect())
     }
 
+    /// The members after the first of an anonymous union `(first | B | ...)`, whose first `|` is
+    /// read: each member is a whole type, as in a signature (`(i64 -> i64 | string)` holds a
+    /// function and `(i64 * i64 | string)` a tuple). A nested union is flattened.
+    fn union(&mut self, first: Ty) -> Option<Ty> {
+        let mut members = vec![first];
+        loop {
+            members.push(self.product()?);
+            if !self.eat("|") {
+                break;
+            }
+        }
+        if !self.eat(")") {
+            return None;
+        }
+        let mut flat = Vec::new();
+        for member in members {
+            match member {
+                Ty::Union(inner) => flat.extend(inner),
+                other => flat.push(other),
+            }
+        }
+        flat.sort_by_cached_key(member_key);
+        Some(Ty::Union(flat))
+    }
+
+    /// `A * B * C` inside parentheses, a tuple, or a single type.
+    fn product(&mut self) -> Option<Ty> {
+        let mut elements = vec![self.function()?];
+        while self.eat("*") {
+            elements.push(self.function()?);
+        }
+        Some(if elements.len() == 1 {
+            elements.pop().unwrap()
+        } else {
+            Ty::Tuple(elements)
+        })
+    }
+
     /// `A -> B -> R`, or a single type.
     fn function(&mut self) -> Option<Ty> {
         let mut parts = vec![self.atom()?];
@@ -163,19 +239,11 @@ impl Parser<'_> {
             return self.eat("]").then(|| Ty::Array(Box::new(element)));
         }
         if self.eat("(") {
-            let first = self.function()?;
-            let mut elements = vec![first];
-            while self.eat("*") {
-                elements.push(self.function()?);
+            let first = self.product()?;
+            if self.eat("|") {
+                return self.union(first);
             }
-            if !self.eat(")") {
-                return None;
-            }
-            return Some(if elements.len() == 1 {
-                elements.pop().unwrap()
-            } else {
-                Ty::Tuple(elements)
-            });
+            return self.eat(")").then_some(first);
         }
         if self.eat("'") {
             let name = self.name()?;
@@ -277,6 +345,7 @@ fn qualify(ty: Ty, resolve: &dyn Fn(&str) -> String) -> Ty {
         Ty::List(inner) => Ty::List(Box::new(qualify(*inner, resolve))),
         Ty::Fixed(inner, length) => Ty::Fixed(Box::new(qualify(*inner, resolve)), length),
         Ty::Tuple(elements) => Ty::Tuple(all(elements)),
+        Ty::Union(members) => Ty::Union(all(members)),
         Ty::Function(parameters, result) => {
             Ty::Function(all(parameters), Box::new(qualify(*result, resolve)))
         }
@@ -320,7 +389,9 @@ impl Subst {
     fn occurs(&self, id: usize, ty: &Ty) -> bool {
         match self.resolve(ty) {
             Ty::Var(other) => other == id,
-            Ty::Named(_, args) | Ty::Tuple(args) => args.iter().any(|arg| self.occurs(id, arg)),
+            Ty::Named(_, args) | Ty::Tuple(args) | Ty::Union(args) => {
+                args.iter().any(|arg| self.occurs(id, arg))
+            }
             Ty::Ref(inner, _) | Ty::Array(inner) | Ty::View(inner) | Ty::List(inner) => {
                 self.occurs(id, &inner)
             }
@@ -355,7 +426,7 @@ impl Subst {
             | (Ty::View(x), Ty::View(y))
             | (Ty::List(x), Ty::List(y)) => self.unify(x, y),
             (Ty::Fixed(x, n), Ty::Fixed(y, m)) => self.unify(n, m) && self.unify(x, y),
-            (Ty::Tuple(xs), Ty::Tuple(ys)) => {
+            (Ty::Tuple(xs), Ty::Tuple(ys)) | (Ty::Union(xs), Ty::Union(ys)) => {
                 xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| self.unify(x, y))
             }
             (Ty::Function(xs, x), Ty::Function(ys, y)) => {
@@ -941,6 +1012,55 @@ mod tests {
             "{",
             "ref {r [i64]",
         ] {
+            let mut next = 0;
+            assert!(
+                parse(broken, &mut next, &mut BTreeMap::new()).is_none(),
+                "{broken}"
+            );
+        }
+    }
+
+    /// A24: `(A | B)` reads as one type whatever the order of its members, flattened; the members
+    /// are whole types, and a union never matches a non-union.
+    #[test]
+    fn find_reads_anonymous_unions() {
+        let named = |name: &str| Ty::Named(name.into(), vec![]);
+        assert_eq!(
+            ty("(string | i64)"),
+            Ty::Union(vec![named("i64"), named("string")])
+        );
+        assert_eq!(ty("(i64 | (bool | string))"), ty("((string | i64) | bool)"));
+        assert_eq!(
+            ty("(i64 -> i64 | i64 * i64)"),
+            Ty::Union(vec![
+                Ty::Tuple(vec![named("i64"), named("i64")]),
+                Ty::Function(vec![named("i64")], Box::new(named("i64"))),
+            ])
+        );
+        assert!(matches!(
+            ty("Maybe<(i64 | string)> -> (bool | Shapes.Point)"),
+            Ty::Function(..)
+        ));
+        // The order does not depend on qualification or on how variables are numbered.
+        let keys = |text: &str| match ty(text) {
+            Ty::Union(members) => members.iter().map(member_key).collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            keys("(Shapes.Point | Maybe<'z> | char)"),
+            ["Maybe<_>", "Point", "char"]
+        );
+        assert_eq!(
+            keys("(char | Point | Maybe<'a>)"),
+            ["Maybe<_>", "Point", "char"]
+        );
+        let mut subst = Subst::default();
+        assert!(subst.unify(&ty("(string | i64)"), &ty("(i64 | string)")));
+        assert!(subst.unify(&ty("'a"), &ty("(i64 | string)")));
+        assert!(!subst.unify(&ty("(i64 | string)"), &ty("(i64 * string)")));
+        assert!(!subst.unify(&ty("(i64 | string)"), &ty("(i64 | string | bool)")));
+        assert!(!subst.unify(&ty("(i64 | string)"), &ty("i64")));
+        for broken in ["(i64 | string", "(i64 |)", "(| i64)", "(i64 | string]"] {
             let mut next = 0;
             assert!(
                 parse(broken, &mut next, &mut BTreeMap::new()).is_none(),

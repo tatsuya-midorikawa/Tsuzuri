@@ -5,7 +5,10 @@ use tsuzuri::diagnostic::{Diagnostic, Edit, apply_edits};
 use tsuzuri::driver::{Target, TestOptions, run_tests};
 use tsuzuri::parser::{parse, parse_with_source};
 use tsuzuri::syntax::{Edition, Program, TypeExpr, TypeExprKind};
-use tsuzuri::{analyze, analyze_modules, analyze_with_edition, llvm};
+use tsuzuri::{
+    analyze, analyze_all, analyze_modules, analyze_modules_with_semantics, analyze_with_edition,
+    llvm,
+};
 
 /// The type as written, with every anonymous union and its members spelled out, so that a test
 /// reads the parse tree without the checker.
@@ -1654,4 +1657,324 @@ fn higher_kinded_unification_refuses_anonymous_unions() {
         "{}",
         named.message
     );
+}
+
+// Step 9: the synthesized declarations, their cases and their pseudo-module never reach a user.
+
+/// Fails when `text` names the synthesized declarations, their cases or their pseudo-module.
+fn assert_hidden(text: &str) {
+    for synthetic in ["$anonymous", "Union$", "$t0"] {
+        assert!(!text.contains(synthetic), "{synthetic} in\n{text}");
+    }
+}
+
+#[test]
+fn typed_holes_do_not_offer_synthetic_cases() {
+    // The hole reports the union, and its candidates are values of a member or of the union: no
+    // synthesized case is a constructor that a program can write.
+    let source = "def f :: own (i64 | string) -> i64 = \\v -> 0\nlet n: i64 = 4\nlet v: (string | i64) = ?\nf v\n";
+    let errors = analyze_all(source).expect_err(source).diagnostics;
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    let hole = &errors[0];
+    assert_eq!(hole.code, "E1030");
+    assert!(hole.message.contains("(i64 | string)"), "{}", hole.message);
+    for candidate in &hole.detail.candidates {
+        assert_hidden(&candidate.name);
+        assert_hidden(&candidate.signature);
+    }
+    assert_hidden(&format!("{hole:?}"));
+    // A hole of a generic type does not offer the generic synthesized cases either.
+    let source = "def f :: own (i64 | string) -> i64 = \\v -> 0\nlet m: Maybe<i64> = ?\n0\n";
+    let errors = analyze_all(source).expect_err(source).diagnostics;
+    assert_hidden(&format!("{errors:?}"));
+}
+
+#[test]
+fn suggestions_skip_synthetic_names() {
+    let union = "def f :: own (i64 | string) -> i64 = \\v -> 0\n";
+    for (typo, code) in [
+        // A module whose name is one letter from the pseudo-module.
+        ("Anonymous.f 1\n", "E1002"),
+        ("anonymous 1\n", "E1002"),
+        // A type and a case one letter from the synthesized ones.
+        ("let v: Union2 = 1\nv\n", "E1004"),
+        ("let v = Union2 1\nv\n", "E1002"),
+        ("match 1 with\n| Union2_0 x -> x\n| _ -> 0\n", "E1020"),
+    ] {
+        let source = format!("{union}{typo}");
+        let errors = analyze_all(&source).expect_err(&source).diagnostics;
+        let error = &errors[0];
+        assert_eq!(error.code, code, "{source}\n{}", error.message);
+        assert_hidden(&format!("{error:?}"));
+    }
+}
+
+#[test]
+fn hover_shows_anonymous_union() {
+    let source = "def f :: own (string | i64) -> (i64 | string) = \\v -> v\ndef g :: own Maybe<(bool | i64)> -> i64 = \\m -> 0\n0\n";
+    let (_, index) = analyze_modules_with_semantics(&[("Main.tz", source)]).unwrap();
+    let hover = |needle: &str, offset: usize| {
+        let at = source.find(needle).unwrap() + offset;
+        index
+            .at(0, at)
+            .unwrap_or_else(|| panic!("no hover at {needle}"))
+    };
+    // The union reads in its canonical order wherever it is written, and has no definition to go
+    // to; a member reads as itself.
+    for (needle, detail) in [
+        ("(string | i64) ->", "(i64 | string)"),
+        ("(i64 | string) =", "(i64 | string)"),
+        ("(bool | i64)", "(i64 | bool)"),
+    ] {
+        let entry = hover(needle, 0);
+        assert_eq!(entry.detail, detail, "{needle}");
+        assert_eq!(entry.target, None, "{needle}");
+    }
+    assert_eq!(hover("string | i64) ->", 0).detail, "string");
+    assert_eq!(hover("Maybe<", 0).detail, "Maybe<(i64 | bool)>");
+    for entry in &index.entries {
+        assert_hidden(&entry.detail);
+    }
+}
+
+#[test]
+fn definition_of_anonymous_union_has_no_target() {
+    let source =
+        "union Shape = Dot | Line of i64\ndef f :: own (i64 | Shape) -> i64 = \\v -> 0\n0\n";
+    let (_, index) = analyze_modules_with_semantics(&[("Main.tz", source)]).unwrap();
+    let union = index.at(0, source.find("(i64 | Shape)").unwrap()).unwrap();
+    assert_eq!(union.target, None);
+    // A named member still goes to its declaration.
+    let shape = index.at(0, source.find("Shape) ->").unwrap()).unwrap();
+    assert_eq!(shape.detail, "Main.Shape");
+    assert!(shape.target.is_some());
+}
+
+/// The changes between two versions of the module `Main`, in the default (syntactic) or the
+/// `--effective` mode, as `tests/api_diff.rs` reads them: `severity action kind name` and the old
+/// and new texts.
+fn api_changes(old: &str, new: &str, effective: bool) -> Vec<String> {
+    use tsuzuri::api_diff;
+    use tsuzuri::driver::Project;
+    let directory = |label: &str, text: &str| {
+        let root = std::env::temp_dir().join(format!(
+            "tsuzuri-anonymous-unions-api-{label}-{}-{}",
+            std::process::id(),
+            effective
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Main.tz"), text).unwrap();
+        root
+    };
+    let api = |path: &std::path::Path| {
+        let project = if effective {
+            Project::load_for_docs(path)
+        } else {
+            Project::load_for_api(path)
+        }
+        .unwrap();
+        if effective {
+            api_diff::effective_api(&project)
+        } else {
+            api_diff::api(&project)
+        }
+        .unwrap_or_else(|error| panic!("{path:?}: {}", error.message))
+    };
+    let (before, after) = (directory("old", old), directory("new", new));
+    let report = api_diff::compare(&api(&before), &api(&after));
+    std::fs::remove_dir_all(before).unwrap();
+    std::fs::remove_dir_all(after).unwrap();
+    report
+        .changes
+        .iter()
+        .map(|change| {
+            format!(
+                "{} {} {} {} | {} | {}",
+                change.severity(),
+                change.action.name(),
+                change.kind,
+                change.name,
+                change.old.as_deref().unwrap_or(""),
+                change.new.as_deref().unwrap_or("")
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn api_diff_treats_member_order_as_equal() {
+    for effective in [false, true] {
+        // Reordered members, nested members, and members in another order inside other types.
+        for (old, new) in [
+            (
+                "def f :: own (i64 | string) -> i64 = \\v -> 0\n",
+                "def f :: own (string | i64) -> i64 = \\v -> 0\n",
+            ),
+            (
+                "def f :: own (i64 | (string | bool)) -> i64 = \\v -> 0\n",
+                "def f :: own (bool | string | i64) -> i64 = \\v -> 0\n",
+            ),
+            (
+                "def f :: own Maybe<(i64 | [string])> -> [(bool | char)] = \\v -> []\n",
+                "def f :: own Maybe<([string] | i64)> -> [(char | bool)] = \\v -> []\n",
+            ),
+            (
+                "record Cell { value: (i64 | string) }\ndef g :: own (Maybe<'a> | i64) -> 'a -> 'a = \\v x -> x\n",
+                "record Cell { value: (string | i64) }\ndef g :: own (i64 | Maybe<'b>) -> 'b -> 'b = \\v x -> x\n",
+            ),
+        ] {
+            assert_eq!(
+                api_changes(old, new, effective),
+                Vec::<String>::new(),
+                "effective {effective}\n{old}{new}"
+            );
+        }
+        // A changed member is a change, shown as written and never with a synthesized name.
+        let changes = api_changes(
+            "def f :: own (i64 | string) -> i64 = \\v -> 0\n",
+            "def f :: own (i64 | bool) -> i64 = \\v -> 0\n",
+            effective,
+        );
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert!(
+            changes[0].starts_with("breaking changed def Main.f"),
+            "{changes:?}"
+        );
+        assert!(changes[0].contains("(i64 | string)"), "{changes:?}");
+        assert!(changes[0].contains("(i64 | bool)"), "{changes:?}");
+        assert_hidden(&changes[0]);
+    }
+    // The syntactic comparison does not expand aliases (G19); the effective one does.
+    let alias = "type Meters = f64\ndef f :: own (Meters | string) -> i64 = \\v -> 0\n";
+    let plain = "type Meters = f64\ndef f :: own (f64 | string) -> i64 = \\v -> 0\n";
+    assert_eq!(api_changes(alias, plain, false).len(), 1);
+    assert!(api_changes(alias, plain, true).is_empty());
+}
+
+#[test]
+fn effective_api_hides_synthetic_names() {
+    // Through an alias, a record field and a generic argument, the effective comparison reads the
+    // checked types back as unions, never as the synthesized declaration.
+    let old = "type Value = (i64 | string)\nrecord Cell { value: Value }\ndef f :: own Value -> Maybe<Value> = \\v -> None\n";
+    let new = "type Value = (i64 | string | bool)\nrecord Cell { value: Value }\ndef f :: own Value -> Maybe<Value> = \\v -> None\n";
+    let changes = api_changes(old, new, true);
+    assert!(!changes.is_empty());
+    for change in &changes {
+        assert_hidden(change);
+    }
+    assert!(api_changes(old, &old.replace("(i64 | string)", "(string | i64)"), true).is_empty());
+}
+
+#[test]
+fn kg_has_no_synthetic_declarations() {
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-anonymous-unions-kg-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("Main.tz"),
+        "record Cell { value: (i64 | string) }\ndef f :: own (string | i64) -> Maybe<(bool | i64)> = \\v -> None\ndef g :: own Cell -> i64 = \\c ->\n    match c.value with\n    | :? i64 as n -> n\n    | :? string -> 0\nf 1\n",
+    )
+    .unwrap();
+    let kg = root.join("kg");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .current_dir(&root)
+        .args(["kg", "build", "Main.tz", "--kg-dir"])
+        .arg(&kg)
+        .arg("--force")
+        .env_remove("TSUZURI_KG")
+        .env_remove("TSUZURI_KG_DIR")
+        .env("TSUZURI_CACHE_DIR", root.join("cache"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut pending = vec![kg.clone()];
+    let mut read = 0;
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                assert_hidden(&text);
+                read += 1;
+            }
+        }
+    }
+    assert!(read > 0);
+    // The signatures hold the unions as they are written, and the layout of a field the checked
+    // type, in its canonical order (`kg/ids.rs`).
+    let nodes = std::fs::read_to_string(kg.join("nodes.jsonl")).unwrap();
+    assert!(
+        nodes.contains("def f :: own (string | i64) -> Maybe<(bool | i64)>"),
+        "{nodes}"
+    );
+    let layout = std::fs::read_to_string(kg.join("layout/Main.jsonl")).unwrap();
+    assert!(
+        layout.contains("{\"name\":\"value\",\"type\":\"(i64 | string)\""),
+        "{layout}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn find_searches_anonymous_unions_in_any_order() {
+    // `tsuzuri find` reads `(A | B)` in signatures and queries, whatever order the members are in.
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-anonymous-unions-find-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("Tsuzuri.toml"),
+        "[package]\nname = \"finder\"\nversion = \"0.1.0\"\nedition = \"2026\"\nnamespace = \"Finder\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("Main.tz"),
+        "def pick :: own (string | i64) -> i64 = \\v -> 0\ndef wrap :: i64 -> Maybe<(bool | i64)> = \\n -> None\npick 1\n",
+    )
+    .unwrap();
+    let find = |query: &str| {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .current_dir(&root)
+            .args(["find", "--project", "project", "--limit", "100", query])
+            .env("TSUZURI_CACHE_DIR", root.join("cache"))
+            .env_remove("TSUZURI_KG")
+            .env_remove("TSUZURI_KG_DIR")
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    for query in ["(i64 | string) -> i64", "(string | i64) -> i64"] {
+        let text = find(query);
+        assert!(
+            text.contains("exact   Finder::Main.pick :: own (string | i64) -> i64\n"),
+            "{query}\n{text}"
+        );
+    }
+    let text = find("i64 -> Maybe<(i64 | bool)>");
+    assert!(
+        text.contains("exact   Finder::Main.wrap :: i64 -> Maybe<(bool | i64)>\n"),
+        "{text}"
+    );
+    // A union with another member, or a tuple, is another type.
+    assert!(!find("(i64 | bool) -> i64").contains("Main.pick"));
+    assert!(!find("(i64 * string) -> i64").contains("Main.pick"));
+    std::fs::remove_dir_all(&root).unwrap();
 }

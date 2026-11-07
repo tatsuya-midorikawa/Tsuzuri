@@ -1305,6 +1305,9 @@ fn index_function(
 fn type_target(ty: &Type, types: &TypeContext<'_>) -> Option<Span> {
     match ty {
         Type::Record(id, _) => Some(types.records[*id].span),
+        // An anonymous union (A24) has no definition to go to: its synthesized declaration has no
+        // source, and a default span would send the editor to the start of the current file.
+        Type::Union(id, _) if types.unions[*id].is_anonymous() => None,
         Type::Union(id, _) => Some(types.unions[*id].span),
         _ => None,
     }

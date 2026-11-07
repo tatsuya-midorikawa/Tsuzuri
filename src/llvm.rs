@@ -3840,6 +3840,8 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
             format!("{}[{}]", module.records[*id].name, list(arguments))
         }
         Type::Union(id, arguments) if arguments.is_empty() => module.unions[*id].name.clone(),
+        // An anonymous union (A24) is `$anonymous.Union$n[members]`: one declaration per member
+        // count, and its members in their canonical order, so one type has one spelling.
         Type::Union(id, arguments) => {
             format!("{}[{}]", module.unions[*id].name, list(arguments))
         }
@@ -8011,14 +8013,16 @@ fn builtin_symbol(instance: &BuiltinInstance, module: &CheckedModule) -> String 
 }
 
 /// `canonical_type` spelled with LLVM identifier characters only: `->`, `[`, `]`, `,`, and the
-/// `+` of a dyn type's markers (A29) become `$A`, `$L`, `$R`, `$C`, and `$P`. The only `$` in a
-/// canonical type is inside the implicit union of a multi-case active pattern,
-/// `Main.Active$active$C$P$total$result` (`src/parse_control.rs`): it starts with `.Active$active$`
-/// after the module, ends with `$total$result`, and holds only uppercase case names between `$`s,
-/// none of the escaped characters. So a case named `C` or `P` reads back one way only, and the
-/// escapes keep the spelling injective. Like `canonical_type`, it spells the `codegen_identity`:
-/// a pure function type is `pure.fn$L...$R`, and the convention variants of a type share one
-/// symbol, as the `Builtins` keys share one instance.
+/// `+` of a dyn type's markers (A29) become `$A`, `$L`, `$R`, `$C`, and `$P`. A canonical type
+/// holds a `$` in two kinds of names only. One is the implicit union of a multi-case active
+/// pattern, `Main.Active$active$C$P$total$result` (`src/parse_control.rs`): it starts with
+/// `.Active$active$` after the module, ends with `$total$result`, and holds only uppercase case
+/// names between `$`s, none of the escaped characters. So a case named `C` or `P` reads back one
+/// way only. The other is the declaration behind an anonymous union (A24), `$anonymous.Union$2`
+/// to `$anonymous.Union$32`, where every `$` is followed by a lowercase letter or a digit, never
+/// by an escape letter. So the escapes keep the spelling injective. Like `canonical_type`, it
+/// spells the `codegen_identity`: a pure function type is `pure.fn$L...$R`, and the convention
+/// variants of a type share one symbol, as the `Builtins` keys share one instance.
 fn mangled_type(ty: &Type, module: &CheckedModule) -> String {
     canonical_type(ty, module)
         .replace("->", "$A")
@@ -10580,12 +10584,23 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
     fn canonical_types_are_injective_and_mangled_types_are_identifiers() {
         use crate::check::{DynType, FunctionParameters, ParameterConvention};
         use ParameterConvention::{Mut, Own, Read};
-        let module = analyze("record Box<'a> { value: 'a }\n0").unwrap();
+        // The anonymous union synthesizes its declarations (A24).
+        let module =
+            analyze("record Box<'a> { value: 'a }\ndef f :: (i64 | string) -> i64 = \\v -> 0\n0")
+                .unwrap();
         let record = module
             .records
             .iter()
             .position(|record| record.name == "Main.Box")
             .unwrap();
+        let anonymous = |members: Vec<Type>| {
+            let id = module
+                .unions
+                .iter()
+                .position(|union| union.name == format!("$anonymous.Union${}", members.len()))
+                .unwrap();
+            Type::Union(id, members.into())
+        };
         let function = |types: Vec<Type>, conventions: &[ParameterConvention], pure, result| {
             Type::Function(
                 Box::new(FunctionParameters {
@@ -10614,6 +10629,16 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             Type::Tuple(vec![Type::I64]),
             Type::Tuple(vec![Type::I64, Type::I64]),
         ];
+        for members in [
+            vec![Type::I64, Type::String],
+            vec![Type::I64, Type::Bool],
+            vec![Type::Bool, Type::I64],
+            vec![Type::I64, Type::Bool, Type::String],
+            vec![Type::Bool, Type::Record(record, vec![Type::I64].into())],
+            vec![Type::Tuple(vec![Type::I64, Type::I64]), Type::Unit],
+        ] {
+            leaves.push(anonymous(members));
+        }
         for length in [2, 3] {
             leaves.push(Type::FixedArray(
                 Box::new(Type::I64),
@@ -10703,6 +10728,11 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             }
         }
         assert!(distinct.len() > 500, "{} types", distinct.len());
+        // `$` in the synthesized names is followed by a lowercase letter or a digit (A24).
+        assert_eq!(
+            mangled_type(&anonymous(vec![Type::I64, Type::String]), &module),
+            "$anonymous.Union$2$Li64$Cstring$R"
+        );
         // Functions with the default purity keep their spelling.
         assert_eq!(
             canonical_type(&function(vec![Type::I64], &[], false, Type::I64), &module),

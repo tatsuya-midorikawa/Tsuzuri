@@ -327,6 +327,25 @@ pub struct Api {
     version: Option<Version>,
 }
 
+/// `text` with every type variable written `'_`: `Maybe<'t0>` and `Maybe<'t1>` give one key.
+fn blind_variables(text: &str) -> String {
+    let mut blind = String::with_capacity(text.len());
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        blind.push(character);
+        if character == '\'' {
+            blind.push('_');
+            while characters
+                .peek()
+                .is_some_and(|next| next.is_alphanumeric() || *next == '_')
+            {
+                characters.next();
+            }
+        }
+    }
+    blind
+}
+
 /// Renames type variables, regions and declared length parameters by their first appearance, so
 /// that two declarations that differ only in those names print the same; a renaming that is not
 /// `canonical` leaves every name as written. A name in a length position that no declaration
@@ -489,6 +508,7 @@ impl<'a> Renaming<'a> {
             Length(length) => Length(*length),
             List(inner) => List(Box::new(self.ty(inner))),
             Tuple(elements) => Tuple(elements.iter().map(|element| self.ty(element)).collect()),
+            AnonymousUnion(members) if self.canonical => AnonymousUnion(self.members(members)),
             AnonymousUnion(members) => {
                 AnonymousUnion(members.iter().map(|member| self.ty(member)).collect())
             }
@@ -515,6 +535,39 @@ impl<'a> Renaming<'a> {
             kind,
             span: ty.span,
         }
+    }
+
+    /// The members of an anonymous union as the comparison sees them (A24): the members of a
+    /// union written inside another are its own (`(i64 | (string | bool))`), and they come in one
+    /// order whatever order they were written in, so that reordering them is no change. The order
+    /// is that of each member's renamed text with its type variables blanked out, so it depends
+    /// neither on the names of the variables nor on where they first appear; the variables are
+    /// renamed afresh in that order. A type alias is not expanded (the syntactic comparison never
+    /// expands one), so `(Meters | string)` and `(f64 | string)` stay apart there.
+    fn members(&mut self, members: &[TypeExpr]) -> Box<[TypeExpr]> {
+        let mut flat = Vec::new();
+        let mut pending: Vec<&TypeExpr> = members.iter().rev().collect();
+        while let Some(member) = pending.pop() {
+            match &member.kind {
+                TypeExprKind::AnonymousUnion(inner) => pending.extend(inner.iter().rev()),
+                _ => flat.push(member),
+            }
+        }
+        let saved = (
+            self.variables.clone(),
+            self.regions.clone(),
+            self.lengths.clone(),
+        );
+        let mut keyed: Vec<(String, &TypeExpr)> = flat
+            .into_iter()
+            .map(|member| (blind_variables(&type_text(&self.ty(member))), member))
+            .collect();
+        (self.variables, self.regions, self.lengths) = saved;
+        keyed.sort_by(|left, right| left.0.cmp(&right.0));
+        keyed
+            .into_iter()
+            .map(|(_, member)| self.ty(member))
+            .collect()
     }
 
     fn constraint(&mut self, constraint: &ConstraintExpr) -> ConstraintExpr {

@@ -764,6 +764,21 @@ def font_size :: own (f64 | i64 | string) -> string = \size ->
 8. `src/explain/codes/E1041.md` は 1,500 字の上限に収めるため、任意の「See also」を省き、「What it covers」に kind をまとめて書きました。
 9. 手順 5 と手順 6 は、注入した値を読むのに型テストが要り、型テストの値を作るのに注入が要るので、実装を 1 つのコミットにし、型テストの専用のテストを次のコミットにしました。
 
+### 実装中の判断（手順 7〜10 と周辺）
+
+1. **witness の型（D7）**: `MatchCoverage::scrutinee` に対象の型（推論が終わる前の型）を持たせ、`check_coverage` で `resolve` します。witness は、参照を外したうえで union のペイロード（`union_payload`）・タプルの要素・レコードの置き換えたフィールド・リストのセル（要素とリスト）・配列の要素の型を辿ります。匿名共用体の case は `:? {要素}`（要素の表記は `anonymous_union::type_test_text`。`type_product` で読むので、純粋でない関数の要素は括弧で囲む）で、ペイロードは常にワイルドカードなので書きません。ペイロードの位置では括弧で囲みます（`Some (:? string)`）。レコードの witness（`{ value = :? string }`）は、従来どおり修正候補を書きません。
+2. **`:? _` の経路**: 型テストは対象の型が検査の時点で匿名共用体に決まっていることを求めるので、今のコンパイラでは、ソースから `:? _` に至る経路はありません。守りとして残し、規則そのものを `src/anonymous_union.rs` の単体テスト `unresolved_member_offers_no_fix`（要素が分からない・推論変数・誤った型を含むときは `None`、つまりメッセージは `:? _` で修正候補なし）で固定しました。
+3. **再帰のレイアウトの誤り**: `recursive.rs` が union を通るすべての循環をヒープのノードにするので、`Layouts::union` の `InfiniteRecursiveLayout` にはソースから至りません。文言を `recursive_union_layout` に切り出し、匿名共用体だけ `Type::display` で表示し（名前付きの union は従来どおり修飾名）、`src/check.rs` の単体テスト `recursive_layout_error_displays_members` で固定しました。
+4. **高カインドの単一化**: `higher_kinds::decompose` は宣言を見られない自由関数で、呼び出し元は `Inference::unify` の `Application` の腕だけです。そこで、腕の条件に「`types.unions.get(id)` が匿名共用体でない」を足し、`decompose` 自体は変えていません。名前付きの union の分解（`Functor<Main.P<string>>`）は変わりません。
+5. **型付き穴と候補**: `find.rs` の `build` の case のループの二重の守りは、`hidden(key)` ではなく `names.is_anonymous_union(id)` にしました（`__` を含む利用者の case 名や、`$` を含む能動パターンの暗黙の union の case の候補を変えないため）。`value_pool` のモジュールのループは計画どおり `hidden(key)` です（`names.modules` で `$` を含むのは `$anonymous` だけ）。
+6. **整形**: 型テストの `:` の位置は、パターンの開始位置からは決められません（括弧で囲んだパターンは span が `(` から始まる）。`Hints::type_test_patterns` にパターンの開始位置と型の開始位置を記録し、`print_tokens` が、その間にある、`?` と隣接した `:` を `Hints::type_tests` に集めます。空白の規則は計画の 3 つに加えて、ラムダの `\` の直後も空白なしにしました（既存の `\` の規則と同じ。`\:? i64 as n -> n`）。
+7. **api-diff**: 比較用の形で、書いた入れ子を平らにし、要素を「改名した型の表記の型変数を `'_` にした文字列」の順に並べ（安定な並べ替え）、その順で型変数を改名し直します。型変数の名前にも、最初に現れる位置にも順序が左右されません。構文モードは型別名を展開しないので、`(Meters | string)` と `(f64 | string)` は構文モードでは違う型、`--effective` では同じ型です（テストで固定。文書は手順 13）。
+8. **`tsuzuri find`**: 小さく足せたので、`src/kg/find.rs` に `Ty::Union` を足しました。要素は平らにし、`member_key`（型変数を `_`、名前を最後の区切りで表した表記）の順に並べます。型別名は展開しません（検索のほかの部分と同じ）。テストは単体の `find_reads_anonymous_unions` と CLI の `find_searches_anonymous_unions_in_any_order` です。
+9. **デバッグ情報**: `$tag` の列挙子と `$payload` のメンバーの名前を、匿名共用体では要素の `Type::display`（`i64`・`(i64 * string)`）にしました（`llvm_debug::case_names`。両者が同じ名前であることを `scripts/lldb` の `active_case` が使う）。`parts` は `is_union` でないときだけタプルとして展開します。修正前の台本では `Some(i64, {...})` と表示されることを、`tests/debugger.mjs` の新しい例が検出することを確かめました。
+10. **kg の id**: `kg/ids.rs` の `type_id_text` は、匿名共用体を宣言の id ではなく `(A | B)`（関数の要素は括弧で囲む）で書きます。`kg/layout.rs` の行は、`$anonymous` が graph のモジュールにないので出ません（計画の 35 のとおり）。
+11. **`warnings.rs` の `checked_type`**: 匿名共用体の具体化にも `Dependency::Type("$anonymous.Union$n")` を記録しますが、これは未使用の非公開の宣言の判定にだけ使い、`$anonymous` の宣言は利用者の宣言の一覧にないので、出力に現れません。変えていません。
+12. 手順 7 と手順 8 は別のコミットにし、T1 は両方を含む状態で 1 回走らせました（3037 passed、4 skipped）。
+
 ## 決定事項
 
 ### D1: 値の作り方（承認済み）
