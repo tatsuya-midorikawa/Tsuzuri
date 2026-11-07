@@ -349,6 +349,20 @@ impl Inference {
         Type::Infer(id)
     }
 
+    /// `ty` with the solved inference variables at its top followed, and nothing inside it
+    /// resolved: the injection hooks of anonymous unions look only at the head of an expected type,
+    /// so a program without them does no more work (A24).
+    pub(super) fn head<'t>(&'t self, ty: &'t Type) -> &'t Type {
+        let mut ty = ty;
+        while let Type::Infer(id) = ty {
+            match &self.solutions[*id] {
+                Some(solution) => ty = solution,
+                None => break,
+            }
+        }
+        ty
+    }
+
     pub fn resolve(&self, ty: &Type) -> Type {
         let mut ty = ty;
         while let Type::Infer(id) = ty {

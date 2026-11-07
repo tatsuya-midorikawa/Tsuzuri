@@ -323,16 +323,526 @@ pub(super) fn canonicalize(
 pub(super) fn display(members: &[Type], names: &dyn DeclarationNames) -> String {
     let members: Vec<String> = members
         .iter()
-        .map(|member| {
-            let text = member.display_with(names);
-            if matches!(member, Type::Function(parameters, _) if !parameters.pure) {
-                format!("({text})")
-            } else {
-                text
-            }
-        })
+        .map(|member| member_display(member, names))
         .collect();
     format!("({})", members.join(" | "))
+}
+
+/// One member as `display` writes it.
+fn member_display(member: &Type, names: &dyn DeclarationNames) -> String {
+    let text = member.display_with(names);
+    if matches!(member, Type::Function(parameters, _) if !parameters.pure) {
+        format!("({text})")
+    } else {
+        text
+    }
+}
+
+/// `the members are m1, m2, ...`, the help of the diagnostics that name a type outside a union.
+pub(super) fn members_help(members: &[Type], names: &dyn DeclarationNames) -> String {
+    let members: Vec<String> = members
+        .iter()
+        .map(|member| member_display(member, names))
+        .collect();
+    format!("the members are {}", members.join(", "))
+}
+
+/// The class of an unsuffixed number literal, which picks its member by itself (D4 rule 2).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LiteralClass {
+    Integer,
+    Float,
+}
+
+/// The class and the text of `expression` when it is an unsuffixed number literal, negated or not.
+/// `Checker::untyped_number` also answers for other unary operators, which this does not.
+fn literal_class(expression: &Expr) -> Option<(LiteralClass, String)> {
+    let (operand, sign) = match &expression.kind {
+        ExprKind::Unary(UnaryOp::Negate, operand) => (operand.as_ref(), "-"),
+        _ => (expression, ""),
+    };
+    match &operand.kind {
+        ExprKind::Integer(value, None) => Some((LiteralClass::Integer, format!("{sign}{value}"))),
+        ExprKind::Float(text, None) => Some((LiteralClass::Float, format!("{sign}{text}"))),
+        _ => None,
+    }
+}
+
+/// `Construct` of member `case` of the anonymous union `union` (`Some x` for a named union): the
+/// value is used once, then tagged.
+fn wrap(value: TypedExpr, union: &Type, case: usize) -> TypedExpr {
+    let Type::Union(union_id, _) = union else {
+        unreachable!("an anonymous union is a union type")
+    };
+    TypedExpr {
+        span: value.span,
+        ty: union.clone(),
+        kind: TypedExprKind::Construct {
+            union_id: *union_id,
+            case_id: case,
+            payload: Some(Box::new(value)),
+        },
+    }
+}
+
+/// The expressions that pass their expected type on to their arms, results or reports, so that
+/// each arm is injected by itself and nothing is wrapped twice (D4 rule 1). A hole reports the
+/// union; a dyn dispatch takes it as its result type.
+fn passes_expected_down(expression: &Expr) -> bool {
+    matches!(
+        expression.kind,
+        ExprKind::If { .. }
+            | ExprKind::Match { .. }
+            | ExprKind::Block { .. }
+            | ExprKind::ComputationBoundary(_)
+            | ExprKind::Select(_)
+            | ExprKind::Checked(_)
+            | ExprKind::Hole(_)
+            | ExprKind::DynDispatch { .. }
+    )
+}
+
+/// The injection of values into anonymous unions (D1, D4, D5). Every entry point first checks
+/// `names.anonymous_unions.is_empty()`, and the work is in functions of their own that are never
+/// inlined, so that a program without anonymous unions is checked exactly as before and the
+/// recursive frames of `Checker::expression` and `Checker::argument` do not grow.
+impl Checker<'_> {
+    /// Whether `ty`, followed through its solved inference variables only, is an anonymous union.
+    pub(super) fn anonymous_union_head(&self, ty: &Type) -> bool {
+        matches!(self.inference.head(ty), Type::Union(id, _) if self.names.is_anonymous_union(*id))
+    }
+
+    /// Whether `expected` is an anonymous union `U` or a shared reference `ref U` (a read
+    /// parameter), the two places where a value is injected into an argument.
+    pub(super) fn anonymous_union_parameter(&self, expected: &Type) -> bool {
+        match self.inference.head(expected) {
+            Type::Reference(inner, false) => self.anonymous_union_head(inner),
+            ty => self.anonymous_union_head(ty),
+        }
+    }
+
+    /// Whether `Checker::expression` injects `expression` into `expected`, which the caller has
+    /// found to be some type while anonymous unions exist.
+    pub(super) fn injects(&self, expression: &Expr, expected: &Type) -> bool {
+        self.anonymous_union_head(expected) && !passes_expected_down(expression)
+    }
+
+    /// `Checker::expression` of a value whose expected type is an anonymous union: the value of
+    /// `union_value`, unified with the expected type.
+    #[inline(never)]
+    pub(super) fn injected_expression(
+        &mut self,
+        expression: &Expr,
+        expected: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let union = self.inference.resolve(expected);
+        let value = self.union_value(expression, &union)?;
+        self.finish_expression(value.kind, value.ty, Some(&union), expression.span)
+    }
+
+    /// `Checker::argument` for a parameter of type `U` or `ref U`: the value of `union_value`,
+    /// borrowed by `coerce_argument` when the parameter reads it (as `f (Some x)` is). It runs
+    /// before every other kind of argument, so a call is checked without an expected type and
+    /// never waits with an argument hint (A27).
+    #[inline(never)]
+    pub(super) fn union_argument(
+        &mut self,
+        expression: &Expr,
+        expected: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let target = self.inference.resolve(expected);
+        let union = match &target {
+            Type::Reference(inner, false) => (**inner).clone(),
+            ty => ty.clone(),
+        };
+        let value = if passes_expected_down(expression) {
+            if !matches!(target, Type::Reference(..)) {
+                return self.expression(expression, Some(&target));
+            }
+            self.expression(expression, Some(&union))?
+        } else {
+            self.union_value(expression, &union)?
+        };
+        self.coerce_argument(value, &target)
+    }
+
+    /// The value of `expression` where the anonymous union `union` (resolved) is expected (D4
+    /// rules 2 and 3): a member that the expression's form picks is its expected type, otherwise
+    /// the expression is checked by itself and `conform_union` decides.
+    fn union_value(&mut self, expression: &Expr, union: &Type) -> Result<TypedExpr, Diagnostic> {
+        let Type::Union(_, members) = union else {
+            unreachable!("an anonymous union is a union type")
+        };
+        if let Some(case) = self.preselect(expression, union, members)? {
+            let value = self.expression(expression, Some(&members[case]))?;
+            return Ok(wrap(value, union, case));
+        }
+        let value = self.expression(expression, None)?;
+        self.conform_union(value, union)
+    }
+
+    /// The member that the form of `expression` picks (D4 rule 2): an unsuffixed number literal
+    /// takes the only integer member, else the bigint member, else the only floating-point member
+    /// (a float literal only the last); a lambda the only function member; `Dyn.of v` the only dyn
+    /// member; an array literal the only array or fixed-length array member; a list literal the
+    /// only list member; a tuple the only tuple member of its length. `None` when nothing or more
+    /// than one member fits the form, except that a literal that fits two members is an error.
+    fn preselect(
+        &mut self,
+        expression: &Expr,
+        union: &Type,
+        members: &[Type],
+    ) -> Result<Option<usize>, Diagnostic> {
+        if let Some((class, text)) = literal_class(expression) {
+            return self.literal_member(class, &text, union, members, expression.span);
+        }
+        let only = |fits: &dyn Fn(&Type) -> bool| {
+            let mut fitting = members
+                .iter()
+                .enumerate()
+                .filter(|(_, member)| fits(member));
+            match (fitting.next(), fitting.next()) {
+                (Some((case, _)), None) => Some(case),
+                _ => None,
+            }
+        };
+        Ok(match &expression.kind {
+            ExprKind::Lambda(..) => only(&|member| matches!(member, Type::Function(..))),
+            ExprKind::Call(callee, arguments)
+                if arguments.len() == 1 && self.names_dyn_of(callee) =>
+            {
+                only(&|member| matches!(member, Type::Dyn(_)))
+            }
+            ExprKind::Array(_) => {
+                only(&|member| matches!(member, Type::Array(_) | Type::FixedArray(..)))
+            }
+            ExprKind::List(_) => only(&|member| matches!(member, Type::List(_))),
+            ExprKind::NewLiteral(literal) => match literal.kind {
+                ExprKind::Array(_) => only(&|member| matches!(member, Type::Array(_))),
+                ExprKind::List(_) => only(&|member| matches!(member, Type::List(_))),
+                _ => None,
+            },
+            ExprKind::Tuple(values) => only(
+                &|member| matches!(member, Type::Tuple(elements) if elements.len() == values.len()),
+            ),
+            _ => None,
+        })
+    }
+
+    /// The member of an unsuffixed number literal: the integer members first, then a bigint
+    /// member, then the floating-point members (a float literal looks only at those). Two members
+    /// of the first group that has any is `anonymous_union_ambiguous_literal`: no member is a
+    /// default.
+    fn literal_member(
+        &self,
+        class: LiteralClass,
+        text: &str,
+        union: &Type,
+        members: &[Type],
+        span: Span,
+    ) -> Result<Option<usize>, Diagnostic> {
+        let groups: [&dyn Fn(&Type) -> bool; 3] = [
+            &|member| class == LiteralClass::Integer && matches!(member, Type::Integer(..)),
+            &|member| class == LiteralClass::Integer && self.is_bigint(member),
+            &|member| member.is_float(),
+        ];
+        for fits in groups {
+            let fitting: Vec<usize> = members
+                .iter()
+                .enumerate()
+                .filter(|(_, member)| fits(member))
+                .map(|(case, _)| case)
+                .collect();
+            match fitting.as_slice() {
+                [] => {}
+                [case] => return Ok(Some(*case)),
+                [first, second, ..] => {
+                    let first = member_display(&members[*first], &self.types);
+                    let second = member_display(&members[*second], &self.types);
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::AnonymousUnionAmbiguousLiteral,
+                        format!(
+                            "the literal {text} could be {first} or {second} in {}",
+                            union.display(&self.types)
+                        ),
+                        span,
+                    )
+                    .with_help(format!("add a suffix, for example {text}{first}")));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// The value `value`, checked without an expected type, where the anonymous union `union`
+    /// (resolved) is expected (D4 rule 3). An anonymous union, a reference to one, an erroneous
+    /// value and a value of an undetermined type that is no number literal are not wrapped: the
+    /// caller unifies them with the union or reborrows the reference. Any other value is wrapped
+    /// as the only member that its type may be (`may_member`).
+    #[inline(never)]
+    pub(super) fn conform_union(
+        &mut self,
+        mut value: TypedExpr,
+        union: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let Type::Union(_, members) = union else {
+            unreachable!("an anonymous union is a union type")
+        };
+        let found = self.inference.resolve(&value.ty);
+        match &found {
+            Type::Error => return Ok(value),
+            Type::Union(id, _) if self.names.is_anonymous_union(*id) => return Ok(value),
+            Type::Reference(inner, _) if self.anonymous_union_head(inner) => return Ok(value),
+            Type::Infer(_) if !self.inference.is_numeric_literal(&found) => {
+                // No information to decide by, so the value is the union: `let v: (i64 | string)
+                // = Parse.parse text` reads a union.
+                self.same(&found, union, value.span)?;
+                value.ty = union.clone();
+                return Ok(value);
+            }
+            _ => {}
+        }
+        if let Some((case, literal)) = self.retyped_literal(&value, union, members)? {
+            return Ok(wrap(literal, union, case));
+        }
+        // A member is never a reference: a borrowed value is read as the value it borrows, which
+        // the union then owns (a move out of the borrow, as in `Some s`, D10).
+        let value = if matches!(found, Type::Reference(..)) {
+            Self::autoderef(value)
+        } else {
+            value
+        };
+        let found = self.inference.resolve(&value.ty);
+        let candidates: Vec<usize> = members
+            .iter()
+            .enumerate()
+            .filter(|(_, member)| self.may_member(&found, member))
+            .map(|(case, _)| case)
+            .collect();
+        match candidates.as_slice() {
+            [case] => {
+                let span = value.span;
+                let value =
+                    self.finish_expression(value.kind, value.ty, Some(&members[*case]), span)?;
+                Ok(wrap(value, union, *case))
+            }
+            [] => {
+                let expected = union.display(&self.types);
+                // A number literal is named by the type that it takes when nothing decides it.
+                let found = self
+                    .inference
+                    .numeric_default(&found)
+                    .unwrap_or(found)
+                    .display(&self.types);
+                Err(Diagnostic::of(
+                    DiagnosticKind::AnonymousUnionNotMember,
+                    format!(
+                        "expected {expected}, found {found}; {found} is not a member of the anonymous union"
+                    ),
+                    value.span,
+                )
+                .expected_found(expected, found)
+                .with_help(members_help(members, &self.types)))
+            }
+            [first, second, ..] => Err(Diagnostic::of(
+                DiagnosticKind::AnonymousUnionAmbiguousMember,
+                format!(
+                    "this {} could be {} or {} in {}",
+                    if self.inference.is_numeric_literal(&found) {
+                        "number".to_owned()
+                    } else {
+                        format!("value of type {}", found.display(&self.types))
+                    },
+                    member_display(&members[*first], &self.types),
+                    member_display(&members[*second], &self.types),
+                    union.display(&self.types)
+                ),
+                value.span,
+            )
+            .with_help("annotate the value, for example with a typed let binding")),
+        }
+    }
+
+    /// A number literal that was checked before the union was known (`1 |> f`), checked again
+    /// as the member that `literal_member` picks, as `let v: U = 1` would check it. The literal's
+    /// own open type is left to its default and serves nothing.
+    fn retyped_literal(
+        &mut self,
+        value: &TypedExpr,
+        union: &Type,
+        members: &[Type],
+    ) -> Result<Option<(usize, TypedExpr)>, Diagnostic> {
+        if !self.inference.is_numeric_literal(&value.ty) {
+            return Ok(None);
+        }
+        let span = value.span;
+        let (class, text, negative, operand) = match &value.kind {
+            TypedExprKind::GenericInteger(magnitude, negative) => (
+                LiteralClass::Integer,
+                format!("{}{magnitude}", if *negative { "-" } else { "" }),
+                *negative,
+                value,
+            ),
+            TypedExprKind::GenericFloat(text) => (LiteralClass::Float, text.clone(), false, value),
+            TypedExprKind::Unary(UnaryOp::Negate, operand)
+                if matches!(operand.kind, TypedExprKind::GenericFloat(_)) =>
+            {
+                let TypedExprKind::GenericFloat(text) = &operand.kind else {
+                    unreachable!()
+                };
+                (LiteralClass::Float, format!("-{text}"), true, &**operand)
+            }
+            _ => return Ok(None),
+        };
+        let Some(case) = self.literal_member(class, &text, union, members, span)? else {
+            return Ok(None);
+        };
+        let member = &members[case];
+        let literal = match &operand.kind {
+            TypedExprKind::GenericInteger(magnitude, _) => {
+                let (kind, ty) = self.integer(*magnitude, None, Some(member), negative, span)?;
+                TypedExpr { kind, ty, span }
+            }
+            TypedExprKind::GenericFloat(text) => {
+                let float = TypedExpr {
+                    kind: TypedExprKind::Float(crate::numeric::float_literal(text, member, span)?),
+                    ty: member.clone(),
+                    span: operand.span,
+                };
+                if negative {
+                    TypedExpr {
+                        kind: TypedExprKind::Unary(UnaryOp::Negate, Box::new(float)),
+                        ty: member.clone(),
+                        span,
+                    }
+                } else {
+                    float
+                }
+            }
+            _ => unreachable!("a number literal"),
+        };
+        Ok(Some((case, literal)))
+    }
+
+    /// `coerce_argument` for a parameter of type `U` or `ref U`: a value that is not already the
+    /// union, a reference to it, or of an undetermined type goes through `conform_union` (a
+    /// piped value, which was checked before the parameter was known). An undetermined type that
+    /// is no number literal becomes the union, which the reference then borrows.
+    #[inline(never)]
+    pub(super) fn conform_argument(
+        &mut self,
+        mut value: TypedExpr,
+        expected: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let union = match self.inference.resolve(expected) {
+            Type::Reference(inner, _) => *inner,
+            ty => ty,
+        };
+        let found = self.inference.resolve(&value.ty);
+        match &found {
+            Type::Error => Ok(value),
+            Type::Union(id, _) if self.names.is_anonymous_union(*id) => Ok(value),
+            Type::Reference(inner, _) if self.anonymous_union_head(inner) => Ok(value),
+            Type::Infer(_) if !self.inference.is_numeric_literal(&found) => {
+                self.same(&found, &union, value.span)?;
+                value.ty = union;
+                Ok(value)
+            }
+            _ => self.conform_union(value, &union),
+        }
+    }
+
+    /// `apply_piped` for a parameter of type `U` or `ref U`: the piped value's type is unified
+    /// before the call's arguments only when it is the union, a reference to it (the usual
+    /// hint), or undetermined and no number literal (the union itself). Any other value is
+    /// injected by `coerce_argument` once the call is complete (`None` asks for the usual hint).
+    #[inline(never)]
+    pub(super) fn piped_into_union(
+        &mut self,
+        piped: &Type,
+        parameter: &Type,
+        span: Span,
+    ) -> Option<Result<(), Diagnostic>> {
+        let found = self.inference.resolve(piped);
+        match &found {
+            Type::Union(id, _) if self.names.is_anonymous_union(*id) => None,
+            Type::Reference(inner, _) if self.anonymous_union_head(inner) => None,
+            Type::Infer(_) if !self.inference.is_numeric_literal(&found) => {
+                let union = match self.inference.resolve(parameter) {
+                    Type::Reference(inner, _) => *inner,
+                    ty => ty,
+                };
+                Some(self.same(&found, &union, span))
+            }
+            _ => Some(Ok(())),
+        }
+    }
+
+    /// Whether a value of type `found` may be the member `member` (D5): the types agree except
+    /// where an inference variable stands, and the open type of a number literal agrees only with
+    /// number types. Function types agree on their parameter count, parameters and result, not on
+    /// conventions or purity, which `finish_expression` adapts. Class constraints are not
+    /// consulted.
+    pub(super) fn may_member(&self, found: &Type, member: &Type) -> bool {
+        let found = self.inference.head(found);
+        let member = self.inference.head(member);
+        if found == member {
+            return true;
+        }
+        let all = |left: &[Type], right: &[Type]| {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| self.may_member(left, right))
+        };
+        match (found, member) {
+            (Type::Error, _) | (_, Type::Error) => true,
+            (Type::Infer(_), other) | (other, Type::Infer(_)) => {
+                let variable = if matches!(found, Type::Infer(_)) {
+                    found
+                } else {
+                    member
+                };
+                !self.inference.is_numeric_literal(variable)
+                    || matches!(
+                        other,
+                        Type::Integer(..) | Type::Binary(_) | Type::Decimal(_) | Type::Infer(_)
+                    )
+                    || self.is_bigint(other)
+            }
+            (Type::Application(..) | Type::Partial(_), _)
+            | (_, Type::Application(..) | Type::Partial(_)) => true,
+            (Type::Record(id, arguments), Type::Record(other, other_arguments))
+            | (Type::Union(id, arguments), Type::Union(other, other_arguments)) => {
+                id == other && all(arguments, other_arguments)
+            }
+            (Type::Array(element), Type::Array(other))
+            | (Type::ArrayView(element), Type::ArrayView(other))
+            | (Type::List(element), Type::List(other))
+            | (Type::Vec(element), Type::Vec(other))
+            | (Type::Once(element), Type::Once(other)) => self.may_member(element, other),
+            (Type::FixedArray(element, length), Type::FixedArray(other, other_length)) => {
+                self.may_member(element, other) && self.may_member(length, other_length)
+            }
+            (Type::Tuple(elements), Type::Tuple(others)) => all(elements, others),
+            (Type::Function(parameters, result), Type::Function(others, other_result)) => {
+                parameters.len() == others.len()
+                    && parameters
+                        .iter()
+                        .zip(others.iter())
+                        .all(|(left, right)| self.may_member(left, right))
+                    && self.may_member(result, other_result)
+            }
+            (Type::Reference(target, mutable), Type::Reference(other, other_mutable)) => {
+                mutable == other_mutable && self.may_member(target, other)
+            }
+            (Type::Shared(value, kind), Type::Shared(other, other_kind)) => {
+                kind == other_kind && self.may_member(value, other)
+            }
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]

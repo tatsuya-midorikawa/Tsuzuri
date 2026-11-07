@@ -690,7 +690,9 @@ impl Checker<'_> {
                 )));
                 coverage
             }
-            PatternKind::TypeTest(..) => todo!("A24 step 6: type test patterns"),
+            PatternKind::TypeTest(tested, binder) => {
+                return self.type_test_pattern(pattern, tested, binder.as_ref(), matched);
+            }
             PatternKind::Annotated(inner, annotation) => {
                 let ty = self.annotation(annotation)?;
                 self.same(&matched.ty, &ty, pattern.span)?;
@@ -958,10 +960,24 @@ impl Checker<'_> {
                 ));
             }
         };
+        self.union_case_pattern(name.span, union_id, case_id, payload, matched)
+    }
+
+    /// The tag test of case `case_id` of union `union_id` on the matched value (dereferenced),
+    /// and the payload projection matched against `payload`: the shared part of a case pattern
+    /// and a type test `:? T` (A24). `span` locates the test.
+    fn union_case_pattern(
+        &mut self,
+        span: Span,
+        union_id: usize,
+        case_id: usize,
+        payload: Option<&Pattern>,
+        matched: TypedExpr,
+    ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
         let mut matched = Self::autoderef(matched);
         let arity = self.types.unions[union_id].parameters.len();
         let args: Box<[Type]> = (0..arity).map(|_| self.inference.fresh()).collect();
-        self.same(&matched.ty, &Type::Union(union_id, args), name.span)?;
+        self.same(&matched.ty, &Type::Union(union_id, args), span)?;
         matched.ty = self.inference.resolve(&matched.ty);
         let tag = Type::Integer(32, true);
         let test = value(
@@ -970,12 +986,12 @@ impl Checker<'_> {
                 Box::new(value(
                     TypedExprKind::UnionTag(Box::new(matched.clone())),
                     tag.clone(),
-                    name.span,
+                    span,
                 )),
-                Box::new(value(TypedExprKind::Int(case_id as u128), tag, name.span)),
+                Box::new(value(TypedExprKind::Int(case_id as u128), tag, span)),
             ),
             Type::Bool,
-            name.span,
+            span,
         );
         let alternatives = vec![Alternative {
             steps: vec![PatternStep::Test(test)],
@@ -1005,6 +1021,120 @@ impl Checker<'_> {
             combine(alternatives, next, pattern.span)?,
             CoveragePat::Constructor(case, vec![coverage]),
         ))
+    }
+
+    /// A type test `:? T [as x]` (A24): the case of member `T` of the matched anonymous union
+    /// (dereferenced), whose payload `as x` binds as a case payload does. The matched type must
+    /// be known to be an anonymous union when the pattern is checked, and `T`, resolved as a type
+    /// annotation of the body, one of its members.
+    #[inline(never)]
+    fn type_test_pattern(
+        &mut self,
+        pattern: &Pattern,
+        tested: &TypeExpr,
+        binder: Option<&Ident>,
+        matched: TypedExpr,
+    ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
+        // The `:?` that starts the pattern.
+        let marker = Span {
+            end: pattern.span.start + 2,
+            ..pattern.span
+        };
+        let mut target = self.inference.resolve(&Self::autoderef(matched.clone()).ty);
+        // A number literal takes a number type, never an anonymous union: it is named by the type
+        // it takes when nothing else decides it.
+        if let Some(default) = self.inference.numeric_default(&target) {
+            target = default;
+        }
+        let (union_id, members) = match &target {
+            Type::Union(id, members) if self.names.is_anonymous_union(*id) => (*id, members),
+            Type::Error => {
+                return Ok((
+                    vec![Alternative {
+                        steps: vec![PatternStep::Test(TypedExpr::error(pattern.span))],
+                        bindings: Vec::new(),
+                    }],
+                    CoveragePat::Opaque,
+                ));
+            }
+            Type::Infer(_) => {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TypeTestUnknownScrutinee,
+                    "the type of the matched value must be known to use ':?'",
+                    marker,
+                )
+                .with_help("annotate the parameter or binding with its anonymous union type"));
+            }
+            other => {
+                let error = Diagnostic::of(
+                    DiagnosticKind::TypeTestNotAnonymousUnion,
+                    format!(
+                        "':?' tests a member of an anonymous union, but the matched value has type {}",
+                        other.display(&self.types)
+                    ),
+                    marker,
+                );
+                // The help fits a named union only.
+                return Err(if matches!(other, Type::Union(..)) {
+                    error.with_help("match the cases of a named union by name")
+                } else {
+                    error
+                });
+            }
+        };
+        let ty = self.annotation(tested)?;
+        let ty = self.inference.resolve(&ty);
+        if matches!(&ty, Type::Union(id, _) if self.names.is_anonymous_union(*id)) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::TypeTestUnion,
+                format!(
+                    "':?' names one member of {}; write one ':?' arm for each member",
+                    target.display(&self.types)
+                ),
+                tested.span,
+            ));
+        }
+        let case = match members.iter().position(|member| *member == ty) {
+            Some(case) => Some(case),
+            // A member that still holds an inference variable: the only one that may be `T`.
+            None => {
+                let fitting: Vec<usize> = members
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, member)| self.may_member(&ty, member))
+                    .map(|(case, _)| case)
+                    .collect();
+                match fitting.as_slice() {
+                    [case] => {
+                        self.same(&members[*case], &ty, tested.span)?;
+                        Some(*case)
+                    }
+                    _ => None,
+                }
+            }
+        };
+        let Some(case) = case else {
+            return Err(Diagnostic::of(
+                DiagnosticKind::TypeTestNotMember,
+                format!(
+                    "{} is not a member of {}",
+                    ty.display(&self.types),
+                    target.display(&self.types)
+                ),
+                tested.span,
+            )
+            .with_help(anonymous_union::members_help(members, &self.types)));
+        };
+        // The payload: the binder, or a wildcard (a type test covers the whole member).
+        let payload = Pattern {
+            kind: match binder {
+                Some(name) if name.text != "_" => PatternKind::Binding(name.clone()),
+                _ => PatternKind::Wildcard,
+            },
+            span: binder.map_or(pattern.span, |name| name.span),
+            depth: pattern.depth,
+        };
+        self.union_case_pattern(pattern.span, union_id, case, Some(&payload), matched)
     }
 
     fn active_recognizer(&self, name: &Ident) -> Result<Option<(usize, ActiveCase)>, Diagnostic> {

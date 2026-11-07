@@ -202,6 +202,7 @@ diagnostic_kinds! {
         (UnknownValue, "unknown_value", "E1002"),
         // E1003
         (ActiveRecognizerResult, "active_recognizer_result", "E1003"),
+        (AnonymousUnionNotMember, "anonymous_union_not_member", "E1003"),
         (FixedArrayLiteralLength, "fixed_array_literal_length", "E1003"),
         (FormatSpecTypeMismatch, "format_spec_type_mismatch", "E1003"),
         (FormatSpecTypeUnknown, "format_spec_type_unknown", "E1003"),
@@ -687,9 +688,15 @@ diagnostic_kinds! {
         (RemovedTaskType, "removed_task_type", "E1040"),
         (RenamedToDataChannel, "renamed_to_data_channel", "E1040"),
         // E1041
+        (AnonymousUnionAmbiguousLiteral, "anonymous_union_ambiguous_literal", "E1041"),
+        (AnonymousUnionAmbiguousMember, "anonymous_union_ambiguous_member", "E1041"),
         (AnonymousUnionDuplicateMember, "anonymous_union_duplicate_member", "E1041"),
         (AnonymousUnionIndistinctMembers, "anonymous_union_indistinct_members", "E1041"),
         (AnonymousUnionTypeVariable, "anonymous_union_type_variable", "E1041"),
+        (TypeTestNotAnonymousUnion, "type_test_not_anonymous_union", "E1041"),
+        (TypeTestNotMember, "type_test_not_member", "E1041"),
+        (TypeTestUnion, "type_test_union", "E1041"),
+        (TypeTestUnknownScrutinee, "type_test_unknown_scrutinee", "E1041"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),
         (AuditUsage, "audit_usage", "E2000"),

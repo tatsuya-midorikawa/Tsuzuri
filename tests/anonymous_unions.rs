@@ -1,10 +1,11 @@
 //! Anonymous unions `(A | B)` and type test patterns `:? T` (A24).
 
-use tsuzuri::check::Type;
+use tsuzuri::check::{CheckedModule, Type};
 use tsuzuri::diagnostic::Diagnostic;
+use tsuzuri::driver::{Target, TestOptions, run_tests};
 use tsuzuri::parser::{parse, parse_with_source};
 use tsuzuri::syntax::{Edition, Program, TypeExpr, TypeExprKind};
-use tsuzuri::{analyze, analyze_modules, llvm};
+use tsuzuri::{analyze, analyze_modules, analyze_with_edition, llvm};
 
 /// The type as written, with every anonymous union and its members spelled out, so that a test
 /// reads the parse tree without the checker.
@@ -682,4 +683,519 @@ fn inline_constraints_inside_members_are_kept() {
         "E1005",
         "no_instance",
     );
+}
+
+// Step 5: values injected where an anonymous union is expected.
+
+/// Checks `source` in `edition`, which decides the parameter conventions (`analyze` is 2026).
+fn accepts_in(source: &str, edition: Edition) -> CheckedModule {
+    analyze_with_edition(source, edition)
+        .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message))
+}
+
+fn rejects_in(source: &str, edition: Edition, code: &str, kind: &str) -> Diagnostic {
+    let error = analyze_with_edition(source, edition).expect_err(source);
+    assert_eq!(error.code, code, "{source}\n{}", error.message);
+    assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
+    error
+}
+
+/// How often a test runs before a timeout counts, as in `tests/array_fsharp.rs`.
+const ATTEMPTS: usize = 3;
+
+/// Each test of `module` with its failure, run for `target` at `optimization`; a test that timed
+/// out runs again, up to `ATTEMPTS` times in all.
+fn results(
+    module: &CheckedModule,
+    target: Target,
+    optimization: u8,
+) -> Vec<(String, Option<String>)> {
+    let mut results = Vec::new();
+    for _ in 0..ATTEMPTS {
+        results = run_tests(
+            module,
+            &TestOptions {
+                target,
+                optimization,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message))
+        .results
+        .into_iter()
+        .map(|result| (result.case.name, result.failure))
+        .collect();
+        if !results.iter().any(|(_, failure)| {
+            failure
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("timed out"))
+        }) {
+            break;
+        }
+    }
+    results
+}
+
+/// Runs the tests of `source` (checked in `edition`) natively and on WASM at -O0 and -O3, and
+/// fails for any test that does not pass.
+fn passes(source: &str, edition: Edition) {
+    let module = accepts_in(source, edition);
+    let expected = source
+        .lines()
+        .filter(|line| line.starts_with("test \""))
+        .count();
+    for target in [Target::Native, Target::Wasm32] {
+        for optimization in [0, 3] {
+            let results = results(&module, target, optimization);
+            assert_eq!(results.len(), expected, "{target:?} -O{optimization}");
+            let failed: Vec<_> = results
+                .iter()
+                .filter_map(|(name, failure)| {
+                    failure.as_ref().map(|reason| format!("{name}: {reason}"))
+                })
+                .collect();
+            assert!(
+                failed.is_empty(),
+                "{target:?} -O{optimization}: {failed:?}\n{source}"
+            );
+        }
+    }
+}
+
+/// Runs the tests of `source` natively at -O0 and -O3 and fails for any test that does not trap.
+fn traps(source: &str, edition: Edition) {
+    let module = accepts_in(source, edition);
+    for optimization in [0, 3] {
+        let results = results(&module, Target::Native, optimization);
+        assert!(!results.is_empty());
+        for (name, failure) in results {
+            let reason = failure.unwrap_or_else(|| panic!("-O{optimization}: {name} did not trap"));
+            assert!(
+                !reason.starts_with("timed out"),
+                "-O{optimization}: {name}: {reason}"
+            );
+        }
+    }
+}
+
+/// `count`: a number for every member of `(i64 | string | bool)`, to read a value back.
+const COUNT: &str = "def count :: (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n    | :? bool as b -> if b then 1 else 0\n";
+
+#[test]
+fn injects_at_annotated_bindings() {
+    // The binding has the union type, in any member order.
+    let error = rejects(
+        "let v: (i64 | string) = 42\nlet x: bool = v\nx\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected bool, found (i64 | string)");
+    passes(
+        &format!(
+            "{COUNT}test \"bindings\" =\n    let v: (i64 | string | bool) = 42\n    let w: (bool | string | i64) = v\n    let t: (string | bool | i64) = \"abc\"\n    let b: (bool | i64 | string) = true\n    let n: (i64 | string | bool) = -7\n    assert (count w == 42)\n    assert (count t == 3)\n    assert (count b == 1)\n    assert (count n == -7)\n"
+        ),
+        Edition::E2026,
+    );
+    let error = rejects(
+        "let v: (i64 | string) = true\n0\n",
+        "E1003",
+        "anonymous_union_not_member",
+    );
+    assert_eq!(
+        error.message,
+        "expected (i64 | string), found bool; bool is not a member of the anonymous union"
+    );
+    assert_eq!(error.help.as_deref(), Some("the members are i64, string"));
+    assert_eq!(error.detail.expected.as_deref(), Some("(i64 | string)"));
+    assert_eq!(error.detail.found.as_deref(), Some("bool"));
+    // A suffixed literal has its type: `16i32` is no member of `(i64 | string)`.
+    let error = rejects(
+        "let v: (i64 | string) = 16i32\n0\n",
+        "E1003",
+        "anonymous_union_not_member",
+    );
+    assert_eq!(
+        error.message,
+        "expected (i64 | string), found i32; i32 is not a member of the anonymous union"
+    );
+    // A number literal without a number member is named by its default type.
+    let error = rejects(
+        "let v: (bool | string) = 3\n0\n",
+        "E1003",
+        "anonymous_union_not_member",
+    );
+    assert_eq!(
+        error.message,
+        "expected (bool | string), found i32; i32 is not a member of the anonymous union"
+    );
+}
+
+#[test]
+fn injects_branches() {
+    passes(
+        &format!(
+            "{COUNT}def pick :: i64 -> (i64 | string | bool) = \\x ->\n    if x > 0 then x else if x == 0 then \"zero\" else true\n\ndef choose :: i64 -> (string | bool | i64) = \\x ->\n    match x with\n    | 1 -> \"one\"\n    | 2 ->\n        let y = x * 10\n        y\n    | _ -> false\n\ntest \"branches\" =\n    assert (count (pick 5) == 5)\n    assert (count (pick 0) == 4)\n    assert (count (pick (-3)) == 1)\n    assert (count (choose 1) == 3)\n    assert (count (choose 2) == 20)\n    assert (count (choose 9) == 0)\n    let v: (i64 | string | bool) = if count (pick 1) > 0 then 1 else \"x\"\n    assert (count v == 1)\n"
+        ),
+        Edition::E2026,
+    );
+}
+
+/// `measure`: `count` for `(i64 | string)` with an owned parameter in every edition.
+const MEASURE: &str = "def measure :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n";
+
+#[test]
+fn injects_call_arguments_and_pipes() {
+    // 1 + 1 + 4 + (-2) + 30 + 3 = 37, by hand.
+    let program = format!(
+        "{MEASURE}test \"arguments and pipes\" =\n    let name = \"abcd\"\n    let total = (\"x\" |> measure) + (1 |> measure) + (name |> measure) + (-2 |> measure) + measure 30 + measure \"abc\"\n    assert (total == 37)\n"
+    );
+    passes(&program, Edition::E2026);
+    passes(&program, Edition::E2027);
+    // A read parameter (2027) takes the union as a temporary, from a pipe as from an argument.
+    let read = "def size :: (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n";
+    passes(
+        &format!(
+            "{read}test \"read\" =\n    let name = \"abcd\"\n    let total = (\"x\" |> size) + (1 |> size) + (name |> size) + size 30 + size 1\n    assert (total == 37)\n"
+        ),
+        Edition::E2027,
+    );
+    // The piped value is checked before the parameter is known; a literal is still read as
+    // its member, and two integer members are still ambiguous.
+    passes(
+        "def half :: own (f64 | string) -> f64 = \\v ->\n    match v with\n    | :? f64 as x -> x / 2.0\n    | :? string -> 0.0\n\ntest \"float\" =\n    assert ((3 |> half) == 1.5)\n    assert ((-3 |> half) == -1.5)\n    assert ((5.0 |> half) == 2.5)\n",
+        Edition::E2026,
+    );
+    let error = rejects(
+        "def f :: own (i32 | i64) -> i64 = \\v -> 0\nlet x = 16 |> f\nx\n",
+        "E1041",
+        "anonymous_union_ambiguous_literal",
+    );
+    assert_eq!(
+        error.message,
+        "the literal 16 could be i32 or i64 in (i32 | i64)"
+    );
+    // A value of an undetermined type is the union itself: the lambda's parameter here.
+    passes(
+        &format!(
+            "{MEASURE}test \"open\" =\n    let forward = \\x -> measure x\n    let piped = \\x -> x |> measure\n    assert (forward \"abc\" + forward 1 + piped 2 + piped \"z\" == 7)\n"
+        ),
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn injects_read_parameters() {
+    // A read parameter (2027) of a union type is `ref (i64 | string)`: the injected value is a
+    // temporary that the call borrows, as `f (Some x)`.
+    let read = "def size :: (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n";
+    passes(
+        &format!(
+            "{read}def pick :: own bool -> i64 = \\c -> size (if c then 40 else \"ab\")\n\ntest \"read\" =\n    assert (size 41 == 41)\n    assert (size \"abc\" == 3)\n    assert (pick true + pick false == 42)\n    let owned = \"xyz\"\n    assert (size owned == 3)\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn injects_array_elements() {
+    passes(
+        &format!(
+            "{COUNT}test \"elements\" =\n    let items: [(i64 | string | bool)] = [1, \"two\", true, -4]\n    let mut total = 0\n    for item in items do\n        total = total + (match item with\n            | :? i64 as n -> n\n            | :? string as s -> s.length\n            | :? bool as b -> if b then 1 else 0)\n    assert (total == 1)\n    let list: [|(i64 | string)|] = [|5, \"abc\"|]\n    assert (List.length list == 2)\n    let wrapped: Maybe<(i64 | string)> = Some 1\n    let pair: ((i64 | string) * (bool | string)) = (2, \"x\")\n    assert (match wrapped with\n        | Some (:? i64 as n) -> n == 1\n        | _ -> false)\n    assert (match pair with\n        | (:? i64 as n, :? string as s) -> n + s.length == 3\n        | _ -> false)\n"
+        ),
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn injects_records_and_generic_constructors() {
+    passes(
+        "record Pair<'a> { left: 'a, right: i64 }\nrecord Cell { value: (i64 | string) }\nunion Shape = Dot | Text of (string | char)\n\ntest \"constructors\" =\n    let none: (Maybe<i64> | string) = None\n    let some: (Maybe<i64> | Maybe<string>) = Some 1\n    let text: (Maybe<i64> | Maybe<string>) = Some \"abc\"\n    let pair: (Pair<string> | i64) = Pair { left: \"x\", right: 2 }\n    let cell = Cell { value: 40 }\n    let shape = Text 'c'\n    assert (match none with\n        | :? Maybe<i64> as m -> (match m with | Some _ -> false | None -> true)\n        | :? string -> false)\n    assert (match some with\n        | :? Maybe<i64> as m -> (match m with | Some n -> n == 1 | None -> false)\n        | :? Maybe<string> -> false)\n    assert (match text with\n        | :? Maybe<string> as m -> (match m with | Some s -> s.length == 3 | None -> false)\n        | :? Maybe<i64> -> false)\n    assert (match (pair, cell.value) with\n        | (:? Pair<string> as p, :? i64 as n) -> p.right + n == 42\n        | _ -> false)\n    assert (match shape with\n        | Text (:? char) -> true\n        | _ -> false)\n",
+        Edition::E2026,
+    );
+    // `None` may be either `Maybe`.
+    let error = rejects(
+        "let v: (Maybe<i64> | Maybe<string>) = None\n0\n",
+        "E1041",
+        "anonymous_union_ambiguous_member",
+    );
+    assert_eq!(
+        error.message,
+        "this value of type Maybe<an undetermined type> could be Maybe<i64> or Maybe<string> in (Maybe<i64> | Maybe<string>)"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("annotate the value, for example with a typed let binding")
+    );
+    // A number expression that is no literal may be either integer.
+    let error = rejects(
+        "let v: (i32 | i64 | string) = 1 + 2\n0\n",
+        "E1041",
+        "anonymous_union_ambiguous_member",
+    );
+    assert_eq!(
+        error.message,
+        "this number could be i32 or i64 in (i32 | i64 | string)"
+    );
+}
+
+#[test]
+fn literal_rules() {
+    passes(
+        "test \"literals\" =\n    let float: (f64 | string) = 2\n    let negative: (f64 | string) = -2\n    let integer: (i64 | f64) = 2\n    let fraction: (i64 | f64) = 2.5\n    let small: (i8u | string) = 255\n    assert (match float with | :? f64 as x -> x == 2.0 | :? string -> false)\n    assert (match negative with | :? f64 as x -> x == -2.0 | :? string -> false)\n    assert (match integer with | :? i64 as n -> n == 2 | :? f64 -> false)\n    assert (match fraction with | :? f64 as x -> x == 2.5 | :? i64 -> false)\n    assert (match small with | :? i8u as n -> n == 255i8u | :? string -> false)\n",
+        Edition::E2026,
+    );
+    // A bigint member takes an integer literal when no integer member does.
+    passes(
+        "test \"bigint\" =\n    let big: (bigint | string) = 5\n    assert (match big with | :? bigint as b -> (match BigInt.to_i64 (ref b) with | Some n -> n == 5 | None -> false) | :? string -> false)\n",
+        Edition::E2026,
+    );
+    let error = rejects(
+        "let v: (i32 | i64 | string) = 16\n0\n",
+        "E1041",
+        "anonymous_union_ambiguous_literal",
+    );
+    assert_eq!(
+        error.message,
+        "the literal 16 could be i32 or i64 in (i32 | i64 | string)"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("add a suffix, for example 16i32")
+    );
+    assert_eq!((error.span.start, error.span.end), (30, 32));
+    let error = rejects(
+        "let v: (f32 | f64 | string) = -1.5\n0\n",
+        "E1041",
+        "anonymous_union_ambiguous_literal",
+    );
+    assert_eq!(
+        error.message,
+        "the literal -1.5 could be f32 or f64 in (f32 | f64 | string)"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("add a suffix, for example -1.5f32")
+    );
+    // Two floating-point members only: an integer literal is ambiguous there too.
+    rejects(
+        "let v: (f32 | f64) = 2\n0\n",
+        "E1041",
+        "anonymous_union_ambiguous_literal",
+    );
+    // A suffix decides, and the picked member keeps its range check.
+    accepts("let v: (i32 | i64 | string) = 16i64\nlet w: (i32 | i64 | string) = 16i32\n0\n");
+    rejects(
+        "let v: (i8u | string) = -1\n0\n",
+        "E1009",
+        "integer_literal_out_of_range",
+    );
+}
+
+#[test]
+fn lambda_takes_the_only_function_member() {
+    passes(
+        "def apply :: own ((i64 -> i64) | i64) -> i64 = \\f ->\n    match f with\n    | :? (i64 -> i64) as g -> g 40\n    | :? i64 as n -> n\n\ntest \"lambda\" =\n    assert (apply (\\x -> x + 2) == 42)\n    let f: ((i64 -> i64) | string) = \\x -> x * 2\n    assert (match f with | :? (i64 -> i64) as g -> g 21 == 42 | :? string -> false)\n    let inc = \\(x: i64) -> x + 1\n    assert (apply inc == 41)\n    assert (apply 7 == 7)\n",
+        Edition::E2026,
+    );
+    // Two function members of one parameter: the lambda's parameter decides, or nothing does.
+    accepts("let f: ((i64 -> i64) | (string -> i64)) = \\(s: string) -> s.length\n0\n");
+    rejects(
+        "let f: ((i64 -> i64) | (string -> i64)) = \\x -> 0\n0\n",
+        "E1041",
+        "anonymous_union_ambiguous_member",
+    );
+}
+
+#[test]
+fn dyn_of_takes_the_only_dyn_member() {
+    let class = "class Plain<'a> { def plain :: ref 'a -> i64 }\nrecord Point { x: i64 }\ninstance Plain<Point> { fn plain p = p.x }\n";
+    let ir = accepts(&format!(
+        "{class}def make :: i64 -> (dyn Plain | string) = \\x -> Dyn.of (Point {{ x: x }})\ndef read :: own (dyn Plain | string) -> i64 = \\v ->\n    match v with\n    | :? (dyn Plain) as d -> Plain.plain (ref d)\n    | :? string as s -> s.length\n"
+    ));
+    assert!(ir.contains("$anonymous.Union$2"), "{ir}");
+    passes(
+        &format!(
+            "{class}test \"dyn\" =\n    let v: (dyn Plain | string) = Dyn.of (Point {{ x: 42 }})\n    assert (match v with | :? (dyn Plain) as d -> Plain.plain (ref d) == 42 | :? string -> false)\n"
+        ),
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn no_injection_without_expected_type() {
+    let error = rejects("let xs = [1, \"a\"]\n0\n", "E1003", "type_mismatch");
+    assert_eq!(error.message, "expected an integer, found string");
+    rejects(
+        "def f :: bool -> i64 = \\c ->\n    let v = if c then 1 else \"x\"\n    0\n",
+        "E1003",
+        "type_mismatch",
+    );
+    // A type variable is not widened to a union: `'a` is `i64` from the first argument.
+    rejects(
+        "def same :: own 'a -> own 'a -> i64 = \\x y -> 0\nlet v: (i64 | string) = 1\nsame 1i64 v\n",
+        "E1003",
+        "type_mismatch",
+    );
+}
+
+#[test]
+fn no_injection_inside_containers() {
+    rejects(
+        "def f :: own [i64] -> [(i64 | string)] = \\xs -> xs\n",
+        "E1003",
+        "type_mismatch",
+    );
+    rejects(
+        "def f :: own (i64 -> i64) -> ((i64 | string) -> i64) = \\g -> g\n",
+        "E1003",
+        "type_mismatch",
+    );
+    rejects(
+        "def f :: own Maybe<i64> -> Maybe<(i64 | string)> = \\m -> m\n",
+        "E1003",
+        "type_mismatch",
+    );
+}
+
+#[test]
+fn no_injection_through_references() {
+    rejects(
+        "let x = 1i64\nlet r: ref (i64 | string) = ref x\n0\n",
+        "E1003",
+        "type_mismatch",
+    );
+    // An exclusive parameter takes a place of the union type, never an injected temporary.
+    rejects(
+        "def bump :: ref mut (i64 | string) -> unit = \\v -> ()\nlet mut x = 1i64\nbump (ref mut x)\n",
+        "E1003",
+        "type_mismatch",
+    );
+}
+
+#[test]
+fn injection_moves_the_value() {
+    let size = "def size :: (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n";
+    // The string moves into the union that the read parameter borrows (D10).
+    let error = rejects_in(
+        &format!(
+            "{size}def twice :: own string -> i64 = \\name ->\n    let a = size name\n    a + name.length\n"
+        ),
+        Edition::E2027,
+        "E1012",
+        "use_after_move",
+    );
+    assert!(error.message.contains("'name'"), "{}", error.message);
+    // Its last use moves it with nothing after, and a Copy value is copied.
+    accepts_in(
+        &format!(
+            "{size}def once :: own string -> i64 = \\name -> size name\ndef copies :: i64 -> i64 = \\n -> size n + size n + n\n"
+        ),
+        Edition::E2027,
+    );
+    // A pipe moves it too.
+    rejects_in(
+        &format!("{size}def twice :: own string -> i64 = \\name -> (name |> size) + name.length\n"),
+        Edition::E2027,
+        "E1012",
+        "use_after_move",
+    );
+}
+
+#[test]
+fn read_parameter_needs_owned_value() {
+    let size = "def size :: (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n";
+    let source = format!("{size}def forward :: string -> i64 = \\name -> size name\n");
+    // A read parameter is a borrow (2027): its string cannot move into the union.
+    let error = rejects_in(
+        &source,
+        Edition::E2027,
+        "E1012",
+        "move_out_of_reference_binding",
+    );
+    assert!(
+        error.message.contains("read-only by default"),
+        "{}",
+        error.message
+    );
+    // The same program passes its own value in 2026, and with `own` or a copy in 2027.
+    accepts_in(&source, Edition::E2026);
+    accepts_in(
+        &format!(
+            "{size}def forward :: own string -> i64 = \\name -> size name\ndef copied :: string -> i64 = \\name -> size (clone_string name)\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn references_pass_through() {
+    let size = "def size :: (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n";
+    // A read parameter of the union type is `ref (i64 | string)`, which a read parameter
+    // borrows again, unwrapped and not wrapped twice.
+    passes(
+        &format!(
+            "{size}def forward :: (i64 | string) -> i64 = \\v -> size v + (v |> size)\n\ntest \"references\" =\n    assert (forward \"abc\" == 6)\n    assert (forward 20 == 40)\n"
+        ),
+        Edition::E2027,
+    );
+    passes(
+        "def size :: ref (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n\ntest \"explicit\" =\n    let v: (i64 | string) = \"abcd\"\n    let r = ref v\n    assert (size r + size (ref v) == 8)\n",
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn injects_through_select_checked_and_holes() {
+    passes(
+        &format!(
+            "{MEASURE}test \"select and checked\" =\n    let jobs: Channel<i64> = Channel.make 1\n    let got: (i64 | string) = select\n        | recv job from jobs -> match job with | Maybe.Some v -> v | Maybe.None -> 0\n        | default -> \"idle\"\n    let checked: (i64 | string) = @checked (40 + 1)\n    assert (measure got + measure checked == 45)\n"
+        ),
+        Edition::E2026,
+    );
+    // `@checked` arithmetic still traps on overflow inside the union.
+    traps(
+        "test \"overflow\" =\n    let big = 9223372036854775807\n    let v: (i64 | string) = @checked (big + 1)\n    assert (match v with | :? i64 -> true | :? string -> false)\n",
+        Edition::E2026,
+    );
+    // A hole reports the union, not an undetermined type.
+    let error = rejects("let v: (string | i64) = ?\n0\n", "E1030", "typed_hole");
+    assert!(
+        error.message.contains("of type '(i64 | string)'"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn collection_literals_pick_their_member() {
+    passes(
+        "test \"collections\" =\n    let empty: ([i64] | string) = []\n    let fixed: ([i64; 3] | string) = [1, 2, 3]\n    let list: ([|i64|] | bool) = [|1, 2|]\n    let none: ([|string|] | bool) = [||]\n    let heap: ([i64] | bool) = new [4, 5]\n    let tuple: ((i64 * [string]) | bool) = (1, [])\n    assert (match empty with | :? [i64] as a -> a.length == 0 | :? string -> false)\n    assert (match fixed with | :? [i64; 3] as a -> a[2] == 3 | :? string -> false)\n    assert (match list with | :? [|i64|] as l -> List.length l == 2 | :? bool -> false)\n    assert (match none with | :? [|string|] as l -> List.length l == 0 | :? bool -> false)\n    assert (match heap with | :? [i64] as a -> a[1] == 5 | :? bool -> false)\n    assert (match tuple with | :? (i64 * [string]) as t -> (match t with | (n, xs) -> n + xs.length == 1) | :? bool -> false)\n",
+        Edition::E2026,
+    );
+    // Two array members: the elements decide.
+    accepts("let v: ([i64] | [string]) = [\"a\"]\n0\n");
+    rejects(
+        "let v: ([i64] | [string]) = []\n0\n",
+        "E1004",
+        "empty_list_needs_annotation",
+    );
+    // A literal checked against its member reports the element that does not fit.
+    let error = rejects(
+        "let v: ([i64] | string) = [1, \"a\"]\n0\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected i64, found string");
+}
+
+#[test]
+fn comparisons_and_exports_keep_their_rules() {
+    // `1` is injected into the left operand's type, which has no `Eq` until A26.
+    rejects(
+        "let v: (i64 | string) = 1\nv == 1\n",
+        "E1005",
+        "no_instance",
+    );
+    let error = analyze("export def f :: (i64 | string) -> i64 = \\v -> 0\n").expect_err("export");
+    assert_eq!(error.code, "E1008", "{}", error.message);
 }

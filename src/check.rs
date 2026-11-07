@@ -6211,9 +6211,8 @@ fn entry_signature(signature: &Signature) -> bool {
 impl Names {
     /// Whether union `id` is a synthesized declaration behind anonymous unions (A24).
     fn is_anonymous_union(&self, id: usize) -> bool {
-        self.union_names
-            .get(id)
-            .is_some_and(|name| anonymous_union::is_anonymous_name(name))
+        // The synthesized declarations take the last ids, one after another.
+        matches!(self.anonymous_unions.as_slice(), [first, .., last] if (*first..=*last).contains(&id))
     }
 
     /// Moves the `E1040`s of `renamed` into `diagnostics`.
@@ -12020,6 +12019,12 @@ impl<'a> Checker<'a> {
         };
         // Continuations must not retain the large value-checking frame at every recursive step.
         let result = match expression.kind {
+            // A24: a value where an anonymous union is expected is injected into it.
+            _ if !self.names.anonymous_unions.is_empty()
+                && expected.is_some_and(|expected| self.injects(expression, expected)) =>
+            {
+                self.injected_expression(expression, expected.expect("checked"))
+            }
             ExprKind::Computation(ref builder, ref body) => {
                 computation::check_implicit(self, builder, body, expected)
             }
@@ -13226,6 +13231,13 @@ impl<'a> Checker<'a> {
             computation_depth: self.computation_depth,
         };
         let result = match expression.kind {
+            // A24: first, so that a call is checked without the union as its expected type.
+            _ if !self.names.anonymous_unions.is_empty()
+                && self.anonymous_union_parameter(expected)
+                && !expected.contains_error() =>
+            {
+                self.union_argument(expression, expected)
+            }
             ExprKind::Call(..) if !expected.contains_error() => {
                 self.call_expression(expression, Some(expected), true)
             }
@@ -13366,6 +13378,13 @@ impl<'a> Checker<'a> {
         if let Some(piped) = piped
             && let Type::Function(remaining, _) = self.inference.resolve(result)
         {
+            // A24: a value piped into an anonymous union is injected by `coerce_argument`.
+            if !self.names.anonymous_unions.is_empty()
+                && self.anonymous_union_parameter(&remaining[0])
+                && let Some(result) = self.piped_into_union(&piped, &remaining[0], span)
+            {
+                return result;
+            }
             // An array that passes on as an exclusive slice (`ref mut xs |> Array.write 0 1`) is sliced by
             // `coerce_slice_argument` once the call is complete; here only its elements are known to agree.
             if let Type::Reference(view, true) = self.inference.resolve(&remaining[0])
@@ -13561,9 +13580,13 @@ impl<'a> Checker<'a> {
 
     fn coerce_argument(
         &mut self,
-        value: TypedExpr,
+        mut value: TypedExpr,
         expected: &Type,
     ) -> Result<TypedExpr, Diagnostic> {
+        // A24: a piped value meets an anonymous union parameter here.
+        if !self.names.anonymous_unions.is_empty() && self.anonymous_union_parameter(expected) {
+            value = self.conform_argument(value, expected)?;
+        }
         let expected = self.inference.resolve(expected);
         let mut value = match self.coerce_slice_argument(value, &expected)? {
             Ok(converted) => return Ok(converted),
