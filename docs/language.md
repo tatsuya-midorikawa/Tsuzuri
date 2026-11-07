@@ -185,7 +185,7 @@ doc コメントの本文の 0 桁目から始まる `` ``` ``（3 個以上）�
 
 `tsuzuri api-diff <old> <new> [--json] [--effective]` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、変更を 1 行ずつ標準出力へ出します（G19 Phase 2）。`<old>` と `<new>` はそれぞれディレクトリか、そのルートの中のファイルで、`Main.tz` は要りません。引数が 2 つでない場合、`--json`／`--effective` を重複して指定した場合、ほかのオプションを渡した場合は `E2000` で、終了コード 2 です。フラグは入力の前後に置け、`--` 以降はパスです。
 比べるのは、ルートのパッケージ（マニフェストのない入力ではすべてのソース）の、`private` でない `def`、`extern def`、`extern type`、`record`、`union`、`type`、`const`、すべての `class`、`instance`、ビルダーの別名（`@alias`）です。`tsuzuri doc` と同じ宣言の走査で署名の文字列を作ります。型検査はせず、git と registry の依存は取得せず（`Tsuzuri.lock` も読まず）、依存パッケージの宣言は API に入れません。`test`、`bench`、本体、トップレベルの式は見ません。構文エラーは診断として出し、終了コード 1 です。
-宣言は `名前空間::モジュール.宣言` で見分けます。record の field、union の case、class のメソッドは `.名前` を足し、`instance` は宣言したモジュールで修飾した `Module.Class<Type>`、アクティブパターンは `(|Even|Odd|)` が名前です。署名の型変数・region・宣言した長さパラメーター（`const N: i64`）の名前は最初に出てきた順の連番に置き換えて比べるので、名前の違い（`'a` と `'t`、`N` と `M`）は変更になりません。制約の順序と、定義のラムダが受け取る引数の個数も違いにしません。名前空間（パッケージの `namespace` を含む）やモジュール名を変えると、すべての宣言が削除と追加になり、`changed namespace` の行が 1 行足されます。
+宣言は `名前空間::モジュール.宣言` で見分けます。record の field、union の case、class のメソッドは `.名前` を足し、`instance` は宣言したモジュールで修飾した `Module.Class<Type>`、アクティブパターンは `(|Even|Odd|)` が名前です。署名の型変数・region・宣言した長さパラメーター（`const N: i64`）の名前は最初に出てきた順の連番に置き換えて比べるので、名前の違い（`'a` と `'t`、`N` と `M`）は変更になりません。制約の順序と、定義のラムダが受け取る引数の個数も違いにしません。[匿名共用体](#匿名共用体)は書いた入れ子を平らにし要素を並べ替えて比べるので、要素の順序の違いも変更になりません（既定の構文比較は型別名を展開しないので、`(Meters | string)` と `(f64 | string)` は別の型です。`--effective` では同じ型です）。名前空間（パッケージの `namespace` を含む）やモジュール名を変えると、すべての宣言が削除と追加になり、`changed namespace` の行が 1 行足されます。
 breaking は、公開宣言の削除、署名（型、制約、region、型パラメーター、`export`）の変更、record の field の追加・削除・変更・並べ替え（構築式が壊れる）、union の case の追加・削除・変更・並べ替え（網羅的な `match` が壊れる）、既定の実装のない class メソッドの追加、メソッドの削除・署名の変更・既定の実装の削除、superclass の変更、`deriving` と `instance` の削除です。non-breaking は、宣言、`export`、`instance`、`deriving` の追加、既定の実装のある class メソッドの追加、説明の変更、`@deprecated` の追加と削除です。
 出力は、テキストなら `breaking: removed def Main.g` のように `<severity>: <action> <kind> <name>` で始まる行（後ろに宣言の署名が続き、breaking が先で、それぞれ名前順）、`summary: N breaking, M non-breaking`、省略や版の `note:` 行です。`--json` なら JSON Lines で、変更の行のキーは `type`（`change`）、`severity`、`action`、`kind`、`name`、`old`、`new`、`note`、最後の行のキーは `type`（`summary`）、`breaking`、`non_breaking`、`omitted`、`old_version`、`new_version`、`compatible_versions` です。キーは増えることはあっても、消えたり名前が変わったりしません。出す変更は 1000 件までで（breaking を先に）、超えた分は `omitted` と `note: N more changes not shown` に入ります。同じ入力からは同じ出力が出ます。
 終了コードは、互換性のない変更がなければ 0、あれば 1 です。入力が読めない場合、構文エラー、シンボリックリンクの入力（`E1011`）、4 MiB を超えるソース（`E0003`）、ソースの数や依存グラフの上限（`E1017`）は、診断を標準エラー出力へ出して 1 です。両方のマニフェストの `version` が `MAJOR.MINOR.PATCH` で、新しい版が古い版の互換の範囲（1.0.0 以降は同じ `MAJOR`、それより前は同じ `0.MINOR`）に入っているのに breaking な変更があれば、その注記を出します。
@@ -1172,6 +1172,30 @@ union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Eq, Display, E
 浮動小数点のハッシュ計算では $\pm 0.0$ を同一の値として扱い、NaN は各型固有の正の quiet NaN へと正規化されます。
 decimal 型は非ゼロ係数の末尾の冗長なゼロを除去し、指数を表現上限まで引き上げた BID 形式へと正規化することで、同一のコホートに属する数値が同一のハッシュ値となることを保証します。
 なお、この `Hash` は暗号学的な安全性を目的としたものではなく、ランダムシードも保持しないため、悪意ある HashDoS 攻撃への直接の耐性はありません（乱数シードを用いてハッシュ衝突攻撃を緩和するコンテナについては [HashMap / HashSet](#hashmap--hashset) を参照してください）。
+
+### 匿名共用体
+
+```text
+def describe :: own (i64 | string | bool) -> string = \value ->
+    match value with
+    | :? i64 as n -> $"int {n}"
+    | :? string as s -> s
+    | :? bool as b -> if b then "yes" else "no"
+
+let first: (string | bool | i64) = 42
+describe first                      // "int 42"
+```
+
+匿名共用体 `(T1 | ... | Tn)` は、宣言を持たず、要素の型そのものがケースを表す直和型です（A24、D-62。F# の提案 FS-1092 に当たります）。型の構文は `type-primary = ... | "(" type { "|" type }+ ")"` で、括弧は省略できず、要素は 2 個以上です。各要素は型全体（`type_expr`）なので、`->` と `*` は `|` より強く結び付きます（`(i64 -> i64 | string)` は `((i64 -> i64) | string)`）。要素の間の `||` は `E0002`（`anonymous_union_double_bar`）、構文の入れ子の上限を超える要素の数は `E0002`（`too_many_anonymous_union_members`）です。構文は edition 2026 と 2027 の両方で同じ意味で受理します。
+型の解決では、各要素を解決し（型別名は展開済み）、要素が匿名共用体ならその要素で置き換えて平らにします。平坦化の後の要素が 32 個を超えれば `E1017`（`anonymous_union_member_limit`）、`Type::Error` を含めば結果も `Type::Error`、借用を含む要素は `E1013`（`anonymous_union_borrowed_member`）、型変数そのものか頭が型変数の要素は `E1041`（`anonymous_union_type_variable`）です。続けて要素を正準順序に並べ、順序を決められない組（型引数によっては同じ型になる `Maybe<'a>` と `Maybe<i64>`）は `E1041`（`anonymous_union_indistinct_members`）、等しい組（型別名を経た `(Meters | f64)` を含む）は `E1041`（`anonymous_union_duplicate_member`）です。
+正準順序は、まず型の種類の順位（整数 < 2 進浮動小数点 < 10 進浮動小数点 < SIMD < `bool` < `unit` < `char` < `utf8char` < `string` < `utf8string` < レコード < 共用体 < 配列 < スライス < 固定長配列 < 長さ < リスト < `Vec` < タプル < `Once` < ハンドル < 関数 < 参照 < `dyn` < `Rc`／`Arc`）で比べ、同じ種類どうしは中身で比べます。整数は `(ビット幅, 符号の有無)` の順（`i8u` < `i8` < `i16u` < ...）、レコードと共用体は宣言の修飾名の文字列順、次に型引数、配列・リスト・`Vec` は要素、タプルは要素数と要素、関数型は純粋かどうか、カリー化を平らにした引数の列、結果の順で、引数の規約は比べません。型の内部の番号ではなく修飾名で比べるので、モジュールを足しても順序は変わりません。そのため `(A | B)` と `(B | A)`、`(A | (B | C))` と `((A | B) | C)` はどこで書いても同じ型で、表示（`Type::display`）もタグの番号もこの順です。
+
+期待される型が匿名共用体 `U` の位置で、式の型が `U` の要素のどれか 1 つ `M` に決まるとき、式の値を `M` のケースとして包みます（注入。型付き IR は `Some x` と同じ構築）。暗黙の変換をしない規則の、D-62 で定めた唯一の例外で、値は変えずにタグだけを付けます。期待される型を下へ渡す式（`if`・`match`・ブロック・`select`・`@checked`）は、腕ごとに注入します。型付き穴 `?` は包まずに `U` を期待される型として報告します。接尾辞のない整数のリテラルは整数の要素、なければ `bigint` の要素、なければ浮動小数点の要素の組から、接尾辞のない浮動小数点のリテラルは浮動小数点の要素から選び、組に 2 つ以上あれば既定の型を選ばず `E1041`（`anonymous_union_ambiguous_literal`）です。ラムダは関数型の要素、`Dyn.of x` は `dyn` 型の要素、配列・リストのリテラルは配列・リストの要素、タプルのリテラルは同じ長さのタプルの要素がちょうど 1 つならそれを期待される型にして検査します。それ以外の式は期待される型なしで検査し、得た型が匿名共用体なら包まずに `U` と単一化し、数のリテラルでない未定の推論変数なら `U` と単一化し、参照 `ref T` なら `T` で、それ以外はその型で、合いうる要素を数えます（推論変数はどの型とも合いうる。数のリテラルの推論変数は数の型とだけ）。1 つなら包み、0 個なら `E1003`（`anonymous_union_not_member`、`expected (i64 | string), found bool; bool is not a member of the anonymous union`）、2 個以上なら `E1041`（`anonymous_union_ambiguous_member`）です。引数の位置では、期待される型が `U` でも `ref U`（読み取りの引数）でも同じ判定で `U` の値を作り、一時値として借用します。パイプの左辺も同じです。
+入れ物と関数の中（`[i64]` から `[(i64 | string)]`、`i64 -> unit` から `(i64 | string) -> unit`）、参照の型（`ref i64` から `ref (i64 | string)`）、期待される型のない位置（`let xs = [1, "a"]`）では注入せず、型変数の推論が要素の型を共用体へ広げることもありません。要素の少ない匿名共用体を要素の多い匿名共用体へ渡すことも、まだできません（`E1003`）。注入は値の使用で、Copy の値は複製し、非 Copy の値は共用体へ move します。注入する式は 1 回だけ評価し、評価順は変わりません。
+
+型テストのパターン `:? T`・`:? T as x`（[match と分解](#match-と分解)）は、照合する値が匿名共用体で、`T` がその要素のとき、その要素のケースかどうかをタグで比べます。照合する値の型は、パターンを検査する時点で匿名共用体に決まっていなければなりません（参照は自動で外します）。決まっていなければ `E1041`（`type_test_unknown_scrutinee`）、匿名共用体でなければ `E1041`（`type_test_not_anonymous_union`）です。`T` は本体の型注釈と同じ規則で解決し、匿名共用体なら `E1041`（`type_test_union`）、どの要素とも等しくなければ `E1041`（`type_test_not_member`）です。`as x` の束縛の型は要素の型で、所有権の規則は共用体の case のペイロードの束縛と同じです。網羅性は要素ごとのケースとして数え、足りなければ `E1021 match is not exhaustive; missing: :? string` で、`| :? string -> unreachable ()` を足す修正案を持ちます。
+
+匿名共用体は、要素数 n ごとにコンパイラが合成した総称の union 宣言（擬似モジュール `$anonymous` の `Union$n`）の具体化です。合成は、どれかのモジュールが匿名共用体の型か型テストのパターンを書いたときだけ行い、書かないプログラムの出力は変わりません。合成した名前は識別子に書けず、診断・hover・`doc`・`kg`・`api-diff`・型付き穴の候補には現れません。Copy・Send・drop・レイアウト（1 バイトのタグと最大の要素の領域。すべての要素の表現が同じならペイロードを共有）・再帰（名前付きの型の循環に入れば、名前付きの union と同じくヒープのノード）・64 KiB の上限（`E1010`）・`export` の制約（`E1008`）は、名前付きの union の規則がそのまま決めます。組み込みの `Eq`・`Ord`・`Hash`・`Display` はまだなく（`==` や表示は `E1005`）、匿名共用体を head とする `instance` は `E1041`（`anonymous_union_instance`）です。
 
 ### アプリケーションのエントリーポイント
 
@@ -2750,7 +2774,7 @@ match value with
 提示されるケース名は、無修飾で一意に解決できない場合は `Module.Case` のように名前空間修飾されて表示されます。
 なお、`when` ガードが付与された節は条件次第で不成立（`false`）となり得るため網羅性のカウントには含まれず、ガードを持たない無条件の節を別途用意して残りのケースを回収する必要があります。
 
-網羅性チェッカーは、`bool`、`unit`、共用体（union）の各バリアント、ならびにリストの空リスト `[||]` と先頭・末尾パターン `head :: tail` のすべての組み合わせを厳密に列挙し、
+網羅性チェッカーは、`bool`、`unit`、共用体（union）の各バリアント、匿名共用体の各要素の型テスト（足りなければ `missing: :? bool`）、ならびにリストの空リスト `[||]` と先頭・末尾パターン `head :: tail` のすべての組み合わせを厳密に列挙し、
 タプルやレコードについては各構成要素・フィールドの直積の組み合わせとして網羅性を検証します。
 一方、整数、浮動小数点数、decimal、文字列の定数リテラル、および配列の長さについては、たとえ有限個の値をすべて書き並べたとしても型全体を網羅したとはみなされず、
 ワイルドカード `_` や変数によるフォールバック節が必須となります（例えば `i8` 型に対して 256 通りの数値をすべて列挙した場合であっても `E1021` エラーとなります）。
@@ -2770,11 +2794,12 @@ match value with
 | タプルパターン | `(x, 0)`。値は `(a, b)`、型は `T * U`。ネスト構造、多相型、所有値パターンを自由に使用可能 |
 | レコードパターン | `Point { x: a }` または `{ x = a; y = 0 }`。一部の注目フィールドのみを指定して部分マッチ可能 |
 | 共用体（union）case | `None`、`Some x`、`Rect (w, h)`、`Shapes.Circle r`。内部タグを比較し、ペイロードを内部パターンへ渡す |
+| 型テスト | `:? i64`、`:? string as s`、`Some (:? string as s)`。[匿名共用体](#匿名共用体)の値が要素 `T` のケースかをタグで比較し、`as` の名前に要素の値を束縛する。`:?` は空白なしで、型は `type_product`（関数型と匿名共用体は括弧で囲む） |
 | 配列パターン | `[x; y]` または `[x, y]`。要素数が厳密に 2 つの固定長配列に一致 |
 | リストパターン | `[|x; y|]`、空リスト `[||]`、先頭分割 `head :: tail`。配列とリストの括弧記号規則を厳密に維持 |
 | OR／AND パターン | `p1 | p2` は左辺のマッチを優先、`p1 & p2` は左から右へと両方のパターンを連続検査 |
 | 全体別名束縛 | `pattern as name`（パターンに合致した値全体を同時に変数 `name` に束縛） |
-| 型注釈付きパターン | `(pattern: Type)` |
+| 型注釈付きパターン | `(pattern: Type)`。匿名共用体の型は `(x: (i64 \| string))` と括弧で囲む |
 
 OR パターン（`|`）を記述する場合、各分岐側は完全に同一の変数名および型を束縛する必要があります。同一パターン内で同一の束縛変数名が重複することは文法エラーとなります。
 OR パターンの左側が一致した後に付与された `when` ガードが `false` となった場合、制御は直ちに次の**マッチ節**へと移行し、同一 OR パターン内の右側のパターンでガードを再試行することはありません。単なる変数パターンは参照型の値であってもそのまま参照型として束縛し、レコード、コレクション、定数などの構造パターンは共有参照ポインタを透過的に辿って内部を照合できます。
@@ -2874,7 +2899,7 @@ def (|Parsed|_|) :: ref string -> Maybe<i64> = \text -> Parse.parse text
 match "42" with | Parsed value -> value | _ -> 0
 ```
 
-なお、C# や Java のような `null` 参照、および .NET に見られるような実行時型テスト（`is` / `as` 型キャスト）は言語仕様として存在しません。
+なお、C# や Java のような `null` 参照、および .NET に見られるような実行時型テスト（`is` / `as` 型キャスト）は言語仕様として存在しません。匿名共用体の `:?` は静的に決まったタグの照合で、実行時の型情報は使いません。
 
 ### 検査付き算術と例外
 
@@ -4979,11 +5004,11 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1001`–`E1010` | 識別子名（複数のビルダーが宣言する別名の曖昧さを含む）、型シグネチャ、演算子、引数構成、レコードフィールド、公開 ABI、リテラル、インラインレイアウト |
 | `E1011` | 無効または重複したモジュール名、予約モジュール名・予約名前空間 `std` の不正使用、不正な標準ライブラリパス |
 | `E1012` | 所有権 move 後の不正な再利用、不正な代入先（Drop 型からのフィールド・共用体ペイロードの部分 move および更新、`Owned.function` 本体でのキャプチャ値の不正 move を含む） |
-| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、tzroutine の境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む。`values that move to another tzroutine or thread must be owned; ... contains a reference`）、`Owned.function` に渡した、借用を持つ関数値（`an owned function captures only owned values; this function value holds a borrow`。関数の引数の関数値を含む）、インラインのラムダ式が捕捉した、借用を持つ関数値（`... a captured value holds a borrow`）と、関数値として使った `Owned.function`（`must_apply_directly`）、tzroutine へ持ち込む `Rc`／`Rc.Weak`（`values that move to another tzroutine or thread must be Send; ... holds an Rc or Rc.Weak, ...`）、`Sync` でない値の `Arc`、`Routine.scope` で共有する `Sync` でない値（`tzroutines and threads can share only Sync values; ... is not Sync ...`）、`Mutex.with_lock` の結果に含まれる借用、`DataChannel.send` の要素が持つ借用（`a channel item cannot hold a borrow`）、`Send` でない型で使われた、`DataChannel.bounded`・`Mutex.create` などを包むジェネリック関数 |
+| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、tzroutine の境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む。`values that move to another tzroutine or thread must be owned; ... contains a reference`）、`Owned.function` に渡した、借用を持つ関数値（`an owned function captures only owned values; this function value holds a borrow`。関数の引数の関数値を含む）、インラインのラムダ式が捕捉した、借用を持つ関数値（`... a captured value holds a borrow`）と、関数値として使った `Owned.function`（`must_apply_directly`）、tzroutine へ持ち込む `Rc`／`Rc.Weak`（`values that move to another tzroutine or thread must be Send; ... holds an Rc or Rc.Weak, ...`）、`Sync` でない値の `Arc`、`Routine.scope` で共有する `Sync` でない値（`tzroutines and threads can share only Sync values; ... is not Sync ...`）、`Mutex.with_lock` の結果に含まれる借用、`DataChannel.send` の要素が持つ借用（`a channel item cannot hold a borrow`）、`Send` でない型で使われた、`DataChannel.bounded`・`Mutex.create` などを包むジェネリック関数、匿名共用体の借用を含む要素（`anonymous_union_borrowed_member`） |
 | `E1014` | 借用の競合（共有借用中の排他アクセス）、不変な値に対する不正な可変アクセス |
 | `E1015` | 曖昧な型変数、無限型の検出、不適切な多相性、型検査時点で参照型か未確定な `ref` オペランド |
 | `E1016` | 型クラスまたはインスタンスの不正宣言や重複定義（`Drop` インスタンスおよび `Drop.drop` への直接参照を含む） |
-| `E1017` | 多相型、型エイリアス、トレイト制約、特殊化、パターン展開、網羅性検査、反復解析、GPU カーネルの抽出と WGSL 文の入れ子のコンパイラ資源上限超過 |
+| `E1017` | 多相型、型エイリアス、トレイト制約、特殊化、パターン展開、網羅性検査、反復解析、GPU カーネルの抽出と WGSL 文の入れ子のコンパイラ資源上限超過、平坦化した後に 32 個を超える匿名共用体の要素（`anonymous_union_member_limit`） |
 | `E1018` | ソースファイル種別の規則違反（`.tc` 以外の `@alias` を含む）、未知のビルダー、必要なビルダー操作の未定義、標準ライブラリからの不正な `export` |
 | `E1019` | 再帰関数に必要な `rec` 修飾子の欠落、宣言と実装の再帰契約の不一致、先行関数を持たない単独の `and` |
 | `E1020` | 不正なパターン構文、OR パターン間での束縛変数の不一致、未対応のアクティブパターン形式、共用体バリアントのペイロード不整合 |
@@ -5004,6 +5029,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1038` | `Domain.run` の使い方の誤り（直接呼んでいない・引数がラムダでも `pure def` の名前でもない・平たいデータでない捕捉・純粋でない本体・平たいデータでない結果・領域を持てないビルド） |
 | `E1039` | 浮動小数点の数を含む型への `Monoid` の制約（`Parallel.fold` が `Array.fold_monoid` と違いうる） |
 | `E1040` | 消えた・改名された名前。`renamed_to_data_channel`: 旧 `Channel.bounded` などは `DataChannel` の名前（確かな修正案を持つ）。`removed_task_expression`: `task { … }`（`@alias task` の利用者のビルダーがないとき）。`removed_task_type`: 型 `Task<T>`。`removed_task_api`: `Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope`（`Task.scope` だけが `Routine.scope` への確かな修正案を持つ）。`removed_async`: `Async { … }`・`async { … }`（`@alias async` の利用者のビルダーがないとき）・型 `Async<T>`・`Async.Operation`・`Async.run` などの関数（TZ13）。`removed_net_async`: `Net.connect_async` などの 12 関数（TZ13）。どれも利用者の定義に解決しないときだけ（[並列実行](#並列実行)、[非同期計算（Async）](#非同期計算async)） |
+| `E1041` | [匿名共用体](#匿名共用体)の誤り。型変数の要素（`anonymous_union_type_variable`）、型引数によっては同じ型になる要素（`anonymous_union_indistinct_members`）、重なる要素（`anonymous_union_duplicate_member`）、2 つ以上の要素になりうるリテラル（`anonymous_union_ambiguous_literal`）と値（`anonymous_union_ambiguous_member`）、匿名共用体を head とする `instance`（`anonymous_union_instance`）、型テスト `:?` の対象の型が決まらない（`type_test_unknown_scrutinee`）・匿名共用体でない（`type_test_not_anonymous_union`）、`:?` の型が匿名共用体（`type_test_union`）・要素でない（`type_test_not_member`） |
 | `E1025` | 自動導出（deriving）がサポートされていない型クラスまたは要素型、停止しない再帰的 `Default` 定義 |
 | `E1026` | コンパイル時定数評価（`const` の初期化式と `const def` の本体）におけるトラップ発生、循環参照、計算ステップ上限超過、未対応の定数式、`const def` の署名・本体の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `W1001` | 未使用のローカル変数、引数、またはパターン束縛変数（警告） |

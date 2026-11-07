@@ -6,7 +6,7 @@ Tsuzuri は静的型付きの関数型言語です。式と変数の型はコン
 
 ## この記事のポイント
 
-- **暗黙の型変換はない**: 型が違う値は、コンパイル時にエラーになります。
+- **暗黙の型変換はない**: 型が違う値は、コンパイル時にエラーになります。ただ 1 つの例外は、期待される型が[匿名共用体](../built-in-types-and-modules/anonymous-union.md)の位置で、要素の型の値にタグを付けて包む注入です（値は変えません）。
 - **名前で区別する型**: レコードと共用体は、フィールドが同じでも宣言が違えば別の型です（名目的型付け、nominal typing）。タプルと配列は、中身の型が同じなら同じ型です。 <!-- rule: TYP-002 -->
 - **型引数の書き方**: `Box<i64>` のように、型名と `<` の間に空白を置きません。
 - **関数型は右結合**: `A -> B -> C` は `A -> (B -> C)` です。関数はカリー化されています。
@@ -50,6 +50,7 @@ Copy の列は、値を複製して元の変数も使えるかを示します。
 | 連結リスト | `[|i32|]` | 条件付き | 不変のリスト（要素が Copy ならリストも Copy。要素は連続した領域に並ぶ） | [List](../built-in-types-and-modules/list.md) |
 | レコード | `record Point { ... }` | 条件付き | 名前付きフィールドを持つ積型。全フィールドが Copy ならレコードも Copy | [Record](../built-in-types-and-modules/record.md) |
 | 共用体 | `union Shape = ...` | 条件付き | 直和型。いずれか 1 つのケースの値を保持 | [Union](../built-in-types-and-modules/union.md) |
+| 匿名共用体 | `(i64 \| string)` | 条件付き | 宣言なしの直和型。要素の型そのものがケースで、順序は問わない（要素がすべて Copy なら Copy） | [匿名共用体](../built-in-types-and-modules/anonymous-union.md) |
 | 関数型 | `i64 -> string` | ○ | カリー化された第一級の関数値。複製すると捕捉した値もコピーされる | [関数](../values-and-functions/functions.md) |
 | 共有借用 | `ref T`（または `&T`） | ○ | 所有権を消費しない読み取り専用参照（存続期間は所有者以下） | [借用と参照](../ownership-and-memory/borrowing.md) |
 | 排他借用 | `ref mut T`（または `&mut T`） | × | 単一の排他的な書き込み可能参照。別名付けを静的に排除 | [借用と参照](../ownership-and-memory/borrowing.md) |
@@ -63,7 +64,7 @@ Copy の列は、値を複製して元の変数も使えるかを示します。
 
 ## 型の記法
 
-型引数、関数型、タプル、配列は、次の書き方で表します。
+型引数、関数型、タプル、配列、匿名共用体は、次の書き方で表します。
 
 ### 型引数（`<...>`）
 
@@ -130,6 +131,20 @@ sum_pair pair
 10
 ```
 
+### 匿名共用体（`(A | B)`）
+
+要素の型を `|` で区切り、括弧で囲むと匿名共用体の型です。要素は 2〜32 個で、順序と入れ子は型を変えません。`->` と `*` は `|` より強く結び付くので、関数型の要素は括弧で囲んで書きます。
+
+```text
+(i64 | string)                 // i64 か string
+(string | i64)                 // 上と同じ型
+(i64 | (string | bool))        // (i64 | string | bool) と同じ型
+((i64 -> i64) | string)        // 関数か string
+Maybe<(i64 | string)>          // 型引数にも書ける
+```
+
+括弧は省略できません（`i64 | string` は書けません）。値の作り方と `:?` での取り出しは [匿名共用体](../built-in-types-and-modules/anonymous-union.md) で説明します。
+
 ## レコードと共用体は名前で区別される
 
 レコードと共用体は、宣言した名前で型を区別します。これを名目的型付け（nominal typing）と呼びます。フィールドの名前と型が同じでも、別の宣言なら別の型です。座標と速度を、どちらも整数 2 つの組として混同しないために使います。
@@ -157,7 +172,7 @@ get_x p
 error[E1003]: expected Main.Vector2, found Main.Point
 ```
 
-一方、タプル（`i64 * i64`）と配列（`[i64]`）は構造で区別します。要素の型が同じなら、宣言が違っても同じ型です。
+一方、タプル（`i64 * i64`）と配列（`[i64]`）は構造で区別します。要素の型が同じなら、宣言が違っても同じ型です。匿名共用体（`(i64 | string)`）も要素の型で区別し、要素の順序は問いません（`(string | i64)` と同じ型です）。
 
 ## 型名の解決順序
 
@@ -219,6 +234,7 @@ error[E1003]: expected Main.Vector2, found Main.Point
 - [制約 と 属性](constraints.md)
 - [Record](../built-in-types-and-modules/record.md)
 - [Union](../built-in-types-and-modules/union.md)
+- [匿名共用体](../built-in-types-and-modules/anonymous-union.md)
 - [Tuple](../built-in-types-and-modules/tuple.md)
 - [Array](../built-in-types-and-modules/array.md)
 - [List](../built-in-types-and-modules/list.md)

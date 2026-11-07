@@ -4,7 +4,7 @@
 
 ## この記事のポイント
 
-- 定数、変数、ワイルドカード、タプル、レコード、共用体、リスト、OR / AND が使えます。
+- 定数、変数、ワイルドカード、タプル、レコード、共用体、リスト、OR / AND と、匿名共用体の型テスト `:? T as x` が使えます。
 - 使える場所は `match`、ラムダ式の引数、`for...in`、関数ガードです。通常の `let` では分解できません（`E0002`）。
 - 必ず一致するパターンと、失敗しうるパターンがあります。
 - `match` と関数ガードは網羅性を検査します。不足は `E1021` です。
@@ -23,13 +23,14 @@ Tsuzuri で利用可能なパターンの全種類は以下の通りです。
 | タプル | `(x, y)`, `(a, 0)` | 指定された要素数と各パターンの直積に一致 |
 | <!-- rule: CTL-020 -->レコード | `Point { x = a; y = b }`, `{ x: a }` | 指定したフィールドを照合。一部だけの部分照合も可。構築の `x: 0` とは別に、パターンは `=` でも `:` でも書ける |
 | <!-- rule: CTL-018 -->共用体ケース | `Some x`, `None`, `Shapes.Circle r` | 共用体（union）のタグを比較し、ペイロードを内部パターンへ渡す |
+| 型テスト | `:? i64`, `:? string as s` | [匿名共用体](../built-in-types-and-modules/anonymous-union.md)の値が、その要素の型を持つかをタグで比較し、`as` の名前に要素の値を束縛。照合する値の型が匿名共用体に決まっている必要がある |
 | 配列 | `[x, y]`, `[x; y]` | 要素数がちょうど一致する配列。長さをすべて書き並べても、整数と同じく網羅にはならない |
 | リスト | `[\|x, y\|]`, `[\|\|]` | 固定長の連結リスト、または空リストに一致 |
 | コンス（先頭分割） | `head :: tail` | 空でない連結リストの先頭要素 `head` と残りのリスト `tail` に一致 |
 | OR パターン | `p1 \| p2` | `p1` または `p2` のいずれかに一致（左辺優先） |
 | AND パターン | `p1 & p2` | `p1` と `p2` の両方に一致 |
 | 全体別名束縛 | `pattern as whole` | パターンに合致した値全体を同時に変数 `whole` に束縛 |
-| 型注釈付き | `(pattern: Type)` | パターンに明示的な型注釈を付与 |
+| 型注釈付き | `(pattern: Type)` | パターンに明示的な型注釈を付与。匿名共用体の型は `(x: (i64 \| string))` と括弧で囲む（`(x: i64 \| string)` は `(x: i64)` と `string` の OR パターン） |
 
 ```mermaid
 flowchart TD
@@ -37,7 +38,7 @@ flowchart TD
     Pattern --> Irrefutable["反駁不可能 (必ず一致)"]
     Pattern --> Refutable["反駁可能 (失敗しうる)"]
     Irrefutable --> IrrefExamples["変数 (x)<br/>ワイルドカード (_)<br/>タプル ((a, b))<br/>全フィールドレコード"]
-    Refutable --> RefExamples["定数 (42, true)<br/>共用体ケース (Some x)<br/>リスト (head :: tail)<br/>配列 ([x, y])"]
+    Refutable --> RefExamples["定数 (42, true)<br/>共用体ケース (Some x)<br/>型テスト (:? i64 as n)<br/>リスト (head :: tail)<br/>配列 ([x, y])"]
 ```
 
 ## パターンが使える場所
@@ -250,7 +251,7 @@ match opt with
 
 | 機能 | Tsuzuri | F# | Rust |
 | --- | --- | --- | --- |
-| パターン一覧 | 定数, 変数, タプル, レコード, 共用体, リスト, OR/AND | 同左 | 定数, 変数, タプル, 構造体, enum, スライス, OR |
+| パターン一覧 | 定数, 変数, タプル, レコード, 共用体, 型テスト（`:?`）, リスト, OR/AND | 同左 | 定数, 変数, タプル, 構造体, enum, スライス, OR |
 | ワイルドカード | `_` および `otherwise` | `_` | `_` |
 | リストのコンス | `head :: tail` | `head :: tail` | スライスパターン `[head, tail @ ..]` |
 | 反駁不能の強制 | ラムダ引数等での失敗はトラップ | 失敗時はコンパイル警告/エラー | `let` は反駁不可能のみ（`let else` で対応） |
@@ -259,7 +260,7 @@ match opt with
 ## まとめ
 
 - パターンマッチは、形の判定と分解を同時に行う構文です。
-- 定数、タプル、レコード、共用体、リスト（`head :: tail`）、OR / AND が使えます。
+- 定数、タプル、レコード、共用体、リスト（`head :: tail`）、OR / AND、匿名共用体の型テスト（`:? T as x`）が使えます。
 - 場所は `match`、ラムダ引数、`for...in`、関数ガードです。`let` では分解できません。
 - `match` と関数ガードは網羅性を検査します。関数ガードの共通計算は `where` に書けます。
 - 所有値からはフィールドをムーブできます。参照先は読み取り専用ビューです。
@@ -270,6 +271,7 @@ match opt with
 - [Active パターン](active-pattern.md)
 - [Record](../built-in-types-and-modules/record.md)
 - [Union](../built-in-types-and-modules/union.md)
+- [匿名共用体](../built-in-types-and-modules/anonymous-union.md)
 - [Tuple](../built-in-types-and-modules/tuple.md)
 - [List](../built-in-types-and-modules/list.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)

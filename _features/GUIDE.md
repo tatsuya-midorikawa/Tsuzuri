@@ -274,6 +274,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/docgen.rs` | API 文書の生成（G09） |
 | `src/doctest.rs` | doc の例の収集・実行・表示（`tsuzuri test --doc`、`render_doc`。G34） |
 | `src/exhaustiveness.rs` | match の網羅性検査（A03） |
+| `src/anonymous_union.rs` | 匿名共用体（A24）: 合成する宣言（`declarations`。`$anonymous.Union$2`〜`Union$32`）、正準順序・正規化・表示（`order`・`canonicalize`・`display`）、期待型での注入（`Checker::injects`・`union_value`・`conform_union`・`may_member`）。check の子モジュールで、型テストのパターンは `control.rs` の `type_test_pattern` |
 | `src/formatter.rs` | `tsuzuri fmt`（`format_source`、`SourceKind`） |
 | `src/gpu.rs` | GPU kernel の抽出と WGSL 生成（F07）。`--emit wgsl-relaxed` と `f16`・`f32` の relaxed kernel（F09） |
 | `src/gpu/spirv.rs` | Vulkan 向けの SPIR-V の emitter。依存なしで決定的（F09 Phase 3） |
