@@ -1199,3 +1199,177 @@ fn comparisons_and_exports_keep_their_rules() {
     let error = analyze("export def f :: (i64 | string) -> i64 = \\v -> 0\n").expect_err("export");
     assert_eq!(error.code, "E1008", "{}", error.message);
 }
+
+// Step 6: type test patterns `:? T [as x]`.
+
+#[test]
+fn type_test_binds_member_type() {
+    passes(
+        "def count :: own (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n + 1\n    | :? string as s -> String.length s\n    | :? bool as _ -> 100\n\ndef whole :: own (i64 | string) -> (i64 | string) = \\v ->\n    match v with\n    | (:? i64 as n) as all -> if n > 0 then all else 0\n    | :? string as s -> s\n\ndef either :: own (i32 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i32 | :? i64 -> 1\n    | :? string -> 2\n\ntest \"bindings\" =\n    assert (count 41 + count \"ab\" + count true == 144)\n    assert (match whole 5 with | :? i64 as n -> n == 5 | :? string -> false)\n    assert (match whole (-5) with | :? i64 as n -> n == 0 | :? string -> false)\n    assert (either 1i32 + either 1i64 + either \"x\" == 4)\n",
+        Edition::E2026,
+    );
+    // The binder has the member's type, not the union's.
+    let error = rejects(
+        "def f :: own (i64 | string) -> bool = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string -> false\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected bool, found i64");
+    // The two sides of an OR pattern bind one name with one type.
+    rejects(
+        "def f :: own (i32 | i64) -> i64 = \\v ->\n    match v with\n    | :? i64 as n | :? i32 as n -> 0\n",
+        "E1003",
+        "type_mismatch",
+    );
+    // Generic members test as the instance's types.
+    accepts(
+        "def f :: own (Maybe<'a> | i64) -> i64 = \\v ->\n    match v with\n    | :? Maybe<'a> -> 1\n    | :? i64 as n -> n\n",
+    );
+}
+
+#[test]
+fn type_test_views_through_references() {
+    passes(
+        "def size :: ref (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? string as s -> s.length\n    | :? i64 as n -> n\n\ntest \"views\" =\n    let items: [(i64 | string)] = [\"abc\", 4]\n    let mut total = 0\n    for item in items do\n        total = total + (match item with\n            | :? string as s -> s.length\n            | :? i64 as n -> n)\n    let v: (i64 | string) = \"xy\"\n    assert (total + size (ref v) == 9)\n    assert (match v with | :? string as s -> s.length == 2 | :? i64 -> false)\n",
+        Edition::E2026,
+    );
+    // A payload seen through a reference is a view: it cannot move out.
+    rejects(
+        "def take :: ref (i64 | string) -> string = \\v ->\n    match v with\n    | :? string as s -> s\n    | :? i64 -> \"\"\n",
+        "E1012",
+        "move_out_of_reference_binding",
+    );
+}
+
+#[test]
+fn type_test_rejections() {
+    // The matched type is unknown when the pattern is checked.
+    let error = rejects(
+        "let g = \\v ->\n    match v with\n    | :? i64 -> 0\n    | _ -> 1\n0\n",
+        "E1041",
+        "type_test_unknown_scrutinee",
+    );
+    assert_eq!(
+        error.message,
+        "the type of the matched value must be known to use ':?'"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("annotate the parameter or binding with its anonymous union type")
+    );
+    // The location is the `:?` itself.
+    assert_eq!((error.span.start, error.span.end), (37, 39));
+    // The matched type is no anonymous union: a number literal, or a named union.
+    let error = rejects(
+        "match 1 with\n| :? i64 -> 0\n| _ -> 1\n",
+        "E1041",
+        "type_test_not_anonymous_union",
+    );
+    assert_eq!(
+        error.message,
+        "':?' tests a member of an anonymous union, but the matched value has type i32"
+    );
+    assert_eq!(error.help, None);
+    let error = rejects(
+        "let m: Maybe<i64> = Some 1\nmatch m with\n| :? i64 -> 0\n| _ -> 1\n",
+        "E1041",
+        "type_test_not_anonymous_union",
+    );
+    assert_eq!(
+        error.message,
+        "':?' tests a member of an anonymous union, but the matched value has type Maybe<i64>"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("match the cases of a named union by name")
+    );
+    // The tested type is an anonymous union (A25 narrows to one).
+    let error = rejects(
+        "let v: (i64 | string | bool) = 1\nmatch v with\n| :? (string | i64) -> 0\n| _ -> 1\n",
+        "E1041",
+        "type_test_union",
+    );
+    assert_eq!(
+        error.message,
+        "':?' names one member of (i64 | bool | string); write one ':?' arm for each member"
+    );
+    // The tested type is no member.
+    let error = rejects(
+        "let v: (i64 | string) = 1\nmatch v with\n| :? bool -> 0\n| _ -> 1\n",
+        "E1041",
+        "type_test_not_member",
+    );
+    assert_eq!(error.message, "bool is not a member of (i64 | string)");
+    assert_eq!(error.help.as_deref(), Some("the members are i64, string"));
+    assert_eq!((error.span.start, error.span.end), (44, 48));
+    // A type variable that the signature does not name stays an error of its own.
+    rejects(
+        "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? Maybe<'b> -> 0\n    | _ -> 1\n",
+        "E1015",
+        "type_variable_absent_from_signature",
+    );
+}
+
+#[test]
+fn type_test_in_function_guards() {
+    passes(
+        "def size :: own (i64 | string | (i64 * i64)) -> i64 = \\v ->\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n    | :? (i64 * i64) as pair -> (match pair with | (a, b) -> a + b)\n\ndef inner :: own (i64 | Maybe<i64>) -> i64 = \\v ->\n    | (:? Maybe<i64> as m) -> (match m with | Some n -> n | None -> 0)\n    | :? i64 as n -> n\n\ntest \"guards\" =\n    assert (size 1 + size \"ab\" + size (3, 4) == 10)\n    assert (inner (Some 30) + inner 12 == 42)\n",
+        Edition::E2026,
+    );
+    // A read parameter (2027): the arms read their views.
+    passes(
+        "def size :: (i64 | string) -> i64 = \\v ->\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n\ntest \"read\" =\n    assert (size 40 + size \"ab\" == 42)\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn type_test_in_lambda_parameter_traps_at_run_time() {
+    let lambda = "let only: (i64 | string) -> i64 = \\(:? i64 as n) -> n\nlet bare: (i64 | string) -> i64 = \\:? i64 as n -> n\n";
+    passes(
+        &format!(
+            "test \"matches\" =\n    {}\n    {}\n    let xs: [(i64 | string)] = [1, 2, 39]\n    let mut total = 0\n    for (:? i64 as n) in xs do\n        total = total + n\n    assert (only 1 + bare 1 + total == 44)\n",
+            lambda.lines().next().unwrap(),
+            lambda.lines().nth(1).unwrap()
+        ),
+        Edition::E2026,
+    );
+    traps(
+        &format!(
+            "test \"lambda\" =\n    {}\n    assert (only \"x\" == 0)\n\ntest \"bare lambda\" =\n    {}\n    assert (bare \"x\" == 0)\n\ntest \"for\" =\n    let xs: [(i64 | string)] = [1, \"x\"]\n    let mut total = 0\n    for (:? i64 as n) in xs do\n        total = total + n\n    assert (total == 1)\n",
+            lambda.lines().next().unwrap(),
+            lambda.lines().nth(1).unwrap()
+        ),
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn read_parameter_type_test_moves_need_own() {
+    let describe = "def describe :: (i64 | string | bool) -> string = \\value ->\n    match value with\n    | :? i64 as n -> $\"int {n}\"\n    | :? string as s -> s\n    | :? bool as b -> if b then \"yes\" else \"no\"\n";
+    // A read parameter's payload is a view (2027): moving it out is an error, as with a named union.
+    let error = rejects_in(
+        describe,
+        Edition::E2027,
+        "E1012",
+        "move_out_of_reference_binding",
+    );
+    assert!(
+        error.message.contains("bound through a reference"),
+        "{}",
+        error.message
+    );
+    // `own` takes the value; the acceptance program of the ticket prints "int 42".
+    let owned = describe.replace(":: (i64", ":: own (i64");
+    passes(
+        &format!(
+            "{owned}test \"describe\" =\n    let first: (string | bool | i64) = 42\n    assert (describe first == \"int 42\")\n    assert (describe \"text\" == \"text\")\n    assert (describe false == \"no\")\n"
+        ),
+        Edition::E2027,
+    );
+    // Arms that only read the view need no `own`.
+    accepts_in(
+        "def size :: (i64 | string | bool) -> i64 = \\value ->\n    match value with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n    | :? bool as b -> if b then 1 else 0\n",
+        Edition::E2027,
+    );
+}
