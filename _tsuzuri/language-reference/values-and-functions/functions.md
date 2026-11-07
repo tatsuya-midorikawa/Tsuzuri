@@ -38,6 +38,7 @@ edition 2027 の通常の `def` では、無印の
 `*` を書く必要はありません。借用した型変数の値を返す場合は `Copy` が必要です。
 右辺のラムダで引数を参照の型と注釈すると（`def size :: 'a -> i64 = \(value: ref 'a) -> 3`）、
 view ではなく、注釈のとおり `ref 'a` の局所として束縛します。
+関数型の引数を `\(f: ref (i64 -> i64)) n -> …` と注釈したときは、呼び出しを `(deref f) n` と書きます（`f n` は `E1005`）。
 消費して返す恒等関数は `def identity :: own 'a -> 'a = \value -> value` と書きます。
 数値などの小さな具体型、`dyn`、SIMD と可変束縛引数は値渡しのままです。
 明示の `ref`／`ref mut` と region を指定した引数は変わらず、返却型やコールバックの中の引数も補完しません。
@@ -56,6 +57,8 @@ twice length text + inspect text + text.length
 矢印で書いた callback の型は、引数規約を暗黙に書き換えません。上の `ref 'a` は
 読み取り callback の明示契約です。2027 の `Array`／`List` の `map`・`mapi`・`iter`・
 `iteri`・`fold`・`fold_back` は読み取り callback を使い、非 Copy の要素も扱えます。
+そこへ直接書くラムダは、要素の引数を `\(text: ref string) -> …` と参照の型でも注釈でき、本体ではその引数が参照になります
+（[ラムダ式](./lambda-expressions.md#型注釈とパターン引数)）。
 `map_owned` などの `_owned` 入口は 2026 の値 callback を保ちます。
 `mapr`／`foldr` などの入口も残り、その callback では従来どおり参照を明示します。
 一時 callback の借用は、一段で完全適用し、結果が借用を持たない呼び出しに限ります。

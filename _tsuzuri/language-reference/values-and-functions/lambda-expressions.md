@@ -101,7 +101,7 @@ add 20 22
 42
 ```
 
-注釈には参照の型（`\(text: ref string) -> …`、`\(counter: ref mut Counter) -> …`、参照の型の別名）も書けます。edition 2027 の `def text_length :: string -> i64` の値のように、引数規約 `[Read]`・`[Mut]` を持つ関数型が期待される位置へ直接書いても、`let` で束縛してから使っても、その引数は注釈のとおり参照になり、ラムダの型も同じです。注釈の無い引数と、`\(text: string) -> …` のように値の型を注釈した引数は、その位置では参照先の値を読みます（[引数の所有権](./functions.md#引数の所有権own-と-edition-2027)）。
+注釈には参照の型（`\(text: ref string) -> …`、`\(counter: ref mut Counter) -> …`、参照の型の別名）も書けます。edition 2027 の `def text_length :: string -> i64` の値のように、引数規約 `[Read]`・`[Mut]` を持つ関数型が期待される位置へ直接書いても、`let` で束縛してから使っても、その引数は注釈のとおり参照になり、ラムダの型も同じです。注釈の無い引数と、`\(text: string) -> …` のように値の型を注釈した引数は、その位置では参照先の値を読みます（[引数の所有権](./functions.md#引数の所有権own-と-edition-2027)）。2027 の `Array`／`List` の `map`・`fold` などの読み取り callback へ直接書くラムダ（`texts |> Array.map (\(text: ref string) -> …)`）も同じです。参照の注釈が引数の型と合わないとき（`[Read]` の `string` の引数への `ref [string]` や `ref mut string`）は、引数は参照先の値を読むので、`E1003 expected ref [string], found string` のように、注釈に書いた型と参照先の値の型の食い違いとして報告されます。
 
 ```tsuzuri run=5005
 def text_length :: string -> i64 = \text -> text.length

@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | A18 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-06（A29 の 2 回目の修正の作業中に発見。`main` の `72f06862` で再現し、原因を実験で確かめた） |
 | 承認 | 不要（今型エラーになるプログラムを受理するだけで、今受理しているプログラムの型と IR は変えない） |
 | 改善する劣位 | 不具合: 引数規約 `[Read]` を持つ関数型（edition 2027 の `def text_length :: string -> i64`、edition 2026 の `pure def text_length :: string -> i64`）や `[Own, Mut]` を持つ関数型（`def bump :: i64 -> mut Counter -> unit`）が期待される位置へ、引数を `ref string`・`ref mut Counter` と注釈したラムダを直接書くと、`E1003 expected ref string, found string` になる。同じラムダを `let` で束縛してから使うと通り、注釈を `string` と書いても通る |
@@ -231,7 +231,7 @@ HEAD の dev binary（`target/scratch/base/tsuzuri`）で、「再現」、「�
   - `inner` を解決した型が `Type::Infer` でも `Type::Reference` でもなく、誤りも含まない。
 
   最後の条件を満たすとき、参照外しした主語は参照の注釈と `unify`（`src/polymorph.rs:401`）で決して合いません。したがって変わるのは、今型エラーになるプログラムだけです。上の 1 の 2 つのプログラムは今の型のままです。
-- **仕様 2（改）**: 最上位が参照の注釈でないパターン（注釈の無い引数、値の型の注釈、tuple・record・構築子）は、今のままにします。可変性の違う注釈（`Read` の位置の `ref mut string`）も `E1003` のままです。文言は `found ref string` になります。
+- **仕様 2（改）**: 最上位が参照の注釈でないパターン（注釈の無い引数、値の型の注釈、tuple・record・構築子）は、今のままにします。可変性の違う注釈（`Read` の位置の `ref mut string`）も `E1003` のままです。文言は `found ref string` になります（レビュー第1回で変更: 引数の参照の型と合わない注釈は値 view のままにしたので、文言も `found string` のまま変わりません）。
 - 判定は `lambda`（`src/closures.rs`）と `def` の引数（`src/check.rs:8943〜8962`）の両方に置き、同じ helper を使います。D1 の理由はそのまま当てはまります。`def` の側は、`normalize_definition` がラムダの引数をそのまま移したものです。
 - helper（`src/closures.rs`、`pub(super) fn parameter_annotations(body: &Expr) -> BTreeMap<&str, &TypeExpr>`）:
   - 本体が `ExprKind::Match { origin: MatchOrigin::LambdaDestructuring, .. }` で、主語が `ExprKind::Name`、腕が 1 つである間だけたどります。
@@ -281,7 +281,7 @@ HEAD の dev binary（`target/scratch/base/tsuzuri`）で、「再現」、「�
 
 - `src/closures.rs`:
   - `parameter_annotations(body)`: 本体の先頭の `MatchOrigin::LambdaDestructuring` の `match`（主語が名前、腕が 1 つでガードなし）の連なりをたどり、腕のパターンの最上位が `PatternKind::Annotated` の引数について、生成した名前と注釈を集めます。ガードの `match`（主語が `()`）、ラムダ、それ以外の式で止まります。
-  - `Checker::binds_annotated_reference(inner, annotation)`: 注釈が `resolve_type_with_kinds` で参照の型（`ref`・`ref mut`、別名を含む）に解決され、参照先の型 `inner`（解決後）が `Type::Infer`・`Type::Reference`・`Type::Application`・`Type::Partial` のどれでもなく、誤りも含まないときだけ真です。`Checker::annotation` は制約を足すので呼びません。
+  - `Checker::binds_annotated_reference(parameter, annotation)`: 注釈が `resolve_type_with_kinds` で参照の型（`ref`・`ref mut`、別名を含む）に解決され、引数の型 `parameter` が `ref inner` で、参照先の型 `inner`（解決後）が `Type::Infer`・`Type::Reference`・`Type::Application`・`Type::Partial` のどれでもなく、誤りも含まず、注釈が `parameter` と合う（`Inference::unifies`、レビュー第1回で追加）ときだけ真です。`Checker::annotation` は制約を足すので呼びません。
   - `lambda`: 期待型の規約が `Read`・`Mut` で引数の型が `ref inner` でも、`binds_annotated_reference` が真なら `read_value_parameters` に入れません。規約が無いときは連なりをたどりません。
 - `src/check.rs`（`def` の引数の束縛）: `computation::expand` の前に `parameter_annotations(&function.body)` を作り、`Mut` の挿入と、型変数・関数型を含む読み取りの挿入を同じ条件で外します。`default_reads` の登録はそのままです。
 
@@ -299,7 +299,7 @@ HEAD の dev binary（`target/scratch/base/tsuzuri`）で、「再現」、「�
 - 手順 4: 修正後の binary で同じ 201 個を同じコマンドで出力し、`diff -rq` で `.ll`（366 個）・標準エラー出力・終了コードのすべてが base と byte 単位で一致しました（`generic_records`・`conventions`（修正前の内容）・`type_aliases` を含む）。監査のプログラムのうち base で受理する 26 個の native と wasm32 の IR（52 個）も一致しました。
 - 監査のプログラムの base と修正後の結果（native の `-O0`・`-O3` は全部同じ）:
   - 受理されるようになった形（値は手で数えた値と一致）: `r01` `5005`、`r02` `5005`、`r03` `5005`、`r04` `51005`、`r05` `301004`、2026 の `pure def` の `if`・`match`・`Box` `5005` と `Vec` `51005`、`x01` `5005`、`x02`・`x03`・`x03b`・`x04` `250007`、`x06` `4`、`x07` `8`、`x11` `705`、`x13` `5005`、`x14` `101002`、`x17` `907`、`x19b` `8`、`x21` `5005`、`x22c` `5`。
-  - 拒否のまま（コードも同じ）: `x09`（`E1003`）、`x15`（`E1014`）、`x16`（`E1003`）、`x16f`（`E1003`）、`x18b`（`E1003`）、`x22`（`E1003`）、2026 の束縛した `if`（`E1029`）。`x10` は `E1003` のまま文言が `found ref string` になりました。`x19c`・`x20` は `E1003` から `E1005`（`only a function value can be called`。束縛した形の `x20b` と同じ）になりました。
+  - 拒否のまま（コードも同じ）: `x09`（`E1003`）、`x15`（`E1014`）、`x16`（`E1003`）、`x16f`（`E1003`）、`x18b`（`E1003`）、`x22`（`E1003`）、2026 の束縛した `if`（`E1029`）。`x10` は `E1003` のまま文言が `found ref string` になりました（レビュー第1回の後は文言も base と同じ `expected ref mut string, found string`）。`x19c`・`x20` は `E1003` から `E1005`（`only a function value can be called`。束縛した形の `x20b` と同じ。レビュー第1回で help が `(deref f) x` を案内するようになりました）になりました。
   - 受理していた形は値も変わりません（`c01`〜`c03`、`x05`、`x08`、`x16b`〜`x16e`、`x18`、`x19`、`x22b` など）。
 
 ### 実行したコマンド（T0〜T2）
@@ -336,3 +336,42 @@ HEAD の dev binary（`target/scratch/base/tsuzuri`）で、「再現」、「�
 - `src/closures.rs`、`src/check.rs`
 - `tests/parameter_conventions.rs`、`tests/fixtures/conventions/Main.tz`、`tests/features.mjs`
 - 上の文書と、このチケット（`_features/_completed/` へ移動）
+
+### レビューの指摘への対応（第1回）
+
+指摘ごとに、修正後の dev binary と base の binary（`target/scratch/base/tsuzuri`、`b3dd7f1c`）で再現してから対応しました。再現に使ったプログラムは `target/scratch/review-a32-ce/` と `target/scratch/a32/review1/` にあります。
+
+1. **[major] 新しく受理する注釈付きの形で、`Array.write` を通して解放済みのメモリを読める**: 再現しました。`h22`（`def put :: mut [(unit -> i64)] -> [i64] -> unit = \(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> Array.write 0 (\() -> xs[0] * 1000 + xs.length) slot`）は、base では `E1003`、修正後は `-O0` で `5004`、`-O3` で `4` です。`h21`（閉包の側）は `-4996` と `4` です。**A32 では直さず、A31 の範囲として記録しました。** 理由は次のとおりです。
+   - A32 は所有権検査を変えていません。新しく受理するプログラムには、どれも base が同じ本文の型と IR で受理する綴りがあります。閉包の側は `let` で束縛したラムダです（IR の一致は `annotated_reference_lambdas_compile_like_their_bound_form` が確かめています）。`def` の側は明示の `ref`・`ref mut` の署名です。
+   - base はすでに次の形を受理し、どれも `-O0` と `-O3` で値が分かれます。
+     - `h19`（注釈の無い `def`）、`h20`（束縛したラムダ）、明示の `ref mut` の署名（`h12`・`h14`・`h16`）。
+     - `def put :: ref mut [(unit -> i64)] -> ref [i64] -> unit = \(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> Array.write 0 (\() -> xs[0] * 1000 + xs.length) slot`（`review1/alias`、`5004` と `4`）。これは、パターンで束縛した別名 `slot` を通る書き込みです。
+   - 新しい綴りだけを拒否する保守的な規則も検討しましたが、それでは穴を閉じられません。書き込み先の `Mut` の引数の参照先が借用を持ちうるときだけ値 view に戻す規則なら、`h21`・`h22` は `E1003` に戻ります。しかし、借用の出どころだけを注釈した `\(xs: ref [i64]) slot -> Array.write 0 (\() -> xs[0] * 1000 + xs.length) slot`（`review1/src_side`）が残ります。この形は base では `E1003`、修正後は `-4996` と `4` で、束縛した形 `review1/src_side_bound` は base でも `-4996` と `4` です。これも拒むには、本体（std の関数を含む）が追跡されない格納をするかどうかを型検査の段で調べる必要があります。それは A31 が所有権検査で行うことです。利用者に見える一時的な制限を足しても穴は閉じないので、足しませんでした。
+   - この既知の不具合は、すでに綴りによらない形で書いてあります（`lifetimes.md` の現在の制限、`docs/language.md` の A31）。
+   - A31 への申し送り: `def` の右辺の新しい形と、A32 の前からある「明示の `ref mut` の署名＋注釈付きのラムダ」の形では、`Mut` の引数への書き込みが、隠れた引数 `$lambdaN` をパターンで束縛した別名 `slot` を通ります。引数の局所そのものや、その read value の参照外しは通りません。A31 の格納の事実は、この別名をたどる必要があります。このことは `docs/language.md` の引数の補完の節に書きました。`h19`〜`h22`、`alias`、`src_side` は、A31 の受け入れテストの候補です。
+2. **[minor] 型の違う参照の注釈の `E1003` が、参照先の型だけを報告する**: 再現しました（`m01`・`m02`・`p06`、監査の `x10`）。**直しました。** `binds_annotated_reference` は、注釈が引数の参照の型そのものと合うときだけ参照を束縛します。
+   - 判定は新しい `Inference::unifies`（`src/polymorph.rs`）で、`unify` を試します。試しの間に解いた推論変数は `Inference::trial` に記録して、あとで戻します。`unify` が解を書く所は 1 か所だけです。推論変数の表を複製しないので、費用は試す型の大きさだけです。
+   - 合わない注釈の引数は値 view のままなので、パターンは A32 の前と同じ診断を同じ位置で報告します。例: `expected ref [string], found string`、`expected ref string, found 'a`、`expected ref Main.Other, found Main.Big`、`expected ref mut string, found string`、`Mut` の位置の `ref Counter` に対する `expected ref Main.Counter, found Main.Counter`。
+   - 受理するプログラムは変わりません。監査の 68 個（native の `-O0`・`-O3`）を修正前の結果と比べると、違うのは `x10` の文言だけで、base と同じ文言に戻りました。レビューの 146 個も base と比べ（`-O0`）、規約を持つ引数への型の違う注釈は、どれも base と同じ文言と位置になりました（`m01`・`m02`・`p06` を含む）。
+   - `ref (i64 -> i64)` と注釈した関数の引数（`d07`・`x19c`・`x20`）は、注釈が合っているので参照を束縛します。`f n` は `E1005` のままで、明示の `ref (i64 -> i64)` の署名で `f n` と書いたときと同じです。その help は、参照先が関数のとき `a value of type ref (i64 -> i64) is a reference to a function, not a function; dereference it first, as in `(deref f) x`` にしました（`call_signature`）。`(deref f) n` は通ります。
+   - 回帰テストは `mistyped_reference_annotations_keep_their_diagnostics` です。修正前のコードでは、最初の形が `expected [string], found string` になって失敗することを確かめました。
+3. **[minor] 状態が `todo` のまま**: 見出しの表を `done` にしました。
+4. **[minor] `Array`／`List` の読み取り callback へ直接書く注釈付きラムダに、テストも文書も無い**: 再現しました。(a) `60`、(b) `6`、(c) `60`、(d) `E1013` で、base はどれも `E1003` です。次のテストと文書を足しました。
+   - テスト `annotated_reference_read_callbacks`: `Array` と `List` の `map`（直接とパイプライン）・`mapi`・`iter`・`iteri`・`fold`（直接とパイプライン）・`fold_back` を確かめます。本体では `let view: ref string = text` が通ることも確かめます。参照をブロックの外へ返すと `E1013`（束縛した形も `E1013`）、ブロックの中なら受理です。
+   - suite `conventions` の `annotated_read_callbacks`: native と WASM の `-O0`・`-O3` で、入力は `-3`・`0`・`1` です。期待値は手で数えた式で書きました。
+   - 文書: `functions.md` の読み取り callback の段落、`lambda-expressions.md`、`array.md`、`list.md`、`docs/language.md`。
+5. **[minor] `x16c` と `x18` の回帰テストが値を確かめていない**: suite `conventions` に `annotated_reference_kept` を足しました。次の値を手で数えた式で確かめます。
+   - `x16c` の項: `inspect` が `3`、ラムダが `"hello"` を `ref ref string` を通して読んで `50`。
+   - `x18` の項: `3 + 50 · 1000 + (500 + n) · 10^6`。入力 `1` では監査の基準と同じ `501050003` です。
+   - `apply_ref` の `(deref f) ((deref f) value)`。
+6. **[minor] `binds_annotated_reference` の doc comment に `Partial` が無い**: 書き直しました。2 の試しの条件も書き足しました。
+
+確認したこと:
+
+- `cargo fmt --all -- --check` と `cargo clippy --all-targets -- -D warnings`: 成功。
+- `cargo test --locked --test parameter_conventions`: 44 passed（42 件に新規の 2 件）。
+- `cargo nextest run --locked`: 2987 tests run: 2987 passed, 4 skipped（レビュー前は 2985 件）。
+- `node tests/features.mjs target/debug/tsuzuri conventions`: 成功（49 cases、native と WASM の `-O0`・`-O3`）。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs functions.md lambda-expressions.md array.md list.md`（`_tsuzuri/language-reference/` の下）: 成功（4 pages, 96 links, 88 checked examples, 176 native runs）。`node scripts/check-links.mjs`・`--into _features/README.md`: 0 broken。`node scripts/check-guide-lite.mjs`: 88 references checked, 0 failed。
+
+変更したファイル: `src/polymorph.rs`、`src/closures.rs`、`src/check.rs`、`tests/parameter_conventions.rs`、`tests/fixtures/conventions/Main.tz`、`tests/features.mjs`、`functions.md`、`lambda-expressions.md`、`array.md`、`list.md`、`docs/language.md`、`docs/architecture.md`、このチケット。

@@ -479,7 +479,8 @@ F# のリストは不変で、いくつものリストが末尾を共有しま�
 ### コールバックと `r` 形
 
 2027 の `map`・`mapi`・`iter`・`iteri`・`fold`・`fold_back` は要素の読み取り view を渡すため、
-callback は参照外しを書かずに非 Copy の要素も読めます。旧版の値 callback は
+callback は参照外しを書かずに非 Copy の要素も読めます。ラムダの要素の引数を
+`\(text: ref string) -> …` と参照の型で注釈すると、本体ではその引数が参照になります。旧版の値 callback は
 `map_owned`・`mapi_owned`・`iter_owned`・`iteri_owned`・`fold_owned`・`fold_back_owned` で使えます。
 2026 の従来名も値 callback のままです。
 

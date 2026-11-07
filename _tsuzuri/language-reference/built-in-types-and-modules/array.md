@@ -189,6 +189,7 @@ for i = values.length - 1 downto 0 do
 F# の `Array` と同じ道具が揃っています。関数を先に、配列を最後に渡すので、`|>` でつなげます。
 2027 の `map`・`mapi`・`iter`・`iteri`・`fold`・`fold_back` は要素の読み取り view を渡します。
 callback は要素を読むときに参照外しを書く必要がなく、非 Copy の要素を移動することはできません。
+ラムダの要素の引数を `\(text: ref string) -> …` と参照の型で注釈すると、本体ではその引数が参照になります。
 これらの値 callback は `map_owned`・`mapi_owned`・`iter_owned`・`iteri_owned`・`fold_owned`・
 `fold_back_owned` で使えます。2026 の従来名は引き続き値 callback です。
 明示参照の `mapr`・`mapir`・`iterr`・`iterir`・`foldr`・`foldr_back` も互換入口として残ります。
