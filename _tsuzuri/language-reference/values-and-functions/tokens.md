@@ -29,7 +29,7 @@ Tsuzuri では、区切り文字、括弧、矢印記号、演算子、コメン
 | `.` | レコードやモジュールのメンバー参照、小数点 | `user.name`, `Array.map` | [演算子と式](./op-and-expressions.md) |
 | `..` | 配列スライスの半開区間。必ず `ref` か `ref mut` と組む | `ref values[1..4]` | [演算子と式](./op-and-expressions.md) |
 | `..=` / `..<` | 終端を含む・含まない範囲。`for...in` の整数範囲と配列スライス | `for i in 0 ..< n`<br/>`ref values[1..=3]` | [for...in 式](../loops-and-conditionals/for-in.md#整数範囲の反復) |
-| `\|` | match アームの区切り、union ケース区切り、ビット OR | `\| Case ->`<br/>`\| Circle of f64` | [パターンマッチング](../pattern-matching/pattern-matching.md)<br/>[Union](../built-in-types-and-modules/union.md) |
+| `\|` | match アームの区切り、union ケース区切り、匿名共用体の要素の区切り（括弧の中の型）、ビット OR | `\| Case ->`<br/>`\| Circle of f64`<br/>`(i64 \| string)` | [パターンマッチング](../pattern-matching/pattern-matching.md)<br/>[Union](../built-in-types-and-modules/union.md)<br/>[匿名共用体](../built-in-types-and-modules/anonymous-union.md) |
 | `\|>` | パイプライン演算子（値を関数の引数へ渡す） | `data \|> process` | [演算子と式](./op-and-expressions.md) |
 | `'a` | ジェネリック型変数（小文字で始まる識別子） | `'a`, `'key`, `'value` | [ジェネリック関数と型パラメータ制約](./generics-functions.md) |
 | `'c'` | `char`（UTF-16 文字）リテラル | `'A'`, `'\n'` | [リテラル](../literals-and-strings/literals.md) |
@@ -41,6 +41,7 @@ Tsuzuri では、区切り文字、括弧、矢印記号、演算子、コメン
 | `@` | コンパイラ属性（`@literal`, `@checked`, `@cpu`, `@json`, `@alias`）、制約行 | `@checked x + y`<br/>`@alias async`<br/>`@'a : Show` | [属性](./attributes.md) |
 | `#` | 制約行の関数制約 | `@'a : #hash` | [制約 と 属性](../types-and-type-inference/constraints.md) |
 | `?` | 型つき穴（式の位置だけ。常に `E1030` で、期待される型と候補を教える）。`?名前` は名前つきの穴。誤りの伝播の演算子ではない | `n + ?`<br/>`f ?a ?` | [型推論](../types-and-type-inference/type-inference.md#型つき穴-) |
+| `:?` | 型テストのパターン（パターンの位置だけ。`:` と `?` を空けずに書く）。匿名共用体の値がその要素の型かを照合する | `\| :? i64 as n ->` | [匿名共用体](../built-in-types-and-modules/anonymous-union.md) |
 | `!` | 論理否定演算子、コンピュテーション式文 | `!flag`<br/>`let! x = task` | [演算子と式](./op-and-expressions.md)<br/>[ステートメント](./statements.md) |
 | `_` | ワイルドカード、数値区切り、未使用変数の接頭辞 | `\| _ -> 0`, `1_000` | [パターンマッチング](../pattern-matching/pattern-matching.md) |
 | `//` | 単一行コメント（行末まで） | `// 注記` | [特殊文字](./tokens.md) |
