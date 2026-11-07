@@ -675,6 +675,7 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 | `tzroutine` | 0.4 | 0.5 | 0.5 |
 | `examples/tzroutines` | 0.1 | 0.1 | 0.1 |
 
+別の時刻（負荷平均 25 前後）にもう一度、基準と手順 4 の後だけを比べると、`vec_dotnet` 9.1 → 9.4、`hash_map` 13.4 → 10.9、`list_fsharp` 23.5 → 20.3、`array_fsharp` 16.0 → 14.4、`rc` 2.7 → 2.5、`tzroutine` 0.7 → 0.7、`examples/tzroutines` 0.1 → 0.1 で、10 % を超えて遅いものはありません（`check` の相も ±7 % の中）。
 `tzroutine` の差（0.1 ms）は測定の分解能と同じ大きさです。段階 2 の記録にもあり（0.7 → 1.0）、書き込みの事実の前処理（`store_candidates`）がどのモジュールでも本文を 1 回走査する分と見ています。
 
 ## 決定事項
