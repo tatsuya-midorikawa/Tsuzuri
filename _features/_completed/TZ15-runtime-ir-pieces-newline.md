@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | TZ02, TZ10, TZ14 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（2026-11-08。4 個の `.ll` を改行で終え、単体テストがすべての `.ll` の末尾の改行を保つ。IR の違いは「仕様」の 4 種類だけ） |
 | 起票 | 2026-11-06（TZ14 の作業中に発見。TZ14 のチケットの「レビューの指摘への対応」の「残したこと」の続き。`main` の `72f06862` と TZ14 のブランチの `2306260c` で確認） |
 | 承認 | 不要（言語の意味は変えない。生成 IR の行の分け方と、それで正しく付くようになる属性・検査だけを変える） |
 | 改善する劣位 | 潜在的な不具合: ランタイムの IR の断片のうち 4 個が改行で終わらないので、次の断片の最初の行がその `}` と同じ行に続く（`}define ...`・`}; ...`・`}@...`）。IR を行ごとに読む処理は、その行の関数を関数として見ない。今起きているのは、spawn するプログラムでその関数に `"probe-stack"` が付かないことと、その関数を呼ぶループに要らない横取りの検査が入ることである |
@@ -183,11 +183,11 @@
 
 ## 受け入れ条件
 
-- [ ] `src/runtime/` のすべての `.ll` が改行で終わり、単体テストがそれを保つ。
-- [ ] 再現 1 のプログラムの IR で、`@tz.string.copy` の見出しが自分の行にあり、`"probe-stack"="inline-asm"` を持つ（Windows を除く）。
-- [ ] 再現 2 のプログラムの IR に横取りの検査が無い。
-- [ ] 手順 3 の IR の比較の違いが「仕様」の 4 種類だけで、チケットに記録されている。
-- [ ] T2 が成功する。
+- [x] `src/runtime/` のすべての `.ll` が改行で終わり、単体テストがそれを保つ。
+- [x] 再現 1 のプログラムの IR で、`@tz.string.copy` の見出しが自分の行にあり、`"probe-stack"="inline-asm"` を持つ（Windows を除く）。
+- [x] 再現 2 のプログラムの IR に横取りの検査が無い。
+- [x] 手順 3 の IR の比較の違いが「仕様」の 4 種類だけで、チケットに記録されている。
+- [x] T2 が成功する。
 
 ## 落とし穴
 
@@ -329,3 +329,122 @@ HEAD b3dd7f1c の dev ビルド（`target/scratch/base/tsuzuri`）で「現状�
   - (a) つなぐ側で、出力が改行で終わらないときだけ改行を足す（`RuntimeSymbols::append` と、断片を `push_str` で足す十数か所）。空の行は増えないが、断片を足す所が 2 種類に分かれていて、新しい所を足すと漏れうる。
   - (b) `with_stack_probes` と `definitions` に TZ14 の行の分け方を入れる。この 2 つの処理だけが直り、ほかの行ごとの処理には継ぎ目が残る。
 - 状態: 既定案（実装者はこの案に従う）。手順 3 の比較で「仕様」のほかの違いが出たら見直す（停止条件）。
+
+## 実装と検証（2026-11-08）
+
+ブランチ `fix/tz15-runtime-ir-newline`（`main` の `b3dd7f1c` から）。手順 1〜4 をすべて実装し、「着手時の再検討」の計画の変更をすべて採りました。
+
+### 実装した手順
+
+- 手順 1: 監査が同じ HEAD・同じコマンドで出した IR（`target/scratch/audit-TZ15/survey/{default,small,wasm}/`、`baseline.md`）を基準にしました。数は「着手時の再検討」のとおりです（ネイティブ 26 個・31 行、wasm32 18 個・22 行）。
+- 手順 2: 失敗するテストを先に足しました。
+  - `src/llvm.rs` の `runtime_pieces_end_with_a_newline`: `src/runtime` を再帰せずに読み、拡張子 `ll` のファイルがどれも `\n` で終わることを確かめます（名前を並べ替えて報告）。修正の前は `["character.ll", "debug.ll", "display.ll", "recursive.ll"]` を出して失敗しました。
+  - `tests/tzroutine.rs` の `runtime_pieces_start_on_lines_of_their_own`: 再現 1・2 を `llvm::emit_with_strings(..., StringForm::Utf16)` で、`Entry::Library` と `Entry::Console` の両方で出します。(a) `}` の後に何か続く行が無い、(b) `define ` を含む行がどれも `define ` で始まり、`cfg!(windows)` でなければ `"probe-stack"="inline-asm"` を持つ（`@tz.preempt.poll` と `@tz.trap.*` を除く）、その中に `@tz.string.copy(` の見出しがある、再現 2 の IR に `@tz.preempt.poll` が無い、を確かめます。3 つ目の例（`Debug.print (ref 1)` と `to_string i` のループ）は UTF-16 と compact の両方で (a)・(b) と検査が無いことを確かめます。修正の前は、(a)（`}define internal void @tz.string.copy(...)`）、(b)（同じ行）、再現 2 の検査、3 つ目の例の `}; PM08: ...` と検査で、それぞれ失敗することを確かめました（各確認を一時的に外して 1 つずつ実行。3 つ目の例は先に回る UTF-16 で失敗し、compact でも同じ継ぎ目と検査が出ることは監査の `repro2int.compact.ll` で確かめました）。
+  - `src/llvm_traps.rs` の `a_definition_after_a_closing_brace_is_a_line_of_its_own`: 合成した `}define ...`・`}; note` の IR で、`ir_lines` が閉じ括弧と残りを 2 行に分け、`with_frame_pointers` が `}define` の行にも `"frame-pointer"="all"` を入れることを確かめます（残す備えのテスト。修正の前から成功します）。
+- 手順 3: `character.ll`・`display.ll`・`debug.ll`・`recursive.ll` の末尾に改行を 1 つ足しました。断片をつなぐコードは変えていません（D1）。
+- 手順 4: 「ランタイムの断片は改行で終わらない」と書いていた注釈と文書を直しました（下の「変更したファイル」）。継ぎ目を前提にしたコード（`runtime_definitions`、`ir_lines`、`with_frame_pointers` の `}define ` の枝、`definition_start`、`parse_function`、`src/llvm.rs` の改行の確認 2 か所）は、別の形でつないだ IR への備えとして残しました。
+
+### 手順 3 の IR の比較
+
+新しいコンパイラ（このブランチの dev ビルド）で、監査と同じコマンド（`build --emit llvm --no-cache -O0`。`find tests/fixtures examples -maxdepth 3 -name Main.tz` の 174 個）で出し、古い IR の `}` の後に続く行を 2 行に分けてから `diff` で比べ、違いを「仕様」の 4 種類に分類しました（作業用のスクリプト `target/scratch/tz15/compare.py` で。commit していません）。分類できない違いは、どの構成でも 0 行でした。
+
+| 構成 | byte 単位で同じ | 違う | 拒否（前後で同じ診断） | 種類 1（分かれた行） | 種類 2（`"probe-stack"`） | 種類 3（検査） | 種類 4（空の行） | 新しい IR の `^}.` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 既定の確保器 | 141 | 27 | 6 | 26 個・31 行 | 2（`rc`・`recursive_types` の `@tz.closure.clone`） | 0 | 1（`effects_sweep`） | 0 |
+| `--allocator small` | 141 | 27 | 6 | 26 個・31 行 | 2（同じ） | 0 | 1（`effects_sweep`） | 0 |
+| `--target wasm32` | 139 | 19 | 16 | 18 個・22 行 | 0 | 0 | 1（`concurrency`） | 0 |
+
+違いのある project と種類（ネイティブは既定の確保器と `--allocator small` で同じ。数は行の数）:
+
+| project | ネイティブ | wasm32 |
+| --- | --- | --- |
+| `alloc_contracts` | 1: 2 | 1: 1 |
+| `capabilities/probe` | 1: 1 | – |
+| `cbor` | 1: 1 | 1: 1 |
+| `chars` | 1: 1 | 1: 1 |
+| `compact_strings` | 1: 2 | 1: 2 |
+| `compact_strings_raw` | 1: 2 | 1: 2 |
+| `concurrency` | 1: 1 | 4: 1 |
+| `concurrency_threads` | 1: 1 | – |
+| `debug_output` | 1: 1 | – |
+| `debug_view` | 1: 1 | 1: 1 |
+| `deriving` | 1: 2 | 1: 2 |
+| `effects_sweep` | 4: 1 | – |
+| `generic_records` | 1: 1 | 1: 1 |
+| `json` | 1: 1 | 1: 1 |
+| `kg_basic` | 1: 1 | – |
+| `last_use` | 1: 1 | 1: 1 |
+| `list_chunks` | 1: 1 | 1: 1 |
+| `llvm_handoff/tree` | 1: 2 | 1: 2 |
+| `llvm_handoff/tree_channel` | 1: 1 | 1: 1 |
+| `parallel_report/basic` | 1: 1 | – |
+| `pure_functions` | 1: 1 | – |
+| `rc` | 1: 1、2: 1 | 1: 1 |
+| `recursive_types` | 1: 1、2: 1 | 1: 1 |
+| `string_interpolation` | 1: 1 | 1: 1 |
+| `text_class_stages` | 1: 1 | – |
+| `user_drop` | 1: 1 | 1: 1 |
+| `value_layout` | 1: 1 | 1: 1 |
+
+- 横取りの検査と `noinline` の付き方は、どの project でも変わりませんでした。spawn する `concurrency` の検査は前後とも 2 個です（監査は減りうるとしていましたが、`integer.ll` の最初の関数は検査のあるループの重さを決めていませんでした）。`--allocator small` の `tz_small_realloc` の ` noinline` も同じです。
+- 種類 2 の 2 つは `define internal %tz.closure @tz.closure.clone(%tz.closure %value) nounwind "probe-stack"="inline-asm" {` です。`concurrency` の `define ` の 1,140 行のうち `"probe-stack"` が無いのは `@tz.preempt.poll` だけです。
+- ほかの構成の抜き取り（`deriving`・`rc`・`compact_strings`・`concurrency`・`alloc_contracts`）: `--allocator host` は種類 1 と、`rc` の種類 2（`@tz.closure.clone`）だけ。`--allocator counting` は種類 1 と種類 4（`alloc_contracts`・`concurrency`・`deriving`・`rc` に 1 行ずつ。`recursive.ll` の後に改行で始まる確保器の断片が続く）だけ。`--trap-info` は前から `^}.` が 0 行で、違いは `rc` の種類 2（`@tz.closure.clone`）だけ。`.trap.json` は 5 個とも byte 単位で同じです。
+- 再現の IR（`-O0`・`-O3` で同じ）:
+  - 再現 1: 1338 行目が `}` と `define internal void @tz.string.copy(...) nounwind "probe-stack"="inline-asm" {` の 2 行に分かれることだけが違います。`define ` で始まる 114 行は、すべて `"probe-stack"` を持ちます。実行結果は `x`・`41` です。
+  - 再現 2: 継ぎ目が分かれ、`@tz.string.copy` に `"probe-stack"` が付き、`call void @tz.preempt.poll()` と `POLL_DEFINITION`（`@tsuzuri_tz_preempt_pending`・`@tsuzuri_tz_preempt_check` の宣言を含む）が消えます。`define ` の 65 行はすべて `"probe-stack"` を持ちます。実行結果は `1000` です。
+  - 3 つ目の例（`Debug.print 1` と `to_string i`）: `}; PM08: ...` が分かれ、検査と `POLL_DEFINITION` が消えます。`define ` の 86 行はすべて `"probe-stack"` を持ちます。実行結果は `1`・`2890`（手で数えた 10 × 1 + 90 × 2 + 900 × 3）です。
+
+### 生成コードの確認（性能の節）
+
+`--emit asm` という出力の種類は無いので、`-O3` の実行ファイル（macOS arm64）を `llvm-objdump -d --no-show-raw-insn` で読みました。速さは測っていません。
+
+| プログラム | 基準（`b3dd7f1c`） | このブランチ |
+| --- | --- | --- |
+| 再現 2 | `count` を inline した `_tz.fn.Main.$entry`（7,004 命令）で、ループは展開され、`ldr w8, [x19, #0x50]`（`tsuzuri_tz_preempt_pending` の load）と `cbnz` の組が 999 個、冷たい `bl _tsuzuri_tz_preempt_check` が 999 個 | 入口は `_main`（36 命令）に inline され、`count 1000` は定数 `1000` に畳まれる。`tsuzuri_tz_preempt_pending` の load も `_tsuzuri_tz_preempt_check` の呼び出しも 0 個。実行ファイルは 106,264 → 73,160 byte |
+| 3 つ目の例 | `_main`（13,758 命令）に旗の load が 500 個、`bl _tsuzuri_tz_preempt_check` が 500 個 | 旗の load も呼び出しも 0 個。LLVM は検査の消えたループを別の形に展開し（`_tz.fn.Main.$entry` が 26,201 命令、`@tz.integer.digits` の呼び出しが 502 → 1,001 個）、実行ファイルは 139,304 → 188,824 byte |
+
+どちらも検査の load と分岐がループから消えることを確かめました。3 つ目の例の大きさの増え方は、回数が定数 1000 のループを LLVM が展開した結果で、検査が消えたことで展開の判断が変わったものです。
+
+### 実行したコマンドと結果
+
+- T0: `cargo fmt --all -- --check`（成功）、`cargo clippy --all-targets -- -D warnings`（警告なし）。
+- 手順 2 の後（修正の前）の T1: `cargo nextest run --locked --no-fail-fast` で 2,983 件のうち 2,981 件が成功し、失敗は新しい 2 件（`llvm::tests::runtime_pieces_end_with_a_newline`、`tzroutine::runtime_pieces_start_on_lines_of_their_own`）だけでした（4 件 skip）。
+- 手順 3 の確認:
+  - `cargo test --locked --lib -- runtime_pieces_end_with_a_newline a_definition_after_a_closing_brace_is_a_line_of_its_own preempt llvm::strings::`: `running 19 tests`、19 件成功（`preempt` は 10 件、`llvm::strings::` は 7 件。再検討のとおり `llvm_strings` の絞り込みは 0 件なので使っていません）。
+  - `cargo test --locked --test tzroutine --test preemption --test allocator --test llvm_handoff --test lto`: 23・6・10・13・20 件、すべて成功。
+  - `TSUZURI_STRINGS=compact cargo test --locked --test tzroutine`（PM03 の job と同じ形）: 23 件すべて成功。
+- 最後の T1（手順 4 の後）: `cargo nextest run --locked --no-fail-fast` で 2,983 件すべて成功（4 件 skip）。
+- T2（`cargo build --locked` の dev のバイナリ。`features.mjs` は native と WASM の `-O0`・`-O3` を回します）:
+  - `node tests/features.mjs target/debug/tsuzuri <suite>`: `chars`（19 件）、`string_interpolation`（82 件）、`deriving`（209 件）、`debug_output`（3 件）、`recursive_types`（23 件）、`rc`（39 件。WASM のスレッドの `Arc` を含む）、`concurrency`（15 件）。どれも native と WASM の `-O0`・`-O3` で成功。
+  - `TSUZURI_TEST_ALLOCATOR=small` で `recursive_types`（23 件）・`rc`（39 件）: 成功。
+  - `node tests/compact_strings.mjs`（12 の build の行列が一致）、`node tests/compact_strings_raw.mjs`、`node tests/user_drop.mjs`（native と WASM の `-O0`・`-O3`）、`node tests/wasm_threads.mjs`、`node tests/llvm_handoff.mjs`（`tree`・`tree_channel` を含む）: すべて成功（どれも `target/debug/tsuzuri`）。
+  - `sh scripts/check-runtime-includes.sh`: 60 個のファイルが追跡されていて成功。
+  - `node scripts/check-guide-lite.mjs`（88 件、失敗 0）、`node scripts/check-links.mjs --into _features/_completed/TZ15-runtime-ir-pieces-newline.md --into _features/README.md`（15 件、壊れたもの 0）。
+  - `node scripts/check-docs.mjs` は、言語リファレンスのページを変えていないので回していません。診断の登録簿と std のタグも変えていないので、`gen-docs.mjs` も要りません。
+
+### チケットから外れた判断
+
+- 停止条件に当たる事態は起きませんでした（IR の違いは「仕様」の 4 種類だけ、`llvm_strings` の加工は末尾の改行に依らない、native と WASM・`-O0` と `-O3` の結果は同じ）。
+- 再検討のとおり、統合テストの再現 1・2 は `StringForm::Utf16` に固定し、3 つ目の例を足しました。`analyze` は edition 2026 なので、3 つ目の例は `Debug.print 1` でなく `Debug.print (ref 1)` と書きました（edition 2026 の `Debug.print` は `ref` を取ります。継ぎ目は同じ `debug.ll` → `integer.ll` です）。
+- 「すべての `define` が `"probe-stack"` を持つ」の確認は、`@tz.preempt.poll` と `@tz.trap.*` を除きます（再検討の 4）。`define ` を含む行は、行の途中のものも数えます。
+- 性能の節の「`--emit asm`」は、その出力の種類が無いので、`-O3` の実行ファイルの逆アセンブルで代えました（上の「生成コードの確認」）。
+- 監査が「減りうる」とした `concurrency` の検査は減りませんでした（2 個のまま）。「仕様」の 3 は「消える」ことを許すだけなので、食い違いではありません。
+- テストの名前 `the_trap_instrumentation_reads_runtime_parts_that_share_a_line`（`tests/llvm_handoff.rs`）は変えず、注釈で TZ15 の前の状況だと書きました。継ぎ目の処理そのものは、`src/llvm_traps.rs` の新しい単体テストが合成した IR で確かめます。
+
+### 文書
+
+- `docs/architecture.md`: TZ02 の `with_stack_probes` の段落（見出しとみる行と、`"probe-stack"` が付かない関数が `@tz.preempt.poll`・`@tz.trap.*` だけになったこと）、TZ14 の `helpers_may_wait` の段落（`runtime_definitions` の分け方は備えとして残す）、§フロントエンドのトラップの走査の段落（TZ15 からは継ぎ目が無く、`ir_lines` は備え）、PR08 の `stamp_target_attributes` と B10 の `with_frame_pointers` の `}define` の記述（備えと分かるように）。
+- `_tsuzuri/language-reference/`・`docs/language.md`・`README.md`: 変更不要（利用者から見える振る舞いは変わりません。`grep -rn "TZ15\|probe-stack\|tz.string.copy" _tsuzuri docs/language.md README.md` で、関係する記述が無いことを確かめました）。
+- `_features/README.md`: TZ15 の 2 つの行を done にし、`_completed/` へのリンクにしました。`_features/_completed/TZ14-thread-storage-across-parallel-waits.md` の TZ15 へのリンクも直しました。
+
+### 変更したファイル
+
+- `src/runtime/character.ll`・`display.ll`・`debug.ll`・`recursive.ll`（末尾の改行）
+- `src/llvm.rs`（単体テスト `runtime_pieces_end_with_a_newline`、改行の確認 2 か所の注釈）
+- `src/llvm_traps.rs`（単体テスト `a_definition_after_a_closing_brace_is_a_line_of_its_own`、`ir_lines` の注釈）
+- `src/llvm_preempt.rs`（`runtime_definitions` と `JOINED_PROGRAM` の注釈）
+- `src/driver/lto.rs`（`definition_start` の注釈）
+- `tests/tzroutine.rs`（統合テスト `runtime_pieces_start_on_lines_of_their_own`）
+- `tests/lto.rs`・`tests/llvm_handoff.rs`・`tests/llvm_handoff.mjs`（注釈）
+- `docs/architecture.md`
+- `_features/README.md`、`_features/_completed/TZ14-thread-storage-across-parallel-waits.md`、このチケット（`_features/_completed/` へ移動）

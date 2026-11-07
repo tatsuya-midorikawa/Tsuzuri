@@ -308,7 +308,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | TZ12 | [`Task`・`task { }` の削除と移行（`DataChannel` の待ちの移設を含む）](_completed/TZ12-remove-task.md) | P1 | L | TZ04, TZ07, TZ11 | done（`task { }`・`Task<T>`・`Task.*` は `E1040`（`removed_task_*`。`tsuzuri fix` が `Task.scope` を `Routine.scope` に）。ネイティブの `Parallel`・`Mutex`・`DataChannel` は全プログラムで tzroutine のランタイム。`task.c` を削除） |
 | TZ13 | [`Async` と Net の `_async` の削除と移行](_completed/TZ13-remove-async.md) | P1 | M | TZ08, TZ12 | done（`Async`・`async { }`・`Async.*` と Net の `_async` は `E1040`（`removed_async`・`removed_net_async`）。reactor（`async.c`）とホスト駆動の実行器を削除し、後継はない（D2）） |
 | TZ14 | [spawn しないプログラムの `Parallel.*` でも、スレッドの記憶域を読むランタイムの IR 関数を `noinline` にする](_completed/TZ14-thread-storage-across-parallel-waits.md) | P2 | S | TZ10, TZ11 | done（spawn せず `Parallel.*` を呼ぶネイティブのプログラムのうち、手伝いの tzroutine が待ちうるもの（入れ子の `Parallel.*`、ポインターを通す呼び出しや extern に届くコールバック。IR の保守的な解析）で、`--allocator small` の `tz_small_realloc` を `noinline` にする。横取りの検査は入れず、ほかのプログラムの IR は 1 byte も変わらない。すべてに付けると `Vec` を伸ばす核が 17 % 遅くなったので D1 を狭めた。`-O3` の SIGSEGV と TSan のデータ競合を再現して直した） |
-| TZ15 | [ランタイムの IR の断片を改行で終え、次の断片が閉じ括弧の行から始まらないようにする](TZ15-runtime-ir-pieces-newline.md) | P3 | S | TZ02, TZ10, TZ14 | todo |
+| TZ15 | [ランタイムの IR の断片を改行で終え、次の断片が閉じ括弧の行から始まらないようにする](_completed/TZ15-runtime-ir-pieces-newline.md) | P3 | S | TZ02, TZ10, TZ14 | done（2026-11-08。`src/runtime/` のすべての `.ll` が改行で終わり（単体テスト `runtime_pieces_end_with_a_newline` が保つ）、つないだ IR に `}` の後に同じ行で何かが続く行は無い。spawn するか `Parallel.*` を呼ぶネイティブのプログラムでは、以前は `}define` の行にあった関数（`@tz.string.copy`・`@tz.closure.clone` など）の見出しにも `"probe-stack"="inline-asm"` が付き（Windows を除く）、その関数を通してだけ重い呼び出しに数えられていたループの横取りの検査（検査が残らなければ `@tz.preempt.poll` の定義も）が消える。174 の project の IR の違いは、行の分割、`rc`・`recursive_types` の `@tz.closure.clone` の probe、空の行 1 つ（ネイティブの `effects_sweep`、wasm32 の `concurrency`）だけで、横取りの検査と `noinline` の付き方・実行結果・診断は変わらない。`runtime_definitions`・`ir_lines`・`definition_start` などの継ぎ目の処理は、別の形でつないだ IR への備えとして残す） |
 
 ## 推奨フェーズ
 
@@ -782,7 +782,7 @@ TZ08・TZ12・TZ13・TZ09・TZ10 の実装中に見つけ、その PR では直�
 | [G37](_completed/G37-lsp-signature-help-after-closer.md) | 不具合 | 閉じ括弧で終わる行の次の行の呼び出しで、LSP のシグネチャヘルプが `null` を返す |
 | [G38](_completed/G38-unicode-test-references-pinned.md) | テスト基盤 | `features.mjs` の `regex`・`unicode` が V8 の Unicode の版に依存し、Unicode 18.0 の Node（Homebrew の `node@24`）で失敗する。V8 の参照値を std と同じ版の Node で書き出して commit する |
 | [TZ14](_completed/TZ14-thread-storage-across-parallel-waits.md) | 潜在的な不具合 | spawn しないプログラムの `Parallel.*` の helper も別のスレッドで再開しうるのに、`--allocator small` の `tz_small_realloc`（TLS を読む）は spawn するプログラムでしか `noinline` にならない |
-| [TZ15](TZ15-runtime-ir-pieces-newline.md) | 潜在的な不具合 | ランタイムの IR の断片のうち 4 個（`character.ll`・`display.ll`・`debug.ll`・`recursive.ll`）が改行で終わらず、次の断片が `}define ...` のように閉じ括弧の行から始まる。spawn するプログラムでその関数に `"probe-stack"` が付かず（TZ02）、その関数を呼ぶループに要らない横取りの検査が入る（TZ10） |
+| [TZ15](_completed/TZ15-runtime-ir-pieces-newline.md) | 潜在的な不具合 | ランタイムの IR の断片のうち 4 個（`character.ll`・`display.ll`・`debug.ll`・`recursive.ll`）が改行で終わらず、次の断片が `}define ...` のように閉じ括弧の行から始まる。spawn するプログラムでその関数に `"probe-stack"` が付かず（TZ02）、その関数を呼ぶループに要らない横取りの検査が入る（TZ10）。**done（2026-11-08）**: 4 個の `.ll` を改行で終え、単体テストがすべての `.ll` の末尾の改行を保つ。その関数にも `"probe-stack"` が付き、要らない検査は消える（IR の違いは行の分割・probe・空の行だけ） |
 
 ### 進め方
 
