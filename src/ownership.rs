@@ -859,6 +859,10 @@ struct CallFacts {
     /// whose type may run code when it is dropped stores what it holds where it reaches
     /// (`Checker::drop_stores`).
     drops_write: bool,
+    /// A31: some function of the specialized module stores a value that may hold loans with a
+    /// seed builtin (`StoreCandidates::seeded`); without one, no store escapes the checks and the
+    /// store facts are not applied at all.
+    seeded: bool,
 }
 
 impl CallFacts {
@@ -891,6 +895,7 @@ fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
         lending,
         stores: joint.stores,
         drops_write: joint.drops_write,
+        seeded: joint.seeded,
     }
 }
 
@@ -990,6 +995,22 @@ struct JointFacts {
     retained: Vec<Option<Box<[bool]>>>,
     stores: Vec<StoreFacts>,
     drops_write: bool,
+    seeded: bool,
+}
+
+/// A31: the builtins that store a value that they get where an exclusive reference that they get
+/// reaches: (stored argument, target argument). `Array.write` (which `Array.set`, `Array.fill`,
+/// `Array.blit` and the other std functions that write in place call), `SyncMap.__replace` (through
+/// the `ref mut` that `RwMutex.with_write` lends) and `Vec.push_mut`, whose region slots add the
+/// pushed value's loans to the vector's owner only at a direct call (`store_arguments`), not when a
+/// lock or another function calls it. The other builtins of `untracked_writer` store numbers.
+fn store_seed(builtin: crate::check::Builtin) -> Option<(usize, usize)> {
+    use crate::check::Builtin::{ArrayWrite, SyncMapReplace, VecPushMut};
+    match builtin {
+        ArrayWrite => Some((1, 2)),
+        SyncMapReplace | VecPushMut => Some((0, 1)),
+        _ => None,
+    }
 }
 
 /// A31: which functions may store, from their bodies alone: `may_store` names a builtin that
@@ -999,16 +1020,34 @@ struct JointFacts {
 /// values, or names a function that may store (the least fixed point over `mentions`). A body that
 /// dispatches to a dyn method (`top`) may store anything. The other bodies store nothing that may
 /// hold loans: their stores are assignments and region contracts, which every check tracks.
+///
+/// Every store that the check of a body does not track goes through a seed (`store_seed`) whose
+/// stored value may hold loans: assignments are tracked, a store through a reference that a body
+/// gets needs named regions, which the check of that body enforces, and the code of a function
+/// value, a dyn method, a callback or a `Drop.drop` is a body of the module. So a module with no
+/// such seed (`seeded` false) has no store facts at all, and none of the rest is needed.
 struct StoreCandidates {
+    seeded: bool,
     may_store: Vec<bool>,
     top: Vec<bool>,
     mentions: Vec<BTreeSet<usize>>,
 }
 
+impl StoreCandidates {
+    fn none(count: usize) -> Self {
+        Self {
+            seeded: false,
+            may_store: vec![false; count],
+            top: vec![false; count],
+            mentions: vec![BTreeSet::new(); count],
+        }
+    }
+}
+
 fn store_candidates(module: &CheckedModule) -> StoreCandidates {
-    use crate::check::Builtin::{ArrayWrite, SyncMapReplace};
     let types = module.types();
     let count = module.functions.len();
+    let mut seeded = false;
     let mut may_store = vec![false; count];
     let mut top = vec![false; count];
     let mut mentions = vec![BTreeSet::new(); count];
@@ -1044,14 +1083,10 @@ fn store_candidates(module: &CheckedModule) -> StoreCandidates {
                     mentions[id].insert(*callee);
                 }
                 E::Function(crate::check::FunctionRef::Builtin(instance)) => {
-                    let stored = match instance.builtin {
-                        ArrayWrite => Some(1),
-                        SyncMapReplace => Some(0),
-                        _ => None,
-                    };
-                    if stored.is_some_and(|index| stores_loans(expression, index))
-                        || callback_builtin(instance.builtin)
-                    {
+                    let seed = store_seed(instance.builtin)
+                        .is_some_and(|(stored, _)| stores_loans(expression, stored));
+                    seeded |= seed;
+                    if seed || callback_builtin(instance.builtin) {
                         may_store[id] = true;
                     }
                 }
@@ -1092,12 +1127,16 @@ fn store_candidates(module: &CheckedModule) -> StoreCandidates {
             mentioned_by[callee].push(id);
         }
     }
+    if !seeded {
+        return StoreCandidates::none(count);
+    }
     let mut marks: Vec<bool> = (0..count).map(|id| may_store[id] || top[id]).collect();
     close_marks(&mut marks, &mentioned_by);
     for (id, mark) in marks.into_iter().enumerate() {
         may_store[id] = mark && !top[id];
     }
     StoreCandidates {
+        seeded,
         may_store,
         top,
         mentions,
@@ -1178,23 +1217,21 @@ fn joint_facts(
         }
     }
     let candidates = if infer {
-        StoreCandidates {
-            may_store: vec![false; count],
-            top: vec![false; count],
-            mentions: vec![BTreeSet::new(); count],
-        }
+        StoreCandidates::none(count)
     } else {
         store_candidates(module)
     };
-    let drops_write = module
-        .user_drops
-        .values()
-        .any(|drop| candidates.may_store[*drop] || candidates.top[*drop]);
+    let drops_write = candidates.seeded
+        && module
+            .user_drops
+            .values()
+            .any(|drop| candidates.may_store[*drop] || candidates.top[*drop]);
     let mut facts = CallFacts {
         closed: closed.to_vec(),
         retained: vec![None; count],
         lending: lending.clone(),
         drops_write,
+        seeded: candidates.seeded,
         stores: (0..count)
             .map(|id| {
                 if candidates.top[id] {
@@ -1362,6 +1399,7 @@ fn joint_facts(
         retained: facts.retained,
         stores: facts.stores,
         drops_write,
+        seeded: candidates.seeded,
     }
 }
 
@@ -4275,10 +4313,11 @@ impl<'a> Checker<'a, '_> {
     }
 
     /// A31: whether store facts apply in this check: the specialized bodies, whose types are
-    /// concrete. The abstract bodies of the inference count a type variable as holding no loan, as
-    /// `untracked_loan_store` does, so their Copy constraints do not change.
+    /// concrete, of a module that has a seed (`CallFacts::seeded`). The abstract bodies of the
+    /// inference count a type variable as holding no loan, as `untracked_loan_store` does, so their
+    /// Copy constraints do not change.
     fn tracks_stores(&self) -> bool {
-        !self.infer
+        !self.infer && self.facts.seeded
     }
 
     /// A31: whether a value of type `ty` reaches a mutable cell whose contents may hold a loan
@@ -4767,18 +4806,12 @@ impl<'a> Checker<'a, '_> {
         start: usize,
         span: Span,
     ) {
-        use crate::check::Builtin::{ArrayWrite, SyncMapReplace};
         let scheme = builtin.scheme();
         if arguments.len() < scheme.parameters.len() {
             return;
         }
         let value = |checker: &Self, index: usize| checker.held[start + 1 + index].clone();
-        let stored = match builtin {
-            ArrayWrite => Some((1, 2)),
-            SyncMapReplace => Some((0, 1)),
-            _ => None,
-        };
-        if let Some((from, to)) = stored {
+        if let Some((from, to)) = store_seed(builtin) {
             let parameter = match &callee.ty {
                 Type::Function(parameters, _) => parameters.get(from),
                 _ => None,
@@ -7297,6 +7330,7 @@ mod retention_tests {
             lending,
             stores: joint.stores,
             drops_write: joint.drops_write,
+            seeded: joint.seeded,
         }
     }
 
