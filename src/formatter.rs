@@ -57,6 +57,7 @@ fn print_tokens(source: &str, hints: &mut Hints, edition: Edition) -> Result<Str
     use crate::lexer::TriviaKind;
     let tokens = crate::lexer::lex_with_trivia(source, edition)?;
     let generic = generic_tokens(&tokens, hints);
+    hints.type_tests = type_test_colons(&tokens, &hints.type_test_patterns);
     let mut layout = Layout::new(&tokens);
     let crlf = source
         .as_bytes()
@@ -333,6 +334,14 @@ struct Hints {
     /// The names that follow the `and` of a local `let rec` group (B09): that `and` is a statement
     /// of its block, not a top-level declaration.
     group_names: BTreeSet<usize>,
+    /// The type test patterns `:? T` (A24): the start of each pattern (a parenthesized pattern
+    /// starts at its `(`) and the start of its type. Before its type a type test holds only
+    /// parentheses and its `:?`, which is how `print_tokens` finds that `:`.
+    type_test_patterns: BTreeMap<usize, usize>,
+    /// The `:` of each type test, from `type_test_patterns`. A `:` elsewhere sits against what
+    /// precedes it and a `?` keeps the space written after it (`?a` and `? a` differ), so only these
+    /// get `| :? i64`.
+    type_tests: BTreeSet<usize>,
 }
 
 fn column(source: &str, offset: usize) -> usize {
@@ -606,6 +615,31 @@ impl Layout {
     }
 }
 
+/// The starts of the `:` of the type tests `:? T` (A24): a `:` directly followed by `?` inside a
+/// type test pattern, before its type.
+fn type_test_colons(
+    tokens: &[crate::lexer::TokenWithTrivia],
+    patterns: &BTreeMap<usize, usize>,
+) -> BTreeSet<usize> {
+    if patterns.is_empty() {
+        return BTreeSet::new();
+    }
+    tokens
+        .windows(2)
+        .filter(|pair| {
+            let (colon, question) = (&pair[0].token, &pair[1].token);
+            colon.kind == TokenKind::Colon
+                && question.kind == TokenKind::Question
+                && colon.span.end == question.span.start
+                && patterns
+                    .range(..=colon.span.start)
+                    .next_back()
+                    .is_some_and(|(_, ty)| colon.span.start < *ty)
+        })
+        .map(|pair| pair[0].token.span.start)
+        .collect()
+}
+
 fn generic_tokens(tokens: &[crate::lexer::TokenWithTrivia], hints: &mut Hints) -> Vec<bool> {
     hints.types.sort_by_key(|span| span.start);
     let mut types = hints.types.iter().peekable();
@@ -668,6 +702,30 @@ fn spacing(
     }
     if matches!(current.kind, PathSep) || matches!(previous.kind, PathSep) {
         return "";
+    }
+    // A type test `:? T` (A24): one space before its `:` except after an opening bracket or a
+    // lambda's `\`, none between `:` and `?`, and one after the `?`.
+    if current.kind == Colon && hints.type_tests.contains(&current.span.start) {
+        return if matches!(
+            previous.kind,
+            LeftParen | LeftBracket | LeftList | Backslash
+        ) {
+            ""
+        } else {
+            " "
+        };
+    }
+    if previous.kind == Colon && hints.type_tests.contains(&previous.span.start) {
+        return "";
+    }
+    if previous.kind == Question
+        && previous
+            .span
+            .start
+            .checked_sub(1)
+            .is_some_and(|colon| hints.type_tests.contains(&colon))
+    {
+        return " ";
     }
     // A hole's expression sits directly between the braces of `$"a{x}b"`.
     if matches!(current.kind, InterpolationMiddle(_) | InterpolationEnd(_))
@@ -1087,6 +1145,11 @@ impl Canonical {
     }
 
     fn pattern(&mut self, pattern: &mut Pattern) {
+        if let PatternKind::TypeTest(ty, _) = &pattern.kind {
+            self.hints
+                .type_test_patterns
+                .insert(pattern.span.start, ty.span.start);
+        }
         pattern.span = Span::default();
         pattern.depth = 0;
         use PatternKind::*;
