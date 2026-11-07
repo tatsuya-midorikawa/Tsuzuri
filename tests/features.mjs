@@ -675,6 +675,27 @@ const suites = {
         return ["annotated_reference_forms", [BigInt(n)],
           guarded + two + mixed + ignored + aliased + split + counted + first * 1000000n + 3n + stored * 10000000n];
       }),
+      // A32, review 1: the read callbacks with `ref string` lambdas. map: 1, 2, 3 characters times
+      // 10; mapi over ("dddd", "ee"): 0 * 100 + 4 and 1 * 100 + 2; fold from n: ((n * 10 + 1) * 10
+      // + 2) * 10 + 3; fold_back from the right: ("ee" first) (0 * 10 + 2) * 10 + 4.
+      ...[-3, 0, 1].map((n) => {
+        const w = BigInt(n);
+        const mapped = 10n + 20n + 30n;
+        const indexed = 4n + 102n;
+        const folded = ((w * 10n + 1n) * 10n + 2n) * 10n + 3n;
+        const back = (0n * 10n + 2n) * 10n + 4n;
+        return ["annotated_read_callbacks", [w], mapped + indexed * 1000n + folded * 1000000n + back * 10000000000n];
+      }),
+      // A32, review 1: audit x16c (`inspect` gives 3, the lambda reads "hello" through
+      // `ref ref string`: 5 * 10) and x18 (3 + 50 * 1000 + (5 * 100 + n) * 1000000), and
+      // `apply_ref` applies `x * 2 + n` twice to 5.
+      ...[-3, 0, 1].map((n) => {
+        const w = BigInt(n);
+        const chosen = n > 0 ? 3n : 50n;
+        const kept = 3n + 50n * 1000n + (500n + w) * 1000000n;
+        const applied = (5n * 2n + w) * 2n + w;
+        return ["annotated_reference_kept", [w], chosen + kept * 100n + applied * 1000000000000n];
+      }),
       ["trap", [1n], 10n + 20n + 20n],
     ],
     traps: [

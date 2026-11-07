@@ -330,6 +330,8 @@ pub(super) fn require_concrete(ty: &Type, span: Span) -> Result<(), Diagnostic> 
 pub(super) struct Inference {
     solutions: Vec<Option<Type>>,
     defaults: BTreeMap<usize, Type>,
+    /// While `Inference::unifies` runs, the variables that `unify` solved, which it opens again.
+    trial: Option<Vec<usize>>,
 }
 
 /// The `E1003` of a type mismatch; `expected` and `found` are the displayed types.
@@ -469,6 +471,9 @@ impl Inference {
                 }
                 bounded_type(ty, span)?;
                 self.solutions[*id] = Some(ty.clone());
+                if let Some(solved) = &mut self.trial {
+                    solved.push(*id);
+                }
                 return Ok(());
             }
             (Type::Array(a), Type::Array(b))
@@ -557,6 +562,24 @@ impl Inference {
             actual.display(types),
             span,
         ))
+    }
+
+    /// Whether `actual` unifies with `expected`, leaving every variable as it was: the variables
+    /// that the trial solves are open again afterwards, and no diagnostic is reported (A32). A
+    /// solved variable is only ever set by `unify`, so the trial undoes each of its changes.
+    pub(super) fn unifies(
+        &mut self,
+        actual: &Type,
+        expected: &Type,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        let outer = self.trial.replace(Vec::new());
+        let unified = self.unify(actual, expected, types, Span::default()).is_ok();
+        let solved = std::mem::replace(&mut self.trial, outer).unwrap_or_default();
+        for id in solved {
+            self.solutions[id] = None;
+        }
+        unified
     }
 
     pub fn default_numeric(&mut self, ty: &Type, default: Type) {
@@ -3937,15 +3960,30 @@ impl Checker<'_> {
                 )?;
                 Ok((parameters, result))
             }
-            other => Err(Diagnostic::of(
-                DiagnosticKind::CallNonFunction,
-                "only a function value can be called",
-                span,
-            )
-            .with_help(format!(
-                "a value of type {} is not a function; remove the argument(s) or call a function",
-                other.display(&self.types)
-            ))),
+            other => {
+                // A reference to a function (`f : ref (i64 -> i64)`, as an annotated parameter
+                // binds it, A32) is called through `deref`.
+                let help = if matches!(&other, Type::Reference(target, _)
+                    if matches!(**target, Type::Function(..)))
+                {
+                    format!(
+                        "a value of type {} is a reference to a function, not a function; \
+                         dereference it first, as in `(deref f) x`",
+                        other.display(&self.types)
+                    )
+                } else {
+                    format!(
+                        "a value of type {} is not a function; remove the argument(s) or call a function",
+                        other.display(&self.types)
+                    )
+                };
+                Err(Diagnostic::of(
+                    DiagnosticKind::CallNonFunction,
+                    "only a function value can be called",
+                    span,
+                )
+                .with_help(help))
+            }
         }
     }
 

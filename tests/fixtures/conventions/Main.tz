@@ -283,5 +283,38 @@ export def annotated_reference_forms :: i64 -> i64 = \n ->
     let b = ignored (ref text) + aliased (ref text) + split (ref pair) + counted (ref values)
     a + b + values[0] * 1000000 + annotated_size text + values[1] * 10000000
 
+// A32: the read callbacks of `Array` and `List` take a lambda whose element parameter is annotated
+// `ref string`, directly and through a pipeline.
+export def annotated_read_callbacks :: i64 -> i64 = \n ->
+    let texts = ["a", "bb", "ccc"]
+    let items = [|"dddd", "ee"|]
+    let mapped = texts |> Array.map (\(text: ref string) -> text.length * 10)
+    let indexed = items |> List.mapi (\i (text: ref string) -> i * 100 + text.length)
+    let folded = Array.fold (\sum (text: ref string) -> sum * 10 + text.length) n texts
+    let back = items |> List.fold_back (\(text: ref string) sum -> sum * 10 + text.length) 0
+    texts |> Array.iter (\(_: ref string) -> ())
+    items |> List.iteri (\_ (_: ref string) -> ())
+    Array.sum mapped + List.fold (\sum value -> sum + value) 0 indexed * 1000 + folded * 1000000 + back * 10000000000
+
+// A32: where the expected parameter is `ref ?t` or `ref (ref string)`, a `ref string` annotation
+// is still compared with the value read through the parameter (audit x16c and x18), and a
+// function parameter annotated `ref (i64 -> i64)` is called through `deref`.
+def apply_ref :: (i64 -> i64) -> i64 -> i64 = \(f: ref (i64 -> i64)) value -> (deref f) ((deref f) value)
+
+export def annotated_reference_kept :: i64 -> i64 = \n ->
+    let text = "hello"
+    let r = ref text
+    let chosen = if n > 0 then inspect else \(text: ref string) -> text.length * 10
+    let mut readers = Vec.empty()
+    Vec.push inspect readers
+    let scaled = \(text: ref (ref string)) -> text.length * 10
+    Vec.push scaled readers
+    Vec.push (\(text: ref string) -> text.length * 100 + n) readers
+    let first_reader = readers[0]
+    let second_reader = readers[1]
+    let third_reader = readers[2]
+    let kept = first_reader r + second_reader r * 1000 + third_reader r * 1000000
+    chosen r + kept * 100 + apply_ref (\x -> x * 2 + n) 5 * 1000000000000
+
 type OwnAlias = own
 (contextual_own_type_name)

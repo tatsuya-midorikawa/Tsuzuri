@@ -80,9 +80,11 @@ impl Checker<'_> {
             if matches!(
                 conventions.get(index),
                 Some(ParameterConvention::Read | ParameterConvention::Mut)
-            ) && let Type::Reference(inner, _) = &local.ty
-                && !self
-                    .binds_annotated_reference(inner, annotations.get(name.text.as_str()).copied())
+            ) && matches!(local.ty, Type::Reference(..))
+                && !self.binds_annotated_reference(
+                    &local.ty,
+                    annotations.get(name.text.as_str()).copied(),
+                )
             {
                 self.read_value_parameters.insert(local.id);
             }
@@ -96,24 +98,28 @@ impl Checker<'_> {
         self.group_lambda(parameters, body, &outer, expected, span, kind, recursive)
     }
 
-    /// Whether a parameter of type `ref inner` that a convention would read through
+    /// Whether a parameter of type `ref inner` (`parameter`) that a convention would read through
     /// (`read_value_parameters`) binds its reference instead, because its pattern is annotated
     /// with a reference type (A32): `\(text: ref string) -> …` where `[Read] string -> i64` is
     /// expected, or `\(counter: ref mut Counter) -> …` for a `mut Counter` parameter.
     ///
     /// It binds the reference only where the annotation could never match the value read
-    /// through the parameter: `inner` is no inference variable, reference, type application or
-    /// error, and `unify` equates `ref T` with nothing else. So each program that this changes
-    /// is one whose annotated pattern failed with `E1003` before, and the parameter gets the type
-    /// that the same lambda bound by `let` has. The annotation is resolved without the side
-    /// effects of `Checker::annotation`, which checks it again with the pattern; one that does
-    /// not resolve counts as no reference.
+    /// through the parameter: `inner` is no inference variable, reference, type application,
+    /// partial application of a type constructor or error, and `unify` equates `ref T` with
+    /// nothing else. So each program that this changes is one whose annotated pattern failed with
+    /// `E1003` before, and the parameter gets the type that the same lambda bound by `let` has.
+    /// It also needs the annotation to match `parameter` itself (`Inference::unifies`, which
+    /// solves nothing): a mistyped annotation (`ref [string]`, or `ref mut string` where the
+    /// convention reads) keeps reading the value, so the pattern reports the error that it
+    /// reported before, with the `ref` that the annotation has (`expected ref [string], found
+    /// string`). The annotation is resolved without the side effects of `Checker::annotation`,
+    /// which checks it again with the pattern; one that does not resolve counts as no reference.
     pub(super) fn binds_annotated_reference(
-        &self,
-        inner: &Type,
+        &mut self,
+        parameter: &Type,
         annotation: Option<&TypeExpr>,
     ) -> bool {
-        let Some(annotation) = annotation else {
+        let (Some(annotation), Type::Reference(inner, _)) = (annotation, parameter) else {
             return false;
         };
         let inner = self.inference.resolve(inner);
@@ -125,10 +131,12 @@ impl Checker<'_> {
         {
             return false;
         }
-        matches!(
-            resolve_type_with_kinds(annotation, self.module, self.names, &self.kinds),
-            Ok(Type::Reference(..))
-        )
+        let Ok(annotated @ Type::Reference(..)) =
+            resolve_type_with_kinds(annotation, self.module, self.names, &self.kinds)
+        else {
+            return false;
+        };
+        self.inference.unifies(parameter, &annotated, &self.types)
     }
 
     pub(super) fn checked_lambda(

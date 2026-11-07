@@ -8946,14 +8946,13 @@ fn check_modules_collect(
                 let annotations = closures::parameter_annotations(&function.body);
                 for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
                     let local = checker.bind(&parameter.name, ty.clone(), parameter.mutable);
-                    let annotated = |checker: &Checker<'_>| {
+                    let annotated = |checker: &mut Checker<'_>| {
                         let annotation = annotations.get(parameter.name.text.as_str()).copied();
-                        matches!(ty, Type::Reference(inner, _)
-                            if checker.binds_annotated_reference(inner, annotation))
+                        checker.binds_annotated_reference(ty, annotation)
                     };
                     if scheme.parameter_conventions.get(parameters.len())
                         == Some(&ParameterConvention::Mut)
-                        && !annotated(&checker)
+                        && !annotated(&mut checker)
                     {
                         checker.read_value_parameters.insert(local.id);
                     }
@@ -8966,7 +8965,7 @@ fn check_modules_collect(
                         );
                         if types.reaches(inner, |part| {
                             matches!(part, Type::Variable(_) | Type::Function(..))
-                        }) && !annotated(&checker)
+                        }) && !annotated(&mut checker)
                         {
                             checker.read_value_parameters.insert(local.id);
                         }

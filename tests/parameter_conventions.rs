@@ -1447,3 +1447,172 @@ fn annotated_reference_parameters_keep_the_borrow_rules() {
         "{exclusive}"
     );
 }
+
+/// The offset of the pattern that follows `marker` in `source` (the `(` after the `\` or space
+/// that `marker` ends with).
+fn pattern_offset(source: &str, marker: &str) -> usize {
+    source
+        .find(marker)
+        .unwrap_or_else(|| panic!("{marker}\n{source}"))
+        + marker.len()
+}
+
+#[test]
+fn mistyped_reference_annotations_keep_their_diagnostics() {
+    // A reference annotation that does not match the parameter's reference type keeps reading the
+    // value (review 1 of A32): the pattern reports what it reported before A32, with the `ref`
+    // that the annotation has, at the annotated pattern.
+    let records =
+        "record Big { items: [i64], label: string }\nrecord Other { items: [i64], label: string }";
+    let touch = "def touch :: mut Counter -> unit = \\counter -> counter.count = counter.count + 1";
+    for (source, marker, message) in [
+        (
+            chooser(
+                &[TEXT_LENGTH],
+                &[
+                    "    let chosen = if n > 0 then text_length else \\(text: ref [string]) -> 1",
+                    "    let text = \"hello\"",
+                    "    chosen (ref text)",
+                ],
+            ),
+            "else \\",
+            "expected ref [string], found string",
+        ),
+        (
+            chooser(
+                &[records, "def size :: Big -> i64 = \\b -> b.items.length"],
+                &[
+                    "    let chosen = if n > 0 then size else \\(b: ref Other) -> 1",
+                    "    let b = Big { items: [1], label: \"x\" }",
+                    "    chosen (ref b)",
+                ],
+            ),
+            "else \\",
+            "expected ref Main.Other, found Main.Big",
+        ),
+        (
+            chooser(
+                &[TEXT_LENGTH],
+                &[
+                    "    let chosen = if n > 0 then text_length else \\(text: ref mut string) -> text.length * 10",
+                    "    let text = \"hello\"",
+                    "    chosen (ref text)",
+                ],
+            ),
+            "else \\",
+            "expected ref mut string, found string",
+        ),
+        (
+            chooser(
+                &[COUNTER, touch],
+                &[
+                    "    let change = if n > 0 then touch else \\(counter: ref Counter) -> ()",
+                    "    let mut counter = Counter { count: 1 }",
+                    "    change (ref mut counter)",
+                    "    counter.count",
+                ],
+            ),
+            "else \\",
+            "expected ref Main.Counter, found Main.Counter",
+        ),
+        (
+            program(&["def size :: 'a -> i64 = \\(value: ref string) -> value.length"]),
+            "= \\",
+            "expected ref string, found 'a",
+        ),
+        (
+            program(&["def size :: 'a -> i64 = \\(value: ref mut 'a) -> 3"]),
+            "= \\",
+            "expected ref mut 'a, found 'a",
+        ),
+        (
+            program(&[
+                COUNTER,
+                "def bump :: i64 -> mut Counter -> unit = \\(step: i64) (counter: ref [Counter]) -> ()",
+            ]),
+            "(step: i64) ",
+            "expected ref [Main.Counter], found Main.Counter",
+        ),
+    ] {
+        let error = check("2027", &source).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            ("E1003", message),
+            "{source}"
+        );
+        assert_eq!(
+            error.span.start,
+            pattern_offset(&source, marker),
+            "{source}"
+        );
+    }
+    // A function parameter annotated `ref (i64 -> i64)` binds a reference: calling it is `E1005`,
+    // whose help says to dereference it, and `(deref f) n` calls the function.
+    let call = "def apply :: (i64 -> i64) -> i64 -> i64 = \\(f: ref (i64 -> i64)) n -> f n\n";
+    let error = check("2027", call).unwrap_err();
+    assert_eq!(error.code, "E1005", "{call}");
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "a value of type ref (i64 -> i64) is a reference to a function, not a function; \
+             dereference it first, as in `(deref f) x`"
+        )
+    );
+    let explicit = "def apply :: ref (i64 -> i64) -> i64 -> i64 = \\f n -> f n\n";
+    assert_eq!(
+        check("2027", explicit).unwrap_err().help,
+        error.help,
+        "{explicit}"
+    );
+    let dereferenced = call.replace("-> f n", "-> (deref f) n");
+    check("2027", &dereferenced).unwrap_or_else(|error| panic!("{dereferenced}\n{error:?}"));
+}
+
+#[test]
+fn annotated_reference_read_callbacks() {
+    // The callbacks of the Array and List read entry points have the [Read] convention, so a lambda
+    // passed to them may annotate its element parameter `ref string`, and its body sees a reference.
+    for (module, values) in [("Array", "[\"a\", \"bc\"]"), ("List", "[|\"a\", \"bc\"|]")] {
+        for call in [
+            format!(
+                "({module}.map (\\(text: ref string) -> {{ let view: ref string = text; view.length }}) texts).length"
+            ),
+            format!(
+                "(texts |> {module}.map (\\(text: ref string) -> {{ let view: ref string = text; view.length }})).length"
+            ),
+            format!(
+                "({module}.mapi (\\i (text: ref string) -> {{ let view: ref string = text; i + view.length }}) texts).length"
+            ),
+            format!(
+                "{module}.iter (\\(text: ref string) -> {{ let _view: ref string = text; () }}) texts; 0"
+            ),
+            format!(
+                "{module}.iteri (\\_ (text: ref string) -> {{ let _view: ref string = text; () }}) texts; 0"
+            ),
+            format!(
+                "{module}.fold (\\sum (text: ref string) -> {{ let view: ref string = text; sum + view.length }}) 0 texts"
+            ),
+            format!(
+                "(texts |> {module}.fold (\\sum (text: ref string) -> {{ let view: ref string = text; sum + view.length }}) 0)"
+            ),
+            format!(
+                "{module}.fold_back (\\(text: ref string) sum -> {{ let view: ref string = text; sum + view.length }}) 0 texts"
+            ),
+        ] {
+            let source = format!(
+                "export def answer :: i64 = {{ let texts = {values}; {call} + texts.length }}\n"
+            );
+            check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        }
+    }
+    // The reference may be returned while the array lives, and not past it, as with the lambda
+    // bound by `let`.
+    let inside = "export def answer :: i64 = { let xs = [\"a\", \"bb\"]; let ys = xs |> Array.map (\\(x: ref string) -> x); ys[1].length }\n";
+    check("2027", inside).unwrap_or_else(|error| panic!("{inside}\n{error:?}"));
+    for source in [
+        "export def answer :: i64 = { let ys = { let xs = [\"a\", \"bb\"]; xs |> Array.map (\\(x: ref string) -> x) }; ys.length }\n",
+        "export def answer :: i64 = { let ys = { let xs = [\"a\", \"bb\"]; let f = \\(x: ref string) -> x; xs |> Array.map f }; ys.length }\n",
+    ] {
+        assert_eq!(check("2027", source).unwrap_err().code, "E1013", "{source}");
+    }
+}
