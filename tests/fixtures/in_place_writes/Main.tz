@@ -1,0 +1,337 @@
+// A31: in-place writes that main accepts and that tracking what the writes store must keep
+// accepted, with the same values. Each export is one of the safe programs of the A31 baseline
+// (`_features/A31-in-place-writes-keep-stored-borrows.md`: the `P_*` programs of 落とし穴 and the
+// `N_*` safe forms of the revised plan), its top-level code moved into a function. The written
+// values hold no borrow, or a borrow that outlives the written array, or the write only reads.
+
+// P_acc_1: a reference element written with Array.set.
+export def set_reference :: i64
+fn set_reference =
+    let a = 1
+    let b = 2
+    let mut arr = [ref a]
+    Array.set 0 (ref b) (ref mut arr)
+    deref arr[0]
+
+// P_acc_2: Array.fill and a pipeline into Array.set on reference elements.
+export def fill_and_pipe_references :: i64
+fn fill_and_pipe_references =
+    let a = 1
+    let b = 2
+    let c = 3
+    let mut arr = [ref a, ref b]
+    Array.fill 0 1 (ref c) (ref mut arr)
+    ref mut arr |> Array.set 1 (ref c)
+    deref arr[0] + deref arr[1]
+
+// P_acc_3 and P_pick_set: a function stores one reference parameter into a local array.
+def pick :: ref i64 -> ref i64 -> i64
+fn pick a b =
+    let mut arr = [a]
+    Array.set 0 b (ref mut arr)
+    deref arr[0]
+
+export def pick_second :: i64
+fn pick_second =
+    let x = 1
+    let y = 7
+    pick (ref x) (ref y)
+
+// P_acc_4: a generic writer of the program on function and reference elements, called and piped.
+def put :: own 'a -> ref mut ['a..] -> unit
+fn put x arr = Array.write 0 x arr
+
+export def generic_put :: i64
+fn generic_put =
+    let base = 5
+    let mut a = [\() -> 1]
+    put (\() -> 9) (ref mut a)
+    ref mut a |> put (\() -> base)
+    let p = 1
+    let q = 2
+    let mut refs = [ref p]
+    put (ref q) (ref mut refs)
+    a[0] () + deref refs[0]
+
+// P_acc_5: a generic writer with a declared region.
+def put_region {r} :: own 'a -> ref mut {r} ['a..] -> unit
+fn put_region x d = Array.write 0 x d
+
+export def region_put :: i64
+fn region_put =
+    let base = 4
+    let mut data = [\() -> 1]
+    put_region (\() -> base) (ref mut data)
+    data[0] ()
+
+// P_acc_6: a writer of `ref 'a` elements.
+def put_reference :: ref 'a -> ref mut [ref 'a..] -> unit
+fn put_reference x arr = Array.write 0 x arr
+
+export def reference_put :: i64
+fn reference_put =
+    let p = 1
+    let q = 2
+    let mut a = [ref p]
+    put_reference (ref q) (ref mut a)
+    deref a[0]
+
+// P_acc_7: a writer whose stored borrow and target share the declared region.
+def store_text {s} :: ref {s} string -> ref mut {s} [ref {s} string..] -> unit = \x arr -> Array.write 0 x arr
+
+export def region_store :: i64
+fn region_store =
+    let a = "ab"
+    let b = "cde"
+    let mut arr = [ref a]
+    store_text (ref b) (ref mut arr)
+    arr[0].length
+
+// P_acc_8: a writer without type variables gets a function that borrows a local of the caller.
+def put_function :: own (unit -> i64) -> ref mut [(unit -> i64)..] -> unit
+fn put_function f target = Array.write 0 f target
+
+export def function_put :: i64
+fn function_put =
+    let base = 4
+    let mut arr = [\() -> 1]
+    put_function (\() -> base) (ref mut arr)
+    arr[0] ()
+
+// P_acc_9: a writer writes back an element that it read from the same target.
+def rotate :: ref mut [(unit -> i64)..] -> unit
+fn rotate arr =
+    let second = arr[1]
+    Array.write 0 second arr
+
+export def rotate_once :: i64
+fn rotate_once =
+    let mut a = [\() -> 1, \() -> 2]
+    rotate (ref mut a)
+    a[0] ()
+
+// N_rotate_then_use: two write-backs, then the array moves.
+export def rotate_twice_then_move :: i64
+fn rotate_twice_then_move =
+    let mut a = [\() -> 1, \() -> 2]
+    rotate (ref mut a)
+    rotate (ref mut a)
+    let b = a
+    b[0] () + b[1] ()
+
+// P_put_last_first: the last element written back to the front.
+def put_last_first :: ref mut [(unit -> i64)..] -> unit
+fn put_last_first arr =
+    let last = arr[arr.length - 1]
+    Array.write 0 last arr
+
+export def last_to_first :: i64
+fn last_to_first =
+    let mut a = [\() -> 1, \() -> 2]
+    put_last_first (ref mut a)
+    a[0] ()
+
+// P_map_in_place_body: each element wrapped in a closure and written back.
+def bump :: ref mut [(unit -> i64)..] -> unit
+fn bump arr =
+    for i in 0 ..= (arr.length - 1) do
+        let f = arr[i]
+        Array.write i (\() -> f () + 1) arr
+
+export def bump_in_place :: i64
+fn bump_in_place =
+    let mut a = [\() -> 1, \() -> 2]
+    bump (ref mut a)
+    a[0] () + a[1] ()
+
+// P_acc_10: a MatrixView writer with a declared region, on function and reference elements.
+def matrix_put {r} :: own 'a -> ref mut MatrixView.Mut<'a> {r} -> unit
+fn matrix_put x m = MatrixView.write 0 0 x m
+
+export def region_matrix_put :: i64
+fn region_matrix_put =
+    let a = 1
+    let b = 2
+    let base = 4
+    let mut data = [\() -> 1, \() -> 2]
+    let mut grid = MatrixView.of_array_mut 1 2 (ref mut data)
+    matrix_put (\() -> base) (ref mut grid)
+    let mut cells = [ref a, ref a]
+    let mut row = MatrixView.of_array_mut 1 2 (ref mut cells)
+    matrix_put (ref b) (ref mut row)
+    data[0] () + deref cells[0]
+
+// P_matrix_wrapper_noregion: the same writer without a region.
+def matrix_put_plain :: own 'a -> ref mut MatrixView.Mut<'a> -> unit
+fn matrix_put_plain x m = MatrixView.write 0 0 x m
+
+export def plain_matrix_put :: i64
+fn plain_matrix_put =
+    let base = 4
+    let mut data = [\() -> 1, \() -> 2]
+    let mut grid = MatrixView.of_array_mut 1 2 (ref mut data)
+    matrix_put_plain (\() -> base) (ref mut grid)
+    data[0] ()
+
+// P_matrix_wrapper_fill: a `Copy<'a>` wrapper of MatrixView.fill, on function and reference elements.
+def matrix_fill {r} :: Copy<'a> => own 'a -> ref mut MatrixView.Mut<'a> {r} -> unit
+fn matrix_fill x m = MatrixView.fill x m
+
+export def region_matrix_fill :: i64
+fn region_matrix_fill =
+    let base = 4
+    let mut data = [\() -> 1, \() -> 2]
+    let mut grid = MatrixView.of_array_mut 1 2 (ref mut data)
+    matrix_fill (\() -> base) (ref mut grid)
+    let a = 1
+    let b = 2
+    let mut cells = [ref a, ref a]
+    let mut row = MatrixView.of_array_mut 1 2 (ref mut cells)
+    matrix_fill (ref b) (ref mut row)
+    data[0] () + deref cells[0]
+
+// P_acc_11: the five MatrixView writers in a row on function elements.
+export def matrix_writers :: i64
+fn matrix_writers =
+    let base = 1000
+    let source = [\() -> 7, \() -> 8]
+    let mut data = [\() -> 1, \() -> 2]
+    let mut grid = MatrixView.of_array_mut 1 2 (ref mut data)
+    MatrixView.write 0 1 (\() -> 20) (ref mut grid)
+    MatrixView.fill (\() -> base) (ref mut grid)
+    MatrixView.copy_from (MatrixView.of_array 1 2 source) (ref mut grid)
+    MatrixView.map_in_place (\f -> \() -> f () + 1) (ref mut grid)
+    ref mut grid |> MatrixView.write 0 0 (\() -> base)
+    data[0] () + data[1] ()
+
+// P_acc_12: partial applications of the generic writer and of Array.set.
+export def partial_writers :: i64
+fn partial_writers =
+    let f = put (\() -> 1)
+    let mut a = [\() -> 2]
+    f (ref mut a)
+    let w = Array.set 0 (\() -> 5)
+    w (ref mut a)
+    a[0] ()
+
+// P_partial_set: a partial application of Array.set alone.
+export def partial_set :: i64
+fn partial_set =
+    let mut a = [\() -> 2]
+    let w = Array.set 0 (\() -> 5)
+    w (ref mut a)
+    a[0] ()
+
+// P_partial_put: a partial application of the generic writer alone.
+export def partial_put :: i64
+fn partial_put =
+    let f = put (\() -> 1)
+    let mut a = [\() -> 2]
+    f (ref mut a)
+    a[0] ()
+
+// P_partial_matrix: a partial application of MatrixView.write.
+export def partial_matrix :: i64
+fn partial_matrix =
+    let mut data = [\() -> 1]
+    let mut grid = MatrixView.of_array_mut 1 1 (ref mut data)
+    let w = MatrixView.write 0 0 (\() -> 2)
+    w (ref mut grid)
+    data[0] ()
+
+// P_ref_string_set: a `ref string` element written with Array.set.
+export def set_text_reference :: i64
+fn set_text_reference =
+    let a = "a"
+    let b = "abc"
+    let mut arr = [ref a, ref a]
+    Array.set 1 (ref b) (ref mut arr)
+    arr[1].length
+
+// P_pipe_set: a pipeline into Array.set on reference elements.
+export def pipe_set_reference :: i64
+fn pipe_set_reference =
+    let a = 1
+    let b = 2
+    let c = 3
+    let mut arr = [ref a, ref b, ref a]
+    ref mut arr |> Array.set 0 (ref c)
+    deref arr[0] * 100 + deref arr[1] * 10 + deref arr[2] + 2
+
+// P_fill_ref: Array.fill on reference elements.
+export def fill_reference :: i64
+fn fill_reference =
+    let a = 1
+    let b = 2
+    let c = 3
+    let mut arr = [ref a, ref b, ref b]
+    Array.fill 0 1 (ref c) (ref mut arr)
+    deref arr[0] * 100 + deref arr[1] * 10 + deref arr[2]
+
+// N_blit_then_mutate_source: Array.blit copies a reference out of `src`, then `src` is written.
+export def blit_then_write_source :: i64
+fn blit_then_write_source =
+    let a = 1
+    let b = 2
+    let mut src = [ref a]
+    let mut dst = [ref b]
+    Array.blit 0 0 1 (ref src) (ref mut dst)
+    Array.set 0 (ref b) (ref mut src)
+    deref dst[0] * 10 + deref src[0]
+
+// N_lock_read_then_move: a lock callback only reads what it captured; the borrowed text moves later.
+export def lock_read_then_move :: i64
+fn lock_read_then_move =
+    let m = Mutex.create [\() -> 3]
+    let text = to_string 123456789
+    let borrowed = ref text
+    let n = Mutex.with_lock (ref m) (\slot -> slot[0] () + String.length borrowed)
+    let moved = text
+    let arr = Mutex.into_inner m
+    arr[0] () + n + moved.length
+
+// N_partial_read_then_move: the callback is a partial application that only reads.
+def peek :: ref string -> ref mut [(unit -> i64)] -> i64
+fn peek t a = a[0] () + String.length t
+
+export def partial_read_then_move :: i64
+fn partial_read_then_move =
+    let text = to_string 123456789
+    let m = Mutex.create [\() -> 3]
+    let n = Mutex.with_lock (ref m) (peek (ref text))
+    let moved = text
+    let arr = Mutex.into_inner m
+    arr[0] () + n + moved.length
+
+// N_fnvalue_read_then_move: a function value that only reads gets the exclusive borrow.
+def apply :: own (ref mut [(unit -> i64)..] -> i64) -> ref mut [(unit -> i64)..] -> i64
+fn apply g arr = g arr
+
+export def function_value_read_then_move :: i64
+fn function_value_read_then_move =
+    let text = to_string 123456789
+    let borrowed = ref text
+    let mut arr = [\() -> 3]
+    let n = apply (\a -> a[0] () + String.length borrowed) (ref mut arr)
+    let moved = text
+    arr[0] () + n + moved.length
+
+// N_closed_cell_read: a lock callback reads a borrow of the caller and stores nothing, so the
+// result of `make` holds no borrow and outlives the text.
+def make :: ref string -> (unit -> i64)
+fn make text =
+    let m = Mutex.create [\() -> 7]
+    let n = Mutex.with_lock (ref m) (\slot -> String.length text)
+    let arr = Mutex.into_inner m
+    let f = arr[0]
+    f
+
+def leak :: own i64 -> (unit -> i64)
+fn leak n =
+    let text = to_string n
+    make (ref text)
+
+export def closed_cell_read :: i64
+fn closed_cell_read =
+    let f = leak 123456789
+    f ()

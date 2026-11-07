@@ -1928,6 +1928,54 @@ const suites = {
       assert.match(ir, /getelementptr inbounds %tz\.closure, ptr %[\w.]+, i64 %chunk/);
     },
   },
+  // A31: the safe programs of the baseline stay accepted with these values (computed by hand from the programs).
+  in_place_writes: {
+    cases: [
+      // [a] becomes [b].
+      ["set_reference", [], 2n],
+      // [a, b]: fill index 0 with c, then set index 1 to c, so 3 + 3.
+      ["fill_and_pipe_references", [], 6n],
+      ["pick_second", [], 7n],
+      // a[0] becomes 9, then base = 5; refs[0] becomes q = 2.
+      ["generic_put", [], 5n + 2n],
+      ["region_put", [], 4n],
+      ["reference_put", [], 2n],
+      // "cde".
+      ["region_store", [], 3n],
+      ["function_put", [], 4n],
+      // [1, 2] becomes [2, 2].
+      ["rotate_once", [], 2n],
+      ["rotate_twice_then_move", [], 2n + 2n],
+      ["last_to_first", [], 2n],
+      // [1, 2] becomes [2, 3].
+      ["bump_in_place", [], 2n + 3n],
+      // data[0] becomes base = 4, cells[0] becomes b = 2.
+      ["region_matrix_put", [], 4n + 2n],
+      ["plain_matrix_put", [], 4n],
+      ["region_matrix_fill", [], 4n + 2n],
+      // [1, 2]: write (0, 1) gives [1, 20], fill [1000, 1000], copy [7, 8], map [8, 9], write (0, 0) [1000, 9].
+      ["matrix_writers", [], 1000n + 9n],
+      // put 1, then Array.set 5.
+      ["partial_writers", [], 5n],
+      ["partial_set", [], 5n],
+      ["partial_put", [], 1n],
+      ["partial_matrix", [], 2n],
+      // "abc".
+      ["set_text_reference", [], 3n],
+      // [a, b, a] becomes [c, b, a].
+      ["pipe_set_reference", [], 3n * 100n + 2n * 10n + 1n + 2n],
+      // [a, b, b] becomes [c, b, b].
+      ["fill_reference", [], 3n * 100n + 2n * 10n + 2n],
+      // dst [b] becomes [a], then src [a] becomes [b].
+      ["blit_then_write_source", [], 1n * 10n + 2n],
+      // "123456789" has 9 characters: n = 3 + 9, then 3 + n + 9.
+      ["lock_read_then_move", [], 3n + (3n + 9n) + 9n],
+      ["partial_read_then_move", [], 3n + (3n + 9n) + 9n],
+      ["function_value_read_then_move", [], 3n + (3n + 9n) + 9n],
+      // make returns the array's own first function.
+      ["closed_cell_read", [], 7n],
+    ],
+  },
   fixed_arrays: {
     cases: [
       ...[0n, 5n, min, max].map((x) => ["fixed_sum", [x], BigInt.asIntN(64, 4n * x + 6n)]),

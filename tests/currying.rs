@@ -319,6 +319,39 @@ fn a_pipeline_into_a_unary_function_uses_its_facts() {
     );
 }
 
+/// A31: the direct call and the pipeline of a function whose lock callback stores a borrow of
+/// `text` in its own `let m` keep the borrow of `text` in the result: `stash`'s result is read out
+/// of `m`, so it holds what the callback wrote there (main accepts the direct call, because
+/// `closed_returns` takes `m` for a value that holds no borrow, and `f ()` reads the freed `text`).
+/// Both forms are rejected at the call, where `leak` returns what borrows its `text`.
+#[test]
+fn a_call_of_a_lock_writer_keeps_the_written_borrow_in_both_forms() {
+    let direct = "def stash :: ref string -> (unit -> i64)\nfn stash text =\n    let m = Mutex.create [\\() -> 0]\n    Mutex.with_lock (ref m) (\\slot -> Array.write 0 (\\() -> String.length text) slot)\n    let arr = Mutex.into_inner m\n    arr[0]\ndef leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    stash (ref text)\nlet f = leak 123456789\nf ()";
+    assert!(direct.contains("stash (ref text)"));
+    for source in [
+        direct.to_owned(),
+        direct.replace("stash (ref text)", "ref text |> stash"),
+    ] {
+        let error = analyze(&source).expect_err(&source);
+        assert_eq!(
+            (error.code, error.kind),
+            ("E1013", Some("borrow_outlives_block")),
+            "{source}\n{}",
+            error.message
+        );
+        let before = &source[..error.span.start];
+        assert_eq!(
+            (
+                before.matches('\n').count() + 1,
+                before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1,
+            ),
+            (10, 5),
+            "{source}\n{}",
+            error.message
+        );
+    }
+}
+
 /// A28 review: in the abstract body of a generic function, a value of type `'v` has no loans,
 /// although an instance whose `'v` is a function holds there what the argument lends. The facts
 /// of the inference keep every argument of such a body, so `g` needs `Copy<'a>` as before A28:

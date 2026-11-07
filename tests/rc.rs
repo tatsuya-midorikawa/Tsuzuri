@@ -932,6 +932,169 @@ fn an_untracked_store_keeps_the_rule_from_before_a28_in_the_whole_program() {
     llvm::emit_target(&module, llvm::Entry::Library, false).unwrap();
 }
 
+/// The 1-based line and column of the byte `offset` of `source`.
+fn position(source: &str, offset: usize) -> (usize, usize) {
+    let before = &source[..offset];
+    (
+        before.matches('\n').count() + 1,
+        before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1,
+    )
+}
+
+/// A31: the first error of `source`, in both editions, has `code` and `kind` and starts at
+/// `line:column` of `source`.
+fn rejects_at(source: &str, code: &str, kind: &str, at: (usize, usize)) {
+    for edition in [Edition::E2026, Edition::E2027] {
+        let error = analyze_with_edition(source, edition).expect_err(source);
+        assert_eq!(
+            (error.code, error.kind),
+            (code, Some(kind)),
+            "edition {edition}\n{source}\n{}",
+            error.message
+        );
+        assert_eq!(
+            position(source, error.span.start),
+            at,
+            "edition {edition}\n{source}\n{}",
+            error.message
+        );
+    }
+}
+
+/// A31: `source` is accepted in both editions, with deterministic IR.
+fn emits_in_both(source: &str) {
+    emits(source);
+    let module = analyze_with_edition(source, Edition::E2027)
+        .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    let ir = llvm::emit_target(&module, llvm::Entry::Library, false).unwrap();
+    assert_eq!(
+        ir,
+        llvm::emit_target(&module, llvm::Entry::Library, false).unwrap(),
+        "{source}"
+    );
+}
+
+/// A31: what `Array.write` stores in an array of shared pointers stays in the array's owner, so
+/// `Rc.get (ref arr[0])` keeps the borrow of `text` (`h5`), and a tzroutine that captures the
+/// array captures that borrow (`tz_capture`, which reads `text` after `start` has freed it on
+/// main). The diagnostics are those of `arr[0] = ...` in place of the write.
+#[test]
+fn a_shared_pointer_written_in_place_keeps_its_borrow() {
+    rejects_at(
+        "def leak :: i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [Rc.new (\\() -> 0)]\n    Array.write 0 (Rc.new (\\() -> String.length borrowed)) (ref mut arr)\n    deref (Rc.get (ref arr[0]))\nlet f = leak 123456789\nf ()",
+        "E1013",
+        "borrow_outlives_block",
+        (7, 5),
+    );
+    rejects_at(
+        "def wait_for :: ref Arc<Atomic<i64>> -> i64 -> unit\nfn wait_for counter target =\n    while Atomic.load (Arc.get counter) < target do\n        Routine.yield ()\ndef start :: own i64 -> ref Arc<Atomic<i64>> -> ref Arc<Atomic<i64>> -> unit\nfn start n result done =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [Arc.new (\\() -> 0)]\n    Array.write 0 (Arc.new (\\() -> String.length borrowed)) (ref mut arr)\n    let mine = Arc.share result\n    let finished = Arc.share done\n    tzroutine {\n        let s = Arc.share (ref arr[0])\n        let _sum = Atomic.fetch_add (Arc.get (ref mine)) ((deref (Arc.get (ref s))) ())\n        let _count = Atomic.fetch_add (Arc.get (ref finished)) 1i64\n    }\nlet result = Arc.new (Atomic.create 0i64)\nlet done = Arc.new (Atomic.create 0i64)\nstart 123456789 (ref result) (ref done)\nwait_for (ref done) 1\nAtomic.load (Arc.get (ref result))",
+        "E1013",
+        "task_capture_retains_borrow",
+        (13, 5),
+    );
+}
+
+/// A31: a lock callback that writes a borrow of `text` into the `ref mut` that the lock lends
+/// stores it in the lock's owner `m`, although `m` is not `let mut`: `stash`'s result, read out of
+/// `m`, holds the borrow of `text`, and `leak` cannot return it (main accepts these, because
+/// `closed_returns` takes `m` for a value that holds no borrow, and `f ()` reads the freed
+/// `text`). The diagnostic is the one that `let mut m` gets on main, at the call of `stash`.
+#[test]
+fn a_lock_callback_write_stays_in_the_lock() {
+    let leak = "def leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    stash (ref text)\nlet f = leak 123456789\nf ()";
+    for (lock, write, into_inner) in [
+        (
+            "Mutex.create",
+            "Mutex.with_lock (ref m)",
+            "Mutex.into_inner",
+        ),
+        (
+            "RwMutex.create",
+            "RwMutex.with_write (ref m)",
+            "RwMutex.into_inner",
+        ),
+    ] {
+        // m_lock, rw_write
+        rejects_at(
+            &format!(
+                "def stash :: ref string -> (unit -> i64)\nfn stash text =\n    let m = {lock} [\\() -> 0]\n    {write} (\\slot -> Array.write 0 (\\() -> String.length text) slot)\n    let arr = {into_inner} m\n    arr[0]\n{leak}"
+            ),
+            "E1013",
+            "borrow_outlives_block",
+            (10, 5),
+        );
+        // m_lock_return, rw_write_return
+        let cell = lock.trim_end_matches(".create");
+        rejects_at(
+            &format!(
+                "def stash :: ref string -> {cell}<[(unit -> i64)]>\nfn stash text =\n    let m = {lock} [\\() -> 0]\n    {write} (\\slot -> Array.write 0 (\\() -> String.length text) slot)\n    m\ndef leak :: own i64 -> {cell}<[(unit -> i64)]>\nfn leak n =\n    let text = to_string n\n    stash (ref text)\nlet arr = {into_inner} (leak 123456789)\narr[0] ()"
+            ),
+            "E1013",
+            "borrow_outlives_block",
+            (9, 5),
+        );
+    }
+    // cond_lock
+    rejects_at(
+        &format!(
+            "def stash :: ref string -> (unit -> i64)\nfn stash text =\n    let m = Mutex.create [\\() -> 0]\n    let c = Cond.create ()\n    Cond.wait_with (ref c) (ref m) (\\_ -> true) (\\slot -> Array.write 0 (\\() -> String.length text) slot)\n    let arr = Mutex.into_inner m\n    arr[0]\n{leak}"
+        ),
+        "E1013",
+        "borrow_outlives_block",
+        (11, 5),
+    );
+}
+
+/// A31: a lock callback that only reads keeps nothing in the lock (main accepts these; the
+/// values are checked by the `in_place_writes` suite of `tests/features.mjs`): the borrowed `text`
+/// moves after the lock is used, by a lambda or by a partial application, and a function whose
+/// `let m` is only read through the lock returns what `m` held, which borrows nothing.
+#[test]
+fn a_lock_callback_that_only_reads_stores_nothing() {
+    for source in [
+        "let m = Mutex.create [\\() -> 3]\nlet text = to_string 123456789\nlet borrowed = ref text\nlet n = Mutex.with_lock (ref m) (\\slot -> slot[0] () + String.length borrowed)\nlet moved = text\nlet arr = Mutex.into_inner m\narr[0] () + n + moved.length",
+        "def peek :: ref string -> ref mut [(unit -> i64)] -> i64\nfn peek t a = a[0] () + String.length t\nlet text = to_string 123456789\nlet m = Mutex.create [\\() -> 3]\nlet n = Mutex.with_lock (ref m) (peek (ref text))\nlet moved = text\nlet arr = Mutex.into_inner m\narr[0] () + n + moved.length",
+        "def make :: ref string -> (unit -> i64)\nfn make text =\n    let m = Mutex.create [\\() -> 7]\n    let n = Mutex.with_lock (ref m) (\\slot -> String.length text)\n    let arr = Mutex.into_inner m\n    let f = arr[0]\n    f\ndef leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    make (ref text)\nlet f = leak 123456789\nf ()",
+    ] {
+        emits_in_both(source);
+    }
+}
+
+/// A31: shares of a cell are not read through, so a write into the cell through the original
+/// after the share was made keeps the share borrowing the owner (`N_arc_cell_write_alias`, which a
+/// read-through would accept while the cell holds a function that borrows the freed `text`); a
+/// `SyncMap` that stores a borrowing function keeps it, with no diagnostic inside std.
+#[test]
+fn a_cell_written_after_it_was_shared_keeps_the_rule() {
+    rejects_at(
+        "def leak :: own i64 -> Arc<Mutex<[unit -> i64]>>\nfn leak n =\n    let text = to_string n\n    let borrowed = ref text\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a2 = Arc.share (ref a)\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 (\\() -> String.length borrowed) slot)\n    a2\nlet a = leak 123456789\nMutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())",
+        "E1013",
+        "borrow_outlives_block",
+        (8, 5),
+    );
+    rejects_at(
+        "def leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    let borrowed = ref text\n    let sm = SyncMap.create ()\n    SyncMap.store (ref sm) 0 (\\() -> String.length borrowed)\n    let key = 0\n    match SyncMap.load (ref sm) (ref key) with\n    | Maybe.Some f -> f\n    | Maybe.None -> \\() -> 0\nlet f = leak 123456789\nf ()",
+        "E1013",
+        "borrow_outlives_block",
+        (8, 5),
+    );
+}
+
+/// A31: the implicit drop of `_s` at the end of `leak` runs `Drop.drop`, which writes the function
+/// that borrows `text` into the cell that `a` shares with `run`'s `a2`, and `r` reads it after
+/// `leak` has freed `text` (`drop_inleak`; main and A28 accept it). The write stores a borrow of a
+/// local of `leak` through a value that the caller shares, so it is rejected where the dropped
+/// value is declared.
+#[test]
+fn an_implicit_drop_cannot_store_a_local_borrow_in_a_shared_cell() {
+    rejects_at(
+        "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\nfn reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\ndef leak :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> own i64 -> (unit -> i64)\nfn leak a r n =\n    let text = to_string n\n    let borrowed = ref text\n    let _s = Stash { cell: a, f: \\() -> String.length borrowed }\n    r\ndef run :: unit -> i64\nfn run u =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a1 = Arc.share (ref a)\n    let a2 = Arc.share (ref a)\n    let r = reader a2\n    let f = leak a1 r 123456789\n    let junk = [to_string 987654321, to_string 111111111, to_string 222222222]\n    f () + junk.length\nrun ()",
+        "E1013",
+        "store_local_borrow_through_reference",
+        (11, 9),
+    );
+}
+
 #[test]
 fn shared_types_have_reserved_names_and_no_abi() {
     for source in [
