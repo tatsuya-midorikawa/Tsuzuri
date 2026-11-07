@@ -917,6 +917,38 @@ fn source_modules(module: &CheckedModule) -> BTreeMap<usize, String> {
 mod tests {
     use super::*;
 
+    /// The runtime pieces end with a newline (TZ15), so no emitted program has a function on the line of another
+    /// one's closing brace; the line passes still read such IR, which a hand-joined or external text can have.
+    #[test]
+    fn a_definition_after_a_closing_brace_is_a_line_of_its_own() {
+        let ir = "define void @a() {\nentry:\n  ret void\n}define void @b() !dbg !7 {\nentry:\n  ret void\n}; note\n\
+                  define void @c() {\nentry:\n  ret void\n}\n";
+        assert_eq!(
+            ir_lines(ir).collect::<Vec<_>>(),
+            [
+                "define void @a() {",
+                "entry:",
+                "  ret void",
+                "}",
+                "define void @b() !dbg !7 {",
+                "entry:",
+                "  ret void",
+                "}",
+                "; note",
+                "define void @c() {",
+                "entry:",
+                "  ret void",
+                "}",
+            ]
+        );
+        assert_eq!(
+            with_frame_pointers(ir),
+            "define void @a() \"frame-pointer\"=\"all\" {\nentry:\n  ret void\n\
+             }define void @b() \"frame-pointer\"=\"all\" !dbg !7 {\nentry:\n  ret void\n}; note\n\
+             define void @c() \"frame-pointer\"=\"all\" {\nentry:\n  ret void\n}\n"
+        );
+    }
+
     /// The last place of the last block gives the largest numbers of a stable numbering; with every kind they are
     /// still positive `i32` values, which the wasm32 export `tsuzuri_trap_site` returns.
     #[test]

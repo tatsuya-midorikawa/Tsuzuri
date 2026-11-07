@@ -551,6 +551,99 @@ fn probes_the_stack_only_when_the_program_spawns() {
     assert!(last_alloca < first_call, "{main}");
 }
 
+/// The native IR of `module` in the string form `form`, whatever `TSUZURI_STRINGS` says.
+fn emit_strings(
+    module: &tsuzuri::check::CheckedModule,
+    entry: llvm::Entry,
+    form: llvm::StringForm,
+) -> String {
+    let options = llvm::EmitOptions {
+        entry,
+        wasm: false,
+        wasm_simd128: false,
+        debug_output: false,
+        runtime_objects: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    };
+    let ir = llvm::emit_with_strings(module, options, form).unwrap();
+    assert_eq!(
+        ir,
+        llvm::emit_with_strings(module, options, form).unwrap(),
+        "IR is deterministic"
+    );
+    ir
+}
+
+#[test]
+fn runtime_pieces_start_on_lines_of_their_own() {
+    // TZ15: the emitter joins the runtime pieces as they are. In the grammar of the IR, a function
+    // ends at its closing brace, and what follows it (a `define`, a global, a comment) is a top-level
+    // entity of its own; the passes that read the IR line by line take a line that starts with
+    // `define ` for a function's header and a line that is `}` for its end. So no line may continue
+    // after a closing brace, every header is a line that starts with `define `, and every header of
+    // a spawning program probes its frame (TZ02; Windows probes with __chkstk itself). The poll of
+    // TZ10 and the trap report are added after the probes, so they are the only headers without one.
+    fn assert_lines(ir: &str, header: Option<&str>) {
+        let continued: Vec<&str> = ir
+            .lines()
+            .filter(|line| line.starts_with('}') && line.len() > 1)
+            .collect();
+        assert!(continued.is_empty(), "{continued:#?}");
+        let defines: Vec<&str> = ir.lines().filter(|line| line.contains("define ")).collect();
+        assert!(!defines.is_empty());
+        for define in &defines {
+            assert!(define.starts_with("define "), "{define}");
+            if define.contains("@tz.preempt.poll(") || define.contains("@tz.trap.") {
+                continue;
+            }
+            assert_eq!(
+                define.contains(" \"probe-stack\"=\"inline-asm\" "),
+                !cfg!(windows),
+                "{define}"
+            );
+        }
+        if let Some(header) = header {
+            assert!(
+                defines.iter().any(|define| define.contains(header)),
+                "no {header} header"
+            );
+        }
+    }
+    // A spawning program that shows a Char: `@tz.string.copy` comes right after the last function
+    // of the Char runtime (`character.ll`). The UTF-16 form joins that runtime as it is.
+    let shown = accepts(
+        "def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\ndo! IO.write_line (to_string 'x')\ngo 41\n",
+    );
+    for entry in [llvm::Entry::Library, llvm::Entry::Console] {
+        let ir = emit_strings(&shown, entry, llvm::StringForm::Utf16);
+        assert_lines(&ir, Some("@tz.string.copy("));
+    }
+    // A loop of a spawning program checks for preemption only when a call in it reaches a function
+    // that may wait or run long (TZ10). Everything that this loop reaches is a light function of
+    // the runtime or an allocation: there is no check, and so no poll at all.
+    let counted = accepts(
+        "def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\ndef count :: i64 -> i64\nfn count n =\n    let mut total = 0\n    for _ in 0 ..< n do\n        total = total + String.length (to_string 'x')\n    total\ngo (count 1000)\n",
+    );
+    for entry in [llvm::Entry::Library, llvm::Entry::Console] {
+        let ir = emit_strings(&counted, entry, llvm::StringForm::Utf16);
+        assert_lines(&ir, Some("@tz.string.copy("));
+        assert!(!ir.contains("@tz.preempt.poll"), "{ir}");
+    }
+    // The same loop over the text of integers, in a program that also prints with `Debug`: the
+    // integer runtime comes right after the runtime of `Debug` (`debug.ll`) in both string forms.
+    let debugged = accepts(
+        "def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\ndef count :: i64 -> i64\nfn count n =\n    let mut total = 0\n    for i in 0 ..< n do\n        total = total + String.length (to_string i)\n    total\nDebug.print (ref 1)\ngo (count 1000)\n",
+    );
+    for form in [llvm::StringForm::Utf16, llvm::StringForm::Compact] {
+        for entry in [llvm::Entry::Library, llvm::Entry::Console] {
+            let ir = emit_strings(&debugged, entry, form);
+            assert_lines(&ir, None);
+            assert!(!ir.contains("@tz.preempt.poll"), "{form:?}\n{ir}");
+        }
+    }
+}
+
 #[test]
 fn scope_children_are_waited_for_with_their_tzroutines() {
     // TZ02 made the function that a pool worker ran (a child of Task.scope) a boundary of its own. A

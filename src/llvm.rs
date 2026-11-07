@@ -10308,6 +10308,32 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
     }
 
     #[test]
+    fn runtime_pieces_end_with_a_newline() {
+        // The emitter joins the runtime pieces as they are (`RuntimeSymbols::append`, `push_str`),
+        // and the passes that read the IR line by line take a function for a line that starts with
+        // `define ` and its end for a line that is `}`. A piece that ended without a line break
+        // would put the next piece on the line of its last brace (`}define ...`), where those passes
+        // miss the function (TZ15).
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime");
+        let mut pieces: Vec<std::path::PathBuf> = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "ll"))
+            .collect();
+        pieces.sort();
+        assert!(pieces.len() > 30, "{pieces:?}");
+        let unterminated: Vec<String> = pieces
+            .iter()
+            .filter(|path| !std::fs::read(path).unwrap().ends_with(b"\n"))
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            unterminated.is_empty(),
+            "runtime pieces without a final newline: {unterminated:?}"
+        );
+    }
+
+    #[test]
     fn integers_are_parsed_and_formatted_by_spec_without_the_numeric_runtime() {
         let ir = library_utf16(
             "def narrow :: &string -> Maybe<i8>\nfn narrow text = Parse.parse text\n\
