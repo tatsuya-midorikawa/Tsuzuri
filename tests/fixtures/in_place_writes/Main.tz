@@ -1,8 +1,9 @@
 // A31: in-place writes that main accepts and that tracking what the writes store must keep
 // accepted, with the same values. Each export is one of the safe programs of the A31 baseline
-// (`_features/A31-in-place-writes-keep-stored-borrows.md`: the `P_*` programs of 落とし穴 and the
-// `N_*` safe forms of the revised plan), its top-level code moved into a function. The written
-// values hold no borrow, or a borrow that outlives the written array, or the write only reads.
+// (`_features/_completed/A31-in-place-writes-keep-stored-borrows.md`: the `P_*` programs of
+// 落とし穴 and the `N_*` safe forms of the revised plan), its top-level code moved into a
+// function. The written values hold no borrow, or a borrow that outlives the written array, or
+// the write only reads.
 
 // P_acc_1: a reference element written with Array.set.
 export def set_reference :: i64

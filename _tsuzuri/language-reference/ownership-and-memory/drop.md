@@ -194,7 +194,7 @@ after
 - **レコード更新の禁止（E1012）**: Drop 型に対して `{ value with ... }` の更新構文を適用することはできません。
 - **`drop` 本体での全体置換・排他貸出の禁止（E1012）**: `deref value = ...` で引数全体を置き換えると、古い値の解放が同じ `drop` を再帰します。別の関数へ `ref mut` で渡すと、呼び出し先が中身を置換できます。どちらも `E1012` です。メッセージは `cannot replace the whole value inside Drop.drop` と `cannot pass the value on as 'ref mut' inside Drop.drop` です。
 - **公開境界**: `export` や `extern` の引数・戻り値に Drop 型を置くと `E1008` です。
-- **関数の結果が持つ借用**: `drop` は本文に呼び出しを書かずに実行されます。`drop` の本体（またはプログラムのどこか）が、借用を持ちうる値を `Array.write` や、それで書き込む std の関数（`Array.set` など）で `Mutex` の中身などへ書き込むと、借用検査はその書き込みを追跡できないので、プログラム全体で A28 より前の規則に戻り、関数の結果はすべての引数の借用を持ちます（[現在の制限](lifetimes.md#現在の制限)）。そうした書き込みのないプログラムでも、どれかの `drop` の本体が、`Mutex.with_lock` などのロックや、値が持つ関数値の呼び出しを通して、解放する値の中身をほかのコードへ渡すときは、念のため、借用を持ち、破棄でコードを実行しうる値（Drop 型の値と、それを持ちうる関数値・dyn 値・`Owned.Function` を格納された値として持つ値）を受け取る・作る関数の結果は、その値が持つ引数の借用も持ちます（[関数値の共有借用の寿命](../values-and-functions/lambda-expressions.md#共有借用の寿命)）。その関数の中の `Rc.share` なども、所有者の借用を持ちます（[所有者を増やした値の借用](../built-in-types-and-modules/rc.md#所有者を増やした値の借用)）。次の `pass` は `_s` を使いませんが、`_s` の解放が `text` を借用する関数を `w` へ渡すので、`leak` の結果は `text` の借用を持ち、`E1013` です。`drop` が何もしない（`fn drop _s = ()`）なら受理されます。
+- **関数の結果が持つ借用**: `drop` は本文に呼び出しを書かずに実行されます。どれかの `drop` の本体が、`Mutex.with_lock` などのロックや、値が持つ関数値の呼び出しを通して、解放する値の中身をほかのコードへ渡すときは、借用を持ち、破棄でコードを実行しうる値（Drop 型の値と、それを持ちうる関数値・dyn 値・`Owned.Function` を格納された値として持つ値）を受け取る・作る関数の結果は、その値が持つ引数の借用も持ちます（[関数値の共有借用の寿命](../values-and-functions/lambda-expressions.md#共有借用の寿命)、[現在の制限](lifetimes.md#現在の制限)）。その関数の中の `Rc.share` なども、所有者の借用を持ちます（[所有者を増やした値の借用](../built-in-types-and-modules/rc.md#所有者を増やした値の借用)）。次の `pass` は `_s` を使いませんが、`_s` の解放が `text` を借用する関数を `w` へ渡すので、`leak` の結果は `text` の借用を持ち、`E1013` です。`drop` が何もしない（`fn drop _s = ()`）なら受理されます。
 
   ```text
   record Stash { w: (unit -> i64) -> unit, f: unit -> i64 }
@@ -208,6 +208,21 @@ after
       let text = to_string n
       let borrowed = ref text
       pass (Stash { w: w, f: \() -> String.length borrowed }) r   // E1013
+  ```
+
+- **解放が書き込む借用**: どれかの `drop` の本体が `Array.write` などで値の中身を値の中の `Mutex` などへ書き込みうるときは、破棄でコードを実行しうる値を束縛する・代入で捨てる・値で関数へ渡す所で、その値が持つ借用を、値の中のセル（とそれが指す持ち主）へ書き込んだものとして検査します（[現在の制限](lifetimes.md#現在の制限) の「その場の書き込み」と同じ規則）。次の `leak` は、局所値 `text` の借用を持つ `Stash` を、呼び出し元と共有する `a` と一緒に持ちます。`_s` の解放は `text` の借用を `a` のセルへ残し、呼び出し元の `r` が `leak` の後でそれを読めるので、`_s` の宣言の位置で `E1013`（`cannot store a borrow of a local value through a reference parameter`）です。
+
+  ```text
+  record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }
+  instance Drop<Stash> {
+      fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\slot -> Array.write 0 g slot) }
+  }
+  def leak :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> own i64 -> (unit -> i64)
+  fn leak a r n =
+      let text = to_string n
+      let borrowed = ref text
+      let _s = Stash { cell: a, f: \() -> String.length borrowed }   // E1013
+      r
   ```
 
 ## トラップ時の挙動

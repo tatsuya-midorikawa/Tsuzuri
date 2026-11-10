@@ -7,7 +7,7 @@
 | 規模 | L |
 | 依存 | A13, A28 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-06（A28 のレビューで発見。A30 の先端 `f957a7d9`（PR #94）のバイナリで確認） |
 | 承認 | 不要（健全性の穴を塞ぐ。今受理している危険なプログラムだけが `E1013`・`E1014` になる。今受理している安全なプログラムは変えない。変わるなら停止条件） |
 | 改善する劣位 | 不具合（メモリ安全性）: `let mut arr = [\() -> 1]` に、局所の `text` を借用する関数を `Array.write 0 (\() -> String.length borrowed) (ref mut arr)` で書き込み、`arr[0]` を関数から返すと検査を通る。返した関数を呼ぶと解放した `text` を読み、9 ではなく不定の値を返す。`Array.set`・`Array.fill`・`Array.blit` など、`Array.write` で書き込む std の関数と、参照を要素に持つスライス（`ref string`）も同じ。`arr[0] = v` の代入なら正しく拒否される |
@@ -710,3 +710,51 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 - 拒否されているもの（94 個）: 「A28 の事実が広げる形」と A28 の各回のテスト（`S_*`・`T_*`・`W_*`・`L_*`・`O_*`・`D_*`・`F_*`）は、チケットとテストの表と同じ位置・code・kind です（主に `Lending::untracked` による）。対照（`h0` `7:5`、`h6_assign_control` `5:13`、`h9_assign_control` `4:19`、`S_assign_control` `9:5`、`m_lock_mut_probe` `10:5`）、落とし穴の拒否（`P_sort_with_fn` は `std/Array.tz:2003:32` `task_result_retains_borrow` と `2084:15` `borrow_conflict`、`P_sort_by_fn` は `2098:15`、`P_slice_region_unsized` `1:50`、`P_slice_region_mix` `1:38`、`P_widen_*` は `store_region_unnamed` `2:13`・`2:18`・`2:15`）、`N_arc_cell_write_alias` `8:5`、`N_par_chunk` `4:27` `parallel_callback_borrows_environment`、`N_syncmap_store_fn` `8:5`、`N_local_into_param_assign` `5:5` `store_region_unnamed`。
 - edition 2026（`EDITION=2026`、`_tools/results-base-2026.json`）で違うのは、要素・フィールドへの代入を使う 19 個（`h0`・`h6_assign_control`・`h9_assign_control`・`S_assign_control`・`N_local_into_param_assign`・`F_*` 14 個）だけで、どれも `E1012`/`assign_to_immutable_place` になります。危険な 21 個と安全な 39 個（`F_ctl_fa_ref` を除く）は両方の edition で同じなので、手順 2 の Rust のテストは両方の edition で確かめます。
 - 安全な `P_*`・`N_*` を関数にした `tests/fixtures/in_place_writes/Main.tz`（手順 2 で足す suite `in_place_writes`）は、基準のバイナリで native と WASM の `-O0`・`-O3` の 28 件がすべて通りました（`node tests/features.mjs target/scratch/base/tsuzuri in_place_writes`）。
+
+## 実装と検証（2026-11-08）
+
+ブランチ `fix/a31-in-place-writes-keep-borrows`（`main` の `b3dd7f1c` から）。4 段で実装しました。判断の詳細は上の「着手時の再検討」「手順 3 の判断」「手順 4 の判断」「手順 5 の記録」にあります。
+
+### 実装した手順
+
+- 手順 1（`22bb065f`・`e39069b2`）: 監査の 154 個のプログラムを基準のバイナリで記録し、再実行と照合の道具（`target/scratch/a31/_tools/`）を作りました（「手順 1: ベースラインの記録」）。
+- 手順 2（`ff395453`）: 失敗する拒否のテスト 7 件（`tests/mutable_slices.rs` 3、`tests/rc.rs` 3、`tests/currying.rs` 1）、受理と診断を保つテスト、E2E の suite `in_place_writes`（`tests/fixtures/in_place_writes/Main.tz`、値は手で計算）を足しました。
+- 手順 3a・3b（`6ad78bce`・`32561263`・`a37b26fe`・`ccfa9fc4`）: 書き込みの事実（`StoreFacts`: `(from, Part, to)` の組・高階の事実・`top`）、種（`Array.write`・`SyncMap.__replace`・`Vec.push_mut`）、`Value::through` による Part、A28 の事実・closed と合同の最小不動点（`joint_facts`、予算の打ち切りは保持 `None`・書き込み `top`・closed の取り消し）、`eval_call`・パイプライン・コールバック・関数値での適用（`apply_facts`・`apply_higher`・`apply_opaque`・`builtin_stores`・`pipe_stores`）、lock のコールバック、`MatrixView.Mut` の窓の後ろの持ち主、定義の位置の `E1013`/`store_local_borrow_through_reference`（遅らせる診断）、closed の取り消し（コールバックの closed も）、暗黙の解放（`dropped` の追加と `drop_stores` のフック）。種の無いモジュールでは何もしません。
+- 手順 4（`ab0edbf0`・`88c7ba64`・`500d34ec`・`329e7451`）: パイプラインの closed の門、プログラム全体の条件（`untracked_loan_store`・`untracked_writer`・`Lending::untracked`）、特殊化したモジュールの排他参照の lends（事実と読み通し）とセルの lends（事実）を外しました。lends の走査は必要な本文だけで行います。
+- 手順 5（`329e7451`・`2dc000c1`）: `tests/fixtures/*`・`examples/*` の 154 個の `check --json` と `build --no-cache --emit llvm` が基準とバイト単位で同じ。性能は「手順 5 の記録」。
+- 段階 4（`76ae9b39`、文書を書くための確かめで見つけた穴の修正）: edition 2027 の読み取りの仮引数（`own` の無い仮引数。共有参照として渡る）を通した書き込みが、事実に載っていませんでした。関数値の読み取りの仮引数は本文が `deref` を通して呼ぶので、`apply_higher` の「本文の仮引数」の判定に当たらず、見えない関数値の規則で `(0, Contents, 1)` になり、呼び出し側では借用した一時値（`E::BorrowOperand`。値は一時値が持つ loan そのもの）の中身として、ラムダの捕捉した借用を落としていました。値の読み取りの仮引数（`def put :: (unit -> i64) -> ref mut [...] -> unit`、generic な `'a -> ref mut ['a..] -> unit`）も同じく中身を落としていました。`apply_higher` が共有参照の仮引数を `deref` する呼び出しでも高階の事実を記録し、実引数の借用した一時値の中の関数値を見るようにし、`Arg::temporary`・`Source::temporary` で借用した一時値の `Part::Contents` をその loan で格納するようにしました。修正の前は `apply_read (Array.set 0 (\() -> String.length borrowed)) (ref mut arr)`・`put_read (\() -> String.length borrowed) (ref mut arr)` などが edition 2027 で受理され、解放した文字列を読みました（`-O0` で 43 億前後の不定の値）。edition 2026（仮引数が値）では修正の前から拒否です。テスト `tests/mutable_slices.rs` `a_read_parameter_keeps_what_its_writer_stores`（拒否 7 形を両方の edition で `9:5`・`10:5` の `borrow_outlives_block` と `7:13` の `borrow_conflict`、受理 2 形）と、`in_place_writes` の 2 件（`read_parameter_writes_owned` 13、`read_parameter_reads_capture` 18、手で計算。基準のバイナリでも同じ値で受理）を足しました。
+- 手順 6（この節と同じコミット）: 文書（下の一覧）。
+
+### 計画と違う判断
+
+- 監査の Value/Contents の型の規則は健全でないので、値の来歴（`Value::through`）で決めました（再検討の食い違い 11）。
+- 見えない関数値の規則は、`through` だけで持つ loan も、型が排他参照なら書き込み先に数えます（手順 3 の判断）。
+- 推論（抽象モジュール）は書き込みの事実を使わず、書き込みうる本文が排他参照かセルを渡すときは A28 の lends の規則（事実なし・読み通しなし）を残しました（手順 4 の判断。推論に適用すると 154 個のうち 60 個が期待と違った）。そのため、`Array.write` を借用を持ちうる具体的な型で書き込む本文（またはそれを呼ぶ本文）が `ref mut` を渡す関数は、A28 より前の規則のままです（`Array.set` のような generic な関数を通した書き込みは数えません）。文書の「現在の制限」に書きました。
+- `drops_store` は A28 の求め方のまま残しました（「書き込みの事実から求め直す」は基準が受理するプログラムを拒否しうるため）。
+- `m_named_owned`（所有の値を書く名前付き関数を lock のコールバックにする形）は、見えない呼び出しの除外（残す除外）のため拒否のままです（基準と同じ）。
+- 期待を変えたテストは「手順 4 の判断」に列挙したものだけです（`ctl_drop_no_loan` が受理 5、`W_upgrade` が `3:5` `task_result_retains_borrow`、`tests/currying.rs` の 2 つの拒否が受理 42・2 と、その代わりの拒否、単体テストの置き換えと改名）。`W_generic` は最初の診断が同じで、2 つめの診断が増えます。lock のコールバックが自分の `Mutex` へロック中の値の借用を書いて読み戻す形は、基準が受理していましたが `3:27` `mutex_result_retains_borrow` になります（F10 の規則に反する危険な形）。
+- `_features/README.md` には A31 の行が一覧の表に 1 つだけあり（2026-11-05 の追加チケットの表には A31 の行がありません）、その行を更新しました。A28 の行の状態の説明には、A31 で外した条件を書き足しました。
+
+### 確かめたこと
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` はどちらも警告なし（`76ae9b39`）。
+- T1: `cargo nextest run --locked --no-fail-fast` は、段階 1 で 2991 件中 2983 件成功（意図した失敗 7 件と、共有の機械の flake 1 件）、段階 2・3 の各手順の後で 2993 件すべて成功、`76ae9b39` で 2994 件すべて成功（4 件 skip）。
+- 領域のテスト（`76ae9b39`）: `cargo test --locked --test mutable_slices` 17 件、`--test rc` 24 件、`--test currying` 16 件、`--lib ownership` 13 件、すべて成功。
+- 154 個の照合（`compare.mjs`、`76ae9b39`）: edition 2027・2026 とも期待と違うもの 0。基準からの変化は危険な 21 個の拒否と、許した `D_ctl_drop_no_loan`・`W_generic`・`W_upgrade` だけです。
+- 手順 5 の比較（`76ae9b39`）: `tests/fixtures/*`・`examples/*` の 154 個で、`check --json` と `build --no-cache --emit llvm` が基準とすべて同じ。
+- E2E（dev のバイナリ、`76ae9b39`）: `node tests/features.mjs <bin> <suite>` の `in_place_writes` 30 件・`mutable_slices` 49 件・`rc` 39 件・`borrowed_records` 57 件・`slices` 11 件・`matrix_view` 303 件・`concurrency` 15 件（native と WASM の `-O0`・`-O3`）、`sync_types` 14 件・`tzroutine` 16 件（native の `-O0`・`-O3`）、`node tests/control.mjs` 701 件（native と WASM の `-O0`・`-O3`）、`node tests/user_drop.mjs`（native と WASM の `-O0`・`-O3`）、`TSUZURI_PROGFUZZ_KIND=owned node tests/progfuzz.mjs <bin> 100 1 4`（100 個、3200 回の実行で差なし）。すべて成功しました。`in_place_writes` は基準のバイナリでも 30 件すべて同じ値で通ります。
+- 文書（2026-11-08 に書いた 8 ページ）: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs <8 ページ>` は `Docs: 8 pages, 138 links, 75 checked examples, 150 native runs (O0/O3), 0 test projects, 1 generated blocks.` で成功（2026-11-11 に実行。この実行は中断の前に終わっておらず、再開後に確かめました）。
+
+### 更新した文書
+
+- `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`（現在の制限: 既知の不具合の注意を実際の振る舞い（その場の書き込み、見えない関数値の規則、局所値の借用の `E1013`）に置き換え、プログラム全体の条件の文を消し、残る除外を箇条にした）
+- `ownership-and-memory/drop.md`（プログラム全体の条件の文を消し、解放が書き込む借用の規則と例を足した）
+- `ownership-and-memory/borrowing.md`（「書き込んだ値の借用」の節）
+- `values-and-functions/lambda-expressions.md`・`built-in-types-and-modules/rc.md`（除外の文を今の規則にした）
+- `built-in-types-and-modules/array.md`・`matrix-view.md`・`mutex.md`（書き込んだ借用を書き込み先の持ち主が持つこと）
+- `docs/language.md`（関数の結果が持つ借用: 書き込みの事実の項目、セルと推論の項目、破棄の項目、読み通しの理由、`Rc / Arc` の結果の借用、排他借用フィールドの節の既知の不具合の段落を実際の振る舞いに、排他スライスの節）
+- `docs/architecture.md`（所有権の節: パイプラインの門、書き込みの事実の段落、lends の段落）
+
+### 変えたファイル
+
+`src/ownership.rs`、`src/check.rs`（`Type::lends_mutable` の `exclusive`）、`tests/mutable_slices.rs`、`tests/rc.rs`、`tests/currying.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、上の文書、`_features/README.md`、このチケット（`_features/_completed/` へ移動）。
