@@ -905,3 +905,55 @@ def font_size :: own (f64 | i64 | string) -> string = \size ->
 ### 変更したファイル
 
 `src/anonymous_union.rs`（新規）、`src/syntax.rs`、`src/parser.rs`、`src/parse_control.rs`、`src/syntax_codec.rs`、`src/frontend_cache.rs`、`src/formatter.rs`、`src/check.rs`、`src/control.rs`、`src/polymorph.rs`、`src/higher_kinds.rs`、`src/exhaustiveness.rs`、`src/diagnostic_kinds.rs`、`src/explain.rs`、`src/explain/codes/E1041.md`（新規）、`src/docgen.rs`、`src/api_diff.rs`、`src/contracts.rs`、`src/computation.rs`、`src/regions.rs`、`src/warnings.rs`、`src/semantic.rs`、`src/find.rs`、`src/kg_capture.rs`、`src/kg/ids.rs`、`src/kg/find.rs`、`src/llvm.rs`、`src/llvm_debug.rs`、`scripts/lldb/tsuzuri_lldb.py`、`tests/anonymous_unions.rs`（新規）、`tests/formatter.rs`、`tests/debug_info.rs`、`tests/debugger.mjs`、`tests/features.mjs`、`tests/fixtures/anonymous_unions/Main.tz`（新規）、`.github/workflows/targets.yml`、上の文書、`_features/A25-anonymous-union-conversions.md`・`_features/A26-anonymous-union-classes.md`（依存の A24 への移動先のリンク）、`_features/README.md`。
+
+### レビューの指摘への対応（第1回）
+
+2026-11-11。第 1 回のレビュー（適合性と反例の 2 件。`target/scratch/wave1/review_A24_conformance_r1.json`・`review_A24_counterexample_r1.json`）の指摘は 14 件（重大 2 件は同じ原因、軽微 12 件）で、重なりをまとめると 11 件です。すべて再現し、すべて直しました。実在しない指摘はありません。判断は調整役の決定（`target/scratch/audit/DECISIONS.md` の 2026-11-11 の追記）に従いました。
+
+#### 指摘と対応
+
+| 指摘 | 対応 | 回帰テスト |
+| --- | --- | --- |
+| 重大（2 件、同じ原因）: 関数型の要素の順序と区別が型引数の置き換えで変わる。`(i64 -> 'r)` と `(i64 -> i64 -> i64)` は引数の数で先に決まるが、`'r` が関数型になると引数が増え、同じ要素が 2 つになる（`E1021` の修正案が直らない）か、書いた型と順序が違って `E1003` になる | `order` の関数型の比較を改めました（下の判断 1）。結果が型変数・推論変数・`Partial`・`Application` の関数型は引数が増えうるので、そこまでの引数が等しく、より長い関数型との組は `Order::Unknown`（`anonymous_union_indistinct_members`）です。引数の数より先に引数そのものを比べるので、決まった順序は型引数で変わりません | `function_members_keep_their_order_under_substitution`（拒否 9 通り、受理 4 通り、`'r` を関数型にした具体化の実行、具体化と書いた型の表示の一致、関数型どうしの順序） |
+| 軽微: 純粋かどうかだけが違う要素 `((i64 -> i64) \| pure (i64 -> i64))` は書けるが、どの値も注入できない | 型を書いた位置で `E1041`（`anonymous_union_indistinct_members`。`Order::Purity`）にしました。入れ子（`[pure (i64 -> i64)]` と `[(i64 -> i64)]`）も同じです（判断 2・3） | `members_that_differ_only_in_purity_are_rejected` |
+| 軽微: 配列のリテラルが、固定長配列の要素も合うのに黙って動的配列の要素になる | 動的配列と、長さの合う固定長配列の両方が合えば `E1041`（`anonymous_union_ambiguous_member`、`this array literal could be [i64] or [i64; 3] in ...`）です（判断 4） | `array_literals_do_not_default_to_the_dynamic_array` |
+| 軽微: `may_member` がカリー化した関数型を過小に数え、結果の決まらないラムダが黙って引数の少ない要素になる | `may_member` の関数型の腕を `unify` と同じ形（共通の引数、次に残り）にしました。結果が推論変数なら、引数の続く関数型とも合いえます | `open_function_results_may_be_curried_members` |
+| 軽微（2 件）: ガードの述語やアクティブパターンの引数の中の `match`・ラムダに書いた `:?` が、腕をパターンにしてしまう | `type_test_ahead` が、それ自身の式（`match`・`with`・`\`・`for`・`fn`）の中の `:?` を数えないようにしました（判断 5）。`(:? Maybe<i64> as m)` の修正は保っています | `nested_type_tests_stay_in_their_expressions`（実行 12 通りと構文 3 通り）、既存の `parses_type_test_patterns` |
+| 軽微: `tsuzuri find` が、末尾の名前が同じ要素（`Shapes.Point` と `Main.Point`）の順序を問わずには探せない | 匿名共用体の要素を、位置の組から順に、ほかの組み合わせでも単一化するようにしました（判断 6） | `kg::find::tests::find_pairs_union_members_in_any_order`、`find_pairs_members_of_the_same_name` |
+| 軽微（2 件）: LSP の参照・定義・リネームが `:? T` の型を見ない | `semantic.rs` の `type_tests` が、`match`・ハンドラー・`for`・computation のパターンの型テストの型を、型注釈と同じ `type_entry` で登録します（hover と定義の対象にもなります）。匿名共用体を使わないプログラムの索引は変わりません | `type_tests_are_type_references`、`tests/lsp.rs` の `rename_and_references_reach_type_tests` |
+| 軽微: 計画したテスト `synthetic_names_are_not_registered` がない | `src/check.rs` の単体テストとして足しました（`collect_unions` を直接呼び、id の表には 32 件、名前の表には利用者の union とその case だけがあることを確かめる）。これは欠けていたテストで、直す前のコードでも通ります | `check::tests::synthetic_names_are_not_registered` |
+| 軽微: リファレンスが、並んだ式の期待型（`[a, 2]` と `[3, a]`）と、期待型を受けない構築子の引数（`Some [\|\|]`）を説明していない | `anonymous-union.md` の「値の作り方（注入）」と `type-inference.md`、`docs/language.md` に書きました | `check-docs.mjs`（文の中の例は `target/scratch/a24/r1/d1`〜`d5` で確かめた） |
+| 軽微（2 件）: 匿名共用体の `E1005`・`E1025` が、書けないインスタンスの定義を勧める | 匿名共用体のときだけ `no instance for Eq<(i64 \| string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` にしました。ほかの型の文は 1 文字も変わりません | `missing_instances_do_not_ask_for_an_instance` |
+| 軽微: タプルやペイロードの中の数のリテラルが `an undetermined type` と表示される | `literal_defaults` が、値の型の中の数のリテラルの推論変数を既定の型で示します（`found Maybe<i32>`） | `diagnostics_name_nested_number_literals` |
+
+#### 判断
+
+1. **関数型の正準順序を改めました（D3 と「正準順序」の節、再検討の 12 を上書き）。** 以前は「`pure`、平らにした引数の数、各引数、結果」でした。引数の数を先に比べると、`(i64 -> 'r)` と `(string -> 's)` のように引数で決まった組も、片方だけ引数が増えると順序が逆になります。そこで「純粋かどうかを除き、平らにした引数を先頭から順に、次に引数の少ないほうを先に、最後に結果」とし、決まった組で `pure` が違えば純粋でないものを先にします。`order` が `Less`・`Greater` を返す位置には型変数がなく、`Equal` は型変数のない型にだけ返すので、決まった順序と区別は型引数をどう置き換えても変わりません。関数型の要素を 2 つ以上持つ匿名共用体は、表示とタグの順が変わります（`((string -> i64) | (i64 -> i64 -> i64))` は `((i64 -> i64 -> i64) | (string -> i64))`）。匿名共用体はこのブランチで初めて入るので、既存のプログラムの出力は変わりません。
+2. **純粋かどうかだけの違いは拒否します（決定どおり）。** `finish_expression` は純粋な関数の値を純粋でない関数型へ合わせ、D5 の `may_member` は純粋かどうかを見ないので、どの値も 2 つの要素に合います。純粋な関数型は、純粋でない関数型として読んで（`pure (i64 -> (i64 -> i64))` は `i64 -> i64 -> i64`）比べます。これに合わせて、既存のテスト `function_members_ignore_conventions_and_currying` の期待を 2 か所改めました: `((i64 -> i64) | pure (i64 -> i64))` の受理を新しいテストの拒否に置き換え、表示の順を確かめる型を `pure (i64 -> string)` を使うものにしました（決定が明示した変更です）。
+3. **レビューにない、同じ種類の問題を 1 つ直しました。** `pure (i64 -> (i64 -> i64))` と `pure (i64 -> i64 -> i64)` は別の型（純粋な関数型は引数の数が合わなければ単一化しない）ですが、`Type::display` はどちらも `pure (i64 -> i64 -> i64)` と書きます。両方を要素にすると、網羅性の witness と修正案が片方を名指しできず、重大な指摘の (b) と同じく直らない `E1021` になります。純粋な関数型どうしも平らにして比べ、カリー化の形だけが違う組は `Order::Currying`（`anonymous_union_indistinct_members`、`... differ only in how a pure function type is curried, ...`）で拒否します。結果が型変数の `(pure (i64 -> 'r) | pure (i64 -> i64 -> i64))` も、同じ理由で「決められない組」です。`Type::display` の表示そのもの（匿名共用体のないプログラムの診断にも出る）は、既存の出力を変えないために変えていません。
+4. **配列のリテラル。** 配列か固定長配列の要素がちょうど 1 つならそれ（以前と同じ。長さが違えば `E1003` の長さの誤りを出す）、なければ長さの合う要素がちょうど 1 つならそれを期待型にします（`([i64; 2] | [i64; 3])` に `[1, 2, 3]` が書けるようになりました）。それでも決まらなければ動的配列として検査し、型付きの値が配列のリテラル（`TypedExprKind::Array`）のとき、長さと要素の型の合う固定長配列の要素を数えます。それ 1 つだけなら同じ要素の固定長配列の値に作り直し（式を 2 回検査しない。`fixed_array_literal` と同じ `TypedExprKind::Tuple`）、ほかにも合う要素があれば `E1041` です。パイプの左辺のリテラル（`[1, 2, 3] |> f`）も同じ経路なので、同じ答えです。`new [..]` と、名前に束縛した配列は動的配列のままです。
+5. **パーサー。** `type_test_ahead` は、括弧の中で `match`・`with`・`\`・`for`・`fn` に出会うと、それを囲む括弧が閉じるまで読み飛ばし、括弧の外なら「型テストなし」と答えて既存の判定に任せます。腕そのものの型テストは、その後ろにあっても見つけます（`(Holds (\x -> ...), :? string as s)`）。`{ x:? }`（`:?` の後に型が続かない、フィールドの型付き穴）も型テストとして数えません。`:?` を書かないプログラムでは、この走査は以前と同じく偽を返すだけです。
+6. **`tsuzuri find`。** 決定は「修飾した後に完全な名前で並べ替える」でしたが、問い合わせの名前は修飾しないので（`(Point | Shapes.Point)`）、並べ替えだけでは、モジュール名の順によって一致しない組が残ります。そこで並べ替え（`member_key`）は最初の試行の順として残し、単一化が要素の組み合わせを探すようにしました（`Subst::unify_members`。1 つの匿名共用体につき 4,096 通りまで。失敗した組は束縛を残さない）。`_` や型変数の要素（`(_ | string)`）も、どの順序でも一致します。上限に達した比較は「一致しない」と答えます（`compiler/kg.md` に書きました）。
+7. **LSP。** 型テストの型は hover の項目も作るので、定義への移動も働きます。パターンの型注釈 `(p: T)` の型は、以前から索引にありません（`main` も同じ）。決定が「匿名共用体を使わないプログラムの出力を変えない」としたので、このチケットでは変えていません。
+8. **`may_member` と純粋さ。** 純粋でない値と純粋な要素の組は、単一化では必ず失敗しますが、`may_member` は今も合いうると数えます（過大に数えるだけで、選んだ後の単一化が `E1003` を出します）。
+
+#### 検証
+
+- 直す前のコードで失敗すること: `2c7ffa99`（直す前）のソースに新しいテストだけを足した写し（`target/scratch/a24/head-src`、別の `CARGO_TARGET_DIR`）で、新しい回帰テスト 11 件（`tests/anonymous_unions.rs` の 9 件、`tests/lsp.rs` の 1 件、`kg::find::tests::find_pairs_union_members_in_any_order`）を実行し、11 件すべてが失敗しました（`target/scratch/a24/prefix-tests.txt`）。`synthetic_names_are_not_registered` は欠けていたテストなので対象外です。
+- T0: `cargo fmt --all -- --check`（差分なし）、`cargo clippy --all-targets --locked -- -D warnings`（警告なし）。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3062 件のうち 3062 passed、4 skipped（直す前は 3050 件。増えた 12 件は上の 11 件と `synthetic_names_are_not_registered`）。`tests/anonymous_unions.rs` は 69 件です。`tests/formatter.rs` の匿名共用体の 3 件も、この中で通りました。
+- T2（dev バイナリ、`target/scratch/a24/t2-r1.sh`）: `features.mjs anonymous_unions`（37 件、native と WASM の `-O0`／`-O3`）、`features.mjs deriving`（209 件）、`control.mjs`（701 件）、`lsp_sessions.mjs`（utf-16 と utf-8）、`frontend_cache.mjs`、`docgen.mjs` がすべて通りました。
+- 文書: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs` を変更した 5 ページに（163 links、19 examples、30 native runs）、`node scripts/gen-docs.mjs --check`（19 blocks、0 stale）、`node scripts/check-cli-docs.mjs`（4 checks、0 failed）、`node scripts/check-links.mjs`（0 broken）、`node scripts/check-guide-lite.mjs`（88 references、0 failed）。
+- 匿名共用体を使わないプログラムの出力（パーサー・意味索引・`find`・`E1005` の文を触ったので、手順 12 の比較をやり直しました）: `b3dd7f1c` のバイナリと、この変更のバイナリで、`tests/fixtures/` と `examples/` の 186 単位の出力（native と wasm32 の IR、`check --json`、`doc`、`kg build`、`api-diff` の既定と `--effective`）を取り直し、`sh target/scratch/a24/compare.sh target/scratch/a24/before target/scratch/a24/after` で比べました。違いは、基準のバイナリが構文を読めない `tests/fixtures/anonymous_unions` の 1 単位だけ（50 行すべて）で、ほかの 185 単位は 1 byte も違いません（`target/scratch/a24/compare-r1.txt`）。
+- 値の期待値は手計算です（`kind (mk add) == 42` は `(\_x -> add) 1` に `2` を渡した `2 + 40`、配列のリテラルの 10 通り、述語の 12 通り）。診断の文は、この節の表と判断に書いた文をテストが固定します。
+
+#### 変更したファイル
+
+`src/anonymous_union.rs`（`Order::Purity`・`Order::Currying`、`FunctionKey`・`functions`、`may_member` の関数型の腕、`takes_array_literal`・`array_literal_member`・`fixed_array_value`、`literal_defaults`）、`src/parse_control.rs`（`type_test_ahead`）、`src/kg/find.rs`（`Subst::unify_members`）、`src/semantic.rs`（`type_tests`）、`src/polymorph.rs`（`no_instance`）、`src/check.rs`（単体テスト）、`src/explain/codes/E1041.md`、`tests/anonymous_unions.rs`、`tests/lsp.rs`、言語リファレンスの `built-in-types-and-modules/anonymous-union.md`・`types-and-type-inference/type-inference.md`・`compiler/diagnostics.md`・`compiler/usage.md`・`compiler/kg.md`、`docs/language.md`、`docs/architecture.md`。
+
+#### 残した制限
+
+- `Type::display` は `pure (A -> (B -> C))` を `pure (A -> B -> C)` と書きます（このチケットより前から）。匿名共用体の要素としては上の判断 3 で拒否しますが、ほかの診断の表示は変えていません。
+- パターンの型注釈 `(p: T)` の型は、LSP の参照・リネームの対象になっていません（このチケットより前から。判断 7）。
+- `tsuzuri find` は、1 つの匿名共用体の中では要素のどの組み合わせも試しますが、ある引数の匿名共用体で選んだ組み合わせを、後ろの引数の不一致でやり直すことはしません。要素の組み合わせは 4,096 通りまでです。
+- 期待型のない位置の並んだ式（`[3, a]`）と、構築子の引数（`Some [||]`）は、型を注釈した束縛が要ります（リファレンスに書きました）。

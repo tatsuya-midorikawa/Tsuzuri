@@ -246,12 +246,13 @@ impl<'t> FunctionKey<'t> {
     }
 }
 
-/// The order of two function types without their purity: the parameters that both have, one by one; then
-/// the shorter chain first; then the results. A chain that can grow (`FunctionKey::grows`) is not
-/// ordered against a longer one that agrees with it so far, because a type argument could make
-/// the two the same type or turn their order: `(i64 -> 'r)` and `(i64 -> i64 -> i64)` are
-/// `Unknown`. The number of parameters is not compared before the parameters themselves, so that
-/// a chain that grows keeps its place: `(i64 -> 'r)` is before `(string -> i64)` whatever `'r` is.
+/// The order of two function types without their purity: the parameters that both have, one by
+/// one; then the shorter chain first; then the results. A chain that can grow
+/// (`FunctionKey::grows`) is not ordered against a longer one that agrees with it so far, because
+/// a type argument could make the two the same type or turn their order: `(i64 -> 'r)` and
+/// `(i64 -> i64 -> i64)` are `Unknown`. The number of parameters is not compared before the
+/// parameters themselves, so that a chain that grows keeps its place: `(i64 -> 'r)` is before
+/// `(string -> i64)` whatever `'r` is.
 fn functions(left: FunctionKey<'_>, right: FunctionKey<'_>, names: &dyn DeclarationNames) -> Order {
     left.chain
         .iter()
