@@ -752,9 +752,31 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 - `ownership-and-memory/borrowing.md`（「書き込んだ値の借用」の節）
 - `values-and-functions/lambda-expressions.md`・`built-in-types-and-modules/rc.md`（除外の文を今の規則にした）
 - `built-in-types-and-modules/array.md`・`matrix-view.md`・`mutex.md`（書き込んだ借用を書き込み先の持ち主が持つこと）
+- `built-in-types-and-modules/rwmutex.md`・`cond.md`（`with_write`・`wait_with` の本体が書き込んだ借用もロックの持ち主に残ること。2026-11-11 に追加）
+- `README.md`（変更の種類別の表の「所有権・借用・region」の行に、`tests/mutable_slices.rs`・`tests/rc.rs` と suite `mutable_slices`・`in_place_writes`・`rc` を足した。2026-11-11）
 - `docs/language.md`（関数の結果が持つ借用: 書き込みの事実の項目、セルと推論の項目、破棄の項目、読み通しの理由、`Rc / Arc` の結果の借用、排他借用フィールドの節の既知の不具合の段落を実際の振る舞いに、排他スライスの節）
 - `docs/architecture.md`（所有権の節: パイプラインの門、書き込みの事実の段落、lends の段落）
 
 ### 変えたファイル
 
-`src/ownership.rs`、`src/check.rs`（`Type::lends_mutable` の `exclusive`）、`tests/mutable_slices.rs`、`tests/rc.rs`、`tests/currying.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、上の文書、`_features/README.md`、このチケット（`_features/_completed/` へ移動）。
+`src/ownership.rs`、`src/check.rs`（`Type::lends_mutable` の `exclusive`）、`tests/mutable_slices.rs`、`tests/rc.rs`、`tests/currying.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、`.github/workflows/targets.yml`、上の文書、`README.md`、`_features/README.md`、`_features/_completed/A28-function-results-retain-ref-arguments.md`（A31 へのリンク）、このチケット（`_features/_completed/` へ移動）。
+
+### 再開後の仕上げ（2026-11-11）
+
+段階 4 は文書の検査の途中で中断していました。コンパイラーのコードは `76ae9b39` から変えていません（開発用のバイナリも同じものです）。再開後に行ったことは次のとおりです。
+
+- 文書の主張をコンパイラーで確かめ直しました。中断の前の確かめ用のプログラム 31 個（`target/scratch/a31/_docs/`）を枝のバイナリと基準のバイナリで実行し、文書どおりであること（`Array.set` で書く本体は規則を使い受理 2、`Array.write` で書く本体は以前の規則で拒否、`_s` の宣言の `9:9` の `store_local_borrow_through_reference` など）を見ました。足りなかった主張には 39 個を足しました（`_docs2/`。結果は `_docs2-2027.txt`・`_docs2-2026.txt`）: `Array.set`・`Array.fill`・`Array.blit`・参照の要素の書き込みの後の借用元のムーブが `E1014`、書き込んだ配列を返すと `E1013`、`MatrixView.write`・`fill`・`copy_from`・`map_in_place` と `row_mut` の行への `Array.write` が窓の後ろの配列に借用を残すこと、`Mutex.with_lock`・`RwMutex.with_write` のコールバックの書き込みの後のムーブが `E1014`（借用元を使い続けるだけなら受理 18）、`let w = Array.set 0 f` の `w (ref mut arr)`、`Vec.push_mut`、書き込んだ要素の `Rc.share`、排他借用だけを渡す本体の読み通し（`Array.set` の形は受理 5、`Array.write` の形は `E1014`）、セルを渡す本体が読み通さないこと、`Array.set` で局所の配列へ書いた借用を返す関数の結果（保持する引数だけを持つ: 受理 2、基準は拒否）。edition 2026 でも、次の 3 個を除いて同じ結果です: 2026 に無い添字代入を使う 1 個、2026 では `Vec.push` が `Vec` を返すので型が合わない 1 個、`Array.map` にラムダを渡す本体の `Rc.share`（2027 は引数を貸すので見えないコードの除外に当たり読み通さず `E1014`、2026 は値で渡すので読み通して受理 7。どちらも基準と同じ扱いの安全な形）。`vec.md` の「借用を持つ要素を格納する push は直接の完全適用だけ」は基準と同じ（`region_callback_stores_exclusive_input`）なので変えていません。
+- 文書で触れていない形の危険なプログラムを 17 個足して確かめました（`_adv/`: 関数値の引数を 2 段に渡す形、レコードのフィールドの書き込み関数、関数が返した書き込み関数、参照先の配列の要素を別の配列へ書く形（`ref` と 2027 の読み取りの仮引数）、generic な書き込み関数の 2 段、`Maybe` の要素、`while` の中の書き込み、`Array.split_at_mut` の片方への書き込み（直接と関数の中）、2 つの `ref mut` の間の書き込み、パイプライン、配列に入れた部分適用）。型や構文の誤りで検査に届かない 2 個を除き、すべて両方の edition で `E1013` か `E1014` です。受理される危険な形は見つかりませんでした。
+- `mutable_slices` と `in_place_writes` の suite はどの workflow からも実行されていなかったので、`.github/workflows/targets.yml` の features の step の並びに「Exclusive slices and in-place writes (C08, A31)」を足しました（release のバイナリ、3 つの host）。`ci.yml` には足していません（時間の上限のため。ほかの追加の suite と同じ扱いです）。
+- `docs/architecture.md` の `parameter_retention` の説明を、今の実装（`joint_facts` が `check_facts` で求め、`parameter_retention` はテスト用の関数）に合わせました。`_features/README.md` の A28 の行は、プログラム全体の条件が A28 の時点のものだと分かる書き方にしました。
+- T0（2026-11-11）: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` は警告なし。
+- T1（2026-11-11、文書と workflow を変えた後）: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast` は 2994 件すべて成功、4 件 skip（1238 秒。共有の機械が混んでいて 12 件が slow）。
+- T2（2026-11-11、dev のバイナリ）: `node tests/features.mjs target/debug/tsuzuri <suite>` は `in_place_writes` 30 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件が native と WASM の `-O0`・`-O3` で成功。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs <変えた 10 ページ>` は `Docs: 10 pages, 151 links, 77 checked examples, 154 native runs (O0/O3), 0 test projects, 1 generated blocks.` で成功。`node scripts/gen-docs.mjs --check` は `19 blocks checked, 0 stale`、`node scripts/check-cli-docs.mjs` は `4 checks, 0 failed`（診断の種類と std の関数は増やしていません。`store_local_borrow_through_reference` は A31 より前から登録済みの種類です）。`node scripts/check-guide-lite.mjs` は `88 references checked, 0 failed`、`node scripts/check-links.mjs --into _features/README.md` は `0 broken`。`src/runtime/` は変えていないので `check-runtime-includes.sh` は対象外です。そのほかの suite（`slices`・`matrix_view`・`concurrency`・`sync_types`・`tzroutine`・`control.mjs`・`user_drop.mjs`・`progfuzz.mjs`）は同じバイナリで `76ae9b39` の時点に成功しています（上の「確かめたこと」）。
+
+### 残る制限（文書に書いたもの）
+
+- 見えないコード（名前付き関数でない関数値の呼び出し、dyn のメソッド、`Owned.call`、コールバックを実行する組み込み関数）へ借用を持ちうる値を渡す本体は、事実も読み通しも使いません（A28 の除外のまま）。lock の組み込み関数にコールバックを渡す本体もこれに当たるので、所有の値だけを書く名前付き関数を lock のコールバックにする形（`m_named_owned`）は拒否のままです。
+- 推論の段（抽象本文）は書き込みの事実を使わないので、書き込みうる本体が排他借用かセルを渡すとき、その段は A28 より前の規則を保ちます。`Array.write` を借用を持ちうる具体的な型で呼ぶ本体が `ref mut` を渡すと、結果はすべての引数の借用を持ちます（`Array.set` などの generic な関数を通せば事実を使います）。
+- 借用を持ちうる値のセルを渡す本体は `Rc.share` などを読み通しません。`drops_store` は A28 の求め方のままです。
+- 見えない関数値の呼び出しは、関数値と引数の借用を書き込み先のすべてへ残します（安全側）。
+- lock のコールバックが、ロック中の値の借用を別の `Mutex` へ書いて読み戻した値を返す形は `mutex_result_retains_borrow` です（基準は受理していた危険な形）。
