@@ -36,8 +36,9 @@ enum Ty {
     Fixed(Box<Ty>, Box<Ty>),
     Tuple(Vec<Ty>),
     /// An anonymous union `(A | B)` (A24): its members flattened and sorted by `member_key`, so
-    /// that two spellings of one union in different orders compare as one type. A type alias
-    /// is not expanded, as nowhere else in the search.
+    /// that two spellings of one union in different orders usually pair their members by
+    /// position; `Subst::unify_members` tries the other pairings. A type alias is not expanded,
+    /// as nowhere else in the search.
     Union(Vec<Ty>),
     Function(Vec<Ty>, Box<Ty>),
 }
@@ -426,8 +427,13 @@ impl Subst {
             | (Ty::View(x), Ty::View(y))
             | (Ty::List(x), Ty::List(y)) => self.unify(x, y),
             (Ty::Fixed(x, n), Ty::Fixed(y, m)) => self.unify(n, m) && self.unify(x, y),
-            (Ty::Tuple(xs), Ty::Tuple(ys)) | (Ty::Union(xs), Ty::Union(ys)) => {
+            (Ty::Tuple(xs), Ty::Tuple(ys)) => {
                 xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| self.unify(x, y))
+            }
+            (Ty::Union(xs), Ty::Union(ys)) => {
+                let mut attempts = MEMBER_ATTEMPTS;
+                xs.len() == ys.len()
+                    && self.unify_members(xs, &mut ys.iter().collect(), &mut attempts)
             }
             (Ty::Function(xs, x), Ty::Function(ys, y)) => {
                 xs.len() == ys.len()
@@ -436,6 +442,36 @@ impl Subst {
             }
             _ => false,
         }
+    }
+}
+
+/// The most member pairs that one comparison of two anonymous unions tries.
+const MEMBER_ATTEMPTS: usize = 4096;
+
+impl Subst {
+    /// Whether the members `xs` of an anonymous union are the members `rest` of another in some
+    /// order. `member_key` sorts both sides alike, so the first attempt pairs them by position;
+    /// the others serve the members that the key does not tell apart or order alike: `A.Point`
+    /// and `B.Point`, a name beside its qualified form, and a variable, which may be any member.
+    /// A pairing that fails leaves no binding behind.
+    fn unify_members(&mut self, xs: &[Ty], rest: &mut Vec<&Ty>, attempts: &mut usize) -> bool {
+        let Some((first, others)) = xs.split_first() else {
+            return true;
+        };
+        for index in 0..rest.len() {
+            if *attempts == 0 {
+                return false;
+            }
+            *attempts -= 1;
+            let saved = self.0.clone();
+            let candidate = rest.remove(index);
+            if self.unify(first, candidate) && self.unify_members(others, rest, attempts) {
+                return true;
+            }
+            rest.insert(index, candidate);
+            self.0 = saved;
+        }
+        false
     }
 }
 
@@ -1067,6 +1103,72 @@ mod tests {
                 "{broken}"
             );
         }
+    }
+
+    /// A24 (review round 1): the members pair in any order, also where the sort of `member_key`
+    /// cannot put both sides in one order: names that differ only in their qualifiers, a name
+    /// beside its qualified form, and a variable. A pairing that fails binds nothing.
+    #[test]
+    fn find_pairs_union_members_in_any_order() {
+        let unifies = |left: &str, right: &str| {
+            let mut next = 0;
+            let left = parse(left, &mut next, &mut BTreeMap::new()).unwrap();
+            let right = parse(right, &mut next, &mut BTreeMap::new()).unwrap();
+            Subst::default().unify(&left, &right)
+        };
+        for (left, right) in [
+            ("(Shapes.Point | Main.Point)", "(Main.Point | Shapes.Point)"),
+            ("(Main.Point | Shapes.Point)", "(Shapes.Point | Main.Point)"),
+            // The entry's names are qualified; the query's need not be.
+            ("(Shapes.Point | Point)", "(Alpha.Point | Shapes.Point)"),
+            ("(Point | Shapes.Point)", "(Shapes.Point | Zeta.Point)"),
+            (
+                "(Shapes.Point | Point | i64)",
+                "(i64 | Zeta.Point | Shapes.Point)",
+            ),
+            // `_` sorts between the names; it is whichever member is left.
+            ("(_ | string)", "(string | unit)"),
+            ("(_ | string)", "(Point | string)"),
+            ("('a | Maybe<'a>)", "(Maybe<i64> | i64)"),
+            (
+                "(Maybe<'a> | Maybe<i64> | 'a)",
+                "(Maybe<i64> | string | Maybe<string>)",
+            ),
+            (
+                "Maybe<(B.Point | A.Point)> -> i64",
+                "Maybe<(A.Point | B.Point)> -> i64",
+            ),
+        ] {
+            assert!(unifies(left, right), "{left} / {right}");
+            assert!(unifies(right, left), "{right} / {left}");
+        }
+        for (left, right) in [
+            ("(Shapes.Point | Main.Point)", "(Main.Point | Other.Point)"),
+            ("(Main.Point | Main.Point)", "(Main.Point | Shapes.Point)"),
+            ("('a | Maybe<'a>)", "(Maybe<i64> | string)"),
+            ("(_ | string)", "(i64 | unit)"),
+            ("(_ | string)", "(i64 | string | unit)"),
+        ] {
+            assert!(!unifies(left, right), "{left} / {right}");
+            assert!(!unifies(right, left), "{right} / {left}");
+        }
+        // A failed comparison leaves the substitution as it was.
+        let mut next = 0;
+        let mut variables = BTreeMap::new();
+        let query = parse("('a | Maybe<'a>)", &mut next, &mut variables).unwrap();
+        let variable = parse("'a", &mut next, &mut variables).unwrap();
+        let mut subst = Subst::default();
+        assert!(!subst.unify(&query, &ty("(Maybe<i64> | string)")));
+        assert_eq!(subst.resolve(&variable), variable);
+        assert!(subst.unify(&query, &ty("(bool | Maybe<bool>)")));
+        assert_eq!(subst.resolve(&variable), ty("bool"));
+        // Many members that nothing tells apart stop at the attempt limit, with an answer.
+        let wide = |last: &str| {
+            let members: Vec<String> = (0..12).map(|_| "Maybe<_>".to_owned()).collect();
+            format!("({} | {last})", members.join(" | "))
+        };
+        assert!(unifies(&wide("i64"), &wide("i64")));
+        assert!(!unifies(&wide("i64"), &wide("string")));
     }
 
     #[test]

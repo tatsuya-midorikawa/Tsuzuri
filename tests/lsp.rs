@@ -243,6 +243,38 @@ fn rename_rewrites_fields_cases_and_records() {
     assert_eq!(responses[4]["result"]["range"], range(0, 7, 12));
 }
 
+/// A24 (review round 1): a rename rewrites the type of a type test `:? T`, and references and
+/// go-to-definition see it.
+#[test]
+fn rename_and_references_reach_type_tests() {
+    use serde_json::json;
+    let main = "record Point { x: i64 }\n\ndef size :: own (i64 | Point) -> i64 = \\v ->\n    match v with\n    | :? Point as p -> p.x\n    | :? i64 as n -> n\n\nlet annotated: Point = Point { x: 1 }\nsize annotated\n";
+    let mut uri = String::new();
+    let responses = scripted(&[("Main.tz", main)], "utf-16", |path| {
+        uri = path("Main.tz");
+        vec![
+            rename_request(1, &uri, main, "Point {", "Spot"),
+            json!({"id": 2, "method": "textDocument/references", "params": {"textDocument": {"uri": uri}, "position": position(main, "Point {", "utf-16"), "context": {"includeDeclaration": true}}}),
+            json!({"id": 3, "method": "textDocument/definition", "params": {"textDocument": {"uri": uri}, "position": position(main, "Point as p", "utf-16")}}),
+        ]
+    });
+    let edits = responses[0]["result"]["changes"][uri.as_str()]
+        .as_array()
+        .unwrap_or_else(|| panic!("{:?}", responses[0]));
+    assert_eq!(apply_text_edits(main, edits), main.replace("Point", "Spot"));
+    let references = responses[1]["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{:?}", responses[1]));
+    assert_eq!(references.len(), main.matches("Point").count());
+    assert!(
+        references
+            .iter()
+            .any(|reference| reference["range"] == range(4, 9, 14)),
+        "{references:?}"
+    );
+    assert_eq!(responses[2]["result"]["range"], range(0, 7, 12));
+}
+
 /// A field or case renamed for JSON (`@json "name"`) keeps its attribute; the rename changes only
 /// the Tsuzuri name (D08).
 #[test]

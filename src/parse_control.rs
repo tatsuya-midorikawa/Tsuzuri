@@ -1339,7 +1339,7 @@ impl Parser<'_> {
     }
 
     fn guard_predicate(&self) -> bool {
-        // A type test `:? T` before the arrow makes the arm a pattern, at any depth: its type may
+        // A type test `:? T` of the arm itself makes the arm a pattern, at any depth: its type may
         // hold a `<` that the scan below takes for a comparison (A24).
         if self.type_test_ahead(false) {
             return false;
@@ -1401,18 +1401,59 @@ impl Parser<'_> {
     }
 
     /// Whether a type test starts before the arm's `->` or `when` (`group` false), or before the
-    /// `)` that closes the current group (`group` true), at any depth (A24). No expression holds
-    /// `:?`, so such an arm or group is a pattern.
+    /// `)` that closes the current group (`group` true), at any depth of parentheses (A24): such an
+    /// arm or group is a pattern, whatever else its type holds (a `<` reads as a comparison to the
+    /// scans of the callers). The tokens of an expression of its own are not the arm's or the
+    /// group's: a `match`, a handler's `with`, a lambda, a `for` or a local `fn` has patterns and
+    /// arrows of its own, so the scan skips to the `)` that closes the parentheses around it, and
+    /// outside any parentheses it answers that no type test is ahead. A hole after a field,
+    /// `{ x:? }`, is no type test either: no type follows it.
     fn type_test_ahead(&self, group: bool) -> bool {
         let mut depth = 0usize;
+        // The depth of the parentheses around the expression that is skipped.
+        let mut nested: Option<usize> = None;
         for (index, token) in self.tokens[self.position..].iter().enumerate() {
             match token.kind {
                 TokenKind::End => return false,
-                TokenKind::Arrow | TokenKind::When if !group => return false,
                 TokenKind::LeftParen => depth += 1,
                 TokenKind::RightParen if group && depth == 0 => return false,
-                TokenKind::RightParen => depth = depth.saturating_sub(1),
-                TokenKind::Colon if self.type_test_at(self.position + index) => return true,
+                TokenKind::RightParen => {
+                    depth = depth.saturating_sub(1);
+                    if nested.is_some_and(|outer| depth < outer) {
+                        nested = None;
+                    }
+                }
+                _ if nested.is_some() => {}
+                TokenKind::Arrow | TokenKind::When if !group => return false,
+                TokenKind::Match
+                | TokenKind::With
+                | TokenKind::Backslash
+                | TokenKind::For
+                | TokenKind::Fn => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    nested = Some(depth);
+                }
+                TokenKind::Colon
+                    if self.type_test_at(self.position + index)
+                        && !self
+                            .tokens
+                            .get(self.position + index + 2)
+                            .is_some_and(|after| {
+                                matches!(
+                                    after.kind,
+                                    TokenKind::RightBrace
+                                        | TokenKind::RightParen
+                                        | TokenKind::RightBracket
+                                        | TokenKind::Comma
+                                        | TokenKind::Semicolon
+                                        | TokenKind::End
+                                )
+                            }) =>
+                {
+                    return true;
+                }
                 _ => {}
             }
         }
@@ -1660,7 +1701,7 @@ impl Parser<'_> {
     }
 
     fn pattern_argument_expression(&self) -> bool {
-        // A type test anywhere in the group makes it a pattern: its type may hold a `<` (A24).
+        // A type test of the group itself makes it a pattern: its type may hold a `<` (A24).
         if self.type_test_ahead(true) {
             return false;
         }

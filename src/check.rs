@@ -15394,6 +15394,65 @@ mod tests {
             "recursive union layout for 'Main.Shape'; recursive heap types are not supported in 0.1"
         );
     }
+
+    /// The synthesized declarations of anonymous unions are registered only in the tables by id
+    /// (A24): no table by name holds them or their cases, so no lookup, suggestion or listing
+    /// finds them, whatever a later filter does.
+    #[test]
+    fn synthetic_names_are_not_registered() {
+        use super::{Diagnostics, Names, UnionDecl, anonymous_union, collect_unions};
+        use std::collections::BTreeMap;
+        let program = crate::parser::parse("union Shape = Dot | Line of i64\n").unwrap();
+        let synthesized = anonymous_union::declarations();
+        let declarations: Vec<(&str, &UnionDecl)> = program
+            .unions
+            .iter()
+            .map(|union| ("Main", union))
+            .chain(
+                synthesized
+                    .iter()
+                    .map(|union| (anonymous_union::MODULE, union)),
+            )
+            .collect();
+        let mut names = Names::default();
+        let mut diagnostics = Diagnostics::new(0);
+        collect_unions(&declarations, &mut names, &mut diagnostics).unwrap();
+        // The tables by id hold every declaration, in order.
+        assert_eq!(names.union_names.len(), 32);
+        assert_eq!(names.union_arities.len(), 32);
+        assert_eq!(names.union_lengths.len(), 32);
+        assert_eq!(names.union_names[0], "Main.Shape");
+        assert_eq!(names.union_names[1], "$anonymous.Union$2");
+        assert_eq!(names.union_names[31], "$anonymous.Union$32");
+        assert_eq!(names.union_arities[31], 32);
+        // The tables by name hold the user's union and its cases, and nothing else.
+        let synthetic = |text: &str| text.contains('$');
+        assert_eq!(names.unions.keys().collect::<Vec<_>>(), ["Main.Shape"]);
+        assert_eq!(
+            names.union_aliases,
+            BTreeMap::from([("Shape".to_owned(), vec!["Main.Shape".to_owned()])])
+        );
+        assert_eq!(
+            names.cases.keys().collect::<Vec<_>>(),
+            ["Main.Dot", "Main.Line"]
+        );
+        assert_eq!(
+            names.case_aliases.keys().collect::<Vec<_>>(),
+            ["Dot", "Line"]
+        );
+        for name in names
+            .unions
+            .values()
+            .map(|info| &info.name)
+            .chain(names.union_aliases.values().flatten())
+            .chain(names.cases.values().map(|case| &case.info.name))
+            .chain(names.case_aliases.values().flatten())
+        {
+            assert!(!synthetic(name), "{name}");
+        }
+        assert!(names.records.keys().all(|name| !synthetic(name)));
+        assert!(names.functions.keys().all(|name| !synthetic(name)));
+    }
 }
 
 #[cfg(test)]

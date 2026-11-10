@@ -64,13 +64,18 @@ pub(super) fn declarations() -> Vec<UnionDecl> {
 
 /// How two member types compare in the canonical order. `Unknown` means that a type variable, an
 /// inference variable or an erroneous type decides the comparison, so the order could change with
-/// the type arguments.
+/// the type arguments. `Purity` means that the types differ only in the purity of a function type,
+/// which picks no member when a value is injected (D5). `Currying` means that they differ only in
+/// how a pure function type is curried (`pure (A -> (B -> C))` and `pure (A -> B -> C)`), which
+/// the text of a type does not show, so a diagnostic could not name one of the two members.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Order {
     Less,
     Equal,
     Greater,
     Unknown,
+    Purity,
+    Currying,
 }
 
 impl Order {
@@ -130,8 +135,13 @@ fn rank(ty: &Type) -> Option<u8> {
 
 /// The canonical order of two member types (D3): the head's rank, then the head's own values, with
 /// records and unions by their qualified names, not their ids, so that adding a module changes no
-/// order. A function type compares by purity, its parameters with impure currying flattened, and its
-/// result; its parameter conventions are not compared, as unification ignores them.
+/// order. Function types compare as `functions` says; their parameter conventions are not compared,
+/// as unification ignores them.
+///
+/// A decided answer (`Less` or `Greater`) holds for every substitution of the type variables: it
+/// is found at a place that no variable reaches, and `Equal` is only answered for types without
+/// variables. A generic declaration therefore keeps its members in the canonical order, and
+/// pairwise distinct, in every instance.
 pub(super) fn order(left: &Type, right: &Type, names: &dyn DeclarationNames) -> Order {
     let (Some(left_rank), Some(right_rank)) = (rank(left), rank(right)) else {
         return Order::Unknown;
@@ -169,11 +179,24 @@ pub(super) fn order(left: &Type, right: &Type, names: &dyn DeclarationNames) -> 
         }
         (Type::Handle(name), Type::Handle(other)) => Order::of(name.cmp(other)),
         (Type::Function(parameters, result), Type::Function(others, other_result)) => {
-            let (pure, chain, result) = function_key(parameters, result);
-            let (other_pure, other_chain, other_result) = function_key(others, other_result);
-            Order::of(pure.cmp(&other_pure))
-                .then(|| sequence(chain.into_iter(), other_chain.into_iter(), names))
-                .then(|| order(result, other_result, names))
+            let curried = functions(
+                FunctionKey::of(parameters, result),
+                FunctionKey::of(others, other_result),
+                names,
+            );
+            match curried {
+                // A pure function is also a value of the function type that is not pure, so the
+                // two are members of one union only when they differ without their purity.
+                Order::Equal if parameters.pure != others.pure => Order::Purity,
+                Order::Less | Order::Greater if parameters.pure != others.pure => {
+                    Order::of(parameters.pure.cmp(&others.pure))
+                }
+                // `pure (A -> (B -> C))` and `pure (A -> B -> C)` are two types that read alike.
+                Order::Equal if parameters.pure && parameters.len() != others.len() => {
+                    Order::Currying
+                }
+                decided => decided,
+            }
         }
         (Type::Reference(target, mutable), Type::Reference(other, other_mutable)) => {
             Order::of(mutable.cmp(other_mutable)).then(|| order(target, other, names))
@@ -187,24 +210,61 @@ pub(super) fn order(left: &Type, right: &Type, names: &dyn DeclarationNames) -> 
     }
 }
 
-/// The purity, the parameters and the result of a function type, with the parameters of an impure
-/// curried result appended, as `Type::function_with_conventions` builds and `unify` compares them.
-fn function_key<'t>(
-    parameters: &'t FunctionParameters,
+/// A function type as `order` reads it: its parameters and its result.
+struct FunctionKey<'t> {
+    chain: Vec<&'t Type>,
     result: &'t Type,
-) -> (bool, Vec<&'t Type>, &'t Type) {
-    let mut chain: Vec<&Type> = parameters.iter().collect();
-    let mut result = result;
-    if !parameters.pure && !parameters.is_empty() {
-        while let Type::Function(more, tail) = result
-            && !more.pure
-            && !more.is_empty()
-        {
-            chain.extend(more.iter());
-            result = tail;
+    /// Whether filling in a type variable can add parameters to `chain`.
+    grows: bool,
+}
+
+impl<'t> FunctionKey<'t> {
+    /// The key of `parameters -> result`, read as a function that is not pure, whatever its
+    /// purity (a pure function is also a value of that type): the parameters of a curried result
+    /// that is not pure are appended, as `Type::function_with_conventions` builds and `unify`
+    /// compares them (`i64 -> (i64 -> i64)` is `i64 -> i64 -> i64`). Such a chain grows when its
+    /// result is still a type variable, an inference variable or the application of one, which
+    /// a function type may replace.
+    fn of(parameters: &'t FunctionParameters, result: &'t Type) -> Self {
+        let mut chain: Vec<&Type> = parameters.iter().collect();
+        let mut result = result;
+        let curried = !parameters.is_empty();
+        if curried {
+            while let Type::Function(more, tail) = result
+                && !more.pure
+                && !more.is_empty()
+            {
+                chain.extend(more.iter());
+                result = tail;
+            }
+        }
+        Self {
+            chain,
+            result,
+            grows: curried && rank(result).is_none(),
         }
     }
-    (parameters.pure, chain, result)
+}
+
+/// The order of two function types without their purity: the parameters that both have, one by one; then
+/// the shorter chain first; then the results. A chain that can grow (`FunctionKey::grows`) is not
+/// ordered against a longer one that agrees with it so far, because a type argument could make
+/// the two the same type or turn their order: `(i64 -> 'r)` and `(i64 -> i64 -> i64)` are
+/// `Unknown`. The number of parameters is not compared before the parameters themselves, so that
+/// a chain that grows keeps its place: `(i64 -> 'r)` is before `(string -> i64)` whatever `'r` is.
+fn functions(left: FunctionKey<'_>, right: FunctionKey<'_>, names: &dyn DeclarationNames) -> Order {
+    left.chain
+        .iter()
+        .zip(&right.chain)
+        .map(|(left, right)| order(left, right, names))
+        .find(|order| *order != Order::Equal)
+        .unwrap_or(Order::Equal)
+        .then(|| match left.chain.len().cmp(&right.chain.len()) {
+            std::cmp::Ordering::Equal => order(left.result, right.result, names),
+            std::cmp::Ordering::Less if left.grows => Order::Unknown,
+            std::cmp::Ordering::Greater if right.grows => Order::Unknown,
+            shorter => Order::of(shorter),
+        })
 }
 
 /// Two lists of types by length, then element by element.
@@ -292,6 +352,30 @@ pub(super) fn canonicalize(
                         span,
                     ));
                 }
+                Order::Purity => {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::AnonymousUnionIndistinctMembers,
+                        format!(
+                            "{} and {} differ only in the purity of a function type, and purity does not pick a member, so they cannot both be members of an anonymous union",
+                            member.display_with(names),
+                            other.display_with(names)
+                        ),
+                        span,
+                    )
+                    .with_help("a pure function is also a value of the function type that is not pure; keep one of the two members, or declare a union with named cases"));
+                }
+                Order::Currying => {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::AnonymousUnionIndistinctMembers,
+                        format!(
+                            "{} and {} differ only in how a pure function type is curried, which their text does not show, so they cannot both be members of an anonymous union",
+                            member.display_with(names),
+                            other.display_with(names)
+                        ),
+                        span,
+                    )
+                    .with_help("keep one of the two members, or declare a union with named cases"));
+                }
                 Order::Equal => {
                     return Err(Diagnostic::of(
                         DiagnosticKind::AnonymousUnionDuplicateMember,
@@ -312,7 +396,9 @@ pub(super) fn canonicalize(
     members.sort_by(|left, right| match order(left, right, names) {
         Order::Less => std::cmp::Ordering::Less,
         Order::Greater => std::cmp::Ordering::Greater,
-        Order::Equal | Order::Unknown => std::cmp::Ordering::Equal,
+        Order::Equal | Order::Unknown | Order::Purity | Order::Currying => {
+            std::cmp::Ordering::Equal
+        }
     });
     let id = names.anonymous_unions[members.len() - 2];
     Ok(Type::Union(id, members.into_boxed_slice()))
@@ -520,9 +606,11 @@ impl Checker<'_> {
     /// The member that the form of `expression` picks (D4 rule 2): an unsuffixed number literal
     /// takes the only integer member, else the bigint member, else the only floating-point member
     /// (a float literal only the last); a lambda the only function member; `Dyn.of v` the only dyn
-    /// member; an array literal the only array or fixed-length array member; a list literal the
-    /// only list member; a tuple the only tuple member of its length. `None` when nothing or more
-    /// than one member fits the form, except that a literal that fits two members is an error.
+    /// member; an array literal the only array or fixed-length array member, else the only one of
+    /// them that takes a literal of its length; a list literal the only list member; a tuple the
+    /// only tuple member of its length. `None` when nothing or more than one member fits the
+    /// form, except that a number literal that fits two members is an error. An array literal
+    /// that several members take is checked by itself, and `array_literal_member` decides.
     fn preselect(
         &mut self,
         expression: &Expr,
@@ -549,8 +637,9 @@ impl Checker<'_> {
             {
                 only(&|member| matches!(member, Type::Dyn(_)))
             }
-            ExprKind::Array(_) => {
+            ExprKind::Array(values) => {
                 only(&|member| matches!(member, Type::Array(_) | Type::FixedArray(..)))
+                    .or_else(|| only(&|member| self.takes_array_literal(member, values.len())))
             }
             ExprKind::List(_) => only(&|member| matches!(member, Type::List(_))),
             ExprKind::NewLiteral(literal) => match literal.kind {
@@ -641,6 +730,9 @@ impl Checker<'_> {
         if let Some((case, literal)) = self.retyped_literal(&value, union, members)? {
             return Ok(wrap(literal, union, case));
         }
+        if let Some(case) = self.array_literal_member(&value, &found, union, members)? {
+            return self.fixed_array_value(value, &found, union, case);
+        }
         // A member is never a reference: a borrowed value is read as the value it borrows, which
         // the union then owns (a move out of the borrow, as in `Some s`, D10).
         let value = if matches!(found, Type::Reference(..)) {
@@ -664,12 +756,7 @@ impl Checker<'_> {
             }
             [] => {
                 let expected = union.display(&self.types);
-                // A number literal is named by the type that it takes when nothing decides it.
-                let found = self
-                    .inference
-                    .numeric_default(&found)
-                    .unwrap_or(found)
-                    .display(&self.types);
+                let found = self.literal_defaults(&found).display(&self.types);
                 Err(Diagnostic::of(
                     DiagnosticKind::AnonymousUnionNotMember,
                     format!(
@@ -687,7 +774,10 @@ impl Checker<'_> {
                     if self.inference.is_numeric_literal(&found) {
                         "number".to_owned()
                     } else {
-                        format!("value of type {}", found.display(&self.types))
+                        format!(
+                            "value of type {}",
+                            self.literal_defaults(&found).display(&self.types)
+                        )
                     },
                     member_display(&members[*first], &self.types),
                     member_display(&members[*second], &self.types),
@@ -697,6 +787,103 @@ impl Checker<'_> {
             )
             .with_help("annotate the value, for example with a typed let binding")),
         }
+    }
+
+    /// `ty` (resolved) as a diagnostic names it: the open type of each number literal in it is the
+    /// type that the literal takes when nothing decides it (`Maybe<i32>` for `Some 4`).
+    fn literal_defaults(&self, ty: &Type) -> Type {
+        polymorph::map_type(ty, &mut |leaf| {
+            self.inference
+                .numeric_default(leaf)
+                .unwrap_or_else(|| leaf.clone())
+        })
+    }
+
+    /// Whether an array literal of `length` elements can be the member `member` by its form: a
+    /// dynamic array, or a fixed-length array of that length (or of a length not yet known).
+    fn takes_array_literal(&self, member: &Type, length: usize) -> bool {
+        match member {
+            Type::Array(_) => true,
+            Type::FixedArray(_, expected) => match self.inference.head(expected) {
+                Type::Length(expected) => *expected == length as u64,
+                Type::Infer(_) => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// The fixed-length array member that the array literal `value` is, when `value` was checked
+    /// by itself (as the dynamic array `found`) because several members take an array literal.
+    /// The literal is as much a `[T; N]` as a `[T]` (A16), so its length and its element type
+    /// decide: when a fixed-length member and any other member fit, no member is a default and
+    /// the literal is `anonymous_union_ambiguous_member`. `None` when no fixed-length member fits
+    /// or `value` is no array literal: the value is then the dynamic array that it was checked as.
+    fn array_literal_member(
+        &self,
+        value: &TypedExpr,
+        found: &Type,
+        union: &Type,
+        members: &[Type],
+    ) -> Result<Option<usize>, Diagnostic> {
+        let (TypedExprKind::Array(elements), Type::Array(element)) = (&value.kind, found) else {
+            return Ok(None);
+        };
+        let fitting: Vec<(usize, bool)> = members
+            .iter()
+            .enumerate()
+            .filter_map(|(case, member)| match member {
+                Type::Array(_) => self.may_member(found, member).then_some((case, false)),
+                Type::FixedArray(expected, _) => (self.takes_array_literal(member, elements.len())
+                    && self.may_member(element, expected))
+                .then_some((case, true)),
+                _ => None,
+            })
+            .collect();
+        match fitting.as_slice() {
+            [(case, true)] => Ok(Some(*case)),
+            [(first, _), (second, _), ..] if fitting.iter().any(|(_, fixed)| *fixed) => {
+                Err(Diagnostic::of(
+                    DiagnosticKind::AnonymousUnionAmbiguousMember,
+                    format!(
+                        "this array literal could be {} or {} in {}",
+                        member_display(&members[*first], &self.types),
+                        member_display(&members[*second], &self.types),
+                        union.display(&self.types)
+                    ),
+                    value.span,
+                )
+                .with_help("annotate the value, for example with a typed let binding"))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// The array literal `value`, checked as the dynamic array `found`, as member `case` of
+    /// `union`, a fixed-length array: the same elements in the same order, as
+    /// `Checker::fixed_array_literal` builds them.
+    fn fixed_array_value(
+        &mut self,
+        value: TypedExpr,
+        found: &Type,
+        union: &Type,
+        case: usize,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let (TypedExprKind::Array(elements), Type::Array(element), Type::Union(_, members)) =
+            (value.kind, found, union)
+        else {
+            unreachable!("array_literal_member picked a member for an array literal")
+        };
+        let length = Type::Length(elements.len() as u64);
+        let ty = Type::FixedArray(element.clone(), Box::new(length));
+        let value = self.finish_expression(
+            TypedExprKind::Tuple(elements),
+            ty,
+            Some(&members[case]),
+            value.span,
+        )?;
+        validate_size(&value.ty, &self.types, value.span)?;
+        Ok(wrap(value, union, case))
     }
 
     /// A number literal that was checked before the union was known (`1 |> f`), checked again
@@ -816,9 +1003,10 @@ impl Checker<'_> {
 
     /// Whether a value of type `found` may be the member `member` (D5): the types agree except
     /// where an inference variable stands, and the open type of a number literal agrees only with
-    /// number types. Function types agree on their parameter count, parameters and result, not on
-    /// conventions or purity, which `finish_expression` adapts. Class constraints are not
-    /// consulted.
+    /// number types. Function types agree on their parameters and result, not on conventions or
+    /// purity, which `finish_expression` adapts; a result that is still open may be a function of
+    /// more parameters, so `string -> ?r` may be `string -> i64 -> i64`. Class constraints are
+    /// not consulted. The answer never misses a member that unification would accept.
     pub(super) fn may_member(&self, found: &Type, member: &Type) -> bool {
         let found = self.inference.head(found);
         let member = self.inference.head(member);
@@ -863,12 +1051,28 @@ impl Checker<'_> {
             }
             (Type::Tuple(elements), Type::Tuple(others)) => all(elements, others),
             (Type::Function(parameters, result), Type::Function(others, other_result)) => {
-                parameters.len() == others.len()
+                let common = parameters.len().min(others.len());
+                // As `unify` reads two function types once `finish_expression` has adapted the
+                // value's purity: the parameters that both have, then what is left of each. Only
+                // two pure functions have their parameter counts compared.
+                parameters.is_empty() == others.is_empty()
+                    && (parameters.len() == others.len() || !(parameters.pure && others.pure))
                     && parameters
                         .iter()
                         .zip(others.iter())
                         .all(|(left, right)| self.may_member(left, right))
-                    && self.may_member(result, other_result)
+                    && match (parameters.len() > common, others.len() > common) {
+                        (false, false) => self.may_member(result, other_result),
+                        // An open result may be the function of the parameters that are left.
+                        (false, true) => self.may_member(
+                            result,
+                            &Type::function(others[common..].to_vec(), (**other_result).clone()),
+                        ),
+                        (true, _) => self.may_member(
+                            &Type::function(parameters[common..].to_vec(), (**result).clone()),
+                            other_result,
+                        ),
+                    }
             }
             (Type::Reference(target, mutable), Type::Reference(other, other_mutable)) => {
                 mutable == other_mutable && self.may_member(target, other)

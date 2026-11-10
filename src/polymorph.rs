@@ -242,6 +242,23 @@ pub(super) fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
     }
 }
 
+/// The message of `E1005` for a class without an instance for `ty`. An anonymous union takes no
+/// instance (A24, D8), so its advice names what does.
+fn no_instance(class: &str, ty: &Type, types: &TypeContext<'_>) -> String {
+    let advice = match ty {
+        Type::Union(id, _)
+            if types
+                .unions
+                .get(*id)
+                .is_some_and(CheckedUnion::is_anonymous) =>
+        {
+            "instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases"
+        }
+        _ => "define an instance or use a supported type",
+    };
+    format!("no instance for {class}<{}>; {advice}", ty.display(types))
+}
+
 pub(super) fn substitute(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
     map_type(ty, &mut |ty| match ty {
         Type::Variable(name) => substitutions
@@ -2800,10 +2817,10 @@ impl Classes {
             }
             Err(Diagnostic::of(
                 DiagnosticKind::NoInstance,
-                format!(
-                    "no instance for {}<{}>; define an instance or use a supported type",
-                    self.declarations[constraint.class].name,
-                    constraint.ty.display(types)
+                no_instance(
+                    &self.declarations[constraint.class].name,
+                    &constraint.ty,
+                    types,
                 ),
                 constraint.span,
             ))
@@ -5323,10 +5340,10 @@ impl Specializer<'_> {
                 None => {
                     return Err(Diagnostic::of(
                         DiagnosticKind::NoInstance,
-                        format!(
-                            "no instance for {}<{}>; define an instance or use a supported type",
-                            type_display(&self.classes.declarations[class].name),
-                            value.display(&self.types)
+                        no_instance(
+                            &type_display(&self.classes.declarations[class].name),
+                            value,
+                            &self.types,
                         ),
                         span,
                     ));
