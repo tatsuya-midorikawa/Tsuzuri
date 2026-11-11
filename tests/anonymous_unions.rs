@@ -3477,6 +3477,56 @@ fn rejects_narrowing_non_members() {
 }
 
 #[test]
+fn conversions_do_not_adapt_function_purity() {
+    // A retagging moves the payload as it is, so a function member is only the member that has
+    // the same purity (review round 1; A24's type tests do the same): the conversions report the
+    // documented kinds, not a mismatch between two member types.
+    let call = "def call :: own (i64 | bool | (i64 -> i64)) -> i64 = \\v ->\n    match v with\n    | :? (i64 -> i64) as f -> f 4\n    | :? i64 as k -> k\n    | :? bool -> 7\n\npure def twice :: i64 -> i64 = \\x -> x * 2\n\n";
+    let error = rejects(
+        &format!("{call}def run :: own (i64 | pure (i64 -> i64)) -> i64 = \\small -> call small\n"),
+        "E1003",
+        "anonymous_union_not_subset",
+    );
+    assert_eq!(
+        error.message,
+        "expected (i64 | bool | (i64 -> i64)), found (i64 | pure (i64 -> i64)); pure (i64 -> i64) is not a member of (i64 | bool | (i64 -> i64))"
+    );
+    let error = rejects(
+        "def call :: own (i64 | bool | pure (i64 -> i64)) -> i64 = \\v -> 0\n\ndef run :: own (i64 | (i64 -> i64)) -> i64 = \\small -> call small\n",
+        "E1003",
+        "anonymous_union_not_subset",
+    );
+    assert!(
+        error
+            .message
+            .ends_with("; (i64 -> i64) is not a member of (i64 | bool | pure (i64 -> i64))"),
+        "{}",
+        error.message
+    );
+    // Narrowing names the member of `W` that the matched union lacks.
+    let source = "def f :: own (i64 | bool | (i64 -> i64)) -> i64 = \\v ->\n    match v with\n    | :? (i64 | pure (i64 -> i64)) as x -> 1\n    | _ -> 7\n";
+    let error = rejects(source, "E1041", "type_test_not_member");
+    assert_eq!(
+        error.message,
+        "pure (i64 -> i64) is not a member of (i64 | bool | (i64 -> i64))"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("the members are i64, bool, (i64 -> i64)")
+    );
+    let tested = "(i64 | pure (i64 -> i64))";
+    let at = source.find(tested).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + tested.len()));
+    // The pure function itself is adapted where it is injected, member by member. 2 * 4 + 7 = 15.
+    passes(
+        &format!(
+            "{call}test \"members\" =\n    assert (call twice + call 7 == 15)\n    let wide: (i64 | bool | (i64 -> i64)) = twice\n    assert (call wide == 8)\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
 fn narrowing_moves_owned_values() {
     // A member that is not Copy moves into the narrowed value: the matched value is gone.
     let error = rejects(
