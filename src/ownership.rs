@@ -3038,6 +3038,31 @@ impl<'a> Checker<'a, '_> {
         Ok(())
     }
 
+    /// `value` as the source spells it, when it is a local that the source names or a record
+    /// field of one (`r.u`, `r.inner.u`).
+    fn spelled(&self, value: &TypedExpr) -> Option<String> {
+        match &value.kind {
+            E::Local(id) => self
+                .state
+                .locals
+                .get(id)
+                .map(|(local, _)| local)
+                .filter(|local| {
+                    local.provenance != crate::syntax::Provenance::Generated
+                        && !local.name.starts_with('$')
+                })
+                .map(|local| local.name.clone()),
+            E::Field(inner, index) => {
+                let Type::Record(id, _) = &inner.ty else {
+                    return None;
+                };
+                let (field, _) = self.module.records.get(*id)?.fields.get(*index)?;
+                Some(format!("{}.{field}", self.spelled(inner)?))
+            }
+            _ => None,
+        }
+    }
+
     fn access(
         &mut self,
         place: &Place,
@@ -3063,18 +3088,39 @@ impl<'a> Checker<'a, '_> {
                 .get(&place.root)
                 .map_or("value", |(local, _)| local.name.as_str())
                 .to_owned();
+            let widening = (!moved.fields.is_empty() && origin.end > origin.start)
+                .then(|| widened_at(self.body, origin))
+                .flatten();
             // Only the control flow tells whether the move reached the use through a loop: the
             // `where` bindings of a guarded function run before its arms, and an assignment's value
             // before its place.
-            let previous_iteration = origin.end > origin.start
-                && moved_in_previous_iteration(self.body, origin, span, &mut self.later_use_budget)
-                    == Some(true);
-            // A widening (A25) moves the payload, all that the value holds besides its tag, into
-            // the wider union: the value moved, not a field of it.
-            let widened = (!moved.fields.is_empty() && origin.end > origin.start)
-                .then(|| widened_at(self.body, origin))
+            let reached = (origin.end > origin.start)
+                .then(|| {
+                    moved_in_previous_iteration(self.body, origin, span, &mut self.later_use_budget)
+                })
                 .flatten();
+            // The nodes of a widening (A25) all have the span of the widened expression, so the
+            // flow cannot order its move and a use of that expression; the use reads the value
+            // before the binding moves it, so it reads what an earlier pass of a loop moved
+            // (review round 3).
+            let previous_iteration = reached == Some(true)
+                || (reached.is_some() && widening.is_some() && origin == span);
+            // A widening moves the payload, all that the value holds besides its tag, into the
+            // wider union: the widened value moved, the local itself or a field of it (`r.u`,
+            // review round 3), as the source spells it. A value that the source does not spell
+            // keeps the message of a partial move.
+            let widened = widening.and_then(|(wider, value)| {
+                let part = !matches!(value.kind, E::Local(_));
+                Some((wider, self.spelled(value)?, part))
+            });
             let message = match (moved.fields.is_empty(), previous_iteration) {
+                _ if widened.as_ref().is_some_and(|(_, _, part)| *part) => {
+                    if previous_iteration {
+                        "part of the value moved here into a wider anonymous union, in the previous iteration of the loop"
+                    } else {
+                        "part of the value moved here into a wider anonymous union"
+                    }
+                }
                 _ if widened.is_some() && previous_iteration => {
                     "value moved here into a wider anonymous union, in the previous iteration of the loop"
                 }
@@ -3111,11 +3157,16 @@ impl<'a> Checker<'a, '_> {
                     format!("use of moved or partially moved value '{name}'"),
                     span,
                 )
-                .with_help(if let Some(wider) = &widened {
+                .with_help(if let Some((wider, path, part)) = &widened {
                     // `ref` of the narrower value is never widened: the wider value is bound once.
                     let wider = wider.display(&self.module.types());
+                    let out_of = if *part {
+                        format!(" out of '{name}'")
+                    } else {
+                        String::new()
+                    };
                     format!(
-                        "a widening moves '{name}'; bind the wider value once with 'let wide: {wider} = {name}' and borrow 'wide', or move it last"
+                        "a widening moves '{path}'{out_of}; bind the wider value once with 'let wide: {wider} = {path}' and borrow 'wide', or move it last"
                     )
                 } else if moved.fields.is_empty() {
                     format!("borrow the value with 'ref {name}' or move it last")
@@ -5965,13 +6016,14 @@ fn carriers(
     }
 }
 
-/// The anonymous union that a widening (A25, `Checker::retag`) at `origin` makes, when the move at
-/// `origin` is the one of its generated binding: the payload of the widened value moves through
-/// a binding `$retag..` whose projection has the span of the widened expression.
-fn widened_at(body: &TypedExpr, origin: Span) -> Option<Type> {
+/// The anonymous union that a widening (A25, `Checker::retag`) at `origin` makes, and the value
+/// that it widens, when the move at `origin` is the one of its generated binding: the payload of
+/// the widened value moves through a binding `$retag..` whose projection has the span of the
+/// widened expression.
+fn widened_at(body: &TypedExpr, origin: Span) -> Option<(Type, &TypedExpr)> {
     let mut pending = vec![body];
     while let Some(expression) = pending.pop() {
-        if let E::Match { arms, .. } = &expression.kind
+        if let E::Match { arms, value, .. } = &expression.kind
             && arms.iter().any(|arm| {
                 arm.alternatives.iter().any(|alternative| {
                     alternative.bindings.iter().any(|(binding, projection)| {
@@ -5982,7 +6034,7 @@ fn widened_at(body: &TypedExpr, origin: Span) -> Option<Type> {
                 })
             })
         {
-            return Some(expression.ty.clone());
+            return Some((expression.ty.clone(), value));
         }
         let _ = expression.try_for_each_child(&mut |child| {
             pending.push(child);

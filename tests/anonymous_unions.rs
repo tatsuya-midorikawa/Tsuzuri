@@ -3882,6 +3882,129 @@ fn a_second_widening_says_that_the_value_moved() {
 }
 
 #[test]
+fn a_widened_field_is_named_in_the_help() {
+    // A widening of a record field moves the field's payload: the note says that part of the
+    // value moved and the help binds the field, as the source spells it, not the record, whose
+    // type is not the union (review round 3). The field used again, the record used whole, a
+    // field of a field, a loop, and a read parameter.
+    let make = "record R { u: (i64 | string), k: i64 }\n\nrecord S { r: R }\n\n\
+         def take :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as k -> k\n    | _ -> 0\n\n\
+         def look :: (f64 | i64 | string) -> i64 = \\v -> 0\n\n";
+    let wider = "(i64 | f64 | string)";
+    for (function, widened, used, path, root, looped) in [
+        (
+            "def f :: own R -> i64 = \\r -> take r.u + take r.u\n",
+            "take r.u",
+            "r.u\n",
+            "r.u",
+            "r",
+            false,
+        ),
+        (
+            "def f :: own R -> i64 = \\r ->\n    let a = take r.u\n    let b = r\n    a + b.k\n",
+            "take r.u",
+            "= r\n",
+            "r.u",
+            "r",
+            false,
+        ),
+        (
+            "def f :: own S -> i64 = \\s -> take s.r.u + take s.r.u\n",
+            "take s.r.u",
+            "s.r.u\n",
+            "s.r.u",
+            "s",
+            false,
+        ),
+        (
+            "def f :: own R -> i64 = \\r ->\n    let mut sum = 0\n    for i in 0 ..= 1 do\n        sum = sum + take r.u\n    sum\n",
+            "take r.u",
+            "take r.u",
+            "r.u",
+            "r",
+            true,
+        ),
+        (
+            "def f :: own R -> i64 = \\r -> look r.u + look r.u\n",
+            "look r.u",
+            "r.u\n",
+            "r.u",
+            "r",
+            false,
+        ),
+    ] {
+        let source = format!("{make}{function}");
+        let error = rejects_in(&source, Edition::E2027, "E1012", "use_after_move");
+        assert_eq!(
+            error.message,
+            format!("use of moved or partially moved value '{root}'"),
+            "{function}"
+        );
+        assert_eq!(
+            error.help,
+            Some(format!(
+                "a widening moves '{path}' out of '{root}'; bind the wider value once with 'let wide: {wider} = {path}' and borrow 'wide', or move it last"
+            )),
+            "{function}"
+        );
+        let first = source.find(widened).unwrap() + widened.len() - path.len();
+        let at = if looped {
+            first
+        } else {
+            source.rfind(used).unwrap() + used.find(root).unwrap()
+        };
+        assert_eq!(error.span.start, at, "{function}");
+        let related: Vec<_> = error
+            .related
+            .iter()
+            .map(|related| {
+                (
+                    related.message.as_str(),
+                    related.span.start,
+                    related.span.end,
+                )
+            })
+            .collect();
+        let message = if looped {
+            "part of the value moved here into a wider anonymous union, in the previous iteration of the loop"
+        } else {
+            "part of the value moved here into a wider anonymous union"
+        };
+        assert_eq!(
+            related,
+            [(message, first, first + path.len())],
+            "{function}"
+        );
+    }
+    // A widened local in a loop: the value moved in the previous iteration (the nodes of a
+    // widening share its span, which the flow alone did not tell from a use in the same pass).
+    let source = format!(
+        "{make}def g :: own (i64 | string) -> i64 = \\w ->\n    let mut sum = 0\n    for i in 0 ..= 1 do\n        sum = sum + take w\n    sum\n"
+    );
+    let error = rejects_in(&source, Edition::E2027, "E1012", "use_after_move");
+    let at = source.find("take w").unwrap() + "take ".len();
+    assert_eq!((error.span.start, error.span.end), (at, at + 1));
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "a widening moves 'w'; bind the wider value once with 'let wide: (i64 | f64 | string) = w' and borrow 'wide', or move it last"
+        )
+    );
+    assert_eq!(
+        error.related[0].message,
+        "value moved here into a wider anonymous union, in the previous iteration of the loop"
+    );
+    // The help that the bound wider field follows: it is borrowed twice.
+    passes(
+        &format!(
+            "{make}def f :: own R -> i64 = \\r ->\n    let wide: {wider} = r.u\n    look wide + look wide + take wide\n\n\
+             test \"field\" =\n    assert (f (R {{ u: 4, k: 1 }}) == 4)\n    assert (f (R {{ u: \"x\", k: 1 }}) == 0)\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
 fn a_converted_local_borrowed_beyond_the_call_names_the_conversion() {
     // A read parameter of a partial application borrows its argument while the function value
     // lives. A local converted into the wider union is a temporary: the error says so and how
