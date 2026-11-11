@@ -980,7 +980,8 @@ impl Checker<'_> {
     /// - a narrowing that would view the matched value while another binding of the same
     ///   alternative moves out of it, as `whole` does in `(:? (i64 | f64) as n) as whole`.
     ///
-    /// A step keeps the match from being a switch, so the other narrowings keep the block.
+    /// A step keeps the match from being a switch, so the other narrowings keep the block, unless
+    /// the arm's body reaches the matched storage (`match_value`, once the body is checked).
     #[inline(never)]
     fn stepped_narrowings(
         &self,
@@ -1673,7 +1674,8 @@ impl Checker<'_> {
     ///   move it, so that the narrowing leaves the value whole, as the arms `:? W0 as x`,
     ///   `:? W1 as x` do;
     /// - or by a step of the pattern that copies the payload (`stepped_narrowings`), in an arm
-    ///   with a guard and where the view would meet a move.
+    ///   with a guard and where the view would meet a move, and (`match_value`) where the
+    ///   arm's body reaches the matched storage, which it may move or replace.
     ///
     /// A copy needs a Copy payload: `as x` in borrowed storage (here) or under a guard
     /// (`stepped_narrowings`) is an error when a member of `W` is not Copy
