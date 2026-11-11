@@ -2690,7 +2690,11 @@ impl Classes {
         }
     }
 
-    fn validate(&self, constraint: &Constraint, types: &TypeContext<'_>) -> Result<(), Diagnostic> {
+    pub(super) fn validate(
+        &self,
+        constraint: &Constraint,
+        types: &TypeContext<'_>,
+    ) -> Result<(), Diagnostic> {
         self.normalize(constraint, types).map(|_| ())
     }
 

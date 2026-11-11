@@ -1097,12 +1097,14 @@ impl Checker<'_> {
         }
         let case = match members.iter().position(|member| *member == ty) {
             Some(case) => Some(case),
-            // A member that still holds an inference variable: the only one that may be `T`.
+            // A member that still holds an inference variable, or that differs from `T` only in
+            // what unification does not compare: the only one that is `T` as unification reads
+            // the two. A value is adapted where it is injected; a type test adapts nothing.
             None => {
                 let fitting: Vec<usize> = members
                     .iter()
                     .enumerate()
-                    .filter(|(_, member)| self.may_member(&ty, member))
+                    .filter(|(_, member)| self.agrees(&ty, member))
                     .map(|(case, _)| case)
                     .collect();
                 match fitting.as_slice() {

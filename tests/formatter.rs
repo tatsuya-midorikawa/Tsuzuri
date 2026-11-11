@@ -785,6 +785,15 @@ fn formats_type_tests() {
         ] {
             assert!(formatted.contains(expected), "{expected}\n{formatted}");
         }
+        // A hole after a field's colon is no type test: the arm stays a predicate and the colon
+        // is spaced as a field's (review round 2).
+        assert_eq!(
+            formatted_in(
+                "record R{x:i64}\ndef get::R->i64=\\r->r.x\ndef f::i64->i64=\\n->\n    |get (R{x:?h})>n->1\n    |get (R{x:?h+1})>n->2\n    |otherwise->0\n",
+                edition
+            ),
+            "record R { x: i64 }\ndef get :: R -> i64 = \\r -> r.x\ndef f :: i64 -> i64 = \\n ->\n    | get (R { x: ?h }) > n -> 1\n    | get (R { x: ?h + 1 }) > n -> 2\n    | otherwise -> 0\n"
+        );
         // A `?` elsewhere keeps the space written after it (typed holes, G25).
         assert_eq!(
             formatted_in("let a:i64=?x\nlet b:i64=? y\na\n", edition),

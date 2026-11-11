@@ -1386,7 +1386,8 @@ fn open_function_results_may_be_curried_members() {
 }
 
 /// Review round 1: a number literal inside the value reads as the type that it takes when
-/// nothing decides it, as a literal by itself does.
+/// nothing decides it, as a literal by itself does. Review round 2: where the value could be two
+/// members, its literals have no type yet and the message names none.
 #[test]
 fn diagnostics_name_nested_number_literals() {
     let error = rejects(
@@ -1405,7 +1406,13 @@ fn diagnostics_name_nested_number_literals() {
     );
     assert_eq!(
         error.message,
-        "this value of type (i32 * f64) could be (i64u * f64) or (i64 * f64) in ((i64u * f64) | (i64 * f64))"
+        "this value could be (i64u * f64) or (i64 * f64) in ((i64u * f64) | (i64 * f64))"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "its number literals have no type yet: add a suffix to them, or annotate the value, for example with a typed let binding"
+        )
     );
 }
 
@@ -2377,4 +2384,350 @@ fn type_tests_are_type_references() {
     let builtin = index.at(0, source.find(":? i64)").unwrap() + 3).unwrap();
     assert_eq!(builtin.detail, "i64");
     assert_eq!(builtin.target, None);
+}
+
+/// Review round 2: a hole after the colon of a field, named or followed by an operator, is no
+/// type test. The arm stays a predicate, as it was before type tests existed, and the hole
+/// reports its type.
+#[test]
+fn named_holes_after_field_colons_stay_predicates() {
+    let record = "record R { x: i64 }\ndef get :: R -> i64 = \\r -> r.x\n";
+    for (arm, column) in [
+        ("    | get (R { x:?h }) > n -> 1\n", 18),
+        ("    | get (R { x:?h + 1 }) > n -> 1\n", 18),
+        ("    | get (R { x:? + 1 }) > n -> 1\n", 18),
+    ] {
+        let source =
+            format!("{record}def f :: i64 -> i64 = \\n ->\n{arm}    | otherwise -> 0\nf 1\n");
+        let program = parsed(&source);
+        assert!(!program.uses_anonymous_unions, "{source}");
+        let error = rejects(&source, "E1030", "typed_hole");
+        assert!(error.message.contains("of type 'i64'"), "{}", error.message);
+        let line_start = source.find(arm).unwrap();
+        assert_eq!(error.span.start, line_start + column - 1, "{source}");
+    }
+    // The argument of an active pattern, between its parentheses.
+    let source = format!(
+        "{record}def (|Over|_|) :: i64 -> i64 -> bool = \\limit -> \\value -> value > limit\ndef f :: i64 -> i64 = \\n ->\n    match n with\n    | Over (get (R {{ x:?h }})) -> 1\n    | _ -> 0\nf 1\n"
+    );
+    let error = rejects(&source, "E1030", "typed_hole");
+    assert!(error.message.starts_with("typed hole '?h' of type 'i64'"));
+    // A type test still starts a pattern after a field's colon or `=`, where a space parts the
+    // two colons, and a name before `:?` is no pattern.
+    let fields = "record P { x: (i64 | string) }\ndef f :: own P -> i64 = \\p ->\n    match p with\n    | { x: :? i64 as n } -> n\n    | { x = :? string as s } -> s.length\n";
+    assert!(parsed(fields).uses_anonymous_unions);
+    accepts(fields);
+    parse_error(
+        "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | n:? i64 -> n\n    | _ -> 0\n",
+    );
+}
+
+/// Review round 2: an array literal inside a value is as much a `[T; N]` as a `[T]` when the
+/// value is checked with a member as its expected type, so it picks no member silently either.
+#[test]
+fn nested_array_literals_pick_no_member_silently() {
+    let kinds = "def id :: 'a -> 'a = \\x -> x\ndef kind :: own ([[i64; 2]; 2] | [[i64]]) -> string = \\v ->\n    match v with\n    | :? [[i64; 2]; 2] -> \"fixed\"\n    | :? [[i64]] -> \"dynamic\"\n\ndef pair :: own (([i64; 2] * i64) | ([i64] * i64)) -> string = \\v ->\n    match v with\n    | :? ([i64; 2] * i64) -> \"fixed\"\n    | :? ([i64] * i64) -> \"dynamic\"\n\ndef rows :: own ([[i64; 2]] | [[i64]]) -> string = \\v ->\n    match v with\n    | :? [[i64; 2]] -> \"fixed\"\n    | :? [[i64]] -> \"dynamic\"\n\ndef maybe :: own (Maybe<[i64; 2]> | Maybe<[i64]>) -> string = \\v ->\n    match v with\n    | :? Maybe<[i64; 2]> -> \"fixed\"\n    | :? Maybe<[i64]> -> \"dynamic\"\n\ndef one :: own ([i64; 2] | [i64]) -> string = \\v ->\n    match v with\n    | :? [i64; 2] -> \"fixed\"\n    | :? [i64] -> \"dynamic\"\n\ndef three :: own ([[i64; 3]; 2] | [[i64]]) -> string = \\v ->\n    match v with\n    | :? [[i64; 3]; 2] -> \"fixed\"\n    | :? [[i64]] -> \"dynamic\"\n\ndef only :: own ([[i64; 2]; 2] | string) -> string = \\v ->\n    match v with\n    | :? [[i64; 2]; 2] -> \"fixed\"\n    | :? string -> \"string\"\n\ndef mixed :: own ([[i64]; 2] | [[i64; 2]]) -> string = \\v ->\n    match v with\n    | :? [[i64]; 2] -> \"outer\"\n    | :? [[i64; 2]] -> \"inner\"\n\n";
+    for (call, message) in [
+        (
+            "kind [[1, 2], [3, 4]]",
+            "this array literal could be [[i64]] or [[i64; 2]; 2] in ([[i64]] | [[i64; 2]; 2])",
+        ),
+        (
+            "rows [[1, 2], [3, 4]]",
+            "this array literal could be [[i64]] or [[i64; 2]] in ([[i64]] | [[i64; 2]])",
+        ),
+        // The outer literal alone would be the fixed-length member: the inner ones say otherwise.
+        (
+            "mixed [[1, 2], [3, 4]]",
+            "this array literal could be [[i64; 2]] or [[i64]; 2] in ([[i64; 2]] | [[i64]; 2])",
+        ),
+        (
+            "pair ([1, 2], 3)",
+            "this value, which holds an array literal, could be ([i64] * i64) or ([i64; 2] * i64) in (([i64] * i64) | ([i64; 2] * i64))",
+        ),
+        (
+            "maybe (Some [1, 2])",
+            "this value, which holds an array literal, could be Maybe<[i64]> or Maybe<[i64; 2]> in (Maybe<[i64]> | Maybe<[i64; 2]>)",
+        ),
+        // The expected type reaches the literal through a call as well.
+        (
+            "one (id [1, 2])",
+            "this value, which holds an array literal, could be [i64] or [i64; 2] in ([i64] | [i64; 2])",
+        ),
+        (
+            "[[1, 2], [3, 4]] |> kind",
+            "this array literal could be [[i64]] or [[i64; 2]; 2] in ([[i64]] | [[i64; 2]; 2])",
+        ),
+    ] {
+        let source = format!("{kinds}{call}\n");
+        let error = rejects(&source, "E1041", "anonymous_union_ambiguous_member");
+        assert_eq!(error.message, message, "{call}");
+        assert_eq!(
+            error.help.as_deref(),
+            Some("annotate the value, for example with a typed let binding"),
+            "{call}"
+        );
+    }
+    // An annotated value holds no literal and is the member of its type. A literal whose
+    // lengths fit one member only, the only member with an array, and the array of `new`
+    // are not ambiguous.
+    passes(
+        &format!(
+            "{kinds}test \"a typed value decides\" =\n    let a: [[i64; 2]; 2] = [[1, 2], [3, 4]]\n    let c: [[i64]] = [[1, 2], [3, 4]]\n    assert (kind a == \"fixed\")\n    assert (kind c == \"dynamic\")\n    let p: ([i64; 2] * i64) = ([1, 2], 3)\n    let q: ([i64] * i64) = ([1, 2], 3)\n    assert (pair p == \"fixed\")\n    assert (pair q == \"dynamic\")\n    let m: Maybe<[i64; 2]> = Some [1, 2]\n    let n: Maybe<[i64]> = Some [1, 2]\n    assert (maybe m == \"fixed\")\n    assert (maybe n == \"dynamic\")\n    let d: [i64] = id [1, 2]\n    assert (one d == \"dynamic\")\n    assert (three [[1, 2], [3, 4]] == \"dynamic\")\n    assert (only [[1, 2], [3, 4]] == \"fixed\")\n    assert (one (new [1, 2]) == \"dynamic\")\n    assert (pair ([1, 2, 3], 3) == \"dynamic\")\n"
+        ),
+        Edition::E2026,
+    );
+}
+
+/// Review round 2: only the purity of the value itself is adapted where it is injected. A
+/// function whose result is a pure function is not the curried function that is not pure, so the
+/// two are members of one union and a value of either type is its own member.
+#[test]
+fn function_results_keep_their_purity() {
+    passes(
+        "def f :: own ((i64 -> pure (i64 -> i64)) | (i64 -> i64 -> i64)) -> i64 = \\v ->\n    match v with\n    | :? (i64 -> pure (i64 -> i64)) as g -> 100 + (g 1) 2\n    | :? (i64 -> i64 -> i64) as h -> 200 + h 1 2\n\ndef add :: i64 -> i64 -> i64 = \\a b -> a + b\n\ndef lists :: own ([pure (i64 -> i64)] * i64 | [(i64 -> i64)] * string) -> i64 = \\v ->\n    match v with\n    | :? ([pure (i64 -> i64)] * i64) -> 1\n    | :? ([(i64 -> i64)] * string) -> 2\n\ntest \"a pure result is another member\" =\n    let inc: pure (i64 -> i64) = \\x -> x + 1\n    let padd: i64 -> pure (i64 -> i64) = \\_a -> inc\n    assert (f add == 203)\n    assert (f padd == 103)\n    let pures: [pure (i64 -> i64)] = [inc]\n    assert (lists (pures, 1) == 1)\n",
+        Edition::E2026,
+    );
+    // A value that is a pure function is still a value of the member that is not pure.
+    passes(
+        "def call :: own ((i64 -> i64) | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 -> i64) as g -> g 41\n    | :? string as s -> s.length\n\ntest \"the value's own purity is adapted\" =\n    let inc: pure (i64 -> i64) = \\x -> x + 1\n    assert (call inc == 42)\n",
+        Edition::E2026,
+    );
+}
+
+/// Review round 2: a function that fits no member as it is reaches the member that differs in a
+/// borrowed parameter through the adapter that a function type makes where it is expected
+/// (edition 2027: a `def` reads its parameters).
+#[test]
+fn functions_reach_members_through_the_parameter_adapter() {
+    let source = "def len :: string -> i64 = \\s -> s.length\ndef olen :: own string -> i64 = \\s -> s.length + 100\ndef twice :: own i64 -> i64 = \\n -> n * 2\n\ndef call :: own ((string -> i64) | i64) -> i64 = \\v ->\n    match v with\n    | :? (string -> i64) as f -> f \"abc\"\n    | :? i64 as n -> n\n\ndef rcall :: own ((ref i64 -> i64) | string) -> i64 = \\v ->\n    match v with\n    | :? (ref i64 -> i64) as f -> f 21\n    | :? string as s -> s.length\n\ndef both :: own ((ref string -> i64) | (string -> i64)) -> i64 = \\v ->\n    match v with\n    | :? (ref string -> i64) as f -> f \"ab\"\n    | :? (string -> i64) as f -> 1000 + f \"ab\"\n\n";
+    passes(
+        &format!(
+            "{source}test \"adapted functions\" =\n    assert (call len == 3)\n    assert (call olen == 103)\n    assert (rcall twice == 42)\n    assert (call 7 == 7)\n    let u: ((string -> i64) | i64) = len\n    assert (call u == 3)\n    assert ((len |> call) == 3)\n\ntest \"a member of the value's own type comes first\" =\n    assert (both len == 2)\n    assert (both olen == 1102)\n"
+        ),
+        Edition::E2027,
+    );
+    // The same value at the member's type alone: the union accepts and rejects what it does.
+    accepts_in(
+        "def len :: string -> i64 = \\s -> s.length\nlet f: string -> i64 = len\nf \"abc\"\n",
+        Edition::E2027,
+    );
+    for annotation in ["ref string -> i64", "((ref string -> i64) | i64)"] {
+        rejects_in(
+            &format!(
+                "def olen :: own string -> i64 = \\s -> s.length\nlet h: {annotation} = olen\n0\n"
+            ),
+            Edition::E2027,
+            "E1012",
+            "move_out_of_reference_binding",
+        );
+    }
+    // Edition 2026 has no such adapter, with or without the union.
+    let error = rejects_in(
+        "def twice :: i64 -> i64 = \\n -> n * 2\nlet h: ((ref i64 -> i64) | string) = twice\n0\n",
+        Edition::E2026,
+        "E1003",
+        "anonymous_union_not_member",
+    );
+    assert_eq!(
+        error.message,
+        "expected (string | (ref i64 -> i64)), found i64 -> i64; i64 -> i64 is not a member of the anonymous union"
+    );
+    rejects_in(
+        "def twice :: i64 -> i64 = \\n -> n * 2\nlet h: ref i64 -> i64 = twice\n0\n",
+        Edition::E2026,
+        "E1003",
+        "type_mismatch",
+    );
+}
+
+/// Review round 2: a difference in purity hides no difference that follows it, and purity is no
+/// key of the order, so the members have one order however they are written.
+#[test]
+fn purity_hides_no_later_difference() {
+    passes(
+        "def f :: own ((pure (i64 -> i64) * i64) | ((i64 -> i64) * string)) -> i64 = \\v ->\n    match v with\n    | :? (pure (i64 -> i64) * i64) as p -> (match p with | (g, n) -> g n)\n    | :? ((i64 -> i64) * string) as q -> (match q with | (g, s) -> g s.length)\n\ntest \"the second component decides\" =\n    let inc: pure (i64 -> i64) = \\x -> x + 1\n    let double: i64 -> i64 = \\x -> x * 2\n    let a: (pure (i64 -> i64) * i64) = (inc, 41)\n    let b: ((i64 -> i64) * string) = (double, \"abc\")\n    assert (f a == 42)\n    assert (f b == 6)\n    assert (f (inc, 1) == 2)\n    assert (f (double, \"abcd\") == 8)\n",
+        Edition::E2026,
+    );
+    // Members that differ only in purity stay rejected, wherever the purity is.
+    let error = rejects(
+        "def f :: own ((pure (i64 -> i64) * i64) | ((i64 -> i64) * i64)) -> i64 = \\v -> 0\n",
+        "E1041",
+        "anonymous_union_indistinct_members",
+    );
+    assert!(
+        error
+            .message
+            .contains("differ only in the purity of a function type"),
+        "{}",
+        error.message
+    );
+    // Three members that an order with purity as its first key would turn in a circle: the
+    // first components of the first and the third differ only in purity.
+    let members = [
+        "(pure (i64 -> i64) * i64)",
+        "((string -> i64) * i64)",
+        "((i64 -> i64) * string)",
+    ];
+    let expected = "expected i64, found (((i64 -> i64) * i64) | ((i64 -> i64) * string) | ((string -> i64) * i64))";
+    let mut seen = 0;
+    for first in 0..3 {
+        for second in 0..3 {
+            for third in 0..3 {
+                if first == second || first == third || second == third {
+                    continue;
+                }
+                let source = format!(
+                    "def f :: ({} | {} | {}) -> i64 = \\v -> v\n",
+                    members[first], members[second], members[third]
+                );
+                let error = rejects(&source, "E1003", "type_mismatch");
+                assert_eq!(
+                    error.message.replace("(pure (i64 -> i64))", "(i64 -> i64)"),
+                    expected,
+                    "{source}"
+                );
+                seen += 1;
+            }
+        }
+    }
+    assert_eq!(seen, 6);
+    // The parameters and the results order two function members, not their purity.
+    let error = rejects(
+        "def f :: (pure (string -> i64) | (i64 -> i64) | pure (bool -> i64) | (string -> string)) -> i64 = \\v -> v\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(
+        error.message,
+        "expected i64, found ((i64 -> i64) | pure (bool -> i64) | pure (string -> i64) | (string -> string))"
+    );
+}
+
+/// Review round 2: a number literal inside a value that was checked by itself is an integer or
+/// a floating-point number already, so it reaches only the members that its class has, and a
+/// diagnostic names no type that the literal has not taken.
+#[test]
+fn number_literals_inside_values_keep_their_class() {
+    let note = "a number literal inside the value takes no type from the union, so add a suffix to it or annotate the value";
+    for (source, message, help) in [
+        (
+            "let c: (f64 | string) = 1 + 2\n0\n",
+            "expected (f64 | string), found i32; i32 is not a member of the anonymous union",
+            "the members are f64, string",
+        ),
+        (
+            "let e: ([f64] | [string]) = [1, 2]\n0\n",
+            "expected ([f64] | [string]), found [i32]; [i32] is not a member of the anonymous union",
+            "the members are [f64], [string]",
+        ),
+        (
+            "let m: (Maybe<f64> | string) = Some 1\n0\n",
+            "expected (string | Maybe<f64>), found Maybe<i32>; Maybe<i32> is not a member of the anonymous union",
+            "the members are string, Maybe<f64>",
+        ),
+        // No instance of `Integer` for `BigInt`, and a negative literal is no unsigned integer.
+        (
+            "let b: (Maybe<BigInt> | string) = Some 1\n0\n",
+            "expected (string | Maybe<BigInt>), found Maybe<i32>; Maybe<i32> is not a member of the anonymous union",
+            "the members are string, Maybe<BigInt>",
+        ),
+        (
+            "let n: (Maybe<i8u> | string) = Some (-1)\n0\n",
+            "expected (string | Maybe<i8u>), found Maybe<i32>; Maybe<i32> is not a member of the anonymous union",
+            "the members are string, Maybe<i8u>",
+        ),
+        (
+            "let i: (Maybe<i64> | string) = Some 1.5\n0\n",
+            "expected (string | Maybe<i64>), found Maybe<f64>; Maybe<f64> is not a member of the anonymous union",
+            "the members are string, Maybe<i64>",
+        ),
+    ] {
+        let error = rejects(source, "E1003", "anonymous_union_not_member");
+        assert_eq!(error.message, message, "{source}");
+        assert_eq!(
+            error.help.as_deref(),
+            Some(format!("{help}; {note}").as_str()),
+            "{source}"
+        );
+    }
+    // A value without literals keeps the plain help.
+    let error = rejects(
+        "let t = true\nlet c: (f64 | string) = t\n0\n",
+        "E1003",
+        "anonymous_union_not_member",
+    );
+    assert_eq!(error.help.as_deref(), Some("the members are f64, string"));
+    // Two members of the literals' class: the value has no type to name yet.
+    let error = rejects(
+        "let t: ((i32 * i32) | (i64 * i64)) = (1, 2)\n0\n",
+        "E1041",
+        "anonymous_union_ambiguous_member",
+    );
+    assert_eq!(
+        error.message,
+        "this value could be (i32 * i32) or (i64 * i64) in ((i32 * i32) | (i64 * i64))"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "its number literals have no type yet: add a suffix to them, or annotate the value, for example with a typed let binding"
+        )
+    );
+    // The class of the literal picks the member.
+    passes(
+        "def kind :: own (Maybe<i64> | Maybe<f64>) -> string = \\v ->\n    match v with\n    | :? Maybe<i64> -> \"integer\"\n    | :? Maybe<f64> -> \"float\"\n\ndef wide :: own (Maybe<i64> | Maybe<i8u> | string) -> i64 = \\v ->\n    match v with\n    | :? Maybe<i64> as m -> (match m with | Some n -> n | None -> 0)\n    | :? Maybe<i8u> -> 1000\n    | :? string -> 2000\n\ntest \"the literal's class picks the member\" =\n    assert (kind (Some 1.5) == \"float\")\n    assert (kind (Some 1) == \"integer\")\n    assert (kind (Some (1 + 2)) == \"integer\")\n    assert (wide (Some (-7)) == -7)\n",
+        Edition::E2026,
+    );
+}
+
+/// Review round 2: a type test adapts nothing, so a function type that differs from a member in
+/// its purity is no member, and the error is the one of any other type that is no member.
+#[test]
+fn type_tests_do_not_adapt_function_types() {
+    for (member, tested, shown, members) in [
+        (
+            "pure (i64 -> i64)",
+            "(i64 -> i64)",
+            "i64 -> i64",
+            "string, pure (i64 -> i64)",
+        ),
+        (
+            "(i64 -> i64)",
+            "pure (i64 -> i64)",
+            "pure (i64 -> i64)",
+            "string, (i64 -> i64)",
+        ),
+        (
+            "(i64 -> pure (i64 -> i64))",
+            "(i64 -> i64 -> i64)",
+            "i64 -> i64 -> i64",
+            "string, (i64 -> pure (i64 -> i64))",
+        ),
+        (
+            "(ref string -> i64)",
+            "(string -> i64)",
+            "string -> i64",
+            "string, (ref string -> i64)",
+        ),
+    ] {
+        let source = format!(
+            "def a :: own ({member} | string) -> i64 = \\v ->\n    match v with\n    | :? {tested} -> 1\n    | :? string as s -> s.length\n"
+        );
+        let error = rejects(&source, "E1041", "type_test_not_member");
+        assert!(
+            error
+                .message
+                .starts_with(&format!("{shown} is not a member of ")),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            error.help.as_deref(),
+            Some(format!("the members are {members}").as_str()),
+            "{source}"
+        );
+        let start = source.find(":? ").unwrap() + 3;
+        assert_eq!(error.span.start, start, "{source}");
+    }
 }
