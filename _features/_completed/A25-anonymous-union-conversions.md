@@ -492,3 +492,31 @@ A24 が計画から変えていて、このチケットに関わる点:
 更新した文書（第 3 回）: `_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`（拡大の節のフィールドの拡大とループの注記、読み取りの引数へ渡す `if` の枝）、`_tsuzuri/language-reference/compiler/diagnostics.md`（`E1012` の行）、`docs/language.md`（匿名共用体の節の拡大）、`docs/architecture.md`（`PatternKind::TypeTest` の範囲と `FRONTEND_FORMAT`、`lent_union_match`）。
 
 変更したファイル（第 3 回）: `src/ownership.rs`、`src/last_use.rs`、`src/syntax.rs`、`src/parse_control.rs`、`src/control.rs`、`src/formatter.rs`、`src/warnings.rs`、`src/semantic.rs`、`src/syntax_codec.rs`、`src/frontend_cache.rs`、`tests/anonymous_unions.rs`、`tests/features.mjs`、`tests/fixtures/anonymous_unions/Main.tz`、上の文書、このチケット。
+
+### Copilot のレビューへの対応（第1回）
+
+PR #103 への GitHub Copilot のインラインの指摘（2026-11-12、2 件。うち High 1 件）をどちらもブランチのバイナリで再現し、次のとおり直しました。どの回帰テストも、修正前のコードで落ちることを確かめています（再現と測定は `target/scratch/a25/copilot1`）。
+
+1. **関数型の要素を持つ共用体を借用から `:? (i64 | f64) as n` で絞ると `E1012`（`src/control.rs:1039`、High）**: 再現しました。`ref (i64 | f64 | string | (i64 -> i64))` の `| :? (i64 | f64) as n -> num n` が `error[E1012]: cannot move a non-Copy value out of a reference`（位置は `n`）でした。所有する値でも、隠れた束縛が値全体を move するので、`match` の後で `size (ref v)` と使うと `E1012`（`use of moved or partially moved value 'v'`、注記は `n`）でした。要素ごとの腕（`:? i64 as n`・`:? f64 as n`）とガードのある腕（手順の形）は通っていました。原因: `W` の要素がすべて Copy で `U` が Copy でないとき、隠れた束縛を `TypedMatchArm::borrowed` に入れてビューにしていましたが、所有権と LLVM（`TypedMatchArm::views`）は借用を持ちうる型（`carries_loans`。関数型の要素がそう）をビューにしないので、隠れた束縛は値全体を取り出そうとしていました。修正: `narrowing_pattern` は、`W` の要素がすべて Copy で、`U` が Copy でなく借用を持ちうるとき `Narrowing::copied` を記録し、`stepped_narrowings` がその絞り込みを手順の形にします（パターンの手順が選んだ Copy のペイロードだけを複製し、照合した値には触れません。指摘の提案どおりです）。テスト `narrowing_a_union_that_may_hold_loans_copies_the_payload`（参照から 2 回、所有する値を `match` の後でも使う、edition 2027 の読み取りの引数。値は手計算で、native と WASM の `-O0`／`-O3`）。修正前は `by_ref` の `E1012` で落ちます。
+2. **Copy の要素だけの共用体の絞り込みが配列を 2 回複製する（`src/control.rs:1756`）**: 再現しました。`ref (i64 | f64 | [i64])` の `:? (i64 | [i64]) as x -> arr x` は、最適化前の IR の本体に `@tz.alloc` が 2 回、`--warn implicit-copy` の `W1006` がパターン（`8:7`）と束縛の名前（`8:27`、値全体の複製）の 2 か所でした。所有する値を `match` の後でもう一度使うときも 2 回で、参照ページの「その要素は 1 回複製されます」と食い違っていました。原因: `U` が Copy だとビューにしなかった（`view` が `!U.is_copy` を条件にしていた）ので、隠れた束縛が値全体を複製し、`retag` がそこからペイロードをもう一度複製していました（`LastUses` は `match` の束縛を最後の使用の対象から外すため、`retag` は隠れた束縛から move できません）。修正（指摘の案の「隠れた束縛を別名にする」）:
+   - 隠れた束縛は、`W` の要素がすべて Copy で `U` が借用を持ちえないなら、`U` が Copy でもビューにします（`Narrowing::view`）。`TypedMatchArm::views` と所有権の `eval_match` は、生成した隠れた束縛（`Local::hides_narrowed`: 生成した局所で、名前が `NARROWED_PREFIX` の `$narrow.` で始まる）だけは、型が Copy でもビューにします。ほかの束縛の扱いは変わりません。
+   - 安全な理由: `retag` は腕の本体より前にそのビューを 1 回読み、ペイロードを複製するだけです（照合する局所がビューなので、LLVM の `lent` が move させず、`LastUses` も隠れた束縛を除外したままです）。所有権は Copy の値のビューの下で場所の move と書き込みを許す（`access` の既存の規則）ので、本体は照合した変数を move・代入でき、`retag` はその前に読み終えています。そこで、Copy の `U` のビューは本体が照合した変数に届いても手順の形にしません（`reaches_any` は `U` が Copy でないビュー、`Narrowing::shared` だけ）。同じ代替のほかの束縛が Copy でない値を move する腕は、従来どおり手順の形です（`retag` はビューを束縛の後で読むので、`Holder { u = (:? (i64 | [i64]) as n); name = _ } as whole` で `whole` がレコードを move した後には読めないため）。
+   - 結果: 借用の先・後でもう一度使う値・読み取りの引数から Copy の共用体を絞るときも、配列は絞った値へ 1 回だけ複製され、`W1006`・`E1031` はパターンの位置だけです（`U` が Copy でない場合と同じ）。所有する値を 1 回だけ使う場合は従来も今も 1 回です（隠れた束縛へ move していたのが、ビューになっただけです）。
+   - テスト `narrowing_a_copy_union_copies_its_array_once`（`by_ref`・`again`（`match` の後で使う）・`touched`（本体で `ref v`）・`replaced`（本体で代入。絞った値は古い配列を持つ）・`once` の本体の `@tz.alloc` が 1 回、`@no_copy` の `E1031` がパターンの位置、`Alloc` の窓で確保と解放の数が等しいこと、edition 2027 の読み取りの引数。値は手計算で、native と WASM の `-O0`／`-O3`）。同じ 5 関数の本体の `@tz.alloc` は、修正前のバイナリで `by_ref`・`again`・`touched`・`replaced` が 2 回、`once` が 1 回、修正後はすべて 1 回です（`copilot1/t2`）。修正前のテストは `by_ref` の `left: 2, right: 1` で落ちます。
+   - E2E `narrow_copy`（8 件。native は `live == 0`）: 局所を絞って後でもう一度使う・読み取りの引数（`kept_part`）・関数型の要素を持つ共用体の読み取りの引数（`call_or_scale`、上の 1）。`inspect` が `narrow_copy` と `kept_part` の本体の `@tz.alloc` を 1 回と確かめます。修正前のバイナリでは、fixture の検査が `call_or_scale` の `E1012` で落ちます。その腕を要素ごとの腕に替えた fixture（`fixture-before`）でも、修正前は `narrow_copy`・`kept_part` とも 2 回、修正後は 1 回でした。
+   - 残る制限: 借用を持ちうる Copy の `U`（`(i64 | [i64] | (i64 -> i64))`）は、隠れた束縛をビューにできないので、配列は従来どおり 2 回複製されます（手順の形にしても 2 回なので変えていません）。
+
+端の場合も、修正後のバイナリで native の `-O0`／`-O3` と WASM で確かめました（`e1`〜`e4`。どれも `Alloc` の窓で確保と解放の数が等しい）: レコードの絞り込みと `as whole`（手順の形）、文字列と並んだタプル、OR パターンの両側、配列の要素のループ、`(i64 | [i64] | Maybe<'a>)` の総称の関数を `Maybe<i64>`・`Maybe<string>`・`Maybe<(i64 -> i64)>` で具体化した呼び出し、腕の中での照合した変数の move、`ref mut` の先への書き込み、一時値、drop の要らない Copy の共用体と腕の中の代入、関数型の要素を持つ Copy の共用体。
+
+変えた既存の期待値はありません。追加したテストは `tests/anonymous_unions.rs` の 2 件と E2E の `narrow_copy` の 8 件です。
+
+#### 再検証（Copilot 第1回）
+
+- T0: `cargo fmt --all -- --check`（差分なし）、`node scripts/slot.mjs -- cargo clippy --all-targets -- -D warnings`（警告なし）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`: 3104 件のうち 3104 passed、4 skipped（`target/scratch/a25/copilot1/t1.txt`）。`tests/anonymous_unions.rs` は 111 件（第 3 回の 109 件とこの対応の 2 件）。
+- T2: `node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri anonymous_unions`: `anonymous_unions: native/WASM at O0/O3 passed`、101 cases（`narrow_copy` の 8 件を足した）。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`: `1 pages, 16 links, 10 checked examples, 18 native runs (O0/O3)`。
+- 匿名共用体を使わないプログラムの出力: 修正前と修正後のバイナリで、`tests/fixtures/` と `examples/` の 186 単位の native と wasm32 の IR と `check --json` を取り（`copilot1/baseline.sh`）、`target/scratch/a25/compare.sh` で比べました。違うのは `tests/fixtures/anonymous_unions` だけで（修正前は `call_or_scale` の `E1012` で検査が落ちる）、ほかの 185 単位はすべてのファイルが 1 byte も違いません（`copilot1/compare.txt`）。変更は、名前が `$narrow.` で始まる生成した局所（絞り込みの隠れた束縛）と絞り込みの形にだけ働きます。
+
+更新した文書: `_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`（絞り込みの複製の段落: Copy の共用体も絞った値への 1 回、手順の形になる条件）、`docs/language.md`（匿名共用体の節の絞り込み）、`docs/architecture.md`（絞り込みのブロックの形と手順の形、`Local::hides_narrowed`）。
+
+変更したファイル: `src/check.rs`、`src/control.rs`、`src/ownership_control.rs`、`tests/anonymous_unions.rs`、`tests/features.mjs`、`tests/fixtures/anonymous_unions/Main.tz`、上の文書、このチケット。
