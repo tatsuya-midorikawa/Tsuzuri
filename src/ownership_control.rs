@@ -175,7 +175,7 @@ impl<'a> Checker<'a, '_> {
             let mark = self.hidden_log.len();
             self.bound_next = true;
             let mut value = self.eval(source, Use::Consume, live)?;
-            self.absorb_hidden(mark, &mut value, &local.ty);
+            self.absorb_hidden(mark, &mut value, &local.ty, Some(source));
             self.drop_stores(&value, &local.ty, source.span, None, Some(source));
             self.state
                 .locals

@@ -526,3 +526,53 @@ fn handler_record_then_move =
     let k = invoke_handler (ref h) (ref text)
     let moved = text
     k + moved.length + h.run (ref moved)
+
+// Review round 3. The step function that `Seq.next` runs writes a borrow of a text that
+// outlives the cell into the cell.
+export def seq_step_writes_a_long_lived_borrow :: i64
+fn seq_step_writes_a_long_lived_borrow =
+    let m = Mutex.create [\() -> 0]
+    let mr = ref m
+    let text0 = to_string 123456789
+    let t = ref text0
+    let s = Seq.defer (\() -> { Mutex.with_lock mr (\slot -> Array.write 0 (\() -> String.length t) slot); (Seq.empty(), Maybe.Some 1) })
+    let mut total = 0
+    for x in s do total = total + x
+    Mutex.with_lock (ref m) (\slot -> slot[0] ()) + total
+
+def registry :: unit -> ((unit -> i64) -> i64)
+fn registry _ =
+    let cell = Arc.new (Mutex.create [\() -> 0])
+    \f -> Mutex.with_lock (Arc.get (ref cell)) (\slot -> { Array.write 0 f slot; 1 })
+
+def notifier :: ((unit -> i64) -> i64) -> (i64 -> i64)
+fn notifier r = \k -> r (\() -> k)
+
+// The handlers that `Array.map` makes hold no owner of a cell, whatever their type.
+export def registry_and_mapped_handlers :: i64
+fn registry_and_mapped_handlers =
+    let reg = registry ()
+    let r = reg (\() -> 5)
+    let ks = [1, 2, 3]
+    let hs = Array.map (\k -> \f -> f () + k) ks
+    let text = to_string 123456789
+    let tr = ref text
+    let a = hs[0] (\() -> String.length tr)
+    let moved = text
+    a + moved.length + r + hs[1] (\() -> 1)
+
+def plus_seven :: i64 -> i64
+fn plus_seven k = k + 7
+
+// A local bound to a named function, and functions that `Array.map` makes, share no cell with
+// the function that `notifier` makes, which holds the registry and has their type.
+export def functions_beside_a_named_function :: i64
+fn functions_beside_a_named_function =
+    let base = plus_seven
+    let text = to_string 123456789
+    let tr = ref text
+    let ks = [1, 2]
+    let adders = Array.map (\k -> \(j: i64) -> String.length tr + k + j) ks
+    let a = adders[0] 0
+    let moved = text
+    a + moved.length + base 0 + (notifier (registry ())) 1

@@ -1999,6 +1999,12 @@ const suites = {
       ["closure_over_references_then_move", [], 12n + 5n + 1n],
       // k = 5, moved 5, h.run (ref moved) = 5.
       ["handler_record_then_move", [], 5n + 5n + 5n],
+      // Review round 3. m[0] () is the length 9 of "123456789"; the sequence gives one 1.
+      ["seq_step_writes_a_long_lived_borrow", [], 9n + 1n],
+      // a = 9 + 1, moved 9, r = 1, hs[1] (\() -> 1) = 1 + 2.
+      ["registry_and_mapped_handlers", [], 10n + 9n + 1n + 3n],
+      // a = 9 + 1 + 0, moved 9, base 0 = 7, the notifier's registry call gives 1.
+      ["functions_beside_a_named_function", [], 10n + 9n + 7n + 1n],
     ],
   },
   fixed_arrays: {
