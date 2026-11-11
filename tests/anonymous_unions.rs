@@ -125,14 +125,15 @@ fn tree(source: &str) -> String {
 
 /// Asserts that `source` has a type test whose type's kind starts with `kind` and whose binder is
 /// `binder`. In the debug text, the binder follows the end of the tested type: the first
-/// `source: None } }, ` that a binder follows (the members of a tuple are followed by another type).
+/// `source: None } }, ` that a binder follows (the members of a tuple are followed by another type),
+/// and the test's own extent follows the binder.
 fn assert_type_test(source: &str, kind: &str, binder: Option<&str>) {
     let tree = tree(source);
     let start = format!("TypeTest(TypeExpr {{ kind: {kind}");
     let found = tree.match_indices(&start).any(|(at, _)| {
         let rest = &tree[at..];
         let named = rest.find("source: None } }, Some(Ident { text: \"");
-        let none = rest.find("source: None } }, None)");
+        let none = rest.find("source: None } }, None, Span {");
         match (binder, named, none) {
             (Some(name), Some(named), none) if none.is_none_or(|none| named < none) => rest
                 [named..]
@@ -3189,6 +3190,16 @@ fn widening_inside_a_lent_if_or_block_moves_array_members() {
         function_body(&ir, "again").matches("@tz.alloc").count(),
         1,
         "{ir}"
+    );
+    passes(&source, Edition::E2027);
+    // A closure that lends its capture to the `if` on each call copies the payload out of it
+    // (round 2: the capture is borrowed), and a loop copies it on each pass but the last.
+    // Expected values by hand: make 3 is [3, 3] (100): 101 + 102 + 7, and 7 + 100 + 100; make -2
+    // is the i64 -2: -1 + 0 + 7, and 7 - 2 - 2.
+    let source = format!(
+        "{measure}def captured :: i64 -> i64 = \\n ->\n    let v = make n\n    let c = \\(k: i64) -> measure (if k > 0 then v else 7) + k\n    c 1 + c 2 + c 0\n\n\
+         def looped :: i64 -> i64 = \\n ->\n    let v = make n\n    let mut sum = 0\n    for i in 0 ..< 3 do\n        sum = sum + measure (if i > 0 then v else 7)\n    sum\n\n\
+         test \"captured\" =\n    assert (balanced (\\() -> captured 3) == 210 && balanced (\\() -> captured (-2)) == 6)\n    assert (balanced (\\() -> looped 3) == 207 && balanced (\\() -> looped (-2)) == 7 - 4)\n"
     );
     passes(&source, Edition::E2027);
 }
