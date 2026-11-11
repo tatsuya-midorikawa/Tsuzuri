@@ -732,3 +732,77 @@ fn writes_that_main_rejects_keep_their_diagnostics() {
         rejects_at(source, code, kind, at);
     }
 }
+
+/// A31, review round 1 (finding 9): a call of a function value keeps the other arguments' borrows
+/// only where a place can hold them: a `ref mut [i64..]` or a `ref mut i64` cannot. An immutable
+/// local that is bound to a lambda, a named function or a partial application is called with the
+/// facts of that code. The programs are safe and main accepts them, whatever else the program
+/// stores in place.
+#[test]
+fn a_call_of_a_function_value_stores_only_where_a_borrow_fits() {
+    for source in [
+        // r15_local_lambda_std_seed
+        "def run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    Array.set 0 (\\() -> 1) (ref mut fs)\n    let name = to_string n\n    let mut buf = [0]\n    let add = \\(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out\n    add (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved + fs[0] ()\nrun 12345",
+        // r13_local_lambda_acc
+        "def keep :: ref mut [(unit -> i64)..] -> unit\nfn keep arr = Array.write 0 (\\() -> 1) arr\ndef run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    keep (ref mut fs)\n    let name = to_string n\n    let mut buf = [0]\n    let add = \\(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out\n    add (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved + fs[0] ()\nrun 12345",
+        // r16_local_lambda_vec_seed
+        "def run :: i64 -> i64\nfn run n =\n    let mut v = Vec.of_array [\\() -> 0]\n    Vec.push_mut (\\() -> 1) (ref mut v)\n    let name = to_string n\n    let mut buf = [0]\n    let add = \\(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out\n    add (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved + Vec.length (ref v)\nrun 12345",
+        // r17_local_lambda_refs_seed
+        "def run :: i64 -> i64\nfn run n =\n    let p = 1\n    let q = 2\n    let mut refs = [ref p]\n    Array.set 0 (ref q) (ref mut refs)\n    let name = to_string n\n    let mut buf = [0]\n    let add = \\(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out\n    add (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved + deref refs[0]\nrun 12345",
+        // r01_fnvalue_int_acc
+        "def add_len :: ref mut [i64..] -> ref string -> unit\nfn add_len out s = Array.write 0 (out[0] + String.length s) out\ndef add_twice :: ref mut [i64..] -> ref string -> unit\nfn add_twice out s = Array.write 0 (out[0] + 2 * String.length s) out\ndef keep :: ref mut [(unit -> i64)..] -> unit\nfn keep arr = Array.write 0 (\\() -> 1) arr\ndef run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    keep (ref mut fs)\n    let name = to_string n\n    let mut buf = [0]\n    let f = if n > 0 then add_len else add_twice\n    f (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved + fs[0] ()\nrun 12345",
+        // r03_handlers_array
+        "def add_len :: ref mut [i64..] -> ref string -> unit\nfn add_len out s = Array.write 0 (out[0] + String.length s) out\ndef keep :: ref mut [(unit -> i64)..] -> unit\nfn keep arr = Array.write 0 (\\() -> 1) arr\ndef run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    keep (ref mut fs)\n    let hs = [add_len, add_len]\n    let mut buf = [0]\n    { let name = to_string n; hs[0] (ref mut buf) (ref name); hs[1] (ref mut buf) (ref name) }\n    buf[0] + fs[0] ()\nrun 12345",
+        // r18_local_lambda_scalar
+        "def keep :: ref mut [(unit -> i64)..] -> unit\nfn keep arr = Array.write 0 (\\() -> 1) arr\ndef bump :: ref mut i64 -> ref string -> unit\nfn bump acc s = deref acc = deref acc + String.length s\ndef run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    keep (ref mut fs)\n    let name = to_string n\n    let mut total = 0\n    let hs = [bump]\n    hs[0] (ref mut total) (ref name)\n    let moved = name\n    total + String.length moved + fs[0] ()\nrun 12345",
+        // r12_callback_param_acc
+        "def with_each :: own (ref mut i64 -> ref string -> unit) -> ref mut i64 -> ref [string] -> unit\nfn with_each f acc xs =\n    for i in 0 ..= (xs.length - 1) do\n        f acc (ref xs[i])\ndef add :: ref mut i64 -> ref string -> unit\nfn add acc s = deref acc = deref acc + String.length s\ndef keep :: ref mut [(unit -> i64)..] -> unit\nfn keep arr = Array.write 0 (\\() -> 1) arr\ndef run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    keep (ref mut fs)\n    let xs = [to_string n, to_string (n + 1)]\n    let mut acc = 0\n    let f = if n > 0 then add else add\n    with_each f (ref mut acc) (ref xs)\n    let moved = xs\n    acc + moved.length + fs[0] ()\nrun 12345",
+        // r14_local_lambda_acc_noseed
+        "def run :: i64 -> i64\nfn run n =\n    let name = to_string n\n    let mut buf = [0]\n    let add = \\(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out\n    add (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved\nrun 12345",
+        // r09_two_arrays_fnvalue
+        "def copy_first :: ref mut [(unit -> i64)..] -> ref [(unit -> i64)] -> unit\nfn copy_first dst src = Array.write 0 src[0] dst\ndef run :: i64 -> i64\nfn run n =\n    let src = [\\() -> n]\n    let mut dst = [\\() -> 0]\n    let f = if n > 0 then copy_first else copy_first\n    f (ref mut dst) (ref src)\n    let moved = src\n    dst[0] () + moved[0] ()\nrun 12345",
+        // r10_named_two_arrays
+        "def copy_first :: ref mut [(unit -> i64)..] -> ref [(unit -> i64)] -> unit\nfn copy_first dst src = Array.write 0 src[0] dst\ndef run :: i64 -> i64\nfn run n =\n    let src = [\\() -> n]\n    let mut dst = [\\() -> 0]\n    copy_first (ref mut dst) (ref src)\n    let moved = src\n    dst[0] () + moved[0] ()\nrun 12345",
+    ] {
+        accepts_in_both(source);
+    }
+    // A function value that does store keeps the borrow, as before.
+    for (source, code, kind, at) in [
+        // s01_two_arrays_fnvalue_bad
+        (
+            "def copy_first :: ref mut [(unit -> i64)..] -> ref [(unit -> i64)] -> unit\nfn copy_first dst src = Array.write 0 src[0] dst\ndef run :: i64 -> i64\nfn run n =\n    let mut dst = [\\() -> 0]\n    let f = if n > 0 then copy_first else copy_first\n    { let text0 = to_string n; let text = ref text0; let src = [\\() -> String.length text]; f (ref mut dst) (ref src) }\n    let other = [to_string 777777, to_string 88888888]\n    dst[0] () + other.length * 0\nrun 123456789",
+            "E1013",
+            "assignment_extends_borrow",
+            (7, 5),
+        ),
+        // s02_two_arrays_fnvalue_move
+        (
+            "def copy_first :: ref mut [(unit -> i64)..] -> ref [(unit -> i64)] -> unit\nfn copy_first dst src = Array.write 0 src[0] dst\ndef run :: i64 -> i64\nfn run n =\n    let name = to_string n\n    let nr = ref name\n    let src = [\\() -> String.length nr]\n    let mut dst = [\\() -> 0]\n    let f = if n > 0 then copy_first else copy_first\n    f (ref mut dst) (ref src)\n    let moved = name\n    dst[0] () + String.length moved\nrun 12345",
+            "E1014",
+            "borrow_conflict",
+            (11, 17),
+        ),
+        // s03_named_two_arrays_move
+        (
+            "def copy_first :: ref mut [(unit -> i64)..] -> ref [(unit -> i64)] -> unit\nfn copy_first dst src = Array.write 0 src[0] dst\ndef run :: i64 -> i64\nfn run n =\n    let name = to_string n\n    let nr = ref name\n    let src = [\\() -> String.length nr]\n    let mut dst = [\\() -> 0]\n    copy_first (ref mut dst) (ref src)\n    let moved = name\n    dst[0] () + String.length moved\nrun 12345",
+            "E1014",
+            "borrow_conflict",
+            (10, 17),
+        ),
+    ] {
+        rejects_at(source, code, kind, at);
+    }
+}
+
+/// A31, review round 1 (finding 8): the substitution of the facts of nested function values
+/// makes each application of the same facts to the same arguments once per pass, so a combinator
+/// that calls its function parameter several times does not multiply the work by the nesting
+/// (fourteen levels took hours before; no time is asserted).
+#[test]
+fn nested_function_values_are_substituted_once() {
+    let nested = format!("{}base{}", "p (".repeat(14), ")".repeat(14));
+    let source = format!(
+        "def base :: ref i64 -> ref i64 -> ref i64 -> unit\nfn base x y z = ()\ndef p :: own (ref i64 -> ref i64 -> ref i64 -> unit) -> ref i64 -> ref i64 -> ref i64 -> unit\nfn p f x y z =\n    f x y z\n    f x z y\n    f y x z\n    f y z x\n    f z x y\n    f z y x\ndef seed :: ref mut [(unit -> i64)..] -> unit\nfn seed arr = Array.write 0 (\\() -> 1) arr\ndef run :: i64 -> i64\nfn run n =\n    let a = n\n    let b = n + 1\n    let c = n + 2\n    let mut arr = [\\() -> 0]\n    seed (ref mut arr)\n    {nested} (ref a) (ref b) (ref c)\n    arr[0] () + a + b + c\nrun 1"
+    );
+    accepts_in_both(&source);
+}

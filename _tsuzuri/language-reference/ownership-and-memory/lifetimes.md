@@ -312,9 +312,27 @@ fn leak n =
     arr[0]                 // E1013: arr[0] は text の借用を持つ（text は leak の終わりで解放される）
 ```
 
-本体が見えない関数値（局所値・フィールド・要素・呼び出しの結果の関数値、dyn 値のメソッドなど）の呼び出しは、関数値と、借用を持ちうる引数の借用が、書き込める場所を指す引数（排他借用と、借用を持ちうる値を入れた共有セル）のすべての先へ入りうるとみなします（安全側の制限です）。そのため `let w = Array.set 0 (\() -> String.length borrowed)` の後の `w (ref mut arr)` は、`arr` に `borrowed` の借用を残します。
+不変な `let` がラムダ・名前付き関数・部分適用（それらを `if` で選んだもの、`Owned.function` に渡したものを含む）に束縛されているときは、その局所値の呼び出し（`w x`、`Owned.call (ref w) x`、関数値の引数として渡した先での呼び出し）にも、束縛した本体から求めた書き込みを当てはめます。そのため `let w = Array.set 0 (\() -> String.length borrowed)` の後の `w (ref mut arr)` は、`arr` に `borrowed` の借用を残します。`==`・`!=`・`<` などの演算子と文字列補間・`to_string` は、利用者の instance のメソッドの呼び出しとして同じ規則で検査し、配列・リスト・タプルの比較・ハッシュ・表示は、要素の型の instance のメソッドを要素への参照で呼ぶものとして検査します。dyn 値のメソッドの呼び出しには、そのメソッドを実装するすべての instance の本体から求めた書き込みを合わせて当てはめます。
 
-関数が、自分の局所値の借用を、`ref mut` の引数の先へ `Array.write` などで書き込むと、その位置で `E1013`（`cannot store a borrow of a local value through a reference parameter; the caller's data would outlive it`）です。呼び出し元のデータは関数より長く生きるので、関数が終わった後に解放された局所値を読むことになるためです。
+本体が見えない関数値（フィールド・要素・呼び出しの結果・`let mut` の関数値、引数で受け取った関数値を別名にしたもの、`Owned.Function` など）の呼び出しは、関数の型が環境を表さないので、次のように安全側に扱います。
+
+- 関数値と引数が持つ借用は、引数が指す書き込める場所（排他借用と、借用を持ちうる値を入れた共有セル）のすべての先へ入りうるとみなします。借用を持てない場所（`ref mut [i64..]`、`ref mut i64` など）は書き込み先に数えません。
+- プログラムのどこかに、受け取った値（か自分の環境の値）を自分の環境が届く場所へ書き込む関数値があるときは、引数の借用は、呼び出す関数値の環境が借用している場所にも入りうるとみなします。そうした関数値は、書き込み先を捕捉したラムダ（`\g -> Mutex.with_lock m (\slot -> Array.write 0 g slot)`）、書き込み先を束縛した部分適用、`Mutex.with_lock (ref m)` のようにコールバックを受ける組み込み関数の部分適用です。本体の見えない関数値に、書き込み先になりうる引数や借用を持ちうる引数を渡して関数を得る呼び出し（`let g = h.put (ref m)`）も、引数を束縛した関数値を作りうるので、これに数えます。このとき、関数値・dyn 値・`Owned.Function` を値として持つ型の場所も書き込み先に数えるので、参照越しに受け取った配列やレコードの中の関数値を呼ぶ形（`ws[0] f`、`h.w f`、`Array.iter (\w -> w f) (ref ws)`）でも、関数値が借用している `Mutex` の持ち主に `f` の借用が残ります。
+- さらに、書き込むセルを自分で所有する関数値（`Arc<Mutex<...>>` を値で捕捉したラムダや部分適用、そうした値を入れた dyn 値）を作るプログラムでは、関数値のコピーが借用を持たずに同じセルを共有します。そこで、そうした関数値でありうる型の関数値（とそれを環境に持ちうる関数値）の呼び出しと、関数値・dyn 値・`Owned.Function`・共有セルに届く値を引数に渡す見えない呼び出しは、引数の借用を、そうした型のすべての局所値（と、その文で評価した値を後から束縛した局所値）に残します。呼び出し元の値がそうした型のときは、呼び出し元でも同じ規則を当てはめます。プログラムのどこかで、そうした関数値を持ちうる値を、後で実行するコードへ渡している（tzroutine の捕捉、チャネルの要素、`Routine.go` などへ渡す `Owned.Function`、`OnceValue` の初期化関数の結果、コールバックを取る host 関数の引数、region のない dyn 値）ときは、渡した値は渡した時点で借用を持たないことしか検査されないので、借用を持つ値をそうした環境へ書き込みうる呼び出しは `E1013`（`task_capture_retains_borrow`: `cannot store a borrow in the environment of a function value here: ...`）です。所有する値か、コピーを捕捉した関数を渡します。
+
+```text
+def mk :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> i64)
+fn mk a = \f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () })
+def run :: i64 -> i64
+fn run n =
+    let w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let first = { let text0 = to_string n; let text = ref text0; w (\() -> String.length text) }   // E1013
+    first + w (\() -> 1)        // w のセルは text0 の借用を持つ関数を持ったまま
+```
+
+1 つめと 2 つめの規則が 3 つめより弱いのは、プログラムのすべての関数値の本体を検査が見ているためです。環境へ書き込む関数値を作る所が 1 つもなければ、どの関数値を呼んでも、書き込みは引数の先にしか起きません。この判定はプログラム全体で行うので、離れた所にそうした関数値を足すと、見えない関数値の呼び出しの検査が厳しくなります。
+
+関数が、自分の局所値の借用を、`ref mut` の引数の先へ `Array.write` などで書き込むと、その位置で `E1013`（`cannot store a borrow of a local value through a reference parameter; the caller's data would outlive it`）です。呼び出し元のデータは関数より長く生きるので、関数が終わった後に解放された局所値を読むことになるためです。呼び出す関数が自分の局所値の借用を関数値の仮引数へ渡し、実引数がそれを呼び出し元のデータへ書き込む（か、上の規則で書き込みうる、本体の見えない）関数値のときは、局所値が呼び出し先のものなので、呼び出し元の呼び出しの位置で `E1013`（`cannot pass this function value here: 'leak' passes it a borrow of a local value of its own, ...`）です。読み取りの仮引数（edition 2027）や演算子が借りた一時値への参照そのものを、呼び出す関数が引数の先へ書き込むときは、一時値が文の終わりで解放されるので `E1013`（`cannot store a borrow of a temporary value: ...`）です。値を `let` で束縛してから渡します。
 
 ```text
 def bad :: ref mut [(unit -> i64)..] -> unit

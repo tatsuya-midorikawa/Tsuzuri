@@ -778,5 +778,78 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 - 見えないコード（名前付き関数でない関数値の呼び出し、dyn のメソッド、`Owned.call`、コールバックを実行する組み込み関数）へ借用を持ちうる値を渡す本体は、事実も読み通しも使いません（A28 の除外のまま）。lock の組み込み関数にコールバックを渡す本体もこれに当たるので、所有の値だけを書く名前付き関数を lock のコールバックにする形（`m_named_owned`）は拒否のままです。
 - 推論の段（抽象本文）は書き込みの事実を使わないので、書き込みうる本体が排他借用かセルを渡すとき、その段は A28 より前の規則を保ちます。`Array.write` を借用を持ちうる具体的な型で呼ぶ本体が `ref mut` を渡すと、結果はすべての引数の借用を持ちます（`Array.set` などの generic な関数を通せば事実を使います）。
 - 借用を持ちうる値のセルを渡す本体は `Rc.share` などを読み通しません。`drops_store` は A28 の求め方のままです。
-- 見えない関数値の呼び出しは、関数値と引数の借用を書き込み先のすべてへ残します（安全側）。
+- 本体が見えない関数値の呼び出しは、安全側に扱います（第 1 回のレビュー対応で規則を作り直しました。下の「レビューの指摘への対応（第1回）」）。プログラムのどこかに「受け取った値を自分の環境が届く場所へ書き込む関数値」があると、見えない関数値の呼び出しは引数の借用を関数値の環境の先にも残し、その関数値がセルを所有していると、環境を隠す型かセルに届く型のすべての局所値に残します。この判定はプログラム全体で行うので、離れた所の関数値が、別の関数の中の見えない呼び出しの検査を厳しくします。
 - lock のコールバックが、ロック中の値の借用を別の `Mutex` へ書いて読み戻した値を返す形は `mutex_result_retains_borrow` です（基準は受理していた危険な形）。
+- 読み取りの仮引数（edition 2027）や演算子が借りた一時値への参照そのものを、呼び出す関数が引数の先へ書き込む形は `E1013` です（`let` で束縛してから渡します）。本体が見えない関数値へ一時値を貸す形は、最後の引数なら、参照の仮引数そのものを格納する関数がプログラムにあるときだけ `E1013`、最後でない引数なら、書き込み先があれば `E1013` です。
+
+### レビューの指摘への対応（第1回）（2026-11-11）
+
+レビューの 19 件の指摘（反例の探索 12 件、適合の確認 7 件）を、再現プログラム（`target/scratch/review-a31-ce/` の 279 個、`target/scratch/review-a31-conf/p/` の 117 個）で確かめました。どれも再現しました（指摘 12 は受理だけを再現。実行は基準でも対照でも `SIGABRT` です）。対応の前後の `check --json`（両方の edition、792 件）は `target/scratch/a31/r1/before.json`（対応前の先端 `49997477`）・`base.json`（基準）・`after-final.json`（対応後）にあり、`r1/probe.mjs`・`diff.mjs`・`st.mjs` で作り直せます。
+
+設計の変更（`src/ownership.rs`。`src/check.rs` には `Type::owns_mutable_cell`・`Type::stores_some` を足しただけです）:
+
+- **見えない関数値の規則を、プログラムの関数値から決める 3 つの旗に作り直しました（`sink_flags`、`CallFacts::sinks`・`owned_sinks`・`reference_sinks`、`owned_types`）。** 関数の型は環境を表しませんが、関数値を作る所（持ち上げたラムダと捕捉、名前付き関数の部分適用、コールバックを取る組み込み関数の部分適用、`Dyn.of`）はすべてモジュールの本文にあり、その本体の書き込みの事実も分かります。そこで、(1) 作る所のどれかが「束縛した値（環境）へ書き込む、束縛した値を関数値の呼び出しへ渡す、分からない」事実を持てば `sinks`、(2) そのうえ束縛した値が可変セルを所有していれば（参照を通さずに `Mutex` などに届く型。`Arc<Mutex<...>>` の値での捕捉）`owned_sinks` とその関数値の型（とそれを環境に持ちうる関数値の型）を `owned_types`、(3) どれかの関数が共有参照の仮引数そのもの（`Part::Value`）を格納するか、それを持つ値を関数値へ渡せば `reference_sinks` にします。旗は書き込みの事実から求め、事実は旗の下の検査から求めるので、`joint_facts` は旗が上がるたびに不動点を取り直します（旗は上がるだけなので高々数回。検査に失敗する本文の `top` は数えません: そのプログラムは拒否されるので、ほかの本文に余計な診断を出さないためです）。
+  - `sinks` が偽のモジュールでは、どの関数値を呼んでも書き込みは引数の先にしか起きません（関数値の本体はモジュールの関数で、環境へ書き込むものが 1 つも無いので、呼び出しの帰納法で従います）。見えない関数値の呼び出しは、関数値と引数の loan を引数の書き込み先へ格納するだけです。
+  - `sinks` が真なら、引数の loan を関数値の loan の書き込み先（環境が借用する場所）へも格納し、`store_target` は関数値・`Owned.Function` を持つ型の場所も書き込み先に数えます（dyn 値に届く型の場所は常に数えます）。
+  - `owned_sinks` が真で、呼ぶ関数値の型（か、引数をいくつか渡した後の関数の型）が `owned_types` のどれかでありうるか、引数の型が環境を隠す・セルに届くなら、`Checker::store_hidden` が、環境を隠す型かセルに届く型のすべての局所値へ格納します。関数値はコピーでき、コピーは借用なしにセルを共有するからです。その文の中で先に評価して後から束縛する値（`let t = (w, w f)`）は `hidden_log` と束縛の位置の `absorb_hidden`、関数の結果は本文の検査の後、呼び出し元の値は `StoreFacts::hidden` の事実で扱います。
+- **不変な局所値の関数値は見える本体として扱います（`known_functions`、`Checker::known`）。** `let` がラムダ・名前付き関数・部分適用・それらの `if`・`Owned.function` の引数に束縛されていれば、その局所値の呼び出し（`w x`、`Owned.call (ref w) x`、関数値の引数として渡した先での呼び出し）に、その本体の事実を当てはめます。
+- **dyn のメソッドの dispatch は、vtable のスロット関数（仮引数の数が同じもの）の事実を合わせたものにしました**（`StoreCandidates::dispatch`。候補が無ければ今までどおり `top`）。
+- **排他の書き込み先は、場所が借用を持てる型のときだけ数えます**（`Checker::hidden_type` の `holds`。`ref mut [i64..]`・`ref mut i64` は数えません。`[T..]` は `[T]` と読みます）。
+- **事実の適用は、格納が何も変えなくなるまで繰り返し、1 回の走査では同じ事実と同じ引数の適用を 1 度だけ行います**（`Checker::settle`・`store_memo`）。ある格納が別の事実の書き込み先を広げる順序の問題も、これで閉じます。
+- **`Rc.share (ref owner)` などの「読み通さないときの代わりの loan」に印を付けました（`Loan::share`、`share_loans`）。** 持ち主のブロックへ格納しないのは印の付いた loan だけで、`ref owner` そのものは格納します（持ち主のムーブは `E1014`）。印の付いた局所の loan を呼び出し元の書き込み先へ格納するときは、その局所値が持つ loan に読み替えます。
+- **`retain_live_loans` は、借用されたままの局所値が今持つ loan のルートも生かします。**
+- **破棄のフックを、束縛しない値を評価するすべての所へ広げました**（`eval`、位置は囲む宣言か呼び出し: `Checker::drop_site`）。どれかの `Drop.drop` が書き込みうるとき、破棄でコードを実行しうる型の値を持つ本文は書き込みうる本文に数え（`store_candidates`）、関数の中の破棄の格納がその関数の事実になります。関数の本文の結果は呼び出し元が束縛するので、フックを当てません。
+- **`Drop.drop` が破棄する値そのものの借用を格納する形**は、`Drop.drop` の事実（仮引数の `Part::Value`）で見つけ（`drop_borrows_self`）、束縛では局所値の loan を値の書き込み先へ格納し（`drop_keeps_self`）、一時値と値で渡す値は書き込み先があれば `E1013` です。
+- **演算子と一時値:** 演算子が利用者の instance へ貸す被演算子（`E::BorrowOperand` の場所）は、値が「場所の中身」なので、`Part::Value` の事実のために場所の loan を別に持ちます（`Checker::argument`、`Arg::reference`）。貸した一時値への参照を格納する事実は `E1013` です（`Arg::dying`）。構造的な比較・ハッシュ・表示は、被演算子の後ろに並ぶ要素のメソッドを高階の呼び出しとして当てはめます。`Owned.call` は owned function を入力で呼ぶ高階の呼び出し、結果の型が仮引数の型と同じコールバック（`List.foldr`）はコールバック自身の値も受け取るものとして扱います。
+
+指摘ごとの対応（期待は、レビューの対照と、直接の形の双子の診断から決めました。値は手で計算したものです）:
+
+| 指摘 | 再現 | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1・16（参照・要素・フィールド・別名の関数値） | 再現（`k01`〜`k03`・`t04`〜`t07`・`k07`・`k09`・`i01`・`i04`・`i05`・`op1`〜`op3`・`op6`〜`op8` が受理） | `sinks` の規則。`k01` などはブロックの位置の `assignment_extends_borrow`、`op1`〜`op3` はムーブの位置の `borrow_conflict`、`op7`・`op8` は呼び出しの位置の `store_local_borrow_through_reference` | `tests/rc.rs` `a_function_value_behind_a_reference_or_an_alias_keeps_what_its_call_stores`（`n01`・`n14` も。対照 `k05`・`k06`・`n15` は受理） |
+| 2・13（セルを所有する関数値、`Owned.call`） | 再現（`d01`・`d04`・`d06`・`d07`・`e04`〜`e06`・`x02`・`oc1`〜`oc5` が受理） | `owned_sinks` の規則、`known`、`Owned.call`。`x02` は、関数値が loan を持たなくても呼び出しの位置で拒否（`apply_opaque` の早い return を無くしました） | `a_function_value_that_owns_its_cell_keeps_what_its_call_stores`（この対応で作った `n02`〜`n04`・`n11`〜`n13` も。対照 `d09`・`n08`・`n09` は受理）、`a_function_value_handed_to_later_code_takes_no_borrow_afterwards`（`n16`・`n17`） |
+| 3（callee の中の破棄） | 再現（`g17`・`g38` が受理） | 破棄する値を持つ本文を書き込みうる本文に数える | `a_drop_in_a_callee_or_of_a_temporary_stores_what_the_value_holds` |
+| 4（演算子と利用者の instance） | 再現（`v07`・`z04`・`v10` が受理）。同じ原因で、読み取りの仮引数へ貸した一時値（`r1/q5`、2027）も受理でした | 被演算子の場所の loan と、一時値の `E1013` | `an_operator_or_a_structural_operation_applies_the_stores_of_the_instance`（対照 `v08` は受理） |
+| 5・17（束縛しない一時値の破棄） | 再現（`g37`・`g13`・`g39`・`dr1`〜`dr4`・`dr6`・`dr7` が受理） | `eval` の破棄のフック | 3 と同じテスト（対照 `dr0`・`dr5` は同じ診断） |
+| 6（破棄する値そのものの借用） | 再現（`g33`・`g32` が受理） | `drop_borrows_self`・`drop_keeps_self` | 3 と同じテスト |
+| 7（`List.foldr` の状態） | 再現（`u04`・`u02` が受理） | コールバック自身の値を引数に足す | `a_fold_callback_stores_the_state_that_it_returned`（対照 `u05` は受理、`u03` は同じ診断） |
+| 8（部分適用の入れ子で指数時間） | 再現（深さ 10 で 321 秒） | `settle`・`store_memo`。深さ 10・16・24 が 2 秒未満（共有の機械。基準と同じ程度） | `tests/mutable_slices.rs` `nested_function_values_are_substituted_once`（深さ 14。時間の閾値は置きません） |
+| 9（借用を持てない書き込み先） | 再現（`r01`・`r03`・`r11`〜`r13`・`r15`〜`r18` が拒否） | 書き込み先の型の条件、`known`、dyn の事実。すべて受理に戻り、値は基準と同じ（11・11・11・13・11・11・12・12・11） | `a_call_of_a_function_value_stores_only_where_a_borrow_fits`、`tests/rc.rs` `a_dyn_method_applies_the_stores_of_the_instances`（`r11`）、E2E `local_lambda_adds_lengths`・`handlers_then_move` |
+| 10（`Arc.share (ref a)` を持つ値の束縛） | 再現（`y01` が拒否） | `Loan::share` の読み替え。`y01` は受理（8） | 3 と同じテストの受理の列、E2E `drop_stores_an_owned_function` |
+| 11（呼び出し元の診断の文言） | 再現 | 呼び出し先の名前を挙げる文言と help（`cannot pass this function value here: 'leak' passes it a borrow of a local value of its own, ...`）。kind は同じ | `a_borrow_of_a_callee_local_handed_to_an_unseen_function_value_names_the_callee` |
+| 12（region 付きの dyn 値） | 受理を再現（実行は基準でも `SIGABRT`） | dyn の事実と、dyn 値に届く型の場所を書き込み先に数えること。`v24`・`v02` は拒否、対照 `v03`・`v20` は受理 | `a_dyn_method_applies_the_stores_of_the_instances` |
+| 14（構造的な比較・表示） | 再現（`disp4`〜`disp6`・`eq2` が受理） | 要素のメソッドの事実を当てはめる | 4 と同じテスト |
+| 15（`Rc`／`Arc` の持ち主の loan を落とす） | 再現（`arcself`・`rcself`・`arcself2` が受理、`-O0` で `SIGSEGV`） | `Loan::share` | `a_borrow_kept_in_a_cell_holds_its_owner_and_its_source` |
+| 18（古い `parents` だけをたどる） | 再現（`chain3`・`chain3_order`・`chain3_arc` が受理） | `retain_live_loans` | 15 と同じテスト（対照 `chain3_ctl` は受理） |
+| 19（`docs/architecture.md` の記述） | 確認（`through` の除外は無く、closed の取り消しは静的データ以外の loan で行う） | `docs/architecture.md` の段落を実装に合わせて書き直しました | — |
+
+この対応で見つけて塞いだ形（レビューの指摘に無いもの）のうち、規則を足したもの:
+
+- **関数値の段階的な適用（`n14`）:** 本体の見えない関数値に引数を一部だけ渡した結果（`let g = h.w2 (ref m)`）は、渡した引数を束縛した関数値で、作る所が `sink_flags` の走査に現れません。そこで、callee が名前付き関数・組み込み関数の直接の参照でない呼び出し（と、名前付き関数が返した関数への引数の追加）で結果の型が関数のものを、引数が書き込み先になりうるか借用を持ちうるなら `sinks` の所（引数がセルを所有するなら `owned_sinks` の所）に数えます。
+- **後で実行するコードへ渡した共有者（`n16`）:** セルを所有する関数値のコピーを tzroutine が捕捉した後で、元の関数値に借用を持つ値を書き込ませる形は、基準でも受理され、tzroutine が解放後の値を読みます（`-O3` で 0、期待は 9）。捕捉・チャネルの要素・`Routine.go` などへ渡す owned function・`OnceValue` の初期化・host 関数・region のない dyn 値は、渡す時点で借用を持たないことしか検査しない（A30）ので、モジュールがそうした所で `owned_types` の関数値を持ちうる型の値を渡すとき（`CallFacts::escapes`）は、`store_hidden` が借用の格納を `E1013`/`task_capture_retains_borrow` にします（既存の kind。文言は新しいもの）。
+
+ほかにこの対応で見つけて塞いだ形: 読み取りの仮引数へ貸した一時値への参照の格納（`q5`）、`Mutex.with_lock (ref m)` の部分適用を呼ぶ形（`n01`）、`let mut` の関数値（`n02`）、先に作った `Rc.share` の写し（`n03`）、同じ文の中の先に評価したコピー（`n04`）、セルを所有する関数値を包むラムダ・返す関数・引数に受ける関数値（`n11`〜`n13`）、文字列補間の中の instance の書き込み（`v05i`）。プログラムは `target/scratch/a31/r1/` と `r1/adv/` にあります。
+
+判断（どれも「健全性を保ち、受理している安全なプログラムを受理のまま保つ、最も保守的な選択」）:
+
+- 指摘 9 の「受理が離れた所の文に依存する」は、旗がプログラム全体の性質なので残ります。ただし旗は「種があるか」ではなく「環境へ書き込む関数値を作るか」で、`sinks` が偽のモジュールでは、以前の先端よりも受理が広がります（見えない関数値の環境への格納を数えないので）。文書（`lifetimes.md`）に書きました。
+- `owned_sinks` の規則は粗いので、対象を型で狭めました（`owned_types`）。E2E の fixture（`in_place_writes`）に、セルを所有する関数値・書き込む `Drop.drop`・参照を格納する `Eq` の instance を足しても、以前の 30 件を含む 36 件がすべて同じ値で通ります。
+- 一時値の `E1013` と、呼び出し先の局所値の借用の `E1013` は、既存の kind `store_local_borrow_through_reference` を使い、文言だけ分けました（診断の kind は増やしていません）。
+- `v14`（`to_string c2` で、`Display.display` が `c2` への参照を `Mutex` へ書く）と `v05i`・`v09i` は、基準が受理して解放後の値を出す危険な形（`v14` は `-O0` で不定の値）で、拒否になります。
+- テストの期待を変えた既存のテストはありません（`retention_tests::store_facts_follow_what_the_bodies_store` の `Source` に新しい欄を足しただけです）。
+
+確かめたこと（2026-11-11、最後のソースの変更の後。ログは `target/scratch/a31/r1/`）:
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` は警告なし。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast` は 3006 件すべて成功、4 件 skip（979 秒、`nextest-final.log`。その後の変更はコメントだけで、`tests/rc.rs`・`tests/mutable_slices.rs`・`tests/currying.rs` の 68 件を再実行して成功）。対応前は 2994 件で、増えた 12 件は `tests/rc.rs` の 9 件、`tests/mutable_slices.rs` の 2 件、単体テスト `retention_tests::the_sink_flags_follow_the_function_values_of_the_module` です。
+- 拒否のテストが対応前に失敗すること: 対応前の先端 `49997477` のバイナリの結果（`r1/before.json`）で、表の再現プログラムは受理（指摘 9・10 は拒否）でした。テストはそれらのプログラムの本文をそのまま使っています。
+- レビューの 396 個（792 件）: `r1/after-final.json`。対応前から受理に変わったのは指摘 9・10 の安全なプログラムと `blow_10`（時間切れだったもの）だけで、受理のまま残るものは、実行して `-O0` と `-O3` が同じ値でした（`r1/run5.json`。`"{c2}"` と書いた `v05`・`v09`・`v16`・`v17` は文字列補間ではないので、`Display.display` を呼びません）。
+- 154 個の照合（`compare.mjs`）: edition 2027・2026 とも期待と違うもの 0（`r1/compare-2027.txt`・`compare-2026.txt`）。
+- 手順 5 の比較（`step5.mjs`）: `tests/fixtures/*`・`examples/*` の 154 個の `check --json` と `build --no-cache --emit llvm` が基準とすべて同じ（`r1/step5-final.txt`。`in_place_writes` の fixture には 6 件を足しましたが、基準も同じ値で受理します）。
+- E2E（dev のバイナリ、`r1/e2e-final.log`）: `in_place_writes` 36 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`slices` 11 件、`matrix_view` 303 件、`concurrency` 15 件、`sync_types` 14 件、`tzroutine` 16 件、`control.mjs` 701 件、`user_drop.mjs`。すべて成功。`in_place_writes` の 36 件は基準のバイナリでも同じ値で通ります。
+- 文書: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs`（`lifetimes.md`・`drop.md`・`borrowing.md`）は `Docs: 3 pages, 50 links, 19 checked examples, 38 native runs (O0/O3)` で成功。`gen-docs.mjs --check` は `19 blocks checked, 0 stale`、`check-cli-docs.mjs` は `4 checks, 0 failed`、`check-guide-lite.mjs` は `88 references checked, 0 failed`。
+- 性能（`TSUZURI_TIME_PASSES=1 tsuzuri check` の `ownership` の相の中央値、ms、21 回、基準と対応後を交互に実行。共有の機械）: `hash_map` 12.8 → 12.6、`list_fsharp` 18.1 → 17.6、`array_fsharp` 10.8 → 10.5、`vec_dotnet` 5.1 → 5.1、`rc` 1.6 → 1.7、`tzroutine` 0.5 → 0.6、`examples/tzroutines` 0.1 → 0.1（0.1 ms の差は分解能と同じ大きさ）。書き込みの事実を多く使う fixture は遅くなります: `mutable_slices` 3.5 → 8.4、`in_place_writes`（セルを所有する関数値・書き込む `Drop.drop`・参照を格納する instance を足した後）2.3 → 13.1（9 回の中央値。旗が上がるたびの不動点の取り直しと、`settle` の 2 回の走査の分です）。指摘 8 のプログラムは、深さ 10・16・24 とも 2 秒未満（基準と同じ程度）です。
+
+更新した文書: `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`（現在の制限: 本体の見える局所値・演算子・dyn のメソッド、見えない関数値の 3 つの規則と例、後で実行するコードへ渡した関数値、呼び出し元と一時値の `E1013`）、`drop.md`（解放が書き込む借用: 一時値・呼び出す関数の中の破棄・破棄する値そのものの借用）、`borrowing.md`（書き込んだ値の借用: 演算子と文字列補間）、`docs/language.md`・`docs/architecture.md`（書き込みの事実の段落を実装に合わせて書き直し。指摘 19）。
+
+変えたファイル: `src/ownership.rs`、`src/check.rs`（`Type::owns_mutable_cell`・`Type::stores_some`）、`tests/rc.rs`、`tests/mutable_slices.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、上の文書、このチケット。

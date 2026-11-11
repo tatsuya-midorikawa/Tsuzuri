@@ -1978,6 +1978,17 @@ const suites = {
       ["read_parameter_writes_owned", [], 3n + 3n + 7n],
       // k = 9 is copied into the written function; the moved text still has 9 characters.
       ["read_parameter_reads_capture", [], 9n + 9n],
+      // Review round 1. "12345" has 5 characters: buf[0] = 5, moved 5, fs[0] () = 1.
+      ["local_lambda_adds_lengths", [], 5n + 5n + 1n],
+      // k = 5 + 1; twice_length gives 5 * 2 + 2; the first call of the swapper returns the old 0.
+      ["handlers_then_move", [], 6n + 12n + 0n],
+      // The first call returns the old 0, the second the length 9 of the first argument.
+      ["owned_cell_keeps_a_long_lived_borrow", [], 0n + 9n],
+      // The stored function reads c2.name, 9 characters; e is true.
+      ["equality_keeps_an_operand", [], 9n],
+      // The cell holds the state after the first element, 9 + 1; last is 9 + 2.
+      ["fold_state_comes_back", [], (9n + 1n) * 100n + (9n + 2n)],
+      ["drop_stores_an_owned_function", [], 7n + 1n],
     ],
   },
   fixed_arrays: {

@@ -362,3 +362,97 @@ fn read_parameter_reads_capture =
     apply_read (\a -> { let k = borrowed.length; Array.write 0 (\() -> k) a }) (ref mut arr)
     let moved = text
     moved.length + arr[0] ()
+
+// A31, review round 1: safe programs that the rules for function values that the check does not
+// see must keep accepted (main accepts each with the same value).
+
+// A local lambda that adds a length to a buffer of integers keeps no borrow of `name`, although
+// the program stores a function in place elsewhere (`fs`).
+export def local_lambda_adds_lengths :: i64
+fn local_lambda_adds_lengths =
+    let mut fs = [\() -> 0]
+    Array.set 0 (\() -> 1) (ref mut fs)
+    let name = to_string 12345
+    let mut buf = [0]
+    let add = \(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out
+    add (ref mut buf) (ref name)
+    let moved = name
+    buf[0] + String.length moved + fs[0] ()
+
+def add_length :: ref string -> i64 -> i64
+fn add_length s k = String.length s + k
+
+def twice_length :: ref string -> i64 -> i64
+fn twice_length s k = String.length s * 2 + k
+
+// A function value that owns the cell that it writes: what a call gives it stays in every value
+// that may share the cell.
+def swapper :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> i64)
+fn swapper a = \f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () })
+
+// The named functions of `hs` have another type than `swapper`'s function and get no value that
+// hides an environment, so their calls keep no borrow of `name`.
+export def handlers_then_move :: i64
+fn handlers_then_move =
+    let w = swapper (Arc.new (Mutex.create [\() -> 0]))
+    let hs = [add_length, twice_length]
+    let name = to_string 12345
+    let k = hs[0] (ref name) 1
+    let moved = name
+    k + hs[1] (ref moved) 2 + w (\() -> 3)
+
+// The borrowed text outlives the function value that keeps the borrow in its cell.
+export def owned_cell_keeps_a_long_lived_borrow :: i64
+fn owned_cell_keeps_a_long_lived_borrow =
+    let text0 = to_string 123456789
+    let text = ref text0
+    let w = swapper (Arc.new (Mutex.create [\() -> 0]))
+    let first = w (\() -> String.length text)
+    first + w (\() -> 1)
+
+record Named {r} { m: ref {r} Mutex<[unit -> i64]>, name: string }
+
+instance Eq<Named> {
+    fn eq a b = { Mutex.with_lock a.m (\slot -> Array.write 0 (\() -> String.length b.name) slot); true }
+    fn ne a b = !(Eq.eq a b)
+}
+
+// `==` lends both operands to the instance, which keeps a reference to `c2` in `m`: both live
+// as long as `m` is read.
+export def equality_keeps_an_operand :: i64
+fn equality_keeps_an_operand =
+    let m = Mutex.create [\() -> 0]
+    let c1 = Named { m: ref m, name: "a" }
+    let c2 = Named { m: ref m, name: to_string 123456789 }
+    let e = c1 == c2
+    Mutex.with_lock (ref m) (\slot -> slot[0] ()) + (if e then 0 else 1)
+
+// `List.foldr` gives the callback its own result as the next state, which the callback stores.
+export def fold_state_comes_back :: i64
+fn fold_state_comes_back =
+    let text0 = to_string 123456789
+    let text = ref text0
+    let a = Arc.new (Mutex.create [\() -> 0])
+    let a2 = Arc.share (ref a)
+    let xs = [| 1, 2 |]
+    let last = List.foldr (\acc x -> { Mutex.with_lock (Arc.get (ref a2)) (\slot -> Array.write 0 acc slot); \() -> String.length text + deref x }) (\() -> 0) xs
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ()) * 100 + last ()
+
+record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }
+
+instance Drop<Stash> {
+    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\slot -> Array.write 0 g slot) }
+}
+
+def stash_owned :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> unit
+fn stash_owned a f =
+    let _s = Stash { cell: Arc.share (ref a), f: f }
+    ()
+
+// The dropped `Stash` shares its cell through a share of the parameter, and stores a function
+// that owns what it captured.
+export def drop_stores_an_owned_function :: i64
+fn drop_stores_an_owned_function =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    stash_owned (Arc.share (ref a)) (\() -> 7)
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ()) + 1
