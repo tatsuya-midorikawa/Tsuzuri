@@ -198,7 +198,7 @@ expected (i64 | f64 | string), found (i64 | bool); bool is not a member of (i64 
 
 拡大は値の使用です。注入と同じ規則に従います。
 
-- 値は 1 回だけ評価します。Copy でない要素を持つ共用体（`(i64 | string)`）は move され、拡大の後では使えません（`E1012`）。Copy の要素だけの共用体（`(i64 | bool)`）は複製され、後でも使えます。拡大した後でもう一度使うと、注記が `value moved here into a wider anonymous union` で最初の拡大を指し、help が拡大した値を 1 回だけ束縛するよう案内します（`a widening moves 'w'; bind the wider value once with 'let wide: (i64 | f64 | string) = w' and borrow 'wide', or move it last`）。`ref w` は拡大しないので、`ref` は案内しません。
+- 値は 1 回だけ評価します。Copy でない要素を持つ共用体（`(i64 | string)`）は move され、拡大の後では使えません（`E1012`）。Copy の要素だけの共用体（`(i64 | bool)`）は複製され、後でも使えます。拡大した後でもう一度使うと、注記が `value moved here into a wider anonymous union` で最初の拡大を指し、help が拡大した値を 1 回だけ束縛するよう案内します（`a widening moves 'w'; bind the wider value once with 'let wide: (i64 | f64 | string) = w' and borrow 'wide', or move it last`）。`ref w` は拡大しないので、`ref` は案内しません。レコードのフィールドを拡大したとき（`take r.u`）は、注記が `part of the value moved here into a wider anonymous union` で、help がレコードではなくフィールドを名指しします（`a widening moves 'r.u' out of 'r'; bind the wider value once with 'let wide: (i64 | f64 | string) = r.u' and borrow 'wide', or move it last`）。ループの中の拡大が前の反復で move した値をもう一度使うときは、注記の終わりに `, in the previous iteration of the loop` が付きます。
 - 部分適用（`let g = three w`、`5 |> three w`）の読み取りの引数は、できた関数の値が生きている間、引数を借用します。拡大した値は一時値なので、変数を渡しても借用できず `E1013`（kind `borrow_of_temporary`）です。メッセージは `borrow requires a local place; 'w' converted into (i64 | f64 | [i64]) is a temporary value`、help は `bind the converted value first, as in 'let wide: (i64 | f64 | [i64]) = w', and pass 'wide'; or take the parameter with 'own'` で、注入した値（`three k`）も同じです。拡大した値を型注釈のある `let` で束縛してから渡すか、引数を `own` にします。
 - 参照 `ref V` の値は拡大しません（`E1003`、help `an anonymous union is widened from an owned value`）。edition 2027 の読み取りの引数は参照なので、`def f :: (i64 | string) -> (f64 | i64 | string) = \v -> v` は `E1003` で、メッセージが `own (i64 | string)` と書くよう案内します。`(i64 | bool)` のように Copy で drop の要らない共用体の引数は、edition 2027 でも値なので拡大できます。
 - 総称の読み取りの引数（edition 2027 の `def keep :: 'a -> (Maybe<'a> | i64) -> (Maybe<'a> | i64 | bool) = \_x v -> v` の `v`）は、共用体なしで `\_x v -> v` と書いたときと同じく、本体が値をビューから取り出すので、具体化した型が Copy であることを求めます。`keep 1 (Some 2)` は通り、`keep "a" (Some "bc")` は呼び出しの位置で `E1005`（`no instance for Copy<string>; ...`）です。`own (Maybe<'a> | i64)` と書けば、どの型でも渡せます。
@@ -209,7 +209,7 @@ expected (i64 | f64 | string), found (i64 | bool); bool is not a member of (i64 
 - 並んだ式は、注入と同じく前の式の型を期待される型にします。期待される型のない `[v, w]` は `w` を拡大しますが、`[w, v]` は `E1003` です。型を注釈すれば順序に関係なく書けます。
 - 要素の多い共用体から少ない共用体へは、自動では変えません。[`:? (A | B)` で絞る](#-a--b-で絞る)を使います。
 
-拡大は確保をしません。タグを付け替え、ペイロードをそのまま移します。edition 2027 の読み取りの引数へ渡すときも同じで、呼び出しは拡大した一時値を借用し、所有する値の配列の要素はその一時値へ move されます。ただし次の場合は、名前付きの共用体を `match` で包み直すときと同じ複製や確保があります。
+拡大は確保をしません。タグを付け替え、ペイロードをそのまま移します。edition 2027 の読み取りの引数へ渡すときも同じで、呼び出しは拡大した一時値を借用し、所有する値の配列の要素はその一時値へ move されます。引数に書いた `if`・`match`・ブロックの枝で拡大するとき（`weigh (if n > 0 then w else 1.5)`）も同じです。ただし次の場合は、名前付きの共用体を `match` で包み直すときと同じ複製や確保があります。
 
 - 配列・リストの要素（Copy で、要素の領域を持つ型）は、拡大した値を後でもう一度使うとき、拡大がループの本体の中にあるか、同じ関数のその後ろにループがあるとき、パイプの左辺を拡大するときに 1 回複製されます。`let w = v` と同じ暗黙の複製で、`--warn implicit-copy` の `W1006` と `@no_copy` の `E1031` が出ます。位置は、後でもう一度使う値とパイプの左辺では拡大した値、ループによる複製では拡大した値の直後（幅 0 の位置。値が行の最後なら行末の次の列）です。
 - 型の循環に入った匿名共用体（`union Tree = Leaf | Node of (i64 | Tree)` の `(i64 | Tree)`）はヒープのノードなので、その値を作る拡大はノードを確保します。
