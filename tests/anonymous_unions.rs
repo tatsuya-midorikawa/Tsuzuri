@@ -2349,6 +2349,254 @@ fn find_pairs_members_of_the_same_name() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// A project of `main` (the `Main.tz` of the namespace `Finder`) in a fresh directory under the
+/// temporary directory, and `tsuzuri find --project ... --module Main ARGUMENTS` over it, which
+/// must succeed; the caller removes the directory.
+fn find_in_project(label: &str, main: &str) -> (std::path::PathBuf, impl Fn(&[&str]) -> String) {
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-anonymous-unions-find-{label}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("Tsuzuri.toml"),
+        "[package]\nname = \"finder\"\nversion = \"0.1.0\"\nedition = \"2026\"\nnamespace = \"Finder\"\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("Main.tz"), main).unwrap();
+    let directory = root.clone();
+    let find = move |arguments: &[&str]| {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .current_dir(&directory)
+            .args(["find", "--project", "project", "--module", "Main"])
+            .args(arguments)
+            .env("TSUZURI_CACHE_DIR", directory.join("cache"))
+            .env_remove("TSUZURI_KG")
+            .env_remove("TSUZURI_KG_DIR")
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    (root, find)
+}
+
+/// Copilot review 1: in a query, `*` binds more tightly than `->`, as in a signature: a member
+/// `i64 -> i64 * i64` of an anonymous union returns a tuple, and `i64 * i64 -> i64` takes one.
+#[test]
+fn find_reads_products_tighter_than_arrows() {
+    let (root, find) = find_in_project(
+        "products",
+        "def f :: (bool | i64 -> i64 * i64) -> unit = \\_u -> ()\n\
+         def g :: (bool | (i64 -> i64) * i64) -> unit = \\_u -> ()\n\
+         def h :: (i64 -> i64 * i64) -> unit = \\_u -> ()\n\
+         def k :: (i64 * i64 -> i64 | string) -> unit = \\_u -> ()\n\
+         def m :: i64 * i64 -> i64 = \\_p -> 0\n\
+         def z :: (fn() -> i64 -> i64) -> unit = \\_u -> ()\n\
+         0\n",
+    );
+    let exact = |text: &str, name: &str| text.contains(&format!("exact   Finder::Main.{name} ::"));
+    for query in [
+        "(bool | i64 -> i64 * i64) -> unit",
+        "(i64 -> i64 * i64 | bool) -> unit",
+        "(bool | i64 -> (i64 * i64)) -> unit",
+    ] {
+        let text = find(&[query]);
+        assert!(exact(&text, "f"), "{query}\n{text}");
+        assert!(!exact(&text, "g"), "{query}\n{text}");
+    }
+    for query in [
+        "(bool | (i64 -> i64) * i64) -> unit",
+        "((i64 -> i64) * i64 | bool) -> unit",
+    ] {
+        let text = find(&[query]);
+        assert!(exact(&text, "g"), "{query}\n{text}");
+        assert!(!exact(&text, "f"), "{query}\n{text}");
+    }
+    // The same precedence without a union, and for a function that takes a tuple.
+    assert!(exact(&find(&["(i64 -> i64 * i64) -> unit"]), "h"));
+    assert!(exact(&find(&["(string | i64 * i64 -> i64) -> unit"]), "k"));
+    assert!(exact(&find(&["i64 * i64 -> i64"]), "m"));
+    assert!(exact(
+        &find(&["--takes", "i64 * i64", "--result", "i64"]),
+        "m"
+    ));
+    // The result of `fn()` is a whole type, as in the signature.
+    assert!(exact(&find(&["(fn() -> i64 -> i64) -> unit"]), "z"));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Copilot review 1: a pairing of union members is not committed before the rest of the signature
+/// matches. `'a` is `i64` by position, and the later `string` wants the other pairing; in every
+/// tier and in `--takes`.
+#[test]
+fn find_reconsiders_member_pairings_for_later_parameters() {
+    let (root, find) = find_in_project(
+        "pairings",
+        "def pick :: (Maybe<i64> | Maybe<string>) -> string -> i64 = \\_u _s -> 0\n\
+         def peek :: ref (Maybe<i64> | Maybe<string>) -> ref string -> i64 = \\_u _s -> 0\n\
+         def more :: (Maybe<i64> | Maybe<string>) -> string -> bool -> i64 = \\_u _s _b -> 0\n\
+         0\n",
+    );
+    let text = find(&["(Maybe<'a> | Maybe<'b>) -> 'a -> i64"]);
+    assert!(
+        text.contains(
+            "exact   Finder::Main.pick :: (Maybe<i64> | Maybe<string>) -> string -> i64\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "borrow  Finder::Main.peek :: ref (Maybe<i64> | Maybe<string>) -> ref string -> i64\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("partial Finder::Main.more :: (Maybe<i64> | Maybe<string>) -> string -> bool -> i64  (+1)\n"),
+        "{text}"
+    );
+    // The pairing by position matches, as before.
+    let text = find(&["(Maybe<'a> | Maybe<'b>) -> 'b -> i64"]);
+    assert!(text.contains("exact   Finder::Main.pick ::"), "{text}");
+    // No pairing gives `'a` both `string` (the parameter) and `i64` (the result).
+    let text = find(&["(Maybe<'a> | Maybe<'b>) -> 'a -> 'a"]);
+    assert!(!text.contains("Main.pick"), "{text}");
+    let text = find(&[
+        "--takes",
+        "(Maybe<'a> | Maybe<'b>)",
+        "--takes",
+        "'a",
+        "--result",
+        "i64",
+    ]);
+    for line in [
+        "exact   Finder::Main.pick ::",
+        "borrow  Finder::Main.peek ::",
+        "exact   Finder::Main.more ::",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Copilot review 1, verification: the `partial` tier and `--takes` assign the parameters
+/// greedily, as before, under each pairing of union members in turn. Under the pairing by position
+/// of the result (`'a = i64`, `'b = string`), `'a` passes over `string` and takes `i64`, and the
+/// query's `string` takes `string`. The fix of round 1 let `'a` take `string` (the other pairing
+/// allows it) and found no parameter for the query's `string`.
+#[test]
+fn find_assigns_parameters_under_each_pairing() {
+    let (root, find) = find_in_project(
+        "assign",
+        "def e :: string -> i64 -> (Maybe<i64> | Maybe<string>) = \\_s _n -> Some 0\n\
+         def e3 :: string -> i64 -> bool -> (Maybe<i64> | Maybe<string>) = \\_s _n _b -> Some 0\n\
+         def g :: string -> i64 -> unit = \\_s _n -> ()\n\
+         0\n",
+    );
+    let text = find(&["'a -> string -> (Maybe<'a> | Maybe<'b>)"]);
+    assert!(
+        text.contains("partial Finder::Main.e :: string -> i64 -> (Maybe<i64> | Maybe<string>)\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "partial Finder::Main.e3 :: string -> i64 -> bool -> (Maybe<i64> | Maybe<string>)  (+1)\n"
+        ),
+        "{text}"
+    );
+    let text = find(&[
+        "--takes",
+        "'a",
+        "--takes",
+        "string",
+        "--result",
+        "(Maybe<'a> | Maybe<'b>)",
+    ]);
+    for line in [
+        "exact   Finder::Main.e :: string -> i64 -> (Maybe<i64> | Maybe<string>)\n",
+        "exact   Finder::Main.e3 :: string -> i64 -> bool -> (Maybe<i64> | Maybe<string>)\n",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    // Without a union nothing binds `'a` first: it takes `string`, and the query's `string` finds
+    // no parameter left (the greedy assignment of `b3dd7f1c`, unchanged).
+    assert_eq!(find(&["'a -> string -> unit"]), "no matches\n");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Copilot review 1, verification: when the search across the comparison fails, a second pass
+/// keeps the first pairing of every union, as the matcher did before, so that what it found is
+/// still found. `n`: the nested union's variables occur in the result, so its 7! pairings stay
+/// open in the first pass and use up the attempts. `m`: the first pass gives the first wanted
+/// type the first parameter (`'x = string` by the other pairing), which the second needs; kept by
+/// position (`'x = i64`), that parameter does not unify and the first wanted type takes the second
+/// (`'x = bool`).
+#[test]
+fn find_keeps_the_matches_of_the_earlier_matcher() {
+    let seven = "(i64 | string | bool | f64 | char | i8 | i32)";
+    let n = format!(
+        "(Result<{seven}, Maybe<i64>> | Result<{seven}, Result<{seven}, Maybe<i64>>>) -> {seven}"
+    );
+    let m =
+        "((Maybe<i64> | Maybe<string>) * string) -> ((Maybe<bool> | Maybe<i64>) * bool) -> unit";
+    let main = format!("def n :: {n} = \\_u -> true\ndef m :: {m} = \\_a _b -> ()\n0\n");
+    let (root, find) = find_in_project("earlier", &main);
+    let names = "('p | 'q | 'r | 's | 't | 'u | 'v)";
+    let text = find(&[&format!("(Result<{names}, 'a> | 'a) -> {names}")]);
+    assert!(
+        text.contains(&format!("exact   Finder::Main.n :: {n}\n")),
+        "{text}"
+    );
+    let text = find(&[
+        "((Maybe<'x> | Maybe<'y>) * 'x) -> ((Maybe<i64> | Maybe<string>) * string) -> unit",
+    ]);
+    assert!(
+        text.contains(&format!("partial Finder::Main.m :: {m}\n")),
+        "{text}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Copilot review 1, verification: a pairing whose variables nothing after it reads is kept once
+/// found. The 7! pairings of the nested `(_ | ... | _)` bind only its own `_`s, so the failure of
+/// `'a` (the second member of the outer union) goes straight back to the outer union, whose other
+/// pairing (`'a = Result<(...), Maybe<i64>>`) matches. The fix of round 1 tried every pairing of
+/// the nested union first and reached the attempt limit from 7 members on.
+#[test]
+fn find_keeps_pairings_that_nothing_else_reads() {
+    let seven = "(i64 | string | bool | f64 | char | i8 | i32)";
+    let six = "(i64 | string | bool | f64 | char | i8)";
+    let signature = |inner: &str| {
+        format!(
+            "(Result<{inner}, Maybe<i64>> | Result<{inner}, Result<{inner}, Maybe<i64>>>) -> unit"
+        )
+    };
+    let main = format!(
+        "def w :: {} = \\_u -> ()\ndef w6 :: {} = \\_u -> ()\n0\n",
+        signature(seven),
+        signature(six)
+    );
+    let (root, find) = find_in_project("unseen", &main);
+    let text = find(&["(Result<(_|_|_|_|_|_|_), 'a> | 'a) -> unit"]);
+    assert!(
+        text.contains(&format!("exact   Finder::Main.w :: {}\n", signature(seven))),
+        "{text}"
+    );
+    let text = find(&["(Result<(_|_|_|_|_|_), 'a> | 'a) -> unit"]);
+    assert!(
+        text.contains(&format!("exact   Finder::Main.w6 :: {}\n", signature(six))),
+        "{text}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 /// Review round 1: the type of a type test is a reference to its declaration, as an annotation
 /// is: hover, go to definition, references and rename see it.
 #[test]
