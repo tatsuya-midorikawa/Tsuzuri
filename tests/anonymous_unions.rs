@@ -3164,3 +3164,56 @@ test "round trips" =
     passes(source, Edition::E2026);
     passes(source, Edition::E2027);
 }
+
+#[test]
+fn recursive_records_and_method_values_decode() {
+    // The derived instance of `Tree` and the built-in one of `(i64 | [Tree])` call each other; the
+    // weight of the decoded tree [1, [2], []] is 100 + 1 + (100 + 2) + 100.
+    passes(
+        r#"record Tree { value: (i64 | [Tree]) } deriving (Eq, Encode, Decode)
+
+def text :: Encode<'a> => own 'a -> string = \value ->
+    match Json.serialize value with
+    | Ok bytes -> String.from_utf8 (ref bytes)
+    | Error error -> Display.display error
+
+def rec weight :: ref Tree -> i64 = \tree ->
+    match tree.value with
+    | :? i64 as n -> n
+    | :? [Tree] as children ->
+        let mut sum = 100i64
+        for index in 0i64 ..< children.length do sum = sum + weight (ref children[index])
+        sum
+
+def read :: own string -> Result<Tree, Json.Error> = \source ->
+    Json.deserialize (ref (Utf8String.from_string (ref source)))
+
+def apply :: own (ref Json.Value -> Result<(i64 | string), Json.Error>) -> own string -> string = \decode source ->
+    match Json.parse (ref (Utf8String.from_string (ref source))) with
+    | Error error -> Display.display error
+    | Ok json ->
+        match decode (ref json) with
+        | Ok value -> Display.display value
+        | Error error -> Display.display error
+
+test "a record that holds itself through a member" =
+    let tree = Tree { value: [Tree { value: 1 }, Tree { value: [Tree { value: 2 }] }, Tree { value: [] }] }
+    assert (text tree == "{\"value\":[{\"value\":1},{\"value\":[{\"value\":2}]},{\"value\":[]}]}")
+    let back = read "{\"value\":[{\"value\":1},{\"value\":[{\"value\":2}]},{\"value\":[]}]}"
+    let total = match back with
+        | Ok found -> weight (ref found)
+        | Error _ -> -1
+    assert (total == 303)
+    let refused = match read "{\"value\":[{\"value\":\"x\"}]}" with
+        | Ok _ -> "ok"
+        | Error error -> Display.display error
+    assert (refused == "json: expected number or array")
+
+test "the method as a function value" =
+    assert (apply Decode.decode "5" == "5")
+    assert (apply Decode.decode "\"five\"" == "five")
+    assert (apply Decode.decode "[5]" == "json: expected number or string")
+"#,
+        Edition::E2027,
+    );
+}

@@ -10,6 +10,7 @@
 - 取り出しは型テストのパターン `:? T`・`:? T as x` です。`match` の網羅性を検査し、足りなければ `E1021`（`missing: :? bool`）です。
 - 型変数・区別できない要素・重複した要素は `E1041`、借用を含む要素は `E1013`、33 個以上の要素は `E1017` です。
 - 要素がすべて `Eq`・`Ord`・`Hash`・`Display` を持てば、匿名共用体も同じクラスを持ちます（タプルと同じ、組み込みのインスタンスです）。`==`・`<`・`$"{v}"` を書け、`HashMap`・`HashSet`・`Map`・`Set` のキーにできます。
+- JSON では、`Encode` がペイロードの JSON だけを書きます（タグを書きません）。`Decode` は、JSON の値の種類で要素が 1 つに決まる匿名共用体だけが持ちます（`(i64 | string)` は持ち、`(i64 | f64)` は `E1025`）。
 - 名前付きの `union` と同じ表現で、native と WebAssembly で同じ結果です。新しいランタイム関数や import は使いません。
 
 ## 基本の書き方
@@ -321,11 +322,98 @@ Hash.hash a == Hash.hash (Text "one")
 
 ### 持たないクラスとそのほかの規則
 
-- ほかのクラスのインスタンスはありません。`Default` と `Arbitrary` は、どの要素の値を作るかを決められないので持ちません。`Format`・`Encode`・`Decode` もありません。`Default.default()` や書式指定の補間 `$"{v:x}"` は `E1005`、匿名共用体を持つ型の `deriving (Default)` は `E1025` です。メッセージは `no instance for Default<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` で、インスタンスの定義は勧めません。幅と寄せだけの補間 `$"{v:>5}"` は `Display` を使うので書けます。
+- `Encode`・`Decode` は [JSON（Encode と Decode）](#jsonencode-と-decode) の規則で持ちます。それ以外のクラスのインスタンスはありません。`Default` と `Arbitrary` は、どの要素の値を作るかを決められないので持ちません。`Format` もありません。`Default.default()` や書式指定の補間 `$"{v:x}"` は `E1005`、匿名共用体を持つ型の `deriving (Default)` は `E1025` です。メッセージは `no instance for Default<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` で、インスタンスの定義は勧めません。幅と寄せだけの補間 `$"{v:>5}"` は `Display` を使うので書けます。
 - 匿名共用体を head とする `instance` は書けません（`E1041`）。比較や表示の規則を自分で決めたいときは、レコードで包むか、名前付きの `union` を宣言します。
-- `Dyn.of v` で `dyn Display` などに格納できます（タプルと同じです）。表示はペイロードだけです。
+- `Dyn.of v` で `dyn Display`・`dyn Encode` などに格納できます（タプルと同じです）。表示はペイロードだけです。
 - `const def` の中では、タプルや名前付きの共用体と同じく比較演算子を使えません（`E1026`）。
 - インスタンスは要素のインスタンスを呼ぶ関数です。`pure def` の中で匿名共用体を比べたり表示したりするには、要素のインスタンスも純粋でなければなりません（`E1029`）。
+
+## JSON（Encode と Decode）
+
+匿名共用体は、[Json](json.md) の型クラス `Encode`・`Decode` の組み込みのインスタンスも持ちます。`deriving (Encode, Decode)` のあるレコードや共用体のフィールド・ペイロードにも使えます。
+
+### Encode
+
+`Encode` は、ペイロードの JSON をそのまま書きます。要素を示すタグや包みは書きません（TypeScript の `number | string` を JSON にしたときと同じ見え方です）。要素がすべて `Encode` を持てば、匿名共用体も持ちます。結果は要素の `Encode` の結果そのもので、誤りも要素のものです（`f64` の NaN は `NonFinite`）。
+
+```tsuzuri run=[1,"two",[3,4]]
+let items: [(i64 | string | [i64])] = [1, "two", [3, 4]]
+Json.serialize items |> Result.default_value u8"error"
+```
+
+### Decode
+
+タグがないので、`Decode` は JSON の値の種類（真偽値・数・文字列・配列・object）で要素を選びます。そのため、**要素が読む JSON の種類が互いに重ならない匿名共用体だけ**が `Decode` を持ちます。重なるときに「最初の要素」のような既定は選びません。
+
+| 要素の型 | 読む JSON の種類 |
+| --- | --- |
+| `bool` | 真偽値（boolean） |
+| 整数（`i8`〜`i128`、`i8u`〜`i128u`）、`f16`〜`f128`、`d32`〜`d128` | 数（number） |
+| `string`、`utf8string` | 文字列（string） |
+| `[T]`、`[\|T\|]`、`Vec<T>`、2〜4 要素のタプル、`Set<T>`、`HashSet<T>` | 配列（array） |
+| `Map<K, V>`、`HashMap<K, V>` | object と配列の両方（キーが JSON の文字列にならないマップは `[キー, 値]` の配列の配列になるため） |
+| `deriving (Decode)` のあるレコード | object |
+| `Maybe<T>`、名前付きの共用体、`Json.Value`、手書きの `Decode` を持つ型 | 決まりません（どの要素とも重なります） |
+
+- 種類は要素の型の頭（`[T]` なら配列）だけで決まり、型引数では変わりません。総称の関数の中の `(['a] | string)` も `Decode<'a>` があれば読めます。
+- `Maybe<T>` は `null` に加えて `T` の種類を、導出した名前付きの共用体は文字列と object を、`Json.Value` はすべての種類を読みます。手書きの `Decode` が何を読むかは、コンパイラには分かりません。これらを要素に持つ匿名共用体は `Decode` を持ちません。
+- `Decode` のインスタンスがない要素（`char`、固定長配列、5 要素以上のタプルなど）は、要素の型を言う `E1005`（`no instance for Decode<char>`）です。
+
+読むときは、JSON の値の種類に当たる要素の `Decode` を呼び、その結果を匿名共用体の値にします。選ばれた要素が値を受理しなければ、その要素の誤りをそのまま返します（`(i64 | string)` に `1.5` を読ませると、`i64` の `json: expected integer`）。どの要素の種類でもなければ、`Json.ExpectedType` の誤りです。メッセージは要素の種類を正準順序で `or` でつなぎます（`offset` は `-1`）。
+
+```tsuzuri run=number%207%20|%20text%20seven%20|%20json:%20expected%20number%20or%20string%20|%20json:%20expected%20integer
+def describe :: ref utf8string -> string = \text ->
+    let decoded: Result<(i64 | string), Json.Error> = Json.deserialize text
+    match decoded with
+    | Ok value ->
+        match value with
+        | :? i64 as n -> $"number {n}"
+        | :? string as s -> $"text {s}"
+    | Error error -> Display.display error
+
+let number = describe u8"7"
+let text = describe u8"\"seven\""
+let flag = describe u8"true"
+let fraction = describe u8"1.5"
+$"{number} | {text} | {flag} | {fraction}"
+```
+
+種類が重なる匿名共用体の `Decode` は `E1025`（kind `anonymous_union_decode_overlap`）です。メッセージが、重なる 2 つの要素か、種類が決まらない要素を示します。
+
+```text
+let a: Result<(i64 | f64), Json.Error> = Json.deserialize u8"1"
+// E1025: no Decode instance for (i64 | f64): the members i64 and f64 both read a JSON number,
+//        so the JSON value does not select one member; decode Json.Value and match on it,
+//        or use a union with named cases
+
+let b: Result<(Maybe<i64> | string), Json.Error> = Json.deserialize u8"1"
+// E1025: no Decode instance for (string | Maybe<i64>): the member Maybe<i64> is not limited to
+//        one kind of JSON value (a Maybe, a union with named cases, Json.Value, or a type with
+//        a hand-written Decode can read several), so the JSON value does not select one member; ...
+```
+
+`(Map<i64, string> | [i64])` も、どちらも配列を読むので `E1025` です。`Encode` にはこの制限がなく、`(i64 | f64)` や `(Maybe<i64> | string)` も JSON に書けます（読み戻すには、`Json.Value` に decode して `match` で分けるか、名前付きの `union` を使います）。
+
+### 導出した型のフィールド
+
+`deriving (Encode, Decode)` のあるレコードと共用体は、匿名共用体のフィールドとペイロードを持てます。種類が重ならなければ、書いた JSON を同じ値に読み戻せます。
+
+```tsuzuri run={"name":"depth","value":3}%20true
+record Setting { name: string, value: (i64 | string | bool) } deriving (Eq, Encode, Decode)
+
+let setting = Setting { name: "depth", value: 3 }
+let text = Json.serialize (ref setting) |> Result.get
+let back: Result<Setting, Json.Error> = Json.deserialize (ref text)
+let same = match back with
+    | Ok copy -> copy == setting
+    | Error _ -> false
+let shown = String.from_utf8 (ref text)
+$"{shown} {same}"
+```
+
+- 導出したレコードは、JSON に無いキーを `null` として decode します。匿名共用体は `null` を読まないので、匿名共用体のフィールドのキーが無ければ `MissingField` です。省略できるフィールドは `Maybe<(i64 | string)>` にします。
+- フィールドの匿名共用体の種類が重なると、`deriving (Decode)` の位置で同じ `E1025`（`anonymous_union_decode_overlap`）です。
+- 値そのものが往復するかどうかは、要素の `Encode`・`Decode` の性質のままです（[Json](json.md#encode-と-decode)）。
 
 ## 型の性質
 
@@ -339,7 +427,8 @@ Hash.hash a == Hash.hash (Text "one")
 | 大きさの上限 | 具体型ごとに 64 KiB（`E1010`） |
 | `export`・`extern` | 使えません（`E1008`） |
 | GPU カーネル | 使えません（`E1018`） |
-| 比較・順序・ハッシュ・表示 | 要素がすべてそのクラスを持てば、`Eq`・`Ord`・`Hash`・`Display` を持ちます（[比較・順序・ハッシュ・表示](#比較順序ハッシュ表示)）。`Default`・`Format`・`Arbitrary`・`Encode`・`Decode` はありません（`E1005`。`deriving` では `E1025`） |
+| 比較・順序・ハッシュ・表示 | 要素がすべてそのクラスを持てば、`Eq`・`Ord`・`Hash`・`Display` を持ちます（[比較・順序・ハッシュ・表示](#比較順序ハッシュ表示)）。`Default`・`Format`・`Arbitrary` はありません（`E1005`。`deriving` では `E1025`） |
+| JSON | 要素がすべて持てば `Encode` を持ちます。`Decode` は、要素が読む JSON の種類が重ならないときだけ持ちます（[JSON（Encode と Decode）](#jsonencode-と-decode)。重なれば `E1025`） |
 | インスタンス | 匿名共用体を head とする `instance` は書けません（`E1041`、kind `anonymous_union_instance`） |
 
 ```tsuzuri run=3
@@ -361,7 +450,8 @@ depth (Node (Node (Node 7)))
 - ケースの名前に意味がある（`Celsius of f64` と `Fahrenheit of f64`）。
 - 同じ型を 2 回持つ（匿名共用体では要素の重複は `E1041` です）。
 - 要素が多い、または公開 API として長く保つ。
-- 比較や表示の規則を自分で決めたい、または `Default` や JSON（`Encode`・`Decode`）のインスタンスが要る（匿名共用体のインスタンスは組み込みの 4 つだけで、`instance` も `deriving` も書けません）。
+- 比較や表示の規則を自分で決めたい、または `Default` のインスタンスが要る（匿名共用体のインスタンスは組み込みのものだけで、`instance` も `deriving` も書けません）。
+- 同じ種類の JSON を読む要素（`i64` と `f64`、2 つのレコード）を JSON から読み分けたい（匿名共用体の JSON にはタグがないので、`Decode` を持てません。名前付きの `union` の導出は `{"Case": payload}` と書きます）。
 
 ## 所有権
 
@@ -409,6 +499,7 @@ def widen :: own (i64 | string) -> (i64 | string | bool) = \value ->
 - `:? T as x` で取り出し、`match` が網羅性を検査します。
 - 型変数・重複・区別できない要素は `E1041`、借用は `E1013`、33 個以上は `E1017` です。
 - 要素がすべて持てば、`Eq`・`Ord`・`Hash`・`Display` を持ちます。順序は正準順序で要素を比べ、表示はペイロードだけです。
+- `Encode` はペイロードの JSON だけを書き、`Decode` は JSON の値の種類で要素を選びます。種類が重なる匿名共用体の `Decode` は `E1025` です。
 - `instance` は書けません。ラベルに意味があるデータは名前付きの `union` で表します。
 
 ## 関連項目
@@ -423,6 +514,7 @@ def widen :: own (i64 | string) -> (i64 | string | bool) = \value ->
 - [型クラス](../types-and-type-inference/type-classes.md)
 - [HashMap](hashmap.md)
 - [Map](map.md)
+- [Json](json.md)
 - [診断](../compiler/diagnostics.md)
 - [言語仕様の匿名共用体](../../../docs/language.md#匿名共用体)
 - [言語リファレンスの目次](../index.md)

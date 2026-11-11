@@ -287,7 +287,7 @@ area (Rect (3.0, 4.0))
 
 - **自動導出 (`deriving`)**: レコードや共用体の宣言末尾に `deriving (Eq, Ord, Display, Hash, Default)` を指定することで、構造的なインスタンス実装を自動生成できます。`deriving (Encode, Decode)` はレコードを JSON の object、共用体を `"Case"` / `{"Case": payload}` と相互変換します。
 - **再帰的データ型**: `union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>` のように木構造や構文木を定義できます。再帰ケースは自動的にヒープへ配置され、解放や環境の複製時にスタックオーバーフローを起こさない工夫が施されています。詳細は [共用体 (union)](docs/language.md#共用体union) を参照してください。
-- **匿名共用体**: `(i64 | string)` のように、宣言なしで要素の型そのものをケースにする共用体を書けます（F# の提案 FS-1092 に当たります）。要素の順序と入れ子は型を変えず、期待される型が匿名共用体の位置では要素の型の値をそのまま書け、`:? i64 as n` で取り出して `match` の網羅性を検査します。要素がすべて持てば、タプルと同じく組み込みの `Eq`・`Ord`・`Hash`・`Display` を持ち（順序は要素の正準順序、表示はペイロードだけ）、`HashMap`・`Map` のキーや `deriving` のある型のフィールドに使えます。詳細は [匿名共用体](_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md) を参照してください。
+- **匿名共用体**: `(i64 | string)` のように、宣言なしで要素の型そのものをケースにする共用体を書けます（F# の提案 FS-1092 に当たります）。要素の順序と入れ子は型を変えず、期待される型が匿名共用体の位置では要素の型の値をそのまま書け、`:? i64 as n` で取り出して `match` の網羅性を検査します。要素がすべて持てば、タプルと同じく組み込みの `Eq`・`Ord`・`Hash`・`Display` を持ち（順序は要素の正準順序、表示はペイロードだけ）、`HashMap`・`Map` のキーや `deriving` のある型のフィールドに使えます。JSON では `Encode` がペイロードだけをタグなしで書き、`Decode` は JSON の値の種類で要素を選びます（要素が読む種類が重なる `(i64 | f64)` などの `Decode` は `E1025`）。詳細は [匿名共用体](_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md) を参照してください。
 - **高階型 (HKT)**: カインドを明示したランク 1 の高階型をサポートしています（例: `class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }`）。詳細は [HKT仕様](docs/language.md#高階型hkt) を参照してください。
 
 ### 制御構文とパターンマッチ
@@ -1139,7 +1139,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | --- | --- | --- |
 | 字句・構文・予約語 | `tests/frontend.rs`、`tests/diagnostics.rs`、`src/parser.rs` の test module、`tests/formatter.rs`、`tests/editions.rs`（edition ごとの予約語・manifest の `edition`） | `examples.mjs`、`features.mjs`（関係する suite） |
 | 型・型クラス・多相 | `tests/polymorphism.rs`、`tests/higher_kinds.rs`、`tests/deriving.rs`、`tests/union_types.rs` | `features.mjs typeclasses`・`deriving`・`higher_kinds` |
-| 匿名共用体（A24・A26。`src/anonymous_union.rs`、インスタンスの本体は `src/polymorph.rs` の `Specializer::union_method`） | `tests/anonymous_unions.rs`（構文・正規化・注入・型テスト・網羅性・インスタンス・組み込みの `Eq`／`Ord`／`Hash`／`Display`・名前の隠蔽・api-diff・find）、`tests/formatter.rs`、`tests/debug_info.rs`、`src/syntax_codec.rs` の test module | `features.mjs anonymous_unions`（native と WASM の `-O0`／`-O3`、`live == 0`）、`debugger.mjs`、`frontend_cache.mjs` |
+| 匿名共用体（A24・A26。`src/anonymous_union.rs`、インスタンスの本体は `src/polymorph.rs` の `Specializer::union_method`・`union_codec`） | `tests/anonymous_unions.rs`（構文・正規化・注入・型テスト・網羅性・インスタンス・組み込みの `Eq`／`Ord`／`Hash`／`Display`・`Encode`／`Decode` と JSON の種類の重なり・名前の隠蔽・api-diff・find）、`tests/formatter.rs`、`tests/debug_info.rs`、`src/syntax_codec.rs` の test module | `features.mjs anonymous_unions`（native と WASM の `-O0`／`-O3`、`live == 0`）、`debugger.mjs`、`frontend_cache.mjs` |
 | 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs` | `features.mjs borrowed_records`、`control.mjs`、`TSUZURI_PROGFUZZ_KIND=owned progfuzz.mjs` |
 | 制御構文・パターン | `tests/control.rs`、`tests/match_exhaustiveness.rs` | `control.mjs`、`features.mjs` |
 | 計算式・IO | `tests/computations.rs` | `computations.mjs`、`io.mjs` |

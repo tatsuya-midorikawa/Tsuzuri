@@ -10,6 +10,7 @@ Web ホストや設定ファイルとのあいだで、スカラーより複雑�
 - 数値は字句をそのまま保つ `Json.Numeral` です。`2^53` を超える整数や `1.0E+2` の書き方も失われません。
 - 組み込み型クラス `Encode` / `Decode` が値と `Json.Value` を変換します。`Json.serialize` / `Json.deserialize` はテキストとのあいだを一度に変換します。
 - `deriving (Encode, Decode)` はレコードを object、共用体を `"Case"` / `{"Case": payload}` にします。
+- [匿名共用体](./anonymous-union.md) `(i64 | string)` はペイロードの JSON だけを書き、JSON の値の種類で要素を選んで読みます。
 - 入力は 64 MiB、入れ子は 128 段まで。エラーは種類とバイト位置を持つ `Json.Error` です。
 - `@json "name"` でフィールドや case の JSON での名前を変えられます。`Json.to_utf8string_pretty` は `JSON.stringify(value, null, indent)` と同じ字下げで書きます。
 - `Json.reader` / `Json.next` は木を作らずにトークンを返すプル型の解析器、`Json.writer` はトークンを順に書く出力器です。
@@ -129,7 +130,7 @@ $"{exact} {range} {String.from_utf8 (ref huge.text)} {invalid}"
 
 ## Encode と Decode
 
-組み込み型クラスです。インスタンスは `Json` モジュールと利用者のソースにだけあります。
+組み込み型クラスです。インスタンスは `Json` モジュールと利用者のソースにあります。コンパイラが組み込みで持つのは、[匿名共用体](#匿名共用体)のインスタンスだけです。
 
 ```text
 Encode<'a> { encode :: ref 'a -> Result<Json.Value, Json.Error> }
@@ -151,6 +152,7 @@ Decode<'a> { decode :: ref Json.Value -> Result<'a, Json.Error> }
 | `Json.Value` | 複製 | 複製 |
 | 導出したレコード | object。キーはフィールド名で宣言順 | object。余分なキーは無視。キーが無ければ `null` として decode し、失敗すれば `MissingField` |
 | 導出した共用体 | ペイロードなしは `"Case"`、ありは `{"Case": payload}`（複数のペイロードはタプルなので配列） | 同じ形だけ。未知の名前は `UnknownCase`、形が違えば `ExpectedType` |
+| [匿名共用体](#匿名共用体) `(A \| B)` | ペイロードの JSON だけ（要素を示すタグを書かない） | JSON の値の種類で要素を 1 つ選び、その要素の decode。どの要素の種類でもなければ `ExpectedType`。要素の種類が重なる型には `Decode` がない（`E1025`） |
 
 `Map<string, 'v>` は常に object です。`Map<i64, 'v>` のようにキーが文字列にならないマップは `[[1, "a"], [2, "b"]]` の形になり、キーが 1 つも無いときだけ `{}` になります（decode はどちらの形も受理します）。文字列のキーとそれ以外のキーに別々のインスタンスを置くことは、型クラスの重複規則（同じヘッドに単一化できるインスタンスは 1 つ）ではできないので、形は encode したキーで決まります。ペイロードのない case だけの共用体をキーにすると、そのマップは object になります。`Map` の decode には `Ord<'k>`、`HashMap` には `Hash<'k>` と `Eq<'k>` が要ります。
 キーや要素が重なったときの `DuplicateKey` は、文書順で前の要素とキーが等しい最初の要素を、文書でのその要素の字句（object のキーはそのまま、配列の要素と組のキーは JSON テキスト）で示します（`[2.0, 1, 2]` を `Set<f64>` にすると `duplicate key "2"`）。
@@ -211,6 +213,53 @@ json: missing field "y" | ok | json: expected integer | json: unknown case "Squa
 - 導出したレコードの decode は全フィールドを宣言順に decode し、宣言順で最初の `Error` を返します。成功した他のフィールドは解放します。
 - 導出したレコードの encode はフィールドを宣言順に encode し、最初の `Error` を返して残りを encode しません。
 - 共用体の decode では、ペイロードのある case を `"Case"` と書くと `ExpectedType "object"`、ペイロードのない case を `{"Case": ...}` と書くと `ExpectedType "string"`、メンバーが 1 つでない object は `ExpectedType "object with one member"`、それ以外の種類は `ExpectedType "string or object"` です。
+
+### 匿名共用体
+
+[匿名共用体](./anonymous-union.md) `(A | B)` の `Encode`・`Decode` は、コンパイラが要素のインスタンスから作る組み込みのインスタンスです。`instance` も `deriving` も書きません。
+
+- **encode**: ペイロードを要素の `Encode` で書きます。タグも包みも書かないので、`(i64 | string)` の `1` は `1`、`"one"` は `"one"` です。要素がすべて `Encode` を持てば使えます。
+- **decode**: JSON の値の種類で要素を 1 つ選び、その要素の `Decode` を呼びます。選ばれた要素の誤りはそのまま返ります。どの要素の種類でもなければ `ExpectedType` で、名前は要素の種類を型の表示の順に `or` でつないだもの（`(i64 | string)` は `number or string`）、`offset` は `-1` です。
+
+要素が読む種類は、要素の型の頭で決まります。
+
+| 要素の型 | 種類（`ExpectedType` での名前） |
+| --- | --- |
+| `bool` | `boolean` |
+| 整数、浮動小数点、decimal | `number` |
+| `string`、`utf8string` | `string` |
+| `['a]`、`[\|'a\|]`、`Vec<'a>`、2–4 要素のタプル、`Set<'k>`、`HashSet<'k>` | `array` |
+| `Map<'k, 'v>`、`HashMap<'k, 'v>` | `object` と `array` の両方 |
+| `deriving (Decode)` のあるレコード | `object` |
+| `Maybe<'a>`、名前付きの共用体、`Json.Value`、手書きの `Decode` を持つ型 | 決まらない |
+
+```tsuzuri run={"id":7,"tags":"a"}%20|%20number%207%20|%20text%20x-7%20|%20json:%20expected%20number%20or%20string
+record Item { id: (i64 | string), tags: (string | [string]) } deriving (Encode, Decode)
+
+def kind :: ref utf8string -> string = \text ->
+    let item: Result<Item, Json.Error> = Json.deserialize text
+    match item with
+    | Ok found ->
+        match found.id with
+        | :? i64 as n -> $"number {n}"
+        | :? string as s -> $"text {s}"
+    | Error error -> Display.display error
+
+let first = Item { id: 7, tags: "a" }
+let written = String.from_utf8 (ref (Json.serialize (ref first) |> Result.get))
+let number = kind u8"{\"id\": 7, \"tags\": \"a\"}"
+let text = kind u8"{\"id\": \"x-7\", \"tags\": [\"a\", \"b\"]}"
+let wrong = kind u8"{\"id\": true, \"tags\": []}"
+$"{written} | {number} | {text} | {wrong}"
+```
+
+制限:
+
+- **種類が重なる匿名共用体には `Decode` がありません**（`E1025`、kind `anonymous_union_decode_overlap`）。2 つの要素が同じ種類を読む型（`(i64 | f64)`、`(string | utf8string)`、`([i64] | (i64 * i64))`、`(Map<i64, string> | [i64])`、導出したレコード 2 つ）と、種類が決まらない要素を持つ型（`(Maybe<i64> | string)`、`(Json.Value | i64)`、名前付きの共用体や手書きの `Decode` を持つ型を要素にした型）です。JSON にタグがないので、読むときに要素を決められません。既定の要素（最初の要素など）は選びません。
+- この検査は型だけで決まり、JSON の内容は見ません。`deriving (Decode)` のあるレコード 2 つは、フィールド名が違っても重なります。手書きの `Decode` を持つ型は、object だけを読むように書いてあっても「決まらない」です。
+- `Encode` には制限がありません。`(i64 | f64)` は書けますが、読み戻す `Decode` はありません。読み分けたいときは、`Json.Value` に decode して `match` で分けるか、case に名前のある `union` を導出します（`{"Case": payload}` の形になります）。
+- `null` を読む要素はありません。`null` も受け取るには `Maybe<(i64 | string)>` にします（匿名共用体を `Maybe` の中に置きます。`(Maybe<i64> | string)` は `Decode` を持ちません）。導出したレコードの、匿名共用体のフィールドのキーが無ければ `MissingField` です。
+- `Decode` のない要素（`char`、`unit`、固定長配列、5 要素以上のタプル、関数など）は、ほかの位置と同じく `E1005` です。
 
 ### 手書きのインスタンス
 
@@ -507,12 +556,14 @@ match built with
 - `Json.parse` と `Json.to_utf8string` は RFC 8259 に厳密で、決定的なバイト列を書きます。
 - 数値は字句を保つ `Numeral`、object はメンバーの順を保つ配列です。
 - `Encode` / `Decode` と `deriving (Encode, Decode)` で、レコード・共用体・コレクションを JSON と変換します。
+- 匿名共用体はタグなしで書き、JSON の値の種類で読みます。種類が重なる匿名共用体の `Decode` は `E1025` です。
 - 失敗はすべて `Json.Error`（種類とバイト位置）で返り、上限（64 MiB、128 段）を超える入力もトラップしません。
 - `@json` で名前を変え、`to_utf8string_pretty` で字下げし、`reader` / `writer` で木を作らずに読み書きできます。
 
 ## 関連項目
 
 - [型クラス](../types-and-type-inference/type-classes.md) — `deriving` と組み込み型クラス
+- [匿名共用体](./anonymous-union.md) — `(A | B)` の `Encode` と `Decode`
 - [Utf8String](./utf8string.md) — 入力と出力の型
 - [Format](./format.md) — `Display` と `Parse`
 - [Result](./result.md) — 失敗の扱い

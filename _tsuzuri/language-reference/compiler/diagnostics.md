@@ -305,7 +305,7 @@ flowchart TD
 | `E1022` | 他モジュールの `private`、公開 API からの private 型、不透明な標準ライブラリ型（`Map`、`Arena`、`Arena.Handle`、`Net.Address`、`Atomic`、`Mutex`、`DataChannel.Sender`、`DataChannel.Receiver` など）の直接構築・フィールド参照、std 専用の組み込み関数（`Os.__read`、`Net.__open`、`Arena.__next_id`、`Gpu.__open`、`DataChannel.__close_sender` など）の呼び出し |
 | `E1023` | ループ外の `break` / `continue`、`finally` を越える脱出 |
 | `E1024` | 型パラメーター、共用体と型エイリアスの名前、循環するエイリアス。共用体の重複したケースは、最初の定義（`first_defined_here`）を持ちます |
-| `E1025` | `deriving` できない型クラスや要素、止まらない `Default`、`Encode`／`Decode` を導出しない型の `@json`、重なった `@json` の名前 |
+| `E1025` | `deriving` できない型クラスや要素、止まらない `Default`、`Encode`／`Decode` を導出しない型の `@json`、重なった `@json` の名前。要素が読む JSON の種類が重なる[匿名共用体](../built-in-types-and-modules/anonymous-union.md#jsonencode-と-decode)の `Decode`（`anonymous_union_decode_overlap`。`deriving` がなくても出ます） |
 | `E1026` | コンパイル時定数と `const def` のトラップ、循環、ステップ上限、`const def` の署名（値型でない引数や結果）と本体（使えない式）の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `E1027` | 条件付きインスタンスやスーパークラスの制約 |
 | `E1028` | `dyn` にできない型クラス。理由はメッセージに入る |
@@ -371,7 +371,7 @@ flowchart TD
 | `E1022` | `opaque_type_representation`, `private_builder_operation`, `private_export`, `private_name_access`, `private_on_unsupported_declaration`, `private_std_primitive`, `private_type_in_public_api` |
 | `E1023` | `jump_outside_loop` |
 | `E1024` | `alias_argument_count`, `cyclic_type_alias`, `duplicate_type_parameter`, `duplicate_union_case`, `invalid_type_parameter_name`, `type_name_case`, `undeclared_length_parameter`, `undeclared_type_variable`, `union_case_name_case`, `unused_type_parameter` |
-| `E1025` | `default_derive_recursive`, `derived_instance_invalid`, `deriving_unavailable`, `duplicate_json_name`, `json_name_without_deriving`, `underivable_class` |
+| `E1025` | `anonymous_union_decode_overlap`, `default_derive_recursive`, `derived_instance_invalid`, `deriving_unavailable`, `duplicate_json_name`, `json_name_without_deriving`, `underivable_class` |
 | `E1026` | `const_aggregate_operator`, `const_assignment_target`, `const_borrow_not_allowed`, `const_call_depth_limit`, `const_callee_not_const`, `const_checked_operation`, `const_condition_not_bool`, `const_cycle`, `const_evaluation_trapped`, `const_expression_not_allowed`, `const_for_loop_form`, `const_function_value`, `const_limit_exceeded`, `const_new_collection_form`, `const_operation_not_allowed`, `const_partial_application`, `const_pipe_not_allowed`, `const_signature_invalid`, `const_static_data_too_large`, `const_unbuildable_type`, `const_unsupported_operation`, `constant_type_not_concrete` |
 | `E1027` | `class_context_not_a_class`, `instance_check_failed`, `instance_context_variable`, `instance_missing_superclass`, `superclass_cycle`, `superclass_type_variable`, `undeclared_default_constraint`, `undeclared_instance_constraint`, `unknown_class_in_context` |
 | `E1028` | `dyn_incompatible_class` |
