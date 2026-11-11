@@ -1,0 +1,650 @@
+// A31: in-place writes that main accepts and that tracking what the writes store must keep
+// accepted, with the same values. Each export is one of the safe programs of the A31 baseline
+// (`_features/_completed/A31-in-place-writes-keep-stored-borrows.md`: the `P_*` programs of
+// 落とし穴 and the `N_*` safe forms of the revised plan), its top-level code moved into a
+// function. The written values hold no borrow, or a borrow that outlives the written array, or
+// the write only reads.
+
+// P_acc_1: a reference element written with Array.set.
+export def set_reference :: i64
+fn set_reference =
+    let a = 1
+    let b = 2
+    let mut arr = [ref a]
+    Array.set 0 (ref b) (ref mut arr)
+    deref arr[0]
+
+// P_acc_2: Array.fill and a pipeline into Array.set on reference elements.
+export def fill_and_pipe_references :: i64
+fn fill_and_pipe_references =
+    let a = 1
+    let b = 2
+    let c = 3
+    let mut arr = [ref a, ref b]
+    Array.fill 0 1 (ref c) (ref mut arr)
+    ref mut arr |> Array.set 1 (ref c)
+    deref arr[0] + deref arr[1]
+
+// P_acc_3 and P_pick_set: a function stores one reference parameter into a local array.
+def pick :: ref i64 -> ref i64 -> i64
+fn pick a b =
+    let mut arr = [a]
+    Array.set 0 b (ref mut arr)
+    deref arr[0]
+
+export def pick_second :: i64
+fn pick_second =
+    let x = 1
+    let y = 7
+    pick (ref x) (ref y)
+
+// P_acc_4: a generic writer of the program on function and reference elements, called and piped.
+def put :: own 'a -> ref mut ['a..] -> unit
+fn put x arr = Array.write 0 x arr
+
+export def generic_put :: i64
+fn generic_put =
+    let base = 5
+    let mut a = [\() -> 1]
+    put (\() -> 9) (ref mut a)
+    ref mut a |> put (\() -> base)
+    let p = 1
+    let q = 2
+    let mut refs = [ref p]
+    put (ref q) (ref mut refs)
+    a[0] () + deref refs[0]
+
+// P_acc_5: a generic writer with a declared region.
+def put_region {r} :: own 'a -> ref mut {r} ['a..] -> unit
+fn put_region x d = Array.write 0 x d
+
+export def region_put :: i64
+fn region_put =
+    let base = 4
+    let mut data = [\() -> 1]
+    put_region (\() -> base) (ref mut data)
+    data[0] ()
+
+// P_acc_6: a writer of `ref 'a` elements.
+def put_reference :: ref 'a -> ref mut [ref 'a..] -> unit
+fn put_reference x arr = Array.write 0 x arr
+
+export def reference_put :: i64
+fn reference_put =
+    let p = 1
+    let q = 2
+    let mut a = [ref p]
+    put_reference (ref q) (ref mut a)
+    deref a[0]
+
+// P_acc_7: a writer whose stored borrow and target share the declared region.
+def store_text {s} :: ref {s} string -> ref mut {s} [ref {s} string..] -> unit = \x arr -> Array.write 0 x arr
+
+export def region_store :: i64
+fn region_store =
+    let a = "ab"
+    let b = "cde"
+    let mut arr = [ref a]
+    store_text (ref b) (ref mut arr)
+    arr[0].length
+
+// P_acc_8: a writer without type variables gets a function that borrows a local of the caller.
+def put_function :: own (unit -> i64) -> ref mut [(unit -> i64)..] -> unit
+fn put_function f target = Array.write 0 f target
+
+export def function_put :: i64
+fn function_put =
+    let base = 4
+    let mut arr = [\() -> 1]
+    put_function (\() -> base) (ref mut arr)
+    arr[0] ()
+
+// P_acc_9: a writer writes back an element that it read from the same target.
+def rotate :: ref mut [(unit -> i64)..] -> unit
+fn rotate arr =
+    let second = arr[1]
+    Array.write 0 second arr
+
+export def rotate_once :: i64
+fn rotate_once =
+    let mut a = [\() -> 1, \() -> 2]
+    rotate (ref mut a)
+    a[0] ()
+
+// N_rotate_then_use: two write-backs, then the array moves.
+export def rotate_twice_then_move :: i64
+fn rotate_twice_then_move =
+    let mut a = [\() -> 1, \() -> 2]
+    rotate (ref mut a)
+    rotate (ref mut a)
+    let b = a
+    b[0] () + b[1] ()
+
+// P_put_last_first: the last element written back to the front.
+def put_last_first :: ref mut [(unit -> i64)..] -> unit
+fn put_last_first arr =
+    let last = arr[arr.length - 1]
+    Array.write 0 last arr
+
+export def last_to_first :: i64
+fn last_to_first =
+    let mut a = [\() -> 1, \() -> 2]
+    put_last_first (ref mut a)
+    a[0] ()
+
+// P_map_in_place_body: each element wrapped in a closure and written back.
+def bump :: ref mut [(unit -> i64)..] -> unit
+fn bump arr =
+    for i in 0 ..= (arr.length - 1) do
+        let f = arr[i]
+        Array.write i (\() -> f () + 1) arr
+
+export def bump_in_place :: i64
+fn bump_in_place =
+    let mut a = [\() -> 1, \() -> 2]
+    bump (ref mut a)
+    a[0] () + a[1] ()
+
+// P_acc_10: a MatrixView writer with a declared region, on function and reference elements.
+def matrix_put {r} :: own 'a -> ref mut MatrixView.Mut<'a> {r} -> unit
+fn matrix_put x m = MatrixView.write 0 0 x m
+
+export def region_matrix_put :: i64
+fn region_matrix_put =
+    let a = 1
+    let b = 2
+    let base = 4
+    let mut data = [\() -> 1, \() -> 2]
+    let mut grid = MatrixView.of_array_mut 1 2 (ref mut data)
+    matrix_put (\() -> base) (ref mut grid)
+    let mut cells = [ref a, ref a]
+    let mut row = MatrixView.of_array_mut 1 2 (ref mut cells)
+    matrix_put (ref b) (ref mut row)
+    data[0] () + deref cells[0]
+
+// P_matrix_wrapper_noregion: the same writer without a region.
+def matrix_put_plain :: own 'a -> ref mut MatrixView.Mut<'a> -> unit
+fn matrix_put_plain x m = MatrixView.write 0 0 x m
+
+export def plain_matrix_put :: i64
+fn plain_matrix_put =
+    let base = 4
+    let mut data = [\() -> 1, \() -> 2]
+    let mut grid = MatrixView.of_array_mut 1 2 (ref mut data)
+    matrix_put_plain (\() -> base) (ref mut grid)
+    data[0] ()
+
+// P_matrix_wrapper_fill: a `Copy<'a>` wrapper of MatrixView.fill, on function and reference elements.
+def matrix_fill {r} :: Copy<'a> => own 'a -> ref mut MatrixView.Mut<'a> {r} -> unit
+fn matrix_fill x m = MatrixView.fill x m
+
+export def region_matrix_fill :: i64
+fn region_matrix_fill =
+    let base = 4
+    let mut data = [\() -> 1, \() -> 2]
+    let mut grid = MatrixView.of_array_mut 1 2 (ref mut data)
+    matrix_fill (\() -> base) (ref mut grid)
+    let a = 1
+    let b = 2
+    let mut cells = [ref a, ref a]
+    let mut row = MatrixView.of_array_mut 1 2 (ref mut cells)
+    matrix_fill (ref b) (ref mut row)
+    data[0] () + deref cells[0]
+
+// P_acc_11: the five MatrixView writers in a row on function elements.
+export def matrix_writers :: i64
+fn matrix_writers =
+    let base = 1000
+    let source = [\() -> 7, \() -> 8]
+    let mut data = [\() -> 1, \() -> 2]
+    let mut grid = MatrixView.of_array_mut 1 2 (ref mut data)
+    MatrixView.write 0 1 (\() -> 20) (ref mut grid)
+    MatrixView.fill (\() -> base) (ref mut grid)
+    MatrixView.copy_from (MatrixView.of_array 1 2 source) (ref mut grid)
+    MatrixView.map_in_place (\f -> \() -> f () + 1) (ref mut grid)
+    ref mut grid |> MatrixView.write 0 0 (\() -> base)
+    data[0] () + data[1] ()
+
+// P_acc_12: partial applications of the generic writer and of Array.set.
+export def partial_writers :: i64
+fn partial_writers =
+    let f = put (\() -> 1)
+    let mut a = [\() -> 2]
+    f (ref mut a)
+    let w = Array.set 0 (\() -> 5)
+    w (ref mut a)
+    a[0] ()
+
+// P_partial_set: a partial application of Array.set alone.
+export def partial_set :: i64
+fn partial_set =
+    let mut a = [\() -> 2]
+    let w = Array.set 0 (\() -> 5)
+    w (ref mut a)
+    a[0] ()
+
+// P_partial_put: a partial application of the generic writer alone.
+export def partial_put :: i64
+fn partial_put =
+    let f = put (\() -> 1)
+    let mut a = [\() -> 2]
+    f (ref mut a)
+    a[0] ()
+
+// P_partial_matrix: a partial application of MatrixView.write.
+export def partial_matrix :: i64
+fn partial_matrix =
+    let mut data = [\() -> 1]
+    let mut grid = MatrixView.of_array_mut 1 1 (ref mut data)
+    let w = MatrixView.write 0 0 (\() -> 2)
+    w (ref mut grid)
+    data[0] ()
+
+// P_ref_string_set: a `ref string` element written with Array.set.
+export def set_text_reference :: i64
+fn set_text_reference =
+    let a = "a"
+    let b = "abc"
+    let mut arr = [ref a, ref a]
+    Array.set 1 (ref b) (ref mut arr)
+    arr[1].length
+
+// P_pipe_set: a pipeline into Array.set on reference elements.
+export def pipe_set_reference :: i64
+fn pipe_set_reference =
+    let a = 1
+    let b = 2
+    let c = 3
+    let mut arr = [ref a, ref b, ref a]
+    ref mut arr |> Array.set 0 (ref c)
+    deref arr[0] * 100 + deref arr[1] * 10 + deref arr[2] + 2
+
+// P_fill_ref: Array.fill on reference elements.
+export def fill_reference :: i64
+fn fill_reference =
+    let a = 1
+    let b = 2
+    let c = 3
+    let mut arr = [ref a, ref b, ref b]
+    Array.fill 0 1 (ref c) (ref mut arr)
+    deref arr[0] * 100 + deref arr[1] * 10 + deref arr[2]
+
+// N_blit_then_mutate_source: Array.blit copies a reference out of `src`, then `src` is written.
+export def blit_then_write_source :: i64
+fn blit_then_write_source =
+    let a = 1
+    let b = 2
+    let mut src = [ref a]
+    let mut dst = [ref b]
+    Array.blit 0 0 1 (ref src) (ref mut dst)
+    Array.set 0 (ref b) (ref mut src)
+    deref dst[0] * 10 + deref src[0]
+
+// N_lock_read_then_move: a lock callback only reads what it captured; the borrowed text moves later.
+export def lock_read_then_move :: i64
+fn lock_read_then_move =
+    let m = Mutex.create [\() -> 3]
+    let text = to_string 123456789
+    let borrowed = ref text
+    let n = Mutex.with_lock (ref m) (\slot -> slot[0] () + String.length borrowed)
+    let moved = text
+    let arr = Mutex.into_inner m
+    arr[0] () + n + moved.length
+
+// N_partial_read_then_move: the callback is a partial application that only reads.
+def peek :: ref string -> ref mut [(unit -> i64)] -> i64
+fn peek t a = a[0] () + String.length t
+
+export def partial_read_then_move :: i64
+fn partial_read_then_move =
+    let text = to_string 123456789
+    let m = Mutex.create [\() -> 3]
+    let n = Mutex.with_lock (ref m) (peek (ref text))
+    let moved = text
+    let arr = Mutex.into_inner m
+    arr[0] () + n + moved.length
+
+// N_fnvalue_read_then_move: a function value that only reads gets the exclusive borrow.
+def apply :: own (ref mut [(unit -> i64)..] -> i64) -> ref mut [(unit -> i64)..] -> i64
+fn apply g arr = g arr
+
+export def function_value_read_then_move :: i64
+fn function_value_read_then_move =
+    let text = to_string 123456789
+    let borrowed = ref text
+    let mut arr = [\() -> 3]
+    let n = apply (\a -> a[0] () + String.length borrowed) (ref mut arr)
+    let moved = text
+    arr[0] () + n + moved.length
+
+// N_closed_cell_read: a lock callback reads a borrow of the caller and stores nothing, so the
+// result of `make` holds no borrow and outlives the text.
+def make :: ref string -> (unit -> i64)
+fn make text =
+    let m = Mutex.create [\() -> 7]
+    let n = Mutex.with_lock (ref m) (\slot -> String.length text)
+    let arr = Mutex.into_inner m
+    let f = arr[0]
+    f
+
+def leak :: own i64 -> (unit -> i64)
+fn leak n =
+    let text = to_string n
+    make (ref text)
+
+export def closed_cell_read :: i64
+fn closed_cell_read =
+    let f = leak 123456789
+    f ()
+
+// A read parameter (edition 2027: a shared reference to the caller's value) of a function type:
+// `apply_read` calls the function value behind it with its array. A writer that stores an owned
+// function, and one that only reads what it captured, keep the borrowed text free to move.
+def apply_read :: (ref mut [(unit -> i64)..] -> unit) -> ref mut [(unit -> i64)..] -> unit
+fn apply_read w arr = w arr
+
+export def read_parameter_writes_owned :: i64
+fn read_parameter_writes_owned =
+    let text = to_string 123
+    let borrowed = ref text
+    let mut arr = [\() -> 1]
+    apply_read (\_a -> ()) (ref mut arr)
+    apply_read (\a -> Array.write 0 (\() -> 7) a) (ref mut arr)
+    let n = borrowed.length
+    let moved = text
+    n + moved.length + arr[0] ()
+
+export def read_parameter_reads_capture :: i64
+fn read_parameter_reads_capture =
+    let text = to_string 123456789
+    let borrowed = ref text
+    let mut arr = [\() -> 1]
+    apply_read (\a -> { let k = borrowed.length; Array.write 0 (\() -> k) a }) (ref mut arr)
+    let moved = text
+    moved.length + arr[0] ()
+
+// A31, review round 1: safe programs that the rules for function values that the check does not
+// see must keep accepted (main accepts each with the same value).
+
+// A local lambda that adds a length to a buffer of integers keeps no borrow of `name`, although
+// the program stores a function in place elsewhere (`fs`).
+export def local_lambda_adds_lengths :: i64
+fn local_lambda_adds_lengths =
+    let mut fs = [\() -> 0]
+    Array.set 0 (\() -> 1) (ref mut fs)
+    let name = to_string 12345
+    let mut buf = [0]
+    let add = \(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out
+    add (ref mut buf) (ref name)
+    let moved = name
+    buf[0] + String.length moved + fs[0] ()
+
+def add_length :: ref string -> i64 -> i64
+fn add_length s k = String.length s + k
+
+def twice_length :: ref string -> i64 -> i64
+fn twice_length s k = String.length s * 2 + k
+
+// A function value that owns the cell that it writes: what a call gives it stays in every value
+// that may share the cell.
+def swapper :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> i64)
+fn swapper a = \f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () })
+
+// The named functions of `hs` have another type than `swapper`'s function and get no value that
+// hides an environment, so their calls keep no borrow of `name`.
+export def handlers_then_move :: i64
+fn handlers_then_move =
+    let w = swapper (Arc.new (Mutex.create [\() -> 0]))
+    let hs = [add_length, twice_length]
+    let name = to_string 12345
+    let k = hs[0] (ref name) 1
+    let moved = name
+    k + hs[1] (ref moved) 2 + w (\() -> 3)
+
+// The borrowed text outlives the function value that keeps the borrow in its cell.
+export def owned_cell_keeps_a_long_lived_borrow :: i64
+fn owned_cell_keeps_a_long_lived_borrow =
+    let text0 = to_string 123456789
+    let text = ref text0
+    let w = swapper (Arc.new (Mutex.create [\() -> 0]))
+    let first = w (\() -> String.length text)
+    first + w (\() -> 1)
+
+record Named {r} { m: ref {r} Mutex<[unit -> i64]>, name: string }
+
+instance Eq<Named> {
+    fn eq a b = { Mutex.with_lock a.m (\slot -> Array.write 0 (\() -> String.length b.name) slot); true }
+    fn ne a b = !(Eq.eq a b)
+}
+
+// `==` lends both operands to the instance, which keeps a reference to `c2` in `m`: both live
+// as long as `m` is read.
+export def equality_keeps_an_operand :: i64
+fn equality_keeps_an_operand =
+    let m = Mutex.create [\() -> 0]
+    let c1 = Named { m: ref m, name: "a" }
+    let c2 = Named { m: ref m, name: to_string 123456789 }
+    let e = c1 == c2
+    Mutex.with_lock (ref m) (\slot -> slot[0] ()) + (if e then 0 else 1)
+
+// `List.foldr` gives the callback its own result as the next state, which the callback stores.
+export def fold_state_comes_back :: i64
+fn fold_state_comes_back =
+    let text0 = to_string 123456789
+    let text = ref text0
+    let a = Arc.new (Mutex.create [\() -> 0])
+    let a2 = Arc.share (ref a)
+    let xs = [| 1, 2 |]
+    let last = List.foldr (\acc x -> { Mutex.with_lock (Arc.get (ref a2)) (\slot -> Array.write 0 acc slot); \() -> String.length text + deref x }) (\() -> 0) xs
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ()) * 100 + last ()
+
+record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }
+
+instance Drop<Stash> {
+    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\slot -> Array.write 0 g slot) }
+}
+
+def stash_owned :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> unit
+fn stash_owned a f =
+    let _s = Stash { cell: Arc.share (ref a), f: f }
+    ()
+
+// The dropped `Stash` shares its cell through a share of the parameter, and stores a function
+// that owns what it captured.
+export def drop_stores_an_owned_function :: i64
+fn drop_stores_an_owned_function =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    stash_owned (Arc.share (ref a)) (\() -> 7)
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ()) + 1
+
+// Review round 2. The element of an immutable table of lambdas is one of them, whose code the
+// check sees: calling it lends `name` only for the call.
+export def dispatch_table_then_move :: i64
+fn dispatch_table_then_move =
+    let table = [\(x: i64) -> x + 1, \(x: i64) -> x * 2]
+    let t = ref table
+    let ops = [\(s: ref string) -> t[0] (String.length s)]
+    let name = to_string 12345
+    let k = ops[0] (ref name)
+    let moved = name
+    let sizes = Array.map (\x -> x + 1) [1, 2]
+    k + table[1] 3 + moved.length + sizes[0]
+
+def two_step_handlers :: unit -> [(unit -> i64) -> i64 -> i64]
+fn two_step_handlers _ = [\(g: unit -> i64) (k: i64) -> g () + k]
+
+// The handlers come from a function, so the check does not see them, but their type is not that
+// of `swapper`'s function, and a closure over a `ref string` holds no such function.
+export def other_type_handlers_then_move :: i64
+fn other_type_handlers_then_move =
+    let w = swapper (Arc.new (Mutex.create [\() -> 0]))
+    let hs = two_step_handlers ()
+    let name = to_string 12345
+    let t = ref name
+    let k = hs[0] (\() -> String.length t) 1
+    let moved = name
+    k + moved.length + w (\() -> 3)
+
+def with_length :: i64 -> ((unit -> i64) -> i64) -> i64
+fn with_length n k =
+    let s = to_string n
+    let b = ref s
+    k (\() -> String.length b)
+
+// The callback only calls the callee's closure, which hands it nothing to store.
+export def callback_calls_a_callee_closure :: i64
+fn callback_calls_a_callee_closure =
+    let ys = Array.map (\x -> x + 1) [1, 2, 3]
+    let mut arr = [\() -> 0]
+    let t = to_string 5
+    let bt = ref t
+    Array.set 0 (\() -> String.length bt) (ref mut arr)
+    with_length 123456789 (\get -> get () * 2) + ys[0] + arr[0] ()
+
+// A closure over references runs no Drop.drop when it is dropped, whatever `Stash` does.
+export def closure_over_references_then_move :: i64
+fn closure_over_references_then_move =
+    let m = Mutex.create [\() -> 1]
+    let rm = ref m
+    let text = to_string 12345
+    let bt = ref text
+    let f = \() -> Mutex.with_lock rm (\slot -> slot[0] ()) + String.length bt
+    let k = f () + f ()
+    let moved = text
+    k + moved.length + Mutex.with_lock (ref m) (\slot -> slot[0] ())
+
+record TextHandler { run: ref string -> i64 }
+
+def invoke_handler :: ref TextHandler -> ref string -> i64
+fn invoke_handler h s = h.run s
+
+// No function value of the module of the handler's type stores what it is given.
+export def handler_record_then_move :: i64
+fn handler_record_then_move =
+    let h = TextHandler { run: \s -> String.length s }
+    let text = to_string 12345
+    let k = invoke_handler (ref h) (ref text)
+    let moved = text
+    k + moved.length + h.run (ref moved)
+
+// Review round 3. The step function that `Seq.next` runs writes a borrow of a text that
+// outlives the cell into the cell.
+export def seq_step_writes_a_long_lived_borrow :: i64
+fn seq_step_writes_a_long_lived_borrow =
+    let m = Mutex.create [\() -> 0]
+    let mr = ref m
+    let text0 = to_string 123456789
+    let t = ref text0
+    let s = Seq.defer (\() -> { Mutex.with_lock mr (\slot -> Array.write 0 (\() -> String.length t) slot); (Seq.empty(), Maybe.Some 1) })
+    let mut total = 0
+    for x in s do total = total + x
+    Mutex.with_lock (ref m) (\slot -> slot[0] ()) + total
+
+def registry :: unit -> ((unit -> i64) -> i64)
+fn registry _ =
+    let cell = Arc.new (Mutex.create [\() -> 0])
+    \f -> Mutex.with_lock (Arc.get (ref cell)) (\slot -> { Array.write 0 f slot; 1 })
+
+def notifier :: ((unit -> i64) -> i64) -> (i64 -> i64)
+fn notifier r = \k -> r (\() -> k)
+
+// The handlers that `Array.map` makes hold no owner of a cell, whatever their type.
+export def registry_and_mapped_handlers :: i64
+fn registry_and_mapped_handlers =
+    let reg = registry ()
+    let r = reg (\() -> 5)
+    let ks = [1, 2, 3]
+    let hs = Array.map (\k -> \f -> f () + k) ks
+    let text = to_string 123456789
+    let tr = ref text
+    let a = hs[0] (\() -> String.length tr)
+    let moved = text
+    a + moved.length + r + hs[1] (\() -> 1)
+
+def plus_seven :: i64 -> i64
+fn plus_seven k = k + 7
+
+// A local bound to a named function, and functions that `Array.map` makes, share no cell with
+// the function that `notifier` makes, which holds the registry and has their type.
+export def functions_beside_a_named_function :: i64
+fn functions_beside_a_named_function =
+    let base = plus_seven
+    let text = to_string 123456789
+    let tr = ref text
+    let ks = [1, 2]
+    let adders = Array.map (\k -> \(j: i64) -> String.length tr + k + j) ks
+    let a = adders[0] 0
+    let moved = text
+    a + moved.length + base 0 + (notifier (registry ())) 1
+
+// Review round 4. The drop of an InboxStash moves the function that its inbox holds into the block
+// that its out shares with `a`: a share of a block of the dropped value is no borrow of it.
+record InboxStash { inbox: Arc<Mutex<[unit -> i64]>>, out: Arc<Mutex<[unit -> i64]>> }
+
+instance Drop<InboxStash> {
+    fn drop s = { let out = Arc.share (ref s.out); Mutex.with_lock (Arc.get (ref s.inbox)) (\src -> { let g = src[0]; Mutex.with_lock (Arc.get (ref out)) (\dst -> Array.write 0 g dst) }) }
+}
+
+export def drop_moves_its_inbox_through_a_share :: i64
+fn drop_moves_its_inbox_through_a_share =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    let text0 = to_string 123456789
+    { let t = ref text0; let s = InboxStash { inbox: Arc.new (Mutex.create [\() -> 0]), out: Arc.share (ref a) }; Mutex.with_lock (Arc.get (ref s.inbox)) (\slot -> Array.write 0 (\() -> String.length t) slot); () }
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ())
+
+// The same move written in a helper that the drop calls.
+record TransferStash { inbox: Arc<Mutex<[unit -> i64]>>, out: Arc<Mutex<[unit -> i64]>> }
+
+def transfer :: ref Arc<Mutex<[unit -> i64]>> -> ref Arc<Mutex<[unit -> i64]>> -> unit
+fn transfer src dst = Mutex.with_lock (Arc.get src) (\a -> { let g = a[0]; Mutex.with_lock (Arc.get dst) (\b -> Array.write 0 g b) })
+
+instance Drop<TransferStash> {
+    fn drop s = transfer (ref s.inbox) (ref s.out)
+}
+
+export def drop_moves_its_inbox_in_a_helper :: i64
+fn drop_moves_its_inbox_in_a_helper =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    let text0 = to_string 123456789
+    { let t = ref text0; let s = TransferStash { inbox: Arc.new (Mutex.create [\() -> 0]), out: Arc.share (ref a) }; Mutex.with_lock (Arc.get (ref s.inbox)) (\slot -> Array.write 0 (\() -> String.length t) slot); () }
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ())
+
+// A drop that shares its inbox (an Rc) and its out, then writes an owned function into the out.
+record RcStash { inbox: Rc<[unit -> i64]>, out: Arc<Mutex<[unit -> i64]>> }
+
+instance Drop<RcStash> {
+    fn drop s = { let _keep = Rc.share (ref s.inbox); let out = Arc.share (ref s.out); Mutex.with_lock (Arc.get (ref out)) (\dst -> Array.write 0 (\() -> 5) dst) }
+}
+
+export def drop_shares_its_rc_and_writes_the_out :: i64
+fn drop_shares_its_rc_and_writes_the_out =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    { let _s = RcStash { inbox: Rc.new [\() -> 1], out: Arc.share (ref a) }; () }
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ())
+
+// A handler read from an Rc that holds a capture-less lambda shares no cell with the registry.
+export def handler_read_from_an_rc :: i64
+fn handler_read_from_an_rc =
+    let reg = registry ()
+    let r = Rc.new (\f -> f () + 1)
+    let h = deref (Rc.get (ref r))
+    let text = to_string 12345
+    let first = { let t = ref text; h (\() -> String.length t) }
+    let moved = text
+    first + moved.length + reg (\() -> 3) + reg (\() -> 1)
+
+// Review round 5. A handler taken out of an Rc by Rc.try_unwrap and a match, and handlers taken
+// out of a Maybe and a tuple by patterns, hold what the matched values hold: no owner of a cell.
+export def handlers_taken_out_by_patterns :: i64
+fn handlers_taken_out_by_patterns =
+    let reg = registry ()
+    let r = Rc.new (\f -> f () + 1)
+    let h = match Rc.try_unwrap r with | Result.Ok v -> v | Result.Error _ -> \_f -> 0
+    let m = Maybe.Some (\f -> f () * 2)
+    let g = match m with | Maybe.Some x -> x | Maybe.None -> \_f -> 0
+    let p = (\f -> f () * 3, 2)
+    let k = match p with | (y, _) -> y
+    let text = to_string 12345
+    let first = { let t = ref text; h (\() -> String.length t) + g (\() -> String.length t) + k (\() -> String.length t) }
+    let moved = text
+    first + moved.length + reg (\() -> 3)

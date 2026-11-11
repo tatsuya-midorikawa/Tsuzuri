@@ -163,6 +163,16 @@ jobs:
           node tests/features.mjs target/release/tsuzuri param_facts
           node tests/features.mjs target/release/tsuzuri list_chunks
           node tests/features.mjs target/release/tsuzuri map_set_chunks
+      # C08 and A31: writes through an exclusive slice (Array.write and the std functions that write with it, in
+      # direct, piped, partial and callback forms) give the values computed by hand, native and WASM at -O0/-O3.
+      # in_place_writes holds the safe programs that tracking the stored borrows must keep accepted.
+      - name: Exclusive slices and in-place writes (C08, A31)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/features.mjs target/release/tsuzuri mutable_slices
+          node tests/features.mjs target/release/tsuzuri in_place_writes
       # F15: Parallel.fold returns Array.fold_monoid's value around the chunk boundaries (a non-commutative monoid and
       # 4,194,305 elements included), and the Parallel functions with pure callbacks return what their sequential
       # counterparts return, native and WASM at -O0/-O3. tests/monoid.rs runs only the native law tests.

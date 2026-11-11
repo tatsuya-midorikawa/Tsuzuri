@@ -194,7 +194,7 @@ after
 - **レコード更新の禁止（E1012）**: Drop 型に対して `{ value with ... }` の更新構文を適用することはできません。
 - **`drop` 本体での全体置換・排他貸出の禁止（E1012）**: `deref value = ...` で引数全体を置き換えると、古い値の解放が同じ `drop` を再帰します。別の関数へ `ref mut` で渡すと、呼び出し先が中身を置換できます。どちらも `E1012` です。メッセージは `cannot replace the whole value inside Drop.drop` と `cannot pass the value on as 'ref mut' inside Drop.drop` です。
 - **公開境界**: `export` や `extern` の引数・戻り値に Drop 型を置くと `E1008` です。
-- **関数の結果が持つ借用**: `drop` は本文に呼び出しを書かずに実行されます。`drop` の本体（またはプログラムのどこか）が、借用を持ちうる値を `Array.write` や、それで書き込む std の関数（`Array.set` など）で `Mutex` の中身などへ書き込むと、借用検査はその書き込みを追跡できないので、プログラム全体で A28 より前の規則に戻り、関数の結果はすべての引数の借用を持ちます（[現在の制限](lifetimes.md#現在の制限)）。そうした書き込みのないプログラムでも、どれかの `drop` の本体が、`Mutex.with_lock` などのロックや、値が持つ関数値の呼び出しを通して、解放する値の中身をほかのコードへ渡すときは、念のため、借用を持ち、破棄でコードを実行しうる値（Drop 型の値と、それを持ちうる関数値・dyn 値・`Owned.Function` を格納された値として持つ値）を受け取る・作る関数の結果は、その値が持つ引数の借用も持ちます（[関数値の共有借用の寿命](../values-and-functions/lambda-expressions.md#共有借用の寿命)）。その関数の中の `Rc.share` なども、所有者の借用を持ちます（[所有者を増やした値の借用](../built-in-types-and-modules/rc.md#所有者を増やした値の借用)）。次の `pass` は `_s` を使いませんが、`_s` の解放が `text` を借用する関数を `w` へ渡すので、`leak` の結果は `text` の借用を持ち、`E1013` です。`drop` が何もしない（`fn drop _s = ()`）なら受理されます。
+- **関数の結果が持つ借用**: `drop` は本文に呼び出しを書かずに実行されます。どれかの `drop` の本体が、`Mutex.with_lock` などのロックや、値が持つ関数値の呼び出しを通して、解放する値の中身をほかのコードへ渡すときは、借用を持ち、破棄でコードを実行しうる値（Drop 型の値と、それを持ちうる関数値・dyn 値・`Owned.Function` を格納された値として持つ値）を受け取る・作る関数の結果は、その値が持つ引数の借用も持ちます（[関数値の共有借用の寿命](../values-and-functions/lambda-expressions.md#共有借用の寿命)、[現在の制限](lifetimes.md#現在の制限)）。その関数の中の `Rc.share` なども、所有者の借用を持ちます（[所有者を増やした値の借用](../built-in-types-and-modules/rc.md#所有者を増やした値の借用)）。次の `pass` は `_s` を使いませんが、`_s` の解放が `text` を借用する関数を `w` へ渡すので、`leak` の結果は `text` の借用を持ち、`E1013` です。`drop` が何もしない（`fn drop _s = ()`）なら受理されます。
 
   ```text
   record Stash { w: (unit -> i64) -> unit, f: unit -> i64 }
@@ -209,6 +209,37 @@ after
       let borrowed = ref text
       pass (Stash { w: w, f: \() -> String.length borrowed }) r   // E1013
   ```
+
+- **解放が書き込む借用**: どれかの `drop` の本体が `Array.write` などで値の中身を値の中の `Mutex` などへ書き込みうるときは、破棄でコードを実行しうる値を束縛する・代入で捨てる所と、束縛しない値（`match` の対象、関数へ貸す・値で渡す値、フィールドを読むだけのレコード、配列リテラルの要素などの一時値）を評価する所で、その値が持つ借用を、値の中のセル（とそれが指す持ち主）へ書き込んだものとして検査します（[現在の制限](lifetimes.md#現在の制限) の「その場の書き込み」と同じ規則）。位置は、`let` の値とその中の一時値は宣言、呼び出しの引数は呼び出しの式です。関数値の破棄が実行するコードは、関数値を作った式で決めます。ラムダは捕捉した値を、部分適用は束縛した引数を破棄し、名前付き関数は何も持たないので、参照だけを捕捉したラムダ（`\() -> Mutex.with_lock rm (...) + String.length bt`）は、束縛しても値で渡しても何も書き込みません。配列・リスト・タプル・レコード・共用体のリテラルは要素を破棄し（レコードと共用体は、その型自身の `drop` も実行します）、不変な局所値は束縛した値と同じものを破棄します（共有セルに届く型の値は、中身が後から変わりうるので型で決めます）。そのため `fill_with (Ctx { buf: ref mut arr, cb: \() -> String.length nr })` は何も書き込みません。呼び出された関数が引数の一部（`c.cb` など）を破棄するときの書き込みは、呼び出し元の実引数がそうした値を持つときだけ当てはめます。呼び出す関数値を場所から読むだけの呼び出し（`c.cb ()`）は、関数値を複製しないので何も破棄しません。関数の中で束縛して捨てる値の書き込みは、その関数の呼び出しの書き込みとして呼び出し元でも検査します（`build a f` が `Stash` を束縛して `unit` を返す形）。`drop` の本体が、破棄する値そのものの借用（`let nm = ref s.name` を捕捉した関数など）を書き込むときは、束縛した局所値の借用を書き込んだものとして検査し、一時値や関数へ値で渡す値がセルをほかの持ち主と共有していれば `E1013` です（値が先に解放され、借用がセルに残るため）。次の `leak` は、局所値 `text` の借用を持つ `Stash` を、呼び出し元と共有する `a` と一緒に持ちます。`_s` の解放は `text` の借用を `a` のセルへ残し、呼び出し元の `r` が `leak` の後でそれを読めるので、`_s` の宣言の位置で `E1013`（`cannot store a borrow of a local value through a reference parameter`）です。
+
+  ```text
+  record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }
+  instance Drop<Stash> {
+      fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\slot -> Array.write 0 g slot) }
+  }
+  def leak :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> own i64 -> (unit -> i64)
+  fn leak a r n =
+      let text = to_string n
+      let borrowed = ref text
+      let _s = Stash { cell: a, f: \() -> String.length borrowed }   // E1013
+      r
+  ```
+
+  `drop` の本体が、値の中の関数値を呼んで値の中身を渡し、その関数値が書き込むセルを自分で所有する（`Arc<Mutex<...>>` を値で捕捉したラムダのコピー）ときは、セルを共有するほかのコピーは借用を持たないので、上の「値の中のセル」では足りません。そこで、そうした関数値を作るプログラムでは、値を束縛する・代入で捨てる・一時値として評価する所と、束縛の後で値のセルへ書き込んだ所で、値が持つ借用を、そうした関数値を持ちうる型か共有セルに届く型のすべての局所値へ書き込んだものとして検査します（[現在の制限](lifetimes.md#現在の制限) の、セルを所有する関数値の呼び出しと同じ規則）。値そのものの借用を渡す `drop` は、束縛した局所値の借用を同じように書き込み、一時値や関数へ値で渡す値は `E1013`（`cannot drop this value here: its Drop.drop hands a borrow of the dropped value to a function value ...`）です。値の出どころから、そうした関数値もセルも持ちえないと分かる値（捕捉の無いラムダだけを持つレコードなど）は対象外です。次の `run` は、`text0` の借用を持つ `Stash` を、レジストリ `reg` のコピーと一緒に持ちます。`_s` の解放は借用を `reg` のセルへ残し、`reg` の後の呼び出しがそれを読むので、`text0` を宣言したブロックの位置で `E1013`（`assignment lets a reference outlive its owner`）です。
+
+  ```text
+  record Stash { f: unit -> i64, out: (unit -> i64) -> i64 }
+  instance Drop<Stash> {
+      fn drop s = { let o = s.out; let _k = o s.f; () }
+  }
+  def run :: i64 -> i64
+  fn run n =
+      let reg = make_registry ()   // Arc<Mutex<...>> を値で捕捉したラムダを返す
+      { let text0 = to_string n; let t = ref text0; let _s = Stash { f: \() -> String.length t, out: reg }; () }   // E1013
+      reg (\() -> 1)
+  ```
+
+  `drop` の中で `Arc.share (ref s.out)` などで作った共有はブロックの所有者で、破棄する値そのものの借用ではありません。それを通して値の中身を別のセルへ移す `drop`（`s.inbox` の要素を `s.out` のセルへ移すもの）は、値そのものの借用を書き込む `drop` には数えません。
 
 ## トラップ時の挙動
 

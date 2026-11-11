@@ -93,7 +93,7 @@ total=36 owners=1
 `callback` はロックを持ったまま走り、その結果はロックが外れた後で使われます。結果が、ロック中の値への借用を持っていると、その借用はロックの外で、置き換えられて解放された値や、ほかの tzroutine が書いている値を指します。結果の型が借用を持ちうる（関数値、またはそれを含む `Maybe`・タプル・配列・レコード・`Seq`）ときは、コンパイラーが、借用を持たない結果だと証明できるものだけを通します。
 
 - 通るもの: 値のコピーを取り、そのコピーを捕捉した関数。`Mutex` の外の借用で、ロック中の値から取っていないものを捕捉した関数。整数、文字列、配列などの所有値。
-- `E1013` になるもの: `let view = ref (deref value)` のように、ロック中の値から取った借用を捕捉した関数と、それを含む値。`ref` そのもの。
+- `E1013` になるもの: `let view = ref (deref value)` のように、ロック中の値から取った借用を捕捉した関数と、それを含む値（`callback` の中で別の `Mutex` や配列へ書き込んでから読み戻した値も含みます）。`ref` そのもの。
 
 ```tsuzuri run=adder%3D15
 let total = Mutex.create 5i64
@@ -181,7 +181,7 @@ WebAssembly の `Mutex` の規則は、プログラムが tzroutine のランタ
 ## 型の規則
 
 - `Mutex.create` は `Send<'a>` を要求します。`Mutex<Rc<T>>` は作れません（`E1013`、`values that move to another tzroutine or thread must be Send`）。`Mutex.create` を包んだジェネリック関数も、関数を使う型ごとに検査されるので、`Rc` で使うと `E1013` です（型変数は `Send` かどうか分からないためです。`Mutex<'f<i64>>` のように、型変数を頭にした適用も同じです）。
-- `Mutex.create` に、借用を捕捉した関数を入れることもできます。ロックは値を持ち続けるので、借用はロックの値に残ります。そのロックは、借用元より長く生きる場所（関数の戻り値、`Routine.scope` の `shared`、tzroutine）へ出せません（`E1013`）。`DataChannel.send` の要素と違い、ロックの型が関数型を含むので、借用は型から見えます。
+- `Mutex.create` に、借用を捕捉した関数を入れることもできます。ロックは値を持ち続けるので、借用はロックの値に残ります。`callback` が受け取った中身へ `Array.write` などで書き込んだ値の借用も、代入と同じくロックの持ち主に残ります（`RwMutex.with_write`・`Cond.wait_with` も同じ。[ライフタイムと region の現在の制限](../ownership-and-memory/lifetimes.md#現在の制限)）。そのロックは、借用元より長く生きる場所（関数の戻り値、`Routine.scope` の `shared`、tzroutine）へ出せません（`E1013`）。`DataChannel.send` の要素と違い、ロックの型が関数型を含むので、借用は型から見えます。
 - `Mutex<T>` は、`T` の中を見ずに `Sync` です。ロックの外から `T` に触れる道がなく、`T` は tzroutine の間を移れるものに限られるからです。
 - `Mutex<T>` は中身が不透明です。構築、フィールド参照、パターン分解、更新構文は `E1022`、`export def` と `extern def` の境界は `E1008`、`const` の初期化は `E1026` です。`Eq`・`Ord`・`Hash`・`Display` の instance はありません。
 - 関数値は複製されることがあり、複製した `Mutex` は別のロックになるので、捕捉は `E1005` です。借用 `ref mutex` を捕捉するか、`Arc` に入れるか、引数で渡します。
