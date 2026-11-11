@@ -2047,11 +2047,15 @@ fn definition_of_anonymous_union_has_no_target() {
 /// `--effective` mode, as `tests/api_diff.rs` reads them: `severity action kind name` and the old
 /// and new texts.
 fn api_changes(old: &str, new: &str, effective: bool) -> Vec<String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tsuzuri::api_diff;
     use tsuzuri::driver::Project;
+    // Tests of one process run on several threads: each call takes directories of its own.
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, Ordering::Relaxed);
     let directory = |label: &str, text: &str| {
         let root = std::env::temp_dir().join(format!(
-            "tsuzuri-anonymous-unions-api-{label}-{}-{}",
+            "tsuzuri-anonymous-unions-api-{label}-{}-{call}-{}",
             std::process::id(),
             effective
         ));
@@ -3596,6 +3600,42 @@ fn narrowing_beside_other_bindings() {
         ),
         "E1012",
         "use_after_move",
+    );
+}
+
+#[test]
+fn narrowing_arms_may_move_or_replace_the_matched_value() {
+    // A narrowing of Copy members copies the payload and leaves the matched value to the arm,
+    // as the arms `:? i64 as n`, `:? f64 as n` do, also when the match is not the result of
+    // its function (review round 1): the arm may move the matched variable, assign to it or
+    // write through the reference that it was read from, and the narrowed value keeps the old
+    // payload. By hand: `num` is 2 k for the i64 k and 3 for an f64 above 1, `size` 20000 for
+    // an f64, the i64 itself and the length of a string.
+    let program = format!(
+        "{NUM}def size :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? f64 -> 20000\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n\n\
+         def moved :: own (f64 | i64 | string) -> i64 = \\v ->\n    let r = match v with\n        | :? (i64 | f64) as n -> num n + size v\n        | :? string -> 1\n    r\n\n\
+         def replaced :: own (f64 | i64 | string) -> i64 = \\start ->\n    let mut v = start\n    let r = match v with\n        | :? (i64 | f64) as n ->\n            v = \"replaced\"\n            num n\n        | :? string -> 0\n    r * 100 + size v\n\n\
+         def through :: ref mut (f64 | i64 | string) -> i64 = \\cell ->\n    let r = match deref cell with\n        | :? (i64 | f64) as n ->\n            deref cell = \"through\"\n            num n\n        | :? string -> 0\n    r\n\n\
+         test \"arms\" =\n    \
+         assert (moved 4 == 8 + 4)\n    \
+         assert (moved 2.5 == 3 + 20000)\n    \
+         assert (moved \"abc\" == 1)\n    \
+         assert (replaced 6 == 1200 + 8)\n    \
+         assert (replaced 0.5 == 0 + 8)\n    \
+         assert (replaced \"ab\" == 0 + 2)\n    \
+         let mut cell: (f64 | i64 | string) = 9\n    \
+         assert (through (ref mut cell) == 18)\n    \
+         assert (through (ref mut cell) == 0)\n    \
+         assert (size cell == 7)\n"
+    );
+    passes(&program, Edition::E2027);
+    // An arm that does not reach the matched variable keeps the switch on the tag.
+    let ir = accepts(&format!(
+        "{NUM}def kept :: own (f64 | i64 | string) -> i64 = \\v ->\n    let r = match v with\n        | :? (i64 | f64) as n -> num n\n        | :? string as s -> s.length\n    r\n"
+    ));
+    assert!(
+        function_body(&ir, "kept").matches("switch i32 ").count() >= 2,
+        "{ir}"
     );
 }
 

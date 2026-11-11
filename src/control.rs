@@ -38,6 +38,70 @@ fn narrowed_name(name: &str) -> String {
     format!("$narrow.{name}")
 }
 
+/// The locals through which code may reach the storage of the subject `matched` of a match: the
+/// root of a place, or every local of a value that holds loans (a reference may lend any of
+/// them). A narrowing whose hidden binding views that storage keeps it shared (A25).
+fn reached_locals(matched: &TypedExpr, types: &TypeContext<'_>) -> BTreeSet<usize> {
+    let mut place = matched;
+    if is_place(place) {
+        loop {
+            match &place.kind {
+                TypedExprKind::Local(id) => return BTreeSet::from([*id]),
+                TypedExprKind::Field(value, _)
+                | TypedExprKind::ListTail(value, _)
+                | TypedExprKind::UnionPayload { value, .. }
+                | TypedExprKind::Index(value, _)
+                | TypedExprKind::Dereference(value) => place = value,
+                _ => break,
+            }
+        }
+    }
+    let mut locals = BTreeSet::new();
+    if matched.ty.carries_loans(types) || is_place(matched) {
+        let mut pending = vec![matched];
+        while let Some(expression) = pending.pop() {
+            match &expression.kind {
+                TypedExprKind::Local(id) => {
+                    locals.insert(*id);
+                }
+                TypedExprKind::Lambda { captures, .. } => {
+                    locals.extend(captures.iter().map(|capture| capture.id));
+                }
+                _ => {}
+            }
+            let _ = expression.try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            });
+        }
+    }
+    locals
+}
+
+/// Whether `body` reads, writes, borrows or captures one of `locals`, at any depth.
+fn reaches_any(body: &TypedExpr, locals: &BTreeSet<usize>) -> bool {
+    if locals.is_empty() {
+        return false;
+    }
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        match &expression.kind {
+            TypedExprKind::Local(id) if locals.contains(id) => return true,
+            TypedExprKind::Lambda { captures, .. }
+                if captures.iter().any(|capture| locals.contains(&capture.id)) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        let _ = expression.try_for_each_child(&mut |child| {
+            pending.push(child);
+            Ok(())
+        });
+    }
+    false
+}
+
 fn value(kind: TypedExprKind, ty: Type, span: Span) -> TypedExpr {
     TypedExpr { kind, ty, span }
 }
@@ -850,7 +914,7 @@ impl Checker<'_> {
                     borrowed.remove(&hidden.id);
                     self.step_narrowing(&mut plans, &narrowed, at, &hidden, &local);
                 } else {
-                    wrapped.push((hidden, local, narrowing.clone()));
+                    wrapped.push((hidden, local, narrowing.clone(), at));
                 }
             }
             self.borrowed.extend(&borrowed);
@@ -862,6 +926,22 @@ impl Checker<'_> {
             let mut body = self.expression(&arm.body, result.as_ref())?;
             if !result.as_ref().is_some_and(Type::contains_error) {
                 result = self.sibling_hint(&body.ty, result.as_ref()).cloned();
+            }
+            // A viewing narrowing keeps the matched storage shared for the whole arm. A body that
+            // reaches that storage, which it may move or replace, gets the narrowed value from a
+            // step of the pattern instead, which copies the payload as the arms `:? W0 as x`,
+            // `:? W1 as x` do (A25, review round 1).
+            if wrapped.iter().any(|(_, _, narrowing, _)| narrowing.view)
+                && reaches_any(&body, &reached_locals(&matched, &self.types))
+            {
+                let (copied, kept): (Vec<_>, Vec<_>) = wrapped
+                    .into_iter()
+                    .partition(|(_, _, narrowing, _)| narrowing.view);
+                for (hidden, local, _, at) in copied {
+                    borrowed.remove(&hidden.id);
+                    self.step_narrowing(&mut plans, &narrowed, at, &hidden, &local);
+                }
+                wrapped = kept;
             }
             if !wrapped.is_empty() {
                 body = self.narrowed_body(wrapped, body);
@@ -1022,12 +1102,12 @@ impl Checker<'_> {
     #[inline(never)]
     fn narrowed_body(
         &mut self,
-        narrowed: Vec<(Local, Local, Narrowing)>,
+        narrowed: Vec<(Local, Local, Narrowing, usize)>,
         body: TypedExpr,
     ) -> TypedExpr {
         let bindings = narrowed
             .into_iter()
-            .map(|(hidden, local, narrowing)| {
+            .map(|(hidden, local, narrowing, _)| {
                 // Read at the empty span after the pattern, like the reads that `retag` makes.
                 let read = Span {
                     start: narrowing.span.end,
