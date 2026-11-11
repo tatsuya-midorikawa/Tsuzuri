@@ -29,7 +29,7 @@ struct Narrowing {
     /// Whether the hidden binding views the matched value where a binding would move it: every
     /// member of `to` is Copy, so the narrowing copies the payload and leaves the value whole.
     view: bool,
-    /// The whole pattern.
+    /// The type test's own extent, from its `:?`, without parentheses around it.
     span: Span,
 }
 
@@ -1201,8 +1201,14 @@ impl Checker<'_> {
                 )));
                 coverage
             }
-            PatternKind::TypeTest(tested, binder) => {
-                return self.type_test_pattern(pattern, tested, binder.as_ref(), matched);
+            PatternKind::TypeTest(tested, binder, span) => {
+                return self.type_test_pattern(
+                    *span,
+                    pattern.depth,
+                    tested,
+                    binder.as_ref(),
+                    matched,
+                );
             }
             PatternKind::Annotated(inner, annotation) => {
                 let ty = self.annotation(annotation)?;
@@ -1542,15 +1548,16 @@ impl Checker<'_> {
     #[inline(never)]
     fn type_test_pattern(
         &mut self,
-        pattern: &Pattern,
+        span: Span,
+        depth: usize,
         tested: &TypeExpr,
         binder: Option<&Ident>,
         matched: TypedExpr,
     ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
         // The `:?` that starts the pattern.
         let marker = Span {
-            end: pattern.span.start + 2,
-            ..pattern.span
+            end: span.start + 2,
+            ..span
         };
         let mut target = self.inference.resolve(&Self::autoderef(matched.clone()).ty);
         // A number literal takes a number type, never an anonymous union: it is named by the type
@@ -1563,7 +1570,7 @@ impl Checker<'_> {
             Type::Error => {
                 return Ok((
                     vec![Alternative {
-                        steps: vec![PatternStep::Test(TypedExpr::error(pattern.span))],
+                        steps: vec![PatternStep::Test(TypedExpr::error(span))],
                         ..Alternative::default()
                     }],
                     CoveragePat::Opaque,
@@ -1597,7 +1604,7 @@ impl Checker<'_> {
         let ty = self.annotation(tested)?;
         let ty = self.inference.resolve(&ty);
         if matches!(&ty, Type::Union(id, _) if self.names.is_anonymous_union(*id)) {
-            return self.narrowing_pattern(pattern, tested.span, binder, matched, &target, &ty);
+            return self.narrowing_pattern(span, tested.span, binder, matched, &target, &ty);
         }
         let Some(case) = self.type_test_member(&ty, members, tested.span)? else {
             return Err(self.not_tested_member(&ty, &target, members, tested.span));
@@ -1608,10 +1615,10 @@ impl Checker<'_> {
                 Some(name) if name.text != "_" => PatternKind::Binding(name.clone()),
                 _ => PatternKind::Wildcard,
             },
-            span: binder.map_or(pattern.span, |name| name.span),
-            depth: pattern.depth,
+            span: binder.map_or(span, |name| name.span),
+            depth,
         };
-        self.union_case_pattern(pattern.span, union_id, case, Some(&payload), matched)
+        self.union_case_pattern(span, union_id, case, Some(&payload), matched)
     }
 
     /// The member of `members` that the type `ty` after `:?` names: the one equal to it, or the
@@ -1691,7 +1698,7 @@ impl Checker<'_> {
     #[inline(never)]
     fn narrowing_pattern(
         &mut self,
-        pattern: &Pattern,
+        span: Span,
         tested: Span,
         binder: Option<&Ident>,
         matched: TypedExpr,
@@ -1732,8 +1739,8 @@ impl Checker<'_> {
         {
             // The `:?` that starts the pattern.
             let marker = Span {
-                end: pattern.span.start + 2,
-                ..pattern.span
+                end: span.start + 2,
+                ..span
             };
             return Err(Diagnostic::of(
                 DiagnosticKind::TypeTestNarrowBorrowed,
@@ -1757,16 +1764,12 @@ impl Checker<'_> {
                     Box::new(value(
                         TypedExprKind::UnionTag(Box::new(place.clone())),
                         tag.clone(),
-                        pattern.span,
+                        span,
                     )),
-                    Box::new(value(
-                        TypedExprKind::Int(from as u128),
-                        tag.clone(),
-                        pattern.span,
-                    )),
+                    Box::new(value(TypedExprKind::Int(from as u128), tag.clone(), span)),
                 ),
                 Type::Bool,
-                pattern.span,
+                span,
             );
             let mut alternative = Alternative {
                 steps: vec![PatternStep::Test(test)],
@@ -1795,7 +1798,7 @@ impl Checker<'_> {
                     case: (from, into),
                     moved: moved.clone(),
                     view,
-                    span: pattern.span,
+                    span,
                 });
             }
             alternatives.push(alternative);

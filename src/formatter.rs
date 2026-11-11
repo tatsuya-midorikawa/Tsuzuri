@@ -1145,10 +1145,10 @@ impl Canonical {
     }
 
     fn pattern(&mut self, pattern: &mut Pattern) {
-        if let PatternKind::TypeTest(ty, _) = &pattern.kind {
+        if let PatternKind::TypeTest(ty, _, span) = &pattern.kind {
             self.hints
                 .type_test_patterns
-                .insert(pattern.span.start, ty.span.start);
+                .insert(span.start, ty.span.start);
         }
         pattern.span = Span::default();
         pattern.depth = 0;
@@ -1188,7 +1188,8 @@ impl Canonical {
                 self.ident(name);
             }
             Argument(value) | Literal(value) => self.expression(value),
-            TypeTest(ty, binder) => {
+            TypeTest(ty, binder, span) => {
+                *span = Span::default();
                 self.ty(ty);
                 if let Some(binder) = binder {
                     self.ident(binder);

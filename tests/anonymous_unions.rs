@@ -3676,6 +3676,30 @@ fn type_test_errors_point_at_the_marker_inside_parentheses() {
 }
 
 #[test]
+fn a_parenthesized_type_test_pattern_spans_its_parentheses() {
+    // The parentheses around a type test are part of the pattern, as around any other pattern:
+    // an arm's pattern and an `as` or `|` around the test start at the `(` and end at the `)`
+    // or after, as in A24 (review round 3). The test's own diagnostics stay at its `:?`
+    // (`type_test_errors_point_at_the_marker_inside_parentheses`).
+    let source = "def f :: own (i64 | f64 | string) -> i64 = \\v ->\n    match v with\n    | _ -> 0\n    | (:? i64 as k) as whole -> k\n    | (:? i64 as k) -> k\n    | ( :? f64 ) | (:? string) -> 1\n";
+    let module = analyze(source).unwrap();
+    let warnings: Vec<(&str, &str)> = module
+        .warnings
+        .iter()
+        .filter(|warning| warning.code == "W1003")
+        .map(|warning| (warning.code, &source[warning.span.start..warning.span.end]))
+        .collect();
+    assert_eq!(
+        warnings,
+        [
+            ("W1003", "(:? i64 as k) as whole"),
+            ("W1003", "(:? i64 as k)"),
+            ("W1003", "( :? f64 ) | (:? string)"),
+        ]
+    );
+}
+
+#[test]
 fn rejects_narrowing_non_members() {
     let source = "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | bool) -> 0\n    | _ -> 1\n";
     let error = rejects(source, "E1041", "type_test_not_member");
