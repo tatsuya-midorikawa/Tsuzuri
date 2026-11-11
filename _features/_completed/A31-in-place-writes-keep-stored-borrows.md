@@ -979,3 +979,51 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 更新した文書: `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`（現在の制限: 見えないコードの除外に `Seq.next`、`Seq.next` の step 関数の書き込み、sink を作る所の一覧（捕捉した関数値を渡すだけのラムダ、関数を返す呼び出しの引数の条件）、出どころの規則と、出どころを追えない所の例、同じ型の関数値がある場合の 2 つの形）、`drop.md`（リテラル・不変な局所値の破棄、呼び出された関数の中の破棄、場所から読んだ関数値の呼び出し）、`docs/language.md`・`docs/architecture.md`（書き込みの事実の段落）、`_features/README.md`（A31 の行）。
 
 変えたファイル: `src/ownership.rs`、`src/ownership_control.rs`、`tests/rc.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、上の文書、このチケット。
+
+### レビューの指摘への対応（第4回）（2026-11-12）
+
+レビューの 6 件の指摘（反例の探索 `target/scratch/review-a31-ce-r4/`、適合の確認 `target/scratch/review-a31-conf-r4/`）を、対応前の先端（`58cc81a6`）・第 3 回の前（`fb3c0611`、`review-a31-conf-r4/pre-bin/`）・基準・対応後のバイナリで確かめました。6 件とも指摘のとおりに再現しました。結果は `target/scratch/a31/r4/` にあります（`r4corpus-before.json`・`r4corpus-b.json` ほか、対応で書いたプログラムは `r4/adv/`、`r4/corpora.sh` で作り直せます）。
+
+設計の変更（`src/ownership.rs` だけ）:
+
+- **値の破棄は、`Drop.drop` の本文が隠れた環境へ格納するもの（`StoreFacts::hidden`）を当てはめます**（`DropHidden`、`Checker::drop_hidden`）。`owned_sinks` のモジュールで、破棄でその `Drop.drop` を実行しうる値について、事実が中身（`(0, Contents)`）を持てば、破棄のフック（束縛・代入で捨てる値・`eval` が評価する束縛しない値）が値の loan を `store_hidden` で格納し、束縛の後に値のセルへ入った loan も、`apply_store_within` と `store_through` の局所の枝で同じく格納します（`drop_hides_owner`。入れ子の格納は `drop_hiding` で 1 度に）。事実が値そのもの（`(0, Value)`）を持てば、束縛した局所値の loan を `store_hidden_except`（その局所値自身は受けない）で格納し、一時値と値で渡す値は `E1013`（`store_local_borrow_through_reference`、`cannot drop this value here: its Drop.drop hands a borrow of the dropped value to a function value ...`）です。`top` は両方です。値の出どころ（`may_own`、`holds_no_owner`）から所有する関数値もセルも持ちえない値は除きます。そうした値の `Drop.drop` は、値の外のセルを所有する関数値に届かないためです（`drop` の中で作ったレジストリは `drop` の終わりで解放され、値のセルにも入りません。後で実行するコードへ渡せば `escapes` で `drop` の本文が拒否されます）。指摘 1。
+- **`Drop.drop` の中で、破棄する値の場所の借用を `Rc.share`・`Arc.share` などに渡した結果の loan に `Loan::share` の印を付けます**（`share_loans`・`read_through` の写し。今までは外部のルートの loan をそのまま返していました）。`store_external`・`store_hidden`・`source_of` は、印の付いた仮引数の loan を `Part::Contents`（値の中身）として記録します。共有はブロックの所有者で値そのものの借用ではないので、それを通して `s.inbox` の要素を `s.out` のセルへ移す `drop` は、`drop_borrows_self` に数えなくなります。印は `Drop.drop` の本文の中だけで付き、ほかの本文の事実は変わりません。指摘 4。
+- **`OwnerScan` で、`mut` の仮引数は `fresh` です**（`owner_facts` と `Checker::owner_scan` の `params` から外す。`let mut` の局所値と同じ扱い）。指摘 5。
+- **`OwnerScan::own` は式ごとの答えを覚えます**（`memo`、式のアドレスが鍵。本文の束縛は使う所より前にあるので、答えは見つけた後に変わりません）。呼び出しは実引数を自分のためと callee の事実のために 2 度読むので、引数を返す関数の連鎖が段ごとに 2 倍になっていました。指摘 2。
+- **`owner_facts` は、挙げる関数（呼び出し・部分適用・持ち上げたラムダ）の事実が増えた本文だけを走査し直す作業リストです**（最後の関数から始める。型の判定 `owner_types` は走査の間で共有）。指摘 6。
+- **`OwnerScan::call` で、`Rc`・`Arc` の `new`・`get`・`share`・`try_unwrap`・`downgrade`・`upgrade` は、`Owned.function` と同じく引数の出どころを返します**（ブロックの値は作った後に置き換わらず、セルのブロックは型で `fresh` です）。指摘 3 の一部。
+
+この対応で見つけて塞いだ穴（どれも基準と対応前の先端が受理していた危険な形で、両方の edition で `E1013` になります）: 値のセルに最初から借用があり、`drop` がそれをレジストリへ移す形（`review-a31-ce-r4/d11`）、`Array.write` が上書きで捨てる要素の `drop`（`d22`）、値そのものの借用（`ref s.name` を捕捉したラムダ）をレジストリへ渡す `drop`（`d23`、`d23w`）とその一時値（`r4/adv/s02`。`cannot drop this value here: ... hands a borrow of the dropped value to a function value ...`）、`Rc` に入れた文字列を借りる形（`d12h`）。`drop` 自身が後で実行するコードへ渡したレジストリを呼ぶ形（`r4/adv/e01`）は、今までどおり `drop` の本文で `task_capture_retains_borrow` で、束縛の位置にも同じ誤りが出ます。指摘 4 と同じ原因で拒否していた安全な形（`drop` の中の `Rc.share (ref s.inbox)`・`Arc.share (ref s.out)`、`r4/adv/s06`）も受理になります（5）。
+
+指摘ごとの対応（期待はレビューの対照と手の計算から。安全なプログラムの値は基準と同じことを `-O0`・`-O3` で確かめました: `r4/run-after.json`・`run-base.json`）:
+
+| 指摘 | 再現 | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（暗黙の破棄が `Drop.drop` の隠れた環境への格納を当てはめない。危険な形を両方の edition で受理） | 再現（`d12`・`d13`・`d14`・`d15`・`d20`（2026）・`d21`・`d09` が受理、`-O0`・`-O3` とも 0。対照 `d12_ctl` は 9） | 破棄のフックが `Drop.drop` の hidden の事実を当てはめる。すべて `E1013`（`assignment_extends_borrow`、借用元を宣言したブロックの位置。`d13`・`d14` は `let k = { ... }` のブロック）。対照 `d12_ctl`・`d10`（9）、`d17`・`d18`・`d19` は今までどおり | `tests/rc.rs` `an_implicit_drop_applies_what_its_drop_stores_in_hidden_environments`（`d11`・`d22`・`d23`・`s02` と、所有の値だけを渡す `s01`・`s04`、所有する関数値を持たない値の `s03`、値と一緒に解放されるレジストリの `s05` の受理も） |
+| 2（`OwnerScan` が実引数を 2 度評価し、呼び出しの連鎖の深さで検査時間が倍になる） | 再現（`p08_builder_pipe_22` の `ownership` が 5 秒台、`p01_nested_id_26` が 33 秒） | 式ごとの答えを覚える。下の表 | 単体テスト `the_owner_provenance_looks_at_each_expression_once_and_follows_the_callers`（24 段の入れ子で `own_uncached` が段の数に比例。時間の閾値は置きません） |
+| 3（`Seq.to_array`・`Rc.get` から読んだハンドラーを所有する関数値に数える） | 再現（`u_seq_to_array`・`u_rc_get`・`u_seq_map_lit` が両方の edition で `E1014`、基準は受理 14） | `Rc`・`Arc` の関数は引数の出どころ。`u_rc_get`・`u_rc_direct` は受理（14）。`Seq.to_array`・`Seq.map` の形は拒否のまま（下の判断。`lifetimes.md` の出どころを追えない所の一覧と説明に書いた） | `a_mutable_parameter_holds_what_the_body_assigns`（`u_rc_get`） |
+| 4（自分のセルの要素を別のセルへ移す `Drop.drop` を、値そのものの借用を書き込む `drop` とみなす） | 再現（`d06` が両方の edition で `E1013` 9:5、基準は受理 9）。原因は `drop` の本文の `let out = Arc.share (ref s.out)` の束縛のフックで、`out` の loan（`s.out` の借用そのもの）が `(0, Value, 0)` になっていました | `drop` の中の共有の loan に印を付け、`Part::Contents` として記録する。`d06` は受理（9）、借用元が先に解放される `d05` は拒否のまま（8:5） | `a_share_of_a_block_of_the_dropped_value_is_no_borrow_of_it`（`d06`・`d08`・`s06` の受理、`d05` の拒否） |
+| 5（`mut` の仮引数を実引数の値とみなし、レジストリを返す形を受理。第 3 回からの退行） | 再現（`m01`（2026）・`m02`・`m03`・`m04` が受理、`-O0`・`-O3` とも 0。`fb3c0611` は拒否） | `mut` の仮引数は `fresh`。すべて `fb3c0611` と同じ位置の `E1013`（`m03`・`m04` 10:17、`m01`・`m02` 11:17） | `a_mutable_parameter_holds_what_the_body_assigns`、単体テスト（`renew`・`pick` の事実が `fresh`） |
+| 6（宣言の順が呼び出しの逆の連鎖で `owner_facts` が 2 乗） | 再現（`perf_rev_chain_2000` の `ownership` が 2 秒台） | 呼び出し元の作業リスト。下の表 | 単体テスト（120 個の逆順の連鎖で、本文の走査が関数の数の 3 倍以下） |
+
+判断（どれも「健全性を保ち、受理している安全なプログラムを受理のまま保つ、最も保守的な選択」）:
+
+- 指摘 3 の `Seq` の形は受理に戻していません。列の要素は列が持つ step 関数の結果で、`for` も `Seq.next` と `match` に展開されます（`src/control.rs`）。出どころ（`Own`）は値が捕捉したものを表し、値が持つ関数を呼んだ結果を表さないので、`Seq.next` の結果を列の出どころとみなすと、呼ぶたびにレジストリを作る step 関数の列（`r4/adv/f04`〜`f06`: 利用者の関数が `Seq.defer` で作る列を `for`・`Seq.next`・`Seq.to_array` で読む形）を受理してしまいます。step 関数の結果まで追うには、列のリテラルが step 関数の結果を含む規則、パターンの束縛、`let mut` の流れを区別しない合併を足す必要があり、それぞれ別の健全性の確認が要るので、このチケットでは扱いません。安全な形は、ハンドラーを配列リテラルに入れるか名前付き関数の結果として受け取れば受理されます（`lifetimes.md` に書きました）。
+- 一時値の `drop` が値そのものの借用をセルを所有する関数値へ渡しうるときの `E1013` は、値の出どころがそうした関数値もセルも持ちえないときは出しません（`s03`）。`Drop.drop` の事実は、値のフィールドの関数値を呼ぶ形（`o s.f`）では中身（`Contents`）、値の場所の借用を渡す形（`ref s.name`）では値そのもの（`Value`）になるので、所有の値だけを渡す一時値（`s01`）は受理のままです。
+- 期待を変えた既存のテストはありません。
+
+確かめたこと（2026-11-12。ログは `target/scratch/a31/r4/`）:
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` は警告なし（`r4/clippy.log`）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast` は 3022 件すべて成功、4 件 skip（1164 秒、`r4/nextest-1.log`。共有の機械が混んでいて 12 件が slow）。第 3 回の 3018 件から増えた 4 件は `tests/rc.rs` の 3 件と単体テスト 1 件です。
+- 新しいテストが対応前に失敗すること: `src/ownership.rs` だけを `58cc81a6` に戻して `cargo test --test rc` を実行し、新しい 3 件がすべて失敗することを確かめました（戻した後は先端に戻しています）。単体テストは対応前の関数（`owner_facts_counted`・`visits`）が無いので、対応後のコードの一部を 1 つずつ戻して確かめました: 覚えた答えを使わないと `33554434 looks` で、`mut` の仮引数を外さないと `renew` の事実で、呼び出し元の作業リストを毎回すべての関数の走査に戻すと `11651 scans of 131 functions` で失敗します。
+- レビューの 4 回分のプログラム（`r4/corpora.sh`、対応前と対応後のバイナリ）: 第 4 回の 346 件で変わったのは 38 件で、すべて上の表のとおり（危険な形 17 個が受理から `E1013`（`d20`・`m01` は edition 2026 だけ）、`d06`・`u_rc_get`・`u_rc_direct` が拒否から受理）です。第 3 回と `r2/adv`・`r3/adv`・`r4/adv` の 294 件で変わったのは `s02`（受理から `E1013`）・`s06`（拒否から受理）と、新しく書いた `e01` だけ、第 2 回の 338 件と第 1 回の 1146 件は 0 件です。性能のプログラム（`p0*`・`perf_*`）は対応前のバイナリで終わらないものがあるので、下の表で別に測りました。受理になった安全なプログラムと受理のままの対照（12 個）は、`-O0`・`-O3` の値が基準と同じで手の計算どおりです（`d06`・`d08`・`d10`・`d12_ctl` 9、`s01` 8、`s03` 1、`s04` 7、`s05` 3、`s06` 5、`u_rc_get`・`u_rc_direct` 14。`r4/run-after.json`・`run-base.json`）。
+- 154 個の照合（`compare.mjs`）: edition 2027・2026 とも期待と違うもの 0（`r4/compare-2027.txt`・`compare-2026.txt`）。
+- 手順 5 の比較（`step5.mjs`）: `tests/fixtures/*`・`examples/*` の 154 個の `check --json` と `build --no-cache --emit llvm` が基準とすべて同じ（`r4/step5-final.txt`）。
+- E2E（`r4/e2e-final.log`）: `node tests/features.mjs <bin> <suite>` の `in_place_writes` 44 件（基準のバイナリでも 44 件同じ値で成功）、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`slices` 11 件、`matrix_view` 303 件、`concurrency` 15 件、`iteration_protocol` 26 件（native と WASM の `-O0`・`-O3`）、`sync_types` 14 件・`tzroutine` 16 件（native の `-O0`・`-O3`）、`node tests/control.mjs` 701 件、`node tests/user_drop.mjs`（native と WASM の `-O0`・`-O3`）。すべて成功。
+- 文書: `TSUZURI_BIN=<bin> node scripts/check-docs.mjs`（`lifetimes.md`・`drop.md`）は `Docs: 2 pages, 37 links, 9 checked examples, 18 native runs (O0/O3)` で成功。`gen-docs.mjs --check` は `19 blocks checked, 0 stale`、`check-cli-docs.mjs` は `4 checks, 0 failed`（どちらも `TSUZURI_BIN` に対応後のバイナリ）、`check-guide-lite.mjs` は `88 references checked, 0 failed`、`check-links.mjs --into _features/README.md` は `0 broken`。診断の種類は増やしていません（新しい文言は既存の `store_local_borrow_through_reference` です）。
+- 性能（`TSUZURI_TIME_PASSES=1 tsuzuri check --edition 2027` の `ownership` の相の中央値、ms、基準・対応前・対応後を交互に 3 回。機械の負荷が 50〜70 で、同じプログラムでも回によって 3 割ほど違います。`r4/time-perf.txt`）: 指摘 2 の `p08_builder_pipe_22` 0.29 / 5273 / 0.80、`p07_builder_chain_22` 0.33 / 4859 / 0.82、`p01_nested_id_20` 0.23 / 464 / 0.86、`p05_nested_wrap_own_22` 0.31 / 4697 / 0.65（`p01_nested_id_26` は対応後 1.0、`p01_nested_id_60` は 0.74 で終わります）。指摘 6 の `perf_rev_chain_500` 1.0 / 242 / 4.4、`perf_rev_chain_2000` 3.3 / 4199 / 15.8、`perf_fwd_chain_2000` 4.4 / 22.3 / 18.6。第 3 回までの表の `p01_many_locals_600` 805 / 799 / 792、`perf_locals_600` 1146 / 2577 / 2647、`chain_1600` 43 / 241 / 206、`ring_400` 7.7 / 24.6 / 25.7、`perf_chain_400` 6.4 / 48.7 / 62.7、`p01_known_tree_24` 1.05 / 3.24 / 2.21、`p03_hof_chain_40` 0.84 / 2.34 / 3.06、`perf_twice_12` 0.37 / 0.95 / 1.43。セルを所有する関数値を持つモジュールの `ownership` は、基準より 2〜5 倍のままです（出どころの事実と本文ごとの走査の分）。時間の閾値は置きません。
+
+更新した文書: `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`（現在の制限: 出どころを追える値に `Rc`・`Arc` の関数、`mut` の仮引数は追えない値、値の破棄も同じ規則で検査すること、追えない所の一覧に `mut` の仮引数・組み込み関数の結果・列から読んだ値、列の要素の説明）、`drop.md`（解放が書き込む借用: セルを所有する関数値へ渡す `drop`、一時値の `E1013` の文言、例、`drop` の中の共有）、`docs/language.md`・`docs/architecture.md`（書き込みの事実の段落）、`_features/README.md`（A31 の行）。
+
+変えたファイル: `src/ownership.rs`、`tests/rc.rs`、上の文書、このチケット。
