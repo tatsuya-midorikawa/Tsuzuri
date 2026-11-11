@@ -1,4 +1,4 @@
-// A24: anonymous unions end to end. Every export takes and returns i64; tests/features.mjs compares the values with
+// A24 and A26: anonymous unions end to end. Every export takes and returns i64; tests/features.mjs compares the values with
 // references written in JavaScript from the definitions below, natively (the host checks live == 0) and on WASM, at
 // -O0 and -O3. Edition 2027: a parameter whose member is taken out by value is `own`.
 
@@ -151,3 +151,105 @@ export def wide :: i64 -> i64 = \n ->
     | :? string as s -> s.length * 1000
     | :? i64 as k -> k
     | _ -> -1
+
+// A26: the built-in instances Eq, Ord, Hash and Display. `key x` is the i64 x for an even x and the text `s{x}` for an
+// odd one; in the canonical order the member i64 comes before the member string.
+def key :: i64 -> (i64 | string) = \x ->
+    if x % 2 == 0 then x else $"s{x}"
+
+// ratio x is the f64 x / x: NaN for 0, else 1.0.
+def ratio :: i64 -> (f64 | string) = \x -> (x as f64) / (x as f64)
+
+// zero x is the f64 x * 0.0: -0.0 for a negative x, else 0.0.
+def zero :: i64 -> (f64 | string) = \x -> (x as f64) * 0.0
+
+// digit: `place` when the comparison holds, else 0.
+def digit :: bool -> i64 -> i64 = \holds place -> if holds then place else 0
+
+// equal: one decimal digit for each comparison, 1 when it holds.
+export def equal :: i64 -> i64 = \x ->
+    let a = key x
+    let same = key x
+    let other = key (x + 2)
+    let neighbour = key (x + 1)
+    let nan = ratio x
+    let positive: (f64 | string) = 0.0
+    let members = digit (a == same) 1 + digit (a == other) 10 + digit (a == neighbour) 100
+    let negated = digit (a != neighbour) 1000 + digit (a != same) 10000
+    let injected = digit (a == x) 100000 + digit (a == "s1") 1000000
+    let floats = digit (nan == nan) 10000000 + digit (zero x == positive) 100000000
+    members + negated + injected + floats + digit (Eq.eq (ref a) (ref same)) 1000000000
+
+// order: one decimal digit for each comparison. `next` is the other member, `after` the same member.
+export def order :: i64 -> i64 = \x ->
+    let a = key x
+    let next = key (x + 1)
+    let after = key (x + 2)
+    let across = digit (a < next) 1 + digit (a <= next) 10 + digit (a > next) 100 + digit (a >= next) 1000
+    let within = digit (a < after) 10000 + digit (a >= after) 100000 + digit (a <= key x) 1000000 + digit (a > key x) 10000000
+    across + within + digit (a < "s10") 100000000 + digit (a < 10) 1000000000
+
+// A number for a text: its code units folded as in the JavaScript reference `checksum`.
+def checksum :: string -> i64 = \text ->
+    let mut hash = 7i64
+    for unit in text do hash = (hash * 131 + (unit as i64)) % 1000000007
+    hash
+
+// sorted: the keys key 0 .. key (n - 1), inserted in a scrambled order into a Set, read back in the order of Ord
+// (every i64 in numeric order, then every text in the order of its code units) and shown one after the other.
+export def sorted :: i64 -> i64 = \n ->
+    let mut set: Set<(i64 | string)> = Set.empty()
+    for i in 0i64 ..< n do
+        set = Set.insert (key (i * 7 % n)) set
+    let mut text = ""
+    for item in Set.iter set do
+        text = text + Display.display item + ";"
+    checksum text * 1000 + Set.length set
+
+// hashed: n keys of at most 10 distinct values in a HashSet, and the number of times each was inserted in a HashMap.
+export def hashed :: i64 -> i64 = \n ->
+    let mut seen: HashSet<(i64 | string)> = HashSet.empty()
+    let mut counts: HashMap<(i64 | string), i64> = HashMap.empty()
+    for i in 0i64 ..< n do
+        seen = HashSet.insert (key (i % 10)) seen
+        let before = match HashMap.get (key (i % 10)) counts with
+            | Some count -> count
+            | None -> 0
+        counts = HashMap.insert (key (i % 10)) (before + 1) counts
+    let first = match HashMap.get (key 0) counts with
+        | Some count -> count
+        | None -> 0
+    let text = match HashMap.get (key 3) counts with
+        | Some count -> count
+        | None -> 0
+    let absent = if HashSet.contains (key 10) seen then 1 else 0
+    HashSet.length seen + HashMap.length counts * 100 + first * 10000 + text * 1000000 + absent * 100000000
+
+// digest: the hash of key x, and whether a named union with the same cases in the same order has the same hash.
+union Named = Number of i64 | Text of string deriving (Hash)
+
+def named :: i64 -> Named = \x ->
+    if x % 2 == 0 then Number x else Text $"s{x}"
+
+export def digest :: i64 -> i64 = \x ->
+    let anonymous = Hash.hash (key x)
+    if anonymous == Hash.hash (named x) then anonymous as i64 else 0
+
+// shown: the texts of key x alone, in an interpolation, in a tuple, in an array, in a list, in a derived record and in
+// a derived union. Alone and in an interpolation a text has no quotation marks; inside the others it has.
+record Entry { name: string, value: (i64 | string) } deriving (Display)
+
+union Boxed = Box of (i64 | string) deriving (Display)
+
+export def shown :: i64 -> i64 = \x ->
+    let alone = Display.display (key x)
+    let interpolated = $"{key x}/{key (x + 1)}"
+    let pair = Display.display (key x, key (x + 1))
+    let items: [(i64 | string)] = [key x, key (x + 1)]
+    let list: [|(i64 | string)|] = [|key (x + 1), key x|]
+    let entry = Entry { name: "e", value: key (x + 1) }
+    let boxed = Box (key (x + 1))
+    let containers = Display.display items + "|" + Display.display list
+    let derived = Display.display entry + "|" + Display.display boxed
+    let text = alone + "|" + interpolated + "|" + pair + "|" + containers + "|" + derived
+    checksum text * 1000 + text.length
