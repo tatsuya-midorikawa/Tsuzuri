@@ -2783,6 +2783,29 @@ fn distinct_parts_of_members_meet_the_obligation_limit() {
     );
     assert_eq!(error.message, limit);
     assert_eq!(error.help, None);
+    // Review round 2: the help names the union only when most of the counted obligations come
+    // from inside its members. A union of `i64` and `string` next to 63 records adds no
+    // obligation inside its members (the tuple without it meets the limit as well).
+    let parts: Vec<_> = (0..63).map(|index| format!("P{index:02}")).collect();
+    let tuple = format!("{} * (i64 | string)", parts.join(" * "));
+    let error = rejects(
+        &format!(
+            "{}def compare :: own ({tuple}) -> own ({tuple}) -> bool = \\a b -> a < b\n0\n",
+            numbered_records(63)
+        ),
+        "E1017",
+        "instance_resolution_limit",
+    );
+    assert_eq!(error.message, limit);
+    assert_eq!(error.help, None);
+    // The depth of an instance context that grows through a union is not about the members.
+    let error = rejects(
+        "record Box<'a> { v: 'a }\ninstance Eq<(Box<['a]> | i64)> => Eq<Box<'a>> {\n    fn eq _ _ = true\n    fn ne _ _ = false\n}\nlet a = Box { v: 1 }\nlet b = Box { v: 1 }\na == b\n",
+        "E1017",
+        "instance_resolution_limit",
+    );
+    assert_eq!(error.message, limit);
+    assert_eq!(error.help, None);
 }
 
 #[test]
@@ -3301,10 +3324,12 @@ fn decode_overlap_is_rejected() {
             "(i64 | f64)",
             "the members i64 and f64 both read a JSON number".to_owned(),
         ),
+        // Review round 2: a generic function is checked where its type variables are known,
+        // as before A26 (`constraints_with_type_variables_wait_for_their_types`).
         (
-            "def f :: Decode<'a> => ref Json.Value -> Result<(['a] | Vec<'a>), Json.Error> = \\json -> Decode.decode json\n0\n".to_owned(),
-            "(['a] | Vec<'a>)",
-            "the members ['a] and Vec<'a> both read a JSON array".to_owned(),
+            "def f :: Decode<'a> => ref Json.Value -> Result<(['a] | Vec<'a>), Json.Error> = \\json -> Decode.decode json\nlet value = Result.get (Json.parse (ref u8\"[1]\"))\nlet r: Result<([i64] | Vec<i64>), Json.Error> = f (ref value)\n0\n".to_owned(),
+            "([i64] | Vec<i64>)",
+            "the members [i64] and Vec<i64> both read a JSON array".to_owned(),
         ),
         (
             "record R { v: (i64 | f64) } deriving (Decode)\n0\n".to_owned(),
@@ -3338,6 +3363,22 @@ fn decode_overlap_is_rejected() {
             decode("((i64 * i64 * i64 * i64 * i64) | [i64])"),
             "no instance for Decode<(i64 * i64 * i64 * i64 * i64)>; define an instance or use a supported type",
         ),
+        // Review round 2: a derived instance whose context fails is a member without `Decode`
+        // too, next to a member of the same kind as next to one of another kind.
+        (
+            format!(
+                "record Box<'a> {{ v: 'a }} deriving (Decode)\n{point}{}",
+                decode("(Box<char> | Point)")
+            ),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
+        (
+            format!(
+                "record Box<'a> {{ v: 'a }} deriving (Decode)\n{}",
+                decode("(Box<char> | i64)")
+            ),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
     ] {
         let error = rejects(&source, "E1005", "no_instance");
         assert_eq!(error.message, message, "{source}");
@@ -3352,94 +3393,88 @@ fn decode_overlap_is_rejected() {
 
 #[test]
 fn generic_members_need_an_instance_for_every_argument() {
-    // Review round 1: a member with type variables and no instance for all of them (`Pair<'a>`
-    // with no `Decode<Pair<'a>>`) left the member's constraint to the caller, and the kinds were
-    // compared only when the function was instantiated: the error was then inside the generic
-    // function (or inside std) although its author could not have avoided it, and the caller
-    // could not either, because an instance for some type arguments only is hand-written and so
-    // not limited to one kind. The kinds are decided where the union is written.
+    // A member with type variables and no instance for all of them (`Pair<'a>` with no
+    // `Decode<Pair<'a>>`) can only meet its constraint by an instance for some type arguments,
+    // which is hand-written and so not limited to one kind of JSON value. Review round 1 put
+    // the diagnostic where the union is written; review round 2 found that this rejects
+    // definitions that A24 accepted, so the constraint of the union waits for the types, as it
+    // did then, and the diagnostic is where they are known: the call in the program, never the
+    // generic body or std (`Classes::settle`).
     let advice = "so the JSON value does not select one member; decode Json.Value and match on it, or use a union with named cases";
-    let unsettled = |union: &str, member: &str, variables: &str| {
+    let open = |union: &str, member: &str| {
         format!(
-            "no Decode instance for {union}: the member {member} has no Decode instance for every type of {variables} (a derived instance reads a JSON object; an instance for some types only is hand-written and not limited to one kind of JSON value), {advice}"
+            "no Decode instance for {union}: the member {member} is not limited to one kind of JSON value (a Maybe, a union with named cases, Json.Value, or a type with a hand-written Decode can read several), {advice}"
         )
     };
-    // The library is rejected by itself, at the expression that needs the instance.
+    // The library is accepted by itself.
     let library = "record Pair<'a> { x: 'a }\n\ndef read :: Decode<Pair<'a>> => ref Json.Value -> Result<(Pair<'a> | i64), Json.Error> = \\json -> Decode.decode json\n";
+    accepts_modules(&[("Lib", library)]);
+    // A program that gives the instance for one type argument and calls the function gets the
+    // diagnostic at its call.
+    let program = "instance Decode<Lib.Pair<i64>> {\n    fn decode json = Result.map (\\x -> Lib.Pair { x: x }) (Decode.decode json)\n}\n\nlet value = Result.get (Json.parse (ref u8\"3\"))\nlet back: Result<(Lib.Pair<i64> | i64), Json.Error> = Lib.read (ref value)\nmatch back with\n| Ok _ -> \"ok\"\n| Error error -> Display.display error\n";
     let error = rejects_modules(
-        &[("Lib", library)],
+        &[("Main", program), ("Lib", library)],
         "E1025",
         "anonymous_union_decode_overlap",
     );
     assert_eq!(
         error.message,
-        unsettled("(i64 | Lib.Pair<'a>)", "Lib.Pair<'a>", "'a")
+        open("(i64 | Lib.Pair<i64>)", "Lib.Pair<i64>")
     );
-    assert_eq!(&library[error.span.start..error.span.end], "Decode.decode");
-    // A program that gives the instance for one type argument and calls the function gets the
-    // same diagnostic at the same place: the call is not the mistake.
-    let program = "instance Decode<Lib.Pair<i64>> {\n    fn decode json = Result.map (\\x -> Lib.Pair { x: x }) (Decode.decode json)\n}\n\nlet value = Result.get (Json.parse (ref u8\"3\"))\nlet back: Result<(Lib.Pair<i64> | i64), Json.Error> = Lib.read (ref value)\nmatch back with\n| Ok _ -> \"ok\"\n| Error error -> Display.display error\n";
-    let with_caller = rejects_modules(
-        &[("Main", program), ("Lib", library)],
-        "E1025",
-        "anonymous_union_decode_overlap",
-    );
-    assert_eq!(with_caller.message, error.message);
-    assert_eq!(with_caller.span.source, Some(1));
-    assert_eq!(
-        &library[with_caller.span.start..with_caller.span.end],
-        "Decode.decode"
-    );
+    assert_eq!(error.span.source, Some(0));
+    assert_eq!(&program[error.span.start..error.span.end], "Lib.read");
     // Through a generic function of std the diagnostic is at the call in the program, not in std.
     let source = "record Plain<'a> { w: 'a }\ninstance Decode<Plain<i64>> {\n    fn decode json = Result.Ok (Plain { w: 1 })\n}\ndef read :: Decode<Plain<'a>> => ref utf8string -> Result<(Plain<'a> | string), Json.Error> = \\text -> Json.deserialize text\nlet back: Result<(Plain<i64> | string), Json.Error> = read u8\"1\"\nif Result.is_ok (ref back) then 1 else 0\n";
     let error = rejects(source, "E1025", "anonymous_union_decode_overlap");
     assert_eq!(
         error.message,
-        unsettled("(string | Main.Plain<'a>)", "Main.Plain<'a>", "'a")
+        open("(string | Main.Plain<i64>)", "Main.Plain<i64>")
     );
     assert_eq!(error.span.source, Some(0));
-    assert_eq!(
-        &source[error.span.start..error.span.end],
-        "Json.deserialize"
-    );
-    // A derived instance, a member of two variables, and a tuple that std gives no instance.
-    for (source, union, member, variables) in [
+    assert_eq!(&source[error.span.start..error.span.end], "read");
+    // A derived instance, a member of two variables, a tuple that std gives no instance, and a
+    // member without variables and without an instance next to one with variables: accepted
+    // where they are written, and rejected where they are used.
+    for (definition, used, code, kind, message, at) in [
         (
-            "record Plain<'a> { w: 'a }\nrecord Holder<'a> { v: (Plain<'a> | string) } deriving (Decode)\n0\n",
-            "(string | Main.Plain<'a>)",
-            "Main.Plain<'a>",
-            "'a",
+            "record Plain<'a> { w: 'a }\nrecord Holder<'a> { v: (Plain<'a> | string) } deriving (Decode)\n",
+            "let held: Result<Holder<i64>, Json.Error> = Json.deserialize u8\"{}\"\n",
+            "E1005",
+            "no_instance",
+            "no instance for Decode<Main.Plain<i64>>; define an instance or use a supported type".to_owned(),
+            "Json.deserialize",
         ),
         (
-            "record Two<'a, 'b> { a: 'a, b: 'b }\ninstance Decode<Two<i64, 'b>> {\n    fn decode json = Result.Error (Json.Error { kind: Json.Syntax, offset: 0 })\n}\ndef read :: Decode<Two<'k, 'v>> => ref Json.Value -> Result<(Two<'k, 'v> | bool), Json.Error> = \\json -> Decode.decode json\n0\n",
-            "(bool | Main.Two<'k, 'v>)",
-            "Main.Two<'k, 'v>",
-            "'k, 'v",
+            "record Two<'a, 'b> { a: 'a, b: 'b }\ninstance Decode<Two<i64, 'b>> {\n    fn decode json = Result.Error (Json.Error { kind: Json.Syntax, offset: 0 })\n}\ndef read :: Decode<Two<'k, 'v>> => ref Json.Value -> Result<(Two<'k, 'v> | bool), Json.Error> = \\json -> Decode.decode json\n",
+            "let value = Result.get (Json.parse (ref u8\"1\"))\nlet r: Result<(Two<i64, string> | bool), Json.Error> = read (ref value)\n",
+            "E1025",
+            "anonymous_union_decode_overlap",
+            open("(bool | Main.Two<i64, string>)", "Main.Two<i64, string>"),
+            "read",
         ),
         (
-            "def read :: Decode<('a * 'a * 'a * 'a * 'a)> => ref Json.Value -> Result<(('a * 'a * 'a * 'a * 'a) | i64), Json.Error> = \\json -> Decode.decode json\n0\n",
-            "(i64 | ('a * 'a * 'a * 'a * 'a))",
-            "('a * 'a * 'a * 'a * 'a)",
-            "'a",
+            "def read :: Decode<('a * 'a * 'a * 'a * 'a)> => ref Json.Value -> Result<(('a * 'a * 'a * 'a * 'a) | i64), Json.Error> = \\json -> Decode.decode json\n",
+            "let value = Result.get (Json.parse (ref u8\"1\"))\nlet r: Result<((i64 * i64 * i64 * i64 * i64) | i64), Json.Error> = read (ref value)\n",
+            "E1005",
+            "no_instance",
+            "no instance for Decode<(i64 * i64 * i64 * i64 * i64)>; define an instance or use a supported type".to_owned(),
+            "read",
+        ),
+        (
+            "record Plain<'a> { w: 'a } deriving (Decode)\ndef read :: Decode<'a> => ref Json.Value -> Result<(Plain<'a> | char), Json.Error> = \\json -> Decode.decode json\n",
+            "let value = Result.get (Json.parse (ref u8\"1\"))\nlet r: Result<(Plain<i64> | char), Json.Error> = read (ref value)\n",
+            "E1005",
+            "no_instance",
+            "no instance for Decode<char>; define an instance or use a supported type".to_owned(),
+            "read",
         ),
     ] {
-        let error = rejects(source, "E1025", "anonymous_union_decode_overlap");
-        assert_eq!(
-            error.message,
-            unsettled(union, member, variables),
-            "{source}"
-        );
+        accepts(&format!("{definition}0\n"));
+        let source = format!("{definition}{used}0\n");
+        let error = rejects(&source, code, kind);
+        assert_eq!(error.message, message, "{source}");
+        assert_eq!(&source[error.span.start..error.span.end], at, "{source}");
     }
-    // A member without variables and without an instance is still reported as that, first.
-    let error = rejects(
-        "record Plain<'a> { w: 'a }\ndef read :: ref Json.Value -> Result<(Plain<'a> | char), Json.Error> = \\json -> Decode.decode json\n0\n",
-        "E1005",
-        "no_instance",
-    );
-    assert_eq!(
-        error.message,
-        "no instance for Decode<char>; define an instance or use a supported type"
-    );
     // An instance for every type argument settles the kind: a derived one reads an object, and
     // the type arguments need `Decode` where the function is used.
     let source = r#"record Plain<'a> { w: 'a } deriving (Decode)
@@ -3483,6 +3518,188 @@ test "generic members with an instance for every argument" =
 "#;
     passes(source, Edition::E2026);
     passes(source, Edition::E2027);
+}
+
+#[test]
+fn constraints_with_type_variables_wait_for_their_types() {
+    // Review round 2: a constraint that still has type variables waits for them where nothing
+    // can meet it yet (no instance matches it). A24 gave anonymous unions no instance, so their
+    // constraints in a generic function that is never called were accepted. The built-in
+    // instances expand them into the members' constraints only when every member can meet its
+    // own (and, for `Decode`, the kinds of the members are known); otherwise the constraint of
+    // the union stays whole, as before, and is checked where its types are known.
+    for source in [
+        // A member without any instance, with the variable given `Decode` (a tuple accepts the same).
+        "record Plain<'a> { v: 'a }\ndef f :: Decode<'a> => ref Json.Value -> Result<(Plain<'a> | string), Json.Error> = \\j -> Decode.decode j\n0\n",
+        // The constraint of the union in the signature, a member with an instance for one type.
+        "record Pair<'a> { a: 'a }\ninstance Decode<Pair<i64>> {\n    fn decode value = Result.map (\\n -> Pair { a: n }) (Decode.decode value)\n}\ndef dec :: Decode<(Pair<'a> | string)> => ref Json.Value -> Result<(Pair<'a> | string), Json.Error> = \\j -> Decode.decode j\n0\n",
+        // Kinds that are known and overlap.
+        "def dec3 :: Decode<(Maybe<'a> | i64)> => ref Json.Value -> Result<(Maybe<'a> | i64), Json.Error> = \\j -> Decode.decode j\n0\n",
+        "def dec4 :: Decode<(['a] | Vec<'a>)> => ref Json.Value -> Result<(['a] | Vec<'a>), Json.Error> = \\j -> Decode.decode j\n0\n",
+        // A member without the class of Phase 1, next to one with a variable.
+        "def f1 :: Eq<(['a] | (i64 -> i64))> => own (['a] | (i64 -> i64)) -> own (['a] | (i64 -> i64)) -> bool = \\a b -> a == b\n0\n",
+        "def f2 :: Ord<(['a] | bool)> => own (['a] | bool) -> own (['a] | bool) -> bool = \\a b -> a < b\n0\n",
+        "def f4 :: Encode<(['a] | char)> => own (['a] | char) -> bool = \\a -> Result.is_ok (ref (Encode.encode (ref a)))\n0\n",
+        // A derived instance's context, and an instance's context whose members grow.
+        "record R<'a> { v: (['a] | (i64 -> i64)) } deriving (Eq)\n0\n",
+        "record Box<'a> { v: 'a }\ninstance Eq<(Box<['a]> | i64)> => Eq<Box<'a>> {\n    fn eq _ _ = true\n    fn ne _ _ = false\n}\n0\n",
+    ] {
+        accepts(source);
+    }
+    // Where the types are known, the constraint is checked as any other, at the call (also
+    // through another generic function).
+    for (source, code, kind, message, at) in [
+        (
+            "record Plain<'a> { v: 'a }\ndef f :: Decode<'a> => ref Json.Value -> Result<(Plain<'a> | string), Json.Error> = \\j -> Decode.decode j\nlet value = Result.get (Json.parse (ref u8\"3\"))\nlet back: Result<(Plain<i64> | string), Json.Error> = f (ref value)\n0\n",
+            "E1005",
+            "no_instance",
+            "no instance for Decode<Main.Plain<i64>>; define an instance or use a supported type",
+            "f",
+        ),
+        (
+            "def dec4 :: Decode<(['a] | Vec<'a>)> => ref Json.Value -> Result<(['a] | Vec<'a>), Json.Error> = \\j -> Decode.decode j\ndef outer :: Decode<'b> => ref Json.Value -> Result<(['b] | Vec<'b>), Json.Error> = \\j -> dec4 j\nlet value = Result.get (Json.parse (ref u8\"[3]\"))\nlet r: Result<([i64] | Vec<i64>), Json.Error> = outer (ref value)\n0\n",
+            "E1025",
+            "anonymous_union_decode_overlap",
+            "no Decode instance for ([i64] | Vec<i64>): the members [i64] and Vec<i64> both read a JSON array, so the JSON value does not select one member; decode Json.Value and match on it, or use a union with named cases",
+            "outer",
+        ),
+        (
+            "def f1 :: Eq<(['a] | (i64 -> i64))> => own (['a] | (i64 -> i64)) -> own (['a] | (i64 -> i64)) -> bool = \\a b -> a == b\nlet x: ([i64] | (i64 -> i64)) = [1]\nlet y: ([i64] | (i64 -> i64)) = [1]\nf1 x y\n",
+            "E1005",
+            "no_instance",
+            "no instance for Eq<i64 -> i64>; define an instance or use a supported type",
+            "f1",
+        ),
+        (
+            "def f2 :: Ord<(['a] | bool)> => own (['a] | bool) -> own (['a] | bool) -> bool = \\a b -> a < b\nlet x: ([i64] | bool) = true\nlet y: ([i64] | bool) = [1]\nf2 x y\n",
+            "E1005",
+            "no_instance",
+            "no instance for Ord<bool>; define an instance or use a supported type",
+            "f2",
+        ),
+        (
+            "def f4 :: Encode<(['a] | char)> => own (['a] | char) -> bool = \\a -> Result.is_ok (ref (Encode.encode (ref a)))\nlet x: ([i64] | char) = 'c'\nf4 x\n",
+            "E1005",
+            "no_instance",
+            "no instance for Encode<char>; define an instance or use a supported type",
+            "f4",
+        ),
+        (
+            "record R<'a> { v: (['a] | (i64 -> i64)) } deriving (Eq)\nlet a = R { v: [1] }\nlet b = R { v: [1] }\na == b\n",
+            "E1005",
+            "no_instance",
+            "no instance for Eq<i64 -> i64>; define an instance or use a supported type",
+            "a == b",
+        ),
+    ] {
+        let error = rejects(source, code, kind);
+        assert_eq!(error.message, message, "{source}");
+        assert_eq!(&source[error.span.start..error.span.end], at, "{source}");
+    }
+    // A union whose members meet their constraints still gives the members' obligations where
+    // it is written: an instance context of the variable entails them, and calls run.
+    passes(
+        "record Wrap<'a> { v: (['a] | string) }\ninstance Eq<'a> => Eq<Wrap<'a>> {\n    fn rec eq left right = left.v == right.v\n    fn rec ne left right = left.v != right.v\n}\n\ntest \"settled in an instance\" =\n    let a = Wrap { v: [1, 2] }\n    let b = Wrap { v: [1, 2] }\n    let c = Wrap { v: \"x\" }\n    assert (a == b)\n    assert (a != c)\n",
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn injected_operands_move_with_their_own_help() {
+    // Review round 2: a comparison injects its other operand into the union like any expected
+    // type does, so a non-Copy variable moves (D-62 decision 3). `ref s` cannot be injected, so
+    // the help of a later use says what does work.
+    let help = |name: &str, copy: &str| {
+        format!(
+            "an anonymous union holds its value, so injecting '{name}' moved it; use '{name}' before that, or inject a copy{copy}"
+        )
+    };
+    for (source, name, copy) in [
+        (
+            "let a: (i64 | string) = \"s1\"\nlet s = \"s1\"\nlet same = a == s\n$\"{same} {s}\"\n",
+            "s",
+            " (clone_string ref s)",
+        ),
+        (
+            "let a: (i64 | utf8string) = u8\"s1\"\nlet s = u8\"s1\"\nlet same = a < s\nUtf8String.length (ref s)\n",
+            "s",
+            " (Utf8String.clone ref s)",
+        ),
+        (
+            "let a: ([string] | string) = [\"x\"]\nlet t = [\"x\"]\nlet same = a == t\nt.length\n",
+            "t",
+            "",
+        ),
+        // The same holds for any other injection.
+        (
+            "let s = \"s1\"\nlet v: (i64 | string) = s\ns.length\n",
+            "s",
+            " (clone_string ref s)",
+        ),
+    ] {
+        let error = rejects(source, "E1012", "use_after_move");
+        assert_eq!(
+            error.message,
+            format!("use of moved or partially moved value '{name}'"),
+            "{source}"
+        );
+        assert_eq!(error.help, Some(help(name, copy)), "{source}");
+    }
+    let error = rejects(
+        "record R { name: string, n: i64 }\nlet a: (i64 | string) = \"s1\"\nlet r = R { name: \"s1\", n: 1 }\nlet same = a == r.name\nr.name.length\n",
+        "E1012",
+        "use_after_move",
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "an anonymous union holds its value, so injecting the field moved it out of 'r'; use the field before that, or inject a copy"
+        )
+    );
+    // `ref s` is no injection: a reference cannot move (unchanged).
+    rejects(
+        "let a: (i64 | string) = \"s1\"\nlet s = \"s1\"\nlet same = a == ref s\n$\"{same} {s}\"\n",
+        "E1012",
+        "move_out_of_reference_binding",
+    );
+    // A Copy operand stays, and the ways that keep a non-Copy one work.
+    passes(
+        "test \"operands that stay\" =\n    let a: (i64 | string) = \"s1\"\n    let n = 1\n    assert (not (a == n))\n    assert (n == 1)\n    let s = \"s1\"\n    assert (a == clone_string ref s)\n    let tested = match a with\n        | :? string as t -> t == s\n        | _ -> false\n    assert tested\n    assert (s.length == 2)\n    let b: (i64 | string) = \"s1\"\n    assert (s.length == 2 && b == s)\n",
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn top_level_union_result_is_shown() {
+    // Review round 2: a top-level result prints through `Display` when its type has one, so a
+    // program whose result is an anonymous union prints the payload (A24 printed nothing, since
+    // the union had no `Display`).
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-anonymous-unions-result-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("Main.tz"),
+        "def pick :: i64 -> (i64 | string) = \\n -> if n > 0 then n else \"none\"\npick 0\n",
+    )
+    .unwrap();
+    for optimization in ["-O0", "-O3"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .current_dir(&root)
+            .args(["run", "Main.tz", optimization])
+            .env("TSUZURI_CACHE_DIR", root.join("cache"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "none\n");
+    }
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

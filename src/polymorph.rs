@@ -38,11 +38,13 @@ impl Part {
 }
 
 /// The obligations that one resolution has counted (`MAX_CONSTRAINTS`), and those of them that
-/// come from inside the members of anonymous unions (`Part::Inside`).
+/// come from inside the members of anonymous unions (`Part::Inside`). `settling`: inside the
+/// members of an anonymous union with type variables (`Classes::settle`).
 #[derive(Clone, Copy, Debug, Default)]
 struct Budget {
     work: usize,
     inside: usize,
+    settling: bool,
 }
 
 /// The specialization limits: all specializations, and growth along one chain.
@@ -2574,12 +2576,25 @@ impl Classes {
                     // members only when all of them can be met; otherwise the constraint stays
                     // whole for the types that the variables take, as one without an instance
                     // does, and is checked where they are known (the caller, the instance).
+                    // Either way it costs this resolution one obligation, as before A26: the
+                    // outermost union gets the rest of the budget for its members and gives it
+                    // back, and the unions inside its members share that part. A union inside
+                    // the members that stays whole keeps the outermost one whole, so that
+                    // resolving the result again gives the same result.
                     let saved = *budget;
-                    let found = self.settle(&current, depth, &active, budget, types);
-                    if found.is_none() {
+                    budget.settling = true;
+                    let found = match self.settle(&current, depth, &active, budget, types) {
+                        Ok(found) => found,
+                        Err(error) if saved.settling => return Err(error),
+                        Err(_) => {
+                            *budget = saved;
+                            vec![current.clone()]
+                        }
+                    };
+                    if !saved.settling {
                         *budget = saved;
                     }
-                    for constraint in found.unwrap_or_else(|| vec![current.clone()]) {
+                    for constraint in found {
                         if seen.insert((constraint.class, constraint.ty.clone())) {
                             residual.push(constraint);
                         }
@@ -2645,12 +2660,12 @@ impl Classes {
     }
 
     /// The obligations that stay for the members of `union`, an anonymous union with type
-    /// variables, when every member meets its constraint (A26); `None` when one fails, or when the
-    /// members of `Decode<union>` do not read disjoint kinds of JSON values. A member whose
-    /// instance is missing only for these variables may still meet it for the types they take,
-    /// and the kinds of a member with no instance yet are not known, so the caller keeps the
-    /// constraint of the union whole: where the variables are known, it is resolved again, and
-    /// any error is reported there.
+    /// variables, when every member meets its constraint (A26); the first error when one does
+    /// not, or when the members of `Decode<union>` do not read disjoint kinds of JSON values. A
+    /// member whose instance is missing only for these variables may still meet it for the types
+    /// that they take, and the kinds of a member with no instance yet are not known, so the
+    /// caller keeps the constraint of the union whole: where the variables are known, it is
+    /// resolved again, and any error is reported there.
     fn settle(
         &self,
         union: &Constraint,
@@ -2658,11 +2673,25 @@ impl Classes {
         active: &BTreeMap<(usize, Type), (usize, bool)>,
         budget: &mut Budget,
         types: &TypeContext<'_>,
-    ) -> Option<Vec<Constraint>> {
-        if self.declarations[union.class].name == "Decode"
-            && !matches!(self.decode_members(&union.ty, types), Ok(Some(_)))
-        {
-            return None;
+    ) -> Result<Vec<Constraint>, Diagnostic> {
+        if self.declarations[union.class].name == "Decode" {
+            match self.decode_members(&union.ty, types) {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::NoInstance,
+                        no_instance("Decode", &union.ty, types),
+                        union.span,
+                    ));
+                }
+                Err(message) => {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::AnonymousUnionDecodeOverlap,
+                        message,
+                        union.span,
+                    ));
+                }
+            }
         }
         let mut found = Vec::new();
         for member in structural_elements(&union.ty) {
@@ -2671,12 +2700,9 @@ impl Classes {
                 ty: member.clone(),
                 span: union.span,
             };
-            found.extend(
-                self.reduce(&member, (depth + 1, Part::Member), active, budget, types)
-                    .ok()?,
-            );
+            found.extend(self.reduce(&member, (depth + 1, Part::Member), active, budget, types)?);
         }
-        Some(found)
+        Ok(found)
     }
 
     fn entails(
@@ -2894,7 +2920,9 @@ impl Classes {
                     continue;
                 }
                 anonymous_union::JsonKinds::Missing => return Ok(None),
-                anonymous_union::JsonKinds::Open => "is not limited to one kind of JSON value (a Maybe, a union with named cases, Json.Value, or a type with a hand-written Decode can read several)",
+                anonymous_union::JsonKinds::Open => {
+                    "is not limited to one kind of JSON value (a Maybe, a union with named cases, Json.Value, or a type with a hand-written Decode can read several)"
+                }
             };
             return Err(format!(
                 "no Decode instance for {}: the member {} {reason}, {advice}",
