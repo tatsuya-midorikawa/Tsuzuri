@@ -5936,3 +5936,192 @@ fn hover_on_a_narrowed_binder_shows_the_narrowed_union() {
     assert_eq!(warnings, [("W1001", "number")]);
     assert_eq!(module.warnings[0].fixes.len(), 1);
 }
+
+// A25 and A26 together (the merge of 2026-11-11): conversions between anonymous unions meet the
+// built-in instances. The expected values are worked out by hand from the rules of both tickets.
+
+#[test]
+fn comparisons_take_injected_and_widened_operands() {
+    // `(f64 | i64 | string)` is `(i64 | f64 | string)` in the canonical order: i64 0, f64 1,
+    // string 2. Two values of one union are compared through `Eq` and `Ord`, which borrow both,
+    // so both stay usable. The right operand is injected when it is a member value; an operand
+    // that is itself a narrower union is not widened (`comparison_does_not_widen`), but the arms
+    // of an `if` operand are, and the widened value takes the position of its member in the
+    // wider union: `5` stays before every f64, `"abc"` comes after them.
+    passes(
+        r#"def positive :: i64 -> bool = \n -> n > 0
+
+test "compared" =
+    let v: (f64 | i64 | string) = "abc"
+    let u: (f64 | i64 | string) = "abc"
+    assert (v == u && not (v < u) && v <= u)
+    assert (Display.display v + Display.display u == "abcabc")
+    assert (v == "abc" && v != 1 && v > 1 && v > 2.5)
+    let w: (i64 | string) = "abc"
+    assert (v == (if positive 1 then w else 0))
+    let n: (i64 | string) = 5
+    let wide: (f64 | i64 | string) = n
+    assert (wide == 5 && wide > 4 && wide < 0.5 && wide < "")
+    let text: (i64 | string) = "abc"
+    let widened: (f64 | i64 | string) = text
+    assert (widened > 0.5 && widened == v && widened >= u)
+"#,
+        Edition::E2027,
+    );
+    // In one operand, the widened arm and the injected arm each keep their own help when the
+    // moved value is used again.
+    let both = "let v: (f64 | i64 | string) = \"abc\"\nlet w: (i64 | string) = \"abc\"\nlet s = \"abc\"\nlet same = v == (if v > 1 then w else s)\n";
+    let error = rejects(&format!("{both}let t = w\n0\n"), "E1012", "use_after_move");
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "a widening moves 'w'; bind the wider value once with 'let wide: (i64 | f64 | string) = w' and borrow 'wide', or move it last"
+        )
+    );
+    let error = rejects(&format!("{both}s.length\n"), "E1012", "use_after_move");
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "an anonymous union holds its value, so injecting 's' moved it; use 's' before that, or inject a copy (clone_string ref s)"
+        )
+    );
+}
+
+/// `Hash.hash` of `"s1"` in `(f64 | i64 | string)` (member 2) and in `(i64 | string)` (member 1):
+/// FNV-1a over the canonical stream of `docs/language.md` (tag `0x55`, the member's position in
+/// the canonical order, then the hash of the string: tag `0x53`, 2 code units, 2 bytes each),
+/// computed by a Python script that reproduces `HASH_OF_1` and `HASH_OF_ONE`.
+const HASH_OF_S1_WIDE: &str = "16237190552417262429i64u";
+const HASH_OF_S1_NARROW: &str = "1096041482089778054i64u";
+
+#[test]
+fn widened_and_narrowed_keys_hash_as_their_union() {
+    // A widened key is a value of the wider union: it hashes and orders as the member of that
+    // union, so it finds the keys made there directly. A narrowed key finds the keys of the
+    // narrower union. Generic arguments are not widened (the type argument is inferred from
+    // them), so the keys are widened in typed bindings.
+    passes(
+        &format!(
+            r#"def narrow_key :: i64 -> (i64 | string) = \n -> if n % 2 == 0 then n else $"s{{n}}"
+
+def wide_of :: i64 -> (f64 | i64 | string) = \n ->
+    if n % 3 == 0 then (n as f64) + 0.5 elif n % 3 == 1 then n else $"s{{n}}"
+
+def found :: Maybe<i64> -> i64 = \m ->
+    match m with
+    | Some v -> v
+    | None -> -1
+
+test "widened keys" =
+    let mut wide: HashSet<(f64 | i64 | string)> = HashSet.empty()
+    let mut counts: Map<(f64 | i64 | string), i64> = Map.empty()
+    for i in 0i64 ..< 7 do
+        let k: (f64 | i64 | string) = narrow_key (i % 3)
+        let again: (f64 | i64 | string) = narrow_key (i % 3)
+        let before = match Map.get again counts with
+            | Some c -> c
+            | None -> 0
+        let key: (f64 | i64 | string) = narrow_key (i % 3)
+        counts = Map.insert key (before + 1) counts
+        wide = HashSet.insert k wide
+    assert (HashSet.length wide == 3)
+    let half: (f64 | i64 | string) = 0.5
+    let wide = HashSet.insert half wide
+    let probe: (f64 | i64 | string) = "s1"
+    let one: (f64 | i64 | string) = 1
+    assert (HashSet.length wide == 4 && HashSet.contains probe wide)
+    assert (not (HashSet.contains one wide))
+    let other: (f64 | i64 | string) = 0.5
+    let counts = Map.insert other 9 counts
+    let mut text = ""
+    for (key, count) in Map.iter counts do
+        text = text + Display.display key + "=" + Display.display (deref count) + ";"
+    assert (text == "0=3;2=2;0.5=9;s1=2;")
+    let widened: (f64 | i64 | string) = narrow_key 1
+    let narrow = narrow_key 1
+    assert (Hash.hash (ref widened) == {HASH_OF_S1_WIDE})
+    assert (Hash.hash (ref narrow) == {HASH_OF_S1_NARROW})
+
+test "narrowed keys" =
+    let mut seen: HashMap<(i64 | string), i64> = HashMap.empty()
+    for i in 0i64 ..< 6 do
+        match wide_of i with
+        | :? (i64 | string) as n -> seen = HashMap.insert n i seen
+        | :? f64 -> ()
+    let s2: (i64 | string) = "s2"
+    let four: (i64 | string) = 4
+    let three: (i64 | string) = 3
+    assert (HashMap.length seen == 4)
+    assert (found (HashMap.get s2 seen) == 2 && found (HashMap.get four seen) == 4)
+    assert (not (HashMap.contains_key three seen))
+    let mut flags: HashSet<(f64 | i64 | bool)> = HashSet.empty()
+    for i in 0i64 ..< 5 do
+        let v: (f64 | i64 | bool) = if i == 0 then 1 elif i == 1 then true elif i == 2 then 2.5 elif i == 3 then 1 else false
+        flags = HashSet.insert v flags
+    let mut kept: HashSet<(i64 | bool)> = HashSet.empty()
+    for item in HashSet.iter flags do
+        match item with
+        | :? (i64 | bool) as n -> kept = HashSet.insert n kept
+        | :? f64 -> ()
+    let yes: (i64 | bool) = true
+    let uno: (i64 | bool) = 1
+    let two: (i64 | bool) = 2
+    assert (HashSet.length flags == 4 && HashSet.length kept == 3)
+    assert (HashSet.contains yes kept && HashSet.contains uno kept)
+    assert (not (HashSet.contains two kept))
+"#
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn widened_and_narrowed_values_show_and_encode() {
+    // `Display` and `Encode` see only the payload, so a widened or narrowed value shows and
+    // encodes as the value it was made from; `Decode` of the wider union reads it back by the
+    // kind of the JSON value (boolean, number, string, array: one member each).
+    passes(
+        r#"type Wide = (bool | i64 | string | [i64])
+
+record Holder { v: Wide } deriving (Eq, Display, Encode, Decode)
+
+def json_of :: Encode<'a> => own 'a -> string = \value ->
+    match Json.serialize value with
+    | Ok text -> String.from_utf8 (ref text)
+    | Error error -> Display.display error
+
+def back :: own string -> Result<Holder, Json.Error> = \text ->
+    let bytes = Utf8String.from_string (ref text)
+    Json.deserialize (ref bytes)
+
+test "widened" =
+    let text: (i64 | string) = "a"
+    let number: (i64 | string) = 7
+    let wide_text: Wide = text
+    let wide_number: Wide = number
+    assert (Display.display wide_text == "a")
+    assert ($"{wide_number}/{wide_text}" == "7/a")
+    let items: [Wide] = [wide_number, wide_text]
+    assert (Display.display items == "[7, \"a\"]")
+    assert (json_of items == "[7,\"a\"]")
+    let late: (i64 | string) = "b"
+    let holder = Holder { v: late }
+    assert (Display.display holder == "Holder { v: \"b\" }")
+    assert (json_of holder == "{\"v\":\"b\"}")
+    let expected: Wide = "b"
+    let same = match back "{\"v\": \"b\"}" with
+        | Ok decoded -> decoded == Holder { v: expected }
+        | Error _ -> false
+    assert same
+
+test "narrowed" =
+    let numbers: Wide = [1, 2]
+    match numbers with
+    | :? (string | [i64]) as part ->
+        assert (Display.display part == "[1, 2]")
+        assert (json_of part == "[1,2]")
+    | :? (bool | i64) -> assert false
+"#,
+        Edition::E2027,
+    );
+}
