@@ -359,7 +359,7 @@ A24 が計画から変えていて、このチケットに関わる点:
 
 ## 実装と検証（2026-11-11）
 
-ブランチ `feat/a25-anonymous-union-conversions`（基準は `feat/a24-anonymous-unions` の `bd625b4d`）で、Phase 1（このチケットの全体）の手順 1〜7 を実装しました。
+ブランチ `feat/a25-anonymous-union-conversions`（基準は `feat/a24-anonymous-unions` の `bd625b4d`。レビューの第 1 回で、その先端 `09fdb0de` を取り込みました。下の「レビューの指摘への対応（第1回）」）で、Phase 1（このチケットの全体）の手順 1〜7 を実装しました。
 
 ### 実装した手順
 
@@ -373,7 +373,7 @@ A24 が計画から変えていて、このチケットに関わる点:
 
 ### 受け入れ条件
 
-- 「例」の表の 8 行は、`tests/anonymous_unions.rs` の `widens_subset_unions`・`rejects_non_subset_unions`・`widening_moves_the_value`・`narrows_to_sub_unions`・`narrowing_is_exhaustive_as_or`・`rejects_narrowing_borrowed_non_copy`・`rejects_narrowing_non_members` が確かめます。表示は正準順序です（表の `(f64 | i64 | string)` は `(i64 | f64 | string)` と表示されます）。
+- 「例」の表の 8 行は（2 行目は仕様の規則 1 に従い kind `type_mismatch` です。表の `anonymous_union_not_subset` は書き誤りで、下の「レビューの指摘への対応（第1回）」の 7）、`tests/anonymous_unions.rs` の `widens_subset_unions`・`rejects_non_subset_unions`・`widening_moves_the_value`・`narrows_to_sub_unions`・`narrowing_is_exhaustive_as_or`・`rejects_narrowing_borrowed_non_copy`・`rejects_narrowing_non_members` が確かめます。表示は正準順序です（表の `(f64 | i64 | string)` は `(i64 | f64 | string)` と表示されます）。
 - suite `anonymous_unions` は native と WASM の `-O0`／`-O3` で通り、native は `live == 0` です（69 件。A24 の 37 件と、このチケットの 32 件）。
 - 拡大に確保がないこと（手順 6）: 最適化前の IR（`build -O3 --emit llvm`）で、`widen` と `narrow` の本体に `@tz.alloc` がなく、タグを `switch i32` で選びます（suite の `inspect` が毎回確かめます）。`opt -O3` の後は、`tz_widen` に `number_or_text`・`weigh` が畳み込まれ、残る `malloc` は `$"odd {n}"` の文字列の 1 つだけ、`tz_narrow` も `classify` の文字列の 1 つだけです（`target/scratch/a25/try/ir2` で確かめました）。配列・リストの要素の複製の条件は「実装中の判断」（第 1 段の 2、第 2 段の 8）のとおりです。
 
@@ -416,3 +416,35 @@ A24 が計画から変えていて、このチケットに関わる点:
 ### 変更したファイル
 
 `src/anonymous_union.rs`、`src/check.rs`、`src/control.rs`、`src/diagnostic_kinds.rs`、`src/explain/codes/E1041.md`、`tests/anonymous_unions.rs`、`tests/diagnostic_kinds.rs`、`tests/features.mjs`、`tests/fixtures/anonymous_unions/Main.tz`、上の文書、`_features/README.md`、このチケット。
+
+### レビューの指摘への対応（第1回）
+
+レビュー（2026-11-11、11 件。うち major 2 件）の指摘をすべて再現し、次のとおり対応しました。修正した指摘の回帰テストは、修正前のコードで落ちることを確かめています（3 は取り込んだ A24 の修正によるもので、取り込む前の動作はレビューの再現のとおりです）。
+
+1. **読み取りの引数への拡大が配列の要素を複製する（major）**: 再現しました。edition 2027 の読み取りの引数（`ref U`）へ渡す拡大は `BorrowOperand(Match)` で、`LastUses::visit` が `BorrowOperand` の中を不透明に読むため、拡大の束縛が move と判定されず、配列が複製されていました（`@no_copy` の `E1031`、`@tz.alloc`）。`last_use.rs` に `lent_union_match` を足し、値の型が匿名共用体の `match` を貸すときだけ、ほかの `match` と同じに読みます。`operand_borrow` はその `match` を一時値として評価して借用し、呼び出しの後で drop するので、所有する対象のペイロードを一時値へ move できます（所有権の検査は変えていません。対象が後でも使われるなら、従来どおり最初の呼び出しで複製します）。匿名共用体を使わないプログラムの読み方は変わりません。テスト `widening_into_a_read_parameter_moves_array_members`（局所・一時値・束縛からの拡大に `@tz.alloc` がなく `@no_copy` を満たすこと、2 回使う値は 1 回だけ複製すること、値は native と WASM の `-O0`／`-O3`）と、E2E `widen_read`（7 件。native は `live == 0`、`inspect` が本体に `@tz.alloc` がないことを確かめる）。名前付きの union を利用者が包み直して読み取りの引数へ渡す場合（基準のバイナリでも複製する）は変えていません。文書は「読み取りの引数へ渡すときも確保をしない」と書きました。
+2. **すべて Copy の要素へ絞る腕で、照合した変数へ代入する（minor）・move する（minor）と `E1014`**: 再現しました。どちらも保守的な拒否で、健全性の問題ではありません。隠れた束縛 `$narrow.x` のビューの貸し出しが腕の間ずっと生きているためです（所有権の生存の集合は、`let` の値の中で使う局所も「後で使う」と数えるので、`match` が関数の結果の位置にあるときだけ通っていました）。`match_value` は本体を検査した後、ビューにする絞り込みのある腕の本体が、対象に届く局所（`reached_locals`: 場所の根の局所、参照を返す式ならその式のすべての局所）を読む・書く・借用する・捕捉するなら（`reaches_any`）、その絞り込みを手順の形（パターンがペイロードを複製する。ガードのある腕と同じ形）にします。本体が照合した変数に触れない腕は、従来どおりブロックの形で switch になります（`tests/fixtures` の `narrow` の `inspect` も同じ）。テスト `narrowing_arms_may_move_or_replace_the_matched_value`（腕の中の move・代入・`ref mut` の先への書き込みと、触れない腕の switch）。
+3. **純粋かどうかだけが違う関数型の要素が、生の `type_mismatch` になる（minor）**: 下の 6 で A24 の第 2 回のレビュー対応を取り込み、`type_test_member` と `widened` が `agrees`（調整しない比較）で要素を探すようにしたので、拡大は `anonymous_union_not_subset`、絞り込みは `type_test_not_member` になりました。テスト `conversions_do_not_adapt_function_purity`。純粋な関数の値を持つ共用体は、純粋でない要素を持つ共用体へは拡大できません（拡大はペイロードを調整せずに移すため。要素ごとの注入では調整されます）。この制限を文書に書きました。
+4. **括弧で囲んだ型テストの `type_test_narrow_borrowed` の位置（minor）**: 再現しました（A24 の `type_test_not_anonymous_union` も同じでした）。`grouped_pattern` が、型テストのパターンの span に括弧を含めないようにしました。型テストの診断（`type_test_narrow_borrowed` とガードの文、`type_test_not_anonymous_union`、`type_test_unknown_scrutinee`）は括弧の中でも `:?` を指し、絞り込みの複製の報告（`W1006`・`E1031`）は括弧を除いたパターンを指します。型テストを書かないプログラムの構文木は変わりません。`src/formatter.rs` のコメントと `docs/architecture.md` の注記を直しました。テスト `type_test_errors_point_at_the_marker_inside_parentheses`。
+5. **`E1012` が生成した局所 `$match<offset>` を名指しする（minor）**: 再現しました。基準のバイナリでも、一時値を照合する `(:? string as s) as whole` と名前付きの union の `(A owner) as whole` で同じです。所有権の `access` は、ムーブ後の使用の根が生成した `$match` の局所なら、名前を出さない文 `use of moved or partially moved matched value: two bindings of the pattern take the same part of it` と help `bind the whole value with 'as' or bind its parts, not both, and match the bound value again in the arm` にします。絞り込みの隠れた束縛の射影の span を束縛の名前にしたので、注記 `value moved here`（とビューの `value borrowed here`）は `match` 全体ではなく先に move した束縛を指します。照合した値が変数なら、従来どおりその変数を名指しします。テスト `double_moves_out_of_a_matched_temporary_name_no_generated_local`。
+6. **A25 が A24 の先端に基づいていない（major）**: `feat/a24-anonymous-unions` の `09fdb0de`（A24 のレビュー対応の第 2 回）を `eb59b098` で取り込み、7 ファイルの衝突を解きました。A25 が `type_test_pattern` から移した要素の探索（`type_test_member`。`:? T` と `:? (A | B)` が共有）と、`widened` の要素の探索は、第 2 回の `agrees` を使います（retag はペイロードを調整せずに移すため）。第 2 回の、関数の値が引数の規約のアダプターを通して要素に入る規則は注入だけのもので、拡大と絞り込みには入れていません。検証は、取り込んだ後の木で測り直しました（下の「再検証」）。
+7. **「例」の表の 2 行目（minor）**: 指摘のとおりです。要素の数が同じ `(i64 | bool)` から `(i64 | string)` へは、仕様の「拡大」の規則 1（と再検討の 1）により `same` で単一化し、`E1003` の kind は `type_mismatch` です（`rejects_non_subset_unions` が確かめ、参照ページの表もそう書いています）。表の 2 行目の `anonymous_union_not_subset` は規則 1 と食い違う書き誤りで、規則 1 を正とします。上の「受け入れ条件」に注記しました。
+8. **総称の読み取りの引数の拡大にテストと文書がない（minor）**: 動作は「実装中の判断（第 1 段）」の 5 のとおりで、共用体なしの `\_x v -> v`（`Maybe<'a>` を返す）でも基準のバイナリが同じ `E1005`（`no instance for Copy<string>`）を出します（総称の読み取りの引数から値を取り出す既存の規則）。テスト `widening_a_generic_read_parameter_needs_copy`（`i64` の具体化で通る、`string` で呼び出す関数の位置に `E1005`、`own` で通る）と、参照ページと `docs/language.md` の 1 文を足しました。
+9. **`for`・レコード・配列・リストのパターンでの絞り込みと `E1017` にテストがない（minor）**: テスト `narrowing_in_loops_records_arrays_and_lists`（`for` の照合と不一致のトラップ、レコードのフィールドからの複製と move、配列の要素、リストの先頭、11 個の絞り込みの `pattern_alternatives_limit`）を足し、`narrows_to_sub_unions` の `for` を名乗るコメントを直しました。
+10. **ループによる複製の報告の位置の書き方（minor）**: 参照ページと `docs/language.md` を「後でもう一度使う値とパイプの左辺では拡大した値の位置、ループによる複製では拡大した値の直後の幅 0 の位置」に直しました。span そのものは変えていません（`retag` の読み取りの幅 0 の span は、hover と定義が拡大の束縛を指さないためのものです）。
+
+ほかに、`tests/anonymous_unions.rs` の `api_changes`（A24）が一時ディレクトリをプロセス番号だけで名付けていたため、`cargo test`（1 プロセスの複数スレッド）で `api_diff_treats_member_order_as_equal` と `effective_api_hides_synthetic_names` が同じディレクトリを使って落ちることがありました。呼び出しごとの番号を名前に足しました（期待値は変えていません。nextest はテストごとにプロセスが別なので影響がありませんでした）。
+
+変えた既存の期待値はありません。追加したテストは `tests/anonymous_unions.rs` の 7 件（上の 1〜5・8・9 に 1 件ずつ）と E2E の `widen_read` の 7 件です。
+
+#### 再検証（取り込んだ後の木）
+
+上の「実行したコマンドと結果」は取り込む前の木（基準 `bd625b4d`）のものです。取り込んだ後の木（この対応の最後のコミット）で、次を測り直しました。
+
+- T0: `cargo fmt --all -- --check`（差分なし）、`node scripts/slot.mjs -- cargo clippy --all-targets --locked -- -D warnings`（警告なし）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`: 3095 件のうち 3095 passed、4 skipped（`target/scratch/a25/t1-review1.txt`）。`tests/anonymous_unions.rs` は 102 件（取り込んだ A24 の 76 件、A25 の 19 件、この対応の 7 件）。GUIDE §3.1 の回帰テストもこの中で通りました。
+- T2: `node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri anonymous_unions`: `anonymous_unions: native/WASM at O0/O3 passed`、76 cases（`widen_read` の 7 件を足した）。`node tests/last_use_fuzz.mjs target/debug/tsuzuri 40 1 4`: `40 programs, 80 native O0/O3 executions, seed 1, depth 4; zero differences`。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs`（`anonymous-union.md`・`compiler/diagnostics.md`）: `2 pages, 62 links, 10 checked examples, 18 native runs (O0/O3)`。`node scripts/gen-docs.mjs --check`: 19 blocks、0 stale。`node scripts/check-cli-docs.mjs`: 4 checks、0 failed。`node scripts/check-guide-lite.mjs`: 88 references、0 failed。`node scripts/check-links.mjs --into _features/README.md`: 0 broken。
+- 匿名共用体を使わないプログラムの出力: A24 の先端 `09fdb0de` のバイナリ（`target/wt/a24/target/debug/tsuzuri`）と、この対応の最後のバイナリで、`tests/fixtures/` と `examples/` の 186 単位の出力（native と wasm32 の IR、`check --json`、`doc`、`kg build`、`api-diff` の既定と `--effective`）を `target/scratch/a25/baseline.sh` で取り、`compare.sh` で比べました。違うのは `tests/fixtures/anonymous_unions` の 64 ファイルだけで（この fixture は拡大と絞り込みを使うので、基準のバイナリでは検査が通りません）、ほかの 185 単位はすべてのファイルが 1 byte も違いません（`compare-r1.txt`）。この対応の変更は、どれも匿名共用体の値か型テストのパターンを持つプログラムにだけ働きます（`lent_union_match` は匿名共用体の型、`reached_locals` は絞り込み、`grouped_pattern` は型テスト、`E1012` の文は失敗するプログラムだけ）。
+
+更新した文書（第 1 回）: `_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`（拡大の節の読み取りの引数・総称の読み取りの引数・純粋かどうか・複製の位置、絞り込みの節の所有権の表・`E1012` の文・括弧で囲んだ型テスト・複製の回数）、`_tsuzuri/language-reference/compiler/diagnostics.md`（`E1012` の行）、`docs/language.md`（匿名共用体の節の拡大と絞り込み）、`docs/architecture.md`（型テストの span、拡大の `LastUses`、絞り込みの手順の形と隠れた束縛の span）。
+
+変更したファイル（第 1 回。取り込みの `eb59b098` を除く）: `src/last_use.rs`、`src/control.rs`、`src/parse_control.rs`、`src/ownership.rs`、`src/formatter.rs`（コメント）、`tests/anonymous_unions.rs`、`tests/features.mjs`、`tests/fixtures/anonymous_unions/Main.tz`、上の文書、このチケット。
