@@ -640,6 +640,8 @@ fn start_checker<'a, 'run>(
         tail_bound: false,
         dropping: None,
         owner_scan: None,
+        drop_hidden_types: BTreeMap::new(),
+        drop_hiding: false,
     };
     if !infer && facts.seeded {
         known_functions(
@@ -3360,6 +3362,8 @@ struct OwnerScan<'m, 'f> {
     /// The bindings of a body come before their uses, so an expression's answer does not change
     /// once it is found.
     memo: BTreeMap<usize, Own>,
+    /// How many expressions the scan has looked at (`own_uncached`), for the tests of its cost.
+    visits: usize,
 }
 
 impl<'m, 'f> OwnerScan<'m, 'f> {
@@ -3375,6 +3379,7 @@ impl<'m, 'f> OwnerScan<'m, 'f> {
             env: BTreeMap::new(),
             owner_types: BTreeMap::new(),
             memo: BTreeMap::new(),
+            visits: 0,
         }
     }
 
@@ -3481,6 +3486,7 @@ impl<'m, 'f> OwnerScan<'m, 'f> {
     }
 
     fn own_uncached(&mut self, expression: &TypedExpr) -> Own {
+        self.visits += 1;
         let (may, cell) = self.owner_type(&expression.ty);
         // The bindings of the blocks inside are made whatever the value's type.
         if !may {
@@ -3610,8 +3616,33 @@ impl<'m, 'f> OwnerScan<'m, 'f> {
                 std::cmp::Ordering::Greater => Own::fresh(),
             };
         }
-        if builtin_called(module, callee) == Some(crate::check::Builtin::OwnedFunction)
-            && arguments.len() == 1
+        // `Owned.function` holds its argument. The builtins of `Rc` and `Arc` that give back the
+        // block, a share or a weak pointer of it, or its value (`Rc.new`, `Rc.get`, `Rc.share`,
+        // `Rc.try_unwrap`, `Rc.downgrade`, `Rc.upgrade`) give what their argument holds: nothing
+        // replaces the value of a block after it is made (a block of a cell is fresh by its type).
+        if arguments.len() == 1
+            && builtin_called(module, callee).is_some_and(|builtin| {
+                use crate::check::Builtin::{
+                    ArcDowngrade, ArcGet, ArcNew, ArcShare, ArcTryUnwrap, ArcUpgrade,
+                    OwnedFunction, RcDowngrade, RcGet, RcNew, RcShare, RcTryUnwrap, RcUpgrade,
+                };
+                matches!(
+                    builtin,
+                    OwnedFunction
+                        | RcNew
+                        | RcGet
+                        | RcShare
+                        | RcTryUnwrap
+                        | RcDowngrade
+                        | RcUpgrade
+                        | ArcNew
+                        | ArcGet
+                        | ArcShare
+                        | ArcTryUnwrap
+                        | ArcDowngrade
+                        | ArcUpgrade
+                )
+            })
         {
             return values;
         }
@@ -3693,7 +3724,13 @@ impl<'m, 'f> OwnerScan<'m, 'f> {
 /// calls ... `fN`) settles in one pass rather than one function per pass over all of them. The
 /// scans share what the types say (`OwnerScan::owner_type`).
 fn owner_facts(module: &CheckedModule) -> Vec<Own> {
+    owner_facts_counted(module).0
+}
+
+/// `owner_facts`, with the number of body scans that it made (for the tests of its cost).
+fn owner_facts_counted(module: &CheckedModule) -> (Vec<Own>, usize) {
     let count = module.functions.len();
+    let mut scans = 0;
     let mut facts = vec![Own::default(); count];
     let mut callers: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); count];
     for (id, function) in module.functions.iter().enumerate() {
@@ -3716,6 +3753,7 @@ fn owner_facts(module: &CheckedModule) -> Vec<Own> {
     let mut owner_types = BTreeMap::new();
     while let Some(id) = work.pop_front() {
         queued[id] = false;
+        scans += 1;
         let function = &module.functions[id];
         let found = {
             let parameters = function
@@ -3742,7 +3780,7 @@ fn owner_facts(module: &CheckedModule) -> Vec<Own> {
             }
         }
     }
-    facts
+    (facts, scans)
 }
 
 /// A31: the immutable locals of `body` that are bound to a function value whose code the body
@@ -4060,6 +4098,23 @@ struct Checker<'a, 'run> {
     /// applied to such a part: the store facts from that parameter that they make are drop-only
     /// (`StoreFacts::drop_only`).
     dropping: Option<usize>,
+    /// A31: what dropping a value of a type may store in hidden environments (`drop_hidden`), by
+    /// type.
+    drop_hidden_types: BTreeMap<Type, DropHidden>,
+    /// A31: a store of a drop's hidden facts is being made (`drop_hides_owner`): the owners that it
+    /// reaches hold what is stored there already, so their own drops add nothing.
+    drop_hiding: bool,
+}
+
+/// A31: what the `Drop.drop` that dropping a value of a type may run stores in the environments
+/// that the check cannot name (`StoreFacts::hidden` of its body, or anything for `top`):
+/// `contents`, what the dropped value holds (its fields, the contents of its cells); `itself`, a
+/// borrow of the dropped value (`let nm = ref s.name` kept in a function that it hands to
+/// `s.out`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DropHidden {
+    contents: bool,
+    itself: bool,
 }
 
 /// A31: one application of the store facts of a function to arguments, for `Checker::store_memo`:
@@ -4562,7 +4617,12 @@ impl<'a, 'run> Checker<'a, 'run> {
         let copies: Vec<usize> = held
             .into_iter()
             .map(|id| {
-                let copy = self.loans[id].clone();
+                let mut copy = self.loans[id].clone();
+                // Inside `Drop.drop`, a borrow of a place of the dropped value stands for a share
+                // of its block (`share_loans`).
+                if self.drop_root == Some(copy.place.root) && !copy.mutable {
+                    copy.share = true;
+                }
                 self.loans.push(copy);
                 self.loans.len() - 1
             })
@@ -4575,12 +4635,20 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// own (`Loan::share`): what the result of `Rc.share (ref owner)` and its kin holds when the
     /// check does not read through the borrow of the owner. A copy keeps the same data borrowed,
     /// as the original does, and has it as its parent.
+    ///
+    /// Inside `Drop.drop`, the borrow of a place of the dropped value (`Arc.share (ref s.out)`) is
+    /// marked too: the share is an owner of the block, no borrow of the dropped value, and a store
+    /// of it is a store of what the value holds (`Part::Contents`, `store_external`), not one of a
+    /// borrow of the value itself (`drop_borrows_self`). Any other external loan stands for itself.
     fn share_loans(&mut self, loans: &BTreeSet<usize>) -> BTreeSet<usize> {
         loans
             .iter()
             .map(|&id| {
                 let root = self.loans[id].place.root;
-                if is_static_root(root) || self.external.contains(&root) || self.loans[id].mutable {
+                if is_static_root(root)
+                    || (self.external.contains(&root) && self.drop_root != Some(root))
+                    || self.loans[id].mutable
+                {
                     return id;
                 }
                 let mut copy = self.loans[id].clone();
@@ -5895,6 +5963,8 @@ impl<'a, 'run> Checker<'a, 'run> {
                 .expect("checked above")
                 .extend(&value.loans);
         }
+        let root = place.root;
+        self.drop_hides_owner(root, &ty, value, span);
         Ok(())
     }
 
@@ -6344,6 +6414,16 @@ impl<'a, 'run> Checker<'a, 'run> {
                 kept.through.retain(|id| held.contains(id));
             }
             self.absorb_owner(root, &kept);
+            // What the owner's drop may hand to a function value that owns the cell that it
+            // writes now includes what was stored.
+            if let Some(ty) = self
+                .state
+                .locals
+                .get(&root)
+                .map(|(local, _)| local.ty.clone())
+            {
+                self.drop_hides_owner(root, &ty, &kept, span);
+            }
         }
     }
 
@@ -6374,7 +6454,13 @@ impl<'a, 'run> Checker<'a, 'run> {
                 continue;
             }
             if let Some(&from) = self.parameter_roots.get(&source) {
-                let part = if through { Part::Contents } else { Part::Value };
+                // A share of a block of the dropped value (`share_loans`) stands for what the
+                // value holds.
+                let part = if through || self.loans[loan].share {
+                    Part::Contents
+                } else {
+                    Part::Value
+                };
                 if exclusive && from == to && part == Part::Contents {
                     continue;
                 }
@@ -6421,6 +6507,12 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// the body, `StoreFacts::hidden`, when a parameter has such a type). A borrow of a local value
     /// of the body cannot go where the caller's data reaches.
     fn store_hidden(&mut self, stored: &Value, span: Span) {
+        self.store_hidden_except(stored, span, None);
+    }
+
+    /// `store_hidden`, where the local `except` does not take what is stored (the borrow of a
+    /// local that its own drop keeps, `drop_keeps_self`).
+    fn store_hidden_except(&mut self, stored: &Value, span: Span, except: Option<usize>) {
         if stored.loans.is_empty() || !self.facts.owned_sinks {
             return;
         }
@@ -6468,7 +6560,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         let ids: Vec<usize> = self.state.locals.keys().copied().collect();
         for id in ids {
             let local = self.state.locals[&id].0;
-            if !self.shares_hidden(&local.ty) {
+            if Some(id) == except || !self.shares_hidden(&local.ty) {
                 continue;
             }
             if self.parameter_roots.contains_key(&(usize::MAX - id)) {
@@ -6504,7 +6596,11 @@ impl<'a, 'run> Checker<'a, 'run> {
                 continue;
             }
             if let Some(&from) = self.parameter_roots.get(&source) {
-                let part = if through { Part::Contents } else { Part::Value };
+                let part = if through || self.loans[loan].share {
+                    Part::Contents
+                } else {
+                    Part::Value
+                };
                 if let Some(stores) = self.stores.as_mut()
                     && stores.hidden.insert((from, part))
                 {
@@ -6744,7 +6840,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             }
             match self.parameter_roots.get(&root) {
                 Some(&index) => {
-                    let part = if value.through.contains(&loan) {
+                    let part = if value.through.contains(&loan) || self.loans[loan].share {
                         Part::Contents
                     } else {
                         Part::Value
@@ -7639,7 +7735,16 @@ impl<'a, 'run> Checker<'a, 'run> {
         // A31: a value that is not bound is a temporary, dropped where the statement ends at the
         // latest (the scrutinee of a `match`, a value lent to a call, a record that a field is
         // read from), or handed to code that drops it.
-        if !bound && !value.loans.is_empty() && self.facts.drops_write && self.tracks_stores() {
+        // A temporary whose drop may hand a borrow of itself to a hidden environment is checked
+        // even when it holds no loan.
+        if !bound
+            && self.facts.drops_write
+            && self.tracks_stores()
+            && (!value.loans.is_empty()
+                || (self.facts.owned_sinks
+                    && self.runs_drop_code(&expression.ty)
+                    && self.drop_hidden(&expression.ty).itself))
+        {
             let span = self.drop_site.unwrap_or(expression.span);
             self.drop_stores(
                 &value,
@@ -7689,6 +7794,12 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// `origin` is the expression that gives the value, when it is known: a lambda whose captures
     /// run no code when they are dropped (`\() -> String.length bt`) runs none either, whatever its
     /// type says (`value_runs_drop_code`).
+    ///
+    /// A `Drop.drop` may also hand what the value holds, or a borrow of the value, to a function
+    /// value that owns the cell that it writes (`s.out` holds a copy of a registry): its hidden
+    /// facts (`drop_hidden`) store that in the hidden environments (`store_hidden`), as a call of
+    /// the `Drop.drop` with the value would. A value that cannot share such an environment
+    /// (`may_own` of `origin`) reaches none of them.
     fn drop_stores(
         &mut self,
         value: &Value,
@@ -7697,27 +7808,121 @@ impl<'a, 'run> Checker<'a, 'run> {
         temporary: Option<&TypedExpr>,
         origin: Option<&TypedExpr>,
     ) {
-        if !self.tracks_stores()
-            || !self.facts.drops_write
-            || value.loans.is_empty()
-            || !self.value_runs_drop_code(origin, ty, 0)
-        {
+        if !self.tracks_stores() || !self.facts.drops_write {
+            return;
+        }
+        let hidden = if self.facts.owned_sinks && self.runs_drop_code(ty) {
+            self.drop_hidden(ty)
+        } else {
+            DropHidden::default()
+        };
+        let temporary =
+            temporary.is_some_and(|expression| !Self::is_place(expression) || !self.is_copy(ty));
+        let hides_itself = hidden.itself && temporary;
+        if (value.loans.is_empty() && !hides_itself) || !self.value_runs_drop_code(origin, ty, 0) {
             return;
         }
         let part = origin.and_then(|origin| self.parameter_part(origin));
         let dropping = std::mem::replace(&mut self.dropping, part);
         self.apply_store(value, value, span);
         self.dropping = dropping;
-        if temporary.is_some_and(|expression| !Self::is_place(expression) || !self.is_copy(ty))
-            && self.drop_borrows_self(ty)
-            && self.has_targets(value)
-        {
-            self.defer(error(
-                DiagnosticKind::StoreLocalBorrowThroughReference,
-                "cannot drop this value here: its Drop.drop stores a borrow of the dropped value in a place that the value shares, and the value is a temporary or is handed to a callee, so the borrow would outlive it",
-                span,
-            ).with_help("bind the value with 'let' in a scope that outlives every other owner of the place, or make Drop.drop store owned values only"));
+        let shares =
+            (hidden.contents || hides_itself) && origin.is_none_or(|origin| self.may_own(origin));
+        if shares && hidden.contents {
+            self.drop_hides(value, span);
         }
+        if !temporary {
+            return;
+        }
+        let message = if self.drop_borrows_self(ty) && self.has_targets(value) {
+            "cannot drop this value here: its Drop.drop stores a borrow of the dropped value in a place that the value shares, and the value is a temporary or is handed to a callee, so the borrow would outlive it"
+        } else if shares && hidden.itself {
+            "cannot drop this value here: its Drop.drop hands a borrow of the dropped value to a function value that may keep it in a cell that other values share, and the value is a temporary or is handed to a callee, so the borrow would outlive it"
+        } else {
+            return;
+        };
+        self.defer(
+            error(DiagnosticKind::StoreLocalBorrowThroughReference, message, span).with_help(
+                "bind the value with 'let' in a scope that outlives every other owner of the place, or make Drop.drop store owned values only",
+            ),
+        );
+    }
+
+    /// A31: what dropping a value of type `ty` may store in hidden environments (`DropHidden`):
+    /// the hidden facts of the `Drop.drop` of each type with a user `Drop` instance that `ty`
+    /// stores, or of all of them when `ty` stores a dyn value. `top`, or a call of a function-valued
+    /// parameter (a `Drop.drop` has none), may store both.
+    fn drop_hidden(&mut self, ty: &Type) -> DropHidden {
+        if let Some(known) = self.drop_hidden_types.get(ty) {
+            return *known;
+        }
+        let module = self.module;
+        let facts: &CallFacts = self.facts;
+        let types = module.types();
+        let any = ty.stores_some(&types, |part| matches!(part, Type::Dyn(_)));
+        let mut found = DropHidden::default();
+        for (dropped, id) in &module.user_drops {
+            if !(any || ty.stores_some(&types, |part| part == dropped)) {
+                continue;
+            }
+            let Some(stores) = facts.stores.get(*id) else {
+                continue;
+            };
+            if stores.top || !stores.calls.is_empty() {
+                found = DropHidden {
+                    contents: true,
+                    itself: true,
+                };
+                break;
+            }
+            for &(from, part) in &stores.hidden {
+                if from != 0 {
+                    continue;
+                }
+                match part {
+                    Part::Value => found.itself = true,
+                    Part::Contents => found.contents = true,
+                }
+            }
+        }
+        self.drop_hidden_types.insert(ty.clone(), found);
+        found
+    }
+
+    /// A31: stores `stored`, what a dropped value holds, in the hidden environments that its
+    /// `Drop.drop` may reach (`drop_stores`, `drop_hides_owner`). Nested stores of the same
+    /// loans are left out (`drop_hiding`).
+    fn drop_hides(&mut self, stored: &Value, span: Span) {
+        if self.drop_hiding || stored.loans.is_empty() {
+            return;
+        }
+        self.drop_hiding = true;
+        let kept = Value {
+            loans: stored.loans.clone(),
+            through: stored.through.clone(),
+            ..Value::default()
+        };
+        self.store_hidden(&kept, span);
+        self.drop_hiding = false;
+    }
+
+    /// A31: the local owner `root`, of type `ty`, now holds `stored` as well (a store into its
+    /// cell, an assignment to a field): when its drop may hand what it holds to a function value
+    /// that owns the cell that it writes (`drop_hidden`), that goes into the hidden environments
+    /// now, since the binding's hook saw only what the owner held then.
+    fn drop_hides_owner(&mut self, root: usize, ty: &Type, stored: &Value, span: Span) {
+        if self.drop_hiding
+            || stored.loans.is_empty()
+            || !self.facts.owned_sinks
+            || !self.tracks_stores()
+            || !self.facts.drops_write
+            || !self.runs_drop_code(ty)
+            || !self.drop_hidden(ty).contents
+            || self.holds_no_owner(root)
+        {
+            return;
+        }
+        self.drop_hides(stored, span);
     }
 
     /// A31: whether dropping the value of `origin`, of type `ty`, may run code (`drop_runs_code`).
@@ -7858,6 +8063,9 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// A31: the local `id` of type `ty` was bound to a value whose `Drop.drop` may store a borrow
     /// of the dropped value itself (`drop_borrows_self`): a borrow of the local goes where the
     /// value's own target loans reach, so that a place that keeps it cannot outlive the local.
+    /// A `Drop.drop` that may hand a borrow of the dropped value to a function value that owns the
+    /// cell that it writes (`DropHidden::itself`) puts the borrow of the local in the hidden
+    /// environments (`store_hidden`), unless the local cannot share one (`holds_no_owner`).
     fn drop_keeps_self(&mut self, id: usize, ty: &Type, span: Span) {
         if !self.tracks_stores() || !self.facts.drops_write || !self.runs_drop_code(ty) {
             return;
@@ -7866,7 +8074,11 @@ impl<'a, 'run> Checker<'a, 'run> {
             return;
         };
         let value = value.clone();
-        if value.loans.is_empty() || !self.drop_borrows_self(ty) || !self.has_targets(&value) {
+        let targets =
+            !value.loans.is_empty() && self.drop_borrows_self(ty) && self.has_targets(&value);
+        let hidden =
+            self.facts.owned_sinks && self.drop_hidden(ty).itself && !self.holds_no_owner(id);
+        if !targets && !hidden {
             return;
         }
         let loan = self.loan(
@@ -7883,7 +8095,13 @@ impl<'a, 'run> Checker<'a, 'run> {
             loans: BTreeSet::from([loan]),
             ..Value::default()
         };
-        self.apply_store(&stored, &value, span);
+        if targets {
+            self.apply_store(&stored, &value, span);
+        }
+        if hidden {
+            // The local itself does not keep a borrow of itself.
+            self.store_hidden_except(&stored, span, Some(id));
+        }
     }
 
     /// Starts `dropped` with the parameters' loans: a parameter whose type may run code when it is
@@ -10733,5 +10951,90 @@ mod retention_tests {
         assert_eq!(facts.stores[write], only(&[(1, Part::Value, 2)]));
         let abstract_facts = call_facts(&module, true);
         assert!(abstract_facts.stores.iter().all(StoreFacts::is_empty));
+    }
+
+    /// A31, review round 4 (findings 2, 5 and 6): the provenance scan looks at each expression
+    /// once, so a chain of calls that pass their argument on costs one look per call, not twice
+    /// as many at each level; the facts settle through the callers, so a chain of functions
+    /// declared before their callees costs one scan of each body, not one pass over all of them
+    /// per function of the chain; and a mutable parameter, which the body may assign, counts as
+    /// fresh.
+    #[test]
+    fn the_owner_provenance_looks_at_each_expression_once_and_follows_the_callers() {
+        let registry = "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\n";
+        let index = |module: &CheckedModule, name: &str| {
+            module
+                .functions
+                .iter()
+                .position(|function| function.name == name)
+                .unwrap()
+        };
+        let depth = 24;
+        let mut nested = "reg".to_owned();
+        for _ in 0..depth {
+            nested = format!("pass ({nested})");
+        }
+        let source = format!(
+            "{registry}def pass :: ((unit -> i64) -> i64) -> ((unit -> i64) -> i64)\nfn pass h = h\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h = {nested}\n    h (\\() -> n)\nrun 5"
+        );
+        let module = crate::analyze(&source).unwrap();
+        let facts = owner_facts(&module);
+        assert!(facts[index(&module, "make_registry")].fresh);
+        assert_eq!(
+            facts[index(&module, "pass")],
+            Own {
+                values: BTreeSet::from([0]),
+                ..Own::default()
+            }
+        );
+        let run = &module.functions[index(&module, "run")];
+        let parameters = run
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| (parameter.id, index));
+        let mut scan = OwnerScan::new(&module, &facts, parameters);
+        scan.own(&run.body);
+        assert!(scan.visits <= 3 * depth + 16, "{} looks", scan.visits);
+        let h = scan
+            .env
+            .iter()
+            .find(|(_, (own, _))| own.fresh)
+            .map(|(id, _)| *id);
+        assert!(h.is_some(), "the copies of the registry are fresh");
+
+        let chain = 120;
+        let mut source = registry.to_owned();
+        for at in 1..chain {
+            source.push_str(&format!(
+                "def f{at} :: unit -> ((unit -> i64) -> i64)\nfn f{at} u = f{} u\n",
+                at + 1
+            ));
+        }
+        source.push_str(&format!(
+            "def f{chain} :: unit -> ((unit -> i64) -> i64)\nfn f{chain} u = make_registry u\nlet h = f1 ()\nh (\\() -> 1)"
+        ));
+        let module = crate::analyze(&source).unwrap();
+        let (facts, scans) = owner_facts_counted(&module);
+        assert!(facts[index(&module, "f1")].fresh);
+        assert!(
+            scans <= 3 * module.functions.len(),
+            "{scans} scans of {} functions",
+            module.functions.len()
+        );
+
+        for (source, name) in [
+            (
+                "def renew :: ((unit -> i64) -> i64) -> ((unit -> i64) -> i64)\nfn renew mut a = { a = make_registry (); a }\nrenew (\\_f -> 1) (\\() -> 1)",
+                "renew",
+            ),
+            (
+                "def pick :: ((unit -> i64) -> i64) -> ((unit -> i64) -> i64) -> ((unit -> i64) -> i64)\nfn pick mut a b = { a = b; a }\npick (\\_f -> 1) (make_registry ()) (\\() -> 1)",
+                "pick",
+            ),
+        ] {
+            let module = crate::analyze(&format!("{registry}{source}")).unwrap();
+            assert!(owner_facts(&module)[index(&module, name)].fresh, "{source}");
+        }
     }
 }

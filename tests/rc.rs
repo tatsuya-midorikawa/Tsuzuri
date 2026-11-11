@@ -2293,6 +2293,175 @@ fn a_value_that_cannot_hold_an_owner_reaches_no_hidden_cell() {
     }
 }
 
+/// A31, review round 4 (finding 1): an implicit drop runs `Drop.drop` with the dropped value, so
+/// it applies what that body stores in the environments that the check cannot name
+/// (`StoreFacts::hidden`): a `Drop.drop` that calls `s.out`, a copy of a function value that owns
+/// the cell that it writes (`make_registry`), with what the value holds puts that into the cell
+/// that every other copy (`reg`) reaches, and one that hands it a borrow of the value itself
+/// (`ref s.name`) puts a borrow of the dropped value there. Each program below reads the stored
+/// closure through `reg` after its borrowed string is gone (the controls, which keep the string
+/// alive, give 9); main and the previous rounds accepted them. The bound, temporary, by-value,
+/// `Owned.Function`, assigned-over and overwritten forms, a borrow that enters the value's own
+/// cell before the drop, and one that is there from the start are all rejected where the string
+/// is dropped. The values that cannot share such a cell, and the stores of owned values, stay
+/// accepted.
+#[test]
+fn an_implicit_drop_applies_what_its_drop_stores_in_hidden_environments() {
+    for (main, at) in [
+        // d12_drop_calls_owned_sink
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { f: unit -> i64, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = o s.f; () }\n}\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    { let text0 = to_string n; let t = ref text0; let _s = Stash { f: \\() -> String.length t, out: reg }; () }\n    let other = [to_string 777777, to_string 88888888]\n    reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (12, 5),
+        ),
+        // d13_drop_owned_sink_temp
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { f: unit -> i64, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = o s.f; () }\n}\ndef size :: ref Stash -> i64\nfn size s = 1\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let k = { let text0 = to_string n; let t = ref text0; size (ref (Stash { f: \\() -> String.length t, out: reg })) }\n    let other = [to_string 777777, to_string 88888888]\n    reg (\\() -> 1) + other.length * 0 + k * 0\nrun 123456789",
+            (14, 13),
+        ),
+        // d14_drop_owned_sink_param
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { f: unit -> i64, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = o s.f; () }\n}\ndef consume :: Stash -> i64\nfn consume s = 1\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let k = { let text0 = to_string n; let t = ref text0; consume (Stash { f: \\() -> String.length t, out: reg }) }\n    let other = [to_string 777777, to_string 88888888]\n    reg (\\() -> 1) + other.length * 0 + k * 0\nrun 123456789",
+            (14, 13),
+        ),
+        // d15_drop_owned_function
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { f: unit -> i64, out: Owned.Function<(unit -> i64), i64> }\ninstance Drop<Stash> {\n    fn drop s = { let _k = Owned.call (ref s.out) s.f; () }\n}\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    { let text0 = to_string n; let t = ref text0; let _s = Stash { f: \\() -> String.length t, out: Owned.function reg }; () }\n    let other = [to_string 777777, to_string 88888888]\n    reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (12, 5),
+        ),
+        // d21_drop_assign_over
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { f: unit -> i64, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = o s.f; () }\n}\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let mut s = Stash { f: \\() -> 0, out: reg }\n    { let text0 = to_string n; let t = ref text0; s = Stash { f: \\() -> String.length t, out: reg }; s = Stash { f: \\() -> 1, out: reg }; () }\n    let other = [to_string 777777, to_string 88888888]\n    reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (13, 5),
+        ),
+        // d09_grow_owned_writer
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { inbox: Arc<Mutex<[unit -> i64]>>, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = Mutex.with_lock (Arc.get (ref s.inbox)) (\\src -> { let g = src[0]; o g }); () }\n}\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    { let text0 = to_string n; let t = ref text0; let s = Stash { inbox: Arc.new (Mutex.create [\\() -> 0]), out: reg }; Mutex.with_lock (Arc.get (ref s.inbox)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); () }\n    let other = [to_string 777777, to_string 88888888]\n    reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (12, 5),
+        ),
+        // d11_nogrow_owned_writer
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { inbox: Arc<Mutex<[unit -> i64]>>, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = Mutex.with_lock (Arc.get (ref s.inbox)) (\\src -> { let g = src[0]; o g }); () }\n}\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    { let text0 = to_string n; let t = ref text0; let s = Stash { inbox: Arc.new (Mutex.create [\\() -> String.length t]), out: reg }; () }\n    let other = [to_string 777777, to_string 88888888]\n    reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (12, 5),
+        ),
+        // d22_drop_array_write_old
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { f: unit -> i64, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = o s.f; () }\n}\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    { let text0 = to_string n; let t = ref text0; let mut arr = [Stash { f: \\() -> String.length t, out: reg }]; Array.write 0 (Stash { f: \\() -> 1, out: reg }) (ref mut arr); () }\n    let other = [to_string 777777, to_string 88888888]\n    reg (\\() -> 3) + other.length * 0\nrun 123456789",
+            (12, 5),
+        ),
+        // d23_drop_self_borrow_owned
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Named { name: string, out: (unit -> i64) -> i64 }\ninstance Drop<Named> {\n    fn drop s = { let nm = ref s.name; let o = s.out; let _k = o (\\() -> String.length nm); () }\n}\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    { let _s = Named { name: to_string n, out: reg }; () }\n    let other = [to_string 12345678, to_string 87654321, to_string 1234567]\n    reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (12, 5),
+        ),
+    ] {
+        rejects_at(main, "E1013", "assignment_extends_borrow", at);
+    }
+    // d20_drop_owned_via_wrapper_fn: in edition 2027 the lambda lent to the read parameter of
+    // `wrap` is a borrowed temporary that the record keeps (E1013 `borrow_of_temporary`, as main).
+    let wrapper = "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { f: unit -> i64, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = o s.f; () }\n}\ndef wrap :: ((unit -> i64) -> i64) -> (unit -> i64) -> Stash\nfn wrap reg f = Stash { f: f, out: reg }\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    { let text0 = to_string n; let t = ref text0; let _s = wrap reg (\\() -> String.length t); () }\n    let other = [to_string 777777, to_string 88888888]\n    reg (\\() -> 1) + other.length * 0\nrun 123456789";
+    let error = analyze_with_edition(wrapper, Edition::E2026).expect_err(wrapper);
+    assert_eq!(
+        (error.code, error.kind, position(wrapper, error.span.start)),
+        ("E1013", Some("assignment_extends_borrow"), (14, 5)),
+        "{}",
+        error.message
+    );
+    // s02_drop_self_temp: a temporary whose drop hands a borrow of itself to the registry.
+    rejects_at(
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Named { name: string, out: (unit -> i64) -> i64 }\ninstance Drop<Named> {\n    fn drop s = { let nm = ref s.name; let o = s.out; let _k = o (\\() -> String.length nm); () }\n}\ndef consume :: Named -> i64\nfn consume s = 1\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let k = consume (Named { name: to_string n, out: reg })\n    let other = [to_string 12345678, to_string 87654321]\n    k + reg (\\() -> 1) + other.length * 0\nrun 123456789",
+        "E1013",
+        "store_local_borrow_through_reference",
+        (14, 13),
+    );
+    for main in [
+        // d12_ctl
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { f: unit -> i64, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = o s.f; () }\n}\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let text0 = to_string n\n    { let t = ref text0; let _s = Stash { f: \\() -> String.length t, out: reg }; () }\n    reg (\\() -> 1)\nrun 123456789",
+        // d10_grow_owned_writer_ctl
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { inbox: Arc<Mutex<[unit -> i64]>>, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = Mutex.with_lock (Arc.get (ref s.inbox)) (\\src -> { let g = src[0]; o g }); () }\n}\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let text0 = to_string n\n    { let t = ref text0; let s = Stash { inbox: Arc.new (Mutex.create [\\() -> 0]), out: reg }; Mutex.with_lock (Arc.get (ref s.inbox)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); () }\n    reg (\\() -> 1)\nrun 123456789",
+        // s01_drop_owned_temp
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { f: unit -> i64, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = o s.f; () }\n}\ndef consume :: Stash -> i64\nfn consume s = 1\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let k = consume (Stash { f: \\() -> 7, out: reg })\n    k + reg (\\() -> 1)\nrun 5",
+        // s03_drop_self_noowner
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Named { name: string, out: (unit -> i64) -> i64 }\ninstance Drop<Named> {\n    fn drop s = { let nm = ref s.name; let o = s.out; let _k = o (\\() -> String.length nm); () }\n}\ndef consume :: Named -> i64\nfn consume s = 1\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let k = consume (Named { name: to_string n, out: \\f -> f () })\n    { let _s = Named { name: to_string 42, out: \\f -> f () + 1 }; () }\n    k + reg (\\() -> 1)\nrun 123456789",
+        // s04_drop_owned_bound
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Stash { f: unit -> i64, out: (unit -> i64) -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let o = s.out; let _k = o s.f; () }\n}\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    { let _s = Stash { f: \\() -> 7, out: reg }; () }\n    reg (\\() -> 1)\nrun 5",
+        // s05_drop_self_bound_outer
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Named { name: string, out: (unit -> i64) -> i64 }\ninstance Drop<Named> {\n    fn drop s = { let nm = ref s.name; let o = s.out; let _k = o (\\() -> String.length nm); () }\n}\ndef run :: i64 -> i64\nfn run n =\n    let s = Named { name: to_string n, out: make_registry () }\n    3\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 4 (finding 4): inside `Drop.drop`, `Arc.share (ref s.out)` is an owner of the
+/// block that `s.out` shares, no borrow of the dropped value: storing what `s.inbox` holds into
+/// that block through the share stores what the value holds, so the bound value keeps no borrow of
+/// itself in the block (`drop_borrows_self`), and the program, whose string outlives the read,
+/// is accepted (9) as main accepts it. The same drop written through a helper was accepted
+/// before; the form whose string dies first stays rejected.
+#[test]
+fn a_share_of_a_block_of_the_dropped_value_is_no_borrow_of_it() {
+    for main in [
+        // d06_inbox_grow_drop_ctl
+        "record Stash { inbox: Arc<Mutex<[unit -> i64]>>, out: Arc<Mutex<[unit -> i64]>> }\ninstance Drop<Stash> {\n    fn drop s = { let out = Arc.share (ref s.out); Mutex.with_lock (Arc.get (ref s.inbox)) (\\src -> { let g = src[0]; Mutex.with_lock (Arc.get (ref out)) (\\dst -> Array.write 0 g dst) }) }\n}\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let text0 = to_string n\n    { let t = ref text0; let s = Stash { inbox: Arc.new (Mutex.create [\\() -> 0]), out: Arc.share (ref a) }; Mutex.with_lock (Arc.get (ref s.inbox)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); () }\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 123456789",
+        // d08_inbox_transfer_helper_ctl
+        "record Stash { inbox: Arc<Mutex<[unit -> i64]>>, out: Arc<Mutex<[unit -> i64]>> }\ndef transfer :: ref Arc<Mutex<[unit -> i64]>> -> ref Arc<Mutex<[unit -> i64]>> -> unit\nfn transfer src dst = Mutex.with_lock (Arc.get src) (\\a -> { let g = a[0]; Mutex.with_lock (Arc.get dst) (\\b -> Array.write 0 g b) })\ninstance Drop<Stash> {\n    fn drop s = transfer (ref s.inbox) (ref s.out)\n}\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let text0 = to_string n\n    { let t = ref text0; let s = Stash { inbox: Arc.new (Mutex.create [\\() -> 0]), out: Arc.share (ref a) }; Mutex.with_lock (Arc.get (ref s.inbox)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); () }\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 123456789",
+        // s06_rc_share_drop
+        "record Stash { inbox: Rc<[unit -> i64]>, out: Arc<Mutex<[unit -> i64]>> }\ninstance Drop<Stash> {\n    fn drop s = { let keep = Rc.share (ref s.inbox); let out = Arc.share (ref s.out); Mutex.with_lock (Arc.get (ref out)) (\\dst -> Array.write 0 (\\() -> 5) dst) }\n}\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    { let s = Stash { inbox: Rc.new [\\() -> 1], out: Arc.share (ref a) }; () }\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 1",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+    // d05_inbox_grow_drop
+    rejects_at(
+        "record Stash { inbox: Arc<Mutex<[unit -> i64]>>, out: Arc<Mutex<[unit -> i64]>> }\ninstance Drop<Stash> {\n    fn drop s = { let out = Arc.share (ref s.out); Mutex.with_lock (Arc.get (ref s.inbox)) (\\src -> { let g = src[0]; Mutex.with_lock (Arc.get (ref out)) (\\dst -> Array.write 0 g dst) }) }\n}\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    { let text0 = to_string n; let t = ref text0; let s = Stash { inbox: Arc.new (Mutex.create [\\() -> 0]), out: Arc.share (ref a) }; Mutex.with_lock (Arc.get (ref s.inbox)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+        "E1013",
+        "assignment_extends_borrow",
+        (8, 5),
+    );
+}
+
+/// A31, review round 4 (findings 3 and 5): a mutable parameter (`fn renew mut a`, `\mut a ->`)
+/// may be assigned anything in the body, so it holds what its last assignment holds, not the
+/// caller's argument: a registry returned through one is a copy of the registry, and the borrow
+/// that a call of it stores stays in the registry's cell (main and the previous round accepted
+/// these; the round before rejected them where they are rejected here). The builtins of `Rc`
+/// give what their argument holds (`Rc.get (ref (Rc.new h))` is `h`), so a handler read from an
+/// `Rc` that holds a capture-less lambda shares no cell (14, as main).
+#[test]
+fn a_mutable_parameter_holds_what_the_body_assigns() {
+    for (main, at) in [
+        // m03_mut_param_fresh
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef renew :: own ((unit -> i64) -> i64) -> ((unit -> i64) -> i64)\nfn renew mut a = { a = make_registry (); a }\ndef run :: i64 -> i64\nfn run n =\n    let h = renew (\\_f -> 1)\n    let first = { let text0 = to_string n; let text = ref text0; h (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + h (\\() -> 1) + other.length * 0\nrun 123456789",
+            (10, 17),
+        ),
+        // m02_mut_param_own
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef pick :: own ((unit -> i64) -> i64) -> own ((unit -> i64) -> i64) -> ((unit -> i64) -> i64)\nfn pick mut a b = { a = b; a }\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h = pick (\\f -> 1) reg\n    let first = { let text0 = to_string n; let text = ref text0; h (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // m04_mut_lambda_param
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef get :: own (((unit -> i64) -> i64) -> ((unit -> i64) -> i64)) -> ((unit -> i64) -> i64)\nfn get f = f (\\_g -> 1)\ndef run :: i64 -> i64\nfn run n =\n    let h = get (\\mut a -> { a = make_registry (); a })\n    let first = { let text0 = to_string n; let text = ref text0; h (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + h (\\() -> 1) + other.length * 0\nrun 123456789",
+            (10, 17),
+        ),
+    ] {
+        rejects_at(main, "E1013", "assignment_extends_borrow", at);
+    }
+    // m01_mut_param: edition 2027 rejects the lambda lent to the read parameter first.
+    let pick = "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef pick :: ((unit -> i64) -> i64) -> ((unit -> i64) -> i64) -> ((unit -> i64) -> i64)\nfn pick mut a b = { a = b; a }\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h = pick (\\f -> 1) reg\n    let first = { let text0 = to_string n; let text = ref text0; h (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + reg (\\() -> 1) + other.length * 0\nrun 123456789";
+    let error = analyze_with_edition(pick, Edition::E2026).expect_err(pick);
+    assert_eq!(
+        (error.code, error.kind, position(pick, error.span.start)),
+        ("E1013", Some("assignment_extends_borrow"), (11, 17)),
+        "{}",
+        error.message
+    );
+    // u_rc_get
+    accepts_in_both_editions(&[(
+        "Main.tz",
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let r = Rc.new (\\f -> f () + 1)\n    let h = deref (Rc.get (ref r))\n    let text = to_string n\n    let first = { let t = ref text; h (\\() -> String.length t) }\n    let moved = text\n    first + moved.length + reg (\\() -> 3) + reg (\\() -> 1)\nrun 12345",
+    )]);
+}
+
 #[test]
 fn shared_types_have_reserved_names_and_no_abi() {
     for source in [
