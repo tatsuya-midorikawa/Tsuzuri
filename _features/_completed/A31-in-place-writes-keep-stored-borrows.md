@@ -853,3 +853,49 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 更新した文書: `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`（現在の制限: 本体の見える局所値・演算子・dyn のメソッド、見えない関数値の 3 つの規則と例、後で実行するコードへ渡した関数値、呼び出し元と一時値の `E1013`）、`drop.md`（解放が書き込む借用: 一時値・呼び出す関数の中の破棄・破棄する値そのものの借用）、`borrowing.md`（書き込んだ値の借用: 演算子と文字列補間）、`docs/language.md`・`docs/architecture.md`（書き込みの事実の段落を実装に合わせて書き直し。指摘 19）。
 
 変えたファイル: `src/ownership.rs`、`src/check.rs`（`Type::owns_mutable_cell`・`Type::stores_some`）、`tests/rc.rs`、`tests/mutable_slices.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、上の文書、このチケット。
+
+### レビューの指摘への対応（第2回）（2026-11-11）
+
+レビューの 11 件の指摘（反例の探索とその再現 `target/scratch/review-a31-ce-r2/`、適合の確認 `target/scratch/review-a31-conf-r2/p/`）を、対応前の先端（`d9b2a96f`）・基準・対応後のバイナリで確かめました。指摘はどれも再現しました（性能の指摘 3・10 は数値も同じ傾向）。結果は `target/scratch/a31/r2/` にあります（`before.json`・`base.json`・`after-r2h.json`、第 1 回の 1146 件の再実行 `r1corpus-r2h.json`、`corpora.sh` で作り直せます）。
+
+設計の変更（`src/ownership.rs`、`src/ownership_control.rs` の呼び出し 1 か所）:
+
+- **環境へ書き込む関数値（`sinks`）を作る所の判定を、渡す値の型で狭めました。** 作る所の本体が、束縛した値を関数値の呼び出しへ渡すときは、その引数の型を通して書き込みが届きうるとき（`may_reach_store`: 借用を持ちうる値の可変セル、排他参照、関数値・dyn 値・`Owned.Function`）だけ数えます（`Source::target`・`Arg::target`。`staged` と同じ考え方）。std の `Array.map`・`Array.mapi` のラムダ（`\index -> transform values[index]`）は要素を、`Array.mapr` は要素への共有参照を渡すだけなので、`[i64]` では数えません。コールバックを取る組み込み関数の部分適用も、束縛した引数の型を通して書き込みが届きうるときだけです（`Mutex<i64>` の `Mutex.with_lock (ref m)` は数えません）。指摘 1・5・6・11。
+- **`sinks` の規則を型で狭めました（`CallFacts::sink_types`、`may_be_sink`）。** 環境へ書き込む関数値の型と、それを環境に持ちうる関数値の型だけが、環境の先へ格納する呼び出しと、関数値を持つ場所を書き込み先に数える規則（`store_target`）の対象です。`owned_types` と同じく、関数値はどれもモジュールの作る所で作るので、型が違えば別の関数値です（指摘 7 の `r9`、指摘 6 の形が `sinks` の真なモジュールにあるとき）。
+- **セルを所有する関数値（`owned_sinks`）の規則で、引数と局所値を型で狭めました。** 見えない呼び出しが隠れた環境へ届くのは、関数値か引数の型が、所有する関数値の型（`owned_types`。引数をいくつか渡した後の型も: `owned_suffix`）の関数値・dyn 型が対象なら dyn 値・`Owned.Function` を持ちうるか、セルに届くときだけです（`argument_hides`、式の無い引数は呼び出し先が見た `Arg::hides`）。格納を受け取る局所値も同じ条件の型だけです（`shares_hidden`）。`ref string` だけを捕捉したクロージャや、型の違うハンドラーは数えません。仮引数の局所値には呼び出し元の loan だけを足し、局所値の loan は文書どおりの `E1013`（`store_local_borrow_through_reference`）で報告します（以前は仮引数への吸収が先に `assignment_extends_borrow` を出していました）。指摘 2・7。
+- **holder（環境を隠す値を束縛した関数値）の型は、束縛した値が所有する関数値（環境へ書き込む関数値）の型の値を持ちうるときだけ加えます**（不動点）。名前付き関数を束縛した値は何も持ちません（`named_locals`。edition 2027 の `callback_adapter` が名前付き関数を包む閉包を含む）。以前は関数値に届く値を束縛した関数値をすべて加えていたので、`Eq` の instance の `\() -> String.length b.name`（`b` が `Mutex<[unit -> i64]>` への参照を持つ）が `unit -> i64` をすべて所有する関数値の型にしていました（`in_place_writes` に足した事例で見つけました）。
+- **関数の型の比較（`sink_type`）で、引数の型を囲む参照を除きました。** edition 2027 のラムダの読み取りの仮引数は `ref (unit -> i64)` で、それを持つ値の宣言の型は `unit -> i64` なので、同じ関数値が 2 つの型を持ちます。除くことで比較が一致します（違う型が一致することは集合を広げるだけで、安全側です）。狭めた規則を足した段階で、2027 の `w18` がこのために受理されていたのを見つけて直しました。
+- **呼び出し先の局所値の借用の `E1013` は、その借用を書き込みうる先があるときだけ出します。** 関数値自身の loan の書き込み先（`may_be_sink` のときだけ）、呼び出し元から来た引数の書き込み先、隠れた環境のどれかです。呼び出し先で作った関数値を引数なしで呼ぶだけ（`\get -> get () * 2`、名前付きの `plus_one`）は何も格納しません。指摘 5。
+- **dyn 値を持つ場所は、その dyn 型の vtable のメソッドが書き込みうるとき（スロット関数の事実が空でない）か、結果の型を通して書き込みが届きうるときだけ書き込み先に数えます**（`CallFacts::dyn_targets`・`dyn_types`、`sink_flags` で求める。vtable の無い dyn 型は数える）。指摘 8。
+- **値の破棄のフックで、関数値は作った式で判定します**（`value_runs_drop_code`）。ラムダは捕捉、部分適用は束縛した引数、名前付き関数は何も実行しません。不変な局所値に束縛したものは束縛した式で決めます。指摘 9。
+- **不変な局所値が、ラムダ・名前付き関数・部分適用だけを要素に持つ配列リテラル、そうした値をフィールドに持つレコードリテラルに束縛されているときは、要素・フィールドの呼び出しにその本体の事実を当てはめます**（`Checker::known_parts`）。所有する関数値と型が同じハンドラーの表（`r4`）も受理になります。
+- **生成した関数の名前の `.$mono.N` を、呼び出し先を挙げる `E1013` の文言から除きました。** 指摘 4。
+- **性能:** `Value::absorb` を、足す loan の数に比例する手間にしました（`store_hidden` がすべての局所値へ足すため、以前は局所値の loan の数に比例し、全体で 3 乗でした）。`joint_facts` は、旗が読む関数（作る所の本体と vtable のスロット関数、`flag_sites`）とそれが呼ぶ関数を先に旗と一緒に確定させ、ほかの本文はその後で検査します（以前は旗が上がるたびに大きな本文を検査し直していました）。仮引数のどれも書き込みの届きうる型でない関数は、書き込みの事実を求めるための検査をしません（`storing`。事実は空にしかなりえないため）。予算を超えたときは、確定した事実の旗の型の集合を取り直し、記録した呼び出しの引数を `hides`・`target` とみなし、すべての dyn 型を書き込み先にします。指摘 3・10。
+
+この対応で見つけて塞いだ穴（レビューの指摘に無いもの）:
+
+- **見えない関数値が、自分の環境の値を環境の先へ格納する形。** `apply_opaque` は、引数の loan だけを関数値の環境の先へ格納していたので、借用とセルを捕捉した閉包（`\() -> { Mutex.with_lock mr (\slot -> Array.write 0 (\() -> String.length text) slot); 1 }`）を、配列の要素・レコードのフィールド・返された配列・`IO` の動作・`let mut` などを通して呼ぶと、`text` の借用がセルに残ることを見落としていました。基準と第 1 回の先端は受理し、解放した文字列を読みます（`review-a31-ce/q01`〜`q03`・`q11`〜`q19`・`q21`〜`q24` の 14 個と `r2/adv/v01`・`v02`。期待 9 のところ `-O0`・`-O3` とも 0）。関数値の loan も環境の先と隠れた環境へ格納するようにしました。
+
+指摘ごとの対応（期待はレビューの対照と手の計算から。値は基準と同じことを `-O0`・`-O3` で確かめました: `r2/run-c.json`・`run-base.json`）:
+
+| 指摘 | 再現 | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（`Array.map`・`mapi`・`mapr` の std のラムダが `sinks` を上げる） | 再現（`t02`・`t03`・`t06`・`u02`・`u11`・`u16` が 2027 で、`u24` が両方の edition で拒否） | 作る所の判定を渡す値の型で狭めた。すべて受理（`t06` 19、`u24` 19 など、基準と同じ） | `tests/rc.rs` `a_bound_value_that_no_store_reaches_through_makes_no_sink`、E2E `dispatch_table_then_move` |
+| 2（セルを所有する関数値があると、無関係なハンドラーの配列が拒否される。仮引数があると文言が違う） | 再現（`w05`・`w06`・`w08`・`w09`・`w15`） | 引数と局所値を型で狭め、仮引数には呼び出し元の loan だけを足す。すべて受理（`w06` 19、`w08` 20、`w15` 13） | `a_function_value_of_a_type_that_no_owner_has_reaches_no_hidden_cell`、E2E `other_type_handlers_then_move` |
+| 3（`owned_sinks` のもとで見えない呼び出しの数の 3 乗） | 再現（`p01_many_locals_*`） | `Value::absorb`、`flag_sites`、`storing`。`p01` は `store_hidden` を通らなくなった | 時間の閾値は置かない（下の表） |
+| 4（`'leak.$mono.2'`） | 再現（`g07`・`g01`） | 宣言の名前にした | `the_error_of_a_generic_callee_names_its_declaration` |
+| 5（呼び出し先の閉包を呼ぶだけのコールバックが `E1013`） | 再現（`r17`・`r20_Array_mapi`・`r13m` が 2027 で、`r13j`・`r14`・`r15`・`r13b`・`r13c`・`r13g` が両方で拒否） | 書き込みうる先があるときだけの `E1013` と、作る所の判定の型。すべて受理（`r17` 21 など） | `a_call_that_hands_nothing_keeps_no_borrow_of_the_callee`（と指摘 1 のテストの `r17`・`r20`・`r13j`・`r14`）、E2E `callback_calls_a_callee_closure` |
+| 6（参照越しのハンドラーのレコード） | 再現（`r18` が 2027 で拒否） | 指摘 1 と `sink_types`。受理（22） | 指摘 1 のテスト、E2E `handler_record_then_move` |
+| 7（純粋なハンドラーにクロージャを渡すと、すべての局所値へ格納） | 再現（`r10`・`r3`・`r4`・`r9`） | 引数の型の判定、`known_parts`、`sink_types`。すべて受理（43・19・19・17） | 指摘 2 のテスト |
+| 8（dyn 値を持つ場所が常に書き込み先） | 再現（`dyn1`・`dyn2`） | `dyn_targets`。受理（37）。書き込むメソッド・`ref Mutex` を返すメソッドの dyn は拒否のまま（`r2/adv/v04`・`v05`） | `a_dyn_value_is_a_store_target_only_through_methods_that_store` |
+| 9（参照だけを捕捉した閉包の破棄） | 再現（`d6`・`d3`） | `value_runs_drop_code`。受理（35・25） | `dropping_a_closure_runs_only_what_its_captures_drop`、E2E `closure_over_references_then_move` |
+| 10（局所値の多い関数の検査が 7 倍） | 再現（`perf_locals_*`） | 指摘 3 と同じ | 下の表 |
+| 11（`lifetimes.md` の作る所の一覧が実装より狭い） | 確認 | 実装を狭め、文書を実装に合わせた（下の「更新した文書」） | — |
+
+新しいテストは、どれも対応前の先端（`d9b2a96f`）の `src/` では失敗します（`src/` だけを戻して `cargo nextest run --test rc` で確かめました: 7 件が失敗）。
+
+判断（どれも「健全性を保ち、受理している安全なプログラムを受理のまま保つ、最も保守的な選択」）:
+
+- 型による区別は、型が同じなら別の関数値でも同じに扱います。所有する関数値と型が同じハンドラーを、本体の見えない形（関数の結果、フィールド、`let mut`）で呼ぶと、ハンドラーが書き込まなくても借用が残ります。不変な配列リテラル・レコードリテラルに束縛したハンドラーは `known_parts` で受理します。文書（`lifetimes.md`）に例を書きました。
+- 隠れた環境の規則は、どのセルかを区別しません。関数の中で作ったセルを所有する関数値へ局所値の借用を渡し、所有する関数値と型の同じ仮引数を持つ関数（`r2/adv/w18`）は、仮引数がそのセルを共有しえないのに `E1013` です（第 1 回の先端から同じ。基準は受理）。セルの同一性を追う変更が要るので、この対応では変えていません。
+- 単体テスト `retention_tests::store_facts_follow_what_the_bodies_store` の `Source` の期待を、欄の意味の変更に合わせて `hides: false, target: true` にしました（`hides` は「所有する関数値を持ちうるかセルに届く」になり、この単体テストのプログラムには所有する関数値がありません。`target` は新しい欄です）。単体テスト `retention_tests::the_sink_flags_follow_the_function_values_of_the_module` の 3 つめの事例（`a31_mk`）の `owned_types` の数を 2 から 1 にしました。数えていた 2 つめは、ロックへ渡すコールバック `\slot -> Array.write 0 g slot`（`g` を束縛した holder）で、`g` の型 `unit -> i64` は所有する関数値の型ではなく、それを持ちうる型でもないので、holder の不動点では加わりません（上の holder の変更）。ほかの既存のテストの期待は変えていません。

@@ -1521,6 +1521,16 @@ fn joint_facts(
             dependents.entry(callee).or_default().insert(user);
         }
     }
+    // A body that drops a value runs a `Drop.drop` without naming it, and reads its facts
+    // (`Checker::drop_borrows_self`): every body depends on the facts of every `Drop.drop`.
+    if drops_write {
+        for drop in module.user_drops.values() {
+            dependents
+                .entry(*drop)
+                .or_default()
+                .extend(checked.iter().filter(|user| *user != drop));
+        }
+    }
     // Callees before their callers, so that a chain without recursion settles in one pass.
     let mut order = Vec::with_capacity(checked.len());
     let mut visited = BTreeSet::new();
@@ -1557,14 +1567,17 @@ fn joint_facts(
         }
     }
     // The functions whose facts the sink flags read (`sink_flags`: the code of the function
-    // values that the module makes, and the slot functions of the vtables), with the functions
-    // whose facts theirs come from. They settle first, with the flags, before the other bodies
+    // values that the module makes, and the slot functions of the vtables) and the `Drop.drop`
+    // bodies, whose facts every body that drops a value reads, with the functions whose facts
+    // theirs come from. They settle first, with the flags, before the other bodies
     // are checked under the flags that result: a large body that calls function values is then
     // checked once rather than once more for each rise of the flags.
     let mut first = if infer || !candidates.seeded {
         BTreeSet::new()
     } else {
-        flag_sites(module)
+        let mut sites = flag_sites(module);
+        sites.extend(module.user_drops.values().copied());
+        sites
     };
     let mut pending: Vec<usize> = first.iter().copied().collect();
     while let Some(id) = pending.pop() {
@@ -9822,7 +9835,17 @@ mod retention_tests {
                  fn a31_mk a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\n\
                  let w = a31_mk (Arc.new (Mutex.create [\\() -> 0]))\nw (\\() -> 1)\n0"
             ),
-            // The lambda, and the callback that it gives the lock, which holds `g`.
+            // The lambda. The callback that it gives the lock holds `g`, whose type no owner
+            // has and which can hold no owner, so it is no holder of one.
+            (true, true, false, 1)
+        );
+        // A lambda that holds such an owner reaches its cell: its type joins them.
+        assert_eq!(
+            flags(
+                "def a31_mk :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\n\
+                 fn a31_mk a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\n\
+                 let w = a31_mk (Arc.new (Mutex.create [\\() -> 0]))\nlet h = \\() -> w (\\() -> 1)\nh ()\n0"
+            ),
             (true, true, false, 2)
         );
         // A lambda that only reads the cell that it owns stores nothing.
