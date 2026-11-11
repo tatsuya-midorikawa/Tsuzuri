@@ -297,7 +297,7 @@ flowchart TD
 | `E1014` | 借用の競合、不変な値への可変アクセス。借用の競合は、借用した位置（`borrowed_here`）、借用を生かしている後の使用（`borrow_used_here`）と `help` を持ちます。`let` で宣言した変数への可変アクセスは、その宣言（`declared_here`）と `help` を持ちます |
 | `E1015` | 曖昧な型変数、無限型、多相の不正 |
 | `E1016` | 型クラスとインスタンス。`Drop` を含む（std の型への利用者の `Drop` の instance は `E1016`。std のモジュールが自分で宣言した型には、std が書く） |
-| `E1017` | コンパイラの資源上限。`tsuzuri fix` の 1 ラウンドの修正案が 20,000 件を超えた場合（`fix_candidate_limit`）、`--overflow-report` の地点が 65,536 を超えた場合（`too_many_overflow_sites`）、`tsuzuri test --doc` の例が 10,000 個を超えた場合（`doc_example_limit`）、匿名共用体の要素が平坦化した後に 32 個を超えた場合（`anonymous_union_member_limit`）を含む |
+| `E1017` | コンパイラの資源上限。`tsuzuri fix` の 1 ラウンドの修正案が 20,000 件を超えた場合（`fix_candidate_limit`）、`--overflow-report` の地点が 65,536 を超えた場合（`too_many_overflow_sites`）、`tsuzuri test --doc` の例が 10,000 個を超えた場合（`doc_example_limit`）、匿名共用体の要素が平坦化した後に 32 個を超えた場合（`anonymous_union_member_limit`）、1 つの制約から導かれるインスタンスの要件が 128 個を超えた場合（`instance_resolution_limit`。匿名共用体の要素そのものの要件は数えず、匿名共用体を解いていたときは数え方と対処を言う `help` を持ちます。[匿名共用体](../built-in-types-and-modules/anonymous-union.md#持たないクラスとそのほかの規則)）を含む |
 | `E1018` | ファイル種別の規則違反（`.tc` 以外の `@alias` を含む）、未知のビルダー、必要なビルダー操作の未定義、ビルダー候補の曖昧・不在、GPU カーネルにできない構文（厳密な WGSL の `f32`・`f16`・64 bit の要素、緩い WGSL（`Gpu.init_relaxed`・`Gpu.map_relaxed`・`--emit wgsl-relaxed`）の `f64`・64 bit 整数・`bool` の要素・`f32`・`f16` から整数と `f32` と `f64` の間のキャスト、整数の除算と剰余を含む）、Vulkan 用の厳密な SPIR-V（`Gpu.map`・`--emit spirv`）の `f32` の `/`・`f64`・`f16`・`bool` の要素・整数の除算と剰余と `**`、緩い SPIR-V（`--emit spirv-relaxed`）の 64 bit 整数の要素と `f32` から整数へのキャスト、標準ライブラリからの不正な `export`、`.tt` と標準ライブラリの `bench` 宣言、`tsuzuri bench` 以外の出力でトップレベルのコード・`export def`・実行するテスト・`Drop` の実装から到達する `Bench.now` |
 | `E1019` | `rec` の過不足、単独の `and` |
 | `E1020` | パターンの形、OR パターンの束縛、共用体のペイロード。未知のケース・アクティブパターンは、近い名前の候補を持ちます（下の「未知の名前の候補」） |
@@ -305,7 +305,7 @@ flowchart TD
 | `E1022` | 他モジュールの `private`、公開 API からの private 型、不透明な標準ライブラリ型（`Map`、`Arena`、`Arena.Handle`、`Net.Address`、`Atomic`、`Mutex`、`DataChannel.Sender`、`DataChannel.Receiver` など）の直接構築・フィールド参照、std 専用の組み込み関数（`Os.__read`、`Net.__open`、`Arena.__next_id`、`Gpu.__open`、`DataChannel.__close_sender` など）の呼び出し |
 | `E1023` | ループ外の `break` / `continue`、`finally` を越える脱出 |
 | `E1024` | 型パラメーター、共用体と型エイリアスの名前、循環するエイリアス。共用体の重複したケースは、最初の定義（`first_defined_here`）を持ちます |
-| `E1025` | `deriving` できない型クラスや要素、止まらない `Default`、`Encode`／`Decode` を導出しない型の `@json`、重なった `@json` の名前。要素が読む JSON の種類が重なる[匿名共用体](../built-in-types-and-modules/anonymous-union.md#jsonencode-と-decode)の `Decode`（`anonymous_union_decode_overlap`。`deriving` がなくても出ます） |
+| `E1025` | `deriving` できない型クラスや要素、止まらない `Default`、`Encode`／`Decode` を導出しない型の `@json`、重なった `@json` の名前。要素が読む JSON の種類が重なる[匿名共用体](../built-in-types-and-modules/anonymous-union.md#jsonencode-と-decode)の `Decode`（`anonymous_union_decode_overlap`。種類が決まらない要素と、型変数を持ち、すべての型引数についての `Decode` のインスタンスがない要素も含みます。`deriving` がなくても出ます） |
 | `E1026` | コンパイル時定数と `const def` のトラップ、循環、ステップ上限、`const def` の署名（値型でない引数や結果）と本体（使えない式）の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `E1027` | 条件付きインスタンスやスーパークラスの制約 |
 | `E1028` | `dyn` にできない型クラス。理由はメッセージに入る |

@@ -9,7 +9,7 @@
 - 期待される型が匿名共用体の位置では、要素の型の値がそのまま匿名共用体の値になります（注入）。構築用の関数はありません。
 - 取り出しは型テストのパターン `:? T`・`:? T as x` です。`match` の網羅性を検査し、足りなければ `E1021`（`missing: :? bool`）です。
 - 型変数・区別できない要素・重複した要素は `E1041`、借用を含む要素は `E1013`、33 個以上の要素は `E1017` です。
-- 要素がすべて `Eq`・`Ord`・`Hash`・`Display` を持てば、匿名共用体も同じクラスを持ちます（タプルと同じ、組み込みのインスタンスです）。`==`・`<`・`$"{v}"` を書け、`HashMap`・`HashSet`・`Map`・`Set` のキーにできます。
+- 要素がすべて `Eq`・`Ord`・`Hash`・`Display` を持てば、匿名共用体も同じクラスを持ちます（タプルと同じ、組み込みのインスタンスです）。`==`・`<`・`$"{v}"` とリテラルのパターン（`| 1 ->`）を書け、`HashMap`・`HashSet`・`Map`・`Set` のキーにできます。
 - JSON では、`Encode` がペイロードの JSON だけを書きます（タグを書きません）。`Decode` は、JSON の値の種類で要素が 1 つに決まる匿名共用体だけが持ちます（`(i64 | string)` は持ち、`(i64 | f64)` は `E1025`）。
 - 名前付きの `union` と同じ表現で、native と WebAssembly で同じ結果です。新しいランタイム関数や import は使いません。
 
@@ -197,6 +197,8 @@ for :? i64 as n in values do total = total + n
 total
 ```
 
+値そのものと比べるリテラルのパターン（`| 1 ->`、`| "x" ->`）も、同じ `match` に書けます（[リテラルのパターン](#リテラルのパターン)）。
+
 網羅性は要素ごとのケースとして数えます。すべての要素をガードなしでテストすれば網羅的です。足りなければ `E1021` で、足りない要素を `:? T` で示し、`| :? bool -> unreachable ()` を足す修正案（`maybe`）を持ちます。ペイロードの中では `missing: Some (:? string)` のように示します。同じ要素の 2 回目のテストは `W1003`（到達不能）です。
 
 ## 要素の規則
@@ -251,6 +253,33 @@ true false true true false true true true
 - **比較演算子のもう一方の被演算子は、匿名共用体へ注入されます。** `a == 1` は、`1` を `i64` の要素として包んでから比べます。左辺が接尾辞のない数のリテラルの `1 == a` も同じです。左辺がそれ以外の式なら、左辺の型が右辺の期待される型になります。`"one" == b` は `E1003`（`expected string, found (i64 | string)`）なので、匿名共用体を左辺に書きます。
 - **浮動小数点の要素は、要素の比較のままです。** `(f64 | string)` の NaN は自分自身と等しくありません（`==` は `false`、`!=` は `true`、`<` は `false`）。`0.0` と `-0.0` は等しい値です。
 - **クラスを持たない要素があれば、その要素を示す `E1005` です。** `bool` は `Ord` を持たないので、`(i64 | bool)` は `==` を使えますが、`<` は `no instance for Ord<bool>` です。`record Point { x: i64, y: i64 }` に `Eq` がなければ、`(i64 | Point)` の `==` は `no instance for Eq<Main.Point>` です。
+
+### リテラルのパターン
+
+リテラルのパターンは `==` での比較です。匿名共用体が `Eq` を持てば、`match` の腕にリテラルを書けます。リテラルは、比較演算子の被演算子と同じ規則で匿名共用体へ注入してから比べます。
+
+```tsuzuri run=one%20ex%20other%20other%20other
+def name :: own (i64 | f64 | string) -> string = \value ->
+    match value with
+    | 1 -> "one"
+    | "x" -> "ex"
+    | _ -> "other"
+
+$"{name 1} {name "x"} {name 2} {name 1.0} {name "1"}"
+```
+
+実行結果:
+
+```text
+one ex other other other
+```
+
+- **別の要素の値は、どのリテラルにも一致しません。** `1` は整数の要素 `i64` として包まれるので、`f64` の `1.0` にも、文字列の `"1"` にも一致しません。
+- タプルやレコードの中（`| (1, "s") ->`、`| Row { key: 0, n: _ } ->`）、OR パターン（`| 7 | 8 | "y" ->`）、関数ガードにも書けます。型テスト `:? T as x` と同じ `match` に混ぜられます。
+- 注入の規則がそのまま働きます。2 つ以上の要素になりうるリテラルは `E1041`（`(i32 | i64)` への `| 1 ->`。`| 1i64 ->` と接尾辞を付けます）、どの要素の型でもないリテラルは `E1003` です。
+- 比べるのは匿名共用体の `Eq` なので、すべての要素に `Eq` が要ります。`Eq` を持たない要素があれば、その要素を示す `E1005` です（リテラルのない要素でも同じです）。その場合は、型テストで取り出してから比べます。
+- 浮動小数点の要素は、要素の `==` のままです。NaN はどのリテラルにも一致せず、`-0.0` は `0.0` に一致します。
+- リテラルのパターンは値を 1 つしか覆わないので、`_` の腕が要ります。`(i64 | bool)` に `true`・`false`・`:? i64` を並べても、`E1021`（`missing: _`）です。
 
 ### 表示
 
@@ -322,11 +351,12 @@ Hash.hash a == Hash.hash (Text "one")
 
 ### 持たないクラスとそのほかの規則
 
-- `Encode`・`Decode` は [JSON（Encode と Decode）](#jsonencode-と-decode) の規則で持ちます。それ以外のクラスのインスタンスはありません。`Default` と `Arbitrary` は、どの要素の値を作るかを決められないので持ちません。`Format` もありません。`Default.default()` や書式指定の補間 `$"{v:x}"` は `E1005`、匿名共用体を持つ型の `deriving (Default)` は `E1025` です。メッセージは `no instance for Default<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` で、インスタンスの定義は勧めません。幅と寄せだけの補間 `$"{v:>5}"` は `Display` を使うので書けます。
+- `Encode`・`Decode` は [JSON（Encode と Decode）](#jsonencode-と-decode) の規則で持ちます。メソッドを持つほかの組み込みクラス（`Default`・`Format`・`Arbitrary`、`Add` などの演算子のクラス）のインスタンスはありません。プログラムが宣言したクラスも、匿名共用体のためのインスタンスは書けません（すべての型に当てはまる `instance Size<'a>` だけは、匿名共用体にも当てはまります）。メソッドのないクラス `Copy`・`Send`・`Sync`・`Capture` は、要素から決まります（[型の性質](#型の性質)。`Copy<'a>` を要る総称の関数に `(i64 | f64)` を渡せます）。`Default` と `Arbitrary` は、どの要素の値を作るかを決められないので持ちません。`Default.default()` や書式指定の補間 `$"{v:x}"` は `E1005`、匿名共用体を持つ型の `deriving (Default)` は `E1025` です。メッセージは `no instance for Default<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` で、インスタンスの定義は勧めません。幅と寄せだけの補間 `$"{v:>5}"` は `Display` を使うので書けます。
 - 匿名共用体を head とする `instance` は書けません（`E1041`）。比較や表示の規則を自分で決めたいときは、レコードで包むか、名前付きの `union` を宣言します。
 - `Dyn.of v` で `dyn Display`・`dyn Encode` などに格納できます（タプルと同じです）。表示はペイロードだけです。
-- `const def` の中では、タプルや名前付きの共用体と同じく比較演算子を使えません（`E1026`）。
+- `const def` の中では、タプルや名前付きの共用体と同じく比較演算子を使えません（`E1026`）。リテラルのパターンも同じ比較なので、同じ `E1026`（`an operator on a record, tuple, array, or union is not allowed in a const def; ...`）がパターンの位置に出ます。
 - インスタンスは要素のインスタンスを呼ぶ関数です。`pure def` の中で匿名共用体を比べたり表示したりするには、要素のインスタンスも純粋でなければなりません（`E1029`）。
+- **インスタンスの解決には上限があります。** 1 つの制約（`a < b` の `Ord` など）から導かれる要件は 128 個までで、超えると `E1017`（kind `instance_resolution_limit`）です。匿名共用体の要素そのものの要件は数えません（要素は 32 個までなので）。要素の中の型（タプルや配列の要素、導出したレコードのフィールドの型）は、異なる型ごと・クラスごとに 1 個で、`Ord` は `Eq` も要るので 2 個です。たとえば、互いに異なる 64 個のレコードを 2 個ずつタプルにした 32 要素の匿名共用体は、`==` を使えますが、`<` は `E1017` です。型の種類を減らすか、要素の一部を、手書きのインスタンスを持つレコードで包みます（文脈のない手書きのインスタンスは、フィールドの型を辿らないので、クラスごとに 1 個です）。この上限はタプルやレコードにも同じに働きます。
 
 ## JSON（Encode と Decode）
 
@@ -356,6 +386,7 @@ Json.serialize items |> Result.default_value u8"error"
 | `Maybe<T>`、名前付きの共用体、`Json.Value`、手書きの `Decode` を持つ型 | 決まりません（どの要素とも重なります） |
 
 - 種類は要素の型の頭（`[T]` なら配列）だけで決まり、型引数では変わりません。総称の関数の中の `(['a] | string)` も `Decode<'a>` があれば読めます。
+- 型変数を持つ要素の種類も、匿名共用体を書いた位置で決めます。`record Pair<'a> { x: 'a } deriving (Decode)` の `(Pair<'a> | i64)` は、`Pair<'a>` がどの `'a` でも object を読むので、`Decode<'a>` があれば読めます。`Pair<'a>` に、すべての `'a` についての `Decode` のインスタンスがなければ、同じ `E1025` です（`the member Main.Pair<'a> has no Decode instance for every type of 'a ...`）。署名に `Decode<Pair<'a>> =>` を書いて、呼び出し側のインスタンスに任せることはできません。一部の型引数だけのインスタンスは手書きのもので、種類が決まらないためです。
 - `Maybe<T>` は `null` に加えて `T` の種類を、導出した名前付きの共用体は文字列と object を、`Json.Value` はすべての種類を読みます。手書きの `Decode` が何を読むかは、コンパイラには分かりません。これらを要素に持つ匿名共用体は `Decode` を持ちません。
 - `Decode` のインスタンスがない要素（`char`、固定長配列、5 要素以上のタプルなど）は、要素の型を言う `E1005`（`no instance for Decode<char>`）です。
 
@@ -376,6 +407,18 @@ let text = describe u8"\"seven\""
 let flag = describe u8"true"
 let fraction = describe u8"1.5"
 $"{number} | {text} | {flag} | {fraction}"
+```
+
+要素を選ぶ種類は、要素の `Decode` のインスタンスだけから決まります。`Encode` が何を書くかは調べません。`Json` のインスタンスと、`Encode`・`Decode` の両方を導出した型は、書く種類と読む種類が同じなので、書いた JSON は書いた要素として読み戻されます。`Decode` を導出して `Encode` を手書きしたレコードが object 以外を書くと、その JSON は、その種類を読む別の要素の値になるか、どの要素にも読まれません（そのレコードは、単独でも書いた JSON を読み戻せません）。
+
+```text
+record Meters { value: i64 } deriving (Decode)
+instance Encode<Meters> {
+    fn encode meters = Encode.encode (ref meters.value)    // object ではなく、数を書く
+}
+
+let length: (Meters | i64) = Meters { value: 1 }
+// Json.serialize は 1 を書き、それを (Meters | i64) として読むと i64 の 1 になります
 ```
 
 種類が重なる匿名共用体の `Decode` は `E1025`（kind `anonymous_union_decode_overlap`）です。メッセージが、重なる 2 つの要素か、種類が決まらない要素を示します。
@@ -427,7 +470,7 @@ $"{shown} {same}"
 | 大きさの上限 | 具体型ごとに 64 KiB（`E1010`） |
 | `export`・`extern` | 使えません（`E1008`） |
 | GPU カーネル | 使えません（`E1018`） |
-| 比較・順序・ハッシュ・表示 | 要素がすべてそのクラスを持てば、`Eq`・`Ord`・`Hash`・`Display` を持ちます（[比較・順序・ハッシュ・表示](#比較順序ハッシュ表示)）。`Default`・`Format`・`Arbitrary` はありません（`E1005`。`deriving` では `E1025`） |
+| 比較・順序・ハッシュ・表示 | 要素がすべてそのクラスを持てば、`Eq`・`Ord`・`Hash`・`Display` を持ちます（[比較・順序・ハッシュ・表示](#比較順序ハッシュ表示)。要素の中の型が多いと、インスタンスの解決の上限で `E1017`）。`Default`・`Format`・`Arbitrary` はありません（`E1005`。`deriving` では `E1025`） |
 | JSON | 要素がすべて持てば `Encode` を持ちます。`Decode` は、要素が読む JSON の種類が重ならないときだけ持ちます（[JSON（Encode と Decode）](#jsonencode-と-decode)。重なれば `E1025`） |
 | インスタンス | 匿名共用体を head とする `instance` は書けません（`E1041`、kind `anonymous_union_instance`） |
 
@@ -498,7 +541,7 @@ def widen :: own (i64 | string) -> (i64 | string | bool) = \value ->
 - 期待される型が匿名共用体の位置で、要素の型の値を包みます。リテラル・ラムダ・`Dyn.of` は形で要素を選び、曖昧なら `E1041` です。
 - `:? T as x` で取り出し、`match` が網羅性を検査します。
 - 型変数・重複・区別できない要素は `E1041`、借用は `E1013`、33 個以上は `E1017` です。
-- 要素がすべて持てば、`Eq`・`Ord`・`Hash`・`Display` を持ちます。順序は正準順序で要素を比べ、表示はペイロードだけです。
+- 要素がすべて持てば、`Eq`・`Ord`・`Hash`・`Display` を持ちます。順序は正準順序で要素を比べ、表示はペイロードだけです。リテラルのパターンは `==` で比べます。
 - `Encode` はペイロードの JSON だけを書き、`Decode` は JSON の値の種類で要素を選びます。種類が重なる匿名共用体の `Decode` は `E1025` です。
 - `instance` は書けません。ラベルに意味があるデータは名前付きの `union` で表します。
 
