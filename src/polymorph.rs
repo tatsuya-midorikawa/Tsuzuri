@@ -47,6 +47,26 @@ struct Budget {
     settling: bool,
 }
 
+/// What one resolution has found (`Classes::reduce`): the obligations already resolved, and the
+/// obligations that stay for the type variables (`residual`, once each; `seen` holds their keys).
+/// The resolutions of the members of an anonymous union with type variables share one
+/// (`Classes::settle`), so that an obligation that several members need is resolved and counted
+/// once, as it is in the members of an anonymous union without type variables (A26).
+#[derive(Debug, Default)]
+struct Resolution {
+    completed: BTreeSet<(usize, Type)>,
+    seen: BTreeSet<(usize, Type)>,
+    residual: Vec<Constraint>,
+}
+
+impl Resolution {
+    fn keep(&mut self, constraint: Constraint) {
+        if self.seen.insert((constraint.class, constraint.ty.clone())) {
+            self.residual.push(constraint);
+        }
+    }
+}
+
 /// The specialization limits: all specializations, and growth along one chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SpecializationLimits {
@@ -2441,56 +2461,49 @@ impl Classes {
         constraint: &Constraint,
         types: &TypeContext<'_>,
     ) -> Result<Vec<Constraint>, Diagnostic> {
+        let mut resolution = Resolution::default();
         self.reduce(
             constraint,
             (0, Part::Outside),
             &BTreeMap::new(),
             &mut Budget::default(),
+            &mut resolution,
             types,
-        )
+        )?;
+        Ok(resolution.residual)
     }
 
-    /// The obligations of `constraint` that stay for the type variables, or the diagnostic of
-    /// the first one that fails. `start` is the depth and the part of `constraint`, `ancestors`
-    /// the obligations being resolved around it (for cycles), and `budget` is shared with them:
-    /// `normalize` starts at depth 0, outside any anonymous union, with no ancestors.
+    /// Resolves `constraint`, adding the obligations that stay for the type variables to
+    /// `resolution`, or gives the diagnostic of the first one that fails. `start` is the depth
+    /// and the part of `constraint`, `ancestors` the obligations being resolved around it (for
+    /// cycles), and `budget` is shared with them: `normalize` starts at depth 0, outside any
+    /// anonymous union, with no ancestors and an empty `resolution`.
     fn reduce(
         &self,
         constraint: &Constraint,
         start: (usize, Part),
         ancestors: &BTreeMap<(usize, Type), (usize, bool)>,
         budget: &mut Budget,
+        resolution: &mut Resolution,
         types: &TypeContext<'_>,
-    ) -> Result<Vec<Constraint>, Diagnostic> {
+    ) -> Result<(), Diagnostic> {
         let mut pending = vec![(constraint.clone(), start.0, false, start.1)];
-        let mut residual = Vec::new();
-        let mut seen = BTreeSet::new();
         let mut active = ancestors.clone();
-        let mut completed = BTreeSet::new();
-        // A26: the overlap of an anonymous union's `Decode` waits until the obligations of its
-        // members, pushed above this length of `pending`, are resolved: a member without an
-        // instance is what to fix first (D7).
-        let mut overlaps: Vec<(usize, Diagnostic)> = Vec::new();
-        loop {
-            if let Some((mark, _)) = overlaps.last()
-                && pending.len() <= *mark
-                && let Some((_, overlap)) = overlaps.pop()
-            {
-                return Err(overlap);
-            }
-            let Some((current, depth, finished, part)) = pending.pop() else {
-                break;
-            };
+        // A26: the overlap of an anonymous union's `Decode` waits until every other obligation
+        // of this resolution is resolved, whatever the order of the members: a member without
+        // an instance, inside this union or beside it, is what to fix first (D7).
+        let mut overlap: Option<Diagnostic> = None;
+        while let Some((current, depth, finished, part)) = pending.pop() {
             if current.ty.contains_error() {
                 continue;
             }
             let key = (current.class, current.ty.clone());
             if finished {
                 active.remove(&key);
-                completed.insert(key);
+                resolution.completed.insert(key);
                 continue;
             }
-            if completed.contains(&key) {
+            if resolution.completed.contains(&key) {
                 continue;
             }
             if let Some(&(start, _)) = active.get(&key) {
@@ -2580,39 +2593,37 @@ impl Classes {
                     // outermost union gets the rest of the budget for its members and gives it
                     // back, and the unions inside its members share that part. A union inside
                     // the members that stays whole keeps the outermost one whole, so that
-                    // resolving the result again gives the same result.
+                    // resolving the result again gives the same result. The members of the
+                    // outermost union, and of the unions inside them, share one resolution, which
+                    // is kept only when they all hold.
                     let saved = *budget;
                     budget.settling = true;
-                    let found = match self.settle(&current, depth, &active, budget, types) {
-                        Ok(found) => found,
-                        Err(error) if saved.settling => return Err(error),
-                        Err(_) => {
-                            *budget = saved;
-                            vec![current.clone()]
-                        }
-                    };
-                    if !saved.settling {
-                        *budget = saved;
+                    if saved.settling {
+                        self.settle(&current, depth, &active, budget, resolution, types)?;
+                        continue;
                     }
-                    for constraint in found {
-                        if seen.insert((constraint.class, constraint.ty.clone())) {
-                            residual.push(constraint);
+                    let mut members = Resolution::default();
+                    match self.settle(&current, depth, &active, budget, &mut members, types) {
+                        Ok(()) => {
+                            for constraint in members.residual {
+                                resolution.keep(constraint);
+                            }
                         }
+                        Err(_) => resolution.keep(current.clone()),
                     }
+                    *budget = saved;
                     continue;
                 }
                 // A26: an anonymous union decodes only when the JSON value selects one member.
                 if union
                     && class.name == "Decode"
+                    && overlap.is_none()
                     && let Err(message) = self.decode_members(&current.ty, types)
                 {
-                    overlaps.push((
-                        pending.len(),
-                        Diagnostic::of(
-                            DiagnosticKind::AnonymousUnionDecodeOverlap,
-                            message,
-                            current.span,
-                        ),
+                    overlap = Some(Diagnostic::of(
+                        DiagnosticKind::AnonymousUnionDecodeOverlap,
+                        message,
+                        current.span,
                     ));
                 }
                 let below = if union { Part::Member } else { part.below() };
@@ -2649,31 +2660,31 @@ impl Classes {
                     )
                 }));
             } else if !variables(&current.ty).is_empty() {
-                if seen.insert((current.class, current.ty.clone())) {
-                    residual.push(current);
-                }
+                resolution.keep(current);
             } else {
                 self.validate_instance(&current, types)?;
             }
         }
-        Ok(residual)
+        overlap.map_or(Ok(()), Err)
     }
 
-    /// The obligations that stay for the members of `union`, an anonymous union with type
-    /// variables, when every member meets its constraint (A26); the first error when one does
-    /// not, or when the members of `Decode<union>` do not read disjoint kinds of JSON values. A
-    /// member whose instance is missing only for these variables may still meet it for the types
-    /// that they take, and the kinds of a member with no instance yet are not known, so the
-    /// caller keeps the constraint of the union whole: where the variables are known, it is
-    /// resolved again, and any error is reported there.
+    /// Resolves the members of `union`, an anonymous union with type variables, in one shared
+    /// `resolution`, which then holds the obligations that stay for them when every member meets
+    /// its constraint (A26); the first error when one does not, or when the members of
+    /// `Decode<union>` do not read disjoint kinds of JSON values. A member whose instance is
+    /// missing only for these variables may still meet it for the types that they take, and the
+    /// kinds of a member with no instance yet are not known, so the caller keeps the constraint
+    /// of the union whole: where the variables are known, it is resolved again, and any error is
+    /// reported there.
     fn settle(
         &self,
         union: &Constraint,
         depth: usize,
         active: &BTreeMap<(usize, Type), (usize, bool)>,
         budget: &mut Budget,
+        resolution: &mut Resolution,
         types: &TypeContext<'_>,
-    ) -> Result<Vec<Constraint>, Diagnostic> {
+    ) -> Result<(), Diagnostic> {
         if self.declarations[union.class].name == "Decode" {
             match self.decode_members(&union.ty, types) {
                 Ok(Some(_)) => {}
@@ -2693,16 +2704,22 @@ impl Classes {
                 }
             }
         }
-        let mut found = Vec::new();
         for member in structural_elements(&union.ty) {
             let member = Constraint {
                 class: union.class,
                 ty: member.clone(),
                 span: union.span,
             };
-            found.extend(self.reduce(&member, (depth + 1, Part::Member), active, budget, types)?);
+            self.reduce(
+                &member,
+                (depth + 1, Part::Member),
+                active,
+                budget,
+                resolution,
+                types,
+            )?;
         }
-        Ok(found)
+        Ok(())
     }
 
     fn entails(
@@ -2895,7 +2912,8 @@ impl Classes {
     /// `Ok(None)` when a member has no `Decode` instance, which the member's own constraint
     /// reports; `Err` with the message of `anonymous_union_decode_overlap` when two members read
     /// the same kind or a member is not limited to kinds of its own. No member is a default.
-    /// `Classes::reduce` reports that message only after the members' own constraints hold, and
+    /// `Classes::reduce` reports that message only after every other obligation of its resolution
+    /// holds (the members' own constraints among them), and
     /// keeps the constraint of a union with type variables whole until they are known
     /// (`Classes::settle`); `Specializer::union_codec` reads the kinds again for the body.
     fn decode_members(

@@ -1714,7 +1714,7 @@ pub(super) fn decode_body(
             span,
         )
     };
-    let local = |id: usize, name: &str, ty: &Type| Local {
+    let local = |id: usize, name: &str, ty: &Type, span: Span| Local {
         id,
         ty: ty.clone(),
         name: name.into(),
@@ -1722,14 +1722,34 @@ pub(super) fn decode_body(
         span,
         provenance: Provenance::Generated,
     };
+    // `LastUses` keeps one move decision for each binding span (as in `Checker::retag`). A binding
+    // whose type is not both Copy and in need of a drop (the error, a number, a string) always
+    // says "copied" and no one reads its decision, so it has the empty span at the end of `span`:
+    // sharing `span` would take the move from the binding of an array member, which would then
+    // copy the decoded array element by element instead of moving it out of the result.
+    let binding_span = |ty: &Type| {
+        if ty.is_copy(types) && ty.needs_drop(types) {
+            span
+        } else {
+            Span {
+                start: span.end,
+                ..span
+            }
+        }
+    };
     let mut chain = mismatch;
     // The parameter is local 0; each arm has three locals of its own.
     for (index, (kind, member)) in arms.into_iter().enumerate().rev() {
         let member_type = &members[member];
         let decoded_type = Type::Union(*result_id, vec![member_type.clone(), error.clone()].into());
-        let decoded = local(1 + 3 * index, "$decoded", &decoded_type);
-        let item = local(2 + 3 * index, "$value", member_type);
-        let problem = local(3 + 3 * index, "$error", error);
+        let decoded = local(1 + 3 * index, "$decoded", &decoded_type, span);
+        let item = local(
+            2 + 3 * index,
+            "$value",
+            member_type,
+            binding_span(member_type),
+        );
+        let problem = local(3 + 3 * index, "$error", error, binding_span(error));
         let method = typed(
             TypedExprKind::Method(decode, 0, member_type.clone()),
             Type::function(vec![json.ty.clone()], decoded_type.clone()),

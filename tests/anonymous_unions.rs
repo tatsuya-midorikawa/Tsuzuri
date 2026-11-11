@@ -3327,6 +3327,18 @@ fn decode_overlap_is_rejected() {
             "(i64 | Main.Manual)",
             format!("the member Main.Manual {open}"),
         ),
+        // Copilot review round 1: an overlap inside a member, or beside the union in a tuple, is
+        // reported once every other obligation holds.
+        (
+            decode("(string | [(i64 | f64)])"),
+            "(i64 | f64)",
+            "the members i64 and f64 both read a JSON number".to_owned(),
+        ),
+        (
+            decode("((i64 | f64) * string)"),
+            "(i64 | f64)",
+            "the members i64 and f64 both read a JSON number".to_owned(),
+        ),
         // The method, a generic function and derived instances reach the same rule.
         (
             "def f :: ref Json.Value -> Result<(i64 | f64), Json.Error> = \\json -> Decode.decode json\n0\n".to_owned(),
@@ -3386,6 +3398,35 @@ fn decode_overlap_is_rejected() {
                 "record Box<'a> {{ v: 'a }} deriving (Decode)\n{}",
                 decode("(Box<char> | i64)")
             ),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
+        // Copilot review round 1: also when the overlap is inside another member, or beside the
+        // union in a tuple, whichever of the two the canonical order resolves first.
+        (
+            decode("(char | [(i64 | f64)])"),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
+        (
+            decode("(unit | [(i64 | f64)])"),
+            "no instance for Decode<unit>; define an instance or use a supported type",
+        ),
+        (
+            format!(
+                "record Plain {{ x: i64 }}\n{}",
+                decode("(Plain | [(i64 | f64)])")
+            ),
+            "no instance for Decode<Main.Plain>; define an instance or use a supported type",
+        ),
+        (
+            decode("((i64 * i64 * i64 * i64 * i64) | [(i64 | f64)])"),
+            "no instance for Decode<(i64 * i64 * i64 * i64 * i64)>; define an instance or use a supported type",
+        ),
+        (
+            decode("(char * (i64 | f64))"),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
+        (
+            decode("((i64 | f64) * char)"),
             "no instance for Decode<char>; define an instance or use a supported type",
         ),
     ] {
@@ -3609,6 +3650,71 @@ fn constraints_with_type_variables_wait_for_their_types() {
     // it is written: an instance context of the variable entails them, and calls run.
     passes(
         "record Wrap<'a> { v: (['a] | string) }\ninstance Eq<'a> => Eq<Wrap<'a>> {\n    fn rec eq left right = left.v == right.v\n    fn rec ne left right = left.v != right.v\n}\n\ntest \"settled in an instance\" =\n    let a = Wrap { v: [1, 2] }\n    let b = Wrap { v: [1, 2] }\n    let c = Wrap { v: \"x\" }\n    assert (a == b)\n    assert (a != c)\n",
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn members_with_type_variables_share_their_obligations() {
+    // Copilot review round 1: the members of an anonymous union with type variables are resolved
+    // in one shared resolution (`Classes::settle`), so an obligation that several members need is
+    // resolved and counted once, as it is in the members of a union without type variables.
+    // Counted by hand: a member `(Pk * [[[[['a]]]]])` is not counted itself and needs Eq<Pk>,
+    // Eq<i64> (the context of the derived instance), the five arrays and Eq<'a>: 8 obligations.
+    // Counted apart for 16 members, the union needed 1 + 16 * 8 = 129 > 128, so it stayed whole,
+    // and the context Eq<'a> does not entail it (E1027); shared, it needs 1 + 16 + 1 + 6 = 24.
+    let instance = "instance Eq<'a> => Eq<Wrap<'a>> {\n    fn rec eq left right = left.v == right.v\n    fn rec ne left right = left.v != right.v\n}\n";
+    let wrap =
+        |members: usize, member: &dyn Fn(usize) -> String, records: &dyn Fn(usize) -> String| {
+            let declarations: String = (0..members).map(records).collect();
+            let union = (0..members).map(member).collect::<Vec<_>>().join(" | ");
+            format!("{declarations}record Wrap<'a> {{ v: ({union}) }}\n{instance}")
+        };
+    let shared = wrap(16, &|k| format!("(P{k:02} * [[[[['a]]]]])"), &|k| {
+        format!("record P{k:02} {{ v: i64 }} deriving (Eq)\n")
+    });
+    passes(
+        &format!(
+            "{shared}\ndef same :: Eq<'a> => ref Wrap<'a> -> ref Wrap<'a> -> bool = \\left right -> left.v == right.v\n\n\
+             test \"shared elements\" =\n    let a = Wrap {{ v: (P03 {{ v: 1 }}, [[[[[2]]]]]) }}\n    let b = Wrap {{ v: (P03 {{ v: 1 }}, [[[[[2]]]]]) }}\n    let c = Wrap {{ v: (P04 {{ v: 1 }}, [[[[[2]]]]]) }}\n    let d = Wrap {{ v: (P03 {{ v: 1 }}, [[[[[3]]]]]) }}\n    assert (a == b && same (ref a) (ref b))\n    assert (a != c && not (same (ref a) (ref c)))\n    assert (a != d && not (same (ref a) (ref d)))\n"
+        ),
+        Edition::E2026,
+    );
+    // The limit still counts every distinct obligation. A member `(Pk * [[Qk<'a>]])` needs
+    // Eq<Pk>, Eq<[[Qk<'a>]]>, Eq<[Qk<'a>]> and Eq<Qk<'a>> of its own, and all of them share
+    // Eq<i64> and Eq<'a>: 1 + 4 * 31 + 2 = 127 for 31 members, within the budget, and
+    // 1 + 4 * 32 + 2 = 131 for 32, which keeps the union whole (E1027 in the instance).
+    let distinct = |members: usize| {
+        wrap(members, &|k| format!("(P{k:02} * [[Q{k:02}<'a>]])"), &|k| {
+            format!(
+                "record P{k:02} {{ v: i64 }} deriving (Eq)\nrecord Q{k:02}<'a> {{ v: 'a }} deriving (Eq)\n"
+            )
+        })
+    };
+    passes(
+        &format!(
+            "{}\ntest \"distinct elements\" =\n    let a = Wrap {{ v: (P30 {{ v: 1 }}, [[Q30 {{ v: 2 }}]]) }}\n    let b = Wrap {{ v: (P30 {{ v: 1 }}, [[Q30 {{ v: 2 }}]]) }}\n    let c = Wrap {{ v: (P30 {{ v: 1 }}, [[Q30 {{ v: 3 }}]]) }}\n    assert (a == b)\n    assert (a != c)\n",
+            distinct(31)
+        ),
+        Edition::E2026,
+    );
+    let source = distinct(32);
+    let error = rejects(&source, "E1027", "undeclared_instance_constraint");
+    assert_eq!(
+        error.message,
+        "instance method requires an undeclared constraint; add it to the instance context"
+    );
+    assert_eq!(error.span.start, source.find("Eq<Wrap<'a>>").unwrap());
+    // An instance that the resolution of a member meets again is a cycle, as before: members
+    // that share `[Tree<'a>]` reach the derived instance of `Tree<'a>` that is being resolved.
+    // Expected values by hand: the payloads of the same member compare as arrays and tuples do,
+    // and values of two members differ.
+    passes(
+        "record Tree<'a> { v: ((string * 'a) | [Tree<'a>] | ([Tree<'a>] * i64)) } deriving (Eq, Ord)\n\n\
+         def leaf :: string -> i64 -> Tree<i64> = \\s n -> Tree { v: (s, n) }\n\
+         def node :: [Tree<i64>] -> Tree<i64> = \\ts -> Tree { v: ts }\n\
+         def pair :: [Tree<i64>] -> i64 -> Tree<i64> = \\ts n -> Tree { v: (ts, n) }\n\n\
+         test \"recursive members\" =\n    assert (leaf \"a\" 1 == leaf \"a\" 1 && leaf \"a\" 1 != leaf \"a\" 2)\n    assert (leaf \"a\" 1 < leaf \"a\" 2 && leaf \"a\" 9 < leaf \"b\" 0)\n    assert (node [leaf \"a\" 1] == node [leaf \"a\" 1] && node [leaf \"a\" 1] < node [leaf \"a\" 2])\n    assert (pair [leaf \"a\" 1] 2 == pair [leaf \"a\" 1] 2 && pair [leaf \"a\" 1] 2 < pair [leaf \"a\" 1] 3)\n    assert (node [leaf \"a\" 1] != pair [leaf \"a\" 1] 0)\n    assert (node [] != pair [] 0)\n",
         Edition::E2026,
     );
 }
@@ -3948,6 +4054,113 @@ test "the method as a function value" =
 "#,
         Edition::E2027,
     );
+}
+
+#[test]
+fn decode_moves_array_members_out_of_the_result() {
+    // Copilot review round 1: the arm of an array member moves the decoded array out of the
+    // member's result into the union. Its binding shared one span with the binding of the error,
+    // which is not Copy, so `LastUses` copied the array element by element: `@no_copy` rejected
+    // `Decode.decode` (E1031), and decoding allocated once more than decoding the array itself.
+    // `Row` is Copy and holds an array, so `(Row | [f64] | string)` has two arms that move.
+    let source = r#"record Row { cells: [i64] } deriving (Decode)
+
+@no_copy
+def numbers :: ref Json.Value -> Result<(i64 | [i64]), Json.Error> = \json -> Decode.decode json
+
+@no_copy
+def table :: ref Json.Value -> Result<(Row | [f64] | string), Json.Error> = \json -> Decode.decode json
+
+@no_copy
+def whole :: ref utf8string -> Result<(i64 | [i64]), Json.Error> = \text -> Json.deserialize text
+
+@no_copy
+def plain :: ref utf8string -> Result<[i64], Json.Error> = \text -> Json.deserialize text
+
+def sum :: own [i64] -> i64 = \xs ->
+    let mut total = 0i64
+    for index in 0i64 ..< xs.length do total = total + xs[index]
+    total
+
+def total :: own (i64 | [i64]) -> i64 = \v ->
+    match v with
+    | :? i64 as n -> n
+    | :? [i64] as xs -> sum xs
+
+@no_copy
+def through_union :: unit -> i64 = \() ->
+    match whole u8"[1, 2, 3]" with
+    | Ok v -> total v
+    | Error _ -> -1
+
+@no_copy
+def direct :: unit -> i64 = \() ->
+    match plain u8"[1, 2, 3]" with
+    | Ok xs -> sum xs
+    | Error _ -> -1
+
+def allocations :: (unit -> i64) -> i64 = \f ->
+    let start = Alloc.snapshot ()
+    let value = f ()
+    let used = start |> Alloc.since
+    if value == 6 && used.frees == used.allocs then used.allocs else -1
+
+def parsed :: own string -> Json.Value = \text ->
+    Result.get (Json.parse (ref (Utf8String.from_string (ref text))))
+
+def counted :: own Result<(i64 | [i64]), Json.Error> -> i64 = \result ->
+    match result with
+    | Ok v -> total v
+    | Error _ -> -1
+
+def measured :: own Result<(Row | [f64] | string), Json.Error> -> i64 = \result ->
+    match result with
+    | Ok v ->
+        match v with
+        | :? Row as row -> sum row.cells
+        | :? [f64] as values -> 10 * values.length
+        | :? string as s -> s.length
+    | Error _ -> -1
+
+test "an array member allocates nothing more than the array" =
+    assert (allocations direct > 0)
+    assert (allocations through_union == allocations direct)
+
+test "the decoded values" =
+    assert (counted (numbers (ref (parsed "[1, 2, 3]"))) == 6)
+    assert (counted (numbers (ref (parsed "[]"))) == 0)
+    assert (counted (numbers (ref (parsed "7"))) == 7)
+    assert (counted (numbers (ref (parsed "\"x\""))) == -1)
+    assert (measured (table (ref (parsed "{\"cells\": [4, 5]}"))) == 9)
+    assert (measured (table (ref (parsed "[1.5, 2.5]"))) == 20)
+    assert (measured (table (ref (parsed "\"abc\""))) == 3)
+    assert (measured (table (ref (parsed "true"))) == -1)
+"#;
+    for edition in [Edition::E2026, Edition::E2027] {
+        let module = accepts_in(source, edition);
+        let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+        assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+        // The two built-in instances allocate nothing: each arm moves what the member decoded.
+        let bodies: Vec<&str> = ir
+            .match_indices("\ndefine ")
+            .map(|(at, _)| &ir[at + 1..])
+            .filter(|rest| {
+                rest.lines()
+                    .next()
+                    .unwrap()
+                    .contains("@tz.fn.$intrinsic.Decode.decode.")
+            })
+            .map(|rest| &rest[..rest.find("\n}\n").expect("the definition ends")])
+            .collect();
+        assert_eq!(bodies.len(), 2, "{ir}");
+        for body in bodies {
+            assert!(!body.contains("@tz.alloc"), "{body}");
+        }
+        // Expected values by hand: 1 + 2 + 3, the empty sum, the number itself, 4 + 5, ten
+        // times the two numbers, the length of "abc"; a string or a boolean that no member reads
+        // is an error.
+        passes(source, edition);
+    }
 }
 
 /// Review round 2: a hole after the colon of a field, named or followed by an operator, is no
