@@ -306,6 +306,32 @@ export def narrow_copy :: i64 -> i64 = \n ->
         | :? f64 -> 1
     first + kept_part value * 1000 + call_or_scale (callable n) * 1000000
 
+// narrow_generic: a narrowing into Copy members of a union with a type variable copies the number in a step of the
+// pattern whatever the type argument, here a pair of a string and a function that captures n, which holds loans:
+// through a read parameter and from an owned value that is read again. The narrowing of a Copy union beside a binding
+// that moves another part of the matched value copies the array once.
+def generic_number :: (i64 | f64 | Maybe<'a>) -> i64 = \value ->
+    match value with
+    | :? (i64 | f64) as number -> scale number
+    | :? Maybe<'a> -> 7
+
+def generic_again :: own (i64 | f64 | Maybe<'a>) -> i64 = \value ->
+    let first = match value with
+        | :? (i64 | f64) as number -> scale number
+        | :? Maybe<'a> -> 0
+    first * 1000 + generic_number value
+
+def labelled_pair :: i64 -> (i64 | f64 | Maybe<(string * (i64 -> i64))>) = \n ->
+    if n % 3 == 0 then n else if n % 3 == 1 then (n as f64) * 0.5 else Some ($"pair {n}", \(k: i64) -> k + n)
+
+def beside_label :: own (string * (i64 | f64 | [i64])) -> i64 = \pair ->
+    match pair with
+    | (label, :? (i64 | [i64]) as kept) -> label.length * 1000 + part kept
+    | (label, _) -> label.length
+
+export def narrow_generic :: i64 -> i64 = \n ->
+    generic_number (labelled_pair n) + generic_again (labelled_pair n) * 10 + beside_label ($"n={n}", counted_or_half n) * 100000000
+
 // widen_captured: closures convert the values that they capture, on each call: a widening into an own and into a read
 // parameter, a widening in an annotated binding and a narrowing; the continuation of a computation expression widens
 // the value that it captures (`return`). A closure that does not consume its captures lends them to its body, so the

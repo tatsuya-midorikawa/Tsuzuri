@@ -4426,6 +4426,246 @@ fn narrowing_a_copy_union_copies_its_array_once() {
     passes(&read, Edition::E2027);
 }
 
+/// `arr` (100 for each number of an array, the i64 itself) and `balanced` (the value of `f ()`
+/// when it frees what it allocates, else -1) for the narrowing tests below.
+const ARR_BALANCED: &str = r#"def arr :: own ([i64] | i64) -> i64 = \n ->
+    match n with
+    | :? i64 as k -> k
+    | :? [i64] as xs -> xs.length * 100
+
+def balanced :: (unit -> i64) -> i64 = \f ->
+    let start = Alloc.snapshot ()
+    let value = f ()
+    let used = start |> Alloc.since
+    if used.frees == used.allocs then value else -1
+
+"#;
+
+#[test]
+fn narrowing_a_generic_union_copies_the_payload_for_every_type_argument() {
+    // A type variable may stand for a type that holds loans: `(i64 | f64 | Maybe<'a>)` with `'a` a
+    // pair of a string and a function, or a record with such fields, is not Copy and holds loans,
+    // and ownership and code generation decide views in each specialization
+    // (`TypedMatchArm::views`). So `:? (i64 | f64) as n` of a union with a type variable copies the
+    // payload in a step of the pattern for every type argument (Copilot review round 1,
+    // verification). Before, the hidden binding viewed the generic union and took the whole value
+    // in such a specialization: `E1012` behind a reference and a move of an owned value that is
+    // used again, both reported inside the generic definition.
+    // By hand: `num` is 2 k for the i64 k, 3 for an f64 above 1 and 0 for one below; `by_ref` 50 for
+    // a `Maybe`; `owned` is 1000 times the arm plus `by_ref`; `touched` 1000 num n + by_ref, 7 for a
+    // `Maybe`; `guarded` num n when it is above 4, 1 for another number, 2 for a `Maybe`; `beside`
+    // 1000 times the length of the string plus num n; `either` num n of the side that is a number.
+    // `sf base kind` is base, base + 0.5 or `Some` of a pair whose function captures `base`.
+    let functions = r#"record Pair { text: string, f: (i64 -> i64) }
+
+def by_ref :: ref (i64 | f64 | Maybe<'a>) -> i64 = \v ->
+    match v with
+    | :? (i64 | f64) as n -> num n
+    | :? Maybe<'a> -> 50
+
+def owned :: own (i64 | f64 | Maybe<'a>) -> i64 = \v ->
+    let r = match v with
+        | :? (i64 | f64) as n -> num n
+        | :? Maybe<'a> -> 0
+    r * 1000 + by_ref (ref v)
+
+def touched :: own (i64 | f64 | Maybe<'a>) -> i64 = \v ->
+    match v with
+    | :? (i64 | f64) as n -> num n * 1000 + by_ref (ref v)
+    | :? Maybe<'a> -> 7
+
+def guarded :: ref (i64 | f64 | Maybe<'a>) -> i64 = \v ->
+    match v with
+    | :? (i64 | f64) as n when num n > 4 -> num n
+    | :? (i64 | f64) -> 1
+    | :? Maybe<'a> -> 2
+
+def with_array :: ref (i64 | [i64] | Maybe<'a>) -> i64 = \v ->
+    match v with
+    | :? (i64 | [i64]) as x -> arr x
+    | :? Maybe<'a> -> 9
+
+def with_array_own :: own (i64 | [i64] | Maybe<'a>) -> i64 = \v ->
+    let r = match v with
+        | :? (i64 | [i64]) as x -> arr x
+        | :? Maybe<'a> -> 9
+    r * 1000 + with_array (ref v)
+
+def beside :: own (string * (i64 | f64 | Maybe<'a>)) -> i64 = \t ->
+    match t with
+    | (s, :? (i64 | f64) as n) -> s.length * 1000 + num n
+    | (s, _) -> s.length
+
+def either :: ref ((i64 | f64 | Maybe<'a>) * (i64 | f64 | Maybe<'a>)) -> i64 = \pair ->
+    match pair with
+    | (:? (i64 | f64) as n, :? Maybe<'a>) | (:? Maybe<'a>, :? (i64 | f64) as n) -> num n
+    | _ -> -1
+
+def sf :: i64 -> i64 -> (i64 | f64 | Maybe<(string * (i64 -> i64))>) = \base kind ->
+    let f = \(k: i64) -> k + base
+    if kind == 0 then base else if kind == 1 then (base as f64) + 0.5 else Some ($"ab{base}", f)
+
+def pr :: i64 -> i64 -> (i64 | f64 | Maybe<Pair>) = \base kind ->
+    if kind == 0 then base else if kind == 1 then (base as f64) + 0.5 else Some (Pair { text: $"x{base}", f: \(k: i64) -> k * base })
+
+"#;
+    let tests = r#"test "pair of a string and a function" =
+    let a = sf 3 0
+    let b = sf 2 1
+    let c = sf 3 2
+    assert (by_ref (ref a) == 6 && by_ref (ref b) == 3 && by_ref (ref c) == 50)
+    assert (guarded (ref a) == 6 && guarded (ref b) == 1 && guarded (ref c) == 2)
+    assert (balanced (\() -> owned (sf 3 0)) == 6006 && balanced (\() -> owned (sf 2 1)) == 3003 && balanced (\() -> owned (sf 3 2)) == 50)
+    assert (balanced (\() -> touched (sf 3 0)) == 6006 && balanced (\() -> touched (sf 2 1)) == 3003 && balanced (\() -> touched (sf 3 2)) == 7)
+    let t: (string * (i64 | f64 | Maybe<(string * (i64 -> i64))>)) = ($"abc{a |> by_ref}", sf 3 0)
+    assert (beside t == 4006)
+    let e: (i64 | [i64] | Maybe<(string * (i64 -> i64))>) = [1, 2]
+    assert (with_array (ref e) == 200 && balanced (\() -> with_array_own e) == 200200)
+    let pair = (sf 4 0, sf 4 2)
+    assert (either (ref pair) == 8)
+    let other = (sf 4 2, sf 2 1)
+    assert (either (ref other) == 3)
+
+test "record with a string and a function" =
+    let a = pr 7 0
+    let c = pr 2 2
+    assert (by_ref (ref a) == 14 && by_ref (ref c) == 50)
+    assert (balanced (\() -> owned (pr 7 0)) == 14014 && balanced (\() -> touched (pr 7 0)) == 14014)
+    assert (balanced (\() -> owned (pr 2 2)) == 50)
+
+test "other type arguments" =
+    let s: (i64 | f64 | Maybe<string>) = 3
+    let i: (i64 | f64 | Maybe<i64>) = 2.5
+    let xs: (i64 | f64 | Maybe<[i64]>) = 4
+    let fs: (i64 | f64 | Maybe<(i64 -> i64)>) = 1
+    assert (by_ref (ref s) + owned s == 6012)
+    assert (by_ref (ref i) + owned i == 3006)
+    assert (by_ref (ref xs) + owned xs == 8016)
+    assert (by_ref (ref fs) + owned fs == 2004)
+    let t: (i64 | [i64] | Maybe<string>) = [1, 2, 3]
+    let u: (i64 | [i64] | Maybe<i64>) = [4]
+    assert (balanced (\() -> with_array_own t) == 300300 && balanced (\() -> with_array_own u) == 100100)
+"#;
+    passes(
+        &[NUM, ARR_BALANCED, functions, tests].concat(),
+        Edition::E2026,
+    );
+    // A read parameter (2027) is a view too. By hand: 6 + 3 + 50.
+    let read = r#"def read :: (i64 | f64 | Maybe<'a>) -> i64 = \v ->
+    match v with
+    | :? (i64 | f64) as n -> num n
+    | :? Maybe<'a> -> 50
+
+def sf :: i64 -> i64 -> (i64 | f64 | Maybe<(string * (i64 -> i64))>) = \base kind ->
+    let f = \(k: i64) -> k + base
+    if kind == 0 then base else if kind == 1 then (base as f64) + 0.5 else Some ($"ab{base}", f)
+
+test "read" =
+    assert (read (sf 3 0) + read (sf 2 1) + read (sf 3 2) == 6 + 3 + 50)
+"#;
+    passes(&[NUM, read].concat(), Edition::E2027);
+}
+
+#[test]
+fn narrowing_a_copy_union_beside_a_moved_part_copies_its_array_once() {
+    // The hidden binding of a narrowing into Copy members views a Copy union, and only a move of
+    // the part that it views meets that view (Copilot review round 1, verification). Beside a
+    // binding that moves another part (`s` takes `t.0`, the narrowing reads `t.1`), the hidden
+    // binding takes the value as a binding does: it moves out of the owned subject, which is dead
+    // afterwards, and the retagging copies the array once. Behind a reference it stays a view.
+    // Stepping the narrowing, as for `(:? W as x) as whole`, copied the array twice: into the value
+    // that the pattern makes and into the binding.
+    let functions = r#"record R { u: (i64 | f64 | [i64]), s: string }
+
+def size :: ref (i64 | f64 | [i64]) -> i64 = \v ->
+    match v with
+    | :? i64 as k -> k
+    | :? f64 -> 1
+    | :? [i64] as xs -> xs.length * 10
+
+def tuple :: own (string * (i64 | f64 | [i64])) -> i64 = \t ->
+    match t with
+    | (s, :? (i64 | [i64]) as x) -> s.length * 1000000 + arr x
+    | (s, _) -> s.length
+
+def field :: own R -> i64 = \r ->
+    match r with
+    | R { u = :? (i64 | [i64]) as x, s = s } -> s.length * 1000000 + arr x
+    | R { s = s } -> s.length
+
+def through :: own (string * ref (i64 | f64 | [i64])) -> i64 = \t ->
+    match t with
+    | (s, :? (i64 | [i64]) as x) -> s.length * 1000000 + arr x
+    | (s, _) -> s.length
+
+def either :: own ((string * (i64 | f64 | [i64])) * (i64 | f64 | [i64])) -> i64 = \p ->
+    match p with
+    | ((s, :? (i64 | [i64]) as x), :? f64) -> s.length * 1000000 + arr x
+    | ((s, :? f64), :? (i64 | [i64]) as x) -> s.length * 2000000 + arr x
+    | _ -> 0
+
+def ored :: own ((string * (i64 | f64 | [i64])) * (i64 | f64 | [i64])) -> i64 = \p ->
+    match p with
+    | ((s, :? (i64 | [i64]) as x), :? f64) | ((s, :? f64), :? (i64 | [i64]) as x) -> s.length * 1000000 + arr x
+    | _ -> 0
+
+def whole :: own (i64 | f64 | [i64]) -> i64 = \v ->
+    match v with
+    | (:? (i64 | [i64]) as x) as w -> arr x * 1000 + size (ref w)
+    | :? f64 -> 1
+
+"#;
+    let source = [ARR_BALANCED, functions].concat();
+    let module = accepts_in(&source, Edition::E2026);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    // One copy for each arm that narrows: the retagging copies the array of the narrowed value.
+    for (name, copies) in [
+        ("tuple", 1),
+        ("field", 1),
+        ("through", 1),
+        ("either", 2),
+        ("ored", 1),
+    ] {
+        let body = function_body(&ir, name);
+        assert_eq!(body.matches("@tz.alloc").count(), copies, "{name}:\n{body}");
+    }
+    // `W1006` is at the pattern only, as for a union that is not Copy, never at the binder.
+    let pattern = ":? (i64 | [i64]) as x";
+    let warnings = tsuzuri::copies::warnings(&module);
+    for name in ["tuple", "field", "through", "either"] {
+        let start = source.find(&format!("def {name} ::")).unwrap();
+        let end = start + source[start..].find("\n\n").unwrap();
+        let spelled: Vec<&str> = warnings
+            .iter()
+            .filter(|warning| warning.code == "W1006")
+            .filter(|warning| (start..end).contains(&warning.span.start))
+            .map(|warning| &source[warning.span.start..warning.span.end])
+            .collect();
+        let narrowings = source[start..end].matches(pattern).count();
+        assert_eq!(spelled, vec![pattern; narrowings], "{name}");
+    }
+    // Expected values by hand: the string's length times 1000000 (2000000 in the second arm of
+    // `either`) plus arr x; `whole` 1000 arr x plus size, 10 for each number of an array.
+    let tests = r#"def mk :: unit -> (i64 | f64 | [i64]) = \() -> [1, 2, 3]
+
+def through_caller :: unit -> i64 = \() ->
+    let v = mk ()
+    let r = through ($"ab{1}", ref v)
+    r + size (ref v)
+
+test "values" =
+    assert (balanced (\() -> tuple ($"ab{1}", mk ())) == 3000300 && balanced (\() -> tuple ("a", 7)) == 1000007 && balanced (\() -> tuple ("a", 0.5)) == 1)
+    assert (balanced (\() -> field (R { u: mk (), s: $"ab{1}" })) == 3000300 && balanced (\() -> field (R { u: 2.5, s: "ab" })) == 2)
+    assert (balanced through_caller == 3000330)
+    assert (balanced (\() -> either (($"ab{1}", mk ()), 2.5)) == 3000300 && balanced (\() -> either (($"ab{1}", 2.5), mk ())) == 6000300)
+    assert (balanced (\() -> either (("ab", 1.5), 1.5)) == 0)
+    assert (balanced (\() -> ored (($"ab{1}", mk ()), 1.5)) == 3000300 && balanced (\() -> ored (("ab", 1.5), 4)) == 2000004)
+    assert (balanced (\() -> whole (mk ())) == 300030 && balanced (\() -> whole 6) == 6006 && balanced (\() -> whole 0.5) == 1)
+"#;
+    passes(&[source.as_str(), tests].concat(), Edition::E2026);
+}
+
 #[test]
 fn hover_on_a_narrowed_binder_shows_the_narrowed_union() {
     let source = "def f :: own (f64 | i64 | string) -> (i64 | f64) = \\value ->\n    match value with\n    | :? (i64 | f64) as number -> number\n    | :? string -> 0\n0\n";
