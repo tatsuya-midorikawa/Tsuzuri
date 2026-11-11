@@ -238,6 +238,14 @@ A24 がレビュー第 1 回の修正まで入ったブランチ `feat/a24-anony
 9. **足したテスト**（`tests/anonymous_unions.rs`）: `anonymous_unions_have_structural_classes`・`missing_member_instance_names_the_member`・`no_default_for_anonymous_unions`（手順 2）、`eq_compares_tag_then_payload`・`ord_follows_member_order`・`hash_matches_named_union_stream`・`display_shows_the_payload`・`display_quotes_inside_tuples`・`nan_members_follow_member_eq`・`recursive_types_compare_through_named_unions`・`wide_unions_have_instances`（手順 3）、`derived_record_with_anonymous_field`・`hashset_and_map_keys`・`comparison_injects_right_operand`（`v == 1` と `1 == v`）・`dyn_stores_anonymous_union`・`const_definitions_refuse_the_operators_as_for_tuples`（手順 4）。実行するテストは native と WASM、`-O0` と `-O3` で通します（`passes`）。期待値は規則から手で求めた値です。
    - A24 のテストの変更は再検討の 9 のとおりです: `comparisons_and_exports_keep_their_rules` の `v == 1` を受理に、`missing_instances_do_not_ask_for_an_instance` の 3 例を `Add`・`Default`・`deriving (Default)` に替えました。
 
+10. **検証（手順 1〜4 の時点。最終確認は手順 7）**:
+    - 手順 1（基準）: `feat/a24-anonymous-unions` の先端（`bd625b4d`）の dev バイナリで、`features.mjs deriving` 209 件、`features.mjs anonymous_unions` 37 件、`cargo nextest run --locked --test deriving --test anonymous_unions` 77 件が通り、`tests/fixtures/` と `examples/` の 186 単位の native と wasm32 の IR・`check --json` を保存しました（`target/scratch/a26/before`）。T1 の基準は A24 の記録の 3062 passed、4 skipped です。
+    - T0: `cargo fmt --all -- --check`（差分なし）、`cargo clippy --all-targets --locked -- -D warnings`（警告なし）。
+    - T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 手順 2・3 と手順 4 のテストを入れた木で 3077 件のうち 3076 passed、4 skipped、1 件失敗（`driver::test_runner::tests::runner_rejects_malformed_indices_and_reaps_timed_out_children`。機械が混んでいるときの 1 秒の時間切れで、単独で回し直すと通る。このブランチの変更とは関係がありません）。`wide_unions_have_instances` を足した最終の木（手順 4 のコミット）では 3078 件すべて passed、4 skipped です（基準 3062 + 足した 16 件）。`tests/anonymous_unions.rs` は 85 件です。
+    - 既存の出力（手順 6 の先取り）: 手順 2〜4 のバイナリで 186 単位を取り直し、`sh target/scratch/a26/compare.sh before after` は終了コード 0（native と wasm32 の IR・`check --json` が 1 byte も違わない）。
+    - E2E（dev バイナリ）: `features.mjs deriving`（209 件）・`anonymous_unions`（37 件）・`dyn_dispatch`（58 件）・`hash_map`（199 件）が native と WASM、`-O0` と `-O3` で通りました。
+    - 確保の追跡: 一時的な suite（コミットしていません。`target/scratch/a26/probe/Main.tz`）で、比較・`Hash.hash`・`Display.display`（単独とタプルの中）・`HashSet` のキーを 1 つの export にまとめ、手計算の値（`probe 5 = 210011011`、`probe -2 = 210031101`）と一致し、native の host の `live == 0` と WASM（import なし）を `-O0`・`-O3` で通りました。手順 5 で正式な suite に入れます。
+
 ## 決定事項
 
 ### D1: 組み込みの構造的なインスタンス
