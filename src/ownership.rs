@@ -169,16 +169,22 @@ impl Value {
     /// Adds what `other` holds: a loan stays read through only when both values hold it so, or
     /// only one holds it and holds it so.
     fn absorb(&mut self, other: &Value) {
-        let own = |value: &Value| -> BTreeSet<usize> {
-            value.loans.difference(&value.through).copied().collect()
-        };
-        let mut held = own(self);
-        held.extend(own(other));
-        self.loans.extend(&other.loans);
-        self.through.extend(&other.through);
-        self.through.retain(|loan| !held.contains(loan));
-        let loans = &self.loans;
-        self.through.retain(|loan| loans.contains(loan));
+        // One loan of `other` at a time, so that adding a few loans to a value that holds many
+        // costs as many steps as the few (`Checker::store_hidden` adds to every local).
+        if !self.through.is_empty() {
+            let loans = &self.loans;
+            self.through.retain(|loan| loans.contains(loan));
+        }
+        for &loan in &other.loans {
+            let through = other.through.contains(&loan);
+            if self.loans.insert(loan) {
+                if through {
+                    self.through.insert(loan);
+                }
+            } else if !through {
+                self.through.remove(&loan);
+            }
+        }
     }
 
     /// Drops every loan.
@@ -621,7 +627,10 @@ fn start_checker<'a, 'run>(
             .collect(),
         cell_types: BTreeMap::new(),
         hidden_types: BTreeMap::new(),
+        shared_targets: BTreeMap::new(),
+        argument_types: BTreeMap::new(),
         known: BTreeMap::new(),
+        known_parts: BTreeMap::new(),
         store_memo: None,
         store_changes: 0,
         hidden_log: Vec::new(),
@@ -630,7 +639,7 @@ fn start_checker<'a, 'run>(
         tail_bound: false,
     };
     if !infer && facts.seeded {
-        known_functions(module, body, &mut checker.known);
+        known_functions(module, body, &mut checker.known, &mut checker.known_parts);
     }
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
@@ -815,8 +824,11 @@ struct Source {
     dying: bool,
     /// The argument is a reference itself (`Arg::lent`).
     lent: bool,
-    /// The argument's type may hide an environment or reach a cell (`Arg::hides`).
+    /// The argument's type may hold a function value that owns the cell that it writes, or
+    /// reaches a cell (`Arg::hides`).
     hides: bool,
+    /// The argument's type may be a place that a store reaches through it (`Arg::target`).
+    target: bool,
 }
 
 /// A31: a call of the function-valued parameter `callee` of a body with `arguments`.
@@ -911,6 +923,11 @@ struct CallFacts {
     /// hold one in their environment (`sink_flags`): a call of a function value of any other type,
     /// with arguments that hide no environment, reaches none.
     owned_types: BTreeSet<Type>,
+    /// A31: the types (`sink_type`) of the function values that may store into what their
+    /// environment reaches, or hold such a value in their environment (`sink_flags`): a call of a
+    /// function value of any other type stores nothing where the value's environment reaches, and
+    /// a place that holds only function values of other types is no place to store into.
+    sink_types: BTreeSet<Type>,
     /// A31: the module hands a value that may hold such a function value to code that runs it
     /// later, where no check follows it: the captures of a tzroutine, the item of a channel, an
     /// owned function that a builtin takes (`Routine.go`), the result of an `OnceValue`
@@ -924,12 +941,25 @@ struct CallFacts {
     /// (`top`): only then may code that the check does not see keep the reference that a read
     /// parameter or an operator lends (`Arg::reference`, `Arg::dying`).
     reference_sinks: bool,
+    /// A31: the dyn types (`DynType::vtable_key`) that have vtables in the module, and those
+    /// whose methods may store or give back a value through which a store may reach
+    /// (`sink_flags`): a store through a borrow of a place that holds a dyn value reaches what the
+    /// value stores only for those (`Checker::store_target`). A dyn type without vtables counts
+    /// as one of them.
+    dyn_types: BTreeSet<crate::check::DynType>,
+    dyn_targets: BTreeSet<crate::check::DynType>,
     /// A31: by function, whether its body does not check (`joint_facts`): the program is
     /// rejected there, so a call of it stores nothing more for its callers to report.
     failed: Vec<bool>,
 }
 
 impl CallFacts {
+    /// A31: whether a store may reach through a dyn value of type `dyn_type` (`dyn_targets`).
+    fn dyn_target(&self, dyn_type: &crate::check::DynType) -> bool {
+        let key = dyn_type.vtable_key();
+        !self.dyn_types.contains(&key) || self.dyn_targets.contains(&key)
+    }
+
     /// Whether a complete direct call of `function` passes none of the loans of its argument
     /// `index` to its result.
     fn temporary(&self, function: usize, index: usize) -> bool {
@@ -968,8 +998,11 @@ fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
         sinks: joint.sinks,
         owned_sinks: joint.owned_sinks,
         owned_types: joint.owned_types,
+        sink_types: joint.sink_types,
         escapes: joint.escapes,
         reference_sinks: joint.reference_sinks,
+        dyn_types: joint.dyn_types,
+        dyn_targets: joint.dyn_targets,
         failed: joint.failed,
     }
 }
@@ -1074,8 +1107,11 @@ struct JointFacts {
     sinks: bool,
     owned_sinks: bool,
     owned_types: BTreeSet<Type>,
+    sink_types: BTreeSet<Type>,
     escapes: bool,
     reference_sinks: bool,
+    dyn_types: BTreeSet<crate::check::DynType>,
+    dyn_targets: BTreeSet<crate::check::DynType>,
     failed: Vec<bool>,
 }
 
@@ -1418,8 +1454,11 @@ fn joint_facts(
         sinks: false,
         owned_sinks: false,
         owned_types: BTreeSet::new(),
+        sink_types: BTreeSet::new(),
         escapes: false,
         reference_sinks: false,
+        dyn_types: module.vtables.keys().map(|(key, _)| key.clone()).collect(),
+        dyn_targets: BTreeSet::new(),
         failed: vec![false; count],
         revoked: vec![false; count],
         stores: (0..count)
@@ -1452,10 +1491,22 @@ fn joint_facts(
     for &id in &retention {
         facts.retained[id] = Some(initial(id));
     }
+    // A store fact stores where a parameter reaches, or runs a function-valued parameter: a
+    // function none of whose parameters a store may reach through (`may_reach_store`: an `i64`, a
+    // `ref string`) has no store facts to compute, whatever its body stores into its own locals.
+    let storing: Vec<bool> = (0..count)
+        .map(|id| {
+            candidates.may_store[id]
+                && module.functions[id]
+                    .parameters
+                    .iter()
+                    .any(|parameter| may_reach_store(&parameter.ty, &types))
+        })
+        .collect();
     let checked: BTreeSet<usize> = callers
         .keys()
         .copied()
-        .chain((0..count).filter(|id| candidates.may_store[*id]))
+        .chain((0..count).filter(|id| storing[*id] || (closed[*id] && revocable(*id))))
         .collect();
     // The functions whose checks read the facts of each function.
     let mut dependents: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
@@ -1505,8 +1556,41 @@ fn joint_facts(
             }
         }
     }
-    let mut queued: BTreeSet<usize> = order.iter().copied().collect();
-    let mut work: std::collections::VecDeque<usize> = order.iter().copied().collect();
+    // The functions whose facts the sink flags read (`sink_flags`: the code of the function
+    // values that the module makes, and the slot functions of the vtables), with the functions
+    // whose facts theirs come from. They settle first, with the flags, before the other bodies
+    // are checked under the flags that result: a large body that calls function values is then
+    // checked once rather than once more for each rise of the flags.
+    let mut first = if infer || !candidates.seeded {
+        BTreeSet::new()
+    } else {
+        flag_sites(module)
+    };
+    let mut pending: Vec<usize> = first.iter().copied().collect();
+    while let Some(id) = pending.pop() {
+        for &callee in callees
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .chain(&candidates.mentions[id])
+        {
+            if first.insert(callee) {
+                pending.push(callee);
+            }
+        }
+    }
+    first.retain(|id| checked.contains(id));
+    let mut staged = !first.is_empty() && first.len() < order.len();
+    let mut queued: BTreeSet<usize> = order
+        .iter()
+        .copied()
+        .filter(|id| !staged || first.contains(id))
+        .collect();
+    let mut work: std::collections::VecDeque<usize> = order
+        .iter()
+        .copied()
+        .filter(|id| queued.contains(id))
+        .collect();
     let mut budget =
         budget.unwrap_or(checked.len() * RETENTION_CHECKS_PER_FUNCTION + RETENTION_EXTRA_CHECKS);
     let mut exhausted = false;
@@ -1551,7 +1635,7 @@ fn joint_facts(
                 infer,
                 &facts,
                 retention.contains(&id),
-                candidates.may_store[id],
+                storing[id],
                 facts.closed[id] && revocable(id),
             );
             facts.failed[id] |= outcome.failed;
@@ -1571,7 +1655,7 @@ fn joint_facts(
                     changed = true;
                 }
             }
-            if candidates.may_store[id] {
+            if storing[id] {
                 changed |= facts.stores[id].join(&outcome.stores);
                 // A dyn method's dispatch runs one of the slot functions of the vtables.
                 if let Some(targets) = candidates.dispatch.get(&id) {
@@ -1595,7 +1679,7 @@ fn joint_facts(
             }
             if changed {
                 for user in dependents.get(&id).into_iter().flatten() {
-                    if queued.insert(*user) {
+                    if (!staged || first.contains(user)) && queued.insert(*user) {
                         work.push_back(*user);
                     }
                 }
@@ -1623,6 +1707,29 @@ fn joint_facts(
                 facts.reference_sinks = true;
                 facts.escapes = true;
             }
+            // The facts that stand now (`top` for the unsettled functions) may make more
+            // function values owners than the checks saw, and the calls that the settled
+            // functions recorded judged their arguments by the types of their time: every
+            // argument may now hold an owner or be a place to store into, and every dyn type
+            // may be one.
+            let found = sink_flags(module, &facts.stores, &facts.failed);
+            facts.owned_types.extend(found.owned_types);
+            facts.sink_types.extend(found.sink_types);
+            for stores in &mut facts.stores {
+                if !stores.calls.is_empty() {
+                    stores.calls = std::mem::take(&mut stores.calls)
+                        .into_iter()
+                        .map(|mut call| {
+                            for source in &mut call.arguments {
+                                source.hides = true;
+                                source.target = true;
+                            }
+                            call
+                        })
+                        .collect();
+                }
+            }
+            facts.dyn_targets = facts.dyn_types.clone();
             break;
         }
         let found = sink_flags(module, &facts.stores, &facts.failed);
@@ -1637,15 +1744,34 @@ fn joint_facts(
             types.extend(found.owned_types.iter().cloned());
         }
         let escapes = facts.escapes || (flags.1 && found.escapes(module, &types));
-        let grew = types.len() != known || escapes != facts.escapes;
+        let dyn_known = facts.dyn_targets.len();
+        facts.dyn_targets.extend(found.dyn_targets);
+        let sinks_known = facts.sink_types.len();
+        if flags.0 {
+            facts.sink_types.extend(found.sink_types);
+        }
+        let grew = types.len() != known
+            || escapes != facts.escapes
+            || facts.dyn_targets.len() != dyn_known
+            || facts.sink_types.len() != sinks_known;
         facts.owned_types = types;
         facts.escapes = escapes;
         if flags == (facts.sinks, facts.owned_sinks, facts.reference_sinks) && !grew {
-            break;
+            if !staged {
+                break;
+            }
+            // The functions that the flags read have settled: the others now get their checks.
+            staged = false;
+            for &id in &order {
+                if !first.contains(&id) && queued.insert(id) {
+                    work.push_back(id);
+                }
+            }
+            continue;
         }
         (facts.sinks, facts.owned_sinks, facts.reference_sinks) = flags;
         for &id in &order {
-            if queued.insert(id) {
+            if (!staged || first.contains(&id)) && queued.insert(id) {
                 work.push_back(id);
             }
         }
@@ -1659,8 +1785,11 @@ fn joint_facts(
         sinks: facts.sinks,
         owned_sinks: facts.owned_sinks,
         owned_types: facts.owned_types,
+        sink_types: facts.sink_types,
         escapes: facts.escapes,
         reference_sinks: facts.reference_sinks,
+        dyn_types: facts.dyn_types,
+        dyn_targets: facts.dyn_targets,
         failed: facts.failed,
     }
 }
@@ -1737,6 +1866,9 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
     // The types of the function values that own the cell that they write, and of those that
     // may hold a function value in their environment, which may be such an owner.
     let mut owned_types = BTreeSet::new();
+    // The types of the function values that store into what their environment reaches, and of
+    // those that may hold such a value in their environment.
+    let mut sink_types = BTreeSet::new();
     let mut holders = BTreeSet::new();
     // The types of the values that the module hands to code that runs later (`SinkFlags::escapes`).
     let mut escaping: BTreeSet<Type> = BTreeSet::new();
@@ -1744,27 +1876,43 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
     // an owned function to run it later.
     let mut wrapped: BTreeSet<Type> = BTreeSet::new();
     let mut takes_owned = false;
-    let site = |id: usize, bound: &mut dyn Iterator<Item = &TypedExpr>| -> (bool, bool, bool) {
+    // A bound value that names a function (`plus_one`, or the local that the adapter of a
+    // function with other parameter conventions binds it to) has no environment.
+    let named = |value: &TypedExpr, locals: &BTreeSet<usize>| match &value.kind {
+        E::Function(_) | E::GenericFunction(..) => true,
+        E::Local(id) => locals.contains(id),
+        _ => false,
+    };
+    let site = |id: usize,
+                bound: &mut dyn Iterator<Item = &TypedExpr>,
+                locals: &BTreeSet<usize>|
+     -> (bool, bool, bool) {
         let bound: Vec<&TypedExpr> = bound.collect();
         let facts = &stores[id];
         let count = bound.len();
+        // A bound value that a call of a function value gets counts only when a store may reach
+        // through it (`Source::target`): the function value stores what it gets where its own
+        // arguments reach or where its environment does, and the latter is a site of its own.
         let sink = (facts.top && !failed[id])
             || !facts.hidden.is_empty()
             || facts.stores.iter().any(|(_, _, to)| *to < count)
             || facts.calls.iter().any(|call| {
                 call.arguments.iter().any(|source| {
-                    source
-                        .parameters
-                        .iter()
-                        .any(|(parameter, _)| *parameter < count)
+                    source.target
+                        && source
+                            .parameters
+                            .iter()
+                            .any(|(parameter, _)| *parameter < count)
                 })
             });
         let owns = sink
             && (!facts.hidden.is_empty()
-                || bound.iter().any(|value| value.ty.owns_mutable_cell(&types)));
-        let holds = bound
-            .iter()
-            .any(|value| hides_environment(&without_views(&value.ty), &types));
+                || bound
+                    .iter()
+                    .any(|value| !named(value, locals) && value.ty.owns_mutable_cell(&types)));
+        let holds = bound.iter().any(|value| {
+            !named(value, locals) && hides_environment(&without_views(&value.ty), &types)
+        });
         (sink, owns, holds)
     };
     // A call of a function value that the scan does not see (or of the function that a named
@@ -1789,6 +1937,9 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
     let mut found = |(sink, owns, holds): (bool, bool, bool), ty: &Type| {
         sinks |= sink;
         owned |= owns;
+        if sink {
+            sink_types.insert(sink_type(ty));
+        }
         if owns {
             owned_types.insert(sink_type(ty));
         }
@@ -1797,11 +1948,12 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
         }
     };
     for function in &module.functions {
+        let locals = named_locals(&function.body);
         let mut pending = vec![&function.body];
         while let Some(expression) = pending.pop() {
             match &expression.kind {
                 E::Closure(id, captures) => {
-                    found(site(*id, &mut captures.iter()), &expression.ty);
+                    found(site(*id, &mut captures.iter(), &locals), &expression.ty);
                     if matches!(expression.ty, Type::Once(_)) {
                         escaping.extend(captures.iter().map(|capture| without_views(&capture.ty)));
                     }
@@ -1849,7 +2001,7 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                     if let Some(id) = direct_callee(callee) {
                         let count = module.functions[id].parameters.len();
                         if arguments.len() < count {
-                            found(site(id, &mut arguments.iter()), &expression.ty);
+                            found(site(id, &mut arguments.iter(), &locals), &expression.ty);
                         } else if arguments.len() > count {
                             // The function that the call returns binds the arguments beyond.
                             found(
@@ -1869,11 +2021,17 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                     } else if let E::Function(crate::check::FunctionRef::Builtin(instance)) =
                         &callee.kind
                     {
+                        // The builtin runs the callback with what its other arguments reach (the
+                        // contents that a lock lends): the partial application stores into what
+                        // it binds only when a store may reach through a bound value.
                         let scheme = instance.builtin.scheme();
                         if arguments.len() < scheme.parameters.len()
                             && scheme.parameters.iter().any(|parameter| {
                                 matches!(parameter, crate::check::BuiltinType::Function(..))
                             })
+                            && arguments
+                                .iter()
+                                .any(|value| may_reach_store(&value.ty, &types))
                         {
                             found((true, false, false), &expression.ty);
                         }
@@ -1899,7 +2057,7 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                         Some(id) => {
                             let count = module.functions[id].parameters.len();
                             if arguments.len() + 1 < count {
-                                found(site(id, &mut all), &expression.ty);
+                                found(site(id, &mut all, &locals), &expression.ty);
                             } else if arguments.len() + 1 > count {
                                 found(staged(&mut all, &expression.ty), &expression.ty);
                             }
@@ -1926,18 +2084,104 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
         }
     }
     // A function value that holds another in its environment reaches whatever that one does.
+    if sinks {
+        sink_types.extend(holders.iter().cloned());
+    }
     if owned {
         owned_types.extend(holders);
+    }
+    // Code that gets a dyn value reaches the value that it stores only through the methods of
+    // the vtables: a store reaches through it when one of them may store (its facts), or gives
+    // back a value through which a store may reach (a reference to a cell inside the value).
+    let mut dyn_targets = BTreeSet::new();
+    for ((key, _), slots) in &module.vtables {
+        if slots.iter().any(|&slot| {
+            stores.get(slot).is_none_or(|facts| {
+                (facts.top && !failed[slot])
+                    || !facts.stores.is_empty()
+                    || !facts.calls.is_empty()
+                    || !facts.hidden.is_empty()
+            }) || module
+                .functions
+                .get(slot)
+                .is_none_or(|function| may_reach_store(&function.body.ty, &types))
+        }) {
+            dyn_targets.insert(key.clone());
+        }
     }
     SinkFlags {
         sinks,
         owned,
         owned_types,
+        sink_types,
         references,
         escaping,
         wrapped,
         takes_owned,
+        dyn_targets,
     }
+}
+
+/// A31: the functions whose store facts `sink_flags` reads: the lifted lambdas that the module
+/// makes into function values, the named functions that it applies partially (in a call or a
+/// pipeline), and the slot functions of the vtables.
+fn flag_sites(module: &CheckedModule) -> BTreeSet<usize> {
+    let mut sites: BTreeSet<usize> = module.vtables.values().flatten().copied().collect();
+    for function in &module.functions {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            match &expression.kind {
+                E::Closure(id, _) => {
+                    sites.insert(*id);
+                }
+                E::Call(callee, arguments) => {
+                    if let Some(id) = direct_callee(callee)
+                        && arguments.len() < module.functions[id].parameters.len()
+                    {
+                        sites.insert(id);
+                    }
+                }
+                E::Binary(BinaryOp::Pipe, _, right) => {
+                    let (callee, arguments) = piped_application(right);
+                    if let Some(id) = direct_callee(callee)
+                        && arguments.len() + 1 < module.functions[id].parameters.len()
+                    {
+                        sites.insert(id);
+                    }
+                }
+                _ => {}
+            }
+            expression
+                .try_for_each_child(&mut |child| {
+                    pending.push(child);
+                    Ok(())
+                })
+                .expect("collecting function values cannot fail");
+        }
+    }
+    sites
+}
+
+/// A31: the immutable locals of `body` bound to a named function, which has no environment.
+fn named_locals(body: &TypedExpr) -> BTreeSet<usize> {
+    let mut locals = BTreeSet::new();
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        if let E::Block { bindings, .. } = &expression.kind {
+            for (local, value) in bindings {
+                if !local.mutable && matches!(value.kind, E::Function(_) | E::GenericFunction(..)) {
+                    locals.insert(local.id);
+                }
+            }
+        }
+        expression
+            .try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })
+            .expect("collecting bindings cannot fail");
+    }
+    locals
 }
 
 /// What `sink_flags` finds.
@@ -1945,6 +2189,9 @@ struct SinkFlags {
     sinks: bool,
     owned: bool,
     owned_types: BTreeSet<Type>,
+    /// The types (`sink_type`) of the function values that store into what their environment
+    /// reaches, and of those that may hold one in their environment (`CallFacts::sink_types`).
+    sink_types: BTreeSet<Type>,
     references: bool,
     /// The types of the values that the module hands to code that runs later.
     escaping: BTreeSet<Type>,
@@ -1952,6 +2199,9 @@ struct SinkFlags {
     wrapped: BTreeSet<Type>,
     /// Some builtin of the module takes an owned function, to run it later.
     takes_owned: bool,
+    /// The dyn types (`DynType::vtable_key`) whose methods may store, or give back a value
+    /// through which a store may reach (`CallFacts::dyn_targets`).
+    dyn_targets: BTreeSet<crate::check::DynType>,
 }
 
 impl SinkFlags {
@@ -2008,6 +2258,30 @@ fn sink_type(ty: &Type) -> Type {
         Type::Union(id, arguments) => Type::Union(*id, arguments.iter().map(sink_type).collect()),
         _ => ty.clone(),
     }
+}
+
+/// A31: whether the function type `ty`, or the type of the function that a value of it gives after
+/// at most `arguments` arguments, is one of `owned` (`CallFacts::owned_types`, compared as
+/// `sink_type` has it).
+fn owned_suffix(ty: &Type, arguments: usize, owned: &BTreeSet<Type>) -> bool {
+    let Type::Function(parameters, result) = sink_type(ty) else {
+        return owned.contains(&sink_type(ty));
+    };
+    (0..=arguments.min(parameters.types.len())).any(|applied| {
+        let rest = if applied == parameters.types.len() {
+            (*result).clone()
+        } else {
+            Type::Function(
+                Box::new(crate::check::FunctionParameters {
+                    types: parameters.types[applied..].to_vec(),
+                    conventions: Box::default(),
+                    pure: false,
+                }),
+                result.clone(),
+            )
+        };
+        owned.contains(&rest)
+    })
 }
 
 /// What one check of a body gives `joint_facts`.
@@ -2902,11 +3176,15 @@ fn collect_declarations<'a>(body: &'a TypedExpr, locals: &mut BTreeMap<usize, &'
 /// `Owned.function`, or an `if` between such. A call of the local runs one of them with the
 /// environment that the local holds, so `Checker::apply_higher` substitutes their facts where it
 /// would otherwise take the call for one of code that it does not see. The local is immutable and
-/// its binding comes before every use, so the expressions name the code of every call.
+/// its binding comes before every use, so the expressions name the code of every call. An
+/// immutable local bound to an array literal of such values, or to a record literal, gives
+/// `parts` the expressions that an element (`(local, None)`) or a field (`(local, Some(field))`)
+/// may be: `hs[0] x` with `let hs = [\f -> f () + 1, \f -> f () * 2]` runs one of the two.
 fn known_functions<'a>(
     module: &CheckedModule,
     body: &'a TypedExpr,
     known: &mut BTreeMap<usize, Vec<&'a TypedExpr>>,
+    parts: &mut BTreeMap<(usize, Option<usize>), Vec<&'a TypedExpr>>,
 ) {
     fn shown<'a>(
         module: &CheckedModule,
@@ -2946,9 +3224,35 @@ fn known_functions<'a>(
         match &expression.kind {
             E::Block { bindings, .. } => {
                 for (local, value) in bindings {
+                    if local.mutable {
+                        continue;
+                    }
                     let mut found = Vec::new();
-                    if !local.mutable && shown(module, value, &mut found) {
+                    if shown(module, value, &mut found) {
                         known.insert(local.id, found);
+                        continue;
+                    }
+                    // An immutable array or record made of such values: an element or a field
+                    // of it is one of them (nothing writes into an immutable local).
+                    match &value.kind {
+                        E::Array(elements) if !elements.is_empty() => {
+                            let mut found = Vec::new();
+                            if elements
+                                .iter()
+                                .all(|element| shown(module, element, &mut found))
+                            {
+                                parts.insert((local.id, None), found);
+                            }
+                        }
+                        E::Record(fields) => {
+                            for (field, value) in fields {
+                                let mut found = Vec::new();
+                                if shown(module, value, &mut found) {
+                                    parts.insert((local.id, Some(*field)), found);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -3134,11 +3438,21 @@ struct Checker<'a, 'run> {
     /// A31: whether a type reaches a value that hides an environment (`hides_environment`), and
     /// whether a place of the type can hold a stored loan (`holds_stored`), by type.
     hidden_types: BTreeMap<Type, (bool, bool, bool)>,
+    /// A31: whether a store through a shared borrow of a place of a type that hides an
+    /// environment reaches what the place holds (`store_target`), by type.
+    shared_targets: BTreeMap<Type, bool>,
+    /// A31: whether a value of a type may be a place that a store reaches through it
+    /// (`may_reach_store`), and whether it may hold a function value of one of the types that own
+    /// the cell that they write, or reach a cell (`argument_hides`), by type.
+    argument_types: BTreeMap<Type, (bool, bool)>,
     /// A31: the immutable locals of the body that are bound to a function value whose code the
     /// body shows (a lambda, a named function, a partial application of one, an `Owned.function`
     /// of one, or a choice between such), with those expressions (`known_functions`): a call of
     /// such a local substitutes their facts.
     known: BTreeMap<usize, Vec<&'a TypedExpr>>,
+    /// A31: the elements (`(local, None)`) and fields (`(local, Some(field))`) of the immutable
+    /// locals bound to an array or record literal of such values (`known_functions`).
+    known_parts: BTreeMap<(usize, Option<usize>), Vec<&'a TypedExpr>>,
     /// A31: the applications of store facts that the current pass over a call has made
     /// (`settle`); one made again in the same pass changes nothing.
     store_memo: Option<BTreeSet<StoreKey>>,
@@ -3198,9 +3512,14 @@ struct Arg<'e> {
     /// lends it to a callback), not a value that holds one: `sink_flags` asks which function
     /// hands a value that holds a shared reference parameter to a function value.
     lent: bool,
-    /// Without an expression: whether the value's type may hide an environment or reach a cell
-    /// (`Checker::shares_hidden`), as the callee that passed it on saw it. With one, its type says.
+    /// Without an expression: whether the value's type may hold a function value of one of the
+    /// types that own the cell that they write, or reach a cell (`Checker::argument_hides`), as
+    /// the callee that passed it on saw it. With one, its type says.
     hides: bool,
+    /// Without an expression: whether the value's type may be a place that a store reaches
+    /// through it (`may_reach_store`), as the callee that passed it on saw it. With one, its type
+    /// says.
+    target: bool,
 }
 
 impl<'e> Arg<'e> {
@@ -3220,6 +3539,7 @@ impl<'e> Arg<'e> {
             environment: false,
             lent: expression.is_some_and(|e| matches!(e.ty, Type::Reference(..))),
             hides: true,
+            target: true,
         }
     }
 }
@@ -3235,6 +3555,18 @@ fn hides_environment(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
     types.reaches(ty, |part| {
         matches!(part, Type::Function(..) | Type::Dyn(_)) || part.is_owned_function(types)
     })
+}
+
+/// A31: whether a value of type `ty` may be a place that a store reaches through it: it reaches a
+/// mutable cell whose contents may hold a loan, an exclusive reference, or a value whose type
+/// hides an environment (a function value, a dyn value, an `Owned.Function`). Code that gets a
+/// value of any other type (an `i64`, a `ref string`, a `[i64]`) cannot store into what it reaches.
+fn may_reach_store(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    let plain = without_views(ty);
+    hides_environment(&plain, types)
+        || types.reaches(&plain, |part| {
+            part.is_mutable_cell(types) || matches!(part, Type::Reference(_, true))
+        })
 }
 
 /// A31: `ty` with the target `[T..]` of each exclusive slice (C08) written as the array `[T]`:
@@ -5125,8 +5457,9 @@ impl<'a> Checker<'a, '_> {
     /// A31: whether a store through the borrow `loan` reaches what its place holds. An exclusive
     /// borrow does when a place of the type that it borrows can hold a stored loan (`ref mut
     /// [i64..]` and `ref mut i64` cannot). A shared borrow does when the type of its place reaches
-    /// a mutable cell or a dyn value, or, in a module where some function value stores into what
-    /// its environment reaches (`CallFacts::sinks`), a function value or an `Owned.Function`. The
+    /// a mutable cell, a dyn value whose methods may store or give back a place to store into
+    /// (`CallFacts::dyn_target`), or, in a module where some function value stores into what its
+    /// environment reaches (`CallFacts::sinks`), a function value or an `Owned.Function`. The
     /// type of a local root is its declaration's and that of an external root its parameter's
     /// (the target of a reference parameter, for an exclusive borrow); a root without a
     /// declaration counts as reaching one.
@@ -5151,7 +5484,31 @@ impl<'a> Checker<'a, '_> {
             return true;
         }
         let (hides, _, dynamic) = self.hidden_type(&ty);
-        dynamic || (hides && self.facts.sinks)
+        if !hides {
+            return false;
+        }
+        if let Some(known) = self.shared_targets.get(&ty) {
+            return *known;
+        }
+        let types = self.module.types();
+        let facts: &CallFacts = self.facts;
+        let plain = without_views(&ty);
+        // A dyn value is reached through the methods of its vtables (`CallFacts::dyn_targets`);
+        // a function value of a type that may store into what its environment reaches
+        // (`CallFacts::sink_types`), or an `Owned.Function`, in a module where some function value
+        // does.
+        let found = (dynamic
+            && types.reaches(
+                &plain,
+                |part| matches!(part, Type::Dyn(dyn_type) if facts.dyn_target(dyn_type)),
+            ))
+            || (facts.sinks
+                && types.reaches(&plain, |part| match part {
+                    Type::Function(..) => owned_suffix(part, usize::MAX, &facts.sink_types),
+                    _ => part.is_owned_function(&types),
+                }));
+        self.shared_targets.insert(ty, found);
+        found
     }
 
     /// A31: whether a store where `target` reaches stores anywhere (`store_target`).
@@ -5184,7 +5541,11 @@ impl<'a> Checker<'a, '_> {
     /// callee (`callee`, the named function of the call) rather than a local of this body.
     #[cold]
     fn callee_borrow_stored(&self, callee: Option<usize>, span: Span, seen: bool) -> Diagnostic {
-        let name = callee.map(|id| self.module.functions[id].name.as_str());
+        // The declared name: an instance of a generic function is `leak.$mono.2`.
+        let name = callee.map(|id| {
+            let name = self.module.functions[id].name.as_str();
+            name.split(".$mono.").next().unwrap_or(name)
+        });
         let subject = match name {
             Some(name) => format!("'{name}'"),
             None => "the callee".to_owned(),
@@ -5437,10 +5798,29 @@ impl<'a> Checker<'a, '_> {
             self.hidden_log.push(kept.clone());
             self.store_changes += 1;
         }
+        // A parameter keeps only the caller's loans here: a loan of a local value of the body
+        // that reaches the caller's values is the error below, which names what happened.
+        let outside = {
+            let loans = &self.loans;
+            let external = &self.external;
+            let mut outside = kept.clone();
+            outside.loans.retain(|loan| {
+                let root = loans[*loan].place.root;
+                is_static_root(root) || external.contains(&root)
+            });
+            let held = &outside.loans;
+            outside.through.retain(|loan| held.contains(loan));
+            outside
+        };
         let ids: Vec<usize> = self.state.locals.keys().copied().collect();
         for id in ids {
-            let ty = self.state.locals[&id].0.ty.clone();
-            if self.shares_hidden(&ty) {
+            let local = self.state.locals[&id].0;
+            if !self.shares_hidden(&local.ty) {
+                continue;
+            }
+            if self.parameter_roots.contains_key(&(usize::MAX - id)) {
+                self.absorb_owner(id, &outside);
+            } else {
                 self.absorb_owner(id, &kept);
             }
         }
@@ -5576,20 +5956,81 @@ impl<'a> Checker<'a, '_> {
         }
     }
 
-    /// A31: whether the type of `argument` may hide an environment or reach a cell.
+    /// A31: what the type `ty` of an argument says (`argument_types`): whether a store may reach
+    /// through a value of it (`may_reach_store`), and whether it may hold a function value that
+    /// may own the cell that it writes, or reaches a cell (`argument_hides`).
+    fn argument_type(&mut self, ty: &Type) -> (bool, bool) {
+        if let Some(known) = self.argument_types.get(ty) {
+            return *known;
+        }
+        let types = self.module.types();
+        let target = may_reach_store(ty, &types);
+        let facts: &CallFacts = self.facts;
+        let dynamic = facts
+            .owned_types
+            .iter()
+            .any(|owned| matches!(owned, Type::Dyn(_)));
+        let plain = without_views(ty);
+        let hides = target
+            && (types.reaches(&plain, |part| match part {
+                Type::Function(..) => owned_suffix(part, usize::MAX, &facts.owned_types),
+                Type::Dyn(_) => dynamic,
+                _ => part.is_owned_function(&types),
+            }) || self.reaches_cell(ty));
+        self.argument_types.insert(ty.clone(), (target, hides));
+        (target, hides)
+    }
+
+    /// A31: whether the value of `argument` may hold a function value of one of the types that
+    /// may own the cell that they write (`CallFacts::owned_types`, or a type whose function after
+    /// some arguments is one), a dyn value when a dyn type is one of them, or an `Owned.Function`,
+    /// or reaches a cell. Unseen code that gets the argument reaches an environment that the check
+    /// cannot name only through such a value: a closure that captured a `ref string` and a
+    /// function of a type that no owner has are neither.
     fn argument_hides(&mut self, argument: &Arg<'_>) -> bool {
         match argument.expression {
-            Some(expression) => self.shares_hidden(&expression.ty),
+            Some(expression) => self.argument_type(&expression.ty).1,
             None => argument.hides,
+        }
+    }
+
+    /// A31: whether a store may reach through the value of `argument` (`may_reach_store`).
+    fn argument_target(&mut self, argument: &Arg<'_>) -> bool {
+        match argument.expression {
+            Some(expression) => self.argument_type(&expression.ty).0,
+            None => argument.target,
         }
     }
 
     /// A31: whether a call of `callee` with `arguments` arguments may run a function value that
     /// owns the cell that it writes, or reach one through its environment: its type, or the type
     /// of the function that it gives after some of the arguments, is one of
-    /// `CallFacts::owned_types`. A value that is not of a function type (an `Owned.Function`), or
-    /// whose type is not known here, may.
+    /// `CallFacts::owned_types`. A value that is not of a function type (an `Owned.Function`) may.
+    /// A value without an expression (an argument that a callee's facts pass on) may when the
+    /// callee saw that its type may (`Arg::hides`).
     fn may_own_sink(&self, callee: &Arg<'_>, arguments: usize) -> bool {
+        let Some(expression) = callee.expression else {
+            return callee.hides;
+        };
+        let mut ty = &expression.ty;
+        while let Type::Reference(target, _) = ty {
+            ty = target;
+        }
+        if !matches!(ty, Type::Function(..)) {
+            return true;
+        }
+        owned_suffix(ty, arguments, &self.facts.owned_types)
+    }
+
+    /// A31: whether a call of `callee` with `arguments` arguments may run code that stores into
+    /// what the function value's environment reaches: in a module where some function value does
+    /// (`CallFacts::sinks`), when its type, or the type of the function that it gives after some of
+    /// the arguments, is one of `CallFacts::sink_types`. A value that is not of a function type
+    /// (an `Owned.Function`), or whose expression is not known here, may.
+    fn may_be_sink(&self, callee: &Arg<'_>, arguments: usize) -> bool {
+        if !self.facts.sinks {
+            return false;
+        }
         let Some(expression) = callee.expression else {
             return true;
         };
@@ -5597,24 +6038,7 @@ impl<'a> Checker<'a, '_> {
         while let Type::Reference(target, _) = ty {
             ty = target;
         }
-        let Type::Function(parameters, result) = sink_type(ty) else {
-            return true;
-        };
-        (0..=arguments.min(parameters.types.len())).any(|applied| {
-            let rest = if applied == parameters.types.len() {
-                (*result).clone()
-            } else {
-                Type::Function(
-                    Box::new(crate::check::FunctionParameters {
-                        types: parameters.types[applied..].to_vec(),
-                        conventions: Box::default(),
-                        pure: false,
-                    }),
-                    result.clone(),
-                )
-            };
-            self.facts.owned_types.contains(&rest)
-        })
+        !matches!(ty, Type::Function(..)) || owned_suffix(ty, arguments, &self.facts.sink_types)
     }
 
     /// A31: where the loans of `value` come from, for a fact of a call of a function-valued
@@ -5825,6 +6249,7 @@ impl<'a> Checker<'a, '_> {
                     environment: false,
                     lent: source.lent,
                     hides: source.hides,
+                    target: source.target,
                 });
             }
             let callee = callee.clone();
@@ -5888,6 +6313,7 @@ impl<'a> Checker<'a, '_> {
                     environment: true,
                     lent: matches!(expression.ty, Type::Reference(..)),
                     hides: true,
+                    target: true,
                 })
                 .collect()
         };
@@ -5911,9 +6337,23 @@ impl<'a> Checker<'a, '_> {
             self.apply_higher_once(&lent, arguments, span, depth + 1, named);
             return;
         }
-        if let Some(E::Local(id)) = expression.map(|e| &e.kind)
-            && let Some(shown) = self.known.get(id).cloned()
-        {
+        // An element or a field of an immutable local bound to a literal of such values.
+        let part = expression.and_then(|expression| match &expression.kind {
+            E::Index(base, _) => match &base.kind {
+                E::Local(id) => self.known_parts.get(&(*id, None)),
+                _ => None,
+            },
+            E::Field(base, field) => match &base.kind {
+                E::Local(id) => self.known_parts.get(&(*id, Some(*field))),
+                _ => None,
+            },
+            _ => None,
+        });
+        let shown = match expression.map(|e| &e.kind) {
+            Some(E::Local(id)) => self.known.get(id).cloned(),
+            _ => part.cloned(),
+        };
+        if let Some(shown) = shown {
             for expression in shown {
                 let one = Arg {
                     expression: Some(expression),
@@ -5988,6 +6428,7 @@ impl<'a> Checker<'a, '_> {
                         .zip(arguments)
                         .map(|(mut source, argument)| {
                             source.hides = self.argument_hides(argument);
+                            source.target = self.argument_target(argument);
                             source
                         })
                         .collect(),
@@ -6009,11 +6450,14 @@ impl<'a> Checker<'a, '_> {
     ///
     /// - what any of them holds may be stored wherever an argument reaches (`store_target`): the
     ///   code gets the arguments, and may call the function values that it finds in them;
-    /// - what the arguments hold may be stored where the function value's environment reaches,
-    ///   in a module where some function value stores into what its environment reaches
-    ///   (`CallFacts::sinks`; in any other module no function value does, whatever value this is);
+    /// - what the arguments and the function value hold may be stored where the function value's
+    ///   environment reaches, in a module where some function value stores into what its
+    ///   environment reaches (`CallFacts::sinks`; in any other module no function value does,
+    ///   whatever value this is), when the value's type is one that such a function value may
+    ///   have (`may_be_sink`);
     /// - and in the environment itself, in a module where one owns the cell that it writes
-    ///   (`store_hidden`).
+    ///   (`store_hidden`), when the function value's type, or the type of an argument, may hold
+    ///   such an owner (`may_own_sink`, `argument_hides`).
     ///
     /// With `local_only`, only the local targets get it (the caller substitutes the code for the
     /// rest). `named` is the named callee whose facts lead here, for the error that names it.
@@ -6029,11 +6473,10 @@ impl<'a> Checker<'a, '_> {
         // function stores a reference parameter itself (`handed`); it may write wherever the
         // operand reaches in any module.
         let references = self.facts.reference_sinks;
-        let mut given = Value::default();
+        let mut stored = Value::default();
         for argument in arguments {
-            given.absorb(&self.handed(argument));
+            stored.absorb(&self.handed(argument));
         }
-        let mut stored = given.clone();
         if let Some(callee) = callee {
             stored.absorb(&self.handed(callee));
         }
@@ -6041,8 +6484,11 @@ impl<'a> Checker<'a, '_> {
         for argument in arguments {
             reached.hold(self.argument_part(argument, Part::Value).loans);
         }
+        // The function value's own loans are where its environment reaches, when its code, or
+        // the code of the function that it gives after some of the arguments, may store there.
+        let sink = callee.is_some_and(|callee| self.may_be_sink(callee, arguments.len()));
         let mut environment = Value::default();
-        if let Some(callee) = callee.filter(|_| self.facts.sinks) {
+        if let Some(callee) = callee.filter(|_| sink) {
             environment.hold(self.argument_part(callee, Part::Value).loans);
         }
         // A loan of a local value of the body that a callee's facts substitute here may go
@@ -6060,11 +6506,17 @@ impl<'a> Checker<'a, '_> {
         }
         let operands = || callee.into_iter().chain(arguments);
         if !local_only && operands().any(|operand| operand.local) {
+            // The places that the code may store the local loan into: what an argument from
+            // outside the callee's body reaches, and, in a module where a function value may store
+            // into what its environment reaches, what the function value's own loans reach. A
+            // function value made in the callee's body (a local operand with no other loans) has
+            // an environment of the callee's own values, and a call with no argument hands it
+            // nothing: `get ()` in `\get -> get () * 2` stores nothing anywhere.
             let outside: Vec<Value> = operands()
                 .filter(|operand| operand.external)
                 .map(|operand| operand.value.clone())
                 .collect();
-            if (callee.is_some() && self.facts.sinks)
+            if callee.is_some_and(|callee| sink && self.has_targets(&callee.value))
                 || hidden
                 || outside.iter().any(|value| self.has_targets(value))
             {
@@ -6085,12 +6537,15 @@ impl<'a> Checker<'a, '_> {
         {
             self.defer(Self::temporary_borrow_stored(span));
         }
+        // The code of the function value may store what its own environment holds where that
+        // environment reaches, as well as what it is given: a closure that captured a borrow and
+        // a cell puts the borrow into the cell (`ts[0] ()`).
         self.apply_store_within(&stored, &reached, span, local_only);
-        self.apply_store_within(&given, &environment, span, local_only);
+        self.apply_store_within(&stored, &environment, span, local_only);
         if hidden {
             // Unseen code may call the function values that it finds in its arguments, whose
             // environments are as hidden as that of the function value that runs.
-            self.store_hidden(if callee.is_some() { &given } else { &stored }, span);
+            self.store_hidden(&stored, span);
         }
     }
 
@@ -6470,7 +6925,13 @@ impl<'a> Checker<'a, '_> {
         // read from), or handed to code that drops it.
         if !bound && !value.loans.is_empty() && self.facts.drops_write && self.tracks_stores() {
             let span = self.drop_site.unwrap_or(expression.span);
-            self.drop_stores(&value, &expression.ty, span, Some(expression));
+            self.drop_stores(
+                &value,
+                &expression.ty,
+                span,
+                Some(expression),
+                Some(expression),
+            );
         }
         Ok(value)
     }
@@ -6508,11 +6969,22 @@ impl<'a> Checker<'a, '_> {
     /// writes into `s.cell`), which dangles once the value is gone: for a temporary, or a value
     /// that a callee drops, that is an error wherever the value reaches a place to store in; a
     /// bound value stores a borrow of its local instead (`drop_keeps_self`).
-    fn drop_stores(&mut self, value: &Value, ty: &Type, span: Span, temporary: Option<&TypedExpr>) {
+    ///
+    /// `origin` is the expression that gives the value, when it is known: a lambda whose captures
+    /// run no code when they are dropped (`\() -> String.length bt`) runs none either, whatever its
+    /// type says (`value_runs_drop_code`).
+    fn drop_stores(
+        &mut self,
+        value: &Value,
+        ty: &Type,
+        span: Span,
+        temporary: Option<&TypedExpr>,
+        origin: Option<&TypedExpr>,
+    ) {
         if !self.tracks_stores()
             || !self.facts.drops_write
             || value.loans.is_empty()
-            || !self.runs_drop_code(ty)
+            || !self.value_runs_drop_code(origin, ty, 0)
         {
             return;
         }
@@ -6526,6 +6998,47 @@ impl<'a> Checker<'a, '_> {
                 "cannot drop this value here: its Drop.drop stores a borrow of the dropped value in a place that the value shares, and the value is a temporary or is handed to a callee, so the borrow would outlive it",
                 span,
             ).with_help("bind the value with 'let' in a scope that outlives every other owner of the place, or make Drop.drop store owned values only"));
+        }
+    }
+
+    /// A31: whether dropping the value of `origin`, of type `ty`, may run code (`drop_runs_code`).
+    /// A function value's type does not show its environment, but the expression that makes it
+    /// may: a lambda drops its captures, a partial application of a named function the arguments
+    /// that it binds, a named function nothing, and an immutable local bound to such values
+    /// (`Checker::known`) what they drop. Any other value counts as its type says.
+    fn value_runs_drop_code(
+        &mut self,
+        origin: Option<&TypedExpr>,
+        ty: &Type,
+        depth: usize,
+    ) -> bool {
+        if !self.runs_drop_code(ty) {
+            return false;
+        }
+        let Some(origin) = origin.filter(|_| depth <= STORE_SUBSTITUTION_DEPTH) else {
+            return true;
+        };
+        let module = self.module;
+        match &origin.kind {
+            E::Closure(_, captures) => captures
+                .iter()
+                .any(|capture| self.value_runs_drop_code(Some(capture), &capture.ty, depth + 1)),
+            E::Function(crate::check::FunctionRef::User(_)) | E::GenericFunction(..) => false,
+            E::Call(callee, bound)
+                if direct_callee(callee)
+                    .is_some_and(|id| bound.len() < module.functions[id].parameters.len()) =>
+            {
+                bound
+                    .iter()
+                    .any(|value| self.value_runs_drop_code(Some(value), &value.ty, depth + 1))
+            }
+            E::Local(id) if self.known.contains_key(id) => {
+                let shown = self.known[id].clone();
+                shown
+                    .into_iter()
+                    .any(|value| self.value_runs_drop_code(Some(value), &value.ty, depth + 1))
+            }
+            _ => true,
         }
     }
 
@@ -6739,7 +7252,7 @@ impl<'a> Checker<'a, '_> {
             self.drop_site = site;
             let mut value_result = value_result?;
             self.absorb_hidden(mark, &mut value_result, &local.ty);
-            self.drop_stores(&value_result, &local.ty, local.span, None);
+            self.drop_stores(&value_result, &local.ty, local.span, None, Some(value));
             let mut consumed = BTreeMap::new();
             count_uses(value, &mut consumed);
             for (id, count) in consumed {
@@ -7346,10 +7859,10 @@ impl<'a> Checker<'a, '_> {
                         // is dropped now holds what was stored (A28's `dropped`), which its drop
                         // may store where it reaches.
                         match old {
-                            Some(old) => self.drop_stores(&old, &ty, expression.span, None),
+                            Some(old) => self.drop_stores(&old, &ty, expression.span, None, None),
                             None => {
                                 let owner = self.state.locals[&place.root].1.clone();
-                                self.drop_stores(&owner, &ty, expression.span, None);
+                                self.drop_stores(&owner, &ty, expression.span, None, None);
                             }
                         }
                         self.drop_keeps_self(place.root, &ty, expression.span);
@@ -7642,7 +8155,7 @@ impl<'a> Checker<'a, '_> {
                 };
                 self.held.pop();
                 if *operator == BinaryOp::Pipe && !owned_function && self.tracks_stores() {
-                    self.drop_stores(&value, &left.ty, expression.span, Some(left));
+                    self.drop_stores(&value, &left.ty, expression.span, Some(left), Some(left));
                     self.pipe_stores(left, right, &value, &callee, piped, expression.span, &during);
                 }
                 if *operator == BinaryOp::Pipe && expression.ty.carries_loans(&self.module.types())
@@ -9318,11 +9831,14 @@ mod retention_tests {
             StoreFacts {
                 calls: BTreeSet::from([HigherOrderCall {
                     callee: 0,
-                    // `arr` is a reference itself, to an array of function values.
+                    // `arr` is a reference itself, to an array of function values: a store
+                    // may reach through it (`target`), and it holds no function value of a type
+                    // that owns the cell that it writes (no such function value here).
                     arguments: vec![Source {
                         parameters: BTreeSet::from([(1, Part::Value)]),
                         lent: true,
-                        hides: true,
+                        hides: false,
+                        target: true,
                         ..Source::default()
                     }],
                 }]),

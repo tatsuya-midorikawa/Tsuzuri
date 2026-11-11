@@ -176,7 +176,7 @@ impl<'a> Checker<'a, '_> {
             self.bound_next = true;
             let mut value = self.eval(source, Use::Consume, live)?;
             self.absorb_hidden(mark, &mut value, &local.ty);
-            self.drop_stores(&value, &local.ty, source.span, None);
+            self.drop_stores(&value, &local.ty, source.span, None, Some(source));
             self.state
                 .locals
                 .insert(local.id, (self.declarations[&local.id], value));
