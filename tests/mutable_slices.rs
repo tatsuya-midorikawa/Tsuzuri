@@ -1,4 +1,5 @@
-use tsuzuri::{analyze, llvm};
+use tsuzuri::syntax::Edition;
+use tsuzuri::{analyze, analyze_all, analyze_with_edition, llvm};
 
 fn accepts(source: &str) -> String {
     let module = analyze(source)
@@ -336,12 +337,12 @@ fn rejects_with_kind(source: &str, code: &str, kind: &str) {
     assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
 }
 
-/// A28 review: the check does not track what `Array.write`, and the std functions that write
-/// through it, store in the owner of the target (A31). A function whose body lends an exclusive
-/// borrow to a call therefore gets no facts: its result keeps every argument's loans, as before
-/// A28, so `text` stays lent while `leak`'s result lives. Without that, `stash` stored a function
-/// that borrows `text`, which `leak` frees, and the call `f ()` read freed memory. The A30 tip
-/// rejects each program at the same place with the same kind.
+/// A28 review: `Array.write`, and the std functions that write through it, store a function that
+/// borrows `text` in `arr`, and `stash` returns it, so `text` stays lent while `leak`'s result
+/// lives. Without that, `leak` freed `text` and the call `f ()` read freed memory. A28 gave a body
+/// that lends an exclusive borrow to a call no facts; since A31 the store facts put what the write
+/// stores in `arr`'s loans, and the facts of `stash` keep `text` in its result. The A30 tip rejects
+/// each program at the same place with the same kind.
 #[test]
 fn a_function_that_writes_in_place_keeps_its_arguments_loans() {
     for write in [
@@ -404,4 +405,404 @@ fn in_place_writes_that_main_accepts_stay_accepted() {
     ] {
         accepts(source);
     }
+}
+
+/// The 1-based line and column of the byte `offset` of `source`.
+fn position(source: &str, offset: usize) -> (usize, usize) {
+    let before = &source[..offset];
+    (
+        before.matches('\n').count() + 1,
+        before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1,
+    )
+}
+
+/// A31: the first error of `source`, in both editions, has `code` and `kind` and starts at
+/// `line:column` of `source`.
+fn rejects_at(source: &str, code: &str, kind: &str, at: (usize, usize)) {
+    for edition in [Edition::E2026, Edition::E2027] {
+        let error = analyze_with_edition(source, edition).expect_err(source);
+        assert_eq!(
+            (error.code, error.kind),
+            (code, Some(kind)),
+            "edition {edition}\n{source}\n{}",
+            error.message
+        );
+        assert_eq!(
+            position(source, error.span.start),
+            at,
+            "edition {edition}\n{source}\n{}",
+            error.message
+        );
+    }
+}
+
+/// A31: `source` is accepted in both editions, with deterministic IR.
+fn accepts_in_both(source: &str) {
+    accepts(source);
+    let module = analyze_with_edition(source, Edition::E2027)
+        .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    let ir = llvm::emit_target(&module, llvm::Entry::Library, false).unwrap();
+    assert_eq!(
+        ir,
+        llvm::emit_target(&module, llvm::Entry::Library, false).unwrap(),
+        "{source}"
+    );
+}
+
+/// A31: `Array.write`, and `Array.set`, `Array.fill` and a slice of the array that write through
+/// it, keep the borrows of the written value in the owner of the target, as `arr[0] = v` does: the
+/// array that holds a function borrowing `text` cannot leave the block that frees `text`. Each
+/// program is the reproduction of the ticket (`h1` to `h4`, `h7`), which main accepts and which
+/// then reads freed memory; the diagnostic is the one of the assignment `arr[0] = ...` in the same
+/// place (`h0`, `Main.tz:7:5`).
+#[test]
+fn an_in_place_write_keeps_the_written_borrow_in_the_owner() {
+    for write in [
+        "Array.write 0 (\\() -> String.length borrowed) (ref mut arr)",
+        "Array.set 0 (\\() -> String.length borrowed) (ref mut arr)",
+        "Array.fill 0 1 (\\() -> String.length borrowed) (ref mut arr)",
+        "Array.write 0 (\\() -> String.length borrowed) (ref mut arr[0..1])",
+    ] {
+        rejects_at(
+            &format!(
+                "def leak :: i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [\\() -> 1]\n    {write}\n    arr[0]\nlet f = leak 123456789\nf ()"
+            ),
+            "E1013",
+            "borrow_outlives_block",
+            (7, 5),
+        );
+    }
+    // h7: the array itself leaves the block.
+    rejects_at(
+        "def leak :: i64 -> [(unit -> i64)]\nfn leak n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [\\() -> 1]\n    Array.write 0 (\\() -> String.length borrowed) (ref mut arr)\n    arr\nlet f = leak 123456789\nf[0] ()",
+        "E1013",
+        "borrow_outlives_block",
+        (7, 5),
+    );
+    // h9: a reference element that `Array.set` writes outlives the block of its owner, as with
+    // `arr[0] = ref local` (`Main.tz:4:19`).
+    rejects_at(
+        "def leak :: i64 -> ref string -> i64\nfn leak n other =\n    let mut arr = [other]\n    if n > 0 then {\n        let local = to_string n;\n        Array.set 0 (ref local) (ref mut arr)\n    } else ()\n    arr[0].length\nlet o = \"ab\"\nleak 123456789 (ref o)",
+        "E1013",
+        "assignment_extends_borrow",
+        (4, 19),
+    );
+}
+
+/// A31: while the array holds what a write stored, the borrowed `text` cannot move (`h6`; main
+/// accepts it and `arr[0] ()` reads the moved string). The same holds for a generic writer of the
+/// program and one without type variables (their bodies write with `Array.write`, and the facts of
+/// the call store the value in the caller's array), and for `MatrixView.write` through a window of
+/// `data`, which reaches the owner of the window's array. Each diagnostic is the one of
+/// `arr[0] = ...` (or `data[0] = ...`) in place of the write.
+#[test]
+fn a_written_borrow_keeps_its_source_from_moving() {
+    for last in ["arr[0] ()", "arr[0] () * 100 + moved.length"] {
+        rejects_at(
+            &format!(
+                "let text = to_string 123456789\nlet borrowed = ref text\nlet mut arr = [\\() -> 1]\nArray.write 0 (\\() -> String.length borrowed) (ref mut arr)\nlet moved = text\n{last}"
+            ),
+            "E1014",
+            "borrow_conflict",
+            (5, 13),
+        );
+    }
+    for put in [
+        "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.write 0 x arr\n",
+        "def put :: own (unit -> i64) -> ref mut [(unit -> i64)..] -> unit\nfn put f target = Array.write 0 f target\n",
+    ] {
+        rejects_at(
+            &format!(
+                "{put}let text = to_string 123456789\nlet borrowed = ref text\nlet mut arr = [\\() -> 1]\nput (\\() -> String.length borrowed) (ref mut arr)\nlet moved = text\narr[0] () * 100 + moved.length"
+            ),
+            "E1014",
+            "borrow_conflict",
+            (7, 13),
+        );
+    }
+    rejects_at(
+        "let text = to_string 123456789\nlet borrowed = ref text\nlet mut data = [\\() -> 1, \\() -> 2]\nlet mut grid = MatrixView.of_array_mut 1 2 (ref mut data)\nMatrixView.write 0 0 (\\() -> String.length borrowed) (ref mut grid)\nlet moved = text\ndata[0] () * 100 + moved.length",
+        "E1014",
+        "borrow_conflict",
+        (6, 13),
+    );
+}
+
+/// A31: a function that writes a borrow of its own local into the target of its `ref mut`
+/// parameter hands the caller a borrow that dies when the function returns. No fact of the call
+/// can keep it alive, so the definition is rejected where it writes (main accepts it, and
+/// `arr[0] ()` reads the freed `s`). The assignment `target[0] = ...` is rejected there too
+/// (`store_region_unnamed`).
+#[test]
+fn a_write_of_a_local_borrow_through_a_parameter_is_rejected_where_it_is_made() {
+    rejects_at(
+        "def bad :: ref mut [(unit -> i64)..] -> unit\nfn bad target =\n    let s = to_string 123456789\n    let b = ref s\n    Array.write 0 (\\() -> String.length b) target\nlet mut arr = [\\() -> 1]\nbad (ref mut arr)\narr[0] ()",
+        "E1013",
+        "store_local_borrow_through_reference",
+        (5, 5),
+    );
+}
+
+/// A31: a read parameter of edition 2027 is a shared reference to the caller's value. A function
+/// value given to one is called through `deref`, and a value given to one is lent as a borrowed
+/// temporary, whose value is what the temporary holds. The facts follow both: `apply_read` calls
+/// its function-valued read parameter with its array (a higher-order fact, as for an `own`
+/// parameter), and `put_read` stores the value behind its read parameter (the temporary's
+/// contents). Each program reads the freed `text` with the stage 3 compiler in edition 2027 (and
+/// is rejected in edition 2026, whose parameters are values); the diagnostic is the one of
+/// `arr[0] = ...` in place of the write: the array that holds a function borrowing `text` leaves
+/// the block that frees it. A function value that writes an owned function, or that only reads
+/// what it captured, stays accepted (13 and 6 by hand).
+#[test]
+fn a_read_parameter_keeps_what_its_writer_stores() {
+    const APPLY: &str = "def apply_read :: (ref mut [(unit -> i64)..] -> unit) -> ref mut [(unit -> i64)..] -> unit\nfn apply_read w arr = w arr\n";
+    const PUT: &str = "def put_read :: (unit -> i64) -> ref mut [(unit -> i64)..] -> unit\nfn put_read x arr = Array.write 0 x arr\n";
+    const PUT_GENERIC: &str =
+        "def put_read :: 'a -> ref mut ['a..] -> unit\nfn put_read x arr = Array.write 0 x arr\n";
+    for (header, write) in [
+        (
+            APPLY,
+            "apply_read (Array.set 0 (\\() -> String.length borrowed)) (ref mut arr)",
+        ),
+        (
+            APPLY,
+            "apply_read (\\a -> Array.write 0 (\\() -> String.length borrowed) a) (ref mut arr)",
+        ),
+        (
+            APPLY,
+            "apply_read (Array.write 0 (\\() -> String.length borrowed)) (ref mut arr)",
+        ),
+        (
+            PUT,
+            "put_read (\\() -> String.length borrowed) (ref mut arr)",
+        ),
+        (
+            PUT_GENERIC,
+            "put_read (\\() -> String.length borrowed) (ref mut arr)",
+        ),
+    ] {
+        rejects_at(
+            &format!(
+                "{header}def leak :: i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    let borrowed = ref text\n    let mut arr = [\\() -> 1]\n    {write}\n    arr[0]\nlet f = leak 123456789\nf ()"
+            ),
+            "E1013",
+            "borrow_outlives_block",
+            (9, 5),
+        );
+    }
+    // A partial application of a named writer over a reference parameter.
+    rejects_at(
+        &format!(
+            "def put :: ref string -> ref mut [(unit -> i64)..] -> unit\nfn put t a = Array.write 0 (\\() -> String.length t) a\n{APPLY}def leak :: i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    let mut arr = [\\() -> 1]\n    apply_read (put (ref text)) (ref mut arr)\n    arr[0]\nlet f = leak 123456789\nf ()"
+        ),
+        "E1013",
+        "borrow_outlives_block",
+        (10, 5),
+    );
+    // The borrowed `text` moves while `arr` lives.
+    rejects_at(
+        &format!(
+            "{APPLY}let text = to_string 123\nlet b = ref text\nlet mut arr = [\\() -> 1]\napply_read (Array.set 0 (\\() -> String.length b)) (ref mut arr)\nlet moved = text\narr[0] () + moved.length"
+        ),
+        "E1014",
+        "borrow_conflict",
+        (7, 13),
+    );
+    for source in [
+        format!(
+            "{APPLY}let text = to_string 123\nlet b = ref text\nlet mut arr = [\\() -> 1]\napply_read (\\_a -> ()) (ref mut arr)\napply_read (\\a -> Array.write 0 (\\() -> 7) a) (ref mut arr)\nlet n = b.length\nlet moved = text\nn + moved.length + arr[0] ()"
+        ),
+        format!(
+            "{APPLY}let text = to_string 123\nlet b = ref text\nlet mut arr = [\\() -> 1]\napply_read (\\a -> {{ let k = b.length; Array.write 0 (\\() -> k) a }}) (ref mut arr)\nlet moved = text\nmoved.length + arr[0] ()"
+        ),
+    ] {
+        accepts_in_both(&source);
+    }
+}
+
+/// A31: writes that store nothing new in the owner stay accepted (main accepts them; the values
+/// are checked by the `in_place_writes` suite of `tests/features.mjs`): reference elements written
+/// with std writers, partial applications of writers, `MatrixView` wrappers, write-backs of an
+/// element read from the same target (`put_last_first`, `bump`, two `rotate`s before the array
+/// moves), `Array.blit` before its source is written (the source's element, not the borrow of the
+/// source, goes into `dst`), and a function value that only reads what it captured.
+#[test]
+fn writes_that_store_nothing_new_stay_accepted() {
+    for source in [
+        "let a = \"a\"\nlet b = \"abc\"\nlet mut arr = [ref a, ref a]\nArray.set 1 (ref b) (ref mut arr)\narr[1].length",
+        "let a = 1\nlet b = 2\nlet c = 3\nlet mut arr = [ref a, ref b, ref a]\nref mut arr |> Array.set 0 (ref c)\nderef arr[0] * 100 + deref arr[1] * 10 + deref arr[2] + 2",
+        "let a = 1\nlet b = 2\nlet c = 3\nlet mut arr = [ref a, ref b, ref b]\nArray.fill 0 1 (ref c) (ref mut arr)\nderef arr[0] * 100 + deref arr[1] * 10 + deref arr[2]",
+        "let mut a = [\\() -> 2]\nlet w = Array.set 0 (\\() -> 5)\nw (ref mut a)\na[0] ()",
+        "def put :: own 'a -> ref mut ['a..] -> unit\nfn put x arr = Array.write 0 x arr\nlet f = put (\\() -> 1)\nlet mut a = [\\() -> 2]\nf (ref mut a)\na[0] ()",
+        "let mut data = [\\() -> 1]\nlet mut grid = MatrixView.of_array_mut 1 1 (ref mut data)\nlet w = MatrixView.write 0 0 (\\() -> 2)\nw (ref mut grid)\ndata[0] ()",
+        "def g :: own 'a -> ref mut MatrixView.Mut<'a> -> unit\nfn g x m = MatrixView.write 0 0 x m\nlet base = 4\nlet mut data = [\\() -> 1, \\() -> 2]\nlet mut grid = MatrixView.of_array_mut 1 2 (ref mut data)\ng (\\() -> base) (ref mut grid)\ndata[0] ()",
+        "def g {r} :: Copy<'a> => own 'a -> ref mut MatrixView.Mut<'a> {r} -> unit\nfn g x m = MatrixView.fill x m\nlet base = 4\nlet mut data = [\\() -> 1, \\() -> 2]\nlet mut grid = MatrixView.of_array_mut 1 2 (ref mut data)\ng (\\() -> base) (ref mut grid)\nlet a = 1\nlet b = 2\nlet mut cells = [ref a, ref a]\nlet mut row = MatrixView.of_array_mut 1 2 (ref mut cells)\ng (ref b) (ref mut row)\ndata[0] () + deref cells[0]",
+        "def put_last_first :: ref mut [(unit -> i64)..] -> unit\nfn put_last_first arr =\n    let last = arr[arr.length - 1]\n    Array.write 0 last arr\nlet mut a = [\\() -> 1, \\() -> 2]\nput_last_first (ref mut a)\na[0] ()",
+        "def bump :: ref mut [(unit -> i64)..] -> unit\nfn bump arr =\n    for i in 0 ..= (arr.length - 1) do\n        let f = arr[i]\n        Array.write i (\\() -> f () + 1) arr\nlet mut a = [\\() -> 1, \\() -> 2]\nbump (ref mut a)\na[0] () + a[1] ()",
+        "def rotate :: ref mut [(unit -> i64)..] -> unit\nfn rotate arr =\n    let second = arr[1]\n    Array.write 0 second arr\nlet mut a = [\\() -> 1, \\() -> 2]\nrotate (ref mut a)\nrotate (ref mut a)\nlet b = a\nb[0] () + b[1] ()",
+        "let a = 1\nlet b = 2\nlet mut src = [ref a]\nlet mut dst = [ref b]\nArray.blit 0 0 1 (ref src) (ref mut dst)\nArray.set 0 (ref b) (ref mut src)\nderef dst[0] * 10 + deref src[0]",
+        "def apply :: own (ref mut [(unit -> i64)..] -> i64) -> ref mut [(unit -> i64)..] -> i64\nfn apply g arr = g arr\nlet text = to_string 123456789\nlet borrowed = ref text\nlet mut arr = [\\() -> 3]\nlet n = apply (\\a -> a[0] () + String.length borrowed) (ref mut arr)\nlet moved = text\narr[0] () + n + moved.length",
+    ] {
+        accepts_in_both(source);
+    }
+}
+
+/// A31: the writes that main rejects stay rejected with the same diagnostics, and tracking the
+/// writes adds none: function elements sorted in place (rejected inside std), slices whose element
+/// region a type cannot name, stores through a `ref mut` parameter without a named target region
+/// (also of values that hold no borrow), and a parallel callback that borrows its environment.
+#[test]
+fn writes_that_main_rejects_keep_their_diagnostics() {
+    let array = include_str!("../std/Array.tz");
+    for (source, expected) in [
+        (
+            "let mut arr = [\\() -> 2, \\() -> 1]\nArray.sort_in_place_with (\\x y -> x () - y ()) (ref mut arr)\narr[0] ()",
+            &[
+                ("E1013", "task_result_retains_borrow", (2003, 32)),
+                ("E1014", "borrow_conflict", (2084, 15)),
+            ][..],
+        ),
+        (
+            "let mut arr = [\\() -> 2, \\() -> 1]\nArray.sort_in_place_by (\\x -> x ()) (ref mut arr)\narr[0] ()",
+            &[("E1014", "borrow_conflict", (2098, 15))][..],
+        ),
+    ] {
+        let found: Vec<_> = analyze_all(source)
+            .expect_err(source)
+            .diagnostics
+            .iter()
+            .map(|error| {
+                (
+                    error.code,
+                    error.kind.unwrap_or(""),
+                    position(array, error.span.start),
+                )
+            })
+            .collect();
+        assert_eq!(found, expected, "{source}");
+        let first = analyze_with_edition(source, Edition::E2027).expect_err(source);
+        assert_eq!(
+            (
+                first.code,
+                first.kind.unwrap_or(""),
+                position(array, first.span.start)
+            ),
+            expected[0],
+            "edition 2027\n{source}"
+        );
+    }
+    for (source, code, kind, at) in [
+        (
+            "def store {r s} :: ref {s} string -> ref mut {r} [ref {s} string..] {s} -> unit = \\x arr -> Array.write 0 x arr\n0",
+            "E1005",
+            "unsized_slice_type_position",
+            (1, 50),
+        ),
+        (
+            "def store {r s} :: ref {s} string -> ref mut {r} [ref {s} string..] -> unit = \\x arr -> Array.write 0 x arr\n0",
+            "E1013",
+            "field_mixes_regions",
+            (1, 38),
+        ),
+        (
+            "def push :: ref mut Vec<(unit -> i64)> -> unit\nfn push v = Vec.push_mut (\\() -> 1) v\n0",
+            "E1013",
+            "store_region_unnamed",
+            (2, 13),
+        ),
+        (
+            "def set_ref :: own 'a -> ref mut 'a -> unit\nfn set_ref v r = deref r = v\nlet base = 2\nlet mut x = \\() -> 1\nset_ref (\\() -> base) (ref mut x)\nx ()",
+            "E1013",
+            "store_region_unnamed",
+            (2, 18),
+        ),
+        (
+            "def push :: own 'a -> ref mut Vec<'a> -> unit\nfn push x v = Vec.push_mut x v\nlet base = 2\nlet mut v: Vec<(unit -> i64)> = Vec.empty()\npush (\\() -> base) (ref mut v)\nVec.length (ref v)",
+            "E1013",
+            "store_region_unnamed",
+            (2, 15),
+        ),
+        (
+            "let text = to_string 123456789\nlet borrowed = ref text\nlet mut arr = [\\() -> 1, \\() -> 2]\nParallel.for_each_chunk 1 (\\_start chunk -> Array.write 0 (\\() -> String.length borrowed) chunk) (ref mut arr)\nlet moved = text\narr[0] () * 100 + moved.length",
+            "E1013",
+            "parallel_callback_borrows_environment",
+            (4, 27),
+        ),
+    ] {
+        rejects_at(source, code, kind, at);
+    }
+}
+
+/// A31, review round 1 (finding 9): a call of a function value keeps the other arguments' borrows
+/// only where a place can hold them: a `ref mut [i64..]` or a `ref mut i64` cannot. An immutable
+/// local that is bound to a lambda, a named function or a partial application is called with the
+/// facts of that code. The programs are safe and main accepts them, whatever else the program
+/// stores in place.
+#[test]
+fn a_call_of_a_function_value_stores_only_where_a_borrow_fits() {
+    for source in [
+        // r15_local_lambda_std_seed
+        "def run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    Array.set 0 (\\() -> 1) (ref mut fs)\n    let name = to_string n\n    let mut buf = [0]\n    let add = \\(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out\n    add (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved + fs[0] ()\nrun 12345",
+        // r13_local_lambda_acc
+        "def keep :: ref mut [(unit -> i64)..] -> unit\nfn keep arr = Array.write 0 (\\() -> 1) arr\ndef run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    keep (ref mut fs)\n    let name = to_string n\n    let mut buf = [0]\n    let add = \\(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out\n    add (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved + fs[0] ()\nrun 12345",
+        // r16_local_lambda_vec_seed
+        "def run :: i64 -> i64\nfn run n =\n    let mut v = Vec.of_array [\\() -> 0]\n    Vec.push_mut (\\() -> 1) (ref mut v)\n    let name = to_string n\n    let mut buf = [0]\n    let add = \\(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out\n    add (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved + Vec.length (ref v)\nrun 12345",
+        // r17_local_lambda_refs_seed
+        "def run :: i64 -> i64\nfn run n =\n    let p = 1\n    let q = 2\n    let mut refs = [ref p]\n    Array.set 0 (ref q) (ref mut refs)\n    let name = to_string n\n    let mut buf = [0]\n    let add = \\(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out\n    add (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved + deref refs[0]\nrun 12345",
+        // r01_fnvalue_int_acc
+        "def add_len :: ref mut [i64..] -> ref string -> unit\nfn add_len out s = Array.write 0 (out[0] + String.length s) out\ndef add_twice :: ref mut [i64..] -> ref string -> unit\nfn add_twice out s = Array.write 0 (out[0] + 2 * String.length s) out\ndef keep :: ref mut [(unit -> i64)..] -> unit\nfn keep arr = Array.write 0 (\\() -> 1) arr\ndef run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    keep (ref mut fs)\n    let name = to_string n\n    let mut buf = [0]\n    let f = if n > 0 then add_len else add_twice\n    f (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved + fs[0] ()\nrun 12345",
+        // r03_handlers_array
+        "def add_len :: ref mut [i64..] -> ref string -> unit\nfn add_len out s = Array.write 0 (out[0] + String.length s) out\ndef keep :: ref mut [(unit -> i64)..] -> unit\nfn keep arr = Array.write 0 (\\() -> 1) arr\ndef run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    keep (ref mut fs)\n    let hs = [add_len, add_len]\n    let mut buf = [0]\n    { let name = to_string n; hs[0] (ref mut buf) (ref name); hs[1] (ref mut buf) (ref name) }\n    buf[0] + fs[0] ()\nrun 12345",
+        // r18_local_lambda_scalar
+        "def keep :: ref mut [(unit -> i64)..] -> unit\nfn keep arr = Array.write 0 (\\() -> 1) arr\ndef bump :: ref mut i64 -> ref string -> unit\nfn bump acc s = deref acc = deref acc + String.length s\ndef run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    keep (ref mut fs)\n    let name = to_string n\n    let mut total = 0\n    let hs = [bump]\n    hs[0] (ref mut total) (ref name)\n    let moved = name\n    total + String.length moved + fs[0] ()\nrun 12345",
+        // r12_callback_param_acc
+        "def with_each :: own (ref mut i64 -> ref string -> unit) -> ref mut i64 -> ref [string] -> unit\nfn with_each f acc xs =\n    for i in 0 ..= (xs.length - 1) do\n        f acc (ref xs[i])\ndef add :: ref mut i64 -> ref string -> unit\nfn add acc s = deref acc = deref acc + String.length s\ndef keep :: ref mut [(unit -> i64)..] -> unit\nfn keep arr = Array.write 0 (\\() -> 1) arr\ndef run :: i64 -> i64\nfn run n =\n    let mut fs = [\\() -> 0]\n    keep (ref mut fs)\n    let xs = [to_string n, to_string (n + 1)]\n    let mut acc = 0\n    let f = if n > 0 then add else add\n    with_each f (ref mut acc) (ref xs)\n    let moved = xs\n    acc + moved.length + fs[0] ()\nrun 12345",
+        // r14_local_lambda_acc_noseed
+        "def run :: i64 -> i64\nfn run n =\n    let name = to_string n\n    let mut buf = [0]\n    let add = \\(out: ref mut [i64..]) (s: ref string) -> Array.write 0 (out[0] + String.length s) out\n    add (ref mut buf) (ref name)\n    let moved = name\n    buf[0] + String.length moved\nrun 12345",
+        // r09_two_arrays_fnvalue
+        "def copy_first :: ref mut [(unit -> i64)..] -> ref [(unit -> i64)] -> unit\nfn copy_first dst src = Array.write 0 src[0] dst\ndef run :: i64 -> i64\nfn run n =\n    let src = [\\() -> n]\n    let mut dst = [\\() -> 0]\n    let f = if n > 0 then copy_first else copy_first\n    f (ref mut dst) (ref src)\n    let moved = src\n    dst[0] () + moved[0] ()\nrun 12345",
+        // r10_named_two_arrays
+        "def copy_first :: ref mut [(unit -> i64)..] -> ref [(unit -> i64)] -> unit\nfn copy_first dst src = Array.write 0 src[0] dst\ndef run :: i64 -> i64\nfn run n =\n    let src = [\\() -> n]\n    let mut dst = [\\() -> 0]\n    copy_first (ref mut dst) (ref src)\n    let moved = src\n    dst[0] () + moved[0] ()\nrun 12345",
+    ] {
+        accepts_in_both(source);
+    }
+    // A function value that does store keeps the borrow, as before.
+    for (source, code, kind, at) in [
+        // s01_two_arrays_fnvalue_bad
+        (
+            "def copy_first :: ref mut [(unit -> i64)..] -> ref [(unit -> i64)] -> unit\nfn copy_first dst src = Array.write 0 src[0] dst\ndef run :: i64 -> i64\nfn run n =\n    let mut dst = [\\() -> 0]\n    let f = if n > 0 then copy_first else copy_first\n    { let text0 = to_string n; let text = ref text0; let src = [\\() -> String.length text]; f (ref mut dst) (ref src) }\n    let other = [to_string 777777, to_string 88888888]\n    dst[0] () + other.length * 0\nrun 123456789",
+            "E1013",
+            "assignment_extends_borrow",
+            (7, 5),
+        ),
+        // s02_two_arrays_fnvalue_move
+        (
+            "def copy_first :: ref mut [(unit -> i64)..] -> ref [(unit -> i64)] -> unit\nfn copy_first dst src = Array.write 0 src[0] dst\ndef run :: i64 -> i64\nfn run n =\n    let name = to_string n\n    let nr = ref name\n    let src = [\\() -> String.length nr]\n    let mut dst = [\\() -> 0]\n    let f = if n > 0 then copy_first else copy_first\n    f (ref mut dst) (ref src)\n    let moved = name\n    dst[0] () + String.length moved\nrun 12345",
+            "E1014",
+            "borrow_conflict",
+            (11, 17),
+        ),
+        // s03_named_two_arrays_move
+        (
+            "def copy_first :: ref mut [(unit -> i64)..] -> ref [(unit -> i64)] -> unit\nfn copy_first dst src = Array.write 0 src[0] dst\ndef run :: i64 -> i64\nfn run n =\n    let name = to_string n\n    let nr = ref name\n    let src = [\\() -> String.length nr]\n    let mut dst = [\\() -> 0]\n    copy_first (ref mut dst) (ref src)\n    let moved = name\n    dst[0] () + String.length moved\nrun 12345",
+            "E1014",
+            "borrow_conflict",
+            (10, 17),
+        ),
+    ] {
+        rejects_at(source, code, kind, at);
+    }
+}
+
+/// A31, review round 1 (finding 8): the substitution of the facts of nested function values
+/// makes each application of the same facts to the same arguments once per pass, so a combinator
+/// that calls its function parameter several times does not multiply the work by the nesting
+/// (fourteen levels took hours before; no time is asserted).
+#[test]
+fn nested_function_values_are_substituted_once() {
+    let nested = format!("{}base{}", "p (".repeat(14), ")".repeat(14));
+    let source = format!(
+        "def base :: ref i64 -> ref i64 -> ref i64 -> unit\nfn base x y z = ()\ndef p :: own (ref i64 -> ref i64 -> ref i64 -> unit) -> ref i64 -> ref i64 -> ref i64 -> unit\nfn p f x y z =\n    f x y z\n    f x z y\n    f y x z\n    f y z x\n    f z x y\n    f z y x\ndef seed :: ref mut [(unit -> i64)..] -> unit\nfn seed arr = Array.write 0 (\\() -> 1) arr\ndef run :: i64 -> i64\nfn run n =\n    let a = n\n    let b = n + 1\n    let c = n + 2\n    let mut arr = [\\() -> 0]\n    seed (ref mut arr)\n    {nested} (ref a) (ref b) (ref c)\n    arr[0] () + a + b + c\nrun 1"
+    );
+    accepts_in_both(&source);
 }

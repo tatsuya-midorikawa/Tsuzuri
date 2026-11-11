@@ -1138,7 +1138,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | --- | --- | --- |
 | 字句・構文・予約語 | `tests/frontend.rs`、`tests/diagnostics.rs`、`src/parser.rs` の test module、`tests/formatter.rs`、`tests/editions.rs`（edition ごとの予約語・manifest の `edition`） | `examples.mjs`、`features.mjs`（関係する suite） |
 | 型・型クラス・多相 | `tests/polymorphism.rs`、`tests/higher_kinds.rs`、`tests/deriving.rs`、`tests/union_types.rs` | `features.mjs typeclasses`・`deriving`・`higher_kinds` |
-| 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs` | `features.mjs borrowed_records`、`control.mjs`、`TSUZURI_PROGFUZZ_KIND=owned progfuzz.mjs` |
+| 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs`、`tests/mutable_slices.rs`（排他スライスと、その場の書き込みが残す借用。A31）、`tests/rc.rs`（`Rc`・`Arc` と lock のコールバックの書き込み） | `features.mjs borrowed_records`・`mutable_slices`・`in_place_writes`・`rc`、`control.mjs`、`TSUZURI_PROGFUZZ_KIND=owned progfuzz.mjs` |
 | 制御構文・パターン | `tests/control.rs`、`tests/match_exhaustiveness.rs` | `control.mjs`、`features.mjs` |
 | 計算式・IO | `tests/computations.rs` | `computations.mjs`、`io.mjs` |
 | コレクション・std | `tests/stdlib.rs`、`tests/map_set.rs`、`tests/vec.rs`、`tests/iteration_protocol.rs` | `features.mjs map_set`・`iteration_protocol`・`vec` |

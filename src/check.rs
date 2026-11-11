@@ -935,15 +935,33 @@ impl Type {
                 && arguments.iter().any(|argument| argument.carries_loans(types)))
     }
 
+    /// A31: whether a value of this type stores (not through a reference) a value of a type
+    /// that `found` accepts.
+    pub(crate) fn stores_some(
+        &self,
+        types: &TypeContext<'_>,
+        found: impl Fn(&Type) -> bool,
+    ) -> bool {
+        !types.stored_all(self, |part| !found(part))
+    }
+
+    /// A31: whether a value of this type owns a mutable cell (`is_mutable_cell`): it stores one,
+    /// or an `Rc` or `Arc` that it stores shares one, without a reference on the way. A function
+    /// value that captures such a value by value shares the cell with its copies.
+    pub(crate) fn owns_mutable_cell(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |part| !part.is_mutable_cell(types))
+    }
+
     /// A28: whether code that receives a value of this type may write into a place that the giver
-    /// reaches, so that a store that the ownership check does not track (A31) lands where the
-    /// giver's values can read it. That needs an exclusive reference (a `ref mut`, or a record
-    /// with exclusive regions such as `MatrixView.Mut`) or a mutable cell (`is_mutable_cell`),
-    /// reached through stored values, the targets of references, the contents of `Rc`, `Arc` and
-    /// their weak pointers, and the parameter and result types of function types (and the result
-    /// of a tzroutine body): a callback `put text : ref mut [T] -> unit` is a writer although its
-    /// own value holds no exclusive borrow. Each function type is walked once.
-    pub(crate) fn lends_mutable(&self, types: &TypeContext<'_>) -> bool {
+    /// reaches. That needs an exclusive reference (a `ref mut`, or a record with exclusive regions
+    /// such as `MatrixView.Mut`; counted when `exclusive` is true) or a mutable cell
+    /// (`is_mutable_cell`), reached through stored values, the targets of references, the contents
+    /// of `Rc`, `Arc` and their weak pointers, and the parameter and result types of function
+    /// types (and the result of a tzroutine body): a callback `put text : ref mut [T] -> unit` is a
+    /// writer although its own value holds no exclusive borrow. Each function type is walked once.
+    /// The ownership check tracks the stores through both (A31); a cell that an `Rc` or `Arc`
+    /// shares is still written behind the other owners' loans (`ownership::lending_bodies`).
+    pub(crate) fn lends_mutable(&self, types: &TypeContext<'_>, exclusive: bool) -> bool {
         let functions = std::cell::RefCell::new(Vec::new());
         let reaches = |root: &Type| {
             types.reaches(root, |ty| {
@@ -954,8 +972,9 @@ impl Type {
                     Type::Once(result) => functions.borrow_mut().push((**result).clone()),
                     _ => {}
                 }
-                matches!(ty, Type::Reference(_, true))
-                    || matches!(ty, Type::Record(id, _) if types.records[*id].exclusive_regions != 0)
+                (exclusive
+                    && (matches!(ty, Type::Reference(_, true))
+                        || matches!(ty, Type::Record(id, _) if types.records[*id].exclusive_regions != 0)))
                     || ty.is_mutable_cell(types)
             })
         };
@@ -9405,15 +9424,6 @@ fn check_modules_collect(
                 .is_some_and(|slots| slots.writes)
     }) {
         regions::validate_contract_calls(&module)?;
-    }
-    // A32: a parameter annotated with a reference type binds the reference, where a convention
-    // would read the value, only in a program whose stores the borrow check tracks. A store of a
-    // value that may hold loans with `Array.write` or `SyncMap.__replace` (A31) can keep a loan
-    // of such a parameter past its owner, as it can with the spellings that A32 did not change,
-    // so the program fails as it did before A32: with the pattern's `E1003`.
-    if !annotated_references.is_empty() && crate::ownership::untracked_loan_store_in(&module) {
-        diagnostics.extend(annotated_references);
-        names.flush_renamed(diagnostics).check()?;
     }
     let ownership_time = crate::timings::Phase::start("ownership");
     diagnostics.extend(crate::ownership::check_all_with(&module, parallelism));
