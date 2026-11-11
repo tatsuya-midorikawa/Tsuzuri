@@ -1623,118 +1623,355 @@ fn annotated_reference_read_callbacks() {
     }
 }
 
-/// The help of the `E1003` that an annotated reference parameter keeps in a program with a store
-/// that the borrow check does not track (review 2 of A32).
-const UNTRACKED_STORE_HELP: &str = "a parameter annotated with a reference type binds the \
-    reference only in a program that stores no value which may hold borrows with an in-place \
-    write (`Array.write`, `SyncMap.__replace`, or a std function that calls one, such as \
-    `Array.set`); this program has such a store, so the parameter reads the value";
+/// The first error of `source` has `code` and `kind` and starts at the 1-based `line:column`.
+fn rejects_at(source: &str, code: &str, kind: &str, at: (usize, usize)) {
+    let error = check("2027", source)
+        .err()
+        .unwrap_or_else(|| panic!("accepted:\n{source}"));
+    assert_eq!(
+        (error.code, error.kind),
+        (code, Some(kind)),
+        "{source}\n{}",
+        error.message
+    );
+    let before = &source[..error.span.start];
+    let position = (
+        before.matches('\n').count() + 1,
+        before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1,
+    );
+    assert_eq!(position, at, "{source}\n{}", error.message);
+}
 
 #[test]
-fn annotated_reference_parameters_wait_for_tracked_in_place_writes() {
-    // `Array.write` does not add the loans of the value that it stores to the owner of the array
-    // (A31), so a closure that captures an annotated reference parameter could outlive the
-    // parameter's owner in the array. Every spelling that A32 does not change has the same hole
-    // until A31 tracks the store; A32 does not add the annotated spellings to it: in a program that
-    // makes such a store, the annotated pattern keeps the `E1003` that it had before A32, at the
-    // same place and with the same message.
-    let caller = [
-        "export def run :: i64 -> i64 = \\n ->",
-        "    let mut arr = [\\() -> 0]",
-        "    { let local = [n, n + 1, n + 2, n + 3]; put arr local }",
-        "    arr[0] ()",
-    ];
-    let def_form = |put: &str| {
-        let mut lines = vec![put];
-        lines.extend(caller);
-        program(&lines)
-    };
+fn annotated_reference_parameters_keep_their_in_place_writes_tracked() {
+    // A32 stacked on A31: an in-place write (`Array.write`, the std functions that call it, such
+    // as `Array.set` and `Array.fill`) that stores a function holding a loan of an annotated
+    // reference parameter adds that loan to the target's owner (A31's store facts), as it does for
+    // the spellings that A32 did not change. Each program stores, through the annotated spelling,
+    // a function that borrows `local` (or `k`) in `arr`, which outlives the block that owns
+    // `local`; its twin is the same program without the annotations, or with explicit `ref`
+    // signatures. Both fail where A31's rule for an owner that a block drops reports: at that
+    // block, `E1013 assignment_extends_borrow`. The seeds of the two A32 reviews are kept verbatim
+    // (`h19`..`h22`, `r2_ag02`..`r2_ag04`, `alias`, `src_side`, `src_side_bound`); until A31 they
+    // kept the pre-A32 `E1003` through a guard (review 2 of A32), and a base program with the
+    // twin's spelling was accepted.
     let store = "Array.write 0 (\\() -> xs[0] * 1000 + xs.length) slot";
-    let lambda_form = |declaration: &str, lambda: &str, call: &str| {
+    let put_plain =
+        format!("def put :: mut [(unit -> i64)] -> [i64] -> unit = \\slot xs -> {store}");
+    let put_annotated = format!(
+        "def put :: mut [(unit -> i64)] -> [i64] -> unit = \\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}"
+    );
+    let put_source_first =
+        format!("def put :: [i64] -> mut [(unit -> i64)] -> unit = \\xs slot -> {store}");
+    let caller = |declaration: &str, chosen: Option<&str>, call: &str, n: &str| {
+        let mut lines = vec![
+            declaration.to_string(),
+            String::new(),
+            "def run :: i64 -> i64 = \\n ->".to_string(),
+            "    let mut arr = [\\() -> 0]".to_string(),
+        ];
+        lines.extend(chosen.map(|line| format!("    let chosen = {line}")));
+        lines.push(format!(
+            "    {{ let local = [n, n + 1, n + 2, n + 3]; {call} }}"
+        ));
+        lines.push("    let other = [777, 778, 779, 780, 781, 782]".to_string());
+        lines.push("    let g = arr[0]".to_string());
+        lines.push("    g () + other[0] * 0".to_string());
+        lines.push(String::new());
+        lines.push(format!("run {n}"));
+        program(&lines.iter().map(String::as_str).collect::<Vec<_>>())
+    };
+    // h19 and h22: a `def` whose right-hand side lambda annotates its parameters.
+    let h19 = caller(&put_plain, None, "put arr local", "5");
+    let h22 = caller(&put_annotated, None, "put arr local", "5");
+    // h20: both branches of an `if` bound by `let` are annotated lambdas; no type with
+    // conventions is expected there, so base accepted it as it is. The twin chooses `put` twice.
+    let h20 = program(&[
+        "def run :: i64 -> i64 = \\n ->",
+        "    let mut arr = [\\() -> 0]",
+        &format!(
+            "    let chosen = if n > 0 then (\\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}) else (\\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> ())"
+        ),
+        "    { let local = [n, n + 1, n + 2, n + 3]; chosen (ref mut arr) (ref local) }",
+        "    let other = [777, 778, 779, 780, 781, 782]",
+        "    let g = arr[0]",
+        "    g () + other[0] * 0",
+        "",
+        "run 5",
+    ]);
+    let h20_twin = caller(
+        &put_plain,
+        Some("if n > 0 then put else put"),
+        "chosen (ref mut arr) (ref local)",
+        "5",
+    );
+    // h21: an annotated lambda where `put`'s type, with its conventions, is expected.
+    let h21 = caller(
+        &put_plain,
+        Some(&format!(
+            "if n > 0 then put else \\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}"
+        )),
+        "chosen (ref mut arr) (ref local)",
+        "(-5)",
+    );
+    let h21_twin = caller(
+        &put_plain,
+        Some("put"),
+        "chosen (ref mut arr) (ref local)",
+        "(-5)",
+    );
+    // review 1, alias: an explicit `ref mut` signature whose lambda annotates its parameters.
+    let alias = caller(
+        &format!(
+            "def put :: ref mut [(unit -> i64)] -> ref [i64] -> unit = \\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}"
+        ),
+        None,
+        "put (ref mut arr) (ref local)",
+        "5",
+    );
+    let alias_twin = caller(
+        &format!("def put :: ref mut [(unit -> i64)] -> ref [i64] -> unit = \\slot xs -> {store}"),
+        None,
+        "put (ref mut arr) (ref local)",
+        "5",
+    );
+    // review 1, src_side and src_side_bound: the annotated parameter is the source of the store,
+    // in an annotated lambda in the `else` branch and in a lambda bound by `let`.
+    let src_side = caller(
+        &put_source_first,
+        Some(&format!(
+            "if n > 0 then put else \\(xs: ref [i64]) slot -> {store}"
+        )),
+        "chosen local arr",
+        "(-5)",
+    );
+    let src_side_bound = {
+        let mut lines: Vec<String> = caller(
+            &put_source_first,
+            Some("if n > 0 then put else other_put"),
+            "chosen local arr",
+            "(-5)",
+        )
+        .lines()
+        .map(str::to_string)
+        .collect();
+        lines.insert(
+            4,
+            format!(
+                "    let other_put = \\(xs: ref [i64]) (slot: ref mut [(unit -> i64)]) -> {store}"
+            ),
+        );
+        program(&lines.iter().map(String::as_str).collect::<Vec<_>>())
+    };
+    let src_side_twin = caller(&put_source_first, Some("put"), "chosen local arr", "(-5)");
+    // r2_ag02 (annotated), r2_ag03 (unannotated) and r2_ag04 (explicit `ref` signature): the
+    // stored function calls a function parameter that captures `k`.
+    let function_store = |declaration: &str, call: &str| {
         program(&[
             declaration,
+            "",
             "export def run :: i64 -> i64 = \\n ->",
             "    let mut arr = [\\() -> 0]",
-            &format!("    let chosen = if n > 0 then put else {lambda}"),
-            &format!("    {{ let local = [n, n + 1, n + 2, n + 3]; {call} }}"),
-            "    arr[0] ()",
+            &format!(
+                "    {{ let k = [n, n + 1, n + 2, n + 3]; let g = \\x -> x + k[0] + k.length; {call} }}"
+            ),
+            "    let other = [777, 778, 779, 780, 781, 782]",
+            "    let h = arr[0]",
+            "    h () + other[0] * 0",
+            "",
+            "run 5",
         ])
     };
-    let unannotated =
-        format!("def put :: mut [(unit -> i64)] -> [i64] -> unit = \\slot xs -> {store}");
-    let unannotated_source_last =
-        format!("def put :: [i64] -> mut [(unit -> i64)] -> unit = \\xs slot -> {store}");
-    for (source, marker, message) in [
-        (
-            def_form(&format!(
-                "def put :: mut [(unit -> i64)] -> [i64] -> unit = \\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}"
+    let r2_ag02 = function_store(
+        "def put :: mut [(unit -> i64)] -> (i64 -> i64) -> unit = \\(slot: ref mut [(unit -> i64)]) (f: ref (i64 -> i64)) -> Array.write 0 (\\() -> (deref f) 1000) slot",
+        "put arr g",
+    );
+    let r2_ag03 = function_store(
+        "def put :: mut [(unit -> i64)] -> (i64 -> i64) -> unit = \\slot f -> Array.write 0 (\\() -> f 1000) slot",
+        "put arr g",
+    );
+    let r2_ag04 = function_store(
+        "def put :: ref mut [(unit -> i64)] -> ref (i64 -> i64) -> unit = \\slot f -> Array.write 0 (\\() -> (deref f) 1000) slot",
+        "put (ref mut arr) (ref g)",
+    );
+    // Further spellings of A32: a std function that calls `Array.write` (`Array.set`,
+    // `Array.fill`), a `match` arm, a generic record, a vector of functions, a generic `def`, and
+    // a read callback that stores through a lock.
+    let set_store = "Array.set 0 (\\() -> xs[0] * 1000 + xs.length) slot";
+    let set = caller(
+        &format!("def put :: mut [(unit -> i64)] -> [i64] -> unit = \\slot xs -> {set_store}"),
+        Some(&format!(
+            "if n > 0 then put else \\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {set_store}"
+        )),
+        "chosen (ref mut arr) (ref local)",
+        "(-5)",
+    );
+    let set_twin = caller(
+        &format!("def put :: mut [(unit -> i64)] -> [i64] -> unit = \\slot xs -> {set_store}"),
+        Some("put"),
+        "chosen (ref mut arr) (ref local)",
+        "(-5)",
+    );
+    let fill_store = "Array.fill 0 1 (\\() -> xs[0] * 1000 + xs.length) slot";
+    let fill = caller(
+        &format!(
+            "def put :: mut [(unit -> i64)] -> [i64] -> unit = \\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {fill_store}"
+        ),
+        None,
+        "put arr local",
+        "5",
+    );
+    let fill_twin = caller(
+        &format!("def put :: mut [(unit -> i64)] -> [i64] -> unit = \\slot xs -> {fill_store}"),
+        None,
+        "put arr local",
+        "5",
+    );
+    let arm = caller(
+        &put_plain,
+        Some(&format!(
+            "match n with | 0 -> put | _ -> \\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}"
+        )),
+        "chosen (ref mut arr) (ref local)",
+        "5",
+    );
+    let arm_twin = caller(
+        &put_plain,
+        Some("match n with | 0 -> put | _ -> put"),
+        "chosen (ref mut arr) (ref local)",
+        "5",
+    );
+    let holder = |value: &str| {
+        caller(
+            &format!("record Holder<'a> {{ value: 'a }}\n{put_plain}"),
+            Some(&format!(
+                "if n > 0 then Holder {{ value: put }} else Holder {{ value: {value} }}"
             )),
-            "= \\",
-            "expected ref mut [unit -> i64], found [unit -> i64]",
-        ),
-        (
-            lambda_form(
-                &unannotated,
-                &format!("\\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}"),
-                "chosen arr local",
+            "chosen.value (ref mut arr) (ref local)",
+            "(-5)",
+        )
+    };
+    let in_holder = holder(&format!(
+        "\\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}"
+    ));
+    let in_holder_twin = holder("put");
+    let vector = |second: &str| {
+        caller(
+            &put_plain,
+            Some(&format!(
+                "{{ let mut writers = Vec.empty(); Vec.push put writers; Vec.push ({second}) writers; writers[1] }}"
+            )),
+            "chosen (ref mut arr) (ref local)",
+            "5",
+        )
+    };
+    let in_vector = vector(&format!(
+        "\\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}"
+    ));
+    let in_vector_twin = vector("put");
+    let generic = |put: &str| {
+        program(&[
+            put,
+            "export def run :: i64 -> i64 = \\n ->",
+            "    let mut arr = [\\() -> 0]",
+            "    { let local = to_string n; put arr local (\\(s: ref string) -> s.length) }",
+            "    let other = to_string 987654321",
+            "    arr[0] () + other.length * 0",
+        ])
+    };
+    let in_generic = generic(
+        "def put :: mut [(unit -> i64)] -> 'a -> (ref 'a -> i64) -> unit = \\(slot: ref mut [(unit -> i64)]) (v: ref 'a) (measure: ref (ref 'a -> i64)) -> Array.write 0 (\\() -> (deref measure) v) slot",
+    );
+    let in_generic_twin = generic(
+        "def put :: mut [(unit -> i64)] -> 'a -> (ref 'a -> i64) -> unit = \\slot v measure -> Array.write 0 (\\() -> measure (ref v)) slot",
+    );
+    let locked = |parameter: &str| {
+        program(&[
+            "export def run :: i64 -> i64 = \\n ->",
+            "    let m = Mutex.create [\\() -> 0]",
+            "    let mr = ref m",
+            &format!(
+                "    {{ let texts = [to_string n, \"bb\"]; let ks = Array.map (\\{parameter} -> {{ Mutex.with_lock mr (\\slot -> Array.write 0 (\\() -> t.length) slot); 1 }}) texts; () }}"
             ),
-            "else \\",
-            "expected ref mut [unit -> i64], found [unit -> i64]",
+            "    Mutex.with_lock mr (\\slot -> slot[0] ())",
+        ])
+    };
+    let read_callback = locked("(t: ref string)");
+    let read_callback_twin = locked("t");
+    // Each annotated program, then its twin, with the line of the block that owns `local` (or
+    // `k`, `texts`), which starts at column 5.
+    for (source, line) in [
+        (&h22, 5),
+        (&h19, 5),
+        (&h20, 4),
+        (&h20_twin, 6),
+        (&h21, 6),
+        (&h21_twin, 6),
+        (&alias, 5),
+        (&alias_twin, 5),
+        (&src_side, 6),
+        (&src_side_bound, 7),
+        (&src_side_twin, 6),
+        (&r2_ag02, 5),
+        (&r2_ag03, 5),
+        (&r2_ag04, 5),
+        (&set, 6),
+        (&set_twin, 6),
+        (&fill, 5),
+        (&fill_twin, 5),
+        (&arm, 6),
+        (&arm_twin, 6),
+        (&in_holder, 7),
+        (&in_holder_twin, 7),
+        (&in_vector, 6),
+        (&in_vector_twin, 6),
+        (&in_generic, 4),
+        (&in_generic_twin, 4),
+        (&read_callback, 4),
+        (&read_callback_twin, 4),
+    ] {
+        rejects_at(source, "E1013", "assignment_extends_borrow", (line, 5));
+    }
+    // Moving the owner while the target holds the stored loan conflicts with it (`E1014`), at the
+    // move, with the annotations and without.
+    let moved = |put: &str| {
+        program(&[
+            put,
+            "def consume :: own string -> i64 = \\text -> text.length",
+            "export def run :: i64 -> i64 = \\n ->",
+            "    let local = to_string n",
+            "    let mut arr = [\\() -> 0]",
+            "    put arr local",
+            "    let c = consume local",
+            "    arr[0] () + c",
+        ])
+    };
+    for source in [
+        moved(
+            "def put :: mut [(unit -> i64)] -> string -> unit = \\(slot: ref mut [(unit -> i64)]) (xs: ref string) -> Array.write 0 (\\() -> xs.length * 1000) slot",
         ),
-        (
-            lambda_form(
-                &unannotated_source_last,
-                &format!("\\(xs: ref [i64]) slot -> {store}"),
-                "chosen local arr",
-            ),
-            "else \\",
-            "expected ref [i64], found [i64]",
-        ),
-        (
-            program(&[
-                "def put :: mut [(unit -> i64)] -> (i64 -> i64) -> unit = \\(slot: ref mut [(unit -> i64)]) (f: ref (i64 -> i64)) -> Array.write 0 (\\() -> (deref f) 1000) slot",
-                "export def run :: i64 -> i64 = \\n ->",
-                "    let mut arr = [\\() -> 0]",
-                "    { let k = [n, n + 1]; let g = \\x -> x + k[0] + k.length; put arr g }",
-                "    arr[0] ()",
-            ]),
-            "= \\",
-            "expected ref mut [unit -> i64], found [unit -> i64]",
-        ),
-        (
-            // A std function that calls `Array.write` stores as well, and the store may be in
-            // another function than the annotated parameter.
-            program(&[
-                TEXT_LENGTH,
-                "def keep :: mut [(unit -> i64)] -> (unit -> i64) -> unit = \\slots f -> Array.set 0 f slots",
-                "export def pick :: i64 -> i64 = \\n ->",
-                "    let chosen = if n > 0 then text_length else \\(text: ref string) -> text.length * 10",
-                "    let mut slots = [\\() -> 0]",
-                "    keep slots (\\() -> n)",
-                "    let text = \"hello\"",
-                "    chosen (ref text) + slots[0] ()",
-            ]),
-            "else \\",
-            "expected ref string, found string",
+        moved(
+            "def put :: mut [(unit -> i64)] -> string -> unit = \\slot xs -> Array.write 0 (\\() -> xs.length * 1000) slot",
         ),
     ] {
-        let error = check("2027", &source)
-            .err()
-            .unwrap_or_else(|| panic!("accepted:\n{source}"));
-        assert_eq!(
-            (error.code, error.message.as_str(), error.help.as_deref()),
-            ("E1003", message, Some(UNTRACKED_STORE_HELP)),
-            "{source}"
-        );
-        assert_eq!(
-            error.span.start,
-            pattern_offset(&source, marker),
-            "{source}"
-        );
+        rejects_at(&source, "E1014", "borrow_conflict", (7, 21));
     }
-    // A store whose value holds no loan, and a program whose stores are all tracked, keep the
-    // annotated reference.
+    // The annotated spellings whose stores hold no loan that outlives its owner are accepted:
+    // r2_ag01 (the stored function captures nothing), a store of an `i64`, a store of a function
+    // that captures only `n`, and owners declared before the target. The conventions suite runs
+    // them (`annotated_reference_stores`).
     for source in [
+        program(&[
+            "def put :: mut [(unit -> i64)] -> 'a -> ('a -> i64) -> unit = \\(slot: ref mut [(unit -> i64)]) (v: ref 'a) (measure: ref ('a -> i64)) -> Array.write 0 (\\() -> 1) slot",
+            "",
+            "export def run :: i64 -> i64 = \\n ->",
+            "    let mut arr = [\\() -> 0]",
+            "    { let local = [n, n + 1, n + 2, n + 3]; put arr local (\\xs -> xs.length) }",
+            "    let g = arr[0]",
+            "    g ()",
+            "",
+            "run 5",
+        ]),
         program(&[
             "def put :: mut [i64] -> [i64] -> unit = \\(slot: ref mut [i64]) (xs: ref [i64]) -> Array.write 0 (xs[0] * 1000 + xs.length) slot",
             "export def run :: i64 -> i64 = \\n ->",
@@ -1744,29 +1981,45 @@ fn annotated_reference_parameters_wait_for_tracked_in_place_writes() {
         ]),
         program(&[
             TEXT_LENGTH,
+            "def keep :: mut [(unit -> i64)] -> (unit -> i64) -> unit = \\slots f -> Array.set 0 f slots",
             "export def pick :: i64 -> i64 = \\n ->",
             "    let chosen = if n > 0 then text_length else \\(text: ref string) -> text.length * 10",
-            "    let mut slots = [0]",
-            "    Array.set 0 n (ref mut slots)",
+            "    let mut slots = [\\() -> 0]",
+            "    keep slots (\\() -> n)",
             "    let text = \"hello\"",
-            "    chosen (ref text) + slots[0]",
+            "    chosen (ref text) + slots[0] ()",
+        ]),
+        program(&[
+            &put_annotated,
+            "export def run :: i64 -> i64 = \\n ->",
+            "    let local = [n, n + 1, n + 2, n + 3]",
+            "    let mut arr = [\\() -> 0]",
+            "    put arr local",
+            "    arr[0] ()",
+        ]),
+        program(&[
+            &put_plain,
+            "export def run :: i64 -> i64 = \\n ->",
+            "    let local = [n, n + 1, n + 2]",
+            "    let mut arr = [\\() -> 0]",
+            &format!(
+                "    let chosen = if n > 0 then put else \\(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> {store}"
+            ),
+            "    chosen (ref mut arr) (ref local)",
+            "    arr[0] ()",
+        ]),
+        program(&[
+            "def put :: mut [(unit -> i64)] -> (i64 -> i64) -> unit = \\(slot: ref mut [(unit -> i64)]) (f: ref (i64 -> i64)) -> Array.write 0 (\\() -> (deref f) 1000) slot",
+            "export def run :: i64 -> i64 = \\n ->",
+            "    let k = [n, n + 1, n + 2, n + 3]",
+            "    let g = \\x -> x + k[0] + k.length",
+            "    let mut arr = [\\() -> 0]",
+            "    put arr g",
+            "    arr[0] ()",
         ]),
     ] {
         check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
     }
-    // A program with such a store and no annotated reference parameter is checked as before A32.
-    let unannotated_lambda = program(&[
-        TEXT_LENGTH,
-        "def keep :: mut [(unit -> i64)] -> (unit -> i64) -> unit = \\slots f -> Array.set 0 f slots",
-        "export def pick :: i64 -> i64 = \\n ->",
-        "    let chosen = if n > 0 then text_length else \\text -> text.length * 10",
-        "    let mut slots = [\\() -> 0]",
-        "    keep slots (\\() -> n)",
-        "    let text = \"hello\"",
-        "    chosen (ref text) + slots[0] ()",
-    ]);
-    check("2027", &unannotated_lambda)
-        .unwrap_or_else(|error| panic!("{unannotated_lambda}\n{error:?}"));
 }
 
 #[test]

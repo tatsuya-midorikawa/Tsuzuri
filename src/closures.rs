@@ -114,18 +114,12 @@ impl Checker<'_> {
     /// reported before, with the `ref` that the annotation has (`expected ref [string], found
     /// string`). The annotation is resolved without the side effects of `Checker::annotation`,
     /// which checks it again with the pattern; one that does not resolve counts as no reference.
-    ///
-    /// When it binds the reference, the first such parameter of the body keeps the `E1003` that
-    /// its pattern (`span`) reported before A32 in `Checker::annotated_reference`: the program
-    /// reports it when some function stores a value that may hold loans with a writer that the
-    /// borrow check does not track (A31, review 2 of A32), where the reference could outlive its
-    /// owner.
     pub(super) fn binds_annotated_reference(
         &mut self,
         parameter: &Type,
-        annotation: Option<(&TypeExpr, Span)>,
+        annotation: Option<&TypeExpr>,
     ) -> bool {
-        let (Some((annotation, span)), Type::Reference(inner, _)) = (annotation, parameter) else {
+        let (Some(annotation), Type::Reference(inner, _)) = (annotation, parameter) else {
             return false;
         };
         let inner = self.inference.resolve(inner);
@@ -142,20 +136,7 @@ impl Checker<'_> {
         else {
             return false;
         };
-        if !self.inference.unifies(parameter, &annotated, &self.types) {
-            return false;
-        }
-        if self.annotated_reference.is_none() {
-            self.annotated_reference = Some(
-                polymorph::mismatch(
-                    annotated.display(&self.types),
-                    inner.display(&self.types),
-                    span,
-                )
-                .with_help(UNTRACKED_STORE_HELP),
-            );
-        }
-        true
+        self.inference.unifies(parameter, &annotated, &self.types)
     }
 
     pub(super) fn checked_lambda(
@@ -253,21 +234,13 @@ impl Checker<'_> {
     }
 }
 
-/// The help of the `E1003` that an annotated reference parameter keeps in a program with a store
-/// that the borrow check does not track (`Checker::binds_annotated_reference`).
-const UNTRACKED_STORE_HELP: &str = "a parameter annotated with a reference type binds the \
-    reference only in a program that stores no value which may hold borrows with an in-place \
-    write (`Array.write`, `SyncMap.__replace`, or a std function that calls one, such as \
-    `Array.set`); this program has such a store, so the parameter reads the value";
-
-/// The type annotations of the parameters that a lambda destructures, with the span of the
-/// annotated pattern, by the parameter's generated name (A32). `explicit_lambda` names a
-/// parameter that is not a plain name `$lambda…` and wraps the body in one
-/// `MatchOrigin::LambdaDestructuring` match on it with a single arm, the first parameter
-/// outermost; a guard adds the innermost match, on `()`. A `def` whose body is such a lambda
-/// takes its parameters and keeps the chain as its body. The walk stops at the first expression
-/// that is not one of these matches.
-pub(super) fn parameter_annotations(body: &Expr) -> BTreeMap<&str, (&TypeExpr, Span)> {
+/// The type annotations of the parameters that a lambda destructures, by the parameter's
+/// generated name (A32). `explicit_lambda` names a parameter that is not a plain name `$lambda…`
+/// and wraps the body in one `MatchOrigin::LambdaDestructuring` match on it with a single arm,
+/// the first parameter outermost; a guard adds the innermost match, on `()`. A `def` whose body
+/// is such a lambda takes its parameters and keeps the chain as its body. The walk stops at the
+/// first expression that is not one of these matches.
+pub(super) fn parameter_annotations(body: &Expr) -> BTreeMap<&str, &TypeExpr> {
     let mut annotations = BTreeMap::new();
     let mut current = body;
     while let ExprKind::Match {
@@ -283,7 +256,7 @@ pub(super) fn parameter_annotations(body: &Expr) -> BTreeMap<&str, (&TypeExpr, S
             break;
         }
         if let PatternKind::Annotated(_, annotation) = &arm.pattern.kind {
-            annotations.insert(name.text.as_str(), (annotation, arm.pattern.span));
+            annotations.insert(name.text.as_str(), annotation);
         }
         current = &arm.body;
     }

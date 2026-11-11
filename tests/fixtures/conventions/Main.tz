@@ -316,5 +316,37 @@ export def annotated_reference_kept :: i64 -> i64 = \n ->
     let kept = first_reader r + second_reader r * 1000 + third_reader r * 1000000
     chosen r + kept * 100 + apply_ref (\x -> x * 2 + n) 5 * 1000000000000
 
+// A32 on A31: in-place writes through annotated reference parameters whose owners outlive the
+// target, and stores that hold no loan of them (review seed r2_ag01 among them); A31's store facts
+// reject the same writes when the owner dies first.
+def stored_constant :: mut [(unit -> i64)] -> 'a -> ('a -> i64) -> unit = \(slot: ref mut [(unit -> i64)]) (v: ref 'a) (measure: ref ('a -> i64)) -> Array.write 0 (\() -> 1) slot
+def stored_reader :: mut [(unit -> i64)] -> [i64] -> unit = \(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> Array.write 0 (\() -> xs[0] * 1000 + xs.length) slot
+def stored_plain :: mut [(unit -> i64)] -> [i64] -> unit = \slot xs -> Array.write 0 (\() -> xs[0] * 1000 + xs.length) slot
+def stored_function :: mut [(unit -> i64)] -> (i64 -> i64) -> unit = \(slot: ref mut [(unit -> i64)]) (f: ref (i64 -> i64)) -> Array.write 0 (\() -> (deref f) 1000) slot
+def stored_number :: mut [i64] -> [i64] -> unit = \(slot: ref mut [i64]) (xs: ref [i64]) -> Array.write 0 (xs[0] * 1000 + xs.length) slot
+def stored_keep :: mut [(unit -> i64)] -> (unit -> i64) -> unit = \slots f -> Array.set 0 f slots
+
+export def annotated_reference_stores :: i64 -> i64 = \n ->
+    let local = [n, n + 1, n + 2]
+    let k = [n, n + 1, n + 2, n + 3]
+    let g = \x -> x + k[0] + k.length
+    let mut constant = [\() -> 0]
+    { let scratch = [n, n + 1, n + 2, n + 3]; stored_constant constant scratch (\xs -> xs.length) }
+    let mut chosen_slots = [\() -> 0]
+    let chosen = if n > 0 then stored_plain else \(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> Array.write 0 (\() -> xs[0] * 100 + xs.length * 7) slot
+    chosen (ref mut chosen_slots) (ref local)
+    let mut direct = [\() -> 0]
+    stored_reader direct local
+    let mut applied = [\() -> 0]
+    stored_function applied g
+    let mut numbers = [0]
+    { let scratch = [n, n + 1, n + 2, n + 3]; stored_number numbers scratch }
+    let text = "hello"
+    let measure = if n > 0 then text_size else \(text: ref string) -> text.length * 10
+    let mut kept = [\() -> 0]
+    stored_keep kept (\() -> n)
+    let picked = measure (ref text) + kept[0] ()
+    constant[0] () + chosen_slots[0] () * 10 + direct[0] () * 100000 + applied[0] () * 1000000000 + numbers[0] * 10000000000000 + picked * 7
+
 type OwnAlias = own
 (contextual_own_type_name)

@@ -696,6 +696,21 @@ const suites = {
         const applied = (5n * 2n + w) * 2n + w;
         return ["annotated_reference_kept", [w], chosen + kept * 100n + applied * 1000000000000n];
       }),
+      // A32 on A31: in-place writes through annotated reference parameters. `constant` holds
+      // `\() -> 1` (r2_ag01); `local` is [n, n + 1, n + 2], so the declared writer gives
+      // n * 1000 + 3 and the annotated lambda n * 100 + 3 * 7; `g 1000` is 1000 + k[0] + 4; the
+      // number store gives n * 1000 + 4; `measure` reads "hello" (5, or 5 * 10) and `kept` gives n.
+      ...[-3, 0, 1, 5].map((n) => {
+        const w = BigInt(n);
+        const constant = 1n;
+        const chosen = n > 0 ? w * 1000n + 3n : w * 100n + 21n;
+        const direct = w * 1000n + 3n;
+        const applied = 1000n + w + 4n;
+        const numbers = w * 1000n + 4n;
+        const picked = (n > 0 ? 5n : 50n) + w;
+        return ["annotated_reference_stores", [w],
+          constant + chosen * 10n + direct * 100000n + applied * 1000000000n + numbers * 10000000000000n + picked * 7n];
+      }),
       ["trap", [1n], 10n + 20n + 20n],
     ],
     traps: [

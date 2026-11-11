@@ -9203,9 +9203,6 @@ fn check_modules_collect(
     }
     let mut name_uses = Vec::new();
     let mut reference_borrows: Vec<Span> = Vec::new();
-    // A32: the `E1003` of the first annotated reference parameter of each body, reported when the
-    // program makes a store that the borrow check does not track (after `closures::lower`).
-    let mut annotated_references: Vec<Diagnostic> = Vec::new();
     // Finishing a function reads the shared tables and changes only that function and its checker,
     // so the functions finish in parallel; what each leaves for the shared lists is applied in
     // function order.
@@ -9220,11 +9217,9 @@ fn check_modules_collect(
             let name_use = std::mem::take(&mut checker.name_uses);
             let mut function_warnings = Vec::new();
             let mut references = Vec::new();
-            let mut annotated = None;
             let checked = (|| {
                 checker.finish(&mut function.body)?;
                 references = std::mem::take(&mut checker.reference_borrows);
-                annotated = checker.annotated_reference.take();
                 let coverage = checker.check_coverage()?;
                 if function.origin.module == ModuleOrigin::User {
                     function_warnings.extend(coverage);
@@ -9249,12 +9244,11 @@ fn check_modules_collect(
                     .map_or(usize::MAX, |info| info.id);
                 classes.derived_error(id, error)
             });
-            (name_use, function_warnings, error, references, annotated)
+            (name_use, function_warnings, error, references)
         },
         |_, outcome| {
-            let (name_use, function_warnings, error, references, annotated) = outcome.get();
+            let (name_use, function_warnings, error, references) = outcome.get();
             reference_borrows.extend(references);
-            annotated_references.extend(annotated);
             name_uses.push(name_use);
             warnings.extend(function_warnings);
             if let Some(error) = error {
@@ -11495,12 +11489,6 @@ struct Checker<'a> {
     borrowed: BTreeSet<usize>,
     default_reads: BTreeMap<usize, (String, String, bool)>,
     read_value_parameters: BTreeSet<usize>,
-    /// The first parameter of this body that A32 binds as the reference that its pattern's
-    /// annotation names, where the convention would read the value, with the `E1003` that the
-    /// pattern reported before A32 (`Checker::binds_annotated_reference`). The program reports it
-    /// after all when some function stores a value that may hold loans with a writer that the
-    /// borrow check does not track (`ownership::untracked_loan_store_in`, A31).
-    annotated_reference: Option<Diagnostic>,
     read_conventions: bool,
     pure_values: bool,
     poisoned: bool,
@@ -11561,7 +11549,6 @@ impl<'a> Checker<'a> {
             borrowed: BTreeSet::new(),
             default_reads: BTreeMap::new(),
             read_value_parameters: BTreeSet::new(),
-            annotated_reference: None,
             read_conventions: names.borrowing_modules.contains(module),
             pure_values: false,
             poisoned: false,

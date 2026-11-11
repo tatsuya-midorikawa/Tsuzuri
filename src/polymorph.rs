@@ -335,7 +335,7 @@ pub(super) struct Inference {
 }
 
 /// The `E1003` of a type mismatch; `expected` and `found` are the displayed types.
-pub(super) fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
+fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
     Diagnostic::of(
         DiagnosticKind::TypeMismatch,
         format!("expected {expected}, found {found}"),
