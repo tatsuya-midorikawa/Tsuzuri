@@ -1669,7 +1669,11 @@ impl Parser<'_> {
         let mut first = self.pattern(0)?;
         if !self.eat(&TokenKind::Comma) {
             let end = self.expect(&TokenKind::RightParen, "')' after the pattern")?;
-            first.span = start.through(end.span);
+            // A type test keeps its own extent, from its `:?`, where the checker reports what is
+            // wrong with the test (A25, review round 1); the parentheses only group it.
+            if !matches!(first.kind, PatternKind::TypeTest(..)) {
+                first.span = start.through(end.span);
+            }
             self.pattern_type_arrow = outer_type_arrow;
             return Ok(first);
         }

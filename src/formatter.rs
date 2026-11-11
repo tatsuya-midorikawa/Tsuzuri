@@ -334,9 +334,9 @@ struct Hints {
     /// The names that follow the `and` of a local `let rec` group (B09): that `and` is a statement
     /// of its block, not a top-level declaration.
     group_names: BTreeSet<usize>,
-    /// The type test patterns `:? T` (A24): the start of each pattern (a parenthesized pattern
-    /// starts at its `(`) and the start of its type. Before its type a type test holds only
-    /// parentheses and its `:?`, which is how `print_tokens` finds that `:`.
+    /// The type test patterns `:? T` (A24): the start of each pattern (its `:`; the parser keeps
+    /// the parentheses around a type test out of its span) and the start of its type. Before its
+    /// type a type test holds only its `:?`, which is how `print_tokens` finds that `:`.
     type_test_patterns: BTreeMap<usize, usize>,
     /// The `:` of each type test, from `type_test_patterns`. A `:` elsewhere sits against what
     /// precedes it and a `?` keeps the space written after it (`?a` and `? a` differ), so only these

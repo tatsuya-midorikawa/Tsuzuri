@@ -3455,6 +3455,45 @@ fn rejects_narrowing_borrowed_non_copy() {
 }
 
 #[test]
+fn type_test_errors_point_at_the_marker_inside_parentheses() {
+    // The parentheses around a type test (required in a payload) group it; the errors about the
+    // test are at its `:?` all the same (review round 1), with or without spaces inside them.
+    for (source, kind) in [
+        (
+            "def f :: ref Maybe<([i64] | i64 | string)> -> i64 = \\m ->\n    match m with\n    | Some (:? (i64 | string) as x) -> 1\n    | _ -> 2\n",
+            "type_test_narrow_borrowed",
+        ),
+        (
+            "def f :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | (  :? (i64 | string) as x  ) -> 1\n    | _ -> 2\n",
+            "type_test_narrow_borrowed",
+        ),
+        (
+            "def f :: own Maybe<([i64] | i64 | string)> -> i64 = \\m ->\n    match m with\n    | Some ((:? (i64 | string) as x)) when true -> 1\n    | _ -> 2\n",
+            "type_test_narrow_borrowed",
+        ),
+        (
+            "def f :: own Maybe<i64> -> i64 = \\m ->\n    match m with\n    | Some (:? i64 as x) -> x\n    | _ -> 2\n",
+            "type_test_not_anonymous_union",
+        ),
+        (
+            "def f :: own (i64 * i64) -> i64 = \\pair ->\n    match pair with\n    | ( :? i64 as x, _) -> x\n",
+            "type_test_not_anonymous_union",
+        ),
+    ] {
+        let error = rejects(source, "E1041", kind);
+        let at = source.find(":?").unwrap();
+        assert_eq!((error.span.start, error.span.end), (at, at + 2), "{source}");
+    }
+    // The type test's own extent is the pattern that a narrowing copy is reported at.
+    let source = "def arr :: own ([i64] | i64) -> i64 = \\n ->\n    match n with\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length\n\n\
+         @no_copy\ndef arrays :: ref Maybe<([i64] | i64 | string)> -> i64 = \\m ->\n    match m with\n    | Some (:? ([i64] | i64) as n) -> arr n\n    | _ -> 0\n";
+    let error = rejects(source, "E1031", "effect_copy_in_no_copy");
+    let pattern = ":? ([i64] | i64) as n";
+    let at = source.find(pattern).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + pattern.len()));
+}
+
+#[test]
 fn rejects_narrowing_non_members() {
     let source = "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | bool) -> 0\n    | _ -> 1\n";
     let error = rejects(source, "E1041", "type_test_not_member");
