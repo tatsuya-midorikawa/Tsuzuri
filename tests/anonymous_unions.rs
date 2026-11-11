@@ -3811,6 +3811,186 @@ fn double_moves_out_of_a_matched_temporary_name_no_generated_local() {
 }
 
 #[test]
+fn a_second_widening_says_that_the_value_moved() {
+    // A widening moves the payload, all that the value holds besides its tag: the note says that
+    // the value moved and the help binds the wider value once, since `ref w` is never widened
+    // (review round 2). Into an own parameter, an annotated binding and a read parameter.
+    let make = "def mk :: i64 -> (i64 | string) = \\n -> if n > 0 then n else \"x\"\n\n\
+         def take :: own (f64 | i64 | string) -> i64 = \\v -> 0\n\n\
+         def look :: (f64 | i64 | string) -> i64 = \\v -> 0\n\n";
+    for (body, marker) in [
+        (
+            "    let a = take w\n    let b = take w\n    a + b\n",
+            "take w",
+        ),
+        (
+            "    let a: (f64 | i64 | string) = w\n    let b: (f64 | i64 | string) = w\n    take a + take b\n",
+            "= w",
+        ),
+        (
+            "    let a = look w\n    let b = look w\n    a + b\n",
+            "look w",
+        ),
+    ] {
+        let source = format!("{make}def f :: i64 -> i64 = \\n ->\n    let w = mk n\n{body}");
+        let error = rejects_in(&source, Edition::E2027, "E1012", "use_after_move");
+        assert_eq!(
+            error.message, "use of moved or partially moved value 'w'",
+            "{body}"
+        );
+        assert_eq!(
+            error.help.as_deref(),
+            Some(
+                "a widening moves 'w'; bind the wider value once with 'let wide: (i64 | f64 | string) = w' and borrow 'wide', or move it last"
+            ),
+            "{body}"
+        );
+        let first = source.find(marker).unwrap() + marker.len() - 1;
+        let second = source.rfind(marker).unwrap() + marker.len() - 1;
+        assert_eq!(error.span.start, second, "{body}");
+        let related: Vec<_> = error
+            .related
+            .iter()
+            .map(|related| (related.message.as_str(), related.span.start))
+            .collect();
+        assert_eq!(
+            related,
+            [("value moved here into a wider anonymous union", first)],
+            "{body}"
+        );
+    }
+    // The help that the bound wider value follows: it is borrowed twice.
+    accepts_in(
+        &format!(
+            "{make}def f :: i64 -> i64 = \\n ->\n    let w = mk n\n    let wide: (f64 | i64 | string) = w\n    look wide + look wide\n"
+        ),
+        Edition::E2027,
+    );
+    // A move out of a case of a union that is not anonymous keeps its message.
+    let error = rejects_in(
+        "union V = A of string | B of i64\n\ndef eat :: own string -> i64 = \\s -> 0\n\n\
+         def f :: own V -> i64 = \\v ->\n    let a = match v with\n        | A s -> eat s\n        | B _ -> 0\n    let b = match v with\n        | A s -> eat s\n        | B _ -> 0\n    a + b\n",
+        Edition::E2027,
+        "E1012",
+        "use_after_move",
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("borrow the field with 'ref' instead of moving it out of 'v', or move it last")
+    );
+    assert_eq!(error.related[0].message, "part of the value moved here");
+}
+
+#[test]
+fn a_converted_local_borrowed_beyond_the_call_names_the_conversion() {
+    // A read parameter of a partial application borrows its argument while the function value
+    // lives. A local converted into the wider union is a temporary: the error says so and how
+    // to bind the converted value, not to bind a temporary that the source does not write
+    // (review round 2). The injection of A24 says the same.
+    let make = "def mk :: i64 -> (i64 | [i64]) = \\n -> if n % 2 == 0 then n else Array.init n (\\i -> i)\n\n\
+         def three :: (f64 | i64 | [i64]) -> i64 -> i64 = \\a b -> b\n\n";
+    for (body, name, union) in [
+        (
+            "    let w = mk n\n    let g = three w\n    g 1\n",
+            "w",
+            "(i64 | f64 | [i64])",
+        ),
+        (
+            "    let w = mk n\n    5 |> three w\n",
+            "w",
+            "(i64 | f64 | [i64])",
+        ),
+        (
+            "    let k = n\n    let g = three k\n    g 1\n",
+            "k",
+            "(i64 | f64 | [i64])",
+        ),
+    ] {
+        let source = format!("{make}def f :: i64 -> i64 = \\n ->\n{body}");
+        let error = rejects_in(&source, Edition::E2027, "E1013", "borrow_of_temporary");
+        assert_eq!(
+            error.message,
+            format!(
+                "borrow requires a local place; '{name}' converted into {union} is a temporary value"
+            ),
+            "{body}"
+        );
+        assert_eq!(
+            error.help,
+            Some(format!(
+                "bind the converted value first, as in 'let wide: {union} = {name}', and pass 'wide'; or take the parameter with 'own'"
+            )),
+            "{body}"
+        );
+        let at = source.find(&format!("three {name}")).unwrap() + "three ".len();
+        assert_eq!((error.span.start, error.span.end), (at, at + 1), "{body}");
+    }
+    // Both ways out that the help names are accepted, and compute the same: (f64 | i64 | [i64])
+    // ignored, b returned.
+    let source = format!(
+        "{make}def f :: i64 -> i64 = \\n ->\n    let w = mk n\n    let wide: (f64 | i64 | [i64]) = w\n    let g = three wide\n    g 1\n\n\
+         def own_three :: own (f64 | i64 | [i64]) -> i64 -> i64 = \\a b -> b\n\n\
+         def h :: i64 -> i64 = \\n ->\n    let w = mk n\n    let g = own_three w\n    g 2\n\n\
+         test \"bound\" =\n    assert (f 3 + h 3 + f 4 + h 4 == 6)\n"
+    );
+    passes(&source, Edition::E2027);
+    // A temporary that the source writes keeps its message.
+    let error = rejects_in(
+        &format!("{make}def f :: i64 -> i64 = \\n ->\n    let g = three (mk n)\n    g 1\n"),
+        Edition::E2027,
+        "E1013",
+        "borrow_of_temporary",
+    );
+    assert_eq!(
+        error.message,
+        "borrow requires a local place; bind the temporary with 'let' first"
+    );
+}
+
+/// `depth` nested matches of the same value whose arms narrow it with `arm` (`{x}` is the
+/// binder of the level), each of them followed by an arm for the string.
+fn nested_narrowings(depth: usize, arm: &str) -> String {
+    let mut source = "def mk :: i64 -> (f64 | i64 | string | bool) = \\n -> if n > 0 then n else \"x\"\n\n\
+         def num :: (i64 | f64 | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as k -> k\n    | :? f64 -> 1\n    | :? bool -> 2\n\n\
+         export def t :: i64 -> i64 = \\n ->\n    let v = mk n\n"
+        .to_owned();
+    for level in 0..depth {
+        let pad = "    ".repeat(level + 1);
+        let arm = arm.replace("{x}", &format!("x{level}"));
+        source.push_str(&format!("{pad}match v with\n{pad}| {arm} + (\n"));
+    }
+    source.push_str(&format!("{}0\n", "    ".repeat(depth + 1)));
+    for level in (0..depth).rev() {
+        let pad = "    ".repeat(level + 1);
+        source.push_str(&format!("{pad}    )\n{pad}| :? string -> 1\n"));
+    }
+    source
+}
+
+#[test]
+fn nested_narrowing_arms_check_each_body_once() {
+    // Each `:? (A | B | C)` is three alternatives of one arm. They bind the same values, so the
+    // ownership check visits the body of the arm once, not once for each alternative: a match
+    // nested 30 deep in such arms was 3^30 visits of the innermost body (review round 2). The
+    // same holds for a narrowing without a binder and for the OR of type tests that A24 wrote.
+    for arm in [
+        ":? (i64 | f64 | bool) as {x} -> num {x}",
+        ":? (i64 | f64 | bool) -> 1",
+        ":? i64 | :? f64 | :? bool -> 1",
+    ] {
+        let source = nested_narrowings(30, arm);
+        accepts_in(&source, Edition::E2027);
+    }
+    // Expected value by hand: every level of `nested_narrowings 3` takes the i64 5 (5 each) for
+    // t 5, and t (-1) is the string at the outer level (1).
+    let source = format!(
+        "{}\ntest \"nested\" =\n    assert (t 5 == 15 && t (-1) == 1)\n",
+        nested_narrowings(3, ":? (i64 | f64 | bool) as {x} -> num {x}")
+    );
+    passes(&source, Edition::E2027);
+}
+
+#[test]
 fn narrowing_arms_may_move_or_replace_the_matched_value() {
     // A narrowing of Copy members copies the payload and leaves the matched value to the arm,
     // as the arms `:? i64 as n`, `:? f64 as n` do, also when the match is not the result of
