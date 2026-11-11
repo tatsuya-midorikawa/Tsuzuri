@@ -2093,6 +2093,12 @@ const suites = {
       }
       return total * 1000000n + numbers;
     };
+    // widen_captured: wide 1 + wide 2 reads counted five times; typed 0 + typed 1 and narrowed 0 + narrowed 1 are twice
+    // the member plus 1 (heap as in narrowOwned); the continuation returns counted.
+    const widenCaptured = (n) => {
+      const heap = [length(`n=${n}`), n * 10n, n * 3n, 6n][n % 4n];
+      return 5n * counted(n) + (2n * labelled(n) + 1n) * 1000n + (2n * heap + 1n) * 1000000n + counted(n) * 1000000000n;
+    };
     const at = (name, reference, inputs) => inputs.map((x) => [name, [x], reference(x)]);
     return {
       cases: [
@@ -2110,6 +2116,7 @@ const suites = {
         ...at("narrow", narrow, [6n, 7n, 8n, 0n, -3n, -4n, 1000000n]),
         ...at("narrow_owned", narrowOwned, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 20n]),
         ...at("narrow_views", narrowViews, [0n, 1n, 2n, 3n, 6n, 9n, 31n]),
+        ...at("widen_captured", widenCaptured, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 12n]),
       ],
       inspect(ir) {
         // One type for each instantiation, named by its members in the canonical order whatever order the source wrote.

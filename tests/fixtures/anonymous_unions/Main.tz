@@ -265,3 +265,36 @@ export def narrow_views :: i64 -> i64 = \n ->
             | :? (f64 | string) -> 2)
         numbers = numbers + numbers_of item
     total * 1000000 + numbers + items.length * 0
+
+// widen_captured: closures convert the values that they capture, on each call: a widening into an own and into a read
+// parameter, a widening in an annotated binding and a narrowing; the continuation of a computation expression widens
+// the value that it captures (`return`). A closure that does not consume its captures lends them to its body, so the
+// payload that a conversion binds is a copy and the environment frees each value once.
+def take :: own (f64 | i64 | string | [i64]) -> i64 = \value ->
+    match value with
+    | :? f64 -> 1
+    | :? i64 as k -> k
+    | :? string as s -> s.length
+    | :? [i64] as xs -> xs.length
+
+def pick_counted :: i64 -> Maybe<(f64 | i64 | string | [i64])> = \n ->
+    let numbers = counted n
+    let! _step = Maybe.Some n
+    return numbers
+
+export def widen_captured :: i64 -> i64 = \n ->
+    let numbers = counted n
+    let label = labelled n
+    let item = heap n
+    let wide = \(k: i64) -> take numbers * k + weigh numbers
+    let typed = \(k: i64) ->
+        let value: (f64 | i64 | string | [i64]) = label
+        take value + k
+    let narrowed = \(k: i64) ->
+        match item with
+        | :? (string | [i64]) as owner -> sized owner + k
+        | :? (i64 | f64) as number -> scale number + k
+    let continued = match pick_counted n with
+        | Some value -> take value
+        | None -> 0
+    wide 1 + wide 2 + (typed 0 + typed 1) * 1000 + (narrowed 0 + narrowed 1) * 1000000 + continued * 1000000000

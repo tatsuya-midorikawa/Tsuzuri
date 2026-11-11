@@ -3124,6 +3124,42 @@ fn widening_into_a_read_parameter_moves_array_members() {
     passes(&source, Edition::E2027);
 }
 
+/// A closure whose body widens or narrows a captured value, called once or twice, and the
+/// continuation of a computation expression that widens a value it captures (review round 2).
+/// The call of a closure that does not consume its captures lends them to a worker; the binding
+/// of the conversion copies an array payload out of them instead of moving it, so the closure's
+/// environment frees each array once. The window of `Alloc` sees as many frees as allocations.
+/// `explicit` and `rewrapped` are the matches that A24 already accepted, which took the same
+/// payload out of the environment.
+const CAPTURED: &str = "def mk :: i64 -> ([i64] | i64) = \\n -> if n % 2 == 0 then n else Array.init n (\\i -> i + 1)\n\n\
+def mk3 :: i64 -> ([i64] | i64 | f64) = \\n -> if n % 2 == 0 then n else Array.init n (\\i -> i + 1)\n\n\
+def weigh :: own (f64 | [i64] | i64) -> i64 = \\v ->\n    match v with\n    | :? f64 -> 1\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length * 100\n\n\
+def weigh_read :: (f64 | [i64] | i64) -> i64 = \\v ->\n    match v with\n    | :? f64 -> 1\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length * 100\n\n\
+def size :: own ([i64] | i64) -> i64 = \\v ->\n    match v with\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length * 100\n\n\
+def len_own :: own [i64] -> i64 = \\xs -> xs.length * 100\n\n\
+def once :: i64 -> i64 = \\n ->\n    let w = mk n\n    let c = \\(k: i64) -> weigh w + k\n    c 1\n\n\
+def twice :: i64 -> i64 = \\n ->\n    let w = mk n\n    let c = \\(k: i64) -> weigh w + k\n    c 1 + c 2\n\n\
+def read :: i64 -> i64 = \\n ->\n    let w = mk n\n    let c = \\(k: i64) -> weigh_read w + k\n    c 1 + c 2\n\n\
+def bound :: i64 -> i64 = \\n ->\n    let w = mk n\n    let c = \\(k: i64) ->\n        let u: (f64 | [i64] | i64) = w\n        weigh u + k\n    c 1 + c 2\n\n\
+def narrowed :: i64 -> i64 = \\n ->\n    let w = mk3 n\n    let c = \\(k: i64) ->\n        match w with\n        | :? ([i64] | i64) as x -> size x + k\n        | :? f64 -> 0\n    c 1 + c 2\n\n\
+def pick :: i64 -> Maybe<(f64 | i64 | [i64])> = \\n ->\n    let w = mk n\n    let! _a = Maybe.Some 1\n    return w\n\n\
+def continued :: i64 -> i64 = \\n ->\n    match pick n with\n    | Some v -> weigh v\n    | None -> 0\n\n\
+def explicit :: i64 -> i64 = \\n ->\n    let w = Array.init n (\\i -> i)\n    let c = \\(k: i64) ->\n        match w with\n        | ys -> len_own ys + k\n    c 1 + c 2\n\n\
+def pick_rewrapped :: i64 -> Maybe<([i64] | i64)> = \\n ->\n    let w = mk n\n    let! _a = Maybe.Some 1\n    return (match w with | :? i64 as k -> k | :? [i64] as xs -> xs)\n\n\
+def rewrapped :: i64 -> i64 = \\n ->\n    match pick_rewrapped n with\n    | Some v -> size v\n    | None -> 0\n\n\
+def balanced :: (unit -> i64) -> i64 = \\f ->\n    let start = Alloc.snapshot ()\n    let value = f ()\n    let used = start |> Alloc.since\n    if used.frees == used.allocs then value else -1\n\n";
+
+#[test]
+fn widening_a_borrowed_capture_copies_its_payload() {
+    // Expected values by hand: mk 3 is [1, 2, 3] (300), mk 4 is the i64 4. once: 300 + 1, 4 + 1;
+    // twice, read, bound and narrowed: (300 + 1) + (300 + 2), (4 + 1) + (4 + 2); continued and
+    // rewrapped: 300, 4; explicit: [0, 1, 2] is 300, so 301 + 302.
+    let tests = "test \"captured\" =\n    assert (balanced (\\() -> once 3) == 301 && balanced (\\() -> once 4) == 5)\n    assert (balanced (\\() -> twice 3) == 603 && balanced (\\() -> twice 4) == 11)\n    assert (balanced (\\() -> read 3) == 603 && balanced (\\() -> read 4) == 11)\n    assert (balanced (\\() -> bound 3) == 603 && balanced (\\() -> bound 4) == 11)\n    assert (balanced (\\() -> narrowed 3) == 603 && balanced (\\() -> narrowed 4) == 11)\n    assert (balanced (\\() -> continued 3) == 300 && balanced (\\() -> continued 4) == 4)\n    assert (balanced (\\() -> continued 5) == 500 && balanced (\\() -> continued 3) == 300)\n    assert (balanced (\\() -> explicit 3) == 603)\n    assert (balanced (\\() -> rewrapped 3) == 300 && balanced (\\() -> rewrapped 4) == 4)\n";
+    for edition in [Edition::E2026, Edition::E2027] {
+        passes(&format!("{CAPTURED}{tests}"), edition);
+    }
+}
+
 #[test]
 fn hover_on_a_widened_value_shows_the_value() {
     let source = "def make :: own i64 -> (i64 | string) = \\n -> n\n\
