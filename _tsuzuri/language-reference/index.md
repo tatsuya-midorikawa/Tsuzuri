@@ -91,7 +91,7 @@
 - [標準ライブラリの引数の順序](./built-in-types-and-modules/argument-order.md)
 - [Record](./built-in-types-and-modules/record.md)
 - [Union](./built-in-types-and-modules/union.md)
-- [匿名共用体](./built-in-types-and-modules/anonymous-union.md) — `(i64 | string)`、期待される型での注入、型テストのパターン `:?`
+- [匿名共用体](./built-in-types-and-modules/anonymous-union.md) — `(i64 | string)`、期待される型での注入と拡大、型テストのパターン `:?` と絞り込み `:? (A | B)`
 - [Tuple](./built-in-types-and-modules/tuple.md)
 - [String](./built-in-types-and-modules/string.md)
 - [Utf8String](./built-in-types-and-modules/utf8string.md)

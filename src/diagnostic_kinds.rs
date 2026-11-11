@@ -695,6 +695,7 @@ diagnostic_kinds! {
         (AnonymousUnionIndistinctMembers, "anonymous_union_indistinct_members", "E1041"),
         (AnonymousUnionInstance, "anonymous_union_instance", "E1041"),
         (AnonymousUnionTypeVariable, "anonymous_union_type_variable", "E1041"),
+        (TypeTestNarrowBorrowed, "type_test_narrow_borrowed", "E1041"),
         (TypeTestNotAnonymousUnion, "type_test_not_anonymous_union", "E1041"),
         (TypeTestNotMember, "type_test_not_member", "E1041"),
         (TypeTestUnion, "type_test_union", "E1041"),

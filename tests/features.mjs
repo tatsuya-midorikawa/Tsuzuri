@@ -2053,6 +2053,38 @@ const suites = {
     const common = (n) => n >= 0n ? 3n * n + 1n : 2n * n;
     // The function member applied to 20, the string "wide" (times 1000), or the i64.
     const wide = (n) => n > 0n ? 20n * 2n + n : n === 0n ? length("wide") * 1000n : n;
+    // A25. widen: an even n is the i64 itself, an odd n the length of `odd {n}`.
+    const widen = (n) => n % 2n === 0n ? n : length(`odd ${n}`);
+    // `n={n}` (times 1000), the n numbers, and the last value of the loop: the n numbers when it does not run, the
+    // i64 i for an even i, `{i}` for an odd i.
+    const widenOwned = (n) => {
+      const last = n - 1n;
+      const slot = n === 0n ? 0n : last % 2n === 0n ? last : length(`${last}`);
+      return length(`n=${n}`) * 1000n + n + slot * 1000000n;
+    };
+    // scale: three times an i64, four times an f64. narrow: the i64 n when 3 divides n, the f64 n / 2 when the
+    // remainder is 1 (4 (n / 2) = 2 n, exact), else `text {n}` (its length times 1000).
+    const narrow = (n) => n % 3n === 0n ? n * 3n : n % 3n === 1n ? 2n * n : length(`text ${n}`) * 1000n;
+    // heap i by i % 4: `n={i}`, i numbers, the i64 i, the f64 1.5 (scale gives 6).
+    const narrowOwned = (n) => {
+      let total = 0n;
+      for (let i = 0n; i < n; i++) total += [length(`n=${i}`), i * 10n, i, 1n][i % 4n];
+      const rest = [length(`n=${n}`), n * 10n, n * 3n, 6n][n % 4n];
+      const unread = (n + 1n) % 4n < 2n ? 7n : 9n;
+      return total + rest * 1000000n + unread * 100000000n;
+    };
+    // part: ten times the length of an array, or the i64. The guard takes the pieces above 25.
+    const narrowViews = (n) => {
+      let total = 0n;
+      let numbers = 0n;
+      for (let i = 0n; i < n; i++) {
+        const kind = i % 4n;
+        const piece = kind === 1n ? i * 10n : i;
+        total += kind === 1n || kind === 2n ? (piece > 25n ? 5n : piece) : 2n;
+        numbers += kind === 2n ? i * 3n : kind === 3n ? 6n : 0n;
+      }
+      return total * 1000000n + numbers;
+    };
     const at = (name, reference, inputs) => inputs.map((x) => [name, [x], reference(x)]);
     return {
       cases: [
@@ -2064,6 +2096,11 @@ const suites = {
         ...at("generic", generic, [3n, 4n, 0n, -3n, -4n]),
         ...at("common", common, [5n, 0n, -4n, 1000000n]),
         ...at("wide", wide, [5n, 0n, -7n]),
+        ...at("widen", widen, [4n, 7n, 0n, -3n, -8n]),
+        ...at("widen_owned", widenOwned, [0n, 1n, 4n, 7n, 20n]),
+        ...at("narrow", narrow, [6n, 7n, 8n, 0n, -3n, -4n, 1000000n]),
+        ...at("narrow_owned", narrowOwned, [0n, 1n, 2n, 3n, 4n, 9n, 20n]),
+        ...at("narrow_views", narrowViews, [0n, 1n, 2n, 3n, 6n, 9n, 31n]),
       ],
       inspect(ir) {
         // One type for each instantiation, named by its members in the canonical order whatever order the source wrote.
@@ -2075,6 +2112,13 @@ const suites = {
         assert.match(ir, /^%"tz\.rec\.node\.\$anonymous\.Union\$2\[i64,Main\.Tree\]" = type /m);
         // 32 members, the function type last.
         assert.match(ir, /^%"tz\.union\.\$anonymous\.Union\$32\[i8u,i8,[^\n]*,fn\[[^\n]*\]\]" = type /m);
+        // A25: a widening and a narrowing of a union that is not recursive switch on the tag and move or copy the
+        // payload; they allocate nothing (the strings are made by number_or_text and classify).
+        const body = (name) => ir.split("\n\n").find((block) => block.startsWith("define ") && block.split("\n")[0].includes(`@tz.fn.Main.${name}(`));
+        for (const name of ["widen", "narrow"]) {
+          assert.doesNotMatch(body(name), /@tz\.alloc/, name);
+          assert.match(body(name), /switch i32 /, name);
+        }
       },
     };
   })(),

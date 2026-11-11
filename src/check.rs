@@ -11575,6 +11575,9 @@ struct Checker<'a> {
     /// expected type. `injected_expression` takes it, and does not widen an expression of that
     /// span to an anonymous union.
     operand: Option<Span>,
+    /// A25: whether the arm whose pattern is being resolved has a guard. A narrowing `:? W as x`
+    /// in such an arm builds its value in a step of the pattern (`narrowing_pattern`).
+    guarded_arm: bool,
     /// Spans of unsuffixed integer literals whose type waits for inference.
     integer_literals: Vec<Span>,
     /// Builtin result types that wait for a concrete integer argument type.
@@ -11643,6 +11646,7 @@ impl<'a> Checker<'a> {
             use_bindings: Vec::new(),
             piped: None,
             operand: None,
+            guarded_arm: false,
             integer_literals: Vec::new(),
             families: Vec::new(),
             coverage: Vec::new(),

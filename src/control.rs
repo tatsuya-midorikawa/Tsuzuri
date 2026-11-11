@@ -3,10 +3,34 @@ use super::*;
 
 pub(super) const MAX_PATTERN_ALTERNATIVES: usize = 1024;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Alternative {
     steps: Vec<PatternStep>,
     bindings: Vec<(Ident, TypedExpr)>,
+    /// The narrowings of the alternative, in an arm without a guard (A25).
+    narrowed: Vec<Narrowing>,
+}
+
+/// `:? W as x` where `W` has fewer members than the matched anonymous union (A25), in an arm
+/// without a guard. The alternative binds the matched value to the hidden name `hidden`, and
+/// `match_value` binds `name` around the arm's body to that value as a value of `to`, which
+/// `retag` makes from `cases`.
+#[derive(Clone)]
+struct Narrowing {
+    name: Ident,
+    hidden: String,
+    to: Type,
+    cases: Vec<(usize, usize)>,
+    /// Whether the hidden binding views the matched value where a binding would move it: every
+    /// member of `to` is Copy, so the narrowing copies the payload and leaves the value whole.
+    view: bool,
+    /// The whole pattern.
+    span: Span,
+}
+
+/// The name that hides the matched value of a narrowing into `name`. No source spells it.
+fn narrowed_name(name: &str) -> String {
+    format!("$narrow.{name}")
 }
 
 fn value(kind: TypedExprKind, ty: Type, span: Span) -> TypedExpr {
@@ -53,6 +77,7 @@ fn combine(
             let mut combined = left.clone();
             combined.steps.extend(right.steps.iter().cloned());
             combined.bindings.extend(right.bindings.iter().cloned());
+            combined.narrowed.extend(right.narrowed.iter().cloned());
             result.push(combined);
         }
     }
@@ -523,7 +548,8 @@ impl Checker<'_> {
         members: &[usize],
     ) -> TypedExpr {
         let cases: Vec<(usize, usize)> = members.iter().copied().enumerate().collect();
-        self.retag(subset, to, &cases)
+        let span = subset.span;
+        self.retag(subset, span, to, &cases)
     }
 
     /// A value of the union type `to` made from the union value `matched` (A25): for each
@@ -545,21 +571,27 @@ impl Checker<'_> {
     /// is empty): a payload in borrowed storage is taken out of it, which copies a Copy payload
     /// and which ownership rejects for any other, as it does for `Some s`.
     ///
-    /// Everything has the span of `matched`, except what follows. The reads of the subject and
+    /// Everything has the span `span` (a widening gives the span of `matched`, a narrowing the
+    /// span of its pattern), except what follows. The reads of the subject and
     /// of the bindings have the empty span at its end, so that a hover or a definition request
     /// on `matched` finds `matched` and not a local that no source spells. A binding whose type
     /// is never both Copy and in need of a drop also has that empty span: `LastUses` keeps one
     /// decision for each binding span, a binding of such a type always says "copied", and no
     /// one reads its decision, so with a span of its own it cannot take the move from the
-    /// binding of an array member, which reports its copies at the span of `matched`.
-    fn retag(&mut self, mut matched: TypedExpr, to: &Type, cases: &[(usize, usize)]) -> TypedExpr {
+    /// binding of an array member, which reports its copies at `span`.
+    fn retag(
+        &mut self,
+        mut matched: TypedExpr,
+        span: Span,
+        to: &Type,
+        cases: &[(usize, usize)],
+    ) -> TypedExpr {
         matched.ty = self.inference.resolve(&matched.ty);
         let (Type::Union(from_id, from_arguments), Type::Union(to_id, _)) = (&matched.ty, to)
         else {
             unreachable!("a union value is given the cases of another union")
         };
         let (from_id, from_arguments, to_id) = (*from_id, from_arguments.clone(), *to_id);
-        let span = matched.span;
         let read = Span {
             start: span.end,
             ..span
@@ -680,8 +712,11 @@ impl Checker<'_> {
         let mut result = expected.cloned();
         for arm in arms {
             self.scopes.push(BTreeMap::new());
-            let (alternatives, pattern) =
-                self.pattern_alternatives(&arm.pattern, local_value(&subject))?;
+            // A pattern in the arm's own expressions (a recognizer argument) is of another match.
+            let outer = std::mem::replace(&mut self.guarded_arm, arm.guard.is_some());
+            let alternatives = self.pattern_alternatives(&arm.pattern, local_value(&subject));
+            self.guarded_arm = outer;
+            let (alternatives, pattern) = alternatives?;
             coverage.push(CoverageArm {
                 pattern,
                 guarded: arm.guard.is_some(),
@@ -690,7 +725,34 @@ impl Checker<'_> {
             let mut locals: BTreeMap<String, Local> = BTreeMap::new();
             let mut plans = Vec::new();
             let mut borrowed = BTreeSet::new();
+            // The narrowings of the arm (A25): those of the first alternative, which every
+            // other alternative repeats.
+            let mut narrowed: Vec<Narrowing> = Vec::new();
             for (index, alternative) in alternatives.into_iter().enumerate() {
+                for (at, narrowing) in alternative.narrowed.iter().enumerate() {
+                    let name = &narrowing.name;
+                    if alternative.narrowed[..at]
+                        .iter()
+                        .any(|other| other.name.text == name.text)
+                        || alternative
+                            .bindings
+                            .iter()
+                            .any(|(other, _)| other.text == name.text)
+                    {
+                        return Err(duplicate(name));
+                    }
+                    if index == 0 {
+                        continue;
+                    }
+                    // The hidden bindings below report a name that only one side narrows.
+                    if let Some(first) = narrowed.iter().find(|first| first.name.text == name.text)
+                    {
+                        self.same(&narrowing.to, &first.to, name.span)?;
+                    }
+                }
+                if index == 0 {
+                    narrowed.clone_from(&alternative.narrowed);
+                }
                 let mut seen = BTreeSet::new();
                 let mut bindings = Vec::new();
                 for (name, projection) in alternative.bindings {
@@ -702,9 +764,28 @@ impl Checker<'_> {
                         locals.insert(name.text.clone(), local.clone());
                         local
                     } else {
+                        let hidden = name.provenance == Provenance::Generated
+                            && alternative
+                                .narrowed
+                                .iter()
+                                .any(|narrowing| narrowing.hidden == name.text);
+                        let unlike = || {
+                            Diagnostic::of(
+                                DiagnosticKind::OrPatternBindingMismatch,
+                                "both sides of an OR pattern must narrow the same anonymous union with the same ':?' test to bind one name",
+                                name.span,
+                            )
+                        };
                         let local = locals
                             .get(&name.text)
                             .ok_or_else(|| {
+                                if hidden
+                                    || narrowed
+                                        .iter()
+                                        .any(|narrowing| narrowing.name.text == name.text)
+                                {
+                                    return unlike();
+                                }
                                 Diagnostic::of(
                                     DiagnosticKind::OrPatternBindingMismatch,
                                     "both sides of an OR pattern must bind the same names",
@@ -712,11 +793,25 @@ impl Checker<'_> {
                                 )
                             })?
                             .clone();
-                        self.same(&projection.ty, &local.ty, name.span)?;
+                        if hidden {
+                            // One retagging serves the arm: every side narrows the same union.
+                            if self.inference.resolve(&projection.ty)
+                                != self.inference.resolve(&local.ty)
+                            {
+                                return Err(unlike());
+                            }
+                        } else {
+                            self.same(&projection.ty, &local.ty, name.span)?;
+                        }
                         self.note_name(&name, NameTarget::Local(local.id));
                         local
                     };
-                    if self.borrowed_place(&projection) {
+                    if self.borrowed_place(&projection)
+                        || alternative
+                            .narrowed
+                            .iter()
+                            .any(|narrowing| narrowing.view && narrowing.hidden == local.name)
+                    {
                         borrowed.insert(local.id);
                     }
                     bindings.push((local, projection));
@@ -734,14 +829,26 @@ impl Checker<'_> {
                 });
             }
             self.borrowed.extend(&borrowed);
+            // The body of a narrowing arm sees the narrowed names; an arm with a guard has none.
+            let narrowed: Vec<(Local, Local, Narrowing)> = narrowed
+                .into_iter()
+                .map(|narrowing| {
+                    let hidden = locals[&narrowing.hidden].clone();
+                    let local = self.bind(&narrowing.name, narrowing.to.clone(), false);
+                    (hidden, local, narrowing)
+                })
+                .collect();
             let guard = arm
                 .guard
                 .as_ref()
                 .map(|guard| self.expression(guard, Some(&Type::Bool)))
                 .transpose()?;
-            let body = self.expression(&arm.body, result.as_ref())?;
+            let mut body = self.expression(&arm.body, result.as_ref())?;
             if !result.as_ref().is_some_and(Type::contains_error) {
                 result = self.sibling_hint(&body.ty, result.as_ref()).cloned();
+            }
+            if !narrowed.is_empty() {
+                body = self.narrowed_body(narrowed, body);
             }
             self.scopes.pop();
             checked.push(TypedMatchArm {
@@ -767,6 +874,40 @@ impl Checker<'_> {
         ))
     }
 
+    /// The body of an arm that narrows (A25): a block that binds each narrowed name to the
+    /// hidden binding of its matched value, retagged as the narrowed union, around `body`. An
+    /// owned payload moves from the hidden binding into the narrowed value; a hidden binding
+    /// that views borrowed storage has only Copy payloads to give (`narrowing_pattern`).
+    #[inline(never)]
+    fn narrowed_body(
+        &mut self,
+        narrowed: Vec<(Local, Local, Narrowing)>,
+        body: TypedExpr,
+    ) -> TypedExpr {
+        let bindings = narrowed
+            .into_iter()
+            .map(|(hidden, local, narrowing)| {
+                // Read at the empty span after the pattern, like the reads that `retag` makes.
+                let read = Span {
+                    start: narrowing.span.end,
+                    ..narrowing.span
+                };
+                let matched = value(TypedExprKind::Local(hidden.id), hidden.ty.clone(), read);
+                let narrow = self.retag(matched, narrowing.span, &narrowing.to, &narrowing.cases);
+                (local, narrow)
+            })
+            .collect();
+        let (ty, span) = (body.ty.clone(), body.span);
+        value(
+            TypedExprKind::Block {
+                bindings,
+                result: Box::new(body),
+            },
+            ty,
+            span,
+        )
+    }
+
     /// Resolves a pattern into lowering alternatives and, from the same
     /// resolution, the pattern's coverage for the exhaustiveness check.
     fn pattern_alternatives(
@@ -786,10 +927,7 @@ impl Checker<'_> {
         ) {
             matched = Self::autoderef(matched);
         }
-        let mut alternatives = vec![Alternative {
-            steps: Vec::new(),
-            bindings: Vec::new(),
-        }];
+        let mut alternatives = vec![Alternative::default()];
         let coverage = match &pattern.kind {
             PatternKind::Wildcard => CoveragePat::Wildcard,
             PatternKind::Binding(name) => {
@@ -1138,7 +1276,7 @@ impl Checker<'_> {
         );
         let alternatives = vec![Alternative {
             steps: vec![PatternStep::Test(test)],
-            bindings: Vec::new(),
+            ..Alternative::default()
         }];
         let case = Constructor::Union { union_id, case_id };
         let Some(pattern) = payload else {
@@ -1169,7 +1307,8 @@ impl Checker<'_> {
     /// A type test `:? T [as x]` (A24): the case of member `T` of the matched anonymous union
     /// (dereferenced), whose payload `as x` binds as a case payload does. The matched type must
     /// be known to be an anonymous union when the pattern is checked, and `T`, resolved as a type
-    /// annotation of the body, one of its members.
+    /// annotation of the body, one of its members, or an anonymous union of its members (A25,
+    /// `narrowing_pattern`).
     #[inline(never)]
     fn type_test_pattern(
         &mut self,
@@ -1195,7 +1334,7 @@ impl Checker<'_> {
                 return Ok((
                     vec![Alternative {
                         steps: vec![PatternStep::Test(TypedExpr::error(pattern.span))],
-                        bindings: Vec::new(),
+                        ..Alternative::default()
                     }],
                     CoveragePat::Opaque,
                 ));
@@ -1228,45 +1367,10 @@ impl Checker<'_> {
         let ty = self.annotation(tested)?;
         let ty = self.inference.resolve(&ty);
         if matches!(&ty, Type::Union(id, _) if self.names.is_anonymous_union(*id)) {
-            return Err(Diagnostic::of(
-                DiagnosticKind::TypeTestUnion,
-                format!(
-                    "':?' names one member of {}; write one ':?' arm for each member",
-                    target.display(&self.types)
-                ),
-                tested.span,
-            ));
+            return self.narrowing_pattern(pattern, tested.span, binder, matched, &target, &ty);
         }
-        let case = match members.iter().position(|member| *member == ty) {
-            Some(case) => Some(case),
-            // A member that still holds an inference variable: the only one that may be `T`.
-            None => {
-                let fitting: Vec<usize> = members
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, member)| self.may_member(&ty, member))
-                    .map(|(case, _)| case)
-                    .collect();
-                match fitting.as_slice() {
-                    [case] => {
-                        self.same(&members[*case], &ty, tested.span)?;
-                        Some(*case)
-                    }
-                    _ => None,
-                }
-            }
-        };
-        let Some(case) = case else {
-            return Err(Diagnostic::of(
-                DiagnosticKind::TypeTestNotMember,
-                format!(
-                    "{} is not a member of {}",
-                    ty.display(&self.types),
-                    target.display(&self.types)
-                ),
-                tested.span,
-            )
-            .with_help(anonymous_union::members_help(members, &self.types)));
+        let Some(case) = self.type_test_member(&ty, members, tested.span)? else {
+            return Err(self.not_tested_member(&ty, &target, members, tested.span));
         };
         // The payload: the binder, or a wildcard (a type test covers the whole member).
         let payload = Pattern {
@@ -1278,6 +1382,252 @@ impl Checker<'_> {
             depth: pattern.depth,
         };
         self.union_case_pattern(pattern.span, union_id, case, Some(&payload), matched)
+    }
+
+    /// The member of `members` that the type `ty` after `:?` names: the one equal to it, or the
+    /// only one that still holds an inference variable and may be `ty`, which becomes `ty`.
+    fn type_test_member(
+        &mut self,
+        ty: &Type,
+        members: &[Type],
+        span: Span,
+    ) -> Result<Option<usize>, Diagnostic> {
+        if let Some(case) = members.iter().position(|member| member == ty) {
+            return Ok(Some(case));
+        }
+        let fitting: Vec<usize> = members
+            .iter()
+            .enumerate()
+            .filter(|(_, member)| self.may_member(ty, member))
+            .map(|(case, _)| case)
+            .collect();
+        match fitting.as_slice() {
+            [case] => {
+                self.same(&members[*case], ty, span)?;
+                Ok(Some(*case))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn not_tested_member(
+        &self,
+        ty: &Type,
+        target: &Type,
+        members: &[Type],
+        span: Span,
+    ) -> Diagnostic {
+        Diagnostic::of(
+            DiagnosticKind::TypeTestNotMember,
+            format!(
+                "{} is not a member of {}",
+                ty.display(&self.types),
+                target.display(&self.types)
+            ),
+            span,
+        )
+        .with_help(anonymous_union::members_help(members, &self.types))
+    }
+
+    /// A type test `:? W [as x]` whose type `narrowed` is an anonymous union (A25): the matched
+    /// value (dereferenced), of the anonymous union `target`, holds one of the members of `W`,
+    /// each of which is a member of `target`. The alternatives test the tag for each member of
+    /// `W` in turn, and the coverage is that of `:? W0 | :? W1 | ...`.
+    ///
+    /// `as x` binds the value as a value of `W`:
+    ///
+    /// - When `W` has every member of `target`, it is the matched value itself, bound as `x as`
+    ///   binds it, with nothing to test.
+    /// - Otherwise the value is made anew, with the tag of `W` (`retag`). In an arm without a
+    ///   guard the alternative binds the matched value to a hidden name and records a
+    ///   `Narrowing`, from which `match_value` binds `x` around the body: an owned payload moves
+    ///   into the new value, and a payload in borrowed storage is copied. When every member of
+    ///   `W` is Copy, the hidden binding views the matched value also where a binding would
+    ///   move it, so that the narrowing leaves the value whole, as the arms `:? W0 as x`,
+    ///   `:? W1 as x` do.
+    /// - A guard reads `x` before the arm is chosen, when nothing may move out of the matched
+    ///   value yet, so there a step of the pattern builds the new value from a copy of the
+    ///   payload, as a recognizer's result is bound (`active_pattern`).
+    ///
+    /// A copy needs a Copy payload: `as x` in borrowed storage or under a guard is an error when
+    /// a member of `W` is not Copy (`type_test_narrow_borrowed`).
+    #[inline(never)]
+    fn narrowing_pattern(
+        &mut self,
+        pattern: &Pattern,
+        tested: Span,
+        binder: Option<&Ident>,
+        matched: TypedExpr,
+        target: &Type,
+        narrowed: &Type,
+    ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
+        let (Type::Union(union_id, members), Type::Union(narrowed_id, wanted)) = (target, narrowed)
+        else {
+            unreachable!("both types are anonymous unions")
+        };
+        // (the case of `target`, the case of `W`) for each member of `W`.
+        let mut cases: Vec<(usize, usize)> = Vec::with_capacity(wanted.len());
+        for (into, member) in wanted.iter().enumerate() {
+            let from = self
+                .type_test_member(member, members, tested)?
+                .filter(|from| cases.iter().all(|(other, _)| other != from));
+            let Some(from) = from else {
+                return Err(self.not_tested_member(member, target, members, tested));
+            };
+            cases.push((from, into));
+        }
+        let binder = binder.filter(|name| name.text != "_");
+        let mut place = Self::autoderef(matched);
+        place.ty = self.inference.resolve(&place.ty);
+        if cases.len() == members.len() {
+            let mut alternative = Alternative::default();
+            if let Some(name) = binder {
+                alternative.bindings.push((name.clone(), place));
+            }
+            return Ok((vec![alternative], CoveragePat::Wildcard));
+        }
+        let guarded = self.guarded_arm;
+        let wanted: Vec<Type> = wanted
+            .iter()
+            .map(|member| self.inference.resolve(member))
+            .collect();
+        let moved = wanted.iter().find(|member| !member.is_copy(&self.types));
+        let borrowed = self.borrowed_place(&place);
+        if binder.is_some()
+            && (guarded || borrowed)
+            && let Some(member) = moved
+        {
+            let (narrowed, member) = (narrowed.display(&self.types), member.display(&self.types));
+            // The `:?` that starts the pattern.
+            let marker = Span {
+                end: pattern.span.start + 2,
+                ..pattern.span
+            };
+            // A guard is no obstacle that a borrowed value does not have as well.
+            let (message, help) = if borrowed {
+                (
+                    format!(
+                        "cannot narrow a borrowed value into {narrowed} because {member} is not Copy"
+                    ),
+                    "match each member with its own ':?' arm, or match an owned value",
+                )
+            } else {
+                (
+                    format!(
+                        "cannot narrow a value into {narrowed} in an arm with a guard because {member} is not Copy"
+                    ),
+                    "match each member with its own ':?' arm, or test the condition in the arm's body",
+                )
+            };
+            return Err(
+                Diagnostic::of(DiagnosticKind::TypeTestNarrowBorrowed, message, marker)
+                    .with_help(help),
+            );
+        }
+        // Under a guard, the local that a step of each alternative fills with the new value.
+        let built = match binder {
+            Some(name) if guarded => Some(self.bind(
+                &Ident {
+                    text: format!("$narrowed{}", self.next_local),
+                    span: name.span,
+                    provenance: Provenance::Generated,
+                },
+                narrowed.clone(),
+                false,
+            )),
+            _ => None,
+        };
+        let tag = Type::Integer(32, true);
+        let mut alternatives = Vec::with_capacity(cases.len());
+        let mut coverage: Option<CoveragePat> = None;
+        for &(from, into) in &cases {
+            let test = value(
+                TypedExprKind::Binary(
+                    BinaryOp::Equal,
+                    Box::new(value(
+                        TypedExprKind::UnionTag(Box::new(place.clone())),
+                        tag.clone(),
+                        pattern.span,
+                    )),
+                    Box::new(value(
+                        TypedExprKind::Int(from as u128),
+                        tag.clone(),
+                        pattern.span,
+                    )),
+                ),
+                Type::Bool,
+                pattern.span,
+            );
+            let mut alternative = Alternative {
+                steps: vec![PatternStep::Test(test)],
+                ..Alternative::default()
+            };
+            match (binder, &built) {
+                (Some(name), Some(built)) => {
+                    let payload = value(
+                        TypedExprKind::UnionPayload {
+                            value: Box::new(place.clone()),
+                            case_id: from,
+                        },
+                        wanted[into].clone(),
+                        pattern.span,
+                    );
+                    let made = value(
+                        TypedExprKind::Construct {
+                            union_id: *narrowed_id,
+                            case_id: into,
+                            payload: Some(Box::new(payload)),
+                        },
+                        narrowed.clone(),
+                        pattern.span,
+                    );
+                    alternative
+                        .steps
+                        .push(PatternStep::Bind(built.clone(), made));
+                    alternative
+                        .bindings
+                        .push((name.clone(), local_value(built)));
+                }
+                (Some(name), None) => {
+                    let hidden = narrowed_name(&name.text);
+                    alternative.bindings.push((
+                        Ident {
+                            text: hidden.clone(),
+                            span: name.span,
+                            provenance: Provenance::Generated,
+                        },
+                        place.clone(),
+                    ));
+                    alternative.narrowed.push(Narrowing {
+                        name: name.clone(),
+                        hidden,
+                        to: narrowed.clone(),
+                        cases: cases.clone(),
+                        view: moved.is_none() && !place.ty.is_copy(&self.types),
+                        span: pattern.span,
+                    });
+                }
+                (None, _) => {}
+            }
+            alternatives.push(alternative);
+            let case = CoveragePat::Constructor(
+                Constructor::Union {
+                    union_id: *union_id,
+                    case_id: from,
+                },
+                vec![CoveragePat::Wildcard],
+            );
+            coverage = Some(match coverage {
+                Some(others) => CoveragePat::Or(Box::new(others), Box::new(case)),
+                None => case,
+            });
+        }
+        Ok((
+            alternatives,
+            coverage.expect("an anonymous union has members"),
+        ))
     }
 
     fn active_recognizer(&self, name: &Ident) -> Result<Option<(usize, ActiveCase)>, Diagnostic> {
@@ -1355,7 +1705,7 @@ impl Checker<'_> {
             return Ok((
                 vec![Alternative {
                     steps: vec![PatternStep::Test(TypedExpr::error(name.span))],
-                    bindings: Vec::new(),
+                    ..Alternative::default()
                 }],
                 CoveragePat::Opaque,
             ));
@@ -1466,7 +1816,7 @@ impl Checker<'_> {
             return Ok((
                 vec![Alternative {
                     steps: vec![PatternStep::Test(call)],
-                    bindings: Vec::new(),
+                    ..Alternative::default()
                 }],
                 CoveragePat::Opaque,
             ));
@@ -1504,13 +1854,7 @@ impl Checker<'_> {
                 self.pattern_alternatives(payload, local_value(&local))?;
             (alternatives, Some(Box::new(coverage)))
         } else {
-            (
-                vec![Alternative {
-                    steps: Vec::new(),
-                    bindings: Vec::new(),
-                }],
-                None,
-            )
+            (vec![Alternative::default()], None)
         };
         for alternative in &mut alternatives {
             alternative

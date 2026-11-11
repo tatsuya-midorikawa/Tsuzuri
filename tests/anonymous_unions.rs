@@ -1551,16 +1551,9 @@ fn type_test_rejections() {
         error.help.as_deref(),
         Some("match the cases of a named union by name")
     );
-    // The tested type is an anonymous union (A25 narrows to one).
-    let error = rejects(
-        "let v: (i64 | string | bool) = 1\nmatch v with\n| :? (string | i64) -> 0\n| _ -> 1\n",
-        "E1041",
-        "type_test_union",
-    );
-    assert_eq!(
-        error.message,
-        "':?' names one member of (i64 | bool | string); write one ':?' arm for each member"
-    );
+    // The tested type is an anonymous union: A25 narrows to it (A24 rejected it as
+    // `type_test_union`).
+    accepts("let v: (i64 | string | bool) = 1\nmatch v with\n| :? (string | i64) -> 0\n| _ -> 1\n");
     // The tested type is no member.
     let error = rejects(
         "let v: (i64 | string) = 1\nmatch v with\n| :? bool -> 0\n| _ -> 1\n",
@@ -2755,4 +2748,453 @@ fn comparison_does_not_widen() {
         "E1003",
         "type_mismatch",
     );
+}
+
+// A25, step 3: `:? (A | B) [as x]` narrows to an anonymous union of some members.
+
+/// `num`: a number for each member of `(i64 | f64)`, to read a narrowed value back
+/// (`num 4 == 8`, `num 1.5 == 3`, `num 0.5 == 0`).
+const NUM: &str = "def num :: (i64 | f64) -> i64 = \\n ->\n    match n with\n    | :? i64 as k -> k * 2\n    | :? f64 as x -> if x > 1.0 then 3 else 0\n\n";
+
+/// `text`: a number for each member of `(i64 | string)` (`text 7 == 7`, `text \"hello\" == 5`).
+const TEXT: &str = "def text :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n\n";
+
+#[test]
+fn narrows_to_sub_unions() {
+    // The expected values follow from `num` and `text` by hand; each assert spells its sum.
+    passes(
+        &format!(
+            "{NUM}{TEXT}\
+             def size :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             def keep :: own (i64 | string | [i64]) -> (i64 | string) = \\v ->\n    match v with\n    | :? (i64 | string) as x -> x\n    | :? [i64] as xs -> xs.length\n\n\
+             def either :: own (f64 | i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | bool) -> 1\n    | :? (string | f64) -> 2\n\n\
+             def inside :: own Maybe<(f64 | i64 | string)> -> i64 = \\m ->\n    match m with\n    | Some (:? (i64 | f64) as n) -> num n\n    | Some (:? string as s) -> s.length\n    | None -> -1\n\n\
+             def guards :: own (f64 | i64 | string) -> i64 = \\v ->\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             def only :: own (f64 | i64 | string) -> i64 = \\(:? (i64 | f64) as n) -> num n\n\n\
+             def generic :: own (Maybe<'a> | i64 | string) -> (Maybe<'a> | i64) = \\v ->\n    match v with\n    | :? (Maybe<'a> | i64) as m -> m\n    | :? string as s -> s.length\n\n\
+             def count :: own (Maybe<string> | i64) -> i64 = \\v ->\n    match v with\n    | :? Maybe<string> as m -> (match m with | Some s -> s.length | None -> -1)\n    | :? i64 as n -> n\n\n\
+             def make :: i64 -> (f64 | i64 | string) = \\n -> if n > 0 then n else \"neg\"\n\n\
+             def made :: i64 -> i64 = \\k ->\n    match make k with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             test \"narrow\" =\n    \
+             assert (size 4 == 8)\n    \
+             assert (size 1.5 == 3)\n    \
+             assert (size 0.5 == 0)\n    \
+             assert (size \"abc\" == 3)\n    \
+             assert (text (keep 7) == 7)\n    \
+             assert (text (keep \"hello\") == 5)\n    \
+             assert (text (keep [1, 2, 3]) == 3)\n    \
+             assert (either 1 + either true + either \"s\" + either 2.0 == 1 + 1 + 2 + 2)\n    \
+             assert (inside (Some 4) + inside (Some \"abc\") + inside None == 8 + 3 - 1)\n    \
+             assert (guards 1.5 + guards \"abc\" == 3 + 3)\n    \
+             assert (only 4 == 8)\n    \
+             assert (count (generic (Some \"abcd\")) == 4)\n    \
+             assert (count (generic 7) == 7)\n    \
+             assert (count (generic \"xy\") == 2)\n    \
+             assert (made 4 + made 0 == 8 + 3)\n"
+        ),
+        Edition::E2026,
+    );
+    // The binder has the narrowed union's type, in its canonical order.
+    let error = rejects(
+        "def f :: own (f64 | i64 | string) -> bool = \\v ->\n    match v with\n    | :? (f64 | i64) as n -> n\n    | :? string -> false\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected bool, found (i64 | f64)");
+    // A lambda parameter and a `for` pattern trap for a value of another member.
+    traps(
+        &format!(
+            "{NUM}def only :: own (f64 | i64 | string) -> i64 = \\(:? (i64 | f64) as n) -> num n\n\ntest \"other member\" = assert (only \"s\" == 0)\n"
+        ),
+        Edition::E2026,
+    );
+    // An alias names the narrowed union as well.
+    accepts(
+        "type Number = (i64 | f64)\ndef f :: own (f64 | i64 | string) -> Number = \\v ->\n    match v with\n    | :? Number as n -> n\n    | :? string -> 0\n",
+    );
+}
+
+#[test]
+fn narrowing_to_every_member_binds_the_value() {
+    // `W == U`: the value itself, also behind a reference, where a member that is not Copy
+    // forbids a narrowing to fewer members. Nothing is tested, so one arm is exhaustive.
+    passes(
+        &format!(
+            "{TEXT}def all :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (string | i64) as w -> text w\n\n\
+             def seen :: ref (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as w -> (match w with | :? i64 as n -> n | :? string as s -> s.length)\n\n\
+             test \"whole\" =\n    assert (all \"abcd\" + all 3 == 4 + 3)\n    let v: (i64 | string) = \"hello\"\n    assert (seen (ref v) + seen (ref v) == 5 + 5)\n"
+        ),
+        Edition::E2026,
+    );
+    let source = "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) -> 0\n    | _ -> 1\n";
+    let module = analyze(source).unwrap();
+    let warnings: Vec<(&str, &str)> = module
+        .warnings
+        .iter()
+        .map(|warning| (warning.code, &source[warning.span.start..warning.span.end]))
+        .collect();
+    assert_eq!(warnings, [("W1003", "_")]);
+    // The view cannot move out, as any binding of a borrowed value.
+    rejects(
+        "def take :: ref (i64 | string) -> (i64 | string) = \\v ->\n    match v with\n    | :? (i64 | string) as w -> w\n",
+        "E1012",
+        "move_out_of_reference_binding",
+    );
+}
+
+#[test]
+fn narrowing_is_exhaustive_as_or() {
+    // Each member of the narrowed union counts as its own `:?` arm.
+    for binder in ["", " as n"] {
+        let error = missing(
+            &format!(
+                "def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64){binder} -> 0\n"
+            ),
+            ":? string",
+        );
+        assert_eq!(
+            error.help.as_deref(),
+            Some("add an arm for ':? string', or end the match with a wildcard arm '| _ -> ...'")
+        );
+    }
+    missing(
+        "def f :: own (f64 | i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) -> 0\n    | :? (i64 | string) -> 1\n",
+        ":? bool",
+    );
+    accepts(
+        "def f :: own (f64 | i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> 0\n    | :? (bool | string) as rest -> 1\n",
+    );
+    // An arm that the narrowing covers is unreachable, and so is a narrowing whose members
+    // are all covered.
+    let warnings = |source: &str| -> Vec<(String, String)> {
+        analyze(source)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message))
+            .warnings
+            .iter()
+            .map(|warning| {
+                (
+                    warning.code.to_string(),
+                    source[warning.span.start..warning.span.end].to_string(),
+                )
+            })
+            .collect()
+    };
+    let unreachable = |text: &str| vec![("W1003".to_string(), text.to_string())];
+    assert_eq!(
+        warnings(
+            "def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) -> 0\n    | :? i64 -> 1\n    | :? string -> 2\n"
+        ),
+        unreachable(":? i64")
+    );
+    assert_eq!(
+        warnings(
+            "def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 -> 0\n    | :? f64 -> 1\n    | :? (i64 | f64) -> 2\n    | :? string -> 3\n"
+        ),
+        unreachable(":? (i64 | f64)")
+    );
+    // A narrowing with one member left is reachable.
+    assert!(
+        warnings(
+            "def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 -> 0\n    | :? (i64 | f64) -> 1\n    | :? string -> 2\n"
+        )
+        .is_empty()
+    );
+    // A guarded arm covers nothing.
+    assert!(
+        warnings(&format!(
+            "{NUM}def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n when num n > 5 -> 0\n    | :? (i64 | f64) -> 1\n    | :? string -> 2\n"
+        ))
+        .is_empty()
+    );
+    missing(
+        &format!(
+            "{NUM}def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n when num n > 5 -> 0\n    | :? string -> 2\n"
+        ),
+        ":? i64",
+    );
+}
+
+#[test]
+fn narrowing_copies_copy_members_from_views() {
+    // Behind a reference, in a collection and under a guard the narrowed value is a copy, so
+    // the matched value stays usable. `arr [1, 2, 3] == 300`, `arr 7 == 7`.
+    let arr = "def arr :: own ([i64] | i64) -> i64 = \\n ->\n    match n with\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length * 100\n\n";
+    passes(
+        &format!(
+            "{NUM}{arr}\
+             def by_ref :: ref (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             def arr_ref :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? ([i64] | i64) as n -> arr n\n    | :? string as s -> s.length\n\n\
+             def guarded :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n when num n > 5 -> 1000 + num n\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             def guarded_arr :: own ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? ([i64] | i64) as n when arr n > 150 -> 1\n    | :? ([i64] | i64) as n -> arr n\n    | :? string as s -> s.length\n\n\
+             def guarded_ref :: ref (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n when num n > 5 -> 1000 + num n\n    | _ -> 0\n\n\
+             def pair :: own ((f64 | i64 | string) * (f64 | i64 | string)) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | f64) as n, :? string) | (:? string, :? (i64 | f64) as n) -> num n\n    | _ -> -1\n\n\
+             def twice :: own (f64 | i64 | string) -> i64 = \\v ->\n    let first = match v with\n        | :? (i64 | f64) as n -> num n\n        | :? string -> 0\n    first + by_ref (ref v)\n\n\
+             test \"views\" =\n    \
+             let a: (f64 | i64 | string) = 4\n    \
+             let b: (f64 | i64 | string) = 1.5\n    \
+             let c: (f64 | i64 | string) = \"abc\"\n    \
+             assert (by_ref (ref a) + by_ref (ref b) + by_ref (ref c) == 8 + 3 + 3)\n    \
+             assert (by_ref (ref a) == 8)\n    \
+             let d: ([i64] | i64 | string) = [1, 2, 3]\n    \
+             let e: ([i64] | i64 | string) = 7\n    \
+             assert (arr_ref (ref d) + arr_ref (ref d) + arr_ref (ref e) == 300 + 300 + 7)\n    \
+             assert (guarded 4 == 1008)\n    \
+             assert (guarded 2 + guarded 1.5 + guarded \"ab\" == 4 + 3 + 2)\n    \
+             assert (guarded_arr [1, 2] == 1)\n    \
+             assert (guarded_arr [1] + guarded_arr 5 + guarded_arr \"abc\" == 100 + 5 + 3)\n    \
+             assert (guarded_ref (ref a) + guarded_ref (ref b) + guarded_ref (ref c) == 1008)\n    \
+             assert (pair (4, \"x\") + pair (\"x\", 1.5) + pair (\"x\", \"y\") + pair (1, 2) == 8 + 3 - 1 - 1)\n    \
+             assert (twice 4 + twice 1.5 + twice \"abc\" == 16 + 6 + 3)\n    \
+             let items: [(f64 | i64 | string)] = [1, \"ab\", 2.5]\n    \
+             let mut total = 0\n    \
+             for item in items do\n        \
+             total = total + (match item with\n            \
+             | :? (f64 | i64) as n -> num n\n            \
+             | :? string as s -> s.length)\n    \
+             assert (total == 2 + 2 + 3)\n    \
+             assert (items.length == 3)\n"
+        ),
+        Edition::E2026,
+    );
+    // A read parameter (2027) is such a view.
+    passes(
+        &format!(
+            "{NUM}def size :: (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             test \"read\" =\n    assert (size 4 + size 1.5 + size \"abc\" == 8 + 3 + 3)\n"
+        ),
+        Edition::E2027,
+    );
+    // The copy of an array member is an implicit copy, reported at the pattern.
+    let source = format!(
+        "{arr}@no_copy\ndef arr_ref :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? ([i64] | i64) as n -> arr n\n    | :? string as s -> s.length\n"
+    );
+    let error = rejects(&source, "E1031", "effect_copy_in_no_copy");
+    let pattern = ":? ([i64] | i64) as n";
+    let at = source.find(pattern).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + pattern.len()));
+}
+
+#[test]
+fn rejects_narrowing_borrowed_non_copy() {
+    let message = "cannot narrow a borrowed value into (i64 | string) because string is not Copy";
+    let help = "match each member with its own ':?' arm, or match an owned value";
+    // Through a reference: the location is the `:?`.
+    let source = "def f :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 1\n    | :? [i64] -> 2\n";
+    let error = rejects(source, "E1041", "type_test_narrow_borrowed");
+    assert_eq!(error.message, message);
+    assert_eq!(error.help.as_deref(), Some(help));
+    let at = source.find(":?").unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + 2));
+    // A borrowed local, a read parameter (2027), an element of a collection and a payload
+    // below a reference.
+    let error = rejects(
+        "let v: ([i64] | i64 | string) = 1\nlet r = ref v\nmatch r with\n| :? (i64 | string) as x -> 1\n| :? [i64] -> 2\n",
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    assert_eq!(error.message, message);
+    let error = rejects_in(
+        "def f :: ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 1\n    | :? [i64] -> 2\n",
+        Edition::E2027,
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    assert_eq!(error.message, message);
+    assert_eq!(error.help.as_deref(), Some(help));
+    rejects(
+        "def f :: own [([i64] | i64 | string)] -> i64 = \\items ->\n    let mut total = 0\n    for item in items do\n        total = total + (match item with\n            | :? (i64 | string) as x -> 1\n            | :? [i64] -> 2)\n    total\n",
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    rejects(
+        "def f :: ref Maybe<([i64] | i64 | string)> -> i64 = \\m ->\n    match m with\n    | Some (:? (i64 | string) as x) -> 1\n    | _ -> 2\n",
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    // A member with a type variable is not known to be Copy.
+    let error = rejects(
+        "def f :: ref (Maybe<'a> | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (Maybe<'a> | i64) as x -> 1\n    | :? string -> 2\n",
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    assert_eq!(
+        error.message,
+        "cannot narrow a borrowed value into (i64 | Maybe<'a>) because Maybe<'a> is not Copy"
+    );
+    // Without a binder nothing is made, so the same tests are accepted.
+    for binder in ["", " as _"] {
+        accepts(&format!(
+            "def f :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string){binder} -> 1\n    | :? [i64] -> 2\n"
+        ));
+    }
+    // A guard reads the binder before the arm is chosen, when nothing can move yet.
+    let source = "def f :: own ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x when true -> 1\n    | _ -> 2\n";
+    let error = rejects(source, "E1041", "type_test_narrow_borrowed");
+    assert_eq!(
+        error.message,
+        "cannot narrow a value into (i64 | string) in an arm with a guard because string is not Copy"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("match each member with its own ':?' arm, or test the condition in the arm's body")
+    );
+    let at = source.find(":?").unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + 2));
+    accepts(
+        "def f :: own ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) when true -> 1\n    | _ -> 2\n",
+    );
+    // A guarded arm of a borrowed value reports the borrow: no guard is to blame.
+    let error = rejects(
+        "def f :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x when true -> 1\n    | _ -> 2\n",
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    assert_eq!(error.message, message);
+}
+
+#[test]
+fn rejects_narrowing_non_members() {
+    let source = "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | bool) -> 0\n    | _ -> 1\n";
+    let error = rejects(source, "E1041", "type_test_not_member");
+    assert_eq!(error.message, "bool is not a member of (i64 | string)");
+    assert_eq!(error.help.as_deref(), Some("the members are i64, string"));
+    // The location is the type after `:?`.
+    let tested = "(i64 | bool)";
+    let at = source.find(tested).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + tested.len()));
+    // The first member that the matched union lacks is named, in the canonical order (numbers
+    // come before `bool`); more members than it has is the same error.
+    let error = rejects(
+        "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (bool | i64 | f64) as x -> 0\n    | _ -> 1\n",
+        "E1041",
+        "type_test_not_member",
+    );
+    assert_eq!(error.message, "f64 is not a member of (i64 | string)");
+    let error = rejects(
+        "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string | bool) -> 0\n",
+        "E1041",
+        "type_test_not_member",
+    );
+    assert_eq!(error.message, "bool is not a member of (i64 | string)");
+}
+
+#[test]
+fn narrowing_moves_owned_values() {
+    // A member that is not Copy moves into the narrowed value: the matched value is gone.
+    let error = rejects(
+        &format!(
+            "{TEXT}def f :: own (i64 | string | bool) -> i64 = \\v ->\n    let first = match v with\n        | :? (i64 | string) as x -> text x\n        | :? bool -> 2\n    match v with\n    | :? i64 -> first\n    | _ -> 0\n"
+        ),
+        "E1012",
+        "use_after_move",
+    );
+    assert!(error.message.contains("'v'"), "{}", error.message);
+    // The narrowed value is an owned value of its own: it moves on, once.
+    accepts(&format!(
+        "{TEXT}def f :: own (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> text x\n    | :? bool -> 2\n"
+    ));
+    let error = rejects(
+        &format!(
+            "{TEXT}def f :: own (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> text x + text x\n    | :? bool -> 2\n"
+        ),
+        "E1012",
+        "use_after_move",
+    );
+    assert!(error.message.contains("'x'"), "{}", error.message);
+    // When every member of the narrowed union is Copy, the value stays whole, as it does
+    // after the arms `:? i64 as n` and `:? f64 as n`.
+    accepts(&format!(
+        "{NUM}{TEXT}def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    let first = match v with\n        | :? (i64 | f64) as n -> num n + num n\n        | :? string -> 0\n    match v with\n    | :? string as s -> first + s.length\n    | _ -> first\n"
+    ));
+}
+
+#[test]
+fn narrowing_in_or_patterns() {
+    // Both sides narrow the same union with the same test (see `pair` in
+    // `narrowing_copies_copy_members_from_views`). Anything else has no single value to bind.
+    let unlike = "both sides of an OR pattern must narrow the same anonymous union with the same ':?' test to bind one name";
+    for pattern in [
+        // Two unions with the members of the narrowed one.
+        "(:? (i64 | f64) as n, _) | (_, :? (i64 | f64) as n)",
+        // A narrowing and a plain binding of the narrowed type, in both orders.
+        "(:? (i64 | f64) as n, _) | (_, n)",
+        "(_, n) | (:? (i64 | f64) as n, _)",
+    ] {
+        let source = format!(
+            "def f :: own ((f64 | i64 | string) * (f64 | i64)) -> i64 = \\v ->\n    match v with\n    | {pattern} -> 1\n    | _ -> 2\n"
+        );
+        let error = rejects(&source, "E1020", "or_pattern_binding_mismatch");
+        assert_eq!(error.message, unlike, "{pattern}");
+        // The location is the second binder.
+        let at = source.rfind(" n").unwrap() + 1;
+        assert_eq!(
+            (error.span.start, error.span.end),
+            (at, at + 1),
+            "{pattern}"
+        );
+    }
+    // Two narrowings to different unions give the name two types.
+    let error = rejects(
+        "def f :: own (f64 | i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n | :? (i64 | bool) as n -> 1\n    | _ -> 2\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected (i64 | f64), found (i64 | bool)");
+    // A name that only one side binds, and a name bound twice on one side.
+    let error = rejects(
+        "def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n | :? string -> 1\n",
+        "E1020",
+        "or_pattern_binding_mismatch",
+    );
+    assert_eq!(
+        error.message,
+        "both sides of an OR pattern must bind the same names"
+    );
+    let error = rejects(
+        "def f :: own ((f64 | i64 | string) * (f64 | i64 | string)) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | f64) as n, :? (i64 | f64) as n) -> 1\n    | _ -> 2\n",
+        "E1001",
+        "duplicate_name",
+    );
+    assert_eq!(error.message, "duplicate or reserved name 'n'");
+    rejects(
+        "def f :: own ((f64 | i64 | string) * i64) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | f64) as n, n) -> 1\n    | _ -> 2\n",
+        "E1001",
+        "duplicate_name",
+    );
+}
+
+#[test]
+fn hover_on_a_narrowed_binder_shows_the_narrowed_union() {
+    let source = "def f :: own (f64 | i64 | string) -> (i64 | f64) = \\value ->\n    match value with\n    | :? (i64 | f64) as number -> number\n    | :? string -> 0\n0\n";
+    let (_, index) = analyze_modules_with_semantics(&[("Main.tz", source)]).unwrap();
+    let binder = source.find("as number").unwrap() + 3;
+    let entry = index.at(0, binder).unwrap();
+    assert_eq!(entry.detail, "number: (i64 | f64)");
+    // The use in the body goes to the binder.
+    let used = source.find("-> number").unwrap() + 3;
+    let entry = index.at(0, used).unwrap();
+    assert_eq!(entry.detail, "number: (i64 | f64)");
+    assert_eq!(
+        entry.target.map(|span| (span.start, span.end)),
+        Some((binder, binder + "number".len()))
+    );
+    // The `:?` reads as the narrowed value; no entry spells a generated local.
+    let entry = index.at(0, source.find(":?").unwrap()).unwrap();
+    assert_eq!(entry.detail, "(i64 | f64)");
+    for entry in &index.entries {
+        assert_hidden(&entry.detail);
+        for hidden in ["$match", "$retag", "$narrow"] {
+            assert!(!entry.detail.contains(hidden), "{}", entry.detail);
+        }
+    }
+    // An unused binder is reported at its own name, with the usual fix.
+    let source = "def f :: own (f64 | i64 | string) -> i64 = \\value ->\n    match value with\n    | :? (i64 | f64) as number -> 1\n    | :? string -> 0\n";
+    let module = analyze(source).unwrap();
+    let warnings: Vec<(&str, &str)> = module
+        .warnings
+        .iter()
+        .map(|warning| (warning.code, &source[warning.span.start..warning.span.end]))
+        .collect();
+    assert_eq!(warnings, [("W1001", "number")]);
+    assert_eq!(module.warnings[0].fixes.len(), 1);
 }
