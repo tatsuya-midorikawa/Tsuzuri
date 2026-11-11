@@ -9,7 +9,7 @@
 - 期待される型が匿名共用体の位置では、要素の型の値がそのまま匿名共用体の値になります（注入）。構築用の関数はありません。
 - 取り出しは型テストのパターン `:? T`・`:? T as x` です。`match` の網羅性を検査し、足りなければ `E1021`（`missing: :? bool`）です。
 - 型変数・区別できない要素・重複した要素は `E1041`、借用を含む要素は `E1013`、33 個以上の要素は `E1017` です。
-- 比較・表示・ハッシュはまだありません（`==` や `$"{v}"` は `E1005`）。値は `match` で取り出して使います。
+- 要素がすべて `Eq`・`Ord`・`Hash`・`Display` を持てば、匿名共用体も同じクラスを持ちます（タプルと同じ、組み込みのインスタンスです）。`==`・`<`・`$"{v}"` を書け、`HashMap`・`HashSet`・`Map`・`Set` のキーにできます。
 - 名前付きの `union` と同じ表現で、native と WebAssembly で同じ結果です。新しいランタイム関数や import は使いません。
 
 ## 基本の書き方
@@ -85,7 +85,7 @@ def width :: own Setting -> i64 = \setting ->
 | レコードのフィールド、共用体のペイロード、ジェネリックな構築子 | `Cell { value: 40 }`、`Node 7`、`let m: Maybe<(i64 \| string)> = Some 1` |
 | 配列・リスト・タプルのリテラルの要素 | `let xs: [(i64 \| string)] = [1, "two"]` |
 | `if`・`match`・ブロックの腕 | `if flag then 1 else "x"`（腕ごとに包む） |
-| 比較演算子の右辺 | `v == 1`（`1` を包む。ただし `==` そのものは `E1005`） |
+| 比較演算子のもう一方の被演算子 | `v == 1`、`v < "a"`（`1` と `"a"` を包んでから比べる。[比較・順序・ハッシュ・表示](#比較順序ハッシュ表示)） |
 
 式の種類ごとに、要素の選び方が決まっています。
 
@@ -220,6 +220,113 @@ total
 - 純粋な関数型は純粋でない関数型の後に並べます。ただし、純粋な関数の値は純粋でない関数型の値としても使えるので、純粋かどうかだけが違う 2 つの要素は、値からどちらの要素か決められません。そのため、型を書いた位置で拒否します（上の表）。`(pure (i64 -> i64) | (string -> i64))` のように、ほかの部分でも違えば書けます。
 - 純粋な関数型どうしも、カリー化を平らにして比べます。`pure (i64 -> (i64 -> i64))` と `pure (i64 -> i64 -> i64)` は別の型ですが、診断はどちらも `pure (i64 -> i64 -> i64)` と表示するので、片方を名指しできません。この 2 つを要素にすることも `E1041`（kind `anonymous_union_indistinct_members`、`... differ only in how a pure function type is curried, ...`）です。
 
+## 比較・順序・ハッシュ・表示
+
+匿名共用体は、要素がすべてそのクラスを持てば、`Eq`・`Ord`・`Hash`・`Display` を持ちます。タプルと同じく、要素のインスタンスから決まる組み込みのインスタンスです。匿名共用体には宣言がないので、`deriving` も `instance` も書きません。
+
+| クラス | 規則 |
+| --- | --- |
+| `Eq`（`==`・`!=`） | 2 つの値が同じ要素で、ペイロードが要素の `==` で等しいとき、等しい値です。別の要素なら、ペイロードを比べずに「等しくない」です |
+| `Ord`（`<`・`<=`・`>`・`>=`） | まず要素を正準順序（表示の順）で比べます。同じ要素なら、ペイロードを要素の同じ演算子で比べます |
+| `Hash` | 名前付きの共用体の `deriving (Hash)` と同じ列です。タグ `0x55`、正準順序での要素の位置（0 から数える）、ペイロードのハッシュの順に混ぜます。`==` で等しい値は、ハッシュも等しくなります |
+| `Display` | ペイロードの表示だけです。要素の型名は書きません。入れ物の中の文字列には、ほかの文字列と同じく引用符が付きます |
+
+### 比較と順序
+
+```tsuzuri run=true%20false%20true%20true%20false%20true%20true%20true
+let a: (i64 | string) = 1
+let b: (string | i64) = "one"
+let c: (i64 | string) = 1
+$"{a == c} {a == b} {a != b} {a < b} {b <= a} {a == 1} {b == "one"} {b > 100}"
+```
+
+実行結果:
+
+```text
+true false true true false true true true
+```
+
+- **要素の順は、書いた順ではなく正準順序です。** `i64` は `string` より前なので、`i64` の値はどの `string` の値よりも小さくなります。`b` の型を `(string | i64)` と書いても、`a < b` は `true` です。`b > 100` も、ペイロードを比べずに要素の順で決まります。
+- **比較演算子のもう一方の被演算子は、匿名共用体へ注入されます。** `a == 1` は、`1` を `i64` の要素として包んでから比べます。左辺が接尾辞のない数のリテラルの `1 == a` も同じです。左辺がそれ以外の式なら、左辺の型が右辺の期待される型になります。`"one" == b` は `E1003`（`expected string, found (i64 | string)`）なので、匿名共用体を左辺に書きます。
+- **浮動小数点の要素は、要素の比較のままです。** `(f64 | string)` の NaN は自分自身と等しくありません（`==` は `false`、`!=` は `true`、`<` は `false`）。`0.0` と `-0.0` は等しい値です。
+- **クラスを持たない要素があれば、その要素を示す `E1005` です。** `bool` は `Ord` を持たないので、`(i64 | bool)` は `==` を使えますが、`<` は `no instance for Ord<bool>` です。`record Point { x: i64, y: i64 }` に `Eq` がなければ、`(i64 | Point)` の `==` は `no instance for Eq<Main.Point>` です。
+
+### 表示
+
+単独の値と文字列補間は、要素の `Display` をそのまま使います（文字列に引用符は付きません）。配列・リスト・タプルと、`deriving (Display)` のレコード・共用体の中では、文字列の要素に引用符が付きます。
+
+```tsuzuri run=1%20one%20%5B2%2C%20%22two%22%5D%20%281%2C%20%22one%22%29
+let a: (i64 | string) = 1
+let b: (i64 | string) = "one"
+let items: [(i64 | string)] = [2, "two"]
+let alone = $"{a} {b}"
+alone + " " + Display.display items + " " + Display.display (a, b)
+```
+
+実行結果:
+
+```text
+1 one [2, "two"] (1, "one")
+```
+
+`(i64 | string)` は Copy ではないので、タプル `(a, b)` を作ると `a` と `b` は move されます。後でも使う値は、タプルにする前に使うか、複製して渡します。
+
+### コレクションのキーと `deriving`
+
+`HashMap`・`HashSet` のキー（`Eq` と `Hash`）と、`Map`・`Set` のキー（`Ord`）に使えます。`Map` と `Set` は `Ord` の順に並ぶので、`i64` のキーがすべて `string` のキーより前に来ます。
+
+```tsuzuri run=2%20%5B1%5D%5B2%5D%5Ba%5D%5Bb%5D
+def key :: own (i64 | string) -> (i64 | string) = \value -> value
+
+let seen: HashSet<(i64 | string)> = HashSet.empty() |> HashSet.insert (key 1) |> HashSet.insert (key "one") |> HashSet.insert (key 1)
+let ordered: Set<(i64 | string)> = Set.empty() |> Set.insert (key "b") |> Set.insert (key 2) |> Set.insert (key "a") |> Set.insert (key 1)
+let mut text = ""
+for item in Set.iter ordered do
+    text = text + $"[{item}]"
+$"{HashSet.length seen} {text}"
+```
+
+実行結果:
+
+```text
+2 [1][2][a][b]
+```
+
+型引数の推論は、要素の型を匿名共用体へ広げません（[値の作り方](#値の作り方注入)）。`Set.empty() |> Set.insert "b"` と書くと、キーの型は `string` に決まります。キーは、上の `key` のような関数か型注釈のある束縛で、匿名共用体の値にしてから渡します。
+
+匿名共用体をフィールドやペイロードに持つ型には、`deriving (Eq, Ord, Hash, Display)` を付けられます。
+
+```tsuzuri run=false%20Setting%20%7B%20name%3A%20%22depth%22%2C%20value%3A%203%20%7D%20Setting%20%7B%20name%3A%20%22depth%22%2C%20value%3A%20%223%22%20%7D
+record Setting { name: string, value: (i64 | string | bool) } deriving (Eq, Display)
+
+let a = Setting { name: "depth", value: 3 }
+let b = Setting { name: "depth", value: "3" }
+$"{a == b} {a} {b}"
+```
+
+実行結果:
+
+```text
+false Setting { name: "depth", value: 3 } Setting { name: "depth", value: "3" }
+```
+
+ハッシュは、同じ要素を同じ順（正準順序）に並べた名前付きの共用体と同じ値です。
+
+```tsuzuri run=true
+union Named = Number of i64 | Text of string deriving (Hash)
+
+let a: (i64 | string) = "one"
+Hash.hash a == Hash.hash (Text "one")
+```
+
+### 持たないクラスとそのほかの規則
+
+- `Default`・`Format`・`Arbitrary`・`Encode`・`Decode` など、ほかのクラスのインスタンスはありません。どの要素の値を作るかを決められないためです。`Default.default()` や書式指定の補間 `$"{v:x}"` は `E1005`、匿名共用体を持つ型の `deriving (Default)` は `E1025` です。メッセージは `no instance for Default<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` で、インスタンスの定義は勧めません。幅と寄せだけの補間 `$"{v:>5}"` は `Display` を使うので書けます。
+- 匿名共用体を head とする `instance` は書けません（`E1041`）。比較や表示の規則を自分で決めたいときは、レコードで包むか、名前付きの `union` を宣言します。
+- `Dyn.of v` で `dyn Display` などに格納できます（タプルと同じです）。表示はペイロードだけです。
+- `const def` の中では、タプルや名前付きの共用体と同じく比較演算子を使えません（`E1026`）。
+- インスタンスは要素のインスタンスを呼ぶ関数です。`pure def` の中で匿名共用体を比べたり表示したりするには、要素のインスタンスも純粋でなければなりません（`E1029`）。
+
 ## 型の性質
 
 匿名共用体は、要素数ごとにコンパイラが合成した総称の共用体の具体化です。そのため、次はすべて名前付きの共用体の規則がそのまま決めます。
@@ -232,7 +339,7 @@ total
 | 大きさの上限 | 具体型ごとに 64 KiB（`E1010`） |
 | `export`・`extern` | 使えません（`E1008`） |
 | GPU カーネル | 使えません（`E1018`） |
-| 比較・表示・ハッシュ | ありません。`==`・`<`・`$"{v}"`・`Hash.hash` は `E1005`、匿名共用体を持つ型の `deriving (Eq, ...)` は `E1025` です。メッセージは `no instance for Eq<(i64 \| string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` で、インスタンスの定義は勧めません |
+| 比較・順序・ハッシュ・表示 | 要素がすべてそのクラスを持てば、`Eq`・`Ord`・`Hash`・`Display` を持ちます（[比較・順序・ハッシュ・表示](#比較順序ハッシュ表示)）。`Default`・`Format`・`Arbitrary`・`Encode`・`Decode` はありません（`E1005`。`deriving` では `E1025`） |
 | インスタンス | 匿名共用体を head とする `instance` は書けません（`E1041`、kind `anonymous_union_instance`） |
 
 ```tsuzuri run=3
@@ -254,7 +361,7 @@ depth (Node (Node (Node 7)))
 - ケースの名前に意味がある（`Celsius of f64` と `Fahrenheit of f64`）。
 - 同じ型を 2 回持つ（匿名共用体では要素の重複は `E1041` です）。
 - 要素が多い、または公開 API として長く保つ。
-- 比較・表示・`deriving` が要る。
+- 比較や表示の規則を自分で決めたい、または `Default` や JSON（`Encode`・`Decode`）のインスタンスが要る（匿名共用体のインスタンスは組み込みの 4 つだけで、`instance` も `deriving` も書けません）。
 
 ## 所有権
 
@@ -280,7 +387,8 @@ edition 2027 の読み取りの引数は参照なので、非 Copy の型の読�
 
 ## 注意点
 
-- 比較・表示・ハッシュはまだありません。現在は `match` で取り出してから比べたり表示したりします。
+- `Ord` の順は、書いた順ではなく正準順序（表示の順）です。`(string | i64)` と書いても、`i64` の値が `string` の値より前です。
+- コレクションのキーや総称の関数の引数は、匿名共用体の値にしてから渡します（型引数の推論は要素の型を匿名共用体へ広げません）。
 - 要素の少ない共用体を、要素の多い共用体の位置へそのまま渡すことはできません（`(i64 | string)` を `(i64 | string | bool)` へ渡すと `E1003`）。`match` で取り出して包み直します。
 
 ```text
@@ -300,7 +408,8 @@ def widen :: own (i64 | string) -> (i64 | string | bool) = \value ->
 - 期待される型が匿名共用体の位置で、要素の型の値を包みます。リテラル・ラムダ・`Dyn.of` は形で要素を選び、曖昧なら `E1041` です。
 - `:? T as x` で取り出し、`match` が網羅性を検査します。
 - 型変数・重複・区別できない要素は `E1041`、借用は `E1013`、33 個以上は `E1017` です。
-- 比較・表示・インスタンスはまだありません。ラベルに意味があるデータは名前付きの `union` で表します。
+- 要素がすべて持てば、`Eq`・`Ord`・`Hash`・`Display` を持ちます。順序は正準順序で要素を比べ、表示はペイロードだけです。
+- `instance` は書けません。ラベルに意味があるデータは名前付きの `union` で表します。
 
 ## 関連項目
 
@@ -311,6 +420,9 @@ def widen :: own (i64 | string) -> (i64 | string | bool) = \value ->
 - [パターンマッチング](../pattern-matching/pattern-matching.md)
 - [型](../types-and-type-inference/types.md)
 - [型推論](../types-and-type-inference/type-inference.md)
+- [型クラス](../types-and-type-inference/type-classes.md)
+- [HashMap](hashmap.md)
+- [Map](map.md)
 - [診断](../compiler/diagnostics.md)
 - [言語仕様の匿名共用体](../../../docs/language.md#匿名共用体)
 - [言語リファレンスの目次](../index.md)

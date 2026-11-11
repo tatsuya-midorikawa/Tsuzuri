@@ -858,8 +858,8 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Rem` | `rem` / `%` | 全整数型 |
 | `Neg` | `neg` / 単項 `-` | 符号付き整数型、全浮動小数点型 |
 | `Pow` | `pow` / `**` | 全整数型、f32、f64 |
-| `Eq` | `eq` / `ne :: ref 'a -> ref 'a -> bool`、`== !=` | 全数値型、bool、unit、string、utf8string、char、utf8char。全要素が Eq を満たす配列・リスト・タプル |
-| `Ord`（`Eq` を要求） | `lt` / `le` / `gt` / `ge :: ref 'a -> ref 'a -> bool`、`< <= > >=` | 全数値型、string、utf8string、char、utf8char。全要素が Ord を満たす配列・リスト・タプル |
+| `Eq` | `eq` / `ne :: ref 'a -> ref 'a -> bool`、`== !=` | 全数値型、bool、unit、string、utf8string、char、utf8char。全要素が Eq を満たす配列・リスト・タプル・[匿名共用体](#匿名共用体) |
+| `Ord`（`Eq` を要求） | `lt` / `le` / `gt` / `ge :: ref 'a -> ref 'a -> bool`、`< <= > >=` | 全数値型、string、utf8string、char、utf8char。全要素が Ord を満たす配列・リスト・タプル・匿名共用体（要素の正準順序、次にペイロード） |
 | `Bits` | `bit_and` / `bit_or` / `bit_xor` / `shl` / `shr` / `ushr` / `bit_not` | 全整数型 |
 | `Integer` / `SignedInteger` / `Float` / `Numeric` | リテラル解釈および型変換のための制約（メソッドなし） | 全整数型／符号付き整数型／全浮動小数点型／全数値型 |
 | `UnsignedInteger` | 符号なし整数制約（メソッドなし） | i8u／i16u／i32u／i64u／i128u |
@@ -868,9 +868,9 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Send` | tzroutine や別のスレッドへ所有権を移転可能な制約（メソッドなし） | 格納された参照型を含まない型（関数の捕捉環境は別途所有権検査される）。`Arc<'a>` は `'a` が `Send` かつ `Sync` のとき |
 | `Sync` | 複数の tzroutine やスレッドが共有借用で同時に使える制約（メソッドなし） | 整数、浮動小数点、bool、文字、文字列、関数値、`Atomic`、`Mutex`、`Copy` な `dyn`、それらだけを格納した配列・リスト・タプル・レコード・共用体、`'a` が `Sync` な `Arc<'a>`。`Rc`、extern ハンドル、排他参照、`Seq`、GPU のハンドル、`Copy` でない `dyn`、`Owned.Function` は含まない |
 | `AtomicValue` | `Atomic` に入れられる型の制約（メソッドなし） | i8／i16／i32／i64／i8u／i16u／i32u／i64u／bool |
-| `Display` | `display :: ref 'a -> string` | 全数値型、bool、unit、string、utf8string |
+| `Display` | `display :: ref 'a -> string` | 全数値型、bool、unit、string、utf8string。全要素が Display を満たす配列・リスト・タプル・匿名共用体（匿名共用体はペイロードだけを表示） |
 | `Parse` | `parse :: ref string -> Maybe<'a>` | 全数値型、bool |
-| `Hash` | `hash :: ref 'a -> i64u` | 全数値型、bool、unit、文字列型、文字型。全要素が Hash を満たす配列・リスト・タプル |
+| `Hash` | `hash :: ref 'a -> i64u` | 全数値型、bool、unit、文字列型、文字型。全要素が Hash を満たす配列・リスト・タプル・匿名共用体 |
 | `Default` | `default :: 'a`（`Default.default()` で呼び出し） | 数値の 0、false、unit、空文字列、文字の 0、空配列、空リスト、全要素が Default を満たすタプル |
 | `Elementary` | 初等超越関数用制約（メソッドなし） | f32／f64 のみ（ユーザーによるインスタンス追加は不可） |
 | `Err` | `msg :: ref 'a -> string`（`try` ハンドラの戻り値型に要求） | なし（標準ライブラリの `Exception` がインスタンスを保持。[検査付き算術と例外](#検査付き算術と例外) 参照） |
@@ -1167,7 +1167,7 @@ union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Eq, Display, E
 | `string`／`utf8string` | タグ `0x53`／`0x73`、コード単位数／バイト長、UTF-16 は 2 バイト単位／UTF-8 はバイト列 |
 | `char`／`utf8char` | タグ `0x43`／`0x63`、UTF-16 コード単位（2 バイト）／Unicode スカラー値（4 バイト） |
 | タプル／配列／リスト／レコード | タグ `0x54`／`0x41`／`0x4C`／`0x52`、要素数、各インデックスと子要素のハッシュ値 |
-| `union` | タグ `0x55`、case インデックス、ペイロードのハッシュ値（ペイロードなしは全ビット 1） |
+| `union`／匿名共用体 | タグ `0x55`、case インデックス、ペイロードのハッシュ値（ペイロードなしは全ビット 1）。[匿名共用体](#匿名共用体)の case インデックスは、正準順序での要素の位置（0 始まり） |
 
 浮動小数点のハッシュ計算では $\pm 0.0$ を同一の値として扱い、NaN は各型固有の正の quiet NaN へと正規化されます。
 decimal 型は非ゼロ係数の末尾の冗長なゼロを除去し、指数を表現上限まで引き上げた BID 形式へと正規化することで、同一のコホートに属する数値が同一のハッシュ値となることを保証します。
@@ -1195,7 +1195,17 @@ describe first                      // "int 42"
 
 型テストのパターン `:? T`・`:? T as x`（[match と分解](#match-と分解)）は、照合する値が匿名共用体で、`T` がその要素のとき、その要素のケースかどうかをタグで比べます。照合する値の型は、パターンを検査する時点で匿名共用体に決まっていなければなりません（参照は自動で外します）。決まっていなければ `E1041`（`type_test_unknown_scrutinee`）、匿名共用体でなければ `E1041`（`type_test_not_anonymous_union`）です。`T` は本体の型注釈と同じ規則で解決し、匿名共用体なら `E1041`（`type_test_union`）、どの要素とも等しくなければ `E1041`（`type_test_not_member`）です。`as x` の束縛の型は要素の型で、所有権の規則は共用体の case のペイロードの束縛と同じです。網羅性は要素ごとのケースとして数え、足りなければ `E1021 match is not exhaustive; missing: :? string` で、`| :? string -> unreachable ()` を足す修正案を持ちます。
 
-匿名共用体は、要素数 n ごとにコンパイラが合成した総称の union 宣言（擬似モジュール `$anonymous` の `Union$n`）の具体化です。合成は、どれかのモジュールが匿名共用体の型か型テストのパターンを書いたときだけ行い、書かないプログラムの出力は変わりません。合成した名前は識別子に書けず、診断・hover・`doc`・`kg`・`api-diff`・型付き穴の候補には現れません。Copy・Send・drop・レイアウト（1 バイトのタグと最大の要素の領域。すべての要素の表現が同じならペイロードを共有）・再帰（名前付きの型の循環に入れば、名前付きの union と同じくヒープのノード）・64 KiB の上限（`E1010`）・`export` の制約（`E1008`）は、名前付きの union の規則がそのまま決めます。組み込みの `Eq`・`Ord`・`Hash`・`Display` はまだなく（`==` や表示は `E1005`。メッセージは `no instance for Eq<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases`）、匿名共用体を head とする `instance` は `E1041`（`anonymous_union_instance`）です。
+匿名共用体は、要素数 n ごとにコンパイラが合成した総称の union 宣言（擬似モジュール `$anonymous` の `Union$n`）の具体化です。合成は、どれかのモジュールが匿名共用体の型か型テストのパターンを書いたときだけ行い、書かないプログラムの出力は変わりません。合成した名前は識別子に書けず、診断・hover・`doc`・`kg`・`api-diff`・型付き穴の候補には現れません。Copy・Send・drop・レイアウト（1 バイトのタグと最大の要素の領域。すべての要素の表現が同じならペイロードを共有）・再帰（名前付きの型の循環に入れば、名前付きの union と同じくヒープのノード）・64 KiB の上限（`E1010`）・`export` の制約（`E1008`）は、名前付きの union の規則がそのまま決めます。匿名共用体を head とする `instance` は `E1041`（`anonymous_union_instance`）です。
+
+匿名共用体は、タプルと同じく、要素のインスタンスから決まる組み込みの `Eq`・`Ord`・`Hash`・`Display` を持ちます（A26）。どれも要素ごとの同じクラスの制約を要り、足りなければ要素を示す `E1005` です（`(i64 | bool)` の `<` は `no instance for Ord<bool>`）。
+
+- `Eq`: 2 つの値のタグが同じで、ペイロードが要素の `==` で等しいとき真です。タグが違えば、ペイロードを比べずに偽です。`!=` は、タグが違えば真、同じなら要素の `==` の否定です。
+- `Ord`: `<`・`<=`・`>`・`>=` は、タグが違えばタグの大小（正準順序での要素の位置。書いた順ではありません）で、同じなら要素の同じ演算子で決まります。`i64` の値はどの `string` の値よりも小さくなります。NaN と符号付きゼロは要素の演算子のままで、`(f64 | string)` の NaN は自分自身と等しくなく、`0.0 == -0.0` は真です。
+- `Hash`: 名前付きの union の導出と同じ列（Canonical Stream の `union` の行）です。同じ要素を正準順序に case として並べた名前付きの union（`union R = A of i64 | B of string deriving (Hash)`）と同じ値になり、`(i64 | string)` の `1` は `15967365493956732001`、`"one"` は `17017872639125386659` です。
+- `Display`: ペイロードの表示だけで、要素の型名は書きません。単独の値と文字列補間は要素の `Display`（文字列は引用符なし）、配列・リスト・タプルと、導出したレコードや union の中では、要素の引用付きの表示（文字列は `"one"`）です。`Display.display (a, b)` は `(1, "one")` です。
+
+比較演算子のもう一方の被演算子は注入されるので、`v == 1`（`v: (i64 | string)`）は `1` を `i64` の要素として包んでから比べます。左辺が接尾辞のない数のリテラルの `1 == v` も同じです。匿名共用体は `HashMap`・`HashSet`（`Eq` と `Hash`）と `Map`・`Set`（`Ord`）のキーにでき、匿名共用体をフィールドやペイロードに持つ型に `deriving (Eq, Ord, Hash, Display)` を付けられ、`Dyn.of` で `dyn Display` などに格納できます（表示はペイロードだけ）。`const def` の中の比較は、タプルや名前付きの union と同じ `E1026` です。インスタンスの本体は要素のインスタンスを呼ぶ通常の関数なので、`pure def` の中で使うと要素のインスタンスの効果まで調べます（要素の `Eq` が純粋でなければ `E1029`）。
+`Default`・`Format`・`Arbitrary`・`Encode`・`Decode` のインスタンスはありません。`E1005`（匿名共用体を持つ型の `deriving` では `E1025`）で、メッセージは `no instance for Default<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` です。
 
 ### アプリケーションのエントリーポイント
 

@@ -144,7 +144,9 @@ flowchart TD
 | `SimdVector` `SimdNumeric` `SimdMask` | SIMD 値の印。詳細は [Simd](../built-in-types-and-modules/simd.md) |
 
 <!-- rule: TYP-014 -->
-`==`、`+`、`**` などの演算子は、対応するクラスのメソッドです。配列、リスト、タプルの `Eq`、`Ord`、`Hash`、`Display` は要素の制約から構造的に作られます。`Default` はタプルにも構造的にあります。レコードと共用体は、手書きのインスタンスか `deriving` が必要です。無い比較は `E1005`（no instance）です。
+`==`、`+`、`**` などの演算子は、対応するクラスのメソッドです。配列、リスト、タプル、[匿名共用体](../built-in-types-and-modules/anonymous-union.md)（`(i64 | string)`）の `Eq`、`Ord`、`Hash`、`Display` は要素の制約から構造的に作られます。`Default` はタプルにも構造的にあります（匿名共用体にはありません）。レコードと名前付きの共用体は、手書きのインスタンスか `deriving` が必要です。無い比較は `E1005`（no instance）です。
+
+匿名共用体の `Eq` は、同じ要素でペイロードが等しいときに等しく、`Ord` は要素を正準順序（表示の順。`i64` は `string` より前）で比べてからペイロードを比べます。`Hash` は名前付きの共用体の導出と同じ列で、`Display` はペイロードだけを表示します。匿名共用体を head とする `instance` は書けません（`E1041`）。
 
 `Drop.drop` を自分で呼ぶことはできません。`E1016` で、値をスコープから出すか、消費する関数へ渡すよう案内されます。`Drop` のインスタンスは、このプログラムで宣言したレコードか共用体に限り、すべての型引数を別々の型変数で書いた head だけです。制約も `deriving (Drop)` も使えません。詳細は [Drop](../ownership-and-memory/drop.md) です。
 
