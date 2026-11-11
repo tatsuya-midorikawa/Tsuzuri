@@ -1570,7 +1570,12 @@ region 契約を読む前に宣言の引数型にも同じ表面上の補完を�
 `Checker::binds_annotated_reference` が、注釈が `resolve_type_with_kinds` で参照の型に解決され、参照先の型が
 `Infer`・`Reference`・`Application`・`Partial`・誤りのどれでもなく、注釈が引数の参照の型と合う（`Inference::unifies`。
 解いた推論変数を戻す試しの `unify` で、`Inference::trial` に解いた変数を記録する）と確かめたときだけ、`lambda` と `def` の引数の束縛は view にしません。
-このとき view は注釈と `unify` で決して合わないので、変わるのは型エラーだったプログラムだけで、その引数の型と生成コードは
+`Infer` のうち数値リテラルの型（`Inference::is_numeric_literal`）は、`Integer`・`SignedInteger`・`Float` の制約が参照では成り立たず、
+利用者はこれらの instance を足せないので、参照になりえません。そのときは `closures::literal_takes` が、注釈の参照先が整数か浮動小数点の型で、
+その変数を含む class 制約のすべてが参照先へ置き換えても成り立ち（ほかの未決の変数を含まない）、変数そのものの制約が 1 つ以上あり、member 制約が
+その変数を含まないことを確かめたときだけ束縛します（`[1, 2, 3] |> Array.map (\(x: ref i64) -> …)`）。満たさない注釈は view のままで、リテラルの
+`E1003`（`expected an integer, found ref string`）は変わりません。
+このとき view は注釈と `unify` で決して合わないか、合ってもリテラルの制約で必ず失敗するので、変わるのは型エラーだったプログラムだけで、その引数の型と生成コードは
 `let` で束縛したラムダと同じです。引数の参照の型と合わない注釈は view のままなので、パターンは A32 の前と同じ
 `E1003`（`expected ref [string], found string`）を報告します。参照を束縛した引数の所有権検査は `let` で束縛したラムダの引数と同じで、
 その場の書き込み（`Array.write` など）が注釈した参照の借用を書き込み先へ残すことは、A31 の書き込みの事実（`ownership::StoreFacts`）が

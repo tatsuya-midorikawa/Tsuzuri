@@ -481,6 +481,7 @@ F# のリストは不変で、いくつものリストが末尾を共有しま�
 2027 の `map`・`mapi`・`iter`・`iteri`・`fold`・`fold_back` は要素の読み取り view を渡すため、
 callback は参照外しを書かずに非 Copy の要素も読めます。ラムダの要素の引数を
 `\(text: ref string) -> …` と参照の型で注釈すると、本体ではその引数が参照になります。
+数値リテラルのリスト（`[|1, 2, 3|] |> List.map (\(x: ref i64) -> …)`）でも同じで、要素の型は注釈の参照先の型に決まります。
 要素がすでに参照のリストの `\(r: ref (ref string)) -> …` では、
 注釈は `E1003` です（[ラムダ式](../values-and-functions/lambda-expressions.md#型注釈とパターン引数)）。旧版の値 callback は
 `map_owned`・`mapi_owned`・`iter_owned`・`iteri_owned`・`fold_owned`・`fold_back_owned` で使えます。

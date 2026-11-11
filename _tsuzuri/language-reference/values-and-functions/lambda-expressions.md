@@ -120,6 +120,21 @@ pick 3 + pick (-3) * 100
 5005
 ```
 
+数値リテラルの配列やリストの読み取り callback（`[1, 2, 3] |> Array.map (\(x: ref i64) -> …)`、`let xs = [1, 2, 3]` の後の `xs |> Array.fold …`）では、callback を検査する時点で要素の型がまだリテラルの型のままです。リテラルの型は参照になりえないので、注釈の参照先がリテラルの取れる数値型（整数のリテラルなら `i64` や `i8u`）なら、引数は注釈のとおり参照になり、要素の型もその型に決まります。`let` で束縛したラムダと同じ型です。リテラルの取れない参照先（`ref string`、整数のリテラルへの `ref f64`、負のリテラルへの `ref i8u`）や、ほかの制約（その要素を渡した関数が求める class の instance）を満たさない参照先では、引数は参照先の値を読むので、リテラルの位置に `E1003 expected an integer, found ref string` のように報告されます。
+
+```tsuzuri run=615
+let doubled = [1, 2, 3] |> Array.map (\(x: ref i64) -> deref x * 2)
+let xs = [4, 5, 6]
+let total = xs |> Array.fold (\sum (x: ref i64) -> sum + deref x) 0
+doubled[2] * 100 + total
+```
+
+実行結果:
+
+```text
+615
+```
+
 期待型の引数がまだ決まっていない型の参照のとき（`def inspect :: 'a -> i64` の値と並べた `if`）は、今も注釈を参照先の値と比べます。`\(text: ref string) -> …` の型は `ref ref string -> i64` になり、`ref string` を渡す呼び出しは `E1003` です。ラムダを先に `let` で束縛すると `ref string -> i64` になります。規約の無い関数型の引数（`def apply :: (string -> i64) -> i64` の `apply (\(text: ref string) -> …)`）は値の引数なので、`ref string` の注釈は `E1003` です。`let` で束縛した関数値なら、値の引数へ合わせる adapter が作られるので渡せます。
 
 次の場合も、注釈を参照先の値と比べます。
@@ -130,6 +145,8 @@ pick 3 + pick (-3) * 100
 注釈で参照を束縛した引数は、`let` で束縛したラムダの引数と同じ所有権検査を受けます。`Array.write` と、それで書き込む std の関数（`Array.set`・`Array.fill`・`Array.blit` など）で、その引数の借用を持つ値（引数を捕捉した関数など）を書き込み先へ書き込むと、書き込み先の持ち主はその借用を持ちます。そのため、借用元より長く書き込み先を使うと、注釈を書かない綴りと同じく `E1013` です（[その場の書き込み](../ownership-and-memory/lifetimes.md#現在の制限)）。
 
 `\mut (pattern)` の `mut` は、パターンで束縛する名前ではなく、分解する前の引数を可変にします。`def` の右辺では可変束縛引数は値渡しなので、そのパターンへ参照の型を注釈すると `E1003` です（`def size :: 'a -> i64 = \mut (v: ref 'a) -> 3` は `expected ref 'a, found 'a`）。規約を持つ関数型が期待される位置のラムダと、`def` の `mut T` の引数では、`mut` を付けても引数の型は変わりません。そのため `\mut (text: ref string) -> …` や `\mut (counter: ref mut Counter) -> …` と書けます。
+
+排他借用 `ref mut T` は Copy でないので、`\((c as d): ref mut Counter) -> …` のように `as`（または `&`）で同じ参照を 2 つの名前に束縛すると `E1012` です。所有値の `\((s as t): string) -> …` と同じで、診断は引数のパターンを指し、`use of moved or partially moved value: this parameter's pattern binds the value, or a part of it, to more than one name` と報告します。名前を 1 つにして `\(c: ref mut Counter) -> …` と書きます（[as パターンによる全体束縛](../pattern-matching/pattern-matching.md#as-パターンによる全体束縛)）。
 
 `\(left, right) ->` はタプルを 1 つ受けて分解します。カリー化された 2 引数関数ではないので、呼び出しは `total (20, 22)` です。
 
