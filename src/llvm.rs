@@ -2289,8 +2289,9 @@ fn emit_program_in(
             runtime_symbols.append(&mut output, &host_abi::native_allocator());
         }
     }
-    // The driver links `cpu.c` when a line declares a `tsuzuri_cpu_` function (F08), and the
-    // runtime text above may end without a newline.
+    // The driver links `cpu.c` when a line declares a `tsuzuri_cpu_` function (F08). The runtime
+    // pieces end with a newline (TZ15); the check keeps each declaration on a line of its own
+    // after any text above that does not.
     for (symbol, result) in CPU_KERNELS {
         if runtime_symbols.contains(symbol) {
             if !output.ends_with('\n') {
@@ -2313,7 +2314,8 @@ fn emit_program_in(
         );
     }
     if parallel || mutex || channel {
-        // The runtime text above may end without a newline.
+        // The runtime pieces end with a newline (TZ15); this keeps the declarations on lines of
+        // their own after any text above that does not.
         if (mutex || channel) && !output.ends_with('\n') {
             output.push('\n');
         }
@@ -10305,6 +10307,32 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
         ] {
             assert!(!runtime.contains(word), "{word}");
         }
+    }
+
+    #[test]
+    fn runtime_pieces_end_with_a_newline() {
+        // The emitter joins the runtime pieces as they are (`RuntimeSymbols::append`, `push_str`),
+        // and the passes that read the IR line by line take a function for a line that starts with
+        // `define ` and its end for a line that is `}`. A piece that ended without a line break
+        // would put the next piece on the line of its last brace (`}define ...`), where those passes
+        // miss the function (TZ15).
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime");
+        let mut pieces: Vec<std::path::PathBuf> = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "ll"))
+            .collect();
+        pieces.sort();
+        assert!(pieces.len() > 30, "{pieces:?}");
+        let unterminated: Vec<String> = pieces
+            .iter()
+            .filter(|path| !std::fs::read(path).unwrap().ends_with(b"\n"))
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            unterminated.is_empty(),
+            "runtime pieces without a final newline: {unterminated:?}"
+        );
     }
 
     #[test]

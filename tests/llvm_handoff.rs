@@ -40,7 +40,8 @@ fn sources(text: &str) -> Vec<TrapSource<'_>> {
 /// The names that `ir` defines, such as `@tz.fn.Main.used`.
 fn defined(ir: &str) -> BTreeSet<String> {
     ir.lines()
-        // A runtime part can follow the closing brace of the function before it on the same line.
+        // Before TZ15 a runtime part could follow the closing brace of the function before it on the same line. The
+        // runtime parts end with a newline now; the split stays as a guard for IR that is joined in another way.
         .map(|line| line.strip_prefix('}').unwrap_or(line))
         .filter(|line| line.starts_with("define "))
         .filter_map(|line| {
@@ -372,7 +373,8 @@ fn context_without_parameter(ir: &str) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     let mut open: Option<(String, bool)> = None;
     for raw in ir.lines() {
-        // A runtime part can follow the closing brace of the function before it on the same line.
+        // Before TZ15 a runtime part could follow the closing brace of the function before it on the same line. The
+        // runtime parts end with a newline now; the split stays as a guard for IR that is joined in another way.
         let line = match raw.strip_prefix('}') {
             Some(rest) if !rest.is_empty() => {
                 open = None;
@@ -396,8 +398,9 @@ fn context_without_parameter(ir: &str) -> BTreeSet<String> {
 }
 
 /// A recursive union and a displayed list make the runtime parts `recursive.ll` and `display.ll`, and the emitter
-/// appends a part right behind the previous one. `recursive.ll` ends without a line break, so `display.ll` starts in
-/// the line of its last brace (`}define ...`) unless something else is appended between them.
+/// appends a part right behind the previous one. Before TZ15 `recursive.ll` ended without a line break, so
+/// `display.ll` started in the line of its last brace (`}define ...`) unless something else was appended between
+/// them. The runtime parts end with a newline now (`src/llvm_traps.rs` checks the split of such a line on its own).
 const TREE: &str = "\
 union Tree =
     | Leaf
@@ -439,8 +442,8 @@ $\"{values} {size (Tree.Node (Tree.Leaf, 1, Tree.Leaf))}\"
 
 #[test]
 fn the_trap_instrumentation_reads_runtime_parts_that_share_a_line() {
-    // `display.ll` follows `recursive.ll` in the line of its last brace, which the baseline compiler already
-    // instrumented wrongly: the function took no `%tz.context` and its body used it.
+    // Before TZ15 `display.ll` followed `recursive.ll` in the line of its last brace, which the compiler before
+    // PB03 instrumented wrongly: the function took no `%tz.context` and its body used it.
     for ir in [unpruned(TREE, true).ir, executable(TREE, true).ir] {
         assert_eq!(context_without_parameter(&ir), BTreeSet::new());
     }
@@ -448,8 +451,8 @@ fn the_trap_instrumentation_reads_runtime_parts_that_share_a_line() {
 
 #[test]
 fn an_unused_function_does_not_decide_whether_a_trap_info_build_still_works() {
-    // The channel stands between the two runtime parts, so the unpruned program (which `tsuzuri run` built before
-    // pruning) has the line break that the pruned one lost with the function.
+    // The channel stands between the two runtime parts, so before TZ15 the unpruned program (which `tsuzuri run`
+    // built before pruning) had the line break that the pruned one lost with the function.
     let whole = unpruned(TREE_WITH_CHANNEL, true).ir;
     assert!(whole.contains("declare i32 @tsuzuri_channel_send(ptr, ptr)"));
     assert_eq!(context_without_parameter(&whole), BTreeSet::new());

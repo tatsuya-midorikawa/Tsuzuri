@@ -1,7 +1,7 @@
 // A recursive union and a displayed list: the runtime parts `recursive.ll` and `display.ll` are appended one behind the
-// other, and `recursive.ll` ends without a line break, so `display.ll` starts in the line of its last brace. The trap
-// instrumentation of `tsuzuri run` used to read that function as a part of the one before it (`use of undefined value
-// '%tz.context'`).
+// other. Before TZ15 `recursive.ll` ended without a line break, so `display.ll` started in the line of its last brace, and
+// the trap instrumentation of `tsuzuri run` used to read that function as a part of the one before it (`use of undefined
+// value '%tz.context'`). Every runtime part ends with a line break now; the program must still run.
 union Tree =
     | Leaf
     | Node of Tree * i64 * Tree
