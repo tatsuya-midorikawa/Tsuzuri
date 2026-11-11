@@ -2621,3 +2621,61 @@ fn wide_unions_have_instances() {
         Edition::E2027,
     );
 }
+
+#[test]
+fn derived_record_with_anonymous_field() {
+    passes(
+        "record Cell { value: (i64 | string), tag: string } deriving (Eq, Ord, Hash, Display)\nunion Shape = Dot | Text of (string | char) deriving (Eq, Ord, Hash, Display)\nrecord Pair<'a> { left: (['a] | string), right: 'a } deriving (Eq, Ord, Hash, Display)\n\ntest \"record\" =\n    let number = Cell { value: 1, tag: \"z\" }\n    let again = Cell { value: 1, tag: \"z\" }\n    let text = Cell { value: \"one\", tag: \"a\" }\n    assert (number == again)\n    assert (number != text)\n    assert (number < text)\n    assert (text >= number)\n    assert (Hash.hash number == Hash.hash again)\n    assert (Hash.hash number != Hash.hash text)\n    assert (Display.display text == \"Cell { value: \\\"one\\\", tag: \\\"a\\\" }\")\n\ntest \"union\" =\n    assert (Text 's' == Text 's')\n    assert (Text 's' != Text \"s\")\n    assert (Text 'z' < Text \"a\")\n    assert (Dot < Text 'a')\n    assert (Hash.hash (Text 's') != Hash.hash (Text \"s\"))\n    assert (Display.display (Text \"s\") == \"Text \\\"s\\\"\")\n\ntest \"generic record\" =\n    let left = Pair { left: \"1\", right: 2 }\n    let right = Pair { left: [1], right: 2 }\n    assert (left != right)\n    assert (left < right)\n    assert (right == Pair { left: [1], right: 2 })\n    assert (Display.display left == \"Pair { left: \\\"1\\\", right: 2 }\")\n    assert (Display.display right == \"Pair { left: [1], right: 2 }\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn hashset_and_map_keys() {
+    passes(
+        "def key :: own (i64 | string) -> (i64 | string) = \\v -> v\n\ndef found :: own Maybe<i64> -> i64 = \\m ->\n    match m with\n    | Some n -> n\n    | None -> -1\n\ntest \"hash keys\" =\n    let seen: HashSet<(i64 | string)> = HashSet.empty() |> HashSet.insert (key 1) |> HashSet.insert (key \"one\") |> HashSet.insert (key 1) |> HashSet.insert (key \"1\")\n    assert (HashSet.length seen == 3)\n    assert (HashSet.contains (key \"one\") seen)\n    assert (HashSet.contains (key 1) seen)\n    assert (not (HashSet.contains (key 2) seen))\n    let table: HashMap<(i64 | string), i64> = HashMap.empty() |> HashMap.insert (key \"one\") 10 |> HashMap.insert (key 1) 20 |> HashMap.insert (key \"one\") 30\n    assert (HashMap.length table == 2)\n    assert (found (HashMap.get (key \"one\") table) == 30)\n    assert (found (HashMap.get (key 1) table) == 20)\n    assert (found (HashMap.get (key \"1\") table) == -1)\n\ntest \"ordered keys\" =\n    let set: Set<(i64 | string)> = Set.empty() |> Set.insert (key \"one\") |> Set.insert (key 2) |> Set.insert (key 1) |> Set.insert (key \"one\")\n    assert (Set.length set == 3)\n    assert (Set.contains (key 2) set)\n    assert (not (Set.contains (key \"two\") set))\n    let map: Map<(i64 | string), i64> = Map.empty() |> Map.insert (key \"one\") 10 |> Map.insert (key 1) 20 |> Map.insert (key \"one\") 30\n    assert (Map.length map == 2)\n    assert (found (Map.get (key \"one\") map) == 30)\n    assert (found (Map.get (key 1) map) == 20)\n    assert (found (Map.get (key 2) map) == -1)\n    let mut keys = \"\"\n    for (k, _) in Map.iter map do\n        keys = keys + Display.display k + \";\"\n    assert (keys == \"1;one;\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn comparison_injects_right_operand() {
+    // The other operand is injected into the union: `v == 1` compares two values of the union.
+    passes(
+        "test \"right operand\" =\n    let v: (i64 | string) = 1\n    assert (v == 1)\n    assert (not (v == 2))\n    assert (v != \"1\")\n    assert (not (v == \"1\"))\n    assert (v < 2)\n    assert (v < \"\")\n    assert (v >= 1)\n\ntest \"left operand\" =\n    let v: (i64 | string) = 1\n    let t: (i64 | string) = \"one\"\n    assert (1 == v)\n    assert (not (2 == v))\n    assert (0 < v)\n    assert (1 != t)\n    assert (2 < t)\n",
+        Edition::E2027,
+    );
+    // A value that is no member is still rejected, and a literal that fits two members too.
+    rejects(
+        "let v: (i64 | string) = 1\nv == true\n",
+        "E1003",
+        "anonymous_union_not_member",
+    );
+    rejects(
+        "let v: (i32 | i64) = 1i64\nv == 1\n",
+        "E1041",
+        "anonymous_union_ambiguous_literal",
+    );
+}
+
+#[test]
+fn dyn_stores_anonymous_union() {
+    // As a tuple is: the built-in instance fills the vtable, and the text is the payload.
+    passes(
+        "test \"dyn\" =\n    let text: (i64 | string) = \"one\"\n    let number: (i64 | string) = 1\n    let items: [dyn Display] = [Dyn.of text, Dyn.of number, Dyn.of (1, \"one\")]\n    assert (Display.display items[0] == \"one\")\n    assert (Display.display items[1] == \"1\")\n    assert (Display.display items[2] == \"(1, \\\"one\\\")\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn const_definitions_refuse_the_operators_as_for_tuples() {
+    // The message that a tuple and a named union get: the operator is a call of an instance.
+    let message = "an operator on a record, tuple, array, or union is not allowed in a const def; apply it to their fields";
+    for source in [
+        "const def same :: bool =\n    let v: (i64 | string) = 1\n    let w: (i64 | string) = 1\n    v == w\nsame\n",
+        "const def same :: bool =\n    let v: (i64 * string) = (1, \"a\")\n    let w: (i64 * string) = (1, \"a\")\n    v == w\nsame\n",
+    ] {
+        let error = rejects(source, "E1026", "const_aggregate_operator");
+        assert_eq!(error.message, message, "{source}");
+    }
+}

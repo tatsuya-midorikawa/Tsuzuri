@@ -219,6 +219,25 @@ A24 がレビュー第 1 回の修正まで入ったブランチ `feat/a24-anony
    - 言語リファレンスの「比較・表示・ハッシュはまだありません」の記述（`anonymous-union.md`）は、ドキュメントの手順で実際の振る舞いに替えます。
 10. **手順の分け方**: 手順 2（判定と制約）と手順 3（本体）は、判定だけを先に入れると本体のない経路（`intrinsic_function` の `unreachable!()`）に届くので、同じ段で入れます。手順 6 の IR の比較の対象に、名前付きの union の導出（`deriving`）の fixture も入れます。
 
+### 実装中の判断（手順 2〜4）
+
+1. **所有権の検査（D6 の前提）**: `ownership::check_all_with` は `$intrinsic` の関数もほかの関数と同じに検査します（モジュール名での除外はありません）。合成した本体（`Borrow(UnionPayload { value: Dereference(引数), case_id })` を要素のメソッドへ渡す形）は、非 Copy の要素（`string`・`[i64]`・`[|string|]`）、再帰する型（`union Tree = Leaf | Node of (i64 | Tree)`）、全要素が同じ表現の型（`(i64 | i64u)`）、32 要素の型で、そのまま受理されました。本文の LLVM の分岐（代案）は使っていません。`src/llvm*.rs` は 1 行も変えていません。
+2. **手順 2 と手順 3 は 1 つのコミット**にしました（再検討の 10）。`Classes::anonymous` は `Names::anonymous_unions` から作る `BTreeSet<usize>` です。`structural_elements` は `src/polymorph.rs` の自由関数で、`normalize` と `intrinsic_function` の 3 か所が使います。
+3. **本体を作る位置**: 型付き IR の部品（`tag_behind`・`member_call`・`by_member`）は `src/anonymous_union.rs`、メソッドごとの組み立ては `Specializer::union_method`（`Eq`・`Ord`・`Hash`・`Display`）と `Specializer::quoted_display_function`（引用付きの表示。キャッシュは `quoted_displays`、関数名は `$intrinsic.Display.display_quoted.N`）です。演算子の形（`a == b`）もメソッドの形（`Eq.eq a b`）も、同じ `intrinsic_function` の同じ関数になります。
+4. **`If` の連鎖**: 要素 0 から順に `tag == k` を調べ、最後の要素は検査なしの `else` です（タグは必ず要素の位置なので）。`-O0` の IR は、タグの読み取り・比較・ペイロードへの `getelementptr`・要素の関数の直接呼び出しだけで、値の複製はありません（`target/scratch/a26/try/ir1`）。
+5. **ハッシュの定数**: `HASH_OFFSET`（14695981039346656037）と `UNION_HASH_TAG`（`0x55`）を `src/polymorph.rs` に置き、導出と同じく `$builtin.hash_mix` の呼び出しを 3 回並べます（コンパイル時に畳みません。導出した union と同じ式にするため）。参照値 `15967365493956732001`・`17017872639125386659` は、`docs/language.md` の Canonical Stream の定義から Python で計算し直した値とも一致しました（FNV-1a: 状態 `xor` バイト、`* 1099511628211`、語は下位バイトから 8 バイト。`i64` は `0x13`、文字列は `0x53`・長さ・UTF-16 の単位ごとに 2 バイト）。
+6. **純粋性**: 本体が通常の関数なので、`pure def` の中で匿名共用体を比べると、要素のインスタンスの効果まで辿られます（要素の `Eq` が `Debug.print` を呼ぶと `E1029`。経路に `$intrinsic.Eq.eq.N` が現れます）。タプルの比較（`StructuralCompare`）は要素のインスタンスを辿らず、同じプログラムを受理します（このチケットより前からの挙動で、このチケットでは変えていません）。
+7. **`const def`**: 匿名共用体の比較は、タプル・名前付きの union と同じ `E1026`（`const_aggregate_operator`、`an operator on a record, tuple, array, or union is not allowed in a const def; ...`）です。テスト `const_definitions_refuse_the_operators_as_for_tuples` で固定しました。
+8. **テストを書くうえで分かった、A24 までの規則**（このチケットでは変えていません）:
+   - 型変数そのものは要素にできない（`('a | string)` は `E1041`）ので、総称のレコードのテストは `(['a] | string)` を使います。
+   - `Display<ref T>` はないので、参照のタプル `(ref a, ref b)` は表示できません（`Display.display (a, b)` は値を move します）。
+   - 型引数の推論は要素から共用体へ広げない（A24）ので、`Set.empty() |> Set.insert "one"` は `'key = string` になります。キーは、型の付いた値（`def key :: own (i64 | string) -> (i64 | string)`）にしてから渡します。言語リファレンスの例でも同じにします。
+   - `Array.sort` は `Copy` を要るので、並べ替えのテストは `(char | i64)`・`(f64 | i64)` を使います。
+   - 導出した `Display` は、ペイロードを括弧で囲みません（`Node (Node 1)` は `Node Node 1`。名前付きの union だけでも同じ）。
+   - `bool` には `Ord` がないので、`(i64 | bool)` は `Eq` だけを持ちます（`<` は `no instance for Ord<bool>`）。
+9. **足したテスト**（`tests/anonymous_unions.rs`）: `anonymous_unions_have_structural_classes`・`missing_member_instance_names_the_member`・`no_default_for_anonymous_unions`（手順 2）、`eq_compares_tag_then_payload`・`ord_follows_member_order`・`hash_matches_named_union_stream`・`display_shows_the_payload`・`display_quotes_inside_tuples`・`nan_members_follow_member_eq`・`recursive_types_compare_through_named_unions`・`wide_unions_have_instances`（手順 3）、`derived_record_with_anonymous_field`・`hashset_and_map_keys`・`comparison_injects_right_operand`（`v == 1` と `1 == v`）・`dyn_stores_anonymous_union`・`const_definitions_refuse_the_operators_as_for_tuples`（手順 4）。実行するテストは native と WASM、`-O0` と `-O3` で通します（`passes`）。期待値は規則から手で求めた値です。
+   - A24 のテストの変更は再検討の 9 のとおりです: `comparisons_and_exports_keep_their_rules` の `v == 1` を受理に、`missing_instances_do_not_ask_for_an_instance` の 3 例を `Add`・`Default`・`deriving (Default)` に替えました。
+
 ## 決定事項
 
 ### D1: 組み込みの構造的なインスタンス
