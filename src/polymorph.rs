@@ -724,6 +724,9 @@ pub(super) struct Classes {
     names: BTreeMap<String, usize>,
     instances: Vec<InstanceTemplate>,
     function_reads: BTreeMap<String, Box<[bool]>>,
+    /// The synthesized declarations behind anonymous unions (A24): a union of one of them has the
+    /// structural instances of `structural` (A26).
+    anonymous: BTreeSet<usize>,
 }
 
 struct InstanceTemplate {
@@ -880,6 +883,7 @@ impl Classes {
             names: BTreeMap::new(),
             instances: Vec::new(),
             function_reads: BTreeMap::new(),
+            anonymous: names.anonymous_unions.iter().copied().collect(),
         };
         for name in BUILTIN_CLASSES {
             classes
@@ -2479,14 +2483,7 @@ impl Classes {
                 ));
             }
             if self.structural(current.class, &current.ty) {
-                let elements = match &current.ty {
-                    Type::Array(element) | Type::List(element) => {
-                        std::slice::from_ref(element.as_ref())
-                    }
-                    Type::Tuple(elements) => elements.as_slice(),
-                    _ => unreachable!(),
-                };
-                pending.extend(elements.iter().map(|ty| {
+                pending.extend(structural_elements(&current.ty).iter().map(|ty| {
                     (
                         Constraint {
                             class: current.class,
@@ -2652,6 +2649,9 @@ impl Classes {
         targets.into_iter().collect()
     }
 
+    /// Whether the instance of `class` for `ty` is the built-in one that the instances of the parts
+    /// of `ty` make: the elements of an array, a list or a tuple, the members of an anonymous union
+    /// (A26). `structural_elements` gives those parts.
     fn structural(&self, class: usize, ty: &Type) -> bool {
         if self.declarations[class].name == "Default" {
             return matches!(ty, Type::Tuple(_));
@@ -2659,7 +2659,13 @@ impl Classes {
         matches!(
             self.declarations[class].name.as_str(),
             "Eq" | "Ord" | "Hash" | "Display"
-        ) && matches!(ty, Type::Array(_) | Type::List(_) | Type::Tuple(_))
+        ) && (matches!(ty, Type::Array(_) | Type::List(_) | Type::Tuple(_))
+            || self.anonymous_union(ty))
+    }
+
+    /// Whether `ty` is an anonymous union `(A | B)` (A24).
+    fn anonymous_union(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Union(id, _) if self.anonymous.contains(id))
     }
 
     fn intrinsic(&self, class: usize, ty: &Type, types: &TypeContext<'_>) -> bool {
@@ -4677,6 +4683,7 @@ pub(super) fn specialize(
         functions: Vec::with_capacity(base_count),
         intrinsics: BTreeMap::new(),
         to_strings: BTreeMap::new(),
+        quoted_displays: BTreeMap::new(),
         vtables: BTreeMap::new(),
         upcasts: BTreeSet::new(),
         current: FunctionOrigin::source(ModuleOrigin::User),
@@ -4909,6 +4916,8 @@ struct Specializer<'a> {
     functions: Vec<CheckedFunction>,
     intrinsics: BTreeMap<(usize, usize, Type), usize>,
     to_strings: BTreeMap<Type, usize>,
+    /// A26: the function that shows each anonymous union inside a collection, with quoted members.
+    quoted_displays: BTreeMap<Type, usize>,
     /// A14: the slot functions of each vtable, by vtable key and stored type.
     vtables: Vtables,
     /// A14 Phase 2: the upcasts between distinct vtable keys, as (source, target).
@@ -5196,9 +5205,13 @@ impl Specializer<'_> {
                         ) =>
                 {
                     let class = self.classes.names["Display"];
-                    let function = if let Some((function, arguments)) = self
-                        .classes
-                        .resolved_method(class, 0, &instance.types[0], &self.types)
+                    let function = if self.classes.anonymous_union(&instance.types[0]) {
+                        // A26: the payload keeps its quotes, which `Display.display` drops.
+                        let ty = instance.types[0].clone();
+                        self.quoted_display_function(&ty, expression.span)?
+                    } else if let Some((function, arguments)) =
+                        self.classes
+                            .resolved_method(class, 0, &instance.types[0], &self.types)
                     {
                         self.request(function, arguments, expression.span)?
                     } else {
@@ -5449,16 +5462,14 @@ impl Specializer<'_> {
             })
         };
         let kind = match method.operation.expect("intrinsic methods have operations") {
+            operation if self.classes.anonymous_union(ty) && self.classes.structural(class, ty) => {
+                let arguments: Vec<_> =
+                    parameters.iter().map(|local| *argument(local.id)).collect();
+                self.union_method(class, operation, structural_elements(ty), &arguments)
+            }
             Operation::Builtin(Builtin::Display) if self.classes.structural(class, ty) => {
-                let elements = match ty {
-                    Type::Array(element) | Type::List(element) => {
-                        std::slice::from_ref(element.as_ref())
-                    }
-                    Type::Tuple(elements) => elements.as_slice(),
-                    _ => unreachable!(),
-                };
                 let mut values = vec![*argument(0)];
-                values.extend(elements.iter().map(|element| TypedExpr {
+                values.extend(structural_elements(ty).iter().map(|element| TypedExpr {
                     kind: TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance {
                         builtin: Builtin::DisplayQuoted,
                         types: vec![element.clone()],
@@ -5472,15 +5483,8 @@ impl Specializer<'_> {
                 TypedExprKind::StructuralDisplay(values)
             }
             Operation::Builtin(Builtin::Hash) if self.classes.structural(class, ty) => {
-                let elements = match ty {
-                    Type::Array(element) | Type::List(element) => {
-                        std::slice::from_ref(element.as_ref())
-                    }
-                    Type::Tuple(elements) => elements.as_slice(),
-                    _ => unreachable!(),
-                };
                 let mut values = vec![*argument(0)];
-                values.extend(elements.iter().map(|element| TypedExpr {
+                values.extend(structural_elements(ty).iter().map(|element| TypedExpr {
                     kind: TypedExprKind::Method(class, 0, element.clone()),
                     ty: Type::function(
                         vec![Type::Reference(Box::new(element.clone()), false)],
@@ -5513,15 +5517,8 @@ impl Specializer<'_> {
                 )
             }
             Operation::Binary(operator) if self.classes.structural(class, ty) => {
-                let elements = match ty {
-                    Type::Array(element) | Type::List(element) => {
-                        std::slice::from_ref(element.as_ref())
-                    }
-                    Type::Tuple(elements) => elements.as_slice(),
-                    _ => unreachable!(),
-                };
                 let mut values = vec![*argument(0), *argument(1)];
-                for element in elements {
+                for element in structural_elements(ty) {
                     let borrowed = Type::Reference(Box::new(element.clone()), false);
                     for operation in std::iter::once(BinaryOp::Equal)
                         .chain((class == self.classes.names["Ord"]).then_some(operator))
@@ -5599,6 +5596,187 @@ impl Specializer<'_> {
         self.request(id, Vec::new(), span)
     }
 
+    /// The body of a method of the built-in instance of an anonymous union with `members` (A26,
+    /// D6), for the parameters `arguments`, which are references to the union. The body is ordinary
+    /// typed IR, so every later stage reads it as a function of the program:
+    ///
+    /// - `Display.display`: the text of the payload, by the member's `Display.display`.
+    /// - `Hash.hash`: the stream of a derived union, `0x55`, the position of the member, the hash of
+    ///   the payload (`derive::Build::union`).
+    /// - `==` and `!=`: values of different members are different; values of one member compare by
+    ///   the member's `==`.
+    /// - `<`, `<=`, `>`, `>=`: values of different members compare by the positions of the members;
+    ///   values of one member compare by the member's operator.
+    fn union_method(
+        &self,
+        class: usize,
+        operation: Operation,
+        members: &[Type],
+        arguments: &[TypedExpr],
+    ) -> TypedExprKind {
+        use anonymous_union::{by_member, member_call, tag_behind};
+        let span = arguments[0].span;
+        let typed = |kind, ty| TypedExpr { kind, ty, span };
+        let method = |class: usize, method: usize, member: &Type, arity: usize, result: Type| {
+            let borrowed = Type::Reference(Box::new(member.clone()), false);
+            typed(
+                TypedExprKind::Method(class, method, member.clone()),
+                Type::function(vec![borrowed; arity], result),
+            )
+        };
+        let body = match operation {
+            Operation::Builtin(Builtin::Display) => {
+                by_member(&arguments[0], members, |case, member| {
+                    let display = method(class, 0, member, 1, Type::String);
+                    member_call(display, arguments, member, case)
+                })
+            }
+            Operation::Builtin(Builtin::Hash) => {
+                let word = Type::Integer(64, false);
+                let mix = |state: TypedExpr, value: TypedExpr| {
+                    let function = typed(
+                        TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance {
+                            builtin: Builtin::HashMix,
+                            types: Vec::new(),
+                        })),
+                        Type::function(vec![word.clone(), word.clone()], word.clone()),
+                    );
+                    typed(
+                        TypedExprKind::Call(Box::new(function), vec![state, value]),
+                        word.clone(),
+                    )
+                };
+                let number = |value: u128| typed(TypedExprKind::Int(value), word.clone());
+                by_member(&arguments[0], members, |case, member| {
+                    let start = mix(
+                        mix(number(HASH_OFFSET), number(UNION_HASH_TAG)),
+                        number(case as u128),
+                    );
+                    let hash = method(class, 0, member, 1, word.clone());
+                    mix(start, member_call(hash, arguments, member, case))
+                })
+            }
+            Operation::Binary(operator) => {
+                // `!=` is the negation of `==`, as it is for a tuple and for a derived instance.
+                let compared = if operator == BinaryOp::NotEqual {
+                    BinaryOp::Equal
+                } else {
+                    operator
+                };
+                let (member_class, member_method) =
+                    self.classes.operation(Operation::Binary(compared));
+                let same = by_member(&arguments[0], members, |case, member| {
+                    let compare = method(member_class, member_method, member, 2, Type::Bool);
+                    let result = member_call(compare, arguments, member, case);
+                    if operator == BinaryOp::NotEqual {
+                        typed(
+                            TypedExprKind::Unary(UnaryOp::Not, Box::new(result)),
+                            Type::Bool,
+                        )
+                    } else {
+                        result
+                    }
+                });
+                let tags = |operator| {
+                    typed(
+                        TypedExprKind::Binary(
+                            operator,
+                            Box::new(tag_behind(&arguments[0])),
+                            Box::new(tag_behind(&arguments[1])),
+                        ),
+                        Type::Bool,
+                    )
+                };
+                let different = match operator {
+                    BinaryOp::Equal => typed(TypedExprKind::Bool(false), Type::Bool),
+                    BinaryOp::NotEqual => typed(TypedExprKind::Bool(true), Type::Bool),
+                    _ => tags(operator),
+                };
+                typed(
+                    TypedExprKind::If {
+                        condition: Box::new(tags(BinaryOp::Equal)),
+                        then_branch: Box::new(same),
+                        else_branch: Box::new(different),
+                    },
+                    Type::Bool,
+                )
+            }
+            Operation::Builtin(_) | Operation::Unary(_) => {
+                unreachable!(
+                    "an anonymous union has structural instances of Eq, Ord, Hash and Display only"
+                )
+            }
+        };
+        body.kind
+    }
+
+    /// The function that shows a value of the anonymous union `ty` inside a collection, a tuple or
+    /// a derived instance (A26): the payload by the member's `DisplayQuoted`, so that a string
+    /// member reads `"one"` there and `one` by itself (`Display.display`, `union_method`). The two
+    /// functions differ, so this one has a cache of its own.
+    fn quoted_display_function(&mut self, ty: &Type, span: Span) -> Result<usize, Diagnostic> {
+        if let Some(id) = self.quoted_displays.get(ty) {
+            return self.request(*id, Vec::new(), span);
+        }
+        let borrowed = Type::Reference(Box::new(ty.clone()), false);
+        let parameter = Local {
+            id: 0,
+            ty: borrowed.clone(),
+            name: "arg0".into(),
+            mutable: false,
+            span,
+            provenance: Provenance::Generated,
+        };
+        let argument = TypedExpr {
+            kind: TypedExprKind::Local(0),
+            ty: borrowed.clone(),
+            span,
+        };
+        let body =
+            anonymous_union::by_member(&argument, structural_elements(ty), |case, member| {
+                let quoted = TypedExpr {
+                    kind: TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance {
+                        builtin: Builtin::DisplayQuoted,
+                        types: vec![member.clone()],
+                    })),
+                    ty: Type::function(
+                        vec![Type::Reference(Box::new(member.clone()), false)],
+                        Type::String,
+                    ),
+                    span,
+                };
+                anonymous_union::member_call(quoted, std::slice::from_ref(&argument), member, case)
+            });
+        let id = self.templates.len();
+        self.templates.push(CheckedFunction {
+            read_by_default: Vec::new(),
+            module: "$intrinsic".into(),
+            region_sources: None,
+            callback_contracts: Vec::new(),
+            region_slots: None,
+            origin: self.current,
+            name: format!("Display.display_quoted.{id}"),
+            visibility: Visibility::Public,
+            exported: false,
+            parameters: vec![parameter],
+            signature: Signature {
+                parameters: vec![borrowed],
+                result: Type::String,
+            },
+            body,
+            span,
+            type_parameters: Vec::new(),
+            constraints: Vec::new(),
+            members: Vec::new(),
+            capture_count: 0,
+            is_once: false,
+            owned_captures: false,
+            contracts: Default::default(),
+        });
+        self.quoted_displays.insert(ty.clone(), id);
+        self.request(id, Vec::new(), span)
+    }
+
     fn string_function(&mut self, ty: &Type, span: Span) -> Result<usize, Diagnostic> {
         if let Some(id) = self.to_strings.get(ty) {
             return self.request(*id, Vec::new(), span);
@@ -5663,6 +5841,23 @@ impl Specializer<'_> {
         });
         self.to_strings.insert(ty.clone(), id);
         self.request(id, Vec::new(), span)
+    }
+}
+
+/// The start of every hash stream, the FNV-1a offset basis (`llvm_hash::OFFSET`, `derive::Build::hash_start`).
+const HASH_OFFSET: u128 = 14695981039346656037;
+
+/// The tag of a union in the hash stream (`derive::Build::union`).
+const UNION_HASH_TAG: u128 = 0x55;
+
+/// The types whose instances make the structural instance of `ty` (`Classes::structural`): the
+/// element of an array or a list, the elements of a tuple, the members of an anonymous union.
+fn structural_elements(ty: &Type) -> &[Type] {
+    match ty {
+        Type::Array(element) | Type::List(element) => std::slice::from_ref(element.as_ref()),
+        Type::Tuple(elements) => elements,
+        Type::Union(_, members) => members,
+        _ => unreachable!("only a type with a structural instance has structural elements"),
     }
 }
 

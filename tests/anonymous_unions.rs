@@ -1410,28 +1410,29 @@ fn diagnostics_name_nested_number_literals() {
 }
 
 /// Review round 1: an anonymous union takes no instance (D8), so `E1005` and `E1025` do not ask
-/// for one; a named type keeps the usual advice.
+/// for one; a named type keeps the usual advice. Since A26 the classes that an anonymous union
+/// lacks are those without a structural instance, such as `Default`, `Add` and `Arbitrary`.
 #[test]
 fn missing_instances_do_not_ask_for_an_instance() {
     let advice = "instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases";
     for (source, code, kind, class) in [
         (
-            "let v: (i64 | string) = 1\nv == 1\n",
+            "let v: (i64 | string) = 1\nlet w: (i64 | string) = 2\nv + w\n",
             "E1005",
             "no_instance",
-            "Eq",
+            "Add",
         ),
         (
-            "let v: (i64 | string) = 1\nlet s = to_string v\n0\n",
+            "let v: (i64 | string) = Default.default()\n0\n",
             "E1005",
             "no_instance",
-            "Display",
+            "Default",
         ),
         (
-            "record R { v: (i64 | string) } deriving (Eq)\n0\n",
+            "record R { v: (i64 | string) } deriving (Default)\n0\n",
             "E1025",
             "derived_instance_invalid",
-            "Eq",
+            "Default",
         ),
     ] {
         let error = rejects(source, code, kind);
@@ -1454,12 +1455,9 @@ fn missing_instances_do_not_ask_for_an_instance() {
 
 #[test]
 fn comparisons_and_exports_keep_their_rules() {
-    // `1` is injected into the left operand's type, which has no `Eq` until A26.
-    rejects(
-        "let v: (i64 | string) = 1\nv == 1\n",
-        "E1005",
-        "no_instance",
-    );
+    // `1` is injected into the left operand's type, which has `Eq` since A26
+    // (`comparison_injects_right_operand` runs it).
+    accepts("let v: (i64 | string) = 1\nv == 1\n");
     let error = analyze("export def f :: (i64 | string) -> i64 = \\v -> 0\n").expect_err("export");
     assert_eq!(error.code, "E1008", "{}", error.message);
 }
@@ -2377,4 +2375,249 @@ fn type_tests_are_type_references() {
     let builtin = index.at(0, source.find(":? i64)").unwrap() + 3).unwrap();
     assert_eq!(builtin.detail, "i64");
     assert_eq!(builtin.target, None);
+}
+
+// A26: the built-in instances `Eq`, `Ord`, `Hash` and `Display` of anonymous unions. The expected
+// values are worked out by hand from the rules: the members compare in the canonical order
+// (`displays_in_canonical_order`), then by payload; the hash is the stream of a derived union.
+
+/// `Hash.hash` of `A 1` and of `B "one"` of `union R = A of i64 | B of string deriving (Hash)`:
+/// FNV-1a over the canonical stream (tag `0x55`, the case, the hash of the payload), computed by
+/// a Python script from the definition of the stream in `docs/language.md`, and equal to what the
+/// compiler gave for the named union before A26.
+const HASH_OF_1: &str = "15967365493956732001i64u";
+const HASH_OF_ONE: &str = "17017872639125386659i64u";
+
+#[test]
+fn anonymous_unions_have_structural_classes() {
+    // Operators, methods and the constraints of generic functions, in both editions.
+    let source = "def same :: Eq<'a> => own 'a -> own 'a -> bool = \\x y -> x == y\ndef before :: Ord<'a> => own 'a -> own 'a -> bool = \\x y -> x < y\ndef hashed :: Hash<'a> => own 'a -> i64u = \\x -> Hash.hash x\ndef shown :: Display<'a> => own 'a -> string = \\x -> Display.display x\ndef open :: Eq<'a> => own (['a] | i64) -> own (['a] | i64) -> bool = \\x y -> x == y\ndef wide :: (Ord<'a>, Display<'a>) => own ([|'a|] | 'a * 'a | string) -> own ([|'a|] | 'a * 'a | string) -> string = \\x y ->\n    if x <= y then Display.display x else Display.display y\n\ntest \"constraints\" =\n    let a: (i64 | string) = 1\n    let b: (string | i64) = \"one\"\n    assert (not (same a b))\n    let c: (i64 | string) = 1\n    let d: (string | i64) = \"one\"\n    assert (before c d)\n    let e: (i64 | string) = 1\n    assert (hashed e == 15967365493956732001i64u)\n    let f: (i64 | string) = \"one\"\n    assert (shown f == \"one\")\n    assert (open [2] [2])\n    assert (not (open [2] 2))\n    let first: ([|i64|] | i64 * i64 | string) = (2, 1)\n    let second: ([|i64|] | i64 * i64 | string) = [|9|]\n    assert (wide first second == \"[|9|]\")\n\ntest \"methods\" =\n    let a: (i64 | string) = 1\n    let b: (i64 | string) = \"one\"\n    assert (Eq.ne a b)\n    assert (not (Eq.eq a b))\n    assert (Ord.lt a b)\n    assert (Ord.le a b)\n    assert (not (Ord.gt a b))\n    assert (not (Ord.ge a b))\n    assert (Ord.ge b a)\n";
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+    // The IR is deterministic, and its names are LLVM identifiers.
+    accepts(
+        "let a: (i64 | string) = 1\nlet b: (i64 | string) = \"one\"\nlet hash = if a == b || a < b then Hash.hash (ref a) else Hash.hash (ref b)\nlet shown = Display.display (ref (a, b))\nhash\n",
+    );
+    // A user instance is still rejected by the rule of A24, not as an override of a built-in one.
+    rejects(
+        "instance Eq<(i64 | string)> {\n}\n0\n",
+        "E1041",
+        "anonymous_union_instance",
+    );
+}
+
+#[test]
+fn missing_member_instance_names_the_member() {
+    let point = "record Point { x: i64 }\n";
+    for (source, code, kind, message) in [
+        (
+            format!("{point}let a: (i64 | Point) = 1\nlet b: (i64 | Point) = 1\na == b\n"),
+            "E1005",
+            "no_instance",
+            "no instance for Eq<Main.Point>; define an instance or use a supported type",
+        ),
+        (
+            format!("{point}let a: (i64 | Point) = 1\nlet s = Display.display (ref a)\n0\n"),
+            "E1005",
+            "no_instance",
+            "no instance for Display<Main.Point>; define an instance or use a supported type",
+        ),
+        (
+            format!("{point}let a: (i64 | Point) = 1\nlet h = Hash.hash (ref a)\n0\n"),
+            "E1005",
+            "no_instance",
+            "no instance for Hash<Main.Point>; define an instance or use a supported type",
+        ),
+        // `bool` has `Eq` and no `Ord`; a function has neither.
+        (
+            "let a: (i64 | bool) = 1\nlet b: (i64 | bool) = 1\na < b\n".to_owned(),
+            "E1005",
+            "no_instance",
+            "no instance for Ord<bool>; define an instance or use a supported type",
+        ),
+        (
+            "let a: (i64 | (i64 -> i64)) = 1\nlet b: (i64 | (i64 -> i64)) = 1\na == b\n".to_owned(),
+            "E1005",
+            "no_instance",
+            "no instance for Eq<i64 -> i64>; define an instance or use a supported type",
+        ),
+        (
+            format!("{point}record R {{ v: (i64 | Point) }} deriving (Eq)\n0\n"),
+            "E1025",
+            "derived_instance_invalid",
+            "no instance for Eq<Main.Point>; define an instance or use a supported type",
+        ),
+    ] {
+        let error = rejects(&source, code, kind);
+        assert_eq!(error.message, message, "{source}");
+    }
+    // `(i64 | bool)` has `Eq` all the same.
+    accepts("let a: (i64 | bool) = 1\nlet b: (i64 | bool) = true\na == b\n");
+}
+
+#[test]
+fn no_default_for_anonymous_unions() {
+    // No member is the default one, and the other classes have no structural instance either.
+    for (source, code, kind, class) in [
+        (
+            "let v: (i64 | string) = Default.default()\n0\n",
+            "E1005",
+            "no_instance",
+            "Default",
+        ),
+        (
+            "record R { v: (i64 | string) } deriving (Default)\n0\n",
+            "E1025",
+            "derived_instance_invalid",
+            "Default",
+        ),
+        (
+            "record R { v: (i64 | string) } deriving (Arbitrary)\n0\n",
+            "E1025",
+            "derived_instance_invalid",
+            "Arbitrary",
+        ),
+        (
+            "let v: (i64 | i32) = 1i64\nlet w: (i64 | i32) = 2i64\nv + w\n",
+            "E1005",
+            "no_instance",
+            "Add",
+        ),
+    ] {
+        let error = rejects(source, code, kind);
+        assert!(
+            error
+                .message
+                .starts_with(&format!("no instance for {class}<(")),
+            "{source}\n{}",
+            error.message
+        );
+    }
+    // A tuple of defaults is still a default: only the union is refused.
+    let error = rejects(
+        "let v: (i64 * (i64 | string)) = Default.default()\n0\n",
+        "E1005",
+        "no_instance",
+    );
+    assert!(
+        error
+            .message
+            .starts_with("no instance for Default<(i64 | string)>"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn eq_compares_tag_then_payload() {
+    passes(
+        "test \"members\" =\n    let one: (i64 | string) = 1\n    let uno: (string | i64) = 1\n    let two: (i64 | string) = 2\n    let text: (i64 | string) = \"1\"\n    let same: (i64 | string) = \"1\"\n    assert (one == uno)\n    assert (not (one != uno))\n    assert (not (one == two))\n    assert (one != two)\n    assert (not (one == text))\n    assert (one != text)\n    assert (text == same)\n    assert (not (text != same))\n\ntest \"owned payloads\" =\n    let a: (string | [i64] | [|string|]) = [1, 2]\n    let b: (string | [i64] | [|string|]) = [1, 2]\n    let c: (string | [i64] | [|string|]) = [1, 3]\n    let d: (string | [i64] | [|string|]) = [|\"1\", \"2\"|]\n    let e: (string | [i64] | [|string|]) = [|\"1\", \"2\"|]\n    assert (a == b)\n    assert (a != c)\n    assert (a != d)\n    assert (d == e)\n    assert (a == b)\n\ntest \"one layout for every member\" =\n    let signed: (i64 | i64u) = 5i64\n    let unsigned: (i64 | i64u) = 5i64u\n    let again: (i64 | i64u) = 5i64u\n    assert (signed != unsigned)\n    assert (not (signed == unsigned))\n    assert (unsigned == again)\n\ntest \"inside other types\" =\n    let left: ((i64 | string) * [(i64 | string)]) = (1, [\"a\", 2])\n    let right: ((i64 | string) * [(i64 | string)]) = (1, [\"a\", 2])\n    let other: ((i64 | string) * [(i64 | string)]) = (1, [\"a\", \"2\"])\n    assert (left == right)\n    assert (left != other)\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn ord_follows_member_order() {
+    // The canonical order is i64 < f64 < bool < char < string < [i64] < (i64 * i64), however the
+    // type is written. `bool` has no `Ord`, so it is left out here.
+    passes(
+        "test \"members then payloads\" =\n    let number: (string | i64) = 9\n    let text: (string | i64) = \"1\"\n    let small: (i64 | string) = -3\n    let later: (i64 | string) = \"a\"\n    assert (number < text)\n    assert (number <= text)\n    assert (not (number > text))\n    assert (not (number >= text))\n    assert (text > number)\n    assert (text >= number)\n    assert (not (text < number))\n    assert (not (text <= number))\n    assert (small < number)\n    assert (small <= number)\n    assert (not (small > number))\n    assert (number >= small)\n    assert (text < later)\n    assert (later > text)\n    assert (number <= number)\n    assert (number >= number)\n    assert (not (number < number))\n    assert (not (text > text))\n\ntest \"written order does not matter\" =\n    let pair: ((i64 * i64) | [i64] | string | char | f64 | i64) = (0, 0)\n    let array: ((i64 * i64) | [i64] | string | char | f64 | i64) = [9]\n    let text: ((i64 * i64) | [i64] | string | char | f64 | i64) = \"z\"\n    let letter: ((i64 * i64) | [i64] | string | char | f64 | i64) = 'z'\n    let float: ((i64 * i64) | [i64] | string | char | f64 | i64) = 1.0e300\n    let integer: ((i64 * i64) | [i64] | string | char | f64 | i64) = 9000000000000000000\n    assert (integer < float)\n    assert (float < letter)\n    assert (letter < text)\n    assert (text < array)\n    assert (array < pair)\n    assert (pair > integer)\n    assert (not (pair <= array))\n\ntest \"sorting\" =\n    let sorted: [(char | i64)] = Array.sort ['b', 3, 'a', 1]\n    assert (Display.display sorted == \"[1, 3, 'a', 'b']\")\n    let floats: [(f64 | i64)] = Array.sort [2.5, 3, 1.5, 1]\n    assert (Display.display floats == \"[1, 3, 1.5, 2.5]\")\n\ntest \"one layout for every member\" =\n    let signed: (i64 | i64u) = 0i64\n    let unsigned: (i64 | i64u) = 18446744073709551615i64u\n    assert (unsigned < signed)\n    assert (signed >= unsigned)\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn hash_matches_named_union_stream() {
+    // The named union with the same cases in the canonical order, and the two reference values.
+    passes(
+        &format!(
+            "union R = A of i64 | B of string deriving (Hash)\n\ntest \"stream\" =\n    let one: (string | i64) = 1\n    let text: (i64 | string) = \"one\"\n    assert (Hash.hash one == {HASH_OF_1})\n    assert (Hash.hash text == {HASH_OF_ONE})\n    assert (Hash.hash (A 1) == {HASH_OF_1})\n    assert (Hash.hash (B \"one\") == {HASH_OF_ONE})\n    assert (Hash.hash one == Hash.hash (A 1))\n    assert (Hash.hash text == Hash.hash (B \"one\"))\n\ntest \"equal values hash equally\" =\n    let a: (string | [i64]) = [1, 2]\n    let b: ([i64] | string) = [1, 2]\n    let c: (string | [i64]) = [2, 1]\n    assert (a == b)\n    assert (Hash.hash a == Hash.hash b)\n    assert (Hash.hash a != Hash.hash c)\n    let zero: (f64 | string) = 0.0\n    let negative: (f64 | string) = -0.0\n    assert (zero == negative)\n    assert (Hash.hash zero == Hash.hash negative)\n\ntest \"the member is part of the hash\" =\n    let signed: (i64 | i64u) = 1i64\n    let unsigned: (i64 | i64u) = 1i64u\n    assert (Hash.hash signed != Hash.hash unsigned)\n    assert (Hash.hash (1, signed) != Hash.hash (1, unsigned))\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn display_shows_the_payload() {
+    passes(
+        "test \"payload only\" =\n    let number: (i64 | string | char | [string]) = -7\n    let text: (i64 | string | char | [string]) = \"one\"\n    let letter: (i64 | string | char | [string]) = 'c'\n    let array: (i64 | string | char | [string]) = [\"a\", \"b\"]\n    assert (Display.display number == \"-7\")\n    assert (Display.display text == \"one\")\n    assert (Display.display letter == \"c\")\n    assert (Display.display array == \"[\\\"a\\\", \\\"b\\\"]\")\n    assert ($\"{number} {text} {letter} {array}\" == \"-7 one c [\\\"a\\\", \\\"b\\\"]\")\n    assert (to_string text == \"one\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn display_quotes_inside_tuples() {
+    // Inside a tuple, an array, a list, and a derived record or union, a string or character
+    // member is quoted, as a string or character element is.
+    passes(
+        "record Cell { value: (i64 | string), tag: string } deriving (Display)\nunion Shape = Dot | Text of (string | char) deriving (Display)\n\ntest \"containers\" =\n    let a: (i64 | string) = 1\n    let b: (i64 | string) = \"one\"\n    assert (Display.display (a, b) == \"(1, \\\"one\\\")\")\n    let items: [(char | string | i64)] = ['c', \"s\", 3]\n    assert (Display.display items == \"['c', \\\"s\\\", 3]\")\n    let list: [|(i64 | string)|] = [|\"x\", 2|]\n    assert (Display.display list == \"[|\\\"x\\\", 2|]\")\n    let nested: ((i64 | string) * [(i64 | string)]) = (\"p\", [\"q\", 1])\n    assert (Display.display nested == \"(\\\"p\\\", [\\\"q\\\", 1])\")\n    assert ($\"{nested}\" == \"(\\\"p\\\", [\\\"q\\\", 1])\")\n\ntest \"derived instances\" =\n    assert (Display.display (Cell { value: \"one\", tag: \"a\" }) == \"Cell { value: \\\"one\\\", tag: \\\"a\\\" }\")\n    assert (Display.display (Cell { value: 1, tag: \"a\" }) == \"Cell { value: 1, tag: \\\"a\\\" }\")\n    assert (Display.display (Text 'c') == \"Text 'c'\")\n    assert (Display.display (Text \"s\") == \"Text \\\"s\\\"\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn nan_members_follow_member_eq() {
+    passes(
+        "test \"nan\" =\n    let zero = 0.0\n    let nan: (f64 | string) = zero / zero\n    let other: (f64 | string) = zero / zero\n    let plus: (f64 | string) = 0.0\n    let minus: (f64 | string) = -0.0\n    let text: (f64 | string) = \"nan\"\n    assert (not (nan == other))\n    assert (nan != other)\n    assert (not (nan < other))\n    assert (not (nan <= other))\n    assert (not (nan > other))\n    assert (not (nan >= other))\n    assert (plus == minus)\n    assert (not (plus != minus))\n    assert (plus <= minus)\n    assert (not (plus < minus))\n    assert (nan < text)\n    assert (nan != text)\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn recursive_types_compare_through_named_unions() {
+    // The union goes through the heap node of `Tree`; the derived instances of `Tree` and the
+    // built-in ones of `(i64 | Tree)` call each other.
+    passes(
+        "union Tree = Leaf | Node of (i64 | Tree) deriving (Eq, Ord, Hash, Display)\n\ntest \"recursive\" =\n    let one = Node (Node 1)\n    let same = Node (Node 1)\n    let two = Node (Node 2)\n    let deep = Node (Node (Node Leaf))\n    assert (one == same)\n    assert (one != two)\n    assert (one < two)\n    assert (Leaf < one)\n    assert (two < deep)\n    assert (Hash.hash one == Hash.hash same)\n    assert (Hash.hash one != Hash.hash two)\n    assert (Display.display one == \"Node Node 1\")\n    assert (Display.display deep == \"Node Node Node Leaf\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn wide_unions_have_instances() {
+    // 32 members (D9), every one with the four classes: the bodies test up to 31 tags in a row.
+    let members = [
+        "i8",
+        "i8u",
+        "i16",
+        "i16u",
+        "i32",
+        "i32u",
+        "i64",
+        "i64u",
+        "i128",
+        "i128u",
+        "f32",
+        "f64",
+        "char",
+        "utf8char",
+        "string",
+        "utf8string",
+        "[i64]",
+        "[string]",
+        "[char]",
+        "[f64]",
+        "[|i64|]",
+        "[|string|]",
+        "(i64 * i64)",
+        "(i64 * string)",
+        "(string * i64)",
+        "(string * string)",
+        "[[i64]]",
+        "[[string]]",
+        "(i64 * i64 * i64)",
+        "(i64 * (i64 * i64))",
+        "[i8]",
+        "[i16]",
+    ];
+    assert_eq!(members.len(), 32);
+    // `i8u` is the first member in the canonical order and the tuple of three the last one: a
+    // tuple follows every array and list, and a longer tuple the shorter ones.
+    passes(
+        &format!(
+            "type Wide = ({})\n\ntest \"wide\" =\n    let first: Wide = 1i8u\n    let last: Wide = (1, 2, 3)\n    let text: Wide = \"s\"\n    let again: Wide = (1, 2, 3)\n    assert (first < last)\n    assert (first < text)\n    assert (text < last)\n    assert (last > first)\n    assert (last == again)\n    assert (last != text)\n    assert (last >= again)\n    assert (Hash.hash last == Hash.hash again)\n    assert (Hash.hash last != Hash.hash text)\n    assert (Display.display last == \"(1, 2, 3)\")\n    assert (Display.display text == \"s\")\n    assert (Display.display (text, first) == \"(\\\"s\\\", 1)\")\n",
+            members.join(" | ")
+        ),
+        Edition::E2027,
+    );
 }

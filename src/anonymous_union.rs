@@ -1086,6 +1086,117 @@ impl Checker<'_> {
     }
 }
 
+// The built-in instances of anonymous unions (A26). Their methods are ordinary typed IR that the
+// specializer builds (D6): they test the tag as a case pattern does, and pass a borrow of the
+// payload of member k to the method of member k. Code generation needs nothing new.
+
+fn typed(kind: TypedExprKind, ty: Type, span: Span) -> TypedExpr {
+    TypedExpr { kind, ty, span }
+}
+
+/// The anonymous union behind `reference`, a parameter of type `ref U`: a place, never a copy.
+fn behind(reference: &TypedExpr) -> TypedExpr {
+    let Type::Reference(union, _) = &reference.ty else {
+        unreachable!("the methods of the built-in instances take their receivers by reference")
+    };
+    typed(
+        TypedExprKind::Dereference(Box::new(reference.clone())),
+        (**union).clone(),
+        reference.span,
+    )
+}
+
+/// The `i32` tag of the anonymous union behind `reference`: the canonical position of its member.
+pub(super) fn tag_behind(reference: &TypedExpr) -> TypedExpr {
+    typed(
+        TypedExprKind::UnionTag(Box::new(behind(reference))),
+        Type::Integer(32, true),
+        reference.span,
+    )
+}
+
+/// A read-only borrow of the payload of member `case`, of type `member`, of the anonymous union
+/// behind `reference`. Only the arm of `by_member` for `case` may evaluate it.
+fn payload_behind(reference: &TypedExpr, member: &Type, case: usize) -> TypedExpr {
+    let span = reference.span;
+    let payload = typed(
+        TypedExprKind::UnionPayload {
+            value: Box::new(behind(reference)),
+            case_id: case,
+        },
+        member.clone(),
+        span,
+    );
+    typed(
+        TypedExprKind::Borrow(Box::new(payload), false),
+        Type::Reference(Box::new(member.clone()), false),
+        span,
+    )
+}
+
+/// `function` of member `case` applied to the payloads of that member behind each of `references`.
+pub(super) fn member_call(
+    function: TypedExpr,
+    references: &[TypedExpr],
+    member: &Type,
+    case: usize,
+) -> TypedExpr {
+    let Type::Function(_, result) = &function.ty else {
+        unreachable!("a method of a member is a function")
+    };
+    let (result, span) = ((**result).clone(), function.span);
+    let arguments = references
+        .iter()
+        .map(|reference| payload_behind(reference, member, case))
+        .collect();
+    typed(
+        TypedExprKind::Call(Box::new(function), arguments),
+        result,
+        span,
+    )
+}
+
+/// `if tag == 0 then arm 0 elif tag == 1 then arm 1 ... else arm n-1` for the tag of the
+/// anonymous union behind `reference`, whose members are `members`: the arm of the member that the
+/// value holds. The last member needs no test, since a tag is always the position of a member.
+pub(super) fn by_member(
+    reference: &TypedExpr,
+    members: &[Type],
+    mut arm: impl FnMut(usize, &Type) -> TypedExpr,
+) -> TypedExpr {
+    let span = reference.span;
+    let mut chain: Option<TypedExpr> = None;
+    for (case, member) in members.iter().enumerate().rev() {
+        let body = arm(case, member);
+        chain = Some(match chain {
+            None => body,
+            Some(rest) => {
+                let tag = Type::Integer(32, true);
+                let test = typed(
+                    TypedExprKind::Binary(
+                        BinaryOp::Equal,
+                        Box::new(tag_behind(reference)),
+                        Box::new(typed(TypedExprKind::Int(case as u128), tag, span)),
+                    ),
+                    Type::Bool,
+                    span,
+                );
+                let ty = body.ty.clone();
+                typed(
+                    TypedExprKind::If {
+                        condition: Box::new(test),
+                        then_branch: Box::new(body),
+                        else_branch: Box::new(rest),
+                    },
+                    ty,
+                    span,
+                )
+            }
+        });
+    }
+    chain.expect("an anonymous union has at least two members")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
