@@ -179,10 +179,13 @@ impl Analysis<'_> {
         }
     }
 
-    /// Whether `operand`, lent to a call, is a `match` whose value is an anonymous union.
+    /// Whether `operand`, lent to a call, is a `match`, an `if` or a block whose value is an
+    /// anonymous union: one of its branches is the value, such as a widening (review round 3).
     fn lent_union_match(&self, operand: &TypedExpr) -> bool {
-        matches!(operand.kind, TypedExprKind::Match { .. })
-            && matches!(&operand.ty, Type::Union(id, _) if self.module.unions[*id].is_anonymous())
+        matches!(
+            operand.kind,
+            TypedExprKind::Match { .. } | TypedExprKind::If { .. } | TypedExprKind::Block { .. }
+        ) && matches!(&operand.ty, Type::Union(id, _) if self.module.unions[*id].is_anonymous())
     }
 
     fn opaque(&mut self, expression: &TypedExpr, live: &mut Live, depth: usize) {
@@ -268,10 +271,10 @@ impl Analysis<'_> {
             Binary(BinaryOp::Pipe, ..) => self.opaque(expression, live, depth),
             // A25: the temporary that a read parameter borrows is evaluated as a value before
             // the call (`operand_borrow`). When it is a `match` that makes an anonymous union,
-            // as a widening is (`Checker::retag`), its arms and bindings are read as those of
-            // any other match, so an owned payload moves into the wider value. Every other
-            // lent operand stays opaque, which keeps the reads of programs without anonymous
-            // unions as they were.
+            // as a widening is (`Checker::retag`), or an `if` or a block whose branch is one,
+            // it is read as any other value, so an owned payload moves into the wider value.
+            // Every other lent operand stays opaque, which keeps the reads of programs without
+            // anonymous unions as they were.
             BorrowOperand(value) if self.lent_union_match(value) => {
                 self.visit(value, live, depth + 1)
             }

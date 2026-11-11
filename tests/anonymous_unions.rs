@@ -3124,6 +3124,75 @@ fn widening_into_a_read_parameter_moves_array_members() {
     passes(&source, Edition::E2027);
 }
 
+#[test]
+fn widening_inside_a_lent_if_or_block_moves_array_members() {
+    // An `if`, a block or a `match` lent to a read parameter whose branch widens an owned value:
+    // the branch moves the payload into the borrowed temporary, as the widened value itself does
+    // (review round 3). A value that the `if` holds already wide moves too. The window of `Alloc`
+    // sees as many frees as allocations, on the branch that moves and on the one that does not.
+    let measure = "def measure :: (i64 | [i64] | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? [i64] -> 100\n    | :? string as s -> s.length\n\n\
+         def make :: i64 -> (i64 | [i64]) = \\n -> if n > 0 then [n, n] else n\n\n\
+         def wide :: i64 -> (i64 | [i64] | string) = \\n -> if n > 0 then [n] else \"abc\"\n\n\
+         def balanced :: (unit -> i64) -> i64 = \\f ->\n    let start = Alloc.snapshot ()\n    let value = f ()\n    let used = start |> Alloc.since\n    if used.frees == used.allocs then value else -1\n\n";
+    let functions = [
+        (
+            "branch",
+            "    let v = make n\n    measure (if n > 1 then v else 7)\n",
+        ),
+        (
+            "nested",
+            "    let v = make n\n    measure (if n > 1 then (if n > 5 then v else 8) else 7)\n",
+        ),
+        (
+            "block",
+            "    let v = make n\n    measure (if n > 1 then\n                 let k = n + 1\n                 if k > 3 then v else k\n             else 7)\n",
+        ),
+        (
+            "matched",
+            "    let v = make n\n    measure (if n > 1 then (match n with | 2 -> 9 | _ -> v) else 7)\n",
+        ),
+        (
+            "held",
+            "    let u = wide n\n    measure (if n > 1 then u else \"de\")\n",
+        ),
+    ];
+    let mut source = measure.to_owned();
+    for (name, body) in functions {
+        source.push_str(&format!(
+            "@no_copy\ndef {name} :: i64 -> i64 = \\n ->\n{body}\n"
+        ));
+    }
+    let module = accepts_in(&source, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    for (name, _) in functions {
+        let body = function_body(&ir, name);
+        assert!(!body.contains("@tz.alloc"), "{name}:\n{body}");
+    }
+    // Expected values by hand: make 3 is [3, 3] (100), make 1 is [1, 1] and the `if` takes 7;
+    // nested: 6 takes the array, 3 takes 8, 0 takes 7; block: 4 takes the array (k = 5), 2 takes k = 3,
+    // 1 takes 7; matched: 2 takes 9, 4 takes the array, 0 takes 7; held: wide 3 is [3] (100), wide
+    // 1 is [1] and the `if` takes "de" (2), wide -1 is "abc" and the `if` takes "de".
+    source.push_str(
+        "test \"values\" =\n    assert (balanced (\\() -> branch 3) == 100 && balanced (\\() -> branch 1) == 7)\n    assert (balanced (\\() -> nested 6) == 100 && balanced (\\() -> nested 3) == 8 && balanced (\\() -> nested 0) == 7)\n    assert (balanced (\\() -> block 4) == 100 && balanced (\\() -> block 2) == 3 && balanced (\\() -> block 1) == 7)\n    assert (balanced (\\() -> matched 2) == 9 && balanced (\\() -> matched 4) == 100 && balanced (\\() -> matched 0) == 7)\n    assert (balanced (\\() -> held 3) == 100 && balanced (\\() -> held 1) == 2 && balanced (\\() -> held (-1)) == 2)\n",
+    );
+    passes(&source, Edition::E2027);
+    // A value used again after the `if` is copied for it and moved by the last use: 100 + 100
+    // for make 3, 7 + 100 for make 1.
+    let source = format!(
+        "{measure}def again :: i64 -> i64 = \\n ->\n    let v = make n\n    measure (if n > 1 then v else 7) + measure v\n\n\
+         test \"again\" =\n    assert (balanced (\\() -> again 3) == 200 && balanced (\\() -> again 1) == 107)\n"
+    );
+    let module = accepts_in(&source, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(
+        function_body(&ir, "again").matches("@tz.alloc").count(),
+        1,
+        "{ir}"
+    );
+    passes(&source, Edition::E2027);
+}
+
 /// A closure whose body widens or narrows a captured value, called once or twice, and the
 /// continuation of a computation expression that widens a value it captures (review round 2).
 /// The call of a closure that does not consume its captures lends them to a worker; the binding

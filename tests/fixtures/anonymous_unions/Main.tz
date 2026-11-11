@@ -195,6 +195,18 @@ export def widen_read :: i64 -> i64 = \n ->
     let label = labelled n
     weigh numbers + weigh label * 100 + weigh (labelled (n + 1)) * 10000
 
+// widen_read_branch: an `if` and a `match` lent to the read parameter of weigh widen one branch and inject the other.
+// The payload of the widened branch moves into the borrowed value; when the other branch runs, the local keeps its
+// payload and is dropped at the end of the function. Nothing is copied.
+export def widen_read_branch :: i64 -> i64 = \n ->
+    let numbers = counted n
+    let label = labelled n
+    let first = weigh (if n > 2 then numbers else 1.5)
+    let second = weigh (match n % 2 with
+        | 0 -> label
+        | _ -> 7)
+    first + second * 100
+
 // narrow: the numbers of a (f64 | i64 | string) are narrowed to (i64 | f64) and passed on. The matched value is a
 // temporary that keeps its string: the narrowed value is a copy of the number.
 def classify :: i64 -> (f64 | i64 | string) = \n ->
