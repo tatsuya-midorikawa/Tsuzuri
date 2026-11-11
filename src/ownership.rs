@@ -3801,6 +3801,47 @@ fn error(kind: DiagnosticKind, message: impl Into<String>, span: Span) -> Diagno
     Diagnostic::of(kind, message, span)
 }
 
+/// The `E1012` for a use of the local `name` after its value (`whole`) or a part of it moved.
+/// A name that the compiler generated (`$…`) is not shown, since nobody can write it. The hidden
+/// parameter that a lambda, or a `def` through it, gets for a pattern (`$lambda12` for
+/// `\((c as d): ref mut Counter) -> …`) is used only by that pattern, so a second use is the
+/// pattern binding a value that is not Copy to a second name (`as`, `&`).
+#[cold]
+#[inline(never)]
+fn use_after_move(name: &str, whole: bool, span: Span) -> Diagnostic {
+    let pattern_parameter = name
+        .strip_prefix("$lambda")
+        .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()));
+    let (message, help) = if !name.starts_with('$') {
+        (
+            format!("use of moved or partially moved value '{name}'"),
+            if whole {
+                format!("borrow the value with 'ref {name}' or move it last")
+            } else {
+                format!(
+                    "borrow the field with 'ref' instead of moving it out of '{name}', or move it last"
+                )
+            },
+        )
+    } else if pattern_parameter {
+        (
+            "use of moved or partially moved value: this parameter's pattern binds the value, or a part of it, to more than one name".to_owned(),
+            "a value that is not Copy, such as an owned value or a 'ref mut' reference, moves into the first name that binds it, and an 'as' or '&' pattern cannot bind it again; keep only one of the names".to_owned(),
+        )
+    } else {
+        (
+            "use of moved or partially moved value".to_owned(),
+            if whole {
+                "borrow the value with 'ref' or move it last"
+            } else {
+                "borrow the field with 'ref' instead of moving it, or move it last"
+            }
+            .to_owned(),
+        )
+    };
+    Diagnostic::of(DiagnosticKind::UseAfterMove, message, span).with_help(help)
+}
+
 /// Whether `callee` is `Dyn.of` building a dyn value without a region, which owns all it holds (A14).
 fn owned_dyn_of(callee: &TypedExpr) -> bool {
     matches!(&callee.kind, E::Function(crate::check::FunctionRef::Builtin(instance))
@@ -5253,18 +5294,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                     "part of the value moved here, in the previous iteration of the loop"
                 }
             };
-            let mut diagnostic = Diagnostic::of(
-                DiagnosticKind::UseAfterMove,
-                format!("use of moved or partially moved value '{name}'"),
-                span,
-            )
-            .with_help(if moved.fields.is_empty() {
-                format!("borrow the value with 'ref {name}' or move it last")
-            } else {
-                format!(
-                    "borrow the field with 'ref' instead of moving it out of '{name}', or move it last"
-                )
-            });
+            let mut diagnostic = use_after_move(&name, moved.fields.is_empty(), span);
             if origin.end > origin.start {
                 diagnostic = diagnostic.related(RelatedRole::MovedHere, message, origin);
             }
