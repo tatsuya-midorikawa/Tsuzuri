@@ -321,7 +321,7 @@ Hash.hash a == Hash.hash (Text "one")
 
 ### 持たないクラスとそのほかの規則
 
-- `Default`・`Format`・`Arbitrary`・`Encode`・`Decode` など、ほかのクラスのインスタンスはありません。どの要素の値を作るかを決められないためです。`Default.default()` や書式指定の補間 `$"{v:x}"` は `E1005`、匿名共用体を持つ型の `deriving (Default)` は `E1025` です。メッセージは `no instance for Default<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` で、インスタンスの定義は勧めません。幅と寄せだけの補間 `$"{v:>5}"` は `Display` を使うので書けます。
+- ほかのクラスのインスタンスはありません。`Default` と `Arbitrary` は、どの要素の値を作るかを決められないので持ちません。`Format`・`Encode`・`Decode` もありません。`Default.default()` や書式指定の補間 `$"{v:x}"` は `E1005`、匿名共用体を持つ型の `deriving (Default)` は `E1025` です。メッセージは `no instance for Default<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` で、インスタンスの定義は勧めません。幅と寄せだけの補間 `$"{v:>5}"` は `Display` を使うので書けます。
 - 匿名共用体を head とする `instance` は書けません（`E1041`）。比較や表示の規則を自分で決めたいときは、レコードで包むか、名前付きの `union` を宣言します。
 - `Dyn.of v` で `dyn Display` などに格納できます（タプルと同じです）。表示はペイロードだけです。
 - `const def` の中では、タプルや名前付きの共用体と同じく比較演算子を使えません（`E1026`）。

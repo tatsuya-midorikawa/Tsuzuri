@@ -246,6 +246,33 @@ A24 がレビュー第 1 回の修正まで入ったブランチ `feat/a24-anony
     - E2E（dev バイナリ）: `features.mjs deriving`（209 件）・`anonymous_unions`（37 件）・`dyn_dispatch`（58 件）・`hash_map`（199 件）が native と WASM、`-O0` と `-O3` で通りました。
     - 確保の追跡: 一時的な suite（コミットしていません。`target/scratch/a26/probe/Main.tz`）で、比較・`Hash.hash`・`Display.display`（単独とタプルの中）・`HashSet` のキーを 1 つの export にまとめ、手計算の値（`probe 5 = 210011011`、`probe -2 = 210031101`）と一致し、native の host の `live == 0` と WASM（import なし）を `-O0`・`-O3` で通りました。手順 5 で正式な suite に入れます。
 
+### 実装中の判断（手順 5・6 と Phase 1 のドキュメント）
+
+1. **suite の関数（手順 5）**: 本文の 4 関数 `equal`・`order`・`hashed`・`shown` に `sorted` と `digest` を足し、6 関数・44 件にしました（suite `anonymous_unions` は 37 件から 81 件）。どれも `key x`（偶数の `x` は `i64` の `x`、奇数の `x` は文字列 `s{x}`）の値を使います。
+   - `equal x`: 10 個の比較を 10 進の桁にします。同じ要素の同じ値・同じ要素の違う値・別の要素の `==`、`!=` の 2 つ、注入した被演算子（`a == x`・`a == "s1"`）、`(f64 | string)` の NaN（`x / x`）と `-0.0`（`x * 0.0`）、メソッドの形 `Eq.eq` です。
+   - `order x`: 別の要素との 4 つの演算子、同じ要素との 4 つの演算子、注入した `a < "s10"`・`a < 10` を 10 進の桁にします。
+   - `sorted n`: `key (7 i mod n)` を `Set<(i64 | string)>` に入れ、`Ord` の順（`i64` を数の順に、次に文字列をコード単位の順に）に読んで表示をつないだ文字列の検査和と、要素数を返します。
+   - `hashed n`: `HashSet` と `HashMap` のキーにして、異なるキーの数と、`key 0`・`"s3"` を入れた回数を数えます。
+   - `digest x`: `Hash.hash (key x)` を返します。同じ順に case を並べた名前付きの union（`union Named = Number of i64 | Text of string deriving (Hash)`）と違えば 0 を返します。
+   - `shown x`: 単独・文字列補間（引用符なし）と、タプル・配列・リスト・導出したレコード・導出した union の中（引用符付き）の表示を `|` でつなぎ、検査和と長さを返します。本文の「表示の長さ」より厳しく、文字の違いも検出します。
+   - 参照の値は `tests/features.mjs` の JavaScript（BigInt）で、規則から書いています。比較は「型が違えば `i64` が先、同じなら値」（文字列は JavaScript の `<` がコード単位の順）、ハッシュは `docs/language.md` の Canonical Stream の定義から書いた FNV-1a（`i64` はタグ `0x13` と 8 バイト、文字列はタグ `0x53`・長さ・コード単位ごとに 2 バイト、共用体はタグ `0x55`・要素の位置・ペイロードのハッシュ）です。この JavaScript は、コンパイラを使わずに、監査の参照値 `15967365493956732001`（`1`）と `17017872639125386659`（`"one"`）を再現しました（`target/scratch/a26/try5/hash.mjs`）。手で求めた値（`equal 4 = 1110101001`、`equal 1 = 1111001001`、`equal 0 = 1100101001`、`order 4 = 1101010011`、`order 9 = 1101100`、`sorted 5` と `sorted 14` の文字列、`hashed 25 = 3031010`、`shown 4` と `shown -1` の文字列）を、参照の関数の `assert` として同じファイルに置きました。
+   - `inspect`: IR に `hash_mix(i64 14695981039346656037, i64 85)` の呼び出しと、関数 `$intrinsic.Display.display_quoted.N` があることを確かめます。
+   - 結果: `node tests/features.mjs target/debug/tsuzuri anonymous_unions` は 81 件が native（host の `live == 0`）と WASM（import なし）、`-O0` と `-O3` で通りました。
+2. **既存の IR（手順 6）**: 手順 5 の後のバイナリで、`tests/fixtures/` と `examples/` の 186 単位の native と wasm32 の IR・`check --json` を取り直し、基準（`feat/a24-anonymous-unions` の先端 `bd625b4d` のバイナリ）と比べました。違うのは、手順 5 で fixture を変えた `tests/fixtures/anonymous_unions` の IR 2 つだけで、ほかの 185 単位は 1 byte も違いません。
+   - 変える前の fixture（`bd625b4d` の `Main.tz`）は、基準と新しいバイナリで native・wasm32 とも同じ IR です。
+   - 匿名共用体を使わず、タプル・配列・リスト・導出したレコードと union（再帰する union を含む）の `==`・`<`・`Hash.hash`・`Display.display`、`HashSet<Point>`、`Set<(i64 * string)>` を使うプログラム（`target/scratch/a26/step6/structural/Main.tz`）も、native（1,473,221 bytes）・wasm32（1,455,292 bytes）とも同じ IR です。
+   - 新しい fixture の IR は、2 回の生成で同じです（決定的）。
+3. **ドキュメントで確かめて書いた振る舞い**（どれもこのチケットで変えたものではなく、実装の結果です）:
+   - 幅と寄せだけの補間 `$"{v:>5}"` は `Display` を使うので書けます。`$"{v:x}"` と `Format.format` は `Format` を要るので `E1005` です。
+   - `"one" == b` は `E1003`（`expected string, found (i64 | string)`）です。左辺の型が右辺の期待される型になるためで、匿名共用体を左辺に書きます（接尾辞のない数のリテラルが左辺のときだけ、右辺を先に検査します）。
+   - `HashSet.insert 1 empty` は通り、`HashSet.insert "one" set` は `'key = string` に決まって `E1003` です（数のリテラルだけ、型が後から決まります）。リファレンスの例は `key` 関数を使います。
+   - `pure def` の中の匿名共用体の比較は、要素の `Eq` が `Debug.print` を呼ぶと `E1029` です（経路は `$intrinsic.Eq.eq.N` → 要素のインスタンス）。同じプログラムをタプルで書くと受理され、実行すると純粋でない `Eq` が呼ばれます（このチケットより前からの挙動で、変えていません。報告する事項です）。
+4. **更新したページ**: `_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`（「比較・順序・ハッシュ・表示」の節と `run=` の例 5 つ。「まだありません」の記述を実際の振る舞いに替えた）、`types-and-type-inference/type-classes.md`、`built-in-types-and-modules/hashmap.md`・`map.md`・`union.md`、`index.md`、`docs/language.md`（組み込みクラスの表の `Eq`・`Ord`・`Display`・`Hash` の行、Canonical Stream の union の行、「匿名共用体」の節）、`docs/architecture.md`（ファイルの表、構造的なインスタンスの節、「匿名共用体（A24）」の「組み込みのインスタンス（A26）」）、`README.md`（機能の一覧とテストの表）。`Encode`・`Decode` は Phase 2 で入れるので、この時点のページは「ない」と書いています。
+5. **検証（手順 5・6 とドキュメントの時点）**:
+   - `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs <変えた 6 ページ>`: 233 links、40 examples、native の実行 78 回（`-O0`・`-O3`）で通りました。`node scripts/gen-docs.mjs --check` は 19 blocks、0 stale（新しい kind はないので、生成するブロックは変わりません）。`node scripts/check-cli-docs.mjs` は 4 checks、`node scripts/check-guide-lite.mjs` は 88 references で通りました。
+   - T0: `cargo fmt --all -- --check`（差分なし）、`cargo clippy --all-targets --locked -- -D warnings`（警告なし）。この段では `src/` を変えていません。
+   - T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast` は 3078 件すべて passed、4 skipped です（手順 4 の時点と同じ件数。この段は Rust のテストを足していません。記録は `target/scratch/a26/t1-stage2.txt`）。
+
 ## 決定事項
 
 ### D1: 組み込みの構造的なインスタンス
