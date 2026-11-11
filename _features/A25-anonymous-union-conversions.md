@@ -243,6 +243,35 @@ A24 が計画から変えていて、このチケットに関わる点:
   - 変わる場合の代案（監査の「腕ごとに異なる span」を、衝突しない形にしたもの）: `last_use.rs` には触らず、拡大の束縛の `Local.span` を 2 組に分けます。Copy かつ drop の要る型になりうる要素（型変数・未定の推論変数を含む型も数える）の束縛は `value.span`、それ以外（`i64`・`string` など、表の値が生成コードに関わらない型）の束縛は幅 0 の span（`value.span.end`）です。前者どうしは同じ `match` の同じ条件で決まるので打ち消し合わず、後者は表の値を誰も読みません。複製の警告（`W1006`）は `value.span` に出ます。
   - どちらを取ったかと確かめた結果は、下の「実装中の判断」に書きます。
 
+### 実装中の判断（第 1 段: 手順 1・2 と `E1003` の kind）
+
+計画に書いていなかった点と、確かめて決めた点です。
+
+1. **`last_use.rs` は変えませんでした（監査の案は採らない）。** 監査の案（`record_bindings` で、Copy かつ drop の要る型でない束縛を表に入れない）を試すと、匿名共用体を使わないプログラムの IR が変わりました。`for item in Seq.once row`（`row: [i64]`）の展開は `$sequence_next` と `$sequence_item` の束縛に同じ span を与えていて、今は前者（Copy でない `Seq`）が後者の move を打ち消しています。案を入れると `item` が複製から move に変わります（`target/scratch/a25/try/seq` の `base.ll` と `filter.ll` が 24 行目から違う）。「使わないプログラムの IR を 1 byte も変えない」を満たさないので、再検討に書いた代案にしました: 拡大の束縛の `Local.span` を型で 2 組に分けます。
+   - Copy かつ drop の要る型（配列・リストなど）と、型変数・未定の推論変数を含む型の束縛は `value.span`。同じ `match` の束縛は同じ条件（対象が所有されていて後で使われない）で決まるので、互いに打ち消しません。複製の報告（`W1006`・`E1031`）は拡大した値の位置に出ます。
+   - それ以外（`i64`・`string` など）の束縛は幅 0 の span（`value.span.end`）。この組の表の値はどの段も読みません（複製するかどうかを決めるのは Copy かつ drop の要る型だけ）。
+   - 残る制限: 総称の本体で、型変数を含む要素（`Maybe<'a>`）と配列の要素が同じ拡大にあり、具体化で前者が Copy でない型（`Maybe<string>`）になると、前者が後者の move を打ち消し、配列が 1 回複製されます（結果は同じで、確保が 1 回増えるだけです）。
+2. **確保と複製を測りました**（`target/scratch/a25/try/ir1`）。再帰しない匿名共用体について:
+   - 所有値を 1 回だけ使う拡大（引数・束縛）は `@tz.alloc` がなく、`@no_copy` を満たします（テスト `widening_does_not_copy_owned_array_members`。タグの選択は `switch i32`）。
+   - 後でもう一度使う値（Copy の匿名共用体）は、`let w = v` と同じく複製されます。位置は拡大した値です（`@no_copy` なら `E1031`）。
+   - ループの本体の中の拡大は、配列・リストの要素を 1 回複製します。束縛から `Construct` へ読むところで複製されます（`single_use_locals` はループの中の局所を 1 回の使用と数えず、`LastUses` は `match` の束縛を最後の使用の対象から外しているため）。`W1006` は値の直後の幅 0 の位置に出ます。
+   - パイプの左辺の拡大（`v |> f`）は、配列・リストの要素を 1 回複製します（`LastUses` はパイプの中を調べないため）。`W1006` は値の位置に出ます。
+   - 後ろの 2 つは、名前付きの union を利用者が `match` で包み直した場合とまったく同じです。基準のバイナリで `union V = A of i64 | B of [i64]` を `match v with | A k -> X k | B xs -> Y xs` で包み直すと、同じ 2 か所（ループの本体とパイプ）で同じ数の `@tz.alloc` が出ます（`target/scratch/a25/try/hand`）。D2（検査器が作るのと同じ形の `match`）の帰結なので、このチケットでは変えません。文書（第 2 段）の「確保なし」は、ループとパイプの外の所有値についてだけ書きます。
+3. **二項演算子の被演算子**は、`Checker` のフィールド `operand`（右の被演算子の span）で伝えます。`binary_expression` が右の被演算子を検査する直前に置き、`injected_expression` が取り出して、同じ span の式を拡大しません。括弧だけで包んだ式は同じ span なので拡大しません（`v == (w)` も `E1003`）。被演算子が `if`・`match`・ブロックなら、その腕は別の span の式なので拡大します。並んだ式（配列・リストの要素、`if` の枝、`match` の腕）は、A24 の注入と同じく、前の式の型を期待型として受けて拡大します（期待型のない `[v, w]` は `w` を拡大し、`[w, v]` は `E1003`）。
+4. **`ref V`**（要素数の違う匿名共用体への参照）は `conform_union` の中の `borrowed_union` が `E1003`（kind `type_mismatch`）にします。既定で読み取りの引数なら文に `read_only_hint` を足し（help なし）、そうでなければ help `an anonymous union is widened from an owned value` を付けます。要素数の等しい `ref V` と、被演算子の位置は A24 のままです。
+5. **総称の読み取りの引数**（`def f :: 'a -> (Maybe<'a> | i64) -> ...` の 2 つ目）は `finish_expression` が参照を外すので、拡大の `match` に入ります。本体の検査は通り、Copy でない型で具体化した呼び出しが `E1005`（`no instance for Copy<string>`）になります（総称の本体が Copy の制約を推論する既存の仕組みです）。
+6. **対応の重複**（`V` の 2 つの要素が `U` の同じ要素に合う）は、正準化を通った型では起きませんが、起きた場合は `E1041`（`anonymous_union_ambiguous_member`、`the members {Vi} and {Vk} of {V} could both be {Uj} in {U}`）にします。
+7. **`anonymous_union_not_subset` の help** は `the members are i64, f64, string; match the value with ':?' and pass on the members that (i64 | f64 | string) has` の形です（A24 の `members_help` に修正方法を足しました）。数のリテラルの推論変数は、A24 と同じく既定の型で表示します。
+8. 拡大の束縛の名前は `$retag{start}.{元のケース}`、対象の局所は `match_value` と同じ `$match{start}` です（どちらも `$` で始まり、hover・補完・定義の一覧に出ません）。
+9. テスト（`tests/anonymous_unions.rs`。69 件から 77 件）: 手順 2 の 5 件（`widens_subset_unions`・`rejects_non_subset_unions`・`widens_pipes_and_read_parameters`・`widening_moves_the_value`・`widening_maps_generic_members`）と、監査が足した 3 件（`widening_does_not_copy_owned_array_members`・`hover_on_a_widened_value_shows_the_value`・`comparison_does_not_widen`）。値の期待値は手計算です（テストのコメントに式を書きました）。実行するテストは native と WASM の `-O0`／`-O3` で、規約が関わるものは edition を明示しています。`members_commute_and_flatten` の 1 行は、再検討に書いたとおり受理に替え、逆向き（要素の多い値を少ない型へ）の拒否を足しました。
+
+10. 検証（第 1 段）:
+    - T0: `cargo fmt --all -- --check`（差分なし）、`cargo clippy --all-targets --locked -- -D warnings`（警告なし）。
+    - T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3070 件のうち 3070 passed、4 skipped（A24 の先端は 3062 件。増えた 8 件は上の 9 のテスト）。`tests/anonymous_unions.rs` は 77 件です。
+    - 匿名共用体を使わないプログラムの出力: A24 の先端のバイナリ（`target/wt/a24/target/debug/tsuzuri`）とこの段のバイナリで、`tests/fixtures/` と `examples/` の 186 単位の出力（native と wasm32 の IR、`check --json`、`doc`、`kg build`、`api-diff` の既定と `--effective`。9,577 ファイル）を取り、比べました（`target/scratch/a25/baseline.sh`・`compare.sh`、`before`・`after`）。出力先のディレクトリ名を含む `kg.out` をそろえると、186 単位すべてが 1 byte も違いません（匿名共用体を使う `tests/fixtures/anonymous_unions` も、まだ拡大を書いていないので同じです）。
+    - 生成物: `node scripts/gen-docs.mjs`（`diagnostics.md` の kind の表に `anonymous_union_not_subset` が入る）、`--check` は 19 blocks、0 stale。`check-cli-docs.mjs` は 4 checks、0 failed。
+    - E2E の下書き（第 2 段の手順 5 で確定します。`target/scratch/a25/e2e-draft.patch`）: fixture に `(i64 | string)` を 4 要素の読み取りの引数へ渡す関数と、文字列・配列を持つ値を束縛・ループの中の代入・読まずに捨てる値で拡大する関数を仮に足し、suite `anonymous_unions` を dev バイナリで実行しました。native と WASM、`-O0` と `-O3` の 47 件（既存の 37 件と仮の 10 件）が通り、native は `live == 0` です。fixture には A24 の非公開の補助関数 `widen` がすでにあるので、手順 5 の export `widen` は、その補助関数の名前を変えてから足します。
+
 ### 絞り込み（第 2 段）: 起票の作り方は実現できない
 
 `x` を `Construct` に束縛する案は使えません。理由は次の 2 つです。

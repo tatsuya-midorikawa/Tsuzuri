@@ -494,6 +494,159 @@ impl Checker<'_> {
         }
     }
 
+    /// The local that holds the subject `matched` of a match at `span`, bound in the innermost
+    /// scope, which the caller has pushed for the match. A subject in borrowed storage is itself
+    /// borrowed, so that the bindings below it are (`borrowed_place`).
+    fn match_subject(&mut self, matched: &TypedExpr, span: Span) -> Local {
+        let subject = self.bind(
+            &Ident {
+                text: format!("$match{}", span.start),
+                span,
+                provenance: Provenance::Generated,
+            },
+            matched.ty.clone(),
+            false,
+        );
+        if self.borrowed_place(matched) {
+            self.borrowed.insert(subject.id);
+        }
+        subject
+    }
+
+    /// `subset` as a value of the anonymous union `to` (A25): member `i` of the anonymous union
+    /// that `subset` has is member `members[i]` of `to`. See `retag`.
+    #[inline(never)]
+    pub(super) fn widen_union(
+        &mut self,
+        subset: TypedExpr,
+        to: &Type,
+        members: &[usize],
+    ) -> TypedExpr {
+        let cases: Vec<(usize, usize)> = members.iter().copied().enumerate().collect();
+        self.retag(subset, to, &cases)
+    }
+
+    /// A value of the union type `to` made from the union value `matched` (A25): for each
+    /// `(from, into)` of `cases`, case `from` of `matched` becomes case `into` of `to` with the
+    /// same payload. Both cases carry a payload of the same type, and `cases` names a case of
+    /// `matched` at most once; a value of a case that `cases` does not name traps as a match
+    /// without an arm for it does. This is the typed match of
+    ///
+    /// ```text
+    /// match matched with
+    /// | <case from0> x0 -> <case into0 of to> x0
+    /// | <case from1> x1 -> <case into1 of to> x1
+    /// ```
+    ///
+    /// in the shape that `match_value` gives it, so that ownership, last uses, effects and code
+    /// generation treat it as the match that a program writes: `matched` is evaluated once, a
+    /// tag test selects the arm (`switch_plan` switches on it), and the payload goes through the
+    /// arm's binding, so that ownership sees it leave `matched`. No binding is a view (`borrowed`
+    /// is empty): a payload in borrowed storage is taken out of it, which copies a Copy payload
+    /// and which ownership rejects for any other, as it does for `Some s`.
+    ///
+    /// Everything has the span of `matched`, except what follows. The reads of the subject and
+    /// of the bindings have the empty span at its end, so that a hover or a definition request
+    /// on `matched` finds `matched` and not a local that no source spells. A binding whose type
+    /// is never both Copy and in need of a drop also has that empty span: `LastUses` keeps one
+    /// decision for each binding span, a binding of such a type always says "copied", and no
+    /// one reads its decision, so with a span of its own it cannot take the move from the
+    /// binding of an array member, which reports its copies at the span of `matched`.
+    fn retag(&mut self, mut matched: TypedExpr, to: &Type, cases: &[(usize, usize)]) -> TypedExpr {
+        matched.ty = self.inference.resolve(&matched.ty);
+        let (Type::Union(from_id, from_arguments), Type::Union(to_id, _)) = (&matched.ty, to)
+        else {
+            unreachable!("a union value is given the cases of another union")
+        };
+        let (from_id, from_arguments, to_id) = (*from_id, from_arguments.clone(), *to_id);
+        let span = matched.span;
+        let read = Span {
+            start: span.end,
+            ..span
+        };
+        let tag = Type::Integer(32, true);
+        self.scopes.push(BTreeMap::new());
+        let subject = self.match_subject(&matched, span);
+        let read_subject = || value(TypedExprKind::Local(subject.id), subject.ty.clone(), read);
+        let mut arms = Vec::with_capacity(cases.len());
+        for &(from, into) in cases {
+            let payload = self
+                .types
+                .union_payload(from_id, &from_arguments, from)
+                .expect("the case carries a payload");
+            let payload = self.inference.resolve(&payload);
+            // A type variable may stand for an array, so its binding is not set apart.
+            let mut open = false;
+            polymorph::map_type(&payload, &mut |leaf| {
+                open |= polymorph::is_unknown(leaf);
+                leaf.clone()
+            });
+            let copied = open || payload.is_copy(&self.types) && payload.needs_drop(&self.types);
+            let binding = self.bind(
+                &Ident {
+                    text: format!("$retag{}.{from}", span.start),
+                    span: if copied { span } else { read },
+                    provenance: Provenance::Generated,
+                },
+                payload.clone(),
+                false,
+            );
+            let test = value(
+                TypedExprKind::Binary(
+                    BinaryOp::Equal,
+                    Box::new(value(
+                        TypedExprKind::UnionTag(Box::new(read_subject())),
+                        tag.clone(),
+                        span,
+                    )),
+                    Box::new(value(TypedExprKind::Int(from as u128), tag.clone(), span)),
+                ),
+                Type::Bool,
+                span,
+            );
+            let projection = value(
+                TypedExprKind::UnionPayload {
+                    value: Box::new(read_subject()),
+                    case_id: from,
+                },
+                payload.clone(),
+                span,
+            );
+            let body = value(
+                TypedExprKind::Construct {
+                    union_id: to_id,
+                    case_id: into,
+                    payload: Some(Box::new(value(
+                        TypedExprKind::Local(binding.id),
+                        payload,
+                        read,
+                    ))),
+                },
+                to.clone(),
+                span,
+            );
+            arms.push(TypedMatchArm {
+                alternatives: vec![PatternAlternative {
+                    steps: vec![PatternStep::Test(test)],
+                    bindings: vec![(binding, projection)],
+                }],
+                guard: None,
+                body,
+                borrowed: BTreeSet::new(),
+            });
+        }
+        self.scopes.pop();
+        value(
+            TypedExprKind::Match {
+                local: subject,
+                value: Box::new(matched),
+                arms,
+            },
+            to.clone(),
+            span,
+        )
+    }
+
     /// Checks the arms of a match. With `coverage`, the arms' coverage is
     /// recorded so that `check_coverage` can reject a non-exhaustive match and
     /// warn about unreachable arms; destructuring keeps its runtime trap.
@@ -522,18 +675,7 @@ impl Checker<'_> {
         });
         let mut coverage = Vec::new();
         self.scopes.push(BTreeMap::new());
-        let subject = self.bind(
-            &Ident {
-                text: format!("$match{}", span.start),
-                span,
-                provenance: Provenance::Generated,
-            },
-            matched.ty.clone(),
-            false,
-        );
-        if self.borrowed_place(&matched) {
-            self.borrowed.insert(subject.id);
-        }
+        let subject = self.match_subject(&matched, span);
         let mut checked = Vec::new();
         let mut result = expected.cloned();
         for arm in arms {

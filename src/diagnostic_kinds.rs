@@ -203,6 +203,7 @@ diagnostic_kinds! {
         // E1003
         (ActiveRecognizerResult, "active_recognizer_result", "E1003"),
         (AnonymousUnionNotMember, "anonymous_union_not_member", "E1003"),
+        (AnonymousUnionNotSubset, "anonymous_union_not_subset", "E1003"),
         (FixedArrayLiteralLength, "fixed_array_literal_length", "E1003"),
         (FormatSpecTypeMismatch, "format_spec_type_mismatch", "E1003"),
         (FormatSpecTypeUnknown, "format_spec_type_unknown", "E1003"),
