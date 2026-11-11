@@ -153,6 +153,72 @@ Display の「単独の値」と「入れ物の中」の区別は、タプルの
 - 利用者の独自インスタンス（A24 の D8 のまま）。
 - Phase 2 を人間が求めない限り、`Encode`・`Decode`。
 
+## 着手時の再検討（2026-11-11、A24 の先端）
+
+A24 がレビュー第 1 回の修正まで入ったブランチ `feat/a24-anonymous-unions`（`bd625b4d`）を取り込んだ状態で、A24 の実際のコード（`src/anonymous_union.rs`、`src/check.rs` の注入の入口、`src/control.rs` の `union_case_pattern`・`type_test_pattern`、`src/polymorph.rs`）と、監査（HEAD `b3dd7f1c`。`target/scratch/audit/A26.json`・`A26-revision.md`）、調整役の決定（`target/scratch/audit/DECISIONS.md` と 2026-11-11 の追記）を照合し、計画を改めました。
+この節は、この節より前の本文と食い違うところでは本文より優先します。本文の古い記述は、記録のため残します。
+停止条件（「着手条件と停止条件」と GUIDE §13）は、このチケットでは次の規則に置き換えます（利用者の指示による）: 健全性を保ち、今受理されている安全なプログラムをすべて受理し続ける、最も保守的な選択を取り、その判断をこのチケットに記録して作業を続けます。テストの期待値を弱めて通すことと、安全でないプログラムを受理することはしません。
+範囲は Phase 1 と Phase 2 の両方です（利用者が全 Phase の実装を求めたため。決定の 2026-11-11 の追記）。
+
+### A24 が実際に作ったもの（このチケットが使う名前）
+
+- 匿名共用体は `Type::Union(id, 要素)` で、`id` は合成した宣言 `$anonymous.Union$n`（n = 2〜32）です。要素は正準順に並び、ケース `k` のペイロードは要素 `k` です（A24 の D2・D3）。
+- 判定: `Names::is_anonymous_union(id)`（`src/check.rs`。`Names::anonymous_unions: Vec<usize>` は連続した id）と、`TypeContext` から読む `CheckedUnion::is_anonymous()`。本文の `anonymous_union::is_anonymous` という関数はありません。
+- 利用者のインスタンスの拒否（`anonymous_union_instance`、`E1041`）は、`Classes::instances` の組み込みの上書きの拒否（`builtin_instance_override`）より前にあります。このチケットは順序を変えません。
+- `E1005`・`E1025` の文（`polymorph::no_instance`）: 匿名共用体なら `no instance for C<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases`（A24 のレビュー第 1 回）。このチケットの後は、匿名共用体が持たないクラス（`Default` など）でだけ出ます。
+- 型付き IR: case のパターンと型テストは、`UnionTag(対象) == Int(k)`（タグは `i32`）と `UnionPayload { value: 対象, case_id: k }` を作ります（`Checker::union_case_pattern`、`src/control.rs`）。参照の対象は `Checker::autoderef` が `Dereference` で外します。
+- 比較演算子は、左辺の型を右辺の期待型に渡すので（`binary_expression` の `sibling_hint`）、`v == 1` の `1` は A24 の時点で注入されます。左辺が接尾辞のない数のリテラルなら右辺を先に検査するので、`1 == v` も注入されます。
+
+### 位置（このブランチの先端）
+
+- `src/polymorph.rs`: `Classes`（722）、`Classes::collect`（871。`names` と `types` を受け取る）、`anonymous_union_instance` の拒否（1933〜1946）と組み込みの上書きの拒否（1957〜1968）、`matching_instance`（2286）、`normalize`（2400。構造的な展開は 2481〜2501）、`structural`（2655）、`Specializer`（4902）、`Specializer::lower` の `Method`（5145〜5190）と `DisplayQuoted` の書き換え（5191〜5208）、`dyn_of` の vtable（5322〜5353）、`operator_call`（5358）、`intrinsic_function`（5408。`Display` 5452、`Hash` 5474、`Default` 5493、比較 5515）。
+- `src/derive.rs`: `mix`・`hash_start`（286〜297）、`Build::union` の `Display`・`Hash`・`Eq`／`Ord`（906〜1057）。
+- `src/llvm_display.rs`・`src/llvm_hash.rs`・`src/llvm_compare.rs` は、このチケットでは変えません（下の D6）。
+
+### 現状と食い違う記述
+
+1. **引用付きの表示**: 文字列・文字以外の `T` では、`DisplayQuoted<T>` を `Specializer::lower` が `T` の `Display.display` に置き換えます。`display_quoted`（`src/llvm_display.rs`）は文字列・文字専用で、匿名共用体には届きません。本文の設計のままでは `Display.display (a, b)` が `(1, one)` になります。
+2. **`dyn` への格納**: タプル・配列は `dyn Display` に格納でき、`(1, "one")`・`[1, 2]` と表示されます。`built into the compiler` という `E1028` はありません。本文の仕様の `E1028` の行と、テスト `dyn_rejects_builtin_instances` は取り消します。
+3. **ファイル名と仕組み（Phase 2）**: `std/Json.tt` は `std/Json.tz` です。`Encode`・`Decode` は組み込みクラスですが、メソッドに `operation` がなく、インスタンスは std のソースと導出だけにあります。
+4. **誤りの型（Phase 2）**: `Json.DecodeError` はありません。誤りは `Json.Error { kind, offset }` で、型の不一致は `ExpectedType of string` です。
+5. **JSON の種類の表（Phase 2）**: `char`・`utf8char`・`unit`・`bigint`・固定長配列・5 要素以上のタプルには `Encode`・`Decode` がありません。`Map`・`HashMap` は object と配列の両方になりえます。`Set`・`HashSet` は配列、`Json.Value` はすべての種類を受理します。
+6. **目的の例**: `HashSet.empty` は `HashSet.empty()` です。`(i64 | string)` は Copy でないので、`Display.display (a, b)` の後で `a`・`b` を使うと `E1012` になります。リファレンスの例は順序を入れ替えるか、借用を使います。
+7. **停止条件 1**: `Classes::collect` が `names` を受け取るので、`Classes` に匿名共用体の id の集合を持たせるだけで済み、`structural` の呼び出し元は変わりません。停止条件には当たりません。
+8. **`!=`**: 本文は `!=` を書いていません。タプル・導出と同じく、`==` の否定です（タグが違えば `true`、同じなら要素の `==` の否定）。
+
+### 採用する計画の変更
+
+1. **D6（新規）: インスタンスの本体は、Specializer が通常の型付き IR として作ります。`src/llvm_display.rs`・`src/llvm_hash.rs`・`src/llvm_compare.rs`・`src/llvm.rs` は変えません。**
+   - 形: 引数（`ref U`）を `Dereference` で外し、`UnionTag(..) == Int(k)` の `If` の連鎖にします（最後の要素は検査なしの `else`）。腕 `k` は、`Borrow(UnionPayload { value: Dereference(引数), case_id: k })`（型は `ref 要素 k`）を要素のメソッドに渡します。`union_case_pattern` が `ref` の対象に作る形と同じです。
+   - `Eq.eq`: 両方のタグが違えば `false`、同じなら要素 `k` の `Eq.eq`。`Eq.ne` は、タグが違えば `true`、同じなら要素 `k` の `Eq.eq` の否定です（導出・タプルと同じ）。
+   - `Ord` の 4 つの演算子: タグが違えば `Binary(演算子, 左のタグ, 右のタグ)`（`i32` の比較）、同じなら要素 `k` の同じ演算子（`Ord.lt` など）。導出した union と同じ形です。
+   - `Hash.hash`: `$builtin.hash_mix` で `OFFSET`（14695981039346656037）→ `0x55` → `k` → 要素 `k` の `Hash.hash` の順に混ぜます。導出した union（`Build::union` の `hash_start(0x55, k)` と `mix`）と同じ列です。
+   - `Display.display`: 要素 `k` の `Display.display`（引用符なし）。引用付きの版（入れ物・タプル・導出したレコードや union の中）は別のテンプレートで、要素 `k` の `DisplayQuoted` を呼びます。`Specializer::lower` の `DisplayQuoted` の書き換えから、専用のキャッシュ（`quoted_displays: BTreeMap<Type, usize>`）に作ります。`intrinsics` の鍵 `(Display, 0, U)` は引用符なしの版のものなので、共有しません。
+   - 理由: Phase 2（`Encode`・`Decode`）は型付き IR でしか作れないので、仕組みを 1 つにします。LLVM の側を変えないので、タプル・配列・リスト・名前付きの union の生成 IR は構成上変わりません。再帰・`Common`・`General` のレイアウトは、既存の `UnionTag`・`UnionPayload` の生成が扱います。
+   - 代案（所有権の検査 `ownership::check_all_with` が合成した本体を受理しない場合だけ）: 本文の LLVM の分岐（`llvm_layout.rs` の `load_tag`・`payload_pointer`・`case_switch`）で Phase 1 を作ります。最初にこれを確かめ、結果を「実装中の判断」に書きます。
+2. **`Classes::anonymous`**: `Classes::collect` で `Names::anonymous_unions` から `BTreeSet<usize>` を作ります。`structural(class, ty)` は、`Type::Union(id, _)` で `id` がこの集合にあれば `Eq`・`Ord`・`Hash`・`Display`（Phase 2 で `Encode`・`Decode`）について真です。`Default` は偽のままです。
+3. **要素を返す関数を 1 つにします**: `Array`・`List`・`Tuple`・匿名共用体の要素を返す `structural_elements(ty)` を作り、`normalize` と `intrinsic_function` の 3 か所の `match ... _ => unreachable!()` を置き換えます（タプル・配列・リストの結果は同じ）。
+4. **`dyn`**: 匿名共用体は、タプルと同じく `dyn Display` などに格納できます。表示はペイロードだけで、引用符は付きません（単独の値と同じ）。テストは `dyn_stores_anonymous_union` にします。
+5. **Phase 2 の制約**: `structural` は匿名共用体の `Encode`・`Decode` でも真にし、`normalize` が要素ごとの制約に展開します。`Decode` だけ、要素の JSON の種類が互いに素かを `normalize` で調べ、重なれば `E1025`（新しい kind `anonymous_union_decode_overlap`）です。
+   - 種類は頭の型構築子で決めます（型変数を含む要素でも決まる）。number＝整数・浮動小数点・`decimal`、string＝`string`・`utf8string`、bool、array＝配列・リスト・`Vec`・2〜4 要素のタプル・`Set`・`HashSet`、object と array＝`Map`・`HashMap`、object＝`Decode` を導出したレコード。
+   - 種類が決まらない要素（どの要素とも重なる）: `Maybe`・名前付きの union・`Json.Value`・手書きの `Decode` を持つ型。同じ kind で、その要素の JSON の種類が決まらないことをメッセージで示します。`Encode` はどの要素でも持てます。
+6. **Phase 2 の本体**: `Encode`・`Decode` のメソッドには `operation` がないので、`Specializer::lower` の `Method` で、匿名共用体の `Encode`・`Decode` を専用の合成へ回します（`intrinsic_function` の `operation.expect` より前）。`dyn_of` の vtable の条件も直し、`dyn Encode` に格納できるようにします。
+   - `Encode.encode`: 要素 `k` の `Encode.encode` を呼ぶ `If` の連鎖（タグを書かない）。
+   - `Decode.decode`: `Json.Value` のタグで要素を選び、腕 `k` は `Result.map (CaseConstructor U k) (Decode.decode json)` です。どれにも当たらなければ `Result.Error (Json.Error { kind: ExpectedType "number or string", offset: -1 })`（要素の種類を ` or ` でつなぐ。導出した union の `string or object` と同じ書き方）。std に関数は足しません。
+   - 詳細は Phase 2 の着手時に `std/Json.tz` と `src/derive.rs` を読み直し、決定事項に追記してから実装します。
+7. **診断とドキュメント（Phase 2 を含む）**: 新しい kind は `E1025` の組に足し、`src/explain/codes/E1025.md` を広げ、`gen-docs` を実行します。更新するページに `json.md`（型の表と「インスタンスは Json と利用者のソースだけ」の文）、`docs/language.md` の組み込みクラスの表・Canonical Stream の union の行（匿名共用体は union の列で、番号は正準順の位置）・Json の項、`type-classes.md` の構造的な型の一覧、`docs/architecture.md` を足します。GUIDE D-55 の `E1041` の行に、`Decode` の重なりだけは D5 のとおり `E1025` であることを注記します。
+8. **テスト**: 本文の手順 2〜4 のテストに、次を足し・替えます。
+   - `hash_matches_named_union_stream` は、同じ順に case を並べた名前付きの union との一致に加えて、監査が `b3dd7f1c` の導出で得た参照値と照合します: `union R = A of i64 | B of string deriving (Hash)` の `Hash.hash (A 1)` = `15967365493956732001`、`Hash.hash (B "one")` = `17017872639125386659`（`-O0` と `-O3` で同じ）。実装の前に、FNV-1a の定義からの独立した計算（Python）でもこの値を確かめます。
+   - `comparison_injects_right_operand` に `1 == v` を足します。
+   - 再帰する型（`union Tree = Leaf | Node of (i64 | Tree)` に `deriving (Eq, Ord, Hash, Display)`）のテストを足します。
+   - `dyn_rejects_builtin_instances` は `dyn_stores_anonymous_union` に替えます（上の 4）。
+   - Phase 2: `encode_writes_payload_without_tag`、`decode_selects_member_by_kind`、`decode_overlap_is_rejected`（`(i64 | f64)`・`(Map<i64, string> | [i64])`・`(Maybe<i64> | string)`）、`decode_mismatch_names_member_kinds`、`derived_record_with_anonymous_field_round_trips`。suite `anonymous_unions` に `encoded x`・`decoded x` を足します。
+9. **A24 の既存テストで期待を替えるもの**（このチケットの機能が、A24 の時点の「インスタンスがない」という前提を変えるため。替える前にここへ記録します）:
+   - `comparisons_and_exports_keep_their_rules` の `v == 1`（`E1005`）は受理に替えます（本文の「既存テストへの影響」のとおり）。`E1008`（export）の部分は変えません。
+   - `missing_instances_do_not_ask_for_an_instance`（A24 のレビュー第 1 回で足したテスト。本文を書いた後にできた）は、`Eq`・`Display` の `E1005` と `deriving (Eq)` の `E1025` を、匿名共用体に `no instance` と言う文が「インスタンスを定義する」ことを勧めないことの確認に使っています。このチケットで `Eq`・`Display` が入るので、同じ文を、匿名共用体が持たないままのクラス `Default`（`E1005`、`deriving (Default)` の `E1025`）で確かめる形に替えます。確かめる文（`...; instances cannot be declared for an anonymous union; ...`）と、名前付きの型の文の確認は変えません。
+   - 言語リファレンスの「比較・表示・ハッシュはまだありません」の記述（`anonymous-union.md`）は、ドキュメントの手順で実際の振る舞いに替えます。
+10. **手順の分け方**: 手順 2（判定と制約）と手順 3（本体）は、判定だけを先に入れると本体のない経路（`intrinsic_function` の `unreachable!()`）に届くので、同じ段で入れます。手順 6 の IR の比較の対象に、名前付きの union の導出（`deriving`）の fixture も入れます。
+
 ## 決定事項
 
 ### D1: 組み込みの構造的なインスタンス
@@ -184,3 +250,9 @@ Display の「単独の値」と「入れ物の中」の区別は、タプルの
 - 決定: 要素の JSON の種類が重なれば `E1025`。
 - 理由: 既定の選び方（最初の要素など）を入れない（GUIDE §1 の規則 2）。タグを書かない `Encode` と往復できる範囲だけを受理する。
 - 状態: 承認済み（2026-11-02 の利用者の回答「1~4 について承認します」。起票時の確認事項 4）。承認は設計についてで、Phase 2 の着手は従来どおり人間が求めた場合だけ。
+
+### D6: インスタンスの本体は Specializer が型付き IR で作る
+
+- 決定: 匿名共用体の `Eq`・`Ord`・`Hash`・`Display`（引用付きの表示を含む）と、Phase 2 の `Encode`・`Decode` の本体は、単相化（`Specializer`）が通常の型付き IR の関数として作る。タグの `If` の連鎖と、`Borrow(UnionPayload { .. })` を要素のメソッドに渡す腕から成る。`src/llvm_display.rs`・`src/llvm_hash.rs`・`src/llvm_compare.rs` は変えない。
+- 理由: Phase 2 は型付き IR でしか作れないので、仕組みを 1 つにする。LLVM の側を変えないので、タプル・配列・リスト・名前付きの union の生成 IR は構成上変わらない。再帰・`Common`・`General` のレイアウトは既存の `UnionTag`・`UnionPayload` の生成が扱う。`Hash` は導出した union と同じ式（`$builtin.hash_mix` の列）なので、同じ値になる。
+- 状態: 着手時の再検討（2026-11-11）で採用（監査の提案を調整役が採用。`target/scratch/audit/DECISIONS.md`）。
