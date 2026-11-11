@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | [A24](A24-anonymous-unions.md)（done）, A06, A07 |
 | 後続 | – |
-| 状態 | done（2026-11-11。Phase 1 と Phase 2。末尾の「実装と検証」。A25 を取り込み、A24 ← A25 ← A26 の順に積んだ（「A25 との統合」）） |
+| 状態 | done（2026-11-11。Phase 1 と Phase 2。末尾の「実装と検証」。A25 を取り込み、A24 ← A25 ← A26 の順に積んだ（「A25 との統合」。Copilot のレビューの第1回の後に「A25 の再取り込み」）） |
 | 起票 | 2026-11-02（A24 と同時。HEAD `2f556480`） |
 | 承認 | `Ord` を正準順で持たせること（D2）と、`Decode` を JSON の種類が互いに素な場合に限ること（D5）は、2026-11-02 の利用者の回答「1~4 について承認します」で承認済み（GUIDE D-62 の決定 4・5）。ほかは既定案。Phase 2 は人間が求めた場合だけ着手する |
 | 手本にする既存実装 | タプル・配列・リストの構造的なインスタンス: `Classes::structural`（`src/polymorph.rs:2556`）、制約の展開 `normalize`（`2382-2401`）、型付き IR への下ろし（`5230`、`5311-5399`）、LLVM の `structural_display`（`src/llvm_display.rs:548`）・`display_quoted`（`601`）・`structural_hash`（`src/llvm_hash.rs:17`）・`structural_compare`（`src/llvm_compare.rs:69`）。union の導出の意味: `src/derive.rs`（`Build::union`、`817`） |
@@ -570,3 +570,19 @@ PR #104 に GitHub Copilot が付けたインラインの指摘 3 件です。3 
 - T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3138 件がすべて passed、4 skipped です（記録は `target/scratch/a26/copilot1/v1/t1.txt`）。
 - E2E: `node tests/features.mjs target/debug/tsuzuri anonymous_unions` は 152 件が通りました（native と WASM、`-O0` と `-O3`、記録は `target/scratch/a26/copilot1/v1/suite.txt`）。
 - 言語リファレンスのページは変えていないので、`check-docs.mjs` は実行していません。
+
+### A25 の再取り込み（Copilot のレビューの第1回の後、2026-11-12）
+
+A24 と A25 が Copilot のレビューの第1回に対応したので、`feat/a25-anonymous-union-conversions` の先端 `941e45a7`（A25 の `c7f0b207`〜`fd622aa0` と、A24 の `907e5e8c`・`b9a31cce` を取り込んだもの）を、もう一度このブランチへ取り込みました（マージコミット `15f322e2`）。履歴は書き換えていません。前の取り込み（`8f14b16c`）から A25 の側で変わったのは `src/check.rs`・`src/control.rs`（Copy の要素への絞り込みのビューと手順の形）・`src/kg/find.rs`（`Subst::solve` の後戻りの探索）・`src/ownership_control.rs` で、A26 はこれらを変えていないので、コードは自動で併合されました。
+
+- 衝突は `docs/architecture.md` の「ほかの段。」の段落の 1 か所です。A26 の側はこの段落を変えておらず（`8f14b16c` と同じ文）、A25 の側は `kg/find.rs` の説明を書き直していました。直前の A26 の「組み込みのインスタンス（A26）」の段落はそのまま残し、「ほかの段。」は A25 の版にしました。
+- 自動で併合したもの: `tests/anonymous_unions.rs`（A25 の 9 件を足して 145 件から 154 件）、`tests/features.mjs` とフィクスチャ（A25 の `narrow_copy` と `narrow_generic`。suite `anonymous_unions` は 152 件から 169 件）、`anonymous-union.md`（「`:? (A | B)` で絞る」の複製の回数）、`kg.md`（問い合わせの `*` と `->` の結合）、`docs/language.md`（絞り込みの 2 項目）、A24 と A25 のチケット。
+- この取り込みは `README.md`・`_features/README.md`・`src/diagnostic_kinds.rs`・`src/explain/codes/` を変えません。各チケットの行（`_completed/` へのリンク）と診断の kind の順はそのままで、`E1041.md` は 1,481 文字、`E1025.md` は 1,465 文字です（上限 1,500 文字）。
+
+検証（取り込みの後の木）:
+
+- T0: `cargo fmt --all -- --check` は差分なし、`cargo clippy --all-targets -- -D warnings` は警告なし。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked`）: 3154 件がすべて passed、4 skipped です（記録は `target/scratch/a26/copilot1/nextest-restack.log`）。
+- E2E: `node tests/features.mjs target/debug/tsuzuri anonymous_unions` は 169 件が通りました（native と WASM、`-O0` と `-O3`、記録は `target/scratch/a26/copilot1/restack/suite.txt`）。
+- IR: `tests/fixtures/` と `examples/` の 186 単位の native と wasm32 の IR・`check --json` を、`941e45a7` を `git archive` で取り出してビルドしたバイナリと取り込んだ後のバイナリで取りました（`sh target/scratch/a26/baseline.sh` と `compare.sh`、記録は `target/scratch/a26/copilot1/restack/ir-compare.txt`）。違うのは `tests/fixtures/anonymous_unions` だけで、A25 のバイナリは A26 の関数を持つフィクスチャを `E1005` で拒否します。ほかの 185 単位は 1 byte も違いません。`941e45a7` のフィクスチャの native と wasm32 の IR も、2 つのバイナリで同じです。IR とビルドした木は消しました。
+- ドキュメント: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs` を取り込みで変わった 2 ページ（`anonymous-union.md`・`kg.md`）に実行し、45 links、21 examples、native の実行 40 回（`-O0`・`-O3`）で通りました（記録は `target/scratch/a26/copilot1/restack/check-docs.txt`）。`node scripts/gen-docs.mjs --check` は 19 blocks、0 stale、`node scripts/check-cli-docs.mjs` は 4 checks、0 failed、`node scripts/check-guide-lite.mjs` は 88 references、0 failed、`node scripts/check-links.mjs` は 0 broken です。
