@@ -1197,6 +1197,268 @@ pub(super) fn by_member(
     chain.expect("an anonymous union has at least two members")
 }
 
+// `Encode` and `Decode` of anonymous unions (A26 Phase 2, D7). `Encode` writes the JSON of the
+// payload and no tag, so `Decode` exists only when the kind of a JSON value selects one member.
+
+/// A kind of JSON value that the `Decode` instance of a member reads, in the order of the cases of
+/// std's `Json.Value`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum JsonKind {
+    Boolean,
+    Number,
+    Text,
+    Array,
+    Object,
+}
+
+impl JsonKind {
+    /// The name of the kind in `Json.ErrorKind.ExpectedType`, as std's instances write it.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Boolean => "boolean",
+            Self::Number => "number",
+            Self::Text => "string",
+            Self::Array => "array",
+            Self::Object => "object",
+        }
+    }
+
+    /// The kind as a diagnostic names it.
+    pub(super) fn phrase(self) -> &'static str {
+        match self {
+            Self::Boolean => "a JSON boolean",
+            Self::Number => "a JSON number",
+            Self::Text => "a JSON string",
+            Self::Array => "a JSON array",
+            Self::Object => "a JSON object",
+        }
+    }
+
+    /// The case of `Json.Value` that holds a value of the kind.
+    fn case(self) -> &'static str {
+        match self {
+            Self::Boolean => "Bool",
+            Self::Number => "Number",
+            Self::Text => "Text",
+            Self::Array => "Items",
+            Self::Object => "Object",
+        }
+    }
+}
+
+/// The JSON kinds that the `Decode` instance of one member reads (`Classes::decode_kinds`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum JsonKinds {
+    /// These kinds and no other, whatever the type arguments are.
+    Fixed(&'static [JsonKind]),
+    /// An instance exists and the type does not limit what it reads: a `Maybe`, a union with named
+    /// cases, `Json.Value`, a type with a hand-written instance.
+    Open,
+    /// No instance: the constraint of the member reports it.
+    Missing,
+}
+
+/// `json: expected number or string`: the kinds of the members in the canonical order, as the
+/// `ExpectedType` of a JSON value that no member reads.
+pub(super) fn expected_kinds(kinds: &[&'static [JsonKind]]) -> String {
+    kinds
+        .iter()
+        .flat_map(|kinds| kinds.iter())
+        .map(|kind| kind.name())
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+fn local_value(local: &Local) -> TypedExpr {
+    typed(TypedExprKind::Local(local.id), local.ty.clone(), local.span)
+}
+
+fn std_shape(item: &str, span: Span) -> Diagnostic {
+    Diagnostic::of(
+        DiagnosticKind::StdItemMissing,
+        format!("Decode of an anonymous union needs {item} of the standard library"),
+        span,
+    )
+}
+
+/// The body of `Decode.decode` of the anonymous union `union` (D7), for the parameter `json` of
+/// type `ref Json.Value` and the result type `result`, `Result<union, Json.Error>`. `kinds` are the
+/// JSON kinds of each member, pairwise disjoint (`Classes::decode_members`), and `decode` is the
+/// class `Decode`.
+///
+/// The body tests the tag of the JSON value. The arm of a kind decodes the member that reads the
+/// kind and tags the value, as `match Decode.decode json with | Ok v -> Ok v | Error e -> Error e`
+/// with the first `v` a member and the second one the union; a kind that no member reads gives
+/// `Error (Json.Error { kind: ExpectedType "number or string", offset: -1 })`.
+pub(super) fn decode_body(
+    json: &TypedExpr,
+    union: &Type,
+    result: &Type,
+    kinds: &[&'static [JsonKind]],
+    decode: usize,
+    types: &TypeContext<'_>,
+) -> Result<TypedExpr, Diagnostic> {
+    let span = json.span;
+    let (Type::Reference(value, false), Type::Union(_, members), Type::Union(result_id, outcome)) =
+        (&json.ty, union, result)
+    else {
+        return Err(std_shape("Json.Value and Result", span));
+    };
+    let (Type::Union(value_id, _), [_, error]) = (value.as_ref(), outcome.as_ref()) else {
+        return Err(std_shape("Json.Value and Result", span));
+    };
+    let case = |union: usize, name: &str| {
+        types.unions[union]
+            .cases
+            .iter()
+            .position(|(case, _)| case == name)
+            .ok_or_else(|| std_shape(&format!("the case {name}"), span))
+    };
+    let (ok, failed) = (case(*result_id, "Ok")?, case(*result_id, "Error")?);
+    // `Json.Error { kind: ExpectedType text, offset: -1 }`, as std's private `expected` makes it.
+    let Type::Record(error_id, _) = error else {
+        return Err(std_shape("Json.Error", span));
+    };
+    let field = |name: &str| {
+        types.records[*error_id]
+            .fields
+            .iter()
+            .position(|(field, _)| field == name)
+            .ok_or_else(|| std_shape(&format!("the field {name} of Json.Error"), span))
+    };
+    let (kind_field, offset_field) = (field("kind")?, field("offset")?);
+    let kind_type = types.records[*error_id].fields[kind_field].1.clone();
+    let Type::Union(kind_id, _) = &kind_type else {
+        return Err(std_shape("Json.ErrorKind", span));
+    };
+    let construct = |union_id: usize, case_id: usize, payload: TypedExpr, ty: Type| {
+        typed(
+            TypedExprKind::Construct {
+                union_id,
+                case_id,
+                payload: Some(Box::new(payload)),
+            },
+            ty,
+            span,
+        )
+    };
+    let text = StringLiteral::Utf16(expected_kinds(kinds).encode_utf16().collect());
+    let expected = construct(
+        *kind_id,
+        case(*kind_id, "ExpectedType")?,
+        typed(TypedExprKind::String(text), Type::String, span),
+        kind_type,
+    );
+    let offset = Type::Integer(64, true);
+    let minus_one = typed(TypedExprKind::Int(u128::from(u64::MAX)), offset, span);
+    let mismatch = construct(
+        *result_id,
+        failed,
+        typed(
+            TypedExprKind::Record(vec![(kind_field, expected), (offset_field, minus_one)]),
+            error.clone(),
+            span,
+        ),
+        result.clone(),
+    );
+    // The member of each kind, in the order of the cases of `Json.Value`.
+    let mut arms = BTreeMap::new();
+    for (member, kinds) in kinds.iter().enumerate() {
+        for kind in *kinds {
+            if arms.insert(*kind, member).is_some() {
+                unreachable!("the JSON kinds of the members are disjoint")
+            }
+        }
+    }
+    let tag = Type::Integer(32, true);
+    let tagged = |value: TypedExpr, case: usize| {
+        typed(
+            TypedExprKind::Binary(
+                BinaryOp::Equal,
+                Box::new(typed(
+                    TypedExprKind::UnionTag(Box::new(value)),
+                    tag.clone(),
+                    span,
+                )),
+                Box::new(typed(TypedExprKind::Int(case as u128), tag.clone(), span)),
+            ),
+            Type::Bool,
+            span,
+        )
+    };
+    let local = |id: usize, name: &str, ty: &Type| Local {
+        id,
+        ty: ty.clone(),
+        name: name.into(),
+        mutable: false,
+        span,
+        provenance: Provenance::Generated,
+    };
+    let mut chain = mismatch;
+    // The parameter is local 0; each arm has three locals of its own.
+    for (index, (kind, member)) in arms.into_iter().enumerate().rev() {
+        let member_type = &members[member];
+        let decoded_type = Type::Union(*result_id, vec![member_type.clone(), error.clone()].into());
+        let decoded = local(1 + 3 * index, "$decoded", &decoded_type);
+        let item = local(2 + 3 * index, "$value", member_type);
+        let problem = local(3 + 3 * index, "$error", error);
+        let method = typed(
+            TypedExprKind::Method(decode, 0, member_type.clone()),
+            Type::function(vec![json.ty.clone()], decoded_type.clone()),
+            span,
+        );
+        let arm = |case: usize, binding: &Local, body: TypedExpr| TypedMatchArm {
+            alternatives: vec![PatternAlternative {
+                steps: vec![PatternStep::Test(tagged(local_value(&decoded), case))],
+                bindings: vec![(
+                    binding.clone(),
+                    typed(
+                        TypedExprKind::UnionPayload {
+                            value: Box::new(local_value(&decoded)),
+                            case_id: case,
+                        },
+                        binding.ty.clone(),
+                        span,
+                    ),
+                )],
+            }],
+            guard: None,
+            body,
+            borrowed: BTreeSet::new(),
+        };
+        let accepted = construct(
+            *result_id,
+            ok,
+            wrap(local_value(&item), union, member),
+            result.clone(),
+        );
+        let rejected = construct(*result_id, failed, local_value(&problem), result.clone());
+        let selected = typed(
+            TypedExprKind::Match {
+                value: Box::new(typed(
+                    TypedExprKind::Call(Box::new(method), vec![json.clone()]),
+                    decoded_type.clone(),
+                    span,
+                )),
+                arms: vec![arm(ok, &item, accepted), arm(failed, &problem, rejected)],
+                local: decoded,
+            },
+            result.clone(),
+            span,
+        );
+        chain = typed(
+            TypedExprKind::If {
+                condition: Box::new(tagged(behind(json), case(*value_id, kind.case())?)),
+                then_branch: Box::new(selected),
+                else_branch: Box::new(chain),
+            },
+            result.clone(),
+            span,
+        );
+    }
+    Ok(chain)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -253,3 +253,92 @@ export def shown :: i64 -> i64 = \x ->
     let derived = Display.display entry + "|" + Display.display boxed
     let text = alone + "|" + interpolated + "|" + pair + "|" + containers + "|" + derived
     checksum text * 1000 + text.length
+
+// A26 Phase 2: Encode and Decode. `doc x` is one of five members by x mod 5: the i64 x, the bool x > 0, the text
+// `s{x}`, the array [x, x + 1], the record Point { x, y = -x }. Encode writes the JSON of the member and no tag; Decode
+// selects the member by the kind of the JSON value (number, boolean, string, array, object).
+record Point { x: i64, y: i64 } deriving (Eq, Encode, Decode)
+
+type Doc = (i64 | bool | string | [i64] | Point)
+
+record Holder { name: string, value: Doc } deriving (Eq, Encode, Decode)
+
+def doc :: i64 -> Doc = \x ->
+    let kind = (x % 5 + 5) % 5
+    if kind == 0 then x
+    elif kind == 1 then x > 0
+    elif kind == 2 then $"s{x}"
+    elif kind == 3 then [x, x + 1]
+    else Point { x: x, y: 0 - x }
+
+// The JSON text of a value, or the text of the error.
+def json_of :: Encode<'a> => own 'a -> string = \value ->
+    match Json.serialize value with
+    | Ok text -> String.from_utf8 (ref text)
+    | Error error -> Display.display error
+
+// encoded: the JSON texts of doc x alone, of five consecutive docs in an array, and of a derived record that holds one.
+export def encoded :: i64 -> i64 = \x ->
+    let items: [Doc] = [doc x, doc (x + 1), doc (x + 2), doc (x + 3), doc (x + 4)]
+    let text = json_of (doc x) + "|" + json_of items + "|" + json_of (Holder { name: "h", value: doc (x + 2) })
+    checksum text * 1000 + text.length
+
+// What a decoded Doc is: the member and its payload, or the text of the error.
+def described :: own Result<Doc, Json.Error> -> string = \decoded ->
+    match decoded with
+    | Error error -> "e:" + Display.display error
+    | Ok value ->
+        match value with
+        | :? i64 as n -> $"i:{n}"
+        | :? bool as b -> if b then "b:1" else "b:0"
+        | :? string as s -> "s:" + s
+        | :? [i64] as numbers ->
+            let mut sum = 0i64
+            for n in numbers do sum = sum + n
+            $"a:{numbers.length}:{sum}"
+        | :? Point as p -> $"p:{p.x},{p.y}"
+
+def read :: own string -> string = \text ->
+    let bytes = Utf8String.from_string (ref text)
+    described (Json.deserialize (ref bytes))
+
+type Table = (i64 | Map<string, i64>)
+
+// A map member reads an object and an array of [key, value] arrays; the i64 member reads a number.
+def table :: own string -> string = \text ->
+    let bytes = Utf8String.from_string (ref text)
+    let decoded: Result<Table, Json.Error> = Json.deserialize (ref bytes)
+    match decoded with
+    | Error error -> "e:" + Display.display error
+    | Ok value ->
+        match value with
+        | :? i64 as n -> $"i:{n}"
+        | :? Map<string, i64> as map ->
+            let mut sum = 0i64
+            for (_, item) in Map.iter map do sum = sum + deref item
+            $"m:{Map.length map}:{sum}"
+
+// decoded: JSON texts made from x, one for each kind, then the texts that no member reads or that the selected member
+// refuses, then whether doc x .. doc (x + 4) and a derived record come back equal from their own JSON.
+export def decoded :: i64 -> i64 = \x ->
+    let members = read $"{x}" + "|" + read "true" + "|" + read " false " + "|" + read $"\"t{x}\"" + "|" + read $"[{x}, 2, 3]" + "|" + read "[]"
+    let records = read $"{{\"y\": {x}, \"x\": 7, \"z\": null}}" + "|" + read "{\"x\": 1}" + "|" + read "{}"
+    let refused = read "null" + "|" + read $"{x}.5" + "|" + read "[1, \"two\"]" + "|" + read "99999999999999999999" + "|" + read "{\"x\": true, \"y\": 2}" + "|" + read "tru"
+    let tables = table $"{x}" + "|" + table $"{{\"a\": {x}, \"b\": 2}}" + "|" + table $"[[\"k\", {x}]]" + "|" + table "{}" + "|" + table "\"text\"" + "|" + table "[1]"
+    let mut trips = 0i64
+    for i in 0i64 ..< 5 do
+        let back: Result<Doc, Json.Error> = match Json.serialize (doc (x + i)) with
+            | Ok text -> Json.deserialize (ref text)
+            | Error error -> Error error
+        match back with
+        | Ok value -> if value == doc (x + i) then trips = trips + 1
+        | Error _ -> ()
+    let holder: Result<Holder, Json.Error> = match Json.serialize (Holder { name: "h", value: doc x }) with
+        | Ok text -> Json.deserialize (ref text)
+        | Error error -> Error error
+    let original = Holder { name: "h", value: doc x }
+    let kept = match holder with
+        | Ok value -> if value == original then 1 else 0
+        | Error _ -> 0
+    let text = members + "|" + records + "|" + refused + "|" + tables + $"|{trips}{kept}"
+    checksum text * 1000 + text.length

@@ -2679,3 +2679,488 @@ fn const_definitions_refuse_the_operators_as_for_tuples() {
         assert_eq!(error.message, message, "{source}");
     }
 }
+
+// A26 Phase 2: `Encode` and `Decode` (D7). `Encode` writes the JSON of the payload and no tag, so
+// `Decode` exists only when the kind of a JSON value selects one member. The expected texts are
+// written by hand from the JSON that std's instances write for the payloads (compact, a record as
+// an object in declaration order, a tuple as an array, `None` as `null`) and from the messages of
+// `Json.Error` in `std/Json.tz`.
+
+#[test]
+fn encode_writes_payload_without_tag() {
+    let source = r#"record Point { x: i64, y: string } deriving (Encode)
+union Shape = Dot | Line of i64 deriving (Encode)
+
+def text :: Encode<'a> => own 'a -> string = \value ->
+    match Json.serialize value with
+    | Ok bytes -> String.from_utf8 (ref bytes)
+    | Error error -> Display.display error
+
+def cell :: own (i64 | [i64]) -> (i64 | [i64]) = \value -> value
+
+test "payload only" =
+    let number: (i64 | string) = 1
+    let word: (string | i64) = "one"
+    assert (text number == "1")
+    assert (text word == "\"one\"")
+    let flag: (bool | f64 | [i64] | (i64 * string)) = true
+    let ratio: (bool | f64 | [i64] | (i64 * string)) = 1.5
+    let items: (bool | f64 | [i64] | (i64 * string)) = [1, 2]
+    let pair: (bool | f64 | [i64] | (i64 * string)) = (3, "c")
+    assert (text flag == "true")
+    assert (text ratio == "1.5")
+    assert (text items == "[1,2]")
+    assert (text pair == "[3,\"c\"]")
+
+test "members that Decode could not tell apart" =
+    let whole: (i64 | f64) = 2
+    let half: (i64 | f64) = 0.5
+    assert (text whole == "2")
+    assert (text half == "0.5")
+    let four: Maybe<i64> = Some 4
+    let none: Maybe<i64> = None
+    let present: (Maybe<i64> | string) = four
+    let absent: (Maybe<i64> | string) = none
+    assert (text present == "4")
+    assert (text absent == "null")
+    let line: (Shape | i64) = Line 7
+    let dot: (Shape | i64) = Dot
+    assert (text line == "{\"Line\":7}")
+    assert (text dot == "\"Dot\"")
+    let point: (Point | i64) = Point { x: 1, y: "a" }
+    assert (text point == "{\"x\":1,\"y\":\"a\"}")
+    let json: (Json.Value | i64) = Json.Null
+    assert (text json == "null")
+
+test "the error of the member" =
+    let zero = 0.0
+    let nan: (f64 | string) = zero / zero
+    assert (text nan == "json: non-finite number")
+
+test "inside other values" =
+    let items: [(i64 | string)] = [1, "two", 3]
+    assert (Result.is_ok (Encode.encode (ref items)))
+    assert (text items == "[1,\"two\",3]")
+    let table: Map<string, (i64 | [i64])> = Map.empty() |> Map.insert "a" (cell 1) |> Map.insert "b" (cell [2, 3])
+    assert (text table == "{\"a\":1,\"b\":[2,3]}")
+    let nested: ((i64 | string) * Maybe<(bool | string)>) = (1, Some "s")
+    assert (text nested == "[1,\"s\"]")
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+    // The bodies are functions of the specializer, emitted the same way twice.
+    let ir = accepts(
+        "let a: (i64 | string) = 1\nlet encoded = Encode.encode (ref a)\nlet decoded: Result<(i64 | string), Json.Error> = Json.deserialize u8\"1\"\nif Result.is_ok (ref encoded) && Result.is_ok (ref decoded) then 1 else 0\n",
+    );
+    assert!(ir.contains("$intrinsic.Encode.encode."), "{ir}");
+    assert!(ir.contains("$intrinsic.Decode.decode."), "{ir}");
+    // A member without `Encode` is named, as for the other classes.
+    let error = rejects(
+        "record Point { x: i64 }\nlet a: (i64 | Point) = 1\nlet t = Json.serialize a\n0\n",
+        "E1005",
+        "no_instance",
+    );
+    assert_eq!(
+        error.message,
+        "no instance for Encode<Main.Point>; define an instance or use a supported type"
+    );
+}
+
+#[test]
+fn dyn_encode_stores_anonymous_union() {
+    // As a tuple is: the built-in instance fills the vtable of `dyn Encode`.
+    passes(
+        r#"test "dyn" =
+    let word: (i64 | string) = "one"
+    let number: (i64 | string) = 1
+    let stored: [dyn Encode] = [Dyn.of word, Dyn.of number, Dyn.of (1, "one")]
+    let mut all = ""
+    for item in stored do
+        all = all + (match Encode.encode item with
+            | Ok json -> String.from_utf8 (ref (Json.to_utf8string (ref json)))
+            | Error error -> Display.display error) + ";"
+    assert (all == "\"one\";1;[1,\"one\"];")
+"#,
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn decode_selects_member_by_kind() {
+    let source = r#"record Point { x: i64, y: string } deriving (Decode)
+
+type Doc = (i64 | bool | string | [i64] | Point)
+
+def bytes :: own string -> utf8string = \text -> Utf8String.from_string (ref text)
+
+def read :: own string -> string = \text ->
+    let decoded: Result<Doc, Json.Error> = Json.deserialize (ref (bytes text))
+    match decoded with
+    | Error error -> "error " + Display.display error
+    | Ok value ->
+        match value with
+        | :? i64 as n -> $"i64 {n}"
+        | :? bool as b -> $"bool {b}"
+        | :? string as s -> "string " + s
+        | :? [i64] as items -> $"array {items}"
+        | :? Point as p -> $"point {p.x} {p.y}"
+
+test "one member for each kind" =
+    assert (read "42" == "i64 42")
+    assert (read "-0" == "i64 0")
+    assert (read " true" == "bool true")
+    assert (read "false" == "bool false")
+    assert (read "\"x\"" == "string x")
+    assert (read "\"\"" == "string ")
+    assert (read "[1, 2]" == "array [1, 2]")
+    assert (read "[]" == "array []")
+    assert (read "{\"y\": \"b\", \"x\": 3}" == "point 3 b")
+
+def float_or_text :: own string -> string = \text ->
+    let decoded: Result<(string | f64), Json.Error> = Json.deserialize (ref (bytes text))
+    match decoded with
+    | Ok value ->
+        match value with
+        | :? f64 as f -> if f == 2.5 then "f64 2.5" elif f == 3.0 then "f64 3" else "f64"
+        | :? string as s -> "string " + s
+    | Error error -> Display.display error
+
+def list_or_flag :: Decode<'a> => own string -> Result<(bool | ['a]), Json.Error> = \text ->
+    Json.deserialize (ref (bytes text))
+
+def collection :: own string -> string = \text ->
+    let decoded: Result<(i64 | utf8string | Map<string, i64>), Json.Error> = Json.deserialize (ref (bytes text))
+    match decoded with
+    | Ok value ->
+        match value with
+        | :? i64 as n -> $"i64 {n}"
+        | :? utf8string as s -> $"utf8string {s.length}"
+        | :? Map<string, i64> as map -> $"map {Map.length map}"
+    | Error error -> Display.display error
+
+def sequence :: own string -> string = \text ->
+    let decoded: Result<(Set<i64> | string | bool), Json.Error> = Json.deserialize (ref (bytes text))
+    match decoded with
+    | Ok value ->
+        match value with
+        | :? Set<i64> as set -> $"set {Set.length set}"
+        | :? string as s -> "string " + s
+        | :? bool as b -> $"bool {b}"
+    | Error error -> Display.display error
+
+def pair :: own string -> string = \text ->
+    let decoded: Result<((i64 * string) | i64), Json.Error> = Json.deserialize (ref (bytes text))
+    match decoded with
+    | Ok value ->
+        match value with
+        | :? (i64 * string) as both ->
+            match both with
+            | (n, s) -> $"pair {n} {s}"
+        | :? i64 as n -> $"i64 {n}"
+    | Error error -> Display.display error
+
+test "the other types of the table" =
+    assert (float_or_text "2.5" == "f64 2.5")
+    assert (float_or_text "3" == "f64 3")
+    assert (float_or_text "\"2.5\"" == "string 2.5")
+    assert (collection "7" == "i64 7")
+    assert (collection "\"abc\"" == "utf8string 3")
+    assert (collection "{\"a\": 1, \"b\": 2}" == "map 2")
+    assert (collection "[[\"a\", 1]]" == "map 1")
+    assert (sequence "[3, 1, 2]" == "set 3")
+    assert (sequence "\"s\"" == "string s")
+    assert (sequence "true" == "bool true")
+    assert (pair "[1, \"a\"]" == "pair 1 a")
+    assert (pair "5" == "i64 5")
+
+test "generic functions and nested values" =
+    let numbers: Result<(bool | [i64]), Json.Error> = list_or_flag "[1, 2, 3]"
+    let found = match numbers with
+        | Ok value ->
+            match value with
+            | :? [i64] as items -> items.length
+            | :? bool -> -1
+        | Error _ -> -2
+    assert (found == 3)
+    let texts: Result<(bool | [string]), Json.Error> = list_or_flag "true"
+    let flag = match texts with
+        | Ok value ->
+            match value with
+            | :? [string] -> 0
+            | :? bool as b -> if b then 1 else 2
+        | Error _ -> -2
+    assert (flag == 1)
+    let mixed: Result<[(i64 | string)], Json.Error> = Json.deserialize u8"[1, \"two\", 3]"
+    let shown = match mixed with
+        | Ok items -> Display.display items
+        | Error error -> Display.display error
+    assert (shown == "[1, \"two\", 3]")
+    let optional: Result<Maybe<(i64 | string)>, Json.Error> = Json.deserialize u8"null"
+    let absent = match optional with
+        | Ok found -> Maybe.is_none (ref found)
+        | Error _ -> false
+    assert absent
+    let method: Result<(i64 | string), Json.Error> = match Json.parse u8"\"m\"" with
+        | Ok json -> Decode.decode (ref json)
+        | Error error -> Error error
+    let text = match method with
+        | Ok value -> Display.display value
+        | Error error -> Display.display error
+    assert (text == "m")
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+}
+
+#[test]
+fn decode_overlap_is_rejected() {
+    let advice = "so the JSON value does not select one member; decode Json.Value and match on it, or use a union with named cases";
+    let open = "is not limited to one kind of JSON value (a Maybe, a union with named cases, Json.Value, or a type with a hand-written Decode can read several)";
+    let decode =
+        |ty: &str| format!("let r: Result<{ty}, Json.Error> = Json.deserialize u8\"1\"\n0\n");
+    let shape = "union Shape = Dot | Line of i64 deriving (Decode)\n";
+    let point =
+        "record Point { x: i64 } deriving (Decode)\nrecord Size { w: i64 } deriving (Decode)\n";
+    let manual = "record Manual { x: i64 }\ninstance Decode<Manual> {\n    fn decode json = Result.Ok (Manual { x: 1 })\n}\n";
+    for (source, union, reason) in [
+        // Two members read the same kind.
+        (
+            decode("(i64 | f64)"),
+            "(i64 | f64)",
+            "the members i64 and f64 both read a JSON number".to_owned(),
+        ),
+        (
+            decode("(Map<i64, string> | [i64])"),
+            "(Map<i64, string> | [i64])",
+            "the members Map<i64, string> and [i64] both read a JSON array".to_owned(),
+        ),
+        (
+            decode("(utf8string | string | i64)"),
+            "(i64 | string | utf8string)",
+            "the members string and utf8string both read a JSON string".to_owned(),
+        ),
+        (
+            decode("((i64 * i64) | Vec<i64> | bool)"),
+            "(bool | Vec<i64> | (i64 * i64))",
+            "the members Vec<i64> and (i64 * i64) both read a JSON array".to_owned(),
+        ),
+        (
+            decode("(HashMap<string, i64> | HashSet<i64>)"),
+            "(HashMap<string, i64> | HashSet<i64>)",
+            "the members HashMap<string, i64> and HashSet<i64> both read a JSON array".to_owned(),
+        ),
+        (
+            format!("{point}{}", decode("(Point | Size)")),
+            "(Main.Point | Main.Size)",
+            "the members Main.Point and Main.Size both read a JSON object".to_owned(),
+        ),
+        (
+            format!("{point}{}", decode("(Point | Map<string, i64>)")),
+            // Records are in the order of their qualified names: `Main.Point`, then `Map.Map`.
+            "(Main.Point | Map<string, i64>)",
+            "the members Main.Point and Map<string, i64> both read a JSON object".to_owned(),
+        ),
+        // A member that is not limited to kinds of its own.
+        (
+            decode("(Maybe<i64> | string)"),
+            "(string | Maybe<i64>)",
+            format!("the member Maybe<i64> {open}"),
+        ),
+        (
+            decode("(Json.Value | i64)"),
+            "(i64 | Json.Value)",
+            format!("the member Json.Value {open}"),
+        ),
+        (
+            format!("{shape}{}", decode("(Shape | i64)")),
+            "(i64 | Main.Shape)",
+            format!("the member Main.Shape {open}"),
+        ),
+        (
+            format!("{manual}{}", decode("(Manual | i64)")),
+            "(i64 | Main.Manual)",
+            format!("the member Main.Manual {open}"),
+        ),
+        // The method, a generic function and derived instances reach the same rule.
+        (
+            "def f :: ref Json.Value -> Result<(i64 | f64), Json.Error> = \\json -> Decode.decode json\n0\n".to_owned(),
+            "(i64 | f64)",
+            "the members i64 and f64 both read a JSON number".to_owned(),
+        ),
+        (
+            "def f :: Decode<'a> => ref Json.Value -> Result<(['a] | Vec<'a>), Json.Error> = \\json -> Decode.decode json\n0\n".to_owned(),
+            "(['a] | Vec<'a>)",
+            "the members ['a] and Vec<'a> both read a JSON array".to_owned(),
+        ),
+        (
+            "record R { v: (i64 | f64) } deriving (Decode)\n0\n".to_owned(),
+            "(i64 | f64)",
+            "the members i64 and f64 both read a JSON number".to_owned(),
+        ),
+        (
+            "union U = A | B of (Maybe<i64> | string) deriving (Encode, Decode)\n0\n".to_owned(),
+            "(string | Maybe<i64>)",
+            format!("the member Maybe<i64> {open}"),
+        ),
+    ] {
+        let error = rejects(&source, "E1025", "anonymous_union_decode_overlap");
+        assert_eq!(
+            error.message,
+            format!("no Decode instance for {union}: {reason}, {advice}"),
+            "{source}"
+        );
+    }
+    // A member without `Decode` is reported as that, before the kinds are compared.
+    for (source, message) in [
+        (
+            decode("(char | i64 | f64)"),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
+        (
+            format!("record Plain {{ x: i64 }}\n{}", decode("(Plain | i64)")),
+            "no instance for Decode<Main.Plain>; define an instance or use a supported type",
+        ),
+        (
+            decode("((i64 * i64 * i64 * i64 * i64) | [i64])"),
+            "no instance for Decode<(i64 * i64 * i64 * i64 * i64)>; define an instance or use a supported type",
+        ),
+    ] {
+        let error = rejects(&source, "E1005", "no_instance");
+        assert_eq!(error.message, message, "{source}");
+    }
+    // `Encode` has no such rule, and a record with a derived `Decode` reads an object only.
+    accepts("record R { v: (i64 | f64 | Maybe<i64>) } deriving (Encode)\n0\n");
+    accepts(&format!("{point}{}", decode("(Point | i64 | [Size])")));
+    accepts(
+        "def f :: Decode<'a> => ref Json.Value -> Result<(['a] | string), Json.Error> = \\json -> Decode.decode json\n0\n",
+    );
+}
+
+#[test]
+fn decode_mismatch_names_member_kinds() {
+    passes(
+        r#"record Point { x: i64 } deriving (Decode)
+
+def bytes :: own string -> utf8string = \text -> Utf8String.from_string (ref text)
+
+def refusal :: own Result<'a, Json.Error> -> string = \decoded ->
+    match decoded with
+    | Ok _ -> "ok"
+    | Error error -> Display.display error
+
+def number_or_text :: own string -> string = \text ->
+    let decoded: Result<(string | i64), Json.Error> = Json.deserialize (ref (bytes text))
+    refusal decoded
+
+def flag_items_point :: own string -> string = \text ->
+    let decoded: Result<([i64] | Point | bool), Json.Error> = Json.deserialize (ref (bytes text))
+    refusal decoded
+
+def number_or_map :: own string -> string = \text ->
+    let decoded: Result<(Map<string, i64> | i64), Json.Error> = Json.deserialize (ref (bytes text))
+    refusal decoded
+
+test "no member reads the kind" =
+    assert (number_or_text "true" == "json: expected number or string")
+    assert (number_or_text "null" == "json: expected number or string")
+    assert (number_or_text "[1]" == "json: expected number or string")
+    assert (number_or_text "{}" == "json: expected number or string")
+    assert (flag_items_point "1" == "json: expected boolean or object or array")
+    assert (flag_items_point "\"s\"" == "json: expected boolean or object or array")
+    assert (flag_items_point "null" == "json: expected boolean or object or array")
+    assert (number_or_map "\"s\"" == "json: expected number or object or array")
+    assert (number_or_map "false" == "json: expected number or object or array")
+
+test "the error is ExpectedType outside parsing" =
+    let decoded: Result<(i64 | string), Json.Error> = Json.deserialize u8"true"
+    match decoded with
+    | Ok _ -> assert false
+    | Error error ->
+        assert (error.offset == -1)
+        assert (error.kind == Json.ExpectedType "number or string")
+
+test "the selected member gives its own error" =
+    assert (number_or_text "1.5" == "json: expected integer")
+    assert (number_or_text "1e2" == "json: expected integer")
+    assert (number_or_text "99999999999999999999" == "json: number out of range")
+    assert (flag_items_point "[1, true]" == "json: expected integer")
+    assert (flag_items_point "{}" == "json: missing field \"x\"")
+    assert (flag_items_point "{\"x\": \"one\"}" == "json: expected integer")
+    assert (number_or_map "[1]" == "json: expected array of 2")
+    assert (number_or_map "{\"a\": true}" == "json: expected integer")
+    assert (number_or_text "tru" == "json: unexpected end of input at byte 3")
+    assert (number_or_text "7" == "ok")
+"#,
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn derived_record_with_anonymous_field_round_trips() {
+    let source = r#"record Cell { name: string, value: (i64 | string | [i64]) } deriving (Eq, Encode, Decode)
+union Shape = Dot | Label of (string | i64) deriving (Eq, Encode, Decode)
+record Pair<'a> { left: (['a] | string), right: 'a } deriving (Eq, Encode, Decode)
+
+def text :: Encode<'a> => own 'a -> string = \value ->
+    match Json.serialize value with
+    | Ok bytes -> String.from_utf8 (ref bytes)
+    | Error error -> Display.display error
+
+def cell :: own string -> Result<Cell, Json.Error> = \text ->
+    Json.deserialize (ref (Utf8String.from_string (ref text)))
+
+def shape :: own string -> Result<Shape, Json.Error> = \text ->
+    Json.deserialize (ref (Utf8String.from_string (ref text)))
+
+def refusal :: own Result<'a, Json.Error> -> string = \decoded ->
+    match decoded with
+    | Ok _ -> "ok"
+    | Error error -> Display.display error
+
+def gives :: Eq<'a> => own Result<'a, Json.Error> -> own 'a -> bool = \decoded expected ->
+    match decoded with
+    | Ok value -> value == expected
+    | Error _ -> false
+
+test "record" =
+    assert (text (Cell { name: "a", value: [1, 2] }) == "{\"name\":\"a\",\"value\":[1,2]}")
+    assert (text (Cell { name: "b", value: "two" }) == "{\"name\":\"b\",\"value\":\"two\"}")
+    assert (text (Cell { name: "c", value: 3 }) == "{\"name\":\"c\",\"value\":3}")
+    assert (gives (cell "{\"name\":\"a\",\"value\":[1,2]}") (Cell { name: "a", value: [1, 2] }))
+    assert (gives (cell "{\"value\": \"two\", \"name\": \"b\"}") (Cell { name: "b", value: "two" }))
+    assert (gives (cell "{\"name\":\"c\",\"value\":3}") (Cell { name: "c", value: 3 }))
+    assert (not (gives (cell "{\"name\":\"c\",\"value\":3}") (Cell { name: "c", value: "3" })))
+    assert (refusal (cell "{\"name\":\"a\"}") == "json: missing field \"value\"")
+    assert (refusal (cell "{\"name\":\"a\",\"value\":null}") == "json: expected number or string or array")
+    assert (refusal (cell "{\"name\":\"a\",\"value\":true}") == "json: expected number or string or array")
+    assert (refusal (cell "{\"name\":\"a\",\"value\":[\"x\"]}") == "json: expected integer")
+
+test "union" =
+    assert (text (Label "x") == "{\"Label\":\"x\"}")
+    assert (text (Label 3) == "{\"Label\":3}")
+    assert (text Dot == "\"Dot\"")
+    assert (gives (shape "{\"Label\":\"x\"}") (Label "x"))
+    assert (gives (shape "{\"Label\": 3}") (Label 3))
+    assert (gives (shape "\"Dot\"") Dot)
+    assert (refusal (shape "{\"Label\": [3]}") == "json: expected number or string")
+
+test "generic record" =
+    let numbers = Pair { left: [1, 2], right: 3 }
+    let words = Pair { left: "w", right: "x" }
+    assert (text (Pair { left: [1, 2], right: 3 }) == "{\"left\":[1,2],\"right\":3}")
+    assert (text (Pair { left: "w", right: "x" }) == "{\"left\":\"w\",\"right\":\"x\"}")
+    let first: Result<Pair<i64>, Json.Error> = Json.deserialize u8"{\"left\":[1,2],\"right\":3}"
+    let second: Result<Pair<string>, Json.Error> = Json.deserialize u8"{\"left\":\"w\",\"right\":\"x\"}"
+    assert (gives first numbers)
+    assert (gives second words)
+
+test "round trips" =
+    let cells = [Cell { name: "a", value: [1, 2] }, Cell { name: "b", value: "two" }, Cell { name: "c", value: -3 }]
+    let back: Result<[Cell], Json.Error> = match Json.serialize (ref cells) with
+        | Ok bytes -> Json.deserialize (ref bytes)
+        | Error error -> Error error
+    assert (gives back cells)
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+}
