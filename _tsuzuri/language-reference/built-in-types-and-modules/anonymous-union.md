@@ -199,7 +199,7 @@ expected (i64 | f64 | string), found (i64 | bool); bool is not a member of (i64 
 - 参照 `ref V` の値は拡大しません（`E1003`、help `an anonymous union is widened from an owned value`）。edition 2027 の読み取りの引数は参照なので、`def f :: (i64 | string) -> (f64 | i64 | string) = \v -> v` は `E1003` で、メッセージが `own (i64 | string)` と書くよう案内します。`(i64 | bool)` のように Copy で drop の要らない共用体の引数は、edition 2027 でも値なので拡大できます。
 - 借用の先やコレクションの要素にある値を拡大すると、Copy の要素は複製し、Copy でない要素は move できないので `E1012` です（`Some item` と同じです）。
 - 入れ物や関数の中は拡大しません。`[(i64 | string)]` を `[(f64 | i64 | string)]` へ、`Maybe<(i64 | string)>` を `Maybe<(f64 | i64 | string)>` へ渡すと `E1003` です。
-- 比較などの演算子の被演算子は拡大しません。`v == w`（`v` が `(f64 | i64 | string)`、`w` が `(i64 | string)`）は `E1003` です。片方だけを move することになるためです。先に `let wide: (f64 | i64 | string) = w` と束縛します。
+- 比較などの演算子の被演算子は拡大しません。`v == w`（`v` が `(f64 | i64 | string)`、`w` が `(i64 | string)`）は `E1003` です。拡大すると、片方の被演算子だけを move することになるためです。
 - 並んだ式は、注入と同じく前の式の型を期待される型にします。期待される型のない `[v, w]` は `w` を拡大しますが、`[w, v]` は `E1003` です。型を注釈すれば順序に関係なく書けます。
 - 要素の多い共用体から少ない共用体へは、自動では変えません。[`:? (A | B)` で絞る](#-a--b-で絞る)を使います。
 
@@ -304,7 +304,11 @@ cannot narrow a value into (i64 | string) in an arm with a guard because string 
   help: match each member with its own ':?' arm, or test the condition in the arm's body
 ```
 
-型変数を含む要素（`Maybe<'a>`）は、Copy と決まらないので Copy でない要素として扱います。所有する値からは、Copy でない要素もそのまま絞り込めます。
+型変数を含む要素（`Maybe<'a>`）は、Copy と決まらないので Copy でない要素として扱います。
+
+絞り込みと同じ値をほかの束縛が受け取るパターン（`(:? (i64 | f64) as n) as whole`）は、絞った先の要素がすべて Copy なら書けます。`n` は複製で、`whole` が値を受け取ります。Copy でない要素があれば、同じ値を 2 回 move することになるので `E1012` です（`(:? string as s) as whole` と同じです）。
+
+所有する値からは、Copy でない要素もそのまま絞り込めます。
 
 ```tsuzuri run=abc%203
 def keep_text :: own (i64 | string | [i64]) -> (i64 | string) = \value ->
@@ -320,7 +324,7 @@ def show :: own (i64 | string) -> string = \value ->
 $"{show (keep_text "abc")} {show (keep_text [1, 2, 3])}"
 ```
 
-絞り込みも、再帰しない匿名共用体では確保をしません。ただし、配列・リストの要素（Copy で、要素の領域を持つ型）を持つ値へ絞ると、その要素は 1 回複製されます（`match` を入れ子にして包み直すときと同じです）。ガードのある腕では、ガードが読む値と本体が受け取る値の 2 回です。`--warn implicit-copy` の `W1006` と `@no_copy` の `E1031` は、パターンの位置に出ます。
+絞り込みも、再帰しない匿名共用体では確保をしません。ただし、配列・リストの要素（Copy で、要素の領域を持つ型）を持つ値へ絞ると、その要素は 1 回複製されます（`match` を入れ子にして包み直すときと同じです）。ガードのある腕と、同じパターンのほかの束縛が照合する値を move する腕では、パターンが作る値と束縛が受け取る値の 2 回です。`--warn implicit-copy` の `W1006` と `@no_copy` の `E1031` は、パターンと束縛の名前の位置に出ます。
 
 ## 要素の規則
 

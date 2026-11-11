@@ -5,9 +5,9 @@
 | ID | A25 |
 | 優先度 | P2 |
 | 規模 | M |
-| 依存 | [A24](_completed/A24-anonymous-unions.md)（done） |
+| 依存 | [A24](A24-anonymous-unions.md)（done） |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（2026-11-11。下の「実装と検証」） |
 | 起票 | 2026-11-02（A24 と同時。HEAD `2f556480`） |
 | 承認 | 拡大は GUIDE D-62 の決定 1（期待型で自動的に包む）の範囲として扱う。ほかの決定事項は既定案 |
 | 手本にする既存実装 | A24 の `conform_union`・`type_test_pattern`・`union_case_pattern`。型付き IR の `match`: `TypedExprKind::Match { local, value, arms }`（`src/check.rs:4096`）と `TypedMatchArm`・`PatternAlternative`・`PatternStep`（`3955-3995`）。OR パターンの代替と網羅性: `pattern_alternatives` の `PatternKind::Or` の腕（`src/control.rs:585`）と `CoveragePat::Or`（`src/exhaustiveness.rs:24`） |
@@ -314,6 +314,29 @@ A24 が計画から変えていて、このチケットに関わる点:
   - 文書: `pattern-matching/match.md`、`type-inference.md`、`docs/language.md` の匿名共用体の節。
 - `--emit llvm` は最適化前の IR です。
 
+### 実装中の判断（第 2 段: 手順 3〜7 と `E1041` の kind）
+
+再検討の「絞り込み（第 2 段）」の作り方を実装し、確かめながら次を決めました。
+
+1. **形を決めるのは `match_value` です（再検討の案からの変更）。** 再検討は、ガードのある腕かどうかを `pattern_alternatives` へ伝える旗（`Checker` のフィールド）を置き、ガードのある腕では `type_test_pattern` が手順（`Bind`）を作る案でした。実装では、`narrowing_pattern`（`type_test_pattern` から分けた関数）はどの腕でも「対象を隠れた名前 `$narrow.x` に束縛し、`Narrowing` を記録する」だけにし、`match_value` が腕ごとに形を選びます（`stepped_narrowings`）。旗は要りません。
+   - ブロックの形（既定）: 本体を `Block { [(x, retag(Local($narrow.x)))], body }` で包みます（`narrowed_body`）。
+   - 手順の形: 隠れた束縛を外し、手順の末尾に `Bind($narrowed{n}, Construct { W, j, UnionPayload { 対象, k } })`、束縛を `(x, Local($narrowed{n}))` にします（`step_narrowing`。`active_pattern` と同じ形）。ガードのある腕と、下の 3 の場合に使います。`W` の要素がすべて Copy のときだけです。
+2. **`W` の要素がすべて Copy で `U` が Copy でないとき、隠れた束縛をビューにします**（`Narrowing::view`。腕の `borrowed` に入れる）。再検討どおりに隠れた束縛へ値を move すると、`match v with | :? (i64 | f64) as n -> ...` が `v`（`(f64 | i64 | string)`）を move し、後で `v` を使えなくなります。要素ごとの腕（`:? i64 as n`・`:? f64 as n`）は `v` を move しないので、それに合わせました。ビューは A24 でも所有する対象の下に現れる形（配列のパターンの要素など）で、`views()`・所有権・LLVM・`match_use` は対象が所有されているかどうかを区別しません。
+3. **ビューにする絞り込みと同じ代替に、対象から Copy でない値を move する束縛があるときは、手順の形にします。** `(:? (i64 | f64) as n) as whole` は、ビュー（`n` の隠れた束縛）と move（`whole`）が同じ場所で衝突し、ブロックの形では `E1014` になりました。要素ごとの `(:? i64 as n) as whole` は通るので、通る形にしました。判定は保守的で、「同じ代替のほかの束縛（ビューにする絞り込みの隠れた束縛を除く）のうち、型が Copy でなく、借用の先でないもの」が 1 つでもあれば手順の形です（場所が重ならない `(:? (i64 | f64) as n, s)` の `s: string` でも手順の形になります。結果は同じで、switch にならないだけです）。`W` に Copy でない要素があれば、隠れた束縛と `whole` の 2 回の move で `E1012` です（`(:? string as s) as whole` と同じ）。
+4. **`W == U` の `as x`** は、参照を外した対象をそのまま束縛します（`whole` だけのパターンと同じ。`CoveragePat::Wildcard`、テストなし）。`as` のない `:? U` もテストを作りません。束縛の名前は、`PatternKind::As` と同じくつねに束縛です（case や recognizer の名前としては解決しません）。
+5. **OR パターン**は、どの代替も同じ `x` を、同じ型の対象から、同じ `W` で絞るときだけ通します。片側だけが絞り込み（もう片側は同じ型の素の束縛）か、絞る前の型が違えば `E1020`（kind `or_pattern_binding_mismatch`。メッセージは `both sides of an OR pattern must narrow the same anonymous union with the same ':?' test to bind one name`）、`W` が違えば `E1003`（A24 の「OR の両側は同じ型」と同じ）です。1 つの代替で同じ名前を 2 回絞るのは `E1001`（`duplicate or reserved name 'n'`）です。
+6. **診断の文**（`type_test_narrow_borrowed`。位置は `:?`）:
+   - 借用の先: `cannot narrow a borrowed value into {W} because {Wi} is not Copy`、help `match each member with its own ':?' arm, or match an owned value`。
+   - 所有する値のガードのある腕: `cannot narrow a value into {W} in an arm with a guard because {Wi} is not Copy`、help `match each member with its own ':?' arm, or test the condition in the arm's body`。借用の先でガードもある腕は、借用の文です。
+   - `type_test_not_member` は、`W` の要素のうち正準順序で最初の、`U` にない型を名指しします（位置は `:?` の後の型全体）。
+7. **span**: `retag` に span の引数を足しました（拡大は値の span、絞り込みはパターンの span）。隠れた束縛と `x` の `Local.span` は `x` の名前、`retag` の束縛は拡大と同じ 2 組（パターンの span か、その終わりの幅 0 の span）です。`LastUses` の表のキーが重ならないので、隠れた束縛の move を `retag` の束縛が打ち消しません。hover は、`x` の上で `x: W`、`:?` の上で `W` です。
+8. **複製と確保**（`target/scratch/a25/try/ir2`・`cp1`〜`cp8` で測りました）:
+   - 再帰しない匿名共用体の拡大・絞り込みは、数・文字列の要素では `@tz.alloc` がなく、`@no_copy` を満たし、タグは `switch i32` で選びます（テスト `narrowing_retags_without_allocating`・`widening_does_not_copy_owned_array_members`、suite の `inspect`）。
+   - 絞り込みの配列・リストの要素は、ブロックの形で 1 回（`retag` が隠れた束縛から読むところ。`LastUses` が `match` の束縛を最後の使用の対象から外すため）、手順の形で 2 回（手順の `Construct` と束縛）複製されます。`W1006`・`E1031` の位置はパターン（と、手順の形では束縛の名前）です。
+   - 第 1 段の判断 2 の「ループの本体の中の拡大」は、正確には「拡大がループの本体の中にあるか、同じ関数のその後ろにループがあるとき」です。`single_use_locals`（`src/call_specialization.rs`）が、ループに出会うとそれまでに数えた局所をすべて「2 回以上」にするためで、名前付きの union を `match` で包み直した場合も、基準のバイナリで同じ位置に同じ複製が出ます（`try/cp5`）。文書はこの条件で書きました。
+9. **`type_test_union`** は出さなくなりました。登録簿には残し（D-51）、`tests/diagnostic_kinds.rs` の `RETIRED` に足しました。A24 のテスト `type_test_rejections` の 1 件（`:? (string | i64)` を `E1041` にする期待）は、受理の期待に替えました（どちらも、起票と再検討に書いた、許す期待値の変更です）。
+10. **E2E**（suite `anonymous_unions`。fixture の A24 の非公開の補助関数 `widen` は `either_sign` に改名）: `widen`・`widen_owned`・`narrow`・`narrow_owned` に加えて `narrow_views`（配列の要素からの絞り込み、ガードが通る場合と落ちる場合、読み取りの引数）を足しました。`narrow_owned` は、一時値・局所・`Maybe` のペイロードからの move、読まずに捨てる絞り込み、`as whole` との併用（手順の形）を通します。参照値は JavaScript の BigInt で、fixture の定義から書きました。
+
 ## 決定事項
 
 ### D1: 拡大を注入と同じ位置で行う
@@ -333,3 +356,63 @@ A24 が計画から変えていて、このチケットに関わる点:
 - 決定: Copy の要素だけなら複製して作り、そうでなければ拒否する。
 - 理由: 絞り込みの束縛は新しい値で、借用の先のペイロードを move できない。暗黙の深い複製（A15）を増やさない。
 - 状態: 既定案。
+
+## 実装と検証（2026-11-11）
+
+ブランチ `feat/a25-anonymous-union-conversions`（基準は `feat/a24-anonymous-unions` の `bd625b4d`）で、Phase 1（このチケットの全体）の手順 1〜7 を実装しました。
+
+### 実装した手順
+
+| 手順 | 内容 | コミット |
+| --- | --- | --- |
+| 着手時の再検討 | 監査・調整役の決定・A24 が実際に作ったコードを合わせた節 | `74141875` |
+| 1・2・4（`E1003`） | 拡大: `conform_union` の分岐と `widened`、`control.rs` の `match_subject`・`retag`・`widen_union`、kind `anonymous_union_not_subset` | `b83389c4` |
+| 3・4（`E1041`） | 絞り込み: `type_test_pattern` から `narrowing_pattern`、`match_value` の `stepped_narrowings`・`step_narrowing`・`narrowed_body`、kind `type_test_narrow_borrowed`、`type_test_union` の引退 | 第 2 段のコミット（この節を含む） |
+| 5・6 | suite `anonymous_unions` の `widen`・`widen_owned`・`narrow`・`narrow_owned`・`narrow_views` と `inspect` | 同上 |
+| 7 | 文書（下の一覧）、`E1041.md`、`gen-docs` | 同上 |
+
+### 受け入れ条件
+
+- 「例」の表の 8 行は、`tests/anonymous_unions.rs` の `widens_subset_unions`・`rejects_non_subset_unions`・`widening_moves_the_value`・`narrows_to_sub_unions`・`narrowing_is_exhaustive_as_or`・`rejects_narrowing_borrowed_non_copy`・`rejects_narrowing_non_members` が確かめます。表示は正準順序です（表の `(f64 | i64 | string)` は `(i64 | f64 | string)` と表示されます）。
+- suite `anonymous_unions` は native と WASM の `-O0`／`-O3` で通り、native は `live == 0` です（69 件。A24 の 37 件と、このチケットの 32 件）。
+- 拡大に確保がないこと（手順 6）: 最適化前の IR（`build -O3 --emit llvm`）で、`widen` と `narrow` の本体に `@tz.alloc` がなく、タグを `switch i32` で選びます（suite の `inspect` が毎回確かめます）。`opt -O3` の後は、`tz_widen` に `number_or_text`・`weigh` が畳み込まれ、残る `malloc` は `$"odd {n}"` の文字列の 1 つだけ、`tz_narrow` も `classify` の文字列の 1 つだけです（`target/scratch/a25/try/ir2` で確かめました）。配列・リストの要素の複製の条件は「実装中の判断」（第 1 段の 2、第 2 段の 8）のとおりです。
+
+### 実行したコマンドと結果
+
+- T0: `cargo fmt --all -- --check`（差分なし）、`node scripts/slot.mjs -- cargo clippy --all-targets --locked -- -D warnings`（警告なし）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`: 3081 件のうち 3081 passed、4 skipped（A24 の先端は 3062 件。増えた 19 件は `tests/anonymous_unions.rs` のテスト）。途中の実行（絞り込みを作り直した直後）では、3081 件のうち `llvm_handoff::pruning_keeps_the_ir_of_every_project_valid` の 1 件が `No such file or directory` で落ちました。落ちたのはディレクトリの読み取り（`tests/llvm_handoff.rs:470` の `read_dir`）で、IR の検査には達していません。このテストは `tests/fixtures/`・`examples/` の各単位の下を、無視されるキャッシュ（`target/tz/kg`。同じ T1 の実行のほかのテストが 154 個の単位に書きます。消してから T1 を回すと、実行の途中で作り直されました）も含めて歩くので、歩いている間にその中のファイルが入れ替わったものと見ています（このチケットの変更とは無関係です）。`--test llvm_handoff` だけを回すと 13 件すべて通り、最後の全体の実行でも通りました。`tests/anonymous_unions.rs` は 88 件（A24 の先端は 69 件。第 1 段で 8 件、第 2 段で 11 件）。GUIDE §3.1 の回帰テスト 4 件（`bounds_type_growing_polymorphic_recursion`・`bounds_recursive_and_flat_expression_depth`・`bounds_nested_builder_expansion_not_just_source_syntax`・`honors_the_exact_specialization_limit`）は T1 の中で通りました。
+- T2:
+  - `node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri anonymous_unions`: `anonymous_unions: native/WASM at O0/O3 passed`、69 cases。
+  - ほかの suite は回していません。下の「匿名共用体を使わないプログラムの出力」のとおり、ほかの suite の fixture（`tests/fixtures/` の 185 単位）は IR が 1 byte も変わらないので、結果は基準と同じです。
+  - `node scripts/slot.mjs -- node tests/last_use_fuzz.mjs target/debug/tsuzuri 40 1 4`: `40 programs, 80 native O0/O3 executions, seed 1, depth 4; zero differences`。
+  - `node scripts/check-docs.mjs <変更した 7 ページ>`: `7 pages, 292 links, 31 checked examples, 60 native runs (O0/O3), 0 test projects, 1 generated blocks`。
+  - `node scripts/gen-docs.mjs --check`: 19 blocks、0 stale。`node scripts/check-cli-docs.mjs`: 4 checks、0 failed。
+  - `node scripts/check-guide-lite.mjs`・`node scripts/check-links.mjs --into _features/README.md`: 88 references、0 failed と、11 links、0 broken。
+- 匿名共用体を使わないプログラムの出力: A24 の先端のバイナリの出力（第 1 段で取った `target/scratch/a25/before`）と、このチケットの最後のバイナリの出力（`after`）を、`tests/fixtures/` と `examples/` の 186 単位（native と wasm32 の IR、`check --json`、`doc`、`kg build`、`api-diff` の既定と `--effective`）で比べました。`tests/fixtures/anonymous_unions`（この段で関数を足した fixture）を除く 185 単位は、すべてのファイルが 1 byte も違いません（`compare-final.txt`）。その fixture も、A24 の 15 関数（`pick`・`make`・`number`・`mixed`・`element`・`owned`・`measure`・`label`・`unwrap`・`nested`・`build`・`total`・`recursive`・`generic`・`wide`）の本体は、単相化とラムダの連番をそろえると native と wasm32 の両方で同じです。
+- `src/runtime/` は変えていないので、`scripts/check-runtime-includes.sh` は対象外です。
+
+### チケットから外れた判断
+
+再検討の節と、2 つの「実装中の判断」に書いたとおりです。要点:
+
+- 絞り込みの束縛は `Construct` ではなく、隠れた束縛と `retag` のブロック、または パターンの手順（`Bind`）で作ります（起票の作り方は、束縛が場所でなければならないので実現できません）。
+- `W == U` の `as x` は値そのものを束縛します（作り直しません。借用の先でも拒否しません）。
+- 要素がすべて Copy の絞り込みは、所有する値を move しません（要素ごとの腕と同じ）。
+- 二項演算子の被演算子では拡大しません。`ref V` は拡大せず `E1003`（`type_mismatch`）です。
+- `last_use.rs` は変えていません（監査の案は、匿名共用体を使わないプログラムの IR を変えるため）。
+- E2E に `narrow_owned` と `narrow_views` を足しました（起票は 3 関数）。
+- 変えた既存の期待値は、起票と再検討に書いた 3 つだけです: `members_commute_and_flatten` の 1 行（部分集合の受理）、`type_test_rejections` の 1 件（`:? (string | i64)` の受理）、`tests/diagnostic_kinds.rs` の `RETIRED`（`type_test_union`）。
+
+### 更新した文書
+
+- `_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`（「共用体どうしの受け渡し（拡大）」と「`:? (A | B)` で絞る」の節と `run=` の例 3 つ。「部分集合は渡せない」の注意を削除）
+- `_tsuzuri/language-reference/pattern-matching/match.md`、`pattern-matching.md`
+- `_tsuzuri/language-reference/types-and-type-inference/type-inference.md`、`types.md`
+- `_tsuzuri/language-reference/compiler/diagnostics.md`（`E1003`・`E1020`・`E1041` の説明と、生成した kind の表）
+- `_tsuzuri/language-reference/index.md`
+- `docs/language.md`（匿名共用体の節の「拡大」「絞り込み」、パターンの表、`E1041` の行）、`docs/architecture.md`（「匿名共用体（A24・A25）」の「拡大」「絞り込み」）
+- `README.md`（機能の一覧と「変更の種類別」の行）、`src/explain/codes/E1041.md`（1,481 文字）
+
+### 変更したファイル
+
+`src/anonymous_union.rs`、`src/check.rs`、`src/control.rs`、`src/diagnostic_kinds.rs`、`src/explain/codes/E1041.md`、`tests/anonymous_unions.rs`、`tests/diagnostic_kinds.rs`、`tests/features.mjs`、`tests/fixtures/anonymous_unions/Main.tz`、上の文書、`_features/README.md`、このチケット。

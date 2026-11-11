@@ -199,7 +199,8 @@ export def narrow :: i64 -> i64 = \n ->
     | :? string as text -> text.length * 1000
 
 // narrow_owned: the members that own heap memory move out of an owned value into the narrowed one, from a temporary
-// in a loop, from a local, and into a narrowed value that is dropped unread.
+// in a loop, from a local, into a narrowed value that is dropped unread, and from the payload of a Maybe. In the last
+// match `whole` moves the payload that `number` is narrowed from, so `number` is a copy made by the pattern.
 def heap :: i64 -> (f64 | i64 | string | [i64]) = \n ->
     if n % 4 == 0 then $"n={n}" else if n % 4 == 1 then Array.init n (\i -> i) else if n % 4 == 2 then n else 1.5
 
@@ -222,7 +223,12 @@ export def narrow_owned :: i64 -> i64 = \n ->
     let unread = match heap (n + 1) with
         | :? (string | [i64]) as _owner -> 7
         | :? (i64 | f64) as _number -> 9
-    total + rest * 1000000 + unread * 100000000
+    let wrapped: Maybe<(f64 | i64 | string | [i64])> = if n == 5 then None else Some (heap (n + 2))
+    let inner = match wrapped with
+        | Some (:? (string | [i64]) as owner) -> sized owner
+        | Some ((:? (i64 | f64) as number) as whole) -> scale number + weigh whole
+        | None -> 0
+    total + rest * 1000000 + unread * 100000000 + inner * 10000000000
 
 // narrow_views: the elements of an array are narrowed in place (the narrowed value is a copy, of an array too), under
 // a guard that fails or holds, and through a read parameter.

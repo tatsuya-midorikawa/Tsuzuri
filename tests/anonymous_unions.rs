@@ -3109,6 +3109,49 @@ fn narrowing_moves_owned_values() {
 }
 
 #[test]
+fn narrowing_beside_other_bindings() {
+    // `whole` moves the value that `n` is narrowed from, so `n` is a copy that the pattern
+    // makes; two narrowings in one pattern; the payload of a case; a binder that shadows the
+    // matched name. By hand: `size` is 1 for an f64, the i64 itself, the length of a string.
+    passes(
+        &format!(
+            "{NUM}{TEXT}\
+             def size :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? f64 -> 1\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n\n\
+             def both :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | f64) as n) as whole -> num n + size whole\n    | :? string as s -> s.length\n\n\
+             def two :: own ((f64 | i64 | string) * (f64 | i64 | string)) -> i64 = \\pair ->\n    match pair with\n    | (:? (i64 | f64) as a, :? (i64 | f64) as b) -> num a * 100 + num b\n    | (:? (i64 | string) as a, :? (i64 | string) as b) -> text a * 10 + text b\n    | _ -> -1\n\n\
+             def beside :: own ((f64 | i64 | string) * string) -> i64 = \\pair ->\n    match pair with\n    | (:? (i64 | f64) as n, s) -> num n + s.length\n    | (:? string as t, s) -> t.length * s.length\n\n\
+             def nested :: own Maybe<(i64 | string | [i64])> -> i64 = \\m ->\n    match m with\n    | Some (:? (i64 | string) as x) -> text x\n    | Some (:? [i64] as xs) -> xs.length * 10\n    | None -> -1\n\n\
+             def shadow :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as v -> num v\n    | :? string as v -> v.length\n\n\
+             test \"beside\" =\n    \
+             assert (both 4 == 8 + 4)\n    \
+             assert (both 1.5 == 3 + 1)\n    \
+             assert (both \"abc\" == 3)\n    \
+             assert (two (4, 1.5) == 800 + 3)\n    \
+             assert (two (\"ab\", 7) == 20 + 7)\n    \
+             assert (two (\"ab\", \"xyz\") == 20 + 3)\n    \
+             assert (two (1.5, \"x\") == -1)\n    \
+             assert (beside (4, \"ab\") == 8 + 2)\n    \
+             assert (beside (\"abc\", \"ab\") == 6)\n    \
+             assert (nested (Some \"hello\") == 5)\n    \
+             assert (nested (Some 9) == 9)\n    \
+             assert (nested (Some [1, 2]) == 20)\n    \
+             assert (nested None == -1)\n    \
+             assert (shadow 4 + shadow \"abc\" == 8 + 3)\n"
+        ),
+        Edition::E2026,
+    );
+    // A member that is not Copy moves with the narrowing, so a second binding of the value
+    // is a second move, as it is beside `:? string as s`.
+    rejects(
+        &format!(
+            "{TEXT}def f :: own (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | string) as x) as whole -> text x\n    | :? bool -> 2\n"
+        ),
+        "E1012",
+        "use_after_move",
+    );
+}
+
+#[test]
 fn narrowing_in_or_patterns() {
     // Both sides narrow the same union with the same test (see `pair` in
     // `narrowing_copies_copy_members_from_views`). Anything else has no single value to bind.
@@ -3160,6 +3203,37 @@ fn narrowing_in_or_patterns() {
         "def f :: own ((f64 | i64 | string) * i64) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | f64) as n, n) -> 1\n    | _ -> 2\n",
         "E1001",
         "duplicate_name",
+    );
+}
+
+#[test]
+fn narrowing_retags_without_allocating() {
+    // A narrowing of a union that is not recursive switches on the tag and moves or copies the
+    // payload: no allocation and no implicit copy (`@no_copy` holds) for numbers and strings.
+    let ir = accepts(&format!(
+        "{NUM}{TEXT}@no_copy\ndef numbers :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+         @no_copy\ndef owners :: own (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> text x\n    | :? bool -> 2\n\n\
+         export def run :: i64 -> i64 = \\n ->\n    let a: (f64 | i64 | string) = n\n    let b: (i64 | string | bool) = n\n    numbers a + owners b\n"
+    ));
+    for name in ["numbers", "owners"] {
+        let body = function_body(&ir, name);
+        assert!(!body.contains("@tz.alloc"), "{name}:\n{body}");
+        // The match of the function and the retagging match of the narrowing.
+        assert!(body.matches("switch i32 ").count() >= 2, "{name}:\n{body}");
+    }
+    // An array member is copied once into the narrowed value, as a nested match that wraps it
+    // again copies it; the copy is reported at the pattern.
+    let source = "def arr :: own ([i64] | i64) -> i64 = \\n ->\n    match n with\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length\n\n\
+         @no_copy\ndef arrays :: own ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? ([i64] | i64) as n -> arr n\n    | :? string as s -> s.length\n";
+    let error = rejects(source, "E1031", "effect_copy_in_no_copy");
+    let pattern = ":? ([i64] | i64) as n";
+    let at = source.find(pattern).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + pattern.len()));
+    let ir = accepts(&source.replace("@no_copy\n", ""));
+    assert_eq!(
+        function_body(&ir, "arrays").matches("@tz.alloc").count(),
+        1,
+        "{ir}"
     );
 }
 

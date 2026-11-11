@@ -1201,9 +1201,10 @@ describe first                      // "int 42"
 
 - 所有する値を照合するガードのない腕では、`W` に Copy でない要素があればペイロードを move して作り（照合した値は使えなくなります）、すべて Copy ならペイロードを複製して作ります（照合した値は後でも使えます）。
 - 借用の先・コレクションの要素・edition 2027 の読み取りの引数など、case のペイロードの束縛がビューになる位置と、ガード（`when`）のある腕（ガードは腕を選ぶ前に束縛を読む）では、`W` の要素がすべて Copy ならペイロードを複製して作り、Copy でない要素があれば `E1041`（`type_test_narrow_borrowed`。位置は `:?`）です。メッセージは `cannot narrow a borrowed value into (i64 | string) because string is not Copy`（help `match each member with its own ':?' arm, or match an owned value`）と、所有する値のガードのある腕の `cannot narrow a value into (i64 | string) in an arm with a guard because string is not Copy`（help `match each member with its own ':?' arm, or test the condition in the arm's body`）です。型変数を含む要素は Copy でない要素として扱います。
+- ガードのない腕でも、同じ代替のほかの束縛が照合する値から Copy でない値を move するとき（`(:? (i64 | f64) as n) as whole`）は、`W` の要素がすべて Copy なら、ガードのある腕と同じくパターンの手順でペイロードを複製して作ります。Copy でない要素があれば、同じ値を 2 回 move するので `E1012` です。
 - OR パターンの両側が同じ名前を絞り込みで束縛できるのは、同じ型の値を同じ `W` で絞るときだけで、片側だけが絞り込みのとき・絞る前の型が違うときは `E1020`、`W` が違えば `E1003` です。
 - 絞り込みは `W` の要素の数だけ代替を作るので、パターンの代替の上限（1,024。`E1017`）に数えます。
-- 再帰しない匿名共用体の絞り込みは確保をしません。配列・リストの要素は 1 回（ガードのある腕では 2 回）複製され、`W1006`・`E1031` はパターンの位置に出ます。
+- 再帰しない匿名共用体の絞り込みは確保をしません。配列・リストの要素は 1 回（パターンの手順で作る場合は 2 回）複製され、`W1006`・`E1031` はパターンと束縛の名前の位置に出ます。
 
 匿名共用体は、要素数 n ごとにコンパイラが合成した総称の union 宣言（擬似モジュール `$anonymous` の `Union$n`）の具体化です。合成は、どれかのモジュールが匿名共用体の型か型テストのパターンを書いたときだけ行い、書かないプログラムの出力は変わりません。合成した名前は識別子に書けず、診断・hover・`doc`・`kg`・`api-diff`・型付き穴の候補には現れません。Copy・Send・drop・レイアウト（1 バイトのタグと最大の要素の領域。すべての要素の表現が同じならペイロードを共有）・再帰（名前付きの型の循環に入れば、名前付きの union と同じくヒープのノード）・64 KiB の上限（`E1010`）・`export` の制約（`E1008`）は、名前付きの union の規則がそのまま決めます。組み込みの `Eq`・`Ord`・`Hash`・`Display` はまだなく（`==` や表示は `E1005`。メッセージは `no instance for Eq<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases`）、匿名共用体を head とする `instance` は `E1041`（`anonymous_union_instance`）です。
 

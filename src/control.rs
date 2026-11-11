@@ -7,20 +7,25 @@ pub(super) const MAX_PATTERN_ALTERNATIVES: usize = 1024;
 struct Alternative {
     steps: Vec<PatternStep>,
     bindings: Vec<(Ident, TypedExpr)>,
-    /// The narrowings of the alternative, in an arm without a guard (A25).
+    /// The narrowings `:? W as x` of the alternative (A25), each with a hidden binding in
+    /// `bindings`.
     narrowed: Vec<Narrowing>,
 }
 
-/// `:? W as x` where `W` has fewer members than the matched anonymous union (A25), in an arm
-/// without a guard. The alternative binds the matched value to the hidden name `hidden`, and
-/// `match_value` binds `name` around the arm's body to that value as a value of `to`, which
-/// `retag` makes from `cases`.
+/// `:? W as x` where `W` has fewer members than the matched anonymous union (A25). The
+/// alternative binds the matched value to the hidden name `hidden`, and `match_value` decides
+/// how `name` gets that value as a value of `to` (`Checker::narrowing_pattern`).
 #[derive(Clone)]
 struct Narrowing {
     name: Ident,
     hidden: String,
     to: Type,
+    /// (the case of the matched union, the case of `to`) for each member of `to`.
     cases: Vec<(usize, usize)>,
+    /// The entry of `cases` that the alternative tests.
+    case: (usize, usize),
+    /// The first member of `to` that is not Copy: its payload has to move into the new value.
+    moved: Option<Type>,
     /// Whether the hidden binding views the matched value where a binding would move it: every
     /// member of `to` is Copy, so the narrowing copies the payload and leaves the value whole.
     view: bool,
@@ -712,11 +717,9 @@ impl Checker<'_> {
         let mut result = expected.cloned();
         for arm in arms {
             self.scopes.push(BTreeMap::new());
-            // A pattern in the arm's own expressions (a recognizer argument) is of another match.
-            let outer = std::mem::replace(&mut self.guarded_arm, arm.guard.is_some());
-            let alternatives = self.pattern_alternatives(&arm.pattern, local_value(&subject));
-            self.guarded_arm = outer;
-            let (alternatives, pattern) = alternatives?;
+            let (alternatives, pattern) =
+                self.pattern_alternatives(&arm.pattern, local_value(&subject))?;
+            let stepped = self.stepped_narrowings(&alternatives, arm.guard.is_some())?;
             coverage.push(CoverageArm {
                 pattern,
                 guarded: arm.guard.is_some(),
@@ -725,9 +728,9 @@ impl Checker<'_> {
             let mut locals: BTreeMap<String, Local> = BTreeMap::new();
             let mut plans = Vec::new();
             let mut borrowed = BTreeSet::new();
-            // The narrowings of the arm (A25): those of the first alternative, which every
-            // other alternative repeats.
-            let mut narrowed: Vec<Narrowing> = Vec::new();
+            // The narrowings of each alternative (A25): every alternative repeats those of the
+            // first one.
+            let mut narrowed: Vec<Vec<Narrowing>> = Vec::new();
             for (index, alternative) in alternatives.into_iter().enumerate() {
                 for (at, narrowing) in alternative.narrowed.iter().enumerate() {
                     let name = &narrowing.name;
@@ -745,14 +748,14 @@ impl Checker<'_> {
                         continue;
                     }
                     // The hidden bindings below report a name that only one side narrows.
-                    if let Some(first) = narrowed.iter().find(|first| first.name.text == name.text)
+                    if let Some(first) = narrowed[0]
+                        .iter()
+                        .find(|first| first.name.text == name.text)
                     {
                         self.same(&narrowing.to, &first.to, name.span)?;
                     }
                 }
-                if index == 0 {
-                    narrowed.clone_from(&alternative.narrowed);
-                }
+                narrowed.push(alternative.narrowed.clone());
                 let mut seen = BTreeSet::new();
                 let mut bindings = Vec::new();
                 for (name, projection) in alternative.bindings {
@@ -780,7 +783,7 @@ impl Checker<'_> {
                             .get(&name.text)
                             .ok_or_else(|| {
                                 if hidden
-                                    || narrowed
+                                    || narrowed[0]
                                         .iter()
                                         .any(|narrowing| narrowing.name.text == name.text)
                                 {
@@ -807,10 +810,11 @@ impl Checker<'_> {
                         local
                     };
                     if self.borrowed_place(&projection)
-                        || alternative
-                            .narrowed
-                            .iter()
-                            .any(|narrowing| narrowing.view && narrowing.hidden == local.name)
+                        || alternative.narrowed.iter().any(|narrowing| {
+                            narrowing.view
+                                && narrowing.hidden == local.name
+                                && !stepped.contains(&narrowing.name.text)
+                        })
                     {
                         borrowed.insert(local.id);
                     }
@@ -828,16 +832,28 @@ impl Checker<'_> {
                     bindings,
                 });
             }
+            // The guard and the body see the narrowed names: a step of the pattern makes the
+            // values of `stepped`, a block around the body the others.
+            let mut wrapped = Vec::new();
+            for (at, narrowing) in narrowed.first().into_iter().flatten().enumerate() {
+                let hidden = locals[&narrowing.hidden].clone();
+                let local = self.bind(&narrowing.name, narrowing.to.clone(), false);
+                // The same name written again on another side of an OR pattern.
+                let mut noted = BTreeSet::from([narrowing.name.span.start]);
+                for other in narrowed[1..].iter().flatten() {
+                    if other.name.text == narrowing.name.text && noted.insert(other.name.span.start)
+                    {
+                        self.note_name(&other.name, NameTarget::Local(local.id));
+                    }
+                }
+                if stepped.contains(&narrowing.name.text) {
+                    borrowed.remove(&hidden.id);
+                    self.step_narrowing(&mut plans, &narrowed, at, &hidden, &local);
+                } else {
+                    wrapped.push((hidden, local, narrowing.clone()));
+                }
+            }
             self.borrowed.extend(&borrowed);
-            // The body of a narrowing arm sees the narrowed names; an arm with a guard has none.
-            let narrowed: Vec<(Local, Local, Narrowing)> = narrowed
-                .into_iter()
-                .map(|narrowing| {
-                    let hidden = locals[&narrowing.hidden].clone();
-                    let local = self.bind(&narrowing.name, narrowing.to.clone(), false);
-                    (hidden, local, narrowing)
-                })
-                .collect();
             let guard = arm
                 .guard
                 .as_ref()
@@ -847,8 +863,8 @@ impl Checker<'_> {
             if !result.as_ref().is_some_and(Type::contains_error) {
                 result = self.sibling_hint(&body.ty, result.as_ref()).cloned();
             }
-            if !narrowed.is_empty() {
-                body = self.narrowed_body(narrowed, body);
+            if !wrapped.is_empty() {
+                body = self.narrowed_body(wrapped, body);
             }
             self.scopes.pop();
             checked.push(TypedMatchArm {
@@ -872,6 +888,131 @@ impl Checker<'_> {
                 .resolve(&result.expect("match has at least one arm")),
             span,
         ))
+    }
+
+    /// The names that the narrowings of an arm's `alternatives` (A25) bind by a step of the
+    /// pattern, which builds the narrowed value from a copy of the payload, as the result of a
+    /// recognizer is bound (`active_pattern`), instead of a block around the arm's body:
+    ///
+    /// - every narrowing of an arm with a guard: the guard reads the name before the arm is
+    ///   chosen, when nothing may move out of the matched value yet. A narrowing whose union
+    ///   has a member that is not Copy cannot be copied, so it is an error there;
+    /// - a narrowing that would view the matched value while another binding of the same
+    ///   alternative moves out of it, as `whole` does in `(:? (i64 | f64) as n) as whole`.
+    ///
+    /// A step keeps the match from being a switch, so the other narrowings keep the block.
+    #[inline(never)]
+    fn stepped_narrowings(
+        &self,
+        alternatives: &[Alternative],
+        guarded: bool,
+    ) -> Result<BTreeSet<String>, Diagnostic> {
+        let mut stepped = BTreeSet::new();
+        for alternative in alternatives {
+            for narrowing in &alternative.narrowed {
+                if guarded {
+                    if let Some(member) = &narrowing.moved {
+                        // The `:?` that starts the pattern.
+                        let marker = Span {
+                            end: narrowing.span.start + 2,
+                            ..narrowing.span
+                        };
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::TypeTestNarrowBorrowed,
+                            format!(
+                                "cannot narrow a value into {} in an arm with a guard because {} is not Copy",
+                                narrowing.to.display(&self.types),
+                                member.display(&self.types)
+                            ),
+                            marker,
+                        )
+                        .with_help(
+                            "match each member with its own ':?' arm, or test the condition in the arm's body",
+                        ));
+                    }
+                    stepped.insert(narrowing.name.text.clone());
+                    continue;
+                }
+                // A binding that takes a value that is not Copy out of storage that is not
+                // borrowed moves it; the hidden binding of a viewing narrowing does not.
+                let moves = |(name, projection): &(Ident, TypedExpr)| {
+                    let views = name.provenance == Provenance::Generated
+                        && alternative
+                            .narrowed
+                            .iter()
+                            .any(|other| other.view && other.hidden == name.text);
+                    !views
+                        && !self.inference.resolve(&projection.ty).is_copy(&self.types)
+                        && !self.borrowed_place(projection)
+                };
+                if narrowing.view && alternative.bindings.iter().any(moves) {
+                    stepped.insert(narrowing.name.text.clone());
+                }
+            }
+        }
+        Ok(stepped)
+    }
+
+    /// Binds the name of narrowing `at` of an arm (A25) by a step of the pattern: in each of the
+    /// arm's `plans`, the hidden binding of the matched value gives way to a step that fills
+    /// the local `$narrowed..` with the narrowed value, built from the payload of the case that
+    /// the alternative tests, and `local` binds that local. Every member of the narrowed union
+    /// is Copy (`stepped_narrowings`), so the payload is copied and the matched value is left
+    /// as it is.
+    #[inline(never)]
+    fn step_narrowing(
+        &mut self,
+        plans: &mut [PatternAlternative],
+        narrowed: &[Vec<Narrowing>],
+        at: usize,
+        hidden: &Local,
+        local: &Local,
+    ) {
+        let first = &narrowed[0][at];
+        let Type::Union(to_id, members) = &first.to else {
+            unreachable!("a narrowing makes a value of an anonymous union")
+        };
+        let built = self.bind(
+            &Ident {
+                text: format!("$narrowed{}", self.next_local),
+                span: first.name.span,
+                provenance: Provenance::Generated,
+            },
+            first.to.clone(),
+            false,
+        );
+        for (plan, narrowings) in plans.iter_mut().zip(narrowed) {
+            let (from, into) = narrowings
+                .iter()
+                .find(|narrowing| narrowing.name.text == first.name.text)
+                .expect("every alternative repeats the narrowings of the first")
+                .case;
+            let bound = plan
+                .bindings
+                .iter()
+                .position(|(binding, _)| binding.id == hidden.id)
+                .expect("the alternative binds the matched value");
+            let (_, place) = plan.bindings.remove(bound);
+            let payload = value(
+                TypedExprKind::UnionPayload {
+                    value: Box::new(place),
+                    case_id: from,
+                },
+                self.inference.resolve(&members[into]),
+                first.span,
+            );
+            let made = value(
+                TypedExprKind::Construct {
+                    union_id: *to_id,
+                    case_id: into,
+                    payload: Some(Box::new(payload)),
+                },
+                first.to.clone(),
+                first.span,
+            );
+            plan.steps.push(PatternStep::Bind(built.clone(), made));
+            plan.bindings.push((local.clone(), local_value(&built)));
+        }
     }
 
     /// The body of an arm that narrows (A25): a block that binds each narrowed name to the
@@ -1436,23 +1577,24 @@ impl Checker<'_> {
     /// each of which is a member of `target`. The alternatives test the tag for each member of
     /// `W` in turn, and the coverage is that of `:? W0 | :? W1 | ...`.
     ///
-    /// `as x` binds the value as a value of `W`:
+    /// `as x` binds the value as a value of `W`. When `W` has every member of `target`, it is
+    /// the matched value itself, bound as `x as` binds it, with nothing to test. Otherwise the
+    /// value is made anew, with the tag of `W`. The projection of a pattern binding has to be a
+    /// place (code generation takes its address, and ownership evaluates it twice while the
+    /// subject is protected), so a new value cannot be one. Each alternative binds the matched
+    /// value to a hidden name and records a `Narrowing`, from which `match_value` binds `x`:
     ///
-    /// - When `W` has every member of `target`, it is the matched value itself, bound as `x as`
-    ///   binds it, with nothing to test.
-    /// - Otherwise the value is made anew, with the tag of `W` (`retag`). In an arm without a
-    ///   guard the alternative binds the matched value to a hidden name and records a
-    ///   `Narrowing`, from which `match_value` binds `x` around the body: an owned payload moves
+    /// - by a block around the arm's body (`narrowed_body`, `retag`): an owned payload moves
     ///   into the new value, and a payload in borrowed storage is copied. When every member of
     ///   `W` is Copy, the hidden binding views the matched value also where a binding would
     ///   move it, so that the narrowing leaves the value whole, as the arms `:? W0 as x`,
-    ///   `:? W1 as x` do.
-    /// - A guard reads `x` before the arm is chosen, when nothing may move out of the matched
-    ///   value yet, so there a step of the pattern builds the new value from a copy of the
-    ///   payload, as a recognizer's result is bound (`active_pattern`).
+    ///   `:? W1 as x` do;
+    /// - or by a step of the pattern that copies the payload (`stepped_narrowings`), in an arm
+    ///   with a guard and where the view would meet a move.
     ///
-    /// A copy needs a Copy payload: `as x` in borrowed storage or under a guard is an error when
-    /// a member of `W` is not Copy (`type_test_narrow_borrowed`).
+    /// A copy needs a Copy payload: `as x` in borrowed storage (here) or under a guard
+    /// (`stepped_narrowings`) is an error when a member of `W` is not Copy
+    /// (`type_test_narrow_borrowed`).
     #[inline(never)]
     fn narrowing_pattern(
         &mut self,
@@ -1463,8 +1605,7 @@ impl Checker<'_> {
         target: &Type,
         narrowed: &Type,
     ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
-        let (Type::Union(union_id, members), Type::Union(narrowed_id, wanted)) = (target, narrowed)
-        else {
+        let (Type::Union(union_id, members), Type::Union(_, wanted)) = (target, narrowed) else {
             unreachable!("both types are anonymous unions")
         };
         // (the case of `target`, the case of `W`) for each member of `W`.
@@ -1488,57 +1629,31 @@ impl Checker<'_> {
             }
             return Ok((vec![alternative], CoveragePat::Wildcard));
         }
-        let guarded = self.guarded_arm;
-        let wanted: Vec<Type> = wanted
+        let moved = wanted
             .iter()
             .map(|member| self.inference.resolve(member))
-            .collect();
-        let moved = wanted.iter().find(|member| !member.is_copy(&self.types));
-        let borrowed = self.borrowed_place(&place);
+            .find(|member| !member.is_copy(&self.types));
         if binder.is_some()
-            && (guarded || borrowed)
-            && let Some(member) = moved
+            && self.borrowed_place(&place)
+            && let Some(member) = &moved
         {
-            let (narrowed, member) = (narrowed.display(&self.types), member.display(&self.types));
             // The `:?` that starts the pattern.
             let marker = Span {
                 end: pattern.span.start + 2,
                 ..pattern.span
             };
-            // A guard is no obstacle that a borrowed value does not have as well.
-            let (message, help) = if borrowed {
-                (
-                    format!(
-                        "cannot narrow a borrowed value into {narrowed} because {member} is not Copy"
-                    ),
-                    "match each member with its own ':?' arm, or match an owned value",
-                )
-            } else {
-                (
-                    format!(
-                        "cannot narrow a value into {narrowed} in an arm with a guard because {member} is not Copy"
-                    ),
-                    "match each member with its own ':?' arm, or test the condition in the arm's body",
-                )
-            };
-            return Err(
-                Diagnostic::of(DiagnosticKind::TypeTestNarrowBorrowed, message, marker)
-                    .with_help(help),
-            );
+            return Err(Diagnostic::of(
+                DiagnosticKind::TypeTestNarrowBorrowed,
+                format!(
+                    "cannot narrow a borrowed value into {} because {} is not Copy",
+                    narrowed.display(&self.types),
+                    member.display(&self.types)
+                ),
+                marker,
+            )
+            .with_help("match each member with its own ':?' arm, or match an owned value"));
         }
-        // Under a guard, the local that a step of each alternative fills with the new value.
-        let built = match binder {
-            Some(name) if guarded => Some(self.bind(
-                &Ident {
-                    text: format!("$narrowed{}", self.next_local),
-                    span: name.span,
-                    provenance: Provenance::Generated,
-                },
-                narrowed.clone(),
-                false,
-            )),
-            _ => None,
-        };
+        let view = moved.is_none() && !place.ty.is_copy(&self.types);
         let tag = Type::Integer(32, true);
         let mut alternatives = Vec::with_capacity(cases.len());
         let mut coverage: Option<CoveragePat> = None;
@@ -1564,52 +1679,26 @@ impl Checker<'_> {
                 steps: vec![PatternStep::Test(test)],
                 ..Alternative::default()
             };
-            match (binder, &built) {
-                (Some(name), Some(built)) => {
-                    let payload = value(
-                        TypedExprKind::UnionPayload {
-                            value: Box::new(place.clone()),
-                            case_id: from,
-                        },
-                        wanted[into].clone(),
-                        pattern.span,
-                    );
-                    let made = value(
-                        TypedExprKind::Construct {
-                            union_id: *narrowed_id,
-                            case_id: into,
-                            payload: Some(Box::new(payload)),
-                        },
-                        narrowed.clone(),
-                        pattern.span,
-                    );
-                    alternative
-                        .steps
-                        .push(PatternStep::Bind(built.clone(), made));
-                    alternative
-                        .bindings
-                        .push((name.clone(), local_value(built)));
-                }
-                (Some(name), None) => {
-                    let hidden = narrowed_name(&name.text);
-                    alternative.bindings.push((
-                        Ident {
-                            text: hidden.clone(),
-                            span: name.span,
-                            provenance: Provenance::Generated,
-                        },
-                        place.clone(),
-                    ));
-                    alternative.narrowed.push(Narrowing {
-                        name: name.clone(),
-                        hidden,
-                        to: narrowed.clone(),
-                        cases: cases.clone(),
-                        view: moved.is_none() && !place.ty.is_copy(&self.types),
-                        span: pattern.span,
-                    });
-                }
-                (None, _) => {}
+            if let Some(name) = binder {
+                let hidden = narrowed_name(&name.text);
+                alternative.bindings.push((
+                    Ident {
+                        text: hidden.clone(),
+                        span: name.span,
+                        provenance: Provenance::Generated,
+                    },
+                    place.clone(),
+                ));
+                alternative.narrowed.push(Narrowing {
+                    name: name.clone(),
+                    hidden,
+                    to: narrowed.clone(),
+                    cases: cases.clone(),
+                    case: (from, into),
+                    moved: moved.clone(),
+                    view,
+                    span: pattern.span,
+                });
             }
             alternatives.push(alternative);
             let case = CoveragePat::Constructor(

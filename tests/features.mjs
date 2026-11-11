@@ -2065,13 +2065,17 @@ const suites = {
     // scale: three times an i64, four times an f64. narrow: the i64 n when 3 divides n, the f64 n / 2 when the
     // remainder is 1 (4 (n / 2) = 2 n, exact), else `text {n}` (its length times 1000).
     const narrow = (n) => n % 3n === 0n ? n * 3n : n % 3n === 1n ? 2n * n : length(`text ${n}`) * 1000n;
-    // heap i by i % 4: `n={i}`, i numbers, the i64 i, the f64 1.5 (scale gives 6).
+    // heap i by i % 4: `n={i}`, i numbers, the i64 i, the f64 1.5 (scale gives 6). The Maybe holds heap (n + 2), or
+    // nothing for n = 5: the length of the string, ten times the count of the numbers, or scale plus weigh of the number
+    // (3 k + k for the i64 k, 6 + 1 for the f64).
     const narrowOwned = (n) => {
       let total = 0n;
       for (let i = 0n; i < n; i++) total += [length(`n=${i}`), i * 10n, i, 1n][i % 4n];
       const rest = [length(`n=${n}`), n * 10n, n * 3n, 6n][n % 4n];
       const unread = (n + 1n) % 4n < 2n ? 7n : 9n;
-      return total + rest * 1000000n + unread * 100000000n;
+      const k = n + 2n;
+      const inner = n === 5n ? 0n : [length(`n=${k}`), k * 10n, k * 4n, 7n][k % 4n];
+      return total + rest * 1000000n + unread * 100000000n + inner * 10000000000n;
     };
     // part: ten times the length of an array, or the i64. The guard takes the pieces above 25.
     const narrowViews = (n) => {
@@ -2099,7 +2103,7 @@ const suites = {
         ...at("widen", widen, [4n, 7n, 0n, -3n, -8n]),
         ...at("widen_owned", widenOwned, [0n, 1n, 4n, 7n, 20n]),
         ...at("narrow", narrow, [6n, 7n, 8n, 0n, -3n, -4n, 1000000n]),
-        ...at("narrow_owned", narrowOwned, [0n, 1n, 2n, 3n, 4n, 9n, 20n]),
+        ...at("narrow_owned", narrowOwned, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 20n]),
         ...at("narrow_views", narrowViews, [0n, 1n, 2n, 3n, 6n, 9n, 31n]),
       ],
       inspect(ir) {
