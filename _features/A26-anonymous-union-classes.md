@@ -310,3 +310,42 @@ A24 がレビュー第 1 回の修正まで入ったブランチ `feat/a24-anony
 - 決定: 匿名共用体の `Eq`・`Ord`・`Hash`・`Display`（引用付きの表示を含む）と、Phase 2 の `Encode`・`Decode` の本体は、単相化（`Specializer`）が通常の型付き IR の関数として作る。タグの `If` の連鎖と、`Borrow(UnionPayload { .. })` を要素のメソッドに渡す腕から成る。`src/llvm_display.rs`・`src/llvm_hash.rs`・`src/llvm_compare.rs` は変えない。
 - 理由: Phase 2 は型付き IR でしか作れないので、仕組みを 1 つにする。LLVM の側を変えないので、タプル・配列・リスト・名前付きの union の生成 IR は構成上変わらない。再帰・`Common`・`General` のレイアウトは既存の `UnionTag`・`UnionPayload` の生成が扱う。`Hash` は導出した union と同じ式（`$builtin.hash_mix` の列）なので、同じ値になる。
 - 状態: 着手時の再検討（2026-11-11）で採用（監査の提案を調整役が採用。`target/scratch/audit/DECISIONS.md`）。
+
+### D7: `Encode`・`Decode` の本体と、`Decode` を持つ条件（Phase 2 の設計）
+
+Phase 2 の着手時（2026-11-11）に `std/Json.tz`（`Value`・`Error`・`ErrorKind`、572〜1132 行のインスタンス、1194〜1308 行の導出用の関数）と `src/derive.rs`（`Build::record` 502〜、`Build::union` 819〜）を読み直して決めました。
+
+- **現状**: `Encode`・`Decode` は組み込みクラスで、メソッド（`encode :: ref 'a -> Result<Json.Value, Json.Error>`、`decode :: ref Json.Value -> Result<'a, Json.Error>`）に `operation` がありません（`src/polymorph.rs` の `Classes::collect`）。インスタンスは `std/Json.tz` のソース（数・`bool`・`string`・`utf8string`・`Maybe`・配列・`Vec`・リスト・2〜4 要素のタプル・`Map`・`HashMap`・`Set`・`HashSet`・`Json.Value`）と、`deriving`・利用者のソースだけです。匿名共用体は head に書けない（`E1041`）ので、ソースのインスタンスは作れません。
+- **判定**: `Classes::structural(class, ty)` を、匿名共用体の `Encode`・`Decode` でも真にします。`normalize` が要素ごとの同じクラスの制約に展開します（要素に `Encode`・`Decode` がなければ、要素の型を言う既存の `E1005`。導出の中なら既存の `E1025` `derived_instance_invalid`）。`Decode` だけ、展開の前に下の「種類の表」で要素を調べます。
+- **`operation` のないメソッドの経路**: `Specializer::lower` の `Method` は、インスタンスが見つからなければ `intrinsic_function` に来ます。`intrinsic_function` は、`operation` が `None` で、型が匿名共用体で、`structural` が真のときだけ、新しい合成 `Specializer::union_codec` に回します（ほかの `operation` のないメソッドは従来どおり到達しません）。関数は `$intrinsic.Encode.encode.N`・`$intrinsic.Decode.decode.N` で、鍵は既存の `intrinsics`（クラス・メソッド・型）です。`dyn_of` の vtable は、`operation` があるときに加えて、匿名共用体で `structural` が真のときも `intrinsic_function` を使います（`dyn Encode` に格納できる）。`src/llvm*.rs` と `std/` は変えません（D6 のまま）。
+- **`Encode.encode` の本体**: Phase 1 と同じ `If` の連鎖（`by_member`）で、腕 `k` は要素 `k` の `Encode.encode` を、ペイロードの借用に呼びます。タグも包みも書きません。結果は要素の `Encode` の結果そのもの（誤りも要素のもの。たとえば `f64` の NaN は `NonFinite`）です。
+- **種類の表**（`Decode` の要素。HEAD で `Decode` を持つ型だけ。頭の型構築子で決まり、型引数の代入で変わりません）:
+
+  | 要素 | JSON の種類 |
+  | --- | --- |
+  | `bool` | boolean |
+  | 整数（`i8`〜`i128`、`i8u`〜`i128u`）・浮動小数点（`f16`〜`f128`）・`d32`〜`d128` | number |
+  | `string`・`utf8string` | string |
+  | `[T]`・`[|T|]`・`Vec<T>`・2〜4 要素のタプル・`Set<T>`・`HashSet<T>` | array |
+  | `Map<K, V>`・`HashMap<K, V>` | object と array（キーが JSON の文字列にならないとき、`[key, value]` の配列を読むため） |
+  | `Decode` を導出したレコード（そのレコードを head とする `Decode` のインスタンスが導出のもの） | object |
+  | 上のどれでもなく、`Decode` のインスタンスに合う型（`Maybe<T>`・名前付きの union・`Json.Value`・手書きの `Decode` を持つ型） | 決まらない（どの要素とも重なる） |
+  | 上のどれでもなく、`Decode` のインスタンスがない型（`char`・`utf8char`・`unit`・固定長配列・5 要素以上のタプル・関数など） | 表の対象外。要素の制約が既存の `E1005`（`no instance for Decode<char>`）になる |
+
+  - 本文の表との違い: `char`・`utf8char`・`unit`・`bigint`・固定長配列・5 要素以上のタプルは、HEAD に `Decode` がないので外しました。`null` を読む要素は表にありません（`null` を読むのは `Maybe` と `Json.Value` で、どちらも「決まらない」です）。
+  - `Maybe<T>` は `null` と `T` の種類、導出した名前付きの union は string と object、`Json.Value` はすべての種類を読みます。手書きの `Decode` は何を読むかをコンパイラが知りません。これらを細かく数えず、同じ「決まらない」にします（本文の仕様と再検討の 5 のとおり。最も保守的で、後から受理を広げても既存のプログラムは壊れません）。
+- **重なりの拒否（`E1025`、kind `anonymous_union_decode_overlap`）**: 種類が決まる要素の間で同じ種類が 2 回現れるか、種類が決まらない要素が 1 つでもあれば、`Decode<U>` の制約は誤りです。既定の要素（最初の要素など）は選びません（D5）。メッセージは理由を言います。
+  - 種類の重なり: `no Decode instance for (f64 | i64): the members f64 and i64 both read a JSON number, so the JSON value does not select one member; decode Json.Value and match on it, or use a union with named cases`
+  - 決まらない要素: `no Decode instance for (i64 | Maybe<i64>): the member Maybe<i64> reads more than one kind of JSON value or a kind that its type does not fix (a Maybe, a union with named cases, Json.Value, a type with a hand-written Decode), so the JSON value does not select one member; decode Json.Value and match on it, or use a union with named cases`
+  - `Decode` のインスタンスがない要素があるときは、重なりを調べる前に要素の制約へ進み、`E1005` を先に出します（「インスタンスがない」のほうが直すべき点を正しく言うため）。
+  - 調べる位置は `normalize`（制約を解く全経路: 関数の本体、導出したインスタンスの文脈、`dyn`、`holds`）と、`union_codec`（本体を作る直前。制約の検査を通らずに届いた場合の二重の検査で、同じ kind を返します。黙って要素を選ぶことも、内部エラーにすることもありません）。
+- **`Decode.decode` の本体**: 引数 `ref Json.Value` のタグ（`UnionTag(Dereference(引数))`）で分岐する `If` の連鎖です。JSON の種類ごとに、その種類を読む要素 `k` の腕を置きます（`Bool`・`Number`・`Text`・`Items`・`Object` の case の番号の順。番号は `Json.Value` の宣言から名前で引きます）。
+  - 腕 `k`: `match Decode.decode<要素 k> json with | Ok v -> Ok (v を要素 k として包む) | Error e -> Error e` を、検査器が同じソースに作るのと同じ形の `Match`（`UnionTag` の検査と `UnionPayload` の束縛）で作ります。要素の誤りはそのまま返します（`(i64 | string)` に `1.5` を読ませると、`i64` の `json: expected integer`）。
+  - どの種類にも当たらないとき: `Result.Error (Json.Error { kind: ExpectedType "<要素の種類>", offset: -1 })`。種類の名前は `boolean`・`number`・`string`・`array`・`object` で、要素の正準順に ` or ` でつなぎます（`(i64 | string)` は `json: expected number or string`。`Map` の要素は `object or array`）。std の既存の書き方（`expected "boolean"`、`"object or array"`、`"string or object"`）に合わせています。
+  - 再検討の 6 は `Result.map (CaseConstructor U k) (...)` を考えていましたが、関数値（`closures::lower` が作る `$case.$anonymous.Union$n...` という関数）を経由せず、直接の呼び出しと `Match` だけにしました。`-O0` でも間接呼び出しがなく、合成した名前の関数が増えません。std に関数は足しません。`Json.Value`・`Json.Error`・`Json.ErrorKind`・`Result` の宣言は名前で引き、見つからなければ既存の `E1002`（`std_item_missing`）です。
+- **往復**: 種類が互いに素なので、`Encode` が書いた JSON の種類は、書いた要素だけが読みます（数 → number、文字列 → string、`bool` → boolean、配列・タプル・集合 → array、導出したレコード → object、`Map` → object か array）。値そのものの往復は要素の `Encode`・`Decode` の性質のままです（NaN は `Encode` が `NonFinite`、範囲外の数は `Decode` が `NumberRange`）。
+- **`dyn`**: `dyn Encode` に格納できます（タプルと同じ）。`Decode` は受け手のないメソッドなので、もともと `dyn` にできません。
+- **導出**: `deriving (Encode, Decode)` のレコード・union は、匿名共用体のフィールド・ペイロードを持てます（導出が文脈に書く `Decode<(i64 | string)>` がこの規則で解けるため）。重なる匿名共用体のフィールドは、同じ `anonymous_union_decode_overlap` です（導出のせいではなく、フィールドの型のせいなので、`derived_instance_invalid` に付け替えません）。導出したレコードの欠けたキーは、従来どおり `null` として decode され、匿名共用体は `null` を読まないので `MissingField` になります。
+- **健全にできず拒否するもの**: 上の「重なり」と「決まらない要素」だけです。`Encode` には制限がありません。
+- 理由: タグを書かない `Encode`（D5 の前提、TypeScript の union と同じ見え方）と往復できる範囲だけを `Decode` が受理し、既定の選び方を入れない（GUIDE §1 の規則 2）。本体は D6 の仕組み（型付き IR）で、LLVM と std を変えない。
+- 状態: Phase 2 の着手時の設計（2026-11-11）。D5 の承認の範囲内。
