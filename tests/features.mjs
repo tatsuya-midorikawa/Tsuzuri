@@ -686,6 +686,19 @@ const suites = {
         const back = (0n * 10n + 2n) * 10n + 4n;
         return ["annotated_read_callbacks", [w], mapped + indexed * 1000n + folded * 1000000n + back * 10000000000n];
       }),
+      // A32, review 3: `ref i64` callbacks over number-literal arrays. doubled: (1 + 2 + 3) * 2 +
+      // 3n; total: fold from n over 4, -5, 6 with acc * 10 + x; listed: (7 + 8) * 3; indexed:
+      // 0 * 100 + 10 and 1 * 100 + 20; captured: (1 + 2 + 3) * 10 + 3 elements.
+      ...[-3, 0, 1].map((n) => {
+        const w = BigInt(n);
+        const doubled = 12n + 3n * w;
+        const total = ((w * 10n + 4n) * 10n - 5n) * 10n + 6n;
+        const listed = 45n;
+        const indexed = 10n + 120n;
+        const captured = 6n * 10n + 3n;
+        return ["annotated_literal_callbacks", [w],
+          doubled + listed * 100n + indexed * 100000n + captured * 100000000n + total * 10000000000n];
+      }),
       // A32, review 1: audit x16c (`inspect` gives 3, the lambda reads "hello" through
       // `ref ref string`: 5 * 10) and x18 (3 + 50 * 1000 + (5 * 100 + n) * 1000000), and
       // `apply_ref` applies `x * 2 + n` twice to 5.

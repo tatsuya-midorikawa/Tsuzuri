@@ -114,6 +114,15 @@ impl Checker<'_> {
     /// reported before, with the `ref` that the annotation has (`expected ref [string], found
     /// string`). The annotation is resolved without the side effects of `Checker::annotation`,
     /// which checks it again with the pattern; one that does not resolve counts as no reference.
+    ///
+    /// The one inference variable that it accepts as `inner` is the open type of a number
+    /// literal (`[1, 2, 3] |> Array.map (\(x: ref i64) -> …)`, review 3): its `Integer`,
+    /// `SignedInteger` or `Float` constraint holds for no reference and a program cannot add an
+    /// instance of these classes, so reading the value failed there too, at the literal
+    /// (`expected an integer, found ref i64`). It binds the reference only when the referent
+    /// of the annotation is a number type that meets every constraint on the variable
+    /// (`literal_takes`), so a mistyped referent (`ref string`, `ref u8` for `-1`) keeps that
+    /// error.
     pub(super) fn binds_annotated_reference(
         &mut self,
         parameter: &Type,
@@ -123,20 +132,63 @@ impl Checker<'_> {
             return false;
         };
         let inner = self.inference.resolve(inner);
-        if inner.contains_error()
-            || matches!(
-                inner,
-                Type::Infer(_) | Type::Reference(..) | Type::Application(..) | Type::Partial(..)
-            )
-        {
-            return false;
-        }
+        let literal = match inner {
+            Type::Infer(id) if self.inference.is_numeric_literal(&inner) => Some(id),
+            Type::Infer(_) | Type::Reference(..) | Type::Application(..) | Type::Partial(..) => {
+                return false;
+            }
+            _ if inner.contains_error() => return false,
+            _ => None,
+        };
         let Ok(annotated @ Type::Reference(..)) =
             resolve_type_with_kinds(annotation, self.module, self.names, &self.kinds)
         else {
             return false;
         };
+        if let (Some(root), Type::Reference(referent, _)) = (literal, &annotated)
+            && !self.literal_takes(root, referent)
+        {
+            return false;
+        }
         self.inference.unifies(parameter, &annotated, &self.types)
+    }
+
+    /// Whether the open type of a number literal (the variable `root`) can become `referent`
+    /// without a new error from the constraints on it: `referent` is an integer or
+    /// floating-point type; every class constraint that mentions `root` holds once `referent`
+    /// takes its place, and mentions no other open variable (`Capture<[?]>` of an array that a
+    /// function captures holds, `Show<?>` of a class without an instance for `i64` does not);
+    /// one of them constrains `root` itself (the literal's own); and no member constraint
+    /// mentions `root`. The program read the value before and failed at the literal, so a
+    /// constraint that would fail now keeps it reading the value and failing as before.
+    fn literal_takes(&self, root: usize, referent: &Type) -> bool {
+        if !(referent.is_integer() || referent.is_float()) {
+            return false;
+        }
+        let mut constrained = false;
+        for constraint in &self.constraints {
+            if !self.inference.mentions(&constraint.ty, root) {
+                continue;
+            }
+            let ty = polymorph::map_type(&self.inference.resolve(&constraint.ty), &mut |part| {
+                if *part == Type::Infer(root) {
+                    referent.clone()
+                } else {
+                    part.clone()
+                }
+            });
+            if self.inference.is_open(&ty)
+                || !self.classes.holds_class(constraint.class, &ty, &self.types)
+            {
+                return false;
+            }
+            constrained |= ty == *referent;
+        }
+        constrained
+            && !self
+                .members
+                .iter()
+                .any(|member| self.inference.mentions(&member.receiver, root))
     }
 
     pub(super) fn checked_lambda(

@@ -1448,6 +1448,114 @@ fn annotated_reference_parameters_keep_the_borrow_rules() {
     );
 }
 
+#[test]
+fn patterns_that_bind_a_moved_value_twice_name_no_hidden_parameter() {
+    // Review 3 of A32: an annotated `ref mut T` pattern may now be an `as` pattern in a [Mut]
+    // position, which binds the exclusive reference twice. The `E1012` names the pattern, not the
+    // hidden parameter `$lambdaN` that the lambda gets for it (nobody can write `ref $lambdaN`).
+    // The bound lambda, the explicit `ref mut` signature and an owned value had the same wording
+    // before A32.
+    let message = "use of moved or partially moved value: this parameter's pattern binds the value, \
+                   or a part of it, to more than one name";
+    let help = "a value that is not Copy, such as an owned value or a 'ref mut' reference, moves \
+                into the first name that binds it, and an 'as' or '&' pattern cannot bind it again; \
+                keep only one of the names";
+    let bump = "def bump :: i64 -> mut Counter -> unit = \\step c -> c.count = c.count + step";
+    for (source, marker) in [
+        (
+            chooser(
+                &[COUNTER, bump],
+                &[
+                    "    let chosen = if n > 0 then bump else \\(step: i64) ((c as d): ref mut Counter) -> c.count = c.count + step * 100",
+                    "    let mut counter = Counter { count: 1 }",
+                    "    chosen 3 counter",
+                    "    counter.count",
+                ],
+            ),
+            "(step: i64) ",
+        ),
+        (
+            program(&[
+                COUNTER,
+                "def bump :: i64 -> mut Counter -> unit = \\(step: i64) ((c as d): ref mut Counter) -> c.count = c.count + step",
+            ]),
+            "(step: i64) ",
+        ),
+        (
+            program(&[
+                "def put :: mut [(unit -> i64)] -> [i64] -> unit = \\((s as slot): ref mut [(unit -> i64)]) (xs: ref [i64]) -> Array.write 0 (\\() -> xs[0] * 1000 + xs.length) slot",
+            ]),
+            "= \\",
+        ),
+        (
+            chooser(
+                &[COUNTER],
+                &[
+                    "    let chosen = \\(step: i64) ((c as d): ref mut Counter) -> c.count = c.count + step * 100",
+                    "    let mut counter = Counter { count: 1 }",
+                    "    chosen 3 (ref mut counter)",
+                    "    counter.count",
+                ],
+            ),
+            "(step: i64) ",
+        ),
+        (
+            program(&[
+                COUNTER,
+                "def bump :: i64 -> ref mut Counter -> unit = \\(step: i64) ((c as d): ref mut Counter) -> c.count = c.count + step",
+            ]),
+            "(step: i64) ",
+        ),
+        (
+            program(&[
+                "export def answer :: i64 = { let f = \\((s as t): string) -> s.length + t.length; f \"abc\" }",
+            ]),
+            "let f = \\",
+        ),
+        (
+            program(&[
+                "export def answer :: i64 = { let f = \\(((a, b) as whole): (string * string)) -> a.length + b.length; f (\"ab\", \"c\") }",
+            ]),
+            "let f = \\",
+        ),
+        (
+            program(&[
+                "export def answer :: i64 = { let f = \\((s & t): string) -> s.length + t.length; f \"abc\" }",
+            ]),
+            "let f = \\",
+        ),
+    ] {
+        let error = check("2027", &source).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str(), error.help.as_deref()),
+            ("E1012", message, Some(help)),
+            "{source}"
+        );
+        assert_eq!(
+            error.span.start,
+            pattern_offset(&source, marker),
+            "{source}"
+        );
+    }
+    // A name that the program wrote is still named, with the `ref` that it can write.
+    let named = program(&[
+        "export def answer :: i64 =",
+        "    let text = \"abc\"",
+        "    match text with",
+        "        | (s as t) -> s.length + t.length",
+    ]);
+    let error = check("2027", &named).unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str(), error.help.as_deref()),
+        (
+            "E1012",
+            "use of moved or partially moved value 'text'",
+            Some("borrow the value with 'ref text' or move it last")
+        ),
+        "{named}"
+    );
+}
+
 /// The offset of the pattern that follows `marker` in `source` (the `(` after the `\` or space
 /// that `marker` ends with).
 fn pattern_offset(source: &str, marker: &str) -> usize {
@@ -1621,6 +1729,92 @@ fn annotated_reference_read_callbacks() {
     ] {
         assert_eq!(check("2027", source).unwrap_err().code, "E1013", "{source}");
     }
+}
+
+#[test]
+fn annotated_reference_callbacks_over_number_literals() {
+    // Review 3 of A32: when a read callback is checked, the element type of a number-literal
+    // array is still the open type of the literals. A `ref` annotation whose referent is a number
+    // type that the literals can take binds the reference and decides the element type, as the
+    // lambda bound by `let` does. Before, the literal failed (`expected an integer, found ref
+    // i64`), since the parameter read the value and the pattern made the literal a reference.
+    for body in [
+        "let ys = [1, 2, 3] |> Array.map (\\(x: ref i64) -> { let view: ref i64 = x; deref view * 2 }); ys[2]",
+        "let xs = [1, 2, 3]; xs |> Array.fold (\\acc (x: ref i64) -> acc + deref x) 0",
+        "let ys = [|1, 2, 3|] |> List.map (\\(x: ref i64) -> deref x * 2); List.length ys",
+        "let ys = Array.map (\\(x: ref i64) -> deref x * 2) [1, 2, 3]; ys[2]",
+        "let xs = [1, 2, 3]; let first = xs[0] + 10; (xs |> Array.fold (\\acc (x: ref i64) -> acc + deref x) 0) + first",
+        "let xs = [1, 2, 3]; let g = \\() -> xs.length; (xs |> Array.fold (\\acc (x: ref i64) -> acc + deref x) 0) + g ()",
+        "let ys = [-1, 2] |> Array.map (\\(x: ref i64) -> deref x * 10); ys[0]",
+        "let ys = [1, 2, 3] |> Array.mapi (\\i (x: ref i64) -> i * 100 + deref x); ys[2]",
+        "let ys = [250, 3] |> Array.map (\\(x: ref i8u) -> deref x + 1); ys.length",
+    ] {
+        let source = format!("export def answer :: i64 = {{ {body} }}\n");
+        check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    }
+    // The function that the lambda becomes is the one of the bound lambda.
+    let direct = ir(
+        "2027",
+        "export def answer :: i64 = { let ys = [1, 2, 3] |> Array.map (\\(x: ref i64) -> deref x * 2); ys[2] }\n",
+    );
+    let bound = ir(
+        "2027",
+        "export def answer :: i64 = { let f = \\(x: ref i64) -> deref x * 2; let ys = [1, 2, 3] |> Array.map f; ys[2] }\n",
+    );
+    let lambdas = lambda_functions(&direct);
+    assert!(!lambdas.is_empty(), "{direct}");
+    assert_eq!(lambdas, lambda_functions(&bound));
+    // A referent that the literals cannot take keeps reading the value, so the literal reports
+    // what it reported before.
+    for (call, message) in [
+        (
+            "[1, 2, 3] |> Array.map (\\(x: ref string) -> x.length)",
+            "expected an integer, found ref string",
+        ),
+        (
+            "[1, 2, 3] |> Array.map (\\(x: ref f64) -> 1)",
+            "expected an integer, found ref f64",
+        ),
+        (
+            "[1, 2, 3] |> Array.map (\\(x: ref mut i64) -> 1)",
+            "expected an integer, found ref mut i64",
+        ),
+        (
+            "[-1, 2] |> Array.map (\\(x: ref i8u) -> 1)",
+            "expected an integer, found ref i8u",
+        ),
+    ] {
+        let source = format!("export def answer :: i64 = {{ let ys = {call}; ys.length }}\n");
+        let error = check("2027", &source).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            ("E1003", message),
+            "{source}"
+        );
+        assert_eq!(error.span.start, source.find('[').unwrap() + 1, "{source}");
+    }
+    // So does a referent that another constraint on the literals rejects: `Traits.Show` has an
+    // instance for `i32` and none for `i64`.
+    let traits = "class Show<'t> {\n    def show :: ref 't -> i64\n}\n";
+    let shown = |element: &str| {
+        program(&[
+            "instance Traits.Show<i32> {",
+            "    fn show x = 7",
+            "}",
+            "export def answer :: i64 =",
+            "    let xs = [1, 2, 3]",
+            "    let s = Traits.Show.show (ref (xs[0]))",
+            &format!(
+                "    let total = xs |> Array.fold (\\acc (x: ref {element}) -> acc + (if deref x > 1 then 10 else 1)) 0"
+            ),
+            "    total * 100 + s",
+        ])
+    };
+    check_with_files("2027", &shown("i32"), &[("Traits.tt", traits)])
+        .unwrap_or_else(|error| panic!("{}\n{error:?}", shown("i32")));
+    let rejected = shown("i64");
+    let error = check_with_files("2027", &rejected, &[("Traits.tt", traits)]).unwrap_err();
+    assert_eq!(error.code, "E1015", "{rejected}\n{}", error.message);
 }
 
 /// The first error of `source` has `code` and `kind` and starts at the 1-based `line:column`.

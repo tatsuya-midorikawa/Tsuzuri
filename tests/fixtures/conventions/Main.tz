@@ -296,6 +296,20 @@ export def annotated_read_callbacks :: i64 -> i64 = \n ->
     items |> List.iteri (\_ (_: ref string) -> ())
     Array.sum mapped + List.fold (\sum value -> sum + value) 0 indexed * 1000 + folded * 1000000 + back * 10000000000
 
+// A32, review 3: the element of a number-literal array is still the open type of the literals
+// when the callback is checked; a `ref i64` annotation binds the reference and decides the
+// element type, as it does for the lambda bound by `let`.
+export def annotated_literal_callbacks :: i64 -> i64 = \n ->
+    let doubled = [1, 2, 3] |> Array.map (\(x: ref i64) -> deref x * 2 + n)
+    let xs = [4, -5, 6]
+    let total = xs |> Array.fold (\acc (x: ref i64) -> acc * 10 + deref x) n
+    let listed = [|7, 8|] |> List.map (\(x: ref i64) -> deref x * 3)
+    let indexed = [10, 20] |> Array.mapi (\i (x: ref i64) -> i * 100 + deref x)
+    let ys = [1, 2, 3]
+    let count = \() -> ys.length
+    let captured = (ys |> Array.fold (\acc (x: ref i64) -> acc + deref x) 0) * 10 + count ()
+    Array.sum doubled + List.fold (\sum value -> sum + value) 0 listed * 100 + Array.sum indexed * 100000 + captured * 100000000 + total * 10000000000
+
 // A32: where the expected parameter is `ref ?t` or `ref (ref string)`, a `ref string` annotation
 // is still compared with the value read through the parameter (audit x16c and x18), and a
 // function parameter annotated `ref (i64 -> i64)` is called through `deref`.
