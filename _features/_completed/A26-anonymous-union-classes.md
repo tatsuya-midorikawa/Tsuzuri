@@ -5,9 +5,9 @@
 | ID | A26 |
 | 優先度 | P2 |
 | 規模 | M |
-| 依存 | [A24](_completed/A24-anonymous-unions.md)（done）, A06, A07 |
+| 依存 | [A24](A24-anonymous-unions.md)（done）, A06, A07 |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（2026-11-11。Phase 1 と Phase 2。末尾の「実装と検証」） |
 | 起票 | 2026-11-02（A24 と同時。HEAD `2f556480`） |
 | 承認 | `Ord` を正準順で持たせること（D2）と、`Decode` を JSON の種類が互いに素な場合に限ること（D5）は、2026-11-02 の利用者の回答「1~4 について承認します」で承認済み（GUIDE D-62 の決定 4・5）。ほかは既定案。Phase 2 は人間が求めた場合だけ着手する |
 | 手本にする既存実装 | タプル・配列・リストの構造的なインスタンス: `Classes::structural`（`src/polymorph.rs:2556`）、制約の展開 `normalize`（`2382-2401`）、型付き IR への下ろし（`5230`、`5311-5399`）、LLVM の `structural_display`（`src/llvm_display.rs:548`）・`display_quoted`（`601`）・`structural_hash`（`src/llvm_hash.rs:17`）・`structural_compare`（`src/llvm_compare.rs:69`）。union の導出の意味: `src/derive.rs`（`Build::union`、`817`） |
@@ -349,3 +349,95 @@ Phase 2 の着手時（2026-11-11）に `std/Json.tz`（`Value`・`Error`・`Err
 - **健全にできず拒否するもの**: 上の「重なり」と「決まらない要素」だけです。`Encode` には制限がありません。
 - 理由: タグを書かない `Encode`（D5 の前提、TypeScript の union と同じ見え方）と往復できる範囲だけを `Decode` が受理し、既定の選び方を入れない（GUIDE §1 の規則 2）。本体は D6 の仕組み（型付き IR）で、LLVM と std を変えない。
 - 状態: Phase 2 の着手時の設計（2026-11-11）。D5 の承認の範囲内。
+
+## 実装と検証（2026-11-11）
+
+ブランチ `feat/a26-anonymous-union-classes`（`feat/a24-anonymous-unions` の `bd625b4d` の上）。Phase 1 と Phase 2 の両方を実装しました。Phase 1 の判断と検証は「実装中の判断（手順 2〜4）」「実装中の判断（手順 5・6 と Phase 1 のドキュメント）」に、Phase 2 の設計は D7 にあります。この節は、Phase 2 の実装と、チケット全体の最終の検証をまとめます。
+
+### 実装した範囲
+
+| 段 | 内容 | コミット |
+| --- | --- | --- |
+| 再計画 | 「着手時の再検討」と D6 | `534fee42` |
+| Phase 1 手順 2・3 | `Classes::anonymous`・`structural`・`structural_elements`、`Specializer::union_method`（`Eq`・`Ord`・`Hash`・`Display`）、`quoted_display_function` | `4fe0bf84` |
+| Phase 1 手順 4 | 導出・コレクションのキー・注入した被演算子・`dyn`・`const def` のテスト | `ac7d2c47`、`b3c0c711` |
+| Phase 1 手順 5 | suite `anonymous_unions` の `equal`・`order`・`sorted`・`hashed`・`digest`・`shown` | `9204c9d6` |
+| Phase 1 手順 6・7 | 既存の IR の比較、ドキュメント | `2a769e9c`、`1808a3a1` |
+| Phase 2 の設計 | D7 | `913779fa` |
+| Phase 2 の実装 | `Encode`・`Decode`、kind `anonymous_union_decode_overlap`、`dyn Encode`、テスト、suite の `encoded`・`decoded` | `c9f2b2aa` |
+| Phase 2 のドキュメント | `json.md` ほか、`explain E1025`、再帰するレコードとメソッド値のテスト | `8a30fe0f` |
+
+### Phase 2 で作ったもの
+
+- `src/diagnostic_kinds.rs`: `AnonymousUnionDecodeOverlap`（`anonymous_union_decode_overlap`、`E1025`。`E1025` の組の先頭）。`src/explain/codes/E1025.md` に説明と修正を足しました（1,399 文字。上限は 1,500 文字）。
+- `src/anonymous_union.rs`: `JsonKind`（`Boolean`・`Number`・`Text`・`Array`・`Object`。`Json.Value` の case の順）、`JsonKinds`（`Fixed`・`Open`・`Missing`）、`expected_kinds`、`decode_body`（`Decode.decode` の本体）。
+- `src/polymorph.rs`: `Classes::structural`（匿名共用体の `Encode`・`Decode` で真）、`Classes::decode_kinds`・`decode_members`（種類の表と重なりの判定）、`normalize`（`Decode` の構造的な展開の前に重なりを `E1025` にする）、`Specializer::dyn_of`（匿名共用体の構造的なインスタンスも `intrinsic_function` へ）、`intrinsic_function`（`operation` が `None` の匿名共用体を `union_codec` へ）、`Specializer::union_codec`。
+- `src/llvm*.rs`・`std/`・`src/runtime/` は変えていません。新しい crate・`unsafe`・WASM の import・ランタイム関数はありません。合成した本体は、ほかの関数と同じ所有権の検査・純粋性の検査を通ります。
+
+### 実装中の判断（Phase 2）
+
+1. **本体は `Result.map` ではなく `Match`**（再検討の 6 からの変更。D7 に記録）: 腕 `k` は `Match { 値: Decode.decode<要素 k>(json), 腕: [Ok v -> Ok (v を要素 k として包む), Error e -> Error e] }` です。検査器が `match` に作る形（`PatternStep::Test(UnionTag(..) == Int(case))` と `UnionPayload` の束縛）をそのまま使いました。`-O0` の IR は、`Json.Value` のタグの比較と、要素の `Decode.decode`（`Json.$instance.N.decode`）の直接呼び出しだけで、関数値・間接呼び出し・`$case.$anonymous...` という関数はありません（`target/scratch/a26/p2/det1.ll` で確認）。所有権の検査は、この形をそのまま受理しました（非 Copy の要素、`Map`、導出したレコード、再帰するレコード）。
+2. **std の形の読み方**: `Json.Value`・`Result`・`Json.Error`・`Json.ErrorKind` の id は、`Decode.decode` のシグネチャ（`ref Json.Value -> Result<'a, Json.Error>`）の型から読みます。case（`Bool`・`Number`・`Text`・`Items`・`Object`・`Ok`・`Error`・`ExpectedType`）とフィールド（`kind`・`offset`）は名前で引き、なければ `E1004`（`std_item_missing`）です。std の private な関数（`Json.expected`）には依存しません。
+3. **`Missing` を先に**: `Decode` のインスタンスがない要素（`char`、導出していないレコード、5 要素以上のタプル）があるときは、重なりを調べずに要素の制約へ進みます。診断は `no instance for Decode<char>` です（`(char | i64 | f64)` でも、先に直すべき `char` を言います）。
+4. **導出の文脈**: `record R { v: (i64 | f64) } deriving (Decode)` は、`deriving` の位置で `anonymous_union_decode_overlap` のままです（`derived_error` が付け替えるのは `E1005`・`E1027` だけなので、理由を言うメッセージと kind が残ります）。要素に `Decode` がない場合（`(i64 | Plain)`）は、従来どおり `derived_instance_invalid` です。
+5. **総称の関数**: `Decode<'a> => ... -> Result<(['a] | string), Json.Error>` は受理します（種類は頭の型構築子で決まる）。`(['a] | Vec<'a>)` は定義の位置で `E1025` です。型変数を含むレコードで、一般の head の導出がなく特定の具体化にだけ手書きのインスタンスがあるような場合は、定義の位置では `Missing`（要素の制約が残る）になり、具体化の時点で `union_codec` が同じ検査をして `E1025` を返します（黙って要素を選ぶ本体は作りません）。
+6. **署名の制約**: `def f :: Decode<(i64 | f64)> => ...` のように制約を明示しても、同じ `E1025` です。
+7. **`pure def`・`const def`・`dyn`**: `pure def` の中の `Decode.decode`・`Encode.encode` は受理されます（std の `Json` のインスタンスが純粋なため）。`const def` の中では、ほかのインスタンスの呼び出しと同じ `E1026` です。`dyn Encode` には格納できます。
+8. **デバッグ情報とカバレッジ**: 合成した局所変数（`$decoded`・`$value`・`$error`）と関数（`$intrinsic.Decode.decode.N`）は、DWARF の名前に現れません（`tsuzuri test --index 0 -g` の出力を `dwarfdump` で確認）。`--coverage` は利用者の行だけを数えます。
+9. **テストの期待値を 1 件直しました**（実装の出力に合わせたのではなく、規則の読み違いの訂正です）: `(Point | Map<string, i64>)` の表示を `(Map<string, i64> | Main.Point)` と書いていましたが、レコードどうしは宣言の修飾名で並ぶ（言語リファレンスの「型の書き方」）ので、`Main.Point` が `Map.Map` より前です。期待値を `(Main.Point | Map<string, i64>)` に直しました。
+10. **保守的に拒否したもの**: `Maybe<T>`・名前付きの union・`Json.Value`・手書きの `Decode` を持つ型を要素にした匿名共用体の `Decode`（D7 の「決まらない」）。`(Maybe<i64> | string)` は `null`・number と string で実際には重なりませんが、チケットの仕様どおり拒否しています。受理を広げる変更は、既存のプログラムを壊しません。`Encode` には制限がありません。
+
+### テスト
+
+- `tests/anonymous_unions.rs`: 85 件から 92 件（Phase 2 で 7 件）。期待値は、JSON の規則（空白なし、レコードは宣言順の object、タプルは配列、`None` は `null`）と `std/Json.tz` の誤りの文から手で書きました。実行するテストは native と WASM、`-O0` と `-O3`（`passes`）で通します。
+  - `encode_writes_payload_without_tag`（edition 2026 と 2027。ペイロードだけ、`Decode` を持てない型の `Encode`、NaN の `NonFinite`、入れ物の中、IR の決定性、要素に `Encode` がないときの `E1005`）
+  - `dyn_encode_stores_anonymous_union`
+  - `decode_selects_member_by_kind`（edition 2026 と 2027。種類ごとの要素、表のほかの型、総称の関数、入れ子、メソッドの形）
+  - `decode_overlap_is_rejected`（`(i64 | f64)`・`(Map<i64, string> | [i64])`・`(Maybe<i64> | string)` を含む 15 例のメッセージ全文、`E1005` が先に出る 3 例、受理する 3 例）
+  - `decode_mismatch_names_member_kinds`（`json: expected number or string` など、`kind == Json.ExpectedType "number or string"` と `offset == -1`、選ばれた要素の誤り）
+  - `derived_record_with_anonymous_field_round_trips`（edition 2026 と 2027。レコード・union・総称のレコード、欠けたキーの `MissingField`）
+  - `recursive_records_and_method_values_decode`（`record Tree { value: (i64 | [Tree]) }`、`Decode.decode` を関数値として渡す）
+- suite `anonymous_unions`（`tests/fixtures/anonymous_unions/Main.tz`、`tests/features.mjs`）: `encoded`（9 件）と `decoded`（6 件）を足し、81 件から 96 件。`doc x` は `x mod 5` で `i64`・`bool`・文字列・配列・導出したレコードのどれかです。
+  - `encoded x`: 単独の値、5 つの値の配列、導出したレコードのフィールドの JSON テキストをつないだ文字列の検査和と長さ。参照は JavaScript で規則から書いた JSON の書き手（`jsonOf`）で、手で書いた 2 つの文字列（`x = 0`・`x = -3`）と `JSON.stringify` の出力（1 例）を `assert` で照合しています。
+  - `decoded x`: 種類ごとの 6 つの JSON テキスト、レコードの 3 つ（余分なキー、欠けたキー）、どの要素も読まない・要素が拒否する 6 つ（`null`、`x.5`、`[1, "two"]`、範囲外の整数、フィールドの型違い、構文の誤り）、`(i64 | Map<string, i64>)` の 6 つ（object と `[key, value]` の配列の両方）、5 つの値と導出したレコードの往復。参照は `std/Json.tz` の規則から手で書いた文字列です。
+  - `inspect`: IR に `$intrinsic.Encode.encode.N`・`$intrinsic.Decode.decode.N` の定義があること。
+
+### 検証
+
+- T0: `cargo fmt --all -- --check`（差分なし）、`cargo clippy --all-targets --locked -- -D warnings`（警告なし）。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 手順 4 の時点の 3078 件に Phase 2 の 7 件を足した 3085 件がすべて passed、4 skipped です（最終の木。記録は `target/scratch/a26/t1-final.txt`）。Phase 2 の実装のコミットの時点（3084 件）では 3083 passed、1 件失敗（下の「残っていること」の `runner_rejects_malformed_indices_and_reaps_timed_out_children`。機械が混んでいるときの時間切れで、最終の実行では通っています）。
+- 領域のテスト: `cargo nextest run --locked --test anonymous_unions --test explain --test diagnostic_kinds --test json --test deriving` は 140 件すべて passed。
+- E2E（dev バイナリ、native と WASM、`-O0` と `-O3`、native は host の `live == 0`、WASM は import なし）: `node tests/features.mjs target/debug/tsuzuri <suite>` で `anonymous_unions` 96 件、`deriving` 209 件、`typeclasses` 39 件、`dyn_dispatch` 58 件、`hash_map` 199 件、`unions` 27 件、`json` 165 件、`cbor` 86 件が通りました。`node tests/json.mjs target/debug/tsuzuri` は 297 入力・2,523 検査が通りました（記録は `target/scratch/a26/suites-stage3.txt`）。
+- 既存の IR（手順 6 のやり直し）: Phase 2 のバイナリで `tests/fixtures/` と `examples/` の 186 単位の native と wasm32 の IR・`check --json` を取り直し、基準（`bd625b4d` のバイナリ）と比べました。違うのは、fixture を変えた `tests/fixtures/anonymous_unions` の IR 2 つだけで、ほかの 185 単位は 1 byte も違いません。`sh target/scratch/a26/step6/run.sh old_fixture structural`（A24 の fixture と、タプル・配列・リスト・導出を使うプログラム）は終了コード 0（native 243,487・1,473,221 bytes、wasm32 224,480・1,455,292 bytes が同じ）。
+- Phase 1 の IR: Phase 2 の前のコミット（`1808a3a1`）を `target/scratch/a26/stage2` に取り出して別にビルドし、その時点の fixture（Phase 1 の 6 関数を含む）を両方のバイナリで IR にしました。native（1,056,787 bytes）・wasm32（1,047,682 bytes）・`check --json` が同じです（`target/scratch/a26/stage2/compare.sh`。ビルドした木は消しました）。Phase 2 は、Phase 1 のインスタンスの IR も変えていません。
+- 新しい fixture の IR は 2 回の生成で同じです（決定的）。
+- ドキュメント: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs <変えた 4 ページ>` は 111 links、34 examples、native の実行 66 回（`-O0`・`-O3`）で通りました。`node scripts/gen-docs.mjs` は 1 ブロック（診断の kind の表）を更新し、`--check` は 19 blocks、0 stale。`node scripts/check-cli-docs.mjs` は 4 checks、`node scripts/check-guide-lite.mjs` は 88 references、`node scripts/check-links.mjs --into _features/README.md` は 11 links、0 broken で通りました。
+- `src/runtime/` は変えていないので、`scripts/check-runtime-includes.sh` は対象外です。
+
+### 更新したドキュメント（Phase 2）
+
+- `_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`: 「JSON（Encode と Decode）」の節（種類の表、`run=` の例 3 つ、`E1025` の例）、ポイント・型の性質の表・使い分け・まとめ・関連項目。「`Encode`・`Decode` はない」という記述を実際の振る舞いに替えました。
+- `_tsuzuri/language-reference/built-in-types-and-modules/json.md`: 型の表の行、「匿名共用体」の節（種類の表、`run=` の例、制限）、ポイント・まとめ・関連項目、「インスタンスは Json と利用者のソースだけ」の文。
+- `_tsuzuri/language-reference/types-and-type-inference/type-classes.md`: 組み込みクラスの表の `Encode`・`Decode` の行、構造的なインスタンスの段落。
+- `_tsuzuri/language-reference/compiler/diagnostics.md`: `E1025` の行と、生成される kind の表。
+- `docs/language.md`: 組み込みクラスの表、「匿名共用体」の節、`Json` の項、`E1025` の行。`docs/architecture.md`: ファイルの表（`std/Json.tz`・`src/anonymous_union.rs`）、構造的なインスタンスの節、「組み込みのインスタンス（A26）」。
+- `README.md`（機能の一覧とテストの表）、`_features/GUIDE.md`（`E1025` の行、D-55 の `E1041` の行の注記、D-62 の型クラスの項）、`src/explain/codes/E1025.md`。
+
+### 変えたファイル（チケット全体）
+
+`src/polymorph.rs`、`src/anonymous_union.rs`、`src/diagnostic_kinds.rs`、`src/explain/codes/E1025.md`、`tests/anonymous_unions.rs`、`tests/features.mjs`、`tests/fixtures/anonymous_unions/Main.tz`、`docs/language.md`、`docs/architecture.md`、`README.md`、`_features/GUIDE.md`、`_features/README.md`、`_tsuzuri/language-reference/index.md`、`_tsuzuri/language-reference/built-in-types-and-modules/`（`anonymous-union.md`・`json.md`・`hashmap.md`・`map.md`・`union.md`）、`_tsuzuri/language-reference/types-and-type-inference/type-classes.md`、`_tsuzuri/language-reference/compiler/diagnostics.md`、このチケット。
+
+### チケットの本文と違う点（まとめ）
+
+- インスタンスの本体は LLVM の分岐ではなく、Specializer が型付き IR で作る（D6）。`src/llvm_display.rs`・`src/llvm_hash.rs`・`src/llvm_compare.rs` は変えていない。
+- `dyn` への格納は拒否せず、タプルと同じく受理する（再検討の 4。`E1028` の規則は取り消し）。
+- Phase 2 の種類の表は、HEAD に `Decode` がある型だけ（`char`・`unit`・`bigint`・固定長配列・5 要素以上のタプルを外した）。`Map`・`HashMap` は object と array の両方、`Set`・`HashSet` は array。種類が決まらない要素は `E1005` ではなく、理由を言う `E1025`（D7）。
+- 型の不一致の誤りは `Json.DecodeError` ではなく、既存の `Json.Error { kind: ExpectedType "...", offset: -1 }`。
+- `Decode` の腕は `Result.map` ではなく `Match`（D7、上の 1）。
+- テスト: 本文と再検討の名前のテストに加えて、`dyn_encode_stores_anonymous_union`・`recursive_records_and_method_values_decode` と、suite の `sorted`・`digest`・`encoded`・`decoded` を足した。
+
+### 残っていること・報告する事項
+
+- `feat/a25-anonymous-union-conversions` の取り込み（A24 ← A25 ← A26 の順に積む、調整役の決定）は、この段ではしていません。取り込んだ後に、T1・suite `anonymous_unions`・上の IR の比較をやり直します。
+- `driver::test_runner::tests::runner_rejects_malformed_indices_and_reaps_timed_out_children` は、機械が混んでいるときに 1 秒の時間切れで落ちることがあります（単独では通る。このブランチの変更とは関係がありません）。
+- このチケットより前からの挙動（変えていません）: `pure def` の中のタプルの比較（`StructuralCompare`）は、要素のインスタンスの効果を辿りません（要素の `Eq` が `Debug.print` を呼んでも受理される）。匿名共用体のインスタンスは通常の関数なので辿られ、`E1029` になります。
