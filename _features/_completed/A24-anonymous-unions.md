@@ -955,7 +955,7 @@ def font_size :: own (f64 | i64 | string) -> string = \size ->
 
 - `Type::display` は `pure (A -> (B -> C))` を `pure (A -> B -> C)` と書きます（このチケットより前から）。匿名共用体の要素としては上の判断 3 で拒否しますが、ほかの診断の表示は変えていません。
 - パターンの型注釈 `(p: T)` の型は、LSP の参照・リネームの対象になっていません（このチケットより前から。判断 7）。
-- `tsuzuri find` は、1 つの匿名共用体の中では要素のどの組み合わせも試しますが、ある引数の匿名共用体で選んだ組み合わせを、後ろの引数の不一致でやり直すことはしません。要素の組み合わせは 4,096 通りまでです。
+- `tsuzuri find` は、1 つの匿名共用体の中では要素のどの組み合わせも試しますが、ある引数の匿名共用体で選んだ組み合わせを、後ろの引数の不一致でやり直すことはしません。要素の組み合わせは 4,096 通りまでです。（「Copilot のレビューへの対応（第1回）」で解消。組み合わせは後ろの引数・結果・制約まで合うものを選び、上限は 1 回の比較につき 4,096 組）
 - 期待型のない位置の並んだ式（`[3, a]`）と、構築子の引数（`Some [||]`）は、型を注釈した束縛が要ります（リファレンスに書きました）。
 
 ### レビューの指摘への対応（第2回）
@@ -1003,3 +1003,41 @@ def font_size :: own (f64 | i64 | string) -> string = \size ->
 - 固定長配列として読んだときだけ合う要素が 1 つでも、値がそのリテラル自身でなければ（`Some [1, 2]`、入れ子のリテラル）作り直さず、`E1003` です。
 - 値の中の数のリテラルは、期待される型なしで検査した型のままです（`1 + 2` は `f64` の要素にならない）。
 - `(Maybe<'a> * i64)` と `(Maybe<i64> * string)` のように、決められない位置の後ろで区別できる要素は、仕様どおり拒否します。
+
+### Copilot のレビューへの対応（第1回）
+
+2026-11-12。PR #102 への GitHub Copilot のインラインの指摘は 2 件で、どちらも `tsuzuri find`／`kg find` の照合（`src/kg/find.rs`）です。2 件とも分岐のバイナリで再現し（`target/scratch/a24/copilot1/p1`）、直しました。実在しない指摘はありません。
+
+#### 指摘と対応
+
+| 指摘 | 再現 | 対応 | 回帰テスト |
+| --- | --- | --- | --- |
+| 1. `src/kg/find.rs:179`: `product()` が `*` の前で関数型を丸ごと読むので、`*` と `->` の結び付きがコンパイラと逆になる。`(bool \| i64 -> i64 * i64) -> unit` が `(i64 -> i64) * i64` を含む型になり、同じ署名の関数を見つけない | `def f :: (bool \| i64 -> i64 * i64) -> unit` に `tsuzuri find --project p --module Main '(bool \| i64 -> i64 * i64) -> unit'` は `no matches` で、括弧を足した `(bool \| i64 -> (i64 * i64)) -> unit` だけが `exact`。匿名共用体のない `(i64 -> i64 * i64) -> unit` も同じく見つけず（括弧の中の読み方は `b3dd7f1c` から同じ）、括弧のない `i64 * i64 -> i64` は読めずに `E2000` | パーサーをコンパイラの `type_expr`（`->` の間に `type_product`）と同じ形にしました: `function` が `product` を `->` でつなぎ、`product` が `atom` を `*` でつなぎます。括弧の中・匿名共用体の要素・`[..]`・`<..>` は `function` で読みます（判断 1） | `kg::find::tests::products_bind_more_tightly_than_arrows`、`tests/anonymous_unions.rs` の `find_reads_products_tighter_than_arrows` |
+| 2. `src/kg/find.rs:469`: 要素の組み合わせを、それを囲むタプルや関数の単一化が終わる前に確定するので、`(Maybe<'a> \| Maybe<'b>) -> 'a -> i64` が `(Maybe<i64> \| Maybe<string>) -> string -> i64` に一致しない | 同じく `no matches`（位置の組で合う `... -> 'b -> i64` は `exact`）。第 1 回の対応の「残した制限」に書いた挙動です | 1 つの匿名共用体の中だけで後戻りしていた `Subst::unify_members` を、比較全体で後戻りする `Subst::solve` に置き換えました（判断 3〜5） | `kg::find::tests::member_pairings_stay_open_until_the_comparison_holds`・`solve_tries_other_pairings_until_the_check_holds`、`tests/anonymous_unions.rs` の `find_reconsiders_member_pairings_for_later_parameters` |
+
+#### 判断
+
+1. **結び付き（指摘 1）。** コンパイラの `type_expr` は `type_product` を `->` でつなぐので、`i64 -> i64 * i64` は `i64 -> (i64 * i64)`、`i64 * i64 -> i64` は `(i64 * i64) -> i64` で、匿名共用体の要素も `type_expr` です。検索のパーサーも同じ形にしました。知識グラフの署名の型（`docgen::type_text`）はタプルと関数型をいつも括弧で囲むので、エントリの読み方は変わりません。変わるのは括弧を省いた問い合わせで、匿名共用体を書かない問い合わせでは `(i64 -> i64 * i64) -> unit`（`i64 -> (i64 * i64)` を受け取る関数を探す。以前は `(i64 -> i64) * i64`）と `i64 * i64 -> i64`（以前は `E2000`）の形だけです。指摘の「検索のパーサーの全体で」に従いました。
+2. **指摘にない、同じ種類の違いを 1 つ直しました。** 検索のパーサーは `fn() -> A -> B` を `(fn() -> A) -> B` と読んでいました（`b3dd7f1c` から）。コンパイラは `fn()` の後の結果を `type_expr` で読むので `fn() -> (A -> B)` で、署名をそのまま写した問い合わせ `(fn() -> i64 -> i64) -> unit` は `def z :: (fn() -> i64 -> i64) -> unit` を見つけませんでした（`target/scratch/a24/copilot1/p3`）。指摘 1 で同じ行（`fn()` の結果の読み方）を変えるので、結果を `function` で読むようにしました。括弧を書いた `(fn() -> i64) -> i64` は今までどおりです。
+3. **比較全体での後戻り（指摘 2）。** `Subst::solve(goals, holds)` は、型の組の列（`tier_of` の `exact`・`borrow` では引数の組と結果の組）を順に単一化し、最後に `holds`（その宣言の制約の検査 `satisfied`）を確かめます。匿名共用体の組に出会うと、最初の要素の相手ごとに選択点を積み、後ろの組・後ろの引数・結果・制約のどれかが合わなければ、最も新しい選択点の次の相手へ戻ります。再帰ではなく目標と選択点のスタックを回すループなので、型の大きさでコールスタックは深くなりません（継続を渡す再帰にすると、深さが型の節の数に比例する）。要素の組は 1 回の `solve` につき 4,096 まで試し（以前は 1 つの匿名共用体の比較ごとに 4,096。後戻りを入れると、前の共用体の組ごとに後ろの共用体の 4,096 が掛け合わされるので、1 回の比較に 1 つの上限にしました）、上限に達した比較は以前と同じく「一致しない」です。失敗した比較は束縛を残しません。匿名共用体のない型では選択点が 1 つもできず、一階の単一化は順序によらず同じ答えを返すので、結果は以前と同じです。
+4. **`partial` 段と `--takes`。** 引数の割り当ては、以前と同じ貪欲な選び方のままです（`assign`。問い合わせの引数ごとに、まだ使っていない宣言の引数のうち、それまでの比較がある組み合わせでまだ成り立つ最初のもの）。割り当てまで後戻りの対象にすると、匿名共用体のない問い合わせの `partial` の結果も変わるからです（割り当ての貪欲さは `b3dd7f1c` からの性質で、指摘の対象ではありません）。割り当てを決めた後、結果・選んだ組・制約を 1 回の `solve` で解くので、組み合わせは後ろの引数と制約まで合うものが選ばれます。
+5. **制約の検査で組み合わせを選び直す経路**（`holds` が偽で次の組へ戻る）は、コンパイラが受理する宣言からは作れません。宣言の側で 2 つの要素が同じ問い合わせの要素に合うには `(Maybe<'a> | Maybe<'b>)` のような要素が要りますが、これは「決められない組」として `E1041` です。そこでこの経路は `Subst::solve` の単体テスト（`solve_tries_other_pairings_until_the_check_holds`。検査が見た `'a` が `f64`、`i64` の順であること）で確かめました。
+
+#### 検証
+
+- 直す前のコードで失敗すること: ソースを変える前に新しいテスト 4 件（`products_bind_more_tightly_than_arrows`・`member_pairings_stay_open_until_the_comparison_holds`・`find_reads_products_tighter_than_arrows`・`find_reconsiders_member_pairings_for_later_parameters`）を足して実行し、4 件すべてが失敗しました（`target/scratch/a24/copilot1/prefix-tests.txt`）。`solve_tries_other_pairings_until_the_check_holds` は新しい関数 `Subst::solve` のテストなので、直す前には書けません。判断 2 の `fn()` の問い合わせ（`find_reads_products_tighter_than_arrows` の最後の問い合わせ）は、直す前のソースのバイナリで `no matches`、直した後で `exact   Finder::Main.z :: (fn() -> (i64 -> i64)) -> unit` です。
+- 匿名共用体を書かない問い合わせの結果: 直す前のソース（`git archive HEAD`、別の `CARGO_TARGET_DIR`）のバイナリと、直した後のバイナリで、std と `tests/fixtures/` の 4 つのプロジェクト（`kg_basic`・`kg_shop`・`conventions`・`canonical_2026`）に 27 の問い合わせと `--result`／`--takes` の 6 通り（計 141 回、テキストと `--json`）を実行して比べました（`target/scratch/a24/copilot1/cmp.sh`）。違ったのは、判断 1 の 2 つの形（`i64 * i64 -> i64` と `(i64 -> i64 * i64) -> unit`）の 10 回だけで、ほかの 131 回は 1 byte も違いません（作業ディレクトリの名前を除く。`target/scratch/a24/copilot1/cmp/diff.txt`）。`(i64 -> i64 * i64) -> unit` で増えたのは `partial Array.sort_in_place_by :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref mut ['a..] -> unit  (+1)`（`'a = i64`、`'key = (i64 * i64)`）で、手で確かめた正しい一致です。std の検索の時間は、どちらも 0.06〜0.07 秒でした。
+- 期待値は手で求めました: 指摘 2 の例は、位置の組（`'a = i64`）では後ろの `string` が合わず、もう一方の組（`'a = string`、`'b = i64`）で合う。`... -> 'a -> 'a` は `'a` が引数の `string` と結果の `i64` の両方になるので一致しない。2 つの共用体の例は、`'c = bool` から 2 つ目の共用体で `'b = i64`、1 つ目で `'a = string`（`'c = i64` なら `'b = bool` で、1 つ目の共用体の `{i64, string}` にない）。`peek`（`ref` の引数）は `exact` では `ref` と共用体が合わず、`borrow` で合う。`more` は引数が 1 つ多いので `partial (+1)`、`--takes` では `exact`。
+- T0: `cargo fmt --all -- --check`（差分なし）、`cargo clippy --all-targets --locked -- -D warnings`（警告なし。単一化の入口 `Subst::unify` はテストだけが使うので `#[cfg(test)]` にしました）。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3074 件のうち 3074 passed、4 skipped（第 2 回の後は 3069 件。増えた 5 件は上の表の新しいテスト）。`tests/anonymous_unions.rs` は 78 件です（`target/scratch/a24/copilot1/t1.txt`）。`tests/kg_query.rs`・`tests/find.rs`・`tests/mcp_knowledge.rs` の `find` のテストも、期待を変えずに通りました。
+- `features.mjs anonymous_unions`（dev バイナリ）: 37 件、native と WASM の `-O0`／`-O3` がすべて通りました（`target/scratch/a24/copilot1/features.txt`。コード生成は変えていません）。
+- 文書: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/kg.md`（8 links、0 failed）、`node scripts/gen-docs.mjs --check`（19 blocks、0 stale）、`node scripts/check-cli-docs.mjs`（4 checks、0 failed）、`node scripts/check-links.mjs`（既定と `--into docs/architecture.md`、0 broken）、`node scripts/check-guide-lite.mjs`（88 references、0 failed）。
+
+#### 変更したファイル
+
+`src/kg/find.rs`（`Parser::product`・`function`・`union`・`atom` の `(` と `fn()`、`Subst::solve`・`step`・`Goal`・`Choice`、`tier_of`・`tier_of_parts`・`assign`。`Subst::unify_members` は削除、`Subst::unify` はテスト専用）、`tests/anonymous_unions.rs`（`find_in_project` と 2 件）、言語リファレンスの `compiler/kg.md`（`*` と `->` の結び付き、組み合わせの選び直しと上限）、`docs/architecture.md`（「### 匿名共用体（A24）」の `kg/find.rs` の項）、このチケット（第 1 回の「残した制限」の find の項に、解消したことを書き足した）。
+
+#### 残した制限
+
+- `partial` 段と `--takes` の引数の割り当ては、以前と同じく貪欲です（判断 4）。問い合わせの引数が、最初に合う宣言の引数を取った後で残りが合わなくても、別の引数への割り当てはやり直しません（匿名共用体と関係なく `b3dd7f1c` から）。
+- 要素の組は 1 回の比較につき 4,096 までです。同じ鍵の要素（`_` や同じ名前の型）が多い匿名共用体を 2 つ以上持つ比較では、以前（共用体ごとに 4,096）より早く「一致しない」になることがあります。
