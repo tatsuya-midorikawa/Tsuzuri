@@ -929,3 +929,53 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 更新した文書: `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`（現在の制限: 配列・レコードのリテラルのハンドラー、dyn 値の場所の規則、環境へ書き込む関数値を作る所の一覧と型による区別、関数値自身の環境の値の格納、呼び出し先の閉包を引数なしで呼ぶ形、セルを所有する関数値の規則の引数と局所値の条件、型が同じハンドラーの例。指摘 11）、`drop.md`（関数値の破棄は作った式で決めること）、`docs/language.md`・`docs/architecture.md`（書き込みの事実の段落）、`_features/README.md`（A31 の行）。
 
 変えたファイル: `src/ownership.rs`、`src/ownership_control.rs`、`tests/rc.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、上の文書、このチケット。
+
+### レビューの指摘への対応（第3回）（2026-11-11）
+
+レビューの 7 件の指摘（反例の探索 `target/scratch/review-a31-ce-r3/`、適合の確認 `target/scratch/review-a31-conf-r3/mine/`）を、対応前の先端（`fb3c0611`）・基準・対応後のバイナリで確かめました。指摘 1・2・3・5・6 は再現し、指摘 4・7 は指摘のとおりの状態（基準からある診断の位置と、記録済みの制限）でした。結果は `target/scratch/a31/r3/` にあります（`before.json`・`base.json`・`after-c.json`。対応で書いたプログラムは `r3/adv/`）。
+
+設計の変更（`src/ownership.rs`、`src/ownership_control.rs` の呼び出し 1 か所）:
+
+- **`Seq.next` は、列が持つ step 関数を `()` で呼ぶ、本体の見えない関数値の呼び出しとして扱います**（`builtin_stores` の `SeqNext`、`store_candidates` でもコールバックを実行する組み込み関数に数える）。列を関数値とする `apply_opaque` で、列の loan を列の loan の書き込み先へ、セルを所有する関数値の規則では隠れた環境へも格納します。列を仮引数で受け取る本文では、その格納が本文の書き込みの事実になり（`store_external`）、呼び出し元が実引数に当てはめます。`may_be_sink`・`may_own_sink` は、列の型が届く step 関数の型で判定します（`sequence_steps`）。指摘 1。
+- **捕捉・束縛した関数値を関数値の呼び出しへ渡すだけのラムダは、環境へ書き込む関数値（sink）に数えません**（`Source::target` を `may_reach_store_beside_code` で求める: 可変セル、排他参照、dyn 値、`Owned.Function` に届く型だけ）。関数値の環境へ書き込めるのはその関数値自身のコードだけで、そのコードを作る所はそれ自体で sink かどうかを判定し、それを捕捉した関数値は holder の不動点でその型を受け継ぎます。関数を返す見えない呼び出し（staged）も、束縛した引数が環境を隠すか、`may_reach_store_beside_code` のときだけ sink にしました（edition 2027 の読み取りの仮引数へ貸した `ref i64` は借用を持つだけで、書き込める場所ではありません。この対応の E2E の事例を足したときに、`Array.map` の `transform values[index]` が `i64 -> i64` を sink の型にし、`TextHandler` の事例を 2027 で拒否させたので見つけました）。指摘 2。
+- **値の破棄で実行するコードを、作った式でより広く決めます**（`value_runs_drop_code`）。配列・リスト・タプル・レコード・共用体のリテラルは要素を（レコードと共用体はその型自身の `Drop` も、`has_own_drop`）、不変な局所値は束縛した値を破棄します（`Checker::bound`。共有セルに届く型は中身が後から変わりうるので型で決めます）。呼び出された関数が、不変で参照でない仮引数の値の一部（仮引数、そのフィールド・要素: `parameter_part`）を破棄する格納は、事実の `StoreFacts::drop_only` にも入れ、呼び出し元は実引数の式が破棄でコードを実行しうるときだけ当てはめます（`join` は、どちらかが破棄以外で記録した組を drop-only から外します。破棄以外の格納と合わさった組は常に当てはめます）。場所から読んだ関数値を呼ぶだけの呼び出し（`c.cb ()`）は関数値を複製しないので、callee の値に破棄のフックを当てません（`eval_call` とパイプラインで `bound_next`）。指摘 3。
+- **セルを所有する関数値の規則で、値の出どころから所有する関数値を持ちえないと分かる値を除きました**（`Own`・`OwnerScan`・`owner_facts`、`CallFacts::owners`）。値の出どころは、仮引数の外から来た `fresh`、仮引数の値 `values`、関数値の仮引数の呼び出しの結果 `results` の 3 つで表し、型が関数値・dyn 値・`Owned.Function`・可変セルに届かない値は無し、可変セルに届く値は `fresh`（中身が後から変わりうる）、名前付き関数は無し、ラムダ・部分適用・リテラル・フィールド・要素・借用・参照外しは部品の和、不変な局所値は束縛の値（`for` の要素は列の値）、名前付き関数の完全適用は、その関数の事実（本文の結果の出どころの最小不動点）を実引数に当てはめたもの、`Owned.function` は引数、関数値の仮引数の呼び出しは `results`、`new [T](n, f)` は `f` の結果、ほかの組み込み関数・`let mut`・パターンの束縛・ほかの関数値の呼び出しは `fresh` です。出どころの無い式（`Checker::may_own` が偽）は、呼ぶ関数値（`may_own_sink`）にも、隠れた環境へ届く引数（`argument_hides`）にも数えず、そうした値に束縛した不変な局所値（`holds_no_owner`）は `store_hidden` の格納を受けず、束縛と関数の結果の `absorb_hidden` も行いません。事実はセルを所有する関数値の旗（`owned_sinks`）が上がったときに 1 度求めます。指摘 5・6。
+
+この対応で見つけて塞いだ穴: 第 1 回のレビューの `review-a31-ce/m01`〜`m05`・`m07`（`Seq.map`・`for`・`Seq.next`・`Seq.defer` の step 関数が `Mutex` へ借用を書き込む形）は、第 1 回・第 2 回の先端で受理されていました（指摘 1 と同じ原因）。両方の edition で拒否になります。
+
+指摘ごとの対応（期待はレビューの対照と手の計算から。安全なプログラムの値は基準と同じことを `-O0`・`-O3` で確かめました: `r3/run-after.json`・`run-base.json`）:
+
+| 指摘 | 再現 | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（`Seq.next` が実行する step 関数の書き込みを追わない。危険な形を両方の edition で受理） | 再現（`b02`・`b04`〜`b08`・`c05`・`c06`・`b09` が受理、`-O0`・`-O3` とも 0） | `SeqNext` を本体の見えない関数値の呼び出しにした。すべて `E1013`（`assignment_extends_borrow`、ブロックの位置）。対照 `b02_twin`・`b07_twin` は受理（9） | `tests/rc.rs` `a_step_function_that_seq_next_runs_keeps_what_it_stores`（第 1 回の `m07` も）、E2E `seq_step_writes_a_long_lived_borrow` |
+| 2（2027 で `twice`・`bracket` のような組み合わせ関数が `E1013`） | 再現（`f01`・`f03`・`f06_min_1`・`f07_d`、第 2 回の `perf_twice_4`〜`12` が 2027 で拒否） | 捕捉した関数値を渡すだけのラムダを sink にしない。すべて受理（`f06_min_1` 10、`f07_d` 37、`f03` 13） | `a_lambda_that_hands_a_captured_function_value_on_is_no_sink` |
+| 3（書き込む `Drop.drop` があると、参照とその参照だけを捕捉したラムダのレコードリテラルが `E1014`） | 再現（`g22` が 2026 で拒否）。原因は 2 つで、呼び出し元の一時値の破棄のフックと、呼び出された関数の中の `c.cb ()` の callee の破棄のフック（仮引数の値の一部を型で判定）でした | リテラル・不変な局所値の破棄、drop-only の事実、場所から読んだ callee。`g22` は受理（14）。`let` で束縛した同じ形（`r3/adv/d03`）も受理。呼び出された関数が部品から `Stash` を作って破棄する形（`r3/adv/d01`）は拒否のまま | `dropping_a_literal_runs_only_what_its_parts_drop` |
+| 4（利用者のコードの誤りが `std/Array.tz:2003:32` に出る。文言が基準と違う） | 指摘のとおり（`g19`・`c08` とも基準も枝も拒否、位置は同じ） | 変えていません（下の判断） | — |
+| 5（セルを所有するレジストリが 1 つあると、無関係な同じ型のハンドラー・サンクの呼び出しが `E1014`） | 再現（`s01`・`s02`・`s05`・`s06`・`s07`・`s09`・`s13`・`s16`） | 出どころの規則。すべて受理（22・23・22・46・20・43・27・27） | `a_value_that_cannot_hold_an_owner_reaches_no_hidden_cell`、E2E `registry_and_mapped_handlers`・`functions_beside_a_named_function` |
+| 6（名前付き関数・捕捉の無いラムダに束縛した局所値が隠れた環境の格納を受ける） | 再現（`s15`・`s13` の `base`） | `holds_no_owner`。受理（27） | 指摘 5 のテスト（`s15`・`s13`） |
+| 7（`w18` が拒否のまま） | 指摘のとおり（両方の edition で `10:5` の `store_local_borrow_through_reference`） | 変えていません（下の判断） | — |
+
+出どころの規則は、所有する関数値のコピーを型で数えていた所を狭めるので、危険な形を 29 個書いて確かめました（`r3/adv/p01`〜`p19`、`q01`〜`q20` の番号の一部: レジストリのコピーを配列リテラル・`Array.map`・`Array.mapi`・恒等関数・レコードを返す関数・ラムダの捕捉・関数値の結果・`Maybe` の `match`・`for`・`Array.fold` のコールバックの仮引数・`if`・タプル・`Owned.function`・部分適用・再帰関数を通して呼ぶ形と、レジストリ自身へ書き込んで、コピーから読み戻す形）。どれも両方の edition で `E1013`（`assignment_extends_borrow`）です（基準はすべて受理）。
+
+判断（どれも「健全性を保ち、受理している安全なプログラムを受理のまま保つ、最も保守的な選択」）:
+
+- 指摘 4 は変えていません。std の関数の本文で見つけた誤りを std の本文の位置で報告するのは基準からの振る舞いで、受理の結果は基準と同じです（`g19` は安全ですが基準も拒否します）。呼び出し側の位置へ移すのは、検査した本文の外へ診断を写す別の変更なので、このチケットでは扱いません。
+- 指摘 7（`r2/adv/w18`）は第 2 回の記録どおり残します。仮引数の関数値が局所のセルを共有しえないことは、どのセルへの格納かを区別しないと示せません（出どころの規則は値が所有する関数値を持ちうるかだけを見ます）。
+- 出どころの規則でも、型が同じで出どころを追えない値は数えます。この対応で、次の 2 つの形を `lifetimes.md` の「現在の制限」に書きました（どちらも基準は受理する安全な形で、環境へ書き込む同じ型の関数値がモジュールに無ければ受理です）: 環境へ書き込む `unit -> i64` の関数値があるモジュールで、引数のフィールドの関数値を呼ぶ関数（`fn fill_with c = { let v = c.cb (); Array.write 0 (\() -> v) c.buf }`、`r3/adv/l02`）は、フィールドの関数値の環境を引数全体で近似するので、引数の借用を引数の書き込み先へ残します（両方の edition で `E1014`）。edition 2027 で、同じモジュールの `twice h g = h (\() -> h g)` に読み取りの仮引数を持つラムダを渡す形（`r3/adv/l01`）は `E1013` です。そのため、E2E の fixture（`in_place_writes`。環境へ書き込む `unit -> i64` の関数値を含みます）には、指摘 2・3 の形を足していません（`tests/rc.rs` のテストが、そうした関数値の無いモジュールで受理を確かめます）。
+- 期待を変えた既存のテストはありません。
+
+確かめたこと（2026-11-11。ログは `target/scratch/a31/r3/`）:
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` は警告なし（`r3/clippy.log`）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast` は 3018 件すべて成功、4 件 skip（1614 秒、`r3/nextest-1.log`。ソースはこの対応の最後のものと同じで、その後はテストと文書だけを変えました）。第 2 回の 3014 件から増えた 4 件は `tests/rc.rs` の新しいテストです。
+- 新しいテストが対応前に失敗すること: `src/ownership.rs`・`src/ownership_control.rs` だけを `fb3c0611` に戻して `cargo test --test rc` を実行し、新しい 4 件がすべて失敗することを確かめました（戻した後は先端に戻しています）。
+- レビューの 3 回分のプログラム: 第 3 回の 97 個（194 件、`r3/after-c.json`）と、この対応の `r3/adv/` の 39 個（78 件）、第 1 回・第 2 回の 1146 件・338 件・`r2/adv/` の 26 件（`r2/corpora.sh r3c`）を確かめました。第 1 回・第 2 回のプログラムで変わったのは、上の `m01`〜`m05`・`m07`（12 件、受理から拒否）だけです。受理になった安全なプログラム（指摘 2・3・5・6 の 14 個と、この対応の `d03`・`g22r` など）は、`-O0`・`-O3` の値が基準と同じです（`r3/run-after.json`・`run-base.json`）。基準が受理する危険なプログラムで対応後に受理されるものはありません。
+- 154 個の照合（`compare.mjs`）: edition 2027・2026 とも期待と違うもの 0（`r3/compare-2027.txt`・`compare-2026.txt`）。
+- 手順 5 の比較（`step5.mjs`）: `tests/fixtures/*`・`examples/*` の 154 個の `check --json` と `build --no-cache --emit llvm` が基準とすべて同じ（`r3/step5-final.txt`。`in_place_writes` の fixture に足した 3 件も基準と同じ値で受理されます）。
+- E2E（`r3/e2e-final.log`）: `node tests/features.mjs <bin> <suite>` の `in_place_writes` 44 件（基準のバイナリでも 44 件同じ値で成功）、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`slices` 11 件、`matrix_view` 303 件、`concurrency` 15 件、`iteration_protocol` 26 件（native と WASM の `-O0`・`-O3`）、`sync_types` 14 件・`tzroutine` 16 件（native の `-O0`・`-O3`）、`node tests/control.mjs` 701 件、`node tests/user_drop.mjs`（native と WASM の `-O0`・`-O3`）。すべて成功。
+- 文書: `TSUZURI_BIN=<bin> node scripts/check-docs.mjs`（`lifetimes.md`・`drop.md`）は `Docs: 2 pages, 35 links, 9 checked examples, 18 native runs (O0/O3)` で成功。`gen-docs.mjs --check` は `19 blocks checked, 0 stale`、`check-cli-docs.mjs` は `4 checks, 0 failed`（どちらも `TSUZURI_BIN` に dev のバイナリ）、`check-guide-lite.mjs` は `88 references checked, 0 failed`、`check-links.mjs --into _features/README.md` は `0 broken`。診断の種類は増やしていません。
+- 性能（`TSUZURI_TIME_PASSES=1 tsuzuri check --edition 2027` の `ownership` の相の中央値、ms、基準・対応前・対応後を交互に 5 回。共有の機械が混んでいて、同じプログラムでも回によって 2 割ほど違います。`r3/time-perf.txt`）: `p01_many_locals_600` 387 / 408 / 414、`p05_many_locals_600_nosink` 420 / 437 / 431、`perf_locals_600` 354 / 789 / 799、`perf_twice_12` 0.17 / 0.56 / 0.57、第 3 回の `p01_known_tree_24` 0.33 / 1.32 / 1.34、`p03_hof_chain_40` 0.50 / 1.41 / 1.43、`ring_400` 2.2 / 11.0 / 11.2、`chain_1600` 15.9〜23.1 / 84.7〜117.0 / 108.0〜138.3、`perf_chain_400` 3.2〜5.1 / 18.5〜22.2 / 22.9〜33.9、fixture の `hash_map` 5.6 / 5.0 / 5.0、`list_fsharp` 9.0 / 7.9 / 7.9、`iteration_protocol` 2.5 / 2.4 / 2.3。セルを所有する関数値と多くの関数を持つ `chain_*` は、出どころの事実（全関数の本文の走査の不動点）と本文ごとの出どころの走査の分だけ遅くなります（2 割前後）。時間の閾値は置きません。
+
+更新した文書: `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`（現在の制限: 見えないコードの除外に `Seq.next`、`Seq.next` の step 関数の書き込み、sink を作る所の一覧（捕捉した関数値を渡すだけのラムダ、関数を返す呼び出しの引数の条件）、出どころの規則と、出どころを追えない所の例、同じ型の関数値がある場合の 2 つの形）、`drop.md`（リテラル・不変な局所値の破棄、呼び出された関数の中の破棄、場所から読んだ関数値の呼び出し）、`docs/language.md`・`docs/architecture.md`（書き込みの事実の段落）、`_features/README.md`（A31 の行）。
+
+変えたファイル: `src/ownership.rs`、`src/ownership_control.rs`、`tests/rc.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、上の文書、このチケット。
