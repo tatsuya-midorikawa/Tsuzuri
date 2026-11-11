@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | [A24](A24-anonymous-unions.md)（done）, A06, A07 |
 | 後続 | – |
-| 状態 | done（2026-11-11。Phase 1 と Phase 2。末尾の「実装と検証」） |
+| 状態 | done（2026-11-11。Phase 1 と Phase 2。末尾の「実装と検証」。A25 を取り込み、A24 ← A25 ← A26 の順に積んだ（「A25 との統合」）） |
 | 起票 | 2026-11-02（A24 と同時。HEAD `2f556480`） |
 | 承認 | `Ord` を正準順で持たせること（D2）と、`Decode` を JSON の種類が互いに素な場合に限ること（D5）は、2026-11-02 の利用者の回答「1~4 について承認します」で承認済み（GUIDE D-62 の決定 4・5）。ほかは既定案。Phase 2 は人間が求めた場合だけ着手する |
 | 手本にする既存実装 | タプル・配列・リストの構造的なインスタンス: `Classes::structural`（`src/polymorph.rs:2556`）、制約の展開 `normalize`（`2382-2401`）、型付き IR への下ろし（`5230`、`5311-5399`）、LLVM の `structural_display`（`src/llvm_display.rs:548`）・`display_quoted`（`601`）・`structural_hash`（`src/llvm_hash.rs:17`）・`structural_compare`（`src/llvm_compare.rs:69`）。union の導出の意味: `src/derive.rs`（`Build::union`、`817`） |
@@ -440,7 +440,7 @@ Phase 2 の着手時（2026-11-11）に `std/Json.tz`（`Value`・`Error`・`Err
 
 ### 残っていること・報告する事項
 
-- `feat/a25-anonymous-union-conversions` の取り込み（A24 ← A25 ← A26 の順に積む、調整役の決定）は、この段ではしていません。取り込んだ後に、T1・suite `anonymous_unions`・上の IR の比較をやり直します。
+- `feat/a25-anonymous-union-conversions` の取り込み（A24 ← A25 ← A26 の順に積む、調整役の決定）は、この段ではしていませんでした。後で取り込み、T1・suite `anonymous_unions`・IR の比較をやり直しました（末尾の「A25 との統合（2026-11-11）」）。
 - `driver::test_runner::tests::runner_rejects_malformed_indices_and_reaps_timed_out_children` は、機械が混んでいるときに 1 秒の時間切れで落ちることがあります（単独では通る。このブランチの変更とは関係がありません）。
 - このチケットより前からの挙動（変えていません）: `pure def` の中のタプルの比較（`StructuralCompare`）は、要素のインスタンスの効果を辿りません（要素の `Eq` が `Debug.print` を呼んでも受理される）。匿名共用体のインスタンスは通常の関数なので辿られ、`E1029` になります。
 
@@ -508,3 +508,31 @@ Phase 2 の着手時（2026-11-11）に `std/Json.tz`（`Value`・`Error`・`Err
 - E2E（dev バイナリ、native と WASM、`-O0` と `-O3`）: `node tests/features.mjs target/debug/tsuzuri <suite>` で `anonymous_unions` 96 件、`deriving` 209 件、`typeclasses` 39 件、`json` 165 件、`dyn_dispatch` 58 件、`hash_map` 199 件、`unions` 27 件が通り、`node tests/json.mjs target/debug/tsuzuri` は 297 入力・2,523 検査が通りました（記録は `target/scratch/a26/r2/suites.txt`）。
 - 既存の IR: `tests/fixtures/` と `examples/` の 186 単位の native と wasm32 の IR・`check --json` を、`d0782ed4` のバイナリと今のバイナリで取り、1 byte も違いません（`tests/fixtures/anonymous_unions` を含む。`sh target/scratch/a26/baseline.sh` と `compare.sh`、記録は `target/scratch/a26/r2/ir-compare.txt`。IR は消しました）。制約の解き方を変えても、受理していたプログラムの生成コードは変わりません。
 - ドキュメント: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs` を変えた 3 ページ（`anonymous-union.md`・`json.md`・`diagnostics.md`）に実行し、96 links、29 examples、native の実行 56 回（`-O0`・`-O3`）で通りました。`node scripts/gen-docs.mjs --check` は 19 blocks、0 stale、`node scripts/check-cli-docs.mjs` は 4 checks、0 failed、`node scripts/check-guide-lite.mjs` は 88 references、0 failed です。
+
+### A25 との統合（2026-11-11）
+
+調整役の決定（A24 ← A25 ← A26 の順に積む）に従い、`feat/a25-anonymous-union-conversions`（先端 `8f14b16c`。A24 の第2回のレビューの対応 `09fdb0de` を含む）をこのブランチへ取り込みました（マージコミット `550d4715`）。履歴は書き換えていません。
+
+衝突した 13 ファイルは、両方のチケットの振る舞いを残して解きました。
+
+- `src/ownership.rs`（ムーブ後の使用の `E1012`）: A25 の「照合した一時値の 2 つの束縛」のメッセージと、拡大の help（`a widening moves 'w'; bind the wider value once ...`）を残し、その次に A26 の注入の help（`an anonymous union holds its value, so injecting 's' moved it; ...`）を調べます。拡大を先に調べるのは、拡大した値には拡大した値を 1 回だけ束縛する案内が当たり、「複製を注入する」は当たらないためです。1 つの被演算子 `v == (if c then w else s)` の中でも、拡大した `w` と注入した `s` はそれぞれの help です（下のテスト 1）。
+- `src/anonymous_union.rs`: A26 の組み込みのインスタンスの部品（`tag_behind`・`member_call`・`by_member`）と JSON の種類（`JsonKind`・`JsonKinds`・`decode_body`）、A24 の第2回の `Fit` と `holds_array_literal` を、どちらも残しました。`src/check.rs`・`src/control.rs`・`src/polymorph.rs`・`src/diagnostic_kinds.rs` は自動で併合され、診断の kind は各コードの中のアルファベット順のままです（A25 の `anonymous_union_not_subset`（`E1003`）と `type_test_narrow_borrowed`（`E1041`）、A26 の `anonymous_union_decode_overlap`（`E1025`））。`src/explain/codes/E1041.md`（A25 が変えた）は 1,481 文字、`E1025.md`（A26 が変えた）は 1,465 文字で、上限の 1,500 文字に収まります。
+- `tests/anonymous_unions.rs`: 共通の部分（両方の途中の変更は自動で併合）の後に、A26 が足したテスト、A25 と A24 の第2回が足したテストの順に置きました。69 + 31 + 40 = 140 件で、下の 3 件を足して 143 件です。
+- `tests/features.mjs` とフィクスチャ: 両方の関数と JavaScript の参照値を残し、フィクスチャの冒頭の説明は A24・A25・A26 を名指しします（suite `anonymous_unions` は 96 + 56 = 152 件）。
+- ドキュメント: `README.md` の機能の項目に拡大・絞り込みとインスタンスの両方を書き、テストの表の行は両方のファイルとテストを並べました。`_features/README.md` は A25 の行（A25 の版、`_completed/` へのリンク）と A26 の行（このブランチの版、`_completed/` へのリンク）を残し、A24 の行の「まだない」を「変換は A25 が、組み込みのインスタンスは A26 が足した」に直しました。`anonymous-union.md`（「所有権」の比較の注入と A25 の絞り込みのビュー、「注意点」は A26 の 2 項目と A25 の 2 項目。A25 が消した「要素の少ない共用体を渡せない」の項目と例は消したまま）、`diagnostics.md`（`E1012` の行は A25 の文に A26 の注入の help の文を足し、`E1013` の行は A25 の版）、`index.md`、`match.md`（A25 の絞り込みの数え方と A26 のリテラルのパターンの両方）、`docs/architecture.md`（モジュールの表の行は A24・A25・A26、注入の段落は A24 の第2回の版に A26 の `injections` の文を足した）、`docs/language.md`（`E1041` の行は A25 の版、`E1025` の行は A26 の版）。
+
+監査が名指しした相互作用を確かめ、3 件のテストを足しました。期待値はどれも規則から手で求めたもので、ハッシュの 2 つの値は、`HASH_OF_1`・`HASH_OF_ONE` を再現する Python のスクリプト（`docs/language.md` の Canonical Stream から書いたもの）で計算しました。3 件とも、A25 のバイナリでは `E1005`（インスタンスがない）です。取り込む前の A26 には拡大がないので、拡大する位置が `E1003` です（拡大のない A24 のバイナリで確かめました）。
+
+1. `comparisons_take_injected_and_widened_operands`: 比較の被演算子は拡大しません（A25 の `comparison_does_not_widen` はそのまま通ります。`v == w`・`w == v`・`v == (w)` は `E1003`）。右の被演算子は注入され（A24）、同じ型の 2 つの値は A26 の `Eq`・`Ord` が借用して比べるので、どちらも後で使えます。被演算子に書いた `if` の枝は拡大し（`v == (if positive 1 then w else 0)`）、拡大した値のタグは広い共用体の正準順序での位置です: `(i64 | string)` から拡大した `5` はどの `f64` の値よりも小さく（`wide < 0.5`）、`"abc"` は大きい。拡大した `w` を後で使うと拡大の help、同じ `if` で注入した `s` を後で使うと注入の help です。
+2. `widened_and_narrowed_keys_hash_as_their_union`: 型注釈のある束縛で拡大したキーで `HashSet<(f64 | i64 | string)>` と `Map<(f64 | i64 | string), i64>` を作り、直接作ったキーで見つかること、`Map` の順が `0=3;2=2;0.5=9;s1=2;`（i64、f64、string の順）であること、拡大した `"s1"` のハッシュが要素 2 の値 `16237190552417262429`、もとの `(i64 | string)` の `"s1"` が要素 1 の値 `1096041482089778054` であることを確かめます。絞り込みは、所有する一時値から Copy でない要素を持つ `(i64 | string)` へ（`HashMap`）、借用した `HashSet` の要素から Copy の要素だけの `(i64 | bool)` へ（`HashSet`）絞ったキーが、直接作ったキーで見つかることを確かめます。総称の関数の引数は拡大しないので（`HashSet.insert w set` は `E1003`）、キーは束縛で拡大します。
+3. `widened_and_narrowed_values_show_and_encode`: 拡大した値と絞った値の `Display`（単独・補間・配列の中・導出したレコードの中）と `Encode`（配列・導出したレコード）がもとの値と同じで、`Decode` で読み戻したレコードが `==` で等しいことを確かめます。
+
+どれもコードの変更は要りませんでした（拡大と絞り込みはタグを付け替えてペイロードを移す型付きの `match` で、インスタンスはタグとペイロードを読むだけなので、互いに知る必要がありません）。ドキュメントに、相互作用の規則を足しました: `anonymous-union.md`（「比較と順序」に被演算子は拡大しないことと `if` の枝の拡大、拡大した値の順序。「表示」と「Encode」に拡大・絞った値はもとの値と同じ。「コレクションのキーと `deriving`」に総称の関数の引数は拡大しないこと、拡大・絞ったキーのハッシュと順序、`run=` の例）、`docs/language.md`（匿名共用体の節に 1 段落）。
+
+検証（取り込みの後の木）:
+
+- T0: `cargo fmt --all -- --check` は差分なし、`cargo clippy --all-targets --locked -- -D warnings` は警告なし。
+- T1: マージコミット `550d4715` の木で `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast` を実行し、3133 件がすべて passed、4 skipped です（記録は `target/scratch/a26/m/t1-merge.txt`）。その後に足した 3 件を含む `--test anonymous_unions` は 143 件が passed、ドキュメントを変えた後の文書を読むテスト（`explain`・`property`・`std_examples`・`value_layout`・`diagnostic_kinds`・`diagnostic_v2`・`mcp`・`guide`・`mcp_knowledge`）は 190 件が passed です。
+- E2E（dev バイナリ、native と WASM、`-O0` と `-O3`）: `node tests/features.mjs target/debug/tsuzuri <suite>` で `anonymous_unions` 152 件、`deriving` 209 件、`typeclasses` 39 件、`json` 165 件、`dyn_dispatch` 58 件、`hash_map` 199 件、`unions` 27 件が通りました（記録は `target/scratch/a26/m/suites.txt`）。
+- IR: `tests/fixtures/` と `examples/` の 186 単位の native と wasm32 の IR・`check --json` を、A25 の先端のバイナリと取り込んだ後のバイナリで取りました（`sh target/scratch/a26/baseline.sh` と `compare.sh`、記録は `target/scratch/a26/m/ir-compare.txt`）。違うのは `tests/fixtures/anonymous_unions` だけで、A25 のバイナリは A26 の関数を持つフィクスチャを `E1005` で拒否します。ほかの 185 単位は 1 byte も違いません。A25 の先端のフィクスチャ（`feat/a25-anonymous-union-conversions:tests/fixtures/anonymous_unions/Main.tz`）の native と wasm32 の IR も、2 つのバイナリで同じです。A26 は、匿名共用体のインスタンスを使わない A25 のプログラムの生成コードを変えません。IR は消しました。
+- ドキュメント: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs` を、取り込みで変わった 7 ページ（`anonymous-union.md`・`diagnostics.md`・`index.md`・`match.md`・`pattern-matching.md`・`type-inference.md`・`types.md`）に実行し、318 links、42 examples、native の実行 82 回（`-O0`・`-O3`）で通りました（記録は `target/scratch/a26/m/check-docs.txt`）。`node scripts/gen-docs.mjs` は 19 blocks、0 updated、`--check` は 0 stale、`node scripts/check-cli-docs.mjs` は 4 checks、0 failed、`node scripts/check-guide-lite.mjs` は 88 references、0 failed、`node scripts/check-links.mjs` は 0 broken です。

@@ -1229,6 +1229,8 @@ describe first                      // "int 42"
 
 比較演算子の被演算子への注入は、ほかの注入と同じく値の使用です。非 Copy の変数（`v == s` の `s: string`）は匿名共用体の中へ move され、後で使うと `E1012` です（ほかの型どうしの比較は被演算子を借用するだけです）。この `E1012` の help は、注入できない `ref s` ではなく、`an anonymous union holds its value, so injecting 's' moved it; use 's' before that, or inject a copy (clone_string ref s)` です（`utf8string` は `Utf8String.clone ref s`、フィールドは `injecting the field moved it out of 'r'`）。
 
+拡大・絞り込み（A25）と組み込みのインスタンス（A26）: 比較演算子の被演算子は拡大しないので、要素の少ない匿名共用体の値を被演算子にした `v == w` は `E1003` です（被演算子に書いた `if`・`match`・ブロックの枝は、ほかの位置と同じく拡大し、拡大した値へ move されます）。拡大した値と絞った値は、その型の正準順序での要素の位置をタグに持つので、`Eq`・`Ord`・`Hash` はその型で直接作った値と同じ結果です。同じペイロードでも、要素の位置が違う型の値とは `Hash` が違います（`(i64 | string)` の `"s1"` は要素 1、`(f64 | i64 | string)` の `"s1"` は要素 2）。`Display`・`Encode` はペイロードだけを書くので、もとの値と同じ表示・JSON です。総称の関数の引数（`HashSet.insert`・`Map.get` のキー）では拡大しないので、要素の多い匿名共用体のコレクションへは、型注釈のある束縛で拡大してから渡します。
+
 匿名共用体は `Display` を持つので、トップレベルの結果式が匿名共用体なら、その表示を出力します（`Display` を持つ型の値を出力する結果式の規則のとおりです）。
 
 `Default`・`Format`・`Arbitrary` のインスタンスはありません。`E1005`（匿名共用体を持つ型の `deriving` では `E1025`）で、メッセージは `no instance for Default<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` です。
