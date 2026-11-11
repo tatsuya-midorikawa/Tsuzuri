@@ -26,16 +26,25 @@ struct Narrowing {
     case: (usize, usize),
     /// The first member of `to` that is not Copy: its payload has to move into the new value.
     moved: Option<Type>,
-    /// Whether the hidden binding views the matched value where a binding would move it: every
-    /// member of `to` is Copy, so the narrowing copies the payload and leaves the value whole.
+    /// Whether the hidden binding views the matched value where a binding would move or copy it:
+    /// every member of `to` is Copy, so the narrowing copies the payload and leaves the value
+    /// whole, and the matched union holds no loans, which no view may (`TypedMatchArm::views`).
     view: bool,
+    /// Whether that view keeps the matched storage shared for the arm: the matched union is not
+    /// Copy. Ownership lets the storage of a Copy value be moved or written over under a view.
+    shared: bool,
+    /// Every member of `to` is Copy, and the matched union is not Copy and may hold loans: no
+    /// binding can view it, nor take it without moving more than the payload, so the pattern
+    /// copies the payload in a step (`stepped_narrowings`).
+    copied: bool,
     /// The type test's own extent, from its `:?`, without parentheses around it.
     span: Span,
 }
 
-/// The name that hides the matched value of a narrowing into `name`. No source spells it.
+/// The name that hides the matched value of a narrowing into `name`. No source spells it
+/// (`Local::hides_narrowed`).
 fn narrowed_name(name: &str) -> String {
-    format!("$narrow.{name}")
+    format!("{NARROWED_PREFIX}{name}")
 }
 
 /// The locals through which code may reach the storage of the subject `matched` of a match: the
@@ -927,11 +936,13 @@ impl Checker<'_> {
             if !result.as_ref().is_some_and(Type::contains_error) {
                 result = self.sibling_hint(&body.ty, result.as_ref()).cloned();
             }
-            // A viewing narrowing keeps the matched storage shared for the whole arm. A body that
-            // reaches that storage, which it may move or replace, gets the narrowed value from a
-            // step of the pattern instead, which copies the payload as the arms `:? W0 as x`,
-            // `:? W1 as x` do (A25, review round 1).
-            if wrapped.iter().any(|(_, _, narrowing, _)| narrowing.view)
+            // A view of a union that is not Copy keeps the matched storage shared for the whole
+            // arm. A body that reaches that storage, which it may move or replace, gets the
+            // narrowed value from a step of the pattern instead, which copies the payload as the
+            // arms `:? W0 as x`, `:? W1 as x` do (A25, review round 1). The view of a Copy union
+            // shares nothing: the body may move or replace the storage after the retagging has
+            // read it (`Local::hides_narrowed`).
+            if wrapped.iter().any(|(_, _, narrowing, _)| narrowing.shared)
                 && reaches_any(
                     &body,
                     &reached_locals(
@@ -944,7 +955,7 @@ impl Checker<'_> {
             {
                 let (copied, kept): (Vec<_>, Vec<_>) = wrapped
                     .into_iter()
-                    .partition(|(_, _, narrowing, _)| narrowing.view);
+                    .partition(|(_, _, narrowing, _)| narrowing.shared);
                 for (hidden, local, _, at) in copied {
                     borrowed.remove(&hidden.id);
                     self.step_narrowing(&mut plans, &narrowed, at, &hidden, &local);
@@ -986,7 +997,10 @@ impl Checker<'_> {
     ///   chosen, when nothing may move out of the matched value yet. A narrowing whose union
     ///   has a member that is not Copy cannot be copied, so it is an error there;
     /// - a narrowing that would view the matched value while another binding of the same
-    ///   alternative moves out of it, as `whole` does in `(:? (i64 | f64) as n) as whole`.
+    ///   alternative moves out of it, as `whole` does in `(:? (i64 | f64) as n) as whole`: the
+    ///   retagging reads the view after the bindings are made;
+    /// - a narrowing into Copy members of a matched union that is not Copy and may hold loans
+    ///   (`Narrowing::copied`), as `:? (i64 | f64) as n` of `(i64 | f64 | string | (i64 -> i64))`.
     ///
     /// A step keeps the match from being a switch, so the other narrowings keep the block, unless
     /// the arm's body reaches the matched storage (`match_value`, once the body is checked).
@@ -1019,6 +1033,10 @@ impl Checker<'_> {
                             "match each member with its own ':?' arm, or test the condition in the arm's body",
                         ));
                     }
+                    stepped.insert(narrowing.name.text.clone());
+                    continue;
+                }
+                if narrowing.copied {
                     stepped.insert(narrowing.name.text.clone());
                     continue;
                 }
@@ -1687,10 +1705,12 @@ impl Checker<'_> {
     ///   into the new value, and a payload in borrowed storage is copied. When every member of
     ///   `W` is Copy, the hidden binding views the matched value also where a binding would
     ///   move it, so that the narrowing leaves the value whole, as the arms `:? W0 as x`,
-    ///   `:? W1 as x` do;
+    ///   `:? W1 as x` do, and also where a binding would copy it, a Copy union with an array
+    ///   member, so that only the payload is copied (`Local::hides_narrowed`);
     /// - or by a step of the pattern that copies the payload (`stepped_narrowings`), in an arm
-    ///   with a guard and where the view would meet a move, and (`match_value`) where the
-    ///   arm's body reaches the matched storage, which it may move or replace.
+    ///   with a guard, where the view would meet a move and where the matched union may hold
+    ///   loans, which no view may, and (`match_value`) where the arm's body reaches the matched
+    ///   storage of a view that keeps it shared, which the body may move or replace.
     ///
     /// A copy needs a Copy payload: `as x` in borrowed storage (here) or under a guard
     /// (`stepped_narrowings`) is an error when a member of `W` is not Copy
@@ -1753,7 +1773,14 @@ impl Checker<'_> {
             )
             .with_help("match each member with its own ':?' arm, or match an owned value"));
         }
-        let view = moved.is_none() && !place.ty.is_copy(&self.types);
+        // A view of a value that may hold loans would lose them (`TypedMatchArm::views`); a Copy
+        // value is copied whole by a binding that does not view it, an array member too (Copilot
+        // review round 1).
+        let copy = place.ty.is_copy(&self.types);
+        let loans = place.ty.carries_loans(&self.types);
+        let view = moved.is_none() && !loans;
+        let shared = view && !copy;
+        let copied = moved.is_none() && loans && !copy;
         let tag = Type::Integer(32, true);
         let mut alternatives = Vec::with_capacity(cases.len());
         let mut coverage: Option<CoveragePat> = None;
@@ -1798,6 +1825,8 @@ impl Checker<'_> {
                     case: (from, into),
                     moved: moved.clone(),
                     view,
+                    shared,
+                    copied,
                     span,
                 });
             }

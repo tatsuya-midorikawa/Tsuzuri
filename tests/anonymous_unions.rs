@@ -4340,6 +4340,93 @@ fn narrowing_retags_without_allocating() {
 }
 
 #[test]
+fn narrowing_a_union_that_may_hold_loans_copies_the_payload() {
+    // A function member may hold loans, and ownership and code generation view no value of a type
+    // that may (`TypedMatchArm::views`). `:? (i64 | f64) as n` of such a union copies the selected
+    // Copy payload in a step of the pattern, as the arms `:? i64 as n`, `:? f64 as n` do, instead of
+    // taking the whole value into its hidden binding (Copilot review round 1): that was `E1012`
+    // behind a reference and a move of an owned value, which could not be used again. By hand:
+    // `num` is 2 k for the i64 k and 3 for an f64 above 1; `size` is k for the i64 k, 1 for an f64,
+    // the length of a string and f 1 for a function f.
+    const ANY: &str = "(i64 | f64 | string | (i64 -> i64))";
+    let source = format!(
+        "{NUM}def size :: ref {ANY} -> i64 = \\v ->\n    match v with\n    | :? i64 as k -> k\n    | :? f64 -> 1\n    | :? string as s -> s.length\n    | :? (i64 -> i64) as f -> f 1\n\n\
+         def by_ref :: ref {ANY} -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n    | :? (i64 -> i64) -> 100\n\n\
+         def owned :: own {ANY} -> i64 = \\v ->\n    let r = match v with\n        | :? (i64 | f64) as n -> num n\n        | :? string -> 0\n        | :? (i64 -> i64) -> 0\n    r * 1000 + size (ref v)\n\n\
+         test \"loans\" =\n    \
+         let a: {ANY} = 4\n    \
+         let b: {ANY} = 2.5\n    \
+         let c: {ANY} = \"abc\"\n    \
+         let d: {ANY} = \\(k: i64) -> k + 41\n    \
+         assert (by_ref (ref a) + by_ref (ref b) + by_ref (ref c) + by_ref (ref d) == 8 + 3 + 3 + 100)\n    \
+         assert (by_ref (ref a) == 8)\n    \
+         assert (owned a == 8004 && owned b == 3001 && owned c == 3 && owned d == 42)\n"
+    );
+    passes(&source, Edition::E2026);
+    // A read parameter (2027) is such a view. By hand: 8 + 3 + 2 + 2 * 5.
+    passes(
+        &format!(
+            "{NUM}def read :: {ANY} -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n    | :? (i64 -> i64) as f -> f 2\n\n\
+             test \"read\" =\n    assert (read 4 + read 2.5 + read \"ab\" + read (\\(k: i64) -> k * 5) == 8 + 3 + 2 + 10)\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn narrowing_a_copy_union_copies_its_array_once() {
+    // A union whose members are all Copy, one of them an array: the hidden binding of
+    // `:? (i64 | [i64]) as x` views the matched value, as it does a union that is not Copy, and the
+    // retagging copies the array once, into the narrowed value (Copilot review round 1). Before, the
+    // hidden binding copied the whole value first behind a reference, through a read parameter and
+    // from an owned value that the function reads again: two copies. An owned value read once moved
+    // into the hidden binding: one copy, as now. The arm may write over the matched variable: the
+    // narrowed value was copied before the body runs.
+    let arr = "def arr :: own ([i64] | i64) -> i64 = \\n ->\n    match n with\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length * 100\n\n\
+         def balanced :: (unit -> i64) -> i64 = \\f ->\n    let start = Alloc.snapshot ()\n    let value = f ()\n    let used = start |> Alloc.since\n    if used.frees == used.allocs then value else -1\n\n";
+    let functions = "def by_ref :: ref (i64 | f64 | [i64]) -> i64 = \\v ->\n    match v with\n    | :? (i64 | [i64]) as x -> arr x\n    | :? f64 -> 1\n\n\
+         def again :: own (i64 | f64 | [i64]) -> i64 = \\v ->\n    let r = match v with\n        | :? (i64 | [i64]) as x -> arr x\n        | :? f64 -> 1\n    r * 1000 + by_ref (ref v)\n\n\
+         def touched :: own (i64 | f64 | [i64]) -> i64 = \\v ->\n    match v with\n    | :? (i64 | [i64]) as x -> arr x * 1000 + by_ref (ref v)\n    | :? f64 -> 1\n\n\
+         def replaced :: own (i64 | f64 | [i64]) -> i64 = \\start ->\n    let mut v = start\n    match v with\n    | :? (i64 | [i64]) as x ->\n        v = 2.5\n        arr x * 1000 + by_ref (ref v)\n    | :? f64 -> 1\n\n\
+         def once :: own (i64 | f64 | [i64]) -> i64 = \\v ->\n    match v with\n    | :? (i64 | [i64]) as x -> arr x\n    | :? f64 -> 1\n\n";
+    let source = format!("{arr}{functions}");
+    let module = accepts_in(&source, Edition::E2026);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    for name in ["by_ref", "again", "touched", "replaced", "once"] {
+        let body = function_body(&ir, name);
+        assert_eq!(body.matches("@tz.alloc").count(), 1, "{name}:\n{body}");
+    }
+    // The copy is the narrowed value's, at the pattern, as for a union that is not Copy.
+    let source_no_copy = format!("{arr}@no_copy\n{functions}");
+    let error = rejects(&source_no_copy, "E1031", "effect_copy_in_no_copy");
+    let pattern = ":? (i64 | [i64]) as x";
+    let at = source_no_copy.find(pattern).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + pattern.len()));
+    // Expected values by hand: arr gives 100 for each number of an array and the i64 itself, the
+    // f64 arm 1. again [1, 2]: 200 * 1000 + 200; touched as again; replaced [1, 2]: the narrowed
+    // value keeps the array (200), v is then the f64 (1).
+    let tests = "def via_ref :: own (i64 | f64 | [i64]) -> i64 = \\v -> by_ref (ref v)\n\n\
+         test \"values\" =\n    \
+         assert (balanced (\\() -> via_ref [1, 2, 3]) == 300 && balanced (\\() -> via_ref 7) == 7 && balanced (\\() -> via_ref 2.5) == 1)\n    \
+         assert (balanced (\\() -> again [1, 2]) == 200200 && balanced (\\() -> again 5) == 5005 && balanced (\\() -> again 1.5) == 1001)\n    \
+         assert (balanced (\\() -> touched [1, 2]) == 200200 && balanced (\\() -> touched 5) == 5005 && balanced (\\() -> touched 1.5) == 1)\n    \
+         assert (balanced (\\() -> replaced [1, 2]) == 200001 && balanced (\\() -> replaced 5) == 5001 && balanced (\\() -> replaced 1.5) == 1)\n    \
+         assert (balanced (\\() -> once [4]) == 100 && balanced (\\() -> once 9) == 9 && balanced (\\() -> once 0.5) == 1)\n";
+    passes(&format!("{source}{tests}"), Edition::E2026);
+    // A read parameter (2027) views the matched value too.
+    let read = format!(
+        "{arr}def read :: (i64 | f64 | [i64]) -> i64 = \\v ->\n    match v with\n    | :? (i64 | [i64]) as x -> arr x\n    | :? f64 -> 1\n\n\
+         test \"read\" =\n    assert (balanced (\\() -> read [1, 2, 3]) == 300 && balanced (\\() -> read 7) == 7 && balanced (\\() -> read 2.5) == 1)\n"
+    );
+    let module = accepts_in(&read, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    let body = function_body(&ir, "read");
+    assert_eq!(body.matches("@tz.alloc").count(), 1, "read:\n{body}");
+    passes(&read, Edition::E2027);
+}
+
+#[test]
 fn hover_on_a_narrowed_binder_shows_the_narrowed_union() {
     let source = "def f :: own (f64 | i64 | string) -> (i64 | f64) = \\value ->\n    match value with\n    | :? (i64 | f64) as number -> number\n    | :? string -> 0\n0\n";
     let (_, index) = analyze_modules_with_semantics(&[("Main.tz", source)]).unwrap();

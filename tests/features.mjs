@@ -2095,6 +2095,13 @@ const suites = {
       }
       return total * 1000000n + numbers;
     };
+    // narrow_copy: counted_or_half n is n + 2 numbers when 3 divides n (part gives ten times their count), the i64 n when
+    // the remainder is 1, else an f64 (1); callable n is the i64 n for an even n (scale gives 3 n), else a function that
+    // adds n (applied to 100).
+    const narrowCopy = (n) => {
+      const first = n % 3n === 0n ? (n + 2n) * 10n : n % 3n === 1n ? n : 1n;
+      return first + first * 1000n + (n % 2n === 0n ? 3n * n : 100n + n) * 1000000n;
+    };
     // widen_captured: wide 1 + wide 2 reads counted five times; typed 0 + typed 1 and narrowed 0 + narrowed 1 are twice
     // the member plus 1 (heap as in narrowOwned); the continuation returns counted.
     const widenCaptured = (n) => {
@@ -2119,6 +2126,7 @@ const suites = {
         ...at("narrow", narrow, [6n, 7n, 8n, 0n, -3n, -4n, 1000000n]),
         ...at("narrow_owned", narrowOwned, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 20n]),
         ...at("narrow_views", narrowViews, [0n, 1n, 2n, 3n, 6n, 9n, 31n]),
+        ...at("narrow_copy", narrowCopy, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 10n]),
         ...at("widen_captured", widenCaptured, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 12n]),
       ],
       inspect(ir) {
@@ -2139,6 +2147,11 @@ const suites = {
         for (const name of ["widen", "narrow", "widen_read", "widen_read_branch"]) {
           assert.doesNotMatch(body(name), /@tz\.alloc/, name);
           assert.match(body(name), /switch i32 /, name);
+        }
+        // The narrowing of a Copy union with an array copies the array once, into the narrowed value: its hidden binding
+        // views the matched value, a local that is read again and a read parameter (Copilot review round 1).
+        for (const name of ["narrow_copy", "kept_part"]) {
+          assert.equal((body(name).match(/@tz\.alloc/g) ?? []).length, 1, name);
         }
       },
     };

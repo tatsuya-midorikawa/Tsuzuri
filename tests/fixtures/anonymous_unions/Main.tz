@@ -278,6 +278,34 @@ export def narrow_views :: i64 -> i64 = \n ->
         numbers = numbers + numbers_of item
     total * 1000000 + numbers + items.length * 0
 
+// narrow_copy: a union of Copy members with an array, (i64 | f64 | [i64]), is narrowed to (i64 | [i64]) from a local
+// that is read again and through a read parameter: the hidden binding views the matched value and the array is copied
+// once, into the narrowed value. A union with a function member may hold loans: its narrowing copies the number in a
+// step of the pattern and leaves the value to the read parameter.
+def counted_or_half :: i64 -> (i64 | f64 | [i64]) = \n ->
+    if n % 3 == 0 then Array.init (n + 2) (\i -> i) else if n % 3 == 1 then n else (n as f64) * 0.5
+
+def kept_part :: (i64 | f64 | [i64]) -> i64 = \value ->
+    match value with
+    | :? (i64 | [i64]) as kept -> part kept
+    | :? f64 -> 1
+
+def callable :: i64 -> (i64 | f64 | string | (i64 -> i64)) = \n ->
+    if n % 2 == 0 then n else \(k: i64) -> k + n
+
+def call_or_scale :: (i64 | f64 | string | (i64 -> i64)) -> i64 = \value ->
+    match value with
+    | :? (i64 | f64) as number -> scale number
+    | :? string as text -> text.length
+    | :? (i64 -> i64) as f -> f 100
+
+export def narrow_copy :: i64 -> i64 = \n ->
+    let value = counted_or_half n
+    let first = match value with
+        | :? (i64 | [i64]) as kept -> part kept
+        | :? f64 -> 1
+    first + kept_part value * 1000 + call_or_scale (callable n) * 1000000
+
 // widen_captured: closures convert the values that they capture, on each call: a widening into an own and into a read
 // parameter, a widening in an annotated binding and a narrowing; the continuation of a computation expression widens
 // the value that it captures (`return`). A closure that does not consume its captures lends them to its body, so the
