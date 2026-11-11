@@ -14,6 +14,37 @@ const MAX_GROWTH_DEPTH: usize = 32;
 const MAX_LINEAGE_WALK: usize = 1024;
 const MAX_CONSTRAINTS: usize = 128;
 
+/// Where an obligation of `Classes::reduce` comes from (A26).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Part {
+    /// Not from the members of an anonymous union.
+    Outside,
+    /// The instance for a member of an anonymous union, or one of its superclasses for the same
+    /// member: not counted in the budget.
+    Member,
+    /// An obligation that the instance for a member needs: counted, and counted apart for the
+    /// help of the limit.
+    Inside,
+}
+
+impl Part {
+    /// The part of the obligations that an obligation of this part needs.
+    fn below(self) -> Self {
+        match self {
+            Self::Outside => Self::Outside,
+            Self::Member | Self::Inside => Self::Inside,
+        }
+    }
+}
+
+/// The obligations that one resolution has counted (`MAX_CONSTRAINTS`), and those of them that
+/// come from inside the members of anonymous unions (`Part::Inside`).
+#[derive(Clone, Copy, Debug, Default)]
+struct Budget {
+    work: usize,
+    inside: usize,
+}
+
 /// The specialization limits: all specializations, and growth along one chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SpecializationLimits {
@@ -2408,16 +2439,46 @@ impl Classes {
         constraint: &Constraint,
         types: &TypeContext<'_>,
     ) -> Result<Vec<Constraint>, Diagnostic> {
-        // The last field: the obligation is for a member of an anonymous union (A26).
-        let mut pending = vec![(constraint.clone(), 0, false, false)];
+        self.reduce(
+            constraint,
+            (0, Part::Outside),
+            &BTreeMap::new(),
+            &mut Budget::default(),
+            types,
+        )
+    }
+
+    /// The obligations of `constraint` that stay for the type variables, or the diagnostic of
+    /// the first one that fails. `start` is the depth and the part of `constraint`, `ancestors`
+    /// the obligations being resolved around it (for cycles), and `budget` is shared with them:
+    /// `normalize` starts at depth 0, outside any anonymous union, with no ancestors.
+    fn reduce(
+        &self,
+        constraint: &Constraint,
+        start: (usize, Part),
+        ancestors: &BTreeMap<(usize, Type), (usize, bool)>,
+        budget: &mut Budget,
+        types: &TypeContext<'_>,
+    ) -> Result<Vec<Constraint>, Diagnostic> {
+        let mut pending = vec![(constraint.clone(), start.0, false, start.1)];
         let mut residual = Vec::new();
         let mut seen = BTreeSet::new();
-        let mut active = BTreeMap::new();
+        let mut active = ancestors.clone();
         let mut completed = BTreeSet::new();
-        let mut work = 0;
-        // Whether an anonymous union was resolved, which the help of the limit explains.
-        let mut unions = false;
-        while let Some((current, depth, finished, member)) = pending.pop() {
+        // A26: the overlap of an anonymous union's `Decode` waits until the obligations of its
+        // members, pushed above this length of `pending`, are resolved: a member without an
+        // instance is what to fix first (D7).
+        let mut overlaps: Vec<(usize, Diagnostic)> = Vec::new();
+        loop {
+            if let Some((mark, _)) = overlaps.last()
+                && pending.len() <= *mark
+                && let Some((_, overlap)) = overlaps.pop()
+            {
+                return Err(overlap);
+            }
+            let Some((current, depth, finished, part)) = pending.pop() else {
+                break;
+            };
             if current.ty.contains_error() {
                 continue;
             }
@@ -2463,15 +2524,17 @@ impl Classes {
             // Their number stays bounded: a member is never an anonymous union, so each of them
             // is asked for by an obligation of a union, which is counted and has at most that
             // many members.
-            work += usize::from(!member);
-            unions |= self.anonymous_union(&current.ty);
-            if depth >= 64 || work > MAX_CONSTRAINTS {
+            budget.work += usize::from(part != Part::Member);
+            budget.inside += usize::from(part == Part::Inside);
+            if depth >= 64 || budget.work > MAX_CONSTRAINTS {
                 let limit = Diagnostic::of(
                     DiagnosticKind::InstanceResolutionLimit,
                     "instance constraint resolution exceeds depth 64 or 128 obligations",
                     current.span,
                 );
-                return Err(if unions {
+                // The help names anonymous unions only when most of the counted obligations
+                // come from inside their members, so that fewer distinct types there would help.
+                return Err(if depth < 64 && 2 * budget.inside > budget.work {
                     limit.with_help(
                         "an anonymous union needs the instance of each member, and every distinct type inside the members is one obligation for each class (Ord also needs Eq); use fewer distinct types, or wrap a part in a record with a hand-written instance, which is one obligation",
                     )
@@ -2480,7 +2543,7 @@ impl Classes {
                 });
             }
             bounded_type(&current.ty, current.span)?;
-            pending.push((current.clone(), depth, true, member));
+            pending.push((current.clone(), depth, true, part));
             let class = &self.declarations[current.class];
             // F15: `Monoid<T>` is checked here, before its instance is matched, because a found instance
             // (`Monoids.Sum<f64>`) goes on to its context and never reaches `validate_instance`. A type with
@@ -2501,21 +2564,43 @@ impl Classes {
                     },
                     depth + 1,
                     false,
-                    member,
+                    part,
                 ));
             }
             if self.structural(current.class, &current.ty) {
+                let union = self.anonymous_union(&current.ty);
+                if union && !variables(&current.ty).is_empty() {
+                    // A26: an anonymous union with type variables gives the obligations of its
+                    // members only when all of them can be met; otherwise the constraint stays
+                    // whole for the types that the variables take, as one without an instance
+                    // does, and is checked where they are known (the caller, the instance).
+                    let saved = *budget;
+                    let found = self.settle(&current, depth, &active, budget, types);
+                    if found.is_none() {
+                        *budget = saved;
+                    }
+                    for constraint in found.unwrap_or_else(|| vec![current.clone()]) {
+                        if seen.insert((constraint.class, constraint.ty.clone())) {
+                            residual.push(constraint);
+                        }
+                    }
+                    continue;
+                }
                 // A26: an anonymous union decodes only when the JSON value selects one member.
-                if class.name == "Decode"
+                if union
+                    && class.name == "Decode"
                     && let Err(message) = self.decode_members(&current.ty, types)
                 {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::AnonymousUnionDecodeOverlap,
-                        message,
-                        current.span,
+                    overlaps.push((
+                        pending.len(),
+                        Diagnostic::of(
+                            DiagnosticKind::AnonymousUnionDecodeOverlap,
+                            message,
+                            current.span,
+                        ),
                     ));
                 }
-                let members = self.anonymous_union(&current.ty);
+                let below = if union { Part::Member } else { part.below() };
                 pending.extend(structural_elements(&current.ty).iter().map(|ty| {
                     (
                         Constraint {
@@ -2525,7 +2610,7 @@ impl Classes {
                         },
                         depth + 1,
                         false,
-                        members,
+                        below,
                     )
                 }));
                 continue;
@@ -2545,7 +2630,7 @@ impl Classes {
                         },
                         depth + 1,
                         false,
-                        false,
+                        part.below(),
                     )
                 }));
             } else if !variables(&current.ty).is_empty() {
@@ -2557,6 +2642,41 @@ impl Classes {
             }
         }
         Ok(residual)
+    }
+
+    /// The obligations that stay for the members of `union`, an anonymous union with type
+    /// variables, when every member meets its constraint (A26); `None` when one fails, or when the
+    /// members of `Decode<union>` do not read disjoint kinds of JSON values. A member whose
+    /// instance is missing only for these variables may still meet it for the types they take,
+    /// and the kinds of a member with no instance yet are not known, so the caller keeps the
+    /// constraint of the union whole: where the variables are known, it is resolved again, and
+    /// any error is reported there.
+    fn settle(
+        &self,
+        union: &Constraint,
+        depth: usize,
+        active: &BTreeMap<(usize, Type), (usize, bool)>,
+        budget: &mut Budget,
+        types: &TypeContext<'_>,
+    ) -> Option<Vec<Constraint>> {
+        if self.declarations[union.class].name == "Decode"
+            && !matches!(self.decode_members(&union.ty, types), Ok(Some(_)))
+        {
+            return None;
+        }
+        let mut found = Vec::new();
+        for member in structural_elements(&union.ty) {
+            let member = Constraint {
+                class: union.class,
+                ty: member.clone(),
+                span: union.span,
+            };
+            found.extend(
+                self.reduce(&member, (depth + 1, Part::Member), active, budget, types)
+                    .ok()?,
+            );
+        }
+        Some(found)
     }
 
     fn entails(
@@ -2733,21 +2853,10 @@ impl Classes {
             _ => {}
         }
         match self.matching_instance(self.names["Decode"], member, types) {
-            None => {
-                // A type that inference has not solved yet matches no instance either; its
-                // constraint is checked when it is solved.
-                let (mut generic, mut inferred) = (false, false);
-                map_type(member, &mut |part| {
-                    generic |= matches!(part, Type::Variable(_));
-                    inferred |= matches!(part, Type::Infer(_));
-                    part.clone()
-                });
-                if generic && !inferred {
-                    JsonKinds::Unsettled
-                } else {
-                    JsonKinds::Missing
-                }
-            }
+            // A member with type variables may still meet its constraint for the types that they
+            // take: `Classes::settle` keeps the constraint of the union for them.
+            None => JsonKinds::Missing,
+            // The context of the instance is the business of the member's own constraint.
             Some((instance, _)) if instance.derived && matches!(member, Type::Record(..)) => {
                 JsonKinds::Fixed(&[Object])
             }
@@ -2759,11 +2868,10 @@ impl Classes {
     /// kinds are pairwise disjoint, so the kind of a JSON value selects one member (D5, D7).
     /// `Ok(None)` when a member has no `Decode` instance, which the member's own constraint
     /// reports; `Err` with the message of `anonymous_union_decode_overlap` when two members read
-    /// the same kind, a member is not limited to kinds of its own, or a member with type
-    /// variables has no instance for all of them (`JsonKinds::Unsettled`): the kinds are decided
-    /// where the union is written, never where a generic function is instantiated, so a function
-    /// that is accepted decodes at every type that satisfies its constraints. No member is a
-    /// default.
+    /// the same kind or a member is not limited to kinds of its own. No member is a default.
+    /// `Classes::reduce` reports that message only after the members' own constraints hold, and
+    /// keeps the constraint of a union with type variables whole until they are known
+    /// (`Classes::settle`); `Specializer::union_codec` reads the kinds again for the body.
     fn decode_members(
         &self,
         ty: &Type,
@@ -2786,15 +2894,7 @@ impl Classes {
                     continue;
                 }
                 anonymous_union::JsonKinds::Missing => return Ok(None),
-                anonymous_union::JsonKinds::Open => "is not limited to one kind of JSON value (a Maybe, a union with named cases, Json.Value, or a type with a hand-written Decode can read several)".to_owned(),
-                anonymous_union::JsonKinds::Unsettled => format!(
-                    "has no Decode instance for every type of {} (a derived instance reads a JSON object; an instance for some types only is hand-written and not limited to one kind of JSON value)",
-                    variables(member)
-                        .into_iter()
-                        .map(|name| Type::Variable(name).display(types))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
+                anonymous_union::JsonKinds::Open => "is not limited to one kind of JSON value (a Maybe, a union with named cases, Json.Value, or a type with a hand-written Decode can read several)",
             };
             return Err(format!(
                 "no Decode instance for {}: the member {} {reason}, {advice}",
@@ -5880,10 +5980,10 @@ impl Specializer<'_> {
     ///
     /// - `Encode.encode`: the JSON of the payload by the member's `Encode.encode`, with no tag.
     /// - `Decode.decode`: the member that reads the kind of the JSON value
-    ///   (`anonymous_union::decode_body`). The constraint `Decode<ty>` was checked where the
-    ///   union is written, with its type variables (`Classes::decode_members`), so every
-    ///   instantiation has the kinds that were found there. They are read again here; should
-    ///   that ever fail, the union gets a diagnostic and never a body that picks a member.
+    ///   (`anonymous_union::decode_body`). The constraint `Decode<ty>` was checked for these types:
+    ///   where the union is written when the kinds of its members are known there, otherwise
+    ///   where its type variables are known (`Classes::settle`). The kinds are read again here;
+    ///   should that ever fail, the union gets a diagnostic and never a body that picks a member.
     fn union_codec(
         &self,
         class: usize,

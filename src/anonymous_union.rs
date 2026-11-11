@@ -1254,13 +1254,9 @@ pub(super) enum JsonKinds {
     /// An instance exists and the type does not limit what it reads: a `Maybe`, a union with named
     /// cases, `Json.Value`, a type with a hand-written instance.
     Open,
-    /// No instance: the constraint of the member reports it.
+    /// No instance: the constraint of the member reports it, or, for a member with type
+    /// variables, the constraint of the union waits for the types that they take.
     Missing,
-    /// No instance for the type as it is written, which has type variables. Only an instance for
-    /// some of the types that the variables stand for can make the constraint of the member
-    /// hold, and such an instance is hand-written (a derived one is for every type argument), so
-    /// it is `Open` wherever it exists.
-    Unsettled,
 }
 
 /// `json: expected number or string`: the kinds of the members in the canonical order, as the

@@ -565,6 +565,7 @@ fn start_checker<'a, 'run>(
         drop_types: BTreeMap::new(),
         read_through_used: false,
         drops_stop_reads: false,
+        injections: BTreeSet::new(),
     };
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
@@ -2045,6 +2046,9 @@ struct Checker<'a, 'run> {
     /// Nothing is read through: the body drops a value that holds loans and may run code when it
     /// is dropped (`drops_stop_reads`).
     drops_stop_reads: bool,
+    /// The spans of the values that moved into an anonymous union when they were injected (A24),
+    /// for the help of a later use: a borrow cannot be injected.
+    injections: BTreeSet<(Option<usize>, usize, usize)>,
 }
 
 /// How many expressions the diagnostics of one function may look at, in all, to find where a
@@ -3067,7 +3071,28 @@ impl<'a> Checker<'a, '_> {
                 format!("use of moved or partially moved value '{name}'"),
                 span,
             )
-            .with_help(if moved.fields.is_empty() {
+            .with_help(if self
+                .injections
+                .contains(&(origin.source, origin.start, origin.end))
+            {
+                // A24, A26: a value injected into an anonymous union, also by a comparison
+                // (`v == s`), moves; `ref s` cannot be injected.
+                if moved.fields.is_empty() {
+                    let ty = self.state.locals.get(&place.root).map(|(local, _)| &local.ty);
+                    let copy = match ty {
+                        Some(Type::String) => format!(" (clone_string ref {name})"),
+                        Some(Type::Utf8String) => format!(" (Utf8String.clone ref {name})"),
+                        _ => String::new(),
+                    };
+                    format!(
+                        "an anonymous union holds its value, so injecting '{name}' moved it; use '{name}' before that, or inject a copy{copy}"
+                    )
+                } else {
+                    format!(
+                        "an anonymous union holds its value, so injecting the field moved it out of '{name}'; use the field before that, or inject a copy"
+                    )
+                }
+            } else if moved.fields.is_empty() {
                 format!("borrow the value with 'ref {name}' or move it last")
             } else {
                 format!(
@@ -4994,8 +5019,18 @@ impl<'a> Checker<'a, '_> {
             E::NewLiteral(literal) => {
                 result = self.eval(literal, Use::Consume, &during)?;
             }
-            E::Construct { payload, .. } => {
+            E::Construct {
+                union_id, payload, ..
+            } => {
                 if let Some(payload) = payload {
+                    // An injection has the span of its value: no source names an anonymous
+                    // union's case.
+                    if payload.span == expression.span
+                        && self.module.unions[*union_id].is_anonymous()
+                    {
+                        let span = payload.span;
+                        self.injections.insert((span.source, span.start, span.end));
+                    }
                     result = self.eval(payload, Use::Consume, &during)?;
                     // A union payload keeps every region of its value together (A12 D6).
                     result.regions = None;

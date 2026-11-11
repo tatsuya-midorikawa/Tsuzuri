@@ -472,3 +472,12 @@ Phase 2 の着手時（2026-11-11）に `std/Json.tz`（`Value`・`Error`・`Err
 - `tests/anonymous_unions.rs` は 92 件から 97 件です（新しい 5 件: 上の 1 の 2 件、3 の 1 件、2 の 1 件、4 の 1 件。7 は既存のテストに足した）。
 - E2E（dev バイナリ、native と WASM、`-O0` と `-O3`）: `node tests/features.mjs target/debug/tsuzuri <suite>` で `anonymous_unions` 96 件、`deriving` 209 件、`typeclasses` 39 件、`json` 165 件、`dyn_dispatch` 58 件、`hash_map` 199 件、`unions` 27 件が通り、`node tests/json.mjs target/debug/tsuzuri` は 297 入力・2,523 検査が通りました（記録は `target/scratch/a26/r1/suites.txt`）。
 - ドキュメント: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs` を変えた 6 ページ（`anonymous-union.md`・`json.md`・`index.md`・`match.md`・`pattern-matching.md`・`diagnostics.md`）に実行し、262 links、39 examples、native の実行 76 回（`-O0`・`-O3`）で通りました。`node scripts/gen-docs.mjs --check` は 19 blocks、0 stale、`node scripts/check-cli-docs.mjs` は 4 checks、0 failed、`node scripts/check-guide-lite.mjs` は 88 references、0 failed です。
+
+### レビューの指摘への対応（第2回）
+
+2026-11-11 の第2回のレビュー（5 件、すべて minor。再現の材料は `target/scratch/review-a26-ce-r2/`）です。5 件とも、指摘のコミット `d0782ed4` のバイナリで再現しました。
+
+既存のテストの期待値の変更（指摘 1 の対応で、変更の前にここへ記録します）:
+
+- `decode_overlap_is_rejected` の「総称の関数」の例 `def f :: Decode<'a> => ... Result<(['a] | Vec<'a>), Json.Error> = \json -> Decode.decode json`: 定義の位置の `E1025` から、定義は受理し、型引数を `i64` に決めて呼ぶ位置で同じ理由の `E1025`（`([i64] | Vec<i64>)`）に変えます。基準（A24）はこの定義を受理していたので、定義の位置で拒否するのは後退です（指摘 1）。
+- `generic_members_need_an_instance_for_every_argument`（第1回で足したテスト）: 定義の位置の `E1025`（`JsonKinds::Unsettled`、`has no Decode instance for every type of 'a`）を確かめていた例を、定義は受理し、型が決まる位置（呼び出し・導出したインスタンスを使う位置）で診断する期待値に変えます。`Lib` だけのモジュールは受理、`Main` が `Lib.read` を `Lib.Pair<i64>` で呼ぶと、その呼び出しの位置（`Main.tz`）で `the member Lib.Pair<i64> is not limited to one kind of JSON value` の `E1025`、std の `Json.deserialize` を経由する例も利用者の呼び出しの位置です。`Unsettled` の文言はなくなります。
