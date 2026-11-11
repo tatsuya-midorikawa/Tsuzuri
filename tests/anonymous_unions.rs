@@ -4062,6 +4062,10 @@ fn decode_moves_array_members_out_of_the_result() {
     // member's result into the union. Its binding shared one span with the binding of the error,
     // which is not Copy, so `LastUses` copied the array element by element: `@no_copy` rejected
     // `Decode.decode` (E1031), and decoding allocated once more than decoding the array itself.
+    // `whole` reaches the body of `numbers` through `Json.deserialize`, so it was rejected too;
+    // a body that only std's `Json.deserialize` asks for is std's, whose copies the `copy` effect
+    // does not count, and the allocation count is what shows that path. `plain` and `direct` read
+    // the array itself: they are the reference.
     // `Row` is Copy and holds an array, so `(Row | [f64] | string)` has two arms that move.
     let source = r#"record Row { cells: [i64] } deriving (Decode)
 
