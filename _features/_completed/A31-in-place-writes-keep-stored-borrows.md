@@ -1027,3 +1027,50 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 更新した文書: `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`（現在の制限: 出どころを追える値に `Rc`・`Arc` の関数、`mut` の仮引数は追えない値、値の破棄も同じ規則で検査すること、追えない所の一覧に `mut` の仮引数・組み込み関数の結果・列から読んだ値、列の要素の説明）、`drop.md`（解放が書き込む借用: セルを所有する関数値へ渡す `drop`、一時値の `E1013` の文言、例、`drop` の中の共有）、`docs/language.md`・`docs/architecture.md`（書き込みの事実の段落）、`_features/README.md`（A31 の行）。
 
 変えたファイル: `src/ownership.rs`、`tests/rc.rs`、上の文書、このチケット。
+
+### レビューの指摘への対応（第5回）（2026-11-12）
+
+レビューの 5 件の指摘（反例の探索 `target/scratch/review-a31-ce-r5/`、適合の確認 `target/scratch/review-a31-conf-r5/`）を、対応前の先端（`a562f692`。ソースは `de7a3574` と同じ）・基準・対応後のバイナリで確かめました。指摘 1・3・4・5 は指摘のとおりに再現しました。指摘 2 は、指摘のとおり受理される危険なプログラムとしては再現できませんでしたが、鍵の誤りは実在するので直しました。結果は `target/scratch/a31/r5/` にあります（レビューの 5 回分のプログラムの対応前と対応後は `r5/corpora.sh before|a` の `r1corpus-*.json`〜`r5corpus-*.json`、この対応で書いたプログラムは `r5/adv/` と `r5/f3/`、`r5/t.sh` で対応前・対応後・基準を並べます）。
+
+設計の変更（`src/ownership.rs` だけ）:
+
+- **holder の不動点を作業リストで求めます**（`HolderReach`、`SuffixTrie`）。holder が持つ値の届く関数値の型を、結果と最後から最初への引数の列の道として 1 つの trie に入れ（結果と引数の型には 1 度だけ番号を付けます）、道の節ごとにそこを通る holder を覚えます。型がいくつかの引数の後に与える型（`owned_suffix` の接尾）は道の上の節なので、`owned_types`（`sink_types`）に型が加わったら、その節を通る holder だけを見直します。今までは、型が 1 つ加わるたびにすべての holder を見直し、そのたびに持つ値の型の接尾をすべて作って集合と比べていたので、前の閉包を捕捉した閉包を型を長くしながら連ねる形で、検査の時間が段の数の 3.5 乗ほどで伸びていました。求める集合は前と同じ最小不動点です。指摘 1。
+- **本文の検査の出どころの走査は、本文の式の答えだけを覚えます**（`OwnerScan::lasting_in`、`OwnerScan::query`）。答えの鍵は式のアドレスで、検査は捕捉ごとに一時的な `TypedExpr` を作って評価するので（`capture_loans`）、次の捕捉の一時的な式が前の式のアドレスを取ると、前の答え（レジストリを持たない値の答え）を受け取りえました。本文の式（検査の間ずっと生きている）だけを覚え、ほかの式の答えは 1 つの問いの間だけ持ちます。`owner_facts` の走査はモジュールの本文しか見ないので、今までどおりすべて覚えます。指摘 2。
+- **パターンの局所値は、パターンがそこへ入れる照合した値の射影の出どころを持ちます**（`OwnerScan::bind_patterns`）。今までは `match` で取り出した値をすべて `fresh`（出どころを追えない値）にしていたので、`Rc.try_unwrap` の `Result` や `Maybe`・タプルから取り出したハンドラーを、セルを所有する関数値に数えていました。射影はコード生成が局所値へ入れる式そのもので（`PatternAlternative::bindings`）、アクティブパターンの段は関数の呼び出しなので、その事実（`owner_facts`）を当てはめます。OR パターンの選択肢は同じ局所値を束縛するので、出どころは選択肢の和です。`mut` の局所値と、`Seq.next` の結果（`for x in seq` の要素）は今までどおり `fresh` です。指摘 3。
+- `owner_scan` の上に残っていた段落を `shares_hidden` へ移しました。指摘 5。
+
+指摘ごとの対応（期待はレビューの対照と手の計算から。安全なプログラムの値は基準と同じことを `-O0`・`-O3` で確かめました）:
+
+| 指摘 | 再現 | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（前の閉包を型を長くしながら捕捉する閉包の連鎖で、検査時間が段の数の 3.5 乗ほどで伸びる） | 再現（`perf_holders3_480` の `ownership` が 1 万 4 千 ms 台、基準は 25 ms。標本では時間のほぼすべてが `sink_flags` の holder の不動点の `owned_suffix`） | 作業リストと trie。下の表（2 乗の伸びに戻り、基準の数倍） | 単体テスト `closing_the_types_under_the_holders_follows_the_types_that_join`（100 段の連鎖のすべての閉包の型が `owned_types` に入る、連鎖の held 型が trie の 1 本の道になる、見直しの回数が道の節の数以下、200 回の乱数の holder の組で前のパスと同じ集合。時間の閾値は置きません） |
+| 2（`OwnerScan` の答えを式のアドレスで覚え、`capture_loans` の一時的な式も問う。未確認） | 受理される危険なプログラムは作れませんでした（`om02`・`om03` は対応前も対応後も `E1014`、基準は受理）。アドレスが再利用されれば前の答えを受け取ることは、単体テストで確かめました | 本文の式だけを覚える | 単体テスト `the_owner_provenance_forgets_the_expressions_made_for_a_moment`（同じアドレスの一時的な式を、捕捉の無いラムダ、レジストリの順に問う。2 つめが `fresh`） |
+| 3（`lifetimes.md` は `Rc.try_unwrap`・`Rc.upgrade` で取り出したハンドラーを数えないと書くが、枝は数える） | 再現（`ok01`・`ok02` が両方の edition で `E1013`、基準は受理 9） | パターンの局所値の出どころ。`ok01` は受理（9）。`ok02` は拒否のまま（下の判断。`lifetimes.md` に書いた）。同じ原因で拒否していた第 4 回の `u_maybe_map`・`u_maybe_some_match`・`u_tuple_match` も受理（14、基準と同じ） | `tests/rc.rs` `a_local_that_a_pattern_binds_holds_what_the_matched_value_holds`（`ok01`・`u_maybe_map` と、この対応の安全な形 11 個の受理、危険な形 17 個の拒否） |
+| 4（第 4 回に受理になった安全なプログラムの値を、自動のテストが確かめない） | 指摘のとおり（`d06`・`d08`・`s06`・`u_rc_get` は `accepts_in_both_editions` だけ） | `in_place_writes` の fixture と `tests/features.mjs` に足した | E2E `drop_shares_its_rc_and_writes_the_out`（5）、`handler_read_from_an_rc`（13）、`handlers_taken_out_by_patterns`（37、第 5 回の形）、native だけの `drop_moves_its_inbox_through_a_share`・`drop_moves_its_inbox_in_a_helper`（9） |
+| 5（`owner_scan` の上に `shares_hidden` の段落が残り、`shares_hidden` に説明が無い） | 指摘のとおり | 段落を移した | — |
+
+パターンの局所値の規則は、追えない値を狭めるので、危険な形を 17 個書いて確かめました（`r5/adv/p01`〜`p17`: レジストリを `Maybe`・タプル・レコード・リスト（`::`）・配列の要素のタプル・入れ子のパターン・ガード・`ref` の照合・OR パターン（どちらの選択肢から取り出すものも、`if` でどちらかを作るものも）・`Rc.try_unwrap`・`Rc.upgrade` から取り出す形、引数を返すアクティブパターン、ラムダの中の `match`、レジストリを作るアクティブパターン・名前付き関数の結果から取り出す形）。どれも両方の edition で `E1013`（`assignment_extends_borrow`、ブロックの位置）で、基準はすべて受理します。同じ形でレジストリのかわりに捕捉の無いラムダを取り出す安全な形（`s01`〜`s14`）は、`s08`・`s14` を除いて受理になり、値は基準と同じ 10 です。
+
+判断（どれも「健全性を保ち、受理している安全なプログラムを受理のまま保つ、最も保守的な選択」）:
+
+- 指摘 3 の `ok02`（`match Rc.upgrade (ref w) with | Maybe.Some s -> deref (Rc.get (ref s))` で取り出したハンドラーを呼ぶ形。`s08` も同じ）は受理に戻していません。対応後、このハンドラーはセルを所有する関数値の規則では数えません（出どころが無い）。拒否の理由は、環境へ書き込む関数値の規則（`lifetimes.md` の 2 つめの規則）です: 借用を持つ値を本体の見えないコードへ渡す本体では、`Rc.share`・`Rc.upgrade` などの結果は元の `Rc` の借用を持ち（A28 の読み通しの制限。`lifetimes.md` に書いてある規則）、`Rc.get` で読んだハンドラーはその借用を持つので、環境へ書き込みうる型の関数値の呼び出しが、渡した借用を元の `Rc` に残します。`Rc.share` で作った値から読む形（`r5/f3/v7`）も同じで、`Rc.get (ref r)` で元の `Rc` から直接読む形（`v9`、第 4 回の `u_rc_get`）は受理です。受理するには、ハンドラーのコードが環境へ書き込まないこと（`Rc` のブロックを通した関数値の追跡）か、そうした本体での読み通しが要り、どちらも別の健全性の確認が要るので、このチケットでは扱いません。第 3 回の前（`fb3c0611`）と第 4 回（`58cc81a6`）も同じく拒否していました。`lifetimes.md` の出どころの規則の段落に、この規則で数えないことと、2 つめの規則では残ることを書きました。
+- この対応で書いた `s14`（ラムダに束縛した局所値を呼んだ結果を取り出す形）は拒否のままです。名前付き関数でない関数値の呼び出しの結果は、これまでどおり出どころを追えない値です（`lifetimes.md` の一覧の「関数値の呼び出しの結果」）。
+- 指摘 1 の単体テストは、対応前のコードに trie が無いので、対応前に失敗することは示せません。効果は下の時間の表で示し、テストは不動点の結果（前のパスとの一致）と構造（接尾を作り直さないこと）を確かめます。
+- 指摘 4 の `d06`・`d08` の形は、`drop` が inbox のロックを持ったまま `a` のロックを取るので、tzroutine のランタイムを使わない WebAssembly ではトラップします（`mutex.md` の「WebAssembly のロック」の規則どおりで、基準のバイナリも同じです）。そのため `nativeCases` に置きました。
+- 期待を変えた既存のテストはありません。
+
+確かめたこと（2026-11-12。ログは `target/scratch/a31/r5/`）:
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` は警告なし（`r5/clippy.log`）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast` は 3025 件すべて成功、4 件 skip（787 秒、`r5/nextest-1.log`。7 件が slow。ソースはこの対応の最後のものと同じで、その後は文書だけを変えました）。第 4 回の 3022 件から増えた 3 件は、単体テスト 2 件と `tests/rc.rs` の 1 件です。
+- 新しいテストが対応前に失敗すること: `src/ownership.rs` だけを `a562f692` に戻して `cargo test --test rc` を実行し、`a_local_that_a_pattern_binds_holds_what_the_matched_value_holds` が失敗することを確かめました（`ok01` の受理で失敗。戻した後は先端に戻しています）。単体テスト `the_owner_provenance_forgets_the_expressions_made_for_a_moment` は、本文の式だけを覚える条件を外す（すべて覚える）と `the registry at the same address` で失敗します。
+- レビューの 5 回分のプログラム（`r5/corpora.sh`、対応前と対応後のバイナリ、両方の edition）: 第 1 回の 1146 件・第 2 回の 338 件・第 3 回と `r2/adv`・`r3/adv` の 270 件で変わったものは 0 件、第 4 回と `r4/adv`・`r4/safe` の 394 件で変わったのは `u_maybe_map`・`u_maybe_some_match`・`u_tuple_match`（6 件、拒否から受理。値は基準と同じ 14）、第 5 回と `r5/f3` の 338 件で変わったのは `ok01`・`f3/v5`（4 件、拒否から受理。9 と 10）だけです。受理から拒否に変わったものはありません。
+- 154 個の照合（`compare.mjs`）: edition 2027・2026 とも期待と違うもの 0（`r5/compare-2027.txt`・`compare-2026.txt`）。
+- 手順 5 の比較（`step5.mjs`）: `tests/fixtures/*`・`examples/*` の 154 個の `check --json` と `build --no-cache --emit llvm` が基準とすべて同じ（`r5/step5-final.txt`。`in_place_writes` の fixture に足した 5 件も基準と同じく受理されます）。
+- E2E（`r5/e2e-final.log`）: `node tests/features.mjs <bin> <suite>` の `in_place_writes` 47 件と native だけの 2 件（基準のバイナリでも同じ値で成功）、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`slices` 11 件、`matrix_view` 303 件、`concurrency` 15 件、`iteration_protocol` 26 件（native と WASM の `-O0`・`-O3`）、`sync_types` 14 件・`tzroutine` 16 件（native の `-O0`・`-O3`）、`node tests/control.mjs` 701 件、`node tests/user_drop.mjs`（native と WASM の `-O0`・`-O3`）。すべて成功。
+- 文書: `TSUZURI_BIN=<bin> node scripts/check-docs.mjs`（`lifetimes.md`・`drop.md`）は `Docs: 2 pages, 37 links, 9 checked examples, 18 native runs (O0/O3)` で成功。`gen-docs.mjs --check` は `19 blocks checked, 0 stale`、`check-cli-docs.mjs` は `4 checks, 0 failed`（どちらも `TSUZURI_BIN` に対応後のバイナリ）、`check-guide-lite.mjs` は `88 references checked, 0 failed`、`check-links.mjs --into _features/README.md` は `0 broken`。診断の種類は増やしていません。
+- 性能（`TSUZURI_KG=0 TSUZURI_TIME_PASSES=1 tsuzuri check --edition 2027` の `ownership` の相の中央値、ms、基準・対応前・対応後を交互に 3 回。`r5/time-perf.txt`）: 指摘 1 の `perf_holders3_240` 3.9 / 444 / 26.2、`perf_holders3_480` 15.4 / 3735 / 108、この対応で作った 960 段（`r5/p960`）64.6 / 35058 / 476、呼び出しの連鎖も持つ `perf_holders2_120` 3.6 / 59.8 / 10.9、`perf_holders2_240` 13.8 / 452 / 41.2、`perf_holders2_480` 60.4 / 3817 / 173、閉包の型が 1 つの対照 `perf_wrappers_480` 53.2 / 69.4 / 68.1。段の数を 2 倍にすると対応後は 4 倍ほどで、基準と同じ 2 乗の伸びです（基準の 3〜8 倍。標本では、残りは本文の検査（`check_functions` と、合同の不動点の `check_facts`）です）。第 4 回までの表の `perf_locals_600` 357 / 803 / 801、`chain_1600` 13.5 / 91.8 / 91.8、`ring_400` 2.1 / 10.9 / 11.0、`perf_chain_400` 2.9 / 21.3 / 21.6、`p01_known_tree_24` 0.34 / 1.35 / 1.40、`p03_hof_chain_40` 0.50 / 1.43 / 1.44、`perf_twice_12` 0.17 / 0.60 / 0.60、`p08_builder_pipe_22` 0.18 / 0.48 / 0.51、`perf_rev_chain_2000` 1.5 / 8.1 / 8.1 と、第 5 回の `perf_drops_600` 6.7 / 33.6 / 33.7、`perf_hdrops_400` 26.1 / 62.4 / 62.3 は、対応の前後で変わりません。機械の負荷は測定の間に 30 ほどから 5 ほどへ下がりました。時間の閾値は置きません。
+
+更新した文書: `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`（現在の制限: 出どころを追える値に `match` のパターンで取り出した値、`Rc.try_unwrap`・`Rc.upgrade` の結果は `match` で取り出すこと、そうしたハンドラーも 2 つめの規則では元の `Rc` に借用を残しうること、追えない所の一覧からパターンを外した）、`docs/architecture.md`（holder の不動点の作業リスト、パターンの局所値の出どころ、本文の式だけを覚える走査）、`docs/language.md`（出どころの規則）、`_features/README.md`（A31 の行）。
+
+変えたファイル: `src/ownership.rs`、`tests/rc.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、上の文書、このチケット。
