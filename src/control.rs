@@ -26,16 +26,26 @@ struct Narrowing {
     case: (usize, usize),
     /// The first member of `to` that is not Copy: its payload has to move into the new value.
     moved: Option<Type>,
-    /// Whether the hidden binding views the matched value where a binding would move it: every
-    /// member of `to` is Copy, so the narrowing copies the payload and leaves the value whole.
+    /// Whether the hidden binding views the matched value where a binding would move or copy it:
+    /// every member of `to` is Copy, so the narrowing copies the payload and leaves the value
+    /// whole, and the matched union holds no loans, which no view may (`TypedMatchArm::views`),
+    /// nor has a type variable, which a type that holds loans may replace.
     view: bool,
+    /// Whether that view keeps the matched storage shared for the arm: the matched union is not
+    /// Copy. Ownership lets the storage of a Copy value be moved or written over under a view.
+    shared: bool,
+    /// Every member of `to` is Copy, and the matched union is not Copy and may hold loans (or has
+    /// a type variable): no binding can view it, nor take it without moving more than the
+    /// payload, so the pattern copies the payload in a step (`stepped_narrowings`).
+    copied: bool,
     /// The type test's own extent, from its `:?`, without parentheses around it.
     span: Span,
 }
 
-/// The name that hides the matched value of a narrowing into `name`. No source spells it.
+/// The name that hides the matched value of a narrowing into `name`. No source spells it
+/// (`Local::hides_narrowed`).
 fn narrowed_name(name: &str) -> String {
-    format!("$narrow.{name}")
+    format!("{NARROWED_PREFIX}{name}")
 }
 
 /// The locals through which code may reach the storage of the subject `matched` of a match: the
@@ -76,6 +86,54 @@ fn reached_locals(matched: &TypedExpr, lends: bool) -> BTreeSet<usize> {
         }
     }
     locals
+}
+
+/// One step of a place from its root local (`place_path`).
+#[derive(PartialEq)]
+enum PlaceStep {
+    Field(usize),
+    /// The payload of a union: every case has the same storage.
+    Payload,
+    Dereference,
+}
+
+/// The root local of the place `expression` and the steps from it to the place, or `None` for
+/// another expression.
+fn place_path(expression: &TypedExpr) -> Option<(usize, Vec<PlaceStep>)> {
+    let mut steps = Vec::new();
+    let mut place = expression;
+    loop {
+        place = match &place.kind {
+            TypedExprKind::Local(id) => {
+                steps.reverse();
+                return Some((*id, steps));
+            }
+            TypedExprKind::Field(value, index) => {
+                steps.push(PlaceStep::Field(*index));
+                value
+            }
+            TypedExprKind::UnionPayload { value, .. } => {
+                steps.push(PlaceStep::Payload);
+                value
+            }
+            TypedExprKind::Dereference(value) => {
+                steps.push(PlaceStep::Dereference);
+                value
+            }
+            _ => return None,
+        };
+    }
+}
+
+/// Whether the places `left` and `right` may share storage: unless both are fields and payloads
+/// of one local that part at a field, as `t.0` and `t.1` do.
+fn overlaps(left: &TypedExpr, right: &TypedExpr) -> bool {
+    let (Some((left_root, left)), Some((right_root, right))) =
+        (place_path(left), place_path(right))
+    else {
+        return true;
+    };
+    left_root != right_root || left.iter().zip(&right).all(|(left, right)| left == right)
 }
 
 /// Whether `body` reads, writes, borrows or captures one of `locals`, at any depth.
@@ -783,7 +841,7 @@ impl Checker<'_> {
             self.scopes.push(BTreeMap::new());
             let (alternatives, pattern) =
                 self.pattern_alternatives(&arm.pattern, local_value(&subject))?;
-            let stepped = self.stepped_narrowings(&alternatives, arm.guard.is_some())?;
+            let (stepped, owned) = self.stepped_narrowings(&alternatives, arm.guard.is_some())?;
             coverage.push(CoverageArm {
                 pattern,
                 guarded: arm.guard.is_some(),
@@ -878,6 +936,7 @@ impl Checker<'_> {
                             narrowing.view
                                 && narrowing.hidden == local.name
                                 && !stepped.contains(&narrowing.name.text)
+                                && !owned.contains(&narrowing.name.text)
                         })
                     {
                         borrowed.insert(local.id);
@@ -927,11 +986,13 @@ impl Checker<'_> {
             if !result.as_ref().is_some_and(Type::contains_error) {
                 result = self.sibling_hint(&body.ty, result.as_ref()).cloned();
             }
-            // A viewing narrowing keeps the matched storage shared for the whole arm. A body that
-            // reaches that storage, which it may move or replace, gets the narrowed value from a
-            // step of the pattern instead, which copies the payload as the arms `:? W0 as x`,
-            // `:? W1 as x` do (A25, review round 1).
-            if wrapped.iter().any(|(_, _, narrowing, _)| narrowing.view)
+            // A view of a union that is not Copy keeps the matched storage shared for the whole
+            // arm. A body that reaches that storage, which it may move or replace, gets the
+            // narrowed value from a step of the pattern instead, which copies the payload as the
+            // arms `:? W0 as x`, `:? W1 as x` do (A25, review round 1). The view of a Copy union
+            // shares nothing: the body may move or replace the storage after the retagging has
+            // read it (`Local::hides_narrowed`).
+            if wrapped.iter().any(|(_, _, narrowing, _)| narrowing.shared)
                 && reaches_any(
                     &body,
                     &reached_locals(
@@ -944,7 +1005,7 @@ impl Checker<'_> {
             {
                 let (copied, kept): (Vec<_>, Vec<_>) = wrapped
                     .into_iter()
-                    .partition(|(_, _, narrowing, _)| narrowing.view);
+                    .partition(|(_, _, narrowing, _)| narrowing.shared);
                 for (hidden, local, _, at) in copied {
                     borrowed.remove(&hidden.id);
                     self.step_narrowing(&mut plans, &narrowed, at, &hidden, &local);
@@ -986,7 +1047,15 @@ impl Checker<'_> {
     ///   chosen, when nothing may move out of the matched value yet. A narrowing whose union
     ///   has a member that is not Copy cannot be copied, so it is an error there;
     /// - a narrowing that would view the matched value while another binding of the same
-    ///   alternative moves out of it, as `whole` does in `(:? (i64 | f64) as n) as whole`.
+    ///   alternative moves out of it, as `whole` does in `(:? (i64 | f64) as n) as whole`: the
+    ///   retagging reads the view after the bindings are made. When the matched union is Copy,
+    ///   only a move of the part that the narrowing views counts;
+    /// - a narrowing into Copy members of a matched union that is not Copy and may hold loans
+    ///   (`Narrowing::copied`), as `:? (i64 | f64) as n` of `(i64 | f64 | string | (i64 -> i64))`.
+    ///
+    /// The second set has the names whose hidden binding takes the matched value as a binding
+    /// does instead of viewing it: a view of a Copy union beside a move of another part of the
+    /// matched value.
     ///
     /// A step keeps the match from being a switch, so the other narrowings keep the block, unless
     /// the arm's body reaches the matched storage (`match_value`, once the body is checked).
@@ -995,8 +1064,9 @@ impl Checker<'_> {
         &self,
         alternatives: &[Alternative],
         guarded: bool,
-    ) -> Result<BTreeSet<String>, Diagnostic> {
+    ) -> Result<(BTreeSet<String>, BTreeSet<String>), Diagnostic> {
         let mut stepped = BTreeSet::new();
+        let mut owned = BTreeSet::new();
         for alternative in alternatives {
             for narrowing in &alternative.narrowed {
                 if guarded {
@@ -1022,6 +1092,13 @@ impl Checker<'_> {
                     stepped.insert(narrowing.name.text.clone());
                     continue;
                 }
+                if narrowing.copied {
+                    stepped.insert(narrowing.name.text.clone());
+                    continue;
+                }
+                if !narrowing.view {
+                    continue;
+                }
                 // A binding that takes a value that is not Copy out of storage that is not
                 // borrowed moves it; the hidden binding of a viewing narrowing does not.
                 let moves = |(name, projection): &(Ident, TypedExpr)| {
@@ -1034,12 +1111,37 @@ impl Checker<'_> {
                         && !self.inference.resolve(&projection.ty).is_copy(&self.types)
                         && !self.borrowed_place(projection)
                 };
-                if narrowing.view && alternative.bindings.iter().any(moves) {
+                let mut moved = alternative
+                    .bindings
+                    .iter()
+                    .filter(|binding| moves(binding))
+                    .map(|(_, projection)| projection)
+                    .peekable();
+                if moved.peek().is_none() {
+                    continue;
+                }
+                // The view of a Copy union keeps nothing shared (`Narrowing::shared`), so only a
+                // move of the part that it views meets it. Beside a move of another part, as
+                // `s` in `(s, :? (i64 | [i64]) as x)`, the hidden binding takes the value as a
+                // binding does (it moves out of an owned subject that is dead afterwards), and
+                // the retagging copies the payload once (Copilot review round 1, verification).
+                let (_, viewed) = alternative
+                    .bindings
+                    .iter()
+                    .find(|(name, _)| {
+                        name.provenance == Provenance::Generated && name.text == narrowing.hidden
+                    })
+                    .expect("a narrowing binds the matched value to its hidden name");
+                if narrowing.shared || moved.any(|projection| overlaps(projection, viewed)) {
                     stepped.insert(narrowing.name.text.clone());
+                } else {
+                    owned.insert(narrowing.name.text.clone());
                 }
             }
         }
-        Ok(stepped)
+        // Every alternative repeats the narrowings of the first one, with one hidden binding.
+        owned.retain(|name| !stepped.contains(name));
+        Ok((stepped, owned))
     }
 
     /// Binds the name of narrowing `at` of an arm (A25) by a step of the pattern: in each of the
@@ -1687,10 +1789,12 @@ impl Checker<'_> {
     ///   into the new value, and a payload in borrowed storage is copied. When every member of
     ///   `W` is Copy, the hidden binding views the matched value also where a binding would
     ///   move it, so that the narrowing leaves the value whole, as the arms `:? W0 as x`,
-    ///   `:? W1 as x` do;
+    ///   `:? W1 as x` do, and also where a binding would copy it, a Copy union with an array
+    ///   member, so that only the payload is copied (`Local::hides_narrowed`);
     /// - or by a step of the pattern that copies the payload (`stepped_narrowings`), in an arm
-    ///   with a guard and where the view would meet a move, and (`match_value`) where the
-    ///   arm's body reaches the matched storage, which it may move or replace.
+    ///   with a guard, where the view would meet a move and where the matched union may hold
+    ///   loans, which no view may, and (`match_value`) where the arm's body reaches the matched
+    ///   storage of a view that keeps it shared, which the body may move or replace.
     ///
     /// A copy needs a Copy payload: `as x` in borrowed storage (here) or under a guard
     /// (`stepped_narrowings`) is an error when a member of `W` is not Copy
@@ -1753,7 +1857,18 @@ impl Checker<'_> {
             )
             .with_help("match each member with its own ':?' arm, or match an owned value"));
         }
-        let view = moved.is_none() && !place.ty.is_copy(&self.types);
+        // A view of a value that may hold loans would lose them (`TypedMatchArm::views`); a Copy
+        // value is copied whole by a binding that does not view it, an array member too (Copilot
+        // review round 1). A type variable may stand for a type that holds loans, which
+        // ownership and code generation see in each specialization (`Type::contains_unknown`):
+        // `(i64 | f64 | Maybe<'a>)` with `'a` a pair of a string and a function is not Copy and
+        // holds loans, so the narrowing steps in every specialization (Copilot review round 1,
+        // verification).
+        let copy = place.ty.is_copy(&self.types);
+        let loans = place.ty.carries_loans(&self.types) || place.ty.contains_unknown();
+        let view = moved.is_none() && !loans;
+        let shared = view && !copy;
+        let copied = moved.is_none() && loans && !copy;
         let tag = Type::Integer(32, true);
         let mut alternatives = Vec::with_capacity(cases.len());
         let mut coverage: Option<CoveragePat> = None;
@@ -1798,6 +1913,8 @@ impl Checker<'_> {
                     case: (from, into),
                     moved: moved.clone(),
                     view,
+                    shared,
+                    copied,
                     span,
                 });
             }

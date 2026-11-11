@@ -591,8 +591,9 @@ impl<'a> Checker<'a, '_> {
                         .clear();
                 }
                 for (local, projection) in &alternative.bindings {
+                    // As `TypedMatchArm::views`, which code generation follows.
                     if arm.borrowed.contains(&local.id)
-                        && !self.is_copy(&local.ty)
+                        && (!self.is_copy(&local.ty) || local.hides_narrowed())
                         && !local.ty.carries_loans(&self.module.types())
                     {
                         self.view(local, projection, during)?;

@@ -4984,10 +4984,30 @@ impl TypedMatchArm {
     /// Whether the body sees `binding` as a view rather than an owned value.
     /// Copy values are independent owned values. Emission copies them unless
     /// the scrutinee is owned and dead afterwards and the projections do not overlap.
+    /// The hidden binding of a narrowing (`Local::hides_narrowed`) views a Copy value too.
     pub fn views(&self, binding: &Local, types: &TypeContext<'_>) -> bool {
         self.borrowed.contains(&binding.id)
-            && !binding.ty.is_copy(types)
+            && (!binding.ty.is_copy(types) || binding.hides_narrowed())
             && !binding.ty.carries_loans(types)
+    }
+}
+
+/// The start of the name of the hidden binding that holds the matched value of a narrowing
+/// `:? W as x` (A25, `Checker::narrowing_pattern`). No source spells a name with `$`.
+pub(crate) const NARROWED_PREFIX: &str = "$narrow.";
+
+impl Local {
+    /// Whether this is the hidden binding of the matched value of a narrowing `:? W as x` (A25).
+    /// An arm counts it among its `borrowed` bindings only when every member of `W` is Copy
+    /// (`Checker::match_value`); the retagging that makes `x` then reads it once, before the arm's
+    /// body (an arm with a guard builds `x` in a step of the pattern instead), and copies a payload
+    /// out of it. So the arm views it whatever its type, as long as the type holds no loans
+    /// (`TypedMatchArm::views`): a view of a Copy union saves the copy of the whole matched value
+    /// that an owned binding would make (Copilot review round 1). Ownership lets the matched
+    /// storage be moved or written over while a view of a Copy value is live, which the arm may
+    /// do once the retagging has read it.
+    pub fn hides_narrowed(&self) -> bool {
+        self.provenance == Provenance::Generated && self.name.starts_with(NARROWED_PREFIX)
     }
 }
 

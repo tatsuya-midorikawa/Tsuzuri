@@ -2236,6 +2236,23 @@ const suites = {
       }
       return total * 1000000n + numbers;
     };
+    // narrow_copy: counted_or_half n is n + 2 numbers when 3 divides n (part gives ten times their count), the i64 n when
+    // the remainder is 1, else an f64 (1); callable n is the i64 n for an even n (scale gives 3 n), else a function that
+    // adds n (applied to 100).
+    const narrowCopy = (n) => {
+      const first = n % 3n === 0n ? (n + 2n) * 10n : n % 3n === 1n ? n : 1n;
+      return first + first * 1000n + (n % 2n === 0n ? 3n * n : 100n + n) * 1000000n;
+    };
+    // narrow_generic: labelled_pair n is the i64 n when 3 divides n (scale gives 3 n), n / 2 as an f64 when the remainder is
+    // 1 (scale gives 2 n), else a Some (generic_number gives 7, generic_again 0 * 1000 + 7); beside_label adds part of
+    // counted_or_half n (as in narrowCopy) to 1000 times the length of the label, or is that length for an f64.
+    const narrowGeneric = (n) => {
+      const number = n % 3n === 0n ? 3n * n : n % 3n === 1n ? 2n * n : 7n;
+      const again = n % 3n === 2n ? 7n : number * 1000n + number;
+      const label = length(`n=${n}`);
+      const beside = n % 3n === 0n ? label * 1000n + (n + 2n) * 10n : n % 3n === 1n ? label * 1000n + n : label;
+      return number + again * 10n + beside * 100000000n;
+    };
     // widen_captured: wide 1 + wide 2 reads counted five times; typed 0 + typed 1 and narrowed 0 + narrowed 1 are twice
     // the member plus 1 (heap as in narrowOwned); the continuation returns counted.
     const widenCaptured = (n) => {
@@ -2268,6 +2285,8 @@ const suites = {
         ...at("narrow", narrow, [6n, 7n, 8n, 0n, -3n, -4n, 1000000n]),
         ...at("narrow_owned", narrowOwned, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 20n]),
         ...at("narrow_views", narrowViews, [0n, 1n, 2n, 3n, 6n, 9n, 31n]),
+        ...at("narrow_copy", narrowCopy, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 10n]),
+        ...at("narrow_generic", narrowGeneric, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 10n, 1000n]),
         ...at("widen_captured", widenCaptured, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 12n]),
       ],
       inspect(ir) {
@@ -2296,6 +2315,13 @@ const suites = {
           assert.doesNotMatch(body(name), /@tz\.alloc/, name);
           assert.match(body(name), /switch i32 /, name);
         }
+        // The narrowing of a Copy union with an array copies the array once, into the narrowed value: its hidden binding
+        // views the matched value, a local that is read again and a read parameter (Copilot review round 1).
+        for (const name of ["narrow_copy", "kept_part"]) {
+          assert.equal((body(name).match(/@tz\.alloc/g) ?? []).length, 1, name);
+        }
+        // Beside a binding that moves another part of the matched value, too (Copilot review round 1, verification).
+        assert.equal((body("beside_label").match(/@tz\.alloc/g) ?? []).length, 1, "beside_label");
       },
     };
   })(),
