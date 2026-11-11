@@ -2226,12 +2226,25 @@ impl SinkFlags {
 }
 
 /// A31: the type `ty` of a function value as `CallFacts::owned_types` compares it: the purity,
-/// which a cast changes, is left out, and so are the parameter conventions; a curried chain is
-/// one list of parameters.
+/// which a cast changes, is left out, and so are the parameter conventions and the references
+/// around a parameter's type (a lambda's read parameter of edition 2027 is `ref (unit -> i64)`
+/// where the declared type of a value that holds the lambda says `unit -> i64`); a curried chain
+/// is one list of parameters. Two types that a value may have both compare equal, which is what
+/// a test of membership needs; a few more compare equal too, which only widens it.
 fn sink_type(ty: &Type) -> Type {
     match ty {
         Type::Function(parameters, result) => {
-            let mut types: Vec<Type> = parameters.types.iter().map(sink_type).collect();
+            let mut types: Vec<Type> = parameters
+                .types
+                .iter()
+                .map(|parameter| {
+                    let mut parameter = parameter;
+                    while let Type::Reference(target, _) = parameter {
+                        parameter = target;
+                    }
+                    sink_type(parameter)
+                })
+                .collect();
             let mut result = sink_type(result);
             while let Type::Function(more, last) = result {
                 types.extend(more.types);
@@ -5448,10 +5461,13 @@ impl<'a> Checker<'a, '_> {
         (hides, holds, dynamic)
     }
 
-    /// A31: whether a value of type `ty` may share, with values that hold no loan of it, a place
-    /// that a store reaches: it hides an environment or reaches a cell (`store_hidden`).
+    /// A31: whether a value of type `ty` may share, with values that hold no loan of it, the cell
+    /// that a function value that owns it writes (`store_hidden`): it may hold such a function
+    /// value (a type of `CallFacts::owned_types`, a dyn value when one is, an `Owned.Function`),
+    /// or reaches a cell (`argument_type`). A closure that captured a `ref string`, and a function
+    /// of a type that no such owner has, share nothing.
     fn shares_hidden(&mut self, ty: &Type) -> bool {
-        self.hidden_type(ty).0 || self.reaches_cell(ty)
+        self.argument_type(ty).1
     }
 
     /// A31: whether a store through the borrow `loan` reaches what its place holds. An exclusive
@@ -5763,7 +5779,7 @@ impl<'a> Checker<'a, '_> {
     /// lambda that captured an `Arc<Mutex<...>>` by value), in a module that makes such a value
     /// (`CallFacts::owned_sinks`). The value may be a copy, and a copy shares the cell without
     /// holding a loan of anything, so every value that may share it holds what was stored: every
-    /// local whose type hides an environment or reaches a cell (`shares_hidden`), the values bound
+    /// local whose type may hold such a function value or reaches a cell (`shares_hidden`), the values bound
     /// later that were made before (`hidden_log`), and the caller's values of such types (a fact of
     /// the body, `StoreFacts::hidden`, when a parameter has such a type). A borrow of a local value
     /// of the body cannot go where the caller's data reaches.
