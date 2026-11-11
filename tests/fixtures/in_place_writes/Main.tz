@@ -576,3 +576,75 @@ fn functions_beside_a_named_function =
     let a = adders[0] 0
     let moved = text
     a + moved.length + base 0 + (notifier (registry ())) 1
+
+// Review round 4. The drop of an InboxStash moves the function that its inbox holds into the block
+// that its out shares with `a`: a share of a block of the dropped value is no borrow of it.
+record InboxStash { inbox: Arc<Mutex<[unit -> i64]>>, out: Arc<Mutex<[unit -> i64]>> }
+
+instance Drop<InboxStash> {
+    fn drop s = { let out = Arc.share (ref s.out); Mutex.with_lock (Arc.get (ref s.inbox)) (\src -> { let g = src[0]; Mutex.with_lock (Arc.get (ref out)) (\dst -> Array.write 0 g dst) }) }
+}
+
+export def drop_moves_its_inbox_through_a_share :: i64
+fn drop_moves_its_inbox_through_a_share =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    let text0 = to_string 123456789
+    { let t = ref text0; let s = InboxStash { inbox: Arc.new (Mutex.create [\() -> 0]), out: Arc.share (ref a) }; Mutex.with_lock (Arc.get (ref s.inbox)) (\slot -> Array.write 0 (\() -> String.length t) slot); () }
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ())
+
+// The same move written in a helper that the drop calls.
+record TransferStash { inbox: Arc<Mutex<[unit -> i64]>>, out: Arc<Mutex<[unit -> i64]>> }
+
+def transfer :: ref Arc<Mutex<[unit -> i64]>> -> ref Arc<Mutex<[unit -> i64]>> -> unit
+fn transfer src dst = Mutex.with_lock (Arc.get src) (\a -> { let g = a[0]; Mutex.with_lock (Arc.get dst) (\b -> Array.write 0 g b) })
+
+instance Drop<TransferStash> {
+    fn drop s = transfer (ref s.inbox) (ref s.out)
+}
+
+export def drop_moves_its_inbox_in_a_helper :: i64
+fn drop_moves_its_inbox_in_a_helper =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    let text0 = to_string 123456789
+    { let t = ref text0; let s = TransferStash { inbox: Arc.new (Mutex.create [\() -> 0]), out: Arc.share (ref a) }; Mutex.with_lock (Arc.get (ref s.inbox)) (\slot -> Array.write 0 (\() -> String.length t) slot); () }
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ())
+
+// A drop that shares its inbox (an Rc) and its out, then writes an owned function into the out.
+record RcStash { inbox: Rc<[unit -> i64]>, out: Arc<Mutex<[unit -> i64]>> }
+
+instance Drop<RcStash> {
+    fn drop s = { let _keep = Rc.share (ref s.inbox); let out = Arc.share (ref s.out); Mutex.with_lock (Arc.get (ref out)) (\dst -> Array.write 0 (\() -> 5) dst) }
+}
+
+export def drop_shares_its_rc_and_writes_the_out :: i64
+fn drop_shares_its_rc_and_writes_the_out =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    { let _s = RcStash { inbox: Rc.new [\() -> 1], out: Arc.share (ref a) }; () }
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ())
+
+// A handler read from an Rc that holds a capture-less lambda shares no cell with the registry.
+export def handler_read_from_an_rc :: i64
+fn handler_read_from_an_rc =
+    let reg = registry ()
+    let r = Rc.new (\f -> f () + 1)
+    let h = deref (Rc.get (ref r))
+    let text = to_string 12345
+    let first = { let t = ref text; h (\() -> String.length t) }
+    let moved = text
+    first + moved.length + reg (\() -> 3) + reg (\() -> 1)
+
+// Review round 5. A handler taken out of an Rc by Rc.try_unwrap and a match, and handlers taken
+// out of a Maybe and a tuple by patterns, hold what the matched values hold: no owner of a cell.
+export def handlers_taken_out_by_patterns :: i64
+fn handlers_taken_out_by_patterns =
+    let reg = registry ()
+    let r = Rc.new (\f -> f () + 1)
+    let h = match Rc.try_unwrap r with | Result.Ok v -> v | Result.Error _ -> \_f -> 0
+    let m = Maybe.Some (\f -> f () * 2)
+    let g = match m with | Maybe.Some x -> x | Maybe.None -> \_f -> 0
+    let p = (\f -> f () * 3, 2)
+    let k = match p with | (y, _) -> y
+    let text = to_string 12345
+    let first = { let t = ref text; h (\() -> String.length t) + g (\() -> String.length t) + k (\() -> String.length t) }
+    let moved = text
+    first + moved.length + reg (\() -> 3)

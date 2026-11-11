@@ -2005,6 +2005,19 @@ const suites = {
       ["registry_and_mapped_handlers", [], 10n + 9n + 1n + 3n],
       // a = 9 + 1 + 0, moved 9, base 0 = 7, the notifier's registry call gives 1.
       ["functions_beside_a_named_function", [], 10n + 9n + 7n + 1n],
+      // Review round 4. The drop writes \() -> 5 into a's block.
+      ["drop_shares_its_rc_and_writes_the_out", [], 5n],
+      // "12345" has 5 characters: h gives 5 + 1, moved 5, each registry call gives 1.
+      ["handler_read_from_an_rc", [], 6n + 5n + 1n + 1n],
+      // Review round 5. h gives 5 + 1, g 5 * 2, k 5 * 3, moved 5, the registry call 1.
+      ["handlers_taken_out_by_patterns", [], 6n + 10n + 15n + 5n + 1n],
+    ],
+    // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
+    // runtime holds one mutex at a time and traps on the second, as it does for any such program.
+    nativeCases: [
+      // Review round 4. The drop moves the function that reads "123456789" (9 characters) into a's block.
+      ["drop_moves_its_inbox_through_a_share", [], 9n],
+      ["drop_moves_its_inbox_in_a_helper", [], 9n],
     ],
   },
   fixed_arrays: {

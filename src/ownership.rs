@@ -2168,34 +2168,14 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
     // its type joins those of the owners (and of the sinks) when a value that it holds may hold
     // one of them, until no more do. A closure that captured a `ref` to a record whose cell holds
     // functions of no such type reaches none.
-    let close = |set: &mut BTreeSet<Type>| loop {
-        let dynamic = set.iter().any(|ty| matches!(ty, Type::Dyn(_)));
-        let mut grew = false;
-        for (ty, held) in &holders {
-            if set.contains(ty) {
-                continue;
-            }
-            let reaches = held.iter().any(|value| {
-                types.reaches(value, |part| match part {
-                    Type::Function(..) => owned_suffix(part, usize::MAX, set),
-                    Type::Dyn(_) => dynamic,
-                    _ => part.is_owned_function(&types),
-                })
-            });
-            if reaches {
-                set.insert(ty.clone());
-                grew = true;
-            }
+    if (sinks || owned) && !holders.is_empty() {
+        let reach = HolderReach::new(&holders, &types);
+        if sinks {
+            reach.close(&holders, &mut sink_types);
         }
-        if !grew {
-            break;
+        if owned {
+            reach.close(&holders, &mut owned_types);
         }
-    };
-    if sinks {
-        close(&mut sink_types);
-    }
-    if owned {
-        close(&mut owned_types);
     }
     // Code that gets a dyn value reaches the value that it stores only through the methods of
     // the vtables: a store reaches through it when one of them may store (its facts), or gives
@@ -2267,6 +2247,167 @@ fn flag_sites(module: &CheckedModule) -> BTreeSet<usize> {
         }
     }
     sites
+}
+
+/// A31: the function types of a set of `CallFacts::owned_types` or `CallFacts::sink_types` as
+/// `owned_suffix` compares them, as paths of a trie: a type `(p1, ..., pn) -> r` (a `sink_type`,
+/// whose result is no function) is the path of its result `r` and then of its parameters from the
+/// last to the first. The types that a value of it gives after some of its arguments (`r`,
+/// `pn -> r`, ..., the type itself) are the nodes along that path, so whether one of them is in a
+/// set costs one lookup of each parameter rather than a copy and a comparison of every suffix.
+/// The result and parameter types are numbered once each (`symbols`).
+#[derive(Default)]
+struct SuffixTrie {
+    symbols: BTreeMap<Type, usize>,
+    nodes: BTreeMap<(usize, usize), usize>,
+}
+
+impl SuffixTrie {
+    /// The parent of the nodes of the results.
+    const ROOT: usize = usize::MAX;
+
+    /// The steps of the path of `ty`: its result, then its parameters from the last.
+    fn steps(ty: &Type) -> (&Type, &[Type]) {
+        match ty {
+            Type::Function(parameters, result) => (&**result, &parameters.types[..]),
+            _ => (ty, &[]),
+        }
+    }
+
+    /// The nodes along the path of the `sink_type` `ty`, made when missing: the first is the node of
+    /// its result (`owned_suffix` with every argument applied), the last the node of `ty` itself.
+    fn path(&mut self, ty: &Type) -> Vec<usize> {
+        let (result, parameters) = Self::steps(ty);
+        let mut path = Vec::with_capacity(parameters.len() + 1);
+        let mut node = Self::ROOT;
+        for step in std::iter::once(result).chain(parameters.iter().rev()) {
+            let next = self.symbols.len();
+            let symbol = *self.symbols.entry(step.clone()).or_insert(next);
+            let next = self.nodes.len();
+            node = *self.nodes.entry((node, symbol)).or_insert(next);
+            path.push(node);
+        }
+        path
+    }
+
+    /// The node of the type `ty` itself, when the trie has its whole path. A function type that no
+    /// `sink_type` has (pure, with conventions, without parameters or with a function result) is
+    /// no suffix of one, and has none.
+    fn node(&self, ty: &Type) -> Option<usize> {
+        if let Type::Function(parameters, result) = ty
+            && (parameters.pure
+                || !parameters.conventions.is_empty()
+                || parameters.types.is_empty()
+                || matches!(**result, Type::Function(..)))
+        {
+            return None;
+        }
+        let (result, parameters) = Self::steps(ty);
+        let mut node = Self::ROOT;
+        for step in std::iter::once(result).chain(parameters.iter().rev()) {
+            node = *self.nodes.get(&(node, *self.symbols.get(step)?))?;
+        }
+        Some(node)
+    }
+}
+
+/// A31: what the values that the holders of `sink_flags` hold reach, for closing a set of types
+/// (`CallFacts::owned_types` or `CallFacts::sink_types`) under them: a holder joins the set when a
+/// function value that its held values reach (through stored values and references) gives a type
+/// of the set after some of its arguments (`owned_suffix`), when they reach a dyn value and the set
+/// has a dyn type, or when they reach an `Owned.Function`. The function values are paths of `trie`,
+/// and `watchers` lists, for each node, the holders whose function values pass through it, so a
+/// holder is looked at again only when a type that it may reach joins the set, rather than every
+/// holder after each one that joins (a chain of closures that each capture the one before at a
+/// longer type joined one type per pass over all of them).
+struct HolderReach {
+    trie: SuffixTrie,
+    watchers: BTreeMap<usize, Vec<usize>>,
+    /// The holders whose held values reach an `Owned.Function`, and those that reach a dyn value.
+    owned: Vec<usize>,
+    dynamic: Vec<usize>,
+}
+
+impl HolderReach {
+    fn new(holders: &[(Type, Vec<Type>)], types: &crate::check::TypeContext<'_>) -> Self {
+        let mut reach = Self {
+            trie: SuffixTrie::default(),
+            watchers: BTreeMap::new(),
+            owned: Vec::new(),
+            dynamic: Vec::new(),
+        };
+        for (index, (_, held)) in holders.iter().enumerate() {
+            let functions = std::cell::RefCell::new(Vec::new());
+            let (owned, dynamic) = (std::cell::Cell::new(false), std::cell::Cell::new(false));
+            for value in held {
+                types.reaches(value, |part| {
+                    match part {
+                        Type::Function(..) => functions.borrow_mut().push(sink_type(part)),
+                        Type::Dyn(_) => dynamic.set(true),
+                        _ => owned.set(owned.get() || part.is_owned_function(types)),
+                    }
+                    false
+                });
+            }
+            if owned.get() {
+                reach.owned.push(index);
+            }
+            if dynamic.get() {
+                reach.dynamic.push(index);
+            }
+            for function in functions.into_inner() {
+                for node in reach.trie.path(&function) {
+                    let watchers = reach.watchers.entry(node).or_default();
+                    if watchers.last() != Some(&index) {
+                        watchers.push(index);
+                    }
+                }
+            }
+        }
+        reach
+    }
+
+    /// Adds to `set` the types of the holders that reach one of its types, to a fixed point. It
+    /// gives how many times it looked at a holder, for the tests of its cost: at most once for
+    /// each node that the holder's function values pass through, beside `owned` and `dynamic`.
+    fn close(&self, holders: &[(Type, Vec<Type>)], set: &mut BTreeSet<Type>) -> usize {
+        let mut looks = 0;
+        let mut done = vec![false; holders.len()];
+        let mut marked = BTreeSet::new();
+        let mut pending: Vec<usize> = self.owned.clone();
+        let mut dynamic = false;
+        for ty in set.iter() {
+            dynamic |= matches!(ty, Type::Dyn(_));
+            if let Some(node) = self.trie.node(ty)
+                && marked.insert(node)
+            {
+                pending.extend(self.watchers.get(&node).into_iter().flatten());
+            }
+        }
+        if dynamic {
+            pending.extend(&self.dynamic);
+        }
+        while let Some(index) = pending.pop() {
+            looks += 1;
+            if std::mem::replace(&mut done[index], true) {
+                continue;
+            }
+            let ty = &holders[index].0;
+            if !set.insert(ty.clone()) {
+                continue;
+            }
+            if !dynamic && matches!(ty, Type::Dyn(_)) {
+                dynamic = true;
+                pending.extend(&self.dynamic);
+            }
+            if let Some(node) = self.trie.node(ty)
+                && marked.insert(node)
+            {
+                pending.extend(self.watchers.get(&node).into_iter().flatten());
+            }
+        }
+        looks
+    }
 }
 
 /// A31: the immutable locals of `body` bound to a named function, which has no environment.
@@ -3337,14 +3478,16 @@ const OWNER_SCAN_DEPTH: usize = 16;
 ///   borrow or a dereference what the value that it is read from holds; an `if`, a `match` and a
 ///   block what their results hold;
 /// - an immutable local what its binding holds (`env`, bound in the order of the body, and an
-///   element of a `for` loop what the sequence holds); an immutable parameter its own value
-///   (`values`), and a mutable one (`fn f mut a`, `\mut a ->`) is fresh: the body may assign it
-///   anything;
+///   element of a `for` loop what the sequence holds); a local of a pattern what the projection
+///   of the matched value that the pattern stores in it holds (the steps of an active pattern
+///   bind the result of its call), joined over the alternatives of an OR pattern; an immutable
+///   parameter its own value (`values`), and a mutable one (`fn f mut a`, `\mut a ->`) is fresh:
+///   the body may assign it anything;
 /// - a complete call of a named function what its facts say of the arguments (its own `fresh`,
 ///   the arguments in `values`, the results of the calls of those in `results`); `Owned.function`
 ///   what its argument holds; a call of a function-valued parameter its result (`results`), its
 ///   own value and its arguments; `new [T](n, f)` the results of `f`;
-/// - anything else (another builtin, a mutable local, a pattern binding, a call of any other
+/// - anything else (another builtin, a mutable local or pattern local, a call of any other
 ///   function value) is fresh.
 struct OwnerScan<'m, 'f> {
     module: &'m CheckedModule,
@@ -3360,8 +3503,16 @@ struct OwnerScan<'m, 'f> {
     /// itself and once more for the callee's facts, so without it a chain of calls that pass
     /// their argument on (`f (f (f x))`, `x |> f a |> f b`) costs twice as much at each level.
     /// The bindings of a body come before their uses, so an expression's answer does not change
-    /// once it is found.
+    /// once it is found. It keeps only the expressions that outlive the scan (`lasting`): an
+    /// address is a key only while its expression lives.
     memo: BTreeMap<usize, Own>,
+    /// The addresses of the expressions that outlive the scan (those of the body that it
+    /// scans), or `None` when every expression that it sees does (the bodies of the module, for
+    /// `owner_facts`). The answers for other expressions (a `TypedExpr` that the check makes
+    /// for a moment, as `Checker::capture_loans` does for each capture) go to `scratch`, which
+    /// lasts one question (`query`): a later expression may take the address of a dropped one.
+    lasting: Option<BTreeSet<usize>>,
+    scratch: BTreeMap<usize, Own>,
     /// How many expressions the scan has looked at (`own_uncached`), for the tests of its cost.
     visits: usize,
 }
@@ -3379,8 +3530,31 @@ impl<'m, 'f> OwnerScan<'m, 'f> {
             env: BTreeMap::new(),
             owner_types: BTreeMap::new(),
             memo: BTreeMap::new(),
+            lasting: None,
+            scratch: BTreeMap::new(),
             visits: 0,
         }
+    }
+
+    /// The scan for the questions of a check of `body`, which may ask about expressions that it
+    /// makes for a moment: only the answers for the expressions of `body` are kept (`lasting`).
+    fn lasting_in(mut self, body: &TypedExpr) -> Self {
+        let mut lasting = BTreeSet::new();
+        let mut pending = vec![body];
+        while let Some(expression) = pending.pop() {
+            lasting.insert(std::ptr::from_ref(expression) as usize);
+            pending.extend(expression.children());
+        }
+        self.lasting = Some(lasting);
+        self
+    }
+
+    /// What the value of `expression` may hold (`own`), for a question from outside the scan:
+    /// the answers for expressions that do not outlive the scan are forgotten afterwards.
+    fn query(&mut self, expression: &TypedExpr) -> Own {
+        let found = self.own(expression);
+        self.scratch.clear();
+        found
     }
 
     /// Whether a value of type `ty` may hold an owner at all, and whether it reaches a mutable
@@ -3475,13 +3649,59 @@ impl<'m, 'f> OwnerScan<'m, 'f> {
         self.env.insert(local.id, (own, result));
     }
 
+    /// Binds the locals of the patterns of `arm` (`PatternAlternative`): each holds what the
+    /// projection of the matched value (or, in the steps of an active pattern, the call of its
+    /// function) that the pattern stores in it holds. The alternatives of an OR pattern bind the
+    /// same locals, so a local holds what any of them stores; the body comes after all of them.
+    fn bind_patterns(&mut self, arm: &crate::check::TypedMatchArm) {
+        for alternative in &arm.alternatives {
+            for step in &alternative.steps {
+                match step {
+                    crate::check::PatternStep::Test(test) => self.walk(test),
+                    crate::check::PatternStep::Bind(local, value) => self.bind_joined(local, value),
+                }
+            }
+            for (local, value) in &alternative.bindings {
+                self.bind_joined(local, value);
+            }
+        }
+    }
+
+    /// Binds the immutable local of a pattern to what `value` holds, joined with what the
+    /// alternatives before bound it to.
+    fn bind_joined(&mut self, local: &crate::check::Local, value: &TypedExpr) {
+        let own = self.own(value);
+        if local.mutable {
+            return;
+        }
+        let result = self.result_of(value, 1);
+        match self.env.entry(local.id) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let (held, gives) = entry.get_mut();
+                held.join(own);
+                gives.join(result);
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert((own, result));
+            }
+        }
+    }
+
     fn own(&mut self, expression: &TypedExpr) -> Own {
         let key = std::ptr::from_ref(expression) as usize;
-        if let Some(known) = self.memo.get(&key) {
+        if let Some(known) = self.memo.get(&key).or_else(|| self.scratch.get(&key)) {
             return known.clone();
         }
         let found = self.own_uncached(expression);
-        self.memo.insert(key, found.clone());
+        if self
+            .lasting
+            .as_ref()
+            .is_none_or(|lasting| lasting.contains(&key))
+        {
+            self.memo.insert(key, found.clone());
+        } else {
+            self.scratch.insert(key, found.clone());
+        }
         found
     }
 
@@ -3573,6 +3793,7 @@ impl<'m, 'f> OwnerScan<'m, 'f> {
                 self.bind(local, value);
                 let mut own = Own::default();
                 for arm in arms {
+                    self.bind_patterns(arm);
                     if let Some(guard) = &arm.guard {
                         self.walk(guard);
                     }
@@ -3679,6 +3900,7 @@ impl<'m, 'f> OwnerScan<'m, 'f> {
             E::Match { local, value, arms } => {
                 self.bind(local, value);
                 for arm in arms {
+                    self.bind_patterns(arm);
                     if let Some(guard) = &arm.guard {
                         self.walk(guard);
                     }
@@ -6124,12 +6346,9 @@ impl<'a, 'run> Checker<'a, 'run> {
         (hides, holds, dynamic)
     }
 
-    /// A31: whether a value of type `ty` may share, with values that hold no loan of it, the cell
-    /// that a function value that owns it writes (`store_hidden`): it may hold such a function
-    /// value (a type of `CallFacts::owned_types`, a dyn value when one is, an `Owned.Function`),
-    /// or reaches a cell (`argument_type`). A closure that captured a `ref string`, and a function
-    /// of a type that no such owner has, share nothing.
     /// A31: the provenance scan of the body (`OwnerScan`), made with every binding of the body.
+    /// It keeps the answers for the expressions of the body only (`OwnerScan::lasting_in`): the
+    /// check also asks about expressions that it makes for a moment.
     fn owner_scan(&mut self) -> &mut OwnerScan<'a, 'run> {
         if self.owner_scan.is_none() {
             let facts: &'run CallFacts = self.facts;
@@ -6140,7 +6359,8 @@ impl<'a, 'run> Checker<'a, 'run> {
                 .iter()
                 .map(|(root, index)| (usize::MAX - root, *index))
                 .filter(|(id, _)| declarations.get(id).is_some_and(|local| !local.mutable));
-            let mut scan = OwnerScan::new(self.module, &facts.owners, parameters);
+            let mut scan =
+                OwnerScan::new(self.module, &facts.owners, parameters).lasting_in(self.body);
             scan.walk(self.body);
             self.owner_scan = Some(scan);
         }
@@ -6151,7 +6371,7 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// a function value that owns its cell (or a copy of one), or reach a cell. One that cannot
     /// gives a call no way into such an environment, and keeps nothing that is stored there.
     fn may_own(&mut self, expression: &TypedExpr) -> bool {
-        !self.owner_scan().own(expression).is_none()
+        !self.owner_scan().query(expression).is_none()
     }
 
     /// A31: whether the immutable local `id` is bound to a value that cannot share a hidden
@@ -6163,6 +6383,11 @@ impl<'a, 'run> Checker<'a, 'run> {
             .is_some_and(|(own, _)| own.is_none())
     }
 
+    /// A31: whether a value of type `ty` may share, with values that hold no loan of it, the cell
+    /// that a function value that owns it writes (`store_hidden`): it may hold such a function
+    /// value (a type of `CallFacts::owned_types`, a dyn value when one is, an `Owned.Function`),
+    /// or reaches a cell (`argument_type`). A closure that captured a `ref string`, and a function
+    /// of a type that no such owner has, share nothing.
     fn shares_hidden(&mut self, ty: &Type) -> bool {
         self.argument_type(ty).1
     }
@@ -11036,5 +11261,246 @@ mod retention_tests {
             let module = crate::analyze(&format!("{registry}{source}")).unwrap();
             assert!(owner_facts(&module)[index(&module, name)].fresh, "{source}");
         }
+    }
+
+    /// A31, review round 5 (finding 2): the answers of the provenance scan of a check are kept by
+    /// the address of the expression, and the check also asks about expressions that it makes for
+    /// a moment (`Checker::capture_loans`): the next one may take the address of the last. The
+    /// scan keeps only the answers for the expressions of its body (`OwnerScan::lasting_in`), so
+    /// the second question about one place in memory, now holding the registry, is not answered
+    /// with what the first found for a capture-less lambda.
+    #[test]
+    fn the_owner_provenance_forgets_the_expressions_made_for_a_moment() {
+        let source = "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let plain = \\(f: unit -> i64) -> f () + n\n    plain (\\() -> 1) + reg (\\() -> 2)\nrun 5";
+        let module = crate::analyze(source).unwrap();
+        let facts = owner_facts(&module);
+        let run = module
+            .functions
+            .iter()
+            .find(|function| function.name == "run")
+            .unwrap();
+        let mut locals = BTreeMap::new();
+        let mut pending = vec![&run.body];
+        while let Some(expression) = pending.pop() {
+            if let E::Block { bindings, .. } = &expression.kind {
+                for (local, _) in bindings {
+                    locals.insert(local.name.clone(), local.clone());
+                }
+            }
+            pending.extend(expression.children());
+        }
+        let (plain, reg) = (&locals["plain"], &locals["reg"]);
+        let parameters = run
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| (parameter.id, index));
+        let mut scan = OwnerScan::new(&module, &facts, parameters).lasting_in(&run.body);
+        scan.walk(&run.body);
+        let mut moment = TypedExpr {
+            kind: E::Local(plain.id),
+            ty: plain.ty.clone(),
+            span: run.body.span,
+        };
+        assert!(scan.query(&moment).is_none(), "a capture-less lambda");
+        moment.kind = E::Local(reg.id);
+        moment.ty = reg.ty.clone();
+        assert!(
+            scan.query(&moment).fresh,
+            "the registry at the same address"
+        );
+        // The expressions of the body keep their answers; the others are forgotten.
+        let body = std::ptr::from_ref(&run.body) as usize;
+        assert!(!scan.memo.contains_key(&body));
+        scan.query(&run.body);
+        assert!(scan.memo.contains_key(&body));
+        assert!(scan.scratch.is_empty());
+    }
+
+    /// A31, review round 5 (finding 1): the types of the owners and of the sinks are closed under
+    /// the holders (`HolderReach`) by looking at a holder again only when a type that its held
+    /// function values give after some arguments joins the set. A chain of closures that each
+    /// capture the one before at a longer curried type (`\(u: i64) -> h`) joined one type per pass
+    /// over all the holders, with a copy and a comparison of every suffix of every held type in
+    /// each pass. The closure agrees with those passes (`owned_suffix`) on holders of curried and
+    /// flattened types, tuples, arrays, references, dyn values and `Owned.Function`s.
+    #[test]
+    fn closing_the_types_under_the_holders_follows_the_types_that_join() {
+        let depth = 100;
+        let mut source = "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let h0 = make_registry ()\n".to_owned();
+        for at in 1..=depth {
+            source.push_str(&format!("    let h{at} = \\(u{at}: i64) -> h{}\n", at - 1));
+        }
+        source.push_str("    h0 (\\() -> n)\nrun 5");
+        let module = crate::analyze(&source).unwrap();
+        let facts = call_facts(&module, false);
+        assert!(facts.owned_sinks);
+        let run = module
+            .functions
+            .iter()
+            .find(|function| function.name == "run")
+            .unwrap();
+        let mut closures = 0;
+        let mut pending = vec![&run.body];
+        while let Some(expression) = pending.pop() {
+            // The closures of the chain, not the thunk `\() -> n` that `h0` gets.
+            if let (E::Closure(..), Type::Function(parameters, _)) =
+                (&expression.kind, &expression.ty)
+                && parameters.types.first() != Some(&Type::Unit)
+            {
+                closures += 1;
+                assert!(
+                    facts.owned_types.contains(&sink_type(&expression.ty)),
+                    "{:?}",
+                    expression.ty
+                );
+            }
+            pending.extend(expression.children());
+        }
+        assert_eq!(closures, depth);
+
+        let types = module.types();
+        let int = Type::Integer(64, true);
+        let function = |parameters: Vec<Type>, result: Type| {
+            Type::Function(
+                Box::new(crate::check::FunctionParameters {
+                    types: parameters,
+                    conventions: Box::default(),
+                    pure: false,
+                }),
+                Box::new(result),
+            )
+        };
+        let thunk = function(vec![Type::Unit], int.clone());
+        // A chain of holders, listed from the last: each holds the one before.
+        let mut chain = vec![function(vec![thunk.clone()], int.clone())];
+        for _ in 0..depth {
+            let last = chain.last().unwrap().clone();
+            chain.push(function(vec![int.clone()], last));
+        }
+        let holders: Vec<(Type, Vec<Type>)> = (1..chain.len())
+            .rev()
+            .map(|at| (sink_type(&chain[at]), vec![chain[at - 1].clone()]))
+            .collect();
+        let reach = HolderReach::new(&holders, &types);
+        // The held types are suffixes of one another: one path of the trie, a node for each
+        // parameter, rather than a copy of every suffix of every held type.
+        assert_eq!(reach.trie.nodes.len(), chain.len());
+        let entries: usize = reach.watchers.values().map(Vec::len).sum();
+        let mut set = BTreeSet::from([sink_type(&chain[0])]);
+        let looks = reach.close(&holders, &mut set);
+        assert_eq!(set.len(), chain.len());
+        assert!(
+            looks <= entries + reach.owned.len() + reach.dynamic.len(),
+            "{looks} looks at {entries} entries"
+        );
+
+        // The passes of the closure before, as the reference.
+        let passes = |holders: &[(Type, Vec<Type>)], set: &mut BTreeSet<Type>| loop {
+            let dynamic = set.iter().any(|ty| matches!(ty, Type::Dyn(_)));
+            let mut grew = false;
+            for (ty, held) in holders {
+                if set.contains(ty) {
+                    continue;
+                }
+                let reaches = held.iter().any(|value| {
+                    types.reaches(value, |part| match part {
+                        Type::Function(..) => owned_suffix(part, usize::MAX, set),
+                        Type::Dyn(_) => dynamic,
+                        _ => part.is_owned_function(&types),
+                    })
+                });
+                if reaches {
+                    set.insert(ty.clone());
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        };
+        let owned_function = types
+            .records
+            .iter()
+            .position(|record| record.name == "Owned.Function")
+            .map(|id| Type::Record(id, Box::new([Type::Unit, int.clone()])));
+        let dynamic = Type::Dyn(Box::new(crate::check::DynType {
+            classes: Box::new([Box::from("Show")]),
+            copy: false,
+            send: false,
+            borrowed: false,
+        }));
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % bound as u64).unwrap()
+        };
+        let atoms = [int.clone(), Type::Unit, Type::Bool, Type::String];
+        let mut functions: Vec<Type> = Vec::new();
+        for _ in 0..40 {
+            let count = 1 + next(3);
+            let parameters = (0..count)
+                .map(|_| match next(4) {
+                    0 if !functions.is_empty() => functions[next(functions.len())].clone(),
+                    1 => Type::Reference(Box::new(atoms[next(atoms.len())].clone()), false),
+                    _ => atoms[next(atoms.len())].clone(),
+                })
+                .collect();
+            let result = match next(4) {
+                0 if !functions.is_empty() => functions[next(functions.len())].clone(),
+                1 => dynamic.clone(),
+                _ => atoms[next(atoms.len())].clone(),
+            };
+            functions.push(function(parameters, result));
+        }
+        let (mut grew, mut stayed) = (0, 0);
+        for round in 0..200 {
+            let held = |next: &mut dyn FnMut(usize) -> usize| {
+                let one = functions[next(functions.len())].clone();
+                match next(7) {
+                    0 => Type::Tuple(vec![int.clone(), one]),
+                    1 => Type::Array(Box::new(one)),
+                    2 => Type::Reference(Box::new(one), false),
+                    3 => dynamic.clone(),
+                    4 => owned_function.clone().unwrap_or(one),
+                    _ => one,
+                }
+            };
+            let holders: Vec<(Type, Vec<Type>)> = (0..1 + next(12))
+                .map(|_| {
+                    let ty = sink_type(&functions[next(functions.len())]);
+                    let held = (0..1 + next(2)).map(|_| held(&mut next)).collect();
+                    (ty, held)
+                })
+                .collect();
+            let mut start = BTreeSet::new();
+            for _ in 0..next(3) {
+                let chosen = sink_type(&functions[next(functions.len())]);
+                // A suffix of a chosen type, or a result.
+                let chosen = match (&chosen, next(3)) {
+                    (Type::Function(parameters, result), 0) if parameters.types.len() > 1 => {
+                        function(parameters.types[1..].to_vec(), (**result).clone())
+                    }
+                    (Type::Function(_, result), 1) => (**result).clone(),
+                    _ => chosen,
+                };
+                start.insert(chosen);
+            }
+            let reach = HolderReach::new(&holders, &types);
+            let known = start.len();
+            let (mut closed, mut expected) = (start.clone(), start);
+            reach.close(&holders, &mut closed);
+            passes(&holders, &mut expected);
+            assert_eq!(closed, expected, "round {round}: {holders:?}");
+            grew += usize::from(expected.len() > known);
+            stayed += usize::from(holders.iter().any(|(ty, _)| !expected.contains(ty)));
+        }
+        // Both outcomes occur often enough for the comparison to mean something.
+        assert!(
+            grew >= 20 && stayed >= 20,
+            "{grew} grew, {stayed} left holders out"
+        );
     }
 }

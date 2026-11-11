@@ -2396,7 +2396,9 @@ fn an_implicit_drop_applies_what_its_drop_stores_in_hidden_environments() {
 /// that block through the share stores what the value holds, so the bound value keeps no borrow of
 /// itself in the block (`drop_borrows_self`), and the program, whose string outlives the read,
 /// is accepted (9) as main accepts it. The same drop written through a helper was accepted
-/// before; the form whose string dies first stays rejected.
+/// before; the form whose string dies first stays rejected. The values of the accepted forms are
+/// checked by the `in_place_writes` suite of `tests/features.mjs` (natively: WebAssembly without
+/// the tzroutine runtime traps on the drop's second lock).
 #[test]
 fn a_share_of_a_block_of_the_dropped_value_is_no_borrow_of_it() {
     for main in [
@@ -2424,7 +2426,8 @@ fn a_share_of_a_block_of_the_dropped_value_is_no_borrow_of_it() {
 /// that a call of it stores stays in the registry's cell (main and the previous round accepted
 /// these; the round before rejected them where they are rejected here). The builtins of `Rc`
 /// give what their argument holds (`Rc.get (ref (Rc.new h))` is `h`), so a handler read from an
-/// `Rc` that holds a capture-less lambda shares no cell (14, as main).
+/// `Rc` that holds a capture-less lambda shares no cell (14, as main; the `in_place_writes` suite
+/// checks the value of the same form).
 #[test]
 fn a_mutable_parameter_holds_what_the_body_assigns() {
     for (main, at) in [
@@ -2460,6 +2463,138 @@ fn a_mutable_parameter_holds_what_the_body_assigns() {
         "Main.tz",
         "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let r = Rc.new (\\f -> f () + 1)\n    let h = deref (Rc.get (ref r))\n    let text = to_string n\n    let first = { let t = ref text; h (\\() -> String.length t) }\n    let moved = text\n    first + moved.length + reg (\\() -> 3) + reg (\\() -> 1)\nrun 12345",
     )]);
+}
+
+/// A31, review round 5 (finding 3): a local that a pattern binds holds what the projection of the
+/// matched value holds (the provenance of the cell-owning function values, `OwnerScan`): a handler
+/// taken out of an `Rc` with `Rc.try_unwrap` and a `match`, out of a `Maybe`, a tuple, a record, a
+/// list, an array element, a nested pattern, an OR pattern, behind a guard or a `ref`, or through
+/// an active pattern that returns its argument, is the capture-less lambda that was put in, and
+/// shares no cell with the registry (main accepts these with the values 9, 14 and 10; the branch
+/// counted every pattern local as an owner before). The same shapes that take the registry out
+/// (or a registry that an active pattern or a named function makes, or one of the alternatives
+/// of an OR pattern) are rejected where the borrowed string is dropped (main accepts them).
+#[test]
+fn a_local_that_a_pattern_binds_holds_what_the_matched_value_holds() {
+    for main in [
+        // ok01_rc_try_unwrap (review round 5)
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let r = Rc.new h\n    let c = match Rc.try_unwrap r with | Result.Ok v -> v | Result.Error _ -> \\f -> 0\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + reg (\\() -> 1) + other.length * 0\nrun 123456789",
+        // u_maybe_map (review round 4)
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let m = Maybe.map (\\k -> \\f -> f () + k) (Maybe.Some 1)\n    let h = match m with | Maybe.Some g -> g | Maybe.None -> \\f -> 0\n    let text = to_string n\n    let first = { let t = ref text; h (\\() -> String.length t) }\n    let moved = text\n    first + moved.length + reg (\\() -> 3) + reg (\\() -> 1)\nrun 12345",
+        // s01_maybe_some
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let m = Maybe.Some h\n    let c = match m with | Maybe.Some s -> s | Maybe.None -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+        // s02_tuple
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let pair = (h, h)\n    let c = match pair with | (a, b) -> b\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+        // s03_or_pattern
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let x: Result<(unit -> i64) -> i64, (unit -> i64) -> i64> = Result.Error h\n    let c = match x with | Result.Ok g | Result.Error g -> g\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+        // s05_record
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Two { f: (unit -> i64) -> i64, g: (unit -> i64) -> i64 }\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let b = Two { f: h, g: h }\n    let c = match b with | { g = x } -> x\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+        // s06_cons
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let l = [|h, h|]\n    let c = match l with | a :: rest -> (match rest with | b :: _ -> b | _ -> a) | _ -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+        // s07_try_unwrap
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let r = Rc.new h\n    let c = match Rc.try_unwrap r with | Result.Ok v -> v | Result.Error _ -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+        // s09_nested
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let m = Maybe.Some (Maybe.Some h)\n    let c = match m with | Maybe.Some (Maybe.Some s) -> s | _ -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+        // s10_guard
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let m = Maybe.Some h\n    let c = match m with | Maybe.Some s when n > 0 -> s | _ -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+        // s11_ref_scrutinee
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let m = Maybe.Some h\n    let c = match ref m with | Maybe.Some s -> s | Maybe.None -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+        // s12_array_elem_tuple
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let pairs = [(h, h)]\n    let c = match pairs[0] with | (a, b) -> b\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+        // s13_active_payload
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef (|Wrap|_|) :: own ((unit -> i64) -> i64) -> Maybe<(unit -> i64) -> i64>\nfn (|Wrap|_|) g = Maybe.Some g\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let src = h\n    let c = match src with | Wrap s -> s | _ -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+    for (main, at) in [
+        // p01_maybe_some
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let m = Maybe.Some reg\n    let c = match m with | Maybe.Some s -> s | Maybe.None -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // p02_tuple
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let pair = (h, reg)\n    let c = match pair with | (a, b) -> b\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // p03_or_pattern
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let x: Result<(unit -> i64) -> i64, (unit -> i64) -> i64> = Result.Error reg\n    let c = match x with | Result.Ok g | Result.Error g -> g\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // p04_or_pattern_first
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let x: Result<(unit -> i64) -> i64, (unit -> i64) -> i64> = Result.Ok reg\n    let c = match x with | Result.Ok g | Result.Error g -> g\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // p05_record
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Two { f: (unit -> i64) -> i64, g: (unit -> i64) -> i64 }\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let b = Two { f: h, g: reg }\n    let c = match b with | { g = x } -> x\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (12, 17),
+        ),
+        // p06_cons
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let l = [|h, reg|]\n    let c = match l with | a :: rest -> (match rest with | b :: _ -> b | _ -> a) | _ -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // p07_try_unwrap
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let r = Rc.new reg\n    let c = match Rc.try_unwrap r with | Result.Ok v -> v | Result.Error _ -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // p08_upgrade
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let r = Rc.new reg\n    let w = Rc.downgrade (ref r)\n    let c = match Rc.upgrade (ref w) with | Maybe.Some s -> deref (Rc.get (ref s)) | Maybe.None -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (12, 17),
+        ),
+        // p09_nested
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let m = Maybe.Some (Maybe.Some reg)\n    let c = match m with | Maybe.Some (Maybe.Some s) -> s | _ -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // p10_guard
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let m = Maybe.Some reg\n    let c = match m with | Maybe.Some s when n > 0 -> s | _ -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // p11_ref_scrutinee
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let m = Maybe.Some reg\n    let c = match ref m with | Maybe.Some s -> s | Maybe.None -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // p12_array_elem_tuple
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let pairs = [(h, reg)]\n    let c = match pairs[0] with | (a, b) -> b\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // p13_active_payload
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef (|Wrap|_|) :: own ((unit -> i64) -> i64) -> Maybe<(unit -> i64) -> i64>\nfn (|Wrap|_|) g = Maybe.Some g\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let src = reg\n    let c = match src with | Wrap s -> s | _ -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (13, 17),
+        ),
+        // p14_match_in_lambda_result
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let m = Maybe.Some reg\n    let pick = \\(u: i64) -> match m with | Maybe.Some s -> s | Maybe.None -> h\n    let c = pick 0\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (12, 17),
+        ),
+        // p15_active_makes_registry
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef (|Reg|_|) :: own i64 -> Maybe<(unit -> i64) -> i64>\nfn (|Reg|_|) _k = Maybe.Some (make_registry ())\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let c = match 0 with | Reg r -> r | _ -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (12, 17),
+        ),
+        // p16_named_result_registry
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef wrap :: unit -> Maybe<(unit -> i64) -> i64>\nfn wrap _u = Maybe.Some (make_registry ())\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let c = match wrap () with | Maybe.Some s -> s | Maybe.None -> h\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (12, 17),
+        ),
+        // p17_or_pattern_mixed
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h: (unit -> i64) -> i64 = \\f -> f ()\n    let x: Result<(unit -> i64) -> i64, (unit -> i64) -> i64> = if n > 0 then Result.Error reg else Result.Ok h\n    let c = match x with | Result.Ok g | Result.Error g -> g\n    let first = { let text0 = to_string n; let text = ref text0; c (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + c (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+    ] {
+        rejects_at(main, "E1013", "assignment_extends_borrow", at);
+    }
 }
 
 #[test]
