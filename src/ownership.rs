@@ -3062,18 +3062,39 @@ impl<'a> Checker<'a, '_> {
                     "part of the value moved here, in the previous iteration of the loop"
                 }
             };
-            let mut diagnostic = Diagnostic::of(
-                DiagnosticKind::UseAfterMove,
-                format!("use of moved or partially moved value '{name}'"),
-                span,
-            )
-            .with_help(if moved.fields.is_empty() {
-                format!("borrow the value with 'ref {name}' or move it last")
-            } else {
-                format!(
-                    "borrow the field with 'ref' instead of moving it out of '{name}', or move it last"
+            // The local that holds a matched temporary has a generated name, which no source
+            // spells; only the bindings of one pattern take from it.
+            let matched = self
+                .state
+                .locals
+                .get(&place.root)
+                .is_some_and(|(local, _)| {
+                    local.provenance == crate::syntax::Provenance::Generated
+                        && local.name.starts_with("$match")
+                });
+            let mut diagnostic = if matched {
+                Diagnostic::of(
+                    DiagnosticKind::UseAfterMove,
+                    "use of moved or partially moved matched value: two bindings of the pattern take the same part of it",
+                    span,
                 )
-            });
+                .with_help(
+                    "bind the whole value with 'as' or bind its parts, not both, and match the bound value again in the arm",
+                )
+            } else {
+                Diagnostic::of(
+                    DiagnosticKind::UseAfterMove,
+                    format!("use of moved or partially moved value '{name}'"),
+                    span,
+                )
+                .with_help(if moved.fields.is_empty() {
+                    format!("borrow the value with 'ref {name}' or move it last")
+                } else {
+                    format!(
+                        "borrow the field with 'ref' instead of moving it out of '{name}', or move it last"
+                    )
+                })
+            };
             if origin.end > origin.start {
                 diagnostic = diagnostic.related(RelatedRole::MovedHere, message, origin);
             }

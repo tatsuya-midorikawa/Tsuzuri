@@ -3643,6 +3643,61 @@ fn narrowing_beside_other_bindings() {
 }
 
 #[test]
+fn double_moves_out_of_a_matched_temporary_name_no_generated_local() {
+    // Two bindings of one pattern that take the same part of a matched temporary: the error
+    // names no local that the compiler made (review round 1), and the earlier move is at the
+    // binder that made it.
+    let make = "def make :: i64 -> (f64 | i64 | string) = \\n -> if n > 0 then n else \"neg\"\n\n\
+         def take :: own (f64 | i64 | string) -> i64 = \\v -> 0\n\n\
+         union V = A of string | B of i64\n\ndef mk :: i64 -> V = \\n -> if n > 0 then A \"a\" else B n\n\n\
+         def eat :: own V -> i64 = \\v -> 0\n\n";
+    for (body, binder) in [
+        (
+            "    match make n with\n    | (:? (i64 | string) as x) as whole -> take whole\n    | _ -> 0\n",
+            "x)",
+        ),
+        (
+            "    match make n with\n    | (:? string as s) as whole -> s.length + take whole\n    | _ -> 0\n",
+            "s)",
+        ),
+        (
+            "    match mk n with\n    | (A owner) as whole -> owner.length + eat whole\n    | _ -> 0\n",
+            "owner)",
+        ),
+    ] {
+        let source = format!("{make}def f :: i64 -> i64 = \\n ->\n{body}");
+        let error = rejects(&source, "E1012", "use_after_move");
+        assert_eq!(
+            error.message,
+            "use of moved or partially moved matched value: two bindings of the pattern take the same part of it",
+            "{body}"
+        );
+        assert_eq!(
+            error.help.as_deref(),
+            Some(
+                "bind the whole value with 'as' or bind its parts, not both, and match the bound value again in the arm"
+            )
+        );
+        let at = source.find(binder).unwrap();
+        let related: Vec<_> = error
+            .related
+            .iter()
+            .map(|related| related.span.start)
+            .collect();
+        assert_eq!(related, [at], "{body}");
+    }
+    // A matched variable is named as before.
+    let error = rejects(
+        &format!(
+            "{make}def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | string) as x) as whole -> take whole\n    | _ -> 0\n"
+        ),
+        "E1012",
+        "use_after_move",
+    );
+    assert_eq!(error.message, "use of moved or partially moved value 'v'");
+}
+
+#[test]
 fn narrowing_arms_may_move_or_replace_the_matched_value() {
     // A narrowing of Copy members copies the payload and leaves the matched value to the arm,
     // as the arms `:? i64 as n`, `:? f64 as n` do, also when the match is not the result of

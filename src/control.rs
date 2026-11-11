@@ -1764,13 +1764,18 @@ impl Checker<'_> {
             };
             if let Some(name) = binder {
                 let hidden = narrowed_name(&name.text);
+                // Ownership reports a move or a borrow of the hidden binding at its projection:
+                // at the binder, which the source spells, as for a case payload.
                 alternative.bindings.push((
                     Ident {
                         text: hidden.clone(),
                         span: name.span,
                         provenance: Provenance::Generated,
                     },
-                    place.clone(),
+                    TypedExpr {
+                        span: name.span,
+                        ..place.clone()
+                    },
                 ));
                 alternative.narrowed.push(Narrowing {
                     name: name.clone(),
