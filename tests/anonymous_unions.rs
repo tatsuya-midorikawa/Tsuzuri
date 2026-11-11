@@ -2484,6 +2484,117 @@ fn find_reconsiders_member_pairings_for_later_parameters() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// Copilot review 1, verification: the `partial` tier and `--takes` assign the parameters
+/// greedily, as before, under each pairing of union members in turn. Under the pairing by position
+/// of the result (`'a = i64`, `'b = string`), `'a` passes over `string` and takes `i64`, and the
+/// query's `string` takes `string`. The fix of round 1 let `'a` take `string` (the other pairing
+/// allows it) and found no parameter for the query's `string`.
+#[test]
+fn find_assigns_parameters_under_each_pairing() {
+    let (root, find) = find_in_project(
+        "assign",
+        "def e :: string -> i64 -> (Maybe<i64> | Maybe<string>) = \\_s _n -> Some 0\n\
+         def e3 :: string -> i64 -> bool -> (Maybe<i64> | Maybe<string>) = \\_s _n _b -> Some 0\n\
+         def g :: string -> i64 -> unit = \\_s _n -> ()\n\
+         0\n",
+    );
+    let text = find(&["'a -> string -> (Maybe<'a> | Maybe<'b>)"]);
+    assert!(
+        text.contains("partial Finder::Main.e :: string -> i64 -> (Maybe<i64> | Maybe<string>)\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "partial Finder::Main.e3 :: string -> i64 -> bool -> (Maybe<i64> | Maybe<string>)  (+1)\n"
+        ),
+        "{text}"
+    );
+    let text = find(&[
+        "--takes",
+        "'a",
+        "--takes",
+        "string",
+        "--result",
+        "(Maybe<'a> | Maybe<'b>)",
+    ]);
+    for line in [
+        "exact   Finder::Main.e :: string -> i64 -> (Maybe<i64> | Maybe<string>)\n",
+        "exact   Finder::Main.e3 :: string -> i64 -> bool -> (Maybe<i64> | Maybe<string>)\n",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    // Without a union nothing binds `'a` first: it takes `string`, and the query's `string` finds
+    // no parameter left (the greedy assignment of `b3dd7f1c`, unchanged).
+    assert_eq!(find(&["'a -> string -> unit"]), "no matches\n");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Copilot review 1, verification: when the search across the comparison fails, a second pass
+/// keeps the first pairing of every union, as the matcher did before, so that what it found is
+/// still found. `n`: the nested union's variables occur in the result, so its 7! pairings stay
+/// open in the first pass and use up the attempts. `m`: the first pass gives the first wanted
+/// type the first parameter (`'x = string` by the other pairing), which the second needs; kept by
+/// position (`'x = i64`), that parameter does not unify and the first wanted type takes the second
+/// (`'x = bool`).
+#[test]
+fn find_keeps_the_matches_of_the_earlier_matcher() {
+    let seven = "(i64 | string | bool | f64 | char | i8 | i32)";
+    let n = format!(
+        "(Result<{seven}, Maybe<i64>> | Result<{seven}, Result<{seven}, Maybe<i64>>>) -> {seven}"
+    );
+    let m =
+        "((Maybe<i64> | Maybe<string>) * string) -> ((Maybe<bool> | Maybe<i64>) * bool) -> unit";
+    let main = format!("def n :: {n} = \\_u -> true\ndef m :: {m} = \\_a _b -> ()\n0\n");
+    let (root, find) = find_in_project("earlier", &main);
+    let names = "('p | 'q | 'r | 's | 't | 'u | 'v)";
+    let text = find(&[&format!("(Result<{names}, 'a> | 'a) -> {names}")]);
+    assert!(
+        text.contains(&format!("exact   Finder::Main.n :: {n}\n")),
+        "{text}"
+    );
+    let text = find(&[
+        "((Maybe<'x> | Maybe<'y>) * 'x) -> ((Maybe<i64> | Maybe<string>) * string) -> unit",
+    ]);
+    assert!(
+        text.contains(&format!("partial Finder::Main.m :: {m}\n")),
+        "{text}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Copilot review 1, verification: a pairing whose variables nothing after it reads is kept once
+/// found. The 7! pairings of the nested `(_ | ... | _)` bind only its own `_`s, so the failure of
+/// `'a` (the second member of the outer union) goes straight back to the outer union, whose other
+/// pairing (`'a = Result<(...), Maybe<i64>>`) matches. The fix of round 1 tried every pairing of
+/// the nested union first and reached the attempt limit from 7 members on.
+#[test]
+fn find_keeps_pairings_that_nothing_else_reads() {
+    let seven = "(i64 | string | bool | f64 | char | i8 | i32)";
+    let six = "(i64 | string | bool | f64 | char | i8)";
+    let signature = |inner: &str| {
+        format!(
+            "(Result<{inner}, Maybe<i64>> | Result<{inner}, Result<{inner}, Maybe<i64>>>) -> unit"
+        )
+    };
+    let main = format!(
+        "def w :: {} = \\_u -> ()\ndef w6 :: {} = \\_u -> ()\n0\n",
+        signature(seven),
+        signature(six)
+    );
+    let (root, find) = find_in_project("unseen", &main);
+    let text = find(&["(Result<(_|_|_|_|_|_|_), 'a> | 'a) -> unit"]);
+    assert!(
+        text.contains(&format!("exact   Finder::Main.w :: {}\n", signature(seven))),
+        "{text}"
+    );
+    let text = find(&["(Result<(_|_|_|_|_|_), 'a> | 'a) -> unit"]);
+    assert!(
+        text.contains(&format!("exact   Finder::Main.w6 :: {}\n", signature(six))),
+        "{text}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 /// Review round 1: the type of a type test is a reference to its declaration, as an annotation
 /// is: hover, go to definition, references and rename see it.
 #[test]

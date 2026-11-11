@@ -13,6 +13,7 @@
 //! constraints are shown, not checked (the graph does not hold every instance).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use super::json::Object;
 use super::store::{KgData, KgView, Node};
@@ -409,30 +410,115 @@ impl Subst {
         }
     }
 
+    /// `ty` with the variables that the substitution binds looked through at the top only.
+    fn shallow<'t>(&'t self, mut ty: &'t Ty) -> &'t Ty {
+        while let Ty::Var(id) = ty {
+            match self.0.get(id) {
+                Some(bound) => ty = bound,
+                None => break,
+            }
+        }
+        ty
+    }
+
+    /// Calls `visit` with each variable of `ty` under the substitution, once per occurrence.
+    fn each_variable(&self, ty: &Ty, visit: &mut dyn FnMut(usize)) {
+        match self.shallow(ty) {
+            Ty::Var(id) => visit(*id),
+            Ty::Named(_, types) | Ty::Tuple(types) | Ty::Union(types) => {
+                for ty in types {
+                    self.each_variable(ty, visit);
+                }
+            }
+            Ty::Ref(inner, _) | Ty::Array(inner) | Ty::View(inner) | Ty::List(inner) => {
+                self.each_variable(inner, visit);
+            }
+            Ty::Fixed(inner, length) => {
+                self.each_variable(inner, visit);
+                self.each_variable(length, visit);
+            }
+            Ty::Function(parameters, result) => {
+                for parameter in parameters {
+                    self.each_variable(parameter, visit);
+                }
+                self.each_variable(result, visit);
+            }
+        }
+    }
+
+    /// `ty` under the substitution, with every variable for which `alone` holds written as one
+    /// placeholder.
+    fn shape(&self, ty: &Ty, alone: &dyn Fn(usize) -> bool) -> Ty {
+        let all = |types: &[Ty]| types.iter().map(|ty| self.shape(ty, alone)).collect();
+        let one = |ty: &Ty| Box::new(self.shape(ty, alone));
+        match self.shallow(ty) {
+            Ty::Var(id) if alone(*id) => Ty::Var(usize::MAX),
+            Ty::Var(id) => Ty::Var(*id),
+            Ty::Named(name, arguments) => Ty::Named(name.clone(), all(arguments)),
+            Ty::Ref(inner, mutable) => Ty::Ref(one(inner), *mutable),
+            Ty::Array(inner) => Ty::Array(one(inner)),
+            Ty::View(inner) => Ty::View(one(inner)),
+            Ty::List(inner) => Ty::List(one(inner)),
+            Ty::Fixed(inner, length) => Ty::Fixed(one(inner), one(length)),
+            Ty::Tuple(elements) => Ty::Tuple(all(elements)),
+            Ty::Union(members) => Ty::Union(all(members)),
+            Ty::Function(parameters, result) => Ty::Function(all(parameters), one(result)),
+        }
+    }
+
     /// Whether `a` and `b` unify: `solve` with one pair and no further check (the tests' form).
     #[cfg(test)]
     fn unify(&mut self, a: &Ty, b: &Ty) -> bool {
-        self.solve(vec![(a.clone(), b.clone())], &|_| true)
+        self.solve(&[Goal::Same(a.clone(), b.clone())], &[], &|_| true)
     }
 
-    /// Whether every pair of `goals` unifies, each under the bindings of those before it, and
-    /// `holds` then accepts the substitution. The members of two anonymous unions are paired
-    /// first by position (`member_key` sorts both sides alike); the other pairings serve the
-    /// members that the key does not tell apart or order alike (`A.Point` and `B.Point`, a name
-    /// beside its qualified form, a variable, which may be any member). A pairing stays open until
-    /// the whole comparison holds: when a later part or `holds` fails, the next pairing is tried,
-    /// so that a variable that a union shares with a later parameter is bound by the pairing
-    /// that suits both. At most `MEMBER_ATTEMPTS` member pairs are tried in one call; past them
-    /// the answer is no. The search is a loop over a stack of goals and of choices, so that the
-    /// call stack does not grow with the size of the types. On success the substitution is the
-    /// one that `holds` accepted; otherwise it is as it was.
-    fn solve(&mut self, goals: Vec<(Ty, Ty)>, holds: &dyn Fn(&Subst) -> bool) -> bool {
+    /// Whether `goals` all hold, each under the bindings of those before it, and `holds` then
+    /// accepts the substitution, which it reads only through the types of `watched`.
+    ///
+    /// The members of two anonymous unions are paired first by position (`member_key` sorts both
+    /// sides alike); the other pairings serve the members that the key does not tell apart or
+    /// order alike (`A.Point` and `B.Point`, a name beside its qualified form, a variable, which
+    /// may be any member). A pairing stays open until the whole comparison holds: when a later
+    /// part or `holds` fails, the newest choice takes its next partner, so that a variable that a
+    /// union shares with a later parameter is bound by the pairing that suits both. Two rules
+    /// leave out pairings that cannot change the answer: a pairing of two unions whose variables
+    /// occur nowhere after them and not in `watched` is kept once found (`Goal::Cut`), and a
+    /// member takes only the first of partners that are the same type up to variables that occur
+    /// nowhere else, such as `_` (`Subst::twins`). `Goal::Assign` gives each wanted type a
+    /// parameter greedily, as the `partial` tier always has, and gives it again after each
+    /// change of a pairing before it.
+    ///
+    /// A second pass keeps the first pairing of every union, as the matcher did before it
+    /// searched across the comparison (`commit`), so that every match that the earlier matcher
+    /// found is found: its greedy assignment can take another parameter than the first pass's
+    /// (one that only another pairing allows is not taken), and it does not spend attempts on
+    /// the other pairings of a union whose pairing is complete. It runs only when the first pass
+    /// failed after it went back into such a union (`Goal::Done`); until then both passes take
+    /// the same steps, so the second would fail as well.
+    ///
+    /// Each pass tries at most `MEMBER_ATTEMPTS` member pairs; past them its answer is no. The
+    /// search is a loop over a stack of goals and of choices, so that the call stack does not
+    /// grow with the size of the types. On success the substitution is the one that `holds`
+    /// accepted; otherwise it is as it was.
+    fn solve(&mut self, goals: &[Goal], watched: &[Ty], holds: &dyn Fn(&Subst) -> bool) -> bool {
+        let mut reopened = false;
+        self.search(goals, watched, holds, false, &mut reopened)
+            || (reopened && self.search(goals, watched, holds, true, &mut reopened))
+    }
+
+    /// One pass of `solve`. With `commit`, every pairing of union members is kept once it holds;
+    /// without it, only one that nothing after it reads, and `reopened` is set when the pass
+    /// tries another pairing of a union whose pairing was complete.
+    fn search(
+        &mut self,
+        goals: &[Goal],
+        watched: &[Ty],
+        holds: &dyn Fn(&Subst) -> bool,
+        commit: bool,
+        reopened: &mut bool,
+    ) -> bool {
         let before = self.0.clone();
-        let mut goals: Vec<Goal> = goals
-            .into_iter()
-            .rev()
-            .map(|(a, b)| Goal::Same(a, b))
-            .collect();
+        let mut goals: Vec<Goal> = goals.iter().rev().cloned().collect();
         let mut choices: Vec<Choice> = Vec::new();
         let mut attempts = MEMBER_ATTEMPTS;
         loop {
@@ -440,52 +526,180 @@ impl Subst {
                 None if holds(self) => return true,
                 None => false,
                 Some(Goal::Same(a, b)) => self.step(a, b, &mut goals),
-                Some(Goal::Members(mut xs, partners)) => {
+                Some(Goal::Union(xs, ys)) => {
+                    let (unseen, alone) = self.survey(&xs, &ys, &goals, watched);
+                    goals.push(if commit || unseen {
+                        Goal::Cut(choices.len())
+                    } else {
+                        Goal::Done(choices.len())
+                    });
+                    goals.push(Goal::Members(xs, ys, Rc::new(alone)));
+                    true
+                }
+                Some(Goal::Members(mut xs, partners, alone)) => {
                     if xs.is_empty() {
                         true
                     } else {
                         // The first partner is tried as the next choice below.
                         let first = xs.remove(0);
+                        let twins = self.twins(&partners, &alone);
                         choices.push(Choice {
                             bindings: self.0.clone(),
                             goals: std::mem::take(&mut goals),
-                            first,
-                            others: xs,
-                            partners,
+                            pick: Pick::Partner {
+                                first,
+                                others: xs,
+                                partners,
+                                twins,
+                                alone,
+                            },
                             next: 0,
+                            done: false,
                         });
                         false
                     }
+                }
+                Some(Goal::Cut(depth)) => {
+                    choices.truncate(depth);
+                    true
+                }
+                Some(Goal::Done(depth)) => {
+                    for choice in &mut choices[depth..] {
+                        choice.done = true;
+                    }
+                    true
+                }
+                Some(Goal::Assign(wanted, free)) => {
+                    if wanted.is_empty() {
+                        true
+                    } else {
+                        choices.push(Choice {
+                            bindings: self.0.clone(),
+                            goals: std::mem::take(&mut goals),
+                            pick: Pick::Parameter { wanted, free },
+                            next: 0,
+                            done: false,
+                        });
+                        false
+                    }
+                }
+                Some(Goal::Keep(depth)) => {
+                    let choice = &mut choices[depth];
+                    debug_assert!(matches!(choice.pick, Pick::Parameter { .. }));
+                    choice.next = usize::MAX;
+                    true
                 }
             };
             if going {
                 continue;
             }
-            // Back to the newest pairing with a partner left to try.
+            // Back to the newest choice with an alternative left to try.
             loop {
+                let depth = choices.len();
                 let Some(choice) = choices.last_mut() else {
                     self.0 = before;
                     return false;
                 };
-                if choice.next == choice.partners.len() {
+                let resumed = match &choice.pick {
+                    Pick::Partner {
+                        first,
+                        others,
+                        partners,
+                        twins,
+                        alone,
+                    } => (choice.next..partners.len())
+                        .find(|&index| !twins[index])
+                        .map(|index| {
+                            let mut rest = partners.clone();
+                            let partner = rest.remove(index);
+                            let mut goals = choice.goals.clone();
+                            goals.push(Goal::Members(others.clone(), rest, alone.clone()));
+                            goals.push(Goal::Same(first.clone(), partner));
+                            (index, goals)
+                        }),
+                    Pick::Parameter { wanted, free } => (choice.next < free.len()).then(|| {
+                        let mut rest = free.clone();
+                        let parameter = rest.remove(choice.next);
+                        let mut goals = choice.goals.clone();
+                        goals.push(Goal::Assign(wanted[1..].to_vec(), rest));
+                        goals.push(Goal::Keep(depth - 1));
+                        goals.push(Goal::Same(parameter, wanted[0].clone()));
+                        (choice.next, goals)
+                    }),
+                };
+                let Some((index, resumed)) = resumed else {
                     choices.pop();
                     continue;
+                };
+                if let Pick::Partner { .. } = choice.pick {
+                    if attempts == 0 {
+                        self.0 = before;
+                        return false;
+                    }
+                    attempts -= 1;
+                    *reopened |= choice.done;
                 }
-                if attempts == 0 {
-                    self.0 = before;
-                    return false;
-                }
-                attempts -= 1;
+                choice.next = index + 1;
                 self.0 = choice.bindings.clone();
-                goals = choice.goals.clone();
-                let mut partners = choice.partners.clone();
-                let partner = partners.remove(choice.next);
-                choice.next += 1;
-                goals.push(Goal::Members(choice.others.clone(), partners));
-                goals.push(Goal::Same(choice.first.clone(), partner));
+                goals = resumed;
                 break;
             }
         }
+    }
+
+    /// What `search` reads of two unions with the members `xs` and `ys` before it pairs them:
+    /// whether none of their variables occurs in `goals` (what is left after them) or in
+    /// `watched`, so that no pairing of their members can change what follows and the first that
+    /// holds is as good as any; and the variables that occur once in the whole comparison. Such a variable stays alone while the members pair: only the
+    /// unification of its own member can put it into another type.
+    fn survey(
+        &self,
+        xs: &[Ty],
+        ys: &[Ty],
+        goals: &[Goal],
+        watched: &[Ty],
+    ) -> (bool, BTreeSet<usize>) {
+        let mut inside: BTreeMap<usize, usize> = BTreeMap::new();
+        for member in xs.iter().chain(ys) {
+            self.each_variable(member, &mut |id| *inside.entry(id).or_default() += 1);
+        }
+        let mut outside = BTreeSet::new();
+        if !inside.is_empty() {
+            let mut visit = |id| {
+                if inside.contains_key(&id) {
+                    outside.insert(id);
+                }
+            };
+            for ty in watched {
+                self.each_variable(ty, &mut visit);
+            }
+            for goal in goals {
+                goal.each_type(&mut |ty| self.each_variable(ty, &mut visit));
+            }
+        }
+        let alone = inside
+            .iter()
+            .filter(|&(id, count)| *count == 1 && !outside.contains(id))
+            .map(|(id, _)| *id)
+            .collect();
+        (outside.is_empty(), alone)
+    }
+
+    /// For each of `partners`, whether an earlier one is the same type when every variable of
+    /// `alone` (those that occur once in the whole comparison, such as `_`) is read as one
+    /// placeholder. Pairing a member with such a partner searches what the earlier one searched
+    /// with those variables renamed, so it is left out.
+    fn twins(&self, partners: &[Ty], alone: &BTreeSet<usize>) -> Vec<bool> {
+        if partners.len() < 2 {
+            return vec![false; partners.len()];
+        }
+        let shapes: Vec<Ty> = partners
+            .iter()
+            .map(|partner| self.shape(partner, &|id| alone.contains(&id)))
+            .collect();
+        (0..shapes.len())
+            .map(|index| shapes[..index].contains(&shapes[index]))
+            .collect()
     }
 
     /// One step of `solve`: whether `a` and `b` agree at the top, binding a variable, with the
@@ -538,7 +752,7 @@ impl Subst {
             (Ty::Union(xs), Ty::Union(ys)) => {
                 let agree = xs.len() == ys.len();
                 if agree {
-                    goals.push(Goal::Members(xs, ys));
+                    goals.push(Goal::Union(xs, ys));
                 }
                 agree
             }
@@ -556,26 +770,73 @@ impl Subst {
     }
 }
 
-/// The most member pairs that one comparison (`Subst::solve`) tries.
+/// The most member pairs that one pass of `Subst::solve` tries.
 const MEMBER_ATTEMPTS: usize = 4096;
 
-/// What `Subst::solve` has left to do: two types to unify, or the members of two anonymous unions
-/// left to pair.
+/// What `Subst::solve` has left to do.
 #[derive(Clone)]
 enum Goal {
+    /// Two types to unify.
     Same(Ty, Ty),
-    Members(Vec<Ty>, Vec<Ty>),
+    /// The members of two anonymous unions with as many members, before their pairing starts.
+    Union(Vec<Ty>, Vec<Ty>),
+    /// The members of an anonymous union left to pair, their partners left in the other, and
+    /// the variables that occur once in the comparison (`Subst::survey`).
+    Members(Vec<Ty>, Vec<Ty>, Rc<BTreeSet<usize>>),
+    /// The end of a pairing that nothing after it reads: the choices from this depth up, made
+    /// since it started, are dropped.
+    Cut(usize),
+    /// The end of a pairing that something after it reads: the choices from this depth up are
+    /// kept and marked `done`.
+    Done(usize),
+    /// The wanted types of the `partial` tier or of `--takes` left to place, and the parameters
+    /// that no earlier one took, in order: each wanted type takes the first parameter that it
+    /// unifies with.
+    Assign(Vec<Ty>, Vec<Ty>),
+    /// The parameter of the choice at this depth unified: the parameters after it are not tried.
+    Keep(usize),
 }
 
-/// A pairing of `Subst::solve` to come back to: the bindings and goals from before `first` was
-/// paired, the members after it, its candidate partners, and the next of them to try.
+impl Goal {
+    fn each_type(&self, visit: &mut dyn FnMut(&Ty)) {
+        match self {
+            Goal::Same(a, b) => {
+                visit(a);
+                visit(b);
+            }
+            Goal::Union(xs, ys) | Goal::Members(xs, ys, _) | Goal::Assign(xs, ys) => {
+                xs.iter().chain(ys).for_each(visit);
+            }
+            Goal::Cut(_) | Goal::Done(_) | Goal::Keep(_) => {}
+        }
+    }
+}
+
+/// A choice of `Subst::solve` to come back to: the bindings and goals from before it, what it
+/// picks from, and the next alternative to try.
 struct Choice {
     bindings: BTreeMap<usize, Ty>,
     goals: Vec<Goal>,
-    first: Ty,
-    others: Vec<Ty>,
-    partners: Vec<Ty>,
+    pick: Pick,
     next: usize,
+    /// Whether the pairing of the union that the choice belongs to was once complete.
+    done: bool,
+}
+
+/// What a `Choice` picks.
+enum Pick {
+    /// The partner of the member `first` among `partners`, with `others` to pair after it;
+    /// `twins` marks the partners that `Subst::twins` leaves out, and `alone` is that of
+    /// `Goal::Members`.
+    Partner {
+        first: Ty,
+        others: Vec<Ty>,
+        partners: Vec<Ty>,
+        twins: Vec<bool>,
+        alone: Rc<BTreeSet<usize>>,
+    },
+    /// The parameter for `wanted[0]` among `free`; the first that unifies is kept (`Goal::Keep`).
+    Parameter { wanted: Vec<Ty>, free: Vec<Ty> },
 }
 
 fn unref(ty: &Ty) -> Ty {
@@ -595,6 +856,13 @@ struct Entry<'a> {
     result: Ty,
     /// The constraints of the signature: the class and its type argument.
     constraints: Vec<(String, Ty)>,
+}
+
+impl Entry<'_> {
+    /// The type arguments of the constraints: what `satisfied` reads of a substitution.
+    fn constrained(&self) -> Vec<Ty> {
+        self.constraints.iter().map(|(_, ty)| ty.clone()).collect()
+    }
 }
 
 /// The constraints before `=>` in a signature's type: `Numeric<'a> => …` or
@@ -842,59 +1110,36 @@ fn tier_of(
     let (n, m) = (entry.parameters.len(), parameters.len());
     // One comparison of the parameters, the result and the constraints, so that a pairing of
     // union members stays open until all of them hold (`Subst::solve`).
+    let watched = entry.constrained();
     let holds = |subst: &Subst| satisfied(entry, subst, view);
     if n == m {
         for (tier, strip) in [("exact", false), ("borrow", true)] {
             let side = |ty: &Ty| if strip { unref(ty) } else { ty.clone() };
-            let goals = entry
+            let goals: Vec<Goal> = entry
                 .parameters
                 .iter()
                 .zip(parameters)
                 .chain([(&entry.result, result)])
-                .map(|(p, q)| (side(p), side(q)))
+                .map(|(p, q)| Goal::Same(side(p), side(q)))
                 .collect();
-            if Subst::default().solve(goals, &holds) {
+            if Subst::default().solve(&goals, &watched, &holds) {
                 return Some((tier, 0));
             }
         }
     }
     if n >= m {
-        let goals = vec![(unref(&entry.result), unref(result))];
-        if !Subst::default().solve(goals.clone(), &|_| true) {
-            return None;
-        }
-        let goals = assign(goals, &entry.parameters, parameters, &unref)?;
+        let goals = vec![
+            Goal::Same(unref(&entry.result), unref(result)),
+            Goal::Assign(
+                parameters.iter().map(unref).collect(),
+                entry.parameters.iter().map(unref).collect(),
+            ),
+        ];
         return Subst::default()
-            .solve(goals, &holds)
+            .solve(&goals, &watched, &holds)
             .then_some(("partial", n - m));
     }
     None
-}
-
-/// The greedy choice of the `partial` tier and of `--takes`: each type of `wanted` in turn takes
-/// the first parameter of `parameters` that no earlier one took and with which the comparison so
-/// far (`goals`, under some pairing of union members) can still hold; `side` gives the form of
-/// each side that is compared. The goals with those pairs added, or `None` when a wanted type
-/// finds no parameter.
-fn assign(
-    mut goals: Vec<(Ty, Ty)>,
-    parameters: &[Ty],
-    wanted: &[Ty],
-    side: &dyn Fn(&Ty) -> Ty,
-) -> Option<Vec<(Ty, Ty)>> {
-    let mut used = vec![false; parameters.len()];
-    for q in wanted {
-        let index = (0..parameters.len()).find(|&index| {
-            !used[index] && {
-                let mut attempt = goals.clone();
-                attempt.push((side(&parameters[index]), side(q)));
-                Subst::default().solve(attempt, &|_| true)
-            }
-        })?;
-        used[index] = true;
-        goals.push((side(&parameters[index]), side(q)));
-    }
-    Some(goals)
 }
 
 /// `--result` and `--takes`: `exact` with the outer `ref`s, `borrow` without them.
@@ -904,19 +1149,18 @@ fn tier_of_parts(
     takes: &[Ty],
     graph: &KgView,
 ) -> Option<(&'static str, usize)> {
+    let watched = entry.constrained();
     for (tier, strip) in [("exact", false), ("borrow", true)] {
         let side = |ty: &Ty| if strip { unref(ty) } else { ty.clone() };
         let mut goals = Vec::new();
         if let Some(result) = result {
-            goals.push((side(&entry.result), side(result)));
-            if !Subst::default().solve(goals.clone(), &|_| true) {
-                continue;
-            }
+            goals.push(Goal::Same(side(&entry.result), side(result)));
         }
-        let Some(goals) = assign(goals, &entry.parameters, takes, &side) else {
-            continue;
-        };
-        if Subst::default().solve(goals, &|subst| satisfied(entry, subst, graph)) {
+        goals.push(Goal::Assign(
+            takes.iter().map(side).collect(),
+            entry.parameters.iter().map(side).collect(),
+        ));
+        if Subst::default().solve(&goals, &watched, &|subst| satisfied(entry, subst, graph)) {
             return Some((tier, 0));
         }
     }
@@ -1444,13 +1688,19 @@ mod tests {
             seen.borrow_mut().push(subst.resolve(&a));
             subst.resolve(&a) == ty("i64")
         };
+        // The check reads `'a`, so the pairing that binds it stays open.
+        let watched = std::slice::from_ref(&a);
         let mut subst = Subst::default();
-        assert!(subst.solve(vec![(query.clone(), entry.clone())], &wants_i64));
+        assert!(subst.solve(
+            &[Goal::Same(query.clone(), entry.clone())],
+            watched,
+            &wants_i64
+        ));
         assert_eq!(*seen.borrow(), [ty("f64"), ty("i64")]);
         assert_eq!(subst.resolve(&a), ty("i64"));
         // A check that no pairing passes leaves the substitution as it was.
         let mut subst = Subst::default();
-        assert!(!subst.solve(vec![(query, entry)], &|_| false));
+        assert!(!subst.solve(&[Goal::Same(query, entry)], watched, &|_| false));
         assert_eq!(subst.resolve(&a), a);
         // Two wide unions whose comparison fails only after them still answer within the one limit.
         let unifies = |left: &str, right: &str| {
@@ -1468,6 +1718,174 @@ mod tests {
         assert!(!unifies(
             &format!("({wide} * {wide} * bool)"),
             &format!("({wide} * {wide} * string)")
+        ));
+    }
+
+    /// The `partial` tier's comparison: the entry's `result` with the query's, then the wanted
+    /// types of the query among the entry's `parameters` (`Goal::Assign`).
+    fn assigns(result: (&str, &str), parameters: &[&str], wanted: &[&str]) -> bool {
+        let mut next = 0;
+        let (mut entry, mut query) = (BTreeMap::new(), BTreeMap::new());
+        let mut goals = vec![Goal::Same(
+            parse(result.0, &mut next, &mut entry).unwrap(),
+            parse(result.1, &mut next, &mut query).unwrap(),
+        )];
+        let free = parameters
+            .iter()
+            .map(|text| parse(text, &mut next, &mut entry).unwrap())
+            .collect();
+        let wanted = wanted
+            .iter()
+            .map(|text| parse(text, &mut next, &mut query).unwrap())
+            .collect();
+        goals.push(Goal::Assign(wanted, free));
+        Subst::default().solve(&goals, &[], &|_| true)
+    }
+
+    /// Copilot review 1, verification: `Goal::Assign` gives each wanted type the first free
+    /// parameter that it unifies with under the bindings so far, as the `partial` tier always has,
+    /// and gives it again under each other pairing of the unions before it.
+    #[test]
+    fn parameters_are_assigned_again_under_each_pairing() {
+        let maybes = ("(Maybe<i64> | Maybe<string>)", "(Maybe<'a> | Maybe<'b>)");
+        // By position `'a = i64`: `'a` passes over `string`, and `string` is left for `string`.
+        assert!(assigns(maybes, &["string", "i64"], &["'a", "string"]));
+        assert!(assigns(
+            maybes,
+            &["string", "i64", "bool"],
+            &["'a", "string"]
+        ));
+        assert!(assigns(maybes, &["i64", "string"], &["'b", "'a"]));
+        // `'a = i64` (by position) leaves no parameter for `'a`; the other pairing gives it `string`.
+        assert!(assigns(
+            ("i64", "i64"),
+            &["(Maybe<i64> | Maybe<string>)", "string"],
+            &["(Maybe<'a> | Maybe<'b>)", "'a"]
+        ));
+        // Nothing binds `'a` first, so it takes `string`, and `string` finds no parameter left:
+        // the assignment itself is greedy, with or without a union.
+        assert!(!assigns(
+            ("unit", "unit"),
+            &["string", "i64"],
+            &["'a", "string"]
+        ));
+        assert!(!assigns(
+            ("(Maybe<i64> | Maybe<bool>)", "(Maybe<'b> | Maybe<'c>)"),
+            &["string", "i64"],
+            &["'a", "string"]
+        ));
+        assert!(!assigns(
+            ("unit", "unit"),
+            &["string"],
+            &["string", "string"]
+        ));
+    }
+
+    /// Copilot review 1, verification: when the search fails, a second pass keeps the first
+    /// pairing of every union, as the matcher did before, so that what it found is still found.
+    #[test]
+    fn a_second_pass_keeps_the_first_pairings() {
+        // The nested union's variables occur in the result, so its 7! pairings stay open and use
+        // up the attempts before the outer union's other pairing; kept by position, the nested
+        // union lets the outer union pair again at once (`'a = Result<…, Maybe<i64>>`), and the
+        // result `('p | … | 'v)` is then the entry's members in some order.
+        let seven = "(i64 | string | bool | f64 | char | i8 | i32)";
+        let entry = format!(
+            "(Result<{seven}, Maybe<i64>> | Result<{seven}, Result<{seven}, Maybe<i64>>>) -> {seven}"
+        );
+        let names = "('p | 'q | 'r | 's | 't | 'u | 'v)";
+        let query = format!("(Result<{names}, 'a> | 'a) -> {names}");
+        let unifies = |left: &str, right: &str| {
+            let mut next = 0;
+            let left = parse(left, &mut next, &mut BTreeMap::new()).unwrap();
+            let right = parse(right, &mut next, &mut BTreeMap::new()).unwrap();
+            Subst::default().unify(&left, &right)
+        };
+        assert!(unifies(&entry, &query));
+        assert!(unifies(&query, &entry));
+        // The first pass gives the first wanted type the first parameter that some pairing allows
+        // (`'x = string`), which the second wanted type needed; kept by position (`'x = i64`),
+        // that parameter does not unify, and the first wanted type takes the second (`'x = bool`).
+        assert!(assigns(
+            ("unit", "unit"),
+            &[
+                "((Maybe<i64> | Maybe<string>) * string)",
+                "((Maybe<bool> | Maybe<i64>) * bool)"
+            ],
+            &[
+                "((Maybe<'x> | Maybe<'y>) * 'x)",
+                "((Maybe<i64> | Maybe<string>) * string)"
+            ]
+        ));
+    }
+
+    /// Copilot review 1, verification: a pairing of union members whose variables nothing after
+    /// it reads is kept once found, so that a failure after it goes back to the choices before it.
+    /// The members `('p * 'p)` are not alike (each has its own variable), and any of the 7!
+    /// pairings of the nested unions holds; only the outer union's other pairing
+    /// (`'a = Result<…, Maybe<i64>>`) lets its second member match.
+    #[test]
+    fn pairings_that_nothing_else_reads_are_kept() {
+        let unifies = |left: &str, right: &str| {
+            let mut next = 0;
+            let left = parse(left, &mut next, &mut BTreeMap::new()).unwrap();
+            let right = parse(right, &mut next, &mut BTreeMap::new()).unwrap();
+            Subst::default().unify(&left, &right)
+        };
+        let entry = |inner: &str| {
+            format!(
+                "(Result<{inner}, Maybe<i64>> | Result<{inner}, Result<{inner}, Maybe<i64>>>) -> unit"
+            )
+        };
+        let pairs = "((i64 * i64) | (string * string) | (bool * bool) | (f64 * f64) | (char * char) | (i8 * i8) | (i32 * i32))";
+        let query = "(Result<(('p * 'p) | ('q * 'q) | ('r * 'r) | ('s * 's) | ('t * 't) | ('u * 'u) | ('v * 'v)), 'a> | 'a) -> unit";
+        assert!(unifies(&entry(pairs), query));
+        assert!(unifies(query, &entry(pairs)));
+        // The `_`s of the review's example.
+        let seven = "(i64 | string | bool | f64 | char | i8 | i32)";
+        let blanks = "(Result<(_|_|_|_|_|_|_), 'a> | 'a) -> unit";
+        assert!(unifies(&entry(seven), blanks));
+        assert!(unifies(blanks, &entry(seven)));
+        // A union whose variable a later part reads keeps its other pairings (`'a = string`); one
+        // whose variable the check reads does too (`solve_tries_other_pairings_until_the_check_holds`).
+        assert!(unifies(
+            "((Maybe<i64> | Maybe<string>) * string)",
+            "((Maybe<'a> | Maybe<'b>) * 'a)"
+        ));
+    }
+
+    /// Copilot review 1, verification: partners that are the same type up to variables that occur
+    /// nowhere else (`_`) are tried once for each member. `bool` must take `'a`; by position it
+    /// takes the first `_`, and the 7! ways of pairing the rest, which all leave `'a` to another
+    /// member, are one way.
+    #[test]
+    fn alike_partners_are_tried_once() {
+        let unifies = |left: &str, right: &str| {
+            let mut next = 0;
+            let left = parse(left, &mut next, &mut BTreeMap::new()).unwrap();
+            let right = parse(right, &mut next, &mut BTreeMap::new()).unwrap();
+            Subst::default().unify(&left, &right)
+        };
+        let entry =
+            |last: &str| format!("((i64 | string | bool | f64 | char | i8 | i32 | u8) * {last})");
+        let query = "((_ | _ | _ | _ | _ | _ | _ | 'a) * 'a)";
+        for (last, holds) in [("bool", true), ("u8", true), ("i64", true), ("unit", false)] {
+            assert_eq!(unifies(&entry(last), query), holds, "{last}");
+        }
+        // Inside a type argument: `Maybe<bool>` sorts first and must take `'a`.
+        let query = "((Maybe<_> | Maybe<_> | Maybe<_> | Maybe<_> | Maybe<_> | Maybe<_> | Maybe<_> | 'a) * 'a)";
+        let entry = |last: &str| {
+            format!(
+                "((Maybe<i64> | Maybe<string> | Maybe<bool> | Maybe<f64> | Maybe<char> | Maybe<i8> | Maybe<i32> | Maybe<u8>) * {last})"
+            )
+        };
+        assert!(unifies(&entry("Maybe<bool>"), query));
+        assert!(!unifies(&entry("Maybe<unit>"), query));
+        // `Maybe<'b>` and `Maybe<_>` are not alike: `'b` occurs again. `'b = string` wants
+        // `Maybe<i64>` to take `Maybe<_>`, the second partner.
+        assert!(unifies(
+            "((Maybe<i64> | Maybe<string> | bool) * string)",
+            "((Maybe<'b> | Maybe<_> | 'c) * 'b)"
         ));
     }
 
