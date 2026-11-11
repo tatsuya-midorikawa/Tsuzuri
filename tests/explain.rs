@@ -128,10 +128,7 @@ fn call_non_function_page_covers_references_to_functions() {
             .unwrap_or_else(|| panic!("no {name}"))
             .1
     };
-    assert!(
-        section("Why").contains("reference to a function"),
-        "{page}"
-    );
+    assert!(section("Why").contains("reference to a function"), "{page}");
     let example = |name: &str| explain::examples(section(name)).remove(0).1;
     let bad = example("Bad");
     let Err(set) = analyze_modules_all(&[("Main", bad.as_str())]) else {

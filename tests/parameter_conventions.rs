@@ -1764,6 +1764,16 @@ fn annotated_reference_callbacks_over_number_literals() {
     let lambdas = lambda_functions(&direct);
     assert!(!lambdas.is_empty(), "{direct}");
     assert_eq!(lambdas, lambda_functions(&bound));
+    // The literals are checked against the type that the annotation decides, as for the bound
+    // lambda: 300 is no `i8`.
+    for source in [
+        "export def answer :: i64 = { let ys = [300, 1] |> Array.map (\\(x: ref i8) -> 1); ys.length }\n",
+        "export def answer :: i64 = { let f = \\(x: ref i8) -> 1; let ys = [300, 1] |> Array.map f; ys.length }\n",
+    ] {
+        let error = check("2027", source).unwrap_err();
+        assert_eq!(error.code, "E1009", "{source}\n{}", error.message);
+        assert_eq!(error.span.start, source.find("300").unwrap(), "{source}");
+    }
     // A referent that the literals cannot take keeps reading the value, so the literal reports
     // what it reported before.
     for (call, message) in [
