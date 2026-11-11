@@ -1403,7 +1403,9 @@ impl Parser<'_> {
     /// Whether a type test starts before the arm's `->` or `when` (`group` false), or before the
     /// `)` that closes the current group (`group` true), at any depth of parentheses (A24): such an
     /// arm or group is a pattern, whatever else its type holds (a `<` reads as a comparison to the
-    /// scans of the callers). The tokens of an expression of its own are not the arm's or the
+    /// scans of the callers). The arm's `->` and `when` are outside every parenthesis: an arrow
+    /// inside one is a function type of an annotation (`((g: Maybe<i64> -> bool), :? i64 as n)`),
+    /// and the scan goes on past it. The tokens of an expression of its own are not the arm's or the
     /// group's: a `match`, a handler's `with`, a lambda, a `for` or a local `fn` has patterns and
     /// arrows of its own, so the scan skips to the `)` that closes the parentheses around it, and
     /// outside any parentheses it answers that no type test is ahead. A hole after the colon of a
@@ -1425,7 +1427,7 @@ impl Parser<'_> {
                     }
                 }
                 _ if nested.is_some() => {}
-                TokenKind::Arrow | TokenKind::When if !group => return false,
+                TokenKind::Arrow | TokenKind::When if !group && depth == 0 => return false,
                 TokenKind::Match
                 | TokenKind::With
                 | TokenKind::Backslash

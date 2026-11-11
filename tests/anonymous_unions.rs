@@ -2979,3 +2979,46 @@ fn type_tests_do_not_adapt_function_types() {
         assert_eq!(error.span.start, start, "{source}");
     }
 }
+
+/// Copilot review 2 of #102: `@old (x)` in an `@ensures` line is injected where an anonymous
+/// union is expected, as `x` is: at an annotated binding, in the arms of an `if` and in the
+/// elements of an array literal, as well as at an argument. The contracts are checked at run time,
+/// so each line must also hold for the values computed by hand.
+#[test]
+fn old_values_are_injected() {
+    let count = "def count :: own (i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? bool as b -> if b then 1000 else 2000\n\ndef total :: own [(i64 | bool)] -> i64 = \\vs ->\n    let mut sum = 0\n    for v in vs do\n        sum = sum + count v\n    sum\n\n";
+    // grow 41 is 42: count 41 + 1 is 42; r is not over 100, so w is true and count w is 1000;
+    // total [41, true, false] is 41 + 1000 + 2000, which is 42 + 2999. grow 200 is 201: w is the
+    // old 200, which is 201 - 1, and total [200, true, false] is 3200, which is 201 + 2999.
+    passes(
+        &format!(
+            "{count}def grow :: i64 -> i64 = \\x ->\n    @ensures \\r -> {{ let v: (i64 | bool) = @old (x); count v + 1 == r }}\n    @ensures \\r -> {{ let w: (i64 | bool) = if r > 100 then @old (x) else true; count w == (if r > 100 then r - 1 else 1000) }}\n    @ensures \\r -> total [@old (x), true, false] == r + 2999\n    @ensures \\r -> count (@old (x)) + 1 == r\n    x + 1\n\ntest \"old values\" =\n    assert (grow 41 == 42)\n    assert (grow 200 == 201)\n"
+        ),
+        Edition::E2026,
+    );
+    // The injected value is the old one: count 41 is 41, not 42, so the line traps.
+    traps(
+        &format!(
+            "{count}def wrong :: i64 -> i64 = \\x ->\n    @ensures \\r -> {{ let v: (i64 | bool) = @old (x); count v == r }}\n    x + 1\n\ntest \"wrong\" =\n    assert (wrong 41 == 42)\n"
+        ),
+        Edition::E2026,
+    );
+}
+
+/// Copilot review 2 of #102: the arm's own `->` is outside every parenthesis. An arrow inside
+/// one, here the function type of a pattern's annotation, does not end the scan for a type test,
+/// so the function-guard arm is a pattern (its `<` read as a comparison made it a predicate).
+#[test]
+fn arrows_in_annotations_do_not_hide_type_tests() {
+    // pick f 5 is 5 (f (Some 5) holds), pick f 7 is -7, pick f true is 100 and pick f false is 200.
+    let source = "def pick :: (Maybe<i64> -> bool) -> own (i64 | bool) -> i64 = \\g v ->\n    | ((g: Maybe<i64> -> bool), :? i64 as n) -> if g (Some n) then n else -n\n    | (_, :? bool as b) -> if b then 100 else 200\n\ndef guarded :: (Maybe<i64> -> bool) -> own (i64 | bool) -> i64 = \\g v ->\n    | ((g: Maybe<i64> -> bool), :? i64 as n) when g (Some n) -> n\n    | _ -> 0\n\ndef matched :: (Maybe<i64> -> bool) -> own (i64 | bool) -> i64 = \\g v ->\n    match (g, v) with\n    | ((g: Maybe<i64> -> bool), :? i64 as n) -> if g (Some n) then n else -n\n    | _ -> 0\n\ntest \"pick\" =\n    let five = \\m -> Maybe.default_value 0 m == 5\n    assert (pick five 5 == 5)\n    assert (pick five 7 == -7)\n    assert (pick five true == 100)\n    assert (pick five false == 200)\n    assert (guarded five 5 == 5)\n    assert (guarded five 7 == 0)\n    assert (matched five 5 == 5)\n    assert (matched five 7 == -7)\n";
+    let program = parsed(source);
+    assert!(program.uses_anonymous_unions);
+    passes(source, Edition::E2026);
+    // A predicate with arrows inside parentheses and no type test of its own is still a
+    // predicate: f 2 is 1 (1 < 2) and f 0 is 0.
+    passes(
+        "def holds :: (i64 -> bool) -> bool = \\h -> h 1\ndef f :: i64 -> i64 = \\n ->\n    | holds ((\\(h: i64 -> bool) -> h) (\\k -> k < n)) -> 1\n    | otherwise -> 0\n\ntest \"f\" =\n    assert (f 2 == 1)\n    assert (f 0 == 0)\n",
+        Edition::E2026,
+    );
+}
