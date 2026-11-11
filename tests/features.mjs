@@ -2118,6 +2118,9 @@ const suites = {
       const heap = [length(`n=${n}`), n * 10n, n * 3n, 6n][n % 4n];
       return 5n * counted(n) + (2n * labelled(n) + 1n) * 1000n + (2n * heap + 1n) * 1000000n + counted(n) * 1000000000n;
     };
+    // widen_generic: maybe_number n is n + 1 numbers for an even n (ten times their count), else a Some (2); maybe_text n
+    // is n + 2 numbers when 3 divides n, a Some (2) when the remainder is 1, else None (3).
+    const widenGeneric = (n) => (n % 2n === 0n ? (n + 1n) * 10n : 2n) + (n % 3n === 0n ? (n + 2n) * 10n : n % 3n === 1n ? 2n : 3n) * 1000n;
     const at = (name, reference, inputs) => inputs.map((x) => [name, [x], reference(x)]);
     return {
       cases: [
@@ -2139,6 +2142,7 @@ const suites = {
         ...at("narrow_copy", narrowCopy, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 10n]),
         ...at("narrow_generic", narrowGeneric, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 10n, 1000n]),
         ...at("widen_captured", widenCaptured, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 12n]),
+        ...at("widen_generic", widenGeneric, [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 1000n]),
       ],
       inspect(ir) {
         // One type for each instantiation, named by its members in the canonical order whatever order the source wrote.
@@ -2166,6 +2170,11 @@ const suites = {
         }
         // Beside a binding that moves another part of the matched value, too (Copilot review round 1, verification).
         assert.equal((body("beside_label").match(/@tz\.alloc/g) ?? []).length, 1, "beside_label");
+        // A widening beside a member with a type variable moves the array in the instances that make it an i64 and a
+        // string (Copilot review round 2).
+        const instances = ir.split("\n\n").filter((block) => block.startsWith("define ") && /@tz\.fn\.Main\.widen_open\.\$mono\.\d+\(/.test(block.split("\n")[0]));
+        assert.equal(instances.length, 2, "widen_open");
+        for (const instance of instances) assert.doesNotMatch(instance, /@tz\.alloc/, "widen_open");
       },
     };
   })(),

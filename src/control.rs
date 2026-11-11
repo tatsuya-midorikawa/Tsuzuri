@@ -734,7 +734,9 @@ impl Checker<'_> {
                 .union_payload(from_id, &from_arguments, from)
                 .expect("the case carries a payload");
             let payload = self.inference.resolve(&payload);
-            // A type variable may stand for an array, so its binding is not set apart.
+            // A type variable may stand for an array, so its binding is not set apart. An instance
+            // that makes it a type that no binding moves takes no part in the decision of `span`
+            // (`LastUses` passes over it, Copilot review round 2).
             let mut open = false;
             polymorph::map_type(&payload, &mut |leaf| {
                 open |= polymorph::is_unknown(leaf);
@@ -743,7 +745,7 @@ impl Checker<'_> {
             let copied = open || payload.is_copy(&self.types) && payload.needs_drop(&self.types);
             let binding = self.bind(
                 &Ident {
-                    text: format!("$retag{}.{from}", span.start),
+                    text: format!("{RETAGGED_PREFIX}{}.{from}", span.start),
                     span: if copied { span } else { read },
                     provenance: Provenance::Generated,
                 },
