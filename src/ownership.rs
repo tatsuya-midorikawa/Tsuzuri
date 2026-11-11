@@ -3335,7 +3335,9 @@ const OWNER_SCAN_DEPTH: usize = 16;
 ///   borrow or a dereference what the value that it is read from holds; an `if`, a `match` and a
 ///   block what their results hold;
 /// - an immutable local what its binding holds (`env`, bound in the order of the body, and an
-///   element of a `for` loop what the sequence holds); a parameter its own value (`values`);
+///   element of a `for` loop what the sequence holds); an immutable parameter its own value
+///   (`values`), and a mutable one (`fn f mut a`, `\mut a ->`) is fresh: the body may assign it
+///   anything;
 /// - a complete call of a named function what its facts say of the arguments (its own `fresh`,
 ///   the arguments in `values`, the results of the calls of those in `results`); `Owned.function`
 ///   what its argument holds; a call of a function-valued parameter its result (`results`), its
@@ -3345,11 +3347,19 @@ const OWNER_SCAN_DEPTH: usize = 16;
 struct OwnerScan<'m, 'f> {
     module: &'m CheckedModule,
     facts: &'f [Own],
+    /// The immutable parameters (local id, index). A mutable parameter is left out, so that it
+    /// counts as fresh like a `let mut` local.
     params: BTreeMap<usize, usize>,
     /// The immutable locals bound so far: what their values hold, and what a call of them gives
     /// (`result_of` of the binding).
     env: BTreeMap<usize, (Own, Own)>,
     owner_types: BTreeMap<Type, (bool, bool)>,
+    /// What `own` found for each expression (by address): a call reads its arguments once for
+    /// itself and once more for the callee's facts, so without it a chain of calls that pass
+    /// their argument on (`f (f (f x))`, `x |> f a |> f b`) costs twice as much at each level.
+    /// The bindings of a body come before their uses, so an expression's answer does not change
+    /// once it is found.
+    memo: BTreeMap<usize, Own>,
 }
 
 impl<'m, 'f> OwnerScan<'m, 'f> {
@@ -3364,6 +3374,7 @@ impl<'m, 'f> OwnerScan<'m, 'f> {
             params: parameters.collect(),
             env: BTreeMap::new(),
             owner_types: BTreeMap::new(),
+            memo: BTreeMap::new(),
         }
     }
 
@@ -3460,6 +3471,16 @@ impl<'m, 'f> OwnerScan<'m, 'f> {
     }
 
     fn own(&mut self, expression: &TypedExpr) -> Own {
+        let key = std::ptr::from_ref(expression) as usize;
+        if let Some(known) = self.memo.get(&key) {
+            return known.clone();
+        }
+        let found = self.own_uncached(expression);
+        self.memo.insert(key, found.clone());
+        found
+    }
+
+    fn own_uncached(&mut self, expression: &TypedExpr) -> Own {
         let (may, cell) = self.owner_type(&expression.ty);
         // The bindings of the blocks inside are made whatever the value's type.
         if !may {
@@ -3666,35 +3687,62 @@ impl<'m, 'f> OwnerScan<'m, 'f> {
 
 /// A31: the provenance facts of the functions of the module (`Own`, `OwnerScan`): what the result
 /// of a complete call of each may hold, as the least fixed point over the calls. Every fact only
-/// grows, so the iteration ends.
+/// grows, so the iteration ends. A body is scanned again only when the fact of a function that it
+/// names (calls, partially applies or lifts as a lambda) grew: a work list over the callers, which
+/// starts from the last function so that a chain declared before its callees (`f1` calls `f2`
+/// calls ... `fN`) settles in one pass rather than one function per pass over all of them. The
+/// scans share what the types say (`OwnerScan::owner_type`).
 fn owner_facts(module: &CheckedModule) -> Vec<Own> {
     let count = module.functions.len();
     let mut facts = vec![Own::default(); count];
-    loop {
-        let mut changed = false;
-        for (id, function) in module.functions.iter().enumerate() {
-            let found = {
-                let parameters = function
-                    .parameters
-                    .iter()
-                    .enumerate()
-                    .map(|(index, parameter)| (parameter.id, index));
-                let mut scan = OwnerScan::new(module, &facts, parameters);
-                scan.own(&function.body)
-            };
-            if found != facts[id] {
-                let mut joined = facts[id].clone();
-                joined.join(found);
-                if joined != facts[id] {
-                    facts[id] = joined;
-                    changed = true;
+    let mut callers: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); count];
+    for (id, function) in module.functions.iter().enumerate() {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            if let E::Function(crate::check::FunctionRef::User(callee))
+            | E::GenericFunction(callee, _)
+            | E::Closure(callee, _) = &expression.kind
+                && *callee < count
+            {
+                callers[*callee].insert(id);
+            }
+            for child in expression.children() {
+                pending.push(child);
+            }
+        }
+    }
+    let mut work: std::collections::VecDeque<usize> = (0..count).rev().collect();
+    let mut queued = vec![true; count];
+    let mut owner_types = BTreeMap::new();
+    while let Some(id) = work.pop_front() {
+        queued[id] = false;
+        let function = &module.functions[id];
+        let found = {
+            let parameters = function
+                .parameters
+                .iter()
+                .enumerate()
+                .filter(|(_, parameter)| !parameter.mutable)
+                .map(|(index, parameter)| (parameter.id, index));
+            let mut scan = OwnerScan::new(module, &facts, parameters);
+            scan.owner_types = std::mem::take(&mut owner_types);
+            let found = scan.own(&function.body);
+            owner_types = scan.owner_types;
+            found
+        };
+        let mut joined = facts[id].clone();
+        joined.join(found);
+        if joined != facts[id] {
+            facts[id] = joined;
+            for &caller in &callers[id] {
+                if !queued[caller] {
+                    queued[caller] = true;
+                    work.push_back(caller);
                 }
             }
         }
-        if !changed {
-            return facts;
-        }
     }
+    facts
 }
 
 /// A31: the immutable locals of `body` that are bound to a function value whose code the body
@@ -6015,10 +6063,13 @@ impl<'a, 'run> Checker<'a, 'run> {
     fn owner_scan(&mut self) -> &mut OwnerScan<'a, 'run> {
         if self.owner_scan.is_none() {
             let facts: &'run CallFacts = self.facts;
+            // A mutable parameter counts as fresh (`OwnerScan::params`).
+            let declarations = &self.declarations;
             let parameters = self
                 .parameter_roots
                 .iter()
-                .map(|(root, index)| (usize::MAX - root, *index));
+                .map(|(root, index)| (usize::MAX - root, *index))
+                .filter(|(id, _)| declarations.get(id).is_some_and(|local| !local.mutable));
             let mut scan = OwnerScan::new(self.module, &facts.owners, parameters);
             scan.walk(self.body);
             self.owner_scan = Some(scan);
