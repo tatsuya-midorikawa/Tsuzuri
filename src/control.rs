@@ -1526,7 +1526,10 @@ impl Checker<'_> {
     }
 
     /// The member of `members` that the type `ty` after `:?` names: the one equal to it, or the
-    /// only one that still holds an inference variable and may be `ty`, which becomes `ty`.
+    /// only one that still holds an inference variable, or that differs from `ty` only in what
+    /// unification does not compare, and is `ty` as unification reads the two, which becomes
+    /// `ty`. A value is adapted where it is injected; a type test adapts nothing (`agrees`), and
+    /// neither does a narrowing, which moves the payload as it is.
     fn type_test_member(
         &mut self,
         ty: &Type,
@@ -1539,7 +1542,7 @@ impl Checker<'_> {
         let fitting: Vec<usize> = members
             .iter()
             .enumerate()
-            .filter(|(_, member)| self.may_member(ty, member))
+            .filter(|(_, member)| self.agrees(ty, member))
             .map(|(case, _)| case)
             .collect();
         match fitting.as_slice() {

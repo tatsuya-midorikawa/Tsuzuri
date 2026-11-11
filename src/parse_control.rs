@@ -1406,8 +1406,9 @@ impl Parser<'_> {
     /// scans of the callers). The tokens of an expression of its own are not the arm's or the
     /// group's: a `match`, a handler's `with`, a lambda, a `for` or a local `fn` has patterns and
     /// arrows of its own, so the scan skips to the `)` that closes the parentheses around it, and
-    /// outside any parentheses it answers that no type test is ahead. A hole after a field,
-    /// `{ x:? }`, is no type test either: no type follows it.
+    /// outside any parentheses it answers that no type test is ahead. A hole after the colon of a
+    /// field, `{ x:? }` or `{ x:?h }`, is no type test either: a type test starts a pattern, so a
+    /// name never stands before its `:`, and a type follows its `?`.
     fn type_test_ahead(&self, group: bool) -> bool {
         let mut depth = 0usize;
         // The depth of the parentheses around the expression that is skipped.
@@ -1437,6 +1438,11 @@ impl Parser<'_> {
                 }
                 TokenKind::Colon
                     if self.type_test_at(self.position + index)
+                        && !(index > 0
+                            && matches!(
+                                self.tokens[self.position + index - 1].kind,
+                                TokenKind::Ident(_)
+                            ))
                         && !self
                             .tokens
                             .get(self.position + index + 2)
