@@ -1256,6 +1256,11 @@ pub(super) enum JsonKinds {
     Open,
     /// No instance: the constraint of the member reports it.
     Missing,
+    /// No instance for the type as it is written, which has type variables. Only an instance for
+    /// some of the types that the variables stand for can make the constraint of the member
+    /// hold, and such an instance is hand-written (a derived one is for every type argument), so
+    /// it is `Open` wherever it exists.
+    Unsettled,
 }
 
 /// `json: expected number or string`: the kinds of the members in the canonical order, as the

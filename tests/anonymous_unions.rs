@@ -2483,6 +2483,19 @@ fn no_default_for_anonymous_unions() {
             "no_instance",
             "Add",
         ),
+        // A format specifier with a type letter needs `Format`, as does the method.
+        (
+            "let v: (i64 | string) = 1\n$\"{v:x}\"\n",
+            "E1005",
+            "no_instance",
+            "Format",
+        ),
+        (
+            "let v: (i64 | string) = 1\nFormat.format (ref v) \"x\"\n",
+            "E1005",
+            "no_instance",
+            "Format",
+        ),
     ] {
         let error = rejects(source, code, kind);
         assert!(
@@ -2492,7 +2505,19 @@ fn no_default_for_anonymous_unions() {
             "{source}\n{}",
             error.message
         );
+        assert!(
+            error
+                .message
+                .ends_with("; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases"),
+            "{source}\n{}",
+            error.message
+        );
     }
+    // A width and an alignment alone use `Display`, so they format the text of the payload.
+    passes(
+        "test \"width\" =\n    let text: (i64 | string) = \"ab\"\n    let number: (i64 | string) = 7\n    assert ($\"{text:>5}\" == \"   ab\")\n    assert ($\"{number:>5}\" == \"    7\")\n    assert ($\"{number:<3}|\" == \"7  |\")\n",
+        Edition::E2027,
+    );
     // A tuple of defaults is still a default: only the union is refused.
     let error = rejects(
         "let v: (i64 * (i64 | string)) = Default.default()\n0\n",
@@ -2576,6 +2601,8 @@ fn recursive_types_compare_through_named_unions() {
 #[test]
 fn wide_unions_have_instances() {
     // 32 members (D9), every one with the four classes: the bodies test up to 31 tags in a row.
+    // The members share their element types (`i64`, `string`, ...); members whose parts are all
+    // distinct are in `wide_unions_resolve_within_the_obligation_budget`.
     let members = [
         "i8",
         "i8u",
@@ -2620,6 +2647,142 @@ fn wide_unions_have_instances() {
         ),
         Edition::E2027,
     );
+}
+
+/// `count` records `P00`, `P01`, ... of one field, each with the four derived classes.
+fn numbered_records(count: usize) -> String {
+    (0..count)
+        .map(|index| format!("record P{index:02} {{ x: i64 }} deriving (Eq, Ord, Hash, Display)\n"))
+        .collect()
+}
+
+/// `(M0 | M1 | ...)` for `members` members, each made of its index by `member`.
+fn union_of(members: usize, member: impl Fn(usize) -> String) -> String {
+    let members: Vec<_> = (0..members).map(member).collect();
+    format!("({})", members.join(" | "))
+}
+
+/// A union of `members` tuples of `size` of the records of `numbered_records`, all distinct.
+fn union_of_tuples(members: usize, size: usize) -> String {
+    union_of(members, |member| {
+        let parts: Vec<_> = (member * size..(member + 1) * size)
+            .map(|index| format!("P{index:02}"))
+            .collect();
+        format!("({})", parts.join(" * "))
+    })
+}
+
+#[test]
+fn wide_unions_resolve_within_the_obligation_budget() {
+    // Review round 1: instance resolution allows 128 obligations for one constraint, and `Ord`
+    // of a union asks for `Ord` and `Eq` of every member. With the members counted, a union
+    // well inside the 32 members of D9 had `==` and no `<` (E1017) as soon as the members had
+    // parts of their own: 16 tuples of three records, 32 arrays of records, a pair of two unions
+    // of 32 records. The obligations of the members are not counted now. The expected values
+    // follow from the canonical order (records by their names, an array before a list) and from
+    // the payloads.
+    let source = format!(
+        "{records}type Tuples = {tuples}\ntype Arrays = {arrays}\ntype Left = {left}\ntype Right = {right}\n\ntest \"tuples of records\" =\n    let a: Tuples = (P00 {{ x: 1 }}, P01 {{ x: 1 }}, P02 {{ x: 1 }})\n    let b: Tuples = (P03 {{ x: 1 }}, P04 {{ x: 1 }}, P05 {{ x: 1 }})\n    let c: Tuples = (P00 {{ x: 1 }}, P01 {{ x: 2 }}, P02 {{ x: 0 }})\n    let last: Tuples = (P45 {{ x: 0 }}, P46 {{ x: 0 }}, P47 {{ x: 0 }})\n    let same: Tuples = (P00 {{ x: 1 }}, P01 {{ x: 1 }}, P02 {{ x: 1 }})\n    assert (a != b)\n    assert (a < b)\n    assert (not (b <= a))\n    assert (a < c)\n    assert (c > a)\n    assert (c < b)\n    assert (b < last)\n    assert (last >= b)\n    assert (a == same)\n    assert (a >= same)\n    assert (Hash.hash a == Hash.hash same)\n    assert (Display.display c == \"(P00 {{ x: 1 }}, P01 {{ x: 2 }}, P02 {{ x: 0 }})\")\n\ntest \"arrays of records\" =\n    let a: Arrays = [P00 {{ x: 1 }}]\n    let b: Arrays = [P31 {{ x: 0 }}]\n    let c: Arrays = [P00 {{ x: 2 }}]\n    let same: Arrays = [P00 {{ x: 1 }}]\n    assert (a < b)\n    assert (a < c)\n    assert (c < b)\n    assert (a == same)\n    assert (a <= same)\n    assert (not (a < same))\n    assert (Hash.hash a == Hash.hash same)\n    assert (Display.display b == \"[P31 {{ x: 0 }}]\")\n\ntest \"a pair of wide unions\" =\n    let p: (Left * Right) = (P00 {{ x: 1 }}, P32 {{ x: 1 }})\n    let q: (Left * Right) = (P00 {{ x: 1 }}, P63 {{ x: 0 }})\n    let r: (Left * Right) = (P01 {{ x: 0 }}, P32 {{ x: 0 }})\n    let same: (Left * Right) = (P00 {{ x: 1 }}, P32 {{ x: 1 }})\n    assert (p < q)\n    assert (p < r)\n    assert (q < r)\n    assert (not (r <= q))\n    assert (p == same)\n    assert (p >= same)\n    assert (Hash.hash p == Hash.hash same)\n    assert (Display.display q == \"(P00 {{ x: 1 }}, P63 {{ x: 0 }})\")\n",
+        records = numbered_records(64),
+        tuples = union_of_tuples(16, 3),
+        arrays = union_of(32, |index| format!("[P{index:02}]")),
+        left = union_of(32, |index| format!("P{index:02}")),
+        right = union_of(32, |index| format!("P{:02}", index + 32)),
+    );
+    passes(&source, Edition::E2027);
+    // 32 members whose elements are 21 distinct types: arrays of arrays, and lists of arrays.
+    let elements = [
+        "i8",
+        "i8u",
+        "i16",
+        "i16u",
+        "i32",
+        "i32u",
+        "i64",
+        "i64u",
+        "i128",
+        "i128u",
+        "f16",
+        "f32",
+        "f64",
+        "f128",
+        "d32",
+        "d64",
+        "d128",
+        "char",
+        "utf8char",
+        "string",
+        "utf8string",
+    ];
+    let wide = union_of(32, |index| match elements.get(index) {
+        Some(element) => format!("[[{element}]]"),
+        None => format!("[|[{}]|]", elements[index - elements.len()]),
+    });
+    passes(
+        &format!(
+            "type Wide = {wide}\n\ntest \"arrays of arrays\" =\n    let a: Wide = [[1i8]]\n    let b: Wide = [[2i8]]\n    let c: Wide = [|[1i8]|]\n    let same: Wide = [[1i8]]\n    assert (a < b)\n    assert (a < c)\n    assert (b < c)\n    assert (c > b)\n    assert (not (a < same))\n    assert (a <= same)\n    assert (a == same)\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn distinct_parts_of_members_meet_the_obligation_limit() {
+    // What the budget of 128 counts: one obligation for each class and each distinct type, without
+    // the members of the union themselves. For `<` on a union of pairs of the records of
+    // `numbered_records`: `Ord` and `Eq` of the union (2), of every record inside the pairs (2
+    // each) and of `i64`, the type of the field that the derived instances compare (2). So 62
+    // records make 128, the limit, and 64 records make 132.
+    let limit = "instance constraint resolution exceeds depth 64 or 128 obligations";
+    let compare = |members: usize, operator: &str| {
+        format!(
+            "{}type W = {}\ndef compare :: own W -> own W -> bool = \\a b -> a {operator} b\n0\n",
+            numbered_records(members * 2),
+            union_of_tuples(members, 2)
+        )
+    };
+    accepts(&compare(31, "<"));
+    let error = rejects(&compare(32, "<"), "E1017", "instance_resolution_limit");
+    assert_eq!(error.message, limit);
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "an anonymous union needs the instance of each member, and every distinct type inside the members is one obligation for each class (Ord also needs Eq); use fewer distinct types, or wrap a part in a record with a hand-written instance, which is one obligation"
+        )
+    );
+    // `Eq` has no superclass: the union (1), 64 records and `i64` make 66.
+    accepts(&compare(32, "=="));
+    // What the help names: a record with hand-written instances is resolved without its fields.
+    let wrapped: String = (0..32)
+        .map(|member| {
+            format!(
+                "record T{member:02} {{ a: P{:02}, b: P{:02} }}\ninstance Eq<T{member:02}> {{\n    fn eq left right = left.a == right.a && left.b == right.b\n    fn ne left right = not (Eq.eq left right)\n}}\ninstance Ord<T{member:02}> {{\n    fn lt left right = left.a < right.a || (left.a == right.a && left.b < right.b)\n    fn le left right = not (Ord.lt right left)\n    fn gt left right = Ord.lt right left\n    fn ge left right = not (Ord.lt left right)\n}}\n",
+                member * 2,
+                member * 2 + 1
+            )
+        })
+        .collect();
+    passes(
+        &format!(
+            "{}{wrapped}type W = {}\n\ntest \"wrapped pairs\" =\n    let a: W = T00 {{ a: P00 {{ x: 1 }}, b: P01 {{ x: 1 }} }}\n    let b: W = T31 {{ a: P62 {{ x: 0 }}, b: P63 {{ x: 0 }} }}\n    let c: W = T00 {{ a: P00 {{ x: 1 }}, b: P01 {{ x: 2 }} }}\n    assert (a < b)\n    assert (a < c)\n    assert (c < b)\n    assert (not (c <= a))\n",
+            numbered_records(64),
+            union_of(32, |member| format!("T{member:02}"))
+        ),
+        Edition::E2027,
+    );
+    // A tuple has no members to leave out: the limit and its diagnostic are as they were.
+    let parts: Vec<_> = (0..64).map(|index| format!("P{index:02}")).collect();
+    let tuple = parts.join(" * ");
+    let error = rejects(
+        &format!(
+            "{}def compare :: own ({tuple}) -> own ({tuple}) -> bool = \\a b -> a < b\n0\n",
+            numbered_records(64)
+        ),
+        "E1017",
+        "instance_resolution_limit",
+    );
+    assert_eq!(error.message, limit);
+    assert_eq!(error.help, None);
 }
 
 #[test]
@@ -2678,6 +2841,157 @@ fn const_definitions_refuse_the_operators_as_for_tuples() {
         let error = rejects(source, "E1026", "const_aggregate_operator");
         assert_eq!(error.message, message, "{source}");
     }
+}
+
+#[test]
+fn literal_patterns_compare_by_eq() {
+    // Review round 1: a literal pattern is a comparison with `==`, so the built-in `Eq` gives an
+    // anonymous union literal patterns (they were E1005 before A26). The literal is injected as
+    // in `v == 1`: `1` is the `i64` member, so the `f64` value `1.0` does not match it, and a
+    // value of another member matches no literal. NaN equals nothing; `-0.0` equals `0.0`.
+    let source = r#"record Row { key: (i64 | string), n: i64 }
+
+def name :: own (i64 | string) -> string = \v ->
+    match v with
+    | 1 -> "one"
+    | "x" -> "ex"
+    | _ -> "other"
+
+def pair :: own ((i64 | string) * i64) -> string = \p ->
+    match p with
+    | (1, 2) -> "a"
+    | ("s", _) -> "b"
+    | _ -> "c"
+
+def kinds :: (i64 | string | f64 | char) -> i64 = \value ->
+    match value with
+    | 1 -> 1
+    | -2 -> 2
+    | "x" -> 3
+    | 1.5 -> 4
+    | 'c' -> 5
+    | 7 | 8 | "y" -> 6
+    | _ -> 0
+
+def row :: own Row -> i64 = \r ->
+    match r with
+    | Row { key: 0, n: _ } -> 1
+    | Row { key: "k", n: 1 } -> 2
+    | Row { key: _, n: 5 } -> 3
+    | _ -> 4
+
+def mixed :: own (i64 | string | [string]) -> i64 = \v ->
+    match v with
+    | 0 -> 1
+    | "a" -> 2
+    | :? [string] as items -> 10 + items.length
+    | :? string as s -> 100 + s.length
+    | _ -> 9
+
+def guarded :: own (i64 | string) -> i64 = \v ->
+    | 1 -> 10
+    | "x" -> 20
+    | other -> if other < "a" then 30 else 40
+
+test "literal patterns" =
+    assert (name 1 == "one")
+    assert (name "x" == "ex")
+    assert (name 2 == "other")
+    assert (name "1" == "other")
+    assert (pair (1, 2) == "a")
+    assert (pair ("s", 2) == "b")
+    assert (pair (1, 3) == "c")
+    assert (pair ("t", 2) == "c")
+
+test "kinds of literals" =
+    assert (kinds 1 == 1)
+    assert (kinds (-2) == 2)
+    assert (kinds "x" == 3)
+    assert (kinds 1.5 == 4)
+    assert (kinds 'c' == 5)
+    assert (kinds 8 == 6)
+    assert (kinds "y" == 6)
+    assert (kinds 1.0 == 0)
+    assert (kinds "c" == 0)
+    assert (kinds 2 == 0)
+
+test "records, type tests, guards and loops" =
+    assert (row (Row { key: 0, n: 9 }) == 1)
+    assert (row (Row { key: "k", n: 1 }) == 2)
+    assert (row (Row { key: "k", n: 5 }) == 3)
+    assert (row (Row { key: 1, n: 1 }) == 4)
+    assert (mixed 0 == 1)
+    assert (mixed "a" == 2)
+    assert (mixed ["p", "q"] == 12)
+    assert (mixed "abc" == 103)
+    assert (mixed 5 == 9)
+    assert (guarded 1 == 10)
+    assert (guarded "x" == 20)
+    assert (guarded 5 == 30)
+    assert (guarded "z" == 40)
+    let items: [(i64 | string)] = [1, "x", 3]
+    let mut total = 0
+    for item in items do
+        total = total + (match item with
+            | 1 -> 1
+            | "x" -> 10
+            | _ -> 100)
+    assert (total == 111)
+
+test "nan and signed zero follow the member's Eq" =
+    let zero = 0.0
+    let nan: (f64 | string) = zero / zero
+    assert ((match nan with
+        | 0.0 -> 1
+        | _ -> 2) == 2)
+    let negative: (f64 | string) = -0.0
+    assert ((match negative with
+        | 0.0 -> 1
+        | _ -> 2) == 1)
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+    // The rules of the injected operand hold for the pattern: a literal that fits two members,
+    // a literal of no member, and a member without `Eq`.
+    let error = rejects(
+        "def f :: own (i32 | i64) -> i64 = \\v ->\n    match v with\n    | 1 -> 1\n    | _ -> 0\n0\n",
+        "E1041",
+        "anonymous_union_ambiguous_literal",
+    );
+    assert_eq!(
+        error.message,
+        "the literal 1 could be i32 or i64 in (i32 | i64)"
+    );
+    accepts(
+        "def f :: own (i32 | i64) -> i64 = \\v ->\n    match v with\n    | 1i64 -> 1\n    | _ -> 0\n0\n",
+    );
+    rejects(
+        "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | true -> 1\n    | _ -> 0\n0\n",
+        "E1003",
+        "anonymous_union_not_member",
+    );
+    let error = rejects(
+        "record Point { x: i64 }\ndef f :: own (i64 | Point) -> i64 = \\v ->\n    match v with\n    | 1 -> 1\n    | _ -> 0\n0\n",
+        "E1005",
+        "no_instance",
+    );
+    assert_eq!(
+        error.message,
+        "no instance for Eq<Main.Point>; define an instance or use a supported type"
+    );
+    // A literal pattern covers one value, so the match needs a wildcard arm, as on any other type:
+    // the members that the type tests cover are not subtracted.
+    let error = rejects(
+        "def f :: own (i64 | bool) -> i64 = \\v ->\n    match v with\n    | true -> 1\n    | false -> 2\n    | :? i64 as n -> n\n0\n",
+        "E1021",
+        "non_exhaustive_match",
+    );
+    assert_eq!(error.message, "match is not exhaustive; missing: _");
+    // In a const def the comparison is the operator's, and so is the diagnostic, at the pattern.
+    let source = "const def pick :: i64 =\n    let v: (i64 | string) = 1\n    match v with\n    | 1 -> 10\n    | _ -> 30\npick\n";
+    let error = rejects(source, "E1026", "const_aggregate_operator");
+    assert_eq!(error.span.start, source.find("| 1").unwrap() + 2);
+    assert_eq!(&source[error.span.start..error.span.end], "1");
 }
 
 // A26 Phase 2: `Encode` and `Decode` (D7). `Encode` writes the JSON of the payload and no tag, so
@@ -3034,6 +3348,198 @@ fn decode_overlap_is_rejected() {
     accepts(
         "def f :: Decode<'a> => ref Json.Value -> Result<(['a] | string), Json.Error> = \\json -> Decode.decode json\n0\n",
     );
+}
+
+#[test]
+fn generic_members_need_an_instance_for_every_argument() {
+    // Review round 1: a member with type variables and no instance for all of them (`Pair<'a>`
+    // with no `Decode<Pair<'a>>`) left the member's constraint to the caller, and the kinds were
+    // compared only when the function was instantiated: the error was then inside the generic
+    // function (or inside std) although its author could not have avoided it, and the caller
+    // could not either, because an instance for some type arguments only is hand-written and so
+    // not limited to one kind. The kinds are decided where the union is written.
+    let advice = "so the JSON value does not select one member; decode Json.Value and match on it, or use a union with named cases";
+    let unsettled = |union: &str, member: &str, variables: &str| {
+        format!(
+            "no Decode instance for {union}: the member {member} has no Decode instance for every type of {variables} (a derived instance reads a JSON object; an instance for some types only is hand-written and not limited to one kind of JSON value), {advice}"
+        )
+    };
+    // The library is rejected by itself, at the expression that needs the instance.
+    let library = "record Pair<'a> { x: 'a }\n\ndef read :: Decode<Pair<'a>> => ref Json.Value -> Result<(Pair<'a> | i64), Json.Error> = \\json -> Decode.decode json\n";
+    let error = rejects_modules(
+        &[("Lib", library)],
+        "E1025",
+        "anonymous_union_decode_overlap",
+    );
+    assert_eq!(
+        error.message,
+        unsettled("(i64 | Lib.Pair<'a>)", "Lib.Pair<'a>", "'a")
+    );
+    assert_eq!(&library[error.span.start..error.span.end], "Decode.decode");
+    // A program that gives the instance for one type argument and calls the function gets the
+    // same diagnostic at the same place: the call is not the mistake.
+    let program = "instance Decode<Lib.Pair<i64>> {\n    fn decode json = Result.map (\\x -> Lib.Pair { x: x }) (Decode.decode json)\n}\n\nlet value = Result.get (Json.parse (ref u8\"3\"))\nlet back: Result<(Lib.Pair<i64> | i64), Json.Error> = Lib.read (ref value)\nmatch back with\n| Ok _ -> \"ok\"\n| Error error -> Display.display error\n";
+    let with_caller = rejects_modules(
+        &[("Main", program), ("Lib", library)],
+        "E1025",
+        "anonymous_union_decode_overlap",
+    );
+    assert_eq!(with_caller.message, error.message);
+    assert_eq!(with_caller.span.source, Some(1));
+    assert_eq!(
+        &library[with_caller.span.start..with_caller.span.end],
+        "Decode.decode"
+    );
+    // Through a generic function of std the diagnostic is at the call in the program, not in std.
+    let source = "record Plain<'a> { w: 'a }\ninstance Decode<Plain<i64>> {\n    fn decode json = Result.Ok (Plain { w: 1 })\n}\ndef read :: Decode<Plain<'a>> => ref utf8string -> Result<(Plain<'a> | string), Json.Error> = \\text -> Json.deserialize text\nlet back: Result<(Plain<i64> | string), Json.Error> = read u8\"1\"\nif Result.is_ok (ref back) then 1 else 0\n";
+    let error = rejects(source, "E1025", "anonymous_union_decode_overlap");
+    assert_eq!(
+        error.message,
+        unsettled("(string | Main.Plain<'a>)", "Main.Plain<'a>", "'a")
+    );
+    assert_eq!(error.span.source, Some(0));
+    assert_eq!(
+        &source[error.span.start..error.span.end],
+        "Json.deserialize"
+    );
+    // A derived instance, a member of two variables, and a tuple that std gives no instance.
+    for (source, union, member, variables) in [
+        (
+            "record Plain<'a> { w: 'a }\nrecord Holder<'a> { v: (Plain<'a> | string) } deriving (Decode)\n0\n",
+            "(string | Main.Plain<'a>)",
+            "Main.Plain<'a>",
+            "'a",
+        ),
+        (
+            "record Two<'a, 'b> { a: 'a, b: 'b }\ninstance Decode<Two<i64, 'b>> {\n    fn decode json = Result.Error (Json.Error { kind: Json.Syntax, offset: 0 })\n}\ndef read :: Decode<Two<'k, 'v>> => ref Json.Value -> Result<(Two<'k, 'v> | bool), Json.Error> = \\json -> Decode.decode json\n0\n",
+            "(bool | Main.Two<'k, 'v>)",
+            "Main.Two<'k, 'v>",
+            "'k, 'v",
+        ),
+        (
+            "def read :: Decode<('a * 'a * 'a * 'a * 'a)> => ref Json.Value -> Result<(('a * 'a * 'a * 'a * 'a) | i64), Json.Error> = \\json -> Decode.decode json\n0\n",
+            "(i64 | ('a * 'a * 'a * 'a * 'a))",
+            "('a * 'a * 'a * 'a * 'a)",
+            "'a",
+        ),
+    ] {
+        let error = rejects(source, "E1025", "anonymous_union_decode_overlap");
+        assert_eq!(
+            error.message,
+            unsettled(union, member, variables),
+            "{source}"
+        );
+    }
+    // A member without variables and without an instance is still reported as that, first.
+    let error = rejects(
+        "record Plain<'a> { w: 'a }\ndef read :: ref Json.Value -> Result<(Plain<'a> | char), Json.Error> = \\json -> Decode.decode json\n0\n",
+        "E1005",
+        "no_instance",
+    );
+    assert_eq!(
+        error.message,
+        "no instance for Decode<char>; define an instance or use a supported type"
+    );
+    // An instance for every type argument settles the kind: a derived one reads an object, and
+    // the type arguments need `Decode` where the function is used.
+    let source = r#"record Plain<'a> { w: 'a } deriving (Decode)
+record Holder<'a> { v: (Plain<'a> | string) } deriving (Decode)
+
+def read :: Decode<'a> => ref Json.Value -> Result<(Plain<'a> | i64), Json.Error> = \json -> Decode.decode json
+def both :: (Decode<'a>, Decode<'b>) => ref Json.Value -> Result<(['a] | Plain<'b> | string), Json.Error> = \json -> Decode.decode json
+
+test "generic members with an instance for every argument" =
+    let value = Result.get (Json.parse (ref u8"{\"w\":3}"))
+    let back: Result<(Plain<i64> | i64), Json.Error> = read (ref value)
+    let n = match back with
+        | Ok found ->
+            match found with
+            | :? i64 as n -> n
+            | :? Plain<i64> as p -> p.w + 10
+        | Error _ -> -1
+    assert (n == 13)
+    let number = Result.get (Json.parse (ref u8"5"))
+    let direct: Result<(Plain<i64> | i64), Json.Error> = read (ref number)
+    let m = match direct with
+        | Ok found ->
+            match found with
+            | :? i64 as n -> n
+            | :? Plain<i64> as p -> p.w + 10
+        | Error _ -> -1
+    assert (m == 5)
+    let held: Result<Holder<i64>, Json.Error> = Json.deserialize u8"{\"v\":{\"w\":4}}"
+    let w = match held with
+        | Ok holder ->
+            match holder.v with
+            | :? string -> 0
+            | :? Plain<i64> as p -> p.w
+        | Error _ -> -1
+    assert (w == 4)
+    let third: Result<([i64] | Plain<bool> | string), Json.Error> = both (ref value)
+    let shown = match third with
+        | Ok _ -> "ok"
+        | Error error -> Display.display error
+    assert (shown == "json: expected boolean")
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+}
+
+#[test]
+fn decode_reads_the_kind_whatever_encode_wrote() {
+    // Review round 1: the kinds that select a member are those that the `Decode` instances read.
+    // `Encode` and `Decode` of std and derived pairs agree on the kind, so a value comes back
+    // as the member it was. A record with a derived `Decode` and a hand-written `Encode` that
+    // writes another kind does not round-trip by itself either; inside a union its JSON is read
+    // by the member of that kind, or by none. This is what the reference says.
+    let source = r#"record Number { x: i64 } deriving (Eq, Decode)
+instance Encode<Number> {
+    fn encode value = Encode.encode (ref value.x)
+}
+record Text { x: i64 } deriving (Eq, Decode)
+instance Encode<Text> {
+    fn encode value = Encode.encode (ref "text")
+}
+record Both { x: i64 } deriving (Eq, Encode, Decode)
+
+def member :: own Result<(Number | i64), Json.Error> -> string = \back ->
+    match back with
+    | Ok found ->
+        match found with
+        | :? i64 -> "i64"
+        | :? Number -> "Number"
+    | Error error -> Display.display error
+
+test "the kind of the JSON value selects the member" =
+    let number: (Number | i64) = Number { x: 1 }
+    let written = Result.get (Json.serialize (ref number))
+    assert (String.from_utf8 (ref written) == "1")
+    let back: Result<(Number | i64), Json.Error> = Json.deserialize (ref written)
+    assert (member back == "i64")
+    let text: (Text | i64) = Text { x: 1 }
+    let quoted = Result.get (Json.serialize (ref text))
+    assert (String.from_utf8 (ref quoted) == "\"text\"")
+    let none: Result<(Text | i64), Json.Error> = Json.deserialize (ref quoted)
+    let shown = match none with
+        | Ok _ -> "ok"
+        | Error error -> Display.display error
+    assert (shown == "json: expected number or object")
+
+test "derived pairs come back as the member they were" =
+    let both: (Both | i64) = Both { x: 1 }
+    let object = Result.get (Json.serialize (ref both))
+    assert (String.from_utf8 (ref object) == "{\"x\":1}")
+    let again: Result<(Both | i64), Json.Error> = Json.deserialize (ref object)
+    let same = match again with
+        | Ok found ->
+            match found with
+            | :? i64 -> false
+            | :? Both as kept -> kept.x == 1
+        | Error _ -> false
+    assert same
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
 }
 
 #[test]
