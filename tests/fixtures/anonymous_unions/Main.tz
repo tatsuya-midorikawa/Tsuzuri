@@ -183,6 +183,18 @@ export def widen_owned :: i64 -> i64 = \n ->
     let _ = unread
     total + weigh slot * 1000000
 
+// widen_read: owned values with an array or a string are widened straight into the read parameter of weigh, from a
+// local and from a temporary. The call borrows the widened value, into which the payload moves, and frees it after
+// the call; nothing is copied.
+def counted :: i64 -> (i64 | [i64]) = \n -> if n % 2 == 0 then Array.init (n + 3) (\i -> i) else n
+
+def labelled :: i64 -> (string | [i64]) = \n -> if n % 3 == 0 then $"label {n}" else Array.init (n + 1) (\i -> i)
+
+export def widen_read :: i64 -> i64 = \n ->
+    let numbers = counted n
+    let label = labelled n
+    weigh numbers + weigh label * 100 + weigh (labelled (n + 1)) * 10000
+
 // narrow: the numbers of a (f64 | i64 | string) are narrowed to (i64 | f64) and passed on. The matched value is a
 // temporary that keeps its string: the narrowed value is a copy of the number.
 def classify :: i64 -> (f64 | i64 | string) = \n ->

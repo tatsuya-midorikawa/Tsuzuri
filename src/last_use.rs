@@ -2,7 +2,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::check::{
-    CheckedFunction, CheckedModule, PatternStep, TypedExpr, TypedExprKind, TypedMatchArm,
+    CheckedFunction, CheckedModule, PatternStep, Type, TypedExpr, TypedExprKind, TypedMatchArm,
 };
 use crate::diagnostic::Span;
 use crate::syntax::BinaryOp;
@@ -179,6 +179,12 @@ impl Analysis<'_> {
         }
     }
 
+    /// Whether `operand`, lent to a call, is a `match` whose value is an anonymous union.
+    fn lent_union_match(&self, operand: &TypedExpr) -> bool {
+        matches!(operand.kind, TypedExprKind::Match { .. })
+            && matches!(&operand.ty, Type::Union(id, _) if self.module.unions[*id].is_anonymous())
+    }
+
     fn opaque(&mut self, expression: &TypedExpr, live: &mut Live, depth: usize) {
         let mut pending = vec![(expression, depth)];
         while let Some((expression, depth)) = pending.pop() {
@@ -260,6 +266,15 @@ impl Analysis<'_> {
                 self.visit(a, live, depth + 1);
             }
             Binary(BinaryOp::Pipe, ..) => self.opaque(expression, live, depth),
+            // A25: the temporary that a read parameter borrows is evaluated as a value before
+            // the call (`operand_borrow`). When it is a `match` that makes an anonymous union,
+            // as a widening is (`Checker::retag`), its arms and bindings are read as those of
+            // any other match, so an owned payload moves into the wider value. Every other
+            // lent operand stays opaque, which keeps the reads of programs without anonymous
+            // unions as they were.
+            BorrowOperand(value) if self.lent_union_match(value) => {
+                self.visit(value, live, depth + 1)
+            }
             Binary(_, a, b) => {
                 self.visit(b, live, depth + 1);
                 self.visit(a, live, depth + 1);

@@ -2062,6 +2062,10 @@ const suites = {
       const slot = n === 0n ? 0n : last % 2n === 0n ? last : length(`${last}`);
       return length(`n=${n}`) * 1000n + n + slot * 1000000n;
     };
+    // counted: n + 3 numbers for an even n, else the i64 n. labelled: `label {n}` when 3 divides n, else n + 1 numbers.
+    const counted = (n) => n % 2n === 0n ? n + 3n : n;
+    const labelled = (n) => n % 3n === 0n ? length(`label ${n}`) : n + 1n;
+    const widenRead = (n) => counted(n) + labelled(n) * 100n + labelled(n + 1n) * 10000n;
     // scale: three times an i64, four times an f64. narrow: the i64 n when 3 divides n, the f64 n / 2 when the
     // remainder is 1 (4 (n / 2) = 2 n, exact), else `text {n}` (its length times 1000).
     const narrow = (n) => n % 3n === 0n ? n * 3n : n % 3n === 1n ? 2n * n : length(`text ${n}`) * 1000n;
@@ -2102,6 +2106,7 @@ const suites = {
         ...at("wide", wide, [5n, 0n, -7n]),
         ...at("widen", widen, [4n, 7n, 0n, -3n, -8n]),
         ...at("widen_owned", widenOwned, [0n, 1n, 4n, 7n, 20n]),
+        ...at("widen_read", widenRead, [0n, 1n, 2n, 3n, 5n, 8n, 12n]),
         ...at("narrow", narrow, [6n, 7n, 8n, 0n, -3n, -4n, 1000000n]),
         ...at("narrow_owned", narrowOwned, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 20n]),
         ...at("narrow_views", narrowViews, [0n, 1n, 2n, 3n, 6n, 9n, 31n]),
@@ -2117,9 +2122,10 @@ const suites = {
         // 32 members, the function type last.
         assert.match(ir, /^%"tz\.union\.\$anonymous\.Union\$32\[i8u,i8,[^\n]*,fn\[[^\n]*\]\]" = type /m);
         // A25: a widening and a narrowing of a union that is not recursive switch on the tag and move or copy the
-        // payload; they allocate nothing (the strings are made by number_or_text and classify).
+        // payload; they allocate nothing (the strings are made by number_or_text and classify, the arrays by counted and
+        // labelled: an array moves into the widened value that a read parameter borrows).
         const body = (name) => ir.split("\n\n").find((block) => block.startsWith("define ") && block.split("\n")[0].includes(`@tz.fn.Main.${name}(`));
-        for (const name of ["widen", "narrow"]) {
+        for (const name of ["widen", "narrow", "widen_read"]) {
           assert.doesNotMatch(body(name), /@tz\.alloc/, name);
           assert.match(body(name), /switch i32 /, name);
         }

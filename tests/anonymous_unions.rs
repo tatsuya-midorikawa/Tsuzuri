@@ -3045,6 +3045,51 @@ fn widening_does_not_copy_owned_array_members() {
 }
 
 #[test]
+fn widening_into_a_read_parameter_moves_array_members() {
+    // Edition 2027 reads the parameter of `measure`: the call borrows the widened value, a
+    // temporary, and an owned array member moves into it as into an owned parameter (review
+    // round 1). `measure` binds no array, so that `@no_copy` sees only the callers.
+    let measure = "def measure :: (i64 | [i64] | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? [i64] -> 100\n    | :? string as s -> s.length\n\n\
+         def make :: i64 -> (i64 | [i64]) = \\n -> if n > 0 then [n, n] else n\n\n";
+    let source = format!(
+        "{measure}@no_copy\ndef local :: own (i64 | [i64]) -> i64 = \\v -> measure v\n\n\
+         @no_copy\ndef temporary :: i64 -> i64 = \\n -> measure (make n)\n\n\
+         @no_copy\ndef bound :: i64 -> i64 = \\n ->\n    let v = make n\n    measure v\n\n\
+         test \"values\" =\n    let a: (i64 | [i64]) = [1, 2, 3]\n    let b: (i64 | [i64]) = 6\n    assert (local a + local b == 106)\n    assert (temporary 5 + temporary (-4) == 96)\n    assert (bound 2 + bound (-7) == 93)\n"
+    );
+    let module = accepts_in(&source, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    for name in ["local", "temporary", "bound"] {
+        let body = function_body(&ir, name);
+        assert!(!body.contains("@tz.alloc"), "{name}:\n{body}");
+        assert!(body.contains("switch i32 "), "{name}:\n{body}");
+    }
+    // Expected values by hand: 100 for an array, the i64 itself: 100 + 6, 100 - 4, 100 - 7.
+    passes(&source, Edition::E2027);
+    // A value that is read again is copied for the first call and moved by the last; the copy
+    // is the widened value's. 100 + 100 for an array, 2 k for the i64 k.
+    let source = format!(
+        "{measure}@no_copy\ndef twice :: own (i64 | [i64]) -> i64 = \\v -> measure v + measure v\n"
+    );
+    let error = rejects_in(&source, Edition::E2027, "E1031", "effect_copy_in_no_copy");
+    let at = source.find("measure v +").unwrap() + "measure ".len();
+    assert_eq!((error.span.start, error.span.end), (at, at + 1));
+    let source = format!(
+        "{}\ntest \"twice\" =\n    let a: (i64 | [i64]) = [4]\n    let b: (i64 | [i64]) = 21\n    assert (twice a + twice b == 242)\n",
+        source.replace("@no_copy\n", "")
+    );
+    let module = accepts_in(&source, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(
+        function_body(&ir, "twice").matches("@tz.alloc").count(),
+        1,
+        "{ir}"
+    );
+    passes(&source, Edition::E2027);
+}
+
+#[test]
 fn hover_on_a_widened_value_shows_the_value() {
     let source = "def make :: own i64 -> (i64 | string) = \\n -> n\n\
          def f :: own (i64 | [i64]) -> (f64 | i64 | [i64]) = \\items ->\n    let wide: (f64 | i64 | [i64]) = items\n    wide\n\
