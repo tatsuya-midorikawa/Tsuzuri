@@ -1840,6 +1840,238 @@ fn a_dyn_method_applies_the_stores_of_the_instances() {
         .unwrap_or_else(|error| panic!("{main}\n{}: {}", error.code, error.message));
 }
 
+/// A31, review round 2: a source in both editions is accepted, with deterministic IR.
+fn accepts_in_both_editions(modules: &[(&str, &str)]) {
+    for edition in [Edition::E2026, Edition::E2027] {
+        let module = analyze_modules_with_edition(modules, edition).unwrap_or_else(|error| {
+            panic!(
+                "edition {edition}\n{modules:?}\n{}: {}",
+                error.code, error.message
+            )
+        });
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, false).unwrap();
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, false).unwrap(),
+            "{modules:?}"
+        );
+    }
+}
+
+/// A31, review round 2 (findings 1, 5, 6 and 11): a function value is a sink (it stores into
+/// what its environment reaches) when it passes a bound value to a call of a function value only
+/// if a store may reach through that value: the lambda of std's `Array.map`
+/// (`\index -> transform values[index]`) passes an `i64`, that of `Array.mapr` a `ref i64`, and
+/// `Mutex.with_lock (ref m)` on a `Mutex<i64>` lends an `i64`. A module that uses them and writes
+/// a closure in place keeps its dispatch tables, handler records and helpers that take a
+/// callback as main accepts them (the values are in the `in_place_writes` suite).
+#[test]
+fn a_bound_value_that_no_store_reaches_through_makes_no_sink() {
+    for main in [
+        // t06_dispatch_table
+        "def setf :: ref mut [(unit -> i64)..] -> unit\nfn setf a = Array.write 0 (\\() -> 1) a\ndef run :: i64 -> i64\nfn run n =\n    let table = [\\(x: i64) -> x + 1, \\(x: i64) -> x * 2]\n    let t = ref table\n    let ops = [\\(s: ref string) -> t[0] (String.length s)]\n    let name = to_string n\n    let k = ops[0] (ref name)\n    let moved = name\n    let sizes = Array.map (\\x -> x + 1) [1, 2]\n    k + table[1] 3 + moved.length + sizes[0]\nrun 12345",
+        // t03_reader_record_direct_map
+        "record H { f: ref string -> i64 }\ndef setf :: ref mut [(unit -> i64)..] -> unit\nfn setf a = Array.write 0 (\\() -> 1) a\ndef bump :: [i64] -> [i64]\nfn bump xs = Array.map (\\x -> x + 1) xs\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 3]\n    let mr = ref m\n    let h = H { f: \\(s: ref string) -> Mutex.with_lock mr (\\slot -> slot[0] () + String.length s) }\n    let name = to_string n\n    let k = h.f (ref name)\n    let moved = name\n    k + moved.length + Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + (bump [1])[0]\nrun 12345",
+        // u24_array_mapr
+        "def setf :: ref mut [(unit -> i64)..] -> unit\nfn setf a = Array.write 0 (\\() -> 1) a\ndef extra :: [i64] -> i64\nfn extra xs = (Array.mapr (\\(x: ref i64) -> deref x + 1) (ref xs))[0]\ndef run :: i64 -> i64\nfn run n =\n    let table = [\\(x: i64) -> x + 1, \\(x: i64) -> x * 2]\n    let t = ref table\n    let ops = [\\(s: ref string) -> t[0] (String.length s)]\n    let name = to_string n\n    let k = ops[0] (ref name)\n    let moved = name\n    k + table[1] 3 + moved.length + extra [1, 2]\nrun 12345",
+        // r17_direct_map_ctl
+        "def with_name :: i64 -> ((unit -> i64) -> i64) -> i64\nfn with_name n k =\n    let s = to_string n\n    let b = ref s\n    k (\\() -> String.length b)\ndef run :: i64 -> i64\nfn run n =\n    let xs = [1, 2, 3]\n    let ys = Array.map (\\x -> x + 1) xs\n    let mut arr = [\\() -> 0]\n    let t = to_string 5\n    let bt = ref t\n    Array.set 0 (\\() -> String.length bt) (ref mut arr)\n    with_name n (\\get -> get () * 2) + ys[0] + arr[0] ()\nrun 123456789",
+        // r20_Array_mapi
+        "def with_name :: i64 -> ((unit -> i64) -> i64) -> i64\nfn with_name n k =\n    let s = to_string n\n    let b = ref s\n    k (\\() -> String.length b)\ndef run :: i64 -> i64\nfn run n =\n    let xs = [1, 2, 3]\n    let ys = Array.mapi (\\i x -> i + x) xs\n    let mut arr = [\\() -> 0]\n    let t = to_string 5\n    let bt = ref t\n    Array.set 0 (\\() -> String.length bt) (ref mut arr)\n    with_name n (\\get -> get () * 2) + ys[0] + arr[0] ()\nrun 123456789",
+        // r13j_with_lock_partial_only
+        "def with_name :: i64 -> ((unit -> i64) -> i64) -> i64\nfn with_name n k =\n    let s = to_string n\n    let b = ref s\n    k (\\() -> String.length b)\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create 0\n    let bump = Mutex.with_lock (ref m)\n    let z = bump (\\c -> 1)\n    let mut arr = [\\() -> 0]\n    let t = to_string 5\n    let bt = ref t\n    Array.write 0 (\\() -> String.length bt) (ref mut arr)\n    with_name n (\\get -> get () * 2) + z + arr[0] ()\nrun 123456789",
+        // r14_apply_to_captured
+        "def with_name :: i64 -> ((unit -> i64) -> i64) -> i64\nfn with_name n k =\n    let s = to_string n\n    let b = ref s\n    k (\\() -> String.length b)\ndef apply_all :: [i64 -> i64] -> i64 -> [i64]\nfn apply_all fs x = Array.map (\\f -> f x) fs\ndef run :: i64 -> i64\nfn run n =\n    let ys = apply_all [\\x -> x + 1, \\x -> x * 2] 5\n    let mut cbs = [\\() -> 0]\n    let t = to_string 5\n    let bt = ref t\n    Array.set 0 (\\() -> String.length bt) (ref mut cbs)\n    with_name n (\\get -> get () * 2) + ys[0] + cbs[0] ()\nrun 123456789",
+        // r18_handler_record_ref_arg
+        "record Handler { run: ref string -> i64 }\ndef invoke :: ref Handler -> ref string -> i64\nfn invoke h s = h.run s\ndef run :: i64 -> i64\nfn run n =\n    let h = Handler { run: \\s -> String.length s }\n    let text = to_string n\n    let k = invoke (ref h) (ref text)\n    let moved = text\n    let ys = Array.map (\\x -> x + 1) [1, 2]\n    let mut arr = [\\() -> 0]\n    let t = to_string 5\n    let bt = ref t\n    Array.set 0 (\\() -> String.length bt) (ref mut arr)\n    k + moved.length + ys[0] + arr[0] () + h.run (ref t)\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 2 (finding 5): a callee that passes a closure over its own local to a
+/// callback that only calls it (`\get -> get () * 2`, the named `plus_one`) stores the borrow
+/// nowhere: a call of a function value with no argument hands it nothing, and the closure's
+/// environment holds only the callee's own values. A module with a function value that stores
+/// into its environment elsewhere (`remember`, a partial `Mutex.with_lock`, an owner of a cell)
+/// keeps such programs accepted.
+#[test]
+fn a_call_that_hands_nothing_keeps_no_borrow_of_the_callee() {
+    for main in [
+        // r13b_ownsink_lambda_to_apply
+        "def mk :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn mk a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef apply :: ((unit -> i64) -> i64) -> i64 -> i64\nfn apply h n =\n    let text0 = to_string n\n    let text = ref text0\n    h (\\() -> String.length text)\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let w = mk (Arc.share (ref a))\n    w (\\() -> 7)\n    let r = apply (\\f -> f () + 1) n\n    r + Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 123456789",
+        // r13c_ownsink_named_to_apply
+        "def mk :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn mk a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef apply :: ((unit -> i64) -> i64) -> i64 -> i64\nfn apply h n =\n    let text0 = to_string n\n    let text = ref text0\n    h (\\() -> String.length text)\ndef plus_one :: (unit -> i64) -> i64\nfn plus_one f = f () + 1\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let w = mk (Arc.share (ref a))\n    w (\\() -> 7)\n    let r = apply plus_one n\n    r + Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 123456789",
+        // r13g_with_helper_mutex_partial
+        "def with_name :: i64 -> ((unit -> i64) -> i64) -> i64\nfn with_name n k =\n    let s = to_string n\n    let b = ref s\n    k (\\() -> String.length b)\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let set = Mutex.with_lock (Arc.get (ref a))\n    set (\\slot -> Array.write 0 (\\() -> 5) slot)\n    let x = with_name n (\\get -> get () * 2)\n    x + Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 123456789",
+        // r15_inline_cache_closure_with_helper
+        "def with_name :: i64 -> ((unit -> i64) -> i64) -> i64\nfn with_name n k =\n    let s = to_string n\n    let b = ref s\n    k (\\() -> String.length b)\ndef cached :: i64 -> i64\nfn cached n =\n    let cache = Arc.new (Mutex.create [\\() -> 0])\n    let rc = ref cache\n    let remember = \\(f: unit -> i64) -> Mutex.with_lock (Arc.get rc) (\\slot -> Array.write 0 f slot)\n    remember (\\() -> n)\n    Mutex.with_lock (Arc.get (ref cache)) (\\slot -> slot[0] ())\ndef run :: i64 -> i64\nfn run n = cached 4 + with_name n (\\get -> get () * 2)\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 2 (findings 2 and 7): a function value that owns the cell that it writes
+/// (an event bus `subscriber`, `mk`) is reached only through values whose types may hold one:
+/// a handler of another type, a closure that captured a `ref string`, a named function in an
+/// array, and a parameter of a function type that no owner has are none of them. A table of
+/// handlers whose type is the owner's (`r4`) is an immutable array literal of lambdas, whose
+/// code the check sees.
+#[test]
+fn a_function_value_of_a_type_that_no_owner_has_reaches_no_hidden_cell() {
+    for main in [
+        // w06_bus_plus_handlers_other_fn
+        "def subscriber :: own Arc<Mutex<[unit -> i64]>> -> (own (unit -> i64) -> unit)\nfn subscriber bus = \\cb -> Mutex.with_lock (Arc.get (ref bus)) (\\slot -> Array.write 0 cb slot)\ndef setup :: i64 -> i64\nfn setup k =\n    let bus = Arc.new (Mutex.create [\\() -> 0])\n    let sub = subscriber (Arc.share (ref bus))\n    sub (\\() -> 5)\n    Mutex.with_lock (Arc.get (ref bus)) (\\slot -> slot[0] ())\ndef run :: i64 -> i64\nfn run n =\n    let hs = [\\(g: unit -> i64) -> g () + 1]\n    let name = to_string n\n    let t = ref name\n    let k = hs[0] (\\() -> String.length t)\n    let moved = name\n    k + moved.length + hs[0] (\\() -> 2)\nrun 12345 + setup 0",
+        // w08_bus_plus_sort_callback
+        "def subscriber :: own Arc<Mutex<[unit -> i64]>> -> (own (unit -> i64) -> unit)\nfn subscriber bus = \\cb -> Mutex.with_lock (Arc.get (ref bus)) (\\slot -> Array.write 0 cb slot)\ndef setup :: i64 -> i64\nfn setup k =\n    let bus = Arc.new (Mutex.create [\\() -> 0])\n    let sub = subscriber (Arc.share (ref bus))\n    sub (\\() -> 5)\n    Mutex.with_lock (Arc.get (ref bus)) (\\slot -> slot[0] ())\ndef apply_cmp :: (i64 -> i64 -> i64) -> i64\nfn apply_cmp c = c 1 2\ndef run :: i64 -> i64\nfn run n =\n    let fs = [apply_cmp]\n    let name = to_string n\n    let t = ref name\n    let k = fs[0] (\\a b -> a + b + String.length t)\n    let moved = name\n    k + moved.length + fs[0] (\\a b -> a * b)\nrun 12345 + setup 0",
+        // w09_bus_plus_fnparam_local
+        "def subscriber :: own Arc<Mutex<[unit -> i64]>> -> (own (unit -> i64) -> unit)\nfn subscriber bus = \\cb -> Mutex.with_lock (Arc.get (ref bus)) (\\slot -> Array.write 0 cb slot)\ndef setup :: i64 -> i64\nfn setup k =\n    let bus = Arc.new (Mutex.create [\\() -> 0])\n    let sub = subscriber (Arc.share (ref bus))\n    sub (\\() -> 5)\n    Mutex.with_lock (Arc.get (ref bus)) (\\slot -> slot[0] ())\ndef run_with :: (i64 -> i64) -> i64 -> i64\nfn run_with f n =\n    let hs = [\\(g: unit -> i64) -> g () + 1]\n    let name = to_string n\n    let t = ref name\n    hs[0] (\\() -> String.length t) + f 1\nrun_with (\\x -> x + 1) 12345 + setup 0",
+        // w15_bus_handlers_fnparam_after
+        "def subscriber :: own Arc<Mutex<[unit -> i64]>> -> (own (unit -> i64) -> unit)\nfn subscriber bus = \\cb -> Mutex.with_lock (Arc.get (ref bus)) (\\slot -> Array.write 0 cb slot)\ndef setup :: i64 -> i64\nfn setup k =\n    let bus = Arc.new (Mutex.create [\\() -> 0])\n    let sub = subscriber (Arc.share (ref bus))\n    sub (\\() -> 5)\n    Mutex.with_lock (Arc.get (ref bus)) (\\slot -> slot[0] ())\ndef run_with :: (i64 -> i64) -> i64 -> i64\nfn run_with f n =\n    let name = to_string n\n    let t = ref name\n    let hs = [\\(g: unit -> i64) -> g () + 1]\n    hs[0] (\\() -> String.length t) + f 1\nrun_with (\\x -> x + 1) 12345 + setup 0",
+        // r10_maybe_cb_ownsink
+        "def mk :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn mk a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let w = mk (Arc.share (ref a))\n    w (\\() -> 7)\n    let cbs = [\\(f: unit -> i64) -> f () * 3]\n    let text = to_string n\n    let bt = ref text\n    let k = cbs[0] (\\() -> String.length bt)\n    let moved = text\n    k + moved.length + Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 123456789",
+        // r3_handlers_ownsink_othertype
+        "def mk :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn mk a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef run :: i64 -> i64\nfn run n =\n    let handlers = [\\(f: unit -> i64) -> f () + 1, \\f -> f () * 2]\n    let r = { let text0 = to_string n; let text = ref text0; handlers[0] (\\() -> String.length text) }\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let w = mk (Arc.share (ref a))\n    w (\\() -> 7)\n    r + handlers[1] (\\() -> 1) + Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 123456789",
+        // r4_handlers_ownsink_sametype
+        "def mk :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> i64)\nfn mk a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> { Array.write 0 g slot; 0 })\ndef run :: i64 -> i64\nfn run n =\n    let handlers = [\\(f: unit -> i64) -> f () + 1, \\f -> f () * 2]\n    let r = { let text0 = to_string n; let text = ref text0; handlers[0] (\\() -> String.length text) }\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let w = mk (Arc.share (ref a))\n    let z = w (\\() -> 7)\n    r + z + handlers[1] (\\() -> 1) + Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 123456789",
+        // r9_record_handler_ownsink
+        "record Handler { name: string, run: (unit -> i64) -> i64 }\ndef mk :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn mk a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef invoke :: ref Handler -> i64 -> i64\nfn invoke h n =\n    let text0 = to_string n\n    let text = ref text0\n    h.run (\\() -> String.length text)\ndef run :: i64 -> i64\nfn run n =\n    let h = Handler { name: \"x\", run: \\f -> f () + 1 }\n    let r = invoke (ref h) n\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let w = mk (Arc.share (ref a))\n    w (\\() -> 7)\n    r + Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 2 (finding 9): with a `Drop.drop` that writes in the module, a closure that
+/// captured only references runs no code when it is dropped, so binding it or passing it by value
+/// stores nothing where its references reach.
+#[test]
+fn dropping_a_closure_runs_only_what_its_captures_drop() {
+    for main in [
+        // d6_writing_drop_local_closure_move
+        "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef work :: i64 -> i64\nfn work n =\n    let m = Mutex.create [\\() -> 1]\n    let rm = ref m\n    let text = to_string n\n    let bt = ref text\n    let f = \\() -> Mutex.with_lock rm (\\slot -> slot[0] ()) + String.length bt\n    let k = f () + f ()\n    let moved = text\n    k + moved.length + Mutex.with_lock (ref m) (\\slot -> slot[0] ())\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    { let s = Stash { cell: Arc.share (ref a), f: \\() -> 5 }; () }\n    work n + Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 123456789",
+        // d3_writing_drop_temp_closure
+        "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\ndef call_once :: own (unit -> i64) -> i64\nfn call_once f = f ()\ndef work :: i64 -> i64\nfn work n =\n    let m = Mutex.create [\\() -> 1]\n    let text = to_string n\n    let bt = ref text\n    let rm = ref m\n    let k = call_once (\\() -> Mutex.with_lock rm (\\slot -> slot[0] ()) + String.length bt)\n    let moved = text\n    k + moved.length + Mutex.with_lock (ref m) (\\slot -> slot[0] ())\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    { let s = Stash { cell: Arc.share (ref a), f: \\() -> 5 }; () }\n    work n + Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 2 (finding 8): a place that holds a dyn value is a place to store into only
+/// when a method of its vtables may store (its facts) or gives back a value through which a store
+/// may reach (`cell` returns a `ref Mutex`): an array of `dyn Shape` whose `area` stores nothing
+/// keeps a borrowed string free (`dyn1`, `dyn2`).
+#[test]
+fn a_dyn_value_is_a_store_target_only_through_methods_that_store() {
+    let shapes = "class Shape<'value> {\n    def area :: ref 'value -> i64\n}";
+    for main in [
+        // dyn2
+        "record Sq { s: i64 }\ninstance Shapes.Shape<Sq> {\n    fn area q = q.s * q.s\n}\ndef run :: i64 -> i64\nfn run n =\n    let shapes: [dyn Shapes.Shape] = [Dyn.of (Sq { s: 3 })]\n    let text = to_string n\n    let reporters = [\\(d: ref [dyn Shapes.Shape]) (s: ref string) -> Shapes.Shape.area (ref d[0]) + String.length s]\n    let k = reporters[0] (ref shapes) (ref text)\n    let moved = text\n    let mut cbs = [\\() -> 0]\n    let t = to_string 5\n    let b2 = ref t\n    Array.set 0 (\\() -> String.length b2) (ref mut cbs)\n    k + moved.length + cbs[0] () + Shapes.Shape.area (ref shapes[0])\nrun 123456789",
+        // dyn1
+        "record Sq { s: i64 }\ninstance Shapes.Shape<Sq> {\n    fn area q = q.s * q.s\n}\ndef run :: i64 -> i64\nfn run n =\n    let shapes: [dyn Shapes.Shape] = [Dyn.of (Sq { s: 3 })]\n    let text = to_string n\n    let bt = ref text\n    let reporters = [\\(d: ref [dyn Shapes.Shape]) (f: unit -> i64) -> Shapes.Shape.area (ref d[0]) + f ()]\n    let k = reporters[0] (ref shapes) (\\() -> String.length bt)\n    let moved = text\n    let mut cbs = [\\() -> 0]\n    let t = to_string 5\n    let b2 = ref t\n    Array.set 0 (\\() -> String.length b2) (ref mut cbs)\n    k + moved.length + cbs[0] () + Shapes.Shape.area (ref shapes[0])\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Shapes.tt", shapes), ("Main.tz", main)]);
+    }
+    for (boxes, main, at) in [
+        // v04_dyn_cell_method
+        (
+            "class Holder<'value> {\n    def cell :: ref 'value -> ref Mutex<[unit -> i64]>\n}",
+            "record Hold {r} { m: ref {r} Mutex<[unit -> i64]> }\ninstance Boxes.Holder<Hold> {\n    fn cell h = h.m\n}\ndef make {r} :: ref {r} Mutex<[unit -> i64]> -> dyn Boxes.Holder {r}\nfn make m = Dyn.of (Hold { m: m })\ndef wr {r} :: ref (dyn Boxes.Holder {r}) -> ref string -> i64\nfn wr d s = Mutex.with_lock (Boxes.Holder.cell d) (\\slot -> { Array.write 0 (\\() -> String.length s) slot; 1 })\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let d = make (ref m)\n    let mut ws = [wr]\n    let k = { let text0 = to_string n; ws[0] (ref d) (ref text0) }\n    let other = [to_string 777777, to_string 88888888]\n    k + Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            (14, 13),
+        ),
+        // v05_dyn_storing_method
+        (
+            "class Keeper<'value> {\n    def keep :: ref 'value -> ref string -> unit\n    def read :: ref 'value -> i64\n}",
+            "record K {r} { m: ref {r} Mutex<[unit -> i64]> }\ninstance Boxes.Keeper<K> {\n    fn keep k s = Mutex.with_lock k.m (\\slot -> Array.write 0 (\\() -> String.length s) slot)\n    fn read k = Mutex.with_lock k.m (\\slot -> slot[0] ())\n}\ndef make {r} :: ref {r} Mutex<[unit -> i64]> -> dyn Boxes.Keeper {r}\nfn make m = Dyn.of (K { m: m })\ndef kp {r} :: ref (dyn Boxes.Keeper {r}) -> ref string -> i64\nfn kp d s = { Boxes.Keeper.keep d s; 1 }\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let d = make (ref m)\n    let mut cs = [kp]\n    let k = { let text0 = to_string n; cs[0] (ref d) (ref text0) }\n    let other = [to_string 777777, to_string 88888888]\n    k + Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            (15, 13),
+        ),
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let error =
+                analyze_modules_with_edition(&[("Boxes.tt", boxes), ("Main.tz", main)], edition)
+                    .expect_err(main);
+            assert_eq!(
+                (error.code, error.kind, position(main, error.span.start)),
+                ("E1013", Some("assignment_extends_borrow"), at),
+                "edition {edition}\n{main}\n{}",
+                error.message
+            );
+        }
+    }
+}
+
+/// A31, review round 2 (finding 4): the error of a callee whose instance is a specialization of
+/// a generic function names the declaration (`'leak'`), not the instance (`'leak.$mono.2'`).
+#[test]
+fn the_error_of_a_generic_callee_names_its_declaration() {
+    for (main, at) in [
+        // g07_generic_known_writer
+        (
+            "def leak :: Copy<'b> => ((unit -> i64) -> 'b) -> i64 -> 'b\nfn leak w n =\n    let text = to_string n\n    let b = ref text\n    w (\\() -> String.length b)\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let mr = ref m\n    leak (\\g -> Mutex.with_lock mr (\\slot -> Array.write 0 g slot)) n\n    Mutex.with_lock (ref m) (\\slot -> slot[0] ())\nrun 123456789",
+            (10, 5),
+        ),
+        // g01_generic_callee_name
+        (
+            "def leak :: Copy<'b> => ((unit -> i64) -> 'b) -> i64 -> 'b\nfn leak w n =\n    let text = to_string n\n    let b = ref text\n    w (\\() -> String.length b)\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let mr = ref m\n    let ws = [\\(g: unit -> i64) -> Mutex.with_lock mr (\\slot -> Array.write 0 g slot)]\n    leak ws[0] n\n    Mutex.with_lock (ref m) (\\slot -> slot[0] ())\nrun 123456789",
+            (11, 5),
+        ),
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let error = analyze_with_edition(main, edition).expect_err(main);
+            assert_eq!(
+                (error.code, error.kind, position(main, error.span.start)),
+                ("E1013", Some("store_local_borrow_through_reference"), at),
+                "edition {edition}: {}",
+                error.message
+            );
+            assert!(
+                error.message.contains("'leak' passes it"),
+                "{}",
+                error.message
+            );
+            assert!(!error.message.contains("$mono"), "{}", error.message);
+        }
+    }
+}
+
+/// A31, review round 2 (found while answering it): code that the check does not see may store
+/// what the function value's own environment holds where that environment reaches: a closure that
+/// captured a borrow and a cell (`\() -> { Mutex.with_lock mr (...); 1 }`) puts the borrow into the
+/// cell when it runs, through an element of an array, a field, a returned array or an `IO`
+/// action. Main and the first round accepted these and read the freed string (they print 0, not
+/// 9).
+#[test]
+fn an_unseen_function_value_stores_what_its_environment_holds_where_it_reaches() {
+    for (main, at) in [
+        // v01_self_env_store
+        (
+            "def mkt :: ref Mutex<[unit -> i64]> -> ref string -> [unit -> i64]\nfn mkt mr text = [\\() -> { Mutex.with_lock mr (\\slot -> Array.write 0 (\\() -> String.length text) slot); 1 }]\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let k = { let text0 = to_string n; let text = ref text0; let ts = mkt (ref m) text; ts[0] () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0 + k * 0\nrun 123456789",
+            (6, 13),
+        ),
+        // v02_site_target
+        (
+            "def run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let mr = ref m\n    let k = { let text0 = to_string n; let t = ref text0; let f = \\(c: ref Mutex<[unit -> i64]>) -> { Mutex.with_lock c (\\slot -> Array.write 0 (\\() -> String.length t) slot); 1 }; let g = \\() -> f mr; let mut gs = [g]; gs[0] () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0 + k * 0\nrun 123456789",
+            (5, 13),
+        ),
+        // q01_io_map_writer
+        (
+            "def go :: ref Mutex<[unit -> i64]> -> ref string -> i64\nfn go mr text =\n    let act = IO.pure 1 |> IO.map (\\x -> { Mutex.with_lock mr (\\slot -> Array.write 0 (\\() -> String.length text) slot); x })\n    let! v = act\n    v\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let k = { let text0 = to_string n; go (ref m) (ref text0) }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0 + k * 0\nrun 123456789",
+            (9, 13),
+        ),
+        // q11_thunk_array_direct
+        (
+            "def run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let k = { let text0 = to_string n; let text = ref text0; let mr = ref m; let ts = [\\() -> { Mutex.with_lock mr (\\slot -> Array.write 0 (\\() -> String.length text) slot); 1 }]; ts[0] () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0 + k * 0\nrun 123456789",
+            (4, 13),
+        ),
+        // q13_thunk_record_own
+        (
+            "record Thunk { work: unit -> i64 }\ndef force :: own Thunk -> i64\nfn force t = t.work ()\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let k = { let text0 = to_string n; let text = ref text0; let mr = ref m; let t = Thunk { work: \\() -> { Mutex.with_lock mr (\\slot -> Array.write 0 (\\() -> String.length text) slot); 1 } }; force t }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0 + k * 0\nrun 123456789",
+            (7, 13),
+        ),
+    ] {
+        rejects_at(main, "E1013", "assignment_extends_borrow", at);
+    }
+}
+
 #[test]
 fn shared_types_have_reserved_names_and_no_abi() {
     for source in [

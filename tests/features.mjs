@@ -1989,6 +1989,16 @@ const suites = {
       // The cell holds the state after the first element, 9 + 1; last is 9 + 2.
       ["fold_state_comes_back", [], (9n + 1n) * 100n + (9n + 2n)],
       ["drop_stores_an_owned_function", [], 7n + 1n],
+      // Review round 2. "12345" has 5 characters: k = 5 + 1, table[1] 3 = 6, moved 5, sizes[0] = 2.
+      ["dispatch_table_then_move", [], 6n + 6n + 5n + 2n],
+      // k = 5 + 1, moved 5, the first call of the swapper returns the old 0.
+      ["other_type_handlers_then_move", [], 6n + 5n + 0n],
+      // "123456789" has 9 characters, doubled; ys[0] = 2; arr[0] () is the length 1 of "5".
+      ["callback_calls_a_callee_closure", [], 18n + 2n + 1n],
+      // f () = 1 + 5 twice, moved 5, m[0] () = 1.
+      ["closure_over_references_then_move", [], 12n + 5n + 1n],
+      // k = 5, moved 5, h.run (ref moved) = 5.
+      ["handler_record_then_move", [], 5n + 5n + 5n],
     ],
   },
   fixed_arrays: {

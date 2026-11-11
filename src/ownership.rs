@@ -1820,8 +1820,11 @@ fn joint_facts(
 ///
 /// `references` (`CallFacts::reference_sinks`) says that some function stores a shared
 /// reference parameter itself, or anything. `owned_types` (`CallFacts::owned_types`) are the types
-/// of the function values that own their cell and of those that hold a function value, a dyn
-/// value or an `Owned.Function` in their environment.
+/// of the function values that own their cell and of those that hold, in their environment, a
+/// value that may hold one of them (to a fixed point); `sink_types` (`CallFacts::sink_types`) are
+/// those of the sinks and of the function values that hold one in the same way. A bound value that
+/// names a function holds nothing. The dyn types whose methods may store or give back a place to
+/// store into are `dyn_targets` (`CallFacts::dyn_targets`).
 fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) -> SinkFlags {
     let types = module.types();
     // A function keeps a shared reference parameter when it stores the parameter's own loan, or
@@ -1869,7 +1872,9 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
     // The types of the function values that store into what their environment reaches, and of
     // those that may hold such a value in their environment.
     let mut sink_types = BTreeSet::new();
-    let mut holders = BTreeSet::new();
+    // The function values that hold values that hide an environment, with the types of those
+    // values: such a function value reaches the owners and the sinks that those values reach.
+    let mut holders: Vec<(Type, Vec<Type>)> = Vec::new();
     // The types of the values that the module hands to code that runs later (`SinkFlags::escapes`).
     let mut escaping: BTreeSet<Type> = BTreeSet::new();
     // The types of the function values that `Owned.function` wraps, and whether a builtin takes
@@ -1886,7 +1891,7 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
     let site = |id: usize,
                 bound: &mut dyn Iterator<Item = &TypedExpr>,
                 locals: &BTreeSet<usize>|
-     -> (bool, bool, bool) {
+     -> (bool, bool, Vec<Type>) {
         let bound: Vec<&TypedExpr> = bound.collect();
         let facts = &stores[id];
         let count = bound.len();
@@ -1910,10 +1915,13 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                 || bound
                     .iter()
                     .any(|value| !named(value, locals) && value.ty.owns_mutable_cell(&types)));
-        let holds = bound.iter().any(|value| {
-            !named(value, locals) && hides_environment(&without_views(&value.ty), &types)
-        });
-        (sink, owns, holds)
+        let held = bound
+            .iter()
+            .filter(|value| !named(value, locals))
+            .map(|value| without_views(&value.ty))
+            .filter(|ty| hides_environment(ty, &types))
+            .collect();
+        (sink, owns, held)
     };
     // A call of a function value that the scan does not see (or of the function that a named
     // function returns) whose result is a function: it may be that function value with the
@@ -1921,20 +1929,24 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
     // is a place that a store may reach.
     let staged = |bound: &mut dyn Iterator<Item = &TypedExpr>,
                   result: &Type|
-     -> (bool, bool, bool) {
+     -> (bool, bool, Vec<Type>) {
         if !matches!(result, Type::Function(..)) {
-            return (false, false, false);
+            return (false, false, Vec::new());
         }
         let bound: Vec<Type> = bound.map(|value| without_views(&value.ty)).collect();
-        let hides = bound.iter().any(|ty| hides_environment(ty, &types));
-        let sink = hides
+        let held: Vec<Type> = bound
+            .iter()
+            .filter(|ty| hides_environment(ty, &types))
+            .cloned()
+            .collect();
+        let sink = !held.is_empty()
             || bound.iter().any(|ty| {
                 ty.carries_loans(&types) || types.reaches(ty, |part| part.is_mutable_cell(&types))
             });
         let owns = sink && bound.iter().any(|ty| ty.owns_mutable_cell(&types));
-        (sink, owns, hides)
+        (sink, owns, held)
     };
-    let mut found = |(sink, owns, holds): (bool, bool, bool), ty: &Type| {
+    let mut found = |(sink, owns, held): (bool, bool, Vec<Type>), ty: &Type| {
         sinks |= sink;
         owned |= owns;
         if sink {
@@ -1943,8 +1955,8 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
         if owns {
             owned_types.insert(sink_type(ty));
         }
-        if holds {
-            holders.insert(sink_type(ty));
+        if !held.is_empty() {
+            holders.push((sink_type(ty), held));
         }
     };
     for function in &module.functions {
@@ -2033,7 +2045,7 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                                 .iter()
                                 .any(|value| may_reach_store(&value.ty, &types))
                         {
-                            found((true, false, false), &expression.ty);
+                            found((true, false, Vec::new()), &expression.ty);
                         }
                         // A dyn value without a region holds no borrow where it is made
                         // (A30), and its type says so wherever it goes afterwards.
@@ -2046,7 +2058,7 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                                     || hides_environment(&value.ty, &types)
                             })
                         {
-                            found((true, true, false), &expression.ty);
+                            found((true, true, Vec::new()), &expression.ty);
                         }
                     }
                 }
@@ -2083,12 +2095,38 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                 .expect("collecting function values cannot fail");
         }
     }
-    // A function value that holds another in its environment reaches whatever that one does.
+    // A function value that holds another in its environment reaches whatever that one does:
+    // its type joins those of the owners (and of the sinks) when a value that it holds may hold
+    // one of them, until no more do. A closure that captured a `ref` to a record whose cell holds
+    // functions of no such type reaches none.
+    let close = |set: &mut BTreeSet<Type>| loop {
+        let dynamic = set.iter().any(|ty| matches!(ty, Type::Dyn(_)));
+        let mut grew = false;
+        for (ty, held) in &holders {
+            if set.contains(ty) {
+                continue;
+            }
+            let reaches = held.iter().any(|value| {
+                types.reaches(value, |part| match part {
+                    Type::Function(..) => owned_suffix(part, usize::MAX, set),
+                    Type::Dyn(_) => dynamic,
+                    _ => part.is_owned_function(&types),
+                })
+            });
+            if reaches {
+                set.insert(ty.clone());
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    };
     if sinks {
-        sink_types.extend(holders.iter().cloned());
+        close(&mut sink_types);
     }
     if owned {
-        owned_types.extend(holders);
+        close(&mut owned_types);
     }
     // Code that gets a dyn value reaches the value that it stores only through the methods of
     // the vtables: a store reaches through it when one of them may store (its facts), or gives
