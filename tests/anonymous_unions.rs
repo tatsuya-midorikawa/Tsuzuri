@@ -3006,6 +3006,37 @@ fn widening_maps_generic_members() {
     );
 }
 
+#[test]
+fn widening_a_generic_read_parameter_needs_copy() {
+    // Edition 2027 reads a generic parameter, and its body takes the value out of the view only
+    // when the instance is Copy, as `\x v -> v` does without a union (review round 1): the body
+    // widens, an instance with an i64 runs, and an instance with a string is E1005 at the call.
+    // `own` takes the value. By hand: the payload 2, the length 2 of "bc".
+    let keep = "def keep :: 'a -> (Maybe<'a> | i64) -> (Maybe<'a> | i64 | bool) = \\_x v -> v\n\n";
+    let number = "def number :: own (Maybe<i64> | i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? Maybe<i64> as m -> (match m with | Some x -> x | None -> 0)\n    | _ -> -1\n\n";
+    let text = "def text :: own (Maybe<string> | i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? Maybe<string> as m -> (match m with | Some s -> s.length | None -> 0)\n    | _ -> -1\n\n";
+    passes(
+        &format!("{keep}{number}test \"copy\" =\n    assert (number (keep 1 (Some 2)) == 2)\n"),
+        Edition::E2027,
+    );
+    let source =
+        format!("{keep}{text}def f :: i64 -> i64 = \\_n -> text (keep \"a\" (Some \"bc\"))\n");
+    let error = rejects_in(&source, Edition::E2027, "E1005", "no_instance");
+    assert_eq!(
+        error.message,
+        "no instance for Copy<string>; define an instance or use a supported type"
+    );
+    let at = source.find("keep \"a\"").unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + "keep".len()));
+    passes(
+        &format!(
+            "{}{text}test \"own\" =\n    assert (text (keep \"a\" (Some \"bc\")) == 2)\n",
+            keep.replace("-> (Maybe<'a> | i64) ->", "-> own (Maybe<'a> | i64) ->")
+        ),
+        Edition::E2027,
+    );
+}
+
 /// The lines of the definition of the function `name` of module `Main` in `ir`.
 fn function_body<'ir>(ir: &'ir str, name: &str) -> &'ir str {
     let start = ir
@@ -3203,7 +3234,8 @@ fn narrows_to_sub_unions() {
         "type_mismatch",
     );
     assert_eq!(error.message, "expected bool, found (i64 | f64)");
-    // A lambda parameter and a `for` pattern trap for a value of another member.
+    // A lambda parameter traps for a value of another member (a `for` pattern: see
+    // `narrowing_in_loops_records_arrays_and_lists`).
     traps(
         &format!(
             "{NUM}def only :: own (f64 | i64 | string) -> i64 = \\(:? (i64 | f64) as n) -> num n\n\ntest \"other member\" = assert (only \"s\" == 0)\n"
@@ -3213,6 +3245,51 @@ fn narrows_to_sub_unions() {
     // An alias names the narrowed union as well.
     accepts(
         "type Number = (i64 | f64)\ndef f :: own (f64 | i64 | string) -> Number = \\v ->\n    match v with\n    | :? Number as n -> n\n    | :? string -> 0\n",
+    );
+}
+
+#[test]
+fn narrowing_in_loops_records_arrays_and_lists() {
+    // A narrowing is a pattern like any other (review round 1): a `for` pattern, a record
+    // field, array elements and the head of a list. By hand from `num` and `text`.
+    let program = format!(
+        "{NUM}{TEXT}record Cell {{ value: (f64 | i64 | string), count: i64 }}\n\n\
+         def looped :: own [(f64 | i64 | string)] -> i64 = \\items ->\n    let mut total = 0i64\n    for (:? (i64 | f64) as n) in items do\n        total = total + num n\n    total\n\n\
+         def cell :: own Cell -> i64 = \\c ->\n    match c with\n    | {{ value = :? (i64 | f64) as n, count = k }} -> num n * 100 + k\n    | {{ value = :? string as s, count = k }} -> s.length * 100 + k\n\n\
+         def owner :: own Cell -> i64 = \\c ->\n    match c with\n    | {{ value = :? (i64 | string) as x }} -> text x\n    | {{ value = :? f64 }} -> -1\n\n\
+         def pair :: own [(f64 | i64 | string)] -> i64 = \\xs ->\n    match xs with\n    | [:? (i64 | f64) as n, :? (i64 | f64) as m] -> num n * 100 + num m\n    | _ -> -1\n\n\
+         def head :: own [|(f64 | i64 | string)|] -> i64 = \\list ->\n    match list with\n    | (:? (i64 | f64) as n) :: _ -> num n\n    | (:? string as s) :: _ -> s.length * 10\n    | [||] -> -1\n\n\
+         test \"patterns\" =\n    \
+         assert (looped [1, 2.5, 3] == 2 + 3 + 6)\n    \
+         assert (looped [] == 0)\n    \
+         assert (cell (Cell {{ value: 4, count: 7 }}) == 807)\n    \
+         assert (cell (Cell {{ value: 0.5, count: 2 }}) == 2)\n    \
+         assert (cell (Cell {{ value: \"ab\", count: 3 }}) == 203)\n    \
+         assert (owner (Cell {{ value: \"abc\", count: 1 }}) + owner (Cell {{ value: 5, count: 1 }}) == 3 + 5)\n    \
+         assert (owner (Cell {{ value: 1.5, count: 1 }}) == -1)\n    \
+         assert (pair [4, 1.5] == 803)\n    \
+         assert (pair [4, \"x\"] + pair [1] == -2)\n    \
+         assert (head [|2.5, 9|] + head [|\"xyz\"|] + head [||] == 3 + 30 - 1)\n"
+    );
+    passes(&program, Edition::E2027);
+    // A `for` pattern traps for an element of another member.
+    traps(
+        &format!(
+            "{NUM}def looped :: own [(f64 | i64 | string)] -> i64 = \\items ->\n    let mut total = 0i64\n    for (:? (i64 | f64) as n) in items do\n        total = total + num n\n    total\n\ntest \"other member\" = assert (looped [1, \"s\"] == 0)\n"
+        ),
+        Edition::E2027,
+    );
+    // Eleven narrowings of two members in one pattern make 2^11 = 2048 alternatives, over the
+    // limit of 1024.
+    let tests = vec![":? (i64 | f64)"; 11].join(", ");
+    let wildcards = vec!["_"; 11].join(", ");
+    let values = vec!["(f64 | i64 | string)"; 11].join(" * ");
+    rejects(
+        &format!(
+            "def f :: own ({values}) -> i64 = \\t ->\n    match t with\n    | ({tests}) -> 1\n    | ({wildcards}) -> 0\n"
+        ),
+        "E1017",
+        "pattern_alternatives_limit",
     );
 }
 
