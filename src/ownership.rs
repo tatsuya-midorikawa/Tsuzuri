@@ -1620,6 +1620,10 @@ fn joint_facts(
                 // The others were checked under the facts that their callees have now, so they stay a
                 // fixed point of their part of the graph.
                 let mut unsettled = std::mem::take(&mut queued);
+                // The bodies that wait for the functions that the flags read have no facts yet.
+                if staged {
+                    unsettled.extend(order.iter().copied().filter(|id| !first.contains(id)));
+                }
                 let mut pending: Vec<usize> = unsettled.iter().copied().collect();
                 while let Some(callee) = pending.pop() {
                     for user in dependents.get(&callee).into_iter().flatten() {
@@ -9787,6 +9791,48 @@ mod retention_tests {
             partial,
             "some budget settles `a28_pass` but not the recursive pair"
         );
+    }
+
+    /// A31, review round 2: the functions that the sink flags read are checked first
+    /// (`flag_sites`); when the checks run out before the others are checked, those others store
+    /// anything, as an unsettled function does, and every budget gives facts that are either the
+    /// fixed point's or `top`.
+    #[test]
+    fn an_exhausted_budget_before_the_other_bodies_leaves_them_storing_anything() {
+        let module = crate::analyze(
+            "def a31_put :: own (unit -> i64) -> ref mut [(unit -> i64)..] -> unit\nfn a31_put f target = Array.write 0 f target\n\
+             def a31_writer :: ref Mutex<[unit -> i64]> -> ((unit -> i64) -> unit)\nfn a31_writer m = \\g -> Mutex.with_lock m (\\slot -> Array.write 0 g slot)\n\
+             let m = Mutex.create [\\() -> 0]\nlet w = a31_writer (ref m)\nw (\\() -> 1)\n\
+             let mut a = [\\() -> 1]\na31_put (\\() -> 2) (ref mut a)\na[0] () + Mutex.with_lock (ref m) (\\slot -> slot[0] ())",
+        )
+        .unwrap();
+        let closed = closed_returns(&module);
+        let lending = lending_bodies(&module, false);
+        let put = module
+            .functions
+            .iter()
+            .position(|function| function.name == "a31_put")
+            .expect("a31_put");
+        let full = joint_facts(&module, &closed, &lending, false, None);
+        assert_eq!(
+            full.stores[put],
+            StoreFacts {
+                stores: BTreeSet::from([(0, Part::Value, 1)]),
+                ..StoreFacts::default()
+            }
+        );
+        let mut topped = false;
+        for budget in 0..24 {
+            let facts = joint_facts(&module, &closed, &lending, false, Some(budget));
+            for (function, stores) in facts.stores.iter().enumerate() {
+                assert!(
+                    stores.top || *stores == full.stores[function],
+                    "{budget} {function}: {stores:?}"
+                );
+            }
+            topped |= facts.stores[put].top;
+        }
+        assert!(topped, "some budget runs out before `a31_put` is checked");
     }
 
     /// A31: the store facts of the bodies. `Array.write`'s generated function stores its value

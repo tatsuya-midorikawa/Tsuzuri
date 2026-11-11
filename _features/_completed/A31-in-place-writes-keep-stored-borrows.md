@@ -899,3 +899,33 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 - 型による区別は、型が同じなら別の関数値でも同じに扱います。所有する関数値と型が同じハンドラーを、本体の見えない形（関数の結果、フィールド、`let mut`）で呼ぶと、ハンドラーが書き込まなくても借用が残ります。不変な配列リテラル・レコードリテラルに束縛したハンドラーは `known_parts` で受理します。文書（`lifetimes.md`）に例を書きました。
 - 隠れた環境の規則は、どのセルかを区別しません。関数の中で作ったセルを所有する関数値へ局所値の借用を渡し、所有する関数値と型の同じ仮引数を持つ関数（`r2/adv/w18`）は、仮引数がそのセルを共有しえないのに `E1013` です（第 1 回の先端から同じ。基準は受理）。セルの同一性を追う変更が要るので、この対応では変えていません。
 - 単体テスト `retention_tests::store_facts_follow_what_the_bodies_store` の `Source` の期待を、欄の意味の変更に合わせて `hides: false, target: true` にしました（`hides` は「所有する関数値を持ちうるかセルに届く」になり、この単体テストのプログラムには所有する関数値がありません。`target` は新しい欄です）。単体テスト `retention_tests::the_sink_flags_follow_the_function_values_of_the_module` の 3 つめの事例（`a31_mk`）の `owned_types` の数を 2 から 1 にしました。数えていた 2 つめは、ロックへ渡すコールバック `\slot -> Array.write 0 g slot`（`g` を束縛した holder）で、`g` の型 `unit -> i64` は所有する関数値の型ではなく、それを持ちうる型でもないので、holder の不動点では加わりません（上の holder の変更）。ほかの既存のテストの期待は変えていません。
+- 予算を超えたときの扱いを、段階を分けた不動点に合わせました。旗が読む関数を確定させる前に検査が尽きたら、まだ検査していないほかの本文も未確定として `top` にします。どれかの `Drop.drop` が書き込みうるときは、値を破棄する本文がその `Drop.drop` の事実を読むので、すべての本文を `Drop.drop` の依存先にし、`Drop.drop` も先に確定させます。単体テスト `retention_tests::an_exhausted_budget_before_the_other_bodies_leaves_them_storing_anything` を足しました。
+
+確かめたこと（2026-11-11。ログは `target/scratch/a31/r2/`）:
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` は警告なし。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast` は `3952d22a` で 3013 件すべて成功、4 件 skip（1159 秒、`nextest-final.log`）。対応前の 3006 件から増えた 7 件は `tests/rc.rs` の新しいテストです。その後の変更（予算を超えたときの段階の扱いと、その単体テスト）の後は、`--lib retention_tests` 10 件、`--test rc --test mutable_slices --test currying --test borrowed_records` 96 件を再実行して成功しました。
+- レビューの 2 回分のプログラム: 第 2 回の 171 個（338 件）と、第 1 回のディレクトリの 573 個（1146 件。第 1 回の 396 個と、その後に足された 177 個）を `r2/corpora.sh` で確かめました。指摘の安全なプログラム 32 個はすべて受理になり、`-O0`・`-O3` の値が基準と同じです（`run-c.json`・`run-base.json`）。基準が受理する危険なプログラムで対応後に受理されるものはありません。第 1 回の先端から変わったのは、上の受理になった 32 個（64 件）と、新たに拒否になった危険な `q` の 14 個（28 件）と、診断の位置が変わった `g18`・`g19`（どちらも拒否のまま。`borrow_outlives_block` から、呼び出しの位置の `store_local_borrow_through_reference` へ）だけです。この対応で書いた危険な形 `r2/adv/`（`v01`〜`v05`、`w17`〜`w21`）はすべて拒否です（`w21` の 2027 は型の誤り）。
+- 154 個の照合（`compare.mjs`）: edition 2027・2026 とも期待と違うもの 0（`r2/compare-2027.txt`・`compare-2026.txt`）。
+- 手順 5 の比較（`step5.mjs`）: `tests/fixtures/*`・`examples/*` の 154 個の `check --json` と `build --no-cache --emit llvm` が基準とすべて同じ（`r2/step5-final.txt`。`in_place_writes` の fixture に足した 5 件も基準と同じ値で受理されます）。
+- E2E（`3952d22a` のバイナリ、`r2/e2e-final.log`）: `node tests/features.mjs <bin> <suite>` の `in_place_writes` 41 件（基準のバイナリでも 41 件同じ値で成功）、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`slices` 11 件、`matrix_view` 303 件、`concurrency` 15 件（native と WASM の `-O0`・`-O3`）、`sync_types` 14 件・`tzroutine` 16 件（native の `-O0`・`-O3`）、`node tests/control.mjs` 701 件、`node tests/user_drop.mjs`（native と WASM の `-O0`・`-O3`）。すべて成功。
+- 文書: `TSUZURI_BIN=<bin> node scripts/check-docs.mjs`（`lifetimes.md`・`drop.md`）は `Docs: 2 pages, 35 links, 9 checked examples, 18 native runs (O0/O3)` で成功。`gen-docs.mjs --check` は `19 blocks checked, 0 stale`、`check-cli-docs.mjs` は `4 checks, 0 failed`、`check-guide-lite.mjs` は `88 references checked, 0 failed`、`check-links.mjs --into _features/README.md` は `0 broken`。診断の種類は増やしていません。
+- 性能（`TSUZURI_TIME_PASSES=1 tsuzuri check --edition 2027` の `ownership` の相の中央値、ms、基準・対応前・対応後を交互に 5 回。共有の機械）:
+
+| プログラム | 基準 | 対応前（`d9b2a96f`） | 対応後 |
+| --- | --- | --- | --- |
+| `p01_many_locals_50` | 6.0 | 32.2 | 6.6 |
+| `p01_many_locals_200` | 85.0 | 452.7 | 84.2 |
+| `p01_many_locals_600` | 820 | 4847 | 796 |
+| `p01_many_locals_1200` | 3428 | 21875 | 3455 |
+| `perf_locals_300` | 153 | 1226 | 399 |
+| `perf_locals_600` | 671 | 4437 | 1059 |
+| `p05_many_locals_600_nosink` | 382 | 825 | 429 |
+| `perf_chain_400` | 3.2 | 22.9 | 18.5 |
+| `p03_nested_24`・`p06_nested_loops_8`・`perf_twice_12`・第 1 回の `blow_24` | 0.1〜0.2 | 0.7〜1.7 | 0.4〜1.3 |
+
+  `p01` は `store_hidden` を通らなくなり、基準と同じです。`perf_locals` はセルを所有する関数値を実際に呼ぶ形で、呼び出しごとに同じ条件の型の局所値すべてへ足すので、基準の 1.6〜2.6 倍です（どちらも 2 乗で増えます）。fixture（`hash_map`・`list_fsharp`・`array_fsharp`・`vec_dotnet`・`rc`・`tzroutine`、21 回の中央値）は基準と同じ程度です（`r2/time-fixtures.txt`）。時間の閾値は置きません。
+
+更新した文書: `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`（現在の制限: 配列・レコードのリテラルのハンドラー、dyn 値の場所の規則、環境へ書き込む関数値を作る所の一覧と型による区別、関数値自身の環境の値の格納、呼び出し先の閉包を引数なしで呼ぶ形、セルを所有する関数値の規則の引数と局所値の条件、型が同じハンドラーの例。指摘 11）、`drop.md`（関数値の破棄は作った式で決めること）、`docs/language.md`・`docs/architecture.md`（書き込みの事実の段落）、`_features/README.md`（A31 の行）。
+
+変えたファイル: `src/ownership.rs`、`src/ownership_control.rs`、`tests/rc.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、上の文書、このチケット。
