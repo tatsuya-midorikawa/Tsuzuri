@@ -170,10 +170,17 @@ impl<'a> Checker<'a, '_> {
     ) -> Result<bool, Diagnostic> {
         let temporary = !Self::is_place(source);
         if temporary {
-            let value = self.eval(source, Use::Consume, live)?;
+            // A31: the temporary lives in the local until the match or loop ends, where it is
+            // dropped: the binding applies the drop hook, as a `let` does.
+            let mark = self.hidden_log.len();
+            self.bound_next = true;
+            let mut value = self.eval(source, Use::Consume, live)?;
+            self.absorb_hidden(mark, &mut value, &local.ty);
+            self.drop_stores(&value, &local.ty, source.span, None);
             self.state
                 .locals
                 .insert(local.id, (self.declarations[&local.id], value));
+            self.drop_keeps_self(local.id, &local.ty, source.span);
         } else {
             let places = self.place(source, live)?;
             let value = self.read_places(source, Use::Read, places.clone())?;
@@ -205,6 +212,7 @@ impl<'a> Checker<'a, '_> {
                 parents: via,
                 view: Some(local.ty.clone()),
                 span: projection.span,
+                share: false,
             });
         }
         let root = Place {

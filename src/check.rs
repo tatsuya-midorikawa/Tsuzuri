@@ -935,6 +935,23 @@ impl Type {
                 && arguments.iter().any(|argument| argument.carries_loans(types)))
     }
 
+    /// A31: whether a value of this type stores (not through a reference) a value of a type
+    /// that `found` accepts.
+    pub(crate) fn stores_some(
+        &self,
+        types: &TypeContext<'_>,
+        found: impl Fn(&Type) -> bool,
+    ) -> bool {
+        !types.stored_all(self, |part| !found(part))
+    }
+
+    /// A31: whether a value of this type owns a mutable cell (`is_mutable_cell`): it stores one,
+    /// or an `Rc` or `Arc` that it stores shares one, without a reference on the way. A function
+    /// value that captures such a value by value shares the cell with its copies.
+    pub(crate) fn owns_mutable_cell(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |part| !part.is_mutable_cell(types))
+    }
+
     /// A28: whether code that receives a value of this type may write into a place that the giver
     /// reaches. That needs an exclusive reference (a `ref mut`, or a record with exclusive regions
     /// such as `MatrixView.Mut`; counted when `exclusive` is true) or a mutable cell
