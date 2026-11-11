@@ -2072,6 +2072,227 @@ fn an_unseen_function_value_stores_what_its_environment_holds_where_it_reaches()
     }
 }
 
+/// A31, review round 3 (finding 1): `Seq.next` runs the step function that the sequence holds, a
+/// function value of the module: what that function stores (a borrow written into a `Mutex` that
+/// it captured, or that an `Arc` it captured shares) stays in the cell, whether `Seq.next` is
+/// called directly, by `Seq.to_array`, `Seq.map`, `Seq.unfold`, a `for` loop or a helper that
+/// gets the sequence, and whether a lambda or a named function builds it. The twins whose text
+/// outlives the cell stay accepted (values 9 in the `in_place_writes` suite).
+#[test]
+fn a_step_function_that_seq_next_runs_keeps_what_it_stores() {
+    for (main, code, kind, at) in [
+        // b02_seq_next_arc
+        (
+            "def run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    { let text0 = to_string n; let t = ref text0; let b = Arc.share (ref a); let s = Seq.defer (\\() -> { Mutex.with_lock (Arc.get (ref b)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); (Seq.empty(), Maybe.Some 1) }); let r = Seq.next s; () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            "E1013",
+            "assignment_extends_borrow",
+            (4, 5),
+        ),
+        // b04_seq_to_array_arc
+        (
+            "def run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    { let text0 = to_string n; let t = ref text0; let b = Arc.share (ref a); let s = Seq.defer (\\() -> { Mutex.with_lock (Arc.get (ref b)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); (Seq.empty(), Maybe.Some 1) }); let r = Seq.to_array s; () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            "E1013",
+            "assignment_extends_borrow",
+            (4, 5),
+        ),
+        // b05_seq_unfold_arc
+        (
+            "def run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    { let text0 = to_string n; let t = ref text0; let b = Arc.share (ref a); let s = Seq.unfold (\\k -> { Mutex.with_lock (Arc.get (ref b)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); if k < 1 then Maybe.Some (k, k + 1) else Maybe.None }) 0; let r = Seq.to_array s; () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            "E1013",
+            "assignment_extends_borrow",
+            (4, 5),
+        ),
+        // b06_seq_map_arc
+        (
+            "def run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let nums = [1, 2]\n    { let text0 = to_string n; let t = ref text0; let b = Arc.share (ref a); let s = Array.to_seq (ref nums) |> Seq.map (\\x -> { Mutex.with_lock (Arc.get (ref b)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); 1 }); let r = Seq.to_array s; () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            "E1013",
+            "assignment_extends_borrow",
+            (5, 5),
+        ),
+        // b07_seq_foreach
+        (
+            "def run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let mut total = 0\n    { let text0 = to_string n; let t = ref text0; let b = Arc.share (ref a); let s = Seq.defer (\\() -> { Mutex.with_lock (Arc.get (ref b)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); (Seq.empty(), Maybe.Some 1) }); for x in s do total = total + x }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) + other.length * 0 + total * 0\nrun 123456789",
+            "E1013",
+            "assignment_extends_borrow",
+            (5, 5),
+        ),
+        // b08_seq_next_local_mutex
+        (
+            "def run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let mr = ref m\n    { let text0 = to_string n; let t = ref text0; let s = Seq.defer (\\() -> { Mutex.with_lock mr (\\slot -> Array.write 0 (\\() -> String.length t) slot); (Seq.empty(), Maybe.Some 1) }); let r = Seq.next s; () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            "E1013",
+            "assignment_extends_borrow",
+            (5, 5),
+        ),
+        // c05_seq_next_fnparam
+        (
+            "def pump :: own Seq<i64> -> i64\nfn pump s =\n    match Seq.next s with\n    | (_, Maybe.Some v) -> v\n    | (_, Maybe.None) -> 0\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    { let text0 = to_string n; let t = ref text0; let b = Arc.share (ref a); let k = pump (Seq.defer (\\() -> { Mutex.with_lock (Arc.get (ref b)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); (Seq.empty(), Maybe.Some 1) })); () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            "E1013",
+            "assignment_extends_borrow",
+            (9, 5),
+        ),
+        // c06_seq_defer_named
+        (
+            "def stash :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> Seq<i64>\nfn stash b f = Seq.defer (\\() -> { Mutex.with_lock (Arc.get (ref b)) (\\slot -> Array.write 0 f slot); (Seq.empty(), Maybe.Some 1) })\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    { let text0 = to_string n; let t = ref text0; let s = stash (Arc.share (ref a)) (\\() -> String.length t); let r = Seq.next s; () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            "E1013",
+            "assignment_extends_borrow",
+            (6, 5),
+        ),
+        // m07_seq_move_after (review round 1)
+        (
+            "def first :: own Seq<i64> -> i64\nfn first seq =\n    match Seq.next seq with\n    | (_, Maybe.Some v) -> v\n    | (_, Maybe.None) -> 0\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let text0 = to_string n\n    let text = ref text0\n    let mr = ref m\n    let seq = Seq.defer (\\() -> { Mutex.with_lock mr (\\slot -> Array.write 0 (\\() -> String.length text) slot); (Seq.empty(), Maybe.Some 1) })\n    let k = first seq\n    let moved = text0\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0 + k * 0 + moved.length * 0\nrun 123456789",
+            "E1014",
+            "borrow_conflict",
+            (14, 17),
+        ),
+    ] {
+        rejects_at(main, code, kind, at);
+    }
+    for main in [
+        // b02_twin
+        "def run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let text0 = to_string n\n    { let t = ref text0; let b = Arc.share (ref a); let s = Seq.defer (\\() -> { Mutex.with_lock (Arc.get (ref b)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); (Seq.empty(), Maybe.Some 1) }); let r = Seq.next s; () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+        // b07_twin
+        "def run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let mut total = 0\n    let text0 = to_string n\n    { let t = ref text0; let b = Arc.share (ref a); let s = Seq.defer (\\() -> { Mutex.with_lock (Arc.get (ref b)) (\\slot -> Array.write 0 (\\() -> String.length t) slot); (Seq.empty(), Maybe.Some 1) }); for x in s do total = total + x }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) + other.length * 0 + total * 0\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 3 (finding 2): a lambda that hands a captured function value to a call of
+/// another (`\() -> h g` in `twice`) stores nothing where its environment reaches: the function
+/// value is stored into only by its own code. A module that writes a closure in place keeps such
+/// combinators accepted in edition 2027, where the lambdas' parameters are read parameters.
+#[test]
+fn a_lambda_that_hands_a_captured_function_value_on_is_no_sink() {
+    for main in [
+        // f01_twice_no_owner
+        "def twice :: ((unit -> i64) -> i64) -> (unit -> i64) -> i64\nfn twice h g = h (\\() -> h g) + h g\ndef run :: i64 -> i64\nfn run n =\n    let mut arr = [\\() -> 0]\n    Array.write 0 (\\() -> 7) (ref mut arr)\n    let s = to_string n\n    let b = ref s\n    twice (\\a3 -> twice (\\a2 -> twice (\\a1 -> twice (\\a0 -> twice (\\x -> x ()) a0) a1) a2) a3) (\\() -> String.length b) + arr[0] ()\nrun 3",
+        // f03_twice_two_levels
+        "def twice :: ((unit -> i64) -> i64) -> (unit -> i64) -> i64\nfn twice h g = h (\\() -> h g) + h g\ndef run :: i64 -> i64\nfn run n =\n    let mut arr = [\\() -> 0]\n    Array.write 0 (\\() -> 7) (ref mut arr)\n    let s = to_string n\n    let b = ref s\n    twice (\\a0 -> twice (\\x -> x ()) a0) (\\() -> String.length b) + arr[0] ()\nrun 3",
+        // f06_min_1
+        "def twice :: ((unit -> i64) -> i64) -> (unit -> i64) -> i64\nfn twice h g = h (\\() -> h g)\ndef run :: i64 -> i64\nfn run n =\n    let mut arr = [\\() -> 0]\n    Array.write 0 (\\() -> 7) (ref mut arr)\n    twice (\\a0 -> twice (\\x -> x ()) a0) (\\() -> n) + arr[0] ()\nrun 3",
+        // f07_d
+        "def bracket :: ((unit -> i64) -> i64) -> (unit -> i64) -> i64\nfn bracket body g = body (\\() -> body g)\ndef run :: i64 -> i64\nfn run n =\n    let mut arr = [\\() -> 0]\n    Array.write 0 (\\() -> 7) (ref mut arr)\n    let total = Array.map (\\i -> bracket (\\k -> bracket (\\x -> x () + i) k) (\\() -> i)) [1, 2, 3]\n    Array.sum (ref total) + arr[0] ()\nrun 3",
+        // perf_twice_4 (review round 2)
+        "def mk :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\nfn mk a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\ndef twice :: ((unit -> i64) -> i64) -> (unit -> i64) -> i64\nfn twice h g = h (\\() -> h g) + h g\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let w = mk (Arc.share (ref a))\n    w (\\() -> 7)\n    let s = to_string n\n    let b = ref s\n    twice (\\a3 -> twice (\\a2 -> twice (\\a1 -> twice (\\a0 -> twice (\\x -> x ()) a0) a1) a2) a3) (\\() -> String.length b)\nrun 3",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 3 (finding 3): with a `Drop.drop` that writes in the module, a record literal
+/// of a reference and a lambda over one runs no code when it is dropped, whether the caller drops
+/// it or the callee drops a part of it (a copy of `c.cb` that it calls, a drop-only store fact);
+/// so does an immutable local bound to one. A `Stash` that the callee builds from the parts and
+/// drops still stores (edition 2026: the callee writes through the record's `ref mut` field).
+#[test]
+fn dropping_a_literal_runs_only_what_its_parts_drop() {
+    for main in [
+        // g22_drop_hook_closure_buf
+        "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\nrecord Ctx {r} { buf: ref mut {r} [(unit -> i64)..], cb: unit -> i64 }\ndef fill_with :: Ctx -> unit\nfn fill_with c = { let v = c.cb (); Array.write 0 (\\() -> v) c.buf }\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let u = { let _s = Stash { cell: Arc.share (ref a), f: \\() -> 4 }; 0 }\n    let name = to_string n\n    let nr = ref name\n    let mut arr = [\\() -> 0, \\() -> 0]\n    fill_with (Ctx { buf: ref mut arr, cb: \\() -> String.length nr })\n    let moved = name\n    arr[0] () + String.length moved + u + Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 12345",
+        // d03_let_bound_ctx
+        "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\nrecord Ctx {r} { buf: ref mut {r} [(unit -> i64)..], cb: unit -> i64 }\ndef fill_with :: Ctx -> unit\nfn fill_with c = { let v = c.cb (); Array.write 0 (\\() -> v) c.buf }\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let u = { let _s = Stash { cell: Arc.share (ref a), f: \\() -> 4 }; 0 }\n    let name = to_string n\n    let nr = ref name\n    let mut arr = [\\() -> 0, \\() -> 0]\n    let c = Ctx { buf: ref mut arr, cb: \\() -> String.length nr }\n    fill_with c\n    let moved = name\n    arr[0] () + String.length moved + u + Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\nrun 12345",
+    ] {
+        analyze_with_edition(main, Edition::E2026)
+            .unwrap_or_else(|error| panic!("{main}\n{}: {}", error.code, error.message));
+    }
+    // d01_callee_local_stash
+    let main = "record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }\ninstance Drop<Stash> {\n    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\\slot -> Array.write 0 g slot) }\n}\nrecord Parts { cell: Arc<Mutex<[unit -> i64]>>, g: unit -> i64 }\ndef build :: Parts -> i64\nfn build p = { let _s = Stash { cell: p.cell, f: p.g }; 0 }\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    { let text = to_string n; let t = ref text; let k = build (Parts { cell: Arc.share (ref a), g: \\() -> String.length t }); () }\n    let other = [to_string 777777, to_string 88888888]\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789";
+    let error = analyze_with_edition(main, Edition::E2026).expect_err(main);
+    assert_eq!(
+        (error.code, error.kind, position(main, error.span.start)),
+        ("E1013", Some("assignment_extends_borrow"), (11, 5)),
+        "{main}\n{}",
+        error.message
+    );
+}
+
+/// A31, review round 3 (findings 5 and 6): with a function value that owns its cell in the
+/// module (a registry, `make_registry`), a call reaches the hidden cell only through a value that
+/// may share it: the handlers and thunks that a function returns, that `Array.map` makes or that a
+/// `for` loop takes from such an array, a local bound to a named function or to a lambda over a
+/// `ref string`, and an unrelated `Arc<Mutex<...>>` are none of them (`OwnerScan`). A copy of the
+/// registry in an array, a record, a `Maybe`, a tuple, an `Owned.function`, a partial application,
+/// a lambda or the result of a function that returns its argument still is.
+#[test]
+fn a_value_that_cannot_hold_an_owner_reaches_no_hidden_cell() {
+    for main in [
+        // s01_registry_handlers_result
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\ndef handlers :: unit -> [(unit -> i64) -> i64]\nfn handlers _u = [\\f -> f () + 1, \\f -> f () * 2]\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let r = reg (\\() -> 5)\n    let hs = handlers ()\n    let text = to_string n\n    let tr = ref text\n    let a = hs[0] (\\() -> String.length tr)\n    let moved = text\n    a + moved.length + r + hs[1] (\\() -> 1)\nrun 123456789",
+        // s02_registry_mapped_handlers
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let r = reg (\\() -> 5)\n    let ks = [1, 2, 3]\n    let hs = Array.map (\\k -> \\f -> f () + k) ks\n    let text = to_string n\n    let tr = ref text\n    let a = hs[0] (\\() -> String.length tr)\n    let moved = text\n    a + moved.length + r + hs[1] (\\() -> 1)\nrun 123456789",
+        // s05_handler_record_result
+        "record Handlers { on_text: (unit -> i64) -> i64 }\ndef make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\ndef handlers :: unit -> Handlers\nfn handlers _u = Handlers { on_text: \\f -> f () + 1 }\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let r = reg (\\() -> 5)\n    let h = handlers ()\n    let text = to_string n\n    let tr = ref text\n    let a = h.on_text (\\() -> String.length tr)\n    let moved = text\n    a + moved.length + r + h.on_text (\\() -> 1)\nrun 123456789",
+        // s06_iter_handlers
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let r = reg (\\() -> 5)\n    let ks = [1, 2, 3]\n    let hs = Array.map (\\k -> \\f -> f () + k) ks\n    let text = to_string n\n    let tr = ref text\n    let mut total = 0\n    for h in hs do\n        total = total + h (\\() -> String.length tr)\n    let moved = text\n    total + moved.length + r + hs[1] (\\() -> 1)\nrun 123456789",
+        // s07_holder_thunks
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let notify = \\() -> reg (\\() -> 1)\n    let text = to_string n\n    let tr = ref text\n    let ks = [1, 2]\n    let thunks = Array.map (\\k -> \\() -> String.length tr + k) ks\n    let a = thunks[0] ()\n    let moved = text\n    a + moved.length + notify ()\nrun 123456789",
+        // s09_listeners_vec
+        "def make_bus :: unit -> ((unit -> i64) -> i64)\nfn make_bus _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0, \\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 1 f slot; slot[0] () })\ndef run :: i64 -> i64\nfn run n =\n    let subscribe = make_bus ()\n    let r = subscribe (\\() -> 5)\n    let ks = [1, 2, 3]\n    let hs = Array.map (\\k -> \\f -> f () + k) ks\n    let text = to_string n\n    let tr = ref text\n    let mut total = 0\n    for i in 0 ..= 2 do\n        total = total + hs[i] (\\() -> String.length tr)\n    let moved = text\n    total + moved.length + r + hs[0] (\\() -> 0)\nrun 123456789",
+        // s13_unrelated_function
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\ndef notifier :: ((unit -> i64) -> i64) -> (unit -> i64)\nfn notifier reg = \\() -> reg (\\() -> 1)\ndef lengths :: i64 -> i64\nfn lengths n =\n    let base = \\() -> 7\n    let text = to_string n\n    let tr = ref text\n    let ks = [1, 2]\n    let thunks = Array.map (\\k -> \\() -> String.length tr + k) ks\n    let a = thunks[0] ()\n    let moved = text\n    a + moved.length + base ()\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let notify = notifier reg\n    lengths n + notify ()\nrun 123456789",
+        // s15_named_base
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\ndef notifier :: ((unit -> i64) -> i64) -> (unit -> i64)\nfn notifier reg = \\() -> reg (\\() -> 1)\ndef seven :: unit -> i64\nfn seven _u = 7\ndef lengths :: i64 -> i64\nfn lengths n =\n    let base = seven\n    let text = to_string n\n    let tr = ref text\n    let ks = [1, 2]\n    let thunks = Array.map (\\k -> \\() -> String.length tr + k) ks\n    let a = thunks[0] ()\n    let moved = text\n    a + moved.length + base ()\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let notify = notifier reg\n    lengths n + notify ()\nrun 123456789",
+        // s16_cell_local
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\ndef notifier :: ((unit -> i64) -> i64) -> (unit -> i64)\nfn notifier reg = \\() -> reg (\\() -> 1)\ndef lengths :: i64 -> i64\nfn lengths n =\n    let counter = Arc.new (Mutex.create [\\() -> 7])\n    let text = to_string n\n    let tr = ref text\n    let ks = [1, 2]\n    let thunks = Array.map (\\k -> \\() -> String.length tr + k) ks\n    let a = thunks[0] ()\n    let moved = text\n    a + moved.length + Mutex.with_lock (Arc.get (ref counter)) (\\slot -> slot[0] ())\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let notify = notifier reg\n    lengths n + notify ()\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+    for (main, at) in [
+        // p02_array_map_const
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let ks = [1, 2]\n    let hs = Array.map (\\k -> reg) (ref ks)\n    let first = { let text0 = to_string n; let text = ref text0; hs[0] (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (10, 17),
+        ),
+        // p03_identity_fn
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef id_fn :: ((unit -> i64) -> i64) -> ((unit -> i64) -> i64)\nfn id_fn x = x\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h = id_fn reg\n    let first = { let text0 = to_string n; let text = ref text0; h (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // p04_record_fn
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Handlers { on_text: (unit -> i64) -> i64 }\ndef wrap :: ((unit -> i64) -> i64) -> Handlers\nfn wrap r = Handlers { on_text: r }\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let r = wrap reg\n    let first = { let text0 = to_string n; let text = ref text0; r.on_text (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (12, 17),
+        ),
+        // p07_maybe_match
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let m = Maybe.Some reg\n    let first = { let text0 = to_string n; let text = ref text0; match m with\n        | Maybe.Some h -> h (\\() -> String.length text)\n        | Maybe.None -> 0 }\n    let other = [to_string 777777, to_string 88888888]\n    first + reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (9, 17),
+        ),
+        // q02_array_map_const
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let ks = [1, 2]\n    let hs = Array.map (\\k -> reg) (ref ks)\n    let first = { let text0 = to_string n; let text = ref text0; reg (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + hs[0] (\\() -> 1) + other.length * 0\nrun 123456789",
+            (10, 17),
+        ),
+        // q13_holder_thunk
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let notify = \\() -> reg (\\() -> 1)\n    let first = { let text0 = to_string n; let text = ref text0; reg (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + notify () + other.length * 0\nrun 123456789",
+            (9, 17),
+        ),
+        // q16_tuple
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let pair = (reg, 1)\n    let first = { let text0 = to_string n; let text = ref text0; reg (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + (match pair with\n        | (h, _) -> h (\\() -> 1)) + other.length * 0\nrun 123456789",
+            (9, 17),
+        ),
+        // q17_owned_function
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let w = Owned.function reg\n    let first = { let text0 = to_string n; let text = ref text0; reg (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + Owned.call (ref w) (\\() -> 1) + other.length * 0\nrun 123456789",
+            (9, 17),
+        ),
+        // q18_partial_apply
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef call_with :: ((unit -> i64) -> i64) -> (unit -> i64) -> i64\nfn call_with r f = r f\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h = call_with reg\n    let first = { let text0 = to_string n; let text = ref text0; reg (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + h (\\() -> 1) + other.length * 0\nrun 123456789",
+            (11, 17),
+        ),
+        // q20_mapi_branch
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let ks = [1, 2]\n    let hs = Array.mapi (\\i k -> if i == 0 then reg else (\\f -> k)) (ref ks)\n    let first = { let text0 = to_string n; let text = ref text0; reg (\\() -> String.length text) }\n    let other = [to_string 777777, to_string 88888888]\n    first + hs[0] (\\() -> 1) + other.length * 0\nrun 123456789",
+            (10, 17),
+        ),
+    ] {
+        rejects_at(main, "E1013", "assignment_extends_borrow", at);
+    }
+}
+
 #[test]
 fn shared_types_have_reserved_names_and_no_abi() {
     for source in [
