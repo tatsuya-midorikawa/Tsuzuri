@@ -542,3 +542,25 @@ PR #103 への GitHub Copilot のインラインの指摘（2026-11-12、2 件�
 更新した文書: `_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`（絞り込みの複製の段落: 別の部分を move する束縛と並ぶ Copy の共用体、型変数を含む共用体）、`docs/language.md`（匿名共用体の節の絞り込み）、`docs/architecture.md`（絞り込みのブロックの形と手順の形、`overlaps`、`Type::contains_unknown`）。
 
 変更したファイル: `src/control.rs`、`tests/anonymous_unions.rs`、`tests/features.mjs`、`tests/fixtures/anonymous_unions/Main.tz`、上の文書、このチケット。
+
+### Copilot のレビューへの対応（第2回）
+
+PR #103 への GitHub Copilot の再レビューのインラインの指摘（2026-11-12、1 件）をブランチのバイナリで再現し、次のとおり直しました。回帰テストは、修正前のコードで落ちることを確かめています（再現と測定は `target/scratch/a25/copilot2`）。
+
+1. **型変数を含む要素と並ぶ配列の要素の拡大が、具体化によっては配列を複製する（`src/control.rs:747`）**: 再現しました。所有する `(Maybe<'a> | [i64])` を `(bool | Maybe<'a> | [i64])` へ広げる総称の関数（結果の `\v -> v`、own の引数の `weigh v`、型注釈の `let w: (bool | Maybe<'a> | [i64]) = v`、edition 2027 の読み取りの引数の `measure v`）は、`@no_copy` を付けると `E1031`（位置は拡大した値）で、付けなければ `'a` が `i64`・`string` の具体化の本体に `@tz.alloc` が 1 回ありました（`'a = [i64]` の具体化は 0 回）。`Alloc` の確保の数は、ただ 1 回使う値で 2（`Array.init` と複製。`'a = [i64]` は 1）、2 回使う値（`weigh v + weigh v`）の `'a = i64` で 3（`'a = [i64]` は 2）でした（`r1`・`r2`・`t1`・`t2`・`t3`）。値と、確保と解放の数が等しいことは正しく、問題は確保の回数と `@no_copy` の誤った拒否です。原因: `retag` は、型変数を含む要素の束縛を、具体化で配列になりうるので配列の要素の束縛と同じ値の span に置きます。`LastUses::record_bindings` は束縛の span ごとに 1 つの判定を AND で持つので、具体化で `Maybe<i64>`（Copy で drop の要らない型）や `Maybe<string>`（Copy でない型）になった束縛の「move しない」が、配列の束縛の move を打ち消していました。修正: `record_bindings` は、具体化した型が Copy かつ drop の要る型でない `retag` の束縛（`Local::retags_payload`: 生成した局所で、名前が `RETAGGED_PREFIX` の `$retag` で始まる）を判定に入れません。束縛の判定を読むのは LLVM の `clones_on_take`（`read_place` が Copy で drop の要る値を取り出すときだけ効く）と `copies::sites`（`CopyRead` は Copy で drop の要る値だけ）なので、その束縛の判定は誰も読みません。同じ `retag` の配列の束縛は、自分の条件（対象が所有され、その後で死んでいる。射影が重ならない。ビューでない）で決まり、その条件は配列だけの共用体の拡大と同じです。ほかの束縛は従来どおり判定に入ります（Copy かつ drop の要る型でない束縛をすべて外すと、`for item in Seq.once row` の展開の IR が変わることは「実装中の判断（第 1 段）」の 1 のとおりです）。そのため、匿名共用体を使わないプログラムは変わりません。指摘の案のうち「束縛ごとに独立した鍵を与える」は採りませんでした。束縛の span は複製を報告する位置（`W1006`・`E1031`）でもあり、型変数を含む要素がいくつあっても、拡大した値の中にそれぞれ別の span は作れないためです。「具体化の後で組み直す」は、具体化した型で判定から外すこの修正と同じ効果で、単相化した型付き IR の span を書き換えずに済みます。
+   - テスト `widening_beside_an_open_member_moves_array_members`: `'a` が `i64`・`string`・`[i64]` の 3 つの具体化で、結果・own の引数・型注釈の `let` の拡大の本体に `@tz.alloc` がなく、`@no_copy` が通ること。値と、`Alloc` の窓の確保の数（ただ 1 回使う値で 1）と解放の数。2 回使う値は 1 回だけ複製すること（確保の数 2。`(Maybe<string> | [i64])` は Copy でないので 2 回は使えない）。edition 2027 の読み取りの引数。値と確保の数は手計算で、native と WASM の `-O0`／`-O3` で確かめます。修正前のテストは `widen` の `E1031` で落ちます（`test-before.txt`）。
+   - E2E `widen_generic`（9 件。native は `live == 0`）: `widen_open` を `Maybe<i64>` と `Maybe<string>` で具体化し、`inspect` が 2 つの具体化の本体に `@tz.alloc` がないことを確かめます。修正前のバイナリでは `inspect` が `widen_open` で落ちます（`suite-before.txt`）。
+
+変えた既存の期待値はありません。追加したテストは `tests/anonymous_unions.rs` の 1 件と E2E の `widen_generic` の 9 件です。直したので、参照ページの確保の注意に制限は足していません。「拡大は確保をしません」が総称の関数の中でも成り立つことを書き足しました。
+
+#### 再検証（Copilot 第2回）
+
+- T0: `cargo fmt --all -- --check`（差分なし）、`node scripts/slot.mjs -- cargo clippy --all-targets -- -D warnings`（警告なし）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`: 3119 件のうち 3119 passed、4 skipped（`target/scratch/a25/copilot2/t1.txt`）。`tests/anonymous_unions.rs` は 119 件（直前の木の 118 件とこの対応の 1 件）。
+- T2: `node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri anonymous_unions`: `anonymous_unions: native/WASM at O0/O3 passed`、119 cases（`widen_generic` の 9 件を足した）。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`: `1 pages, 16 links, 10 checked examples, 18 native runs (O0/O3)`。
+- 指摘の再現: 修正後のバイナリでは、`r1` の確保の数が 3 つの具体化とも 1、`t3` の 2 回使う値が 2 と 2、`t1`（own の 3 つの位置）と `t2`（edition 2027 の読み取りの引数）の `@no_copy` が通ります（`-O0`／`-O3`）。
+- 匿名共用体を使わないプログラムの出力: 直前の木（`941e45a7`）のバイナリと、この対応のバイナリで、`tests/fixtures/` と `examples/` の 186 単位の native と wasm32 の IR と `check --json` を取り（`copilot2/baseline.sh`）、`target/scratch/a25/compare.sh` で比べました。違うのは `tests/fixtures/anonymous_unions` の native と wasm32 の IR だけです。その中で違う関数は、足した `widen_open` の 2 つの具体化（`$mono.59`・`$mono.60`。本体の `@tz.alloc` は直前のバイナリで 1 回ずつ、この対応で 0 回）だけで、ほかの 185 単位はすべてのファイルが 1 byte も違いません（`copilot2/compare.txt`）。変更は、名前が `$retag` で始まる生成した束縛にだけ働きます。
+
+更新した文書: `_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`（拡大の確保の段落: 総称の関数の中の型変数を含む要素と並ぶ配列）、`docs/language.md`（匿名共用体の節の拡大）、`docs/architecture.md`（拡大の束縛の span と `LastUses::record_bindings`、`Local::retags_payload`）。
+
+変更したファイル: `src/check.rs`、`src/control.rs`、`src/last_use.rs`、`tests/anonymous_unions.rs`、`tests/features.mjs`、`tests/fixtures/anonymous_unions/Main.tz`、上の文書、このチケット。
