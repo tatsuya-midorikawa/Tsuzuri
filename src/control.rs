@@ -39,9 +39,9 @@ fn narrowed_name(name: &str) -> String {
 }
 
 /// The locals through which code may reach the storage of the subject `matched` of a match: the
-/// root of a place, or every local of a value that holds loans (a reference may lend any of
-/// them). A narrowing whose hidden binding views that storage keeps it shared (A25).
-fn reached_locals(matched: &TypedExpr, types: &TypeContext<'_>) -> BTreeSet<usize> {
+/// root of a place, or every local of a value that holds loans (`lends`: a reference may lend
+/// any of them). A narrowing whose hidden binding views that storage keeps it shared (A25).
+fn reached_locals(matched: &TypedExpr, lends: bool) -> BTreeSet<usize> {
     let mut place = matched;
     if is_place(place) {
         loop {
@@ -57,7 +57,7 @@ fn reached_locals(matched: &TypedExpr, types: &TypeContext<'_>) -> BTreeSet<usiz
         }
     }
     let mut locals = BTreeSet::new();
-    if matched.ty.carries_loans(types) || is_place(matched) {
+    if lends || is_place(matched) {
         let mut pending = vec![matched];
         while let Some(expression) = pending.pop() {
             match &expression.kind {
@@ -932,7 +932,15 @@ impl Checker<'_> {
             // step of the pattern instead, which copies the payload as the arms `:? W0 as x`,
             // `:? W1 as x` do (A25, review round 1).
             if wrapped.iter().any(|(_, _, narrowing, _)| narrowing.view)
-                && reaches_any(&body, &reached_locals(&matched, &self.types))
+                && reaches_any(
+                    &body,
+                    &reached_locals(
+                        &matched,
+                        self.inference
+                            .resolve(&matched.ty)
+                            .carries_loans(&self.types),
+                    ),
+                )
             {
                 let (copied, kept): (Vec<_>, Vec<_>) = wrapped
                     .into_iter()

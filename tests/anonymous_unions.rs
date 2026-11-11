@@ -3281,9 +3281,9 @@ fn narrowing_in_loops_records_arrays_and_lists() {
     );
     // Eleven narrowings of two members in one pattern make 2^11 = 2048 alternatives, over the
     // limit of 1024.
-    let tests = vec![":? (i64 | f64)"; 11].join(", ");
-    let wildcards = vec!["_"; 11].join(", ");
-    let values = vec!["(f64 | i64 | string)"; 11].join(" * ");
+    let tests = [":? (i64 | f64)"; 11].join(", ");
+    let wildcards = ["_"; 11].join(", ");
+    let values = ["(f64 | i64 | string)"; 11].join(" * ");
     rejects(
         &format!(
             "def f :: own ({values}) -> i64 = \\t ->\n    match t with\n    | ({tests}) -> 1\n    | ({wildcards}) -> 0\n"
