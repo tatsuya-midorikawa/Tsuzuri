@@ -1406,8 +1406,9 @@ impl Parser<'_> {
     /// scans of the callers). The tokens of an expression of its own are not the arm's or the
     /// group's: a `match`, a handler's `with`, a lambda, a `for` or a local `fn` has patterns and
     /// arrows of its own, so the scan skips to the `)` that closes the parentheses around it, and
-    /// outside any parentheses it answers that no type test is ahead. A hole after a field,
-    /// `{ x:? }`, is no type test either: no type follows it.
+    /// outside any parentheses it answers that no type test is ahead. A hole after the colon of a
+    /// field, `{ x:? }` or `{ x:?h }`, is no type test either: a type test starts a pattern, so a
+    /// name never stands before its `:`, and a type follows its `?`.
     fn type_test_ahead(&self, group: bool) -> bool {
         let mut depth = 0usize;
         // The depth of the parentheses around the expression that is skipped.
@@ -1437,6 +1438,11 @@ impl Parser<'_> {
                 }
                 TokenKind::Colon
                     if self.type_test_at(self.position + index)
+                        && !(index > 0
+                            && matches!(
+                                self.tokens[self.position + index - 1].kind,
+                                TokenKind::Ident(_)
+                            ))
                         && !self
                             .tokens
                             .get(self.position + index + 2)
@@ -1589,11 +1595,8 @@ impl Parser<'_> {
         };
         self.uses_anonymous_unions = true;
         let end = binder.as_ref().map_or(ty.span, |binder| binder.span);
-        self.make_pattern(
-            PatternKind::TypeTest(Box::new(ty), binder),
-            start.through(end),
-            1,
-        )
+        let span = start.through(end);
+        self.make_pattern(PatternKind::TypeTest(Box::new(ty), binder, span), span, 1)
     }
 
     fn named_pattern(&mut self) -> Result<Pattern, Diagnostic> {
@@ -1663,6 +1666,8 @@ impl Parser<'_> {
         let mut first = self.pattern(0)?;
         if !self.eat(&TokenKind::Comma) {
             let end = self.expect(&TokenKind::RightParen, "')' after the pattern")?;
+            // A type test keeps its own extent in its kind, where the checker reports what is
+            // wrong with the test (A25, review rounds 1 and 3).
             first.span = start.through(end.span);
             self.pattern_type_arrow = outer_type_arrow;
             return Ok(first);

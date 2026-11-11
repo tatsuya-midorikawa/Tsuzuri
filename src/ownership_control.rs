@@ -16,6 +16,46 @@ pub(super) struct TryFlow<'a> {
     raises: Vec<State<'a>>,
 }
 
+/// The bindings of an alternative of a match arm whose guard and body were checked, the state
+/// after its pattern steps, and whether that state was reachable (`eval_match`).
+type Checked<'b, 'a> = (&'b [(Local, TypedExpr)], State<'a>, bool);
+
+/// Whether two alternatives of an arm bind the same locals, in the same order, to the same
+/// places: projections that `same_projection` finds equal.
+fn same_bindings(left: &[(Local, TypedExpr)], right: &[(Local, TypedExpr)]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|((a, x), (b, y))| a.id == b.id && a.span == b.span && same_projection(x, y))
+}
+
+/// Whether two binding projections are the same place, with the same types and spans. Only the
+/// kinds of a place compare equal; any other expression is never the same as another.
+fn same_projection(left: &TypedExpr, right: &TypedExpr) -> bool {
+    if left.ty != right.ty || left.span != right.span {
+        return false;
+    }
+    match (&left.kind, &right.kind) {
+        (E::Local(a), E::Local(b)) => a == b,
+        (E::Field(a, i), E::Field(b, j)) | (E::ListTail(a, i), E::ListTail(b, j)) => {
+            i == j && same_projection(a, b)
+        }
+        (
+            E::UnionPayload {
+                value: a,
+                case_id: i,
+            },
+            E::UnionPayload {
+                value: b,
+                case_id: j,
+            },
+        ) => i == j && same_projection(a, b),
+        (E::Dereference(a), E::Dereference(b)) => same_projection(a, b),
+        _ => false,
+    }
+}
+
 impl<'a> Checker<'a, '_> {
     /// Records a possible raise to the innermost `try` of this body: a checked
     /// operation or a re-raise. Without one, an uncaught exception traps.
@@ -466,6 +506,9 @@ impl<'a> Checker<'a, '_> {
             let mut pattern_pending_reachable = pending_reachable;
             let mut failed = pending.clone();
             let mut failed_reachable = pending_reachable;
+            // The last alternative of the arm whose guard and body were checked, with the state
+            // after its steps.
+            let mut checked: Option<Checked<'_, 'a>> = None;
             for alternative in &arm.alternatives {
                 self.state = pattern_pending.clone();
                 self.reachable = pattern_pending_reachable;
@@ -497,6 +540,24 @@ impl<'a> Checker<'a, '_> {
                             self.reachable = success_reachable;
                         }
                     }
+                }
+                // An alternative that binds the same locals to the same places as the last checked
+                // one, and reaches the state that it reached after its steps, would check the same
+                // guard and body from the same state: every result (the failed and the exit states,
+                // the value, the diagnostics) is one that the checked alternative gave already, up
+                // to the numbers of the loans that it makes. The alternatives of a narrowing (A25)
+                // and those of a pattern that binds nothing (`:? A | :? B`) are such. Checking the
+                // body again for each made nested arms cost the product of their alternatives.
+                if arm.alternatives.len() > 1 {
+                    if let Some((bindings, state, reachable)) = &checked
+                        && *reachable == self.reachable
+                        && same_bindings(bindings, &alternative.bindings)
+                        && state.same(&self.state)
+                    {
+                        self.held.pop();
+                        continue;
+                    }
+                    checked = Some((&alternative.bindings, self.state.clone(), self.reachable));
                 }
                 let mut ids = BTreeSet::new();
                 for (local, projection) in &alternative.bindings {

@@ -316,10 +316,12 @@ fn emitted_variants(directory: &Path, found: &mut std::collections::BTreeSet<Str
 /// Kinds that stay registered, so that their ids and `tsuzuri explain` pages keep working, but that
 /// no source emits any more: TZ12 removed the implicit `task` builder, and TZ13 `Async` (the borrow
 /// across one of its suspensions, `Async.block_on` for Net's `_async` operations, and Async in the
-/// tests of a WebAssembly runner).
+/// tests of a WebAssembly runner). A25 accepts an anonymous union after `:?` (a narrowing), which
+/// A24 rejected as `type_test_union`.
 const RETIRED: &[&str] = &[
     "borrow_across_async_boundary",
     "implicit_task_needs_builder",
+    "type_test_union",
     "net_async_needs_block_on",
     "wasm_test_runner_async",
 ];

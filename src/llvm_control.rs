@@ -587,6 +587,13 @@ impl FunctionEmitter<'_, '_> {
             return result;
         }
         self.scopes.push(Vec::new());
+        // A binding takes its value out of the matched local only where this function owns the
+        // local. A worker that borrows its parameters (the call of a closure that does not consume
+        // its captures, `can_borrow`) and an owned function's captures leave their storage to the
+        // caller, so a binding out of them copies, as a read of them does (`clones_on_take`).
+        // `LastUses` decides once for the function and every worker of it.
+        let lent =
+            matches!(matched.kind, TypedExprKind::Local(id) if self.borrowed_locals.contains(&id));
         if Self::is_place(matched) {
             let pointer = self.place(matched);
             self.locals.insert(local.id, pointer);
@@ -757,7 +764,7 @@ impl FunctionEmitter<'_, '_> {
                     ty: binding.ty.clone(),
                     span: binding.span,
                 };
-                if self.last_uses.moves_binding(binding.span) {
+                if !lent && self.last_uses.moves_binding(binding.span) {
                     self.moving_bindings.insert(binding.id);
                 }
                 let value = self.expression(&expression);

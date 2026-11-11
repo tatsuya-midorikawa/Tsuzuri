@@ -11571,6 +11571,10 @@ struct Checker<'a> {
     use_bindings: Vec<Span>,
     /// The type of the value that `xs |> f a` passes to the call `f a`.
     piped: Option<Type>,
+    /// A25: the operand of a binary operator that is being checked with its sibling's type as its
+    /// expected type. `injected_expression` takes it, and does not widen an expression of that
+    /// span to an anonymous union.
+    operand: Option<Span>,
     /// Spans of unsuffixed integer literals whose type waits for inference.
     integer_literals: Vec<Span>,
     /// Builtin result types that wait for a concrete integer argument type.
@@ -11638,6 +11642,7 @@ impl<'a> Checker<'a> {
             format_specs: Vec::new(),
             use_bindings: Vec::new(),
             piped: None,
+            operand: None,
             integer_literals: Vec::new(),
             families: Vec::new(),
             coverage: Vec::new(),
@@ -12624,8 +12629,11 @@ impl<'a> Checker<'a> {
             } else {
                 let left = self.expression(left, hint)?;
                 let expected = self.sibling_hint(&left.ty, hint);
-                let right = self.expression(right, expected)?;
-                (left, right)
+                // A25: an operand is no place where a subset union is widened (it would move).
+                self.operand = Some(right.span);
+                let right = self.expression(right, expected);
+                self.operand = None;
+                (left, right?)
             }
         };
         let result = if *operator == BinaryOp::Pipe {

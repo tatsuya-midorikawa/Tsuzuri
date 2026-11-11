@@ -749,7 +749,7 @@ impl TypeReferences<'_> {
             }
             As(pattern, _) => self.pattern(pattern),
             Argument(value) | Literal(value) => self.expression(value),
-            TypeTest(ty, _) => self.ty(ty),
+            TypeTest(ty, ..) => self.ty(ty),
             Wildcard | Binding(_) => {}
         }
     }

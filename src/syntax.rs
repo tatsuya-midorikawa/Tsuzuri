@@ -1365,7 +1365,10 @@ pub enum PatternKind {
     Annotated(Box<Pattern>, TypeExpr),
     /// `:? T` or `:? T as x`: whether an anonymous union holds its member `T`, binding the member's
     /// value to `x` (A24). The binder `_` stays an `Ident`; the checker treats it as a wildcard.
-    TypeTest(Box<TypeExpr>, Option<Ident>),
+    /// The span is the test's own extent, from its `:?` to the type or the binder, where the
+    /// checker reports what is wrong with the test (A25); the pattern's span also covers the
+    /// parentheses that group it, as the span of any other pattern does.
+    TypeTest(Box<TypeExpr>, Option<Ident>, Span),
 }
 
 impl Pattern {

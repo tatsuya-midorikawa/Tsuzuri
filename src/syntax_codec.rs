@@ -2252,10 +2252,11 @@ impl Wire for PatternKind {
                 pattern.put(out)?;
                 ty.put(out)
             }
-            TypeTest(ty, binder) => {
+            TypeTest(ty, binder, span) => {
                 out.tag("PatternKind", 14);
                 ty.put(out)?;
-                binder.put(out)
+                binder.put(out)?;
+                span.put(out)
             }
         }
     }
@@ -2284,7 +2285,11 @@ impl Wire for PatternKind {
                 Ok(Annotated(Box::get(input)?, TypeExpr::get(input)?))
             }),
             14 => variant(input, |input| {
-                Ok(TypeTest(Box::get(input)?, Option::get(input)?))
+                Ok(TypeTest(
+                    Box::get(input)?,
+                    Option::get(input)?,
+                    Span::get(input)?,
+                ))
             }),
             15..=u8::MAX => Err(Invalid),
         }

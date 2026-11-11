@@ -1,6 +1,6 @@
-// A24 and A26: anonymous unions end to end. Every export takes and returns i64; tests/features.mjs compares the values with
-// references written in JavaScript from the definitions below, natively (the host checks live == 0) and on WASM, at
-// -O0 and -O3. Edition 2027: a parameter whose member is taken out by value is `own`.
+// A24, A25 and A26: anonymous unions end to end. Every export takes and returns i64; tests/features.mjs compares the
+// values with references written in JavaScript from the definitions below, natively (the host checks live == 0) and on
+// WASM, at -O0 and -O3. Edition 2027: a parameter whose member is taken out by value is `own`.
 
 // pick: one of three members by the sign of x, then a number back from the member (i64 is itself, string its length,
 // bool 0 or 1). The match of `number` is the one the -O3 IR shows as a switch on the tag.
@@ -101,11 +101,11 @@ export def generic :: i64 -> i64 = \n ->
     number * 100 + word.length
 
 // common: two members with the same LLVM type (the Common layout of a union).
-def widen :: i64 -> (i64 | i64u) = \n ->
+def either_sign :: i64 -> (i64 | i64u) = \n ->
     if n >= 0 then (n as i64u) * 3i64u else n
 
 export def common :: i64 -> i64 = \n ->
-    match widen n with
+    match either_sign n with
     | :? i64u as u -> (u as i64) + 1
     | :? i64 as s -> s * 2
 
@@ -342,3 +342,162 @@ export def decoded :: i64 -> i64 = \x ->
         | Error _ -> 0
     let text = members + "|" + records + "|" + refused + "|" + tables + $"|{trips}{kept}"
     checksum text * 1000 + text.length
+
+// A25: conversions between anonymous unions.
+
+// widen: a (i64 | string) where a read parameter of four members is expected. The call borrows the widened value,
+// which is a temporary; its string is freed after the call.
+def number_or_text :: i64 -> (i64 | string) = \n -> if n % 2 == 0 then n else $"odd {n}"
+
+def weigh :: (f64 | i64 | string | [i64]) -> i64 = \value ->
+    match value with
+    | :? f64 -> 1
+    | :? i64 as k -> k
+    | :? string as s -> s.length
+    | :? [i64] as xs -> xs.length
+
+export def widen :: i64 -> i64 = \n -> weigh (number_or_text n)
+
+// widen_owned: values that own heap memory are widened in bindings, in an assignment inside a loop (which frees the
+// value it replaces) and into a value that is dropped unread.
+export def widen_owned :: i64 -> i64 = \n ->
+    let text: (i64 | string) = $"n={n}"
+    let numbers: (i64 | [i64]) = Array.init n (\i -> i)
+    let dropped: (string | [i64]) = $"dropped {n}"
+    let wide: (f64 | i64 | string | [i64]) = text
+    let mut slot: (f64 | i64 | string | [i64]) = numbers
+    let unread: (i64 | string | [i64]) = dropped
+    let total = weigh wide * 1000 + weigh slot
+    for i in 0i64 ..< n do
+        let step: (i64 | string) = if i % 2 == 0 then i else $"{i}"
+        slot = step
+    let _ = unread
+    total + weigh slot * 1000000
+
+// widen_read: owned values with an array or a string are widened straight into the read parameter of weigh, from a
+// local and from a temporary. The call borrows the widened value, into which the payload moves, and frees it after
+// the call; nothing is copied.
+def counted :: i64 -> (i64 | [i64]) = \n -> if n % 2 == 0 then Array.init (n + 3) (\i -> i) else n
+
+def labelled :: i64 -> (string | [i64]) = \n -> if n % 3 == 0 then $"label {n}" else Array.init (n + 1) (\i -> i)
+
+export def widen_read :: i64 -> i64 = \n ->
+    let numbers = counted n
+    let label = labelled n
+    weigh numbers + weigh label * 100 + weigh (labelled (n + 1)) * 10000
+
+// widen_read_branch: an `if` and a `match` lent to the read parameter of weigh widen one branch and inject the other.
+// The payload of the widened branch moves into the borrowed value; when the other branch runs, the local keeps its
+// payload and is dropped at the end of the function. Nothing is copied.
+export def widen_read_branch :: i64 -> i64 = \n ->
+    let numbers = counted n
+    let label = labelled n
+    let first = weigh (if n > 2 then numbers else 1.5)
+    let second = weigh (match n % 2 with
+        | 0 -> label
+        | _ -> 7)
+    first + second * 100
+
+// narrow: the numbers of a (f64 | i64 | string) are narrowed to (i64 | f64) and passed on. The matched value is a
+// temporary that keeps its string: the narrowed value is a copy of the number.
+def classify :: i64 -> (f64 | i64 | string) = \n ->
+    if n % 3 == 0 then n else if n % 3 == 1 then (n as f64) * 0.5 else $"text {n}"
+
+def scale :: (i64 | f64) -> i64 = \number ->
+    match number with
+    | :? i64 as k -> k * 3
+    | :? f64 as x -> (x * 4.0) as i64
+
+export def narrow :: i64 -> i64 = \n ->
+    match classify n with
+    | :? (i64 | f64) as number -> scale number
+    | :? string as text -> text.length * 1000
+
+// narrow_owned: the members that own heap memory move out of an owned value into the narrowed one, from a temporary
+// in a loop, from a local, into a narrowed value that is dropped unread, and from the payload of a Maybe. In the last
+// match `whole` moves the payload that `number` is narrowed from, so `number` is a copy made by the pattern.
+def heap :: i64 -> (f64 | i64 | string | [i64]) = \n ->
+    if n % 4 == 0 then $"n={n}" else if n % 4 == 1 then Array.init n (\i -> i) else if n % 4 == 2 then n else 1.5
+
+def sized :: own (string | [i64]) -> i64 = \value ->
+    match value with
+    | :? string as text -> text.length
+    | :? [i64] as numbers -> numbers.length * 10
+
+export def narrow_owned :: i64 -> i64 = \n ->
+    let mut total = 0i64
+    for i in 0i64 ..< n do
+        total = total + (match heap i with
+            | :? (string | [i64]) as owner -> sized owner
+            | :? i64 as k -> k
+            | :? f64 -> 1)
+    let kept = heap n
+    let rest = match kept with
+        | :? (string | [i64]) as owner -> sized owner
+        | :? (i64 | f64) as number -> scale number
+    let unread = match heap (n + 1) with
+        | :? (string | [i64]) as _owner -> 7
+        | :? (i64 | f64) as _number -> 9
+    let wrapped: Maybe<(f64 | i64 | string | [i64])> = if n == 5 then None else Some (heap (n + 2))
+    let inner = match wrapped with
+        | Some (:? (string | [i64]) as owner) -> sized owner
+        | Some ((:? (i64 | f64) as number) as whole) -> scale number + weigh whole
+        | None -> 0
+    total + rest * 1000000 + unread * 100000000 + inner * 10000000000
+
+// narrow_views: the elements of an array are narrowed in place (the narrowed value is a copy, of an array too), under
+// a guard that fails or holds, and through a read parameter.
+def part :: ([i64] | i64) -> i64 = \value ->
+    match value with
+    | :? [i64] as numbers -> numbers.length * 10
+    | :? i64 as k -> k
+
+def numbers_of :: (f64 | i64 | string | [i64]) -> i64 = \value ->
+    match value with
+    | :? (i64 | f64) as number -> scale number
+    | _ -> 0
+
+export def narrow_views :: i64 -> i64 = \n ->
+    let items: [(f64 | i64 | string | [i64])] = Array.init n heap
+    let mut total = 0i64
+    let mut numbers = 0i64
+    for item in items do
+        total = total + (match item with
+            | :? ([i64] | i64) as piece when part piece > 25 -> 5
+            | :? ([i64] | i64) as piece -> part piece
+            | :? (f64 | string) -> 2)
+        numbers = numbers + numbers_of item
+    total * 1000000 + numbers + items.length * 0
+
+// widen_captured: closures convert the values that they capture, on each call: a widening into an own and into a read
+// parameter, a widening in an annotated binding and a narrowing; the continuation of a computation expression widens
+// the value that it captures (`return`). A closure that does not consume its captures lends them to its body, so the
+// payload that a conversion binds is a copy and the environment frees each value once.
+def take :: own (f64 | i64 | string | [i64]) -> i64 = \value ->
+    match value with
+    | :? f64 -> 1
+    | :? i64 as k -> k
+    | :? string as s -> s.length
+    | :? [i64] as xs -> xs.length
+
+def pick_counted :: i64 -> Maybe<(f64 | i64 | string | [i64])> = \n ->
+    let numbers = counted n
+    let! _step = Maybe.Some n
+    return numbers
+
+export def widen_captured :: i64 -> i64 = \n ->
+    let numbers = counted n
+    let label = labelled n
+    let item = heap n
+    let wide = \(k: i64) -> take numbers * k + weigh numbers
+    let typed = \(k: i64) ->
+        let value: (f64 | i64 | string | [i64]) = label
+        take value + k
+    let narrowed = \(k: i64) ->
+        match item with
+        | :? (string | [i64]) as owner -> sized owner + k
+        | :? (i64 | f64) as number -> scale number + k
+    let continued = match pick_counted n with
+        | Some value -> take value
+        | None -> 0
+    wide 1 + wide 2 + (typed 0 + typed 1) * 1000 + (narrowed 0 + narrowed 1) * 1000000 + continued * 1000000000

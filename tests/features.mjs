@@ -2194,6 +2194,54 @@ const suites = {
     assert.equal(decodedText(7n).split("|").slice(0, 9).join("|"), 'i:7|b:1|b:0|s:t7|a:3:12|a:0:0|p:7,7|e:json: missing field "y"|e:json: missing field "x"');
     assert.equal(decodedText(-4n).split("|").slice(15, 19).join("|"), "i:-4|m:2:-2|m:1:-4|m:0:0");
     const decoded = (x) => checksum(decodedText(x)) * 1000n + BigInt(decodedText(x).length);
+    // A25. widen: an even n is the i64 itself, an odd n the length of `odd {n}`.
+    const widen = (n) => n % 2n === 0n ? n : length(`odd ${n}`);
+    // `n={n}` (times 1000), the n numbers, and the last value of the loop: the n numbers when it does not run, the
+    // i64 i for an even i, `{i}` for an odd i.
+    const widenOwned = (n) => {
+      const last = n - 1n;
+      const slot = n === 0n ? 0n : last % 2n === 0n ? last : length(`${last}`);
+      return length(`n=${n}`) * 1000n + n + slot * 1000000n;
+    };
+    // counted: n + 3 numbers for an even n, else the i64 n. labelled: `label {n}` when 3 divides n, else n + 1 numbers.
+    const counted = (n) => n % 2n === 0n ? n + 3n : n;
+    const labelled = (n) => n % 3n === 0n ? length(`label ${n}`) : n + 1n;
+    const widenRead = (n) => counted(n) + labelled(n) * 100n + labelled(n + 1n) * 10000n;
+    // widen_read_branch: counted when n > 2, else the f64 1.5 (weigh gives 1); labelled for an even n, else the i64 7.
+    const widenReadBranch = (n) => (n > 2n ? counted(n) : 1n) + (n % 2n === 0n ? labelled(n) : 7n) * 100n;
+    // scale: three times an i64, four times an f64. narrow: the i64 n when 3 divides n, the f64 n / 2 when the
+    // remainder is 1 (4 (n / 2) = 2 n, exact), else `text {n}` (its length times 1000).
+    const narrow = (n) => n % 3n === 0n ? n * 3n : n % 3n === 1n ? 2n * n : length(`text ${n}`) * 1000n;
+    // heap i by i % 4: `n={i}`, i numbers, the i64 i, the f64 1.5 (scale gives 6). The Maybe holds heap (n + 2), or
+    // nothing for n = 5: the length of the string, ten times the count of the numbers, or scale plus weigh of the number
+    // (3 k + k for the i64 k, 6 + 1 for the f64).
+    const narrowOwned = (n) => {
+      let total = 0n;
+      for (let i = 0n; i < n; i++) total += [length(`n=${i}`), i * 10n, i, 1n][i % 4n];
+      const rest = [length(`n=${n}`), n * 10n, n * 3n, 6n][n % 4n];
+      const unread = (n + 1n) % 4n < 2n ? 7n : 9n;
+      const k = n + 2n;
+      const inner = n === 5n ? 0n : [length(`n=${k}`), k * 10n, k * 4n, 7n][k % 4n];
+      return total + rest * 1000000n + unread * 100000000n + inner * 10000000000n;
+    };
+    // part: ten times the length of an array, or the i64. The guard takes the pieces above 25.
+    const narrowViews = (n) => {
+      let total = 0n;
+      let numbers = 0n;
+      for (let i = 0n; i < n; i++) {
+        const kind = i % 4n;
+        const piece = kind === 1n ? i * 10n : i;
+        total += kind === 1n || kind === 2n ? (piece > 25n ? 5n : piece) : 2n;
+        numbers += kind === 2n ? i * 3n : kind === 3n ? 6n : 0n;
+      }
+      return total * 1000000n + numbers;
+    };
+    // widen_captured: wide 1 + wide 2 reads counted five times; typed 0 + typed 1 and narrowed 0 + narrowed 1 are twice
+    // the member plus 1 (heap as in narrowOwned); the continuation returns counted.
+    const widenCaptured = (n) => {
+      const heap = [length(`n=${n}`), n * 10n, n * 3n, 6n][n % 4n];
+      return 5n * counted(n) + (2n * labelled(n) + 1n) * 1000n + (2n * heap + 1n) * 1000000n + counted(n) * 1000000000n;
+    };
     const at = (name, reference, inputs) => inputs.map((x) => [name, [x], reference(x)]);
     return {
       cases: [
@@ -2213,6 +2261,14 @@ const suites = {
         ...at("generic", generic, [3n, 4n, 0n, -3n, -4n]),
         ...at("common", common, [5n, 0n, -4n, 1000000n]),
         ...at("wide", wide, [5n, 0n, -7n]),
+        ...at("widen", widen, [4n, 7n, 0n, -3n, -8n]),
+        ...at("widen_owned", widenOwned, [0n, 1n, 4n, 7n, 20n]),
+        ...at("widen_read", widenRead, [0n, 1n, 2n, 3n, 5n, 8n, 12n]),
+        ...at("widen_read_branch", widenReadBranch, [0n, 1n, 2n, 3n, 4n, 5n, 6n, 9n, 12n]),
+        ...at("narrow", narrow, [6n, 7n, 8n, 0n, -3n, -4n, 1000000n]),
+        ...at("narrow_owned", narrowOwned, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 20n]),
+        ...at("narrow_views", narrowViews, [0n, 1n, 2n, 3n, 6n, 9n, 31n]),
+        ...at("widen_captured", widenCaptured, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 12n]),
       ],
       inspect(ir) {
         // One type for each instantiation, named by its members in the canonical order whatever order the source wrote.
@@ -2231,6 +2287,15 @@ const suites = {
         // Phase 2: Encode and Decode of an anonymous union are functions of the specializer too.
         assert.match(ir, /^define internal [^\n]* @"?tz\.fn\.\$intrinsic\.Encode\.encode\.\d+"?\(/m);
         assert.match(ir, /^define internal [^\n]* @"?tz\.fn\.\$intrinsic\.Decode\.decode\.\d+"?\(/m);
+        // A25: a widening and a narrowing of a union that is not recursive switch on the tag and move or copy the
+        // payload; they allocate nothing (the strings are made by number_or_text and classify, the arrays by counted and
+        // labelled: an array moves into the widened value that a read parameter borrows, also from the branch of an
+        // `if`).
+        const body = (name) => ir.split("\n\n").find((block) => block.startsWith("define ") && block.split("\n")[0].includes(`@tz.fn.Main.${name}(`));
+        for (const name of ["widen", "narrow", "widen_read", "widen_read_branch"]) {
+          assert.doesNotMatch(body(name), /@tz\.alloc/, name);
+          assert.match(body(name), /switch i32 /, name);
+        }
       },
     };
   })(),
