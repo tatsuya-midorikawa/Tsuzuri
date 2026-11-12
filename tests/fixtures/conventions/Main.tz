@@ -426,4 +426,15 @@ export def annotated_reference_drop_rules :: i64 -> i64 = \n ->
     shared + part * 100 + temps * 10000 + cell * 1000000
 
 type OwnAlias = own
+
+// A31, after review 9: a vector of lambdas that capture a value, in a module with a `Drop`
+// instance (`DropFields`): `callback_constructed_once` above still lends its temporaries to
+// `Array.map`, whose callback gets an element of an `[i64]`, which keeps no borrow.
+export def capturing_readers :: i64 -> i64 = \n ->
+    let text = "hello"
+    let mut readers = Vec.empty()
+    Vec.push (\(text: string) -> text.length * 10000 + n) readers
+    let first = readers[0]
+    first text
+
 (contextual_own_type_name)
