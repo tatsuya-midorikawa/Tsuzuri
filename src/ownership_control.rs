@@ -195,7 +195,9 @@ impl<'a> Checker<'a, '_> {
     /// Binds a pattern variable as a read-only view of the matched storage.
     /// The view is its own root, so a borrow of it ends with the arm like a
     /// borrow of an owned pattern variable; the view's loans keep the storage
-    /// shared while the view or such a borrow is live.
+    /// shared while the view or such a borrow is live. A31: a borrow of it that
+    /// goes where the caller's data or a hidden environment reaches holds the
+    /// view's loans instead (`Checker::expand_views`).
     fn view(
         &mut self,
         local: &Local,
@@ -226,6 +228,7 @@ impl<'a> Checker<'a, '_> {
         self.state
             .locals
             .insert(local.id, (self.declarations[&local.id], value));
+        self.views.insert(local.id);
         self.state.moved.retain(|place, _| place.root != local.id);
         self.state
             .generic_moves

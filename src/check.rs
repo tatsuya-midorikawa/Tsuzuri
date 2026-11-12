@@ -740,6 +740,26 @@ impl Type {
         !types.stored_all(self, |part| !part.runs_on_drop(types))
     }
 
+    /// A31: whether destroying a value of this type destroys a value of a type that `found`
+    /// accepts: it stores one (not through a reference), except that a weak pointer destroys
+    /// nothing of what it points at (the last strong owner destroys the block's value).
+    pub(crate) fn drops_some(
+        &self,
+        types: &TypeContext<'_>,
+        found: impl Fn(&Type) -> bool,
+    ) -> bool {
+        !types.stored_all_closed(
+            self,
+            |part| !found(part),
+            |part| {
+                matches!(
+                    part,
+                    Self::Shared(_, SharedKind::RcWeak | SharedKind::ArcWeak)
+                )
+            },
+        )
+    }
+
     /// Whether destroying a value of this type itself, beside what it stores, may run code: a
     /// user `Drop` instance, a function value or a tzroutine body (its environment may hold a
     /// value with one), an `Owned.Function`, or a dyn value (its drop is the vtable's). A type
@@ -933,16 +953,6 @@ impl Type {
                         | "ErrGroup.ErrGroup"
                 )
                 && arguments.iter().any(|argument| argument.carries_loans(types)))
-    }
-
-    /// A31: whether a value of this type stores (not through a reference) a value of a type
-    /// that `found` accepts.
-    pub(crate) fn stores_some(
-        &self,
-        types: &TypeContext<'_>,
-        found: impl Fn(&Type) -> bool,
-    ) -> bool {
-        !types.stored_all(self, |part| !found(part))
     }
 
     /// A31: whether a value of this type owns a mutable cell (`is_mutable_cell`): it stores one,

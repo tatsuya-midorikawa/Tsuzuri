@@ -2011,6 +2011,16 @@ const suites = {
       ["handler_read_from_an_rc", [], 6n + 5n + 1n + 1n],
       // Review round 5. h gives 5 + 1, g 5 * 2, k 5 * 3, moved 5, the registry call 1.
       ["handlers_taken_out_by_patterns", [], 6n + 10n + 15n + 5n + 1n],
+      // Review round 6. The share in arr reads "123456789" (9 characters), that in brr gives 5.
+      ["shared_cell_written_after_the_share", [], 9n * 10n + 5n],
+      // The drop of r hands \() -> 9 to the registry (whose old 0 it gets back); the next call returns it.
+      ["dropped_share_hands_the_block", [], 9n],
+      // lk returns 10, lt returns z = 20, the writer put \() -> 2 into m.
+      ["pattern_parameters_call_what_they_get", [], 10n + 20n + 2n],
+      // arr[0] reads "123456789" through the Maybe, arr[1] "12345" through the record.
+      ["views_of_the_callers_data", [], 9n * 100n + 5n],
+      // take_cell reads 3 from a's block; later's cell reads "12345".
+      ["drop_runner_after_its_borrows", [], 3n + 5n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.

@@ -648,3 +648,100 @@ fn handlers_taken_out_by_patterns =
     let first = { let t = ref text; h (\() -> String.length t) + g (\() -> String.length t) + k (\() -> String.length t) }
     let moved = text
     first + moved.length + reg (\() -> 3)
+
+// Review round 6. A share of a callee's local block in the caller's array takes what the callee
+// writes into the block's cell afterwards: a function that reads the caller's string, which
+// outlives the array, and an owned function.
+def put_shared_then_write :: ref string -> ref mut [Arc<Mutex<[unit -> i64]>>..] -> unit
+fn put_shared_then_write text slot =
+    let lr = Arc.new (Mutex.create [\() -> 0])
+    Array.write 0 (Arc.share (ref lr)) slot
+    Mutex.with_lock (Arc.get (ref lr)) (\cell -> Array.write 0 (\() -> String.length text) cell)
+
+def put_shared_then_owned :: ref mut [Rc<Mutex<[unit -> i64]>>..] -> unit
+fn put_shared_then_owned slot =
+    let lr = Rc.new (Mutex.create [\() -> 0])
+    Array.write 0 (Rc.share (ref lr)) slot
+    Mutex.with_lock (Rc.get (ref lr)) (\cell -> Array.write 0 (\() -> 5) cell)
+
+export def shared_cell_written_after_the_share :: i64
+fn shared_cell_written_after_the_share =
+    let text0 = to_string 123456789
+    let mut arr = [Arc.new (Mutex.create [\() -> 0])]
+    put_shared_then_write (ref text0) (ref mut arr)
+    let mut brr = [Rc.new (Mutex.create [\() -> 0])]
+    put_shared_then_owned (ref mut brr)
+    Mutex.with_lock (Arc.get (ref arr[0])) (\cell -> cell[0] ()) * 10 + Mutex.with_lock (Rc.get (ref brr[0])) (\cell -> cell[0] ())
+
+// A dropped share and a dropped weak pointer of an Rc hand the registry what the block holds, not
+// a borrow of the Rc, which the inner block declares: the registry outlives it.
+def swap_registry :: unit -> ((unit -> i64) -> i64)
+fn swap_registry _ =
+    let cell = Arc.new (Mutex.create [\() -> 0])
+    \f -> Mutex.with_lock (Arc.get (ref cell)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () })
+
+record ShareStash { f: unit -> i64, out: (unit -> i64) -> i64 }
+
+instance Drop<ShareStash> {
+    fn drop s = { let o = s.out; let _k = o s.f; () }
+}
+
+export def dropped_share_hands_the_block :: i64
+fn dropped_share_hands_the_block =
+    let text0 = to_string 123456789
+    let t = ref text0
+    let reg = swap_registry ()
+    { let r = Rc.new (ShareStash { f: \() -> String.length t, out: reg }); let _r2 = Rc.share (ref r); let _w = Rc.downgrade (ref r); () }
+    reg (\() -> 1)
+
+// A lambda whose parameter is annotated, and one that destructures a tuple, call what their callers
+// pass (functions that store nothing), in a module with a writer of that function type.
+export def pattern_parameters_call_what_they_get :: i64
+fn pattern_parameters_call_what_they_get =
+    let m = Mutex.create [\() -> 0]
+    let mr = ref m
+    let put = \f -> Mutex.with_lock mr (\slot -> Array.write 0 f slot)
+    put (\() -> 2)
+    let lk = \(use: (unit -> i64) -> unit) -> { let s = to_string 123456789; let b = ref s; use (\() -> String.length b); 10 }
+    let lt = \(use, z) -> { let s = to_string 12345; let b = ref s; use (\() -> String.length b); z }
+    let k = lk (\f -> { let _x = f (); () }) + lt ((\f -> { let _x = f (); () }), 20)
+    k + Mutex.with_lock (ref m) (\slot -> slot[0] ())
+
+// A borrow of a pattern variable that views the caller's data, written into the caller's array.
+def put_view :: ref Maybe<string> -> ref mut [(unit -> i64)..] -> unit
+fn put_view m slot = match m with | Maybe.Some s -> { let sr = ref s; Array.write 0 (\() -> String.length sr) slot } | Maybe.None -> ()
+
+record NamedView { name: string, k: i64 }
+
+def put_field_view :: ref NamedView -> ref mut [(unit -> i64)..] -> unit
+fn put_field_view r slot = match r with | NamedView { name: s, k: _ } -> { let sr = ref s; Array.write 1 (\() -> String.length sr) slot }
+
+export def views_of_the_callers_data :: i64
+fn views_of_the_callers_data =
+    let v0 = Maybe.Some (to_string 123456789)
+    let r0 = NamedView { name: to_string 12345, k: 1 }
+    let mut arr = [\() -> 0, \() -> 0]
+    put_view (ref v0) (ref mut arr)
+    put_field_view (ref r0) (ref mut arr)
+    arr[0] () * 100 + arr[1] ()
+
+// A value whose drop runs code holds a share of a block whose owner moves away, and another is
+// declared after the string that it borrows, so it is dropped first.
+record CellReader { cell: Arc<Mutex<[unit -> i64]>> }
+
+instance Drop<CellReader> {
+    fn drop r = { let _k = Mutex.with_lock (Arc.get (ref r.cell)) (\slot -> slot[0] ()); () }
+}
+
+def take_cell :: own Arc<Mutex<[unit -> i64]>> -> i64
+fn take_cell a = Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ())
+
+export def drop_runner_after_its_borrows :: i64
+fn drop_runner_after_its_borrows =
+    let a = Arc.new (Mutex.create [\() -> 3])
+    let reader = CellReader { cell: Arc.share (ref a) }
+    let k = take_cell a
+    let text0 = to_string 12345
+    let t = ref text0
+    let later = CellReader { cell: Arc.new (Mutex.create [\() -> String.length t]) }
+    k + Mutex.with_lock (Arc.get (ref later.cell)) (\slot -> slot[0] ())
