@@ -7,8 +7,8 @@ use tsuzuri::driver::{Target, TestOptions, run_tests};
 use tsuzuri::parser::{parse, parse_with_source};
 use tsuzuri::syntax::{Edition, Program, TypeExpr, TypeExprKind};
 use tsuzuri::{
-    analyze, analyze_all, analyze_modules, analyze_modules_with_semantics, analyze_with_edition,
-    llvm,
+    analyze, analyze_all, analyze_modules, analyze_modules_all, analyze_modules_with_semantics,
+    analyze_with_edition, llvm,
 };
 
 /// The type as written, with every anonymous union and its members spelled out, so that a test
@@ -128,7 +128,19 @@ fn tree(source: &str) -> String {
 /// `source: None } }, ` that a binder follows (the members of a tuple are followed by another type),
 /// and the test's own extent follows the binder.
 fn assert_type_test(source: &str, kind: &str, binder: Option<&str>) {
-    let tree = tree(source);
+    assert_type_test_tree(source, &tree(source), kind, binder);
+}
+
+/// `assert_type_test` for `source` read in `edition`. The spans of the tree are those of
+/// `parse`, which names no source.
+fn assert_type_test_in(source: &str, edition: Edition, kind: &str, binder: Option<&str>) {
+    let program = parse_with_source(source, 0, edition)
+        .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    let tree = format!("{program:?}").replace("source: Some(0)", "source: None");
+    assert_type_test_tree(source, &tree, kind, binder);
+}
+
+fn assert_type_test_tree(source: &str, tree: &str, kind: &str, binder: Option<&str>) {
     let start = format!("TypeTest(TypeExpr {{ kind: {kind}");
     let found = tree.match_indices(&start).any(|(at, _)| {
         let rest = &tree[at..];
@@ -2174,6 +2186,147 @@ fn api_diff_reorders_members_that_share_region_names() {
         changes[0].starts_with("breaking changed def Main.f"),
         "{changes:?}"
     );
+}
+
+/// Copilot review 3 of #102: the default comparison reads signatures that the checker rejects
+/// (`E1041`: members that differ only in their variables), and members whose blind keys tie are
+/// still a set: the rest of the signature decides their order. By hand: in
+/// `(Maybe<'a> | Maybe<'b>) -> 'a -> i64` the member whose variable is the later parameter comes
+/// second in either written order, so both versions print `(Maybe<'t0> | Maybe<'t1>) -> 't1 ->
+/// i64`; the chain and the ring of regions that review 2 left as a limit print one text for each
+/// order too. Changing what the members share is still a change.
+#[test]
+fn api_diff_orders_tied_members_by_the_whole_signature() {
+    let def = |signature: &str| format!("def f :: {signature} = \\v -> todo ()\n");
+    for (old, new) in [
+        (
+            "(Maybe<'a> | Maybe<'b>) -> 'a -> i64",
+            "(Maybe<'b> | Maybe<'a>) -> 'a -> i64",
+        ),
+        (
+            "(Maybe<'a> | Maybe<'b>) -> 'a -> 'b -> i64",
+            "(Maybe<'b> | Maybe<'a>) -> 'a -> 'b -> i64",
+        ),
+        (
+            "((ref {c} string -> ref {a} i64 -> bool) | (ref {a} string -> ref {b} i64 -> bool)) -> unit",
+            "((ref {a} string -> ref {b} i64 -> bool) | (ref {c} string -> ref {a} i64 -> bool)) -> unit",
+        ),
+        (
+            "((ref {a} i64 * ref {b} i64 * ref {c} i64) | (ref {b} i64 * ref {c} i64 * ref {a} i64)) -> unit",
+            "((ref {b} i64 * ref {c} i64 * ref {a} i64) | (ref {a} i64 * ref {b} i64 * ref {c} i64)) -> unit",
+        ),
+    ] {
+        assert_eq!(
+            api_changes(&def(old), &def(new), false),
+            Vec::<String>::new(),
+            "{old}\n{new}"
+        );
+    }
+    for (old, new) in [
+        (
+            "(Maybe<'a> | Maybe<'b>) -> 'a -> i64",
+            "(Maybe<'a> | Maybe<'a>) -> 'a -> i64",
+        ),
+        (
+            "(Maybe<'a> | Maybe<'b>) -> 'a -> 'b -> i64",
+            "(Maybe<'b> | Maybe<'a>) -> 'a -> 'a -> i64",
+        ),
+    ] {
+        let changes = api_changes(&def(old), &def(new), false);
+        assert_eq!(changes.len(), 1, "{old}\n{new}\n{changes:?}");
+        assert!(
+            changes[0].starts_with("breaking changed def Main.f"),
+            "{changes:?}"
+        );
+    }
+}
+
+/// Verification of Copilot review 3 of #102: unions that share no names with the rest of the
+/// declaration are searched one after the other, so their number no longer runs into the
+/// search's limit; members with a union inside that hold all the occurrences of their names need
+/// no search; and a class's methods are searched once per run of the class. By hand: thirteen
+/// 3-rings `(('aK * 'bK * 'cK) | ('bK * 'cK * 'aK))` (`2^13` combinations) and the same rings of
+/// regions print one text whichever member of the first ring is written first; 32 members
+/// `[('vN | i64)]` print one text in either order; a class with four rings as superclass
+/// constraints and a method with twelve rings of regions too. A ring whose second member swaps
+/// two names instead of rotating them (`('bK * 'aK * 'cK)`) is no renaming of a ring, so it is a
+/// change.
+#[test]
+fn api_diff_settles_independent_unions_one_by_one() {
+    let ring = |k: usize, swapped: bool, region: bool, transposed: bool| {
+        let name = |letter: &str| {
+            if region {
+                format!("ref {{{letter}{k}}} i64")
+            } else {
+                format!("'{letter}{k}")
+            }
+        };
+        let (a, b, c) = (name("a"), name("b"), name("c"));
+        let first = format!("({a} * {b} * {c})");
+        let second = if transposed {
+            format!("({b} * {a} * {c})")
+        } else {
+            format!("({b} * {c} * {a})")
+        };
+        if swapped {
+            format!("({second} | {first})")
+        } else {
+            format!("({first} | {second})")
+        }
+    };
+    let rings = |region: bool, swapped: bool, transposed: Option<usize>| {
+        let parameters: Vec<String> = (0..13)
+            .map(|k| ring(k, swapped && k == 0, region, transposed == Some(k)))
+            .collect();
+        format!(
+            "def f :: {} -> unit = \\v -> todo ()\n",
+            parameters.join(" -> ")
+        )
+    };
+    let wide = |reversed: bool| {
+        let mut members: Vec<String> = (0..32).map(|n| format!("[('v{n} | i64)]")).collect();
+        if reversed {
+            members.reverse();
+        }
+        format!(
+            "def f :: ({}) -> unit = \\v -> todo ()\n",
+            members.join(" | ")
+        )
+    };
+    let class = |swapped: bool| {
+        let constraints: Vec<String> = (0..4)
+            .map(|k| format!("Show<{}>", ring(k, swapped && k == 0, false, false)))
+            .collect();
+        let rings: Vec<String> = (0..12)
+            .map(|k| ring(k + 10, swapped && k == 0, true, false))
+            .collect();
+        format!(
+            "class ({}) => C<'t> {{\n    def m :: 't -> {} -> unit\n}}\n",
+            constraints.join(", "),
+            rings.join(" -> ")
+        )
+    };
+    for (old, new) in [
+        (rings(false, false, None), rings(false, true, None)),
+        (rings(true, false, None), rings(true, true, None)),
+        (wide(false), wide(true)),
+        (class(false), class(true)),
+    ] {
+        assert_eq!(
+            api_changes(&old, &new, false),
+            Vec::<String>::new(),
+            "{old}\n{new}"
+        );
+    }
+    for region in [false, true] {
+        let (old, new) = (rings(region, false, None), rings(region, true, Some(12)));
+        let changes = api_changes(&old, &new, false);
+        assert_eq!(changes.len(), 1, "{old}\n{new}\n{changes:?}");
+        assert!(
+            changes[0].starts_with("breaking changed def Main.f"),
+            "{changes:?}"
+        );
+    }
 }
 
 #[test]
@@ -5433,6 +5586,226 @@ fn comparison_does_not_widen() {
     );
 }
 
+/// The functions and values of `operand_results_do_not_widen`: `flag 1` is true and `flag 0`
+/// false; `size` reads a member back (`size 2 == 2`, `size "neg" == 3`); `wide` takes and
+/// returns the wider union; `make n` is `n` for `n > 0` and `"neg"` otherwise; `ident` is generic.
+const OPERANDS: &str = "def flag :: i64 -> bool = \\n -> n > 0\n\
+     def size :: own (f64 | i64 | string) -> i64 = \\x ->\n    match x with\n    | :? i64 as n -> n\n    | :? f64 -> 100\n    | :? string as s -> s.length\n\n\
+     def wide :: own (f64 | i64 | string) -> (f64 | i64 | string) = \\x -> x\n\
+     def make :: i64 -> (i64 | string) = \\n -> if n > 0 then n else \"neg\"\n\
+     def ident :: 'a -> 'a = \\x -> x\n\n";
+
+/// A builder whose computations are their values (`Identity { return w }` is `w`).
+const IDENTITY: &str = "def Return :: own 'a -> 'a\nfn Return value = value\n\ndef Bind :: own 'a -> own ('a -> 'b) -> 'b\nfn Bind value next = next value\n";
+
+/// `OPERANDS`, a channel `a`, the values `v` and `x: (f64 | i64 | string)`, `w` and
+/// `u: (i64 | string)`, and `let same = {operand}` with the markers `«` and `»` taken out, and the
+/// offset of `«`.
+fn operand_source(operand: &str) -> (String, usize) {
+    let source = format!(
+        "{OPERANDS}let a: Channel<i64> = Channel.make 1\nlet v: (f64 | i64 | string) = 1\nlet w: (i64 | string) = 2\nlet u: (i64 | string) = 3\nlet x: (f64 | i64 | string) = 4\nlet same = {operand}\n0\n"
+    );
+    let at = source.find('«').unwrap_or(0);
+    (source.replace(['«', '»'], ""), at)
+}
+
+/// The errors of `sources`, which compare `v` with an operand whose value is the smaller union
+/// `(i64 | string)`: `E1003` at the offset `at` (when given), and only `E1003` of that operand or
+/// the `E1005` of the comparison of anonymous unions, which have no `Eq` and `Ord` until A26 (a
+/// `match` keeps the union as its type when an arm's error is recovered).
+fn operand_mismatch(sources: &[(&str, &str)], at: Option<usize>, label: &str) {
+    let errors = analyze_modules_all(sources).expect_err(label).diagnostics;
+    let mut mismatched = Vec::new();
+    for error in errors.iter().filter(|error| error.code.starts_with('E')) {
+        if error.code == "E1003" {
+            assert_eq!(error.kind, Some("type_mismatch"), "{label}");
+            assert_eq!(
+                error.message, "expected (i64 | f64 | string), found (i64 | string)",
+                "{label}"
+            );
+            mismatched.push(error.span.start);
+        } else {
+            assert_eq!(error.code, "E1005", "{label}: {}", error.message);
+            assert!(
+                ["Eq", "Ord"].iter().any(|class| error
+                    .message
+                    .starts_with(&format!("no instance for {class}<(i64 | f64 | string)>"))),
+                "{label}: {}",
+                error.message
+            );
+        }
+    }
+    assert!(!mismatched.is_empty(), "{label}: {errors:?}");
+    if let Some(at) = at {
+        assert!(
+            mismatched.contains(&at),
+            "{label}: {mismatched:?}, not {at}"
+        );
+    }
+}
+
+#[test]
+fn operand_results_do_not_widen() {
+    // Copilot review round 3 of A25: the value of an operand may come from the branches of an
+    // `if`, the arms of a `match` or `select`, the result of a block, `@checked` or a computation
+    // expression, which pass the sibling's type down. Each of them is the operand's value and is
+    // not widened either (`E1003` at the branch that is the smaller union), with every comparison
+    // operator. Before the fix, each branch was widened and the only error was the missing
+    // `Eq`/`Ord` instance (`E1005`).
+    let forms = [
+        "(if flag 1 then «w» else u)",
+        "(if flag 1 then v else «w»)",
+        "(match 1 with | 0 -> «w» | _ -> u)",
+        "{ let k = 1; «w» }",
+        "(@checked «w»)",
+        // A parenthesized expression spans its parentheses.
+        "(if flag 1 then { let k = 1; «(w)» } else (match 1 with | 0 -> u | _ -> w))",
+        "((if flag 0 then v else «((u))»))",
+        "(select | recv _ from a -> «w» | default -> u)",
+        // A call is a value of its own: its result is not widened in an operand.
+        "(if flag 1 then «make 1» else w)",
+    ];
+    for operator in ["==", "!=", "<", "<=", ">", ">="] {
+        for form in forms {
+            let (source, at) = operand_source(&format!("v {operator} {form}"));
+            operand_mismatch(
+                &[("Main", &source)],
+                Some(at),
+                &format!("{operator} {form}"),
+            );
+        }
+    }
+    // A computation expression whose builder returns the value as it is.
+    for body in ["Identity { return w }", "Identity { let! x = w; return x }"] {
+        let (source, _) = operand_source(&format!("v == {body}"));
+        operand_mismatch(
+            &[("Main.tz", &source), ("Identity.tc", IDENTITY)],
+            None,
+            body,
+        );
+    }
+    // A pipe and a call in an operand are checked by themselves (as before the fix).
+    for form in ["«(w |> ident)", "«ident w", "«(w |> \\x -> x)"] {
+        let (source, at) = operand_source(&format!("v == {form}"));
+        let error = rejects(&source, "E1003", "type_mismatch");
+        assert_eq!(
+            error.message, "expected (i64 | f64 | string), found (i64 | string)",
+            "{form}"
+        );
+        assert_eq!(error.span.start, at, "{form}");
+    }
+    // The left operand is checked first and gives its type to the right one, which is not
+    // narrowed (as before the fix).
+    let (source, at) = operand_source("(if flag 1 then w else u) == «v»");
+    let error = rejects(&source, "E1003", "type_mismatch");
+    assert_eq!(
+        error.message,
+        "expected (i64 | string), found (i64 | f64 | string)"
+    );
+    assert_eq!(error.span.start, at);
+    // A call or an annotated binding inside an operand still widens: these operands are the
+    // wider union, so the check reaches `Eq`, which anonymous unions do not have until A26.
+    for form in [
+        "(if flag 1 then wide w else v)",
+        "(match 1 with | 0 -> wide w | _ -> v)",
+        "{ let y: (f64 | i64 | string) = w; y }",
+        "(w |> wide)",
+    ] {
+        let (source, _) = operand_source(&format!("v == {form}"));
+        let error = rejects(&source, "E1005", "no_instance");
+        assert!(
+            error
+                .message
+                .starts_with("no instance for Eq<(i64 | f64 | string)>"),
+            "{form}: {}",
+            error.message
+        );
+    }
+    // The same conversions in operands of type `i64` run; the values follow from `size` and
+    // `make` by hand (`make 2` is 2, `make 0` is "neg" of length 3).
+    passes(
+        &format!(
+            "{OPERANDS}test \"conversions inside operands\" =\n    \
+             assert (size (if flag 1 then make 2 else make 0) == 2)\n    \
+             assert (2 == size (if flag 0 then make 2 else make 0) - 1)\n    \
+             assert ({{ let y: (f64 | i64 | string) = make 5; size y }} == 5)\n    \
+             assert ((if flag 1 then size (make 0) else 0) == 3)\n    \
+             assert (size (match 2 with | 0 -> make 7 | _ -> make 0) + 1 == 4)\n    \
+             assert (6 > 1 + size ({{ let k = make 4; k }}))\n"
+        ),
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn operand_checked_first_widens_by_itself() {
+    // Verification of the Copilot review round 3 of A25: only the operand that takes its
+    // sibling's type is not widened. The operand checked first (the left one, or the right one
+    // when the left one is an unsuffixed number) has no sibling's type: it is checked by itself,
+    // so an `if`, `match` or `select` there gives the type of its first branch, `v`'s
+    // `(f64 | i64 | string)`, to the next one (D4), and `w` is widened as in
+    // `let t = if c then v else w`. Both operands are then `(f64 | i64 | string)` (the number is
+    // injected into its member), and the only error is the comparison's: anonymous unions have
+    // no `Eq` and `Ord` until A26. When the operand checked first was recorded too, `w` was
+    // `E1003` in each of these.
+    let first = [
+        "(if flag 1 then v else w)",
+        "(match 1 with | 0 -> v | _ -> w)",
+        "{ let k = 1; if flag k then v else w }",
+        "(@checked (if flag 1 then v else w))",
+        "(select | recv _ from a -> v | default -> w)",
+        // The inner `if` takes the outer `then` branch's type: both of its branches are widened.
+        "(if flag 1 then v else (if flag 0 then u else w))",
+    ];
+    for operator in ["==", "!=", "<", "<=", ">", ">="] {
+        let class = if matches!(operator, "==" | "!=") {
+            "Eq"
+        } else {
+            "Ord"
+        };
+        for form in first {
+            for operands in [
+                format!("{form} {operator} x"),
+                format!("1 {operator} {form}"),
+                format!("-1 {operator} {form}"),
+                format!("1.5 {operator} {form}"),
+                // The parentheses keep a block operand from being the lambda's body.
+                format!("{{ let f = \\b -> ({form} {operator} b); f x }}"),
+            ] {
+                let (source, _) = operand_source(&operands);
+                let errors = analyze_modules_all(&[("Main", &source)])
+                    .expect_err(&operands)
+                    .diagnostics;
+                let errors: Vec<_> = errors
+                    .iter()
+                    .filter(|error| error.code.starts_with('E'))
+                    .collect();
+                assert_eq!(errors.len(), 1, "{operands}: {errors:?}");
+                assert_eq!(errors[0].code, "E1005", "{operands}");
+                assert!(
+                    errors[0]
+                        .message
+                        .starts_with(&format!("no instance for {class}<(i64 | f64 | string)>")),
+                    "{operands}: {}",
+                    errors[0].message
+                );
+            }
+        }
+    }
+    // The operand checked second takes its sibling's type, which the `if` passes down, and the
+    // `else` branch takes the `then` branch's: `E1003` at `w`, whether the sibling's type is
+    // written, inferred later (`b`), or already the wider union.
+    for operands in [
+        "x == (if flag 1 then v else «w»)",
+        "{ let f = \\(b: (f64 | i64 | string)) -> b == (if flag 1 then v else «w»); f x }",
+        "{ let f = \\b -> b == (if flag 1 then v else «w»); f x }",
+        "{ let f = \\b -> b < (match 1 with | 0 -> v | _ -> «w»); f x }",
+    ] {
+        let (source, at) = operand_source(operands);
+        operand_mismatch(&[("Main", &source)], Some(at), operands);
+    }
+}
+
 // A25, step 3: `:? (A | B) [as x]` narrows to an anonymous union of some members.
 
 /// `num`: a number for each member of `(i64 | f64)`, to read a narrowed value back
@@ -7108,4 +7481,171 @@ def wrong :: i64 -> i64 = \x ->
         &format!("{definitions}\ntest \"wrong\" =\n    assert (wrong 41 == 42)\n"),
         Edition::E2026,
     );
+}
+
+/// Copilot review 3 of #102: the scan for a type test reads the type of an annotation as the
+/// parser does (`type_expr` inside parentheses, `type_product` outside them), so nothing in that
+/// type hides the type test after it: neither the `fn` of `fn() -> T` (which started an
+/// expression of its own to the scan), nor an arrow outside the parentheses of the arm (inside
+/// `<...>`, `[...]` or after `fn()`), nor a `<` (which the later scans read as a comparison).
+/// Each form of type stands before a type test in a function-guard arm, with and without `when`,
+/// in a `match` arm inside one and two case patterns, with and without `when`, after an
+/// annotation outside the parentheses of the arm, and in a record pattern.
+#[test]
+fn annotation_types_do_not_hide_type_tests() {
+    let forms = [
+        "fn() -> i64",
+        "fn(i64, bool) -> i64",
+        "fn() -> i64 -> i64",
+        "Maybe<fn() -> i64>",
+        "Maybe<Maybe<Maybe<i64>>>",
+        "Result<Maybe<i64>, Maybe<fn() -> Maybe<i64>>>",
+        "Maybe<i64> -> bool",
+        "i64 -> Maybe<i64> -> bool",
+        "i64 * Maybe<i64>",
+        "(bool | Maybe<i64>)",
+        "(fn() -> i64 | Maybe<i64 -> bool>)",
+        "ref Maybe<i64>",
+        "ref mut Maybe<i64>",
+        "&Maybe<i64>",
+        "&&Maybe<i64>",
+        "ref {a} Maybe<i64>",
+        "{a} ref {a} Maybe<i64> -> i64",
+        "[i64; 3]",
+        "[Maybe<i64>; N]",
+        "[Maybe<i64>]",
+        "[|Maybe<i64>|]",
+        "ref mut [Maybe<i64>..]",
+        "(i64 * Maybe<i64>)",
+        "Point",
+        "'a",
+        "'f<Maybe<i64>>",
+        "own Maybe<i64>",
+        "mut Maybe<i64>",
+        "pure (i64 -> Maybe<i64>)",
+        "dyn Show",
+        "dyn (Show, Send)",
+    ];
+    for form in forms {
+        let guard = "def f :: i64 -> own (i64 | bool) -> i64 = \\x v ->\n";
+        let matched =
+            "def f :: i64 -> own (i64 | bool) -> i64 = \\x v ->\n    match Some (x, v) with\n";
+        let nested = "def f :: i64 -> own (i64 | bool) -> i64 = \\x v ->\n    match Some (Some (x, v)) with\n";
+        let boxed = "def f :: Box -> own (i64 | bool) -> i64 = \\b v ->\n";
+        for source in [
+            format!("{guard}    | (x: {form}, :? i64 as n) -> n\n    | _ -> 0\n"),
+            format!("{guard}    | (x: {form}, :? i64 as n) when n > 0 -> n\n    | _ -> 0\n"),
+            format!("{matched}    | Some (x: {form}, :? i64 as n) -> n\n    | _ -> 0\n"),
+            format!("{matched}    | Some (x: {form}, :? i64 as n) when n > 0 -> n\n    | _ -> 0\n"),
+            format!("{nested}    | Some (Some (x: {form}, :? i64 as n)) -> n\n    | _ -> 0\n"),
+            format!(
+                "{nested}    | Some (Some (x: {form}, :? i64 as n)) when n > 0 -> n\n    | _ -> 0\n"
+            ),
+            format!(
+                "def f :: own (i64 * (i64 | bool)) -> i64 = \\t ->\n    | t: Maybe<{form}> * (i64 | bool) & (_, :? i64 as n) -> n\n    | _ -> 0\n"
+            ),
+            format!("{boxed}    | ({{ value = (h: {form}) }}, :? i64 as n) -> n\n    | _ -> 0\n"),
+            format!(
+                "{boxed}    | ({{ value: (h: {form}) }}, :? i64 as n) when n > 0 -> n\n    | _ -> 0\n"
+            ),
+            format!(
+                "{boxed}    match Some (b, v) with\n    | Some ({{ value: (h: {form}) }}, :? i64 as n) -> n\n    | _ -> 0\n"
+            ),
+        ] {
+            // `&` is a spelling of 2026 only (A22); the scan is the same in both editions.
+            for edition in [Edition::E2026, Edition::E2027] {
+                if edition == Edition::E2026 || !form.contains('&') {
+                    assert_type_test_in(&source, edition, "Named(\"i64\")", Some("n"));
+                }
+            }
+        }
+    }
+    // The same forms run, with the values bound by the annotated patterns: by hand, `answer()` is
+    // 40, `mul 3 4` is 12, `(3, Some 4)` gives 7, `Some 6` gives 6, `[1, 2, 3]` gives 1 + 3 for the
+    // fixed array and 3 for its length, `(3, 4)` gives 12; a type test of 500 adds 1000, `true`
+    // takes the last arm (0).
+    let runs = [
+        ("thunk", "(fn() -> i64)", "fn() -> i64", "answer", "x()", 40),
+        (
+            "generic",
+            "Maybe<fn() -> i64>",
+            "Maybe<fn() -> i64>",
+            "(Some answer)",
+            "(match x with | Some h -> h() | None -> 0)",
+            40,
+        ),
+        (
+            "nested",
+            "Maybe<Maybe<Maybe<i64>>>",
+            "Maybe<Maybe<Maybe<i64>>>",
+            "(Some (Some (Some 2)))",
+            "(match x with | Some (Some (Some k)) -> k | _ -> 0)",
+            2,
+        ),
+        (
+            "arrow",
+            "(i64 -> i64 -> i64)",
+            "i64 -> i64 -> i64",
+            "mul",
+            "x 3 4",
+            12,
+        ),
+        (
+            "product",
+            "(i64 * Maybe<i64>)",
+            "i64 * Maybe<i64>",
+            "(3, Some 4)",
+            "(match x with | (a, Some b) -> a + b | (a, None) -> a)",
+            7,
+        ),
+        (
+            "union",
+            "own (bool | Maybe<i64>)",
+            "(bool | Maybe<i64>)",
+            "(Some 6)",
+            "(match x with | :? Maybe<i64> as m -> Maybe.default_value 0 m | :? bool -> 1)",
+            6,
+        ),
+        (
+            "fixed",
+            "[i64; 3]",
+            "[i64; 3]",
+            "[1, 2, 3]",
+            "x[0] + x[2]",
+            4,
+        ),
+        ("array", "own [i64]", "[i64]", "[1, 2, 3]", "x.length", 3),
+        (
+            "tuple",
+            "(i64 * i64)",
+            "(i64 * i64)",
+            "(3, 4)",
+            "(match x with | (a, b) -> a * b)",
+            12,
+        ),
+        ("variable", "'a", "'a", "1.5", "0", 0),
+    ];
+    let mut source = "def answer :: i64 = 40\n\ndef mul :: i64 -> i64 -> i64 = \\a b -> a * b\n\nrecord Box { value: Maybe<fn() -> i64> }\n\n".to_owned();
+    let mut tests = String::new();
+    for (name, parameter, annotation, argument, value, expected) in runs {
+        source.push_str(&format!(
+            "def g_{name} :: {parameter} -> own (i64 | bool) -> i64 = \\x v ->\n    | (x: {annotation}, :? i64 as n) when n > 100 -> {value} + n + 1000\n    | (x: {annotation}, :? i64 as n) -> {value} + n\n    | _ -> 0\n\ndef m_{name} :: {parameter} -> own (i64 | bool) -> i64 = \\x v ->\n    match Some (Some (x, v)) with\n    | Some (Some (x: {annotation}, :? i64 as n)) when n > 100 -> {value} + n + 1000\n    | Some (Some (x: {annotation}, :? i64 as n)) -> {value} + n\n    | _ -> 0\n\n"
+        ));
+        for function in ["g", "m"] {
+            tests.push_str(&format!(
+                "    assert ({function}_{name} {argument} 5 == {})\n    assert ({function}_{name} {argument} 500 == {})\n    assert ({function}_{name} {argument} true == 0)\n",
+                expected + 5,
+                expected + 1500
+            ));
+        }
+    }
+    // Outside the parentheses of the arm, after `&`, and inside a record pattern.
+    source.push_str("def g_and :: own (Maybe<fn() -> i64> * (i64 | bool)) -> i64 = \\t ->\n    | t: Maybe<fn() -> i64> * (i64 | bool) & (_, :? i64 as n) -> n\n    | _ -> 0\n\ndef g_box :: Box -> own (i64 | bool) -> i64 = \\b v ->\n    | ({ value = (h: Maybe<fn() -> i64>) }, :? i64 as n) -> (match h with | Some k -> k() + n | None -> n)\n    | _ -> 0\n\n");
+    tests.push_str("    assert (g_and (Some answer, 5) == 5)\n    assert (g_and (None, true) == 0)\n    assert (g_box (Box { value: Some answer }) 2 == 42)\n    assert (g_box (Box { value: None }) 2 == 2)\n    assert (g_box (Box { value: Some answer }) false == 0)\n");
+    // Predicates that hold such types stay predicates, before the last type test of the source
+    // (so the scan reads them): by hand, `answer()` is 40, over 30 and over 10 but not over 50.
+    source.push_str("def holds :: bool -> bool = \\b -> b\n\ndef value_of :: Box -> i64 = \\b ->\n    match b.value with\n    | Some h -> h()\n    | None -> 0\n\ndef p_record :: i64 -> i64 = \\n ->\n    | value_of (Box { value: Some answer }) > n -> 1\n    | otherwise -> 0\n\ndef p_block :: i64 -> i64 = \\n ->\n    | { let y: Maybe<fn() -> i64> = Some answer; (match y with | Some h -> h() | None -> 0) > n } -> 1\n    | otherwise -> 0\n\ndef p_lambda :: own (i64 | bool) -> i64 = \\v ->\n    | holds ((\\(h: fn() -> i64) -> h() > 30) answer) && (match v with | :? i64 as k -> k > 0 | :? bool -> false) -> 1\n    | otherwise -> 0\n\n");
+    tests.push_str("    assert (p_lambda 5 == 1)\n    assert (p_lambda (-5) == 0)\n    assert (p_lambda true == 0)\n    assert (p_record 10 == 1)\n    assert (p_record 50 == 0)\n    assert (p_block 10 == 1)\n    assert (p_block 50 == 0)\n");
+    source.push_str(&format!("test \"annotations\" =\n{tests}"));
+    passes(&source, Edition::E2026);
 }
