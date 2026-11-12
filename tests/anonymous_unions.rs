@@ -2222,11 +2222,16 @@ fn definition_of_anonymous_union_has_no_target() {
 /// `--effective` mode, as `tests/api_diff.rs` reads them: `severity action kind name` and the old
 /// and new texts.
 fn api_changes(old: &str, new: &str, effective: bool) -> Vec<String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tsuzuri::api_diff;
     use tsuzuri::driver::Project;
+    // `cargo test` runs the tests of this file as threads of one process, so the process id alone
+    // does not keep two calls apart: every call takes its own number.
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, Ordering::Relaxed);
     let directory = |label: &str, text: &str| {
         let root = std::env::temp_dir().join(format!(
-            "tsuzuri-anonymous-unions-api-{label}-{}-{}",
+            "tsuzuri-anonymous-unions-api-{label}-{}-{call}-{}",
             std::process::id(),
             effective
         ));
