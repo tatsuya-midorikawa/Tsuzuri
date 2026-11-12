@@ -8,6 +8,7 @@ type LoopSummary = (
     BTreeSet<String>,
     BTreeSet<(Place, bool)>,
     usize,
+    BTreeMap<usize, BTreeSet<usize>>,
 );
 
 pub(super) struct LoopFlow<'a> {
@@ -349,6 +350,7 @@ impl<'a> Checker<'a, '_> {
                 })
                 .collect(),
             self.handed.len(),
+            self.state.block_shares.clone(),
         )
     }
 
