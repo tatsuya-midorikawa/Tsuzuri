@@ -1731,8 +1731,10 @@ std は `own` と `_owned` 入口で旧契約を保存した単一コピーで�
 推論中の型のうち数値リテラルの型（`[1, 2, 3] |> Array.map (\(x: ref i64) -> …)` の要素）は参照になりえないので、注釈の参照先がリテラルの取れる数値型で、
 その型に掛かる class 制約をすべて満たすときは束縛し、要素の型は参照先の型に決まります。満たさない注釈（`ref string`、整数のリテラルへの `ref f64`、
 負のリテラルへの `ref i8u`）は値 view のままで、リテラルの位置の `E1003 expected an integer, found ref string` は変わりません。
+要素の内側の推論中の型（`[[1, 2], [3]]` の要素 `[?]`）も、注釈との `unify` の試しで解いた型で、その変数に掛かる class 制約がすべて成り立つときだけ束縛します。成り立たない注釈（`ref [string]`）は値 view のままで、注釈したパターンの位置の `E1003 expected ref [string], found [an undetermined type]` は変わりません。試しの解でもほかの未決の変数を含む制約は成り立つと数えず、その変数を含むモジュール関数制約があるときも束縛しないので、`\p q -> …` で `(p, q) == (p, q)` と比べた後の `[[p]]` への `ref [i64]` は値 view のままの `E1003` です（`let` で束縛したラムダなら受理されます）。
 パターンが `as`・`&` で Copy でない値（排他借用を含む）を 2 つの名前に束縛すると `E1012` で、文言は隠れた引数 `$lambda…` の名前を出さず、
 引数のパターンが値を 2 つ以上の名前に束縛すると報告します（コンパイラが作った名前は、ほかの所有権の診断と同じく表示しません）。
+パターンの引数の後の関数ガードの節（`\(s: string) -> | t -> …`）は隠れた引数そのものをもう一度照合するので、Copy でない値ではムーブの後の照合として `E1012` で、文言は `these clauses match the parameter again after its pattern moved the value`、位置は節です（`value moved here` はパターン）。
 注釈が引数の参照の型そのものと合うこと（推論変数を解かない試しの `unify`）も条件で、合わない注釈（`[Read]` の `string` への `ref [string]` や `ref mut string`）の引数は値 view のままなので、
 診断は `E1003 expected ref [string], found string` のまま変わりません。`ref (A -> B)` と注釈した関数の引数は `(deref f) x` で呼び、`f x` の `E1005` の help は `deref` で参照外ししてから呼ぶよう案内します（呼び出す名前と引数は書きません。パイプライン `3 |> r` にも同じ help です）。`tsuzuri explain call_non_function` も、関数の参照の呼び出しと `(deref g) x` の直し方を示します。
 2027 の `Array`／`List` の読み取り callback（引数規約 `[Read]`）へ直接書くラムダも同じ規則です。

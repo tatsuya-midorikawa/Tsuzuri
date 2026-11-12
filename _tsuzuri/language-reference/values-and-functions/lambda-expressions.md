@@ -120,7 +120,7 @@ pick 3 + pick (-3) * 100
 5005
 ```
 
-数値リテラルの配列やリストの読み取り callback（`[1, 2, 3] |> Array.map (\(x: ref i64) -> …)`、`let xs = [1, 2, 3]` の後の `xs |> Array.fold …`）では、callback を検査する時点で要素の型がまだリテラルの型のままです。リテラルの型は参照になりえないので、注釈の参照先がリテラルの取れる数値型（整数のリテラルなら `i64` や `i8u`）なら、引数は注釈のとおり参照になり、要素の型もその型に決まります。`let` で束縛したラムダと同じ型です。リテラルの取れない参照先（`ref string`、整数のリテラルへの `ref f64`、負のリテラルへの `ref i8u`）や、ほかの制約（その要素を渡した関数が求める class の instance）を満たさない参照先では、引数は参照先の値を読むので、リテラルの位置に `E1003 expected an integer, found ref string` のように報告されます。
+数値リテラルの配列やリストの読み取り callback（`[1, 2, 3] |> Array.map (\(x: ref i64) -> …)`、`let xs = [1, 2, 3]` の後の `xs |> Array.fold …`）では、callback を検査する時点で要素の型がまだリテラルの型のままです。リテラルの型は参照になりえないので、注釈の参照先がリテラルの取れる数値型（整数のリテラルなら `i64` や `i8u`）なら、引数は注釈のとおり参照になり、要素の型もその型に決まります。`let` で束縛したラムダと同じ型です。リテラルの取れない参照先（`ref string`、整数のリテラルへの `ref f64`、負のリテラルへの `ref i8u`）や、ほかの制約（その要素を渡した関数が求める class の instance）を満たさない参照先では、引数は参照先の値を読むので、リテラルの位置に `E1003 expected an integer, found ref string` のように報告されます。リテラルが要素の内側にあるとき（`[[1, 2], [3]] |> Array.map (\(x: ref [i64]) -> …)` の `[i64]`、タプルの中の配列）も、リテラルの取れる注釈なら参照になり、要素の型が決まります。取れない注釈（`ref [string]`、整数のリテラルへの `ref [f64]`）では引数は参照先の値を読み、注釈したパターンの位置に `E1003 expected ref [string], found [an undetermined type]` と報告されます。
 
 ```tsuzuri run=615
 let doubled = [1, 2, 3] |> Array.map (\(x: ref i64) -> deref x * 2)
@@ -141,12 +141,15 @@ doubled[2] * 100 + total
 
 - 期待型の引数が参照の参照のとき。たとえば `[ref string]` を `Array.map` に渡すときの callback の要素の引数です。直接書いた `Array.map (\(r: ref (ref string)) -> r.length) rs` は `E1003` で、文言は内側の食い違いの `expected ref string, found string` です。参照先の値の型で `\(r: ref string) -> …` と書くか、ラムダを先に `let` で束縛します。
 - 読み取り引数の型が、型変数を型構築子に適用した型のとき。たとえば `def probe :: Functor<'container> => 'container<i64> -> i64` の `'container<i64>` です。`\(value: ref 'container<i64>) -> …` は `E1015`（`type constructor application has an incompatible kind`）です。注釈を書かないか、値の型で `\(value: 'container<i64>) -> …` と書きます。
+- 期待型の引数の参照先の内側にまだ決まっていない型があり、その型に掛かる class の制約が、注釈で決まらないほかの型も含むとき（その型にモジュール関数制約が掛かるときも同じです）。たとえば `let h = \p q -> …` の本体で `(p, q) == (p, q)` と比べた後の `[[p]] |> Array.map (\(x: ref [i64]) -> …)` は、`E1003 expected ref [i64], found [an undetermined type]` です。ラムダを先に `let` で束縛します。
 
 注釈で参照を束縛した引数は、`let` で束縛したラムダの引数と同じ所有権検査を受けます。`Array.write` と、それで書き込む std の関数（`Array.set`・`Array.fill`・`Array.blit` など）で、その引数の借用を持つ値（引数を捕捉した関数など）を書き込み先へ書き込むと、書き込み先の持ち主はその借用を持ちます。そのため、借用元より長く書き込み先を使うと、注釈を書かない綴りと同じく `E1013` です（[その場の書き込み](../ownership-and-memory/lifetimes.md#現在の制限)）。同じページの残りの規則も、`ref` の型の引数を持つ名前付き関数と同じです。`ref mut` と注釈した引数の先の借用を書き込み先へ残した後で、借用した場所へ届く書き込み（そのフィールドの置き換え、`Vec.push_mut`）は `E1014` で、別のフィールドへの書き込みは受理されます。`ref` と注釈した引数の先を `match` で照合した変数の借用は呼び出し元のデータの借用で、`((use, z): ref (A * B))` のようなパターンで取り出した関数は引数の関数として呼び出し元で検査します。
 
 `\mut (pattern)` の `mut` は、パターンで束縛する名前ではなく、分解する前の引数を可変にします。`def` の右辺では可変束縛引数は値渡しなので、そのパターンへ参照の型を注釈すると `E1003` です（`def size :: 'a -> i64 = \mut (v: ref 'a) -> 3` は `expected ref 'a, found 'a`）。規約を持つ関数型が期待される位置のラムダと、`def` の `mut T` の引数では、`mut` を付けても引数の型は変わりません。そのため `\mut (text: ref string) -> …` や `\mut (counter: ref mut Counter) -> …` と書けます。
 
 排他借用 `ref mut T` は Copy でないので、`\((c as d): ref mut Counter) -> …` のように `as`（または `&`）で同じ参照を 2 つの名前に束縛すると `E1012` です。所有値の `\((s as t): string) -> …` と同じで、診断は引数のパターンを指し、`use of moved or partially moved value: this parameter's pattern binds the value, or a part of it, to more than one name` と報告します。名前を 1 つにして `\(c: ref mut Counter) -> …` と書きます（[as パターンによる全体束縛](../pattern-matching/pattern-matching.md#as-パターンによる全体束縛)）。
+
+パターンの引数の `->` の後に [関数ガード](./functions.md#関数ガード)の `|` 節を続けると、節はパターンで分解した名前ではなく引数そのものをもう一度照合します。そのため、Copy でない値（所有値や排他借用 `ref mut`）では、`\(s: string) -> | t when t.length > 3 -> 1 | _ -> 0` や `\(c: ref mut Counter) -> | d -> …` は、パターンが値をムーブした後の照合として `E1012` です。診断は最初の `|` の節を指し、`use of moved or partially moved value: these clauses match the parameter again after its pattern moved the value` と報告します（`value moved here` の注記は引数のパターンを指します）。本体で `match s with | t when … -> …` のようにパターンの名前を照合するか、`| s.length > 3 -> 1` のような条件だけの節にします。条件だけの節は引数を照合しないので、そのまま書けます。
 
 `\(left, right) ->` はタプルを 1 つ受けて分解します。カリー化された 2 引数関数ではないので、呼び出しは `total (20, 22)` です。
 
