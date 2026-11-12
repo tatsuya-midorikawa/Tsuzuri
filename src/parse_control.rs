@@ -1403,19 +1403,25 @@ impl Parser<'_> {
     /// Whether a type test starts before the arm's `->` or `when` (`group` false), or before the
     /// `)` that closes the current group (`group` true), at any depth of parentheses (A24): such an
     /// arm or group is a pattern, whatever else its type holds (a `<` reads as a comparison to the
-    /// scans of the callers). The arm's `->` and `when` are outside every parenthesis: an arrow
-    /// inside one is a function type of an annotation (`((g: Maybe<i64> -> bool), :? i64 as n)`),
-    /// and the scan goes on past it. The tokens of an expression of its own are not the arm's or the
-    /// group's: a `match`, a handler's `with`, a lambda, a `for` or a local `fn` has patterns and
-    /// arrows of its own, so the scan skips to the `)` that closes the parentheses around it, and
-    /// outside any parentheses it answers that no type test is ahead. A hole after the colon of a
+    /// scans of the callers). The arm's `->` and `when` are outside every parenthesis. The type of
+    /// an annotation is read as the parser reads it (`annotation_end`), so no token of that type
+    /// (`fn` of `fn() -> T`, a `<`, an arrow inside `<...>`, `[...]`, parentheses or after `fn()`)
+    /// ends the scan or hides a type test after it. The tokens of an expression of its own are not
+    /// the arm's or the group's: a `match`, a handler's `with`, a lambda, a `for` or a local
+    /// function `fn name` has patterns and arrows of its own, so the scan skips to the `)` that
+    /// closes the parentheses around it, and outside any parentheses it answers that no type test
+    /// is ahead; `fn(` starts a function type, as in `type_primary`. A hole after the colon of a
     /// field, `{ x:? }` or `{ x:?h }`, is no type test either: a type test starts a pattern, so a
     /// name never stands before its `:`, and a type follows its `?`.
     fn type_test_ahead(&self, group: bool) -> bool {
+        if self.position >= self.type_tests_end {
+            return false;
+        }
         let mut depth = 0usize;
         // The depth of the parentheses around the expression that is skipped.
         let mut nested: Option<usize> = None;
-        for (index, token) in self.tokens[self.position..].iter().enumerate() {
+        let mut index = self.position;
+        while let Some(token) = self.tokens.get(index) {
             match token.kind {
                 TokenKind::End => return false,
                 TokenKind::LeftParen => depth += 1,
@@ -1428,6 +1434,11 @@ impl Parser<'_> {
                 }
                 _ if nested.is_some() => {}
                 TokenKind::Arrow | TokenKind::When if !group && depth == 0 => return false,
+                TokenKind::Fn
+                    if self
+                        .tokens
+                        .get(index + 1)
+                        .is_some_and(|next| next.kind == TokenKind::LeftParen) => {}
                 TokenKind::Match
                 | TokenKind::With
                 | TokenKind::Backslash
@@ -1438,34 +1449,59 @@ impl Parser<'_> {
                     }
                     nested = Some(depth);
                 }
-                TokenKind::Colon
-                    if self.type_test_at(self.position + index)
-                        && !(index > 0
-                            && matches!(
-                                self.tokens[self.position + index - 1].kind,
-                                TokenKind::Ident(_)
-                            ))
-                        && !self
-                            .tokens
-                            .get(self.position + index + 2)
-                            .is_some_and(|after| {
-                                matches!(
-                                    after.kind,
-                                    TokenKind::RightBrace
-                                        | TokenKind::RightParen
-                                        | TokenKind::RightBracket
-                                        | TokenKind::Comma
-                                        | TokenKind::Semicolon
-                                        | TokenKind::End
-                                )
-                            }) =>
-                {
-                    return true;
+                TokenKind::Colon if self.type_test_at(index) => {
+                    let hole = (index > self.position
+                        && matches!(self.tokens[index - 1].kind, TokenKind::Ident(_)))
+                        || self.tokens.get(index + 2).is_some_and(|after| {
+                            matches!(
+                                after.kind,
+                                TokenKind::RightBrace
+                                    | TokenKind::RightParen
+                                    | TokenKind::RightBracket
+                                    | TokenKind::Comma
+                                    | TokenKind::Semicolon
+                                    | TokenKind::End
+                            )
+                        });
+                    if !hole {
+                        return true;
+                    }
+                }
+                TokenKind::Colon => {
+                    // Inside a group the annotation is a `type_expr` (`pattern_type_arrow`).
+                    let arrow = group || depth > 0 || self.pattern_type_arrow;
+                    if let Some(end) = self.annotation_end(index, arrow) {
+                        index = end;
+                        continue;
+                    }
                 }
                 _ => {}
             }
+            index += 1;
         }
         false
+    }
+
+    /// The index of the token after the type that follows the `:` at `colon`, read as the type of
+    /// a pattern's annotation (`pattern_suffix`): a `type_expr` when `arrow`, a `type_product`
+    /// otherwise. `None` when no type follows: the colon of a field (`{ x: p }`, `R { x: e }`)
+    /// before a value that is no type. A type holds no `:`, so reading a value that looks like a
+    /// type (`{ x: n }`) never passes over a type test, and its parentheses are balanced. The read
+    /// is a probe on a copy of the parser (`Parser::probe`, as `own_type_ahead` makes), which
+    /// costs the same wherever it is made; `type_test_ahead` makes it only before the last type
+    /// test of the source.
+    #[inline(never)]
+    fn annotation_end(&self, colon: usize, arrow: bool) -> Option<usize> {
+        let mut probe = self.probe();
+        probe.position = colon + 1;
+        probe.type_remainder = None;
+        probe.previous_end = self.tokens[colon].span.end;
+        let read = if arrow {
+            probe.type_expr()
+        } else {
+            probe.type_product()
+        };
+        read.ok().map(|_| probe.position)
     }
 
     fn make_pattern(

@@ -128,7 +128,19 @@ fn tree(source: &str) -> String {
 /// `source: None } }, ` that a binder follows (the members of a tuple are followed by another type),
 /// and the test's own extent follows the binder.
 fn assert_type_test(source: &str, kind: &str, binder: Option<&str>) {
-    let tree = tree(source);
+    assert_type_test_tree(source, &tree(source), kind, binder);
+}
+
+/// `assert_type_test` for `source` read in `edition`. The spans of the tree are those of
+/// `parse`, which names no source.
+fn assert_type_test_in(source: &str, edition: Edition, kind: &str, binder: Option<&str>) {
+    let program = parse_with_source(source, 0, edition)
+        .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    let tree = format!("{program:?}").replace("source: Some(0)", "source: None");
+    assert_type_test_tree(source, &tree, kind, binder);
+}
+
+fn assert_type_test_tree(source: &str, tree: &str, kind: &str, binder: Option<&str>) {
     let start = format!("TypeTest(TypeExpr {{ kind: {kind}");
     let found = tree.match_indices(&start).any(|(at, _)| {
         let rest = &tree[at..];
@@ -2176,6 +2188,147 @@ fn api_diff_reorders_members_that_share_region_names() {
         changes[0].starts_with("breaking changed def Main.f"),
         "{changes:?}"
     );
+}
+
+/// Copilot review 3 of #102: the default comparison reads signatures that the checker rejects
+/// (`E1041`: members that differ only in their variables), and members whose blind keys tie are
+/// still a set: the rest of the signature decides their order. By hand: in
+/// `(Maybe<'a> | Maybe<'b>) -> 'a -> i64` the member whose variable is the later parameter comes
+/// second in either written order, so both versions print `(Maybe<'t0> | Maybe<'t1>) -> 't1 ->
+/// i64`; the chain and the ring of regions that review 2 left as a limit print one text for each
+/// order too. Changing what the members share is still a change.
+#[test]
+fn api_diff_orders_tied_members_by_the_whole_signature() {
+    let def = |signature: &str| format!("def f :: {signature} = \\v -> todo ()\n");
+    for (old, new) in [
+        (
+            "(Maybe<'a> | Maybe<'b>) -> 'a -> i64",
+            "(Maybe<'b> | Maybe<'a>) -> 'a -> i64",
+        ),
+        (
+            "(Maybe<'a> | Maybe<'b>) -> 'a -> 'b -> i64",
+            "(Maybe<'b> | Maybe<'a>) -> 'a -> 'b -> i64",
+        ),
+        (
+            "((ref {c} string -> ref {a} i64 -> bool) | (ref {a} string -> ref {b} i64 -> bool)) -> unit",
+            "((ref {a} string -> ref {b} i64 -> bool) | (ref {c} string -> ref {a} i64 -> bool)) -> unit",
+        ),
+        (
+            "((ref {a} i64 * ref {b} i64 * ref {c} i64) | (ref {b} i64 * ref {c} i64 * ref {a} i64)) -> unit",
+            "((ref {b} i64 * ref {c} i64 * ref {a} i64) | (ref {a} i64 * ref {b} i64 * ref {c} i64)) -> unit",
+        ),
+    ] {
+        assert_eq!(
+            api_changes(&def(old), &def(new), false),
+            Vec::<String>::new(),
+            "{old}\n{new}"
+        );
+    }
+    for (old, new) in [
+        (
+            "(Maybe<'a> | Maybe<'b>) -> 'a -> i64",
+            "(Maybe<'a> | Maybe<'a>) -> 'a -> i64",
+        ),
+        (
+            "(Maybe<'a> | Maybe<'b>) -> 'a -> 'b -> i64",
+            "(Maybe<'b> | Maybe<'a>) -> 'a -> 'a -> i64",
+        ),
+    ] {
+        let changes = api_changes(&def(old), &def(new), false);
+        assert_eq!(changes.len(), 1, "{old}\n{new}\n{changes:?}");
+        assert!(
+            changes[0].starts_with("breaking changed def Main.f"),
+            "{changes:?}"
+        );
+    }
+}
+
+/// Verification of Copilot review 3 of #102: unions that share no names with the rest of the
+/// declaration are searched one after the other, so their number no longer runs into the
+/// search's limit; members with a union inside that hold all the occurrences of their names need
+/// no search; and a class's methods are searched once per run of the class. By hand: thirteen
+/// 3-rings `(('aK * 'bK * 'cK) | ('bK * 'cK * 'aK))` (`2^13` combinations) and the same rings of
+/// regions print one text whichever member of the first ring is written first; 32 members
+/// `[('vN | i64)]` print one text in either order; a class with four rings as superclass
+/// constraints and a method with twelve rings of regions too. A ring whose second member swaps
+/// two names instead of rotating them (`('bK * 'aK * 'cK)`) is no renaming of a ring, so it is a
+/// change.
+#[test]
+fn api_diff_settles_independent_unions_one_by_one() {
+    let ring = |k: usize, swapped: bool, region: bool, transposed: bool| {
+        let name = |letter: &str| {
+            if region {
+                format!("ref {{{letter}{k}}} i64")
+            } else {
+                format!("'{letter}{k}")
+            }
+        };
+        let (a, b, c) = (name("a"), name("b"), name("c"));
+        let first = format!("({a} * {b} * {c})");
+        let second = if transposed {
+            format!("({b} * {a} * {c})")
+        } else {
+            format!("({b} * {c} * {a})")
+        };
+        if swapped {
+            format!("({second} | {first})")
+        } else {
+            format!("({first} | {second})")
+        }
+    };
+    let rings = |region: bool, swapped: bool, transposed: Option<usize>| {
+        let parameters: Vec<String> = (0..13)
+            .map(|k| ring(k, swapped && k == 0, region, transposed == Some(k)))
+            .collect();
+        format!(
+            "def f :: {} -> unit = \\v -> todo ()\n",
+            parameters.join(" -> ")
+        )
+    };
+    let wide = |reversed: bool| {
+        let mut members: Vec<String> = (0..32).map(|n| format!("[('v{n} | i64)]")).collect();
+        if reversed {
+            members.reverse();
+        }
+        format!(
+            "def f :: ({}) -> unit = \\v -> todo ()\n",
+            members.join(" | ")
+        )
+    };
+    let class = |swapped: bool| {
+        let constraints: Vec<String> = (0..4)
+            .map(|k| format!("Show<{}>", ring(k, swapped && k == 0, false, false)))
+            .collect();
+        let rings: Vec<String> = (0..12)
+            .map(|k| ring(k + 10, swapped && k == 0, true, false))
+            .collect();
+        format!(
+            "class ({}) => C<'t> {{\n    def m :: 't -> {} -> unit\n}}\n",
+            constraints.join(", "),
+            rings.join(" -> ")
+        )
+    };
+    for (old, new) in [
+        (rings(false, false, None), rings(false, true, None)),
+        (rings(true, false, None), rings(true, true, None)),
+        (wide(false), wide(true)),
+        (class(false), class(true)),
+    ] {
+        assert_eq!(
+            api_changes(&old, &new, false),
+            Vec::<String>::new(),
+            "{old}\n{new}"
+        );
+    }
+    for region in [false, true] {
+        let (old, new) = (rings(region, false, None), rings(region, true, Some(12)));
+        let changes = api_changes(&old, &new, false);
+        assert_eq!(changes.len(), 1, "{old}\n{new}\n{changes:?}");
+        assert!(
+            changes[0].starts_with("breaking changed def Main.f"),
+            "{changes:?}"
+        );
+    }
 }
 
 #[test]
@@ -5318,4 +5471,171 @@ fn arrows_in_annotations_do_not_hide_type_tests() {
         "def holds :: (i64 -> bool) -> bool = \\h -> h 1\ndef f :: i64 -> i64 = \\n ->\n    | holds ((\\(h: i64 -> bool) -> h) (\\k -> k < n)) -> 1\n    | otherwise -> 0\n\ntest \"f\" =\n    assert (f 2 == 1)\n    assert (f 0 == 0)\n",
         Edition::E2026,
     );
+}
+
+/// Copilot review 3 of #102: the scan for a type test reads the type of an annotation as the
+/// parser does (`type_expr` inside parentheses, `type_product` outside them), so nothing in that
+/// type hides the type test after it: neither the `fn` of `fn() -> T` (which started an
+/// expression of its own to the scan), nor an arrow outside the parentheses of the arm (inside
+/// `<...>`, `[...]` or after `fn()`), nor a `<` (which the later scans read as a comparison).
+/// Each form of type stands before a type test in a function-guard arm, with and without `when`,
+/// in a `match` arm inside one and two case patterns, with and without `when`, after an
+/// annotation outside the parentheses of the arm, and in a record pattern.
+#[test]
+fn annotation_types_do_not_hide_type_tests() {
+    let forms = [
+        "fn() -> i64",
+        "fn(i64, bool) -> i64",
+        "fn() -> i64 -> i64",
+        "Maybe<fn() -> i64>",
+        "Maybe<Maybe<Maybe<i64>>>",
+        "Result<Maybe<i64>, Maybe<fn() -> Maybe<i64>>>",
+        "Maybe<i64> -> bool",
+        "i64 -> Maybe<i64> -> bool",
+        "i64 * Maybe<i64>",
+        "(bool | Maybe<i64>)",
+        "(fn() -> i64 | Maybe<i64 -> bool>)",
+        "ref Maybe<i64>",
+        "ref mut Maybe<i64>",
+        "&Maybe<i64>",
+        "&&Maybe<i64>",
+        "ref {a} Maybe<i64>",
+        "{a} ref {a} Maybe<i64> -> i64",
+        "[i64; 3]",
+        "[Maybe<i64>; N]",
+        "[Maybe<i64>]",
+        "[|Maybe<i64>|]",
+        "ref mut [Maybe<i64>..]",
+        "(i64 * Maybe<i64>)",
+        "Point",
+        "'a",
+        "'f<Maybe<i64>>",
+        "own Maybe<i64>",
+        "mut Maybe<i64>",
+        "pure (i64 -> Maybe<i64>)",
+        "dyn Show",
+        "dyn (Show, Send)",
+    ];
+    for form in forms {
+        let guard = "def f :: i64 -> own (i64 | bool) -> i64 = \\x v ->\n";
+        let matched =
+            "def f :: i64 -> own (i64 | bool) -> i64 = \\x v ->\n    match Some (x, v) with\n";
+        let nested = "def f :: i64 -> own (i64 | bool) -> i64 = \\x v ->\n    match Some (Some (x, v)) with\n";
+        let boxed = "def f :: Box -> own (i64 | bool) -> i64 = \\b v ->\n";
+        for source in [
+            format!("{guard}    | (x: {form}, :? i64 as n) -> n\n    | _ -> 0\n"),
+            format!("{guard}    | (x: {form}, :? i64 as n) when n > 0 -> n\n    | _ -> 0\n"),
+            format!("{matched}    | Some (x: {form}, :? i64 as n) -> n\n    | _ -> 0\n"),
+            format!("{matched}    | Some (x: {form}, :? i64 as n) when n > 0 -> n\n    | _ -> 0\n"),
+            format!("{nested}    | Some (Some (x: {form}, :? i64 as n)) -> n\n    | _ -> 0\n"),
+            format!(
+                "{nested}    | Some (Some (x: {form}, :? i64 as n)) when n > 0 -> n\n    | _ -> 0\n"
+            ),
+            format!(
+                "def f :: own (i64 * (i64 | bool)) -> i64 = \\t ->\n    | t: Maybe<{form}> * (i64 | bool) & (_, :? i64 as n) -> n\n    | _ -> 0\n"
+            ),
+            format!("{boxed}    | ({{ value = (h: {form}) }}, :? i64 as n) -> n\n    | _ -> 0\n"),
+            format!(
+                "{boxed}    | ({{ value: (h: {form}) }}, :? i64 as n) when n > 0 -> n\n    | _ -> 0\n"
+            ),
+            format!(
+                "{boxed}    match Some (b, v) with\n    | Some ({{ value: (h: {form}) }}, :? i64 as n) -> n\n    | _ -> 0\n"
+            ),
+        ] {
+            // `&` is a spelling of 2026 only (A22); the scan is the same in both editions.
+            for edition in [Edition::E2026, Edition::E2027] {
+                if edition == Edition::E2026 || !form.contains('&') {
+                    assert_type_test_in(&source, edition, "Named(\"i64\")", Some("n"));
+                }
+            }
+        }
+    }
+    // The same forms run, with the values bound by the annotated patterns: by hand, `answer()` is
+    // 40, `mul 3 4` is 12, `(3, Some 4)` gives 7, `Some 6` gives 6, `[1, 2, 3]` gives 1 + 3 for the
+    // fixed array and 3 for its length, `(3, 4)` gives 12; a type test of 500 adds 1000, `true`
+    // takes the last arm (0).
+    let runs = [
+        ("thunk", "(fn() -> i64)", "fn() -> i64", "answer", "x()", 40),
+        (
+            "generic",
+            "Maybe<fn() -> i64>",
+            "Maybe<fn() -> i64>",
+            "(Some answer)",
+            "(match x with | Some h -> h() | None -> 0)",
+            40,
+        ),
+        (
+            "nested",
+            "Maybe<Maybe<Maybe<i64>>>",
+            "Maybe<Maybe<Maybe<i64>>>",
+            "(Some (Some (Some 2)))",
+            "(match x with | Some (Some (Some k)) -> k | _ -> 0)",
+            2,
+        ),
+        (
+            "arrow",
+            "(i64 -> i64 -> i64)",
+            "i64 -> i64 -> i64",
+            "mul",
+            "x 3 4",
+            12,
+        ),
+        (
+            "product",
+            "(i64 * Maybe<i64>)",
+            "i64 * Maybe<i64>",
+            "(3, Some 4)",
+            "(match x with | (a, Some b) -> a + b | (a, None) -> a)",
+            7,
+        ),
+        (
+            "union",
+            "own (bool | Maybe<i64>)",
+            "(bool | Maybe<i64>)",
+            "(Some 6)",
+            "(match x with | :? Maybe<i64> as m -> Maybe.default_value 0 m | :? bool -> 1)",
+            6,
+        ),
+        (
+            "fixed",
+            "[i64; 3]",
+            "[i64; 3]",
+            "[1, 2, 3]",
+            "x[0] + x[2]",
+            4,
+        ),
+        ("array", "own [i64]", "[i64]", "[1, 2, 3]", "x.length", 3),
+        (
+            "tuple",
+            "(i64 * i64)",
+            "(i64 * i64)",
+            "(3, 4)",
+            "(match x with | (a, b) -> a * b)",
+            12,
+        ),
+        ("variable", "'a", "'a", "1.5", "0", 0),
+    ];
+    let mut source = "def answer :: i64 = 40\n\ndef mul :: i64 -> i64 -> i64 = \\a b -> a * b\n\nrecord Box { value: Maybe<fn() -> i64> }\n\n".to_owned();
+    let mut tests = String::new();
+    for (name, parameter, annotation, argument, value, expected) in runs {
+        source.push_str(&format!(
+            "def g_{name} :: {parameter} -> own (i64 | bool) -> i64 = \\x v ->\n    | (x: {annotation}, :? i64 as n) when n > 100 -> {value} + n + 1000\n    | (x: {annotation}, :? i64 as n) -> {value} + n\n    | _ -> 0\n\ndef m_{name} :: {parameter} -> own (i64 | bool) -> i64 = \\x v ->\n    match Some (Some (x, v)) with\n    | Some (Some (x: {annotation}, :? i64 as n)) when n > 100 -> {value} + n + 1000\n    | Some (Some (x: {annotation}, :? i64 as n)) -> {value} + n\n    | _ -> 0\n\n"
+        ));
+        for function in ["g", "m"] {
+            tests.push_str(&format!(
+                "    assert ({function}_{name} {argument} 5 == {})\n    assert ({function}_{name} {argument} 500 == {})\n    assert ({function}_{name} {argument} true == 0)\n",
+                expected + 5,
+                expected + 1500
+            ));
+        }
+    }
+    // Outside the parentheses of the arm, after `&`, and inside a record pattern.
+    source.push_str("def g_and :: own (Maybe<fn() -> i64> * (i64 | bool)) -> i64 = \\t ->\n    | t: Maybe<fn() -> i64> * (i64 | bool) & (_, :? i64 as n) -> n\n    | _ -> 0\n\ndef g_box :: Box -> own (i64 | bool) -> i64 = \\b v ->\n    | ({ value = (h: Maybe<fn() -> i64>) }, :? i64 as n) -> (match h with | Some k -> k() + n | None -> n)\n    | _ -> 0\n\n");
+    tests.push_str("    assert (g_and (Some answer, 5) == 5)\n    assert (g_and (None, true) == 0)\n    assert (g_box (Box { value: Some answer }) 2 == 42)\n    assert (g_box (Box { value: None }) 2 == 2)\n    assert (g_box (Box { value: Some answer }) false == 0)\n");
+    // Predicates that hold such types stay predicates, before the last type test of the source
+    // (so the scan reads them): by hand, `answer()` is 40, over 30 and over 10 but not over 50.
+    source.push_str("def holds :: bool -> bool = \\b -> b\n\ndef value_of :: Box -> i64 = \\b ->\n    match b.value with\n    | Some h -> h()\n    | None -> 0\n\ndef p_record :: i64 -> i64 = \\n ->\n    | value_of (Box { value: Some answer }) > n -> 1\n    | otherwise -> 0\n\ndef p_block :: i64 -> i64 = \\n ->\n    | { let y: Maybe<fn() -> i64> = Some answer; (match y with | Some h -> h() | None -> 0) > n } -> 1\n    | otherwise -> 0\n\ndef p_lambda :: own (i64 | bool) -> i64 = \\v ->\n    | holds ((\\(h: fn() -> i64) -> h() > 30) answer) && (match v with | :? i64 as k -> k > 0 | :? bool -> false) -> 1\n    | otherwise -> 0\n\n");
+    tests.push_str("    assert (p_lambda 5 == 1)\n    assert (p_lambda (-5) == 0)\n    assert (p_lambda true == 0)\n    assert (p_record 10 == 1)\n    assert (p_record 50 == 0)\n    assert (p_block 10 == 1)\n    assert (p_block 50 == 0)\n");
+    source.push_str(&format!("test \"annotations\" =\n{tests}"));
+    passes(&source, Edition::E2026);
 }
