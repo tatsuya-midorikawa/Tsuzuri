@@ -2148,6 +2148,34 @@ fn api_diff_treats_member_order_as_equal() {
     assert!(api_changes(alias, plain, true).is_empty());
 }
 
+/// Verification of Copilot review 2 of #102: the default comparison reads signatures that the
+/// checker rejects (here `E1013`: a region-quantified function type inside a union), and members
+/// that use the same region names in other places are still a set. By hand: in either written
+/// order the members key as `({_0 _1} ref {_0} i64 -> ...)` and `({_0 _1} ref {_1} i64 -> ...)`,
+/// so both versions print the same and nothing changed. A member whose regions really differ is
+/// a change.
+#[test]
+fn api_diff_reorders_members_that_share_region_names() {
+    let first = "({a b} ref {a} i64 -> ref {b} i64 -> i64)";
+    let second = "({a b} ref {b} i64 -> ref {a} i64 -> i64)";
+    let signature =
+        |left: &str, right: &str| format!("def f :: own ({left} | {right}) -> unit = \\v -> ()\n");
+    assert_eq!(
+        api_changes(&signature(first, second), &signature(second, first), false),
+        Vec::<String>::new()
+    );
+    let changes = api_changes(
+        &signature(first, second),
+        &signature(first, "({a b} ref {a} i64 -> ref {a} i64 -> i64)"),
+        false,
+    );
+    assert_eq!(changes.len(), 1, "{changes:?}");
+    assert!(
+        changes[0].starts_with("breaking changed def Main.f"),
+        "{changes:?}"
+    );
+}
+
 #[test]
 fn effective_api_hides_synthetic_names() {
     // Through an alias, a record field and a generic argument, the effective comparison reads the

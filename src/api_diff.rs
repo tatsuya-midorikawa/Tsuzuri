@@ -335,15 +335,20 @@ pub struct Api {
 struct Renaming<'a> {
     canonical: bool,
     /// Set while `members` computes the sort keys of an anonymous union's members (A24): every
-    /// type variable is `'_`, and a region or a length parameter that has no name yet stays
-    /// unnamed (`_`), so a key depends neither on the names of the variables nor on where names
-    /// first appear, and computing it renames nothing.
+    /// type variable is `'_`, and a region or a length parameter that has no name yet is
+    /// numbered by where it first appears in the member (`_0`, `_1`, ...: `unnamed_regions`,
+    /// `unnamed_lengths`), so a key keeps which of them is which, depends neither on their names
+    /// nor on the other members, and computing it renames nothing.
     blind: bool,
     resolved: Option<&'a ResolvedApi>,
     variables: BTreeMap<String, String>,
     regions: BTreeMap<String, String>,
     /// The declared length parameters, by the name without its `#`.
     lengths: BTreeMap<String, String>,
+    /// While `blind`: the regions and the length parameters without a name, in the order in which
+    /// the key being computed reaches them; the position is the number.
+    unnamed_regions: Vec<String>,
+    unnamed_lengths: Vec<String>,
     /// The calls of `ty`, which the unit tests count.
     #[cfg(test)]
     visits: usize,
@@ -358,9 +363,24 @@ impl<'a> Renaming<'a> {
             variables: BTreeMap::new(),
             regions: BTreeMap::new(),
             lengths: BTreeMap::new(),
+            unnamed_regions: Vec::new(),
+            unnamed_lengths: Vec::new(),
             #[cfg(test)]
             visits: 0,
         }
+    }
+
+    /// The number of a region or a length parameter that has no name, in a blind key: its
+    /// position in `unnamed`, which it joins when the key first reaches it.
+    fn unnamed(unnamed: &mut Vec<String>, name: &str) -> String {
+        let position = unnamed
+            .iter()
+            .position(|known| known == name)
+            .unwrap_or_else(|| {
+                unnamed.push(name.to_owned());
+                unnamed.len() - 1
+            });
+        format!("_{position}")
     }
 
     fn variable(&mut self, name: &str) -> String {
@@ -382,10 +402,10 @@ impl<'a> Renaming<'a> {
             return name.to_owned();
         }
         if self.blind {
-            return self
-                .regions
-                .get(name)
-                .map_or_else(|| "_".to_owned(), Clone::clone);
+            return match self.regions.get(name) {
+                Some(region) => region.clone(),
+                None => Self::unnamed(&mut self.unnamed_regions, name),
+            };
         }
         let next = self.regions.len();
         self.regions
@@ -412,10 +432,10 @@ impl<'a> Renaming<'a> {
             return name.to_owned();
         }
         if self.blind {
-            return self
-                .lengths
-                .get(name)
-                .map_or_else(|| "_".to_owned(), Clone::clone);
+            return match self.lengths.get(name) {
+                Some(length) => length.clone(),
+                None => Self::unnamed(&mut self.unnamed_lengths, name),
+            };
         }
         let next = self.lengths.len();
         self.lengths
@@ -551,10 +571,14 @@ impl<'a> Renaming<'a> {
     /// The members of an anonymous union as the comparison sees them (A24): the members of a
     /// union written inside another are its own (`(i64 | (string | bool))`), and they come in one
     /// order whatever order they were written in, so that reordering them is no change. The order
-    /// is that of each member's blind text (`blind`: its type variables blanked out), so it
-    /// depends neither on the names of the variables nor on where they first appear; the variables
-    /// are renamed afresh in that order. A type alias is not expanded (the syntactic comparison
-    /// never expands one), so `(Meters | string)` and `(f64 | string)` stay apart there.
+    /// is that of each member's blind text (`blind`: its type variables blanked out, and its
+    /// regions and length parameters that have no name yet numbered from `_0` within the member),
+    /// so it depends neither on the names of the variables nor on where they first appear; the
+    /// variables are renamed afresh in that order. Each member's numbering starts afresh, and each
+    /// member of a union inside a key starts from the numbering before that union, so no key
+    /// depends on the other members or on the order of the members inside it. A type alias is
+    /// not expanded (the syntactic comparison never expands one), so `(Meters | string)` and
+    /// `(f64 | string)` stay apart there.
     ///
     /// A blind renaming renames nothing, so a member's blind text is computed once, with the
     /// unions inside it in their own order, and each member is renamed once, after the sort: for
@@ -571,10 +595,13 @@ impl<'a> Renaming<'a> {
             }
         }
         if self.blind {
+            let before = (self.unnamed_regions.len(), self.unnamed_lengths.len());
             let mut blind: Vec<(String, TypeExpr)> = flat
                 .into_iter()
                 .map(|member| {
                     let member = self.ty(member);
+                    self.unnamed_regions.truncate(before.0);
+                    self.unnamed_lengths.truncate(before.1);
                     (type_text(&member), member)
                 })
                 .collect();
@@ -584,8 +611,14 @@ impl<'a> Renaming<'a> {
         self.blind = true;
         let mut keyed: Vec<(String, &TypeExpr)> = flat
             .into_iter()
-            .map(|member| (type_text(&self.ty(member)), member))
+            .map(|member| {
+                self.unnamed_regions.clear();
+                self.unnamed_lengths.clear();
+                (type_text(&self.ty(member)), member)
+            })
             .collect();
+        self.unnamed_regions.clear();
+        self.unnamed_lengths.clear();
         self.blind = false;
         keyed.sort_by(|left, right| left.0.cmp(&right.0));
         keyed
@@ -1707,11 +1740,12 @@ mod tests {
         }
     }
 
-    /// A region that first appears inside a member has no name in the blind key, so the order of
-    /// the members does not depend on which of them was written first (the checker rejects these
-    /// regions, `E1013`, but the syntactic comparison reads any signature). By hand: the keys are
-    /// `(ref {_} i64 -> i64)` and `(ref {_} string -> i64)`, `i64` sorts before `string`, so the
-    /// region `b` is named first (`r0`).
+    /// A region that first appears inside a member has no name in the blind key, only its number
+    /// within the member, so the order of the members does not depend on which of them was
+    /// written first (the checker rejects these regions, `E1013`, but the syntactic comparison
+    /// reads any signature). By hand: the keys are `(ref {_0} i64 -> i64)` and
+    /// `(ref {_0} string -> i64)`, `i64` sorts before `string`, so the region `b` is named first
+    /// (`r0`).
     #[test]
     fn members_order_ignores_where_regions_first_appear() {
         let canonical = |source: &str| {
@@ -1727,6 +1761,67 @@ mod tests {
                 "((ref {r0} i64 -> i64) | (ref {r1} string -> i64))",
                 "{source}"
             );
+        }
+    }
+
+    /// Verification of Copilot review 2 of #102: the blind key keeps which unnamed region is
+    /// which. Two quantified members that use the same region names in other places had the same
+    /// key when every unnamed region was `_` (`({_ _} ref {_} i64 -> ref {_} i64 -> i64)`), so
+    /// they kept their written order and, sharing `r0` and `r1`, printed in that order: a reorder
+    /// was a change. By hand: the binders number `a` and `b` in each member, so the keys are
+    /// `({_0 _1} ref {_0} i64 -> ref {_1} i64 -> i64)` and `({_0 _1} ref {_1} i64 -> ref {_0} i64
+    /// -> i64)`; `0` sorts before `1`, so the first member comes first in either written order,
+    /// and `a` is `r0` and `b` is `r1` in both members.
+    #[test]
+    fn members_keep_which_region_is_which() {
+        let canonical = |source: &str| {
+            let mut renaming = Renaming::new(true, None);
+            type_text(&renaming.ty(&parameter(source)))
+        };
+        let first = "({a b} ref {a} i64 -> ref {b} i64 -> i64)";
+        let second = "({a b} ref {b} i64 -> ref {a} i64 -> i64)";
+        for (left, right) in [(first, second), (second, first)] {
+            let source = format!("def f :: ({left} | {right}) -> unit = \\v -> ()\n");
+            assert_eq!(
+                canonical(&source),
+                "(({r0 r1} ref {r0} i64 -> ref {r1} i64 -> i64) | ({r0 r1} ref {r1} i64 -> ref {r0} i64 -> i64))",
+                "{source}"
+            );
+        }
+    }
+
+    /// Each member of a union inside a blind key is numbered from the numbering before that union,
+    /// so the key does not depend on the order of those members either. By hand: in
+    /// `[(S | I)]` with `S = ({a} ref {a} string -> i64)` and `I = ({b} ref {b} i64 -> i64)`, both
+    /// members number their region `_0`, `i64` sorts before `string`, so the key is
+    /// `[(({_0} ref {_0} i64 -> i64) | ({_0} ref {_0} string -> i64))]` in either written order.
+    /// It sorts before the key of `Z = [(({c} ref {c} i64 -> string) | bool)]`,
+    /// `[(({_0} ref {_0} i64 -> string) | bool)]` (`i64 -> i` before `i64 -> s`). Numbered in the
+    /// written order instead, `[(S | I)]` would key as `[(({_0} ref {_0} string -> i64) | ({_1}
+    /// ...))]` and sort after `Z`. Renamed in the sorted order: `b` is `r0`, `a` is `r1`, `c` is
+    /// `r2`.
+    #[test]
+    fn nested_members_number_their_regions_afresh() {
+        let canonical = |source: &str| {
+            let mut renaming = Renaming::new(true, None);
+            type_text(&renaming.ty(&parameter(source)))
+        };
+        let string = "({a} ref {a} string -> i64)";
+        let integer = "({b} ref {b} i64 -> i64)";
+        let other = "[(({c} ref {c} i64 -> string) | bool)]";
+        for (left, right) in [(string, integer), (integer, string)] {
+            let nested = format!("[({left} | {right})]");
+            for union in [
+                format!("({nested} | {other})"),
+                format!("({other} | {nested})"),
+            ] {
+                let source = format!("def f :: {union} -> unit = \\v -> ()\n");
+                assert_eq!(
+                    canonical(&source),
+                    "([(({r0} ref {r0} i64 -> i64) | ({r1} ref {r1} string -> i64))] | [(({r2} ref {r2} i64 -> string) | bool)])",
+                    "{source}"
+                );
+            }
         }
     }
 }
