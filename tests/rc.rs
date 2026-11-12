@@ -4086,3 +4086,195 @@ fn an_owned_parameter_owns_the_cells_that_it_stores() {
         (8, 5),
     );
 }
+
+/// A31, after review round 9 (the merge into A32): a borrow that a callee keeps of a part of what
+/// a `ref mut` parameter points at, in that same value (`ref p.s` written into the cell of
+/// `p.h`), is a borrow that the caller's value keeps of a part of itself, however the exclusive
+/// borrow reaches the callee: a fresh `ref mut p0`, a `ref mut` variable, another function that
+/// passes its parameter on, a pipeline, a function-valued parameter, a lambda, a partial
+/// application or a function value that the check does not see. Its parts are dropped in the
+/// order of their declarations (`Pair { s, h }` drops `s` first), and a later write of the
+/// borrowed part conflicts with it. The safe order (`Pair { h, s }`) stays accepted.
+#[test]
+fn a_borrow_of_a_part_kept_through_an_exclusive_reference_keeps_the_drop_order() {
+    const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\n";
+    const UNSAFE: &str = "record Pair { s: string, h: Holder }\n";
+    const SAFE: &str = "record Pair { h: Holder, s: string }\n";
+    const TARGET: &str = "def target :: ref mut Pair -> i64\nfn target p = { let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); 0 }\n";
+    const P0: &str = "Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } }";
+    // (name, the code after the header and the record, the line and column of the error)
+    let spellings: Vec<(&str, String, (usize, usize))> = vec![
+        (
+            "fn",
+            format!(
+                "{TARGET}def run :: i64 -> i64\nfn run n =\n    let mut p0 = {P0}\n    target (ref mut p0)\nrun 1"
+            ),
+            (15, 5),
+        ),
+        (
+            "var",
+            format!(
+                "{TARGET}def run :: i64 -> i64\nfn run n =\n    let mut p0 = {P0}\n    let r = ref mut p0\n    target r\nrun 1"
+            ),
+            (15, 5),
+        ),
+        (
+            "relay",
+            format!(
+                "def inner :: ref mut Pair -> i64\nfn inner p = {{ let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); 0 }}\ndef target :: ref mut Pair -> i64\nfn target p = inner p\ndef run :: i64 -> i64\nfn run n =\n    let mut p0 = {P0}\n    target (ref mut p0)\nrun 1"
+            ),
+            (17, 5),
+        ),
+        (
+            "parameter",
+            format!(
+                "{TARGET}def run :: ref mut Pair -> i64\nfn run p = target p\ndef go :: i64 -> i64\nfn go n =\n    let mut p0 = {P0}\n    run (ref mut p0)\ngo 1"
+            ),
+            (17, 5),
+        ),
+        (
+            "pipe",
+            format!(
+                "{TARGET}def run :: i64 -> i64\nfn run n =\n    let mut p0 = {P0}\n    ref mut p0 |> target\nrun 1"
+            ),
+            (15, 5),
+        ),
+        (
+            "apply",
+            format!(
+                "{TARGET}def apply :: (ref mut Pair -> i64) -> ref mut Pair -> i64\nfn apply f p = f p\ndef run :: i64 -> i64\nfn run n =\n    let mut p0 = {P0}\n    apply target (ref mut p0)\nrun 1"
+            ),
+            (17, 5),
+        ),
+        (
+            "lambda",
+            format!(
+                "{TARGET}def run :: i64 -> i64\nfn run n =\n    let k = \\(q: ref mut Pair) -> target q\n    let mut p0 = {P0}\n    k (ref mut p0)\nrun 1"
+            ),
+            (15, 5),
+        ),
+        (
+            "partial",
+            format!(
+                "{TARGET}def target2 :: i64 -> ref mut Pair -> i64\nfn target2 k p = {{ let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t + k) b); 0 }}\ndef run :: i64 -> i64\nfn run n =\n    let f = target2 1\n    let mut p0 = {P0}\n    f (ref mut p0)\nrun 1"
+            ),
+            (17, 5),
+        ),
+        (
+            "unseen",
+            format!(
+                "{TARGET}def pick :: i64 -> (ref mut Pair -> i64)\nfn pick n = if n > 100 then (\\(q: ref mut Pair) -> 0) else target\ndef run :: i64 -> i64\nfn run n =\n    let f = pick n\n    let mut p0 = {P0}\n    f (ref mut p0)\nrun 1"
+            ),
+            (17, 5),
+        ),
+        (
+            "owned",
+            format!(
+                "{TARGET}def run :: own Pair -> i64\nfn run p = {{ let mut q = p; target (ref mut q) }}\nrun ({P0})"
+            ),
+            (14, 12),
+        ),
+        (
+            "arm",
+            format!(
+                "{TARGET}def run :: i64 -> i64\nfn run n =\n    match Maybe.Some ({P0}) with\n    | Maybe.Some p -> {{ let mut q = p; target (ref mut q) }}\n    | Maybe.None -> 0\nrun 1"
+            ),
+            (16, 23),
+        ),
+        (
+            "loop",
+            format!(
+                "{TARGET}def run :: i64 -> i64\nfn run n =\n    let mut total = 0\n    for i in 0 ..= 1 do\n        let mut p0 = {P0}\n        total = total + target (ref mut p0)\n    total\nrun 1"
+            ),
+            (17, 9),
+        ),
+    ];
+    for (name, code, at) in &spellings {
+        let unsafe_order = format!("{HOLDER}{UNSAFE}{code}");
+        rejects_at(&unsafe_order, "E1013", "self_referential_store", *at);
+        let safe_order = format!("{HOLDER}{SAFE}{code}");
+        for edition in [Edition::E2026, Edition::E2027] {
+            analyze_with_edition(&safe_order, edition).unwrap_or_else(|error| {
+                panic!(
+                    "{name}, edition {edition}\n{safe_order}\n{}: {}",
+                    error.code, error.message
+                )
+            });
+        }
+    }
+    // Edition 2027: the conventions spelling, a function value in a vector that the check does
+    // not see, and a write of the borrowed part after the call (in either order of the fields).
+    let edition_2027: Vec<(String, &str, (usize, usize))> = vec![
+        (
+            format!(
+                "{HOLDER}{UNSAFE}def target :: mut Pair -> i64 = \\p -> {{ let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); 0 }}\ndef run :: i64 -> i64\nfn run n =\n    let mut p0 = {P0}\n    target (ref mut p0)\nrun 1"
+            ),
+            "self_referential_store",
+            (14, 5),
+        ),
+        (
+            format!(
+                "{HOLDER}{UNSAFE}{TARGET}def run :: i64 -> i64\nfn run n =\n    let mut fs: Vec<ref mut Pair -> i64> = Vec.empty()\n    Vec.push target fs\n    let f = fs[0]\n    let mut p0 = {P0}\n    f (ref mut p0)\nrun 1"
+            ),
+            "self_referential_store",
+            (15, 5),
+        ),
+        (
+            format!(
+                "{HOLDER}{UNSAFE}{TARGET}def run :: i64 -> i64\nfn run n =\n    let mut p0 = {P0}\n    let _x = target (ref mut p0)\n    p0.s = String.repeat 2 (ref \"abc\")\n    0\nrun 1"
+            ),
+            "borrow_conflict",
+            (17, 5),
+        ),
+        (
+            format!(
+                "{HOLDER}{SAFE}{TARGET}def run :: i64 -> i64\nfn run n =\n    let mut p0 = {P0}\n    let _x = target (ref mut p0)\n    p0.s = String.repeat 2 (ref \"abc\")\n    0\nrun 1"
+            ),
+            "borrow_conflict",
+            (17, 5),
+        ),
+    ];
+    for (source, kind, at) in &edition_2027 {
+        let error = analyze_with_edition(source, Edition::E2027).expect_err(source);
+        let code = if *kind == "borrow_conflict" {
+            "E1014"
+        } else {
+            "E1013"
+        };
+        assert_eq!(
+            (error.code, error.kind, position(source, error.span.start)),
+            (code, Some(*kind), *at),
+            "{source}\n{}",
+            error.message
+        );
+    }
+    for source in [
+        format!(
+            "{HOLDER}{SAFE}def target :: mut Pair -> i64 = \\p -> {{ let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); 0 }}\ndef run :: i64 -> i64\nfn run n =\n    let mut p0 = {P0}\n    target (ref mut p0)\nrun 1"
+        ),
+        format!(
+            "{HOLDER}{SAFE}{TARGET}def run :: i64 -> i64\nfn run n =\n    let mut fs: Vec<ref mut Pair -> i64> = Vec.empty()\n    Vec.push target fs\n    let f = fs[0]\n    let mut p0 = {P0}\n    f (ref mut p0)\nrun 1"
+        ),
+    ] {
+        analyze_with_edition(&source, Edition::E2027)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    }
+}
+
+/// A31, after review round 9 (the merge into A32): the value that a callee passes on to a
+/// function value (the element that `Array.map`'s lambda hands to its callback) is no temporary
+/// of the caller's statement whose drop may read a borrow: the drop-order rule asks what a drop
+/// of its type may read (the callee's view of the type, `Arg::ty`), not whether the module has a
+/// `Drop` instance. Round 9 rejected `Array.map ({ calls = calls + 1; owned_inc }) [1, 2, 3]` in
+/// a module with a `Drop` instance and a vector of lambdas that capture a value (the
+/// `conventions` fixture of A32).
+#[test]
+fn a_value_that_a_callee_passes_on_reads_what_its_type_reads_when_dropped() {
+    for main in [
+        "record Item { n: i64 }\ninstance Drop<Item> {\n    fn drop item = do! IO.write_line (\"drop \" + to_string item.n)\n}\n\ndef owned_inc :: own i64 -> i64 = \\value -> value + 1\n\ndef callback_constructed_once :: i64 -> i64 = \\n ->\n    let mut calls = 0\n    let values = Array.map ({ calls = calls + 1; owned_inc }) [1, 2, 3]\n    calls * 100 + Array.sum values + n\n\ndef readers_of :: i64 -> i64 = \\n ->\n    let text = \"hello\"\n    let mut readers = Vec.empty()\n    Vec.push (\\(t: string) -> t.length * 10000 + n) readers\n    let first = readers[0]\n    first text\n\ncallback_constructed_once 0 + readers_of 1",
+        "record Item { n: i64 }\ninstance Drop<Item> {\n    fn drop item = do! IO.write_line (\"drop \" + to_string item.n)\n}\n\ndef owned_inc :: own i64 -> i64 = \\value -> value + 1\ndef c :: i64 -> i64 = \\n ->\n    let values = Array.map owned_inc [1, 2, 3]\n    Array.sum values + n\ndef readers_of :: i64 -> i64 = \\n ->\n    let text = \"hello\"\n    let mut readers = Vec.empty()\n    Vec.push (\\(t: string) -> t.length * 10000 + n) readers\n    let first = readers[0]\n    first text\nc 0 + readers_of 1",
+    ] {
+        analyze_with_edition(main, Edition::E2027)
+            .unwrap_or_else(|error| panic!("{main}\n{}: {}", error.code, error.message));
+    }
+}

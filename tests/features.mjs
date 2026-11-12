@@ -634,6 +634,9 @@ const suites = {
       ["read_list_mapi", [], 15n],
       ["read_iters", [], 4n],
       ["callback_constructed_once", [], 109n],
+      // A31, after review 9: "hello".length * 10000 + n.
+      ["capturing_readers", [0n], 50000n],
+      ["capturing_readers", [7n], 50007n],
       ["mutable_record", [], 10n],
       ["mutable_elements", [0n], 14n],
       ["mutable_elements", [1n], 13n],
