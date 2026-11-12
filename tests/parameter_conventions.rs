@@ -3061,7 +3061,10 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
     // and kind at the same expression (and, where the `if` spelling calls the chosen function the
     // same way, with the same code and kind there); each safe one is accepted. Before this merge
     // the annotated spellings of `lk01`, `tp01`, `cp03` and `sp02` were accepted with wrong values
-    // and `sh01` was rejected, as their twins were.
+    // and `sh01` was rejected, as their twins were. Before the fourth merge (A31 reviews 10 and
+    // 11), every spelling of the `ref mut` forms of `sp02` (`sm02`: directly, through a `ref mut`
+    // variable, relayed to a named or an annotated `inner`), A31's own `ref mut` signature too, was
+    // accepted and printed `drop -1` instead of being rejected.
     const OTHER: &str = "let other = [to_string 777777, to_string 88888888, to_string 12345678]";
     const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}";
     const CALLER: &str = "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}";
@@ -3126,6 +3129,7 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
         annotated_body: None,
         run,
     };
+    const PART_BODY: &str = "let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); 0";
     let part = |pair: &'static str, run: &'static [&'static str]| LaterRule {
         prelude: match pair {
             "safe" => &[HOLDER, LOOK, "record Pair { h: Holder, s: string }"],
@@ -3135,10 +3139,31 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
         conventions: "Pair -> i64".to_string(),
         plain: "p",
         annotated: "(p: ref Pair)".to_string(),
-        body: "let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); 0",
+        body: PART_BODY,
         annotated_body: None,
         run,
     };
+    // The same parts through an exclusive reference (fourth merge, A31 reviews 10 and 11): the
+    // target ties the parts together itself, or relays the reference to a named function
+    // (`inner`) or to an annotated lambda of a `def` with conventions that does.
+    const SAFE_PAIR: &str = "record Pair { h: Holder, s: string }";
+    const UNSAFE_PAIR: &str = "record Pair { s: string, h: Holder }";
+    const INNER_NAMED: &str = "def inner :: ref mut Pair -> i64\nfn inner p = { let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); 0 }";
+    const INNER_ANNOTATED: &str = "def inner :: mut Pair -> i64 = \\(p: ref mut Pair) -> { let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); 0 }";
+    let exclusive_part = |prelude: &'static [&'static str],
+                          body: &'static str,
+                          run: &'static [&'static str]| LaterRule {
+        prelude,
+        explicit: "ref mut Pair -> i64".to_string(),
+        conventions: "mut Pair -> i64".to_string(),
+        plain: "p",
+        annotated: "(p: ref mut Pair)".to_string(),
+        body,
+        annotated_body: None,
+        run,
+    };
+    const UNSAFE_INIT: &str = "let mut p0 = Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } }";
+    const SAFE_INIT: &str = "let mut p0 = Pair { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }";
     const SHARED_RUN: [&str; 4] = [
         "let m = Mutex.create [\\() -> 0]",
         "let mr = ref m",
@@ -3206,6 +3231,46 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
             "self_referential_store",
             true,
         ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, UNSAFE_PAIR],
+                PART_BODY,
+                &[UNSAFE_INIT, "CALL (ref mut p0)"],
+            ),
+            "E1013",
+            "self_referential_store",
+            true,
+        ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, UNSAFE_PAIR],
+                PART_BODY,
+                &[UNSAFE_INIT, "let r = ref mut p0", "CALL r"],
+            ),
+            "E1013",
+            "self_referential_store",
+            true,
+        ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, UNSAFE_PAIR, INNER_NAMED],
+                "inner p",
+                &[UNSAFE_INIT, "CALL (ref mut p0)"],
+            ),
+            "E1013",
+            "self_referential_store",
+            true,
+        ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, UNSAFE_PAIR, INNER_ANNOTATED],
+                "inner p",
+                &[UNSAFE_INIT, "CALL (ref mut p0)"],
+            ),
+            "E1013",
+            "self_referential_store",
+            true,
+        ),
     ];
     for (case, code, kind, branch) in &unsafe_cases {
         let twin = case.convention_twin();
@@ -3219,6 +3284,23 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
             expected.message
         );
         let at = &twin[expected.span.start..expected.span.end];
+        // A31's own spelling, where it can be written: a named function with `ref` types.
+        if !case.explicit.is_empty() {
+            let explicit = case.twin();
+            let error = check("2027", &explicit)
+                .err()
+                .unwrap_or_else(|| panic!("accepted:\n{explicit}"));
+            assert_eq!(
+                (
+                    error.code,
+                    error.kind,
+                    &explicit[error.span.start..error.span.end]
+                ),
+                (*code, Some(*kind), at),
+                "{explicit}\n{}",
+                error.message
+            );
+        }
         let annotated = case.annotated_def();
         let error = check("2027", &annotated)
             .err()
@@ -3248,7 +3330,8 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
     }
     // The safe forms: a copy of the locked text's length (`lk01c`); the caller reads the owner
     // after handing a shared borrow (`sh01`); the holder lent before the text (`tp01c`); the
-    // caller's cell declared after the text (`cp01`); the part dropped after its reader (`sp01`).
+    // caller's cell declared after the text (`cp01`); the part dropped after its reader (`sp01`,
+    // and its `ref mut` forms `sm01`).
     // (case, whether the `if` spelling is accepted too: a function value lent temporaries or a
     // lambda argument is `borrow_of_temporary` in every spelling, as before A31)
     let safe_cases = [
@@ -3291,6 +3374,38 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
                     "let p0 = Pair { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }",
                     "CALL (ref p0)",
                 ],
+            ),
+            true,
+        ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, SAFE_PAIR],
+                PART_BODY,
+                &[SAFE_INIT, "CALL (ref mut p0)"],
+            ),
+            true,
+        ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, SAFE_PAIR],
+                PART_BODY,
+                &[SAFE_INIT, "let r = ref mut p0", "CALL r"],
+            ),
+            true,
+        ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, SAFE_PAIR, INNER_NAMED],
+                "inner p",
+                &[SAFE_INIT, "CALL (ref mut p0)"],
+            ),
+            true,
+        ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, SAFE_PAIR, INNER_ANNOTATED],
+                "inner p",
+                &[SAFE_INIT, "CALL (ref mut p0)"],
             ),
             true,
         ),
