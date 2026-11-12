@@ -2226,6 +2226,517 @@ fn annotated_reference_parameters_keep_their_in_place_writes_tracked() {
     }
 }
 
+/// A32 on A31 (second merge): one program of
+/// `annotated_reference_parameters_follow_the_later_rules_of_in_place_writes`. `explicit` and
+/// `conventions` are the type of `target` with `ref` parameter types and with conventions,
+/// `plain` and `annotated` its parameters without and with reference annotations, `body` its
+/// body (`annotated_body` where an annotated pattern destructures the parameter), and `CALL`
+/// in `run` stands for the function that the program calls.
+struct LaterRule {
+    prelude: &'static [&'static str],
+    explicit: String,
+    conventions: String,
+    plain: &'static str,
+    annotated: String,
+    body: &'static str,
+    annotated_body: Option<&'static str>,
+    run: &'static [&'static str],
+}
+
+impl LaterRule {
+    fn source(&self, declaration: &str, before: Option<&str>, call: &str) -> String {
+        let mut lines: Vec<String> = self.prelude.iter().map(|line| line.to_string()).collect();
+        lines.push(declaration.to_string());
+        lines.push("def run :: i64 -> i64".to_string());
+        lines.push("fn run n =".to_string());
+        lines.extend(before.map(|line| format!("    {line}")));
+        lines.extend(
+            self.run
+                .iter()
+                .map(|line| format!("    {}", line.replace("CALL", call))),
+        );
+        lines.push("run 123456789".to_string());
+        program(&lines.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    fn annotated_body(&self) -> &str {
+        self.annotated_body.unwrap_or(self.body)
+    }
+
+    /// A31's own spelling: a named function with `ref` parameter types.
+    fn twin(&self) -> String {
+        self.source(
+            &format!(
+                "def target :: {}\nfn target {} = {{ {} }}",
+                self.explicit, self.plain, self.body
+            ),
+            None,
+            "target",
+        )
+    }
+
+    /// A32's spelling: the right-hand side lambda of a `def` with conventions annotates its
+    /// parameters with reference types.
+    fn annotated_def(&self) -> String {
+        self.source(
+            &format!(
+                "def target :: {} = \\{} -> {{ {} }}",
+                self.conventions,
+                self.annotated,
+                self.annotated_body()
+            ),
+            None,
+            "target",
+        )
+    }
+
+    /// A32's spelling: the annotated lambda in the `else` branch of an `if` whose `then` branch is
+    /// the same function written without annotations.
+    fn annotated_branch(&self) -> String {
+        self.source(
+            &format!(
+                "def target :: {} = \\{} -> {{ {} }}",
+                self.conventions, self.plain, self.body
+            ),
+            Some(&format!(
+                "let chosen = if n < 0 then target else \\{} -> {{ {} }}",
+                self.annotated,
+                self.annotated_body()
+            )),
+            "chosen",
+        )
+    }
+}
+
+#[test]
+fn annotated_reference_parameters_follow_the_later_rules_of_in_place_writes() {
+    // A32 stacked on A31, second merge (A31 reviews 4 to 7): the rules that A31 added later treat
+    // a parameter annotated with a reference type as A31's own spelling, a named function with
+    // `ref` parameter types (`twin`), treats it. Each unsafe program fails with the twin's code and
+    // kind at the same expression; each safe one is accepted, and the conventions suite runs four
+    // of them (`annotated_reference_later_rules`). No program here changed between the two merges
+    // except through A31's rules, which change the twin in the same way.
+    const SLOT: &str = "ref mut [(unit -> i64)]";
+    const OTHER: &str = "let other = [to_string 777777, to_string 88888888, to_string 12345678]";
+    const RECORD: &[&str] = &["record Rec { name: string, count: i64 }"];
+    const SINK: [&str; 4] = [
+        "let m = Mutex.create [\\() -> 0]",
+        "let mr = ref m",
+        "let put = \\f -> Mutex.with_lock mr (\\slot -> Array.write 0 f slot)",
+        "put (\\() -> n)",
+    ];
+    const SINK_THEN_SAFE_PAIR: &[&str] = &[
+        SINK[0],
+        SINK[1],
+        SINK[2],
+        SINK[3],
+        "let g = ((\\f -> { let _x = f (); () }), 2)",
+        "let k = CALL (ref g)",
+        "k + Mutex.with_lock (ref m) (\\slot -> slot[0] ())",
+    ];
+    const SINK_THEN_UNSAFE_PAIR: &[&str] = &[
+        SINK[0],
+        SINK[1],
+        SINK[2],
+        SINK[3],
+        "let g = (put, 2)",
+        "let k = CALL (ref g)",
+        OTHER,
+        "k + Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0",
+    ];
+    let record = |body: &'static str, ret: &str, run: &'static [&'static str]| LaterRule {
+        prelude: RECORD,
+        explicit: format!("ref mut Rec -> {SLOT} -> {ret}"),
+        conventions: format!("mut Rec -> mut [(unit -> i64)] -> {ret}"),
+        plain: "r slot",
+        annotated: format!("(r: ref mut Rec) (slot: {SLOT})"),
+        body,
+        annotated_body: None,
+        run,
+    };
+    let element = |body: &'static str, run: &'static [&'static str]| LaterRule {
+        prelude: &[],
+        explicit: format!("ref mut Vec<string> -> {SLOT} -> unit"),
+        conventions: "mut Vec<string> -> mut [(unit -> i64)] -> unit".to_string(),
+        plain: "v slot",
+        annotated: format!("(v: ref mut Vec<string>) (slot: {SLOT})"),
+        body,
+        annotated_body: None,
+        run,
+    };
+    let handed = |run: &'static [&'static str]| LaterRule {
+        prelude: &[
+            "def push_all :: ref mut Vec<string> -> unit\nfn push_all v = { let mut i = 0; while i < 100 do { Vec.push_mut (to_string i) v; i = i + 1 } }",
+        ],
+        explicit: "ref mut Vec<string> -> ((unit -> i64) -> unit) -> unit".to_string(),
+        conventions: "mut Vec<string> -> ((unit -> i64) -> unit) -> unit".to_string(),
+        plain: "v use",
+        annotated: "(v: ref mut Vec<string>) use".to_string(),
+        body: "let sr = ref v[0]; use (\\() -> String.length sr); push_all v",
+        annotated_body: None,
+        run,
+    };
+    let view = |run: &'static [&'static str]| LaterRule {
+        prelude: &[],
+        explicit: format!("ref Maybe<string> -> {SLOT} -> unit"),
+        conventions: "Maybe<string> -> mut [(unit -> i64)] -> unit".to_string(),
+        plain: "m slot",
+        annotated: format!("(m: ref Maybe<string>) (slot: {SLOT})"),
+        body: "match m with | Maybe.Some s -> { let sr = ref s; Array.write 0 (\\() -> String.length sr) slot } | Maybe.None -> ()",
+        annotated_body: None,
+        run,
+    };
+    let nested_view = |run: &'static [&'static str]| LaterRule {
+        prelude: &[],
+        explicit: format!("ref (Maybe<string> * i64) -> {SLOT} -> unit"),
+        conventions: "(Maybe<string> * i64) -> mut [(unit -> i64)] -> unit".to_string(),
+        plain: "p slot",
+        annotated: format!("(p: ref (Maybe<string> * i64)) (slot: {SLOT})"),
+        body: "match deref p with | (Maybe.Some s, _) -> { let sr = ref s; Array.write 0 (\\() -> String.length sr) slot } | _ -> ()",
+        annotated_body: None,
+        run,
+    };
+    let view_callback = |run: &'static [&'static str]| LaterRule {
+        prelude: &[],
+        explicit: "ref Maybe<string> -> ((unit -> i64) -> unit) -> i64".to_string(),
+        conventions: "Maybe<string> -> ((unit -> i64) -> unit) -> i64".to_string(),
+        plain: "m use",
+        annotated: "(m: ref Maybe<string>) use".to_string(),
+        body: "match m with | Maybe.Some s -> { let sr = ref s; use (\\() -> String.length sr); 0 } | Maybe.None -> 0",
+        annotated_body: None,
+        run,
+    };
+    let pair = |run: &'static [&'static str]| LaterRule {
+        prelude: &[],
+        explicit: "ref (((unit -> i64) -> unit) * i64) -> i64".to_string(),
+        conventions: "(((unit -> i64) -> unit) * i64) -> i64".to_string(),
+        plain: "p",
+        annotated: "((use, z): ref (((unit -> i64) -> unit) * i64))".to_string(),
+        body: "match p with | (use, z) -> { let s = to_string 123456789; let b = ref s; use (\\() -> String.length b); z }",
+        annotated_body: Some(
+            "let s = to_string 123456789; let b = ref s; use (\\() -> String.length b); z",
+        ),
+        run,
+    };
+    let maybe = |run: &'static [&'static str]| LaterRule {
+        prelude: &[],
+        explicit: "ref Maybe<(unit -> i64) -> unit> -> i64".to_string(),
+        conventions: "Maybe<(unit -> i64) -> unit> -> i64".to_string(),
+        plain: "p",
+        annotated: "(p: ref Maybe<(unit -> i64) -> unit>)".to_string(),
+        body: "match p with | Maybe.Some use -> { let s = to_string 123456789; let b = ref s; use (\\() -> String.length b); 3 } | Maybe.None -> 0",
+        annotated_body: None,
+        run,
+    };
+    let field = |run: &'static [&'static str]| LaterRule {
+        prelude: &["record Box { use: (unit -> i64) -> unit, z: i64 }"],
+        explicit: "ref Box -> i64".to_string(),
+        conventions: "Box -> i64".to_string(),
+        plain: "p",
+        annotated: "(p: ref Box)".to_string(),
+        body: "let s = to_string 123456789; let b = ref s; p.use (\\() -> String.length b); p.z",
+        annotated_body: None,
+        run,
+    };
+    let unsafe_cases = [
+        // Review 6, a kept borrow of a writable parameter: the field that the stored borrow points
+        // at is replaced afterwards (`m01`).
+        (
+            record(
+                "let sr = ref r.name; Array.write 0 (\\() -> String.length sr) slot; r.name = to_string 5",
+                "unit",
+                &[
+                    "let mut v0 = Rec { name: to_string n, count: 0 }",
+                    "let mut arr = [\\() -> 0]",
+                    "CALL (ref mut v0) (ref mut arr)",
+                    OTHER,
+                    "arr[0] () + other.length * 0",
+                ],
+            ),
+            "E1014",
+            "borrow_conflict",
+        ),
+        // The same with a pushed vector whose element the stored borrow points at (`m03`).
+        (
+            element(
+                "let sr = ref v[0]; Array.write 0 (\\() -> String.length sr) slot; let mut i = 0; while i < 100 do { Vec.push_mut (to_string i) v; i = i + 1 }",
+                &[
+                    "let mut v0: Vec<string> = Vec.empty()",
+                    "Vec.push_mut (to_string n) (ref mut v0)",
+                    "let mut arr = [\\() -> 0]",
+                    "CALL (ref mut v0) (ref mut arr)",
+                    OTHER,
+                    "arr[0] () + other.length * 0",
+                ],
+            ),
+            "E1014",
+            "borrow_conflict",
+        ),
+        // Review 7, a borrow handed to a function parameter and written over afterwards: the
+        // caller may not pass a function that keeps what it receives (`y02`).
+        (
+            handed(&[
+                "let m = Mutex.create [\\() -> 0]",
+                "let mr = ref m",
+                "let mut v0: Vec<string> = Vec.empty()",
+                "Vec.push_mut (to_string n) (ref mut v0)",
+                "CALL (ref mut v0) (\\g -> Mutex.with_lock mr (\\slot -> Array.write 0 g slot))",
+                OTHER,
+                "Mutex.with_lock mr (\\slot -> slot[0] ()) + other.length * 0",
+            ]),
+            "E1013",
+            "store_local_borrow_through_reference",
+        ),
+        // Review 6, a view of the referent of a read parameter is a borrow of the caller's data,
+        // which dies with the inner block (`vw03`, and `vw04` through `deref p`).
+        (
+            view(&[
+                "let mut arr = [\\() -> 0]",
+                "{ let v0 = Maybe.Some (to_string n); CALL (ref v0) (ref mut arr) }",
+                OTHER,
+                "arr[0] () + other.length * 0",
+            ]),
+            "E1013",
+            "assignment_extends_borrow",
+        ),
+        (
+            nested_view(&[
+                "let mut arr = [\\() -> 0]",
+                "{ let pp = (Maybe.Some (to_string n), 1); CALL (ref pp) (ref mut arr) }",
+                OTHER,
+                "arr[0] () + other.length * 0",
+            ]),
+            "E1013",
+            "assignment_extends_borrow",
+        ),
+        (
+            view_callback(&[
+                "let mx = Mutex.create [\\() -> 0]",
+                "let mr = ref mx",
+                "let k = { let v0 = Maybe.Some (to_string n); CALL (ref v0) (\\f -> Mutex.with_lock mr (\\slot -> Array.write 0 f slot)) }",
+                OTHER,
+                "k + Mutex.with_lock (ref mx) (\\slot -> slot[0] ()) + other.length * 0",
+            ]),
+            "E1013",
+            "assignment_extends_borrow",
+        ),
+        // Review 6, a function reached through a pattern of the parameter (a tuple, a `Maybe`)
+        // or a field is called as the parameter: the caller that passes a function keeping what
+        // it receives fails at the call (`n21`, `n19`, `n23`).
+        (
+            pair(SINK_THEN_UNSAFE_PAIR),
+            "E1013",
+            "store_local_borrow_through_reference",
+        ),
+        (
+            maybe(&[
+                SINK[0],
+                SINK[1],
+                SINK[2],
+                SINK[3],
+                "let g = Maybe.Some put",
+                "let k = CALL (ref g)",
+                OTHER,
+                "k + Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0",
+            ]),
+            "E1013",
+            "store_local_borrow_through_reference",
+        ),
+        (
+            field(&[
+                SINK[0],
+                SINK[1],
+                SINK[2],
+                SINK[3],
+                "let g = Box { use: put, z: 2 }",
+                "let k = CALL (ref g)",
+                OTHER,
+                "k + Mutex.with_lock (ref m) (\\slot -> slot[0] ()) + other.length * 0",
+            ]),
+            "E1013",
+            "store_local_borrow_through_reference",
+        ),
+    ];
+    for (case, code, kind) in &unsafe_cases {
+        let twin = case.twin();
+        let expected = check("2027", &twin)
+            .err()
+            .unwrap_or_else(|| panic!("accepted:\n{twin}"));
+        assert_eq!(
+            (expected.code, expected.kind),
+            (*code, Some(*kind)),
+            "{twin}\n{}",
+            expected.message
+        );
+        let at = &twin[expected.span.start..expected.span.end];
+        let annotated = case.annotated_def();
+        let error = check("2027", &annotated)
+            .err()
+            .unwrap_or_else(|| panic!("accepted:\n{annotated}"));
+        assert_eq!(
+            (
+                error.code,
+                error.kind,
+                &annotated[error.span.start..error.span.end]
+            ),
+            (*code, Some(*kind), at),
+            "{annotated}\n{}",
+            error.message
+        );
+    }
+    // The safe forms, accepted in the three spellings: a write to another field of the writable
+    // parameter, a read of it, and a read of the owner after the call (`wp01`, `wp02`, `wq01`); a
+    // kept borrow of an element without a later push (`m04`); a function parameter that only
+    // calls what it receives (`y01`, `y02c`); views of the caller's data that outlives the target
+    // (`vw02`, `vw05`, `v07`); and functions reached through a tuple, a `Maybe` or a field that
+    // keep nothing (`n20`, `n18`, `n22`).
+    let safe_cases = [
+        (
+            record(
+                "let sr = ref r.name; Array.write 0 (\\() -> String.length sr) slot; r.count = 5",
+                "unit",
+                &[
+                    "let mut v0 = Rec { name: to_string n, count: 0 }",
+                    "let mut arr = [\\() -> 0]",
+                    "CALL (ref mut v0) (ref mut arr)",
+                    "arr[0] () + v0.count",
+                ],
+            ),
+            true,
+        ),
+        (
+            record(
+                "let sr = ref r.name; Array.write 0 (\\() -> String.length sr) slot; String.length (ref r.name) + r.count",
+                "i64",
+                &[
+                    "let mut v0 = Rec { name: to_string n, count: 1 }",
+                    "let mut arr = [\\() -> 0]",
+                    "let k = CALL (ref mut v0) (ref mut arr)",
+                    "arr[0] () + k",
+                ],
+            ),
+            true,
+        ),
+        (
+            record(
+                "let sr = ref r.name; Array.write 0 (\\() -> String.length sr) slot",
+                "unit",
+                &[
+                    "let mut v0 = Rec { name: to_string n, count: 3 }",
+                    "let mut arr = [\\() -> 0]",
+                    "CALL (ref mut v0) (ref mut arr)",
+                    "arr[0] () + v0.count",
+                ],
+            ),
+            true,
+        ),
+        (
+            element(
+                "let sr = ref v[0]; Array.write 0 (\\() -> String.length sr) slot",
+                &[
+                    "let mut v0: Vec<string> = Vec.empty()",
+                    "Vec.push_mut (to_string n) (ref mut v0)",
+                    "let mut arr = [\\() -> 0]",
+                    "CALL (ref mut v0) (ref mut arr)",
+                    "arr[0] () + v0.length",
+                ],
+            ),
+            true,
+        ),
+        // Calling the chosen function value with a lambda for its read function parameter is
+        // `E1013 borrow_of_temporary` with or without the annotation, so these two have no branch
+        // spelling.
+        (
+            LaterRule {
+                prelude: &[],
+                explicit: "ref mut Vec<string> -> ((unit -> i64) -> i64) -> i64".to_string(),
+                conventions: "mut Vec<string> -> ((unit -> i64) -> i64) -> i64".to_string(),
+                plain: "v use",
+                annotated: "(v: ref mut Vec<string>) use".to_string(),
+                body: "let sr = ref v[0]; let k = use (\\() -> String.length sr); let mut i = 0; while i < 100 do { Vec.push_mut (to_string i) v; i = i + 1 }; k",
+                annotated_body: None,
+                run: &[
+                    "let mut v0: Vec<string> = Vec.empty()",
+                    "Vec.push_mut (to_string n) (ref mut v0)",
+                    "CALL (ref mut v0) (\\g -> g ())",
+                ],
+            },
+            false,
+        ),
+        (
+            handed(&[
+                "let mut v0: Vec<string> = Vec.empty()",
+                "Vec.push_mut (to_string n) (ref mut v0)",
+                "CALL (ref mut v0) (\\g -> { let _x = g (); () })",
+                "v0.length",
+            ]),
+            false,
+        ),
+        (
+            view(&[
+                "let v0 = Maybe.Some (to_string n)",
+                "let mut arr = [\\() -> 0]",
+                "CALL (ref v0) (ref mut arr)",
+                "arr[0] ()",
+            ]),
+            true,
+        ),
+        (
+            nested_view(&[
+                "let pp = (Maybe.Some (to_string n), 1)",
+                "let mut arr = [\\() -> 0]",
+                "CALL (ref pp) (ref mut arr)",
+                "arr[0] ()",
+            ]),
+            true,
+        ),
+        (
+            view_callback(&[
+                "let v0 = Maybe.Some (to_string n)",
+                "let mx = Mutex.create [\\() -> 0]",
+                "let mr = ref mx",
+                "let k = CALL (ref v0) (\\f -> Mutex.with_lock mr (\\slot -> Array.write 0 f slot))",
+                "k + Mutex.with_lock (ref mx) (\\slot -> slot[0] ())",
+            ]),
+            false,
+        ),
+        (pair(SINK_THEN_SAFE_PAIR), true),
+        (
+            maybe(&[
+                SINK[0],
+                SINK[1],
+                SINK[2],
+                SINK[3],
+                "let g: Maybe<(unit -> i64) -> unit> = Maybe.Some (\\f -> { let _x = f (); () })",
+                "let k = CALL (ref g)",
+                "k + Mutex.with_lock (ref m) (\\slot -> slot[0] ())",
+            ]),
+            true,
+        ),
+        (
+            field(&[
+                SINK[0],
+                SINK[1],
+                SINK[2],
+                SINK[3],
+                "let g = Box { use: \\f -> { let _x = f (); () }, z: 2 }",
+                "let k = CALL (ref g)",
+                "k + Mutex.with_lock (ref m) (\\slot -> slot[0] ())",
+            ]),
+            true,
+        ),
+    ];
+    for (case, branch) in &safe_cases {
+        let mut sources = vec![case.twin(), case.annotated_def()];
+        if *branch {
+            sources.push(case.annotated_branch());
+        }
+        for source in sources {
+            check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        }
+    }
+}
+
 #[test]
 fn documented_exceptions_of_annotated_reference_parameters() {
     // The language reference lists these forms as exceptions (review 2 of A32); each keeps the

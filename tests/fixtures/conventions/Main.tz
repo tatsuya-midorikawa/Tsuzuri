@@ -362,5 +362,34 @@ export def annotated_reference_stores :: i64 -> i64 = \n ->
     let picked = measure (ref text) + kept[0] ()
     constant[0] () + chosen_slots[0] () * 10 + direct[0] () * 100000 + applied[0] () * 1000000000 + numbers[0] * 10000000000000 + picked * 7
 
+// A32 on A31, second merge (A31 reviews 4 to 7): annotated reference parameters follow A31's later
+// rules as named functions with `ref` parameters do. A borrow of a writable parameter that the
+// target keeps allows a write to another field; a borrow handed to a function parameter that only
+// calls it allows a push afterwards; a view of a read parameter's referent is a borrow of the
+// caller's data; a function reached through a tuple pattern is called as the parameter.
+record LaterOwner { name: string, count: i64 }
+def later_kept :: mut LaterOwner -> mut [(unit -> i64)] -> unit = \(owner: ref mut LaterOwner) (slot: ref mut [(unit -> i64)]) -> { let name = ref owner.name; Array.write 0 (\() -> String.length name) slot; owner.count = 5 }
+def later_handed :: mut Vec<string> -> ((unit -> i64) -> unit) -> unit = \(words: ref mut Vec<string>) use -> { let first = ref words[0]; use (\() -> String.length first); Vec.push_mut (to_string 1) words; Vec.push_mut (to_string 2) words }
+def later_view :: (Maybe<string> * i64) -> mut [(unit -> i64)] -> unit = \(pair: ref (Maybe<string> * i64)) (slot: ref mut [(unit -> i64)]) -> match deref pair with | (Maybe.Some text, _) -> { let r = ref text; Array.write 0 (\() -> String.length r) slot } | _ -> ()
+def later_path :: (((unit -> i64) -> unit) * i64) -> i64 = \((use, z): ref (((unit -> i64) -> unit) * i64)) -> { let text = to_string 1234567; let r = ref text; use (\() -> String.length r); z }
+
+export def annotated_reference_later_rules :: i64 -> i64 = \n ->
+    let mut owner = LaterOwner { name: to_string (n * 1000), count: 0 }
+    let mut kept = [\() -> 0]
+    later_kept owner kept
+    let mut words: Vec<string> = Vec.empty()
+    Vec.push_mut (to_string n) (ref mut words)
+    later_handed words (\g -> { let _x = g (); () })
+    let pair = (Maybe.Some (to_string (n * 10)), 1)
+    let mut viewed = [\() -> 0]
+    later_view pair viewed
+    let m = Mutex.create [\() -> 0]
+    let mr = ref m
+    let put = \f -> Mutex.with_lock mr (\slot -> Array.write 0 f slot)
+    put (\() -> n)
+    let handler = ((\f -> { let _x = f (); () }), 2)
+    let z = later_path handler
+    kept[0] () + owner.count + words.length * 100 + viewed[0] () * 1000 + (z + Mutex.with_lock (ref m) (\slot -> slot[0] ())) * 100000
+
 type OwnAlias = own
 (contextual_own_type_name)

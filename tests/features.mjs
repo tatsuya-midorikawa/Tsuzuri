@@ -724,6 +724,16 @@ const suites = {
         return ["annotated_reference_stores", [w],
           constant + chosen * 10n + direct * 100000n + applied * 1000000000n + numbers * 10000000000000n + picked * 7n];
       }),
+      // A32 on A31, second merge: `kept` reads the length of the decimal text of n * 1000 and the
+      // later write sets `count` to 5; `words` holds one text and two pushes; `viewed` reads the
+      // length of the decimal text of n * 10; `later_path` gives 2 and the mutex slot holds `n`.
+      ...[-3, 0, 1, 5].map((n) => {
+        const w = BigInt(n);
+        const kept = BigInt(String(n * 1000).length) + 5n;
+        const words = 3n;
+        const viewed = BigInt(String(n * 10).length);
+        return ["annotated_reference_later_rules", [w], kept + words * 100n + viewed * 1000n + (2n + w) * 100000n];
+      }),
       ["trap", [1n], 10n + 20n + 20n],
     ],
     traps: [
