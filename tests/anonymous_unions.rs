@@ -7067,3 +7067,45 @@ test "narrowed" =
         Edition::E2027,
     );
 }
+
+// A24's Copilot review 2 and A26 together (the merge of 2026-11-12): an old value injected where an
+// anonymous union is expected meets the built-in instances. The expected values are worked out by
+// hand from the rules of both tickets.
+
+/// `@old (x)` as the right operand of a comparison is injected into the left operand's union and
+/// compared through A26's `Eq` and `Ord`; bound by an annotated `let`, it hashes and shows as its
+/// member. By hand, for `grow 41` (r is 42) and `grow (-5)` (r is -4): r - 1 is the old x, so the
+/// first line holds; r is an i64 greater than the old x, so `>` and `!=` hold and `<=` does not
+/// (`(string | i64)` is `(i64 | string)`: i64 first); `"a"` is a string, whose member comes after
+/// i64, so it is greater than every i64 and not equal to one; the old x hashes as `I x` of a named
+/// union with the cases i64 and string in that order (tag `0x55`, position 0, the payload's hash)
+/// and shows as the number alone. `wrong 41` compares 42 to the old 41 and traps.
+#[test]
+fn old_values_compare_hash_and_show_through_the_instances() {
+    let definitions = r#"union NamedIS =
+    | I of i64
+    | S of string
+    deriving (Hash)
+
+def grow :: i64 -> i64 = \x ->
+    @ensures \r -> { let v: (i64 | string) = r - 1; v == @old (x) }
+    @ensures \r -> { let v: (string | i64) = r; v > @old (x) && v != @old (x) && !(v <= @old (x)) }
+    @ensures \_ -> { let s: (i64 | string) = "a"; s > @old (x) && !(s == @old (x)) }
+    @ensures \r -> { let o: (i64 | string) = @old (x); Hash.hash o == Hash.hash (I (r - 1)) && Display.display o == $"{r - 1}" }
+    x + 1
+
+def wrong :: i64 -> i64 = \x ->
+    @ensures \r -> { let v: (i64 | string) = r; v == @old (x) }
+    x + 1
+"#;
+    passes(
+        &format!(
+            "{definitions}\ntest \"old\" =\n    assert (grow 41 == 42)\n    assert (grow (-5) == -4)\n"
+        ),
+        Edition::E2026,
+    );
+    traps(
+        &format!("{definitions}\ntest \"wrong\" =\n    assert (wrong 41 == 42)\n"),
+        Edition::E2026,
+    );
+}
