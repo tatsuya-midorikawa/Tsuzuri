@@ -237,7 +237,7 @@ struct State<'a> {
     /// A31: the locals whose value was, when they were bound or assigned last, a share of the
     /// block of local owners (`Rc.share (ref rc)`, `Loan::share`), with those owners. A borrow of
     /// the contents of the block through such a local points into the same block as one through
-    /// the owner (`Checker::same_block`), which outlives the local while the owner holds it. A
+    /// the owner (`Checker::same_block_loan`), which outlives the local while the owner holds it. A
     /// join keeps what both paths agree on.
     block_shares: BTreeMap<usize, BTreeSet<usize>>,
 }
@@ -8365,8 +8365,17 @@ impl<'a, 'run> Checker<'a, 'run> {
                         } else {
                             exclusive.insert(index);
                         }
+                        // Only fields: an element or a payload is one place for every element or
+                        // case, so its borrow stays one of the whole target (the element of
+                        // `ref values[index]` that `Array.iterir` passes on).
                         match self.self_path(loan) {
-                            Some(path) if !path.is_empty() && !self.loans[loan].mutable => {
+                            Some(path)
+                                if !path.is_empty()
+                                    && !self.loans[loan].mutable
+                                    && path
+                                        .iter()
+                                        .all(|step| *step != ELEMENT && *step != PAYLOAD) =>
+                            {
                                 add_self_path(source.paths.entry(index).or_default(), path);
                             }
                             _ => {
@@ -10842,15 +10851,18 @@ impl<'a, 'run> Checker<'a, 'run> {
             if value.loans.is_empty() || moved.contains(id) {
                 continue;
             }
-            // A share of the block of a local owner holds what the block holds, and a borrow of a
-            // local is read through: the holder may read what that local holds now.
-            let held = self.expand_shares_read(value, *id);
             // Every borrow that the rule counts needs a holder whose drop may read one (a part
             // that may read is a part of the holder's stored parts): the common case stops here.
             let ty = holder.ty.clone();
             if !self.drop_reads_cached(&ty) {
                 continue;
             }
+            // A share of the block of a local owner holds what the block holds, and a borrow of a
+            // local is read through: the holder may read what that local holds now.
+            let Some((_, value)) = self.state.locals.get(id) else {
+                continue;
+            };
+            let held = self.expand_shares_read(value, *id);
             let slot = DropSlot::Scoped(at);
             let later = held.iter().copied().find(|loan| {
                 let root = self.loans[*loan].place.root;
@@ -10970,12 +10982,11 @@ impl<'a, 'run> Checker<'a, 'run> {
 
     /// A31: records whether the local `id`, which was just bound or assigned the value of
     /// `value`, is a share of the block of a local owner (`State::block_shares`): only the direct
-    /// forms `Rc.share (ref owner)` and `ref owner |> Rc.share` (and those of `Arc`) count, so
-    /// that a value that may come from somewhere else (a branch, a call) is never taken for one.
+    /// call `Rc.share (ref owner)` (or `Arc.share`) of a whole local counts, so that a value that
+    /// may come from somewhere else (a branch, a call) is never taken for one.
     fn note_block_share(&mut self, id: usize, value: &TypedExpr) {
         let (callee, argument) = match &value.kind {
             E::Call(callee, arguments) if arguments.len() == 1 => (&**callee, &arguments[0]),
-            E::Binary(BinaryOp::Pipe, left, right) => (&**right, &**left),
             _ => {
                 self.state.block_shares.remove(&id);
                 return;

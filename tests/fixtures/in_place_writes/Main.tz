@@ -1120,3 +1120,114 @@ fn relayed_temporaries_in_drop_order =
     let out = Arc.new (Mutex.create [0])
     relay_two keep_text (ref (Recorder { cell: Mutex.create [\() -> 0], out: Arc.share (ref out) })) (ref (to_string 123456789))
     recorded (ref out)
+
+// A31, review round 11. The borrows of an old value's own parts end with it: the local is moved
+// after its assignment, a reference parameter's target is replaced whole, and a field whose
+// siblings hold no borrow is replaced like the whole record. Each old recorder reads its string
+// while it is dropped.
+record TripleBox { p: RecordedTriple, n: i64 }
+
+def sink_triple :: own RecordedTriple -> i64
+fn sink_triple p = p.n
+
+def renew_triple :: ref mut RecordedTriple -> ref Arc<Mutex<[i64]>> -> i64
+fn renew_triple p out =
+    let t = ref p.s
+    Mutex.with_lock (ref p.c.cell) (\b -> Array.write 0 (\() -> String.length t + 6) b)
+    deref p = make_triple 3 out
+    1
+
+export def replaced_values_stay_usable :: i64
+fn replaced_values_stay_usable =
+    let out = Arc.new (Mutex.create [0])
+    let mut p = make_triple 1 (ref out)
+    let t = ref p.s
+    Mutex.with_lock (ref p.c.cell) (\b -> Array.write 0 (\() -> String.length t + 3) b)
+    p = make_triple 2 (ref out)
+    let first = recorded (ref out)
+    let moved = sink_triple p
+    let mut q = make_triple 4 (ref out)
+    let r = renew_triple (ref mut q) (ref out)
+    let second = recorded (ref out)
+    let mut bx = TripleBox { p: make_triple 5 (ref out), n: 0 }
+    let u = ref bx.p.s
+    Mutex.with_lock (ref bx.p.c.cell) (\b -> Array.write 0 (\() -> String.length u + 7) b)
+    bx.p = make_triple 6 (ref out)
+    let third = recorded (ref out)
+    ((((first * 100 + moved) * 100 + second) * 10 + r) * 10 + q.n) * 100 + third + bx.p.n * 0
+
+// A value whose drop reads a cell through a borrow reads what the cell holds then: the string,
+// declared before the reader, is still there.
+record Watcher { read: unit -> i64, out: Arc<Mutex<[i64]>> }
+
+instance Drop<Watcher> {
+    fn drop w = {
+        let seen = w.read ();
+        Mutex.with_lock (Arc.get (ref w.out)) (\o -> Array.write 0 seen o)
+    }
+}
+
+def read_cell_first :: ref Mutex<[unit -> i64]> -> unit -> i64
+fn read_cell_first m _u = Mutex.with_lock m (\b -> b[0] ())
+
+def watched :: ref Arc<Mutex<[i64]>> -> i64
+fn watched out =
+    let s = to_string 123456789
+    let m = Mutex.create [\() -> 0]
+    let _w = Watcher { read: read_cell_first (ref m), out: Arc.share out }
+    let t = ref s
+    Mutex.with_lock (ref m) (\b -> Array.write 0 (\() -> String.length t + 8) b)
+    1
+
+export def reads_through_a_borrow_in_drop_order :: i64
+fn reads_through_a_borrow_in_drop_order =
+    let out = Arc.new (Mutex.create [0])
+    let k = watched (ref out)
+    k * 100 + recorded (ref out)
+
+// A `ref mut` variable and the left side of a pipeline leave the caller a shared borrow of the
+// part that the callee borrowed: the other fields stay writable.
+export def reference_variables_leave_the_part :: i64
+fn reference_variables_leave_the_part =
+    let out = Arc.new (Mutex.create [0])
+    let mut p = make_triple 1 (ref out)
+    let k = { let r = ref mut p; keep_triple r }
+    p.n = 4
+    let mut q = make_triple 2 (ref out)
+    let j = ref mut q |> keep_triple
+    q.n = 5
+    (k * 10 + j) * 100 + p.n * 10 + q.n
+
+// A borrow of a part of an `Rc` block taken through another owner of the block is one of a part
+// of the block, whose recorder field is dropped before its string field.
+def shared_owner_parts :: ref Arc<Mutex<[i64]>> -> i64
+fn shared_owner_parts out =
+    let rc = Rc.new (RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out }, s: to_string 123456789 })
+    let inner = Rc.share (ref rc)
+    let t = ref (Rc.get (ref inner)).s
+    Mutex.with_lock (ref (Rc.get (ref rc)).c.cell) (\b -> Array.write 0 (\() -> String.length t + 9) b)
+    1
+
+export def shared_owner_parts_in_drop_order :: i64
+fn shared_owner_parts_in_drop_order =
+    let out = Arc.new (Mutex.create [0])
+    let k = shared_owner_parts (ref out)
+    k * 100 + recorded (ref out)
+
+// Borrows of two parts of what a parameter points at, handed to a function value, stay borrows of
+// those parts: the recorder keeps a borrow of the string beside it.
+def apply_parts :: (ref Recorder -> ref string -> unit) -> ref RecordedPair -> i64
+fn apply_parts f p =
+    f (ref p.c) (ref p.s)
+    1
+
+def handed_parts :: ref Arc<Mutex<[i64]>> -> i64
+fn handed_parts out =
+    let p = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out }, s: to_string 123456789 }
+    apply_parts keep_text (ref p)
+
+export def parts_handed_to_function_values :: i64
+fn parts_handed_to_function_values =
+    let out = Arc.new (Mutex.create [0])
+    let k = handed_parts (ref out)
+    k * 100 + recorded (ref out)

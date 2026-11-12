@@ -2051,6 +2051,13 @@ const suites = {
       ["whole_replacement_in_drop_order", [], (1n * 100n + 0n) * 1000n + (9n + 3n) * 10n + 7n],
       ["shared_block_parts_in_drop_order", [], 1n * 100n + 9n + 4n],
       ["relayed_temporaries_in_drop_order", [], 9n + 5n],
+      // Review round 11. The old recorders read 9 + 3, 9 + 6 and 9 + 7 when the assignments drop
+      // them; the moved value's n is 2, the callee returns 1 and leaves n = 3.
+      ["replaced_values_stay_usable", [], ((((12n * 100n + 2n) * 100n + 15n) * 10n + 1n) * 10n + 3n) * 100n + 16n],
+      ["reads_through_a_borrow_in_drop_order", [], 1n * 100n + 9n + 8n],
+      ["reference_variables_leave_the_part", [], (1n * 10n + 1n) * 100n + 4n * 10n + 5n],
+      ["shared_owner_parts_in_drop_order", [], 1n * 100n + 9n + 9n],
+      ["parts_handed_to_function_values", [], 1n * 100n + 9n + 5n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.
