@@ -2029,6 +2029,12 @@ const suites = {
       ["drop_beside_a_borrow_it_cannot_read", [], 9n * 100n + 1n * 10n + 4n],
       // read_once reads 9; the loop reads "12345" twice and breaks; holder reads 3.
       ["drop_runners_moved_on_one_path_or_left_at_a_break", [], 9n * 1000n + 10n * 10n + 3n],
+      // Review round 8. The inner handler catches the overflow: holder reads "9" afterwards, plus 1.
+      ["catch_all_handler_inside_a_try", [123456789n], 9n + 1n],
+      // "123456789" read through the later parameter.
+      ["parameter_holder_after_what_it_borrows", [], 9n],
+      // "123456789" (9) + count 3, then the registry's previous function reads "1234" (4) + count 5.
+      ["shared_borrows_handed_to_function_values", [], (9n + 3n) * 100n + 4n + 5n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.
@@ -2036,6 +2042,11 @@ const suites = {
       // Review round 4. The drop moves the function that reads "123456789" (9 characters) into a's block.
       ["drop_moves_its_inbox_through_a_share", [], 9n],
       ["drop_moves_its_inbox_in_a_helper", [], 9n],
+      // Review round 8 (nested locks). The copy of the first function (7), the shared "123" (3),
+      // the wrapper's reader of "12345" (5) and SyncMap.with_value's reader of "1234" (4).
+      ["lock_contents_copied_out_of_their_callbacks", [], 7n * 1000n + 3n * 100n + 5n * 10n + 4n],
+      // The block that the share went to took the later function, which returns 8.
+      ["share_handed_to_a_function_parameter", [], 8n],
     ],
   },
   fixed_arrays: {

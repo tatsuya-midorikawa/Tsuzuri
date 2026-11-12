@@ -841,3 +841,116 @@ fn drop_runners_moved_on_one_path_or_left_at_a_break =
         inner = Reading { f: \() -> 1 }
         i = i + 1
     k * 1000 + seen * 10 + holder.f ()
+
+// Review round 8: copies of what a lock's contents hold (a function value, a new strong pointer)
+// leave its callback, and borrows of the contents are only read inside it (a wrapper's function
+// value, `SyncMap.with_value`).
+def read_first :: ref Mutex<Vec<string>> -> (ref string -> i64) -> i64
+fn read_first m f = Mutex.with_lock m (\a -> f (ref a[0]))
+
+export def lock_contents_copied_out_of_their_callbacks :: i64
+fn lock_contents_copied_out_of_their_callbacks =
+    let m = Mutex.create [\() -> 7]
+    let m2 = Mutex.create [\() -> 0]
+    let rm2 = ref m2
+    Mutex.with_lock (ref m) (\a -> { let f = a[0]; Mutex.with_lock rm2 (\b -> Array.write 0 f b) })
+    Mutex.with_lock (ref m) (\a -> Array.write 0 (\() -> 5) a)
+    let shares = Mutex.create [Arc.new (to_string 123)]
+    let s2 = Mutex.create [Arc.new "x"]
+    let rs2 = ref s2
+    Mutex.with_lock (ref shares) (\a -> { let s = Arc.share (ref a[0]); Mutex.with_lock rs2 (\b -> Array.write 0 s b) })
+    Mutex.with_lock (ref shares) (\a -> Array.write 0 (Arc.new "yy") a)
+    let mut v: Vec<string> = Vec.empty()
+    Vec.push_mut (to_string 12345) (ref mut v)
+    let strings = Mutex.create v
+    let len = read_first (ref strings) (\s -> String.length s)
+    let sm: SyncMap<i64, string> = SyncMap.create ()
+    let one = 1
+    SyncMap.store (ref sm) 1 (to_string 1234)
+    let found = match SyncMap.with_value (ref sm) (ref one) (\t -> String.length t) with
+                | Maybe.Some k -> k
+                | Maybe.None -> 0
+    let copied = Mutex.with_lock rm2 (\b -> b[0] ())
+    let shared = Mutex.with_lock rs2 (\b -> String.length (Arc.get (ref b[0])))
+    copied * 1000 + shared * 100 + len * 10 + found
+
+// Review round 8: an inner `try` whose handler catches every exception lets none reach the outer
+// one, so the value whose drop runs code may keep a borrow of a later local until it is replaced.
+export def catch_all_handler_inside_a_try :: i64 -> i64
+fn catch_all_handler_inside_a_try n =
+    let r = try
+                let mut holder = Reading { f: \() -> 0 }
+                let text0 = to_string 123456789
+                let t = ref text0
+                holder = Reading { f: \() -> String.length t }
+                let inner = try
+                                @checked n * 9223372036854775807
+                            with
+                            | e -> e
+                holder = Reading { f: \() -> 9 }
+                match inner with
+                | Ok v -> v
+                | Error _ -> holder.f () + 1
+            with
+            | e -> e
+    match r with
+    | Ok v -> v
+    | Error _ -> 0
+
+// Review round 8: a parameter whose drop runs code, declared after the parameter that it borrows.
+def keep_after :: own string -> own Reading -> i64
+fn keep_after s mut c =
+    let t = ref s
+    c = Reading { f: \() -> String.length t }
+    c.f ()
+
+export def parameter_holder_after_what_it_borrows :: i64
+fn parameter_holder_after_what_it_borrows = keep_after (to_string 123456789) (Reading { f: \() -> 1 })
+
+// Review round 8: a function hands a shared borrow of what its `ref mut` parameter points at to a
+// function value that keeps it (in a mutex, in a registry); the caller reads the value afterwards.
+record NamedCount { name: string, count: i64 }
+
+def hand_name :: ref mut NamedCount -> ((unit -> i64) -> unit) -> unit
+fn hand_name r use =
+    let sr = ref r.name
+    use (\() -> String.length sr)
+
+def make_name_registry :: unit -> ((unit -> i64) -> i64)
+fn make_name_registry _u =
+    let cell = Arc.new (Mutex.create [\() -> 0])
+    \f -> Mutex.with_lock (Arc.get (ref cell)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () })
+
+def hand_name_to :: ref mut NamedCount -> ((unit -> i64) -> i64) -> unit
+fn hand_name_to r reg =
+    let sr = ref r.name
+    let _k = reg (\() -> String.length sr)
+    ()
+
+export def shared_borrows_handed_to_function_values :: i64
+fn shared_borrows_handed_to_function_values =
+    let m = Mutex.create [\() -> 0]
+    let mr = ref m
+    let mut v0 = NamedCount { name: to_string 123456789, count: 3 }
+    hand_name (ref mut v0) (\g -> Mutex.with_lock mr (\slot -> Array.write 0 g slot))
+    let first = Mutex.with_lock mr (\slot -> slot[0] ()) + v0.count
+    let reg = make_name_registry ()
+    let mut v1 = NamedCount { name: to_string 1234, count: 5 }
+    hand_name_to (ref mut v1) reg
+    let second = reg (\() -> 1) + v1.count
+    first * 100 + second
+
+// Review round 8: a share of the block of a local `Arc` owner handed to a function-valued
+// parameter, which keeps it in a mutex.
+def share_out :: (Arc<Mutex<[unit -> i64]>> -> unit) -> unit
+fn share_out use =
+    let lr = Arc.new (Mutex.create [\() -> 9])
+    use (Arc.share (ref lr))
+    Mutex.with_lock (Arc.get (ref lr)) (\slot -> Array.write 0 (\() -> 8) slot)
+
+export def share_handed_to_a_function_parameter :: i64
+fn share_handed_to_a_function_parameter =
+    let m = Mutex.create [Arc.new (Mutex.create [\() -> 0])]
+    let mr = ref m
+    share_out (\r -> Mutex.with_lock mr (\slot -> Array.write 0 r slot))
+    Mutex.with_lock mr (\slot -> Mutex.with_lock (Arc.get (ref slot[0])) (\cell -> cell[0] ()))
