@@ -2081,6 +2081,53 @@ fn annotated_reference_callbacks_over_nested_number_literals() {
     }
 }
 
+#[test]
+fn builtins_that_store_through_exclusive_references_are_named_as_written() {
+    // Review 4 of A32: a function value of `Vec.push_mut` over borrowed elements may store an
+    // input through an exclusive reference, so it runs only in direct calls. The error names the
+    // builtin as the program writes it, not the numbered instance (`Vec.push_mut.3`) that the
+    // compiler makes of it. The annotated `else` branch is new with A32 (`E1003` before); the
+    // other spellings had the numbered name before.
+    let message = "'Vec.push_mut' may store an input through an exclusive reference, so call it \
+                   directly with all of its arguments";
+    // Each `push` and the marker that ends right before the function value of `Vec.push_mut`.
+    for (push, marker) in [
+        (
+            "    let push = if n > 1000000 then Vec.push_mut else \\(x: ref string) (w: ref mut Vec<ref string>) -> Vec.push_mut x w",
+            "then ",
+        ),
+        (
+            "    let push = if n > 1000000 then Vec.push_mut else \\x w -> Vec.push_mut x w",
+            "then ",
+        ),
+        ("    let push = Vec.push_mut", "let push = "),
+    ] {
+        let source = program(&[
+            "export def run :: i64 -> i64 = \\n ->",
+            "    let zz = \"zz\"",
+            "    let mut v: Vec<ref string> = Vec.empty()",
+            push,
+            "    push (ref zz) v",
+            "    v[0].length",
+        ]);
+        let error = check("2027", &source).unwrap_err();
+        assert_eq!(
+            (error.code, error.kind, error.message.as_str()),
+            (
+                "E1013",
+                Some("region_callback_stores_exclusive_input"),
+                message
+            ),
+            "{source}"
+        );
+        assert_eq!(
+            error.span.start,
+            pattern_offset(&source, marker),
+            "{source}"
+        );
+    }
+}
+
 /// The first error of `source` has `code` and `kind` and starts at the 1-based `line:column`.
 fn rejects_at(source: &str, code: &str, kind: &str, at: (usize, usize)) {
     let error = check("2027", source)
