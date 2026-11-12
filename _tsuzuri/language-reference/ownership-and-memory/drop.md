@@ -131,6 +131,22 @@ inner drop
 
 `Outer` の `drop` が呼ばれた後に、フィールドである `Inner` の `drop` が呼ばれていることがわかります。
 
+宣言の逆順で解放されるので、先に宣言した変数は、後に宣言した変数より後に解放されます。そのため、`drop` を実行しうる値（利用者の `Drop` 型の値と、それを持つ配列・`Vec`・`Mutex`・`Rc`・`Arc`・レコード、それを環境に持ちうる関数値など。弱参照の先は数えません）は、同じブロックで後に宣言した変数の借用を持てません。持つと、`drop` が先に解放された変数を読みうるので、ブロックの終わりで `E1013`（`'holder' keeps a borrow of a value that is dropped before it, and dropping 'holder' may run a Drop.drop that uses the borrow`）です。借用をどう得たか（代入、`Array.write`・`Array.set`・`Vec.push_mut` などのその場の書き込み、ロックのコールバック、セルを所有するレジストリの呼び出し）は問いません。借用される変数を先に宣言します。そうした値の借用は、後の文で値を使わなくても、`drop` が使うのでスコープの終わりまで生きます。
+
+```text
+record Caller { f: unit -> i64 }
+instance Drop<Caller> {
+    fn drop c = do! IO.write_line ("drop " + to_string (c.f ()))
+}
+def run :: i64 -> i64
+fn run n =
+    let mut holder = Caller { f: \() -> 0 }   // E1013: holder は text0 より後に解放される
+    let text0 = to_string n
+    let t = ref text0
+    holder = Caller { f: \() -> String.length t }
+    0
+```
+
 ## use 束縛による解放保証
 
 `use` キーワードは、`Drop` を実装した値を不変で束縛する専用構文です。
@@ -240,6 +256,8 @@ after
   ```
 
   `drop` の中で `Arc.share (ref s.out)` などで作った共有はブロックの所有者で、破棄する値そのものの借用ではありません。それを通して値の中身を別のセルへ移す `drop`（`s.inbox` の要素を `s.out` のセルへ移すもの）は、値そのものの借用を書き込む `drop` には数えません。
+
+  `Rc.share`・`Arc.share` で作った共有を破棄すると、最後の所有者ならブロックの値の `drop` を実行します。そのときに渡るのはブロックが持つ借用で、元の `Rc` の借用ではないので、元の `Rc` を内側のブロックで宣言しても、レジストリが外側にあることは誤りになりません（ブロックの値が持つ借用がレジストリより長く生きる必要はあります）。弱参照（`Rc.downgrade` の結果）の破棄はブロックの値の `drop` を実行しないので、何も渡しません。
 
 ## トラップ時の挙動
 
