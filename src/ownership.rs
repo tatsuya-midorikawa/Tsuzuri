@@ -6707,6 +6707,33 @@ impl<'a, 'run> Checker<'a, 'run> {
             .filter(|ty| !matches!(ty, Type::Reference(..)))
     }
 
+    /// A31: whether the place at `fields` in a value of type `ty` is a mutable cell
+    /// (`Type::is_mutable_cell`) that the value stores itself: a field of a record, an element of
+    /// a tuple or of a collection on the way (a payload or a region slot names no type, and counts
+    /// as none).
+    fn place_is_cell(&self, ty: &Type, fields: &[usize]) -> bool {
+        let types = self.module.types();
+        let mut current = ty.clone();
+        for &field in fields {
+            current = match &current {
+                Type::Record(id, arguments) if field < types.records[*id].fields.len() => {
+                    types.record_field(*id, arguments, field)
+                }
+                Type::Tuple(elements) if field < elements.len() => elements[field].clone(),
+                Type::Array(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _)
+                    if field == ELEMENT =>
+                {
+                    (**inner).clone()
+                }
+                _ => return false,
+            };
+        }
+        current.is_mutable_cell(&types)
+    }
+
     /// A31: whether a value of type `ty` reaches a mutable cell whose contents may hold a loan
     /// (`reaches_cell`) behind a reference or a shared pointer (`Rc`, `Arc` or a weak pointer):
     /// a cell that other values than one that owns the value may reach. Cached by type.
@@ -7123,6 +7150,9 @@ impl<'a, 'run> Checker<'a, 'run> {
         }
         let mut seen = BTreeSet::new();
         let mut reached: Vec<(usize, bool)> = Vec::new();
+        // The reached owners whose loans the store followed (all but a store into an owned
+        // parameter's own cell).
+        let mut followed: BTreeSet<(usize, bool)> = BTreeSet::new();
         // The external roots, and whether only exclusive borrows reach each.
         let mut external: BTreeMap<usize, bool> = BTreeMap::new();
         while let Some((loan, exclusive)) = pending.pop() {
@@ -7137,30 +7167,34 @@ impl<'a, 'run> Checker<'a, 'run> {
                 *external.entry(root).or_insert(true) &= exclusive;
                 continue;
             }
+            // A store into a cell that an owned parameter stores itself (`Mutex.with_lock (ref
+            // c.cell)`, `ref m` for `own m: Mutex<...>`) stays in the parameter's storage: it
+            // reaches none of what the caller's value holds (the parameter's own loan), neither a
+            // cell behind a reference or a shared pointer nor the environment of a function value
+            // that the parameter holds, which only a call of that function value writes.
+            let own_cell = self.owned_parameter(root).is_some_and(|ty| {
+                let fields = self.loans[loan].place.fields.clone();
+                self.place_is_cell(&ty, &fields)
+            });
             if reached.contains(&(root, exclusive)) {
-                continue;
+                if own_cell || followed.contains(&(root, exclusive)) {
+                    continue;
+                }
+            } else {
+                reached.push((root, exclusive));
             }
-            reached.push((root, exclusive));
             let Some((_, owner)) = self.state.locals.get(&root) else {
                 continue;
             };
             let held: Vec<usize> = owner.loans.iter().copied().collect();
-            let owned = self.owned_parameter(root);
+            if !own_cell {
+                followed.insert((root, exclusive));
+            }
             for loan in held {
-                // A store into the storage of an owned parameter reaches what the caller's value
-                // holds (its loan of the parameter) only through a cell behind a reference or a
-                // shared pointer: the function values that the parameter holds are written only
-                // by calls of them, whose callee holds that loan itself.
-                let follow = match &owned {
-                    Some(ty)
-                        if self.loans[loan].place.root == usize::MAX - root
-                            && !self.loans[loan].mutable =>
-                    {
-                        self.reaches_shared_cell(ty)
-                    }
-                    _ => self.store_target(loan),
-                };
-                if follow {
+                if own_cell && self.loans[loan].place.root == usize::MAX - root {
+                    continue;
+                }
+                if self.store_target(loan) {
                     let mutable = self.loans[loan].mutable;
                     pending.push((loan, exclusive && mutable));
                 }
@@ -10105,7 +10139,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                     types.record_fields(*id, arguments)
                 }
                 Type::Tuple(elements) if field < elements.len() => elements.clone(),
-                _ => return self.drop_reads_cached(&current),
+                _ => return self.parts_drop_read(&current),
             };
             if parts[field + 1..]
                 .iter()
@@ -10115,7 +10149,26 @@ impl<'a, 'run> Checker<'a, 'run> {
             }
             current = parts[field].clone();
         }
-        !proven && self.drop_reads_cached(&current)
+        !proven && self.parts_drop_read(&current)
+    }
+
+    /// A31: whether dropping the parts of a value of type `ty` may run a user `Drop.drop` that
+    /// reads a borrow (`drop_reads`): the value's own `Drop.drop` runs first, while every part is
+    /// there, and reads nothing that is gone; the parts are dropped after it, one after another
+    /// (`self_borrow_dropped_first`).
+    fn parts_drop_read(&mut self, ty: &Type) -> bool {
+        let types = self.module.types();
+        let parts: Vec<Type> = match ty {
+            Type::Record(id, arguments) => types.record_fields(*id, arguments),
+            Type::Tuple(elements) => elements.clone(),
+            Type::Union(id, arguments) => types
+                .union_payloads(*id, arguments)
+                .into_iter()
+                .flatten()
+                .collect(),
+            _ => return self.drop_reads_cached(ty),
+        };
+        parts.iter().any(|part| self.drop_reads_cached(part))
     }
 
     /// A31: the error of `check_drop_order_of` for a local `holder` that keeps the borrow `loan`

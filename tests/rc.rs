@@ -4059,15 +4059,13 @@ fn a_value_whose_parts_run_drop_code_keeps_no_borrow_of_a_part_dropped_before_th
 /// drop order of the parameters decides. A cell behind a shared pointer may be the caller's too.
 #[test]
 fn an_owned_parameter_owns_the_cells_that_it_stores() {
-    for (source, at) in [
-        // rg07 (the holder parameter first)
-        (
-            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef keep :: own Mutex<[Caller]> -> own string -> i64\nfn keep m s =\n    let t = ref s\n    Mutex.with_lock (ref m) (\\b -> Array.write 0 (Caller { f: \\() -> String.length t }) b)\n    0\nkeep (Mutex.create [Caller { f: \\() -> 0 }]) (to_string 123456789)",
-            (7, 5),
-        ),
-    ] {
-        rejects_at(source, "E1013", "assignment_extends_borrow", at);
-    }
+    // rg07 (the holder parameter first)
+    rejects_at(
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef keep :: own Mutex<[Caller]> -> own string -> i64\nfn keep m s =\n    let t = ref s\n    Mutex.with_lock (ref m) (\\b -> Array.write 0 (Caller { f: \\() -> String.length t }) b)\n    0\nkeep (Mutex.create [Caller { f: \\() -> 0 }]) (to_string 123456789)",
+        "E1013",
+        "assignment_extends_borrow",
+        (7, 5),
+    );
     // F2r: by-value parameters of edition 2026
     analyze_with_edition("record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef keep :: string -> Holder -> i64\nfn keep s c =\n    let t = ref s\n    Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\ndef run :: i64 -> i64\nfn run n = keep (String.repeat 4 (ref \"123456789\")) (Holder { cell: Mutex.create [\\() -> 0] })\nrun 1", Edition::E2026).expect("F2r_read_params_2027 is accepted in edition 2026");
     // a02c: the same through a pipeline
@@ -4075,6 +4073,8 @@ fn an_owned_parameter_owns_the_cells_that_it_stores() {
     for main in [
         // rg02
         "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef keep :: own string -> own Mutex<[Caller]> -> i64\nfn keep s m =\n    let t = ref s\n    Mutex.with_lock (ref m) (\\b -> Array.write 0 (Caller { f: \\() -> String.length t }) b)\n    0\nkeep (to_string 123456789) (Mutex.create [Caller { f: \\() -> 0 }])",
+        // a25: the same in a module with a function value that owns the cell that it writes
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef keep :: own string -> own Mutex<[Caller]> -> i64\nfn keep s m =\n    let t = ref s\n    Mutex.with_lock (ref m) (\\b -> Array.write 0 (Caller { f: \\() -> String.length t }) b)\n    0\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let k = reg (\\() -> 5)\n    k + keep (to_string 123456789) (Mutex.create [Caller { f: \\() -> 0 }])\nrun 1",
     ] {
         accepts_in_both_editions(&[("Main.tz", main)]);
     }
