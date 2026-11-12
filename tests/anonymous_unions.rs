@@ -8064,3 +8064,158 @@ fn members_that_hold_borrows_keep_their_loans() {
         Edition::E2026,
     );
 }
+
+// A24's Copilot review 4 and A26 together (the merge of 2026-11-12): a member comparison keeps an
+// inference variable that occurs twice as one type (`Ties`), so a generic result whose type repeats
+// a variable is injected into the only consistent member, and the built-in instances of that member
+// and of its type arguments are selected after it. The expected values are worked out by hand from
+// the rules of both tickets.
+
+/// `empties ()` has the type `([?a] * [?a])` and `read2 text` the type `(?a * ?a)` with
+/// `Decode<?a>`. Each fits only the first member written in `Pairs` and `Cells` (the second would
+/// need ?a to be two types), so it is injected there as a comparison operand and as an annotated
+/// value: ?a becomes `i64` and `(i64 | string)`, so `read2` reads its components with A26's
+/// `Decode` of `(i64 | string)`. Before the merge, both members counted and each such position was
+/// `E1041`.
+///
+/// By hand, with i64 before string in the canonical order (the first unequal component decides
+/// between tuples):
+/// - `Pairs` is `(([i64] * [i64]) | ([i64] * [string]))` in that order. `v` and `k` are
+///   `([], [])` in member 0, `w` is `([1], ["x"])` in member 1 (the literal's `["x"]` is no
+///   `[i64]`), `u` is `([2], [3])` in member 0 (a number literal is no string). Values of one member
+///   compare their payloads as tuples, element by element (`[] < [2]`); values of different members
+///   compare by the member alone, so `u < w` although `[2] > [1]`. `v` and `k` are equal, so they
+///   hash alike and the set of `v`, `w`, `u` and `k` holds 3 keys. The display and the JSON are the
+///   payload's: a tuple shows strings inside it quoted, and `Json.serialize` writes no spaces.
+/// - `read2 "[1, \"a\"]"` is `(1, "a")` in the member `((i64 | string) * (i64 | string))` of
+///   `Cells`, which the type test confirms. Every comparison is within that member, so the order of
+///   the two members does not matter: `"a" < "b"` (both strings), `"a"` after `2` (string after
+///   i64) and `1 > 0` (both i64).
+#[test]
+fn tied_members_compare_and_decode_through_the_instances() {
+    let definitions = r#"type Pairs = (([i64] * [i64]) | ([i64] * [string]))
+
+type Cells = (((i64 | string) * (i64 | string)) | ((i64 | string) * f64))
+
+def empties :: unit -> (['a] * ['a]) = \_ -> ([], [])
+
+def read2 :: Decode<'a> => own string -> ('a * 'a) = \text ->
+    let bytes = Utf8String.from_string (ref text)
+    Json.deserialize (ref bytes) |> Result.get
+
+def json_of :: Encode<'a> => own 'a -> string = \value ->
+    match Json.serialize value with
+    | Ok text -> String.from_utf8 (ref text)
+    | Error error -> Display.display error
+
+"#;
+    passes(
+        &format!(
+            r#"{definitions}test "compared" =
+    let v: Pairs = empties ()
+    assert (v == empties ())
+    assert (not (v != empties ()))
+    assert (v <= empties () && v >= empties () && not (v < empties ()))
+    let w: Pairs = ([1], ["x"])
+    assert (w != empties () && w > empties () && not (w <= empties ()))
+    let u: Pairs = ([2], [3])
+    assert (u > empties () && u != v && u < w)
+    assert (Display.display v == "([], [])")
+    assert (Display.display w == "([1], [\"x\"])")
+    let written: Pairs = ([1], ["x"])
+    assert (json_of written == "[[1],[\"x\"]]")
+    let k: Pairs = empties ()
+    assert (Hash.hash (ref v) == Hash.hash (ref k))
+    let mut set: HashSet<Pairs> = HashSet.empty()
+    set = HashSet.insert v set
+    set = HashSet.insert w set
+    set = HashSet.insert u set
+    set = HashSet.insert k set
+    let probe: Pairs = empties ()
+    assert (HashSet.length set == 3 && HashSet.contains probe set)
+
+test "decoded" =
+    let v: Cells = read2 "[1, \"a\"]"
+    let member = match v with
+        | :? ((i64 | string) * (i64 | string)) -> 1
+        | :? ((i64 | string) * f64) -> 2
+    assert (member == 1)
+    assert (v == read2 "[1, \"a\"]")
+    assert (v != read2 "[1, \"b\"]" && v < read2 "[1, \"b\"]")
+    assert (v > read2 "[1, 2]" && v > read2 "[0, \"z\"]")
+    assert (Display.display v == "(1, \"a\")")
+    assert (json_of v == "[1,\"a\"]")
+"#
+        ),
+        Edition::E2027,
+    );
+    // The comparison's injection counts members as an annotated value does, and A26's `Eq` adds
+    // no error of its own: `empties ()` is no member when no member has one type in both places
+    // (`E1003` at the operand), and ambiguous when two do (`E1041`). The selected type argument
+    // decides the instance: a member that makes ?a `(i64 | f64)` has no `Decode` (`E1025` at the
+    // call, D5), one that makes it `(char | string)` reports the missing `Decode<char>` first
+    // (`E1005`), and a `Cells` value read from a whole JSON array is still `E1025`, since both of
+    // its members read an array.
+    let only = |body: &str, code: &str, kind: &str, at: &str| {
+        let source = format!("{definitions}{body}0\n");
+        let errors = analyze_modules_all(&[("Main", &source)])
+            .expect_err(&source)
+            .diagnostics;
+        let errors: Vec<_> = errors
+            .into_iter()
+            .filter(|error| error.code.starts_with('E'))
+            .collect();
+        assert_eq!(errors.len(), 1, "{source}\n{errors:?}");
+        assert_eq!(errors[0].code, code, "{source}\n{}", errors[0].message);
+        assert_eq!(
+            errors[0].kind,
+            Some(kind),
+            "{source}\n{}",
+            errors[0].message
+        );
+        assert_eq!(errors[0].span.start, source.rfind(at).unwrap(), "{source}");
+        errors.into_iter().next().unwrap()
+    };
+    only(
+        "let z: (([i64] * [string]) | ([string] * [i64])) = ([1], [\"a\"])\nlet same = z == empties ()\n",
+        "E1003",
+        "anonymous_union_not_member",
+        "empties ()",
+    );
+    only(
+        "let y: (([i64] * [i64]) | ([string] * [string])) = ([1], [2])\nlet same = y == empties ()\n",
+        "E1041",
+        "anonymous_union_ambiguous_member",
+        "empties ()",
+    );
+    let error = only(
+        "let o: (((i64 | f64) * (i64 | f64)) | ((i64 | f64) * string)) = read2 \"[1, 2.5]\"\n",
+        "E1025",
+        "anonymous_union_decode_overlap",
+        "read2",
+    );
+    assert!(
+        error.message.starts_with(
+            "no Decode instance for (i64 | f64): the members i64 and f64 both read a JSON number"
+        ),
+        "{}",
+        error.message
+    );
+    let error = only(
+        "let c: (((char | string) * (char | string)) | ((char | string) * f64)) = read2 \"[\\\"a\\\", \\\"b\\\"]\"\n",
+        "E1005",
+        "no_instance",
+        "read2",
+    );
+    assert!(
+        error.message.starts_with("no instance for Decode<char>"),
+        "{}",
+        error.message
+    );
+    only(
+        "let whole: Result<Cells, Json.Error> = Json.deserialize u8\"[1, 2]\"\n",
+        "E1025",
+        "anonymous_union_decode_overlap",
+        "Json.deserialize",
+    );
+}
