@@ -5610,30 +5610,21 @@ fn operand_source(operand: &str) -> (String, usize) {
 }
 
 /// The errors of `sources`, which compare `v` with an operand whose value is the smaller union
-/// `(i64 | string)`: `E1003` at the offset `at` (when given), and only `E1003` of that operand or
-/// the `E1005` of the comparison of anonymous unions, which have no `Eq` and `Ord` until A26 (a
-/// `match` keeps the union as its type when an arm's error is recovered).
+/// `(i64 | string)`: `E1003` at the offset `at` (when given), and only `E1003` of that operand.
+/// In A25 alone, the `E1005` of the comparison could follow (anonymous unions have no `Eq` and
+/// `Ord` there, and a `match` keeps the union as its type when an arm's error is recovered); with
+/// the built-in instances of A26, the comparison has no error of its own.
 fn operand_mismatch(sources: &[(&str, &str)], at: Option<usize>, label: &str) {
     let errors = analyze_modules_all(sources).expect_err(label).diagnostics;
     let mut mismatched = Vec::new();
     for error in errors.iter().filter(|error| error.code.starts_with('E')) {
-        if error.code == "E1003" {
-            assert_eq!(error.kind, Some("type_mismatch"), "{label}");
-            assert_eq!(
-                error.message, "expected (i64 | f64 | string), found (i64 | string)",
-                "{label}"
-            );
-            mismatched.push(error.span.start);
-        } else {
-            assert_eq!(error.code, "E1005", "{label}: {}", error.message);
-            assert!(
-                ["Eq", "Ord"].iter().any(|class| error
-                    .message
-                    .starts_with(&format!("no instance for {class}<(i64 | f64 | string)>"))),
-                "{label}: {}",
-                error.message
-            );
-        }
+        assert_eq!(error.code, "E1003", "{label}: {}", error.message);
+        assert_eq!(error.kind, Some("type_mismatch"), "{label}");
+        assert_eq!(
+            error.message, "expected (i64 | f64 | string), found (i64 | string)",
+            "{label}"
+        );
+        mismatched.push(error.span.start);
     }
     assert!(!mismatched.is_empty(), "{label}: {errors:?}");
     if let Some(at) = at {
@@ -5704,22 +5695,34 @@ fn operand_results_do_not_widen() {
     );
     assert_eq!(error.span.start, at);
     // A call or an annotated binding inside an operand still widens: these operands are the
-    // wider union, so the check reaches `Eq`, which anonymous unions do not have until A26.
-    for form in [
-        "(if flag 1 then wide w else v)",
-        "(match 1 with | 0 -> wide w | _ -> v)",
-        "{ let y: (f64 | i64 | string) = w; y }",
-        "(w |> wide)",
+    // wider union, so the check reaches `Eq`, which A26 gives anonymous unions (in A25 alone, it
+    // was the `E1005` of the missing instance). The first two forms then move `v` (`else v`,
+    // `_ -> v`) while the comparison borrows it as its left operand: `E1014` at that inner `v`
+    // (the comparison borrows its operands, and moving their owner meanwhile is `E1014`), and
+    // nothing else. With `x` there instead, every form is accepted.
+    for (form, conflict) in [
+        ("(if flag 1 then wide w else «v»)", true),
+        ("(match 1 with | 0 -> wide w | _ -> «v»)", true),
+        ("{ let y: (f64 | i64 | string) = w; y }", false),
+        ("(w |> wide)", false),
     ] {
-        let (source, _) = operand_source(&format!("v == {form}"));
-        let error = rejects(&source, "E1005", "no_instance");
-        assert!(
-            error
-                .message
-                .starts_with("no instance for Eq<(i64 | f64 | string)>"),
-            "{form}: {}",
-            error.message
-        );
+        let (source, at) = operand_source(&format!("v == {form}"));
+        let result = analyze_modules_all(&[("Main", &source)]);
+        if conflict {
+            let errors = result.expect_err(form).diagnostics;
+            let errors: Vec<_> = errors
+                .iter()
+                .filter(|error| error.code.starts_with('E'))
+                .collect();
+            assert_eq!(errors.len(), 1, "{form}: {errors:?}");
+            assert_eq!(errors[0].code, "E1014", "{form}: {}", errors[0].message);
+            assert_eq!(errors[0].span.start, at, "{form}");
+            let (source, _) = operand_source(&format!("v == {}", form.replace("«v»", "x")));
+            analyze_modules_all(&[("Main", &source)])
+                .unwrap_or_else(|error| panic!("{form} with x: {:?}", error.diagnostics));
+        } else {
+            result.unwrap_or_else(|error| panic!("{form}: {:?}", error.diagnostics));
+        }
     }
     // The same conversions in operands of type `i64` run; the values follow from `size` and
     // `make` by hand (`make 2` is 2, `make 0` is "neg" of length 3).
@@ -5745,9 +5748,13 @@ fn operand_checked_first_widens_by_itself() {
     // so an `if`, `match` or `select` there gives the type of its first branch, `v`'s
     // `(f64 | i64 | string)`, to the next one (D4), and `w` is widened as in
     // `let t = if c then v else w`. Both operands are then `(f64 | i64 | string)` (the number is
-    // injected into its member), and the only error is the comparison's: anonymous unions have
-    // no `Eq` and `Ord` until A26. When the operand checked first was recorded too, `w` was
-    // `E1003` in each of these.
+    // injected into its member). In A25 alone, the only error was the comparison's `E1005`
+    // (anonymous unions have no `Eq` and `Ord` there); A26 gives them both, so these programs
+    // have no error, and an unwidened `w` would be `E1003`. The exception is a `select` in the
+    // lambda: its arm `recv _ from a` makes the lambda, a reusable function, capture the channel
+    // `a`, which has `Drop` (`E1005`, `cannot capture Channel<i64> in a reusable function`);
+    // capturing `v` and `w` moves them into the environment, which each call copies. When the
+    // operand checked first was recorded too, `w` was `E1003` in each of these.
     let first = [
         "(if flag 1 then v else w)",
         "(match 1 with | 0 -> v | _ -> w)",
@@ -5757,41 +5764,45 @@ fn operand_checked_first_widens_by_itself() {
         // The inner `if` takes the outer `then` branch's type: both of its branches are widened.
         "(if flag 1 then v else (if flag 0 then u else w))",
     ];
+    let mut accepted = 0;
     for operator in ["==", "!=", "<", "<=", ">", ">="] {
-        let class = if matches!(operator, "==" | "!=") {
-            "Eq"
-        } else {
-            "Ord"
-        };
         for form in first {
-            for operands in [
-                format!("{form} {operator} x"),
-                format!("1 {operator} {form}"),
-                format!("-1 {operator} {form}"),
-                format!("1.5 {operator} {form}"),
+            for (operands, lambda) in [
+                (format!("{form} {operator} x"), false),
+                (format!("1 {operator} {form}"), false),
+                (format!("-1 {operator} {form}"), false),
+                (format!("1.5 {operator} {form}"), false),
                 // The parentheses keep a block operand from being the lambda's body.
-                format!("{{ let f = \\b -> ({form} {operator} b); f x }}"),
+                (
+                    format!("{{ let f = \\b -> ({form} {operator} b); f x }}"),
+                    true,
+                ),
             ] {
                 let (source, _) = operand_source(&operands);
-                let errors = analyze_modules_all(&[("Main", &source)])
-                    .expect_err(&operands)
-                    .diagnostics;
-                let errors: Vec<_> = errors
-                    .iter()
-                    .filter(|error| error.code.starts_with('E'))
-                    .collect();
-                assert_eq!(errors.len(), 1, "{operands}: {errors:?}");
-                assert_eq!(errors[0].code, "E1005", "{operands}");
-                assert!(
-                    errors[0]
-                        .message
-                        .starts_with(&format!("no instance for {class}<(i64 | f64 | string)>")),
-                    "{operands}: {}",
-                    errors[0].message
-                );
+                let result = analyze_modules_all(&[("Main", &source)]);
+                if lambda && form.starts_with("(select") {
+                    let errors = result.expect_err(&operands).diagnostics;
+                    let errors: Vec<_> = errors
+                        .iter()
+                        .filter(|error| error.code.starts_with('E'))
+                        .collect();
+                    assert_eq!(errors.len(), 1, "{operands}: {errors:?}");
+                    assert_eq!(errors[0].code, "E1005", "{operands}");
+                    assert!(
+                        errors[0]
+                            .message
+                            .starts_with("cannot capture Channel<i64> in a reusable function"),
+                        "{operands}: {}",
+                        errors[0].message
+                    );
+                } else {
+                    result.unwrap_or_else(|error| panic!("{operands}: {:?}", error.diagnostics));
+                    accepted += 1;
+                }
             }
         }
     }
+    assert_eq!(accepted, 6 * 6 * 5 - 6);
     // The operand checked second takes its sibling's type, which the `if` passes down, and the
     // `else` branch takes the `then` branch's: `E1003` at `w`, whether the sibling's type is
     // written, inferred later (`b`), or already the wider union.
@@ -7259,10 +7270,16 @@ fn arrows_in_annotations_do_not_hide_type_tests() {
 fn comparisons_take_injected_and_widened_operands() {
     // `(f64 | i64 | string)` is `(i64 | f64 | string)` in the canonical order: i64 0, f64 1,
     // string 2. Two values of one union are compared through `Eq` and `Ord`, which borrow both,
-    // so both stay usable. The right operand is injected when it is a member value; an operand
-    // that is itself a narrower union is not widened (`comparison_does_not_widen`), but the arms
-    // of an `if` operand are, and the widened value takes the position of its member in the
-    // wider union: `5` stays before every f64, `"abc"` comes after them.
+    // so both stay usable. The right operand is injected when it is a member value; the operand
+    // that takes its sibling's type is not widened when it is a narrower union, nor are the
+    // branches that are its value (`comparison_does_not_widen`, `operand_results_do_not_widen`).
+    // The operand checked first is checked by itself, so a later branch of an `if` there takes
+    // the type of the first one and is widened (`operand_checked_first_widens_by_itself`); the
+    // widened value takes the position of its member in the wider union: `5` stays before every
+    // f64, `"abc"` comes after them. `positive 0` is false, so each `if` below is its widened
+    // `else` branch: `"abc"` equals `v`, `5` equals the literal `5` (both i64), and `0.25`, an
+    // f64, is greater than every i64. An `if` makes a new value of its branches, so it moves
+    // each of them (`z` too), and each comparison has its own.
     passes(
         r#"def positive :: i64 -> bool = \n -> n > 0
 
@@ -7273,7 +7290,14 @@ test "compared" =
     assert (Display.display v + Display.display u == "abcabc")
     assert (v == "abc" && v != 1 && v > 1 && v > 2.5)
     let w: (i64 | string) = "abc"
-    assert (v == (if positive 1 then w else 0))
+    let z: (f64 | i64 | string) = 0.5
+    assert ((if positive 0 then z else w) == v)
+    let m: (i64 | string) = 5
+    let z2: (f64 | i64 | string) = 0.5
+    assert (5 == (if positive 0 then z2 else m))
+    let m2: (i64 | string) = 5
+    let z3: (f64 | i64 | string) = 0.5
+    assert (0.25 > (if positive 0 then z3 else m2))
     let n: (i64 | string) = 5
     let wide: (f64 | i64 | string) = n
     assert (wide == 5 && wide > 4 && wide < 0.5 && wide < "")
@@ -7283,9 +7307,28 @@ test "compared" =
 "#,
         Edition::E2027,
     );
+    // A branch of the operand that takes its sibling's type is not widened (A25): `E1003` at
+    // `w`, and nothing else, since the comparison has its `Eq` here.
+    let source = "def positive :: i64 -> bool = \\n -> n > 0\nlet v: (f64 | i64 | string) = \"abc\"\nlet w: (i64 | string) = \"abc\"\nlet same = v == (if positive 1 then w else 0)\n0\n";
+    let errors = analyze_modules_all(&[("Main", source)])
+        .expect_err(source)
+        .diagnostics;
+    let errors: Vec<_> = errors
+        .iter()
+        .filter(|error| error.code.starts_with('E'))
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].code, "E1003");
+    assert_eq!(errors[0].kind, Some("type_mismatch"));
+    assert_eq!(
+        errors[0].message,
+        "expected (i64 | f64 | string), found (i64 | string)"
+    );
+    assert_eq!(errors[0].span.start, source.find("w else").unwrap());
     // In one operand, the widened arm and the injected arm each keep their own help when the
-    // moved value is used again.
-    let both = "let v: (f64 | i64 | string) = \"abc\"\nlet w: (i64 | string) = \"abc\"\nlet s = \"abc\"\nlet same = v == (if v > 1 then w else s)\n";
+    // moved value is used again. The left operand is checked first: the outer `then` branch `u`
+    // gives its type to the inner `if`, which widens `w` and injects `s`.
+    let both = "let v: (f64 | i64 | string) = \"abc\"\nlet u: (f64 | i64 | string) = \"abc\"\nlet w: (i64 | string) = \"abc\"\nlet s = \"abc\"\nlet same = (if v > 1 then u else if v > 2 then w else s) == v\n";
     let error = rejects(&format!("{both}let t = w\n0\n"), "E1012", "use_after_move");
     assert_eq!(
         error.help.as_deref(),
