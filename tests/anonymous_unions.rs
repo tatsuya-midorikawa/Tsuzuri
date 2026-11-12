@@ -8521,3 +8521,122 @@ test "decoded" =
         "Json.deserialize",
     );
 }
+
+/// After the merge of A24's Copilot review 5 (through A25): A26's literal patterns sit beside type
+/// tests whose `as` name always binds the whole member, and beside witnesses that write a member
+/// type as the match's module names it. By hand:
+/// - `mix`: `1` and `"x"` match only the `i64` and `string` values that equal them (the literal is
+///   injected as in `v == 1`), so `4` reaches `:? i64 as Even` and `"yz"` reaches
+///   `:? string as Small`; each `as` name holds the whole member, never a recognizer or a case.
+///   The tuple member shows its string quoted (`("a", true)`), as a tuple does.
+/// - `same`: `Green` is the tuple member, compared by A26's `Eq` with `("a", true)`: equal for
+///   `("a", true)`, not for `(1, true)` (`i64` and `string` differ). `0` matches the literal;
+///   `101` is the `i64` member and greater than 100.
+/// - `key`: `None` and `Some` name the array and the `i64` member. The keys are `[]` (from the
+///   literal `7`), `[1, "b"]` twice (equal arrays hash alike), `[2]` and `["b", 1]`: 4 keys.
+/// - The witness of a match whose other column holds a literal pattern names the only missing
+///   member, `std::BigInt`, which the module's own `BigInt` hides: `(:? std::BigInt, _)`, and its
+///   arm is appended after the last arm's body. With the arm, `f (1, 1)` takes the first arm (1),
+///   `f (5, "x")` and `f (3, 7)` the second (6 and 4), `f (2, 1)` the first (2). Before the merge
+///   the witness read `(:? BigInt, _)`, and its arm was `E1041` (`Main.BigInt is not a member`).
+/// - A literal pattern on the union itself covers one value, so the witness stays `_`.
+/// - The diagnostics that A26 adds or reaches name types as `Type::display` does, like every
+///   diagnostic other than a witness: `Maybe<i64>` for `std::Maybe<i64>` where the module declares
+///   its own `Maybe` (`E1025` of `Decode`, and `E1005` of the literal pattern, since `Maybe` has no
+///   `Eq`).
+#[test]
+fn literal_patterns_beside_binders_and_scoped_witnesses() {
+    let binders = r#"union Color = Red | Green
+def (|Even|_|) :: i64 -> bool = \value -> value % 2 == 0
+def (|Small|Large|) :: i64 -> 'T = \value -> if value < 10 then Small else Large
+
+def mix :: own (i64 | string | ((i64 | string) * bool)) -> string = \v ->
+    match v with
+    | 1 -> "one"
+    | "x" -> "ex"
+    | :? ((i64 | string) * bool) as Red -> $"pair {Red}"
+    | :? i64 as Even -> $"int {Even}"
+    | :? string as Small -> $"str {Small}"
+    | _ -> "none"
+
+def same :: own (i64 | ((i64 | string) * bool)) -> bool = \v ->
+    match v with
+    | 0 -> false
+    | :? ((i64 | string) * bool) as Green -> Green == ("a", true)
+    | :? i64 as Large -> Large > 100
+    | _ -> false
+
+def key :: own (i64 | [(i64 | string)]) -> [(i64 | string)] = \v ->
+    match v with
+    | 7 -> []
+    | :? [(i64 | string)] as None -> None
+    | :? i64 as Some -> [Some]
+    | _ -> []
+
+test "binders" =
+    assert (mix 1 == "one")
+    assert (mix "x" == "ex")
+    assert (mix 4 == "int 4")
+    assert (mix "yz" == "str yz")
+    let p: ((i64 | string) * bool) = ("a", true)
+    assert (mix p == "pair (\"a\", true)")
+    let q: ((i64 | string) * bool) = (3, false)
+    assert (mix q == "pair (3, false)")
+    let r: ((i64 | string) * bool) = ("a", true)
+    assert (same r)
+    let s: ((i64 | string) * bool) = (1, true)
+    assert (not (same s))
+    assert (same 101)
+    assert (not (same 0))
+    let a: [(i64 | string)] = [1, "b"]
+    let b: [(i64 | string)] = [1, "b"]
+    let c: [(i64 | string)] = ["b", 1]
+    let a7: (i64 | [(i64 | string)]) = 7
+    let a2: (i64 | [(i64 | string)]) = 2
+    let keys: HashSet<[(i64 | string)]> = HashSet.empty() |> HashSet.insert (key a7) |> HashSet.insert (key a) |> HashSet.insert (key a2) |> HashSet.insert (key b) |> HashSet.insert (key c)
+    assert (HashSet.length keys == 4)
+    let one: [(i64 | string)] = [1, "b"]
+    assert (HashSet.contains one keys)
+"#;
+    passes(binders, Edition::E2026);
+    passes(binders, Edition::E2027);
+    let source = "record BigInt { n: i64 }\ndef f :: own ((i64 | std::BigInt) * (i64 | string)) -> i64 = \\v ->\n    match v with\n    | (:? i64 as n, 1) -> n\n    | (:? i64 as n, _) -> n + 1\n";
+    let fixed = fixed_in(&[("Main", source)], 0, "(:? std::BigInt, _)");
+    assert_eq!(
+        fixed,
+        source.replace("n + 1\n", "n + 1 | (:? std::BigInt, _) -> unreachable ()\n")
+    );
+    passes(
+        &format!(
+            "{fixed}\ntest \"fixed\" =\n    assert ((BigInt {{ n: 4 }}).n == 4)\n    assert (f (1, 1) == 1)\n    assert (f (5, \"x\") == 6)\n    assert (f (2, 1) == 2)\n    assert (f (3, 7) == 4)\n"
+        ),
+        Edition::E2026,
+    );
+    let error = rejects(
+        "record BigInt { n: i64 }\ndef f :: own (i64 | string | std::BigInt) -> i64 = \\v ->\n    match v with\n    | 1 -> 10\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n",
+        "E1021",
+        "non_exhaustive_match",
+    );
+    assert_eq!(error.message, "match is not exhaustive; missing: _");
+    let error = rejects(
+        "union Maybe = Nothing\ndef read :: own utf8string -> Result<(i64 | std::Maybe<i64>), Json.Error> = \\text -> Json.deserialize text\n0\n",
+        "E1025",
+        "anonymous_union_decode_overlap",
+    );
+    assert!(
+        error.message.starts_with(
+            "no Decode instance for (i64 | Maybe<i64>): the member Maybe<i64> is not limited to one kind of JSON value"
+        ),
+        "{}",
+        error.message
+    );
+    let error = rejects(
+        "union Maybe = Nothing\ndef f :: own (i64 | std::Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | 1 -> 10\n    | _ -> 0\n0\n",
+        "E1005",
+        "no_instance",
+    );
+    assert_eq!(
+        error.message,
+        "no instance for Eq<Maybe<i64>>; define an instance or use a supported type"
+    );
+}
