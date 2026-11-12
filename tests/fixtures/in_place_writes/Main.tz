@@ -1066,3 +1066,57 @@ fn exclusive_parts_in_drop_order =
     for how in 0 ..= 2 do
         total = total * 1000 + exclusive_parts how (ref out) * 100 + recorded (ref out)
     total
+
+// A31, review round 10. Assigning a whole value drops the old one after the new one is made: the
+// borrow of its own part that a callee kept in it is read by that drop, while the part is there,
+// and a write of another field does not conflict with it.
+record RecordedTriple { c: Recorder, s: string, n: i64 }
+
+def make_triple :: i64 -> ref Arc<Mutex<[i64]>> -> RecordedTriple
+fn make_triple k out = RecordedTriple { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out }, s: to_string 123456789, n: k }
+
+def keep_triple :: ref mut RecordedTriple -> i64
+fn keep_triple p =
+    let t = ref p.s
+    Mutex.with_lock (ref p.c.cell) (\b -> Array.write 0 (\() -> String.length t + 3) b)
+    1
+
+export def whole_replacement_in_drop_order :: i64
+fn whole_replacement_in_drop_order =
+    let out = Arc.new (Mutex.create [0])
+    let mut p = make_triple 1 (ref out)
+    let k = keep_triple (ref mut p)
+    p.n = 5
+    let before = recorded (ref out)
+    p = make_triple 7 (ref out)
+    let after = recorded (ref out)
+    (k * 100 + before) * 1000 + after * 10 + p.n
+
+// The block of an `Rc` holds one value, whose recorder field is dropped before its string field.
+def block_parts :: ref Arc<Mutex<[i64]>> -> i64
+fn block_parts out =
+    let rc = Rc.new (RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out }, s: to_string 123456789 })
+    let p = Rc.get (ref rc)
+    let t = ref p.s
+    Mutex.with_lock (ref p.c.cell) (\b -> Array.write 0 (\() -> String.length t + 4) b)
+    1
+
+export def shared_block_parts_in_drop_order :: i64
+fn shared_block_parts_in_drop_order =
+    let out = Arc.new (Mutex.create [0])
+    let k = block_parts (ref out)
+    k * 100 + recorded (ref out)
+
+// A function that passes its parameters on unchanged passes the caller's temporaries: the
+// recorder is made first, so it is dropped first, while the string is there.
+def keep_text :: ref Recorder -> ref string -> unit
+fn keep_text c s = Mutex.with_lock (ref c.cell) (\b -> Array.write 0 (\() -> String.length s + 5) b)
+
+def relay_two :: own (ref Recorder -> ref string -> unit) -> ref Recorder -> ref string -> unit
+fn relay_two f c s = f c s
+
+export def relayed_temporaries_in_drop_order :: i64
+fn relayed_temporaries_in_drop_order =
+    let out = Arc.new (Mutex.create [0])
+    relay_two keep_text (ref (Recorder { cell: Mutex.create [\() -> 0], out: Arc.share (ref out) })) (ref (to_string 123456789))
+    recorded (ref out)

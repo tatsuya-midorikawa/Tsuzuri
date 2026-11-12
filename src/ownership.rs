@@ -8395,7 +8395,8 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// A31: the place, as fields from what a reference parameter points at, of the borrow `loan`
     /// of a part of that target, kept in it (`StoreFacts::self_paths`): `None` for a parameter
     /// that is no reference; the whole target (`[]`) for a view (`ref mut [Pair..]`, whose caller
-    /// may pass a part of an array) or a borrow through a view; the fields up to a region slot.
+    /// may pass a part of an array), a reference to a reference, or a borrow through a view; the
+    /// fields up to a region slot.
     fn self_path(&self, loan: usize) -> Option<Vec<usize>> {
         let place = &self.loans[loan].place;
         let Some(Type::Reference(target, _)) = self
@@ -8405,7 +8406,9 @@ impl<'a, 'run> Checker<'a, 'run> {
         else {
             return None;
         };
-        if matches!(**target, Type::ArrayView(_)) || self.loans[loan].view.is_some() {
+        if matches!(**target, Type::ArrayView(_) | Type::Reference(..))
+            || self.loans[loan].view.is_some()
+        {
             return Some(Vec::new());
         }
         Some(
@@ -8418,23 +8421,85 @@ impl<'a, 'run> Checker<'a, 'run> {
         )
     }
 
+    /// A31: the type of the value at `place`: its root's (what a reference parameter points at,
+    /// for an external root), then each field, element or block of an `Rc` or `Arc` (which a
+    /// field of the place names directly) on the way; `None` when a step names no type (a payload
+    /// or a region slot) or the root has no declaration.
+    fn place_type(&self, place: &Place) -> Option<Type> {
+        let types = self.module.types();
+        let mut current = if self.external.contains(&place.root) {
+            match &self.declarations.get(&(usize::MAX - place.root))?.ty {
+                Type::Reference(target, _) => (**target).clone(),
+                ty => ty.clone(),
+            }
+        } else {
+            self.declarations.get(&place.root)?.ty.clone()
+        };
+        let unwrap = |mut ty: Type| {
+            while let Type::Shared(
+                inner,
+                crate::check::SharedKind::Rc | crate::check::SharedKind::Arc,
+            ) = ty
+            {
+                ty = *inner;
+            }
+            ty
+        };
+        for &field in &place.fields {
+            current = match unwrap(current) {
+                Type::Record(id, arguments) if field < types.records[id].fields.len() => {
+                    types.record_field(id, &arguments, field)
+                }
+                Type::Tuple(elements) if field < elements.len() => elements[field].clone(),
+                Type::Array(inner)
+                | Type::ArrayView(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _)
+                    if field == ELEMENT =>
+                {
+                    *inner
+                }
+                _ => return None,
+            };
+        }
+        Some(without_views(&unwrap(current)))
+    }
+
     /// A31: `value` with each loan replaced by shared borrows of the parts at `paths` of the place
-    /// that it borrows (`StoreFacts::self_paths`): what a callee kept of its reference argument in
-    /// the argument's value. A path `[]` is the place itself (a shared copy, `shared_copy`); a loan
-    /// through a view, a share or a place without its own fields is kept whole. One copy per loan
-    /// and path, so that the check of a loop settles.
-    fn path_copy(&mut self, value: &Value, paths: &BTreeSet<Vec<usize>>) -> Value {
+    /// that it borrows (`StoreFacts::self_paths`): what a callee kept of its reference argument,
+    /// which points at a `target`, in the argument's value. A path `[]` is the place itself (a
+    /// shared copy, `shared_copy`). A loan is extended only when its place is a `target`
+    /// (`place_type`), so that it is the value that the callee's parameter pointed at: a loan of
+    /// a larger value (the array whose element a callee passed on to the function value), one
+    /// held as contents, one through a view and a share are kept whole. One copy per loan and
+    /// path, so that the check of a loop settles.
+    fn path_copy(
+        &mut self,
+        value: &Value,
+        paths: &BTreeSet<Vec<usize>>,
+        target: Option<&Type>,
+    ) -> Value {
         let whole = BTreeSet::from([Vec::new()]);
-        let paths = if paths.is_empty() { &whole } else { paths };
         let mut copied = Value {
             closed_result: value.closed_result,
             ..Value::default()
         };
         for &loan in &value.loans {
             let through = value.through.contains(&loan);
-            let plain = self.loans[loan].view.is_none() && !self.loans[loan].share;
+            let plain = !through
+                && self.loans[loan].view.is_none()
+                && !self.loans[loan].share
+                && target.is_some_and(|target| {
+                    self.place_type(&self.loans[loan].place).as_ref() == Some(target)
+                });
+            let paths = if !plain || paths.is_empty() {
+                &whole
+            } else {
+                paths
+            };
             for path in paths {
-                let held = if path.is_empty() || !plain {
+                let held = if path.is_empty() {
                     let single = Value {
                         loans: BTreeSet::from([loan]),
                         ..Value::default()
@@ -8653,20 +8718,29 @@ impl<'a, 'run> Checker<'a, 'run> {
             };
             let whole = BTreeSet::from([Vec::new()]);
             let paths = stores.self_paths.get(&from).unwrap_or(&whole);
+            // What the callee's parameter points at, whose parts the paths name.
+            let pointed = match self.module.functions[id]
+                .parameters
+                .get(from)
+                .map(|p| &p.ty)
+            {
+                Some(Type::Reference(target, _)) => Some(without_views(target)),
+                _ => None,
+            };
             let mut kept_self = None;
             // A fresh exclusive borrow passed where the callee stores only shared borrows of
             // what it points at leaves a shared borrow of the same place.
             if stores.shared_only.contains(&entry) && (Self::fresh_exclusive(source) || self_shared)
             {
                 stored = if self_shared {
-                    self.path_copy(&stored, paths)
+                    self.path_copy(&stored, paths, pointed.as_ref())
                 } else {
                     self.shared_copy(&stored)
                 };
             } else if self_shared {
-                kept_self = Some(self.path_copy(&stored, paths));
+                kept_self = Some(self.path_copy(&stored, paths, pointed.as_ref()));
             } else if reference == Some(false) {
-                stored = self.path_copy(&stored, paths);
+                stored = self.path_copy(&stored, paths, pointed.as_ref());
             }
             // A borrow of a part of the argument's place kept in that place, in the drop order of
             // its parts (`StoreFacts::ordered`).
@@ -9470,7 +9544,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             } else {
                 continue;
             };
-            let mut kept = self.path_copy(&value, paths);
+            let mut kept = self.path_copy(&value, paths, Some(referent));
             // Every function that does so keeps the drop order of the value's parts.
             if ordered {
                 kept = self.ordered_copy(&kept);
