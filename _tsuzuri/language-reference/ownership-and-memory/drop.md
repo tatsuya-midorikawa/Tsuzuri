@@ -131,6 +131,26 @@ inner drop
 
 `Outer` の `drop` が呼ばれた後に、フィールドである `Inner` の `drop` が呼ばれていることがわかります。
 
+宣言の逆順で解放されるので、先に宣言した変数は、後に宣言した変数より後に解放されます。そのため、借用を読みうる `drop` を実行する値（借用を持ちうる利用者の `Drop` 型の値と、それを持つ配列・`Vec`・`Mutex`・`Rc`・`Arc`・レコード、それを環境に持ちうる関数値など。弱参照の先は数えません）は、同じブロックで後に宣言した変数の借用を持てません。持つと、`drop` が先に解放された変数を読みうるので、ブロックの終わりで `E1013`（`'holder' keeps a borrow of a value that is dropped before it, and dropping 'holder' may run a Drop.drop that uses the borrow`）です。借用をどう得たか（代入、`Array.write`・`Array.set`・`Vec.push_mut` などのその場の書き込み、ロックのコールバック、セルを所有するレジストリの呼び出し、値をムーブして渡した関数による書き込み）は問いません。借用される変数を先に宣言します。そうした値の借用は、後の文で値を使わなくても、`drop` が使うのでスコープの終わりまで生きます。
+
+- **一部の経路でだけムーブした値**: `if`・`match` の片方の枝やループの中でだけムーブした値は、ムーブしなかった経路ではスコープの終わりで解放されるので、ムーブしていない値と同じく検査し、借用もスコープの終わりまで生かします。すべての経路でムーブした値だけが、ここでは解放されません。
+- **`break`・`continue`・例外での脱出**: `break`・`continue` や、`try` が受け止める例外は、抜けるスコープの変数をその場で宣言の逆順に解放するので、その位置でも同じ検査をします（`E1013` はその `break` などを指します）。脱出の後で変数に借用を持たない値を代入しても、脱出した経路の解放は変わりません。
+- **借用を持てない `Drop` 型**: `Drop.drop` が受け取るのは自分の値だけなので、参照・関数値・dyn 値・`Owned.Function` などの借用を持ちうる値を（フィールド・要素・セル・`Rc` や弱参照の先のどこにも）格納しない `Drop` 型（`record Guard { id: i64 }`）の `drop` は、隣のフィールドの借用を読めません。`record Ctx { guard: Guard, label: ref string }` の値は `label` の借用を `drop` で読まない値として扱い、借用される変数を後に宣言しても、値を使い終えた後で変更しても構いません。
+
+```text
+record Caller { f: unit -> i64 }
+instance Drop<Caller> {
+    fn drop c = do! IO.write_line ("drop " + to_string (c.f ()))
+}
+def run :: i64 -> i64
+fn run n =
+    let mut holder = Caller { f: \() -> 0 }   // E1013: holder は text0 より後に解放される
+    let text0 = to_string n
+    let t = ref text0
+    holder = Caller { f: \() -> String.length t }
+    0
+```
+
 ## use 束縛による解放保証
 
 `use` キーワードは、`Drop` を実装した値を不変で束縛する専用構文です。
@@ -224,6 +244,24 @@ after
       let _s = Stash { cell: a, f: \() -> String.length borrowed }   // E1013
       r
   ```
+
+  `drop` の本体が、値の中の関数値を呼んで値の中身を渡し、その関数値が書き込むセルを自分で所有する（`Arc<Mutex<...>>` を値で捕捉したラムダのコピー）ときは、セルを共有するほかのコピーは借用を持たないので、上の「値の中のセル」では足りません。そこで、そうした関数値を作るプログラムでは、値を束縛する・代入で捨てる・一時値として評価する所と、束縛の後で値のセルへ書き込んだ所で、値が持つ借用を、そうした関数値を持ちうる型か共有セルに届く型のすべての局所値へ書き込んだものとして検査します（[現在の制限](lifetimes.md#現在の制限) の、セルを所有する関数値の呼び出しと同じ規則）。値そのものの借用を渡す `drop` は、束縛した局所値の借用を同じように書き込み、一時値や関数へ値で渡す値は `E1013`（`cannot drop this value here: its Drop.drop hands a borrow of the dropped value to a function value ...`）です。値の出どころから、そうした関数値もセルも持ちえないと分かる値（捕捉の無いラムダだけを持つレコードなど）は対象外です。次の `run` は、`text0` の借用を持つ `Stash` を、レジストリ `reg` のコピーと一緒に持ちます。`_s` の解放は借用を `reg` のセルへ残し、`reg` の後の呼び出しがそれを読むので、`text0` を宣言したブロックの位置で `E1013`（`assignment lets a reference outlive its owner`）です。
+
+  ```text
+  record Stash { f: unit -> i64, out: (unit -> i64) -> i64 }
+  instance Drop<Stash> {
+      fn drop s = { let o = s.out; let _k = o s.f; () }
+  }
+  def run :: i64 -> i64
+  fn run n =
+      let reg = make_registry ()   // Arc<Mutex<...>> を値で捕捉したラムダを返す
+      { let text0 = to_string n; let t = ref text0; let _s = Stash { f: \() -> String.length t, out: reg }; () }   // E1013
+      reg (\() -> 1)
+  ```
+
+  `drop` の中で `Arc.share (ref s.out)` などで作った共有はブロックの所有者で、破棄する値そのものの借用ではありません。それを通して値の中身を別のセルへ移す `drop`（`s.inbox` の要素を `s.out` のセルへ移すもの）は、値そのものの借用を書き込む `drop` には数えません。
+
+  `Rc.share`・`Arc.share` で作った共有を破棄すると、最後の所有者ならブロックの値の `drop` を実行します。そのときに渡るのはブロックが持つ借用で、元の `Rc` の借用ではないので、元の `Rc` を内側のブロックで宣言しても、レジストリが外側にあることは誤りになりません（ブロックの値が持つ借用がレジストリより長く生きる必要はあります）。弱参照（`Rc.downgrade` の結果）の破棄はブロックの値の `drop` を実行しないので、何も渡しません。
 
 ## トラップ時の挙動
 

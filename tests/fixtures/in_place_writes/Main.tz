@@ -576,3 +576,268 @@ fn functions_beside_a_named_function =
     let a = adders[0] 0
     let moved = text
     a + moved.length + base 0 + (notifier (registry ())) 1
+
+// Review round 4. The drop of an InboxStash moves the function that its inbox holds into the block
+// that its out shares with `a`: a share of a block of the dropped value is no borrow of it.
+record InboxStash { inbox: Arc<Mutex<[unit -> i64]>>, out: Arc<Mutex<[unit -> i64]>> }
+
+instance Drop<InboxStash> {
+    fn drop s = { let out = Arc.share (ref s.out); Mutex.with_lock (Arc.get (ref s.inbox)) (\src -> { let g = src[0]; Mutex.with_lock (Arc.get (ref out)) (\dst -> Array.write 0 g dst) }) }
+}
+
+export def drop_moves_its_inbox_through_a_share :: i64
+fn drop_moves_its_inbox_through_a_share =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    let text0 = to_string 123456789
+    { let t = ref text0; let s = InboxStash { inbox: Arc.new (Mutex.create [\() -> 0]), out: Arc.share (ref a) }; Mutex.with_lock (Arc.get (ref s.inbox)) (\slot -> Array.write 0 (\() -> String.length t) slot); () }
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ())
+
+// The same move written in a helper that the drop calls.
+record TransferStash { inbox: Arc<Mutex<[unit -> i64]>>, out: Arc<Mutex<[unit -> i64]>> }
+
+def transfer :: ref Arc<Mutex<[unit -> i64]>> -> ref Arc<Mutex<[unit -> i64]>> -> unit
+fn transfer src dst = Mutex.with_lock (Arc.get src) (\a -> { let g = a[0]; Mutex.with_lock (Arc.get dst) (\b -> Array.write 0 g b) })
+
+instance Drop<TransferStash> {
+    fn drop s = transfer (ref s.inbox) (ref s.out)
+}
+
+export def drop_moves_its_inbox_in_a_helper :: i64
+fn drop_moves_its_inbox_in_a_helper =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    let text0 = to_string 123456789
+    { let t = ref text0; let s = TransferStash { inbox: Arc.new (Mutex.create [\() -> 0]), out: Arc.share (ref a) }; Mutex.with_lock (Arc.get (ref s.inbox)) (\slot -> Array.write 0 (\() -> String.length t) slot); () }
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ())
+
+// A drop that shares its inbox (an Rc) and its out, then writes an owned function into the out.
+record RcStash { inbox: Rc<[unit -> i64]>, out: Arc<Mutex<[unit -> i64]>> }
+
+instance Drop<RcStash> {
+    fn drop s = { let _keep = Rc.share (ref s.inbox); let out = Arc.share (ref s.out); Mutex.with_lock (Arc.get (ref out)) (\dst -> Array.write 0 (\() -> 5) dst) }
+}
+
+export def drop_shares_its_rc_and_writes_the_out :: i64
+fn drop_shares_its_rc_and_writes_the_out =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    { let _s = RcStash { inbox: Rc.new [\() -> 1], out: Arc.share (ref a) }; () }
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ())
+
+// A handler read from an Rc that holds a capture-less lambda shares no cell with the registry.
+export def handler_read_from_an_rc :: i64
+fn handler_read_from_an_rc =
+    let reg = registry ()
+    let r = Rc.new (\f -> f () + 1)
+    let h = deref (Rc.get (ref r))
+    let text = to_string 12345
+    let first = { let t = ref text; h (\() -> String.length t) }
+    let moved = text
+    first + moved.length + reg (\() -> 3) + reg (\() -> 1)
+
+// Review round 5. A handler taken out of an Rc by Rc.try_unwrap and a match, and handlers taken
+// out of a Maybe and a tuple by patterns, hold what the matched values hold: no owner of a cell.
+export def handlers_taken_out_by_patterns :: i64
+fn handlers_taken_out_by_patterns =
+    let reg = registry ()
+    let r = Rc.new (\f -> f () + 1)
+    let h = match Rc.try_unwrap r with | Result.Ok v -> v | Result.Error _ -> \_f -> 0
+    let m = Maybe.Some (\f -> f () * 2)
+    let g = match m with | Maybe.Some x -> x | Maybe.None -> \_f -> 0
+    let p = (\f -> f () * 3, 2)
+    let k = match p with | (y, _) -> y
+    let text = to_string 12345
+    let first = { let t = ref text; h (\() -> String.length t) + g (\() -> String.length t) + k (\() -> String.length t) }
+    let moved = text
+    first + moved.length + reg (\() -> 3)
+
+// Review round 6. A share of a callee's local block in the caller's array takes what the callee
+// writes into the block's cell afterwards: a function that reads the caller's string, which
+// outlives the array, and an owned function.
+def put_shared_then_write :: ref string -> ref mut [Arc<Mutex<[unit -> i64]>>..] -> unit
+fn put_shared_then_write text slot =
+    let lr = Arc.new (Mutex.create [\() -> 0])
+    Array.write 0 (Arc.share (ref lr)) slot
+    Mutex.with_lock (Arc.get (ref lr)) (\cell -> Array.write 0 (\() -> String.length text) cell)
+
+def put_shared_then_owned :: ref mut [Rc<Mutex<[unit -> i64]>>..] -> unit
+fn put_shared_then_owned slot =
+    let lr = Rc.new (Mutex.create [\() -> 0])
+    Array.write 0 (Rc.share (ref lr)) slot
+    Mutex.with_lock (Rc.get (ref lr)) (\cell -> Array.write 0 (\() -> 5) cell)
+
+export def shared_cell_written_after_the_share :: i64
+fn shared_cell_written_after_the_share =
+    let text0 = to_string 123456789
+    let mut arr = [Arc.new (Mutex.create [\() -> 0])]
+    put_shared_then_write (ref text0) (ref mut arr)
+    let mut brr = [Rc.new (Mutex.create [\() -> 0])]
+    put_shared_then_owned (ref mut brr)
+    Mutex.with_lock (Arc.get (ref arr[0])) (\cell -> cell[0] ()) * 10 + Mutex.with_lock (Rc.get (ref brr[0])) (\cell -> cell[0] ())
+
+// A dropped share and a dropped weak pointer of an Rc hand the registry what the block holds, not
+// a borrow of the Rc, which the inner block declares: the registry outlives it.
+def swap_registry :: unit -> ((unit -> i64) -> i64)
+fn swap_registry _ =
+    let cell = Arc.new (Mutex.create [\() -> 0])
+    \f -> Mutex.with_lock (Arc.get (ref cell)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () })
+
+record ShareStash { f: unit -> i64, out: (unit -> i64) -> i64 }
+
+instance Drop<ShareStash> {
+    fn drop s = { let o = s.out; let _k = o s.f; () }
+}
+
+export def dropped_share_hands_the_block :: i64
+fn dropped_share_hands_the_block =
+    let text0 = to_string 123456789
+    let t = ref text0
+    let reg = swap_registry ()
+    { let r = Rc.new (ShareStash { f: \() -> String.length t, out: reg }); let _r2 = Rc.share (ref r); let _w = Rc.downgrade (ref r); () }
+    reg (\() -> 1)
+
+// A lambda whose parameter is annotated, and one that destructures a tuple, call what their callers
+// pass (functions that store nothing), in a module with a writer of that function type.
+export def pattern_parameters_call_what_they_get :: i64
+fn pattern_parameters_call_what_they_get =
+    let m = Mutex.create [\() -> 0]
+    let mr = ref m
+    let put = \f -> Mutex.with_lock mr (\slot -> Array.write 0 f slot)
+    put (\() -> 2)
+    let lk = \(use: (unit -> i64) -> unit) -> { let s = to_string 123456789; let b = ref s; use (\() -> String.length b); 10 }
+    let lt = \(use, z) -> { let s = to_string 12345; let b = ref s; use (\() -> String.length b); z }
+    let k = lk (\f -> { let _x = f (); () }) + lt ((\f -> { let _x = f (); () }), 20)
+    k + Mutex.with_lock (ref m) (\slot -> slot[0] ())
+
+// A borrow of a pattern variable that views the caller's data, written into the caller's array.
+def put_view :: ref Maybe<string> -> ref mut [(unit -> i64)..] -> unit
+fn put_view m slot = match m with | Maybe.Some s -> { let sr = ref s; Array.write 0 (\() -> String.length sr) slot } | Maybe.None -> ()
+
+record NamedView { name: string, k: i64 }
+
+def put_field_view :: ref NamedView -> ref mut [(unit -> i64)..] -> unit
+fn put_field_view r slot = match r with | NamedView { name: s, k: _ } -> { let sr = ref s; Array.write 1 (\() -> String.length sr) slot }
+
+export def views_of_the_callers_data :: i64
+fn views_of_the_callers_data =
+    let v0 = Maybe.Some (to_string 123456789)
+    let r0 = NamedView { name: to_string 12345, k: 1 }
+    let mut arr = [\() -> 0, \() -> 0]
+    put_view (ref v0) (ref mut arr)
+    put_field_view (ref r0) (ref mut arr)
+    arr[0] () * 100 + arr[1] ()
+
+// A value whose drop runs code holds a share of a block whose owner moves away, and another is
+// declared after the string that it borrows, so it is dropped first.
+record CellReader { cell: Arc<Mutex<[unit -> i64]>> }
+
+instance Drop<CellReader> {
+    fn drop r = { let _k = Mutex.with_lock (Arc.get (ref r.cell)) (\slot -> slot[0] ()); () }
+}
+
+def take_cell :: own Arc<Mutex<[unit -> i64]>> -> i64
+fn take_cell a = Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ())
+
+export def drop_runner_after_its_borrows :: i64
+fn drop_runner_after_its_borrows =
+    let a = Arc.new (Mutex.create [\() -> 3])
+    let reader = CellReader { cell: Arc.share (ref a) }
+    let k = take_cell a
+    let text0 = to_string 12345
+    let t = ref text0
+    let later = CellReader { cell: Arc.new (Mutex.create [\() -> String.length t]) }
+    k + Mutex.with_lock (Arc.get (ref later.cell)) (\slot -> slot[0] ())
+
+// Review round 7. A borrow of one field of what a `ref mut` parameter points at, written into the
+// caller's array: the body then writes another field, and the caller reads the value.
+record Counted { name: string, count: i64 }
+
+def put_name_then_count :: ref mut Counted -> ref mut [(unit -> i64)..] -> unit
+fn put_name_then_count r slot =
+    let sr = ref r.name
+    Array.write 0 (\() -> String.length sr) slot
+    r.count = r.count + 5
+
+export def disjoint_field_after_a_stored_borrow :: i64
+fn disjoint_field_after_a_stored_borrow =
+    let mut v0 = Counted { name: to_string 123456789, count: 3 }
+    let mut arr = [\() -> 0]
+    put_name_then_count (ref mut v0) (ref mut arr)
+    arr[0] () * 100 + v0.count
+
+// A borrow of what a `ref mut` parameter points at, handed to a function-valued parameter that
+// only calls it, and then elements pushed through the parameter, directly and through a function
+// that passes both on.
+def hand_then_push :: ref mut Vec<string> -> ((unit -> i64) -> i64) -> i64
+fn hand_then_push v use =
+    let sr = ref v[0]
+    let k = use (\() -> String.length sr)
+    let mut i = 0
+    while i < 20 do {
+        Vec.push_mut (to_string i) v
+        i = i + 1
+    }
+    k
+
+def hand_then_push_relay :: ref mut Vec<string> -> ((unit -> i64) -> i64) -> i64
+fn hand_then_push_relay v use = hand_then_push v use
+
+export def handed_borrow_called_then_pushed :: i64
+fn handed_borrow_called_then_pushed =
+    let mut v0: Vec<string> = Vec.empty()
+    Vec.push_mut (to_string 123456789) (ref mut v0)
+    let a = hand_then_push (ref mut v0) (\g -> g ())
+    let b = hand_then_push_relay (ref mut v0) (\g -> g () * 2)
+    a * 1000 + b * 10 + Vec.length (ref v0) / 10
+
+// A value whose drop runs code beside a borrow that its drop cannot reach: the guard's drop reads
+// only its number, so the borrowed string may be replaced after the record's last use, and
+// declared after the record.
+record Guarded { id: i64 }
+
+instance Drop<Guarded> {
+    fn drop g = { let _k = g.id; () }
+}
+
+record GuardedLabel { guard: Guarded, label: ref string }
+
+export def drop_beside_a_borrow_it_cannot_read :: i64
+fn drop_beside_a_borrow_it_cannot_read =
+    let mut text = to_string 123456789
+    let c = GuardedLabel { guard: Guarded { id: 1 }, label: ref text }
+    let len = String.length c.label
+    text = to_string 5
+    let first = to_string 12
+    let mut d = GuardedLabel { guard: Guarded { id: 2 }, label: ref first }
+    let later = to_string 1234
+    d = GuardedLabel { guard: Guarded { id: 3 }, label: ref later }
+    len * 100 + String.length (ref text) * 10 + String.length d.label
+
+// A value whose drop runs code, moved on one path and given a value without a borrow afterwards;
+// and one that a loop drops at a break, declared after the string that it borrows.
+record Reading { f: unit -> i64 }
+
+instance Drop<Reading> {
+    fn drop r = { let _k = r.f (); () }
+}
+
+def read_once :: own Reading -> i64
+fn read_once r = r.f ()
+
+export def drop_runners_moved_on_one_path_or_left_at_a_break :: i64
+fn drop_runners_moved_on_one_path_or_left_at_a_break =
+    let mut holder = Reading { f: \() -> 0 }
+    let text0 = to_string 123456789
+    let t = ref text0
+    holder = Reading { f: \() -> String.length t }
+    let k = if String.length t > 5 then read_once holder else 0
+    holder = Reading { f: \() -> 3 }
+    let mut i = 0
+    let mut seen = 0
+    while i < 3 do
+        let text1 = to_string 12345
+        let t1 = ref text1
+        let mut inner = Reading { f: \() -> String.length t1 }
+        seen = seen + inner.f ()
+        if i == 1 then break else ()
+        inner = Reading { f: \() -> 1 }
+        i = i + 1
+    k * 1000 + seen * 10 + holder.f ()
