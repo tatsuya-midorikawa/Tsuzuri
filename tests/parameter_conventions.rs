@@ -1556,6 +1556,191 @@ fn patterns_that_bind_a_moved_value_twice_name_no_hidden_parameter() {
     );
 }
 
+#[test]
+fn function_clauses_after_a_moving_pattern_are_named_as_the_second_use() {
+    // Review 4 of A32: function clauses after the arrow (`\(s: string) -> | t -> …`) match the
+    // parameter itself again, after its pattern moved a value that is not Copy. The `E1012` points
+    // at the clauses and says so; it does not blame an `as` or `&` pattern that the program does
+    // not have. The annotated `ref mut` spellings are new with A32 (`E1003` before); the others
+    // named the hidden parameter `$lambdaN` before.
+    let message = "use of moved or partially moved value: these clauses match the parameter again \
+                   after its pattern moved the value";
+    let help = "a value that is not Copy, such as an owned value or a 'ref mut' reference, moves \
+                into the names of the parameter's pattern, so the clauses after '->' cannot match \
+                the parameter again; match those names with 'match' in the body instead, or write \
+                clauses that only test conditions on them, as in '| x > 0 -> …'";
+    let bump = "def bump :: mut Counter -> i64 = \\c -> c.count";
+    // Each program, the marker that ends right before its pattern, the marker that ends right
+    // before its first clause, and whether the pattern moved only parts of the value (the note
+    // then points at the part that moved last).
+    for (source, pattern, clauses, parts) in [
+        (
+            program(&[
+                "def classify :: own string -> i64 = \\(s: string) ->",
+                "    | t when t.length > 3 -> 1",
+                "    | _ -> 0",
+            ]),
+            "= \\",
+            "->\n    ",
+            false,
+        ),
+        (
+            program(&[
+                COUNTER,
+                "def bump :: mut Counter -> i64 = \\(c: ref mut Counter) ->",
+                "    | d -> { d.count = d.count + 1; d.count }",
+            ]),
+            "= \\",
+            "->\n    ",
+            false,
+        ),
+        (
+            chooser(
+                &[COUNTER, bump],
+                &[
+                    "    let chosen = if n > 100 then bump else \\(c: ref mut Counter) ->",
+                    "        | d -> { d.count = d.count + 1; d.count }",
+                    "    let mut c = Counter { count: n }",
+                    "    chosen c",
+                ],
+            ),
+            "else \\",
+            "->\n        ",
+            false,
+        ),
+        (
+            program(&[
+                COUNTER,
+                "def bump :: ref mut Counter -> i64 = \\(c: ref mut Counter) ->",
+                "    | d -> { d.count = d.count + 1; d.count }",
+            ]),
+            "= \\",
+            "->\n    ",
+            false,
+        ),
+        (
+            program(&[
+                "export def answer :: i64 =",
+                "    let f = \\(s: string) ->",
+                "        | t when t.length > 3 -> 1",
+                "        | _ -> 0",
+                "    f (to_string 12345)",
+            ]),
+            "let f = \\",
+            "->\n        ",
+            false,
+        ),
+        (
+            program(&[
+                "def classify :: i64 -> own string -> i64 = \\n (s: string) ->",
+                "    | (0, t) when t.length > 3 -> 1",
+                "    | _ -> n",
+            ]),
+            "\\n ",
+            "->\n    ",
+            false,
+        ),
+        (
+            program(&[
+                "def classify :: own (string * string) -> i64 = \\((a, b): (string * string)) ->",
+                "    | (x, y) -> x.length + y.length + a.length",
+            ]),
+            "\\((a, ",
+            "->\n    ",
+            true,
+        ),
+        (
+            program(&[
+                "def classify :: own string -> i64 = \\mut (s: string) ->",
+                "    | t when t.length > 3 -> 1",
+                "    | _ -> 0",
+            ]),
+            "= \\mut ",
+            "->\n    ",
+            false,
+        ),
+    ] {
+        let error = check("2027", &source).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str(), error.help.as_deref()),
+            ("E1012", message, Some(help)),
+            "{source}"
+        );
+        assert_eq!(
+            error.span.start,
+            pattern_offset(&source, clauses),
+            "{source}"
+        );
+        assert_eq!(
+            error
+                .related
+                .iter()
+                .map(|related| (related.message.as_str(), related.span.start))
+                .collect::<Vec<_>>(),
+            [(
+                if parts {
+                    "part of the value moved here"
+                } else {
+                    "value moved here"
+                },
+                pattern_offset(&source, pattern)
+            )],
+            "{source}"
+        );
+    }
+    // A pattern that binds the value twice is still reported as such, before the clauses.
+    let twice = program(&[
+        "def classify :: own string -> i64 = \\((s as t): string) ->",
+        "    | u when u.length > 3 -> 1",
+        "    | _ -> 0",
+    ]);
+    let error = check("2027", &twice).unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str(), error.span.start),
+        (
+            "E1012",
+            "use of moved or partially moved value: this parameter's pattern binds the value, or a \
+             part of it, to more than one name",
+            pattern_offset(&twice, "= \\")
+        ),
+        "{twice}"
+    );
+    // The ways out that the help names are accepted: a `match` on the pattern's names in the body,
+    // and clauses that only test conditions (with the annotated `ref mut` of A32 too).
+    for source in [
+        program(&[
+            "def classify :: own string -> i64 = \\(s: string) ->",
+            "    match s with",
+            "    | t when t.length > 3 -> 1",
+            "    | _ -> 0",
+        ]),
+        program(&[
+            "def classify :: own string -> i64 = \\(s: string) ->",
+            "    | s.length > 3 -> 1",
+            "    | otherwise -> 0",
+        ]),
+        program(&[
+            "def classify :: own string -> i64 = \\(s: string) ->",
+            "    | _ when s.length > 3 -> 1",
+            "    | _ -> 0",
+        ]),
+        program(&[
+            COUNTER,
+            "def bump :: mut Counter -> i64 = \\(c: ref mut Counter) ->",
+            "    match c with",
+            "    | d -> { d.count = d.count + 1; d.count }",
+        ]),
+        program(&[
+            COUNTER,
+            "def bump :: mut Counter -> i64 = \\(c: ref mut Counter) ->",
+            "    | c.count > 3 -> { c.count = c.count + 1; c.count }",
+            "    | otherwise -> 0",
+        ]),
+    ] {
+        check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    }
+}
+
 /// The offset of the pattern that follows `marker` in `source` (the `(` after the `\` or space
 /// that `marker` ends with).
 fn pattern_offset(source: &str, marker: &str) -> usize {

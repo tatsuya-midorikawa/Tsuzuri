@@ -497,7 +497,10 @@ impl<'a> Checker<'a, '_> {
         during: &BTreeSet<usize>,
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        let temporary = self.alias_source(subject, matched, during)?;
+        let outer = self.matched_by.replace(span);
+        let temporary = self.alias_source(subject, matched, during);
+        self.matched_by = outer;
+        let temporary = temporary?;
         let mut pending = self.state.clone();
         let mut pending_reachable = self.reachable;
         let mut exits: Option<State<'a>> = None;

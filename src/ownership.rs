@@ -665,6 +665,7 @@ fn start_checker<'a, 'run>(
         shared_copies: BTreeMap::new(),
         parameter_paths: std::cell::RefCell::new(BTreeMap::new()),
         parameter_path_steps: std::cell::Cell::new(0),
+        matched_by: None,
     };
     if !infer && facts.seeded {
         known_functions(
@@ -4334,16 +4335,30 @@ fn error(kind: DiagnosticKind, message: impl Into<String>, span: Span) -> Diagno
 }
 
 /// The `E1012` for a use of the local `name` after its value (`whole`) or a part of it moved.
-/// A name that the compiler generated (`$…`) is not shown, since nobody can write it. The hidden
-/// parameter that a lambda, or a `def` through it, gets for a pattern (`$lambda12` for
-/// `\((c as d): ref mut Counter) -> …`) is used only by that pattern, so a second use is the
-/// pattern binding a value that is not Copy to a second name (`as`, `&`).
+/// A name that the compiler generated (`$…`) is not shown, since nobody can write it.
+///
+/// The hidden parameter that a lambda, or a `def` through it, gets for a pattern (`$lambda12` for
+/// `\((c as d): ref mut Counter) -> …`) cannot be named in the body. Only two things use it: the
+/// pattern, and the function clauses that may follow the arrow (`\(s: string) -> | t -> …`), which
+/// match the parameter itself again (`guarded_definition`). `rematched` is the span of those
+/// clauses when the moved value is read as their subject; the error then points at them. Any other
+/// second use is the pattern binding a value that is not Copy to a second name (`as`, `&`).
 #[cold]
 #[inline(never)]
-fn use_after_move(name: &str, whole: bool, span: Span) -> Diagnostic {
+fn use_after_move(name: &str, whole: bool, span: Span, rematched: Option<Span>) -> Diagnostic {
     let pattern_parameter = name
         .strip_prefix("$lambda")
         .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()));
+    if pattern_parameter && let Some(clauses) = rematched {
+        return Diagnostic::of(
+            DiagnosticKind::UseAfterMove,
+            "use of moved or partially moved value: these clauses match the parameter again after its pattern moved the value",
+            clauses,
+        )
+        .with_help(
+            "a value that is not Copy, such as an owned value or a 'ref mut' reference, moves into the names of the parameter's pattern, so the clauses after '->' cannot match the parameter again; match those names with 'match' in the body instead, or write clauses that only test conditions on them, as in '| x > 0 -> …'",
+        );
+    }
     let (message, help) = if !name.starts_with('$') {
         (
             format!("use of moved or partially moved value '{name}'"),
@@ -4628,6 +4643,10 @@ struct Checker<'a, 'run> {
     parameter_paths: std::cell::RefCell<BTreeMap<usize, (Option<ParameterPath>, usize)>>,
     /// A31: the steps that `parameter_path_at` took, for the test of its cost.
     parameter_path_steps: std::cell::Cell<usize>,
+    /// The span of the `match` whose subject the check is reading (`eval_match`), for the `E1012`
+    /// of function clauses that match a parameter again after its pattern moved the value
+    /// (`use_after_move`).
+    matched_by: Option<Span>,
 }
 
 /// A31: the parameter of a body and the path of tuple or record fields (or union payloads) in its
@@ -5905,12 +5924,17 @@ impl<'a, 'run> Checker<'a, 'run> {
                 .max_by_key(|(_, origin)| (origin.start, origin.end))
                 .map(|(moved, origin)| (moved.clone(), *origin))
         {
-            let name = self
+            let (name, declared) = self
                 .state
                 .locals
                 .get(&place.root)
-                .map_or("value", |(local, _)| local.name.as_str())
-                .to_owned();
+                .map_or(("value", None), |(local, _)| {
+                    (local.name.as_str(), Some(local.span))
+                });
+            let name = name.to_owned();
+            // A hidden pattern parameter is read by its own name, at its declaration, only as the
+            // subject of a `match`: its pattern's, which comes first, or the function clauses'.
+            let rematched = (declared == Some(span)).then(|| self.matched_by.unwrap_or(span));
             // Only the control flow tells whether the move reached the use through a loop: the
             // `where` bindings of a guarded function run before its arms, and an assignment's value
             // before its place.
@@ -5925,7 +5949,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                     "part of the value moved here, in the previous iteration of the loop"
                 }
             };
-            let mut diagnostic = use_after_move(&name, moved.fields.is_empty(), span);
+            let mut diagnostic = use_after_move(&name, moved.fields.is_empty(), span, rematched);
             if origin.end > origin.start {
                 diagnostic = diagnostic.related(RelatedRole::MovedHere, message, origin);
             }
