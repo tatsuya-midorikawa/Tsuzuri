@@ -2576,6 +2576,19 @@ impl LaterRule {
         )
     }
 
+    /// The same conventions in a named function: the twin of a `def` whose parameters are read
+    /// parameters lent temporaries, which a named function with `ref` types cannot take.
+    fn convention_twin(&self) -> String {
+        self.source(
+            &format!(
+                "def target :: {}\nfn target {} = {{ {} }}",
+                self.conventions, self.plain, self.body
+            ),
+            None,
+            "target",
+        )
+    }
+
     /// A32's spelling: the right-hand side lambda of a `def` with conventions annotates its
     /// parameters with reference types.
     fn annotated_def(&self) -> String {
@@ -3029,6 +3042,264 @@ fn annotated_reference_parameters_follow_the_later_rules_of_in_place_writes() {
     ];
     for (case, branch) in &safe_cases {
         let mut sources = vec![case.twin(), case.annotated_def()];
+        if *branch {
+            sources.push(case.annotated_branch());
+        }
+        for source in sources {
+            check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        }
+    }
+}
+
+#[test]
+fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_place_writes() {
+    // A32 stacked on A31, third merge (A31 reviews 8 and 9): borrows of a lock's contents kept
+    // beyond the callback, shared borrows handed to a function parameter, temporaries lent to
+    // read parameters, cells of the caller's data and parts of one value that the target ties
+    // together are checked for a parameter annotated with a reference type as for a named function
+    // with the same conventions (`convention_twin`). Each unsafe program fails with the twin's code
+    // and kind at the same expression (and, where the `if` spelling calls the chosen function the
+    // same way, with the same code and kind there); each safe one is accepted. Before this merge
+    // the annotated spellings of `lk01`, `tp01`, `cp03` and `sp02` were accepted with wrong values
+    // and `sh01` was rejected, as their twins were.
+    const OTHER: &str = "let other = [to_string 777777, to_string 88888888, to_string 12345678]";
+    const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}";
+    const CALLER: &str = "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}";
+    const LOOK: &str = "def look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1";
+    const LOCK_RUN: &[&str] = &[
+        "let m = Mutex.create [to_string n]",
+        "let m2 = Mutex.create [\\() -> 0]",
+        "let rm2 = ref m2",
+        "Mutex.with_lock (ref m) (\\a -> CALL a rm2)",
+        "Mutex.with_lock (ref m) (\\a -> Array.set 0 (to_string 5) a)",
+        OTHER,
+        "Mutex.with_lock rm2 (\\b -> b[0] ()) + other.length * 0",
+    ];
+    let lock = |body: &'static str| LaterRule {
+        prelude: &[],
+        explicit: "ref mut [string] -> ref Mutex<[unit -> i64]> -> unit".to_string(),
+        conventions: "mut [string] -> Mutex<[unit -> i64]> -> unit".to_string(),
+        plain: "a m2",
+        annotated: "(a: ref mut [string]) (m2: ref Mutex<[unit -> i64]>)".to_string(),
+        body,
+        annotated_body: None,
+        run: LOCK_RUN,
+    };
+    let shared = |run: &'static [&'static str]| LaterRule {
+        prelude: &["record Rec { name: string, count: i64 }"],
+        explicit: "ref mut Rec -> ((unit -> i64) -> unit) -> unit".to_string(),
+        conventions: "mut Rec -> ((unit -> i64) -> unit) -> unit".to_string(),
+        plain: "r use",
+        annotated: "(r: ref mut Rec) use".to_string(),
+        body: "let sr = ref r.name; use (\\() -> String.length sr)",
+        annotated_body: None,
+        run,
+    };
+    const TEMP_BODY: &str = "let t = ref s; Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> String.length t) b); 0";
+    let temps = |holder_first: bool, run: &'static [&'static str]| LaterRule {
+        prelude: &[HOLDER],
+        explicit: String::new(),
+        conventions: if holder_first {
+            "Holder -> string -> i64"
+        } else {
+            "string -> Holder -> i64"
+        }
+        .to_string(),
+        plain: if holder_first { "c s" } else { "s c" },
+        annotated: if holder_first {
+            "(c: ref Holder) (s: ref string)"
+        } else {
+            "(s: ref string) (c: ref Holder)"
+        }
+        .to_string(),
+        body: TEMP_BODY,
+        annotated_body: None,
+        run,
+    };
+    let cell = |run: &'static [&'static str]| LaterRule {
+        prelude: &[CALLER],
+        explicit: "ref string -> ref Mutex<[Caller]> -> i64".to_string(),
+        conventions: "string -> Mutex<[Caller]> -> i64".to_string(),
+        plain: "s m",
+        annotated: "(s: ref string) (m: ref Mutex<[Caller]>)".to_string(),
+        body: "let t = ref s; Mutex.with_lock m (\\b -> Array.write 0 (Caller { f: \\() -> String.length t }) b); 0",
+        annotated_body: None,
+        run,
+    };
+    let part = |pair: &'static str, run: &'static [&'static str]| LaterRule {
+        prelude: match pair {
+            "safe" => &[HOLDER, LOOK, "record Pair { h: Holder, s: string }"],
+            _ => &[HOLDER, LOOK, "record Pair { s: string, h: Holder }"],
+        },
+        explicit: "ref Pair -> i64".to_string(),
+        conventions: "Pair -> i64".to_string(),
+        plain: "p",
+        annotated: "(p: ref Pair)".to_string(),
+        body: "let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); 0",
+        annotated_body: None,
+        run,
+    };
+    const SHARED_RUN: [&str; 4] = [
+        "let m = Mutex.create [\\() -> 0]",
+        "let mr = ref m",
+        "let mut v0 = Rec { name: to_string n, count: 3 }",
+        "CALL (ref mut v0) (\\g -> Mutex.with_lock mr (\\slot -> Array.write 0 g slot))",
+    ];
+    // (case, code, kind, whether the `if` spelling reports the same code and kind)
+    let unsafe_cases = [
+        (
+            lock(
+                "let sr = ref a[0]; Mutex.with_lock m2 (\\b -> Array.write 0 (\\() -> String.length sr) b)",
+            ),
+            "E1013",
+            "mutex_result_retains_borrow",
+            true,
+        ),
+        (
+            shared(&[
+                SHARED_RUN[0],
+                SHARED_RUN[1],
+                SHARED_RUN[2],
+                SHARED_RUN[3],
+                "v0.name = to_string 1",
+                "Mutex.with_lock mr (\\slot -> slot[0] ()) + v0.count",
+            ]),
+            "E1014",
+            "borrow_conflict",
+            false,
+        ),
+        (
+            temps(
+                false,
+                &["CALL (to_string n) (Holder { cell: Mutex.create [\\() -> 0] })"],
+            ),
+            "E1013",
+            "assignment_extends_borrow",
+            false,
+        ),
+        (
+            cell(&[
+                "let m0 = Mutex.create [Caller { f: \\() -> 0 }]",
+                "let s0 = to_string n",
+                "let k = CALL (ref s0) (ref m0)",
+                "k",
+            ]),
+            "E1013",
+            "assignment_extends_borrow",
+            true,
+        ),
+        (
+            cell(&["CALL (to_string n) (Mutex.create [Caller { f: \\() -> 0 }])"]),
+            "E1013",
+            "assignment_extends_borrow",
+            false,
+        ),
+        (
+            part(
+                "unsafe",
+                &[
+                    "let p0 = Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } }",
+                    "CALL (ref p0)",
+                ],
+            ),
+            "E1013",
+            "self_referential_store",
+            true,
+        ),
+    ];
+    for (case, code, kind, branch) in &unsafe_cases {
+        let twin = case.convention_twin();
+        let expected = check("2027", &twin)
+            .err()
+            .unwrap_or_else(|| panic!("accepted:\n{twin}"));
+        assert_eq!(
+            (expected.code, expected.kind),
+            (*code, Some(*kind)),
+            "{twin}\n{}",
+            expected.message
+        );
+        let at = &twin[expected.span.start..expected.span.end];
+        let annotated = case.annotated_def();
+        let error = check("2027", &annotated)
+            .err()
+            .unwrap_or_else(|| panic!("accepted:\n{annotated}"));
+        assert_eq!(
+            (
+                error.code,
+                error.kind,
+                &annotated[error.span.start..error.span.end]
+            ),
+            (*code, Some(*kind), at),
+            "{annotated}\n{}",
+            error.message
+        );
+        if *branch {
+            let chosen = case.annotated_branch();
+            let error = check("2027", &chosen)
+                .err()
+                .unwrap_or_else(|| panic!("accepted:\n{chosen}"));
+            assert_eq!(
+                (error.code, error.kind),
+                (*code, Some(*kind)),
+                "{chosen}\n{}",
+                error.message
+            );
+        }
+    }
+    // The safe forms: a copy of the locked text's length (`lk01c`); the caller reads the owner
+    // after handing a shared borrow (`sh01`); the holder lent before the text (`tp01c`); the
+    // caller's cell declared after the text (`cp01`); the part dropped after its reader (`sp01`).
+    // (case, whether the `if` spelling is accepted too: a function value lent temporaries or a
+    // lambda argument is `borrow_of_temporary` in every spelling, as before A31)
+    let safe_cases = [
+        (
+            lock(
+                "let k = String.length (ref a[0]); Mutex.with_lock m2 (\\b -> Array.write 0 (\\() -> k) b)",
+            ),
+            true,
+        ),
+        (
+            shared(&[
+                SHARED_RUN[0],
+                SHARED_RUN[1],
+                SHARED_RUN[2],
+                SHARED_RUN[3],
+                "Mutex.with_lock mr (\\slot -> slot[0] ()) + v0.count",
+            ]),
+            false,
+        ),
+        (
+            temps(
+                true,
+                &["CALL (Holder { cell: Mutex.create [\\() -> 0] }) (to_string n)"],
+            ),
+            false,
+        ),
+        (
+            cell(&[
+                "let s0 = to_string n",
+                "let m0 = Mutex.create [Caller { f: \\() -> 0 }]",
+                "let k = CALL (ref s0) (ref m0)",
+                "k",
+            ]),
+            true,
+        ),
+        (
+            part(
+                "safe",
+                &[
+                    "let p0 = Pair { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }",
+                    "CALL (ref p0)",
+                ],
+            ),
+            true,
+        ),
+    ];
+    for (case, branch) in &safe_cases {
+        let mut sources = vec![case.convention_twin(), case.annotated_def()];
+        if !case.explicit.is_empty() {
+            sources.push(case.twin());
+        }
         if *branch {
             sources.push(case.annotated_branch());
         }

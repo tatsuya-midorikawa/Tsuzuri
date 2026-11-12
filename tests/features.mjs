@@ -734,6 +734,14 @@ const suites = {
         const viewed = BigInt(String(n * 10).length);
         return ["annotated_reference_later_rules", [w], kept + words * 100n + viewed * 1000n + (2n + w) * 100000n];
       }),
+      // A32 on A31, third merge: `shared` is the length of the decimal text of n plus the count 3;
+      // `part`, `temps` and `cell` are the lengths of the decimal texts of n * 7, n * 11 and n * 13.
+      ...[-3, 0, 1, 5].map((n) => {
+        const len = (v) => BigInt(String(v).length);
+        const shared = len(n) + 3n;
+        return ["annotated_reference_drop_rules", [BigInt(n)],
+          shared + len(n * 7) * 100n + len(n * 11) * 10000n + len(n * 13) * 1000000n];
+      }),
       ["trap", [1n], 10n + 20n + 20n],
     ],
     traps: [

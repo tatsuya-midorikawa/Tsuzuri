@@ -391,5 +391,39 @@ export def annotated_reference_later_rules :: i64 -> i64 = \n ->
     let z = later_path handler
     kept[0] () + owner.count + words.length * 100 + viewed[0] () * 1000 + (z + Mutex.with_lock (ref m) (\slot -> slot[0] ())) * 100000
 
+// A32 on A31, third merge (A31 reviews 8 and 9): annotated reference parameters follow A31's rules
+// for shared borrows handed to a function parameter, parts of one value, temporaries lent to read
+// parameters and cells of the caller's data as named functions with the same conventions do. In
+// each safe order below, the value whose drop reads a borrow is dropped before the borrowed text.
+record DropRec { name: string, count: i64 }
+record DropHolder { cell: Mutex<[unit -> i64]> }
+instance Drop<DropHolder> {
+    fn drop h = { let _x = Mutex.with_lock (ref h.cell) (\b -> b[0] ()); () }
+}
+record DropCaller { f: unit -> i64 }
+instance Drop<DropCaller> {
+    fn drop c = { let _x = c.f (); () }
+}
+record DropPair { h: DropHolder, s: string }
+def drop_shared :: mut DropRec -> ((unit -> i64) -> unit) -> unit = \(r: ref mut DropRec) use -> { let name = ref r.name; use (\() -> String.length name) }
+def drop_part :: DropPair -> i64 = \(p: ref DropPair) -> { let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\b -> Array.write 0 (\() -> String.length t) b); String.length t }
+def drop_temps :: DropHolder -> string -> i64 = \(c: ref DropHolder) (s: ref string) -> { let t = ref s; Mutex.with_lock (ref c.cell) (\b -> Array.write 0 (\() -> String.length t) b); String.length t }
+def drop_cell :: string -> Mutex<[DropCaller]> -> unit = \(s: ref string) (m: ref Mutex<[DropCaller]>) -> { let t = ref s; Mutex.with_lock m (\b -> Array.write 0 (DropCaller { f: \() -> String.length t }) b) }
+
+export def annotated_reference_drop_rules :: i64 -> i64 = \n ->
+    let m = Mutex.create [\() -> 0]
+    let mr = ref m
+    let mut owner = DropRec { name: to_string n, count: 3 }
+    drop_shared owner (\g -> Mutex.with_lock mr (\slot -> Array.write 0 g slot))
+    let shared = Mutex.with_lock mr (\slot -> slot[0] ()) + owner.count
+    let pair = DropPair { h: DropHolder { cell: Mutex.create [\() -> 0] }, s: to_string (n * 7) }
+    let part = drop_part pair
+    let temps = drop_temps (DropHolder { cell: Mutex.create [\() -> 0] }) (to_string (n * 11))
+    let text = to_string (n * 13)
+    let callers = Mutex.create [DropCaller { f: \() -> 0 }]
+    drop_cell text callers
+    let cell = Mutex.with_lock (ref callers) (\b -> b[0].f ())
+    shared + part * 100 + temps * 10000 + cell * 1000000
+
 type OwnAlias = own
 (contextual_own_type_name)
