@@ -601,6 +601,18 @@ impl<'a> Checker<'a, '_> {
                 }
                 let value = self.eval(&arm.body, Use::Consume, live)?;
                 ids.extend(temporaries);
+                // A31: the pattern's variables and temporaries are dropped where the arm ends, in
+                // the reverse order of their bindings (`| (c, s) ->` drops `s` before `c`), as
+                // where a `break` leaves them. A view is no value of its own: the matched storage
+                // that it reads is dropped with the subject, after the arm.
+                if self.reachable {
+                    let dropped: BTreeSet<usize> = ids
+                        .iter()
+                        .copied()
+                        .filter(|id| !self.views.contains(id))
+                        .collect();
+                    self.check_exit_drop_order(&dropped, arm.body.span)?;
+                }
                 self.finish_control_scope(&ids, &value, span)?;
                 if self.reachable {
                     join(&mut result, value);
@@ -615,6 +627,20 @@ impl<'a> Checker<'a, '_> {
             self.merge_reachable(&failed, failed_reachable);
             pending = self.state.clone();
             pending_reachable = self.reachable;
+            // A31: an arm without a guard that has an alternative that tests nothing matches every
+            // value, so no arm after it runs. The arm that re-raises an exception that no arm of a
+            // `try` handler matches comes after every arm of the handler (`| e -> e` catches
+            // everything): it raises nothing to the next `try`, whose drops it would check.
+            if arm.guard.is_none()
+                && arm.alternatives.iter().any(|alternative| {
+                    !alternative
+                        .steps
+                        .iter()
+                        .any(|step| matches!(step, PatternStep::Test(_)))
+                })
+            {
+                pending_reachable = false;
+            }
         }
         self.reachable = exits.is_some();
         self.state = exits.unwrap_or(pending);
