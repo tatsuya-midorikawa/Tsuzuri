@@ -8112,9 +8112,9 @@ impl<'a, 'run> Checker<'a, 'run> {
                     hides: true,
                     target: true,
                     overwritten: callee.overwritten,
-                    // A function value made from the borrow of a lock's contents holds it in
-                    // its environment.
-                    locked: callee.locked,
+                    // What the function value holds is its own environment, not a borrow of the
+                    // contents of a lock that holds it (`Arg::locked`).
+                    locked: false,
                 })
                 .collect()
         };
@@ -8220,21 +8220,24 @@ impl<'a, 'run> Checker<'a, 'run> {
     ) {
         // A share of the block of a local `Rc` or `Arc` owner (`Loan::share`) is an owner of the
         // block, not a borrow of the local: it passes on what the owner holds, and the block,
-        // which the function value may keep in the caller's data, takes what the body stores into
-        // a cell of it later (`export_block`), as when the body stores the share there itself
-        // (`store_external`).
+        // which the function value may keep where its environment reaches in the caller's data,
+        // or in an environment of its own that the check cannot name, takes what the body stores
+        // into a cell of it later (`export_block`), as when the body stores the share there itself
+        // (`store_external`, `store_hidden`).
         let target = self
             .parameter_roots
             .iter()
             .find(|(_, at)| **at == index)
-            .map_or(ExportTarget::Hidden, |(root, _)| {
-                ExportTarget::External(*root)
-            });
+            .map(|(root, _)| ExportTarget::External(*root));
         let passed: Vec<Value> = arguments
             .iter()
             .map(|argument| {
                 let value = self.argument_part(argument, Part::Value);
-                self.expand_shares(&value, target)
+                let expanded = self.expand_shares(&value, ExportTarget::Hidden);
+                match target {
+                    Some(target) => self.expand_shares(&value, target),
+                    None => expanded,
+                }
             })
             .collect();
         if self.stores.is_some() {
@@ -8609,11 +8612,13 @@ impl<'a, 'run> Checker<'a, 'run> {
                 self.defer(self.callee_borrow_stored(named, span, false, overwritten));
             }
         }
-        // The borrow of a lock's contents (`Arg::locked`) may be kept where the code may store
-        // the loan of a local value of a callee.
-        if !local_only && operands().any(|operand| operand.locked) {
+        // The borrow of a lock's contents (`Arg::locked`) that the code gets may be kept where it
+        // may store the loan of a local value of a callee, and in the contents themselves, which
+        // outlive the call. A function value that the contents hold and that runs here gets its
+        // own environment, which is what the contents hold, not the borrow of them.
+        if !local_only && arguments.iter().any(|argument| argument.locked) {
             let outside = operands()
-                .filter(|operand| operand.external)
+                .filter(|operand| operand.external || operand.locked)
                 .any(|operand| self.has_targets(&operand.value));
             if callee.is_some_and(|callee| sink && self.has_targets(&callee.value))
                 || hidden
@@ -8807,11 +8812,21 @@ impl<'a, 'run> Checker<'a, 'run> {
                 given.absorb(&callee.value);
             }
             // What a builtin gives its callback is a reference that it makes or an element.
-            let source = Arg {
+            let mut source = Arg {
                 lent: true,
                 locked: locks,
                 ..Arg::of(None, given)
             };
+            // A lock lends a reference to its contents, whose type says what code that gets it
+            // may reach through it (`argument_type`), as the type of an argument's expression does.
+            if locks
+                && let Type::Function(lent, _) = &arguments[index].ty
+                && let Some(ty) = lent.first()
+            {
+                let (target, hides) = self.argument_type(ty);
+                source.target = target;
+                source.hides = hides;
+            }
             let sources = vec![source; arity];
             self.apply_higher(&callee, &sources, span, 0);
         }
