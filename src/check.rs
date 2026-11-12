@@ -12027,6 +12027,15 @@ impl<'a> Checker<'a> {
             .iter()
             .find(|(span, _)| *span == expression.span)?;
         let local = local.clone();
+        // A24: where an anonymous union is expected, the old value is injected as any other value
+        // is: `injected_expression` checks it without an expected type (this function again, with
+        // `None`), then `conform_union` wraps it as its member.
+        if let Some(expected) = expected
+            && !self.names.anonymous_unions.is_empty()
+            && self.injects(expression, expected)
+        {
+            return Some(self.injected_expression(expression, expected));
+        }
         Some((|| {
             if let Some(expected) = expected {
                 self.same(&local.ty, expected, expression.span)?;
