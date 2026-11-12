@@ -13186,12 +13186,14 @@ mod retention_tests {
                     path: Vec::new(),
                     // `arr` is a reference itself, to an array of function values: a store
                     // may reach through it (`target`), and it holds no function value of a type
-                    // that owns the cell that it writes (no such function value here).
+                    // that owns the cell that it writes (no such function value here). Its type
+                    // is the parameter's, as the body sees it (`Source::ty`).
                     arguments: vec![Source {
                         parameters: BTreeSet::from([(1, Part::Value)]),
                         lent: true,
                         hides: false,
                         target: true,
+                        ty: Some(module.functions[id("a31_apply")].parameters[1].ty.clone()),
                         ..Source::default()
                     }],
                 }]),
@@ -13329,6 +13331,49 @@ mod retention_tests {
         ] {
             let module = crate::analyze(&format!("{registry}{source}")).unwrap();
             assert!(owner_facts(&module)[index(&module, name)].fresh, "{source}");
+        }
+    }
+
+    /// A31, after review round 9: a function that keeps a shared borrow of a part of what its
+    /// `ref mut` parameter points at in that same value records the entry in `shared_some` (and,
+    /// in the safe order of the parts, in `ordered`), and the module's `self_borrow_types` holds
+    /// the parameter's target type with whether every such entry is ordered; a function that
+    /// stores nothing of the kind adds nothing.
+    #[test]
+    fn shared_self_borrows_through_exclusive_references_are_facts_of_the_module() {
+        let holder = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}\n";
+        let target = "def target :: ref mut Pair -> i64\nfn target p = { let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> String.length t) b); 0 }\ndef plain :: ref mut Pair -> i64\nfn plain p = String.length (ref p.s)\n";
+        // No call: the facts are those of the bodies, whichever order the program checks.
+        let run = "0";
+        for (pair, ordered) in [
+            ("record Pair { s: string, h: Holder }\n", false),
+            ("record Pair { h: Holder, s: string }\n", true),
+        ] {
+            let source = format!("{holder}{pair}{target}{run}");
+            let module = crate::analyze(&source)
+                .unwrap_or_else(|error| panic!("{source}\n{}", error.message));
+            let facts = call_facts(&module, false);
+            let id = |name: &str| {
+                module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == name)
+                    .unwrap_or_else(|| panic!("{name}"))
+            };
+            let stores = &facts.stores[id("target")];
+            let entry = (0, Part::Value, 0);
+            assert!(stores.shared_some.contains(&entry), "{stores:?}");
+            assert_eq!(stores.ordered.contains(&entry), ordered, "{stores:?}");
+            assert_eq!(facts.stores[id("plain")].shared_some, BTreeSet::new());
+            let Type::Reference(pair_type, true) = &module.functions[id("target")].parameters[0].ty
+            else {
+                panic!("target takes a ref mut Pair");
+            };
+            assert_eq!(
+                facts.self_borrow_types,
+                BTreeMap::from([((**pair_type).clone(), ordered)])
+            );
+            assert!(!facts.self_borrow_any);
         }
     }
 
