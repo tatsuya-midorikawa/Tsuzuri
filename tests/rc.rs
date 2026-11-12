@@ -3626,6 +3626,9 @@ fn a_borrow_of_a_locked_value_cannot_be_kept_beyond_its_callback() {
         "def run :: i64 -> i64\nfn run n =\n    let sm: SyncMap<i64, string> = SyncMap.create ()\n    let one = 1\n    SyncMap.store (ref sm) 1 (to_string n)\n    match SyncMap.with_value (ref sm) (ref one) (\\v -> String.length v) with\n    | Maybe.Some k -> k\n    | Maybe.None -> 0\nrun 123456789",
         // a13: a function value copied out of a read lock
         "def run :: i64 -> i64\nfn run n =\n    let text0 = to_string n\n    let t = ref text0\n    let m = RwMutex.create [\\() -> String.length t]\n    let m2 = Mutex.create [\\() -> 0]\n    let rm2 = ref m2\n    RwMutex.with_read (ref m) (\\a -> { let f = a[0]; Mutex.with_lock rm2 (\\b -> Array.write 0 f b) })\n    Mutex.with_lock rm2 (\\b -> b[0] ())\nrun 123456789",
+        // a17: a callback that the check does not see, given a reference to contents that hold no
+        // borrow, in a module whose registries own their cells
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\nrecord Handler { f: ref mut Vec<string> -> unit }\ndef make_handler :: unit -> Handler\nfn make_handler _u = Handler { f: grow }\ndef grow :: ref mut Vec<string> -> unit\nfn grow v =\n    let mut i = 0\n    while i < 10 do\n        Vec.push_mut (to_string i) v\n        i = i + 1\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let mut v: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v)\n    let m = Mutex.create v\n    let h = make_handler ()\n    Mutex.with_lock (ref m) h.f\n    reg (\\() -> 1) + Mutex.with_lock (ref m) (\\a -> a.length)\nrun 123456789",
     ] {
         accepts_in_both_editions(&[("Main.tz", main)]);
     }
@@ -3842,4 +3845,13 @@ fn a_share_of_a_local_block_handed_to_a_function_parameter_is_an_owner() {
     ] {
         rejects_at(source, "E1013", "store_local_borrow_through_reference", at);
     }
+    // sh19 (review round 6): the function value is a registry that owns its cell, which takes
+    // the share, and the body writes a borrow of its `ref string` parameter into the block later:
+    // the caller's string is dropped while the registry still holds it.
+    rejects_at(
+        "def make_registry :: unit -> (Arc<Mutex<[unit -> i64]>> -> i64)\nfn make_registry _u =\n    let cell: Arc<Mutex<[Arc<Mutex<[unit -> i64]>>]>> = Arc.new (Mutex.create [Arc.new (Mutex.create [\\() -> 0])])\n    \\a -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = Mutex.with_lock (Arc.get (ref slot[0])) (\\c -> c[0] ()); Array.write 0 a slot; old })\ndef give :: (Arc<Mutex<[unit -> i64]>> -> i64) -> ref string -> i64\nfn give reg text =\n    let lr = Arc.new (Mutex.create [\\() -> 0])\n    let k = reg (Arc.share (ref lr))\n    Mutex.with_lock (Arc.get (ref lr)) (\\c -> Array.write 0 (\\() -> String.length text) c)\n    k\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let a = { let text0 = to_string n; give reg (ref text0) }\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    a + reg (Arc.new (Mutex.create [\\() -> 0])) + other.length * 0\nrun 123456789",
+        "E1013",
+        "assignment_extends_borrow",
+        (14, 13),
+    );
 }
