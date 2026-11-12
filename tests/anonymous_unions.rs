@@ -5215,6 +5215,96 @@ fn widening_maps_generic_members() {
     );
 }
 
+/// A24's Copilot review 4 at the A25 merge: a member comparison keeps an inference variable that
+/// occurs twice as one type (`Ties`), and widening (`widened`) and narrowing (`type_test_member`)
+/// find members with that comparison (`agrees`). `mkp n` has the type `(i64 | (Maybe<?a> *
+/// Maybe<?a>))`: its tuple member can be `(Maybe<i64> * Maybe<i64>)` (?a is `i64`), but
+/// `(Maybe<i64> * Maybe<string>)` would need ?a to be both `i64` and `string`, so the widening
+/// takes the first and then unifies ?a with `i64`. Before the merge, each occurrence was compared
+/// by itself and the widening was `E1041` (the member could be either tuple). Members without
+/// inference variables compare as before.
+#[test]
+fn widening_and_narrowing_tie_repeated_inference_variables() {
+    let defs = "def mkp :: own i64 -> ((Maybe<'a> * Maybe<'a>) | i64) = \\n -> if n > 0 then (None, None) else n\n\n\
+                def mk3 :: own i64 -> ((Maybe<'a> * Maybe<'a>) | i64 | bool) = \\n -> if n > 0 then (None, None) else if n == 0 then true else n\n\n\
+                def which4 :: own ((Maybe<i64> * Maybe<i64>) | (Maybe<i64> * Maybe<string>) | i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? (Maybe<i64> * Maybe<i64>) as p -> (match p with | (None, None) -> 1 | _ -> 4)\n    | :? (Maybe<i64> * Maybe<string>) -> 2\n    | :? bool -> 3\n    | :? i64 as k -> k + 10\n\n\
+                def narrowed :: own i64 -> i64 = \\n ->\n    match mk3 n with\n    | :? ((Maybe<i64> * Maybe<i64>) | i64) as x -> which4 x\n    | :? bool -> 7\n\n";
+    // By hand: a positive `n` gives the tuple `(None, None)`, which widens into the member
+    // `(Maybe<i64> * Maybe<i64>)` of `which4` (from case 1 of `mkp` to case 2 of `which4`,
+    // counting from 0 in the canonical order `(i64 | bool | tuples)`), so 1; `mkp
+    // (-5)` is the i64 -5, so -5 + 10 = 5. Once the widening has unified ?a with `i64`, `p` is
+    // `(i64 | (Maybe<i64> * Maybe<i64>))`, its tuple member reads 20. `mk3 1` narrows into the
+    // member `(Maybe<i64> * Maybe<i64>)` of `W` and widens into `which4` (1), `mk3 0` is `true`
+    // (7), and `mk3 (-4)` narrows into the i64 member and widens: -4 + 10 = 6.
+    let program = format!(
+        "{defs}test \"widening a value whose member repeats a variable\" =\n    \
+         assert (which4 (mkp 1) == 1)\n    \
+         assert (which4 (mkp (-5)) == 5)\n    \
+         assert ((mkp 2 |> which4) == 1)\n    \
+         let v: ((Maybe<i64> * Maybe<string>) | bool | (Maybe<i64> * Maybe<i64>) | i64) = mkp 3\n    \
+         assert (which4 v == 1)\n    \
+         let p = mkp 4\n    \
+         assert (which4 p == 1)\n    \
+         let q: (i64 | (Maybe<i64> * Maybe<i64>)) = p\n    \
+         assert ((match q with | :? i64 as k -> k | :? (Maybe<i64> * Maybe<i64>) -> 20) == 20)\n\n\
+         test \"narrowing a value whose member repeats a variable\" =\n    \
+         assert (narrowed 1 == 1)\n    \
+         assert (narrowed 0 == 7)\n    \
+         assert (narrowed (-4) == 6)\n"
+    );
+    passes(&program, Edition::E2026);
+    passes(&program, Edition::E2027);
+    // Both tuples fit when ?a is one type in both places: still ambiguous.
+    let error = rejects(
+        &format!(
+            "{defs}let v: ((Maybe<i64> * Maybe<i64>) | (Maybe<string> * Maybe<string>) | i64) = mkp 1\n0\n"
+        ),
+        "E1041",
+        "anonymous_union_ambiguous_member",
+    );
+    assert!(
+        error.message.ends_with(
+            "could be (Maybe<i64> * Maybe<i64>) or (Maybe<string> * Maybe<string>) in (i64 | (Maybe<i64> * Maybe<i64>) | (Maybe<string> * Maybe<string>))"
+        ),
+        "{}",
+        error.message
+    );
+    // Neither tuple has one type in both places: the member is in no member of the wider union.
+    let error = rejects(
+        &format!(
+            "{defs}let v: ((Maybe<string> * Maybe<i64>) | (Maybe<i64> * Maybe<string>) | i64) = mkp 1\n0\n"
+        ),
+        "E1003",
+        "anonymous_union_not_subset",
+    );
+    assert_eq!(
+        error.message,
+        "expected (i64 | (Maybe<i64> * Maybe<string>) | (Maybe<string> * Maybe<i64>)), found (i64 | (Maybe<an undetermined type> * Maybe<an undetermined type>)); (Maybe<an undetermined type> * Maybe<an undetermined type>) is not a member of (i64 | (Maybe<i64> * Maybe<string>) | (Maybe<string> * Maybe<i64>))"
+    );
+    // The widening unified ?a with `i64`, so the value is no longer a union of `Maybe<string>`.
+    rejects(
+        &format!(
+            "{defs}let p = mkp 1\nlet k = which4 p\nlet q: (i64 | (Maybe<string> * Maybe<string>)) = p\nk\n"
+        ),
+        "E1003",
+        "type_mismatch",
+    );
+    // A narrowing compares the same way: `(Maybe<i64> * Maybe<string>)` is not `(Maybe<?a> *
+    // Maybe<?a>)`, so the test names no member (before the merge, `E1003 type_mismatch` when the
+    // member was unified with it).
+    let error = rejects(
+        &format!(
+            "{defs}let t = match mk3 1 with\n    | :? ((Maybe<i64> * Maybe<string>) | i64) as x -> which4 x\n    | _ -> 0\nt\n"
+        ),
+        "E1041",
+        "type_test_not_member",
+    );
+    assert_eq!(
+        error.message,
+        "(Maybe<i64> * Maybe<string>) is not a member of (i64 | bool | (Maybe<an undetermined type> * Maybe<an undetermined type>))"
+    );
+}
+
 #[test]
 fn widening_a_generic_read_parameter_needs_copy() {
     // Edition 2027 reads a generic parameter, and its body takes the value out of the view only
@@ -7691,4 +7781,286 @@ fn annotation_types_do_not_hide_type_tests() {
     tests.push_str("    assert (p_lambda 5 == 1)\n    assert (p_lambda (-5) == 0)\n    assert (p_lambda true == 0)\n    assert (p_record 10 == 1)\n    assert (p_record 50 == 0)\n    assert (p_block 10 == 1)\n    assert (p_block 50 == 0)\n");
     source.push_str(&format!("test \"annotations\" =\n{tests}"));
     passes(&source, Edition::E2026);
+}
+
+/// Copilot review 4: an inference variable that occurs more than once in the type of a value
+/// stands for one type everywhere, as unification makes it. `pair ()` has the type
+/// `(Maybe<?a> * Maybe<?a>)`: it can be `(Maybe<i64> * Maybe<i64>)` (?a is `i64`), but
+/// `(Maybe<i64> * Maybe<string>)` would need ?a to be both `i64` and `string`, so only the first
+/// member fits. Before, each occurrence was compared by itself and both members counted (`E1041`).
+/// The same holds for an array element and a tuple component (`boxes`), a generic function value
+/// (`same` is `?a -> ?a`), a tuple literal whose components share the variable (`(n, n)`, which
+/// `literal_fits` reads component by component), and a member that holds the variable (a type
+/// test against `mk ()`).
+#[test]
+fn repeated_inference_variables_fit_one_member() {
+    let defs = "def pair :: unit -> (Maybe<'a> * Maybe<'a>) = \\_ -> (None, None)\n\n\
+                def boxes :: unit -> ([Maybe<'a>] * Maybe<'a>) = \\_ -> ([], None)\n\n\
+                def same :: 'a -> 'a = \\x -> x\n\n\
+                def none :: unit -> Maybe<'a> = \\_ -> None\n\n\
+                def mk :: unit -> ((Maybe<'a> * Maybe<'a>) | i64) = \\_ -> 0\n\n\
+                def which :: own ((Maybe<i64> * Maybe<i64>) | (Maybe<i64> * Maybe<string>)) -> i64 = \\v ->\n    match v with\n    | :? (Maybe<i64> * Maybe<i64>) -> 1\n    | :? (Maybe<i64> * Maybe<string>) -> 2\n\n\
+                def kind :: own (([Maybe<i64>] * Maybe<i64>) | ([Maybe<string>] * Maybe<i64>)) -> i64 = \\v ->\n    match v with\n    | :? ([Maybe<i64>] * Maybe<i64>) -> 1\n    | :? ([Maybe<string>] * Maybe<i64>) -> 2\n\n\
+                def call :: own ((i64 -> i64) | (i64 -> string)) -> i64 = \\f ->\n    match f with\n    | :? (i64 -> i64) as g -> g 41\n    | :? (i64 -> string) as g -> (g 1).length + 100\n\n";
+    // By hand: `pair ()` and `(n, n)` are only the first member of `which` (1), the literal pair
+    // `(Some 1, Some "x")` only the second (2); `boxes ()` only the first of `kind` (1); `same` only
+    // `i64 -> i64`, so `call same` is `same 41` (41); `mk ()` is the `i64` member 0, so 0 + 10.
+    passes(
+        &format!(
+            "{defs}test \"a repeated variable is one type\" =\n    \
+             assert (which (pair ()) == 1)\n    \
+             let v: ((Maybe<i64> * Maybe<string>) | (Maybe<i64> * Maybe<i64>)) = pair ()\n    \
+             assert (which v == 1)\n    \
+             assert ((pair () |> which) == 1)\n    \
+             assert (which (Some 1, Some \"x\") == 2)\n    \
+             assert (kind (boxes ()) == 1)\n    \
+             assert (call same == 41)\n    \
+             let n = none ()\n    \
+             assert (which (n, n) == 1)\n    \
+             let k = match mk () with\n        \
+             | :? (Maybe<i64> * Maybe<i64>) -> 1\n        \
+             | :? i64 as k -> k + 10\n    \
+             assert (k == 10)\n"
+        ),
+        Edition::E2026,
+    );
+    // Both members fit when ?a is one type in both places: still ambiguous.
+    let error = rejects(
+        &format!(
+            "{defs}let v: ((Maybe<i64> * Maybe<i64>) | (Maybe<string> * Maybe<string>)) = pair ()\n0\n"
+        ),
+        "E1041",
+        "anonymous_union_ambiguous_member",
+    );
+    assert!(
+        error.message.ends_with(
+            "could be (Maybe<i64> * Maybe<i64>) or (Maybe<string> * Maybe<string>) in ((Maybe<i64> * Maybe<i64>) | (Maybe<string> * Maybe<string>))"
+        ),
+        "{}",
+        error.message
+    );
+    // Neither member has one type in both places: the value is no member.
+    let error = rejects(
+        &format!(
+            "{defs}let v: ((Maybe<string> * Maybe<i64>) | (Maybe<i64> * Maybe<string>)) = pair ()\n0\n"
+        ),
+        "E1003",
+        "anonymous_union_not_member",
+    );
+    assert_eq!(
+        error.message,
+        "expected ((Maybe<i64> * Maybe<string>) | (Maybe<string> * Maybe<i64>)), found (Maybe<an undetermined type> * Maybe<an undetermined type>); (Maybe<an undetermined type> * Maybe<an undetermined type>) is not a member of the anonymous union"
+    );
+    rejects(
+        &format!(
+            "{defs}def call2 :: own ((i64 -> string) | (string -> i64)) -> i64 = \\f -> 0\ncall2 same\n"
+        ),
+        "E1003",
+        "anonymous_union_not_member",
+    );
+    // A type test compares the same way: `(Maybe<?a> * Maybe<?a>)` is not `(Maybe<i64> *
+    // Maybe<string>)`, so the test names no member (before, `E1003 type_mismatch`).
+    rejects(
+        &format!(
+            "{defs}let t = match mk () with\n    | :? (Maybe<i64> * Maybe<string>) -> 1\n    | _ -> 0\nt\n"
+        ),
+        "E1041",
+        "type_test_not_member",
+    );
+}
+
+/// The components of a tuple type or value, joined by `separator`: in tuples of at most 100
+/// components when there are more, as a tuple holds at most 128.
+fn tuple(components: &[&str], separator: &str) -> String {
+    if components.len() <= 100 {
+        return format!("({})", components.join(separator));
+    }
+    let groups: Vec<String> = components
+        .chunks(100)
+        .map(|group| tuple(group, separator))
+        .collect();
+    format!("({})", groups.join(separator))
+}
+
+/// Copilot review 4, verification: a comparison that ties inference variables stays within limits.
+/// `chain` returns components that share type variables, and the tuple member of `g` shares its
+/// own, so that comparing them ties each variable to a type that holds earlier ones. The value's
+/// last component is `string` and the member's `i64`, so the value is no member, which the
+/// comparison only finds after the ties. Before the fix, it walked the tied types in full:
+/// - doubling: each variable is tied to a type that holds the previous one twice, so the walk of a
+///   tie (its check that the variable does not occur) doubled with every component (2^40 here).
+///   Now a variable is tied only to a type that `bounded_type` accepts, which the walk checks
+///   without copying and stops at its limit.
+/// - lockstep: each tie is small when it is made, but the tied types nest one in another, so the
+///   last components agree only through 4^30 tied variables. Now a comparison follows ties for at
+///   most `TIE_STEPS` steps, after which its variables may be anything.
+/// - deep: the tied types nest one `[|..|]` per variable, so the last components agree only 600
+///   levels down. Now a comparison follows ties within `TIE_DEPTH` levels, which keeps the
+///   recursion as shallow as for two types that `bounded_type` accepts.
+///
+/// By hand: each value's last component, `string`, is not the member's `i64`, and `bool` is no
+/// tuple, so the value is no member (`E1003`). With `i64` as the last component of `doubling`, the
+/// tuple is the only member that the value can be, and unification ties `'f1` to `('m0 * 'm0)` (3
+/// constructors), `'m1` to `('f1 * 'f1)` (7), and each type after that to twice the one before plus
+/// one: `'m6` would hold 2^13 - 1 = 8191 constructors, more than `bounded_type` accepts (4096), so
+/// it is `E1017`.
+#[test]
+fn tied_inference_variables_stay_within_limits() {
+    // Each part is the value's component type, the member's and the value's component.
+    let program = |parts: Vec<(String, String, &str)>, last: &str| {
+        let found: Vec<&str> = parts.iter().map(|part| part.0.as_str()).collect();
+        let member: Vec<&str> = parts.iter().map(|part| part.1.as_str()).collect();
+        let values: Vec<&str> = parts.iter().map(|part| part.2).collect();
+        let value = if last == "string" { "\"x\"" } else { "1" };
+        format!(
+            "def chain :: unit -> {} = \\_ -> {}\n\n\
+             def g :: own ({} | bool) -> i64 = \\_ -> 0\n\n\
+             g (chain ())\n",
+            tuple(&[found, vec![last]].concat(), " * "),
+            tuple(&[values, vec![value]].concat(), ", "),
+            tuple(&[member, vec!["i64"]].concat(), " * "),
+        )
+    };
+    let doubling = |last: &str| {
+        let mut parts = Vec::new();
+        for i in 1..=40 {
+            let previous = i - 1;
+            parts.push((
+                format!("Maybe<'f{i}>"),
+                format!("Maybe<('m{previous} * 'm{previous})>"),
+                "None",
+            ));
+            parts.push((
+                format!("Maybe<('f{i} * 'f{i})>"),
+                format!("Maybe<'m{i}>"),
+                "None",
+            ));
+        }
+        program(parts, last)
+    };
+    let mut lockstep = Vec::new();
+    for i in 1..=30 {
+        let next = i + 1;
+        lockstep.push((
+            format!("Maybe<'f{i}>"),
+            format!("Maybe<('m{i} * 'm{i})>"),
+            "None",
+        ));
+        lockstep.push((
+            format!("Maybe<('f{next} * 'f{next})>"),
+            format!("Maybe<'m{i}>"),
+            "None",
+        ));
+    }
+    lockstep.push(("Maybe<'f1>".to_owned(), "Maybe<'m1>".to_owned(), "None"));
+    let mut deep = vec![("[|[|'f1|]|]".to_owned(), "[|'m0|]".to_owned(), "[||]")];
+    for i in 1..=300 {
+        let next = i + 1;
+        deep.push((format!("[|'f{i}|]"), format!("[|[|'m{i}|]|]"), "[||]"));
+        deep.push((format!("[|[|'f{next}|]|]"), format!("[|'m{i}|]"), "[||]"));
+    }
+    deep.push(("[|'f1|]".to_owned(), "[|'m0|]".to_owned(), "[||]"));
+    for source in [
+        doubling("string"),
+        program(lockstep, "string"),
+        program(deep, "string"),
+    ] {
+        rejects(&source, "E1003", "anonymous_union_not_member");
+    }
+    rejects(
+        &doubling("i64"),
+        "E1017",
+        "polymorphic_type_expansion_limit",
+    );
+}
+
+/// Copilot review 4: a member is checked for borrows as a named union's payload is
+/// (`contains_reference`, the rule of the ticket): a borrow written in the member's type is
+/// `E1013`, also through a type alias, while a record that holds borrows, and a type argument
+/// that a call instantiates with a shared borrow (a reference or a `dyn C {r}`), are members as
+/// they are payloads of `Maybe`. The ownership check tracks the borrows that such a union value
+/// holds as it does for a named union: every leak below is `E1013 borrow_outlives_block`, as its
+/// named control is, an exclusive borrow is rejected when the union is instantiated, and the same
+/// values used while their owner lives run.
+#[test]
+fn members_that_hold_borrows_keep_their_loans() {
+    let stored = "record Stored { value: Maybe<ref string> }\n";
+    // Accepted as `union U = A of Stored | B` is.
+    accepts(&format!(
+        "{stored}def f :: (i64 | Stored) -> i64 = \\_ -> 0\n"
+    ));
+    accepts(&format!(
+        "{stored}union U = A of Stored | B\ndef f :: U -> i64 = \\_ -> 0\n"
+    ));
+    let leaks = [
+        // A record without region parameters, and its named control.
+        format!(
+            "{stored}let u: (i64 | Stored) = {{\n    let text = to_string 123456789;\n    Stored {{ value: Some (ref text) }}\n}}\nmatch u with\n| :? Stored as s -> (match s.value with | Some t -> t.length | None -> 0)\n| :? i64 as k -> k\n"
+        ),
+        format!(
+            "{stored}let u: Maybe<Stored> = {{\n    let text = to_string 123456789;\n    Some (Stored {{ value: Some (ref text) }})\n}}\nmatch u with\n| Some s -> (match s.value with | Some t -> t.length | None -> 0)\n| None -> 0\n"
+        ),
+        // A record with a region parameter, inside a tuple member, and inside a named union.
+        "record View {r} { value: ref {r} string }\nlet u: (i64 | View) = {\n    let text = to_string 123456789;\n    View { value: ref text }\n}\nmatch u with\n| :? View as s -> s.value.length\n| :? i64 as k -> k\n".to_owned(),
+        "record View {r} { value: ref {r} string }\nlet u: ((View * i64) | bool) = {\n    let text = to_string 123456789;\n    (View { value: ref text }, 1)\n}\nmatch u with\n| :? (View * i64) as p -> (match p with | (s, _) -> s.value.length)\n| :? bool -> 0\n".to_owned(),
+        "record View {r} { value: ref {r} string }\nunion Holder = Hold of View | Empty\nlet u: (Holder | i64) = {\n    let text = to_string 123456789;\n    Hold (View { value: ref text })\n}\nmatch u with\n| :? Holder as h -> (match h with | Hold s -> s.value.length | Empty -> 0)\n| :? i64 as k -> k\n".to_owned(),
+        // A function member that captures a borrow, and its named control.
+        "let u: ((unit -> i64) | i64) = {\n    let text = to_string 123456789;\n    let r = ref text;\n    \\() -> r.length\n}\nmatch u with\n| :? (unit -> i64) as f -> f ()\n| :? i64 as k -> k\n".to_owned(),
+        "let u: Maybe<unit -> i64> = {\n    let text = to_string 123456789;\n    let r = ref text;\n    Some (\\() -> r.length)\n}\nmatch u with\n| Some f -> f ()\n| None -> 0\n".to_owned(),
+        // The result of a call that reads a borrowed record, and its named control.
+        "record View {r} { value: ref {r} string }\ndef pass :: ref View -> (View | i64) = \\s -> deref s\nlet u = {\n    let text = to_string 123456789;\n    let st = View { value: ref text };\n    pass (ref st)\n}\nmatch u with\n| :? View as s -> s.value.length\n| :? i64 as k -> k\n".to_owned(),
+        "record View {r} { value: ref {r} string }\ndef pass :: ref View -> Maybe<View> = \\s -> Some (deref s)\nlet u = {\n    let text = to_string 123456789;\n    let st = View { value: ref text };\n    pass (ref st)\n}\nmatch u with\n| Some s -> s.value.length\n| None -> 0\n".to_owned(),
+        // A closure in the result of a call.
+        "def make :: ref string -> ((unit -> i64) | i64) = \\r ->\n    let f: unit -> i64 = \\() -> r.length\n    f\nlet u = {\n    let text = to_string 123456789;\n    let r = ref text;\n    make r\n}\nmatch u with\n| :? (unit -> i64) as f -> f ()\n| :? i64 as k -> k\n".to_owned(),
+    ];
+    let generic = "def wrap :: own Maybe<'a> -> (Maybe<Maybe<'a>> | i64) = \\x -> Some x\n\ndef first :: own (Maybe<Maybe<'a>> | i64) -> Maybe<'a> = \\u ->\n    match u with\n    | :? Maybe<Maybe<'a>> as m -> (match m with | Some inner -> inner | None -> None)\n    | :? i64 -> None\n\n";
+    let named = "def wrap :: own Maybe<'a> -> Result<Maybe<Maybe<'a>>, i64> = \\x -> Ok (Some x)\n\ndef first :: own Result<Maybe<Maybe<'a>>, i64> -> Maybe<'a> = \\u ->\n    match u with\n    | Ok m -> (match m with | Some inner -> inner | None -> None)\n    | Error _ -> None\n\n";
+    let leak = "let u = {\n    let text = to_string 123456789;\n    let r = ref text;\n    let s = Some r;\n    wrap s\n}\nmatch first u with\n| Some t -> t.length\n| None -> 0\n";
+    // A `dyn` value that holds a borrow, as the type argument of the same calls.
+    let shown = "record View {r} { value: ref {r} string }\n\ninstance Display<View> {\n    fn display v = $\"{v.value}\"\n}\n\ndef show {r} :: ref {r} string -> dyn Display {r} = \\t -> Dyn.of (View { value: t })\n\n";
+    let leak_dyn = "let u = {\n    let text = to_string 123456789;\n    let r = ref text;\n    let d = show r;\n    let s = Some d;\n    wrap s\n}\nmatch first u with\n| Some _ -> 1\n| None -> 0\n";
+    for source in leaks.iter().cloned().chain(
+        [generic, named]
+            .into_iter()
+            .flat_map(|defs| [format!("{defs}{leak}"), format!("{shown}{defs}{leak_dyn}")]),
+    ) {
+        rejects(&source, "E1013", "borrow_outlives_block");
+    }
+    // An exclusive borrow cannot be a payload of either union once the call instantiates it.
+    let exclusive = "let mut n = 1\nlet m = ref mut n\nlet s = Some m\nlet u = wrap s\n0\n";
+    for defs in [generic, named] {
+        rejects(
+            &format!("{defs}{exclusive}"),
+            "E1013",
+            "union_payload_exclusive_borrow",
+        );
+    }
+    // A type alias that names a borrow as its argument writes the borrow into the member.
+    let error = rejects(
+        "type OrMaybe<'a> = (Maybe<'a> | i64)\nlet u: OrMaybe<ref string> = 1\n0\n",
+        "E1013",
+        "anonymous_union_borrowed_member",
+    );
+    assert_eq!(
+        error.message,
+        "an anonymous union holds owned values; Maybe<ref string> is borrowed"
+    );
+    // While the owner lives, the borrows are read: "123456789" has 9 characters.
+    passes(
+        &format!(
+            "{generic}record View {{r}} {{ value: ref {{r}} string }}\n\ndef keep :: ref string -> (View | i64) = \\t -> View {{ value: t }}\n\n\
+             def make :: ref string -> ((unit -> i64) | i64) = \\r ->\n    let f: unit -> i64 = \\() -> r.length\n    f\n\n\
+             test \"the borrows of a union are read while their owner lives\" =\n    \
+             let text = to_string 123456789\n    \
+             let r = ref text\n    \
+             let s = Some r\n    \
+             let u = wrap s\n    \
+             assert ((match first u with | Some t -> t.length | None -> 0) == 9)\n    \
+             let v = keep r\n    \
+             assert ((match v with | :? View as w -> w.value.length | :? i64 as k -> k) == 9)\n    \
+             let c = make r\n    \
+             assert ((match c with | :? (unit -> i64) as f -> f () | :? i64 as k -> k) == 9)\n"
+        ),
+        Edition::E2026,
+    );
 }

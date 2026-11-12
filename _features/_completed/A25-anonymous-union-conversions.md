@@ -615,3 +615,28 @@ PR #103 への GitHub Copilot の再レビューのインラインの指摘（20
 更新した文書: `_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`（拡大の注意点の被演算子の項: どちらの被演算子が隣の型を受け取るか、先に検査する被演算子の中の拡大）、`docs/language.md`（匿名共用体の節の拡大）、`docs/architecture.md`（拡大の段落の `operand_results`）。
 
 変更したファイル: `src/check.rs`、`src/anonymous_union.rs`、`tests/anonymous_unions.rs`、上の文書、このチケット。
+
+### A24 の Copilot 第 4 回の取り込み
+
+2026-11-12。`feat/a24-anonymous-unions` の先端 `352606b4`（A24 の Copilot のレビューの第 4 回とその検証。要素の比較が推論変数を 1 つの型に保つ `Ties`、借用を持つ要素の文書）を取り込みました（再現と測定は `target/scratch/a25/copilot4`）。
+
+- 衝突は文書の 3 ファイル 5 か所で、両方の内容を残して解きました。`anonymous-union.md` の 3 か所（「この記事のポイント」と「まとめ」は A25 の拡大・絞り込みの項と A24 の「型に書いた借用」の文、「それ以外の式」は A25 の拡大の文と A24 の推論変数の規則）、`docs/architecture.md` の表の行（A25 の名前の一覧に `Ties` を足した）、`docs/language.md` の注入の段落（A25 の段落に A24 の推論変数の括弧書きを入れ、A25 が消した「要素の少ない匿名共用体を渡すこともまだできません」は戻さない）。`src/` と `tests/` は衝突しませんでした。
+- A25 への影響: 拡大（`widened`）と絞り込み（`narrowing_pattern` が呼ぶ `type_test_member`。`:? T` と共有）は、要素を `agrees`（`member_fits` を調整なしで）で探します。取り込んだ `member_fits` は、1 つの要素との比較の中で、2 回以上現れる推論変数を同じ型として数えます。
+  - 推論変数を含まない要素（具体的な型と、総称の本体の型変数）は、比較が推論変数に出会わないので何も覚えず、答えは取り込む前と同じです。部分集合の拡大と `:? (A | B)` の絞り込みが選ぶ要素は変わりません（既存の拡大・絞り込みのテストと suite が通ります）。
+  - 未解決の推論変数を 2 回以上含む要素（総称の関数の結果を、変数が決まる前に拡大・照合するとき）は変わります。`def mkp :: unit -> ((Maybe<'a> * Maybe<'a>) | i64)` の `mkp ()` を `((Maybe<i64> * Maybe<i64>) | (Maybe<i64> * Maybe<string>) | i64)` へ拡大すると、取り込む前は `E1041`（`the member (Maybe<an undetermined type> * Maybe<an undetermined type>) of ... could be ... or ...`）、取り込んだ後は最初の要素だけに合い、`same` が `?a` を `i64` に解いて通ります（引数・型注釈の `let`・パイプ・局所の 4 つの形。`probes.sh` の `w_call`〜`w_local`）。両方に合う `((Maybe<i64> * Maybe<i64>) | (Maybe<string> * Maybe<string>) | i64)` は前も後も `E1041`、どちらにも合わない `((Maybe<i64> * Maybe<string>) | (Maybe<string> * Maybe<i64>) | i64)` は `E1041` から `E1003`（`anonymous_union_not_subset`）になります。
+  - 絞り込みは、通る形（`((Maybe<'a> * Maybe<'a>) | i64 | bool)` の `mk3 ()` に `:? ((Maybe<i64> * Maybe<i64>) | i64) as x`）は前も後も同じ要素を選びます。`:? ((Maybe<i64> * Maybe<string>) | i64)` は、取り込む前は要素を選んでから単一化が `E1003`（`expected Maybe<string>, found Maybe<i64>`）、取り込んだ後は `E1041`（`type_test_not_member`）で、A24 が `:? T` について記録した変化と同じです。
+  - `Ties` が「合わない」とするのは単一化が必ず失敗する要素だけなので（A24 の判断 4）、拡大と絞り込みが黙って要素を選ぶことはありません。`V` の要素どうしの対応は従来どおり要素ごとに空の `Ties` から比べ、選んだ要素を順に単一化します（前の要素で解けた変数は次の要素の比較で辿られます）。
+- テスト `widening_and_narrowing_tie_repeated_inference_variables`（`tests/anonymous_unions.rs`）: `mkp n`・`mk3 n` の拡大（引数・パイプ・型注釈の `let`・局所。拡大の後で `?a` が `i64` に解けていること）と絞り込みからの拡大の値（手計算。native と WASM の `-O0`／`-O3`、edition 2026 と 2027）、両方に合う `E1041`、どちらにも合わない `anonymous_union_not_subset` の文、拡大が `?a` を解いた後の `type_mismatch`、絞り込みの `type_test_not_member` の文。取り込む前の `src/anonymous_union.rs` では最初の `which4 (mkp 1)` の `E1041` で落ちます（`test-before.txt`）。
+- 文書: `anonymous-union.md`（拡大の節の表の後に、等しい要素のない要素の数え方と `pair ()` の例。絞り込みの節の要素の項に、照合する値の要素の推論変数）、`docs/language.md`（匿名共用体の節の拡大と絞り込み）、`docs/architecture.md`（拡大の段落。要素は `may_member` ではなく `agrees` で探すと直し、`Ties` と単一化の順を書いた）。
+
+変えた既存の期待値はありません。追加したテストは `tests/anonymous_unions.rs` の 1 件です。
+
+#### 再検証（A24 の Copilot 第 4 回の取り込み）
+
+- T0: `cargo fmt --all -- --check`（差分なし）、`node scripts/slot.mjs -- cargo clippy --all-targets -- -D warnings`（警告なし）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`: 3144 件のうち 3144 passed、4 skipped（`target/scratch/a25/copilot4/t1.txt`）。`tests/anonymous_unions.rs` は 131 件（取り込む前の 127 件、A24 の第 4 回の 3 件、この対応の 1 件）。
+- T2: `node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri anonymous_unions`: `anonymous_unions: native/WASM at O0/O3 passed`、119 cases（`suite.txt`）。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs`（`anonymous-union.md`・`type-inference.md`）: `2 pages, 28 links, 17 checked examples, 32 native runs (O0/O3)`（`check-docs.txt`）。`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`: 19 blocks、0 stale。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-cli-docs.mjs`: 4 checks、0 failed。
+- 影響の再現: `probes.sh` の 10 のプログラムを取り込む前（`c6ab27df`）と後のバイナリで検査しました。変わったのは上に書いた 4 つの拡大（`E1041` → 通る）、どちらにも合わない拡大（`E1041` → `anonymous_union_not_subset`）、`?a` を解いた後の注釈（`E1041` → `type_mismatch`）、絞り込みの `:? ((Maybe<i64> * Maybe<string>) | i64)`（`type_mismatch` → `type_test_not_member`）だけで、両方に合う拡大（`E1041`）、通る絞り込み、具体的な型で注釈した後の拡大（`anonymous_union_not_subset`）は同じです。
+- 匿名共用体を使わないプログラムの出力: 取り込む前（`c6ab27df`、`copilot4/tsuzuri-before`）と後のバイナリで、`tests/fixtures/` と `examples/` の 186 単位の native と wasm32 の IR と `check --json` を取り（`copilot3/baseline.sh`）、`target/scratch/a25/compare.sh` で比べました。`tests/fixtures/anonymous_unions` を含む 186 単位のすべてのファイル（1,490 個）が 1 byte も違いません（`copilot4/compare.txt`）。取り込んだ `src/` の変更は匿名共用体の要素の比較（`member_fits`・`literal_fits`）と `polymorph::MAX_TYPE_SIZE` の名前付けだけです。
+
+変更したファイル（取り込みの `e6a2ba49` を除く）: `tests/anonymous_unions.rs`、上の文書、このチケット。
