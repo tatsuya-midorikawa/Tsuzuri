@@ -7,8 +7,8 @@ use tsuzuri::driver::{Target, TestOptions, run_tests};
 use tsuzuri::parser::{parse, parse_with_source};
 use tsuzuri::syntax::{Edition, Program, TypeExpr, TypeExprKind};
 use tsuzuri::{
-    analyze, analyze_all, analyze_modules, analyze_modules_with_semantics, analyze_with_edition,
-    llvm,
+    analyze, analyze_all, analyze_modules, analyze_modules_all, analyze_modules_with_semantics,
+    analyze_with_edition, llvm,
 };
 
 /// The type as written, with every anonymous union and its members spelled out, so that a test
@@ -3651,6 +3651,156 @@ fn comparison_does_not_widen() {
         "let v: (f64 | i64 | string) = 1\nlet w: (i64 | string) = 2\nlet same = w == v\n0\n",
         "E1003",
         "type_mismatch",
+    );
+}
+
+/// The functions and values of `operand_results_do_not_widen`: `flag 1` is true and `flag 0`
+/// false; `size` reads a member back (`size 2 == 2`, `size "neg" == 3`); `wide` takes and
+/// returns the wider union; `make n` is `n` for `n > 0` and `"neg"` otherwise; `ident` is generic.
+const OPERANDS: &str = "def flag :: i64 -> bool = \\n -> n > 0\n\
+     def size :: own (f64 | i64 | string) -> i64 = \\x ->\n    match x with\n    | :? i64 as n -> n\n    | :? f64 -> 100\n    | :? string as s -> s.length\n\n\
+     def wide :: own (f64 | i64 | string) -> (f64 | i64 | string) = \\x -> x\n\
+     def make :: i64 -> (i64 | string) = \\n -> if n > 0 then n else \"neg\"\n\
+     def ident :: 'a -> 'a = \\x -> x\n\n";
+
+/// A builder whose computations are their values (`Identity { return w }` is `w`).
+const IDENTITY: &str = "def Return :: own 'a -> 'a\nfn Return value = value\n\ndef Bind :: own 'a -> own ('a -> 'b) -> 'b\nfn Bind value next = next value\n";
+
+/// `OPERANDS`, a channel `a`, the values `v: (f64 | i64 | string)`, `w` and `u: (i64 | string)`,
+/// and `let same = {operand}` with the markers `«` and `»` taken out, and the offset of `«`.
+fn operand_source(operand: &str) -> (String, usize) {
+    let source = format!(
+        "{OPERANDS}let a: Channel<i64> = Channel.make 1\nlet v: (f64 | i64 | string) = 1\nlet w: (i64 | string) = 2\nlet u: (i64 | string) = 3\nlet same = {operand}\n0\n"
+    );
+    let at = source.find('«').unwrap_or(0);
+    (source.replace(['«', '»'], ""), at)
+}
+
+/// The errors of `sources`, which compare `v` with an operand whose value is the smaller union
+/// `(i64 | string)`: `E1003` at the offset `at` (when given), and only `E1003` of that operand or
+/// the `E1005` of the comparison of anonymous unions, which have no `Eq` and `Ord` until A26 (a
+/// `match` keeps the union as its type when an arm's error is recovered).
+fn operand_mismatch(sources: &[(&str, &str)], at: Option<usize>, label: &str) {
+    let errors = analyze_modules_all(sources).expect_err(label).diagnostics;
+    let mut mismatched = Vec::new();
+    for error in errors.iter().filter(|error| error.code.starts_with('E')) {
+        if error.code == "E1003" {
+            assert_eq!(error.kind, Some("type_mismatch"), "{label}");
+            assert_eq!(
+                error.message, "expected (i64 | f64 | string), found (i64 | string)",
+                "{label}"
+            );
+            mismatched.push(error.span.start);
+        } else {
+            assert_eq!(error.code, "E1005", "{label}: {}", error.message);
+            assert!(
+                ["Eq", "Ord"].iter().any(|class| error
+                    .message
+                    .starts_with(&format!("no instance for {class}<(i64 | f64 | string)>"))),
+                "{label}: {}",
+                error.message
+            );
+        }
+    }
+    assert!(!mismatched.is_empty(), "{label}: {errors:?}");
+    if let Some(at) = at {
+        assert!(
+            mismatched.contains(&at),
+            "{label}: {mismatched:?}, not {at}"
+        );
+    }
+}
+
+#[test]
+fn operand_results_do_not_widen() {
+    // Copilot review round 3 of A25: the value of an operand may come from the branches of an
+    // `if`, the arms of a `match` or `select`, the result of a block, `@checked` or a computation
+    // expression, which pass the sibling's type down. Each of them is the operand's value and is
+    // not widened either (`E1003` at the branch that is the smaller union), with every comparison
+    // operator. Before the fix, each branch was widened and the only error was the missing
+    // `Eq`/`Ord` instance (`E1005`).
+    let forms = [
+        "(if flag 1 then «w» else u)",
+        "(if flag 1 then v else «w»)",
+        "(match 1 with | 0 -> «w» | _ -> u)",
+        "{ let k = 1; «w» }",
+        "(@checked «w»)",
+        // A parenthesized expression spans its parentheses.
+        "(if flag 1 then { let k = 1; «(w)» } else (match 1 with | 0 -> u | _ -> w))",
+        "((if flag 0 then v else «((u))»))",
+        "(select | recv _ from a -> «w» | default -> u)",
+        // A call is a value of its own: its result is not widened in an operand.
+        "(if flag 1 then «make 1» else w)",
+    ];
+    for operator in ["==", "!=", "<", "<=", ">", ">="] {
+        for form in forms {
+            let (source, at) = operand_source(&format!("v {operator} {form}"));
+            operand_mismatch(
+                &[("Main", &source)],
+                Some(at),
+                &format!("{operator} {form}"),
+            );
+        }
+    }
+    // A computation expression whose builder returns the value as it is.
+    for body in ["Identity { return w }", "Identity { let! x = w; return x }"] {
+        let (source, _) = operand_source(&format!("v == {body}"));
+        operand_mismatch(
+            &[("Main.tz", &source), ("Identity.tc", IDENTITY)],
+            None,
+            body,
+        );
+    }
+    // A pipe and a call in an operand are checked by themselves (as before the fix).
+    for form in ["«(w |> ident)", "«ident w", "«(w |> \\x -> x)"] {
+        let (source, at) = operand_source(&format!("v == {form}"));
+        let error = rejects(&source, "E1003", "type_mismatch");
+        assert_eq!(
+            error.message, "expected (i64 | f64 | string), found (i64 | string)",
+            "{form}"
+        );
+        assert_eq!(error.span.start, at, "{form}");
+    }
+    // The left operand is checked first and gives its type to the right one, which is not
+    // narrowed (as before the fix).
+    let (source, at) = operand_source("(if flag 1 then w else u) == «v»");
+    let error = rejects(&source, "E1003", "type_mismatch");
+    assert_eq!(
+        error.message,
+        "expected (i64 | string), found (i64 | f64 | string)"
+    );
+    assert_eq!(error.span.start, at);
+    // A call or an annotated binding inside an operand still widens: these operands are the
+    // wider union, so the check reaches `Eq`, which anonymous unions do not have until A26.
+    for form in [
+        "(if flag 1 then wide w else v)",
+        "(match 1 with | 0 -> wide w | _ -> v)",
+        "{ let y: (f64 | i64 | string) = w; y }",
+        "(w |> wide)",
+    ] {
+        let (source, _) = operand_source(&format!("v == {form}"));
+        let error = rejects(&source, "E1005", "no_instance");
+        assert!(
+            error
+                .message
+                .starts_with("no instance for Eq<(i64 | f64 | string)>"),
+            "{form}: {}",
+            error.message
+        );
+    }
+    // The same conversions in operands of type `i64` run; the values follow from `size` and
+    // `make` by hand (`make 2` is 2, `make 0` is "neg" of length 3).
+    passes(
+        &format!(
+            "{OPERANDS}test \"conversions inside operands\" =\n    \
+             assert (size (if flag 1 then make 2 else make 0) == 2)\n    \
+             assert (2 == size (if flag 0 then make 2 else make 0) - 1)\n    \
+             assert ({{ let y: (f64 | i64 | string) = make 5; size y }} == 5)\n    \
+             assert ((if flag 1 then size (make 0) else 0) == 3)\n    \
+             assert (size (match 2 with | 0 -> make 7 | _ -> make 0) + 1 == 4)\n    \
+             assert (6 > 1 + size ({{ let k = make 4; k }}))\n"
+        ),
+        Edition::E2026,
     );
 }
 
