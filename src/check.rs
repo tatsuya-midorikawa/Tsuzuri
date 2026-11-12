@@ -4996,7 +4996,18 @@ impl TypedMatchArm {
 /// `:? W as x` (A25, `Checker::narrowing_pattern`). No source spells a name with `$`.
 pub(crate) const NARROWED_PREFIX: &str = "$narrow.";
 
+/// The start of the name of a binding that a retagging (A25, `Checker::retag`: a widening or the
+/// value of a narrowing) gives the payload of a member.
+pub(crate) const RETAGGED_PREFIX: &str = "$retag";
+
 impl Local {
+    /// Whether this is the binding of a member's payload in a retagging (A25, `Checker::retag`).
+    /// The bindings of members that may be arrays share one span there, which is the key of
+    /// `LastUses` for a binding's move.
+    pub fn retags_payload(&self) -> bool {
+        self.provenance == Provenance::Generated && self.name.starts_with(RETAGGED_PREFIX)
+    }
+
     /// Whether this is the hidden binding of the matched value of a narrowing `:? W as x` (A25).
     /// An arm counts it among its `borrowed` bindings only when every member of `W` is Copy
     /// (`Checker::match_value`); the retagging that makes `x` then reads it once, before the arm's
@@ -12016,6 +12027,15 @@ impl<'a> Checker<'a> {
             .iter()
             .find(|(span, _)| *span == expression.span)?;
         let local = local.clone();
+        // A24: where an anonymous union is expected, the old value is injected as any other value
+        // is: `injected_expression` checks it without an expected type (this function again, with
+        // `None`), then `conform_union` wraps it as its member.
+        if let Some(expected) = expected
+            && !self.names.anonymous_unions.is_empty()
+            && self.injects(expression, expected)
+        {
+            return Some(self.injected_expression(expression, expected));
+        }
         Some((|| {
             if let Some(expected) = expected {
                 self.same(&local.ty, expected, expression.span)?;

@@ -555,3 +555,21 @@ export def widen_captured :: i64 -> i64 = \n ->
         | Some value -> take value
         | None -> 0
     wide 1 + wide 2 + (typed 0 + typed 1) * 1000 + (narrowed 0 + narrowed 1) * 1000000 + continued * 1000000000
+
+// widen_generic: an owned (Maybe<'a> | [i64]) is widened into (bool | Maybe<'a> | [i64]) in a generic function whose
+// instances make 'a an i64 and a string: the array moves into the wider union in each of them, as it does when 'a is
+// an array. Nothing is copied.
+def open_size :: own (bool | Maybe<'a> | [i64]) -> i64 = \value ->
+    match value with
+    | :? bool -> 1
+    | :? Maybe<'a> as found -> (match found with | Some _ -> 2 | None -> 3)
+    | :? [i64] as numbers -> numbers.length * 10
+
+def widen_open :: own (Maybe<'a> | [i64]) -> i64 = \value -> open_size value
+
+def maybe_number :: i64 -> (Maybe<i64> | [i64]) = \n -> if n % 2 == 0 then Array.init (n + 1) (\i -> i) else Some n
+
+def maybe_text :: i64 -> (Maybe<string> | [i64]) = \n ->
+    if n % 3 == 0 then Array.init (n + 2) (\i -> i) else if n % 3 == 1 then Some $"t{n}" else None
+
+export def widen_generic :: i64 -> i64 = \n -> widen_open (maybe_number n) + widen_open (maybe_text n) * 1000

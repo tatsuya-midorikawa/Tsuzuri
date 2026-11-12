@@ -501,11 +501,16 @@ impl Analysis<'_> {
             });
             for alternative in &arm.alternatives {
                 for (binding, _) in &alternative.bindings {
-                    let moves = owned
-                        && disjoint
-                        && !arm.borrowed.contains(&binding.id)
-                        && binding.ty.is_copy(&types)
-                        && binding.ty.needs_drop(&types);
+                    let movable = binding.ty.is_copy(&types) && binding.ty.needs_drop(&types);
+                    // Only the take of a Copy value that needs a drop reads a binding's decision.
+                    // A retagging gives the binding of a member that names a type variable the span
+                    // of its array members' bindings, and an instance may make that member a type
+                    // that is not both (`Maybe<i64>`, `Maybe<string>`): its binding must not take
+                    // their move (A25, Copilot review round 2). Other bindings keep their vote.
+                    if !movable && binding.retags_payload() {
+                        continue;
+                    }
+                    let moves = owned && disjoint && !arm.borrowed.contains(&binding.id) && movable;
                     self.bindings
                         .entry(key(binding.span))
                         .and_modify(|old| *old &= moves)

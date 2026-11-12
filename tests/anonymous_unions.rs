@@ -2148,6 +2148,34 @@ fn api_diff_treats_member_order_as_equal() {
     assert!(api_changes(alias, plain, true).is_empty());
 }
 
+/// Verification of Copilot review 2 of #102: the default comparison reads signatures that the
+/// checker rejects (here `E1013`: a region-quantified function type inside a union), and members
+/// that use the same region names in other places are still a set. By hand: in either written
+/// order the members key as `({_0 _1} ref {_0} i64 -> ...)` and `({_0 _1} ref {_1} i64 -> ...)`,
+/// so both versions print the same and nothing changed. A member whose regions really differ is
+/// a change.
+#[test]
+fn api_diff_reorders_members_that_share_region_names() {
+    let first = "({a b} ref {a} i64 -> ref {b} i64 -> i64)";
+    let second = "({a b} ref {b} i64 -> ref {a} i64 -> i64)";
+    let signature =
+        |left: &str, right: &str| format!("def f :: own ({left} | {right}) -> unit = \\v -> ()\n");
+    assert_eq!(
+        api_changes(&signature(first, second), &signature(second, first), false),
+        Vec::<String>::new()
+    );
+    let changes = api_changes(
+        &signature(first, second),
+        &signature(first, "({a b} ref {a} i64 -> ref {a} i64 -> i64)"),
+        false,
+    );
+    assert_eq!(changes.len(), 1, "{changes:?}");
+    assert!(
+        changes[0].starts_with("breaking changed def Main.f"),
+        "{changes:?}"
+    );
+}
+
 #[test]
 fn effective_api_hides_synthetic_names() {
     // Through an alias, a record field and a generic argument, the effective comparison reads the
@@ -5231,6 +5259,85 @@ fn widening_inside_a_lent_if_or_block_moves_array_members() {
     passes(&source, Edition::E2027);
 }
 
+/// The definitions of the instances `name.$mono.N` of the generic function `name` of module
+/// `Main` in `ir`, in the order of the IR.
+fn instance_bodies<'ir>(ir: &'ir str, name: &str) -> Vec<&'ir str> {
+    let head = format!("tz.fn.Main.{name}.$mono.");
+    ir.match_indices("\ndefine ")
+        .map(|(at, _)| at + 1)
+        .filter(|at| {
+            let line = ir[*at..].lines().next().unwrap();
+            line.find(&head).is_some_and(|start| {
+                let rest = &line[start + head.len()..];
+                let rest = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+                rest.starts_with('(') || rest.starts_with("\"(")
+            })
+        })
+        .map(|start| &ir[start..start + ir[start..].find("\n}\n").expect("the definition ends")])
+        .collect()
+}
+
+#[test]
+fn widening_beside_an_open_member_moves_array_members() {
+    // `(Maybe<'a> | [i64])` widened into `(bool | Maybe<'a> | [i64])`: the retagging binds the
+    // payload of each member, and `LastUses` keeps one decision for each binding span. The binding
+    // of the open member `Maybe<'a>` has the span of the widened value, as the binding of the array
+    // has, since an instance may make it an array. An instance that made it a type that no binding
+    // moves (`Maybe<i64>`, Copy without a drop, or `Maybe<string>`, not Copy) took the move from
+    // the binding of the array, so the only use of an owned value copied the array, and `@no_copy`
+    // rejected it (Copilot review round 2). Every instance moves the array into the wider union.
+    let weigh = "def weigh :: own (bool | Maybe<'a> | [i64]) -> i64 = \\v ->\n    match v with\n    | :? bool -> 1\n    | :? Maybe<'a> as m -> (match m with | Some _ -> 2 | None -> 3)\n    | :? [i64] as xs -> xs.length * 100\n\n";
+    // `allocations f` is the number of allocations that `f` makes, -1 if it does not free each.
+    let makers = "def ints :: i64 -> (Maybe<i64> | [i64]) = \\n -> if n > 0 then Array.init n (\\i -> i) else if n == 0 then None else Some n\n\n\
+         def texts :: i64 -> (Maybe<string> | [i64]) = \\n -> if n > 0 then Array.init n (\\i -> i) else if n == 0 then None else Some $\"t{n}\"\n\n\
+         def arrays :: i64 -> (Maybe<[i64]> | [i64]) = \\n -> if n > 0 then Array.init n (\\i -> i) else if n == 0 then None else Some [n]\n\n\
+         def balanced :: (unit -> i64) -> i64 = \\f ->\n    let start = Alloc.snapshot ()\n    let value = f ()\n    let used = start |> Alloc.since\n    if used.frees == used.allocs then value else -1\n\n\
+         def allocations :: (unit -> i64) -> i64 = \\f ->\n    let start = Alloc.snapshot ()\n    let _value = f ()\n    let used = start |> Alloc.since\n    if used.frees == used.allocs then used.allocs else -1\n\n";
+    let functions = "@no_copy\ndef widen :: own (Maybe<'a> | [i64]) -> (bool | Maybe<'a> | [i64]) = \\v -> v\n\n\
+         @no_copy\ndef argument :: own (Maybe<'a> | [i64]) -> i64 = \\v -> weigh v\n\n\
+         @no_copy\ndef bound :: own (Maybe<'a> | [i64]) -> i64 = \\v ->\n    let w: (bool | Maybe<'a> | [i64]) = v\n    weigh w\n\n\
+         def run :: i64 -> i64 = \\n ->\n    weigh (widen (ints n)) + weigh (widen (texts n)) + weigh (widen (arrays n)) + argument (ints n) + argument (texts n) + argument (arrays n) + bound (ints n) + bound (texts n) + bound (arrays n)\n\n";
+    let source = [weigh, makers, functions].concat();
+    let module = accepts_in(&source, Edition::E2026);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    for name in ["widen", "argument", "bound"] {
+        let bodies = instance_bodies(&ir, name);
+        assert_eq!(bodies.len(), 3, "{name}:\n{ir}");
+        for body in bodies {
+            assert!(!body.contains("@tz.alloc"), "{name}:\n{body}");
+        }
+    }
+    // Expected values by hand: 100 for each element of an array, 2 for `Some`, 3 for `None`. The
+    // only allocation is the array of `Array.init`.
+    let tests = "test \"values\" =\n    assert (balanced (\\() -> weigh (widen (ints 3))) == 300 && balanced (\\() -> weigh (widen (ints 0))) == 3 && balanced (\\() -> weigh (widen (ints (-2)))) == 2)\n    assert (balanced (\\() -> weigh (widen (texts 2))) == 200 && balanced (\\() -> weigh (widen (texts 0))) == 3 && balanced (\\() -> weigh (widen (texts (-2)))) == 2)\n    assert (balanced (\\() -> weigh (widen (arrays 1))) == 100 && balanced (\\() -> weigh (widen (arrays 0))) == 3 && balanced (\\() -> weigh (widen (arrays (-2)))) == 2)\n    assert (balanced (\\() -> argument (ints 4)) == 400 && balanced (\\() -> argument (texts 5)) == 500 && balanced (\\() -> argument (arrays 6)) == 600)\n    assert (balanced (\\() -> argument (ints (-1))) == 2 && balanced (\\() -> argument (texts (-1))) == 2 && balanced (\\() -> argument (arrays 0)) == 3)\n    assert (balanced (\\() -> bound (ints 2)) == 200 && balanced (\\() -> bound (texts 3)) == 300 && balanced (\\() -> bound (arrays 4)) == 400)\n    assert (balanced (\\() -> bound (ints 0)) == 3 && balanced (\\() -> bound (texts (-3))) == 2 && balanced (\\() -> bound (arrays (-3))) == 2)\n\n\
+         test \"allocations\" =\n    assert (allocations (\\() -> weigh (widen (ints 3))) == 1 && allocations (\\() -> weigh (widen (texts 3))) == 1 && allocations (\\() -> weigh (widen (arrays 3))) == 1)\n    assert (allocations (\\() -> argument (ints 3)) == 1 && allocations (\\() -> argument (texts 3)) == 1 && allocations (\\() -> argument (arrays 3)) == 1)\n    assert (allocations (\\() -> bound (ints 3)) == 1 && allocations (\\() -> bound (texts 3)) == 1 && allocations (\\() -> bound (arrays 3)) == 1)\n";
+    passes(&[source.as_str(), tests].concat(), Edition::E2026);
+    // A value used again is copied for the first widening and moved by the last, in each Copy
+    // instance: the array of `Array.init` and one copy (`(Maybe<string> | [i64])` is not Copy, so
+    // it cannot be used twice). By hand: 300 + 300 for ints 3, 2 + 2 for ints (-1), 200 + 200 for
+    // arrays 2.
+    let twice = "def twice :: own (Maybe<'a> | [i64]) -> i64 = \\v -> weigh v + weigh v\n\n\
+         def again :: i64 -> i64 = \\n -> twice (ints n) + twice (arrays n)\n\n\
+         test \"twice\" =\n    assert (balanced (\\() -> twice (ints 3)) == 600 && balanced (\\() -> twice (ints (-1))) == 4 && balanced (\\() -> twice (arrays 2)) == 400)\n    assert (allocations (\\() -> twice (ints 3)) == 2 && allocations (\\() -> twice (arrays 3)) == 2)\n";
+    passes(&[weigh, makers, twice].concat(), Edition::E2026);
+    // Edition 2027 lends the widened value to a read parameter (review round 1), which binds no
+    // array, so that `@no_copy` sees only the caller. By hand: 100 for an array, 2 for `Some`.
+    let read = "def measure :: (bool | Maybe<'a> | [i64]) -> i64 = \\v ->\n    match v with\n    | :? bool -> 1\n    | :? Maybe<'a> -> 2\n    | :? [i64] -> 100\n\n\
+         @no_copy\ndef lent :: own (Maybe<'a> | [i64]) -> i64 = \\v -> measure v\n\n\
+         def run :: i64 -> i64 = \\n -> lent (ints n) + lent (texts n) + lent (arrays n)\n\n\
+         test \"read\" =\n    assert (balanced (\\() -> lent (ints 3)) == 100 && balanced (\\() -> lent (texts 2)) == 100 && balanced (\\() -> lent (arrays 1)) == 100)\n    assert (balanced (\\() -> lent (ints (-1))) == 2 && balanced (\\() -> lent (texts (-1))) == 2 && balanced (\\() -> lent (arrays (-1))) == 2)\n    assert (allocations (\\() -> lent (ints 3)) == 1 && allocations (\\() -> lent (texts 3)) == 1 && allocations (\\() -> lent (arrays 3)) == 1)\n";
+    let source = [makers, read].concat();
+    let module = accepts_in(&source, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    let bodies = instance_bodies(&ir, "lent");
+    assert_eq!(bodies.len(), 3, "{ir}");
+    for body in bodies {
+        assert!(!body.contains("@tz.alloc"), "{body}");
+    }
+    passes(&source, Edition::E2027);
+}
+
 /// A closure whose body widens or narrows a captured value, called once or twice, and the
 /// continuation of a computation expression that widens a value it captures (review round 2).
 /// The call of a closure that does not consume its captures lends them to a worker; the binding
@@ -6727,6 +6834,49 @@ fn hover_on_a_narrowed_binder_shows_the_narrowed_union() {
         .collect();
     assert_eq!(warnings, [("W1001", "number")]);
     assert_eq!(module.warnings[0].fixes.len(), 1);
+}
+
+/// Copilot review 2 of #102: `@old (x)` in an `@ensures` line is injected where an anonymous
+/// union is expected, as `x` is: at an annotated binding, in the arms of an `if` and in the
+/// elements of an array literal, as well as at an argument. The contracts are checked at run time,
+/// so each line must also hold for the values computed by hand.
+#[test]
+fn old_values_are_injected() {
+    let count = "def count :: own (i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? bool as b -> if b then 1000 else 2000\n\ndef total :: own [(i64 | bool)] -> i64 = \\vs ->\n    let mut sum = 0\n    for v in vs do\n        sum = sum + count v\n    sum\n\n";
+    // grow 41 is 42: count 41 + 1 is 42; r is not over 100, so w is true and count w is 1000;
+    // total [41, true, false] is 41 + 1000 + 2000, which is 42 + 2999. grow 200 is 201: w is the
+    // old 200, which is 201 - 1, and total [200, true, false] is 3200, which is 201 + 2999.
+    passes(
+        &format!(
+            "{count}def grow :: i64 -> i64 = \\x ->\n    @ensures \\r -> {{ let v: (i64 | bool) = @old (x); count v + 1 == r }}\n    @ensures \\r -> {{ let w: (i64 | bool) = if r > 100 then @old (x) else true; count w == (if r > 100 then r - 1 else 1000) }}\n    @ensures \\r -> total [@old (x), true, false] == r + 2999\n    @ensures \\r -> count (@old (x)) + 1 == r\n    x + 1\n\ntest \"old values\" =\n    assert (grow 41 == 42)\n    assert (grow 200 == 201)\n"
+        ),
+        Edition::E2026,
+    );
+    // The injected value is the old one: count 41 is 41, not 42, so the line traps.
+    traps(
+        &format!(
+            "{count}def wrong :: i64 -> i64 = \\x ->\n    @ensures \\r -> {{ let v: (i64 | bool) = @old (x); count v == r }}\n    x + 1\n\ntest \"wrong\" =\n    assert (wrong 41 == 42)\n"
+        ),
+        Edition::E2026,
+    );
+}
+
+/// Copilot review 2 of #102: the arm's own `->` is outside every parenthesis. An arrow inside
+/// one, here the function type of a pattern's annotation, does not end the scan for a type test,
+/// so the function-guard arm is a pattern (its `<` read as a comparison made it a predicate).
+#[test]
+fn arrows_in_annotations_do_not_hide_type_tests() {
+    // pick f 5 is 5 (f (Some 5) holds), pick f 7 is -7, pick f true is 100 and pick f false is 200.
+    let source = "def pick :: (Maybe<i64> -> bool) -> own (i64 | bool) -> i64 = \\g v ->\n    | ((g: Maybe<i64> -> bool), :? i64 as n) -> if g (Some n) then n else -n\n    | (_, :? bool as b) -> if b then 100 else 200\n\ndef guarded :: (Maybe<i64> -> bool) -> own (i64 | bool) -> i64 = \\g v ->\n    | ((g: Maybe<i64> -> bool), :? i64 as n) when g (Some n) -> n\n    | _ -> 0\n\ndef matched :: (Maybe<i64> -> bool) -> own (i64 | bool) -> i64 = \\g v ->\n    match (g, v) with\n    | ((g: Maybe<i64> -> bool), :? i64 as n) -> if g (Some n) then n else -n\n    | _ -> 0\n\ntest \"pick\" =\n    let five = \\m -> Maybe.default_value 0 m == 5\n    assert (pick five 5 == 5)\n    assert (pick five 7 == -7)\n    assert (pick five true == 100)\n    assert (pick five false == 200)\n    assert (guarded five 5 == 5)\n    assert (guarded five 7 == 0)\n    assert (matched five 5 == 5)\n    assert (matched five 7 == -7)\n";
+    let program = parsed(source);
+    assert!(program.uses_anonymous_unions);
+    passes(source, Edition::E2026);
+    // A predicate with arrows inside parentheses and no type test of its own is still a
+    // predicate: f 2 is 1 (1 < 2) and f 0 is 0.
+    passes(
+        "def holds :: (i64 -> bool) -> bool = \\h -> h 1\ndef f :: i64 -> i64 = \\n ->\n    | holds ((\\(h: i64 -> bool) -> h) (\\k -> k < n)) -> 1\n    | otherwise -> 0\n\ntest \"f\" =\n    assert (f 2 == 1)\n    assert (f 0 == 0)\n",
+        Edition::E2026,
+    );
 }
 
 // A25 and A26 together (the merge of 2026-11-11): conversions between anonymous unions meet the
