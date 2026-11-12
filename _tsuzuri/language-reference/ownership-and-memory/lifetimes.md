@@ -340,6 +340,8 @@ fn run n =
 
 関数が、自分の局所値の借用を、`ref mut` の引数の先へ `Array.write` などで書き込むと、その位置で `E1013`（`cannot store a borrow of a local value through a reference parameter; the caller's data would outlive it`）です。呼び出し元のデータは関数より長く生きるので、関数が終わった後に解放された局所値を読むことになるためです。値で受け取った仮引数（`own m`、edition 2026 の値の仮引数）は関数が所有するので、その中のセル（`Mutex` など）へ局所値の借用を書き込んでも呼び出し元のデータには届きません。仮引数の解放の順序で検査します（[Drop とリソースの解放](drop.md#解放の順序lifo-と宣言順)）。仮引数の中でも、参照や `Rc`・`Arc` の先のセルは呼び出し元と共有しうるので、この `E1013` です。呼び出す関数が自分の局所値の借用を関数値の仮引数へ渡し、実引数がそれを呼び出し元のデータへ書き込む（か、上の規則で書き込みうる、本体の見えない）関数値のときは、局所値が呼び出し先のものなので、呼び出し元の呼び出しの位置で `E1013`（`cannot pass this function value here: 'leak' passes it a borrow of a local value of its own, ...`）です。読み取りの仮引数（edition 2027）や演算子が借りた一時値への参照そのものを、呼び出す関数が引数の先へ書き込むときは、一時値が文の終わりで解放されるので `E1013`（`cannot store a borrow of a temporary value: ...`）です。値を `let` で束縛してから渡します。
 
+関数が、`ref` か `ref mut` の引数の先の部分の借用（`let t = ref p.s`）を、同じ引数の先（`p.h` の `Mutex` など）へ書き込むのは、呼び出し元の値が自分の部分の借用を持つことです。`ref mut` の引数でも、関数が書き込んだのは共有の借用なので、呼び出し元の値はその後も共有の借用を持ちます。`ref mut p0` を新しく書いた呼び出しでも、`ref mut` の変数や仮引数を渡す呼び出し、関数値の仮引数、ラムダ、部分適用、本体の見えない関数値を通した呼び出しでも同じで、呼び出し元では値の部分の解放の順序を検査し（[Drop とリソースの解放](drop.md#解放の順序lifo-と宣言順)）、借用された部分の書き換えや、もう一度の `ref mut p0` は `E1014` です。
+
 ```text
 def bad :: ref mut [(unit -> i64)..] -> unit
 fn bad target =

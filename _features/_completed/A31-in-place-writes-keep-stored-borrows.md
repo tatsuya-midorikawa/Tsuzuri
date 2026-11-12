@@ -1279,3 +1279,80 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 更新した文書: `_tsuzuri/language-reference/ownership-and-memory/drop.md`（解放の順序: パターンの変数、文の一時値、タプル・要素の順。検査: パターンの変数、一時値、値の自分自身の部分と安全側の扱い）、`lifetimes.md`（値で受け取った仮引数のセル）、`docs/language.md`・`docs/architecture.md`（破棄の順序の段落）、`_features/README.md`（A31 の行）。
 
 変えたファイル: `src/ownership.rs`、`src/ownership_control.rs`、`tests/rc.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、上の文書、このチケット。
+
+### レビューの指摘への対応（第9回の後）（2026-11-13）
+
+第9回の対応（`3a9e4733`）を A32 のブランチへ merge した作業（`target/wt/a32/target/scratch/a32/merge3/`）で、2 つの問題が見つかりました。1 つは第9回の退行、もう 1 つは基準からある穴です。どちらも対応前の先端（`3a9e4733`、`r10/bin/tsuzuri-before`）・基準・対応後のバイナリで再現を確かめてから直しました。結果は `target/scratch/a31/r10/` にあります（再現は `r10/min2`・`r10/fx`・`r10/sm`、`r10/corpora.sh <tag>` がレビューの 9 回分と第10回のプログラムの `check --json` を、`r10/cdiff.mjs` がその差を出します）。
+
+- **問題 1（第9回の退行、修正の妨げ）**: conventions の fixture の `callback_constructed_once`（`Array.map ({ calls = calls + 1; owned_inc }) [1, 2, 3]`）が、モジュールに `Drop` の instance と、値を捕捉したラムダを入れた `Vec` があると `E1013`（`assignment_extends_borrow`、`cannot keep a borrow of a temporary value in itself or in a temporary made after it`）になりました（A32 の fixture。20 行の再現 `r10/min2` は、対応前のバイナリが拒否し、基準は手で数えた `50110` を出します）。原因: `Array.map` のラムダ（`\index -> transform values[index]`）が渡す要素は、高階の事実の出どころ（`Source`）で `dying`（借用した一時値の配列から読んだ値）を受け継ぎ、呼び出し元では式の無い引数になります。値を捕捉したラムダがあるとこの呼び出しは見えないコードの規則（`temporaries_dropped_first`）に落ち、式の無い引数は型が分からない（`temporary_type` が `None`）ので、「自分自身へ借用を保持させる一時値」に数えていました。モジュールに `Drop` の instance があるかだけで決まり、渡す値の型（`i64`）の破棄が何も読まないことを見ていませんでした。第9回の E2E は conventions suite を実行していませんでした（A31 の fixture には `Vec` が無いので、A31 では suite も Rust のテストも通っていました）。
+- **問題 2（健全性の穴、基準にもある）**: `record Pair { s: string, h: Holder }` を `ref mut Pair` で受け取る関数が `let t = ref p.s` を `p.h.cell` へ書き込む（ロックのコールバックのその場の書き込み）と受理され、`drop -1`（解放後の読み出し）を出しました。名前付き関数、`ref mut` の変数を渡す形、別の関数へ中継する形のどれでもです（`ref Pair` の版は第9回で拒否）。原因: 呼び出し元の `apply_store_within` は、排他の借用だけで届く持ち主へ格納する値から、その持ち主をルートとする loan をすべて「書き戻し」として除いていました。呼び出し先の事実 `(0, Value, 0)` は `shared_only` なので、呼び出し元は `shared_copy` で共有の借用の複製を格納しますが、その複製も除かれ、`p0` は自分の部分の借用を持たないままでした。そのため第9回の自己 loan の検査が届かず、さらに安全な順序 `Pair { h, s }` でも、呼び出しの後の `p0.s = ...` が受理され、`h` の `drop` が解放した文字列を読みました（`r10/sm/m5`、基準も `drop -1`）。この対応で、同じ穴が関数値の仮引数を通した呼び出し（`apply target (ref mut p0)`、`r10/sm/w_apply`）と本体の見えない関数値（`Vec` から読んだ関数値 `w_opaque_vec`、関数の結果 `w_opaque_dyn`）にもあることを見つけました（どれも基準で `drop -1`）。
+
+どちらも「[pre-existing, plain]」ではありません（問題 2 は基準にもありますが、代入の双子が無い: フィールドの `ref mut` は書けず、ロックのコールバックのその場の書き込みは A31 の範囲です）。A31 で直し、別のチケット（A33）は作っていません。
+
+#### 1 つの破棄の順序の規則
+
+第6回〜第9回は、破棄の順序の穴を記憶域の種類ごとに閉じてきました（局所値、脱出、仮引数、パターンの変数・一時値・値の部分）。オーケストレーターの指示に従い、判定を 1 つの規則にまとめました（`src/ownership.rs` の `DropSlot`・`Borrowed`・`Checker::borrow_dropped_first`）。
+
+> 借用を読みうる `drop` を実行する値（保持する値）は、その値より後に破棄される記憶域の借用か、自分自身の部分のうち、読みうる部分より後に破棄される部分の借用しか持てない。
+
+「借用を読みうる」は保持する値の型で決めます（`drop_reads`: 型の格納された部分から届く、借用を持ちうる利用者の `Drop` 型と、`drop_environments` が求めたそうした値を環境に持ちうる関数値。弱参照の先は数えない）。型の分からない値だけを数えます（モジュールに `Drop` の instance があるかでは決めません）。借用の出どころ（代入、その場の書き込み、ロックのコールバック、呼び出し先の書き込みの事実、隠れた環境）は問わず、保持する値が破棄される所で、その値が持つものを見ます。破棄の位置は記憶域の種類ごとに次のとおりで、どの検査も `borrow_dropped_first` を呼びます（`DropSlot::Scoped` は同時に終わるスコープの束縛の順位で、大きいほど先に破棄。`Temporary` は文の一時値を作ったソースの位置で、作った順に破棄。`Unknown` は位置の分からない値で、常に先に破棄されうるものとする。`Borrowed::Part` は自分自身の部分で `self_borrow_dropped_first`）。
+
+| 記憶域 | 破棄の位置と順序 | 規則での位置 | 検査する所 | テスト |
+| --- | --- | --- | --- | --- |
+| ブロックの局所値 | ブロックの終わり、宣言の逆順 | `Scoped`（宣言の位置） | `eval_block` の `check_drop_order` | `tests/rc.rs` `a_value_whose_drop_runs_code_keeps_no_borrow_of_a_later_local`（第6回） |
+| 一部の経路でだけムーブした局所値 | ムーブしなかった経路でブロックの終わり（すべての経路でムーブした値は破棄しない: `State::moved_always`） | `Scoped` | 同上 | `a_value_that_a_branch_moves_or_a_jump_drops_keeps_no_borrow_of_a_later_local`（第7回） |
+| `break`・`continue` で抜けるスコープの局所値 | その位置、束縛の逆順 | `Scoped`（`binding_order`） | `eval_loop_jump` の `check_exit_drop_order` | 同上 |
+| `try` が受け止める例外で抜けるスコープの局所値 | 送出の位置、束縛の逆順（受け止める `try` が無ければトラップで、破棄しない） | `Scoped`（`binding_order`） | `raise_edge` の `check_exit_drop_order` | 同上、`a_handler_that_catches_every_exception_raises_nothing_to_the_outer_try`（第8回） |
+| `match` の腕のパターンの変数とパターンの一時値 | 腕の終わり、束縛の逆順（照合した値をその場で見るビューは照合した値の一部） | `Scoped`（`binding_order`） | `eval_match` の `check_exit_drop_order` | `a_pattern_variable_whose_drop_runs_code_keeps_no_borrow_of_a_later_one`（第9回） |
+| 関数・ラムダの値の仮引数（パターンの仮引数を含む） | 本体の終わり、局所値の後、宣言の逆順 | `Scoped`（宣言の位置） | `check_body` の `check_parameter_drop_order` | `a_parameter_whose_drop_runs_code_keeps_no_borrow_of_a_later_parameter`（第8回）、`an_owned_parameter_owns_the_cells_that_it_stores`（第9回） |
+| `ref` の仮引数の先とその部分 | 呼び出し元の値（呼び出しより長く生きる）。先の部分の借用を同じ先へ格納すると、呼び出し元の値の自己 loan | 呼び出し元で `Part`（呼び出し先が順序を示せば `ordered`） | `store_external`（`ordered_self_borrow`）→ 呼び出し元の `check_drop_order_of` | `a_value_whose_parts_run_drop_code_keeps_no_borrow_of_a_part_dropped_before_them`（第9回） |
+| `ref mut` の仮引数の先とその部分 | 同上（格納したのは共有の借用: `shared_some`） | 同上 | 同上と `apply_store_within`（共有の loan を残す）、`apply_facts_once`（どの実引数でも共有の複製）、`apply_opaque`（`self_borrow_types`） | `a_borrow_of_a_part_kept_through_an_exclusive_reference_keeps_the_drop_order`（この対応） |
+| 文・呼び出しの一時値 | 文の終わり、作った順（引数は左から、パイプラインは左辺が先）。文の後も使う局所値より先 | `Temporary`（式の位置） | `temporary_dropped_first`（書き込みの事実・隠れた環境 `temporary_hidden_first`・見えないコード `temporaries_dropped_first`） | `a_temporary_whose_drop_runs_code_keeps_no_borrow_of_one_made_before_it`（第9回） |
+| 呼び出し先が関数値へ渡す値（一時値の要素、呼び出し先が作った値） | 分からない | `Unknown`、型は呼び出し先から見た型（`Source::ty`・`Arg::ty`） | 同上 | `a_value_that_a_callee_passes_on_reads_what_its_type_reads_when_dropped`（この対応）、conventions の fixture の `capturing_readers` |
+| レコードのフィールド | 値自身の `drop` の後、宣言順 | `Part`（`self_borrow_dropped_first`） | `check_drop_order_of` の自己 loan（局所値・仮引数・腕・脱出）、一時値は `temporary_dropped_first` | `a_value_whose_parts_run_drop_code_keeps_no_borrow_of_a_part_dropped_before_them`（第9回） |
+| タプルの要素 | 値自身の `drop` の後、先頭から | `Part` | 同上 | 同上（`r9/adv/a03_tuple_order` の順序） |
+| 配列・`Vec` などの要素、共用体の中身、`Mutex` などの中身 | 値自身の `drop` の後（検査は要素の順序を区別しない: 入れ物が読みうるなら拒否） | `Part`（順序の分からない段） | 同上 | 同上（`sf10`） |
+| 隠れた環境（セルを所有する関数値、`Rc`・`Arc` のブロック） | 環境を共有しうる局所値の破棄（その局所値が保持する値） | その局所値の `Scoped` | `store_hidden`・`exports` で局所値へ渡し、上の検査 | `a_value_whose_drop_runs_code_keeps_no_borrow_of_a_later_local`（`dc01`・`k10`・`k11`、第6回） |
+
+違うのは保持する値と借用の先を集める所（スコープの終わりの局所値の値、呼び出しの一時値の引数と事実）とエラーの文言だけです。一時値と局所値をまたぐ組（局所値が一時値の借用を持つ、文の中で終わる腕の変数の借用を一時値が持つ）は、一時値の借用の規則（`borrow_of_temporary`・`temporary_borrow_stored`）と借用の生存の規則（`borrow_outlives_block`）が先に拒否するので、`dropped_before` は `Temporary` の借用を局所値が持つ組を常に先に破棄されるものとし、局所値の借用を一時値が持つ組を後に破棄されるものとします。
+
+#### 設計の変更（`src/ownership.rs`）
+
+- **1 つの規則**（`DropSlot`、`DropSlot::dropped_before`、`Borrowed`、`Checker::borrow_dropped_first`）。`check_drop_order_of` は局所値ごとに、後に宣言した局所値の loan を `Borrowed::Other(Scoped)`、自分自身の loan を `Borrowed::Part` として判定します（判定と報告の順序は今までと同じ）。`temporary_dropped_first` は、2 つの一時値を `Temporary`（式の無い値は `Unknown`）として判定し、同じ引数なら `Borrowed::Part` です。一時値が自分自身の借用を持つ組は、今まで値自身の `Drop.drop` も数えていましたが（`drop_reads`）、局所値と同じく部分の規則（値自身の `drop` は部分より先に走る）にしました。
+- **呼び出し先が渡す値の型**（`Arg::ty`、`Source::ty`、`temporary_type`）。`record_higher` が高階の事実の出どころに、呼び出し先から見た実引数の型（借用した一時値なら一時値の型）を記録し、`apply_facts_once` の高階の呼び出しの適用が式の無い引数へ渡します。特殊化した本文の型なので具体的です。`temporary_type` は式があれば式の型、無ければこの型を返し、`temporary_dropped_first`・`temporary_hidden_first`・`temporaries_dropped_first` はその型で、書き込み先になりうるか（`may_reach_store`・`hidden_type`）と、破棄が読みうるか（`drop_reads`）を判定します。型の分からない値だけを数えます。問題 1。
+- **排他の借用で届く持ち主の共有の自己 loan を残します**（`apply_store_within`）。書き戻しとして除くのは、排他の借用だけで届く持ち主をルートとする排他の loan だけにしました（フィールドや要素の `ref mut` は書けないので、排他の loan はその持ち主全体の排他の借用か、その再借用です）。共有の loan は呼び出し先が同じ値へ格納した共有の借用の複製なので、持ち主が持ちます。持ち主が持つ自分自身をルートとする loan はたどりません（たどると持ち主へ共有の借用で届いたことになり、排他の借用そのものが書き戻しでなくなるため。本体の見えない関数値の安全な順序 `ok_w_opaque_vec` を、2 回目の評価で自己の排他の loan として拒否していました）。問題 2。
+- **どの実引数でも共有の複製を格納します**（`StoreFacts::shared_some`、`apply_facts_once`）。`shared_some` は、共有の借用を格納した組（`shared_only` の上位集合。合流は和、単調）です。組が `(p, Part::Value, p)` なら、呼び出し元は実引数が新しく作った `ref mut` でなくても（`ref mut` の変数、仮引数を渡す関数、高階の事実が渡す式の無い値）共有の複製を格納し、`shared_only` でない組（呼び出し先が排他の借用の書き戻しも格納する）なら実引数の loan とともに格納します。`ordered` の組では複製も `ordered_copy` にします。問題 2 の `w_apply` など。
+- **中継した `ordered` を伝えます**（`ordered_self_borrow`）。`ordered_loans` の複製（呼び出し先が実引数の場所の中の順序を示した loan）は、実引数の場所より上の段だけを見ます。仮引数をそのまま渡す関数（`fn target p = inner p`）の安全な順序（`ok_relay`）を、最初の版は値全体の借用として拒否していました。
+- **本体の見えない関数値**（`CallFacts::self_borrow_types`・`self_borrow_any`、`self_borrow_types`、`apply_opaque`）。プログラムの関数のうち、`ref mut T` の仮引数の先へ自分の部分の共有の借用を格納するもの（`shared_some` の `(p, Part::Value, p)`）の `T` と、その組がどれも `ordered` かを、`joint_facts` の不動点で求めます（集合は増えるだけ、`ordered` は減るだけで、変われば本文を検査し直します。予算を超えたときと、検査に通る `top` の関数があるときは `self_borrow_any`）。`apply_opaque` は、`ref mut T` の実引数の `T` がそれに入るなら、実引数の値の共有の複製（すべて `ordered` なら `ordered_copy`）を実引数の先へ格納します。そうした関数が無いプログラムでは何も変わりません。問題 2 の `w_opaque_vec`・`w_opaque_dyn`。
+
+指摘ごとの対応（期待は基準の対照と手の計算から。安全なプログラムの値は基準と同じことを確かめました）:
+
+| 問題 | 再現 | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（第9回の退行） | 再現（`r10/min2` は対応前が `10:18` の `E1013`、基準は `50110`。`r10/fx/v2`・`v3`（`Array.map owned_inc [1, 2, 3]`）も同じ。`v1`（ラムダの `Vec` が無い）・`v4`・`v5`（借用した一時値が無い）は対応前も受理） | 呼び出し先から見た型（`Source::ty`）で判定。どれも受理、`min2` は `50110` | `a_value_that_a_callee_passes_on_reads_what_its_type_reads_when_dropped`（edition 2027）、conventions の fixture の `capturing_readers`（`50000`・`50007`、`"hello".length * 10000 + n`。対応前のバイナリはこの fixture の `callback_constructed_once` を `141:18` で拒否） |
+| 2（`ref mut` の自己の部分の借用） | 再現（`r10/sm/fn`・`var`・`relay` が受理、`drop -1`。`m5`: 安全な順序でも呼び出しの後の `p0.s = ...` で `drop -1`。この対応で見つけた `w_apply`・`w_opaque_vec`・`w_opaque_dyn` も受理、`drop -1`。`w_pipe`・`w_lambda`・`w_partial`・`w_param`・`w_own`・`w_ownp`・`w_arm`・`w_loop` も対応前は受理、基準は `drop -1`（`w_partial` は `drop 0`）） | 上の 5 つ。危険な順序はどの綴りも、値を宣言したブロック（`w_arm` は腕、`w_own` は `let mut q` のブロック）の始まりの `E1013`、`self_referential_store`。呼び出しの後の借用した部分の書き換え（`m4`・`m5`）は `E1014`、`borrow_conflict`。安全な順序（`ok_*`、`m6`）は受理、値は基準と同じ（`drop 8`・`0`、`ok_w_partial` は `drop 9`・`0`） | `a_borrow_of_a_part_kept_through_an_exclusive_reference_keeps_the_drop_order`（12 の綴りを両方の edition で拒否し、安全な順序の双子を受理。edition 2027 で conventions の綴り・`Vec` から読んだ関数値・書き換えの 2 つの順序） |
+
+判断（どれも「健全性を保ち、受理している安全なプログラムを受理のまま保つ、最も保守的な選択」）:
+
+- 自分の部分の共有の借用を持つ値へ、もう一度 `ref mut p0` を渡す呼び出し（`r10/sm/mix4`、安全な順序で `target (ref mut p0)` を 2 回。基準と対応前は受理して `drop 8`）は `E1014` になりました。呼び出し先が借用された部分を書き換えうる（`m5` の書き換えを呼び出し先がする形）ためで、書き込みの事実は「どの場所を書き換えるか」を持たないので区別できません。同じ関数を中継する本体の中（`mix3`: `fn twice p = target p + target p`）は第7回から同じ理由で `E1014` で、それと揃います。`ref p0` を渡す呼び出しは受理されます（`mix5`、`36`）。`drop.md` に書きました。
+- 本体の見えない関数値は、プログラムに `ref mut T` の自己の部分の借用を格納する関数があるときだけ、`T` の値へ同じ格納をしうるものとします。型の一致で判定するのは、特殊化したモジュールの型が具体的で、フィールドや要素の `ref mut` は書けない（`ref mut T` を受け取ったコードがその部分の `ref mut` を作って別の関数へ渡すことはできない）ためです。そうした関数がどれも順序を守るなら順序を守るものとし、安全な順序の `ok_w_opaque_vec`・`ok_w_opaque_dyn` を受理のまま保ちました。
+- 安全な順序で、ロックの中身（`Mutex<Pair>` のコールバックへ貸した `p`）の部分の借用を中身へ格納する `ok_w_lock` は、対応前の `self_referential_store` から、ロックの中身の借用を残す `mutex_result_retains_borrow`（`locked_borrow_kept`、第8回）に変わりました（どちらも拒否。中身の借用はロックを外した後の書き込みで無効になりうるので、第8回の規則が正しい理由です）。
+- 書き戻しとして除く loan を排他の loan に絞ったことは、レビューの 9 回分のプログラム（4496 回の検査）と fixture・examples のどれでも、除いていた loan が排他のものだけだったことを、計装したバイナリで確かめてから決めました（`r10/dbg-corpora.txt`。共有の loan を除いていたのは `r10/sm` の再現だけ）。
+- 期待を変えた既存のテストはありません。
+
+確かめたこと（2026-11-13。ログは `target/scratch/a31/r10/`）:
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` は警告なし。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast` は、最初の版（`17465441`）で 3048 件中 3047 件成功、1 件失敗（`ownership::retention_tests::store_facts_follow_what_the_bodies_store`: 書き込みの事実を丸ごと比べる単体テストで、期待の `Source` に新しい `ty` が無かった。期待に、本文から見た実引数の型（仮引数 `arr` の宣言の型）を足しました。期待を弱めたのではなく、増えた項目の値を書いたものです）、直した版（`89814a68`）で 3049 件すべて成功、4 件 skip（915 秒、`nextest-2.log`）。第9回の 3046 件から増えた 3 件は `tests/rc.rs` の 2 件と単体テスト `shared_self_borrows_through_exclusive_references_are_facts_of_the_module` です。すべての fixture をビルドする `effects_trap`（9 件）・`effects_alloc_conservative` も成功しています。領域のテスト（`rc`・`mutable_slices`・`currying`・`borrowed_records`・`user_drop`）は 70・19・16・21・27 件すべて成功。
+- 新しいテストが対応前に失敗すること: `src/ownership.rs` を `3a9e4733` に戻して `cargo test --test rc` で新しい 2 件を実行し、2 件とも失敗することを確かめました（`fail-before.txt`。退行のテストは `E1013`、穴のテストは最初の綴りの受理で失敗。戻した後は先端に戻しています）。単体テストは新しい事実（`shared_some`・`self_borrow_types`）を読むので、対応前にはコンパイルできません。
+- レビューの 9 回分のプログラム（`corpora.sh a`、両方の edition。対応前は `corpora.sh before`）: 第 1 回〜第 9 回の 4348 回の検査は 1 つも変わりませんでした（`diff-before-a.txt`）。第10回のプログラム（`r10/sm`・`r10/sm/g`（A32 の綴りのうち A31 で書けるもの）・`r10/fx`・`r10/min2`、164 回）は、拒否から受理が 3 件（`min2`、`fx/v2`・`v3`。問題 1）、受理から拒否が 38 件（危険な順序のすべての綴りと書き換えの 36 件（基準で実行すると `drop -1` か `drop 0`）、上の判断の `mix4` の両方の edition）、拒否のまま kind が変わったものが 2 件（`ok_w_lock` の両方の edition、上の判断）です。
+- 受理される第10回のプログラム 57 回（両方の edition）は、`-O0`・`-O3` の出力がすべて基準と同じです（`vals.sh`、`vals.txt`）。
+- 154 個の照合（`compare.mjs`）: edition 2027・2026 とも期待と違うもの 0（`compare-2027.txt`・`compare-2026.txt`）。
+- 手順 5 の比較（`step5.mjs`）: `tests/fixtures/*`・`examples/*` の 154 個の `check --json` と `build --no-cache --emit llvm` が基準とすべて同じ（`step5-a.txt`。この対応で conventions の fixture に足した `capturing_readers` も、基準と同じく受理されます）。
+- E2E（`e2e.sh`、`e2e-final.log`）: `node tests/features.mjs <bin> <suite>` の `conventions` 39 件（基準のバイナリでも同じ値で成功。対応前のバイナリは fixture の検査で `E1013` になり失敗します）、`in_place_writes` 63 件（基準でも成功）、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`slices` 11 件、`matrix_view` 303 件、`concurrency` 15 件、`iteration_protocol` 26 件（native と WASM の `-O0`・`-O3`）、`sync_types` 14 件・`tzroutine` 16 件（native の `-O0`・`-O3`）、`node tests/control.mjs`（701 件）、`node tests/user_drop.mjs`（native と WASM の `-O0`・`-O3`）。すべて成功。
+- 文書: `TSUZURI_BIN=<bin> node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`）は `Docs: 2 pages, 41 links, 9 checked examples, 18 native runs (O0/O3)` で成功。`gen-docs.mjs --check` は `19 blocks checked, 0 stale`、`check-cli-docs.mjs` は `4 checks, 0 failed`、`check-guide-lite.mjs` は `88 references checked, 0 failed`、`check-links.mjs --into _features/README.md` は `0 broken`。診断の種類は増やしていません。
+- 性能（`TSUZURI_KG=0 TSUZURI_TIME_PASSES=1 tsuzuri check` の `ownership` の相の中央値、ms、基準・対応前・対応後を交互に 3 回。`time-perf.txt`）: レビューの `perf_loop_breaks_400` 147 / 375 / 374、`perf_try_checked_400` 224 / 389 / 399、`perf_ho_wrap_120` 0.55 / 1.73 / 1.71、`perf_match_nest_30` 1.41 / 1.53 / 1.54、第 8 回の `perf_ho_chain_320` 1.58 / 22.7 / 22.7、第 6 回の `drop_locals_600` 3.67 / 5.78 / 5.75、`pattern_param_chain_200` 1.39 / 6.20 / 6.34（どれも対応前とほぼ同じ）。時間の閾値は置きません。
+
+更新した文書: `_tsuzuri/language-reference/ownership-and-memory/drop.md`（1 つの規則と、値の種類ごとの解放の位置の表。`ref mut` の仮引数を通した自分自身の部分、呼び出し先が関数値へ渡す値、もう一度の `ref mut` の制限）、`lifetimes.md`（`ref`・`ref mut` の引数の先の部分の借用を同じ先へ書き込む関数）、`docs/language.md`・`docs/architecture.md`（破棄の順序の段落）、`_features/README.md`（A31 の行）。
+
+変えたファイル: `src/ownership.rs`、`tests/rc.rs`、`tests/features.mjs`、`tests/fixtures/conventions/Main.tz`、上の文書、このチケット。
