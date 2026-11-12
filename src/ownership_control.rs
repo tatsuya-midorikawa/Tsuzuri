@@ -598,6 +598,18 @@ impl<'a> Checker<'a, '_> {
                 }
                 let value = self.eval(&arm.body, Use::Consume, live)?;
                 ids.extend(temporaries);
+                // A31: the pattern's variables and temporaries are dropped where the arm ends, in
+                // the reverse order of their bindings (`| (c, s) ->` drops `s` before `c`), as
+                // where a `break` leaves them. A view is no value of its own: the matched storage
+                // that it reads is dropped with the subject, after the arm.
+                if self.reachable {
+                    let dropped: BTreeSet<usize> = ids
+                        .iter()
+                        .copied()
+                        .filter(|id| !self.views.contains(id))
+                        .collect();
+                    self.check_exit_drop_order(&dropped, arm.body.span)?;
+                }
                 self.finish_control_scope(&ids, &value, span)?;
                 if self.reachable {
                     join(&mut result, value);

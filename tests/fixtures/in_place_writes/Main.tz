@@ -954,3 +954,82 @@ fn share_handed_to_a_function_parameter =
     let mr = ref m
     share_out (\r -> Mutex.with_lock mr (\slot -> Array.write 0 r slot))
     Mutex.with_lock mr (\slot -> Mutex.with_lock (Arc.get (ref slot[0])) (\cell -> cell[0] ()))
+
+// Review round 9: a value whose drop reads what its cell holds, and writes it to `out`.
+record Recorder { cell: Mutex<[unit -> i64]>, out: Arc<Mutex<[i64]>> }
+
+instance Drop<Recorder> {
+    fn drop r = {
+        let seen = Mutex.with_lock (ref r.cell) (\b -> b[0] ());
+        Mutex.with_lock (Arc.get (ref r.out)) (\o -> Array.write 0 seen o)
+    }
+}
+
+def recorded :: ref Arc<Mutex<[i64]>> -> i64
+fn recorded out = Mutex.with_lock (Arc.get out) (\o -> o[0])
+
+// The pattern binds the string before the recorder, so the recorder is dropped first.
+export def pattern_variables_in_drop_order :: i64
+fn pattern_variables_in_drop_order =
+    let out = Arc.new (Mutex.create [0])
+    let k = match (to_string 123456789, Recorder { cell: Mutex.create [\() -> 0], out: Arc.share (ref out) }) with
+            | (s, c) ->
+                let t = ref s
+                Mutex.with_lock (ref c.cell) (\b -> Array.write 0 (\() -> String.length t) b)
+                1
+    k * 100 + recorded (ref out)
+
+def keep_in :: ref Recorder -> ref string -> i64
+fn keep_in c s =
+    Mutex.with_lock (ref c.cell) (\b -> Array.write 0 (\() -> String.length s) b)
+    1
+
+// The recorder temporary is made before the string, so it is dropped first.
+export def temporaries_in_drop_order :: i64
+fn temporaries_in_drop_order =
+    let out = Arc.new (Mutex.create [0])
+    let k = keep_in (ref (Recorder { cell: Mutex.create [\() -> 0], out: Arc.share (ref out) })) (ref (to_string 123456789))
+    k * 100 + recorded (ref out)
+
+record RecordedPair { c: Recorder, s: string }
+
+def pair_parts :: ref Arc<Mutex<[i64]>> -> i64
+fn pair_parts out =
+    let p = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out }, s: to_string 123456789 }
+    let t = ref p.s
+    Mutex.with_lock (ref p.c.cell) (\b -> Array.write 0 (\() -> String.length t) b)
+    1
+
+def keep_part :: ref RecordedPair -> i64
+fn keep_part p =
+    let t = ref p.s
+    Mutex.with_lock (ref p.c.cell) (\b -> Array.write 0 (\() -> String.length t + 1) b)
+    1
+
+def pair_parts_in_a_callee :: ref Arc<Mutex<[i64]>> -> i64
+fn pair_parts_in_a_callee out =
+    let p = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out }, s: to_string 123456789 }
+    keep_part (ref p)
+
+// The recorder field is declared before the string field, so it is dropped first; the callee's
+// store keeps that order too.
+export def own_parts_in_drop_order :: i64
+fn own_parts_in_drop_order =
+    let out = Arc.new (Mutex.create [0])
+    let first = pair_parts (ref out) * 100 + recorded (ref out)
+    let second = pair_parts_in_a_callee (ref out) * 100 + recorded (ref out)
+    first * 1000 + second
+
+def keep_owned :: own string -> own Recorder -> i64
+fn keep_owned s c =
+    let t = ref s
+    Mutex.with_lock (ref c.cell) (\b -> Array.write 0 (\() -> String.length t) b)
+    1
+
+// An owned parameter's cell is the callee's own: the recorder, declared after the string, is
+// dropped first.
+export def owned_parameter_cells :: i64
+fn owned_parameter_cells =
+    let out = Arc.new (Mutex.create [0])
+    let k = keep_owned (to_string 123456789) (Recorder { cell: Mutex.create [\() -> 0], out: Arc.share (ref out) })
+    k * 100 + recorded (ref out)

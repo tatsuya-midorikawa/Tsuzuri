@@ -3855,3 +3855,234 @@ fn a_share_of_a_local_block_handed_to_a_function_parameter_is_an_owner() {
         (14, 13),
     );
 }
+/// A31, review round 9 (findings 1 and 5): the variables of a pattern are dropped where the arm
+/// ends, in the reverse order of their bindings (`| (c, s) ->` drops `s`, then `c`). A variable
+/// whose drop may run a user `Drop.drop` must not keep a borrow of a variable bound after it, which
+/// a lock's callback writes into its cell; one bound before it, or a holder moved away, may.
+#[test]
+fn a_pattern_variable_whose_drop_runs_code_keeps_no_borrow_of_a_later_one() {
+    for (source, at) in [
+        // F1 (a tuple pattern)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef run :: i64 -> i64\nfn run n =\n    match (Holder { cell: Mutex.create [\\() -> 0] }, String.repeat 4 (ref \"123456789\")) with\n    | (c, s) ->\n        let t = ref s\n        Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n        0\nrun 1",
+            (17, 9),
+        ),
+        // m01 (a lock that holds the drop values)
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef run :: i64 -> i64\nfn run n =\n    match (Mutex.create [Caller { f: \\() -> 0 }], to_string n) with\n    | (m, s) ->\n        let t = ref s\n        Mutex.with_lock (ref m) (\\slot -> Array.write 0 (Caller { f: \\() -> String.length t }) slot)\n        0\nrun 123456789",
+            (9, 9),
+        ),
+        // po17 (a union payload)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}\nunion Pair = P of Holder * string\ndef run :: i64 -> i64\nfn run n =\n    match P (Holder { cell: Mutex.create [\\() -> 0] }, to_string n) with\n    | P (c, s) ->\n        let t = ref s\n        Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> String.length t) b)\n        0\nrun 123456789",
+            (10, 9),
+        ),
+        // po21 (a tuple inside Maybe.Some)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}\ndef run :: i64 -> i64\nfn run n =\n    let pair = Maybe.Some (Holder { cell: Mutex.create [\\() -> 0] }, to_string n)\n    match pair with\n    | Maybe.Some (c, s) ->\n        let t = ref s\n        Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> String.length t) b)\n        1\n    | Maybe.None -> 0\nrun 123456789",
+            (10, 9),
+        ),
+        // po22 (a record pattern)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}\nrecord Pair { h: Holder, s: string }\ndef run :: i64 -> i64\nfn run n =\n    let p = Pair { h: Holder { cell: Mutex.create [\\() -> 0] }, s: to_string n }\n    match p with\n    | Pair { h = c, s = s } ->\n        let t = ref s\n        Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> String.length t) b)\n        1\nrun 123456789",
+            (11, 9),
+        ),
+        // a16 (the borrowed variable bound last of three)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef run :: i64 -> i64\nfn run n =\n    match (String.repeat 4 (ref \"abcdefghi\"), Holder { cell: Mutex.create [\\() -> 0] }, String.repeat 4 (ref \"123456789\")) with\n    | (s, c, u) ->\n        let t = ref u\n        Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n        0\nrun 1",
+            (17, 9),
+        ),
+        // F1g (the arms of a function)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef keep :: own Holder -> own string -> i64 = \\c0 s0 ->\n    | (c, s) ->\n        let t = ref s\n        Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n        0\ndef run :: i64 -> i64\nfn run n = keep (Holder { cell: Mutex.create [\\() -> 0] }) (String.repeat 4 (ref \"123456789\"))\nrun 1",
+            (15, 9),
+        ),
+    ] {
+        rejects_at(source, "E1013", "assignment_extends_borrow", at);
+    }
+    // a15: a read parameter of edition 2027 borrows the holder, which stays in the arm
+    let source = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef finish :: Holder -> i64\nfn finish h = 0\ndef run :: i64 -> i64\nfn run n =\n    match (Holder { cell: Mutex.create [\\() -> 0] }, String.repeat 4 (ref \"123456789\")) with\n    | (c, s) ->\n        let t = ref s\n        Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n        finish c\nrun 1";
+    let error = analyze_with_edition(source, Edition::E2027).expect_err(source);
+    assert_eq!(
+        (error.code, error.kind, position(source, error.span.start)),
+        ("E1013", Some("assignment_extends_borrow"), (19, 9)),
+        "{source}\n{}",
+        error.message
+    );
+    // a15: a by-value parameter of edition 2026 moves the holder away
+    analyze_with_edition("record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef finish :: Holder -> i64\nfn finish h = 0\ndef run :: i64 -> i64\nfn run n =\n    match (Holder { cell: Mutex.create [\\() -> 0] }, String.repeat 4 (ref \"123456789\")) with\n    | (c, s) ->\n        let t = ref s\n        Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n        finish c\nrun 1", Edition::E2026).expect("a15_arm_holder_moved is accepted in edition 2026");
+    for main in [
+        // F1c (the string bound first)
+        "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef run :: i64 -> i64\nfn run n =\n    match (String.repeat 4 (ref \"123456789\"), Holder { cell: Mutex.create [\\() -> 0] }) with\n    | (s, c) ->\n        let t = ref s\n        Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n        0\nrun 1",
+        // m02
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef run :: i64 -> i64\nfn run n =\n    match (to_string n, Mutex.create [Caller { f: \\() -> 0 }]) with\n    | (s, m) ->\n        let t = ref s\n        Mutex.with_lock (ref m) (\\slot -> Array.write 0 (Caller { f: \\() -> String.length t }) slot)\n        0\nrun 123456789",
+        // po18
+        "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}\ndef run :: i64 -> i64\nfn run n =\n    match (to_string n, Holder { cell: Mutex.create [\\() -> 0] }) with\n    | (s, c) ->\n        let t = ref s\n        Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> String.length t) b)\n        0\nrun 123456789",
+        // a16c (the borrowed variable bound first of three)
+        "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef run :: i64 -> i64\nfn run n =\n    match (String.repeat 4 (ref \"123456789\"), Holder { cell: Mutex.create [\\() -> 0] }, String.repeat 4 (ref \"abcdefghi\")) with\n    | (u, c, s) ->\n        let t = ref u\n        Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n        0\nrun 1",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 9 (findings 2 and 6): the temporaries of a statement are dropped where it
+/// ends in the order in which they were made (from left to right). A callee that keeps a borrow of
+/// one temporary argument in another made after it (or in itself) whose drop may run a user
+/// `Drop.drop` leaves that drop reading a temporary that is gone; one made before it may keep it.
+#[test]
+fn a_temporary_whose_drop_runs_code_keeps_no_borrow_of_one_made_before_it() {
+    for (source, at) in [
+        // F2 (explicit borrows)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef keep :: ref string -> ref Holder -> i64\nfn keep s c =\n    Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look s) b)\n    0\ndef run :: i64 -> i64\nfn run n = keep (ref (String.repeat 4 (ref \"123456789\"))) (ref (Holder { cell: Mutex.create [\\() -> 0] }))\nrun 1",
+            (18, 12),
+        ),
+        // t03
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"caller drop reads \" + to_string (c.f ()))\n}\nrecord Noisy { text: string }\ninstance Drop<Noisy> {\n    fn drop c = do! IO.write_line (\"noisy dropped\")\n}\ndef put :: ref Noisy -> ref Mutex<[Caller]> -> i64\nfn put s m =\n    Mutex.with_lock m (\\slot -> Array.write 0 (Caller { f: \\() -> if s.text == \"123456789\" then 1 else 0 }) slot)\n    0\ndef run :: i64 -> i64\nfn run n = put (ref (Noisy { text: to_string n })) (ref (Mutex.create [Caller { f: \\() -> 7 }]))\nrun 123456789",
+            (14, 12),
+        ),
+        // pa06
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}\ndef keep :: ref string -> ref Holder -> i64\nfn keep s c =\n    Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> String.length s) b)\n    0\ndef run :: i64 -> i64\nfn run n = keep (ref (to_string n)) (ref (Holder { cell: Mutex.create [\\() -> 0] }))\nrun 123456789",
+            (10, 12),
+        ),
+        // a09 (the operands of a user Eq)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]>, text: string }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}\ninstance Eq<Holder> {\n    fn eq a b = {\n        Mutex.with_lock (ref b.cell) (\\x -> Array.write 0 (\\() -> String.length a.text) x);\n        true\n    }\n    fn ne a b = false\n}\ndef run :: i64 -> i64\nfn run n = if (Holder { cell: Mutex.create [\\() -> 0], text: to_string n }) == (Holder { cell: Mutex.create [\\() -> 0], text: to_string 7 }) then 1 else 0\nrun 123456789",
+            (13, 15),
+        ),
+        // a06t (a callee that keeps a borrow of the whole temporary in itself)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Pair { s: string, h: Holder }\ndef keep :: ref Pair -> i64\nfn keep p =\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look (ref p.s)) b)\n    0\ndef run :: i64 -> i64\nfn run n = keep (ref (Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } }))\nrun 1",
+            (19, 12),
+        ),
+        // a21u (a callee that keeps a borrow of a part dropped first)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Pair { s: string, h: Holder }\ndef keep :: ref Pair -> i64\nfn keep p =\n    let t = ref p.s\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\ndef run :: i64 -> i64\nfn run n = keep (ref (Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } }))\nrun 1",
+            (20, 12),
+        ),
+    ] {
+        rejects_at(source, "E1013", "assignment_extends_borrow", at);
+    }
+    // F2r: read parameters of edition 2027 borrow the temporaries
+    let source = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef keep :: string -> Holder -> i64\nfn keep s c =\n    let t = ref s\n    Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\ndef run :: i64 -> i64\nfn run n = keep (String.repeat 4 (ref \"123456789\")) (Holder { cell: Mutex.create [\\() -> 0] })\nrun 1";
+    let error = analyze_with_edition(source, Edition::E2027).expect_err(source);
+    assert_eq!(
+        (error.code, error.kind, position(source, error.span.start)),
+        ("E1013", Some("assignment_extends_borrow"), (19, 12)),
+        "{source}\n{}",
+        error.message
+    );
+    for main in [
+        // F2c (the holder made first)
+        "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef keep :: ref Holder -> ref string -> i64\nfn keep c s =\n    Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look s) b)\n    0\ndef run :: i64 -> i64\nfn run n = keep (ref (Holder { cell: Mutex.create [\\() -> 0] })) (ref (String.repeat 4 (ref \"123456789\")))\nrun 1",
+        // t01
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef put :: ref Mutex<[Caller]> -> ref string -> i64\nfn put m s =\n    Mutex.with_lock m (\\slot -> Array.write 0 (Caller { f: \\() -> String.length s }) slot)\n    0\ndef run :: i64 -> i64\nfn run n = put (ref (Mutex.create [Caller { f: \\() -> 0 }])) (ref (to_string n))\nrun 123456789",
+        // a21 (a callee that keeps a borrow of a part dropped after the holder)
+        "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Pair { h: Holder, s: string }\ndef keep :: ref Pair -> i64\nfn keep p =\n    let t = ref p.s\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\ndef run :: i64 -> i64\nfn run n = keep (ref (Pair { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }))\nrun 1",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 9 (findings 3 and 7): the fields of a record, the elements of a tuple and of
+/// a collection are dropped in their order. A value that keeps a borrow of its own part (a lock's
+/// callback wrote a borrow of `p.s` into the cell of `p.h`) must not drop that part before a part
+/// whose drop may run a user `Drop.drop`, at the end of a block, of a body, or of an arm.
+#[test]
+fn a_value_whose_parts_run_drop_code_keeps_no_borrow_of_a_part_dropped_before_them() {
+    for (source, at) in [
+        // sf05
+        (
+            "record Txt { text: string }\ninstance Drop<Txt> {\n    fn drop t = do! IO.write_line (\"drop txt\")\n}\nrecord Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\nrecord Pair { s: Txt, h: Holder }\ndef run :: i64 -> i64\nfn run n =\n    let p = Pair { s: Txt { text: String.repeat 4 (ref \"123456789\") }, h: Holder { cell: Mutex.create [\\() -> 0] } }\n    let t = ref p.s\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> match String.find (ref \"9\") (ref t.text) with\n                                                              | Maybe.Some i -> i\n                                                              | Maybe.None -> -1) b)\n    0\nrun 123456789",
+            (15, 5),
+        ),
+        // s01
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"caller drop reads \" + to_string (c.f ()))\n}\nrecord Noisy { id: i64, text: string }\ninstance Drop<Noisy> {\n    fn drop c = do! IO.write_line (\"noisy dropped \" + to_string c.id)\n}\nrecord Pair { s: Noisy, m: Mutex<[Caller]> }\ndef run :: i64 -> i64\nfn run n =\n    let r = Pair { s: Noisy { id: n, text: to_string n }, m: Mutex.create [Caller { f: \\() -> 0 }] }\n    let t = ref r.s\n    Mutex.with_lock (ref r.m) (\\slot -> Array.write 0 (Caller { f: \\() -> if t.text == \"123456789\" then 1 else 0 }) slot)\n    0\nrun 123456789",
+            (12, 5),
+        ),
+        // sf10 (elements of an array)
+        (
+            "record Node { s: string, cell: Mutex<[unit -> i64]> }\ninstance Drop<Node> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop node reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef run :: i64 -> i64\nfn run n =\n    let arr = [Node { s: String.repeat 4 (ref \"123456789\"), cell: Mutex.create [\\() -> 0] }, Node { s: String.repeat 4 (ref \"abcdefghi\"), cell: Mutex.create [\\() -> 0] }]\n    let t = ref arr[0].s\n    Mutex.with_lock (ref arr[1].cell) (\\b -> Array.write 0 (\\() -> match String.find (ref \"9\") t with\n                                                                 | Maybe.Some i -> i\n                                                                 | Maybe.None -> -1) b)\n    0\nrun 123456789",
+            (10, 5),
+        ),
+        // a05 (a nested record)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Wrap { s: string, h: Holder }\nrecord Outer { w: Wrap }\ndef run :: i64 -> i64\nfn run n =\n    let o = Outer { w: Wrap { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } } }\n    let t = ref o.w.s\n    Mutex.with_lock (ref o.w.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\nrun 1",
+            (17, 5),
+        ),
+        // a08 (an owned parameter)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Pair { s: string, h: Holder }\ndef keep :: own Pair -> i64\nfn keep p =\n    let t = ref p.s\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\ndef run :: i64 -> i64\nfn run n = keep (Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } })\nrun 1",
+            (16, 5),
+        ),
+        // a18 (a pattern variable)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Pair { s: string, h: Holder }\ndef run :: i64 -> i64\nfn run n =\n    match Maybe.Some (Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } }) with\n    | Maybe.Some p ->\n        let t = ref p.s\n        Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n        0\n    | Maybe.None -> 1\nrun 1",
+            (18, 9),
+        ),
+        // a21u (a callee that keeps a borrow of a part dropped first)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Pair { s: string, h: Holder }\ndef keep :: ref Pair -> i64\nfn keep p =\n    let t = ref p.s\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\ndef run :: i64 -> i64\nfn run n =\n    let p = Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } }\n    keep (ref p)\nrun 1",
+            (21, 5),
+        ),
+        // a06u (a callee that keeps a borrow of the whole value in it)
+        (
+            "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Pair { s: string, h: Holder }\ndef keep :: ref Pair -> i64\nfn keep p =\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look (ref p.s)) b)\n    0\ndef run :: i64 -> i64\nfn run n =\n    let p = Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } }\n    keep (ref p)\nrun 1",
+            (20, 5),
+        ),
+    ] {
+        rejects_at(source, "E1013", "self_referential_store", at);
+    }
+    for main in [
+        // sf06 (the holder declared first)
+        "record Txt { text: string }\ninstance Drop<Txt> {\n    fn drop t = do! IO.write_line (\"drop txt\")\n}\nrecord Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\nrecord Pair { h: Holder, s: Txt }\ndef run :: i64 -> i64\nfn run n =\n    let p = Pair { s: Txt { text: String.repeat 4 (ref \"123456789\") }, h: Holder { cell: Mutex.create [\\() -> 0] } }\n    let t = ref p.s\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> match String.find (ref \"9\") (ref t.text) with\n                                                              | Maybe.Some i -> i\n                                                              | Maybe.None -> -1) b)\n    0\nrun 123456789",
+        // s01b
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"caller drop reads \" + to_string (c.f ()))\n}\nrecord Noisy { id: i64, text: string }\ninstance Drop<Noisy> {\n    fn drop c = do! IO.write_line (\"noisy dropped \" + to_string c.id)\n}\nrecord Pair { m: Mutex<[Caller]>, s: Noisy }\ndef run :: i64 -> i64\nfn run n =\n    let r = Pair { s: Noisy { id: n, text: to_string n }, m: Mutex.create [Caller { f: \\() -> 0 }] }\n    let t = ref r.s\n    Mutex.with_lock (ref r.m) (\\slot -> Array.write 0 (Caller { f: \\() -> if t.text == \"123456789\" then 1 else 0 }) slot)\n    0\nrun 123456789",
+        // a05c
+        "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Wrap { s: string }\nrecord Outer { h: Holder, w: Wrap }\ndef run :: i64 -> i64\nfn run n =\n    let o = Outer { h: Holder { cell: Mutex.create [\\() -> 0] }, w: Wrap { s: String.repeat 4 (ref \"123456789\") } }\n    let t = ref o.w.s\n    Mutex.with_lock (ref o.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\nrun 1",
+        // a08c
+        "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Pair { h: Holder, s: string }\ndef keep :: own Pair -> i64\nfn keep p =\n    let t = ref p.s\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\ndef run :: i64 -> i64\nfn run n = keep (Pair { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") })\nrun 1",
+        // a18c
+        "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Pair { h: Holder, s: string }\ndef run :: i64 -> i64\nfn run n =\n    match Maybe.Some (Pair { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }) with\n    | Maybe.Some p ->\n        let t = ref p.s\n        Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n        0\n    | Maybe.None -> 1\nrun 1",
+        // a21 (a callee that keeps a borrow of a part dropped after the holder)
+        "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\nrecord Pair { h: Holder, s: string }\ndef keep :: ref Pair -> i64\nfn keep p =\n    let t = ref p.s\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\ndef run :: i64 -> i64\nfn run n =\n    let p = Pair { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }\n    keep (ref p)\nrun 1",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 9 (finding 4): an owned parameter (`own m`, or a by-value parameter of
+/// edition 2026) that stores a cell owns it: a store into it reaches no data of the caller, and the
+/// drop order of the parameters decides. A cell behind a shared pointer may be the caller's too.
+#[test]
+fn an_owned_parameter_owns_the_cells_that_it_stores() {
+    for (source, at) in [
+        // rg07 (the holder parameter first)
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef keep :: own Mutex<[Caller]> -> own string -> i64\nfn keep m s =\n    let t = ref s\n    Mutex.with_lock (ref m) (\\b -> Array.write 0 (Caller { f: \\() -> String.length t }) b)\n    0\nkeep (Mutex.create [Caller { f: \\() -> 0 }]) (to_string 123456789)",
+            (7, 5),
+        ),
+    ] {
+        rejects_at(source, "E1013", "assignment_extends_borrow", at);
+    }
+    // F2r: by-value parameters of edition 2026
+    analyze_with_edition("record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef keep :: string -> Holder -> i64\nfn keep s c =\n    let t = ref s\n    Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\ndef run :: i64 -> i64\nfn run n = keep (String.repeat 4 (ref \"123456789\")) (Holder { cell: Mutex.create [\\() -> 0] })\nrun 1", Edition::E2026).expect("F2r_read_params_2027 is accepted in edition 2026");
+    // a02c: the same through a pipeline
+    analyze_with_edition("record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop holder reads \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" junk \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef keep :: string -> Holder -> i64\nfn keep s c =\n    let t = ref s\n    Mutex.with_lock (ref c.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n    0\ndef run :: i64 -> i64\nfn run n = Holder { cell: Mutex.create [\\() -> 0] } |> keep (String.repeat 4 (ref \"123456789\"))\nrun 1", Edition::E2026).expect("a02c_pipe_safe_2027 is accepted in edition 2026");
+    for main in [
+        // rg02
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef keep :: own string -> own Mutex<[Caller]> -> i64\nfn keep s m =\n    let t = ref s\n    Mutex.with_lock (ref m) (\\b -> Array.write 0 (Caller { f: \\() -> String.length t }) b)\n    0\nkeep (to_string 123456789) (Mutex.create [Caller { f: \\() -> 0 }])",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+    // rg06: an `Arc` that the caller may share
+    rejects_at(
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef keep :: own string -> own Arc<Mutex<[Caller]>> -> i64\nfn keep s m =\n    let t = ref s\n    Mutex.with_lock (Arc.get (ref m)) (\\b -> Array.write 0 (Caller { f: \\() -> String.length t }) b)\n    0\nkeep (to_string 123456789) (Arc.new (Mutex.create [Caller { f: \\() -> 0 }]))",
+        "E1013",
+        "store_local_borrow_through_reference",
+        (8, 5),
+    );
+}
