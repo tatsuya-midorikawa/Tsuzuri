@@ -3436,6 +3436,96 @@ fn widening_maps_generic_members() {
     );
 }
 
+/// A24's Copilot review 4 at the A25 merge: a member comparison keeps an inference variable that
+/// occurs twice as one type (`Ties`), and widening (`widened`) and narrowing (`type_test_member`)
+/// find members with that comparison (`agrees`). `mkp n` has the type `(i64 | (Maybe<?a> *
+/// Maybe<?a>))`: its tuple member can be `(Maybe<i64> * Maybe<i64>)` (?a is `i64`), but
+/// `(Maybe<i64> * Maybe<string>)` would need ?a to be both `i64` and `string`, so the widening
+/// takes the first and then unifies ?a with `i64`. Before the merge, each occurrence was compared
+/// by itself and the widening was `E1041` (the member could be either tuple). Members without
+/// inference variables compare as before.
+#[test]
+fn widening_and_narrowing_tie_repeated_inference_variables() {
+    let defs = "def mkp :: own i64 -> ((Maybe<'a> * Maybe<'a>) | i64) = \\n -> if n > 0 then (None, None) else n\n\n\
+                def mk3 :: own i64 -> ((Maybe<'a> * Maybe<'a>) | i64 | bool) = \\n -> if n > 0 then (None, None) else if n == 0 then true else n\n\n\
+                def which4 :: own ((Maybe<i64> * Maybe<i64>) | (Maybe<i64> * Maybe<string>) | i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? (Maybe<i64> * Maybe<i64>) as p -> (match p with | (None, None) -> 1 | _ -> 4)\n    | :? (Maybe<i64> * Maybe<string>) -> 2\n    | :? bool -> 3\n    | :? i64 as k -> k + 10\n\n\
+                def narrowed :: own i64 -> i64 = \\n ->\n    match mk3 n with\n    | :? ((Maybe<i64> * Maybe<i64>) | i64) as x -> which4 x\n    | :? bool -> 7\n\n";
+    // By hand: a positive `n` gives the tuple `(None, None)`, which widens into the member
+    // `(Maybe<i64> * Maybe<i64>)` of `which4` (from case 1 of `mkp` to case 2 of `which4`,
+    // counting from 0 in the canonical order `(i64 | bool | tuples)`), so 1; `mkp
+    // (-5)` is the i64 -5, so -5 + 10 = 5. Once the widening has unified ?a with `i64`, `p` is
+    // `(i64 | (Maybe<i64> * Maybe<i64>))`, its tuple member reads 20. `mk3 1` narrows into the
+    // member `(Maybe<i64> * Maybe<i64>)` of `W` and widens into `which4` (1), `mk3 0` is `true`
+    // (7), and `mk3 (-4)` narrows into the i64 member and widens: -4 + 10 = 6.
+    let program = format!(
+        "{defs}test \"widening a value whose member repeats a variable\" =\n    \
+         assert (which4 (mkp 1) == 1)\n    \
+         assert (which4 (mkp (-5)) == 5)\n    \
+         assert ((mkp 2 |> which4) == 1)\n    \
+         let v: ((Maybe<i64> * Maybe<string>) | bool | (Maybe<i64> * Maybe<i64>) | i64) = mkp 3\n    \
+         assert (which4 v == 1)\n    \
+         let p = mkp 4\n    \
+         assert (which4 p == 1)\n    \
+         let q: (i64 | (Maybe<i64> * Maybe<i64>)) = p\n    \
+         assert ((match q with | :? i64 as k -> k | :? (Maybe<i64> * Maybe<i64>) -> 20) == 20)\n\n\
+         test \"narrowing a value whose member repeats a variable\" =\n    \
+         assert (narrowed 1 == 1)\n    \
+         assert (narrowed 0 == 7)\n    \
+         assert (narrowed (-4) == 6)\n"
+    );
+    passes(&program, Edition::E2026);
+    passes(&program, Edition::E2027);
+    // Both tuples fit when ?a is one type in both places: still ambiguous.
+    let error = rejects(
+        &format!(
+            "{defs}let v: ((Maybe<i64> * Maybe<i64>) | (Maybe<string> * Maybe<string>) | i64) = mkp 1\n0\n"
+        ),
+        "E1041",
+        "anonymous_union_ambiguous_member",
+    );
+    assert!(
+        error.message.ends_with(
+            "could be (Maybe<i64> * Maybe<i64>) or (Maybe<string> * Maybe<string>) in (i64 | (Maybe<i64> * Maybe<i64>) | (Maybe<string> * Maybe<string>))"
+        ),
+        "{}",
+        error.message
+    );
+    // Neither tuple has one type in both places: the member is in no member of the wider union.
+    let error = rejects(
+        &format!(
+            "{defs}let v: ((Maybe<string> * Maybe<i64>) | (Maybe<i64> * Maybe<string>) | i64) = mkp 1\n0\n"
+        ),
+        "E1003",
+        "anonymous_union_not_subset",
+    );
+    assert_eq!(
+        error.message,
+        "expected (i64 | (Maybe<i64> * Maybe<string>) | (Maybe<string> * Maybe<i64>)), found (i64 | (Maybe<an undetermined type> * Maybe<an undetermined type>)); (Maybe<an undetermined type> * Maybe<an undetermined type>) is not a member of (i64 | (Maybe<i64> * Maybe<string>) | (Maybe<string> * Maybe<i64>))"
+    );
+    // The widening unified ?a with `i64`, so the value is no longer a union of `Maybe<string>`.
+    rejects(
+        &format!(
+            "{defs}let p = mkp 1\nlet k = which4 p\nlet q: (i64 | (Maybe<string> * Maybe<string>)) = p\nk\n"
+        ),
+        "E1003",
+        "type_mismatch",
+    );
+    // A narrowing compares the same way: `(Maybe<i64> * Maybe<string>)` is not `(Maybe<?a> *
+    // Maybe<?a>)`, so the test names no member (before the merge, `E1003 type_mismatch` when the
+    // member was unified with it).
+    let error = rejects(
+        &format!(
+            "{defs}let t = match mk3 1 with\n    | :? ((Maybe<i64> * Maybe<string>) | i64) as x -> which4 x\n    | _ -> 0\nt\n"
+        ),
+        "E1041",
+        "type_test_not_member",
+    );
+    assert_eq!(
+        error.message,
+        "(Maybe<i64> * Maybe<string>) is not a member of (i64 | bool | (Maybe<an undetermined type> * Maybe<an undetermined type>))"
+    );
+}
+
 #[test]
 fn widening_a_generic_read_parameter_needs_copy() {
     // Edition 2027 reads a generic parameter, and its body takes the value out of the view only
