@@ -1487,11 +1487,12 @@ impl Parser<'_> {
     /// otherwise. `None` when no type follows: the colon of a field (`{ x: p }`, `R { x: e }`)
     /// before a value that is no type. A type holds no `:`, so reading a value that looks like a
     /// type (`{ x: n }`) never passes over a type test, and its parentheses are balanced. The read
-    /// is a probe on a copy of the parser, as `own_type_ahead` makes; `type_test_ahead` makes it
-    /// only before the last type test of the source.
+    /// is a probe on a copy of the parser (`Parser::probe`, as `own_type_ahead` makes), which
+    /// costs the same wherever it is made; `type_test_ahead` makes it only before the last type
+    /// test of the source.
     #[inline(never)]
     fn annotation_end(&self, colon: usize, arrow: bool) -> Option<usize> {
-        let mut probe = self.clone();
+        let mut probe = self.probe();
         probe.position = colon + 1;
         probe.type_remainder = None;
         probe.previous_end = self.tokens[colon].span.end;

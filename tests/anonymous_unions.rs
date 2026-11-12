@@ -2241,6 +2241,94 @@ fn api_diff_orders_tied_members_by_the_whole_signature() {
     }
 }
 
+/// Verification of Copilot review 3 of #102: unions that share no names with the rest of the
+/// declaration are searched one after the other, so their number no longer runs into the
+/// search's limit; members with a union inside that hold all the occurrences of their names need
+/// no search; and a class's methods are searched once per run of the class. By hand: thirteen
+/// 3-rings `(('aK * 'bK * 'cK) | ('bK * 'cK * 'aK))` (`2^13` combinations) and the same rings of
+/// regions print one text whichever member of the first ring is written first; 32 members
+/// `[('vN | i64)]` print one text in either order; a class with four rings as superclass
+/// constraints and a method with twelve rings of regions too. A ring whose second member swaps
+/// two names instead of rotating them (`('bK * 'aK * 'cK)`) is no renaming of a ring, so it is a
+/// change.
+#[test]
+fn api_diff_settles_independent_unions_one_by_one() {
+    let ring = |k: usize, swapped: bool, region: bool, transposed: bool| {
+        let name = |letter: &str| {
+            if region {
+                format!("ref {{{letter}{k}}} i64")
+            } else {
+                format!("'{letter}{k}")
+            }
+        };
+        let (a, b, c) = (name("a"), name("b"), name("c"));
+        let first = format!("({a} * {b} * {c})");
+        let second = if transposed {
+            format!("({b} * {a} * {c})")
+        } else {
+            format!("({b} * {c} * {a})")
+        };
+        if swapped {
+            format!("({second} | {first})")
+        } else {
+            format!("({first} | {second})")
+        }
+    };
+    let rings = |region: bool, swapped: bool, transposed: Option<usize>| {
+        let parameters: Vec<String> = (0..13)
+            .map(|k| ring(k, swapped && k == 0, region, transposed == Some(k)))
+            .collect();
+        format!(
+            "def f :: {} -> unit = \\v -> todo ()\n",
+            parameters.join(" -> ")
+        )
+    };
+    let wide = |reversed: bool| {
+        let mut members: Vec<String> = (0..32).map(|n| format!("[('v{n} | i64)]")).collect();
+        if reversed {
+            members.reverse();
+        }
+        format!(
+            "def f :: ({}) -> unit = \\v -> todo ()\n",
+            members.join(" | ")
+        )
+    };
+    let class = |swapped: bool| {
+        let constraints: Vec<String> = (0..4)
+            .map(|k| format!("Show<{}>", ring(k, swapped && k == 0, false, false)))
+            .collect();
+        let rings: Vec<String> = (0..12)
+            .map(|k| ring(k + 10, swapped && k == 0, true, false))
+            .collect();
+        format!(
+            "class ({}) => C<'t> {{\n    def m :: 't -> {} -> unit\n}}\n",
+            constraints.join(", "),
+            rings.join(" -> ")
+        )
+    };
+    for (old, new) in [
+        (rings(false, false, None), rings(false, true, None)),
+        (rings(true, false, None), rings(true, true, None)),
+        (wide(false), wide(true)),
+        (class(false), class(true)),
+    ] {
+        assert_eq!(
+            api_changes(&old, &new, false),
+            Vec::<String>::new(),
+            "{old}\n{new}"
+        );
+    }
+    for region in [false, true] {
+        let (old, new) = (rings(region, false, None), rings(region, true, Some(12)));
+        let changes = api_changes(&old, &new, false);
+        assert_eq!(changes.len(), 1, "{old}\n{new}\n{changes:?}");
+        assert!(
+            changes[0].starts_with("breaking changed def Main.f"),
+            "{changes:?}"
+        );
+    }
+}
+
 #[test]
 fn effective_api_hides_synthetic_names() {
     // Through an alias, a record field and a generic argument, the effective comparison reads the

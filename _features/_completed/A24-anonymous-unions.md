@@ -1186,3 +1186,58 @@ def font_size :: own (f64 | i64 | string) -> string = \size ->
 
 - 既定の api-diff の探索は、宣言 1 つにつき 4,096 回の描画までです（`MAX_TIE_RUNS`）。それを超えると、見つかった中で最も小さい描画を使うので、形が書いた順に依存することがありえます。起きうるのは、検査器が拒否する署名のうち、鍵の等しい要素が多く、鍵と色で区別できず、入れ替えもきかない場合だけです。上のファジングと対称な構造のどの組でも形は変わりませんでしたが、4 次元の立方体のように対称な 32 要素は上限まで描き、1 宣言に数秒かかります。
 - 第 2 回の残した制限の 1 つ目（型テストを持たず、括弧の中の注釈に `<` を持つタプルのパターンが、`guard_predicate`・`pattern_argument_expression` の走査で述語と読まれる）は、そのままです（どちらも A24 より前からの走査で、匿名共用体を使わないプログラムの挙動を変えないため）。同じく A24 より前からの `guard_predicate` の走査は最初の `->` で止まるので、`(match ... with | Some h -> h | None -> 0) > n` のように括弧の中の `match` から始まる述語の腕はパターンと読まれ、`E0002 expected a pattern` です（`1cf9565c` でも同じ。`target/scratch/a24/copilot3/predmatch`）。テストの述語は関数を呼ぶ形（`value_of (Box { ... }) > n`）にしました。
+
+#### 検証者の指摘への対応（第3回）
+
+2026-11-12。上の対応（`1ebf66a9`）を検証者が調べ、3 件の問題を見つけました（どれも軽微）。3 件とも `1ebf66a9` のバイナリで再現し（`target/scratch/a24/copilot3-verify`、検証者の `bin/tsuzuri-new`）、直しました。指摘 1 のうち、組の外の部分を通じてだけ互いに独立な組は、下の残した制限のとおり残ります。
+
+| 指摘 | 再現 | 対応 | 回帰テスト |
+| --- | --- | --- | --- |
+| 1. 既定の api-diff の探索は宣言の鍵の等しい要素のすべての選択を 1 つの積として試し、`MAX_TIE_RUNS` で止まる。選択の列は辞書順に試すので、最初の 4,096 回は最初の組が選択 0（先に書いた要素）のままで、名前を共有しない 13 個の 2 択（2^13 = 8,192 通り）では形が最初の組の書いた順に依存する。第 3 回の指摘 1 と同じ偽の破壊的変更が、大きさを変えて残っていた（`1cf9565c` でも同じで、第 3 回の後退ではない。検査器は `E1041` で拒否する） | 各引数が `(('aK * 'bK * 'cK) \| ('bK * 'cK * 'aK))` の 13 個の輪で、最初の輪の 2 つの要素だけを入れ替えた版の `api-diff` は `breaking: changed def Main.f`（`1 breaking`）。12 個（`vcap/n12`）は `0 breaking`。region の輪（`cap/n13`）も同じ | 鍵の等しい要素の組が、まだ名前のない名前のすべての出現を持つとき（宣言の census の出現の数と、組の中の数が等しい。`Renaming::confined`）、その組の順は組の外の何も変えないので、出会ったところで組だけを探索し、組の描画の最も小さい順を採ります（`Renaming::local`）。その選択は宣言の探索の選択肢になりません（判断 8）。13 個の輪は 1 つずつ 2 回描くだけになり、`0 breaking` | `api_diff::tests::independent_ties_are_searched_one_by_one`（14 個の輪 × 変数と region × 3 つの書き方: 正準形、`render` 3 回、局所の描画 28 回）、`tests/anonymous_unions.rs` の `api_diff_settles_independent_unions_one_by_one` |
+| 2. 探索の費用。共用体を含む要素は入れ替えがきくとされないので、どの順も同じに描かれる場合でも上限まで探索し、1 回ごとに候補の数の 2 乗の `refined` を作る。class はヘッダーの探索の各描画で各メソッドの探索（`function_text` の `least`）を丸ごと走らせるので、費用が掛け合わさる（最大 4,096 × 4,096 回） | 検証者の数（dev ビルド）: `([('v0 \| i64)] \| ... \| [('v31 \| i64)])` とその逆順（`wide/k32`）で `1cf9565c` 0.03 秒、`1ebf66a9` 10.35 秒（64 要素 37.4 秒、4 引数 42.9 秒）。4 つの上位クラス制約 `Show<(('a * 'b * 'c) \| ('b * 'c * 'a))>` と 12 個の region の輪を持つメソッドの class（`cls/o4`）で 0.11 秒と 57.8 秒 | (a) 候補のすべてが private（まだ名前のない名前をその要素の中にしか持たない）なら、共用体を含む要素も、それぞれを今の名前から単独で描いた最も小さい描画（`local`）を比べて選び、試しません。private で共用体を含む要素の中の選択も `local` で決めます（判断 9）。(b) class のメソッドの文字列を、メソッドが届く名前に付いた名前と付いた名前の数で覚え、class の探索の描画ごとに作り直しません（判断 10）。(c) 上限を探索ごとから宣言ごとにし、入れ子の探索も合わせて 4,096 回までにしました（`Renaming::spend`。判断 11） | `api_diff::tests` の `private_members_with_unions_need_no_search`（32 要素 × 4 引数、局所の描画 4 × 529 回）、`class_searches_do_not_multiply`（`render` 8 回、局所 32 回）、`class_methods_are_searched_once`（class の探索の 6 回の描画がメソッドの文字列を再利用: `render` 13 回）、`searches_share_one_budget`（7! 通りの探索が 1 + 4,096 回、class の中でも 3 + 4,096 回で止まる）、上の `api_diff_settles_independent_unions_one_by_one` |
+| 3. 型テストの走査が、型テストでない注釈の `:` ごとに `self.clone()` でパーサー全体を複製する。複製は `dyn_types`・`noncanonical`・`active_patterns`・`site_contracts` を写すので、`dyn` の型と注釈付きのパターンが多く、最後の近くに型テストのあるファイルの構文解析は (注釈の数) × (`dyn` の型の数) になる | 検証者の数: `def fK :: (i64 * dyn Format) -> i64 = \t -> match t with \| (x: i64, d: dyn Format) -> x` を 8,000 個と、最後に `\| :? i64 as n -> n` の関数（`q2/quad2`）。`fmt --check` は `1cf9565c` 0.56 秒、`1ebf66a9` 23.96 秒。`dyn` の型を `bool` にすると 2.91 秒と 3.01 秒 | 投機的な読みは `Parser::probe` で作る写しで読みます。`probe` は位置と文法を決める旗だけを写し、ソースとともに増える記録（`noncanonical`・`dyn_types`・`active_patterns`・`site_contracts`・`pending_statement`）を空で始めます。`Parser` から `Clone` を外し、`annotation_end` と `own_type_ahead` の両方が `probe` を使います（判断 12） | `parser::tests::probes_carry_no_records`（40 個の腕と 80 個の `dyn` の型の後の型テスト: 121 回以上の probe が運んだ記録は 0、構文解析の結果は同じ） |
+
+#### 判断（検証者の指摘、第3回）
+
+8. **局所の探索（指摘 1、`confined`・`local`）。** 鍵の等しい要素の組の、まだ名前のない名前が組の外に現れなければ、組のどの順も組の外の描画を変えません。組の後で付く名前の番号は組の中の名前の数だけ進み（順によらない）、後ろの鍵・色・選択はその名前を読まないからです。そこで組の順を「組だけの描画の最も小さいもの」で決めます。この規則は名前と書いた順によらない（同じ組のどの書き方も同じ描画の集合を持つ）ので、判断 1 の議論はそのまま成り立ちます。名前の付け替えと要素の並べ替えだけが違う宣言は同じ形になり、形は宣言の描画なので、それ以外が違う宣言が同じ形になることはありません。正準形の定義は判断 1 の「宣言の描画の最も小さいもの」から、「`confined` な組と private な要素は、その部分の描画の最も小さいもので決め、残る選択について宣言の描画の最も小さいもの」に変わります。正準形の文字列は等しさを比べるだけで、報告には `tsuzuri doc` の形を書くので（`Change` の `old`・`new`）、どの代表を採るかは出力に現れません。第 3 回の単体テストの期待値（8 組、`interchangeable_tied_members_need_no_search` の 3 回）は変わりません。census がない最初の描画では `confined` を判定せず（`false`）、名前のない名前を持たない組も `local` にしません（その鍵が書き方の違う要素をすべて区別するので、選択がない）。census にない名前は組の外にあるものとして扱います（起きないが、外す側に倒す）。
+9. **private な要素（指摘 2、`ordered`）。** 第 3 回の判断 2 (d) は、共用体を含まない要素だけを入れ替えがきくとしました。共用体を含む要素では、`Refine` の鍵が中の共用体の要素と外の名前の関係を落とすので、鍵が等しくても同じ形とは限らないからです（`([Maybe<'a>] | [Maybe<'b>]) * 'a` と `... * 'c` は同じ鍵）。今回は、候補のすべてが private なら、共用体を含む要素はそれぞれを今の名前の表から単独で描いた最も小さい描画を比べ、最も小さいものを採ります。描画が等しい 2 つの要素は、名前の付け替えと中の要素の並べ替えだけが違い（描画は要素そのもの）、その名前がその要素の中にしかないので、入れ替えても宣言は変わりません。描画の違う要素の間の順も描画で決めます（名前と書いた順によらない規則）。private の判定は選ぶときの名前の表で行い（第 3 回と同じ）、名前のない名前を持たない要素は private にしません。private で共用体を含む要素は、候補が 1 つのときや探索で選んだときも `local` で描くので、その中の選択も宣言の探索の選択肢になりません。単独の描画は残る候補ごとに作るので、1 つの組で候補の数の 2 乗回です（64 要素で 2,080 回、各 1 回の描画）。
+10. **class のメソッドの文字列（指摘 2、`add_items`）。** `function_text` の結果は、class の改名のうち、メソッドが届く名前に付いた名前と、付いた変数・region・長さパラメーターの数だけで決まります。ほかの名前を読まず、新しい名前の番号は数で決まり、探索の状態は `function_text` の `least` が作り直すからです。そこでメソッドだけの census で届く名前を書いたとおりに集め、(メソッドの位置, 届く名前に付いた名前, 数) で文字列を覚えます（`MethodKey`）。census の描画では覚えず、毎回描きます（名前の出現を数えるため）。匿名共用体を書かない class と `--effective` は探索しないので（`--effective` が読むのは検査器が受理するプログラムで、鍵の等しい要素はない）、census も覚えることもしません。
+11. **宣言ごとの予算（指摘 2、`spend`）。** 判断 8〜10 で、名前を共有しない部分の探索とメソッドの探索は掛け合わさらなくなりました。それでも、組の外にも名前が現れ、色で区別できない組がいくつもあれば宣言の探索で掛け合わさり（残した制限）、局所の探索の中の探索や、class の名前に依存するメソッドの探索は、外の探索の描画ごとに走ります。そこで上限を探索ごとから宣言ごとに変え、宣言の探索のすべて（`least` の census と 2 回目以降の描画、メソッドの探索、`local` の 2 回目以降）で合わせて 4,096 回までとしました（`Rc<Cell<usize>>` を改名の写しが共有する）。各探索の最初の描画は数えませんが、予算を使い切った後の探索は最初の 1 回で終わるので、宣言 1 つの仕事は 4,096 回と宣言の大きさの積で抑えられます。予算の範囲で終わる探索の結果は以前と同じです。以前は別々に 4,096 回まで試せた複数の探索（class の別々のメソッドなど）は、合わせて 4,096 回を超えると以前より早く打ち切られます（どれも検査器が拒否する署名だけ）。
+12. **`Parser::probe`（指摘 3）。** 型を読むパーサーの関数は、増える記録を読みません（`noncanonical` は上限の数と古いラムダの書き換え、`active_patterns` はパターン、`site_contracts` と `pending_statement` は本体でだけ読む）。probe の追加は probe とともに捨てます。そのため写しが記録を持たなくても読みの結果は同じで、probe 1 回の費用はそれより前に読んだ量によりません。`Parser` の `Clone` を外したので、ほかの場所が丸ごとの複製を作ることもありません。`own_type_ahead` も同じ複製で `own` の型ごとに同じ費用を払っていました（A24 より前から: `def fK :: own (i64 * dyn Format) -> i64 = \t -> 0` を 8,000 個並べたファイルで、下の表のとおり）。同じ `probe` を使うようにしました。
+
+#### 検証（検証者の指摘、第3回）
+
+- 直す前のコードで失敗すること: 新しいテスト 7 件を、ソースの変更だけを戻した状態で実行しました（`src/api_diff.rs` のテスト以外を `1ebf66a9` に戻し、テストが数える `LOCAL_RUNS` は空の置き換え。`Parser::probe` は複製と同じく記録を写す版）。7 件すべてが失敗しました（`target/scratch/a24/copilot3/verify-fix/prefix/prefix-tests-final.txt`）。`independent_ties_are_searched_one_by_one` と `private_members_with_unions_need_no_search` は `render` が 4,098 回（期待は 3）、`class_searches_do_not_multiply` は 69,685 回（期待は 8）、`class_methods_are_searched_once` は 28,695 回（期待は 13）、`searches_share_one_budget` は 4,098 回（期待は 4,097）、`probes_carry_no_records` は probe が運んだ記録が 4,961（期待は 0）、`api_diff_settles_independent_unions_one_by_one` は `breaking changed def Main.f` です。メソッドの文字列を覚えること（判断 10）だけを外すと、`class_methods_are_searched_once` は 30 回、`class_searches_do_not_multiply` は 10 回で失敗します（どちらも手で求めた数）。
+- 期待値は手で求めました（テストのコメント。輪の 2 つの順の描画と、`t9`・`t10` のように桁の変わる名前を含む輪がないこと、制約の文字列の並び（`'t1 ` < `'t10` < `'t4`）、`render` と `local` の回数の内訳）。`probes_carry_no_records` の probe の数は、手で求めた 80 + 41 と一致しました。
+- 検証者の再現の取り直し（dev ビルド、load average 30〜50 の共用の機械。`verify-fix/times.sh`・`times.txt`）:
+
+  | 再現 | `1cf9565c` | `1ebf66a9` | 直した後 |
+  | --- | --- | --- | --- |
+  | `vcap/n13`（変数の輪 13 個） | `1 breaking` | `1 breaking`、0.81 秒 | `0 breaking`、0.00 秒 |
+  | `cap/n13`（region の輪 13 個） | `1 breaking` | `1 breaking`、1.56 秒 | `0 breaking`、0.00 秒 |
+  | `wide/k64`（`[('vN \| i64)]` 64 要素） | 0.01 秒 | 13.96 秒 | 0.05 秒 |
+  | `wide/k32p4`（32 要素 × 4 引数） | 0.30 秒 | 15.86 秒 | 0.04 秒 |
+  | `cls/o4`（上位クラス制約の輪 4 個とメソッドの region の輪 12 個） | `1 breaking`、0.01 秒 | 24.35 秒 | `0 breaking`、0.02 秒 |
+  | `q2/quad2` の `fmt --check` | 0.34 秒 | 16.67 秒 | 0.34 秒 |
+  | `q2/quad2` の `check`（キャッシュなしの写し） | 0.17 秒 | 8.57 秒 | 0.14 秒 |
+  | `own/n8000` の `fmt --check`（`own_type_ahead`、判断 12） | 4.28 秒 | 4.69 秒 | 0.19 秒 |
+
+  `1cf9565c` の `1 breaking` は、第 3 回の指摘 1 の偽の変更です（`vcap/n12`・`cls/o2` も同じ）。
+- 第 3 回の差分ファジングと構造の取り直し（`verify-fix/run.sh`、直した後のバイナリ）: 6,000 組（同じ 3,847、違う 2,153）で見落とし 0・偽の変更 0、要素を 5〜8 個にした 6,000 組（`STRESS=1`）で 0、鍵の等しい要素を作らない 3,000 組（`NOTIE=1`）で 0、無作為のグラフ 750 組で 0、Petersen グラフなどの 70 組（`regular.py`、3.99 秒）で 0、`K5`・`K4,4`・4 次元の立方体・ルークのグラフの 20 組（`regular2.py`、41.47 秒）で 0 です。この 250 回のファジング（`NOTIE` の 50 回を含む）の `api-diff` の出力は、`1ebf66a9` と直した後で 1 byte も違いません（報告は `tsuzuri doc` の形を引くので、正準形の代表が変わっても出力は変わらない）。
+- 匿名共用体を使わないプログラムの出力: `tests/fixtures` と `examples` の全単位の IR（native と wasm32）・`check --json`・`doc`・`kg build`・`api-diff`（既定と `--effective`）を `1ebf66a9` と直した後のバイナリで比べました（`verify-fix/compare.txt`）。186 単位の 9,577 個のファイル（`tests/fixtures/anonymous_unions` を含む）が 1 byte も違いません。
+- 残した制限の形（`verify-fix/gen/later.py`、`later/n13`）: 13 個の輪にそれぞれ後ろの引数 `('aK | 'bK | 'cK)` を足すと、最初の輪の要素の入れ替えは `1cf9565c`・`1ebf66a9`・直した後のどれでも `1 breaking` です（12 個までは直した後で 0）。
+- T0: `cargo fmt --all -- --check`（差分なし）、`cargo clippy --all-targets --locked -- -D warnings`（警告なし）。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3100 件のうち 3100 passed、4 skipped です（`verify-fix/t1.txt`）。第 3 回の 3093 件から増えた 7 件は上の表の新しいテストです（`tests/anonymous_unions.rs` は 87 件）。既存のテストの期待は変えていません。
+- `features.mjs anonymous_unions`（dev バイナリ）: 37 件で、native と WASM の `-O0`／`-O3` がすべて通りました（`verify-fix/features.txt`）。
+- 文書: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md`（1 ページ、12 links、7 examples、native の 12 回の実行）、`node scripts/check-links.mjs --into docs/architecture.md`（17 links、0 broken）、`node scripts/check-links.mjs`（0 broken）、`node scripts/check-guide-lite.mjs`（88 references、0 failed）、`gen-docs.mjs --check`（19 blocks、0 stale）、`check-cli-docs.mjs`（4 checks、0 failed。どちらも dev バイナリ）。
+
+#### 変更したファイル（検証者の指摘、第3回）
+
+`src/api_diff.rs`（`MAX_TIE_RUNS` を宣言ごとの予算に、`advance`、`Renaming` の `budget`・`spend`・`given`・`local`・`confined`・`ordered`、`least` の予算、`tied` の局所の探索、`refined` の `private`、`Refined::private`（`interchangeable` に代わる）、class の `text_of`・`reached`・`known`（`MethodKey`）、単体テスト 5 件と `LOCAL_RUNS`）、`src/parser.rs`（`Parser::probe`、`Clone` を外す、`own_type_ahead`、単体テスト 1 件と `PROBES`）、`src/parse_control.rs`（`annotation_end` が `probe` を使う）、`tests/anonymous_unions.rs`（1 件）、`docs/architecture.md`（「### 匿名共用体（A24）」の `annotation_end` と `api_diff.rs` の項）、`_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md` と `docs/language.md`（api-diff の要素の順序の項に、下の残した制限を足した）、このチケット。
+
+言語リファレンスを変えたのは、第 2 回の検証者の指摘への対応で変えなかったのと同じ文（「要素の順序の違いは差分にしません」）が、既定の比較が読む検査器の拒否する署名について、今も残る例外（下の 1 つ目）を書いていなかったからです。既定の比較はそのような署名も読むと書き、探索の上限と、例外が起きうる署名の形を足しました。
+
+#### 残した制限（検証者の指摘、第3回）
+
+- 組の外（ほかの引数など）にも名前が現れ、色で区別できない鍵の等しい要素の組は、宣言の探索の選択肢のままです。そのような組どうしは、名前を共有しなくても選択が掛け合わさり、4,096 回の予算を超えると形が書いた順に依存します（上の `later/n13`）。1 つの形に決めるには、名前と出現の位置で互いに独立な選択を見分け、それぞれの最小を組み合わせる比較（名前の番号の桁が変わっても位置がずれない、名前を番号として比べる描画）が要ります。一般には要素の並べ替えのもとでのグラフの正準形と同じ問題で、どの方法でも最悪の場合は指数的です。対象は検査器が拒否する署名だけなので、予算の範囲の探索にとどめ、リファレンスにこの例外を書きました。第 3 回の残した制限の 1 つ目（探索は「宣言 1 つにつき」4,096 回）は、実装が探索ごとの上限だったので、今回の判断 11 で書いたとおりの意味になりました。
+- 予算の範囲でも、色で区別できない要素の多い組の探索は、描画ごとに候補の数の 2 乗の鍵を作ります。4 次元の立方体（32 要素）は予算を使い切り、1 組に約 10 秒かかります（dev ビルド、`regular2.py` の 20 組で 41 秒）。宣言 1 つの仕事は予算と宣言の大きさで抑えられますが、小さくはありません。
