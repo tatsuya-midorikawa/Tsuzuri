@@ -745,3 +745,99 @@ fn drop_runner_after_its_borrows =
     let t = ref text0
     let later = CellReader { cell: Arc.new (Mutex.create [\() -> String.length t]) }
     k + Mutex.with_lock (Arc.get (ref later.cell)) (\slot -> slot[0] ())
+
+// Review round 7. A borrow of one field of what a `ref mut` parameter points at, written into the
+// caller's array: the body then writes another field, and the caller reads the value.
+record Counted { name: string, count: i64 }
+
+def put_name_then_count :: ref mut Counted -> ref mut [(unit -> i64)..] -> unit
+fn put_name_then_count r slot =
+    let sr = ref r.name
+    Array.write 0 (\() -> String.length sr) slot
+    r.count = r.count + 5
+
+export def disjoint_field_after_a_stored_borrow :: i64
+fn disjoint_field_after_a_stored_borrow =
+    let mut v0 = Counted { name: to_string 123456789, count: 3 }
+    let mut arr = [\() -> 0]
+    put_name_then_count (ref mut v0) (ref mut arr)
+    arr[0] () * 100 + v0.count
+
+// A borrow of what a `ref mut` parameter points at, handed to a function-valued parameter that
+// only calls it, and then elements pushed through the parameter, directly and through a function
+// that passes both on.
+def hand_then_push :: ref mut Vec<string> -> ((unit -> i64) -> i64) -> i64
+fn hand_then_push v use =
+    let sr = ref v[0]
+    let k = use (\() -> String.length sr)
+    let mut i = 0
+    while i < 20 do {
+        Vec.push_mut (to_string i) v
+        i = i + 1
+    }
+    k
+
+def hand_then_push_relay :: ref mut Vec<string> -> ((unit -> i64) -> i64) -> i64
+fn hand_then_push_relay v use = hand_then_push v use
+
+export def handed_borrow_called_then_pushed :: i64
+fn handed_borrow_called_then_pushed =
+    let mut v0: Vec<string> = Vec.empty()
+    Vec.push_mut (to_string 123456789) (ref mut v0)
+    let a = hand_then_push (ref mut v0) (\g -> g ())
+    let b = hand_then_push_relay (ref mut v0) (\g -> g () * 2)
+    a * 1000 + b * 10 + Vec.length (ref v0) / 10
+
+// A value whose drop runs code beside a borrow that its drop cannot reach: the guard's drop reads
+// only its number, so the borrowed string may be replaced after the record's last use, and
+// declared after the record.
+record Guarded { id: i64 }
+
+instance Drop<Guarded> {
+    fn drop g = { let _k = g.id; () }
+}
+
+record GuardedLabel { guard: Guarded, label: ref string }
+
+export def drop_beside_a_borrow_it_cannot_read :: i64
+fn drop_beside_a_borrow_it_cannot_read =
+    let mut text = to_string 123456789
+    let c = GuardedLabel { guard: Guarded { id: 1 }, label: ref text }
+    let len = String.length c.label
+    text = to_string 5
+    let first = to_string 12
+    let mut d = GuardedLabel { guard: Guarded { id: 2 }, label: ref first }
+    let later = to_string 1234
+    d = GuardedLabel { guard: Guarded { id: 3 }, label: ref later }
+    len * 100 + String.length (ref text) * 10 + String.length d.label
+
+// A value whose drop runs code, moved on one path and given a value without a borrow afterwards;
+// and one that a loop drops at a break, declared after the string that it borrows.
+record Reading { f: unit -> i64 }
+
+instance Drop<Reading> {
+    fn drop r = { let _k = r.f (); () }
+}
+
+def read_once :: own Reading -> i64
+fn read_once r = r.f ()
+
+export def drop_runners_moved_on_one_path_or_left_at_a_break :: i64
+fn drop_runners_moved_on_one_path_or_left_at_a_break =
+    let mut holder = Reading { f: \() -> 0 }
+    let text0 = to_string 123456789
+    let t = ref text0
+    holder = Reading { f: \() -> String.length t }
+    let k = if String.length t > 5 then read_once holder else 0
+    holder = Reading { f: \() -> 3 }
+    let mut i = 0
+    let mut seen = 0
+    while i < 3 do
+        let text1 = to_string 12345
+        let t1 = ref text1
+        let mut inner = Reading { f: \() -> String.length t1 }
+        seen = seen + inner.f ()
+        if i == 1 then break else ()
+        inner = Reading { f: \() -> 1 }
+        i = i + 1
+    k * 1000 + seen * 10 + holder.f ()

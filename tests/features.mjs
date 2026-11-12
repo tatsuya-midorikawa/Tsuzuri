@@ -2021,6 +2021,14 @@ const suites = {
       ["views_of_the_callers_data", [], 9n * 100n + 5n],
       // take_cell reads 3 from a's block; later's cell reads "12345".
       ["drop_runner_after_its_borrows", [], 3n + 5n],
+      // Review round 7. arr[0] reads "123456789" (9 characters); the count becomes 3 + 5.
+      ["disjoint_field_after_a_stored_borrow", [], 9n * 100n + 8n],
+      // The callbacks get the length 9 (doubled by the second); 1 + 20 + 20 elements.
+      ["handed_borrow_called_then_pushed", [], 9n * 1000n + 18n * 10n + 41n / 10n],
+      // len 9, the replaced text "5" has 1 character, d reads "1234".
+      ["drop_beside_a_borrow_it_cannot_read", [], 9n * 100n + 1n * 10n + 4n],
+      // read_once reads 9; the loop reads "12345" twice and breaks; holder reads 3.
+      ["drop_runners_moved_on_one_path_or_left_at_a_break", [], 9n * 1000n + 10n * 10n + 3n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.
