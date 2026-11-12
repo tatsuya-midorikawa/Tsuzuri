@@ -3144,16 +3144,9 @@ fn a_borrow_of_a_view_of_the_callers_data_is_a_borrow_of_that_data() {
     }
     // A borrow of the target of a parameter through which the body may write, kept in the
     // caller's data, stays live: a later write through the parameter conflicts with it.
-    for (source, kind, at) in [
-        // m03_elem_reborrow_then_push
-        (
-            "def put :: ref mut Vec<string> -> ref mut [(unit -> i64)..] -> unit\nfn put v slot =\n    let sr = ref v[0]\n    Array.write 0 (\\() -> String.length sr) slot\n    let mut i = 0\n    while i < 100 do {\n        Vec.push_mut (to_string i) v\n        i = i + 1\n    }\ndef run :: i64 -> i64\nfn run n =\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    let mut arr = [\\() -> 0]\n    put (ref mut v0) (ref mut arr)\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    arr[0] () + other.length * 0\nrun 123456789",
-            "borrow_conflict",
-            (7, 36),
-        ),
-    ] {
-        rejects_at(source, "E1014", kind, at);
-    }
+    // m03_elem_reborrow_then_push
+    let pushed = "def put :: ref mut Vec<string> -> ref mut [(unit -> i64)..] -> unit\nfn put v slot =\n    let sr = ref v[0]\n    Array.write 0 (\\() -> String.length sr) slot\n    let mut i = 0\n    while i < 100 do {\n        Vec.push_mut (to_string i) v\n        i = i + 1\n    }\ndef run :: i64 -> i64\nfn run n =\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    let mut arr = [\\() -> 0]\n    put (ref mut v0) (ref mut arr)\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    arr[0] () + other.length * 0\nrun 123456789";
+    rejects_at(pushed, "E1014", "borrow_conflict", (7, 36));
 }
 
 /// A31, review round 6 (finding 4): the locals of a block are dropped in the reverse order of

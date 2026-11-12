@@ -647,6 +647,7 @@ fn start_checker<'a, 'run>(
         exporting: false,
         views: BTreeSet::new(),
         drop_read_types: BTreeMap::new(),
+        drop_read_locals: BTreeMap::new(),
     };
     if !infer && facts.seeded {
         known_functions(
@@ -4520,8 +4521,10 @@ struct Checker<'a, 'run> {
     /// A31: the pattern variables of the body bound as read-only views of the matched storage
     /// (`view`): a borrow of one points into that storage (`expand_views`).
     views: BTreeSet<usize>,
-    /// A31: whether dropping a value of a type may run a user `Drop.drop` (`drop_reads`), by type.
+    /// A31: whether dropping a value of a type may run a user `Drop.drop` (`drop_reads`), by type,
+    /// and by local (`local_drop_reads`).
     drop_read_types: BTreeMap<Type, bool>,
+    drop_read_locals: BTreeMap<usize, bool>,
 }
 
 /// A31: where a share of a block took it (`Checker::exports`): to the target of the parameter or
@@ -9187,28 +9190,30 @@ impl<'a, 'run> Checker<'a, 'run> {
         if self.module.user_drops.is_empty() || bindings.len() < 2 {
             return Ok(());
         }
+        // The position of each local of the block in the order of the declarations.
+        let positions: BTreeMap<usize, usize> = bindings
+            .iter()
+            .enumerate()
+            .map(|(at, (local, _))| (local.id, at))
+            .collect();
+        let moved = self.moved_whole();
         for (at, (holder, _)) in bindings.iter().enumerate() {
             let Some((_, value)) = self.state.locals.get(&holder.id) else {
                 continue;
             };
-            let later: BTreeSet<usize> = bindings[at + 1..]
-                .iter()
-                .map(|(local, _)| local.id)
-                .collect();
+            if value.loans.is_empty() || moved.contains(&holder.id) {
+                continue;
+            }
             // A share of the block of a local owner holds what the block holds.
             let held = self.expand_shares_read(value);
             let Some(&loan) = held.iter().find(|loan| {
                 let root = self.loans[**loan].place.root;
-                later.contains(&root) && !self.reported.contains(&root)
+                positions.get(&root).is_some_and(|position| *position > at)
+                    && !self.reported.contains(&root)
             }) else {
                 continue;
             };
-            let moved = self
-                .state
-                .moved
-                .keys()
-                .any(|place| place.root == holder.id && place.fields.is_empty());
-            if moved || !self.drop_reads_cached(&holder.ty) {
+            if !self.drop_reads_cached(&holder.ty) {
                 continue;
             }
             let mut diagnostic = self
@@ -9273,24 +9278,43 @@ impl<'a, 'run> Checker<'a, 'run> {
         if self.module.user_drops.is_empty() {
             return Vec::new();
         }
-        let candidates: Vec<(usize, Type)> = self
+        let moved = self.moved_whole();
+        let candidates: Vec<usize> = self
             .state
             .locals
             .iter()
-            .filter(|(id, (_, value))| {
-                !value.loans.is_empty()
-                    && !self
-                        .state
-                        .moved
-                        .keys()
-                        .any(|place| place.root == **id && place.fields.is_empty())
-            })
-            .map(|(id, (local, _))| (*id, local.ty.clone()))
+            .filter(|(id, (_, value))| !value.loans.is_empty() && !moved.contains(*id))
+            .map(|(id, _)| *id)
             .collect();
         candidates
             .into_iter()
-            .filter(|(_, ty)| self.drop_reads_cached(ty))
-            .map(|(id, _)| id)
+            .filter(|id| self.local_drop_reads(*id))
+            .collect()
+    }
+
+    /// `drop_reads` of the type of the local `id`, cached by local.
+    fn local_drop_reads(&mut self, id: usize) -> bool {
+        if let Some(known) = self.drop_read_locals.get(&id) {
+            return *known;
+        }
+        let reads = match self.state.locals.get(&id) {
+            Some((local, _)) => {
+                let ty = local.ty.clone();
+                self.drop_reads_cached(&ty)
+            }
+            None => false,
+        };
+        self.drop_read_locals.insert(id, reads);
+        reads
+    }
+
+    /// A31: the locals moved away whole, which are not dropped where their scopes end.
+    fn moved_whole(&self) -> BTreeSet<usize> {
+        self.state
+            .moved
+            .keys()
+            .filter(|place| place.fields.is_empty())
+            .map(|place| place.root)
             .collect()
     }
 
