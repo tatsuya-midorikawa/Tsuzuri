@@ -3457,6 +3457,111 @@ fn repeated_inference_variables_fit_one_member() {
     );
 }
 
+/// The components of a tuple type or value, joined by `separator`: in tuples of at most 100
+/// components when there are more, as a tuple holds at most 128.
+fn tuple(components: &[&str], separator: &str) -> String {
+    if components.len() <= 100 {
+        return format!("({})", components.join(separator));
+    }
+    let groups: Vec<String> = components
+        .chunks(100)
+        .map(|group| tuple(group, separator))
+        .collect();
+    format!("({})", groups.join(separator))
+}
+
+/// Copilot review 4, verification: a comparison that ties inference variables stays within limits.
+/// `chain` returns components that share type variables, and the tuple member of `g` shares its
+/// own, so that comparing them ties each variable to a type that holds earlier ones. The value's
+/// last component is `string` and the member's `i64`, so the value is no member, which the
+/// comparison only finds after the ties. Before the fix, it walked the tied types in full:
+/// - doubling: each variable is tied to a type that holds the previous one twice, so the walk of a
+///   tie (its check that the variable does not occur) doubled with every component (2^40 here).
+///   Now a variable is tied only to a type that `bounded_type` accepts, which the walk checks
+///   without copying and stops at its limit.
+/// - lockstep: each tie is small when it is made, but the tied types nest one in another, so the
+///   last components agree only through 4^30 tied variables. Now a comparison follows ties for at
+///   most `TIE_STEPS` steps, after which its variables may be anything.
+/// - deep: the tied types nest one `[|..|]` per variable, so the last components agree only 600
+///   levels down. Now a comparison follows ties within `TIE_DEPTH` levels, which keeps the
+///   recursion as shallow as for two types that `bounded_type` accepts.
+///
+/// By hand: each value's last component, `string`, is not the member's `i64`, and `bool` is no
+/// tuple, so the value is no member (`E1003`). With `i64` as the last component of `doubling`, the
+/// tuple is the only member that the value can be, and unification ties `'f1` to `('m0 * 'm0)` (3
+/// constructors), `'m1` to `('f1 * 'f1)` (7), and each type after that to twice the one before plus
+/// one: `'m6` would hold 2^13 - 1 = 8191 constructors, more than `bounded_type` accepts (4096), so
+/// it is `E1017`.
+#[test]
+fn tied_inference_variables_stay_within_limits() {
+    // Each part is the value's component type, the member's and the value's component.
+    let program = |parts: Vec<(String, String, &str)>, last: &str| {
+        let found: Vec<&str> = parts.iter().map(|part| part.0.as_str()).collect();
+        let member: Vec<&str> = parts.iter().map(|part| part.1.as_str()).collect();
+        let values: Vec<&str> = parts.iter().map(|part| part.2).collect();
+        let value = if last == "string" { "\"x\"" } else { "1" };
+        format!(
+            "def chain :: unit -> {} = \\_ -> {}\n\n\
+             def g :: own ({} | bool) -> i64 = \\_ -> 0\n\n\
+             g (chain ())\n",
+            tuple(&[found, vec![last]].concat(), " * "),
+            tuple(&[values, vec![value]].concat(), ", "),
+            tuple(&[member, vec!["i64"]].concat(), " * "),
+        )
+    };
+    let doubling = |last: &str| {
+        let mut parts = Vec::new();
+        for i in 1..=40 {
+            let previous = i - 1;
+            parts.push((
+                format!("Maybe<'f{i}>"),
+                format!("Maybe<('m{previous} * 'm{previous})>"),
+                "None",
+            ));
+            parts.push((
+                format!("Maybe<('f{i} * 'f{i})>"),
+                format!("Maybe<'m{i}>"),
+                "None",
+            ));
+        }
+        program(parts, last)
+    };
+    let mut lockstep = Vec::new();
+    for i in 1..=30 {
+        let next = i + 1;
+        lockstep.push((
+            format!("Maybe<'f{i}>"),
+            format!("Maybe<('m{i} * 'm{i})>"),
+            "None",
+        ));
+        lockstep.push((
+            format!("Maybe<('f{next} * 'f{next})>"),
+            format!("Maybe<'m{i}>"),
+            "None",
+        ));
+    }
+    lockstep.push(("Maybe<'f1>".to_owned(), "Maybe<'m1>".to_owned(), "None"));
+    let mut deep = vec![("[|[|'f1|]|]".to_owned(), "[|'m0|]".to_owned(), "[||]")];
+    for i in 1..=300 {
+        let next = i + 1;
+        deep.push((format!("[|'f{i}|]"), format!("[|[|'m{i}|]|]"), "[||]"));
+        deep.push((format!("[|[|'f{next}|]|]"), format!("[|'m{i}|]"), "[||]"));
+    }
+    deep.push(("[|'f1|]".to_owned(), "[|'m0|]".to_owned(), "[||]"));
+    for source in [
+        doubling("string"),
+        program(lockstep, "string"),
+        program(deep, "string"),
+    ] {
+        rejects(&source, "E1003", "anonymous_union_not_member");
+    }
+    rejects(
+        &doubling("i64"),
+        "E1017",
+        "polymorphic_type_expansion_limit",
+    );
+}
+
 /// Copilot review 4: a member is checked for borrows as a named union's payload is
 /// (`contains_reference`, the rule of the ticket): a borrow written in the member's type is
 /// `E1013`, also through a type alias, while a record that holds borrows, and a type argument

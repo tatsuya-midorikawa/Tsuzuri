@@ -6,6 +6,8 @@
 //! the canonical order of `order` (D3). Every other part of the compiler sees an instance of a generic
 //! union, so ownership, layout, drop, specialization and code generation need nothing new.
 
+use std::rc::Rc;
+
 use super::*;
 
 /// The pseudo-module of the synthesized declarations. `$` cannot start or appear in a written name,
@@ -902,18 +904,25 @@ impl Checker<'_> {
     /// the value holds an array literal. An inference variable stands for one type in the whole
     /// comparison, as it does in `member_fits` (`Ties`).
     fn literal_fits(&self, value: &TypedExpr, member: &Type, fit: Fit) -> bool {
-        self.literal_fits_tied(value, member, fit, &Ties::default())
+        self.literal_fits_tied(value, member, fit, &Ties::default(), 0)
     }
 
     /// `literal_fits` inside one comparison, whose inference variables keep the types that `ties`
-    /// gives them.
-    fn literal_fits_tied(&self, value: &TypedExpr, member: &Type, fit: Fit, ties: &Ties) -> bool {
-        let found = self.tied_head(&value.ty, ties);
-        let member = self.tied_head(member, ties);
+    /// gives them. `depth` is how many levels the comparison has descended (`tied_head`).
+    fn literal_fits_tied(
+        &self,
+        value: &TypedExpr,
+        member: &Type,
+        fit: Fit,
+        ties: &Ties,
+        depth: usize,
+    ) -> bool {
+        let found = self.tied_head(&value.ty, ties, depth);
+        let member = self.tied_head(member, ties, depth);
         let all = |elements: &[TypedExpr], element: &Type| {
             elements
                 .iter()
-                .all(|value| self.literal_fits_tied(value, element, Fit::Same, ties))
+                .all(|value| self.literal_fits_tied(value, element, Fit::Same, ties, depth + 1))
         };
         match (&value.kind, found.as_ref(), member.as_ref()) {
             (TypedExprKind::Array(elements), Type::Array(_), Type::FixedArray(element, _)) => {
@@ -925,17 +934,16 @@ impl Checker<'_> {
             (TypedExprKind::Tuple(elements), Type::Tuple(_), Type::Tuple(others))
                 if elements.len() == others.len() =>
             {
-                elements
-                    .iter()
-                    .zip(others)
-                    .all(|(value, other)| self.literal_fits_tied(value, other, Fit::Same, ties))
+                elements.iter().zip(others).all(|(value, other)| {
+                    self.literal_fits_tied(value, other, Fit::Same, ties, depth + 1)
+                })
             }
             (_, found, member) => {
                 // The second reading starts from the ties made before the first one.
                 let mark = ties.mark();
-                self.member_fits_tied(found, member, fit, false, ties) || {
+                self.member_fits_tied(found, member, fit, false, ties, depth) || {
                     ties.undo(mark);
-                    self.member_fits_tied(found, member, fit, true, ties)
+                    self.member_fits_tied(found, member, fit, true, ties, depth)
                         && holds_array_literal(value)
                 }
             }
@@ -1154,17 +1162,21 @@ impl Checker<'_> {
     /// An inference variable stands for one type in the whole comparison, as unification makes it:
     /// `(Maybe<?a> * Maybe<?a>)` may be `(Maybe<i64> * Maybe<i64>)` but not
     /// `(Maybe<i64> * Maybe<string>)`. The comparison records what each variable has met (`Ties`)
-    /// and leaves the inference state as it was.
+    /// and leaves the inference state as it was. It does so within the limits of `Ties`: a variable
+    /// is tied only to a type that `polymorph::bounded_type` accepts, and only while the comparison
+    /// is no deeper than two such types reach (`TIE_DEPTH`) and has steps left (`TIE_STEPS`); past
+    /// them, its variables may be anything again.
     ///
     /// For a member without inference variables the answer is what unification answers once the
-    /// value is adapted, up to class constraints: it misses no member that an annotation with
-    /// that member accepts for a value checked by itself, and it adds none.
+    /// value is adapted, up to class constraints and those limits: it misses no member that an
+    /// annotation with that member accepts for a value checked by itself, and it adds none.
     fn member_fits(&self, found: &Type, member: &Type, fit: Fit, literal: bool) -> bool {
-        self.member_fits_tied(found, member, fit, literal, &Ties::default())
+        self.member_fits_tied(found, member, fit, literal, &Ties::default(), 0)
     }
 
     /// `member_fits` inside one comparison, whose inference variables keep the types that `ties`
-    /// gives them.
+    /// gives them. `depth` is how many levels the comparison has descended: each level descends
+    /// into one of the two types at least (`tied_head`).
     fn member_fits_tied(
         &self,
         found: &Type,
@@ -1172,15 +1184,16 @@ impl Checker<'_> {
         fit: Fit,
         literal: bool,
         ties: &Ties,
+        depth: usize,
     ) -> bool {
-        let found = self.tied_head(found, ties);
-        let member = self.tied_head(member, ties);
+        let found = self.tied_head(found, ties, depth);
+        let member = self.tied_head(member, ties, depth);
         let (found, member) = (found.as_ref(), member.as_ref());
         if found == member {
             return true;
         }
         let same = |left: &Type, right: &Type| {
-            self.member_fits_tied(left, right, Fit::Same, literal, ties)
+            self.member_fits_tied(left, right, Fit::Same, literal, ties, depth + 1)
         };
         let all = |left: &[Type], right: &[Type]| {
             left.len() == right.len()
@@ -1202,7 +1215,7 @@ impl Checker<'_> {
                 {
                     return false;
                 }
-                self.tie(variable, other, ties);
+                self.tie(variable, other, ties, depth);
                 true
             }
             (Type::Application(..) | Type::Partial(_), _)
@@ -1236,8 +1249,8 @@ impl Checker<'_> {
                 let parameter = |left: &Type, right: &Type| {
                     if borrowed {
                         match (
-                            self.tied_head(left, ties).as_ref(),
-                            self.tied_head(right, ties).as_ref(),
+                            self.tied_head(left, ties, depth + 1).as_ref(),
+                            self.tied_head(right, ties, depth + 1).as_ref(),
                         ) {
                             (Type::Reference(inner, false), other)
                                 if !matches!(other, Type::Reference(..)) =>
@@ -1288,25 +1301,35 @@ impl Checker<'_> {
     }
 
     /// `ty` with the solved inference variables at its top followed, then the variables that the
-    /// comparison has tied to a type (`ties`), and so on until neither applies.
-    fn tied_head<'t>(&'t self, ty: &'t Type, ties: &Ties) -> std::borrow::Cow<'t, Type> {
-        let mut ty = std::borrow::Cow::Borrowed(self.inference.head(ty));
-        while let Type::Infer(id) = ty.as_ref() {
-            let Some(tied) = ties.get(*id) else {
-                break;
-            };
-            ty = std::borrow::Cow::Owned(self.inference.head(&tied).clone());
+    /// comparison has tied to a type (`ties`), and so on until neither applies. `depth` is how many
+    /// levels the comparison has descended to reach `ty`: a tie is followed only within
+    /// `TIE_DEPTH` levels and while the comparison has steps left (`Ties::follow`). Past either, a
+    /// tied variable is open again and may be anything, which only counts more members.
+    fn tied_head<'t>(&'t self, ty: &'t Type, ties: &Ties, depth: usize) -> Head<'t> {
+        let mut head = Head::Part(self.inference.head(ty));
+        while depth <= TIE_DEPTH
+            && let Type::Infer(id) = head.as_ref()
+            && let Some(tied) = ties.follow(*id)
+        {
+            // The inference state does not change during a comparison, so the type that a
+            // variable is tied to, a head when it was tied, is still one.
+            debug_assert!(std::ptr::eq(self.inference.head(&tied), &*tied));
+            head = Head::Tied(tied);
         }
-        ty
+        head
     }
 
     /// Ties the open inference variable `variable` to `other` for the rest of one comparison, as
     /// unification would solve it. Of two open variables, the open type of a number literal stays
     /// the one that is not tied, so that its classes still decide what it meets later. Where
     /// unification would not solve the variable (against the target of an exclusive slice, which
-    /// it leaves open, or a type that holds the variable, which it rejects), nothing is tied: the
-    /// variable may still be anything, which only counts more members.
-    fn tie(&self, variable: &Type, other: &Type, ties: &Ties) {
+    /// it leaves open, or a type that `solvable` refuses, which it rejects), nothing is tied: the
+    /// variable may still be anything, which only counts more members. Nor is anything tied past
+    /// the levels and the steps within which `tied_head` follows ties (`depth`).
+    fn tie(&self, variable: &Type, other: &Type, ties: &Ties, depth: usize) {
+        if depth > TIE_DEPTH {
+            return;
+        }
         let (variable, other) = match other {
             Type::Infer(_)
                 if self.inference.is_numeric_literal(variable)
@@ -1319,26 +1342,88 @@ impl Checker<'_> {
         let Type::Infer(id) = variable else {
             unreachable!("only an open inference variable is tied")
         };
-        if matches!(other, Type::ArrayView(_)) || self.tied_mentions(other, *id, ties) {
+        if matches!(other, Type::ArrayView(_)) || !self.solvable(other, *id, ties, 0, &mut 0) {
             return;
         }
-        ties.tie(*id, other.clone());
+        ties.tie(*id, Rc::new(other.clone()));
     }
 
-    /// Whether the open inference variable `root` occurs in `ty` once the solved and the tied
-    /// variables in it are followed.
-    fn tied_mentions(&self, ty: &Type, root: usize, ties: &Ties) -> bool {
-        let mut mentions = false;
-        polymorph::map_type(ty, &mut |leaf| {
-            if !mentions && matches!(leaf, Type::Infer(_)) {
-                mentions = match self.tied_head(leaf, ties).as_ref() {
-                    Type::Infer(id) => *id == root,
-                    solved => self.tied_mentions(solved, root, ties),
-                };
+    /// Whether unification could solve the open inference variable `root` as `ty`, with the solved
+    /// and the tied variables in `ty` followed: `root` does not occur in it (`unify` rejects that
+    /// as an infinite type, `E1015`) and `polymorph::bounded_type` accepts it (`E1017`): it nests at
+    /// most `MAX_NESTING` levels and holds at most `polymorph::MAX_TYPE_SIZE` type constructors,
+    /// counted as `type_size` counts them. `depth` is the nesting of `ty` and `count` the
+    /// constructors counted so far. The walk copies nothing and stops at the limit, so that
+    /// variables that tie each other back and forth, whose types double with every tie, cost no
+    /// more than the limit. Each constructor visited takes a step of the comparison, and a walk
+    /// that runs out of steps answers no.
+    fn solvable(
+        &self,
+        ty: &Type,
+        root: usize,
+        ties: &Ties,
+        depth: usize,
+        count: &mut usize,
+    ) -> bool {
+        let ty = self.tied_head(ty, ties, 0);
+        *count += 1;
+        if depth > MAX_NESTING || *count > polymorph::MAX_TYPE_SIZE || !ties.step() {
+            return false;
+        }
+        let mut inner = |ty: &Type| self.solvable(ty, root, ties, depth + 1, count);
+        match ty.as_ref() {
+            Type::Infer(id) => *id != root,
+            Type::Partial(partial) => partial.trailing.iter().all(inner),
+            Type::Application(head, arguments) => inner(head) && arguments.iter().all(inner),
+            Type::Array(element)
+            | Type::ArrayView(element)
+            | Type::List(element)
+            | Type::Vec(element)
+            | Type::Once(element)
+            | Type::Shared(element, _)
+            | Type::Reference(element, _) => inner(element),
+            Type::Function(parameters, result) => {
+                parameters.iter().all(&mut inner) && inner(result)
             }
-            leaf.clone()
-        });
-        mentions
+            Type::Tuple(elements) => elements.iter().all(inner),
+            Type::FixedArray(element, length) => inner(element) && inner(length),
+            Type::Record(_, arguments) | Type::Union(_, arguments) => arguments.iter().all(inner),
+            _ => true,
+        }
+    }
+}
+
+/// The levels that one comparison of `Checker::member_fits_tied` descends within which it
+/// follows and makes ties (`Checker::tied_head`). Each level descends into one of the two compared
+/// types at least, so two types that `polymorph::bounded_type` accepts (a nesting of at most
+/// `MAX_NESTING`) are compared within it. A value is a member without `E1017` only if its type,
+/// once unification has made it the member, is such a type (every expression's type is bounded
+/// when its function has been checked), so past the limit the comparison only counts more of the
+/// members that would end in `E1017`. The limit keeps the recursion as shallow as the comparison
+/// of two such types.
+const TIE_DEPTH: usize = 2 * MAX_NESTING;
+
+/// The steps through ties that one comparison takes at most (`Ties::step`). A comparison of types
+/// that share no inference variables takes none; one that ties takes one step for each tied
+/// variable that it follows and for each constructor of the types that it ties variables to,
+/// which `polymorph::MAX_TYPE_SIZE` bounds for each tie. Variables that tie each other back and
+/// forth can make the types that the comparison follows double with every tie; the steps keep such
+/// a comparison from taking time exponential in the number of variables.
+const TIE_STEPS: usize = 1 << 16;
+
+/// A type that `Checker::tied_head` reached: a part of the compared types or of the inference
+/// state, or the type that a variable is tied to.
+enum Head<'t> {
+    Part(&'t Type),
+    Tied(Rc<Type>),
+}
+
+impl AsRef<Type> for Head<'_> {
+    fn as_ref(&self) -> &Type {
+        match self {
+            Head::Part(ty) => ty,
+            Head::Tied(ty) => ty,
+        }
     }
 }
 
@@ -1347,19 +1432,38 @@ impl Checker<'_> {
 /// unification makes it. The ties belong to the comparison of one member with one value and never
 /// reach the inference state: `member_fits` and `literal_fits` start each comparison without any,
 /// and a reading that fails is undone (`mark` and `undo`).
+///
+/// The comparison follows and makes ties for at most `TIE_STEPS` steps (`step`); once they are
+/// spent, every variable may be anything again, as each variable was before the comparison kept
+/// ties, which only counts more members.
 #[derive(Default)]
 struct Ties {
-    types: std::cell::RefCell<BTreeMap<usize, Type>>,
+    types: std::cell::RefCell<BTreeMap<usize, Rc<Type>>>,
     /// The variables in the order that they were tied, to undo the ties after a mark.
     order: std::cell::RefCell<Vec<usize>>,
+    /// The steps that the comparison has taken. `undo` gives none back.
+    steps: std::cell::Cell<usize>,
 }
 
 impl Ties {
-    fn get(&self, id: usize) -> Option<Type> {
-        self.types.borrow().get(&id).cloned()
+    /// The type that `id` is tied to, which takes a step; `None` when `id` is not tied or no steps
+    /// are left.
+    fn follow(&self, id: usize) -> Option<Rc<Type>> {
+        let tied = self.types.borrow().get(&id).cloned()?;
+        self.step().then_some(tied)
     }
 
-    fn tie(&self, id: usize, ty: Type) {
+    /// Takes one of the comparison's steps through ties, if one is left.
+    fn step(&self) -> bool {
+        let steps = self.steps.get();
+        if steps >= TIE_STEPS {
+            return false;
+        }
+        self.steps.set(steps + 1);
+        true
+    }
+
+    fn tie(&self, id: usize, ty: Rc<Type>) {
         self.types.borrow_mut().insert(id, ty);
         self.order.borrow_mut().push(id);
     }

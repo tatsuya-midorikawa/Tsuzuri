@@ -281,12 +281,15 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
     }
 }
 
+/// The most type constructors that `bounded_type` accepts in a type.
+pub(super) const MAX_TYPE_SIZE: usize = 4096;
+
 /// The number of type constructors in `ty`, or `None` beyond a nesting of `MAX_NESTING` or
-/// 4096 constructors.
+/// `MAX_TYPE_SIZE` constructors.
 fn type_size(ty: &Type) -> Option<usize> {
     fn visit(ty: &Type, depth: usize, count: &mut usize) -> bool {
         *count += 1;
-        if depth > MAX_NESTING || *count > 4096 {
+        if depth > MAX_NESTING || *count > MAX_TYPE_SIZE {
             return false;
         }
         match ty {
