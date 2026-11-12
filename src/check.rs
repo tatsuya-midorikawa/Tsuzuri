@@ -740,6 +740,17 @@ impl Type {
         !types.stored_all(self, |part| !part.runs_on_drop(types))
     }
 
+    /// A31: whether a value of this type stores (not through a reference) a value of a type
+    /// that `found` accepts: in fields, payloads, elements, cells, and the blocks of strong and
+    /// weak pointers.
+    pub(crate) fn stores_some(
+        &self,
+        types: &TypeContext<'_>,
+        found: impl Fn(&Type) -> bool,
+    ) -> bool {
+        !types.stored_all(self, |part| !found(part))
+    }
+
     /// A31: whether destroying a value of this type destroys a value of a type that `found`
     /// accepts: it stores one (not through a reference), except that a weak pointer destroys
     /// nothing of what it points at (the last strong owner destroys the block's value).

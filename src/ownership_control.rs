@@ -2,6 +2,13 @@ use super::*;
 use crate::check::PatternStep;
 
 type LoanSummary = BTreeMap<usize, BTreeSet<(Place, bool)>>;
+type LoopSummary = (
+    BTreeSet<Place>,
+    LoanSummary,
+    BTreeSet<String>,
+    BTreeSet<(Place, bool)>,
+    usize,
+);
 
 pub(super) struct LoopFlow<'a> {
     locals: BTreeSet<usize>,
@@ -41,6 +48,8 @@ impl<'a> Checker<'a, '_> {
             .filter(|id| !flow.locals.contains(id))
             .collect();
         let state = self.state.clone();
+        // A31: the locals of the scopes that the exception leaves are dropped here.
+        self.check_exit_drop_order(&locals, span)?;
         self.finish_control_scope(&locals, &Value::default(), span)?;
         let edge = std::mem::replace(&mut self.state, state);
         self.try_flows.last_mut().unwrap().raises.push(edge);
@@ -150,6 +159,9 @@ impl<'a> Checker<'a, '_> {
             .filter(|id| !flow.locals.contains(id))
             .collect();
         let state = self.state.clone();
+        // A31: the locals of the scopes that the jump leaves are dropped here, whatever the code
+        // after it puts into them.
+        self.check_exit_drop_order(&locals, span)?;
         self.finish_control_scope(&locals, &Value::default(), span)?;
         let edge = std::mem::replace(&mut self.state, state);
         let flow = self.loop_flows.last_mut().unwrap();
@@ -189,6 +201,7 @@ impl<'a> Checker<'a, '_> {
                 .insert(local.id, (self.declarations[&local.id], value));
             self.state.aliases.insert(local.id, places);
         }
+        self.note_binding(local.id);
         Ok(temporary)
     }
 
@@ -230,9 +243,11 @@ impl<'a> Checker<'a, '_> {
             .insert(local.id, (self.declarations[&local.id], value));
         self.views.insert(local.id);
         self.state.moved.retain(|place, _| place.root != local.id);
+        self.state.moved_always.remove(&local.id);
         self.state
             .generic_moves
             .retain(|place, _| place.root != local.id);
+        self.note_binding(local.id);
         Ok(())
     }
 
@@ -292,13 +307,14 @@ impl<'a> Checker<'a, '_> {
         self.state
             .moved
             .retain(|place, _| !ids.contains(&place.root));
+        self.state.moved_always.retain(|id| !ids.contains(id));
         self.state
             .generic_moves
             .retain(|place, _| !ids.contains(&place.root));
         Ok(())
     }
 
-    fn loop_summary(&self) -> (BTreeSet<Place>, LoanSummary, BTreeSet<String>) {
+    fn loop_summary(&self) -> LoopSummary {
         let loans = self
             .state
             .locals
@@ -317,11 +333,22 @@ impl<'a> Checker<'a, '_> {
                 )
             })
             .collect();
-        // The places only: the spans of the moves would keep the fixpoint from converging.
+        // The places only: the spans of the moves would keep the fixpoint from converging. A31:
+        // the kept loans by place too, and the borrows handed to function-valued parameters, so
+        // that the next iteration's writes meet those of this one.
         (
             self.state.moved.keys().cloned().collect(),
             loans,
             self.copy_variables.clone(),
+            self.state
+                .kept
+                .iter()
+                .map(|id| {
+                    let loan = &self.loans[*id];
+                    (loan.place.clone(), loan.mutable)
+                })
+                .collect(),
+            self.handed.len(),
         )
     }
 
@@ -354,6 +381,7 @@ impl<'a> Checker<'a, '_> {
                 self.state
                     .moved
                     .retain(|place, _| ids.contains(&place.root));
+                self.state.moved_always.retain(|id| ids.contains(id));
                 self.state
                     .generic_moves
                     .retain(|place, _| ids.contains(&place.root));
@@ -404,6 +432,7 @@ impl<'a> Checker<'a, '_> {
                 self.state
                     .locals
                     .insert(local.id, (self.declarations[&local.id], Value::default()));
+                self.note_binding(local.id);
                 self.check_loop(None, body, &during)?;
                 self.finish_control_scope(
                     &BTreeSet::from([local.id]),
@@ -440,6 +469,7 @@ impl<'a> Checker<'a, '_> {
                 self.state
                     .locals
                     .insert(local.id, (self.declarations[&local.id], loans));
+                self.note_binding(local.id);
                 self.check_loop(None, body, &during)?;
                 self.held.pop();
                 let mut ids = BTreeSet::from([local.id]);
@@ -491,9 +521,11 @@ impl<'a> Checker<'a, '_> {
                                 .locals
                                 .insert(local.id, (self.declarations[&local.id], value));
                             self.state.moved.retain(|place, _| place.root != local.id);
+                            self.state.moved_always.remove(&local.id);
                             self.state
                                 .generic_moves
                                 .retain(|place, _| place.root != local.id);
+                            self.note_binding(local.id);
                             temporaries.insert(local.id);
                         }
                         PatternStep::Test(condition) => {
@@ -558,9 +590,11 @@ impl<'a> Checker<'a, '_> {
                         .locals
                         .insert(local.id, (self.declarations[&local.id], value));
                     self.state.moved.retain(|place, _| place.root != local.id);
+                    self.state.moved_always.remove(&local.id);
                     self.state
                         .generic_moves
                         .retain(|place, _| place.root != local.id);
+                    self.note_binding(local.id);
                 }
                 let value = self.eval(&arm.body, Use::Consume, live)?;
                 ids.extend(temporaries);
