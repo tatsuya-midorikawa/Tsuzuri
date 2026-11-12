@@ -276,9 +276,14 @@ struct Parser<'a> {
     /// Every `dyn` type parsed so far, for `Program::dyn_types` (A14).
     dyn_types: Vec<TypeExpr>,
     /// Whether an anonymous union type or a type test pattern was parsed, for
-    /// `Program::uses_anonymous_unions` (A24). Only `own_type_ahead` parses speculatively, on a
-    /// clone that it drops, so the flag never comes from text that is not a type or a pattern.
+    /// `Program::uses_anonymous_unions` (A24). Only `own_type_ahead` and `annotation_end` parse
+    /// speculatively, on clones that they drop, so the flag never comes from text that is not a
+    /// type or a pattern.
     uses_anonymous_unions: bool,
+    /// The index of the token after the last `:` and `?` written together, 0 without one (A24):
+    /// `type_test_ahead` finds a type test only before it, so from there on it answers at once,
+    /// and it reads the types of annotations (`annotation_end`) only in a source that writes one.
+    type_tests_end: usize,
     /// The token where the body of the top-level function being parsed starts, the only place
     /// where its contract lines may begin (A21). An explicit lambda moves it to its own body.
     contract_site: Option<usize>,
@@ -320,6 +325,14 @@ impl<'a> Parser<'a> {
             pending_statement: None,
             dyn_types: Vec::new(),
             uses_anonymous_unions: false,
+            type_tests_end: tokens
+                .windows(2)
+                .rposition(|pair| {
+                    pair[0].kind == TokenKind::Colon
+                        && pair[1].kind == TokenKind::Question
+                        && pair[0].span.end == pair[1].span.start
+                })
+                .map_or(0, |colon| colon + 1),
             contract_site: None,
             method_body: false,
             site_contracts: Vec::new(),

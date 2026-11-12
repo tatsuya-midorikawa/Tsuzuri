@@ -11,8 +11,10 @@
 //! takes. A declaration is identified by its module's full name and its own name, so a package
 //! whose namespace changes loses every declaration and gains them under the new name.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::rc::Rc;
 
 use crate::check::semantic::{ResolvedApi, SemanticIndex, api_key};
 use crate::check::{Asserts, ModuleOrigin};
@@ -327,6 +329,60 @@ pub struct Api {
     version: Option<Version>,
 }
 
+/// What a renaming does with the names it reaches (A24): it gives them, or it computes a key of
+/// an anonymous union's member, which renames nothing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Blind {
+    /// Names are given by first appearance.
+    Off,
+    /// The key that sorts the members (`Renaming::members`): every type variable is `'_`, and a
+    /// region or a length parameter that has no name yet is numbered by where it first appears in
+    /// the member (`_0`, `_1`, ...: `unnamed_regions`, `unnamed_lengths`), so a key keeps which
+    /// of them is which and depends neither on their names nor on the other members.
+    Order,
+    /// The key that orders the members whose `Order` keys tie (`Renaming::refined`): as `Order`,
+    /// except that a type variable that has a name keeps it, the others are numbered too
+    /// (`unnamed_variables`), and a number is written `~0`, which sorts after a given name.
+    Refine,
+}
+
+/// The kinds of names that a renaming gives.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum NameKind {
+    Variable,
+    Region,
+    Length,
+}
+
+/// Where each name, as written, occurs in what one search renders (`Renaming::least`): the place
+/// of each occurrence (`Renaming::place`).
+type Census = BTreeMap<(NameKind, String), Vec<String>>;
+
+/// For each name of a census: the color of its places (the rank of their sorted list among those
+/// of every name, so names with the same places have the same color) and how often it occurs.
+type Colors = BTreeMap<(NameKind, String), (usize, usize)>;
+
+/// The state of the search over the orders of tied members (`Renaming::least`): the choice made
+/// at each tie that a run reaches, replayed by the next run up to its last entry.
+#[derive(Clone, Default)]
+struct Ties {
+    /// The candidate taken at each tie reached so far, and the number of candidates there.
+    script: Vec<(usize, usize)>,
+    /// The next tie of this run.
+    next: usize,
+    /// The colors of the names in everything that the search renders, once the census is taken.
+    counts: Option<Rc<Colors>>,
+}
+
+/// The most runs of one search over the orders of tied members (`Renaming::least`).
+const MAX_TIE_RUNS: usize = 4096;
+
+#[cfg(test)]
+thread_local! {
+    /// The calls of `render` that `Renaming::least` makes, which the unit tests count.
+    static RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Renames type variables, regions and declared length parameters by their first appearance, so
 /// that two declarations that differ only in those names print the same; a renaming that is not
 /// `canonical` leaves every name as written. A name in a length position that no declaration
@@ -334,21 +390,33 @@ pub struct Api {
 #[derive(Clone)]
 struct Renaming<'a> {
     canonical: bool,
-    /// Set while `members` computes the sort keys of an anonymous union's members (A24): every
-    /// type variable is `'_`, and a region or a length parameter that has no name yet is
-    /// numbered by where it first appears in the member (`_0`, `_1`, ...: `unnamed_regions`,
-    /// `unnamed_lengths`), so a key keeps which of them is which, depends neither on their names
-    /// nor on the other members, and computing it renames nothing.
-    blind: bool,
+    /// Whether the renaming computes a key of a member instead of giving names (A24).
+    blind: Blind,
     resolved: Option<&'a ResolvedApi>,
     variables: BTreeMap<String, String>,
     regions: BTreeMap<String, String>,
     /// The declared length parameters, by the name without its `#`.
     lengths: BTreeMap<String, String>,
-    /// While `blind`: the regions and the length parameters without a name, in the order in which
-    /// the key being computed reaches them; the position is the number.
+    /// While `blind`: the type variables (`Refine` only), the regions and the length parameters
+    /// without a name, in the order in which the key being computed reaches them; the position
+    /// is the number.
+    unnamed_variables: Vec<String>,
     unnamed_regions: Vec<String>,
     unnamed_lengths: Vec<String>,
+    /// While a census runs (`least`): every name reached is recorded here as written, with its
+    /// place, and nothing is renamed. Copies of the renaming (a class's methods) record into the
+    /// same table.
+    census: Option<Rc<RefCell<Census>>>,
+    /// While a census runs: the labels of the parts around the type being read (`placed`), from
+    /// the declaration down. A label names a part by what it is and its position among parts
+    /// whose order matters (a parameter, a tuple's element, a type argument, a field by name, a
+    /// constraint by class); a member of an anonymous union by its blind text, since the order of
+    /// the members does not matter. So no consistent renaming or order of members changes a
+    /// place, and a place tells where a name occurs.
+    place: Vec<String>,
+    /// The search over the orders of tied members that this renaming runs in (`least`); outside
+    /// one, a tie takes its first candidate.
+    ties: Option<Ties>,
     /// The calls of `ty`, which the unit tests count.
     #[cfg(test)]
     visits: usize,
@@ -358,21 +426,187 @@ impl<'a> Renaming<'a> {
     fn new(canonical: bool, resolved: Option<&'a ResolvedApi>) -> Self {
         Self {
             canonical,
-            blind: false,
+            blind: Blind::Off,
             resolved: resolved.filter(|_| canonical),
             variables: BTreeMap::new(),
             regions: BTreeMap::new(),
             lengths: BTreeMap::new(),
+            unnamed_variables: Vec::new(),
             unnamed_regions: Vec::new(),
             unnamed_lengths: Vec::new(),
+            census: None,
+            place: Vec::new(),
+            ties: None,
             #[cfg(test)]
             visits: 0,
         }
     }
 
-    /// The number of a region or a length parameter that has no name, in a blind key: its
-    /// position in `unnamed`, which it joins when the key first reaches it.
-    fn unnamed(unnamed: &mut Vec<String>, name: &str) -> String {
+    /// Records a name and its place in the census, if one runs; `true` when it did.
+    fn counted(&self, kind: NameKind, name: &str) -> bool {
+        let Some(census) = &self.census else {
+            return false;
+        };
+        census
+            .borrow_mut()
+            .entry((kind, name.to_owned()))
+            .or_default()
+            .push(self.place.join("/"));
+        true
+    }
+
+    /// `read` with `label` added to the place while a census runs (`place`).
+    fn placed<R>(
+        &mut self,
+        label: impl FnOnce() -> String,
+        read: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        if self.census.is_none() {
+            return read(self);
+        }
+        self.place.push(label());
+        let result = read(self);
+        self.place.pop();
+        result
+    }
+
+    fn named(&self, kind: NameKind, name: &str) -> bool {
+        match kind {
+            NameKind::Variable => self.variables.contains_key(name),
+            NameKind::Region => self.regions.contains_key(name),
+            NameKind::Length => self.lengths.contains_key(name),
+        }
+    }
+
+    fn forget_unnamed(&mut self) {
+        self.unnamed_variables.clear();
+        self.unnamed_regions.clear();
+        self.unnamed_lengths.clear();
+    }
+
+    /// What `render` makes with this renaming, the least of it over the orders of tied members
+    /// (A24). Members whose `Order` keys tie differ only in the names of their variables, regions
+    /// or length parameters, so nothing in the members themselves orders them; which order is
+    /// right depends on where else those names occur, in the rest of the signature or of the
+    /// declaration. `tied` picks the next member among the tied ones by what it can tell without
+    /// trying (`refined`), and each pick that remains open is a choice of this search: every
+    /// combination of choices is rendered, and the least result is the canonical form. Two
+    /// declarations that differ only in their names and in the order of members reach the same
+    /// set of results, so they print the same; the results are renderings of the declaration, so
+    /// declarations that differ in anything else never print the same.
+    ///
+    /// A run that meets no open choice is the only one, which is every declaration without tied
+    /// members: the checker rejects such members (`E1041`), so only the syntactic comparison of a
+    /// rejected signature searches. Then a census records where each name that `render` reaches
+    /// occurs (`place`), which orders more members without trying and tells which of them can be
+    /// swapped (`tied`). The runs replay the choices of the previous one and take the next
+    /// candidate at the last choice that has one, up to `MAX_TIE_RUNS`; past that, the least
+    /// result found so far is the form, which then may depend on the written order.
+    fn least<T: Ord>(&self, mut render: impl FnMut(&mut Self) -> T) -> T {
+        let (first, script) = self.replay(&mut render, Vec::new(), None);
+        if script.is_empty() {
+            return first;
+        }
+        let census = Rc::new(RefCell::new(Census::new()));
+        let mut counting = self.clone();
+        counting.census = Some(Rc::clone(&census));
+        #[cfg(test)]
+        RUNS.with(|runs| runs.set(runs.get() + 1));
+        render(&mut counting);
+        drop(counting);
+        let census = census.take();
+        let sorted: Vec<Vec<String>> = census
+            .values()
+            .map(|places| {
+                let mut places = places.clone();
+                places.sort_unstable();
+                places
+            })
+            .collect();
+        let mut distinct = sorted.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        let counts: Rc<Colors> = Rc::new(
+            census
+                .into_iter()
+                .zip(sorted)
+                .map(|((name, places), sorted)| {
+                    let color = distinct.binary_search(&sorted).unwrap_or_default();
+                    (name, (color, places.len()))
+                })
+                .collect(),
+        );
+        let mut best: Option<T> = None;
+        let mut script = Vec::new();
+        for _ in 0..MAX_TIE_RUNS {
+            let (result, mut taken) = self.replay(&mut render, script, Some(Rc::clone(&counts)));
+            if best.as_ref().is_none_or(|best| result < *best) {
+                best = Some(result);
+            }
+            loop {
+                match taken.pop() {
+                    Some((choice, candidates)) if choice + 1 < candidates => {
+                        taken.push((choice + 1, candidates));
+                        break;
+                    }
+                    Some(_) => {}
+                    None => return best.expect("the search runs at least once"),
+                }
+            }
+            script = taken;
+        }
+        best.expect("the search runs at least once")
+    }
+
+    /// One run of `least`: `render` with a copy of this renaming that takes the choices of
+    /// `script`, and the choices that the run took.
+    fn replay<T>(
+        &self,
+        render: &mut impl FnMut(&mut Self) -> T,
+        script: Vec<(usize, usize)>,
+        counts: Option<Rc<Colors>>,
+    ) -> (T, Vec<(usize, usize)>) {
+        #[cfg(test)]
+        RUNS.with(|runs| runs.set(runs.get() + 1));
+        let mut renaming = self.clone();
+        renaming.ties = Some(Ties {
+            script,
+            next: 0,
+            counts,
+        });
+        let result = render(&mut renaming);
+        let script = renaming
+            .ties
+            .take()
+            .map(|ties| ties.script)
+            .unwrap_or_default();
+        (result, script)
+    }
+
+    /// The candidate to take at a tie with `candidates` candidates: the script's at a tie that
+    /// the script reaches, the first at a new one, which joins the script.
+    fn choose(&mut self, candidates: usize) -> usize {
+        let Some(ties) = &mut self.ties else {
+            return 0;
+        };
+        let choice = match ties.script.get(ties.next) {
+            Some(&(choice, recorded)) => {
+                debug_assert_eq!(recorded, candidates, "a replayed run reaches the same ties");
+                choice.min(candidates - 1)
+            }
+            None => {
+                ties.script.push((0, candidates));
+                0
+            }
+        };
+        ties.next += 1;
+        choice
+    }
+
+    /// The number of a name that has no name yet, in a blind key: its position in `unnamed`,
+    /// which it joins when the key first reaches it. It is written `_0` in an `Order` key and
+    /// `~0` in a `Refine` key, where it sorts after the names given so far (`t0`, `r0`, `n0`).
+    fn unnamed(blind: Blind, unnamed: &mut Vec<String>, name: &str) -> String {
         let position = unnamed
             .iter()
             .position(|known| known == name)
@@ -380,15 +614,23 @@ impl<'a> Renaming<'a> {
                 unnamed.push(name.to_owned());
                 unnamed.len() - 1
             });
-        format!("_{position}")
+        let mark = if blind == Blind::Refine { '~' } else { '_' };
+        format!("{mark}{position}")
     }
 
     fn variable(&mut self, name: &str) -> String {
-        if !self.canonical {
+        if !self.canonical || self.counted(NameKind::Variable, name) {
             return name.to_owned();
         }
-        if self.blind {
-            return "_".to_owned();
+        match self.blind {
+            Blind::Off => {}
+            Blind::Order => return "_".to_owned(),
+            Blind::Refine => {
+                return match self.variables.get(name) {
+                    Some(variable) => variable.clone(),
+                    None => Self::unnamed(self.blind, &mut self.unnamed_variables, name),
+                };
+            }
         }
         let next = self.variables.len();
         self.variables
@@ -398,13 +640,13 @@ impl<'a> Renaming<'a> {
     }
 
     fn region(&mut self, name: &str) -> String {
-        if !self.canonical {
+        if !self.canonical || self.counted(NameKind::Region, name) {
             return name.to_owned();
         }
-        if self.blind {
+        if self.blind != Blind::Off {
             return match self.regions.get(name) {
                 Some(region) => region.clone(),
-                None => Self::unnamed(&mut self.unnamed_regions, name),
+                None => Self::unnamed(self.blind, &mut self.unnamed_regions, name),
             };
         }
         let next = self.regions.len();
@@ -428,13 +670,13 @@ impl<'a> Renaming<'a> {
 
     /// The name of a declared length parameter, given by its position among the declared ones.
     fn length(&mut self, name: &str) -> String {
-        if !self.canonical {
+        if !self.canonical || self.counted(NameKind::Length, name) {
             return name.to_owned();
         }
-        if self.blind {
+        if self.blind != Blind::Off {
             return match self.lengths.get(name) {
                 Some(length) => length.clone(),
-                None => Self::unnamed(&mut self.unnamed_lengths, name),
+                None => Self::unnamed(self.blind, &mut self.unnamed_lengths, name),
             };
         }
         let next = self.lengths.len();
@@ -501,59 +743,124 @@ impl<'a> Renaming<'a> {
         } else {
             ty
         };
+        // Each part is `placed` under a label of its position, which only a census records.
         let kind = match &ty.kind {
             Named(name) => Named(self.public_name(name)),
             Variable(name) if name.starts_with('#') => Named(self.length(&name[1..])),
             Variable(name) => Variable(self.variable(name)),
             Apply(head, arguments) => {
-                let head = match head.text.strip_prefix('\'') {
-                    Some(name) => Ident {
-                        text: format!("'{}", self.variable(name)),
-                        ..(**head).clone()
-                    },
-                    None => Ident {
-                        text: self.public_name(&head.text),
-                        ..(**head).clone()
-                    },
+                let (head, label) = match head.text.strip_prefix('\'') {
+                    Some(name) => (
+                        Ident {
+                            text: format!(
+                                "'{}",
+                                self.placed(|| "'".to_owned(), |this| this.variable(name))
+                            ),
+                            ..(**head).clone()
+                        },
+                        "'".to_owned(),
+                    ),
+                    None => {
+                        let text = self.public_name(&head.text);
+                        (
+                            Ident {
+                                text: text.clone(),
+                                ..(**head).clone()
+                            },
+                            text,
+                        )
+                    }
                 };
+                let count = arguments.len();
                 let arguments = arguments
                     .iter()
-                    .map(|argument| self.length_argument(argument))
+                    .enumerate()
+                    .map(|(index, argument)| {
+                        self.placed(
+                            || format!("{label}<{index}/{count}"),
+                            |this| this.length_argument(argument),
+                        )
+                    })
                     .collect();
                 Apply(Box::new(head), arguments)
             }
             Regions(inner, names) => {
-                let names = self.regions(names).into_boxed_slice();
-                Regions(Box::new(self.ty(inner)), names)
+                let names = self
+                    .placed(|| "{}".to_owned(), |this| this.regions(names))
+                    .into_boxed_slice();
+                Regions(
+                    Box::new(self.placed(|| "{}^".to_owned(), |this| this.ty(inner))),
+                    names,
+                )
             }
             Quantified(names, inner) => {
-                let names = self.regions(names).into_boxed_slice();
-                Quantified(names, Box::new(self.ty(inner)))
+                let names = self
+                    .placed(|| "{q}".to_owned(), |this| this.regions(names))
+                    .into_boxed_slice();
+                Quantified(
+                    names,
+                    Box::new(self.placed(|| "{q}^".to_owned(), |this| this.ty(inner))),
+                )
             }
-            Array(inner) => Array(Box::new(self.ty(inner))),
-            ArrayView(inner) => ArrayView(Box::new(self.ty(inner))),
+            Array(inner) => Array(Box::new(
+                self.placed(|| "[]".to_owned(), |this| this.ty(inner)),
+            )),
+            ArrayView(inner) => ArrayView(Box::new(
+                self.placed(|| "[..]".to_owned(), |this| this.ty(inner)),
+            )),
             FixedArray(element, length) => FixedArray(
-                Box::new(self.ty(element)),
-                Box::new(self.length_argument(length)),
+                Box::new(self.placed(|| "[;]".to_owned(), |this| this.ty(element))),
+                Box::new(self.placed(|| "[;]#".to_owned(), |this| this.length_argument(length))),
             ),
             Length(length) => Length(*length),
-            List(inner) => List(Box::new(self.ty(inner))),
-            Tuple(elements) => Tuple(elements.iter().map(|element| self.ty(element)).collect()),
+            List(inner) => List(Box::new(
+                self.placed(|| "[||]".to_owned(), |this| this.ty(inner)),
+            )),
+            Tuple(elements) => {
+                let count = elements.len();
+                Tuple(
+                    elements
+                        .iter()
+                        .enumerate()
+                        .map(|(index, element)| {
+                            self.placed(|| format!("*{index}/{count}"), |this| this.ty(element))
+                        })
+                        .collect(),
+                )
+            }
             AnonymousUnion(members) if self.canonical => AnonymousUnion(self.members(members)),
             AnonymousUnion(members) => {
                 AnonymousUnion(members.iter().map(|member| self.ty(member)).collect())
             }
-            Function(parameters, result) => Function(
-                parameters
-                    .iter()
-                    .map(|parameter| self.ty(parameter))
-                    .collect(),
-                Box::new(self.ty(result)),
-            ),
-            Reference(inner, mutable) => Reference(Box::new(self.ty(inner)), *mutable),
-            Own(inner) => Own(Box::new(self.ty(inner))),
-            Mut(inner) => Mut(Box::new(self.ty(inner))),
-            Pure(inner) => Pure(Box::new(self.ty(inner))),
+            Function(parameters, result) => {
+                let count = parameters.len();
+                Function(
+                    parameters
+                        .iter()
+                        .enumerate()
+                        .map(|(index, parameter)| {
+                            self.placed(|| format!("->{index}/{count}"), |this| this.ty(parameter))
+                        })
+                        .collect(),
+                    Box::new(self.placed(|| format!("->r/{count}"), |this| this.ty(result))),
+                )
+            }
+            Reference(inner, mutable) => {
+                let label = if *mutable { "ref mut" } else { "ref" };
+                Reference(
+                    Box::new(self.placed(|| label.to_owned(), |this| this.ty(inner))),
+                    *mutable,
+                )
+            }
+            Own(inner) => Own(Box::new(
+                self.placed(|| "own".to_owned(), |this| this.ty(inner)),
+            )),
+            Mut(inner) => Mut(Box::new(
+                self.placed(|| "mut".to_owned(), |this| this.ty(inner)),
+            )),
+            Pure(inner) => Pure(Box::new(
+                self.placed(|| "pure".to_owned(), |this| this.ty(inner)),
+            )),
             Dyn(dyn_type) => {
                 let mut dyn_type = (**dyn_type).clone();
                 for class in &mut dyn_type.classes {
@@ -585,6 +892,10 @@ impl<'a> Renaming<'a> {
     /// a union nested `d` times through other types (`([([i64] | bool)] | bool)`), the calls of
     /// `ty` grow with `d²`, where renaming each member for its key and again after the sort made
     /// them double at every level.
+    ///
+    /// Members whose blind texts are equal differ only in the names of their variables, regions
+    /// or length parameters; `tied` renames them, in the order that the rest of the declaration
+    /// decides (`least`).
     fn members(&mut self, members: &[TypeExpr]) -> Box<[TypeExpr]> {
         let mut flat = Vec::new();
         let mut pending: Vec<&TypeExpr> = members.iter().rev().collect();
@@ -594,48 +905,187 @@ impl<'a> Renaming<'a> {
                 _ => flat.push(member),
             }
         }
-        if self.blind {
-            let before = (self.unnamed_regions.len(), self.unnamed_lengths.len());
+        if self.census.is_some() {
+            // A member's place is its blind text, which no order of the members changes.
+            return flat
+                .into_iter()
+                .map(|member| {
+                    let census = self.census.take();
+                    self.blind = Blind::Order;
+                    self.forget_unnamed();
+                    let key = type_text(&self.ty(member));
+                    self.forget_unnamed();
+                    self.blind = Blind::Off;
+                    self.census = census;
+                    self.placed(|| format!("|{key}"), |this| this.ty(member))
+                })
+                .collect();
+        }
+        if self.blind != Blind::Off {
+            let before = (
+                self.unnamed_variables.len(),
+                self.unnamed_regions.len(),
+                self.unnamed_lengths.len(),
+            );
             let mut blind: Vec<(String, TypeExpr)> = flat
                 .into_iter()
                 .map(|member| {
                     let member = self.ty(member);
-                    self.unnamed_regions.truncate(before.0);
-                    self.unnamed_lengths.truncate(before.1);
+                    self.unnamed_variables.truncate(before.0);
+                    self.unnamed_regions.truncate(before.1);
+                    self.unnamed_lengths.truncate(before.2);
                     (type_text(&member), member)
                 })
                 .collect();
             blind.sort_by(|left, right| left.0.cmp(&right.0));
             return blind.into_iter().map(|(_, member)| member).collect();
         }
-        self.blind = true;
+        self.blind = Blind::Order;
         let mut keyed: Vec<(String, &TypeExpr)> = flat
             .into_iter()
             .map(|member| {
-                self.unnamed_regions.clear();
-                self.unnamed_lengths.clear();
+                self.forget_unnamed();
                 (type_text(&self.ty(member)), member)
             })
             .collect();
-        self.unnamed_regions.clear();
-        self.unnamed_lengths.clear();
-        self.blind = false;
+        self.forget_unnamed();
+        self.blind = Blind::Off;
         keyed.sort_by(|left, right| left.0.cmp(&right.0));
-        keyed
+        let mut renamed = Vec::with_capacity(keyed.len());
+        for group in keyed.chunk_by(|left, right| left.0 == right.0) {
+            match group {
+                [(_, member)] => renamed.push(self.ty(member)),
+                _ => self.tied(
+                    group.iter().map(|(_, member)| *member).collect(),
+                    &mut renamed,
+                ),
+            }
+        }
+        renamed.into_boxed_slice()
+    }
+
+    /// Renames the members of one union whose blind texts tie (A24), appending them to `renamed`
+    /// in their canonical order. Each next member is one of those whose `refined` key is the
+    /// least now: the key with the names given so far (a variable named by an earlier member or
+    /// part of the declaration, which sorts before a name not given yet, so the next member is
+    /// one that shares names with those already renamed), and the colors of the places where the
+    /// member's other names occur in the whole declaration (in `(Maybe<'a> | Maybe<'b>) -> 'a ->
+    /// i64`: `'a` is also the second parameter, so `Maybe<'b>` comes first). Among those,
+    /// members written the same are one candidate, and members that can be swapped without
+    /// changing anything are one candidate too: without a union inside (their keys then tell
+    /// them apart up to their names), and with every name of theirs that has no name yet only
+    /// inside them, so swapping their names and their positions maps the declaration onto
+    /// itself. Any other choice between candidates is left to the search (`choose`). Keys and
+    /// colors depend only on the declaration and the names given so far, never on the written
+    /// order, so they restrict the search to the same orders for every spelling of one
+    /// declaration.
+    #[inline(never)]
+    fn tied(&mut self, group: Vec<&TypeExpr>, renamed: &mut Vec<TypeExpr>) {
+        let mut group: Vec<(&TypeExpr, Written)> = group
             .into_iter()
-            .map(|(_, member)| self.ty(member))
-            .collect()
+            .map(|member| (member, self.written(member)))
+            .collect();
+        while !group.is_empty() {
+            let keys: Vec<Refined> = group
+                .iter()
+                .map(|(member, written)| self.refined(member, written))
+                .collect();
+            let least = keys
+                .iter()
+                .map(|key| (&key.key, &key.colors))
+                .min()
+                .expect("a tied group has members");
+            let mut candidates: Vec<usize> = Vec::new();
+            for (index, key) in keys.iter().enumerate() {
+                if (&key.key, &key.colors) == least
+                    && !candidates
+                        .iter()
+                        .any(|&other| group[other].1.text == group[index].1.text)
+                {
+                    candidates.push(index);
+                }
+            }
+            let pick = if candidates.len() == 1
+                || candidates.iter().all(|&index| keys[index].interchangeable)
+            {
+                candidates[0]
+            } else {
+                candidates[self.choose(candidates.len())]
+            };
+            let (member, _) = group.remove(pick);
+            renamed.push(self.ty(member));
+        }
+    }
+
+    /// A tied member as written (the names as written, a type alias resolved as `ty` resolves
+    /// it), and how often each of its names occurs in it (`tied`).
+    fn written(&mut self, member: &TypeExpr) -> Written {
+        let ties = self.ties.take();
+        let inside = Rc::new(RefCell::new(Census::new()));
+        self.census = Some(Rc::clone(&inside));
+        let place = std::mem::take(&mut self.place);
+        let written = self.ty(member);
+        self.place = place;
+        self.census = None;
+        self.ties = ties;
+        let names = inside
+            .take()
+            .into_iter()
+            .map(|(name, places)| (name, places.len()))
+            .collect();
+        Written {
+            text: type_text(&written),
+            names,
+            union: has_union(&written),
+        }
+    }
+
+    /// What orders a tied member without trying (`tied`): its `Refine` key, and the sorted colors
+    /// of its names that have no name yet (empty before the census).
+    fn refined(&mut self, member: &TypeExpr, written: &Written) -> Refined {
+        self.blind = Blind::Refine;
+        self.forget_unnamed();
+        let key = type_text(&self.ty(member));
+        self.forget_unnamed();
+        self.blind = Blind::Off;
+        let counts = self.ties.as_ref().and_then(|ties| ties.counts.as_deref());
+        let mut colors = Vec::new();
+        let mut private = true;
+        if let Some(counts) = counts {
+            for ((kind, name), within) in &written.names {
+                if !self.named(*kind, name) {
+                    let (color, total) = counts
+                        .get(&(*kind, name.clone()))
+                        .copied()
+                        .unwrap_or_default();
+                    private &= total <= *within;
+                    colors.push(color);
+                }
+            }
+        }
+        colors.sort_unstable();
+        Refined {
+            key,
+            colors,
+            interchangeable: counts.is_some() && private && !written.union,
+        }
     }
 
     fn constraint(&mut self, constraint: &ConstraintExpr) -> ConstraintExpr {
-        let ty = self.ty(&constraint.ty);
+        // The constraints are a set, so a census places each by its class or function.
+        let label = match &constraint.name {
+            _ if self.census.is_none() => String::new(),
+            ConstraintName::Class(class) => self.class_name(class).text,
+            ConstraintName::Function(name, _) => format!("#{}", name.text),
+        };
+        let ty = self.placed(|| format!("({label})"), |this| this.ty(&constraint.ty));
         let name = match &constraint.name {
             ConstraintName::Class(class) => ConstraintName::Class(self.class_name(class)),
             ConstraintName::Function(name, annotation) => ConstraintName::Function(
                 name.clone(),
-                annotation
-                    .as_ref()
-                    .map(|annotation| Box::new(self.ty(annotation))),
+                annotation.as_ref().map(|annotation| {
+                    Box::new(self.placed(|| format!("({label}):"), |this| this.ty(annotation)))
+                }),
             ),
         };
         ConstraintExpr { name, ty }
@@ -669,6 +1119,46 @@ impl<'a> Renaming<'a> {
     }
 }
 
+/// A member among members whose blind texts tie, as written (`Renaming::written`).
+struct Written {
+    text: String,
+    /// How often each name occurs in the member.
+    names: Vec<((NameKind, String), usize)>,
+    /// Whether an anonymous union is written in the member.
+    union: bool,
+}
+
+/// What orders one member among members whose blind texts tie (`Renaming::refined`).
+struct Refined {
+    key: String,
+    colors: Vec<usize>,
+    /// Whether the member can be swapped with any other candidate of its key without changing
+    /// anything (`Renaming::tied`).
+    interchangeable: bool,
+}
+
+/// Whether an anonymous union is written anywhere in `ty`.
+fn has_union(ty: &TypeExpr) -> bool {
+    use TypeExprKind::*;
+    match &ty.kind {
+        AnonymousUnion(_) => true,
+        Named(_) | Variable(_) | Length(_) | Dyn(_) => false,
+        Apply(_, types) => types.iter().any(has_union),
+        Tuple(types) => types.iter().any(has_union),
+        Regions(inner, _)
+        | Quantified(_, inner)
+        | Array(inner)
+        | ArrayView(inner)
+        | List(inner)
+        | Reference(inner, _)
+        | Own(inner)
+        | Mut(inner)
+        | Pure(inner) => has_union(inner),
+        FixedArray(element, length) => has_union(element) || has_union(length),
+        Function(parameters, result) => parameters.iter().any(has_union) || has_union(result),
+    }
+}
+
 /// The parameter types and the result as one chain of arrows: a result that is itself a
 /// function type is spliced in, because `A -> B -> C` is the type of a definition whether its
 /// lambda takes both arguments or returns a function. The rule is the parser's: a function
@@ -697,29 +1187,49 @@ fn function_text(
     constraints: &[ConstraintExpr],
     parameters: &[&TypeExpr],
     result: &TypeExpr,
-    mut renaming: Renaming<'_>,
+    renaming: Renaming<'_>,
 ) -> String {
-    let regions = renaming.regions(regions);
-    let parameters = parameters
-        .iter()
-        .map(|parameter| renaming.ty(parameter))
-        .collect();
-    let result = renaming.ty(result);
-    let (parameters, result) = if renaming.canonical {
-        flatten(parameters, result)
-    } else {
-        (parameters, result)
-    };
-    let constraints = renaming.constraints(constraints);
-    signature(
-        prefix,
-        name,
-        &regions,
-        &constraints,
-        parameters.iter(),
-        &result,
-    )
-    .replace("\n    ", " ")
+    renaming.least(|renaming| {
+        let regions = renaming.regions(regions);
+        if renaming.census.is_some() && renaming.canonical {
+            // A census places the parameters of the flattened chain by their positions, so that
+            // splicing a result function in (`A -> (B -> C)`) changes no place.
+            let (parameters, result) = flatten(
+                parameters
+                    .iter()
+                    .map(|&parameter| parameter.clone())
+                    .collect(),
+                result.clone(),
+            );
+            let count = parameters.len();
+            for (index, parameter) in parameters.iter().enumerate() {
+                renaming.placed(|| format!("{index}/{count}"), |this| this.ty(parameter));
+            }
+            renaming.placed(|| format!("r/{count}"), |this| this.ty(&result));
+            renaming.constraints(constraints);
+            return String::new();
+        }
+        let parameters = parameters
+            .iter()
+            .map(|parameter| renaming.ty(parameter))
+            .collect();
+        let result = renaming.ty(result);
+        let (parameters, result) = if renaming.canonical {
+            flatten(parameters, result)
+        } else {
+            (parameters, result)
+        };
+        let constraints = renaming.constraints(constraints);
+        signature(
+            prefix,
+            name,
+            &regions,
+            &constraints,
+            parameters.iter(),
+            &result,
+        )
+        .replace("\n    ", " ")
+    })
 }
 
 fn derives(derives: &[(DeriveClass, Span)]) -> BTreeSet<&'static str> {
@@ -931,27 +1441,39 @@ fn add_items(
         if declaration.visibility == Visibility::Private {
             continue;
         }
-        let mut renaming = fresh();
-        let names = parameters(&declaration.parameters, &mut renaming);
-        let regions = renaming.regions(&declaration.regions);
-        let header = format!(
-            "record {}{}{}",
-            declaration.name.text,
-            parameters_text(&names),
-            region_text(&regions)
-        );
+        let (header, types) = fresh().least(|renaming| {
+            let names = parameters(&declaration.parameters, renaming);
+            let regions = renaming.regions(&declaration.regions);
+            let header = format!(
+                "record {}{}{}",
+                declaration.name.text,
+                parameters_text(&names),
+                region_text(&regions)
+            );
+            let types: Vec<String> = declaration
+                .fields
+                .iter()
+                .map(|field| {
+                    let ty = renaming.placed(
+                        || format!(".{}", field.name.text),
+                        |this| this.ty(&field.ty),
+                    );
+                    type_text(&ty)
+                })
+                .collect();
+            (header, types)
+        });
         let mut item = Item::new("record", qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref());
-        for field in &declaration.fields {
+        for (field, ty) in declaration.fields.iter().zip(types) {
             let mut member = Member::new(
                 "field",
                 field.name.text.clone(),
                 format!(
-                    "{}{}{}: {}",
+                    "{}{}{}: {ty}",
                     json_text(field.json.as_ref()),
                     if field.mutable { "mut " } else { "" },
                     field.name.text,
-                    type_text(&renaming.ty(&field.ty))
                 ),
             );
             member.contract = effective
@@ -968,15 +1490,25 @@ fn add_items(
         {
             continue;
         }
-        let mut renaming = fresh();
-        let names = parameters(&declaration.parameters, &mut renaming);
-        let header = format!("union {}{}", declaration.name.text, parameters_text(&names));
+        let (header, payloads) = fresh().least(|renaming| {
+            let names = parameters(&declaration.parameters, renaming);
+            let header = format!("union {}{}", declaration.name.text, parameters_text(&names));
+            let payloads: Vec<String> = declaration
+                .cases
+                .iter()
+                .map(|case| {
+                    case.payload.as_ref().map_or(String::new(), |ty| {
+                        let ty = renaming
+                            .placed(|| format!("case {}", case.name.text), |this| this.ty(ty));
+                        format!(" of {}", type_text(&ty))
+                    })
+                })
+                .collect();
+            (header, payloads)
+        });
         let mut item = Item::new("union", qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref());
-        for case in &declaration.cases {
-            let payload = case.payload.as_ref().map_or(String::new(), |ty| {
-                format!(" of {}", type_text(&renaming.ty(ty)))
-            });
+        for (case, payload) in declaration.cases.iter().zip(payloads) {
             item.members.push(Member::new(
                 "case",
                 case.name.text.clone(),
@@ -994,20 +1526,21 @@ fn add_items(
         if declaration.visibility == Visibility::Private {
             continue;
         }
-        let mut renaming = fresh();
-        let names = parameters(&declaration.parameters, &mut renaming);
-        let target = renaming.ty(&declaration.target);
-        let constraints = effective
-            .and_then(|resolved| resolved.requirements.get(&api_key(declaration.name.span)))
-            .map(|constraints| renaming.constraints(constraints))
-            .unwrap_or_default();
-        let header = format!(
-            "type {}{} = {}{}",
-            declaration.name.text,
-            parameters_text(&names),
-            type_text(&target),
-            constraints_text(&constraints),
-        );
+        let header = fresh().least(|renaming| {
+            let names = parameters(&declaration.parameters, renaming);
+            let target = renaming.ty(&declaration.target);
+            let constraints = effective
+                .and_then(|resolved| resolved.requirements.get(&api_key(declaration.name.span)))
+                .map(|constraints| renaming.constraints(constraints))
+                .unwrap_or_default();
+            format!(
+                "type {}{} = {}{}",
+                declaration.name.text,
+                parameters_text(&names),
+                type_text(&target),
+                constraints_text(&constraints),
+            )
+        });
         add(Item::new("type", qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref()));
     }
@@ -1018,7 +1551,7 @@ fn add_items(
         let header = format!(
             "const {}: {}",
             declaration.name.text,
-            type_text(&fresh().ty(&declaration.ty))
+            fresh().least(|renaming| type_text(&renaming.ty(&declaration.ty)))
         );
         add(
             Item::new("const", qualified(&declaration.name.text), header)
@@ -1026,45 +1559,59 @@ fn add_items(
         );
     }
     for declaration in classes {
-        let mut renaming = fresh();
-        let variable = renaming.variable(&declaration.variable.text);
-        let superclasses = renaming.constraints(&declaration.superclasses);
-        let kind = if declaration.kind == Kind::Type {
-            String::new()
-        } else {
-            format!(": {}", declaration.kind.display())
-        };
-        let header = format!(
-            "class {}{}<'{variable}{kind}>",
-            constraints_text(&superclasses),
-            declaration.name.text
-        );
+        let methods: Vec<_> = declaration
+            .methods
+            .iter()
+            .filter(|method| method.visibility != Visibility::Private)
+            .collect();
+        // Each method starts from the names of the class, and the search for the class's own
+        // tied members sees the methods (the census counts their names too).
+        let (header, texts) = fresh().least(|renaming| {
+            let variable = renaming.variable(&declaration.variable.text);
+            let superclasses = renaming.constraints(&declaration.superclasses);
+            let kind = if declaration.kind == Kind::Type {
+                String::new()
+            } else {
+                format!(": {}", declaration.kind.display())
+            };
+            let header = format!(
+                "class {}{}<'{variable}{kind}>",
+                constraints_text(&superclasses),
+                declaration.name.text
+            );
+            let texts: Vec<String> = methods
+                .iter()
+                .map(|method| {
+                    let signature = effective
+                        .and_then(|resolved| resolved.signatures.get(&api_key(method.name.span)));
+                    let types: Vec<_> = signature.map_or_else(
+                        || method.parameters.iter().collect(),
+                        |signature| signature.parameters.iter().collect(),
+                    );
+                    let result = signature.map_or(&method.result, |signature| &signature.result);
+                    let mut method_renaming = renaming.clone();
+                    if method_renaming.census.is_some() {
+                        method_renaming
+                            .place
+                            .push(format!("method {}", method.name.text));
+                    }
+                    function_text(
+                        if method.pure { "pure def" } else { "def" },
+                        &method.name.text,
+                        &method.regions,
+                        &method.constraints,
+                        &types,
+                        result,
+                        method_renaming,
+                    )
+                })
+                .collect();
+            (header, texts)
+        });
         let mut item = Item::new("class", qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref());
-        for method in &declaration.methods {
-            if method.visibility == Visibility::Private {
-                continue;
-            }
-            let signature =
-                effective.and_then(|resolved| resolved.signatures.get(&api_key(method.name.span)));
-            let types: Vec<_> = signature.map_or_else(
-                || method.parameters.iter().collect(),
-                |signature| signature.parameters.iter().collect(),
-            );
-            let result = signature.map_or(&method.result, |signature| &signature.result);
-            let mut member = Member::new(
-                "method",
-                method.name.text.clone(),
-                function_text(
-                    if method.pure { "pure def" } else { "def" },
-                    &method.name.text,
-                    &method.regions,
-                    &method.constraints,
-                    &types,
-                    result,
-                    renaming.clone(),
-                ),
-            );
+        for (method, text) in methods.into_iter().zip(texts) {
+            let mut member = Member::new("method", method.name.text.clone(), text);
             member.pure = method.pure.then_some(method.parameters.len());
             member.contract = effective
                 .and_then(|resolved| resolved.contracts.get(&api_key(method.name.span)))
@@ -1078,16 +1625,18 @@ fn add_items(
         add(item);
     }
     for declaration in instances {
-        let mut renaming = fresh();
-        let ty = renaming.ty(&declaration.ty);
-        let constraints = renaming.constraints(&declaration.constraints);
-        let class = renaming.class_name(&declaration.class);
-        let name = format!("{}<{}>", class.text, type_text(&ty));
-        let header = format!("instance {}{name}", constraints_text(&constraints));
-        let mut key = Renaming::new(true, resolved);
-        let ty = key.ty(&declaration.ty);
-        let class = key.class_name(&declaration.class);
-        let name = format!("{}<{}>", class.text, type_text(&ty));
+        let header = fresh().least(|renaming| {
+            let ty = renaming.ty(&declaration.ty);
+            let constraints = renaming.constraints(&declaration.constraints);
+            let class = renaming.class_name(&declaration.class);
+            let name = format!("{}<{}>", class.text, type_text(&ty));
+            format!("instance {}{name}", constraints_text(&constraints))
+        });
+        let name = Renaming::new(true, resolved).least(|key| {
+            let ty = key.ty(&declaration.ty);
+            let class = key.class_name(&declaration.class);
+            format!("{}<{}>", class.text, type_text(&ty))
+        });
         // Two modules can spell the same instance for their own types, so the module is part of it.
         let mut item = Item::new("instance", qualified(&name), header);
         item.contract = effective
@@ -1687,6 +2236,7 @@ pub fn compare(old: &Api, new: &Api) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     /// The type of the first parameter of the first function of `source`.
     fn parameter(source: &str) -> TypeExpr {
@@ -1788,6 +2338,209 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    /// The comparison's text of the first function of `source`, written with every length name
+    /// in `lengths` as a length parameter (`#N`, as `--effective` reads a signature's lengths).
+    fn canonical_def_with(source: &str, lengths: &[&str]) -> String {
+        fn lengths_of(ty: &mut TypeExpr, lengths: &[&str]) {
+            match &mut ty.kind {
+                TypeExprKind::FixedArray(element, length) => {
+                    lengths_of(element, lengths);
+                    if let TypeExprKind::Named(name) = &length.kind
+                        && lengths.contains(&name.as_str())
+                    {
+                        length.kind = TypeExprKind::Variable(format!("#{name}"));
+                    }
+                }
+                TypeExprKind::AnonymousUnion(types) => {
+                    types.iter_mut().for_each(|ty| lengths_of(ty, lengths))
+                }
+                TypeExprKind::Tuple(types) => {
+                    types.iter_mut().for_each(|ty| lengths_of(ty, lengths))
+                }
+                TypeExprKind::Function(parameters, result) => {
+                    parameters.iter_mut().for_each(|ty| lengths_of(ty, lengths));
+                    lengths_of(result, lengths);
+                }
+                _ => {}
+            }
+        }
+        let mut program = crate::parser::parse(source).unwrap();
+        let function = &mut program.functions[0];
+        for parameter in &mut function.parameters {
+            lengths_of(&mut parameter.ty, lengths);
+        }
+        lengths_of(&mut function.result, lengths);
+        let types: Vec<_> = function
+            .parameters
+            .iter()
+            .map(|parameter| &parameter.ty)
+            .collect();
+        function_text(
+            "def",
+            &function.name.text,
+            &function.regions,
+            &function.constraints,
+            &types,
+            &function.result,
+            Renaming::new(true, None),
+        )
+    }
+
+    fn canonical_def(source: &str) -> String {
+        canonical_def_with(source, &[])
+    }
+
+    /// Copilot review 3 of #102: members whose blind keys tie (they differ only in the names of
+    /// their type variables, regions or length parameters) take one order, whatever order they
+    /// were written in and whatever their names, also where only the rest of the signature tells
+    /// them apart. Each group lists equivalent signatures: the members permuted, the names
+    /// changed consistently, the result curried. Expected texts by hand, from the rules of
+    /// `Renaming::tied` (a place is written `p:` for the parameter `p` of the flattened chain,
+    /// then the parts down to the name; `m` is the place inside the member, the same for tied
+    /// members):
+    ///
+    /// 1. Copilot's example: the keys are `Maybe<'_0>` for both members; `'b` occurs only at `m`,
+    ///    `'a` at `m` and `1:`, so `Maybe<'b>` (places `[[m]]`) comes before `Maybe<'a>`
+    ///    (`[[m, 1:]]`): `'b` is `'t0`, `'a` is `'t1`, and the parameter is `'t1`.
+    /// 2. `'a` is also at `1:` and `'b` at `2:`, so `Maybe<'a>` comes first, curried or not.
+    /// 3. Members that share a variable (a chain): `'a` is at `m*0`, `'b` at `m*0` and `m*1`,
+    ///    `'c` at `m*1`; `('a * 'b)` has `[[m*0], [m*0, m*1]]`, `('b * 'c)` has
+    ///    `[[m*0, m*1], [m*1]]`, so `('a * 'b)` comes first, `('t0 * 't1)` then `('t1 * 't2)`.
+    /// 4. The region chain that review 2 left as a limit: as in 3, the member whose first region
+    ///    occurs only there (`c, a`) comes first: `{r0} ... {r1}` then `{r1} ... {r2}`.
+    /// 5. The region ring: `(a, b, c)` and `(b, c, a)` have the same places, so both orders are
+    ///    tried. First `(a, b, c)` gives `(r1, r2, r0)` for the other member, first `(b, c, a)`
+    ///    gives `(r2, r0, r1)`; the least text is the first.
+    /// 6. The chain of 3 with length parameters (`[i64; N]` as `--effective` reads it):
+    ///    `n0, n1` then `n1, n2`, as in 3.
+    /// 7. A union inside tied members: the outer member whose variables include the earlier
+    ///    parameter (`'a` at `1:`) comes first, and inside each, the member whose variable is a
+    ///    parameter comes second (as in 1): `'b 'a 'd 'c` are `t0 t1 t2 t3`, the parameters
+    ///    `'t1 -> 't3`.
+    /// 8. Seven members told apart only by where their variables occur in a later tuple: by
+    ///    those places, `'a0` to `'a6` are `'t0` to `'t6` in either written order (searching
+    ///    the 7! orders would pass `MAX_TIE_RUNS`).
+    #[test]
+    fn tied_members_take_one_order() {
+        let chain = |order: &mut dyn Iterator<Item = usize>| {
+            let members: Vec<String> = order.map(|n| format!("Maybe<'a{n}>")).collect();
+            let tuple: Vec<String> = (0..7).map(|n| format!("'a{n}")).collect();
+            format!(
+                "def f :: ({}) -> ({}) -> i64 = \\v x -> 0\n",
+                members.join(" | "),
+                tuple.join(" * ")
+            )
+        };
+        let (forward, backward) = (chain(&mut (0..7)), chain(&mut (0..7).rev()));
+        let groups: [(&[&str], &[&str], &str); 8] = [
+            (
+                &[
+                    "def f :: (Maybe<'a> | Maybe<'b>) -> 'a -> i64 = \\v x -> 0\n",
+                    "def f :: (Maybe<'b> | Maybe<'a>) -> 'a -> i64 = \\v x -> 0\n",
+                    "def f :: (Maybe<'x> | Maybe<'y>) -> 'y -> i64 = \\v x -> 0\n",
+                ],
+                &[],
+                "def f :: (Maybe<'t0> | Maybe<'t1>) -> 't1 -> i64",
+            ),
+            (
+                &[
+                    "def f :: (Maybe<'a> | Maybe<'b>) -> 'a -> 'b -> i64 = \\v x y -> 0\n",
+                    "def f :: (Maybe<'b> | Maybe<'a>) -> 'a -> 'b -> i64 = \\v x y -> 0\n",
+                    "def f :: (Maybe<'a> | Maybe<'b>) -> 'b -> 'a -> i64 = \\v x y -> 0\n",
+                    "def f :: (Maybe<'b> | Maybe<'a>) -> 'b -> 'a -> i64 = \\v x y -> 0\n",
+                    "def f :: (Maybe<'a> | Maybe<'b>) -> ('a -> 'b -> i64) = \\v -> todo ()\n",
+                    "def f :: (Maybe<'b> | Maybe<'a>) -> ('b -> ('a -> i64)) = \\v -> todo ()\n",
+                ],
+                &[],
+                "def f :: (Maybe<'t0> | Maybe<'t1>) -> 't0 -> 't1 -> i64",
+            ),
+            (
+                &[
+                    "def f :: (Maybe<('a * 'b)> | Maybe<('b * 'c)>) -> i64 = \\v -> 0\n",
+                    "def f :: (Maybe<('b * 'c)> | Maybe<('a * 'b)>) -> i64 = \\v -> 0\n",
+                    "def f :: (Maybe<('c * 'b)> | Maybe<('b * 'a)>) -> i64 = \\v -> 0\n",
+                ],
+                &[],
+                "def f :: (Maybe<('t0 * 't1)> | Maybe<('t1 * 't2)>) -> i64",
+            ),
+            (
+                &[
+                    "def f :: ((ref {c} string -> ref {a} i64 -> bool) | (ref {a} string -> ref {b} i64 -> bool)) -> unit = \\v -> ()\n",
+                    "def f :: ((ref {a} string -> ref {b} i64 -> bool) | (ref {c} string -> ref {a} i64 -> bool)) -> unit = \\v -> ()\n",
+                    "def f :: ((ref {x} string -> ref {y} i64 -> bool) | (ref {z} string -> ref {x} i64 -> bool)) -> unit = \\v -> ()\n",
+                ],
+                &[],
+                "def f :: ((ref {r0} string -> ref {r1} i64 -> bool) | (ref {r1} string -> ref {r2} i64 -> bool)) -> unit",
+            ),
+            (
+                &[
+                    "def f :: ((ref {a} i64 * ref {b} i64 * ref {c} i64) | (ref {b} i64 * ref {c} i64 * ref {a} i64)) -> unit = \\v -> ()\n",
+                    "def f :: ((ref {b} i64 * ref {c} i64 * ref {a} i64) | (ref {a} i64 * ref {b} i64 * ref {c} i64)) -> unit = \\v -> ()\n",
+                    "def f :: ((ref {b} i64 * ref {c} i64 * ref {a} i64) | (ref {c} i64 * ref {a} i64 * ref {b} i64)) -> unit = \\v -> ()\n",
+                ],
+                &[],
+                "def f :: ((ref {r0} i64 * ref {r1} i64 * ref {r2} i64) | (ref {r1} i64 * ref {r2} i64 * ref {r0} i64)) -> unit",
+            ),
+            (
+                &[
+                    "def f :: (([i64; N] * [i64; M]) | ([i64; M] * [i64; K])) -> i64 = \\v -> 0\n",
+                    "def f :: (([i64; M] * [i64; K]) | ([i64; N] * [i64; M])) -> i64 = \\v -> 0\n",
+                    "def f :: (([i64; K] * [i64; M]) | ([i64; M] * [i64; N])) -> i64 = \\v -> 0\n",
+                ],
+                &["N", "M", "K"],
+                "def f :: (([i64; n0] * [i64; n1]) | ([i64; n1] * [i64; n2])) -> i64",
+            ),
+            (
+                &[
+                    "def f :: ([(Maybe<'a> | Maybe<'b>)] | [(Maybe<'c> | Maybe<'d>)]) -> 'a -> 'c -> i64 = \\v x y -> 0\n",
+                    "def f :: ([(Maybe<'d> | Maybe<'c>)] | [(Maybe<'b> | Maybe<'a>)]) -> 'a -> 'c -> i64 = \\v x y -> 0\n",
+                    "def f :: ([(Maybe<'c> | Maybe<'d>)] | [(Maybe<'b> | Maybe<'a>)]) -> 'c -> 'a -> i64 = \\v x y -> 0\n",
+                ],
+                &[],
+                "def f :: ([(Maybe<'t0> | Maybe<'t1>)] | [(Maybe<'t2> | Maybe<'t3>)]) -> 't1 -> 't3 -> i64",
+            ),
+            (
+                &[&forward, &backward],
+                &[],
+                "def f :: (Maybe<'t0> | Maybe<'t1> | Maybe<'t2> | Maybe<'t3> | Maybe<'t4> | Maybe<'t5> | Maybe<'t6>) -> ('t0 * 't1 * 't2 * 't3 * 't4 * 't5 * 't6) -> i64",
+            ),
+        ];
+        for (sources, lengths, expected) in groups {
+            for source in sources {
+                assert_eq!(canonical_def_with(source, lengths), expected, "{source}");
+            }
+        }
+    }
+
+    /// Tied members whose variables occur nowhere else can be swapped without changing anything,
+    /// so they need no search: 32 of them (32! orders) take one run, and identical members
+    /// (`Maybe<'z>` twice) are no choice either. By hand: the 34 members tie with the key
+    /// `Maybe<'_0>`; every `'vN` occurs only in its member (places `[[m]]`), `'z` in both of its
+    /// members and as the second parameter (`[[m, m, 1:]]`), so the 32 `Maybe<'vN>` come first,
+    /// in any order, as `'t0` to `'t31`, and the two `Maybe<'z>` follow as `Maybe<'t32>`.
+    /// `render` runs 3 times: the first run, which meets the tie, the census of the names, and
+    /// one run of the search.
+    #[test]
+    fn interchangeable_tied_members_need_no_search() {
+        let mut members: Vec<String> = (0..32).rev().map(|n| format!("Maybe<'v{n}>")).collect();
+        members.insert(7, "Maybe<'z>".to_owned());
+        members.push("Maybe<'z>".to_owned());
+        let source = format!(
+            "def f :: ({}) -> 'z -> i64 = \\v x -> 0\n",
+            members.join(" | ")
+        );
+        RUNS.with(|runs| runs.set(0));
+        let text = canonical_def(&source);
+        let mut expected: Vec<String> = (0..32).map(|n| format!("Maybe<'t{n}>")).collect();
+        expected.push("Maybe<'t32>".to_owned());
+        expected.push("Maybe<'t32>".to_owned());
+        assert_eq!(
+            text,
+            format!("def f :: ({}) -> 't32 -> i64", expected.join(" | "))
+        );
+        assert_eq!(RUNS.with(Cell::get), 3);
     }
 
     /// Each member of a union inside a blind key is numbered from the numbering before that union,
