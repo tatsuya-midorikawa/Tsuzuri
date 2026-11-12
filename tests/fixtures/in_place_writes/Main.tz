@@ -1033,3 +1033,36 @@ fn owned_parameter_cells =
     let out = Arc.new (Mutex.create [0])
     let k = keep_owned (to_string 123456789) (Recorder { cell: Mutex.create [\() -> 0], out: Arc.share (ref out) })
     k * 100 + recorded (ref out)
+
+// A31, after review 9: a callee that keeps a borrow of a part of what its `ref mut` parameter
+// points at in that same value leaves the caller's value a borrow of its own part, however the
+// callee is reached: directly, through a function that passes its parameter on, or through a
+// function-valued parameter. The recorder field is declared before the string field, so it is
+// dropped first, while the string is there.
+def keep_part_mut :: ref mut RecordedPair -> i64
+fn keep_part_mut p =
+    let t = ref p.s
+    Mutex.with_lock (ref p.c.cell) (\b -> Array.write 0 (\() -> String.length t + 2) b)
+    1
+
+def keep_part_relay :: ref mut RecordedPair -> i64
+fn keep_part_relay p = keep_part_mut p
+
+def keep_part_apply :: (ref mut RecordedPair -> i64) -> ref mut RecordedPair -> i64
+fn keep_part_apply f p = f p
+
+def exclusive_parts :: i64 -> ref Arc<Mutex<[i64]>> -> i64
+fn exclusive_parts how out =
+    let mut p = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out }, s: to_string 123456789 }
+    match how with
+    | 0 -> keep_part_mut (ref mut p)
+    | 1 -> keep_part_relay (ref mut p)
+    | _ -> keep_part_apply keep_part_mut (ref mut p)
+
+export def exclusive_parts_in_drop_order :: i64
+fn exclusive_parts_in_drop_order =
+    let out = Arc.new (Mutex.create [0])
+    let mut total = 0
+    for how in 0 ..= 2 do
+        total = total * 1000 + exclusive_parts how (ref out) * 100 + recorded (ref out)
+    total

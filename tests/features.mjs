@@ -2044,6 +2044,8 @@ const suites = {
       // The direct store reads 9; the callee's reads 9 + 1.
       ["own_parts_in_drop_order", [], (1n * 100n + 9n) * 1000n + 1n * 100n + 10n],
       ["owned_parameter_cells", [], 1n * 100n + 9n],
+      // After review 9: each of the three calls returns 1 and its recorder reads 9 + 2.
+      ["exclusive_parts_in_drop_order", [], ((1n * 100n + 11n) * 1000n + 1n * 100n + 11n) * 1000n + 1n * 100n + 11n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.
