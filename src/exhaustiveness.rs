@@ -16,6 +16,63 @@ use super::*;
 /// Row visits that the matrix search may spend on one match.
 const MAX_WORK: usize = 1 << 24;
 
+/// The declaration names of a type as source code in `module` writes them, for a type test that a
+/// witness names (Copilot review round 5): each declaration as `Names::type_spelling_in` and
+/// `Names::class_spelling_in` spell it. A declaration that no name in sight names keeps its
+/// `Type::display` text and sets `unnamed`.
+struct Scoped<'n, 't> {
+    names: &'n Names,
+    types: &'n TypeContext<'t>,
+    module: &'n str,
+    unnamed: std::cell::Cell<bool>,
+}
+
+impl Scoped<'_, '_> {
+    fn spelled(&self, spelling: Option<String>, fallback: &str) -> String {
+        spelling.unwrap_or_else(|| {
+            self.unnamed.set(true);
+            type_display(fallback)
+        })
+    }
+}
+
+impl DeclarationNames for Scoped<'_, '_> {
+    fn record_name(&self, id: usize) -> &str {
+        self.types.record_name(id)
+    }
+
+    fn union_name(&self, id: usize) -> &str {
+        self.types.union_name(id)
+    }
+
+    fn record_display(&self, id: usize) -> String {
+        let qualified = self.types.record_name(id);
+        self.spelled(
+            self.names.type_spelling_in(self.module, qualified),
+            qualified,
+        )
+    }
+
+    fn union_display(&self, id: usize) -> String {
+        let qualified = self.types.union_name(id);
+        self.spelled(
+            self.names.type_spelling_in(self.module, qualified),
+            qualified,
+        )
+    }
+
+    fn handle_display(&self, qualified: &str) -> String {
+        self.spelled(
+            self.names.type_spelling_in(self.module, qualified),
+            qualified,
+        )
+    }
+
+    fn class_display(&self, key: &str) -> String {
+        self.spelled(self.names.class_spelling_in(self.module, key), key)
+    }
+}
+
 /// The values that one pattern covers.
 #[derive(Clone, Debug)]
 pub(super) enum CoveragePat {
@@ -326,9 +383,11 @@ impl Checker<'_> {
             Witness::Ctor(Constructor::Bool(_) | Constructor::Unit, _) => true,
             Witness::Ctor(constructor @ Constructor::Union { union_id, case_id }, arguments) => {
                 if self.names.is_anonymous_union(*union_id) {
-                    // `:? _` is not a pattern: without the member type there is nothing to write.
-                    let member = self.tested_member(*union_id, *case_id, ty);
-                    return anonymous_union::type_test_text(member.as_ref(), &self.types).is_some();
+                    // `:? _` is not a pattern: without the member type there is nothing to write,
+                    // nor with a declaration that no name in sight names here.
+                    return self
+                        .type_test_text(*union_id, *case_id, ty)
+                        .is_some_and(|(_, named)| named);
                 }
                 let types = self.witness_types(constructor, ty, arguments.len());
                 arguments
@@ -352,6 +411,34 @@ impl Checker<'_> {
                 _,
             ) => false,
         }
+    }
+
+    /// `:? T` for the member that a witness case of the anonymous union `union_id` stands for, and
+    /// whether `T` names its declarations as this match's module does, so that an arm may write
+    /// it. Each record, union, extern type and class is written as `Type::display` writes it when
+    /// that names it here, else by its full name (`std::Maybe` where the module declares a
+    /// `Maybe`), in type arguments and in anonymous unions inside the member too; when one has no
+    /// such name, the text is the one of `Type::display` and the flag is false (Copilot review
+    /// round 5). `None` when the member is not known (D7).
+    fn type_test_text(
+        &self,
+        union_id: usize,
+        case_id: usize,
+        ty: Option<&Type>,
+    ) -> Option<(String, bool)> {
+        let member = self.tested_member(union_id, case_id, ty)?;
+        let scoped = Scoped {
+            names: self.names,
+            types: &self.types,
+            module: self.module,
+            unnamed: std::cell::Cell::new(false),
+        };
+        let text = anonymous_union::type_test_text(Some(&member), &scoped)?;
+        if scoped.unnamed.get() {
+            let text = anonymous_union::type_test_text(Some(&member), &self.types)?;
+            return Some((text, false));
+        }
+        Some((text, true))
     }
 
     /// The member that a witness case of the anonymous union `union_id` stands for, from the type
@@ -448,9 +535,8 @@ impl Checker<'_> {
                 if self.names.is_anonymous_union(*union_id) =>
             {
                 // A type test binds its whole member, so its payload is always a wildcard.
-                let member = self.tested_member(*union_id, *case_id, ty);
-                anonymous_union::type_test_text(member.as_ref(), &self.types)
-                    .unwrap_or_else(|| ":? _".into())
+                self.type_test_text(*union_id, *case_id, ty)
+                    .map_or_else(|| ":? _".into(), |(text, _)| text)
             }
             Constructor::Union { union_id, case_id } => {
                 let name = self.case_name(*union_id, *case_id, span);

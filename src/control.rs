@@ -1128,14 +1128,22 @@ impl Checker<'_> {
             )
             .with_help(anonymous_union::members_help(members, &self.types)));
         };
-        // The payload: the binder, or a wildcard (a type test covers the whole member).
-        let payload = Pattern {
-            kind: match binder {
-                Some(name) if name.text != "_" => PatternKind::Binding(name.clone()),
-                _ => PatternKind::Wildcard,
-            },
-            span: binder.map_or(pattern.span, |name| name.span),
+        // The payload: a wildcard (a type test covers the whole member), which the binder names as
+        // `_ as x` does. The name always binds, as after the `as` of any pattern: a case or an
+        // active recognizer of that name does not make it a pattern (Copilot review round 5).
+        let span = binder.map_or(pattern.span, |name| name.span);
+        let wildcard = Pattern {
+            kind: PatternKind::Wildcard,
+            span,
             depth: pattern.depth,
+        };
+        let payload = match binder {
+            Some(name) if name.text != "_" => Pattern {
+                kind: PatternKind::As(Box::new(wildcard), name.clone()),
+                span,
+                depth: pattern.depth,
+            },
+            _ => wildcard,
         };
         self.union_case_pattern(pattern.span, union_id, case, Some(&payload), matched)
     }

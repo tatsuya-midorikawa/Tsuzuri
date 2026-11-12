@@ -301,7 +301,12 @@ impl DynType {
     }
 
     pub fn display(&self) -> String {
-        let mut names: Vec<String> = self.classes.iter().map(|name| type_display(name)).collect();
+        self.display_classes(type_display)
+    }
+
+    /// `display` with each class written by `class` (`DeclarationNames::class_display`).
+    fn display_classes(&self, class: impl Fn(&str) -> String) -> String {
+        let mut names: Vec<String> = self.classes.iter().map(|name| class(name)).collect();
         if self.copy {
             names.push("Copy".into());
         }
@@ -493,10 +498,10 @@ impl Type {
                 anonymous_union::display(args, names)
             }
             Self::Record(id, args) | Self::Union(id, args) => {
-                let mut text = type_display(match self {
-                    Self::Record(..) => names.record_name(*id),
-                    _ => names.union_name(*id),
-                });
+                let mut text = match self {
+                    Self::Record(..) => names.record_display(*id),
+                    _ => names.union_display(*id),
+                };
                 if !args.is_empty() {
                     text.push('<');
                     text.push_str(
@@ -540,8 +545,8 @@ impl Type {
                     .join(" * ")
             ),
             Self::Once(_) => "tzroutine body".into(),
-            Self::Handle(name) => type_display(name),
-            Self::Dyn(dyn_type) => dyn_type.display(),
+            Self::Handle(name) => names.handle_display(name),
+            Self::Dyn(dyn_type) => dyn_type.display_classes(|key| names.class_display(key)),
             Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display_with(names)),
             Self::Function(parameters, _) if parameters.pure => {
                 let mut ordinary = self.clone();
@@ -1288,6 +1293,27 @@ pub struct TypeContext<'a> {
 pub(crate) trait DeclarationNames {
     fn record_name(&self, id: usize) -> &str;
     fn union_name(&self, id: usize) -> &str;
+
+    /// How a type writes the record `id`: by default from the root namespace, as `Geo::Point`.
+    /// A witness of a match writes it as the match's module names it (A24, Copilot review round 5).
+    fn record_display(&self, id: usize) -> String {
+        type_display(self.record_name(id))
+    }
+
+    /// `record_display` for the union `id`.
+    fn union_display(&self, id: usize) -> String {
+        type_display(self.union_name(id))
+    }
+
+    /// `record_display` for the extern type `qualified`.
+    fn handle_display(&self, qualified: &str) -> String {
+        type_display(qualified)
+    }
+
+    /// `record_display` for the class `key` of a `dyn` type.
+    fn class_display(&self, key: &str) -> String {
+        type_display(key)
+    }
 }
 
 impl DeclarationNames for TypeContext<'_> {
@@ -6970,6 +6996,44 @@ impl Names {
                 ))
             }
         }
+    }
+
+    /// How source code in `module` writes the record, union or extern type `qualified` so that it
+    /// names that declaration there, as `type_head` resolves a type name: as `Type::display`
+    /// writes it, else by its full name (`std::Maybe` where `module` declares a `Maybe`). `None`
+    /// when neither names it (A24, Copilot review round 5: the arm that a non-exhaustive match
+    /// offers).
+    pub(super) fn type_spelling_in(&self, module: &str, qualified: &str) -> Option<String> {
+        let names = |spelling: &String| {
+            self.check_type_path(module, spelling, Span::default())
+                .is_ok()
+                && match self.type_choice(module, spelling) {
+                    // A class that ranks as high takes the name of an applied type.
+                    Choice::Found(named, rank) => {
+                        !matches!(named, NamedType::Alias(_))
+                            && named.info().name == qualified
+                            && self
+                                .class_choice(module, spelling)
+                                .rank()
+                                .is_none_or(|class| rank < class)
+                    }
+                    _ => false,
+                }
+        };
+        [type_display(qualified), self.type_spelling(qualified)]
+            .into_iter()
+            .find(names)
+    }
+
+    /// `type_spelling_in` for the class `key` of a `dyn` type, as `resolve_dyn` resolves it.
+    pub(super) fn class_spelling_in(&self, module: &str, key: &str) -> Option<String> {
+        let names = |spelling: &String| {
+            self.check_path(module, spelling, Span::default()).is_ok()
+                && matches!(self.class_choice(module, spelling), Choice::Found(found, _) if found == key)
+        };
+        [type_display(key), self.spelling(key)]
+            .into_iter()
+            .find(names)
     }
 
     /// Finds a class: a built-in class, the requester's own class, an exact
