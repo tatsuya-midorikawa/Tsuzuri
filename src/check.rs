@@ -11602,9 +11602,9 @@ struct Checker<'a> {
     use_bindings: Vec<Span>,
     /// The type of the value that `xs |> f a` passes to the call `f a`.
     piped: Option<Type>,
-    /// A25: the result positions of the operands of the binary operators being checked, by span
-    /// and depth (`Checker::operand_results`). `injected_expression` does not widen an expression
-    /// found here to an anonymous union.
+    /// A25: the result positions of the operands that take their sibling's type in the binary
+    /// operators being checked, by span and depth (`Checker::operand_results`).
+    /// `injected_expression` does not widen an expression found here to an anonymous union.
     operand: Vec<(Span, usize)>,
     /// Spans of unsuffixed integer literals whose type waits for inference.
     integer_literals: Vec<Span>,
@@ -12662,23 +12662,22 @@ impl<'a> Checker<'a> {
                         | BinaryOp::Or
                 )
             });
-            // A25: an operand is no place where a subset union is widened (it would move), nor
-            // is a branch, an arm or a block result that is the operand's value.
-            let marked = self.operand_results([left, right]);
-            let operands = if Self::untyped_number(left) && !Self::untyped_number(right) {
-                self.expression(right, hint).and_then(|right| {
-                    let expected = self.sibling_hint(&right.ty, hint);
-                    Ok((self.expression(left, expected)?, right))
-                })
+            if Self::untyped_number(left) && !Self::untyped_number(right) {
+                // The number takes the right operand's type: it is injected, never widened.
+                let right = self.expression(right, hint)?;
+                let expected = self.sibling_hint(&right.ty, hint);
+                (self.expression(left, expected)?, right)
             } else {
-                self.expression(left, hint).and_then(|left| {
-                    let expected = self.sibling_hint(&left.ty, hint);
-                    let right = self.expression(right, expected)?;
-                    Ok((left, right))
-                })
-            };
-            self.operand.truncate(marked);
-            operands?
+                let left = self.expression(left, hint)?;
+                let expected = self.sibling_hint(&left.ty, hint);
+                // A25: the operand that takes its sibling's type is no place where a subset union
+                // is widened (it would move), nor is a branch, an arm or a block result that is
+                // its value.
+                let marked = self.operand_results(right);
+                let right = self.expression(right, expected);
+                self.operand.truncate(marked);
+                (left, right?)
+            }
         };
         let result = if *operator == BinaryOp::Pipe {
             let signature = self.call_signature(&right.ty, 1, right.span);

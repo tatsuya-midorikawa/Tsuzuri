@@ -3666,11 +3666,12 @@ const OPERANDS: &str = "def flag :: i64 -> bool = \\n -> n > 0\n\
 /// A builder whose computations are their values (`Identity { return w }` is `w`).
 const IDENTITY: &str = "def Return :: own 'a -> 'a\nfn Return value = value\n\ndef Bind :: own 'a -> own ('a -> 'b) -> 'b\nfn Bind value next = next value\n";
 
-/// `OPERANDS`, a channel `a`, the values `v: (f64 | i64 | string)`, `w` and `u: (i64 | string)`,
-/// and `let same = {operand}` with the markers `«` and `»` taken out, and the offset of `«`.
+/// `OPERANDS`, a channel `a`, the values `v` and `x: (f64 | i64 | string)`, `w` and
+/// `u: (i64 | string)`, and `let same = {operand}` with the markers `«` and `»` taken out, and the
+/// offset of `«`.
 fn operand_source(operand: &str) -> (String, usize) {
     let source = format!(
-        "{OPERANDS}let a: Channel<i64> = Channel.make 1\nlet v: (f64 | i64 | string) = 1\nlet w: (i64 | string) = 2\nlet u: (i64 | string) = 3\nlet same = {operand}\n0\n"
+        "{OPERANDS}let a: Channel<i64> = Channel.make 1\nlet v: (f64 | i64 | string) = 1\nlet w: (i64 | string) = 2\nlet u: (i64 | string) = 3\nlet x: (f64 | i64 | string) = 4\nlet same = {operand}\n0\n"
     );
     let at = source.find('«').unwrap_or(0);
     (source.replace(['«', '»'], ""), at)
@@ -3802,6 +3803,75 @@ fn operand_results_do_not_widen() {
         ),
         Edition::E2026,
     );
+}
+
+#[test]
+fn operand_checked_first_widens_by_itself() {
+    // Verification of the Copilot review round 3 of A25: only the operand that takes its
+    // sibling's type is not widened. The operand checked first (the left one, or the right one
+    // when the left one is an unsuffixed number) has no sibling's type: it is checked by itself,
+    // so an `if`, `match` or `select` there gives the type of its first branch, `v`'s
+    // `(f64 | i64 | string)`, to the next one (D4), and `w` is widened as in
+    // `let t = if c then v else w`. Both operands are then `(f64 | i64 | string)` (the number is
+    // injected into its member), and the only error is the comparison's: anonymous unions have
+    // no `Eq` and `Ord` until A26. When the operand checked first was recorded too, `w` was
+    // `E1003` in each of these.
+    let first = [
+        "(if flag 1 then v else w)",
+        "(match 1 with | 0 -> v | _ -> w)",
+        "{ let k = 1; if flag k then v else w }",
+        "(@checked (if flag 1 then v else w))",
+        "(select | recv _ from a -> v | default -> w)",
+        // The inner `if` takes the outer `then` branch's type: both of its branches are widened.
+        "(if flag 1 then v else (if flag 0 then u else w))",
+    ];
+    for operator in ["==", "!=", "<", "<=", ">", ">="] {
+        let class = if matches!(operator, "==" | "!=") {
+            "Eq"
+        } else {
+            "Ord"
+        };
+        for form in first {
+            for operands in [
+                format!("{form} {operator} x"),
+                format!("1 {operator} {form}"),
+                format!("-1 {operator} {form}"),
+                format!("1.5 {operator} {form}"),
+                // The parentheses keep a block operand from being the lambda's body.
+                format!("{{ let f = \\b -> ({form} {operator} b); f x }}"),
+            ] {
+                let (source, _) = operand_source(&operands);
+                let errors = analyze_modules_all(&[("Main", &source)])
+                    .expect_err(&operands)
+                    .diagnostics;
+                let errors: Vec<_> = errors
+                    .iter()
+                    .filter(|error| error.code.starts_with('E'))
+                    .collect();
+                assert_eq!(errors.len(), 1, "{operands}: {errors:?}");
+                assert_eq!(errors[0].code, "E1005", "{operands}");
+                assert!(
+                    errors[0]
+                        .message
+                        .starts_with(&format!("no instance for {class}<(i64 | f64 | string)>")),
+                    "{operands}: {}",
+                    errors[0].message
+                );
+            }
+        }
+    }
+    // The operand checked second takes its sibling's type, which the `if` passes down, and the
+    // `else` branch takes the `then` branch's: `E1003` at `w`, whether the sibling's type is
+    // written, inferred later (`b`), or already the wider union.
+    for operands in [
+        "x == (if flag 1 then v else «w»)",
+        "{ let f = \\(b: (f64 | i64 | string)) -> b == (if flag 1 then v else «w»); f x }",
+        "{ let f = \\b -> b == (if flag 1 then v else «w»); f x }",
+        "{ let f = \\b -> b < (match 1 with | 0 -> v | _ -> «w»); f x }",
+    ] {
+        let (source, at) = operand_source(operands);
+        operand_mismatch(&[("Main", &source)], Some(at), operands);
+    }
 }
 
 // A25, step 3: `:? (A | B) [as x]` narrows to an anonymous union of some members.

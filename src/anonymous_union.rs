@@ -556,9 +556,12 @@ impl Checker<'_> {
         }
     }
 
-    /// Records the result positions of the operands of a binary operator for `injected_expression`,
-    /// which does not widen there, and returns the length of `Checker::operand` to truncate it
-    /// back to once the operands are checked. A result position is an operand, or what a form of
+    /// Records the result positions of `operand`, the operand of a binary operator that is checked
+    /// with its sibling's type as its expected type, for `injected_expression`, which does not
+    /// widen there, and returns the length of `Checker::operand` to truncate it back to once the
+    /// operand is checked. The operand checked first is not recorded: it is checked by itself, so
+    /// an `if` there gives its `then` branch's type to its `else` branch as anywhere else (D4), and
+    /// that branch is widened. A result position is the operand, or what a form of
     /// `passes_expected_down` in one passes the expected type down to as its value: the branches
     /// of an `if`, the arms of a `match` or `select`, the result of a block, `@checked` or a
     /// computation expression. Everything else (a call and its arguments, the value of a `let`, a
@@ -568,12 +571,12 @@ impl Checker<'_> {
     /// span), and the depth tells them apart. `select` arms keep their spans and depths through
     /// the `match` that `Checker::select` builds of clones of them.
     #[inline(never)]
-    pub(super) fn operand_results(&mut self, operands: [&Expr; 2]) -> usize {
+    pub(super) fn operand_results(&mut self, operand: &Expr) -> usize {
         let marked = self.operand.len();
         if self.names.anonymous_unions.is_empty() {
             return marked;
         }
-        let mut pending = Vec::from(operands);
+        let mut pending = vec![operand];
         while let Some(expression) = pending.pop() {
             match &expression.kind {
                 ExprKind::If {
@@ -617,8 +620,8 @@ impl Checker<'_> {
         expression: &Expr,
         expected: &Type,
     ) -> Result<TypedExpr, Diagnostic> {
-        // An operand of a binary operator takes its sibling's type, which is no place of D-62, and
-        // so does each branch, arm or block result that is its value: it is injected (A24) but
+        // The operand of a binary operator that takes its sibling's type is no place of D-62, and
+        // neither is each branch, arm or block result that is its value: it is injected (A24) but
         // not widened, so neither `v == w` nor `v == (if c then w else u)` moves `w` (A25).
         let widen = !self.operand.contains(&(expression.span, expression.depth));
         let union = self.inference.resolve(expected);
@@ -655,8 +658,8 @@ impl Checker<'_> {
     /// The value of `expression` where the anonymous union `union` (resolved) is expected (D4
     /// rules 2 and 3): a member that the expression's form picks is its expected type, otherwise
     /// the expression is checked by itself and `conform_union` decides. `widen` is false for a
-    /// result position of an operand (`operand_results`), which is not widened from another
-    /// anonymous union.
+    /// result position of the operand that takes its sibling's type (`operand_results`), which is
+    /// not widened from another anonymous union.
     fn union_value(
         &mut self,
         expression: &Expr,
