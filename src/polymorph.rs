@@ -564,22 +564,36 @@ impl Inference {
         ))
     }
 
-    /// Whether `actual` unifies with `expected`, leaving every variable as it was: the variables
-    /// that the trial solves are open again afterwards, and no diagnostic is reported (A32). A
-    /// solved variable is only ever set by `unify`, so the trial undoes each of its changes.
+    /// Whether `actual` unifies with `expected` and `check` accepts the solutions that this takes,
+    /// leaving every variable as it was: `check` is asked while the variables that the trial
+    /// solved hold their solutions, which are open again afterwards, and no diagnostic is reported
+    /// (A32). A solved variable is only ever set by `unify`, so the trial undoes each of its
+    /// changes.
     pub(super) fn unifies(
         &mut self,
         actual: &Type,
         expected: &Type,
         types: &TypeContext<'_>,
+        check: impl FnOnce(&Self) -> bool,
     ) -> bool {
         let outer = self.trial.replace(Vec::new());
         let unified = self.unify(actual, expected, types, Span::default()).is_ok();
         let solved = std::mem::replace(&mut self.trial, outer).unwrap_or_default();
+        let accepted = unified && check(self);
         for id in solved {
             self.solutions[id] = None;
         }
-        unified
+        accepted
+    }
+
+    /// The open variables that occur in `ty` once its solved variables are followed (A32).
+    pub(super) fn open_variables(&self, ty: &Type) -> BTreeSet<usize> {
+        let found = std::cell::RefCell::new(BTreeSet::new());
+        self.reaches(ty, &|id| {
+            found.borrow_mut().insert(id);
+            false
+        });
+        found.into_inner()
     }
 
     pub fn default_numeric(&mut self, ty: &Type, default: Type) {

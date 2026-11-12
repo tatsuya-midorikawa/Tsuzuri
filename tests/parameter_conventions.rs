@@ -2012,6 +2012,75 @@ fn annotated_reference_callbacks_over_number_literals() {
     assert_eq!(error.code, "E1015", "{rejected}\n{}", error.message);
 }
 
+#[test]
+fn annotated_reference_callbacks_over_nested_number_literals() {
+    // Review 4 of A32: the open types of number literals may sit inside the element type
+    // (`[[1, 2], [3]]` has elements `[?]`). The annotation's match with `ref [?]` gives them a
+    // type; when a constraint on them (the literal's own `Integer`) does not hold with it, the
+    // parameter keeps reading the value, and the annotated pattern reports what it reported
+    // before A32, where the mistake is, not at a literal.
+    for (lines, message, marker) in [
+        (
+            vec![
+                "export def answer :: i64 =",
+                "    let xs = [[1, 2], [3]]",
+                "    let ys = xs |> Array.map (\\(x: ref [string]) -> x.length)",
+                "    ys[0]",
+            ],
+            "expected ref [string], found [an undetermined type]",
+            "map (\\",
+        ),
+        (
+            vec![
+                "export def answer :: i64 =",
+                "    let ys = [[1, 2], [3]] |> Array.map (\\(x: ref [string]) -> x.length)",
+                "    ys[0]",
+            ],
+            "expected ref [string], found [an undetermined type]",
+            "map (\\",
+        ),
+        (
+            vec![
+                "export def answer :: i64 =",
+                "    let ys = [[1, 2], [3]] |> Array.map (\\(x: ref [f64]) -> x.length)",
+                "    ys[0]",
+            ],
+            "expected ref [f64], found [an undetermined type]",
+            "map (\\",
+        ),
+        (
+            vec![
+                "export def answer :: i64 =",
+                "    let ys = [(1, [2, 3]), (4, [5])] |> Array.map (\\(p: ref (i64 * [string])) -> 1)",
+                "    ys[0]",
+            ],
+            "expected ref (i64 * [string]), found (an undetermined type * [an undetermined type])",
+            "map (\\",
+        ),
+    ] {
+        let source = program(&lines);
+        let error = check("2027", &source).unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            ("E1003", message),
+            "{source}"
+        );
+        assert_eq!(
+            error.span.start,
+            pattern_offset(&source, marker),
+            "{source}"
+        );
+    }
+    // A type that the literals take binds the reference, as at the top level.
+    for body in [
+        "let ys = [[1, 2], [3]] |> Array.map (\\(x: ref [i64]) -> { let view: ref [i64] = x; view.length * 10 + view[0] }); ys[0] + ys[1] * 100",
+        "let ys = [(1, [2, 3]), (4, [5])] |> Array.map (\\(p: ref (i64 * [i64])) -> match p with | (a, b) -> a * 10 + b.length); ys[0] + ys[1] * 100",
+    ] {
+        let source = format!("export def answer :: i64 = {{ {body} }}\n");
+        check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    }
+}
+
 /// The first error of `source` has `code` and `kind` and starts at the 1-based `line:column`.
 fn rejects_at(source: &str, code: &str, kind: &str, at: (usize, usize)) {
     let error = check("2027", source)

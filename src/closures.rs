@@ -109,7 +109,9 @@ impl Checker<'_> {
     /// nothing else. So each program that this changes is one whose annotated pattern failed with
     /// `E1003` before, and the parameter gets the type that the same lambda bound by `let` has.
     /// It also needs the annotation to match `parameter` itself (`Inference::unifies`, which
-    /// solves nothing): a mistyped annotation (`ref [string]`, or `ref mut string` where the
+    /// solves nothing), and every class constraint on an open variable inside `inner` to hold
+    /// with the solution that this match gives it (`[?]` of `[[1, 2], [3]]` cannot take `string`
+    /// from `ref [string]`): a mistyped annotation (`ref [string]`, or `ref mut string` where the
     /// convention reads) keeps reading the value, so the pattern reports the error that it
     /// reported before, with the `ref` that the annotation has (`expected ref [string], found
     /// string`). The annotation is resolved without the side effects of `Checker::annotation`,
@@ -150,7 +152,38 @@ impl Checker<'_> {
         {
             return false;
         }
-        self.inference.unifies(parameter, &annotated, &self.types)
+        // The trial solves the open variables that `inner` holds (`[?]` of `[[1, 2], [3]]` takes
+        // `string` from `ref [string]`, review 4). Reading the value failed at the annotation
+        // whatever they were, so the reference is bound only when every constraint on them holds
+        // with the trial's solutions: one that would fail elsewhere (the literal's `Integer`)
+        // keeps the parameter reading the value and the error where it was.
+        let open = self.inference.open_variables(&inner);
+        if open.is_empty() {
+            return self
+                .inference
+                .unifies(parameter, &annotated, &self.types, |_| true);
+        }
+        let mentions_open = |ty: &Type| open.iter().any(|id| self.inference.mentions(ty, *id));
+        if self
+            .members
+            .iter()
+            .any(|member| mentions_open(&member.receiver))
+        {
+            return false;
+        }
+        let constraints: Vec<_> = self
+            .constraints
+            .iter()
+            .filter(|constraint| mentions_open(&constraint.ty))
+            .collect();
+        let (classes, types) = (&self.classes, &self.types);
+        self.inference
+            .unifies(parameter, &annotated, types, |inference| {
+                constraints.iter().all(|constraint| {
+                    let ty = inference.resolve(&constraint.ty);
+                    !inference.is_open(&ty) && classes.holds_class(constraint.class, &ty, types)
+                })
+            })
     }
 
     /// Whether the open type of a number literal (the variable `root`) can become `referent`
