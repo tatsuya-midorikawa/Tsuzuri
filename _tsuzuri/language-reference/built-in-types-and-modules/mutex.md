@@ -93,7 +93,7 @@ total=36 owners=1
 `callback` はロックを持ったまま走り、その結果はロックが外れた後で使われます。結果が、ロック中の値への借用を持っていると、その借用はロックの外で、置き換えられて解放された値や、ほかの tzroutine が書いている値を指します。結果の型が借用を持ちうる（関数値、またはそれを含む `Maybe`・タプル・配列・レコード・`Seq`）ときは、コンパイラーが、借用を持たない結果だと証明できるものだけを通します。
 
 - 通るもの: 値のコピーを取り、そのコピーを捕捉した関数。`Mutex` の外の借用で、ロック中の値から取っていないものを捕捉した関数。整数、文字列、配列などの所有値。
-- `E1013` になるもの: `let view = ref (deref value)` のように、ロック中の値から取った借用を捕捉した関数と、それを含む値（`callback` の中で別の `Mutex` や配列へ書き込んでから読み戻した値も含みます）。`ref` そのもの。
+- `E1013` になるもの: `let view = ref (deref value)` のように、ロック中の値から取った借用を捕捉した関数と、それを含む値。`ref` そのもの。
 
 ```tsuzuri run=adder%3D15
 let total = Mutex.create 5i64
@@ -121,6 +121,18 @@ let getter = Mutex.with_lock (ref total) (value -> {
 
 ```text
 error[E1013]: Mutex.with_lock results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy
+```
+
+結果に限らず、`callback` はロック中の値から取った借用を、呼び出しの後まで残る場所へ置けません。別の `Mutex` や配列へ `Array.write` などで書き込む、受け取ったものを残す関数値（セルを所有するレジストリなど）へ渡す、のどれも、`callback` を渡した呼び出しの位置で `E1013`（`a lock's callback cannot keep a borrow of the locked value beyond the call: ...`、kind は `mutex_result_retains_borrow`）です。ロックを共有の参照で取るだけで、後の `Mutex.with_lock` が中身を置き換えたり `Vec.push_mut` で伸ばしたりできるので、残した借用は解放された値を指しうるためです。`callback` が名前付き関数や部分適用でも、`Mutex.with_lock (ref m)` を関数値にしても、借用を関数値の仮引数へ渡す関数（`fn with_first m f = Mutex.with_lock m (\a -> f (ref a[0]))`）の呼び出し元が残す関数値を渡しても同じです。中身のコピー（関数値、所有値、`Arc.share` で作った強い参照）は残せます。`RwMutex.with_read`・`RwMutex.with_write`・`Cond.wait_with` と `SyncMap.with_value` も同じです。
+
+```text
+let m = Mutex.create [to_string 123456789]
+let m2 = Mutex.create [\() -> 0]
+let rm2 = ref m2
+Mutex.with_lock (ref m) (\a -> {
+    let first = ref a[0];
+    Mutex.with_lock rm2 (\b -> Array.write 0 (\() -> String.length first) b)   // E1013
+})
 ```
 
 証明は `Mutex.with_lock` を直接、ロックと `callback` を一度に渡して呼ぶ形で行います。結果が借用を持ちうるときは、`Mutex.with_lock (ref total)` のように引数を一部だけ渡すことと、`Mutex.with_lock` 自体を関数値にすることは、`E1013`（`Mutex.with_lock must be fully applied directly when its result may hold borrowed values`）です。結果が借用を持ちえない型（整数や文字列など）なら、どちらも書けます。`callback` が引数で受け取った関数値のように、本体を調べられないものは、結果が借用を持ちうる限り通りません。ジェネリックな関数が `callback` を引数で受け取って `Mutex.with_lock` に渡すときも、結果の型が借用を持ちうる型で使うと、同じ理由で通りません（結果が整数や文字列などなら、どちらも書けます）。
