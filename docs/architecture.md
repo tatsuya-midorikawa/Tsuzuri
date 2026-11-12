@@ -1579,7 +1579,9 @@ region 契約を読む前に宣言の引数型にも同じ表面上の補完を�
 `let` で束縛したラムダと同じです。引数の参照の型と合わない注釈は view のままなので、パターンは A32 の前と同じ
 `E1003`（`expected ref [string], found string`）を報告します。参照を束縛した引数の所有権検査は `let` で束縛したラムダの引数と同じで、
 その場の書き込み（`Array.write` など）が注釈した参照の借用を書き込み先へ残すことは、A31 の書き込みの事実（`ownership::StoreFacts`）が
-注釈のない綴りと同じく追跡します。callback の adapter は既存の Copy・loan 検査を通し、callback 自体の構築は 1 回だけです。
+注釈のない綴りと同じく追跡します。A31 の後の規則（書き込める仮引数の先の借用を残した後の書き込み、関数値の仮引数へ渡した借用、
+ビューの読み替え、`parameter_path`）も、`ref` の型の仮引数を持つ名前付き関数と同じ結果です。隠れた引数を束縛したパターンの変数は隠れた引数の loan
+（またはそれを親に持つ loan）を持ち、`writable_external` などは loan の外部の根で判定し、`parameter_path` はパターンの束縛を仮引数までたどるからです。callback の adapter は既存の Copy・loan 検査を通し、callback 自体の構築は 1 回だけです。
 `BORROWING_APIS` は 2027 の Array／List の読み取り入口と Vec の可変入口、および旧版を保存する `_owned` 入口をまとめます。
 `Vec.push_mut` は `Vec.push_owned` と異なる builtin identity と LLVM helper を持ち、混在版の ABI を衝突させません。
 

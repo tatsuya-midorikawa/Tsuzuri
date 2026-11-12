@@ -142,7 +142,7 @@ doubled[2] * 100 + total
 - 期待型の引数が参照の参照のとき。たとえば `[ref string]` を `Array.map` に渡すときの callback の要素の引数です。直接書いた `Array.map (\(r: ref (ref string)) -> r.length) rs` は `E1003` で、文言は内側の食い違いの `expected ref string, found string` です。参照先の値の型で `\(r: ref string) -> …` と書くか、ラムダを先に `let` で束縛します。
 - 読み取り引数の型が、型変数を型構築子に適用した型のとき。たとえば `def probe :: Functor<'container> => 'container<i64> -> i64` の `'container<i64>` です。`\(value: ref 'container<i64>) -> …` は `E1015`（`type constructor application has an incompatible kind`）です。注釈を書かないか、値の型で `\(value: 'container<i64>) -> …` と書きます。
 
-注釈で参照を束縛した引数は、`let` で束縛したラムダの引数と同じ所有権検査を受けます。`Array.write` と、それで書き込む std の関数（`Array.set`・`Array.fill`・`Array.blit` など）で、その引数の借用を持つ値（引数を捕捉した関数など）を書き込み先へ書き込むと、書き込み先の持ち主はその借用を持ちます。そのため、借用元より長く書き込み先を使うと、注釈を書かない綴りと同じく `E1013` です（[その場の書き込み](../ownership-and-memory/lifetimes.md#現在の制限)）。
+注釈で参照を束縛した引数は、`let` で束縛したラムダの引数と同じ所有権検査を受けます。`Array.write` と、それで書き込む std の関数（`Array.set`・`Array.fill`・`Array.blit` など）で、その引数の借用を持つ値（引数を捕捉した関数など）を書き込み先へ書き込むと、書き込み先の持ち主はその借用を持ちます。そのため、借用元より長く書き込み先を使うと、注釈を書かない綴りと同じく `E1013` です（[その場の書き込み](../ownership-and-memory/lifetimes.md#現在の制限)）。同じページの残りの規則も、`ref` の型の引数を持つ名前付き関数と同じです。`ref mut` と注釈した引数の先の借用を書き込み先へ残した後で、借用した場所へ届く書き込み（そのフィールドの置き換え、`Vec.push_mut`）は `E1014` で、別のフィールドへの書き込みは受理されます。`ref` と注釈した引数の先を `match` で照合した変数の借用は呼び出し元のデータの借用で、`((use, z): ref (A * B))` のようなパターンで取り出した関数は引数の関数として呼び出し元で検査します。
 
 `\mut (pattern)` の `mut` は、パターンで束縛する名前ではなく、分解する前の引数を可変にします。`def` の右辺では可変束縛引数は値渡しなので、そのパターンへ参照の型を注釈すると `E1003` です（`def size :: 'a -> i64 = \mut (v: ref 'a) -> 3` は `expected ref 'a, found 'a`）。規約を持つ関数型が期待される位置のラムダと、`def` の `mut T` の引数では、`mut` を付けても引数の型は変わりません。そのため `\mut (text: ref string) -> …` や `\mut (counter: ref mut Counter) -> …` と書けます。
 

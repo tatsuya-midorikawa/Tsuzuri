@@ -427,6 +427,30 @@ A31 のブランチ（`fix/a31-in-place-writes-keep-borrows` の `58cc81a6`、�
 
 変更したファイル（merge の後）: `src/check.rs`、`src/closures.rs`、`src/polymorph.rs`、`tests/parameter_conventions.rs`、`tests/fixtures/conventions/Main.tz`、`tests/features.mjs`、`lambda-expressions.md`、`functions.md`、`array.md`、`list.md`、`docs/language.md`、`docs/architecture.md`、このチケット。
 
+#### 2 度目の merge（2026-11-12、A31 の第4回〜第7回のレビューの対応）
+
+A31 のブランチ（`fix/a31-in-place-writes-keep-borrows` の `ec955303`、第7回のレビューの対応の記録まで）を、もう一度このブランチへ merge しました（`717eaa28`）。前の merge との共通の祖先は `58cc81a6`（A31 の第3回まで）で、その後の A31 の変更は第4回〜第7回のレビューの対応です。作業の記録とプログラムは `target/scratch/a32/merge2/` にあります。
+
+- merge の衝突: `_features/README.md` の A31 と A32 の行だけでした。A31 の行は A31 のブランチの行（第1回〜第7回の対応を述べる行）、A32 の行はこのブランチの行で、どちらも `_completed/` へリンクします。`src/check.rs`（A31 が `Type::stores_some` を移し、`Type::drops_some` を足した）、`src/ownership.rs`、`src/ownership_control.rs`、`docs/language.md`、`docs/architecture.md`、`pattern-matching.md`、`tests/features.mjs` は自動で merge され、merge commit はそのままビルドできました。`pattern-matching.md` には、A32 の段落（引数のパターンの as の二重消費）と A31 の段落（借用先からの分解）の両方が残り、どちらも今の挙動のとおりです。
+- A32 のテストの確認: merge の直後に `tests/parameter_conventions.rs` の 48 件がすべて成功しました。`annotated_reference_parameters_keep_their_in_place_writes_tracked` の種と探索の 28 個は今も `E1013 assignment_extends_borrow`（借用元を持つブロックの行と列）、ムーブの 2 個は `E1014 borrow_conflict`（ムーブの位置）で、安全な対照 6 個は受理されます。conventions suite の A32 の値（`annotated_reference_stores` など）も変わりません。
+- A31 の後の規則と注釈した綴り: 第4回〜第7回で A31 が足した規則（書き込める仮引数の先の借用を残した後の書き込み、関数値の仮引数へ渡した借用の上書き、共有参照の仮引数の先を照合したパターンの変数の借用、型注釈・パターンを書いたラムダの仮引数や仮引数のフィールドの関数の呼び出し、局所の `Rc`・`Arc` のブロックの共有、破棄の順序）が、注釈で参照を束縛した引数を、`ref` の型の引数を持つ名前付き関数（A31 自身の綴り）と同じに扱うかを確かめました。A31 の第6回・第7回のプログラム（`m01`〜`m03`、`wp01`・`wp02`、`wq01`、`y01`・`y02`・`y06`、`vw01`〜`vw04`、`v04`〜`v07`、`n18`〜`n23` など）から 28 個の形を作り、それぞれを 6 つの綴りで書きました: `ref` の署名の名前付き関数、規約を持つ `def` の注釈の無いラムダ、同じ `def` の注釈したラムダ、注釈したラムダを `else` の枝に置いた `if`、その双子として両方の枝を `def` にした `if`、`ref` の署名の `def` の注釈したラムダです（168 個、`merge2/gen.mjs` が `merge2/p/` に書きます）。merge した binary では、注釈した `def` の結果は名前付き関数の結果と、注釈した `if` の結果は双子の結果と、すべて同じコードと kind（拒否）か同じ値（受理。`-O0`・`-O3`）でした。前の A32 の binary（`bb9b40d1`。A31 の第3回まで）からの変化は、名前付き関数と注釈の無い綴りにも同じく起きた A31 の変化だけです（`m01`・`m03` が受理から `E1014`、`y02` が受理から `E1013`、`wp01`・`wq01`・`m04`・`n18`・`n20`・`n22`・`vw02`・`vw05`・`v05`・`v07` が拒否から受理）。A31 の新しい規則が、A32 が受理し注釈の無い双子も受理する安全なプログラムを拒否する例は見つからなかったので、A31 のコードも A32 のコードも変えていません。
+  - `if` の綴りで、関数値の、読み取りの関数型の仮引数へラムダを直接渡す呼び出し（`chosen (ref mut v0) (\g -> g ())`）は、注釈の有無によらず `E1013 borrow_of_temporary` です。A31 の前からの、関数値の呼び出しの読み取りの引数の規則で、注釈の無い双子も同じなので変えていません。
+- 比べたプログラム: (1) A32 のレビューと探索のプログラム 1658 個（`target/scratch/a32` の下と `review-a32-ce`・`review-a32-ce-r3`）の `check --json` は、前の A32 の binary と merge した binary で 1 つも変わりませんでした（`merge2/a32corpus-*.json`）。A31 の先端の binary（A31 の worktree の `target/debug/tsuzuri`。`src/` を最後に変えた commit `aaf3fab2` の後にビルドされたもの）と比べて違う 731 個は、A31 だけでは A32 の前の `E1003` などで拒否されるもの（504 個が受理へ、227 個が別の診断へ）で、受理から拒否に変わったものはありません。受理される注釈したプログラム 216 個（生成したものを除く）の値は、前の binary と merge した binary で `-O0`・`-O3` とも同じでした（`merge2/a32run-*.json`）。(2) A31 の第4回〜第7回のレビューと対応のプログラム 1651 個（性能のプログラムを除く。edition 2027 と 2026 で 3302 回の検査）を A31 の先端の binary と merge した binary で比べ、違う 13 個は、A31 のレビュー役が写した A32 の種（`h21`・`h22`・`h22w`・`r2_ag02`・`src_side`）が A32 の前の `E1003` から A31 の `E1013 assignment_extends_borrow` になったものだけでした（`merge2/a31corpus-a31-vs-merged.txt`）。
+- テスト: 回帰テスト `annotated_reference_parameters_follow_the_later_rules_of_in_place_writes`（`tests/parameter_conventions.rs`）を足しました。安全でない 9 形（`m01`・`m03` の `E1014 borrow_conflict`、`y02`・`n19`・`n21`・`n23` の `E1013 store_local_borrow_through_reference`、`vw03`・`vw04`・`v06` の `E1013 assignment_extends_borrow`）では、注釈した `def` の最初の誤りが、名前付き関数の双子と同じコード・kind で、誤りの範囲が同じ式であることを確かめます。安全な 12 形では、双子と注釈した `def` と（関数値の呼び出しが綴りによらず受理される 9 形は）注釈した `else` の枝が受理されることを確かめます。前の A32 の binary では、`m01` が受理され `wp01` が拒否されるので、このテストは失敗します（`merge2/p-prev.json`）。conventions suite には `annotated_reference_later_rules`（n = -3, 0, 1, 5。書き込める引数の別のフィールドへの書き込み、関数を呼ぶだけの関数値へ渡した後の `Vec.push_mut`、タプルを照合したビューの書き込み、タプルのパターンで取り出した関数）を足し、手で数えた値を JS の BigInt の式で書きました。
+- 文書: `lambda-expressions.md` の注釈した引数の所有権検査の段落、`docs/language.md`、`docs/architecture.md` に、A31 の後の規則（書き込める引数の先の借用を残した後の書き込み、照合した変数の借用、パターンやフィールドで取り出した関数）も `ref` の型の引数を持つ名前付き関数と同じであることを足しました。A31 が第4回〜第7回で書いた `lifetimes.md`（「型注釈やパターンを書いたラムダの仮引数」の段落を含む）・`drop.md`・`rc.md`・`pattern-matching.md` は、注釈した綴りにもそのまま当てはまるので変えていません。
+
+確認したこと:
+
+- `cargo fmt --all -- --check` と `cargo clippy --all-targets -- -D warnings`: 成功。
+- `cargo test --locked --test parameter_conventions`: 49 passed（48 件に新規の 1 件）。
+- `cargo nextest run --locked --no-fail-fast`: 3049 tests run: 3049 passed (12 slow), 4 skipped（1139 秒、`merge2/t1.log`）。A31 の第7回の 3036 件に、A32 の 12 件と新規の 1 件を足した数です。
+- `node tests/features.mjs target/debug/tsuzuri conventions`: 60 cases（56 件に `annotated_reference_later_rules` の 4 件）、`in_place_writes`: 56 cases、`mutable_slices`: 49 cases。どれも native と WASM の `-O0`・`-O3` で成功（`merge2/features.log`）。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs`: `lambda-expressions.md` は 1 pages, 22 links, 13 checked examples, 26 native runs (O0/O3)、merge で入った A31 の `pattern-matching.md`・`lifetimes.md`・`drop.md`・`rc.md` は 4 pages, 69 links, 26 checked examples, 52 native runs (O0/O3)。どちらも成功（`merge2/check-docs.log`）。
+- `node scripts/check-guide-lite.mjs`: 88 references checked, 0 failed。`node scripts/check-links.mjs`・`--into _features/README.md`: 0 broken。`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`: 19 blocks checked, 0 stale。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-cli-docs.mjs`: 4 checks, 0 failed。
+- 診断の kind は増やしていません。`src/` は merge のほかに変えていません。
+
+変更したファイル（2 度目の merge の後）: `tests/parameter_conventions.rs`、`tests/fixtures/conventions/Main.tz`、`tests/features.mjs`、`lambda-expressions.md`、`docs/language.md`、`docs/architecture.md`、このチケット。
+
 ### レビューの指摘への対応（第3回）
 
 指摘ごとに、A31 の上に重ねたこのブランチの dev binary と、base の binary（A31 の worktree の `target/debug/tsuzuri`）で再現してから対応しました。再現に使ったプログラムは `target/scratch/review-a32-ce-r3/` と `target/scratch/a32/review3/`（`cmp.sh` が base と修正後を `-O0`・`-O3` で比べます）にあります。
