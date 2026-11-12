@@ -664,6 +664,7 @@ fn start_checker<'a, 'run>(
         handed: BTreeSet::new(),
         shared_copies: BTreeMap::new(),
         parameter_paths: std::cell::RefCell::new(BTreeMap::new()),
+        parameter_path_steps: std::cell::Cell::new(0),
     };
     if !infer && facts.seeded {
         known_functions(
@@ -4584,6 +4585,8 @@ struct Checker<'a, 'run> {
     /// A31: the answers of `parameter_path` for the locals that patterns bind, with the depth that
     /// each needed (`parameter_path_at`).
     parameter_paths: std::cell::RefCell<BTreeMap<usize, (Option<ParameterPath>, usize)>>,
+    /// A31: the steps that `parameter_path_at` took, for the test of its cost.
+    parameter_path_steps: std::cell::Cell<usize>,
 }
 
 /// A31: the parameter of a body and the path of tuple or record fields (or union payloads) in its
@@ -8186,6 +8189,8 @@ impl<'a, 'run> Checker<'a, 'run> {
         expression: &TypedExpr,
         depth: usize,
     ) -> (Option<ParameterPath>, usize) {
+        self.parameter_path_steps
+            .set(self.parameter_path_steps.get() + 1);
         if depth > STORE_SUBSTITUTION_DEPTH {
             return (None, 0);
         }
@@ -12480,6 +12485,92 @@ mod retention_tests {
             let module = crate::analyze(&format!("{registry}{source}")).unwrap();
             assert!(owner_facts(&module)[index(&module, name)].fresh, "{source}");
         }
+    }
+
+    /// A31, review round 7 (finding 9): the parameter that a local bound by nested OR patterns is
+    /// part of is found with one look at each local, not one for each way through the
+    /// alternatives (their number to the power of the depth), and the answer is the one that the
+    /// walk without the memo gives.
+    #[test]
+    fn the_parameter_path_looks_at_each_local_once() {
+        let cases = 12;
+        let levels = 3;
+        let alternatives = |var: &str| -> String {
+            (0..cases)
+                .map(|i| format!("C{i} {var}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        let names = ["p", "v0", "v1", "v2"];
+        let mut body =
+            "(match v2 with | Leaf use -> use (\\() -> 1) + use (\\() -> 2) | _ -> 0)".to_owned();
+        for level in (0..levels).rev() {
+            body = format!(
+                "(match {} with | {} -> {body} | Leaf _ -> 0)",
+                names[level],
+                alternatives(names[level + 1])
+            );
+        }
+        // A function that writes in place, so that the module has store facts at all.
+        let mut source = "def keep :: own (unit -> i64) -> ref mut [(unit -> i64)..] -> unit\nfn keep f slot = Array.write 0 f slot\nunion U =\n".to_owned();
+        for i in 0..cases {
+            source.push_str(&format!("    | C{i} of U\n"));
+        }
+        source.push_str(&format!(
+            "    | Leaf of ((unit -> i64) -> i64)\ndef go :: own U -> i64\nfn go p =\n    {body}\nlet mut arr = [\\() -> 0]\nkeep (\\() -> 1) (ref mut arr)\ngo (C0 (C1 (C2 (Leaf (\\f -> f ()))))) + arr[0] ()"
+        ));
+        let module = crate::analyze(&source).unwrap();
+        let facts = call_facts(&module, false);
+        let id = module
+            .functions
+            .iter()
+            .position(|function| function.name == "go")
+            .unwrap();
+        let function = &module.functions[id];
+        let mut recovered = Vec::new();
+        let checker = start_checker(
+            &module,
+            function.parameters.iter(),
+            &function.body,
+            false,
+            &facts,
+            function.is_once,
+            false,
+            facts.contract(&module, id),
+            &mut recovered,
+            None,
+            None,
+        );
+        let local = checker
+            .declarations
+            .values()
+            .find(|local| local.name == "use")
+            .copied()
+            .expect("the pattern local");
+        let expression = TypedExpr {
+            kind: E::Local(local.id),
+            ty: local.ty.clone(),
+            span: local.span,
+        };
+        assert_eq!(
+            checker.parameter_path(&expression, 0),
+            Some((0, vec![PAYLOAD; levels + 1]))
+        );
+        let steps = checker.parameter_path_steps.get();
+        assert!(
+            steps <= 4 * (cases + 1) * (levels + 2),
+            "{steps} steps for {cases} cases and {levels} levels"
+        );
+        // Asked again, and from a depth that leaves the walk no room, the kept answers agree with
+        // the limit.
+        assert_eq!(
+            checker.parameter_path(&expression, 0),
+            Some((0, vec![PAYLOAD; levels + 1]))
+        );
+        assert_eq!(
+            checker.parameter_path(&expression, STORE_SUBSTITUTION_DEPTH),
+            None
+        );
     }
 
     /// A31, review round 5 (finding 2): the answers of the provenance scan of a check are kept by

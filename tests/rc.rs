@@ -3256,3 +3256,301 @@ fn a_value_whose_drop_runs_code_keeps_no_borrow_of_a_later_local() {
         accepts_in_both_editions(&[("Main.tz", main)]);
     }
 }
+
+/// A31, review round 7 (findings 1, 2 and 6): a value whose drop may run a user `Drop.drop` is
+/// dropped at the end of its scope unless every path moved it away, so one that only a branch moves
+/// is checked like one that no path moves, and keeps its borrows to the end of the scope; and a
+/// `break`, a `continue` or an exception that a `try` handles drops the locals of the scopes that it
+/// leaves in the reverse order of their declarations there, whatever the code after it puts into
+/// them.
+#[test]
+fn a_value_that_a_branch_moves_or_a_jump_drops_keeps_no_borrow_of_a_later_local() {
+    for (source, kind, at) in [
+        // do01_cond_move
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef drop_it :: own Caller -> i64\nfn drop_it c = c.f ()\ndef run :: i64 -> i64\nfn run n =\n    let mut holder = Caller { f: \\() -> 0 }\n    let text0 = to_string n\n    let t = ref text0\n    holder = Caller { f: \\() -> String.length t }\n    if n > 1000000000 then drop_it holder else 0\nrun 123456789",
+            "assignment_extends_borrow",
+            (9, 5),
+        ),
+        // do02_cond_move_match
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef drop_it :: own Caller -> i64\nfn drop_it c = c.f ()\ndef run :: i64 -> i64\nfn run n =\n    let mut holder = Caller { f: \\() -> 0 }\n    let text0 = to_string n\n    let t = ref text0\n    holder = Caller { f: \\() -> String.length t }\n    let k = match n with\n        | 0 -> drop_it holder\n        | _ -> 1\n    k\nrun 123456789",
+            "assignment_extends_borrow",
+            (9, 5),
+        ),
+        // do03_while_move
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef drop_it :: own Caller -> i64\nfn drop_it c = c.f ()\ndef run :: i64 -> i64\nfn run n =\n    let mut arr = [Caller { f: \\() -> 0 }]\n    let text0 = to_string n\n    let t = ref text0\n    Array.write 0 (Caller { f: \\() -> String.length t }) (ref mut arr)\n    let total = if n == 0 then { let a = arr; a.length } else 2\n    total\nrun 123456789",
+            "assignment_extends_borrow",
+            (9, 5),
+        ),
+        // do21_k11_condmove
+        (
+            "record Reader { cell: Arc<Mutex<[unit -> i64]>> }\ninstance Drop<Reader> {\n    fn drop r = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (Arc.get (ref r.cell)) (\\slot -> slot[0] ())))\n}\ndef eat :: own Reader -> i64\nfn eat r = 1\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let s = Reader { cell: Arc.share (ref a) }\n    let text0 = to_string n\n    let t = ref text0\n    Mutex.with_lock (Arc.get (ref a)) (\\c -> Array.write 0 (\\() -> String.length t) c)\n    if n > 1000000000 then eat s else 0\nrun 123456789",
+            "assignment_extends_borrow",
+            (9, 5),
+        ),
+        // do23_k10_condmove
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef eat :: own Mutex<[Caller]> -> i64\nfn eat m = 1\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [Caller { f: \\() -> 0 }]\n    let text0 = to_string n\n    let t = ref text0\n    Mutex.with_lock (ref m) (\\slot -> Array.write 0 (Caller { f: \\() -> String.length t }) slot)\n    if n > 1000000000 then eat m else 0\nrun 123456789",
+            "assignment_extends_borrow",
+            (9, 5),
+        ),
+        // do35_cond_move_content
+        (
+            "record Caller { f: unit -> string }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop [\" + c.f () + \"]\")\n}\ndef drop_it :: own Caller -> i64\nfn drop_it c = 0\ndef run :: i64 -> i64\nfn run n =\n    let mut holder = Caller { f: \\() -> \"none\" }\n    let text0 = \"secret-\" + to_string n\n    let t = ref text0\n    holder = Caller { f: \\() -> Maybe.default_value \"?\" (String.sub 0 16 t) }\n    if n > 1000000000 then drop_it holder else 0\nrun 123456789",
+            "assignment_extends_borrow",
+            (9, 5),
+        ),
+        // m02 (a match arm moves the holder)
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef consume :: own Caller -> unit\nfn consume c = ()\ndef run :: i64 -> i64\nfn run n =\n    let mut holder = Caller { f: \\() -> 0 }\n    let text0 = to_string n\n    let t = ref text0\n    holder = Caller { f: \\() -> String.length t }\n    match n with\n    | 1 -> consume holder\n    | _ -> ()\n    0\nrun 123456789",
+            "assignment_extends_borrow",
+            (9, 5),
+        ),
+        // x07: moved on every path, then given a borrow again on one
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef drop_it :: own Caller -> i64\nfn drop_it c = c.f ()\ndef run :: i64 -> i64\nfn run n =\n    let mut holder = Caller { f: \\() -> 0 }\n    let text0 = to_string n\n    let t = ref text0\n    holder = Caller { f: \\() -> String.length t }\n    let k = drop_it holder\n    if n > 5 then holder = Caller { f: \\() -> String.length t } else ()\n    k\nrun 123456789",
+            "assignment_extends_borrow",
+            (9, 5),
+        ),
+        // do27_break_then_reassign
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef run :: i64 -> i64\nfn run n =\n    let mut i = 0\n    while i < 3 do\n        let mut holder = Caller { f: \\() -> 0 }\n        let text0 = to_string n\n        let t = ref text0\n        holder = Caller { f: \\() -> String.length t }\n        if i == 0 then break else ()\n        holder = Caller { f: \\() -> 9 }\n        i = i + 1\n    0\nrun 123456789",
+            "assignment_extends_borrow",
+            (13, 24),
+        ),
+        // do28_continue_then_reassign
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef run :: i64 -> i64\nfn run n =\n    let mut i = 0\n    while i < 2 do\n        i = i + 1\n        let mut holder = Caller { f: \\() -> 0 }\n        let text0 = to_string n\n        let t = ref text0\n        holder = Caller { f: \\() -> String.length t }\n        if i == 1 then continue else ()\n        holder = Caller { f: \\() -> 9 }\n    0\nrun 123456789",
+            "assignment_extends_borrow",
+            (14, 24),
+        ),
+        // x02: a break in an inner block
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef run :: i64 -> i64\nfn run n =\n    let mut i = 0\n    while i < 2 do\n        let mut holder = Caller { f: \\() -> 0 }\n        let k = { let text0 = to_string n; let t = ref text0; holder = Caller { f: \\() -> String.length t }; if i == 0 then break else (); holder = Caller { f: \\() -> 9 }; 1 }\n        i = i + k\n    0\nrun 123456789",
+            "assignment_extends_borrow",
+            (10, 125),
+        ),
+        // x04: a break in a for loop
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef run :: i64 -> i64\nfn run n =\n    for i in 0..=2 do\n        let mut holder = Caller { f: \\() -> 0 }\n        let text0 = to_string n\n        let t = ref text0\n        holder = Caller { f: \\() -> String.length t }\n        if i == 0 then break else ()\n        holder = Caller { f: \\() -> 9 }\n    0\nrun 123456789",
+            "assignment_extends_borrow",
+            (12, 24),
+        ),
+        // x08: an exception that the try handles
+        (
+            "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef run :: i64 -> Result<i64, Exception>\nfn run n =\n    try\n        let mut holder = Caller { f: \\() -> 0 }\n        let text0 = to_string n\n        let t = ref text0\n        holder = Caller { f: \\() -> String.length t }\n        let z = @checked n * 9223372036854775807\n        holder = Caller { f: \\() -> 9 }\n        z\n    with\n    | e -> e\nmatch run 123456789 with\n| Ok v -> v\n| Error _ -> 0",
+            "assignment_extends_borrow",
+            (12, 26),
+        ),
+    ] {
+        rejects_at(source, "E1013", kind, at);
+        let error = analyze_with_edition(source, Edition::E2027).expect_err(source);
+        assert!(
+            error
+                .message
+                .contains("may run a Drop.drop that uses the borrow"),
+            "{source}\n{}",
+            error.message
+        );
+    }
+    // do12: the holder that a branch moves keeps its borrow, so the borrowed value cannot move.
+    rejects_at(
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef drop_it :: own Caller -> i64\nfn drop_it c = c.f ()\ndef consume :: own string -> i64\nfn consume s = String.length (ref s)\ndef run :: i64 -> i64\nfn run n =\n    let text0 = to_string n\n    let t = ref text0\n    let mut holder = Caller { f: \\() -> 0 }\n    holder = Caller { f: \\() -> String.length t }\n    let k = if n > 1000000000 then drop_it holder else 0\n    let other = [to_string 777777, to_string 88888888]\n    k + consume text0 + other.length * 0\nrun 123456789",
+        "E1014",
+        "borrow_conflict",
+        (17, 17),
+    );
+    for main in [
+        // do06_ctl_text_first
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef drop_it :: own Caller -> i64\nfn drop_it c = c.f ()\ndef run :: i64 -> i64\nfn run n =\n    let text0 = to_string n\n    let t = ref text0\n    let mut holder = Caller { f: \\() -> 0 }\n    holder = Caller { f: \\() -> String.length t }\n    if n > 1000000000 then drop_it holder else 0\nrun 123456789",
+        // m01_ctl
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef consume :: own Caller -> unit\nfn consume c = ()\ndef run :: i64 -> i64\nfn run n =\n    let text0 = to_string n\n    let t = ref text0\n    let mut holder = Caller { f: \\() -> 0 }\n    holder = Caller { f: \\() -> String.length t }\n    if n < 5 then consume holder else ()\n    0\nrun 123456789",
+        // do13_uncond_move_then_consume_ctl
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef drop_it :: own Caller -> i64\nfn drop_it c = c.f ()\ndef consume :: own string -> i64\nfn consume s = String.length (ref s)\ndef run :: i64 -> i64\nfn run n =\n    let text0 = to_string n\n    let t = ref text0\n    let mut holder = Caller { f: \\() -> 0 }\n    holder = Caller { f: \\() -> String.length t }\n    let k = drop_it holder\n    let other = [to_string 777777, to_string 88888888]\n    k + consume text0 + other.length * 0\nrun 123456789",
+        // x05: moved on both paths
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef drop_it :: own Caller -> i64\nfn drop_it c = c.f ()\ndef run :: i64 -> i64\nfn run n =\n    let mut holder = Caller { f: \\() -> 0 }\n    let text0 = to_string n\n    let t = ref text0\n    holder = Caller { f: \\() -> String.length t }\n    if n > 5 then drop_it holder else drop_it holder\nrun 123456789",
+        // x06: moved on one path, then given a value without a borrow
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef drop_it :: own Caller -> i64\nfn drop_it c = c.f ()\ndef run :: i64 -> i64\nfn run n =\n    let mut holder = Caller { f: \\() -> 0 }\n    let text0 = to_string n\n    let t = ref text0\n    holder = Caller { f: \\() -> String.length t }\n    let k = if n > 5 then drop_it holder else 0\n    holder = Caller { f: \\() -> 3 }\n    k\nrun 123456789",
+        // do29_ctl_no_break
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef run :: i64 -> i64\nfn run n =\n    let mut i = 0\n    while i < 3 do\n        let mut holder = Caller { f: \\() -> 0 }\n        let text0 = to_string n\n        let t = ref text0\n        holder = Caller { f: \\() -> String.length t }\n        holder = Caller { f: \\() -> 9 }\n        i = i + 1\n    0\nrun 123456789",
+        // x03: the borrowed value declared first
+        "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}\ndef run :: i64 -> i64\nfn run n =\n    let mut i = 0\n    while i < 3 do\n        let text0 = to_string n\n        let t = ref text0\n        let mut holder = Caller { f: \\() -> String.length t }\n        if i == 0 then break else ()\n        holder = Caller { f: \\() -> 9 }\n        i = i + 1\n    0\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 7 (finding 3): a `Drop.drop` gets only its own value, so the drop of a part
+/// whose type cannot hold a borrow (`Guard { id: i64 }`) reads none of the borrows that the parts
+/// beside it hold, and does not keep them to the end of the scope or ask their owners to be
+/// declared first. A part that may reach a borrow, here through the block of a weak pointer, still
+/// counts.
+#[test]
+fn a_drop_that_cannot_hold_a_borrow_reads_none_of_the_borrows_beside_it() {
+    for main in [
+        // rd01_guard_sibling_borrow
+        "record Guard { id: i64 }\ninstance Drop<Guard> {\n    fn drop g = do! IO.write_line (\"bye \" + to_string g.id)\n}\nrecord Ctx { guard: Guard, label: ref string }\ndef run :: i64 -> i64\nfn run n =\n    let mut text = to_string n\n    let c = Ctx { guard: Guard { id: 1 }, label: ref text }\n    let len = String.length c.label\n    text = to_string 5\n    len + String.length (ref text)\nrun 123456789",
+        // rd03_guard_tuple_borrow
+        "record Guard { id: i64 }\ninstance Drop<Guard> {\n    fn drop g = do! IO.write_line (\"bye \" + to_string g.id)\n}\ndef second :: own (Guard * ref string) -> i64\nfn second p = 0\ndef run :: i64 -> i64\nfn run n =\n    let mut text = to_string n\n    let c = (Guard { id: 1 }, ref text)\n    let len = match c with | (_, s) -> String.length s\n    text = to_string 5\n    len + String.length (ref text)\nrun 123456789",
+        // rd04_guard_sibling_declared_first
+        "record Guard { id: i64 }\ninstance Drop<Guard> {\n    fn drop g = do! IO.write_line (\"bye \" + to_string g.id)\n}\nrecord Ctx { guard: Guard, label: ref string }\ndef run :: i64 -> i64\nfn run n =\n    let first = to_string 1\n    let mut c = Ctx { guard: Guard { id: 1 }, label: ref first }\n    let text = to_string n\n    c = Ctx { guard: Guard { id: 2 }, label: ref text }\n    String.length c.label\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+    // z01: the guard's drop upgrades a weak pointer to a cell of function values.
+    rejects_at(
+        "record Guard { w: Rc.Weak<Mutex<[unit -> i64]>> }\ninstance Drop<Guard> {\n    fn drop g = match Rc.upgrade (ref g.w) with\n        | Maybe.Some c -> do! IO.write_line (\"bye \" + to_string (Mutex.with_lock (Rc.get (ref c)) (\\slot -> slot[0] ())))\n        | Maybe.None -> ()\n}\nrecord Ctx { guard: Guard, label: ref string }\ndef run :: i64 -> i64\nfn run n =\n    let cell = Rc.new (Mutex.create [\\() -> 0])\n    let first = to_string 1\n    let mut c = Ctx { guard: Guard { w: Rc.downgrade (ref cell) }, label: ref first }\n    let text = to_string n\n    c = Ctx { guard: Guard { w: Rc.downgrade (ref cell) }, label: ref text }\n    String.length c.label\nrun 123456789",
+        "E1013",
+        "assignment_extends_borrow",
+        (10, 5),
+    );
+}
+
+/// A31, review round 7 (finding 4): a borrow of what a `ref mut` parameter points at, which the
+/// body stored where the caller's data reaches, stays live for the rest of the body by itself, not
+/// in the parameter's value: a later write of a disjoint field through the parameter is accepted,
+/// and one that may reach the borrow is `E1014` with a help that says why. A caller that passes a
+/// fresh `ref mut` borrow there keeps a shared borrow of the value, so it may read the value while
+/// the place that took the borrow lives, and still not write or move it.
+#[test]
+fn a_borrow_stored_from_a_mutable_parameter_keeps_only_what_it_borrows() {
+    // wp01_disjoint_field_write (`r.count = 5` assigns through a reference only in edition 2027).
+    let disjoint = "record Rec { name: string, count: i64 }\ndef put :: ref mut Rec -> ref mut [(unit -> i64)..] -> unit\nfn put r slot =\n    let sr = ref r.name\n    Array.write 0 (\\() -> String.length sr) slot\n    r.count = 5\ndef run :: i64 -> i64\nfn run n =\n    let mut v0 = Rec { name: to_string n, count: 0 }\n    let mut arr = [\\() -> 0]\n    put (ref mut v0) (ref mut arr)\n    arr[0] () + v0.count\nrun 123456789";
+    let module = analyze_with_edition(disjoint, Edition::E2027)
+        .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    llvm::emit_target(&module, llvm::Entry::Library, false).unwrap();
+    for main in [
+        // wq01: the caller reads another field afterwards
+        "record Rec { name: string, count: i64 }\ndef put :: ref mut Rec -> ref mut [(unit -> i64)..] -> unit\nfn put r slot =\n    let sr = ref r.name\n    Array.write 0 (\\() -> String.length sr) slot\ndef run :: i64 -> i64\nfn run n =\n    let mut v0 = Rec { name: to_string n, count: 3 }\n    let mut arr = [\\() -> 0]\n    put (ref mut v0) (ref mut arr)\n    arr[0] () + v0.count\nrun 123456789",
+        // wp02_read_after_store
+        "record Rec { name: string, count: i64 }\ndef put :: ref mut Rec -> ref mut [(unit -> i64)..] -> i64\nfn put r slot =\n    let sr = ref r.name\n    Array.write 0 (\\() -> String.length sr) slot\n    String.length (ref r.name) + r.count\ndef run :: i64 -> i64\nfn run n =\n    let mut v0 = Rec { name: to_string n, count: 1 }\n    let mut arr = [\\() -> 0]\n    let k = put (ref mut v0) (ref mut arr)\n    arr[0] () + k\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+    for (source, at) in [
+        // wq06: the caller replaces the value
+        (
+            "record Rec { name: string, count: i64 }\ndef put :: ref mut Rec -> ref mut [(unit -> i64)..] -> unit\nfn put r slot =\n    let sr = ref r.name\n    Array.write 0 (\\() -> String.length sr) slot\ndef run :: i64 -> i64\nfn run n =\n    let mut v0 = Rec { name: to_string n, count: 3 }\n    let mut arr = [\\() -> 0]\n    put (ref mut v0) (ref mut arr)\n    v0 = Rec { name: to_string 5, count: 1 }\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    arr[0] () + other.length * 0\nrun 123456789",
+            (11, 5),
+        ),
+        // y05: the body passes the parameter on to a function that pushes
+        (
+            "def push_all :: ref mut Vec<string> -> unit\nfn push_all v =\n    let mut i = 0\n    while i < 100 do {\n        Vec.push_mut (to_string i) v\n        i = i + 1\n    }\ndef put :: ref mut Vec<string> -> ref mut [(unit -> i64)..] -> unit\nfn put v slot =\n    let sr = ref v[0]\n    Array.write 0 (\\() -> String.length sr) slot\n    push_all v\ndef run :: i64 -> i64\nfn run n =\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    let mut arr = [\\() -> 0]\n    put (ref mut v0) (ref mut arr)\n    arr[0] ()\nrun 123456789",
+            (12, 14),
+        ),
+        // wp03_other_element_write (the view is borrowed whole, as with a local)
+        (
+            "def put :: ref mut [string..] -> ref mut [(unit -> i64)..] -> unit\nfn put v slot =\n    let sr = ref v[0]\n    Array.write 0 (\\() -> String.length sr) slot\n    Array.write 1 (to_string 5) v\ndef run :: i64 -> i64\nfn run n =\n    let mut words = [to_string n, to_string 7]\n    let mut arr = [\\() -> 0]\n    put (ref mut words) (ref mut arr)\n    arr[0] () + String.length (ref words[1])\nrun 123456789",
+            (5, 33),
+        ),
+    ] {
+        rejects_at(source, "E1014", "borrow_conflict", at);
+    }
+    let error = analyze_with_edition("def push_all :: ref mut Vec<string> -> unit\nfn push_all v =\n    let mut i = 0\n    while i < 100 do {\n        Vec.push_mut (to_string i) v\n        i = i + 1\n    }\ndef put :: ref mut Vec<string> -> ref mut [(unit -> i64)..] -> unit\nfn put v slot =\n    let sr = ref v[0]\n    Array.write 0 (\\() -> String.length sr) slot\n    push_all v\ndef run :: i64 -> i64\nfn run n =\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    let mut arr = [\\() -> 0]\n    put (ref mut v0) (ref mut arr)\n    arr[0] ()\nrun 123456789", Edition::E2027)
+        .expect_err("the push through the parameter");
+    assert!(
+        error
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains("stored the borrow where its caller's data")),
+        "{:?}",
+        error.help
+    );
+}
+
+/// A31, review round 7 (finding 8): a body that hands a borrow of what one of its `ref mut`
+/// parameters points at to a function-valued parameter and writes there afterwards (a push that
+/// moves the elements, or passing the parameter on) may free what the borrow points at, so the
+/// caller rejects a function value that keeps what it is given (`E1013` at the call), and accepts
+/// one that only calls it.
+#[test]
+fn a_borrow_handed_to_a_function_parameter_and_written_over_cannot_be_kept() {
+    for (source, at) in [
+        // h01 (a registry that stores what it gets)
+        (
+            "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef put :: ref mut Vec<string> -> ((unit -> i64) -> i64) -> unit\nfn put v reg =\n    let sr = ref v[0]\n    let _k = reg (\\() -> String.length sr)\n    let mut i = 0\n    while i < 100 do {\n        Vec.push_mut (to_string i) v\n        i = i + 1\n    }\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    put (ref mut v0) reg\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    reg (\\() -> 1) + other.length * 0\nrun 123456789",
+            (19, 5),
+        ),
+        // h03 (a lambda that stores it in a mutex)
+        (
+            "def put :: ref mut Vec<string> -> ((unit -> i64) -> unit) -> unit\nfn put v use =\n    let sr = ref v[0]\n    use (\\() -> String.length sr)\n    let mut i = 0\n    while i < 100 do {\n        Vec.push_mut (to_string i) v\n        i = i + 1\n    }\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let mr = ref m\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    put (ref mut v0) (\\g -> Mutex.with_lock mr (\\slot -> Array.write 0 g slot))\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    Mutex.with_lock mr (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            (16, 5),
+        ),
+        // y02: the body passes the parameter on to a function that pushes
+        (
+            "def push_all :: ref mut Vec<string> -> unit\nfn push_all v =\n    let mut i = 0\n    while i < 100 do {\n        Vec.push_mut (to_string i) v\n        i = i + 1\n    }\ndef put :: ref mut Vec<string> -> ((unit -> i64) -> unit) -> unit\nfn put v use =\n    let sr = ref v[0]\n    use (\\() -> String.length sr)\n    push_all v\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let mr = ref m\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    put (ref mut v0) (\\g -> Mutex.with_lock mr (\\slot -> Array.write 0 g slot))\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    Mutex.with_lock mr (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            (19, 5),
+        ),
+        // y04: a function that passes both on
+        (
+            "def relay :: ref mut Vec<string> -> ((unit -> i64) -> unit) -> unit\nfn relay v use = put v use\ndef put :: ref mut Vec<string> -> ((unit -> i64) -> unit) -> unit\nfn put v use =\n    let sr = ref v[0]\n    use (\\() -> String.length sr)\n    let mut i = 0\n    while i < 100 do {\n        Vec.push_mut (to_string i) v\n        i = i + 1\n    }\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let mr = ref m\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    relay (ref mut v0) (\\g -> Mutex.with_lock mr (\\slot -> Array.write 0 g slot))\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    Mutex.with_lock mr (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            (18, 5),
+        ),
+    ] {
+        rejects_at(source, "E1013", "store_local_borrow_through_reference", at);
+        let error = analyze_with_edition(source, Edition::E2027).expect_err(source);
+        assert!(
+            error.message.contains("writes there afterwards"),
+            "{source}\n{}",
+            error.message
+        );
+    }
+    for main in [
+        // h01_ctl (no push)
+        "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef put :: ref mut Vec<string> -> ((unit -> i64) -> i64) -> unit\nfn put v reg =\n    let sr = ref v[0]\n    let _k = reg (\\() -> String.length sr)\n    ()\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    put (ref mut v0) reg\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    reg (\\() -> 1) + other.length * 0\nrun 123456789",
+        // h03_ctl (no push)
+        "def put :: ref mut Vec<string> -> ((unit -> i64) -> unit) -> unit\nfn put v use =\n    let sr = ref v[0]\n    use (\\() -> String.length sr)\ndef run :: i64 -> i64\nfn run n =\n    let m = Mutex.create [\\() -> 0]\n    let mr = ref m\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    put (ref mut v0) (\\g -> Mutex.with_lock mr (\\slot -> Array.write 0 g slot))\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    Mutex.with_lock mr (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+        // y01: the function value only calls what it gets
+        "def put :: ref mut Vec<string> -> ((unit -> i64) -> i64) -> i64\nfn put v use =\n    let sr = ref v[0]\n    let k = use (\\() -> String.length sr)\n    let mut i = 0\n    while i < 100 do {\n        Vec.push_mut (to_string i) v\n        i = i + 1\n    }\n    k\ndef run :: i64 -> i64\nfn run n =\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    put (ref mut v0) (\\g -> g ())\nrun 123456789",
+        // y04c: the same through a function that passes both on
+        "def relay :: ref mut Vec<string> -> ((unit -> i64) -> i64) -> i64\nfn relay v use = put v use\ndef put :: ref mut Vec<string> -> ((unit -> i64) -> i64) -> i64\nfn put v use =\n    let sr = ref v[0]\n    let k = use (\\() -> String.length sr)\n    let mut i = 0\n    while i < 100 do {\n        Vec.push_mut (to_string i) v\n        i = i + 1\n    }\n    k\ndef run :: i64 -> i64\nfn run n =\n    let mut v0: Vec<string> = Vec.empty()\n    Vec.push_mut (to_string n) (ref mut v0)\n    relay (ref mut v0) (\\g -> g ())\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 7 (finding 7): a store into the block of a local `Rc` or `Arc` owner that the
+/// body moved into a callee, after a share of the block went to the caller's data or to a value
+/// whose drop reads it, reaches that place too: the callee's facts, or code that the check does not
+/// see, store into the block through the moved owner, which no local root leads to any more.
+#[test]
+fn a_store_into_an_owner_moved_into_a_callee_reaches_where_its_block_went() {
+    for (source, kind, at) in [
+        // e06 (the share went to the caller)
+        (
+            "def put_into :: ref string -> own Rc<Mutex<[unit -> i64]>> -> unit\nfn put_into s a = Mutex.with_lock (Rc.get (ref a)) (\\c -> Array.write 0 (\\() -> String.length s) c)\ndef put :: ref mut [Rc<Mutex<[unit -> i64]>>..] -> unit\nfn put slot =\n    let lr = Rc.new (Mutex.create [\\() -> 0])\n    Array.write 0 (Rc.share (ref lr)) slot\n    let local = to_string 123456789\n    put_into (ref local) lr\ndef run :: i64 -> i64\nfn run n =\n    let mut arr = [Rc.new (Mutex.create [\\() -> 0])]\n    put (ref mut arr)\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    Mutex.with_lock (Rc.get (ref arr[0])) (\\cell -> cell[0] ()) + other.length * 0 + n * 0\nrun 1",
+            "store_local_borrow_through_reference",
+            (8, 5),
+        ),
+        // e07: the owner moved into a function value that the check does not see
+        (
+            "def make_put :: unit -> (ref string -> own Rc<Mutex<[unit -> i64]>> -> unit)\nfn make_put _u = \\s c -> Mutex.with_lock (Rc.get (ref c)) (\\slot -> Array.write 0 (\\() -> String.length s) slot)\ndef put :: ref mut [Rc<Mutex<[unit -> i64]>>..] -> unit\nfn put slot =\n    let f = make_put ()\n    let lr = Rc.new (Mutex.create [\\() -> 0])\n    Array.write 0 (Rc.share (ref lr)) slot\n    let local = to_string 123456789\n    f (ref local) lr\ndef run :: i64 -> i64\nfn run n =\n    let mut arr = [Rc.new (Mutex.create [\\() -> 0])]\n    put (ref mut arr)\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    Mutex.with_lock (Rc.get (ref arr[0])) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            "store_local_borrow_through_reference",
+            (9, 5),
+        ),
+        // e08: the owner given to a function-valued parameter
+        (
+            "def put :: ref mut [Rc<Mutex<[unit -> i64]>>..] -> (ref string -> Rc<Mutex<[unit -> i64]>> -> unit) -> unit\nfn put slot f =\n    let lr = Rc.new (Mutex.create [\\() -> 0])\n    Array.write 0 (Rc.share (ref lr)) slot\n    let local = to_string 123456789\n    f (ref local) lr\ndef run :: i64 -> i64\nfn run n =\n    let mut arr = [Rc.new (Mutex.create [\\() -> 0])]\n    put (ref mut arr) (\\s c -> Mutex.with_lock (Rc.get (ref c)) (\\slot -> Array.write 0 (\\() -> String.length s) slot))\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    Mutex.with_lock (Rc.get (ref arr[0])) (\\slot -> slot[0] ()) + other.length * 0\nrun 123456789",
+            "store_local_borrow_through_reference",
+            (6, 5),
+        ),
+        // e01 (the share went to a value whose drop reads the block)
+        (
+            "record CellReader { cell: Arc<Mutex<[unit -> i64]>> }\ninstance Drop<CellReader> {\n    fn drop r = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (Arc.get (ref r.cell)) (\\slot -> slot[0] ())))\n}\ndef put_into :: ref string -> own Arc<Mutex<[unit -> i64]>> -> unit\nfn put_into s a = Mutex.with_lock (Arc.get (ref a)) (\\c -> Array.write 0 (\\() -> String.length s) c)\ndef run :: i64 -> i64\nfn run n =\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let reader = CellReader { cell: Arc.share (ref a) }\n    let text0 = to_string n\n    put_into (ref text0) a\n    0\nrun 123456789",
+            "assignment_extends_borrow",
+            (9, 5),
+        ),
+    ] {
+        rejects_at(source, "E1013", kind, at);
+    }
+    for main in [
+        // e06_ctl
+        "def put_into :: ref string -> own Rc<Mutex<[unit -> i64]>> -> unit\nfn put_into s a = Mutex.with_lock (Rc.get (ref a)) (\\c -> Array.write 0 (\\() -> String.length s) c)\ndef put :: ref string -> ref mut [Rc<Mutex<[unit -> i64]>>..] -> unit\nfn put text slot =\n    let lr = Rc.new (Mutex.create [\\() -> 0])\n    Array.write 0 (Rc.share (ref lr)) slot\n    put_into text lr\ndef run :: i64 -> i64\nfn run n =\n    let text0 = to_string 123456789\n    let mut arr = [Rc.new (Mutex.create [\\() -> 0])]\n    put (ref text0) (ref mut arr)\n    let other = [to_string 777777, to_string 88888888, to_string 12345678]\n    Mutex.with_lock (Rc.get (ref arr[0])) (\\cell -> cell[0] ()) + other.length * 0 + n * 0\nrun 1",
+        // e01_ctl
+        "record CellReader { cell: Arc<Mutex<[unit -> i64]>> }\ninstance Drop<CellReader> {\n    fn drop r = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (Arc.get (ref r.cell)) (\\slot -> slot[0] ())))\n}\ndef put_into :: ref string -> own Arc<Mutex<[unit -> i64]>> -> unit\nfn put_into s a = Mutex.with_lock (Arc.get (ref a)) (\\c -> Array.write 0 (\\() -> String.length s) c)\ndef run :: i64 -> i64\nfn run n =\n    let text0 = to_string n\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let reader = CellReader { cell: Arc.share (ref a) }\n    put_into (ref text0) a\n    0\nrun 123456789",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
