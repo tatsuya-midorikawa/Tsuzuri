@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | [A24](A24-anonymous-unions.md)（done）, A06, A07 |
 | 後続 | – |
-| 状態 | done（2026-11-11。Phase 1 と Phase 2。末尾の「実装と検証」。A25 を取り込み、A24 ← A25 ← A26 の順に積んだ（「A25 との統合」。Copilot のレビューの第1回の後に「A25 の再取り込み」）） |
+| 状態 | done（2026-11-11。Phase 1 と Phase 2。末尾の「実装と検証」。A25 を取り込み、A24 ← A25 ← A26 の順に積んだ（「A25 との統合」。Copilot のレビューの第1回〜第3回の後に「A25 の再取り込み」）） |
 | 起票 | 2026-11-02（A24 と同時。HEAD `2f556480`） |
 | 承認 | `Ord` を正準順で持たせること（D2）と、`Decode` を JSON の種類が互いに素な場合に限ること（D5）は、2026-11-02 の利用者の回答「1~4 について承認します」で承認済み（GUIDE D-62 の決定 4・5）。ほかは既定案。Phase 2 は人間が求めた場合だけ着手する |
 | 手本にする既存実装 | タプル・配列・リストの構造的なインスタンス: `Classes::structural`（`src/polymorph.rs:2556`）、制約の展開 `normalize`（`2382-2401`）、型付き IR への下ろし（`5230`、`5311-5399`）、LLVM の `structural_display`（`src/llvm_display.rs:548`）・`display_quoted`（`601`）・`structural_hash`（`src/llvm_hash.rs:17`）・`structural_compare`（`src/llvm_compare.rs:69`）。union の導出の意味: `src/derive.rs`（`Build::union`、`817`） |
@@ -630,3 +630,12 @@ A24 と A25 が Copilot のレビューの第3回に対応したので、`feat/a
    - 新しい期待値: 174 のプログラムは誤りがありません。拡大されなければ `E1003` になるので、誤りがないことが拡大を示します。残りの 6 つ（ラムダの中の左の被演算子に `select` を置いた形、6 つの演算子）は、`E1005` の `cannot capture Channel<i64> in a reusable function` の 1 件です。`select` の腕 `recv _ from a` のチャネル `a` を、ラムダ（再利用できる関数値）が捕捉するためで、`Channel` は `Drop` を持つので捕捉できません（言語リファレンスの `lambda-expressions.md` の「捕捉」、`Capture` 制約）。A25 では、比較の `E1005` が先に出て、この誤りまで検査が進みませんでした。値の束縛（`v`・`w`・`u` のような `string` の要素を持つ共用体）を捕捉して本体で move するラムダは、捕捉で環境へ move され、関数値は呼び出しのたびに環境を複製するので、誤りになりません（同じページの「捕捉」）。
 
 この 3 件の変更は、A25 のテストの期待値を弱めるものではありません。A25 の期待値が「A26 まで」と断っていた部分を、A26 の規則（D1・D2）と既存の所有権・捕捉の規則で手で求めた期待値に替え、どれも誤りの種類・数・位置を確かめます。
+
+書き直した期待値はどれも手で求め、`comparisons_take_injected_and_widened_operands` の実行する部分は、否定した 3 つの `assert`（`0.25 <`、`!= v`、`5 !=`）がそれぞれ失敗することも確かめました（`target/scratch/a26/s5/cmp`）。ドキュメントも、取り込んだ規則に合わせて直しました: `anonymous-union.md` の「比較と順序」の「要素の少ない匿名共用体の値は、被演算子の位置では拡大しません」の項（「被演算子に書いた `if`・`match`・ブロックの枝は拡大するので、`v == (if c then w else 0)` は書けて」を、右の被演算子の枝は拡大しない（`E1003`）ことと、先に検査する被演算子の中の後の枝は前の枝の型へ拡大する（`(if c then v else w) == x`・`1 == (if c then v else w)`）ことに直した）と、`docs/language.md` の匿名共用体の節の「拡大・絞り込み（A25）と組み込みのインスタンス（A26）」の段落（同じ直し）です。どちらも A26 が最初の取り込みで書いた文で、A25 の拡大の項（取り込みで入った版）とは食い違わなくなりました。コードの変更は要りませんでした。
+
+検証（取り込みとテストの書き直しの後の木）:
+
+- T0: `cargo fmt --all -- --check` は差分なし、`node scripts/slot.mjs -- cargo clippy --all-targets -- -D warnings` は警告なし。`--test anonymous_unions` は 164 件がすべて passed です（記録は `target/scratch/a26/s5/test-after.log`）。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3177 件がすべて passed、4 skipped です（記録は `target/scratch/a26/s5/t1.txt`）。
+- E2E: `node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri anonymous_unions` は 178 件が通りました（native と WASM、`-O0` と `-O3`、記録は `target/scratch/a26/s5/suite.txt`）。取り込みはフィクスチャと `tests/features.mjs` を変えないので、件数は前の取り込みと同じです。
+- ドキュメント: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md` は 1 pages、37 links、21 checked examples、native の実行 40 回（`-O0`・`-O3`）で通りました（記録は `target/scratch/a26/s5/check-docs.txt`）。`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check` は 19 blocks、0 stale、`node scripts/check-cli-docs.mjs --bin target/debug/tsuzuri` は 4 checks、0 failed、`node scripts/check-guide-lite.mjs` は 88 references、0 failed、`node scripts/check-links.mjs` は 0 broken です（記録は `target/scratch/a26/s5/docs-checks.txt`）。
