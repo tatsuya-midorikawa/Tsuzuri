@@ -8,7 +8,7 @@
 - 要素の順序と入れ子は意味を持ちません。`(string | i64)` と `(i64 | string)` は同じ型で、`(i64 | (string | bool))` は `(i64 | string | bool)` です。
 - 期待される型が匿名共用体の位置では、要素の型の値がそのまま匿名共用体の値になります（注入）。構築用の関数はありません。
 - 取り出しは型テストのパターン `:? T`・`:? T as x` です。`match` の網羅性を検査し、足りなければ `E1021`（`missing: :? bool`）です。
-- 型変数・区別できない要素・重複した要素は `E1041`、借用を含む要素は `E1013`、33 個以上の要素は `E1017` です。
+- 型変数・区別できない要素・重複した要素は `E1041`、型に借用を書いた要素は `E1013`、33 個以上の要素は `E1017` です。借用を持つレコードは名前付きの共用体のペイロードと同じく要素にでき、その借用は借用検査が追います。
 - 比較・表示・ハッシュはまだありません（`==` や `$"{v}"` は `E1005`）。値は `match` で取り出して使います。
 - 名前付きの `union` と同じ表現で、native と WebAssembly で同じ結果です。新しいランタイム関数や import は使いません。
 
@@ -97,7 +97,7 @@ def width :: own Setting -> i64 = \setting ->
 - **リストのリテラル**はリストの要素、**タプル**は同じ長さのタプルの要素がちょうど 1 つなら、その型で検査します。
 - **`Dyn.of x`** は、`dyn` 型の要素がちょうど 1 つならその型で検査します。
 - **それ以外の式**は、期待される型なしで検査し、得た型で決めます。合いうる要素が 1 つなら包み、1 つもなければ `E1003`（kind `anonymous_union_not_member`、`expected (i64 | string), found bool; bool is not a member of the anonymous union`。help が要素を並べます）、2 つ以上なら `E1041`（kind `anonymous_union_ambiguous_member`。`(Maybe<i64> | Maybe<string>)` に `None` を渡したときなど）です。式の型が匿名共用体そのものなら包まず、同じ型であることを求めます。型の決まらない式（総称の関数の結果など）は、匿名共用体そのものになります。
-  - まだ決まっていない型は、どの型とも合いうるものとして数えます。関数の値の結果がまだ決まっていなければ、引数がさらに続く関数型の要素とも合いえます。`((string -> i64) | (string -> i64 -> i64))` に、結果の型が決まらないラムダ `\s -> later ()` を渡すと `E1041` です。引数や結果の型を注釈すれば決まります。
+  - まだ決まっていない型は、どの型とも合いうるものとして数えます。ただし、同じまだ決まっていない型が値の型の 2 か所以上に現れるときは、1 つの要素と比べる間、どこでも同じ型として数えます。`def pair :: unit -> (Maybe<'a> * Maybe<'a>)` の `pair ()` は、`((Maybe<i64> * Maybe<i64>) | (Maybe<i64> * Maybe<string>))` へは最初の要素になります（2 つ目の要素には `'a` が `i64` と `string` の両方でなければならないので合いません）。`((Maybe<i64> * Maybe<i64>) | (Maybe<string> * Maybe<string>))` へは両方の要素に合うので `E1041` です。関数の値の結果がまだ決まっていなければ、引数がさらに続く関数型の要素とも合いえます。`((string -> i64) | (string -> i64 -> i64))` に、結果の型が決まらないラムダ `\s -> later ()` を渡すと `E1041` です。引数や結果の型を注釈すれば決まります。
   - 関数の値は、関数型を注釈した位置と同じ調整を受けます。調整するのは値そのものの型だけで、値の中の型（タプルの要素、関数の結果など）は調整しません。純粋な関数の値は、純粋でない関数型の要素になります。結果が純粋な関数型の `i64 -> pure (i64 -> i64)` と、カリー化した `i64 -> i64 -> i64` は別の型なので、`((i64 -> pure (i64 -> i64)) | (i64 -> i64 -> i64))` へはそれぞれの型の値がそれぞれの要素になります。
   - edition 2027 では、どの要素にもそのままでは合わない関数の値を、借用する引数（`ref T`）と値で受け取る引数（`T`）の違いを埋めるアダプターを通して数え直します。`def len :: string -> i64` の型は `ref string -> i64` ですが、`((string -> i64) | i64)` へ渡せます（`let f: string -> i64 = len` と同じです）。そのまま合う要素があれば、それを選びます。
   - 値の中の接尾辞のない数のリテラルは、期待される型なしで検査した時点で整数か浮動小数点に決まっています。そのため、整数のリテラルは整数の要素にだけ、浮動小数点のリテラルは浮動小数点の要素にだけ合います。`(Maybe<i64> | Maybe<f64>)` に `Some 1.5` を渡すと `Maybe<f64>` の要素です。`let c: (f64 | string) = 1 + 2` と `let m: (Maybe<f64> | string) = Some 1` は `E1003`（`anonymous_union_not_member`）です（リテラルそのものを渡す `let v: (f64 | string) = 2` は、上の規則で `f64` になります）。`1.0 + 2.0` と書くか、`let c: f64 = 1 + 2` のように型を注釈した束縛を渡します。
@@ -210,10 +210,12 @@ total
 | `((i64 -> 'r) \| (i64 -> i64 -> i64))`（`'r` が `i64 -> i64` なら同じ型） | 同じ `E1041`。`i64 -> 'r and i64 -> i64 -> i64 may be the same type for some type arguments, ...` |
 | `((i64 -> i64) \| pure (i64 -> i64))`（純粋かどうかだけが違う） | 同じ `E1041`。`i64 -> i64 and pure (i64 -> i64) differ only in the purity of a function type, and purity does not pick a member, ...` |
 | `type Meters = f64` のときの `(Meters \| f64)` | `E1041`（kind `anonymous_union_duplicate_member`。`f64 appears more than once in the anonymous union (f64 \| f64)`） |
-| `(ref string \| i64)` | `E1013`（kind `anonymous_union_borrowed_member`、`an anonymous union holds owned values; ref string is borrowed`） |
+| `(ref string \| i64)`、`((ref i64 * i64) \| bool)`、`(Maybe<ref string> \| i64)`（要素の型に書いた借用） | `E1013`（kind `anonymous_union_borrowed_member`、`an anonymous union holds owned values; ref string is borrowed`）。`type OrMaybe<'a> = (Maybe<'a> \| i64)` の `OrMaybe<ref string>` も同じ |
 | 平坦化した後の要素が 33 個以上 | `E1017`（kind `anonymous_union_member_limit`） |
 
 `(Maybe<'a> | i64)` は書けます。頭の `Maybe` と `i64` で区別でき、型引数を置き換えても順序と区別は変わりません。`(Maybe<i64> | Maybe<string>)` も書けます。
+
+借用の規則は、名前付きの共用体のペイロードと同じです（[共用体](union.md)）。要素の型に書いた借用（`ref T`、`dyn C {r}`）は、タプル・配列・リストの中と共用体の型引数（`Maybe<ref string>`）の中でも `E1013` です。関数型の引数と結果の借用は値に格納されないので書けます（`((ref i64 -> i64) | bool)`）。レコードは中を見ないので、借用を持つレコード（`record View {r} { value: ref {r} string }` の `View`、`record Box<'a> { value: 'a }` の `Box<ref string>`）は要素にできます。総称の関数の型引数も、共有借用に具体化されます（`(Maybe<'a> | i64)` の `'a` が `ref string`）。どちらも匿名共用体の値がその借用を持ち、借用元より長く使えば、`Maybe<View>` と同じく `E1013` です。排他借用は、具体化した型の要素にも入れられません（`E1013`、kind `union_payload_exclusive_borrow`）。
 
 関数型の要素は、次の規則で比べます（引数の規約は比べません）。
 
@@ -303,7 +305,7 @@ def widen :: own (i64 | string) -> (i64 | string | bool) = \value ->
 - 匿名共用体 `(A | B)` は、宣言なしで「どれかの型」を表します。順序と入れ子は意味を持ちません。
 - 期待される型が匿名共用体の位置で、要素の型の値を包みます。リテラル・ラムダ・`Dyn.of` は形で要素を選び、曖昧なら `E1041` です。
 - `:? T as x` で取り出し、`match` が網羅性を検査します。
-- 型変数・重複・区別できない要素は `E1041`、借用は `E1013`、33 個以上は `E1017` です。
+- 型変数・重複・区別できない要素は `E1041`、型に書いた借用は `E1013`、33 個以上は `E1017` です。
 - 比較・表示・インスタンスはまだありません。ラベルに意味があるデータは名前付きの `union` で表します。
 
 ## 関連項目

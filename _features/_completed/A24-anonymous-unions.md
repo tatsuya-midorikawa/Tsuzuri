@@ -1241,3 +1241,56 @@ def font_size :: own (f64 | i64 | string) -> string = \size ->
 
 - 組の外（ほかの引数など）にも名前が現れ、色で区別できない鍵の等しい要素の組は、宣言の探索の選択肢のままです。そのような組どうしは、名前を共有しなくても選択が掛け合わさり、4,096 回の予算を超えると形が書いた順に依存します（上の `later/n13`）。1 つの形に決めるには、名前と出現の位置で互いに独立な選択を見分け、それぞれの最小を組み合わせる比較（名前の番号の桁が変わっても位置がずれない、名前を番号として比べる描画）が要ります。一般には要素の並べ替えのもとでのグラフの正準形と同じ問題で、どの方法でも最悪の場合は指数的です。対象は検査器が拒否する署名だけなので、予算の範囲の探索にとどめ、リファレンスにこの例外を書きました。第 3 回の残した制限の 1 つ目（探索は「宣言 1 つにつき」4,096 回）は、実装が探索ごとの上限だったので、今回の判断 11 で書いたとおりの意味になりました。
 - 予算の範囲でも、色で区別できない要素の多い組の探索は、描画ごとに候補の数の 2 乗の鍵を作ります。4 次元の立方体（32 要素）は予算を使い切り、1 組に約 10 秒かかります（dev ビルド、`regular2.py` の 20 組で 41 秒）。宣言 1 つの仕事は予算と宣言の大きさで抑えられますが、小さくはありません。
+
+### Copilot のレビューへの対応（第4回）
+
+2026-11-12。PR #102 への GitHub Copilot の 4 回目のインラインの指摘は 2 件です（`src/check.rs`・`src/anonymous_union.rs`）。2 件とも分岐のバイナリ（`ebde884f`）で再現しました（`target/scratch/a24/copilot4/p1`・`p2`・`leak`）。指摘 2 は実在し、直しました。指摘 1 は健全性の穴ではなく、チケットの規則（名前付きの union のペイロードと同じ述語）どおりの挙動です。ただし言語リファレンスなどが規則を実際より広く書いていたので文を改め、借用の追跡を固定するテストを足しました。
+
+#### 指摘と対応
+
+| 指摘 | 再現 | 対応 | 回帰テスト |
+| --- | --- | --- | --- |
+| 1. `src/check.rs:10507`: 正規化は `contains_reference()` で調べ、レコードのフィールドを見ないので、`record Stored { value: Maybe<ref i64> }` の `(i64 \| Stored)` が必要な `E1013` にならない。総称の具体化でも共有借用が入る。`Validation::check` で具体化した要素を `contains_stored_reference` で調べるべき | `(i64 \| Stored)` は受理（`p1/a1`〜`a3`・`a6`）。名前付きの `union U = A of Stored \| B` も同じく受理（`p1/a4`・`a5`。`check_union` も `contains_reference`）。借用を外へ持ち出す 18 通り（判断 1）はすべて `E1013 borrow_outlives_block` で、名前付きの対照と同じ。借用元が生きている間の使用は実行でき、`g5a`・`c3a`・`x3a` は 9（名前付きの `g5n` も 9）、`d4a` は 7 | 挙動は変えません（判断 1・2）。言語リファレンス・`docs/language.md`・`docs/architecture.md` の「借用を含む要素は `E1013`」を、実際の規則（要素の型に書いた借用。レコードと関数型の中は見ない。具体化で入る共有借用は借用検査が追う。排他借用は具体化の検査で拒否）に改めました | `members_that_hold_borrows_keep_their_loans`（受理 2、持ち出し 14、排他 2、型別名 1、実行 3） |
+| 2. `src/anonymous_union.rs:1167`: 未定の推論変数の 2 回目以降の出現を、互いに独立な何でも合う型として数える。`def pair :: unit -> (Maybe<'a> * Maybe<'a>)` の `pair ()` を `((Maybe<i64> * Maybe<i64>) \| (Maybe<i64> * Maybe<string>))` へ注入すると両方の要素を数えて `E1041` になるが、2 つ目の要素には同じ変数が `i64` と `string` の両方でなければならない | `which (pair ())` は `E1041: this value of type (Maybe<an undetermined type> * Maybe<an undetermined type>) could be (Maybe<i64> * Maybe<i64>) or (Maybe<i64> * Maybe<string>) in ...`。配列の要素とタプルの要素（`boxes ()`）、総称の関数の値（`same`）、タプルのリテラル（`(n, n)`）も同じ | 1 回の比較の中で、推論変数が最初に出会った型を覚え（`Ties`）、2 回目以降はその型と比べます。推論の状態には書きません（判断 3〜6） | `repeated_inference_variables_fit_one_member`（実行 8、拒否 4） |
+
+#### 判断
+
+1. **指摘 1 は健全性の穴ではありません。** 匿名共用体は合成した generic な union の具体化で（D2）、借用検査（`ownership.rs`・`regions.rs`）は匿名共用体を特別に扱いません（どちらも匿名共用体を判定する箇所を持たない）。union の値が持つ借用は `carries_loans` がペイロード（レコードのフィールドを含む）を辿って決めるので、`(i64 | Stored)` の値は `Maybe<Stored>` の値と同じ借用を持ちます。調整役の指示にある経路をすべて試しました（`target/scratch/a24/copilot4/leak`）: フィールドに借用を持つレコード（region なし `r1a`、あり `r2a`）、タプルの中のレコード（`r3a`）、名前付きの union の中のレコード（`r4a`）、型引数に参照を渡したレコード（`g2a`）、借用を捕捉した関数の要素（`c1a`）、借用した引数を捕捉したクロージャを返す関数の結果（`c2a`）、借用したレコードを読む関数の結果（`f1a`、region の関数 `x2a`）、総称の関数の型引数を共有借用で具体化した要素（`Maybe<Maybe<ref string>>` の `g4a`、`Box<Maybe<ref string>>` の `g7a`、`dyn Display {r}` の `d3a`）。持ち出しの 18 通り（名前付きの対照 `r1n`・`c1n`・`c2n`・`f1n`・`g4n`・`d3n` を含む）はすべて `E1013`（`borrow_outlives_block`）です。排他借用の具体化（`g8a`・`g8n`）は `Validation::check` の `union_payload_exclusive_borrow`、型別名の引数に書いた借用（`t1a`、`type OrMaybe<'a> = (Maybe<'a> | i64)` の `OrMaybe<ref string>`）は正規化の `anonymous_union_borrowed_member`、借用を持つ `dyn` を借用を持たない `dyn` の要素へ注入すること（`d5a`）は `E1003` です。
+2. **規則は変えません。** チケットの仕様（「型の正規化と要素の規則」の 3）は、要素の検査を「名前付きの union のペイロードと同じ述語」の `Type::contains_reference` と定めています（Copilot の言う「必要な `E1013`」は仕様にありません）。`check_union` も同じ述語で、`union U = A of Stored | B` を受理し、型引数としての共有借用（`Maybe<ref i64>`）を持てます。`Validation::check` は具体化したペイロードの排他借用だけを拒否します。Copilot の案（`Validation::check` で `contains_stored_reference`）は、名前付きの union なら通る安全なプログラム（`g5n` と同じ形の `g5a`）を匿名共用体でだけ、それも具体化の後に拒否し、総称の関数が型引数によって失敗するようにします。D2 の「型の性質は名前付きの union の既存の規則がそのまま決める」にも反します。健全性の穴がないので、規則を厳しくする理由がなく、名前付きの union と同じ規則のままとしました。直したのは、規則を実際より広く書いていた文書です（リファレンスの「借用を含む要素は `E1013`」は、借用を持つレコードも拒否するように読めた）。
+3. **推論変数の一貫性（指摘 2、`Ties`）。** `member_fits` と `literal_fits` は、1 つの要素との比較の中で、未定の推論変数が最初に出会った型を `Ties` に覚え、変数に出会うたびに覚えた型を辿って（`tied_head`）比べます（`member_fits_tied`・`literal_fits_tied`。edition 2027 の借用する引数のアダプター（`Fit::Borrowed`）が引数の `ref` を見る所も覚えた型を辿る。辿らなければ、覚えた参照を見落として数えが減りうる）。単一化が変数をその型に解くのと同じ対応で、推論の状態（`Inference`）には書かないので、比較の後に何も残りません。要素ごとの比較は空の `Ties` から始め、`literal_fits` が配列のリテラルを固定長配列として読み直すときは、最初の読みで覚えた分を戻します（`mark`・`undo`）。`literal_fits` も同じ `Ties` を受け渡すので、タプルのリテラルの要素（`(n, n)`）も一貫して数え、「`literal_fits` は `may_member` の数える要素をすべて数える」性質（`conform_union` の `literal.len() > candidates.len()` の前提）が保たれます。`literal_fits` の要素ごとの比較に空の `Ties` を渡した版（`target/scratch/a24/copilot4/tsuzuri-untied`）では、`(n, n)` は `may_member` が 1、`literal_fits` が 2 で、`this value, which holds an array literal, could be (Maybe<i64> * Maybe<i64>) or (Maybe<i64> * Maybe<string>) in ...` という偽の `E1041` になりました。
+4. **数えすぎる側に倒す（DECISIONS 2026-11-11 の「曖昧さを黙って選ばない」）。** 覚えるのは、単一化がその変数を必ずその型に解く対応だけです。そのため `Ties` によって「合わない」となる要素は、単一化でも必ず失敗し、数え方は単一化が受け入れる要素を落としません（曖昧さが黙った選択になることはない）。単一化が変数を解かない相手（排他スライスの対象 `ArrayView`。`unify` はこの組を何もせずに通す）、変数自身を含む型（`unify` は infinite type として拒否する）、`Application`・`Partial`・`Error` との比較では何も覚えず、変数は以後もどの型とも合いうるものとして数えます。未定の変数どうしが出会えば、数のリテラルの変数を根に残し（`literal_takes` の制約が後でも効く）、もう一方をそれに結びます。制約の違う 2 つの数のリテラルの変数が出会えば、結んだ側の制約は以後見ません（数えすぎるだけです）。
+5. **診断の変化。** 以前は 2 つ以上の要素に数えた値のうち、どの要素にも一貫しては合わないもの（`((Maybe<i64> * Maybe<string>) | (Maybe<string> * Maybe<i64>))` への `pair ()`、`((i64 -> string) | (string -> i64))` への `same`）は、`E1041`（`anonymous_union_ambiguous_member`）から `E1003`（`anonymous_union_not_member`）になります。型テストも `agrees` で同じ比較をするので、要素が推論変数を含む `mk ()`（`((Maybe<?a> * Maybe<?a>) | i64)`）に `:? (Maybe<i64> * Maybe<string>)` を書くと、単一化の `E1003 expected Maybe<string>, found Maybe<i64>` ではなく `E1041`（`type_test_not_member`）です（第 2 回の指摘 7 の「要素でない型はすべて `type_test_not_member`」と同じ）。どれも拒否から拒否への変化です。両方の要素に一貫して合う値（`((Maybe<i64> * Maybe<i64>) | (Maybe<string> * Maybe<string>))` への `pair ()`）は以前どおり `E1041` です。
+6. **D5 との関係。** D5 の「推論変数はどの型とも合いうる」は、1 回の比較の中で変数が最初に型に出会うまでのことになります。D5 の理由（単一化を試して巻き戻す仕組みが `Inference` にない）は変わらず、`Ties` は `Inference` に触れない、比較だけの対応表です。匿名共用体を使わないプログラムはこの比較に入りません（注入の入口は `names.anonymous_unions` が空なら何もしない）。
+
+#### 検証
+
+- 直す前のコードで失敗すること: 新しいテスト 2 件を足し、`src/anonymous_union.rs` だけを `ebde884f` に戻した状態で実行しました（`target/scratch/a24/copilot4/prefix-tests.txt`）。`repeated_inference_variables_fit_one_member` は最初の `which (pair ())` で `E1041: this value of type (Maybe<an undetermined type> * Maybe<an undetermined type>) could be (Maybe<i64> * Maybe<i64>) or (Maybe<i64> * Maybe<string>) in ...` を出して失敗しました。`members_that_hold_borrows_keep_their_loans` は通りました。指摘 1 は挙動を変えないので、直す前も後も通るテストで、持ち出しの拒否と、具体化した借用を読む実行を固定します（`dyn` の 2 通りはこの実行の後に足し、2 つのバイナリで同じ `E1013` になることを CLI で確かめました）。
+- 部分ごとの比較（`ebde884f` のバイナリ `tsuzuri-before` と直した後の `tsuzuri-after`、`target/scratch/a24/copilot4/p2`）:
+
+  | ソース | 直す前 | 直した後 |
+  | --- | --- | --- |
+  | `which (pair ())`、注釈した束縛、パイプ | `E1041`（`anonymous_union_ambiguous_member`） | 1 |
+  | `kind (boxes ())` | `E1041` | 1 |
+  | `call same` | `E1041`（`this value of type an undetermined type -> an undetermined type could be ...`） | 41 |
+  | `let n = none ()` の後の `which (n, n)` | `E1041` | 1 |
+  | `which (Some 1, Some "x")`、`mk ()` の型テスト（対照） | 2、10 | 2、10 |
+  | `((Maybe<i64> * Maybe<i64>) \| (Maybe<string> * Maybe<string>))` への `pair ()` | `E1041` | `E1041`（変わらない） |
+  | `((Maybe<i64> * Maybe<string>) \| (Maybe<string> * Maybe<i64>))` への `pair ()`、`((i64 -> string) \| (string -> i64))` への `same` | `E1041` | `E1003`（`anonymous_union_not_member`） |
+  | `mk ()` への `:? (Maybe<i64> * Maybe<string>)` | `E1003 expected Maybe<string>, found Maybe<i64>` | `E1041`（`type_test_not_member`） |
+
+  値の期待値は手で求めました: 2 つ目の要素は同じ変数に `i64` と `string` を求めるので最初の要素（1）、`(Some 1, Some "x")` は 2 つ目の要素だけに合う（2）、`same` は `i64 -> i64` の要素だけなので `same 41`（41）、`mk ()` は `i64` の要素の 0 なので 0 + 10。指摘 1 の再現の 52 のソース（`p1`・`leak`・`doc`。持ち出し、実行、型別名、排他借用、文書の文の確かめ）は、2 つのバイナリの `run` の出力が 1 byte も違いません。`"123456789"` は 9 文字です。
+- `literal_fits` に `Ties` を渡すことの確かめ: 要素ごとの比較に空の `Ties` を渡した一時的な版（`tsuzuri-untied`）では、`which (n, n)` が `E1041: this value, which holds an array literal, could be (Maybe<i64> * Maybe<i64>) or (Maybe<i64> * Maybe<string>) in ...` になりました（判断 3）。
+- 匿名共用体を使わないプログラムの出力: `tests/fixtures` と `examples` の全単位の IR（native と wasm32）・`check --json`・`doc`・`kg build`・`api-diff`（既定と `--effective`）を、`ebde884f` のバイナリと直した後のバイナリで取り直して比べました（`target/scratch/a24/baseline.sh`・`compare.sh`、`target/scratch/a24/copilot4/base-before`・`base-after`）。186 単位の 9,391 個のファイル（`tests/fixtures/anonymous_unions` を含む）が 1 byte も違いません（`compare.sh` は終了コード 0、差分の行なし）。変えた比較は注入と型テストの入口からしか呼ばれず、その入口は匿名共用体を使わないプログラムでは何もしません。
+- T0: `cargo fmt --all -- --check`（差分なし）、`cargo clippy --all-targets --locked -- -D warnings`（警告なし）。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3102 件のうち 3102 passed、4 skipped です（`target/scratch/a24/copilot4/t1.txt`）。第 3 回の検証者の指摘への対応の後の 3100 件から増えた 2 件は、上の表の新しいテストです（`tests/anonymous_unions.rs` は 89 件）。既存のテストの期待は変えていません。
+- `features.mjs anonymous_unions`（dev バイナリ）: 37 件で、native と WASM の `-O0`／`-O3` がすべて通りました（`target/scratch/a24/copilot4/features.txt`）。
+- 文書: `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs` を変更した 2 ページ（`anonymous-union.md`・`type-inference.md`）に（23 links、14 examples、native の 26 回の実行）、`node scripts/check-links.mjs`（0 broken）、`--into docs/architecture.md`（17 links、0 broken）、`--into docs/language.md`（324 links、0 broken）、`node scripts/gen-docs.mjs --check`（19 blocks、0 stale）、`node scripts/check-cli-docs.mjs`（4 checks、0 failed）、`node scripts/check-guide-lite.mjs`（88 references、0 failed）。文の中の規則（共用体の型引数の借用は拒否、レコードの型引数の借用と関数型の引数の借用は受理、`dyn C {r}` と配列の中の借用は拒否）は `target/scratch/a24/copilot4/doc` の 7 つのソースで、名前付きの union の同じ形と比べて確かめました。
+
+#### 変更したファイル
+
+`src/anonymous_union.rs`（`Ties`、`member_fits_tied`・`literal_fits_tied`・`tied_head`・`tie`・`tied_mentions`。`member_fits` と `literal_fits` は空の `Ties` で始める入口になり、`Fit::Borrowed` の引数の比較も `tied_head` を使う）、`tests/anonymous_unions.rs`（2 件）、言語リファレンスの `built-in-types-and-modules/anonymous-union.md`（要点、注入の「まだ決まっていない型」、要素の規則の表と借用の規則の段落、まとめ）・`types-and-type-inference/type-inference.md`（注入の「それ以外の式」）、`docs/language.md`（匿名共用体の型の解決と注入）、`docs/architecture.md`（ファイルの表、「### 匿名共用体（A24）」の正規化と注入）、このチケット。診断の kind は増やしていません。
+
+#### 残した制限
+
+- 要素の借用の検査は、名前付きの union のペイロードと同じく書いた型だけを見ます。借用を持つレコードを要素にでき、借用は借用検査が追います（`(i64 | Stored)` の値は `Maybe<Stored>` の値と同じ借用を持つ）。名前付きの union の `A of Stored` と同じ規則で、匿名共用体だけを厳しくすることはしていません（判断 2）。
+- `Ties` は単一化が必ず行う対応だけを覚えます。`Application`・`Partial` と推論変数でない型を比べた部分は中を辿らないので、その中の変数は何にも結ばれず、排他スライスの対象や変数自身を含む型と出会った変数も結びません。どれも以後はどの型とも合いうるものとして数えます（推論変数が `Application` そのものと出会えば、`unify` と同じくそれに結びます）。制約の違う数のリテラルの変数どうしが出会えば、片方の制約は以後見ません。どれも数えすぎる側（曖昧さの `E1041`）で、黙って要素を選ぶことはありません。

@@ -899,18 +899,25 @@ impl Checker<'_> {
     /// type has a dynamic one. `fit` is how much the value itself is adapted (see `Fit`).
     ///
     /// The answer holds for every member that `member_fits` answers for, and for no other member unless
-    /// the value holds an array literal.
+    /// the value holds an array literal. An inference variable stands for one type in the whole
+    /// comparison, as it does in `member_fits` (`Ties`).
     fn literal_fits(&self, value: &TypedExpr, member: &Type, fit: Fit) -> bool {
-        let found = self.inference.head(&value.ty);
-        let member = self.inference.head(member);
+        self.literal_fits_tied(value, member, fit, &Ties::default())
+    }
+
+    /// `literal_fits` inside one comparison, whose inference variables keep the types that `ties`
+    /// gives them.
+    fn literal_fits_tied(&self, value: &TypedExpr, member: &Type, fit: Fit, ties: &Ties) -> bool {
+        let found = self.tied_head(&value.ty, ties);
+        let member = self.tied_head(member, ties);
         let all = |elements: &[TypedExpr], element: &Type| {
             elements
                 .iter()
-                .all(|value| self.literal_fits(value, element, Fit::Same))
+                .all(|value| self.literal_fits_tied(value, element, Fit::Same, ties))
         };
-        match (&value.kind, found, member) {
+        match (&value.kind, found.as_ref(), member.as_ref()) {
             (TypedExprKind::Array(elements), Type::Array(_), Type::FixedArray(element, _)) => {
-                self.takes_array_literal(member, elements.len()) && all(elements, element)
+                self.takes_array_literal(member.as_ref(), elements.len()) && all(elements, element)
             }
             (TypedExprKind::Array(elements), Type::Array(_), Type::Array(element)) => {
                 all(elements, element)
@@ -921,11 +928,16 @@ impl Checker<'_> {
                 elements
                     .iter()
                     .zip(others)
-                    .all(|(value, other)| self.literal_fits(value, other, Fit::Same))
+                    .all(|(value, other)| self.literal_fits_tied(value, other, Fit::Same, ties))
             }
-            _ => {
-                self.member_fits(found, member, fit, false)
-                    || (self.member_fits(found, member, fit, true) && holds_array_literal(value))
+            (_, found, member) => {
+                // The second reading starts from the ties made before the first one.
+                let mark = ties.mark();
+                self.member_fits_tied(found, member, fit, false, ties) || {
+                    ties.undo(mark);
+                    self.member_fits_tied(found, member, fit, true, ties)
+                        && holds_array_literal(value)
+                }
             }
         }
     }
@@ -1139,16 +1151,37 @@ impl Checker<'_> {
     /// With `literal`, a dynamic array of `found` may also be a fixed-length array of `member`,
     /// as an array literal is.
     ///
+    /// An inference variable stands for one type in the whole comparison, as unification makes it:
+    /// `(Maybe<?a> * Maybe<?a>)` may be `(Maybe<i64> * Maybe<i64>)` but not
+    /// `(Maybe<i64> * Maybe<string>)`. The comparison records what each variable has met (`Ties`)
+    /// and leaves the inference state as it was.
+    ///
     /// For a member without inference variables the answer is what unification answers once the
     /// value is adapted, up to class constraints: it misses no member that an annotation with
     /// that member accepts for a value checked by itself, and it adds none.
     fn member_fits(&self, found: &Type, member: &Type, fit: Fit, literal: bool) -> bool {
-        let found = self.inference.head(found);
-        let member = self.inference.head(member);
+        self.member_fits_tied(found, member, fit, literal, &Ties::default())
+    }
+
+    /// `member_fits` inside one comparison, whose inference variables keep the types that `ties`
+    /// gives them.
+    fn member_fits_tied(
+        &self,
+        found: &Type,
+        member: &Type,
+        fit: Fit,
+        literal: bool,
+        ties: &Ties,
+    ) -> bool {
+        let found = self.tied_head(found, ties);
+        let member = self.tied_head(member, ties);
+        let (found, member) = (found.as_ref(), member.as_ref());
         if found == member {
             return true;
         }
-        let same = |left: &Type, right: &Type| self.member_fits(left, right, Fit::Same, literal);
+        let same = |left: &Type, right: &Type| {
+            self.member_fits_tied(left, right, Fit::Same, literal, ties)
+        };
         let all = |left: &[Type], right: &[Type]| {
             left.len() == right.len()
                 && left
@@ -1164,7 +1197,13 @@ impl Checker<'_> {
                 } else {
                     member
                 };
-                !self.inference.is_numeric_literal(variable) || self.literal_takes(variable, other)
+                if self.inference.is_numeric_literal(variable)
+                    && !self.literal_takes(variable, other)
+                {
+                    return false;
+                }
+                self.tie(variable, other, ties);
+                true
             }
             (Type::Application(..) | Type::Partial(_), _)
             | (_, Type::Application(..) | Type::Partial(_)) => true,
@@ -1196,7 +1235,10 @@ impl Checker<'_> {
                 let borrowed = fit == Fit::Borrowed && parameters.len() == others.len();
                 let parameter = |left: &Type, right: &Type| {
                     if borrowed {
-                        match (self.inference.head(left), self.inference.head(right)) {
+                        match (
+                            self.tied_head(left, ties).as_ref(),
+                            self.tied_head(right, ties).as_ref(),
+                        ) {
                             (Type::Reference(inner, false), other)
                                 if !matches!(other, Type::Reference(..)) =>
                             {
@@ -1242,6 +1284,95 @@ impl Checker<'_> {
                 kind == other_kind && same(value, other)
             }
             _ => false,
+        }
+    }
+
+    /// `ty` with the solved inference variables at its top followed, then the variables that the
+    /// comparison has tied to a type (`ties`), and so on until neither applies.
+    fn tied_head<'t>(&'t self, ty: &'t Type, ties: &Ties) -> std::borrow::Cow<'t, Type> {
+        let mut ty = std::borrow::Cow::Borrowed(self.inference.head(ty));
+        while let Type::Infer(id) = ty.as_ref() {
+            let Some(tied) = ties.get(*id) else {
+                break;
+            };
+            ty = std::borrow::Cow::Owned(self.inference.head(&tied).clone());
+        }
+        ty
+    }
+
+    /// Ties the open inference variable `variable` to `other` for the rest of one comparison, as
+    /// unification would solve it. Of two open variables, the open type of a number literal stays
+    /// the one that is not tied, so that its classes still decide what it meets later. Where
+    /// unification would not solve the variable (against the target of an exclusive slice, which
+    /// it leaves open, or a type that holds the variable, which it rejects), nothing is tied: the
+    /// variable may still be anything, which only counts more members.
+    fn tie(&self, variable: &Type, other: &Type, ties: &Ties) {
+        let (variable, other) = match other {
+            Type::Infer(_)
+                if self.inference.is_numeric_literal(variable)
+                    && !self.inference.is_numeric_literal(other) =>
+            {
+                (other, variable)
+            }
+            _ => (variable, other),
+        };
+        let Type::Infer(id) = variable else {
+            unreachable!("only an open inference variable is tied")
+        };
+        if matches!(other, Type::ArrayView(_)) || self.tied_mentions(other, *id, ties) {
+            return;
+        }
+        ties.tie(*id, other.clone());
+    }
+
+    /// Whether the open inference variable `root` occurs in `ty` once the solved and the tied
+    /// variables in it are followed.
+    fn tied_mentions(&self, ty: &Type, root: usize, ties: &Ties) -> bool {
+        let mut mentions = false;
+        polymorph::map_type(ty, &mut |leaf| {
+            if !mentions && matches!(leaf, Type::Infer(_)) {
+                mentions = match self.tied_head(leaf, ties).as_ref() {
+                    Type::Infer(id) => *id == root,
+                    solved => self.tied_mentions(solved, root, ties),
+                };
+            }
+            leaf.clone()
+        });
+        mentions
+    }
+}
+
+/// The inference variables that one comparison of `Checker::member_fits_tied` has tied to a type:
+/// the type that each first met. A variable that occurs again must be the same type there, as
+/// unification makes it. The ties belong to the comparison of one member with one value and never
+/// reach the inference state: `member_fits` and `literal_fits` start each comparison without any,
+/// and a reading that fails is undone (`mark` and `undo`).
+#[derive(Default)]
+struct Ties {
+    types: std::cell::RefCell<BTreeMap<usize, Type>>,
+    /// The variables in the order that they were tied, to undo the ties after a mark.
+    order: std::cell::RefCell<Vec<usize>>,
+}
+
+impl Ties {
+    fn get(&self, id: usize) -> Option<Type> {
+        self.types.borrow().get(&id).cloned()
+    }
+
+    fn tie(&self, id: usize, ty: Type) {
+        self.types.borrow_mut().insert(id, ty);
+        self.order.borrow_mut().push(id);
+    }
+
+    fn mark(&self) -> usize {
+        self.order.borrow().len()
+    }
+
+    fn undo(&self, mark: usize) {
+        let mut order = self.order.borrow_mut();
+        let mut types = self.types.borrow_mut();
+        for id in order.drain(mark..) {
+            types.remove(&id);
         }
     }
 }
