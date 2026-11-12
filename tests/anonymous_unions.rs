@@ -1651,6 +1651,52 @@ fn type_test_in_lambda_parameter_traps_at_run_time() {
     );
 }
 
+/// Copilot review round 5: the name after `as` in a type test always binds the whole member, as
+/// the name after `as` of any other pattern does. A union case or an active recognizer of that name
+/// in scope does not turn it into a pattern of the member's value, in a `match`, a function guard,
+/// a lambda parameter, a `for`, nested patterns and both sides of an OR pattern.
+#[test]
+fn type_test_binder_always_binds() {
+    passes(
+        "union Color = Red | Green\n\
+         def (|Even|_|) :: i64 -> bool = \\value -> value % 2 == 0\n\
+         def (|Small|Large|) :: i64 -> 'T = \\value -> if value < 10 then Small else Large\n\
+         \n\
+         def inner :: own (i64 | Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? Maybe<i64> as None -> (match None with | Some n -> n | None -> -1)\n    | :? i64 as n -> n\n\n\
+         def guarded :: own (i64 | Maybe<i64>) -> i64 = \\v ->\n    | :? Maybe<i64> as Some -> (match Some with | Some n -> n * 2 | None -> -2)\n    | :? i64 as Red -> Red + 1\n\n\
+         def recognized :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as Even -> Even\n    | :? string as Small -> String.length Small\n\n\
+         def nested :: own (Maybe<(i64 | string)> * bool) -> i64 = \\v ->\n    match v with\n    | (Some (:? i64 as None), true) | (Some (:? i64 as None), false) -> None\n    | (Some (:? string as Large), _) -> String.length Large + 100\n    | (None, _) -> 0\n\n\
+         test \"binders\" =\n    \
+             assert (inner (Some 5) == 5)\n    \
+             assert (inner None == -1)\n    \
+             assert (inner 7 == 7)\n    \
+             assert (guarded (Some 4) == 8)\n    \
+             assert (guarded None == -2)\n    \
+             assert (guarded 9 == 10)\n    \
+             assert (recognized 3 + recognized 4 + recognized \"abc\" == 10)\n    \
+             let six: Maybe<(i64 | string)> = Some 6\n    \
+             let seven: Maybe<(i64 | string)> = Some 7\n    \
+             let text: Maybe<(i64 | string)> = Some \"ab\"\n    \
+             let none: Maybe<(i64 | string)> = None\n    \
+             assert (nested (six, true) + nested (seven, false) + nested (text, true) + nested (none, false) == 115)\n    \
+             let pick: (i64 | string) -> i64 = \\(:? i64 as Even) -> Even\n    \
+             assert (pick 6 == 6)\n    \
+             let xs: [(i64 | string)] = [1, 2, 39]\n    \
+             let mut total = 0\n    \
+             for (:? i64 as Large) in xs do\n        \
+                 total = total + Large\n    \
+             assert (total == 42)\n",
+        Edition::E2026,
+    );
+    // The binder has the member's type: `None` here is a `Maybe<i64>`, not the case.
+    let error = rejects(
+        "def f :: own (i64 | Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? Maybe<i64> as None -> None\n    | :? i64 as n -> n\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected i64, found Maybe<i64>");
+}
+
 #[test]
 fn read_parameter_type_test_moves_need_own() {
     let describe = "def describe :: (i64 | string | bool) -> string = \\value ->\n    match value with\n    | :? i64 as n -> $\"int {n}\"\n    | :? string as s -> s\n    | :? bool as b -> if b then \"yes\" else \"no\"\n";
@@ -1805,6 +1851,120 @@ fn missing_member_fix_is_written() {
     )
     .unwrap_err();
     assert!(error.fixes.is_empty());
+}
+
+/// The `E1021` of the module `index` of `sources`, whose message names `witness`, and that module's
+/// source with the edits of its first fix.
+fn fixed_in(sources: &[(&str, &str)], index: usize, witness: &str) -> String {
+    let error = rejects_modules(sources, "E1021", "non_exhaustive_match");
+    assert_eq!(
+        error.message,
+        format!("match is not exhaustive; missing: {witness}"),
+        "{sources:?}"
+    );
+    assert_eq!(error.fixes.len(), 1, "{sources:?}");
+    let edits: Vec<&Edit> = error.fixes[0].edits.iter().collect();
+    apply_edits(sources[index].1, &edits).unwrap()
+}
+
+/// Copilot review round 5: the witness and the arm of the fix write each declaration as the match's
+/// module names it: as `Type::display` writes it when that names the declaration there, by its
+/// full name otherwise (a std type that the module hides, in type arguments and in anonymous unions
+/// inside members too), and the fix compiles as written. A declaration that no name in sight names
+/// gets no arm.
+#[test]
+fn missing_member_names_types_as_the_match_does() {
+    let check = |sources: &[(&str, &str)], witness: &str| {
+        let main = sources.len() - 1;
+        let fixed_source = fixed_in(sources, main, witness);
+        assert_eq!(
+            fixed_source,
+            sources[main]
+                .1
+                .replace("-> n\n", &format!("-> n | {witness} -> unreachable ()\n"))
+        );
+        let mut fixed_sources = sources.to_vec();
+        fixed_sources[main].1 = &fixed_source;
+        accepts_modules(&fixed_sources);
+    };
+    let arm = "    match v with\n    | :? i64 as n -> n\n";
+    // A union and a type alias of the module hide the std `Maybe`.
+    for hiding in [
+        "union Maybe = Nothing\n",
+        "type Maybe<'a> = Result<'a, string>\n",
+    ] {
+        check(
+            &[(
+                "Main",
+                &format!("{hiding}def f :: own (i64 | std::Maybe<i64>) -> i64 = \\v ->\n{arm}"),
+            )],
+            ":? std::Maybe<i64>",
+        );
+    }
+    // Type arguments, and an anonymous union inside a member, name their declarations the same way.
+    check(
+        &[(
+            "Main",
+            &format!(
+                "union Maybe = Nothing\ndef f :: own (i64 | Result<std::Maybe<(std::Maybe<i64> | string)>, string>) -> i64 = \\v ->\n{arm}"
+            ),
+        )],
+        ":? Result<std::Maybe<(string | std::Maybe<i64>)>, string>",
+    );
+    // `Type::display` names the module's own types, and a type of another module even when that
+    // module, another one or the module itself declares the same name: the text stays.
+    check(
+        &[(
+            "Main",
+            &format!(
+                "record Point {{ x: i64 }}\nunion Color = Red | Green\ndef f :: own (i64 | Maybe<(Point * Color)>) -> i64 = \\v ->\n{arm}"
+            ),
+        )],
+        ":? Maybe<(Main.Point * Main.Color)>",
+    );
+    let shapes = ("Shapes", "union Shape = Dot | Line\n");
+    let main = format!("def f :: own (i64 | Shapes.Shape) -> i64 = \\v ->\n{arm}");
+    check(&[shapes, ("Main", &main)], ":? Shapes.Shape");
+    check(
+        &[shapes, ("Other", "union Shape = Square\n"), ("Main", &main)],
+        ":? Shapes.Shape",
+    );
+    check(
+        &[shapes, ("Main", &format!("union Shape = Here\n{main}"))],
+        ":? Shapes.Shape",
+    );
+    // The class of a `dyn` member that is named after its module reads `Plain`, which is
+    // ambiguous when another module declares a `Plain` too: its full name.
+    let plain = "class Plain<'a> { def plain :: ref 'a -> i64 }\n";
+    check(
+        &[
+            ("Plain", plain),
+            ("Other", plain),
+            (
+                "Main",
+                &format!("def f :: own (i64 | dyn Plain.Plain) -> i64 = \\v ->\n{arm}"),
+            ),
+        ],
+        ":? dyn Plain.Plain",
+    );
+    // The union named after its module `Shape` reads `Shape`, which the module's own `Shape`
+    // hides, and has no other name there: the witness keeps the text, and no arm is offered.
+    let error = rejects_modules(
+        &[
+            (
+                "Shape",
+                "union Shape = Dot | Line\ndef make :: i64 -> (i64 | Shape) = \\x -> if x > 0 then x else Dot\n",
+            ),
+            (
+                "Main",
+                "union Shape = Here\ndef f :: i64 -> i64 = \\x ->\n    match Shape.make x with\n    | :? i64 as n -> n\n",
+            ),
+        ],
+        "E1021",
+        "non_exhaustive_match",
+    );
+    assert_eq!(error.message, "match is not exhaustive; missing: :? Shape");
+    assert!(error.fixes.is_empty(), "{:?}", error.fixes);
 }
 
 #[test]
@@ -6115,6 +6275,148 @@ fn narrowing_is_exhaustive_as_or() {
         ),
         ":? i64",
     );
+}
+
+/// A24's Copilot review round 5, for narrowings: the name after `as` in `:? (A | B)` binds the
+/// whole narrowed value, as after the `as` of any pattern, also when a union case or an active
+/// recognizer of that name is in scope: in a `match`, a function guard, an arm with a guard, beside
+/// `as whole`, in both sides of an OR pattern, a lambda parameter, a `for`, and when the narrowed
+/// union has every member of the matched one. Each expectation follows the arms by hand: `size`
+/// gives `n` for an `i64` and `10 * n` (`-10` for `None`) for a `Maybe<i64>`, so a `None` that
+/// bound the case instead of the value would read `-10` for every member.
+#[test]
+fn narrowing_binder_always_binds() {
+    passes(
+        "union Color = Red | Green\n\
+         def (|Even|_|) :: i64 -> bool = \\value -> value % 2 == 0\n\
+         def (|Small|Large|) :: i64 -> 'T = \\value -> if value < 10 then Small else Large\n\
+         \n\
+         def size :: own (i64 | Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? Maybe<i64> as m -> (match m with | Some n -> n * 10 | None -> -10)\n\n\
+         def num :: (i64 | f64) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? f64 -> 1000\n\n\
+         def inner :: own (i64 | string | Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | Maybe<i64>) as None -> size None\n    | :? string as s -> String.length s\n\n\
+         def guarded :: own (i64 | string | Maybe<i64>) -> i64 = \\v ->\n    | :? (i64 | Maybe<i64>) as Some -> size Some + 1\n    | :? string as Red -> String.length Red\n\n\
+         def recognized :: own (i64 | f64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as Even -> (match Even with | :? i64 as n -> n | :? string as s -> String.length s)\n    | :? f64 as Small -> if Small > 1.0 then 100 else 200\n\n\
+         def whole :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (string | i64) as Large -> (match Large with | :? i64 as n -> n | :? string as s -> String.length s)\n\n\
+         def when_guard :: own (i64 | f64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as None when num None > 5 -> num None\n    | :? (i64 | f64) as Even -> num Even + 1\n    | :? string as Green -> String.length Green\n\n\
+         def with_whole :: own (i64 | f64 | string) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | f64) as Red) as whole -> num Red + (match whole with | :? string -> 0 | _ -> 10)\n    | :? string as s -> String.length s\n\n\
+         def tupled :: own ((i64 | f64 | string) * bool) -> i64 = \\p ->\n    match p with\n    | (:? (i64 | f64) as Some, true) | (:? (i64 | f64) as Some, false) -> num Some\n    | (:? string as s, _) -> String.length s\n\n\
+         test \"binders\" =\n    \
+             assert (inner (Some 5) == 50)\n    \
+             assert (inner 3 == 3)\n    \
+             assert (inner None == -10)\n    \
+             assert (inner \"abcd\" == 4)\n    \
+             assert (guarded (Some 5) == 51)\n    \
+             assert (guarded 3 == 4)\n    \
+             assert (guarded None == -9)\n    \
+             assert (guarded \"abcd\" == 4)\n    \
+             assert (recognized 3 + recognized 4 + recognized \"abc\" + recognized 1.5 == 110)\n    \
+             assert (whole 7 + whole \"xy\" == 9)\n    \
+             assert (when_guard 7 == 7)\n    \
+             assert (when_guard 2 == 3)\n    \
+             assert (when_guard 2.5 == 1000)\n    \
+             assert (when_guard \"abc\" == 3)\n    \
+             assert (with_whole 4 == 14)\n    \
+             assert (with_whole \"ab\" == 2)\n    \
+             assert (tupled (6, true) + tupled (7, false) + tupled (\"xyz\", true) == 16)\n    \
+             let pick: (i64 | string | f64) -> i64 = \\(:? (i64 | f64) as Even) -> num Even\n    \
+             assert (pick 6 == 6)\n    \
+             let xs: [(i64 | string | f64)] = [1, 2, 39]\n    \
+             let mut total = 0\n    \
+             for (:? (i64 | f64) as Large) in xs do\n        \
+                 total = total + num Large\n    \
+             assert (total == 42)\n",
+        Edition::E2026,
+    );
+    // The binder has the narrowed union's type: `None` here is an `(i64 | Maybe<i64>)`.
+    let error = rejects(
+        "def f :: own (i64 | string | Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | Maybe<i64>) as None -> None\n    | :? string -> 0\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected i64, found (i64 | Maybe<i64>)");
+}
+
+/// A24's Copilot review round 5, for narrowings: the members that `:? (A | B)` arms leave out are
+/// witnesses of their own, which name each declaration as the match's module does: by its full
+/// name where the module hides the name that `Type::display` writes (in type arguments, in an
+/// anonymous union inside a member and in a case payload too), and the fix compiles as written.
+/// A declaration that no name in sight names gets no arm. The fixed sources are written by hand.
+#[test]
+fn narrowing_witnesses_name_types_as_the_match_does() {
+    let check = |source: &str, witness: &str, fixed: &str| {
+        let fixed_source = fixed_in(&[("Main", source)], 0, witness);
+        assert_eq!(fixed_source, fixed);
+        accepts(&fixed_source);
+    };
+    let hidden = "union Maybe = Nothing\n";
+    check(
+        &format!(
+            "{hidden}def f :: own (i64 | string | std::Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 0\n"
+        ),
+        ":? std::Maybe<i64>",
+        &format!(
+            "{hidden}def f :: own (i64 | string | std::Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 0 | :? std::Maybe<i64> -> unreachable ()\n"
+        ),
+    );
+    // The narrowing names the hidden type by its full name; the witness is another member.
+    check(
+        &format!(
+            "{hidden}def f :: own (i64 | string | std::Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | std::Maybe<i64>) as x -> 0\n"
+        ),
+        ":? string",
+        &format!(
+            "{hidden}def f :: own (i64 | string | std::Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | std::Maybe<i64>) as x -> 0 | :? string -> unreachable ()\n"
+        ),
+    );
+    // An anonymous union inside the member left out, in its canonical order.
+    check(
+        &format!(
+            "{hidden}def f :: own (i64 | string | Result<(std::Maybe<i64> | string), string>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 0\n"
+        ),
+        ":? Result<(string | std::Maybe<i64>), string>",
+        &format!(
+            "{hidden}def f :: own (i64 | string | Result<(std::Maybe<i64> | string), string>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 0 | :? Result<(string | std::Maybe<i64>), string> -> unreachable ()\n"
+        ),
+    );
+    // A type alias hides the name too; the narrowing covers one of two `std::Maybe` members.
+    let alias = "type Maybe<'a> = Result<'a, string>\n";
+    check(
+        &format!(
+            "{alias}def f :: own (i64 | bool | std::Maybe<i64> | std::Maybe<string>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | std::Maybe<string>) as x -> 0\n    | :? bool -> 1\n"
+        ),
+        ":? std::Maybe<i64>",
+        &format!(
+            "{alias}def f :: own (i64 | bool | std::Maybe<i64> | std::Maybe<string>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | std::Maybe<string>) as x -> 0\n    | :? bool -> 1 | :? std::Maybe<i64> -> unreachable ()\n"
+        ),
+    );
+    // A narrowing in a case payload.
+    check(
+        &format!(
+            "{hidden}def f :: own std::Maybe<(i64 | string | std::Maybe<i64>)> -> i64 = \\v ->\n    match v with\n    | Some (:? (i64 | string) as x) -> 0\n    | None -> 1\n"
+        ),
+        "Some (:? std::Maybe<i64>)",
+        &format!(
+            "{hidden}def f :: own std::Maybe<(i64 | string | std::Maybe<i64>)> -> i64 = \\v ->\n    match v with\n    | Some (:? (i64 | string) as x) -> 0\n    | None -> 1 | Some (:? std::Maybe<i64>) -> unreachable ()\n"
+        ),
+    );
+    // The union named after its module `Shape` reads `Shape`, which the module's own `Shape`
+    // hides, and has no other name there: the witness keeps the text, and no arm is offered.
+    let error = rejects_modules(
+        &[
+            (
+                "Shape",
+                "union Shape = Dot | Line\ndef make :: i64 -> (i64 | string | Shape) = \\x -> if x > 0 then x else if x < 0 then \"negative\" else Dot\n",
+            ),
+            (
+                "Main",
+                "union Shape = Here\ndef f :: i64 -> i64 = \\x ->\n    match Shape.make x with\n    | :? (i64 | string) as n -> 0\n",
+            ),
+        ],
+        "E1021",
+        "non_exhaustive_match",
+    );
+    assert_eq!(error.message, "match is not exhaustive; missing: :? Shape");
+    assert!(error.fixes.is_empty(), "{:?}", error.fixes);
 }
 
 #[test]

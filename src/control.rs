@@ -1713,14 +1713,23 @@ impl Checker<'_> {
         let Some(case) = self.type_test_member(&ty, members, tested.span)? else {
             return Err(self.not_tested_member(&ty, &target, members, tested.span));
         };
-        // The payload: the binder, or a wildcard (a type test covers the whole member).
-        let payload = Pattern {
-            kind: match binder {
-                Some(name) if name.text != "_" => PatternKind::Binding(name.clone()),
-                _ => PatternKind::Wildcard,
-            },
-            span: binder.map_or(span, |name| name.span),
+        // The payload: a wildcard (a type test covers the whole member), which the binder names as
+        // `_ as x` does. The name always binds, as after the `as` of any pattern: a case or an
+        // active recognizer of that name does not make it a pattern (A24, Copilot review round 5).
+        // A narrowing binds its name directly, never as a pattern (`narrowing_pattern`).
+        let payload_span = binder.map_or(span, |name| name.span);
+        let wildcard = Pattern {
+            kind: PatternKind::Wildcard,
+            span: payload_span,
             depth,
+        };
+        let payload = match binder {
+            Some(name) if name.text != "_" => Pattern {
+                kind: PatternKind::As(Box::new(wildcard), name.clone()),
+                span: payload_span,
+                depth,
+            },
+            _ => wildcard,
         };
         self.union_case_pattern(span, union_id, case, Some(&payload), matched)
     }
