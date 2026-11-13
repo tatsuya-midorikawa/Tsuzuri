@@ -3699,6 +3699,246 @@ fn annotated_reference_parameters_passed_to_a_function_value_with_temporaries() 
 }
 
 #[test]
+fn annotated_reference_parameters_follow_the_kept_parts_of_in_place_writes() {
+    // A32 stacked on A31, sixth merge (A31's fix after the fifth merge, `StoreFacts::kept_paths`):
+    // a function that stores a borrow of a part of one reference parameter (`ref b.s`) in another
+    // (`a.h`'s Mutex) leaves the target with a borrow of that part only. Written with parameters
+    // annotated `ref PairOk`, it is checked as the named function with the same conventions
+    // (`convention_twin`) and A31's own `ref` signature (`twin`): the safe order (`p1` declared
+    // before `p2`, so `p2`'s drop reads `p1.s` while it lives) is accepted in every form, and the
+    // unsafe order fails with the twin's code and kind at the same expression. Before this merge
+    // every spelling of the safe order was rejected (`self_referential_store` at `p1`, or
+    // `assignment_extends_borrow` for the reference to one of two values), A31's own too.
+    const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}";
+    const LOOK: &str = "def look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1";
+    const PAIR_OK: &str = "record PairOk { h: Holder, s: string }\ndef mkpo :: unit -> PairOk\nfn mkpo _u = PairOk { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }";
+    const CROSS_BODY: &str =
+        "let t = ref b.s; Mutex.with_lock (ref a.h.cell) (\\c -> Array.write 0 (\\() -> look t) c)";
+    const CROSS_NAMED: &str = "def cross :: ref PairOk -> ref PairOk -> unit\nfn cross a b = { let t = ref b.s; Mutex.with_lock (ref a.h.cell) (\\c -> Array.write 0 (\\() -> look t) c) }";
+    let case = |prelude: &'static [&'static str],
+                body: &'static str,
+                run: &'static [&'static str]| LaterRule {
+        prelude,
+        explicit: "ref PairOk -> ref PairOk -> unit".to_string(),
+        conventions: "PairOk -> PairOk -> unit".to_string(),
+        plain: "a b",
+        annotated: "(a: ref PairOk) (b: ref PairOk)".to_string(),
+        body,
+        annotated_body: None,
+        run,
+    };
+    const CROSS: &[&str] = &[HOLDER, LOOK, PAIR_OK];
+    const RELAY: &[&str] = &[HOLDER, LOOK, PAIR_OK, CROSS_NAMED];
+    // (form, safe run, unsafe run): the target is called directly, through a pipeline, through a
+    // partial application, with an immutable reference variable, with a reference to one of two
+    // values, and as a wrapper that passes both parameters on to the named `cross`.
+    let forms: [(&str, LaterRule, LaterRule); 6] = [
+        (
+            "direct",
+            case(
+                CROSS,
+                CROSS_BODY,
+                &[
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "{ CALL (ref p2) (ref p1); n }",
+                ],
+            ),
+            case(
+                CROSS,
+                CROSS_BODY,
+                &[
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "{ CALL (ref p1) (ref p2); n }",
+                ],
+            ),
+        ),
+        (
+            "pipe",
+            case(
+                CROSS,
+                CROSS_BODY,
+                &[
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "{ ref p1 |> CALL (ref p2); n }",
+                ],
+            ),
+            case(
+                CROSS,
+                CROSS_BODY,
+                &[
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "{ ref p2 |> CALL (ref p1); n }",
+                ],
+            ),
+        ),
+        (
+            "partial",
+            case(
+                CROSS,
+                CROSS_BODY,
+                &[
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "let g = CALL (ref p2)",
+                    "{ g (ref p1); n }",
+                ],
+            ),
+            case(
+                CROSS,
+                CROSS_BODY,
+                &[
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "let g = CALL (ref p1)",
+                    "{ g (ref p2); n }",
+                ],
+            ),
+        ),
+        (
+            "variable",
+            case(
+                CROSS,
+                CROSS_BODY,
+                &[
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "let r = ref p1",
+                    "{ CALL (ref p2) r; n }",
+                ],
+            ),
+            case(
+                CROSS,
+                CROSS_BODY,
+                &[
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "let r = ref p2",
+                    "{ CALL (ref p1) r; n }",
+                ],
+            ),
+        ),
+        (
+            "one of two",
+            case(
+                CROSS,
+                CROSS_BODY,
+                &[
+                    "let p0 = mkpo ()",
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "{ CALL (ref p2) (if n > 0 then ref p1 else ref p0); n }",
+                ],
+            ),
+            case(
+                CROSS,
+                CROSS_BODY,
+                &[
+                    "let p0 = mkpo ()",
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "{ CALL (if n > 0 then ref p1 else ref p0) (ref p2); n }",
+                ],
+            ),
+        ),
+        (
+            "relay",
+            case(
+                RELAY,
+                "cross a b",
+                &[
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "{ CALL (ref p2) (ref p1); n }",
+                ],
+            ),
+            case(
+                RELAY,
+                "cross a b",
+                &[
+                    "let p1 = mkpo ()",
+                    "let p2 = mkpo ()",
+                    "{ CALL (ref p1) (ref p2); n }",
+                ],
+            ),
+        ),
+    ];
+    for (form, safe, unsafe_order) in &forms {
+        // A pipeline or a partial application of the function value that an `if` chose stands
+        // for the whole arguments (A31; A33 `fvpart`): the `if` spelling rejects their safe order,
+        // annotated or not, as `let chosen = cross` does.
+        let through_value = matches!(*form, "pipe" | "partial");
+        for source in [safe.convention_twin(), safe.twin(), safe.annotated_def()] {
+            check("2027", &source).unwrap_or_else(|error| panic!("{form}\n{source}\n{error:?}"));
+        }
+        let chosen = safe.annotated_branch();
+        let unannotated_choice = safe.source(
+            &format!(
+                "def target :: {} = \\{} -> {{ {} }}",
+                safe.conventions, safe.plain, safe.body
+            ),
+            Some("let chosen = if n < 0 then target else target"),
+            "chosen",
+        );
+        for source in [chosen, unannotated_choice] {
+            if through_value {
+                let error = check("2027", &source)
+                    .err()
+                    .unwrap_or_else(|| panic!("{form}: accepted:\n{source}"));
+                assert_eq!(
+                    (error.code, error.kind),
+                    ("E1013", Some("assignment_extends_borrow")),
+                    "{form}\n{source}\n{}",
+                    error.message
+                );
+            } else {
+                check("2027", &source)
+                    .unwrap_or_else(|error| panic!("{form}\n{source}\n{error:?}"));
+            }
+        }
+        let twin = unsafe_order.convention_twin();
+        let expected = check("2027", &twin)
+            .err()
+            .unwrap_or_else(|| panic!("{form}: accepted:\n{twin}"));
+        assert_eq!(
+            (expected.code, expected.kind),
+            ("E1013", Some("assignment_extends_borrow")),
+            "{form}\n{twin}\n{}",
+            expected.message
+        );
+        let at = &twin[expected.span.start..expected.span.end];
+        for source in [unsafe_order.twin(), unsafe_order.annotated_def()] {
+            let error = check("2027", &source)
+                .err()
+                .unwrap_or_else(|| panic!("{form}: accepted:\n{source}"));
+            assert_eq!(
+                (
+                    error.code,
+                    error.kind,
+                    &source[error.span.start..error.span.end]
+                ),
+                ("E1013", Some("assignment_extends_borrow"), at),
+                "{form}\n{source}\n{}",
+                error.message
+            );
+        }
+        let chosen = unsafe_order.annotated_branch();
+        let error = check("2027", &chosen)
+            .err()
+            .unwrap_or_else(|| panic!("{form}: accepted:\n{chosen}"));
+        assert_eq!(
+            (error.code, error.kind),
+            ("E1013", Some("assignment_extends_borrow")),
+            "{form}\n{chosen}\n{}",
+            error.message
+        );
+    }
+}
+
+#[test]
 fn documented_exceptions_of_annotated_reference_parameters() {
     // The language reference lists these forms as exceptions (review 2 of A32); each keeps the
     // diagnostic that it had before A32, and the documented alternative is accepted.
