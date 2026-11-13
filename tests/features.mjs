@@ -2053,6 +2053,147 @@ const suites = {
     const common = (n) => n >= 0n ? 3n * n + 1n : 2n * n;
     // The function member applied to 20, the string "wide" (times 1000), or the i64.
     const wide = (n) => n > 0n ? 20n * 2n + n : n === 0n ? length("wide") * 1000n : n;
+    // A26: the built-in instances. `key x` is the i64 x for an even x and the text `s{x}` for an odd one; a BigInt
+    // stands for the member i64 and a JavaScript string for the member string.
+    const key = (x) => x % 2n === 0n ? x : `s${x}`;
+    // Eq: the same member and equal payloads. Ord: the member first (i64 comes before string in the canonical order),
+    // then the payload; texts compare by UTF-16 code units, as `<` on JavaScript strings does.
+    const same = (a, b) => typeof a === typeof b && a === b;
+    const less = (a, b) => typeof a !== typeof b ? typeof a === "bigint" : a < b;
+    const lessEqual = (a, b) => less(a, b) || same(a, b);
+    const digit = (holds, place) => holds ? place : 0n;
+    const equal = (x) => {
+      const a = key(x);
+      // The f64 members: x / x is NaN for 0 (not equal to itself) and x * 0.0 is -0.0 for a negative x (equal to 0.0).
+      const ratio = Number(x) / Number(x);
+      const zero = Number(x) * 0;
+      return digit(same(a, key(x)), 1n) + digit(same(a, key(x + 2n)), 10n) + digit(same(a, key(x + 1n)), 100n)
+        + digit(!same(a, key(x + 1n)), 1000n) + digit(!same(a, key(x)), 10000n)
+        + digit(same(a, x), 100000n) + digit(same(a, "s1"), 1000000n)
+        + digit(ratio === ratio, 10000000n) + digit(zero === 0, 100000000n)
+        + digit(same(a, key(x)), 1000000000n);
+    };
+    const order = (x) => {
+      const a = key(x);
+      const next = key(x + 1n);
+      const after = key(x + 2n);
+      return digit(less(a, next), 1n) + digit(lessEqual(a, next), 10n) + digit(less(next, a), 100n) + digit(lessEqual(next, a), 1000n)
+        + digit(less(a, after), 10000n) + digit(lessEqual(after, a), 100000n)
+        + digit(lessEqual(a, key(x)), 1000000n) + digit(less(key(x), a), 10000000n)
+        + digit(less(a, "s10"), 100000000n) + digit(less(a, 10n), 1000000000n);
+    };
+    // Written by hand from the rules: 4 and "s5", 6; "s9" and 10, "s11" ("s9" is after "s11" and after "s10").
+    assert.equal(equal(4n), 1110101001n);
+    assert.equal(equal(1n), 1111001001n);
+    assert.equal(equal(0n), 1100101001n);
+    assert.equal(order(4n), 1101010011n);
+    assert.equal(order(9n), 1101100n);
+    const checksum = (text) => {
+      let hash = 7n;
+      for (let index = 0; index < text.length; index++) hash = (hash * 131n + BigInt(text.charCodeAt(index))) % 1000000007n;
+      return hash;
+    };
+    // The distinct keys of key (7 i mod n): every i64 in numeric order, then every text in the order of its code units
+    // (the default order of Array.prototype.sort), each shown without quotation marks and followed by ';'.
+    const sorted = (n) => {
+      const numbers = new Set();
+      const texts = new Set();
+      for (let index = 0n; index < n; index++) {
+        const value = key(index * 7n % n);
+        (typeof value === "bigint" ? numbers : texts).add(value);
+      }
+      const ordered = [...[...numbers].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), ...[...texts].sort()];
+      return checksum(ordered.map((value) => `${value};`).join("")) * 1000n + BigInt(ordered.length);
+    };
+    assert.equal(sorted(5n), checksum("0;2;4;s1;s3;") * 1000n + 5n);
+    assert.equal(sorted(14n), checksum("0;s7;") * 1000n + 2n);
+    // The keys key (i mod 10): how many are distinct (in the set and in the map), and how often key 0 and "s3" came.
+    const hashed = (n) => {
+      const counts = new Map();
+      for (let index = 0n; index < n; index++) {
+        const value = key(index % 10n);
+        counts.set(value, (counts.get(value) ?? 0n) + 1n);
+      }
+      return BigInt(counts.size) * 101n + (counts.get(0n) ?? 0n) * 10000n + (counts.get("s3") ?? 0n) * 1000000n;
+    };
+    // Of 0..24, three indices end in 0 (0, 10, 20) and three in 3 (3, 13, 23); all ten keys are present.
+    assert.equal(hashed(25n), 10n + 1000n + 3n * 10000n + 3n * 1000000n);
+    // Hash (docs/language.md, Canonical Stream): FNV-1a 64 from the offset; a word is 8 little-endian bytes. An i64 is
+    // the tag 0x13 and its 8 bytes; a string the tag 0x53, the number of code units, and 2 bytes for each unit; a union
+    // the tag 0x55, the position of the member in the canonical order, and the hash of the payload.
+    const bytesOf = (value, count) => Array.from({ length: count }, (_, index) => (BigInt.asUintN(64, value) >> BigInt(8 * index)) & 0xffn);
+    const absorb = (state, bytes) => bytes.reduce((hash, byte) => BigInt.asUintN(64, (hash ^ byte) * 1099511628211n), state);
+    const word = (state, value) => absorb(state, bytesOf(value, 8));
+    const offset = 14695981039346656037n;
+    const hashInteger = (value) => word(word(offset, 0x13n), value);
+    const hashText = (text) => {
+      let state = word(word(offset, 0x53n), BigInt(text.length));
+      for (let index = 0; index < text.length; index++) state = absorb(state, bytesOf(BigInt(text.charCodeAt(index)), 2));
+      return state;
+    };
+    const hashMember = (position, payload) => word(word(word(offset, 0x55n), position), payload);
+    const digest = (x) => {
+      const value = key(x);
+      return BigInt.asIntN(64, typeof value === "bigint" ? hashMember(0n, hashInteger(value)) : hashMember(1n, hashText(value)));
+    };
+    // The texts of `shown`: alone and in an interpolation a text has no quotation marks; inside a tuple, an array, a
+    // list, a derived record and a derived union it has.
+    const quoted = (value) => typeof value === "bigint" ? `${value}` : `"${value}"`;
+    const shownText = (x) => {
+      const a = key(x);
+      const b = key(x + 1n);
+      return [
+        `${a}`, `${a}/${b}`, `(${quoted(a)}, ${quoted(b)})`, `[${quoted(a)}, ${quoted(b)}]`, `[|${quoted(b)}, ${quoted(a)}|]`,
+        `Entry { name: "e", value: ${quoted(b)} }`, `Box ${quoted(b)}`,
+      ].join("|");
+    };
+    assert.equal(shownText(4n), '4|4/s5|(4, "s5")|[4, "s5"]|[|"s5", 4|]|Entry { name: "e", value: "s5" }|Box "s5"');
+    assert.equal(shownText(-1n), 's-1|s-1/0|("s-1", 0)|["s-1", 0]|[|0, "s-1"|]|Entry { name: "e", value: 0 }|Box 0');
+    const shown = (x) => checksum(shownText(x)) * 1000n + BigInt(shownText(x).length);
+    // A26 Phase 2: Encode and Decode. `doc x` is one of five members by x mod 5: the i64 x, the bool x > 0, the text
+    // `s{x}`, the array [x, x + 1], the record Point { x, y = -x }. A BigInt stands for i64, an object for the record.
+    const doc = (x) => {
+      const kind = (x % 5n + 5n) % 5n;
+      return kind === 0n ? x : kind === 1n ? x > 0n : kind === 2n ? `s${x}` : kind === 3n ? [x, x + 1n] : { x, y: -x };
+    };
+    // Compact JSON as Json.to_utf8string writes it: no spaces, the fields of a derived record in declaration order,
+    // and no tag for the member of an anonymous union. The texts here need no escapes.
+    const jsonOf = (value) => typeof value === "bigint" || typeof value === "boolean" ? `${value}`
+      : typeof value === "string" ? `"${value}"`
+      : Array.isArray(value) ? `[${value.map(jsonOf).join(",")}]`
+      : `{${Object.entries(value).map(([name, field]) => `"${name}":${jsonOf(field)}`).join(",")}}`;
+    const encodedText = (x) => [
+      jsonOf(doc(x)),
+      jsonOf([0n, 1n, 2n, 3n, 4n].map((step) => doc(x + step))),
+      jsonOf({ name: "h", value: doc(x + 2n) }),
+    ].join("|");
+    // Written by hand: 0, true, "s2", [3,4], Point 4; and "s-3", [-2,-1], Point -1, 0, true.
+    assert.equal(encodedText(0n), '0|[0,true,"s2",[3,4],{"x":4,"y":-4}]|{"name":"h","value":"s2"}');
+    assert.equal(encodedText(-3n), '"s-3"|["s-3",[-2,-1],{"x":-1,"y":1},0,true]|{"name":"h","value":{"x":-1,"y":1}}');
+    // JSON.stringify writes the same compact text for numbers that are exact in a double.
+    assert.equal(jsonOf([doc(8n), doc(9n), doc(6n)]), JSON.stringify([[8, 9], { x: 9, y: -9 }, true]));
+    const encoded = (x) => checksum(encodedText(x)) * 1000n + BigInt(encodedText(x).length);
+    // Decode selects the member by the kind of the JSON value. The texts follow std/Json.tz: a JSON value that no member
+    // reads is `expected` with the kinds of the members in the canonical order (i64, bool, string, the record, the
+    // array); a value that the selected member refuses gives the error of that member.
+    const none = "e:json: expected number or boolean or string or object or array";
+    const decodedText = (x) => [
+      // `{x}`, `true`, ` false `, `"t{x}"`, `[{x}, 2, 3]`, `[]`.
+      `i:${x}`, "b:1", "b:0", `s:t${x}`, `a:3:${x + 5n}`, "a:0:0",
+      // `{"y": {x}, "x": 7, "z": null}` (an unknown key is ignored), `{"x": 1}`, `{}` (the first missing field).
+      `p:7,${x}`, 'e:json: missing field "y"', 'e:json: missing field "x"',
+      // `null`; `{x}.5` (the i64 member takes no fraction); `[1, "two"]` (the element); 99999999999999999999 (out of
+      // the range of i64); `{"x": true, "y": 2}` (the field); `tru` (the parser, at the end of the 3 bytes).
+      none, "e:json: expected integer", "e:json: expected integer", "e:json: number out of range",
+      "e:json: expected integer", "e:json: unexpected end of input at byte 3",
+      // (i64 | Map<string, i64>): `{x}`, `{"a": {x}, "b": 2}`, `[["k", {x}]]`, `{}`, `"text"`, `[1]` (no pair).
+      `i:${x}`, `m:2:${x + 2n}`, `m:1:${x}`, "m:0:0", "e:json: expected number or object or array", "e:json: expected array of 2",
+      // Five members and a derived record come back equal from their own JSON.
+      "51",
+    ].join("|");
+    assert.equal(decodedText(7n).split("|").slice(0, 9).join("|"), 'i:7|b:1|b:0|s:t7|a:3:12|a:0:0|p:7,7|e:json: missing field "y"|e:json: missing field "x"');
+    assert.equal(decodedText(-4n).split("|").slice(15, 19).join("|"), "i:-4|m:2:-2|m:1:-4|m:0:0");
+    const decoded = (x) => checksum(decodedText(x)) * 1000n + BigInt(decodedText(x).length);
     // A25. widen: an even n is the i64 itself, an odd n the length of `odd {n}`.
     const widen = (n) => n % 2n === 0n ? n : length(`odd ${n}`);
     // `n={n}` (times 1000), the n numbers, and the last value of the loop: the n numbers when it does not run, the
@@ -2124,6 +2265,14 @@ const suites = {
     const at = (name, reference, inputs) => inputs.map((x) => [name, [x], reference(x)]);
     return {
       cases: [
+        ...at("encoded", encoded, [0n, 1n, 2n, 3n, 4n, -3n, -4n, 1000n, 123456789012n]),
+        ...at("decoded", decoded, [7n, 0n, -4n, 1n, 9007199254740993n, -123456789n]),
+        ...at("equal", equal, [4n, 1n, 0n, -1n, -2n, 7n, 1000n]),
+        ...at("order", order, [4n, 9n, 0n, 1n, -1n, -2n, 8n, 10n, 99n]),
+        ...at("sorted", sorted, [0n, 1n, 2n, 5n, 14n, 25n, 120n]),
+        ...at("hashed", hashed, [0n, 1n, 3n, 4n, 10n, 25n, 999n]),
+        ...at("digest", digest, [1n, 0n, 2n, -1n, -4n, 1001n, min, max]),
+        ...at("shown", shown, [4n, -1n, 0n, 9n, -10n, 123456789n]),
         ...at("pick", pick, [5n, 0n, -3n, 1n, max]),
         ...at("mixed", mixed, [0n, 1n, 4n, 7n, 1000n]),
         ...at("owned", owned, [0n, 1n, 4n, 7n, 20n]),
@@ -2154,6 +2303,13 @@ const suites = {
         assert.match(ir, /^%"tz\.rec\.node\.\$anonymous\.Union\$2\[i64,Main\.Tree\]" = type /m);
         // 32 members, the function type last.
         assert.match(ir, /^%"tz\.union\.\$anonymous\.Union\$32\[i8u,i8,[^\n]*,fn\[[^\n]*\]\]" = type /m);
+        // A26: the instances are functions of the specializer; the hash starts as a derived union's does (the offset,
+        // then the tag 0x55), and the quoted text of a member inside a container has its own function.
+        assert.match(ir, /call i64 @"?tz\.fn\.\$builtin\.\$builtin\.hash_mix"?\(i64 14695981039346656037, i64 85\)/);
+        assert.match(ir, /^define internal %tz\.string @"?tz\.fn\.\$intrinsic\.Display\.display_quoted\.\d+"?\(/m);
+        // Phase 2: Encode and Decode of an anonymous union are functions of the specializer too.
+        assert.match(ir, /^define internal [^\n]* @"?tz\.fn\.\$intrinsic\.Encode\.encode\.\d+"?\(/m);
+        assert.match(ir, /^define internal [^\n]* @"?tz\.fn\.\$intrinsic\.Decode\.decode\.\d+"?\(/m);
         // A25: a widening and a narrowing of a union that is not recursive switch on the tag and move or copy the
         // payload; they allocate nothing (the strings are made by number_or_text and classify, the arrays by counted and
         // labelled: an array moves into the widened value that a read parameter borrows, also from the branch of an

@@ -1434,28 +1434,29 @@ fn diagnostics_name_nested_number_literals() {
 }
 
 /// Review round 1: an anonymous union takes no instance (D8), so `E1005` and `E1025` do not ask
-/// for one; a named type keeps the usual advice.
+/// for one; a named type keeps the usual advice. Since A26 the classes that an anonymous union
+/// lacks are those without a structural instance, such as `Default`, `Add` and `Arbitrary`.
 #[test]
 fn missing_instances_do_not_ask_for_an_instance() {
     let advice = "instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases";
     for (source, code, kind, class) in [
         (
-            "let v: (i64 | string) = 1\nv == 1\n",
+            "let v: (i64 | string) = 1\nlet w: (i64 | string) = 2\nv + w\n",
             "E1005",
             "no_instance",
-            "Eq",
+            "Add",
         ),
         (
-            "let v: (i64 | string) = 1\nlet s = to_string v\n0\n",
+            "let v: (i64 | string) = Default.default()\n0\n",
             "E1005",
             "no_instance",
-            "Display",
+            "Default",
         ),
         (
-            "record R { v: (i64 | string) } deriving (Eq)\n0\n",
+            "record R { v: (i64 | string) } deriving (Default)\n0\n",
             "E1025",
             "derived_instance_invalid",
-            "Eq",
+            "Default",
         ),
     ] {
         let error = rejects(source, code, kind);
@@ -1478,12 +1479,9 @@ fn missing_instances_do_not_ask_for_an_instance() {
 
 #[test]
 fn comparisons_and_exports_keep_their_rules() {
-    // `1` is injected into the left operand's type, which has no `Eq` until A26.
-    rejects(
-        "let v: (i64 | string) = 1\nv == 1\n",
-        "E1005",
-        "no_instance",
-    );
+    // `1` is injected into the left operand's type, which has `Eq` since A26
+    // (`comparison_injects_right_operand` runs it).
+    accepts("let v: (i64 | string) = 1\nv == 1\n");
     let error = analyze("export def f :: (i64 | string) -> i64 = \\v -> 0\n").expect_err("export");
     assert_eq!(error.code, "E1008", "{}", error.message);
 }
@@ -2978,6 +2976,1787 @@ fn type_tests_are_type_references() {
     assert_eq!(builtin.target, None);
 }
 
+// A26: the built-in instances `Eq`, `Ord`, `Hash` and `Display` of anonymous unions. The expected
+// values are worked out by hand from the rules: the members compare in the canonical order
+// (`displays_in_canonical_order`), then by payload; the hash is the stream of a derived union.
+
+/// `Hash.hash` of `A 1` and of `B "one"` of `union R = A of i64 | B of string deriving (Hash)`:
+/// FNV-1a over the canonical stream (tag `0x55`, the case, the hash of the payload), computed by
+/// a Python script from the definition of the stream in `docs/language.md`, and equal to what the
+/// compiler gave for the named union before A26.
+const HASH_OF_1: &str = "15967365493956732001i64u";
+const HASH_OF_ONE: &str = "17017872639125386659i64u";
+
+#[test]
+fn anonymous_unions_have_structural_classes() {
+    // Operators, methods and the constraints of generic functions, in both editions.
+    let source = "def same :: Eq<'a> => own 'a -> own 'a -> bool = \\x y -> x == y\ndef before :: Ord<'a> => own 'a -> own 'a -> bool = \\x y -> x < y\ndef hashed :: Hash<'a> => own 'a -> i64u = \\x -> Hash.hash x\ndef shown :: Display<'a> => own 'a -> string = \\x -> Display.display x\ndef open :: Eq<'a> => own (['a] | i64) -> own (['a] | i64) -> bool = \\x y -> x == y\ndef wide :: (Ord<'a>, Display<'a>) => own ([|'a|] | 'a * 'a | string) -> own ([|'a|] | 'a * 'a | string) -> string = \\x y ->\n    if x <= y then Display.display x else Display.display y\n\ntest \"constraints\" =\n    let a: (i64 | string) = 1\n    let b: (string | i64) = \"one\"\n    assert (not (same a b))\n    let c: (i64 | string) = 1\n    let d: (string | i64) = \"one\"\n    assert (before c d)\n    let e: (i64 | string) = 1\n    assert (hashed e == 15967365493956732001i64u)\n    let f: (i64 | string) = \"one\"\n    assert (shown f == \"one\")\n    assert (open [2] [2])\n    assert (not (open [2] 2))\n    let first: ([|i64|] | i64 * i64 | string) = (2, 1)\n    let second: ([|i64|] | i64 * i64 | string) = [|9|]\n    assert (wide first second == \"[|9|]\")\n\ntest \"methods\" =\n    let a: (i64 | string) = 1\n    let b: (i64 | string) = \"one\"\n    assert (Eq.ne a b)\n    assert (not (Eq.eq a b))\n    assert (Ord.lt a b)\n    assert (Ord.le a b)\n    assert (not (Ord.gt a b))\n    assert (not (Ord.ge a b))\n    assert (Ord.ge b a)\n";
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+    // The IR is deterministic, and its names are LLVM identifiers.
+    accepts(
+        "let a: (i64 | string) = 1\nlet b: (i64 | string) = \"one\"\nlet hash = if a == b || a < b then Hash.hash (ref a) else Hash.hash (ref b)\nlet shown = Display.display (ref (a, b))\nhash\n",
+    );
+    // A user instance is still rejected by the rule of A24, not as an override of a built-in one.
+    rejects(
+        "instance Eq<(i64 | string)> {\n}\n0\n",
+        "E1041",
+        "anonymous_union_instance",
+    );
+}
+
+#[test]
+fn missing_member_instance_names_the_member() {
+    let point = "record Point { x: i64 }\n";
+    for (source, code, kind, message) in [
+        (
+            format!("{point}let a: (i64 | Point) = 1\nlet b: (i64 | Point) = 1\na == b\n"),
+            "E1005",
+            "no_instance",
+            "no instance for Eq<Main.Point>; define an instance or use a supported type",
+        ),
+        (
+            format!("{point}let a: (i64 | Point) = 1\nlet s = Display.display (ref a)\n0\n"),
+            "E1005",
+            "no_instance",
+            "no instance for Display<Main.Point>; define an instance or use a supported type",
+        ),
+        (
+            format!("{point}let a: (i64 | Point) = 1\nlet h = Hash.hash (ref a)\n0\n"),
+            "E1005",
+            "no_instance",
+            "no instance for Hash<Main.Point>; define an instance or use a supported type",
+        ),
+        // `bool` has `Eq` and no `Ord`; a function has neither.
+        (
+            "let a: (i64 | bool) = 1\nlet b: (i64 | bool) = 1\na < b\n".to_owned(),
+            "E1005",
+            "no_instance",
+            "no instance for Ord<bool>; define an instance or use a supported type",
+        ),
+        (
+            "let a: (i64 | (i64 -> i64)) = 1\nlet b: (i64 | (i64 -> i64)) = 1\na == b\n".to_owned(),
+            "E1005",
+            "no_instance",
+            "no instance for Eq<i64 -> i64>; define an instance or use a supported type",
+        ),
+        (
+            format!("{point}record R {{ v: (i64 | Point) }} deriving (Eq)\n0\n"),
+            "E1025",
+            "derived_instance_invalid",
+            "no instance for Eq<Main.Point>; define an instance or use a supported type",
+        ),
+    ] {
+        let error = rejects(&source, code, kind);
+        assert_eq!(error.message, message, "{source}");
+    }
+    // `(i64 | bool)` has `Eq` all the same.
+    accepts("let a: (i64 | bool) = 1\nlet b: (i64 | bool) = true\na == b\n");
+}
+
+#[test]
+fn no_default_for_anonymous_unions() {
+    // No member is the default one, and the other classes have no structural instance either.
+    for (source, code, kind, class) in [
+        (
+            "let v: (i64 | string) = Default.default()\n0\n",
+            "E1005",
+            "no_instance",
+            "Default",
+        ),
+        (
+            "record R { v: (i64 | string) } deriving (Default)\n0\n",
+            "E1025",
+            "derived_instance_invalid",
+            "Default",
+        ),
+        (
+            "record R { v: (i64 | string) } deriving (Arbitrary)\n0\n",
+            "E1025",
+            "derived_instance_invalid",
+            "Arbitrary",
+        ),
+        (
+            "let v: (i64 | i32) = 1i64\nlet w: (i64 | i32) = 2i64\nv + w\n",
+            "E1005",
+            "no_instance",
+            "Add",
+        ),
+        // A format specifier with a type letter needs `Format`, as does the method.
+        (
+            "let v: (i64 | string) = 1\n$\"{v:x}\"\n",
+            "E1005",
+            "no_instance",
+            "Format",
+        ),
+        (
+            "let v: (i64 | string) = 1\nFormat.format (ref v) \"x\"\n",
+            "E1005",
+            "no_instance",
+            "Format",
+        ),
+    ] {
+        let error = rejects(source, code, kind);
+        assert!(
+            error
+                .message
+                .starts_with(&format!("no instance for {class}<(")),
+            "{source}\n{}",
+            error.message
+        );
+        assert!(
+            error
+                .message
+                .ends_with("; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases"),
+            "{source}\n{}",
+            error.message
+        );
+    }
+    // A width and an alignment alone use `Display`, so they format the text of the payload.
+    passes(
+        "test \"width\" =\n    let text: (i64 | string) = \"ab\"\n    let number: (i64 | string) = 7\n    assert ($\"{text:>5}\" == \"   ab\")\n    assert ($\"{number:>5}\" == \"    7\")\n    assert ($\"{number:<3}|\" == \"7  |\")\n",
+        Edition::E2027,
+    );
+    // A tuple of defaults is still a default: only the union is refused.
+    let error = rejects(
+        "let v: (i64 * (i64 | string)) = Default.default()\n0\n",
+        "E1005",
+        "no_instance",
+    );
+    assert!(
+        error
+            .message
+            .starts_with("no instance for Default<(i64 | string)>"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn eq_compares_tag_then_payload() {
+    passes(
+        "test \"members\" =\n    let one: (i64 | string) = 1\n    let uno: (string | i64) = 1\n    let two: (i64 | string) = 2\n    let text: (i64 | string) = \"1\"\n    let same: (i64 | string) = \"1\"\n    assert (one == uno)\n    assert (not (one != uno))\n    assert (not (one == two))\n    assert (one != two)\n    assert (not (one == text))\n    assert (one != text)\n    assert (text == same)\n    assert (not (text != same))\n\ntest \"owned payloads\" =\n    let a: (string | [i64] | [|string|]) = [1, 2]\n    let b: (string | [i64] | [|string|]) = [1, 2]\n    let c: (string | [i64] | [|string|]) = [1, 3]\n    let d: (string | [i64] | [|string|]) = [|\"1\", \"2\"|]\n    let e: (string | [i64] | [|string|]) = [|\"1\", \"2\"|]\n    assert (a == b)\n    assert (a != c)\n    assert (a != d)\n    assert (d == e)\n    assert (a == b)\n\ntest \"one layout for every member\" =\n    let signed: (i64 | i64u) = 5i64\n    let unsigned: (i64 | i64u) = 5i64u\n    let again: (i64 | i64u) = 5i64u\n    assert (signed != unsigned)\n    assert (not (signed == unsigned))\n    assert (unsigned == again)\n\ntest \"inside other types\" =\n    let left: ((i64 | string) * [(i64 | string)]) = (1, [\"a\", 2])\n    let right: ((i64 | string) * [(i64 | string)]) = (1, [\"a\", 2])\n    let other: ((i64 | string) * [(i64 | string)]) = (1, [\"a\", \"2\"])\n    assert (left == right)\n    assert (left != other)\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn ord_follows_member_order() {
+    // The canonical order is i64 < f64 < bool < char < string < [i64] < (i64 * i64), however the
+    // type is written. `bool` has no `Ord`, so it is left out here.
+    passes(
+        "test \"members then payloads\" =\n    let number: (string | i64) = 9\n    let text: (string | i64) = \"1\"\n    let small: (i64 | string) = -3\n    let later: (i64 | string) = \"a\"\n    assert (number < text)\n    assert (number <= text)\n    assert (not (number > text))\n    assert (not (number >= text))\n    assert (text > number)\n    assert (text >= number)\n    assert (not (text < number))\n    assert (not (text <= number))\n    assert (small < number)\n    assert (small <= number)\n    assert (not (small > number))\n    assert (number >= small)\n    assert (text < later)\n    assert (later > text)\n    assert (number <= number)\n    assert (number >= number)\n    assert (not (number < number))\n    assert (not (text > text))\n\ntest \"written order does not matter\" =\n    let pair: ((i64 * i64) | [i64] | string | char | f64 | i64) = (0, 0)\n    let array: ((i64 * i64) | [i64] | string | char | f64 | i64) = [9]\n    let text: ((i64 * i64) | [i64] | string | char | f64 | i64) = \"z\"\n    let letter: ((i64 * i64) | [i64] | string | char | f64 | i64) = 'z'\n    let float: ((i64 * i64) | [i64] | string | char | f64 | i64) = 1.0e300\n    let integer: ((i64 * i64) | [i64] | string | char | f64 | i64) = 9000000000000000000\n    assert (integer < float)\n    assert (float < letter)\n    assert (letter < text)\n    assert (text < array)\n    assert (array < pair)\n    assert (pair > integer)\n    assert (not (pair <= array))\n\ntest \"sorting\" =\n    let sorted: [(char | i64)] = Array.sort ['b', 3, 'a', 1]\n    assert (Display.display sorted == \"[1, 3, 'a', 'b']\")\n    let floats: [(f64 | i64)] = Array.sort [2.5, 3, 1.5, 1]\n    assert (Display.display floats == \"[1, 3, 1.5, 2.5]\")\n\ntest \"one layout for every member\" =\n    let signed: (i64 | i64u) = 0i64\n    let unsigned: (i64 | i64u) = 18446744073709551615i64u\n    assert (unsigned < signed)\n    assert (signed >= unsigned)\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn hash_matches_named_union_stream() {
+    // The named union with the same cases in the canonical order, and the two reference values.
+    passes(
+        &format!(
+            "union R = A of i64 | B of string deriving (Hash)\n\ntest \"stream\" =\n    let one: (string | i64) = 1\n    let text: (i64 | string) = \"one\"\n    assert (Hash.hash one == {HASH_OF_1})\n    assert (Hash.hash text == {HASH_OF_ONE})\n    assert (Hash.hash (A 1) == {HASH_OF_1})\n    assert (Hash.hash (B \"one\") == {HASH_OF_ONE})\n    assert (Hash.hash one == Hash.hash (A 1))\n    assert (Hash.hash text == Hash.hash (B \"one\"))\n\ntest \"equal values hash equally\" =\n    let a: (string | [i64]) = [1, 2]\n    let b: ([i64] | string) = [1, 2]\n    let c: (string | [i64]) = [2, 1]\n    assert (a == b)\n    assert (Hash.hash a == Hash.hash b)\n    assert (Hash.hash a != Hash.hash c)\n    let zero: (f64 | string) = 0.0\n    let negative: (f64 | string) = -0.0\n    assert (zero == negative)\n    assert (Hash.hash zero == Hash.hash negative)\n\ntest \"the member is part of the hash\" =\n    let signed: (i64 | i64u) = 1i64\n    let unsigned: (i64 | i64u) = 1i64u\n    assert (Hash.hash signed != Hash.hash unsigned)\n    assert (Hash.hash (1, signed) != Hash.hash (1, unsigned))\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn display_shows_the_payload() {
+    passes(
+        "test \"payload only\" =\n    let number: (i64 | string | char | [string]) = -7\n    let text: (i64 | string | char | [string]) = \"one\"\n    let letter: (i64 | string | char | [string]) = 'c'\n    let array: (i64 | string | char | [string]) = [\"a\", \"b\"]\n    assert (Display.display number == \"-7\")\n    assert (Display.display text == \"one\")\n    assert (Display.display letter == \"c\")\n    assert (Display.display array == \"[\\\"a\\\", \\\"b\\\"]\")\n    assert ($\"{number} {text} {letter} {array}\" == \"-7 one c [\\\"a\\\", \\\"b\\\"]\")\n    assert (to_string text == \"one\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn display_quotes_inside_tuples() {
+    // Inside a tuple, an array, a list, and a derived record or union, a string or character
+    // member is quoted, as a string or character element is.
+    passes(
+        "record Cell { value: (i64 | string), tag: string } deriving (Display)\nunion Shape = Dot | Text of (string | char) deriving (Display)\n\ntest \"containers\" =\n    let a: (i64 | string) = 1\n    let b: (i64 | string) = \"one\"\n    assert (Display.display (a, b) == \"(1, \\\"one\\\")\")\n    let items: [(char | string | i64)] = ['c', \"s\", 3]\n    assert (Display.display items == \"['c', \\\"s\\\", 3]\")\n    let list: [|(i64 | string)|] = [|\"x\", 2|]\n    assert (Display.display list == \"[|\\\"x\\\", 2|]\")\n    let nested: ((i64 | string) * [(i64 | string)]) = (\"p\", [\"q\", 1])\n    assert (Display.display nested == \"(\\\"p\\\", [\\\"q\\\", 1])\")\n    assert ($\"{nested}\" == \"(\\\"p\\\", [\\\"q\\\", 1])\")\n\ntest \"derived instances\" =\n    assert (Display.display (Cell { value: \"one\", tag: \"a\" }) == \"Cell { value: \\\"one\\\", tag: \\\"a\\\" }\")\n    assert (Display.display (Cell { value: 1, tag: \"a\" }) == \"Cell { value: 1, tag: \\\"a\\\" }\")\n    assert (Display.display (Text 'c') == \"Text 'c'\")\n    assert (Display.display (Text \"s\") == \"Text \\\"s\\\"\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn nan_members_follow_member_eq() {
+    passes(
+        "test \"nan\" =\n    let zero = 0.0\n    let nan: (f64 | string) = zero / zero\n    let other: (f64 | string) = zero / zero\n    let plus: (f64 | string) = 0.0\n    let minus: (f64 | string) = -0.0\n    let text: (f64 | string) = \"nan\"\n    assert (not (nan == other))\n    assert (nan != other)\n    assert (not (nan < other))\n    assert (not (nan <= other))\n    assert (not (nan > other))\n    assert (not (nan >= other))\n    assert (plus == minus)\n    assert (not (plus != minus))\n    assert (plus <= minus)\n    assert (not (plus < minus))\n    assert (nan < text)\n    assert (nan != text)\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn recursive_types_compare_through_named_unions() {
+    // The union goes through the heap node of `Tree`; the derived instances of `Tree` and the
+    // built-in ones of `(i64 | Tree)` call each other.
+    passes(
+        "union Tree = Leaf | Node of (i64 | Tree) deriving (Eq, Ord, Hash, Display)\n\ntest \"recursive\" =\n    let one = Node (Node 1)\n    let same = Node (Node 1)\n    let two = Node (Node 2)\n    let deep = Node (Node (Node Leaf))\n    assert (one == same)\n    assert (one != two)\n    assert (one < two)\n    assert (Leaf < one)\n    assert (two < deep)\n    assert (Hash.hash one == Hash.hash same)\n    assert (Hash.hash one != Hash.hash two)\n    assert (Display.display one == \"Node Node 1\")\n    assert (Display.display deep == \"Node Node Node Leaf\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn wide_unions_have_instances() {
+    // 32 members (D9), every one with the four classes: the bodies test up to 31 tags in a row.
+    // The members share their element types (`i64`, `string`, ...); members whose parts are all
+    // distinct are in `wide_unions_resolve_within_the_obligation_budget`.
+    let members = [
+        "i8",
+        "i8u",
+        "i16",
+        "i16u",
+        "i32",
+        "i32u",
+        "i64",
+        "i64u",
+        "i128",
+        "i128u",
+        "f32",
+        "f64",
+        "char",
+        "utf8char",
+        "string",
+        "utf8string",
+        "[i64]",
+        "[string]",
+        "[char]",
+        "[f64]",
+        "[|i64|]",
+        "[|string|]",
+        "(i64 * i64)",
+        "(i64 * string)",
+        "(string * i64)",
+        "(string * string)",
+        "[[i64]]",
+        "[[string]]",
+        "(i64 * i64 * i64)",
+        "(i64 * (i64 * i64))",
+        "[i8]",
+        "[i16]",
+    ];
+    assert_eq!(members.len(), 32);
+    // `i8u` is the first member in the canonical order and the tuple of three the last one: a
+    // tuple follows every array and list, and a longer tuple the shorter ones.
+    passes(
+        &format!(
+            "type Wide = ({})\n\ntest \"wide\" =\n    let first: Wide = 1i8u\n    let last: Wide = (1, 2, 3)\n    let text: Wide = \"s\"\n    let again: Wide = (1, 2, 3)\n    assert (first < last)\n    assert (first < text)\n    assert (text < last)\n    assert (last > first)\n    assert (last == again)\n    assert (last != text)\n    assert (last >= again)\n    assert (Hash.hash last == Hash.hash again)\n    assert (Hash.hash last != Hash.hash text)\n    assert (Display.display last == \"(1, 2, 3)\")\n    assert (Display.display text == \"s\")\n    assert (Display.display (text, first) == \"(\\\"s\\\", 1)\")\n",
+            members.join(" | ")
+        ),
+        Edition::E2027,
+    );
+}
+
+/// `count` records `P00`, `P01`, ... of one field, each with the four derived classes.
+fn numbered_records(count: usize) -> String {
+    (0..count)
+        .map(|index| format!("record P{index:02} {{ x: i64 }} deriving (Eq, Ord, Hash, Display)\n"))
+        .collect()
+}
+
+/// `(M0 | M1 | ...)` for `members` members, each made of its index by `member`.
+fn union_of(members: usize, member: impl Fn(usize) -> String) -> String {
+    let members: Vec<_> = (0..members).map(member).collect();
+    format!("({})", members.join(" | "))
+}
+
+/// A union of `members` tuples of `size` of the records of `numbered_records`, all distinct.
+fn union_of_tuples(members: usize, size: usize) -> String {
+    union_of(members, |member| {
+        let parts: Vec<_> = (member * size..(member + 1) * size)
+            .map(|index| format!("P{index:02}"))
+            .collect();
+        format!("({})", parts.join(" * "))
+    })
+}
+
+#[test]
+fn wide_unions_resolve_within_the_obligation_budget() {
+    // Review round 1: instance resolution allows 128 obligations for one constraint, and `Ord`
+    // of a union asks for `Ord` and `Eq` of every member. With the members counted, a union
+    // well inside the 32 members of D9 had `==` and no `<` (E1017) as soon as the members had
+    // parts of their own: 16 tuples of three records, 32 arrays of records, a pair of two unions
+    // of 32 records. The obligations of the members are not counted now. The expected values
+    // follow from the canonical order (records by their names, an array before a list) and from
+    // the payloads.
+    let source = format!(
+        "{records}type Tuples = {tuples}\ntype Arrays = {arrays}\ntype Left = {left}\ntype Right = {right}\n\ntest \"tuples of records\" =\n    let a: Tuples = (P00 {{ x: 1 }}, P01 {{ x: 1 }}, P02 {{ x: 1 }})\n    let b: Tuples = (P03 {{ x: 1 }}, P04 {{ x: 1 }}, P05 {{ x: 1 }})\n    let c: Tuples = (P00 {{ x: 1 }}, P01 {{ x: 2 }}, P02 {{ x: 0 }})\n    let last: Tuples = (P45 {{ x: 0 }}, P46 {{ x: 0 }}, P47 {{ x: 0 }})\n    let same: Tuples = (P00 {{ x: 1 }}, P01 {{ x: 1 }}, P02 {{ x: 1 }})\n    assert (a != b)\n    assert (a < b)\n    assert (not (b <= a))\n    assert (a < c)\n    assert (c > a)\n    assert (c < b)\n    assert (b < last)\n    assert (last >= b)\n    assert (a == same)\n    assert (a >= same)\n    assert (Hash.hash a == Hash.hash same)\n    assert (Display.display c == \"(P00 {{ x: 1 }}, P01 {{ x: 2 }}, P02 {{ x: 0 }})\")\n\ntest \"arrays of records\" =\n    let a: Arrays = [P00 {{ x: 1 }}]\n    let b: Arrays = [P31 {{ x: 0 }}]\n    let c: Arrays = [P00 {{ x: 2 }}]\n    let same: Arrays = [P00 {{ x: 1 }}]\n    assert (a < b)\n    assert (a < c)\n    assert (c < b)\n    assert (a == same)\n    assert (a <= same)\n    assert (not (a < same))\n    assert (Hash.hash a == Hash.hash same)\n    assert (Display.display b == \"[P31 {{ x: 0 }}]\")\n\ntest \"a pair of wide unions\" =\n    let p: (Left * Right) = (P00 {{ x: 1 }}, P32 {{ x: 1 }})\n    let q: (Left * Right) = (P00 {{ x: 1 }}, P63 {{ x: 0 }})\n    let r: (Left * Right) = (P01 {{ x: 0 }}, P32 {{ x: 0 }})\n    let same: (Left * Right) = (P00 {{ x: 1 }}, P32 {{ x: 1 }})\n    assert (p < q)\n    assert (p < r)\n    assert (q < r)\n    assert (not (r <= q))\n    assert (p == same)\n    assert (p >= same)\n    assert (Hash.hash p == Hash.hash same)\n    assert (Display.display q == \"(P00 {{ x: 1 }}, P63 {{ x: 0 }})\")\n",
+        records = numbered_records(64),
+        tuples = union_of_tuples(16, 3),
+        arrays = union_of(32, |index| format!("[P{index:02}]")),
+        left = union_of(32, |index| format!("P{index:02}")),
+        right = union_of(32, |index| format!("P{:02}", index + 32)),
+    );
+    passes(&source, Edition::E2027);
+    // 32 members whose elements are 21 distinct types: arrays of arrays, and lists of arrays.
+    let elements = [
+        "i8",
+        "i8u",
+        "i16",
+        "i16u",
+        "i32",
+        "i32u",
+        "i64",
+        "i64u",
+        "i128",
+        "i128u",
+        "f16",
+        "f32",
+        "f64",
+        "f128",
+        "d32",
+        "d64",
+        "d128",
+        "char",
+        "utf8char",
+        "string",
+        "utf8string",
+    ];
+    let wide = union_of(32, |index| match elements.get(index) {
+        Some(element) => format!("[[{element}]]"),
+        None => format!("[|[{}]|]", elements[index - elements.len()]),
+    });
+    passes(
+        &format!(
+            "type Wide = {wide}\n\ntest \"arrays of arrays\" =\n    let a: Wide = [[1i8]]\n    let b: Wide = [[2i8]]\n    let c: Wide = [|[1i8]|]\n    let same: Wide = [[1i8]]\n    assert (a < b)\n    assert (a < c)\n    assert (b < c)\n    assert (c > b)\n    assert (not (a < same))\n    assert (a <= same)\n    assert (a == same)\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn distinct_parts_of_members_meet_the_obligation_limit() {
+    // What the budget of 128 counts: one obligation for each class and each distinct type, without
+    // the members of the union themselves. For `<` on a union of pairs of the records of
+    // `numbered_records`: `Ord` and `Eq` of the union (2), of every record inside the pairs (2
+    // each) and of `i64`, the type of the field that the derived instances compare (2). So 62
+    // records make 128, the limit, and 64 records make 132.
+    let limit = "instance constraint resolution exceeds depth 64 or 128 obligations";
+    let compare = |members: usize, operator: &str| {
+        format!(
+            "{}type W = {}\ndef compare :: own W -> own W -> bool = \\a b -> a {operator} b\n0\n",
+            numbered_records(members * 2),
+            union_of_tuples(members, 2)
+        )
+    };
+    accepts(&compare(31, "<"));
+    let error = rejects(&compare(32, "<"), "E1017", "instance_resolution_limit");
+    assert_eq!(error.message, limit);
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "an anonymous union needs the instance of each member, and every distinct type inside the members is one obligation for each class (Ord also needs Eq); use fewer distinct types, or wrap a part in a record with a hand-written instance, which is one obligation"
+        )
+    );
+    // `Eq` has no superclass: the union (1), 64 records and `i64` make 66.
+    accepts(&compare(32, "=="));
+    // What the help names: a record with hand-written instances is resolved without its fields.
+    let wrapped: String = (0..32)
+        .map(|member| {
+            format!(
+                "record T{member:02} {{ a: P{:02}, b: P{:02} }}\ninstance Eq<T{member:02}> {{\n    fn eq left right = left.a == right.a && left.b == right.b\n    fn ne left right = not (Eq.eq left right)\n}}\ninstance Ord<T{member:02}> {{\n    fn lt left right = left.a < right.a || (left.a == right.a && left.b < right.b)\n    fn le left right = not (Ord.lt right left)\n    fn gt left right = Ord.lt right left\n    fn ge left right = not (Ord.lt left right)\n}}\n",
+                member * 2,
+                member * 2 + 1
+            )
+        })
+        .collect();
+    passes(
+        &format!(
+            "{}{wrapped}type W = {}\n\ntest \"wrapped pairs\" =\n    let a: W = T00 {{ a: P00 {{ x: 1 }}, b: P01 {{ x: 1 }} }}\n    let b: W = T31 {{ a: P62 {{ x: 0 }}, b: P63 {{ x: 0 }} }}\n    let c: W = T00 {{ a: P00 {{ x: 1 }}, b: P01 {{ x: 2 }} }}\n    assert (a < b)\n    assert (a < c)\n    assert (c < b)\n    assert (not (c <= a))\n",
+            numbered_records(64),
+            union_of(32, |member| format!("T{member:02}"))
+        ),
+        Edition::E2027,
+    );
+    // A tuple has no members to leave out: the limit and its diagnostic are as they were.
+    let parts: Vec<_> = (0..64).map(|index| format!("P{index:02}")).collect();
+    let tuple = parts.join(" * ");
+    let error = rejects(
+        &format!(
+            "{}def compare :: own ({tuple}) -> own ({tuple}) -> bool = \\a b -> a < b\n0\n",
+            numbered_records(64)
+        ),
+        "E1017",
+        "instance_resolution_limit",
+    );
+    assert_eq!(error.message, limit);
+    assert_eq!(error.help, None);
+    // Review round 2: the help names the union only when most of the counted obligations come
+    // from inside its members. A union of `i64` and `string` next to 63 records adds no
+    // obligation inside its members (the tuple without it meets the limit as well).
+    let parts: Vec<_> = (0..63).map(|index| format!("P{index:02}")).collect();
+    let tuple = format!("{} * (i64 | string)", parts.join(" * "));
+    let error = rejects(
+        &format!(
+            "{}def compare :: own ({tuple}) -> own ({tuple}) -> bool = \\a b -> a < b\n0\n",
+            numbered_records(63)
+        ),
+        "E1017",
+        "instance_resolution_limit",
+    );
+    assert_eq!(error.message, limit);
+    assert_eq!(error.help, None);
+    // The depth of an instance context that grows through a union is not about the members.
+    let error = rejects(
+        "record Box<'a> { v: 'a }\ninstance Eq<(Box<['a]> | i64)> => Eq<Box<'a>> {\n    fn eq _ _ = true\n    fn ne _ _ = false\n}\nlet a = Box { v: 1 }\nlet b = Box { v: 1 }\na == b\n",
+        "E1017",
+        "instance_resolution_limit",
+    );
+    assert_eq!(error.message, limit);
+    assert_eq!(error.help, None);
+}
+
+#[test]
+fn derived_record_with_anonymous_field() {
+    passes(
+        "record Cell { value: (i64 | string), tag: string } deriving (Eq, Ord, Hash, Display)\nunion Shape = Dot | Text of (string | char) deriving (Eq, Ord, Hash, Display)\nrecord Pair<'a> { left: (['a] | string), right: 'a } deriving (Eq, Ord, Hash, Display)\n\ntest \"record\" =\n    let number = Cell { value: 1, tag: \"z\" }\n    let again = Cell { value: 1, tag: \"z\" }\n    let text = Cell { value: \"one\", tag: \"a\" }\n    assert (number == again)\n    assert (number != text)\n    assert (number < text)\n    assert (text >= number)\n    assert (Hash.hash number == Hash.hash again)\n    assert (Hash.hash number != Hash.hash text)\n    assert (Display.display text == \"Cell { value: \\\"one\\\", tag: \\\"a\\\" }\")\n\ntest \"union\" =\n    assert (Text 's' == Text 's')\n    assert (Text 's' != Text \"s\")\n    assert (Text 'z' < Text \"a\")\n    assert (Dot < Text 'a')\n    assert (Hash.hash (Text 's') != Hash.hash (Text \"s\"))\n    assert (Display.display (Text \"s\") == \"Text \\\"s\\\"\")\n\ntest \"generic record\" =\n    let left = Pair { left: \"1\", right: 2 }\n    let right = Pair { left: [1], right: 2 }\n    assert (left != right)\n    assert (left < right)\n    assert (right == Pair { left: [1], right: 2 })\n    assert (Display.display left == \"Pair { left: \\\"1\\\", right: 2 }\")\n    assert (Display.display right == \"Pair { left: [1], right: 2 }\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn hashset_and_map_keys() {
+    passes(
+        "def key :: own (i64 | string) -> (i64 | string) = \\v -> v\n\ndef found :: own Maybe<i64> -> i64 = \\m ->\n    match m with\n    | Some n -> n\n    | None -> -1\n\ntest \"hash keys\" =\n    let seen: HashSet<(i64 | string)> = HashSet.empty() |> HashSet.insert (key 1) |> HashSet.insert (key \"one\") |> HashSet.insert (key 1) |> HashSet.insert (key \"1\")\n    assert (HashSet.length seen == 3)\n    assert (HashSet.contains (key \"one\") seen)\n    assert (HashSet.contains (key 1) seen)\n    assert (not (HashSet.contains (key 2) seen))\n    let table: HashMap<(i64 | string), i64> = HashMap.empty() |> HashMap.insert (key \"one\") 10 |> HashMap.insert (key 1) 20 |> HashMap.insert (key \"one\") 30\n    assert (HashMap.length table == 2)\n    assert (found (HashMap.get (key \"one\") table) == 30)\n    assert (found (HashMap.get (key 1) table) == 20)\n    assert (found (HashMap.get (key \"1\") table) == -1)\n\ntest \"ordered keys\" =\n    let set: Set<(i64 | string)> = Set.empty() |> Set.insert (key \"one\") |> Set.insert (key 2) |> Set.insert (key 1) |> Set.insert (key \"one\")\n    assert (Set.length set == 3)\n    assert (Set.contains (key 2) set)\n    assert (not (Set.contains (key \"two\") set))\n    let map: Map<(i64 | string), i64> = Map.empty() |> Map.insert (key \"one\") 10 |> Map.insert (key 1) 20 |> Map.insert (key \"one\") 30\n    assert (Map.length map == 2)\n    assert (found (Map.get (key \"one\") map) == 30)\n    assert (found (Map.get (key 1) map) == 20)\n    assert (found (Map.get (key 2) map) == -1)\n    let mut keys = \"\"\n    for (k, _) in Map.iter map do\n        keys = keys + Display.display k + \";\"\n    assert (keys == \"1;one;\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn comparison_injects_right_operand() {
+    // The other operand is injected into the union: `v == 1` compares two values of the union.
+    passes(
+        "test \"right operand\" =\n    let v: (i64 | string) = 1\n    assert (v == 1)\n    assert (not (v == 2))\n    assert (v != \"1\")\n    assert (not (v == \"1\"))\n    assert (v < 2)\n    assert (v < \"\")\n    assert (v >= 1)\n\ntest \"left operand\" =\n    let v: (i64 | string) = 1\n    let t: (i64 | string) = \"one\"\n    assert (1 == v)\n    assert (not (2 == v))\n    assert (0 < v)\n    assert (1 != t)\n    assert (2 < t)\n",
+        Edition::E2027,
+    );
+    // A value that is no member is still rejected, and a literal that fits two members too.
+    rejects(
+        "let v: (i64 | string) = 1\nv == true\n",
+        "E1003",
+        "anonymous_union_not_member",
+    );
+    rejects(
+        "let v: (i32 | i64) = 1i64\nv == 1\n",
+        "E1041",
+        "anonymous_union_ambiguous_literal",
+    );
+}
+
+#[test]
+fn dyn_stores_anonymous_union() {
+    // As a tuple is: the built-in instance fills the vtable, and the text is the payload.
+    passes(
+        "test \"dyn\" =\n    let text: (i64 | string) = \"one\"\n    let number: (i64 | string) = 1\n    let items: [dyn Display] = [Dyn.of text, Dyn.of number, Dyn.of (1, \"one\")]\n    assert (Display.display items[0] == \"one\")\n    assert (Display.display items[1] == \"1\")\n    assert (Display.display items[2] == \"(1, \\\"one\\\")\")\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn const_definitions_refuse_the_operators_as_for_tuples() {
+    // The message that a tuple and a named union get: the operator is a call of an instance.
+    let message = "an operator on a record, tuple, array, or union is not allowed in a const def; apply it to their fields";
+    for source in [
+        "const def same :: bool =\n    let v: (i64 | string) = 1\n    let w: (i64 | string) = 1\n    v == w\nsame\n",
+        "const def same :: bool =\n    let v: (i64 * string) = (1, \"a\")\n    let w: (i64 * string) = (1, \"a\")\n    v == w\nsame\n",
+    ] {
+        let error = rejects(source, "E1026", "const_aggregate_operator");
+        assert_eq!(error.message, message, "{source}");
+    }
+}
+
+#[test]
+fn literal_patterns_compare_by_eq() {
+    // Review round 1: a literal pattern is a comparison with `==`, so the built-in `Eq` gives an
+    // anonymous union literal patterns (they were E1005 before A26). The literal is injected as
+    // in `v == 1`: `1` is the `i64` member, so the `f64` value `1.0` does not match it, and a
+    // value of another member matches no literal. NaN equals nothing; `-0.0` equals `0.0`.
+    let source = r#"record Row { key: (i64 | string), n: i64 }
+
+def name :: own (i64 | string) -> string = \v ->
+    match v with
+    | 1 -> "one"
+    | "x" -> "ex"
+    | _ -> "other"
+
+def pair :: own ((i64 | string) * i64) -> string = \p ->
+    match p with
+    | (1, 2) -> "a"
+    | ("s", _) -> "b"
+    | _ -> "c"
+
+def kinds :: (i64 | string | f64 | char) -> i64 = \value ->
+    match value with
+    | 1 -> 1
+    | -2 -> 2
+    | "x" -> 3
+    | 1.5 -> 4
+    | 'c' -> 5
+    | 7 | 8 | "y" -> 6
+    | _ -> 0
+
+def row :: own Row -> i64 = \r ->
+    match r with
+    | Row { key: 0, n: _ } -> 1
+    | Row { key: "k", n: 1 } -> 2
+    | Row { key: _, n: 5 } -> 3
+    | _ -> 4
+
+def mixed :: own (i64 | string | [string]) -> i64 = \v ->
+    match v with
+    | 0 -> 1
+    | "a" -> 2
+    | :? [string] as items -> 10 + items.length
+    | :? string as s -> 100 + s.length
+    | _ -> 9
+
+def guarded :: own (i64 | string) -> i64 = \v ->
+    | 1 -> 10
+    | "x" -> 20
+    | other -> if other < "a" then 30 else 40
+
+test "literal patterns" =
+    assert (name 1 == "one")
+    assert (name "x" == "ex")
+    assert (name 2 == "other")
+    assert (name "1" == "other")
+    assert (pair (1, 2) == "a")
+    assert (pair ("s", 2) == "b")
+    assert (pair (1, 3) == "c")
+    assert (pair ("t", 2) == "c")
+
+test "kinds of literals" =
+    assert (kinds 1 == 1)
+    assert (kinds (-2) == 2)
+    assert (kinds "x" == 3)
+    assert (kinds 1.5 == 4)
+    assert (kinds 'c' == 5)
+    assert (kinds 8 == 6)
+    assert (kinds "y" == 6)
+    assert (kinds 1.0 == 0)
+    assert (kinds "c" == 0)
+    assert (kinds 2 == 0)
+
+test "records, type tests, guards and loops" =
+    assert (row (Row { key: 0, n: 9 }) == 1)
+    assert (row (Row { key: "k", n: 1 }) == 2)
+    assert (row (Row { key: "k", n: 5 }) == 3)
+    assert (row (Row { key: 1, n: 1 }) == 4)
+    assert (mixed 0 == 1)
+    assert (mixed "a" == 2)
+    assert (mixed ["p", "q"] == 12)
+    assert (mixed "abc" == 103)
+    assert (mixed 5 == 9)
+    assert (guarded 1 == 10)
+    assert (guarded "x" == 20)
+    assert (guarded 5 == 30)
+    assert (guarded "z" == 40)
+    let items: [(i64 | string)] = [1, "x", 3]
+    let mut total = 0
+    for item in items do
+        total = total + (match item with
+            | 1 -> 1
+            | "x" -> 10
+            | _ -> 100)
+    assert (total == 111)
+
+test "nan and signed zero follow the member's Eq" =
+    let zero = 0.0
+    let nan: (f64 | string) = zero / zero
+    assert ((match nan with
+        | 0.0 -> 1
+        | _ -> 2) == 2)
+    let negative: (f64 | string) = -0.0
+    assert ((match negative with
+        | 0.0 -> 1
+        | _ -> 2) == 1)
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+    // The rules of the injected operand hold for the pattern: a literal that fits two members,
+    // a literal of no member, and a member without `Eq`.
+    let error = rejects(
+        "def f :: own (i32 | i64) -> i64 = \\v ->\n    match v with\n    | 1 -> 1\n    | _ -> 0\n0\n",
+        "E1041",
+        "anonymous_union_ambiguous_literal",
+    );
+    assert_eq!(
+        error.message,
+        "the literal 1 could be i32 or i64 in (i32 | i64)"
+    );
+    accepts(
+        "def f :: own (i32 | i64) -> i64 = \\v ->\n    match v with\n    | 1i64 -> 1\n    | _ -> 0\n0\n",
+    );
+    rejects(
+        "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | true -> 1\n    | _ -> 0\n0\n",
+        "E1003",
+        "anonymous_union_not_member",
+    );
+    let error = rejects(
+        "record Point { x: i64 }\ndef f :: own (i64 | Point) -> i64 = \\v ->\n    match v with\n    | 1 -> 1\n    | _ -> 0\n0\n",
+        "E1005",
+        "no_instance",
+    );
+    assert_eq!(
+        error.message,
+        "no instance for Eq<Main.Point>; define an instance or use a supported type"
+    );
+    // A literal pattern covers one value, so the match needs a wildcard arm, as on any other type:
+    // the members that the type tests cover are not subtracted.
+    let error = rejects(
+        "def f :: own (i64 | bool) -> i64 = \\v ->\n    match v with\n    | true -> 1\n    | false -> 2\n    | :? i64 as n -> n\n0\n",
+        "E1021",
+        "non_exhaustive_match",
+    );
+    assert_eq!(error.message, "match is not exhaustive; missing: _");
+    // In a const def the comparison is the operator's, and so is the diagnostic, at the pattern.
+    let source = "const def pick :: i64 =\n    let v: (i64 | string) = 1\n    match v with\n    | 1 -> 10\n    | _ -> 30\npick\n";
+    let error = rejects(source, "E1026", "const_aggregate_operator");
+    assert_eq!(error.span.start, source.find("| 1").unwrap() + 2);
+    assert_eq!(&source[error.span.start..error.span.end], "1");
+}
+
+// A26 Phase 2: `Encode` and `Decode` (D7). `Encode` writes the JSON of the payload and no tag, so
+// `Decode` exists only when the kind of a JSON value selects one member. The expected texts are
+// written by hand from the JSON that std's instances write for the payloads (compact, a record as
+// an object in declaration order, a tuple as an array, `None` as `null`) and from the messages of
+// `Json.Error` in `std/Json.tz`.
+
+#[test]
+fn encode_writes_payload_without_tag() {
+    let source = r#"record Point { x: i64, y: string } deriving (Encode)
+union Shape = Dot | Line of i64 deriving (Encode)
+
+def text :: Encode<'a> => own 'a -> string = \value ->
+    match Json.serialize value with
+    | Ok bytes -> String.from_utf8 (ref bytes)
+    | Error error -> Display.display error
+
+def cell :: own (i64 | [i64]) -> (i64 | [i64]) = \value -> value
+
+test "payload only" =
+    let number: (i64 | string) = 1
+    let word: (string | i64) = "one"
+    assert (text number == "1")
+    assert (text word == "\"one\"")
+    let flag: (bool | f64 | [i64] | (i64 * string)) = true
+    let ratio: (bool | f64 | [i64] | (i64 * string)) = 1.5
+    let items: (bool | f64 | [i64] | (i64 * string)) = [1, 2]
+    let pair: (bool | f64 | [i64] | (i64 * string)) = (3, "c")
+    assert (text flag == "true")
+    assert (text ratio == "1.5")
+    assert (text items == "[1,2]")
+    assert (text pair == "[3,\"c\"]")
+
+test "members that Decode could not tell apart" =
+    let whole: (i64 | f64) = 2
+    let half: (i64 | f64) = 0.5
+    assert (text whole == "2")
+    assert (text half == "0.5")
+    let four: Maybe<i64> = Some 4
+    let none: Maybe<i64> = None
+    let present: (Maybe<i64> | string) = four
+    let absent: (Maybe<i64> | string) = none
+    assert (text present == "4")
+    assert (text absent == "null")
+    let line: (Shape | i64) = Line 7
+    let dot: (Shape | i64) = Dot
+    assert (text line == "{\"Line\":7}")
+    assert (text dot == "\"Dot\"")
+    let point: (Point | i64) = Point { x: 1, y: "a" }
+    assert (text point == "{\"x\":1,\"y\":\"a\"}")
+    let json: (Json.Value | i64) = Json.Null
+    assert (text json == "null")
+
+test "the error of the member" =
+    let zero = 0.0
+    let nan: (f64 | string) = zero / zero
+    assert (text nan == "json: non-finite number")
+
+test "inside other values" =
+    let items: [(i64 | string)] = [1, "two", 3]
+    assert (Result.is_ok (Encode.encode (ref items)))
+    assert (text items == "[1,\"two\",3]")
+    let table: Map<string, (i64 | [i64])> = Map.empty() |> Map.insert "a" (cell 1) |> Map.insert "b" (cell [2, 3])
+    assert (text table == "{\"a\":1,\"b\":[2,3]}")
+    let nested: ((i64 | string) * Maybe<(bool | string)>) = (1, Some "s")
+    assert (text nested == "[1,\"s\"]")
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+    // The bodies are functions of the specializer, emitted the same way twice.
+    let ir = accepts(
+        "let a: (i64 | string) = 1\nlet encoded = Encode.encode (ref a)\nlet decoded: Result<(i64 | string), Json.Error> = Json.deserialize u8\"1\"\nif Result.is_ok (ref encoded) && Result.is_ok (ref decoded) then 1 else 0\n",
+    );
+    assert!(ir.contains("$intrinsic.Encode.encode."), "{ir}");
+    assert!(ir.contains("$intrinsic.Decode.decode."), "{ir}");
+    // A member without `Encode` is named, as for the other classes.
+    let error = rejects(
+        "record Point { x: i64 }\nlet a: (i64 | Point) = 1\nlet t = Json.serialize a\n0\n",
+        "E1005",
+        "no_instance",
+    );
+    assert_eq!(
+        error.message,
+        "no instance for Encode<Main.Point>; define an instance or use a supported type"
+    );
+}
+
+#[test]
+fn dyn_encode_stores_anonymous_union() {
+    // As a tuple is: the built-in instance fills the vtable of `dyn Encode`.
+    passes(
+        r#"test "dyn" =
+    let word: (i64 | string) = "one"
+    let number: (i64 | string) = 1
+    let stored: [dyn Encode] = [Dyn.of word, Dyn.of number, Dyn.of (1, "one")]
+    let mut all = ""
+    for item in stored do
+        all = all + (match Encode.encode item with
+            | Ok json -> String.from_utf8 (ref (Json.to_utf8string (ref json)))
+            | Error error -> Display.display error) + ";"
+    assert (all == "\"one\";1;[1,\"one\"];")
+"#,
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn decode_selects_member_by_kind() {
+    let source = r#"record Point { x: i64, y: string } deriving (Decode)
+
+type Doc = (i64 | bool | string | [i64] | Point)
+
+def bytes :: own string -> utf8string = \text -> Utf8String.from_string (ref text)
+
+def read :: own string -> string = \text ->
+    let decoded: Result<Doc, Json.Error> = Json.deserialize (ref (bytes text))
+    match decoded with
+    | Error error -> "error " + Display.display error
+    | Ok value ->
+        match value with
+        | :? i64 as n -> $"i64 {n}"
+        | :? bool as b -> $"bool {b}"
+        | :? string as s -> "string " + s
+        | :? [i64] as items -> $"array {items}"
+        | :? Point as p -> $"point {p.x} {p.y}"
+
+test "one member for each kind" =
+    assert (read "42" == "i64 42")
+    assert (read "-0" == "i64 0")
+    assert (read " true" == "bool true")
+    assert (read "false" == "bool false")
+    assert (read "\"x\"" == "string x")
+    assert (read "\"\"" == "string ")
+    assert (read "[1, 2]" == "array [1, 2]")
+    assert (read "[]" == "array []")
+    assert (read "{\"y\": \"b\", \"x\": 3}" == "point 3 b")
+
+def float_or_text :: own string -> string = \text ->
+    let decoded: Result<(string | f64), Json.Error> = Json.deserialize (ref (bytes text))
+    match decoded with
+    | Ok value ->
+        match value with
+        | :? f64 as f -> if f == 2.5 then "f64 2.5" elif f == 3.0 then "f64 3" else "f64"
+        | :? string as s -> "string " + s
+    | Error error -> Display.display error
+
+def list_or_flag :: Decode<'a> => own string -> Result<(bool | ['a]), Json.Error> = \text ->
+    Json.deserialize (ref (bytes text))
+
+def collection :: own string -> string = \text ->
+    let decoded: Result<(i64 | utf8string | Map<string, i64>), Json.Error> = Json.deserialize (ref (bytes text))
+    match decoded with
+    | Ok value ->
+        match value with
+        | :? i64 as n -> $"i64 {n}"
+        | :? utf8string as s -> $"utf8string {s.length}"
+        | :? Map<string, i64> as map -> $"map {Map.length map}"
+    | Error error -> Display.display error
+
+def sequence :: own string -> string = \text ->
+    let decoded: Result<(Set<i64> | string | bool), Json.Error> = Json.deserialize (ref (bytes text))
+    match decoded with
+    | Ok value ->
+        match value with
+        | :? Set<i64> as set -> $"set {Set.length set}"
+        | :? string as s -> "string " + s
+        | :? bool as b -> $"bool {b}"
+    | Error error -> Display.display error
+
+def pair :: own string -> string = \text ->
+    let decoded: Result<((i64 * string) | i64), Json.Error> = Json.deserialize (ref (bytes text))
+    match decoded with
+    | Ok value ->
+        match value with
+        | :? (i64 * string) as both ->
+            match both with
+            | (n, s) -> $"pair {n} {s}"
+        | :? i64 as n -> $"i64 {n}"
+    | Error error -> Display.display error
+
+test "the other types of the table" =
+    assert (float_or_text "2.5" == "f64 2.5")
+    assert (float_or_text "3" == "f64 3")
+    assert (float_or_text "\"2.5\"" == "string 2.5")
+    assert (collection "7" == "i64 7")
+    assert (collection "\"abc\"" == "utf8string 3")
+    assert (collection "{\"a\": 1, \"b\": 2}" == "map 2")
+    assert (collection "[[\"a\", 1]]" == "map 1")
+    assert (sequence "[3, 1, 2]" == "set 3")
+    assert (sequence "\"s\"" == "string s")
+    assert (sequence "true" == "bool true")
+    assert (pair "[1, \"a\"]" == "pair 1 a")
+    assert (pair "5" == "i64 5")
+
+test "generic functions and nested values" =
+    let numbers: Result<(bool | [i64]), Json.Error> = list_or_flag "[1, 2, 3]"
+    let found = match numbers with
+        | Ok value ->
+            match value with
+            | :? [i64] as items -> items.length
+            | :? bool -> -1
+        | Error _ -> -2
+    assert (found == 3)
+    let texts: Result<(bool | [string]), Json.Error> = list_or_flag "true"
+    let flag = match texts with
+        | Ok value ->
+            match value with
+            | :? [string] -> 0
+            | :? bool as b -> if b then 1 else 2
+        | Error _ -> -2
+    assert (flag == 1)
+    let mixed: Result<[(i64 | string)], Json.Error> = Json.deserialize u8"[1, \"two\", 3]"
+    let shown = match mixed with
+        | Ok items -> Display.display items
+        | Error error -> Display.display error
+    assert (shown == "[1, \"two\", 3]")
+    let optional: Result<Maybe<(i64 | string)>, Json.Error> = Json.deserialize u8"null"
+    let absent = match optional with
+        | Ok found -> Maybe.is_none (ref found)
+        | Error _ -> false
+    assert absent
+    let method: Result<(i64 | string), Json.Error> = match Json.parse u8"\"m\"" with
+        | Ok json -> Decode.decode (ref json)
+        | Error error -> Error error
+    let text = match method with
+        | Ok value -> Display.display value
+        | Error error -> Display.display error
+    assert (text == "m")
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+}
+
+#[test]
+fn decode_overlap_is_rejected() {
+    let advice = "so the JSON value does not select one member; decode Json.Value and match on it, or use a union with named cases";
+    let open = "is not limited to one kind of JSON value (a Maybe, a union with named cases, Json.Value, or a type with a hand-written Decode can read several)";
+    let decode =
+        |ty: &str| format!("let r: Result<{ty}, Json.Error> = Json.deserialize u8\"1\"\n0\n");
+    let shape = "union Shape = Dot | Line of i64 deriving (Decode)\n";
+    let point =
+        "record Point { x: i64 } deriving (Decode)\nrecord Size { w: i64 } deriving (Decode)\n";
+    let manual = "record Manual { x: i64 }\ninstance Decode<Manual> {\n    fn decode json = Result.Ok (Manual { x: 1 })\n}\n";
+    for (source, union, reason) in [
+        // Two members read the same kind.
+        (
+            decode("(i64 | f64)"),
+            "(i64 | f64)",
+            "the members i64 and f64 both read a JSON number".to_owned(),
+        ),
+        (
+            decode("(Map<i64, string> | [i64])"),
+            "(Map<i64, string> | [i64])",
+            "the members Map<i64, string> and [i64] both read a JSON array".to_owned(),
+        ),
+        (
+            decode("(utf8string | string | i64)"),
+            "(i64 | string | utf8string)",
+            "the members string and utf8string both read a JSON string".to_owned(),
+        ),
+        (
+            decode("((i64 * i64) | Vec<i64> | bool)"),
+            "(bool | Vec<i64> | (i64 * i64))",
+            "the members Vec<i64> and (i64 * i64) both read a JSON array".to_owned(),
+        ),
+        (
+            decode("(HashMap<string, i64> | HashSet<i64>)"),
+            "(HashMap<string, i64> | HashSet<i64>)",
+            "the members HashMap<string, i64> and HashSet<i64> both read a JSON array".to_owned(),
+        ),
+        (
+            format!("{point}{}", decode("(Point | Size)")),
+            "(Main.Point | Main.Size)",
+            "the members Main.Point and Main.Size both read a JSON object".to_owned(),
+        ),
+        (
+            format!("{point}{}", decode("(Point | Map<string, i64>)")),
+            // Records are in the order of their qualified names: `Main.Point`, then `Map.Map`.
+            "(Main.Point | Map<string, i64>)",
+            "the members Main.Point and Map<string, i64> both read a JSON object".to_owned(),
+        ),
+        // A member that is not limited to kinds of its own.
+        (
+            decode("(Maybe<i64> | string)"),
+            "(string | Maybe<i64>)",
+            format!("the member Maybe<i64> {open}"),
+        ),
+        (
+            decode("(Json.Value | i64)"),
+            "(i64 | Json.Value)",
+            format!("the member Json.Value {open}"),
+        ),
+        (
+            format!("{shape}{}", decode("(Shape | i64)")),
+            "(i64 | Main.Shape)",
+            format!("the member Main.Shape {open}"),
+        ),
+        (
+            format!("{manual}{}", decode("(Manual | i64)")),
+            "(i64 | Main.Manual)",
+            format!("the member Main.Manual {open}"),
+        ),
+        // Copilot review round 1: an overlap inside a member, or beside the union in a tuple, is
+        // reported once every other obligation holds.
+        (
+            decode("(string | [(i64 | f64)])"),
+            "(i64 | f64)",
+            "the members i64 and f64 both read a JSON number".to_owned(),
+        ),
+        (
+            decode("((i64 | f64) * string)"),
+            "(i64 | f64)",
+            "the members i64 and f64 both read a JSON number".to_owned(),
+        ),
+        // The method, a generic function and derived instances reach the same rule.
+        (
+            "def f :: ref Json.Value -> Result<(i64 | f64), Json.Error> = \\json -> Decode.decode json\n0\n".to_owned(),
+            "(i64 | f64)",
+            "the members i64 and f64 both read a JSON number".to_owned(),
+        ),
+        // Review round 2: a generic function is checked where its type variables are known,
+        // as before A26 (`constraints_with_type_variables_wait_for_their_types`).
+        (
+            "def f :: Decode<'a> => ref Json.Value -> Result<(['a] | Vec<'a>), Json.Error> = \\json -> Decode.decode json\nlet value = Result.get (Json.parse (ref u8\"[1]\"))\nlet r: Result<([i64] | Vec<i64>), Json.Error> = f (ref value)\n0\n".to_owned(),
+            "([i64] | Vec<i64>)",
+            "the members [i64] and Vec<i64> both read a JSON array".to_owned(),
+        ),
+        (
+            "record R { v: (i64 | f64) } deriving (Decode)\n0\n".to_owned(),
+            "(i64 | f64)",
+            "the members i64 and f64 both read a JSON number".to_owned(),
+        ),
+        (
+            "union U = A | B of (Maybe<i64> | string) deriving (Encode, Decode)\n0\n".to_owned(),
+            "(string | Maybe<i64>)",
+            format!("the member Maybe<i64> {open}"),
+        ),
+    ] {
+        let error = rejects(&source, "E1025", "anonymous_union_decode_overlap");
+        assert_eq!(
+            error.message,
+            format!("no Decode instance for {union}: {reason}, {advice}"),
+            "{source}"
+        );
+    }
+    // A member without `Decode` is reported as that, before the kinds are compared.
+    for (source, message) in [
+        (
+            decode("(char | i64 | f64)"),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
+        (
+            format!("record Plain {{ x: i64 }}\n{}", decode("(Plain | i64)")),
+            "no instance for Decode<Main.Plain>; define an instance or use a supported type",
+        ),
+        (
+            decode("((i64 * i64 * i64 * i64 * i64) | [i64])"),
+            "no instance for Decode<(i64 * i64 * i64 * i64 * i64)>; define an instance or use a supported type",
+        ),
+        // Review round 2: a derived instance whose context fails is a member without `Decode`
+        // too, next to a member of the same kind as next to one of another kind.
+        (
+            format!(
+                "record Box<'a> {{ v: 'a }} deriving (Decode)\n{point}{}",
+                decode("(Box<char> | Point)")
+            ),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
+        (
+            format!(
+                "record Box<'a> {{ v: 'a }} deriving (Decode)\n{}",
+                decode("(Box<char> | i64)")
+            ),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
+        // Copilot review round 1: also when the overlap is inside another member, or beside the
+        // union in a tuple, whichever of the two the canonical order resolves first.
+        (
+            decode("(char | [(i64 | f64)])"),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
+        (
+            decode("(unit | [(i64 | f64)])"),
+            "no instance for Decode<unit>; define an instance or use a supported type",
+        ),
+        (
+            format!(
+                "record Plain {{ x: i64 }}\n{}",
+                decode("(Plain | [(i64 | f64)])")
+            ),
+            "no instance for Decode<Main.Plain>; define an instance or use a supported type",
+        ),
+        (
+            decode("((i64 * i64 * i64 * i64 * i64) | [(i64 | f64)])"),
+            "no instance for Decode<(i64 * i64 * i64 * i64 * i64)>; define an instance or use a supported type",
+        ),
+        (
+            decode("(char * (i64 | f64))"),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
+        (
+            decode("((i64 | f64) * char)"),
+            "no instance for Decode<char>; define an instance or use a supported type",
+        ),
+    ] {
+        let error = rejects(&source, "E1005", "no_instance");
+        assert_eq!(error.message, message, "{source}");
+    }
+    // `Encode` has no such rule, and a record with a derived `Decode` reads an object only.
+    accepts("record R { v: (i64 | f64 | Maybe<i64>) } deriving (Encode)\n0\n");
+    accepts(&format!("{point}{}", decode("(Point | i64 | [Size])")));
+    accepts(
+        "def f :: Decode<'a> => ref Json.Value -> Result<(['a] | string), Json.Error> = \\json -> Decode.decode json\n0\n",
+    );
+}
+
+#[test]
+fn generic_members_need_an_instance_for_every_argument() {
+    // A member with type variables and no instance for all of them (`Pair<'a>` with no
+    // `Decode<Pair<'a>>`) can only meet its constraint by an instance for some type arguments,
+    // which is hand-written and so not limited to one kind of JSON value. Review round 1 put
+    // the diagnostic where the union is written; review round 2 found that this rejects
+    // definitions that A24 accepted, so the constraint of the union waits for the types, as it
+    // did then, and the diagnostic is where they are known: the call in the program, never the
+    // generic body or std (`Classes::settle`).
+    let advice = "so the JSON value does not select one member; decode Json.Value and match on it, or use a union with named cases";
+    let open = |union: &str, member: &str| {
+        format!(
+            "no Decode instance for {union}: the member {member} is not limited to one kind of JSON value (a Maybe, a union with named cases, Json.Value, or a type with a hand-written Decode can read several), {advice}"
+        )
+    };
+    // The library is accepted by itself.
+    let library = "record Pair<'a> { x: 'a }\n\ndef read :: Decode<Pair<'a>> => ref Json.Value -> Result<(Pair<'a> | i64), Json.Error> = \\json -> Decode.decode json\n";
+    accepts_modules(&[("Lib", library)]);
+    // A program that gives the instance for one type argument and calls the function gets the
+    // diagnostic at its call.
+    let program = "instance Decode<Lib.Pair<i64>> {\n    fn decode json = Result.map (\\x -> Lib.Pair { x: x }) (Decode.decode json)\n}\n\nlet value = Result.get (Json.parse (ref u8\"3\"))\nlet back: Result<(Lib.Pair<i64> | i64), Json.Error> = Lib.read (ref value)\nmatch back with\n| Ok _ -> \"ok\"\n| Error error -> Display.display error\n";
+    let error = rejects_modules(
+        &[("Main", program), ("Lib", library)],
+        "E1025",
+        "anonymous_union_decode_overlap",
+    );
+    assert_eq!(
+        error.message,
+        open("(i64 | Lib.Pair<i64>)", "Lib.Pair<i64>")
+    );
+    assert_eq!(error.span.source, Some(0));
+    assert_eq!(&program[error.span.start..error.span.end], "Lib.read");
+    // Through a generic function of std the diagnostic is at the call in the program, not in std.
+    let source = "record Plain<'a> { w: 'a }\ninstance Decode<Plain<i64>> {\n    fn decode json = Result.Ok (Plain { w: 1 })\n}\ndef read :: Decode<Plain<'a>> => ref utf8string -> Result<(Plain<'a> | string), Json.Error> = \\text -> Json.deserialize text\nlet back: Result<(Plain<i64> | string), Json.Error> = read u8\"1\"\nif Result.is_ok (ref back) then 1 else 0\n";
+    let error = rejects(source, "E1025", "anonymous_union_decode_overlap");
+    assert_eq!(
+        error.message,
+        open("(string | Main.Plain<i64>)", "Main.Plain<i64>")
+    );
+    assert_eq!(error.span.source, Some(0));
+    assert_eq!(&source[error.span.start..error.span.end], "read");
+    // A derived instance, a member of two variables, a tuple that std gives no instance, and a
+    // member without variables and without an instance next to one with variables: accepted
+    // where they are written, and rejected where they are used.
+    for (definition, used, code, kind, message, at) in [
+        (
+            "record Plain<'a> { w: 'a }\nrecord Holder<'a> { v: (Plain<'a> | string) } deriving (Decode)\n",
+            "let held: Result<Holder<i64>, Json.Error> = Json.deserialize u8\"{}\"\n",
+            "E1005",
+            "no_instance",
+            "no instance for Decode<Main.Plain<i64>>; define an instance or use a supported type".to_owned(),
+            "Json.deserialize",
+        ),
+        (
+            "record Two<'a, 'b> { a: 'a, b: 'b }\ninstance Decode<Two<i64, 'b>> {\n    fn decode json = Result.Error (Json.Error { kind: Json.Syntax, offset: 0 })\n}\ndef read :: Decode<Two<'k, 'v>> => ref Json.Value -> Result<(Two<'k, 'v> | bool), Json.Error> = \\json -> Decode.decode json\n",
+            "let value = Result.get (Json.parse (ref u8\"1\"))\nlet r: Result<(Two<i64, string> | bool), Json.Error> = read (ref value)\n",
+            "E1025",
+            "anonymous_union_decode_overlap",
+            open("(bool | Main.Two<i64, string>)", "Main.Two<i64, string>"),
+            "read",
+        ),
+        (
+            "def read :: Decode<('a * 'a * 'a * 'a * 'a)> => ref Json.Value -> Result<(('a * 'a * 'a * 'a * 'a) | i64), Json.Error> = \\json -> Decode.decode json\n",
+            "let value = Result.get (Json.parse (ref u8\"1\"))\nlet r: Result<((i64 * i64 * i64 * i64 * i64) | i64), Json.Error> = read (ref value)\n",
+            "E1005",
+            "no_instance",
+            "no instance for Decode<(i64 * i64 * i64 * i64 * i64)>; define an instance or use a supported type".to_owned(),
+            "read",
+        ),
+        (
+            "record Plain<'a> { w: 'a } deriving (Decode)\ndef read :: Decode<'a> => ref Json.Value -> Result<(Plain<'a> | char), Json.Error> = \\json -> Decode.decode json\n",
+            "let value = Result.get (Json.parse (ref u8\"1\"))\nlet r: Result<(Plain<i64> | char), Json.Error> = read (ref value)\n",
+            "E1005",
+            "no_instance",
+            "no instance for Decode<char>; define an instance or use a supported type".to_owned(),
+            "read",
+        ),
+    ] {
+        accepts(&format!("{definition}0\n"));
+        let source = format!("{definition}{used}0\n");
+        let error = rejects(&source, code, kind);
+        assert_eq!(error.message, message, "{source}");
+        assert_eq!(&source[error.span.start..error.span.end], at, "{source}");
+    }
+    // An instance for every type argument settles the kind: a derived one reads an object, and
+    // the type arguments need `Decode` where the function is used.
+    let source = r#"record Plain<'a> { w: 'a } deriving (Decode)
+record Holder<'a> { v: (Plain<'a> | string) } deriving (Decode)
+
+def read :: Decode<'a> => ref Json.Value -> Result<(Plain<'a> | i64), Json.Error> = \json -> Decode.decode json
+def both :: (Decode<'a>, Decode<'b>) => ref Json.Value -> Result<(['a] | Plain<'b> | string), Json.Error> = \json -> Decode.decode json
+
+test "generic members with an instance for every argument" =
+    let value = Result.get (Json.parse (ref u8"{\"w\":3}"))
+    let back: Result<(Plain<i64> | i64), Json.Error> = read (ref value)
+    let n = match back with
+        | Ok found ->
+            match found with
+            | :? i64 as n -> n
+            | :? Plain<i64> as p -> p.w + 10
+        | Error _ -> -1
+    assert (n == 13)
+    let number = Result.get (Json.parse (ref u8"5"))
+    let direct: Result<(Plain<i64> | i64), Json.Error> = read (ref number)
+    let m = match direct with
+        | Ok found ->
+            match found with
+            | :? i64 as n -> n
+            | :? Plain<i64> as p -> p.w + 10
+        | Error _ -> -1
+    assert (m == 5)
+    let held: Result<Holder<i64>, Json.Error> = Json.deserialize u8"{\"v\":{\"w\":4}}"
+    let w = match held with
+        | Ok holder ->
+            match holder.v with
+            | :? string -> 0
+            | :? Plain<i64> as p -> p.w
+        | Error _ -> -1
+    assert (w == 4)
+    let third: Result<([i64] | Plain<bool> | string), Json.Error> = both (ref value)
+    let shown = match third with
+        | Ok _ -> "ok"
+        | Error error -> Display.display error
+    assert (shown == "json: expected boolean")
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+}
+
+#[test]
+fn constraints_with_type_variables_wait_for_their_types() {
+    // Review round 2: a constraint that still has type variables waits for them where nothing
+    // can meet it yet (no instance matches it). A24 gave anonymous unions no instance, so their
+    // constraints in a generic function that is never called were accepted. The built-in
+    // instances expand them into the members' constraints only when every member can meet its
+    // own (and, for `Decode`, the kinds of the members are known); otherwise the constraint of
+    // the union stays whole, as before, and is checked where its types are known.
+    for source in [
+        // A member without any instance, with the variable given `Decode` (a tuple accepts the same).
+        "record Plain<'a> { v: 'a }\ndef f :: Decode<'a> => ref Json.Value -> Result<(Plain<'a> | string), Json.Error> = \\j -> Decode.decode j\n0\n",
+        // The constraint of the union in the signature, a member with an instance for one type.
+        "record Pair<'a> { a: 'a }\ninstance Decode<Pair<i64>> {\n    fn decode value = Result.map (\\n -> Pair { a: n }) (Decode.decode value)\n}\ndef dec :: Decode<(Pair<'a> | string)> => ref Json.Value -> Result<(Pair<'a> | string), Json.Error> = \\j -> Decode.decode j\n0\n",
+        // Kinds that are known and overlap.
+        "def dec3 :: Decode<(Maybe<'a> | i64)> => ref Json.Value -> Result<(Maybe<'a> | i64), Json.Error> = \\j -> Decode.decode j\n0\n",
+        "def dec4 :: Decode<(['a] | Vec<'a>)> => ref Json.Value -> Result<(['a] | Vec<'a>), Json.Error> = \\j -> Decode.decode j\n0\n",
+        // A member without the class of Phase 1, next to one with a variable.
+        "def f1 :: Eq<(['a] | (i64 -> i64))> => own (['a] | (i64 -> i64)) -> own (['a] | (i64 -> i64)) -> bool = \\a b -> a == b\n0\n",
+        "def f2 :: Ord<(['a] | bool)> => own (['a] | bool) -> own (['a] | bool) -> bool = \\a b -> a < b\n0\n",
+        "def f4 :: Encode<(['a] | char)> => own (['a] | char) -> bool = \\a -> Result.is_ok (ref (Encode.encode (ref a)))\n0\n",
+        // A derived instance's context, and an instance's context whose members grow.
+        "record R<'a> { v: (['a] | (i64 -> i64)) } deriving (Eq)\n0\n",
+        "record Box<'a> { v: 'a }\ninstance Eq<(Box<['a]> | i64)> => Eq<Box<'a>> {\n    fn eq _ _ = true\n    fn ne _ _ = false\n}\n0\n",
+    ] {
+        accepts(source);
+    }
+    // Where the types are known, the constraint is checked as any other, at the call (also
+    // through another generic function).
+    for (source, code, kind, message, at) in [
+        (
+            "record Plain<'a> { v: 'a }\ndef f :: Decode<'a> => ref Json.Value -> Result<(Plain<'a> | string), Json.Error> = \\j -> Decode.decode j\nlet value = Result.get (Json.parse (ref u8\"3\"))\nlet back: Result<(Plain<i64> | string), Json.Error> = f (ref value)\n0\n",
+            "E1005",
+            "no_instance",
+            "no instance for Decode<Main.Plain<i64>>; define an instance or use a supported type",
+            "f",
+        ),
+        (
+            "def dec4 :: Decode<(['a] | Vec<'a>)> => ref Json.Value -> Result<(['a] | Vec<'a>), Json.Error> = \\j -> Decode.decode j\ndef outer :: Decode<'b> => ref Json.Value -> Result<(['b] | Vec<'b>), Json.Error> = \\j -> dec4 j\nlet value = Result.get (Json.parse (ref u8\"[3]\"))\nlet r: Result<([i64] | Vec<i64>), Json.Error> = outer (ref value)\n0\n",
+            "E1025",
+            "anonymous_union_decode_overlap",
+            "no Decode instance for ([i64] | Vec<i64>): the members [i64] and Vec<i64> both read a JSON array, so the JSON value does not select one member; decode Json.Value and match on it, or use a union with named cases",
+            "outer",
+        ),
+        (
+            "def f1 :: Eq<(['a] | (i64 -> i64))> => own (['a] | (i64 -> i64)) -> own (['a] | (i64 -> i64)) -> bool = \\a b -> a == b\nlet x: ([i64] | (i64 -> i64)) = [1]\nlet y: ([i64] | (i64 -> i64)) = [1]\nf1 x y\n",
+            "E1005",
+            "no_instance",
+            "no instance for Eq<i64 -> i64>; define an instance or use a supported type",
+            "f1",
+        ),
+        (
+            "def f2 :: Ord<(['a] | bool)> => own (['a] | bool) -> own (['a] | bool) -> bool = \\a b -> a < b\nlet x: ([i64] | bool) = true\nlet y: ([i64] | bool) = [1]\nf2 x y\n",
+            "E1005",
+            "no_instance",
+            "no instance for Ord<bool>; define an instance or use a supported type",
+            "f2",
+        ),
+        (
+            "def f4 :: Encode<(['a] | char)> => own (['a] | char) -> bool = \\a -> Result.is_ok (ref (Encode.encode (ref a)))\nlet x: ([i64] | char) = 'c'\nf4 x\n",
+            "E1005",
+            "no_instance",
+            "no instance for Encode<char>; define an instance or use a supported type",
+            "f4",
+        ),
+        (
+            "record R<'a> { v: (['a] | (i64 -> i64)) } deriving (Eq)\nlet a = R { v: [1] }\nlet b = R { v: [1] }\na == b\n",
+            "E1005",
+            "no_instance",
+            "no instance for Eq<i64 -> i64>; define an instance or use a supported type",
+            "a == b",
+        ),
+    ] {
+        let error = rejects(source, code, kind);
+        assert_eq!(error.message, message, "{source}");
+        assert_eq!(&source[error.span.start..error.span.end], at, "{source}");
+    }
+    // A union whose members meet their constraints still gives the members' obligations where
+    // it is written: an instance context of the variable entails them, and calls run.
+    passes(
+        "record Wrap<'a> { v: (['a] | string) }\ninstance Eq<'a> => Eq<Wrap<'a>> {\n    fn rec eq left right = left.v == right.v\n    fn rec ne left right = left.v != right.v\n}\n\ntest \"settled in an instance\" =\n    let a = Wrap { v: [1, 2] }\n    let b = Wrap { v: [1, 2] }\n    let c = Wrap { v: \"x\" }\n    assert (a == b)\n    assert (a != c)\n",
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn members_with_type_variables_share_their_obligations() {
+    // Copilot review round 1: the members of an anonymous union with type variables are resolved
+    // in one shared resolution (`Classes::settle`), so an obligation that several members need is
+    // resolved and counted once, as it is in the members of a union without type variables.
+    // Counted by hand: a member `(Pk * [[[[['a]]]]])` is not counted itself and needs Eq<Pk>,
+    // Eq<i64> (the context of the derived instance), the five arrays and Eq<'a>: 8 obligations.
+    // Counted apart for 16 members, the union needed 1 + 16 * 8 = 129 > 128, so it stayed whole,
+    // and the context Eq<'a> does not entail it (E1027); shared, it needs 1 + 16 + 1 + 6 = 24.
+    let instance = "instance Eq<'a> => Eq<Wrap<'a>> {\n    fn rec eq left right = left.v == right.v\n    fn rec ne left right = left.v != right.v\n}\n";
+    let wrap =
+        |members: usize, member: &dyn Fn(usize) -> String, records: &dyn Fn(usize) -> String| {
+            let declarations: String = (0..members).map(records).collect();
+            let union = (0..members).map(member).collect::<Vec<_>>().join(" | ");
+            format!("{declarations}record Wrap<'a> {{ v: ({union}) }}\n{instance}")
+        };
+    let shared = wrap(16, &|k| format!("(P{k:02} * [[[[['a]]]]])"), &|k| {
+        format!("record P{k:02} {{ v: i64 }} deriving (Eq)\n")
+    });
+    passes(
+        &format!(
+            "{shared}\ndef same :: Eq<'a> => ref Wrap<'a> -> ref Wrap<'a> -> bool = \\left right -> left.v == right.v\n\n\
+             test \"shared elements\" =\n    let a = Wrap {{ v: (P03 {{ v: 1 }}, [[[[[2]]]]]) }}\n    let b = Wrap {{ v: (P03 {{ v: 1 }}, [[[[[2]]]]]) }}\n    let c = Wrap {{ v: (P04 {{ v: 1 }}, [[[[[2]]]]]) }}\n    let d = Wrap {{ v: (P03 {{ v: 1 }}, [[[[[3]]]]]) }}\n    assert (a == b && same (ref a) (ref b))\n    assert (a != c && not (same (ref a) (ref c)))\n    assert (a != d && not (same (ref a) (ref d)))\n"
+        ),
+        Edition::E2026,
+    );
+    // The limit still counts every distinct obligation. A member `(Pk * [[Qk<'a>]])` needs
+    // Eq<Pk>, Eq<[[Qk<'a>]]>, Eq<[Qk<'a>]> and Eq<Qk<'a>> of its own, and all of them share
+    // Eq<i64> and Eq<'a>: 1 + 4 * 31 + 2 = 127 for 31 members, within the budget, and
+    // 1 + 4 * 32 + 2 = 131 for 32, which keeps the union whole (E1027 in the instance).
+    let distinct = |members: usize| {
+        wrap(members, &|k| format!("(P{k:02} * [[Q{k:02}<'a>]])"), &|k| {
+            format!(
+                "record P{k:02} {{ v: i64 }} deriving (Eq)\nrecord Q{k:02}<'a> {{ v: 'a }} deriving (Eq)\n"
+            )
+        })
+    };
+    passes(
+        &format!(
+            "{}\ntest \"distinct elements\" =\n    let a = Wrap {{ v: (P30 {{ v: 1 }}, [[Q30 {{ v: 2 }}]]) }}\n    let b = Wrap {{ v: (P30 {{ v: 1 }}, [[Q30 {{ v: 2 }}]]) }}\n    let c = Wrap {{ v: (P30 {{ v: 1 }}, [[Q30 {{ v: 3 }}]]) }}\n    assert (a == b)\n    assert (a != c)\n",
+            distinct(31)
+        ),
+        Edition::E2026,
+    );
+    let source = distinct(32);
+    let error = rejects(&source, "E1027", "undeclared_instance_constraint");
+    assert_eq!(
+        error.message,
+        "instance method requires an undeclared constraint; add it to the instance context"
+    );
+    assert_eq!(error.span.start, source.find("Eq<Wrap<'a>>").unwrap());
+    // An instance that the resolution of a member meets again is a cycle, as before: members
+    // that share `[Tree<'a>]` reach the derived instance of `Tree<'a>` that is being resolved.
+    // Expected values by hand: the payloads of the same member compare as arrays and tuples do,
+    // and values of two members differ.
+    passes(
+        "record Tree<'a> { v: ((string * 'a) | [Tree<'a>] | ([Tree<'a>] * i64)) } deriving (Eq, Ord)\n\n\
+         def leaf :: string -> i64 -> Tree<i64> = \\s n -> Tree { v: (s, n) }\n\
+         def node :: [Tree<i64>] -> Tree<i64> = \\ts -> Tree { v: ts }\n\
+         def pair :: [Tree<i64>] -> i64 -> Tree<i64> = \\ts n -> Tree { v: (ts, n) }\n\n\
+         test \"recursive members\" =\n    assert (leaf \"a\" 1 == leaf \"a\" 1 && leaf \"a\" 1 != leaf \"a\" 2)\n    assert (leaf \"a\" 1 < leaf \"a\" 2 && leaf \"a\" 9 < leaf \"b\" 0)\n    assert (node [leaf \"a\" 1] == node [leaf \"a\" 1] && node [leaf \"a\" 1] < node [leaf \"a\" 2])\n    assert (pair [leaf \"a\" 1] 2 == pair [leaf \"a\" 1] 2 && pair [leaf \"a\" 1] 2 < pair [leaf \"a\" 1] 3)\n    assert (node [leaf \"a\" 1] != pair [leaf \"a\" 1] 0)\n    assert (node [] != pair [] 0)\n",
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn injected_operands_move_with_their_own_help() {
+    // Review round 2: a comparison injects its other operand into the union like any expected
+    // type does, so a non-Copy variable moves (D-62 decision 3). `ref s` cannot be injected, so
+    // the help of a later use says what does work.
+    let help = |name: &str, copy: &str| {
+        format!(
+            "an anonymous union holds its value, so injecting '{name}' moved it; use '{name}' before that, or inject a copy{copy}"
+        )
+    };
+    for (source, name, copy) in [
+        (
+            "let a: (i64 | string) = \"s1\"\nlet s = \"s1\"\nlet same = a == s\n$\"{same} {s}\"\n",
+            "s",
+            " (clone_string ref s)",
+        ),
+        (
+            "let a: (i64 | utf8string) = u8\"s1\"\nlet s = u8\"s1\"\nlet same = a < s\nUtf8String.length (ref s)\n",
+            "s",
+            " (Utf8String.clone ref s)",
+        ),
+        (
+            "let a: ([string] | string) = [\"x\"]\nlet t = [\"x\"]\nlet same = a == t\nt.length\n",
+            "t",
+            "",
+        ),
+        // The same holds for any other injection.
+        (
+            "let s = \"s1\"\nlet v: (i64 | string) = s\ns.length\n",
+            "s",
+            " (clone_string ref s)",
+        ),
+    ] {
+        let error = rejects(source, "E1012", "use_after_move");
+        assert_eq!(
+            error.message,
+            format!("use of moved or partially moved value '{name}'"),
+            "{source}"
+        );
+        assert_eq!(error.help, Some(help(name, copy)), "{source}");
+    }
+    let error = rejects(
+        "record R { name: string, n: i64 }\nlet a: (i64 | string) = \"s1\"\nlet r = R { name: \"s1\", n: 1 }\nlet same = a == r.name\nr.name.length\n",
+        "E1012",
+        "use_after_move",
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "an anonymous union holds its value, so injecting the field moved it out of 'r'; use the field before that, or inject a copy"
+        )
+    );
+    // `ref s` is no injection: a reference cannot move (unchanged).
+    rejects(
+        "let a: (i64 | string) = \"s1\"\nlet s = \"s1\"\nlet same = a == ref s\n$\"{same} {s}\"\n",
+        "E1012",
+        "move_out_of_reference_binding",
+    );
+    // A Copy operand stays, and the ways that keep a non-Copy one work.
+    passes(
+        "test \"operands that stay\" =\n    let a: (i64 | string) = \"s1\"\n    let n = 1\n    assert (not (a == n))\n    assert (n == 1)\n    let s = \"s1\"\n    assert (a == clone_string ref s)\n    let tested = match a with\n        | :? string as t -> t == s\n        | _ -> false\n    assert tested\n    assert (s.length == 2)\n    let b: (i64 | string) = \"s1\"\n    assert (s.length == 2 && b == s)\n",
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn top_level_union_result_is_shown() {
+    // Review round 2: a top-level result prints through `Display` when its type has one, so a
+    // program whose result is an anonymous union prints the payload (A24 printed nothing, since
+    // the union had no `Display`).
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-anonymous-unions-result-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("Main.tz"),
+        "def pick :: i64 -> (i64 | string) = \\n -> if n > 0 then n else \"none\"\npick 0\n",
+    )
+    .unwrap();
+    for optimization in ["-O0", "-O3"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .current_dir(&root)
+            .args(["run", "Main.tz", optimization])
+            .env("TSUZURI_CACHE_DIR", root.join("cache"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "none\n");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn decode_reads_the_kind_whatever_encode_wrote() {
+    // Review round 1: the kinds that select a member are those that the `Decode` instances read.
+    // `Encode` and `Decode` of std and derived pairs agree on the kind, so a value comes back
+    // as the member it was. A record with a derived `Decode` and a hand-written `Encode` that
+    // writes another kind does not round-trip by itself either; inside a union its JSON is read
+    // by the member of that kind, or by none. This is what the reference says.
+    let source = r#"record Number { x: i64 } deriving (Eq, Decode)
+instance Encode<Number> {
+    fn encode value = Encode.encode (ref value.x)
+}
+record Text { x: i64 } deriving (Eq, Decode)
+instance Encode<Text> {
+    fn encode value = Encode.encode (ref "text")
+}
+record Both { x: i64 } deriving (Eq, Encode, Decode)
+
+def member :: own Result<(Number | i64), Json.Error> -> string = \back ->
+    match back with
+    | Ok found ->
+        match found with
+        | :? i64 -> "i64"
+        | :? Number -> "Number"
+    | Error error -> Display.display error
+
+test "the kind of the JSON value selects the member" =
+    let number: (Number | i64) = Number { x: 1 }
+    let written = Result.get (Json.serialize (ref number))
+    assert (String.from_utf8 (ref written) == "1")
+    let back: Result<(Number | i64), Json.Error> = Json.deserialize (ref written)
+    assert (member back == "i64")
+    let text: (Text | i64) = Text { x: 1 }
+    let quoted = Result.get (Json.serialize (ref text))
+    assert (String.from_utf8 (ref quoted) == "\"text\"")
+    let none: Result<(Text | i64), Json.Error> = Json.deserialize (ref quoted)
+    let shown = match none with
+        | Ok _ -> "ok"
+        | Error error -> Display.display error
+    assert (shown == "json: expected number or object")
+
+test "derived pairs come back as the member they were" =
+    let both: (Both | i64) = Both { x: 1 }
+    let object = Result.get (Json.serialize (ref both))
+    assert (String.from_utf8 (ref object) == "{\"x\":1}")
+    let again: Result<(Both | i64), Json.Error> = Json.deserialize (ref object)
+    let same = match again with
+        | Ok found ->
+            match found with
+            | :? i64 -> false
+            | :? Both as kept -> kept.x == 1
+        | Error _ -> false
+    assert same
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+}
+
+#[test]
+fn decode_mismatch_names_member_kinds() {
+    passes(
+        r#"record Point { x: i64 } deriving (Decode)
+
+def bytes :: own string -> utf8string = \text -> Utf8String.from_string (ref text)
+
+def refusal :: own Result<'a, Json.Error> -> string = \decoded ->
+    match decoded with
+    | Ok _ -> "ok"
+    | Error error -> Display.display error
+
+def number_or_text :: own string -> string = \text ->
+    let decoded: Result<(string | i64), Json.Error> = Json.deserialize (ref (bytes text))
+    refusal decoded
+
+def flag_items_point :: own string -> string = \text ->
+    let decoded: Result<([i64] | Point | bool), Json.Error> = Json.deserialize (ref (bytes text))
+    refusal decoded
+
+def number_or_map :: own string -> string = \text ->
+    let decoded: Result<(Map<string, i64> | i64), Json.Error> = Json.deserialize (ref (bytes text))
+    refusal decoded
+
+test "no member reads the kind" =
+    assert (number_or_text "true" == "json: expected number or string")
+    assert (number_or_text "null" == "json: expected number or string")
+    assert (number_or_text "[1]" == "json: expected number or string")
+    assert (number_or_text "{}" == "json: expected number or string")
+    assert (flag_items_point "1" == "json: expected boolean or object or array")
+    assert (flag_items_point "\"s\"" == "json: expected boolean or object or array")
+    assert (flag_items_point "null" == "json: expected boolean or object or array")
+    assert (number_or_map "\"s\"" == "json: expected number or object or array")
+    assert (number_or_map "false" == "json: expected number or object or array")
+
+test "the error is ExpectedType outside parsing" =
+    let decoded: Result<(i64 | string), Json.Error> = Json.deserialize u8"true"
+    match decoded with
+    | Ok _ -> assert false
+    | Error error ->
+        assert (error.offset == -1)
+        assert (error.kind == Json.ExpectedType "number or string")
+
+test "the selected member gives its own error" =
+    assert (number_or_text "1.5" == "json: expected integer")
+    assert (number_or_text "1e2" == "json: expected integer")
+    assert (number_or_text "99999999999999999999" == "json: number out of range")
+    assert (flag_items_point "[1, true]" == "json: expected integer")
+    assert (flag_items_point "{}" == "json: missing field \"x\"")
+    assert (flag_items_point "{\"x\": \"one\"}" == "json: expected integer")
+    assert (number_or_map "[1]" == "json: expected array of 2")
+    assert (number_or_map "{\"a\": true}" == "json: expected integer")
+    assert (number_or_text "tru" == "json: unexpected end of input at byte 3")
+    assert (number_or_text "7" == "ok")
+"#,
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn derived_record_with_anonymous_field_round_trips() {
+    let source = r#"record Cell { name: string, value: (i64 | string | [i64]) } deriving (Eq, Encode, Decode)
+union Shape = Dot | Label of (string | i64) deriving (Eq, Encode, Decode)
+record Pair<'a> { left: (['a] | string), right: 'a } deriving (Eq, Encode, Decode)
+
+def text :: Encode<'a> => own 'a -> string = \value ->
+    match Json.serialize value with
+    | Ok bytes -> String.from_utf8 (ref bytes)
+    | Error error -> Display.display error
+
+def cell :: own string -> Result<Cell, Json.Error> = \text ->
+    Json.deserialize (ref (Utf8String.from_string (ref text)))
+
+def shape :: own string -> Result<Shape, Json.Error> = \text ->
+    Json.deserialize (ref (Utf8String.from_string (ref text)))
+
+def refusal :: own Result<'a, Json.Error> -> string = \decoded ->
+    match decoded with
+    | Ok _ -> "ok"
+    | Error error -> Display.display error
+
+def gives :: Eq<'a> => own Result<'a, Json.Error> -> own 'a -> bool = \decoded expected ->
+    match decoded with
+    | Ok value -> value == expected
+    | Error _ -> false
+
+test "record" =
+    assert (text (Cell { name: "a", value: [1, 2] }) == "{\"name\":\"a\",\"value\":[1,2]}")
+    assert (text (Cell { name: "b", value: "two" }) == "{\"name\":\"b\",\"value\":\"two\"}")
+    assert (text (Cell { name: "c", value: 3 }) == "{\"name\":\"c\",\"value\":3}")
+    assert (gives (cell "{\"name\":\"a\",\"value\":[1,2]}") (Cell { name: "a", value: [1, 2] }))
+    assert (gives (cell "{\"value\": \"two\", \"name\": \"b\"}") (Cell { name: "b", value: "two" }))
+    assert (gives (cell "{\"name\":\"c\",\"value\":3}") (Cell { name: "c", value: 3 }))
+    assert (not (gives (cell "{\"name\":\"c\",\"value\":3}") (Cell { name: "c", value: "3" })))
+    assert (refusal (cell "{\"name\":\"a\"}") == "json: missing field \"value\"")
+    assert (refusal (cell "{\"name\":\"a\",\"value\":null}") == "json: expected number or string or array")
+    assert (refusal (cell "{\"name\":\"a\",\"value\":true}") == "json: expected number or string or array")
+    assert (refusal (cell "{\"name\":\"a\",\"value\":[\"x\"]}") == "json: expected integer")
+
+test "union" =
+    assert (text (Label "x") == "{\"Label\":\"x\"}")
+    assert (text (Label 3) == "{\"Label\":3}")
+    assert (text Dot == "\"Dot\"")
+    assert (gives (shape "{\"Label\":\"x\"}") (Label "x"))
+    assert (gives (shape "{\"Label\": 3}") (Label 3))
+    assert (gives (shape "\"Dot\"") Dot)
+    assert (refusal (shape "{\"Label\": [3]}") == "json: expected number or string")
+
+test "generic record" =
+    let numbers = Pair { left: [1, 2], right: 3 }
+    let words = Pair { left: "w", right: "x" }
+    assert (text (Pair { left: [1, 2], right: 3 }) == "{\"left\":[1,2],\"right\":3}")
+    assert (text (Pair { left: "w", right: "x" }) == "{\"left\":\"w\",\"right\":\"x\"}")
+    let first: Result<Pair<i64>, Json.Error> = Json.deserialize u8"{\"left\":[1,2],\"right\":3}"
+    let second: Result<Pair<string>, Json.Error> = Json.deserialize u8"{\"left\":\"w\",\"right\":\"x\"}"
+    assert (gives first numbers)
+    assert (gives second words)
+
+test "round trips" =
+    let cells = [Cell { name: "a", value: [1, 2] }, Cell { name: "b", value: "two" }, Cell { name: "c", value: -3 }]
+    let back: Result<[Cell], Json.Error> = match Json.serialize (ref cells) with
+        | Ok bytes -> Json.deserialize (ref bytes)
+        | Error error -> Error error
+    assert (gives back cells)
+"#;
+    passes(source, Edition::E2026);
+    passes(source, Edition::E2027);
+}
+
+#[test]
+fn recursive_records_and_method_values_decode() {
+    // The derived instance of `Tree` and the built-in one of `(i64 | [Tree])` call each other; the
+    // weight of the decoded tree [1, [2], []] is 100 + 1 + (100 + 2) + 100.
+    passes(
+        r#"record Tree { value: (i64 | [Tree]) } deriving (Eq, Encode, Decode)
+
+def text :: Encode<'a> => own 'a -> string = \value ->
+    match Json.serialize value with
+    | Ok bytes -> String.from_utf8 (ref bytes)
+    | Error error -> Display.display error
+
+def rec weight :: ref Tree -> i64 = \tree ->
+    match tree.value with
+    | :? i64 as n -> n
+    | :? [Tree] as children ->
+        let mut sum = 100i64
+        for index in 0i64 ..< children.length do sum = sum + weight (ref children[index])
+        sum
+
+def read :: own string -> Result<Tree, Json.Error> = \source ->
+    Json.deserialize (ref (Utf8String.from_string (ref source)))
+
+def apply :: own (ref Json.Value -> Result<(i64 | string), Json.Error>) -> own string -> string = \decode source ->
+    match Json.parse (ref (Utf8String.from_string (ref source))) with
+    | Error error -> Display.display error
+    | Ok json ->
+        match decode (ref json) with
+        | Ok value -> Display.display value
+        | Error error -> Display.display error
+
+test "a record that holds itself through a member" =
+    let tree = Tree { value: [Tree { value: 1 }, Tree { value: [Tree { value: 2 }] }, Tree { value: [] }] }
+    assert (text tree == "{\"value\":[{\"value\":1},{\"value\":[{\"value\":2}]},{\"value\":[]}]}")
+    let back = read "{\"value\":[{\"value\":1},{\"value\":[{\"value\":2}]},{\"value\":[]}]}"
+    let total = match back with
+        | Ok found -> weight (ref found)
+        | Error _ -> -1
+    assert (total == 303)
+    let refused = match read "{\"value\":[{\"value\":\"x\"}]}" with
+        | Ok _ -> "ok"
+        | Error error -> Display.display error
+    assert (refused == "json: expected number or array")
+
+test "the method as a function value" =
+    assert (apply Decode.decode "5" == "5")
+    assert (apply Decode.decode "\"five\"" == "five")
+    assert (apply Decode.decode "[5]" == "json: expected number or string")
+"#,
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn decode_moves_array_members_out_of_the_result() {
+    // Copilot review round 1: the arm of an array member moves the decoded array out of the
+    // member's result into the union. Its binding shared one span with the binding of the error,
+    // which is not Copy, so `LastUses` copied the array element by element: `@no_copy` rejected
+    // `Decode.decode` (E1031), and decoding allocated once more than decoding the array itself.
+    // `whole` reaches the body of `numbers` through `Json.deserialize`, so it was rejected too;
+    // a body that only std's `Json.deserialize` asks for is std's, whose copies the `copy` effect
+    // does not count, and the allocation count is what shows that path. `plain` and `direct` read
+    // the array itself: they are the reference.
+    // `Row` is Copy and holds an array, so `(Row | [f64] | string)` has two arms that move.
+    let source = r#"record Row { cells: [i64] } deriving (Decode)
+
+@no_copy
+def numbers :: ref Json.Value -> Result<(i64 | [i64]), Json.Error> = \json -> Decode.decode json
+
+@no_copy
+def table :: ref Json.Value -> Result<(Row | [f64] | string), Json.Error> = \json -> Decode.decode json
+
+@no_copy
+def whole :: ref utf8string -> Result<(i64 | [i64]), Json.Error> = \text -> Json.deserialize text
+
+@no_copy
+def plain :: ref utf8string -> Result<[i64], Json.Error> = \text -> Json.deserialize text
+
+def sum :: own [i64] -> i64 = \xs ->
+    let mut total = 0i64
+    for index in 0i64 ..< xs.length do total = total + xs[index]
+    total
+
+def total :: own (i64 | [i64]) -> i64 = \v ->
+    match v with
+    | :? i64 as n -> n
+    | :? [i64] as xs -> sum xs
+
+@no_copy
+def through_union :: unit -> i64 = \() ->
+    match whole u8"[1, 2, 3]" with
+    | Ok v -> total v
+    | Error _ -> -1
+
+@no_copy
+def direct :: unit -> i64 = \() ->
+    match plain u8"[1, 2, 3]" with
+    | Ok xs -> sum xs
+    | Error _ -> -1
+
+def allocations :: (unit -> i64) -> i64 = \f ->
+    let start = Alloc.snapshot ()
+    let value = f ()
+    let used = start |> Alloc.since
+    if value == 6 && used.frees == used.allocs then used.allocs else -1
+
+def parsed :: own string -> Json.Value = \text ->
+    Result.get (Json.parse (ref (Utf8String.from_string (ref text))))
+
+def counted :: own Result<(i64 | [i64]), Json.Error> -> i64 = \result ->
+    match result with
+    | Ok v -> total v
+    | Error _ -> -1
+
+def measured :: own Result<(Row | [f64] | string), Json.Error> -> i64 = \result ->
+    match result with
+    | Ok v ->
+        match v with
+        | :? Row as row -> sum row.cells
+        | :? [f64] as values -> 10 * values.length
+        | :? string as s -> s.length
+    | Error _ -> -1
+
+test "an array member allocates nothing more than the array" =
+    assert (allocations direct > 0)
+    assert (allocations through_union == allocations direct)
+
+test "the decoded values" =
+    assert (counted (numbers (ref (parsed "[1, 2, 3]"))) == 6)
+    assert (counted (numbers (ref (parsed "[]"))) == 0)
+    assert (counted (numbers (ref (parsed "7"))) == 7)
+    assert (counted (numbers (ref (parsed "\"x\""))) == -1)
+    assert (measured (table (ref (parsed "{\"cells\": [4, 5]}"))) == 9)
+    assert (measured (table (ref (parsed "[1.5, 2.5]"))) == 20)
+    assert (measured (table (ref (parsed "\"abc\""))) == 3)
+    assert (measured (table (ref (parsed "true"))) == -1)
+"#;
+    for edition in [Edition::E2026, Edition::E2027] {
+        let module = accepts_in(source, edition);
+        let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+        assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+        // The two built-in instances allocate nothing: each arm moves what the member decoded.
+        let bodies: Vec<&str> = ir
+            .match_indices("\ndefine ")
+            .map(|(at, _)| &ir[at + 1..])
+            .filter(|rest| {
+                rest.lines()
+                    .next()
+                    .unwrap()
+                    .contains("@tz.fn.$intrinsic.Decode.decode.")
+            })
+            .map(|rest| &rest[..rest.find("\n}\n").expect("the definition ends")])
+            .collect();
+        assert_eq!(bodies.len(), 2, "{ir}");
+        for body in bodies {
+            assert!(!body.contains("@tz.alloc"), "{body}");
+        }
+        // Expected values by hand: 1 + 2 + 3, the empty sum, the number itself, 4 + 5, ten
+        // times the two numbers, the length of "abc"; a string or a boolean that no member reads
+        // is an error.
+        passes(source, edition);
+    }
+}
+
 /// Review round 2: a hole after the colon of a field, named or followed by an operator, is no
 /// type test. The arm stays a predicate, as it was before type tests existed, and the hole
 /// reports its type.
@@ -4082,30 +5861,21 @@ fn operand_source(operand: &str) -> (String, usize) {
 }
 
 /// The errors of `sources`, which compare `v` with an operand whose value is the smaller union
-/// `(i64 | string)`: `E1003` at the offset `at` (when given), and only `E1003` of that operand or
-/// the `E1005` of the comparison of anonymous unions, which have no `Eq` and `Ord` until A26 (a
-/// `match` keeps the union as its type when an arm's error is recovered).
+/// `(i64 | string)`: `E1003` at the offset `at` (when given), and only `E1003` of that operand.
+/// In A25 alone, the `E1005` of the comparison could follow (anonymous unions have no `Eq` and
+/// `Ord` there, and a `match` keeps the union as its type when an arm's error is recovered); with
+/// the built-in instances of A26, the comparison has no error of its own.
 fn operand_mismatch(sources: &[(&str, &str)], at: Option<usize>, label: &str) {
     let errors = analyze_modules_all(sources).expect_err(label).diagnostics;
     let mut mismatched = Vec::new();
     for error in errors.iter().filter(|error| error.code.starts_with('E')) {
-        if error.code == "E1003" {
-            assert_eq!(error.kind, Some("type_mismatch"), "{label}");
-            assert_eq!(
-                error.message, "expected (i64 | f64 | string), found (i64 | string)",
-                "{label}"
-            );
-            mismatched.push(error.span.start);
-        } else {
-            assert_eq!(error.code, "E1005", "{label}: {}", error.message);
-            assert!(
-                ["Eq", "Ord"].iter().any(|class| error
-                    .message
-                    .starts_with(&format!("no instance for {class}<(i64 | f64 | string)>"))),
-                "{label}: {}",
-                error.message
-            );
-        }
+        assert_eq!(error.code, "E1003", "{label}: {}", error.message);
+        assert_eq!(error.kind, Some("type_mismatch"), "{label}");
+        assert_eq!(
+            error.message, "expected (i64 | f64 | string), found (i64 | string)",
+            "{label}"
+        );
+        mismatched.push(error.span.start);
     }
     assert!(!mismatched.is_empty(), "{label}: {errors:?}");
     if let Some(at) = at {
@@ -4176,22 +5946,34 @@ fn operand_results_do_not_widen() {
     );
     assert_eq!(error.span.start, at);
     // A call or an annotated binding inside an operand still widens: these operands are the
-    // wider union, so the check reaches `Eq`, which anonymous unions do not have until A26.
-    for form in [
-        "(if flag 1 then wide w else v)",
-        "(match 1 with | 0 -> wide w | _ -> v)",
-        "{ let y: (f64 | i64 | string) = w; y }",
-        "(w |> wide)",
+    // wider union, so the check reaches `Eq`, which A26 gives anonymous unions (in A25 alone, it
+    // was the `E1005` of the missing instance). The first two forms then move `v` (`else v`,
+    // `_ -> v`) while the comparison borrows it as its left operand: `E1014` at that inner `v`
+    // (the comparison borrows its operands, and moving their owner meanwhile is `E1014`), and
+    // nothing else. With `x` there instead, every form is accepted.
+    for (form, conflict) in [
+        ("(if flag 1 then wide w else «v»)", true),
+        ("(match 1 with | 0 -> wide w | _ -> «v»)", true),
+        ("{ let y: (f64 | i64 | string) = w; y }", false),
+        ("(w |> wide)", false),
     ] {
-        let (source, _) = operand_source(&format!("v == {form}"));
-        let error = rejects(&source, "E1005", "no_instance");
-        assert!(
-            error
-                .message
-                .starts_with("no instance for Eq<(i64 | f64 | string)>"),
-            "{form}: {}",
-            error.message
-        );
+        let (source, at) = operand_source(&format!("v == {form}"));
+        let result = analyze_modules_all(&[("Main", &source)]);
+        if conflict {
+            let errors = result.expect_err(form).diagnostics;
+            let errors: Vec<_> = errors
+                .iter()
+                .filter(|error| error.code.starts_with('E'))
+                .collect();
+            assert_eq!(errors.len(), 1, "{form}: {errors:?}");
+            assert_eq!(errors[0].code, "E1014", "{form}: {}", errors[0].message);
+            assert_eq!(errors[0].span.start, at, "{form}");
+            let (source, _) = operand_source(&format!("v == {}", form.replace("«v»", "x")));
+            analyze_modules_all(&[("Main", &source)])
+                .unwrap_or_else(|error| panic!("{form} with x: {:?}", error.diagnostics));
+        } else {
+            result.unwrap_or_else(|error| panic!("{form}: {:?}", error.diagnostics));
+        }
     }
     // The same conversions in operands of type `i64` run; the values follow from `size` and
     // `make` by hand (`make 2` is 2, `make 0` is "neg" of length 3).
@@ -4217,9 +5999,13 @@ fn operand_checked_first_widens_by_itself() {
     // so an `if`, `match` or `select` there gives the type of its first branch, `v`'s
     // `(f64 | i64 | string)`, to the next one (D4), and `w` is widened as in
     // `let t = if c then v else w`. Both operands are then `(f64 | i64 | string)` (the number is
-    // injected into its member), and the only error is the comparison's: anonymous unions have
-    // no `Eq` and `Ord` until A26. When the operand checked first was recorded too, `w` was
-    // `E1003` in each of these.
+    // injected into its member). In A25 alone, the only error was the comparison's `E1005`
+    // (anonymous unions have no `Eq` and `Ord` there); A26 gives them both, so these programs
+    // have no error, and an unwidened `w` would be `E1003`. The exception is a `select` in the
+    // lambda: its arm `recv _ from a` makes the lambda, a reusable function, capture the channel
+    // `a`, which has `Drop` (`E1005`, `cannot capture Channel<i64> in a reusable function`);
+    // capturing `v` and `w` moves them into the environment, which each call copies. When the
+    // operand checked first was recorded too, `w` was `E1003` in each of these.
     let first = [
         "(if flag 1 then v else w)",
         "(match 1 with | 0 -> v | _ -> w)",
@@ -4229,41 +6015,45 @@ fn operand_checked_first_widens_by_itself() {
         // The inner `if` takes the outer `then` branch's type: both of its branches are widened.
         "(if flag 1 then v else (if flag 0 then u else w))",
     ];
+    let mut accepted = 0;
     for operator in ["==", "!=", "<", "<=", ">", ">="] {
-        let class = if matches!(operator, "==" | "!=") {
-            "Eq"
-        } else {
-            "Ord"
-        };
         for form in first {
-            for operands in [
-                format!("{form} {operator} x"),
-                format!("1 {operator} {form}"),
-                format!("-1 {operator} {form}"),
-                format!("1.5 {operator} {form}"),
+            for (operands, lambda) in [
+                (format!("{form} {operator} x"), false),
+                (format!("1 {operator} {form}"), false),
+                (format!("-1 {operator} {form}"), false),
+                (format!("1.5 {operator} {form}"), false),
                 // The parentheses keep a block operand from being the lambda's body.
-                format!("{{ let f = \\b -> ({form} {operator} b); f x }}"),
+                (
+                    format!("{{ let f = \\b -> ({form} {operator} b); f x }}"),
+                    true,
+                ),
             ] {
                 let (source, _) = operand_source(&operands);
-                let errors = analyze_modules_all(&[("Main", &source)])
-                    .expect_err(&operands)
-                    .diagnostics;
-                let errors: Vec<_> = errors
-                    .iter()
-                    .filter(|error| error.code.starts_with('E'))
-                    .collect();
-                assert_eq!(errors.len(), 1, "{operands}: {errors:?}");
-                assert_eq!(errors[0].code, "E1005", "{operands}");
-                assert!(
-                    errors[0]
-                        .message
-                        .starts_with(&format!("no instance for {class}<(i64 | f64 | string)>")),
-                    "{operands}: {}",
-                    errors[0].message
-                );
+                let result = analyze_modules_all(&[("Main", &source)]);
+                if lambda && form.starts_with("(select") {
+                    let errors = result.expect_err(&operands).diagnostics;
+                    let errors: Vec<_> = errors
+                        .iter()
+                        .filter(|error| error.code.starts_with('E'))
+                        .collect();
+                    assert_eq!(errors.len(), 1, "{operands}: {errors:?}");
+                    assert_eq!(errors[0].code, "E1005", "{operands}");
+                    assert!(
+                        errors[0]
+                            .message
+                            .starts_with("cannot capture Channel<i64> in a reusable function"),
+                        "{operands}: {}",
+                        errors[0].message
+                    );
+                } else {
+                    result.unwrap_or_else(|error| panic!("{operands}: {:?}", error.diagnostics));
+                    accepted += 1;
+                }
             }
         }
     }
+    assert_eq!(accepted, 6 * 6 * 5 - 6);
     // The operand checked second takes its sibling's type, which the `if` passes down, and the
     // `else` branch takes the `then` branch's: `E1003` at `w`, whether the sibling's type is
     // written, inferred later (`b`), or already the wider union.
@@ -6032,6 +7822,269 @@ fn arrows_in_annotations_do_not_hide_type_tests() {
     );
 }
 
+// A25 and A26 together (the merge of 2026-11-11): conversions between anonymous unions meet the
+// built-in instances. The expected values are worked out by hand from the rules of both tickets.
+
+#[test]
+fn comparisons_take_injected_and_widened_operands() {
+    // `(f64 | i64 | string)` is `(i64 | f64 | string)` in the canonical order: i64 0, f64 1,
+    // string 2. Two values of one union are compared through `Eq` and `Ord`, which borrow both,
+    // so both stay usable. The right operand is injected when it is a member value; the operand
+    // that takes its sibling's type is not widened when it is a narrower union, nor are the
+    // branches that are its value (`comparison_does_not_widen`, `operand_results_do_not_widen`).
+    // The operand checked first is checked by itself, so a later branch of an `if` there takes
+    // the type of the first one and is widened (`operand_checked_first_widens_by_itself`); the
+    // widened value takes the position of its member in the wider union: `5` stays before every
+    // f64, `"abc"` comes after them. `positive 0` is false, so each `if` below is its widened
+    // `else` branch: `"abc"` equals `v`, `5` equals the literal `5` (both i64), and `0.25`, an
+    // f64, is greater than every i64. An `if` makes a new value of its branches, so it moves
+    // each of them (`z` too), and each comparison has its own.
+    passes(
+        r#"def positive :: i64 -> bool = \n -> n > 0
+
+test "compared" =
+    let v: (f64 | i64 | string) = "abc"
+    let u: (f64 | i64 | string) = "abc"
+    assert (v == u && not (v < u) && v <= u)
+    assert (Display.display v + Display.display u == "abcabc")
+    assert (v == "abc" && v != 1 && v > 1 && v > 2.5)
+    let w: (i64 | string) = "abc"
+    let z: (f64 | i64 | string) = 0.5
+    assert ((if positive 0 then z else w) == v)
+    let m: (i64 | string) = 5
+    let z2: (f64 | i64 | string) = 0.5
+    assert (5 == (if positive 0 then z2 else m))
+    let m2: (i64 | string) = 5
+    let z3: (f64 | i64 | string) = 0.5
+    assert (0.25 > (if positive 0 then z3 else m2))
+    let n: (i64 | string) = 5
+    let wide: (f64 | i64 | string) = n
+    assert (wide == 5 && wide > 4 && wide < 0.5 && wide < "")
+    let text: (i64 | string) = "abc"
+    let widened: (f64 | i64 | string) = text
+    assert (widened > 0.5 && widened == v && widened >= u)
+"#,
+        Edition::E2027,
+    );
+    // A branch of the operand that takes its sibling's type is not widened (A25): `E1003` at
+    // `w`, and nothing else, since the comparison has its `Eq` here.
+    let source = "def positive :: i64 -> bool = \\n -> n > 0\nlet v: (f64 | i64 | string) = \"abc\"\nlet w: (i64 | string) = \"abc\"\nlet same = v == (if positive 1 then w else 0)\n0\n";
+    let errors = analyze_modules_all(&[("Main", source)])
+        .expect_err(source)
+        .diagnostics;
+    let errors: Vec<_> = errors
+        .iter()
+        .filter(|error| error.code.starts_with('E'))
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].code, "E1003");
+    assert_eq!(errors[0].kind, Some("type_mismatch"));
+    assert_eq!(
+        errors[0].message,
+        "expected (i64 | f64 | string), found (i64 | string)"
+    );
+    assert_eq!(errors[0].span.start, source.find("w else").unwrap());
+    // In one operand, the widened arm and the injected arm each keep their own help when the
+    // moved value is used again. The left operand is checked first: the outer `then` branch `u`
+    // gives its type to the inner `if`, which widens `w` and injects `s`.
+    let both = "let v: (f64 | i64 | string) = \"abc\"\nlet u: (f64 | i64 | string) = \"abc\"\nlet w: (i64 | string) = \"abc\"\nlet s = \"abc\"\nlet same = (if v > 1 then u else if v > 2 then w else s) == v\n";
+    let error = rejects(&format!("{both}let t = w\n0\n"), "E1012", "use_after_move");
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "a widening moves 'w'; bind the wider value once with 'let wide: (i64 | f64 | string) = w' and borrow 'wide', or move it last"
+        )
+    );
+    let error = rejects(&format!("{both}s.length\n"), "E1012", "use_after_move");
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "an anonymous union holds its value, so injecting 's' moved it; use 's' before that, or inject a copy (clone_string ref s)"
+        )
+    );
+}
+
+/// `Hash.hash` of `"s1"` in `(f64 | i64 | string)` (member 2) and in `(i64 | string)` (member 1):
+/// FNV-1a over the canonical stream of `docs/language.md` (tag `0x55`, the member's position in
+/// the canonical order, then the hash of the string: tag `0x53`, 2 code units, 2 bytes each),
+/// computed by a Python script that reproduces `HASH_OF_1` and `HASH_OF_ONE`.
+const HASH_OF_S1_WIDE: &str = "16237190552417262429i64u";
+const HASH_OF_S1_NARROW: &str = "1096041482089778054i64u";
+
+#[test]
+fn widened_and_narrowed_keys_hash_as_their_union() {
+    // A widened key is a value of the wider union: it hashes and orders as the member of that
+    // union, so it finds the keys made there directly. A narrowed key finds the keys of the
+    // narrower union. Generic arguments are not widened (the type argument is inferred from
+    // them), so the keys are widened in typed bindings.
+    passes(
+        &format!(
+            r#"def narrow_key :: i64 -> (i64 | string) = \n -> if n % 2 == 0 then n else $"s{{n}}"
+
+def wide_of :: i64 -> (f64 | i64 | string) = \n ->
+    if n % 3 == 0 then (n as f64) + 0.5 elif n % 3 == 1 then n else $"s{{n}}"
+
+def found :: Maybe<i64> -> i64 = \m ->
+    match m with
+    | Some v -> v
+    | None -> -1
+
+test "widened keys" =
+    let mut wide: HashSet<(f64 | i64 | string)> = HashSet.empty()
+    let mut counts: Map<(f64 | i64 | string), i64> = Map.empty()
+    for i in 0i64 ..< 7 do
+        let k: (f64 | i64 | string) = narrow_key (i % 3)
+        let again: (f64 | i64 | string) = narrow_key (i % 3)
+        let before = match Map.get again counts with
+            | Some c -> c
+            | None -> 0
+        let key: (f64 | i64 | string) = narrow_key (i % 3)
+        counts = Map.insert key (before + 1) counts
+        wide = HashSet.insert k wide
+    assert (HashSet.length wide == 3)
+    let half: (f64 | i64 | string) = 0.5
+    let wide = HashSet.insert half wide
+    let probe: (f64 | i64 | string) = "s1"
+    let one: (f64 | i64 | string) = 1
+    assert (HashSet.length wide == 4 && HashSet.contains probe wide)
+    assert (not (HashSet.contains one wide))
+    let other: (f64 | i64 | string) = 0.5
+    let counts = Map.insert other 9 counts
+    let mut text = ""
+    for (key, count) in Map.iter counts do
+        text = text + Display.display key + "=" + Display.display (deref count) + ";"
+    assert (text == "0=3;2=2;0.5=9;s1=2;")
+    let widened: (f64 | i64 | string) = narrow_key 1
+    let narrow = narrow_key 1
+    assert (Hash.hash (ref widened) == {HASH_OF_S1_WIDE})
+    assert (Hash.hash (ref narrow) == {HASH_OF_S1_NARROW})
+
+test "narrowed keys" =
+    let mut seen: HashMap<(i64 | string), i64> = HashMap.empty()
+    for i in 0i64 ..< 6 do
+        match wide_of i with
+        | :? (i64 | string) as n -> seen = HashMap.insert n i seen
+        | :? f64 -> ()
+    let s2: (i64 | string) = "s2"
+    let four: (i64 | string) = 4
+    let three: (i64 | string) = 3
+    assert (HashMap.length seen == 4)
+    assert (found (HashMap.get s2 seen) == 2 && found (HashMap.get four seen) == 4)
+    assert (not (HashMap.contains_key three seen))
+    let mut flags: HashSet<(f64 | i64 | bool)> = HashSet.empty()
+    for i in 0i64 ..< 5 do
+        let v: (f64 | i64 | bool) = if i == 0 then 1 elif i == 1 then true elif i == 2 then 2.5 elif i == 3 then 1 else false
+        flags = HashSet.insert v flags
+    let mut kept: HashSet<(i64 | bool)> = HashSet.empty()
+    for item in HashSet.iter flags do
+        match item with
+        | :? (i64 | bool) as n -> kept = HashSet.insert n kept
+        | :? f64 -> ()
+    let yes: (i64 | bool) = true
+    let uno: (i64 | bool) = 1
+    let two: (i64 | bool) = 2
+    assert (HashSet.length flags == 4 && HashSet.length kept == 3)
+    assert (HashSet.contains yes kept && HashSet.contains uno kept)
+    assert (not (HashSet.contains two kept))
+"#
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn widened_and_narrowed_values_show_and_encode() {
+    // `Display` and `Encode` see only the payload, so a widened or narrowed value shows and
+    // encodes as the value it was made from; `Decode` of the wider union reads it back by the
+    // kind of the JSON value (boolean, number, string, array: one member each).
+    passes(
+        r#"type Wide = (bool | i64 | string | [i64])
+
+record Holder { v: Wide } deriving (Eq, Display, Encode, Decode)
+
+def json_of :: Encode<'a> => own 'a -> string = \value ->
+    match Json.serialize value with
+    | Ok text -> String.from_utf8 (ref text)
+    | Error error -> Display.display error
+
+def back :: own string -> Result<Holder, Json.Error> = \text ->
+    let bytes = Utf8String.from_string (ref text)
+    Json.deserialize (ref bytes)
+
+test "widened" =
+    let text: (i64 | string) = "a"
+    let number: (i64 | string) = 7
+    let wide_text: Wide = text
+    let wide_number: Wide = number
+    assert (Display.display wide_text == "a")
+    assert ($"{wide_number}/{wide_text}" == "7/a")
+    let items: [Wide] = [wide_number, wide_text]
+    assert (Display.display items == "[7, \"a\"]")
+    assert (json_of items == "[7,\"a\"]")
+    let late: (i64 | string) = "b"
+    let holder = Holder { v: late }
+    assert (Display.display holder == "Holder { v: \"b\" }")
+    assert (json_of holder == "{\"v\":\"b\"}")
+    let expected: Wide = "b"
+    let same = match back "{\"v\": \"b\"}" with
+        | Ok decoded -> decoded == Holder { v: expected }
+        | Error _ -> false
+    assert same
+
+test "narrowed" =
+    let numbers: Wide = [1, 2]
+    match numbers with
+    | :? (string | [i64]) as part ->
+        assert (Display.display part == "[1, 2]")
+        assert (json_of part == "[1,2]")
+    | :? (bool | i64) -> assert false
+"#,
+        Edition::E2027,
+    );
+}
+
+// A24's Copilot review 2 and A26 together (the merge of 2026-11-12): an old value injected where an
+// anonymous union is expected meets the built-in instances. The expected values are worked out by
+// hand from the rules of both tickets.
+
+/// `@old (x)` as the right operand of a comparison is injected into the left operand's union and
+/// compared through A26's `Eq` and `Ord`; bound by an annotated `let`, it hashes and shows as its
+/// member. By hand, for `grow 41` (r is 42) and `grow (-5)` (r is -4): r - 1 is the old x, so the
+/// first line holds; r is an i64 greater than the old x, so `>` and `!=` hold and `<=` does not
+/// (`(string | i64)` is `(i64 | string)`: i64 first); `"a"` is a string, whose member comes after
+/// i64, so it is greater than every i64 and not equal to one; the old x hashes as `I x` of a named
+/// union with the cases i64 and string in that order (tag `0x55`, position 0, the payload's hash)
+/// and shows as the number alone. `wrong 41` compares 42 to the old 41 and traps.
+#[test]
+fn old_values_compare_hash_and_show_through_the_instances() {
+    let definitions = r#"union NamedIS =
+    | I of i64
+    | S of string
+    deriving (Hash)
+
+def grow :: i64 -> i64 = \x ->
+    @ensures \r -> { let v: (i64 | string) = r - 1; v == @old (x) }
+    @ensures \r -> { let v: (string | i64) = r; v > @old (x) && v != @old (x) && !(v <= @old (x)) }
+    @ensures \_ -> { let s: (i64 | string) = "a"; s > @old (x) && !(s == @old (x)) }
+    @ensures \r -> { let o: (i64 | string) = @old (x); Hash.hash o == Hash.hash (I (r - 1)) && Display.display o == $"{r - 1}" }
+    x + 1
+
+def wrong :: i64 -> i64 = \x ->
+    @ensures \r -> { let v: (i64 | string) = r; v == @old (x) }
+    x + 1
+"#;
+    passes(
+        &format!(
+            "{definitions}\ntest \"old\" =\n    assert (grow 41 == 42)\n    assert (grow (-5) == -4)\n"
+        ),
+        Edition::E2026,
+    );
+    traps(
+        &format!("{definitions}\ntest \"wrong\" =\n    assert (wrong 41 == 42)\n"),
+        Edition::E2026,
+    );
+}
+
 /// Copilot review 3 of #102: the scan for a type test reads the type of an annotation as the
 /// parser does (`type_expr` inside parentheses, `type_product` outside them), so nothing in that
 /// type hides the type test after it: neither the `fn` of `fn() -> T` (which started an
@@ -6479,4 +8532,388 @@ fn members_that_hold_borrows_keep_their_loans() {
         ),
         Edition::E2026,
     );
+}
+
+// A24's Copilot review 4 and A26 together (the merge of 2026-11-12): a member comparison keeps an
+// inference variable that occurs twice as one type (`Ties`), so a generic result whose type repeats
+// a variable is injected into the only consistent member, and the built-in instances of that member
+// and of its type arguments are selected after it. The expected values are worked out by hand from
+// the rules of both tickets.
+
+/// `empties ()` has the type `([?a] * [?a])` and `read2 text` the type `(?a * ?a)` with
+/// `Decode<?a>`. Each fits only the first member written in `Pairs` and `Cells` (the second would
+/// need ?a to be two types), so it is injected there as a comparison operand and as an annotated
+/// value: ?a becomes `i64` and `(i64 | string)`, so `read2` reads its components with A26's
+/// `Decode` of `(i64 | string)`. Before the merge, both members counted and each such position was
+/// `E1041`.
+///
+/// By hand, with i64 before string in the canonical order (the first unequal component decides
+/// between tuples):
+/// - `Pairs` is `(([i64] * [i64]) | ([i64] * [string]))` in that order. `v` and `k` are
+///   `([], [])` in member 0, `w` is `([1], ["x"])` in member 1 (the literal's `["x"]` is no
+///   `[i64]`), `u` is `([2], [3])` in member 0 (a number literal is no string). Values of one member
+///   compare their payloads as tuples, element by element (`[] < [2]`); values of different members
+///   compare by the member alone, so `u < w` although `[2] > [1]`. `v` and `k` are equal, so they
+///   hash alike and the set of `v`, `w`, `u` and `k` holds 3 keys. The display and the JSON are the
+///   payload's: a tuple shows strings inside it quoted, and `Json.serialize` writes no spaces.
+/// - `read2 "[1, \"a\"]"` is `(1, "a")` in the member `((i64 | string) * (i64 | string))` of
+///   `Cells`, which the type test confirms. Every comparison is within that member, so the order of
+///   the two members does not matter: `"a" < "b"` (both strings), `"a"` after `2` (string after
+///   i64) and `1 > 0` (both i64).
+#[test]
+fn tied_members_compare_and_decode_through_the_instances() {
+    let definitions = r#"type Pairs = (([i64] * [i64]) | ([i64] * [string]))
+
+type Cells = (((i64 | string) * (i64 | string)) | ((i64 | string) * f64))
+
+def empties :: unit -> (['a] * ['a]) = \_ -> ([], [])
+
+def read2 :: Decode<'a> => own string -> ('a * 'a) = \text ->
+    let bytes = Utf8String.from_string (ref text)
+    Json.deserialize (ref bytes) |> Result.get
+
+def json_of :: Encode<'a> => own 'a -> string = \value ->
+    match Json.serialize value with
+    | Ok text -> String.from_utf8 (ref text)
+    | Error error -> Display.display error
+
+"#;
+    passes(
+        &format!(
+            r#"{definitions}test "compared" =
+    let v: Pairs = empties ()
+    assert (v == empties ())
+    assert (not (v != empties ()))
+    assert (v <= empties () && v >= empties () && not (v < empties ()))
+    let w: Pairs = ([1], ["x"])
+    assert (w != empties () && w > empties () && not (w <= empties ()))
+    let u: Pairs = ([2], [3])
+    assert (u > empties () && u != v && u < w)
+    assert (Display.display v == "([], [])")
+    assert (Display.display w == "([1], [\"x\"])")
+    let written: Pairs = ([1], ["x"])
+    assert (json_of written == "[[1],[\"x\"]]")
+    let k: Pairs = empties ()
+    assert (Hash.hash (ref v) == Hash.hash (ref k))
+    let mut set: HashSet<Pairs> = HashSet.empty()
+    set = HashSet.insert v set
+    set = HashSet.insert w set
+    set = HashSet.insert u set
+    set = HashSet.insert k set
+    let probe: Pairs = empties ()
+    assert (HashSet.length set == 3 && HashSet.contains probe set)
+
+test "decoded" =
+    let v: Cells = read2 "[1, \"a\"]"
+    let member = match v with
+        | :? ((i64 | string) * (i64 | string)) -> 1
+        | :? ((i64 | string) * f64) -> 2
+    assert (member == 1)
+    assert (v == read2 "[1, \"a\"]")
+    assert (v != read2 "[1, \"b\"]" && v < read2 "[1, \"b\"]")
+    assert (v > read2 "[1, 2]" && v > read2 "[0, \"z\"]")
+    assert (Display.display v == "(1, \"a\")")
+    assert (json_of v == "[1,\"a\"]")
+"#
+        ),
+        Edition::E2027,
+    );
+    // The comparison's injection counts members as an annotated value does, and A26's `Eq` adds
+    // no error of its own: `empties ()` is no member when no member has one type in both places
+    // (`E1003` at the operand), and ambiguous when two do (`E1041`). The selected type argument
+    // decides the instance: a member that makes ?a `(i64 | f64)` has no `Decode` (`E1025` at the
+    // call, D5), one that makes it `(char | string)` reports the missing `Decode<char>` first
+    // (`E1005`), and a `Cells` value read from a whole JSON array is still `E1025`, since both of
+    // its members read an array.
+    let only = |body: &str, code: &str, kind: &str, at: &str| {
+        let source = format!("{definitions}{body}0\n");
+        let errors = analyze_modules_all(&[("Main", &source)])
+            .expect_err(&source)
+            .diagnostics;
+        let errors: Vec<_> = errors
+            .into_iter()
+            .filter(|error| error.code.starts_with('E'))
+            .collect();
+        assert_eq!(errors.len(), 1, "{source}\n{errors:?}");
+        assert_eq!(errors[0].code, code, "{source}\n{}", errors[0].message);
+        assert_eq!(
+            errors[0].kind,
+            Some(kind),
+            "{source}\n{}",
+            errors[0].message
+        );
+        assert_eq!(errors[0].span.start, source.rfind(at).unwrap(), "{source}");
+        errors.into_iter().next().unwrap()
+    };
+    only(
+        "let z: (([i64] * [string]) | ([string] * [i64])) = ([1], [\"a\"])\nlet same = z == empties ()\n",
+        "E1003",
+        "anonymous_union_not_member",
+        "empties ()",
+    );
+    only(
+        "let y: (([i64] * [i64]) | ([string] * [string])) = ([1], [2])\nlet same = y == empties ()\n",
+        "E1041",
+        "anonymous_union_ambiguous_member",
+        "empties ()",
+    );
+    let error = only(
+        "let o: (((i64 | f64) * (i64 | f64)) | ((i64 | f64) * string)) = read2 \"[1, 2.5]\"\n",
+        "E1025",
+        "anonymous_union_decode_overlap",
+        "read2",
+    );
+    assert!(
+        error.message.starts_with(
+            "no Decode instance for (i64 | f64): the members i64 and f64 both read a JSON number"
+        ),
+        "{}",
+        error.message
+    );
+    let error = only(
+        "let c: (((char | string) * (char | string)) | ((char | string) * f64)) = read2 \"[\\\"a\\\", \\\"b\\\"]\"\n",
+        "E1005",
+        "no_instance",
+        "read2",
+    );
+    assert!(
+        error.message.starts_with("no instance for Decode<char>"),
+        "{}",
+        error.message
+    );
+    only(
+        "let whole: Result<Cells, Json.Error> = Json.deserialize u8\"[1, 2]\"\n",
+        "E1025",
+        "anonymous_union_decode_overlap",
+        "Json.deserialize",
+    );
+}
+
+/// After the merge of A24's Copilot review 5 (through A25): A26's literal patterns sit beside type
+/// tests whose `as` name always binds the whole member, and beside witnesses that write a member
+/// type as the match's module names it. By hand:
+/// - `mix`: `1` and `"x"` match only the `i64` and `string` values that equal them (the literal is
+///   injected as in `v == 1`), so `4` reaches `:? i64 as Even` and `"yz"` reaches
+///   `:? string as Small`; each `as` name holds the whole member, never a recognizer or a case.
+///   The tuple member shows its string quoted (`("a", true)`), as a tuple does.
+/// - `same`: `Green` is the tuple member, compared by A26's `Eq` with `("a", true)`: equal for
+///   `("a", true)`, not for `(1, true)` (`i64` and `string` differ). `0` matches the literal;
+///   `101` is the `i64` member and greater than 100.
+/// - `key`: `None` and `Some` name the array and the `i64` member. The keys are `[]` (from the
+///   literal `7`), `[1, "b"]` twice (equal arrays hash alike), `[2]` and `["b", 1]`: 4 keys.
+/// - The witness of a match whose other column holds a literal pattern names the only missing
+///   member, `std::BigInt`, which the module's own `BigInt` hides: `(:? std::BigInt, _)`, and its
+///   arm is appended after the last arm's body. With the arm, `f (1, 1)` takes the first arm (1),
+///   `f (5, "x")` and `f (3, 7)` the second (6 and 4), `f (2, 1)` the first (2). Before the merge
+///   the witness read `(:? BigInt, _)`, and its arm was `E1041` (`Main.BigInt is not a member`).
+/// - A literal pattern on the union itself covers one value, so the witness stays `_`.
+/// - The diagnostics that A26 adds or reaches name types as `Type::display` does, like every
+///   diagnostic other than a witness: `Maybe<i64>` for `std::Maybe<i64>` where the module declares
+///   its own `Maybe` (`E1025` of `Decode`, and `E1005` of the literal pattern, since `Maybe` has no
+///   `Eq`).
+#[test]
+fn literal_patterns_beside_binders_and_scoped_witnesses() {
+    let binders = r#"union Color = Red | Green
+def (|Even|_|) :: i64 -> bool = \value -> value % 2 == 0
+def (|Small|Large|) :: i64 -> 'T = \value -> if value < 10 then Small else Large
+
+def mix :: own (i64 | string | ((i64 | string) * bool)) -> string = \v ->
+    match v with
+    | 1 -> "one"
+    | "x" -> "ex"
+    | :? ((i64 | string) * bool) as Red -> $"pair {Red}"
+    | :? i64 as Even -> $"int {Even}"
+    | :? string as Small -> $"str {Small}"
+    | _ -> "none"
+
+def same :: own (i64 | ((i64 | string) * bool)) -> bool = \v ->
+    match v with
+    | 0 -> false
+    | :? ((i64 | string) * bool) as Green -> Green == ("a", true)
+    | :? i64 as Large -> Large > 100
+    | _ -> false
+
+def key :: own (i64 | [(i64 | string)]) -> [(i64 | string)] = \v ->
+    match v with
+    | 7 -> []
+    | :? [(i64 | string)] as None -> None
+    | :? i64 as Some -> [Some]
+    | _ -> []
+
+test "binders" =
+    assert (mix 1 == "one")
+    assert (mix "x" == "ex")
+    assert (mix 4 == "int 4")
+    assert (mix "yz" == "str yz")
+    let p: ((i64 | string) * bool) = ("a", true)
+    assert (mix p == "pair (\"a\", true)")
+    let q: ((i64 | string) * bool) = (3, false)
+    assert (mix q == "pair (3, false)")
+    let r: ((i64 | string) * bool) = ("a", true)
+    assert (same r)
+    let s: ((i64 | string) * bool) = (1, true)
+    assert (not (same s))
+    assert (same 101)
+    assert (not (same 0))
+    let a: [(i64 | string)] = [1, "b"]
+    let b: [(i64 | string)] = [1, "b"]
+    let c: [(i64 | string)] = ["b", 1]
+    let a7: (i64 | [(i64 | string)]) = 7
+    let a2: (i64 | [(i64 | string)]) = 2
+    let keys: HashSet<[(i64 | string)]> = HashSet.empty() |> HashSet.insert (key a7) |> HashSet.insert (key a) |> HashSet.insert (key a2) |> HashSet.insert (key b) |> HashSet.insert (key c)
+    assert (HashSet.length keys == 4)
+    let one: [(i64 | string)] = [1, "b"]
+    assert (HashSet.contains one keys)
+"#;
+    passes(binders, Edition::E2026);
+    passes(binders, Edition::E2027);
+    let source = "record BigInt { n: i64 }\ndef f :: own ((i64 | std::BigInt) * (i64 | string)) -> i64 = \\v ->\n    match v with\n    | (:? i64 as n, 1) -> n\n    | (:? i64 as n, _) -> n + 1\n";
+    let fixed = fixed_in(&[("Main", source)], 0, "(:? std::BigInt, _)");
+    assert_eq!(
+        fixed,
+        source.replace("n + 1\n", "n + 1 | (:? std::BigInt, _) -> unreachable ()\n")
+    );
+    passes(
+        &format!(
+            "{fixed}\ntest \"fixed\" =\n    assert ((BigInt {{ n: 4 }}).n == 4)\n    assert (f (1, 1) == 1)\n    assert (f (5, \"x\") == 6)\n    assert (f (2, 1) == 2)\n    assert (f (3, 7) == 4)\n"
+        ),
+        Edition::E2026,
+    );
+    let error = rejects(
+        "record BigInt { n: i64 }\ndef f :: own (i64 | string | std::BigInt) -> i64 = \\v ->\n    match v with\n    | 1 -> 10\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n",
+        "E1021",
+        "non_exhaustive_match",
+    );
+    assert_eq!(error.message, "match is not exhaustive; missing: _");
+    let error = rejects(
+        "union Maybe = Nothing\ndef read :: own utf8string -> Result<(i64 | std::Maybe<i64>), Json.Error> = \\text -> Json.deserialize text\n0\n",
+        "E1025",
+        "anonymous_union_decode_overlap",
+    );
+    assert!(
+        error.message.starts_with(
+            "no Decode instance for (i64 | Maybe<i64>): the member Maybe<i64> is not limited to one kind of JSON value"
+        ),
+        "{}",
+        error.message
+    );
+    let error = rejects(
+        "union Maybe = Nothing\ndef f :: own (i64 | std::Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | 1 -> 10\n    | _ -> 0\n0\n",
+        "E1005",
+        "no_instance",
+    );
+    assert_eq!(
+        error.message,
+        "no instance for Eq<Maybe<i64>>; define an instance or use a supported type"
+    );
+}
+
+/// The forms of `nested_element_narrowings` with A26's literal patterns inside elements, and the
+/// hand-computed `[f 5, f 7, f (-1)]` of each at depth 3 (`f 6` is 1 for every form): an OR of
+/// integer literals (`[(5 | 7) as x]`), a literal beside a type test (`[(5 | :? f64) as x]`), two
+/// elements, a list element, the head of a cons, and a string literal in one part of a tuple
+/// element beside the bound part (through `ref v` too). `mk_{name} n` puts the i64 `n` at every
+/// place that the arm matches for a positive `n`, and `2.5` (beside `"ab"`) otherwise.
+const LITERAL_ELEMENTS: [(&str, ElementForm, [i64; 3]); 7] = [
+    (
+        "integers",
+        (
+            "[(i64 | f64)]",
+            "if n > 0 then [n] else [2.5]",
+            "v",
+            "[(5 | 7) as {x}]",
+        ),
+        [30, 42, 1],
+    ),
+    (
+        "beside_test",
+        (
+            "[(i64 | f64)]",
+            "if n > 0 then [n] else [2.5]",
+            "v",
+            "[(5 | :? f64) as {x}]",
+        ),
+        [30, 1, 9],
+    ),
+    (
+        "two",
+        (
+            "[(i64 | f64)]",
+            "if n > 0 then [n, n] else [2.5, 2.5]",
+            "v",
+            "[(5 | 7) as {x}, (5 | 7) as _{x}]",
+        ),
+        [30, 42, 1],
+    ),
+    (
+        "list",
+        (
+            "[|(i64 | f64)|]",
+            "if n > 0 then [|n|] else [|2.5|]",
+            "v",
+            "[| (5 | 7) as {x} |]",
+        ),
+        [30, 42, 1],
+    ),
+    (
+        "cons",
+        (
+            "[|(i64 | f64)|]",
+            "if n > 0 then [|n|] else [|2.5|]",
+            "v",
+            "((5 | 7) as {x}) :: _{x}",
+        ),
+        [30, 42, 1],
+    ),
+    (
+        "text",
+        (
+            "[((i64 | string) * (i64 | f64))]",
+            "if n > 0 then [(n, n)] else [(\"ab\", 2.5)]",
+            "v",
+            "[((5 | \"ab\"), {x})]",
+        ),
+        [30, 1, 9],
+    ),
+    (
+        "text_ref",
+        (
+            "[((i64 | string) * (i64 | f64))]",
+            "if n > 0 then [(n, n)] else [(\"ab\", 2.5)]",
+            "(ref v)",
+            "[((5 | \"ab\"), {x})]",
+        ),
+        [30, 1, 9],
+    ),
+];
+
+#[test]
+fn nested_literal_elements_check_each_body_once() {
+    // A26's literal patterns compare an element of an anonymous union with `==`; the
+    // alternatives of an OR of literals in an element bind the same element (or the same part of
+    // it), whose projections index the same collection at the same constant. A25's
+    // `same_projection` compares them (Copilot review round 5, merged), so a match nested 30 deep
+    // checks each body once; before the merge it was 2^30 visits (4^30 for two elements).
+    for edition in [Edition::E2026, Edition::E2027] {
+        for (name, form, _) in LITERAL_ELEMENTS {
+            let source = format!("{NUM}{}", nested_element_narrowings(name, 30, form));
+            accepts_in(&source, edition);
+        }
+    }
+    // Expected values by hand: each level adds `num x` (`k * 2` for an i64, 3 for 2.5) to the
+    // next, and 0 at the innermost; an element that matches no literal (nor the type test) takes
+    // `_ -> 1` at the outer level. So 5 gives 10 three times (30), 7 gives 14 three times (42)
+    // where the arm names 7 and 1 where it does not, -1 gives 2.5 (3 three times, 9) where the
+    // arm takes the f64 or `"ab"` and 1 where it does not, and 6 matches no literal (1).
+    let mut source = NUM.to_owned();
+    let mut checks = String::from("test \"literal elements\" =\n");
+    for (name, form, [five, seven, negative]) in LITERAL_ELEMENTS {
+        source.push_str(&nested_element_narrowings(name, 3, form));
+        checks.push_str(&format!(
+            "    assert ({name} 5 == {five} && {name} 7 == {seven} && {name} (-1) == {negative} && {name} 6 == 1)\n"
+        ));
+    }
+    source.push_str(&checks);
+    passes(&source, Edition::E2026);
+    passes(&source, Edition::E2027);
 }

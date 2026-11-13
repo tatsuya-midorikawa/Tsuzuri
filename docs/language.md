@@ -849,7 +849,7 @@ instance Eq<'a> => Total<Box<'a>> {}
 同一の型クラスにおいてインスタンスヘッドが単一化可能である場合、コンテキスト制約の強弱にかかわらず重複定義（overlap）として `E1016` エラーとなります。
 例えば `Eq<Box<'a>>` と `Eq<Box<i64>>` を同一プロジェクト内に共存させることはできません（組み込みの条件付き比較インスタンスをユーザーコードで上書きすることも禁止されています）。
 `Eq<Box<'a>>` の比較処理からは、内部要素に対する `Eq<'a>` などの残余制約が呼び出し元へと自然に伝播します。
-インスタンス解決のネスト深度は最大 64、1 つの制約から導出される個別要件は最大 128 個、重複判定の単一化は最大 1024 組を上限とし、これを超過した場合は `E1017` リソース上限エラーとなります。最外の型構築子が異なるインスタンスヘッドの組（例: `Encode<i64>` と `Encode<['a]>`、別々のレコード）は単一化せずに重複なしと判定できるため、この 1024 組には数えません。
+インスタンス解決のネスト深度は最大 64、1 つの制約から導出される個別要件は最大 128 個、重複判定の単一化は最大 1024 組を上限とし、これを超過した場合は `E1017` リソース上限エラーとなります。個別要件は（クラス、型）の異なる組ごとに 1 個と数えます。ただし、[匿名共用体](#匿名共用体)の制約が要素ごとに出す要件と、その要素についての上位クラスの要件は数えません（要素は 32 個までで、要素が匿名共用体になることはないので、数えない要件は数える要件 1 個につき高々その個数です）。要素の中の型（タプルや配列の要素、導出したレコードのフィールドの型）の要件は数えます。数えた要件の半分より多くが匿名共用体の要素の中から来たとき（深さの上限ではないとき）は、`E1017` の help がこの数え方と、型の種類を減らすか、手書きのインスタンスを持つレコードで包む対処を示します。型変数を持つ匿名共用体の制約は、要素の制約に分けられるときも、それを含む解決では 1 個と数えます（要素の要件は、残りの予算で別に解決します）。最外の型構築子が異なるインスタンスヘッドの組（例: `Encode<i64>` と `Encode<['a]>`、別々のレコード）は単一化せずに重複なしと判定できるため、この 1024 組には数えません。
 
 | 組み込みクラス | メソッド／演算子 | 提供される組み込みインスタンス |
 |---|---|---|
@@ -858,8 +858,8 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Rem` | `rem` / `%` | 全整数型 |
 | `Neg` | `neg` / 単項 `-` | 符号付き整数型、全浮動小数点型 |
 | `Pow` | `pow` / `**` | 全整数型、f32、f64 |
-| `Eq` | `eq` / `ne :: ref 'a -> ref 'a -> bool`、`== !=` | 全数値型、bool、unit、string、utf8string、char、utf8char。全要素が Eq を満たす配列・リスト・タプル |
-| `Ord`（`Eq` を要求） | `lt` / `le` / `gt` / `ge :: ref 'a -> ref 'a -> bool`、`< <= > >=` | 全数値型、string、utf8string、char、utf8char。全要素が Ord を満たす配列・リスト・タプル |
+| `Eq` | `eq` / `ne :: ref 'a -> ref 'a -> bool`、`== !=` | 全数値型、bool、unit、string、utf8string、char、utf8char。全要素が Eq を満たす配列・リスト・タプル・[匿名共用体](#匿名共用体) |
+| `Ord`（`Eq` を要求） | `lt` / `le` / `gt` / `ge :: ref 'a -> ref 'a -> bool`、`< <= > >=` | 全数値型、string、utf8string、char、utf8char。全要素が Ord を満たす配列・リスト・タプル・匿名共用体（要素の正準順序、次にペイロード） |
 | `Bits` | `bit_and` / `bit_or` / `bit_xor` / `shl` / `shr` / `ushr` / `bit_not` | 全整数型 |
 | `Integer` / `SignedInteger` / `Float` / `Numeric` | リテラル解釈および型変換のための制約（メソッドなし） | 全整数型／符号付き整数型／全浮動小数点型／全数値型 |
 | `UnsignedInteger` | 符号なし整数制約（メソッドなし） | i8u／i16u／i32u／i64u／i128u |
@@ -868,13 +868,13 @@ instance Eq<'a> => Total<Box<'a>> {}
 | `Send` | tzroutine や別のスレッドへ所有権を移転可能な制約（メソッドなし） | 格納された参照型を含まない型（関数の捕捉環境は別途所有権検査される）。`Arc<'a>` は `'a` が `Send` かつ `Sync` のとき |
 | `Sync` | 複数の tzroutine やスレッドが共有借用で同時に使える制約（メソッドなし） | 整数、浮動小数点、bool、文字、文字列、関数値、`Atomic`、`Mutex`、`Copy` な `dyn`、それらだけを格納した配列・リスト・タプル・レコード・共用体、`'a` が `Sync` な `Arc<'a>`。`Rc`、extern ハンドル、排他参照、`Seq`、GPU のハンドル、`Copy` でない `dyn`、`Owned.Function` は含まない |
 | `AtomicValue` | `Atomic` に入れられる型の制約（メソッドなし） | i8／i16／i32／i64／i8u／i16u／i32u／i64u／bool |
-| `Display` | `display :: ref 'a -> string` | 全数値型、bool、unit、string、utf8string |
+| `Display` | `display :: ref 'a -> string` | 全数値型、bool、unit、string、utf8string。全要素が Display を満たす配列・リスト・タプル・匿名共用体（匿名共用体はペイロードだけを表示） |
 | `Parse` | `parse :: ref string -> Maybe<'a>` | 全数値型、bool |
-| `Hash` | `hash :: ref 'a -> i64u` | 全数値型、bool、unit、文字列型、文字型。全要素が Hash を満たす配列・リスト・タプル |
+| `Hash` | `hash :: ref 'a -> i64u` | 全数値型、bool、unit、文字列型、文字型。全要素が Hash を満たす配列・リスト・タプル・匿名共用体 |
 | `Default` | `default :: 'a`（`Default.default()` で呼び出し） | 数値の 0、false、unit、空文字列、文字の 0、空配列、空リスト、全要素が Default を満たすタプル |
 | `Elementary` | 初等超越関数用制約（メソッドなし） | f32／f64 のみ（ユーザーによるインスタンス追加は不可） |
 | `Err` | `msg :: ref 'a -> string`（`try` ハンドラの戻り値型に要求） | なし（標準ライブラリの `Exception` がインスタンスを保持。[検査付き算術と例外](#検査付き算術と例外) 参照） |
-| `Encode`／`Decode` | `encode :: ref 'a -> Result<Json.Value, Json.Error>`／`decode :: ref Json.Value -> Result<'a, Json.Error>` | なし（標準ライブラリの `Json` が bool、全整数型、全浮動小数点型、decimal 型、文字列型、`Maybe`、配列、リスト、`Vec`、`Map`、`Set`、`HashMap`、`HashSet`、2〜4 要素のタプル、`Json.Value` のインスタンスを保持。[Json](#json) 参照） |
+| `Encode`／`Decode` | `encode :: ref 'a -> Result<Json.Value, Json.Error>`／`decode :: ref Json.Value -> Result<'a, Json.Error>` | [匿名共用体](#匿名共用体)だけ（`Encode` は要素がすべて持つとき、`Decode` はさらに要素が読む JSON の種類が重ならないとき）。ほかは標準ライブラリの `Json` が bool、全整数型、全浮動小数点型、decimal 型、文字列型、`Maybe`、配列、リスト、`Vec`、`Map`、`Set`、`HashMap`、`HashSet`、2〜4 要素のタプル、`Json.Value` のインスタンスを保持（[Json](#json) 参照） |
 | `Drop` | `drop :: ref mut 'a -> unit`（スコープ終了時に drop glue が自動呼び出し。式からは直接参照不可） | なし（ユーザー定義の record や union に対して明示実装。[利用者定義の解放](#利用者定義の解放drop) 参照） |
 
 `Capture` 制約は、排他参照、`Drop` を実装した型、`Owned.Function`、extern ハンドル、`Copy` でない `dyn`、`Rc`、`Atomic`・`Mutex` およびそれらを含む集約値を、再利用可能な関数値へ捕捉することを静的に拒否します。
@@ -1167,7 +1167,7 @@ union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Eq, Display, E
 | `string`／`utf8string` | タグ `0x53`／`0x73`、コード単位数／バイト長、UTF-16 は 2 バイト単位／UTF-8 はバイト列 |
 | `char`／`utf8char` | タグ `0x43`／`0x63`、UTF-16 コード単位（2 バイト）／Unicode スカラー値（4 バイト） |
 | タプル／配列／リスト／レコード | タグ `0x54`／`0x41`／`0x4C`／`0x52`、要素数、各インデックスと子要素のハッシュ値 |
-| `union` | タグ `0x55`、case インデックス、ペイロードのハッシュ値（ペイロードなしは全ビット 1） |
+| `union`／匿名共用体 | タグ `0x55`、case インデックス、ペイロードのハッシュ値（ペイロードなしは全ビット 1）。[匿名共用体](#匿名共用体)の case インデックスは、正準順序での要素の位置（0 始まり） |
 
 浮動小数点のハッシュ計算では $\pm 0.0$ を同一の値として扱い、NaN は各型固有の正の quiet NaN へと正規化されます。
 decimal 型は非ゼロ係数の末尾の冗長なゼロを除去し、指数を表現上限まで引き上げた BID 形式へと正規化することで、同一のコホートに属する数値が同一のハッシュ値となることを保証します。
@@ -1206,7 +1206,34 @@ describe first                      // "int 42"
 - 絞り込みは `W` の要素の数だけ代替を作るので、パターンの代替の上限（1,024。`E1017`）に数えます。
 - 再帰しない匿名共用体の絞り込みは確保をしません。配列・リストの要素は 1 回（パターンの手順で作る場合は 2 回）複製され、`W1006`・`E1031` はパターンと束縛の名前の位置に出ます。照合する共用体の要素がすべて Copy のとき（`(i64 | f64 | [i64])` を `:? (i64 | [i64]) as x` で絞る）も、借用の先や後でもう一度使う値から絞るときも、複製は絞った値への 1 回です（照合した値全体は複製しません）。その共用体の絞り込みがほかの束縛の move する別の部分と並ぶとき（`(s, :? (i64 | [i64]) as x)`）は、照合した値をその後使わず、case のペイロードの中でもなければ 1 回、そうでなければ照合した部分全体の複製と合わせて 2 回です。
 
-匿名共用体は、要素数 n ごとにコンパイラが合成した総称の union 宣言（擬似モジュール `$anonymous` の `Union$n`）の具体化です。合成は、どれかのモジュールが匿名共用体の型か型テストのパターンを書いたときだけ行い、書かないプログラムの出力は変わりません。合成した名前は識別子に書けず、診断・hover・`doc`・`kg`・`api-diff`・型付き穴の候補には現れません。Copy・Send・drop・レイアウト（1 バイトのタグと最大の要素の領域。すべての要素の表現が同じならペイロードを共有）・再帰（名前付きの型の循環に入れば、名前付きの union と同じくヒープのノード）・64 KiB の上限（`E1010`）・`export` の制約（`E1008`）は、名前付きの union の規則がそのまま決めます。組み込みの `Eq`・`Ord`・`Hash`・`Display` はまだなく（`==` や表示は `E1005`。メッセージは `no instance for Eq<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases`）、匿名共用体を head とする `instance` は `E1041`（`anonymous_union_instance`）です。
+匿名共用体は、要素数 n ごとにコンパイラが合成した総称の union 宣言（擬似モジュール `$anonymous` の `Union$n`）の具体化です。合成は、どれかのモジュールが匿名共用体の型か型テストのパターンを書いたときだけ行い、書かないプログラムの出力は変わりません。合成した名前は識別子に書けず、診断・hover・`doc`・`kg`・`api-diff`・型付き穴の候補には現れません。Copy・Send・drop・レイアウト（1 バイトのタグと最大の要素の領域。すべての要素の表現が同じならペイロードを共有）・再帰（名前付きの型の循環に入れば、名前付きの union と同じくヒープのノード）・64 KiB の上限（`E1010`）・`export` の制約（`E1008`）は、名前付きの union の規則がそのまま決めます。匿名共用体を head とする `instance` は `E1041`（`anonymous_union_instance`）です。
+
+匿名共用体は、タプルと同じく、要素のインスタンスから決まる組み込みの `Eq`・`Ord`・`Hash`・`Display` を持ちます（A26）。どれも要素ごとの同じクラスの制約を要り、足りなければ要素を示す `E1005` です（`(i64 | bool)` の `<` は `no instance for Ord<bool>`）。
+
+- `Eq`: 2 つの値のタグが同じで、ペイロードが要素の `==` で等しいとき真です。タグが違えば、ペイロードを比べずに偽です。`!=` は、タグが違えば真、同じなら要素の `==` の否定です。
+- `Ord`: `<`・`<=`・`>`・`>=` は、タグが違えばタグの大小（正準順序での要素の位置。書いた順ではありません）で、同じなら要素の同じ演算子で決まります。`i64` の値はどの `string` の値よりも小さくなります。NaN と符号付きゼロは要素の演算子のままで、`(f64 | string)` の NaN は自分自身と等しくなく、`0.0 == -0.0` は真です。
+- `Hash`: 名前付きの union の導出と同じ列（Canonical Stream の `union` の行）です。同じ要素を正準順序に case として並べた名前付きの union（`union R = A of i64 | B of string deriving (Hash)`）と同じ値になり、`(i64 | string)` の `1` は `15967365493956732001`、`"one"` は `17017872639125386659` です。
+- `Display`: ペイロードの表示だけで、要素の型名は書きません。単独の値と文字列補間は要素の `Display`（文字列は引用符なし）、配列・リスト・タプルと、導出したレコードや union の中では、要素の引用付きの表示（文字列は `"one"`）です。`Display.display (a, b)` は `(1, "one")` です。
+
+比較演算子のもう一方の被演算子は注入されるので、`v == 1`（`v: (i64 | string)`）は `1` を `i64` の要素として包んでから比べます。左辺が接尾辞のない数のリテラルの `1 == v` も同じです。匿名共用体は `HashMap`・`HashSet`（`Eq` と `Hash`）と `Map`・`Set`（`Ord`）のキーにでき、匿名共用体をフィールドやペイロードに持つ型に `deriving (Eq, Ord, Hash, Display)` を付けられ、`Dyn.of` で `dyn Display` などに格納できます（表示はペイロードだけ）。`const def` の中の比較は、タプルや名前付きの union と同じ `E1026` です。リテラルのパターン（`| 1 ->`、`| "x" ->`）は `==` での比較なので、`Eq` を持つ匿名共用体にも書けます。リテラルは比較演算子の被演算子と同じ規則で注入してから比べるので、`(i64 | f64 | string)` への `| 1 ->` は `i64` の `1` にだけ一致し、2 つ以上の要素になりうるリテラルは `E1041`、どの要素でもないリテラルは `E1003`、`Eq` を持たない要素があれば `E1005` です。リテラルのパターンは値を 1 つしか覆わないので、型テストと並べても網羅にはならず、`_` の腕が要ります（`E1021` の `missing: _`）。`const def` の中では比較演算子と同じ `E1026` がパターンの位置に出ます。インスタンスの本体は要素のインスタンスを呼ぶ通常の関数なので、`pure def` の中で使うと要素のインスタンスの効果まで調べます（要素の `Eq` が純粋でなければ `E1029`）。
+匿名共用体は、[Json](#json) の `Encode`・`Decode` の組み込みのインスタンスも持ちます（A26）。
+
+- `Encode`: 要素ごとの `Encode` の制約を要ります。`Encode.encode` は、ペイロードを要素の `Encode.encode` に渡した結果そのものです。要素を示すタグも包みも書きません（`(i64 | string)` の `1` は `1`、`"one"` は `"one"`）。誤りも要素のものです。
+- `Decode`: 要素ごとの `Decode` の制約に加えて、要素が読む JSON の種類が互いに重ならないことを要ります。種類は要素の型の頭の型構築子だけで決まり、型引数の代入で変わりません: `bool` は boolean、整数・浮動小数点・decimal は number、`string`・`utf8string` は string、配列・リスト・`Vec`・2〜4 要素のタプル・`Set`・`HashSet` は array、`Map`・`HashMap` は object と array の両方、`Decode` を導出したレコードは object です。それ以外で `Decode` のインスタンスを持つ型（`Maybe`、名前付きの union、`Json.Value`、手書きの `Decode` を持つ型）は種類が決まらず、どの要素とも重なります。2 つの要素が同じ種類を読むか、種類が決まらない要素があれば、制約 `Decode<U>` は `E1025`（`anonymous_union_decode_overlap`）で、メッセージが理由を言います（`no Decode instance for (i64 | f64): the members i64 and f64 both read a JSON number, so the JSON value does not select one member; decode Json.Value and match on it, or use a union with named cases`）。既定の要素は選びません。`Decode` のインスタンスがない要素は、重なりより先に、要素を示す `E1005` です。重なりが別の要素の中（`(char | [(i64 | f64)])`）や、匿名共用体と並ぶ要件（`(char * (i64 | f64))`）にあっても同じで、要素の正準順序には依りません（重なりは、同じ解決のほかの要件がすべて満たせたときだけ報告します）。
+  - 型変数を持つ要素も、種類が頭の型構築子で決まれば、匿名共用体を書いた位置（総称の関数の本体、導出したインスタンスの文脈）で決まります。要素の型に合うインスタンスが型変数のままの型（`Pair<'a>`）にないとき、要素の制約が満たせないとき、書いた位置で種類が重なるか決まらないとき（`(['a] | Vec<'a>)`、`(Maybe<'a> | i64)`）は、制約を匿名共用体のまま残します（下の「型変数を持つ匿名共用体の制約」）。呼び出しで型変数が決まると、その呼び出しの位置で調べ直し、一部の型引数だけの手書きのインスタンス（`Decode<Pair<i64>>`）は種類が決まらないので `E1025`、インスタンスがなければ `E1005` です。診断は総称の関数の本体や std の中ではなく、型を決めた呼び出しを指します。本体を作る前にも同じ検査を繰り返し、要素を黙って選ぶ本体は作りません。
+  - 種類を決めるのは要素の `Decode` のインスタンスだけで、`Encode` が書く種類は調べません。std のインスタンスと、`Encode`・`Decode` の両方を導出した型は、書く種類と読む種類が同じなので、書いた JSON は書いた要素として読み戻されます。`Decode` を導出して `Encode` を手書きしたレコードが object 以外を書くと、その JSON は、その種類を読む別の要素の値になるか、どの要素にも読まれません。
+- `Decode.decode` は、`Json.Value` のタグで要素を選び、その要素の `Decode.decode` の結果を匿名共用体の値にします（誤りは要素のものをそのまま返します）。要素が読んだ値は複製せずに移すので、配列の要素も要素の `Decode` 以上には割り当てず、`@no_copy` の関数から呼べます。どの要素の種類でもなければ `Error (Json.Error { kind: ExpectedType "number or string", offset: -1 })` で、名前は要素の種類（`boolean`・`number`・`string`・`array`・`object`。`Map` は `object or array`）を正準順序で ` or ` でつなぎます。`null` を読む要素はないので、`null` は常にこの誤りです。
+- 匿名共用体をフィールドやペイロードに持つ型に `deriving (Encode, Decode)` を付けられ、`Dyn.of` で `dyn Encode` に格納できます。種類が重なる匿名共用体のフィールドは、`deriving (Decode)` の位置で同じ `anonymous_union_decode_overlap` です。
+
+型変数を持つ匿名共用体の制約（総称の関数の本体、導出したインスタンスや手書きのインスタンスの文脈）は、要素の制約がすべて満たせ、`Decode` なら要素の JSON の種類が決まって重ならないときだけ、書いた位置で要素ごとの制約に分けます（`Eq<(['a] | string)>` は `Eq<'a>` になり、署名やインスタンスの文脈の `Eq<'a>` が満たします）。そうでなければ（`(['a] | (i64 -> i64))` の `Eq`、`(['a] | bool)` の `Ord`、`(['a] | char)` の `Encode`、上の `Decode` の場合）、制約を匿名共用体のまま残し、ほかの型の、満たすインスタンスがまだない型変数を持つ制約と同じく、型変数が決まる呼び出しの位置（呼び出し元へ伝わる制約の位置）で調べます。呼び出さない総称の関数は、この制約のために拒否されません。タプルは、型変数のない部分が満たせなければ定義の位置で `E1005` なので、ここはタプルと違います。要素の中の匿名共用体が残るときは、外側の匿名共用体も残します（解き直しても同じ結果になるように）。要素どうしは 1 つの解決を共有するので、いくつかの要素が要る同じ要件（`(P1 * [['a]])` と `(P2 * [['a]])` の `Eq<[['a]]>`）は、型変数のない匿名共用体と同じく 1 回だけ解き、インスタンス解決の上限に 1 個と数えます。異なる要件が上限を超えるときも制約は匿名共用体のまま残るので、インスタンスの文脈の `Eq<'a>` はそれを満たしません（`E1027`）。
+
+比較演算子の被演算子への注入は、ほかの注入と同じく値の使用です。非 Copy の変数（`v == s` の `s: string`）は匿名共用体の中へ move され、後で使うと `E1012` です（ほかの型どうしの比較は被演算子を借用するだけです）。この `E1012` の help は、注入できない `ref s` ではなく、`an anonymous union holds its value, so injecting 's' moved it; use 's' before that, or inject a copy (clone_string ref s)` です（`utf8string` は `Utf8String.clone ref s`、フィールドは `injecting the field moved it out of 'r'`）。
+
+拡大・絞り込み（A25）と組み込みのインスタンス（A26）: 比較演算子の被演算子は拡大しないので、要素の少ない匿名共用体の値を被演算子にした `v == w` は `E1003` です。隣の型を受け取る被演算子の値になる位置（`v == (if c then w else 0)` の枝の `w`）も拡大しません。先に検査する被演算子の中の後の枝は、前の枝の型へ拡大し（`(if c then v else w) == x` の `w`）、拡大した値へ move されます（上の拡大の段落）。拡大した値と絞った値は、その型の正準順序での要素の位置をタグに持つので、`Eq`・`Ord`・`Hash` はその型で直接作った値と同じ結果です。同じペイロードでも、要素の位置が違う型の値とは `Hash` が違います（`(i64 | string)` の `"s1"` は要素 1、`(f64 | i64 | string)` の `"s1"` は要素 2）。`Display`・`Encode` はペイロードだけを書くので、もとの値と同じ表示・JSON です。総称の関数の引数（`HashSet.insert`・`Map.get` のキー）では拡大しないので、要素の多い匿名共用体のコレクションへは、型注釈のある束縛で拡大してから渡します。
+
+匿名共用体は `Display` を持つので、トップレベルの結果式が匿名共用体なら、その表示を出力します（`Display` を持つ型の値を出力する結果式の規則のとおりです）。
+
+`Default`・`Format`・`Arbitrary` のインスタンスはありません。`E1005`（匿名共用体を持つ型の `deriving` では `E1025`）で、メッセージは `no instance for Default<(i64 | string)>; instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases` です。
 
 ### アプリケーションのエントリーポイント
 
@@ -3163,7 +3190,7 @@ Json.deserialize :: Decode<'a> => ref utf8string -> Result<'a, Error>
 - 出力は空白なしで、キーは格納順、数値は字句のまま、文字列は ECMAScript 2019 以降の `JSON.stringify` と同じエスケープです（孤立サロゲートは `\udxxx`）。`Object` の重複キーは検査しません。
 - 入力は 64 MiB（`TooLarge`）、入れ子は 128 段（`TooDeep`、129 段目の `[`／`{` の位置）まで。解析は再帰の前に深さを検査する再帰下降なので、深い入力でもスタックは 128 段で止まります。重複キーの検査は 32 メンバー以下で線形、それを超えると整列して $O(n \log n)$ です。`Map`／`Set` の decode も要素を文書での位置とともにキーで安定整列してから昇順に挿入するので $O(n \log n)$ で、重複は文書順で前の要素とキーが等しい最初の要素を、その字句で報告します。
 - 数値の変換（`to_i64`、`to_f64`、数値の `Decode`）は字句を検査してから `Parse.parse` を一度だけ呼びます。整数型は小数・指数のある字句を `ExpectedType "integer"`、範囲外と 4096 バイト超の字句を `NumberRange` にします。浮動小数点は目的の型へ一度だけ最近接・偶数丸めし、無限大への overflow は `NumberRange` です。
-- `Encode`／`Decode` のインスタンスは std の `Json` と利用者のソースにだけあり、bool、全整数型、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、string、utf8string、`Maybe<'a>`（`None` は `null`）、配列・リスト・`Vec`（JSON の配列）、2〜4 要素のタプル（同じ長さの配列）、`Map`／`HashMap`（すべてのキーが JSON の文字列になれば object、そうでなければ `[キー, 値]` の配列の配列。空のマップは `{}`。decode はどちらも受理し、重複キーは `DuplicateKey`）、`Set`／`HashSet`（配列）、`Json.Value` を扱います。`Map`／`Set` はキーの昇順、`HashMap`／`HashSet` は挿入順に書きます。文字列のキーとそれ以外のキーに別々のインスタンスを置くことは重複規則でできないため、マップの形は encode したキーで決まります。NaN・無限大の encode は `NonFinite`、孤立サロゲートを含む文字列の `utf8string` への decode は `LoneSurrogate` です。数値は `to_string` の最短表現（`-0`、`1e+7`）で、`JSON.stringify` とは書き方が異なることがあります。
+- `Encode`／`Decode` のインスタンスは std の `Json` と利用者のソースにあり（コンパイラの組み込みは[匿名共用体](#匿名共用体)だけで、ペイロードの JSON をタグなしで書き、JSON の値の種類で要素を選んで読みます）、bool、全整数型、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、string、utf8string、`Maybe<'a>`（`None` は `null`）、配列・リスト・`Vec`（JSON の配列）、2〜4 要素のタプル（同じ長さの配列）、`Map`／`HashMap`（すべてのキーが JSON の文字列になれば object、そうでなければ `[キー, 値]` の配列の配列。空のマップは `{}`。decode はどちらも受理し、重複キーは `DuplicateKey`）、`Set`／`HashSet`（配列）、`Json.Value` を扱います。`Map`／`Set` はキーの昇順、`HashMap`／`HashSet` は挿入順に書きます。文字列のキーとそれ以外のキーに別々のインスタンスを置くことは重複規則でできないため、マップの形は encode したキーで決まります。NaN・無限大の encode は `NonFinite`、孤立サロゲートを含む文字列の `utf8string` への decode は `LoneSurrogate` です。数値は `to_string` の最短表現（`-0`、`1e+7`）で、`JSON.stringify` とは書き方が異なることがあります。
 - `to_utf8string_pretty indent value`／`serialize_pretty indent value` は `JSON.stringify(value, null, indent)` と同じ字下げ（1 段 `indent` 個の空白、10 で頭打ち、1 未満は空白なし）で書きます。
 - `Json.reader`／`Json.next` は木を作らないプル型の解析器で、`Event`（`ObjectStart`、`KeyToken of Lexeme` など）と、入力のバイト範囲 `Lexeme { start, finish, escaped }` を返します（`token_text`・`token_matches`・`token_numeral` で中身を取り出す）。検査・上限・エラーの種類と位置は `parse` と同じで、重複キーはその object が閉じるか入力が失敗したときに報告します。`Json.writer` と `open_object`／`write_key`／`write_text`／`finish` などは、`,`・`:` を補いながら入れ子と順序を検査する逐次の出力器で、誤りは出力のバイト数を位置とする `Syntax`／`UnexpectedEnd`／`TooDeep` です。`Reader`・`Writer` は不透明です。
 - std の `Cbor` は同じ `Json.Value` を RFC 8949 の決定的な符号化（最短の引数、長さを前置、値を保つ最短の浮動小数点、符号化したキーの辞書順）で `[ubyte]` に書き（`Cbor.encode`／`serialize`）、JSON のデータモデルに入る CBOR だけを厳密に読みます（`Cbor.decode`／`deserialize`。64 MiB、入れ子 128 段、バイト文字列やタグ 2・3 以外は `Unsupported`、不正な UTF-8 は `InvalidUtf8`）。整数の字句は整数（64 ビットを超えれば bignum）、それ以外の数値は `f64` に一度だけ丸めた値です。
@@ -5041,7 +5068,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1039` | 浮動小数点の数を含む型への `Monoid` の制約（`Parallel.fold` が `Array.fold_monoid` と違いうる） |
 | `E1040` | 消えた・改名された名前。`renamed_to_data_channel`: 旧 `Channel.bounded` などは `DataChannel` の名前（確かな修正案を持つ）。`removed_task_expression`: `task { … }`（`@alias task` の利用者のビルダーがないとき）。`removed_task_type`: 型 `Task<T>`。`removed_task_api`: `Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope`（`Task.scope` だけが `Routine.scope` への確かな修正案を持つ）。`removed_async`: `Async { … }`・`async { … }`（`@alias async` の利用者のビルダーがないとき）・型 `Async<T>`・`Async.Operation`・`Async.run` などの関数（TZ13）。`removed_net_async`: `Net.connect_async` などの 12 関数（TZ13）。どれも利用者の定義に解決しないときだけ（[並列実行](#並列実行)、[非同期計算（Async）](#非同期計算async)） |
 | `E1041` | [匿名共用体](#匿名共用体)の誤り。型変数の要素（`anonymous_union_type_variable`）、型引数によっては同じ型になる要素と、関数型が純粋かどうかだけが違う要素（`anonymous_union_indistinct_members`）、重なる要素（`anonymous_union_duplicate_member`）、2 つ以上の要素になりうるリテラル（`anonymous_union_ambiguous_literal`）と値（配列のリテラルを含む値を含む。`anonymous_union_ambiguous_member`）、匿名共用体を head とする `instance`（`anonymous_union_instance`）、型テスト `:?` の対象の型が決まらない（`type_test_unknown_scrutinee`）・匿名共用体でない（`type_test_not_anonymous_union`）、`:?` の型（匿名共用体ならその各要素）が要素でない（`type_test_not_member`）、借用した値またはガードのある腕で、Copy でない要素を持つ匿名共用体へ `as` で絞る（`type_test_narrow_borrowed`）。kind `type_test_union` は出さなくなりました（`:?` の型に匿名共用体を書けます） |
-| `E1025` | 自動導出（deriving）がサポートされていない型クラスまたは要素型、停止しない再帰的 `Default` 定義 |
+| `E1025` | 自動導出（deriving）がサポートされていない型クラスまたは要素型、停止しない再帰的 `Default` 定義。要素が読む JSON の種類が重なる[匿名共用体](#匿名共用体)の `Decode`（`anonymous_union_decode_overlap`） |
 | `E1026` | コンパイル時定数評価（`const` の初期化式と `const def` の本体）におけるトラップ発生、循環参照、計算ステップ上限超過、未対応の定数式、`const def` の署名・本体の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `W1001` | 未使用のローカル変数、引数、またはパターン束縛変数（警告） |
 | `W1002` | 公開 API から到達しないデッドコード（private な関数、レコード、union、型エイリアス）（警告） |

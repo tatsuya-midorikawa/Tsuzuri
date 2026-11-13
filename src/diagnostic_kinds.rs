@@ -577,6 +577,7 @@ diagnostic_kinds! {
         (UnionCaseNameCase, "union_case_name_case", "E1024"),
         (UnusedTypeParameter, "unused_type_parameter", "E1024"),
         // E1025
+        (AnonymousUnionDecodeOverlap, "anonymous_union_decode_overlap", "E1025"),
         (DefaultDeriveRecursive, "default_derive_recursive", "E1025"),
         (DerivedInstanceInvalid, "derived_instance_invalid", "E1025"),
         (DerivingUnavailable, "deriving_unavailable", "E1025"),

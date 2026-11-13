@@ -14,6 +14,59 @@ const MAX_GROWTH_DEPTH: usize = 32;
 const MAX_LINEAGE_WALK: usize = 1024;
 const MAX_CONSTRAINTS: usize = 128;
 
+/// Where an obligation of `Classes::reduce` comes from (A26).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Part {
+    /// Not from the members of an anonymous union.
+    Outside,
+    /// The instance for a member of an anonymous union, or one of its superclasses for the same
+    /// member: not counted in the budget.
+    Member,
+    /// An obligation that the instance for a member needs: counted, and counted apart for the
+    /// help of the limit.
+    Inside,
+}
+
+impl Part {
+    /// The part of the obligations that an obligation of this part needs.
+    fn below(self) -> Self {
+        match self {
+            Self::Outside => Self::Outside,
+            Self::Member | Self::Inside => Self::Inside,
+        }
+    }
+}
+
+/// The obligations that one resolution has counted (`MAX_CONSTRAINTS`), and those of them that
+/// come from inside the members of anonymous unions (`Part::Inside`). `settling`: inside the
+/// members of an anonymous union with type variables (`Classes::settle`).
+#[derive(Clone, Copy, Debug, Default)]
+struct Budget {
+    work: usize,
+    inside: usize,
+    settling: bool,
+}
+
+/// What one resolution has found (`Classes::reduce`): the obligations already resolved, and the
+/// obligations that stay for the type variables (`residual`, once each; `seen` holds their keys).
+/// The resolutions of the members of an anonymous union with type variables share one
+/// (`Classes::settle`), so that an obligation that several members need is resolved and counted
+/// once, as it is in the members of an anonymous union without type variables (A26).
+#[derive(Debug, Default)]
+struct Resolution {
+    completed: BTreeSet<(usize, Type)>,
+    seen: BTreeSet<(usize, Type)>,
+    residual: Vec<Constraint>,
+}
+
+impl Resolution {
+    fn keep(&mut self, constraint: Constraint) {
+        if self.seen.insert((constraint.class, constraint.ty.clone())) {
+            self.residual.push(constraint);
+        }
+    }
+}
+
 /// The specialization limits: all specializations, and growth along one chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SpecializationLimits {
@@ -727,6 +780,9 @@ pub(super) struct Classes {
     names: BTreeMap<String, usize>,
     instances: Vec<InstanceTemplate>,
     function_reads: BTreeMap<String, Box<[bool]>>,
+    /// The synthesized declarations behind anonymous unions (A24): a union of one of them has the
+    /// structural instances of `structural` (A26).
+    anonymous: BTreeSet<usize>,
 }
 
 struct InstanceTemplate {
@@ -883,6 +939,7 @@ impl Classes {
             names: BTreeMap::new(),
             instances: Vec::new(),
             function_reads: BTreeMap::new(),
+            anonymous: names.anonymous_unions.iter().copied().collect(),
         };
         for name in BUILTIN_CLASSES {
             classes
@@ -1081,7 +1138,9 @@ impl Classes {
                 default: None,
             });
         // `Encode.encode value` and `Decode.decode json` convert through the data model of the
-        // std module `Json` (D08). Only std and user source instances implement them.
+        // std module `Json` (D08). Std and user source instances implement them, so the methods
+        // have no operation; an anonymous union alone has built-in instances
+        // (`Specializer::union_codec`, A26).
         let json = |class: &str| {
             let span = Span::default();
             let value = names.std_type("Json", "Value", Box::default(), span);
@@ -2405,23 +2464,49 @@ impl Classes {
         constraint: &Constraint,
         types: &TypeContext<'_>,
     ) -> Result<Vec<Constraint>, Diagnostic> {
-        let mut pending = vec![(constraint.clone(), 0, false)];
-        let mut residual = Vec::new();
-        let mut seen = BTreeSet::new();
-        let mut active = BTreeMap::new();
-        let mut completed = BTreeSet::new();
-        let mut work = 0;
-        while let Some((current, depth, finished)) = pending.pop() {
+        let mut resolution = Resolution::default();
+        self.reduce(
+            constraint,
+            (0, Part::Outside),
+            &BTreeMap::new(),
+            &mut Budget::default(),
+            &mut resolution,
+            types,
+        )?;
+        Ok(resolution.residual)
+    }
+
+    /// Resolves `constraint`, adding the obligations that stay for the type variables to
+    /// `resolution`, or gives the diagnostic of the first one that fails. `start` is the depth
+    /// and the part of `constraint`, `ancestors` the obligations being resolved around it (for
+    /// cycles), and `budget` is shared with them: `normalize` starts at depth 0, outside any
+    /// anonymous union, with no ancestors and an empty `resolution`.
+    fn reduce(
+        &self,
+        constraint: &Constraint,
+        start: (usize, Part),
+        ancestors: &BTreeMap<(usize, Type), (usize, bool)>,
+        budget: &mut Budget,
+        resolution: &mut Resolution,
+        types: &TypeContext<'_>,
+    ) -> Result<(), Diagnostic> {
+        let mut pending = vec![(constraint.clone(), start.0, false, start.1)];
+        let mut active = ancestors.clone();
+        // A26: the overlap of an anonymous union's `Decode` waits until every other obligation
+        // of this resolution is resolved, whatever the order of the members: a member without
+        // an instance, inside this union or beside it, is what to fix first (D7).
+        let mut overlap: Option<Diagnostic> = None;
+        while let Some((current, depth, finished, part)) = pending.pop() {
             if current.ty.contains_error() {
                 continue;
             }
             let key = (current.class, current.ty.clone());
             if finished {
                 active.remove(&key);
-                completed.insert(key);
+                resolution.completed.insert(key);
                 continue;
             }
-            if completed.contains(&key) {
+            if resolution.completed.contains(&key) {
                 continue;
             }
             if let Some(&(start, _)) = active.get(&key) {
@@ -2450,16 +2535,33 @@ impl Classes {
                 .matching_instance(current.class, &current.ty, types)
                 .is_some_and(|(instance, _)| instance.derived);
             active.insert(key, (depth, derived));
-            work += 1;
-            if depth >= 64 || work > MAX_CONSTRAINTS {
-                return Err(Diagnostic::of(
+            // A26: an anonymous union asks for the instance of each member, up to
+            // `anonymous_union::MAX_MEMBERS` of them for each class, so a wide union would use
+            // the budget before any part of a member is resolved. The obligations for the
+            // members, and those of their superclasses for the same members, are not counted.
+            // Their number stays bounded: a member is never an anonymous union, so each of them
+            // is asked for by an obligation of a union, which is counted and has at most that
+            // many members.
+            budget.work += usize::from(part != Part::Member);
+            budget.inside += usize::from(part == Part::Inside);
+            if depth >= 64 || budget.work > MAX_CONSTRAINTS {
+                let limit = Diagnostic::of(
                     DiagnosticKind::InstanceResolutionLimit,
                     "instance constraint resolution exceeds depth 64 or 128 obligations",
                     current.span,
-                ));
+                );
+                // The help names anonymous unions only when most of the counted obligations
+                // come from inside their members, so that fewer distinct types there would help.
+                return Err(if depth < 64 && 2 * budget.inside > budget.work {
+                    limit.with_help(
+                        "an anonymous union needs the instance of each member, and every distinct type inside the members is one obligation for each class (Ord also needs Eq); use fewer distinct types, or wrap a part in a record with a hand-written instance, which is one obligation",
+                    )
+                } else {
+                    limit
+                });
             }
             bounded_type(&current.ty, current.span)?;
-            pending.push((current.clone(), depth, true));
+            pending.push((current.clone(), depth, true, part));
             let class = &self.declarations[current.class];
             // F15: `Monoid<T>` is checked here, before its instance is matched, because a found instance
             // (`Monoids.Sum<f64>`) goes on to its context and never reaches `validate_instance`. A type with
@@ -2471,6 +2573,7 @@ impl Classes {
             }
             let substitutions = BTreeMap::from([(class.variable.clone(), current.ty.clone())]);
             for superclass in &class.superclasses {
+                // `Ord<member>` needs `Eq<member>`, which `Eq` of the union asks for as well.
                 pending.push((
                     Constraint {
                         class: superclass.class,
@@ -2479,17 +2582,55 @@ impl Classes {
                     },
                     depth + 1,
                     false,
+                    part,
                 ));
             }
             if self.structural(current.class, &current.ty) {
-                let elements = match &current.ty {
-                    Type::Array(element) | Type::List(element) => {
-                        std::slice::from_ref(element.as_ref())
+                let union = self.anonymous_union(&current.ty);
+                if union && !variables(&current.ty).is_empty() {
+                    // A26: an anonymous union with type variables gives the obligations of its
+                    // members only when all of them can be met; otherwise the constraint stays
+                    // whole for the types that the variables take, as one without an instance
+                    // does, and is checked where they are known (the caller, the instance).
+                    // Either way it costs this resolution one obligation, as before A26: the
+                    // outermost union gets the rest of the budget for its members and gives it
+                    // back, and the unions inside its members share that part. A union inside
+                    // the members that stays whole keeps the outermost one whole, so that
+                    // resolving the result again gives the same result. The members of the
+                    // outermost union, and of the unions inside them, share one resolution, which
+                    // is kept only when they all hold.
+                    let saved = *budget;
+                    budget.settling = true;
+                    if saved.settling {
+                        self.settle(&current, depth, &active, budget, resolution, types)?;
+                        continue;
                     }
-                    Type::Tuple(elements) => elements.as_slice(),
-                    _ => unreachable!(),
-                };
-                pending.extend(elements.iter().map(|ty| {
+                    let mut members = Resolution::default();
+                    match self.settle(&current, depth, &active, budget, &mut members, types) {
+                        Ok(()) => {
+                            for constraint in members.residual {
+                                resolution.keep(constraint);
+                            }
+                        }
+                        Err(_) => resolution.keep(current.clone()),
+                    }
+                    *budget = saved;
+                    continue;
+                }
+                // A26: an anonymous union decodes only when the JSON value selects one member.
+                if union
+                    && class.name == "Decode"
+                    && overlap.is_none()
+                    && let Err(message) = self.decode_members(&current.ty, types)
+                {
+                    overlap = Some(Diagnostic::of(
+                        DiagnosticKind::AnonymousUnionDecodeOverlap,
+                        message,
+                        current.span,
+                    ));
+                }
+                let below = if union { Part::Member } else { part.below() };
+                pending.extend(structural_elements(&current.ty).iter().map(|ty| {
                     (
                         Constraint {
                             class: current.class,
@@ -2498,6 +2639,7 @@ impl Classes {
                         },
                         depth + 1,
                         false,
+                        below,
                     )
                 }));
                 continue;
@@ -2517,17 +2659,70 @@ impl Classes {
                         },
                         depth + 1,
                         false,
+                        part.below(),
                     )
                 }));
             } else if !variables(&current.ty).is_empty() {
-                if seen.insert((current.class, current.ty.clone())) {
-                    residual.push(current);
-                }
+                resolution.keep(current);
             } else {
                 self.validate_instance(&current, types)?;
             }
         }
-        Ok(residual)
+        overlap.map_or(Ok(()), Err)
+    }
+
+    /// Resolves the members of `union`, an anonymous union with type variables, in one shared
+    /// `resolution`, which then holds the obligations that stay for them when every member meets
+    /// its constraint (A26); the first error when one does not, or when the members of
+    /// `Decode<union>` do not read disjoint kinds of JSON values. A member whose instance is
+    /// missing only for these variables may still meet it for the types that they take, and the
+    /// kinds of a member with no instance yet are not known, so the caller keeps the constraint
+    /// of the union whole: where the variables are known, it is resolved again, and any error is
+    /// reported there.
+    fn settle(
+        &self,
+        union: &Constraint,
+        depth: usize,
+        active: &BTreeMap<(usize, Type), (usize, bool)>,
+        budget: &mut Budget,
+        resolution: &mut Resolution,
+        types: &TypeContext<'_>,
+    ) -> Result<(), Diagnostic> {
+        if self.declarations[union.class].name == "Decode" {
+            match self.decode_members(&union.ty, types) {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::NoInstance,
+                        no_instance("Decode", &union.ty, types),
+                        union.span,
+                    ));
+                }
+                Err(message) => {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::AnonymousUnionDecodeOverlap,
+                        message,
+                        union.span,
+                    ));
+                }
+            }
+        }
+        for member in structural_elements(&union.ty) {
+            let member = Constraint {
+                class: union.class,
+                ty: member.clone(),
+                span: union.span,
+            };
+            self.reduce(
+                &member,
+                (depth + 1, Part::Member),
+                active,
+                budget,
+                resolution,
+                types,
+            )?;
+        }
+        Ok(())
     }
 
     fn entails(
@@ -2655,14 +2850,122 @@ impl Classes {
         targets.into_iter().collect()
     }
 
+    /// Whether the instance of `class` for `ty` is the built-in one that the instances of the parts
+    /// of `ty` make: the elements of an array, a list or a tuple, the members of an anonymous union
+    /// (A26). `structural_elements` gives those parts.
     fn structural(&self, class: usize, ty: &Type) -> bool {
-        if self.declarations[class].name == "Default" {
-            return matches!(ty, Type::Tuple(_));
+        match self.declarations[class].name.as_str() {
+            "Default" => matches!(ty, Type::Tuple(_)),
+            "Eq" | "Ord" | "Hash" | "Display" => {
+                matches!(ty, Type::Array(_) | Type::List(_) | Type::Tuple(_))
+                    || self.anonymous_union(ty)
+            }
+            // A26 Phase 2: the JSON of the payload, without a tag. `normalize` gives `Decode` only
+            // to a union whose members read disjoint kinds of JSON values (`decode_members`).
+            "Encode" | "Decode" => self.anonymous_union(ty),
+            _ => false,
         }
-        matches!(
-            self.declarations[class].name.as_str(),
-            "Eq" | "Ord" | "Hash" | "Display"
-        ) && matches!(ty, Type::Array(_) | Type::List(_) | Type::Tuple(_))
+    }
+
+    /// Whether `ty` is an anonymous union `(A | B)` (A24).
+    fn anonymous_union(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Union(id, _) if self.anonymous.contains(id))
+    }
+
+    /// The kinds of JSON values that the `Decode` instance of `member`, a member of an anonymous
+    /// union, reads (A26, D7). The head of the type decides, so type arguments do not change the
+    /// answer: the types that std gives an instance of one shape, and a record whose instance is
+    /// derived, which reads an object. Any other type with an instance could read several kinds.
+    fn decode_kinds(&self, member: &Type, types: &TypeContext<'_>) -> anonymous_union::JsonKinds {
+        use anonymous_union::{JsonKind::*, JsonKinds};
+        match member {
+            Type::Bool => return JsonKinds::Fixed(&[Boolean]),
+            Type::Integer(..) | Type::Binary(_) | Type::Decimal(_) => {
+                return JsonKinds::Fixed(&[Number]);
+            }
+            Type::String | Type::Utf8String => return JsonKinds::Fixed(&[Text]),
+            Type::Array(_) | Type::List(_) | Type::Vec(_) => return JsonKinds::Fixed(&[Array]),
+            Type::Tuple(elements) if (2..=4).contains(&elements.len()) => {
+                return JsonKinds::Fixed(&[Array]);
+            }
+            Type::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std => {
+                match types.records[*id].name.as_str() {
+                    // A map whose keys are not JSON strings is an array of `[key, value]` arrays.
+                    "Map.Map" | "HashMap.HashMap" => return JsonKinds::Fixed(&[Object, Array]),
+                    "Set.Set" | "HashSet.HashSet" => return JsonKinds::Fixed(&[Array]),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        match self.matching_instance(self.names["Decode"], member, types) {
+            // A member with type variables may still meet its constraint for the types that they
+            // take: `Classes::settle` keeps the constraint of the union for them.
+            None => JsonKinds::Missing,
+            // The context of the instance is the business of the member's own constraint.
+            Some((instance, _)) if instance.derived && matches!(member, Type::Record(..)) => {
+                JsonKinds::Fixed(&[Object])
+            }
+            Some(_) => JsonKinds::Open,
+        }
+    }
+
+    /// The JSON kinds of each member of the anonymous union `ty` when `Decode<ty>` exists: the
+    /// kinds are pairwise disjoint, so the kind of a JSON value selects one member (D5, D7).
+    /// `Ok(None)` when a member has no `Decode` instance, which the member's own constraint
+    /// reports; `Err` with the message of `anonymous_union_decode_overlap` when two members read
+    /// the same kind or a member is not limited to kinds of its own. No member is a default.
+    /// `Classes::reduce` reports that message only after every other obligation of its resolution
+    /// holds (the members' own constraints among them), and
+    /// keeps the constraint of a union with type variables whole until they are known
+    /// (`Classes::settle`); `Specializer::union_codec` reads the kinds again for the body.
+    fn decode_members(
+        &self,
+        ty: &Type,
+        types: &TypeContext<'_>,
+    ) -> Result<Option<Vec<&'static [anonymous_union::JsonKind]>>, String> {
+        let members = structural_elements(ty);
+        let kinds: Vec<_> = members
+            .iter()
+            .map(|member| self.decode_kinds(member, types))
+            .collect();
+        if kinds.contains(&anonymous_union::JsonKinds::Missing) {
+            return Ok(None);
+        }
+        let advice = "so the JSON value does not select one member; decode Json.Value and match on it, or use a union with named cases";
+        let mut fixed = Vec::with_capacity(members.len());
+        for (member, kinds) in members.iter().zip(&kinds) {
+            let reason = match kinds {
+                anonymous_union::JsonKinds::Fixed(kinds) => {
+                    fixed.push(*kinds);
+                    continue;
+                }
+                anonymous_union::JsonKinds::Missing => return Ok(None),
+                anonymous_union::JsonKinds::Open => {
+                    "is not limited to one kind of JSON value (a Maybe, a union with named cases, Json.Value, or a type with a hand-written Decode can read several)"
+                }
+            };
+            return Err(format!(
+                "no Decode instance for {}: the member {} {reason}, {advice}",
+                ty.display(types),
+                member.display(types)
+            ));
+        }
+        for (later, kinds) in fixed.iter().enumerate() {
+            for kind in *kinds {
+                if let Some(earlier) = fixed[..later].iter().position(|kinds| kinds.contains(kind))
+                {
+                    return Err(format!(
+                        "no Decode instance for {}: the members {} and {} both read {}, {advice}",
+                        ty.display(types),
+                        members[earlier].display(types),
+                        members[later].display(types),
+                        kind.phrase()
+                    ));
+                }
+            }
+        }
+        Ok(Some(fixed))
     }
 
     fn intrinsic(&self, class: usize, ty: &Type, types: &TypeContext<'_>) -> bool {
@@ -4684,6 +4987,7 @@ pub(super) fn specialize(
         functions: Vec::with_capacity(base_count),
         intrinsics: BTreeMap::new(),
         to_strings: BTreeMap::new(),
+        quoted_displays: BTreeMap::new(),
         vtables: BTreeMap::new(),
         upcasts: BTreeSet::new(),
         current: FunctionOrigin::source(ModuleOrigin::User),
@@ -4916,6 +5220,8 @@ struct Specializer<'a> {
     functions: Vec<CheckedFunction>,
     intrinsics: BTreeMap<(usize, usize, Type), usize>,
     to_strings: BTreeMap<Type, usize>,
+    /// A26: the function that shows each anonymous union inside a collection, with quoted members.
+    quoted_displays: BTreeMap<Type, usize>,
     /// A14: the slot functions of each vtable, by vtable key and stored type.
     vtables: Vtables,
     /// A14 Phase 2: the upcasts between distinct vtable keys, as (source, target).
@@ -5203,9 +5509,13 @@ impl Specializer<'_> {
                         ) =>
                 {
                     let class = self.classes.names["Display"];
-                    let function = if let Some((function, arguments)) = self
-                        .classes
-                        .resolved_method(class, 0, &instance.types[0], &self.types)
+                    let function = if self.classes.anonymous_union(&instance.types[0]) {
+                        // A26: the payload keeps its quotes, which `Display.display` drops.
+                        let ty = instance.types[0].clone();
+                        self.quoted_display_function(&ty, expression.span)?
+                    } else if let Some((function, arguments)) =
+                        self.classes
+                            .resolved_method(class, 0, &instance.types[0], &self.types)
                     {
                         self.request(function, arguments, expression.span)?
                     } else {
@@ -5338,9 +5648,13 @@ impl Specializer<'_> {
             {
                 Some((function, arguments)) => self.request(function, arguments, span)?,
                 // Builtin implementations get ordinary wrappers, as method values do (Phase 2).
+                // So do the built-in `Encode` of an anonymous union, whose method has no
+                // operation (A26).
                 None if self.classes.declarations[class].methods[method]
                     .operation
-                    .is_some() =>
+                    .is_some()
+                    || (self.classes.anonymous_union(value)
+                        && self.classes.structural(class, value)) =>
                 {
                     self.intrinsic_function(class, method, value, span)?
                 }
@@ -5455,17 +5769,25 @@ impl Specializer<'_> {
                 span,
             })
         };
-        let kind = match method.operation.expect("intrinsic methods have operations") {
-            Operation::Builtin(Builtin::Display) if self.classes.structural(class, ty) => {
-                let elements = match ty {
-                    Type::Array(element) | Type::List(element) => {
-                        std::slice::from_ref(element.as_ref())
-                    }
-                    Type::Tuple(elements) => elements.as_slice(),
-                    _ => unreachable!(),
-                };
+        let kind = match method.operation {
+            // A26 Phase 2: `Encode` and `Decode` have no operation, and only an anonymous union has
+            // built-in instances of them.
+            None if self.classes.anonymous_union(ty) && self.classes.structural(class, ty) => {
+                let arguments: Vec<_> =
+                    parameters.iter().map(|local| *argument(local.id)).collect();
+                self.union_codec(class, ty, &signature.result, &arguments)?
+            }
+            None => unreachable!("intrinsic methods have operations"),
+            Some(operation)
+                if self.classes.anonymous_union(ty) && self.classes.structural(class, ty) =>
+            {
+                let arguments: Vec<_> =
+                    parameters.iter().map(|local| *argument(local.id)).collect();
+                self.union_method(class, operation, structural_elements(ty), &arguments)
+            }
+            Some(Operation::Builtin(Builtin::Display)) if self.classes.structural(class, ty) => {
                 let mut values = vec![*argument(0)];
-                values.extend(elements.iter().map(|element| TypedExpr {
+                values.extend(structural_elements(ty).iter().map(|element| TypedExpr {
                     kind: TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance {
                         builtin: Builtin::DisplayQuoted,
                         types: vec![element.clone()],
@@ -5478,16 +5800,9 @@ impl Specializer<'_> {
                 }));
                 TypedExprKind::StructuralDisplay(values)
             }
-            Operation::Builtin(Builtin::Hash) if self.classes.structural(class, ty) => {
-                let elements = match ty {
-                    Type::Array(element) | Type::List(element) => {
-                        std::slice::from_ref(element.as_ref())
-                    }
-                    Type::Tuple(elements) => elements.as_slice(),
-                    _ => unreachable!(),
-                };
+            Some(Operation::Builtin(Builtin::Hash)) if self.classes.structural(class, ty) => {
                 let mut values = vec![*argument(0)];
-                values.extend(elements.iter().map(|element| TypedExpr {
+                values.extend(structural_elements(ty).iter().map(|element| TypedExpr {
                     kind: TypedExprKind::Method(class, 0, element.clone()),
                     ty: Type::function(
                         vec![Type::Reference(Box::new(element.clone()), false)],
@@ -5497,7 +5812,7 @@ impl Specializer<'_> {
                 }));
                 TypedExprKind::StructuralHash(values)
             }
-            Operation::Builtin(Builtin::Default) if matches!(ty, Type::Tuple(_)) => {
+            Some(Operation::Builtin(Builtin::Default)) if matches!(ty, Type::Tuple(_)) => {
                 let Type::Tuple(elements) = ty else {
                     unreachable!()
                 };
@@ -5519,16 +5834,9 @@ impl Specializer<'_> {
                         .collect(),
                 )
             }
-            Operation::Binary(operator) if self.classes.structural(class, ty) => {
-                let elements = match ty {
-                    Type::Array(element) | Type::List(element) => {
-                        std::slice::from_ref(element.as_ref())
-                    }
-                    Type::Tuple(elements) => elements.as_slice(),
-                    _ => unreachable!(),
-                };
+            Some(Operation::Binary(operator)) if self.classes.structural(class, ty) => {
                 let mut values = vec![*argument(0), *argument(1)];
-                for element in elements {
+                for element in structural_elements(ty) {
                     let borrowed = Type::Reference(Box::new(element.clone()), false);
                     for operation in std::iter::once(BinaryOp::Equal)
                         .chain((class == self.classes.names["Ord"]).then_some(operator))
@@ -5546,7 +5854,7 @@ impl Specializer<'_> {
                 }
                 TypedExprKind::StructuralCompare(operator, values)
             }
-            Operation::Binary(operator) => {
+            Some(Operation::Binary(operator)) => {
                 let operand = |index| {
                     let value = argument(index);
                     if matches!(binary_class(operator), "Eq" | "Ord") {
@@ -5561,8 +5869,8 @@ impl Specializer<'_> {
                 };
                 TypedExprKind::Binary(operator, operand(0), operand(1))
             }
-            Operation::Unary(operator) => TypedExprKind::Unary(operator, argument(0)),
-            Operation::Builtin(builtin) => TypedExprKind::Call(
+            Some(Operation::Unary(operator)) => TypedExprKind::Unary(operator, argument(0)),
+            Some(Operation::Builtin(builtin)) => TypedExprKind::Call(
                 Box::new(TypedExpr {
                     kind: TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance {
                         builtin,
@@ -5603,6 +5911,242 @@ impl Specializer<'_> {
             contracts: Default::default(),
         });
         self.intrinsics.insert(key, id);
+        self.request(id, Vec::new(), span)
+    }
+
+    /// The body of a method of the built-in instance of an anonymous union with `members` (A26,
+    /// D6), for the parameters `arguments`, which are references to the union. The body is ordinary
+    /// typed IR, so every later stage reads it as a function of the program:
+    ///
+    /// - `Display.display`: the text of the payload, by the member's `Display.display`.
+    /// - `Hash.hash`: the stream of a derived union, `0x55`, the position of the member, the hash of
+    ///   the payload (`derive::Build::union`).
+    /// - `==` and `!=`: values of different members are different; values of one member compare by
+    ///   the member's `==`.
+    /// - `<`, `<=`, `>`, `>=`: values of different members compare by the positions of the members;
+    ///   values of one member compare by the member's operator.
+    fn union_method(
+        &self,
+        class: usize,
+        operation: Operation,
+        members: &[Type],
+        arguments: &[TypedExpr],
+    ) -> TypedExprKind {
+        use anonymous_union::{by_member, member_call, tag_behind};
+        let span = arguments[0].span;
+        let typed = |kind, ty| TypedExpr { kind, ty, span };
+        let method = |class: usize, method: usize, member: &Type, arity: usize, result: Type| {
+            let borrowed = Type::Reference(Box::new(member.clone()), false);
+            typed(
+                TypedExprKind::Method(class, method, member.clone()),
+                Type::function(vec![borrowed; arity], result),
+            )
+        };
+        let body = match operation {
+            Operation::Builtin(Builtin::Display) => {
+                by_member(&arguments[0], members, |case, member| {
+                    let display = method(class, 0, member, 1, Type::String);
+                    member_call(display, arguments, member, case)
+                })
+            }
+            Operation::Builtin(Builtin::Hash) => {
+                let word = Type::Integer(64, false);
+                let mix = |state: TypedExpr, value: TypedExpr| {
+                    let function = typed(
+                        TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance {
+                            builtin: Builtin::HashMix,
+                            types: Vec::new(),
+                        })),
+                        Type::function(vec![word.clone(), word.clone()], word.clone()),
+                    );
+                    typed(
+                        TypedExprKind::Call(Box::new(function), vec![state, value]),
+                        word.clone(),
+                    )
+                };
+                let number = |value: u128| typed(TypedExprKind::Int(value), word.clone());
+                by_member(&arguments[0], members, |case, member| {
+                    let start = mix(
+                        mix(number(HASH_OFFSET), number(UNION_HASH_TAG)),
+                        number(case as u128),
+                    );
+                    let hash = method(class, 0, member, 1, word.clone());
+                    mix(start, member_call(hash, arguments, member, case))
+                })
+            }
+            Operation::Binary(operator) => {
+                // `!=` is the negation of `==`, as it is for a tuple and for a derived instance.
+                let compared = if operator == BinaryOp::NotEqual {
+                    BinaryOp::Equal
+                } else {
+                    operator
+                };
+                let (member_class, member_method) =
+                    self.classes.operation(Operation::Binary(compared));
+                let same = by_member(&arguments[0], members, |case, member| {
+                    let compare = method(member_class, member_method, member, 2, Type::Bool);
+                    let result = member_call(compare, arguments, member, case);
+                    if operator == BinaryOp::NotEqual {
+                        typed(
+                            TypedExprKind::Unary(UnaryOp::Not, Box::new(result)),
+                            Type::Bool,
+                        )
+                    } else {
+                        result
+                    }
+                });
+                let tags = |operator| {
+                    typed(
+                        TypedExprKind::Binary(
+                            operator,
+                            Box::new(tag_behind(&arguments[0])),
+                            Box::new(tag_behind(&arguments[1])),
+                        ),
+                        Type::Bool,
+                    )
+                };
+                let different = match operator {
+                    BinaryOp::Equal => typed(TypedExprKind::Bool(false), Type::Bool),
+                    BinaryOp::NotEqual => typed(TypedExprKind::Bool(true), Type::Bool),
+                    _ => tags(operator),
+                };
+                typed(
+                    TypedExprKind::If {
+                        condition: Box::new(tags(BinaryOp::Equal)),
+                        then_branch: Box::new(same),
+                        else_branch: Box::new(different),
+                    },
+                    Type::Bool,
+                )
+            }
+            Operation::Builtin(_) | Operation::Unary(_) => {
+                unreachable!(
+                    "an anonymous union has structural instances of Eq, Ord, Hash and Display only"
+                )
+            }
+        };
+        body.kind
+    }
+
+    /// The body of `Encode.encode` or `Decode.decode` of the anonymous union `ty` (A26 Phase 2,
+    /// D7), whose methods have no operation: typed IR like the bodies of `union_method`.
+    ///
+    /// - `Encode.encode`: the JSON of the payload by the member's `Encode.encode`, with no tag.
+    /// - `Decode.decode`: the member that reads the kind of the JSON value
+    ///   (`anonymous_union::decode_body`). The constraint `Decode<ty>` was checked for these types:
+    ///   where the union is written when the kinds of its members are known there, otherwise
+    ///   where its type variables are known (`Classes::settle`). The kinds are read again here;
+    ///   should that ever fail, the union gets a diagnostic and never a body that picks a member.
+    fn union_codec(
+        &self,
+        class: usize,
+        ty: &Type,
+        result: &Type,
+        arguments: &[TypedExpr],
+    ) -> Result<TypedExprKind, Diagnostic> {
+        let span = arguments[0].span;
+        let members = structural_elements(ty);
+        if self.classes.declarations[class].name == "Encode" {
+            let body = anonymous_union::by_member(&arguments[0], members, |case, member| {
+                let encode = TypedExpr {
+                    kind: TypedExprKind::Method(class, 0, member.clone()),
+                    ty: Type::function(
+                        vec![Type::Reference(Box::new(member.clone()), false)],
+                        result.clone(),
+                    ),
+                    span,
+                };
+                anonymous_union::member_call(encode, arguments, member, case)
+            });
+            return Ok(body.kind);
+        }
+        let kinds = match self.classes.decode_members(ty, &self.types) {
+            Ok(Some(kinds)) => kinds,
+            Ok(None) => {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::NoInstance,
+                    no_instance("Decode", ty, &self.types),
+                    span,
+                ));
+            }
+            Err(message) => {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::AnonymousUnionDecodeOverlap,
+                    message,
+                    span,
+                ));
+            }
+        };
+        Ok(
+            anonymous_union::decode_body(&arguments[0], ty, result, &kinds, class, &self.types)?
+                .kind,
+        )
+    }
+
+    /// The function that shows a value of the anonymous union `ty` inside a collection, a tuple or
+    /// a derived instance (A26): the payload by the member's `DisplayQuoted`, so that a string
+    /// member reads `"one"` there and `one` by itself (`Display.display`, `union_method`). The two
+    /// functions differ, so this one has a cache of its own.
+    fn quoted_display_function(&mut self, ty: &Type, span: Span) -> Result<usize, Diagnostic> {
+        if let Some(id) = self.quoted_displays.get(ty) {
+            return self.request(*id, Vec::new(), span);
+        }
+        let borrowed = Type::Reference(Box::new(ty.clone()), false);
+        let parameter = Local {
+            id: 0,
+            ty: borrowed.clone(),
+            name: "arg0".into(),
+            mutable: false,
+            span,
+            provenance: Provenance::Generated,
+        };
+        let argument = TypedExpr {
+            kind: TypedExprKind::Local(0),
+            ty: borrowed.clone(),
+            span,
+        };
+        let body =
+            anonymous_union::by_member(&argument, structural_elements(ty), |case, member| {
+                let quoted = TypedExpr {
+                    kind: TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance {
+                        builtin: Builtin::DisplayQuoted,
+                        types: vec![member.clone()],
+                    })),
+                    ty: Type::function(
+                        vec![Type::Reference(Box::new(member.clone()), false)],
+                        Type::String,
+                    ),
+                    span,
+                };
+                anonymous_union::member_call(quoted, std::slice::from_ref(&argument), member, case)
+            });
+        let id = self.templates.len();
+        self.templates.push(CheckedFunction {
+            read_by_default: Vec::new(),
+            module: "$intrinsic".into(),
+            region_sources: None,
+            callback_contracts: Vec::new(),
+            region_slots: None,
+            origin: self.current,
+            name: format!("Display.display_quoted.{id}"),
+            visibility: Visibility::Public,
+            exported: false,
+            parameters: vec![parameter],
+            signature: Signature {
+                parameters: vec![borrowed],
+                result: Type::String,
+            },
+            body,
+            span,
+            type_parameters: Vec::new(),
+            constraints: Vec::new(),
+            members: Vec::new(),
+            capture_count: 0,
+            is_once: false,
+            owned_captures: false,
+            contracts: Default::default(),
+        });
+        self.quoted_displays.insert(ty.clone(), id);
         self.request(id, Vec::new(), span)
     }
 
@@ -5670,6 +6214,23 @@ impl Specializer<'_> {
         });
         self.to_strings.insert(ty.clone(), id);
         self.request(id, Vec::new(), span)
+    }
+}
+
+/// The start of every hash stream, the FNV-1a offset basis (`llvm_hash::OFFSET`, `derive::Build::hash_start`).
+const HASH_OFFSET: u128 = 14695981039346656037;
+
+/// The tag of a union in the hash stream (`derive::Build::union`).
+const UNION_HASH_TAG: u128 = 0x55;
+
+/// The types whose instances make the structural instance of `ty` (`Classes::structural`): the
+/// element of an array or a list, the elements of a tuple, the members of an anonymous union.
+fn structural_elements(ty: &Type) -> &[Type] {
+    match ty {
+        Type::Array(element) | Type::List(element) => std::slice::from_ref(element.as_ref()),
+        Type::Tuple(elements) => elements,
+        Type::Union(_, members) => members,
+        _ => unreachable!("only a type with a structural instance has structural elements"),
     }
 }
 
