@@ -249,7 +249,9 @@ struct State<'a> {
 }
 
 impl State<'_> {
-    /// Whether the two states hold the same locals with the same values, aliases and moves.
+    /// Whether the two states hold the same locals with the same values, aliases and moves, and
+    /// the same A31 facts of the path (the locals moved on every path, the kept loans, what was
+    /// stored elsewhere, the shares of blocks): a later check from either gives the same results.
     fn same(&self, other: &Self) -> bool {
         self.locals.len() == other.locals.len()
             && self
@@ -260,6 +262,11 @@ impl State<'_> {
             && self.aliases == other.aliases
             && self.moved == other.moved
             && self.generic_moves == other.generic_moves
+            && self.moved_always == other.moved_always
+            && self.kept == other.kept
+            && self.kept_elsewhere == other.kept_elsewhere
+            && self.contents_elsewhere == other.contents_elsewhere
+            && self.block_shares == other.block_shares
     }
 }
 
