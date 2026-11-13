@@ -781,6 +781,7 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 - 本体が見えない関数値の呼び出しは、安全側に扱います（第 1 回のレビュー対応で規則を作り直しました。下の「レビューの指摘への対応（第1回）」）。プログラムのどこかに「受け取った値を自分の環境が届く場所へ書き込む関数値」があると、見えない関数値の呼び出しは引数の借用を関数値の環境の先にも残し、その関数値がセルを所有していると、環境を隠す型かセルに届く型のすべての局所値に残します。この判定はプログラム全体で行うので、離れた所の関数値が、別の関数の中の見えない呼び出しの検査を厳しくします。
 - lock のコールバックが、ロック中の値の借用を別の `Mutex` へ書いて読み戻した値を返す形は `mutex_result_retains_borrow` です（基準は受理していた危険な形）。
 - 読み取りの仮引数（edition 2027）や演算子が借りた一時値への参照そのものを、呼び出す関数が引数の先へ書き込む形は `E1013` です（`let` で束縛してから渡します）。本体が見えない関数値へ一時値を貸す形は、最後の引数なら、参照の仮引数そのものを格納する関数がプログラムにあるときだけ `E1013`、最後でない引数なら、書き込み先があれば `E1013` です。
+- 12 回のレビューの後に残る保守的な制限（基準が受理する安全な形の拒否: 自分の部分の借用を持つ値へのもう一度の `ref mut`（`mix4`・`w05`）、パイプラインの `Rc.share`（`g08`）、兄弟が借用を持ちうるフィールドの代入（`f02`）、要素の部分（`slice_self_safe_elem`）、隠れた環境の規則（`fx3`）、2 つの仮引数の部分を関数値へ渡す一時値（`h01`）、共有を通したブロックの自己の借用を持つ `Rc` の代入・ムーブ（`r06`・`r07`・`r10`・`r11`）、`m_named_owned`）と、検査の時間、記憶域の寿命と破棄の順序の 1 つのモデルで直す計画は、後続のチケット [A33](../A33-remaining-store-soundness-holes.md) に記録しました（第12回、最終の対応）。
 
 ### レビューの指摘への対応（第1回）（2026-11-11）
 
@@ -1521,3 +1522,65 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 - 両方が拒否し最初の誤りが違うものは 14 組（7 個）で、位置か kind だけの違いです。検査の失敗はありません。
 - 変更: 危険な RA が無かったので、コンパイラーもテストも変えていません。別のチケット（A33）に送る穴も、この確認では見つかりませんでした。
 - T1（2026-11-13、変更の無い枝の先端で）: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast` は 3062 件すべて成功、4 件 skip（1067 秒、`gate/nextest.log`）。
+
+### レビューの指摘への対応（第12回、最終）（2026-11-13）
+
+マージ前の最後のレビュー（第12回。反例の探索 `target/scratch/review-a31-ce-r12/`、適合の確認 `target/scratch/review-a31-conf-r12/`）の 7 件の指摘を、対応前の先端（`2828b752`、`r13/bin/tsuzuri-before`）・基準・対応後のバイナリで確かめました。7 件とも指摘のとおりに再現しました。マージの条件（基準との相対の健全さ、上の「マージ前の確認」）で分けると、指摘 1 は基準が受理する安全な形を拒否する退行（第9回から）、指摘 2・3・5 は基準も受理する穴（第11回の前の先端は拒否していた）、指摘 6・7 は基準が受理する安全な形の拒否（指摘 7 は文書に書いた制限）、指摘 4 は検査の時間です。指摘 1〜6 は小さく局所的な変更で直し（指摘 6 は一部。残りは文書に書いた制限）、指摘 7 と、このチケットで見つかった穴と制限の記録は、後続のチケット [A33](../A33-remaining-store-soundness-holes.md) に送りました。結果は `target/scratch/a31/r13/` にあります（`r13/t.sh` が対応後・対応前・基準の最初の誤りと実行の値を並べ、`r13/p` がこの対応で書いた探査、`r13/gen_tests.py` が Rust のテストをプログラムから作ります）。
+
+#### 設計の変更（`src/ownership.rs`）
+
+- **参照が指しうる値ごとの自己の借用**（指摘 1）: 参照の実引数が複数の loan を持つとき（`if n > 0 then ref a else ref b`、`[ref a, ref b]` の要素、参照の引数のどれかを返す関数の結果）、自己の事実 `(p, Value, p)` の写し（`path_copy`・`shared_copy`）を、すべての loan の場所へ（直積で）書き込んでいたので、`a` が `b.s` の、`b` が `a.s` の借用を持つことになり、宣言の順序で `E1013` でした。参照は実行時にそのどれか 1 つを指し、呼び出し先はその値の部分の借用をその値へ書き込むので、`referent_pieces` が実引数の値を、値自身が持つ loan ごと（内容として持つ loan はどの片にも足す）の片に分け、片ごとに写しを作ってその片の場所へだけ書き込みます（対角）。本体の見えない関数値の、同じ型への自己の借用の書き込み（`apply_opaque`）も同じです。`apply_store` は場所から届く先へ推移的に書き込むので、参照がある値の中の別の値を指すときも、その値へ届きます。借用した演算子（`Arg::reference`）は分けません。
+- **`ref mut` で貸した共有はブロックの持ち主でなくなる**（指摘 2）: `access` が、局所値への書き込みと排他借用（`Use::Write`・`Use::MutBorrow`）で、その局所値の `block_shares` の記録と、その局所値を持ち主とする記録を消します（`forget_block_share`）。`renew (ref mut inner)` の本体の `deref r = Rc.new (...)` や `let r = ref mut inner; deref r = ...` の後の `inner` は別のブロックの持ち主でありうるので、`inner` を通した借用は別の値の借用として破棄の順序を検査します（第11回の前の先端と同じ `E1013`）。値全体の代入は、その後で `note_block_share` が新しい値で記録し直します。
+- **`deref p = v` が終わらせない借用**（指摘 3・5）: `replaced_target` は、次のどれかのとき `kept` から何も外さず、置き換えは借用と競合して `E1014` です（第11回の前の先端と同じ位置）。
+  - 本体が、その仮引数の先の中身（`Part::Contents`、セルの中身の写し）を別の仮引数の先か隠れた環境へ書き込んだ（`State::contents_elsewhere`、`store_external` と `store_hidden_except` で記録。合流は和）。セルの中身の写しは、写した自己の借用の loan を持たない（外部の内容の loan を持つ）ので、`kept_elsewhere` では分かりませんでした（指摘 3、`f14`・`f09`）。
+  - 自己の借用を、仮引数の先の外でありうる場所へ書き込んだ: 書き込み先の loan の場所の途中か先の値の中に、`Rc`・`Arc`（弱参照も）のブロック、書き込みの届く参照（`ref mut`、セルに届く `ref`）、dyn 値、型変数がある（`place_leaves_storage`。`store_external` の `leaves` で `kept_elsewhere` に入れます。`Rc` のブロックが呼び出し元のデータへ行った後の書き込み（`ExportTarget::External`）も同じ）。指摘 5 (a)、`f1`・`t05`・`t08`・`t17`・`t18`。
+  - 先の型が格納する型の `Drop.drop` が書き込みの事実を持つ（先の型が dyn 値・型変数・`Owned.Function`・tzroutine の本体を格納するなら、プログラムのどれかの `Drop.drop` が持つ）（`replacement_frees_kept`）。古い値の解放がセルの中身をほかの場所へ書き込みうるためで、局所値の置き換えの `drop_stores` の hook に当たるものです。関数値の環境は `Drop` の instance を持つ値を所有できない（`E1005`）ので数えません。指摘 5 (b)、`f1b`・`d01`。
+  型だけで判定する案（先の型が `Rc`・`Arc` を格納すれば外さない）は、自己の借用を値の中の自分のセルへ書き込む安全な形（`Recorder` の `out: Arc<...>` を持つ `in_place_writes` の fixture の `replaced_values_stay_usable` など）まで拒否したので、書き込み先の場所で判定しました。
+- **`Rc` の代入は、共有を通したブロックの自己の借用も古い値の借用として終わらせる**（指摘 6 の一部）: `replaced_value` は、根がその局所値の loan に加えて、同じブロックの別の持ち主を通した loan（`same_block_loan`）も古い値の自己の借用として扱います。持ち主（`inner`）を内側のブロックで宣言した形（`r03`）は受理し、値は基準と同じです。持ち主がまだスコープにある形（`r06`・`r11`）と、ブロックが自分の部分の借用を持つ `Rc` のムーブ（`r07`・`r10`）は、持ち主が借用を持ち続けるので `E1014` のままです（第11回の前の先端も同じ）。持ち主の借用を、ブロックが生きている間は代入やムーブと競合しないものとして扱えば受理できますが、ブロックの持ち主の組が正しいことに健全さが懸かるので、この回では変えず、`drop.md` に保守的な制限として書き、A33 に送りました。
+- **検査の時間**（指摘 4）: `same_block_loan` は、呼ぶたびに `block_shares` の組をすべて走査していました（持ち主ごと・loan ごとに組の大きさの 2 乗）。1 つの共有は 1 つの持ち主を指すので組は木か輪で、`block_groups` が組ごとの代表を 1 度に求め、`same_block_loan` は代表を比べます。残りの時間は、束縛ごとの破棄の hook が連なりを展開する `expand_shares` の `export_block`（型の走査と `exports` の線形の探索）と `store_exported_into`（輸出先ごとの型の走査）だったので、型ごとの走査を覚え（`export_walks`）、輸出先の有無を集合で引き（`exported`）、ブロックの型ごとに 1 度だけ走査します。`gen_chain.py cellshares 800` の所有権の検査は 5009 ms から 501 ms（400 で 121 ms、1600 で 2009 ms。基準は 800 で 86 ms）になりました。残る 2 乗は A33 に記録しました。
+
+#### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（参照が複数の値を指しうると、自己の借用が値どうしの借用になる。基準からの退行） | 再現（`h01`・`h02`・`h03`・`h05`・`h06` が両方の edition と Tsuzuri.toml の 2026 で `36:5`/`38:5` の `E1013`、`h04` は受理。基準は `drop 0 2\|drop 8 2\|0` など） | `referent_pieces`。すべて受理、値は基準と同じ。この対応で書いた探査の、呼び出し先が選ぶ参照（`r13/p/d1u11`）・関数値（`d1u9b`）・内側のブロックの値（`d1u4`・`d1u4b`）も受理。危険な順序（`d1u1`・`d1u7`・`d1u12`・`d1u9`、`self_referential_store`）、別の引数への書き込み（`d1u3`）、先に宣言した保持する値への書き込み（`d1u6`）は `E1013` のまま | `a_reference_to_one_of_several_values_keeps_a_borrow_of_its_own_part_in_each`、`in_place_writes` の `one_of_two_targets_keeps_its_own_part`（`26008`） |
+| 2（`ref mut` で書き換えた共有が古いブロックの持ち主のまま。基準も受理） | 再現（`d02`・`d06`・`d08`・`d09`・`d10` が受理し、基準の実行は `drop -1`。対照 `d03`・`d05` は指摘のとおり） | `forget_block_share`。どれも `E1013`（`assignment_extends_borrow`）、対応前の `81a639f7` と同じ位置。片方の枝だけで書き換える `r13/p/d2u1` も `E1013`。対照 `d03`・`d11`・共有の共有 `d2u3` は受理 | `a_share_written_through_an_exclusive_borrow_no_longer_shares_the_block` |
+| 3（`deref p = v` が、セルの中身を写した後も自己の借用を終わらせる。基準も受理） | 再現（`f14`・`f09` が受理し `-1`。対照 `f10` は受理） | `contents_elsewhere`。どちらも `deref` の位置の `E1014`。写しを隠れた環境へ書き込む `r13/p/f5u3`（2027 は対応前に受理、基準の `-O0` は SIGSEGV）も `E1014`。局所値へ写して後で外へ写す `f3u1` は対応前と同じ `E1014`。置き換えの後に新しい値の中身を写す `f3u2` と `f10` は受理 | `replacing_the_target_of_a_reference_ends_no_borrow_that_a_copy_or_a_shared_block_keeps` |
+| 4（`Rc.share` の連なりで検査の時間が 3 乗） | 再現（800 で 5009 ms、基準 86 ms） | `block_groups`、`export_walks`・`exported`、`store_exported_into` の型ごとの走査。800 で 501 ms。2 乗が残る（A33） | なし（CI に速度の合否は入れない） |
+| 5（`deref p = v` が、共有のブロックに残る自己の借用や、古い値の `Drop.drop` が写す借用を終わらせる。基準も受理） | 再現（`min/f1` が `-1`、`min/f1b` が `1`、`p/t05`・`t08`・`t17`・`t18`・`d01` が `read -1`） | `place_leaves_storage`・`replacement_frees_kept`。どれも `deref` の位置の `E1014`。値の中に `Arc` があっても自己の借用を自分のセルへ書き込む `r13/p/f5u2` と、第11回の安全な形 `w03`・`w04`・`r12/adv/d06`・`d07` は受理、値は基準と同じ | 同上、`in_place_writes` の `replaced_target_with_an_arc_drops_its_parts`（`153`） |
+| 6（共有を通したブロックの自己の借用を持つ `Rc` を代入・ムーブできない。基準からの退行で、文書に無い） | 再現（`r03`・`r06`・`r07`・`r11` が `E1014`、`r10` も。`r09` は受理。第11回の前の `81a639f7` も拒否） | `replaced_value` の `same_block_loan`。`r03` は受理（`drop 8 2\|drop 0 2\|1`、基準と同じ）。`r06`・`r07`・`r10`・`r11` は `E1014` のままで、`drop.md` の「値全体の代入」に制限として書いた（A33） | `replacing_an_rc_ends_the_borrows_that_its_block_keeps_through_a_share`（`r06`・`r07` は制限として拒否を固定）、`in_place_writes` の `replaced_rc_drops_its_block_parts`（`182`） |
+| 7（2 つの参照の仮引数の先の部分を関数値へ渡すと一時値の順序が分からない。文書に書いた制限） | 再現（`h01` が `104:12` の `E1013`、基準は `drop 8 2 drop 0 2`。危険な双子 `h02`・`h03` は拒否） | 変えない。`drop.md` の「呼び出し先が関数値へ渡す値」にこの形を例として足し、A33 に記録した | なし |
+
+#### 判断
+
+- 指摘 1 の対角の書き込みは、参照の値が持つ loan のどれかが参照の指す場所（かその場所を含む値）であることに基づきます。内容として持つ loan（`Value::through`）は、どれが指す先か分からないので、どの片にも足しました（今までどおりの直積）。借用した演算子（edition 2027 の読み取りの仮引数）は、演算子の値（場所が持つもの）と借用（`Arg::reference`）が別なので分けていません。
+- 指摘 2 は、指摘の案のとおり局所値全体の排他借用で記録を消すだけでなく、局所値を根とする書き込みと排他借用のすべてで消しました（どちらも保守的な側）。
+- 指摘 3 と 5 は、指摘の案（3: 仮引数の中身を別の先へ書き込んだら外さない。5: 先の型が `Rc`・`Arc` に届くか、`drop` が書き込みうるなら外さない）を、5 (a) だけ型でなく書き込み先の場所で判定する形にしました（上の「設計の変更」）。5 (b) の `drop` の判定は、`drops_write`（どれかの `Drop.drop` がロックのコールバックを書くだけで真になる構文の近似）では第11回の安全な形がすべて拒否になったので、`Drop.drop` の書き込みの事実（`StoreFacts`）で判定しました。
+- 指摘 6 の残り（持ち主がスコープにある間の代入、ムーブ）と指摘 7 は、マージの条件の「文書に書いた保守的な制限」として残し、A33 に送りました。
+
+#### マージの条件の確かめ（この回の変更の後）
+
+上の「マージ前の確認」の道具（`target/scratch/a31/gate/`）で、この回の変更の後のビルド（`gate/bin/tsuzuri-r13`）を、すべてのプログラムで基準と比べ直しました（`gate/tools/check-r13.mjs` が基準の結果を `results.json` から使い、新しいプログラムだけ基準でも検査します。結果は `results-r13.json`、分類は `gate/tools/diff-r13.mjs` の `diff-r13.txt`）。対象は、前の確認のプログラムに第12回のレビューの残りとこの回の探査（`r13/p`）を足した 12167 個（コーパス 10467 個、テストのプログラム 1700 個）、24334 組です。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 4083 | 3169 |
+| 両方が拒否 | 4788 | 6394 |
+| 基準が拒否し対応後が受理（RA） | 14 | 14 |
+| 基準が受理し対応後が拒否（AR） | 3282 | 2590 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は前の確認と同じ 28 組（15 個）で、新しい RA はありません。** 条件 (1) はこの回の変更の後も成り立ちます。
+- 対応前の先端（前の確認の `tsuzuri-branch`）からの変化は 57 組です。受理から拒否が 36 組で、どれも第12回のレビューの危険な形（指摘 2 の `d02`・`d06`・`d08`・`d09`・`d10`（と Tsuzuri.toml の綴り）、指摘 3 の `f08`・`f09`・`f14`（と綴り）、指摘 5 の `min/f1`・`min/f1b`・`p/d01`・`t03`・`t05`・`t08`・`t17`・`t18`）です。`t03` と `f08` は基準の実行が正しい値（`read 8`、`8`）を出しますが、`t03` は `t05` からごみの確保を除いただけの形、`f08` は `f09`・`f14` と同じく解放した文字列を読む形で、解放したメモリがたまたま書き換わっていないだけです（基準の ASan の `-O0` のビルドも何も報告しませんでした。前の確認のとおり、ASan が何も報告しないことは安全を示しません）。拒否から受理が 14 組で、指摘 1 の `h01`・`h02`（と綴り）・`h03`・`h05`・`h06` と指摘 6 の `r03` の両方の edition、どれも安全な形で値は基準と同じです。拒否のまま最初の誤りが変わったのが 7 組（`s02_cond_wait_with_selfborrow` とその A32 の綴り 4 個が `assignment_extends_borrow` から `mutex_result_retains_borrow` へ（対角の書き込みで、保持する値どうしの借用が無くなり、次の誤りが先に出る）、`f05` が `E1013` から `deref` の位置の `E1014` へ）です。
+- 基準も対応後も受理するプログラムのうち、名前が危険を示す 16 個（`fs1_sh_unsafe` とその綴り、`g04_compose_leak`、`v17_display_bad_forced`、`arc_moved_unsafe`、`view_tuple_unsafe`、`depth_u`、`oc1_unsafe`、A32 の `u02`・`r2_u02`）を実行して読みました。`v17` のほかは安全です（パターンの変数は束縛の逆順に解放され、捕捉は写しで、借用した場所は書き換えられない）。`v17`（`Display` の instance が仮引数の部分の借用を呼び出し元のセルへ書き込み、文字列の補間で表示する）は、補間の暗黙の呼び出しに事実を当てはめていませんが、実行では書き込みが見えず、解放後の読み出しを観測できなかったので、穴かどうかを決め切れません（直接の呼び出し `r13/p/v17c` は A31 が拒否し、基準は不定の値）。A33 に調べる項目として記録しました。
+
+#### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3066 件すべて成功、4 件 skip（1296 秒、`r13/nextest.log`。`rc` 87 件、`effects_trap`・`effects_alloc_conservative` 10 件を含む）。その後で、1 つの要素だけを受理する新しいテストの `for` を直接の呼び出しに書き換え（clippy の `single_element_loop`）、`tests/rc.rs` の新しい 4 件をもう一度実行して成功しました。
+- 新しいテストの 4 件は、対応前のバイナリでは失敗する形です（`r13/t.sh` の `before` の列: 受理する `h01`〜`h06`・`d1u*` の安全な形と `r03` を対応前は拒否し、拒否する `d02`〜`d10`・`f14`・`f09`・`min/f1`・`min/f1b`・`t05`・`t08`・`t17`・`t18`・`d01`・`f5u3`（2027）を対応前は受理）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`。`sync_types`・`tzroutine` は native）: `in_place_writes` 75 件（この回の 3 件を含む。基準のバイナリでも 75 件が成功し、対応前は `one_of_two_targets_keeps_its_own_part` を拒否して失敗）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`slices` 11 件、`matrix_view` 303 件、`concurrency` 15 件、`sync_types` 14 件、`tzroutine` 16 件、`node tests/user_drop.mjs`（`-O0`・`-O3`）、`node tests/control.mjs`（701 件）がすべて成功（`r13/suites.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`、基準と対応後の `check --json`・`build --no-cache --emit llvm`）: `tests/fixtures`・`examples` の 154 個のどれも出力が同じ（`r13/step5.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・45 個のリンク・9 個の例・18 回の native の実行）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
+- 検査の時間（`r13/perf.sh`、所有権の検査の中央値、3 回、ms。基準・対応前・対応後）: 前の回の性能の表のプログラムは対応前とほぼ同じ（`perf_loop_breaks_400` 148・375・399、`perf_try_checked_400` 224・388・410、`perf_ho_chain_320` 1.8・24.7・25.1、`p01_relay_chain_400` 1.5・12.5・15.0、`x01_many_holders_800` 704・1276・1287、ほかは 8 ms 以下）で、`p_cellshares_800` は 87・5332・469 です（`r13/time-perf.txt`）。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（4 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（3 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、`_features/README.md`（A31 の行と A33 の行）、このチケット（「残る制限」と、この節）、新しい `_features/A33-remaining-store-soundness-holes.md`。
