@@ -12142,6 +12142,12 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// order, so a step into the block keeps the order of the value inside it. A place without
     /// fields may be the owner itself, which other owners of the block may outlive, and keeps the
     /// rule of the whole value.
+    ///
+    /// A proven borrow (`ordered_loans`) is one that a callee kept in the value that its reference
+    /// parameter pointed at, where the argument's place may step into an element (`ref arr[0]`,
+    /// or the element that `Array.iterr` lends, `Source::element_paths`): the borrow and the part
+    /// that keeps it are in that one element, which is dropped as a whole, so the step keeps the
+    /// order inside the element (the other elements keep no borrow of it).
     fn self_borrow_dropped_first(&mut self, ty: &Type, fields: &[usize], proven: bool) -> bool {
         let types = self.module.types();
         let mut current = without_views(ty);
@@ -12152,6 +12158,17 @@ impl<'a, 'run> Checker<'a, 'run> {
             ) = &current
             {
                 current = (**inner).clone();
+            }
+            if proven
+                && field == ELEMENT
+                && let Type::Array(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _)
+                | Type::ArrayView(inner) = &current
+            {
+                current = without_views(inner);
+                continue;
             }
             let parts = match &current {
                 Type::Record(id, arguments) if field < types.records[*id].fields.len() => {

@@ -5650,7 +5650,8 @@ fn a_borrow_through_the_result_of_a_call_is_one_of_the_whole_argument() {
 /// borrow of `b.s` in the cell of `a.h`, `cross3 a b c` borrows of `b.s` and `c.s`, and `cross5 a b`
 /// borrows of the five strings of `b`; `applyp` and `each` pass a part of their argument (a field,
 /// an element) to a function value, and `crossall` passes each element to `cross a` through
-/// `Array.iterr`; `pick` returns one of its reference arguments. The body of `run` starts at line 37.
+/// `Array.iterr`; `pick` returns one of its reference arguments; `selfok p` keeps a borrow of `p.s`
+/// in `p.h`, and `crossel arr` one of `arr[0].s` in `arr[1].h`. The body of `run` starts at line 41.
 const PARTS_PRELUDE: &str = r#"record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
     fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
@@ -5685,6 +5686,10 @@ def crossk :: ref PairOk -> ref PairOk -> i64
 fn crossk a b = { cross a b; 1 }
 def pick :: i64 -> ref PairOk -> ref PairOk -> ref PairOk
 fn pick k x y = if k > 0 then x else y
+def selfok :: ref PairOk -> unit
+fn selfok p = { let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+def crossel :: ref [PairOk] -> unit
+fn crossel arr = cross (ref arr[1]) (ref arr[0])
 def run :: i64 -> i64
 fn run n =
 "#;
@@ -5726,8 +5731,27 @@ fn a_part_bound_or_passed_to_a_function_value_keeps_a_borrow_of_that_part() {
         // s_match3 and s_several3: a choice of references
         "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let p3 = mkpo ()\n    let p4 = mkpo ()\n    let r = match n with\n        | 0 -> ref p1\n        | 1 -> ref p2\n        | _ -> ref p3\n    cross (ref p4) r\n    n\n",
         "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let p3 = mkpo ()\n    cross (ref p3) (if n > 0 then ref p1 else ref p2)\n    n\n",
+        // iterir_local_safe and its kin: a borrow that `selfok` keeps in the value that its
+        // parameter points at, an element here, is one inside that element, whose parts keep the
+        // order that `selfok` showed (main prints `drop 8`, `drop 0`, `1`).
+        "    let arr = [mkpo (), mkpo ()]\n    selfok (ref arr[0])\n    n\n",
+        "    let arr = [mkpo (), mkpo ()]\n    Array.iterr selfok (ref arr)\n    n\n",
+        "    let arr = [mkpo ()]\n    Array.iterir (\\i (p: ref PairOk) -> { let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b) }) (ref arr)\n    n\n",
     ] {
         accepts_in_both_editions(&[("Main.tz", &parts_program(body))]);
+    }
+    // A borrow of one element kept in another is not one inside an element: the elements are not
+    // told apart, so it is rejected whatever their order.
+    for body in [
+        "    let arr = [mkpo (), mkpo ()]\n    crossel (ref arr)\n    n\n",
+        "    let arr = [mkpo (), mkpo ()]\n    cross (ref arr[1]) (ref arr[0])\n    n\n",
+    ] {
+        rejects_at(
+            &parts_program(body),
+            "E1013",
+            "self_referential_store",
+            (41, 5),
+        );
     }
     // The value that keeps the borrows is declared first, and outlives the borrowed strings (main
     // reads freed strings), in each spelling.
@@ -5745,7 +5769,7 @@ fn a_part_bound_or_passed_to_a_function_value_keeps_a_borrow_of_that_part() {
             &parts_program(body),
             "E1013",
             "assignment_extends_borrow",
-            (37, 5),
+            (41, 5),
         );
     }
     // The conservative limits that drop.md states. `Array.mapr` builds its result with a function
@@ -5759,7 +5783,7 @@ fn a_part_bound_or_passed_to_a_function_value_keeps_a_borrow_of_that_part() {
         ),
         "E1013",
         "assignment_extends_borrow",
-        (37, 5),
+        (41, 5),
     );
     rejects_at(
         &parts_program(
@@ -5767,6 +5791,6 @@ fn a_part_bound_or_passed_to_a_function_value_keeps_a_borrow_of_that_part() {
         ),
         "E1013",
         "self_referential_store",
-        (37, 5),
+        (41, 5),
     );
 }
