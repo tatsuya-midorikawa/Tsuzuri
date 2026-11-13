@@ -781,7 +781,7 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 - 本体が見えない関数値の呼び出しは、安全側に扱います（第 1 回のレビュー対応で規則を作り直しました。下の「レビューの指摘への対応（第1回）」）。プログラムのどこかに「受け取った値を自分の環境が届く場所へ書き込む関数値」があると、見えない関数値の呼び出しは引数の借用を関数値の環境の先にも残し、その関数値がセルを所有していると、環境を隠す型かセルに届く型のすべての局所値に残します。この判定はプログラム全体で行うので、離れた所の関数値が、別の関数の中の見えない呼び出しの検査を厳しくします。
 - lock のコールバックが、ロック中の値の借用を別の `Mutex` へ書いて読み戻した値を返す形は `mutex_result_retains_borrow` です（基準は受理していた危険な形）。
 - 読み取りの仮引数（edition 2027）や演算子が借りた一時値への参照そのものを、呼び出す関数が引数の先へ書き込む形は `E1013` です（`let` で束縛してから渡します）。本体が見えない関数値へ一時値を貸す形は、最後の引数なら、参照の仮引数そのものを格納する関数がプログラムにあるときだけ `E1013`、最後でない引数なら、書き込み先があれば `E1013` です。
-- 12 回のレビューの後に残る保守的な制限（基準が受理する安全な形の拒否: 自分の部分の借用を持つ値へのもう一度の `ref mut`（`mix4`・`w05`）、パイプラインの `Rc.share`（`g08`）、兄弟が借用を持ちうるフィールドの代入（`f02`）、要素の部分（`slice_self_safe_elem`）、隠れた環境の規則（`fx3`）、2 つの仮引数の部分を関数値へ渡す一時値（`h01`）、実引数の値が持つ参照の先の部分を別の仮引数の先へ書き込む関数の呼び出し（`crossw`、マージ前の追加の修正の後に残るもの）、共有を通したブロックの自己の借用を持つ `Rc` の代入・ムーブ（`r06`・`r07`・`r10`・`r11`）、`m_named_owned`）と、検査の時間、記憶域の寿命と破棄の順序の 1 つのモデルで直す計画は、後続のチケット [A33](../A33-remaining-store-soundness-holes.md) に記録しました（第12回、最終の対応）。
+- 12 回のレビューの後に残る保守的な制限（基準が受理する安全な形の拒否: 自分の部分の借用を持つ値へのもう一度の `ref mut`（`mix4`・`w05`）、パイプラインの `Rc.share`（`g08`）、兄弟が借用を持ちうるフィールドの代入（`f02`）、要素の部分（`slice_self_safe_elem`）、隠れた環境の規則（`fx3`）、2 つの仮引数の部分を関数値へ渡す一時値（`h01`）、実引数の値が持つ参照の先の部分を別の仮引数の先へ書き込む関数の呼び出し（`crossw`、マージ前の追加の修正の後に残るもの）、指す場所が分からない参照（ほかの呼び出しの結果 `callres`、`let mut` の参照の変数 `mutref`）を通した同じ呼び出し、5 つ以上の部分（`cross5`）、`Array.mapr` を通した呼び出し（`mapr`）、書き込むセルを自分で所有する関数値があるプログラムでの部分適用（`fx3` と同じ規則。マージ前の追加の修正の見直しの後に残るもの）、共有を通したブロックの自己の借用を持つ `Rc` の代入・ムーブ（`r06`・`r07`・`r10`・`r11`）、`m_named_owned`）と、検査の時間、記憶域の寿命と破棄の順序の 1 つのモデルで直す計画は、後続のチケット [A33](../A33-remaining-store-soundness-holes.md) に記録しました（第12回、最終の対応）。
 
 ### レビューの指摘への対応（第1回）（2026-11-11）
 
@@ -1636,3 +1636,74 @@ A32 の 5 度目の merge（A31 の先端 `da4e5b85` を A32 へ）が、`main` 
 - 手順 5 の比較（`_tools/step5.mjs`、基準と修正後の `check --json`・`build --no-cache --emit llvm`）: `tests/fixtures`・`examples` の 154 個のどれも出力が同じ（`r14/step5.txt`）。
 - 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・47 個のリンク・9 個の例・18 回の native の実行）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
 - 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（1 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（制限の表の `crossw` の行、`loc_direct` を直したこと）、このチケット（「残る制限」と、この節）。
+
+### マージ前の追加の修正の見直し（2026-11-13、前の修正のレビューの指摘）
+
+上の「マージ前の追加の修正」（`f0003aa6`）のレビュー（反例の探索 `target/scratch/a31/r14-review/ce/`、適合の確認 `target/scratch/a31/r14-review/conf/`）の 6 件の指摘を、修正後・A31 の先端（`da4e5b85`）・基準のバイナリで確かめ、どれも指摘のとおりに再現しました。指摘 1 は基準からの退行（基準が別の理由で拒否する危険な形を受理）、指摘 2 は A31 の先端からの退行（基準も受理する危険な形を受理）、指摘 3 は基準も先端も受理する穴、指摘 4・5 は基準が受理する安全な形の拒否（指摘 5 は修正が直したと書いた形の残り）、指摘 6 は文書です。結果は `target/scratch/a31/r15/` にあります（`r15/v4.sh` が修正後・前の修正（`r15/r14-target` でビルド）・先端・基準の最初の誤りを両方の edition で並べ、`r15/all-v4.tsv` がレビューと探査の 369 個の結果、`r15/p` がこの見直しで書いた探査です）。
+
+#### 原因
+
+前の修正は、loan の場所がその借用した部分であること（`exact_loan`）を loan だけの性質とし、フィールドの無い loan はどれもそうだとしました。しかし、呼び出しの結果は実引数の loan を持ちながら、その場所から届く別の値を指しえます。`record Node { kids: [Rc<Node>], s: string }` の `fn child n = Rc.get (ref n.kids[0])` の結果は `n` の loan（`(n, [])`）を持ち、`n` の子という同じ型の別の値を指します。そのため次の 3 か所が誤りでした。
+
+- 呼び出し先の `exact_place`: `let q = child b; ref q.s` の場所 `(b, [s])` を `b.s` の借用とし、`kept_paths` に `[s]` を記録した（指摘 1・2 の呼び出し先の側）。
+- 呼び出し元の `kept_copy`: `crossn (ref p) (child (ref p))` の実引数の loan `(p, [])` を `p.s` に狭めた。仮引数を渡す `viachild a b = crossn a (child b)` は、その写しを exact として本体の事実へ伝えた（指摘 2）。
+- 自己の事実の `self_path`・`ordered`: exact かどうかを見ずに場所を記録した（指摘 3。第12回の対応からの穴で、基準も受理する）。
+
+指摘 4 と 5 は前からの不精確さです。部分適用が束縛した引数はどれも関数値全体の値を持ち（`bound`、パイプラインの右辺も同じ）、呼び出し先が関数値へ渡す仮引数の先の部分の値は `path_copy` の写しで exact でなく（フィールド）、要素の場所は `Source::paths` に入りませんでした。
+
+#### 変えたこと（`src/ownership.rs`、`src/ownership_control.rs`）
+
+- **参照の値が指す場所（`Checker::points_at`）**: 参照の値が、持つ loan のどれかの場所そのものを指す（その場所から届く別の値ではない）かを、値の作り方で決めます。場所の借用（`exact_place`）、不変の参照の仮引数、そうした式に束縛した不変の局所値とパターンの変数（`Checker::pointing`: 束縛したときの loan だけを今も持つもの。`match` の対象はそれが別名にした局所値。注釈した lambda の仮引数 `\(q: ref mut Pair) -> ...` もこれで、`note_pointing`）、`if`・`match`・束縛の無いブロックの選択、`Rc.get`・`Arc.get`、本体の結果が参照の仮引数かその選択である関数（`returned_parameters`: `pick k x y = if k > 0 then x else y`、`id_ref x = x`）の完全な呼び出しで、引数がそうであるものです。ほかの呼び出しの結果は指す場所が分からないものとします。
+- **`exact_place`**: 参照の局所値の先は、その局所値が `pointing` のときだけ exact です。`ref (deref r)`（パイプラインの左辺、`if` の参照の実引数）は `r` が `points_at` のとき exact です。exact な借用の loan は、場所の型（`place_type`）が借用した値の型と同じときだけ `exact_loans` に入れます。
+- **実引数（`argument_points`）**: 式の値が式自身のものなら式で決め（借用した演算子は場所が exact なとき）、そうでない引数（部分適用が束縛した引数、パイプラインの右辺が適用する引数 `Arg::approximate`、呼び出し先の事実が作る式の無い引数）は `Arg::pointing` が持ちます。`Source::pointing` は、関数値の仮引数へ渡した値の loan がどれも仮引数の先全体か `paths`・`element_paths` の部分で、引数の式が `points_at` であることで、呼び出し元はそうした実引数から作った値を `pointing` にします。
+- **写し**: `kept_copy` は `points_at` の実引数だけを狭めます。`path_copy` の写しは、実引数が `points_at` で元の loan が exact なときだけ exact で、そうでない写しは元の loan を親に持ちます（`active` が元を生かすので、借用した部分が実際にある、元の場所から届く値を解放しうる書き込みは、写しがどこへ写っても競合します）。`shared_copy`・`ordered_copy` の写しは元と同じ場所なので、元が exact なら exact です。
+- **自己の事実**: `self_path` は exact でない loan に先全体（`[]`）を返し、`ordered` も exact な loan だけで判断します（指摘 3）。`Source::paths` も同じ `self_path` を使います。
+- **部分適用（`bound_value`）**: 部分適用とパイプラインの右辺が適用する引数で、場所の借用か `pointing` の局所値であるものの値は、関数値の loan のうちその借用が作ったもの（`Checker::borrow_loans`）か局所値が持つものだけで、`pointing` です（指摘 4）。lambda の捕捉は今までどおり関数値全体の値です。
+- **要素の場所（`Source::element_paths`）**: 要素を通る場所（`f (ref arr[0])`、std の `Array.iterr` の `action (ref values[index])`）は、`Source::paths`（`Arg::part` の順序の判断に使う）には入れず、別の `element_paths` に記録し、呼び出し元の実引数が `points_at` のときだけ写しに使います（指摘 5）。
+- **順序を示した自己の借用の要素の段（`self_borrow_dropped_first`）**: `element_paths` で `Array.iterir` の要素を `(arr, [ELEMENT])` と狭めると、呼び出し先が順序を示した自己の借用（`ordered_loans`）の写しの場所が `[ELEMENT, s]` になり、要素の段で拒否しました（下のマージの条件の確かめで見つけた `review-a31-conf-r10/p/iterir_local_safe` の退行。前は配列全体の写しで、段が無く受理していた）。順序を示した写しは、呼び出し先が仮引数の指す値の中へ書き込んだもので、借用とそれを持つ部分は実引数の指す 1 つの要素の中にあるので、その写しに限って要素の段は要素の中へ進みます。ほかの要素の借用を持つ形（`cross (ref arr[1]) (ref arr[0])`、それを本体に持つ関数）は呼び出し先で `ordered` にならず、今までどおり拒否します。これで `selfok (ref arr[0])`（先端・前の修正は拒否、基準は受理）も受理します。
+
+#### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（`let q = child b; ref q.s` の借用を `b.s` とし、`n1.kids = []` が子を解放しても競合しない。基準からの退行） | 再現（`ce/n18_m1` を受理し `read -1 8 2`、ASan で解放後の読み出し。`n20_m1`・`n20_m2` も両方の edition で受理） | `points_at`・`pointing`。`n18_m1` は `31:5` の `E1014`、`n20_m1`・`n20_m2` は `30:5` の `E1013`（`self_referential_store`）で、先端と同じ | `a_borrow_through_the_result_of_a_call_is_one_of_the_whole_argument` |
+| 2（呼び出しの結果の実引数、それを仮引数として渡す関数、そうした局所値を通した借用。先端からの退行） | 再現（`n9`・`n10`・`n1`・`n2`・`n3`・`n4`・`b1`〜`b6` を受理、ASan で解放後の読み出し） | 同上と `kept_copy` の `points`。どれも先端と同じ `E1013`・`E1014`。`b5_capture`・`n8_call_arg` も拒否のまま | 同上 |
+| 3（自己の事実が呼び出しの結果を通した借用の場所を記録する。基準・先端も受理） | 再現（`s1`・`s2` を受理し `drop -1`） | `self_path`・`ordered` の exact。どちらも `25:5` の `E1013`（`self_referential_store`）。同じ根の、自己の事実を指す場所が分からない実引数に当てはめた写しを別の値へ写す形（`r15/p/h1_selfchild_copy`: `selfn (child (ref n1))` の後で `copyh` が `n1` の持つ関数を `p2` へ写し、`n1.kids = []`。修正後・先端・基準が受理し `drop 8`・`drop -1`）も見つけ、写しが元の loan を親に持つことで `34:5` の `E1014` にした。写しを作らない `selfn (child (ref n1))` だけの形と、写しても書き換えない形は受理（`drop 8`・`drop 0`・`1` など） | 同上 |
+| 4（2 つ以上の引数を束縛した部分適用・パイプライン・関数値の仮引数へ渡した部分適用。基準が受理） | 再現（`p8/s_partial2`・`_pipe`・`_apply` が `E1013`、基準は `drop 16`・`drop 0`・`drop 0`・`1`） | `bound_value`、`ref (deref r)` の exact。3 つとも受理。逆の順序は `assignment_extends_borrow` | `a_part_bound_or_passed_to_a_function_value_keeps_a_borrow_of_that_part`、`in_place_writes` の `bound_parts_keep_their_strings` |
+| 5（関数値へ渡す仮引数の先の部分、`Array.iterr`・`Array.mapr`。前の修正が直したと書いた形の残り） | 再現（`p3/s_each_field`・`s_each_user`・`p/s_iterr_partial`・`p3/s_iterr_partial_arrfirst_named`・`p3/s_map_partial` が `E1013`） | `path_copy` の exact、`element_paths`。`s_map_partial` のほかは受理。`Array.mapr` は配列を作る初期化の関数の格納を区別しない事実のままで、`drop.md` と A33（`mapr`）に制限として書いた | 同上（`mapr` は制限として拒否を固定） |
+| 6（5 つ以上の部分、文書） | 再現（`p9/s_cross5` が `E1013`、`s_cross4` は前の修正で受理） | `drop.md` の「別の仮引数の先へ書き込んだ部分」に、値全体として扱う借用の一覧（参照の先のフィールド、呼び出しの結果、`let mut` の参照の変数、5 つ以上の部分、`Array.mapr`、書き込むセルを所有する関数値があるプログラムでの部分適用）と、それぞれの `E1013` を書き、`lifetimes.md` の「現在の制限」、A33（`callres`・`mutref`・`cross5`・`mapr` の行）とこのチケットの「残る制限」を直した | 同上（`cross5` は制限として拒否を固定） |
+
+レビューと探査の 369 個（`r14-review/ce`・`conf`、`r14/p`・`q`・`t`、`r15/p`）を両方の edition で比べると（`r15/all-v4.tsv`）、前の修正からの変化は、上の指摘の形のほかに、前の修正が受理した安全な形のうち指す場所が分からない参照を通すもの（`conf/p/s_loop_refvar` の `let mut` の参照の変数、`conf/p11/s_wrap_field_arg` の `cross (ref p2) w.p`）が先端と同じ拒否に戻ったことです（文書に書いた制限）。`r14/q/idref`・`pick3`・`rcget`・`several`、`conf/p/s_several3`・`s_match3` は、`returned_parameters`・`Rc.get`・選択の `points_at` で受理のままか受理になりました。`conf/p7/s_tree_call`（`kid0` が子か自分を返す）は最初の誤りが基準と同じ `E1012` から `E1013` に変わりました（どちらも拒否）。基準が拒否して修正後が受理するのは `ce/n16d`・`n16e`・`n17`・`n17b`・`n17c`・`r197`・`n18_ctl`・`n20_ctl` で、前の修正と先端も受理する、A28 の保持の事実の精度による安全な形です。どれも native の `-O0`・`-O3` と ASan で手で求めた値（`9`、`4`、`2`、`read 0 8 2`・`1`、`drop 0`・`drop 0`・`-1`）を出し、ASan は何も報告しませんでした（`r15/ra-runs.txt`）。
+
+#### テスト
+
+- `tests/rc.rs` の `a_borrow_through_the_result_of_a_call_is_one_of_the_whole_argument`（`NODE_PRELUDE`）: 指摘 1〜3 の拒否（両方の edition で `44:5` の `E1013` の `self_referential_store` 6 形、edition 2027 で `47:5`・`48:5` の `E1014` の `borrow_conflict` 3 形、`n18` の `31:5` の `E1014`、`n20` の 2 形の `30:5` の `E1013`）と、安全な形の受理（`crossn (ref p2) (ref n1)` の後の `n1.kids = []`、`selfn (child (ref n1))`、写しても書き換えない形）。関数値の仮引数を通した `b2`（`apply2n crossn`）は、Rust のテストのスレッドのスタックでは再帰型の検査があふれる（CLI では `E1013`。レビューの報告のとおり `tsuzuri run` は基準でもあふれる、前からの問題）ので入れていません。
+- 同じく `a_part_bound_or_passed_to_a_function_value_keeps_a_borrow_of_that_part`（`PARTS_PRELUDE`）: 指摘 4・5 と選択の受理 10 形、要素へ順序を守る自己の借用を書き込む受理 3 形（`selfok (ref arr[0])`、`Array.iterr selfok (ref arr)`、`iterir_local_safe` の形）、逆の順序の拒否 8 形（`41:5` の `assignment_extends_borrow`）、ほかの要素の借用の拒否 2 形（`41:5` の `self_referential_store`）、制限の `Array.mapr`（`assignment_extends_borrow`）と `cross5`（`self_referential_store`）の拒否。
+- `in_place_writes` の `bound_parts_keep_their_strings`: パイプラインの右辺が 2 つの引数を束縛した `cross3_recorded` と、要素を関数値へ渡す `each_recorded`。手で求めた値は `(((1 * 100 + 0) * 100 + 10) * 100 + 12) * 100 + 0 = 100101200`（`p3` の記録は `"12345"` と `"1234567"` の 5 + 7、`p2` は 2 番目の要素の `"123456789"` の 9 + 1、`p1` と要素は 0）で、基準も同じ値です。このモジュールには書き込むセルを所有する関数値があり、部分適用の形は隠れた環境の規則で拒否されるので、部分適用は Rust のテストで確かめます。
+
+#### マージの条件の確かめ（この見直しの後）
+
+上の道具を `gate/tools/check-r15.mjs`・`check-r16.mjs`・`diff-r15.mjs`・`diff-r16.mjs` に写しました（基準と前の修正の結果を `results-r14.json` から使い、新しいバイナリだけを検査します）。`gate/tools/collect.mjs` を回し直して、このレビューのプログラム（`r14-review/ce`・`conf`）とこの見直しの探査（`r15/p`）、まだ入っていなかった前の修正の探査（`r14/p`・`q`・`t`）、A32 の 5 度目の merge の写しなど 448 個を足し、12615 個・25230 組を両方の edition で検査しました（`results-r15.json`、要素の段の変更の後の `results-r16.json`、分類は `diff-r15.txt`・`diff-r16.txt`、まとめは `r15/gate-summary.txt`）。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 4224 | 3282 |
+| 両方が拒否 | 4938 | 6608 |
+| 基準が拒否し対応後が受理（RA） | 26 | 22 |
+| 基準が受理し対応後が拒否（AR） | 3427 | 2703 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **前からある 24334 組では、前の修正（`r14`）からの判定の変化は 0 組で、RA は同じ 28 組（15 個）です。** 新しい RA は、足した 896 組の中の 20 組（12 個）だけで、レビューの対照のプログラム `ce/n16d`・`n16e`・`n17`・`n17b`・`n17c`・`n18_ctl`・`n20_ctl`（前の修正と先端も受理する、上の確かめたとおり安全な形）と、A32 の 5 度目の merge が写した最初の確認の探査 `probes/f06_replace_inner_f`・`f11_rc_share_dropped`・`f21_replace_both_arms`・`u11_safe_twin_set_no_capture`・`u15_set_safe_param_kept`（最初の確認で native・ASan で安全と確かめた RA の 7 組、`gate/runs-probes.json`）です。条件 (1) は成り立ちます。
+- 最初の `r15` の検査では、受理から拒否が 2 組ありました（`review-a31-conf-r10/p/iterir_local_safe` の両方の edition。`Array.iterir` の要素へ部分の順序を守る自己の借用を書き込む安全な形で、基準・先端・前の修正は受理）。要素の写しの場所の要素の段で拒否したためで、上の「順序を示した自己の借用の要素の段」で直し、`r16` で受理に戻りました（`r16` の `r15` からの変化はこの 2 組だけ）。
+- 基準も対応後も受理するプログラムのうち、名前が危険を示すものに足されたのは、レビューが安全な形として書いた `conf/p/s_bad_distinct`（別々の `PairBad` の値）と `conf/p9/s_deep_write_u`（借用されていないフィールド `u` の書き換え）で、どちらも下の実行で基準と同じ値を出し、ASan は何も報告しませんでした。
+- レビューと探査で先端が拒否して対応後が受理する 130 個のうち、前の修正も拒否した指摘 4・5 の 7 個（`p8/s_partial2`・`_pipe`・`_apply`、`p3/s_each_field`・`s_each_user`、`p/s_iterr_partial`、`p3/s_iterr_partial_arrfirst_named`）は、両方の edition で native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で実行し、どれも手で求めた値（`drop 16`・`drop 0`・`drop 0`・`1`、`drop 8`・`drop 0`・`1`、`drop 8`・`drop 0`・`drop 0`・`1`）を出しました（`r15/new7-runs.txt`）。残りの 123 個は edition 2027 の native と ASan の `-O0` で実行し、どれも基準と同じ出力で、ASan は何も報告しませんでした（`r15/others-runs.tsv`）。要素の段の変更で受理になった `r15/p/e1_iterr_selfok`・`e3_elem_selfok`・`e6_selfall`・`iterir_local_safe` も両方の edition で native・ASan の `-O0`・`-O3` で手で求めた値（`drop 8`・`drop 8`・`1`、`drop 8`・`drop 0`・`1`、`drop 8`・`0`）を出しました（`r15/elem-runs.txt`）。ほかの要素の借用を持つ `e4_crossel`・`e5_crossel10`・`e8_cross_direct_elems`、順序の逆の `e2_iterr_selfbad`・`e7_iterir_bad` は `E1013`（`self_referential_store`）のままです。
+- 最終のバイナリで、レビューと探査の 383 個（上の 369 個と、この見直しの後に書いた `r15/p` の 14 個）を両方の edition で検査し直し、369 個は `r15/all-v4.tsv` から変化が無く、14 個は上のとおりであることを確かめました（`r15/final-new.tsv`）。
+
+#### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3069 件すべて成功、4 件 skip（1750 秒、`r15/nextest-2.log`。要素の段の変更の前の 1 回目も 3069 件成功、`r15/nextest.log`）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 77 件（この見直しの 1 件を含む。基準のバイナリでも 77 件が成功）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件がすべて成功（`r15/suites-2.log`、`e2e-ipw-base.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`、基準と対応後の `check --json`・`build --no-cache --emit llvm`）: `tests/fixtures`・`examples` の 154 個のどれも出力が同じ（`r15/step5.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・47 個のリンク・9 個の例・18 回の native の実行）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
+- 変えたファイル: `src/ownership.rs`、`src/ownership_control.rs`、`tests/rc.rs`（2 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（制限の表の `callres`・`mutref`・`cross5`・`mapr` の行、段 3、見直しの記録）、このチケット（「残る制限」と、この節）。
