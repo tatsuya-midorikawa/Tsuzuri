@@ -2058,6 +2058,13 @@ const suites = {
       ["reference_variables_leave_the_part", [], (1n * 10n + 1n) * 100n + 4n * 10n + 5n],
       ["shared_owner_parts_in_drop_order", [], 1n * 100n + 9n + 9n],
       ["parts_handed_to_function_values", [], 1n * 100n + 9n + 5n],
+      // Review round 12. With true, a's recorder reads "12345" (5 + 1) and b's keeps 0; with false,
+      // a's keeps 0 and b's reads "1234567" (7 + 1).
+      ["one_of_two_targets_keeps_its_own_part", [], (1n + 1n) * 10000n + 6n * 1000n + 0n * 100n + 0n * 10n + 8n],
+      // The old block's recorder reads "123" (3 + 5) when the assignment drops it; the new one keeps 2.
+      ["replaced_rc_drops_its_block_parts", [], 1n * 100n + 8n * 10n + 2n],
+      // The old value's recorder reads "1234" (4 + 1) when `deref p = v` drops it; the new one keeps 3.
+      ["replaced_target_with_an_arc_drops_its_parts", [], 1n * 100n + 5n * 10n + 3n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.

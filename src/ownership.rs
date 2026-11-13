@@ -234,6 +234,12 @@ struct State<'a> {
     /// replacement of that target (`deref p = v`) drops the old value with the borrows of its own
     /// parts that it keeps, but not these (`Checker::replaced_target`).
     kept_elsewhere: BTreeSet<usize>,
+    /// A31: the external roots of the parameters whose contents (what their targets hold, read
+    /// through them: a copy of what a cell of the target holds) the body stored somewhere other
+    /// than the target of the same parameter (another parameter's target, a hidden environment).
+    /// Such a copy may hold a borrow of `kept` without its loan, so a whole replacement of that
+    /// target ends none of them (`Checker::replaced_target`).
+    contents_elsewhere: BTreeSet<usize>,
     /// A31: the locals whose value was, when they were bound or assigned last, a share of the
     /// block of local owners (`Rc.share (ref rc)`, `Loan::share`), with those owners. A borrow of
     /// the contents of the block through such a local points into the same block as one through
@@ -679,6 +685,8 @@ fn start_checker<'a, 'run>(
         drop_hidden_types: BTreeMap::new(),
         drop_hiding: false,
         exports: Vec::new(),
+        exported: BTreeSet::new(),
+        export_walks: BTreeMap::new(),
         exporting: false,
         views: BTreeSet::new(),
         drop_read_types: BTreeMap::new(),
@@ -4866,6 +4874,10 @@ struct Checker<'a, 'run> {
     /// owner (`block_owner_type`), with where they went: a later store into a local that may own
     /// such a block goes there too (`store_exported`).
     exports: Vec<(Type, ExportTarget)>,
+    /// A31: the entries of `exports`, for the test of whether one is there.
+    exported: BTreeSet<(Type, ExportTarget)>,
+    /// A31: the types of the blocks that an owner of each type may share (`export_block`).
+    export_walks: BTreeMap<Type, Vec<Type>>,
     /// A31: `store_exported` is making its stores, which do not lead to it again.
     exporting: bool,
     /// A31: the pattern variables of the body bound as read-only views of the matched storage
@@ -4907,7 +4919,7 @@ type ParameterPath = (usize, Vec<usize>);
 /// capture with this external root (`store_external`), to the environments that the check
 /// cannot name (`store_hidden`), or to a local whose drop may run a user `Drop.drop` and that the
 /// rest of the body does not use (`Checker::keep_for_drop`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ExportTarget {
     External(usize),
     Hidden,
@@ -6188,6 +6200,9 @@ impl<'a, 'run> Checker<'a, 'run> {
     ) -> Result<(), Diagnostic> {
         if usage != Use::Write {
             self.revive_generic_moves(place);
+        }
+        if matches!(usage, Use::MutBorrow | Use::Write) && !self.state.block_shares.is_empty() {
+            self.forget_block_share(place.root);
         }
         if !self.handed.is_empty() && matches!(usage, Use::MutBorrow | Use::Write | Use::Consume) {
             self.overwrite_handed(place);
@@ -7549,6 +7564,9 @@ impl<'a, 'run> Checker<'a, 'run> {
         let mut followed: BTreeSet<(usize, bool)> = BTreeSet::new();
         // The external roots, and whether only exclusive borrows reach each.
         let mut external: BTreeMap<usize, bool> = BTreeMap::new();
+        // The external roots that a target loan reaches at a place that is not the storage of the
+        // parameter's target itself (`place_leaves_storage`).
+        let mut leaving: BTreeSet<usize> = BTreeSet::new();
         while let Some((loan, exclusive)) = pending.pop() {
             if !seen.insert((loan, exclusive)) {
                 continue;
@@ -7559,6 +7577,9 @@ impl<'a, 'run> Checker<'a, 'run> {
             }
             if self.external.contains(&root) {
                 *external.entry(root).or_insert(true) &= exclusive;
+                if !leaving.contains(&root) && self.place_leaves_storage(&self.loans[loan].place) {
+                    leaving.insert(root);
+                }
                 continue;
             }
             // A store into a cell that an owned parameter stores itself (`Mutex.with_lock (ref
@@ -7603,7 +7624,8 @@ impl<'a, 'run> Checker<'a, 'run> {
         }
         if !local_only {
             for (root, exclusive) in external {
-                self.store_external(root, exclusive, stored, span);
+                let leaves = leaving.contains(&root);
+                self.store_external(root, exclusive, leaves, stored, span);
             }
         }
         // Through exclusive borrows, an exclusive loan of a place on the way can only be one of
@@ -7673,7 +7695,18 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// local `Rc` or `Arc` owner (`Loan::share`) is an owner of the block, not a borrow of the
     /// local: it stores what the local holds, and the block, which outlives the local in the
     /// caller's data, takes what the body stores into a cell of it later (`export_block`).
-    fn store_external(&mut self, root: usize, exclusive: bool, stored: &Value, span: Span) {
+    ///
+    /// With `leaves`, the store may reach a place that is not the storage of the target itself (a
+    /// cell in the block of an `Rc` or `Arc` that it holds, `place_leaves_storage`): a borrow of
+    /// the target kept there outlives a replacement of the target (`State::kept_elsewhere`).
+    fn store_external(
+        &mut self,
+        root: usize,
+        exclusive: bool,
+        leaves: bool,
+        stored: &Value,
+        span: Span,
+    ) {
         let Some(&to) = self.parameter_roots.get(&root) else {
             return;
         };
@@ -7710,9 +7743,12 @@ impl<'a, 'run> Checker<'a, 'run> {
                 // as with a live local borrow, and a write of a disjoint place does not.
                 if part == Part::Value && self.writable_external(source) {
                     self.state.kept.insert(loan);
-                    if from != to {
+                    if from != to || leaves {
                         self.state.kept_elsewhere.insert(loan);
                     }
+                }
+                if part == Part::Contents && from != to {
+                    self.state.contents_elsewhere.insert(source);
                 }
                 let dropping = self.dropping == Some(from);
                 // A shared borrow of what an exclusive reference parameter points at.
@@ -7873,19 +7909,27 @@ impl<'a, 'run> Checker<'a, 'run> {
             return;
         };
         let ty = local.ty.clone();
-        let types = self.module.types();
-        let blocks = std::cell::RefCell::new(Vec::new());
-        types.reaches(&ty, |part| {
-            if let Some(block) = Self::block_owner_type(part)
-                && let Type::Shared(value, _) = part
-                && value.owns_mutable_cell(&types)
-            {
-                blocks.borrow_mut().push(block);
+        let blocks = match self.export_walks.get(&ty) {
+            Some(blocks) => blocks.clone(),
+            None => {
+                let types = self.module.types();
+                let blocks = std::cell::RefCell::new(Vec::new());
+                types.reaches(&ty, |part| {
+                    if let Some(block) = Self::block_owner_type(part)
+                        && let Type::Shared(value, _) = part
+                        && value.owns_mutable_cell(&types)
+                    {
+                        blocks.borrow_mut().push(block);
+                    }
+                    false
+                });
+                let blocks = blocks.into_inner();
+                self.export_walks.insert(ty, blocks.clone());
+                blocks
             }
-            false
-        });
-        for block in blocks.into_inner() {
-            if !self.exports.contains(&(block.clone(), target)) {
+        };
+        for block in blocks {
+            if self.exported.insert((block.clone(), target)) {
                 self.exports.push((block, target));
                 self.store_changes += 1;
             }
@@ -7928,7 +7972,17 @@ impl<'a, 'run> Checker<'a, 'run> {
                 expanded.through.insert(loan);
             }
         }
+        // What a block owner exports depends on its type only: one walk per type, so that a chain
+        // of shares (`let s2 = Rc.share (ref s1)`, ...) costs one walk, not one per owner.
+        let mut walked: Vec<Type> = Vec::new();
         for owner in owners {
+            let Some((local, _)) = self.state.locals.get(&owner) else {
+                continue;
+            };
+            if walked.contains(&local.ty) {
+                continue;
+            }
+            walked.push(local.ty.clone());
             self.export_block(owner, target);
         }
         expanded
@@ -7962,13 +8016,20 @@ impl<'a, 'run> Checker<'a, 'run> {
         let types = self.module.types();
         let exports = &self.exports;
         let mut targets: Vec<ExportTarget> = Vec::new();
+        let mut seen: BTreeSet<ExportTarget> = BTreeSet::new();
+        // One walk of `ty` per type of block, however many places it went to.
+        let mut reached: BTreeMap<&Type, bool> = BTreeMap::new();
         for (block, target) in exports {
-            if (hidden && *target == ExportTarget::Hidden) || targets.contains(target) {
+            if (hidden && *target == ExportTarget::Hidden) || seen.contains(target) {
                 continue;
             }
-            if types.reaches(ty, |part| {
-                Self::block_owner_type(part).is_some_and(|owner| owner == *block)
-            }) {
+            let reaches = *reached.entry(block).or_insert_with(|| {
+                types.reaches(ty, |part| {
+                    Self::block_owner_type(part).is_some_and(|owner| owner == *block)
+                })
+            });
+            if reaches {
+                seen.insert(*target);
                 targets.push(*target);
             }
         }
@@ -7979,7 +8040,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         for target in targets {
             match target {
                 ExportTarget::External(external) => {
-                    self.store_external(external, false, kept, span);
+                    self.store_external(external, false, true, kept, span);
                 }
                 ExportTarget::Hidden => self.store_hidden(kept, span),
                 ExportTarget::Local(holder) => self.absorb_owner(holder, kept),
@@ -8108,6 +8169,9 @@ impl<'a, 'run> Checker<'a, 'run> {
                 if part == Part::Value && self.writable_external(source) {
                     self.state.kept.insert(loan);
                     self.state.kept_elsewhere.insert(loan);
+                }
+                if part == Part::Contents {
+                    self.state.contents_elsewhere.insert(source);
                 }
                 let shared = part == Part::Value && self.shared_borrow_of_exclusive(loan);
                 if let Some(stores) = self.stores.as_mut() {
@@ -8451,6 +8515,49 @@ impl<'a, 'run> Checker<'a, 'run> {
         copied
     }
 
+    /// A31: the value of a reference argument split by the places that it may point at, for the
+    /// store of a borrow of a part of what the reference points at in that same value (a self
+    /// entry of the store facts, or a function value that keeps one as a function of the module
+    /// does). The reference points at one of the places that the loans that the value holds itself
+    /// borrow (`if c then ref a else ref b`, an element of `[ref a, ref b]`, the result of a
+    /// function that returns one of its reference arguments), or at a part of what one of those
+    /// places reaches: the callee keeps a borrow of a part of that place in that place, which
+    /// `apply_store` extends to what the place reaches, and not in the other places. So each piece
+    /// holds one of those loans with every loan that the value holds as contents
+    /// (`Value::through`), and is both what is stored and where. `None` (one piece, the whole
+    /// value stored where all of it reaches) when the value holds at most one loan itself, or the
+    /// argument is a borrowed operand whose borrow `argument_part` adds (`Arg::reference`).
+    fn referent_pieces(argument: &Arg<'_>, value: &Value) -> Option<Vec<Value>> {
+        if argument.reference.is_some() {
+            return None;
+        }
+        let own: Vec<usize> = value
+            .loans
+            .iter()
+            .copied()
+            .filter(|loan| !value.through.contains(loan))
+            .collect();
+        if own.len() < 2 {
+            return None;
+        }
+        Some(
+            own.into_iter()
+                .map(|loan| {
+                    let mut piece = Value {
+                        closed_result: value.closed_result,
+                        ..Value::default()
+                    };
+                    piece.loans.insert(loan);
+                    for &held in &value.through {
+                        piece.loans.insert(held);
+                        piece.through.insert(held);
+                    }
+                    piece
+                })
+                .collect(),
+        )
+    }
+
     /// A31: whether the borrow `loan` of a part of what a reference parameter points at, stored
     /// in that same value, is one that the drop order of the value's parts keeps valid
     /// (`StoreFacts::ordered`): the borrowed part is dropped after every part of the value whose
@@ -8782,7 +8889,6 @@ impl<'a, 'run> Checker<'a, 'run> {
             if source.locked && part == Part::Value {
                 self.defer(Self::locked_borrow_kept(span));
             }
-            let mut stored = self.argument_part(source, part);
             // A shared borrow of what an exclusive reference parameter points at, kept in that
             // same value (`StoreFacts::shared_some`): the caller's value keeps a shared borrow of
             // itself, whatever reference it passed (a fresh `ref mut p0`, a `ref mut` variable, a
@@ -8816,32 +8922,54 @@ impl<'a, 'run> Checker<'a, 'run> {
                 Some(Type::Reference(target, _)) => Some(without_views(target)),
                 _ => None,
             };
-            let mut kept_self = None;
-            // A fresh exclusive borrow passed where the callee stores only shared borrows of
-            // what it points at leaves a shared borrow of the same place.
-            if stores.shared_only.contains(&entry) && (Self::fresh_exclusive(source) || self_shared)
-            {
-                stored = if self_shared {
-                    self.path_copy(&stored, paths, pointed.as_ref())
-                } else {
-                    self.shared_copy(&stored)
-                };
-            } else if self_shared {
-                kept_self = Some(self.path_copy(&stored, paths, pointed.as_ref()));
-            } else if reference == Some(false) {
-                stored = self.path_copy(&stored, paths, pointed.as_ref());
-            }
-            // A borrow of a part of the argument's place kept in that place, in the drop order of
-            // its parts (`StoreFacts::ordered`).
-            if stores.ordered.contains(&entry) {
-                stored = self.ordered_copy(&stored);
-                kept_self = kept_self.map(|kept| self.ordered_copy(&kept));
-            }
-            let reached = target.value.clone();
-            if let Some(kept) = &kept_self {
-                self.apply_store(kept, &reached, span);
+            // A reference argument that may point at one of several places (`if c then ref a
+            // else ref b`) is one of them at run time, and the callee keeps a borrow of a part of
+            // what its parameter points at in that same value: each place keeps a borrow of its
+            // own part, not of the others' (`referent_pieces`). Anything else is one piece, stored
+            // where the whole argument reaches.
+            let whole_value = self.argument_part(source, part);
+            let pieces = match reference {
+                Some(_) => Self::referent_pieces(source, &whole_value),
+                None => None,
+            };
+            let pieces: Vec<(Value, Value)> = match pieces {
+                Some(pieces) => pieces
+                    .into_iter()
+                    .map(|piece| (piece.clone(), piece))
+                    .collect(),
+                None => vec![(whole_value, target.value.clone())],
+            };
+            let mut applied: Vec<(Value, Value)> = Vec::with_capacity(pieces.len());
+            for (mut stored, reached) in pieces {
+                let mut kept_self = None;
+                // A fresh exclusive borrow passed where the callee stores only shared borrows of
+                // what it points at leaves a shared borrow of the same place.
+                if stores.shared_only.contains(&entry)
+                    && (Self::fresh_exclusive(source) || self_shared)
+                {
+                    stored = if self_shared {
+                        self.path_copy(&stored, paths, pointed.as_ref())
+                    } else {
+                        self.shared_copy(&stored)
+                    };
+                } else if self_shared {
+                    kept_self = Some(self.path_copy(&stored, paths, pointed.as_ref()));
+                } else if reference == Some(false) {
+                    stored = self.path_copy(&stored, paths, pointed.as_ref());
+                }
+                // A borrow of a part of the argument's place kept in that place, in the drop order
+                // of its parts (`StoreFacts::ordered`).
+                if stores.ordered.contains(&entry) {
+                    stored = self.ordered_copy(&stored);
+                    kept_self = kept_self.map(|kept| self.ordered_copy(&kept));
+                }
+                if let Some(kept) = &kept_self {
+                    self.apply_store(kept, &reached, span);
+                }
+                applied.push((stored, reached));
             }
             if part == Part::Value && source.dying {
+                let reached = target.value.clone();
                 if self.has_targets(&reached) || target.environment {
                     self.defer(Self::temporary_borrow_stored(span));
                 } else if self.temporary_dropped_first(
@@ -8852,7 +8980,14 @@ impl<'a, 'run> Checker<'a, 'run> {
                     self.defer(Self::temporary_dropped_first_error(span));
                 }
             }
-            self.apply_store(&stored, &reached, span);
+            for (piece, reached) in &applied {
+                self.apply_store(piece, reached, span);
+            }
+            let mut pieces = applied.into_iter().map(|(piece, _)| piece);
+            let mut stored = pieces.next().unwrap_or_default();
+            for piece in pieces {
+                stored.absorb(&piece);
+            }
             // A store into an owner that the call took by value reaches its block, which may have
             // gone where an earlier share took it (`exports`); no local root leads there now.
             if let Some(expression) = target.expression
@@ -9666,12 +9801,18 @@ impl<'a, 'run> Checker<'a, 'run> {
             } else {
                 continue;
             };
-            let mut kept = self.path_copy(&value, paths, Some(referent));
-            // Every function that does so keeps the drop order of the value's parts.
-            if ordered {
-                kept = self.ordered_copy(&kept);
+            // The reference points at one of the places that its loans borrow, which keeps a
+            // borrow of its own part (`referent_pieces`).
+            let pieces =
+                Self::referent_pieces(argument, &value).unwrap_or_else(|| vec![value.clone()]);
+            for piece in pieces {
+                let mut kept = self.path_copy(&piece, paths, Some(referent));
+                // Every function that does so keeps the drop order of the value's parts.
+                if ordered {
+                    kept = self.ordered_copy(&kept);
+                }
+                self.apply_store_within(&kept, &piece, span, local_only);
             }
-            self.apply_store_within(&kept, &value, span, local_only);
         }
         self.apply_store_within(&stored, &environment, span, local_only);
         // An owner that the code took by value reaches its block, which may have gone where an
@@ -10692,6 +10833,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         // A31: a borrow of the block of an outer `Rc` or `Arc` owner taken through a share of the
         // block that this block drops (`same_block_loan`) points into the block, which the outer
         // owner keeps: the drop order of the block's parts decides it.
+        let groups = self.block_groups();
         let mut block_parts: Vec<(usize, usize)> = Vec::new();
         for (id, (_, value)) in &self.state.locals {
             if ids.contains(id) {
@@ -10701,7 +10843,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 let root = self.loans[*loan].place.root;
                 if ids.contains(&root)
                     && !self.reported.contains(&root)
-                    && self.same_block_loan(*loan, *id)
+                    && self.same_block_loan(&groups, *loan, *id)
                 {
                     block_parts.push((*id, *loan));
                 }
@@ -10731,7 +10873,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 && let Some(loan) = value.loans.iter().find(|loan| {
                     ids.contains(&self.loans[**loan].place.root)
                         && !self.reported.contains(&self.loans[**loan].place.root)
-                        && !self.same_block_loan(**loan, *id)
+                        && !self.same_block_loan(&groups, **loan, *id)
                 })
             {
                 return Err(self
@@ -10843,6 +10985,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         let positions: BTreeMap<usize, usize> =
             order.iter().enumerate().map(|(at, id)| (*id, at)).collect();
         let moved = self.moved_always();
+        let groups = self.block_groups();
         for (at, id) in order.iter().enumerate() {
             let Some((holder, value)) = self.state.locals.get(id) else {
                 continue;
@@ -10868,7 +11011,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 let root = self.loans[*loan].place.root;
                 root != *id
                     && !self.reported.contains(&root)
-                    && !self.same_block_loan(*loan, *id)
+                    && !self.same_block_loan(&groups, *loan, *id)
                     && positions.get(&root).is_some_and(|position| {
                         let source = DropSlot::Scoped(*position);
                         self.borrow_dropped_first(slot, Some(&ty), Borrowed::Other(source))
@@ -10882,7 +11025,8 @@ impl<'a, 'run> Checker<'a, 'run> {
                     continue;
                 }
                 if let Some(loan) = held.iter().copied().find(|loan| {
-                    if (self.loans[*loan].place.root != *id && !self.same_block_loan(*loan, *id))
+                    if (self.loans[*loan].place.root != *id
+                        && !self.same_block_loan(&groups, *loan, *id))
                         || self.loans[*loan].share
                     {
                         return false;
@@ -10943,11 +11087,17 @@ impl<'a, 'run> Checker<'a, 'run> {
         let Some((holder, value)) = self.state.locals.get(&root) else {
             return Ok(None);
         };
+        // A borrow of a part of the block of an `Rc` or `Arc` owner through another owner of that
+        // block (`same_block_loan`) is one of a part of the old value too: the block keeps it in
+        // itself, and its last owner drops it with the block.
+        let groups = self.block_groups();
         let own: Vec<usize> = value
             .loans
             .iter()
             .copied()
-            .filter(|loan| self.loans[*loan].place.root == root)
+            .filter(|loan| {
+                self.loans[*loan].place.root == root || self.same_block_loan(&groups, *loan, root)
+            })
             .collect();
         if own.is_empty() {
             return Ok(None);
@@ -11012,6 +11162,18 @@ impl<'a, 'run> Checker<'a, 'run> {
         }
     }
 
+    /// A31: forgets that the local `id` shares the block of other owners and that others share
+    /// its block (`State::block_shares`): a write of it, or an exclusive borrow through which code
+    /// may write it (`renew (ref mut inner)` whose body does `deref r = Rc.new (...)`, `let r =
+    /// ref mut inner`), may make it the owner of another block. An assignment of the whole local
+    /// records what its new value is afterwards (`note_block_share`).
+    fn forget_block_share(&mut self, id: usize) {
+        self.state.block_shares.remove(&id);
+        self.state
+            .block_shares
+            .retain(|_, owners| !owners.contains(&id));
+    }
+
     /// A31: whether `loan`, which the local `holder` keeps, borrows a part of the block that
     /// `holder` owns through another owner of that block: both are `Rc` or `Arc` locals, one a
     /// share of the other (through shares of shares, `State::block_shares`), and the loan names a
@@ -11019,7 +11181,7 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// owner itself). Such a borrow is one of a part of the holder itself, which the drop order
     /// of the value's parts decides (`self_borrow_dropped_first`), whichever owner is dropped
     /// first.
-    fn same_block_loan(&self, loan: usize, holder: usize) -> bool {
+    fn same_block_loan(&self, groups: &BTreeMap<usize, usize>, loan: usize, holder: usize) -> bool {
         let place = &self.loans[loan].place;
         let root = place.root;
         if root == holder || place.fields.is_empty() || self.state.block_shares.is_empty() {
@@ -11039,27 +11201,50 @@ impl<'a, 'run> Checker<'a, 'run> {
         if !block_owner(root) || !block_owner(holder) {
             return false;
         }
-        // The owners of one block form a connected group of `block_shares`.
-        let mut seen = BTreeSet::from([holder]);
-        let mut pending = vec![holder];
-        while let Some(current) = pending.pop() {
-            if current == root {
-                return true;
+        // The owners of one block form a connected group of `block_shares` (`block_groups`).
+        let group = |id: usize| groups.get(&id).copied().unwrap_or(id);
+        group(root) == group(holder)
+    }
+
+    /// A31: the group of the owners of one block (`State::block_shares`) of each local that is a
+    /// share of another, by one member of the group; a local that is no share is in the group that
+    /// it names itself. A share names one owner (`note_block_share`), so a group is a tree (or a
+    /// cycle) whose root (or cycle) every owner's chain of shares reaches: its member is that root
+    /// (the least local of the cycle). Made once for a check that asks `same_block_loan` of many
+    /// loans, so that each answer costs a lookup, not a walk of the shares.
+    fn block_groups(&self) -> BTreeMap<usize, usize> {
+        let shares = &self.state.block_shares;
+        let mut groups: BTreeMap<usize, usize> = BTreeMap::new();
+        for &start in shares.keys() {
+            if groups.contains_key(&start) {
+                continue;
             }
-            let shares = &self.state.block_shares;
-            let next = shares.get(&current).into_iter().flatten().copied().chain(
-                shares
-                    .iter()
-                    .filter(|(_, owners)| owners.contains(&current))
-                    .map(|(id, _)| *id),
-            );
-            for id in next {
-                if seen.insert(id) {
-                    pending.push(id);
+            let mut path = vec![start];
+            let mut on_path = BTreeSet::from([start]);
+            let mut current = start;
+            let member = loop {
+                let Some(next) = shares
+                    .get(&current)
+                    .and_then(|owners| owners.first())
+                    .copied()
+                else {
+                    break current;
+                };
+                if let Some(&known) = groups.get(&next) {
+                    break known;
                 }
+                if !on_path.insert(next) {
+                    let at = path.iter().position(|id| *id == next).unwrap_or(0);
+                    break path[at..].iter().copied().min().unwrap_or(next);
+                }
+                path.push(next);
+                current = next;
+            };
+            for id in path {
+                groups.insert(id, member);
             }
         }
-        false
+        groups
     }
 
     /// A31: the type of the part at `place` (a field path of a local, written directly) when that
@@ -11178,6 +11363,14 @@ impl<'a, 'run> Checker<'a, 'run> {
             Type::Reference(target, _) => (**target).clone(),
             ty => ty.clone(),
         };
+        // The borrows end with the old value only when every copy of them goes with it: the body
+        // copied nothing that the target's cells hold to another place
+        // (`State::contents_elsewhere`), and the places in the value that may keep them are its
+        // own (`replacement_frees_kept`). Otherwise they stay kept, and the write conflicts with
+        // them.
+        if self.state.contents_elsewhere.contains(&root) || !self.replacement_frees_kept(&ty) {
+            return Ok(());
+        }
         if self.drop_reads_cached(&ty) {
             for &loan in &own {
                 if self.loans[loan].share {
@@ -11198,6 +11391,102 @@ impl<'a, 'run> Checker<'a, 'run> {
             self.state.kept.remove(loan);
         }
         Ok(())
+    }
+
+    /// A31: whether a whole replacement of a value of type `ty` that the body reaches through a
+    /// reference parameter (`replaced_target`) frees every place in it that may keep a borrow of
+    /// its own parts. A store into the value may reach a place that is not its own: the block of
+    /// an `Rc` or `Arc` (or what a weak pointer upgrades to), which another owner of the caller's
+    /// may share (`store_external`); the target of a reference that it holds, when a store may go
+    /// there (`may_reach_store`); a dyn value or a value of a type that the check does not know.
+    /// Its drop may copy what its cells hold where it reaches, when the `Drop.drop` of a type that
+    /// it stores has store facts, or it stores a value of a type that may be any (a dyn value, a
+    /// type variable) and some `Drop.drop` of the module has them: the hook of a local's
+    /// replacement (`drop_stores`) has no counterpart here.
+    fn replacement_frees_kept(&mut self, ty: &Type) -> bool {
+        if !self.tracks_stores() || !self.facts.drops_write || !self.runs_drop_code(ty) {
+            return true;
+        }
+        let module = self.module;
+        let types = module.types();
+        let facts: &CallFacts = self.facts;
+        let storing = |id: &usize| {
+            facts
+                .stores
+                .get(*id)
+                .is_none_or(|stores| !stores.is_empty())
+        };
+        // A dyn value, a value of a type that the check does not know, an `Owned.Function` or a
+        // tzroutine body (whose environments own what they captured) may hold any of them. The
+        // environment of a function value owns no value with a `Drop` instance (`E1005`): what its
+        // drop reaches of the value is a borrow of a part of the value kept in the value, which the
+        // drop order of the parts checks, or a block of an `Rc` or `Arc`, whose cells are no
+        // places of the value's own.
+        let unseen = ty.drops_some(&types, |part| {
+            matches!(
+                part,
+                Type::Once(_)
+                    | Type::Dyn(_)
+                    | Type::Variable(_)
+                    | Type::Infer(_)
+                    | Type::Partial(_)
+                    | Type::Application(..)
+                    | Type::Error
+            ) || part.is_owned_function(&types)
+        });
+        !module.user_drops.iter().any(|(dropped, id)| {
+            storing(id) && (unseen || ty.drops_some(&types, |part| part == dropped))
+        })
+    }
+
+    /// A31: whether a store into the place `place` of a parameter's target may reach a place that
+    /// is not the storage of that target itself (`store_external`'s `leaves`): a step of the place,
+    /// or a part of the value at it, is the block of an `Rc` or `Arc` (or a weak pointer to one),
+    /// which another owner of the caller's may share, a reference through which a store may go
+    /// (`may_reach_store`), a dyn value, or a value of a type that the check does not know. A step
+    /// that names no type (a payload, a region slot) counts as one.
+    fn place_leaves_storage(&self, place: &Place) -> bool {
+        let types = self.module.types();
+        let leaves = |part: &Type| match part {
+            Type::Shared(..)
+            | Type::Dyn(_)
+            | Type::Variable(_)
+            | Type::Infer(_)
+            | Type::Partial(_)
+            | Type::Application(..)
+            | Type::Error => true,
+            Type::Reference(target, exclusive) => *exclusive || may_reach_store(target, &types),
+            _ => false,
+        };
+        let Some(declared) = self.declarations.get(&(usize::MAX - place.root)) else {
+            return true;
+        };
+        let mut current = match &declared.ty {
+            Type::Reference(target, _) => without_views(target),
+            _ => return true,
+        };
+        for &field in &place.fields {
+            if matches!(current, Type::Shared(..) | Type::Reference(..)) || leaves(&current) {
+                return true;
+            }
+            current = match current {
+                Type::Record(id, arguments) if field < types.records[id].fields.len() => {
+                    types.record_field(id, &arguments, field)
+                }
+                Type::Tuple(elements) if field < elements.len() => elements[field].clone(),
+                Type::Array(inner)
+                | Type::ArrayView(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _)
+                    if field == ELEMENT =>
+                {
+                    *inner
+                }
+                _ => return true,
+            };
+        }
+        current.stores_some(&types, leaves)
     }
 
     /// A31: whether the part at `fields` of a value of type `ty`, which a borrow that the value
@@ -12549,6 +12838,9 @@ impl<'a, 'run> Checker<'a, 'run> {
         self.state
             .kept_elsewhere
             .extend(other.kept_elsewhere.iter().copied());
+        self.state
+            .contents_elsewhere
+            .extend(other.contents_elsewhere.iter().copied());
         self.state
             .block_shares
             .retain(|id, owners| other.block_shares.get(id) == Some(owners));
