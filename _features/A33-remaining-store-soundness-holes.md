@@ -61,6 +61,8 @@ A31 の先端（`target/wt/a31`、edition 2027 と 2026）で確かめました�
 
 A32 の 5 度目の merge（2026-11-13）が見つけた、名前付き関数の直接の呼び出し `cross (ref p2) (ref p1)`（`cross a b` が `b.s` の借用を `a.h` の `Mutex` へ書き込む。`target/wt/a32/target/scratch/a32/merge5/s01/red/p/loc_direct`）の文書に無い拒否は、A31 のマージ前の追加の修正（`StoreFacts::kept_paths`。[チケット](_completed/A31-in-place-writes-keep-stored-borrows.md)の「マージ前の追加の修正」）で直しました。その修正のレビュー（2026-11-13、`target/wt/a31/target/scratch/a31/r14-review/`）が、修正が `loan` の場所をその借用した部分とみなしたこと（呼び出しの結果を通した借用 `let q = child b; ref q.s` を `b.s` の借用とした）による退行と、部分適用・関数値へ渡す部分の綴りの残りの拒否を見つけ、A31 で直しました（[チケット](_completed/A31-in-place-writes-keep-stored-borrows.md)の「マージ前の追加の修正の見直し」）。指す場所が分からない参照を通した綴り（上の `crossw`・`callres`・`mutref`）、5 つ以上の部分（`cross5`）と `Array.mapr`（`mapr`）が残ります。書き込むセルを自分で所有する関数値があるプログラムでは、部分適用が束縛した参照の引数への格納も隠れた環境へ入るものとして扱うので（上の `fx3` と同じ規則）、`let g = cross3 (ref p3) (ref p1); g (ref p2)` も拒否されます（`tests/fixtures/in_place_writes` のモジュール。パイプラインと名前付きの関数値は受理します）。
 
+A32 の 6 度目の merge（2026-11-14）では、文書に無い拒否をもう 1 つ見つけました（`fvpart`）。部分の借用を別の仮引数の先へ書き込む名前付き関数 `cross` を不変な局所の関数値に束縛し（`let chosen = cross`、`if` で選んだ `let chosen = if n < 0 then cross else cross`）、そのパイプライン `ref p1 |> chosen (ref p2)` か部分適用 `let g = chosen (ref p2); g (ref p1)` で呼ぶと、`p1` を先に宣言した安全な順序でも、A31 の先端（`2ed5f692`）は edition 2027 と 2026 で `E1013 assignment_extends_borrow`（`'p1' keeps a borrow of a value that is dropped before it`、`p1` の宣言）で、`main` は受理して `drop 8`・`drop 0`・`1` を出します（`target/wt/a32/target/scratch/a32/merge6/fv/alias_pipe`・`alias_partial`・`ifref_pipe`・`ifref_partial`）。診断の注記は `p1` が後に宣言した `p2` の借用を持つとしており、局所の関数値を通したパイプラインと部分適用では、どちらの引数の借用ももう一方の先へ入りうるものとして扱っているようです（原因の箇所は調べていません）。同じ局所の関数値の直接の呼び出し `chosen (ref p2) (ref p1)` と、名前付き関数そのもののパイプライン・部分適用は受理します。`if` の `else` の枝に注釈したラムダを書いた A32 の綴りも注釈の無い双子と同じ結果なので、A32 の問題ではありません。
+
 起票の依頼が挙げた `N_closed_cell_read`（`target/wt/a31/target/scratch/a31/N_closed_cell_read`）は、A31 の先端で両方の edition とも受理され、値は `main` と同じです（A31 の閉じた関数の取り消しの後も closed のまま）。制限ではありません。
 
 ### 検査の時間
@@ -106,7 +108,7 @@ done
 
 1. 記憶域の表を足し、今の規則の結果を変えずにそれで表す（`kept`・`kept_elsewhere`・`contents_elsewhere`・`block_shares` を表の問い合わせに置き換える）。A31 のテストと E2E、レビューのコーパス（下）の結果が変わらないこと。
 2. 格納先を場所の粒度で記録し、置き換え（`replaced_value`・`replaced_target`・`replaced_field`）とムーブを記憶域の解放として扱う。「未修正の穴」と、制限のうち `mix4`・`w05`・`r06`・`r07`・`r10`・`r11`・`f02` を直す。
-3. 要素の添字（`slice_self_safe_elem`）、2 つの仮引数の部分（`h01`）、参照の先のフィールドを通した部分（`crossw`）、指す場所が分からない呼び出しの結果と可変の参照の変数（`callres`・`mutref`）、5 つ以上の部分（`cross5`）、`Array.mapr`（`mapr`）、パイプラインの共有（`g08`）、隠れた環境（`fx3`）、ロックのコールバックの名前付き関数（`m_named_owned`）を、表が区別できる範囲で直す。
+3. 要素の添字（`slice_self_safe_elem`）、2 つの仮引数の部分（`h01`）、参照の先のフィールドを通した部分（`crossw`）、指す場所が分からない呼び出しの結果と可変の参照の変数（`callres`・`mutref`）、5 つ以上の部分（`cross5`）、`Array.mapr`（`mapr`）、局所の関数値のパイプラインと部分適用（`fvpart`）、パイプラインの共有（`g08`）、隠れた環境（`fx3`）、ロックのコールバックの名前付き関数（`m_named_owned`）を、表が区別できる範囲で直す。
 4. `expand_shares` の連なりの展開を、ブロックの持ち主の組ごとに 1 度にする（検査の時間）。
 
 ### 関門: 敵対的なレビューを続ける
