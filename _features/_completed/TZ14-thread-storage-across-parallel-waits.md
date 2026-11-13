@@ -344,7 +344,7 @@ orchestrator が、負荷の無い Apple M3 で、`main`（`72f06862`）と `7bc
   3. `_features/README.md` の TZ14 の行は変えていない。行の要約（待ちうるときだけ ` noinline`、ほかのプログラムの IR は変わらない）は、この修正でそのとおりになった。
   4. 費用は測り直していない。修正後、レビューの核の IR が `-O0`・`-O3` で `main` と同じなので、機械語も同じである。
 - 残したこと（前からのことで、TZ14 では直さない）: ランタイムの IR の断片の連結の改行の欠けは、`with_preemption_checks` の `definitions`（TZ10 の検査の位置）と `with_stack_probes`（TZ02。`define ` で始まる行だけを見出しとみるので、`}define` の後の `@tz.string.copy` に probe が付かない。`strjoin2` の IR で確かめた）にも効く。
-  直すにはランタイムの `.ll` か連結に改行を足すことになり、それを含むすべてのプログラムの IR が変わるので、TZ14 の範囲の外とした。[TZ15](../TZ15-runtime-ir-pieces-newline.md) に起票した（下の「2 回目の確認の指摘への対応」）。
+  直すにはランタイムの `.ll` か連結に改行を足すことになり、それを含むすべてのプログラムの IR が変わるので、TZ14 の範囲の外とした。[TZ15](TZ15-runtime-ir-pieces-newline.md) に起票した（下の「2 回目の確認の指摘への対応」）。
 
 #### 2 回目の確認の指摘への対応
 
@@ -356,7 +356,7 @@ orchestrator が、負荷の無い Apple M3 で、`main`（`72f06862`）と `7bc
      `git show 9758ef96:src/llvm_preempt.rs` の `runtime_definitions` は、`}` の後が空白か `;` で始まる行でも関数を閉じていた。なので、この 3 個で見つかる関数は修正の前後で同じで、1 つ増えるのは `rc`・`recursive_types` の `@tz.closure.clone` だけである。
    - 対応: 上の 1 の「IR の比較」の最後の段落をそのとおりに直し、`main` の `definitions` と比べれば 5 個とも 1 つ多いことを添えた。
 2. **前からの継ぎ目の欠陥（`with_stack_probes`・`with_preemption_checks`）が、記録されているだけで追われていなかった。**
-   - 対応: [TZ15](../TZ15-runtime-ir-pieces-newline.md)（todo、P3、S）に起票した。`ls _features _features/_completed | grep TZ15` で番号が空いていることを確かめた。
+   - 対応: [TZ15](TZ15-runtime-ir-pieces-newline.md)（todo、P3、S）に起票した。`ls _features _features/_completed | grep TZ15` で番号が空いていることを確かめた。
      `_features/README.md` の TZ の表と「追加チケット（2026-11-05）」の表に行を足し、その「進め方」に TZ14 の後に直すことを書いた。上の「残したこと」から TZ15 へつないだ。
    - TZ15 の「現状」に書いた再現（`target/scratch/tz15-repro` に生成）。`main` の `72f06862` と `2306260c` の dev のコンパイラで、`-O0`・`-O3` とも同じ結果だった。
      - spawn し `to_string 'x'` を表示するプログラムの IR は、1338 行目が `}define internal void @tz.string.copy(...) nounwind {` で、`"probe-stack"` が無い（`define ` で始まる 113 行はすべて持つ）。
@@ -365,7 +365,7 @@ orchestrator が、負荷の無い Apple M3 で、`main`（`72f06862`）と `7bc
      174 の project（既定の確保器と `--allocator small`、`-O0`）は 142 個が同じ、6 個が前後で同じ診断、26 個が違う。そのうち 23 個は行が分かれるだけ、`rc`・`recursive_types` は `@tz.closure.clone` に `"probe-stack"` が付く、`effects_sweep` は空の行が 1 つ増える。
 - 実行したコマンドと結果: `cargo fmt --all -- --check`（成功）、`cargo clippy --locked --all-targets -- -D warnings`（警告なし）、`cargo test --locked --lib preempt`（10 件成功）、
   `node scripts/check-guide-lite.mjs`（88 件の参照、失敗 0）、`node scripts/repo-kb.mjs ticket TZ15`（項目と節を読める）、`node tests/repo_kb.mjs`（84 件成功）。コードは変えていないので、T1 は回していない。
-- 変更したファイル: このチケット、`_features/TZ15-runtime-ir-pieces-newline.md`（新規）、`_features/README.md`。
+- 変更したファイル: このチケット、`_features/TZ15-runtime-ir-pieces-newline.md`（新規。TZ15 の完了後は `_features/_completed/` にある）、`_features/README.md`。
 
 ## 手順 4 と D1 の見直し（2026-11-06）
 
