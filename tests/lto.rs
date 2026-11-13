@@ -28,9 +28,15 @@ fn clang() -> OsString {
 
 /// A new directory for one test, which the test removes when it succeeds.
 fn scratch(name: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // `cargo test` runs the tests of this file as threads of one process, so two of them can ask for
+    // the same name at the same clock value (every test that calls `wasm_tools` probes in
+    // "wasm-probe"): every call takes its own number.
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
-        "tsuzuri-lto-{name}-{}-{}",
+        "tsuzuri-lto-{name}-{}-{}-{}",
         std::process::id(),
+        CALLS.fetch_add(1, Ordering::Relaxed),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
