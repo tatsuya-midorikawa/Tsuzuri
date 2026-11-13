@@ -31,7 +31,10 @@ fn same_bindings(left: &[(Local, TypedExpr)], right: &[(Local, TypedExpr)]) -> b
 }
 
 /// Whether two binding projections are the same place, with the same types and spans. Only the
-/// kinds of a place compare equal; any other expression is never the same as another.
+/// kinds of a place compare equal; any other expression is never the same as another. These are
+/// every kind that a pattern projects (`pattern_alternatives`): the matched local, a field of a
+/// record or a part of a tuple, an element of an array or a list (its index an integer literal),
+/// the tail of a list, the payload of a case and a dereference.
 fn same_projection(left: &TypedExpr, right: &TypedExpr) -> bool {
     if left.ty != right.ty || left.span != right.span {
         return false;
@@ -40,6 +43,14 @@ fn same_projection(left: &TypedExpr, right: &TypedExpr) -> bool {
         (E::Local(a), E::Local(b)) => a == b,
         (E::Field(a, i), E::Field(b, j)) | (E::ListTail(a, i), E::ListTail(b, j)) => {
             i == j && same_projection(a, b)
+        }
+        // An element of an array or a list pattern and the head of a cons pattern. Evaluating
+        // the index reads nothing. A computed index is never a pattern's, so it stays unequal.
+        (E::Index(a, i), E::Index(b, j)) => {
+            matches!((&i.kind, &j.kind), (E::Int(m), E::Int(n)) if m == n)
+                && i.ty == j.ty
+                && i.span == j.span
+                && same_projection(a, b)
         }
         (
             E::UnionPayload {
