@@ -5585,6 +5585,133 @@ fn a_call_that_stores_a_part_of_one_reference_argument_in_another_keeps_a_borrow
     }
 }
 
+/// A31, the sixth merge into A32 (`fvpart`): an immutable local bound to `cross` (or to a choice
+/// of named functions, a lambda, another such local) runs `cross` in a pipeline and through a
+/// partial application of it as in a direct call (`apply_higher_once` substitutes the local's
+/// expressions after the bound arguments, `known_functions` knows `let g = chosen (ref p2)`, and
+/// the partial application runs no code and drops what the local and the bound arguments drop).
+/// They used the conservative rule of a function value whose code does not show, which kept a
+/// borrow of `p2` in `p1` (main prints `drop 8`, `drop 0`, `1`). The swapped calls keep a borrow of
+/// `p2.s` in `p1`, which is dropped after `p2` (main reads the freed string).
+#[test]
+fn a_local_bound_to_a_named_function_keeps_the_parts_in_a_pipeline_or_partial_application() {
+    const THREE: &str =
+        "\\(a: ref PairOk) (b: ref PairOk) (c: ref PairOk) -> { cross a b; cross a c }";
+    for (binding, safe, swapped) in [
+        // the repros: an alias and a choice, in a pipeline and a partial application
+        (
+            "    let chosen = cross\n",
+            "    ref p1 |> chosen (ref p2)\n",
+            "    ref p2 |> chosen (ref p1)\n",
+        ),
+        (
+            "    let chosen = cross\n",
+            "    let g = chosen (ref p2)\n    g (ref p1)\n",
+            "    let g = chosen (ref p1)\n    g (ref p2)\n",
+        ),
+        (
+            "    let chosen = if n < 0 then cross else cross\n",
+            "    ref p1 |> chosen (ref p2)\n",
+            "    ref p2 |> chosen (ref p1)\n",
+        ),
+        (
+            "    let chosen = if n < 0 then cross else outer\n",
+            "    let g = chosen (ref p2)\n    g (ref p1)\n",
+            "    let g = chosen (ref p1)\n    g (ref p2)\n",
+        ),
+        // an alias of an alias, a lambda, a partial application completed by a pipeline
+        (
+            "    let a = cross\n    let chosen = a\n",
+            "    let g = chosen (ref p2)\n    g (ref p1)\n",
+            "    let g = chosen (ref p1)\n    g (ref p2)\n",
+        ),
+        (
+            "    let chosen = \\(a: ref PairOk) (b: ref PairOk) -> cross a b\n",
+            "    ref p1 |> chosen (ref p2)\n",
+            "    ref p2 |> chosen (ref p1)\n",
+        ),
+        (
+            "    let chosen = cross\n",
+            "    let g = chosen (ref p2)\n    ref p1 |> g\n",
+            "    let g = chosen (ref p1)\n    ref p2 |> g\n",
+        ),
+    ] {
+        let declared = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n";
+        accepts_in_both_editions(&[(
+            "Main.tz",
+            &cross_program(&format!("{declared}{binding}{safe}    n\n")),
+        )]);
+        rejects_at(
+            &cross_program(&format!("{declared}{binding}{swapped}    n\n")),
+            "E1013",
+            "assignment_extends_borrow",
+            (35, 5),
+        );
+    }
+    // The partial application alone runs no code: nothing keeps a borrow (main prints `drop 0`,
+    // `drop 0`, `1`).
+    accepts_in_both_editions(&[(
+        "Main.tz",
+        &cross_program(
+            "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let chosen = cross\n    let g = chosen (ref p2)\n    n\n",
+        ),
+    )]);
+    // A choice whose taken member stores the other way (n = 1 takes the lambda, which keeps a
+    // borrow of `p2.s` in `p1`).
+    rejects_at(
+        &cross_program(
+            "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let chosen = if n < 0 then cross else (\\(a: ref PairOk) (b: ref PairOk) -> cross b a)\n    ref p1 |> chosen (ref p2)\n    n\n",
+        ),
+        "E1013",
+        "assignment_extends_borrow",
+        (35, 5),
+    );
+    // Three values and partial applications of partial applications: `p3`, declared last, keeps
+    // borrows of `p1.s` and `p2.s` (main prints `drop 16`, `drop 0`, `drop 0`, `1`).
+    let declared = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let p3 = mkpo ()\n";
+    for (safe, swapped) in [
+        (
+            "    let g = chosen (ref p3) (ref p1)\n    g (ref p2)\n",
+            "    let g = chosen (ref p1) (ref p2)\n    g (ref p3)\n",
+        ),
+        (
+            "    let g = chosen (ref p3)\n    let h = g (ref p1)\n    h (ref p2)\n",
+            "    let g = chosen (ref p1)\n    let h = g (ref p2)\n    h (ref p3)\n",
+        ),
+        (
+            "    let g = chosen (ref p3)\n    let h = g (ref p1)\n    ref p2 |> h\n",
+            "    let g = chosen (ref p1)\n    let h = g (ref p2)\n    ref p3 |> h\n",
+        ),
+        (
+            "    ref p2 |> chosen (ref p3) (ref p1)\n",
+            "    ref p3 |> chosen (ref p1) (ref p2)\n",
+        ),
+    ] {
+        let binding = format!("    let chosen = {THREE}\n");
+        accepts_in_both_editions(&[(
+            "Main.tz",
+            &cross_program(&format!("{declared}{binding}{safe}    n\n")),
+        )]);
+        rejects_at(
+            &cross_program(&format!("{declared}{binding}{swapped}    n\n")),
+            "E1013",
+            "assignment_extends_borrow",
+            (35, 5),
+        );
+    }
+    // The conservative limit that drop.md states (A33 `fvparam`): a function-valued parameter that
+    // the callee applies partially, or in a pipeline, is there a function value whose code does
+    // not show, so the caller lets each argument's borrow go into the others' targets, and `p1`
+    // keeps a borrow of `p2` (main prints `drop 8`, `drop 0`, `1`). The helpers come after `run`.
+    const APPLY_PARTIAL: &str = "def applyp :: (ref PairOk -> ref PairOk -> unit) -> ref PairOk -> ref PairOk -> i64\nfn applyp f a b = { let g = f a; g b; 0 }\ndef applyq :: (ref PairOk -> ref PairOk -> unit) -> ref PairOk -> ref PairOk -> i64\nfn applyq f a b = { b |> f a; 0 }\n";
+    for call in ["applyp", "applyq"] {
+        let source = format!(
+            "{CROSS_PRELUDE}    let p1 = mkpo ()\n    let p2 = mkpo ()\n    {call} cross (ref p2) (ref p1) + n\n{APPLY_PARTIAL}do! IO.write_line (to_string (run 1))\n"
+        );
+        rejects_at(&source, "E1013", "assignment_extends_borrow", (35, 5));
+    }
+}
+
 /// A31, after the review of the fix after review 12: the programs of
 /// `a_borrow_through_the_result_of_a_call_is_one_of_the_whole_argument`. `child n` returns a
 /// reference to the first child of `n` (`Rc.get (ref n.kids[0])`), which holds `n`'s loan while it

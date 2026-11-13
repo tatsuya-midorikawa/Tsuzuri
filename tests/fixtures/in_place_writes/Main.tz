@@ -1402,3 +1402,25 @@ fn early_exits_drop_pending_temporaries =
     let small = recorded_or_overflow (ref out4) 3
     let big = recorded_or_overflow (ref out5) 4611686018427387904
     ((((((k * 100 + recorded (ref out1)) * 100 + recorded (ref out2)) * 100 + recorded (ref out3)) * 100 + small) * 100 + recorded (ref out4)) * 100 + recorded (ref out5)) * 10 + (big + 2)
+
+// The sixth merge into A32 (`fvpart`): a local bound to `cross_recorded` (here a choice of it) runs it
+// in a pipeline and through a partial application of it as a direct call does. `p2` and `p3`, declared
+// after `p1`, keep borrows of `p1`'s string and are dropped first.
+def chosen_pairs :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn chosen_pairs out1 out2 out3 k =
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 12345 }
+    let p2 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out2 }, s: to_string 1234567 }
+    let p3 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out3 }, s: to_string 123 }
+    let chosen = if k < 0 then cross_recorded else cross_recorded
+    ref p1 |> chosen (ref p2)
+    let g = chosen (ref p3)
+    g (ref p1)
+    k
+
+export def local_function_values_keep_the_part :: i64
+fn local_function_values_keep_the_part =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let out3 = Arc.new (Mutex.create [0])
+    let k = chosen_pairs (ref out1) (ref out2) (ref out3) 1
+    k * 1000 + recorded (ref out1) * 100 + recorded (ref out2) * 10 + recorded (ref out3)

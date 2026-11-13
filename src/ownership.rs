@@ -1478,6 +1478,84 @@ fn direct_callee(callee: &TypedExpr) -> Option<usize> {
     }
 }
 
+/// A31: the expressions of the known local `id` (`known_functions`), each that is another known
+/// local replaced by that local's expressions (`let b = a` after `let a = cross`). `None` when one
+/// is a local that is not known, or past `STORE_SUBSTITUTION_DEPTH` locals.
+fn known_heads<'a>(
+    known: &BTreeMap<usize, Vec<&'a TypedExpr>>,
+    id: usize,
+    depth: usize,
+) -> Option<Vec<&'a TypedExpr>> {
+    if depth > STORE_SUBSTITUTION_DEPTH {
+        return None;
+    }
+    let mut heads = Vec::new();
+    for head in known.get(&id)? {
+        match &head.kind {
+            E::Local(other) => heads.extend(known_heads(known, *other, depth + 1)?),
+            _ => heads.push(*head),
+        }
+    }
+    Some(heads)
+}
+
+/// A31: how many more arguments the function value `expression` (one of the expressions of a
+/// known local, `known_functions`) takes before its code runs: a named function's parameters, a
+/// lifted lambda's beyond its captures, a partial application's beyond its bound arguments (of a
+/// named function, or of a known local whose expressions all take the same number). `None` for
+/// any other expression.
+fn known_arity(
+    module: &CheckedModule,
+    known: &BTreeMap<usize, Vec<&TypedExpr>>,
+    expression: &TypedExpr,
+    depth: usize,
+) -> Option<usize> {
+    match &expression.kind {
+        E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => {
+            Some(module.functions[*id].parameters.len())
+        }
+        E::Closure(id, captures) => module.functions[*id]
+            .parameters
+            .len()
+            .checked_sub(captures.len()),
+        E::Call(function, bound) => {
+            let arity = match (&function.kind, direct_callee(function)) {
+                (_, Some(id)) => module.functions[id].parameters.len(),
+                (E::Local(id), None) if depth <= STORE_SUBSTITUTION_DEPTH => {
+                    let heads = known_heads(known, *id, 0)?;
+                    let arities: BTreeSet<Option<usize>> = heads
+                        .iter()
+                        .map(|head| known_arity(module, known, head, depth + 1))
+                        .collect();
+                    match arities.into_iter().collect::<Vec<_>>().as_slice() {
+                        [Some(arity)] => *arity,
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            };
+            arity.checked_sub(bound.len())
+        }
+        _ => None,
+    }
+}
+
+/// A31: whether every expression of the known local `id` (`known_heads`) takes more than `given`
+/// arguments (`known_arity`), so that a call of the local with `given` arguments is a partial
+/// application, which runs none of them.
+fn partial_heads(
+    module: &CheckedModule,
+    known: &BTreeMap<usize, Vec<&TypedExpr>>,
+    id: usize,
+    given: usize,
+) -> bool {
+    known_heads(known, id, 0).is_some_and(|heads| {
+        heads
+            .iter()
+            .all(|head| known_arity(module, known, head, 0).is_some_and(|arity| arity > given))
+    })
+}
+
 /// How many bodies `parameter_retention` may check for each function that it computes, and in
 /// all beyond that; past it every result keeps all its arguments' loans, as before A28.
 const RETENTION_CHECKS_PER_FUNCTION: usize = 8;
@@ -4626,10 +4704,12 @@ fn owner_facts_counted(module: &CheckedModule) -> (Vec<Own>, usize) {
 
 /// A31: the immutable locals of `body` that are bound to a function value whose code the body
 /// shows, with the expressions that the value may be (`Checker::known`): a lifted lambda, a named
-/// function, a partial application of a named function, another local, the argument of
-/// `Owned.function`, or an `if` between such. A call of the local runs one of them with the
-/// environment that the local holds, so `Checker::apply_higher` substitutes their facts where it
-/// would otherwise take the call for one of code that it does not see. The local is immutable and
+/// function, a partial application of a named function or of a local that is known already and
+/// whose every expression takes more arguments (`partial_heads`: `let g = chosen (ref p2)` after
+/// `let chosen = cross`), another local, the argument of `Owned.function`, or an `if` between
+/// such. A call of the local runs one of them with the environment that the local holds, so
+/// `Checker::apply_higher` substitutes their facts where it would otherwise take the call for one
+/// of code that it does not see. The local is immutable and
 /// its binding comes before every use, so the expressions name the code of every call. An
 /// immutable local bound to an array literal of such values, or to a record literal, gives
 /// `parts` the expressions that an element (`(local, None)`) or a field (`(local, Some(field))`)
@@ -4652,6 +4732,7 @@ fn known_functions<'a>(
         module: &CheckedModule,
         value: &'a TypedExpr,
         found: &mut Vec<&'a TypedExpr>,
+        known: &BTreeMap<usize, Vec<&'a TypedExpr>>,
     ) -> bool {
         match &value.kind {
             E::Closure(..)
@@ -4669,15 +4750,26 @@ fn known_functions<'a>(
                     }
                     return false;
                 }
+                // A partial application of a known local: every expression of the local takes
+                // more arguments, so the call runs none of them yet.
+                if let E::Local(id) = &callee.kind {
+                    if partial_heads(module, known, *id, arguments.len()) {
+                        found.push(value);
+                        return true;
+                    }
+                    return false;
+                }
                 arguments.len() == 1
                     && builtin_called(module, callee) == Some(crate::check::Builtin::OwnedFunction)
-                    && shown(module, &arguments[0], found)
+                    && shown(module, &arguments[0], found, known)
             }
             E::If {
                 then_branch,
                 else_branch,
                 ..
-            } => shown(module, then_branch, found) && shown(module, else_branch, found),
+            } => {
+                shown(module, then_branch, found, known) && shown(module, else_branch, found, known)
+            }
             _ => false,
         }
     }
@@ -4691,7 +4783,7 @@ fn known_functions<'a>(
                     }
                     bound.insert(local.id, value);
                     let mut found = Vec::new();
-                    if shown(module, value, &mut found) {
+                    if shown(module, value, &mut found, known) {
                         known.insert(local.id, found);
                         continue;
                     }
@@ -4702,7 +4794,7 @@ fn known_functions<'a>(
                             let mut found = Vec::new();
                             if elements
                                 .iter()
-                                .all(|element| shown(module, element, &mut found))
+                                .all(|element| shown(module, element, &mut found, known))
                             {
                                 parts.insert((local.id, None), found);
                             }
@@ -4710,7 +4802,7 @@ fn known_functions<'a>(
                         E::Record(fields) => {
                             for (field, value) in fields {
                                 let mut found = Vec::new();
-                                if shown(module, value, &mut found) {
+                                if shown(module, value, &mut found, known) {
                                     parts.insert((local.id, Some(*field)), found);
                                 }
                             }
@@ -10049,6 +10141,14 @@ impl<'a, 'run> Checker<'a, 'run> {
             },
             _ => None,
         });
+        // A call of a known local that gives each of its expressions fewer arguments than it
+        // takes is a partial application, which runs no code (`let g = chosen (ref p2)` after
+        // `let chosen = cross`), as one of a named function is (`call_stores`).
+        if let Some(E::Local(id)) = expression.map(|e| &e.kind)
+            && partial_heads(module, &self.known, *id, arguments.len())
+        {
+            return;
+        }
         let shown = match expression.map(|e| &e.kind) {
             Some(E::Local(id)) => self.known.get(id).cloned(),
             _ => part.cloned(),
@@ -10060,6 +10160,28 @@ impl<'a, 'run> Checker<'a, 'run> {
                     ..callee.clone()
                 };
                 self.apply_higher_once(&one, &[], arguments, span, depth + 1, named);
+            }
+            return;
+        }
+        // A partial application of an immutable local whose code the body shows (`ref p1 |>
+        // chosen (ref p2)` or `let g = chosen (ref p2)` after `let chosen = cross`): each of the
+        // local's expressions runs with the bound arguments before `arguments`, as a partial
+        // application of it does, when each takes exactly that many.
+        if let Some(E::Call(function, partial)) = expression.map(|e| &e.kind)
+            && let E::Local(id) = &function.kind
+            && let Some(heads) = known_heads(&self.known, *id, 0)
+            && heads.iter().all(|head| {
+                known_arity(module, &self.known, head, 0) == Some(partial.len() + arguments.len())
+            })
+        {
+            let mut all = bound(self, partial, &callee.value, true);
+            all.extend(arguments.iter().cloned());
+            for head in heads {
+                let one = Arg {
+                    expression: Some(head),
+                    ..callee.clone()
+                };
+                self.apply_higher_once(&one, &[], &all, span, depth + 1, named);
             }
             return;
         }
@@ -11269,10 +11391,10 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// A31: whether dropping the value of `origin`, of type `ty`, may run code (`drop_runs_code`).
     /// A function value's type does not show its environment, but the expression that makes it
     /// may: a lambda drops its captures, a partial application of a named function the arguments
-    /// that it binds, a named function nothing, and an immutable local bound to such values
-    /// (`Checker::known`) what they drop. An array, list, tuple, record or union literal drops
-    /// what its elements drop, and a record or union value runs its type's own `Drop.drop`. Any
-    /// other value counts as its type says.
+    /// that it binds (one of a known local also what the local drops), a named function nothing,
+    /// and an immutable local bound to such values (`Checker::known`) what they drop. An array,
+    /// list, tuple, record or union literal drops what its elements drop, and a record or union
+    /// value runs its type's own `Drop.drop`. Any other value counts as its type says.
     fn value_runs_drop_code(
         &mut self,
         origin: Option<&TypedExpr>,
@@ -11298,6 +11420,17 @@ impl<'a, 'run> Checker<'a, 'run> {
                 bound
                     .iter()
                     .any(|value| self.value_runs_drop_code(Some(value), &value.ty, depth + 1))
+            }
+            // A partial application of a known local (`chosen (ref p2)` after `let chosen =
+            // cross`) drops a copy of the local's function value and the arguments that it binds.
+            E::Call(callee, bound)
+                if matches!(&callee.kind, E::Local(id)
+                    if partial_heads(module, &self.known, *id, bound.len())) =>
+            {
+                self.value_runs_drop_code(Some(callee), &callee.ty, depth + 1)
+                    || bound
+                        .iter()
+                        .any(|value| self.value_runs_drop_code(Some(value), &value.ty, depth + 1))
             }
             // A literal drops its elements, and a record or union value its own `Drop.drop` when
             // its type has one: `Ctx { buf: ref mut arr, cb: \() -> String.length nr }` drops a

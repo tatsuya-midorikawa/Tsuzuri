@@ -2078,6 +2078,9 @@ const suites = {
       // With 3 the recorder reads "123" (3 + 9) and the call gives 9; with 2^62 the overflow drops
       // them before the call (75) and gives -1, encoded as -1 + 2.
       ["early_exits_drop_pending_temporaries", [], ((((((1n * 100n + 6n) * 100n + 72n) * 100n + 73n) * 100n + 9n) * 100n + 12n) * 100n + 75n) * 10n + 1n],
+      // The sixth merge into A32. p2's and p3's recorders read p1's "12345" (5 + 1), p1's keeps 0;
+      // chosen_pairs returns 1.
+      ["local_function_values_keep_the_part", [], 1n * 1000n + 0n * 100n + 6n * 10n + 6n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.
