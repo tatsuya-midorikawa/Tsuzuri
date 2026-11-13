@@ -588,6 +588,10 @@ impl<'a> Checker<'a, '_> {
                     let value = self.eval(projection, Use::Consume, during);
                     self.copies = copies;
                     let value = value?;
+                    // A31: a variable bound to a reference that points at its loans' places (the
+                    // annotated parameter of a lambda, `\(q: ref mut Pair) -> ...`, is one bound to
+                    // the whole parameter).
+                    self.note_pointing(local, projection, &value);
                     self.state
                         .locals
                         .insert(local.id, (self.declarations[&local.id], value));

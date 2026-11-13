@@ -1323,3 +1323,37 @@ fn crossed_references_keep_the_part =
     let out4 = Arc.new (Mutex.create [0])
     let k = crossed_pairs (ref out1) (ref out2) (ref out3) (ref out4)
     k * 10000 + recorded (ref out1) * 1000 + recorded (ref out2) * 100 + recorded (ref out3) * 10 + recorded (ref out4)
+
+// After the review of that fix: a pipeline whose right side binds two of the arguments of
+// `cross3_recorded` keeps borrows of their strings only, and `each_recorded`, which passes an element
+// of its array to a function value, a borrow of that element's string only. `values` and `p2` are
+// declared before `p3`, and `values` before `p2`, so each value that keeps a borrow is dropped before
+// the borrowed string. (A function value of this module owns the cell that it writes, so a store
+// into an argument that a partial application bound goes into hidden environments as well, which
+// drop.md states as a conservative limit: the partial applications are in tests/rc.rs.)
+def cross3_recorded :: ref RecordedPair -> ref RecordedPair -> ref RecordedPair -> unit
+fn cross3_recorded a b c =
+    let t = ref b.s
+    let u = ref c.s
+    Mutex.with_lock (ref a.c.cell) (\x -> Array.write 0 (\() -> String.length t + String.length u) x)
+
+def each_recorded :: (ref RecordedPair -> ref RecordedPair -> unit) -> ref RecordedPair -> ref [RecordedPair] -> i64
+fn each_recorded f target values = { f target (ref values[1]); 1 }
+
+def bound_parts :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64
+fn bound_parts out1 out2 out3 out4 =
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 12345 }
+    let values = [RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out4 }, s: to_string 1 }, RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out4 }, s: to_string 123456789 }]
+    let p2 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out2 }, s: to_string 1234567 }
+    let p3 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out3 }, s: to_string 123 }
+    ref p2 |> cross3_recorded (ref p3) (ref p1)
+    each_recorded cross_recorded (ref p2) (ref values)
+
+export def bound_parts_keep_their_strings :: i64
+fn bound_parts_keep_their_strings =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let out3 = Arc.new (Mutex.create [0])
+    let out4 = Arc.new (Mutex.create [0])
+    let k = bound_parts (ref out1) (ref out2) (ref out3) (ref out4)
+    (((k * 100 + recorded (ref out1)) * 100 + recorded (ref out2)) * 100 + recorded (ref out3)) * 100 + recorded (ref out4)
