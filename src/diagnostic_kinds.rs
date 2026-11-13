@@ -52,6 +52,7 @@ diagnostic_kinds! {
         // E0002
         (AliasNameOnSameLine, "alias_name_on_same_line", "E0002"),
         (AngleBracketSpacing, "angle_bracket_spacing", "E0002"),
+        (AnonymousUnionDoubleBar, "anonymous_union_double_bar", "E0002"),
         (BuilderAliasIsContextualKeyword, "builder_alias_is_contextual_keyword", "E0002"),
         (BuilderAliasNameCase, "builder_alias_name_case", "E0002"),
         (CheckedLetRec, "checked_let_rec", "E0002"),
@@ -158,6 +159,7 @@ diagnostic_kinds! {
         (StrayAndMember, "stray_and_member", "E0002"),
         (SyntaxNestingTooDeep, "syntax_nesting_too_deep", "E0002"),
         (TooManyActivePatternCases, "too_many_active_pattern_cases", "E0002"),
+        (TooManyAnonymousUnionMembers, "too_many_anonymous_union_members", "E0002"),
         (TooManyDynClasses, "too_many_dyn_classes", "E0002"),
         (TooManyExternLinkNames, "too_many_extern_link_names", "E0002"),
         (TooManyFunctionParameters, "too_many_function_parameters", "E0002"),
@@ -200,6 +202,7 @@ diagnostic_kinds! {
         (UnknownValue, "unknown_value", "E1002"),
         // E1003
         (ActiveRecognizerResult, "active_recognizer_result", "E1003"),
+        (AnonymousUnionNotMember, "anonymous_union_not_member", "E1003"),
         (FixedArrayLiteralLength, "fixed_array_literal_length", "E1003"),
         (FormatSpecTypeMismatch, "format_spec_type_mismatch", "E1003"),
         (FormatSpecTypeUnknown, "format_spec_type_unknown", "E1003"),
@@ -334,6 +337,7 @@ diagnostic_kinds! {
         (UpdateDropTypeValue, "update_drop_type_value", "E1012"),
         (UseAfterMove, "use_after_move", "E1012"),
         // E1013
+        (AnonymousUnionBorrowedMember, "anonymous_union_borrowed_member", "E1013"),
         (AssignmentExtendsBorrow, "assignment_extends_borrow", "E1013"),
         (BorrowAcrossAsyncBoundary, "borrow_across_async_boundary", "E1013"),
         (BorrowFieldWithoutRegion, "borrow_field_without_region", "E1013"),
@@ -451,6 +455,7 @@ diagnostic_kinds! {
         (UnknownTypeClass, "unknown_type_class", "E1016"),
         // E1017
         (AndGroupTooLarge, "and_group_too_large", "E1017"),
+        (AnonymousUnionMemberLimit, "anonymous_union_member_limit", "E1017"),
         (CapabilityAnalysisLimit, "capability_analysis_limit", "E1017"),
         (ClassConstraintLimit, "class_constraint_limit", "E1017"),
         (ContractLineLimit, "contract_line_limit", "E1017"),
@@ -682,6 +687,17 @@ diagnostic_kinds! {
         (RemovedTaskExpression, "removed_task_expression", "E1040"),
         (RemovedTaskType, "removed_task_type", "E1040"),
         (RenamedToDataChannel, "renamed_to_data_channel", "E1040"),
+        // E1041
+        (AnonymousUnionAmbiguousLiteral, "anonymous_union_ambiguous_literal", "E1041"),
+        (AnonymousUnionAmbiguousMember, "anonymous_union_ambiguous_member", "E1041"),
+        (AnonymousUnionDuplicateMember, "anonymous_union_duplicate_member", "E1041"),
+        (AnonymousUnionIndistinctMembers, "anonymous_union_indistinct_members", "E1041"),
+        (AnonymousUnionInstance, "anonymous_union_instance", "E1041"),
+        (AnonymousUnionTypeVariable, "anonymous_union_type_variable", "E1041"),
+        (TypeTestNotAnonymousUnion, "type_test_not_anonymous_union", "E1041"),
+        (TypeTestNotMember, "type_test_not_member", "E1041"),
+        (TypeTestUnion, "type_test_union", "E1041"),
+        (TypeTestUnknownScrutinee, "type_test_unknown_scrutinee", "E1041"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),
         (AuditUsage, "audit_usage", "E2000"),

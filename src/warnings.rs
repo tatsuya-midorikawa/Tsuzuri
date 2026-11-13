@@ -499,6 +499,11 @@ impl TypeReferences<'_> {
                     self.ty(element);
                 }
             }
+            TypeExprKind::AnonymousUnion(elements) => {
+                for element in elements {
+                    self.ty(element);
+                }
+            }
             TypeExprKind::FixedArray(element, length) => {
                 self.ty(element);
                 // A named length may be an integer constant, which this type then uses.
@@ -744,6 +749,7 @@ impl TypeReferences<'_> {
             }
             As(pattern, _) => self.pattern(pattern),
             Argument(value) | Literal(value) => self.expression(value),
+            TypeTest(ty, _) => self.ty(ty),
             Wildcard | Binding(_) => {}
         }
     }

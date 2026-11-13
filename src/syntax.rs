@@ -305,6 +305,10 @@ pub struct Program {
     /// Every `dyn` type written in this module, in source order (A14). The checker reports the
     /// classes that cannot be dispatched here and generates the dispatching instances.
     pub dyn_types: Vec<TypeExpr>,
+    /// Whether this module writes an anonymous union type `(A | B)` or a type test pattern `:? T`
+    /// anywhere, bodies included (A24). The checker synthesizes the generic declarations behind
+    /// anonymous unions only when some module of the program sets it.
+    pub uses_anonymous_unions: bool,
     /// The `@cpu [...]` attributes of this module's functions (F08 Phase 3).
     pub cpu_attributes: Vec<CpuAttribute>,
     /// The effect attributes (`@no_alloc` ...) of this module's functions, in source order (A20).
@@ -788,6 +792,9 @@ pub enum TypeExprKind {
     /// `dyn Shapes.Shape` or `dyn (Shape, Send)`: an owned value of some type with instances of
     /// the classes, dispatched at run time (A14). Boxed like `Apply` so `TypeExpr` does not grow.
     Dyn(Box<DynTypeExpr>),
+    /// `(A | B | ...)`: an anonymous union of two or more member types, in the order written
+    /// (A24). The checker flattens, checks and orders the members. Boxed so `TypeExpr` does not grow.
+    AnonymousUnion(Box<[TypeExpr]>),
 }
 
 /// The classes of a `dyn` type as written, and whether a region follows it (A14).
@@ -1356,6 +1363,9 @@ pub enum PatternKind {
     And(Box<Pattern>, Box<Pattern>),
     As(Box<Pattern>, Ident),
     Annotated(Box<Pattern>, TypeExpr),
+    /// `:? T` or `:? T as x`: whether an anonymous union holds its member `T`, binding the member's
+    /// value to `x` (A24). The binder `_` stays an `Ident`; the checker treats it as a wildcard.
+    TypeTest(Box<TypeExpr>, Option<Ident>),
 }
 
 impl Pattern {
@@ -1378,7 +1388,7 @@ impl Pattern {
                 right.visit_expressions_mut(visitor);
             }
             As(pattern, _) | Annotated(pattern, _) => pattern.visit_expressions_mut(visitor),
-            Wildcard | Binding(_) => {}
+            Wildcard | Binding(_) | TypeTest(..) => {}
         }
     }
 
@@ -1401,7 +1411,7 @@ impl Pattern {
                 right.visit_expressions(visitor);
             }
             As(pattern, _) | Annotated(pattern, _) => pattern.visit_expressions(visitor),
-            Wildcard | Binding(_) => {}
+            Wildcard | Binding(_) | TypeTest(..) => {}
         }
     }
 }

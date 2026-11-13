@@ -17,6 +17,7 @@ fn children(expression: &TypeExpr) -> Vec<&TypeExpr> {
         | TypeExprKind::List(inner) => vec![inner],
         TypeExprKind::FixedArray(element, _) => vec![element],
         TypeExprKind::Tuple(elements) => elements.iter().collect(),
+        TypeExprKind::AnonymousUnion(elements) => elements.iter().collect(),
         TypeExprKind::Function(parameters, result) => parameters
             .iter()
             .chain(std::iter::once(result.as_ref()))

@@ -120,6 +120,15 @@ pub(crate) fn type_text(ty: &TypeExpr) -> String {
                 .collect::<Vec<_>>()
                 .join(" * ")
         ),
+        // A24: in the order written; a function member is already parenthesized.
+        TypeExprKind::AnonymousUnion(members) => format!(
+            "({})",
+            members
+                .iter()
+                .map(type_text)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ),
         TypeExprKind::Function(parameters, result) => {
             let arguments = if parameters.is_empty() {
                 "fn()".into()

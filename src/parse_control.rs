@@ -1339,6 +1339,11 @@ impl Parser<'_> {
     }
 
     fn guard_predicate(&self) -> bool {
+        // A type test `:? T` of the arm itself makes the arm a pattern, at any depth: its type may
+        // hold a `<` that the scan below takes for a comparison (A24).
+        if self.type_test_ahead(false) {
+            return false;
+        }
         if let TokenKind::Ident(name) = &self.current().kind {
             if name.as_bytes()[0].is_ascii_lowercase()
                 && self.tokens.get(self.position + 1).is_some_and(|token| {
@@ -1380,6 +1385,123 @@ impl Parser<'_> {
             }
         }
         false
+    }
+
+    /// Whether the tokens at `index` are `:` and `?` written together, which start a type test
+    /// `:? T` (A24). Apart, `: ?` is no type test.
+    fn type_test_at(&self, index: usize) -> bool {
+        match (self.tokens.get(index), self.tokens.get(index + 1)) {
+            (Some(colon), Some(question)) => {
+                colon.kind == TokenKind::Colon
+                    && question.kind == TokenKind::Question
+                    && colon.span.end == question.span.start
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a type test starts before the arm's `->` or `when` (`group` false), or before the
+    /// `)` that closes the current group (`group` true), at any depth of parentheses (A24): such an
+    /// arm or group is a pattern, whatever else its type holds (a `<` reads as a comparison to the
+    /// scans of the callers). The arm's `->` and `when` are outside every parenthesis. The type of
+    /// an annotation is read as the parser reads it (`annotation_end`), so no token of that type
+    /// (`fn` of `fn() -> T`, a `<`, an arrow inside `<...>`, `[...]`, parentheses or after `fn()`)
+    /// ends the scan or hides a type test after it. The tokens of an expression of its own are not
+    /// the arm's or the group's: a `match`, a handler's `with`, a lambda, a `for` or a local
+    /// function `fn name` has patterns and arrows of its own, so the scan skips to the `)` that
+    /// closes the parentheses around it, and outside any parentheses it answers that no type test
+    /// is ahead; `fn(` starts a function type, as in `type_primary`. A hole after the colon of a
+    /// field, `{ x:? }` or `{ x:?h }`, is no type test either: a type test starts a pattern, so a
+    /// name never stands before its `:`, and a type follows its `?`.
+    fn type_test_ahead(&self, group: bool) -> bool {
+        if self.position >= self.type_tests_end {
+            return false;
+        }
+        let mut depth = 0usize;
+        // The depth of the parentheses around the expression that is skipped.
+        let mut nested: Option<usize> = None;
+        let mut index = self.position;
+        while let Some(token) = self.tokens.get(index) {
+            match token.kind {
+                TokenKind::End => return false,
+                TokenKind::LeftParen => depth += 1,
+                TokenKind::RightParen if group && depth == 0 => return false,
+                TokenKind::RightParen => {
+                    depth = depth.saturating_sub(1);
+                    if nested.is_some_and(|outer| depth < outer) {
+                        nested = None;
+                    }
+                }
+                _ if nested.is_some() => {}
+                TokenKind::Arrow | TokenKind::When if !group && depth == 0 => return false,
+                TokenKind::Fn
+                    if self
+                        .tokens
+                        .get(index + 1)
+                        .is_some_and(|next| next.kind == TokenKind::LeftParen) => {}
+                TokenKind::Match
+                | TokenKind::With
+                | TokenKind::Backslash
+                | TokenKind::For
+                | TokenKind::Fn => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    nested = Some(depth);
+                }
+                TokenKind::Colon if self.type_test_at(index) => {
+                    let hole = (index > self.position
+                        && matches!(self.tokens[index - 1].kind, TokenKind::Ident(_)))
+                        || self.tokens.get(index + 2).is_some_and(|after| {
+                            matches!(
+                                after.kind,
+                                TokenKind::RightBrace
+                                    | TokenKind::RightParen
+                                    | TokenKind::RightBracket
+                                    | TokenKind::Comma
+                                    | TokenKind::Semicolon
+                                    | TokenKind::End
+                            )
+                        });
+                    if !hole {
+                        return true;
+                    }
+                }
+                TokenKind::Colon => {
+                    // Inside a group the annotation is a `type_expr` (`pattern_type_arrow`).
+                    let arrow = group || depth > 0 || self.pattern_type_arrow;
+                    if let Some(end) = self.annotation_end(index, arrow) {
+                        index = end;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        false
+    }
+
+    /// The index of the token after the type that follows the `:` at `colon`, read as the type of
+    /// a pattern's annotation (`pattern_suffix`): a `type_expr` when `arrow`, a `type_product`
+    /// otherwise. `None` when no type follows: the colon of a field (`{ x: p }`, `R { x: e }`)
+    /// before a value that is no type. A type holds no `:`, so reading a value that looks like a
+    /// type (`{ x: n }`) never passes over a type test, and its parentheses are balanced. The read
+    /// is a probe on a copy of the parser (`Parser::probe`, as `own_type_ahead` makes), which
+    /// costs the same wherever it is made; `type_test_ahead` makes it only before the last type
+    /// test of the source.
+    #[inline(never)]
+    fn annotation_end(&self, colon: usize, arrow: bool) -> Option<usize> {
+        let mut probe = self.probe();
+        probe.position = colon + 1;
+        probe.type_remainder = None;
+        probe.previous_end = self.tokens[colon].span.end;
+        let read = if arrow {
+            probe.type_expr()
+        } else {
+            probe.type_product()
+        };
+        read.ok().map(|_| probe.position)
     }
 
     fn make_pattern(
@@ -1488,10 +1610,34 @@ impl Parser<'_> {
             | TokenKind::String(_)
             | TokenKind::Char(_)
             | TokenKind::Utf8Char(_) => (PatternKind::Literal(Box::new(self.literal()?)), 1),
+            TokenKind::Colon if self.type_test_at(self.position) => {
+                return self.type_test_pattern();
+            }
             _ => return Err(self.error_of(DiagnosticKind::ExpectedPattern, "expected a pattern")),
         };
         let span = start.through(self.tokens[self.position - 1].span);
         self.make_pattern(kind, span, depth)
+    }
+
+    /// `:? T` or `:? T as x` (A24). The type is a `type_product`, so a function type or an anonymous
+    /// union needs parentheses; the span starts at the `:`, where the formatter keys its spacing.
+    #[inline(never)]
+    fn type_test_pattern(&mut self) -> Result<Pattern, Diagnostic> {
+        let start = self.take().span;
+        self.take();
+        let ty = self.type_product()?;
+        let binder = if self.eat(&TokenKind::As) {
+            Some(self.ident()?)
+        } else {
+            None
+        };
+        self.uses_anonymous_unions = true;
+        let end = binder.as_ref().map_or(ty.span, |binder| binder.span);
+        self.make_pattern(
+            PatternKind::TypeTest(Box::new(ty), binder),
+            start.through(end),
+            1,
+        )
     }
 
     fn named_pattern(&mut self) -> Result<Pattern, Diagnostic> {
@@ -1599,6 +1745,10 @@ impl Parser<'_> {
     }
 
     fn pattern_argument_expression(&self) -> bool {
+        // A type test of the group itself makes it a pattern: its type may hold a `<` (A24).
+        if self.type_test_ahead(true) {
+            return false;
+        }
         if matches!(
             self.current().kind,
             TokenKind::Ampersand | TokenKind::If | TokenKind::Backslash | TokenKind::New

@@ -705,3 +705,112 @@ fn holes_keep_their_spacing() {
         );
     }
 }
+
+/// A24: formats `source` in `edition` twice, checks the fixed point and the parse tree, and returns
+/// the formatted text.
+fn formatted_in(source: &str, edition: Edition) -> String {
+    let first = tsuzuri::formatter::format_source_with_edition(
+        "Main.tz",
+        source,
+        SourceKind::Code,
+        edition,
+    )
+    .unwrap_or_else(|error| panic!("{source}: {}", error.message));
+    let second = tsuzuri::formatter::format_source_with_edition(
+        "Main.tz",
+        &first.formatted,
+        SourceKind::Code,
+        edition,
+    )
+    .unwrap();
+    assert_eq!(first.formatted, second.formatted, "{source}");
+    assert_eq!(
+        ast_fingerprint(parser::parse_with_source(source, 0, edition).unwrap()),
+        ast_fingerprint(parser::parse_with_source(&first.formatted, 0, edition).unwrap()),
+        "{source}"
+    );
+    first.formatted
+}
+
+#[test]
+fn formats_anonymous_unions() {
+    for edition in [Edition::E2026, Edition::E2027] {
+        let formatted = formatted_in(
+            "def f::own (i64|string)->Maybe<(i64|f64)> =\\v->None\nlet xs:[(i64|  string)]=[1,\"a\"]\nxs.length\n",
+            edition,
+        );
+        assert_eq!(
+            formatted,
+            "def f :: own (i64 | string) -> Maybe<(i64 | f64)> = \\v -> None\nlet xs: [(i64 | string)] = [1, \"a\"]\nxs.length\n",
+            "{edition:?}"
+        );
+        // The multi-line form keeps its lines; this is its fixed point.
+        let multi = "type Value =\n    (i64\n    | f64\n    | string)\n";
+        assert_eq!(formatted_in(multi, edition), multi, "{edition:?}");
+        assert_eq!(
+            formatted_in(
+                "type Value =\n    ( i64\n    | f64\n    | string )\n",
+                edition
+            ),
+            multi,
+            "{edition:?}"
+        );
+        // Function and tuple members, nested unions.
+        assert_eq!(
+            formatted_in("type V=((i64->i64)|i64*i64|(bool|char))\n", edition),
+            "type V = ((i64 -> i64) | i64 * i64 | (bool | char))\n"
+        );
+    }
+}
+
+#[test]
+fn formats_type_tests() {
+    for edition in [Edition::E2026, Edition::E2027] {
+        let source = "def f::own (i64|string|(i64*i64))->i64=\\v->\n    match v with\n    |:?i64 as n->n\n    |   :?  string as _->0\n    |(:? (i64*i64) as pair)->1\n";
+        assert_eq!(
+            formatted_in(source, edition),
+            "def f :: own (i64 | string | (i64 * i64)) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string as _ -> 0\n    | (:? (i64 * i64) as pair) -> 1\n",
+            "{edition:?}"
+        );
+        // Function guards, tuples, cases, lambdas and `for`.
+        let source = "def g::own (i64|Maybe<i64>)->i64=\\v->\n    |(:?Maybe<i64> as m)->0\n    |:?i64 as n->n\nlet h=\\(:?i64 as n)->n\nlet k=\\:?i64 as n->n\nlet xs:[(i64|string)]=[1]\nfor (:?i64 as n) in xs do ()\nmatch (Some 1,2) with\n|(Some (:?i64 as n),_)->0\n|_->1\n";
+        let formatted = formatted_in(source, edition);
+        for expected in [
+            "    | (:? Maybe<i64> as m) -> 0\n",
+            "    | :? i64 as n -> n\n",
+            "let h = \\(:? i64 as n) -> n\n",
+            "let k = \\:? i64 as n -> n\n",
+            "for (:? i64 as n) in xs do ()\n",
+            "| (Some (:? i64 as n), _) -> 0\n",
+        ] {
+            assert!(formatted.contains(expected), "{expected}\n{formatted}");
+        }
+        // A hole after a field's colon is no type test: the arm stays a predicate and the colon
+        // is spaced as a field's (review round 2).
+        assert_eq!(
+            formatted_in(
+                "record R{x:i64}\ndef get::R->i64=\\r->r.x\ndef f::i64->i64=\\n->\n    |get (R{x:?h})>n->1\n    |get (R{x:?h+1})>n->2\n    |otherwise->0\n",
+                edition
+            ),
+            "record R { x: i64 }\ndef get :: R -> i64 = \\r -> r.x\ndef f :: i64 -> i64 = \\n ->\n    | get (R { x: ?h }) > n -> 1\n    | get (R { x: ?h + 1 }) > n -> 2\n    | otherwise -> 0\n"
+        );
+        // A `?` elsewhere keeps the space written after it (typed holes, G25).
+        assert_eq!(
+            formatted_in("let a:i64=?x\nlet b:i64=? y\na\n", edition),
+            "let a: i64 = ?x\nlet b: i64 = ? y\na\n"
+        );
+    }
+}
+
+#[test]
+fn format_is_idempotent_for_anonymous_unions() {
+    for edition in [Edition::E2026, Edition::E2027] {
+        for source in [
+            "def describe :: own (i64 | string | bool) -> string = \\value ->\n    match value with\n    | :? i64 as n -> $\"int {n}\"\n    | :? string as s -> s\n    | :? bool as b -> if b then \"yes\" else \"no\"\n\nlet first: (string | bool | i64) = 42\ndescribe first\n",
+            "record Cell { value: (i64 | string), next: Maybe<(bool | [i64])> }\nunion Shape = Dot | Text of (string | char)\n",
+            "def f :: own (i64 | string) -> i64 =\n    \\v ->\n        match v with\n        | (:? i64 as n) as whole -> n\n        | :? string -> 0\n",
+        ] {
+            assert_eq!(formatted_in(source, edition), source, "{edition:?}");
+        }
+    }
+}

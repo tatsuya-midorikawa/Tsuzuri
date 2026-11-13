@@ -551,8 +551,11 @@ def niche_case(value, niche):
 
 
 def parts(payload):
-    """The values of a payload: the elements of a tuple, or the payload itself."""
-    if (strip(payload.GetType()).GetName() or "").startswith("("):
+    """The values of a payload: the elements of a tuple, or the payload itself. An anonymous union
+    `(i64 | string)` is named with a parenthesis like a tuple `(i64 * string)`, but it is one value
+    that shows its own case (A24)."""
+    ty = payload.GetType()
+    if (strip(ty).GetName() or "").startswith("(") and not is_union(ty, None):
         return [payload.GetChildAtIndex(index) for index in range(payload.GetNumChildren())]
     return [payload]
 

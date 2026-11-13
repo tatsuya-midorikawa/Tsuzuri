@@ -9,6 +9,8 @@ use crate::parallel::{Parallelism, ordered_for_each_owned};
 pub use crate::syntax::Provenance;
 use crate::syntax::*;
 
+#[path = "anonymous_union.rs"]
+mod anonymous_union;
 #[path = "closures.rs"]
 mod closures;
 use closures::LambdaKind;
@@ -299,7 +301,12 @@ impl DynType {
     }
 
     pub fn display(&self) -> String {
-        let mut names: Vec<String> = self.classes.iter().map(|name| type_display(name)).collect();
+        self.display_classes(type_display)
+    }
+
+    /// `display` with each class written by `class` (`DeclarationNames::class_display`).
+    fn display_classes(&self, class: impl Fn(&str) -> String) -> String {
+        let mut names: Vec<String> = self.classes.iter().map(|name| class(name)).collect();
         if self.copy {
             names.push("Copy".into());
         }
@@ -443,6 +450,12 @@ impl Type {
     }
 
     pub fn display(&self, types: &TypeContext<'_>) -> String {
+        self.display_with(types)
+    }
+
+    /// `display` with the declaration names of `names`, which `Names` provides before the
+    /// declarations are checked (A24).
+    pub(crate) fn display_with(&self, names: &dyn DeclarationNames) -> String {
         match self {
             Self::Error => "an erroneous type".into(),
             // A length parameter `#N` (A16) reads as its declared name.
@@ -451,13 +464,13 @@ impl Type {
                 None => format!("'{name}"),
             },
             Self::Infer(_) => "an undetermined type".into(),
-            Self::Partial(partial) => partial.display(types),
+            Self::Partial(partial) => partial.display_with(names),
             Self::Application(head, arguments) => format!(
                 "{}<{}>",
-                head.display(types),
+                head.display_with(names),
                 arguments
                     .iter()
-                    .map(|ty| ty.display(types))
+                    .map(|ty| ty.display_with(names))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -472,7 +485,7 @@ impl Type {
             Self::String => "string".into(),
             Self::Utf8String => "utf8string".into(),
             Self::Reference(ty, mutable) => {
-                let inner = ty.display(types);
+                let inner = ty.display_with(names);
                 let inner = if matches!(**ty, Self::Function(..)) {
                     format!("({inner})")
                 } else {
@@ -480,17 +493,21 @@ impl Type {
                 };
                 format!("ref {}{inner}", if *mutable { "mut " } else { "" })
             }
+            // A24: an anonymous union reads as its members, never as its synthesized declaration.
+            Self::Union(id, args) if anonymous_union::is_anonymous_name(names.union_name(*id)) => {
+                anonymous_union::display(args, names)
+            }
             Self::Record(id, args) | Self::Union(id, args) => {
-                let mut text = type_display(match self {
-                    Self::Record(..) => &types.records[*id].name,
-                    _ => &types.unions[*id].name,
-                });
+                let mut text = match self {
+                    Self::Record(..) => names.record_display(*id),
+                    _ => names.union_display(*id),
+                };
                 if !args.is_empty() {
                     text.push('<');
                     text.push_str(
                         &args
                             .iter()
-                            .map(|arg| arg.display(types))
+                            .map(|arg| arg.display_with(names))
                             .collect::<Vec<_>>()
                             .join(", "),
                     );
@@ -498,22 +515,26 @@ impl Type {
                 }
                 text
             }
-            Self::Vec(element) => format!("Vec<{}>", element.display(types)),
+            Self::Vec(element) => format!("Vec<{}>", element.display_with(names)),
             Self::Array(element) => {
-                format!("[{}]", element.display(types))
+                format!("[{}]", element.display_with(names))
             }
-            Self::ArrayView(element) => format!("[{}..]", element.display(types)),
+            Self::ArrayView(element) => format!("[{}..]", element.display_with(names)),
             Self::FixedArray(element, length) => {
-                format!("[{}; {}]", element.display(types), length.display(types))
+                format!(
+                    "[{}; {}]",
+                    element.display_with(names),
+                    length.display_with(names)
+                )
             }
             Self::Length(length) => length.to_string(),
-            Self::List(element) => format!("[|{}|]", element.display(types)),
+            Self::List(element) => format!("[|{}|]", element.display_with(names)),
             Self::Tuple(elements) => format!(
                 "({})",
                 elements
                     .iter()
                     .map(|ty| {
-                        let text = ty.display(types);
+                        let text = ty.display_with(names);
                         if matches!(ty, Self::Function(..)) {
                             format!("({text})")
                         } else {
@@ -524,25 +545,25 @@ impl Type {
                     .join(" * ")
             ),
             Self::Once(_) => "tzroutine body".into(),
-            Self::Handle(name) => type_display(name),
-            Self::Dyn(dyn_type) => dyn_type.display(),
-            Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display(types)),
+            Self::Handle(name) => names.handle_display(name),
+            Self::Dyn(dyn_type) => dyn_type.display_classes(|key| names.class_display(key)),
+            Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display_with(names)),
             Self::Function(parameters, _) if parameters.pure => {
                 let mut ordinary = self.clone();
                 let Self::Function(parameters, _) = &mut ordinary else {
                     unreachable!()
                 };
                 parameters.pure = false;
-                format!("pure ({})", ordinary.display(types))
+                format!("pure ({})", ordinary.display_with(names))
             }
             Self::Function(parameters, result) if parameters.is_empty() => {
-                format!("fn() -> {}", result.display(types))
+                format!("fn() -> {}", result.display_with(names))
             }
             Self::Function(parameters, result) => {
                 let mut parts: Vec<_> = parameters
                     .iter()
                     .map(|parameter| {
-                        let text = parameter.display(types);
+                        let text = parameter.display_with(names);
                         if matches!(parameter, Self::Function(..)) {
                             format!("({text})")
                         } else {
@@ -550,7 +571,7 @@ impl Type {
                         }
                     })
                     .collect();
-                parts.push(result.display(types));
+                parts.push(result.display_with(names));
                 parts.join(" -> ")
             }
         }
@@ -1264,6 +1285,55 @@ impl Type {
 pub struct TypeContext<'a> {
     pub records: &'a [CheckedRecord],
     pub unions: &'a [CheckedUnion],
+}
+
+/// The qualified names of the record and union declarations by id, which `Type::display_with`
+/// writes: the checked declarations have them, and so does `Names` before they are checked, when
+/// an anonymous union type is resolved (A24).
+pub(crate) trait DeclarationNames {
+    fn record_name(&self, id: usize) -> &str;
+    fn union_name(&self, id: usize) -> &str;
+
+    /// How a type writes the record `id`: by default from the root namespace, as `Geo::Point`.
+    /// A witness of a match writes it as the match's module names it (A24, Copilot review round 5).
+    fn record_display(&self, id: usize) -> String {
+        type_display(self.record_name(id))
+    }
+
+    /// `record_display` for the union `id`.
+    fn union_display(&self, id: usize) -> String {
+        type_display(self.union_name(id))
+    }
+
+    /// `record_display` for the extern type `qualified`.
+    fn handle_display(&self, qualified: &str) -> String {
+        type_display(qualified)
+    }
+
+    /// `record_display` for the class `key` of a `dyn` type.
+    fn class_display(&self, key: &str) -> String {
+        type_display(key)
+    }
+}
+
+impl DeclarationNames for TypeContext<'_> {
+    fn record_name(&self, id: usize) -> &str {
+        &self.records[id].name
+    }
+
+    fn union_name(&self, id: usize) -> &str {
+        &self.unions[id].name
+    }
+}
+
+impl DeclarationNames for Names {
+    fn record_name(&self, id: usize) -> &str {
+        &self.record_names[id]
+    }
+
+    fn union_name(&self, id: usize) -> &str {
+        &self.union_names[id]
+    }
 }
 
 impl TypeContext<'_> {
@@ -4730,6 +4800,12 @@ impl CheckedUnion {
     pub fn module(&self) -> &str {
         self.name.rsplit_once('.').map_or("", |(module, _)| module)
     }
+
+    /// Whether this is a synthesized declaration behind anonymous unions `(A | B)` (A24), whose
+    /// name no program can write or show.
+    pub fn is_anonymous(&self) -> bool {
+        anonymous_union::is_anonymous_name(&self.name)
+    }
 }
 
 fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
@@ -5736,6 +5812,9 @@ struct Names {
     handle_aliases: BTreeMap<String, Vec<String>>,
     /// Number of type parameters of each record declaration, by record id.
     record_arities: Vec<usize>,
+    /// The qualified name of each record declaration, by record id: the canonical order of anonymous
+    /// union members compares records by name before they are checked (A24).
+    record_names: Vec<String>,
     /// Whether each type parameter of a record is a length parameter `const N: i64` (A16).
     record_lengths: Vec<Box<[bool]>>,
     /// Unions share the type namespace with records and classes.
@@ -5743,6 +5822,11 @@ struct Names {
     union_aliases: BTreeMap<String, Vec<String>>,
     union_arities: Vec<usize>,
     union_lengths: Vec<Box<[bool]>>,
+    /// The qualified name of each union declaration, by union id, as `record_names` (A24).
+    union_names: Vec<String>,
+    /// The ids of the synthesized declarations `$anonymous.Union$n`, from n = 2: empty unless some
+    /// module writes an anonymous union or a type test (A24).
+    anonymous_unions: Vec<usize>,
     /// Union cases by qualified `Module.Case`; a module declares each case name once.
     cases: BTreeMap<String, CaseInfo>,
     case_aliases: BTreeMap<String, Vec<String>>,
@@ -6151,6 +6235,12 @@ fn entry_signature(signature: &Signature) -> bool {
 }
 
 impl Names {
+    /// Whether union `id` is a synthesized declaration behind anonymous unions (A24).
+    fn is_anonymous_union(&self, id: usize) -> bool {
+        // The synthesized declarations take the last ids, one after another.
+        matches!(self.anonymous_unions.as_slice(), [first, .., last] if (*first..=*last).contains(&id))
+    }
+
     /// Moves the `E1040`s of `renamed` into `diagnostics`.
     fn flush_renamed<'d>(&self, diagnostics: &'d mut Diagnostics) -> &'d mut Diagnostics {
         for error in self.renamed.lock().expect("renamed names").drain(..) {
@@ -6908,6 +6998,44 @@ impl Names {
         }
     }
 
+    /// How source code in `module` writes the record, union or extern type `qualified` so that it
+    /// names that declaration there, as `type_head` resolves a type name: as `Type::display`
+    /// writes it, else by its full name (`std::Maybe` where `module` declares a `Maybe`). `None`
+    /// when neither names it (A24, Copilot review round 5: the arm that a non-exhaustive match
+    /// offers).
+    pub(super) fn type_spelling_in(&self, module: &str, qualified: &str) -> Option<String> {
+        let names = |spelling: &String| {
+            self.check_type_path(module, spelling, Span::default())
+                .is_ok()
+                && match self.type_choice(module, spelling) {
+                    // A class that ranks as high takes the name of an applied type.
+                    Choice::Found(named, rank) => {
+                        !matches!(named, NamedType::Alias(_))
+                            && named.info().name == qualified
+                            && self
+                                .class_choice(module, spelling)
+                                .rank()
+                                .is_none_or(|class| rank < class)
+                    }
+                    _ => false,
+                }
+        };
+        [type_display(qualified), self.type_spelling(qualified)]
+            .into_iter()
+            .find(names)
+    }
+
+    /// `type_spelling_in` for the class `key` of a `dyn` type, as `resolve_dyn` resolves it.
+    pub(super) fn class_spelling_in(&self, module: &str, key: &str) -> Option<String> {
+        let names = |spelling: &String| {
+            self.check_path(module, spelling, Span::default()).is_ok()
+                && matches!(self.class_choice(module, spelling), Choice::Found(found, _) if found == key)
+        };
+        [type_display(key), self.spelling(key)]
+            .into_iter()
+            .find(names)
+    }
+
     /// Finds a class: a built-in class, the requester's own class, an exact
     /// qualified name, then the unique class of user modules and then of std
     /// modules. Classes have no visibility.
@@ -7225,7 +7353,8 @@ impl Names {
     ) -> Result<usize, Diagnostic> {
         let qualified_type = match receiver {
             Type::Record(id, _) => &types.records[*id].name,
-            Type::Union(id, _) => &types.unions[*id].name,
+            // An anonymous union (A24) has no declaring module of its own, like a tuple.
+            Type::Union(id, _) if !self.is_anonymous_union(*id) => &types.unions[*id].name,
             _ => {
                 return Err(Diagnostic::of(
                     DiagnosticKind::FunctionConstraintUnresolvable,
@@ -7424,6 +7553,9 @@ fn validate_public_type(
         | TypeExprKind::FixedArray(inner, _)
         | TypeExprKind::List(inner) => validate_public_type(inner, module, owner, names),
         TypeExprKind::Tuple(elements) => elements
+            .iter()
+            .try_for_each(|element| validate_public_type(element, module, owner, names)),
+        TypeExprKind::AnonymousUnion(elements) => elements
             .iter()
             .try_for_each(|element| validate_public_type(element, module, owner, names)),
         TypeExprKind::Function(parameters, result) => {
@@ -8004,6 +8136,7 @@ fn check_modules_collect(
             diagnostics.push(duplicate_of(&record.name, first));
             continue;
         }
+        names.record_names.push(qualified.clone());
         names
             .record_aliases
             .entry(record.name.text.clone())
@@ -8045,6 +8178,19 @@ fn check_modules_collect(
         }
     }
     names.flush_renamed(diagnostics).check()?;
+    // The generic declarations behind anonymous unions (A24), after every other union, only when
+    // some module writes the syntax: a program without it keeps every id and output.
+    let anonymous_declarations = if modules
+        .iter()
+        .any(|module| module.program.uses_anonymous_unions)
+    {
+        names
+            .modules
+            .insert(anonymous_union::MODULE.to_owned(), ModuleOrigin::Std);
+        anonymous_union::declarations()
+    } else {
+        Vec::new()
+    };
     let union_declarations: Vec<_> = modules
         .iter()
         .flat_map(|module| {
@@ -8054,8 +8200,15 @@ fn check_modules_collect(
                 .iter()
                 .map(|union| (module.name, union))
         })
+        .chain(
+            anonymous_declarations
+                .iter()
+                .map(|union| (anonymous_union::MODULE, union)),
+        )
         .collect();
     collect_unions(&union_declarations, &mut names, diagnostics)?;
+    let first_anonymous = union_declarations.len() - anonymous_declarations.len();
+    names.anonymous_unions = (first_anonymous..union_declarations.len()).collect();
     // Classes, records, and unions share one type namespace, so `Name<'a>` always has one meaning.
     names.classes.extend(
         polymorph::BUILTIN_CLASSES
@@ -9972,6 +10125,16 @@ fn collect_unions(
                 ));
             }
             let qualified = format!("{module}.{}", name.text);
+            if *module == anonymous_union::MODULE {
+                // A24: only the tables by id. No name table holds the synthesized declarations
+                // or their cases, so no lookup, suggestion or listing can find them.
+                names.union_names.push(qualified);
+                names.union_arities.push(union.parameters.len());
+                names
+                    .union_lengths
+                    .push(vec![false; union.parameters.len()].into());
+                return Ok(());
+            }
             if matches!(name.text.as_str(), "Array" | "Vec" | "Rc" | "Arc")
                 || polymorph::BUILTIN_CLASSES.contains(&name.text.as_str())
                 || names.records.contains_key(&qualified)
@@ -9989,6 +10152,7 @@ fn collect_unions(
                     visibility: union.visibility,
                 },
             );
+            names.union_names.push(qualified.clone());
             names
                 .union_aliases
                 .entry(name.text.clone())
@@ -10010,6 +10174,9 @@ fn collect_unions(
     }
     diagnostics.check()?;
     for (id, (module, union)) in declarations.iter().enumerate() {
+        if *module == anonymous_union::MODULE {
+            continue;
+        }
         for (case, declaration) in union.cases.iter().enumerate() {
             if diagnostics.is_full() {
                 break;
@@ -10397,6 +10564,11 @@ fn resolve_type_with_kinds(
             parameters.iter().map(resolve).collect::<Result<_, _>>()?,
             resolve(result)?,
         ),
+        TypeExprKind::AnonymousUnion(members) => anonymous_union::canonicalize(
+            members.iter().map(resolve).collect::<Result<_, _>>()?,
+            names,
+            expression.span,
+        )?,
     })
 }
 
@@ -10669,6 +10841,14 @@ impl TypeAliasExpansion<'_> {
                     .map(|element| self.expand(element, module, depth + 1))
                     .collect::<Result<_, _>>()?,
             ),
+            // A24: without this arm an alias inside a member, as in `(Meters | string)`, would
+            // stay unexpanded and unknown.
+            TypeExprKind::AnonymousUnion(members) => TypeExprKind::AnonymousUnion(
+                members
+                    .iter()
+                    .map(|member| self.expand(member, module, depth + 1))
+                    .collect::<Result<_, _>>()?,
+            ),
             TypeExprKind::Function(parameters, result) => TypeExprKind::Function(
                 parameters
                     .iter()
@@ -10793,6 +10973,7 @@ impl TypeAliasExpansion<'_> {
             | TypeExprKind::List(inner) => vec![inner],
             TypeExprKind::FixedArray(element, length) => vec![element, length],
             TypeExprKind::Tuple(elements) => elements.iter_mut().collect(),
+            TypeExprKind::AnonymousUnion(members) => members.iter_mut().collect(),
             TypeExprKind::Function(parameters, result) => parameters
                 .iter_mut()
                 .chain(std::iter::once(result.as_mut()))
@@ -10861,6 +11042,7 @@ fn reject_expanded_field_constraints(
         | TypeExprKind::FixedArray(inner, _)
         | TypeExprKind::List(inner) => vec![inner],
         TypeExprKind::Tuple(elements) => elements.iter().collect(),
+        TypeExprKind::AnonymousUnion(members) => members.iter().collect(),
         TypeExprKind::Function(parameters, result) => parameters
             .iter()
             .chain(std::iter::once(result.as_ref()))
@@ -10873,6 +11055,17 @@ fn reject_expanded_field_constraints(
     children
         .into_iter()
         .try_for_each(|child| reject_expanded_field_constraints(child, module, names, owner))
+}
+
+/// The message of a union whose value layout contains itself. A named union reads as its
+/// qualified name, as before; an anonymous union (A24) reads as its members, never as the
+/// synthesized declaration behind it.
+fn recursive_union_layout(ty: &Type, types: &TypeContext<'_>) -> String {
+    let name = match ty {
+        Type::Union(id, _) if !types.unions[*id].is_anonymous() => types.unions[*id].name.clone(),
+        _ => ty.display(types),
+    };
+    format!("recursive union layout for '{name}'; recursive heap types are not supported in 0.1")
 }
 
 fn size_error(span: Span) -> Diagnostic {
@@ -10972,10 +11165,7 @@ impl<'a> Layouts<'a> {
         if !self.visiting.insert(ty.clone()) {
             return Err(Diagnostic::of(
                 DiagnosticKind::InfiniteRecursiveLayout,
-                format!(
-                    "recursive union layout for '{}'; recursive heap types are not supported in 0.1",
-                    union.name
-                ),
+                recursive_union_layout(ty, &self.types),
                 span,
             ));
         }
@@ -11865,6 +12055,15 @@ impl<'a> Checker<'a> {
             .iter()
             .find(|(span, _)| *span == expression.span)?;
         let local = local.clone();
+        // A24: where an anonymous union is expected, the old value is injected as any other value
+        // is: `injected_expression` checks it without an expected type (this function again, with
+        // `None`), then `conform_union` wraps it as its member.
+        if let Some(expected) = expected
+            && !self.names.anonymous_unions.is_empty()
+            && self.injects(expression, expected)
+        {
+            return Some(self.injected_expression(expression, expected));
+        }
         Some((|| {
             if let Some(expected) = expected {
                 self.same(&local.ty, expected, expression.span)?;
@@ -11902,6 +12101,12 @@ impl<'a> Checker<'a> {
         };
         // Continuations must not retain the large value-checking frame at every recursive step.
         let result = match expression.kind {
+            // A24: a value where an anonymous union is expected is injected into it.
+            _ if !self.names.anonymous_unions.is_empty()
+                && expected.is_some_and(|expected| self.injects(expression, expected)) =>
+            {
+                self.injected_expression(expression, expected.expect("checked"))
+            }
             ExprKind::Computation(ref builder, ref body) => {
                 computation::check_implicit(self, builder, body, expected)
             }
@@ -13108,6 +13313,13 @@ impl<'a> Checker<'a> {
             computation_depth: self.computation_depth,
         };
         let result = match expression.kind {
+            // A24: first, so that a call is checked without the union as its expected type.
+            _ if !self.names.anonymous_unions.is_empty()
+                && self.anonymous_union_parameter(expected)
+                && !expected.contains_error() =>
+            {
+                self.union_argument(expression, expected)
+            }
             ExprKind::Call(..) if !expected.contains_error() => {
                 self.call_expression(expression, Some(expected), true)
             }
@@ -13248,6 +13460,13 @@ impl<'a> Checker<'a> {
         if let Some(piped) = piped
             && let Type::Function(remaining, _) = self.inference.resolve(result)
         {
+            // A24: a value piped into an anonymous union is injected by `coerce_argument`.
+            if !self.names.anonymous_unions.is_empty()
+                && self.anonymous_union_parameter(&remaining[0])
+                && let Some(result) = self.piped_into_union(&piped, &remaining[0], span)
+            {
+                return result;
+            }
             // An array that passes on as an exclusive slice (`ref mut xs |> Array.write 0 1`) is sliced by
             // `coerce_slice_argument` once the call is complete; here only its elements are known to agree.
             if let Type::Reference(view, true) = self.inference.resolve(&remaining[0])
@@ -13443,9 +13662,13 @@ impl<'a> Checker<'a> {
 
     fn coerce_argument(
         &mut self,
-        value: TypedExpr,
+        mut value: TypedExpr,
         expected: &Type,
     ) -> Result<TypedExpr, Diagnostic> {
+        // A24: a piped value meets an anonymous union parameter here.
+        if !self.names.anonymous_unions.is_empty() && self.anonymous_union_parameter(expected) {
+            value = self.conform_argument(value, expected)?;
+        }
         let expected = self.inference.resolve(expected);
         let mut value = match self.coerce_slice_argument(value, &expected)? {
             Ok(converted) => return Ok(converted),
@@ -15211,6 +15434,97 @@ mod tests {
                 .code,
             "E1010"
         );
+    }
+
+    /// The recursive-layout error names an anonymous union by its members (A24). The cycle check
+    /// (`recursive.rs`) makes every cycle through a union a heap node first, so no source reaches
+    /// this message today; the message itself is what the test pins.
+    #[test]
+    fn recursive_layout_error_displays_members() {
+        let module = analyze(
+            "union Shape = Dot | Text of string\ndef f :: (i64 | string) -> i64 = \\v -> 0\n0",
+        )
+        .unwrap();
+        let types = module.types();
+        let id = |name: &str| {
+            module
+                .unions
+                .iter()
+                .position(|union| union.name == name)
+                .unwrap()
+        };
+        let anonymous = Type::Union(
+            id("$anonymous.Union$2"),
+            vec![Type::I64, Type::String].into(),
+        );
+        assert_eq!(
+            super::recursive_union_layout(&anonymous, &types),
+            "recursive union layout for '(i64 | string)'; recursive heap types are not supported in 0.1"
+        );
+        let named = Type::Union(id("Main.Shape"), Box::default());
+        assert_eq!(
+            super::recursive_union_layout(&named, &types),
+            "recursive union layout for 'Main.Shape'; recursive heap types are not supported in 0.1"
+        );
+    }
+
+    /// The synthesized declarations of anonymous unions are registered only in the tables by id
+    /// (A24): no table by name holds them or their cases, so no lookup, suggestion or listing
+    /// finds them, whatever a later filter does.
+    #[test]
+    fn synthetic_names_are_not_registered() {
+        use super::{Diagnostics, Names, UnionDecl, anonymous_union, collect_unions};
+        use std::collections::BTreeMap;
+        let program = crate::parser::parse("union Shape = Dot | Line of i64\n").unwrap();
+        let synthesized = anonymous_union::declarations();
+        let declarations: Vec<(&str, &UnionDecl)> = program
+            .unions
+            .iter()
+            .map(|union| ("Main", union))
+            .chain(
+                synthesized
+                    .iter()
+                    .map(|union| (anonymous_union::MODULE, union)),
+            )
+            .collect();
+        let mut names = Names::default();
+        let mut diagnostics = Diagnostics::new(0);
+        collect_unions(&declarations, &mut names, &mut diagnostics).unwrap();
+        // The tables by id hold every declaration, in order.
+        assert_eq!(names.union_names.len(), 32);
+        assert_eq!(names.union_arities.len(), 32);
+        assert_eq!(names.union_lengths.len(), 32);
+        assert_eq!(names.union_names[0], "Main.Shape");
+        assert_eq!(names.union_names[1], "$anonymous.Union$2");
+        assert_eq!(names.union_names[31], "$anonymous.Union$32");
+        assert_eq!(names.union_arities[31], 32);
+        // The tables by name hold the user's union and its cases, and nothing else.
+        let synthetic = |text: &str| text.contains('$');
+        assert_eq!(names.unions.keys().collect::<Vec<_>>(), ["Main.Shape"]);
+        assert_eq!(
+            names.union_aliases,
+            BTreeMap::from([("Shape".to_owned(), vec!["Main.Shape".to_owned()])])
+        );
+        assert_eq!(
+            names.cases.keys().collect::<Vec<_>>(),
+            ["Main.Dot", "Main.Line"]
+        );
+        assert_eq!(
+            names.case_aliases.keys().collect::<Vec<_>>(),
+            ["Dot", "Line"]
+        );
+        for name in names
+            .unions
+            .values()
+            .map(|info| &info.name)
+            .chain(names.union_aliases.values().flatten())
+            .chain(names.cases.values().map(|case| &case.info.name))
+            .chain(names.case_aliases.values().flatten())
+        {
+            assert!(!synthetic(name), "{name}");
+        }
+        assert!(names.records.keys().all(|name| !synthetic(name)));
+        assert!(names.functions.keys().all(|name| !synthetic(name)));
     }
 }
 

@@ -89,7 +89,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 | 項目 | 初版の実装状況 |
 | --- | --- |
 | 状態管理 | 変数は既定で不変（`let`）。ローカル変数の再代入・置換は `let mut` と排他借用 `ref mut T` で行います。標準入出力と OS API は `IO`、外部連携は `extern` で分離します。tzroutine の間で状態を共有して書き換えるときは、共有借用から更新できる `Atomic` と `Mutex` に入れます。 |
-| 型システム | 基本数値型（`bool`, `unit`, `i8`〜`i128`, `i8u`〜`i128u`, `f16`〜`f128`, `d32`〜`d128`, `byte`/`ubyte`/`sbyte`）、任意精度整数 `bigint`、ECMA-262 準拠の UTF-16 `string`、UTF-8 バイト列 `utf8string`、文字型 `char`/`utf8char`、タプル、不変レコード、共用体（`union`）、配列、連結リスト、環境を捕捉する関数値に対応。 |
+| 型システム | 基本数値型（`bool`, `unit`, `i8`〜`i128`, `i8u`〜`i128u`, `f16`〜`f128`, `d32`〜`d128`, `byte`/`ubyte`/`sbyte`）、任意精度整数 `bigint`、ECMA-262 準拠の UTF-16 `string`、UTF-8 バイト列 `utf8string`、文字型 `char`/`utf8char`、タプル、不変レコード、共用体（`union`）、宣言なしの匿名共用体（`(i64 \| string)`。期待される型での注入と型テストのパターン `:? T as x`）、配列、連結リスト、環境を捕捉する関数値に対応。 |
 | 構文と表現 | `def ... = ラムダ式`、カリー化と部分適用、`\引数 -> 式`、`if…then…else`、`match` とガード式、`for…in`、`for…to`／`downto`、`while…do`、`break`／`continue`、レコード更新、インデント構文、パイプライン `\|>`、関数合成 `>>`／`<<`、組み込み関数 `not`／`ignore`、累乗演算子 `**`、ビット演算（`&&&`／`\|\|\|`／`^^^`／`~~~`／`<<<`／`>>>`）、数値接尾辞、高階関数、明示的再帰（`rec`／`and`）、関数の中の `let rec`。 |
 | 多相性 | `'a` によるパラメトリック多相、ジェネリックなレコード・union、透過的な型エイリアス（`type`）、型クラスおよび具体型インスタンスによるアドホック多相。制約推論と静的単相化。ランク1高階型（HKT）。`dyn C` と `Dyn.of` による vtable を使った動的ディスパッチ。 |
 | コンピュテーション式 | `.tc` によるユーザー定義ビルダー（`@alias` による小文字の別名を含む）。明示的ブロックと型推論による暗黙本体。束縛・短絡・分岐・反復を標準の関数呼び出しへ展開。 |
@@ -287,6 +287,7 @@ area (Rect (3.0, 4.0))
 
 - **自動導出 (`deriving`)**: レコードや共用体の宣言末尾に `deriving (Eq, Ord, Display, Hash, Default)` を指定することで、構造的なインスタンス実装を自動生成できます。`deriving (Encode, Decode)` はレコードを JSON の object、共用体を `"Case"` / `{"Case": payload}` と相互変換します。
 - **再帰的データ型**: `union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>` のように木構造や構文木を定義できます。再帰ケースは自動的にヒープへ配置され、解放や環境の複製時にスタックオーバーフローを起こさない工夫が施されています。詳細は [共用体 (union)](docs/language.md#共用体union) を参照してください。
+- **匿名共用体**: `(i64 | string)` のように、宣言なしで要素の型そのものをケースにする共用体を書けます（F# の提案 FS-1092 に当たります）。要素の順序と入れ子は型を変えず、期待される型が匿名共用体の位置では要素の型の値をそのまま書け、`:? i64 as n` で取り出して `match` の網羅性を検査します。詳細は [匿名共用体](_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md) を参照してください。
 - **高階型 (HKT)**: カインドを明示したランク 1 の高階型をサポートしています（例: `class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }`）。詳細は [HKT仕様](docs/language.md#高階型hkt) を参照してください。
 
 ### 制御構文とパターンマッチ
@@ -312,7 +313,7 @@ match add total 2 with
   - `for i = start to end do` / `downto`: 両端を含む整数の範囲反復を行います（F# と同様の仕様です）。
   - `while condition do`: 条件を満たす間ループを実行します。ループ全体の評価値は常に `unit` です。
 - **条件分岐**: `if condition then expr1 else expr2`、`elif`、および `unit` を返す `else` 省略形をサポートします。従来の `{ ... }` ブロック表記も利用可能です。
-- **パターンマッチと網羅性検査**: 定数、変数、ワイルドカード（`_` / `otherwise`）、タプル、レコード、共用体ケース、配列、リスト、コンス（`head :: tail`）、OR / AND パターン、型注釈、`as` パターンに対応しています。コンパイラは `match` の網羅性を静的に検証し、漏れがある場合は不足しているパターンの具体例とともに `E1021` エラーを報告します。また、到達不能な重複節は `W1003` 警告を発行します（`when` ガード付きの節は網羅性の計算には含まれません）。
+- **パターンマッチと網羅性検査**: 定数、変数、ワイルドカード（`_` / `otherwise`）、タプル、レコード、共用体ケース、匿名共用体の型テスト（`:? T as x`）、配列、リスト、コンス（`head :: tail`）、OR / AND パターン、型注釈、`as` パターンに対応しています。コンパイラは `match` の網羅性を静的に検証し、漏れがある場合は不足しているパターンの具体例とともに `E1021` エラーを報告します。また、到達不能な重複節は `W1003` 警告を発行します（`when` ガード付きの節は網羅性の計算には含まれません）。
 - **アクティブパターン**: 入力値を任意の論理的ケースに変換・分解するアクティブパターンに対応しています。`Maybe` や `bool` を返す部分アクティブパターン（例: `def (|Parsed|_|) :: ref string -> Maybe<i64> = \text -> Parse.parse text`）や、共用体と連動する完全アクティブパターンが利用可能です。
 - **再帰関数**: 再帰関数は `def rec name :: ...`、相互再帰は `and name :: ...` で繋いで記述します。関数の本体やブロックの中では、`let rec go = \n acc -> ...`（相互再帰は `and`）で補助関数を定義できます。外側のローカル値を捕捉したまま再帰でき、文字列や配列などの値は借用して読みます。直接の自己末尾再帰は、`-O0` であっても LLVM レベルでループ構造へと自動変換されます（`def rec` も `let rec` も同じです）。同じ再帰グループのほかの関数への末尾呼び出しは、条件を満たすと保証された末尾呼び出し（`musttail`）で、native では `-O0` でも相互再帰のスタックが増えません（WASM は `--wasm-feature tail-call` を付けたときだけです）。詳細は [言語仕様: 再帰とスタック](docs/language.md#再帰とスタック)、[言語仕様: 制御構文](docs/language.md#制御構文)、[言語仕様: ローカルな `let rec`](docs/language.md#ローカルな-let-rec)、および [制御構文のベンチマーク](docs/benchmarks.md#制御構文の比較) を参照してください。実行例は `tsuzuri run examples/control` で確認できます。
 
@@ -1138,6 +1139,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | --- | --- | --- |
 | 字句・構文・予約語 | `tests/frontend.rs`、`tests/diagnostics.rs`、`src/parser.rs` の test module、`tests/formatter.rs`、`tests/editions.rs`（edition ごとの予約語・manifest の `edition`） | `examples.mjs`、`features.mjs`（関係する suite） |
 | 型・型クラス・多相 | `tests/polymorphism.rs`、`tests/higher_kinds.rs`、`tests/deriving.rs`、`tests/union_types.rs` | `features.mjs typeclasses`・`deriving`・`higher_kinds` |
+| 匿名共用体（A24。`src/anonymous_union.rs`） | `tests/anonymous_unions.rs`（構文・正規化・注入・型テスト・網羅性・インスタンス・名前の隠蔽・api-diff・find）、`tests/formatter.rs`、`tests/debug_info.rs`、`src/syntax_codec.rs` の test module | `features.mjs anonymous_unions`（native と WASM の `-O0`／`-O3`、`live == 0`）、`debugger.mjs`、`frontend_cache.mjs` |
 | 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs` | `features.mjs borrowed_records`、`control.mjs`、`TSUZURI_PROGFUZZ_KIND=owned progfuzz.mjs` |
 | 制御構文・パターン | `tests/control.rs`、`tests/match_exhaustiveness.rs` | `control.mjs`、`features.mjs` |
 | 計算式・IO | `tests/computations.rs` | `computations.mjs`、`io.mjs` |

@@ -949,6 +949,13 @@ pub(super) fn collect(
                 for ty in annotations {
                     type_entry(&mut index, ty, module.name, names, &types, links, false);
                 }
+                // A type test `:? T` names a type as an annotation does (A24). Only a program
+                // with anonymous unions has one, so no other index changes.
+                let mut tested = Vec::new();
+                type_tests(expression, &mut tested);
+                for ty in tested {
+                    type_entry(&mut index, ty, module.name, names, &types, links, true);
+                }
             });
         }
     }
@@ -1302,9 +1309,83 @@ fn index_function(
     }
 }
 
+/// The types of the type tests `:? T` (A24) in the patterns that `expression` holds itself: the
+/// arms of a `match`, of a function with guards and of a handler, the pattern of a `for`, and the
+/// statements of a computation. The expressions inside those patterns and statements are visited
+/// by themselves.
+fn type_tests<'e>(expression: &'e Expr, found: &mut Vec<&'e TypeExpr>) {
+    match &expression.kind {
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                pattern_type_tests(&arm.pattern, found);
+            }
+        }
+        ExprKind::Try(handled) => {
+            for arm in &handled.arms {
+                pattern_type_tests(&arm.pattern, found);
+            }
+        }
+        ExprKind::For { pattern, .. } => pattern_type_tests(pattern, found),
+        ExprKind::Computation(_, block) => computation_type_tests(block, found),
+        _ => {}
+    }
+}
+
+fn computation_type_tests<'e>(block: &'e ComputationBlock, found: &mut Vec<&'e TypeExpr>) {
+    use ComputationStatementKind::*;
+    for statement in &block.statements {
+        match &statement.kind {
+            Match(_, arms) => {
+                for arm in arms {
+                    pattern_type_tests(&arm.pattern, found);
+                    computation_type_tests(&arm.body, found);
+                }
+            }
+            If(_, then_block, else_block) => {
+                computation_type_tests(then_block, found);
+                if let Some(block) = else_block {
+                    computation_type_tests(block, found);
+                }
+            }
+            For(pattern, _, body) => {
+                pattern_type_tests(pattern, found);
+                computation_type_tests(body, found);
+            }
+            While(_, body) => computation_type_tests(body, found),
+            Let(..) | LetAnd(_) | Do(_) | Operation(..) | Expression(_) => {}
+        }
+    }
+}
+
+fn pattern_type_tests<'e>(pattern: &'e Pattern, found: &mut Vec<&'e TypeExpr>) {
+    use PatternKind::*;
+    match &pattern.kind {
+        TypeTest(ty, _) => found.push(ty),
+        Apply(_, patterns) | Tuple(patterns) | Array(patterns) | List(patterns) => {
+            for pattern in patterns {
+                pattern_type_tests(pattern, found);
+            }
+        }
+        Record(_, fields) => {
+            for (_, pattern) in fields {
+                pattern_type_tests(pattern, found);
+            }
+        }
+        Cons(left, right) | Or(left, right) | And(left, right) => {
+            pattern_type_tests(left, found);
+            pattern_type_tests(right, found);
+        }
+        As(pattern, _) | Annotated(pattern, _) => pattern_type_tests(pattern, found),
+        Wildcard | Binding(_) | Literal(_) | Argument(_) => {}
+    }
+}
+
 fn type_target(ty: &Type, types: &TypeContext<'_>) -> Option<Span> {
     match ty {
         Type::Record(id, _) => Some(types.records[*id].span),
+        // An anonymous union (A24) has no definition to go to: its synthesized declaration has no
+        // source, and a default span would send the editor to the start of the current file.
+        Type::Union(id, _) if types.unions[*id].is_anonymous() => None,
         Type::Union(id, _) => Some(types.unions[*id].span),
         _ => None,
     }
@@ -1354,6 +1435,7 @@ fn type_entry(
         | TypeExprKind::List(inner) => recurse(inner),
         TypeExprKind::FixedArray(element, _) => recurse(element),
         TypeExprKind::Tuple(elements) => elements.iter().for_each(&mut recurse),
+        TypeExprKind::AnonymousUnion(elements) => elements.iter().for_each(&mut recurse),
         TypeExprKind::Function(parameters, result) => {
             parameters.iter().for_each(&mut recurse);
             recurse(result);

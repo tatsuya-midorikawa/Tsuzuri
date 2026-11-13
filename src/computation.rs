@@ -363,7 +363,7 @@ fn expand_pattern(pattern: &mut Pattern, names: &Names, module: &str) -> Result<
         PatternKind::Record(_, fields) => fields.iter_mut().map(|(_, pattern)| pattern).collect(),
         PatternKind::Cons(a, b) | PatternKind::Or(a, b) | PatternKind::And(a, b) => vec![a, b],
         PatternKind::As(pattern, _) | PatternKind::Annotated(pattern, _) => vec![pattern],
-        PatternKind::Wildcard | PatternKind::Binding(_) => Vec::new(),
+        PatternKind::Wildcard | PatternKind::Binding(_) | PatternKind::TypeTest(..) => Vec::new(),
     };
     let mut depth = 0;
     for child in children {

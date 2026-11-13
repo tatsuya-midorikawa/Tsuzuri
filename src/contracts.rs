@@ -793,6 +793,7 @@ fn mentions_variable(ty: &TypeExpr) -> bool {
                 pending.push(length);
             }
             TypeExprKind::Tuple(elements) => pending.extend(elements.iter()),
+            TypeExprKind::AnonymousUnion(elements) => pending.extend(elements.iter()),
             TypeExprKind::Function(parameters, result) => {
                 pending.extend(parameters.iter());
                 pending.push(result);

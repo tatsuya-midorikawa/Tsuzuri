@@ -455,6 +455,11 @@ pub(super) fn build(
         }
     }
     for (key, case) in &names.cases {
+        // A24: the synthesized cases behind anonymous unions are in no name table; this keeps
+        // them out should one ever be.
+        if names.is_anonymous_union(case.info.id) {
+            continue;
+        }
         let union = &types.unions[case.info.id];
         let arguments: Box<[Type]> = union
             .parameters
@@ -1061,7 +1066,8 @@ impl Checker<'_> {
         }
         if target.starts_with(|c: char| c.is_ascii_uppercase()) {
             for key in self.names.modules.keys() {
-                if !self.names.searchable(self.module, key) {
+                // The pseudo-module of the anonymous unions (A24) is no module a program names.
+                if hidden(key) || !self.names.searchable(self.module, key) {
                     continue;
                 }
                 // The stem is compared with the target; it is written alone only where it names

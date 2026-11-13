@@ -242,6 +242,23 @@ pub(super) fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
     }
 }
 
+/// The message of `E1005` for a class without an instance for `ty`. An anonymous union takes no
+/// instance (A24, D8), so its advice names what does.
+fn no_instance(class: &str, ty: &Type, types: &TypeContext<'_>) -> String {
+    let advice = match ty {
+        Type::Union(id, _)
+            if types
+                .unions
+                .get(*id)
+                .is_some_and(CheckedUnion::is_anonymous) =>
+        {
+            "instances cannot be declared for an anonymous union; match on its members, wrap it in a record, or declare a union with named cases"
+        }
+        _ => "define an instance or use a supported type",
+    };
+    format!("no instance for {class}<{}>; {advice}", ty.display(types))
+}
+
 pub(super) fn substitute(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
     map_type(ty, &mut |ty| match ty {
         Type::Variable(name) => substitutions
@@ -264,12 +281,15 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
     }
 }
 
+/// The most type constructors that `bounded_type` accepts in a type.
+pub(super) const MAX_TYPE_SIZE: usize = 4096;
+
 /// The number of type constructors in `ty`, or `None` beyond a nesting of `MAX_NESTING` or
-/// 4096 constructors.
+/// `MAX_TYPE_SIZE` constructors.
 fn type_size(ty: &Type) -> Option<usize> {
     fn visit(ty: &Type, depth: usize, count: &mut usize) -> bool {
         *count += 1;
-        if depth > MAX_NESTING || *count > 4096 {
+        if depth > MAX_NESTING || *count > MAX_TYPE_SIZE {
             return false;
         }
         match ty {
@@ -347,6 +367,20 @@ impl Inference {
         let id = self.solutions.len();
         self.solutions.push(None);
         Type::Infer(id)
+    }
+
+    /// `ty` with the solved inference variables at its top followed, and nothing inside it
+    /// resolved: the injection hooks of anonymous unions look only at the head of an expected type,
+    /// so a program without them does no more work (A24).
+    pub(super) fn head<'t>(&'t self, ty: &'t Type) -> &'t Type {
+        let mut ty = ty;
+        while let Type::Infer(id) = ty {
+            match &self.solutions[*id] {
+                Some(solution) => ty = solution,
+                None => break,
+            }
+        }
+        ty
     }
 
     pub fn resolve(&self, ty: &Type) -> Type {
@@ -433,8 +467,12 @@ impl Inference {
             | (concrete, Type::Application(head, arguments))
                 if !matches!(concrete, Type::Infer(_)) =>
             {
+                // An anonymous union is not a type constructor (A24): applying a part of it would
+                // build a union out of canonical order or with a repeated member.
                 if let Some((constructor, complete)) = higher_kinds::decompose(concrete)
                     && complete.len() >= arguments.len()
+                    && !matches!(concrete, Type::Union(id, _)
+                        if types.unions.get(*id).is_some_and(CheckedUnion::is_anonymous))
                 {
                     let partial = Type::Partial(Box::new(Partial {
                         constructor,
@@ -1765,7 +1803,13 @@ impl Classes {
                     constraints.extend(self.expanded_inline_constraints(ty, module, names)?);
                 }
             }
+            // A24: an inline constraint inside a member, as in `(Maybe<Add<'a>> | i64)`, is kept.
             TypeExprKind::Tuple(elements) => {
+                for ty in elements {
+                    constraints.extend(self.expanded_inline_constraints(ty, module, names)?);
+                }
+            }
+            TypeExprKind::AnonymousUnion(elements) => {
                 for ty in elements {
                     constraints.extend(self.expanded_inline_constraints(ty, module, names)?);
                 }
@@ -1889,6 +1933,20 @@ impl Classes {
                         ));
                     }
                     bounded_type(&ty, instance.ty.span)?;
+                    // D8 (A24): before the checks of built-in, marker, `Drop` and `Format`
+                    // instances, so that every class gives the same error.
+                    if let Type::Union(union, _) = &ty
+                        && names.is_anonymous_union(*union)
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::AnonymousUnionInstance,
+                            format!(
+                                "instances cannot be declared for the anonymous union {}; wrap it in a record, or declare a union with named cases",
+                                ty.display_with(names)
+                            ),
+                            instance.class.span,
+                        ));
+                    }
                     let type_parameters = variables(&ty);
                     let context = self.resolve_constraints(&instance.constraints, module, names)?;
                     if context.iter().any(|constraint| {
@@ -2635,7 +2693,11 @@ impl Classes {
         }
     }
 
-    fn validate(&self, constraint: &Constraint, types: &TypeContext<'_>) -> Result<(), Diagnostic> {
+    pub(super) fn validate(
+        &self,
+        constraint: &Constraint,
+        types: &TypeContext<'_>,
+    ) -> Result<(), Diagnostic> {
         self.normalize(constraint, types).map(|_| ())
     }
 
@@ -2762,10 +2824,10 @@ impl Classes {
             }
             Err(Diagnostic::of(
                 DiagnosticKind::NoInstance,
-                format!(
-                    "no instance for {}<{}>; define an instance or use a supported type",
-                    self.declarations[constraint.class].name,
-                    constraint.ty.display(types)
+                no_instance(
+                    &self.declarations[constraint.class].name,
+                    &constraint.ty,
+                    types,
                 ),
                 constraint.span,
             ))
@@ -3034,6 +3096,15 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
             } else {
                 inner
             }
+        }
+        // A24: an anonymous union is written as its members, which resolve to the same type again.
+        Type::Union(id, arguments) if types.unions[*id].is_anonymous() => {
+            TypeExprKind::AnonymousUnion(
+                arguments
+                    .iter()
+                    .map(|ty| type_expression(ty, types, span))
+                    .collect(),
+            )
         }
         Type::Record(id, arguments) | Type::Union(id, arguments) if !arguments.is_empty() => {
             let name = match ty {
@@ -5276,10 +5347,10 @@ impl Specializer<'_> {
                 None => {
                     return Err(Diagnostic::of(
                         DiagnosticKind::NoInstance,
-                        format!(
-                            "no instance for {}<{}>; define an instance or use a supported type",
-                            type_display(&self.classes.declarations[class].name),
-                            value.display(&self.types)
+                        no_instance(
+                            &type_display(&self.classes.declarations[class].name),
+                            value,
+                            &self.types,
                         ),
                         span,
                     ));

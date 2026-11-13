@@ -271,6 +271,35 @@ try {
   ]) assert.ok(niche.includes(line), `${line}\n${niche}`);
   assert.match(niche, /^\(Maybe<ref i32>\) located = Some\(0x[0-9a-f]+\)$/m);
 
+  // A24: an anonymous union shows the member that it holds, named by its type, as a named union
+  // shows its case. A member that is a tuple shows its elements; a payload that is an anonymous
+  // union is one value, not a tuple, although both names start with a parenthesis.
+  const anonymous = join(root, "anonymous");
+  mkdirSync(anonymous);
+  writeFileSync(join(anonymous, "Main.tz"), [
+    "def inspect :: i64 -> i64",
+    "fn inspect seed =",
+    "    let number: (string | i64) = 37 + seed",
+    '    let text: (i64 | string) = "abc"',
+    '    let pair: ((i64 * string) | bool) = (7, "p")',
+    "    let wrapped: Maybe<(i64 | string)> = Maybe.Some (40 + seed)",
+    "    let total = seed + (match number with | :? i64 as n -> n | :? string -> 0)",
+    "    total",
+    "",
+    "inspect 5",
+    "",
+  ].join("\n"));
+  const unions = sections(session(anonymous, ["breakpoint set -f Main.tz -l 8", "run", "frame variable", "kill"]))
+    .find(part => part.command === "frame variable").text;
+  for (const line of [
+    "((i64 | string)) number = i64(42)",
+    '((i64 | string)) text = string("abc")',
+    '((bool | (i64 * string))) pair = (i64 * string)(7, "p")',
+    "(Maybe<(i64 | string)>) wrapped = Some(i64(45))",
+    "(i64) total = 47",
+  ]) assert.ok(unions.includes(line), `${line}\n${unions}`);
+  assert.doesNotMatch(unions, /\$anonymous|Union\$/, unions);
+
   // PM01: a record that is smaller with its fields sorted by alignment stores them in that order.
   // The debug info lists the members as declared and gives each the offset where it lives, so
   // LLDB reads the values from the right bytes.

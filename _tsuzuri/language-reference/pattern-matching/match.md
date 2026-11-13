@@ -106,7 +106,17 @@ match true with
 
 ### 網羅性チェッカーの判定ルール
 
-1. **有限な型の完全列挙**: `bool`（`true` と `false`）、`unit`（`()`）、共用体（`union`）の全ケース、およびリストの空リスト `[||]` と先頭・末尾パターン `head :: tail` は、すべて列挙することで網羅できます。
+1. **有限な型の完全列挙**: `bool`（`true` と `false`）、`unit`（`()`）、共用体（`union`）の全ケース、[匿名共用体](../built-in-types-and-modules/anonymous-union.md)の全要素の型テスト（`:? T`）、およびリストの空リスト `[||]` と先頭・末尾パターン `head :: tail` は、すべて列挙することで網羅できます。匿名共用体の足りない要素は `missing: :? bool` のように型テストの形で示し、`| :? bool -> unreachable ()` を足す修正案を持ちます。
+
+```text
+// コンパイルエラー E1021
+// match is not exhaustive; missing: :? bool
+def describe :: own (i64 | string | bool) -> string = \value ->
+    match value with
+    | :? i64 as n -> $"int {n}"
+    | :? string as s -> s
+```
+
 2. **直積の組み合わせ**: タプルやレコードは、各要素・フィールドの組み合わせとして網羅性が検証されます。
 
 ```text
@@ -197,6 +207,7 @@ Maybe.get (Maybe {
 - [パターンマッチング](pattern-matching.md)
 - [Active パターン](active-pattern.md)
 - [Union](../built-in-types-and-modules/union.md)
+- [匿名共用体](../built-in-types-and-modules/anonymous-union.md)
 - [Maybe](../built-in-types-and-modules/maybe.md)
 - [Result](../built-in-types-and-modules/result.md)
 - [コンピュテーション式](../computation-expressions/computation-expressions.md)

@@ -2017,6 +2017,67 @@ const suites = {
       assert.match(ir, /getelementptr inbounds \{ ptr, ptr, i64, i64, \[5 x ptr\] \}, ptr %v\d+, i32 0, i32 4, i64 4/);
     },
   },
+  // A24: anonymous unions. The references follow the definitions of tests/fixtures/anonymous_unions/Main.tz.
+  anonymous_unions: (() => {
+    const length = (text) => BigInt(text.length);
+    // An i64 is itself, a string its length, true is 1.
+    const pick = (x) => x > 0n ? x : x === 0n ? length("zero") : 1n;
+    // i64 at even positions, `s{index}` at odd ones.
+    const mixed = (n) => {
+      let total = 0n;
+      for (let index = 0n; index < n; index++) total += index % 2n === 0n ? index : length(`s${index}`);
+      return total;
+    };
+    // `n={n}`, the sum of 1..n, and the last value of the loop: "start", the sum of 0..i-1 for an even i, `{i}` for an odd i.
+    const owned = (n) => {
+      const last = n - 1n;
+      const slot = n === 0n ? length("start") : last % 2n === 0n ? last * (last - 1n) / 2n : length(`${last}`);
+      return length(`n=${n}`) * 1000000n + n * (n + 1n) / 2n * 1000n + slot;
+    };
+    // Maybe: Some n, None (-1), Some "negative" (its length times 100); the record: "three" when 3 divides n, else 10 n;
+    // the name `#{n}` counts its length times 1000.
+    const nested = (n) => {
+      const found = n > 0n ? n : n === 0n ? -1n : length("negative") * 100n;
+      const inner = n % 3n === 0n ? length("three") : n * 10n;
+      return found + inner + length(`#${n}`) * 1000n;
+    };
+    // A chain of depth n: one per node above the last, which holds 7.
+    const recursive = (n) => n === 0n ? 0n : n - 1n + 7n;
+    // first_or (n * 2) of Some n, None, or 7; first_or "fallback" of Some "even" or n.
+    const generic = (n) => {
+      const number = n > 0n ? n : n * 2n;
+      const word = n % 2n === 0n ? length("even") : length("fallback");
+      return number * 100n + word;
+    };
+    // An i64u 3 n for n >= 0 (plus 1), else the i64 n (times 2).
+    const common = (n) => n >= 0n ? 3n * n + 1n : 2n * n;
+    // The function member applied to 20, the string "wide" (times 1000), or the i64.
+    const wide = (n) => n > 0n ? 20n * 2n + n : n === 0n ? length("wide") * 1000n : n;
+    const at = (name, reference, inputs) => inputs.map((x) => [name, [x], reference(x)]);
+    return {
+      cases: [
+        ...at("pick", pick, [5n, 0n, -3n, 1n, max]),
+        ...at("mixed", mixed, [0n, 1n, 4n, 7n, 1000n]),
+        ...at("owned", owned, [0n, 1n, 4n, 7n, 20n]),
+        ...at("nested", nested, [4n, 0n, -3n, 12n, 7n, -4n]),
+        ...at("recursive", recursive, [0n, 1n, 3n, 1000n]),
+        ...at("generic", generic, [3n, 4n, 0n, -3n, -4n]),
+        ...at("common", common, [5n, 0n, -4n, 1000000n]),
+        ...at("wide", wide, [5n, 0n, -7n]),
+      ],
+      inspect(ir) {
+        // One type for each instantiation, named by its members in the canonical order whatever order the source wrote.
+        assert.equal((ir.match(/^%"tz\.union\.\$anonymous\.Union\$2\[i64,string\]" = type /gm) ?? []).length, 1);
+        assert.match(ir, /^%"tz\.union\.\$anonymous\.Union\$3\[i64,bool,string\]" = type \{ i8, \[2 x i64\] \}$/m);
+        // (i64 | i64u) shares one LLVM type: the Common layout, a tag and the i64.
+        assert.match(ir, /^%"tz\.union\.\$anonymous\.Union\$2\[i64u,i64\]" = type \{ i8, i64 \}$/m);
+        // The recursive member is a heap node.
+        assert.match(ir, /^%"tz\.rec\.node\.\$anonymous\.Union\$2\[i64,Main\.Tree\]" = type /m);
+        // 32 members, the function type last.
+        assert.match(ir, /^%"tz\.union\.\$anonymous\.Union\$32\[i8u,i8,[^\n]*,fn\[[^\n]*\]\]" = type /m);
+      },
+    };
+  })(),
   borrowed_comparisons: {
     cases: [
       ["compare_loop", [0n], 0n],

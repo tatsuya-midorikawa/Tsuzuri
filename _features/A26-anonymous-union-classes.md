@@ -5,7 +5,7 @@
 | ID | A26 |
 | 優先度 | P2 |
 | 規模 | M |
-| 依存 | A24, A06, A07 |
+| 依存 | [A24](_completed/A24-anonymous-unions.md)（done）, A06, A07 |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-02（A24 と同時。HEAD `2f556480`） |
