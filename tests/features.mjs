@@ -2065,6 +2065,9 @@ const suites = {
       ["replaced_rc_drops_its_block_parts", [], 1n * 100n + 8n * 10n + 2n],
       // The old value's recorder reads "1234" (4 + 1) when `deref p = v` drops it; the new one keeps 3.
       ["replaced_target_with_an_arc_drops_its_parts", [], 1n * 100n + 5n * 10n + 3n],
+      // After review 12. p2's and p4's recorders read p1's "12345" (5 + 1), p3's its own "123"
+      // (3 + 1), and p1's keeps 0; the function value returns 1.
+      ["crossed_references_keep_the_part", [], 1n * 10000n + 0n * 1000n + 6n * 100n + 4n * 10n + 6n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.

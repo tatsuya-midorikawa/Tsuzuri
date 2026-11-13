@@ -1291,3 +1291,35 @@ fn replaced_target_with_an_arc_drops_its_parts =
         renew_recorded (ref mut p) (ref out2)
     }
     k * 100 + recorded (ref out1) * 10 + recorded (ref out2)
+
+// After review 12 (the fifth merge into A32): `cross_recorded a b` keeps a borrow of `b.s` in
+// `a`'s recorder, and the caller keeps a borrow of that string only. `p2`, `p3` and `p4` are
+// declared after `p1`, so they are dropped first; `p3` keeps a borrow of its own string, and so
+// may `p4`, which their recorders, declared before it, read first.
+def cross_recorded :: ref RecordedPair -> ref RecordedPair -> unit
+fn cross_recorded a b =
+    let t = ref b.s
+    Mutex.with_lock (ref a.c.cell) (\x -> Array.write 0 (\() -> String.length t + 1) x)
+
+def apply_cross :: (ref RecordedPair -> ref RecordedPair -> unit) -> ref RecordedPair -> ref RecordedPair -> i64
+fn apply_cross f a b = { f a b; 1 }
+
+def crossed_pairs :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64
+fn crossed_pairs out1 out2 out3 out4 =
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 12345 }
+    let p2 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out2 }, s: to_string 1234567 }
+    let p3 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out3 }, s: to_string 123 }
+    let p4 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out4 }, s: to_string 1234567890 }
+    let k = apply_cross cross_recorded (ref p2) (ref p1)
+    ref p3 |> cross_recorded (ref p3)
+    cross_recorded (ref p4) (if k > 0 then ref p1 else ref p4)
+    k
+
+export def crossed_references_keep_the_part :: i64
+fn crossed_references_keep_the_part =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let out3 = Arc.new (Mutex.create [0])
+    let out4 = Arc.new (Mutex.create [0])
+    let k = crossed_pairs (ref out1) (ref out2) (ref out3) (ref out4)
+    k * 10000 + recorded (ref out1) * 1000 + recorded (ref out2) * 100 + recorded (ref out3) * 10 + recorded (ref out4)

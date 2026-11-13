@@ -5324,3 +5324,163 @@ fn replacing_an_rc_ends_the_borrows_that_its_block_keeps_through_a_share() {
         "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())) + \" \" + to_string junk.length)\n    }\n}\ndef look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1\ndef mkh :: unit -> Holder\nfn mkh _u = Holder { cell: Mutex.create [\\() -> 0] }\ndef mks :: unit -> string\nfn mks _u = String.repeat 4 (ref \"123456789\")\nrecord Holder2 { cell: Arc<Mutex<[unit -> i64]>> }\ninstance Drop<Holder2> {\n    fn drop h = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"drop2 \" + to_string (Mutex.with_lock (Arc.get (ref h.cell)) (\\b -> b[0] ())) + \" \" + to_string junk.length)\n    }\n}\ndef mkh2 :: unit -> Holder2\nfn mkh2 _u = Holder2 { cell: Arc.new (Mutex.create [\\() -> 0]) }\nrecord Pair { s: string, h: Holder }\nrecord PairOk { h: Holder, s: string }\ndef mkp :: unit -> Pair\nfn mkp _u = Pair { s: mks (), h: mkh () }\ndef mkpo :: unit -> PairOk\nfn mkpo _u = PairOk { h: mkh (), s: mks () }\nrecord Box { h: Holder, n: i64 }\nrecord Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = {\n        let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")];\n        do! IO.write_line (\"dropc \" + to_string (c.f ()) + \" \" + to_string junk.length)\n    }\n}\ndef mkreg :: unit -> ((unit -> i64) -> unit)\nfn mkreg _u =\n    let cell = Arc.new (Mutex.create [Caller { f: \\() -> 0 }])\n    \\g -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> Array.write 0 (Caller { f: g }) slot)\ndef put :: ref string -> ref Holder -> unit\nfn put t h = Mutex.with_lock (ref h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\nrecord Reg { f: (unit -> i64) -> unit }\ndef mkr :: unit -> Reg\nfn mkr _u = Reg { f: mkreg () }\ndef put2 :: ref Holder -> ref string -> unit\nfn put2 h t = Mutex.with_lock (ref h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\ndef consume :: own Holder -> i64\nfn consume h = 0\ndef mkpo2 :: ref string -> PairOk\nfn mkpo2 t = PairOk { h: Holder { cell: Mutex.create [\\() -> look t] }, s: mks () }\nrecord HB { h: Holder }\nrecord Outer4 { r: Rc<HB>, s: string }\nrecord PN { h: Holder, s: string, n: i64 }\ndef mkpn :: unit -> PN\nfn mkpn _u = PN { h: mkh (), s: mks (), n: 0 }\nrecord B2 { h: Holder2, n: i64 }\ndef mkb2 :: unit -> B2\nfn mkb2 _u = B2 { h: mkh2 (), n: 0 }\ndef putc :: ref string -> ref Arc<Mutex<[unit -> i64]>> -> unit\nfn putc t c = Mutex.with_lock (Arc.get c) (\\b -> Array.write 0 (\\() -> look t) b)\ndef readc :: ref Arc<Mutex<[unit -> i64]>> -> i64\nfn readc c = Mutex.with_lock (Arc.get c) (\\b -> b[0] ())\nrecord PR { c: Holder2, s: string }\ndef mkpr :: unit -> PR\nfn mkpr _u = PR { c: mkh2 (), s: mks () }\ndef keepself :: ref mut PR -> i64\nfn keepself p =\n    let t = ref p.s\n    putc t (ref p.c.cell)\n    0\ndef junkread :: ref Arc<Mutex<[unit -> i64]>> -> unit\nfn junkread c =\n    let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\"), String.repeat 4 (ref \"xxxxxxxxx\")]\n    do! IO.write_line (\"read \" + to_string (readc c) + \" \" + to_string junk.length)\ndef cross :: ref PairOk -> ref PairOk -> unit\nfn cross a b = put (ref b.s) (ref a.h)\ndef selfbad :: ref Pair -> unit\nfn selfbad p = put (ref p.s) (ref p.h)\ndef nothingp :: ref Pair -> unit\nfn nothingp p = ()\ndef pickit :: i64 -> (ref [Pair] -> unit)\nfn pickit k = if k > 0 then Array.iterr selfbad else Array.iterr nothingp\ndef pickself :: i64 -> (ref Pair -> unit)\nfn pickself k = if k > 0 then selfbad else nothingp\ndef readh :: ref Holder -> i64\nfn readh h = Mutex.with_lock (ref h.cell) (\\b -> b[0] ())\ndef read_cell :: ref Mutex<[unit -> i64]> -> (unit -> i64)\nfn read_cell m = \\() -> Mutex.with_lock m (\\b -> b[0] ())\nrecord Watcher {r} { target: ref {r} Mutex<[unit -> i64]> }\ninstance Drop<Watcher> {\n    fn drop w = do! IO.write_line (\"dropw \" + to_string (Mutex.with_lock w.target (\\b -> b[0] ())))\n}\ndef run :: i64 -> i64\nfn run n =\n    let mut rc = Rc.new (mkpo ())\n    let k = { let inner = Rc.share (ref rc); let p = Rc.get (ref inner); put (ref p.s) (ref p.h); 0 }\n    rc = Rc.new (mkpo ())\n    n + k\nrun 1",
     )]);
 }
+
+/// A31, after review 12 (the fifth merge into A32): the programs of
+/// `a_call_that_stores_a_part_of_one_reference_argument_in_another_keeps_a_borrow_of_that_part`.
+/// `cross a b` keeps a borrow of `b.s` in the cell of `a.h`; `crossb` does the same for
+/// `PairBad`, whose string is dropped before its holder; `crossw a w` keeps a borrow of the string
+/// of what the reference field `w.p` points at; `crossm` keeps a shared borrow of the string of
+/// what its `ref mut` parameter points at. The body of `run` starts at line 35.
+const CROSS_PRELUDE: &str = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+record PairOk { h: Holder, s: string }
+record PairBad { s: string, h: Holder }
+record Two { a: PairOk, b: PairOk }
+record TwoBad { b: PairOk, a: PairOk }
+record Wrap {r} { p: ref {r} PairOk }
+def mkpo :: unit -> PairOk
+fn mkpo _u = PairOk { h: Holder { cell: Mutex.create [\() -> 0] }, s: String.repeat 4 (ref "123456789") }
+def mkpb :: unit -> PairBad
+fn mkpb _u = PairBad { s: String.repeat 4 (ref "123456789"), h: Holder { cell: Mutex.create [\() -> 0] } }
+def cross :: ref PairOk -> ref PairOk -> unit
+fn cross a b = { let t = ref b.s; Mutex.with_lock (ref a.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+def crossb :: ref PairBad -> ref PairBad -> unit
+fn crossb a b = { let t = ref b.s; Mutex.with_lock (ref a.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+def crossw :: ref PairOk -> ref Wrap -> unit
+fn crossw a w = { let t = ref w.p.s; Mutex.with_lock (ref a.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+def apply2 :: (ref PairOk -> ref PairOk -> unit) -> ref PairOk -> ref PairOk -> i64
+fn apply2 f a b = { f a b; 0 }
+def apply2g :: (ref 'a -> ref 'a -> unit) -> ref 'a -> ref 'a -> i64
+fn apply2g f a b = { f a b; 0 }
+def outer :: ref PairOk -> ref PairOk -> unit
+fn outer a b = cross a b
+def crossm :: ref PairOk -> ref mut PairOk -> unit
+fn crossm a b = { let t = ref b.s; Mutex.with_lock (ref a.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+def run :: i64 -> i64
+fn run n =
+"#;
+
+fn cross_program(body: &str) -> String {
+    format!("{CROSS_PRELUDE}{body}do! IO.write_line (to_string (run 1))\n")
+}
+
+#[test]
+fn a_call_that_stores_a_part_of_one_reference_argument_in_another_keeps_a_borrow_of_that_part() {
+    // A31, after review 12: `cross (ref p2) (ref p1)` keeps a borrow of `p1.s` in `p2`, which is
+    // declared after `p1` and dropped first, so the drop of its holder reads `p1.s` while `p1` is
+    // still there (main prints `drop 8`, `drop 0`, `1`). The call kept a borrow of the whole `p1`
+    // in `p2` before, a borrow through which a store may reach `p1`'s cell, so applying the store
+    // again went on into `p1`, which then kept a borrow of a part of itself (`E1013`
+    // `self_referential_store`). The callee now tells the part (`StoreFacts::kept_paths`): `p2`
+    // keeps a borrow of `p1.s`, a string, through which no store reaches anything. Every spelling
+    // of the call and a reference to one of two values do the same; when both arguments point at
+    // one value, the drop order of that value's parts decides.
+    for body in [
+        // loc_direct
+        "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    cross (ref p2) (ref p1)\n    n\n",
+        // a pipeline
+        "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    ref p1 |> cross (ref p2)\n    n\n",
+        // a partial application
+        "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let f = cross (ref p2)\n    f (ref p1)\n    n\n",
+        // a function-valued parameter (loc_safe__fn)
+        "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    apply2 cross (ref p2) (ref p1) + n\n",
+        // a generic function-valued parameter
+        "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    apply2g cross (ref p2) (ref p1) + n\n",
+        // a lambda
+        "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    (\\a b -> cross a b) (ref p2) (ref p1)\n    n\n",
+        // a function that passes its reference parameters on
+        "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    outer (ref p2) (ref p1)\n    n\n",
+        // a reference to one of two values: `p1.s` or `p2.s`, which `p2` drops after its holder
+        "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    cross (ref p2) (if n > 0 then ref p1 else ref p2)\n    n\n",
+        // one value: the holder is dropped before the string (main prints `drop 8`, `1`)
+        "    let p = mkpo ()\n    cross (ref p) (ref p)\n    n\n",
+        // two parts of one value: `t.a` is dropped before `t.b`
+        "    let t = Two { a: mkpo (), b: mkpo () }\n    cross (ref t.a) (ref t.b)\n    n\n",
+        // a fresh exclusive borrow of which the callee stores a shared borrow of a part
+        "    let mut p1 = mkpo ()\n    let p2 = mkpo ()\n    crossm (ref p2) (ref mut p1)\n    n\n",
+    ] {
+        accepts_in_both_editions(&[("Main.tz", &cross_program(body))]);
+    }
+    // The borrow is of `p1.s` only: replacing `p1.h` does not conflict with it (main prints
+    // `drop 0`, `drop 8`, `drop 5`, `1`), replacing `p1.s` does (main reads the freed string).
+    // A field assignment is edition 2027.
+    let write_other = cross_program(
+        "    let mut p1 = mkpo ()\n    let p2 = mkpo ()\n    cross (ref p2) (ref p1)\n    p1.h = Holder { cell: Mutex.create [\\() -> 5] }\n    n\n",
+    );
+    analyze_with_edition(&write_other, Edition::E2027)
+        .unwrap_or_else(|error| panic!("{write_other}\n{}: {}", error.code, error.message));
+    let write_borrowed = cross_program(
+        "    let mut p1 = mkpo ()\n    let p2 = mkpo ()\n    cross (ref p2) (ref p1)\n    p1.s = String.repeat 2 (ref \"abc\")\n    n\n",
+    );
+    let error = analyze_with_edition(&write_borrowed, Edition::E2027).expect_err(&write_borrowed);
+    assert_eq!(
+        (
+            error.code,
+            error.kind,
+            position(&write_borrowed, error.span.start)
+        ),
+        ("E1014", Some("borrow_conflict"), (38, 5)),
+        "{}",
+        error.message
+    );
+    for (body, kind) in [
+        // The swapped call keeps a borrow of `p2.s` in `p1`, which is dropped after `p2` (main
+        // prints `drop 0`, then reads the freed string), in every spelling.
+        (
+            "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    cross (ref p1) (ref p2)\n    n\n",
+            "assignment_extends_borrow",
+        ),
+        (
+            "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    ref p2 |> cross (ref p1)\n    n\n",
+            "assignment_extends_borrow",
+        ),
+        (
+            "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    apply2 cross (ref p1) (ref p2) + n\n",
+            "assignment_extends_borrow",
+        ),
+        (
+            "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    apply2g cross (ref p1) (ref p2) + n\n",
+            "assignment_extends_borrow",
+        ),
+        (
+            "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    outer (ref p1) (ref p2)\n    n\n",
+            "assignment_extends_borrow",
+        ),
+        (
+            "    let p1 = mkpo ()\n    let mut p2 = mkpo ()\n    crossm (ref p1) (ref mut p2)\n    n\n",
+            "assignment_extends_borrow",
+        ),
+        // One value whose string is dropped before its holder.
+        (
+            "    let p = mkpb ()\n    crossb (ref p) (ref p)\n    n\n",
+            "self_referential_store",
+        ),
+        // A reference that may point at `q2` itself.
+        (
+            "    let q1 = mkpb ()\n    let q2 = mkpb ()\n    crossb (ref q2) (if n > 0 then ref q1 else ref q2)\n    n\n",
+            "self_referential_store",
+        ),
+        // Two parts of one value: `t.b` is dropped before `t.a`, whose holder reads `t.b.s`.
+        (
+            "    let t = TwoBad { b: mkpo (), a: mkpo () }\n    cross (ref t.a) (ref t.b)\n    n\n",
+            "self_referential_store",
+        ),
+        // The conservative limit that drop.md states: a borrow through a reference that the
+        // argument's value holds (`ref w.p.s`) stands for the whole argument, through which the
+        // store reaches `p1`, which then keeps a borrow of `w`, declared after it (main prints
+        // `drop 8`, `drop 0`, `1`).
+        (
+            "    let p1 = mkpo ()\n    let w = Wrap { p: ref p1 }\n    let p2 = mkpo ()\n    crossw (ref p2) (ref w)\n    n\n",
+            "assignment_extends_borrow",
+        ),
+    ] {
+        rejects_at(&cross_program(body), "E1013", kind, (35, 5));
+    }
+}

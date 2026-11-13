@@ -11,7 +11,7 @@
 | 起票 | 2026-11-13（A31 の 12 回のレビューの最後の回とマージ前の確認から。A31 の先端で再現を確かめた） |
 | 承認 | 不要（危険なプログラムを拒否し、今拒否している安全なプログラムを受理する。言語の意味は変えない） |
 | 改善する劣位 | 不具合（メモリ安全性）と、安全なプログラムを拒否する保守的な制限。A31 は、その場の書き込み・ロックのコールバック・破棄の順序の穴を形ごとの規則で塞いだので、規則の境目に穴と過剰な拒否が残る |
-| 手本にする既存実装 | `src/ownership.rs` の A31 の仕組み（`StoreFacts`、`State::kept`・`kept_elsewhere`・`contents_elsewhere`・`block_shares`、`replaced_value`・`replaced_target`・`replaced_field`、`check_drop_order_of`、`borrow_dropped_first`、`path_copy`・`shared_copy`・`referent_pieces`） |
+| 手本にする既存実装 | `src/ownership.rs` の A31 の仕組み（`StoreFacts`、`State::kept`・`kept_elsewhere`・`contents_elsewhere`・`block_shares`、`replaced_value`・`replaced_target`・`replaced_field`、`check_drop_order_of`、`borrow_dropped_first`、`path_copy`・`shared_copy`・`referent_pieces`、`StoreFacts::kept_paths`・`exact_loans`・`kept_copy`） |
 | 主な影響ファイル | `src/ownership.rs`, `tests/rc.rs`, `tests/mutable_slices.rs`, `tests/fixtures/in_place_writes/Main.tz`, `tests/features.mjs`, `_tsuzuri/language-reference/ownership-and-memory/drop.md`, `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`, `docs/language.md`, `docs/architecture.md`, `_features/README.md` |
 
 ## 目的
@@ -49,9 +49,12 @@ A31 の先端（`target/wt/a31`、edition 2027 と 2026）で確かめました�
 | `slice_self_safe_elem`（`target/wt/a31/target/scratch/review-a31-conf-r10/p/slice_self_safe_elem`）と `arr_elem_safe` | 配列やビューの要素の部分の借用を同じ要素へ書き込む（安全な順序）。要素は添字を区別しない | `15:5` `E1013`（`self_referential_store`） | 受理 |
 | `fx3`（`target/wt/a31/target/scratch/a31/r10/e2e/fx3`、edition 2027） | 書き込むセルを自分で所有する関数値があるプログラムで、本体の見えない関数値へ `ref mut p` を渡す（隠れた環境の規則で、どの部分か分からない自己の借用） | `1056:5` `E1013` | 受理 |
 | `h01`（`target/wt/a31/target/scratch/review-a31-conf-r12/p/h01_parts_two_params_safe`） | 2 つの参照の仮引数の先の部分を関数値へ渡す（`fn apply2 f a b = { f (ref a.h) (ref b.s); 0 }`）呼び出しの一時値の順序。`Source::passed` と `origin` は仮引数をそのまま渡すときしか表さない | `104:12` `E1013` | 受理（`drop 8 2 drop 0 2`） |
+| `crossw`（`target/wt/a31/target/scratch/a31/r14/q/viafield_ok`・`viaref`） | 実引数の値が持つ参照の先の部分（`record Wrap {r} { p: ref {r} PairOk }` の `ref w.p.s`、`w.p` をそのまま渡す `cross a w.p`）を別の仮引数の先へ書き込む関数の呼び出し。region が 1 つの仮引数の外部の loan は先と region の両方を表すので、本体はその借用の場所を `w` の先の部分と区別できず（`Checker::exact_loan`）、呼び出し元は `w` 全体の借用を書き込み先に残し、その後の格納が `w` を通して `p1` へ届くものとして扱う | `20:5` `E1013`（`assignment_extends_borrow`） | 受理（`drop 8`・`drop 0`・`1`） |
 | `r06`・`r11`（`target/wt/a31/target/scratch/review-a31-conf-r12/p/r06_rs_good_same_scope_reassign`・`r11_rs_good_same_scope_move`） | `Rc.share (ref rc)` の持ち主を通して `rc` のブロックへ自分の部分の借用を書き込み、持ち主がスコープにある間に `rc` を代入・ムーブする。持ち主が借用を持ち続ける | `105:5`・`105:17` `E1014` | 受理 |
 | `r07`・`r10`（同じディレクトリの `r07_rs_good_inner_block_move`・`r10_direct_self_move_rc`） | ブロックが自分の部分の借用を持つ `Rc` のムーブ（`main` も `Rc.get` の借用が生きている間のムーブは `E1014`。ブロックは動かないので実際には安全） | `103:17`・`104:17` `E1014` | 受理 |
 | `m_named_owned`（`target/wt/a31/target/scratch/a31/L_m_named_owned`） | 所有の値だけを書く名前付き関数をロックのコールバックにする。ロックの組み込み関数はコールバックを実行する見えないコードなので、A28 の除外が事実を使わない | `13:5` `E1013` | 同じく拒否（A30 の誤った拒否） |
+
+A32 の 5 度目の merge（2026-11-13）が見つけた、名前付き関数の直接の呼び出し `cross (ref p2) (ref p1)`（`cross a b` が `b.s` の借用を `a.h` の `Mutex` へ書き込む。`target/wt/a32/target/scratch/a32/merge5/s01/red/p/loc_direct`）の文書に無い拒否は、A31 のマージ前の追加の修正（`StoreFacts::kept_paths`。[チケット](_completed/A31-in-place-writes-keep-stored-borrows.md)の「マージ前の追加の修正」）で直しました。参照の先のフィールドを通した綴り（上の `crossw`）だけが残ります。
 
 起票の依頼が挙げた `N_closed_cell_read`（`target/wt/a31/target/scratch/a31/N_closed_cell_read`）は、A31 の先端で両方の edition とも受理され、値は `main` と同じです（A31 の閉じた関数の取り消しの後も closed のまま）。制限ではありません。
 
@@ -98,7 +101,7 @@ done
 
 1. 記憶域の表を足し、今の規則の結果を変えずにそれで表す（`kept`・`kept_elsewhere`・`contents_elsewhere`・`block_shares` を表の問い合わせに置き換える）。A31 のテストと E2E、レビューのコーパス（下）の結果が変わらないこと。
 2. 格納先を場所の粒度で記録し、置き換え（`replaced_value`・`replaced_target`・`replaced_field`）とムーブを記憶域の解放として扱う。「未修正の穴」と、制限のうち `mix4`・`w05`・`r06`・`r07`・`r10`・`r11`・`f02` を直す。
-3. 要素の添字（`slice_self_safe_elem`）、2 つの仮引数の部分（`h01`）、パイプラインの共有（`g08`）、隠れた環境（`fx3`）、ロックのコールバックの名前付き関数（`m_named_owned`）を、表が区別できる範囲で直す。
+3. 要素の添字（`slice_self_safe_elem`）、2 つの仮引数の部分（`h01`）、参照の先のフィールドを通した部分（`crossw`）、パイプラインの共有（`g08`）、隠れた環境（`fx3`）、ロックのコールバックの名前付き関数（`m_named_owned`）を、表が区別できる範囲で直す。
 4. `expand_shares` の連なりの展開を、ブロックの持ち主の組ごとに 1 度にする（検査の時間）。
 
 ### 関門: 敵対的なレビューを続ける
