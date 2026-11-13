@@ -1499,3 +1499,25 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 更新した文書: `_tsuzuri/language-reference/ownership-and-memory/drop.md`（解放の位置の表に `where` の束縛・`for` の変数・`deref p = v` の古い値・フィールドの古い値・借用の先の値が持つものを足し、`Rc`・`Arc` のブロックの行に別の持ち主を通した借用を足しました。値全体の代入（代入の後のムーブ、`deref p = v`、フィールドの代入とその制限）、`ref mut` の仮引数を通した自分自身の部分（`ref mut`・`ref` の変数とパイプライン）、値の自分自身の部分（`Rc.share` を通した借用、関数値へ渡した部分）の段落と、借用の先の値が持つもの・`for` の変数と `where` の束縛の段落）、`lifetimes.md`（変数とパイプラインを通した呼び出し、`deref p = v`、借用の先の値が持つもの）、`docs/language.md`・`docs/architecture.md`（破棄の順序の段落）、`_features/README.md`（A31 の行）。
 
 変えたファイル: `src/ownership.rs`、`src/ownership_control.rs`、`tests/rc.rs`、`tests/features.mjs`、`tests/fixtures/in_place_writes/Main.tz`、上の文書、このチケット。
+
+### マージ前の確認（2026-11-13）
+
+マージの条件（オーケストレーターの決定、2026-11-13）は、(1) 基準（main、`b3dd7f1c`、`target/scratch/base/tsuzuri`）が拒否する危険なプログラムを受理しないこと、(2) このチケットと監査のベースラインの危険なプログラムをすべて拒否すること、(3) 基準が受理する安全なプログラムを、文書に書いた保守的な制限を除いて受理のまま保つことです。基準も受理する穴はマージを止めません。この確認は (1) を、今までのすべてのプログラムで基準と対応後（`8890c1aa` の開発用のビルド、ソースは `b224c570`）を直接比べて確かめたものです。分類の表・道具・結果は `target/scratch/a31/gate/` にあります（表は `relative-soundness.md`）。
+
+- 対象: 中身で重複を除いた 12141 個のプログラムです。`target/scratch/review-a31-*`（第 1〜12 回のレビュー。第 12 回のレビューが足している途中のプログラムも、2 度集めて含めました）、`target/scratch/a31/`（r1〜r12 の探査、`_adv`・`_docs`・`_docs2`・`_twins`、監査の写し）、監査のベースライン `target/scratch/audit-A31`、A32 のレビューと merge のプログラム（`target/wt/a32/target/scratch/review-a32-*` と `a32/` の merge2〜merge4・review1〜4b・baseline・stack）の、Main.tz を持つすべてのディレクトリ（12352 個、重複を除いて 10442 個）と、この領域の Rust のテスト 17 本（`rc`・`mutable_slices`・`currying`・`borrowed_records`・`slices`・`matrix_views`・`concurrency`・`sync_types`・`tzroutine`・`user_drop`・`parameter_conventions`・`types_ownership`・`consuming_update`・`last_use`・`effects_trap`・`effects_alloc_conservative`・`closure_representation`）の中に書いたプログラム（1699 個）です。テストのプログラムは、`analyze_modules_in_edition` に一時的に足した環境変数のフックで書き出しました（フックは元に戻し、コミットしていません）。`tests/fixtures` と `examples` は、各回の step5 の比較で基準と同じ出力です。
+- 方法: 各プログラムを両方のバイナリの `check --json` で、edition 2027 と 2026 で検査しました（Tsuzuri.toml を持つプロジェクトは edition を書き換えた写しで検査）。24282 組です。基準が拒否し対応後が受理する組（RA）は、対応後のバイナリで native の `-O0`・`-O3` と AddressSanitizer のビルド（`-O0`・`-O3`。`TSUZURI_CLANG` に置いた `gate/tools/asan-clang.sh` が、プログラムの IR のすべての関数に `sanitize_address` を、C の runtime に `-fsanitize=address` を付け、`ASAN_OPTIONS=detect_stack_use_after_return=1` で実行）で実行し、ソースから手で求めた値と比べました。ASan の手順は、基準が受理する監査の `h1_single_write` で、`-O0` の stack-use-after-return を報告することを確かめてあります。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 4085 | 3171 |
+| 両方が拒否 | 4785 | 6391 |
+| 基準が拒否し対応後が受理（RA） | 14 | 14 |
+| 基準が受理し対応後が拒否（AR） | 3257 | 2565 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 28 組（15 個）で、すべて安全です。** 危険なものは 0 個で、マージを止めるものはありません。どれも `-O0`・`-O3`・ASan の `-O0`・`-O3` の出力が同じで、手で求めた値と一致し、ASan は何も報告しません。内訳は、A28 のプログラム全体の除外（プログラムのどこかに追跡しない `Array.write` があると事実も読み通しも使わない）で基準が拒否していた形 14 個（`a31/_docs/t2`・`t8`・`t10`、`a31/_docs2/le_set_ok`・`le_top_write`・`rc_excl_set`・`rc_excl_cb`（2026 だけ。2027 は `Array.map` のラムダの除外で両方とも `E1014`）、監査の `D_ctl_drop_no_loan`、`review-a31-conf/p/d_set`、`tests/currying.rs` の 4 個と `tests/rc.rs` の 1 個。A31 が期待を受理に変えたテストです）と、フィールドの代入が古い値の借用を外す形 1 個（`review-a31-ce-r12/i03_plain_field_replace_safe`、2027 だけ。基準はフィールドの代入の後も古い値の loan を残して `E1014`。値は 41）です。
+- この確認で書いた探査（`gate/probes/`、47 個 × 2 edition）: 基準に対する緩め方（フィールドと値全体の代入が古い値の loan を外すこと、A28 のプログラム全体の除外を外したこと）を狙い、古い値を別の場所へ移した後の代入、片方の枝だけの代入、新しい値が同じ借用を捕捉する代入、兄弟のフィールドや同じ `Rc` のブロックや `Mutex` が借用を持つ形、呼び出し先・名前付きのロックのコールバック・3 段の中継・返された書き込み関数・フィールドの書き込み関数・`Array.fill`・`Drop` を通した格納などを書きました。RA は 7 組（`f06`・`f11`・`f21` の 2027、`u11`・`u15` の両方）で、すべて手で求めた値と一致し ASan も何も報告しません。危険な形の受理は 0 個です。基準が受理し対応後が拒否したのは `u03`（名前付きの関数をロックのコールバックにした格納）と `u14`（ロックのコールバックで局所値の借用を格納）で、どちらも基準の穴です。
+- AR は 5822 組（3327 個）で、ほとんどはレビューの反例を A31 が塞いだものです（誤りの kind は `assignment_extends_borrow`・`borrow_conflict`・`self_referential_store`・`store_local_borrow_through_reference` など）。条件 (3) は各回のレビューの対応で、その回の前の先端と比べて確かめてきたので、この確認では全部を判定し直していません。基準のバイナリで 479 個を実行し（`-O0`・`-O3`・ASan の `-O0`）、171 個で ASan が誤りを報告しました（ASan が何も報告しないことは安全を示しません。レビューの反例の多くは、ムーブや置き換えの後の、まだ解放されていない値を読みます）。名前が安全を示す AR（`safe`・`ok`・`ctl`・`twin`・`c` で終わる ID）105 組は表の「AR」の節に分けました: 基準の実行で危険と分かったもの 42 組（ASan、または安全な順序の値と違う `-1`・`0` など）、このチケットか文書が保守的な制限として書いているもの 32 組（`a06b`・`a19c`・`a20`、`o01`、`arr_elem_safe`・`slice_self_safe_elem` と同じ要素の形（`d10_view_safe_order` の 9 個）、`ok_w_lock`、基準が代入の双子を同じ誤りで拒否する形（`ctl_scope_rule2`・`sh16`・`sh17`）、セルを所有する関数値の規則（`na05`・`na06`）、ロックのコールバックの規則（`mutex_contents_safe`）など）、判定していないもの 31 組です。判定していないものは、第 12 回のレビューが今調べているプログラム 12 組と、`hid_arm_safe`・`hid_param2_safe`・`hid_tmp_safe`（第 10・11 回の適合の確認と、その A32 の綴り 15 個）19 組です。後者は基準の実行が安全な値を出し、形は `lifetimes.md` の隠れた環境の規則（書き込むセルを自分で所有する関数値はコピーが借用を持たずにセルを共有する）に当たるので、文書に書いた制限だと考えられますが、この確認では確かめていません。
+- 両方が拒否し最初の誤りが違うものは 14 組（7 個）で、位置か kind だけの違いです。検査の失敗はありません。
+- 変更: 危険な RA が無かったので、コンパイラーもテストも変えていません。別のチケット（A33）に送る穴も、この確認では見つかりませんでした。
+- T1（2026-11-13、変更の無い枝の先端で）: `node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast` は 3062 件すべて成功、4 件 skip（1067 秒、`gate/nextest.log`）。
