@@ -5338,6 +5338,172 @@ fn nested_narrowing_arms_check_each_body_once() {
     passes(&source, Edition::E2027);
 }
 
+/// `(subject, maker, matched, arm)` of `nested_element_narrowings`.
+type ElementForm = (&'static str, &'static str, &'static str, &'static str);
+
+/// `def {name} :: i64 -> i64`: `depth` nested matches of `{matched}`, where `v` is the value of
+/// type `{subject}` that `mk_{name} n` makes with `{maker}`. The first arm of each match is
+/// `{arm}` (`{x}` is the binder of the level), whose body adds `num {x}` (`NUM`) to the next
+/// level, or to 0 at the innermost; the second is `_ -> 1`.
+fn nested_element_narrowings(
+    name: &str,
+    depth: usize,
+    (subject, maker, matched, arm): ElementForm,
+) -> String {
+    let mut source = format!(
+        "def mk_{name} :: i64 -> {subject} = \\n -> {maker}\n\n\
+         def {name} :: i64 -> i64 = \\n ->\n    let v = mk_{name} n\n"
+    );
+    for level in 0..depth {
+        let pad = "    ".repeat(level + 1);
+        let x = format!("x{level}");
+        let arm = arm.replace("{x}", &x);
+        source.push_str(&format!(
+            "{pad}match {matched} with\n{pad}| {arm} -> num {x} + (\n"
+        ));
+    }
+    source.push_str(&format!("{}0\n", "    ".repeat(depth + 1)));
+    for level in (0..depth).rev() {
+        let pad = "    ".repeat(level + 1);
+        source.push_str(&format!("{pad}    )\n{pad}| _ -> 1\n"));
+    }
+    source.push('\n');
+    source
+}
+
+/// The forms of `nested_element_narrowings`: narrowings of elements of an array or a list
+/// (Copilot review round 5), of one element and of two, of an element bound whole with `as`
+/// too, of the head of a list beside its tail, of a part of a tuple element, of an element of
+/// an array in a tuple and of an element behind a reference; then the projections that were
+/// compared before (a tuple part, a case payload, the matched value). `mk_{name} n` puts the
+/// i64 `n` at every place that the arm narrows for a positive `n`, and a bool there otherwise.
+const ELEMENT_NARROWINGS: [(&str, ElementForm); 11] = [
+    (
+        "array",
+        (
+            "[(i64 | f64 | bool)]",
+            "if n > 0 then [n] else [true]",
+            "v",
+            "[:? (i64 | f64) as {x}]",
+        ),
+    ),
+    (
+        "pair",
+        (
+            "[(i64 | f64 | bool)]",
+            "if n > 0 then [n, n] else [true, true]",
+            "v",
+            "[:? (i64 | f64) as {x}, :? (i64 | f64) as _{x}]",
+        ),
+    ),
+    (
+        "whole",
+        (
+            "[(i64 | f64 | bool)]",
+            "if n > 0 then [n] else [true]",
+            "v",
+            "[(:? (i64 | f64) as {x}) as _{x}]",
+        ),
+    ),
+    (
+        "list",
+        (
+            "[|(i64 | f64 | bool)|]",
+            "if n > 0 then [|n|] else [|true|]",
+            "v",
+            "[| :? (i64 | f64) as {x} |]",
+        ),
+    ),
+    (
+        "cons",
+        (
+            "[|(i64 | f64 | bool)|]",
+            "if n > 0 then [|n|] else [|true|]",
+            "v",
+            "(:? (i64 | f64) as {x}) :: _{x}",
+        ),
+    ),
+    (
+        "in_tuple",
+        (
+            "[((i64 | f64 | bool) * i64)]",
+            "if n > 0 then [(n, 1)] else [(true, 1)]",
+            "v",
+            "[(:? (i64 | f64) as {x}, _)]",
+        ),
+    ),
+    (
+        "of_tuple",
+        (
+            "([(i64 | f64 | bool)] * i64)",
+            "if n > 0 then ([n], 1) else ([true], 1)",
+            "v",
+            "([:? (i64 | f64) as {x}], _)",
+        ),
+    ),
+    (
+        "borrowed",
+        (
+            "[(i64 | f64 | bool)]",
+            "if n > 0 then [n] else [true]",
+            "(ref v)",
+            "[:? (i64 | f64) as {x}]",
+        ),
+    ),
+    (
+        "tuple",
+        (
+            "((i64 | f64 | bool) * i64)",
+            "if n > 0 then (n, 1) else (true, 1)",
+            "v",
+            "(:? (i64 | f64) as {x}, _)",
+        ),
+    ),
+    (
+        "payload",
+        (
+            "Maybe<(i64 | f64 | bool)>",
+            "if n > 0 then Some n else Some true",
+            "v",
+            "Some (:? (i64 | f64) as {x})",
+        ),
+    ),
+    (
+        "local",
+        (
+            "(i64 | f64 | bool)",
+            "if n > 0 then n else true",
+            "v",
+            ":? (i64 | f64) as {x}",
+        ),
+    ),
+];
+
+#[test]
+fn nested_element_narrowings_check_each_body_once() {
+    // The alternatives of a narrowing of an element bind the same element: their projections
+    // index the same collection at the same constant, which `same_projection` compares. A match
+    // nested 30 deep in such arms was 2^30 visits of the innermost body (4^30 for two elements),
+    // as for the matched value in `nested_narrowing_arms_check_each_body_once`, because two
+    // indexed projections never compared equal (Copilot review round 5).
+    for (name, form) in ELEMENT_NARROWINGS {
+        let source = format!("{NUM}{}", nested_element_narrowings(name, 30, form));
+        accepts_in(&source, Edition::E2027);
+    }
+    // Expected values by hand: every level of a match nested 3 deep narrows the i64 5, which
+    // `num` doubles (10 each, 30 in all), for 5; for -1 the outer level meets the bool (1).
+    let mut source = NUM.to_owned();
+    let mut checks = String::from("test \"nested\" =\n");
+    for (name, form) in ELEMENT_NARROWINGS {
+        source.push_str(&nested_element_narrowings(name, 3, form));
+        checks.push_str(&format!(
+            "    assert ({name} 5 == 30 && {name} (-1) == 1)\n"
+        ));
+    }
+    source.push_str(&checks);
+    passes(&source, Edition::E2027);
+}
+
 #[test]
 fn narrowing_arms_may_move_or_replace_the_matched_value() {
     // A narrowing of Copy members copies the payload and leaves the matched value to the arm,
