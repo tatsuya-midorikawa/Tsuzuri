@@ -125,9 +125,9 @@ try {
     assert.notEqual(reached.status, 0);
     assert.match(reached.stderr, /pb03_missing_symbol/);
 
-    // 10. `tsuzuri run` instruments traps. Two runtime parts that share a line (`}define ...`) are two functions, and pruning an unused
-    // function that sends on a `DataChannel` removes the line break between them (`tree_channel` built before, `tree` did not build
-    // at all).
+    // 10. `tsuzuri run` instruments traps. Before TZ15 two runtime parts shared a line (`}define ...`), and pruning an unused function
+    // that sends on a `DataChannel` removed the line break between them (`tree_channel` built before PB03, `tree` did not build at
+    // all). The runtime parts end with a newline now; both programs still run.
     if (!windows) {
       for (const name of ["tree", "tree_channel"]) {
         const result = execute(compiler, ["run", project(name), optimization, "--no-cache"]);

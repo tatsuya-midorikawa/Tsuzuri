@@ -637,7 +637,7 @@ impl DebugContext {
         let shape = union_layout(union, arguments, module);
         let recursive = module.types().recursive(ty);
         if matches!(shape, UnionLayout::Enum) && !recursive {
-            return self.tag_type(union, ty, display, module, next, definitions);
+            return self.tag_type((union, arguments), ty, display, module, next, definitions);
         }
         if let UnionLayout::Niche { niche, none, .. } = shape {
             return self.niche_union_type(
@@ -650,7 +650,7 @@ impl DebugContext {
             );
         }
         let tag = self.tag_type(
-            union,
+            (union, arguments),
             ty,
             &format!("{display}.$tag"),
             module,
@@ -729,7 +729,8 @@ impl DebugContext {
     }
 
     /// The `$payload` C union of the union `union`, which has a member for each case with a
-    /// payload, in `storage` bytes `(size, alignment)`; none for a union without payloads.
+    /// payload, in `storage` bytes `(size, alignment)`; none for a union without payloads. The
+    /// members of an anonymous union (A24) are named by their types, as `case_names` says.
     fn payload_union(
         &mut self,
         (union, arguments): (usize, &[Type]),
@@ -739,11 +740,10 @@ impl DebugContext {
         next: &mut usize,
         definitions: &mut Vec<String>,
     ) -> Option<usize> {
-        let payloads: Vec<_> = module.unions[union]
-            .cases
-            .iter()
+        let payloads: Vec<_> = case_names(union, arguments, module)
+            .into_iter()
             .zip(module.types().union_payloads(union, arguments))
-            .filter_map(|((case, _), payload)| Some((case.clone(), payload?)))
+            .filter_map(|(case, payload)| Some((case, payload?)))
             .collect();
         if payloads.is_empty() {
             return None;
@@ -849,7 +849,7 @@ impl DebugContext {
     /// enumerator per case.
     fn tag_type(
         &mut self,
-        union: usize,
+        (union, arguments): (usize, &[Type]),
         ty: &Type,
         name: &str,
         module: &CheckedModule,
@@ -860,11 +860,10 @@ impl DebugContext {
         let integer = Type::Integer(bits as u16, bits == 32);
         self.ty(&integer, module, next, definitions);
         let base = self.bases[&integer];
-        let enumerators: Vec<_> = module.unions[union]
-            .cases
+        let enumerators: Vec<_> = case_names(union, arguments, module)
             .iter()
             .enumerate()
-            .map(|(value, (case, _))| {
+            .map(|(value, case)| {
                 metadata(
                     next,
                     definitions,
@@ -878,6 +877,27 @@ impl DebugContext {
             quote(name)
         )
     }
+}
+
+/// The names of the cases of the union `union` with `arguments`, in tag order: the declared names,
+/// or for an anonymous union (A24) its members as `Type::display` writes them (`i64`, `string`),
+/// never the synthesized cases. The members are distinct types with distinct displays, so the
+/// names are distinct; the enumerators of `$tag` and the members of `$payload` share them, which
+/// the formatter of `scripts/lldb` relies on to find the payload of the active case.
+fn case_names(union: usize, arguments: &[Type], module: &CheckedModule) -> Vec<String> {
+    let declaration = &module.unions[union];
+    if declaration.is_anonymous() && arguments.len() == declaration.cases.len() {
+        let types = module.types();
+        return arguments
+            .iter()
+            .map(|member| member.display(&types))
+            .collect();
+    }
+    declaration
+        .cases
+        .iter()
+        .map(|(case, _)| case.clone())
+        .collect()
 }
 
 impl Member {

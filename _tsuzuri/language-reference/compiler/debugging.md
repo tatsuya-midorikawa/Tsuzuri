@@ -101,10 +101,11 @@ show 40
 | すべての case が値を持たない union | case 名。`Green` |
 | 値を持つ case がある union（`Maybe`・`Result` を含む） | `Rect(1.5, 2)`、`Some(40)`、`None`、`Error("bad")`。子は有効な case の値だけ |
 | 再帰する union | `Node(Leaf, 40, Leaf)`。値を持たない case はノードを持たず、その case 名を表示します |
+| [匿名共用体](../built-in-types-and-modules/anonymous-union.md) | 要素の型名と値。`i64(42)`、`string("abc")`、`(i64 * string)(7, "p")`、`Some(i64(45))`。型名は `((i64 \| string)) number` のように要素で表示します |
 | `Map`・`Set` | `size=1` と、キー順の要素 `[0]`、`[1]`… |
 | 関数値 | `<fn Main.show.lambda@12:15>` のように呼び出す関数の名前 |
 
-LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読み込まない LLDB や GDB でも、DWARF だけで整数などの型名、値を持たない union の case 名、union の `$tag` の case 名が読めます。union の DWARF は、タグを `$tag`、値を `$payload`（case 名をメンバー名とする C の union）に持つ構造体です。`Maybe<string>` のように、値を持たない case と文字列・配列の値を持つ case だけの union（ネイティブでは `ref` の値を持つ case だけの union も）はタグを持たないので、`$tag` の代わりに `$niche` を持ちます。`$niche` は `$payload` に重なる列挙型で、値を持たない case の列挙子が、文字列・配列では `-1`（負の長さ）、`ref` では `0`（null ポインター）、関数値では `0`（null の記述子。`$niche` はポインターの幅）です。`$niche` の値がその列挙子と等しければその case、そうでなければ `$payload` の case です。formatter を読み込まない LLDB でも、`$niche` が値を持たない case の列挙子なら case 名が読めます。`$` は Tsuzuri の識別子に使えないので、record のフィールドとは衝突しません。record の DWARF のメンバーは宣言の順に並び、offset はフィールドを格納している位置です（アライメントの大きい順に並べ替えて格納する record では、宣言の順と offset の順が違います。[Record](../built-in-types-and-modules/record.md#メモリ上の大きさ)）。デバッガーはその offset から値を読むので、表示は宣言の順のままです。
+LLDB は浮動小数点の `2.0` を `2` と表示します。formatter を読み込まない LLDB や GDB でも、DWARF だけで整数などの型名、値を持たない union の case 名、union の `$tag` の case 名が読めます。union の DWARF は、タグを `$tag`、値を `$payload`（case 名をメンバー名とする C の union）に持つ構造体です。匿名共用体では、`$tag` の列挙子と `$payload` のメンバーの名前が要素の型の表示（`i64`、`(i64 * string)`）です。`Maybe<string>` のように、値を持たない case と文字列・配列の値を持つ case だけの union（ネイティブでは `ref` の値を持つ case だけの union も）はタグを持たないので、`$tag` の代わりに `$niche` を持ちます。`$niche` は `$payload` に重なる列挙型で、値を持たない case の列挙子が、文字列・配列では `-1`（負の長さ）、`ref` では `0`（null ポインター）、関数値では `0`（null の記述子。`$niche` はポインターの幅）です。`$niche` の値がその列挙子と等しければその case、そうでなければ `$payload` の case です。formatter を読み込まない LLDB でも、`$niche` が値を持たない case の列挙子なら case 名が読めます。`$` は Tsuzuri の識別子に使えないので、record のフィールドとは衝突しません。record の DWARF のメンバーは宣言の順に並び、offset はフィールドを格納している位置です（アライメントの大きい順に並べ替えて格納する record では、宣言の順と offset の順が違います。[Record](../built-in-types-and-modules/record.md#メモリ上の大きさ)）。デバッガーはその offset から値を読むので、表示は宣言の順のままです。
 
 ### 読めない値と上限
 

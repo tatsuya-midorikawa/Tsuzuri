@@ -373,10 +373,11 @@ impl Sites {
     }
 }
 
-/// The lines of `ir`. The emitter appends a runtime part right behind the last line of the text before it, and a
-/// part that follows a function without a line break of its own (`}define ...`) shares the line of that function's
-/// closing brace. LLVM reads it, but the instrumentation works line by line: it would take the function for the part
-/// of the one before it. The brace and the rest are the two lines that they are.
+/// The lines of `ir`. A part that is appended right behind a function without a line break of its own (`}define ...`)
+/// shares the line of that function's closing brace. LLVM reads it, but the instrumentation works line by line: it
+/// would take the function for the part of the one before it. The brace and the rest are the two lines that they are.
+/// The runtime parts end with a newline since TZ15, so the emitter makes no such line; the split stays as a guard for
+/// IR that is joined in another way.
 fn ir_lines(ir: &str) -> impl Iterator<Item = &str> {
     ir.lines()
         .flat_map(|line| match line.strip_prefix('}') {
@@ -916,6 +917,38 @@ fn source_modules(module: &CheckedModule) -> BTreeMap<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The runtime pieces end with a newline (TZ15), so no emitted program has a function on the line of another
+    /// one's closing brace; the line passes still read such IR, which a hand-joined or external text can have.
+    #[test]
+    fn a_definition_after_a_closing_brace_is_a_line_of_its_own() {
+        let ir = "define void @a() {\nentry:\n  ret void\n}define void @b() !dbg !7 {\nentry:\n  ret void\n}; note\n\
+                  define void @c() {\nentry:\n  ret void\n}\n";
+        assert_eq!(
+            ir_lines(ir).collect::<Vec<_>>(),
+            [
+                "define void @a() {",
+                "entry:",
+                "  ret void",
+                "}",
+                "define void @b() !dbg !7 {",
+                "entry:",
+                "  ret void",
+                "}",
+                "; note",
+                "define void @c() {",
+                "entry:",
+                "  ret void",
+                "}",
+            ]
+        );
+        assert_eq!(
+            with_frame_pointers(ir),
+            "define void @a() \"frame-pointer\"=\"all\" {\nentry:\n  ret void\n\
+             }define void @b() \"frame-pointer\"=\"all\" !dbg !7 {\nentry:\n  ret void\n}; note\n\
+             define void @c() \"frame-pointer\"=\"all\" {\nentry:\n  ret void\n}\n"
+        );
+    }
 
     /// The last place of the last block gives the largest numbers of a stable numbering; with every kind they are
     /// still positive `i32` values, which the wasm32 export `tsuzuri_trap_site` returns.

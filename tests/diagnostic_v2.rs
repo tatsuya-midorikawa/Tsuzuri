@@ -479,9 +479,14 @@ fn line_of(source: &str, span: Span) -> usize {
 
 /// Runs `tsuzuri check [--json]` on a project made of `files`; returns the exit code and stderr.
 fn check_cli(files: &[(&str, &str)], json: bool) -> (i32, String) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // `cargo test` runs the tests of this file as threads of one process, and two of them can read
+    // the same clock: every call takes its own number.
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
-        "tsuzuri-diagnostic-v2-{}-{}",
+        "tsuzuri-diagnostic-v2-{}-{}-{}",
         std::process::id(),
+        CALLS.fetch_add(1, Ordering::Relaxed),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

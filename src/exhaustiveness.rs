@@ -16,6 +16,63 @@ use super::*;
 /// Row visits that the matrix search may spend on one match.
 const MAX_WORK: usize = 1 << 24;
 
+/// The declaration names of a type as source code in `module` writes them, for a type test that a
+/// witness names (Copilot review round 5): each declaration as `Names::type_spelling_in` and
+/// `Names::class_spelling_in` spell it. A declaration that no name in sight names keeps its
+/// `Type::display` text and sets `unnamed`.
+struct Scoped<'n, 't> {
+    names: &'n Names,
+    types: &'n TypeContext<'t>,
+    module: &'n str,
+    unnamed: std::cell::Cell<bool>,
+}
+
+impl Scoped<'_, '_> {
+    fn spelled(&self, spelling: Option<String>, fallback: &str) -> String {
+        spelling.unwrap_or_else(|| {
+            self.unnamed.set(true);
+            type_display(fallback)
+        })
+    }
+}
+
+impl DeclarationNames for Scoped<'_, '_> {
+    fn record_name(&self, id: usize) -> &str {
+        self.types.record_name(id)
+    }
+
+    fn union_name(&self, id: usize) -> &str {
+        self.types.union_name(id)
+    }
+
+    fn record_display(&self, id: usize) -> String {
+        let qualified = self.types.record_name(id);
+        self.spelled(
+            self.names.type_spelling_in(self.module, qualified),
+            qualified,
+        )
+    }
+
+    fn union_display(&self, id: usize) -> String {
+        let qualified = self.types.union_name(id);
+        self.spelled(
+            self.names.type_spelling_in(self.module, qualified),
+            qualified,
+        )
+    }
+
+    fn handle_display(&self, qualified: &str) -> String {
+        self.spelled(
+            self.names.type_spelling_in(self.module, qualified),
+            qualified,
+        )
+    }
+
+    fn class_display(&self, key: &str) -> String {
+        self.spelled(self.names.class_spelling_in(self.module, key), key)
+    }
+}
+
 /// The values that one pattern covers.
 #[derive(Clone, Debug)]
 pub(super) enum CoveragePat {
@@ -86,6 +143,10 @@ pub(super) enum LiteralKey {
 /// The arms of one explicit match or function guard.
 pub(super) struct MatchCoverage {
     pub(super) span: Span,
+    /// The type of the matched value as the match saw it, resolved when the coverage is checked.
+    /// A witness of an anonymous union names its member by this type (D7, A24): every anonymous
+    /// union of n members shares one declaration, so the case alone does not tell the member.
+    pub(super) scrutinee: Type,
     pub(super) arms: Vec<CoverageArm>,
     /// The end of the last arm of an explicit `match ... with`, where one more arm can be
     /// written; `None` for a function guard. The span of a parenthesized match includes the
@@ -248,7 +309,8 @@ impl Checker<'_> {
             }
             let wild = search.wild.clone();
             if let Some(witness) = search.run(rows.clone(), push(wild, None), true)? {
-                let missing = self.witness(&witness, coverage.span);
+                let scrutinee = Some(self.inference.resolve(&coverage.scrutinee));
+                let missing = self.witness(&witness, scrutinee.as_ref(), coverage.span);
                 let mut error = Diagnostic::of(
                     DiagnosticKind::NonExhaustiveMatch,
                     format!("match is not exhaustive; missing: {missing}"),
@@ -259,7 +321,8 @@ impl Checker<'_> {
                 ));
                 // The arm has no indentation: the checker does not have the text of the source.
                 if let Some(end) = coverage.append_at
-                    && let Some(arms) = self.missing_arms(&mut search, rows, witness)
+                    && let Some(arms) =
+                        self.missing_arms(&mut search, rows, witness, scrutinee.as_ref())
                 {
                     let end = Span {
                         start: end,
@@ -291,17 +354,18 @@ impl Checker<'_> {
         search: &mut Search<'_, '_>,
         mut rows: Vec<Row>,
         witness: Witness,
+        scrutinee: Option<&Type>,
     ) -> Option<Vec<String>> {
         const MAX_ADDED_ARMS: usize = 8;
         let mut arms = Vec::new();
         let mut next = Some(witness);
         while let Some(witness) = next {
-            if arms.len() == MAX_ADDED_ARMS || !Self::writable(&witness) {
+            if arms.len() == MAX_ADDED_ARMS || !self.writable(&witness, scrutinee) {
                 return None;
             }
             arms.push(format!(
                 "| {} -> unreachable ()",
-                self.witness(&witness, search.span)
+                self.witness(&witness, scrutinee, search.span)
             ));
             rows.push(push(witness_pattern(&witness), None));
             let wild = search.wild.clone();
@@ -311,13 +375,32 @@ impl Checker<'_> {
     }
 
     /// Whether a witness is printed as a pattern that an arm accepts as written: wildcards,
-    /// booleans, `()`, union cases, and tuples of those.
-    fn writable(witness: &Witness) -> bool {
+    /// booleans, `()`, union cases, type tests whose member type is known, and tuples of those.
+    /// `ty` is the type of the value that the witness stands for, when it is known.
+    fn writable(&self, witness: &Witness, ty: Option<&Type>) -> bool {
         match witness {
             Witness::Wild => true,
             Witness::Ctor(Constructor::Bool(_) | Constructor::Unit, _) => true,
-            Witness::Ctor(Constructor::Union { .. } | Constructor::Tuple(_), arguments) => {
-                arguments.iter().all(Self::writable)
+            Witness::Ctor(constructor @ Constructor::Union { union_id, case_id }, arguments) => {
+                if self.names.is_anonymous_union(*union_id) {
+                    // `:? _` is not a pattern: without the member type there is nothing to write,
+                    // nor with a declaration that no name in sight names here.
+                    return self
+                        .type_test_text(*union_id, *case_id, ty)
+                        .is_some_and(|(_, named)| named);
+                }
+                let types = self.witness_types(constructor, ty, arguments.len());
+                arguments
+                    .iter()
+                    .zip(&types)
+                    .all(|(argument, ty)| self.writable(argument, ty.as_ref()))
+            }
+            Witness::Ctor(constructor @ Constructor::Tuple(_), arguments) => {
+                let types = self.witness_types(constructor, ty, arguments.len());
+                arguments
+                    .iter()
+                    .zip(&types)
+                    .all(|(argument, ty)| self.writable(argument, ty.as_ref()))
             }
             Witness::Ctor(
                 Constructor::Record { .. }
@@ -330,13 +413,108 @@ impl Checker<'_> {
         }
     }
 
-    fn witness(&self, witness: &Witness, span: Span) -> String {
+    /// `:? T` for the member that a witness case of the anonymous union `union_id` stands for, and
+    /// whether `T` names its declarations as this match's module does, so that an arm may write
+    /// it. Each record, union, extern type and class is written as `Type::display` writes it when
+    /// that names it here, else by its full name (`std::Maybe` where the module declares a
+    /// `Maybe`), in type arguments and in anonymous unions inside the member too; when one has no
+    /// such name, the text is the one of `Type::display` and the flag is false (Copilot review
+    /// round 5). `None` when the member is not known (D7).
+    fn type_test_text(
+        &self,
+        union_id: usize,
+        case_id: usize,
+        ty: Option<&Type>,
+    ) -> Option<(String, bool)> {
+        let member = self.tested_member(union_id, case_id, ty)?;
+        let scoped = Scoped {
+            names: self.names,
+            types: &self.types,
+            module: self.module,
+            unnamed: std::cell::Cell::new(false),
+        };
+        let text = anonymous_union::type_test_text(Some(&member), &scoped)?;
+        if scoped.unnamed.get() {
+            let text = anonymous_union::type_test_text(Some(&member), &self.types)?;
+            return Some((text, false));
+        }
+        Some((text, true))
+    }
+
+    /// The member that a witness case of the anonymous union `union_id` stands for, from the type
+    /// of the matched value (D7). `None` when that type is not known to be this union.
+    fn tested_member(&self, union_id: usize, case_id: usize, ty: Option<&Type>) -> Option<Type> {
+        match ty.map(Self::matched_type) {
+            Some(Type::Union(id, members)) if id == union_id => members.get(case_id).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The type that patterns see for a value of type `ty`: references are dereferenced, as
+    /// `pattern_alternatives` does before it matches cases, tuples and the other constructors.
+    fn matched_type(ty: &Type) -> Type {
+        let mut ty = ty.clone();
+        while let Some(inner) = ty.dereferenced() {
+            ty = inner;
+        }
+        ty
+    }
+
+    /// The types of the `count` arguments of a witness constructor, for a value of type `ty`
+    /// (resolved); `None` for an argument whose type is not known.
+    fn witness_types(
+        &self,
+        constructor: &Constructor,
+        ty: Option<&Type>,
+        count: usize,
+    ) -> Vec<Option<Type>> {
+        let ty = ty.map(Self::matched_type);
+        let types: Option<Vec<Type>> = match (constructor, &ty) {
+            (Constructor::Union { union_id, case_id }, Some(Type::Union(id, args)))
+                if id == union_id =>
+            {
+                self.types
+                    .union_payload(*id, args, *case_id)
+                    .map(|payload| vec![self.inference.resolve(&payload)])
+            }
+            (Constructor::Tuple(_), Some(Type::Tuple(elements))) => Some(elements.clone()),
+            (Constructor::Record { record_id, .. }, Some(Type::Record(id, args)))
+                if id == record_id =>
+            {
+                Some(
+                    self.types
+                        .record_fields(*id, args)
+                        .iter()
+                        .map(|field| self.inference.resolve(field))
+                        .collect(),
+                )
+            }
+            (
+                Constructor::ArrayLen(length),
+                Some(Type::Array(element) | Type::FixedArray(element, _)),
+            ) => Some(vec![(**element).clone(); *length]),
+            (Constructor::ListCons, Some(list @ Type::List(element))) => {
+                Some(vec![(**element).clone(), list.clone()])
+            }
+            _ => None,
+        };
+        match types {
+            Some(types) if types.len() == count => types.into_iter().map(Some).collect(),
+            _ => vec![None; count],
+        }
+    }
+
+    /// The text of a witness, for a value of type `ty` when it is known. A case of an anonymous
+    /// union reads as the type test of its member, `:? T`, or `:? _` when the member type is not
+    /// known (D7); every other witness reads as before.
+    fn witness(&self, witness: &Witness, ty: Option<&Type>, span: Span) -> String {
         let Witness::Ctor(constructor, arguments) = witness else {
             return "_".into();
         };
-        let argument = |witness: &Witness| {
-            let text = self.witness(witness, span);
-            if Self::atomic(witness) {
+        let types = self.witness_types(constructor, ty, arguments.len());
+        let argument = |witness: &Witness, ty: &Option<Type>| {
+            let text = self.witness(witness, ty.as_ref(), span);
+            if self.atomic(witness) {
                 text
             } else {
                 format!("({text})")
@@ -345,17 +523,25 @@ impl Checker<'_> {
         let list = |arguments: &[Witness]| {
             arguments
                 .iter()
-                .map(|argument| self.witness(argument, span))
+                .zip(&types)
+                .map(|(argument, ty)| self.witness(argument, ty.as_ref(), span))
                 .collect::<Vec<_>>()
                 .join(", ")
         };
         match constructor {
             Constructor::Bool(value) => value.to_string(),
             Constructor::Unit => "()".into(),
+            Constructor::Union { union_id, case_id }
+                if self.names.is_anonymous_union(*union_id) =>
+            {
+                // A type test binds its whole member, so its payload is always a wildcard.
+                self.type_test_text(*union_id, *case_id, ty)
+                    .map_or_else(|| ":? _".into(), |(text, _)| text)
+            }
             Constructor::Union { union_id, case_id } => {
                 let name = self.case_name(*union_id, *case_id, span);
                 match arguments.first() {
-                    Some(payload) => format!("{name} {}", argument(payload)),
+                    Some(payload) => format!("{name} {}", argument(payload, &types[0])),
                     None => name,
                 }
             }
@@ -364,9 +550,11 @@ impl Checker<'_> {
                 let fields: Vec<_> = self.types.records[*record_id]
                     .fields
                     .iter()
-                    .zip(arguments)
-                    .filter(|(_, witness)| !matches!(witness, Witness::Wild))
-                    .map(|((name, _), witness)| format!("{name} = {}", self.witness(witness, span)))
+                    .zip(arguments.iter().zip(&types))
+                    .filter(|(_, (witness, _))| !matches!(witness, Witness::Wild))
+                    .map(|((name, _), (witness, ty))| {
+                        format!("{name} = {}", self.witness(witness, ty.as_ref(), span))
+                    })
                     .collect();
                 if fields.is_empty() {
                     "_".into()
@@ -378,17 +566,23 @@ impl Checker<'_> {
             Constructor::ListNil => "[||]".into(),
             Constructor::ListCons => format!(
                 "{} :: {}",
-                argument(&arguments[0]),
-                self.witness(&arguments[1], span)
+                argument(&arguments[0], &types[0]),
+                self.witness(&arguments[1], types[1].as_ref(), span)
             ),
             Constructor::Literal(_) => "_".into(),
         }
     }
 
-    /// Whether a witness can be a payload or list head without parentheses.
-    fn atomic(witness: &Witness) -> bool {
+    /// Whether a witness can be a payload or list head without parentheses. A type test is not
+    /// (`Some (:? string)`).
+    fn atomic(&self, witness: &Witness) -> bool {
         match witness {
             Witness::Wild => true,
+            Witness::Ctor(Constructor::Union { union_id, .. }, _)
+                if self.names.is_anonymous_union(*union_id) =>
+            {
+                false
+            }
             Witness::Ctor(Constructor::Union { .. } | Constructor::ListCons, arguments) => {
                 arguments.is_empty()
             }

@@ -240,7 +240,8 @@ fn parse_source(
     Parser::new(source, &tokens, edition).program()
 }
 
-#[derive(Clone)]
+/// Not `Clone`: a speculative read copies the parser with `probe`, which leaves out the records
+/// that grow with the source.
 struct Parser<'a> {
     source: &'a str,
     tokens: &'a [Token],
@@ -275,6 +276,15 @@ struct Parser<'a> {
     pending_statement: Option<ComputationStatement>,
     /// Every `dyn` type parsed so far, for `Program::dyn_types` (A14).
     dyn_types: Vec<TypeExpr>,
+    /// Whether an anonymous union type or a type test pattern was parsed, for
+    /// `Program::uses_anonymous_unions` (A24). Only `own_type_ahead` and `annotation_end` parse
+    /// speculatively, on probes that they drop (`probe`), so the flag never comes from text that
+    /// is not a type or a pattern.
+    uses_anonymous_unions: bool,
+    /// The index of the token after the last `:` and `?` written together, 0 without one (A24):
+    /// `type_test_ahead` finds a type test only before it, so from there on it answers at once,
+    /// and it reads the types of annotations (`annotation_end`) only in a source that writes one.
+    type_tests_end: usize,
     /// The token where the body of the top-level function being parsed starts, the only place
     /// where its contract lines may begin (A21). An explicit lambda moves it to its own body.
     contract_site: Option<usize>,
@@ -315,6 +325,15 @@ impl<'a> Parser<'a> {
             exception_arms: false,
             pending_statement: None,
             dyn_types: Vec::new(),
+            uses_anonymous_unions: false,
+            type_tests_end: tokens
+                .windows(2)
+                .rposition(|pair| {
+                    pair[0].kind == TokenKind::Colon
+                        && pair[1].kind == TokenKind::Question
+                        && pair[0].span.end == pair[1].span.start
+                })
+                .map_or(0, |colon| colon + 1),
             contract_site: None,
             method_body: false,
             site_contracts: Vec::new(),
@@ -322,6 +341,67 @@ impl<'a> Parser<'a> {
             in_ensures: false,
         }
     }
+
+    /// A copy of the parser for a read that is dropped afterwards (`own_type_ahead`,
+    /// `annotation_end`): the position and every flag that steers the grammar, but none of the
+    /// records that only grow as the source is parsed (`noncanonical`, `dyn_types`,
+    /// `active_patterns`, `site_contracts`, the pending statement). Reading a type consults none
+    /// of them, and the probe's additions to them are dropped with it. A clone copied them, so a
+    /// probe cost as much as everything parsed before it and a source with many `dyn` types and
+    /// many probes parsed in quadratic time (A24). Every field is named, so a new one cannot be
+    /// left out silently.
+    fn probe(&self) -> Self {
+        let probe = Self {
+            source: self.source,
+            tokens: self.tokens,
+            edition: self.edition,
+            noncanonical: Vec::new(),
+            type_remainder: self.type_remainder.clone(),
+            position: self.position,
+            previous_end: self.previous_end,
+            nesting: self.nesting,
+            in_routine: self.in_routine,
+            stop_at_arm: self.stop_at_arm,
+            stop_at_arrow: self.stop_at_arrow,
+            active_patterns: BTreeMap::new(),
+            pattern_type_arrow: self.pattern_type_arrow,
+            type_offside: self.type_offside,
+            extern_signature: self.extern_signature,
+            probing_own: self.probing_own,
+            slice_context: self.slice_context,
+            stop_at_slice_dotdot: self.stop_at_slice_dotdot,
+            region_suffix: self.region_suffix,
+            in_handler: self.in_handler,
+            exception_arms: self.exception_arms,
+            pending_statement: None,
+            dyn_types: Vec::new(),
+            uses_anonymous_unions: self.uses_anonymous_unions,
+            type_tests_end: self.type_tests_end,
+            contract_site: self.contract_site,
+            method_body: self.method_body,
+            site_contracts: Vec::new(),
+            site_lambdas: self.site_lambdas,
+            in_ensures: self.in_ensures,
+        };
+        #[cfg(test)]
+        PROBES.with(|probes| {
+            let (made, carried) = probes.get();
+            let records = probe.noncanonical.len()
+                + probe.dyn_types.len()
+                + probe.active_patterns.len()
+                + probe.site_contracts.len()
+                + usize::from(probe.pending_statement.is_some());
+            probes.set((made + 1, carried + records));
+        });
+        probe
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The probes made (`Parser::probe`) and the records that they carried, which a unit test
+    /// counts.
+    static PROBES: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 impl Parser<'_> {
@@ -482,6 +562,7 @@ impl Parser<'_> {
             benches: Vec::new(),
             entry: None,
             dyn_types: Vec::new(),
+            uses_anonymous_unions: false,
             cpu_attributes: Vec::new(),
             effect_attributes: Vec::new(),
             trusted: Vec::new(),
@@ -1070,6 +1151,7 @@ impl Parser<'_> {
         program.active_patterns = self.active_patterns.into_values().collect();
         program.noncanonical = self.noncanonical;
         program.dyn_types = self.dyn_types;
+        program.uses_anonymous_unions = self.uses_anonymous_unions;
         Ok(program)
     }
 
@@ -2420,7 +2502,7 @@ impl Parser<'_> {
         if self.probing_own {
             return true;
         }
-        let mut probe = self.clone();
+        let mut probe = self.probe();
         probe.probing_own = true;
         // The caller already entered this primary; the probe enters it again.
         probe.nesting -= 1;
@@ -2513,8 +2595,12 @@ impl Parser<'_> {
             self.variable_type()?
         } else if self.eat(&TokenKind::LeftParen) {
             let ty = self.type_expr()?;
-            self.expect(&TokenKind::RightParen, "')' after the type")?;
-            ty.kind
+            if self.at(&TokenKind::Pipe) || self.at(&TokenKind::OrOr) {
+                self.anonymous_union_members(ty)?
+            } else {
+                self.expect(&TokenKind::RightParen, "')' after the type")?;
+                ty.kind
+            }
         } else if self.at(&TokenKind::Fn)
             && self
                 .tokens
@@ -2561,6 +2647,35 @@ impl Parser<'_> {
         };
         self.nesting -= 1;
         self.finish_type_primary(kind, start)
+    }
+
+    /// The members of an anonymous union `(A | B | ...)` after the first one, through the closing
+    /// `)` (A24); kept out of `type_primary` so that its recursive frame stays small. The list is
+    /// capped like every other list of the parser; the checker allows 32 members after flattening.
+    #[inline(never)]
+    fn anonymous_union_members(&mut self, first: TypeExpr) -> Result<TypeExprKind, Diagnostic> {
+        let mut members = vec![first];
+        loop {
+            if self.at(&TokenKind::OrOr) {
+                return Err(self.error_of(
+                    DiagnosticKind::AnonymousUnionDoubleBar,
+                    "use a single '|' between the members of an anonymous union, as in (i64 | string)",
+                ));
+            }
+            if !self.eat(&TokenKind::Pipe) {
+                break;
+            }
+            if members.len() >= MAX_NESTING {
+                return Err(self.error_of(
+                    DiagnosticKind::TooManyAnonymousUnionMembers,
+                    "too many members in an anonymous union",
+                ));
+            }
+            members.push(self.type_expr()?);
+        }
+        self.expect(&TokenKind::RightParen, "')' after the type")?;
+        self.uses_anonymous_unions = true;
+        Ok(TypeExprKind::AnonymousUnion(members.into_boxed_slice()))
     }
 
     /// The rest of `[T]`, `[|T|]`, `[T..]` (C08), or `[T; N]` (A16) after the element type; kept
@@ -4980,6 +5095,37 @@ fn binary(token: &TokenKind) -> Option<(Operator, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verification of Copilot review 3 of #102 (A24): a speculative read copies none of the
+    /// records that grow with the source (`Parser::probe`). The type test scan reads the type of
+    /// every annotation before the source's last `:?` on a probe, and a copy of the whole parser
+    /// copied every `dyn` type parsed so far, so a source with many annotated patterns, many
+    /// `dyn` types and a type test at its end parsed in quadratic time. By hand: each of the 40
+    /// arms `(x: i64, d: dyn Format)` comes before the last `:?`, so the one scan of the arm
+    /// (`type_test_ahead`) reads both of its annotations (80 probes), and each `own`
+    /// before a type is probed once by `own_type_ahead` (41); at the 40th arm, 79 `dyn` types and
+    /// the noncanonical `86uy` are already parsed. The parse itself is unchanged: 80 `dyn` types
+    /// and a type test.
+    #[test]
+    fn probes_carry_no_records() {
+        let mut source = String::from("def small :: u8 = 86uy\n\n");
+        for index in 0..40 {
+            source.push_str(&format!(
+                "def f{index} :: own (i64 * dyn Format) -> i64 = \\t ->\n    match t with\n    | (x: i64, d: dyn Format) -> x\n\n"
+            ));
+        }
+        source.push_str(
+            "def last :: own (i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | _ -> 0\n",
+        );
+        PROBES.with(|probes| probes.set((0, 0)));
+        let program = parse_with_source(&source, 0, Edition::E2026).unwrap();
+        let (made, carried) = PROBES.with(std::cell::Cell::get);
+        assert_eq!(program.dyn_types.len(), 80);
+        assert_eq!(program.noncanonical.len(), 1);
+        assert!(program.uses_anonymous_unions);
+        assert_eq!(made, 80 + 41);
+        assert_eq!(carried, 0);
+    }
 
     #[test]
     fn keeps_following_statements_in_a_multiline_else_block() {

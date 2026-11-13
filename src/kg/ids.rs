@@ -57,8 +57,9 @@ pub(crate) fn disambiguate(raw: &[(String, (usize, usize))]) -> Vec<String> {
 }
 
 /// The ID text of a type (G26 appendix B2): records, unions and handles by the ID of their
-/// declaration, so that equal names of different packages stay apart; the other types as
-/// `Type::display` writes them, with function components parenthesized.
+/// declaration, so that equal names of different packages stay apart; the other types, and the
+/// anonymous unions `(A | B)` (A24), as `Type::display` writes them, with function components
+/// parenthesized.
 pub(crate) fn type_id_text(
     ty: &Type,
     types: &TypeContext<'_>,
@@ -97,6 +98,11 @@ pub(crate) fn type_id_text(
     };
     match ty {
         Type::Record(id, args) => declaration(&types.records[*id].name) + &arguments(args),
+        // An anonymous union (A24) has no declaration of its own: its members, as it is written.
+        Type::Union(id, members) if types.unions[*id].is_anonymous() => format!(
+            "({})",
+            members.iter().map(nested).collect::<Vec<_>>().join(" | ")
+        ),
         Type::Union(id, args) => declaration(&types.unions[*id].name) + &arguments(args),
         Type::Handle(name) => declaration(name),
         Type::Array(element) => format!("[{}]", type_id_text(element, types, modules)),

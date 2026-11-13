@@ -551,6 +551,100 @@ fn probes_the_stack_only_when_the_program_spawns() {
     assert!(last_alloca < first_call, "{main}");
 }
 
+/// The native IR of `module` in the string form `form`, whatever `TSUZURI_STRINGS` says.
+fn emit_strings(
+    module: &tsuzuri::check::CheckedModule,
+    entry: llvm::Entry,
+    form: llvm::StringForm,
+) -> String {
+    let options = llvm::EmitOptions {
+        entry,
+        wasm: false,
+        wasm_simd128: false,
+        debug_output: false,
+        runtime_objects: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    };
+    let ir = llvm::emit_with_strings(module, options, form).unwrap();
+    assert_eq!(
+        ir,
+        llvm::emit_with_strings(module, options, form).unwrap(),
+        "IR is deterministic"
+    );
+    ir
+}
+
+#[test]
+fn runtime_pieces_start_on_lines_of_their_own() {
+    // TZ15: the emitter joins the runtime pieces as they are. In the grammar of the IR, a function
+    // ends at its closing brace, and what follows it (a `define`, a global, a comment) is a top-level
+    // entity of its own; the passes that read the IR line by line take a line that starts with
+    // `define ` for a function's header and a line that is `}` for its end. So no line may continue
+    // after a closing brace, every header is a line that starts with `define `, and every header of
+    // a spawning program probes its frame (TZ02; Windows probes with __chkstk itself). In this native
+    // IR, the poll of TZ10 and the trap report are added after the probes, so they are the only
+    // headers without one (a wasm32 module and a native executable add others after the probes).
+    fn assert_lines(ir: &str, header: Option<&str>) {
+        let continued: Vec<&str> = ir
+            .lines()
+            .filter(|line| line.starts_with('}') && line.len() > 1)
+            .collect();
+        assert!(continued.is_empty(), "{continued:#?}");
+        let defines: Vec<&str> = ir.lines().filter(|line| line.contains("define ")).collect();
+        assert!(!defines.is_empty());
+        for define in &defines {
+            assert!(define.starts_with("define "), "{define}");
+            if define.contains("@tz.preempt.poll(") || define.contains("@tz.trap.") {
+                continue;
+            }
+            assert_eq!(
+                define.contains(" \"probe-stack\"=\"inline-asm\" "),
+                !cfg!(windows),
+                "{define}"
+            );
+        }
+        if let Some(header) = header {
+            assert!(
+                defines.iter().any(|define| define.contains(header)),
+                "no {header} header"
+            );
+        }
+    }
+    // A spawning program that shows a Char: `@tz.string.copy` comes right after the last function
+    // of the Char runtime (`character.ll`). The UTF-16 form joins that runtime as it is.
+    let shown = accepts(
+        "def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\ndo! IO.write_line (to_string 'x')\ngo 41\n",
+    );
+    for entry in [llvm::Entry::Library, llvm::Entry::Console] {
+        let ir = emit_strings(&shown, entry, llvm::StringForm::Utf16);
+        assert_lines(&ir, Some("@tz.string.copy("));
+    }
+    // A loop of a spawning program checks for preemption only when a call in it reaches a function
+    // that may wait or run long (TZ10). Everything that this loop reaches is a light function of
+    // the runtime or an allocation: there is no check, and so no poll at all.
+    let counted = accepts(
+        "def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\ndef count :: i64 -> i64\nfn count n =\n    let mut total = 0\n    for _ in 0 ..< n do\n        total = total + String.length (to_string 'x')\n    total\ngo (count 1000)\n",
+    );
+    for entry in [llvm::Entry::Library, llvm::Entry::Console] {
+        let ir = emit_strings(&counted, entry, llvm::StringForm::Utf16);
+        assert_lines(&ir, Some("@tz.string.copy("));
+        assert!(!ir.contains("@tz.preempt.poll"), "{ir}");
+    }
+    // The same loop over the text of integers, in a program that also prints with `Debug`: the
+    // integer runtime comes right after the runtime of `Debug` (`debug.ll`) in both string forms.
+    let debugged = accepts(
+        "def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\ndef count :: i64 -> i64\nfn count n =\n    let mut total = 0\n    for i in 0 ..< n do\n        total = total + String.length (to_string i)\n    total\nDebug.print (ref 1)\ngo (count 1000)\n",
+    );
+    for form in [llvm::StringForm::Utf16, llvm::StringForm::Compact] {
+        for entry in [llvm::Entry::Library, llvm::Entry::Console] {
+            let ir = emit_strings(&debugged, entry, form);
+            assert_lines(&ir, None);
+            assert!(!ir.contains("@tz.preempt.poll"), "{form:?}\n{ir}");
+        }
+    }
+}
+
 #[test]
 fn scope_children_are_waited_for_with_their_tzroutines() {
     // TZ02 made the function that a pool worker ran (a child of Task.scope) a boundary of its own. A
@@ -813,6 +907,11 @@ fn a_failure_domain_restores_the_spawn_scope_around_parallel_work() {
 
 /// The IR of `tsuzuri build --emit llvm` of a one-file project with `args`.
 fn emitted_ir(name: &str, source: &str, args: &[&str]) -> String {
+    emitted_ir_with(name, source, args, &[])
+}
+
+/// `emitted_ir` with the environment variables `variables` set for the compiler.
+fn emitted_ir_with(name: &str, source: &str, args: &[&str], variables: &[(&str, &str)]) -> String {
     let directory = std::env::temp_dir().join(format!(
         "tsuzuri-tzroutine-ir-{name}-{}",
         std::process::id()
@@ -826,6 +925,7 @@ fn emitted_ir(name: &str, source: &str, args: &[&str]) -> String {
         .args(["--emit", "llvm", "-o"])
         .arg(&output)
         .args(args)
+        .envs(variables.iter().copied())
         .output()
         .unwrap();
     assert!(
@@ -892,6 +992,55 @@ fn jspi_modules_that_spawn_get_the_stack_switch() {
         "wasm-import-module",
     ] {
         assert!(!with_jspi.contains(absent), "{absent}\n{with_jspi}");
+    }
+}
+
+#[test]
+fn wasm_stack_checks_reach_the_function_after_each_runtime_piece() {
+    // TZ15: `with_stack_checks` checks a function whose header is a line that starts with `define `
+    // and ends with `{`. Before TZ15 the function after a runtime piece that ended without a newline
+    // (`@tz.string.copy` after `character.ll` in the UTF-16 form) sat on the line of the closing
+    // brace (`}define ...`) and got no check. Both stack bounds that the pass writes: the switched
+    // stacks of a wasm32 module that spawns (TZ09) and the module's stack above 2 GiB of memory.
+    const SPAWNS: &str = "def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\ndo! IO.write_line (to_string 'x')\ngo 41\n";
+    const SHOWS: &str = "do! IO.write_line (to_string 'x')\n";
+    let utf16 = [("TSUZURI_STRINGS", "utf16")];
+    for (name, source, args, probes) in [
+        ("checked-spawn", SPAWNS, &JSPI[..], true),
+        (
+            "checked-memory",
+            SHOWS,
+            &["--target", "wasm32", "--wasm-max-memory", "3GiB"][..],
+            false,
+        ),
+    ] {
+        let ir = emitted_ir_with(name, source, args, &utf16);
+        let continued: Vec<&str> = ir
+            .lines()
+            .filter(|line| line.starts_with('}') && line.len() > 1)
+            .collect();
+        assert!(continued.is_empty(), "{name}: {continued:#?}");
+        let lines: Vec<&str> = ir.lines().collect();
+        let header = lines
+            .iter()
+            .position(|line| line.contains("@tz.string.copy(") && line.ends_with('{'))
+            .unwrap_or_else(|| panic!("{name}: no @tz.string.copy\n{ir}"));
+        assert!(
+            lines[header].starts_with("define "),
+            "{name}: {}",
+            lines[header]
+        );
+        assert_eq!(
+            lines[header].contains(" \"probe-stack\"=\"inline-asm\" "),
+            probes,
+            "{name}: {}",
+            lines[header]
+        );
+        assert_eq!(
+            lines[header + 1..header + 3],
+            ["entry:", "  call void @tz.stack.check()"],
+            "{name}"
+        );
     }
 }
 

@@ -674,3 +674,34 @@ fn debug_test_runner_dispatch_is_an_artificial_subprogram() {
         }
     }
 }
+
+/// A24: an anonymous union is named as it is written in its canonical order, and its cases and
+/// payload members by its members' types, never by the synthesized declaration behind it.
+#[test]
+fn debug_anonymous_unions_name_cases_by_member_types() {
+    let source = "export def answer :: i64 -> i64\nfn answer input =\n    let value: (string | i64) = input\n    let pair: ((i64 * string) | bool) = (input, \"p\")\n    let maybe: Maybe<(i64 | string)> = Some input\n    let a = match value with | :? i64 as n -> n | :? string -> 0\n    let b = match pair with | :? (i64 * string) as p -> 1 | :? bool -> 0\n    let c = match maybe with | Some (:? i64 as n) -> n | _ -> 0\n    a + b + c\n";
+    for wasm in [false, true] {
+        let ir = debug_ir(source, tsuzuri::llvm::Entry::Library, wasm);
+        for expected in [
+            "DW_TAG_structure_type, name: \"(i64 | string)\"",
+            "DW_TAG_enumeration_type, name: \"(i64 | string).$tag\"",
+            "!DIEnumerator(name: \"i64\", value: 0)",
+            "!DIEnumerator(name: \"string\", value: 1)",
+            "DW_TAG_union_type, name: \"(i64 | string).$payload\"",
+            "DW_TAG_member, name: \"i64\"",
+            "DW_TAG_member, name: \"string\"",
+            "DW_TAG_structure_type, name: \"(bool | (i64 * string))\"",
+            "!DIEnumerator(name: \"bool\", value: 0)",
+            "!DIEnumerator(name: \"(i64 * string)\", value: 1)",
+            "DW_TAG_member, name: \"(i64 * string)\"",
+            "DW_TAG_union_type, name: \"Maybe<(i64 | string)>.$payload\"",
+        ] {
+            assert!(ir.contains(expected), "{expected}\n{ir}");
+        }
+        assert!(!ir.contains("name: \"Union$"), "{ir}");
+        assert!(!ir.contains("name: \"$anonymous"), "{ir}");
+        // The payload member of each case is the member type, at the offset of the storage.
+        assert_eq!(member_offset(&ir, "(i64 | string)", "$tag"), 0);
+        assert_eq!(member_offset(&ir, "(i64 | string)", "$payload"), 64);
+    }
+}

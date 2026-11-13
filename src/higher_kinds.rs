@@ -23,10 +23,10 @@ impl Constructor {
         }
     }
 
-    pub(super) fn name(&self, types: &TypeContext<'_>) -> String {
+    pub(super) fn name(&self, types: &dyn DeclarationNames) -> String {
         match self {
-            Self::Record(id, _) => types.records[*id].name.clone(),
-            Self::Union(id, _) => types.unions[*id].name.clone(),
+            Self::Record(id, _) => types.record_name(*id).to_owned(),
+            Self::Union(id, _) => types.union_name(*id).to_owned(),
             Self::Array => "Array".into(),
             Self::List => "List".into(),
             Self::Vec => "Vec".into(),
@@ -36,7 +36,11 @@ impl Constructor {
 
 impl Partial {
     pub fn display(&self, types: &TypeContext<'_>) -> String {
-        let name = self.constructor.name(types);
+        self.display_with(types)
+    }
+
+    pub(crate) fn display_with(&self, names: &dyn DeclarationNames) -> String {
+        let name = self.constructor.name(names);
         if self.trailing.is_empty() {
             name
         } else {
@@ -44,7 +48,7 @@ impl Partial {
                 "{name}<{}>",
                 self.trailing
                     .iter()
-                    .map(|ty| ty.display(types))
+                    .map(|ty| ty.display_with(names))
                     .collect::<Vec<_>>()
                     .join(", ")
             )

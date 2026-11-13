@@ -2,7 +2,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::check::{
-    CheckedFunction, CheckedModule, PatternStep, TypedExpr, TypedExprKind, TypedMatchArm,
+    CheckedFunction, CheckedModule, PatternStep, Type, TypedExpr, TypedExprKind, TypedMatchArm,
 };
 use crate::diagnostic::Span;
 use crate::syntax::BinaryOp;
@@ -179,6 +179,15 @@ impl Analysis<'_> {
         }
     }
 
+    /// Whether `operand`, lent to a call, is a `match`, an `if` or a block whose value is an
+    /// anonymous union: one of its branches is the value, such as a widening (review round 3).
+    fn lent_union_match(&self, operand: &TypedExpr) -> bool {
+        matches!(
+            operand.kind,
+            TypedExprKind::Match { .. } | TypedExprKind::If { .. } | TypedExprKind::Block { .. }
+        ) && matches!(&operand.ty, Type::Union(id, _) if self.module.unions[*id].is_anonymous())
+    }
+
     fn opaque(&mut self, expression: &TypedExpr, live: &mut Live, depth: usize) {
         let mut pending = vec![(expression, depth)];
         while let Some((expression, depth)) = pending.pop() {
@@ -260,6 +269,15 @@ impl Analysis<'_> {
                 self.visit(a, live, depth + 1);
             }
             Binary(BinaryOp::Pipe, ..) => self.opaque(expression, live, depth),
+            // A25: the temporary that a read parameter borrows is evaluated as a value before
+            // the call (`operand_borrow`). When it is a `match` that makes an anonymous union,
+            // as a widening is (`Checker::retag`), or an `if` or a block whose branch is one,
+            // it is read as any other value, so an owned payload moves into the wider value.
+            // Every other lent operand stays opaque, which keeps the reads of programs without
+            // anonymous unions as they were.
+            BorrowOperand(value) if self.lent_union_match(value) => {
+                self.visit(value, live, depth + 1)
+            }
             Binary(_, a, b) => {
                 self.visit(b, live, depth + 1);
                 self.visit(a, live, depth + 1);
@@ -483,11 +501,16 @@ impl Analysis<'_> {
             });
             for alternative in &arm.alternatives {
                 for (binding, _) in &alternative.bindings {
-                    let moves = owned
-                        && disjoint
-                        && !arm.borrowed.contains(&binding.id)
-                        && binding.ty.is_copy(&types)
-                        && binding.ty.needs_drop(&types);
+                    let movable = binding.ty.is_copy(&types) && binding.ty.needs_drop(&types);
+                    // Only the take of a Copy value that needs a drop reads a binding's decision.
+                    // A retagging gives the binding of a member that names a type variable the span
+                    // of its array members' bindings, and an instance may make that member a type
+                    // that is not both (`Maybe<i64>`, `Maybe<string>`): its binding must not take
+                    // their move (A25, Copilot review round 2). Other bindings keep their vote.
+                    if !movable && binding.retags_payload() {
+                        continue;
+                    }
+                    let moves = owned && disjoint && !arm.borrowed.contains(&binding.id) && movable;
                     self.bindings
                         .entry(key(binding.span))
                         .and_modify(|old| *old &= moves)
