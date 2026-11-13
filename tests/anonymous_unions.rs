@@ -8807,3 +8807,113 @@ test "binders" =
         "no instance for Eq<Maybe<i64>>; define an instance or use a supported type"
     );
 }
+
+/// The forms of `nested_element_narrowings` with A26's literal patterns inside elements, and the
+/// hand-computed `[f 5, f 7, f (-1)]` of each at depth 3 (`f 6` is 1 for every form): an OR of
+/// integer literals (`[(5 | 7) as x]`), a literal beside a type test (`[(5 | :? f64) as x]`), two
+/// elements, a list element, the head of a cons, and a string literal in one part of a tuple
+/// element beside the bound part (through `ref v` too). `mk_{name} n` puts the i64 `n` at every
+/// place that the arm matches for a positive `n`, and `2.5` (beside `"ab"`) otherwise.
+const LITERAL_ELEMENTS: [(&str, ElementForm, [i64; 3]); 7] = [
+    (
+        "integers",
+        (
+            "[(i64 | f64)]",
+            "if n > 0 then [n] else [2.5]",
+            "v",
+            "[(5 | 7) as {x}]",
+        ),
+        [30, 42, 1],
+    ),
+    (
+        "beside_test",
+        (
+            "[(i64 | f64)]",
+            "if n > 0 then [n] else [2.5]",
+            "v",
+            "[(5 | :? f64) as {x}]",
+        ),
+        [30, 1, 9],
+    ),
+    (
+        "two",
+        (
+            "[(i64 | f64)]",
+            "if n > 0 then [n, n] else [2.5, 2.5]",
+            "v",
+            "[(5 | 7) as {x}, (5 | 7) as _{x}]",
+        ),
+        [30, 42, 1],
+    ),
+    (
+        "list",
+        (
+            "[|(i64 | f64)|]",
+            "if n > 0 then [|n|] else [|2.5|]",
+            "v",
+            "[| (5 | 7) as {x} |]",
+        ),
+        [30, 42, 1],
+    ),
+    (
+        "cons",
+        (
+            "[|(i64 | f64)|]",
+            "if n > 0 then [|n|] else [|2.5|]",
+            "v",
+            "((5 | 7) as {x}) :: _{x}",
+        ),
+        [30, 42, 1],
+    ),
+    (
+        "text",
+        (
+            "[((i64 | string) * (i64 | f64))]",
+            "if n > 0 then [(n, n)] else [(\"ab\", 2.5)]",
+            "v",
+            "[((5 | \"ab\"), {x})]",
+        ),
+        [30, 1, 9],
+    ),
+    (
+        "text_ref",
+        (
+            "[((i64 | string) * (i64 | f64))]",
+            "if n > 0 then [(n, n)] else [(\"ab\", 2.5)]",
+            "(ref v)",
+            "[((5 | \"ab\"), {x})]",
+        ),
+        [30, 1, 9],
+    ),
+];
+
+#[test]
+fn nested_literal_elements_check_each_body_once() {
+    // A26's literal patterns compare an element of an anonymous union with `==`; the
+    // alternatives of an OR of literals in an element bind the same element (or the same part of
+    // it), whose projections index the same collection at the same constant. A25's
+    // `same_projection` compares them (Copilot review round 5, merged), so a match nested 30 deep
+    // checks each body once; before the merge it was 2^30 visits (4^30 for two elements).
+    for edition in [Edition::E2026, Edition::E2027] {
+        for (name, form, _) in LITERAL_ELEMENTS {
+            let source = format!("{NUM}{}", nested_element_narrowings(name, 30, form));
+            accepts_in(&source, edition);
+        }
+    }
+    // Expected values by hand: each level adds `num x` (`k * 2` for an i64, 3 for 2.5) to the
+    // next, and 0 at the innermost; an element that matches no literal (nor the type test) takes
+    // `_ -> 1` at the outer level. So 5 gives 10 three times (30), 7 gives 14 three times (42)
+    // where the arm names 7 and 1 where it does not, -1 gives 2.5 (3 three times, 9) where the
+    // arm takes the f64 or `"ab"` and 1 where it does not, and 6 matches no literal (1).
+    let mut source = NUM.to_owned();
+    let mut checks = String::from("test \"literal elements\" =\n");
+    for (name, form, [five, seven, negative]) in LITERAL_ELEMENTS {
+        source.push_str(&nested_element_narrowings(name, 3, form));
+        checks.push_str(&format!(
+            "    assert ({name} 5 == {five} && {name} 7 == {seven} && {name} (-1) == {negative} && {name} 6 == 1)\n"
+        ));
+    }
+    source.push_str(&checks);
+    passes(&source, Edition::E2026);
+    passes(&source, Edition::E2027);
+}
