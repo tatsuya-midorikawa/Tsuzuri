@@ -31,9 +31,10 @@ concurrency:
 jobs:
   rust:
     runs-on: ubuntu-24.04
-    # A hosted runner of ubuntu-24.04 runs the Rust tests in 21 to 26 minutes or, on slower hardware, in about 37
-    # (October 2026); the job then needs about 50. The limit only stops a hung job: it is not a speed check.
-    timeout-minutes: 60
+    # A hosted runner of ubuntu-24.04 runs the Rust tests in 23 to 30 minutes or, on slower hardware, in 40 to 44
+    # (November 2026, about 3,100 tests); the steps before and after them take about 20 more, so a slow runner needs
+    # about 65. The limit only stops a hung job: it is not a speed check.
+    timeout-minutes: 90
     env:
       TSUZURI_CLANG: /usr/lib/llvm-21/bin/clang
       TSUZURI_WASM_LD: /usr/lib/llvm-21/bin/wasm-ld
