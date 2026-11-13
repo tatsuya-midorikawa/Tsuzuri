@@ -1231,3 +1231,63 @@ fn parts_handed_to_function_values =
     let out = Arc.new (Mutex.create [0])
     let k = handed_parts (ref out)
     k * 100 + recorded (ref out)
+
+// A reference that points at one of two values: the callee keeps a borrow of the string of the
+// value that it gets in that value's recorder, not in the other's.
+def keep_own_text :: ref RecordedPair -> i64
+fn keep_own_text p =
+    let t = ref p.s
+    Mutex.with_lock (ref p.c.cell) (\b -> Array.write 0 (\() -> String.length t + 1) b)
+    1
+
+def chosen_target :: bool -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64
+fn chosen_target first out1 out2 =
+    let a = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 12345 }
+    let b = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out2 }, s: to_string 1234567 }
+    let r = if first then ref a else ref b
+    keep_own_text r
+
+export def one_of_two_targets_keeps_its_own_part :: i64
+fn one_of_two_targets_keeps_its_own_part =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let out3 = Arc.new (Mutex.create [0])
+    let out4 = Arc.new (Mutex.create [0])
+    let k = chosen_target true (ref out1) (ref out2)
+    let j = chosen_target false (ref out3) (ref out4)
+    (k + j) * 10000 + recorded (ref out1) * 1000 + recorded (ref out2) * 100 + recorded (ref out3) * 10 + recorded (ref out4)
+
+// Replacing an `Rc` whose block keeps a borrow of its own string, taken through a share that is
+// gone: the old block is dropped with the borrow, whose recorder is dropped before the string.
+def replaced_shared_block :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64
+fn replaced_shared_block out1 out2 =
+    let mut rc = Rc.new (RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 123 })
+    let k = { let inner = Rc.share (ref rc); let p = Rc.get (ref inner); keep_text (ref p.c) (ref p.s); 1 }
+    rc = Rc.new (RecordedPair { c: Recorder { cell: Mutex.create [\() -> 2], out: Arc.share out2 }, s: to_string 1 })
+    k
+
+export def replaced_rc_drops_its_block_parts :: i64
+fn replaced_rc_drops_its_block_parts =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let k = replaced_shared_block (ref out1) (ref out2)
+    k * 100 + recorded (ref out1) * 10 + recorded (ref out2)
+
+// `deref p = v` drops the old value with the borrow of its string that its own recorder keeps;
+// the recorder's `Arc` is no place of that borrow.
+def renew_recorded :: ref mut RecordedPair -> ref Arc<Mutex<[i64]>> -> i64
+fn renew_recorded p out2 =
+    let t = ref p.s
+    Mutex.with_lock (ref p.c.cell) (\b -> Array.write 0 (\() -> String.length t + 1) b)
+    deref p = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 3], out: Arc.share out2 }, s: to_string 1 }
+    1
+
+export def replaced_target_with_an_arc_drops_its_parts :: i64
+fn replaced_target_with_an_arc_drops_its_parts =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let k = {
+        let mut p = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share (ref out1) }, s: to_string 1234 };
+        renew_recorded (ref mut p) (ref out2)
+    }
+    k * 100 + recorded (ref out1) * 10 + recorded (ref out2)
