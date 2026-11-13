@@ -1991,6 +1991,8 @@ const suites = {
       ["equality_keeps_an_operand", [], 9n],
       // The cell holds the state after the first element, 9 + 1; last is 9 + 2.
       ["fold_state_comes_back", [], (9n + 1n) * 100n + (9n + 2n)],
+      // The same through Array.foldr.
+      ["array_fold_state_comes_back", [], (9n + 1n) * 100n + (9n + 2n)],
       ["drop_stores_an_owned_function", [], 7n + 1n],
       // Review round 2. "12345" has 5 characters: k = 5 + 1, table[1] 3 = 6, moved 5, sizes[0] = 2.
       ["dispatch_table_then_move", [], 6n + 6n + 5n + 2n],
@@ -2081,6 +2083,9 @@ const suites = {
       // The sixth merge into A32. p2's and p3's recorders read p1's "12345" (5 + 1), p1's keeps 0;
       // chosen_pairs returns 1.
       ["local_function_values_keep_the_part", [], 1n * 1000n + 0n * 100n + 6n * 10n + 6n],
+      // Review round 1 after Copilot's review. p2's, p3's and p4's recorders read p1's "12345"
+      // (5 + 1), p1's keeps 0; matched_pairs returns 1.
+      ["matched_function_values_keep_the_part", [], 1n * 10000n + 0n * 1000n + 6n * 100n + 6n * 10n + 6n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.

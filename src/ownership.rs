@@ -1017,10 +1017,16 @@ struct Source {
     /// whose argument points at its place (`Checker::argument_points`) passes shared borrows of
     /// those parts of it (`Checker::path_copy`), which `pointing` then says point at their places.
     element_paths: BTreeMap<usize, BTreeSet<Vec<usize>>>,
+    /// The parameters whose `paths` or `element_paths` stand for larger parts than the places of
+    /// some loans (`add_place_path`: a place of more than `SELF_PATH_FIELDS` fields, or one inside
+    /// another recorded place, `if k > 0 then ref x.a.e[0] else ref x.a`): a path then names a
+    /// part that holds the borrowed place, of which the caller makes a copy that is not exact
+    /// (`Checker::path_copy`), and the argument points at no recorded place (`pointing`).
+    coarse: BTreeSet<usize>,
     /// The argument is a reference that points at the place of one of its loans
     /// (`Checker::argument_points`), each of them a whole target of `parameters` (`Part::Value`)
-    /// or a part of one at `paths` or `element_paths`: the caller's value for it points so when
-    /// its arguments for those parameters do (`Arg::pointing`).
+    /// or a part of one at `paths` or `element_paths` that is not `coarse`: the caller's value for
+    /// it points so when its arguments for those parameters do (`Arg::pointing`).
     pointing: bool,
 }
 
@@ -1244,6 +1250,20 @@ fn add_self_path(paths: &mut BTreeSet<Vec<usize>>, mut path: Vec<usize>) -> bool
         paths.insert(Vec::new());
     }
     true
+}
+
+/// A31: adds `path` to the places `paths` of the parts that an argument borrows
+/// (`Source::paths`, `Source::element_paths`) as `add_self_path` does, and gives whether that made
+/// a recorded place stand for a larger part: it cut `path`, left it out for a path that it starts
+/// with, or put it in place of paths that start with it. Such paths name parts that hold the
+/// borrowed places, not those places (`Source::coarse`).
+fn add_place_path(paths: &mut BTreeSet<Vec<usize>>, path: Vec<usize>) -> bool {
+    let coarse = path.len() > SELF_PATH_FIELDS
+        || paths
+            .iter()
+            .any(|known| *known != path && (path.starts_with(known) || known.starts_with(&path)));
+    add_self_path(paths, path);
+    coarse
 }
 
 /// What the bodies of the functions prove about their direct calls: the results that hold no
@@ -2423,6 +2443,10 @@ fn self_borrow_types(
     (found, places, any)
 }
 
+/// A31: what `sink_flags` finds at one place where a function value is made: whether it is a sink,
+/// whether it owns its cell, and the types of the values that hide an environment that it holds.
+type SinkSite = (bool, bool, Vec<Type>);
+
 /// A31: whether some function value of the module stores into what its environment reaches
 /// (`CallFacts::sinks`), and whether one owns the cell that it writes (`CallFacts::owned_sinks`),
 /// from the store facts `stores` of the functions and the places where the module makes a
@@ -2441,6 +2465,13 @@ fn self_borrow_types(
 ///   owns its cell when an argument does;
 /// - `Dyn.of value`, whose methods get the stored value through the receiver: it owns its cell
 ///   when the value owns a mutable cell or hides an environment itself.
+///
+/// A function value that takes more than one argument before its code runs (a lambda
+/// `\k f -> ...`, a partial application that leaves two parameters) gives its environment to its
+/// partial applications, whatever makes them (`w 0`, `Owned.call (ref w) 0`, the elements of
+/// `new [T](1, w)`): their types, the rest of its parameters (`partial_types`), count as its own
+/// does. A call that runs the code gives what the body returns, whose function values are sites
+/// of their own.
 ///
 /// A named function has no environment, and a function value that only calls a captured function
 /// value with its own arguments stores where that value's code does, which is a site of its own.
@@ -2578,41 +2609,27 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
             let owns = sink && bound.iter().any(|ty| ty.owns_mutable_cell(&types));
             (sink, owns, held)
         };
-    // The function value that such a call applies (or the function that a named function returns,
-    // `returned`): the result may be that value with the arguments bound, so it holds that value's
-    // environment, and reaches the owners and the sinks that it reaches (the holders below).
-    let applied = |ty: &Type| -> Option<Type> {
-        let ty = without_views(ty);
-        hides_environment(&ty, &types).then_some(ty)
-    };
-    let returned = |callee: &TypedExpr, count: usize| -> Option<Type> {
-        match &callee.ty {
-            Type::Function(parameters, _) if count <= parameters.types.len() => {
-                applied(&callee.ty.after_arguments(count))
-            }
-            _ => None,
-        }
-    };
-    let staged_value = |(sink, owns, mut held): (bool, bool, Vec<Type>),
-                        result: &Type,
-                        value: Option<Type>|
-     -> (bool, bool, Vec<Type>) {
-        if matches!(result, Type::Function(..)) {
-            held.extend(value);
-        }
-        (sink, owns, held)
-    };
-    let mut found = |(sink, owns, held): (bool, bool, Vec<Type>), ty: &Type| {
+    // A function value made at a site, of type `ty`, that takes `arity` arguments before its code
+    // runs (`None`: not known): its partial applications hold its environment and have the types
+    // of the rest of its parameters (`partial_types`), so they are sinks, owners and holders as it
+    // is. `w 0`, `Owned.call (ref w) 0`, `0 |> w` and the elements of `new [T](1, w)` are such
+    // applications of `w = mk (...)` with `mk a = \k f -> ...`, whatever applies them.
+    let mut found = |(sink, owns, held): SinkSite, ty: &Type, arity: Option<usize>| {
         sinks |= sink;
         owned |= owns;
-        if sink {
-            sink_types.insert(sink_type(ty));
+        if !sink && !owns && held.is_empty() {
+            return;
         }
-        if owns {
-            owned_types.insert(sink_type(ty));
-        }
-        if !held.is_empty() {
-            holders.push((sink_type(ty), held));
+        for ty in std::iter::once(sink_type(ty)).chain(partial_types(ty, arity)) {
+            if sink {
+                sink_types.insert(ty.clone());
+            }
+            if owns {
+                owned_types.insert(ty.clone());
+            }
+            if !held.is_empty() {
+                holders.push((ty, held.clone()));
+            }
         }
     };
     for function in &module.functions {
@@ -2621,7 +2638,15 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
         while let Some(expression) = pending.pop() {
             match &expression.kind {
                 E::Closure(id, captures) => {
-                    found(site(*id, &mut captures.iter(), &locals), &expression.ty);
+                    let arity = module.functions[*id]
+                        .parameters
+                        .len()
+                        .checked_sub(captures.len());
+                    found(
+                        site(*id, &mut captures.iter(), &locals),
+                        &expression.ty,
+                        arity,
+                    );
                     if matches!(expression.ty, Type::Once(_)) {
                         escaping.extend(captures.iter().map(|capture| without_views(&capture.ty)));
                     }
@@ -2669,16 +2694,17 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                     if let Some(id) = direct_callee(callee) {
                         let count = module.functions[id].parameters.len();
                         if arguments.len() < count {
-                            found(site(id, &mut arguments.iter(), &locals), &expression.ty);
+                            found(
+                                site(id, &mut arguments.iter(), &locals),
+                                &expression.ty,
+                                Some(count - arguments.len()),
+                            );
                         } else if arguments.len() > count {
                             // The function that the call returns binds the arguments beyond.
                             found(
-                                staged_value(
-                                    staged(&mut arguments[count..].iter(), &expression.ty),
-                                    &expression.ty,
-                                    returned(callee, count),
-                                ),
+                                staged(&mut arguments[count..].iter(), &expression.ty),
                                 &expression.ty,
+                                None,
                             );
                         }
                     } else if !matches!(
@@ -2687,12 +2713,9 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                             | E::CaseConstructor { .. }
                     ) {
                         found(
-                            staged_value(
-                                staged(&mut arguments.iter(), &expression.ty),
-                                &expression.ty,
-                                applied(&callee.ty),
-                            ),
+                            staged(&mut arguments.iter(), &expression.ty),
                             &expression.ty,
+                            None,
                         );
                     } else if let E::Function(crate::check::FunctionRef::Builtin(instance)) =
                         &callee.kind
@@ -2709,7 +2732,11 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                                 .iter()
                                 .any(|value| may_reach_store(&value.ty, &types))
                         {
-                            found((true, false, Vec::new()), &expression.ty);
+                            found(
+                                (true, false, Vec::new()),
+                                &expression.ty,
+                                scheme.parameters.len().checked_sub(arguments.len()),
+                            );
                         }
                         // A dyn value without a region holds no borrow where it is made
                         // (A30), and its type says so wherever it goes afterwards.
@@ -2722,7 +2749,7 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                                     || hides_environment(&value.ty, &types)
                             })
                         {
-                            found((true, true, Vec::new()), &expression.ty);
+                            found((true, true, Vec::new()), &expression.ty, Some(0));
                         }
                     }
                 }
@@ -2733,16 +2760,13 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                         Some(id) => {
                             let count = module.functions[id].parameters.len();
                             if arguments.len() + 1 < count {
-                                found(site(id, &mut all, &locals), &expression.ty);
-                            } else if arguments.len() + 1 > count {
                                 found(
-                                    staged_value(
-                                        staged(&mut all, &expression.ty),
-                                        &expression.ty,
-                                        returned(callee, count),
-                                    ),
+                                    site(id, &mut all, &locals),
                                     &expression.ty,
+                                    Some(count - arguments.len() - 1),
                                 );
+                            } else if arguments.len() + 1 > count {
+                                found(staged(&mut all, &expression.ty), &expression.ty, None);
                             }
                         }
                         None if !matches!(
@@ -2751,14 +2775,7 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                                 | E::CaseConstructor { .. }
                         ) =>
                         {
-                            found(
-                                staged_value(
-                                    staged(&mut all, &expression.ty),
-                                    &expression.ty,
-                                    applied(&callee.ty),
-                                ),
-                                &expression.ty,
-                            );
+                            found(staged(&mut all, &expression.ty), &expression.ty, None);
                         }
                         None => {}
                     }
@@ -3151,6 +3168,29 @@ fn drop_environments(module: &CheckedModule) -> DropEnvironments {
         })
     });
     found
+}
+
+/// A31: the types (`sink_type`) of the partial applications of a function value of type `ty` that
+/// takes `arity` arguments before its code runs (`None`: any number up to all its parameters): the
+/// rest of its parameters after each number of arguments short of `arity` (`sink_flags`).
+fn partial_types(ty: &Type, arity: Option<usize>) -> Vec<Type> {
+    let Type::Function(parameters, result) = sink_type(ty) else {
+        return Vec::new();
+    };
+    let count = parameters.types.len();
+    let given = arity.map_or(count, |arity| arity.min(count));
+    (1..given)
+        .map(|applied| {
+            Type::Function(
+                Box::new(crate::check::FunctionParameters {
+                    types: parameters.types[applied..].to_vec(),
+                    conventions: Box::default(),
+                    pure: false,
+                }),
+                result.clone(),
+            )
+        })
+        .collect()
 }
 
 /// A31: the immutable locals of `body` bound to a named function, which has no environment.
@@ -4752,10 +4792,10 @@ fn owner_facts_counted(module: &CheckedModule) -> (Vec<Own>, usize) {
 /// shows, with the expressions that the value may be (`Checker::known`): a lifted lambda, a named
 /// function, a partial application of a named function or of a local that is known already and
 /// whose every expression takes more arguments (`partial_heads`: `let g = chosen (ref p2)` after
-/// `let chosen = cross`), another local, the argument of `Owned.function`, or an `if` between
-/// such. A call of the local runs one of them with the environment that the local holds, so
-/// `Checker::apply_higher` substitutes their facts where it would otherwise take the call for one
-/// of code that it does not see. The local is immutable and
+/// `let chosen = cross`), another local, the argument of `Owned.function`, or an `if`, a `match`
+/// or a block whose value is one of such. A call of the local runs one of them with the
+/// environment that the local holds, so `Checker::apply_higher` substitutes their facts where it
+/// would otherwise take the call for one of code that it does not see. The local is immutable and
 /// its binding comes before every use, so the expressions name the code of every call. An
 /// immutable local bound to an array literal of such values, or to a record literal, gives
 /// `parts` the expressions that an element (`(local, None)`) or a field (`(local, Some(field))`)
@@ -4816,6 +4856,17 @@ fn known_functions<'a>(
             } => {
                 shown(module, then_branch, found, known) && shown(module, else_branch, found, known)
             }
+            // The value of a `match` is that of one of its arms (`match n with | 0 -> cross | _ ->
+            // cross3 (ref p3)`), and that of a block its result (`{ cross }`): the locals that
+            // the block binds are immutable or give the whole function value's loans where an
+            // argument names them (`Checker::bound_value`).
+            E::Match { arms, .. } => {
+                !arms.is_empty()
+                    && arms
+                        .iter()
+                        .all(|arm| shown(module, &arm.body, found, known))
+            }
+            E::Block { result, .. } => shown(module, result, found, known),
             _ => false,
         }
     }
@@ -5054,9 +5105,9 @@ struct Checker<'a, 'run> {
     deferred: Vec<Diagnostic>,
     /// A31: the index of each parameter, by its external root.
     parameter_roots: BTreeMap<usize, usize>,
-    /// A31: the copy of a loan at a path of its place (`path_copy`), by loan, path and whether the
-    /// copy is exact (`exact_loans`).
-    path_copies: BTreeMap<(usize, Vec<usize>, bool), usize>,
+    /// A31: the copy of a loan at a path of its place (`path_copy`), by loan, path, whether the
+    /// copy is exact (`exact_loans`) and whether its place holds the borrowed part (no parent).
+    path_copies: BTreeMap<(usize, Vec<usize>, bool, bool), usize>,
     /// A31: the external roots of the parameters that are captures of a lifted lambda
     /// (`Contract::captures`). The function value's environment owns them, not a call: each call
     /// gets a copy of them in its own frame, and the environment, which outlives the call, drops
@@ -8910,6 +8961,9 @@ impl<'a, 'run> Checker<'a, 'run> {
                 .iter()
                 .any(|loan| self.views.contains(&self.loans[*loan].place.root));
         let mut targets: BTreeMap<usize, bool> = BTreeMap::new();
+        // The parameters whose `paths` and whose `element_paths` stand for a larger part than a
+        // loan's place (`Source::coarse`).
+        let (mut coarse_paths, mut coarse_elements) = (BTreeSet::new(), BTreeSet::new());
         let value = &self.expand_views(value);
         for &loan in &value.loans {
             let root = self.loans[loan].place.root;
@@ -8949,13 +9003,18 @@ impl<'a, 'run> Checker<'a, 'run> {
                             {
                                 if path.contains(&ELEMENT) {
                                     whole.insert(index);
-                                } else {
-                                    add_self_path(
-                                        source.paths.entry(index).or_default(),
-                                        path.clone(),
-                                    );
+                                } else if add_place_path(
+                                    source.paths.entry(index).or_default(),
+                                    path.clone(),
+                                ) {
+                                    coarse_paths.insert(index);
                                 }
-                                add_self_path(source.element_paths.entry(index).or_default(), path);
+                                if add_place_path(
+                                    source.element_paths.entry(index).or_default(),
+                                    path,
+                                ) {
+                                    coarse_elements.insert(index);
+                                }
                             }
                             _ => {
                                 whole.insert(index);
@@ -8981,11 +9040,24 @@ impl<'a, 'run> Checker<'a, 'run> {
                 && !paths.contains_key(index)
                 && !element_paths.contains(&Vec::new())
         });
+        source.coarse = source
+            .paths
+            .keys()
+            .filter(|index| coarse_paths.contains(*index))
+            .chain(
+                source
+                    .element_paths
+                    .keys()
+                    .filter(|index| coarse_elements.contains(*index)),
+            )
+            .copied()
+            .collect();
         source.pointing = precise
             && targets.iter().all(|(index, target)| {
                 *target
-                    || source.paths.contains_key(index)
-                    || source.element_paths.contains_key(index)
+                    || ((source.paths.contains_key(index)
+                        || source.element_paths.contains_key(index))
+                        && !source.coarse.contains(index))
             });
         source
     }
@@ -9524,14 +9596,17 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// one of `shared_copy` has none. A copy is exact (`exact_loans`) when the value `points` at
     /// the place of one of its loans (`argument_points`) and the loan is exact: the result of a
     /// call holds its argument's loan while it may point at a value that the loan's place reaches,
-    /// whose part the copy does not name. One copy per loan, path and exactness, so that the check
-    /// of a loop settles.
+    /// whose part the copy does not name. With `coarse`, a path stands for a part that holds the
+    /// borrowed place (`Source::coarse`): the copy is not exact either, but it names a part that
+    /// holds what the loan's value points at when that value points so. One copy per loan, path,
+    /// exactness and parent, so that the check of a loop settles.
     fn path_copy(
         &mut self,
         value: &Value,
         paths: &BTreeSet<Vec<usize>>,
         target: Option<&Type>,
         points: bool,
+        coarse: bool,
     ) -> Value {
         let whole = BTreeSet::from([Vec::new()]);
         let mut copied = Value {
@@ -9560,8 +9635,11 @@ impl<'a, 'run> Checker<'a, 'run> {
                     let shared = self.shared_copy(&single);
                     *shared.loans.first().expect("one loan in, one out")
                 } else {
-                    let exact = points && self.exact_loan(loan);
-                    if let Some(copy) = self.path_copies.get(&(loan, path.clone(), exact)) {
+                    // The copy's place holds the borrowed part; it is that part unless `coarse`.
+                    let holds = points && self.exact_loan(loan);
+                    let exact = holds && !coarse;
+                    let key = (loan, path.clone(), exact, holds);
+                    if let Some(copy) = self.path_copies.get(&key) {
                         *copy
                     } else {
                         let original = &self.loans[loan];
@@ -9571,8 +9649,9 @@ impl<'a, 'run> Checker<'a, 'run> {
                         // keeps the original live as its parent (`active`): the borrowed part is
                         // somewhere that the original's place reaches (`let q = child (ref n1)`
                         // points into a block of `n1.kids`), so that a write that may free it
-                        // (`n1.kids = []`) conflicts with the copy wherever it went.
-                        let parents = if exact {
+                        // (`n1.kids = []`) conflicts with the copy wherever it went. A copy whose
+                        // place holds the borrowed part conflicts with such a write itself.
+                        let parents = if holds {
                             BTreeSet::new()
                         } else {
                             BTreeSet::from([loan])
@@ -9591,7 +9670,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                         };
                         self.loans.push(copy);
                         let id = self.loans.len() - 1;
-                        self.path_copies.insert((loan, path.clone(), exact), id);
+                        self.path_copies.insert(key, id);
                         if exact {
                             self.exact_loans.insert(id);
                         }
@@ -9852,16 +9931,17 @@ impl<'a, 'run> Checker<'a, 'run> {
                     && (Self::fresh_exclusive(source) || self_shared)
                 {
                     stored = if self_shared {
-                        self.path_copy(&stored, paths, pointed.as_ref(), points)
+                        self.path_copy(&stored, paths, pointed.as_ref(), points, false)
                     } else if let Some(kept) = kept_paths {
                         self.kept_copy(&stored, kept, pointed.as_ref(), true, points)
                     } else {
                         self.shared_copy(&stored)
                     };
                 } else if self_shared {
-                    kept_self = Some(self.path_copy(&stored, paths, pointed.as_ref(), points));
+                    kept_self =
+                        Some(self.path_copy(&stored, paths, pointed.as_ref(), points, false));
                 } else if reference == Some(false) {
-                    stored = self.path_copy(&stored, paths, pointed.as_ref(), points);
+                    stored = self.path_copy(&stored, paths, pointed.as_ref(), points, false);
                 } else if let Some(kept) = kept_paths
                     && matches!(
                         self.module.functions[id]
@@ -9999,7 +10079,11 @@ impl<'a, 'run> Checker<'a, 'run> {
                                 Some(Type::Reference(target, _)) => Some(without_views(target)),
                                 _ => None,
                             };
-                            passed = self.path_copy(&passed, paths, pointed.as_ref(), points);
+                            // A path that stands for a larger part than a borrowed place names
+                            // no exact place (`Source::coarse`).
+                            let coarse = source.coarse.contains(&index);
+                            passed =
+                                self.path_copy(&passed, paths, pointed.as_ref(), points, coarse);
                         } else if part == Part::Value
                             && source.shared.contains(&index)
                             && Self::fresh_exclusive(argument)
@@ -10783,7 +10867,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 Self::referent_pieces(argument, &value).unwrap_or_else(|| vec![value.clone()]);
             let points = self.argument_points(argument);
             for piece in pieces {
-                let mut kept = self.path_copy(&piece, paths, Some(referent), points);
+                let mut kept = self.path_copy(&piece, paths, Some(referent), points, false);
                 // Every function that does so keeps the drop order of the value's parts.
                 if ordered {
                     kept = self.ordered_copy(&kept);
@@ -11495,6 +11579,23 @@ impl<'a, 'run> Checker<'a, 'run> {
                     || payload.as_deref().is_some_and(|value| {
                         self.value_runs_drop_code(Some(value), &value.ty, depth + 1)
                     })
+            }
+            // A choice is the value of one of its branches or arms (`if n < 0 then cross (ref p2)
+            // else cross3 (ref p3)`), and a block's value that of its result: its bindings are
+            // dropped where it ends.
+            E::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.value_runs_drop_code(Some(then_branch), &then_branch.ty, depth + 1)
+                    || self.value_runs_drop_code(Some(else_branch), &else_branch.ty, depth + 1)
+            }
+            E::Match { arms, .. } => arms
+                .iter()
+                .any(|arm| self.value_runs_drop_code(Some(&arm.body), &arm.body.ty, depth + 1)),
+            E::Block { result, .. } => {
+                self.value_runs_drop_code(Some(result), &result.ty, depth + 1)
             }
             E::Local(id) if self.known.contains_key(id) => {
                 let shown = self.known[id].clone();

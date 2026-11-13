@@ -438,6 +438,20 @@ fn fold_state_comes_back =
     let last = List.foldr (\acc x -> { Mutex.with_lock (Arc.get (ref a2)) (\slot -> Array.write 0 acc slot); \() -> String.length text + deref x }) (\() -> 0) xs
     Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ()) * 100 + last ()
 
+// The same through `Array.foldr`, which calls the callback itself: the callback's result is the
+// function that its body makes, not the callback with arguments bound, so the state is no owner of
+// the cell that the callback writes (review round 1 after Copilot's review: the rule before took
+// the result of any call of a function value for one).
+export def array_fold_state_comes_back :: i64
+fn array_fold_state_comes_back =
+    let text0 = to_string 123456789
+    let text = ref text0
+    let a = Arc.new (Mutex.create [\() -> 0])
+    let a2 = Arc.share (ref a)
+    let xs = [1, 2]
+    let last = Array.foldr (\acc x -> { Mutex.with_lock (Arc.get (ref a2)) (\slot -> Array.write 0 acc slot); \() -> String.length text + deref x }) (\() -> 0) (ref xs)
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ()) * 100 + last ()
+
 record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }
 
 instance Drop<Stash> {
@@ -1424,3 +1438,32 @@ fn local_function_values_keep_the_part =
     let out3 = Arc.new (Mutex.create [0])
     let k = chosen_pairs (ref out1) (ref out2) (ref out3) 1
     k * 1000 + recorded (ref out1) * 100 + recorded (ref out2) * 10 + recorded (ref out3)
+
+// Review round 1 after Copilot's review: a local bound to a `match` of `cross_recorded`, or to a
+// block, runs the member that it holds as `chosen_pairs` does. `p2`, `p3` and `p4`, declared after
+// `p1`, keep borrows of `p1`'s string and are dropped first. (A choice of partial applications of a
+// named function is in tests/rc.rs, for the reason that `bound_parts` gives.)
+def matched_pairs :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn matched_pairs out1 out2 out3 out4 k =
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 12345 }
+    let p2 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out2 }, s: to_string 1234567 }
+    let p3 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out3 }, s: to_string 123 }
+    let p4 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out4 }, s: to_string 1234567890 }
+    let chosen = match k with
+        | 0 -> cross_recorded
+        | _ -> { cross_recorded }
+    ref p1 |> chosen (ref p2)
+    let other = { chosen }
+    other (ref p3) (ref p1)
+    let g = chosen (ref p4)
+    g (ref p1)
+    k
+
+export def matched_function_values_keep_the_part :: i64
+fn matched_function_values_keep_the_part =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let out3 = Arc.new (Mutex.create [0])
+    let out4 = Arc.new (Mutex.create [0])
+    let k = matched_pairs (ref out1) (ref out2) (ref out3) (ref out4) 1
+    k * 10000 + recorded (ref out1) * 1000 + recorded (ref out2) * 100 + recorded (ref out3) * 10 + recorded (ref out4)

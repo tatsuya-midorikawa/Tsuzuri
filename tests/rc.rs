@@ -6153,3 +6153,333 @@ do! IO.write_line (to_string (run 123456789))
         accepts_in_both_editions(&[("Main.tz", main)]);
     }
 }
+
+/// A31, review round 1 after Copilot's review (findings 1 and 2): `applyy` and `applyx` hand
+/// their function-valued parameter a reference to a `D` inside the block of an `Rc<D>` that their
+/// argument's `e` holds. The recorded place of that borrow was merged into a shorter one (`[a]`
+/// for `if k > 0 then ref (...x.a.e[0]...) else ref x.a`) or cut to four fields
+/// (`[a, b, c, d]` for `x.a.b.c.d.e[0]`), and still counted as the place that the argument points
+/// at, so the caller made an exact copy of it, which `crossd` narrowed to the `s` of the wrong `D`
+/// (the type is the same, as `D` holds `[Rc<D>]`). Moving or replacing `e` then freed the borrowed
+/// string, which `p2`'s holder read when it was dropped (main and base accept and read the freed
+/// string: `drop -1`). A path that stands for a larger part than a borrowed place now names no
+/// place (`Source::coarse`): the caller's copy borrows the larger part (`x.a`, `x.a.b.c.d`), not
+/// narrowed further, so the move conflicts with it, and a write of `x.z` does not. Without the
+/// move, main prints `drop 8` and `1`. The body of `run` starts at line 33.
+const COARSE_PRELUDE: &str = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+record PairOk { h: Holder, s: string }
+def mkpo :: unit -> PairOk
+fn mkpo _u = PairOk { h: Holder { cell: Mutex.create [\() -> 0] }, s: String.repeat 4 (ref "123456789") }
+record D { s: string, e: [Rc<D>] }
+record X { a: D, z: string }
+record C { d: D }
+record B { c: C }
+record A { b: B }
+record Y { a: A, z: string }
+def mkd :: unit -> D
+fn mkd _u = D { s: String.repeat 4 (ref "123456789"), e: [] }
+def mkx :: unit -> X
+fn mkx _u = X { a: D { s: String.repeat 2 (ref "abc"), e: [Rc.new (mkd ())] }, z: to_string 1 }
+def mky :: unit -> Y
+fn mky _u = Y { a: A { b: B { c: C { d: D { s: String.repeat 2 (ref "abc"), e: [Rc.new (mkd ())] } } } }, z: to_string 1 }
+def applyy :: i64 -> ref X -> (ref D -> unit) -> i64
+fn applyy k x f = { (if k > 0 then ref (deref (Rc.get (ref x.a.e[0]))) else ref x.a) |> f; 0 }
+def applyx :: ref Y -> (ref D -> unit) -> i64
+fn applyx x f = { ref (deref (Rc.get (ref x.a.b.c.d.e[0]))) |> f; 0 }
+def crossd :: ref PairOk -> ref D -> unit
+fn crossd a b = { let t = ref b.s; Mutex.with_lock (ref a.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+def run :: i64 -> i64
+fn run n =
+"#;
+
+#[test]
+fn a_borrowed_place_merged_into_a_larger_part_is_no_place_that_the_argument_points_at() {
+    let program = |body: &str| {
+        format!(
+            "{COARSE_PRELUDE}{body}    let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")]\n    n + z + k * 0 + junk.length * 0\ndo! IO.write_line (to_string (run 1))\n"
+        )
+    };
+    let merged = "    let x = mkx ()\n    let p2 = mkpo ()\n    let z = applyy n (ref x) (crossd (ref p2))\n";
+    let cut =
+        "    let x = mky ()\n    let p2 = mkpo ()\n    let z = applyx (ref x) (crossd (ref p2))\n";
+    // The partial moves conflict with the borrow in both editions.
+    for (setup, moved) in [
+        (merged, "    let k = { let taken = x.a.e; taken.length }\n"),
+        (
+            cut,
+            "    let k = { let taken = x.a.b.c.d.e; taken.length }\n",
+        ),
+    ] {
+        rejects_at(
+            &program(&format!("{setup}{moved}")),
+            "E1014",
+            "borrow_conflict",
+            (36, 27),
+        );
+    }
+    // Replacing the field of a mutable local conflicts the same way in edition 2027 (edition 2026
+    // rejects the assignment itself with `E1012`, `assign_to_immutable_place`).
+    for (setup, replaced) in [
+        (merged, "    x.a.e = []\n    let k = 0\n"),
+        (cut, "    x.a.b.c.d.e = []\n    let k = 0\n"),
+    ] {
+        let setup = setup.replace("let x = ", "let mut x = ");
+        let source = program(&format!("{setup}{replaced}"));
+        let error = analyze_with_edition(&source, Edition::E2027).expect_err(&source);
+        assert_eq!(
+            (error.code, error.kind, position(&source, error.span.start)),
+            ("E1014", Some("borrow_conflict"), (36, 5)),
+            "{source}\n{}",
+            error.message
+        );
+    }
+    // Without the move, nothing conflicts (main prints `drop 8` and `1`), nor does a write of a
+    // part outside the borrowed one (edition 2027).
+    for setup in [merged, cut] {
+        accepts_in_both_editions(&[("Main.tz", &program(&format!("{setup}    let k = 0\n")))]);
+        let setup = setup.replace("let x = ", "let mut x = ");
+        let source = program(&format!("{setup}    x.z = to_string 22\n    let k = 0\n"));
+        analyze_with_edition(&source, Edition::E2027)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    }
+}
+
+/// A31, review round 1 after Copilot's review (finding 3): the fix of
+/// `a_partial_application_of_a_function_value_that_owns_its_cell_shares_the_cell` gave the result
+/// of a call of a function value the applied value's environment, by type, so builtins that apply
+/// a function argument (`Owned.call (ref w) 0`, `0 |> Owned.call (ref w)`, `new [T](1, w)`,
+/// `Array.init 1 w`, `FixedArray.init w`) kept the hole open, and `Array.foldr`, whose callback
+/// returns a function that its body makes, made `unit -> i64` the type of an owner in the
+/// `in_place_writes` fixture (main accepts it). A function value made at a site that takes `arity`
+/// arguments before its code runs now gives its partial applications, whatever applies them, the
+/// types of the rest of its parameters (`partial_types`): `w2`, a partial application of
+/// `mk`'s lambda, owns the cell, and the function that `Array.foldr`'s callback makes does not.
+/// Main accepts the rejected forms and prints `72` read through a dangling borrow; with the array
+/// declared first, it prints `72`, and with an owned function, `7`.
+#[test]
+fn a_partial_application_by_a_builtin_shares_the_cell_of_the_function_value() {
+    const MK: &str = "def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)\nfn mk a = \\k f -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })\ndef run :: i64 -> i64\nfn run _n =\n";
+    const END: &str = "do! IO.write_line (to_string (run 123456789))\n";
+    const OWNED: &str = "    let w = Owned.function (mk (Arc.new (Mutex.create [\\() -> 0])))\n";
+    const PLAIN: &str = "    let w = mk (Arc.new (Mutex.create [\\() -> 0]))\n";
+    const FIXED: &str =
+        "    let ws: [(unit -> i64) -> i64; 1] = FixedArray.init w\n    let mut w2 = ws[0]\n";
+    let forms: [(&str, &str, usize); 6] = [
+        (OWNED, "    let mut w2 = Owned.call (ref w) 0\n", 7),
+        (OWNED, "    let mut w2 = 0 |> Owned.call (ref w)\n", 7),
+        (
+            OWNED,
+            "    let g = Owned.call (ref w)\n    let mut w2 = g 0\n",
+            8,
+        ),
+        (
+            PLAIN,
+            "    let ws = new [(unit -> i64) -> i64](1, w)\n    let mut w2 = ws[0]\n",
+            8,
+        ),
+        (
+            PLAIN,
+            "    let ws = new [|(unit -> i64) -> i64|](1, w)\n    let mut w2 = ws[0]\n",
+            8,
+        ),
+        (
+            PLAIN,
+            "    let ws = Array.init 1 w\n    let mut w2 = ws[0]\n",
+            8,
+        ),
+    ];
+    let dangling = "    let first = { let arr0 = [String.repeat 8 (ref \"123456789\")]; let text = ref arr0[0]; w2 (\\() -> String.length text) }\n    first + w2 (\\() -> 1)\n";
+    let declared_first = |made: &str, applied: &str| {
+        format!(
+            "{MK}    let arr0 = [String.repeat 8 (ref \"123456789\")]\n    let text = ref arr0[0]\n{made}{applied}    let first = w2 (\\() -> String.length text)\n    first + w2 (\\() -> 1)\n{END}"
+        )
+    };
+    let owned = |made: &str, applied: &str| {
+        format!(
+            "{MK}{made}{applied}    let first = w2 (\\() -> 7)\n    first + w2 (\\() -> 1)\n{END}"
+        )
+    };
+    for (made, applied, line) in forms {
+        rejects_at(
+            &format!("{MK}{made}{applied}{dangling}{END}"),
+            "E1013",
+            "assignment_extends_borrow",
+            (line, 17),
+        );
+        accepts_in_both_editions(&[("Main.tz", &declared_first(made, applied))]);
+        accepts_in_both_editions(&[("Main.tz", &owned(made, applied))]);
+    }
+    // `FixedArray.init w` type-checks in edition 2026 (2027 lends the elements to read parameters).
+    let source = format!("{MK}{PLAIN}{FIXED}{dangling}{END}");
+    let error = analyze_with_edition(&source, Edition::E2026).expect_err(&source);
+    assert_eq!(
+        (error.code, error.kind, position(&source, error.span.start)),
+        ("E1013", Some("assignment_extends_borrow"), (8, 17)),
+        "{source}\n{}",
+        error.message
+    );
+    for source in [declared_first(PLAIN, FIXED), owned(PLAIN, FIXED)] {
+        analyze_with_edition(&source, Edition::E2026)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    }
+    // A callback that makes the function it returns gives no partial application of itself: the
+    // state of the fold is no owner of the cell that the callback writes (the `in_place_writes`
+    // suite prints `1011` for both).
+    for fold in [
+        "List.foldr (\\acc x -> { Mutex.with_lock (Arc.get (ref a2)) (\\slot -> Array.write 0 acc slot); \\() -> String.length text + deref x }) (\\() -> 0) (ref ys)",
+        "Array.foldr (\\acc x -> { Mutex.with_lock (Arc.get (ref a2)) (\\slot -> Array.write 0 acc slot); \\() -> String.length text + deref x }) (\\() -> 0) (ref xs)",
+    ] {
+        let main = format!(
+            "record Reading {{ f: unit -> i64 }}\ninstance Drop<Reading> {{\n    fn drop r = do! IO.write_line (to_string (r.f ()))\n}}\ndef folded :: i64 -> i64\nfn folded _n =\n    let text0 = to_string 123456789\n    let text = ref text0\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a2 = Arc.share (ref a)\n    let xs = [1, 2]\n    let ys = [|1, 2|]\n    let last = {fold}\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) * 100 + last () + xs.length * 0 + List.length ys * 0\ndef held :: i64 -> i64\nfn held _n =\n    let mut holder = Reading {{ f: \\() -> 0 }}\n    let text0 = to_string 123456789\n    let t = ref text0\n    holder = Reading {{ f: \\() -> String.length t }}\n    let k = holder.f ()\n    holder = Reading {{ f: \\() -> 3 }}\n    k\ndo! IO.write_line (to_string (folded 1 + held 1))\n"
+        );
+        accepts_in_both_editions(&[("Main.tz", &main)]);
+    }
+}
+
+/// A31, review round 1 after Copilot's review (finding 4): a local bound to a `match` of named
+/// functions, to a block (`{ cross }`), or to an `if` or `match` of partial applications
+/// (`if n < 0 then cross (ref p2) else outer (ref p2)`, `if n < 0 then cross3 (ref p3) else
+/// cross`) gets the facts of the member that it holds, as one bound to an `if` of named functions
+/// does: `known_functions` now knows such locals, and dropping one runs what its branches, arms or
+/// result run (`value_runs_drop_code`). Dropping a choice of partial applications was taken for
+/// running code that may store anything, so `p2` kept a borrow of itself; the others were
+/// function values whose code does not show. Main prints `drop 8`, `drop 0` and `1` (three
+/// values: `drop 0`, `drop 8`, `drop 0`, `1`, and for `cross3` alone `drop 16`, `drop 0`,
+/// `drop 0`, `1`); the swapped calls read a freed string in main.
+#[test]
+fn a_local_bound_to_a_match_block_or_choice_of_partial_applications_keeps_the_part() {
+    let declared = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n";
+    for binding in [
+        "    let chosen = match n with\n        | 0 -> cross\n        | _ -> cross\n",
+        "    let chosen = match n with\n        | k when k > 5 -> cross\n        | _ -> outer\n",
+        "    let chosen = { cross }\n",
+        "    let chosen = { let unused = 3; outer }\n",
+        "    let chosen = if n < 0 then { cross } else { let z = n; outer }\n",
+        "    let chosen = match n with\n        | 0 -> if n > 0 then cross else outer\n        | _ -> { cross }\n",
+    ] {
+        for (safe, swapped) in [
+            (
+                "    chosen (ref p2) (ref p1)\n",
+                "    chosen (ref p1) (ref p2)\n",
+            ),
+            (
+                "    ref p1 |> chosen (ref p2)\n",
+                "    ref p2 |> chosen (ref p1)\n",
+            ),
+            (
+                "    let g = chosen (ref p2)\n    g (ref p1)\n",
+                "    let g = chosen (ref p1)\n    g (ref p2)\n",
+            ),
+        ] {
+            accepts_in_both_editions(&[(
+                "Main.tz",
+                &cross_program(&format!("{declared}{binding}{safe}    n\n")),
+            )]);
+            rejects_at(
+                &cross_program(&format!("{declared}{binding}{swapped}    n\n")),
+                "E1013",
+                "assignment_extends_borrow",
+                (35, 5),
+            );
+        }
+    }
+    // Choices of partial applications, called, piped and through an alias; alone, they run nothing
+    // (main prints `drop 0`, `drop 0`, `1`).
+    for choice in [
+        "if n < 0 then cross (ref {X}) else cross (ref {X})",
+        "if n < 0 then cross (ref {X}) else outer (ref {X})",
+        "match n with\n        | 0 -> cross (ref {X})\n        | _ -> outer (ref {X})",
+        "{ cross (ref {X}) }",
+    ] {
+        let safe = format!("    let chosen = {}\n", choice.replace("{X}", "p2"));
+        let swapped = format!("    let chosen = {}\n", choice.replace("{X}", "p1"));
+        accepts_in_both_editions(&[(
+            "Main.tz",
+            &cross_program(&format!("{declared}{safe}    n\n")),
+        )]);
+        for (safe_call, swapped_call) in [
+            ("    chosen (ref p1)\n", "    chosen (ref p2)\n"),
+            ("    ref p1 |> chosen\n", "    ref p2 |> chosen\n"),
+            (
+                "    let g = chosen\n    g (ref p1)\n",
+                "    let g = chosen\n    g (ref p2)\n",
+            ),
+        ] {
+            accepts_in_both_editions(&[(
+                "Main.tz",
+                &cross_program(&format!("{declared}{safe}{safe_call}    n\n")),
+            )]);
+            rejects_at(
+                &cross_program(&format!("{declared}{swapped}{swapped_call}    n\n")),
+                "E1013",
+                "assignment_extends_borrow",
+                (35, 5),
+            );
+        }
+    }
+    // A choice whose taken member stores the other way (n = 1 takes the lambda, which keeps a
+    // borrow of `p2.s` in `p1`).
+    for binding in [
+        "    let chosen = match n with\n        | 0 -> cross\n        | _ -> (\\(a: ref PairOk) (b: ref PairOk) -> cross b a)\n",
+        "    let chosen = if n < 0 then { cross } else { (\\(a: ref PairOk) (b: ref PairOk) -> cross b a) }\n",
+    ] {
+        rejects_at(
+            &cross_program(&format!(
+                "{declared}{binding}    chosen (ref p2) (ref p1)\n    n\n"
+            )),
+            "E1013",
+            "assignment_extends_borrow",
+            (35, 5),
+        );
+    }
+    // Members of different arities: `three (ref p3)` and `cross` both take two more arguments.
+    // With `p2`, `p1`, `p3` declared in that order, n = 1 runs `cross p1 p2`, and n < 0 would run
+    // `three p3 p1 p2`; declared `p1`, `p2`, `p3`, `p1` keeps a borrow of `p2.s`; and with `p3`
+    // declared first, `three p3 p1 p2` (the only member) keeps borrows of `p1.s` and `p2.s` in it.
+    const THREE: &str = "    let three = \\(a: ref PairOk) (b: ref PairOk) (c: ref PairOk) -> { cross a b; cross a c }\n";
+    let ordered = "    let p2 = mkpo ()\n    let p1 = mkpo ()\n    let p3 = mkpo ()\n";
+    let swapped = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let p3 = mkpo ()\n";
+    let first = "    let p3 = mkpo ()\n    let p2 = mkpo ()\n    let p1 = mkpo ()\n";
+    for call in [
+        "    chosen (ref p1) (ref p2)\n",
+        "    ref p2 |> chosen (ref p1)\n",
+        "    let g = chosen (ref p1)\n    g (ref p2)\n",
+    ] {
+        for (choice, safe_order, unsafe_order) in [
+            (
+                "    let chosen = if n < 0 then three (ref p3) else cross\n",
+                ordered,
+                swapped,
+            ),
+            (
+                "    let chosen = match n with\n        | 0 -> three (ref p3)\n        | _ -> cross\n",
+                ordered,
+                swapped,
+            ),
+            (
+                "    let chosen = if n < 0 then three (ref p3) else three (ref p3)\n",
+                ordered,
+                first,
+            ),
+        ] {
+            accepts_in_both_editions(&[(
+                "Main.tz",
+                &cross_program(&format!("{safe_order}{THREE}{choice}{call}    n\n")),
+            )]);
+            rejects_at(
+                &cross_program(&format!("{unsafe_order}{THREE}{choice}{call}    n\n")),
+                "E1013",
+                "assignment_extends_borrow",
+                (35, 5),
+            );
+        }
+    }
+}
