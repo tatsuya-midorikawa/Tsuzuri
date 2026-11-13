@@ -781,7 +781,7 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 - 本体が見えない関数値の呼び出しは、安全側に扱います（第 1 回のレビュー対応で規則を作り直しました。下の「レビューの指摘への対応（第1回）」）。プログラムのどこかに「受け取った値を自分の環境が届く場所へ書き込む関数値」があると、見えない関数値の呼び出しは引数の借用を関数値の環境の先にも残し、その関数値がセルを所有していると、環境を隠す型かセルに届く型のすべての局所値に残します。この判定はプログラム全体で行うので、離れた所の関数値が、別の関数の中の見えない呼び出しの検査を厳しくします。
 - lock のコールバックが、ロック中の値の借用を別の `Mutex` へ書いて読み戻した値を返す形は `mutex_result_retains_borrow` です（基準は受理していた危険な形）。
 - 読み取りの仮引数（edition 2027）や演算子が借りた一時値への参照そのものを、呼び出す関数が引数の先へ書き込む形は `E1013` です（`let` で束縛してから渡します）。本体が見えない関数値へ一時値を貸す形は、最後の引数なら、参照の仮引数そのものを格納する関数がプログラムにあるときだけ `E1013`、最後でない引数なら、書き込み先があれば `E1013` です。
-- 12 回のレビューの後に残る保守的な制限（基準が受理する安全な形の拒否: 自分の部分の借用を持つ値へのもう一度の `ref mut`（`mix4`・`w05`）、パイプラインの `Rc.share`（`g08`）、兄弟が借用を持ちうるフィールドの代入（`f02`）、要素の部分（`slice_self_safe_elem`）、隠れた環境の規則（`fx3`）、2 つの仮引数の部分を関数値へ渡す一時値（`h01`）、実引数の値が持つ参照の先の部分を別の仮引数の先へ書き込む関数の呼び出し（`crossw`、マージ前の追加の修正の後に残るもの）、指す場所が分からない参照（ほかの呼び出しの結果 `callres`、`let mut` の参照の変数 `mutref`）を通した同じ呼び出し、5 つ以上の部分（`cross5`）、`Array.mapr` を通した呼び出し（`mapr`）、書き込むセルを自分で所有する関数値があるプログラムでの部分適用（`fx3` と同じ規則。マージ前の追加の修正の見直しの後に残るもの）、共有を通したブロックの自己の借用を持つ `Rc` の代入・ムーブ（`r06`・`r07`・`r10`・`r11`）、`m_named_owned`）と、検査の時間、記憶域の寿命と破棄の順序の 1 つのモデルで直す計画は、後続のチケット [A33](../A33-remaining-store-soundness-holes.md) に記録しました（第12回、最終の対応）。
+- 12 回のレビューの後に残る保守的な制限（基準が受理する安全な形の拒否: 自分の部分の借用を持つ値へのもう一度の `ref mut`（`mix4`・`w05`）、パイプラインの `Rc.share`（`g08`）、兄弟が借用を持ちうるフィールドの代入（`f02`）、要素の部分（`slice_self_safe_elem`）、隠れた環境の規則（`fx3`）、2 つの仮引数の部分を関数値へ渡す一時値（`h01`）、実引数の値が持つ参照の先の部分を別の仮引数の先へ書き込む関数の呼び出し（`crossw`、マージ前の追加の修正の後に残るもの）、指す場所が分からない参照（ほかの呼び出しの結果 `callres`、`let mut` の参照の変数 `mutref`）を通した同じ呼び出し、5 つ以上の部分（`cross5`）、`Array.mapr` を通した呼び出し（`mapr`）、書き込むセルを自分で所有する関数値があるプログラムでの部分適用（`fx3` と同じ規則。マージ前の追加の修正の見直しの後に残るもの）、関数値の仮引数を本体の中で部分適用・パイプラインで呼ぶ関数を通した呼び出し（`fvparam`。下の「Copilot のレビューへの対応（第1回）と fvpart」の後に残るもの）、共有を通したブロックの自己の借用を持つ `Rc` の代入・ムーブ（`r06`・`r07`・`r10`・`r11`）、`m_named_owned`）と、検査の時間、記憶域の寿命と破棄の順序の 1 つのモデルで直す計画は、後続のチケット [A33](../A33-remaining-store-soundness-holes.md) に記録しました（第12回、最終の対応）。
 
 ### レビューの指摘への対応（第1回）（2026-11-11）
 
@@ -1707,3 +1707,103 @@ A32 の 5 度目の merge（A31 の先端 `da4e5b85` を A32 へ）が、`main` 
 - 手順 5 の比較（`_tools/step5.mjs`、基準と対応後の `check --json`・`build --no-cache --emit llvm`）: `tests/fixtures`・`examples` の 154 個のどれも出力が同じ（`r15/step5.txt`）。
 - 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・47 個のリンク・9 個の例・18 回の native の実行）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
 - 変えたファイル: `src/ownership.rs`、`src/ownership_control.rs`、`tests/rc.rs`（2 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（制限の表の `callres`・`mutref`・`cross5`・`mapr` の行、段 3、見直しの記録）、このチケット（「残る制限」と、この節）。
+
+### Copilot のレビューへの対応（第1回）と fvpart（2026-11-14）
+
+PR #105 への Copilot のレビュー（`drop.md` の「文の一時値」の項目）と、A32 の 6 度目の merge が見つけた、`main` が受理する安全なプログラムの文書に無い拒否（`fvpart`）に対応しました。結果は `target/scratch/a31/cp1/` にあります（`cp1/v.sh` が修正後・`main`（`168ae4a5`、`m1/bin/tsuzuri-main`）・基準の最初の誤りを並べ、`RUN=1` で修正後の native の `-O0`・`-O3` と ASan の `-O0`・`-O3` の出力を足します。`o1`〜`o9` が lowering を確かめた探査、`p/` が一時値の探査、`fv/` が A32 の再現の写し、`fv2/` が fvpart の探査です）。
+
+#### Copilot の指摘: 一時値の解放の順序
+
+指摘は「作った順は文が正常に終わるときだけで、`break`・`continue` と受け止めた例外は、まだ解放していない一時値を逆の順に解放する（`src/llvm_control.rs:44`、`src/llvm_exception.rs:27`）」というものです。lowering を出口ごとに確かめると、指摘のとおりで、加えて文書の「文の終わり」も誤りでした。
+
+| 出口 | 実際の順序（`src/llvm*.rs`） |
+| --- | --- |
+| 正常な完了 | 呼び出しが借用した一時値（`BorrowOperand`: `ref (T { ... })` の引数、edition 2027 の読み取りの仮引数へ渡した値、比較の演算子の被演算子）は、その呼び出しの直後に `release_operands` が作った順に解放します。文の終わりではありません（`o3`: `k (h (ref T11) (ref T21) 0) (...)` の 11・21 は後の引数の評価より前、`o6`: フィールドを読んだ一時値は読んだ直後）。 |
+| `break`・`continue` | `emit_loop_jump` が、ループの本体を始めてから残っている一時値（`temporaries[temporary_base..]`）を作った逆の順に解放し、次にスコープを内側から束縛の逆順に解放します（`o2`: 後の引数の `break` で 22、12）。 |
+| 同じ関数の `try` が受け止める例外 | `raise` が `break` と同じく、`try` の本体を始めてから残っている一時値を逆の順に、次にスコープを解放します。ハンドラーの中の再送出（`Reraise`）も外側の `try` まで同じで、`finally` の中の送出は保留中の結果を一時値として解放します。 |
+| `try` の無い例外、別の関数の例外 | 例外は関数の境界を越えず、その場でトラップします（解放は走りません）。 |
+| `return`、コンピュテーション式の早期の脱出 | `return` は言語にありません。`?` などの早期の脱出は `Bind` が継続を呼ばないだけで、関数の通常の戻りです。 |
+| `match` の対象とパターンの変数 | スコープとして、正常な経路と脱出で同じ順に解放します。 |
+
+捕捉の後始末（既知のコールバックのクロージャ、`cleanup.iter().rev()`）は逆の順ですが、`Drop` 型の値は再利用できる関数値に捕捉できない（`E1005`）ので、`Drop.drop` の順序には関わりません。
+
+健全さ: 検査の一時値どうしの規則（`DropSlot::Temporary`、`temporary_dropped_first`）は、呼び出しが借用した一時値（`Arg::dying`）を、呼び出しの直後の作った順で比べます。逆の順になる脱出は、その呼び出しの引数の評価中、つまり呼び出しの前にしか起きず、そのとき呼び出しはまだ一時値の借用を書き込んでいません。呼び出しが戻ってから一時値を解放するまでの間に利用者のコードはありません。探査で確かめました（どれも両方の edition）。
+
+- `p/t1_break_later_arg`・`t2_continue_later_arg`・`t3_raise_later_arg`（先に作った `Holder` が後の文字列の借用を持つ `keep3` の 3 つ目の引数で `break`・`continue`・`@checked` の例外）、`t4_store_then_break`・`t5_store_then_raise`・`t7_pipe_store_then_break`（呼び出しの後の、同じ文の後の部分で脱出）: 修正後・`main`・基準が受理し、native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で手で求めた値（`t1`: `drop holder reads 8`・`reads 0`・`total 1`、`t2`: `8`・`0`・`8`・`total 4`、`t3`: `8`・`small 9`・`0`・`big -1`、`t4`・`t7`: `8`・`8`・`total 2`、`t5`: `8`・`small 10`・`8`・`big -1`）を出し、ASan は何も報告しませんでした。`break` した反復の `Holder` は書き込まれる前の関数（`0`）を読みます。
+- `p/u1_break_later_holder`・`u2_raise_later_holder`（保持する側を後に作る）: 修正後は `E1013`（`assignment_extends_borrow`）、`main`・基準は受理し、基準は正常な経路で解放した文字列を読みます（`drop holder reads -1`）。
+- `t6_fnvalue_break`（関数値への一時値の借用）は、どのバイナリも `E1013`（`borrow_of_temporary`）です。
+
+検査の変更は要りませんでした。変えたのは文書と説明です。
+
+- `drop.md`: 「文の一時値」の項目を「一時値」に書き直し（使い終わった位置で解放し、呼び出しが借用した一時値は呼び出しの直後に作った順。`g (f (ref (T { id: 1 })) 0) (h 0)` の 1 は `h` の前）、「`break`・`continue`・例外で式の途中から抜けるとき」の項目を足し、`run=` の例（`drop 11`・`drop 12`・`drop 22`・`drop 21`・`23`）を足しました。表は「文の一時値」の行を「呼び出しが借用した一時値」と「式の途中から抜けるときに残っている一時値」（作った逆の順、抜けるスコープの変数より先）の 2 行にし、「抜けるスコープの変数」の行に「残っている一時値の後」を足しました。検査の項目「呼び出しが借用した一時値」に、脱出で逆になっても呼び出しの前なので借用はまだ無いことを書きました。
+- `lifetimes.md`: 一時値は文の終わりではなく呼び出しが戻った直後に解放されることに直しました。
+- `docs/language.md`（ループの脱出）・`docs/architecture.md`（`emit_loop_jump`、例外の `raise`）: 脱出の順序と、検査が正常な経路の順序だけを見る理由を書きました。
+- `src/ownership.rs`: `DropSlot::Temporary`・`temporary_slot`・`Arg` などのコメントと、2 つのメッセージ（`temporary_borrow_stored` の `... dropped when the call returns`、`temporary_dropped_first_error` の `the temporaries that a call borrows are dropped when it returns, in the order in which they were made`）を、実際の解放の位置に合わせました（code と kind は同じ）。
+
+テスト: `tests/rc.rs` の `an_early_exit_before_the_call_keeps_the_order_of_its_borrowed_temporaries`（受理 6 形を両方の edition で、拒否 3 形を `29:25`・`27:13` の `E1013` の `assignment_extends_borrow` で）、`in_place_writes` の `early_exits_drop_pending_temporaries`（native と WASM の `-O0`・`-O3`。1 回目の反復の記録が `"12345"` の 5 + 1、`continue`・`break` の反復は書き込まれる前の 72・73、`3` では `"123"` の 3 + 9 と結果 9、`2^62` では桁あふれで 75 と結果 -1 なので、手で求めた値は `((((((1 * 100 + 6) * 100 + 72) * 100 + 73) * 100 + 9) * 100 + 12) * 100 + 75) * 10 + (-1 + 2) = 10672730912751`。基準も同じ値で、単独のプログラム `p/e1_fixture_case` は ASan でも同じ値）。
+
+#### fvpart: 名前付き関数を束縛した局所値のパイプラインと部分適用
+
+A32 の 6 度目の merge が、名前付き関数 `cross`（`b.s` の借用を `a.h` の `Mutex` へ書き込む）を局所値に束縛して（`let chosen = cross`、名前付き関数を選ぶ `if`）、パイプライン `ref p1 |> chosen (ref p2)` か部分適用 `let g = chosen (ref p2); g (ref p1)` で呼ぶ安全な形を、A31 が両方の edition で `E1013`（`assignment_extends_borrow`、`p1` が `p2` の借用を持つ）で拒否することを見つけました（`target/wt/a32/target/scratch/a32/merge6/fv/`。基準は `drop 8`・`drop 0`・`1`。直接の呼び出し `chosen (ref p2) (ref p1)` は受理）。
+
+原因は 3 つでした。
+
+- `apply_higher_once` は、部分適用の先頭が名前付き関数（`direct_callee`）のときだけ事実で置き換え、先頭が既知の局所値（`Checker::known` の `chosen`）の部分適用 `chosen (ref p2)` は本体の見えない関数値の規則（`apply_opaque`: どの引数の借用もほかの引数の先へ）でした。パイプラインは `pipe_stores` がこの形で `apply_higher` を呼びます。
+- `known_functions` は `let g = f (x)` を `f` が名前付き関数のときだけ既知の局所値にしたので、`g (ref p1)` も本体の見えない関数値でした。
+- 部分適用 `chosen (ref p2)` そのものも、`call_stores` が関数値の呼び出しとして `apply_higher` を呼び、`chosen` の式（2 つの仮引数）と引数の数が合わないので `apply_opaque` になり、`p2` が自分の借用を持ちました。さらに、`g` の破棄は、`value_runs_drop_code` が名前付き関数の部分適用しか知らないので、どんなコードも実行しうるものでした（部分適用だけの形 `fv2/s_partial_only` も `self_referential_store` で拒否していました）。
+
+変えたこと（`src/ownership.rs`）:
+
+- `known_heads`（既知の局所値の式。別の既知の局所値はその式に展開し、`let b = a` の連なりをたどる）、`known_arity`（式が実行の前に取る残りの引数の数: 名前付き関数の仮引数、持ち上げたラムダの捕捉の後の仮引数、名前付き関数か、どの式も同じ数を取る既知の局所値の部分適用の残り）、`partial_heads`（どの式もそれより多くの引数を取る）。
+- `known_functions`: どの式もまだ引数を取る既知の局所値の部分適用（`let g = chosen (ref p2)`）も既知の局所値にします。
+- `apply_higher_once`: どの式にも引数が足りない既知の局所値の呼び出しは部分適用で、何も格納しません（名前付き関数の部分適用と同じ）。先頭が既知の局所値の部分適用は、どの式も束縛した引数と残りの引数でちょうどそろうとき、束縛した引数（`bound_value` で狭めた値）を先に並べて、それぞれの式の事実で置き換えます。
+- `value_runs_drop_code`: 既知の局所値の部分適用の破棄は、局所値の関数値と束縛した引数の破棄です。
+
+確かめた形（`cp1/fv2/gen.py`、両方の edition。受理はどれも native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で手で求めた値、ASan の報告なし: `cp1/runs-fv-2027.txt`・`runs-fv-2026.txt`）:
+
+| 形 | 修正後 | 前（`m1` の merge のビルド） | `main`・基準 |
+| --- | --- | --- | --- |
+| 別名・`if` の選択・別名の別名・ラムダ・`cross` と `outer` の選択の、直接・パイプライン・部分適用・部分適用を完成させるパイプライン（`s_*` 20 個と A32 の再現 6 個） | 受理（`drop 8`・`drop 0`・`1`） | 直接だけ受理 | 受理 |
+| 3 つの値の `cross3` の別名で、2 つを束縛した部分適用・部分適用の部分適用（`s_three_*` 5 個） | 受理（`drop 16`・`drop 0`・`drop 0`・`1`） | `E1013` | 受理 |
+| 部分適用だけ（`s_partial_only`） | 受理（`drop 0`・`drop 0`・`1`） | `E1013`（`self_referential_store`） | 受理 |
+| 参照を捕捉したラムダの別名、部分適用を関数値の仮引数へ渡す呼び出し（`a_s_*` 4 個） | 受理（`drop 8`・`drop 0`・`1`） | `E1013` | 受理 |
+| 上の逆の呼び出し（`u_*` 28 個）、逆に書き込むラムダとの選択（`u_mix_*`）、逆の捕捉・渡した部分適用・タプルに入れた部分適用（`a_u_*`） | `E1013`（`assignment_extends_borrow`、`p1` の位置） | `E1013` | 受理（基準は解放した文字列を読み、`drop 0`・`drop -1`・`1`、3 つの値は `drop -2`） |
+| 部分適用の後で借用された `p1` をムーブ（`a_u_move_after`） | `E1014`（名前付き関数の部分適用と同じ） | `E1013`（部分適用の `self_referential_store`） | 受理 |
+
+残る制限（文書に書いたもの、A33 の `fvparam`）: 関数値の仮引数を本体の中で部分適用・パイプラインで呼ぶ関数（`fn applyp f a b = { let g = f a; g b; 0 }`、`fn applyq f a b = { b |> f a; 0 }`）へ `cross` を渡す `applyp cross (ref p2) (ref p1)` は、修正後も前のビルドも `E1013`（`assignment_extends_borrow`）で、`main`・基準は受理します（`drop 8`・`drop 0`・`1`、`fv2/b_s_param_*`）。高階の事実（`HigherOrderCall`）は仮引数の関数値をすべての引数で呼ぶ形だけを記録し、部分適用した `g` の呼び出しは本体の見えない関数値の呼び出しなので、呼び出し元はどの実引数の借用もほかの実引数の先へ入りうるものとして扱います。直すには、仮引数の部分適用を高階の事実に記録する必要があり、`drop.md`（「別の仮引数の先へ書き込んだ部分」の安全側の一覧）、`lifetimes.md` の「現在の制限」（本体の見えない関数値の一覧）、A33 の表、上の「残る制限」に書きました。
+
+テスト: `tests/rc.rs` の `a_local_bound_to_a_named_function_keeps_the_parts_in_a_pipeline_or_partial_application`（`CROSS_PRELUDE`。7 組の受理と逆の拒否、部分適用だけの受理、逆に書き込むラムダとの選択の拒否、3 つの値の 4 組の受理と逆の拒否を、拒否は `35:5` の `E1013` の `assignment_extends_borrow` で、両方の edition。制限の `applyp`・`applyq` の拒否も固定）、`in_place_writes` の `local_function_values_keep_the_part`（`cross_recorded` を選ぶ `if` を束縛した局所値のパイプラインと部分適用。`p2` と `p3` の記録が `p1` の `"12345"` の 5 + 1、`p1` は 0 なので、手で求めた値は `1 * 1000 + 0 * 100 + 6 * 10 + 6 = 1066`。基準も同じ値で、前のビルドはこのモジュールを `E1013` で拒否します）。
+
+#### 確かめの中で見つけて直した穴（`main` も受理）
+
+下のマージの条件の確かめ（`r17`）で、`review-a31-ce/p01_staged_int_first`（第1回のレビューの反例）が受理から拒否に変わりました。`mk a = \k f -> ...` が `Arc<Mutex<...>>` を値で捕捉したラムダを返し、`let w = mk (...)`、`let w2 = w 0` の後で、内側のブロックの局所値の借用を持つ関数を `w2` でセルへ書き込み、次の `w2` の呼び出しがそれを実行する形です。基準・`main`・前のビルド・この回の前の先端（`2ed5f692`）は受理し、局所値を配列の要素にした形（`cp1/reg/p01b`）では基準が解放した値を通して `72` を出し、ASan は stack use after scope を報告します（元の形は文字列の局所値を読むので、出力は `0` で、ASan の報告もありません）。危険な形で、fvpart の修正（既知の局所値の部分適用を事実で置き換える）が `w2` の呼び出しに `mk` のラムダの事実を当てはめ、借用を `w2` の環境に残すようになって拒否しました。
+
+同じ形でも、`let mut w2 = w 0`（`reg/v4_mut_local`）、`let mut w = mk (...)`（`v8_mut_w_imm_w2`）、本体が束縛の後でラムダを返す `mk` を引数を多く当てはめる形（`v10_block_mk_mut`）、パイプライン `0 |> w`（`v11_pipe_mut`）は、既知の局所値を通らないので受理のままで、どれも ASan が stack use after scope を報告しました（`main` も受理する前からの穴）。原因は `sink_flags` です。セルを所有する関数値の型（`owned_types`）は、関数値を作る所ごとに求め、それを環境に持つ関数値の型は holder として受け継ぎますが、関数値の呼び出しが関数を返す所（`staged`）は束縛した引数だけを見て、当てはめた関数値そのもの（結果はそれを環境に持つ）を数えていませんでした。`mk` のラムダの型 `i64 -> (unit -> i64) -> i64` は対象でも、`w 0` の型 `(unit -> i64) -> i64` は対象でなく、見えない呼び出しの規則（関数値と引数の借用を、そうした型のすべての局所値に残す）が働きませんでした。
+
+直したこと（`src/ownership.rs` の `sink_flags`、`e2593013`）: 関数値の呼び出し、名前付き関数が返す関数値への当てはめ、それを完成させないパイプラインの結果は、当てはめた関数値（`applied`・`returned`）を環境に持つ値として holder に入れます。小さな変更で、ラムダが捕捉した関数値と同じ扱いです。上の 4 形と元の形・`p01b`・関数の結果への当てはめ（`v1_callres_partial`）は、両方の edition で内側のブロックを指す `E1013`（`assignment_extends_borrow`）になり、借用される配列を関数値より先に宣言した形（`s10_mut_outer_safe`・`s12_block_mk_safe`、手で求めた値 `72`）と所有する関数だけを書き込む形（`s11_mut_owned_safe`、`7`）は受理のままで、native の `-O0`・`-O3` と ASan で同じ値でした。`lifetimes.md`（そうした関数値の型の説明）と `docs/architecture.md`（`sink_flags`）に書き、`tests/rc.rs` の `a_partial_application_of_a_function_value_that_owns_its_cell_shares_the_cell`（拒否 5 形を位置と kind で、受理 3 形を両方の edition で）を足しました。
+
+#### マージの条件の確かめ（この対応の後）
+
+上の道具を `gate/tools/check-r17.mjs`・`diff-r17.mjs`（基準と前の見直しの後の `r16` の結果を `results-r16.json` から使い、`r16` に無いプログラムは m1 の merge のビルド（`prev`）でも検査）、穴の修正の後の `check-r18.mjs`・`diff-r18.mjs`（`results-r17.json` を使う）に写し、変化を merge と この回のどちらによるかを `prev-r17.mjs`（`prev-r17.json`、前のビルドと `main` で検査し直す）で確かめました。`gate/tools/collect.mjs` で、この対応の探査（`cp1/p`・`fv`・`fv2`・`reg`・`ra`）、m1 の探査、A32 の 6 度目の merge の写しなど 286 個を足し、12901 個・25802 組を両方の edition で検査しました（`results-r17.json`・`results-r18.json`、分類は `diff-r17.txt`・`diff-r18.txt`。`cp1/gate-diff-r17.txt`・`gate-diff-r18.txt` に写し）。最終のバイナリ（`r18`）の分類です。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 4328 | 3366 |
+| 両方が拒否 | 5010 | 6719 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 3525 | 2787 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 67 組で、前の見直しの後のビルドが受理しないものは 0 組です。** 48 組は前回と同じ（安全と確かめたもの）で、新しい 19 組は、基準が匿名共用体の構文を読めない（`E0002`）プログラムです: m1 の探査 `s1`〜`s8`（とその A32 の写し）、A32 の 6 度目の merge の `au/*`、この回のビルドの写しの中の `tests/fixtures/anonymous_unions`。どれも `main`（`168ae4a5`）も受理し、探査は native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で手で求めた値（`9`、`5`、`9`、`9`、`1009`、`9`、`45`、`45`、`321`、`14`、`14`）を出し、ASan は何も報告しませんでした（`cp1/ra-runs.txt`）。fixture は `anonymous_unions` のスイートが値を確かめるものです。条件 (1) は成り立ちます。
+- **前からある 25230 組の `r16` からの変化は 3 組で、どれもこの回の変更によります**（`main` の merge だけのビルドは `r16` と同じ判定）。受理から拒否の 2 組は上の `p01_staged_int_first`（危険な形で、前からの穴を閉じたもの）、拒否から受理の 1 組は `a32/merge4/spell/p.fa3_partial_other_part__target2__ifc`（`target2` を選ぶ `if` を束縛した局所値の部分適用 `let g = chosen 1; g (ref mut p0)` の後で借用されていない `p0.n` を書き換える。基準も受理し、native・ASan で手で求めた `drop 8 2`・`11`、ASan の報告なし）です。
+- 足した 572 組では、前のビルドからの変化は上の fvpart の受理（68 組。A32 の再現と `merge6/d/*safe__ifc` を含み、どれも基準が受理する安全な形）、`a_u_move_after` の kind（`E1013` から `E1014`）、`r17` から `r18` の穴の 4 形（8 組、受理から拒否）だけです。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+
+#### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3285 件すべて成功、4 件 skip（1786 秒、`cp1/nextest-2.log`。穴の修正の前の `21caa7fe` でも 3284 件すべて成功、`cp1/nextest.log`）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 79 件（この回の 2 件を含む。基準のバイナリでも 79 件が成功）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control.mjs` 701 件、`user_drop.mjs`（`-O0`・`-O3`）がすべて成功（`cp1/suites-2.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`cp1/step5-main-2.txt`）。基準と比べると 25 個が違い、`tests/fixtures/anonymous_unions`（基準が読めない）と、LLVM IR だけが違う 24 個で、`main` との比較で同じなので merge した `main` の変更によるものです（`cp1/step5-2.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・48 個のリンク・10 個の例・20 回の native の実行。新しい `run=` の例を含む）、`node scripts/check-guide-lite.mjs`、`node scripts/check-links.mjs`、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（3 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（2 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（`fvparam` の行、fvpart と穴の記録）、このチケット（「残る制限」と、この節）。
