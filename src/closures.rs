@@ -123,7 +123,7 @@ impl Checker<'_> {
     /// instance of these classes, so reading the value failed there too, at the literal
     /// (`expected an integer, found ref i64`). It binds the reference only when the referent
     /// of the annotation is a number type that meets every constraint on the variable
-    /// (`literal_takes`), so a mistyped referent (`ref string`, `ref u8` for `-1`) keeps that
+    /// (`annotated_literal_takes`), so a mistyped referent (`ref string`, `ref u8` for `-1`) keeps that
     /// error.
     pub(super) fn binds_annotated_reference(
         &mut self,
@@ -148,7 +148,7 @@ impl Checker<'_> {
             return false;
         };
         if let (Some(root), Type::Reference(referent, _)) = (literal, &annotated)
-            && !self.literal_takes(root, referent)
+            && !self.annotated_literal_takes(root, referent)
         {
             return false;
         }
@@ -194,7 +194,7 @@ impl Checker<'_> {
     /// one of them constrains `root` itself (the literal's own); and no member constraint
     /// mentions `root`. The program read the value before and failed at the literal, so a
     /// constraint that would fail now keeps it reading the value and failing as before.
-    fn literal_takes(&self, root: usize, referent: &Type) -> bool {
+    fn annotated_literal_takes(&self, root: usize, referent: &Type) -> bool {
         if !(referent.is_integer() || referent.is_float()) {
             return false;
         }

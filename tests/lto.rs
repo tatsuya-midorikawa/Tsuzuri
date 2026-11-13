@@ -28,9 +28,15 @@ fn clang() -> OsString {
 
 /// A new directory for one test, which the test removes when it succeeds.
 fn scratch(name: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // `cargo test` runs the tests of this file as threads of one process, so two of them can ask for
+    // the same name at the same clock value (every test that calls `wasm_tools` probes in
+    // "wasm-probe"): every call takes its own number.
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
     let root = std::env::temp_dir().join(format!(
-        "tsuzuri-lto-{name}-{}-{}",
+        "tsuzuri-lto-{name}-{}-{}-{}",
         std::process::id(),
+        CALLS.fetch_add(1, Ordering::Relaxed),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -154,7 +160,8 @@ fn stamps_a_module_without_definitions_and_without_a_tuning_cpu() {
 
 #[test]
 fn stamps_a_definition_that_follows_a_closing_brace() {
-    // The runtime text after a function may end without a newline, so the next `define` shares its line.
+    // IR joined from pieces that end without a newline puts the next `define` on the line of the brace. The runtime
+    // pieces end with a newline since TZ15, and the stamp still reads such a line.
     let attributes = TargetAttributes::new("x86-64", None, None);
     assert_eq!(
         stamp_target_attributes(

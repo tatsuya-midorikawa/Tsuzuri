@@ -142,7 +142,7 @@ impl Place {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 struct Value {
     loans: BTreeSet<usize>,
     /// A12: the loans of each region slot of a record with several regions; `None` lets every
@@ -246,6 +246,28 @@ struct State<'a> {
     /// the owner (`Checker::same_block_loan`), which outlives the local while the owner holds it. A
     /// join keeps what both paths agree on.
     block_shares: BTreeMap<usize, BTreeSet<usize>>,
+}
+
+impl State<'_> {
+    /// Whether the two states hold the same locals with the same values, aliases and moves, and
+    /// the same A31 facts of the path (the locals moved on every path, the kept loans, what was
+    /// stored elsewhere, the shares of blocks): a later check from either gives the same results.
+    fn same(&self, other: &Self) -> bool {
+        self.locals.len() == other.locals.len()
+            && self
+                .locals
+                .iter()
+                .zip(&other.locals)
+                .all(|((a, (x, u)), (b, (y, v)))| a == b && x.id == y.id && u == v)
+            && self.aliases == other.aliases
+            && self.moved == other.moved
+            && self.generic_moves == other.generic_moves
+            && self.moved_always == other.moved_always
+            && self.kept == other.kept
+            && self.kept_elsewhere == other.kept_elsewhere
+            && self.contents_elsewhere == other.contents_elsewhere
+            && self.block_shares == other.block_shares
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -697,9 +719,14 @@ fn start_checker<'a, 'run>(
         shared_copies: BTreeMap::new(),
         ordered_copies: BTreeMap::new(),
         ordered_loans: BTreeSet::new(),
+        exact_loans: BTreeSet::new(),
+        kept_copies: BTreeMap::new(),
+        pointing: BTreeMap::new(),
+        borrow_loans: BTreeMap::new(),
         parameter_paths: std::cell::RefCell::new(BTreeMap::new()),
         parameter_path_steps: std::cell::Cell::new(0),
         matched_by: None,
+        injections: BTreeSet::new(),
     };
     if !infer && facts.seeded {
         known_functions(
@@ -721,6 +748,13 @@ fn start_checker<'a, 'run>(
         let types = module.types();
         if !task && parameter.ty.carries_loans_beside_owned_functions(&types) {
             checker.external_loans(parameter, index, contract.slots, &mut value);
+        }
+        // A31: an immutable reference parameter points at its target, the place of its loan.
+        if matches!(parameter.ty, Type::Reference(..))
+            && !parameter.mutable
+            && !value.loans.is_empty()
+        {
+            checker.pointing.insert(parameter.id, value.loans.clone());
         }
         checker
             .state
@@ -973,6 +1007,18 @@ struct Source {
     /// value that keeps one in another part of the same value keeps a borrow of that part only,
     /// which the drop order of the value's parts decides. Without an entry, the whole target.
     paths: BTreeMap<usize, BTreeSet<Vec<usize>>>,
+    /// For a reference parameter of `parameters` without `paths` all of whose loans in the
+    /// argument are shared borrows of parts of its target at places that also step into elements
+    /// (`f (ref values[index])`, which `Array.iterr` passes on), the parts. They decide no drop
+    /// order between two arguments (an element place stands for every element), so only a caller
+    /// whose argument points at its place (`Checker::argument_points`) passes shared borrows of
+    /// those parts of it (`Checker::path_copy`), which `pointing` then says point at their places.
+    element_paths: BTreeMap<usize, BTreeSet<Vec<usize>>>,
+    /// The argument is a reference that points at the place of one of its loans
+    /// (`Checker::argument_points`), each of them a whole target of `parameters` (`Part::Value`)
+    /// or a part of one at `paths` or `element_paths`: the caller's value for it points so when
+    /// its arguments for those parameters do (`Arg::pointing`).
+    pointing: bool,
 }
 
 /// A31: a call of the function-valued parameter `callee` of a body with `arguments`; with a
@@ -1029,6 +1075,18 @@ struct StoreFacts {
     /// (`Checker::path_copy`), so that a later write of another part (`p0.n = 9`) does not
     /// conflict with them. A path covers the longer paths that start with it (`add_self_path`).
     self_paths: BTreeMap<usize, BTreeSet<Vec<usize>>>,
+    /// For an entry `(p, Part::Value, q)` with `p != q` and a reference parameter `p`: the places,
+    /// as fields from what `p` points at, of the borrows of `p`'s target that the body stored where
+    /// `q` reaches, as `self_paths` keeps them for the value itself (`[s]` for `ref b.s` written
+    /// into the cell of `a.h`); the whole target (`[]`) for a borrow whose place is not the part
+    /// that it borrows (`Checker::exact_loan`: `ref w.p.s` through a reference that the target
+    /// holds). A caller that passes a shared reference there stores borrows of those parts of its
+    /// argument's place (`Checker::kept_copy`): a borrow of a part that holds nothing (a string)
+    /// is no place that a later store reaches through (`Checker::store_target`), and when the two
+    /// arguments point at one value (`cross (ref p) (ref p)`), the drop order of the borrowed part
+    /// decides the borrow that the value keeps of itself. An entry without paths stands for the
+    /// whole target.
+    kept_paths: BTreeMap<(usize, usize), BTreeSet<Vec<usize>>>,
     calls: BTreeSet<HigherOrderCall>,
     /// The loans of these arguments may be stored in an environment that the check cannot name
     /// (`Checker::store_hidden`): every value of the caller that may share one holds them.
@@ -1121,6 +1179,27 @@ impl StoreFacts {
             let known = self.self_paths.entry(*parameter).or_default();
             for path in found {
                 paths |= add_self_path(known, path.clone());
+            }
+        }
+        // An entry that a side has without paths stands for the whole target there.
+        for (entry, found) in &other.kept_paths {
+            let whole = self.stores.contains(&(entry.0, Part::Value, entry.1))
+                && !self.kept_paths.contains_key(entry);
+            let known = self.kept_paths.entry(*entry).or_default();
+            if whole {
+                known.insert(Vec::new());
+            }
+            for path in found {
+                paths |= add_self_path(known, path.clone());
+            }
+        }
+        for &(from, part, to) in &other.stores {
+            if from != to
+                && part == Part::Value
+                && !other.kept_paths.contains_key(&(from, to))
+                && let Some(known) = self.kept_paths.get_mut(&(from, to))
+            {
+                paths |= add_self_path(known, Vec::new());
             }
         }
         self.stores.extend(other.stores.iter().copied());
@@ -1346,6 +1425,46 @@ fn piped_application(right: &TypedExpr) -> (&TypedExpr, &[TypedExpr]) {
         E::Call(callee, arguments) => (callee, arguments),
         _ => (right, &[]),
     }
+}
+
+/// A31: the reference parameters of function `id` one of which its result is, unchanged: its
+/// body's result is an immutable parameter of a reference type, or a choice of such parameters
+/// (`if`, `match`, the result of a block), as in `pick k x y = if k > 0 then x else y`. The
+/// result then points where the argument for one of them does (`Checker::points_at`). `None` for
+/// any other body, and for a function whose parameters have region slots.
+fn returned_parameters(module: &CheckedModule, id: usize) -> Option<BTreeSet<usize>> {
+    let function = module.functions.get(id)?;
+    if function.region_slots.is_some() || !matches!(function.body.ty, Type::Reference(..)) {
+        return None;
+    }
+    let mut returned = BTreeSet::new();
+    let mut pending = vec![&function.body];
+    while let Some(expression) = pending.pop() {
+        match &expression.kind {
+            E::Local(local) => {
+                let index = function.parameters.iter().position(|parameter| {
+                    parameter.id == *local
+                        && !parameter.mutable
+                        && matches!(parameter.ty, Type::Reference(..))
+                })?;
+                returned.insert(index);
+            }
+            E::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                pending.push(then_branch);
+                pending.push(else_branch);
+            }
+            E::Match { arms, .. } if !arms.is_empty() => {
+                pending.extend(arms.iter().map(|arm| &arm.body));
+            }
+            E::Block { result, .. } => pending.push(result),
+            _ => return None,
+        }
+    }
+    (!returned.is_empty()).then_some(returned)
 }
 
 /// The function that a call's callee names directly.
@@ -4849,8 +4968,9 @@ struct Checker<'a, 'run> {
     deferred: Vec<Diagnostic>,
     /// A31: the index of each parameter, by its external root.
     parameter_roots: BTreeMap<usize, usize>,
-    /// A31: the copy of a loan at a path of its place (`path_copy`), by loan and path.
-    path_copies: BTreeMap<(usize, Vec<usize>), usize>,
+    /// A31: the copy of a loan at a path of its place (`path_copy`), by loan, path and whether the
+    /// copy is exact (`exact_loans`).
+    path_copies: BTreeMap<(usize, Vec<usize>, bool), usize>,
     /// A31: the external roots of the parameters that are captures of a lifted lambda
     /// (`Contract::captures`). The function value's environment owns them, not a call: each call
     /// gets a copy of them in its own frame, and the environment, which outlives the call, drops
@@ -4960,6 +5080,27 @@ struct Checker<'a, 'run> {
     /// that a callee stored into the value that they borrow (`StoreFacts::ordered`).
     ordered_copies: BTreeMap<usize, usize>,
     ordered_loans: BTreeSet<usize>,
+    /// A31: the loans with fields whose places are the parts that they borrow (`exact_place`):
+    /// the borrows of a chain of fields and elements of a local value, or of what a reference
+    /// local points at (`pointing`), and the copies of such a loan (`shared_copy`,
+    /// `ordered_copy`), or of a loan of a value that points at its place (`kept_copy`,
+    /// `path_copy`). A borrow through a reference that a value holds (`ref w.p.s`, whose place is
+    /// `w`'s external root with the fields of `p`'s target), that a call returned (`ref (geth
+    /// q).n`, `let q = child b; ref q.s`) names fields of another value than its root's, and is
+    /// none.
+    exact_loans: BTreeSet<usize>,
+    /// A31: the copy of each loan and path that `kept_copy` made.
+    kept_copies: BTreeMap<(usize, Vec<usize>), usize>,
+    /// A31: the immutable locals whose value is a reference that points at the place of one of
+    /// its loans, not at a part of what that place reaches (`points_at`): a reference parameter,
+    /// whose loan is its target, and a local bound to a borrow of an exact place (`ref p.s`), to
+    /// such a local, or to a choice of them (`if c then ref a else ref b`), each with the loans
+    /// that it held when it was bound. A local bound to the result of a call (`let q = child b`,
+    /// whose loan is `b`'s while it points at a value that `b` reaches) is none.
+    pointing: BTreeMap<usize, BTreeSet<usize>>,
+    /// A31: the loans that each borrow expression made (by the address of the expression), for
+    /// the arguments that a partial application bound (`bound_value`).
+    borrow_loans: BTreeMap<usize, BTreeSet<usize>>,
     /// A31: the answers of `parameter_path` for the locals that patterns bind, with the depth that
     /// each needed (`parameter_path_at`).
     parameter_paths: std::cell::RefCell<BTreeMap<usize, (Option<ParameterPath>, usize)>>,
@@ -4969,6 +5110,9 @@ struct Checker<'a, 'run> {
     /// of function clauses that match a parameter again after its pattern moved the value
     /// (`use_after_move`).
     matched_by: Option<Span>,
+    /// The spans of the values that moved into an anonymous union when they were injected (A24),
+    /// for the help of a later use: a borrow cannot be injected.
+    injections: BTreeSet<(Option<usize>, usize, usize)>,
 }
 
 /// A31: the parameter of a body and the path of tuple or record fields (or union payloads) in its
@@ -5000,7 +5144,7 @@ struct DropHidden {
 /// A31: one application of the store facts of a function to arguments, for `Checker::store_memo`:
 /// the function and, by argument, its expression (by address), loans, loans read through, and
 /// flags.
-type StoreKey = (usize, Vec<(usize, Vec<usize>, Vec<usize>, u8)>);
+type StoreKey = (usize, Vec<(usize, Vec<usize>, Vec<usize>, u16)>);
 
 /// A31: an argument of a call whose store facts are applied: its expression when the call has
 /// one, its value, and, for an argument of a call of a function-valued parameter that a callee's
@@ -5070,6 +5214,14 @@ struct Arg<'e> {
     /// argument are parts of one value, whose drop order decides a borrow of one kept in the
     /// other (`Checker::temporary_dropped_first`).
     part: Option<(&'e TypedExpr, Vec<usize>)>,
+    /// With an expression, the value is that of a whole function value that holds it (an argument
+    /// that a pipeline's right side applies, `Checker::pipe_stores`), not its own.
+    approximate: bool,
+    /// Without an expression, or with one whose value is not its own (`environment`,
+    /// `approximate`): whether the value is a reference that points at the place of one of the
+    /// loans that it holds itself (`Checker::argument_points`): a value that a callee's facts made
+    /// of such arguments (`Source::pointing`), or the value that `Checker::bound_value` found.
+    pointing: bool,
 }
 
 impl<'e> Arg<'e> {
@@ -5095,6 +5247,8 @@ impl<'e> Arg<'e> {
             ty: None,
             origin: None,
             part: None,
+            approximate: false,
+            pointing: false,
         }
     }
 }
@@ -5445,9 +5599,19 @@ impl<'a, 'run> Checker<'a, 'run> {
                         .zip(values)
                         .map(|(argument, value)| Arg::of(Some(argument), value))
                         .collect(),
+                    // Each argument that the right side applies has the value of the whole function
+                    // value, or the part of it that a reference to an exact place made
+                    // (`bound_value`).
                     _ => bound
                         .iter()
-                        .map(|argument| Arg::of(Some(argument), callee.clone()))
+                        .map(|argument| {
+                            let own = self.bound_value(argument, callee);
+                            Arg {
+                                approximate: true,
+                                pointing: own.is_some(),
+                                ..Arg::of(Some(argument), own.unwrap_or_else(|| callee.clone()))
+                            }
+                        })
                         .collect(),
                 };
                 all.push(self.argument(left, value.clone(), live));
@@ -6251,6 +6415,31 @@ impl<'a, 'run> Checker<'a, 'run> {
         Ok(())
     }
 
+    /// `value` as the source spells it, when it is a local that the source names or a record
+    /// field of one (`r.u`, `r.inner.u`).
+    fn spelled(&self, value: &TypedExpr) -> Option<String> {
+        match &value.kind {
+            E::Local(id) => self
+                .state
+                .locals
+                .get(id)
+                .map(|(local, _)| local)
+                .filter(|local| {
+                    local.provenance != crate::syntax::Provenance::Generated
+                        && !local.name.starts_with('$')
+                })
+                .map(|local| local.name.clone()),
+            E::Field(inner, index) => {
+                let Type::Record(id, _) = &inner.ty else {
+                    return None;
+                };
+                let (field, _) = self.module.records.get(*id)?.fields.get(*index)?;
+                Some(format!("{}.{field}", self.spelled(inner)?))
+            }
+            _ => None,
+        }
+    }
+
     fn access(
         &mut self,
         place: &Place,
@@ -6287,13 +6476,43 @@ impl<'a, 'run> Checker<'a, 'run> {
             // A hidden pattern parameter is read by its own name, at its declaration, only as the
             // subject of a `match`: its pattern's, which comes first, or the function clauses'.
             let rematched = (declared == Some(span)).then(|| self.matched_by.unwrap_or(span));
+            let widening = (!moved.fields.is_empty() && origin.end > origin.start)
+                .then(|| widened_at(self.body, origin))
+                .flatten();
             // Only the control flow tells whether the move reached the use through a loop: the
             // `where` bindings of a guarded function run before its arms, and an assignment's value
             // before its place.
-            let previous_iteration = origin.end > origin.start
-                && moved_in_previous_iteration(self.body, origin, span, &mut self.later_use_budget)
-                    == Some(true);
+            let reached = (origin.end > origin.start)
+                .then(|| {
+                    moved_in_previous_iteration(self.body, origin, span, &mut self.later_use_budget)
+                })
+                .flatten();
+            // The nodes of a widening (A25) all have the span of the widened expression, so the
+            // flow cannot order its move and a use of that expression; the use reads the value
+            // before the binding moves it, so it reads what an earlier pass of a loop moved
+            // (review round 3).
+            let previous_iteration = reached == Some(true)
+                || (reached.is_some() && widening.is_some() && origin == span);
+            // A widening moves the payload, all that the value holds besides its tag, into the
+            // wider union: the widened value moved, the local itself or a field of it (`r.u`,
+            // review round 3), as the source spells it. A value that the source does not spell
+            // keeps the message of a partial move.
+            let widened = widening.and_then(|(wider, value)| {
+                let part = !matches!(value.kind, E::Local(_));
+                Some((wider, self.spelled(value)?, part))
+            });
             let message = match (moved.fields.is_empty(), previous_iteration) {
+                _ if widened.as_ref().is_some_and(|(_, _, part)| *part) => {
+                    if previous_iteration {
+                        "part of the value moved here into a wider anonymous union, in the previous iteration of the loop"
+                    } else {
+                        "part of the value moved here into a wider anonymous union"
+                    }
+                }
+                _ if widened.is_some() && previous_iteration => {
+                    "value moved here into a wider anonymous union, in the previous iteration of the loop"
+                }
+                _ if widened.is_some() => "value moved here into a wider anonymous union",
                 (true, false) => "value moved here",
                 (false, false) => "part of the value moved here",
                 (true, true) => "value moved here, in the previous iteration of the loop",
@@ -6301,7 +6520,79 @@ impl<'a, 'run> Checker<'a, 'run> {
                     "part of the value moved here, in the previous iteration of the loop"
                 }
             };
-            let mut diagnostic = use_after_move(&name, moved.fields.is_empty(), span, rematched);
+            // The local that holds a matched temporary has a generated name, which no source
+            // spells; only the bindings of one pattern take from it.
+            let matched = self
+                .state
+                .locals
+                .get(&place.root)
+                .is_some_and(|(local, _)| {
+                    local.provenance == crate::syntax::Provenance::Generated
+                        && local.name.starts_with("$match")
+                });
+            // A widening or an injection (A24, A25, A26) explains the move of a value that the
+            // source names. Any other generated name (a hidden pattern parameter) takes the
+            // message of `use_after_move`, which shows no generated name.
+            let explained = if name.starts_with('$') {
+                None
+            } else if let Some((wider, path, part)) = &widened {
+                // `ref` of the narrower value is never widened: the wider value is bound once.
+                let wider = wider.display(&self.module.types());
+                let out_of = if *part {
+                    format!(" out of '{name}'")
+                } else {
+                    String::new()
+                };
+                Some(format!(
+                    "a widening moves '{path}'{out_of}; bind the wider value once with 'let wide: {wider} = {path}' and borrow 'wide', or move it last"
+                ))
+            } else if self
+                .injections
+                .contains(&(origin.source, origin.start, origin.end))
+            {
+                // A24, A26: a value injected into an anonymous union, also by a comparison
+                // (`v == s`), moves; `ref s` cannot be injected.
+                Some(if moved.fields.is_empty() {
+                    let ty = self
+                        .state
+                        .locals
+                        .get(&place.root)
+                        .map(|(local, _)| &local.ty);
+                    let copy = match ty {
+                        Some(Type::String) => format!(" (clone_string ref {name})"),
+                        Some(Type::Utf8String) => format!(" (Utf8String.clone ref {name})"),
+                        _ => String::new(),
+                    };
+                    format!(
+                        "an anonymous union holds its value, so injecting '{name}' moved it; use '{name}' before that, or inject a copy{copy}"
+                    )
+                } else {
+                    format!(
+                        "an anonymous union holds its value, so injecting the field moved it out of '{name}'; use the field before that, or inject a copy"
+                    )
+                })
+            } else {
+                None
+            };
+            let mut diagnostic = if matched {
+                Diagnostic::of(
+                    DiagnosticKind::UseAfterMove,
+                    "use of moved or partially moved matched value: two bindings of the pattern take the same part of it",
+                    span,
+                )
+                .with_help(
+                    "bind the whole value with 'as' or bind its parts, not both, and match the bound value again in the arm",
+                )
+            } else if let Some(help) = explained {
+                Diagnostic::of(
+                    DiagnosticKind::UseAfterMove,
+                    format!("use of moved or partially moved value '{name}'"),
+                    span,
+                )
+                .with_help(help)
+            } else {
+                use_after_move(&name, moved.fields.is_empty(), span, rematched)
+            };
             if origin.end > origin.start {
                 diagnostic = diagnostic.related(RelatedRole::MovedHere, message, origin);
             }
@@ -6719,12 +7010,58 @@ impl<'a, 'run> Checker<'a, 'run> {
                 }
                 Ok(places)
             }
-            _ => Err(error(
+            _ => Err(self.borrow_of_temporary(expression)),
+        }
+    }
+
+    /// E1013 for a borrow of a value that is not a place. A local converted into an anonymous
+    /// union, by a widening (A25, the `match` of `Checker::retag`) or an injection (A24, a
+    /// `Construct` of a case of the anonymous union), is a temporary although the source names
+    /// the local, so the error says how to bind the converted value.
+    #[inline(never)]
+    fn borrow_of_temporary(&self, expression: &TypedExpr) -> Diagnostic {
+        let converted = match &expression.kind {
+            E::Match { value, arms, .. }
+                if arms.iter().any(|arm| {
+                    arm.alternatives.iter().any(|alternative| {
+                        alternative.bindings.iter().any(|(binding, _)| {
+                            binding.provenance == crate::syntax::Provenance::Generated
+                                && binding.name.starts_with("$retag")
+                        })
+                    })
+                }) =>
+            {
+                Some(value)
+            }
+            E::Construct {
+                union_id,
+                payload: Some(value),
+                ..
+            } if self.module.unions[*union_id].is_anonymous() => Some(value),
+            _ => None,
+        };
+        let name = converted.and_then(|value| match value.kind {
+            E::Local(id) => self.declarations.get(&id).map(|local| local.name.as_str()),
+            _ => None,
+        });
+        let Some(name) = name else {
+            return error(
                 DiagnosticKind::BorrowOfTemporary,
                 "borrow requires a local place; bind the temporary with 'let' first",
                 expression.span,
-            )),
-        }
+            );
+        };
+        let union = expression.ty.display(&self.module.types());
+        Diagnostic::of(
+            DiagnosticKind::BorrowOfTemporary,
+            format!(
+                "borrow requires a local place; '{name}' converted into {union} is a temporary value"
+            ),
+            expression.span,
+        )
+        .with_help(format!(
+            "bind the converted value first, as in 'let wide: {union} = {name}', and pass 'wide'; or take the parameter with 'own'"
+        ))
     }
 
     /// A13 M8: a write or an exclusive reborrow cannot pass through a shared reference to data
@@ -7176,6 +7513,22 @@ impl<'a, 'run> Checker<'a, 'run> {
         let Some(ty) = self.declarations.get(&id).map(|local| local.ty.clone()) else {
             return true;
         };
+        // A shared borrow of a part of the root that can hold nothing (no cell, no loan, no
+        // environment, no dyn value: a string or a number, `ref p1.s`) leads nowhere, whatever
+        // the rest of the root reaches: a store reaches no place through it. So a borrow of
+        // `p1.s` that a call kept in the cell of `p2.h` (`StoreFacts::kept_paths`) does not make
+        // a later store where `p2` reaches a store into `p1`. Only a place that is the part that
+        // the loan borrows (`exact_loan`) tells its type: the fields of a borrow through a
+        // reference that a value holds name a part of another value.
+        if !self.loans[loan].mutable
+            && !self.loans[loan].place.fields.is_empty()
+            && self.exact_loan(loan)
+            && let Some(part) = self.place_type(&self.loans[loan].place.clone())
+            && !part.contains_unknown()
+            && self.hidden_type(&part) == (false, false, false)
+        {
+            return false;
+        }
         if self.loans[loan].mutable {
             let place = match ty {
                 Type::Reference(target, _) if external => *target,
@@ -7812,16 +8165,29 @@ impl<'a, 'run> Checker<'a, 'run> {
                 // body borrowed itself, or the copy of what a callee kept in the same target and
                 // proved so (`ordered_loans`: `fn target p = inner p` passes on what `inner`
                 // proved).
-                let ordered = part == Part::Value && from == to && self.ordered_self_borrow(loan);
-                // The place of a borrow of a part of a reference parameter's target kept in it.
-                let path = (part == Part::Value && from == to)
+                // Only a place that is the part that the loan borrows (`exact_loan`) tells it: `let
+                // q = child b; ref q.s` borrows a part of a value that `b`'s target reaches.
+                let ordered = part == Part::Value
+                    && from == to
+                    && self.exact_loan(loan)
+                    && self.ordered_self_borrow(loan);
+                // The place of a borrow of a part of a reference parameter's target, kept in it or
+                // where another parameter reaches (`StoreFacts::self_paths`, `kept_paths`: only a
+                // place that is the part that the loan borrows, and the whole target otherwise,
+                // `self_path`).
+                let path = (part == Part::Value)
                     .then(|| self.self_path(loan))
                     .flatten();
                 if let Some(stores) = self.stores.as_mut() {
                     let entry = (from, part, to);
                     let some = shared && stores.shared_some.insert(entry);
                     let placed = path.is_some_and(|path| {
-                        add_self_path(stores.self_paths.entry(from).or_default(), path)
+                        let paths = if from == to {
+                            stores.self_paths.entry(from).or_default()
+                        } else {
+                            stores.kept_paths.entry((from, to)).or_default()
+                        };
+                        add_self_path(paths, path)
                     });
                     let changed = if stores.stores.insert(entry) {
                         if dropping {
@@ -8463,10 +8829,22 @@ impl<'a, 'run> Checker<'a, 'run> {
         let mut exclusive = BTreeSet::new();
         // The parameters with a loan that borrows its whole target, or not as a shared borrow.
         let mut whole = BTreeSet::new();
+        // The same, with a place that steps into elements counted as a part (`element_paths`).
+        let mut elements = BTreeSet::new();
+        // Whether each loan is a whole target of a parameter or a part of one at `paths`, which a
+        // caller's value for it replaces place for place (`Source::pointing`); for each parameter,
+        // whether all its loans are its whole target.
+        let mut precise = !value.loans.is_empty()
+            && !value
+                .loans
+                .iter()
+                .any(|loan| self.views.contains(&self.loans[*loan].place.root));
+        let mut targets: BTreeMap<usize, bool> = BTreeMap::new();
         let value = &self.expand_views(value);
         for &loan in &value.loans {
             let root = self.loans[loan].place.root;
             if is_static_root(root) {
+                precise = false;
                 continue;
             }
             match self.parameter_roots.get(&root) {
@@ -8477,6 +8855,12 @@ impl<'a, 'run> Checker<'a, 'run> {
                         Part::Value
                     };
                     source.parameters.insert((index, part));
+                    if part == Part::Contents {
+                        precise = false;
+                    } else {
+                        *targets.entry(index).or_insert(true) &=
+                            self.loans[loan].place.fields.is_empty();
+                    }
                     if part == Part::Value {
                         if self.shared_borrow_of_exclusive(loan) {
                             source.shared.insert(index);
@@ -8485,30 +8869,54 @@ impl<'a, 'run> Checker<'a, 'run> {
                         }
                         // Only fields: an element or a payload is one place for every element or
                         // case, so its borrow stays one of the whole target (the element of
-                        // `ref values[index]` that `Array.iterir` passes on).
+                        // `ref values[index]` that `Array.iterir` passes on). A place that also
+                        // steps into elements is one of `element_paths`.
                         match self.self_path(loan) {
                             Some(path)
                                 if !path.is_empty()
                                     && !self.loans[loan].mutable
-                                    && path
-                                        .iter()
-                                        .all(|step| *step != ELEMENT && *step != PAYLOAD) =>
+                                    && path.iter().all(|step| *step != PAYLOAD) =>
                             {
-                                add_self_path(source.paths.entry(index).or_default(), path);
+                                if path.contains(&ELEMENT) {
+                                    whole.insert(index);
+                                } else {
+                                    add_self_path(
+                                        source.paths.entry(index).or_default(),
+                                        path.clone(),
+                                    );
+                                }
+                                add_self_path(source.element_paths.entry(index).or_default(), path);
                             }
                             _ => {
                                 whole.insert(index);
+                                elements.insert(index);
                             }
                         }
                     }
                 }
-                None => source.local = true,
+                None => {
+                    source.local = true;
+                    precise = false;
+                }
             }
         }
         source.shared.retain(|index| !exclusive.contains(index));
         source
             .paths
             .retain(|index, paths| !whole.contains(index) && !paths.contains(&Vec::new()));
+        let paths = &source.paths;
+        source.element_paths.retain(|index, element_paths| {
+            whole.contains(index)
+                && !elements.contains(index)
+                && !paths.contains_key(index)
+                && !element_paths.contains(&Vec::new())
+        });
+        source.pointing = precise
+            && targets.iter().all(|(index, target)| {
+                *target
+                    || source.paths.contains_key(index)
+                    || source.element_paths.contains_key(index)
+            });
         source
     }
 
@@ -8552,9 +8960,14 @@ impl<'a, 'run> Checker<'a, 'run> {
                             span: original.span,
                             share: false,
                         };
+                        let exact = self.exact_loan(loan);
                         self.loans.push(copy);
                         let id = self.loans.len() - 1;
                         self.shared_copies.insert(loan, id);
+                        // The same place, as exact as the original's (`exact_loans`).
+                        if exact {
+                            self.exact_loans.insert(id);
+                        }
                         id
                     }
                 }
@@ -8641,11 +9054,326 @@ impl<'a, 'run> Checker<'a, 'run> {
         !self.self_borrow_dropped_first(&target, &place.fields, proven)
     }
 
+    /// A31: whether the places of a borrow of `expression` (`place`) are the parts that it
+    /// borrows (`exact_loans`): a chain of fields and elements (`p.s`, `arr[i].s`) of a local
+    /// value, or of what a reference local points at (`b.s` for a parameter `b: ref Pair`) when
+    /// the local points at the places of its loans (`pointing`), each loan is exact itself
+    /// (`exact_loan`) and borrows a value of the reference's target type. Any other dereference
+    /// (of a field, an element or the result of a call: `w.p.s`, `(geth q).n`) gives the places of
+    /// the loans that the dereferenced value holds, to which the borrow adds fields of another
+    /// value. So does a local bound to the result of a call (`let q = child b; ref q.s`): the
+    /// result holds `b`'s loan, whose place is `b`'s target, while it points at a value that
+    /// `b`'s target reaches (`Rc.get (ref n.kids[0])`), which may even be of the same type.
+    fn exact_place(&self, expression: &TypedExpr) -> bool {
+        match &expression.kind {
+            E::Local(id) => !self.state.aliases.contains_key(id),
+            E::Field(value, _) | E::UnionPayload { value, .. } | E::ListTail(value, _) => {
+                self.exact_place(value)
+            }
+            E::Index(value, _)
+                if matches!(
+                    value.ty,
+                    Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                ) =>
+            {
+                self.exact_place(value)
+            }
+            // What a reference that points at its loans' places points at (`points_at`): a
+            // reborrow, `ref (deref (ref p))`, which a pipeline makes of its left side, or `ref
+            // (deref (if c then ref a else ref b))`, which a call makes of a reference argument.
+            E::Dereference(reference) if !matches!(reference.kind, E::Local(_)) => {
+                self.points_at(reference)
+            }
+            E::Dereference(reference) => {
+                let E::Local(id) = &reference.kind else {
+                    return false;
+                };
+                let Type::Reference(target, _) = &reference.ty else {
+                    return false;
+                };
+                if self.state.aliases.contains_key(id) {
+                    return false;
+                }
+                let target = without_views(target);
+                self.pointing_local(*id)
+                    && self.state.locals.get(id).is_some_and(|(_, value)| {
+                        value.loans.iter().all(|loan| {
+                            self.exact_loan(*loan)
+                                && self.place_type(&self.loans[*loan].place).as_ref()
+                                    == Some(&target)
+                        })
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// A31: records the immutable `local`, bound to `bound` whose value is `value`, as a local that
+    /// points at its loans' places (`pointing`) when `bound` does (`points_at`).
+    pub(super) fn note_pointing(&mut self, local: &Local, bound: &TypedExpr, value: &Value) {
+        if local.mutable || !self.points_at(bound) {
+            return;
+        }
+        let own = value
+            .loans
+            .iter()
+            .copied()
+            .filter(|loan| !value.through.contains(loan));
+        self.pointing.entry(local.id).or_default().extend(own);
+    }
+
+    /// A31: whether the local `id` holds a reference that points at the place of one of its
+    /// loans (`pointing`): it does when it was bound, and holds no other loan now.
+    fn pointing_local(&self, id: usize) -> bool {
+        !self.state.aliases.contains_key(&id) && self.holds_pointing(id, id)
+    }
+
+    /// A31: whether the local `holder` holds only loans that the local `bound`, which points at
+    /// its loans' places, held when it was bound (`pointing`).
+    fn holds_pointing(&self, bound: usize, holder: usize) -> bool {
+        let (Some(bound), Some((_, value))) =
+            (self.pointing.get(&bound), self.state.locals.get(&holder))
+        else {
+            return false;
+        };
+        !value.loans.is_empty()
+            && value
+                .loans
+                .iter()
+                .all(|loan| !value.through.contains(loan) && bound.contains(loan))
+    }
+
+    /// A31: whether the value of `expression` is a reference that points at the place of one of
+    /// the loans that it holds itself, not at a part of what that place reaches: a borrow of an
+    /// exact place (`exact_place`), a local that points so (`pointing_local`), a choice of them,
+    /// and `Rc.get` or `Arc.get` of one (the block is the place of the owner's loan, as
+    /// `place_type` reads it). The result of any other call holds the loans of its arguments
+    /// while it may point at what they reach (`Rc.get (ref n.kids[0])` returned by a function).
+    fn points_at(&self, expression: &TypedExpr) -> bool {
+        match &expression.kind {
+            E::Borrow(place, _) => self.exact_place(place),
+            // The subject of a `match` of such a local is that local (`alias_source`).
+            E::Local(id) if self.state.aliases.contains_key(id) => {
+                match self.state.aliases[id].as_slice() {
+                    [(place, _)] if place.fields.is_empty() => self.holds_pointing(place.root, *id),
+                    _ => false,
+                }
+            }
+            E::Local(id) => self.pointing_local(*id),
+            E::If {
+                then_branch,
+                else_branch,
+                ..
+            } => self.points_at(then_branch) && self.points_at(else_branch),
+            E::Match { arms, .. } => {
+                !arms.is_empty() && arms.iter().all(|arm| self.points_at(&arm.body))
+            }
+            E::Block { bindings, result } if bindings.is_empty() => self.points_at(result),
+            E::Call(callee, arguments)
+                if arguments.len() == 1
+                    && matches!(
+                        self.builtin_called(callee),
+                        Some(crate::check::Builtin::RcGet | crate::check::Builtin::ArcGet)
+                    ) =>
+            {
+                self.points_at(&arguments[0])
+            }
+            // A complete call of a function that returns one of its reference parameters
+            // (`pick k x y = if k > 0 then x else y`), with arguments that point so there: the
+            // result holds their loans (`parameter_retention`).
+            E::Call(callee, arguments) => direct_callee(callee).is_some_and(|id| {
+                arguments.len() == self.module.functions[id].parameters.len()
+                    && returned_parameters(self.module, id).is_some_and(|returned| {
+                        returned
+                            .iter()
+                            .all(|index| self.points_at(&arguments[*index]))
+                    })
+            }),
+            _ => false,
+        }
+    }
+
+    /// A31: whether the value of `argument` points at the place of one of its own loans
+    /// (`points_at`): the value of its expression, or what a callee's facts or a partial
+    /// application say of a value without one (`Arg::pointing`). A borrowed operand points at
+    /// its place when that place is exact (its borrow is `Arg::reference`; what the place holds,
+    /// which the value adds, is stored as well, as before); a borrowed temporary is none.
+    fn argument_points(&self, argument: &Arg<'_>) -> bool {
+        if let Some(E::BorrowOperand(inner)) = argument.expression.map(|e| &e.kind)
+            && !argument.environment
+            && !argument.approximate
+        {
+            return argument.reference.is_some() && self.exact_place(inner);
+        }
+        if argument.reference.is_some() || argument.temporary {
+            return false;
+        }
+        match argument.expression {
+            Some(expression) if !argument.environment && !argument.approximate => {
+                self.points_at(expression)
+            }
+            _ => argument.pointing,
+        }
+    }
+
+    /// A31: the value of `expression`, an argument that a partial application bound (or that the
+    /// right side of a pipeline applies), out of `whole`, the value of the function value: the
+    /// loans of `whole` that the borrow of an exact place made (`borrow_loans`), or that a local
+    /// that points at its loans' places holds (`pointing_local`). They are the reference that the
+    /// parameter gets, which points at the place of one of them. `None` for any other value, or
+    /// when `whole` holds none of them.
+    fn bound_value(&self, expression: &TypedExpr, whole: &Value) -> Option<Value> {
+        let own: &BTreeSet<usize> = match &expression.kind {
+            E::Borrow(place, _) if self.exact_place(place) => self
+                .borrow_loans
+                .get(&(std::ptr::from_ref(expression) as usize))?,
+            E::Local(id) if self.pointing_local(*id) => &self.state.locals.get(id)?.1.loans,
+            _ => return None,
+        };
+        let loans: BTreeSet<usize> = whole
+            .loans
+            .iter()
+            .copied()
+            .filter(|loan| {
+                own.contains(loan) && !whole.through.contains(loan) && self.exact_loan(*loan)
+            })
+            .collect();
+        (!loans.is_empty()).then(|| Value {
+            loans,
+            closed_result: whole.closed_result,
+            ..Value::default()
+        })
+    }
+
+    /// A31: whether the place of `loan` is the part that it borrows: the whole root, or a part
+    /// that an exact borrow named (`exact_loans`). A view's loan and a share are none.
+    fn exact_loan(&self, loan: usize) -> bool {
+        let loan_ref = &self.loans[loan];
+        loan_ref.view.is_none()
+            && !loan_ref.share
+            && (loan_ref.place.fields.is_empty() || self.exact_loans.contains(&loan))
+    }
+
+    /// A31: `value` with each loan of a `target` (`place_type`) whose place is the part that it
+    /// borrows (`exact_loan`) replaced by shared borrows of the parts at `paths` of that place
+    /// (`StoreFacts::kept_paths`): what a callee stored of the target of its reference parameter
+    /// where another parameter reaches. Only a value that `points` at the place of one of its
+    /// loans (`argument_points`) is so replaced: the result of a call holds its argument's loan
+    /// while it may point at a value that the loan's place reaches (`Rc.get (ref n.kids[0])`
+    /// returned by a function), whose parts are not those of the place. With `exclusive`, the
+    /// value is a fresh exclusive borrow, which ends with the call, of which the callee stored
+    /// only shared borrows (`StoreFacts::shared_only`): any other loan becomes a shared copy
+    /// (`shared_copy`); without it, exclusive loans stay as they are. Unlike `path_copy`'s, a copy
+    /// keeps the original's parents, as the original that the caller stored before did, so it
+    /// keeps live what the borrowed value holds; it is exact. Any other loan (one held as
+    /// contents, a view, a share, a loan of a larger value) is kept whole. One copy per loan and
+    /// path, so that the check of a loop settles.
+    fn kept_copy(
+        &mut self,
+        value: &Value,
+        paths: &BTreeSet<Vec<usize>>,
+        target: Option<&Type>,
+        exclusive: bool,
+        points: bool,
+    ) -> Value {
+        let mut copied = Value {
+            closed_result: value.closed_result,
+            ..Value::default()
+        };
+        for &loan in &value.loans {
+            let through = value.through.contains(&loan);
+            let plain = points
+                && !through
+                && (exclusive || !self.loans[loan].mutable)
+                && self.exact_loan(loan)
+                && target.is_some_and(|target| {
+                    self.place_type(&self.loans[loan].place).as_ref() == Some(target)
+                });
+            // The loan itself, or its shared copy for a fresh exclusive borrow.
+            let whole = |checker: &mut Self| {
+                if exclusive && checker.loans[loan].mutable {
+                    let single = Value {
+                        loans: BTreeSet::from([loan]),
+                        ..Value::default()
+                    };
+                    let shared = checker.shared_copy(&single);
+                    *shared.loans.first().expect("one loan in, one out")
+                } else {
+                    loan
+                }
+            };
+            if !plain || paths.is_empty() {
+                let held = whole(self);
+                copied.loans.insert(held);
+                if through {
+                    copied.through.insert(held);
+                }
+                continue;
+            }
+            for path in paths {
+                if path.is_empty() {
+                    let held = whole(self);
+                    copied.loans.insert(held);
+                    continue;
+                }
+                let held = if let Some(copy) = self.kept_copies.get(&(loan, path.clone())) {
+                    *copy
+                } else {
+                    let types = self.module.types();
+                    let original = &self.loans[loan];
+                    // A step that starts at a value whose type implements Drop, as `place` marks it.
+                    let mut through_drop = original.place.through_drop;
+                    let mut current = target.cloned();
+                    for &field in path {
+                        let Some(ty) = current.take() else {
+                            break;
+                        };
+                        through_drop |= ty.has_user_drop(&types);
+                        current = match ty {
+                            Type::Record(id, arguments)
+                                if field < types.records[id].fields.len() =>
+                            {
+                                Some(types.record_field(id, &arguments, field))
+                            }
+                            Type::Tuple(elements) if field < elements.len() => {
+                                Some(elements[field].clone())
+                            }
+                            _ => None,
+                        };
+                    }
+                    let mut fields = original.place.fields.clone();
+                    fields.extend_from_slice(path);
+                    let copy = Loan {
+                        place: Place {
+                            root: original.place.root,
+                            fields,
+                            through_drop,
+                        },
+                        mutable: false,
+                        parents: original.parents.clone(),
+                        view: None,
+                        span: original.span,
+                        share: false,
+                    };
+                    self.loans.push(copy);
+                    let id = self.loans.len() - 1;
+                    self.kept_copies.insert((loan, path.clone()), id);
+                    self.exact_loans.insert(id);
+                    id
+                };
+                copied.loans.insert(held);
+            }
+        }
+        copied
+    }
+
     /// A31: the place, as fields from what a reference parameter points at, of the borrow `loan`
     /// of a part of that target, kept in it (`StoreFacts::self_paths`): `None` for a parameter
     /// that is no reference; the whole target (`[]`) for a view (`ref mut [Pair..]`, whose caller
-    /// may pass a part of an array), a reference to a reference, or a borrow through a view; the
-    /// fields up to a region slot.
+    /// may pass a part of an array), a reference to a reference, a borrow through a view, or a
+    /// place that is not the part that the loan borrows (`exact_loan`: `let q = child b; ref q.s`
+    /// borrows a part of a value that `b`'s target reaches, not `b.s`); the fields up to a region
+    /// slot.
     fn self_path(&self, loan: usize) -> Option<Vec<usize>> {
         let place = &self.loans[loan].place;
         let Some(Type::Reference(target, _)) = self
@@ -8657,6 +9385,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         };
         if matches!(**target, Type::ArrayView(_) | Type::Reference(..))
             || self.loans[loan].view.is_some()
+            || !self.exact_loan(loan)
         {
             return Some(Vec::new());
         }
@@ -8722,13 +9451,17 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// (`place_type`), so that it is the value that the callee's parameter pointed at: a loan of
     /// a larger value (the array whose element a callee passed on to the function value), one
     /// held as contents, one through a view and a share are kept whole. A copy has no parents, as
-    /// one of `shared_copy` has none. One copy per loan and path, so that the check of a loop
-    /// settles.
+    /// one of `shared_copy` has none. A copy is exact (`exact_loans`) when the value `points` at
+    /// the place of one of its loans (`argument_points`) and the loan is exact: the result of a
+    /// call holds its argument's loan while it may point at a value that the loan's place reaches,
+    /// whose part the copy does not name. One copy per loan, path and exactness, so that the check
+    /// of a loop settles.
     fn path_copy(
         &mut self,
         value: &Value,
         paths: &BTreeSet<Vec<usize>>,
         target: Option<&Type>,
+        points: bool,
     ) -> Value {
         let whole = BTreeSet::from([Vec::new()]);
         let mut copied = Value {
@@ -8756,28 +9489,44 @@ impl<'a, 'run> Checker<'a, 'run> {
                     };
                     let shared = self.shared_copy(&single);
                     *shared.loans.first().expect("one loan in, one out")
-                } else if let Some(copy) = self.path_copies.get(&(loan, path.clone())) {
-                    *copy
                 } else {
-                    let original = &self.loans[loan];
-                    let mut fields = original.place.fields.clone();
-                    fields.extend_from_slice(path);
-                    let copy = Loan {
-                        place: Place {
-                            root: original.place.root,
-                            fields,
-                            through_drop: original.place.through_drop,
-                        },
-                        mutable: false,
-                        parents: BTreeSet::new(),
-                        view: None,
-                        span: original.span,
-                        share: false,
-                    };
-                    self.loans.push(copy);
-                    let id = self.loans.len() - 1;
-                    self.path_copies.insert((loan, path.clone()), id);
-                    id
+                    let exact = points && self.exact_loan(loan);
+                    if let Some(copy) = self.path_copies.get(&(loan, path.clone(), exact)) {
+                        *copy
+                    } else {
+                        let original = &self.loans[loan];
+                        let mut fields = original.place.fields.clone();
+                        fields.extend_from_slice(path);
+                        // A copy that may name a part of another value than the one borrowed
+                        // keeps the original live as its parent (`active`): the borrowed part is
+                        // somewhere that the original's place reaches (`let q = child (ref n1)`
+                        // points into a block of `n1.kids`), so that a write that may free it
+                        // (`n1.kids = []`) conflicts with the copy wherever it went.
+                        let parents = if exact {
+                            BTreeSet::new()
+                        } else {
+                            BTreeSet::from([loan])
+                        };
+                        let copy = Loan {
+                            place: Place {
+                                root: original.place.root,
+                                fields,
+                                through_drop: original.place.through_drop,
+                            },
+                            mutable: false,
+                            parents,
+                            view: None,
+                            span: original.span,
+                            share: false,
+                        };
+                        self.loans.push(copy);
+                        let id = self.loans.len() - 1;
+                        self.path_copies.insert((loan, path.clone(), exact), id);
+                        if exact {
+                            self.exact_loans.insert(id);
+                        }
+                        id
+                    }
                 };
                 copied.loans.insert(held);
                 if through {
@@ -8806,6 +9555,10 @@ impl<'a, 'run> Checker<'a, 'run> {
                     let id = self.loans.len() - 1;
                     self.ordered_copies.insert(loan, id);
                     self.ordered_loans.insert(id);
+                    // The same place, as exact as the original's (`exact_loans`).
+                    if self.exact_loans.contains(&loan) {
+                        self.exact_loans.insert(id);
+                    }
                     id
                 }
             };
@@ -8835,13 +9588,15 @@ impl<'a, 'run> Checker<'a, 'run> {
                             .map_or(0, |expression| std::ptr::from_ref(expression) as usize),
                         loans,
                         argument.value.through.iter().copied().collect(),
-                        u8::from(argument.local)
-                            | u8::from(argument.external) << 1
-                            | u8::from(argument.temporary) << 2
-                            | u8::from(argument.dying) << 3
-                            | u8::from(argument.environment) << 4
-                            | u8::from(argument.lent) << 5
-                            | u8::from(argument.overwritten) << 6,
+                        u16::from(argument.local)
+                            | u16::from(argument.external) << 1
+                            | u16::from(argument.temporary) << 2
+                            | u16::from(argument.dying) << 3
+                            | u16::from(argument.environment) << 4
+                            | u16::from(argument.lent) << 5
+                            | u16::from(argument.overwritten) << 6
+                            | u16::from(argument.approximate) << 7
+                            | u16::from(argument.pointing) << 8,
                     )
                 })
                 .collect(),
@@ -8976,12 +9731,37 @@ impl<'a, 'run> Checker<'a, 'run> {
                 Some(Type::Reference(target, _)) => Some(without_views(target)),
                 _ => None,
             };
+            // Borrows of parts of what a reference parameter points at, stored where another
+            // parameter reaches (`StoreFacts::kept_paths`): borrows of those parts of the
+            // argument's place, for a shared reference parameter and for the shared borrows that a
+            // fresh exclusive borrow leaves (`shared_only`). They reach no further than those parts
+            // (`store_target`), and when the target is the same value, the drop order of the
+            // borrowed part decides them.
+            let kept_paths = if !self_entry
+                && part == Part::Value
+                && matches!(
+                    self.module.functions[id]
+                        .parameters
+                        .get(from)
+                        .map(|p| &p.ty),
+                    Some(Type::Reference(..))
+                ) {
+                stores
+                    .kept_paths
+                    .get(&(from, to))
+                    .filter(|paths| !paths.contains(&Vec::new()))
+            } else {
+                None
+            };
             // A reference argument that may point at one of several places (`if c then ref a
             // else ref b`) is one of them at run time, and the callee keeps a borrow of a part of
             // what its parameter points at in that same value: each place keeps a borrow of its
             // own part, not of the others' (`referent_pieces`). Anything else is one piece, stored
             // where the whole argument reaches.
             let whole_value = self.argument_part(source, part);
+            // Whether the argument points at the place of one of its loans, whose parts the paths
+            // then name (`argument_points`).
+            let points = self.argument_points(source);
             let pieces = match reference {
                 Some(_) => Self::referent_pieces(source, &whole_value),
                 None => None,
@@ -9002,14 +9782,26 @@ impl<'a, 'run> Checker<'a, 'run> {
                     && (Self::fresh_exclusive(source) || self_shared)
                 {
                     stored = if self_shared {
-                        self.path_copy(&stored, paths, pointed.as_ref())
+                        self.path_copy(&stored, paths, pointed.as_ref(), points)
+                    } else if let Some(kept) = kept_paths {
+                        self.kept_copy(&stored, kept, pointed.as_ref(), true, points)
                     } else {
                         self.shared_copy(&stored)
                     };
                 } else if self_shared {
-                    kept_self = Some(self.path_copy(&stored, paths, pointed.as_ref()));
+                    kept_self = Some(self.path_copy(&stored, paths, pointed.as_ref(), points));
                 } else if reference == Some(false) {
-                    stored = self.path_copy(&stored, paths, pointed.as_ref());
+                    stored = self.path_copy(&stored, paths, pointed.as_ref(), points);
+                } else if let Some(kept) = kept_paths
+                    && matches!(
+                        self.module.functions[id]
+                            .parameters
+                            .get(from)
+                            .map(|p| &p.ty),
+                        Some(Type::Reference(_, false))
+                    )
+                {
+                    stored = self.kept_copy(&stored, kept, pointed.as_ref(), false, points);
                 }
                 // A borrow of a part of the argument's place kept in that place, in the drop order
                 // of its parts (`StoreFacts::ordered`).
@@ -9110,13 +9902,23 @@ impl<'a, 'run> Checker<'a, 'run> {
                 // The value passed is at the level of a temporary's contents when the callee
                 // passed a temporary, or passed on the value of an argument that is one.
                 let mut temporary = source.temporary;
+                // It points at the place of one of its loans when the callee's did, place for
+                // place, and the arguments that it replaces do (`Source::pointing`).
+                let mut pointing = source.pointing && !source.local && !source.overwritten;
                 for &(index, part) in &source.parameters {
                     if let Some(argument) = arguments.get(index) {
+                        let points = self.argument_points(argument);
+                        pointing &= part == Part::Value && points;
                         let mut passed = self.argument_part(argument, part);
                         // Shared borrows of parts of what the parameter points at: those parts
-                        // of the argument's place (`Source::paths`).
+                        // of the argument's place (`Source::paths`, and `element_paths` for an
+                        // argument that points at its place).
                         let paths = (part == Part::Value)
-                            .then(|| source.paths.get(&index))
+                            .then(|| {
+                                source.paths.get(&index).or_else(|| {
+                                    points.then(|| source.element_paths.get(&index)).flatten()
+                                })
+                            })
                             .flatten();
                         if let Some(paths) = paths {
                             let pointed = match self.module.functions[id]
@@ -9127,7 +9929,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                                 Some(Type::Reference(target, _)) => Some(without_views(target)),
                                 _ => None,
                             };
-                            passed = self.path_copy(&passed, paths, pointed.as_ref());
+                            passed = self.path_copy(&passed, paths, pointed.as_ref(), points);
                         } else if part == Part::Value
                             && source.shared.contains(&index)
                             && Self::fresh_exclusive(argument)
@@ -9143,6 +9945,8 @@ impl<'a, 'run> Checker<'a, 'run> {
                         temporary |= argument.temporary && part == Part::Value;
                         dying |= argument.dying && part == Part::Value;
                         locked |= argument.locked && part == Part::Value;
+                    } else {
+                        pointing = false;
                     }
                 }
                 // A parameter that the callee passes on unchanged is the caller's argument.
@@ -9183,6 +9987,8 @@ impl<'a, 'run> Checker<'a, 'run> {
                     ty: source.ty.clone(),
                     origin,
                     part,
+                    approximate: false,
+                    pointing: pointing && !temporary && !dying,
                 });
             }
             let callee = callee.clone();
@@ -9234,13 +10040,28 @@ impl<'a, 'run> Checker<'a, 'run> {
             return;
         }
         // The captures of a lambda and the arguments of a partial application come from where the
-        // function value was made: outside any body whose locals a substitution tracks.
-        let bound = |expressions: &'e [TypedExpr], value: &Value| -> Vec<Arg<'e>> {
+        // function value was made: outside any body whose locals a substitution tracks. An
+        // argument of a partial application that is a reference to an exact place, or a local
+        // that points at its places, is the part of the function value's loans that it made
+        // (`bound_value`); any other has the value of the whole function value.
+        let bound = |checker: &Self,
+                     expressions: &'e [TypedExpr],
+                     value: &Value,
+                     narrow: bool|
+         -> Vec<Arg<'e>> {
             expressions
                 .iter()
-                .map(|expression| Arg {
+                .map(|expression| {
+                    let own = narrow
+                        .then(|| checker.bound_value(expression, value))
+                        .flatten();
+                    (expression, own)
+                })
+                .map(|(expression, own)| Arg {
                     expression: Some(expression),
-                    value: value.clone(),
+                    pointing: own.is_some(),
+                    value: own.unwrap_or_else(|| value.clone()),
+                    approximate: false,
                     local: callee.local,
                     external: true,
                     // A bound value that was lent as a borrowed temporary is one here too. Any
@@ -9314,7 +10135,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             Some(E::Closure(id, captures))
                 if module.functions[*id].parameters.len() == captures.len() + arguments.len() =>
             {
-                Some((*id, bound(captures, &callee.value)))
+                Some((*id, bound(self, captures, &callee.value, false)))
             }
             Some(E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _))
                 if module.functions[*id].parameters.len() == arguments.len() =>
@@ -9328,7 +10149,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             {
                 Some((
                     direct_callee(function).expect("checked above"),
-                    bound(partial, &callee.value),
+                    bound(self, partial, &callee.value, true),
                 ))
             }
             _ => None,
@@ -9411,6 +10232,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                         source.target = self.argument_target(argument);
                         source.ty = Self::value_type(argument);
                         source.passed = self.passed_parameter(argument);
+                        source.pointing &= self.argument_points(argument);
                         source
                     })
                     .collect(),
@@ -9859,8 +10681,9 @@ impl<'a, 'run> Checker<'a, 'run> {
             // borrow of its own part (`referent_pieces`).
             let pieces =
                 Self::referent_pieces(argument, &value).unwrap_or_else(|| vec![value.clone()]);
+            let points = self.argument_points(argument);
             for piece in pieces {
-                let mut kept = self.path_copy(&piece, paths, Some(referent));
+                let mut kept = self.path_copy(&piece, paths, Some(referent), points);
                 // Every function that does so keeps the drop order of the value's parts.
                 if ordered {
                     kept = self.ordered_copy(&kept);
@@ -9936,8 +10759,14 @@ impl<'a, 'run> Checker<'a, 'run> {
             && let Ok(places) = self.place(inner, live)
         {
             let mut loans = BTreeSet::new();
+            // A31: the borrow of an exact place is exact (`exact_loans`).
+            let exact = self.exact_place(inner);
             for (place, via) in places {
-                loans.insert(self.loan(place, false, via, expression.span));
+                let loan = self.loan(place, false, via, expression.span);
+                if exact {
+                    self.exact_loans.insert(loan);
+                }
+                loans.insert(loan);
             }
             argument.reference = Some(loans);
         }
@@ -10834,6 +11663,8 @@ impl<'a, 'run> Checker<'a, 'run> {
             let value_result = self.eval(value, Use::Consume, &current);
             self.drop_site = site;
             let mut value_result = value_result?;
+            // A31: an immutable local bound to a reference that points at its loans' places.
+            self.note_pointing(local, value, &value_result);
             self.absorb_hidden(mark, &mut value_result, &local.ty, Some(value));
             self.drop_stores(&value_result, &local.ty, local.span, None, Some(value));
             let mut consumed = BTreeMap::new();
@@ -11564,6 +12395,12 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// order, so a step into the block keeps the order of the value inside it. A place without
     /// fields may be the owner itself, which other owners of the block may outlive, and keeps the
     /// rule of the whole value.
+    ///
+    /// A proven borrow (`ordered_loans`) is one that a callee kept in the value that its reference
+    /// parameter pointed at, where the argument's place may step into an element (`ref arr[0]`,
+    /// or the element that `Array.iterr` lends, `Source::element_paths`): the borrow and the part
+    /// that keeps it are in that one element, which is dropped as a whole, so the step keeps the
+    /// order inside the element (the other elements keep no borrow of it).
     fn self_borrow_dropped_first(&mut self, ty: &Type, fields: &[usize], proven: bool) -> bool {
         let types = self.module.types();
         let mut current = without_views(ty);
@@ -11574,6 +12411,17 @@ impl<'a, 'run> Checker<'a, 'run> {
             ) = &current
             {
                 current = (**inner).clone();
+            }
+            if proven
+                && field == ELEMENT
+                && let Type::Array(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _)
+                | Type::ArrayView(inner) = &current
+            {
+                current = without_views(inner);
+                continue;
             }
             let parts = match &current {
                 Type::Record(id, arguments) if field < types.records[*id].fields.len() => {
@@ -12293,6 +13141,8 @@ impl<'a, 'run> Checker<'a, 'run> {
                 self.held.pop();
             }
             E::Borrow(value, mutable) => {
+                // A31: whether the places of this borrow are the parts that it borrows.
+                let exact = self.exact_place(value);
                 let places = if *mutable {
                     self.shared_exclusive(value, expression.span)?;
                     self.exclusive_places(value, &during)?
@@ -12311,9 +13161,23 @@ impl<'a, 'run> Checker<'a, 'run> {
                         expression.span,
                     )?;
                     self.borrow_event(&place, via.is_empty(), *mutable, expression.span);
-                    result
-                        .loans
-                        .insert(self.loan(place, *mutable, via, expression.span));
+                    // The place of an exact borrow is of the borrowed value's type, as far as
+                    // `place_type` reads it.
+                    let typed = self
+                        .place_type(&place)
+                        .is_none_or(|ty| ty == without_views(&value.ty));
+                    let loan = self.loan(place, *mutable, via, expression.span);
+                    if exact && typed {
+                        self.exact_loans.insert(loan);
+                    }
+                    result.loans.insert(loan);
+                }
+                if exact {
+                    let key = std::ptr::from_ref(expression) as usize;
+                    self.borrow_loans
+                        .entry(key)
+                        .or_default()
+                        .extend(result.loans.iter().copied());
                 }
             }
             E::Assign(place, value) => {
@@ -12811,8 +13675,18 @@ impl<'a, 'run> Checker<'a, 'run> {
             E::NewLiteral(literal) => {
                 result = self.eval(literal, Use::Consume, &during)?;
             }
-            E::Construct { payload, .. } => {
+            E::Construct {
+                union_id, payload, ..
+            } => {
                 if let Some(payload) = payload {
+                    // An injection has the span of its value: no source names an anonymous
+                    // union's case.
+                    if payload.span == expression.span
+                        && self.module.unions[*union_id].is_anonymous()
+                    {
+                        let span = payload.span;
+                        self.injections.insert((span.source, span.start, span.end));
+                    }
                     result = self.eval(payload, Use::Consume, &during)?;
                     // A union payload keeps every region of its value together (A12 D6).
                     result.regions = None;
@@ -13697,6 +14571,34 @@ fn carriers(
             return Some(carriers);
         }
     }
+}
+
+/// The anonymous union that a widening (A25, `Checker::retag`) at `origin` makes, and the value
+/// that it widens, when the move at `origin` is the one of its generated binding: the payload of
+/// the widened value moves through a binding `$retag..` whose projection has the span of the
+/// widened expression.
+fn widened_at(body: &TypedExpr, origin: Span) -> Option<(Type, &TypedExpr)> {
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        if let E::Match { arms, value, .. } = &expression.kind
+            && arms.iter().any(|arm| {
+                arm.alternatives.iter().any(|alternative| {
+                    alternative.bindings.iter().any(|(binding, projection)| {
+                        binding.provenance == crate::syntax::Provenance::Generated
+                            && binding.name.starts_with("$retag")
+                            && projection.span == origin
+                    })
+                })
+            })
+        {
+            return Some((expression.ty.clone(), value));
+        }
+        let _ = expression.try_for_each_child(&mut |child| {
+            pending.push(child);
+            Ok(())
+        });
+    }
+    None
 }
 
 /// Whether the use at `used` reads a value that the move at `moved` took in the previous

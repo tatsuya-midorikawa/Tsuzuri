@@ -1,7 +1,7 @@
 // The same program with an unused public function that sends on a `DataChannel`. Its runtime declarations stand between the two
-// runtime parts of the `tree` fixture, so the unpruned program (which `tsuzuri run` built before PB03 D1) had a line break there
-// that the pruned executable loses with the function: it must still build. (Until TZ12 the function locked a `Mutex`, whose
-// `sync.ll` did the same.)
+// runtime parts of the `tree` fixture, so before TZ15 the unpruned program (which `tsuzuri run` built before PB03 D1) had a line
+// break there that the pruned executable lost with the function. Every runtime part ends with a line break now; the program must
+// still build. (Until TZ12 the function locked a `Mutex`, whose `sync.ll` did the same.)
 union Tree =
     | Leaf
     | Node of Tree * i64 * Tree

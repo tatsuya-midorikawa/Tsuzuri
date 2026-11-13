@@ -770,16 +770,17 @@ const TOP_LEVEL: [&str; 12] = [
     "uselistorder",
 ];
 
-/// The lines of `ir` and its definitions, for `with_thread_storage_noinline`. The pieces of the
-/// runtime's IR are joined as they are, and some end without a newline (src/runtime/character.ll,
-/// display.ll, debug.ll, recursive.ll): the next piece then starts on the line of their last closing
-/// brace (`}define internal void @tz.string.copy(...) nounwind {`, `}; PM08: ...`,
+/// The lines of `ir` and its definitions, for `with_thread_storage_noinline`. IR joined from pieces
+/// that end without a newline starts the next piece on the line of the last closing brace
+/// (`}define internal void @tz.string.copy(...) nounwind {`, `}; PM08: ...`,
 /// `}@tz.debug.newline = ...`). Such a line, a brace and then a top-level form (`TOP_LEVEL`), is
 /// split after the brace and the blanks that follow it, so that the function closes there and the
 /// next one is a definition of its own: `definitions` would take what follows into the function
 /// before, so that the calls of a function after the brace looked like calls of a declared function.
-/// The lines are slices of `ir` and make `ir` again. (`with_preemption_checks` keeps the lines of
-/// `ir`, so that the checks of TZ10 stay where they are.)
+/// The pieces of the runtime's IR end with a newline since TZ15 (`src/runtime/*.ll`, kept so by a
+/// unit test of `llvm`), so the emitter makes no such line; the split stays as a guard for IR that is
+/// joined in another way. The lines are slices of `ir` and make `ir` again.
+/// (`with_preemption_checks` keeps the lines of `ir`, so that the checks of TZ10 stay where they are.)
 fn runtime_definitions(ir: &str) -> (Vec<&str>, Vec<Definition<'_>>) {
     let mut lines = Vec::new();
     for line in ir.split_inclusive('\n') {
@@ -1191,10 +1192,10 @@ define internal i64 @tz.fn.M.run(i64 %arg0) nounwind {\nentry:\n  %p = call ptr 
         }
     }
 
-    /// The runtime's IR is joined piece by piece, and a piece that ends without a newline (as
-    /// src/runtime/character.ll, display.ll, debug.ll and recursive.ll do) puts the next piece on the
-    /// line of its last closing brace. Here each top-level form follows a brace in that way, and
-    /// `@tz.parallel.chunk.0` calls every function. `  ; <name>` marks a line of each function.
+    /// IR joined piece by piece, where a piece that ends without a newline puts the next piece on
+    /// the line of its last closing brace (the runtime's pieces did so before TZ15: character.ll,
+    /// display.ll, debug.ll and recursive.ll). Here each top-level form follows a brace in that way,
+    /// and `@tz.parallel.chunk.0` calls every function. `  ; <name>` marks a line of each function.
     const JOINED_PROGRAM: &str = "define internal i64 @tz.text(i64 %arg0) nounwind {\nentry:\n  ; tz.text\n  ret i64 %arg0\n\
 }define internal ptr @tz.cache(i64 %size) nounwind {\nentry:\n  %t = call ptr @llvm.threadlocal.address.p0(ptr @tls)\n  ; tz.cache\n  ret ptr %t\n\
 }define internal void @tz.string.copy(ptr %to, ptr %from, i64 %length) nounwind {\nentry:\n  call void @llvm.memcpy.p0.p0.i64(ptr %to, ptr %from, i64 %length, i1 false)\n  ; tz.string.copy\n  ret void\n\

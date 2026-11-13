@@ -388,6 +388,7 @@ fn declare_module(
         benches,
         entry: _,
         dyn_types: _,
+        uses_anonymous_unions: _,
         cpu_attributes: _,
         effect_attributes: _,
         trusted: _,

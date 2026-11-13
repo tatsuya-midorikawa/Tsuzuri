@@ -43,9 +43,14 @@ struct Project(PathBuf);
 
 impl Project {
     fn new(files: &[(&str, &str)]) -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // `cargo test` runs the tests of this file as threads of one process, and two of them can
+        // read the same clock: every call takes its own number.
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
-            "tsuzuri-typed-holes-{}-{}",
+            "tsuzuri-typed-holes-{}-{}-{}",
             std::process::id(),
+            CALLS.fetch_add(1, Ordering::Relaxed),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
