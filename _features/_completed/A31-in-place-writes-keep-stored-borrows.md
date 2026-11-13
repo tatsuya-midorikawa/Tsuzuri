@@ -1584,3 +1584,55 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 - 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・45 個のリンク・9 個の例・18 回の native の実行）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
 - 検査の時間（`r13/perf.sh`、所有権の検査の中央値、3 回、ms。基準・対応前・対応後）: 前の回の性能の表のプログラムは対応前とほぼ同じ（`perf_loop_breaks_400` 148・375・399、`perf_try_checked_400` 224・388・410、`perf_ho_chain_320` 1.8・24.7・25.1、`p01_relay_chain_400` 1.5・12.5・15.0、`x01_many_holders_800` 704・1276・1287、ほかは 8 ms 以下）で、`p_cellshares_800` は 87・5332・469 です（`r13/time-perf.txt`）。
 - 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（4 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（3 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、`_features/README.md`（A31 の行と A33 の行）、このチケット（「残る制限」と、この節）、新しい `_features/A33-remaining-store-soundness-holes.md`。
+
+### マージ前の追加の修正（2026-11-13、A32 の 5 度目の merge で見つかった誤った拒否）
+
+A32 の 5 度目の merge（A31 の先端 `da4e5b85` を A32 へ）が、`main` が受理する安全なプログラムを A31 が拒否し、文書にも書いていないことを見つけました（マージの条件 (3) に反します）。名前付き関数 `cross a b` が `b.s` の借用を `a.h` の `Mutex` へ書き込み（`let t = ref b.s; Mutex.with_lock (ref a.h.cell) (\c -> Array.write 0 (\() -> look t) c)`）、`p1` を先に宣言して `cross (ref p2) (ref p1)` と呼ぶ形です（`target/wt/a32/target/scratch/a32/merge5/s01/red/p/loc_direct`）。`p2` が先に解放され、その `drop` が読む `p1.s` はまだあるので安全で、基準は `drop 8`・`drop 0`・`1` を出します。A31 は `E1013`（`self_referential_store`、`'p1' keeps a borrow of a part of itself`、注は `ref p1`）でした。関数値の仮引数・ラムダ・規約の綴り（`loc_safe__*`）も同じで、一時値の形（`loc_direct_tmp`）は受理、逆の呼び出し（`loc_unsafe__*`、基準は `drop 0`・`drop -1`）は正しく `assignment_extends_borrow` でした。結果は `target/scratch/a31/r14/` にあります（`r14/p` が A32 の再現の写し、`r14/q` と `r14/t` がこの修正で書いた探査、`r14/v.sh` が修正後・A31 の先端（`r14/tip-target` でビルド）・基準の最初の誤りを並べます）。
+
+#### 原因
+
+自己の事実ではありませんでした。`cross` の書き込みの事実は `(1, Value, 0)` だけです（引数 1 の値の借用が引数 0 の書き込み先へ）。呼び出し元はこの事実で `p1` 全体の借用（`ref p1` の loan）を `p2` に残します。`settle` は事実を変化が無くなるまで当てはめ直し、2 回目の `apply_store_within` は書き込み先 `p2` が持つ loan をたどります。`store_target` は共有の loan を根の宣言の型で判定するので、`PairOk`（`Mutex` を持つ）全体の借用は書き込み先になり、2 回目の格納は `p1` 自身へ届いて、`p1` が自分全体の借用を持つことになりました（`check_drop_order_of` の自己の借用の検査）。呼び出し先が実際に書き込んだのは `b.s`（文字列）の借用で、そこを通してほかの値へ届くことはありません。同じ理由で、2 つの値のどちらかを指す参照（`cross (ref p2) (if n > 0 then ref p1 else ref p2)`）は `p1` が後に宣言した `p2` の借用を持つことになって `assignment_extends_borrow`、同じ値を 2 回渡す安全な `cross (ref p) (ref p)`（`PairOk { h, s }`）と、呼び出しの後の借用されていない部分の書き換え（`p1.h = ...`）も拒否でした。
+
+#### 変えたこと（`src/ownership.rs`）
+
+- **`StoreFacts::kept_paths`**: 参照の仮引数 `p` の先の借用をほかの仮引数 `q` の先へ格納した組 `(p, Value, q)` ごとに、借用した場所（`p` の先からのフィールドの列。`self_paths` と同じく `self_path` が求め、4 段まで、4 つまで）を記録します。合流は和で、片方が場所の無い組を持てば先全体（`[]`）です。
+- **借用の場所がその借用した部分であること（`exact_loan`）**: region が 1 つの仮引数の外部の loan は、仮引数の先と、先が持つ参照の先の両方を表すので、`ref w.p.s`（`record Wrap {r} { p: ref {r} PairOk }`）の場所は `w` の外部の根に `PairOk` のフィールド `s` を足したものになり、`Wrap` の部分としては誤りです。呼び出しの結果の参照を通した借用（`ref (geth q).n`）も同じです。そこで借用の式が局所値か、loan がどれも場所そのもの（フィールドの無い loan か exact な loan）で先の型と同じ参照の局所値（仮引数を含む）の先の、フィールドと要素の列であるとき（`exact_place`。値はそれ自身の型の部分を持たないので、その参照は場所そのものを指します）だけ、その借用を `Checker::exact_loans` に入れます。`kept_paths` はこの借用のときだけ場所の列を記録し、ほかは先全体です。
+- **呼び出し元の写し（`kept_copy`）**: `ref` の仮引数の組と、`shared_only` の組へ新しく書いた `ref mut` を渡したとき、実引数の loan のうち場所が借用した部分で場所の型が仮引数の先の型と同じもの（`path_copy` と同じ条件）を、その列を足した共有の loan にします。写しは元の loan の parents を保ち（以前に残していた元の loan と同じく、借用した値が持つものを生かし続けます）、exact です。それ以外の loan は全体のままです。
+- **`store_target`**: exact で、場所の型が何も格納できない（`hidden_type` が `(false, false, false)`、型変数を含まない）共有の loan は書き込み先にしません。文字列の借用を通して格納は届きません。
+
+これで `cross (ref p2) (ref p1)` は `p2` に `p1.s` の借用だけを残し、2 回目の当てはめは `p1` へ届かず、受理します。同じ値を 2 回渡すと `p` が `p.s` の借用を持つので、部分の順序で判断します（`PairOk` は受理、`PairBad { s, h }` は `self_referential_store`）。自己の事実（`self_paths`・`path_copy`・`referent_pieces`）は変えていません。
+
+#### 確かめた形（`r14/v.sh`、両方の edition）
+
+| 形 | 修正後 | A31 の先端 | 基準 |
+| --- | --- | --- | --- |
+| `cross (ref p2) (ref p1)` と、パイプライン・部分適用・関数値の仮引数（`apply2`、型変数の `apply2g`）・ラムダ・仮引数をそのまま渡す関数・参照の局所値・参照を返す関数・配列の要素・`Rc.get`・`ref mut` の仮引数（`crossm (ref p2) (ref mut p1)`、`ref mut` の変数）・`loc_safe__*` | 受理 | `E1013` | `drop 8`・`drop 0`・`1` |
+| 2 つの値のどちらかを指す参照（`if n > 0 then ref p1 else ref p2`、`pick`） | 受理 | `E1013` | 同上 |
+| 同じ値（`cross (ref p) (ref p)`）、1 つの値の 2 つの部分（`cross (ref t.a) (ref t.b)`、`a` が先） | 受理 | `E1013` | `drop 8`・`1`、`drop 8`・`drop 0`・`1` |
+| 呼び出しの後の借用されていない部分の書き換え（`p1.h = ...`、edition 2027） | 受理 | `E1014` | `drop 0`・`drop 8`・`drop 5`・`1` |
+| 逆の呼び出し（直接・パイプライン・関数値・型変数・仮引数を渡す関数・`ref mut`・`loc_unsafe__*`）、後に宣言した値を指しうる `pick` | `E1013`（`assignment_extends_borrow`） | 同じ | `drop 0`・`drop -1`（解放した文字列を読む） |
+| `PairBad` の同じ値、`PairBad` の値を指しうる参照、2 つの部分の逆の順序（`TwoBad { b, a }`） | `E1013`（`self_referential_store`） | 同じ（`PairBad` の参照は `assignment_extends_borrow`） | `drop -1`・`1` など |
+| 呼び出しの後の借用された部分の書き換え・ムーブ | `E1014` | 同じ | `drop -1` など |
+| 参照のフィールドの先の部分（`crossw (ref p2) (ref w)`、`cross a w.p`） | `E1013`（`assignment_extends_borrow`、安全側の制限） | 同じ | `drop 8`・`drop 0`・`1` |
+
+最後の行は残る制限です（基準が受理する安全な形の拒否で、A31 の先端も同じ）。`drop.md`（「解放の順序」の新しい項目「別の仮引数の先へ書き込んだ部分」）、`lifetimes.md` の「現在の制限」、上の「残る制限」と A33 の表に書きました。A32 の記録した `tmp_safe__alias`（`def` の右辺のラムダの注釈した引数を関数値へ渡す一時値の形）は、この修正の前と同じ拒否で、A32 が A33 に記録した制限です。
+
+#### テスト
+
+- `tests/rc.rs` の `a_call_that_stores_a_part_of_one_reference_argument_in_another_keeps_a_borrow_of_that_part`（プログラムは `CROSS_PRELUDE` と本体）: 受理 11 形（直接・パイプライン・部分適用・関数値・型変数・ラムダ・仮引数を渡す関数・どちらかを指す参照・同じ値・2 つの部分・`ref mut`）を両方の edition で、`p1.h` の書き換えの受理と `p1.s` の書き換えの `38:5` の `E1014`（`borrow_conflict`）を edition 2027 で、拒否 10 形（逆の呼び出し 6 綴り、`PairBad` の同じ値、`PairBad` を指しうる参照、`TwoBad`、制限の `crossw`）を両方の edition で `35:5` の `E1013` と kind で確かめます。どの受理も A31 の先端では拒否です。
+- `in_place_writes` の `crossed_references_keep_the_part`（native と WASM の `-O0`・`-O3`）: 関数値を通した `p2` への `p1.s`（`"12345"`、5 + 1）、パイプラインの同じ値 `p3`（`"123"`、3 + 1）、どちらかを指す参照の `p4`（`k = 1` なので `p1.s`、6）、`p1` は 0、関数値の結果 1 で、手で求めた値は `1 * 10000 + 0 * 1000 + 6 * 100 + 4 * 10 + 6 = 10646` です（基準の `-O0`・`-O3` も同じ値）。
+
+#### マージの条件の確かめ（この修正の後）
+
+- 上の道具を `gate/tools/check-r14.mjs`・`diff-r14.mjs` に写し（基準と第12回の対応の後の結果を `results-r13.json` から使い、`gate/bin/tsuzuri-r14` だけを検査します）、12167 個・24334 組を両方の edition で検査し直しました（`results-r14.json`・`diff-r14.txt`）。分類は第12回の表と同じです（2027: 両方が受理 4083、両方が拒否 4788、RA 14、AR 3282。2026: 3169、6394、14、2590。検査の失敗 0）。RA は同じ 28 組（15 個）で、新しい RA はありません。第12回の対応の後のバイナリ（`r13`）からの判定の変化は 0 組です（このコーパスには、ある参照の実引数の部分を別の参照の実引数の先へ書き込む呼び出しの安全な形がありませんでした）。
+- そこで、この形を A32 の再現の写しとこの修正の探査（`r14/p`・`r14/q`・`r14/t`、88 個）で両方の edition で比べました（`r14/v-final.txt`・`v-final-2026.txt`・`v-final-rest.txt`）。基準が拒否して修正後が受理するものはありません（基準が拒否するのは A32 の注釈の綴り `*__annot*` の型の誤りなど 11 個で、修正後も同じ誤り）。A31 の先端からの変化は 2027 で 36 個、2026 で 31 個で、拒否から受理が 35 個と 30 個（上の表の受理の行。どれも基準が受理する安全な形）、拒否のまま kind が変わったのが 1 個（`n_several_bad`: `PairBad` の値を指しうる参照が、`p1` に後の `q2` の借用を持たせる `assignment_extends_borrow` から、`q2` 自身の部分の借用の `self_referential_store` へ。値を指しうる参照の片方が `q2` 自身なので、こちらが正しい理由です）です。受理から拒否はありません。
+- 受理に変わった形と一時値の形の 41 個（2027）と 30 個（2026）を、修正後のバイナリで native の `-O0`・`-O3` と ASan（`gate/tools/asan-clang.sh`、`-O0`・`-O3`）で実行し（`gate/runs-r14-probes.json`）、どれも手で求めた値（`drop 8`・`drop 0`・`1`、同じ値は `drop 8`・`1`、`p1.h` の書き換えは `drop 0`・`drop 8`・`drop 5`・`1`、3 つの値は `drop 8`・`drop 0`・`drop 0`・`1`、`in_place_writes` の形は `10646`）を出し、ASan は何も報告しませんでした。
+
+#### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3067 件すべて成功、4 件 skip（1788 秒、`r14/nextest-2.log`）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 76 件（この修正の 1 件を含む。基準のバイナリでも 76 件が成功）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件がすべて成功（`r14/suites.log`・`e2e-base.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`、基準と修正後の `check --json`・`build --no-cache --emit llvm`）: `tests/fixtures`・`examples` の 154 個のどれも出力が同じ（`r14/step5.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・47 個のリンク・9 個の例・18 回の native の実行）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（1 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（制限の表の `crossw` の行、`loc_direct` を直したこと）、このチケット（「残る制限」と、この節）。
