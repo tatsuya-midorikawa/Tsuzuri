@@ -1807,3 +1807,67 @@ A32 の 6 度目の merge が、名前付き関数 `cross`（`b.s` の借用を 
 - 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`cp1/step5-main-2.txt`）。基準と比べると 25 個が違い、`tests/fixtures/anonymous_unions`（基準が読めない）と、LLVM IR だけが違う 24 個で、`main` との比較で同じなので merge した `main` の変更によるものです（`cp1/step5-2.txt`）。
 - 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・48 個のリンク・10 個の例・20 回の native の実行。新しい `run=` の例を含む）、`node scripts/check-guide-lite.mjs`、`node scripts/check-links.mjs`、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
 - 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（3 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（2 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（`fvparam` の行、fvpart と穴の記録）、このチケット（「残る制限」と、この節）。
+
+#### レビューの第1回（2026-11-14）
+
+この対応の後の先端（`88885b9f`）のレビュー（反例の探索 `target/scratch/a31/r16-review-1-ce/`、適合の確認 `target/scratch/a31/r16-review-1-conf/`）の 4 件の指摘を、修正後・先端・その前の先端（`298408bd`）・`main`（`168ae4a5`）・基準のバイナリで確かめ、どれも指摘のとおりに再現しました。指摘 1・2 は前の先端からの退行（`main` も受理する危険な形を受理）、指摘 3 は先端の穴の直し損ね（`main` も受理）、指摘 4 は `main` が受理する安全な形の文書に無い拒否です。結果は `target/scratch/a31/rr1/` にあります（`rr1/v.sh` が修正後・先端・前の先端・`main`・基準の最初の誤りを並べ、`RUN=1 ASAN=1` で native と ASan の `-O0`・`-O3` の出力を足します。`h/` が指摘 3 の探査、`k/` が指摘 4 の探査、`c/` が指摘 1・2 の安全な形、`fx*` が fixture の実験です）。
+
+##### 原因と変えたこと（`src/ownership.rs`）
+
+- **指摘 1・2（関数値の仮引数へ渡す値の場所を短くした記録）**: 呼び出し先が関数値の仮引数へ渡す値の場所（`Source::paths`・`element_paths`）は `add_self_path` が記録し、4 段で切るか、渡しうるほかの場所の中の場所を外側の場所にまとめます（`if k > 0 then ref (deref (Rc.get (ref x.a.e[0]))) else ref x.a` の `[a, e, ELEMENT]` と `[a]` は `[a]`、`ref (deref (Rc.get (ref x.a.b.c.d.e[0])))` は `[a, b, c, d]`）。それでも `Source::pointing` は真のままで、呼び出し元は短くした場所 `(x, [a])` の exact な複製を作り、`crossd` の `kept_copy` がそれを `(x, [a, s])` へ狭めました（`record D { s: string, e: [Rc<D>] }` では外側の場所も同じ型 `D`）。実際の借用は `x.a.e[0]` の `Rc` が指す `D` の `s` なので、`x.a.e` のムーブ・置き換えと競合せず、`p2` の `Holder` の `drop` が解放した文字列を読みました。`add_place_path` が場所を短くしたかを返し、短くした仮引数を `Source::coarse` に記録します。そうした仮引数の値は `pointing` にせず、`path_copy` の複製を exact にしません。複製の場所（外側の場所、4 段目までの場所）は借用した場所を含むので、元の loan を親にはしません（`path_copy` の `coarse`）。これで `x.a.e`・`x.a.b.c.d.e` のムーブ・置き換えは前の先端と同じ `E1014` になり、借用された部分の外（`x.z`）の書き換えは受理します（`c/c_merged_sibling`・`c_cut_sibling`。前の先端は拒否、`main` は `drop 8`・`1`）。外側の場所の中の借用されていない部分（`x.a.b.c.d.s`）の書き換えは、先端と同じく `E1014` で、安全側の制限です（`r16-review-1-ce/p/tp_ctl_s`、`main` は `drop 8`・`1`。A33 の `coarse`）。
+- **指摘 3（セルを所有する関数値の部分適用を組み込み関数で作る形）**: 先端の修正（`e2593013`）は、関数値の呼び出し（と名前付き関数が返す関数値への当てはめ、それを完成させないパイプライン）の結果に、当てはめた関数値を型で持たせる（holder）ものでした。組み込み関数（`Owned.call (ref w) 0`、そのパイプライン、`new [T](1, w)` と、それを使う std の `Array.init 1 w`、`FixedArray.init w`）が当てはめる形は対象外で、`w2` の型 `(unit -> i64) -> i64` は所有する関数値の型にならず、局所値の借用をセルへ書き込めました（`h1_owned_call` など。先端・前の先端・`main`・基準が受理し、ASan で stack use after scope、出力 `72`）。この規則を組み込み関数へ広げると、`in_place_writes` の fixture の 15 個の関数を拒否しました。`List.foldr` の std の関数は、コールバックの仮引数（セルを所有するラムダの型）を組み込み関数へ渡すので、状態の型 `unit -> i64` が所有する関数値の型になったためです。先端でも、fixture の `fold_state_comes_back` の `List.foldr` を `Array.foldr` に変えると同じく拒否します（`rr1/fx4`。`Array.foldr` はコールバックを `folder state (ref values[index])` と呼ぶので、先端の規則に当たります。`main`・基準は受理）。呼び出しの結果が呼び出した関数値の部分適用になるのは、その関数値がまだ本体を実行しないときだけで、そうでなければ結果は本体が作った値で、本体の中の作る所で数えます。そこで規則を作り直しました: `sink_flags` の `found` は、環境を持つ関数値を作る所で、その値が本体を実行する前に取る引数の数（持ち上げたラムダは捕捉の後の仮引数の数、部分適用は残りの仮引数の数、組み込み関数の部分適用は残りの引数の数、関数を返す見えない呼び出しの結果は分からないので仮引数のすべて）も受け取り、`partial_types` がそれに足りない数の引数を当てはめた後の型（`sink_type` で平らにした仮引数の後ろの部分）を、作る所の型と同じく sink・所有・holder に入れます。部分適用はどこで作っても同じ環境と型を持つので、当てはめる所を問わず数えます。`e2593013` の `applied`・`returned` の holder は除きました（`staged` の束縛した引数の規則は残します）。
+- **指摘 4（`match`・ブロック・部分適用の選択を束縛した局所値）**: `known_functions` の `shown` は、`if` のほかは選択を知らず、`let chosen = match n with | 0 -> cross | _ -> cross` と `let chosen = { cross }` は本体の見えない関数値（`apply_opaque`）でした。部分適用を選ぶ `if`（`if n < 0 then cross (ref p2) else cross (ref p2)`）は既知の局所値でしたが、その破棄（`value_runs_drop_code`）が `if` を知らず、どんなコードも実行しうるものとして関数値の loan を引数の先へ格納し、`p2` が自分の借用を持ちました（束縛だけの形も拒否）。`shown` が `match` のすべての腕とブロックの結果を、`value_runs_drop_code` が `if` の枝・`match` の腕・ブロックの結果を見るようにしました。ブロックの束縛した局所値は不変か、引数に現れても関数値全体の値を持つので（`bound_value`）、束縛のあるブロックも同じです。
+
+##### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（入れ子の場所をまとめた記録を指す場所とした。前の先端からの退行） | 再現（`pm_move`・`pm_assign` を先端が受理、native で `drop -1`・`1`、ASan で heap use after free。前の先端は `28:27`・`28:5` の `E1014`、`main`・基準は受理） | `Source::coarse`。`28:27`・`28:5` の `E1014`（`borrow_conflict`）で前の先端と同じ、両方の edition（`pm_assign` は edition 2027）。安全な `pm_safe` は受理（`drop 8`・`1`） | `a_borrowed_place_merged_into_a_larger_part_is_no_place_that_the_argument_points_at` |
+| 2（4 段で切った記録。前の先端からの退行） | 再現（`tp_move`・`tp_assign`・`tr_assign`。ASan で heap use after free） | 同上。`31:27`・`31:5` の `E1014`。`tp_safe` は受理、`tp_ctl_s`・`tp_ctl_whole` は `E1014` のまま | 同上 |
+| 3（組み込み関数の当てはめ。直し損ね） | 再現（`h1_owned_call`・`h6_owned_pipe`・`h8_new_array`・`h9_array_init`・`h10_owned_imm` を先端が受理、ASan で stack use after scope） | `partial_types`。どれも `7:17`・`8:17` の `E1013`（`assignment_extends_borrow`）、両方の edition。`rr1/h` の `List` の `new [\|T\|](1, w)`、`FixedArray.init w`（edition 2026）、`let g = Owned.call (ref w); g 0` も同じ。安全な形（配列を先に宣言 `s_*`: `72`、所有する関数だけ `o_*`: `7`）は受理し、native と ASan の `-O0`・`-O3` で同じ値 | `a_partial_application_by_a_builtin_shares_the_cell_of_the_function_value`、`in_place_writes` の `array_fold_state_comes_back` |
+| 4（`match`・ブロック・部分適用の選択。`main` からの退行） | 再現（`k_ifpartial_*`・`k_block_*`・`k_matchguard_*`・`m2`・`m3`・`m4`・`s_mixarity`・`c1_match_direct`・`s_match_choice` を先端が `23:5` の `E1013` で拒否、`main`・基準は手で求めた値） | `known_functions`・`value_runs_drop_code`。どれも受理 | `a_local_bound_to_a_match_block_or_choice_of_partial_applications_keeps_the_part`、`in_place_writes` の `matched_function_values_keep_the_part` |
+
+指摘 4 の形は `rr1/k/gen.py` の 100 個で両方の edition で確かめました（`rr1/k/res-2027.txt`・`res-2026.txt`）。
+
+| 形 | 修正後 | 先端 | `main`・基準 |
+| --- | --- | --- | --- |
+| `match` の選択（ガード付き、`outer` との選択）、ブロック（束縛あり・なし）、ブロックを枝にした `if`、`if` を腕にした `match` の、直接・パイプライン・部分適用・部分適用を完成させるパイプライン（`s_*` 24 個） | 受理（`drop 8`・`drop 0`・`1`） | `E1013`（`assignment_extends_borrow`） | 受理 |
+| 部分適用の `if`・`if`（`outer` と）・`match`・ブロックの、呼び出し・パイプライン・別名（`s_*` 12 個）と束縛だけ（4 個） | 受理（`drop 8`・`drop 0`・`1`、束縛だけは `drop 0`・`drop 0`・`1`） | `E1013`（`self_referential_store` か `assignment_extends_borrow`） | 受理 |
+| `cross3 (ref p3)` と `cross` の `if`・`match`、`cross3 (ref p3)` 同士の `if` の、直接・パイプライン・部分適用（`s_*` 9 個） | 受理（`drop 0`・`drop 8`・`drop 0`・`1`、`cross3` 同士は `drop 16`・`drop 0`・`drop 0`・`1`） | `E1013` | 受理 |
+| 上の逆の呼び出しと逆の宣言の順（`u_*` 45 個）、逆に書き込む `crossr` との選択（`u_mix_*` 6 個） | `23:5` の `E1013`（`assignment_extends_borrow`） | 同じ | 受理（解放した文字列を読み `drop -1`、3 つの値は `drop -2`） |
+
+受理の 49 個は、両方の edition で native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で手で求めた値を出し、ASan は何も報告しませんでした（`rr1/k/runs.txt`）。
+
+##### テスト
+
+- `tests/rc.rs` の `a_borrowed_place_merged_into_a_larger_part_is_no_place_that_the_argument_points_at`（`COARSE_PRELUDE`）: 指摘 1・2 のムーブ（両方の edition で `36:27` の `E1014`）と置き換え（edition 2027 で `36:5` の `E1014`）、ムーブの無い形と借用の外の `x.z` の書き換えの受理。
+- 同じく `a_partial_application_by_a_builtin_shares_the_cell_of_the_function_value`: 指摘 3 の 6 形（`Owned.call`、そのパイプライン、`Owned.call` の部分適用、`new [T]`、`new [|T|]`、`Array.init`）の拒否（`7:17`・`8:17` の `E1013`）と安全な 12 形の受理を両方の edition で、`FixedArray.init` の 3 形を edition 2026 で、`List.foldr`・`Array.foldr` の状態の形の受理。
+- 同じく `a_local_bound_to_a_match_block_or_choice_of_partial_applications_keeps_the_part`（`CROSS_PRELUDE`）: 指摘 4 の受理と逆の拒否（`35:5` の `E1013`）。
+- `in_place_writes` の `matched_function_values_keep_the_part`（`match` の選択のパイプライン、ブロックの別名の直接の呼び出し、部分適用。`p2`・`p3`・`p4` の記録が `p1` の `"12345"` の 5 + 1、`p1` は 0 なので、手で求めた値は `1 * 10000 + 0 * 1000 + 6 * 100 + 6 * 10 + 6 = 10666`）と `array_fold_state_comes_back`（`fold_state_comes_back` の `Array.foldr` の形。セルは 1 つ目の要素の後の状態 `9 + 1`、最後の状態は `9 + 2` なので `10 * 100 + 11 = 1011`）。どちらも基準のバイナリで同じ値で、先端はこのモジュールを拒否します。部分適用の選択はこのモジュールの隠れた環境の規則（`fx3`）に当たるので、Rust のテストで確かめます。
+
+##### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/check-r19.mjs`・`diff-r19.mjs` に写し（基準と先端（`r18`、`88885b9f` のビルドで `e2593013` と同じソース）の結果を `results-r18.json` から使い、`r18` に無いプログラムは先端でも検査）、`gate/tools/collect.mjs` でこのレビューのプログラム（`r16-review-1-ce`・`r16-review-1-conf`）とこの回の探査（`rr1/`）など 515 個を足して、13416 個・26832 組を両方の edition で検査しました（`results-r19.json`、分類は `diff-r19.txt`、`rr1/gate-diff-r19.txt` に写し）。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 4533 | 3562 |
+| 両方が拒否 | 5045 | 6767 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 3800 | 3058 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 67 組で、どれも先端も受理するもの（前回と同じ 67 組）です。新しい RA はありません。** 条件 (1) は成り立ちます。
+- **前からある 25802 組では、先端からの受理・拒否の変化は 0 組です。** 拒否のまま最初の誤りが変わったのが 2 組（`review-a31-ce-r3/h02_known_array_mixed`・`h03_known_record_mixed` の edition 2027）で、どちらも基準が受理する危険な形（内側のブロックの局所値の借用を、セルを所有する関数値を要素・フィールドに持つ配列・レコードを通してセルへ書き込む）です。先端は呼び出しの結果がその借用を持つものとしてブロックの値の束縛で `assignment_extends_borrow`、対応後は呼び出しでその借用を格納する所で `store_local_borrow_through_reference`（`cannot pass this function value here: ...`）で、edition 2026 は両方とも `assignment_extends_borrow` です。どちらの誤りも、内側のブロックの局所値の借用がブロックの外へ残ることを理由にしています。
+- 足した 1030 組での先端からの変化は、受理から拒否の 22 組（指摘 1〜3 の危険な形と `rr1/h` の `u_*`）と、拒否から受理の 137 組（指摘 4 のレビューの形と `rr1/k` の `s_*`、`rr1/x`、fixture の実験 `rr1/fx4`・`fx8_*`）です。拒否から受理のどれも基準が受理し、`rr1/k` の `s_*` と `rr1/x` は native と ASan で手で求めた値を出し、`rr1/fx4`・`fx8_*` は `in_place_writes` の fixture に安全な関数を足したものです（値は `in_place_writes` のスイートで確かめた `array_fold_state_comes_back` など）。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- 安全な形の実行: `rr1/h` の `s_*`（`72`）・`o_*`（`7`）を両方の edition（`FixedArray.init` は edition 2026）で、`rr1/c` の `c_merged_sibling`・`c_cut_sibling`（`drop 8`・`1`）を edition 2027 で、native と ASan の `-O0`・`-O3` で実行し、どれも手で求めた値で、ASan は何も報告しませんでした（`rr1/h/runs.txt`）。危険な形は `main` で実行し、指摘 1・2 は解放した文字列を読み（`drop -1`）、指摘 3 は ASan が stack use after scope を報告しました。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3288 件すべて成功、4 件 skip（1877 秒、`rr1/nextest.log`）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 81 件（この回の 2 件を含む。基準のバイナリでも 81 件が成功し、先端はこのモジュールを拒否します）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件がすべて成功（`rr1/suites.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`rr1/step5-main.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・48 個のリンク・10 個の例・20 回の native の実行）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（3 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（2 件）、`drop.md`、`lifetimes.md`、`docs/architecture.md`、A33（`coarse` の行、この回の記録）、このチケット（「残る制限」と、この節）。
