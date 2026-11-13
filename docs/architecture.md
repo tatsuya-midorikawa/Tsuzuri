@@ -1584,9 +1584,13 @@ region 契約を読む前に宣言の引数型にも同じ表面上の補完を�
 その場の書き込み（`Array.write` など）が注釈した参照の借用を書き込み先へ残すことは、A31 の書き込みの事実（`ownership::StoreFacts`）が
 注釈のない綴りと同じく追跡します。A31 の後の規則（書き込める仮引数の先の借用を残した後の書き込み、関数値の仮引数へ渡した借用、
 ビューの読み替え、`parameter_path`、`Source::locked`・`Source::shared`、仮引数・一時値・自己 loan の破棄の順序、`StoreFacts::ordered`、
-排他の借用で届く持ち主の共有の自己 loan（`StoreFacts::shared_some`・`self_paths`）、値全体の置き換え（`replaced_value`・`replaced_target`））も、
+排他の借用で届く持ち主の共有の自己 loan（`StoreFacts::shared_some`・`self_paths`）、値全体の置き換え（`replaced_value`・`replaced_target`）、
+参照の実引数の片ごとの自己の事実の写し（`referent_pieces`）、`ref mut` で貸した共有の `forget_block_share`、`deref p = v` が外さない借用
+（`State::contents_elsewhere`・`place_leaves_storage`・`replacement_frees_kept`））も、
 同じ規約か `ref` の型の仮引数を持つ名前付き関数と同じ結果です。隠れた引数を束縛したパターンの変数は隠れた引数の loan
-（またはそれを親に持つ loan）を持ち、`writable_external` などは loan の外部の根で判定し、`parameter_path` はパターンの束縛を仮引数までたどるからです。callback の adapter は既存の Copy・loan 検査を通し、callback 自体の構築は 1 回だけです。
+（またはそれを親に持つ loan）を持ち、`writable_external` などは loan の外部の根で判定し、`parameter_path` はパターンの束縛を仮引数までたどるからです。
+例外は、注釈した引数をそのまま関数値の仮引数へ渡す本体に呼び出し元が貸した一時値の順序で、`ref` の型の署名に注釈したラムダ（A32 の前からの形）と同じく、
+名前付き関数と注釈の無いラムダが受理する安全な順序も `E1013`（`assignment_extends_borrow`）です（保守的な扱い、A33）。callback の adapter は既存の Copy・loan 検査を通し、callback 自体の構築は 1 回だけです。
 `BORROWING_APIS` は 2027 の Array／List の読み取り入口と Vec の可変入口、および旧版を保存する `_owned` 入口をまとめます。
 `Vec.push_mut` は `Vec.push_owned` と異なる builtin identity と LLVM helper を持ち、混在版の ABI を衝突させません。
 

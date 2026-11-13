@@ -51,7 +51,10 @@ A31 の先端（`target/wt/a31`、edition 2027 と 2026）で確かめました�
 | `h01`（`target/wt/a31/target/scratch/review-a31-conf-r12/p/h01_parts_two_params_safe`） | 2 つの参照の仮引数の先の部分を関数値へ渡す（`fn apply2 f a b = { f (ref a.h) (ref b.s); 0 }`）呼び出しの一時値の順序。`Source::passed` と `origin` は仮引数をそのまま渡すときしか表さない | `104:12` `E1013` | 受理（`drop 8 2 drop 0 2`） |
 | `r06`・`r11`（`target/wt/a31/target/scratch/review-a31-conf-r12/p/r06_rs_good_same_scope_reassign`・`r11_rs_good_same_scope_move`） | `Rc.share (ref rc)` の持ち主を通して `rc` のブロックへ自分の部分の借用を書き込み、持ち主がスコープにある間に `rc` を代入・ムーブする。持ち主が借用を持ち続ける | `105:5`・`105:17` `E1014` | 受理 |
 | `r07`・`r10`（同じディレクトリの `r07_rs_good_inner_block_move`・`r10_direct_self_move_rc`） | ブロックが自分の部分の借用を持つ `Rc` のムーブ（`main` も `Rc.get` の借用が生きている間のムーブは `E1014`。ブロックは動かないので実際には安全） | `103:17`・`104:17` `E1014` | 受理 |
+| `apply2` の注釈した綴り（`target/wt/a32/target/scratch/a32/merge5/s01/red/p/tmp_safe__annot`・`tmp_safe__alias`。A32 の 5 度目の merge で記録） | `h01` と同じ一時値の順序で、仮引数の部分ではなく、`def` の右辺のラムダの注釈した引数（隠れた引数をパターンで束縛した名前）をそのまま関数値へ渡す（`\f (a: ref PairOk) (b: ref PairOk) -> { f a b; 0 }`）。名前付き関数と注釈の無いラムダは受理する。A32 の前から書ける `ref` の型の署名の綴り（`tmp_safe__alias`）も同じ結果 | `18:5` `E1013` | 受理（`drop 8`・`drop 0`・`1`。注釈した規約の綴りは `main` では `E1003`） |
 | `m_named_owned`（`target/wt/a31/target/scratch/a31/L_m_named_owned`） | 所有の値だけを書く名前付き関数をロックのコールバックにする。ロックの組み込み関数はコールバックを実行する見えないコードなので、A28 の除外が事実を使わない | `13:5` `E1013` | 同じく拒否（A30 の誤った拒否） |
+
+A32 の 5 度目の merge（2026-11-13）では、文書に無い拒否も 1 つ見つけました。`cross (ref p2) (ref p1)`（`cross a b` が `b.s` の借用を `a.h` の `Mutex` へ書き込む名前付き関数。`p1` を先に宣言するので、`p2` の `drop` が読む `p1.s` はまだある）は、A31 の先端（`da4e5b85`）でも、A31 の第11回までを merge した A32 の binary でも `E1013 self_referential_store`（`'p1' keeps a borrow of a part of itself`、`p1` の宣言）で、`main` は受理して `drop 8`・`drop 0`・`1` を出します（`target/wt/a32/target/scratch/a32/merge5/s01/red/p/loc_direct`。同じ呼び出しを一時値で書いた `loc_direct_tmp` は受理）。名前付き関数そのものの綴りなので、A32 の問題ではありません。
 
 起票の依頼が挙げた `N_closed_cell_read`（`target/wt/a31/target/scratch/a31/N_closed_cell_read`）は、A31 の先端で両方の edition とも受理され、値は `main` と同じです（A31 の閉じた関数の取り消しの後も closed のまま）。制限ではありません。
 
