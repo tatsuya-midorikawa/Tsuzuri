@@ -1357,3 +1357,48 @@ fn bound_parts_keep_their_strings =
     let out4 = Arc.new (Mutex.create [0])
     let k = bound_parts (ref out1) (ref out2) (ref out3) (ref out4)
     (((k * 100 + recorded (ref out1)) * 100 + recorded (ref out2)) * 100 + recorded (ref out3)) * 100 + recorded (ref out4)
+
+// Copilot's review of PR #105: a call drops the temporaries that it borrows right after it returns,
+// in the order in which they were made, so a recorder made before the string keeps a borrow of it.
+// A `break`, `continue` or a handled exception in a later argument drops the pending temporaries in
+// the reverse order, but before the call, while the recorder still holds its first function.
+def fresh_recorder :: ref Arc<Mutex<[i64]>> -> i64 -> Recorder
+fn fresh_recorder out first = Recorder { cell: Mutex.create [\() -> first], out: Arc.share out }
+
+def record_length :: ref Recorder -> ref string -> i64 -> i64
+fn record_length c s n =
+    Mutex.with_lock (ref c.cell) (\x -> Array.write 0 (\() -> String.length s + n) x)
+    n
+
+def recorded_until_exit :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64
+fn recorded_until_exit out1 out2 out3 =
+    let mut i = 0
+    let mut total = 0
+    while i < 4 do
+        i = i + 1
+        let out = if i == 1 then out1 else if i == 2 then out2 else out3
+        total = total + record_length (ref (fresh_recorder out (70 + i))) (ref (to_string 12345)) ({ if i == 2 then continue else (); if i == 3 then break else (); i })
+    total
+
+def recorded_or_overflow :: ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn recorded_or_overflow out n =
+    let outcome =
+        try
+            record_length (ref (fresh_recorder out 75)) (ref (to_string 123)) (@checked n * n)
+        with
+        | e -> e
+    match outcome with
+    | Ok v -> v
+    | Error _ -> -1
+
+export def early_exits_drop_pending_temporaries :: i64
+fn early_exits_drop_pending_temporaries =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let out3 = Arc.new (Mutex.create [0])
+    let out4 = Arc.new (Mutex.create [0])
+    let out5 = Arc.new (Mutex.create [0])
+    let k = recorded_until_exit (ref out1) (ref out2) (ref out3)
+    let small = recorded_or_overflow (ref out4) 3
+    let big = recorded_or_overflow (ref out5) 4611686018427387904
+    ((((((k * 100 + recorded (ref out1)) * 100 + recorded (ref out2)) * 100 + recorded (ref out3)) * 100 + small) * 100 + recorded (ref out4)) * 100 + recorded (ref out5)) * 10 + (big + 2)

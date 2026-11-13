@@ -2072,6 +2072,12 @@ const suites = {
       // (5 + 7), p2's reads the second element's "123456789" (9 + 1), p1's and the elements' keep
       // 0; each_recorded returns 1.
       ["bound_parts_keep_their_strings", [], (((1n * 100n + 0n) * 100n + 10n) * 100n + 12n) * 100n + 0n],
+      // Copilot's review of PR #105. The first iteration's recorder reads "12345" after the call
+      // (5 + 1); the continue and the break in the third argument drop the string and then the
+      // recorder before the call, so those keep their first functions (72, 73); the loop adds 1.
+      // With 3 the recorder reads "123" (3 + 9) and the call gives 9; with 2^62 the overflow drops
+      // them before the call (75) and gives -1, encoded as -1 + 2.
+      ["early_exits_drop_pending_temporaries", [], ((((((1n * 100n + 6n) * 100n + 72n) * 100n + 73n) * 100n + 9n) * 100n + 12n) * 100n + 75n) * 10n + 1n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.

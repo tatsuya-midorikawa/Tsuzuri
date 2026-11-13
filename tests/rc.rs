@@ -3986,6 +3986,106 @@ fn a_temporary_whose_drop_runs_code_keeps_no_borrow_of_one_made_before_it() {
     }
 }
 
+/// The prelude of `an_early_exit_before_the_call_keeps_the_order_of_its_borrowed_temporaries`:
+/// `keep3` keeps a borrow of its string in its holder's cell, `keep3r` the same with the string
+/// first; both take a third argument after the two temporaries.
+const EXIT_PRELUDE: &str = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = {
+        let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")];
+        do! IO.write_line ("drop holder reads " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " junk " + to_string junk.length)
+    }
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def keep3 :: ref Holder -> ref string -> i64 -> i64
+fn keep3 c s n =
+    Mutex.with_lock (ref c.cell) (\b -> Array.write 0 (\() -> look s) b)
+    n
+def keep3r :: ref string -> ref Holder -> i64 -> i64
+fn keep3r s c n =
+    Mutex.with_lock (ref c.cell) (\b -> Array.write 0 (\() -> look s) b)
+    n
+def k :: i64 -> i64 -> i64
+fn k a b = a + b
+"#;
+
+fn exit_program(body: &str) -> String {
+    format!("{EXIT_PRELUDE}{body}do! IO.write_line (to_string (run 3))\n")
+}
+
+/// A31, Copilot's review of PR #105: the lowering drops the temporaries that a call borrows right
+/// after it returns, in the order in which they were made, but a `break`, `continue` or an
+/// exception that a `try` of the same body handles drops the pending ones in the reverse order
+/// before the scopes (`emit_loop_jump`, `raise`). Such an exit can only happen while the call's
+/// arguments are evaluated, before the call, so no temporary holds a borrow of another yet: the
+/// order after the call is the only one that the drop-order rule needs. A holder made first stays
+/// accepted with an exit in a later argument, or in a later part of the statement after the call
+/// (the native and ASan runs print `drop holder reads 8` after a call and `reads 0` for a holder
+/// left before its call), and a holder made after the string stays rejected.
+#[test]
+fn an_early_exit_before_the_call_keeps_the_order_of_its_borrowed_temporaries() {
+    const LOOP: &str = "def run :: i64 -> i64\nfn run n =\n    let mut i = 0\n    let mut total = 0\n    while i < n do\n        i = i + 1\n";
+    const TRY: &str = "def run :: i64 -> i64\nfn run n =\n    let outcome =\n        try\n";
+    const HANDLE: &str = "        with\n        | e -> e\n    match outcome with\n    | Ok v -> v\n    | Error _ -> -1\n";
+    const HOLDER: &str = "ref (Holder { cell: Mutex.create [\\() -> 0] })";
+    const TEXT: &str = "ref (String.repeat 4 (ref \"123456789\"))";
+    for body in [
+        // a break in the third argument, after both temporaries are made (t1)
+        format!(
+            "{LOOP}        total = total + keep3 ({HOLDER}) ({TEXT}) ({{ if i == 2 then break else (); i }})\n    total\n"
+        ),
+        // a continue there (t2)
+        format!(
+            "{LOOP}        total = total + keep3 ({HOLDER}) ({TEXT}) ({{ if i == 2 then continue else (); i }})\n    total\n"
+        ),
+        // an exception raised there and handled by the enclosing try (t3)
+        format!("{TRY}            keep3 ({HOLDER}) ({TEXT}) (@checked n * n)\n{HANDLE}"),
+        // a break after the call, in a later argument of an outer call (t4)
+        format!(
+            "{LOOP}        total = total + k (keep3 ({HOLDER}) ({TEXT}) 1) ({{ if i == 2 then break else (); i }})\n    total\n"
+        ),
+        // an exception raised after the call (t5)
+        format!("{TRY}            k (keep3 ({HOLDER}) ({TEXT}) 1) (@checked n * n)\n{HANDLE}"),
+        // a break on the right side of a pipeline whose left side is the call (t7)
+        format!(
+            "{LOOP}        total = total + (keep3 ({HOLDER}) ({TEXT}) 1 |> k ({{ if i == 2 then break else (); i }}))\n    total\n"
+        ),
+    ] {
+        accepts_in_both_editions(&[("Main.tz", &exit_program(&body))]);
+    }
+    // The holder made after the string: the call drops the string first and the holder's drop
+    // reads it (main prints `drop holder reads -1`), whatever the exits do (u1, u2).
+    for (body, at) in [
+        (
+            format!(
+                "{LOOP}        total = total + keep3r ({TEXT}) ({HOLDER}) ({{ if i == 2 then break else (); i }})\n    total\n"
+            ),
+            (29, 25),
+        ),
+        (
+            format!(
+                "{LOOP}        total = total + keep3r ({TEXT}) ({HOLDER}) ({{ if i == 2 then continue else (); i }})\n    total\n"
+            ),
+            (29, 25),
+        ),
+        (
+            format!("{TRY}            keep3r ({TEXT}) ({HOLDER}) (@checked n * n)\n{HANDLE}"),
+            (27, 13),
+        ),
+    ] {
+        rejects_at(
+            &exit_program(&body),
+            "E1013",
+            "assignment_extends_borrow",
+            at,
+        );
+    }
+}
+
 /// A31, review round 9 (findings 3 and 7): the fields of a record, the elements of a tuple and of
 /// a collection are dropped in their order. A value that keeps a borrow of its own part (a lock's
 /// callback wrote a borrow of `p.s` into the cell of `p.h`) must not drop that part before a part

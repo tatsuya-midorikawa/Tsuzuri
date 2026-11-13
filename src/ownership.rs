@@ -925,10 +925,14 @@ enum DropSlot {
     /// that a `break`, `continue` or a raise leaves. They are dropped in the reverse order of
     /// their bindings: a larger rank is dropped first.
     Scoped(usize),
-    /// A temporary of a statement, by the source position where it is made: the temporaries of
-    /// a statement are dropped where it ends, in the order in which they were made (the
-    /// operands from left to right, the left side of a pipeline first), before the locals that
-    /// are in scope there.
+    /// A temporary that a call borrows, by the source position where it is made: the lowering
+    /// drops the borrowed temporaries of a call right after it returns (`release_operands`), in
+    /// the order in which they were made (the operands from left to right, the left side of a
+    /// pipeline first), before the locals that are in scope there. A `break`, `continue` or raise
+    /// that leaves while they are pending drops them in the reverse order (`emit_loop_jump`,
+    /// `raise`), but it can only happen while the call's arguments are evaluated, before the
+    /// call: no store of the call has kept a borrow of one in another yet, so only the order
+    /// after the call counts.
     Temporary(usize),
     /// A storage whose drop position the check does not know: a value that a callee passed on
     /// (a part of a temporary, or a value that the callee made).
@@ -942,7 +946,7 @@ impl DropSlot {
         match (self, holder) {
             (DropSlot::Scoped(source), DropSlot::Scoped(holder)) => source > holder,
             (DropSlot::Temporary(source), DropSlot::Temporary(holder)) => source <= holder,
-            // A local that is in scope where the statement ends outlives its temporaries.
+            // A local that is in scope where the call returns outlives its temporaries.
             (DropSlot::Scoped(_), DropSlot::Temporary(_)) => false,
             (DropSlot::Temporary(_), DropSlot::Scoped(_))
             | (DropSlot::Unknown, _)
@@ -5102,7 +5106,7 @@ type StoreKey = (usize, Vec<(usize, Vec<usize>, Vec<usize>, u16)>);
 /// A fact that stores the reference itself (`Part::Value`) of a borrowed operand stores a borrow
 /// of the operand: `reference` holds its loans when the operand is a place (`a == b` lends both
 /// operands to a user `Eq.eq`, `Checker::argument`), and `dying` says that it is a temporary,
-/// which is dropped when the statement ends, so that nothing may keep the reference.
+/// which is dropped right after the call returns, so that nothing may keep the reference.
 ///
 /// `environment`: the argument is a capture of the function value that is called (or an argument
 /// that a partial application bound), so a store into it goes into that value's environment.
@@ -7637,12 +7641,12 @@ impl<'a, 'run> Checker<'a, 'run> {
 
     /// A31: the error of a call that stores a reference to a temporary argument: the callee keeps
     /// the reference that a read parameter or an operator gets (not what the value holds) where
-    /// one of its arguments reaches, and the temporary is dropped when the statement ends.
+    /// one of its arguments reaches, and the temporary is dropped right after the call returns.
     #[cold]
     fn temporary_borrow_stored(span: Span) -> Diagnostic {
         error(
             DiagnosticKind::StoreLocalBorrowThroughReference,
-            "cannot store a borrow of a temporary value: the call keeps a reference to this argument where another argument reaches, and the temporary is dropped at the end of the statement",
+            "cannot store a borrow of a temporary value: the call keeps a reference to this argument where another argument reaches, and the temporary is dropped when the call returns",
             span,
         )
         .with_help("bind the value with 'let' before the call, in a scope that outlives the place that keeps the reference")
@@ -7654,7 +7658,7 @@ impl<'a, 'run> Checker<'a, 'run> {
     fn temporary_dropped_first_error(span: Span) -> Diagnostic {
         error(
             DiagnosticKind::AssignmentExtendsBorrow,
-            "cannot keep a borrow of a temporary value in itself or in a temporary made after it: the temporaries of a statement are dropped where it ends in the order in which they were made, as are the parts of a value, and dropping the later one may run a Drop.drop that uses the borrow",
+            "cannot keep a borrow of a temporary value in itself or in a temporary made after it: the temporaries that a call borrows are dropped when it returns, in the order in which they were made, as are the parts of a value, and dropping the later one may run a Drop.drop that uses the borrow",
             span,
         )
         .with_help("bind the borrowed value with 'let' before the statement, or make the temporary that keeps the borrow first")
@@ -7714,11 +7718,12 @@ impl<'a, 'run> Checker<'a, 'run> {
     }
 
     /// A31: where the borrowed temporary argument `argument` is dropped (`DropSlot`): the
-    /// temporaries of a statement are dropped where it ends, in the order in which they were
-    /// made (`f (ref (T { id: 1 })) (ref (T { id: 2 }))` drops 1, then 2), which is the order of
-    /// their operands in the source: arguments are evaluated from left to right, and the left
-    /// side of a pipeline first. A value without an expression (one that a callee passed on, a
-    /// part of a temporary or a value that the callee made) has no known position.
+    /// temporaries that a call borrows are dropped right after it returns, in the order in which
+    /// they were made (`f (ref (T { id: 1 })) (ref (T { id: 2 }))` drops 1, then 2; an early exit
+    /// drops them in the reverse order, but only before the call: `DropSlot::Temporary`), which
+    /// is the order of their operands in the source: arguments are evaluated from left to right,
+    /// and the left side of a pipeline first. A value without an expression (one that a callee
+    /// passed on, a part of a temporary or a value that the callee made) has no known position.
     fn temporary_slot(argument: &Arg<'_>) -> DropSlot {
         match argument.expression.or(argument.origin) {
             Some(expression) => DropSlot::Temporary(expression.span.start),
@@ -11057,9 +11062,9 @@ impl<'a, 'run> Checker<'a, 'run> {
             let dropped = self.dropped.as_mut().expect("checked above");
             dropped.extend(&value.loans);
         }
-        // A31: a value that is not bound is a temporary, dropped where the statement ends at the
-        // latest (the scrutinee of a `match`, a value lent to a call, a record that a field is
-        // read from), or handed to code that drops it.
+        // A31: a value that is not bound is a temporary, dropped where its use ends, by the end
+        // of the statement at the latest (the scrutinee of a `match`, a value lent to a call right
+        // after it returns, a record that a field is read from), or handed to code that drops it.
         // A temporary whose drop may hand a borrow of itself to a hidden environment is checked
         // even when it holds no loan.
         if !bound
