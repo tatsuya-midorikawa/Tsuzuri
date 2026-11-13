@@ -334,9 +334,10 @@ struct Hints {
     /// The names that follow the `and` of a local `let rec` group (B09): that `and` is a statement
     /// of its block, not a top-level declaration.
     group_names: BTreeSet<usize>,
-    /// The type test patterns `:? T` (A24): the start of each pattern (a parenthesized pattern
-    /// starts at its `(`) and the start of its type. Before its type a type test holds only
-    /// parentheses and its `:?`, which is how `print_tokens` finds that `:`.
+    /// The type test patterns `:? T` (A24): the start of each test's own extent (its `:`, which
+    /// `PatternKind::TypeTest` keeps apart from the parentheses around the test) and the start of
+    /// its type. Before its type a type test holds only its `:?`, which is how `print_tokens`
+    /// finds that `:`.
     type_test_patterns: BTreeMap<usize, usize>,
     /// The `:` of each type test, from `type_test_patterns`. A `:` elsewhere sits against what
     /// precedes it and a `?` keeps the space written after it (`?a` and `? a` differ), so only these
@@ -1145,10 +1146,10 @@ impl Canonical {
     }
 
     fn pattern(&mut self, pattern: &mut Pattern) {
-        if let PatternKind::TypeTest(ty, _) = &pattern.kind {
+        if let PatternKind::TypeTest(ty, _, span) = &pattern.kind {
             self.hints
                 .type_test_patterns
-                .insert(pattern.span.start, ty.span.start);
+                .insert(span.start, ty.span.start);
         }
         pattern.span = Span::default();
         pattern.depth = 0;
@@ -1188,7 +1189,8 @@ impl Canonical {
                 self.ident(name);
             }
             Argument(value) | Literal(value) => self.expression(value),
-            TypeTest(ty, binder) => {
+            TypeTest(ty, binder, span) => {
+                *span = Span::default();
                 self.ty(ty);
                 if let Some(binder) = binder {
                     self.ident(binder);

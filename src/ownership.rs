@@ -142,7 +142,7 @@ impl Place {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 struct Value {
     loans: BTreeSet<usize>,
     /// A12: the loans of each region slot of a record with several regions; `None` lets every
@@ -171,6 +171,21 @@ struct State<'a> {
     /// The places that were moved, with the span of the move that the diagnostics point at.
     moved: BTreeMap<Place, Span>,
     generic_moves: BTreeMap<Place, Type>,
+}
+
+impl State<'_> {
+    /// Whether the two states hold the same locals with the same values, aliases and moves.
+    fn same(&self, other: &Self) -> bool {
+        self.locals.len() == other.locals.len()
+            && self
+                .locals
+                .iter()
+                .zip(&other.locals)
+                .all(|((a, (x, u)), (b, (y, v)))| a == b && x.id == y.id && u == v)
+            && self.aliases == other.aliases
+            && self.moved == other.moved
+            && self.generic_moves == other.generic_moves
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3023,6 +3038,31 @@ impl<'a> Checker<'a, '_> {
         Ok(())
     }
 
+    /// `value` as the source spells it, when it is a local that the source names or a record
+    /// field of one (`r.u`, `r.inner.u`).
+    fn spelled(&self, value: &TypedExpr) -> Option<String> {
+        match &value.kind {
+            E::Local(id) => self
+                .state
+                .locals
+                .get(id)
+                .map(|(local, _)| local)
+                .filter(|local| {
+                    local.provenance != crate::syntax::Provenance::Generated
+                        && !local.name.starts_with('$')
+                })
+                .map(|local| local.name.clone()),
+            E::Field(inner, index) => {
+                let Type::Record(id, _) = &inner.ty else {
+                    return None;
+                };
+                let (field, _) = self.module.records.get(*id)?.fields.get(*index)?;
+                Some(format!("{}.{field}", self.spelled(inner)?))
+            }
+            _ => None,
+        }
+    }
+
     fn access(
         &mut self,
         place: &Place,
@@ -3048,13 +3088,43 @@ impl<'a> Checker<'a, '_> {
                 .get(&place.root)
                 .map_or("value", |(local, _)| local.name.as_str())
                 .to_owned();
+            let widening = (!moved.fields.is_empty() && origin.end > origin.start)
+                .then(|| widened_at(self.body, origin))
+                .flatten();
             // Only the control flow tells whether the move reached the use through a loop: the
             // `where` bindings of a guarded function run before its arms, and an assignment's value
             // before its place.
-            let previous_iteration = origin.end > origin.start
-                && moved_in_previous_iteration(self.body, origin, span, &mut self.later_use_budget)
-                    == Some(true);
+            let reached = (origin.end > origin.start)
+                .then(|| {
+                    moved_in_previous_iteration(self.body, origin, span, &mut self.later_use_budget)
+                })
+                .flatten();
+            // The nodes of a widening (A25) all have the span of the widened expression, so the
+            // flow cannot order its move and a use of that expression; the use reads the value
+            // before the binding moves it, so it reads what an earlier pass of a loop moved
+            // (review round 3).
+            let previous_iteration = reached == Some(true)
+                || (reached.is_some() && widening.is_some() && origin == span);
+            // A widening moves the payload, all that the value holds besides its tag, into the
+            // wider union: the widened value moved, the local itself or a field of it (`r.u`,
+            // review round 3), as the source spells it. A value that the source does not spell
+            // keeps the message of a partial move.
+            let widened = widening.and_then(|(wider, value)| {
+                let part = !matches!(value.kind, E::Local(_));
+                Some((wider, self.spelled(value)?, part))
+            });
             let message = match (moved.fields.is_empty(), previous_iteration) {
+                _ if widened.as_ref().is_some_and(|(_, _, part)| *part) => {
+                    if previous_iteration {
+                        "part of the value moved here into a wider anonymous union, in the previous iteration of the loop"
+                    } else {
+                        "part of the value moved here into a wider anonymous union"
+                    }
+                }
+                _ if widened.is_some() && previous_iteration => {
+                    "value moved here into a wider anonymous union, in the previous iteration of the loop"
+                }
+                _ if widened.is_some() => "value moved here into a wider anonymous union",
                 (true, false) => "value moved here",
                 (false, false) => "part of the value moved here",
                 (true, true) => "value moved here, in the previous iteration of the loop",
@@ -3062,18 +3132,50 @@ impl<'a> Checker<'a, '_> {
                     "part of the value moved here, in the previous iteration of the loop"
                 }
             };
-            let mut diagnostic = Diagnostic::of(
-                DiagnosticKind::UseAfterMove,
-                format!("use of moved or partially moved value '{name}'"),
-                span,
-            )
-            .with_help(if moved.fields.is_empty() {
-                format!("borrow the value with 'ref {name}' or move it last")
-            } else {
-                format!(
-                    "borrow the field with 'ref' instead of moving it out of '{name}', or move it last"
+            // The local that holds a matched temporary has a generated name, which no source
+            // spells; only the bindings of one pattern take from it.
+            let matched = self
+                .state
+                .locals
+                .get(&place.root)
+                .is_some_and(|(local, _)| {
+                    local.provenance == crate::syntax::Provenance::Generated
+                        && local.name.starts_with("$match")
+                });
+            let mut diagnostic = if matched {
+                Diagnostic::of(
+                    DiagnosticKind::UseAfterMove,
+                    "use of moved or partially moved matched value: two bindings of the pattern take the same part of it",
+                    span,
                 )
-            });
+                .with_help(
+                    "bind the whole value with 'as' or bind its parts, not both, and match the bound value again in the arm",
+                )
+            } else {
+                Diagnostic::of(
+                    DiagnosticKind::UseAfterMove,
+                    format!("use of moved or partially moved value '{name}'"),
+                    span,
+                )
+                .with_help(if let Some((wider, path, part)) = &widened {
+                    // `ref` of the narrower value is never widened: the wider value is bound once.
+                    let wider = wider.display(&self.module.types());
+                    let out_of = if *part {
+                        format!(" out of '{name}'")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "a widening moves '{path}'{out_of}; bind the wider value once with 'let wide: {wider} = {path}' and borrow 'wide', or move it last"
+                    )
+                } else if moved.fields.is_empty() {
+                    format!("borrow the value with 'ref {name}' or move it last")
+                } else {
+                    format!(
+                        "borrow the field with 'ref' instead of moving it out of '{name}', or move it last"
+                    )
+                })
+            };
             if origin.end > origin.start {
                 diagnostic = diagnostic.related(RelatedRole::MovedHere, message, origin);
             }
@@ -3484,12 +3586,58 @@ impl<'a> Checker<'a, '_> {
                 }
                 Ok(places)
             }
-            _ => Err(error(
+            _ => Err(self.borrow_of_temporary(expression)),
+        }
+    }
+
+    /// E1013 for a borrow of a value that is not a place. A local converted into an anonymous
+    /// union, by a widening (A25, the `match` of `Checker::retag`) or an injection (A24, a
+    /// `Construct` of a case of the anonymous union), is a temporary although the source names
+    /// the local, so the error says how to bind the converted value.
+    #[inline(never)]
+    fn borrow_of_temporary(&self, expression: &TypedExpr) -> Diagnostic {
+        let converted = match &expression.kind {
+            E::Match { value, arms, .. }
+                if arms.iter().any(|arm| {
+                    arm.alternatives.iter().any(|alternative| {
+                        alternative.bindings.iter().any(|(binding, _)| {
+                            binding.provenance == crate::syntax::Provenance::Generated
+                                && binding.name.starts_with("$retag")
+                        })
+                    })
+                }) =>
+            {
+                Some(value)
+            }
+            E::Construct {
+                union_id,
+                payload: Some(value),
+                ..
+            } if self.module.unions[*union_id].is_anonymous() => Some(value),
+            _ => None,
+        };
+        let name = converted.and_then(|value| match value.kind {
+            E::Local(id) => self.declarations.get(&id).map(|local| local.name.as_str()),
+            _ => None,
+        });
+        let Some(name) = name else {
+            return error(
                 DiagnosticKind::BorrowOfTemporary,
                 "borrow requires a local place; bind the temporary with 'let' first",
                 expression.span,
-            )),
-        }
+            );
+        };
+        let union = expression.ty.display(&self.module.types());
+        Diagnostic::of(
+            DiagnosticKind::BorrowOfTemporary,
+            format!(
+                "borrow requires a local place; '{name}' converted into {union} is a temporary value"
+            ),
+            expression.span,
+        )
+        .with_help(format!(
+            "bind the converted value first, as in 'let wide: {union} = {name}', and pass 'wide'; or take the parameter with 'own'"
+        ))
     }
 
     /// A13 M8: a write or an exclusive reborrow cannot pass through a shared reference to data
@@ -5866,6 +6014,34 @@ fn carriers(
             return Some(carriers);
         }
     }
+}
+
+/// The anonymous union that a widening (A25, `Checker::retag`) at `origin` makes, and the value
+/// that it widens, when the move at `origin` is the one of its generated binding: the payload of
+/// the widened value moves through a binding `$retag..` whose projection has the span of the
+/// widened expression.
+fn widened_at(body: &TypedExpr, origin: Span) -> Option<(Type, &TypedExpr)> {
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        if let E::Match { arms, value, .. } = &expression.kind
+            && arms.iter().any(|arm| {
+                arm.alternatives.iter().any(|alternative| {
+                    alternative.bindings.iter().any(|(binding, projection)| {
+                        binding.provenance == crate::syntax::Provenance::Generated
+                            && binding.name.starts_with("$retag")
+                            && projection.span == origin
+                    })
+                })
+            })
+        {
+            return Some((expression.ty.clone(), value));
+        }
+        let _ = expression.try_for_each_child(&mut |child| {
+            pending.push(child);
+            Ok(())
+        });
+    }
+    None
 }
 
 /// Whether the use at `used` reads a value that the move at `moved` took in the previous

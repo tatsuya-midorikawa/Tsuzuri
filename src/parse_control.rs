@@ -1633,11 +1633,8 @@ impl Parser<'_> {
         };
         self.uses_anonymous_unions = true;
         let end = binder.as_ref().map_or(ty.span, |binder| binder.span);
-        self.make_pattern(
-            PatternKind::TypeTest(Box::new(ty), binder),
-            start.through(end),
-            1,
-        )
+        let span = start.through(end);
+        self.make_pattern(PatternKind::TypeTest(Box::new(ty), binder, span), span, 1)
     }
 
     fn named_pattern(&mut self) -> Result<Pattern, Diagnostic> {
@@ -1707,6 +1704,8 @@ impl Parser<'_> {
         let mut first = self.pattern(0)?;
         if !self.eat(&TokenKind::Comma) {
             let end = self.expect(&TokenKind::RightParen, "')' after the pattern")?;
+            // A type test keeps its own extent in its kind, where the checker reports what is
+            // wrong with the test (A25, review rounds 1 and 3).
             first.span = start.through(end.span);
             self.pattern_type_arrow = outer_type_arrow;
             return Ok(first);

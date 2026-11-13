@@ -2053,6 +2053,74 @@ const suites = {
     const common = (n) => n >= 0n ? 3n * n + 1n : 2n * n;
     // The function member applied to 20, the string "wide" (times 1000), or the i64.
     const wide = (n) => n > 0n ? 20n * 2n + n : n === 0n ? length("wide") * 1000n : n;
+    // A25. widen: an even n is the i64 itself, an odd n the length of `odd {n}`.
+    const widen = (n) => n % 2n === 0n ? n : length(`odd ${n}`);
+    // `n={n}` (times 1000), the n numbers, and the last value of the loop: the n numbers when it does not run, the
+    // i64 i for an even i, `{i}` for an odd i.
+    const widenOwned = (n) => {
+      const last = n - 1n;
+      const slot = n === 0n ? 0n : last % 2n === 0n ? last : length(`${last}`);
+      return length(`n=${n}`) * 1000n + n + slot * 1000000n;
+    };
+    // counted: n + 3 numbers for an even n, else the i64 n. labelled: `label {n}` when 3 divides n, else n + 1 numbers.
+    const counted = (n) => n % 2n === 0n ? n + 3n : n;
+    const labelled = (n) => n % 3n === 0n ? length(`label ${n}`) : n + 1n;
+    const widenRead = (n) => counted(n) + labelled(n) * 100n + labelled(n + 1n) * 10000n;
+    // widen_read_branch: counted when n > 2, else the f64 1.5 (weigh gives 1); labelled for an even n, else the i64 7.
+    const widenReadBranch = (n) => (n > 2n ? counted(n) : 1n) + (n % 2n === 0n ? labelled(n) : 7n) * 100n;
+    // scale: three times an i64, four times an f64. narrow: the i64 n when 3 divides n, the f64 n / 2 when the
+    // remainder is 1 (4 (n / 2) = 2 n, exact), else `text {n}` (its length times 1000).
+    const narrow = (n) => n % 3n === 0n ? n * 3n : n % 3n === 1n ? 2n * n : length(`text ${n}`) * 1000n;
+    // heap i by i % 4: `n={i}`, i numbers, the i64 i, the f64 1.5 (scale gives 6). The Maybe holds heap (n + 2), or
+    // nothing for n = 5: the length of the string, ten times the count of the numbers, or scale plus weigh of the number
+    // (3 k + k for the i64 k, 6 + 1 for the f64).
+    const narrowOwned = (n) => {
+      let total = 0n;
+      for (let i = 0n; i < n; i++) total += [length(`n=${i}`), i * 10n, i, 1n][i % 4n];
+      const rest = [length(`n=${n}`), n * 10n, n * 3n, 6n][n % 4n];
+      const unread = (n + 1n) % 4n < 2n ? 7n : 9n;
+      const k = n + 2n;
+      const inner = n === 5n ? 0n : [length(`n=${k}`), k * 10n, k * 4n, 7n][k % 4n];
+      return total + rest * 1000000n + unread * 100000000n + inner * 10000000000n;
+    };
+    // part: ten times the length of an array, or the i64. The guard takes the pieces above 25.
+    const narrowViews = (n) => {
+      let total = 0n;
+      let numbers = 0n;
+      for (let i = 0n; i < n; i++) {
+        const kind = i % 4n;
+        const piece = kind === 1n ? i * 10n : i;
+        total += kind === 1n || kind === 2n ? (piece > 25n ? 5n : piece) : 2n;
+        numbers += kind === 2n ? i * 3n : kind === 3n ? 6n : 0n;
+      }
+      return total * 1000000n + numbers;
+    };
+    // narrow_copy: counted_or_half n is n + 2 numbers when 3 divides n (part gives ten times their count), the i64 n when
+    // the remainder is 1, else an f64 (1); callable n is the i64 n for an even n (scale gives 3 n), else a function that
+    // adds n (applied to 100).
+    const narrowCopy = (n) => {
+      const first = n % 3n === 0n ? (n + 2n) * 10n : n % 3n === 1n ? n : 1n;
+      return first + first * 1000n + (n % 2n === 0n ? 3n * n : 100n + n) * 1000000n;
+    };
+    // narrow_generic: labelled_pair n is the i64 n when 3 divides n (scale gives 3 n), n / 2 as an f64 when the remainder is
+    // 1 (scale gives 2 n), else a Some (generic_number gives 7, generic_again 0 * 1000 + 7); beside_label adds part of
+    // counted_or_half n (as in narrowCopy) to 1000 times the length of the label, or is that length for an f64.
+    const narrowGeneric = (n) => {
+      const number = n % 3n === 0n ? 3n * n : n % 3n === 1n ? 2n * n : 7n;
+      const again = n % 3n === 2n ? 7n : number * 1000n + number;
+      const label = length(`n=${n}`);
+      const beside = n % 3n === 0n ? label * 1000n + (n + 2n) * 10n : n % 3n === 1n ? label * 1000n + n : label;
+      return number + again * 10n + beside * 100000000n;
+    };
+    // widen_captured: wide 1 + wide 2 reads counted five times; typed 0 + typed 1 and narrowed 0 + narrowed 1 are twice
+    // the member plus 1 (heap as in narrowOwned); the continuation returns counted.
+    const widenCaptured = (n) => {
+      const heap = [length(`n=${n}`), n * 10n, n * 3n, 6n][n % 4n];
+      return 5n * counted(n) + (2n * labelled(n) + 1n) * 1000n + (2n * heap + 1n) * 1000000n + counted(n) * 1000000000n;
+    };
+    // widen_generic: maybe_number n is n + 1 numbers for an even n (ten times their count), else a Some (2); maybe_text n
+    // is n + 2 numbers when 3 divides n, a Some (2) when the remainder is 1, else None (3).
+    const widenGeneric = (n) => (n % 2n === 0n ? (n + 1n) * 10n : 2n) + (n % 3n === 0n ? (n + 2n) * 10n : n % 3n === 1n ? 2n : 3n) * 1000n;
     const at = (name, reference, inputs) => inputs.map((x) => [name, [x], reference(x)]);
     return {
       cases: [
@@ -2064,6 +2132,17 @@ const suites = {
         ...at("generic", generic, [3n, 4n, 0n, -3n, -4n]),
         ...at("common", common, [5n, 0n, -4n, 1000000n]),
         ...at("wide", wide, [5n, 0n, -7n]),
+        ...at("widen", widen, [4n, 7n, 0n, -3n, -8n]),
+        ...at("widen_owned", widenOwned, [0n, 1n, 4n, 7n, 20n]),
+        ...at("widen_read", widenRead, [0n, 1n, 2n, 3n, 5n, 8n, 12n]),
+        ...at("widen_read_branch", widenReadBranch, [0n, 1n, 2n, 3n, 4n, 5n, 6n, 9n, 12n]),
+        ...at("narrow", narrow, [6n, 7n, 8n, 0n, -3n, -4n, 1000000n]),
+        ...at("narrow_owned", narrowOwned, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 20n]),
+        ...at("narrow_views", narrowViews, [0n, 1n, 2n, 3n, 6n, 9n, 31n]),
+        ...at("narrow_copy", narrowCopy, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 10n]),
+        ...at("narrow_generic", narrowGeneric, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 10n, 1000n]),
+        ...at("widen_captured", widenCaptured, [0n, 1n, 2n, 3n, 4n, 5n, 9n, 12n]),
+        ...at("widen_generic", widenGeneric, [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 1000n]),
       ],
       inspect(ir) {
         // One type for each instantiation, named by its members in the canonical order whatever order the source wrote.
@@ -2075,6 +2154,27 @@ const suites = {
         assert.match(ir, /^%"tz\.rec\.node\.\$anonymous\.Union\$2\[i64,Main\.Tree\]" = type /m);
         // 32 members, the function type last.
         assert.match(ir, /^%"tz\.union\.\$anonymous\.Union\$32\[i8u,i8,[^\n]*,fn\[[^\n]*\]\]" = type /m);
+        // A25: a widening and a narrowing of a union that is not recursive switch on the tag and move or copy the
+        // payload; they allocate nothing (the strings are made by number_or_text and classify, the arrays by counted and
+        // labelled: an array moves into the widened value that a read parameter borrows, also from the branch of an
+        // `if`).
+        const body = (name) => ir.split("\n\n").find((block) => block.startsWith("define ") && block.split("\n")[0].includes(`@tz.fn.Main.${name}(`));
+        for (const name of ["widen", "narrow", "widen_read", "widen_read_branch"]) {
+          assert.doesNotMatch(body(name), /@tz\.alloc/, name);
+          assert.match(body(name), /switch i32 /, name);
+        }
+        // The narrowing of a Copy union with an array copies the array once, into the narrowed value: its hidden binding
+        // views the matched value, a local that is read again and a read parameter (Copilot review round 1).
+        for (const name of ["narrow_copy", "kept_part"]) {
+          assert.equal((body(name).match(/@tz\.alloc/g) ?? []).length, 1, name);
+        }
+        // Beside a binding that moves another part of the matched value, too (Copilot review round 1, verification).
+        assert.equal((body("beside_label").match(/@tz\.alloc/g) ?? []).length, 1, "beside_label");
+        // A widening beside a member with a type variable moves the array in the instances that make it an i64 and a
+        // string (Copilot review round 2).
+        const instances = ir.split("\n\n").filter((block) => block.startsWith("define ") && /@tz\.fn\.Main\.widen_open\.\$mono\.\d+\(/.test(block.split("\n")[0]));
+        assert.equal(instances.length, 2, "widen_open");
+        for (const instance of instances) assert.doesNotMatch(instance, /@tz\.alloc/, "widen_open");
       },
     };
   })(),

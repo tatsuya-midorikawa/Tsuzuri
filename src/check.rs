@@ -5010,10 +5010,41 @@ impl TypedMatchArm {
     /// Whether the body sees `binding` as a view rather than an owned value.
     /// Copy values are independent owned values. Emission copies them unless
     /// the scrutinee is owned and dead afterwards and the projections do not overlap.
+    /// The hidden binding of a narrowing (`Local::hides_narrowed`) views a Copy value too.
     pub fn views(&self, binding: &Local, types: &TypeContext<'_>) -> bool {
         self.borrowed.contains(&binding.id)
-            && !binding.ty.is_copy(types)
+            && (!binding.ty.is_copy(types) || binding.hides_narrowed())
             && !binding.ty.carries_loans(types)
+    }
+}
+
+/// The start of the name of the hidden binding that holds the matched value of a narrowing
+/// `:? W as x` (A25, `Checker::narrowing_pattern`). No source spells a name with `$`.
+pub(crate) const NARROWED_PREFIX: &str = "$narrow.";
+
+/// The start of the name of a binding that a retagging (A25, `Checker::retag`: a widening or the
+/// value of a narrowing) gives the payload of a member.
+pub(crate) const RETAGGED_PREFIX: &str = "$retag";
+
+impl Local {
+    /// Whether this is the binding of a member's payload in a retagging (A25, `Checker::retag`).
+    /// The bindings of members that may be arrays share one span there, which is the key of
+    /// `LastUses` for a binding's move.
+    pub fn retags_payload(&self) -> bool {
+        self.provenance == Provenance::Generated && self.name.starts_with(RETAGGED_PREFIX)
+    }
+
+    /// Whether this is the hidden binding of the matched value of a narrowing `:? W as x` (A25).
+    /// An arm counts it among its `borrowed` bindings only when every member of `W` is Copy
+    /// (`Checker::match_value`); the retagging that makes `x` then reads it once, before the arm's
+    /// body (an arm with a guard builds `x` in a step of the pattern instead), and copies a payload
+    /// out of it. So the arm views it whatever its type, as long as the type holds no loans
+    /// (`TypedMatchArm::views`): a view of a Copy union saves the copy of the whole matched value
+    /// that an owned binding would make (Copilot review round 1). Ownership lets the matched
+    /// storage be moved or written over while a view of a Copy value is live, which the arm may
+    /// do once the retagging has read it.
+    pub fn hides_narrowed(&self) -> bool {
+        self.provenance == Provenance::Generated && self.name.starts_with(NARROWED_PREFIX)
     }
 }
 
@@ -11635,6 +11666,10 @@ struct Checker<'a> {
     use_bindings: Vec<Span>,
     /// The type of the value that `xs |> f a` passes to the call `f a`.
     piped: Option<Type>,
+    /// A25: the result positions of the operands that take their sibling's type in the binary
+    /// operators being checked, by span and depth (`Checker::operand_results`).
+    /// `injected_expression` does not widen an expression found here to an anonymous union.
+    operand: Vec<(Span, usize)>,
     /// Spans of unsuffixed integer literals whose type waits for inference.
     integer_literals: Vec<Span>,
     /// Builtin result types that wait for a concrete integer argument type.
@@ -11702,6 +11737,7 @@ impl<'a> Checker<'a> {
             format_specs: Vec::new(),
             use_bindings: Vec::new(),
             piped: None,
+            operand: Vec::new(),
             integer_literals: Vec::new(),
             families: Vec::new(),
             coverage: Vec::new(),
@@ -12691,14 +12727,20 @@ impl<'a> Checker<'a> {
                 )
             });
             if Self::untyped_number(left) && !Self::untyped_number(right) {
+                // The number takes the right operand's type: it is injected, never widened.
                 let right = self.expression(right, hint)?;
                 let expected = self.sibling_hint(&right.ty, hint);
                 (self.expression(left, expected)?, right)
             } else {
                 let left = self.expression(left, hint)?;
                 let expected = self.sibling_hint(&left.ty, hint);
-                let right = self.expression(right, expected)?;
-                (left, right)
+                // A25: the operand that takes its sibling's type is no place where a subset union
+                // is widened (it would move), nor is a branch, an arm or a block result that is
+                // its value.
+                let marked = self.operand_results(right);
+                let right = self.expression(right, expected);
+                self.operand.truncate(marked);
+                (left, right?)
             }
         };
         let result = if *operator == BinaryOp::Pipe {

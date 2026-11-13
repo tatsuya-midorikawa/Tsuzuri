@@ -1,4 +1,5 @@
-//! Anonymous unions `(A | B)` and type test patterns `:? T` (A24).
+//! Anonymous unions `(A | B)` and type test patterns `:? T` (A24), and the conversions between
+//! anonymous unions (A25).
 
 use tsuzuri::check::{CheckedModule, Type};
 use tsuzuri::diagnostic::{Diagnostic, Edit, apply_edits};
@@ -6,8 +7,8 @@ use tsuzuri::driver::{Target, TestOptions, run_tests};
 use tsuzuri::parser::{parse, parse_with_source};
 use tsuzuri::syntax::{Edition, Program, TypeExpr, TypeExprKind};
 use tsuzuri::{
-    analyze, analyze_all, analyze_modules, analyze_modules_with_semantics, analyze_with_edition,
-    llvm,
+    analyze, analyze_all, analyze_modules, analyze_modules_all, analyze_modules_with_semantics,
+    analyze_with_edition, llvm,
 };
 
 /// The type as written, with every anonymous union and its members spelled out, so that a test
@@ -124,7 +125,8 @@ fn tree(source: &str) -> String {
 
 /// Asserts that `source` has a type test whose type's kind starts with `kind` and whose binder is
 /// `binder`. In the debug text, the binder follows the end of the tested type: the first
-/// `source: None } }, ` that a binder follows (the members of a tuple are followed by another type).
+/// `source: None } }, ` that a binder follows (the members of a tuple are followed by another type),
+/// and the test's own extent follows the binder.
 fn assert_type_test(source: &str, kind: &str, binder: Option<&str>) {
     assert_type_test_tree(source, &tree(source), kind, binder);
 }
@@ -143,7 +145,7 @@ fn assert_type_test_tree(source: &str, tree: &str, kind: &str, binder: Option<&s
     let found = tree.match_indices(&start).any(|(at, _)| {
         let rest = &tree[at..];
         let named = rest.find("source: None } }, Some(Ident { text: \"");
-        let none = rest.find("source: None } }, None)");
+        let none = rest.find("source: None } }, None, Span {");
         match (binder, named, none) {
             (Some(name), Some(named), none) if none.is_none_or(|none| named < none) => rest
                 [named..]
@@ -455,10 +457,13 @@ fn members_commute_and_flatten() {
         "E1003",
         "type_mismatch",
     );
+    // A union with more members is another type too. A25 widens a value of the smaller one to
+    // it (`widens_subset_unions`); the other way stays an error.
+    accepts("def f :: (i64 | string) -> (i64 | string | bool) = \\v -> v\n");
     rejects(
-        "def f :: (i64 | string) -> (i64 | string | bool) = \\v -> v\n",
+        "def f :: (i64 | string | bool) -> (i64 | string) = \\v -> v\n",
         "E1003",
-        "type_mismatch",
+        "anonymous_union_not_subset",
     );
 }
 
@@ -1566,16 +1571,9 @@ fn type_test_rejections() {
         error.help.as_deref(),
         Some("match the cases of a named union by name")
     );
-    // The tested type is an anonymous union (A25 narrows to one).
-    let error = rejects(
-        "let v: (i64 | string | bool) = 1\nmatch v with\n| :? (string | i64) -> 0\n| _ -> 1\n",
-        "E1041",
-        "type_test_union",
-    );
-    assert_eq!(
-        error.message,
-        "':?' names one member of (i64 | bool | string); write one ':?' arm for each member"
-    );
+    // The tested type is an anonymous union: A25 narrows to it (A24 rejected it as
+    // `type_test_union`).
+    accepts("let v: (i64 | string | bool) = 1\nmatch v with\n| :? (string | i64) -> 0\n| _ -> 1\n");
     // The tested type is no member.
     let error = rejects(
         "let v: (i64 | string) = 1\nmatch v with\n| :? bool -> 0\n| _ -> 1\n",
@@ -3324,6 +3322,2671 @@ fn type_tests_do_not_adapt_function_types() {
         let start = source.find(":? ").unwrap() + 3;
         assert_eq!(error.span.start, start, "{source}");
     }
+}
+
+// A25, step 2: a value of an anonymous union is widened where a union of more members is expected.
+
+/// `weigh`: a number for every member of `(i32 | i64 | f64 | bool | string)`, to read a widened
+/// value back. The members of a smaller union take other case numbers in it, so a value that
+/// kept its old number would be read as another member.
+const WEIGH: &str = "def weigh :: own (string | bool | f64 | i64 | i32) -> i64 = \\v ->\n    match v with\n    | :? i32 -> 10000\n    | :? i64 as n -> n\n    | :? f64 -> 20000\n    | :? bool as b -> if b then 30001 else 30000\n    | :? string as s -> 40000 + s.length\n";
+
+#[test]
+fn widens_subset_unions() {
+    // Bindings, results and arguments. Expected values by hand: `weigh` of an i64 is the
+    // number, of a string 40000 + its length, of `true` 30001, of an f64 20000.
+    let program = format!(
+        "{WEIGH}def narrow :: own i64 -> (i64 | string) = \\n -> if n > 0 then n else \"neg\"\n\
+         def middle :: own (i64 | string) -> (bool | i64 | string) = \\v -> v\n\
+         def wide :: own (string | bool) -> (i32 | i64 | f64 | bool | string) = \\v -> v\n\n\
+         test \"bindings\" =\n    let a: (i64 | string) = 1\n    let b: (f64 | i64 | string) = a\n    let c: (string | bool | f64 | i64 | i32) = b\n    assert (weigh c == 1)\n    let s: (i64 | string) = \"abc\"\n    let t: (i32 | i64 | f64 | bool | string) = s\n    assert (weigh t == 40003)\n\n\
+         test \"results and arguments\" =\n    assert (weigh (narrow 5) == 5)\n    assert (weigh (narrow (-1)) == 40003)\n    assert (weigh (middle (narrow 7)) == 7)\n    assert (weigh (middle \"four\") == 40004)\n    let flag: (string | bool) = true\n    assert (weigh (wide flag) == 30001)\n    let word: (string | bool) = \"ab\"\n    assert (weigh (wide word) == 40002)\n"
+    );
+    passes(&program, Edition::E2026);
+    passes(&program, Edition::E2027);
+    // Fields, elements, the arms of `if` and `match`, a block's result and an assignment.
+    // `sum` reads the elements in place: 12 + 40004 + 30001 + 3 = 70020.
+    passes(
+        &format!(
+            "{WEIGH}record Cell {{ value: (bool | i64 | string), id: i64 }}\n\n\
+             def pick :: own i64 -> own (i64 | string) -> own (bool | string) -> (bool | i64 | f64 | string) = \\k a b ->\n    if k == 0 then a\n    elif k == 1 then b\n    else\n        match k with\n        | 2 -> 2.5\n        | _ ->\n            let kept = a\n            kept\n\n\
+             def sum :: own [(bool | i64 | string)] -> i64 = \\items ->\n    let mut total = 0i64\n    for item in items do\n        total = total + (match item with\n            | :? bool as b -> if b then 30001 else 30000\n            | :? i64 as n -> n\n            | :? string as s -> 40000 + s.length)\n    total\n\n\
+             test \"fields and elements\" =\n    let a: (i64 | string) = 12\n    let cell = Cell {{ value: a, id: 1 }}\n    let b: (i64 | string) = \"wxyz\"\n    let c: (bool | i64) = true\n    assert (sum [cell.value, b, c, 3] == 70020)\n\n\
+             test \"arms and blocks\" =\n    assert (weigh (pick 0 \"abc\" true) == 40003)\n    assert (weigh (pick 1 4 true) == 30001)\n    assert (weigh (pick 1 4 \"hello\") == 40005)\n    assert (weigh (pick 2 4 false) == 20000)\n    assert (weigh (pick 3 9 false) == 9)\n\n\
+             test \"assignment\" =\n    let mut slot: (bool | i64 | string) = false\n    let a: (i64 | string) = 8\n    slot = a\n    let b: (bool | string) = \"xy\"\n    let first = weigh slot\n    slot = b\n    assert (first + weigh slot == 40010)\n"
+        ),
+        Edition::E2027,
+    );
+    // The edition 2026 program of A24's `members_commute_and_flatten`, now a widening.
+    passes(
+        "def f :: (i64 | string) -> (i64 | string | bool) = \\v -> v\n\ntest \"owned parameter\" =\n    assert (match f 41 with | :? i64 as n -> n == 41 | _ -> false)\n    assert (match f \"abc\" with | :? string as s -> s.length == 3 | _ -> false)\n",
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn rejects_non_subset_unions() {
+    // A member of the value's union that the expected union does not have.
+    let error = rejects(
+        "let a: (i64 | bool) = true\nlet b: (f64 | i64 | string) = a\n0\n",
+        "E1003",
+        "anonymous_union_not_subset",
+    );
+    assert_eq!(
+        error.message,
+        "expected (i64 | f64 | string), found (i64 | bool); bool is not a member of (i64 | f64 | string)"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "the members are i64, f64, string; match the value with ':?' and pass on the members that (i64 | f64 | string) has"
+        )
+    );
+    assert_eq!(
+        error.detail.expected.as_deref(),
+        Some("(i64 | f64 | string)")
+    );
+    assert_eq!(error.detail.found.as_deref(), Some("(i64 | bool)"));
+    // More members than the expected union has: no implicit narrowing.
+    let error = rejects(
+        "let a: (i64 | string | bool) = 1\nlet b: (i64 | string) = a\n0\n",
+        "E1003",
+        "anonymous_union_not_subset",
+    );
+    assert_eq!(
+        error.message,
+        "expected (i64 | string), found (i64 | bool | string); bool is not a member of (i64 | string)"
+    );
+    // As many members: the two types are unified as before, with the plain mismatch.
+    let error = rejects(
+        "let a: (i64 | bool) = true\nlet b: (i64 | string) = a\n0\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected (i64 | string), found (i64 | bool)");
+    // The same for arguments, piped values and results.
+    let take = "def take :: own (f64 | i64 | string) -> i64 = \\v -> 0\n";
+    for body in ["take a", "a |> take"] {
+        let error = rejects(
+            &format!("{take}let a: (i64 | bool) = true\n{body}\n"),
+            "E1003",
+            "anonymous_union_not_subset",
+        );
+        assert!(
+            error
+                .message
+                .ends_with("bool is not a member of (i64 | f64 | string)"),
+            "{body}: {}",
+            error.message
+        );
+    }
+    rejects(
+        "def f :: own (i64 | unit) -> (i64 | string | bool) = \\v -> v\n",
+        "E1003",
+        "anonymous_union_not_subset",
+    );
+    // Nothing is widened inside another type, or behind a reference.
+    for source in [
+        "def f :: own [(i64 | string)] -> [(f64 | i64 | string)] = \\xs -> xs\n",
+        "def f :: own Maybe<(i64 | string)> -> Maybe<(f64 | i64 | string)> = \\m -> m\n",
+        "def f :: own (i64 -> (i64 | string)) -> (i64 -> (f64 | i64 | string)) = \\g -> g\n",
+        "let a: (i64 | string) = 1\nlet r: ref (f64 | i64 | string) = ref a\n0\n",
+    ] {
+        rejects(source, "E1003", "type_mismatch");
+    }
+    // A member that may be two members of the expected union picks neither.
+    let error = rejects(
+        "def absent :: unit -> (Maybe<'a> | i64) = \\_ -> None\nlet u: (Maybe<i64> | Maybe<string> | i64 | bool) = absent ()\n0\n",
+        "E1041",
+        "anonymous_union_ambiguous_member",
+    );
+    assert!(
+        error.message.ends_with(
+            "could be Maybe<i64> or Maybe<string> in (i64 | bool | Maybe<i64> | Maybe<string>)"
+        ),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("annotate the value, for example with a typed let binding")
+    );
+}
+
+/// `size`: `(f64 | i64 | string)` read through a parameter that is read in edition 2027.
+const SIZE: &str = "def size :: (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? f64 -> 20000\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n";
+
+#[test]
+fn widens_pipes_and_read_parameters() {
+    // A read parameter (2027) borrows the widened value, a temporary, from an argument as from
+    // a pipe; an owned parameter takes it. 4 + 5 + 3 + 3 + 6 = 21.
+    let program = format!(
+        "{SIZE}def show :: own (f64 | i64 | string) -> i64 = \\v -> size v\n\
+         def make :: own i64 -> (i64 | string) = \\n -> if n > 0 then n else \"neg\"\n\n\
+         test \"pipes\" =\n    let a: (i64 | string) = \"abcd\"\n    let b: (i64 | string) = 5\n    let c: (i64 | string) = \"xyz\"\n    let total = (a |> show) + (b |> size) + size c + (make 3 |> size) + (make 6 |> show)\n    assert (total == 21)\n"
+    );
+    passes(&program, Edition::E2027);
+    passes(&program, Edition::E2026);
+    // A parameter that edition 2027 reads by default is a reference, which is not widened: the
+    // value would move out of the borrow. The message names `own`.
+    for source in [
+        format!("{SIZE}def f :: (i64 | string) -> (f64 | i64 | string) = \\v -> v\n"),
+        format!("{SIZE}def f :: (i64 | string) -> i64 = \\v -> size v\n"),
+        format!("{SIZE}def f :: (i64 | string) -> i64 = \\v -> v |> size\n"),
+    ] {
+        let error = rejects_in(&source, Edition::E2027, "E1003", "type_mismatch");
+        assert_eq!(
+            error.message,
+            "expected (i64 | f64 | string), found ref (i64 | string); parameter 'v' is read-only by default (edition 2027); write 'own (i64 | string)' in the signature to take ownership",
+            "{source}"
+        );
+        assert_eq!(
+            error.detail.expected.as_deref(),
+            Some("(i64 | f64 | string)")
+        );
+        assert_eq!(error.detail.found.as_deref(), Some("ref (i64 | string)"));
+        assert_eq!(error.help, None, "{source}");
+        // The same body takes the value in edition 2026, and with `own` in 2027.
+        accepts_in(&source, Edition::E2026);
+        accepts_in(
+            &source.replace("def f :: (i64 | string)", "def f :: own (i64 | string)"),
+            Edition::E2027,
+        );
+    }
+    // An explicit reference is not widened either; it has no parameter to name.
+    let error = rejects(
+        "let a: (i64 | string) = 1\nlet r = ref a\nlet b: (f64 | i64 | string) = r\n0\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(
+        error.message,
+        "expected (i64 | f64 | string), found ref (i64 | string)"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("an anonymous union is widened from an owned value")
+    );
+    // A union of Copy members that need no drop is a value in edition 2027 too, and widens.
+    passes(
+        "def wide :: (i64 | bool) -> (i64 | f64 | bool) = \\v -> v\ndef read :: (i64 | f64 | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? f64 -> 20000\n    | :? bool as b -> if b then 30001 else 30000\n\n\
+         def forward :: (i64 | bool) -> i64 = \\v -> read v + (v |> read)\n\n\
+         test \"copy members\" =\n    assert (read (wide 7) == 7)\n    assert (read (wide false) == 30000)\n    assert (forward 4 == 8)\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn widening_moves_the_value() {
+    let take = "def take :: own (f64 | i64 | string) -> i64 = \\v -> 0\n";
+    // The payload moves into the wider union, so a union with a string member is used up.
+    let error = rejects(
+        &format!(
+            "{take}let a: (i64 | string) = \"x\"\nlet b: (f64 | i64 | string) = a\nlet c: (f64 | i64 | string) = a\n0\n"
+        ),
+        "E1012",
+        "use_after_move",
+    );
+    assert!(error.message.contains("'a'"), "{}", error.message);
+    rejects(
+        &format!("{take}let a: (i64 | string) = \"x\"\nlet n = take a + (a |> take)\nn\n"),
+        "E1012",
+        "use_after_move",
+    );
+    // The last use needs nothing; a union of Copy members is copied and stays usable.
+    // 5 + 5 + 1 + 20000 = 20011 by hand.
+    passes(
+        "def read :: own (i64 | f64 | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? f64 -> 20000\n    | :? bool as b -> if b then 1 else 0\n\n\
+         test \"copies\" =\n    let a: (i64 | bool) = 5\n    let b: (i64 | f64 | bool) = a\n    let c: (bool | f64) = 2.5\n    assert (read b + read a + (match a with | :? i64 -> 1 | :? bool -> 0) + read c == 20011)\n",
+        Edition::E2027,
+    );
+    // The value is evaluated once: `next` counts its calls. 1 + 1 = 2 calls, values 1 and 2.
+    passes(
+        "def next :: ref mut i64 -> (i64 | string) = \\count ->\n    deref count = deref count + 1\n    deref count\n\n\
+         def read :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? f64 -> 20000\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n\n\
+         test \"once\" =\n    let mut count = 0i64\n    let first: (f64 | i64 | string) = next (ref mut count)\n    let second = read (next (ref mut count))\n    assert (read first == 1)\n    assert (second == 2)\n    assert (count == 2)\n",
+        Edition::E2027,
+    );
+    // A payload behind a borrow cannot move out of it: an element of a borrowed array, and the
+    // target of a reference. The errors are those of any move out of such a place.
+    rejects_in(
+        &format!(
+            "{take}def all :: [(i64 | string)] -> i64 = \\items ->\n    let mut sum = 0i64\n    for item in items do\n        sum = sum + take item\n    sum\n"
+        ),
+        Edition::E2027,
+        "E1012",
+        "move_out_of_collection_element",
+    );
+    rejects_in(
+        &format!("{take}def through :: ref (i64 | string) -> i64 = \\r -> take (deref r)\n"),
+        Edition::E2027,
+        "E1012",
+        "move_out_of_reference_binding",
+    );
+    // Copy members are copied out of the borrow. 3 + 1 + 4 = 8.
+    passes(
+        "def read :: own (i64 | f64 | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? f64 -> 20000\n    | :? bool as b -> if b then 1 else 0\n\n\
+         def all :: [(i64 | bool)] -> i64 = \\items ->\n    let mut sum = 0i64\n    for item in items do\n        sum = sum + read item\n    sum\n\n\
+         def through :: ref (i64 | bool) -> i64 = \\r -> read (deref r)\n\n\
+         test \"borrowed copies\" =\n    assert (all [3, true, 4] == 8)\n    let v: (i64 | bool) = 6\n    assert (through (ref v) + through (ref v) == 12)\n",
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn widening_maps_generic_members() {
+    // `(Maybe<'a> | i64)` is `(i64 | Maybe<'a>)`, and `(Maybe<'a> | i64 | bool)` is
+    // `(i64 | bool | Maybe<'a>)`: the Maybe member moves from case 1 to case 2 in every instance.
+    // Expected values by hand: 100 + the payload (or the length) for `Some`, 200 for `None`.
+    let program = "def keep :: own (Maybe<'a> | i64) -> (Maybe<'a> | i64 | bool) = \\v -> v\n\
+         def absent :: unit -> (Maybe<'a> | i64) = \\_ -> None\n\
+         def number :: own (Maybe<i64> | i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? Maybe<i64> as m -> (match m with | Some x -> 100 + x | None -> 200)\n    | :? i64 as n -> n\n    | :? bool -> 300\n\n\
+         def text :: own (Maybe<string> | i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? Maybe<string> as m -> (match m with | Some s -> 100 + s.length | None -> 200)\n    | :? i64 as n -> n\n    | :? bool -> 300\n\n\
+         test \"instances\" =\n    let five: (Maybe<i64> | i64) = Some 5\n    assert (number (keep five) == 105)\n    let seven: (Maybe<i64> | i64) = 7\n    assert (number (keep seven) == 7)\n    let word: (Maybe<string> | i64) = Some \"abc\"\n    assert (text (keep word) == 103)\n\n\
+         test \"open member\" =\n    let none: (Maybe<string> | i64 | bool) = absent ()\n    assert (text none == 200)\n    let other: (bool | i64 | Maybe<i64>) = absent ()\n    assert (number other == 200)\n";
+    passes(program, Edition::E2026);
+    passes(program, Edition::E2027);
+    let error = rejects(
+        "def keep :: own (Maybe<'a> | i64) -> (Maybe<'b> | i64 | bool) = \\v -> v\n",
+        "E1003",
+        "anonymous_union_not_subset",
+    );
+    assert_eq!(
+        error.message,
+        "expected (i64 | bool | Maybe<'b>), found (i64 | Maybe<'a>); Maybe<'a> is not a member of (i64 | bool | Maybe<'b>)"
+    );
+}
+
+/// A24's Copilot review 4 at the A25 merge: a member comparison keeps an inference variable that
+/// occurs twice as one type (`Ties`), and widening (`widened`) and narrowing (`type_test_member`)
+/// find members with that comparison (`agrees`). `mkp n` has the type `(i64 | (Maybe<?a> *
+/// Maybe<?a>))`: its tuple member can be `(Maybe<i64> * Maybe<i64>)` (?a is `i64`), but
+/// `(Maybe<i64> * Maybe<string>)` would need ?a to be both `i64` and `string`, so the widening
+/// takes the first and then unifies ?a with `i64`. Before the merge, each occurrence was compared
+/// by itself and the widening was `E1041` (the member could be either tuple). Members without
+/// inference variables compare as before.
+#[test]
+fn widening_and_narrowing_tie_repeated_inference_variables() {
+    let defs = "def mkp :: own i64 -> ((Maybe<'a> * Maybe<'a>) | i64) = \\n -> if n > 0 then (None, None) else n\n\n\
+                def mk3 :: own i64 -> ((Maybe<'a> * Maybe<'a>) | i64 | bool) = \\n -> if n > 0 then (None, None) else if n == 0 then true else n\n\n\
+                def which4 :: own ((Maybe<i64> * Maybe<i64>) | (Maybe<i64> * Maybe<string>) | i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? (Maybe<i64> * Maybe<i64>) as p -> (match p with | (None, None) -> 1 | _ -> 4)\n    | :? (Maybe<i64> * Maybe<string>) -> 2\n    | :? bool -> 3\n    | :? i64 as k -> k + 10\n\n\
+                def narrowed :: own i64 -> i64 = \\n ->\n    match mk3 n with\n    | :? ((Maybe<i64> * Maybe<i64>) | i64) as x -> which4 x\n    | :? bool -> 7\n\n";
+    // By hand: a positive `n` gives the tuple `(None, None)`, which widens into the member
+    // `(Maybe<i64> * Maybe<i64>)` of `which4` (from case 1 of `mkp` to case 2 of `which4`,
+    // counting from 0 in the canonical order `(i64 | bool | tuples)`), so 1; `mkp
+    // (-5)` is the i64 -5, so -5 + 10 = 5. Once the widening has unified ?a with `i64`, `p` is
+    // `(i64 | (Maybe<i64> * Maybe<i64>))`, its tuple member reads 20. `mk3 1` narrows into the
+    // member `(Maybe<i64> * Maybe<i64>)` of `W` and widens into `which4` (1), `mk3 0` is `true`
+    // (7), and `mk3 (-4)` narrows into the i64 member and widens: -4 + 10 = 6.
+    let program = format!(
+        "{defs}test \"widening a value whose member repeats a variable\" =\n    \
+         assert (which4 (mkp 1) == 1)\n    \
+         assert (which4 (mkp (-5)) == 5)\n    \
+         assert ((mkp 2 |> which4) == 1)\n    \
+         let v: ((Maybe<i64> * Maybe<string>) | bool | (Maybe<i64> * Maybe<i64>) | i64) = mkp 3\n    \
+         assert (which4 v == 1)\n    \
+         let p = mkp 4\n    \
+         assert (which4 p == 1)\n    \
+         let q: (i64 | (Maybe<i64> * Maybe<i64>)) = p\n    \
+         assert ((match q with | :? i64 as k -> k | :? (Maybe<i64> * Maybe<i64>) -> 20) == 20)\n\n\
+         test \"narrowing a value whose member repeats a variable\" =\n    \
+         assert (narrowed 1 == 1)\n    \
+         assert (narrowed 0 == 7)\n    \
+         assert (narrowed (-4) == 6)\n"
+    );
+    passes(&program, Edition::E2026);
+    passes(&program, Edition::E2027);
+    // Both tuples fit when ?a is one type in both places: still ambiguous.
+    let error = rejects(
+        &format!(
+            "{defs}let v: ((Maybe<i64> * Maybe<i64>) | (Maybe<string> * Maybe<string>) | i64) = mkp 1\n0\n"
+        ),
+        "E1041",
+        "anonymous_union_ambiguous_member",
+    );
+    assert!(
+        error.message.ends_with(
+            "could be (Maybe<i64> * Maybe<i64>) or (Maybe<string> * Maybe<string>) in (i64 | (Maybe<i64> * Maybe<i64>) | (Maybe<string> * Maybe<string>))"
+        ),
+        "{}",
+        error.message
+    );
+    // Neither tuple has one type in both places: the member is in no member of the wider union.
+    let error = rejects(
+        &format!(
+            "{defs}let v: ((Maybe<string> * Maybe<i64>) | (Maybe<i64> * Maybe<string>) | i64) = mkp 1\n0\n"
+        ),
+        "E1003",
+        "anonymous_union_not_subset",
+    );
+    assert_eq!(
+        error.message,
+        "expected (i64 | (Maybe<i64> * Maybe<string>) | (Maybe<string> * Maybe<i64>)), found (i64 | (Maybe<an undetermined type> * Maybe<an undetermined type>)); (Maybe<an undetermined type> * Maybe<an undetermined type>) is not a member of (i64 | (Maybe<i64> * Maybe<string>) | (Maybe<string> * Maybe<i64>))"
+    );
+    // The widening unified ?a with `i64`, so the value is no longer a union of `Maybe<string>`.
+    rejects(
+        &format!(
+            "{defs}let p = mkp 1\nlet k = which4 p\nlet q: (i64 | (Maybe<string> * Maybe<string>)) = p\nk\n"
+        ),
+        "E1003",
+        "type_mismatch",
+    );
+    // A narrowing compares the same way: `(Maybe<i64> * Maybe<string>)` is not `(Maybe<?a> *
+    // Maybe<?a>)`, so the test names no member (before the merge, `E1003 type_mismatch` when the
+    // member was unified with it).
+    let error = rejects(
+        &format!(
+            "{defs}let t = match mk3 1 with\n    | :? ((Maybe<i64> * Maybe<string>) | i64) as x -> which4 x\n    | _ -> 0\nt\n"
+        ),
+        "E1041",
+        "type_test_not_member",
+    );
+    assert_eq!(
+        error.message,
+        "(Maybe<i64> * Maybe<string>) is not a member of (i64 | bool | (Maybe<an undetermined type> * Maybe<an undetermined type>))"
+    );
+}
+
+#[test]
+fn widening_a_generic_read_parameter_needs_copy() {
+    // Edition 2027 reads a generic parameter, and its body takes the value out of the view only
+    // when the instance is Copy, as `\x v -> v` does without a union (review round 1): the body
+    // widens, an instance with an i64 runs, and an instance with a string is E1005 at the call.
+    // `own` takes the value. By hand: the payload 2, the length 2 of "bc".
+    let keep = "def keep :: 'a -> (Maybe<'a> | i64) -> (Maybe<'a> | i64 | bool) = \\_x v -> v\n\n";
+    let number = "def number :: own (Maybe<i64> | i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? Maybe<i64> as m -> (match m with | Some x -> x | None -> 0)\n    | _ -> -1\n\n";
+    let text = "def text :: own (Maybe<string> | i64 | bool) -> i64 = \\v ->\n    match v with\n    | :? Maybe<string> as m -> (match m with | Some s -> s.length | None -> 0)\n    | _ -> -1\n\n";
+    passes(
+        &format!("{keep}{number}test \"copy\" =\n    assert (number (keep 1 (Some 2)) == 2)\n"),
+        Edition::E2027,
+    );
+    let source =
+        format!("{keep}{text}def f :: i64 -> i64 = \\_n -> text (keep \"a\" (Some \"bc\"))\n");
+    let error = rejects_in(&source, Edition::E2027, "E1005", "no_instance");
+    assert_eq!(
+        error.message,
+        "no instance for Copy<string>; define an instance or use a supported type"
+    );
+    let at = source.find("keep \"a\"").unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + "keep".len()));
+    passes(
+        &format!(
+            "{}{text}test \"own\" =\n    assert (text (keep \"a\" (Some \"bc\")) == 2)\n",
+            keep.replace("-> (Maybe<'a> | i64) ->", "-> own (Maybe<'a> | i64) ->")
+        ),
+        Edition::E2027,
+    );
+}
+
+/// The lines of the definition of the function `name` of module `Main` in `ir`.
+fn function_body<'ir>(ir: &'ir str, name: &str) -> &'ir str {
+    let start = ir
+        .match_indices("\ndefine ")
+        .map(|(at, _)| at + 1)
+        .find(|at| {
+            let line = ir[*at..].lines().next().unwrap();
+            line.contains(&format!("@tz.fn.Main.{name}("))
+                || line.contains(&format!("@\"tz.fn.Main.{name}\"("))
+        })
+        .unwrap_or_else(|| panic!("no definition of {name} in\n{ir}"));
+    let end = ir[start..].find("\n}\n").expect("the definition ends");
+    &ir[start..start + end]
+}
+
+#[test]
+fn widening_does_not_copy_owned_array_members() {
+    // An array member of an owned value moves into the wider union: no allocation and no
+    // implicit copy (`@no_copy` holds), and the arm is chosen by a switch on the tag.
+    let total = "def total :: own (i64 | [i64] | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? [i64] as xs -> xs.length\n    | :? string as s -> s.length\n\n";
+    let ir = accepts(&format!(
+        "{total}@no_copy\ndef argument :: own (i64 | [i64]) -> i64 = \\v -> total v\n\n\
+         @no_copy\ndef bound :: own ([i64] | string) -> i64 = \\v ->\n    let w: (i64 | [i64] | string) = v\n    total w\n\n\
+         export def run :: i64 -> i64 = \\n ->\n    let a: (i64 | [i64]) = [n, n]\n    let b: ([i64] | string) = [n]\n    argument a + bound b\n"
+    ));
+    for name in ["argument", "bound"] {
+        let body = function_body(&ir, name);
+        assert!(!body.contains("@tz.alloc"), "{name}:\n{body}");
+        assert!(body.contains("switch i32 "), "{name}:\n{body}");
+    }
+    // A value that is used again is copied, as `let w = v` copies an array; the copy is the
+    // widened value's (the position that `@no_copy` reports).
+    let source = format!(
+        "{total}@no_copy\ndef twice :: own (i64 | [i64]) -> i64 = \\v ->\n    let w: (i64 | [i64] | string) = v\n    total w + (match v with | :? i64 as n -> n | :? [i64] as xs -> xs.length)\n"
+    );
+    let error = rejects(&source, "E1031", "effect_copy_in_no_copy");
+    let at = source.find("= v\n").unwrap() + 2;
+    assert_eq!((error.span.start, error.span.end), (at, at + 1));
+    let ir = accepts(&source.replace("@no_copy\n", ""));
+    assert!(function_body(&ir, "twice").contains("@tz.alloc"), "{ir}");
+}
+
+#[test]
+fn widening_into_a_read_parameter_moves_array_members() {
+    // Edition 2027 reads the parameter of `measure`: the call borrows the widened value, a
+    // temporary, and an owned array member moves into it as into an owned parameter (review
+    // round 1). `measure` binds no array, so that `@no_copy` sees only the callers.
+    let measure = "def measure :: (i64 | [i64] | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? [i64] -> 100\n    | :? string as s -> s.length\n\n\
+         def make :: i64 -> (i64 | [i64]) = \\n -> if n > 0 then [n, n] else n\n\n";
+    let source = format!(
+        "{measure}@no_copy\ndef local :: own (i64 | [i64]) -> i64 = \\v -> measure v\n\n\
+         @no_copy\ndef temporary :: i64 -> i64 = \\n -> measure (make n)\n\n\
+         @no_copy\ndef bound :: i64 -> i64 = \\n ->\n    let v = make n\n    measure v\n\n\
+         test \"values\" =\n    let a: (i64 | [i64]) = [1, 2, 3]\n    let b: (i64 | [i64]) = 6\n    assert (local a + local b == 106)\n    assert (temporary 5 + temporary (-4) == 96)\n    assert (bound 2 + bound (-7) == 93)\n"
+    );
+    let module = accepts_in(&source, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    for name in ["local", "temporary", "bound"] {
+        let body = function_body(&ir, name);
+        assert!(!body.contains("@tz.alloc"), "{name}:\n{body}");
+        assert!(body.contains("switch i32 "), "{name}:\n{body}");
+    }
+    // Expected values by hand: 100 for an array, the i64 itself: 100 + 6, 100 - 4, 100 - 7.
+    passes(&source, Edition::E2027);
+    // A value that is read again is copied for the first call and moved by the last; the copy
+    // is the widened value's. 100 + 100 for an array, 2 k for the i64 k.
+    let source = format!(
+        "{measure}@no_copy\ndef twice :: own (i64 | [i64]) -> i64 = \\v -> measure v + measure v\n"
+    );
+    let error = rejects_in(&source, Edition::E2027, "E1031", "effect_copy_in_no_copy");
+    let at = source.find("measure v +").unwrap() + "measure ".len();
+    assert_eq!((error.span.start, error.span.end), (at, at + 1));
+    let source = format!(
+        "{}\ntest \"twice\" =\n    let a: (i64 | [i64]) = [4]\n    let b: (i64 | [i64]) = 21\n    assert (twice a + twice b == 242)\n",
+        source.replace("@no_copy\n", "")
+    );
+    let module = accepts_in(&source, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(
+        function_body(&ir, "twice").matches("@tz.alloc").count(),
+        1,
+        "{ir}"
+    );
+    passes(&source, Edition::E2027);
+}
+
+#[test]
+fn widening_inside_a_lent_if_or_block_moves_array_members() {
+    // An `if`, a block or a `match` lent to a read parameter whose branch widens an owned value:
+    // the branch moves the payload into the borrowed temporary, as the widened value itself does
+    // (review round 3). A value that the `if` holds already wide moves too. The window of `Alloc`
+    // sees as many frees as allocations, on the branch that moves and on the one that does not.
+    let measure = "def measure :: (i64 | [i64] | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? [i64] -> 100\n    | :? string as s -> s.length\n\n\
+         def make :: i64 -> (i64 | [i64]) = \\n -> if n > 0 then [n, n] else n\n\n\
+         def wide :: i64 -> (i64 | [i64] | string) = \\n -> if n > 0 then [n] else \"abc\"\n\n\
+         def balanced :: (unit -> i64) -> i64 = \\f ->\n    let start = Alloc.snapshot ()\n    let value = f ()\n    let used = start |> Alloc.since\n    if used.frees == used.allocs then value else -1\n\n";
+    let functions = [
+        (
+            "branch",
+            "    let v = make n\n    measure (if n > 1 then v else 7)\n",
+        ),
+        (
+            "nested",
+            "    let v = make n\n    measure (if n > 1 then (if n > 5 then v else 8) else 7)\n",
+        ),
+        (
+            "block",
+            "    let v = make n\n    measure (if n > 1 then\n                 let k = n + 1\n                 if k > 3 then v else k\n             else 7)\n",
+        ),
+        (
+            "matched",
+            "    let v = make n\n    measure (if n > 1 then (match n with | 2 -> 9 | _ -> v) else 7)\n",
+        ),
+        (
+            "held",
+            "    let u = wide n\n    measure (if n > 1 then u else \"de\")\n",
+        ),
+    ];
+    let mut source = measure.to_owned();
+    for (name, body) in functions {
+        source.push_str(&format!(
+            "@no_copy\ndef {name} :: i64 -> i64 = \\n ->\n{body}\n"
+        ));
+    }
+    let module = accepts_in(&source, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    for (name, _) in functions {
+        let body = function_body(&ir, name);
+        assert!(!body.contains("@tz.alloc"), "{name}:\n{body}");
+    }
+    // Expected values by hand: make 3 is [3, 3] (100), make 1 is [1, 1] and the `if` takes 7;
+    // nested: 6 takes the array, 3 takes 8, 0 takes 7; block: 4 takes the array (k = 5), 2 takes k = 3,
+    // 1 takes 7; matched: 2 takes 9, 4 takes the array, 0 takes 7; held: wide 3 is [3] (100), wide
+    // 1 is [1] and the `if` takes "de" (2), wide -1 is "abc" and the `if` takes "de".
+    source.push_str(
+        "test \"values\" =\n    assert (balanced (\\() -> branch 3) == 100 && balanced (\\() -> branch 1) == 7)\n    assert (balanced (\\() -> nested 6) == 100 && balanced (\\() -> nested 3) == 8 && balanced (\\() -> nested 0) == 7)\n    assert (balanced (\\() -> block 4) == 100 && balanced (\\() -> block 2) == 3 && balanced (\\() -> block 1) == 7)\n    assert (balanced (\\() -> matched 2) == 9 && balanced (\\() -> matched 4) == 100 && balanced (\\() -> matched 0) == 7)\n    assert (balanced (\\() -> held 3) == 100 && balanced (\\() -> held 1) == 2 && balanced (\\() -> held (-1)) == 2)\n",
+    );
+    passes(&source, Edition::E2027);
+    // A value used again after the `if` is copied for it and moved by the last use: 100 + 100
+    // for make 3, 7 + 100 for make 1.
+    let source = format!(
+        "{measure}def again :: i64 -> i64 = \\n ->\n    let v = make n\n    measure (if n > 1 then v else 7) + measure v\n\n\
+         test \"again\" =\n    assert (balanced (\\() -> again 3) == 200 && balanced (\\() -> again 1) == 107)\n"
+    );
+    let module = accepts_in(&source, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(
+        function_body(&ir, "again").matches("@tz.alloc").count(),
+        1,
+        "{ir}"
+    );
+    passes(&source, Edition::E2027);
+    // A closure that lends its capture to the `if` on each call copies the payload out of it
+    // (round 2: the capture is borrowed), and a loop copies it on each pass but the last.
+    // Expected values by hand: make 3 is [3, 3] (100): 101 + 102 + 7, and 7 + 100 + 100; make -2
+    // is the i64 -2: -1 + 0 + 7, and 7 - 2 - 2.
+    let source = format!(
+        "{measure}def captured :: i64 -> i64 = \\n ->\n    let v = make n\n    let c = \\(k: i64) -> measure (if k > 0 then v else 7) + k\n    c 1 + c 2 + c 0\n\n\
+         def looped :: i64 -> i64 = \\n ->\n    let v = make n\n    let mut sum = 0\n    for i in 0 ..< 3 do\n        sum = sum + measure (if i > 0 then v else 7)\n    sum\n\n\
+         test \"captured\" =\n    assert (balanced (\\() -> captured 3) == 210 && balanced (\\() -> captured (-2)) == 6)\n    assert (balanced (\\() -> looped 3) == 207 && balanced (\\() -> looped (-2)) == 7 - 4)\n"
+    );
+    passes(&source, Edition::E2027);
+}
+
+/// The definitions of the instances `name.$mono.N` of the generic function `name` of module
+/// `Main` in `ir`, in the order of the IR.
+fn instance_bodies<'ir>(ir: &'ir str, name: &str) -> Vec<&'ir str> {
+    let head = format!("tz.fn.Main.{name}.$mono.");
+    ir.match_indices("\ndefine ")
+        .map(|(at, _)| at + 1)
+        .filter(|at| {
+            let line = ir[*at..].lines().next().unwrap();
+            line.find(&head).is_some_and(|start| {
+                let rest = &line[start + head.len()..];
+                let rest = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+                rest.starts_with('(') || rest.starts_with("\"(")
+            })
+        })
+        .map(|start| &ir[start..start + ir[start..].find("\n}\n").expect("the definition ends")])
+        .collect()
+}
+
+#[test]
+fn widening_beside_an_open_member_moves_array_members() {
+    // `(Maybe<'a> | [i64])` widened into `(bool | Maybe<'a> | [i64])`: the retagging binds the
+    // payload of each member, and `LastUses` keeps one decision for each binding span. The binding
+    // of the open member `Maybe<'a>` has the span of the widened value, as the binding of the array
+    // has, since an instance may make it an array. An instance that made it a type that no binding
+    // moves (`Maybe<i64>`, Copy without a drop, or `Maybe<string>`, not Copy) took the move from
+    // the binding of the array, so the only use of an owned value copied the array, and `@no_copy`
+    // rejected it (Copilot review round 2). Every instance moves the array into the wider union.
+    let weigh = "def weigh :: own (bool | Maybe<'a> | [i64]) -> i64 = \\v ->\n    match v with\n    | :? bool -> 1\n    | :? Maybe<'a> as m -> (match m with | Some _ -> 2 | None -> 3)\n    | :? [i64] as xs -> xs.length * 100\n\n";
+    // `allocations f` is the number of allocations that `f` makes, -1 if it does not free each.
+    let makers = "def ints :: i64 -> (Maybe<i64> | [i64]) = \\n -> if n > 0 then Array.init n (\\i -> i) else if n == 0 then None else Some n\n\n\
+         def texts :: i64 -> (Maybe<string> | [i64]) = \\n -> if n > 0 then Array.init n (\\i -> i) else if n == 0 then None else Some $\"t{n}\"\n\n\
+         def arrays :: i64 -> (Maybe<[i64]> | [i64]) = \\n -> if n > 0 then Array.init n (\\i -> i) else if n == 0 then None else Some [n]\n\n\
+         def balanced :: (unit -> i64) -> i64 = \\f ->\n    let start = Alloc.snapshot ()\n    let value = f ()\n    let used = start |> Alloc.since\n    if used.frees == used.allocs then value else -1\n\n\
+         def allocations :: (unit -> i64) -> i64 = \\f ->\n    let start = Alloc.snapshot ()\n    let _value = f ()\n    let used = start |> Alloc.since\n    if used.frees == used.allocs then used.allocs else -1\n\n";
+    let functions = "@no_copy\ndef widen :: own (Maybe<'a> | [i64]) -> (bool | Maybe<'a> | [i64]) = \\v -> v\n\n\
+         @no_copy\ndef argument :: own (Maybe<'a> | [i64]) -> i64 = \\v -> weigh v\n\n\
+         @no_copy\ndef bound :: own (Maybe<'a> | [i64]) -> i64 = \\v ->\n    let w: (bool | Maybe<'a> | [i64]) = v\n    weigh w\n\n\
+         def run :: i64 -> i64 = \\n ->\n    weigh (widen (ints n)) + weigh (widen (texts n)) + weigh (widen (arrays n)) + argument (ints n) + argument (texts n) + argument (arrays n) + bound (ints n) + bound (texts n) + bound (arrays n)\n\n";
+    let source = [weigh, makers, functions].concat();
+    let module = accepts_in(&source, Edition::E2026);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    for name in ["widen", "argument", "bound"] {
+        let bodies = instance_bodies(&ir, name);
+        assert_eq!(bodies.len(), 3, "{name}:\n{ir}");
+        for body in bodies {
+            assert!(!body.contains("@tz.alloc"), "{name}:\n{body}");
+        }
+    }
+    // Expected values by hand: 100 for each element of an array, 2 for `Some`, 3 for `None`. The
+    // only allocation is the array of `Array.init`.
+    let tests = "test \"values\" =\n    assert (balanced (\\() -> weigh (widen (ints 3))) == 300 && balanced (\\() -> weigh (widen (ints 0))) == 3 && balanced (\\() -> weigh (widen (ints (-2)))) == 2)\n    assert (balanced (\\() -> weigh (widen (texts 2))) == 200 && balanced (\\() -> weigh (widen (texts 0))) == 3 && balanced (\\() -> weigh (widen (texts (-2)))) == 2)\n    assert (balanced (\\() -> weigh (widen (arrays 1))) == 100 && balanced (\\() -> weigh (widen (arrays 0))) == 3 && balanced (\\() -> weigh (widen (arrays (-2)))) == 2)\n    assert (balanced (\\() -> argument (ints 4)) == 400 && balanced (\\() -> argument (texts 5)) == 500 && balanced (\\() -> argument (arrays 6)) == 600)\n    assert (balanced (\\() -> argument (ints (-1))) == 2 && balanced (\\() -> argument (texts (-1))) == 2 && balanced (\\() -> argument (arrays 0)) == 3)\n    assert (balanced (\\() -> bound (ints 2)) == 200 && balanced (\\() -> bound (texts 3)) == 300 && balanced (\\() -> bound (arrays 4)) == 400)\n    assert (balanced (\\() -> bound (ints 0)) == 3 && balanced (\\() -> bound (texts (-3))) == 2 && balanced (\\() -> bound (arrays (-3))) == 2)\n\n\
+         test \"allocations\" =\n    assert (allocations (\\() -> weigh (widen (ints 3))) == 1 && allocations (\\() -> weigh (widen (texts 3))) == 1 && allocations (\\() -> weigh (widen (arrays 3))) == 1)\n    assert (allocations (\\() -> argument (ints 3)) == 1 && allocations (\\() -> argument (texts 3)) == 1 && allocations (\\() -> argument (arrays 3)) == 1)\n    assert (allocations (\\() -> bound (ints 3)) == 1 && allocations (\\() -> bound (texts 3)) == 1 && allocations (\\() -> bound (arrays 3)) == 1)\n";
+    passes(&[source.as_str(), tests].concat(), Edition::E2026);
+    // A value used again is copied for the first widening and moved by the last, in each Copy
+    // instance: the array of `Array.init` and one copy (`(Maybe<string> | [i64])` is not Copy, so
+    // it cannot be used twice). By hand: 300 + 300 for ints 3, 2 + 2 for ints (-1), 200 + 200 for
+    // arrays 2.
+    let twice = "def twice :: own (Maybe<'a> | [i64]) -> i64 = \\v -> weigh v + weigh v\n\n\
+         def again :: i64 -> i64 = \\n -> twice (ints n) + twice (arrays n)\n\n\
+         test \"twice\" =\n    assert (balanced (\\() -> twice (ints 3)) == 600 && balanced (\\() -> twice (ints (-1))) == 4 && balanced (\\() -> twice (arrays 2)) == 400)\n    assert (allocations (\\() -> twice (ints 3)) == 2 && allocations (\\() -> twice (arrays 3)) == 2)\n";
+    passes(&[weigh, makers, twice].concat(), Edition::E2026);
+    // Edition 2027 lends the widened value to a read parameter (review round 1), which binds no
+    // array, so that `@no_copy` sees only the caller. By hand: 100 for an array, 2 for `Some`.
+    let read = "def measure :: (bool | Maybe<'a> | [i64]) -> i64 = \\v ->\n    match v with\n    | :? bool -> 1\n    | :? Maybe<'a> -> 2\n    | :? [i64] -> 100\n\n\
+         @no_copy\ndef lent :: own (Maybe<'a> | [i64]) -> i64 = \\v -> measure v\n\n\
+         def run :: i64 -> i64 = \\n -> lent (ints n) + lent (texts n) + lent (arrays n)\n\n\
+         test \"read\" =\n    assert (balanced (\\() -> lent (ints 3)) == 100 && balanced (\\() -> lent (texts 2)) == 100 && balanced (\\() -> lent (arrays 1)) == 100)\n    assert (balanced (\\() -> lent (ints (-1))) == 2 && balanced (\\() -> lent (texts (-1))) == 2 && balanced (\\() -> lent (arrays (-1))) == 2)\n    assert (allocations (\\() -> lent (ints 3)) == 1 && allocations (\\() -> lent (texts 3)) == 1 && allocations (\\() -> lent (arrays 3)) == 1)\n";
+    let source = [makers, read].concat();
+    let module = accepts_in(&source, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    let bodies = instance_bodies(&ir, "lent");
+    assert_eq!(bodies.len(), 3, "{ir}");
+    for body in bodies {
+        assert!(!body.contains("@tz.alloc"), "{body}");
+    }
+    passes(&source, Edition::E2027);
+}
+
+/// A closure whose body widens or narrows a captured value, called once or twice, and the
+/// continuation of a computation expression that widens a value it captures (review round 2).
+/// The call of a closure that does not consume its captures lends them to a worker; the binding
+/// of the conversion copies an array payload out of them instead of moving it, so the closure's
+/// environment frees each array once. The window of `Alloc` sees as many frees as allocations.
+/// `explicit` and `rewrapped` are the matches that A24 already accepted, which took the same
+/// payload out of the environment.
+const CAPTURED: &str = "def mk :: i64 -> ([i64] | i64) = \\n -> if n % 2 == 0 then n else Array.init n (\\i -> i + 1)\n\n\
+def mk3 :: i64 -> ([i64] | i64 | f64) = \\n -> if n % 2 == 0 then n else Array.init n (\\i -> i + 1)\n\n\
+def weigh :: own (f64 | [i64] | i64) -> i64 = \\v ->\n    match v with\n    | :? f64 -> 1\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length * 100\n\n\
+def weigh_read :: (f64 | [i64] | i64) -> i64 = \\v ->\n    match v with\n    | :? f64 -> 1\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length * 100\n\n\
+def size :: own ([i64] | i64) -> i64 = \\v ->\n    match v with\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length * 100\n\n\
+def len_own :: own [i64] -> i64 = \\xs -> xs.length * 100\n\n\
+def once :: i64 -> i64 = \\n ->\n    let w = mk n\n    let c = \\(k: i64) -> weigh w + k\n    c 1\n\n\
+def twice :: i64 -> i64 = \\n ->\n    let w = mk n\n    let c = \\(k: i64) -> weigh w + k\n    c 1 + c 2\n\n\
+def read :: i64 -> i64 = \\n ->\n    let w = mk n\n    let c = \\(k: i64) -> weigh_read w + k\n    c 1 + c 2\n\n\
+def bound :: i64 -> i64 = \\n ->\n    let w = mk n\n    let c = \\(k: i64) ->\n        let u: (f64 | [i64] | i64) = w\n        weigh u + k\n    c 1 + c 2\n\n\
+def narrowed :: i64 -> i64 = \\n ->\n    let w = mk3 n\n    let c = \\(k: i64) ->\n        match w with\n        | :? ([i64] | i64) as x -> size x + k\n        | :? f64 -> 0\n    c 1 + c 2\n\n\
+def pick :: i64 -> Maybe<(f64 | i64 | [i64])> = \\n ->\n    let w = mk n\n    let! _a = Maybe.Some 1\n    return w\n\n\
+def continued :: i64 -> i64 = \\n ->\n    match pick n with\n    | Some v -> weigh v\n    | None -> 0\n\n\
+def explicit :: i64 -> i64 = \\n ->\n    let w = Array.init n (\\i -> i)\n    let c = \\(k: i64) ->\n        match w with\n        | ys -> len_own ys + k\n    c 1 + c 2\n\n\
+def pick_rewrapped :: i64 -> Maybe<([i64] | i64)> = \\n ->\n    let w = mk n\n    let! _a = Maybe.Some 1\n    return (match w with | :? i64 as k -> k | :? [i64] as xs -> xs)\n\n\
+def rewrapped :: i64 -> i64 = \\n ->\n    match pick_rewrapped n with\n    | Some v -> size v\n    | None -> 0\n\n\
+def balanced :: (unit -> i64) -> i64 = \\f ->\n    let start = Alloc.snapshot ()\n    let value = f ()\n    let used = start |> Alloc.since\n    if used.frees == used.allocs then value else -1\n\n";
+
+#[test]
+fn widening_a_borrowed_capture_copies_its_payload() {
+    // Expected values by hand: mk 3 is [1, 2, 3] (300), mk 4 is the i64 4. once: 300 + 1, 4 + 1;
+    // twice, read, bound and narrowed: (300 + 1) + (300 + 2), (4 + 1) + (4 + 2); continued and
+    // rewrapped: 300, 4; explicit: [0, 1, 2] is 300, so 301 + 302.
+    let tests = "test \"captured\" =\n    assert (balanced (\\() -> once 3) == 301 && balanced (\\() -> once 4) == 5)\n    assert (balanced (\\() -> twice 3) == 603 && balanced (\\() -> twice 4) == 11)\n    assert (balanced (\\() -> read 3) == 603 && balanced (\\() -> read 4) == 11)\n    assert (balanced (\\() -> bound 3) == 603 && balanced (\\() -> bound 4) == 11)\n    assert (balanced (\\() -> narrowed 3) == 603 && balanced (\\() -> narrowed 4) == 11)\n    assert (balanced (\\() -> continued 3) == 300 && balanced (\\() -> continued 4) == 4)\n    assert (balanced (\\() -> continued 5) == 500 && balanced (\\() -> continued 3) == 300)\n    assert (balanced (\\() -> explicit 3) == 603)\n    assert (balanced (\\() -> rewrapped 3) == 300 && balanced (\\() -> rewrapped 4) == 4)\n";
+    for edition in [Edition::E2026, Edition::E2027] {
+        passes(&format!("{CAPTURED}{tests}"), edition);
+    }
+}
+
+#[test]
+fn hover_on_a_widened_value_shows_the_value() {
+    let source = "def make :: own i64 -> (i64 | string) = \\n -> n\n\
+         def f :: own (i64 | [i64]) -> (f64 | i64 | [i64]) = \\items ->\n    let wide: (f64 | i64 | [i64]) = items\n    wide\n\
+         def g :: own i64 -> (f64 | i64 | string) = \\n -> make n\n0\n";
+    let (_, index) = analyze_modules_with_semantics(&[("Main.tz", source)]).unwrap();
+    // The widened variable reads as itself and goes to its own definition, not to a local of
+    // the conversion.
+    let at = source.find("= items").unwrap() + 2;
+    let entry = index.at(0, at).unwrap();
+    assert_eq!(entry.detail, "items: (i64 | [i64])");
+    let definition = source.find("\\items").unwrap() + 1;
+    assert_eq!(
+        entry.target.map(|span| (span.start, span.end)),
+        Some((definition, definition + "items".len()))
+    );
+    // A widened call reads as the value that the position takes, as an injected value does.
+    let entry = index.at(0, source.find("make n").unwrap() + 5).unwrap();
+    assert_eq!(entry.detail, "n: i64");
+    let entry = index.at(0, source.find("make n").unwrap() + 4).unwrap();
+    assert_eq!(entry.detail, "(i64 | f64 | string)");
+    // No entry spells a generated local, and none names a synthesized declaration.
+    for entry in &index.entries {
+        assert_hidden(&entry.detail);
+        assert!(
+            !entry.detail.contains("$match") && !entry.detail.contains("$retag"),
+            "{}",
+            entry.detail
+        );
+    }
+}
+
+#[test]
+fn comparison_does_not_widen() {
+    // The operands of an operator are no place where a value is widened: it would move the
+    // variable, and only on one side. The A24 rule for a member (`v == 1` is injected, then
+    // needs `Eq`) is unchanged.
+    for operand in ["w", "(w)"] {
+        for operator in ["==", "!=", "<"] {
+            let error = rejects(
+                &format!(
+                    "let v: (f64 | i64 | string) = 1\nlet w: (i64 | string) = 2\nlet same = v {operator} {operand}\n0\n"
+                ),
+                "E1003",
+                "type_mismatch",
+            );
+            assert_eq!(
+                error.message, "expected (i64 | f64 | string), found (i64 | string)",
+                "{operator} {operand}"
+            );
+        }
+    }
+    rejects(
+        "let v: (f64 | i64 | string) = 1\nlet w: (i64 | string) = 2\nlet same = w == v\n0\n",
+        "E1003",
+        "type_mismatch",
+    );
+}
+
+/// The functions and values of `operand_results_do_not_widen`: `flag 1` is true and `flag 0`
+/// false; `size` reads a member back (`size 2 == 2`, `size "neg" == 3`); `wide` takes and
+/// returns the wider union; `make n` is `n` for `n > 0` and `"neg"` otherwise; `ident` is generic.
+const OPERANDS: &str = "def flag :: i64 -> bool = \\n -> n > 0\n\
+     def size :: own (f64 | i64 | string) -> i64 = \\x ->\n    match x with\n    | :? i64 as n -> n\n    | :? f64 -> 100\n    | :? string as s -> s.length\n\n\
+     def wide :: own (f64 | i64 | string) -> (f64 | i64 | string) = \\x -> x\n\
+     def make :: i64 -> (i64 | string) = \\n -> if n > 0 then n else \"neg\"\n\
+     def ident :: 'a -> 'a = \\x -> x\n\n";
+
+/// A builder whose computations are their values (`Identity { return w }` is `w`).
+const IDENTITY: &str = "def Return :: own 'a -> 'a\nfn Return value = value\n\ndef Bind :: own 'a -> own ('a -> 'b) -> 'b\nfn Bind value next = next value\n";
+
+/// `OPERANDS`, a channel `a`, the values `v` and `x: (f64 | i64 | string)`, `w` and
+/// `u: (i64 | string)`, and `let same = {operand}` with the markers `«` and `»` taken out, and the
+/// offset of `«`.
+fn operand_source(operand: &str) -> (String, usize) {
+    let source = format!(
+        "{OPERANDS}let a: Channel<i64> = Channel.make 1\nlet v: (f64 | i64 | string) = 1\nlet w: (i64 | string) = 2\nlet u: (i64 | string) = 3\nlet x: (f64 | i64 | string) = 4\nlet same = {operand}\n0\n"
+    );
+    let at = source.find('«').unwrap_or(0);
+    (source.replace(['«', '»'], ""), at)
+}
+
+/// The errors of `sources`, which compare `v` with an operand whose value is the smaller union
+/// `(i64 | string)`: `E1003` at the offset `at` (when given), and only `E1003` of that operand or
+/// the `E1005` of the comparison of anonymous unions, which have no `Eq` and `Ord` until A26 (a
+/// `match` keeps the union as its type when an arm's error is recovered).
+fn operand_mismatch(sources: &[(&str, &str)], at: Option<usize>, label: &str) {
+    let errors = analyze_modules_all(sources).expect_err(label).diagnostics;
+    let mut mismatched = Vec::new();
+    for error in errors.iter().filter(|error| error.code.starts_with('E')) {
+        if error.code == "E1003" {
+            assert_eq!(error.kind, Some("type_mismatch"), "{label}");
+            assert_eq!(
+                error.message, "expected (i64 | f64 | string), found (i64 | string)",
+                "{label}"
+            );
+            mismatched.push(error.span.start);
+        } else {
+            assert_eq!(error.code, "E1005", "{label}: {}", error.message);
+            assert!(
+                ["Eq", "Ord"].iter().any(|class| error
+                    .message
+                    .starts_with(&format!("no instance for {class}<(i64 | f64 | string)>"))),
+                "{label}: {}",
+                error.message
+            );
+        }
+    }
+    assert!(!mismatched.is_empty(), "{label}: {errors:?}");
+    if let Some(at) = at {
+        assert!(
+            mismatched.contains(&at),
+            "{label}: {mismatched:?}, not {at}"
+        );
+    }
+}
+
+#[test]
+fn operand_results_do_not_widen() {
+    // Copilot review round 3 of A25: the value of an operand may come from the branches of an
+    // `if`, the arms of a `match` or `select`, the result of a block, `@checked` or a computation
+    // expression, which pass the sibling's type down. Each of them is the operand's value and is
+    // not widened either (`E1003` at the branch that is the smaller union), with every comparison
+    // operator. Before the fix, each branch was widened and the only error was the missing
+    // `Eq`/`Ord` instance (`E1005`).
+    let forms = [
+        "(if flag 1 then «w» else u)",
+        "(if flag 1 then v else «w»)",
+        "(match 1 with | 0 -> «w» | _ -> u)",
+        "{ let k = 1; «w» }",
+        "(@checked «w»)",
+        // A parenthesized expression spans its parentheses.
+        "(if flag 1 then { let k = 1; «(w)» } else (match 1 with | 0 -> u | _ -> w))",
+        "((if flag 0 then v else «((u))»))",
+        "(select | recv _ from a -> «w» | default -> u)",
+        // A call is a value of its own: its result is not widened in an operand.
+        "(if flag 1 then «make 1» else w)",
+    ];
+    for operator in ["==", "!=", "<", "<=", ">", ">="] {
+        for form in forms {
+            let (source, at) = operand_source(&format!("v {operator} {form}"));
+            operand_mismatch(
+                &[("Main", &source)],
+                Some(at),
+                &format!("{operator} {form}"),
+            );
+        }
+    }
+    // A computation expression whose builder returns the value as it is.
+    for body in ["Identity { return w }", "Identity { let! x = w; return x }"] {
+        let (source, _) = operand_source(&format!("v == {body}"));
+        operand_mismatch(
+            &[("Main.tz", &source), ("Identity.tc", IDENTITY)],
+            None,
+            body,
+        );
+    }
+    // A pipe and a call in an operand are checked by themselves (as before the fix).
+    for form in ["«(w |> ident)", "«ident w", "«(w |> \\x -> x)"] {
+        let (source, at) = operand_source(&format!("v == {form}"));
+        let error = rejects(&source, "E1003", "type_mismatch");
+        assert_eq!(
+            error.message, "expected (i64 | f64 | string), found (i64 | string)",
+            "{form}"
+        );
+        assert_eq!(error.span.start, at, "{form}");
+    }
+    // The left operand is checked first and gives its type to the right one, which is not
+    // narrowed (as before the fix).
+    let (source, at) = operand_source("(if flag 1 then w else u) == «v»");
+    let error = rejects(&source, "E1003", "type_mismatch");
+    assert_eq!(
+        error.message,
+        "expected (i64 | string), found (i64 | f64 | string)"
+    );
+    assert_eq!(error.span.start, at);
+    // A call or an annotated binding inside an operand still widens: these operands are the
+    // wider union, so the check reaches `Eq`, which anonymous unions do not have until A26.
+    for form in [
+        "(if flag 1 then wide w else v)",
+        "(match 1 with | 0 -> wide w | _ -> v)",
+        "{ let y: (f64 | i64 | string) = w; y }",
+        "(w |> wide)",
+    ] {
+        let (source, _) = operand_source(&format!("v == {form}"));
+        let error = rejects(&source, "E1005", "no_instance");
+        assert!(
+            error
+                .message
+                .starts_with("no instance for Eq<(i64 | f64 | string)>"),
+            "{form}: {}",
+            error.message
+        );
+    }
+    // The same conversions in operands of type `i64` run; the values follow from `size` and
+    // `make` by hand (`make 2` is 2, `make 0` is "neg" of length 3).
+    passes(
+        &format!(
+            "{OPERANDS}test \"conversions inside operands\" =\n    \
+             assert (size (if flag 1 then make 2 else make 0) == 2)\n    \
+             assert (2 == size (if flag 0 then make 2 else make 0) - 1)\n    \
+             assert ({{ let y: (f64 | i64 | string) = make 5; size y }} == 5)\n    \
+             assert ((if flag 1 then size (make 0) else 0) == 3)\n    \
+             assert (size (match 2 with | 0 -> make 7 | _ -> make 0) + 1 == 4)\n    \
+             assert (6 > 1 + size ({{ let k = make 4; k }}))\n"
+        ),
+        Edition::E2026,
+    );
+}
+
+#[test]
+fn operand_checked_first_widens_by_itself() {
+    // Verification of the Copilot review round 3 of A25: only the operand that takes its
+    // sibling's type is not widened. The operand checked first (the left one, or the right one
+    // when the left one is an unsuffixed number) has no sibling's type: it is checked by itself,
+    // so an `if`, `match` or `select` there gives the type of its first branch, `v`'s
+    // `(f64 | i64 | string)`, to the next one (D4), and `w` is widened as in
+    // `let t = if c then v else w`. Both operands are then `(f64 | i64 | string)` (the number is
+    // injected into its member), and the only error is the comparison's: anonymous unions have
+    // no `Eq` and `Ord` until A26. When the operand checked first was recorded too, `w` was
+    // `E1003` in each of these.
+    let first = [
+        "(if flag 1 then v else w)",
+        "(match 1 with | 0 -> v | _ -> w)",
+        "{ let k = 1; if flag k then v else w }",
+        "(@checked (if flag 1 then v else w))",
+        "(select | recv _ from a -> v | default -> w)",
+        // The inner `if` takes the outer `then` branch's type: both of its branches are widened.
+        "(if flag 1 then v else (if flag 0 then u else w))",
+    ];
+    for operator in ["==", "!=", "<", "<=", ">", ">="] {
+        let class = if matches!(operator, "==" | "!=") {
+            "Eq"
+        } else {
+            "Ord"
+        };
+        for form in first {
+            for operands in [
+                format!("{form} {operator} x"),
+                format!("1 {operator} {form}"),
+                format!("-1 {operator} {form}"),
+                format!("1.5 {operator} {form}"),
+                // The parentheses keep a block operand from being the lambda's body.
+                format!("{{ let f = \\b -> ({form} {operator} b); f x }}"),
+            ] {
+                let (source, _) = operand_source(&operands);
+                let errors = analyze_modules_all(&[("Main", &source)])
+                    .expect_err(&operands)
+                    .diagnostics;
+                let errors: Vec<_> = errors
+                    .iter()
+                    .filter(|error| error.code.starts_with('E'))
+                    .collect();
+                assert_eq!(errors.len(), 1, "{operands}: {errors:?}");
+                assert_eq!(errors[0].code, "E1005", "{operands}");
+                assert!(
+                    errors[0]
+                        .message
+                        .starts_with(&format!("no instance for {class}<(i64 | f64 | string)>")),
+                    "{operands}: {}",
+                    errors[0].message
+                );
+            }
+        }
+    }
+    // The operand checked second takes its sibling's type, which the `if` passes down, and the
+    // `else` branch takes the `then` branch's: `E1003` at `w`, whether the sibling's type is
+    // written, inferred later (`b`), or already the wider union.
+    for operands in [
+        "x == (if flag 1 then v else «w»)",
+        "{ let f = \\(b: (f64 | i64 | string)) -> b == (if flag 1 then v else «w»); f x }",
+        "{ let f = \\b -> b == (if flag 1 then v else «w»); f x }",
+        "{ let f = \\b -> b < (match 1 with | 0 -> v | _ -> «w»); f x }",
+    ] {
+        let (source, at) = operand_source(operands);
+        operand_mismatch(&[("Main", &source)], Some(at), operands);
+    }
+}
+
+// A25, step 3: `:? (A | B) [as x]` narrows to an anonymous union of some members.
+
+/// `num`: a number for each member of `(i64 | f64)`, to read a narrowed value back
+/// (`num 4 == 8`, `num 1.5 == 3`, `num 0.5 == 0`).
+const NUM: &str = "def num :: (i64 | f64) -> i64 = \\n ->\n    match n with\n    | :? i64 as k -> k * 2\n    | :? f64 as x -> if x > 1.0 then 3 else 0\n\n";
+
+/// `text`: a number for each member of `(i64 | string)` (`text 7 == 7`, `text \"hello\" == 5`).
+const TEXT: &str = "def text :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n\n";
+
+#[test]
+fn narrows_to_sub_unions() {
+    // The expected values follow from `num` and `text` by hand; each assert spells its sum.
+    passes(
+        &format!(
+            "{NUM}{TEXT}\
+             def size :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             def keep :: own (i64 | string | [i64]) -> (i64 | string) = \\v ->\n    match v with\n    | :? (i64 | string) as x -> x\n    | :? [i64] as xs -> xs.length\n\n\
+             def either :: own (f64 | i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | bool) -> 1\n    | :? (string | f64) -> 2\n\n\
+             def inside :: own Maybe<(f64 | i64 | string)> -> i64 = \\m ->\n    match m with\n    | Some (:? (i64 | f64) as n) -> num n\n    | Some (:? string as s) -> s.length\n    | None -> -1\n\n\
+             def guards :: own (f64 | i64 | string) -> i64 = \\v ->\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             def only :: own (f64 | i64 | string) -> i64 = \\(:? (i64 | f64) as n) -> num n\n\n\
+             def generic :: own (Maybe<'a> | i64 | string) -> (Maybe<'a> | i64) = \\v ->\n    match v with\n    | :? (Maybe<'a> | i64) as m -> m\n    | :? string as s -> s.length\n\n\
+             def count :: own (Maybe<string> | i64) -> i64 = \\v ->\n    match v with\n    | :? Maybe<string> as m -> (match m with | Some s -> s.length | None -> -1)\n    | :? i64 as n -> n\n\n\
+             def make :: i64 -> (f64 | i64 | string) = \\n -> if n > 0 then n else \"neg\"\n\n\
+             def made :: i64 -> i64 = \\k ->\n    match make k with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             test \"narrow\" =\n    \
+             assert (size 4 == 8)\n    \
+             assert (size 1.5 == 3)\n    \
+             assert (size 0.5 == 0)\n    \
+             assert (size \"abc\" == 3)\n    \
+             assert (text (keep 7) == 7)\n    \
+             assert (text (keep \"hello\") == 5)\n    \
+             assert (text (keep [1, 2, 3]) == 3)\n    \
+             assert (either 1 + either true + either \"s\" + either 2.0 == 1 + 1 + 2 + 2)\n    \
+             assert (inside (Some 4) + inside (Some \"abc\") + inside None == 8 + 3 - 1)\n    \
+             assert (guards 1.5 + guards \"abc\" == 3 + 3)\n    \
+             assert (only 4 == 8)\n    \
+             assert (count (generic (Some \"abcd\")) == 4)\n    \
+             assert (count (generic 7) == 7)\n    \
+             assert (count (generic \"xy\") == 2)\n    \
+             assert (made 4 + made 0 == 8 + 3)\n"
+        ),
+        Edition::E2026,
+    );
+    // The binder has the narrowed union's type, in its canonical order.
+    let error = rejects(
+        "def f :: own (f64 | i64 | string) -> bool = \\v ->\n    match v with\n    | :? (f64 | i64) as n -> n\n    | :? string -> false\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected bool, found (i64 | f64)");
+    // A lambda parameter traps for a value of another member (a `for` pattern: see
+    // `narrowing_in_loops_records_arrays_and_lists`).
+    traps(
+        &format!(
+            "{NUM}def only :: own (f64 | i64 | string) -> i64 = \\(:? (i64 | f64) as n) -> num n\n\ntest \"other member\" = assert (only \"s\" == 0)\n"
+        ),
+        Edition::E2026,
+    );
+    // An alias names the narrowed union as well.
+    accepts(
+        "type Number = (i64 | f64)\ndef f :: own (f64 | i64 | string) -> Number = \\v ->\n    match v with\n    | :? Number as n -> n\n    | :? string -> 0\n",
+    );
+}
+
+#[test]
+fn narrowing_in_loops_records_arrays_and_lists() {
+    // A narrowing is a pattern like any other (review round 1): a `for` pattern, a record
+    // field, array elements and the head of a list. By hand from `num` and `text`.
+    let program = format!(
+        "{NUM}{TEXT}record Cell {{ value: (f64 | i64 | string), count: i64 }}\n\n\
+         def looped :: own [(f64 | i64 | string)] -> i64 = \\items ->\n    let mut total = 0i64\n    for (:? (i64 | f64) as n) in items do\n        total = total + num n\n    total\n\n\
+         def cell :: own Cell -> i64 = \\c ->\n    match c with\n    | {{ value = :? (i64 | f64) as n, count = k }} -> num n * 100 + k\n    | {{ value = :? string as s, count = k }} -> s.length * 100 + k\n\n\
+         def owner :: own Cell -> i64 = \\c ->\n    match c with\n    | {{ value = :? (i64 | string) as x }} -> text x\n    | {{ value = :? f64 }} -> -1\n\n\
+         def pair :: own [(f64 | i64 | string)] -> i64 = \\xs ->\n    match xs with\n    | [:? (i64 | f64) as n, :? (i64 | f64) as m] -> num n * 100 + num m\n    | _ -> -1\n\n\
+         def head :: own [|(f64 | i64 | string)|] -> i64 = \\list ->\n    match list with\n    | (:? (i64 | f64) as n) :: _ -> num n\n    | (:? string as s) :: _ -> s.length * 10\n    | [||] -> -1\n\n\
+         test \"patterns\" =\n    \
+         assert (looped [1, 2.5, 3] == 2 + 3 + 6)\n    \
+         assert (looped [] == 0)\n    \
+         assert (cell (Cell {{ value: 4, count: 7 }}) == 807)\n    \
+         assert (cell (Cell {{ value: 0.5, count: 2 }}) == 2)\n    \
+         assert (cell (Cell {{ value: \"ab\", count: 3 }}) == 203)\n    \
+         assert (owner (Cell {{ value: \"abc\", count: 1 }}) + owner (Cell {{ value: 5, count: 1 }}) == 3 + 5)\n    \
+         assert (owner (Cell {{ value: 1.5, count: 1 }}) == -1)\n    \
+         assert (pair [4, 1.5] == 803)\n    \
+         assert (pair [4, \"x\"] + pair [1] == -2)\n    \
+         assert (head [|2.5, 9|] + head [|\"xyz\"|] + head [||] == 3 + 30 - 1)\n"
+    );
+    passes(&program, Edition::E2027);
+    // A `for` pattern traps for an element of another member.
+    traps(
+        &format!(
+            "{NUM}def looped :: own [(f64 | i64 | string)] -> i64 = \\items ->\n    let mut total = 0i64\n    for (:? (i64 | f64) as n) in items do\n        total = total + num n\n    total\n\ntest \"other member\" = assert (looped [1, \"s\"] == 0)\n"
+        ),
+        Edition::E2027,
+    );
+    // Eleven narrowings of two members in one pattern make 2^11 = 2048 alternatives, over the
+    // limit of 1024.
+    let tests = [":? (i64 | f64)"; 11].join(", ");
+    let wildcards = ["_"; 11].join(", ");
+    let values = ["(f64 | i64 | string)"; 11].join(" * ");
+    rejects(
+        &format!(
+            "def f :: own ({values}) -> i64 = \\t ->\n    match t with\n    | ({tests}) -> 1\n    | ({wildcards}) -> 0\n"
+        ),
+        "E1017",
+        "pattern_alternatives_limit",
+    );
+}
+
+#[test]
+fn narrowing_to_every_member_binds_the_value() {
+    // `W == U`: the value itself, also behind a reference, where a member that is not Copy
+    // forbids a narrowing to fewer members. Nothing is tested, so one arm is exhaustive.
+    passes(
+        &format!(
+            "{TEXT}def all :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (string | i64) as w -> text w\n\n\
+             def seen :: ref (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as w -> (match w with | :? i64 as n -> n | :? string as s -> s.length)\n\n\
+             test \"whole\" =\n    assert (all \"abcd\" + all 3 == 4 + 3)\n    let v: (i64 | string) = \"hello\"\n    assert (seen (ref v) + seen (ref v) == 5 + 5)\n"
+        ),
+        Edition::E2026,
+    );
+    let source = "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) -> 0\n    | _ -> 1\n";
+    let module = analyze(source).unwrap();
+    let warnings: Vec<(&str, &str)> = module
+        .warnings
+        .iter()
+        .map(|warning| (warning.code, &source[warning.span.start..warning.span.end]))
+        .collect();
+    assert_eq!(warnings, [("W1003", "_")]);
+    // The view cannot move out, as any binding of a borrowed value.
+    rejects(
+        "def take :: ref (i64 | string) -> (i64 | string) = \\v ->\n    match v with\n    | :? (i64 | string) as w -> w\n",
+        "E1012",
+        "move_out_of_reference_binding",
+    );
+}
+
+#[test]
+fn narrowing_is_exhaustive_as_or() {
+    // Each member of the narrowed union counts as its own `:?` arm.
+    for binder in ["", " as n"] {
+        let error = missing(
+            &format!(
+                "def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64){binder} -> 0\n"
+            ),
+            ":? string",
+        );
+        assert_eq!(
+            error.help.as_deref(),
+            Some("add an arm for ':? string', or end the match with a wildcard arm '| _ -> ...'")
+        );
+    }
+    missing(
+        "def f :: own (f64 | i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) -> 0\n    | :? (i64 | string) -> 1\n",
+        ":? bool",
+    );
+    accepts(
+        "def f :: own (f64 | i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> 0\n    | :? (bool | string) as rest -> 1\n",
+    );
+    // An arm that the narrowing covers is unreachable, and so is a narrowing whose members
+    // are all covered.
+    let warnings = |source: &str| -> Vec<(String, String)> {
+        analyze(source)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message))
+            .warnings
+            .iter()
+            .map(|warning| {
+                (
+                    warning.code.to_string(),
+                    source[warning.span.start..warning.span.end].to_string(),
+                )
+            })
+            .collect()
+    };
+    let unreachable = |text: &str| vec![("W1003".to_string(), text.to_string())];
+    assert_eq!(
+        warnings(
+            "def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) -> 0\n    | :? i64 -> 1\n    | :? string -> 2\n"
+        ),
+        unreachable(":? i64")
+    );
+    assert_eq!(
+        warnings(
+            "def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 -> 0\n    | :? f64 -> 1\n    | :? (i64 | f64) -> 2\n    | :? string -> 3\n"
+        ),
+        unreachable(":? (i64 | f64)")
+    );
+    // A narrowing with one member left is reachable.
+    assert!(
+        warnings(
+            "def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 -> 0\n    | :? (i64 | f64) -> 1\n    | :? string -> 2\n"
+        )
+        .is_empty()
+    );
+    // A guarded arm covers nothing.
+    assert!(
+        warnings(&format!(
+            "{NUM}def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n when num n > 5 -> 0\n    | :? (i64 | f64) -> 1\n    | :? string -> 2\n"
+        ))
+        .is_empty()
+    );
+    missing(
+        &format!(
+            "{NUM}def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n when num n > 5 -> 0\n    | :? string -> 2\n"
+        ),
+        ":? i64",
+    );
+}
+
+/// A24's Copilot review round 5, for narrowings: the name after `as` in `:? (A | B)` binds the
+/// whole narrowed value, as after the `as` of any pattern, also when a union case or an active
+/// recognizer of that name is in scope: in a `match`, a function guard, an arm with a guard, beside
+/// `as whole`, in both sides of an OR pattern, a lambda parameter, a `for`, and when the narrowed
+/// union has every member of the matched one. Each expectation follows the arms by hand: `size`
+/// gives `n` for an `i64` and `10 * n` (`-10` for `None`) for a `Maybe<i64>`, so a `None` that
+/// bound the case instead of the value would read `-10` for every member.
+#[test]
+fn narrowing_binder_always_binds() {
+    passes(
+        "union Color = Red | Green\n\
+         def (|Even|_|) :: i64 -> bool = \\value -> value % 2 == 0\n\
+         def (|Small|Large|) :: i64 -> 'T = \\value -> if value < 10 then Small else Large\n\
+         \n\
+         def size :: own (i64 | Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? Maybe<i64> as m -> (match m with | Some n -> n * 10 | None -> -10)\n\n\
+         def num :: (i64 | f64) -> i64 = \\v ->\n    match v with\n    | :? i64 as n -> n\n    | :? f64 -> 1000\n\n\
+         def inner :: own (i64 | string | Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | Maybe<i64>) as None -> size None\n    | :? string as s -> String.length s\n\n\
+         def guarded :: own (i64 | string | Maybe<i64>) -> i64 = \\v ->\n    | :? (i64 | Maybe<i64>) as Some -> size Some + 1\n    | :? string as Red -> String.length Red\n\n\
+         def recognized :: own (i64 | f64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as Even -> (match Even with | :? i64 as n -> n | :? string as s -> String.length s)\n    | :? f64 as Small -> if Small > 1.0 then 100 else 200\n\n\
+         def whole :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (string | i64) as Large -> (match Large with | :? i64 as n -> n | :? string as s -> String.length s)\n\n\
+         def when_guard :: own (i64 | f64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as None when num None > 5 -> num None\n    | :? (i64 | f64) as Even -> num Even + 1\n    | :? string as Green -> String.length Green\n\n\
+         def with_whole :: own (i64 | f64 | string) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | f64) as Red) as whole -> num Red + (match whole with | :? string -> 0 | _ -> 10)\n    | :? string as s -> String.length s\n\n\
+         def tupled :: own ((i64 | f64 | string) * bool) -> i64 = \\p ->\n    match p with\n    | (:? (i64 | f64) as Some, true) | (:? (i64 | f64) as Some, false) -> num Some\n    | (:? string as s, _) -> String.length s\n\n\
+         test \"binders\" =\n    \
+             assert (inner (Some 5) == 50)\n    \
+             assert (inner 3 == 3)\n    \
+             assert (inner None == -10)\n    \
+             assert (inner \"abcd\" == 4)\n    \
+             assert (guarded (Some 5) == 51)\n    \
+             assert (guarded 3 == 4)\n    \
+             assert (guarded None == -9)\n    \
+             assert (guarded \"abcd\" == 4)\n    \
+             assert (recognized 3 + recognized 4 + recognized \"abc\" + recognized 1.5 == 110)\n    \
+             assert (whole 7 + whole \"xy\" == 9)\n    \
+             assert (when_guard 7 == 7)\n    \
+             assert (when_guard 2 == 3)\n    \
+             assert (when_guard 2.5 == 1000)\n    \
+             assert (when_guard \"abc\" == 3)\n    \
+             assert (with_whole 4 == 14)\n    \
+             assert (with_whole \"ab\" == 2)\n    \
+             assert (tupled (6, true) + tupled (7, false) + tupled (\"xyz\", true) == 16)\n    \
+             let pick: (i64 | string | f64) -> i64 = \\(:? (i64 | f64) as Even) -> num Even\n    \
+             assert (pick 6 == 6)\n    \
+             let xs: [(i64 | string | f64)] = [1, 2, 39]\n    \
+             let mut total = 0\n    \
+             for (:? (i64 | f64) as Large) in xs do\n        \
+                 total = total + num Large\n    \
+             assert (total == 42)\n",
+        Edition::E2026,
+    );
+    // The binder has the narrowed union's type: `None` here is an `(i64 | Maybe<i64>)`.
+    let error = rejects(
+        "def f :: own (i64 | string | Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | Maybe<i64>) as None -> None\n    | :? string -> 0\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected i64, found (i64 | Maybe<i64>)");
+}
+
+/// A24's Copilot review round 5, for narrowings: the members that `:? (A | B)` arms leave out are
+/// witnesses of their own, which name each declaration as the match's module does: by its full
+/// name where the module hides the name that `Type::display` writes (in type arguments, in an
+/// anonymous union inside a member and in a case payload too), and the fix compiles as written.
+/// A declaration that no name in sight names gets no arm. The fixed sources are written by hand.
+#[test]
+fn narrowing_witnesses_name_types_as_the_match_does() {
+    let check = |source: &str, witness: &str, fixed: &str| {
+        let fixed_source = fixed_in(&[("Main", source)], 0, witness);
+        assert_eq!(fixed_source, fixed);
+        accepts(&fixed_source);
+    };
+    let hidden = "union Maybe = Nothing\n";
+    check(
+        &format!(
+            "{hidden}def f :: own (i64 | string | std::Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 0\n"
+        ),
+        ":? std::Maybe<i64>",
+        &format!(
+            "{hidden}def f :: own (i64 | string | std::Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 0 | :? std::Maybe<i64> -> unreachable ()\n"
+        ),
+    );
+    // The narrowing names the hidden type by its full name; the witness is another member.
+    check(
+        &format!(
+            "{hidden}def f :: own (i64 | string | std::Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | std::Maybe<i64>) as x -> 0\n"
+        ),
+        ":? string",
+        &format!(
+            "{hidden}def f :: own (i64 | string | std::Maybe<i64>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | std::Maybe<i64>) as x -> 0 | :? string -> unreachable ()\n"
+        ),
+    );
+    // An anonymous union inside the member left out, in its canonical order.
+    check(
+        &format!(
+            "{hidden}def f :: own (i64 | string | Result<(std::Maybe<i64> | string), string>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 0\n"
+        ),
+        ":? Result<(string | std::Maybe<i64>), string>",
+        &format!(
+            "{hidden}def f :: own (i64 | string | Result<(std::Maybe<i64> | string), string>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 0 | :? Result<(string | std::Maybe<i64>), string> -> unreachable ()\n"
+        ),
+    );
+    // A type alias hides the name too; the narrowing covers one of two `std::Maybe` members.
+    let alias = "type Maybe<'a> = Result<'a, string>\n";
+    check(
+        &format!(
+            "{alias}def f :: own (i64 | bool | std::Maybe<i64> | std::Maybe<string>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | std::Maybe<string>) as x -> 0\n    | :? bool -> 1\n"
+        ),
+        ":? std::Maybe<i64>",
+        &format!(
+            "{alias}def f :: own (i64 | bool | std::Maybe<i64> | std::Maybe<string>) -> i64 = \\v ->\n    match v with\n    | :? (i64 | std::Maybe<string>) as x -> 0\n    | :? bool -> 1 | :? std::Maybe<i64> -> unreachable ()\n"
+        ),
+    );
+    // A narrowing in a case payload.
+    check(
+        &format!(
+            "{hidden}def f :: own std::Maybe<(i64 | string | std::Maybe<i64>)> -> i64 = \\v ->\n    match v with\n    | Some (:? (i64 | string) as x) -> 0\n    | None -> 1\n"
+        ),
+        "Some (:? std::Maybe<i64>)",
+        &format!(
+            "{hidden}def f :: own std::Maybe<(i64 | string | std::Maybe<i64>)> -> i64 = \\v ->\n    match v with\n    | Some (:? (i64 | string) as x) -> 0\n    | None -> 1 | Some (:? std::Maybe<i64>) -> unreachable ()\n"
+        ),
+    );
+    // The union named after its module `Shape` reads `Shape`, which the module's own `Shape`
+    // hides, and has no other name there: the witness keeps the text, and no arm is offered.
+    let error = rejects_modules(
+        &[
+            (
+                "Shape",
+                "union Shape = Dot | Line\ndef make :: i64 -> (i64 | string | Shape) = \\x -> if x > 0 then x else if x < 0 then \"negative\" else Dot\n",
+            ),
+            (
+                "Main",
+                "union Shape = Here\ndef f :: i64 -> i64 = \\x ->\n    match Shape.make x with\n    | :? (i64 | string) as n -> 0\n",
+            ),
+        ],
+        "E1021",
+        "non_exhaustive_match",
+    );
+    assert_eq!(error.message, "match is not exhaustive; missing: :? Shape");
+    assert!(error.fixes.is_empty(), "{:?}", error.fixes);
+}
+
+#[test]
+fn narrowing_copies_copy_members_from_views() {
+    // Behind a reference, in a collection and under a guard the narrowed value is a copy, so
+    // the matched value stays usable. `arr [1, 2, 3] == 300`, `arr 7 == 7`.
+    let arr = "def arr :: own ([i64] | i64) -> i64 = \\n ->\n    match n with\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length * 100\n\n";
+    passes(
+        &format!(
+            "{NUM}{arr}\
+             def by_ref :: ref (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             def arr_ref :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? ([i64] | i64) as n -> arr n\n    | :? string as s -> s.length\n\n\
+             def guarded :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n when num n > 5 -> 1000 + num n\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             def guarded_arr :: own ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? ([i64] | i64) as n when arr n > 150 -> 1\n    | :? ([i64] | i64) as n -> arr n\n    | :? string as s -> s.length\n\n\
+             def guarded_ref :: ref (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n when num n > 5 -> 1000 + num n\n    | _ -> 0\n\n\
+             def pair :: own ((f64 | i64 | string) * (f64 | i64 | string)) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | f64) as n, :? string) | (:? string, :? (i64 | f64) as n) -> num n\n    | _ -> -1\n\n\
+             def twice :: own (f64 | i64 | string) -> i64 = \\v ->\n    let first = match v with\n        | :? (i64 | f64) as n -> num n\n        | :? string -> 0\n    first + by_ref (ref v)\n\n\
+             test \"views\" =\n    \
+             let a: (f64 | i64 | string) = 4\n    \
+             let b: (f64 | i64 | string) = 1.5\n    \
+             let c: (f64 | i64 | string) = \"abc\"\n    \
+             assert (by_ref (ref a) + by_ref (ref b) + by_ref (ref c) == 8 + 3 + 3)\n    \
+             assert (by_ref (ref a) == 8)\n    \
+             let d: ([i64] | i64 | string) = [1, 2, 3]\n    \
+             let e: ([i64] | i64 | string) = 7\n    \
+             assert (arr_ref (ref d) + arr_ref (ref d) + arr_ref (ref e) == 300 + 300 + 7)\n    \
+             assert (guarded 4 == 1008)\n    \
+             assert (guarded 2 + guarded 1.5 + guarded \"ab\" == 4 + 3 + 2)\n    \
+             assert (guarded_arr [1, 2] == 1)\n    \
+             assert (guarded_arr [1] + guarded_arr 5 + guarded_arr \"abc\" == 100 + 5 + 3)\n    \
+             assert (guarded_ref (ref a) + guarded_ref (ref b) + guarded_ref (ref c) == 1008)\n    \
+             assert (pair (4, \"x\") + pair (\"x\", 1.5) + pair (\"x\", \"y\") + pair (1, 2) == 8 + 3 - 1 - 1)\n    \
+             assert (twice 4 + twice 1.5 + twice \"abc\" == 16 + 6 + 3)\n    \
+             let items: [(f64 | i64 | string)] = [1, \"ab\", 2.5]\n    \
+             let mut total = 0\n    \
+             for item in items do\n        \
+             total = total + (match item with\n            \
+             | :? (f64 | i64) as n -> num n\n            \
+             | :? string as s -> s.length)\n    \
+             assert (total == 2 + 2 + 3)\n    \
+             assert (items.length == 3)\n"
+        ),
+        Edition::E2026,
+    );
+    // A read parameter (2027) is such a view.
+    passes(
+        &format!(
+            "{NUM}def size :: (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+             test \"read\" =\n    assert (size 4 + size 1.5 + size \"abc\" == 8 + 3 + 3)\n"
+        ),
+        Edition::E2027,
+    );
+    // The copy of an array member is an implicit copy, reported at the pattern.
+    let source = format!(
+        "{arr}@no_copy\ndef arr_ref :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? ([i64] | i64) as n -> arr n\n    | :? string as s -> s.length\n"
+    );
+    let error = rejects(&source, "E1031", "effect_copy_in_no_copy");
+    let pattern = ":? ([i64] | i64) as n";
+    let at = source.find(pattern).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + pattern.len()));
+}
+
+#[test]
+fn rejects_narrowing_borrowed_non_copy() {
+    let message = "cannot narrow a borrowed value into (i64 | string) because string is not Copy";
+    let help = "match each member with its own ':?' arm, or match an owned value";
+    // Through a reference: the location is the `:?`.
+    let source = "def f :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 1\n    | :? [i64] -> 2\n";
+    let error = rejects(source, "E1041", "type_test_narrow_borrowed");
+    assert_eq!(error.message, message);
+    assert_eq!(error.help.as_deref(), Some(help));
+    let at = source.find(":?").unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + 2));
+    // A borrowed local, a read parameter (2027), an element of a collection and a payload
+    // below a reference.
+    let error = rejects(
+        "let v: ([i64] | i64 | string) = 1\nlet r = ref v\nmatch r with\n| :? (i64 | string) as x -> 1\n| :? [i64] -> 2\n",
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    assert_eq!(error.message, message);
+    let error = rejects_in(
+        "def f :: ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> 1\n    | :? [i64] -> 2\n",
+        Edition::E2027,
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    assert_eq!(error.message, message);
+    assert_eq!(error.help.as_deref(), Some(help));
+    rejects(
+        "def f :: own [([i64] | i64 | string)] -> i64 = \\items ->\n    let mut total = 0\n    for item in items do\n        total = total + (match item with\n            | :? (i64 | string) as x -> 1\n            | :? [i64] -> 2)\n    total\n",
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    rejects(
+        "def f :: ref Maybe<([i64] | i64 | string)> -> i64 = \\m ->\n    match m with\n    | Some (:? (i64 | string) as x) -> 1\n    | _ -> 2\n",
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    // A member with a type variable is not known to be Copy.
+    let error = rejects(
+        "def f :: ref (Maybe<'a> | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (Maybe<'a> | i64) as x -> 1\n    | :? string -> 2\n",
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    assert_eq!(
+        error.message,
+        "cannot narrow a borrowed value into (i64 | Maybe<'a>) because Maybe<'a> is not Copy"
+    );
+    // Without a binder nothing is made, so the same tests are accepted.
+    for binder in ["", " as _"] {
+        accepts(&format!(
+            "def f :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string){binder} -> 1\n    | :? [i64] -> 2\n"
+        ));
+    }
+    // A guard reads the binder before the arm is chosen, when nothing can move yet.
+    let source = "def f :: own ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x when true -> 1\n    | _ -> 2\n";
+    let error = rejects(source, "E1041", "type_test_narrow_borrowed");
+    assert_eq!(
+        error.message,
+        "cannot narrow a value into (i64 | string) in an arm with a guard because string is not Copy"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("match each member with its own ':?' arm, or test the condition in the arm's body")
+    );
+    let at = source.find(":?").unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + 2));
+    accepts(
+        "def f :: own ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) when true -> 1\n    | _ -> 2\n",
+    );
+    // A guarded arm of a borrowed value reports the borrow: no guard is to blame.
+    let error = rejects(
+        "def f :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x when true -> 1\n    | _ -> 2\n",
+        "E1041",
+        "type_test_narrow_borrowed",
+    );
+    assert_eq!(error.message, message);
+}
+
+#[test]
+fn type_test_errors_point_at_the_marker_inside_parentheses() {
+    // The parentheses around a type test (required in a payload) group it; the errors about the
+    // test are at its `:?` all the same (review round 1), with or without spaces inside them.
+    for (source, kind) in [
+        (
+            "def f :: ref Maybe<([i64] | i64 | string)> -> i64 = \\m ->\n    match m with\n    | Some (:? (i64 | string) as x) -> 1\n    | _ -> 2\n",
+            "type_test_narrow_borrowed",
+        ),
+        (
+            "def f :: ref ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | (  :? (i64 | string) as x  ) -> 1\n    | _ -> 2\n",
+            "type_test_narrow_borrowed",
+        ),
+        (
+            "def f :: own Maybe<([i64] | i64 | string)> -> i64 = \\m ->\n    match m with\n    | Some ((:? (i64 | string) as x)) when true -> 1\n    | _ -> 2\n",
+            "type_test_narrow_borrowed",
+        ),
+        (
+            "def f :: own Maybe<i64> -> i64 = \\m ->\n    match m with\n    | Some (:? i64 as x) -> x\n    | _ -> 2\n",
+            "type_test_not_anonymous_union",
+        ),
+        (
+            "def f :: own (i64 * i64) -> i64 = \\pair ->\n    match pair with\n    | ( :? i64 as x, _) -> x\n",
+            "type_test_not_anonymous_union",
+        ),
+    ] {
+        let error = rejects(source, "E1041", kind);
+        let at = source.find(":?").unwrap();
+        assert_eq!((error.span.start, error.span.end), (at, at + 2), "{source}");
+    }
+    // The type test's own extent is the pattern that a narrowing copy is reported at.
+    let source = "def arr :: own ([i64] | i64) -> i64 = \\n ->\n    match n with\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length\n\n\
+         @no_copy\ndef arrays :: ref Maybe<([i64] | i64 | string)> -> i64 = \\m ->\n    match m with\n    | Some (:? ([i64] | i64) as n) -> arr n\n    | _ -> 0\n";
+    let error = rejects(source, "E1031", "effect_copy_in_no_copy");
+    let pattern = ":? ([i64] | i64) as n";
+    let at = source.find(pattern).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + pattern.len()));
+}
+
+#[test]
+fn a_parenthesized_type_test_pattern_spans_its_parentheses() {
+    // The parentheses around a type test are part of the pattern, as around any other pattern:
+    // an arm's pattern and an `as` or `|` around the test start at the `(` and end at the `)`
+    // or after, as in A24 (review round 3). The test's own diagnostics stay at its `:?`
+    // (`type_test_errors_point_at_the_marker_inside_parentheses`).
+    let source = "def f :: own (i64 | f64 | string) -> i64 = \\v ->\n    match v with\n    | _ -> 0\n    | (:? i64 as k) as whole -> k\n    | (:? i64 as k) -> k\n    | ( :? f64 ) | (:? string) -> 1\n";
+    let module = analyze(source).unwrap();
+    let warnings: Vec<(&str, &str)> = module
+        .warnings
+        .iter()
+        .filter(|warning| warning.code == "W1003")
+        .map(|warning| (warning.code, &source[warning.span.start..warning.span.end]))
+        .collect();
+    assert_eq!(
+        warnings,
+        [
+            ("W1003", "(:? i64 as k) as whole"),
+            ("W1003", "(:? i64 as k)"),
+            ("W1003", "( :? f64 ) | (:? string)"),
+        ]
+    );
+}
+
+#[test]
+fn rejects_narrowing_non_members() {
+    let source = "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | bool) -> 0\n    | _ -> 1\n";
+    let error = rejects(source, "E1041", "type_test_not_member");
+    assert_eq!(error.message, "bool is not a member of (i64 | string)");
+    assert_eq!(error.help.as_deref(), Some("the members are i64, string"));
+    // The location is the type after `:?`.
+    let tested = "(i64 | bool)";
+    let at = source.find(tested).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + tested.len()));
+    // The first member that the matched union lacks is named, in the canonical order (numbers
+    // come before `bool`); more members than it has is the same error.
+    let error = rejects(
+        "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (bool | i64 | f64) as x -> 0\n    | _ -> 1\n",
+        "E1041",
+        "type_test_not_member",
+    );
+    assert_eq!(error.message, "f64 is not a member of (i64 | string)");
+    let error = rejects(
+        "def f :: own (i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string | bool) -> 0\n",
+        "E1041",
+        "type_test_not_member",
+    );
+    assert_eq!(error.message, "bool is not a member of (i64 | string)");
+}
+
+#[test]
+fn conversions_do_not_adapt_function_purity() {
+    // A retagging moves the payload as it is, so a function member is only the member that has
+    // the same purity (review round 1; A24's type tests do the same): the conversions report the
+    // documented kinds, not a mismatch between two member types.
+    let call = "def call :: own (i64 | bool | (i64 -> i64)) -> i64 = \\v ->\n    match v with\n    | :? (i64 -> i64) as f -> f 4\n    | :? i64 as k -> k\n    | :? bool -> 7\n\npure def twice :: i64 -> i64 = \\x -> x * 2\n\n";
+    let error = rejects(
+        &format!("{call}def run :: own (i64 | pure (i64 -> i64)) -> i64 = \\small -> call small\n"),
+        "E1003",
+        "anonymous_union_not_subset",
+    );
+    assert_eq!(
+        error.message,
+        "expected (i64 | bool | (i64 -> i64)), found (i64 | pure (i64 -> i64)); pure (i64 -> i64) is not a member of (i64 | bool | (i64 -> i64))"
+    );
+    let error = rejects(
+        "def call :: own (i64 | bool | pure (i64 -> i64)) -> i64 = \\v -> 0\n\ndef run :: own (i64 | (i64 -> i64)) -> i64 = \\small -> call small\n",
+        "E1003",
+        "anonymous_union_not_subset",
+    );
+    assert!(
+        error
+            .message
+            .ends_with("; (i64 -> i64) is not a member of (i64 | bool | pure (i64 -> i64))"),
+        "{}",
+        error.message
+    );
+    // Narrowing names the member of `W` that the matched union lacks.
+    let source = "def f :: own (i64 | bool | (i64 -> i64)) -> i64 = \\v ->\n    match v with\n    | :? (i64 | pure (i64 -> i64)) as x -> 1\n    | _ -> 7\n";
+    let error = rejects(source, "E1041", "type_test_not_member");
+    assert_eq!(
+        error.message,
+        "pure (i64 -> i64) is not a member of (i64 | bool | (i64 -> i64))"
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("the members are i64, bool, (i64 -> i64)")
+    );
+    let tested = "(i64 | pure (i64 -> i64))";
+    let at = source.find(tested).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + tested.len()));
+    // The pure function itself is adapted where it is injected, member by member. 2 * 4 + 7 = 15.
+    passes(
+        &format!(
+            "{call}test \"members\" =\n    assert (call twice + call 7 == 15)\n    let wide: (i64 | bool | (i64 -> i64)) = twice\n    assert (call wide == 8)\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn narrowing_moves_owned_values() {
+    // A member that is not Copy moves into the narrowed value: the matched value is gone.
+    let error = rejects(
+        &format!(
+            "{TEXT}def f :: own (i64 | string | bool) -> i64 = \\v ->\n    let first = match v with\n        | :? (i64 | string) as x -> text x\n        | :? bool -> 2\n    match v with\n    | :? i64 -> first\n    | _ -> 0\n"
+        ),
+        "E1012",
+        "use_after_move",
+    );
+    assert!(error.message.contains("'v'"), "{}", error.message);
+    // The narrowed value is an owned value of its own: it moves on, once.
+    accepts(&format!(
+        "{TEXT}def f :: own (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> text x\n    | :? bool -> 2\n"
+    ));
+    let error = rejects(
+        &format!(
+            "{TEXT}def f :: own (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> text x + text x\n    | :? bool -> 2\n"
+        ),
+        "E1012",
+        "use_after_move",
+    );
+    assert!(error.message.contains("'x'"), "{}", error.message);
+    // When every member of the narrowed union is Copy, the value stays whole, as it does
+    // after the arms `:? i64 as n` and `:? f64 as n`.
+    accepts(&format!(
+        "{NUM}{TEXT}def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    let first = match v with\n        | :? (i64 | f64) as n -> num n + num n\n        | :? string -> 0\n    match v with\n    | :? string as s -> first + s.length\n    | _ -> first\n"
+    ));
+}
+
+#[test]
+fn narrowing_beside_other_bindings() {
+    // `whole` moves the value that `n` is narrowed from, so `n` is a copy that the pattern
+    // makes; two narrowings in one pattern; the payload of a case; a binder that shadows the
+    // matched name. By hand: `size` is 1 for an f64, the i64 itself, the length of a string.
+    passes(
+        &format!(
+            "{NUM}{TEXT}\
+             def size :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? f64 -> 1\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n\n\
+             def both :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | f64) as n) as whole -> num n + size whole\n    | :? string as s -> s.length\n\n\
+             def two :: own ((f64 | i64 | string) * (f64 | i64 | string)) -> i64 = \\pair ->\n    match pair with\n    | (:? (i64 | f64) as a, :? (i64 | f64) as b) -> num a * 100 + num b\n    | (:? (i64 | string) as a, :? (i64 | string) as b) -> text a * 10 + text b\n    | _ -> -1\n\n\
+             def beside :: own ((f64 | i64 | string) * string) -> i64 = \\pair ->\n    match pair with\n    | (:? (i64 | f64) as n, s) -> num n + s.length\n    | (:? string as t, s) -> t.length * s.length\n\n\
+             def nested :: own Maybe<(i64 | string | [i64])> -> i64 = \\m ->\n    match m with\n    | Some (:? (i64 | string) as x) -> text x\n    | Some (:? [i64] as xs) -> xs.length * 10\n    | None -> -1\n\n\
+             def shadow :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as v -> num v\n    | :? string as v -> v.length\n\n\
+             test \"beside\" =\n    \
+             assert (both 4 == 8 + 4)\n    \
+             assert (both 1.5 == 3 + 1)\n    \
+             assert (both \"abc\" == 3)\n    \
+             assert (two (4, 1.5) == 800 + 3)\n    \
+             assert (two (\"ab\", 7) == 20 + 7)\n    \
+             assert (two (\"ab\", \"xyz\") == 20 + 3)\n    \
+             assert (two (1.5, \"x\") == -1)\n    \
+             assert (beside (4, \"ab\") == 8 + 2)\n    \
+             assert (beside (\"abc\", \"ab\") == 6)\n    \
+             assert (nested (Some \"hello\") == 5)\n    \
+             assert (nested (Some 9) == 9)\n    \
+             assert (nested (Some [1, 2]) == 20)\n    \
+             assert (nested None == -1)\n    \
+             assert (shadow 4 + shadow \"abc\" == 8 + 3)\n"
+        ),
+        Edition::E2026,
+    );
+    // A member that is not Copy moves with the narrowing, so a second binding of the value
+    // is a second move, as it is beside `:? string as s`.
+    rejects(
+        &format!(
+            "{TEXT}def f :: own (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | string) as x) as whole -> text x\n    | :? bool -> 2\n"
+        ),
+        "E1012",
+        "use_after_move",
+    );
+}
+
+#[test]
+fn double_moves_out_of_a_matched_temporary_name_no_generated_local() {
+    // Two bindings of one pattern that take the same part of a matched temporary: the error
+    // names no local that the compiler made (review round 1), and the earlier move is at the
+    // binder that made it.
+    let make = "def make :: i64 -> (f64 | i64 | string) = \\n -> if n > 0 then n else \"neg\"\n\n\
+         def take :: own (f64 | i64 | string) -> i64 = \\v -> 0\n\n\
+         union V = A of string | B of i64\n\ndef mk :: i64 -> V = \\n -> if n > 0 then A \"a\" else B n\n\n\
+         def eat :: own V -> i64 = \\v -> 0\n\n";
+    for (body, binder) in [
+        (
+            "    match make n with\n    | (:? (i64 | string) as x) as whole -> take whole\n    | _ -> 0\n",
+            "x)",
+        ),
+        (
+            "    match make n with\n    | (:? string as s) as whole -> s.length + take whole\n    | _ -> 0\n",
+            "s)",
+        ),
+        (
+            "    match mk n with\n    | (A owner) as whole -> owner.length + eat whole\n    | _ -> 0\n",
+            "owner)",
+        ),
+    ] {
+        let source = format!("{make}def f :: i64 -> i64 = \\n ->\n{body}");
+        let error = rejects(&source, "E1012", "use_after_move");
+        assert_eq!(
+            error.message,
+            "use of moved or partially moved matched value: two bindings of the pattern take the same part of it",
+            "{body}"
+        );
+        assert_eq!(
+            error.help.as_deref(),
+            Some(
+                "bind the whole value with 'as' or bind its parts, not both, and match the bound value again in the arm"
+            )
+        );
+        let at = source.find(binder).unwrap();
+        let related: Vec<_> = error
+            .related
+            .iter()
+            .map(|related| related.span.start)
+            .collect();
+        assert_eq!(related, [at], "{body}");
+    }
+    // A matched variable is named as before.
+    let error = rejects(
+        &format!(
+            "{make}def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | string) as x) as whole -> take whole\n    | _ -> 0\n"
+        ),
+        "E1012",
+        "use_after_move",
+    );
+    assert_eq!(error.message, "use of moved or partially moved value 'v'");
+}
+
+#[test]
+fn a_second_widening_says_that_the_value_moved() {
+    // A widening moves the payload, all that the value holds besides its tag: the note says that
+    // the value moved and the help binds the wider value once, since `ref w` is never widened
+    // (review round 2). Into an own parameter, an annotated binding and a read parameter.
+    let make = "def mk :: i64 -> (i64 | string) = \\n -> if n > 0 then n else \"x\"\n\n\
+         def take :: own (f64 | i64 | string) -> i64 = \\v -> 0\n\n\
+         def look :: (f64 | i64 | string) -> i64 = \\v -> 0\n\n";
+    for (body, marker) in [
+        (
+            "    let a = take w\n    let b = take w\n    a + b\n",
+            "take w",
+        ),
+        (
+            "    let a: (f64 | i64 | string) = w\n    let b: (f64 | i64 | string) = w\n    take a + take b\n",
+            "= w",
+        ),
+        (
+            "    let a = look w\n    let b = look w\n    a + b\n",
+            "look w",
+        ),
+    ] {
+        let source = format!("{make}def f :: i64 -> i64 = \\n ->\n    let w = mk n\n{body}");
+        let error = rejects_in(&source, Edition::E2027, "E1012", "use_after_move");
+        assert_eq!(
+            error.message, "use of moved or partially moved value 'w'",
+            "{body}"
+        );
+        assert_eq!(
+            error.help.as_deref(),
+            Some(
+                "a widening moves 'w'; bind the wider value once with 'let wide: (i64 | f64 | string) = w' and borrow 'wide', or move it last"
+            ),
+            "{body}"
+        );
+        let first = source.find(marker).unwrap() + marker.len() - 1;
+        let second = source.rfind(marker).unwrap() + marker.len() - 1;
+        assert_eq!(error.span.start, second, "{body}");
+        let related: Vec<_> = error
+            .related
+            .iter()
+            .map(|related| (related.message.as_str(), related.span.start))
+            .collect();
+        assert_eq!(
+            related,
+            [("value moved here into a wider anonymous union", first)],
+            "{body}"
+        );
+    }
+    // The help that the bound wider value follows: it is borrowed twice.
+    accepts_in(
+        &format!(
+            "{make}def f :: i64 -> i64 = \\n ->\n    let w = mk n\n    let wide: (f64 | i64 | string) = w\n    look wide + look wide\n"
+        ),
+        Edition::E2027,
+    );
+    // A move out of a case of a union that is not anonymous keeps its message.
+    let error = rejects_in(
+        "union V = A of string | B of i64\n\ndef eat :: own string -> i64 = \\s -> 0\n\n\
+         def f :: own V -> i64 = \\v ->\n    let a = match v with\n        | A s -> eat s\n        | B _ -> 0\n    let b = match v with\n        | A s -> eat s\n        | B _ -> 0\n    a + b\n",
+        Edition::E2027,
+        "E1012",
+        "use_after_move",
+    );
+    assert_eq!(
+        error.help.as_deref(),
+        Some("borrow the field with 'ref' instead of moving it out of 'v', or move it last")
+    );
+    assert_eq!(error.related[0].message, "part of the value moved here");
+}
+
+#[test]
+fn a_widened_field_is_named_in_the_help() {
+    // A widening of a record field moves the field's payload: the note says that part of the
+    // value moved and the help binds the field, as the source spells it, not the record, whose
+    // type is not the union (review round 3). The field used again, the record used whole, a
+    // field of a field, a loop, and a read parameter.
+    let make = "record R { u: (i64 | string), k: i64 }\n\nrecord S { r: R }\n\n\
+         def take :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? i64 as k -> k\n    | _ -> 0\n\n\
+         def look :: (f64 | i64 | string) -> i64 = \\v -> 0\n\n";
+    let wider = "(i64 | f64 | string)";
+    for (function, widened, used, path, root, looped) in [
+        (
+            "def f :: own R -> i64 = \\r -> take r.u + take r.u\n",
+            "take r.u",
+            "r.u\n",
+            "r.u",
+            "r",
+            false,
+        ),
+        (
+            "def f :: own R -> i64 = \\r ->\n    let a = take r.u\n    let b = r\n    a + b.k\n",
+            "take r.u",
+            "= r\n",
+            "r.u",
+            "r",
+            false,
+        ),
+        (
+            "def f :: own S -> i64 = \\s -> take s.r.u + take s.r.u\n",
+            "take s.r.u",
+            "s.r.u\n",
+            "s.r.u",
+            "s",
+            false,
+        ),
+        (
+            "def f :: own R -> i64 = \\r ->\n    let mut sum = 0\n    for i in 0 ..= 1 do\n        sum = sum + take r.u\n    sum\n",
+            "take r.u",
+            "take r.u",
+            "r.u",
+            "r",
+            true,
+        ),
+        (
+            "def f :: own R -> i64 = \\r -> look r.u + look r.u\n",
+            "look r.u",
+            "r.u\n",
+            "r.u",
+            "r",
+            false,
+        ),
+    ] {
+        let source = format!("{make}{function}");
+        let error = rejects_in(&source, Edition::E2027, "E1012", "use_after_move");
+        assert_eq!(
+            error.message,
+            format!("use of moved or partially moved value '{root}'"),
+            "{function}"
+        );
+        assert_eq!(
+            error.help,
+            Some(format!(
+                "a widening moves '{path}' out of '{root}'; bind the wider value once with 'let wide: {wider} = {path}' and borrow 'wide', or move it last"
+            )),
+            "{function}"
+        );
+        let first = source.find(widened).unwrap() + widened.len() - path.len();
+        let at = if looped {
+            first
+        } else {
+            source.rfind(used).unwrap() + used.find(root).unwrap()
+        };
+        assert_eq!(error.span.start, at, "{function}");
+        let related: Vec<_> = error
+            .related
+            .iter()
+            .map(|related| {
+                (
+                    related.message.as_str(),
+                    related.span.start,
+                    related.span.end,
+                )
+            })
+            .collect();
+        let message = if looped {
+            "part of the value moved here into a wider anonymous union, in the previous iteration of the loop"
+        } else {
+            "part of the value moved here into a wider anonymous union"
+        };
+        assert_eq!(
+            related,
+            [(message, first, first + path.len())],
+            "{function}"
+        );
+    }
+    // A widened local in a loop: the value moved in the previous iteration (the nodes of a
+    // widening share its span, which the flow alone did not tell from a use in the same pass).
+    let source = format!(
+        "{make}def g :: own (i64 | string) -> i64 = \\w ->\n    let mut sum = 0\n    for i in 0 ..= 1 do\n        sum = sum + take w\n    sum\n"
+    );
+    let error = rejects_in(&source, Edition::E2027, "E1012", "use_after_move");
+    let at = source.find("take w").unwrap() + "take ".len();
+    assert_eq!((error.span.start, error.span.end), (at, at + 1));
+    assert_eq!(
+        error.help.as_deref(),
+        Some(
+            "a widening moves 'w'; bind the wider value once with 'let wide: (i64 | f64 | string) = w' and borrow 'wide', or move it last"
+        )
+    );
+    assert_eq!(
+        error.related[0].message,
+        "value moved here into a wider anonymous union, in the previous iteration of the loop"
+    );
+    // The help that the bound wider field follows: it is borrowed twice.
+    passes(
+        &format!(
+            "{make}def f :: own R -> i64 = \\r ->\n    let wide: {wider} = r.u\n    look wide + look wide + take wide\n\n\
+             test \"field\" =\n    assert (f (R {{ u: 4, k: 1 }}) == 4)\n    assert (f (R {{ u: \"x\", k: 1 }}) == 0)\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn a_converted_local_borrowed_beyond_the_call_names_the_conversion() {
+    // A read parameter of a partial application borrows its argument while the function value
+    // lives. A local converted into the wider union is a temporary: the error says so and how
+    // to bind the converted value, not to bind a temporary that the source does not write
+    // (review round 2). The injection of A24 says the same.
+    let make = "def mk :: i64 -> (i64 | [i64]) = \\n -> if n % 2 == 0 then n else Array.init n (\\i -> i)\n\n\
+         def three :: (f64 | i64 | [i64]) -> i64 -> i64 = \\a b -> b\n\n";
+    for (body, name, union) in [
+        (
+            "    let w = mk n\n    let g = three w\n    g 1\n",
+            "w",
+            "(i64 | f64 | [i64])",
+        ),
+        (
+            "    let w = mk n\n    5 |> three w\n",
+            "w",
+            "(i64 | f64 | [i64])",
+        ),
+        (
+            "    let k = n\n    let g = three k\n    g 1\n",
+            "k",
+            "(i64 | f64 | [i64])",
+        ),
+    ] {
+        let source = format!("{make}def f :: i64 -> i64 = \\n ->\n{body}");
+        let error = rejects_in(&source, Edition::E2027, "E1013", "borrow_of_temporary");
+        assert_eq!(
+            error.message,
+            format!(
+                "borrow requires a local place; '{name}' converted into {union} is a temporary value"
+            ),
+            "{body}"
+        );
+        assert_eq!(
+            error.help,
+            Some(format!(
+                "bind the converted value first, as in 'let wide: {union} = {name}', and pass 'wide'; or take the parameter with 'own'"
+            )),
+            "{body}"
+        );
+        let at = source.find(&format!("three {name}")).unwrap() + "three ".len();
+        assert_eq!((error.span.start, error.span.end), (at, at + 1), "{body}");
+    }
+    // Both ways out that the help names are accepted, and compute the same: (f64 | i64 | [i64])
+    // ignored, b returned.
+    let source = format!(
+        "{make}def f :: i64 -> i64 = \\n ->\n    let w = mk n\n    let wide: (f64 | i64 | [i64]) = w\n    let g = three wide\n    g 1\n\n\
+         def own_three :: own (f64 | i64 | [i64]) -> i64 -> i64 = \\a b -> b\n\n\
+         def h :: i64 -> i64 = \\n ->\n    let w = mk n\n    let g = own_three w\n    g 2\n\n\
+         test \"bound\" =\n    assert (f 3 + h 3 + f 4 + h 4 == 6)\n"
+    );
+    passes(&source, Edition::E2027);
+    // A temporary that the source writes keeps its message.
+    let error = rejects_in(
+        &format!("{make}def f :: i64 -> i64 = \\n ->\n    let g = three (mk n)\n    g 1\n"),
+        Edition::E2027,
+        "E1013",
+        "borrow_of_temporary",
+    );
+    assert_eq!(
+        error.message,
+        "borrow requires a local place; bind the temporary with 'let' first"
+    );
+}
+
+/// `depth` nested matches of the same value whose arms narrow it with `arm` (`{x}` is the
+/// binder of the level), each of them followed by an arm for the string.
+fn nested_narrowings(depth: usize, arm: &str) -> String {
+    let mut source = "def mk :: i64 -> (f64 | i64 | string | bool) = \\n -> if n > 0 then n else \"x\"\n\n\
+         def num :: (i64 | f64 | bool) -> i64 = \\v ->\n    match v with\n    | :? i64 as k -> k\n    | :? f64 -> 1\n    | :? bool -> 2\n\n\
+         export def t :: i64 -> i64 = \\n ->\n    let v = mk n\n"
+        .to_owned();
+    for level in 0..depth {
+        let pad = "    ".repeat(level + 1);
+        let arm = arm.replace("{x}", &format!("x{level}"));
+        source.push_str(&format!("{pad}match v with\n{pad}| {arm} + (\n"));
+    }
+    source.push_str(&format!("{}0\n", "    ".repeat(depth + 1)));
+    for level in (0..depth).rev() {
+        let pad = "    ".repeat(level + 1);
+        source.push_str(&format!("{pad}    )\n{pad}| :? string -> 1\n"));
+    }
+    source
+}
+
+#[test]
+fn nested_narrowing_arms_check_each_body_once() {
+    // Each `:? (A | B | C)` is three alternatives of one arm. They bind the same values, so the
+    // ownership check visits the body of the arm once, not once for each alternative: a match
+    // nested 30 deep in such arms was 3^30 visits of the innermost body (review round 2). The
+    // same holds for a narrowing without a binder and for the OR of type tests that A24 wrote.
+    for arm in [
+        ":? (i64 | f64 | bool) as {x} -> num {x}",
+        ":? (i64 | f64 | bool) -> 1",
+        ":? i64 | :? f64 | :? bool -> 1",
+    ] {
+        let source = nested_narrowings(30, arm);
+        accepts_in(&source, Edition::E2027);
+    }
+    // Expected value by hand: every level of `nested_narrowings 3` takes the i64 5 (5 each) for
+    // t 5, and t (-1) is the string at the outer level (1).
+    let source = format!(
+        "{}\ntest \"nested\" =\n    assert (t 5 == 15 && t (-1) == 1)\n",
+        nested_narrowings(3, ":? (i64 | f64 | bool) as {x} -> num {x}")
+    );
+    passes(&source, Edition::E2027);
+}
+
+/// `(subject, maker, matched, arm)` of `nested_element_narrowings`.
+type ElementForm = (&'static str, &'static str, &'static str, &'static str);
+
+/// `def {name} :: i64 -> i64`: `depth` nested matches of `{matched}`, where `v` is the value of
+/// type `{subject}` that `mk_{name} n` makes with `{maker}`. The first arm of each match is
+/// `{arm}` (`{x}` is the binder of the level), whose body adds `num {x}` (`NUM`) to the next
+/// level, or to 0 at the innermost; the second is `_ -> 1`.
+fn nested_element_narrowings(
+    name: &str,
+    depth: usize,
+    (subject, maker, matched, arm): ElementForm,
+) -> String {
+    let mut source = format!(
+        "def mk_{name} :: i64 -> {subject} = \\n -> {maker}\n\n\
+         def {name} :: i64 -> i64 = \\n ->\n    let v = mk_{name} n\n"
+    );
+    for level in 0..depth {
+        let pad = "    ".repeat(level + 1);
+        let x = format!("x{level}");
+        let arm = arm.replace("{x}", &x);
+        source.push_str(&format!(
+            "{pad}match {matched} with\n{pad}| {arm} -> num {x} + (\n"
+        ));
+    }
+    source.push_str(&format!("{}0\n", "    ".repeat(depth + 1)));
+    for level in (0..depth).rev() {
+        let pad = "    ".repeat(level + 1);
+        source.push_str(&format!("{pad}    )\n{pad}| _ -> 1\n"));
+    }
+    source.push('\n');
+    source
+}
+
+/// The forms of `nested_element_narrowings`: narrowings of elements of an array or a list
+/// (Copilot review round 5), of one element and of two, of an element bound whole with `as`
+/// too, of the head of a list beside its tail, of a part of a tuple element, of an element of
+/// an array in a tuple and of an element behind a reference; then the projections that were
+/// compared before (a tuple part, a case payload, the matched value). `mk_{name} n` puts the
+/// i64 `n` at every place that the arm narrows for a positive `n`, and a bool there otherwise.
+const ELEMENT_NARROWINGS: [(&str, ElementForm); 11] = [
+    (
+        "array",
+        (
+            "[(i64 | f64 | bool)]",
+            "if n > 0 then [n] else [true]",
+            "v",
+            "[:? (i64 | f64) as {x}]",
+        ),
+    ),
+    (
+        "pair",
+        (
+            "[(i64 | f64 | bool)]",
+            "if n > 0 then [n, n] else [true, true]",
+            "v",
+            "[:? (i64 | f64) as {x}, :? (i64 | f64) as _{x}]",
+        ),
+    ),
+    (
+        "whole",
+        (
+            "[(i64 | f64 | bool)]",
+            "if n > 0 then [n] else [true]",
+            "v",
+            "[(:? (i64 | f64) as {x}) as _{x}]",
+        ),
+    ),
+    (
+        "list",
+        (
+            "[|(i64 | f64 | bool)|]",
+            "if n > 0 then [|n|] else [|true|]",
+            "v",
+            "[| :? (i64 | f64) as {x} |]",
+        ),
+    ),
+    (
+        "cons",
+        (
+            "[|(i64 | f64 | bool)|]",
+            "if n > 0 then [|n|] else [|true|]",
+            "v",
+            "(:? (i64 | f64) as {x}) :: _{x}",
+        ),
+    ),
+    (
+        "in_tuple",
+        (
+            "[((i64 | f64 | bool) * i64)]",
+            "if n > 0 then [(n, 1)] else [(true, 1)]",
+            "v",
+            "[(:? (i64 | f64) as {x}, _)]",
+        ),
+    ),
+    (
+        "of_tuple",
+        (
+            "([(i64 | f64 | bool)] * i64)",
+            "if n > 0 then ([n], 1) else ([true], 1)",
+            "v",
+            "([:? (i64 | f64) as {x}], _)",
+        ),
+    ),
+    (
+        "borrowed",
+        (
+            "[(i64 | f64 | bool)]",
+            "if n > 0 then [n] else [true]",
+            "(ref v)",
+            "[:? (i64 | f64) as {x}]",
+        ),
+    ),
+    (
+        "tuple",
+        (
+            "((i64 | f64 | bool) * i64)",
+            "if n > 0 then (n, 1) else (true, 1)",
+            "v",
+            "(:? (i64 | f64) as {x}, _)",
+        ),
+    ),
+    (
+        "payload",
+        (
+            "Maybe<(i64 | f64 | bool)>",
+            "if n > 0 then Some n else Some true",
+            "v",
+            "Some (:? (i64 | f64) as {x})",
+        ),
+    ),
+    (
+        "local",
+        (
+            "(i64 | f64 | bool)",
+            "if n > 0 then n else true",
+            "v",
+            ":? (i64 | f64) as {x}",
+        ),
+    ),
+];
+
+#[test]
+fn nested_element_narrowings_check_each_body_once() {
+    // The alternatives of a narrowing of an element bind the same element: their projections
+    // index the same collection at the same constant, which `same_projection` compares. A match
+    // nested 30 deep in such arms was 2^30 visits of the innermost body (4^30 for two elements),
+    // as for the matched value in `nested_narrowing_arms_check_each_body_once`, because two
+    // indexed projections never compared equal (Copilot review round 5).
+    for (name, form) in ELEMENT_NARROWINGS {
+        let source = format!("{NUM}{}", nested_element_narrowings(name, 30, form));
+        accepts_in(&source, Edition::E2027);
+    }
+    // Expected values by hand: every level of a match nested 3 deep narrows the i64 5, which
+    // `num` doubles (10 each, 30 in all), for 5; for -1 the outer level meets the bool (1).
+    let mut source = NUM.to_owned();
+    let mut checks = String::from("test \"nested\" =\n");
+    for (name, form) in ELEMENT_NARROWINGS {
+        source.push_str(&nested_element_narrowings(name, 3, form));
+        checks.push_str(&format!(
+            "    assert ({name} 5 == 30 && {name} (-1) == 1)\n"
+        ));
+    }
+    source.push_str(&checks);
+    passes(&source, Edition::E2027);
+}
+
+#[test]
+fn narrowing_arms_may_move_or_replace_the_matched_value() {
+    // A narrowing of Copy members copies the payload and leaves the matched value to the arm,
+    // as the arms `:? i64 as n`, `:? f64 as n` do, also when the match is not the result of
+    // its function (review round 1): the arm may move the matched variable, assign to it or
+    // write through the reference that it was read from, and the narrowed value keeps the old
+    // payload. By hand: `num` is 2 k for the i64 k and 3 for an f64 above 1, `size` 20000 for
+    // an f64, the i64 itself and the length of a string.
+    let program = format!(
+        "{NUM}def size :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? f64 -> 20000\n    | :? i64 as n -> n\n    | :? string as s -> s.length\n\n\
+         def moved :: own (f64 | i64 | string) -> i64 = \\v ->\n    let r = match v with\n        | :? (i64 | f64) as n -> num n + size v\n        | :? string -> 1\n    r\n\n\
+         def replaced :: own (f64 | i64 | string) -> i64 = \\start ->\n    let mut v = start\n    let r = match v with\n        | :? (i64 | f64) as n ->\n            v = \"replaced\"\n            num n\n        | :? string -> 0\n    r * 100 + size v\n\n\
+         def through :: ref mut (f64 | i64 | string) -> i64 = \\cell ->\n    let r = match deref cell with\n        | :? (i64 | f64) as n ->\n            deref cell = \"through\"\n            num n\n        | :? string -> 0\n    r\n\n\
+         test \"arms\" =\n    \
+         assert (moved 4 == 8 + 4)\n    \
+         assert (moved 2.5 == 3 + 20000)\n    \
+         assert (moved \"abc\" == 1)\n    \
+         assert (replaced 6 == 1200 + 8)\n    \
+         assert (replaced 0.5 == 0 + 8)\n    \
+         assert (replaced \"ab\" == 0 + 2)\n    \
+         let mut cell: (f64 | i64 | string) = 9\n    \
+         assert (through (ref mut cell) == 18)\n    \
+         assert (through (ref mut cell) == 0)\n    \
+         assert (size cell == 7)\n"
+    );
+    passes(&program, Edition::E2027);
+    // An arm that does not reach the matched variable keeps the switch on the tag.
+    let ir = accepts(&format!(
+        "{NUM}def kept :: own (f64 | i64 | string) -> i64 = \\v ->\n    let r = match v with\n        | :? (i64 | f64) as n -> num n\n        | :? string as s -> s.length\n    r\n"
+    ));
+    assert!(
+        function_body(&ir, "kept").matches("switch i32 ").count() >= 2,
+        "{ir}"
+    );
+}
+
+#[test]
+fn narrowing_in_or_patterns() {
+    // Both sides narrow the same union with the same test (see `pair` in
+    // `narrowing_copies_copy_members_from_views`). Anything else has no single value to bind.
+    let unlike = "both sides of an OR pattern must narrow the same anonymous union with the same ':?' test to bind one name";
+    for pattern in [
+        // Two unions with the members of the narrowed one.
+        "(:? (i64 | f64) as n, _) | (_, :? (i64 | f64) as n)",
+        // A narrowing and a plain binding of the narrowed type, in both orders.
+        "(:? (i64 | f64) as n, _) | (_, n)",
+        "(_, n) | (:? (i64 | f64) as n, _)",
+    ] {
+        let source = format!(
+            "def f :: own ((f64 | i64 | string) * (f64 | i64)) -> i64 = \\v ->\n    match v with\n    | {pattern} -> 1\n    | _ -> 2\n"
+        );
+        let error = rejects(&source, "E1020", "or_pattern_binding_mismatch");
+        assert_eq!(error.message, unlike, "{pattern}");
+        // The location is the second binder.
+        let at = source.rfind(" n").unwrap() + 1;
+        assert_eq!(
+            (error.span.start, error.span.end),
+            (at, at + 1),
+            "{pattern}"
+        );
+    }
+    // Two narrowings to different unions give the name two types.
+    let error = rejects(
+        "def f :: own (f64 | i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n | :? (i64 | bool) as n -> 1\n    | _ -> 2\n",
+        "E1003",
+        "type_mismatch",
+    );
+    assert_eq!(error.message, "expected (i64 | f64), found (i64 | bool)");
+    // A name that only one side binds, and a name bound twice on one side.
+    let error = rejects(
+        "def f :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n | :? string -> 1\n",
+        "E1020",
+        "or_pattern_binding_mismatch",
+    );
+    assert_eq!(
+        error.message,
+        "both sides of an OR pattern must bind the same names"
+    );
+    let error = rejects(
+        "def f :: own ((f64 | i64 | string) * (f64 | i64 | string)) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | f64) as n, :? (i64 | f64) as n) -> 1\n    | _ -> 2\n",
+        "E1001",
+        "duplicate_name",
+    );
+    assert_eq!(error.message, "duplicate or reserved name 'n'");
+    rejects(
+        "def f :: own ((f64 | i64 | string) * i64) -> i64 = \\v ->\n    match v with\n    | (:? (i64 | f64) as n, n) -> 1\n    | _ -> 2\n",
+        "E1001",
+        "duplicate_name",
+    );
+}
+
+#[test]
+fn narrowing_retags_without_allocating() {
+    // A narrowing of a union that is not recursive switches on the tag and moves or copies the
+    // payload: no allocation and no implicit copy (`@no_copy` holds) for numbers and strings.
+    let ir = accepts(&format!(
+        "{NUM}{TEXT}@no_copy\ndef numbers :: own (f64 | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n\n\
+         @no_copy\ndef owners :: own (i64 | string | bool) -> i64 = \\v ->\n    match v with\n    | :? (i64 | string) as x -> text x\n    | :? bool -> 2\n\n\
+         export def run :: i64 -> i64 = \\n ->\n    let a: (f64 | i64 | string) = n\n    let b: (i64 | string | bool) = n\n    numbers a + owners b\n"
+    ));
+    for name in ["numbers", "owners"] {
+        let body = function_body(&ir, name);
+        assert!(!body.contains("@tz.alloc"), "{name}:\n{body}");
+        // The match of the function and the retagging match of the narrowing.
+        assert!(body.matches("switch i32 ").count() >= 2, "{name}:\n{body}");
+    }
+    // An array member is copied once into the narrowed value, as a nested match that wraps it
+    // again copies it; the copy is reported at the pattern.
+    let source = "def arr :: own ([i64] | i64) -> i64 = \\n ->\n    match n with\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length\n\n\
+         @no_copy\ndef arrays :: own ([i64] | i64 | string) -> i64 = \\v ->\n    match v with\n    | :? ([i64] | i64) as n -> arr n\n    | :? string as s -> s.length\n";
+    let error = rejects(source, "E1031", "effect_copy_in_no_copy");
+    let pattern = ":? ([i64] | i64) as n";
+    let at = source.find(pattern).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + pattern.len()));
+    let ir = accepts(&source.replace("@no_copy\n", ""));
+    assert_eq!(
+        function_body(&ir, "arrays").matches("@tz.alloc").count(),
+        1,
+        "{ir}"
+    );
+}
+
+#[test]
+fn narrowing_a_union_that_may_hold_loans_copies_the_payload() {
+    // A function member may hold loans, and ownership and code generation view no value of a type
+    // that may (`TypedMatchArm::views`). `:? (i64 | f64) as n` of such a union copies the selected
+    // Copy payload in a step of the pattern, as the arms `:? i64 as n`, `:? f64 as n` do, instead of
+    // taking the whole value into its hidden binding (Copilot review round 1): that was `E1012`
+    // behind a reference and a move of an owned value, which could not be used again. By hand:
+    // `num` is 2 k for the i64 k and 3 for an f64 above 1; `size` is k for the i64 k, 1 for an f64,
+    // the length of a string and f 1 for a function f.
+    const ANY: &str = "(i64 | f64 | string | (i64 -> i64))";
+    let source = format!(
+        "{NUM}def size :: ref {ANY} -> i64 = \\v ->\n    match v with\n    | :? i64 as k -> k\n    | :? f64 -> 1\n    | :? string as s -> s.length\n    | :? (i64 -> i64) as f -> f 1\n\n\
+         def by_ref :: ref {ANY} -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n    | :? (i64 -> i64) -> 100\n\n\
+         def owned :: own {ANY} -> i64 = \\v ->\n    let r = match v with\n        | :? (i64 | f64) as n -> num n\n        | :? string -> 0\n        | :? (i64 -> i64) -> 0\n    r * 1000 + size (ref v)\n\n\
+         test \"loans\" =\n    \
+         let a: {ANY} = 4\n    \
+         let b: {ANY} = 2.5\n    \
+         let c: {ANY} = \"abc\"\n    \
+         let d: {ANY} = \\(k: i64) -> k + 41\n    \
+         assert (by_ref (ref a) + by_ref (ref b) + by_ref (ref c) + by_ref (ref d) == 8 + 3 + 3 + 100)\n    \
+         assert (by_ref (ref a) == 8)\n    \
+         assert (owned a == 8004 && owned b == 3001 && owned c == 3 && owned d == 42)\n"
+    );
+    passes(&source, Edition::E2026);
+    // A read parameter (2027) is such a view. By hand: 8 + 3 + 2 + 2 * 5.
+    passes(
+        &format!(
+            "{NUM}def read :: {ANY} -> i64 = \\v ->\n    match v with\n    | :? (i64 | f64) as n -> num n\n    | :? string as s -> s.length\n    | :? (i64 -> i64) as f -> f 2\n\n\
+             test \"read\" =\n    assert (read 4 + read 2.5 + read \"ab\" + read (\\(k: i64) -> k * 5) == 8 + 3 + 2 + 10)\n"
+        ),
+        Edition::E2027,
+    );
+}
+
+#[test]
+fn narrowing_a_copy_union_copies_its_array_once() {
+    // A union whose members are all Copy, one of them an array: the hidden binding of
+    // `:? (i64 | [i64]) as x` views the matched value, as it does a union that is not Copy, and the
+    // retagging copies the array once, into the narrowed value (Copilot review round 1). Before, the
+    // hidden binding copied the whole value first behind a reference, through a read parameter and
+    // from an owned value that the function reads again: two copies. An owned value read once moved
+    // into the hidden binding: one copy, as now. The arm may write over the matched variable: the
+    // narrowed value was copied before the body runs.
+    let arr = "def arr :: own ([i64] | i64) -> i64 = \\n ->\n    match n with\n    | :? i64 as k -> k\n    | :? [i64] as xs -> xs.length * 100\n\n\
+         def balanced :: (unit -> i64) -> i64 = \\f ->\n    let start = Alloc.snapshot ()\n    let value = f ()\n    let used = start |> Alloc.since\n    if used.frees == used.allocs then value else -1\n\n";
+    let functions = "def by_ref :: ref (i64 | f64 | [i64]) -> i64 = \\v ->\n    match v with\n    | :? (i64 | [i64]) as x -> arr x\n    | :? f64 -> 1\n\n\
+         def again :: own (i64 | f64 | [i64]) -> i64 = \\v ->\n    let r = match v with\n        | :? (i64 | [i64]) as x -> arr x\n        | :? f64 -> 1\n    r * 1000 + by_ref (ref v)\n\n\
+         def touched :: own (i64 | f64 | [i64]) -> i64 = \\v ->\n    match v with\n    | :? (i64 | [i64]) as x -> arr x * 1000 + by_ref (ref v)\n    | :? f64 -> 1\n\n\
+         def replaced :: own (i64 | f64 | [i64]) -> i64 = \\start ->\n    let mut v = start\n    match v with\n    | :? (i64 | [i64]) as x ->\n        v = 2.5\n        arr x * 1000 + by_ref (ref v)\n    | :? f64 -> 1\n\n\
+         def once :: own (i64 | f64 | [i64]) -> i64 = \\v ->\n    match v with\n    | :? (i64 | [i64]) as x -> arr x\n    | :? f64 -> 1\n\n";
+    let source = format!("{arr}{functions}");
+    let module = accepts_in(&source, Edition::E2026);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    for name in ["by_ref", "again", "touched", "replaced", "once"] {
+        let body = function_body(&ir, name);
+        assert_eq!(body.matches("@tz.alloc").count(), 1, "{name}:\n{body}");
+    }
+    // The copy is the narrowed value's, at the pattern, as for a union that is not Copy.
+    let source_no_copy = format!("{arr}@no_copy\n{functions}");
+    let error = rejects(&source_no_copy, "E1031", "effect_copy_in_no_copy");
+    let pattern = ":? (i64 | [i64]) as x";
+    let at = source_no_copy.find(pattern).unwrap();
+    assert_eq!((error.span.start, error.span.end), (at, at + pattern.len()));
+    // Expected values by hand: arr gives 100 for each number of an array and the i64 itself, the
+    // f64 arm 1. again [1, 2]: 200 * 1000 + 200; touched as again; replaced [1, 2]: the narrowed
+    // value keeps the array (200), v is then the f64 (1).
+    let tests = "def via_ref :: own (i64 | f64 | [i64]) -> i64 = \\v -> by_ref (ref v)\n\n\
+         test \"values\" =\n    \
+         assert (balanced (\\() -> via_ref [1, 2, 3]) == 300 && balanced (\\() -> via_ref 7) == 7 && balanced (\\() -> via_ref 2.5) == 1)\n    \
+         assert (balanced (\\() -> again [1, 2]) == 200200 && balanced (\\() -> again 5) == 5005 && balanced (\\() -> again 1.5) == 1001)\n    \
+         assert (balanced (\\() -> touched [1, 2]) == 200200 && balanced (\\() -> touched 5) == 5005 && balanced (\\() -> touched 1.5) == 1)\n    \
+         assert (balanced (\\() -> replaced [1, 2]) == 200001 && balanced (\\() -> replaced 5) == 5001 && balanced (\\() -> replaced 1.5) == 1)\n    \
+         assert (balanced (\\() -> once [4]) == 100 && balanced (\\() -> once 9) == 9 && balanced (\\() -> once 0.5) == 1)\n";
+    passes(&format!("{source}{tests}"), Edition::E2026);
+    // A read parameter (2027) views the matched value too.
+    let read = format!(
+        "{arr}def read :: (i64 | f64 | [i64]) -> i64 = \\v ->\n    match v with\n    | :? (i64 | [i64]) as x -> arr x\n    | :? f64 -> 1\n\n\
+         test \"read\" =\n    assert (balanced (\\() -> read [1, 2, 3]) == 300 && balanced (\\() -> read 7) == 7 && balanced (\\() -> read 2.5) == 1)\n"
+    );
+    let module = accepts_in(&read, Edition::E2027);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    let body = function_body(&ir, "read");
+    assert_eq!(body.matches("@tz.alloc").count(), 1, "read:\n{body}");
+    passes(&read, Edition::E2027);
+}
+
+/// `arr` (100 for each number of an array, the i64 itself) and `balanced` (the value of `f ()`
+/// when it frees what it allocates, else -1) for the narrowing tests below.
+const ARR_BALANCED: &str = r#"def arr :: own ([i64] | i64) -> i64 = \n ->
+    match n with
+    | :? i64 as k -> k
+    | :? [i64] as xs -> xs.length * 100
+
+def balanced :: (unit -> i64) -> i64 = \f ->
+    let start = Alloc.snapshot ()
+    let value = f ()
+    let used = start |> Alloc.since
+    if used.frees == used.allocs then value else -1
+
+"#;
+
+#[test]
+fn narrowing_a_generic_union_copies_the_payload_for_every_type_argument() {
+    // A type variable may stand for a type that holds loans: `(i64 | f64 | Maybe<'a>)` with `'a` a
+    // pair of a string and a function, or a record with such fields, is not Copy and holds loans,
+    // and ownership and code generation decide views in each specialization
+    // (`TypedMatchArm::views`). So `:? (i64 | f64) as n` of a union with a type variable copies the
+    // payload in a step of the pattern for every type argument (Copilot review round 1,
+    // verification). Before, the hidden binding viewed the generic union and took the whole value
+    // in such a specialization: `E1012` behind a reference and a move of an owned value that is
+    // used again, both reported inside the generic definition.
+    // By hand: `num` is 2 k for the i64 k, 3 for an f64 above 1 and 0 for one below; `by_ref` 50 for
+    // a `Maybe`; `owned` is 1000 times the arm plus `by_ref`; `touched` 1000 num n + by_ref, 7 for a
+    // `Maybe`; `guarded` num n when it is above 4, 1 for another number, 2 for a `Maybe`; `beside`
+    // 1000 times the length of the string plus num n; `either` num n of the side that is a number.
+    // `sf base kind` is base, base + 0.5 or `Some` of a pair whose function captures `base`.
+    let functions = r#"record Pair { text: string, f: (i64 -> i64) }
+
+def by_ref :: ref (i64 | f64 | Maybe<'a>) -> i64 = \v ->
+    match v with
+    | :? (i64 | f64) as n -> num n
+    | :? Maybe<'a> -> 50
+
+def owned :: own (i64 | f64 | Maybe<'a>) -> i64 = \v ->
+    let r = match v with
+        | :? (i64 | f64) as n -> num n
+        | :? Maybe<'a> -> 0
+    r * 1000 + by_ref (ref v)
+
+def touched :: own (i64 | f64 | Maybe<'a>) -> i64 = \v ->
+    match v with
+    | :? (i64 | f64) as n -> num n * 1000 + by_ref (ref v)
+    | :? Maybe<'a> -> 7
+
+def guarded :: ref (i64 | f64 | Maybe<'a>) -> i64 = \v ->
+    match v with
+    | :? (i64 | f64) as n when num n > 4 -> num n
+    | :? (i64 | f64) -> 1
+    | :? Maybe<'a> -> 2
+
+def with_array :: ref (i64 | [i64] | Maybe<'a>) -> i64 = \v ->
+    match v with
+    | :? (i64 | [i64]) as x -> arr x
+    | :? Maybe<'a> -> 9
+
+def with_array_own :: own (i64 | [i64] | Maybe<'a>) -> i64 = \v ->
+    let r = match v with
+        | :? (i64 | [i64]) as x -> arr x
+        | :? Maybe<'a> -> 9
+    r * 1000 + with_array (ref v)
+
+def beside :: own (string * (i64 | f64 | Maybe<'a>)) -> i64 = \t ->
+    match t with
+    | (s, :? (i64 | f64) as n) -> s.length * 1000 + num n
+    | (s, _) -> s.length
+
+def either :: ref ((i64 | f64 | Maybe<'a>) * (i64 | f64 | Maybe<'a>)) -> i64 = \pair ->
+    match pair with
+    | (:? (i64 | f64) as n, :? Maybe<'a>) | (:? Maybe<'a>, :? (i64 | f64) as n) -> num n
+    | _ -> -1
+
+def sf :: i64 -> i64 -> (i64 | f64 | Maybe<(string * (i64 -> i64))>) = \base kind ->
+    let f = \(k: i64) -> k + base
+    if kind == 0 then base else if kind == 1 then (base as f64) + 0.5 else Some ($"ab{base}", f)
+
+def pr :: i64 -> i64 -> (i64 | f64 | Maybe<Pair>) = \base kind ->
+    if kind == 0 then base else if kind == 1 then (base as f64) + 0.5 else Some (Pair { text: $"x{base}", f: \(k: i64) -> k * base })
+
+"#;
+    let tests = r#"test "pair of a string and a function" =
+    let a = sf 3 0
+    let b = sf 2 1
+    let c = sf 3 2
+    assert (by_ref (ref a) == 6 && by_ref (ref b) == 3 && by_ref (ref c) == 50)
+    assert (guarded (ref a) == 6 && guarded (ref b) == 1 && guarded (ref c) == 2)
+    assert (balanced (\() -> owned (sf 3 0)) == 6006 && balanced (\() -> owned (sf 2 1)) == 3003 && balanced (\() -> owned (sf 3 2)) == 50)
+    assert (balanced (\() -> touched (sf 3 0)) == 6006 && balanced (\() -> touched (sf 2 1)) == 3003 && balanced (\() -> touched (sf 3 2)) == 7)
+    let t: (string * (i64 | f64 | Maybe<(string * (i64 -> i64))>)) = ($"abc{a |> by_ref}", sf 3 0)
+    assert (beside t == 4006)
+    let e: (i64 | [i64] | Maybe<(string * (i64 -> i64))>) = [1, 2]
+    assert (with_array (ref e) == 200 && balanced (\() -> with_array_own e) == 200200)
+    let pair = (sf 4 0, sf 4 2)
+    assert (either (ref pair) == 8)
+    let other = (sf 4 2, sf 2 1)
+    assert (either (ref other) == 3)
+
+test "record with a string and a function" =
+    let a = pr 7 0
+    let c = pr 2 2
+    assert (by_ref (ref a) == 14 && by_ref (ref c) == 50)
+    assert (balanced (\() -> owned (pr 7 0)) == 14014 && balanced (\() -> touched (pr 7 0)) == 14014)
+    assert (balanced (\() -> owned (pr 2 2)) == 50)
+
+test "other type arguments" =
+    let s: (i64 | f64 | Maybe<string>) = 3
+    let i: (i64 | f64 | Maybe<i64>) = 2.5
+    let xs: (i64 | f64 | Maybe<[i64]>) = 4
+    let fs: (i64 | f64 | Maybe<(i64 -> i64)>) = 1
+    assert (by_ref (ref s) + owned s == 6012)
+    assert (by_ref (ref i) + owned i == 3006)
+    assert (by_ref (ref xs) + owned xs == 8016)
+    assert (by_ref (ref fs) + owned fs == 2004)
+    let t: (i64 | [i64] | Maybe<string>) = [1, 2, 3]
+    let u: (i64 | [i64] | Maybe<i64>) = [4]
+    assert (balanced (\() -> with_array_own t) == 300300 && balanced (\() -> with_array_own u) == 100100)
+"#;
+    passes(
+        &[NUM, ARR_BALANCED, functions, tests].concat(),
+        Edition::E2026,
+    );
+    // A read parameter (2027) is a view too. By hand: 6 + 3 + 50.
+    let read = r#"def read :: (i64 | f64 | Maybe<'a>) -> i64 = \v ->
+    match v with
+    | :? (i64 | f64) as n -> num n
+    | :? Maybe<'a> -> 50
+
+def sf :: i64 -> i64 -> (i64 | f64 | Maybe<(string * (i64 -> i64))>) = \base kind ->
+    let f = \(k: i64) -> k + base
+    if kind == 0 then base else if kind == 1 then (base as f64) + 0.5 else Some ($"ab{base}", f)
+
+test "read" =
+    assert (read (sf 3 0) + read (sf 2 1) + read (sf 3 2) == 6 + 3 + 50)
+"#;
+    passes(&[NUM, read].concat(), Edition::E2027);
+}
+
+#[test]
+fn narrowing_a_copy_union_beside_a_moved_part_copies_its_array_once() {
+    // The hidden binding of a narrowing into Copy members views a Copy union, and only a move of
+    // the part that it views meets that view (Copilot review round 1, verification). Beside a
+    // binding that moves another part (`s` takes `t.0`, the narrowing reads `t.1`), the hidden
+    // binding takes the value as a binding does: it moves out of the owned subject, which is dead
+    // afterwards, and the retagging copies the array once. Behind a reference it stays a view.
+    // Stepping the narrowing, as for `(:? W as x) as whole`, copied the array twice: into the value
+    // that the pattern makes and into the binding.
+    let functions = r#"record R { u: (i64 | f64 | [i64]), s: string }
+
+def size :: ref (i64 | f64 | [i64]) -> i64 = \v ->
+    match v with
+    | :? i64 as k -> k
+    | :? f64 -> 1
+    | :? [i64] as xs -> xs.length * 10
+
+def tuple :: own (string * (i64 | f64 | [i64])) -> i64 = \t ->
+    match t with
+    | (s, :? (i64 | [i64]) as x) -> s.length * 1000000 + arr x
+    | (s, _) -> s.length
+
+def field :: own R -> i64 = \r ->
+    match r with
+    | R { u = :? (i64 | [i64]) as x, s = s } -> s.length * 1000000 + arr x
+    | R { s = s } -> s.length
+
+def through :: own (string * ref (i64 | f64 | [i64])) -> i64 = \t ->
+    match t with
+    | (s, :? (i64 | [i64]) as x) -> s.length * 1000000 + arr x
+    | (s, _) -> s.length
+
+def either :: own ((string * (i64 | f64 | [i64])) * (i64 | f64 | [i64])) -> i64 = \p ->
+    match p with
+    | ((s, :? (i64 | [i64]) as x), :? f64) -> s.length * 1000000 + arr x
+    | ((s, :? f64), :? (i64 | [i64]) as x) -> s.length * 2000000 + arr x
+    | _ -> 0
+
+def ored :: own ((string * (i64 | f64 | [i64])) * (i64 | f64 | [i64])) -> i64 = \p ->
+    match p with
+    | ((s, :? (i64 | [i64]) as x), :? f64) | ((s, :? f64), :? (i64 | [i64]) as x) -> s.length * 1000000 + arr x
+    | _ -> 0
+
+def whole :: own (i64 | f64 | [i64]) -> i64 = \v ->
+    match v with
+    | (:? (i64 | [i64]) as x) as w -> arr x * 1000 + size (ref w)
+    | :? f64 -> 1
+
+"#;
+    let source = [ARR_BALANCED, functions].concat();
+    let module = accepts_in(&source, Edition::E2026);
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    // One copy for each arm that narrows: the retagging copies the array of the narrowed value.
+    for (name, copies) in [
+        ("tuple", 1),
+        ("field", 1),
+        ("through", 1),
+        ("either", 2),
+        ("ored", 1),
+    ] {
+        let body = function_body(&ir, name);
+        assert_eq!(body.matches("@tz.alloc").count(), copies, "{name}:\n{body}");
+    }
+    // `W1006` is at the pattern only, as for a union that is not Copy, never at the binder.
+    let pattern = ":? (i64 | [i64]) as x";
+    let warnings = tsuzuri::copies::warnings(&module);
+    for name in ["tuple", "field", "through", "either"] {
+        let start = source.find(&format!("def {name} ::")).unwrap();
+        let end = start + source[start..].find("\n\n").unwrap();
+        let spelled: Vec<&str> = warnings
+            .iter()
+            .filter(|warning| warning.code == "W1006")
+            .filter(|warning| (start..end).contains(&warning.span.start))
+            .map(|warning| &source[warning.span.start..warning.span.end])
+            .collect();
+        let narrowings = source[start..end].matches(pattern).count();
+        assert_eq!(spelled, vec![pattern; narrowings], "{name}");
+    }
+    // Expected values by hand: the string's length times 1000000 (2000000 in the second arm of
+    // `either`) plus arr x; `whole` 1000 arr x plus size, 10 for each number of an array.
+    let tests = r#"def mk :: unit -> (i64 | f64 | [i64]) = \() -> [1, 2, 3]
+
+def through_caller :: unit -> i64 = \() ->
+    let v = mk ()
+    let r = through ($"ab{1}", ref v)
+    r + size (ref v)
+
+test "values" =
+    assert (balanced (\() -> tuple ($"ab{1}", mk ())) == 3000300 && balanced (\() -> tuple ("a", 7)) == 1000007 && balanced (\() -> tuple ("a", 0.5)) == 1)
+    assert (balanced (\() -> field (R { u: mk (), s: $"ab{1}" })) == 3000300 && balanced (\() -> field (R { u: 2.5, s: "ab" })) == 2)
+    assert (balanced through_caller == 3000330)
+    assert (balanced (\() -> either (($"ab{1}", mk ()), 2.5)) == 3000300 && balanced (\() -> either (($"ab{1}", 2.5), mk ())) == 6000300)
+    assert (balanced (\() -> either (("ab", 1.5), 1.5)) == 0)
+    assert (balanced (\() -> ored (($"ab{1}", mk ()), 1.5)) == 3000300 && balanced (\() -> ored (("ab", 1.5), 4)) == 2000004)
+    assert (balanced (\() -> whole (mk ())) == 300030 && balanced (\() -> whole 6) == 6006 && balanced (\() -> whole 0.5) == 1)
+"#;
+    passes(&[source.as_str(), tests].concat(), Edition::E2026);
+}
+
+#[test]
+fn hover_on_a_narrowed_binder_shows_the_narrowed_union() {
+    let source = "def f :: own (f64 | i64 | string) -> (i64 | f64) = \\value ->\n    match value with\n    | :? (i64 | f64) as number -> number\n    | :? string -> 0\n0\n";
+    let (_, index) = analyze_modules_with_semantics(&[("Main.tz", source)]).unwrap();
+    let binder = source.find("as number").unwrap() + 3;
+    let entry = index.at(0, binder).unwrap();
+    assert_eq!(entry.detail, "number: (i64 | f64)");
+    // The use in the body goes to the binder.
+    let used = source.find("-> number").unwrap() + 3;
+    let entry = index.at(0, used).unwrap();
+    assert_eq!(entry.detail, "number: (i64 | f64)");
+    assert_eq!(
+        entry.target.map(|span| (span.start, span.end)),
+        Some((binder, binder + "number".len()))
+    );
+    // The `:?` reads as the narrowed value; no entry spells a generated local.
+    let entry = index.at(0, source.find(":?").unwrap()).unwrap();
+    assert_eq!(entry.detail, "(i64 | f64)");
+    for entry in &index.entries {
+        assert_hidden(&entry.detail);
+        for hidden in ["$match", "$retag", "$narrow"] {
+            assert!(!entry.detail.contains(hidden), "{}", entry.detail);
+        }
+    }
+    // An unused binder is reported at its own name, with the usual fix.
+    let source = "def f :: own (f64 | i64 | string) -> i64 = \\value ->\n    match value with\n    | :? (i64 | f64) as number -> 1\n    | :? string -> 0\n";
+    let module = analyze(source).unwrap();
+    let warnings: Vec<(&str, &str)> = module
+        .warnings
+        .iter()
+        .map(|warning| (warning.code, &source[warning.span.start..warning.span.end]))
+        .collect();
+    assert_eq!(warnings, [("W1001", "number")]);
+    assert_eq!(module.warnings[0].fixes.len(), 1);
 }
 
 /// Copilot review 2 of #102: `@old (x)` in an `@ensures` line is injected where an anonymous

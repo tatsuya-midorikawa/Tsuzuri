@@ -1360,7 +1360,7 @@ fn computation_type_tests<'e>(block: &'e ComputationBlock, found: &mut Vec<&'e T
 fn pattern_type_tests<'e>(pattern: &'e Pattern, found: &mut Vec<&'e TypeExpr>) {
     use PatternKind::*;
     match &pattern.kind {
-        TypeTest(ty, _) => found.push(ty),
+        TypeTest(ty, ..) => found.push(ty),
         Apply(_, patterns) | Tuple(patterns) | Array(patterns) | List(patterns) => {
             for pattern in patterns {
                 pattern_type_tests(pattern, found);

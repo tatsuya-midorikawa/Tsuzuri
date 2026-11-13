@@ -558,6 +558,56 @@ impl Checker<'_> {
         }
     }
 
+    /// Records the result positions of `operand`, the operand of a binary operator that is checked
+    /// with its sibling's type as its expected type, for `injected_expression`, which does not
+    /// widen there, and returns the length of `Checker::operand` to truncate it back to once the
+    /// operand is checked. The operand checked first is not recorded: it is checked by itself, so
+    /// an `if` there gives its `then` branch's type to its `else` branch as anywhere else (D4), and
+    /// that branch is widened. A result position is the operand, or what a form of
+    /// `passes_expected_down` in one passes the expected type down to as its value: the branches
+    /// of an `if`, the arms of a `match` or `select`, the result of a block, `@checked` or a
+    /// computation expression. Everything else (a call and its arguments, the value of a `let`, a
+    /// condition, a guard, a lambda, a pipe) is checked by itself, so a conversion that it asks for
+    /// stays. Positions are kept by span and depth, the height of the subtree: a generated node can
+    /// share its span with a child (the parser writes `f >> g` as a block with a lambda of its
+    /// span), and the depth tells them apart. `select` arms keep their spans and depths through
+    /// the `match` that `Checker::select` builds of clones of them.
+    #[inline(never)]
+    pub(super) fn operand_results(&mut self, operand: &Expr) -> usize {
+        let marked = self.operand.len();
+        if self.names.anonymous_unions.is_empty() {
+            return marked;
+        }
+        let mut pending = vec![operand];
+        while let Some(expression) = pending.pop() {
+            match &expression.kind {
+                ExprKind::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => pending.extend([&**then_branch, &**else_branch]),
+                ExprKind::Match { arms, .. } => pending.extend(arms.iter().map(|arm| &arm.body)),
+                ExprKind::Select(arms) => pending.extend(arms.iter().map(|arm| &arm.body)),
+                ExprKind::Block { result, .. }
+                | ExprKind::ComputationBoundary(result)
+                | ExprKind::Checked(result) => pending.push(result),
+                _ => {
+                    // A hole and a dyn dispatch pass the type down, but to no value of theirs.
+                    debug_assert!(
+                        !passes_expected_down(expression)
+                            || matches!(
+                                expression.kind,
+                                ExprKind::Hole(_) | ExprKind::DynDispatch { .. }
+                            ),
+                        "operand_results follows every form of passes_expected_down"
+                    );
+                    self.operand.push((expression.span, expression.depth));
+                }
+            }
+        }
+        marked
+    }
+
     /// Whether `Checker::expression` injects `expression` into `expected`, which the caller has
     /// found to be some type while anonymous unions exist.
     pub(super) fn injects(&self, expression: &Expr, expected: &Type) -> bool {
@@ -572,8 +622,12 @@ impl Checker<'_> {
         expression: &Expr,
         expected: &Type,
     ) -> Result<TypedExpr, Diagnostic> {
+        // The operand of a binary operator that takes its sibling's type is no place of D-62, and
+        // neither is each branch, arm or block result that is its value: it is injected (A24) but
+        // not widened, so neither `v == w` nor `v == (if c then w else u)` moves `w` (A25).
+        let widen = !self.operand.contains(&(expression.span, expression.depth));
         let union = self.inference.resolve(expected);
-        let value = self.union_value(expression, &union)?;
+        let value = self.union_value(expression, &union, widen)?;
         self.finish_expression(value.kind, value.ty, Some(&union), expression.span)
     }
 
@@ -598,15 +652,22 @@ impl Checker<'_> {
             }
             self.expression(expression, Some(&union))?
         } else {
-            self.union_value(expression, &union)?
+            self.union_value(expression, &union, true)?
         };
         self.coerce_argument(value, &target)
     }
 
     /// The value of `expression` where the anonymous union `union` (resolved) is expected (D4
     /// rules 2 and 3): a member that the expression's form picks is its expected type, otherwise
-    /// the expression is checked by itself and `conform_union` decides.
-    fn union_value(&mut self, expression: &Expr, union: &Type) -> Result<TypedExpr, Diagnostic> {
+    /// the expression is checked by itself and `conform_union` decides. `widen` is false for a
+    /// result position of the operand that takes its sibling's type (`operand_results`), which is
+    /// not widened from another anonymous union.
+    fn union_value(
+        &mut self,
+        expression: &Expr,
+        union: &Type,
+        widen: bool,
+    ) -> Result<TypedExpr, Diagnostic> {
         let Type::Union(_, members) = union else {
             unreachable!("an anonymous union is a union type")
         };
@@ -615,7 +676,7 @@ impl Checker<'_> {
             return Ok(wrap(value, union, case));
         }
         let value = self.expression(expression, None)?;
-        self.conform_union(value, union)
+        self.conform_union(value, union, widen)
     }
 
     /// The member that the form of `expression` picks (D4 rule 2): an unsuffixed number literal
@@ -715,17 +776,20 @@ impl Checker<'_> {
     }
 
     /// The value `value`, checked without an expected type, where the anonymous union `union`
-    /// (resolved) is expected (D4 rule 3). An anonymous union, a reference to one, an erroneous
-    /// value and a value of an undetermined type that is no number literal are not wrapped: the
-    /// caller unifies them with the union or reborrows the reference. Any other value is wrapped
-    /// as the only member that its type may be (`may_member`); when its type may be none, as the
-    /// only member that it reaches through the adapter of a borrowed parameter (`Fit::Borrowed`).
-    /// An array literal inside the value picks no member silently (`literal_fits`).
+    /// (resolved) is expected (D4 rule 3). An erroneous value and a value of an undetermined type
+    /// that is no number literal are not wrapped: the caller unifies them with the union. A
+    /// value of an anonymous union with fewer members is widened (`widened`, A25) when `widen`
+    /// allows it; any other anonymous union and a reference to one are left to the caller, which
+    /// unifies them or reborrows the reference. Any other value is wrapped as the only member
+    /// that its type may be (`may_member`); when its type may be none, as the only member that
+    /// it reaches through the adapter of a borrowed parameter (`Fit::Borrowed`). An array
+    /// literal inside the value picks no member silently (`literal_fits`).
     #[inline(never)]
     pub(super) fn conform_union(
         &mut self,
         mut value: TypedExpr,
         union: &Type,
+        widen: bool,
     ) -> Result<TypedExpr, Diagnostic> {
         let Type::Union(_, members) = union else {
             unreachable!("an anonymous union is a union type")
@@ -733,8 +797,20 @@ impl Checker<'_> {
         let found = self.inference.resolve(&value.ty);
         match &found {
             Type::Error => return Ok(value),
-            Type::Union(id, _) if self.names.is_anonymous_union(*id) => return Ok(value),
-            Type::Reference(inner, _) if self.anonymous_union_head(inner) => return Ok(value),
+            Type::Union(id, from) if self.names.is_anonymous_union(*id) => {
+                return if widen && from.len() != members.len() {
+                    self.widened(value, &found, union)
+                } else {
+                    Ok(value)
+                };
+            }
+            Type::Reference(inner, _) if self.anonymous_union_head(inner) => {
+                return if widen {
+                    self.borrowed_union(value, &found, union)
+                } else {
+                    Ok(value)
+                };
+            }
             Type::Infer(_) if !self.inference.is_numeric_literal(&found) => {
                 // No information to decide by, so the value is the union: `let v: (i64 | string)
                 // = Parse.parse text` reads a union.
@@ -856,6 +932,139 @@ impl Checker<'_> {
                 }))
             }
         }
+    }
+
+    /// `value`, of the anonymous union type `found`, as a value of the anonymous union `union`
+    /// with another number of members (both resolved, A25): each member of `found` is the member
+    /// of `union` that it equals, or else the only one that it is as unification reads the two
+    /// (`agrees`), with which it is then unified. With such a member for each, the value is
+    /// widened (`widen_union`: its tag is renumbered and its payload moves on, nothing is
+    /// allocated). A member without one, and so any union of more members than `union`, is
+    /// `anonymous_union_not_subset`; a member that agrees with two members of `union` is
+    /// ambiguous, since no member is a default.
+    ///
+    /// The payload moves on as it is: nothing adapts it, as `finish_expression` adapts a value
+    /// that is injected. A pure function member is therefore no member `A -> B` that is not
+    /// pure, and a function reaches no member through the adapter of a borrowed parameter.
+    fn widened(
+        &mut self,
+        mut value: TypedExpr,
+        found: &Type,
+        union: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let (Type::Union(_, from), Type::Union(_, to)) = (found, union) else {
+            unreachable!("anonymous unions are union types")
+        };
+        let mut cases = Vec::with_capacity(from.len());
+        for member in from.iter() {
+            let fitting: Vec<usize> = match to.iter().position(|other| other == member) {
+                Some(case) => vec![case],
+                None => to
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, other)| self.agrees(member, other))
+                    .map(|(case, _)| case)
+                    .collect(),
+            };
+            let ambiguous = |message: String| {
+                Diagnostic::of(
+                    DiagnosticKind::AnonymousUnionAmbiguousMember,
+                    message,
+                    value.span,
+                )
+                .with_help("annotate the value, for example with a typed let binding")
+            };
+            match fitting.as_slice() {
+                [] => return Err(self.not_subset(member, found, union, value.span)),
+                [case] => {
+                    // Canonical members are pairwise distinct, so two of them are never the
+                    // same member of `union`; if they were, the value would have no one reading.
+                    if let Some(earlier) = cases.iter().position(|taken| taken == case) {
+                        return Err(ambiguous(format!(
+                            "the members {} and {} of {} could both be {} in {}",
+                            member_display(&from[earlier], &self.types),
+                            member_display(member, &self.types),
+                            found.display(&self.types),
+                            member_display(&to[*case], &self.types),
+                            union.display(&self.types)
+                        )));
+                    }
+                    self.same(member, &to[*case], value.span)?;
+                    cases.push(*case);
+                }
+                [first, second, ..] => {
+                    return Err(ambiguous(format!(
+                        "the member {} of {} could be {} or {} in {}",
+                        member_display(member, &self.types),
+                        found.display(&self.types),
+                        member_display(&to[*first], &self.types),
+                        member_display(&to[*second], &self.types),
+                        union.display(&self.types)
+                    )));
+                }
+            }
+        }
+        // More members than `union` has: one of them found no member above.
+        debug_assert!(from.len() < to.len());
+        value.ty = self.inference.resolve(&value.ty);
+        Ok(self.widen_union(value, union, &cases))
+    }
+
+    /// `E1003` for a value of the anonymous union `found` where `union` is expected and `member`
+    /// of `found` is no member of `union`.
+    fn not_subset(&self, member: &Type, found: &Type, union: &Type, span: Span) -> Diagnostic {
+        let Type::Union(_, members) = union else {
+            unreachable!("an anonymous union is a union type")
+        };
+        let expected = union.display(&self.types);
+        let found = self.literal_defaults(found).display(&self.types);
+        let member = member_display(&self.literal_defaults(member), &self.types);
+        Diagnostic::of(
+            DiagnosticKind::AnonymousUnionNotSubset,
+            format!("expected {expected}, found {found}; {member} is not a member of {expected}"),
+            span,
+        )
+        .with_help(format!(
+            "{}; match the value with ':?' and pass on the members that {expected} has",
+            members_help(members, &self.types)
+        ))
+        .expected_found(expected, found)
+    }
+
+    /// `value`, a reference to an anonymous union (`found`, resolved), where the anonymous union
+    /// `union` is expected (A25). A reference to a union of as many members is left to the
+    /// caller, which reborrows `ref U` for a read parameter and otherwise reports the mismatch.
+    /// A reference to a union of another number of members is never widened, since that would
+    /// move the value out of the borrow: it is a type mismatch that names the way to an owned
+    /// value.
+    fn borrowed_union(
+        &self,
+        value: TypedExpr,
+        found: &Type,
+        union: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let (Type::Reference(inner, _), Type::Union(_, to)) = (found, union) else {
+            unreachable!("a reference to an anonymous union, where one is expected")
+        };
+        if matches!(&**inner, Type::Union(_, from) if from.len() == to.len()) {
+            return Ok(value);
+        }
+        let expected = union.display(&self.types);
+        let found = found.display(&self.types);
+        let mut error = Diagnostic::of(
+            DiagnosticKind::TypeMismatch,
+            format!("expected {expected}, found {found}"),
+            value.span,
+        )
+        .expected_found(expected, found);
+        match &value.kind {
+            TypedExprKind::Local(id) if self.default_reads.contains_key(id) => {
+                let (name, ty, pure) = &self.default_reads[id];
+                read_only_hint(&mut error, name, ty, *pure);
+            }
+            _ => error = error.with_help("an anonymous union is widened from an owned value"),
+        }
+        Err(error)
     }
 
     /// Whether `ty` (resolved) holds the open type of a number literal.
@@ -1058,10 +1267,10 @@ impl Checker<'_> {
         Ok(Some((case, literal)))
     }
 
-    /// `coerce_argument` for a parameter of type `U` or `ref U`: a value that is not already the
-    /// union, a reference to it, or of an undetermined type goes through `conform_union` (a
-    /// piped value, which was checked before the parameter was known). An undetermined type that
-    /// is no number literal becomes the union, which the reference then borrows.
+    /// `coerce_argument` for a parameter of type `U` or `ref U`: the value goes through
+    /// `conform_union` (a piped value, which was checked before the parameter was known), which
+    /// leaves the union itself and a reference to it as they are. An undetermined type that is
+    /// no number literal becomes the union, which the reference then borrows.
     #[inline(never)]
     pub(super) fn conform_argument(
         &mut self,
@@ -1075,21 +1284,20 @@ impl Checker<'_> {
         let found = self.inference.resolve(&value.ty);
         match &found {
             Type::Error => Ok(value),
-            Type::Union(id, _) if self.names.is_anonymous_union(*id) => Ok(value),
-            Type::Reference(inner, _) if self.anonymous_union_head(inner) => Ok(value),
             Type::Infer(_) if !self.inference.is_numeric_literal(&found) => {
                 self.same(&found, &union, value.span)?;
                 value.ty = union;
                 Ok(value)
             }
-            _ => self.conform_union(value, &union),
+            _ => self.conform_union(value, &union, true),
         }
     }
 
     /// `apply_piped` for a parameter of type `U` or `ref U`: the piped value's type is unified
     /// before the call's arguments only when it is the union, a reference to it (the usual
     /// hint), or undetermined and no number literal (the union itself). Any other value is
-    /// injected by `coerce_argument` once the call is complete (`None` asks for the usual hint).
+    /// injected, and an anonymous union of another number of members widened (A25), by
+    /// `coerce_argument` once the call is complete (`None` asks for the usual hint).
     #[inline(never)]
     pub(super) fn piped_into_union(
         &mut self,
@@ -1098,17 +1306,28 @@ impl Checker<'_> {
         span: Span,
     ) -> Option<Result<(), Diagnostic>> {
         let found = self.inference.resolve(piped);
+        let union = match self.inference.resolve(parameter) {
+            Type::Reference(inner, _) => *inner,
+            ty => ty,
+        };
+        let Type::Union(_, members) = &union else {
+            unreachable!("the parameter is an anonymous union or a reference to one")
+        };
+        // The union itself, or a reference to it, takes the usual hint (as does a union of as
+        // many members, whose mismatch the hint reports); a union of another number of members
+        // is widened or refused by `coerce_argument`.
+        let other = |piped: &Type| match piped {
+            Type::Union(id, from) if self.names.is_anonymous_union(*id) => {
+                Some(from.len() != members.len())
+            }
+            _ => None,
+        };
         match &found {
-            Type::Union(id, _) if self.names.is_anonymous_union(*id) => None,
-            Type::Reference(inner, _) if self.anonymous_union_head(inner) => None,
             Type::Infer(_) if !self.inference.is_numeric_literal(&found) => {
-                let union = match self.inference.resolve(parameter) {
-                    Type::Reference(inner, _) => *inner,
-                    ty => ty,
-                };
                 Some(self.same(&found, &union, span))
             }
-            _ => Some(Ok(())),
+            Type::Reference(inner, _) => other(inner).is_none_or(|other| other).then_some(Ok(())),
+            found => other(found).is_none_or(|other| other).then_some(Ok(())),
         }
     }
 
