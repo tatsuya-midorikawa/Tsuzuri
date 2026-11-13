@@ -6021,3 +6021,135 @@ fn a_part_bound_or_passed_to_a_function_value_keeps_a_borrow_of_that_part() {
         (41, 5),
     );
 }
+
+/// A31, found while checking the fix of `fvpart`: `mk a = \k f -> ...` returns a function value
+/// that owns its cell (it captured the `Arc<Mutex<...>>` by value) and writes `f` there. Applying
+/// it to its first argument (`w 0`) makes a function value of another type that holds it, so a
+/// call of that value may write into the same cell. The scan of the module's function values
+/// (`sink_flags`) took such a result for one that holds only the bound arguments, so a borrow of a
+/// block-local array that `w2 (\() -> String.length text)` wrote into the cell was not kept, and
+/// the next call ran the function after the array was gone (main and base accept; base prints
+/// `72` read through the dangling borrow, and AddressSanitizer reports a stack use after scope).
+/// The result of a call of a function value, or of the function that a named function returns,
+/// now holds that value (`HolderReach`), as a lambda that captured it does.
+#[test]
+fn a_partial_application_of_a_function_value_that_owns_its_cell_shares_the_cell() {
+    for (main, at) in [
+        // immutable bindings: the partial application of a known local (this round)
+        (
+            r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let w2 = w 0
+    let first = { let arr0 = [String.repeat 8 (ref "123456789")]; let text = ref arr0[0]; w2 (\() -> String.length text) }
+    let other = [String.repeat 8 (ref "zzzzzzzzz"), String.repeat 8 (ref "yyyyyyyyy")]
+    first + w2 (\() -> 1) + other.length * 0
+do! IO.write_line (to_string (run 123456789))
+"#,
+            (7, 17),
+        ),
+        // `let mut w2 = w 0`
+        (
+            r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let mut w2 = w 0
+    let first = { let arr0 = [String.repeat 8 (ref "123456789")]; let text = ref arr0[0]; w2 (\() -> String.length text) }
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+            (7, 17),
+        ),
+        // `let mut w = mk (...)`, then `let w2 = w 0`
+        (
+            r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let mut w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let w2 = w 0
+    let first = { let arr0 = [String.repeat 8 (ref "123456789")]; let text = ref arr0[0]; w2 (\() -> String.length text) }
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+            (7, 17),
+        ),
+        // a named function whose body returns the lambda after a binding, applied to more arguments than it takes
+        (
+            r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a =
+    let z = 0
+    \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k + z })
+def run :: i64 -> i64
+fn run n =
+    let mut w2 = mk (Arc.new (Mutex.create [\() -> 0])) 0
+    let first = { let arr0 = [String.repeat 8 (ref "123456789")]; let text = ref arr0[0]; w2 (\() -> String.length text) }
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+            (8, 17),
+        ),
+        // `let mut w2 = 0 |> w`
+        (
+            r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let mut w2 = 0 |> w
+    let first = { let arr0 = [String.repeat 8 (ref "123456789")]; let text = ref arr0[0]; w2 (\() -> String.length text) }
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+            (7, 17),
+        ),
+    ] {
+        rejects_at(main, "E1013", "assignment_extends_borrow", at);
+    }
+    for main in [
+        // the borrowed array declared before the function value (main prints `72`)
+        r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let arr0 = [String.repeat 8 (ref "123456789")]
+    let text = ref arr0[0]
+    let w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let mut w2 = w 0
+    let first = w2 (\() -> String.length text)
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+        // an owned function (main prints `7`)
+        r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let mut w2 = w 0
+    let first = w2 (\() -> 7)
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+        // the borrowed array declared first, through the block-bodied `mk` (main prints `72`)
+        r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a =
+    let z = 0
+    \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k + z })
+def run :: i64 -> i64
+fn run n =
+    let arr0 = [String.repeat 8 (ref "123456789")]
+    let text = ref arr0[0]
+    let mut w2 = mk (Arc.new (Mutex.create [\() -> 0])) 0
+    let first = w2 (\() -> String.length text)
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}

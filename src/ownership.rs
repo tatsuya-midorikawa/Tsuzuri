@@ -2578,6 +2578,30 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
             let owns = sink && bound.iter().any(|ty| ty.owns_mutable_cell(&types));
             (sink, owns, held)
         };
+    // The function value that such a call applies (or the function that a named function returns,
+    // `returned`): the result may be that value with the arguments bound, so it holds that value's
+    // environment, and reaches the owners and the sinks that it reaches (the holders below).
+    let applied = |ty: &Type| -> Option<Type> {
+        let ty = without_views(ty);
+        hides_environment(&ty, &types).then_some(ty)
+    };
+    let returned = |callee: &TypedExpr, count: usize| -> Option<Type> {
+        match &callee.ty {
+            Type::Function(parameters, _) if count <= parameters.types.len() => {
+                applied(&callee.ty.after_arguments(count))
+            }
+            _ => None,
+        }
+    };
+    let staged_value = |(sink, owns, mut held): (bool, bool, Vec<Type>),
+                        result: &Type,
+                        value: Option<Type>|
+     -> (bool, bool, Vec<Type>) {
+        if matches!(result, Type::Function(..)) {
+            held.extend(value);
+        }
+        (sink, owns, held)
+    };
     let mut found = |(sink, owns, held): (bool, bool, Vec<Type>), ty: &Type| {
         sinks |= sink;
         owned |= owns;
@@ -2649,7 +2673,11 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                         } else if arguments.len() > count {
                             // The function that the call returns binds the arguments beyond.
                             found(
-                                staged(&mut arguments[count..].iter(), &expression.ty),
+                                staged_value(
+                                    staged(&mut arguments[count..].iter(), &expression.ty),
+                                    &expression.ty,
+                                    returned(callee, count),
+                                ),
                                 &expression.ty,
                             );
                         }
@@ -2659,7 +2687,11 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                             | E::CaseConstructor { .. }
                     ) {
                         found(
-                            staged(&mut arguments.iter(), &expression.ty),
+                            staged_value(
+                                staged(&mut arguments.iter(), &expression.ty),
+                                &expression.ty,
+                                applied(&callee.ty),
+                            ),
                             &expression.ty,
                         );
                     } else if let E::Function(crate::check::FunctionRef::Builtin(instance)) =
@@ -2703,7 +2735,14 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                             if arguments.len() + 1 < count {
                                 found(site(id, &mut all, &locals), &expression.ty);
                             } else if arguments.len() + 1 > count {
-                                found(staged(&mut all, &expression.ty), &expression.ty);
+                                found(
+                                    staged_value(
+                                        staged(&mut all, &expression.ty),
+                                        &expression.ty,
+                                        returned(callee, count),
+                                    ),
+                                    &expression.ty,
+                                );
                             }
                         }
                         None if !matches!(
@@ -2712,7 +2751,14 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                                 | E::CaseConstructor { .. }
                         ) =>
                         {
-                            found(staged(&mut all, &expression.ty), &expression.ty);
+                            found(
+                                staged_value(
+                                    staged(&mut all, &expression.ty),
+                                    &expression.ty,
+                                    applied(&callee.ty),
+                                ),
+                                &expression.ty,
+                            );
                         }
                         None => {}
                     }
