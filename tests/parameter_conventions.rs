@@ -3064,7 +3064,10 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
     // and `sh01` was rejected, as their twins were. Before the fourth merge (A31 reviews 10 and
     // 11), every spelling of the `ref mut` forms of `sp02` (`sm02`: directly, through a `ref mut`
     // variable, relayed to a named or an annotated `inner`), A31's own `ref mut` signature too, was
-    // accepted and printed `drop -1` instead of being rejected.
+    // accepted and printed `drop -1` instead of being rejected. Before the fifth merge (A31 review
+    // 12), a reference that points to one of two values (`if n > 0 then ref mut a else ref mut b`)
+    // made each value keep a borrow of the other's part, so every spelling of the safe order was
+    // rejected (`assignment_extends_borrow` at `a`); the unsafe order is still rejected.
     const OTHER: &str = "let other = [to_string 777777, to_string 88888888, to_string 12345678]";
     const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}";
     const CALLER: &str = "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}";
@@ -3164,6 +3167,18 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
     };
     const UNSAFE_INIT: &str = "let mut p0 = Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } }";
     const SAFE_INIT: &str = "let mut p0 = Pair { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }";
+    // A reference that points to one of two values (fifth merge, A31 review 12): the target ties
+    // the parts of the one value it receives, so each value keeps a borrow of its own part only.
+    const UNSAFE_TWO: [&str; 2] = [
+        "let mut a = Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } }",
+        "let mut b = Pair { s: String.repeat 4 (ref \"123456789\"), h: Holder { cell: Mutex.create [\\() -> 0] } }",
+    ];
+    const SAFE_TWO: [&str; 2] = [
+        "let mut a = Pair { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }",
+        "let mut b = Pair { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }",
+    ];
+    const ONE_OF_TWO: &str = "let r = if n > 0 then ref mut a else ref mut b";
+    const ONE_OF_TWO_INLINE: &str = "CALL (if n > 0 then ref mut a else ref mut b)";
     const SHARED_RUN: [&str; 4] = [
         "let m = Mutex.create [\\() -> 0]",
         "let mr = ref m",
@@ -3271,6 +3286,36 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
             "self_referential_store",
             true,
         ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, UNSAFE_PAIR],
+                PART_BODY,
+                &[UNSAFE_TWO[0], UNSAFE_TWO[1], ONE_OF_TWO, "CALL r"],
+            ),
+            "E1013",
+            "self_referential_store",
+            true,
+        ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, UNSAFE_PAIR],
+                PART_BODY,
+                &[UNSAFE_TWO[0], UNSAFE_TWO[1], ONE_OF_TWO_INLINE],
+            ),
+            "E1013",
+            "self_referential_store",
+            true,
+        ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, UNSAFE_PAIR, INNER_ANNOTATED],
+                "inner p",
+                &[UNSAFE_TWO[0], UNSAFE_TWO[1], ONE_OF_TWO, "CALL r"],
+            ),
+            "E1013",
+            "self_referential_store",
+            true,
+        ),
     ];
     for (case, code, kind, branch) in &unsafe_cases {
         let twin = case.convention_twin();
@@ -3331,7 +3376,7 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
     // The safe forms: a copy of the locked text's length (`lk01c`); the caller reads the owner
     // after handing a shared borrow (`sh01`); the holder lent before the text (`tp01c`); the
     // caller's cell declared after the text (`cp01`); the part dropped after its reader (`sp01`,
-    // and its `ref mut` forms `sm01`).
+    // and its `ref mut` forms `sm01`, also through a reference to one of two values `rp01`).
     // (case, whether the `if` spelling is accepted too: a function value lent temporaries or a
     // lambda argument is `borrow_of_temporary` in every spelling, as before A31)
     let safe_cases = [
@@ -3409,6 +3454,30 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
             ),
             true,
         ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, SAFE_PAIR],
+                PART_BODY,
+                &[SAFE_TWO[0], SAFE_TWO[1], ONE_OF_TWO, "CALL r"],
+            ),
+            true,
+        ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, SAFE_PAIR],
+                PART_BODY,
+                &[SAFE_TWO[0], SAFE_TWO[1], ONE_OF_TWO_INLINE],
+            ),
+            true,
+        ),
+        (
+            exclusive_part(
+                &[HOLDER, LOOK, SAFE_PAIR, INNER_ANNOTATED],
+                "inner p",
+                &[SAFE_TWO[0], SAFE_TWO[1], ONE_OF_TWO, "CALL r"],
+            ),
+            true,
+        ),
     ];
     for (case, branch) in &safe_cases {
         let mut sources = vec![case.convention_twin(), case.annotated_def()];
@@ -3421,6 +3490,211 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
         for source in sources {
             check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
         }
+    }
+}
+
+#[test]
+fn annotated_reference_parameters_follow_the_replacement_rules_of_in_place_writes() {
+    // A32 stacked on A31, fifth merge (A31 review 12): `deref p = v` on a parameter annotated with
+    // `ref mut T` ends the borrows of its own parts that the body kept in the old value exactly
+    // where A31's own spelling (`twin`, a named function with `ref` types) ends them. Not after the
+    // body copied the cell's contents to another parameter's target (`copied`), nor when the cell
+    // is in an `Arc` block that the caller shares (`shared`); and a share replaced through the
+    // parameter (`deref r = Rc.new (...)`) is no longer an owner of the old block (`renewed`). The
+    // conventions twins cannot dereference their value views (`E1005`), so the annotated `def` is
+    // compared with `twin`. Before this merge every unsafe spelling here, the twin too, was
+    // accepted and read freed text (`-1`).
+    const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}";
+    const HOLDER2: &str = "record Holder2 { cell: Arc<Mutex<[unit -> i64]>> }\ninstance Drop<Holder2> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (Arc.get (ref h.cell)) (\\b -> b[0] ())))\n}";
+    const LOOK: &str = "def look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1";
+    const PA: &str = "record PA { h: Holder, a: [string] }\ndef mkpa :: unit -> PA\nfn mkpa _u = PA { h: Holder { cell: Mutex.create [\\() -> 0] }, a: [String.repeat 4 (ref \"123456789\")] }";
+    const COPY_OUT: &str = "def copy_out :: ref [unit -> i64] -> ref Mutex<[unit -> i64]> -> unit\nfn copy_out b out = Mutex.with_lock out (\\o -> Array.write 0 b[0] o)";
+    const PR: &str = "record PR { c: Holder2, s: string }";
+    const PAIR_OK: &str = "record PairOk { h: Holder, s: string }\ndef mkpo :: unit -> PairOk\nfn mkpo _u = PairOk { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }";
+    const COPIED_RUN: &[&str] = &[
+        "let mut p0 = mkpa ()",
+        "let out = Holder { cell: Mutex.create [\\() -> 0] }",
+        "let k = CALL (ref mut p0) (ref out)",
+        "Mutex.with_lock (ref out.cell) (\\b -> b[0] ()) + k",
+    ];
+    let copied = |body: &'static str| LaterRule {
+        prelude: &[HOLDER, LOOK, PA, COPY_OUT],
+        explicit: "ref mut PA -> ref Holder -> i64".to_string(),
+        conventions: "mut PA -> Holder -> i64".to_string(),
+        plain: "p out",
+        annotated: "(p: ref mut PA) (out: ref Holder)".to_string(),
+        body,
+        annotated_body: None,
+        run: COPIED_RUN,
+    };
+    let shared = LaterRule {
+        prelude: &[HOLDER2, LOOK, PR],
+        explicit: "ref mut PR -> i64".to_string(),
+        conventions: "mut PR -> i64".to_string(),
+        plain: "p",
+        annotated: "(p: ref mut PR)".to_string(),
+        body: "let t = ref p.s; Mutex.with_lock (Arc.get (ref p.c.cell)) (\\b -> Array.write 0 (\\() -> look t) b); deref p = PR { c: Holder2 { cell: Arc.new (Mutex.create [\\() -> 0]) }, s: String.repeat 4 (ref \"abcdefgh\") }; 0",
+        annotated_body: None,
+        run: &[
+            "let keep = Arc.new (Mutex.create [\\() -> 0])",
+            "let mut p0 = PR { c: Holder2 { cell: Arc.share (ref keep) }, s: String.repeat 4 (ref \"123456789\") }",
+            "let k = CALL (ref mut p0)",
+            "Mutex.with_lock (Arc.get (ref keep)) (\\b -> b[0] ()) + k",
+        ],
+    };
+    let renewed = LaterRule {
+        prelude: &[HOLDER, LOOK, PAIR_OK],
+        explicit: "ref mut Rc<PairOk> -> i64".to_string(),
+        conventions: "mut Rc<PairOk> -> i64".to_string(),
+        plain: "r",
+        annotated: "(r: ref mut Rc<PairOk>)".to_string(),
+        body: "deref r = Rc.new (mkpo ()); 0",
+        annotated_body: None,
+        run: &[
+            "let rc = Rc.new (mkpo ())",
+            "let mut inner = Rc.share (ref rc)",
+            "let k = CALL (ref mut inner)",
+            "let t = ref (Rc.get (ref inner)).s",
+            "Mutex.with_lock (ref (Rc.get (ref rc)).h.cell) (\\b -> Array.write 0 (\\() -> look t) b)",
+            "n + k",
+        ],
+    };
+    let unsafe_cases = [
+        (
+            copied(
+                "let t = ref p.a[0]; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); Mutex.with_lock (ref p.h.cell) (\\b -> copy_out b (ref out.cell)); deref p = mkpa (); 0",
+            ),
+            "E1014",
+            "borrow_conflict",
+        ),
+        (shared, "E1014", "borrow_conflict"),
+        (renewed, "E1013", "assignment_extends_borrow"),
+    ];
+    for (case, code, kind) in &unsafe_cases {
+        let twin = case.twin();
+        let expected = check("2027", &twin)
+            .err()
+            .unwrap_or_else(|| panic!("accepted:\n{twin}"));
+        assert_eq!(
+            (expected.code, expected.kind),
+            (*code, Some(*kind)),
+            "{twin}\n{}",
+            expected.message
+        );
+        let at = &twin[expected.span.start..expected.span.end];
+        let annotated = case.annotated_def();
+        let error = check("2027", &annotated)
+            .err()
+            .unwrap_or_else(|| panic!("accepted:\n{annotated}"));
+        assert_eq!(
+            (
+                error.code,
+                error.kind,
+                &annotated[error.span.start..error.span.end]
+            ),
+            (*code, Some(*kind), at),
+            "{annotated}\n{}",
+            error.message
+        );
+    }
+    // The safe forms: the old value's own cell keeps the borrow of its own part and nothing copies
+    // it out (`own`), and the copy is made from the new value after the replacement (`after`).
+    let own = LaterRule {
+        prelude: &[HOLDER, LOOK, PA],
+        explicit: "ref mut PA -> i64".to_string(),
+        conventions: "mut PA -> i64".to_string(),
+        plain: "p",
+        annotated: "(p: ref mut PA)".to_string(),
+        body: "let t = ref p.a[0]; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); deref p = mkpa (); 0",
+        annotated_body: None,
+        run: &["let mut p0 = mkpa ()", "CALL (ref mut p0)"],
+    };
+    let after = copied(
+        "let t = ref p.a[0]; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b); deref p = mkpa (); Mutex.with_lock (ref p.h.cell) (\\b -> copy_out b (ref out.cell)); 0",
+    );
+    for case in [own, after] {
+        for source in [case.twin(), case.annotated_def()] {
+            check("2027", &source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        }
+    }
+}
+
+#[test]
+fn annotated_reference_parameters_passed_to_a_function_value_with_temporaries() {
+    // A conservative limit that A32 shares with the `ref` signature whose lambda annotates its
+    // parameters (found at the fifth merge, A31 review 12; A33): a body that passes annotated
+    // parameters on to a function-valued parameter does not tell the drop order of the
+    // temporaries lent to them, so the safe order is rejected (`E1013` at the call) where the named
+    // functions and the unannotated lambdas accept it. The unsafe order is rejected by every
+    // spelling.
+    let source = |declaration: &str, f: &str| {
+        program(&[
+            "record Holder { cell: Mutex<[unit -> i64]> }",
+            "instance Drop<Holder> {",
+            "    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))",
+            "}",
+            "def look :: ref string -> i64",
+            "fn look t =",
+            "    match String.find (ref \"9\") t with",
+            "    | Maybe.Some i -> i",
+            "    | Maybe.None -> -1",
+            "record PairOk { h: Holder, s: string }",
+            "def mkpo :: unit -> PairOk",
+            "fn mkpo _u = PairOk { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }",
+            "def cross :: ref PairOk -> ref PairOk -> unit",
+            "fn cross a b = { let t = ref b.s; Mutex.with_lock (ref a.h.cell) (\\c -> Array.write 0 (\\() -> look t) c) }",
+            declaration,
+            "def run :: i64 -> i64",
+            &format!("fn run n = apply2 {f} (ref (mkpo ())) (ref (mkpo ())) + n"),
+            "run 1",
+        ])
+    };
+    const SIG: &str = "(ref PairOk -> ref PairOk -> unit) -> ref PairOk -> ref PairOk -> i64";
+    const CONVENTIONS: &str = "(ref PairOk -> ref PairOk -> unit) -> PairOk -> PairOk -> i64";
+    let accepted = [
+        format!("def apply2 :: {SIG}\nfn apply2 f a b = {{ f a b; 0 }}"),
+        format!("def apply2 :: {CONVENTIONS}\nfn apply2 f a b = {{ f a b; 0 }}"),
+        format!("def apply2 :: {SIG} = \\f a b -> {{ f a b; 0 }}"),
+        format!("def apply2 :: {CONVENTIONS} = \\f a b -> {{ f a b; 0 }}"),
+    ];
+    let annotated = [
+        format!("def apply2 :: {SIG} = \\f (a: ref PairOk) (b: ref PairOk) -> {{ f a b; 0 }}"),
+        format!(
+            "def apply2 :: {CONVENTIONS} = \\f (a: ref PairOk) (b: ref PairOk) -> {{ f a b; 0 }}"
+        ),
+        format!("def apply2 :: {CONVENTIONS} = \\f (a: ref PairOk) b -> {{ f a b; 0 }}"),
+    ];
+    for declaration in &accepted {
+        let safe = source(declaration, "cross");
+        check("2027", &safe).unwrap_or_else(|error| panic!("{safe}\n{error:?}"));
+    }
+    for declaration in &annotated {
+        let safe = source(declaration, "cross");
+        let error = check("2027", &safe)
+            .err()
+            .unwrap_or_else(|| panic!("accepted:\n{safe}"));
+        assert_eq!(
+            (error.code, error.kind, error.span.start),
+            (
+                "E1013",
+                Some("assignment_extends_borrow"),
+                safe.find("apply2 cross").unwrap()
+            ),
+            "{safe}\n{}",
+            error.message
+        );
+    }
+    for declaration in accepted.iter().chain(&annotated) {
+        let unsafe_order = source(declaration, "(\\x y -> cross y x)");
+        let error = check("2027", &unsafe_order)
+            .err()
+            .unwrap_or_else(|| panic!("accepted:\n{unsafe_order}"));
+        assert_eq!(
+            (error.code, error.kind),
+            ("E1013", Some("assignment_extends_borrow")),
+            "{unsafe_order}\n{}",
+            error.message
+        );
     }
 }
 
