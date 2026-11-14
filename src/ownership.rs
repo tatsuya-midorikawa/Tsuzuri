@@ -5778,6 +5778,31 @@ impl<'e> Arg<'e> {
 /// call for one of code that the check does not see.
 const STORE_PASSES: usize = 16;
 
+/// A31: the entry of `Checker::exports` for the blocks that a value may own where the walk by types
+/// does not see them (`walk_hides_blocks`), which may be of any type: a store into a value whose
+/// type hides blocks or reaches a block with a cell goes where this entry went
+/// (`store_exported_into`). No value has the type `Error` when the ownership check runs, so no
+/// block type is this one.
+const HIDDEN_BLOCK: Type = Type::Error;
+
+/// A31: whether a value of type `ty` may own a block that `Checker::export_walk` does not list,
+/// behind a value that can hand out a place inside what it holds: it reaches a dyn value (whose
+/// methods get a reference to its data and may return a reference into it) or a value of a type
+/// that the check does not know (a type parameter, whose class methods may do the same).
+fn walk_hides_blocks(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    types.reaches(ty, |part| {
+        matches!(
+            part,
+            Type::Dyn(_)
+                | Type::Variable(_)
+                | Type::Infer(_)
+                | Type::Partial(_)
+                | Type::Application(..)
+                | Type::Error
+        )
+    })
+}
+
 /// A31: whether a value of type `ty` reaches (through stored values, references and shared
 /// pointers) a value whose type does not show what it holds or reaches: a function value (its
 /// captures), a dyn value (the value that it stores) or an `Owned.Function`.
@@ -8844,13 +8869,26 @@ impl<'a, 'run> Checker<'a, 'run> {
 
     /// A31: `export_block(holder, ExportTarget::Local(source))` for a local `holder` whose shares
     /// of the block of the local owner `source` `keep_for_drop` expanded, limited to the types of
-    /// blocks that `source`'s type reaches too. The shared block is one of them, and so is each
-    /// block that it may hold (`Rc<Leaf>` in `Tree { child: Maybe<Rc<Leaf>> }`), which it frees
-    /// when it goes; a block that only `holder`'s type reaches (the `Rc<Other>` of `RH2 { rc:
-    /// Rc.share (ref r2), other: Rc<Other> }`) is not one that `source`'s drop can free, so a
-    /// store into it does not concern `source`. A block that a function value in the shared block
-    /// holds is not walked by types; a store into such a block is a store into a hidden
-    /// environment (`store_hidden`), which every local that may hold such a value takes.
+    /// blocks that `source`'s type reaches too, when that type shows every block that a value of
+    /// it may own. `source`'s drop frees only blocks that it owns: the shared block, each block
+    /// that the shared block may hold (`Rc<Leaf>` in `Tree { child: Maybe<Rc<Leaf>> }`), and the
+    /// blocks of `source`'s other parts. A block that only `holder`'s type reaches (the
+    /// `Rc<Other>` of `RH2 { rc: Rc.share (ref r2), other: Rc<Other> }`) is not one of them, so a
+    /// store into it does not concern `source`.
+    ///
+    /// The walk by types does not see into a dyn value, whose methods get a reference to its data
+    /// and may return a reference into it (`Rc.share (C.leaf (ref (Rc.get (ref r2)).d))` shares
+    /// an `Rc<Leaf>` that `r2`'s dyn field owns), nor into a value of a type that the check does not
+    /// know (a type parameter, whose class methods may do the same). When `source`'s type reaches
+    /// one of these (`walk_hides_blocks`), the shared block may be of a type that the walk of
+    /// `source`'s type misses, so every block type of `holder`'s type goes to `source`. When
+    /// `holder`'s type reaches one, the share itself may be inside it (`H { d: Dyn.of (Box1 { l:
+    /// Rc.share (ref r2) }) }`), and so may the blocks that a store into `holder` reaches: a store
+    /// into any local whose type reaches one goes to `source` too (`HIDDEN_BLOCK`). A function
+    /// value hands out no place inside its environment (a lambda that returns a reference to what
+    /// it captured is `E1013`), so no share of a block of the environment is made; a store into
+    /// such a block is a store into a hidden environment (`store_hidden`), which every local that
+    /// may hold such a value takes.
     fn export_shared_block(&mut self, holder: usize, source: usize) {
         let (Some((holder_local, _)), Some((source_local, _))) = (
             self.state.locals.get(&holder),
@@ -8859,12 +8897,24 @@ impl<'a, 'run> Checker<'a, 'run> {
             return;
         };
         let (holder_ty, source_ty) = (holder_local.ty.clone(), source_local.ty.clone());
-        let freed = self.export_walk(&source_ty);
-        let blocks: Vec<Type> = self
-            .export_walk(&holder_ty)
-            .into_iter()
-            .filter(|block| freed.contains(block))
-            .collect();
+        let types = self.module.types();
+        let (holder_hides, source_hides) = (
+            walk_hides_blocks(&holder_ty, &types),
+            walk_hides_blocks(&source_ty, &types),
+        );
+        let blocks = self.export_walk(&holder_ty);
+        let mut blocks: Vec<Type> = if source_hides {
+            blocks
+        } else {
+            let freed = self.export_walk(&source_ty);
+            blocks
+                .into_iter()
+                .filter(|block| freed.contains(block))
+                .collect()
+        };
+        if holder_hides {
+            blocks.push(HIDDEN_BLOCK);
+        }
         self.add_exports(blocks, ExportTarget::Local(source));
     }
 
@@ -8972,7 +9022,9 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// store there (`put_into (ref local) lr`, `apply_facts_once`), or into code that the check
     /// does not see (`apply_opaque`). When `ty` may own a block that went to the caller's data, to
     /// a hidden environment or to a local that keeps it for its drop, the store may have been into
-    /// that block.
+    /// that block. A value of a type that hides the blocks that it may own (`walk_hides_blocks`)
+    /// may own one of every type; the blocks that a value of a hiding type took (`HIDDEN_BLOCK`)
+    /// may be of every type that holds a cell.
     fn store_exported_into(&mut self, ty: &Type, kept: &Value, span: Span, hidden: bool) {
         if self.exports.is_empty() || self.exporting || kept.loans.is_empty() {
             return;
@@ -8981,17 +9033,24 @@ impl<'a, 'run> Checker<'a, 'run> {
         let exports = &self.exports;
         let mut targets: Vec<ExportTarget> = Vec::new();
         let mut seen: BTreeSet<ExportTarget> = BTreeSet::new();
+        let hides = walk_hides_blocks(ty, &types);
         // One walk of `ty` per type of block, however many places it went to.
         let mut reached: BTreeMap<&Type, bool> = BTreeMap::new();
         for (block, target) in exports {
             if (hidden && *target == ExportTarget::Hidden) || seen.contains(target) {
                 continue;
             }
-            let reaches = *reached.entry(block).or_insert_with(|| {
-                types.reaches(ty, |part| {
-                    Self::block_owner_type(part).is_some_and(|owner| owner == *block)
-                })
-            });
+            let reaches = hides
+                || *reached.entry(block).or_insert_with(|| {
+                    if *block == HIDDEN_BLOCK {
+                        return types.reaches(ty, |part| {
+                            matches!(part, Type::Shared(value, _) if value.owns_mutable_cell(&types))
+                        });
+                    }
+                    types.reaches(ty, |part| {
+                        Self::block_owner_type(part).is_some_and(|owner| owner == *block)
+                    })
+                });
             if reaches {
                 seen.insert(*target);
                 targets.push(*target);
@@ -13223,11 +13282,14 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// local (through `Rc.get (ref r)` of `let r = Rc.share (ref r2)`, or of an `Rc` that a field or
     /// an element holds) followed it to `r2` (`apply_store_within`), whose drop may be the one
     /// that frees the block. The expanded value leads nowhere, so a store into a value whose type
-    /// reaches the type of a block that the local and such an owner may both hold (the shared
-    /// block, and the blocks that it may hold) goes to that owner too (`export_shared_block`,
-    /// `store_exported`). The test is by type: a store into another value that may hold a block of
-    /// such a type (another `Rc<PairOk>`, a record with a `Maybe<Rc<PairOk>>` field) goes there
-    /// as well.
+    /// reaches the type of a block that the local's type and such an owner's type both reach (the
+    /// shared block, the blocks that it may hold, and the blocks of the owner's other parts; every
+    /// block type of the local's type when the owner's type reaches a dyn value or a type that the
+    /// check does not know) goes to that owner too (`export_shared_block`, `store_exported`); when
+    /// the local's own type reaches one, so does a store into a value whose type reaches one or a
+    /// block with a cell (`HIDDEN_BLOCK`). The test is by type: a store into another value that
+    /// may hold a block of such a type (another `Rc<PairOk>`, a record with a `Maybe<Rc<PairOk>>`
+    /// field) goes there as well.
     fn keep_for_drop(&mut self, keep: &mut BTreeSet<usize>) {
         for id in self.dropped_later() {
             if keep.insert(id)

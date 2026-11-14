@@ -7109,3 +7109,183 @@ def run :: i64 -> i64
         (50, 5),
     );
 }
+
+/// A31, review round 6 after Copilot: a dyn value's method can hand out a place inside the dyn's
+/// data (`fn leaf b = ref b.l`), which the walk by types does not see. A share of a block that a
+/// dyn value of `r2` owns (`Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))`) is a share of a
+/// block that `r2`'s drop may free, although `r2`'s type does not show it, so a store into it
+/// after the share's last use reaches `r2` (the round-5 narrowing of `export_shared_block`
+/// accepted it; `drop -1` is a read of freed memory). The same holds when the holder keeps the
+/// share inside a dyn value (`H { d: Dyn.of (Box1 { l: Rc.share (ref r2) }) }`), whose type shows
+/// no block, and when the store goes into a block inside the dyn of the shared block (pre-existing:
+/// main accepts both). With the owner of the string declared before the owner of the block, each
+/// program is accepted.
+#[test]
+fn a_store_through_a_share_behind_a_dyn_value_reaches_the_owner_that_frees_the_block() {
+    let defs = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+record Leaf { h: Holder, n: i64 }
+def mkleaf :: i64 -> Leaf
+fn mkleaf k = Leaf { h: Holder { cell: Mutex.create [\() -> 0] }, n: k }
+record PairOk { h: Holder, s: string }
+def mkpo :: unit -> PairOk
+fn mkpo _u = PairOk { h: Holder { cell: Mutex.create [\() -> 0] }, s: String.repeat 4 (ref "123456789") }
+def crossleaf :: ref Leaf -> ref PairOk -> unit
+fn crossleaf w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+"#;
+    let cls = "class LeafOf<'value> {\n    def leaf :: ref 'value -> ref Rc<Defs.Leaf>\n}\n";
+    let arc_cls = "class LeafOf<'value> {\n    def leaf :: ref 'value -> ref Arc<Defs.Leaf>\n}\n";
+    // Lines 1 to 7 come before the body, which starts at line 8.
+    let main = |pointer: &str, record: &str, body: &str| {
+        format!(
+            "record Box1 {{ l: {pointer}<Defs.Leaf> }}\ninstance Cls.LeafOf<Box1> {{\n    fn leaf b = ref b.l\n}}\n{record}\ndef run :: i64 -> i64\nfn run n =\n{body}do! IO.write_line (to_string (run 1))\n"
+        )
+    };
+    let with_cell = "record B {r} { h: Defs.Holder, d: dyn Cls.LeafOf {r} }";
+    let no_cell = "record B {r} { n: i64, d: dyn Cls.LeafOf {r} }";
+    let holder = "record H {r} { d: dyn Cls.LeafOf {r} }";
+    let plain = "record S {r} { h: Defs.Holder, d: dyn Cls.LeafOf {r} }";
+    let b_cell = "    let r2 = Rc.new (B { h: Defs.Holder { cell: Mutex.create [\\() -> 0] }, d: Dyn.of (Box1 { l: Rc.new (Defs.mkleaf 1) }) })\n";
+    let b_none =
+        "    let r2 = Rc.new (B { n: 0, d: Dyn.of (Box1 { l: Rc.new (Defs.mkleaf 1) }) })\n";
+    let b_arc = "    let r2 = Arc.new (B { h: Defs.Holder { cell: Mutex.create [\\() -> 0] }, d: Dyn.of (Box1 { l: Arc.new (Defs.mkleaf 1) }) })\n";
+    let s_plain = "    let r2 = S { h: Defs.Holder { cell: Mutex.create [\\() -> 0] }, d: Dyn.of (Box1 { l: Rc.new (Defs.mkleaf 1) }) }\n";
+    let leaf = "    let r2 = Rc.new (Defs.mkleaf 1)\n";
+    let p = "    let rp = Rc.new (Defs.mkpo ())\n";
+    let store = "    Defs.crossleaf a (Rc.get (ref rp))\n    n\n";
+    // (pointer, record, the owner of the block, the rest of the body before the store)
+    let cases = [
+        // d1: the share of the leaf that `r2`'s dyn field owns
+        (
+            "Rc",
+            with_cell,
+            b_cell,
+            "    let h = Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))\n    let a = Rc.get (ref h)\n",
+        ),
+        // d2_nocell: the same, `B` without a cell
+        (
+            "Rc",
+            no_cell,
+            b_none,
+            "    let h = Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))\n    let a = Rc.get (ref h)\n",
+        ),
+        // d6_plain: a record owner in place of an `Rc`
+        (
+            "Rc",
+            plain,
+            s_plain,
+            "    let h = Rc.share (Cls.LeafOf.leaf (ref r2.d))\n    let a = Rc.get (ref h)\n",
+        ),
+        // d7_arc
+        (
+            "Arc",
+            with_cell,
+            b_arc,
+            "    let h = Arc.share (Cls.LeafOf.leaf (ref (Arc.get (ref r2)).d))\n    let a = Arc.get (ref h)\n",
+        ),
+        // the share of `r2`'s whole block, and the store into the leaf in its dyn field
+        (
+            "Rc",
+            no_cell,
+            b_none,
+            "    let h = Rc.share (ref r2)\n    let a = Rc.get (Cls.LeafOf.leaf (ref (Rc.get (ref h)).d))\n",
+        ),
+        // the holder keeps the share in a dyn value
+        (
+            "Rc",
+            holder,
+            leaf,
+            "    let h = H { d: Dyn.of (Box1 { l: Rc.share (ref r2) }) }\n    let a = Rc.get (Cls.LeafOf.leaf (ref h.d))\n",
+        ),
+        // the holder keeps, in a dyn value, a share of a share of `r2`
+        (
+            "Rc",
+            holder,
+            leaf,
+            "    let h = Rc.share (ref r2)\n    let g = H { d: Dyn.of (Box1 { l: Rc.share (ref h) }) }\n    let a = Rc.get (Cls.LeafOf.leaf (ref g.d))\n",
+        ),
+    ];
+    for (pointer, record, owner, rest) in cases {
+        let class = if pointer == "Arc" { arc_cls } else { cls };
+        let unsafe_main = main(pointer, record, &format!("{owner}{p}{rest}{store}"));
+        for edition in [Edition::E2026, Edition::E2027] {
+            let modules = [
+                ("Defs.tz", defs),
+                ("Cls.tt", class),
+                ("Main.tz", unsafe_main.as_str()),
+            ];
+            let error = analyze_modules_with_edition(&modules, edition).expect_err(&unsafe_main);
+            assert_eq!(
+                (
+                    error.code,
+                    error.kind,
+                    position(&unsafe_main, error.span.start)
+                ),
+                ("E1013", Some("assignment_extends_borrow"), (8, 5)),
+                "edition {edition}\n{unsafe_main}\n{}",
+                error.message
+            );
+        }
+        let safe_main = main(pointer, record, &format!("{p}{owner}{rest}{store}"));
+        accepts_in_both_editions(&[
+            ("Defs.tz", defs),
+            ("Cls.tt", class),
+            ("Main.tz", &safe_main),
+        ]);
+    }
+    // The share of `r2`'s block also went to the caller's array, which keeps the leaf after the
+    // call returns: the store through the holder's dyn value is a store into the caller's data.
+    let put = |order: &str| {
+        format!(
+            "record Box1 {{ l: Rc<Defs.Leaf> }}\ninstance Cls.LeafOf<Box1> {{\n    fn leaf b = ref b.l\n}}\n{holder}\ndef put :: ref mut [Rc<Defs.Leaf>] -> i64 -> i64\nfn put out n =\n{order}    let g = H {{ d: Dyn.of (Box1 {{ l: Rc.share (ref r2) }}) }}\n    let a = Rc.get (Cls.LeafOf.leaf (ref g.d))\n{store}def run :: i64 -> i64\nfn run n =\n    let mut v = [Rc.new (Defs.mkleaf 0)]\n    put (ref mut v) n\ndo! IO.write_line (to_string (run 1))\n"
+        )
+    };
+    let shared = "    Array.write 0 (Rc.share (ref r2)) out\n";
+    for (order, expected) in [
+        (
+            format!("{leaf}{shared}{p}"),
+            ("E1013", Some("assignment_extends_borrow"), (8, 5)),
+        ),
+        (
+            format!("{p}{leaf}{shared}"),
+            (
+                "E1013",
+                Some("store_local_borrow_through_reference"),
+                (13, 5),
+            ),
+        ),
+    ] {
+        let program = put(&order);
+        for edition in [Edition::E2026, Edition::E2027] {
+            let modules = [
+                ("Defs.tz", defs),
+                ("Cls.tt", cls),
+                ("Main.tz", program.as_str()),
+            ];
+            let error = analyze_modules_with_edition(&modules, edition).expect_err(&program);
+            assert_eq!(
+                (error.code, error.kind, position(&program, error.span.start)),
+                expected,
+                "edition {edition}\n{program}\n{}",
+                error.message
+            );
+        }
+    }
+    // The source owner still moves after the store through a holder that keeps the share in a dyn
+    // value (`keep_for_drop` expands the share).
+    let moved = main(
+        "Rc",
+        holder,
+        &format!(
+            "{p}{leaf}    let h = H {{ d: Dyn.of (Box1 {{ l: Rc.share (ref r2) }}) }}\n    let a = Rc.get (Cls.LeafOf.leaf (ref h.d))\n    Defs.crossleaf a (Rc.get (ref rp))\n    let _r3 = r2\n    n\n"
+        ),
+    );
+    accepts_in_both_editions(&[("Defs.tz", defs), ("Cls.tt", cls), ("Main.tz", &moved)]);
+}
