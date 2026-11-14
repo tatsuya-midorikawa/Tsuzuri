@@ -2145,3 +2145,65 @@ A32 の 6 度目の merge が、名前付き関数 `cross`（`b.s` の借用を 
 - 検査の時間: `gen_chain.py cellshares` の所有権の検査は、n = 400 で 226 ms（先端 214 ms）、800 で 1007 ms（908 ms）で、同じ程度です（同じ負荷の機械で続けて測りました）。
 - 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・55 個のリンク・11 個の例・22 回の native の実行、`rr5/docs.log`）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功（`rr5/doc-checks.log`）。
 - 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（1 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（`sharetype`・`refsrc`・`fvdrop` の行、新しい `rcgetowner`・`shareparam` の行、段 3 の一覧、この回の記録）、このチケット（「残る制限」と、この節）。
+
+#### レビューの第6回（2026-11-15）
+
+第5回の対応の後の先端（`6e4f0537`・`e5614a3e`・`1191ba64`・`253a78e7`・`c18c0433`、A34 の起票 `953747a2`）の最後のレビュー（反例の探索 `target/scratch/a31/r19-review-6-ce/`、適合の確認 `target/scratch/a31/r19-review-6-conf/`）の 2 件の指摘を、修正後・先端（`953747a2`。`src/` は `6e4f0537` と同じ）・前の先端（`b6d30189`。`src/` は `2084a9e4` と同じ）・`main`（`168ae4a5`）・基準のバイナリで確かめ、どちらも指摘のとおりに再現しました。指摘 1 は第5回の狭めによる前の先端からの退行で、`main` も受理する危険なプログラムの受理です。指摘 2 は文書の誤りです。最後の回の規則（検査を緩める変更はしない。前の先端や `main` からの危険な退行は、締めつけ（第5回の狭めを戻す・狭める）と回帰のテストで直し、それで拒否に変わる安全な形は制限として文書に書く。安全な形の拒否は `src/` を変えずに文書と A34 に書く）に従いました。結果は `target/scratch/a31/rr6/` にあります（`rr6/v.sh` が修正後・先端・前の先端・`main`・基準の最初の誤りを並べ、`RUN=1 ASAN=1` で native と ASan の `-O0`・`-O3` の出力を足します。`rr6/n/` が修正の周りの探査、`rr6/lim/` と `rr6/a34/` が修正による安全側の拒否の形です）。
+
+##### 原因と変えたこと（`src/ownership.rs`）
+
+- **指摘 1（dyn の値の中の共有を通した格納が、ブロックを解放する元の所有者へ届かない。前の先端からの退行）**: 第5回の `export_shared_block(h, r2)` は、`keep_for_drop` が読み替えた局所値 `h` の型が届くブロックの型のうち、元の所有者 `r2` の型も届くものだけを `r2` への届け先にしていました。型の走査（`TypeContext::reaches`。`type_arena::children` は `Type::Dyn`・型引数などに子を持たせません）は dyn の値の中を見ないので、`record B {r} { h: Holder, d: dyn Cls.LeafOf {r} }` の `Rc<B>` から届くのは `Rc<B>` だけで、dyn の値の中の `Box1` の `Rc<Leaf>` は見えません。一方、dyn の値のメソッドは中身の場所の参照を返せる（`def leaf :: ref 'value -> ref Rc<Defs.Leaf>`、`fn leaf b = ref b.l`）ので、`let h = Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))` は、`r2` の破棄が（`B` → dyn → `Box1` → `Rc<Leaf>` と）解放しうる `Leaf` のブロックの共有です。`let a = Rc.get (ref h)` の後で `h` は使われないので読み替えられ、届け先は `{Rc<Leaf>} ∩ {Rc<B>} = ∅` になり、`Defs.crossleaf a (ref p)` の `p` の借用は `h` にだけ入りました。実行では `h`（`Leaf` の持ち主を 2 から 1 に）、`p`、`r2`（`B`・dyn・`Leaf` を解放）の順に解放され、`Leaf` の `Holder` の `drop` が解放した `p.s` を読みます（`d1` は `drop -1`、`d1_heap`・`d2_*`・`d6_plain`・`d7_arc` は ASan の `-O0`・`-O3` で heap-use-after-free）。第4回の先端は `h` の型が届くすべての型（`{Rc<Leaf>}`）を届けたので拒否していました。第5回のチケットの「`r2` の破棄が解放するのは `r2` の型から型で届くブロックだけ」は、dyn の値（と元の所有者のほかの部分。指摘 2）について誤りでした。関数値は環境の中の場所を渡せない（捕捉した値の参照を返すラムダは `E1013`。`r19-review-6-ce/p/f1`）ので、関数値の環境は同じ問題を持ちません。
+  修正（`5e99c1c0`）: 値の型が dyn の値か型引数（`Type::Dyn`・`Variable`・`Infer`・`Partial`・`Application`・`Error`）に届くかを答える `walk_hides_blocks` を足し、
+  (a) `export_shared_block` は、`r2` の型がそうした値に届くなら狭めず、`h` の型が届くセルを持つブロックの型をすべて届けます（第4回の先端の扱い。指摘の勧めた直し方です）。
+  (b) `h` の型がそうした値に届くなら（`H { d: Dyn.of (Box1 { l: Rc.share (ref r2) }) }`。共有そのものが dyn の値の中にあり、`h` の型からはブロックが見えません）、印 `HIDDEN_BLOCK`（`Type::Error`。ブロックの型にはならない）を `r2` への届け先に足し、`store_exported_into` は、格納先の型が dyn の値か型引数かセルを持つブロックに届けば、この印の届け先へ格納します。
+  (c) `store_exported_into` は、格納先の型が dyn の値か型引数に届けば、記録したすべての届け先へ格納します（そうした値はどの型のブロックも持ちうるため。型で届くブロックの型が同じことで連なりを伝えていた規則の、dyn の値の場合です）。
+  (d) 逆の向き（`expand_shares` から、元の所有者を通した後の格納を共有の持ち主・呼び出し元のデータ・隠れた環境へ届ける `export_block`）も、所有者の型が dyn の値か型引数に届くなら `HIDDEN_BLOCK` を記録します（`e45887c8`。セルを持たない `B` の `Rc<B>` の dyn の値の中のブロックはセルを持ちうるのに、`export_walk(Rc<B>)` は空でした）。
+  確かめの中で、`main`・基準・前の先端・先端がどれも受理する、同じ仕組みの危険な形を見つけ、(b)・(c) で塞ぎました（`main` の ASan の `-O0`・`-O3` は heap-use-after-free）: 共有を持つ値の型が dyn の値に届く形（`rr6/n/u_hrecdyn`）、セルを持たない `B {r} { n: i64, d: dyn ... }` の `Rc<B>` 全体を共有して dyn のフィールドの中の `Leaf` へ書き込む形（`u_bdyn_whole`。`export_walk(Rc<B>)` は空なので、第4回の先端も何も届けませんでした）、共有の共有を dyn の値に入れた形（`u_chain_dyn`。`h` の読み替えで `h` から `r2` への道が消え、`store_exported` は届け先の局所値の届け先をたどらない（`exporting`）ので、dyn の値への格納はすべての届け先へ届ける必要があります）、呼び出し元の配列へも共有を入れた形（`u_extchain`・`u_extchain_rpfirst`。届け先は呼び出し元のデータ）。(d) で、逆の向きの同じ穴（セルを持たない `B` の `r2` の共有 `hd` を持ち続け、`r2` の dyn のフィールドの中の `Leaf` の共有を通して書き込む `u_rev_nocell`・`u_rev_nocell2`・`u_rev_lchain`、`r2` の共有を呼び出し元の配列へ入れた `u_ext_nocell`・`u_ext_lchain`）も塞ぎました。
+  修正による安全側の拒否（`main` と先端は受理）: `h` の型が dyn の値に届くときの無関係な `Rc<Other>` への格納（`rr6/lim/s_dynholder_other`、`rr6/a34/s_sharetype_dynholder`）、`r2` の型が dyn の値に届き `h` の型が `Rc<Other>` を持ちうるときの同じ格納（`s_dynsrc_other`・`s_sharetype_dynsrc`。前の先端も拒否）、使い終えた共有の後の、dyn の値を持つ無関係な局所値への格納（`s_dynstore`・`s_sharetype_dynstore`）、呼び出し元の配列へ共有を入れた関数の中の同じ格納（`s_dynstore_ext`、`store_local_borrow_through_reference`）、(d) による、`r2` の型が dyn の値に届くときに `r2` の共有を持ち続ける値やその共有を入れた呼び出し元のデータへの、無関係な `Rc<Other>` への格納（`s_rev_dynowner_other`・`s_sharetype_dynowner`、`s_ext_dynowner_other`）。どれも `main` の native と ASan の `-O0`・`-O3`（edition 2027。A34 の形は edition 2026 の native の `-O0`・`-O3` も）で手で求めた値を出し、ASan は何も報告しませんでした（`rr6/lim-main-runs.txt`・`lim-main-runs2.txt`、`rr6/a34-runs.txt`）。`drop.md`・`lifetimes.md`・`docs/language.md`・`docs/architecture.md`・A34 の `sharetype`（「`sharetype` に A31 のレビューの第6回で足した形」。最小のプログラムと危険な双子）・A33 の表の行・「残る制限」に書きました。
+- **指摘 2（`sharetype` の文書が、届け先を共有したブロックとその中のブロックの型と書いていた。文書）**: `export_shared_block` の判定は、`h` の型と `r2` の型全体の両方が届くブロックの型で、`r2` がレコードなどでほかのフィールドにもブロックを持てば、そのブロックの型も入ります（`r2 = RS { rc: Rc<PairOk>, other: Rc<Other> }` と `h = RH2 { rc: Rc.share (ref r2.rc), other: Rc.new (mkother 2) }` の後の無関係な `Rc<Other>` への格納が `r2` へ届く。`r19-review-6-conf/st/s_srcrec_other`）。前の先端も同じく拒否する安全な形で、`src/` は変えず、実際の規則とこの形を `drop.md`・`lifetimes.md`・`docs/language.md`・`docs/architecture.md`・A34 の `sharetype`（`s_sharetype_srcrec` とその危険な双子）・「残る制限」に書きました。指摘の言うとおり、共有したブロック自身の型の走査に狭めても健全です（`r2` のほかのフィールドのブロックは、そのブロック自身の共有の loan で `r2` へ届くため）が、最後の回なので検査を緩める変更はしていません。
+
+##### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（dyn の値の中の共有を通した格納が元の所有者へ届かない。前の先端からの退行、危険） | 再現（`r19-review-6-ce/p/d1`・`d1_heap`・`d2_nocell`・`d2_heap`・`d6_plain`・`d7_arc` を先端が両方の edition で受理し、前の先端は `8:5` の `E1013`（`assignment_extends_borrow`）。`main`・基準は受理し、`d1` は `drop 0`・`drop 0`・`drop -1`・`1`、ほかは ASan の `-O0`・`-O3` で heap-use-after-free。安全な双子 `d3_safe`・`d3_heap`・`d6_plain_safe` はどのバイナリも受理。`d4_lam`・`d5_pipe`・`e1_rev` は先端も拒否） | 修正後はどれも両方の edition で `8:5` の `E1013`（`assignment_extends_borrow`）。安全な双子は受理（`drop 0`・`drop 8`・`drop 0`・`1`、`drop 0`・`drop 36`・`drop 0`・`1`）。同じ仕組みの `main` からの穴 10 個も拒否 | `a_store_through_a_share_behind_a_dyn_value_reaches_the_owner_that_frees_the_block` |
+| 2（`sharetype` の文書の規則が実際より狭い。文書） | 再現（`r19-review-6-conf/st/s_srcrec_other` を先端・前の先端が両方の edition で `63:5` の `E1013`。`main`・基準は受理し `drop 8`・`drop 0`・`drop 0`・`drop 0`・`drop 0`・`1`。`s_srcrec_other_nob`・`s_rh2_other` は受理） | 文書（実際の規則と、元の所有者のほかの部分のブロックの形） | — |
+
+##### テスト
+
+- `tests/rc.rs` の `a_store_through_a_share_behind_a_dyn_value_reaches_the_owner_that_frees_the_block`（`Defs.tz`・`Cls.tt`・`Main.tz` の 3 つのモジュール）: dyn の値を通した 7 つの危険な形（指摘 1 の `d1`・`d2_nocell`・`d6_plain`・`d7_arc`、`Rc<B>` 全体の共有の後の dyn の中の `Leaf` への書き込み、共有を dyn の値に持つ値、共有の共有を dyn の値に持つ値）を両方の edition で `8:5` の `E1013`（`assignment_extends_borrow`）で拒否し、それぞれの安全な双子（借用される値を元の所有者より先に宣言する）を受理します。共有を呼び出し元の配列へも入れた形は `8:5` の `E1013`（`assignment_extends_borrow`）と、借用される値を先に宣言すると `13:5` の `E1013`（`store_local_borrow_through_reference`）です。dyn の値に共有を持つ値を通して書き込んだ後で元の所有者をムーブする形は受理します（読み替えは保つ）。逆の向き（`u_rev_nocell`）は `8:5` の `E1013`（`assignment_extends_borrow`）で、その安全な双子は受理し、呼び出し元の配列へ共有を入れた形（`u_ext_nocell`）は `12:5` の `E1013`（`store_local_borrow_through_reference`）です。`5e99c1c0` の前のビルドでは最初の拒否（`d1`）が、`e45887c8` の前のビルドでは逆の向きの拒否が受理されて失敗することを確かめました。
+- E2E は足していません（dyn の値の形はクラスのファイルが要り、`in_place_writes` の fixture は 1 つのモジュールです）。
+
+##### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/check-r24.mjs`・`check-r25.mjs` と `diff-r24.mjs`・`diff-r25.mjs`・`table-r24.mjs`・`table-r25.mjs` に写し、`gate/tools/collect-r24.mjs`・`collect-r25.mjs` でこのレビューのプログラム（`r19-review-6-ce` と `r19-review-6-conf`）とこの回の探査（`rr6/n/`・`rr6/lim/`・`rr6/a34/`）ほかの 187 個を足して、15351 個・30702 組を両方の edition で検査しました。`r24` は最初の修正（`5e99c1c0`）のビルド、`r25` は今の先端（`e45887c8`）のビルドで、基準・先端（`r23`、`6e4f0537` のビルド）・`r24` の結果は前の結果から使い、無いプログラムはそれぞれで検査しました（`results-r25.json`、分類は `diff-r25.txt`、`rr6/gate-diff-r25.txt` に写し）。第2回の反例の探索が生成した 15552 個は、別に `rr6/g-check.mjs` で検査しました（下）。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 5208 | 4155 |
+| 両方が拒否 | 5230 | 7156 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 4875 | 4011 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 67 組で、前回と同じ 67 組です。新しい RA はありません。** 条件 (1) は成り立ちます。
+- 前回からある 30328 組では、先端からの受理・拒否の変化も、最初の誤りの変化もありません。
+- 足した 374 組での先端からの変化は、受理から拒否の 62 組（31 個）だけで、拒否から受理はありません。31 個は、指摘 1 の危険な形（`d1`・`d1_heap`・`d2_nocell`・`d2_heap`・`d6_plain`・`d7_arc`）、この回に塞いだ `main` からの穴（`rr6/n/u_*` と、名前に反して危険な `s_extchain` = `u_extchain_rpfirst`、`rr6/lim2/t` = `d1` の `Defs` を `Main.tz` に入れた形）、A34 の危険な双子（`rr6/a34/u_sharetype_dyn*`）、修正による安全側の制限として文書に書いた形（`rr6/lim/s_*`、`rr6/a34/s_sharetype_dyn*`）のどれかです。`r24` から `r25` への変化は、`e45887c8` が塞いだ逆の向きと呼び出し元のデータの 5 個と A34 の危険な双子 `u_sharetype_dynowner`、文書に書いた 3 個（`s_rev_dynowner_other`・`s_ext_dynowner_other`・`s_sharetype_dynowner`）だけです。
+- 足した組のうち基準が受理し対応後が拒否する安全そうな名前の形（`rr6/ar-fresh-r25.txt`）は、どれも先端も拒否する文書にある制限（A34 の 6 つの項目の形と、`r19-review-6-conf` の `fv`（`fvdrop`）・`rg`（`rcgetowner`）・`rs`（`refsrc`）・`sp`・`sp2`（`shareparam`）・`st`・`t5`（`sharetype`、指摘 2 の `s_srcrec_other` を含む））、危険な形（`e1_rev`）、この回の制限、または `rr6/n/s_gen`・`s_gen2` です。後の 2 つは型引数の値（`own 'a`）を局所値へムーブして、そのクラスのメソッドが返した参照の先の共有を通して書き込む汎用の関数で、A31 のどの先端も `E1013`（`store_local_borrow_through_reference`）で拒否します。型引数の値は呼び出し元のデータの参照を持つ値でもありうる（インスタンスのメソッドがその参照を返せる）ので、本体はその場合にも健全でなければならず、安全な形の拒否ではありません。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- キャッシュを足した `a2726750` のビルド（`r26`、`gate/tools/check-r26.mjs`、`results-r26.json`）は、30702 組のすべてで `r25` と同じ結果でした（検査の失敗も無し）。
+- 前の回の先端（第4回）の回帰の確かめに使われた 40 個（`r19-review-6-ce/r4/`、`r18-review-4-ce/p/u_rc_*`・`u_rcf_*`・`u_arr_*`・`u_rcself_*`）は、修正後も両方の edition で 80 組すべて拒否します。1232 個の探査のディレクトリ（`a34/`、`r18-review-4-*`・`r18-review-5-*`・`r19-review-6-*`、`rr4/`・`rr5/`・`rr6/n/`）で `5e99c1c0` のビルドと先端を比べた結果は、指摘 1 の 6 個とこの回の `rr6/n/u_*` だけが拒否に変わりました（`rr6/diffnh-1.txt`）。
+- 生成したプログラム（`rr6/g-check.mjs`、15552 個・31104 組を `e45887c8` のビルドで。結果は `rr6/g-results.json`・`g-summary.json`）: 危険な 18048 組はどれも拒否し（条件 (2)）、安全な 13056 組はすべて受理しました。
+
+条件 (3) の、`main` が受理する安全な形の拒否は、どれも文書に書いた安全側の制限です（この回の修正による `sharetype` の dyn の値と型引数の形、指摘 2 で文書にした `sharetype` の元の所有者のほかの部分の形、前からの A34 の 6 つの項目）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: `a2726750` で 3296 件すべて成功、4 件 skip（1393 秒、`rr6/nextest2.log`。この回の 1 件を含みます）。その前の `e45887c8` の実行では、`tests/formatter.rs` の `corpus_is_idempotent_and_semantically_unchanged` が 1 件、走査中のディレクトリが同時に走るほかのテストで消えた（`read_dir` の `NotFound`）ために失敗し、単独で回すと成功しました（`rr6/nextest.log`・`nextest-rerun.log`）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 84 件（基準のバイナリと先端でも 84 件）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件が、`e45887c8` と `a2726750` のビルドの両方ですべて成功（`rr6/suites.log`・`suites2.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`rr6/step5-main.txt`）。
+- 検査の時間: `5e99c1c0`・`e45887c8` の `walk_hides_blocks` は呼び出しのたびに型を走査したので、`gen_chain.py cellshares` の所有権の検査が先端のおよそ 3.5 倍になりました（n = 400 で 1389 ms（先端 380 ms）、800 で 5911 ms（1707 ms）、1600 で 24540 ms（7632 ms））。型ごとのキャッシュ（`hidden_walks`、`a2726750`）で、n = 400 で 401 ms（先端 380 ms）、800 で 1693 ms（1707 ms）、1600 で 10022 ms（9732 ms）に戻りました（同じ負荷の機械で続けて測りました。`rr6/chain-times.txt`・`rr6/chain2.sh`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・62 個のリンク・11 個の例・22 回の native の実行、`rr6/docs.log`）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功（`rr6/doc-checks.log`）。A34 の第6回の 8 個のプログラムのブロックは `rr6/a34/` のファイルと同じ内容です（取り出して比べました）。
+- コミット: `5e99c1c0`（修正とテスト）、`f1e8636f`（文書）、`e45887c8`（`export_block` の締めつけとテスト）、`d381de9b`（文書）、`a2726750`（キャッシュ）、この節。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（A34 へ移した行の `sharetype` の説明と、この回に塞いだ穴の記録）、A34（`sharetype` の第6回の形、原因・方針・落とし穴・テスト計画）、このチケット（「残る制限」と、この節）。
