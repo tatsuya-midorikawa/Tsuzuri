@@ -2009,3 +2009,72 @@ A32 の 6 度目の merge が、名前付き関数 `cross`（`b.s` の借用を 
 - 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`rr3/step5-main.txt`）。
 - 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・49 個のリンク・11 個の例・22 回の native の実行、`rr3/docs.log`）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功（`rr3/doc-checks.log`）。
 - 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（2 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（`bindref` の行を消し、`fvlam` の行を直し、`matchref`・`blockalias` の行、段 3 の一覧、この回の記録）、このチケット（「残る制限」と、この節）。
+
+#### レビューの第4回（2026-11-14）
+
+第3回の対応の後の先端（`dff92288`・`7ccca2e7`、その前のレビューの先端は `231404d0`）のレビュー（反例の探索 `target/scratch/a31/r18-review-4-ce/`、適合の確認 `target/scratch/a31/r18-review-4-conf/`）の 6 件の指摘を、修正後・先端（`dff92288`）・前の先端（`231404d0`）・`main`（`168ae4a5`）・基準のバイナリで確かめ、どれも指摘のとおりに再現しました。指摘 1 は前の先端からの退行（危険な形の受理）、指摘 2 は `main` も受理する前からの穴で、原因は同じ 1 つでした。指摘 3〜6 は `main`・基準が受理する安全な形の文書に無い拒否で、前の先端も同じく拒否します。この回からの規則（前の先端からの退行でない安全な形の拒否は `src/` を変えず、保守的な制限として文書に書く）に従い、文書に書きました。結果は `target/scratch/a31/rr4/` にあります（`rr4/v.sh` が修正後・先端・前の先端・`main`・基準の最初の誤りを並べ、`RUN=1 ASAN=1` で native と ASan の `-O0`・`-O3` の出力を足します。`t/` がこの回の双子（`t/gen.py`）、`x/` が共有の別の作り方の探査（`x/gen.py`）、`p/` が共有の元の持ち主のムーブの探査です）。
+
+##### 原因と変えたこと（`src/ownership.rs`）
+
+- **指摘 1・2（`Rc` の共有を通した格納）**: `let r = Rc.share (ref r2)` の値は `r2` のブロックの共有の loan（`Loan::share`、場所の根は `r2`）を持ち、`Rc.get (ref r)` を通した格納は、`apply_store_within` が `r` に入れた後、`r` が持つ loan のうち書き込み先になりうるもの（`store_target`）をたどって `r2` にも入れていました。ところが、破棄でコードを実行しうる局所値のうち本文がもう使わないものは、束縛のたびに `keep_for_drop` が共有の loan を元の所有者が今持つ loan に読み替え（`expand_shares`。元の所有者はムーブしうるため）、`r` の値から `r2` への道が消えます。`let a = Rc.get (ref r)` の後は `r` を使わないので、`a` を通した格納（`cross a (ref p)`、呼び出しの無い `Mutex.with_lock (ref a.h.cell) ...`、部分適用・パイプライン・`a` を渡す関数）は `r` だけに入り、`r2` は `p` の借用を持たず、`p` の後で `r2` がブロックを解放してブロックの `Holder` が解放した `p.s` を読む形を受理していました（`main` は `drop -1`。文字列をヒープのブロックに置く形は ASan が heap use after free）。一時値の `cross (Rc.get (ref r)) (ref p)` は格納の時点で `r` を使うので共有の loan が残り、拒否していました。第3回のラムダの捕捉の狭めは、捕捉した `a` に自分の loan（`r` の借用）だけを持たせたので、ラムダの形もこの道を通るようになりました（前の先端は捕捉がラムダの値全体を持ち、`p` が `r` の借用を持つという別の理由で拒否していました）。共有をパイプライン（`ref r2 |> Rc.share`）で作った形、フィールドや要素に入れた形（`RH { rc: Rc.share (ref r2) }`、`[Rc.share (ref r2)]`）も同じで、同じブロックの自分の部分 `s` を `PairBad` の `h` へ書き込む形（`let r2 = ref r |> Rc.share` の後の `crossb (Rc.get (ref r2)) (Rc.get (ref r))`）も、格納が `r2` だけに入り、`r2` を `r` と別の値として扱う（`block_shares` は直接の `Rc.share (ref r)` だけを記録します）ので受理していました。
+  `keep_for_drop` が局所値の共有を読み替えるとき、その共有の元の所有者（共有の共有もたどる、`share_sources`）へ、局所値の型が届くブロックの型で `export_block(id, ExportTarget::Local(source))` を足します。以後、その型のブロックを持ちうる局所値への格納は、`store_exported` が元の所有者へも届けます（読み替えの逆の向き `export_block(source, ExportTarget::Local(id))` は前からありました）。型で判定するので、同じ型のブロックを持つ別の局所値への格納も元の所有者へ届きます（安全側。`r` を使い終えた後で、`p` より後に宣言した同じ型の別のブロック `q` へ `p.s` の借用を書き込む安全な形 `rr4/p/s_unrelated_after`・`s_unrelated_local` も、`r2` が `p` の借用を持つものとして `26:5` の `E1013` になります。`main`・先端は受理し、`drop 8`・`drop 0`・`drop 0`・`1`（native と ASan の `-O0`・`-O3`、ASan は報告なし）。この回の規則のとおり保守的な制限として、`drop.md`・`lifetimes.md`・A33 の表（`sharetype`）・「残る制限」に書きました）。
+  局所値ごとの正確な道（読み替えた共有の loan を記録し、`apply_store_within` が持ち主の loan と同じくたどる）も試しましたが、`Rc.share` の連なり（A33 の「検査の時間」の `gen_chain.py cellshares`）では、格納が共有の loan を連なりの持ち主へ吸収させて読み替えが繰り返されるので、道の数が連なりの長さに比例して増え、検査が 3 乗になりました（n = 400 で 4491 ms、800 で 37073 ms、1600 で 300 秒を超える）。型の判定の修正も同じ連なりで 2 乗のまま定数がおよそ 2 倍になります（同じ負荷の機械で続けて測った所有権の検査: n = 400 で 273 ms（先端 138 ms）、800 で 1210 ms（550 ms）、1600 で 5109 ms（2418 ms）。`rr4/chain-times.txt`。`expand_shares` の走査を使い回し、局所値と所有者の組ごとに 1 度だけ `export_block` する形にしても変わらず、増えたのは所有者への早い出力による `store_exported_into` の呼び出しと届け先でした）。現実のプログラムの形ではないので、型の判定の修正を採り、A33 の「検査の時間」に書きました。
+  この回の規則は、前の先端からの退行には、それを入れた緩めを戻すか狭めることを求めます。ただし指摘 2 のとおり、同じ穴は捕捉を狭めない形（局所値を直接渡す呼び出し、呼び出しの無い書き込み）にもあり、捕捉の狭めを戻しても塞がりません。そこで原因の格納の規則を締め、ラムダの形を含むすべての形を拒否しました。捕捉の狭めは、部分適用と局所値の形と同じ規則（`points_at`）のまま残しています（緩めも特別な扱いも足していません）。
+- **指摘 3〜6**: 文書に書きました（下の表と「残る制限」）。原因はレビューの読みのとおりで、指摘 3・4 は `place_type` を読んで確かめました。指摘 3・4 は、フィールドや要素の場所の `Rc` の借用（`ref rs[0]`、`ref x.a.e[0]`）が、`place_type` が `Rc` を読み通してブロックの中の値の型を返すので借用の型（`Rc<PairOk>`）と合わず、`exact_loans` に入らないこと（`E::Borrow` の `typed`）です。変数全体の `ref r` は場所にフィールドが無いので exact です。捕捉・束縛した引数は `bound_value` が `None` で関数値の値全体を持ち、書き込む値の側の実引数は持ち主全体の借用として書き込み先に入り、その後の格納が持ち主のセルへ届きます。指摘 5 は、`Checker::drop_stores` が破棄を `drop_only` にするのが `parameter_part`（不変で参照でない仮引数とその部分）の破棄だけで、パターンの変数（型注釈を書いたラムダの仮引数は `\$lambdaN -> match $lambdaN with h -> ...` に下ろされます）は仮引数の根でなく、edition 2027 の読み取りの仮引数は参照の型なので `apply_facts_once` の `dropping_part` も `None` になることです。指摘 6 は、呼び出しが場所でない参照の実引数を `ref (deref q1)` として再借用し、`Checker::loan` が根の局所値の loan（`q1` が持つ `p1` 全体の借用）を親に足し、`kept_copy` の写しが元の親を持つことです。
+
+##### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（ラムダの捕捉を通した `Rc` の共有への格納。前の先端からの退行） | 再現（`u_rc_lam`・`u_rc_lam_direct`・`u_rcf_lam`・`u_rc_pipe_share_lam`・`u_arr_lam`・`u_rcp_outerg_loc`・`u_rcp_outerl_loc`・`u_rcself_bad_pipe_lam2` を先端が両方の edition で受理し、前の先端は `E1013`、`main`・基準は受理） | `share_sources`（上）。どれも両方の edition で `E1013`（`assignment_extends_borrow`、`u_rcself_bad_*` は `self_referential_store`） | `a_store_through_one_owner_of_a_block_reaches_the_other_owners` |
+| 2（同じ原因の前からの穴） | 再現（`u_rc_inline_local`・`u_rc_local_direct`・`u_rc_part`・`u_rc_partb`・`u_rc_pipe`・`u_rcf_part`・`u_rcp_outer_loc`・`u_rcp_outerq_loc`・`u_rcself_bad_pipe_loc2`・`u_rcself_bad_pipe_part2`・`u_rcself_bad_pipe_inline2`・`u_rcself_bad_arr_loc` と `_heap` の形を、どのバイナリも受理） | 同上。どれも両方の edition で `E1013` | 同上 |
+| 3（捕捉・ほかの引数と一緒に束縛した `Rc.get (ref x.a.e[0])`。`main` が受理する安全な形の拒否） | 再現（`q/C3_lam_b_only_a_bound` を修正後・先端・前の先端が両方の edition で `39:5` の `E1013`（`self_referential_store`）、`q/C7_bind2_local` は `41:5`、`p/s_arr_rc_src_lam`・`s_fld_rc_src_lam` は `27:5` の `assignment_extends_borrow`。`main` は `drop 8`・`1`） | 文書（`rcgetpart`） | — |
+| 4（書き込む値の側の `Rc.get (ref rs[0])` の局所値。同上） | 再現（`p/s_src_rcarr_local`・`s_src_rcfld_local`・`s_src_rcarr_local_pipe`・`s_arr_rc_src_part` を両方の edition で `27:5` の `E1013`（`self_referential_store`）。`main` は `drop 8`・`drop 0`・`1`） | 文書（`rcgetpart`） | — |
+| 5（パターンの変数・型注釈を書いたラムダの仮引数・読み取りの仮引数を通した関数値の破棄。同上） | 再現（`d/s_matchnamed_run` の `21:5`、`d/s_unused`・`s_min` の `19:5`、`b/s_xlamarg` の `39:5`、`c/s_lamarg` の `41:5` の `E1013`（`self_referential_store`）は両方の edition、`d/s_min_untyped`・`s_ownnamed`・`k/v4_cross_call` は edition 2027 だけ。`main` は `drop 0`・`drop 0`・`1`、`drop 8`・`drop 0`・`1`） | 文書（`fvdrop`）。`lifetimes.md` の「関数値の仮引数として扱います」は呼び出しの扱いだと書き、`fvlam` の「edition 2027 は受理」はラムダが捕捉する形だと書きました | — |
+| 6（書き込む部分の側の参照の変数が値全体を生かす。同上） | 再現（`e/w_q1` の `21:5`、`w_if` の `24:5`、`w_q1_reborrow`・`w_q1_pipe`・`w_q1_part`・`w_src_part`、`s_direct` の `23:27`・`s_part_local` の `24:27` の `E1014`（`borrow_conflict`）。`main` は `drop 0`・`drop 8`・`drop 5`・`1`、`drop 0`・`drop 8`・`1`。`w_fresh`・`w_q1_lam` は修正後も受理） | 文書（`refsrc`）。`drop.md` の「借用されていない `p1.h` は書き換えられ」と、第3回の文書の束縛した参照の変数の文に、書き込む部分の側では値全体を生かすと書きました | — |
+
+この回の双子（`rr4/t/gen.py`、両方の edition）:
+
+| 形 | 安全な順序（`p` を先に宣言） | 逆の順序（`p` をブロックの最初の持ち主より後に宣言） |
+| --- | --- | --- |
+| 直接の共有 `Rc.share (ref r2)` の `Rc.get (ref r)` を束縛した `a` を、束縛してから呼ぶラムダ・すぐに呼ぶラムダ・直接の呼び出し・呼び出しの無い `Mutex.with_lock`・部分適用・パイプライン・`outer`・`outerg`・`outerl`・`outerq` に使う形と、一時値の `Rc.get (ref r)` | 受理（`drop 8`・`drop 0`・`1`） | `40:5` の `E1013`（`assignment_extends_borrow`） |
+| パイプラインの共有・フィールドに入れた共有・要素に入れた共有の同じ 11 形 | 受理 | 同上 |
+| 書き込んだ後でブロックを前に宣言した変数へムーブ（`hold = r2`） | 受理（`drop 0`・`drop 8`・`drop 0`・`1`） | 同上（`'hold' keeps a borrow ...`） |
+| 同じブロックの自分の部分 `s` を、別の持ち主（直接・パイプライン・要素の共有）を通して `h` へ（直接の呼び出し・ラムダ・部分適用） | `PairOk` は受理（`drop 8`・`1`） | `PairBad` は `40:5` の `E1013`（`self_referential_store`） |
+
+安全な順序の 54 個はどれも先端と同じく両方の edition で受理し、逆の順序の 54 個はどれも両方の edition で拒否しました（先端はそのうち 46 個を両方の edition で受理していました。拒否していたのは一時値の 4 形と、直接の共有を通した `PairBad` の 3 形、要素の共有を通したラムダの形です）。安全な形のうち 24 個（直接の共有の 11 形、各共有のラムダ、自分の部分の 9 形、ムーブ）を edition 2027 の native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で実行し、どれも手で求めた値で、ASan は何も報告しませんでした（`rr4/t-runs-2027.txt`）。共有の別の作り方（`rr4/x/`: `Maybe` に入れた共有、弱参照の `Rc.upgrade`、共有を値で受けて返す関数、`Rc.get` を返す関数、`if` で選んだ共有、内側のブロックで作った共有、ループの中の格納）も、安全な順序はどれも受理し、逆の順序はどれも拒否しました。そのうち共有を値で受けて返す関数・`Rc.get` を返す関数・`if`・内側のブロック・ループ（edition 2026）の形は、先端と `main` が受理する危険な形で、この修正で拒否になりました。書き込んだ後で共有の元の持ち主をムーブする `rr4/p/u_mvsrc_after_store`（`main` は `drop -1`）も同じです。共有が生きている間に元の持ち主をムーブする形（`rr4/p/u_mvsrc_*`）は、どのバイナリも `E1014` です。
+
+##### テスト
+
+- `tests/rc.rs` の `a_store_through_one_owner_of_a_block_reaches_the_other_owners`（`CROSS_PRELUDE` に `RH`・`outerg`・`outerl`・`outerq` を足したもの）: 直接の共有の 10 形とパイプライン・フィールド・要素の共有の 3 形ずつの、安全な順序の受理と逆の順序の拒否（両方の edition で `42:5` の `E1013`（`assignment_extends_borrow`））、書き込んだ後のムーブ（同じ）、パイプライン・要素の共有を通した自分の部分の 3 形ずつ（`PairOk` の受理、`PairBad` の `42:5` の `E1013`（`self_referential_store`））。修正を外したビルドでは、このテストが失敗することを確かめました。
+
+##### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/check-r22.mjs`・`diff-r22.mjs`・`table-r22.mjs` に写し（基準と先端（`r21`、`dff92288` のビルド）の結果を `results-r21.json` から使い、`r21` に無いプログラムは先端でも検査）、`gate/tools/collect-r22.mjs`（第2回の生成したプログラム `r16-review-2-ce/g` を除くもの）でこのレビューのプログラム（`r18-review-4-ce` の 256 個、`r18-review-4-conf` の 282 個）とこの回の探査（`rr4/` の 142 個）、第3回の後に足した探査（`rr3/` の 7 個）の 687 個を足して、14939 個・29878 組を両方の edition で検査しました（`results-r22.json`、分類は `diff-r22.txt`、`rr4/gate-diff-r22.txt` に写し）。第2回の反例の探索が生成した 15552 個は、別に `rr4/g-check.mjs` で検査しました（下）。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 5085 | 4025 |
+| 両方が拒否 | 5185 | 7102 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 4631 | 3783 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 67 組で、前回と同じ 67 組です。新しい RA はありません。** 条件 (1) は成り立ちます。
+- **拒否から受理に変わった組はありません。**
+- 前からある 28504 組では、先端からの受理・拒否の変化はなく、最初の誤りが変わったのは `review-a31-conf-r12/p/r01_rs_bad_order_reassign_rc`（基準が受理する危険な形）の両方の edition だけです。拒否のまま、先端の 1 つ目の誤り（`99:5` の `E1013` の `self_referential_store`）と 2 つ目（`103:5` の `E1014`）に代わって、`103:5` の `self_referential_store` が最初の誤りになりました（`let inner = Rc.share (ref rc)` を通した書き込みが元の持ち主 `rc` にも届くので、`rc = Rc.new (mkp ())` の位置で、古い値が持つ自分の部分の借用を部分の順序で検査します）。
+- 足した 1374 組での先端からの変化は、受理から拒否の 155 組だけで、どれも名前が `u_` の危険な形です: このレビューの指摘 1・2 の形（`r18-review-4-ce/p/u_rc_*`・`u_rcf_*`・`u_rcp_*_loc`・`u_rcself_bad_*`・`u_arr_lam`）、この回の双子（`rr4/t/u_*`）、共有の別の作り方（`rr4/x/u_getp`・`u_ident`・`u_if`・`u_inner`・edition 2026 の `u_loop`）、書き込んだ後のムーブ（`rr4/p/u_mvsrc_after_store`）。安全な形（`s_*`、`r18-review-4-conf/p/*/s_*`、`rr4/t/s_*`、`rr4/x/s_*`）は、どれも先端と同じ判定です。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- 安全な形の実行: この回の双子の安全な形のうち 24 個（上）と、`sharetype` の 2 個（`main` のバイナリ）、文書にした制限の形（`rcgetpart`・`fvdrop`・`refsrc` の 6 個、`main` のバイナリ）は、手で求めた値を出しました（`rr4/t-runs-2027.txt`、`rr4/limits-main-runs.txt`）。この回の修正で受理に変わった形はありません。
+- 生成したプログラム（`rr4/g-check.mjs`、15552 個・31104 組。結果は `rr4/g-results.json`・`g-summary.json`）: 危険な 18048 組はどれも拒否し（条件 (2)）、安全な 13056 組はすべて受理しました。
+
+条件 (3) の、`main` が受理する安全な形の拒否は、どれも文書に書いた安全側の制限です（この回の `rcgetpart`・`fvdrop`・`refsrc` と、修正による `sharetype`）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3294 件すべて成功、4 件 skip（1551 秒、`rr4/nextest.log`。この回の 1 件を含みます）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 83 件（基準のバイナリ・先端でも 83 件が成功）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`rr4/suites.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`rr4/step5-main.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・53 個のリンク・11 個の例・22 回の native の実行、`rr4/docs-2.log`）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功（`rr4/doc-checks.log`）。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（`rcgetpart`・`fvdrop`・`refsrc`・`sharetype` の行、`fvlam` の行、段 3 の一覧、この回の記録、検査の時間）、このチケット（「残る制限」と、この節）。
