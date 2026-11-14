@@ -412,7 +412,7 @@ do! IO.write_line (to_string (run 1))
 - A31 の先端: 両方の edition で `24:5` の `E1013`（`assignment_extends_borrow`）。
 - `main`: 両方の edition で受理し、`drop 0`・`drop 0`・`drop -1`・`1`。edition 2027 の ASan のビルドは何も報告しません。
 
-dyn の値と型引数の値は、型が中身を示さず、型の走査（`TypeContext::reaches`）もその中を見ません。dyn の値のメソッドは中身の場所の参照を返せる（インスタンスの `fn leaf b = ref b.l`）ので、`Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))` は、`r2` の型からは見えない `r2` のブロックの共有です。第5回の狭め（`r` の型と `r2` の型の両方が届くブロックの型だけを届ける）はこの共有を通した格納を `r2` へ届けず、`main` も受理する解放後の読み出しを受理していた（前の先端からの退行）ので、第6回で、`r2` の型が dyn の値か型引数に届くなら狭めず、`r` の型が届くなら dyn の値か型引数かセルを持つブロックに届く型の値への格納をすべて `r2` へ届け、dyn の値か型引数に届く型の値への格納はブロックの共有が届いたどの先へも届けるようにしました。次の 3 つの形はそれによる安全側の拒否です。どれも同じ `Cls.tt` と、上の前置きと `Other` の 5 行に `Leaf`・`mkleaf`・`crossleaf`・`Box1` とそのインスタンスの 9 行が続く前置きを使います。
+dyn の値と型引数の値は、型が中身を示さず、型の走査（`TypeContext::reaches`）もその中を見ません。dyn の値のメソッドは中身の場所の参照を返せる（インスタンスの `fn leaf b = ref b.l`）ので、`Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))` は、`r2` の型からは見えない `r2` のブロックの共有です。第5回の狭め（`r` の型と `r2` の型の両方が届くブロックの型だけを届ける）はこの共有を通した格納を `r2` へ届けず、`main` も受理する解放後の読み出しを受理していた（前の先端からの退行）ので、第6回で、`r2` の型が dyn の値か型引数に届くなら狭めず、`r` の型が届くなら dyn の値か型引数かセルを持つブロックに届く型の値への格納をすべて `r2` へ届け（逆の向きも同じ）、dyn の値か型引数に届く型の値への格納はブロックの共有が届いたどの先へも届けるようにしました。次の 4 つの形はそれによる安全側の拒否です。どれも同じ `Cls.tt` と、上の前置きと `Other` の 5 行に `Leaf`・`mkleaf`・`crossleaf`・`Box1` とそのインスタンスの 9 行が続く前置きを使います。
 
 ```tsuzuri
 class LeafOf<'value> {
@@ -618,6 +618,55 @@ do! IO.write_line (to_string (run 1))
 - 同じく拒否する形: `r2` の共有を呼び出し元の配列へ入れた関数の中で、dyn の値を持つ無関係な局所値へ書き込む形は、`E1013`（`store_local_borrow_through_reference`）です（`main` は受理して `drop 0`・`drop 8`・`drop 0`・`drop 0`・`1`。A31 のワークツリーの `target/scratch/a31/rr6/lim/s_dynstore_ext`）。
 - 危険な双子（共有の共有 `Rc.share (ref h)` を dyn の値に入れた `g` を通して `r2` のブロックへ書き込むもの。`g` は `h` の共有だけを持ち、`h` から `r2` への道は読み替えで消えているので、`g` への格納は型の判定で `r2` へ届ける必要があります）: A31 の先端は両方の edition で `32:5` の `E1013`（`assignment_extends_borrow`）、`main` は受理して `drop 0`・`drop -1`・`1` です（A31 の第6回の前の先端も受理していた、`main` からある穴です）。
 
+逆の向き（元の所有者を通した書き込みを、その共有を持つ値へ届ける規則。`export_block`）で、元の所有者の型が dyn の値に届く形（`r2` の `B` はセルを持たないが、dyn の値の中のブロックはセルを持ちうるので、`r` を使い終えた後の、セルを持つブロックに届く型の値への書き込みを `r` へも届ける）:
+
+```tsuzuri
+record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+record PairOk { h: Holder, s: string }
+def mkpo :: unit -> PairOk
+fn mkpo _u = PairOk { h: Holder { cell: Mutex.create [\() -> 0] }, s: String.repeat 4 (ref "123456789") }
+def cross :: ref PairOk -> ref PairOk -> unit
+fn cross a b = { let t = ref b.s; Mutex.with_lock (ref a.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+record Other { h: Holder, n: i64 }
+def mkother :: i64 -> Other
+fn mkother k = Other { h: Holder { cell: Mutex.create [\() -> 0] }, n: k }
+def crossother :: ref Other -> ref PairOk -> unit
+fn crossother w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+record Leaf { h: Holder, n: i64 }
+def mkleaf :: i64 -> Leaf
+fn mkleaf k = Leaf { h: Holder { cell: Mutex.create [\() -> 0] }, n: k }
+def crossleaf :: ref Leaf -> ref PairOk -> unit
+fn crossleaf w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+record Box1 { l: Rc<Leaf> }
+instance Cls.LeafOf<Box1> {
+    fn leaf b = ref b.l
+}
+record B {r} { n: i64, d: dyn Cls.LeafOf {r} }
+def run :: i64 -> i64
+fn run n =
+    let r2 = Rc.new (B { n: 0, d: Dyn.of (Box1 { l: Rc.new (mkleaf 1) }) })
+    let r = Rc.share (ref r2)
+    let p = mkpo ()
+    let o = Rc.new (mkother 3)
+    crossother (Rc.get (ref o)) (ref p)
+    let r3 = r2
+    (Rc.get (ref r3)).n * 0 + n
+do! IO.write_line (to_string (run 1))
+```
+
+- A31 の先端: 両方の edition で `32:5` の `E1013`（`assignment_extends_borrow`、`r` が借用を持つ）。第5回の先端と第4回の先端は受理します。
+- `main`: 両方の edition で受理し、`drop 8`・`drop 0`・`drop 0`・`1`（ASan の `-O0`・`-O3` も同じ値で、報告なし）。手で求めた値: `r3` の解放は `B` のブロックの持ち主を 1 つ減らすだけで、`o` の `h` が `p.s` を読んで `drop 8`、`p` の `h` が `drop 0`、`r` が `B` のブロックを解放して dyn の値の中の `Leaf` の `h` が `drop 0`、`run` の結果が `1` です。
+- 同じく拒否する形: `r2` の共有を呼び出し元の配列へ入れた関数の中の、無関係な `Rc<Other>` への書き込みは `E1013`（`store_local_borrow_through_reference`）です（`main` は受理して `drop 0`・`drop 8`・`drop 0`・`drop 0`・`1`。A31 のワークツリーの `target/scratch/a31/rr6/lim/s_ext_dynowner_other`）。
+- 危険な双子（`o` の代わりに、`r2` の dyn のフィールドの中の `Leaf` の共有 `lf` を通して書き込むもの。`p` が解放された後で `r` が `B` のブロックを解放し、`Leaf` の `h` が `p.s` を読みます。A31 の第6回の前の先端と `main` が受理していた、`main` からある穴です）: A31 の先端は両方の edition で `32:5` の `E1013`（`assignment_extends_borrow`）、`main` は受理して `drop 0`・`drop -1`・`1` です（`look` を `t.length` にした形は ASan のビルドで heap-use-after-free。`target/scratch/a31/rr6/n/u_rev_nocell`）。共有を呼び出し元の配列へ入れた同じ形（`rr6/n/u_ext_nocell`）は `E1013`（`store_local_borrow_through_reference`）です。
+
 ### `rcgetowner`: `Rc.get (ref r)` の借用を `r` の借用として解放の順序を検査する
 
 ```tsuzuri
@@ -761,7 +810,7 @@ do! IO.write_line (to_string (run 1))
 - **`rcgetpart`**: `Checker::eval` の `E::Borrow` の腕は、借用した場所が借用した部分そのものであること（`exact_place`）に加えて、場所の型が借用の型と同じこと（`typed`: `place_type(&place)` が `without_views(&value.ty)` と同じ）を求め、両方が成り立つ loan だけを `exact_loans` に入れます。`place_type` は場所をたどるたびに `Rc`・`Arc` を読み通し、最後の段の後にも読み通す（`unwrap(current)`）ので、`ref rs[0]`（借用の型は `Rc<PairOk>`）の場所の型は `PairOk` になって合わず、loan は exact になりません。`exact_loan` はフィールドの無い場所（変数全体の `ref r`）を `exact_loans` なしで exact とみなすので、変数全体の形は受理されます。その loan を持つ局所値 `b` を書き込む値の側へ渡すと、`kept_copy` は exact な loan だけを `kept_paths` の部分（`.s`）の借用に置き換えるので、`p2` は `rs[0]` の場所全体の借用を持ち、その後の格納は `apply_store_within` がその借用をたどって `rs` の中のセル（`store_target`）へ届けます。`rs` が自分の借用を持つものになり、`check_drop_order_of` が `self_referential_store` を報告します。ラムダの捕捉と部分適用の引数は、`bound_value` が exact な loan だけを引数の値とし、ほかは `None`（関数値の値全体）にします。引数にそのまま書いた `Rc.get (ref rs[0])` が受理される道（`points_at` は `Rc.get` の引数の借用を `exact_place` で判断します）は、着手時に確かめます。
 - **`fvdrop`**: `Checker::drop_stores` は、破棄でコードを実行しうる値の破棄を、その値の loan をその値の書き込み先へ格納するもの（`apply_store(value, value)`）として扱い、破棄した値が仮引数の一部（`parameter_part`: 不変で参照でない仮引数、そのフィールド・要素）なら、その格納を `StoreFacts::drop_only` に記録します。呼び出し元の `apply_facts_once` は、drop-only の格納を、実引数の式が破棄でコードを実行しうるとき（`value_runs_drop_code`）だけ当てはめます。`parameter_part` は `E::Local`・`E::Field`・`E::Index` しか見ないので、リテラル（`FR { f: f, k: 1 }`、`[f]`、`(f, 1)`、`Maybe.Some f`）、パターンの変数（型注釈を書いたラムダの仮引数は `\$lambdaN -> match $lambdaN with h -> ...` に下ろされます）、edition 2027 の読み取りの仮引数（型が参照）を束縛した局所値の破棄は `None` になり、普通の格納として記録されます。呼び出し元は、`cross (ref p2)` が破棄で何も実行しないことを使えず、`(0, Value, 0)` を当てはめて `p2` の借用を `p2` 自身のセルへ入れます。
 - **`refsrc`**: 呼び出しは、場所の借用でない参照の実引数 `q1` を `ref (deref q1)` として再借用します。`Checker::loan` は借用する場所の根の局所値が持つ loan を新しい loan の親に足す（`parents.extend(&value.loans)`）ので、再借用の loan は `q1` が持つ `p1` 全体の借用を親に持ちます。`kept_copy` は `kept_paths` の部分（`p1.s`）の写しを作りますが、写しは元の親を持つ（呼び出し元が前に格納した元の loan と同じく、借用した値が持つものを生かすため）ので、`p2` が生きている間は `p1` 全体の借用が生きたままになり、`p1.h` のムーブが `E1014` になります。親が「借用した値が持つもの」ではなく「同じ値の外側の借用」であることを区別していません（`read_through_loan` は、同じ場所の再借用を親として読む場合を区別しています）。ラムダの捕捉は `Checker::captured_loans` で狭めますが、再借用を束縛した局所値（`let q1 = ref (deref q0)`）の loan も同じく元の借用を親に持ちます。
-- **`sharetype`**: `keep_for_drop` は、破棄でコードを実行しうる局所値のうち本文がもう使わないもの（`let a = Rc.get (ref r)` の後の `r`）が持つ共有の loan（`Loan::share`）を、元の所有者 `r2` が今持つ loan に読み替えます（`expand_shares`）。読み替えで `r` から `r2` への道が消えるので、`share_sources` の元の所有者へ、`export_shared_block(r, r2)` がブロックの型（`r` の型と `r2` の型の両方が届く、セルを持つブロックの型。`export_walk`）を届け先として記録し、以後の格納は `store_exported` → `store_exported_into` が、格納先の局所値の型がその型に届けば `r2` へも入れます。型の走査は dyn の値と型引数の中を見ないので（`walk_hides_blocks`）、`r2` の型がそうした値に届くなら狭めずに `r` の型が届くすべての型を、`r` の型が届くなら印 `HIDDEN_BLOCK`（dyn の値か型引数かセルを持つブロックに届く型の値への格納に当たる）を記録し、`store_exported_into` は、格納先の型が dyn の値か型引数に届けば、すべての届け先へ入れます（第6回）。判定は型だけなので、`r2` のブロックを持ちえない値（新しく作った `Rc.new (mkpo ())`、`keep` が `Maybe.None` の `W`）への格納も `r2` に入ります。事実は書き込み先の仮引数だけを記録し、その中のどの部分へ書き込んだかを記録しないので、呼び出し元はブロックでない部分（`w.h`）への格納を型で除くこともできません。局所値ごとの正確な道（読み替えた共有の loan を記録し、`apply_store_within` がたどる）は、`Rc.share` の連なりで検査が 3 乗になったので、A31 では採っていません（A31 のチケットの「レビューの第4回」）。
+- **`sharetype`**: `keep_for_drop` は、破棄でコードを実行しうる局所値のうち本文がもう使わないもの（`let a = Rc.get (ref r)` の後の `r`）が持つ共有の loan（`Loan::share`）を、元の所有者 `r2` が今持つ loan に読み替えます（`expand_shares`）。読み替えで `r` から `r2` への道が消えるので、`share_sources` の元の所有者へ、`export_shared_block(r, r2)` がブロックの型（`r` の型と `r2` の型の両方が届く、セルを持つブロックの型。`export_walk`）を届け先として記録し、以後の格納は `store_exported` → `store_exported_into` が、格納先の局所値の型がその型に届けば `r2` へも入れます。型の走査は dyn の値と型引数の中を見ないので（`walk_hides_blocks`）、`r2` の型がそうした値に届くなら狭めずに `r` の型が届くすべての型を、`r` の型が届くなら印 `HIDDEN_BLOCK`（dyn の値か型引数かセルを持つブロックに届く型の値への格納に当たる）を記録し（逆の向きの `export_block` も、元の所有者の型が届くなら `HIDDEN_BLOCK` を記録します）、`store_exported_into` は、格納先の型が dyn の値か型引数に届けば、すべての届け先へ入れます（第6回）。判定は型だけなので、`r2` のブロックを持ちえない値（新しく作った `Rc.new (mkpo ())`、`keep` が `Maybe.None` の `W`）への格納も `r2` に入ります。事実は書き込み先の仮引数だけを記録し、その中のどの部分へ書き込んだかを記録しないので、呼び出し元はブロックでない部分（`w.h`）への格納を型で除くこともできません。局所値ごとの正確な道（読み替えた共有の loan を記録し、`apply_store_within` がたどる）は、`Rc.share` の連なりで検査が 3 乗になったので、A31 では採っていません（A31 のチケットの「レビューの第4回」）。
 - **`rcgetowner`**: `Rc.get (ref r)` の結果は `ref r` の loan（場所の根は `r`）を持ちます。`check_drop_order_of` は、局所値が持つ loan の根の位置で解放の順序を判断し、根 `r` が `p` より後に宣言されていれば `borrow_dropped_first` で `assignment_extends_borrow` にします。同じブロックの持ち主の組（`State::block_shares`、`block_groups`）を見る `same_block_loan` は、借用を持つ値自身が同じブロックの持ち主のときだけ例外にするので、ブロックを持たない `p` には、組のほかの持ち主（`r2`）がブロックを生かすことが使われません。
 - **`shareparam`**: `share_loans` は、`Rc.share`・`Arc.share` の結果が持つ loan を共有の印（`Loan::share`）を付けた写しにしますが、根が外部（仮引数）の loan は、`Drop.drop` の中の破棄する値（`drop_root`）を除いて印を付けません。そのため `fn dup r = Rc.share r` の結果と `let s = Rc.share r` は仮引数 `r` の先の借用のままで、その破棄（`drop_stores`。どれかの `Drop.drop` が書き込みうるプログラム、`facts.drops_write` だけ）は、その借用を共有したブロックのセルへ格納するものになります。呼び出し元では `dup (ref r2)` の結果が `r2` の借用で、その破棄が `r2` の借用を `r2` のブロックのセルへ入れ、`sh2 (ref r2)` は事実 `(0, Value, 0)` で同じことをし、`r2` が自分自身の借用を持つものとして `self_referential_store` になります。呼び出し元で書いた `Rc.share (ref r2)` は、根が局所値なので共有として扱われます（`note_block_share` も記録します）。
 
