@@ -6914,3 +6914,110 @@ fn a_lambda_or_a_partial_application_over_reference_parameters_keeps_each_part()
         );
     }
 }
+
+/// A31, review round 4 after Copilot (findings 1 and 2): a store into the block of an `Rc` owner
+/// reaches the other owners of the block. `let r = Rc.share (ref r2)` holds a share of `r2`'s block
+/// (`Loan::share`), which a store into `r` (through `let a = Rc.get (ref r)`) followed to `r2`.
+/// Once `r` is no longer used, its value stands for what the block holds (`keep_for_drop`), and
+/// the store reached `r` alone: `r2`, declared before `p`, frees the block after `p`, and the
+/// block's holder reads `p.s` after it was freed (main prints `drop -1`, ASan reports a
+/// heap-use-after-free with the string in a heap block). The narrowed capture of a lambda (review
+/// round 3) took the same way. Every form keeps the borrow in `r2` now (`E1013`,
+/// `assignment_extends_borrow`), and so does the block moved into an older local after the store
+/// (`hold = r2`). A store of the block's own `s` into its `h` through another owner of the block
+/// is a store into the block itself: `PairBad` drops `s` before `h` (`self_referential_store`),
+/// `PairOk` drops `h` first. With `p` declared first, `p` outlives the block (`drop 8`, `drop 0`,
+/// `1`). The body of `run` starts at line 42.
+#[test]
+fn a_store_through_one_owner_of_a_block_reaches_the_other_owners() {
+    let prelude = CROSS_PRELUDE.replace(
+        "def run :: i64 -> i64\n",
+        "record RH { rc: Rc<PairOk> }\ndef outerg :: ref PairOk -> ref PairOk -> unit\nfn outerg a b = { let g = \\(_u: unit) -> cross a b; g () }\ndef outerl :: ref PairOk -> ref PairOk -> unit\nfn outerl a b = (\\(_u: unit) -> cross a b) ()\ndef outerq :: ref PairOk -> ref PairOk -> unit\nfn outerq a b = { let g = cross a; g b }\ndef run :: i64 -> i64\n",
+    );
+    let program =
+        |body: &str| format!("{prelude}{body}    n\ndo! IO.write_line (to_string (run 1))\n");
+    let lambda = "    let b = ref p\n    let g = \\(_u: unit) -> cross a b\n    g ()\n";
+    let direct = "    cross a (ref p)\n";
+    let partial = "    let g = cross a\n    g (ref p)\n";
+    let mut forms: Vec<String> = Vec::new();
+    for using in [
+        lambda,
+        "    let b = ref p\n    (\\(_u: unit) -> cross a b) ()\n",
+        direct,
+        "    let t = ref p.s\n    Mutex.with_lock (ref a.h.cell) (\\c -> Array.write 0 (\\() -> look t) c)\n",
+        partial,
+        "    ref p |> cross a\n",
+        "    outer a (ref p)\n",
+        "    outerg a (ref p)\n",
+        "    outerl a (ref p)\n",
+        "    outerq a (ref p)\n",
+    ] {
+        forms.push(format!(
+            "    let r = Rc.share (ref r2)\n    let a = Rc.get (ref r)\n{using}"
+        ));
+    }
+    for (share, get) in [
+        ("    let r = ref r2 |> Rc.share\n", "Rc.get (ref r)"),
+        (
+            "    let h = RH { rc: Rc.share (ref r2) }\n",
+            "Rc.get (ref h.rc)",
+        ),
+        ("    let rs = [Rc.share (ref r2)]\n", "Rc.get (ref rs[0])"),
+    ] {
+        for using in [lambda, direct, partial] {
+            forms.push(format!("{share}    let a = {get}\n{using}"));
+        }
+    }
+    for form in &forms {
+        let safe = format!("    let p = mkpo ()\n    let r2 = Rc.new (mkpo ())\n{form}");
+        accepts_in_both_editions(&[("Main.tz", &program(&safe))]);
+        let unsafe_order = format!("    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n{form}");
+        rejects_at(
+            &program(&unsafe_order),
+            "E1013",
+            "assignment_extends_borrow",
+            (42, 5),
+        );
+    }
+    // The block moved into `hold`, declared before `p`, after the store.
+    let moved = "    let r2 = Rc.new (mkpo ())\n    let r = Rc.share (ref r2)\n    let a = Rc.get (ref r)\n    cross a (ref p)\n    hold = r2\n";
+    accepts_in_both_editions(&[(
+        "Main.tz",
+        &program(&format!(
+            "    let p = mkpo ()\n    let mut hold = Rc.new (mkpo ())\n{moved}"
+        )),
+    )]);
+    rejects_at(
+        &program(&format!(
+            "    let mut hold = Rc.new (mkpo ())\n    let p = mkpo ()\n{moved}"
+        )),
+        "E1013",
+        "assignment_extends_borrow",
+        (42, 5),
+    );
+    // The block's own part, through another owner of the block.
+    for (share, get) in [
+        ("    let r2 = ref r |> Rc.share\n", "Rc.get (ref r2)"),
+        ("    let rs = [Rc.share (ref r)]\n", "Rc.get (ref rs[0])"),
+    ] {
+        for using in [
+            "    crossX a b\n",
+            "    let g = \\(_u: unit) -> crossX a b\n    g ()\n",
+            "    let g = crossX a\n    g b\n",
+        ] {
+            let body = |make: &str, writer: &str| {
+                format!(
+                    "    let r = Rc.new ({make} ())\n{share}    let a = {get}\n    let b = Rc.get (ref r)\n{}",
+                    using.replace("crossX", writer)
+                )
+            };
+            accepts_in_both_editions(&[("Main.tz", &program(&body("mkpo", "cross")))]);
+            rejects_at(
+                &program(&body("mkpb", "crossb")),
+                "E1013",
+                "self_referential_store",
+                (42, 5),
+            );
+        }
+    }
+}

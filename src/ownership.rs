@@ -13183,6 +13183,12 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// for what the block holds rather than a borrow of the owner: the owner may move, as it may
     /// while the share is dead. It holds what the owner holds now, and the block's later contents
     /// (`expand_shares` to an `ExportTarget::Local`).
+    ///
+    /// The share was also the way from the local to the owners of its block: a store into the
+    /// local (through `Rc.get (ref r)` of `let r = Rc.share (ref r2)`, or of an `Rc` that a field or
+    /// an element holds) followed it to `r2` (`apply_store_within`), whose drop may be the one
+    /// that frees the block. The expanded value leads nowhere, so a store into a value of the
+    /// local's type goes to each of those owners too (`export_block` to them, `store_exported`).
     fn keep_for_drop(&mut self, keep: &mut BTreeSet<usize>) {
         for id in self.dropped_later() {
             if keep.insert(id)
@@ -13190,14 +13196,44 @@ impl<'a, 'run> Checker<'a, 'run> {
                 && value.loans.iter().any(|loan| self.loans[*loan].share)
             {
                 let value = value.clone();
+                let sources = self.share_sources(&value);
                 let expanded = self.expand_shares(&value, ExportTarget::Local(id));
                 if let Some((_, owner)) = self.state.locals.get_mut(&id) {
                     owner.loans = expanded.loans;
                     owner.through = expanded.through;
                     owner.regions = None;
                 }
+                for source in sources {
+                    if source != id {
+                        self.export_block(id, ExportTarget::Local(source));
+                    }
+                }
             }
         }
+    }
+
+    /// A31: the local owners of the blocks whose shares (`Loan::share`) `value` holds, through
+    /// shares of shares, as `expand_shares` walks them.
+    fn share_sources(&self, value: &Value) -> Vec<usize> {
+        let mut pending: Vec<usize> = value.loans.iter().copied().collect();
+        let mut seen = BTreeSet::new();
+        let mut sources = Vec::new();
+        while let Some(loan) = pending.pop() {
+            if !seen.insert(loan) || !self.loans[loan].share {
+                continue;
+            }
+            let source = self.loans[loan].place.root;
+            if is_static_root(source) || self.external.contains(&source) {
+                continue;
+            }
+            if let Some((_, owner)) = self.state.locals.get(&source) {
+                pending.extend(owner.loans.iter().copied());
+                if !sources.contains(&source) {
+                    sources.push(source);
+                }
+            }
+        }
+        sources
     }
 
     /// A31: the locals that are not moved away whole on every path and whose drops may run a
