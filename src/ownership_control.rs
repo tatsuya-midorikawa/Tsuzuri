@@ -1,15 +1,57 @@
 use super::*;
 use crate::check::PatternStep;
 
-type LoanSummary = BTreeMap<usize, BTreeSet<(Place, bool)>>;
-type LoopSummary = (
-    BTreeSet<Place>,
-    LoanSummary,
-    BTreeSet<String>,
-    BTreeSet<(Place, bool)>,
-    usize,
-    BTreeMap<usize, BTreeSet<usize>>,
-);
+/// What the fixed point of a loop compares of a loan (`Checker::loop_summary`): its place, whether
+/// it is mutable, and the flags `LOAN_*` of what the checks read of it besides. Its number is no
+/// part of it: an iteration makes its loans again with fresh numbers, so a summary by number would
+/// never settle.
+type LoanKey = (Place, bool, u8);
+
+/// A31: the flags of a `LoanKey`. The loan stands for a share of a block (`Loan::share`), belongs
+/// to a pattern view (`Loan::view`), is held only as what the value read through a reference
+/// parameter (`Value::through`, by the value that holds it), or is in `Checker::exact_loans`,
+/// `Checker::ordered_loans` or `Checker::holding_loans`.
+const LOAN_SHARE: u8 = 1;
+const LOAN_VIEW: u8 = 2;
+const LOAN_THROUGH: u8 = 4;
+const LOAN_EXACT: u8 = 8;
+const LOAN_ORDERED: u8 = 16;
+const LOAN_HOLDING: u8 = 32;
+
+/// What `LoopSummary` keeps of the value of a local: its loans, and those of each of its region
+/// slots (`Value::regions`).
+type LocalSummary = (BTreeSet<LoanKey>, Option<Vec<BTreeSet<LoanKey>>>);
+
+/// What the fixed point of a loop compares of the state where an iteration starts
+/// (`Checker::check_loop`). The check returns the exit state of the iteration whose summary did
+/// not change, which starts from what the iterations before it left: a fact of the state that an
+/// iteration changes and the summary leaves out would be lost after the loop, and the body would
+/// not be checked again under it. So it holds every fact of `State` that a check reads, each loan
+/// by its `LoanKey` and each move by its place (the spans of the moves would keep it from
+/// settling), and the facts of the body that only grow and that a later write or store reads
+/// where it happens (`Checker::handed`, `Checker::exports`): the next iteration's writes and
+/// stores meet those of this one. A31, Copilot's review 2: `kept_elsewhere`, `contents_elsewhere`,
+/// `moved_always`, `generic_moves`, the regions and the flags of the loans, and `exports` were
+/// missing (a copy of a target's contents or a borrow of it stored elsewhere in a loop was lost,
+/// and a later `deref p = v` ended the borrow). The aliases are not in it: only the bindings of a
+/// match, a `for` and a pattern view add them, for their own locals, and the end of their scopes
+/// takes them out (`finish_control_scope`, `eval_match`, `eval_control`), so an iteration leaves
+/// those of the locals before the loop as they were. `Value::closed_result` is not in it either:
+/// `State::merge` keeps the first state's, so the summary of a merged state never shows a change.
+#[derive(PartialEq, Eq)]
+struct LoopSummary {
+    moved: BTreeSet<Place>,
+    moved_always: BTreeSet<usize>,
+    generic_moves: BTreeSet<Place>,
+    locals: BTreeMap<usize, LocalSummary>,
+    copy_variables: BTreeSet<String>,
+    kept: BTreeSet<LoanKey>,
+    kept_elsewhere: BTreeSet<LoanKey>,
+    contents_elsewhere: BTreeSet<usize>,
+    block_shares: BTreeMap<usize, BTreeSet<usize>>,
+    handed: usize,
+    exports: usize,
+}
 
 pub(super) struct LoopFlow<'a> {
     locals: BTreeSet<usize>,
@@ -366,43 +408,61 @@ impl<'a> Checker<'a, '_> {
         Ok(())
     }
 
+    /// The `LoanKey` of `loan`, held as what the holder read through a reference parameter when
+    /// `through`.
+    fn loan_key(&self, loan: usize, through: bool) -> LoanKey {
+        let held = &self.loans[loan];
+        let mut flags = 0;
+        for (set, flag) in [
+            (held.share, LOAN_SHARE),
+            (held.view.is_some(), LOAN_VIEW),
+            (through, LOAN_THROUGH),
+            (self.exact_loans.contains(&loan), LOAN_EXACT),
+            (self.ordered_loans.contains(&loan), LOAN_ORDERED),
+            (self.holding_loans.contains(&loan), LOAN_HOLDING),
+        ] {
+            if set {
+                flags |= flag;
+            }
+        }
+        (held.place.clone(), held.mutable, flags)
+    }
+
     fn loop_summary(&self) -> LoopSummary {
-        let loans = self
+        let keys = |loans: &BTreeSet<usize>, value: Option<&Value>| -> BTreeSet<LoanKey> {
+            loans
+                .iter()
+                .map(|loan| {
+                    let through = value.is_some_and(|value| value.through.contains(loan));
+                    self.loan_key(*loan, through)
+                })
+                .collect()
+        };
+        let locals = self
             .state
             .locals
             .iter()
             .map(|(id, (_, value))| {
-                (
-                    *id,
-                    value
-                        .loans
-                        .iter()
-                        .map(|id| {
-                            let loan = &self.loans[*id];
-                            (loan.place.clone(), loan.mutable)
-                        })
-                        .collect(),
-                )
+                let regions = value
+                    .regions
+                    .as_ref()
+                    .map(|slots| slots.iter().map(|slot| keys(slot, Some(value))).collect());
+                (*id, (keys(&value.loans, Some(value)), regions))
             })
             .collect();
-        // The places only: the spans of the moves would keep the fixpoint from converging. A31:
-        // the kept loans by place too, and the borrows handed to function-valued parameters, so
-        // that the next iteration's writes meet those of this one.
-        (
-            self.state.moved.keys().cloned().collect(),
-            loans,
-            self.copy_variables.clone(),
-            self.state
-                .kept
-                .iter()
-                .map(|id| {
-                    let loan = &self.loans[*id];
-                    (loan.place.clone(), loan.mutable)
-                })
-                .collect(),
-            self.handed.len(),
-            self.state.block_shares.clone(),
-        )
+        LoopSummary {
+            moved: self.state.moved.keys().cloned().collect(),
+            moved_always: self.state.moved_always.clone(),
+            generic_moves: self.state.generic_moves.keys().cloned().collect(),
+            locals,
+            copy_variables: self.copy_variables.clone(),
+            kept: keys(&self.state.kept, None),
+            kept_elsewhere: keys(&self.state.kept_elsewhere, None),
+            contents_elsewhere: self.state.contents_elsewhere.clone(),
+            block_shares: self.state.block_shares.clone(),
+            handed: self.handed.len(),
+            exports: self.exports.len(),
+        }
     }
 
     fn check_loop(

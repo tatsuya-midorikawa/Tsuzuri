@@ -1565,3 +1565,33 @@ fn unrelated_blocks_keep_no_borrow =
     let k = unrelated_pairs (ref out1) (ref out2) (ref out3) (ref out4)
     let first = (k * 10 + recorded (ref out1)) * 10 + recorded (ref out2)
     (first * 10 + recorded (ref out3)) * 10 + recorded (ref out4)
+
+// Copilot's review 2 of PR #105: a loop whose body stores a borrow that the target of a reference
+// parameter keeps (of its new string, after the replacement) into another parameter's target.
+// The check takes what the body stored to the code after the loop. The old `q` records 0; `d`,
+// declared after `q`, is dropped first and reads the new "123456789" (9 + 4), then `q`'s recorder
+// reads it (9 + 2); the function returns the new value's 7.
+def renew_then_lend :: ref mut RecordedTriple -> ref RecordedTriple -> ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn renew_then_lend p dst out n =
+    deref p = make_triple 7 out
+    let t = ref p.s
+    Mutex.with_lock (ref p.c.cell) (\b -> Array.write 0 (\() -> String.length t + 2) b)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref dst.c.cell) (\b -> Array.write 0 (\() -> String.length t + 4) b)
+        i = i + 1
+    p.n
+
+def lent_in_a_loop :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64
+fn lent_in_a_loop out1 out2 out3 =
+    let mut q = make_triple 1 out1
+    let d = make_triple 2 out2
+    renew_then_lend (ref mut q) (ref d) out3 3
+
+export def loop_lends_borrows_of_the_new_value :: i64
+fn loop_lends_borrows_of_the_new_value =
+    let out1 = Arc.new (Mutex.create [9])
+    let out2 = Arc.new (Mutex.create [9])
+    let out3 = Arc.new (Mutex.create [9])
+    let k = lent_in_a_loop (ref out1) (ref out2) (ref out3)
+    ((k * 100 + recorded (ref out1)) * 100 + recorded (ref out2)) * 100 + recorded (ref out3)

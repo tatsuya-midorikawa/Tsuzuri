@@ -2095,6 +2095,9 @@ const suites = {
       // Review round 5 after Copilot's review. unrelated_pairs returns the length of "1234567" (7);
       // r2's, p1's and h's other recorders keep 0, o's reads p1's "12345" (5 + 1).
       ["unrelated_blocks_keep_no_borrow", [], (((7n * 10n + 0n) * 10n + 0n) * 10n + 0n) * 10n + 6n],
+      // Copilot's review 2. lent_in_a_loop returns the new value's 7; the old q records 0, d and
+      // the new q read the new "123456789" (9 + 4 and 9 + 2).
+      ["loop_lends_borrows_of_the_new_value", [], ((7n * 100n + 0n) * 100n + 13n) * 100n + 11n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.

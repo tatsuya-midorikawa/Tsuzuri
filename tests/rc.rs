@@ -7354,3 +7354,183 @@ fn crossleaf w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Arra
         );
     }
 }
+
+/// A31, Copilot's review 2 of PR #105: the fixed point of a loop compares a summary of the state
+/// where an iteration starts, and the check goes on from the exit state of the iteration whose
+/// summary did not change, which starts from what the iterations before it left. The summary had
+/// neither `State::contents_elsewhere` nor `State::kept_elsewhere`: a body that only copied what
+/// the cell of `p`'s target holds to `out`'s target, or stored the borrow of `p.a[0]` that the cell
+/// held already in `out`'s cell, changed no fact of it, so the loop ended after one iteration with
+/// the state from before the body, and `deref p = mkpa ()` after the loop ended the borrow that the
+/// copy keeps (the caller then read the freed string through `out`: `drop -1 2` and `-1` in place
+/// of `drop 8 2` and `8`, a heap use after free under ASan). Each loop form is rejected where the
+/// replacement is, as the program without a loop is; with the replacement before the loop, the
+/// copies borrow the new value and the program is accepted. The flags of a loan were not in the
+/// summary either: `x` held what it read through `p` (`Value::through`) before a loop that binds
+/// it to a lambda that captures `p` itself, so the store of `x` into `out` after the loop was a
+/// copy of `p`'s contents and not a borrow of `p`'s target (`drop -1 2` when the caller's `out`
+/// outlives `p1`); it is rejected at the call, as without a loop.
+#[test]
+fn a_loop_keeps_what_its_body_stored_elsewhere() {
+    const PRELUDE: &str = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = {
+        let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")];
+        do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " " + to_string junk.length)
+    }
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def mkh :: unit -> Holder
+fn mkh _u = Holder { cell: Mutex.create [\() -> 0] }
+def mks :: unit -> string
+fn mks _u = String.repeat 4 (ref "123456789")
+record PA { h: Holder, a: [string] }
+def mkpa :: unit -> PA
+fn mkpa _u = PA { h: mkh (), a: [mks ()] }
+def copy_out :: ref [unit -> i64] -> ref Mutex<[unit -> i64]> -> unit
+fn copy_out b out = Mutex.with_lock out (\o -> Array.write 0 b[0] o)
+def renew :: ref mut PA -> ref Holder -> i64 -> i64
+fn renew p out n =
+"#;
+    const RUN: &str = r#"    0
+def run :: i64 -> i64
+fn run n =
+    let mut p0 = mkpa ()
+    let out = mkh ()
+    let k = renew (ref mut p0) (ref out) n
+    let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy"), String.repeat 4 (ref "xxxxxxxxx")]
+    Mutex.with_lock (ref out.cell) (\b -> b[0] ()) + k + junk.length * 0
+do! IO.write_line (to_string (run 1))
+"#;
+    const KEEP: &str = "    let t = ref p.a[0]\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n";
+    const REPLACE: &str = "    deref p = mkpa ()\n";
+    let bodies = [
+        // the copy of what the cell holds (`contents_elsewhere`)
+        "Mutex.with_lock (ref p.h.cell) (\\b -> copy_out b (ref out.cell))",
+        // the borrow that the cell holds, stored in another target (`kept_elsewhere`)
+        "Mutex.with_lock (ref out.cell) (\\b -> Array.write 0 (\\() -> look t) b)",
+    ];
+    let loops: [&[&str]; 9] = [
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    BODY",
+            "    i = i + 1",
+        ],
+        &["for i in 0 ..= (n - 1) do", "    BODY"],
+        &["let xs = [1, 2]", "for x in xs do", "    BODY"],
+        &[
+            "let mut i = 0",
+            "while true do",
+            "    if i >= n then break else ()",
+            "    BODY",
+            "    i = i + 1",
+        ],
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    i = i + 1",
+            "    BODY",
+            "    if i > 0 then continue else ()",
+        ],
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    let mut j = 0",
+            "    while j < n do",
+            "        BODY",
+            "        j = j + 1",
+            "    i = i + 1",
+        ],
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    let r = try",
+            "                BODY",
+            "                @checked i * 2",
+            "            with",
+            "            | e -> e",
+            "    i = i + 1",
+        ],
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    match i with",
+            "    | 0 -> BODY",
+            "    | _ -> ()",
+            "    i = i + 1",
+        ],
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    if i == 0 then BODY else ()",
+            "    i = i + 1",
+        ],
+    ];
+    for body in bodies {
+        for lines in loops {
+            let mut looped = String::new();
+            for line in lines {
+                looped.push_str("    ");
+                looped.push_str(&line.replace("BODY", body));
+                looped.push('\n');
+            }
+            let unsafe_source = format!("{PRELUDE}{KEEP}{looped}{REPLACE}{RUN}");
+            let at = position(
+                &unsafe_source,
+                unsafe_source.find("deref p = mkpa ()").unwrap(),
+            );
+            assert_eq!(at.1, 5);
+            rejects_at(&unsafe_source, "E1014", "borrow_conflict", at);
+            let safe = format!("{PRELUDE}{REPLACE}{KEEP}{looped}{RUN}");
+            accepts_in_both_editions(&[("Main.tz", &safe)]);
+        }
+    }
+    // A value read through `p` before the loop, a lambda that captures `p` in it.
+    let through = |assigned: &str| {
+        format!(
+            r#"record Holder {{ cell: Mutex<[unit -> i64]> }}
+instance Drop<Holder> {{
+    fn drop h = {{
+        let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")];
+        do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " " + to_string junk.length)
+    }}
+}}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def mkh :: unit -> Holder
+fn mkh _u = Holder {{ cell: Mutex.create [\() -> 0] }}
+record P {{ s: string, f: unit -> i64 }}
+def stash :: ref P -> ref Holder -> i64 -> i64
+fn stash p out n =
+    let mut x = p.f
+    let mut i = 0
+    while i < n do
+        x = {assigned}
+        i = i + 1
+    Mutex.with_lock (ref out.cell) (\b -> Array.write 0 x b)
+    0
+def run :: i64 -> i64
+fn run n =
+    let out = mkh ()
+    let p1 = P {{ s: String.repeat 4 (ref "123456789"), f: \() -> 5 }}
+    stash (ref p1) (ref out) n
+do! IO.write_line (to_string (run 1))
+"#
+        )
+    };
+    rejects_at(
+        &through("\\() -> look (ref p.s)"),
+        "E1013",
+        "assignment_extends_borrow",
+        (27, 5),
+    );
+    accepts_in_both_editions(&[("Main.tz", &through("p.f"))]);
+}
