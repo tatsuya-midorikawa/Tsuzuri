@@ -6483,3 +6483,299 @@ fn a_local_bound_to_a_match_block_or_choice_of_partial_applications_keeps_the_pa
         }
     }
 }
+
+/// A31, review round 2 after Copilot's review (finding 1): a builtin that applies a function value
+/// it gets to fewer arguments than the value takes before its code runs makes a partial
+/// application that binds what the builtin passes, and no site counted it: `Owned.call (ref w)
+/// cell` with `w` wrapping the named function `wr` of two parameters (or an alias of it, or the
+/// partial application `wr3 0`), its pipeline, `List.mapr wrr (ref cells)` and `List.foldr fold
+/// zero (ref cells)` (edition 2026) gave a function value that owns or reaches the cell, through
+/// which a closure that borrows a block-local string went into the cell. Main and base accept the
+/// rejected forms and read the freed string (`-1`). Such a builtin application is now a site as a
+/// call of an unseen function value is (`builtin_partial_applications`): with the string declared
+/// first the programs print `0 + 8`, and with owned closures only `0 + 7`.
+#[test]
+fn a_builtin_that_applies_a_function_value_to_fewer_arguments_shares_the_cell() {
+    const PRE: &str = r#"def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def wr :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64) -> i64
+fn wr a f = Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () })
+def wr3 :: i64 -> own Arc<Mutex<[unit -> i64]>> -> (unit -> i64) -> i64
+fn wr3 k a f = Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k * 0 })
+def wrr :: ref Arc<Mutex<[unit -> i64]>> -> (unit -> i64) -> i64
+fn wrr a f = Mutex.with_lock (Arc.get a) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () })
+def fold :: own ((unit -> i64) -> i64) -> ref Arc<Mutex<[unit -> i64]>> -> (unit -> i64) -> i64
+fn fold prev a f = Mutex.with_lock (Arc.get a) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + prev (\() -> 0) * 0 })
+def zero :: (unit -> i64) -> i64
+fn zero _f = 0
+def run :: i64 -> i64
+fn run _n =
+"#;
+    const CELL: &str = "Arc.new (Mutex.create [\\() -> 0])";
+    const END: &str = "    let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")]\n    first + w2 (\\() -> 1) + junk.length * 0\ndo! IO.write_line (to_string (run 123456789))\n";
+    let mapr = |piped: bool| {
+        format!(
+            "    let cells = [|{CELL}|]\n    let ws = {}\n    let mut w2 = match ws with\n        | [|g|] -> g\n        | _ -> \\_f -> 0\n",
+            if piped {
+                "ref cells |> List.mapr wrr"
+            } else {
+                "List.mapr wrr (ref cells)"
+            }
+        )
+    };
+    // (the function value, the partial application, the line of the error)
+    let forms = [
+        (
+            "    let w = Owned.function wr\n".to_string(),
+            format!("    let mut w2 = Owned.call (ref w) ({CELL})\n"),
+            20,
+        ),
+        (
+            "    let w = Owned.function wr\n".to_string(),
+            format!("    let mut w2 = {CELL} |> Owned.call (ref w)\n"),
+            20,
+        ),
+        (
+            "    let named = wr\n    let w = Owned.function named\n".to_string(),
+            format!("    let mut w2 = Owned.call (ref w) ({CELL})\n"),
+            21,
+        ),
+        (
+            "    let w = Owned.function (wr3 0)\n".to_string(),
+            format!("    let mut w2 = Owned.call (ref w) ({CELL})\n"),
+            20,
+        ),
+        (String::new(), mapr(false), 23),
+        (String::new(), mapr(true), 23),
+    ];
+    let dangling = "    let first = { let s0 = String.repeat 4 (ref \"123456789\"); let text = ref s0; w2 (\\() -> look text) }\n";
+    let declared_first = |made: &str, applied: &str| {
+        format!(
+            "{PRE}    let s0 = String.repeat 4 (ref \"123456789\")\n    let text = ref s0\n{made}{applied}    let first = w2 (\\() -> look text)\n{END}"
+        )
+    };
+    let owned = |made: &str, applied: &str| {
+        format!("{PRE}{made}{applied}    let first = w2 (\\() -> 7)\n{END}")
+    };
+    for (made, applied, line) in &forms {
+        rejects_at(
+            &format!("{PRE}{made}{applied}{dangling}{END}"),
+            "E1013",
+            "assignment_extends_borrow",
+            (*line, 17),
+        );
+        accepts_in_both_editions(&[("Main.tz", &declared_first(made, applied))]);
+        accepts_in_both_editions(&[("Main.tz", &owned(made, applied))]);
+    }
+    // `List.foldr` binds the state and a reference to the element (edition 2026, where `fold`'s
+    // state parameter type-checks).
+    let folded =
+        format!("    let cells = [|{CELL}|]\n    let mut w2 = List.foldr fold zero (ref cells)\n");
+    let source = format!("{PRE}{folded}{dangling}{END}");
+    let error = analyze_with_edition(&source, Edition::E2026).expect_err(&source);
+    assert_eq!(
+        (error.code, error.kind, position(&source, error.span.start)),
+        ("E1013", Some("assignment_extends_borrow"), (20, 17)),
+        "{source}\n{}",
+        error.message
+    );
+    for source in [declared_first("", &folded), owned("", &folded)] {
+        analyze_with_edition(&source, Edition::E2026)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    }
+    // A callback whose expression shows that it takes no more arguments than the builtin passes
+    // runs its code there, and makes no partial application.
+    let lambda = format!(
+        "    let cells = [|{CELL}|]\n    let ws = List.mapr (\\(a: ref Arc<Mutex<[unit -> i64]>>) -> \\(f: unit -> i64) -> wrr a f) (ref cells)\n    let mut w2 = match ws with\n        | [|g|] -> g\n        | _ -> \\_f -> 0\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &declared_first("", &lambda))]);
+}
+
+/// A31, review round 2 after Copilot's review (finding 2): a site that makes a function value
+/// taking two or more arguments before its code runs (`mk a = \k f -> ...`) made the types of its
+/// partial applications owner types whether or not any partial application was ever made, so
+/// `user`, which calls an unrelated `(unit -> i64) -> i64` read out of an array through a reference
+/// with a closure that borrows its local, was rejected in a program that only applies `w` to all
+/// its arguments (main, base and the previous tip accept it and print `300 + 11 + 6 = 317`). The
+/// types now count only when the module may make such a partial application (`partial_results`):
+/// a call, a pipeline, `Owned.call`, `new [T]`, `Array.init`, std's `Maybe.map`, a tuple's member.
+/// With one of them, the closure goes into the cell and `user` is rejected.
+#[test]
+fn the_partial_application_types_of_an_owner_count_only_when_the_module_makes_one() {
+    const MK: &str = "def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)\nfn mk a = \\k f -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })\ndef apply_thunk :: (unit -> i64) -> i64\nfn apply_thunk f = f () + 1\n";
+    // (edition, `user`, the full applications, the line of the error)
+    let editions = [
+        (
+            Edition::E2026,
+            "def user :: ref [(unit -> i64) -> i64] -> i64\nfn user fs =\n    let s = to_string 12345\n    let t = ref s\n    fs[0] (\\() -> String.length t)\n",
+            "    let a = w 3 (\\() -> 7)\n    let b = w 4 (\\() -> 1)\n",
+            (9, 5),
+        ),
+        (
+            Edition::E2027,
+            "def user :: ref [ref (unit -> i64) -> i64] -> i64\nfn user fs =\n    let s = to_string 12345\n    let t = ref s\n    let get = \\() -> String.length t\n    fs[0] get\n",
+            "    let seven = \\() -> 7\n    let one = \\() -> 1\n    let a = w 3 seven\n    let b = w 4 one\n",
+            (10, 5),
+        ),
+    ];
+    for (edition, user, full, at) in editions {
+        let program = |made: &str, fs: &str| {
+            format!(
+                "{MK}{user}def run :: i64 -> i64\nfn run _n =\n    let w = mk (Arc.new (Mutex.create [\\() -> 0]))\n{full}{made}    let fs = {fs}\n    a * 100 + b + user (ref fs)\ndo! IO.write_line (to_string (run 123456789))\n"
+            )
+        };
+        // No partial application of `w`, nor of any value of its partial application's type.
+        for made in [
+            "",
+            "    let p3 = \\(x: i64) (y: i64) (z: i64) -> x + y + z\n    let q = p3 1\n    let r = q 2 3\n",
+        ] {
+            let source = program(made, "[apply_thunk]");
+            analyze_with_edition(&source, edition).unwrap_or_else(|error| {
+                panic!(
+                    "edition {edition}\n{source}\n{}: {}",
+                    error.code, error.message
+                )
+            });
+        }
+        let new_array = if edition == Edition::E2027 {
+            "new [ref (unit -> i64) -> i64](1, w)"
+        } else {
+            "new [(unit -> i64) -> i64](1, w)"
+        };
+        for (made, fs) in [
+            ("    let w2 = w 3\n", "[w2]"),
+            ("    let w2 = 3 |> w\n", "[w2]"),
+            (
+                "    let ow = Owned.function w\n    let w2 = Owned.call (ref ow) 3\n",
+                "[w2]",
+            ),
+            ("", "Array.init 1 w"),
+            ("", new_array),
+            (
+                "    let w2 = match Maybe.map w (Maybe.Some 3) with\n        | Maybe.Some g -> g\n        | Maybe.None -> apply_thunk\n",
+                "[w2]",
+            ),
+            (
+                "    let pair = (w, 3)\n    let w2 = match pair with\n        | (g, k) -> g k\n",
+                "[w2]",
+            ),
+        ] {
+            let source = program(made, fs);
+            let error = analyze_with_edition(&source, edition).expect_err(&source);
+            assert_eq!(
+                (error.code, error.kind, position(&source, error.span.start)),
+                ("E1013", Some("store_local_borrow_through_reference"), at),
+                "edition {edition}\n{source}\n{}",
+                error.message
+            );
+        }
+    }
+}
+
+/// A31, review round 2 after Copilot's review (finding 3): the copy that a caller makes of its
+/// argument at a path that stands for a larger part than the borrowed place (`Source::coarse`) is
+/// not exact, so a body that passed it on to a function value recorded the whole parameter
+/// (`self_path`), and the caller of a function that passes its parameters on to `applyy` or
+/// `applyx` (`applyy2`, `applyy3` that calls `applyy2`, `applyyr` that reborrows, `applyyw` that
+/// passes `ref w.x`, `applyx2`, `applyx3`) kept a borrow of all of `x`: writing or moving `x.z`
+/// was rejected (the previous tip, main and base accept it and print `drop 8` and `1`). Such a
+/// copy now holds the borrowed part (`holding_loans`), and the body records its place as a coarse
+/// path (`holding_path`), as the direct call does. Moving or replacing `x.a.e` stays `E1014`.
+#[test]
+fn a_function_that_passes_its_parameters_on_keeps_the_coarse_part_of_its_callee() {
+    let prelude = COARSE_PRELUDE.replace(
+        "def run :: i64 -> i64\n",
+        "def applyy2 :: i64 -> ref X -> (ref D -> unit) -> i64\nfn applyy2 k x f = applyy k x f\ndef applyy3 :: i64 -> ref X -> (ref D -> unit) -> i64\nfn applyy3 k x f = applyy2 k x f\ndef applyyr :: i64 -> ref X -> (ref D -> unit) -> i64\nfn applyyr k x f = applyy k (ref (deref x)) f\nrecord W { x: X }\ndef applyyw :: i64 -> ref W -> (ref D -> unit) -> i64\nfn applyyw k w f = applyy k (ref w.x) f\ndef applyx2 :: ref Y -> (ref D -> unit) -> i64\nfn applyx2 x f = applyx x f\ndef applyx3 :: ref Y -> (ref D -> unit) -> i64\nfn applyx3 x f = applyx2 x f\ndef run :: i64 -> i64\n",
+    );
+    let program = |body: &str| {
+        format!(
+            "{prelude}{body}    let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")]\n    n + z + k * 0 + junk.length * 0\ndo! IO.write_line (to_string (run 1))\n"
+        )
+    };
+    // (the declaration of the value, the call, the place of `x` in the value, the borrowed field)
+    let forms = [
+        (
+            "let x = mkx ()",
+            "applyy2 n (ref x) (crossd (ref p2))",
+            "x",
+            "x.a.e",
+        ),
+        (
+            "let x = mkx ()",
+            "applyy3 n (ref x) (crossd (ref p2))",
+            "x",
+            "x.a.e",
+        ),
+        (
+            "let x = mkx ()",
+            "applyyr n (ref x) (crossd (ref p2))",
+            "x",
+            "x.a.e",
+        ),
+        (
+            "let x = mkx ()",
+            "crossd (ref p2) |> applyy2 n (ref x)",
+            "x",
+            "x.a.e",
+        ),
+        (
+            "let w = W { x: mkx () }",
+            "applyyw n (ref w) (crossd (ref p2))",
+            "w.x",
+            "w.x.a.e",
+        ),
+        (
+            "let x = mky ()",
+            "applyx2 (ref x) (crossd (ref p2))",
+            "x",
+            "x.a.b.c.d.e",
+        ),
+        (
+            "let x = mky ()",
+            "applyx3 (ref x) (crossd (ref p2))",
+            "x",
+            "x.a.b.c.d.e",
+        ),
+    ];
+    for (declared, call, value, borrowed) in forms {
+        let setup = format!("    {declared}\n    let p2 = mkpo ()\n    let z = {call}\n");
+        // A move of the borrowed field conflicts with the borrow in both editions, and so does its
+        // replacement in a mutable local (edition 2027).
+        rejects_at(
+            &program(&format!(
+                "{setup}    let k = {{ let taken = {borrowed}; taken.length }}\n"
+            )),
+            "E1014",
+            "borrow_conflict",
+            (49, 27),
+        );
+        let mutable = setup
+            .replace("let x = ", "let mut x = ")
+            .replace("let w = ", "let mut w = ");
+        let source = program(&format!("{mutable}    {borrowed} = []\n    let k = 0\n"));
+        let error = analyze_with_edition(&source, Edition::E2027).expect_err(&source);
+        assert_eq!(
+            (error.code, error.kind, position(&source, error.span.start)),
+            ("E1014", Some("borrow_conflict"), (49, 5)),
+            "{source}\n{}",
+            error.message
+        );
+        // Moving `z` out of the value, or nothing, conflicts with nothing in both editions, and
+        // writing `z` neither in edition 2027 (main prints `drop 8` and `1`).
+        accepts_in_both_editions(&[(
+            "Main.tz",
+            &program(&format!(
+                "{setup}    let k = {{ let taken = {value}.z; String.length (ref taken) }}\n"
+            )),
+        )]);
+        accepts_in_both_editions(&[("Main.tz", &program(&format!("{setup}    let k = 0\n")))]);
+        let source = program(&format!(
+            "{mutable}    {value}.z = to_string 22\n    let k = 0\n"
+        ));
+        analyze_with_edition(&source, Edition::E2027)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    }
+}

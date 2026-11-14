@@ -720,6 +720,7 @@ fn start_checker<'a, 'run>(
         ordered_copies: BTreeMap::new(),
         ordered_loans: BTreeSet::new(),
         exact_loans: BTreeSet::new(),
+        holding_loans: BTreeSet::new(),
         kept_copies: BTreeMap::new(),
         pointing: BTreeMap::new(),
         borrow_loans: BTreeMap::new(),
@@ -2463,6 +2464,10 @@ type SinkSite = (bool, bool, Vec<Type>);
 ///   function returns) whose result is a function: the result may be that value with the
 ///   arguments bound, so it is a sink when an argument can be stored into or holds a loan, and
 ///   owns its cell when an argument does;
+/// - a builtin that applies a function value it gets to fewer arguments than the value takes
+///   (`builtin_partial_applications`: `Owned.call (ref w) cell` with `w` wrapping a named
+///   function of two parameters, `List.mapr wr (ref cells)`), whose partial application binds
+///   values that the builtin makes from its other arguments: as the call above;
 /// - `Dyn.of value`, whose methods get the stored value through the receiver: it owns its cell
 ///   when the value owns a mutable cell or hides an environment itself.
 ///
@@ -2470,8 +2475,8 @@ type SinkSite = (bool, bool, Vec<Type>);
 /// `\k f -> ...`, a partial application that leaves two parameters) gives its environment to its
 /// partial applications, whatever makes them (`w 0`, `Owned.call (ref w) 0`, the elements of
 /// `new [T](1, w)`): their types, the rest of its parameters (`partial_types`), count as its own
-/// does. A call that runs the code gives what the body returns, whose function values are sites
-/// of their own.
+/// does, when the module may make a partial application of that type (`partial_results`). A call
+/// that runs the code gives what the body returns, whose function values are sites of their own.
 ///
 /// A named function has no environment, and a function value that only calls a captured function
 /// value with its own arguments stores where that value's code does, which is a site of its own.
@@ -2590,37 +2595,49 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
     // arguments bound, which the rest of its parameters complete, so it is a sink when an argument
     // is a place that a store may reach (`may_reach_store_beside_code`), or hides an environment.
     // An argument that only holds a loan (the `ref i64` that edition 2027 lends to a read
-    // parameter) is no place to store into.
-    let staged =
-        |bound: &mut dyn Iterator<Item = &TypedExpr>, result: &Type| -> (bool, bool, Vec<Type>) {
-            if !matches!(result, Type::Function(..)) {
-                return (false, false, Vec::new());
-            }
-            let bound: Vec<Type> = bound.map(|value| without_views(&value.ty)).collect();
-            let held: Vec<Type> = bound
+    // parameter) is no place to store into. A builtin that applies a function value it gets to
+    // fewer arguments than the value takes (`builtin_partial_applications`) makes such a value
+    // with the values that it passes, whose types (`bound`) are given.
+    let staged_types = |bound: Vec<Type>, result: &Type| -> (bool, bool, Vec<Type>) {
+        if !matches!(result, Type::Function(..)) {
+            return (false, false, Vec::new());
+        }
+        let held: Vec<Type> = bound
+            .iter()
+            .filter(|ty| hides_environment(ty, &types))
+            .cloned()
+            .collect();
+        let sink = !held.is_empty()
+            || bound
                 .iter()
-                .filter(|ty| hides_environment(ty, &types))
-                .cloned()
-                .collect();
-            let sink = !held.is_empty()
-                || bound
-                    .iter()
-                    .any(|ty| may_reach_store_beside_code(ty, &types));
-            let owns = sink && bound.iter().any(|ty| ty.owns_mutable_cell(&types));
-            (sink, owns, held)
-        };
+                .any(|ty| may_reach_store_beside_code(ty, &types));
+        let owns = sink && bound.iter().any(|ty| ty.owns_mutable_cell(&types));
+        (sink, owns, held)
+    };
+    let staged = |bound: &mut dyn Iterator<Item = &TypedExpr>, result: &Type| {
+        staged_types(
+            bound.map(|value| without_views(&value.ty)).collect(),
+            result,
+        )
+    };
     // A function value made at a site, of type `ty`, that takes `arity` arguments before its code
     // runs (`None`: not known): its partial applications hold its environment and have the types
     // of the rest of its parameters (`partial_types`), so they are sinks, owners and holders as it
     // is. `w 0`, `Owned.call (ref w) 0`, `0 |> w` and the elements of `new [T](1, w)` are such
     // applications of `w = mk (...)` with `mk a = \k f -> ...`, whatever applies them.
+    // Only the partial applications that the module may make (`partial_results`) count: a value
+    // of the type of one that it never makes holds no environment of the site.
+    let partials = partial_results(module);
     let mut found = |(sink, owns, held): SinkSite, ty: &Type, arity: Option<usize>| {
         sinks |= sink;
         owned |= owns;
         if !sink && !owns && held.is_empty() {
             return;
         }
-        for ty in std::iter::once(sink_type(ty)).chain(partial_types(ty, arity)) {
+        let made = partial_types(ty, arity)
+            .into_iter()
+            .filter(|partial| partials.contains(partial));
+        for ty in std::iter::once(sink_type(ty)).chain(made) {
             if sink {
                 sink_types.insert(ty.clone());
             }
@@ -2751,10 +2768,42 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                         {
                             found((true, true, Vec::new()), &expression.ty, Some(0));
                         }
+                        // A partial application that the builtin makes of a function value that
+                        // it gets (`Owned.call (ref w) cell`, `List.mapr wr (ref cells)`) binds
+                        // what it passes: a site as a call of an unseen function value is.
+                        let all: Vec<&TypedExpr> = arguments.iter().collect();
+                        for (applied, bound) in builtin_partial_applications(
+                            module,
+                            instance.builtin,
+                            &all,
+                            &expression.ty,
+                        ) {
+                            found(staged_types(bound, &applied), &applied, None);
+                        }
+                    }
+                }
+                E::Parallel(builtin, arguments) => {
+                    let all: Vec<&TypedExpr> = arguments.iter().collect();
+                    for (applied, bound) in
+                        builtin_partial_applications(module, *builtin, &all, &expression.ty)
+                    {
+                        found(staged_types(bound, &applied), &applied, None);
                     }
                 }
                 E::Binary(BinaryOp::Pipe, left, right) => {
                     let (callee, arguments) = piped_application(right);
+                    if let E::Function(crate::check::FunctionRef::Builtin(instance)) = &callee.kind
+                    {
+                        let all: Vec<&TypedExpr> = arguments.iter().chain([&**left]).collect();
+                        for (applied, bound) in builtin_partial_applications(
+                            module,
+                            instance.builtin,
+                            &all,
+                            &expression.ty,
+                        ) {
+                            found(staged_types(bound, &applied), &applied, None);
+                        }
+                    }
                     let mut all = arguments.iter().chain([&**left]);
                     match direct_callee(callee) {
                         Some(id) => {
@@ -3067,24 +3116,24 @@ fn drop_environments(module: &CheckedModule) -> DropEnvironments {
     // The values that hide an environment that dyn values, owned functions and tzroutine bodies
     // hold: they decide `others` once `functions` is known.
     let mut others_held: Vec<Type> = Vec::new();
-    let mut site = |ty: &Type, bound: Vec<&TypedExpr>, found: &mut DropEnvironments| {
-        // A bound named function has no environment.
-        let bound: Vec<&TypedExpr> = bound
+    // The types of the values that a site binds, a bound named function left out (it has no
+    // environment).
+    let bound_types = |bound: Vec<&TypedExpr>| -> Vec<Type> {
+        bound
             .into_iter()
             .filter(|value| !matches!(value.kind, E::Function(_) | E::GenericFunction(..)))
-            .collect();
-        let drops = |value: &&TypedExpr| {
-            value
-                .ty
-                .drops_some(&types, |part| part.has_user_drop(&types))
-        };
+            .map(|value| value.ty.clone())
+            .collect()
+    };
+    let mut site = |ty: &Type, bound: Vec<Type>, found: &mut DropEnvironments| {
+        let drops = |bound: &Type| bound.drops_some(&types, |part| part.has_user_drop(&types));
         if !matches!(ty, Type::Function(..)) {
             // A dyn value, an `Owned.Function` or a tzroutine body.
             found.others |= bound.iter().any(drops);
             others_held.extend(
                 bound
                     .iter()
-                    .map(|value| without_views(&value.ty))
+                    .map(without_views)
                     .filter(|ty| hides_environment(ty, &types)),
             );
             return;
@@ -3094,7 +3143,7 @@ fn drop_environments(module: &CheckedModule) -> DropEnvironments {
         }
         let held: Vec<Type> = bound
             .iter()
-            .map(|value| without_views(&value.ty))
+            .map(without_views)
             .filter(|ty| hides_environment(ty, &types))
             .collect();
         if !held.is_empty() {
@@ -3106,17 +3155,25 @@ fn drop_environments(module: &CheckedModule) -> DropEnvironments {
         while let Some(expression) = pending.pop() {
             match &expression.kind {
                 E::Closure(_, captures) => {
-                    site(&expression.ty, captures.iter().collect(), &mut found);
+                    site(
+                        &expression.ty,
+                        bound_types(captures.iter().collect()),
+                        &mut found,
+                    );
                 }
                 E::Call(callee, arguments) if !arguments.is_empty() => {
                     if let Some(id) = direct_callee(callee) {
                         let count = module.functions[id].parameters.len();
                         if arguments.len() < count {
-                            site(&expression.ty, arguments.iter().collect(), &mut found);
+                            site(
+                                &expression.ty,
+                                bound_types(arguments.iter().collect()),
+                                &mut found,
+                            );
                         } else if arguments.len() > count {
                             site(
                                 &expression.ty,
-                                arguments[count..].iter().collect(),
+                                bound_types(arguments[count..].iter().collect()),
                                 &mut found,
                             );
                         }
@@ -3127,12 +3184,31 @@ fn drop_environments(module: &CheckedModule) -> DropEnvironments {
                         if matches!(instance.builtin, DynOf | OwnedFunction)
                             || arguments.len() < instance.builtin.scheme().parameters.len()
                         {
-                            site(&expression.ty, arguments.iter().collect(), &mut found);
+                            site(
+                                &expression.ty,
+                                bound_types(arguments.iter().collect()),
+                                &mut found,
+                            );
+                        }
+                        // The partial applications that the builtin makes of a function value
+                        // that it gets (`builtin_partial_applications`).
+                        let all: Vec<&TypedExpr> = arguments.iter().collect();
+                        for (applied, bound) in builtin_partial_applications(
+                            module,
+                            instance.builtin,
+                            &all,
+                            &expression.ty,
+                        ) {
+                            site(&applied, bound, &mut found);
                         }
                     } else if !matches!(callee.kind, E::CaseConstructor { .. })
                         && matches!(expression.ty, Type::Function(..))
                     {
-                        site(&expression.ty, arguments.iter().collect(), &mut found);
+                        site(
+                            &expression.ty,
+                            bound_types(arguments.iter().collect()),
+                            &mut found,
+                        );
                     }
                 }
                 E::Binary(BinaryOp::Pipe, left, right)
@@ -3141,9 +3217,32 @@ fn drop_environments(module: &CheckedModule) -> DropEnvironments {
                     let (_, arguments) = piped_application(right);
                     site(
                         &expression.ty,
-                        arguments.iter().chain([&**left]).collect(),
+                        bound_types(arguments.iter().chain([&**left]).collect()),
                         &mut found,
                     );
+                }
+                E::Binary(BinaryOp::Pipe, left, right) => {
+                    let (callee, arguments) = piped_application(right);
+                    if let E::Function(crate::check::FunctionRef::Builtin(instance)) = &callee.kind
+                    {
+                        let all: Vec<&TypedExpr> = arguments.iter().chain([&**left]).collect();
+                        for (applied, bound) in builtin_partial_applications(
+                            module,
+                            instance.builtin,
+                            &all,
+                            &expression.ty,
+                        ) {
+                            site(&applied, bound, &mut found);
+                        }
+                    }
+                }
+                E::Parallel(builtin, arguments) => {
+                    let all: Vec<&TypedExpr> = arguments.iter().collect();
+                    for (applied, bound) in
+                        builtin_partial_applications(module, *builtin, &all, &expression.ty)
+                    {
+                        site(&applied, bound, &mut found);
+                    }
                 }
                 _ => {}
             }
@@ -3168,6 +3267,274 @@ fn drop_environments(module: &CheckedModule) -> DropEnvironments {
         })
     });
     found
+}
+
+/// A31: how many arguments the function value of `value` takes before its code runs, when its
+/// expression shows it: the parameters of a named function, those of a lifted lambda after its
+/// captures, the rest of the parameters of a partial application of a named function. `None` for
+/// any other value (a local, a parameter, the result of a call).
+fn shown_arity(module: &CheckedModule, value: &TypedExpr) -> Option<usize> {
+    match &value.kind {
+        E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => {
+            Some(module.functions[*id].parameters.len())
+        }
+        E::Closure(id, captures) => module.functions[*id]
+            .parameters
+            .len()
+            .checked_sub(captures.len()),
+        E::Call(callee, arguments) => direct_callee(callee)
+            .and_then(|id| {
+                module.functions[id]
+                    .parameters
+                    .len()
+                    .checked_sub(arguments.len())
+            })
+            .filter(|rest| *rest > 0),
+        _ => None,
+    }
+}
+
+/// A31: the partial applications that a call of the builtin `builtin` with `arguments` (whose
+/// type is `result`) may make of a function value that it gets, each with its type (`sink_type`)
+/// and the types of the values that it may bind (`sink_flags`, `drop_environments`,
+/// `partial_results`). The builtin applies a callback (a parameter of a function type in its
+/// scheme) to as many arguments as that type has parameters, made from its other arguments (the
+/// elements of a list, a reference to one, the state of a fold, the contents of a lock), and
+/// `Owned.call` applies the owned function to its argument. When the function value takes more
+/// arguments before its code runs (a named function, a partial application of one or a lambda
+/// with more parameters, or a value whose expression does not show it: `shown_arity`), the result
+/// is a partial application that holds those values, whose types the other arguments, and the
+/// arguments that a partial application of the builtin leaves (the parameters of `result`),
+/// reach. A call with more arguments than the builtin takes applies its result to the rest, which
+/// may bind them all. A bound named function has no environment.
+fn builtin_partial_applications(
+    module: &CheckedModule,
+    builtin: crate::check::Builtin,
+    arguments: &[&TypedExpr],
+    result: &Type,
+) -> Vec<(Type, Vec<Type>)> {
+    let scheme = builtin.scheme();
+    let named = |value: &TypedExpr| matches!(value.kind, E::Function(_) | E::GenericFunction(..));
+    // The values that the builtin passes to a callback come from its other arguments, and from
+    // those that it does not get yet when the call applies it partially.
+    let later: Vec<Type> = match result {
+        Type::Function(parameters, _) if arguments.len() < scheme.parameters.len() => {
+            parameters.types.iter().map(without_views).collect()
+        }
+        _ => Vec::new(),
+    };
+    let bound = |skip: Option<usize>| -> Vec<Type> {
+        arguments
+            .iter()
+            .enumerate()
+            .filter(|(index, value)| Some(*index) != skip && !named(value))
+            .map(|(_, value)| without_views(&value.ty))
+            .chain(later.iter().cloned())
+            .collect()
+    };
+    let mut made = Vec::new();
+    if matches!(result, Type::Function(..)) {
+        if builtin == crate::check::Builtin::OwnedCall && arguments.len() >= 2 {
+            made.push((sink_type(result), bound(Some(0))));
+        } else if arguments.len() > scheme.parameters.len() {
+            made.push((sink_type(result), bound(None)));
+        }
+    }
+    for (index, parameter) in scheme.parameters.iter().enumerate() {
+        let (crate::check::BuiltinType::Function(parameters, _), Some(callback)) =
+            (parameter, arguments.get(index))
+        else {
+            continue;
+        };
+        let count = parameters.len();
+        if shown_arity(module, callback).is_some_and(|arity| arity <= count) {
+            continue;
+        }
+        if let Type::Function(types, last) = sink_type(&callback.ty)
+            && types.types.len() > count
+        {
+            let applied = Type::Function(
+                Box::new(crate::check::FunctionParameters {
+                    types: types.types[count..].to_vec(),
+                    conventions: Box::default(),
+                    pure: false,
+                }),
+                last,
+            );
+            made.push((applied, bound(Some(index))));
+        }
+    }
+    made
+}
+
+/// A31: the types (`sink_type`) of the partial applications of function values that `module` may
+/// make. A partial application of a function value is made only where something applies the value
+/// to fewer arguments than it takes before its code runs:
+///
+/// - a call or a pipeline of a function value (a local, a parameter, a field, the result of a
+///   call, a method), or of the function that a named function or a builtin returns, applied to
+///   the arguments beyond its parameters: the call's type, when it is a function;
+/// - a builtin that applies a function value it gets (`builtin_partial_applications`);
+/// - `new [T](n, f)` and `new [|T|](n, f)`, which apply `f` to an index;
+/// - code outside the module that runs a callback that a host import gets (any partial
+///   application of the callback's type).
+///
+/// A partial application of a named function is a site of its own (`sink_flags`). Specialization
+/// gives every body its concrete types, so the type of an application is that of the partial
+/// application that it may make. `sink_flags` counts the types of the partial applications of a
+/// function value made at a site (`partial_types`) only when one of them is here: a value of such
+/// a type that the module never makes as a partial application holds no environment of the site.
+/// The match over the kinds of expressions names each kind, so a new kind has to say whether it
+/// applies a function value.
+fn partial_results(module: &CheckedModule) -> BTreeSet<Type> {
+    let mut made = BTreeSet::new();
+    let function_type = |ty: &Type| matches!(ty, Type::Function(..)).then(|| sink_type(ty));
+    for function in &module.functions {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            match &expression.kind {
+                E::Call(callee, arguments) => {
+                    let all: Vec<&TypedExpr> = arguments.iter().collect();
+                    applications(module, expression, callee, &all, &mut made);
+                }
+                E::Binary(BinaryOp::Pipe, left, right) => {
+                    let (callee, arguments) = piped_application(right);
+                    let all: Vec<&TypedExpr> = arguments.iter().chain([&**left]).collect();
+                    applications(module, expression, callee, &all, &mut made);
+                }
+                E::Parallel(builtin, arguments) => {
+                    let all: Vec<&TypedExpr> = arguments.iter().collect();
+                    made.extend(
+                        builtin_partial_applications(module, *builtin, &all, &expression.ty)
+                            .into_iter()
+                            .map(|(applied, _)| applied),
+                    );
+                }
+                E::NewArray(_, initializer) | E::NewList(_, initializer) => {
+                    if !shown_arity(module, initializer).is_some_and(|arity| arity <= 1)
+                        && let Some(Type::Function(parameters, result)) =
+                            function_type(&initializer.ty)
+                        && parameters.types.len() > 1
+                    {
+                        made.insert(Type::Function(
+                            Box::new(crate::check::FunctionParameters {
+                                types: parameters.types[1..].to_vec(),
+                                conventions: Box::default(),
+                                pure: false,
+                            }),
+                            result,
+                        ));
+                    }
+                }
+                E::HostCall(import, arguments) => {
+                    if import.callbacks {
+                        for argument in arguments {
+                            if matches!(argument.ty, Type::Function(..)) {
+                                made.extend(partial_types(&argument.ty, None));
+                            }
+                        }
+                    }
+                }
+                // Values, places, control and the values that the module makes: none applies a
+                // function value. An operator, an index, a format or a structural comparison of a
+                // user type calls its instance's named functions with all their arguments, a
+                // tzroutine body takes none, and a `select` runs its arms as a `match`.
+                E::Error
+                | E::Int(_)
+                | E::Float(_)
+                | E::String(_)
+                | E::Bool(_)
+                | E::Unit
+                | E::Break
+                | E::Continue
+                | E::Local(_)
+                | E::Static(_)
+                | E::Function(_)
+                | E::GenericFunction(..)
+                | E::Method(..)
+                | E::TypeFunction { .. }
+                | E::GenericInteger(..)
+                | E::GenericFloat(_)
+                | E::Unary(..)
+                | E::Binary(..)
+                | E::Lambda { .. }
+                | E::Closure(..)
+                | E::RoutineGo(_)
+                | E::SelectWait(_)
+                | E::StructuralCompare(..)
+                | E::StructuralHash(_)
+                | E::StructuralDisplay(_)
+                | E::Interpolated(_)
+                | E::If { .. }
+                | E::While { .. }
+                | E::ForRange { .. }
+                | E::ForEach { .. }
+                | E::Match { .. }
+                | E::Block { .. }
+                | E::Record(_)
+                | E::RecordUpdate { .. }
+                | E::Array(_)
+                | E::List(_)
+                | E::Tuple(_)
+                | E::ListTail(..)
+                | E::NewLiteral(_)
+                | E::Field(..)
+                | E::Index(..)
+                | E::Slice { .. }
+                | E::Length(_)
+                | E::StringLength(_)
+                | E::Borrow(..)
+                | E::BorrowOperand(_)
+                | E::Dereference(_)
+                | E::Assign(..)
+                | E::Cast(_)
+                | E::SaturatingIndex(_)
+                | E::CaseConstructor { .. }
+                | E::Construct { .. }
+                | E::UnionTag(_)
+                | E::UnionPayload { .. }
+                | E::Checked(_)
+                | E::Try(_)
+                | E::RaisedException
+                | E::Reraise
+                | E::DynDispatch { .. } => {}
+            }
+            expression
+                .try_for_each_child(&mut |child| {
+                    pending.push(child);
+                    Ok(())
+                })
+                .expect("collecting applications cannot fail");
+        }
+    }
+    made
+}
+
+/// A31: the partial applications (`partial_results`) that the call or pipeline `expression` of
+/// `callee` with `arguments` may make.
+fn applications(
+    module: &CheckedModule,
+    expression: &TypedExpr,
+    callee: &TypedExpr,
+    arguments: &[&TypedExpr],
+    made: &mut BTreeSet<Type>,
+) {
+    let result = matches!(expression.ty, Type::Function(..)).then(|| sink_type(&expression.ty));
+    if let Some(id) = direct_callee(callee) {
+        // A partial application of a named function is a site of its own; the arguments beyond
+        // its parameters apply the function that it returns.
+        if arguments.len() > module.functions[id].parameters.len() {
+            made.extend(result);
+        }
+    } else if let E::Function(crate::check::FunctionRef::Builtin(instance)) = &callee.kind {
+        made.extend(
+            builtin_partial_applications(module, instance.builtin, arguments, &expression.ty)
+                .into_iter()
+                .map(|(applied, _)| applied),
+        );
+    } else if !matches!(callee.kind, E::CaseConstructor { .. }) {
+        made.extend(result);
+    }
 }
 
 /// A31: the types (`sink_type`) of the partial applications of a function value of type `ty` that
@@ -5226,6 +5593,14 @@ struct Checker<'a, 'run> {
     /// q).n`, `let q = child b; ref q.s`) names fields of another value than its root's, and is
     /// none.
     exact_loans: BTreeSet<usize>,
+    /// A31: the copies whose places hold the parts that they borrow without being them: the copies
+    /// that `path_copy` makes at a path that stands for a larger part than a borrowed place
+    /// (`Source::coarse`) of a loan of a value that points at its place, and the copies of such a
+    /// copy (`shared_copy`, `ordered_copy`). They are not exact, but a body that passes one on to
+    /// a function value records its place as a coarse path (`Checker::holding_path`), so that a
+    /// function that passes its parameters on unchanged keeps the caller's part as a direct call
+    /// does.
+    holding_loans: BTreeSet<usize>,
     /// A31: the copy of each loan and path that `kept_copy` made.
     kept_copies: BTreeMap<(usize, Vec<usize>), usize>,
     /// A31: the immutable locals whose value is a reference that points at the place of one of
@@ -8994,8 +9369,12 @@ impl<'a, 'run> Checker<'a, 'run> {
                         // Only fields: an element or a payload is one place for every element or
                         // case, so its borrow stays one of the whole target (the element of
                         // `ref values[index]` that `Array.iterir` passes on). A place that also
-                        // steps into elements is one of `element_paths`.
-                        match self.self_path(loan) {
+                        // steps into elements is one of `element_paths`. A copy whose place holds
+                        // the borrowed part (a coarse path of a callee that this body passes its
+                        // parameter on to, `holding_path`) gives that place as a coarse path.
+                        let holding = self.holding_path(loan);
+                        let held = holding.is_some();
+                        match holding.or_else(|| self.self_path(loan)) {
                             Some(path)
                                 if !path.is_empty()
                                     && !self.loans[loan].mutable
@@ -9006,13 +9385,15 @@ impl<'a, 'run> Checker<'a, 'run> {
                                 } else if add_place_path(
                                     source.paths.entry(index).or_default(),
                                     path.clone(),
-                                ) {
+                                ) || held
+                                {
                                     coarse_paths.insert(index);
                                 }
                                 if add_place_path(
                                     source.element_paths.entry(index).or_default(),
                                     path,
-                                ) {
+                                ) || held
+                                {
                                     coarse_elements.insert(index);
                                 }
                             }
@@ -9106,9 +9487,13 @@ impl<'a, 'run> Checker<'a, 'run> {
                         self.loans.push(copy);
                         let id = self.loans.len() - 1;
                         self.shared_copies.insert(loan, id);
-                        // The same place, as exact as the original's (`exact_loans`).
+                        // The same place, as exact as the original's (`exact_loans`), and holding
+                        // the borrowed part when the original's does (`holding_loans`).
                         if exact {
                             self.exact_loans.insert(id);
+                        }
+                        if self.holding_loans.contains(&loan) {
+                            self.holding_loans.insert(id);
                         }
                         id
                     }
@@ -9541,6 +9926,38 @@ impl<'a, 'run> Checker<'a, 'run> {
         )
     }
 
+    /// A31: the place, as fields from what a reference parameter points at, of the copy `loan`
+    /// whose place holds the part that it borrows (`holding_loans`): `self_path` takes it for the
+    /// whole target, as it is not exact, but its place names a part of the parameter's target
+    /// that holds the borrowed part, which `source_of` records as a coarse path (`Source::coarse`).
+    /// `None` for any other loan, and where `self_path` gives the whole target for another reason
+    /// (a view, a reference to a reference).
+    fn holding_path(&self, loan: usize) -> Option<Vec<usize>> {
+        let loan_ref = &self.loans[loan];
+        if !self.holding_loans.contains(&loan) || loan_ref.view.is_some() || loan_ref.share {
+            return None;
+        }
+        let Some(Type::Reference(target, _)) = self
+            .declarations
+            .get(&(usize::MAX - loan_ref.place.root))
+            .map(|local| &local.ty)
+        else {
+            return None;
+        };
+        if matches!(**target, Type::ArrayView(_) | Type::Reference(..)) {
+            return None;
+        }
+        Some(
+            loan_ref
+                .place
+                .fields
+                .iter()
+                .copied()
+                .take_while(|field| !is_region_field(*field))
+                .collect(),
+        )
+    }
+
     /// A31: the type of the value at `place`: its root's (what a reference parameter points at,
     /// for an external root), then each field, element or block of an `Rc` or `Arc` (which a
     /// field of the place names directly) on the way; `None` when a step names no type (a payload
@@ -9673,6 +10090,9 @@ impl<'a, 'run> Checker<'a, 'run> {
                         self.path_copies.insert(key, id);
                         if exact {
                             self.exact_loans.insert(id);
+                        } else if holds {
+                            // Coarse: the place holds the borrowed part (`holding_loans`).
+                            self.holding_loans.insert(id);
                         }
                         id
                     }
@@ -9704,9 +10124,13 @@ impl<'a, 'run> Checker<'a, 'run> {
                     let id = self.loans.len() - 1;
                     self.ordered_copies.insert(loan, id);
                     self.ordered_loans.insert(id);
-                    // The same place, as exact as the original's (`exact_loans`).
+                    // The same place, as exact as the original's (`exact_loans`), and holding the
+                    // borrowed part when the original's does (`holding_loans`).
                     if self.exact_loans.contains(&loan) {
                         self.exact_loans.insert(id);
+                    }
+                    if self.holding_loans.contains(&loan) {
+                        self.holding_loans.insert(id);
                     }
                     id
                 }

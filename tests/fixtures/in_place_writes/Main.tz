@@ -1467,3 +1467,39 @@ fn matched_function_values_keep_the_part =
     let out4 = Arc.new (Mutex.create [0])
     let k = matched_pairs (ref out1) (ref out2) (ref out3) (ref out4) 1
     k * 10000 + recorded (ref out1) * 1000 + recorded (ref out2) * 100 + recorded (ref out3) * 10 + recorded (ref out4)
+
+// Review round 2 after Copilot's review: `apply_coarse` passes its function value a place that
+// stands for a larger part (`x.a`, which holds the borrowed `x.a.e[0]`'s string), and
+// `apply_coarse_on` passes its parameters on to it. The caller of `apply_coarse_on` keeps a borrow
+// of `x.a` only, as a direct call does, so writing `x.z` is accepted. `p1`, declared after `x`,
+// is dropped first: its recorder reads "12345" (5 + 1).
+record CoarseD { s: string, e: [Rc<CoarseD>] }
+record CoarseX { a: CoarseD, z: string }
+
+def coarse_leaf :: own string -> CoarseD
+fn coarse_leaf s = CoarseD { s: s, e: [] }
+
+def apply_coarse :: i64 -> ref CoarseX -> (ref CoarseD -> unit) -> i64
+fn apply_coarse k x f = { (if k > 0 then ref (deref (Rc.get (ref x.a.e[0]))) else ref x.a) |> f; 0 }
+
+def apply_coarse_on :: i64 -> ref CoarseX -> (ref CoarseD -> unit) -> i64
+fn apply_coarse_on k x f = apply_coarse k x f
+
+def cross_coarse :: ref RecordedPair -> ref CoarseD -> unit
+fn cross_coarse a b =
+    let t = ref b.s
+    Mutex.with_lock (ref a.c.cell) (\c -> Array.write 0 (\() -> String.length t + 1) c)
+
+def coarse_pairs :: ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn coarse_pairs out1 k =
+    let mut x = CoarseX { a: CoarseD { s: to_string 12, e: [Rc.new (coarse_leaf (to_string 12345))] }, z: to_string 1 }
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 7 }
+    let r = apply_coarse_on k (ref x) (cross_coarse (ref p1))
+    x.z = to_string 123
+    r + String.length (ref x.z)
+
+export def wrapped_coarse_parts_keep_the_outside :: i64
+fn wrapped_coarse_parts_keep_the_outside =
+    let out1 = Arc.new (Mutex.create [0])
+    let k = coarse_pairs (ref out1) 1
+    k * 10 + recorded (ref out1)
