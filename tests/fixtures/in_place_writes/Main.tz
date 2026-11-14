@@ -1531,3 +1531,37 @@ fn passed_on_parts_keep_the_outside =
     let out2 = Arc.new (Mutex.create [0])
     let k = passed_pairs (ref out1) (ref out2) 1
     k * 100 + recorded (ref out1) * 10 + recorded (ref out2)
+
+// Review round 5 after Copilot's review: `h` holds a share of `r2`'s block and a block of its
+// own; after `h`'s last use, `p1`'s string is written into `o`'s recorder, a block of a type
+// that `r2`'s type does not reach, so `r2`, which cannot free it, keeps no borrow of `p1`. `o`,
+// declared after `p1`, is dropped first: its recorder reads "12345" (5 + 1). The other recorders
+// keep 0, and the function returns the length of `r2`'s "1234567" (7).
+record RecordedOther { c: Recorder, n: i64 }
+
+record SharedPairs { rc: Rc<RecordedPair>, other: Rc<RecordedOther> }
+
+def cross_other :: ref RecordedOther -> ref RecordedPair -> unit
+fn cross_other a b =
+    let t = ref b.s
+    Mutex.with_lock (ref a.c.cell) (\x -> Array.write 0 (\() -> String.length t + 1) x)
+
+def unrelated_pairs :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64
+fn unrelated_pairs out1 out2 out3 out4 =
+    let r2 = Rc.new (RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 1234567 })
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out2 }, s: to_string 12345 }
+    let h = SharedPairs { rc: Rc.share (ref r2), other: Rc.new (RecordedOther { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out3 }, n: 1 }) }
+    let a = Rc.get (ref h.rc)
+    let o = Rc.new (RecordedOther { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out4 }, n: 2 })
+    cross_other (Rc.get (ref o)) (ref p1)
+    String.length (ref a.s)
+
+export def unrelated_blocks_keep_no_borrow :: i64
+fn unrelated_blocks_keep_no_borrow =
+    let out1 = Arc.new (Mutex.create [9])
+    let out2 = Arc.new (Mutex.create [9])
+    let out3 = Arc.new (Mutex.create [9])
+    let out4 = Arc.new (Mutex.create [9])
+    let k = unrelated_pairs (ref out1) (ref out2) (ref out3) (ref out4)
+    let first = (k * 10 + recorded (ref out1)) * 10 + recorded (ref out2)
+    (first * 10 + recorded (ref out3)) * 10 + recorded (ref out4)

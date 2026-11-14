@@ -2092,6 +2092,9 @@ const suites = {
       // Review round 3 after Copilot's review. passed_pairs returns 0 + 0 + the length of the new
       // x.z "1234" (4); p1's and p2's recorders read x.a.e[0]'s "12345" (5 + 1).
       ["passed_on_parts_keep_the_outside", [], 4n * 100n + 6n * 10n + 6n],
+      // Review round 5 after Copilot's review. unrelated_pairs returns the length of "1234567" (7);
+      // r2's, p1's and h's other recorders keep 0, o's reads p1's "12345" (5 + 1).
+      ["unrelated_blocks_keep_no_borrow", [], (((7n * 10n + 0n) * 10n + 0n) * 10n + 0n) * 10n + 6n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.
