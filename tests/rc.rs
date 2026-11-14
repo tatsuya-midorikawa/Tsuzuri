@@ -7098,7 +7098,7 @@ def run :: i64 -> i64
         "assignment_extends_borrow",
         (50, 5),
     );
-    // A31 limit (`sharetype`, A33): a store into a value whose type reaches the shared block's
+    // A31 limit (`sharetype`, A34): a store into a value whose type reaches the shared block's
     // type goes to `r2` although no block is involved (`w.keep` is `Maybe.None`).
     rejects_at(
         &program(
