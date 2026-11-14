@@ -8857,13 +8857,19 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// owner moves into. The check does not follow the block through those values, so it keeps the
     /// types of the blocks with a cell that the owner may share (`exports`): a later store into a
     /// local whose value may own such a block goes to `target` too (`store_exported`). A block
-    /// without a cell takes nothing after it is made.
+    /// without a cell takes nothing after it is made. A block that the owner holds behind a dyn
+    /// value or a value of a type that the check does not know is not walked by types, and may
+    /// hold a cell although the type of its owner shows none (`Rc<B>` of `record B {r} { n: i64,
+    /// d: dyn C {r} }`), so such an owner also takes `HIDDEN_BLOCK` there.
     fn export_block(&mut self, owner: usize, target: ExportTarget) {
         let Some((local, _)) = self.state.locals.get(&owner) else {
             return;
         };
         let ty = local.ty.clone();
-        let blocks = self.export_walk(&ty);
+        let mut blocks = self.export_walk(&ty);
+        if walk_hides_blocks(&ty, &self.module.types()) {
+            blocks.push(HIDDEN_BLOCK);
+        }
         self.add_exports(blocks, target);
     }
 

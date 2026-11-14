@@ -7288,4 +7288,69 @@ fn crossleaf w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Arra
         ),
     );
     accepts_in_both_editions(&[("Defs.tz", defs), ("Cls.tt", cls), ("Main.tz", &moved)]);
+    // The other direction (pre-existing: main accepts both): `hd` shares `r2`'s block, whose type
+    // shows no cell (`B` without one), and the store goes into the leaf in its dyn field through
+    // `r2` after `hd`'s last use; and the block whose share went to the caller's array. Both
+    // owners hold a block that may hold a cell behind the dyn value (`export_block`).
+    let reverse = |order: &str| {
+        main(
+            "Rc",
+            no_cell,
+            &format!(
+                "{order}    let lf = Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))\n    Defs.crossleaf (Rc.get (ref lf)) (Rc.get (ref rp))\n    let _r3 = r2\n    n\n"
+            ),
+        )
+    };
+    let hd = "    let hd = Rc.share (ref r2)\n";
+    let unsafe_reverse = reverse(&format!("{b_none}{hd}{p}"));
+    for edition in [Edition::E2026, Edition::E2027] {
+        let modules = [
+            ("Defs.tz", defs),
+            ("Cls.tt", cls),
+            ("Main.tz", unsafe_reverse.as_str()),
+        ];
+        let error = analyze_modules_with_edition(&modules, edition).expect_err(&unsafe_reverse);
+        assert_eq!(
+            (
+                error.code,
+                error.kind,
+                position(&unsafe_reverse, error.span.start)
+            ),
+            ("E1013", Some("assignment_extends_borrow"), (8, 5)),
+            "edition {edition}\n{unsafe_reverse}\n{}",
+            error.message
+        );
+    }
+    let safe_reverse = reverse(&format!("{p}{b_none}{hd}"));
+    accepts_in_both_editions(&[
+        ("Defs.tz", defs),
+        ("Cls.tt", cls),
+        ("Main.tz", &safe_reverse),
+    ]);
+    // Lines 1 to 7 come before the body of `put`, whose store is at line 12.
+    let to_caller = format!(
+        "record Box1 {{ l: Rc<Defs.Leaf> }}\ninstance Cls.LeafOf<Box1> {{\n    fn leaf b = ref b.l\n}}\n{no_cell}\ndef put :: ref mut [Rc<B>] -> i64 -> i64\nfn put out n =\n{p}{b_none}    Array.write 0 (Rc.share (ref r2)) out\n    let lf = Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))\n    Defs.crossleaf (Rc.get (ref lf)) (Rc.get (ref rp))\n    n\ndef run :: i64 -> i64\nfn run n =\n    let mut v = [Rc.new (B {{ n: 1, d: Dyn.of (Box1 {{ l: Rc.new (Defs.mkleaf 2) }}) }})]\n    put (ref mut v) n\ndo! IO.write_line (to_string (run 1))\n"
+    );
+    for edition in [Edition::E2026, Edition::E2027] {
+        let modules = [
+            ("Defs.tz", defs),
+            ("Cls.tt", cls),
+            ("Main.tz", to_caller.as_str()),
+        ];
+        let error = analyze_modules_with_edition(&modules, edition).expect_err(&to_caller);
+        assert_eq!(
+            (
+                error.code,
+                error.kind,
+                position(&to_caller, error.span.start)
+            ),
+            (
+                "E1013",
+                Some("store_local_borrow_through_reference"),
+                (12, 5)
+            ),
+            "edition {edition}\n{to_caller}\n{}",
+            error.message
+        );
+    }
 }
