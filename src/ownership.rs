@@ -709,6 +709,7 @@ fn start_checker<'a, 'run>(
         exports: Vec::new(),
         exported: BTreeSet::new(),
         export_walks: BTreeMap::new(),
+        hidden_walks: BTreeMap::new(),
         exporting: false,
         views: BTreeSet::new(),
         drop_read_types: BTreeMap::new(),
@@ -5561,6 +5562,8 @@ struct Checker<'a, 'run> {
     exported: BTreeSet<(Type, ExportTarget)>,
     /// A31: the types of the blocks that an owner of each type may share (`export_block`).
     export_walks: BTreeMap<Type, Vec<Type>>,
+    /// A31: `walk_hides_blocks` of each type that the exports asked about.
+    hidden_walks: BTreeMap<Type, bool>,
     /// A31: `store_exported` is making its stores, which do not lead to it again.
     exporting: bool,
     /// A31: the pattern variables of the body bound as read-only views of the matched storage
@@ -8867,7 +8870,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         };
         let ty = local.ty.clone();
         let mut blocks = self.export_walk(&ty);
-        if walk_hides_blocks(&ty, &self.module.types()) {
+        if self.hides_blocks(&ty) {
             blocks.push(HIDDEN_BLOCK);
         }
         self.add_exports(blocks, target);
@@ -8903,11 +8906,8 @@ impl<'a, 'run> Checker<'a, 'run> {
             return;
         };
         let (holder_ty, source_ty) = (holder_local.ty.clone(), source_local.ty.clone());
-        let types = self.module.types();
-        let (holder_hides, source_hides) = (
-            walk_hides_blocks(&holder_ty, &types),
-            walk_hides_blocks(&source_ty, &types),
-        );
+        let (holder_hides, source_hides) =
+            (self.hides_blocks(&holder_ty), self.hides_blocks(&source_ty));
         let blocks = self.export_walk(&holder_ty);
         let mut blocks: Vec<Type> = if source_hides {
             blocks
@@ -8944,6 +8944,16 @@ impl<'a, 'run> Checker<'a, 'run> {
         let blocks = blocks.into_inner();
         self.export_walks.insert(ty.clone(), blocks.clone());
         blocks
+    }
+
+    /// A31: `walk_hides_blocks` of `ty`, cached by type.
+    fn hides_blocks(&mut self, ty: &Type) -> bool {
+        if let Some(hides) = self.hidden_walks.get(ty) {
+            return *hides;
+        }
+        let hides = walk_hides_blocks(ty, &self.module.types());
+        self.hidden_walks.insert(ty.clone(), hides);
+        hides
     }
 
     /// A31: the entries of `exports` for `blocks` that went to `target`.
@@ -9035,11 +9045,11 @@ impl<'a, 'run> Checker<'a, 'run> {
         if self.exports.is_empty() || self.exporting || kept.loans.is_empty() {
             return;
         }
+        let hides = self.hides_blocks(ty);
         let types = self.module.types();
         let exports = &self.exports;
         let mut targets: Vec<ExportTarget> = Vec::new();
         let mut seen: BTreeSet<ExportTarget> = BTreeSet::new();
-        let hides = walk_hides_blocks(ty, &types);
         // One walk of `ty` per type of block, however many places it went to.
         let mut reached: BTreeMap<&Type, bool> = BTreeMap::new();
         for (block, target) in exports {
