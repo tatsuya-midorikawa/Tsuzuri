@@ -8838,25 +8838,60 @@ impl<'a, 'run> Checker<'a, 'run> {
             return;
         };
         let ty = local.ty.clone();
-        let blocks = match self.export_walks.get(&ty) {
-            Some(blocks) => blocks.clone(),
-            None => {
-                let types = self.module.types();
-                let blocks = std::cell::RefCell::new(Vec::new());
-                types.reaches(&ty, |part| {
-                    if let Some(block) = Self::block_owner_type(part)
-                        && let Type::Shared(value, _) = part
-                        && value.owns_mutable_cell(&types)
-                    {
-                        blocks.borrow_mut().push(block);
-                    }
-                    false
-                });
-                let blocks = blocks.into_inner();
-                self.export_walks.insert(ty, blocks.clone());
-                blocks
-            }
+        let blocks = self.export_walk(&ty);
+        self.add_exports(blocks, target);
+    }
+
+    /// A31: `export_block(holder, ExportTarget::Local(source))` for a local `holder` whose shares
+    /// of the block of the local owner `source` `keep_for_drop` expanded, limited to the types of
+    /// blocks that `source`'s type reaches too. The shared block is one of them, and so is each
+    /// block that it may hold (`Rc<Leaf>` in `Tree { child: Maybe<Rc<Leaf>> }`), which it frees
+    /// when it goes; a block that only `holder`'s type reaches (the `Rc<Other>` of `RH2 { rc:
+    /// Rc.share (ref r2), other: Rc<Other> }`) is not one that `source`'s drop can free, so a
+    /// store into it does not concern `source`. A block that a function value in the shared block
+    /// holds is not walked by types; a store into such a block is a store into a hidden
+    /// environment (`store_hidden`), which every local that may hold such a value takes.
+    fn export_shared_block(&mut self, holder: usize, source: usize) {
+        let (Some((holder_local, _)), Some((source_local, _))) = (
+            self.state.locals.get(&holder),
+            self.state.locals.get(&source),
+        ) else {
+            return;
         };
+        let (holder_ty, source_ty) = (holder_local.ty.clone(), source_local.ty.clone());
+        let freed = self.export_walk(&source_ty);
+        let blocks: Vec<Type> = self
+            .export_walk(&holder_ty)
+            .into_iter()
+            .filter(|block| freed.contains(block))
+            .collect();
+        self.add_exports(blocks, ExportTarget::Local(source));
+    }
+
+    /// A31: the types of the blocks with a cell that a value of type `ty` may own
+    /// (`export_block`), by the type of their strong owner, cached by type.
+    fn export_walk(&mut self, ty: &Type) -> Vec<Type> {
+        if let Some(blocks) = self.export_walks.get(ty) {
+            return blocks.clone();
+        }
+        let types = self.module.types();
+        let blocks = std::cell::RefCell::new(Vec::new());
+        types.reaches(ty, |part| {
+            if let Some(block) = Self::block_owner_type(part)
+                && let Type::Shared(value, _) = part
+                && value.owns_mutable_cell(&types)
+            {
+                blocks.borrow_mut().push(block);
+            }
+            false
+        });
+        let blocks = blocks.into_inner();
+        self.export_walks.insert(ty.clone(), blocks.clone());
+        blocks
+    }
+
+    /// A31: the entries of `exports` for `blocks` that went to `target`.
+    fn add_exports(&mut self, blocks: Vec<Type>, target: ExportTarget) {
         for block in blocks {
             if self.exported.insert((block.clone(), target)) {
                 self.exports.push((block, target));
@@ -13187,8 +13222,12 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// The share was also the way from the local to the owners of its block: a store into the
     /// local (through `Rc.get (ref r)` of `let r = Rc.share (ref r2)`, or of an `Rc` that a field or
     /// an element holds) followed it to `r2` (`apply_store_within`), whose drop may be the one
-    /// that frees the block. The expanded value leads nowhere, so a store into a value of the
-    /// local's type goes to each of those owners too (`export_block` to them, `store_exported`).
+    /// that frees the block. The expanded value leads nowhere, so a store into a value whose type
+    /// reaches the type of a block that the local and such an owner may both hold (the shared
+    /// block, and the blocks that it may hold) goes to that owner too (`export_shared_block`,
+    /// `store_exported`). The test is by type: a store into another value that may hold a block of
+    /// such a type (another `Rc<PairOk>`, a record with a `Maybe<Rc<PairOk>>` field) goes there
+    /// as well.
     fn keep_for_drop(&mut self, keep: &mut BTreeSet<usize>) {
         for id in self.dropped_later() {
             if keep.insert(id)
@@ -13205,7 +13244,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 }
                 for source in sources {
                     if source != id {
-                        self.export_block(id, ExportTarget::Local(source));
+                        self.export_shared_block(id, source);
                     }
                 }
             }

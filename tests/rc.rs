@@ -7021,3 +7021,91 @@ fn a_store_through_one_owner_of_a_block_reaches_the_other_owners() {
         }
     }
 }
+
+/// A31: the store into a value whose share of another owner's block `keep_for_drop` expanded
+/// reaches that owner by the types of the blocks that both may hold (the shared block and the
+/// blocks inside it), not by every block type of the value's type: a store into an unrelated
+/// `Rc<Other>` after the share's last use does not reach `r2` (review round 5 after Copilot),
+/// while a store into a block that the other owner may free does (`o2`, which shares the `Other`
+/// block, and `r2`, whose tree holds the leaf).
+#[test]
+fn a_store_through_an_expanded_share_reaches_the_owners_that_may_free_the_block() {
+    // 15 lines before `def run`, which is then line 48: the body starts at line 50.
+    let prelude = CROSS_PRELUDE.replace(
+        "def run :: i64 -> i64\n",
+        r#"record Other { h: Holder, n: i64 }
+def mkother :: i64 -> Other
+fn mkother k = Other { h: Holder { cell: Mutex.create [\() -> 0] }, n: k }
+def crossother :: ref Other -> ref PairOk -> unit
+fn crossother w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+record RH2 { rc: Rc<PairOk>, other: Rc<Other> }
+record Leaf { h: Holder, n: i64 }
+def mkleaf :: i64 -> Leaf
+fn mkleaf k = Leaf { h: Holder { cell: Mutex.create [\() -> 0] }, n: k }
+def crossleaf :: ref Leaf -> ref PairOk -> unit
+fn crossleaf w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+record Tree2 { h: Holder, s: string, child: Rc<Leaf> }
+record W { h: Holder, keep: Maybe<Rc<PairOk>> }
+def crossw2 :: ref W -> ref PairOk -> unit
+fn crossw2 w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+def run :: i64 -> i64
+"#,
+    );
+    let program = |body: &str| format!("{prelude}{body}do! IO.write_line (to_string (run 1))\n");
+    // The store goes into an `Rc<Other>` that no owner of `r2`'s block holds: `r2` cannot free
+    // it, whether `p` is declared before or after `h`.
+    accepts_in_both_editions(&[(
+        "Main.tz",
+        &program(
+            "    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n    let h = RH2 { rc: Rc.share (ref r2), other: Rc.new (mkother 1) }\n    let a = Rc.get (ref h.rc)\n    let o = Rc.new (mkother 2)\n    crossother (Rc.get (ref o)) (ref p)\n    look (ref a.s) * 0 + n\n",
+        ),
+    )]);
+    accepts_in_both_editions(&[(
+        "Main.tz",
+        &program(
+            "    let r2 = Rc.new (mkpo ())\n    let h = RH2 { rc: Rc.share (ref r2), other: Rc.new (mkother 1) }\n    let a = Rc.get (ref h.rc)\n    let x = look (ref a.s)\n    let p = mkpo ()\n    let o = Rc.new (mkother 2)\n    crossother (Rc.get (ref o)) (ref p)\n    x * 0 + n\n",
+        ),
+    )]);
+    // The store goes into the `Other` block that `h` shares with `o2`, declared before `p`.
+    let two = |order: &str| {
+        program(&format!(
+            "{order}    let r2 = Rc.new (mkpo ())\n    let h = RH2 {{ rc: Rc.share (ref r2), other: Rc.share (ref o2) }}\n    let a = Rc.get (ref h.other)\n    crossother a (ref p)\n    n\n"
+        ))
+    };
+    accepts_in_both_editions(&[(
+        "Main.tz",
+        &two("    let p = mkpo ()\n    let o2 = Rc.new (mkother 1)\n"),
+    )]);
+    rejects_at(
+        &two("    let o2 = Rc.new (mkother 1)\n    let p = mkpo ()\n"),
+        "E1013",
+        "assignment_extends_borrow",
+        (50, 5),
+    );
+    // The store goes into the leaf that `r2`'s tree holds, through a share of the leaf made from
+    // the share `r` of the tree.
+    let leaf = |order: &str| {
+        let tree = "    let r2 = Rc.new (Tree2 { h: Holder { cell: Mutex.create [\\() -> 0] }, s: \"ab\", child: Rc.new (mkleaf 1) })\n";
+        program(&format!(
+            "{}    let r = Rc.share (ref r2)\n    let t = Rc.get (ref r)\n    let l = Rc.share (ref t.child)\n    let a = Rc.get (ref l)\n    crossleaf a (ref p)\n    n\n",
+            order.replace("TREE", tree)
+        ))
+    };
+    accepts_in_both_editions(&[("Main.tz", &leaf("    let p = mkpo ()\nTREE"))]);
+    rejects_at(
+        &leaf("TREE    let p = mkpo ()\n"),
+        "E1013",
+        "assignment_extends_borrow",
+        (50, 5),
+    );
+    // A31 limit (`sharetype`, A33): a store into a value whose type reaches the shared block's
+    // type goes to `r2` although no block is involved (`w.keep` is `Maybe.None`).
+    rejects_at(
+        &program(
+            "    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n    let r = Rc.share (ref r2)\n    let a = Rc.get (ref r)\n    let w = W { h: Holder { cell: Mutex.create [\\() -> 0] }, keep: Maybe.None }\n    crossw2 (ref w) (ref p)\n    look (ref a.s) * 0 + n\n",
+        ),
+        "E1013",
+        "assignment_extends_borrow",
+        (50, 5),
+    );
+}
