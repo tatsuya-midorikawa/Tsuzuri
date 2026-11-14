@@ -6779,3 +6779,138 @@ fn a_function_that_passes_its_parameters_on_keeps_the_coarse_part_of_its_callee(
             .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
     }
 }
+
+/// A31, review round 3 after Copilot (findings 1 and 2): a function that passes its parameters
+/// on through a partial application (`applyyq k x f = { let g = applyy k x; g f }`, and the same
+/// with a reborrow) or a lambda that captures them (`applyyc k x f = (\(_u: unit) -> applyy k x
+/// f) ()`, a lambda bound and then called) kept no part: the caller borrowed all of `x`, so
+/// writing or moving `x.z` was `E1014`, and a lambda over a function-valued parameter even kept
+/// `crossd (ref p2)`'s borrow in `p2` (`E1013`). The previous tips reject them; main and base
+/// accept them and print `drop 8` and `1`. The argument that a partial application bound was
+/// narrowed (`bound_value`) only when it was exact in the state where the function value runs, in
+/// which the parameter that it read is no longer live and holds nothing; the evaluation of the
+/// borrow now records whether it was exact (`inexact_borrows`). The captures of a lambda were not
+/// narrowed at all; they are now, by what each captured local held where the lambda was made
+/// (`captured_loans`). A lambda that captures a function-valued parameter in edition 2026 owns
+/// it, and its drop counts as code that may store what it holds into that function value, so
+/// those forms stay `E1013` there (drop.md, A33 `fvlam`). The body of `run` starts at line 45.
+#[test]
+fn a_partial_application_or_a_lambda_that_passes_parameters_on_keeps_the_part() {
+    let prelude = COARSE_PRELUDE.replace(
+        "def run :: i64 -> i64\n",
+        "def applyp :: ref X -> (ref D -> unit) -> i64\nfn applyp x f = { ref (deref (Rc.get (ref x.a.e[0]))) |> f; 0 }\ndef applyyq :: i64 -> ref X -> (ref D -> unit) -> i64\nfn applyyq k x f = { let g = applyy k x; g f }\ndef applypq :: ref X -> (ref D -> unit) -> i64\nfn applypq x f = { let g = applyp x; g f }\ndef applypr :: ref X -> (ref D -> unit) -> i64\nfn applypr x f = { let g = applyp (ref (deref x)); g f }\ndef applyyc :: i64 -> ref X -> (ref D -> unit) -> i64\nfn applyyc k x f = (\\(_u: unit) -> applyy k x f) ()\ndef applypn :: ref X -> (ref D -> unit) -> i64\nfn applypn x f = { let g = \\(_u: unit) -> { ref (deref (Rc.get (ref x.a.e[0]))) |> f; 0 }; g () }\ndef run :: i64 -> i64\n",
+    );
+    let program = |body: &str| {
+        format!(
+            "{prelude}{body}    let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")]\n    n + z + k * 0 + junk.length * 0\ndo! IO.write_line (to_string (run 1))\n"
+        )
+    };
+    // (the call, whether edition 2026 keeps it whole: a lambda that owns the function value)
+    let forms = [
+        ("applyyq n (ref x) (crossd (ref p2))", false),
+        ("applypq (ref x) (crossd (ref p2))", false),
+        ("applypr (ref x) (crossd (ref p2))", false),
+        ("applyyc n (ref x) (crossd (ref p2))", true),
+        ("applypn (ref x) (crossd (ref p2))", true),
+    ];
+    for (call, owned) in forms {
+        let setup = format!("    let x = mkx ()\n    let p2 = mkpo ()\n    let z = {call}\n");
+        let mutable = setup.replace("let x = ", "let mut x = ");
+        let moved = program(&format!(
+            "{setup}    let k = {{ let taken = x.a.e; taken.length }}\n"
+        ));
+        let replaced = program(&format!("{mutable}    x.a.e = []\n    let k = 0\n"));
+        let outside = program(&format!(
+            "{setup}    let k = {{ let taken = x.z; String.length (ref taken) }}\n"
+        ));
+        let nothing = program(&format!("{setup}    let k = 0\n"));
+        let written = program(&format!("{mutable}    x.z = to_string 22\n    let k = 0\n"));
+        // A move or a replacement of the borrowed field conflicts with the borrow (edition 2027
+        // for the replacement in a mutable local).
+        let error = analyze_with_edition(&replaced, Edition::E2027).expect_err(&replaced);
+        assert_eq!(
+            (
+                error.code,
+                error.kind,
+                position(&replaced, error.span.start)
+            ),
+            ("E1014", Some("borrow_conflict"), (48, 5)),
+            "{replaced}\n{}",
+            error.message
+        );
+        analyze_with_edition(&written, Edition::E2027)
+            .unwrap_or_else(|error| panic!("{written}\n{}: {}", error.code, error.message));
+        if owned {
+            // Edition 2027 keeps the part; edition 2026 keeps `p2`'s borrow in itself.
+            let error = analyze_with_edition(&moved, Edition::E2027).expect_err(&moved);
+            assert_eq!(
+                (error.code, error.kind, position(&moved, error.span.start)),
+                ("E1014", Some("borrow_conflict"), (48, 27)),
+                "{moved}\n{}",
+                error.message
+            );
+            for source in [&outside, &nothing] {
+                analyze_with_edition(source, Edition::E2027)
+                    .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+                let error = analyze_with_edition(source, Edition::E2026).expect_err(source);
+                assert_eq!(
+                    (error.code, error.kind, position(source, error.span.start)),
+                    ("E1013", Some("self_referential_store"), (45, 5)),
+                    "{source}\n{}",
+                    error.message
+                );
+            }
+        } else {
+            rejects_at(&moved, "E1014", "borrow_conflict", (48, 27));
+            accepts_in_both_editions(&[("Main.tz", &outside)]);
+            accepts_in_both_editions(&[("Main.tz", &nothing)]);
+        }
+    }
+}
+
+/// A31, review round 3 after Copilot (finding 2, and round 2's `bindref`): a lambda that captures
+/// two reference parameters (`outerl a b = (\(_u: unit) -> cross a b) ()`, or bound and then
+/// called) gave each capture the loans of both, so `outerl (ref p2) (ref p1)` was taken to keep
+/// `p1`'s borrow in `p1` too (`E1013`), and so did a partial application that binds parameters
+/// (`via3 a b c = { let g = cross3 a b; g c }`). Main and base accept them: `p2` reads `p1.s`
+/// when it is dropped first (`drop 8`, `drop 0`, `1`), and `via3 (ref p2) (ref p3) (ref p1)`
+/// keeps `p1.s` in `p2` and `p3` (`drop 8`, `drop 8`, `drop 0`, `1`). The reversed calls keep a
+/// borrow of a value dropped first and stay `E1013` (`assignment_extends_borrow`), and a capture
+/// that may be either parameter (`let q = if k > 0 then a else b`) keeps a borrow in both. The
+/// body of `run` starts at line 45.
+#[test]
+fn a_lambda_or_a_partial_application_over_reference_parameters_keeps_each_part() {
+    let prelude = CROSS_PRELUDE.replace(
+        "def run :: i64 -> i64\n",
+        "def cross3 :: ref PairOk -> ref PairOk -> ref PairOk -> unit\nfn cross3 a b c = { cross a c; cross b c }\ndef outerl :: ref PairOk -> ref PairOk -> unit\nfn outerl a b = (\\(_u: unit) -> cross a b) ()\ndef outerg :: ref PairOk -> ref PairOk -> unit\nfn outerg a b = { let g = \\(_u: unit) -> cross a b; g () }\ndef via3 :: ref PairOk -> ref PairOk -> ref PairOk -> unit\nfn via3 a b c = { let g = cross3 a b; g c }\ndef mixl :: i64 -> ref PairOk -> ref PairOk -> unit\nfn mixl k a b = { let q = if k > 0 then a else b; let g = \\(_u: unit) -> cross q b; g () }\ndef run :: i64 -> i64\n",
+    );
+    let program =
+        |body: &str| format!("{prelude}{body}    n\ndo! IO.write_line (to_string (run 1))\n");
+    let two = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n";
+    let three = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let p3 = mkpo ()\n";
+    for safe in [
+        format!("{two}    outerl (ref p2) (ref p1)\n"),
+        format!("{two}    outerg (ref p2) (ref p1)\n"),
+        format!("{three}    via3 (ref p2) (ref p3) (ref p1)\n"),
+        format!("{two}    mixl 1 (ref p2) (ref p1)\n"),
+    ] {
+        accepts_in_both_editions(&[("Main.tz", &program(&safe))]);
+    }
+    // `p1` keeps a borrow of `p2` (`p3` of `p2` for `via3`), which is dropped before it.
+    for (unsafe_call, at) in [
+        (format!("{two}    outerl (ref p1) (ref p2)\n"), (45, 5)),
+        (format!("{two}    outerg (ref p1) (ref p2)\n"), (45, 5)),
+        (
+            format!("{three}    via3 (ref p1) (ref p3) (ref p2)\n"),
+            (45, 5),
+        ),
+        (format!("{two}    mixl 1 (ref p1) (ref p2)\n"), (45, 5)),
+    ] {
+        rejects_at(
+            &program(&unsafe_call),
+            "E1013",
+            "assignment_extends_borrow",
+            at,
+        );
+    }
+}

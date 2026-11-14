@@ -1503,3 +1503,31 @@ fn wrapped_coarse_parts_keep_the_outside =
     let out1 = Arc.new (Mutex.create [0])
     let k = coarse_pairs (ref out1) 1
     k * 10 + recorded (ref out1)
+
+// Review round 3 after Copilot's review: `apply_coarse_partial` passes its parameters on to
+// `apply_coarse` through a partial application, and `apply_coarse_lambda` through a lambda that
+// captures them. Their callers keep a borrow of `x.a` only, as a direct call does, so writing
+// `x.z` is accepted. `p1` and `p2`, declared after `x`, are dropped first: each recorder reads
+// "12345" (5 + 1).
+def apply_coarse_partial :: i64 -> ref CoarseX -> (ref CoarseD -> unit) -> i64
+fn apply_coarse_partial k x f = { let g = apply_coarse k x; g f }
+
+def apply_coarse_lambda :: i64 -> ref CoarseX -> (ref CoarseD -> unit) -> i64
+fn apply_coarse_lambda k x f = (\(_u: unit) -> apply_coarse k x f) ()
+
+def passed_pairs :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn passed_pairs out1 out2 k =
+    let mut x = CoarseX { a: CoarseD { s: to_string 12, e: [Rc.new (coarse_leaf (to_string 12345))] }, z: to_string 1 }
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 7 }
+    let p2 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out2 }, s: to_string 7 }
+    let r = apply_coarse_partial k (ref x) (cross_coarse (ref p1))
+    let s = apply_coarse_lambda k (ref x) (cross_coarse (ref p2))
+    x.z = to_string 1234
+    r + s + String.length (ref x.z)
+
+export def passed_on_parts_keep_the_outside :: i64
+fn passed_on_parts_keep_the_outside =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let k = passed_pairs (ref out1) (ref out2) 1
+    k * 100 + recorded (ref out1) * 10 + recorded (ref out2)

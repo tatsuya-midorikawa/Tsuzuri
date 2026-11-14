@@ -724,6 +724,9 @@ fn start_checker<'a, 'run>(
         kept_copies: BTreeMap::new(),
         pointing: BTreeMap::new(),
         borrow_loans: BTreeMap::new(),
+        inexact_borrows: BTreeSet::new(),
+        captured_loans: BTreeMap::new(),
+        inexact_captures: BTreeSet::new(),
         parameter_paths: std::cell::RefCell::new(BTreeMap::new()),
         parameter_path_steps: std::cell::Cell::new(0),
         injections: BTreeSet::new(),
@@ -5610,9 +5613,18 @@ struct Checker<'a, 'run> {
     /// that it held when it was bound. A local bound to the result of a call (`let q = child b`,
     /// whose loan is `b`'s while it points at a value that `b` reaches) is none.
     pointing: BTreeMap<usize, BTreeSet<usize>>,
-    /// A31: the loans that each borrow expression made (by the address of the expression), for
-    /// the arguments that a partial application bound (`bound_value`).
+    /// A31: the loans that each borrow expression made (by the address of the expression) where
+    /// its place was exact (`exact_place`), for the arguments that a partial application bound
+    /// and the captures of a lambda (`bound_value`).
     borrow_loans: BTreeMap<usize, BTreeSet<usize>>,
+    /// A31: the borrow expressions (by address) that made a loan where their place was not exact.
+    inexact_borrows: BTreeSet<usize>,
+    /// A31: the loans that each capture of a lambda that is a local (by the address of the
+    /// expression) held where the local pointed at their places when the lambda was made
+    /// (`pointing_local`), for the captures that `bound_value` narrows.
+    captured_loans: BTreeMap<usize, BTreeSet<usize>>,
+    /// A31: the captures (by address) of a local that did not point so when a lambda was made.
+    inexact_captures: BTreeSet<usize>,
     /// A31: the answers of `parameter_path` for the locals that patterns bind, with the depth that
     /// each needed (`parameter_path_at`).
     parameter_paths: std::cell::RefCell<BTreeMap<usize, (Option<ParameterPath>, usize)>>,
@@ -5665,7 +5677,8 @@ type StoreKey = (usize, Vec<(usize, Vec<usize>, Vec<usize>, u16)>);
 /// place: those loans are already the contents of the reference that the parameter gets, so a
 /// fact that stores the contents (`Part::Contents`) stores them (`Checker::argument_part`). The
 /// captures of a lambda and the arguments of a partial application that `apply_higher` binds
-/// count as temporaries too: their value is that of the whole function value.
+/// count as temporaries too: their value is that of the whole function value, or the part of it
+/// that a reference to an exact place made (`Checker::bound_value`).
 ///
 /// A fact that stores the reference itself (`Part::Value`) of a borrowed operand stores a borrow
 /// of the operand: `reference` holds its loans when the operand is a place (`a == b` lends both
@@ -9649,6 +9662,23 @@ impl<'a, 'run> Checker<'a, 'run> {
         self.pointing.entry(local.id).or_default().extend(own);
     }
 
+    /// A31: records what the capture `capture` of a lambda, a local, held where the lambda was
+    /// made (`value`), when the local pointed at its loans' places there (`pointing_local`), for
+    /// `bound_value`; or that it did not, at some making of the lambda (`inexact_captures`).
+    fn note_capture(&mut self, capture: &TypedExpr, pointing: bool, value: &Value) {
+        let key = std::ptr::from_ref(capture) as usize;
+        if !pointing {
+            self.inexact_captures.insert(key);
+            return;
+        }
+        let own = value
+            .loans
+            .iter()
+            .copied()
+            .filter(|loan| !value.through.contains(loan));
+        self.captured_loans.entry(key).or_default().extend(own);
+    }
+
     /// A31: whether the local `id` holds a reference that points at the place of one of its
     /// loans (`pointing`): it does when it was bound, and holds no other loan now.
     fn pointing_local(&self, id: usize) -> bool {
@@ -9743,17 +9773,32 @@ impl<'a, 'run> Checker<'a, 'run> {
         }
     }
 
-    /// A31: the value of `expression`, an argument that a partial application bound (or that the
-    /// right side of a pipeline applies), out of `whole`, the value of the function value: the
-    /// loans of `whole` that the borrow of an exact place made (`borrow_loans`), or that a local
-    /// that points at its loans' places holds (`pointing_local`). They are the reference that the
-    /// parameter gets, which points at the place of one of them. `None` for any other value, or
-    /// when `whole` holds none of them.
+    /// A31: the value of `expression`, an argument that a partial application bound, a capture of
+    /// a lambda (or an argument that the right side of a pipeline applies), out of `whole`, the
+    /// value of the function value: the loans of `whole` that the borrow of an exact place made
+    /// (`borrow_loans`), that a captured local held where it pointed at their places when the
+    /// lambda was made (`captured_loans`), or that a local that points at its loans' places holds
+    /// (`pointing_local`). They are the reference that the parameter gets, which points at the
+    /// place of one of them. `None` for any other value, when `whole` holds none of them, or when
+    /// some evaluation of the borrow or the capture was not one of those
+    /// (`inexact_borrows`, `inexact_captures`): its loans, which `whole` may hold, point at a
+    /// part of what their places reach.
+    ///
+    /// What the function value holds was made where the borrow or the capture was evaluated,
+    /// which may be before the local or the reference that it reads stops being live (`let g =
+    /// cross a; g b`, whose `a` holds nothing once `cross a` has read it), so the evaluation
+    /// records whether it was exact, rather than the state where the function value runs.
     fn bound_value(&self, expression: &TypedExpr, whole: &Value) -> Option<Value> {
+        let key = std::ptr::from_ref(expression) as usize;
         let own: &BTreeSet<usize> = match &expression.kind {
-            E::Borrow(place, _) if self.exact_place(place) => self
-                .borrow_loans
-                .get(&(std::ptr::from_ref(expression) as usize))?,
+            E::Borrow(..) => {
+                if self.inexact_borrows.contains(&key) {
+                    return None;
+                }
+                self.borrow_loans.get(&key)?
+            }
+            E::Local(_) if self.inexact_captures.contains(&key) => return None,
+            E::Local(_) if self.captured_loans.contains_key(&key) => &self.captured_loans[&key],
             E::Local(id) if self.pointing_local(*id) => &self.state.locals.get(id)?.1.loans,
             _ => return None,
         };
@@ -10618,9 +10663,9 @@ impl<'a, 'run> Checker<'a, 'run> {
             return;
         }
         // The captures of a lambda and the arguments of a partial application come from where the
-        // function value was made: outside any body whose locals a substitution tracks. An
-        // argument of a partial application that is a reference to an exact place, or a local
-        // that points at its places, is the part of the function value's loans that it made
+        // function value was made: outside any body whose locals a substitution tracks. One that
+        // is a reference to an exact place, or a local that points at its places, where the
+        // function value was made, is the part of the function value's loans that it made
         // (`bound_value`); any other has the value of the whole function value.
         let bound = |checker: &Self,
                      expressions: &'e [TypedExpr],
@@ -10743,7 +10788,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             Some(E::Closure(id, captures))
                 if module.functions[*id].parameters.len() == captures.len() + arguments.len() =>
             {
-                Some((*id, bound(self, captures, &callee.value, false)))
+                Some((*id, bound(self, captures, &callee.value, true)))
             }
             Some(E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _))
                 if module.functions[*id].parameters.len() == arguments.len() =>
@@ -13808,12 +13853,14 @@ impl<'a, 'run> Checker<'a, 'run> {
                     }
                     result.loans.insert(loan);
                 }
+                let key = std::ptr::from_ref(expression) as usize;
                 if exact {
-                    let key = std::ptr::from_ref(expression) as usize;
                     self.borrow_loans
                         .entry(key)
                         .or_default()
                         .extend(result.loans.iter().copied());
+                } else {
+                    self.inexact_borrows.insert(key);
                 }
             }
             E::Assign(place, value) => {
@@ -13954,12 +14001,21 @@ impl<'a, 'run> Checker<'a, 'run> {
                     self.callback_returns_closed(expression, index + 1)
                 });
                 for capture in captures {
+                    // A31: whether the capture is an immutable local that points at its loans'
+                    // places here, where the lambda is made (`bound_value`).
+                    let pointing = match &capture.kind {
+                        E::Local(id) => Some(self.pointing_local(*id)),
+                        _ => None,
+                    };
                     let value = self.eval(capture, Use::Consume, &during)?;
                     if matches!(expression.ty, Type::Once(_)) && !value.loans.is_empty() {
                         return Err(error(DiagnosticKind::TaskCaptureRetainsBorrow,
                             "the captures of a tzroutine cannot retain borrowed values, including borrowed function environments",
                             expression.span,
                         ));
+                    }
+                    if let Some(pointing) = pointing {
+                        self.note_capture(capture, pointing, &value);
                     }
                     result.absorb(&value);
                 }
