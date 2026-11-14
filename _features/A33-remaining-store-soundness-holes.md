@@ -80,6 +80,53 @@ A32 の 6 度目の merge（2026-11-14）が見つけた、名前付き関数を
 
 `Rc.share` の持ち主の連なり（`let s_i = Rc.share (ref s_{i-1})` を n 個、最後の持ち主のフィールドの借用を最初の持ち主のセルへ書き込む、ブロックの型が `Drop` を持つ）の所有権の検査は、A31 の第12回の対応の後も n の 2 乗で伸びます（`target/wt/a31/target/scratch/review-a31-ce-r12/_tools/gen_chain.py cellshares n`、開発用のビルド: n = 400 で 121 ms、800 で 501 ms、1600 で 2009 ms。`main` は 800 で 86 ms）。第12回の対応で 3 乗（800 で 5009 ms）から下げました。束縛ごとの破棄の hook が持ち主の連なりを展開する（`expand_shares`）ためで、現実のプログラムの形ではありません。A31 の Copilot のレビューの後のレビューの第4回の修正（`keep_for_drop` が共有の元の所有者へも `export_block` する）で、2 乗のまま定数がおよそ 2 倍になりました（同じ負荷の機械で続けて測った所有権の検査: n = 400 で 273 ms（修正前 138 ms）、800 で 1210 ms（550 ms）、1600 で 5109 ms（2418 ms）。`target/wt/a31/target/scratch/a31/rr4/chain-times.txt`）。読み替えた共有ごとの正確な道（[A34](A34-store-check-safe-rejections.md) の `sharetype`）は 3 乗になったので採っていません。
 
+A31 の Copilot のレビュー 2 の点検（2026-11-15）で、edition 2026 でループの検査が収束しない形を見つけました。`ref mut` の仮引数 `p` の先のセルの中身を、値の仮引数 `sink` を捕捉したラムダ `w` を通して隠れた環境へ書き込むループです（下は置き換えをループの前にした安全な形で、`main` は 0.7 秒で受理し、`drop 0 2`・`drop 8 2`・`8` を出します）。
+
+```tsuzuri
+record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = {
+        let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")];
+        do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " " + to_string junk.length)
+    }
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def mkh :: unit -> Holder
+fn mkh _u = Holder { cell: Mutex.create [\() -> 0] }
+def mks :: unit -> string
+fn mks _u = String.repeat 4 (ref "123456789")
+record PA { h: Holder, a: [string] }
+def mkpa :: unit -> PA
+fn mkpa _u = PA { h: mkh (), a: [mks ()] }
+def copy_out :: ref [unit -> i64] -> ref Mutex<[unit -> i64]> -> unit
+fn copy_out b out = Mutex.with_lock out (\o -> Array.write 0 b[0] o)
+def renew :: ref mut PA -> Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn renew p sink n =
+    deref p = mkpa ()
+    let t = ref p.a[0]
+    Mutex.with_lock (ref p.h.cell) (\b -> Array.write 0 (\() -> look t) b)
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref p.h.cell) (\b -> w b[0])
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let mut p0 = mkpa ()
+    let k = renew (ref mut p0) (Arc.share (ref keep)) n
+    let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy"), String.repeat 4 (ref "xxxxxxxxx")]
+    Mutex.with_lock (Arc.get (ref keep)) (\b -> b[0] ()) + k + junk.length * 0
+do! IO.write_line (to_string (run 1))
+```
+
+隠れた環境への格納（`Checker::store_hidden_except`）は、環境を共有しうる値として仮引数 `p` の値にも、写した中身の loan（`p` の先の `h.cell` の場所で `through`）を足します。`deref p` の場所は `p` の値のすべての loan の場所から作る（`Checker::place`）ので、次の反復の `ref p.h.cell` は `p.h.cell.h.cell` の場所も作り、反復ごとに場所が 2 段ずつ伸びて、ループの要約が変わり続けます。A31 の先端（`fbd7d194`）もレビュー 2 の修正の後も、この形と、置き換えをループの後にした危険な形（`target/wt/a31/target/scratch/a31/copilot2/p/s_hidden_while`・`u_hidden_while`）の edition 2026 の検査が 50 分たっても終わりません（マージの条件の確かめの 240 秒の時間切れ）。edition 2027 では、ラムダは `sink` を借りるだけで `p` へは格納が届かず、どちらも 1 秒ほどで終わります（安全な形は受理、危険な形はレビュー 2 の修正の後は `31:5` の `E1014`）。ループの無い形も 1 秒ほどで `28:5` の `E1014` です。直すには、参照の値が中身として持つ loan（`Value::through`）を参照の指す場所から除くか、場所の長さに上限を設ける必要があり、どちらも検査の広い範囲に関わるので、このチケットのモデルで扱います。
+
 ## 再現
 
 上の 2 つの表の各行のディレクトリに `Main.tz` があります（A34 へ移した行のプログラムは、A34 のチケットの「現状」に書いてあります）。A31 のワークツリーで:

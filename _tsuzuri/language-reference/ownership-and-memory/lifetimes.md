@@ -402,6 +402,8 @@ fn put slot =
     Mutex.with_lock (Rc.get (ref lr)) (\cell -> Array.write 0 (\() -> String.length lt) cell)   // E1013
 ```
 
+ループの本体での書き込み・写し・借用の格納は、ループの後の検査へ持ち越します（ループの検査は、本体が変えうる事実が変わらなくなるまで本体を検査し直します）。ただし、edition 2026 で、`ref mut` の仮引数の先のセルの中身を、値の仮引数を捕捉したラムダ（`let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)`）を通して書き込むループ（`while i < n do { Mutex.with_lock (ref p.h.cell) (\b -> w b[0]); ... }`）は、検査が反復のたびに仮引数の先のより深い場所を作るので、ループの検査が収束せず、検査は 50 分たっても終わりません（`main` が 1 秒以内に受理する安全な形も同じです。edition 2027 では起きません。[A33](../../../_features/A33-remaining-store-soundness-holes.md)）。
+
 複数 region のレコードを `let mut` で束縛すると、region は 1 つにまとまります。共有フィールドの読み出しと排他フィールドの再借用を同じ式で行うと `E1014` になることがあるので、先に `let` で読み出します。
 
 ## 他の言語との比較
