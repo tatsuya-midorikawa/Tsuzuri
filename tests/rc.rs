@@ -8014,23 +8014,28 @@ fn each_chain(links: usize, extra: &str, result: &str, local: bool) -> String {
 /// `LOOP_LOAN_GROWTH` (500) counts every loan of the body: a loop that advances 17 chains of 8
 /// references each makes at most 17 times 28 = 476 more loans than in its first iteration and is
 /// accepted, and with 18 chains its iteration 7 makes 504 more, and the loop stops at the start of
-/// its body.
+/// its body. So does a single chain of 33 references (`L (L - 1) / 2` = 528 more at most; its
+/// iteration 26 is the first beyond the limit), where the documents put the limit; a chain of 32
+/// (496 at most) is accepted, but takes a release build about 13 seconds, so the test does not
+/// check it.
 #[test]
 fn a_loop_stops_when_an_iteration_makes_500_loans_more_than_the_first() {
     let live = "    q0.v + q1.v + p.r0.v\n";
-    let chain = {
-        let (mut source, literals) = chain_records(16);
+    // A chain of `links` references, each `qk` starting at its own local `yk`.
+    let single = |links: usize| {
+        let (mut source, literals) = chain_records(links);
         source.push_str("def run :: i64 -> i64\nfn run n =\n");
         for (k, literal) in literals.iter().enumerate() {
             source.push_str(&format!("    let y{k} = {literal}\n"));
         }
-        for k in 0..=16 {
+        for k in 0..=links {
             source.push_str(&format!("    let mut q{k} = ref y{k}\n"));
         }
-        source.push_str(&chain_loop(16));
+        source.push_str(&chain_loop(links));
         source.push_str("do! IO.write_line (to_string (run 3))\n");
         source
     };
+    let chain = single(16);
     for source in [
         each_chain(9, "        w (\\() -> q0.v)\n", live, false),
         each_chain(
@@ -8146,24 +8151,30 @@ do! IO.write_line (to_string (run 1))
         source
     };
     accepts_in_both_editions(&[("Main.tz", &chains(17))]);
-    let over = chains(18);
-    let body = over.find("        q0_0 = ").unwrap();
-    for edition in [Edition::E2026, Edition::E2027] {
-        let error = analyze_with_edition(&over, edition).expect_err(&over);
-        assert_eq!(
-            (error.code, error.kind),
-            ("E1017", Some("loop_ownership_limit")),
-            "edition {edition}: {}",
-            error.message
-        );
-        assert_eq!(error.span.start, body + 8, "edition {edition}");
-        assert!(
-            error
-                .help
-                .as_deref()
-                .is_some_and(|help| help.contains("more than 500 beyond")),
-            "edition {edition}: {:?}",
-            error.help
-        );
+    // 18 chains of 8 links (iteration 7: 504 more), and one chain of 33 links (iteration 26:
+    // 26 * 25 / 2 + 26 * 7 = 507 more; iteration 25 makes 500 more).
+    for (over, first) in [
+        (chains(18), "        q0_0 = "),
+        (single(33), "        q0 = "),
+    ] {
+        let body = over.find(first).unwrap();
+        for edition in [Edition::E2026, Edition::E2027] {
+            let error = analyze_with_edition(&over, edition).expect_err(&over);
+            assert_eq!(
+                (error.code, error.kind),
+                ("E1017", Some("loop_ownership_limit")),
+                "edition {edition}: {}",
+                error.message
+            );
+            assert_eq!(error.span.start, body + 8, "edition {edition}");
+            assert!(
+                error
+                    .help
+                    .as_deref()
+                    .is_some_and(|help| help.contains("more than 500 beyond")),
+                "edition {edition}: {:?}",
+                error.help
+            );
+        }
     }
 }

@@ -36,18 +36,19 @@ const LOAN_HOLDING: u8 = 32;
 /// links on, and from 23 when each link starts with two places (a link that borrows a field of a
 /// reference parameter's target after a store into a function value that owns a cell added a
 /// borrow to the parameter). The review probes of A31 hold chains of up to 13 links (at most 132
-/// more loans); a chain of 30 links takes `15d84aaf`, which had no such limit, 16 seconds on a
-/// release build, and each link more about a quarter longer.
+/// more loans). The check of such chains grows with about the seventh power of their length: on a
+/// release build, a chain of 30 links takes 9 seconds, and one of 33 takes `15d84aaf`, which had no
+/// such limit, 16 seconds (23 links that start with two places each take it 8.5 seconds).
 ///
 /// In the loops that never settle (A34 `loopplace`), a store into a function value that owns a
 /// cell adds the borrows of a reference parameter's target to the parameter, whose dereference
 /// then gives their places too, so each iteration borrows places one field deeper and makes about
 /// twice the loans of the one before (three times through a choice between reborrows, about 1.2
-/// times when the borrow passes through nine locals before the store), and the time of an
-/// iteration grows about four times as fast: the check would not reach `MAX_NESTING` + 1
+/// times when the borrow passes through nine locals before the store), and each doubling makes an
+/// iteration take about four times as long: the check would not reach `MAX_NESTING` + 1
 /// iterations in practical time. They meet this limit within a second on a release build. The
-/// limit counts the loans beyond the first iteration rather than a multiple of them, so a large
-/// body does not let them grow further.
+/// limit counts the loans beyond the first iteration rather than a multiple of the first
+/// iteration's, so a large body does not let them grow further first.
 const LOOP_LOAN_GROWTH: usize = 500;
 
 /// What `LoopSummary` keeps of the value of a local: its loans, and those of each of its region
