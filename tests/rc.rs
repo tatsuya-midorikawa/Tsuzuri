@@ -7545,19 +7545,17 @@ do! IO.write_line (to_string (run 1))
 /// locals hold doubled with each iteration, so that the check of `15d84aaf` did not end (killed
 /// after 120 s, 600 s for the first program; `main` accepts the safe forms within a second). The
 /// check now stops with `E1017` (`loop_ownership_limit`) at the start of the loop's body, where
-/// the limit of the iterations reports it, with a help that names the change that lets the loop
-/// settle. The dereference of `p` gives the places of the borrows that the store added, at which
-/// `p` cannot point; the second iteration borrows a field of them, a place that no value has, and
-/// stores it in `p`; from the third iteration on, each iteration ends with `p` (whose dereference
-/// made them) holding a deeper such place than when it started, and the check stops after 8 such
-/// iterations, after the 10th iteration. The unsafe twin (the caller's `keep` gets the borrow of a
-/// string that dies first) stops the same way. With that change (the lambda captures `Arc.get
-/// (ref sink)`), the safe form is accepted and the twin is rejected where its block drops the
-/// string (`E1013`). A chain of 12 references, each to a field of the target of the next, borrows
-/// deeper in each of its first 12 iterations and settles in the 13th, as on `15d84aaf` and
-/// `main`: its places are places of values.
+/// the limit of the iterations reports it, with a help that says how many loans the iteration
+/// made and names the change that lets the loop settle. Iteration `k` (from 0) of these loops
+/// makes `2^k + 2` loans, and iteration 9 (514) is the first that makes more than 500 beyond the
+/// first iteration's 3 (`LOOP_LOAN_GROWTH`). The unsafe twin (the caller's `keep` gets the borrow
+/// of a string that dies first) stops the same way. With that change (the lambda captures
+/// `Arc.get (ref sink)`), the safe form is accepted and the twin is rejected where its block drops
+/// the string (`E1013`). A chain of 12 references, each to a field of the target of the next,
+/// borrows deeper in each of its first 12 iterations and settles in the 13th, as on `15d84aaf` and
+/// `main`: iteration `k` makes `k (k - 1) / 2 + k (12 - k)` loans more than the first, at most 66.
 #[test]
-fn a_loop_whose_borrows_keep_getting_deeper_stops_with_e1017() {
+fn a_loop_whose_borrows_keep_growing_stops_with_e1017() {
     const OWN: &str = r#"record Box { cell: Mutex<[unit -> i64]> }
 def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
 fn run2 p sink n =
@@ -7664,6 +7662,16 @@ do! IO.write_line (to_string (run 1))
     };
     for edition in [Edition::E2026, Edition::E2027] {
         stops(OWN, edition, (7, 9));
+        let help = analyze_with_edition(OWN, edition)
+            .expect_err(OWN)
+            .help
+            .clone();
+        assert!(
+            help.as_deref().is_some_and(|help| help.contains(
+                "one iteration made 514 borrows, more than 500 beyond the 3 of the first"
+            )),
+            "edition {edition}: {help:?}"
+        );
         stops(FIELD, edition, (7, 9));
         stops(LOCAL, edition, (9, 9));
         stops(TWIN, edition, (12, 9));
@@ -7728,30 +7736,55 @@ fn chain_loop(links: usize) -> String {
     code
 }
 
-/// A31, the review of the `E1017` stop of `loopplace` (`DEEPER_ITERATIONS`). The stop counted the
-/// iterations that borrowed a place deeper than before whose fields left the type that they read
-/// from the root's declaration. The place of a loan that the result of a call holds is its
-/// argument's (`top (ref y)` returns `ref y.r` with the loan of `y`), the external loan of a
-/// record parameter with a region stands for what its references point at, and so does a loan
-/// read from a reference that a parameter holds: their fields name fields of another value, so a
-/// chain of 10 or more references, each to a field of the target of the next, that starts at such
-/// places got `E1017`, although `15d84aaf`, `main` and the base accept it (each prints 3). The
-/// stop now counts only loans of places that no value has (`artifact_loans`), which a
-/// dereference makes from a loan at which the reference cannot point: the chains below, with 12
-/// links, are accepted in both editions. So is a chain whose links each start at such a place (a
-/// field of a borrow that a store added to the parameter), in a loop that feeds none back to the
-/// parameter: no local whose dereference made them holds a deeper one later.
+/// A `loopplace` loop in which `t{k-1}`, ..., `t0` carry the borrow of `p.s` for `k` iterations
+/// before the store into the function value that owns a cell.
+fn late_hand_on(k: usize) -> String {
+    let mut source = String::from(
+        "record Box { cell: Mutex<[unit -> i64]>, s: string }\ndef run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64\nfn run2 p sink n =\n",
+    );
+    source.push_str(
+        "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n",
+    );
+    source.push_str("    let mut i = 0\n");
+    for j in 0..k {
+        source.push_str(&format!("    let mut t{j} = ref p.s\n"));
+    }
+    source.push_str(&format!(
+        "    while i < n do\n        let t = t{}\n        w (\\() -> String.length t)\n",
+        k - 1
+    ));
+    for j in (1..k).rev() {
+        source.push_str(&format!("        t{j} = t{}\n", j - 1));
+    }
+    source.push_str("        t0 = ref p.s\n        i = i + 1\n    0\ndef run :: i64 -> i64\nfn run n =\n    let mut b = Box { cell: Mutex.create [\\() -> 3], s: \"abcd\" }\n    let keep = Arc.new (Mutex.create [\\() -> 0])\n    let k = run2 (ref mut b) (Arc.share (ref keep)) n\n    Mutex.with_lock (Arc.get (ref keep)) (\\c -> c[0] ()) + k\ndo! IO.write_line (to_string (run 1))\n");
+    source
+}
+
+/// A31, the review of the first two `E1017` stops of `loopplace`, which guessed from the shapes of
+/// the places that a loop borrows. The first (`773ea1c4`) counted the iterations that borrowed a
+/// place deeper than before whose fields left the type that they read from the root's
+/// declaration. The place of a loan that the result of a call holds is its argument's
+/// (`top (ref y)` returns `ref y.r` with the loan of `y`), the external loan of a record parameter
+/// with a region stands for what its references point at, and so does a loan read from a
+/// reference that a parameter holds: their fields name fields of another value, so a chain of 10
+/// or more references, each to a field of the target of the next, that starts at such places got
+/// `E1017`, although `15d84aaf`, `main` and the base accept it (each prints 3). The check now
+/// counts the loans that each iteration makes (`LOOP_LOAN_GROWTH`): iteration `k` of the chains
+/// below, of 12 links, makes `k (k - 1) / 2 + k (12 - k)` loans more than the first, at most 66,
+/// and twice as many in `each`, whose links start with two places each (a field of `p` and the
+/// same field of the borrow of `p.r12` that the store before the loop added to `p`), at most 132.
+/// They are accepted in both editions.
 ///
-/// Two forms that the stop missed now stop at the start of the loop's body. A `dyn Display`
-/// field (`ref p.s`, the stop read no type past the `dyn` value), whose unsafe twin `main`
-/// accepts and runs into a use after free; with `let cell = Arc.get (ref sink)` the safe form is
-/// accepted and the twin is rejected where its block drops the string (`E1013`). And a loop that
-/// hands the borrow to the function value through `t1 = t0` (one or two locals before the store):
-/// the deepest place got deeper only every second or third iteration, so 9 such iterations took
-/// minutes to an hour, while each iteration still doubled the loans; now an iteration counts when
-/// any holder (`t0`, `t1`, `p`) ends it deeper than it started.
+/// Two forms that the first stop missed stop at the start of the loop's body. A `dyn Display`
+/// field (`ref p.s`), whose loans double as in the other `loopplace` forms and whose unsafe twin
+/// `main` accepts and runs into a use after free; with `let cell = Arc.get (ref sink)` the safe
+/// form is accepted and the twin is rejected where its block drops the string (`E1013`). And a
+/// loop that hands the borrow to the function value through `t1 = t0` (one or two locals before
+/// the store, `late_hand_on`): its loans grow by about 1.6 or 1.5 times per iteration instead of
+/// doubling, and its iteration 12 (612 loans, 4 in the first) or 15 (597) is the first beyond the
+/// limit.
 #[test]
-fn a_loop_stops_only_when_places_that_no_value_has_keep_getting_deeper() {
+fn a_loop_stops_by_the_loans_of_its_iterations_not_by_the_shapes_of_its_places() {
     let (records, literals) = chain_records(12);
     // Call results: `qk = topk (ref yk)` holds the loan of `yk` while it points at `yk.r`.
     let mut call = records.clone();
@@ -7874,27 +7907,7 @@ do! IO.write_line (to_string (run 1))
     const LAMBDA: &str =
         "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n";
     const SETTLES: &str = "    let cell = Arc.get (ref sink)\n    let w = \\g -> Mutex.with_lock cell (\\o -> Array.write 0 g o)\n";
-    // `t{k-1}`, ..., `t0` carry the borrow of `p.s` for `k` iterations before the store.
-    let late = |k: usize| {
-        let mut source = String::from(
-            "record Box { cell: Mutex<[unit -> i64]>, s: string }\ndef run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64\nfn run2 p sink n =\n",
-        );
-        source.push_str(LAMBDA);
-        source.push_str("    let mut i = 0\n");
-        for j in 0..k {
-            source.push_str(&format!("    let mut t{j} = ref p.s\n"));
-        }
-        source.push_str(&format!(
-            "    while i < n do\n        let t = t{}\n        w (\\() -> String.length t)\n",
-            k - 1
-        ));
-        for j in (1..k).rev() {
-            source.push_str(&format!("        t{j} = t{}\n", j - 1));
-        }
-        source.push_str("        t0 = ref p.s\n        i = i + 1\n    0\ndef run :: i64 -> i64\nfn run n =\n    let mut b = Box { cell: Mutex.create [\\() -> 3], s: \"abcd\" }\n    let keep = Arc.new (Mutex.create [\\() -> 0])\n    let k = run2 (ref mut b) (Arc.share (ref keep)) n\n    Mutex.with_lock (Arc.get (ref keep)) (\\c -> c[0] ()) + k\ndo! IO.write_line (to_string (run 1))\n");
-        source
-    };
-    let (two, three) = (late(2), late(3));
+    let (two, three) = (late_hand_on(2), late_hand_on(3));
     for (source, at) in [
         (DYN, (7, 9)),
         (DYN_TWIN, (7, 9)),
@@ -7933,4 +7946,224 @@ do! IO.write_line (to_string (run 1))
         "assignment_extends_borrow",
         (15, 13),
     );
+}
+
+/// The `each` chain of the review of the first `loopplace` stops: `qk = ref p.rk` for `k` up to
+/// `links`, after a store of the borrow of `p.r{links}` before the loop, then the loop of
+/// `chain_loop` with `extra` at the end of its body and `result` after it. The function value that
+/// owns the cell captures the `own` parameter `sink`, or a local `Arc.share` (`local`).
+fn each_chain(links: usize, extra: &str, result: &str, local: bool) -> String {
+    let (mut source, literals) = chain_records(links);
+    let fields: Vec<String> = (0..=links).map(|k| format!("r{k}: R{k}")).collect();
+    source.push_str(&format!(
+        "record Box {{ cell: Mutex<[unit -> i64]>, {} }}\n",
+        fields.join(", ")
+    ));
+    if local {
+        source.push_str("def run2 :: ref mut Box -> i64 -> i64\nfn run2 p n =\n    let sink = Arc.new (Mutex.create [\\() -> 0])\n    let sink2 = Arc.share (ref sink)\n    let w = \\g -> Mutex.with_lock (Arc.get (ref sink2)) (\\o -> Array.write 0 g o)\n");
+    } else {
+        source.push_str("def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64\nfn run2 p sink n =\n    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n");
+    }
+    source.push_str(&format!(
+        "    let t = ref p.r{links}\n    w (\\() -> t.v)\n"
+    ));
+    for k in 0..=links {
+        source.push_str(&format!("    let mut q{k} = ref p.r{k}\n"));
+    }
+    source.push_str(&chain_loop(links).replace("        i = i + 1\n    q0.v + q1.v\n", ""));
+    source.push_str(extra);
+    source.push_str("        i = i + 1\n");
+    source.push_str(result);
+    let values: Vec<String> = literals
+        .iter()
+        .enumerate()
+        .map(|(k, literal)| format!("r{k}: {literal}"))
+        .collect();
+    source.push_str(&format!(
+        "def run :: i64 -> i64\nfn run n =\n    let mut b = Box {{ cell: Mutex.create [\\() -> 3], {} }}\n",
+        values.join(", ")
+    ));
+    if local {
+        source.push_str("    run2 (ref mut b) n\n");
+    } else {
+        source.push_str("    let keep = Arc.new (Mutex.create [\\() -> 0])\n    let k = run2 (ref mut b) (Arc.share (ref keep)) n\n    Mutex.with_lock (Arc.get (ref keep)) (\\c -> c[0] ()) + k\n");
+    }
+    source.push_str("do! IO.write_line (to_string (run 3))\n");
+    source
+}
+
+/// A31, the review of the second `E1017` stop of `loopplace` (`5f3c2a0b`), which counted the
+/// iterations whose locals held deeper places that no value has, once such places had been fed
+/// back to the local whose dereference made them. It stopped converging chains whose places a
+/// store in the loop fed back to the parameter while the loop never dereferenced the parameter
+/// again: `each9_store0_live` (9 links, the loop stores `\() -> q0.v`), `es_live_10` (10 links,
+/// `let u = q0` before the store) and `esl_local` (9 links, a local `Arc.share` sink), which
+/// `15d84aaf`, `main` and the base accept (`main` prints 5, 5 and 5). Their iteration `k` makes
+/// `2 (k (k - 1) / 2 + k (L - k))` loans more than the first (their links start with two places
+/// each), at most 72, 90 and 72; a chain of 16 references to locals makes at most 120 more. All
+/// four are accepted in both editions.
+///
+/// It never stopped the `loopplace` forms whose dereferenced reference is a local of the loop body
+/// (`let r = p; let t = ref r.s`, `e_copy2`, or `let q = p`, `bl_copy`), or the result of an `if`
+/// (`gl_if`), and a choice between reborrows of a `ref mut` parameter (`rm_ifref`) triples the
+/// loans in each iteration, so that it took more than 10 minutes. Those stop now at the start of
+/// the loop's body: their iteration 9 makes 514 loans (3 in the first; 515 and 4 for `gl_if`), the
+/// iteration 5 of `rm_ifref` 975 (7). So does a loop that passes the borrow through four locals
+/// before the store (`late_hand_on(4)`, iteration 18: 659 loans, 4 in the first).
+///
+/// `LOOP_LOAN_GROWTH` (500) counts every loan of the body: a loop that advances 17 chains of 8
+/// references each makes at most 17 times 28 = 476 more loans than in its first iteration and is
+/// accepted, and with 18 chains its iteration 7 makes 504 more, and the loop stops at the start of
+/// its body.
+#[test]
+fn a_loop_stops_when_an_iteration_makes_500_loans_more_than_the_first() {
+    let live = "    q0.v + q1.v + p.r0.v\n";
+    let chain = {
+        let (mut source, literals) = chain_records(16);
+        source.push_str("def run :: i64 -> i64\nfn run n =\n");
+        for (k, literal) in literals.iter().enumerate() {
+            source.push_str(&format!("    let y{k} = {literal}\n"));
+        }
+        for k in 0..=16 {
+            source.push_str(&format!("    let mut q{k} = ref y{k}\n"));
+        }
+        source.push_str(&chain_loop(16));
+        source.push_str("do! IO.write_line (to_string (run 3))\n");
+        source
+    };
+    for source in [
+        each_chain(9, "        w (\\() -> q0.v)\n", live, false),
+        each_chain(
+            10,
+            "        let u = q0\n        w (\\() -> u.v)\n",
+            live,
+            false,
+        ),
+        each_chain(
+            9,
+            "        let u = q0\n        w (\\() -> u.v)\n",
+            "    q0.v + q1.v + p.r0.v + Mutex.with_lock (Arc.get (ref sink)) (\\c -> c[0] ())\n",
+            true,
+        ),
+        chain,
+    ] {
+        accepts_in_both_editions(&[("Main.tz", &source)]);
+    }
+
+    const COPY: &str = r#"record Box { cell: Mutex<[unit -> i64]>, s: string }
+def run2 :: ref Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        let r = p
+        let t = ref r.s
+        w (\() -> String.length t)
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let b = Box { cell: Mutex.create [\() -> 3], s: "abcd" }
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let k = run2 (ref b) (Arc.share (ref keep)) n
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
+do! IO.write_line (to_string (run 1))
+"#;
+    let local = COPY.replace(
+        "        let r = p\n        let t = ref r.s\n",
+        "        let q = p\n        let t = ref q.s\n",
+    );
+    let choice = COPY.replace(
+        "        let r = p\n        let t = ref r.s\n",
+        "        let t = ref (if i >= 0 then p else p).s\n",
+    );
+    let reborrow = COPY
+        .replace("ref Box ->", "ref mut Box ->")
+        .replace("    let b = Box", "    let mut b = Box")
+        .replace("run2 (ref b)", "run2 (ref mut b)")
+        .replace(
+            "        let r = p\n        let t = ref r.s\n",
+            "        let t = ref (deref (if i >= 0 then ref p else ref p)).s\n",
+        );
+    let late = late_hand_on(4);
+    for (source, at) in [
+        (COPY, (7, 9)),
+        (&local, (7, 9)),
+        (&choice, (7, 9)),
+        (&reborrow, (7, 9)),
+        (&late, (11, 9)),
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let error = analyze_with_edition(source, edition).expect_err(source);
+            assert_eq!(
+                (error.code, error.kind),
+                ("E1017", Some("loop_ownership_limit")),
+                "edition {edition}\n{source}\n{}",
+                error.message
+            );
+            assert_eq!(
+                position(source, error.span.start),
+                at,
+                "edition {edition}\n{source}"
+            );
+            assert!(
+                error
+                    .help
+                    .as_deref()
+                    .is_some_and(|help| help.contains("`let cell = Arc.get (ref sink)`")),
+                "edition {edition}\n{source}\n{:?}",
+                error.help
+            );
+        }
+    }
+
+    // `q<c>_<k> = ref (deref q<c>_<k+1>).a` for `chains` chains of 8 links, which share the records.
+    let chains = |chains: usize| {
+        let (mut source, literals) = chain_records(8);
+        source.push_str("def run :: i64 -> i64\nfn run n =\n");
+        for c in 0..chains {
+            for (k, literal) in literals.iter().enumerate() {
+                source.push_str(&format!("    let y{c}_{k} = {literal}\n"));
+            }
+        }
+        for c in 0..chains {
+            for k in 0..=8 {
+                source.push_str(&format!("    let mut q{c}_{k} = ref y{c}_{k}\n"));
+            }
+        }
+        source.push_str("    let mut i = 0\n    while i < n do\n");
+        for c in 0..chains {
+            for k in 0..8 {
+                source.push_str(&format!(
+                    "        q{c}_{k} = ref (deref q{c}_{}).a\n",
+                    k + 1
+                ));
+            }
+        }
+        source.push_str(
+            "        i = i + 1\n    q0_0.v + q0_1.v\ndo! IO.write_line (to_string (run 3))\n",
+        );
+        source
+    };
+    accepts_in_both_editions(&[("Main.tz", &chains(17))]);
+    let over = chains(18);
+    let body = over.find("        q0_0 = ").unwrap();
+    for edition in [Edition::E2026, Edition::E2027] {
+        let error = analyze_with_edition(&over, edition).expect_err(&over);
+        assert_eq!(
+            (error.code, error.kind),
+            ("E1017", Some("loop_ownership_limit")),
+            "edition {edition}: {}",
+            error.message
+        );
+        assert_eq!(error.span.start, body + 8, "edition {edition}");
+        assert!(
+            error
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("more than 500 beyond")),
+            "edition {edition}: {:?}",
+            error.help
+        );
+    }
 }

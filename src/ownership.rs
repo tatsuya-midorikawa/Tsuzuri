@@ -722,10 +722,6 @@ fn start_checker<'a, 'run>(
         ordered_loans: BTreeSet::new(),
         exact_loans: BTreeSet::new(),
         holding_loans: BTreeSet::new(),
-        loan_types: BTreeMap::new(),
-        artifact_loans: BTreeSet::new(),
-        artifact_sources: BTreeSet::new(),
-        reach_cache: BTreeMap::new(),
         kept_copies: BTreeMap::new(),
         pointing: BTreeMap::new(),
         borrow_loans: BTreeMap::new(),
@@ -5611,24 +5607,6 @@ struct Checker<'a, 'run> {
     /// function that passes its parameters on unchanged keeps the caller's part as a direct call
     /// does.
     holding_loans: BTreeSet<usize>,
-    /// A31: the type of what each loan that a borrow of a place made borrows: the type of the
-    /// borrowed expression (`note_borrowed`), and of a copy of such a loan at the same place. It
-    /// is the type of the borrowed value even where the loan's place names fields of another value
-    /// (a borrow through the result of a call), which `place_type` would misread.
-    loan_types: BTreeMap<usize, Type>,
-    /// A31: the loans whose places no value has (`note_borrowed`): made by a borrow through a
-    /// dereference that gave the place of a loan at which the reference cannot point (a loan
-    /// that an immutable reference local did not hold when it was bound, or a value of a type
-    /// from which the reference's target type cannot be reached), or of such a loan, and the
-    /// copies of such a loan. `Checker::check_loop` stops a loop in which they keep getting
-    /// deeper (`DEEPER_ITERATIONS`).
-    artifact_loans: BTreeSet<usize>,
-    /// A31: the locals whose dereference gave the place of a loan at which the reference cannot
-    /// point (`artifact_place`), the roots of the dereferenced expressions: where the loans of
-    /// `artifact_loans` start, which a loop has to feed back for them to keep getting deeper.
-    artifact_sources: BTreeSet<usize>,
-    /// A31: the answers of `Checker::reaches`.
-    reach_cache: BTreeMap<(Type, Type), bool>,
     /// A31: the copy of each loan and path that `kept_copy` made.
     kept_copies: BTreeMap<(usize, Vec<usize>), usize>,
     /// A31: the immutable locals whose value is a reference that points at the place of one of
@@ -6275,9 +6253,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                     copy.share = true;
                 }
                 self.loans.push(copy);
-                let copy = self.loans.len() - 1;
-                self.inherit_marks(id, copy, true);
-                copy
+                self.loans.len() - 1
             })
             .collect();
         kept.extend(copies);
@@ -6308,23 +6284,9 @@ impl<'a, 'run> Checker<'a, 'run> {
                 copy.share = true;
                 copy.parents.insert(id);
                 self.loans.push(copy);
-                let copy = self.loans.len() - 1;
-                self.inherit_marks(id, copy, true);
-                copy
+                self.loans.len() - 1
             })
             .collect()
-    }
-
-    /// A31: gives `copy`, a copy of the loan `original`, the original's type (`loan_types`) when
-    /// it borrows the `same` place, and its mark of a place that no value has (`artifact_loans`),
-    /// which a copy at a deeper place keeps too.
-    fn inherit_marks(&mut self, original: usize, copy: usize, same: bool) {
-        if same && let Some(ty) = self.loan_types.get(&original).cloned() {
-            self.loan_types.insert(copy, ty);
-        }
-        if self.artifact_loans.contains(&original) {
-            self.artifact_loans.insert(copy);
-        }
     }
 
     /// The loans that the target of the borrow `loan` holds (`read_through`).
@@ -7697,10 +7659,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         for (place, via) in places {
             self.access(&place, &via, Use::MutBorrow, span)?;
             self.borrow_event(&place, via.is_empty(), true, span);
-            let artifact = self.artifact_place(source, &via);
-            let loan = self.loan(place, true, via, span);
-            self.note_borrowed(loan, source, artifact);
-            result.loans.insert(loan);
+            result.loans.insert(self.loan(place, true, via, span));
         }
         Ok(result)
     }
@@ -9659,7 +9618,6 @@ impl<'a, 'run> Checker<'a, 'run> {
                         if self.holding_loans.contains(&loan) {
                             self.holding_loans.insert(id);
                         }
-                        self.inherit_marks(loan, id, true);
                         id
                     }
                 }
@@ -10083,7 +10041,6 @@ impl<'a, 'run> Checker<'a, 'run> {
                     let id = self.loans.len() - 1;
                     self.kept_copies.insert((loan, path.clone()), id);
                     self.exact_loans.insert(id);
-                    self.inherit_marks(loan, id, path.is_empty());
                     id
                 };
                 copied.loans.insert(held);
@@ -10292,7 +10249,6 @@ impl<'a, 'run> Checker<'a, 'run> {
                             // Coarse: the place holds the borrowed part (`holding_loans`).
                             self.holding_loans.insert(id);
                         }
-                        self.inherit_marks(loan, id, false);
                         id
                     }
                 };
@@ -10331,7 +10287,6 @@ impl<'a, 'run> Checker<'a, 'run> {
                     if self.holding_loans.contains(&loan) {
                         self.holding_loans.insert(id);
                     }
-                    self.inherit_marks(loan, id, true);
                     id
                 }
             };
@@ -11570,9 +11525,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             // A31: the borrow of an exact place is exact (`exact_loans`).
             let exact = self.exact_place(inner);
             for (place, via) in places {
-                let artifact = self.artifact_place(inner, &via);
                 let loan = self.loan(place, false, via, expression.span);
-                self.note_borrowed(loan, inner, artifact);
                 if exact {
                     self.exact_loans.insert(loan);
                 }
@@ -11872,10 +11825,9 @@ impl<'a, 'run> Checker<'a, 'run> {
                     ));
                 }
             } else if usage == Use::Read {
-                let artifact = self.artifact_place(expression, &via);
-                let loan = self.loan(place.clone(), false, via, expression.span);
-                self.note_borrowed(loan, expression, artifact);
-                value.loans.insert(loan);
+                value
+                    .loans
+                    .insert(self.loan(place.clone(), false, via, expression.span));
             }
             if moving {
                 self.state.moved.insert(place.clone(), expression.span);
@@ -14012,10 +13964,9 @@ impl<'a, 'run> Checker<'a, 'run> {
                 for (place, via) in self.place(value, &during)? {
                     self.access(&place, &via, Use::Borrow, expression.span)?;
                     self.borrow_event(&place, via.is_empty(), false, expression.span);
-                    let artifact = self.artifact_place(value, &via);
-                    let loan = self.loan(place, false, via, expression.span);
-                    self.note_borrowed(loan, value, artifact);
-                    result.loans.insert(loan);
+                    result
+                        .loans
+                        .insert(self.loan(place, false, via, expression.span));
                 }
                 self.held.push(result.clone());
                 for bound in start.iter().chain(end) {
@@ -14049,9 +14000,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                     let typed = self
                         .place_type(&place)
                         .is_none_or(|ty| ty == without_views(&value.ty));
-                    let artifact = self.artifact_place(value, &via);
                     let loan = self.loan(place, *mutable, via, expression.span);
-                    self.note_borrowed(loan, value, artifact);
                     if exact && typed {
                         self.exact_loans.insert(loan);
                     }
