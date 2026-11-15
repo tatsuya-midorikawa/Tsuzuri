@@ -26,18 +26,24 @@ type LocalSummary = (BTreeSet<LoanKey>, Option<Vec<BTreeSet<LoanKey>>>);
 /// (`Checker::check_loop`). The check returns the exit state of the iteration whose summary did
 /// not change, which starts from what the iterations before it left: a fact of the state that an
 /// iteration changes and the summary leaves out would be lost after the loop, and the body would
-/// not be checked again under it. So it holds every fact of `State` that a check reads, each loan
-/// by its `LoanKey` and each move by its place (the spans of the moves would keep it from
-/// settling), and the facts of the body that only grow and that a later write or store reads
-/// where it happens (`Checker::handed`, `Checker::exports`): the next iteration's writes and
-/// stores meet those of this one. A31, Copilot's review 2: `kept_elsewhere`, `contents_elsewhere`,
-/// `moved_always`, `generic_moves`, the regions and the flags of the loans, and `exports` were
-/// missing (a copy of a target's contents or a borrow of it stored elsewhere in a loop was lost,
-/// and a later `deref p = v` ended the borrow). The aliases are not in it: only the bindings of a
-/// match, a `for` and a pattern view add them, for their own locals, and the end of their scopes
-/// takes them out (`finish_control_scope`, `eval_match`, `eval_control`), so an iteration leaves
-/// those of the locals before the loop as they were. `Value::closed_result` is not in it either:
-/// `State::merge` keeps the first state's, so the summary of a merged state never shows a change.
+/// not be checked again under it. So it holds the facts of `State` that a check reads, but for the
+/// three left out below, each loan by its `LoanKey` and each move by its place (the spans of the
+/// moves would keep it from settling), and the facts of the body that only grow and that a later
+/// write or store reads where it happens (`Checker::handed`, `Checker::exports`): the next
+/// iteration's writes and stores meet those of this one. A31, Copilot's review 2:
+/// `kept_elsewhere`, `contents_elsewhere`, `moved_always`, `generic_moves`, the regions and the
+/// flags of the loans, and `exports` were missing (a copy of a target's contents or a borrow of it
+/// stored elsewhere in a loop was lost, and a later `deref p = v` ended the borrow). The aliases
+/// are not in it: only the bindings of a match, a `for` and a pattern view add them, for their own
+/// locals, and the end of their scopes takes them out (`finish_control_scope`, `eval_match`,
+/// `eval_control`), so an iteration leaves those of the locals before the loop as they were.
+/// `Value::closed_result` is not in it either: `State::merge` keeps the first state's, so the
+/// summary of a merged state never shows a change. Nor are the parents of a loan
+/// (`Loan::parents`, which `active`, `retain_live_loans`, `held_keeps`, `holders` and the move of
+/// a reborrowed exclusive reference read): with them a chain of reborrows such as
+/// `cur = ref mut (deref cur).next` would make the key grow with each iteration and the summary
+/// would never settle, and a loan of the same place and flags under other parents would conflict
+/// with the exclusive borrow of its parent.
 #[derive(PartialEq, Eq)]
 struct LoopSummary {
     moved: BTreeSet<Place>,
