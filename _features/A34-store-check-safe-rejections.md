@@ -1,22 +1,22 @@
-# A34: A31 の格納と破棄の順序の検査が `main` の受理する安全なプログラムを拒否する 6 つの形を、危険な双子を拒否したまま受理する
+# A34: A31 の格納と破棄の順序の検査が `main` の受理する安全なプログラムを拒否する（または検査を終えない）9 つの形を、危険な双子を拒否したまま受理する
 
 | 項目 | 内容 |
 | --- | --- |
 | ID | A34 |
 | 優先度 | P1（`main` が受理する安全なプログラムを A31 が拒否する表現力の退行。どれも回避の書き方がある。危険なプログラムの受理ではない） |
-| 規模 | L（6 つの項目は互いに独立で、項目ごとに S〜M。項目ごとに分けて入れてよい） |
+| 規模 | L（9 つの項目は互いに独立で、項目ごとに S〜M。項目ごとに分けて入れてよい） |
 | 依存 | A31 |
 | 後続 | – |
 | 状態 | todo |
-| 起票 | 2026-11-15（A31 の Copilot のレビューの後のレビューの第4回・第5回から。A31 の先端（`src/` が `6e4f0537` と同じもの）と `main`（`168ae4a5`）で再現を確かめた。第6回の修正（`5e99c1c0`）の後、`sharetype` に形を足した） |
+| 起票 | 2026-11-15（A31 の Copilot のレビューの後のレビューの第4回・第5回から。A31 の先端（`src/` が `6e4f0537` と同じもの）と `main`（`168ae4a5`）で再現を確かめた。第6回の修正（`5e99c1c0`）の後、`sharetype` に形を足した。A31 の Copilot のレビュー 2 の対応（`df307296`）のレビュー（2026-11-15）から `replcopy`・`cellslots`・`loopplace` を足し、A31 の先端（`8fbcd40e`、`src/` は `df307296` と同じ）・その前の先端（`fbd7d194`）・`main` で再現を確かめた） |
 | 承認 | 不要（今拒否している安全なプログラムを受理するだけで、危険なプログラムは拒否したまま。言語の意味は変えない） |
-| 改善する劣位 | 表現力の退行: `main` が受理する安全なプログラムを、A31 の安全側の近似が `E1013`・`E1014` で拒否する。利用者は、項目ごとの回避の書き方（「現状」）を知らないと書けない |
-| 手本にする既存実装 | `src/ownership.rs` の、`Checker::eval` の `E::Borrow` の腕（`typed`・`exact_loans`）と `exact_loan`・`points_at`、`StoreFacts::drop_only`・`Checker::parameter_part`・`drop_stores`・`value_runs_drop_code`・`apply_facts_once`（`dropping_part`）、`Checker::loan`・`kept_copy`・`path_copy`・`read_through_loan`（同じ場所の再借用を親として読む）・`Checker::captured_loans`、`keep_for_drop`・`share_sources`・`export_shared_block`・`store_exported_into`・`OwnerScan`（`may_own`: 値を作った式から、持ちえないものを決める）、`State::block_shares`・`note_block_share`・`forget_block_share`・`block_groups`・`same_block_loan`・`check_drop_order_of`・`moved_always`、`share_loans`（`Drop.drop` の中の `drop_root` の扱い） |
-| 主な影響ファイル | `src/ownership.rs`, `tests/rc.rs`, `tests/mutable_slices.rs`, `tests/fixtures/in_place_writes/Main.tz`, `tests/features.mjs`, `_tsuzuri/language-reference/ownership-and-memory/drop.md`, `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`, `docs/language.md`, `docs/architecture.md`, `_features/A33-remaining-store-soundness-holes.md`, `_features/README.md` |
+| 改善する劣位 | 表現力の退行: `main` が受理する安全なプログラムを、A31 の安全側の近似が `E1013`・`E1014` で拒否する（`loopplace` は検査が終わらない）。利用者は、項目ごとの回避の書き方（「現状」）を知らないと書けない |
+| 手本にする既存実装 | `src/ownership.rs` の、`Checker::eval` の `E::Borrow` の腕（`typed`・`exact_loans`）と `exact_loan`・`points_at`、`StoreFacts::drop_only`・`Checker::parameter_part`・`drop_stores`・`value_runs_drop_code`・`apply_facts_once`（`dropping_part`）、`Checker::loan`・`kept_copy`・`path_copy`・`read_through_loan`（同じ場所の再借用を親として読む）・`Checker::captured_loans`、`keep_for_drop`・`share_sources`・`export_shared_block`・`store_exported_into`・`OwnerScan`（`may_own`: 値を作った式から、持ちえないものを決める）、`State::block_shares`・`note_block_share`・`forget_block_share`・`block_groups`・`same_block_loan`・`check_drop_order_of`・`moved_always`、`share_loans`（`Drop.drop` の中の `drop_root` の扱い）、`replaced_target`・`State::contents_elsewhere`・`State::merge` と `src/ownership_control.rs` の `check_loop`・`LoopSummary`（`replcopy`）、`absorb_owner`・`record_value`・`field_value`・`project`（`cellslots`）、`store_hidden_except`・`Checker::place`・`Value::through`（`loopplace`） |
+| 主な影響ファイル | `src/ownership.rs`, `src/ownership_control.rs`, `tests/rc.rs`, `tests/mutable_slices.rs`, `tests/fixtures/in_place_writes/Main.tz`, `tests/features.mjs`, `_tsuzuri/language-reference/ownership-and-memory/drop.md`, `_tsuzuri/language-reference/ownership-and-memory/lifetimes.md`, `docs/language.md`, `docs/architecture.md`, `_features/A33-remaining-store-soundness-holes.md`, `_features/README.md` |
 
 ## 目的
 
-A31（[チケット](_completed/A31-in-place-writes-keep-stored-borrows.md)）は、その場の書き込み・ロックのコールバック・破棄が実行する `Drop.drop` が書き込んだ借用を、書き込み先の持ち主に残すようにしました。その検査は分からない所を安全側に近似するので、`main` が受理する安全なプログラムのいくつかを `E1013`・`E1014` で拒否します。このチケットは、そのうち A31 の Copilot のレビューの後のレビューの第4回・第5回で見つけ、A31 では文書に書くだけにした次の 6 つの形を、それぞれの危険な双子（安全な形にいちばん近い危険な形）を拒否したまま受理します。
+A31（[チケット](_completed/A31-in-place-writes-keep-stored-borrows.md)）は、その場の書き込み・ロックのコールバック・破棄が実行する `Drop.drop` が書き込んだ借用を、書き込み先の持ち主に残すようにしました。その検査は分からない所を安全側に近似するので、`main` が受理する安全なプログラムのいくつかを `E1013`・`E1014` で拒否します。このチケットは、そのうち A31 の Copilot のレビューの後のレビューの第4回・第5回で見つけた 6 つの形と、A31 の Copilot のレビュー 2 の対応のレビューで見つけた 3 つの形（`replcopy`・`cellslots`・`loopplace`。`loopplace` は拒否ではなく、検査が終わらない形です）、合わせて A31 では文書に書くだけにした次の 9 つの形を、それぞれの危険な双子（安全な形にいちばん近い危険な形）を拒否したまま受理します。
 
 | 名前 | 形 | 回避の書き方（A31 の先端が受理する） |
 | --- | --- | --- |
@@ -26,15 +26,19 @@ A31（[チケット](_completed/A31-in-place-writes-keep-stored-borrows.md)）�
 | `sharetype` | `let r = Rc.share (ref r2)` の `r` を使い終えた後で、共有したブロックの型を持ちうる別の値へ、`r2` より後に宣言した値の借用を書き込む | 借用される値を `r2` より先に宣言する |
 | `rcgetowner` | `Rc.get (ref r)` の借用を、`r` より前に宣言した値へ書き込む（ブロックは、もっと前に宣言した別の持ち主 `r2` が生かす） | 借用を先に宣言した持ち主から得る（`Rc.get (ref r2)`） |
 | `shareparam` | 参照の仮引数の `Rc` から関数の中で作った共有（`fn dup r = Rc.share r` の結果、本体の `let s = Rc.share r`） | 呼び出し元で `Rc.share (ref r2)` と書く |
+| `replcopy` | ループの前に `ref mut` の仮引数の先へ自分の部分の借用を書き込んだ関数が、ループの中で `deref p = v` と置き換えてから新しい値のセルの中身をほかへ写す（`if` の片方の枝で置き換えて写した後の置き換えも） | ループが少なくとも 1 回回るなら、最初の反復（置き換えと写し）をループの前に書く |
+| `cellslots` | 不変な複数 region のレコードの、region を持たないセルのフィールド（`Mutex`）へ借用を書き込んだ後で、別の region のフィールドを読んだ値を持ったまま、書き込んだ借用の元でない region の借用元をムーブする | フィールドを書き込みの前に読む |
+| `loopplace` | 先にセルを持つ参照の仮引数の先の借用（セルの中身、`ref p.s` を捕捉した関数）を、書き込むセルを所有する関数値へ渡すループ（検査が終わらない） | 関数値には `Arc` ではなく、セルへの参照（`let sref = Arc.get (ref sink)`）を捕捉させる |
 
 利用者にとっては、A31 の前に書けた安全なプログラムが、回避の書き方を知らなくても、そのまま書けるようになります。
 
 ## 背景
 
 - A31 のレビューの第4回からの規則は「前の先端からの退行でない安全な形の拒否は `src/` を変えず、保守的な制限として文書に書く」でした（[A31 のチケット](_completed/A31-in-place-writes-keep-stored-borrows.md)の「レビューの第4回」「レビューの第5回」）。6 つの形はこの規則で、`drop.md`・`lifetimes.md`・`docs/language.md` に安全側の扱いとして書き、[A33](A33-remaining-store-soundness-holes.md) の「保守的な制限」の表に行として足しました。`rcgetpart`・`fvdrop`・`refsrc`・`rcgetowner`・`shareparam` は A31 の前の先端からある拒否で、`sharetype` は第4回の修正（使い終えた共有の持ち主を通した格納を元の所有者へ型で届ける）が生んだ拒否です（第5回で、元の所有者が解放しえないブロックへの格納だけは届けないように狭めました）。どれも A31 のマージの条件 (3)（`main` が受理する安全なプログラムは、文書に書いた安全側の制限のほかは受理のまま）に従った扱いです。第6回では、第5回の狭めが dyn の値の中の共有を通した危険な形を受理していた（前の先端からの退行）ので、dyn の値と型引数に届く型では狭めないようにし、それによる安全側の拒否と、規則の実際の範囲（元の所有者のほかの部分が持ちうるブロック）を `sharetype` に足しました（「`sharetype` に A31 のレビューの第6回で足した形」）。
+- A31 の Copilot のレビュー 2（ループの不動点の要約が `State` の事実の一部を持たず、ループの中の写しや格納がループの後で失われていた）の修正（`df307296`）の後のレビューで、3 つの形を足しました。`replcopy` と `cellslots` は、要約が `contents_elsewhere` と region の slot を比べるようになったために、ループの中の形が前の先端（`fbd7d194`）からの退行として拒否されるようになったものです（ループの無い形と `if` の形は前の先端も拒否していました）。`loopplace` は前の先端からある、検査が終わらない形で、A31 では edition 2026 の形として A33 の「検査の時間」に記録していましたが、どちらの edition でも起きることが分かったので、ここへ移しました。最後の回の規則（検査を緩める変更はしない）で、A31 では文書に書くだけにしました。
 - 利用者の依頼で、A31 が直さずに残すこれらの安全な形の拒否を、文書と A33 の表の行だけでなく、このチケットで個別に直します。
-- **A33 との関係**: A33 は、格納と破棄の順序の検査を、記憶域の寿命と破棄の順序の 1 つのモデルで作り直す XL のチケットです。A34 は、項目ごとに `src/ownership.rs` の 1〜2 個の近似を狭める小さな変更の集まりで、A33 のモデルを待たずに入れられます。6 つの項目は互いに独立で、どの順にも、項目ごとの PR にも分けられます。A33 が先に入るなら、A34 の各項目の安全なプログラムと危険な双子は A33 の受け入れのテストになり、A34 には A33 の後も拒否が残る項目だけが残ります。A34 の項目が先に入れば、その項目は A33 の段 3 の一覧から外れます。A33 の表では、この 6 つを A34 へ移したことを 1 行で示しています。
-- 拒否の理由は、どれも検査が知らないことを安全側に扱うことです（「原因」）: (1) フィールドや要素の場所の `Rc` の借用を exact な loan にしない、(2) 破棄だけが作る格納（`drop_only`）を仮引数そのものとその部分の破棄に限る、(3) 参照の変数の再借用が元の借用（値全体の借用）を親に持つ、(4) 使い終えた共有の持ち主を通した格納を元の所有者へブロックの型で届ける、(5) `Rc.get (ref r)` の借用を `r` の借用として解放の順序を検査する、(6) 参照の仮引数の `Rc` から作った共有を共有として扱わない。
+- **A33 との関係**: A33 は、格納と破棄の順序の検査を、記憶域の寿命と破棄の順序の 1 つのモデルで作り直す XL のチケットです。A34 は、項目ごとに `src/ownership.rs`（`replcopy` は `src/ownership_control.rs` も）の 1〜2 個の近似を狭める小さな変更の集まりで、A33 のモデルを待たずに入れられます。9 つの項目は互いに独立で、どの順にも、項目ごとの PR にも分けられます。A33 が先に入るなら、A34 の各項目の安全なプログラムと危険な双子は A33 の受け入れのテストになり、A34 には A33 の後も拒否が残る項目だけが残ります。A34 の項目が先に入れば、その項目は A33 の段 3 の一覧から外れます。A33 の表では、この 9 つを A34 へ移したことを 1 行で示しています（`loopplace` は A33 の「検査の時間」から移しました）。
+- 拒否の理由は、どれも検査が知らないことを安全側に扱うことです（「原因」）: (1) フィールドや要素の場所の `Rc` の借用を exact な loan にしない、(2) 破棄だけが作る格納（`drop_only`）を仮引数そのものとその部分の破棄に限る、(3) 参照の変数の再借用が元の借用（値全体の借用）を親に持つ、(4) 使い終えた共有の持ち主を通した格納を元の所有者へブロックの型で届ける、(5) `Rc.get (ref r)` の借用を `r` の借用として解放の順序を検査する、(6) 参照の仮引数の `Rc` から作った共有を共有として扱わない、(7) ループの反復の始まりの状態を入口の状態と前の反復の終わりの状態の和にし、先のセルの中身の写しを根だけで記録する、(8) セルへの格納で複数 region のレコードの region の slot を捨てる。`loopplace` の理由は (9) セルを所有する関数値への格納を参照の仮引数の値にも入れ、参照の先の場所をその借用の場所からも作るので、ループの要約が収束しないことです。
 
 ## 着手条件と停止条件
 
@@ -45,9 +49,9 @@ A31（[チケット](_completed/A31-in-place-writes-keep-stored-borrows.md)）�
 
 ### 共通の前置きと確かめ方
 
-各項目のプログラムは、同じ 14 行の前置き（下の最初のプログラムの `record Holder` から `fn cross` まで）で始まります（それだけで検査・実行できるよう、各プログラムに含めています）。`Holder` は解放のときにセルの関数を呼んで `drop <値>` を出力します。`look t` は `t` の最初の `9` の位置で、`String.repeat 4 (ref "123456789")` の文字列なら 8、解放した文字列を読むと多くは -1 になります。`cross a b` は `b.s` の借用を読む関数を `a.h` の `Mutex` へ書き込みます（A31 の書き込みの事実は `(1, Value, 0)` で、`b` の先の部分 `s` だけを残します: `StoreFacts::kept_paths`）。`PairOk` は `h` を `s` より先に宣言するので、値の中では `h` の `drop` が `s` より先に走ります。
+各項目のプログラムは、同じ 14 行の前置き（下の最初のプログラムの `record Holder` から `fn cross` まで）で始まります（それだけで検査・実行できるよう、各プログラムに含めています）。`Holder` は解放のときにセルの関数を呼んで `drop <値>` を出力します。`look t` は `t` の最初の `9` の位置で、`String.repeat 4 (ref "123456789")` の文字列なら 8、解放した文字列を読むと多くは -1 になります。`cross a b` は `b.s` の借用を読む関数を `a.h` の `Mutex` へ書き込みます（A31 の書き込みの事実は `(1, Value, 0)` で、`b` の先の部分 `s` だけを残します: `StoreFacts::kept_paths`）。`PairOk` は `h` を `s` より先に宣言するので、値の中では `h` の `drop` が `s` より先に走ります。`replcopy`・`cellslots`・`loopplace` のプログラムは、それぞれの項目に書いた別の前置きで始まります。
 
-確かめたバイナリは、A31 の先端（ブランチ `fix/a31-in-place-writes-keep-borrows`、`src/` が `6e4f0537` と同じもの。開発用のビルド）と `main`（`168ae4a5`、A31 の前）です。どちらも `check --edition 2027` と `check --edition 2026` で検査し、受理したものを `run -O0`・`run -O3` で実行しました（edition 2027 は AddressSanitizer のビルドの `-O0`・`-O3` も）。位置は最初の誤りの `行:列` で、解放の順序の誤り（`E1013` の `assignment_extends_borrow`・`self_referential_store`）は関数の本体の最初の文の位置を指します（検査はスコープの終わりに行い、本体の範囲を指すため）。値は手で求め、実行の出力と一致しました。
+確かめたバイナリは、A31 の先端（ブランチ `fix/a31-in-place-writes-keep-borrows`、`src/` が `6e4f0537` と同じもの。開発用のビルド）と `main`（`168ae4a5`、A31 の前）です。`replcopy`・`cellslots`・`loopplace` は、A31 の先端（`src/` が `df307296` と同じもの。開発用のビルド）、その前の先端（`fbd7d194`）、`main` で確かめました（`loopplace` の検査は 120 秒で打ち切りました）。どちらも `check --edition 2027` と `check --edition 2026` で検査し、受理したものを `run -O0`・`run -O3` で実行しました（edition 2027 は AddressSanitizer のビルドの `-O0`・`-O3` も）。位置は最初の誤りの `行:列` で、解放の順序の誤り（`E1013` の `assignment_extends_borrow`・`self_referential_store`）は関数の本体の最初の文の位置を指します（検査はスコープの終わりに行い、本体の範囲を指すため）。値は手で求め、実行の出力と一致しました。
 
 | 項目 | 安全な形: A31 の先端 | 安全な形: `main` | 危険な双子: A31 の先端 | 危険な双子: `main` |
 | --- | --- | --- | --- | --- |
@@ -57,8 +61,11 @@ A31（[チケット](_completed/A31-in-place-writes-keep-stored-borrows.md)）�
 | `sharetype` | `17:5` `E1013`（`assignment_extends_borrow`） | 受理、`drop 8`・`drop 0`・`drop 0`・`1` | `17:5` `E1013`（`assignment_extends_borrow`） | 受理、`drop 0`・`drop -1`・`1` |
 | `rcgetowner` | `17:5` `E1013`（`assignment_extends_borrow`） | 受理、`drop 8`・`drop 0`・`1` | `17:5` `E1013`（`assignment_extends_borrow`） | 受理、`drop 0`・`drop -1`・`1`、ASan は heap-use-after-free |
 | `shareparam` | `19:5` `E1013`（`self_referential_store`） | 受理、`drop 8`・`drop 0`・`1` | `19:5` `E1013`（`assignment_extends_borrow`） | 受理、`drop 0`・`drop -1`・`1` |
+| `replcopy` | `28:9` `E1014`（`borrow_conflict`）。前の先端は受理 | 受理、`drop 8 2`・`drop 0 2`・`drop 0 2`・`drop 0 2`・`0` | `29:9` `E1014`（`borrow_conflict`） | 受理、`drop 8 2`・`drop -1 2`・`drop 0 2`・`-1`、ASan は heap-use-after-free |
+| `cellslots` | `20:17` `E1014`（`borrow_conflict`）。前の先端は受理 | 受理、`836` | `21:17` `E1014`（`borrow_conflict`） | 受理、`835`（解放した文字列を読む） |
+| `loopplace` | 検査が終わらない（前の先端も） | 受理、`3` | 検査が終わらない（前の先端も） | 受理、`-1`（解放した文字列を読む） |
 
-どれも edition 2027 と 2026 で同じ結果です（`fvdrop` の一部の形は edition 2027 だけ。下の各項目）。`main` の安全な形は、edition 2027 の ASan のビルドの `-O0`・`-O3` でも同じ値で、ASan は何も報告しませんでした。危険な双子で ASan が報告するのは、解放した `Rc` のブロックを読む形です（ほかの形は、`main` の出力が解放した文字列を読んだ値になりますが、ASan は報告しませんでした）。
+どれも edition 2027 と 2026 で同じ結果です（`fvdrop` の一部の形は edition 2027 だけ。下の各項目）。`main` の安全な形は、edition 2027 の ASan のビルドの `-O0`・`-O3` でも同じ値で、ASan は何も報告しませんでした。危険な双子で ASan が報告するのは、解放した `Rc` のブロックや配列の要素を読む形です（ほかの形は、`main` の出力が解放した文字列を読んだ値になりますが、ASan は報告しませんでした）。
 
 ### `rcgetpart`: フィールドや要素の場所の `Rc.get` を束縛した変数
 
@@ -803,6 +810,236 @@ do! IO.write_line (to_string (run 1))
 
 危険な双子 2（関数の中の共有を通して書き込む `stashs` の形で、`p` を `r2` の後に宣言したもの）: A31 の先端は両方の edition で `19:5` の `E1013`（`assignment_extends_borrow`）、`main` は受理して `drop 0`・`drop -1`・`1` です。
 
+### `replcopy`: ループの中で置き換えてから新しい値の中身を写す
+
+この項目と次の 2 つは、A31 の Copilot のレビュー 2 の対応のレビューで足したものです。前置きの `Holder` は、解放のときにセルの関数の値と、`Drop.drop` の中で作る `junk` の長さを `drop <値> 2` と出力します（`junk` と `run` の `junk` は、解放した文字列の領域を別の文字列で使い直させ、解放した文字列を読むと `look` が -1 になりやすくするためのものです）。`renew` は、ループの前に `p.a[0]` の借用を読む関数を `p.h` のセルへ書き込み（自分の部分の借用）、ループの中で `deref p = mkpa ()` と置き換えてから、新しい値のセルの中身を `out` のセルへ写します。
+
+```tsuzuri
+record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = {
+        let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")];
+        do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " " + to_string junk.length)
+    }
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def mkh :: unit -> Holder
+fn mkh _u = Holder { cell: Mutex.create [\() -> 0] }
+def mks :: unit -> string
+fn mks _u = String.repeat 4 (ref "123456789")
+record PA { h: Holder, a: [string] }
+def mkpa :: unit -> PA
+fn mkpa _u = PA { h: mkh (), a: [mks ()] }
+def copy_out :: ref [unit -> i64] -> ref Mutex<[unit -> i64]> -> unit
+fn copy_out b out = Mutex.with_lock out (\o -> Array.write 0 b[0] o)
+def renew :: ref mut PA -> ref Holder -> i64 -> i64
+fn renew p out n =
+    let t = ref p.a[0]
+    Mutex.with_lock (ref p.h.cell) (\b -> Array.write 0 (\() -> look t) b)
+    let mut i = 0
+    while i < n do
+        deref p = mkpa ()
+        Mutex.with_lock (ref p.h.cell) (\b -> copy_out b (ref out.cell))
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let mut p0 = mkpa ()
+    let out = mkh ()
+    let k = renew (ref mut p0) (ref out) n
+    let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy"), String.repeat 4 (ref "xxxxxxxxx")]
+    Mutex.with_lock (ref out.cell) (\b -> b[0] ()) + k + junk.length * 0
+do! IO.write_line (to_string (run 2))
+```
+
+- A31 の先端: 両方の edition で `28:9` の `E1014`（`borrow_conflict`。ループの中の `deref p = mkpa ()`）。前の先端（`fbd7d194`）は受理していました。前の先端の要約は `contents_elsewhere` を比べず、1 回目の反復で要約が変わらなかったので、写しの後の状態で本体を検査し直しませんでした。その修正（`df307296`）の後は、2 回目の反復の始まりの状態（入口の状態と 1 回目の反復の終わりの状態の和）が、入口の状態の `kept` の借用（`t`）と、1 回目の反復の写しの `contents_elsewhere` の根（`p`）を合わせて持ちます。`replaced_target` は根が `contents_elsewhere` にあると `kept` の借用を終わらせないので、置き換えが `t` の借用と競合します。実行では、1 回目の置き換えが `t` の借用を古い値とともに終わらせ、その後で写すのは借用を持たない新しい値の中身なので、この 2 つが同時に成り立つことはありません。
+- `main`: 両方の edition で受理し、`drop 8 2`・`drop 0 2`・`drop 0 2`・`drop 0 2`・`0`（edition 2027 の ASan のビルドの `-O0`・`-O3` も同じ値で、報告なし）。手で求めた値: 1 回目の置き換えで `p0` の古い値が解放され、その `h` がまだ解放されていない `a[0]` を読んで `drop 8 2`、写すのは新しい値のセルの `\() -> 0` です。2 回目の置き換えで 1 つ目の新しい値が解放されて `drop 0 2`、`run` は `out` のセルの `0` を読み、`out` と `p0` の解放が `drop 0 2`・`drop 0 2`、結果が `0` です。
+- 同じく拒否する形（両方の edition。`main` は受理して手で求めた値を出し、edition 2027 の ASan のビルドは何も報告しません）:
+  - 範囲の `for`（`for i in 0 ..= (n - 1) do` に同じ本体）: `27:9`。前の先端は受理。
+  - ループの無い `if`（24〜25 行目の後を `if n > 0 then { deref p = mkpa (); Mutex.with_lock (ref p.h.cell) (\b -> copy_out b (ref out.cell)) } else ()` と `deref p = mkpa ()` にしたもの）: `27:5`。前の先端も拒否（合流の和は同じです）。`main` は同じ値。
+  - 写した先を後で上書きする形（ループの本体を `if i > 0 then deref p = mkpa () else ()` と写しにしたもの。1 回目の反復は古い値の中身 `\() -> look t` を `out` へ写し、2 回目の反復は置き換えてから新しい値の中身を写し直すので、古い写しは読まれる前に上書きされます。写しを入れ子のループに入れた形も同じ）: `28:23`（置き換え）。前の先端は受理。`main` は `drop 8 2`・`drop 0 2`・`drop 0 2`・`0`。これは置き換えの前に古い値の中身を写した形なので、下の方針案で直すのは `contents_elsewhere` の精度ではなく、セルへの書き込みを上書きとして扱えるかで、このチケットの範囲の外です（下の「対象外」）。
+- 受理する形（A31 の先端と `main`）: ループの前の書き込み（24〜25 行目）の無い形、ループを開いた `deref p = mkpa ()`・写し・`deref p = mkpa ()` の並び、最初の反復をループの前に書いた形（25 行目の後に `deref p = mkpa ()` と写しを書き、`let mut i = 1` から回すもの。ループが少なくとも 1 回回るときの回避の書き方です。`if n > 0 then { ... } else ()` で囲むと、合流の和が戻るので `E1014` です）。
+
+危険な双子 1（ループの本体の置き換えと写しを入れ替え、`run 1` にしたもの。写すのは古い値の中身 `\() -> look t` で、その後の置き換えが `t` の指す文字列を解放します）:
+
+```tsuzuri
+record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = {
+        let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")];
+        do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " " + to_string junk.length)
+    }
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def mkh :: unit -> Holder
+fn mkh _u = Holder { cell: Mutex.create [\() -> 0] }
+def mks :: unit -> string
+fn mks _u = String.repeat 4 (ref "123456789")
+record PA { h: Holder, a: [string] }
+def mkpa :: unit -> PA
+fn mkpa _u = PA { h: mkh (), a: [mks ()] }
+def copy_out :: ref [unit -> i64] -> ref Mutex<[unit -> i64]> -> unit
+fn copy_out b out = Mutex.with_lock out (\o -> Array.write 0 b[0] o)
+def renew :: ref mut PA -> ref Holder -> i64 -> i64
+fn renew p out n =
+    let t = ref p.a[0]
+    Mutex.with_lock (ref p.h.cell) (\b -> Array.write 0 (\() -> look t) b)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref p.h.cell) (\b -> copy_out b (ref out.cell))
+        deref p = mkpa ()
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let mut p0 = mkpa ()
+    let out = mkh ()
+    let k = renew (ref mut p0) (ref out) n
+    let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy"), String.repeat 4 (ref "xxxxxxxxx")]
+    Mutex.with_lock (ref out.cell) (\b -> b[0] ()) + k + junk.length * 0
+do! IO.write_line (to_string (run 1))
+```
+
+- A31 の先端と前の先端: 両方の edition で `29:9` の `E1014`（`borrow_conflict`。置き換え）。
+- `main`: 両方の edition で受理し、`drop 8 2`・`drop -1 2`・`drop 0 2`・`-1`（`run` と `out` の解放が、解放した `a[0]` の文字列を読みます）。edition 2027 の ASan のビルドは、`-O0`・`-O3` とも `drop 8 2` の後に heap-use-after-free で止まります。
+
+危険な双子 2（安全な形のループの本体を `if i > 0 then deref p = mkpa () else Mutex.with_lock (ref p.h.cell) (\b -> copy_out b (ref out.cell))` にしたもの。1 回目の反復の古い値の中身の写しを 2 回目の反復の置き換えが無効にし、上書きはありません）: A31 の先端は両方の edition で `28:23` の `E1014`（`borrow_conflict`）で、前の先端は受理していました（Copilot のレビュー 2 の修正で塞いだ穴です）。`main` は受理して `drop 8 2`・`drop -1 2`・`drop 0 2`・`-1` で、ASan は heap-use-after-free です。
+
+### `cellslots`: セルのフィールドへ借用を書き込んだ複数 region のレコード
+
+`Pair3` は 2 つの region `r`・`s` のフィールドと、region を持たないセルのフィールド `c` を持ちます。`eat` は文字列をムーブして長さを返します。
+
+```tsuzuri
+record Pair3 {r s} { a: ref {r} string, b: ref {s} string, c: Mutex<[unit -> i64]> }
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def eat :: own string -> i64
+fn eat s = String.length s
+def run :: i64 -> i64
+fn run n =
+    let s1 = String.repeat 4 (ref "123456789")
+    let s2 = String.repeat 4 (ref "abcdefgh9")
+    let x = Pair3 { a: ref s1, b: ref s2, c: Mutex.create [\() -> 0] }
+    let ra = x.a
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref x.c) (\b -> Array.write 0 (\() -> look ra) b)
+        i = i + 1
+    let t = x.b
+    let k = eat s1
+    let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")]
+    look t * 100 + k + junk.length * 0
+do! IO.write_line (to_string (run 1))
+```
+
+- A31 の先端: 両方の edition で `20:17` の `E1014`（`borrow_conflict`。`eat s1` の `s1`。注記の借用は `t`）。前の先端は受理していました。`absorb_owner` は、局所の持ち主へ借用を持つ値を格納すると、持ち主の region の slot を捨てます（`owner.regions = None`）。そのため `let t = x.b` は `x` のすべての借用（`s1` と `s2`）を持ち、`t` が生きている間の `s1` のムーブが競合します。前の先端の要約は slot を比べず、ループの後は本体の前の状態（slot がある）に戻っていました。
+- `main`: 両方の edition で受理し、`836`（edition 2027 の ASan のビルドの `-O0`・`-O3` も同じ値で、報告なし）。手で求めた値: `t` は `s2`（`"abcdefgh9"` の 4 回の繰り返し）だけを指すので `look t` は 8、`eat s1` は `s1` の長さ 36 で、`8 * 100 + 36 = 836` です。`x.c` の関数は `s1` のムーブの後に呼ばれず、`Pair3` の解放は何も実行しません。
+- 同じく拒否する形（両方の edition。`main` は受理して `836`、ASan は報告なし）: 範囲の `for`（`18:17`。前の先端は受理）、ループの無い書き込み（`17:17`。前の先端も拒否）、`if n > 0 then ... else ()` の中の書き込み（`17:17`。前の先端も拒否）。
+- 受理する形: 書き込みの無い形、書き込みの前に `let t = x.b` を読む形（回避の書き方）。
+
+危険な双子（ループで `x.c` へ書き込む関数が、`x` のフィールドの借用元でない `s3` を読み、`s3` のムーブの後で `x.c` の関数を呼ぶもの。直し方が格納した借用を slot に足さないとき、それでも `x` 全体の借用に残っていることを確かめる双子です）:
+
+```tsuzuri
+record Pair3 {r s} { a: ref {r} string, b: ref {s} string, c: Mutex<[unit -> i64]> }
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def eat :: own string -> i64
+fn eat s = String.length s
+def run :: i64 -> i64
+fn run n =
+    let s1 = String.repeat 4 (ref "123456789")
+    let s2 = String.repeat 4 (ref "abcdefgh9")
+    let s3 = String.repeat 4 (ref "123456789")
+    let x = Pair3 { a: ref s1, b: ref s2, c: Mutex.create [\() -> 0] }
+    let r3 = ref s3
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref x.c) (\b -> Array.write 0 (\() -> look r3) b)
+        i = i + 1
+    let t = x.b
+    let k = eat s3
+    let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")]
+    look t * 100 + k + Mutex.with_lock (ref x.c) (\b -> b[0] ()) + junk.length * 0
+do! IO.write_line (to_string (run 1))
+```
+
+- A31 の先端と前の先端: 両方の edition で `21:17` の `E1014`（`borrow_conflict`。`eat s3`）。
+- `main`: 両方の edition で受理し、`835`（`x.c` の関数がムーブして解放した `s3` を読んで -1。解放していなければ 8 で `844`）。edition 2027 の ASan のビルドは同じ値で、何も報告しません。
+
+### `loopplace`: 参照の仮引数の先の借用を、セルを所有する関数値へ渡すループ
+
+```tsuzuri
+record Box { cell: Mutex<[unit -> i64]> }
+def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref p.cell) (\b -> w b[0])
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let mut b = Box { cell: Mutex.create [\() -> 3] }
+    let k = run2 (ref mut b) (Arc.share (ref keep)) n
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
+do! IO.write_line (to_string (run 1))
+```
+
+- A31 の先端と前の先端: 両方の edition で検査が終わりません（120 秒で打ち切り。レビューでは edition 2027 の先端が 600 秒（CPU 597 秒）たっても終わりませんでした）。
+- `main`: 両方の edition で 1 秒以内に受理し、`3`（native の `-O0`・`-O3`。edition 2027 の ASan のビルドの `-O0`・`-O3` も同じ値で、報告なし）。手で求めた値: ループは 1 回で、`b` のセルの `\() -> 3` を `keep` と共有するセルへ書き込み、`run` がそれを呼んで `3`、`k` は `0` です。
+- 同じく終わらない形（`main` は受理）: 関数値が局所値の `Arc.share` を捕捉する形（`let sink = Arc.new (...)`・`let sink2 = Arc.share (ref sink)` を捕捉。両方の edition）、`ref mut` でなく `ref Box` の仮引数で、局所値の `Arc.share` を捕捉する形（両方の edition）、edition 2027 の読み取りの仮引数 `Box`（edition 2026 では値の仮引数で、局所値なので終わります）、セルの中身でなく `ref p.s` を捕捉した関数を渡す形（`record Box { cell: Mutex<[unit -> i64]>, s: string }`。両方の edition）、範囲の `for`（両方の edition）、edition 2026 の値の仮引数の `Arc` を捕捉する形（A31 の Copilot のレビュー 2 の点検で見つけた、`ref mut PA` の `p.h.cell` の中身を写す形を含みます）、edition 2026 の部分適用 `let w = put (Arc.share (ref sink))`（`fn put s g = Mutex.with_lock (Arc.get (ref s)) (\o -> Array.write 0 g o)`）。
+- 終わる形（A31 の先端と `main` が受理）: ループを開いた 3 回の呼び出しの並び、局所値の `b` の先のセル（`ref b.cell`、`let p = ref b` の `ref p.cell`）、先にセルを持たない仮引数（`ref [unit -> i64]` の `p[0]`、`for f in p`、`record Box { items: [unit -> i64] }`、`ref Mutex<[unit -> i64]>` そのもの、`record Box { n: i64, s: string }` の `ref p.s`）、edition 2027 の読み取りの仮引数の `Arc` を捕捉する形（関数値はセルを所有しません）、関数値が `Arc` でなくセルへの参照を捕捉する形（`let sref = Arc.get (ref sink)` の後の `let w = \g -> Mutex.with_lock sref (\o -> Array.write 0 g o)`。回避の書き方）。
+
+危険な双子（`b` のセルの関数が、内側のブロックの文字列 `s` の借用を読み、`run2` がそれを `keep` と共有するセルへ書き込んだ後で、ブロックが `s` を解放するもの）:
+
+```tsuzuri
+record Box { cell: Mutex<[unit -> i64]> }
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref p.cell) (\b -> w b[0])
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let k = {
+        let s = String.repeat 4 (ref "123456789");
+        let t = ref s;
+        let mut b = Box { cell: Mutex.create [\() -> look t] };
+        run2 (ref mut b) (Arc.share (ref keep)) n
+    }
+    let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")]
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k + junk.length * 0
+do! IO.write_line (to_string (run 1))
+```
+
+- A31 の先端と前の先端: 両方の edition で検査が終わりません（120 秒で打ち切り）。
+- `main`: 両方の edition で 1 秒以内に受理し、`-1`（`keep` のセルの関数が、内側のブロックが解放した `s` を読みます。解放していなければ `look t` は 8）。edition 2027 の ASan のビルドは同じ値で、何も報告しません。
+
 ## 原因
 
 関数名は `src/ownership.rs` のものです。
@@ -813,12 +1050,16 @@ do! IO.write_line (to_string (run 1))
 - **`sharetype`**: `keep_for_drop` は、破棄でコードを実行しうる局所値のうち本文がもう使わないもの（`let a = Rc.get (ref r)` の後の `r`）が持つ共有の loan（`Loan::share`）を、元の所有者 `r2` が今持つ loan に読み替えます（`expand_shares`）。読み替えで `r` から `r2` への道が消えるので、`share_sources` の元の所有者へ、`export_shared_block(r, r2)` がブロックの型（`r` の型と `r2` の型の両方が届く、セルを持つブロックの型。`export_walk`）を届け先として記録し、以後の格納は `store_exported` → `store_exported_into` が、格納先の局所値の型がその型に届けば `r2` へも入れます。型の走査は dyn の値と型引数の中を見ないので（`walk_hides_blocks`）、`r2` の型がそうした値に届くなら狭めずに `r` の型が届くすべての型を、`r` の型が届くなら印 `HIDDEN_BLOCK`（dyn の値か型引数かセルを持つブロックに届く型の値への格納に当たる）を記録し（逆の向きの `export_block` も、元の所有者の型が届くなら `HIDDEN_BLOCK` を記録します）、`store_exported_into` は、格納先の型が dyn の値か型引数に届けば、すべての届け先へ入れます（第6回）。判定は型だけなので、`r2` のブロックを持ちえない値（新しく作った `Rc.new (mkpo ())`、`keep` が `Maybe.None` の `W`）への格納も `r2` に入ります。事実は書き込み先の仮引数だけを記録し、その中のどの部分へ書き込んだかを記録しないので、呼び出し元はブロックでない部分（`w.h`）への格納を型で除くこともできません。局所値ごとの正確な道（読み替えた共有の loan を記録し、`apply_store_within` がたどる）は、`Rc.share` の連なりで検査が 3 乗になったので、A31 では採っていません（A31 のチケットの「レビューの第4回」）。
 - **`rcgetowner`**: `Rc.get (ref r)` の結果は `ref r` の loan（場所の根は `r`）を持ちます。`check_drop_order_of` は、局所値が持つ loan の根の位置で解放の順序を判断し、根 `r` が `p` より後に宣言されていれば `borrow_dropped_first` で `assignment_extends_borrow` にします。同じブロックの持ち主の組（`State::block_shares`、`block_groups`）を見る `same_block_loan` は、借用を持つ値自身が同じブロックの持ち主のときだけ例外にするので、ブロックを持たない `p` には、組のほかの持ち主（`r2`）がブロックを生かすことが使われません。
 - **`shareparam`**: `share_loans` は、`Rc.share`・`Arc.share` の結果が持つ loan を共有の印（`Loan::share`）を付けた写しにしますが、根が外部（仮引数）の loan は、`Drop.drop` の中の破棄する値（`drop_root`）を除いて印を付けません。そのため `fn dup r = Rc.share r` の結果と `let s = Rc.share r` は仮引数 `r` の先の借用のままで、その破棄（`drop_stores`。どれかの `Drop.drop` が書き込みうるプログラム、`facts.drops_write` だけ）は、その借用を共有したブロックのセルへ格納するものになります。呼び出し元では `dup (ref r2)` の結果が `r2` の借用で、その破棄が `r2` の借用を `r2` のブロックのセルへ入れ、`sh2 (ref r2)` は事実 `(0, Value, 0)` で同じことをし、`r2` が自分自身の借用を持つものとして `self_referential_store` になります。呼び出し元で書いた `Rc.share (ref r2)` は、根が局所値なので共有として扱われます（`note_block_share` も記録します）。
+- **`replcopy`**: `check_loop`（`src/ownership_control.rs`）は、反復の始まりの状態を入口の状態と `continue` の状態の合流（`State::merge`: `kept`・`kept_elsewhere`・`contents_elsewhere` は和）にし、その要約（`LoopSummary`）が変わらなくなるまで本体を検査し直します。`State::contents_elsewhere` は、先のセルの中身をほかの先へ写した根（仮引数）の集合で、写したときにどの借用が中身にあったかを持ちません。`replaced_target` は、根が `contents_elsewhere` にあれば、`kept` の借用（先のセルへ書き込んだ自分の部分の借用）を終わらせずに戻ります（写しが借用を持ちうるため）。合流した状態は、入口の状態の `kept` の借用と、前の反復が置き換えの後に写した根を同時に持つので、置き換えは借用を終わらせず、生きたままの `kept` の借用（`p.a[0]` の借用）が先全体への書き込みと競合します。`if` の合流も同じです。
+- **`cellslots`**: 複数 region のレコードの値は、region ごとの借用の集合（`Value::regions`）を持ち、フィールドの読み出し（`field_value`・`project`）はそのフィールドの region の slot の借用だけを持ちます。`absorb_owner` は局所の持ち主へ借用を持つ値を格納すると、格納先のフィールドを問わず `owner.regions = None` にするので、その後の読み出しは値全体の借用を持ちます。レコードリテラル（`record_value`）は、region を持たないフィールドの借用をどの slot にも入れず値全体の借用にだけ入れるので、作った時点の同じ関数は slot を保ちます。ループの要約は region の slot を比べる（A31 の Copilot のレビュー 2）ので、ループの中の格納も slot を失わせます。
+- **`loopplace`**: セルを所有する関数値の呼び出し（`owned_sinks`）は、`store_hidden_except` で、セルに届く型か環境を隠す型のすべての局所値へ、渡した値の借用を格納します。先にセルを持つ参照の仮引数 `p` もその局所値なので、`p` の値は先の場所（`(deref p).cell` や `(deref p).s`）の借用を持つようになります。`Checker::place` は参照の先の場所を参照の値のすべての借用の場所から作るので、次の反復の `ref p.cell` は `(deref p).cell.cell` の場所も作り、その借用がまた `p` に入ります。反復ごとに場所が 1 段ずつ深くなり、借用が増えるので、要約が変わり続け、1 回の反復の検査（`active` などが局所値の借用と親をたどる）も重くなって、反復の上限（`MAX_NESTING` + 1 回、`E1017`）に届く前に検査が実用的な時間で終わりません。edition 2027 の読み取りの仮引数の `Arc` を捕捉したラムダや、セルへの参照を捕捉したラムダはセルを所有しないので（`owned_sinks` にならない）、終わります。
 
 ## 期待する振る舞い
 
 - 「現状」の各項目の安全な形（主なプログラムと「同じく拒否する形」）を、書いた edition で受理し、`main` と同じ値（手で求めた値）を出す。
-- 「現状」の危険な双子（主なプログラムと、文で書いた双子）を、両方の edition で、同じ code と kind で拒否する（`E1013` の `assignment_extends_borrow`・`self_referential_store`、`E1014` の `borrow_conflict`。edition 2026 の `rcgetpart` の双子 3 は `E1012` のまま）。位置が変わるなら、このチケットに記録する。
-- A31 のテスト（`tests/rc.rs`・`tests/mutable_slices.rs`・`tests/currying.rs`・`tests/borrowed_records.rs`・`tests/user_drop.rs` など）と E2E（`in_place_writes`・`mutable_slices`・`rc`・`borrowed_records`・`conventions`・`control`）の期待は変えない。例外は、この 6 つの制限の拒否を固定したテストで、受理に変える前にこのチケットに記録する: `tests/rc.rs` の `a_store_through_an_expanded_share_reaches_the_owners_that_may_free_the_block` の最後の `rejects_at`（`sharetype` の `W` の形、`50:5`）。
+- 「現状」の危険な双子（主なプログラムと、文で書いた双子）を、両方の edition で、同じ code と kind で拒否する（`E1013` の `assignment_extends_borrow`・`self_referential_store`、`E1014` の `borrow_conflict`。edition 2026 の `rcgetpart` の双子 3 は `E1012` のまま）。位置が変わるなら、このチケットに記録する。`loopplace` の危険な双子は、今は検査が終わらないので、拒否の code・kind・位置を、直したときにこのチケットに記録する（呼び出し元の `run2 (ref mut b) (Arc.share (ref keep)) n` が `keep` に `s` の借用を残すことによる、`keep` より後に宣言した `s` の解放の順序の `E1013` を期待します）。
+- `loopplace` の安全な形と同じく終わらない形の検査が、`main` と同じ程度の時間（1 秒ほど）で終わる。
+- A31 のテスト（`tests/rc.rs`・`tests/mutable_slices.rs`・`tests/currying.rs`・`tests/borrowed_records.rs`・`tests/user_drop.rs` など）と E2E（`in_place_writes`・`mutable_slices`・`rc`・`borrowed_records`・`conventions`・`control`）の期待は変えない。例外は、この 9 つの制限の拒否を固定したテストで、受理に変える前にこのチケットに記録する: `tests/rc.rs` の `a_store_through_an_expanded_share_reaches_the_owners_that_may_free_the_block` の最後の `rejects_at`（`sharetype` の `W` の形、`50:5`）。
 - 直せない項目が残るなら、その理由と残る形を文書（`drop.md`・`lifetimes.md`）とこのチケットに書き、A33 に戻す。
 
 ## 方針案
@@ -860,11 +1101,29 @@ do! IO.write_line (to_string (run 1))
 - `share_loans` で、根が参照の仮引数の loan にも共有の印を付け（`Drop.drop` の中の `drop_root` と同じ扱い: 共有はブロックの持ち主で、それを格納・破棄するのはブロックが持つもの（`Part::Contents`）の格納）、関数の結果が持つ外部の共有の loan を、呼び出し元が実引数の loan の共有（`Loan::share`、根は `r2`）として受け取るようにする（`parameter_retention` の結果の対応づけで、印を保つ）。共有の印の付いた結果は、`keep_for_drop`・`expand_shares`・`share_sources` の対象になる。
 - 双子: 共有を通したブロックへの格納（双子 1）は、共有の loan をたどって `r2` へ届くので拒否のまま。関数の中の共有を通した格納（双子 2）は、事実 `(1, Value, 0)` が残るので拒否のまま。`Rc.share` を作って捨てるだけの関数（`sh2`）の事実が、`(0, Contents, 0)`（ブロックが持つものをブロックへ）になって呼び出し元で何も格納しないことを確かめる。
 
+### `replcopy`
+
+- `State::contents_elsewhere` を根の集合から、根ごとに「写したときに `kept`（と `kept_elsewhere`）にあった、その根の先の借用の集合」にする（A31 の Copilot のレビュー 2 の対応のレビューの勧め）。`replaced_target` は、根が写しを持つとき、写しに入った借用だけを `kept` に残し、ほかの借用（入口の状態から来た、写しの後に書き込まれていない借用）は今と同じく古い値とともに終わらせる。`State::merge` は根ごとの和、ループの要約（`LoopSummary`）は根ごとの借用を `LoanKey` で比べる。
+- 双子: 置き換えの前に古い値の中身を写す形（双子 1、写しが `t` の借用を記録する）と、片方の枝の写しを別の反復の置き換えが無効にする形（双子 2）は、写しが `t` の借用を持つので拒否のまま。写しの後に同じ値へ書き込んだ借用（写しには入っていないが、写しの前の借用と同じ場所のもの）の扱いと、`kept_elsewhere` の借用（別の先へ書き込んだので、置き換えでは終わらない）の扱いを確かめる。
+- 写した先を後で上書きする形（「同じく拒否する形」の 3 つ目）は、写しに `t` の借用が入るので、この案では拒否のまま残る（セルへの書き込みを上書きとして扱わないため）。直さない形として「対象外」に置く。
+
+### `cellslots`
+
+- `absorb_owner` で、格納先がレコードの region を持たないフィールド（`field_regions` の mask が 0）の中のセルだと分かるとき（格納の書き込み先の loan の場所がそのフィールドの下にある）、`record_value` と同じく、格納した借用を値全体の借用にだけ足して region の slot を保つ。分からないとき（場所が値全体、region を持つフィールドの下、`let mut` の値）は今と同じく slot を捨てる。
+- 先に、region を持たないフィールドの読み出し（`project` の mask 0 の扱い）が何を持つかを確かめる。そのフィールドの中のセルへ書き込んだ借用は、セルを借りた（`ref x.c`）値全体の借用と、値全体の借用で検査されている必要があります。
+- 双子: 書き込んだ借用の元のムーブの後で `x.c` の関数を呼ぶ形（双子）は、`x` 全体の借用で拒否のまま。`x` をムーブする・`ref x` を渡す・`x` を値として破棄する（`Drop` を持つフィールドがある）形も、値全体の借用で検査されることを確かめる。
+
+### `loopplace`
+
+- 次のどれかで、ループの要約を有限にする。(a) `store_hidden_except` は、参照の仮引数（外部の根）への格納を、その値の借用に足さず、呼び出し元への事実（`StoreFacts::hidden`）だけにする（呼び出し元のデータは関数の中の局所値ではないので、関数の中で守る必要があるのは、その値を通した後の読み出しが格納した借用を持つことだけです）。(b) `Checker::place` が参照の先の場所を作るとき、参照の値が格納として受け取った借用（`Value::through` か、隠れた環境への格納で足した借用）を、参照の指す場所から除く。(c) 場所の長さに上限を設け、超えた場所はその接頭辞（大きな部分）の借用にする（`Source::coarse` と同じ安全側の扱い）。
+- (a)・(b) は、参照の仮引数の値が持つ借用を読む所（呼び出し元の事実の `Part::Contents`、`deref p = v` の `replaced_target`、`self_paths`）のすべてで、格納した借用を失わないことを確かめる。
+- 双子: 呼び出し元の `keep` に `s` の借用が残る（事実 `hidden`）ので、`keep` より後に宣言した `s` を内側のブロックで解放する形は拒否になることを確かめる（今は検査が終わらないので、拒否の code・kind・位置は分かっていません）。
+
 ## テスト計画
 
 ### Rust テスト
 
-- `tests/rc.rs` に、項目ごとに 1 つのテストを足す: 「現状」の安全な形の受理（`accepts_in_both_editions`。edition 2027 だけの形は `analyze_with_edition` で）と、危険な双子の拒否（`rejects_at` か両方の edition の code・kind・位置）。プログラムは「現状」から写す（前置きは `CROSS_PRELUDE` と同じ形）。項目を入れる前に双子のテストが成功し、安全な形のテストが失敗することを確かめる。
+- `tests/rc.rs` に、項目ごとに 1 つのテストを足す: 「現状」の安全な形の受理（`accepts_in_both_editions`。edition 2027 だけの形は `analyze_with_edition` で）と、危険な双子の拒否（`rejects_at` か両方の edition の code・kind・位置）。プログラムは「現状」から写す（前置きは `CROSS_PRELUDE` と同じ形。`replcopy`・`cellslots`・`loopplace` は項目の前置き）。項目を入れる前に双子のテストが成功し、安全な形のテストが失敗することを確かめる（`loopplace` は、入れる前のテストが終わらないので、入れた後のビルドで双子の拒否と安全な形の受理を確かめ、入れる前のビルドでは時間を区切って終わらないことを確かめる）。`replcopy` は `tests/rc.rs` の `a_loop_keeps_what_its_body_stored_elsewhere`（ループの中の写しの危険な形の拒否）を、`cellslots` は region の検査のテスト（`tests/borrowed_records.rs` など）を変えない。
 - `sharetype` を入れるときは、`a_store_through_an_expanded_share_reaches_the_owners_that_may_free_the_block` の最後の `rejects_at`（`W` の形）を受理に変える（このチケットに記録してから）。`a_store_through_a_share_behind_a_dyn_value_reaches_the_owner_that_frees_the_block`（dyn の値を通した危険な形の拒否と、その安全な双子の受理）は変えない。
 
 ### E2E
@@ -878,17 +1137,20 @@ do! IO.write_line (to_string (run 1))
 ### 性能
 
 - `sharetype` と `rcgetowner` は、`gen_chain.py cellshares`（A33 の「検査の時間」）の n = 400・800・1600 の所有権の検査の時間（`TSUZURI_TIME_PASSES=1`）を、入れる前と後で同じ負荷の機械で続けて測り、このチケットに記録する。CI に速度の合否は入れない。
+- `replcopy` は根ごとの借用の集合を持つので、ループの多い関数（A31 のチケットの「Copilot のレビューへの対応（第2回）」の `copilot2/perf.sh` の `perf_loop_breaks_400`・`x04_nested_loops_30` など）の所有権の検査の時間を、入れる前と後で比べる。
+- `loopplace` は、安全な形と「同じく終わらない形」の検査の時間を記録する（`main` は 1 秒以内）。
 
 ## ドキュメント
 
-- `_tsuzuri/language-reference/ownership-and-memory/drop.md`（「解放の順序（LIFO と宣言順）」の「別の仮引数の先へ書き込んだ部分」の一覧の `rcgetpart`・`refsrc` の項目、「`Rc`・`Arc` の別の持ち主を通した書き込み」の `sharetype`・`rcgetowner`・`shareparam` の文、「Drop 型に課される制約」の「解放が書き込む借用」の `fvdrop` の文）と `lifetimes.md`（「現在の制限」の「その場の書き込み」の段落と `Rc`・`Arc` の段落）の、直した制限の記述を実際の振る舞いに置き換え、このチケットへのリンクを外す。
-- `docs/language.md`（A31 の破棄と格納の段落の安全側の列挙）と `docs/architecture.md`（A31 の書き込みの事実の節）の、直した近似の記述。
+- `_tsuzuri/language-reference/ownership-and-memory/drop.md`（「解放の順序（LIFO と宣言順）」の「別の仮引数の先へ書き込んだ部分」の一覧の `rcgetpart`・`refsrc` の項目、「`Rc`・`Arc` の別の持ち主を通した書き込み」の `sharetype`・`rcgetowner`・`shareparam` の文、「Drop 型に課される制約」の「解放が書き込む借用」の `fvdrop` の文）と `lifetimes.md`（「現在の制限」の「その場の書き込み」の段落と `Rc`・`Arc` の段落）の、直した制限の記述を実際の振る舞いに置き換え、このチケットへのリンクを外す。`replcopy` は `drop.md` の「値全体の代入」と `lifetimes.md` の「現在の制限」のループの段落、`cellslots` は `lifetimes.md` の「現在の制限」の表（関係する region をすべて保持する行）と複数 region のレコードの段落、`loopplace` は `lifetimes.md` の「現在の制限」の検査が終わらないループの段落です。
+- `docs/language.md`（A31 の破棄と格納の段落の安全側の列挙、`replaced_target` の括弧の中のループの文）と `docs/architecture.md`（A31 の書き込みの事実の節、ループの不動点の段落の `replcopy`・`loopplace` の文）の、直した近似の記述。
 - `_features/A33-remaining-store-soundness-holes.md` の、A34 へ移した行の記述と段 3 の一覧（直した項目を外す）、`_features/README.md` の状態。
 
 ## 受け入れ条件
 
 - [ ] 「現状」の各項目の安全な形を、書いた edition で受理し、値が `main` と同じ（直せない項目は理由を文書とこのチケットに書き、A33 に戻す）。
-- [ ] 「現状」の危険な双子を、両方の edition で同じ code・kind で拒否する。
+- [ ] 「現状」の危険な双子を、両方の edition で同じ code・kind で拒否する（`loopplace` の双子は、直したときの code・kind・位置を記録する）。
+- [ ] `loopplace` の安全な形と「同じく終わらない形」の検査が `main` と同じ程度の時間で終わる。
 - [ ] A31 のテストと E2E の期待が変わらない（`sharetype` の `W` の形を除く。変えるものは記録した後）。
 - [ ] コーパスで、`main` が拒否して対応後が受理する危険なプログラムが無く、受理から拒否に変わる安全なプログラムも無い。
 - [ ] `gen_chain.py cellshares` の検査の時間が A31 の先端と同じ程度（n の 2 乗）。
@@ -896,16 +1158,20 @@ do! IO.write_line (to_string (run 1))
 
 ## 落とし穴
 
-- 6 つの近似は、どれも A31 のレビューが見つけた危険な形を塞ぐために入ったか、それを塞ぐ規則の安全側の端です。項目を狭めるたびに、その項目の双子だけでなく、A31 のレビューの危険な形（`gate/` のコーパス、名前が `u_`・`bad` のもの）を回す。A31 では、レビューの回ごとに、前の回の狭めが新しい穴を生みました（第3回のラムダの捕捉の狭めが第4回の指摘 1 になった）。
+- 9 つの近似は、どれも A31 のレビューが見つけた危険な形を塞ぐために入ったか、それを塞ぐ規則の安全側の端です（`loopplace` は A28 の隠れた環境の規則と参照の先の場所の求め方の組み合わせです）。項目を狭めるたびに、その項目の双子だけでなく、A31 のレビューの危険な形（`gate/` のコーパス、名前が `u_`・`bad` のもの）を回す。A31 では、レビューの回ごとに、前の回の狭めが新しい穴を生みました（第3回のラムダの捕捉の狭めが第4回の指摘 1 になった）。
 - `rcgetpart`: exact な loan は、部分の順序の検査（`ordered_self_borrow`）と写しの道（`kept_copy`・`path_copy`）の前提です。`Rc` の要素の場所を exact にすると、ブロックの中の部分の借用がその要素の場所の下の道として表されるので、要素の置き換え・ムーブ・別の持ち主を通した書き込みとの重なりを確かめる。
 - `fvdrop`: リテラルの型自身の `Drop`、要素の中の破棄でコードを実行する値、2 つの仮引数の部分を持つリテラルを見落とすと、破棄が実行するコードの格納を落とす（`u_fvdrop`）。
 - `refsrc`: 親を狭めてよいのは、親が同じ値の外側の借用のときだけです。借用した値が持つ借用（`p1` が持つ別の値の借用）の親を狭めると、その借用が先に終わってしまう。
 - `sharetype`: 値の出どころは、セル（`Mutex`・`Rc` のブロック）を通して、loan を持たずに既存のブロックへ届くことがあります（セルの中身を読み出した値）。そうした値は型の判定のまま残す。dyn の値のメソッドは中身の場所の参照を返せ、型の走査はその中を見ません（A31 の第5回の狭めは、これを見落として dyn の値の中の共有を通した格納を落としました）。dyn の値と型引数に届く型を狭めの外に置く第6回の規則を保つ。
 - `rcgetowner`: 組の持ち主は、ムーブ・代入・排他借用でブロックを手放しうる。`State::block_shares` が古くなる所（A33 の「落とし穴」の第12回の指摘 2）を確かめる。
 - `shareparam`: 外部の loan に共有の印を付けると、呼び出し元に返る結果の対応づけ（`parameter_retention`）と、印の付いた loan を読む所（`exact_loan` は共有を exact にしない、`expand_shares`・`expand_shares_read`）のすべてに影響します。
+- `replcopy`: A31 の Copilot のレビュー 2 は、ループの要約が `contents_elsewhere` を持たなかったために、ループの中の写しが失われた穴でした。写しの記録を細かくするときは、要約がその記録を比べること（ループの中で写しに借用が足されたら、要約が変わること）を確かめる。`contents_elsewhere` は、写しの後の置き換えのほか、`deref p = v` の後の `kept_elsewhere` の扱いにも関わります。
+- `cellslots`: region の slot は、フィールドの読み出しが持つ借用を決めます。セルの中身はセルを借りた値を通してしか読めませんが、セルを持つフィールドを値として読み出す（ムーブする・写す）形があれば、そのフィールドの読み出しが格納した借用を持つ必要があります。
+- `loopplace`: 参照の仮引数の値が持つ借用は、呼び出し元の事実（`Part::Contents`）と、`deref p = v` の後の自分の部分の借用の検査（`replaced_target`）が読みます。隠れた環境への格納を参照の仮引数の値に足さないようにすると、その後で同じ仮引数を通して読んだ値が格納した借用を持たなくなりうるので、A31 の Copilot のレビュー 2 の点検の危険な形（`copilot2/p/u_hidden_while` の edition 2027 の形と、その `own` の形）で確かめる。
 
 ## 対象外
 
 - A33 のモデル（記憶域の寿命と破棄の順序の 1 つのモデル）と、A33 の表のほかの行（`mix4`・`w05`・`g08`・`f02`・`slice_self_safe_elem`・`fx3`・`h01`・`crossw`・`callres`・`mutref`・`cross5`・`mapr`・`fvparam`・`coarse`・`fvlam`・`matchref`・`blockalias`・`r06`・`r07`・`r10`・`r11`・`m_named_owned`）と、A33 の「未修正の穴」。
 - 明示した `ref` の仮引数を通した関数値の破棄（`fvdrop` の方針案の外）。
+- セルへの書き込みを上書きとして扱うこと（`replcopy` の「同じく拒否する形」の、写した先を後で上書きする形）。セルの要素への書き込みは今と同じく借用を足すだけにします。
 - 言語の意味（破棄の順序、`Drop.drop` の規則）を変えること。
