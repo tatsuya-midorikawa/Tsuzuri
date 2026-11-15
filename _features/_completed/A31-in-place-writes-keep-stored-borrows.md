@@ -2604,4 +2604,4 @@ PR #105 への Copilot の 2 度目のレビュー（`src/ownership_control.rs` 
 | `p_cellshares_800` | 983.059 | 991.956 | 979.364 |
 
 - 変えたファイル: `src/ownership.rs`（`15d84aaf` に戻した）、`src/ownership_control.rs`、`tests/rc.rs`（2 件の名前と説明、新しい 1 件）、`src/explain/codes/E1017.md`、`lifetimes.md`（「現在の制限」）、`compiler/diagnostics.md` と `docs/language.md`（`E1017` の行）、`docs/architecture.md`（ループの不動点の段落）、A34（`loopplace` の「現状」・原因・方針案、背景）、A33（「検査の時間」）、このチケット（上の 2 つの節の冒頭の注、「残る制限」と「修正のレビュー」の案内、この節）。
-- コミット: `dbbe8338`（`src/` と `tests/rc.rs`）、この節を含む文書のコミット。
+- コミット: `dbbe8338`（`src/` と `tests/rc.rs`）、`509760e6`（33 個の連なりのテストと doc comment の時間）、`43aae285`（文書とこの節）。
