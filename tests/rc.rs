@@ -7534,3 +7534,171 @@ do! IO.write_line (to_string (run 1))
     );
     accepts_in_both_editions(&[("Main.tz", &through("p.f"))]);
 }
+
+/// A31, the review of the fix of Copilot's review 2 (`loopplace` in
+/// `_features/A34-store-check-safe-rejections.md`): a loop that passes a borrow of the target of
+/// a reference parameter whose type has a cell (the cell's contents `b[0]`, a function that
+/// captures `ref p.s`) to a function value that owns the cell it writes (a lambda that captures an
+/// `own` parameter, an edition 2026 value parameter or a local `Arc.share`) never settled: the
+/// store into the function value added the borrows of the target to `p`, whose dereference made
+/// the places of the next iteration one field deeper (`p.cell.cell...`), and the loans that the
+/// locals hold doubled with each iteration, so that the check of `15d84aaf` did not end (killed
+/// after 120 s, 600 s for the first program; `main` accepts the safe forms within a second). The
+/// check now stops with `E1017` (`loop_ownership_limit`) at the start of the loop's body, where
+/// the limit of the iterations reports it, when 10 iterations have each borrowed a place that no
+/// type follows deeper than every iteration before, with a help that names the change that lets
+/// the loop settle; the unsafe twin (the caller's `keep` gets the borrow of a string that dies
+/// first) stops the same way. With that change (the lambda captures `Arc.get (ref sink)`), the
+/// safe form is accepted and the twin is rejected where its block drops the string (`E1013`). A
+/// chain of 12 references, each to a field of the target of the next, borrows deeper in each of
+/// its first 12 iterations and settles in the 13th, as on `15d84aaf` and `main`: its places
+/// follow their types.
+#[test]
+fn a_loop_whose_borrows_keep_getting_deeper_stops_with_e1017() {
+    const OWN: &str = r#"record Box { cell: Mutex<[unit -> i64]> }
+def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref p.cell) (\b -> w b[0])
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let mut b = Box { cell: Mutex.create [\() -> 3] }
+    let k = run2 (ref mut b) (Arc.share (ref keep)) n
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
+do! IO.write_line (to_string (run 1))
+"#;
+    const FIELD: &str = r#"record Box { cell: Mutex<[unit -> i64]>, s: string }
+def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        let t = ref p.s
+        w (\() -> String.length t)
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let mut b = Box { cell: Mutex.create [\() -> 3], s: "abcd" }
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let k = run2 (ref mut b) (Arc.share (ref keep)) n
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
+do! IO.write_line (to_string (run 1))
+"#;
+    const LOCAL: &str = r#"record Box { cell: Mutex<[unit -> i64]> }
+def run2 :: ref mut Box -> i64 -> i64
+fn run2 p n =
+    let sink = Arc.new (Mutex.create [\() -> 0])
+    let sink2 = Arc.share (ref sink)
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink2)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref p.cell) (\b -> w b[0])
+        i = i + 1
+    Mutex.with_lock (Arc.get (ref sink)) (\c -> c[0] ())
+def run :: i64 -> i64
+fn run n =
+    let mut b = Box { cell: Mutex.create [\() -> 3] }
+    run2 (ref mut b) n
+do! IO.write_line (to_string (run 1))
+"#;
+    const TWIN: &str = r#"record Box { cell: Mutex<[unit -> i64]> }
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref p.cell) (\b -> w b[0])
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let k = {
+        let s = String.repeat 4 (ref "123456789");
+        let t = ref s;
+        let mut b = Box { cell: Mutex.create [\() -> look t] };
+        run2 (ref mut b) (Arc.share (ref keep)) n
+    }
+    let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")]
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k + junk.length * 0
+do! IO.write_line (to_string (run 1))
+"#;
+    const LAMBDA: &str =
+        "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n";
+    const SETTLES: &str = "    let cell = Arc.get (ref sink)\n    let w = \\g -> Mutex.with_lock cell (\\o -> Array.write 0 g o)\n";
+    let stops = |source: &str, edition: Edition, at: (usize, usize)| {
+        let error = analyze_with_edition(source, edition).expect_err(source);
+        assert_eq!(
+            (error.code, error.kind),
+            ("E1017", Some("loop_ownership_limit")),
+            "edition {edition}\n{source}\n{}",
+            error.message
+        );
+        assert_eq!(
+            position(source, error.span.start),
+            at,
+            "edition {edition}\n{source}"
+        );
+        assert!(
+            error
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("`let cell = Arc.get (ref sink)`")),
+            "edition {edition}\n{source}\n{:?}",
+            error.help
+        );
+    };
+    for edition in [Edition::E2026, Edition::E2027] {
+        stops(OWN, edition, (7, 9));
+        stops(FIELD, edition, (7, 9));
+        stops(LOCAL, edition, (9, 9));
+        stops(TWIN, edition, (12, 9));
+    }
+    // An edition 2026 value parameter owns the `Arc`; in edition 2027 it is a read parameter, and
+    // a lambda that captures it owns no cell.
+    let value = OWN.replace("-> own Arc", "-> Arc");
+    stops(&value, Edition::E2026, (7, 9));
+    analyze_with_edition(&value, Edition::E2027)
+        .unwrap_or_else(|error| panic!("{value}\n{}: {}", error.code, error.message));
+    assert!(OWN.contains(LAMBDA) && TWIN.contains(LAMBDA));
+    accepts_in_both_editions(&[("Main.tz", &OWN.replace(LAMBDA, SETTLES))]);
+    rejects_at(
+        &TWIN.replace(LAMBDA, SETTLES),
+        "E1013",
+        "assignment_extends_borrow",
+        (19, 13),
+    );
+    // `q0 = ref (deref q1).a`, ..., `q11 = ref (deref q12).a`, each `qk` a `ref Rk` that starts
+    // at its own `yk`: the iteration `j` (from 0) makes `q0` borrow `y(j+1).a.a...` (`j + 1`
+    // fields), up to `y12` and 12 fields in the 12th iteration, and the 13th changes nothing.
+    let mut chain = String::from("record R0 { v: i64 }\n");
+    let mut literals = vec![String::from("R0 { v: 1 }")];
+    for k in 1..=12 {
+        chain.push_str(&format!("record R{k} {{ a: R{}, v: i64 }}\n", k - 1));
+        literals.push(format!("R{k} {{ a: {}, v: {} }}", literals[k - 1], k + 1));
+    }
+    chain.push_str("def run :: i64 -> i64\nfn run n =\n");
+    for (k, literal) in literals.iter().enumerate() {
+        chain.push_str(&format!("    let y{k} = {literal}\n"));
+    }
+    for k in 0..=12 {
+        chain.push_str(&format!("    let mut q{k} = ref y{k}\n"));
+    }
+    chain.push_str("    let mut i = 0\n    while i < n do\n");
+    for k in 0..12 {
+        chain.push_str(&format!("        q{k} = ref (deref q{}).a\n", k + 1));
+    }
+    chain.push_str("        i = i + 1\n    q0.v + q1.v\ndo! IO.write_line (to_string (run 3))\n");
+    accepts_in_both_editions(&[("Main.tz", &chain)]);
+}

@@ -18,6 +18,28 @@ const LOAN_EXACT: u8 = 8;
 const LOAN_ORDERED: u8 = 16;
 const LOAN_HOLDING: u8 = 32;
 
+/// A31: how many iterations of one loop may each borrow a place that leaves its type
+/// (`Checker::leaves_type`) deeper than every such place that the iterations before them
+/// borrowed, before `Checker::check_loop` stops with `E1017`. The first iteration never counts,
+/// and an iteration counts only when the loop does not settle with it, so a loop that settles
+/// within `DEEPER_ITERATIONS` + 1 iterations never meets this limit. Neither does a loop whose
+/// places get deeper only along their types: without a union, a type nests only so deep (a chain
+/// of references, each to a field of the target of the next, settles when the chain ends). In
+/// the loops that keep borrowing deeper (A34 `loopplace`), a store into a function value that
+/// owns a cell adds the borrows of a reference parameter's target to the parameter, its
+/// dereference (`Checker::place`) makes the places of the next iteration from them one step
+/// deeper (`p.cell.cell.cell`, the field `cell` of an array from the third iteration on), and the
+/// loans that the locals hold double with each iteration, so that the check would not reach the
+/// limit of `MAX_NESTING` + 1 iterations in practical time.
+const DEEPER_ITERATIONS: usize = 9;
+
+/// The help of the `E1017` of `DEEPER_ITERATIONS`: the change that lets the loops of A34
+/// `loopplace` settle.
+const LOOP_DEEPER_HELP: &str = "the loop's borrows reach a deeper place in every iteration and \
+     never settle; when the loop passes a borrow of a reference parameter's target to a function \
+     value that owns a cell (a lambda that captures an `Arc` by value), capture a reference to the \
+     cell instead, such as `let cell = Arc.get (ref sink)`";
+
 /// What `LoopSummary` keeps of the value of a local: its loans, and those of each of its region
 /// slots (`Value::regions`).
 type LocalSummary = (BTreeSet<LoanKey>, Option<Vec<BTreeSet<LoanKey>>>);
@@ -481,7 +503,19 @@ impl<'a> Checker<'a, '_> {
         let entry_reachable = self.reachable;
         let ids: BTreeSet<_> = entry.locals.keys().copied().collect();
         let live: BTreeSet<_> = live.intersection(&ids).copied().collect();
-        for _ in 0..=crate::syntax::MAX_NESTING {
+        let limit = || {
+            error(
+                DiagnosticKind::LoopOwnershipLimit,
+                "loop ownership analysis exceeds the compiler limit; simplify loop-carried borrows",
+                body.span,
+            )
+        };
+        // The deepest place that leaves its type that an iteration so far borrowed, and how many
+        // iterations borrowed one deeper than every iteration before them (`DEEPER_ITERATIONS`).
+        let mut deepest: Option<usize> = None;
+        let mut deeper = 0;
+        for iteration in 0..=crate::syntax::MAX_NESTING {
+            let made = self.loans.len();
             let before = self.loop_summary();
             self.reachable = entry_reachable;
             if let Some(condition) = condition {
@@ -518,12 +552,85 @@ impl<'a> Checker<'a, '_> {
                 }
                 return Ok(());
             }
+            let leaving = self.loans[made..]
+                .iter()
+                .map(|loan| &loan.place)
+                .filter(|place| deepest.is_none_or(|known| place.fields.len() > known))
+                .filter(|place| self.leaves_type(place))
+                .map(|place| place.fields.len())
+                .max();
+            if let Some(depth) = leaving {
+                if iteration > 0 {
+                    deeper += 1;
+                    if deeper == DEEPER_ITERATIONS {
+                        return Err(limit().with_help(LOOP_DEEPER_HELP));
+                    }
+                }
+                deepest = Some(depth);
+            }
         }
-        Err(error(
-            DiagnosticKind::LoopOwnershipLimit,
-            "loop ownership analysis exceeds the compiler limit; simplify loop-carried borrows",
-            body.span,
-        ))
+        Err(limit())
+    }
+
+    /// A31: whether `place` takes a step that the type it has reached does not have
+    /// (`DEEPER_ITERATIONS`): a field of a value that is no record or tuple, or that its record or
+    /// tuple lacks, or an element of a value that is no collection. Each step reads through `Rc`
+    /// and `Arc`, as `place_type` does. What follows the payload of a union (whose case the place
+    /// does not name) or a type whose structure the check does not know (a type variable, an
+    /// application of one, a `dyn` value) is not known to leave its type, nor is a place whose
+    /// root has no type that the check knows (static data). The slot marker of a parameter's
+    /// region slot is no step (`unmarked_fields`).
+    fn leaves_type(&self, place: &Place) -> bool {
+        let external = self.external.contains(&place.root);
+        let root = if external {
+            usize::MAX - place.root
+        } else {
+            place.root
+        };
+        let Some(local) = self.declarations.get(&root) else {
+            return false;
+        };
+        let mut current = match &local.ty {
+            Type::Reference(target, _) if external => (**target).clone(),
+            ty => ty.clone(),
+        };
+        let types = self.module.types();
+        for &field in unmarked_fields(place) {
+            if field == PAYLOAD {
+                return false;
+            }
+            let mut ty = without_views(&current);
+            while let Type::Shared(
+                inner,
+                crate::check::SharedKind::Rc | crate::check::SharedKind::Arc,
+            ) = ty
+            {
+                ty = *inner;
+            }
+            current = match ty {
+                Type::Record(id, arguments) if field < types.records[id].fields.len() => {
+                    types.record_field(id, &arguments, field)
+                }
+                Type::Tuple(elements) if field < elements.len() => elements[field].clone(),
+                Type::Array(inner)
+                | Type::ArrayView(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _)
+                    if field == ELEMENT =>
+                {
+                    *inner
+                }
+                Type::Error
+                | Type::Variable(_)
+                | Type::Infer(_)
+                | Type::Partial(_)
+                | Type::Application(..)
+                | Type::Dyn(_) => return false,
+                _ => return true,
+            };
+        }
+        false
     }
 
     pub(super) fn eval_control(
