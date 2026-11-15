@@ -7547,8 +7547,9 @@ do! IO.write_line (to_string (run 1))
 /// check now stops with `E1017` (`loop_ownership_limit`) at the start of the loop's body, where
 /// the limit of the iterations reports it, with a help that says how many loans the iteration
 /// made and names the change that lets the loop settle. Iteration `k` (from 0) of these loops
-/// makes `2^k + 2` loans, and iteration 9 (514) is the first that makes more than 500 beyond the
-/// first iteration's 3 (`LOOP_LOAN_GROWTH`). The unsafe twin (the caller's `keep` gets the borrow
+/// makes `2^k + 2` loans, so from iteration 1 on each makes more loans than the one before it, and
+/// more of them than that one added, and iteration 5 (34 loans) is the fifth such iteration in a
+/// row (`LOOP_FASTER_ITERATIONS`). The unsafe twin (the caller's `keep` gets the borrow
 /// of a string that dies first) stops the same way. With that change (the lambda captures
 /// `Arc.get (ref sink)`), the safe form is accepted and the twin is rejected where its block drops
 /// the string (`E1013`). A chain of 12 references, each to a field of the target of the next,
@@ -7668,7 +7669,8 @@ do! IO.write_line (to_string (run 1))
             .clone();
         assert!(
             help.as_deref().is_some_and(|help| help.contains(
-                "one iteration made 514 borrows, more than 500 beyond the 3 of the first"
+                "keep growing faster: each of the last 5 iterations made more borrows than the one \
+                 before it, and more of them than that one added (the last made 34)"
             )),
             "edition {edition}: {help:?}"
         );
@@ -7779,10 +7781,10 @@ fn late_hand_on(k: usize) -> String {
 /// field (`ref p.s`), whose loans double as in the other `loopplace` forms and whose unsafe twin
 /// `main` accepts and runs into a use after free; with `let cell = Arc.get (ref sink)` the safe
 /// form is accepted and the twin is rejected where its block drops the string (`E1013`). And a
-/// loop that hands the borrow to the function value through `t1 = t0` (one or two locals before
-/// the store, `late_hand_on`): its loans grow by about 1.6 or 1.5 times per iteration instead of
-/// doubling, and its iteration 12 (612 loans, 4 in the first) or 15 (597) is the first beyond the
-/// limit.
+/// loop that hands the borrow to the function value through `t1 = t0` (two or three locals before
+/// the store, `t0` and `t1`, or `t0` to `t2`: `late_hand_on`): its loans grow by about 1.6 or 1.5
+/// times per iteration instead of doubling (3, 4, 5, 7, 10, 15, 23, 36 and 3, 4, 5, 6, 8, 11, 15,
+/// 21, 30), and its iteration 7 (36 loans) or 8 (30) is the fifth in a row that grows faster.
 #[test]
 fn a_loop_stops_by_the_loans_of_its_iterations_not_by_the_shapes_of_its_places() {
     let (records, literals) = chain_records(12);
@@ -8007,19 +8009,23 @@ fn each_chain(links: usize, extra: &str, result: &str, local: bool) -> String {
 /// (`let r = p; let t = ref r.s`, `e_copy2`, or `let q = p`, `bl_copy`), or the result of an `if`
 /// (`gl_if`), and a choice between reborrows of a `ref mut` parameter (`rm_ifref`) triples the
 /// loans in each iteration, so that it took more than 10 minutes. Those stop now at the start of
-/// the loop's body: their iteration 9 makes 514 loans (3 in the first; 515 and 4 for `gl_if`), the
-/// iteration 5 of `rm_ifref` 975 (7). So does a loop that passes the borrow through four locals
-/// before the store (`late_hand_on(4)`, iteration 18: 659 loans, 4 in the first).
+/// the loop's body: from iteration 1 on, their loans grow by 1, 2, 4, 8, ... more (by 8, 24, 72,
+/// ... for `rm_ifref`), so their iteration 5 (34 loans, 35 for `gl_if`, 975 for `rm_ifref`) is the
+/// fifth in a row that grows faster (`LOOP_FASTER_ITERATIONS`). So does a loop that passes the
+/// borrow through four locals before the store (`late_hand_on(4)`, which adds one loan in each of
+/// its first four iterations: iteration 9, 28 loans).
 ///
-/// `LOOP_LOAN_GROWTH` (500) counts every loan of the body: a loop that advances 17 chains of 8
-/// references each makes at most 17 times 28 = 476 more loans than in its first iteration and is
-/// accepted, and with 18 chains its iteration 7 makes 504 more, and the loop stops at the start of
-/// its body. So does a single chain of 33 references (`L (L - 1) / 2` = 528 more at most; its
+/// `LOOP_LOAN_GROWTH` (500) counts every loan of the body from the fifth iteration on, beyond the
+/// iteration before it that made the fewest (the first, for these chains): a loop that advances 17
+/// chains of 8 references each makes at most 17 times 28 = 476 more loans than in its first
+/// iteration and is accepted, and with 18 chains its iteration 7 makes 504 more, and the loop stops
+/// at the start of its body. Their loans grow by less in each iteration than in the one before, so
+/// no other stop applies. So does a single chain of 33 references (`L (L - 1) / 2` = 528 more at most; its
 /// iteration 26 is the first beyond the limit), where the documents put the limit; a chain of 32
 /// (496 at most) is accepted, but takes a release build about 13 seconds, so the test does not
 /// check it.
 #[test]
-fn a_loop_stops_when_an_iteration_makes_500_loans_more_than_the_first() {
+fn a_loop_stops_when_a_later_iteration_makes_500_loans_more_than_an_earlier_one() {
     let live = "    q0.v + q1.v + p.r0.v\n";
     // A chain of `links` references, each `qk` starting at its own local `yk`.
     let single = |links: usize| {
@@ -8173,6 +8179,204 @@ do! IO.write_line (to_string (run 1))
                     .as_deref()
                     .is_some_and(|help| help.contains("more than 500 beyond")),
                 "edition {edition}: {:?}",
+                error.help
+            );
+        }
+    }
+}
+
+/// A toy bytecode interpreter with `ops` opcodes of two strings and `subs` subroutines (`Call0`,
+/// ..., `Ret`): the loop assigns `code` again (`code = sub0`, `code = saved`) and copies it
+/// (`saved = code`), and each opcode's arm borrows its two strings through `code[pc]`. `run 100`
+/// runs `Op0`, then each `Calli` (whose subroutine runs `Op1 ("abc", "d")`, 5) and `Op(i+2)`.
+fn interpreter(ops: usize, subs: usize) -> String {
+    let calls: Vec<String> = (0..subs).map(|j| format!("Call{j}")).collect();
+    let opcodes: Vec<String> = (0..ops)
+        .map(|j| format!("Op{j} of string * string"))
+        .collect();
+    let mut source = format!(
+        "union Instr = Ret | Halt | {} | {}\n",
+        calls.join(" | "),
+        opcodes.join(" | ")
+    );
+    source.push_str(&format!(
+        "def exec :: ref [Instr] -> {}i64 -> i64\nfn exec main {}fuel =\n",
+        "ref [Instr] -> ".repeat(subs),
+        (0..subs).map(|j| format!("sub{j} ")).collect::<String>()
+    ));
+    source.push_str("    let mut code = main\n    let mut saved = main\n    let mut pc = 0\n    let mut back = 0\n    let mut steps = 0\n    let mut acc = 0\n    let mut running = true\n    while running && steps < fuel do\n        steps = steps + 1\n        match code[pc] with\n");
+    for j in 0..subs {
+        source.push_str(&format!(
+            "        | Call{j} ->\n            saved = code\n            back = pc + 1\n            code = sub{j}\n            pc = 0\n"
+        ));
+    }
+    source.push_str("        | Ret ->\n            code = saved\n            pc = back\n        | Halt -> running = false\n");
+    for j in 0..ops {
+        source.push_str(&format!(
+            "        | Op{j} (a, b) ->\n            acc = acc + String.length a * {} - String.length b\n            pc = pc + 1\n",
+            j + 1
+        ));
+    }
+    let main: Vec<String> = (0..subs)
+        .map(|j| format!("Call{j}, Op{} (\"x\", \"yz\")", (j + 2) % ops))
+        .collect();
+    source.push_str(&format!(
+        "    acc\ndef run :: i64 -> i64\nfn run n =\n    let main = [Op0 (\"ab\", \"c\"), {}, Halt]\n",
+        main.join(", ")
+    ));
+    for j in 0..subs {
+        source.push_str(&format!("    let sub{j} = [Op1 (\"abc\", \"d\"), Ret]\n"));
+    }
+    source.push_str(&format!(
+        "    exec (ref main) {}n\ndo! IO.write_line (to_string (run 100))\n",
+        (0..subs)
+            .map(|j| format!("(ref sub{j}) "))
+            .collect::<String>()
+    ));
+    source
+}
+
+/// A loop that borrows `pairs` times the two fields of `cur`, copies it (`prev = cur`) and assigns
+/// it again to one of `places` records (`cur = match i % places with | 0 -> ref b0 ...`). With 8
+/// places and 32 pairs, `run 3` adds 64 (`b0` twice) and 160 (`b1`), and `prev.a` (2): 290.
+fn widening(places: usize, pairs: usize) -> String {
+    let mut source =
+        String::from("record Buf { a: string, b: string }\ndef run :: i64 -> i64\nfn run n =\n");
+    for j in 0..places {
+        source.push_str(&format!(
+            "    let b{j} = Buf {{ a: \"{}\", b: \"{}\" }}\n",
+            "x".repeat(j + 1),
+            "y".repeat(2 * j + 1)
+        ));
+    }
+    source.push_str("    let mut cur = ref b0\n    let mut prev = ref b0\n    let mut s = 0\n    let mut i = 0\n    while i < n do\n");
+    for _ in 0..pairs {
+        source.push_str("        s = s + String.length cur.a + String.length cur.b\n");
+    }
+    source.push_str("        prev = cur\n        cur = match i % ");
+    source.push_str(&format!("{places} with\n"));
+    for j in 0..places - 1 {
+        source.push_str(&format!("            | {j} -> ref b{j}\n"));
+    }
+    source.push_str(&format!(
+        "            | _ -> ref b{}\n        i = i + 1\n    s + String.length prev.a\ndo! IO.write_line (to_string (run 3))\n",
+        places - 1
+    ));
+    source
+}
+
+/// A loop that copies a reference along `n` locals, one per iteration (`u{n-1} = u{n-2}`, ...,
+/// `u1 = u0`, `u0 = ref a`), and reads through the last of them, with `fillers` more borrows of `y`:
+/// the place of `a` reaches `u{k}` in iteration `k`, and the loop settles in iteration `n`. `run 3`
+/// reads `y` (6 bytes) through `u{n-1}` in each of its iterations when `n` is more than 3, and
+/// `fillers` times besides: `18 (fillers + 1)`.
+fn copy_chain(n: usize, fillers: usize) -> String {
+    let mut source = String::from(
+        "def run :: i64 -> i64\nfn run n =\n    let y = \"filler\"\n    let a = \"other\"\n",
+    );
+    for k in 0..n {
+        source.push_str(&format!("    let mut u{k} = ref y\n"));
+    }
+    source.push_str(&format!(
+        "    let mut z = 0\n    let mut i = 0\n    while i < n do\n        z = z + String.length u{}\n",
+        n - 1
+    ));
+    for k in (1..n).rev() {
+        source.push_str(&format!("        u{k} = u{}\n", k - 1));
+    }
+    source.push_str("        u0 = ref a\n");
+    for _ in 0..fillers {
+        source.push_str("        z = z + String.length y\n");
+    }
+    source.push_str("        i = i + 1\n    z\ndo! IO.write_line (to_string (run 3))\n");
+    source
+}
+
+/// A31, review round 1 of the loan budget (`LOOP_LOAN_GROWTH`, which then stopped a loop when an
+/// iteration made 500 loans more than the first). A reference that a loop assigns again (`code =
+/// sub0`) widens at the first merge to every place that the loop gives it, and a local that copies
+/// it (`saved = code`) one iteration later, so each borrow through them makes one loan for each of
+/// those places from the second iteration on: an interpreter of 20 opcodes and 4 subroutines made
+/// 176 loans in its first iteration and 712 in its second, and a loop with 64 borrows through a
+/// reference to one of 8 records 89 and 601, and both settle in their third iteration, as
+/// `15d84aaf`, `main` and the base accept them (`main` prints 31 and 290). They stopped with
+/// `E1017`. `LOOP_LOAN_GROWTH` now starts at the fifth iteration and counts from the iteration
+/// before it that made the fewest loans, and the stops for loans that keep growing need 5 or more
+/// iterations in a row that grow, so both are accepted in both editions.
+///
+/// The first iteration of a `loopplace` loop whose body holds a loop that assigns a reference
+/// declared before it (`u0 = ref a`) is its largest (the inner loop settles in its second iteration
+/// there, at once afterwards), and the stop counted from it, so the loans grew far past 500 first,
+/// and the check took 10 seconds and more. A loop that passes the borrow through 40 locals before
+/// the store adds one loan per iteration for about 40 iterations, and with 140 locals never met
+/// the limit before the 129 iterations (25 seconds). Now 5 iterations in a row whose loans grow
+/// faster and faster (`LOOP_FASTER_ITERATIONS`), or 24 iterations in a row whose loans grow at
+/// least as fast as before (`LOOP_GROWING_ITERATIONS`; 8 when the last made more than 200 loans,
+/// `LOOP_GROWING_LARGE`), stop the loop: the first at the start of the outer loop's body (`11:9`:
+/// from iteration 2 on, its loans grow by 2, 4, 8, ... more, and iteration 6 is the fifth in a row),
+/// the second at that of the loop of 40 locals (`47:9`, its iteration 24). A loop that copies a
+/// reference along 24 locals settles in iteration 24 after 23 iterations that each add one loan, and
+/// is accepted (`main` prints 18); along 25 locals its iteration 24 is the 24th such iteration, and
+/// the loop stops (`33:9`), where the documents put that limit. With 200 more borrows in the body,
+/// 8 locals are accepted (`main` prints 3618), and 9 stop at iteration 8 (`17:9`, 212 loans).
+#[test]
+fn a_loop_that_grows_once_settles_and_one_that_keeps_growing_stops() {
+    accepts_in_both_editions(&[("Main.tz", &interpreter(20, 4))]);
+    accepts_in_both_editions(&[("Main.tz", &widening(8, 32))]);
+    accepts_in_both_editions(&[("Main.tz", &copy_chain(24, 0))]);
+    accepts_in_both_editions(&[("Main.tz", &copy_chain(8, 200))]);
+    let mut inner = String::from(
+        "record Box { cell: Mutex<[unit -> i64]>, s: string }\ndef run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64\nfn run2 p sink n =\n    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n    let y = \"filler\"\n    let a = \"other\"\n    let mut u0 = ref y\n    let mut z = 0\n    let mut i = 0\n    while i < n do\n        let t = ref p.s\n        w (\\() -> String.length t)\n        let mut j = 0\n        while j < 2 do\n            z = z + String.length u0\n            u0 = ref a\n",
+    );
+    for _ in 0..100 {
+        inner.push_str("            z = z + String.length y\n");
+    }
+    inner.push_str("            j = j + 1\n        i = i + 1\n    z - z\ndef run :: i64 -> i64\nfn run n =\n    let mut b = Box { cell: Mutex.create [\\() -> 3], s: \"abcd\" }\n    let keep = Arc.new (Mutex.create [\\() -> 0])\n    let k = run2 (ref mut b) (Arc.share (ref keep)) n\n    Mutex.with_lock (Arc.get (ref keep)) (\\c -> c[0] ()) + k\ndo! IO.write_line (to_string (run 1))\n");
+    let late = late_hand_on(40);
+    let long = copy_chain(25, 0);
+    let large = copy_chain(9, 200);
+    for (source, at, help) in [
+        (
+            &inner,
+            (11, 9),
+            "keep growing faster: each of the last 5 iterations",
+        ),
+        (
+            &late,
+            (47, 9),
+            "keep growing: each of the last 24 iterations",
+        ),
+        (
+            &long,
+            (33, 9),
+            "keep growing: each of the last 24 iterations",
+        ),
+        (
+            &large,
+            (17, 9),
+            "keep growing: each of the last 8 iterations made more borrows than the one before it, and at least as many more as that one added (the last made 212)",
+        ),
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let error = analyze_with_edition(source, edition).expect_err(source);
+            assert_eq!(
+                (error.code, error.kind),
+                ("E1017", Some("loop_ownership_limit")),
+                "edition {edition}\n{source}\n{}",
+                error.message
+            );
+            assert_eq!(
+                position(source, error.span.start),
+                at,
+                "edition {edition}\n{source}"
+            );
+            assert!(
+                error
+                    .help
+                    .as_deref()
+                    .is_some_and(|text| text.contains(help)
+                        && text.contains("`let cell = Arc.get (ref sink)`")),
+                "edition {edition}\n{source}\n{:?}",
                 error.help
             );
         }

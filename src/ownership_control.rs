@@ -18,38 +18,179 @@ const LOAN_EXACT: u8 = 8;
 const LOAN_ORDERED: u8 = 16;
 const LOAN_HOLDING: u8 = 32;
 
-/// A31: how many more loans than its first iteration one iteration of a loop that has not settled
-/// may make before `Checker::check_loop` stops with `E1017` (`loop_ownership_limit`). Each
-/// iteration checks the condition and the body again (with the loops and the checks inside them)
-/// from the state that the iterations before it left, and makes its loans again with fresh
-/// numbers, one for each place that a borrow gives in that state, so the loans that it makes
-/// measure how far that state has grown.
-///
-/// In a loop that settles, the later iterations make about as many loans as the first: at most 3
-/// more in the gate and generated corpora, the examples and test fixtures, the std examples and
-/// the timing programs. A chain of `L` references, each to a field of the target of the next,
-/// advanced in one loop (`q0 = ref (deref q1).a`, ..., `q(L-1) = ref (deref qL).a`), borrows in
-/// iteration `k` (from 0), for each link `j`, every place that link `j + 1` holds, `m` times
-/// `1 + min(k, L - 1 - j)` of them when each link starts with `m` places, so the iteration makes
-/// `m (k (k - 1) / 2 + k (L - k))` more loans than the first, at most `m L (L - 1) / 2` in
-/// iteration `L - 1`, and the loop settles in iteration `L`. Such a chain meets this limit from 33
-/// links on, and from 23 when each link starts with two places (a link that borrows a field of a
-/// reference parameter's target after a store into a function value that owns a cell added a
-/// borrow to the parameter). The review probes of A31 hold chains of up to 13 links (at most 132
-/// more loans). The check of such chains grows with about the seventh power of their length: on a
-/// release build, a chain of 30 links takes 9 seconds, and one of 33 takes `15d84aaf`, which had no
-/// such limit, 16 seconds (23 links that start with two places each take it 8.5 seconds).
+/// A31: the stops of `Checker::check_loop` before its limit of `MAX_NESTING` + 1 iterations
+/// (`LoanGrowth`). Each iteration checks the condition and the body again (with the loops and the
+/// checks inside them) from the state that the iterations before it left, and makes its loans
+/// again with fresh numbers, one for each place that a borrow gives in that state, so the loans
+/// that it makes (`self.loans.len()` after it, less before it) measure how far that state has
+/// grown, and the time of an iteration grows with them.
 ///
 /// In the loops that never settle (A34 `loopplace`), a store into a function value that owns a
 /// cell adds the borrows of a reference parameter's target to the parameter, whose dereference
-/// then gives their places too, so each iteration borrows places one field deeper and makes about
-/// twice the loans of the one before (three times through a choice between reborrows, about 1.2
-/// times when the borrow passes through nine locals before the store), and each doubling makes an
-/// iteration take about four times as long: the check would not reach `MAX_NESTING` + 1
-/// iterations in practical time. They meet this limit within a second on a release build. The
-/// limit counts the loans beyond the first iteration rather than a multiple of the first
-/// iteration's, so a large body does not let them grow further first.
+/// then gives their places too, so each iteration borrows places one field deeper, and the loans
+/// that an iteration makes grow without end: about twice those of the one before, three times
+/// through a choice between reborrows, and by 1.2 to 1.6 times when the borrow passes through two
+/// to nine locals before the store, after one more loan per iteration for about as many iterations
+/// as there are locals. Each doubling makes an iteration take about four times as long, and the
+/// state that the loop carries makes each iteration of a loop inside it longer too, so the check
+/// would not reach the limit of the iterations in practical time. Three stops end such checks with
+/// `E1017` (`loop_ownership_limit`): `LOOP_FASTER_ITERATIONS` iterations in a row whose loans grow
+/// faster and faster, `LOOP_GROWING_ITERATIONS` (or `LOOP_GROWING_LARGE`) iterations in a row
+/// whose loans grow at least as fast as before, and an iteration from `LOOP_GROWTH_FROM` on that
+/// makes `LOOP_LOAN_GROWTH` more loans than the iteration before it that made the fewest.
+///
+/// In a loop that settles, the later iterations make about as many loans as the first: in the gate
+/// and generated corpora, the examples and test fixtures, the std examples and the timing programs,
+/// every loop settles within 3 iterations, and an iteration makes at most 3 more loans than the
+/// first. A reference that the loop assigns again (`code = sub0`, `cur = match op with ...`) widens
+/// to every place that the loop may give it at the first merge, and a local that copies it
+/// (`saved = code`) one iteration later, so each borrow through them makes one loan for each of
+/// those places from the second iteration on: an interpreter loop of a few dozen opcodes grows by
+/// hundreds of loans once, in its second iteration, and settles in its third. No stop counts that
+/// once: the loans of the iterations of `LOOP_FASTER_ITERATIONS` and `LOOP_GROWING_ITERATIONS` grow
+/// in each of them, and `LOOP_LOAN_GROWTH` starts at iteration `LOOP_GROWTH_FROM`.
+///
+/// A chain of `L` references, each to a field of the target of the next, advanced in one loop
+/// (`q0 = ref (deref q1).a`, ..., `q(L-1) = ref (deref qL).a`), borrows in iteration `k` (from 0),
+/// for each link `j`, every place that link `j + 1` holds, `m` times `1 + min(k, L - 1 - j)` of
+/// them when each link starts with `m` places, so the iteration makes `m (k (k - 1) / 2 + k (L -
+/// k))` more loans than the first, at most `m L (L - 1) / 2` in iteration `L - 1`, and the loop
+/// settles in iteration `L`. Its loans grow by less in each iteration than in the one before
+/// (`m (L - k)`), and so do those of a loop that passes a reference along locals and borrows
+/// through each of them (`r1 = r0`), so only `LOOP_LOAN_GROWTH` stops them: a chain from 33 links
+/// on when each link starts with one place, from 23 with two (`if n > 0 then ref y else ref z`, or
+/// a field of a reference parameter's target after a store into a function value that owns a cell
+/// added a borrow to the parameter), and from 17 with four (a `match` of four arms). The review
+/// probes of A31 hold chains of up to 13 links (at most 132 more loans). The check of such chains
+/// grows with about the seventh power of their length: on a release build, a chain of 30 links
+/// takes 9 seconds, and one of 33 takes `15d84aaf`, which had no such limit, 16 seconds (23 links
+/// that start with two places each take it 8.5 seconds, 17 links that start with four 6.7
+/// seconds).
 const LOOP_LOAN_GROWTH: usize = 500;
+
+/// A31: the first iteration (from 0) that `LOOP_LOAN_GROWTH` applies to: the loops that settle by
+/// then grow by as many loans as they need, as a reference that an interpreter loop assigns again
+/// and the locals that copy it (`saved = code`) do in their second to fourth iterations.
+const LOOP_GROWTH_FROM: usize = 4;
+
+/// A31: how many iterations in a row that did not settle may each make more loans than the
+/// iteration before it, and more of them than that one added, before `Checker::check_loop` stops
+/// with `E1017`. The loans of a `loopplace` loop grow so from its second iteration on (2, 4, 8,
+/// ... more) or from the iteration whose store first gets the borrow that its locals passed on, so
+/// the check stops at its sixth iteration (iteration 5) or five iterations after that store. A loop
+/// that settles grows faster only while its locals widen one after another to more places each (a
+/// reference that the loop assigns again, then the locals that copy it): at most once in a row in
+/// the corpora of `LOOP_LOAN_GROWTH` and in the review probes of A31, whose chains grow by less in
+/// each iteration.
+const LOOP_FASTER_ITERATIONS: usize = 5;
+
+/// A31: how many iterations in a row that did not settle may each make more loans than the
+/// iteration before it, and at least as many more as that one added, before
+/// `Checker::check_loop` stops with `E1017`; `LOOP_GROWING_LARGE` stops a loop of many borrows
+/// sooner. A `loopplace` loop that passes the borrow through `k` locals before the store into the
+/// function value (`t1 = t0`, A34) adds one loan per iteration for about `k` iterations before its
+/// loans grow faster, and each of those iterations takes longer the more locals and statements the
+/// body has (`k = 140`: 13 seconds for the 129 iterations of the limit on a release build), so this
+/// stops it at its 25th iteration at the latest. A loop that copies a reference along `n` locals,
+/// one per iteration (`u(n-1) = u(n-2)`, ..., `u1 = u0`, `u0 = ref a`), and borrows through the
+/// last of them adds one loan per iteration the same way and settles in iteration `n`, so this
+/// stops such a loop from 25 locals on.
+const LOOP_GROWING_ITERATIONS: usize = 24;
+
+/// A31: the iterations in a row of `LOOP_GROWING_ITERATIONS` that stop a loop whose last iteration
+/// made more loans than the second number: an iteration of such a body takes long enough that 24 of
+/// them would take seconds (a body of 1000 borrows and 40 locals that pass the borrow on took 5
+/// seconds for 32), and this stops it after a third of that. A loop that copies a reference along 9
+/// or more locals and makes more than 200 loans per iteration stops too.
+const LOOP_GROWING_LARGE: (usize, usize) = (8, 200);
+
+/// A31: the change that lets the loops of A34 `loopplace` settle, which the help of each stop of
+/// `LoanGrowth` names.
+const LOOP_GROWTH_ADVICE: &str = "when the loop passes a borrow of a reference parameter's target \
+     to a function value that owns a cell (a lambda that captures an `Arc` by value), let the \
+     function value capture a reference to the cell instead, such as `let cell = Arc.get (ref sink)`";
+
+/// A31: what `Checker::check_loop` keeps of the loans that the iterations of a loop made, for the
+/// stops of `LOOP_FASTER_ITERATIONS`, `LOOP_GROWING_ITERATIONS` (with `LOOP_GROWING_LARGE`) and
+/// `LOOP_LOAN_GROWTH`.
+#[derive(Default)]
+struct LoanGrowth {
+    /// The fewest loans that an iteration made.
+    fewest: Option<usize>,
+    /// The loans that the last iteration made, and how many more than the one before it (none when
+    /// it made no more).
+    last: Option<(usize, Option<usize>)>,
+    /// How many iterations in a row made more loans than the one before, and more of them than
+    /// that one added.
+    faster: usize,
+    /// How many iterations in a row made more loans than the one before, and at least as many more
+    /// as that one added.
+    growing: usize,
+}
+
+impl LoanGrowth {
+    /// Notes the `made` loans of iteration `iteration` (from 0), which did not settle, and returns
+    /// the help of the `E1017` that stops the loop when they meet a limit.
+    fn note(&mut self, iteration: usize, made: usize) -> Option<String> {
+        let added = self
+            .last
+            .and_then(|(before, _)| made.checked_sub(before))
+            .filter(|added| *added > 0);
+        let earlier = self.last.and_then(|(_, added)| added);
+        match added {
+            Some(added) => {
+                self.faster = if earlier.is_none_or(|earlier| added > earlier) {
+                    self.faster + 1
+                } else {
+                    0
+                };
+                self.growing = if earlier.is_none_or(|earlier| added >= earlier) {
+                    self.growing + 1
+                } else {
+                    0
+                };
+            }
+            None => (self.faster, self.growing) = (0, 0),
+        }
+        let fewest = self.fewest.unwrap_or(made);
+        self.last = Some((made, added));
+        self.fewest = Some(fewest.min(made));
+        if self.faster >= LOOP_FASTER_ITERATIONS {
+            return Some(format!(
+                "the loop's borrows keep growing faster: each of the last {LOOP_FASTER_ITERATIONS} \
+                 iterations made more borrows than the one before it, and more of them than that \
+                 one added (the last made {made}), so the check stops before the loop settles; \
+                 {LOOP_GROWTH_ADVICE}"
+            ));
+        }
+        let (large_iterations, large) = LOOP_GROWING_LARGE;
+        if self.growing >= LOOP_GROWING_ITERATIONS
+            || (self.growing >= large_iterations && made > large)
+        {
+            return Some(format!(
+                "the loop's borrows keep growing: each of the last {} iterations made more \
+                 borrows than the one before it, and at least as many more as that one added (the \
+                 last made {made}), so the check stops before the loop settles; a reference that \
+                 the loop passes along {} or more locals, one per iteration (`u1 = u0`), and \
+                 borrows through grows this way, and along {} or more when its iterations make \
+                 more than {large} borrows; {LOOP_GROWTH_ADVICE}",
+                self.growing,
+                LOOP_GROWING_ITERATIONS + 1,
+                large_iterations + 1
+            ));
+        }
+        if iteration >= LOOP_GROWTH_FROM && made > fewest + LOOP_LOAN_GROWTH {
+            return Some(format!(
+                "one iteration of the loop made {made} borrows, more than {LOOP_LOAN_GROWTH} beyond \
+                 the {fewest} of the iteration before it that made the fewest, so the check stops \
+                 before the loop settles; a chain of dozens of references, each to a field of the \
+                 target of the next, advanced in one loop (`q0 = ref (deref q1).a`) grows this \
+                 way: split the chain or the loop; {LOOP_GROWTH_ADVICE}"
+            ));
+        }
+        None
+    }
+}
 
 /// What `LoopSummary` keeps of the value of a local: its loans, and those of each of its region
 /// slots (`Value::regions`).
@@ -521,9 +662,8 @@ impl<'a> Checker<'a, '_> {
                 body.span,
             )
         };
-        // The loans that the first iteration made (`LOOP_LOAN_GROWTH`).
-        let mut first = None;
-        for _ in 0..=crate::syntax::MAX_NESTING {
+        let mut growth = LoanGrowth::default();
+        for iteration in 0..=crate::syntax::MAX_NESTING {
             let before = self.loop_summary();
             let made_before = self.loans.len();
             self.reachable = entry_reachable;
@@ -561,20 +701,8 @@ impl<'a> Checker<'a, '_> {
                 }
                 return Ok(());
             }
-            let made = self.loans.len() - made_before;
-            match first {
-                None => first = Some(made),
-                Some(first) if made > first + LOOP_LOAN_GROWTH => {
-                    return Err(limit().with_help(format!(
-                        "the loop's borrows keep growing: one iteration made {made} borrows, more \
-                         than {LOOP_LOAN_GROWTH} beyond the {first} of the first iteration, so the \
-                         check stops before the loop settles; when the loop passes a borrow of a \
-                         reference parameter's target to a function value that owns a cell (a \
-                         lambda that captures an `Arc` by value), let the function value capture a \
-                         reference to the cell instead, such as `let cell = Arc.get (ref sink)`"
-                    )));
-                }
-                Some(_) => {}
+            if let Some(help) = growth.note(iteration, self.loans.len() - made_before) {
+                return Err(limit().with_help(help));
             }
         }
         Err(limit())
