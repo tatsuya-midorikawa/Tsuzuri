@@ -8236,10 +8236,13 @@ fn interpreter(ops: usize, subs: usize) -> String {
     source
 }
 
-/// A loop that borrows `pairs` times the two fields of `cur`, copies it (`prev = cur`) and assigns
-/// it again to one of `places` records (`cur = match i % places with | 0 -> ref b0 ...`). With 8
-/// places and 32 pairs, `run 3` adds 64 (`b0` twice) and 160 (`b1`), and `prev.a` (2): 290.
-fn widening(places: usize, pairs: usize) -> String {
+/// A loop that borrows `pairs` times the two fields of `cur`, copies it along `copies` locals
+/// (`prev{copies-1} = prev{copies-2}`, ..., `prev0 = cur`) and assigns it again to one of `places`
+/// records (`cur = match i % places with | 0 -> ref b0 ...`). With 8 places, `run 3` adds the
+/// fields of `b0` twice and of `b1` once in each pair (`2 + 2 + 5`), and the first field of the last
+/// copy (`b0`, 1 byte; `b1`, 2 bytes, when one local copies `cur`): 290 for 32 pairs and one copy,
+/// 325 for 36 pairs and four copies.
+fn widening(places: usize, pairs: usize, copies: usize) -> String {
     let mut source =
         String::from("record Buf { a: string, b: string }\ndef run :: i64 -> i64\nfn run n =\n");
     for j in 0..places {
@@ -8249,18 +8252,27 @@ fn widening(places: usize, pairs: usize) -> String {
             "y".repeat(2 * j + 1)
         ));
     }
-    source.push_str("    let mut cur = ref b0\n    let mut prev = ref b0\n    let mut s = 0\n    let mut i = 0\n    while i < n do\n");
+    source.push_str("    let mut cur = ref b0\n");
+    for j in 0..copies {
+        source.push_str(&format!("    let mut prev{j} = ref b0\n"));
+    }
+    source.push_str("    let mut s = 0\n    let mut i = 0\n    while i < n do\n");
     for _ in 0..pairs {
         source.push_str("        s = s + String.length cur.a + String.length cur.b\n");
     }
-    source.push_str("        prev = cur\n        cur = match i % ");
-    source.push_str(&format!("{places} with\n"));
+    for j in (1..copies).rev() {
+        source.push_str(&format!("        prev{j} = prev{}\n", j - 1));
+    }
+    source.push_str(&format!(
+        "        prev0 = cur\n        cur = match i % {places} with\n"
+    ));
     for j in 0..places - 1 {
         source.push_str(&format!("            | {j} -> ref b{j}\n"));
     }
     source.push_str(&format!(
-        "            | _ -> ref b{}\n        i = i + 1\n    s + String.length prev.a\ndo! IO.write_line (to_string (run 3))\n",
-        places - 1
+        "            | _ -> ref b{}\n        i = i + 1\n    s + String.length prev{}.a\ndo! IO.write_line (to_string (run 3))\n",
+        places - 1,
+        copies - 1
     ));
     source
 }
@@ -8300,9 +8312,12 @@ fn copy_chain(n: usize, fillers: usize) -> String {
 /// 176 loans in its first iteration and 712 in its second, and a loop with 64 borrows through a
 /// reference to one of 8 records 89 and 601, and both settle in their third iteration, as
 /// `15d84aaf`, `main` and the base accept them (`main` prints 31 and 290). They stopped with
-/// `E1017`. `LOOP_LOAN_GROWTH` now starts at the fifth iteration and counts from the iteration
-/// before it that made the fewest loans, and the stops for loans that keep growing need 5 or more
-/// iterations in a row that grow, so both are accepted in both editions.
+/// `E1017`. `LOOP_LOAN_GROWTH` now starts at the fifth iteration, counts from the iteration before
+/// it that made the fewest loans, and needs the iteration to make more loans than the one before it,
+/// and the stops for loans that keep growing need 5 or more iterations in a row that grow, so both
+/// are accepted in both editions, and so is the second loop when it copies `cur` along four locals
+/// and borrows 72 times through it (97 loans, then 673 in each of iterations 1 to 4, and it settles
+/// in iteration 5; `main` prints 325).
 ///
 /// The first iteration of a `loopplace` loop whose body holds a loop that assigns a reference
 /// declared before it (`u0 = ref a`) is its largest (the inner loop settles in its second iteration
@@ -8322,7 +8337,8 @@ fn copy_chain(n: usize, fillers: usize) -> String {
 #[test]
 fn a_loop_that_grows_once_settles_and_one_that_keeps_growing_stops() {
     accepts_in_both_editions(&[("Main.tz", &interpreter(20, 4))]);
-    accepts_in_both_editions(&[("Main.tz", &widening(8, 32))]);
+    accepts_in_both_editions(&[("Main.tz", &widening(8, 32, 1))]);
+    accepts_in_both_editions(&[("Main.tz", &widening(8, 36, 4))]);
     accepts_in_both_editions(&[("Main.tz", &copy_chain(24, 0))]);
     accepts_in_both_editions(&[("Main.tz", &copy_chain(8, 200))]);
     let mut inner = String::from(

@@ -37,7 +37,8 @@ const LOAN_HOLDING: u8 = 32;
 /// `E1017` (`loop_ownership_limit`): `LOOP_FASTER_ITERATIONS` iterations in a row whose loans grow
 /// faster and faster, `LOOP_GROWING_ITERATIONS` (or `LOOP_GROWING_LARGE`) iterations in a row
 /// whose loans grow at least as fast as before, and an iteration from `LOOP_GROWTH_FROM` on that
-/// makes `LOOP_LOAN_GROWTH` more loans than the iteration before it that made the fewest.
+/// makes more loans than the one before it and `LOOP_LOAN_GROWTH` more than the iteration before it
+/// that made the fewest.
 ///
 /// In a loop that settles, the later iterations make about as many loans as the first: in the gate
 /// and generated corpora, the examples and test fixtures, the std examples and the timing programs,
@@ -70,7 +71,10 @@ const LOOP_LOAN_GROWTH: usize = 500;
 
 /// A31: the first iteration (from 0) that `LOOP_LOAN_GROWTH` applies to: the loops that settle by
 /// then grow by as many loans as they need, as a reference that an interpreter loop assigns again
-/// and the locals that copy it (`saved = code`) do in their second to fourth iterations.
+/// and the locals that copy it (`saved = code`) do in their second to fourth iterations. An
+/// iteration that makes no more loans than the one before it never meets the limit either, so a
+/// loop that copies such a reference along more locals (`prev3 = prev2`, ..., `prev0 = cur`) and
+/// borrows only through the reference settles, however late.
 const LOOP_GROWTH_FROM: usize = 4;
 
 /// A31: how many iterations in a row that did not settle may each make more loans than the
@@ -108,7 +112,8 @@ const LOOP_GROWING_LARGE: (usize, usize) = (8, 200);
 /// `LoanGrowth` names.
 const LOOP_GROWTH_ADVICE: &str = "when the loop passes a borrow of a reference parameter's target \
      to a function value that owns a cell (a lambda that captures an `Arc` by value), let the \
-     function value capture a reference to the cell instead, such as `let cell = Arc.get (ref sink)`";
+     function value capture a reference to the cell instead, such as \
+     `let cell = Arc.get (ref sink)`";
 
 /// A31: what `Checker::check_loop` keeps of the loans that the iterations of a loop made, for the
 /// stops of `LOOP_FASTER_ITERATIONS`, `LOOP_GROWING_ITERATIONS` (with `LOOP_GROWING_LARGE`) and
@@ -179,13 +184,14 @@ impl LoanGrowth {
                 large_iterations + 1
             ));
         }
-        if iteration >= LOOP_GROWTH_FROM && made > fewest + LOOP_LOAN_GROWTH {
+        if iteration >= LOOP_GROWTH_FROM && added.is_some() && made > fewest + LOOP_LOAN_GROWTH {
             return Some(format!(
-                "one iteration of the loop made {made} borrows, more than {LOOP_LOAN_GROWTH} beyond \
-                 the {fewest} of the iteration before it that made the fewest, so the check stops \
-                 before the loop settles; a chain of dozens of references, each to a field of the \
-                 target of the next, advanced in one loop (`q0 = ref (deref q1).a`) grows this \
-                 way: split the chain or the loop; {LOOP_GROWTH_ADVICE}"
+                "one iteration of the loop made {made} borrows, more than the one before it \
+                 and more than {LOOP_LOAN_GROWTH} beyond the {fewest} of the iteration before \
+                 it that made the fewest, so the check stops before the loop settles; a chain \
+                 of dozens of references, each to a field of the target of the next, advanced \
+                 in one loop (`q0 = ref (deref q1).a`) grows this way: split the chain or the \
+                 loop; {LOOP_GROWTH_ADVICE}"
             ));
         }
         None
