@@ -18,20 +18,29 @@ const LOAN_EXACT: u8 = 8;
 const LOAN_ORDERED: u8 = 16;
 const LOAN_HOLDING: u8 = 32;
 
-/// A31: how many iterations of one loop may each borrow a place that leaves its type
-/// (`Checker::leaves_type`) deeper than every such place that the iterations before them
-/// borrowed, before `Checker::check_loop` stops with `E1017`. The first iteration never counts,
-/// and an iteration counts only when the loop does not settle with it, so a loop that settles
-/// within `DEEPER_ITERATIONS` + 1 iterations never meets this limit. Neither does a loop whose
-/// places get deeper only along their types: without a union, a type nests only so deep (a chain
-/// of references, each to a field of the target of the next, settles when the chain ends). In
-/// the loops that keep borrowing deeper (A34 `loopplace`), a store into a function value that
-/// owns a cell adds the borrows of a reference parameter's target to the parameter, its
-/// dereference (`Checker::place`) makes the places of the next iteration from them one step
-/// deeper (`p.cell.cell.cell`, the field `cell` of an array from the third iteration on), and the
-/// loans that the locals hold double with each iteration, so that the check would not reach the
-/// limit of `MAX_NESTING` + 1 iterations in practical time.
-const DEEPER_ITERATIONS: usize = 9;
+/// A31: how many iterations of one loop may each end with a holder (a local, `State::kept` or
+/// `State::kept_elsewhere`) that holds a loan of a place that no value has (`artifact_loans`)
+/// deeper than every such loan that it held when the iteration started, which held one already,
+/// before `Checker::check_loop` stops with `E1017`. They count from the first iteration that
+/// ends so for a local whose dereference made such loans (`artifact_sources`): the loop feeds
+/// them back to where they start. The first iteration never counts, and an iteration counts only
+/// when the loop does not settle with it, so a loop that settles within `DEEPER_ITERATIONS` + 1
+/// iterations never meets this limit. Neither does a loop without such loans: a chain of
+/// references, each to a field of the target of the next, gets deeper along the borrowed values,
+/// whether it starts at locals, at parameters or at the results of calls, and settles when the
+/// chain ends. Nor a loop that only passes such loans on from where a store before it put them
+/// (a chain of copies or of borrows, which each holder takes once). In the loops that keep
+/// borrowing deeper (A34 `loopplace`), a store into a function value that owns a cell adds the
+/// borrows of a reference parameter's target to the parameter, its dereference
+/// (`Checker::place`) gives their places, at which the parameter cannot point, a borrow of a
+/// field of it makes places one step deeper from them (`p.s.s`), the next store adds those to the
+/// parameter, and the loans that the locals hold double with each round, so that the check would
+/// not reach the limit of `MAX_NESTING` + 1 iterations in practical time. From the third
+/// iteration on, every iteration ends with the parameter holding a deeper such place, and the
+/// check stops after the tenth. When the round passes through `k` locals before the store
+/// (`t1 = t0`), each of them and the parameter get deeper once every `k + 1` iterations, one
+/// after another, so some holder still gets deeper in every iteration.
+const DEEPER_ITERATIONS: usize = 8;
 
 /// The help of the `E1017` of `DEEPER_ITERATIONS`: the change that lets the loops of A34
 /// `loopplace` settle.
@@ -342,7 +351,9 @@ impl<'a> Checker<'a, '_> {
         let mut value = Value::default();
         for (place, via) in self.place(projection, live)? {
             self.access(&place, &via, Use::Read, projection.span)?;
-            value.loans.insert(self.loans.len());
+            let artifact = self.artifact_place(projection, &via);
+            let loan = self.loans.len();
+            value.loans.insert(loan);
             self.loans.push(Loan {
                 place,
                 mutable: false,
@@ -351,6 +362,7 @@ impl<'a> Checker<'a, '_> {
                 span: projection.span,
                 share: false,
             });
+            self.note_borrowed(loan, projection, artifact);
         }
         let root = Place {
             root: local.id,
@@ -510,13 +522,15 @@ impl<'a> Checker<'a, '_> {
                 body.span,
             )
         };
-        // The deepest place that leaves its type that an iteration so far borrowed, and how many
-        // iterations borrowed one deeper than every iteration before them (`DEEPER_ITERATIONS`).
-        let mut deepest: Option<usize> = None;
+        // Whether a local whose dereference gave a place that no value has held a deeper such
+        // place after an iteration than before it, and how many iterations since ended with a
+        // holder that holds a deeper loan of such a place than it held when they started
+        // (`DEEPER_ITERATIONS`).
+        let mut fed = false;
         let mut deeper = 0;
         for iteration in 0..=crate::syntax::MAX_NESTING {
-            let made = self.loans.len();
             let before = self.loop_summary();
+            let held = self.artifact_depths();
             self.reachable = entry_reachable;
             if let Some(condition) = condition {
                 self.eval(condition, Use::Consume, &live)?;
@@ -552,85 +566,215 @@ impl<'a> Checker<'a, '_> {
                 }
                 return Ok(());
             }
-            let leaving = self.loans[made..]
-                .iter()
-                .map(|loan| &loan.place)
-                .filter(|place| deepest.is_none_or(|known| place.fields.len() > known))
-                .filter(|place| self.leaves_type(place))
-                .map(|place| place.fields.len())
-                .max();
-            if let Some(depth) = leaving {
-                if iteration > 0 {
+            if iteration > 0 && !held.is_empty() {
+                let now = self.artifact_depths();
+                let deepened = |holder: &(u8, usize)| {
+                    now.get(holder)
+                        .is_some_and(|depth| held.get(holder).is_some_and(|was| depth > was))
+                };
+                fed |= self
+                    .artifact_sources
+                    .iter()
+                    .any(|source| deepened(&(0, *source)));
+                if fed && now.keys().any(deepened) {
                     deeper += 1;
                     if deeper == DEEPER_ITERATIONS {
                         return Err(limit().with_help(LOOP_DEEPER_HELP));
                     }
                 }
-                deepest = Some(depth);
             }
         }
         Err(limit())
     }
 
-    /// A31: whether `place` takes a step that the type it has reached does not have
-    /// (`DEEPER_ITERATIONS`): a field of a value that is no record or tuple, or that its record or
-    /// tuple lacks, or an element of a value that is no collection. Each step reads through `Rc`
-    /// and `Arc`, as `place_type` does. What follows the payload of a union (whose case the place
-    /// does not name) or a type whose structure the check does not know (a type variable, an
-    /// application of one, a `dyn` value) is not known to leave its type, nor is a place whose
-    /// root has no type that the check knows (static data). The slot marker of a parameter's
-    /// region slot is no step (`unmarked_fields`).
-    fn leaves_type(&self, place: &Place) -> bool {
-        let external = self.external.contains(&place.root);
-        let root = if external {
-            usize::MAX - place.root
-        } else {
-            place.root
+    /// A31: the number of fields of the deepest loan of a place that no value has
+    /// (`artifact_loans`) that each holder of the state holds (`DEEPER_ITERATIONS`): each local,
+    /// with its region slots, by its id (0 and the id), `State::kept` (1) and
+    /// `State::kept_elsewhere` (2). Empty while the body made no such loan, as almost every body.
+    fn artifact_depths(&self) -> BTreeMap<(u8, usize), usize> {
+        let mut depths = BTreeMap::new();
+        if self.artifact_loans.is_empty() {
+            return depths;
+        }
+        let mut note = |holder: (u8, usize), loans: &BTreeSet<usize>| {
+            for loan in loans.intersection(&self.artifact_loans) {
+                let depth = self.loans[*loan].place.fields.len();
+                let deepest = depths.entry(holder).or_insert(depth);
+                *deepest = (*deepest).max(depth);
+            }
         };
-        let Some(local) = self.declarations.get(&root) else {
+        for (id, (_, value)) in &self.state.locals {
+            note((0, *id), &value.loans);
+            for slot in value.regions.iter().flat_map(|slots| slots.iter()) {
+                note((0, *id), slot);
+            }
+        }
+        note((1, 0), &self.state.kept);
+        note((2, 0), &self.state.kept_elsewhere);
+        depths
+    }
+
+    /// A31: notes `loan`, which a borrow of the place `borrowed` made: the type of the borrowed
+    /// value (`loan_types`), and whether no value has its place (`artifact_loans`, which
+    /// `artifact` gives: `artifact_place`, asked before the loan was made).
+    pub(super) fn note_borrowed(&mut self, loan: usize, borrowed: &TypedExpr, artifact: bool) {
+        self.loan_types.insert(loan, without_views(&borrowed.ty));
+        if artifact {
+            self.artifact_loans.insert(loan);
+        }
+    }
+
+    /// A31: whether no value has the place of a borrow of `borrowed` that the place `via` of
+    /// `Checker::place` gives (`artifact_loans`). Such a place comes from a dereference (the
+    /// innermost one of the fields, elements and payloads of `borrowed`) that gave the place of
+    /// the loan `via` ends with (its newest, which its parents precede), and the loan is one:
+    ///
+    /// - of a place that no value has itself, or
+    /// - that the dereferenced local, an immutable reference that points at the places of the
+    ///   loans that it held when it was bound (`pointing`), did not hold then: a borrow that a
+    ///   store added to it later is one that its target holds, not one at which it points, or
+    /// - whose borrowed value (`loan_types`) has a type from which the type of the reference's
+    ///   target cannot be reached (`reaches`).
+    ///
+    /// A place of a local, or one that its aliases give, is a place of a value. So is a place
+    /// that the result of a call or a reference read from a value gives: its loan's place holds
+    /// what the reference points at (the borrowed value reaches it), even where its fields, read
+    /// from the root's type (`place_type`), name another field.
+    pub(super) fn artifact_place(&mut self, borrowed: &TypedExpr, via: &BTreeSet<usize>) -> bool {
+        let Some(&base) = via.last() else {
             return false;
         };
-        let mut current = match &local.ty {
-            Type::Reference(target, _) if external => (**target).clone(),
-            ty => ty.clone(),
-        };
-        let types = self.module.types();
-        for &field in unmarked_fields(place) {
-            if field == PAYLOAD {
-                return false;
-            }
-            let mut ty = without_views(&current);
-            while let Type::Shared(
-                inner,
-                crate::check::SharedKind::Rc | crate::check::SharedKind::Arc,
-            ) = ty
-            {
-                ty = *inner;
-            }
-            current = match ty {
-                Type::Record(id, arguments) if field < types.records[id].fields.len() => {
-                    types.record_field(id, &arguments, field)
+        let mut value = borrowed;
+        let reference = loop {
+            value = match &value.kind {
+                E::Field(inner, _)
+                | E::UnionPayload { value: inner, .. }
+                | E::ListTail(inner, _) => inner,
+                E::Index(inner, _)
+                    if matches!(
+                        inner.ty,
+                        Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                    ) =>
+                {
+                    inner
                 }
-                Type::Tuple(elements) if field < elements.len() => elements[field].clone(),
+                E::Dereference(reference) => break reference,
+                _ => return false,
+            };
+        };
+        if self.artifact_loans.contains(&base) {
+            return true;
+        }
+        let unbound = matches!(&reference.kind, E::Local(id)
+            if !self.state.aliases.contains_key(id)
+                && self
+                    .pointing
+                    .get(id)
+                    .is_some_and(|bound| !bound.contains(&base)));
+        let unreachable = !unbound
+            && match (&reference.ty, self.loan_types.get(&base).cloned()) {
+                (Type::Reference(target, _), Some(borrowed)) => {
+                    let target = without_views(target);
+                    borrowed != target && !self.reaches(&borrowed, &target)
+                }
+                _ => false,
+            };
+        if !unbound && !unreachable {
+            return false;
+        }
+        let mut root = &**reference;
+        while let E::Field(inner, _)
+        | E::Index(inner, _)
+        | E::Dereference(inner)
+        | E::UnionPayload { value: inner, .. }
+        | E::ListTail(inner, _) = &root.kind
+        {
+            root = inner;
+        }
+        if let E::Local(id) = &root.kind {
+            self.artifact_sources.insert(*id);
+        }
+        true
+    }
+
+    /// A31: whether a reference to a value of the type `to` may point at a part of a value of the
+    /// type `from` or at what it reaches (`artifact_place`): `from` itself, a field (or a type
+    /// argument) of a record, a payload (or a type argument) of a union, an element of a tuple or
+    /// a collection, the target of a reference, the block of an `Rc` or `Arc`, what a function
+    /// returns (a function value hands out no other reference), and what a `dyn` value of any type
+    /// that the program stores in one reaches. A string reaches every type but a record, a union,
+    /// a tuple, a function, a `dyn` value, a block and a reference (a builtin may lend its bytes).
+    /// A type whose structure the check does not know (a type variable, an application of one, an
+    /// extern handle) reaches every type.
+    fn reaches(&mut self, from: &Type, to: &Type) -> bool {
+        let key = (from.clone(), to.clone());
+        if let Some(&answer) = self.reach_cache.get(&key) {
+            return answer;
+        }
+        let types = self.module.types();
+        let mut seen = BTreeSet::new();
+        let mut pending = vec![from.clone()];
+        let mut answer = false;
+        while let Some(ty) = pending.pop() {
+            let ty = without_views(&ty);
+            if ty == *to {
+                answer = true;
+                break;
+            }
+            if !seen.insert(ty.clone()) {
+                continue;
+            }
+            match ty {
+                Type::Record(id, arguments) => {
+                    pending.extend(types.record_fields(id, &arguments));
+                    pending.extend(arguments.iter().cloned());
+                }
+                Type::Union(id, arguments) => {
+                    pending.extend(types.union_payloads(id, &arguments).into_iter().flatten());
+                    pending.extend(arguments.iter().cloned());
+                }
+                Type::Tuple(elements) => pending.extend(elements),
                 Type::Array(inner)
                 | Type::ArrayView(inner)
                 | Type::List(inner)
                 | Type::Vec(inner)
                 | Type::FixedArray(inner, _)
-                    if field == ELEMENT =>
+                | Type::Reference(inner, _)
+                | Type::Shared(inner, _)
+                | Type::Once(inner)
+                | Type::Function(_, inner) => pending.push(*inner),
+                Type::Dyn(_) => {
+                    pending.extend(self.module.vtables.keys().map(|(_, stored)| stored.clone()))
+                }
+                Type::String | Type::Utf8String
+                    if !matches!(
+                        to,
+                        Type::Record(..)
+                            | Type::Union(..)
+                            | Type::Tuple(_)
+                            | Type::Function(..)
+                            | Type::Dyn(_)
+                            | Type::Shared(..)
+                            | Type::Reference(..)
+                    ) =>
                 {
-                    *inner
+                    answer = true;
+                    break;
                 }
                 Type::Error
                 | Type::Variable(_)
                 | Type::Infer(_)
                 | Type::Partial(_)
                 | Type::Application(..)
-                | Type::Dyn(_) => return false,
-                _ => return true,
-            };
+                | Type::Handle(_) => {
+                    answer = true;
+                    break;
+                }
+                _ => {}
+            }
         }
-        false
+        self.reach_cache.insert(key, answer);
+        answer
     }
 
     pub(super) fn eval_control(
