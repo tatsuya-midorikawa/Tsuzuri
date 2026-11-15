@@ -79,7 +79,7 @@ const LOOP_GROWTH_FROM: usize = 4;
 
 /// A31: how many iterations in a row that did not settle may each make more loans than the
 /// iteration before it, and more of them than that one added, before `Checker::check_loop` stops
-/// with `E1017`. The loans of a `loopplace` loop grow so from its second iteration on (2, 4, 8,
+/// with `E1017`. The loans of a `loopplace` loop grow so from its second iteration on (1, 2, 4,
 /// ... more) or from the iteration whose store first gets the borrow that its locals passed on, so
 /// the check stops at its sixth iteration (iteration 5) or five iterations after that store. A loop
 /// that settles grows faster only while its locals widen one after another to more places each (a
@@ -103,9 +103,9 @@ const LOOP_GROWING_ITERATIONS: usize = 24;
 
 /// A31: the iterations in a row of `LOOP_GROWING_ITERATIONS` that stop a loop whose last iteration
 /// made more loans than the second number: an iteration of such a body takes long enough that 24 of
-/// them would take seconds (a body of 1000 borrows and 40 locals that pass the borrow on took 5
-/// seconds for 32), and this stops it after a third of that. A loop that copies a reference along 9
-/// or more locals and makes more than 200 loans per iteration stops too.
+/// them would take seconds (a body of 1000 borrows and 40 locals that pass the borrow on took about
+/// 5 seconds for 32), and this stops it after a third of that. A loop that copies a reference along
+/// 9 or more locals and makes more than 200 loans per iteration stops too.
 const LOOP_GROWING_LARGE: (usize, usize) = (8, 200);
 
 /// A31: the change that lets the loops of A34 `loopplace` settle, which the help of each stop of

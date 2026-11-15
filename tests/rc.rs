@@ -8020,10 +8020,10 @@ fn each_chain(links: usize, extra: &str, result: &str, local: bool) -> String {
 /// chains of 8 references each makes at most 17 times 28 = 476 more loans than in its first
 /// iteration and is accepted, and with 18 chains its iteration 7 makes 504 more, and the loop stops
 /// at the start of its body. Their loans grow by less in each iteration than in the one before, so
-/// no other stop applies. So does a single chain of 33 references (`L (L - 1) / 2` = 528 more at most; its
-/// iteration 26 is the first beyond the limit), where the documents put the limit; a chain of 32
-/// (496 at most) is accepted, but takes a release build about 13 seconds, so the test does not
-/// check it.
+/// no other stop applies. So does a single chain of 33 references (`L (L - 1) / 2` = 528 more at
+/// most; its iteration 26 is the first beyond the limit), where the documents put the limit; a
+/// chain of 32 (496 at most) is accepted, but takes a release build about 13 seconds, so the test
+/// does not check it.
 #[test]
 fn a_loop_stops_when_a_later_iteration_makes_500_loans_more_than_an_earlier_one() {
     let live = "    q0.v + q1.v + p.r0.v\n";
@@ -8239,9 +8239,9 @@ fn interpreter(ops: usize, subs: usize) -> String {
 /// A loop that borrows `pairs` times the two fields of `cur`, copies it along `copies` locals
 /// (`prev{copies-1} = prev{copies-2}`, ..., `prev0 = cur`) and assigns it again to one of `places`
 /// records (`cur = match i % places with | 0 -> ref b0 ...`). With 8 places, `run 3` adds the
-/// fields of `b0` twice and of `b1` once in each pair (`2 + 2 + 5`), and the first field of the last
-/// copy (`b0`, 1 byte; `b1`, 2 bytes, when one local copies `cur`): 290 for 32 pairs and one copy,
-/// 325 for 36 pairs and four copies.
+/// fields of `b0` twice and of `b1` once in each pair (`2 + 2 + 5`), and the first field of the
+/// last copy (`b0`, 1 byte; `b1`, 2 bytes, when one local copies `cur`): 290 for 32 pairs and one
+/// copy, 325 for 36 pairs and four copies.
 fn widening(places: usize, pairs: usize, copies: usize) -> String {
     let mut source =
         String::from("record Buf { a: string, b: string }\ndef run :: i64 -> i64\nfn run n =\n");
@@ -8277,8 +8277,8 @@ fn widening(places: usize, pairs: usize, copies: usize) -> String {
     source
 }
 
-/// A loop that copies a reference along `n` locals, one per iteration (`u{n-1} = u{n-2}`, ...,
-/// `u1 = u0`, `u0 = ref a`), and reads through the last of them, with `fillers` more borrows of `y`:
+/// A loop that copies a reference along `n` locals, one per iteration (`u{n-1} = u{n-2}`, ..., `u1
+/// = u0`, `u0 = ref a`), and reads through the last of them, with `fillers` more borrows of `y`:
 /// the place of `a` reaches `u{k}` in iteration `k`, and the loop settles in iteration `n`. `run 3`
 /// reads `y` (6 bytes) through `u{n-1}` in each of its iterations when `n` is more than 3, and
 /// `fillers` times besides: `18 (fillers + 1)`.
@@ -8313,27 +8313,27 @@ fn copy_chain(n: usize, fillers: usize) -> String {
 /// reference to one of 8 records 89 and 601, and both settle in their third iteration, as
 /// `15d84aaf`, `main` and the base accept them (`main` prints 31 and 290). They stopped with
 /// `E1017`. `LOOP_LOAN_GROWTH` now starts at the fifth iteration, counts from the iteration before
-/// it that made the fewest loans, and needs the iteration to make more loans than the one before it,
-/// and the stops for loans that keep growing need 5 or more iterations in a row that grow, so both
-/// are accepted in both editions, and so is the second loop when it copies `cur` along four locals
-/// and borrows 72 times through it (97 loans, then 673 in each of iterations 1 to 4, and it settles
-/// in iteration 5; `main` prints 325).
+/// it that made the fewest loans, and needs the iteration to make more loans than the one before
+/// it, and the stops for loans that keep growing need 5 or more iterations in a row that grow, so
+/// both are accepted in both editions, and so is the second loop when it copies `cur` along four
+/// locals and borrows 72 times through it (97 loans, then 673 in each of iterations 1 to 4, and it
+/// settles in iteration 5; `main` prints 325).
 ///
 /// The first iteration of a `loopplace` loop whose body holds a loop that assigns a reference
 /// declared before it (`u0 = ref a`) is its largest (the inner loop settles in its second iteration
 /// there, at once afterwards), and the stop counted from it, so the loans grew far past 500 first,
 /// and the check took 10 seconds and more. A loop that passes the borrow through 40 locals before
-/// the store adds one loan per iteration for about 40 iterations, and with 140 locals never met
-/// the limit before the 129 iterations (25 seconds). Now 5 iterations in a row whose loans grow
-/// faster and faster (`LOOP_FASTER_ITERATIONS`), or 24 iterations in a row whose loans grow at
-/// least as fast as before (`LOOP_GROWING_ITERATIONS`; 8 when the last made more than 200 loans,
+/// the store adds one loan per iteration for about 40 iterations, and with 140 locals never met the
+/// limit before the 129 iterations (25 seconds). Now 5 iterations in a row whose loans grow faster
+/// and faster (`LOOP_FASTER_ITERATIONS`), or 24 iterations in a row whose loans grow at least as
+/// fast as before (`LOOP_GROWING_ITERATIONS`; 8 when the last made more than 200 loans,
 /// `LOOP_GROWING_LARGE`), stop the loop: the first at the start of the outer loop's body (`11:9`:
-/// from iteration 2 on, its loans grow by 2, 4, 8, ... more, and iteration 6 is the fifth in a row),
-/// the second at that of the loop of 40 locals (`47:9`, its iteration 24). A loop that copies a
-/// reference along 24 locals settles in iteration 24 after 23 iterations that each add one loan, and
-/// is accepted (`main` prints 18); along 25 locals its iteration 24 is the 24th such iteration, and
-/// the loop stops (`33:9`), where the documents put that limit. With 200 more borrows in the body,
-/// 8 locals are accepted (`main` prints 3618), and 9 stop at iteration 8 (`17:9`, 212 loans).
+/// from iteration 2 on, its loans grow by 2, 4, 8, ... more, and iteration 6 is the fifth in a
+/// row), the second at that of the loop of 40 locals (`47:9`, its iteration 24). A loop that copies
+/// a reference along 24 locals settles in iteration 24 after 23 iterations that each add one loan,
+/// and is accepted (`main` prints 18); along 25 locals its iteration 24 is the 24th such iteration,
+/// and the loop stops (`33:9`), where the documents put that limit. With 200 more borrows in the
+/// body, 8 locals are accepted (`main` prints 3618), and 9 stop at iteration 8 (`17:9`, 212 loans).
 #[test]
 fn a_loop_that_grows_once_settles_and_one_that_keeps_growing_stops() {
     accepts_in_both_editions(&[("Main.tz", &interpreter(20, 4))]);
