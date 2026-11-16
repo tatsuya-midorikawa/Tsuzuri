@@ -7771,11 +7771,12 @@ fn late_hand_on(k: usize) -> String {
 /// reference that a parameter holds: their fields name fields of another value, so a chain of 10
 /// or more references, each to a field of the target of the next, that starts at such places got
 /// `E1017`, although `15d84aaf`, `main` and the base accept it (each prints 3). The check now
-/// counts the loans that each iteration makes (`LOOP_LOAN_GROWTH`): iteration `k` of the chains
-/// below, of 12 links, makes `k (k - 1) / 2 + k (12 - k)` loans more than the first, at most 66,
-/// and twice as many in `each`, whose links start with two places each (a field of `p` and the
-/// same field of the borrow of `p.r12` that the store before the loop added to `p`), at most 132.
-/// They are accepted in both editions.
+/// stops by how the loans that each iteration makes grow (`LoanGrowth`): iteration `k` of the
+/// chains below, of 12 links, makes `k (k - 1) / 2 + k (12 - k)` loans more than the first, at
+/// most 66, and twice as many in `each`, whose links start with two places each (a field of `p`
+/// and the same field of the borrow of `p.r12` that the store before the loop added to `p`), at
+/// most 132. Their loans grow by less in each iteration than in the one before, so no stop applies
+/// to them, and they are accepted in both editions.
 ///
 /// Two forms that the first stop missed stop at the start of the loop's body. A `dyn Display`
 /// field (`ref p.s`), whose loans double as in the other `loopplace` forms and whose unsafe twin
@@ -8015,17 +8016,19 @@ fn each_chain(links: usize, extra: &str, result: &str, local: bool) -> String {
 /// borrow through four locals before the store (`late_hand_on(4)`, which adds one loan in each of
 /// its first four iterations: iteration 9, 28 loans).
 ///
-/// `LOOP_LOAN_GROWTH` (500) counts every loan of the body from the fifth iteration on, beyond the
-/// iteration before it that made the fewest (the first, for these chains): a loop that advances 17
-/// chains of 8 references each makes at most 17 times 28 = 476 more loans than in its first
-/// iteration and is accepted, and with 18 chains its iteration 7 makes 504 more, and the loop stops
-/// at the start of its body. Their loans grow by less in each iteration than in the one before, so
-/// no other stop applies. So does a single chain of 33 references (`L (L - 1) / 2` = 528 more at
-/// most; its iteration 26 is the first beyond the limit), where the documents put the limit; a
-/// chain of 32 (496 at most) is accepted, but takes a release build about 13 seconds, so the test
-/// does not check it.
+/// No stop counts the loans themselves, and a loop whose loans grow by less in each iteration
+/// than in the one before meets neither stop, however many loans it makes. A loop that passes a
+/// reference to one of two records along 16 locals, one per iteration, and reads through each of
+/// them 4 times (`pipeline(16, 2, 4)`) makes 71, 139, 203, ..., 659 and 671 loans (each iteration
+/// adds 4 fewer than the one before; 600 more than the first in all), settles in iteration 16 and
+/// is accepted in both editions (`main` prints 600). The loan budget of A31 (`LOOP_LOAN_GROWTH`,
+/// later removed: from the fifth iteration on, 500 loans beyond the iteration before it that made
+/// the fewest) stopped it in iteration 11, and so it did 18 chains of 8 references advanced in one
+/// loop (146, 272, ..., 650 loans) and a single chain of 33, which the check now accepts after
+/// about 2.4 seconds on a dev build and 33 seconds on a release build, as `15d84aaf` did; the
+/// test checks the shorter loop instead.
 #[test]
-fn a_loop_stops_when_a_later_iteration_makes_500_loans_more_than_an_earlier_one() {
+fn a_loop_whose_loans_grow_by_less_in_each_iteration_settles_however_many_it_makes() {
     let live = "    q0.v + q1.v + p.r0.v\n";
     // A chain of `links` references, each `qk` starting at its own local `yk`.
     let single = |links: usize| {
@@ -8128,61 +8131,7 @@ do! IO.write_line (to_string (run 1))
         }
     }
 
-    // `q<c>_<k> = ref (deref q<c>_<k+1>).a` for `chains` chains of 8 links, which share the records.
-    let chains = |chains: usize| {
-        let (mut source, literals) = chain_records(8);
-        source.push_str("def run :: i64 -> i64\nfn run n =\n");
-        for c in 0..chains {
-            for (k, literal) in literals.iter().enumerate() {
-                source.push_str(&format!("    let y{c}_{k} = {literal}\n"));
-            }
-        }
-        for c in 0..chains {
-            for k in 0..=8 {
-                source.push_str(&format!("    let mut q{c}_{k} = ref y{c}_{k}\n"));
-            }
-        }
-        source.push_str("    let mut i = 0\n    while i < n do\n");
-        for c in 0..chains {
-            for k in 0..8 {
-                source.push_str(&format!(
-                    "        q{c}_{k} = ref (deref q{c}_{}).a\n",
-                    k + 1
-                ));
-            }
-        }
-        source.push_str(
-            "        i = i + 1\n    q0_0.v + q0_1.v\ndo! IO.write_line (to_string (run 3))\n",
-        );
-        source
-    };
-    accepts_in_both_editions(&[("Main.tz", &chains(17))]);
-    // 18 chains of 8 links (iteration 7: 504 more), and one chain of 33 links (iteration 26:
-    // 26 * 25 / 2 + 26 * 7 = 507 more; iteration 25 makes 500 more).
-    for (over, first) in [
-        (chains(18), "        q0_0 = "),
-        (single(33), "        q0 = "),
-    ] {
-        let body = over.find(first).unwrap();
-        for edition in [Edition::E2026, Edition::E2027] {
-            let error = analyze_with_edition(&over, edition).expect_err(&over);
-            assert_eq!(
-                (error.code, error.kind),
-                ("E1017", Some("loop_ownership_limit")),
-                "edition {edition}: {}",
-                error.message
-            );
-            assert_eq!(error.span.start, body + 8, "edition {edition}");
-            assert!(
-                error
-                    .help
-                    .as_deref()
-                    .is_some_and(|help| help.contains("more than 500 beyond")),
-                "edition {edition}: {:?}",
-                error.help
-            );
-        }
-    }
+    accepts_in_both_editions(&[("Main.tz", &pipeline(16, 2, 4))]);
 }
 
 /// A toy bytecode interpreter with `ops` opcodes of two strings and `subs` subroutines (`Call0`,
@@ -8304,20 +8253,18 @@ fn copy_chain(n: usize, fillers: usize) -> String {
     source
 }
 
-/// A31, review round 1 of the loan budget (`LOOP_LOAN_GROWTH`, which then stopped a loop when an
-/// iteration made 500 loans more than the first). A reference that a loop assigns again (`code =
-/// sub0`) widens at the first merge to every place that the loop gives it, and a local that copies
-/// it (`saved = code`) one iteration later, so each borrow through them makes one loan for each of
-/// those places from the second iteration on: an interpreter of 20 opcodes and 4 subroutines made
-/// 176 loans in its first iteration and 712 in its second, and a loop with 64 borrows through a
-/// reference to one of 8 records 89 and 601, and both settle in their third iteration, as
-/// `15d84aaf`, `main` and the base accept them (`main` prints 31 and 290). They stopped with
-/// `E1017`. `LOOP_LOAN_GROWTH` now starts at the fifth iteration, counts from the iteration before
-/// it that made the fewest loans, and needs the iteration to make more loans than the one before
-/// it, and the stops for loans that keep growing need 5 or more iterations in a row that grow, so
-/// both are accepted in both editions, and so is the second loop when it copies `cur` along four
-/// locals and borrows 72 times through it (97 loans, then 673 in each of iterations 1 to 4, and it
-/// settles in iteration 5; `main` prints 325).
+/// A31, review round 1 of the loan budget (`LOOP_LOAN_GROWTH`, since removed, which then stopped a
+/// loop when an iteration made 500 loans more than the first). A reference that a loop assigns
+/// again (`code = sub0`) widens at the first merge to every place that the loop gives it, and a
+/// local that copies it (`saved = code`) one iteration later, so each borrow through them makes one
+/// loan for each of those places from the second iteration on: an interpreter of 20 opcodes and 4
+/// subroutines made 176 loans in its first iteration and 712 in its second, and a loop with 64
+/// borrows through a reference to one of 8 records 89 and 601, and both settle in their third
+/// iteration, as `15d84aaf`, `main` and the base accept them (`main` prints 31 and 290). They
+/// stopped with `E1017`. The stops now need 5 or more iterations in a row whose loans grow, and no
+/// stop counts the loans themselves, so both are accepted in both editions, and so is the second
+/// loop when it copies `cur` along four locals and borrows 72 times through it (97 loans, then 673
+/// in each of iterations 1 to 4, and it settles in iteration 5; `main` prints 325).
 ///
 /// The first iteration of a `loopplace` loop whose body holds a loop that assigns a reference
 /// declared before it (`u0 = ref a`) is its largest (the inner loop settles in its second iteration
@@ -8523,6 +8470,77 @@ fn pipeline(stages: usize, places: usize, reads: usize) -> String {
     source
 }
 
+/// A state machine over `states` records: four arms read `reads` fields of the current state in
+/// all (`String.length cur.name`, `cur.weight`), the loop keeps the last `history` states (`prev5 =
+/// prev4`, ..., `prev0 = cur`, each first `ref s0`), checks `fields` fields of each of them (the
+/// name, then the weight, then `accept`), and moves to one of the states (`cur = match (cur.weight
+/// + c) % states with | 0 -> ref s0 ...`).
+fn state_machine(states: usize, reads: usize, history: usize, fields: usize) -> String {
+    let mut source = String::from(
+        "record State { name: string, accept: bool, weight: i64 }\ndef run :: ref [i64] -> i64\nfn run input =\n",
+    );
+    for k in 0..states {
+        source.push_str(&format!(
+            "    let s{k} = State {{ name: \"s{k}\", accept: {}, weight: {} }}\n",
+            k % 3 == 0,
+            k + 1
+        ));
+    }
+    source.push_str("    let mut cur = ref s0\n");
+    for h in 0..history {
+        source.push_str(&format!("    let mut prev{h} = ref s0\n"));
+    }
+    source.push_str("    let mut score = 0\n    let mut matches = 0\n    let mut i = 0\n    while i < input.length do\n        let c = input[i]\n        match c % 4 with\n");
+    for arm in 0..4 {
+        if arm == 3 {
+            source.push_str("        | _ ->\n");
+        } else {
+            source.push_str(&format!("        | {arm} ->\n"));
+        }
+        for read in 0..reads.div_ceil(4) {
+            if read % 2 == 0 {
+                source.push_str(&format!(
+                    "            score = score + String.length cur.name * {}\n",
+                    arm + 1
+                ));
+            } else {
+                source.push_str(&format!(
+                    "            score = score + cur.weight * {read}\n"
+                ));
+            }
+        }
+    }
+    let mut checks = Vec::new();
+    for h in 0..history {
+        checks.push(format!("String.length prev{h}.name > 1"));
+        if fields >= 2 {
+            checks.push(format!("prev{h}.weight > {h}"));
+        }
+        if fields >= 3 {
+            checks.push(format!("prev{h}.accept"));
+        }
+    }
+    source.push_str(&format!(
+        "        if cur.accept && {} then matches = matches + 1\n",
+        checks.join(" && ")
+    ));
+    for h in (1..history).rev() {
+        source.push_str(&format!("        prev{h} = prev{}\n", h - 1));
+    }
+    source.push_str(&format!(
+        "        prev0 = cur\n        cur = match (cur.weight + c) % {states} with\n"
+    ));
+    for k in 0..states {
+        if k == states - 1 {
+            source.push_str(&format!("            | _ -> ref s{k}\n"));
+        } else {
+            source.push_str(&format!("            | {k} -> ref s{k}\n"));
+        }
+    }
+    source.push_str("        i = i + 1\n    score + matches\ndo! IO.write_line (to_string (run (ref [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9])))\n");
+    source
+}
+
 /// A31, the final review of `LoanGrowth`. `LOOP_LOAN_GROWTH` counted from the iteration before
 /// that made the fewest loans, which is the first when a reference that the loop assigns again
 /// widens in the second (`code = sub0`, `cur = match ...`): an interpreter of 20 opcodes and 4
@@ -8535,11 +8553,15 @@ fn pipeline(stages: usize, places: usize, reads: usize) -> String {
 /// iteration 5; `main` prints 328), the interpreter reading through a history of its last five
 /// names (183, 724, 728, 731, 733, settles in iteration 5; 271), and the interpreter keeping a
 /// return stack of four code references (180, 716, 720, 724, 728, settles in iteration 5; 101).
-/// Now an iteration also needs `LOOP_LATE_GROWTH` (100) loans more than the fourth iteration, so
-/// all three are accepted in both editions. A loop that copies a reference to one of 8 records
-/// along 5 locals and reads through each of them 20 times grows by 240, 220, 200 and 180 loans and
-/// still stops in iteration 4 (`20:9`, 965 loans: 180 more than the 785 of the fourth iteration),
-/// where the documents put that limit.
+/// `LOOP_LATE_GROWTH` (100 loans beyond the fourth iteration) then let these three settle, but a
+/// state machine of 16 states that keeps its last six and checks two fields of each still stopped
+/// (105, 693, 735, 775, 813, 849 and 883 loans, 108 beyond the fourth iteration in iteration 6),
+/// and so did a loop that copies a reference to one of 8 records along 5 locals and reads through
+/// each of them 20 times (125, 365, 585, 785 and 965 loans, in iteration 4). After the widening,
+/// the loans of all five grow by less in each iteration than in the one before, and no stop counts
+/// the loans themselves any more (the budget was removed), so all five settle (the state machine in
+/// iteration 7, the copies in iteration 5) and are accepted in both editions, as `15d84aaf`,
+/// `main` and the base accept them (`main` prints 9288 and 0 for the last two).
 #[test]
 fn a_loop_whose_reference_widens_once_may_settle_a_few_iterations_later() {
     let read = widening(8, 36, 4).replacen(
@@ -8551,31 +8573,9 @@ fn a_loop_whose_reference_widens_once_may_settle_a_few_iterations_later() {
         read,
         keeping_interpreter(20, 4, 5, 0),
         keeping_interpreter(20, 4, 0, 4),
+        state_machine(16, 72, 6, 2),
+        pipeline(5, 8, 20),
     ] {
         accepts_in_both_editions(&[("Main.tz", &source)]);
-    }
-    let pipe = pipeline(5, 8, 20);
-    for edition in [Edition::E2026, Edition::E2027] {
-        let error = analyze_with_edition(&pipe, edition).expect_err(&pipe);
-        assert_eq!(
-            (error.code, error.kind),
-            ("E1017", Some("loop_ownership_limit")),
-            "edition {edition}\n{}",
-            error.message
-        );
-        assert_eq!(
-            position(&pipe, error.span.start),
-            (20, 9),
-            "edition {edition}"
-        );
-        assert!(
-            error.help.as_deref().is_some_and(|help| help.contains(
-                "one iteration of the loop made 965 borrows, more than the one before it, more \
-                 than 500 beyond the 125 of the iteration before it that made the fewest, and \
-                 more than 100 beyond the 785 of the fourth iteration"
-            )),
-            "edition {edition}: {:?}",
-            error.help
-        );
     }
 }
