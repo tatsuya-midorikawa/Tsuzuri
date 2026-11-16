@@ -91,11 +91,12 @@ const LOOP_GROWTH_FROM: usize = 4;
 /// opcodes and 5 code arrays), and when the loop also keeps references that settle one iteration
 /// after another (a history `last4 = last3`, ..., `last0 = ref names[pc]`, a return stack `ret3 =
 /// ret2`, ..., `ret0 = code`, a copy of the reference read through in the loop), each of its later
-/// iterations makes a few loans more (1 to 19 in the review probes of A31) until it settles. What
-/// the loop made before the fifth iteration is not counted against it then: it stops only when it
-/// also makes more than this beyond the fourth iteration. The chains and windows that
-/// `LOOP_LOAN_GROWTH` stops make 180 or more beyond the fourth iteration when they meet it (18
-/// chains of 8 links; 414 for a chain of 33), so where they stop does not change.
+/// iterations makes a few loans more (1 to 19 in the review probes of A31, and at most 20 beyond
+/// the fourth iteration, with a return stack of 8) until it settles. What the loop made before the
+/// fifth iteration is not counted against it then: it stops only when it also makes more than this
+/// beyond the fourth iteration. The chains and windows that `LOOP_LOAN_GROWTH` stops make 180 or
+/// more beyond the fourth iteration when they meet it (18 chains of 8 links; 414 for a chain of
+/// 33), so where they stop does not change.
 const LOOP_LATE_GROWTH: usize = 100;
 
 /// A31: how many iterations in a row that did not settle may each make more loans than the
@@ -122,10 +123,10 @@ const LOOP_FASTER_ITERATIONS: usize = 5;
 /// statements that the body evaluates times the loans that the state holds, not the loans that the
 /// iteration makes, so a body of many statements that borrow little still runs those 24
 /// iterations: on a release build, a hand-on through 60 locals with 2000 statements that make no
-/// loans takes about 10 seconds, and one through 500 locals about 9 (A34 `loopplace`). A loop that copies a reference along `n` locals, one per iteration (`u(n-1) =
-/// u(n-2)`, ..., `u1 = u0`, `u0 = ref a`), and borrows through the last of them adds one loan per
-/// iteration the same way and settles in iteration `n`, so this stops such a loop from 25 locals
-/// on.
+/// loans takes about 8.5 seconds, and one through 500 locals about 7 (A34 `loopplace`). A loop that
+/// copies a reference along `n` locals, one per iteration (`u(n-1) = u(n-2)`, ..., `u1 = u0`, `u0
+/// = ref a`), and borrows through the last of them adds one loan per iteration the same way and
+/// settles in iteration `n`, so this stops such a loop from 25 locals on.
 const LOOP_GROWING_ITERATIONS: usize = 24;
 
 /// A31: the iterations in a row of `LOOP_GROWING_ITERATIONS` that stop a loop whose last iteration
