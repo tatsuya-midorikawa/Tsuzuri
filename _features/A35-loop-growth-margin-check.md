@@ -40,19 +40,19 @@ A31 は、収束しないループの所有権の検査を `E1017`（`loop_owner
 
 ## 現状
 
-A31 の先端（ブランチ `fix/a31-in-place-writes-keep-borrows`。借用の数の上限を外したコミット）で確かめました。行番号はそのコミットのものです。
+A31 の先端（ブランチ `fix/a31-in-place-writes-keep-borrows`、借用の数の上限を外した `73a3402b`）で確かめました。行番号はそのコミットのものです。
 
 ### 打ち切りと上限（`src/ownership_control.rs`）
 
-`Checker::check_loop`（647 行）は、反復ごとに、条件と本体の検査の前後の `self.loans.len()` の差をその反復が作った借用の数とし、収束しなかった反復ごとに `LoanGrowth::note`（144 行）へ渡します（703 行）。要約が前の反復と同じなら（695 行の `self.loop_summary() == before`）、その反復は `note` に渡さずに `Ok` を返します。`note` が止める条件は次の 3 つの定数で決まります（定数はどれも非公開）。借用の数そのものの上限はありません。
+`Checker::check_loop`（648 行）は、反復ごとに、条件と本体の検査の前後の `self.loans.len()` の差をその反復が作った借用の数とし、収束しなかった反復ごとに `LoanGrowth::note`（145 行）へ渡します（704 行）。要約が前の反復と同じなら（696 行の `self.loop_summary() == before`）、その反復は `note` に渡さずに `Ok` を返します。`note` が止める条件は次の 3 つの定数で決まります（定数はどれも非公開）。借用の数そのものの上限はありません。
 
 | 定数 | 行 | 値 | 止める条件 |
 | --- | --- | --- | --- |
-| `LOOP_FASTER_ITERATIONS` | 107 | 5 | 5 回続けて、前の反復より多く、しかも前の反復が増えた数より多く借用を作った（`LoanGrowth::faster`） |
-| `LOOP_GROWING_ITERATIONS` | 123 | 24 | 24 回続けて、前の反復より多く、前の反復が増えた数以上に作った（`LoanGrowth::growing`） |
-| `LOOP_GROWING_LARGE` | 132 | (8, 200) | 同じ数え方で 8 回続き、しかもその反復が 200 個を超えて作った |
+| `LOOP_FASTER_ITERATIONS` | 108 | 5 | 5 回続けて、前の反復より多く、しかも前の反復が増えた数より多く借用を作った（`LoanGrowth::faster`） |
+| `LOOP_GROWING_ITERATIONS` | 124 | 24 | 24 回続けて、前の反復より多く、前の反復が増えた数以上に作った（`LoanGrowth::growing`） |
+| `LOOP_GROWING_LARGE` | 133 | (8, 200) | 同じ数え方で 8 回続き、しかもその反復が 200 個を超えて作った |
 
-`LoanGrowth`（82 行）は、前の反復の数とその前から増えた数（`last`）と、2 つの連続（`faster`・`growing`）だけを持ちます。止めずに収束したループのこれらの値は、どこにも残りません。
+`LoanGrowth`（83 行）は、前の反復の数とその前から増えた数（`last`）と、2 つの連続（`faster`・`growing`）だけを持ちます。止めずに収束したループのこれらの値は、どこにも残りません。
 
 確かめ方: `grep -nE "^const LOOP_|^struct LoanGrowth|fn note|fn check_loop|growth.note|loop_summary\(\) == before" src/ownership_control.rs`。
 
