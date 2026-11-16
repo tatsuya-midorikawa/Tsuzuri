@@ -8398,3 +8398,184 @@ fn a_loop_that_grows_once_settles_and_one_that_keeps_growing_stops() {
         }
     }
 }
+
+/// `interpreter(ops, subs)` that also keeps the last `history` names it stepped through (`w4 =
+/// w3`, ..., `w1 = w0`, `w0 = ref names[steps % 3]`, each first `ref none`) and reads through
+/// each of them in each step, and that saves its code on a return stack of `depth` locals
+/// instead of `saved` (`ret3 = ret2`, ..., `ret0 = code` on a call, popped on `Ret`; each
+/// subroutine but the last calls the next) and adds the lengths of the saved code arrays at
+/// `Halt`.
+fn keeping_interpreter(ops: usize, subs: usize, history: usize, depth: usize) -> String {
+    let mut source = interpreter(ops, subs);
+    if history > 0 {
+        let mut declarations = String::from("    let mut saved = main\n    let none = \"-\"\n");
+        let mut step = String::from("        steps = steps + 1\n");
+        for j in 0..history {
+            declarations.push_str(&format!("    let mut w{j} = ref none\n"));
+            step.push_str(&format!("        acc = acc + String.length w{j}\n"));
+        }
+        for j in (1..history).rev() {
+            step.push_str(&format!("        w{j} = w{}\n", j - 1));
+        }
+        step.push_str("        w0 = ref names[steps % 3]\n");
+        source = source
+            .replacen("def exec :: ", "def exec :: ref [string] -> ", 1)
+            .replacen("fn exec main ", "fn exec names main ", 1)
+            .replacen("    let mut saved = main\n", &declarations, 1)
+            .replacen("        steps = steps + 1\n", &step, 1)
+            .replacen(
+                "    exec (ref main) ",
+                "    let names = [\"add\", \"sub\", \"mul\"]\n    exec (ref names) (ref main) ",
+                1,
+            );
+    }
+    if depth > 0 {
+        let mut declarations = String::new();
+        let mut push = String::new();
+        let mut pop = String::from("            code = ret0\n            pc = back0\n");
+        for r in 0..depth {
+            declarations.push_str(&format!(
+                "    let mut ret{r} = main\n    let mut back{r} = 0\n"
+            ));
+        }
+        for r in (1..depth).rev() {
+            push.push_str(&format!(
+                "            ret{r} = ret{}\n            back{r} = back{}\n",
+                r - 1,
+                r - 1
+            ));
+        }
+        push.push_str("            ret0 = code\n            back0 = pc + 1\n");
+        for r in 1..depth {
+            pop.push_str(&format!(
+                "            ret{} = ret{r}\n            back{} = back{r}\n",
+                r - 1,
+                r - 1
+            ));
+        }
+        let lengths: Vec<String> = (0..depth).map(|r| format!("Array.length ret{r}")).collect();
+        source = source
+            .replacen("    let mut saved = main\n", &declarations, 1)
+            .replacen("    let mut back = 0\n", "", 1)
+            .replace(
+                "            saved = code\n            back = pc + 1\n",
+                &push,
+            )
+            .replacen("            code = saved\n            pc = back\n", &pop, 1)
+            .replacen(
+                "        | Halt -> running = false\n",
+                &format!(
+                    "        | Halt ->\n            acc = acc + {}\n            running = false\n",
+                    lengths.join(" + ")
+                ),
+                1,
+            );
+        for j in 0..subs - 1 {
+            source = source.replacen(
+                &format!("    let sub{j} = [Op1 (\"abc\", \"d\"), Ret]\n"),
+                &format!(
+                    "    let sub{j} = [Op1 (\"abc\", \"d\"), Call{}, Ret]\n",
+                    j + 1
+                ),
+                1,
+            );
+        }
+    }
+    source
+}
+
+/// A loop that copies a reference along `stages` locals, one per iteration (`s4 = s3`, ..., `s1 =
+/// s0`), reads through each of them `reads` times, and assigns the first again to one of `places`
+/// records (`s0 = match (pc * 7 + acc) % places with | 0 -> ref i0 ...`).
+fn pipeline(stages: usize, places: usize, reads: usize) -> String {
+    let mut source = String::from(
+        "record Instr { op: i64, a: i64, b: i64, name: string }\ndef run :: i64 -> i64\nfn run n =\n",
+    );
+    for p in 0..places {
+        source.push_str(&format!(
+            "    let i{p} = Instr {{ op: {p}, a: {}, b: {}, name: \"op{p}\" }}\n",
+            p + 1,
+            p + 2
+        ));
+    }
+    for j in 0..stages {
+        source.push_str(&format!("    let mut s{j} = ref i0\n"));
+    }
+    source.push_str("    let mut pc = 0\n    let mut acc = 0\n    while pc < n do\n");
+    for j in 0..stages {
+        for _ in 0..reads {
+            source.push_str(&format!("        acc = acc + String.length s{j}.name\n"));
+        }
+    }
+    for j in (1..stages).rev() {
+        source.push_str(&format!("        s{j} = s{}\n", j - 1));
+    }
+    source.push_str(&format!(
+        "        s0 = match (pc * 7 + acc) % {places} with\n"
+    ));
+    for p in 0..places - 1 {
+        source.push_str(&format!("            | {p} -> ref i{p}\n"));
+    }
+    source.push_str(&format!(
+        "            | _ -> ref i{}\n        pc = pc + 1\n    acc % 1000\ndo! IO.write_line (to_string (run 50))\n",
+        places - 1
+    ));
+    source
+}
+
+/// A31, the final review of `LoanGrowth`. `LOOP_LOAN_GROWTH` counted from the iteration before
+/// that made the fewest loans, which is the first when a reference that the loop assigns again
+/// widens in the second (`code = sub0`, `cur = match ...`): an interpreter of 20 opcodes and 4
+/// subroutines made 183 loans and then 724, and the loop with 72 borrows through a reference to
+/// one of 8 records 98 and then 675, already more than 500 beyond the first. When the loop also
+/// keeps references that settle one iteration after another and borrows through them, each later
+/// iteration makes a few loans more until it settles, and the fifth was stopped with `E1017`
+/// though `15d84aaf`, `main` and the base accept the loops: the second loop reading through the
+/// last of its four copies (`s + String.length prev3.a`: 98, 675, 676, 677, 678, settles in
+/// iteration 5; `main` prints 328), the interpreter reading through a history of its last five
+/// names (183, 724, 728, 731, 733, settles in iteration 5; 271), and the interpreter keeping a
+/// return stack of four code references (180, 716, 720, 724, 728, settles in iteration 5; 101).
+/// Now an iteration also needs `LOOP_LATE_GROWTH` (100) loans more than the fourth iteration, so
+/// all three are accepted in both editions. A loop that copies a reference to one of 8 records
+/// along 5 locals and reads through each of them 20 times grows by 240, 220, 200 and 180 loans and
+/// still stops in iteration 4 (`20:9`, 965 loans: 180 more than the 785 of the fourth iteration),
+/// where the documents put that limit.
+#[test]
+fn a_loop_whose_reference_widens_once_may_settle_a_few_iterations_later() {
+    let read = widening(8, 36, 4).replacen(
+        "        prev3 = prev2\n",
+        "        s = s + String.length prev3.a\n        prev3 = prev2\n",
+        1,
+    );
+    for source in [
+        read,
+        keeping_interpreter(20, 4, 5, 0),
+        keeping_interpreter(20, 4, 0, 4),
+    ] {
+        accepts_in_both_editions(&[("Main.tz", &source)]);
+    }
+    let pipe = pipeline(5, 8, 20);
+    for edition in [Edition::E2026, Edition::E2027] {
+        let error = analyze_with_edition(&pipe, edition).expect_err(&pipe);
+        assert_eq!(
+            (error.code, error.kind),
+            ("E1017", Some("loop_ownership_limit")),
+            "edition {edition}\n{}",
+            error.message
+        );
+        assert_eq!(
+            position(&pipe, error.span.start),
+            (20, 9),
+            "edition {edition}"
+        );
+        assert!(
+            error.help.as_deref().is_some_and(|help| help.contains(
+                "one iteration of the loop made 965 borrows, more than the one before it, more \
+                 than 500 beyond the 125 of the iteration before it that made the fewest, and \
+                 more than 100 beyond the 785 of the fourth iteration"
+            )),
+            "edition {edition}: {:?}",
+            error.help
+        );
+    }
+}

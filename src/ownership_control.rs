@@ -37,8 +37,8 @@ const LOAN_HOLDING: u8 = 32;
 /// `E1017` (`loop_ownership_limit`): `LOOP_FASTER_ITERATIONS` iterations in a row whose loans grow
 /// faster and faster, `LOOP_GROWING_ITERATIONS` (or `LOOP_GROWING_LARGE`) iterations in a row
 /// whose loans grow at least as fast as before, and an iteration from `LOOP_GROWTH_FROM` on that
-/// makes more loans than the one before it and `LOOP_LOAN_GROWTH` more than the iteration before it
-/// that made the fewest.
+/// makes more loans than the one before it, `LOOP_LOAN_GROWTH` more than the iteration before it
+/// that made the fewest, and `LOOP_LATE_GROWTH` more than the iteration before `LOOP_GROWTH_FROM`.
 ///
 /// In a loop that settles, the later iterations make about as many loans as the first: in the gate
 /// and generated corpora, the examples and test fixtures, the std examples and the timing programs,
@@ -49,7 +49,8 @@ const LOAN_HOLDING: u8 = 32;
 /// those places from the second iteration on: an interpreter loop of a few dozen opcodes grows by
 /// hundreds of loans once, in its second iteration, and settles in its third. No stop counts that
 /// once: the loans of the iterations of `LOOP_FASTER_ITERATIONS` and `LOOP_GROWING_ITERATIONS` grow
-/// in each of them, and `LOOP_LOAN_GROWTH` starts at iteration `LOOP_GROWTH_FROM`.
+/// in each of them, and `LOOP_LOAN_GROWTH` starts at iteration `LOOP_GROWTH_FROM` and needs
+/// `LOOP_LATE_GROWTH` more loans than the iteration before it.
 ///
 /// A chain of `L` references, each to a field of the target of the next, advanced in one loop
 /// (`q0 = ref (deref q1).a`, ..., `q(L-1) = ref (deref qL).a`), borrows in iteration `k` (from 0),
@@ -58,15 +59,20 @@ const LOAN_HOLDING: u8 = 32;
 /// k))` more loans than the first, at most `m L (L - 1) / 2` in iteration `L - 1`, and the loop
 /// settles in iteration `L`. Its loans grow by less in each iteration than in the one before
 /// (`m (L - k)`), and so do those of a loop that passes a reference along locals and borrows
-/// through each of them (`r1 = r0`), so only `LOOP_LOAN_GROWTH` stops them: a chain from 33 links
-/// on when each link starts with one place, from 23 with two (`if n > 0 then ref y else ref z`, or
-/// a field of a reference parameter's target after a store into a function value that owns a cell
-/// added a borrow to the parameter), and from 17 with four (a `match` of four arms). The review
-/// probes of A31 hold chains of up to 13 links (at most 132 more loans). The check of such chains
-/// grows with about the seventh power of their length: on a release build, a chain of 30 links
-/// takes 9 seconds, and one of 33 takes `15d84aaf`, which had no such limit, 16 seconds (23 links
-/// that start with two places each take it 8.5 seconds, 17 links that start with four 6.7
-/// seconds).
+/// through each of them (`r1 = r0`), so of the stops only `LOOP_LOAN_GROWTH` applies to them: a
+/// chain from 33 links on when each link starts with one place, from 23 with two (`if n > 0 then
+/// ref y else ref z`, or a field of a reference parameter's target after a store into a function
+/// value that owns a cell added a borrow to the parameter), and from 17 with four (a `match` of
+/// four arms); 18 chains of 8 links advanced together; and 32 or more locals that each are read
+/// through once, but fewer when each is read through many times and the first takes one of several
+/// places (5 locals read through 20 times each, the first a reference to one of 8 records, grow by
+/// 240, 220, 200 and 180 loans and stop in iteration 4). A chain whose links each take one of two
+/// fields of the next link's target doubles its places at each link instead, and meets
+/// `LOOP_FASTER_ITERATIONS`. The review probes of A31 hold chains of up to 13 links (at most 132
+/// more loans). The check of such chains grows with about the seventh power of their length: on a
+/// release build, a chain of 30 links takes 9 seconds, and one of 33 takes `15d84aaf`, which had
+/// no such limit, 16 seconds (23 links that start with two places each take it 8.5 seconds, 17
+/// links that start with four 6.7 seconds).
 const LOOP_LOAN_GROWTH: usize = 500;
 
 /// A31: the first iteration (from 0) that `LOOP_LOAN_GROWTH` applies to: the loops that settle by
@@ -74,38 +80,61 @@ const LOOP_LOAN_GROWTH: usize = 500;
 /// and the locals that copy it (`saved = code`) do in their second to fourth iterations. An
 /// iteration that makes no more loans than the one before it never meets the limit either, so a
 /// loop that copies such a reference along more locals (`prev3 = prev2`, ..., `prev0 = cur`) and
-/// borrows only through the reference settles, however late.
+/// borrows only through the reference settles, however late, and neither does one that makes at
+/// most `LOOP_LATE_GROWTH` more loans than the iteration before this one.
 const LOOP_GROWTH_FROM: usize = 4;
+
+/// A31: how many loans an iteration from `LOOP_GROWTH_FROM` on may make beyond the iteration before
+/// it (the fourth) without meeting `LOOP_LOAN_GROWTH`. A reference that an interpreter or state
+/// machine loop assigns again widens once, in the second iteration, by the borrows through it
+/// times its places, often by more than `LOOP_LOAN_GROWTH` (548 loans in an interpreter of 20
+/// opcodes and 5 code arrays), and when the loop also keeps references that settle one iteration
+/// after another (a history `last4 = last3`, ..., `last0 = ref names[pc]`, a return stack `ret3 =
+/// ret2`, ..., `ret0 = code`, a copy of the reference read through in the loop), each of its later
+/// iterations makes a few loans more (1 to 19 in the review probes of A31) until it settles. What
+/// the loop made before the fifth iteration is not counted against it then: it stops only when it
+/// also makes more than this beyond the fourth iteration. The chains and windows that
+/// `LOOP_LOAN_GROWTH` stops make 180 or more beyond the fourth iteration when they meet it (18
+/// chains of 8 links; 414 for a chain of 33), so where they stop does not change.
+const LOOP_LATE_GROWTH: usize = 100;
 
 /// A31: how many iterations in a row that did not settle may each make more loans than the
 /// iteration before it, and more of them than that one added, before `Checker::check_loop` stops
 /// with `E1017`. The loans of a `loopplace` loop grow so from its second iteration on (1, 2, 4,
 /// ... more) or from the iteration whose store first gets the borrow that its locals passed on, so
-/// the check stops at its sixth iteration (iteration 5) or five iterations after that store. A loop
-/// that settles grows faster only while its locals widen one after another to more places each (a
-/// reference that the loop assigns again, then the locals that copy it): at most once in a row in
-/// the corpora of `LOOP_LOAN_GROWTH` and in the review probes of A31, whose chains grow by less in
-/// each iteration.
+/// the check stops at its sixth iteration (iteration 5) or five iterations after that store. In the
+/// corpora of `LOOP_LOAN_GROWTH` and the review probes of A31, a loop that settles grew faster at
+/// most once in a row, while its locals widened one after another (a reference that the loop
+/// assigns again, then the locals that copy it). A chain whose links each take one of two fields
+/// of the next link's target (`qk = if c then ref (deref q(k+1)).a else ref (deref q(k+1)).b`)
+/// doubles its places at each link, so its loans grow faster in each iteration until it settles,
+/// and this stops it from 7 links on (`15d84aaf` checks 7 links in 0.8 seconds on a release build,
+/// 8 in 3.3 and 9 in 16).
 const LOOP_FASTER_ITERATIONS: usize = 5;
 
 /// A31: how many iterations in a row that did not settle may each make more loans than the
 /// iteration before it, and at least as many more as that one added, before
-/// `Checker::check_loop` stops with `E1017`; `LOOP_GROWING_LARGE` stops a loop of many borrows
-/// sooner. A `loopplace` loop that passes the borrow through `k` locals before the store into the
-/// function value (`t1 = t0`, A34) adds one loan per iteration for about `k` iterations before its
-/// loans grow faster, and each of those iterations takes longer the more locals and statements the
-/// body has (`k = 140`: 13 seconds for the 129 iterations of the limit on a release build), so this
-/// stops it at its 25th iteration at the latest. A loop that copies a reference along `n` locals,
-/// one per iteration (`u(n-1) = u(n-2)`, ..., `u1 = u0`, `u0 = ref a`), and borrows through the
-/// last of them adds one loan per iteration the same way and settles in iteration `n`, so this
-/// stops such a loop from 25 locals on.
+/// `Checker::check_loop` stops with `E1017`; `LOOP_GROWING_LARGE` stops a loop that makes many
+/// loans sooner. A `loopplace` loop that passes the borrow through `k` locals before the store into
+/// the function value (`t1 = t0`, A34) adds one loan per iteration for about `k` iterations before
+/// its loans grow faster, so this stops it at its 25th iteration at the latest (`k = 140`: 13
+/// seconds for the 129 iterations of the limit on a release build). An iteration costs about the
+/// statements that the body evaluates times the loans that the state holds, not the loans that the
+/// iteration makes, so a body of many statements that borrow little still runs those 24
+/// iterations: on a release build, a hand-on through 60 locals with 2000 statements that make no
+/// loans takes about 10 seconds, and one through 500 locals about 9 (A34 `loopplace`). A loop that copies a reference along `n` locals, one per iteration (`u(n-1) =
+/// u(n-2)`, ..., `u1 = u0`, `u0 = ref a`), and borrows through the last of them adds one loan per
+/// iteration the same way and settles in iteration `n`, so this stops such a loop from 25 locals
+/// on.
 const LOOP_GROWING_ITERATIONS: usize = 24;
 
 /// A31: the iterations in a row of `LOOP_GROWING_ITERATIONS` that stop a loop whose last iteration
-/// made more loans than the second number: an iteration of such a body takes long enough that 24 of
-/// them would take seconds (a body of 1000 borrows and 40 locals that pass the borrow on took about
-/// 5 seconds for 32), and this stops it after a third of that. A loop that copies a reference along
-/// 9 or more locals and makes more than 200 loans per iteration stops too.
+/// made more loans than the second number. The loans are the only measure of the body that the
+/// stops have: a body that makes many of them takes long enough per iteration that 24 iterations
+/// would take seconds (a body of 1000 borrows and 40 locals that pass the borrow on took about 5
+/// seconds for 32), and this stops it after a third of that. A body of many statements that make
+/// few loans takes as long per iteration but runs all 24. A loop that copies a reference along 9 or
+/// more locals and makes more than 200 loans per iteration stops too.
 const LOOP_GROWING_LARGE: (usize, usize) = (8, 200);
 
 /// A31: the change that lets the loops of A34 `loopplace` settle, which the help of each stop of
@@ -122,6 +151,8 @@ const LOOP_GROWTH_ADVICE: &str = "when the loop passes a borrow of a reference p
 struct LoanGrowth {
     /// The fewest loans that an iteration made.
     fewest: Option<usize>,
+    /// The loans that the iteration before `LOOP_GROWTH_FROM` made.
+    before_late: Option<usize>,
     /// The loans that the last iteration made, and how many more than the one before it (none when
     /// it made no more).
     last: Option<(usize, Option<usize>)>,
@@ -160,6 +191,9 @@ impl LoanGrowth {
         let fewest = self.fewest.unwrap_or(made);
         self.last = Some((made, added));
         self.fewest = Some(fewest.min(made));
+        if iteration + 1 == LOOP_GROWTH_FROM {
+            self.before_late = Some(made);
+        }
         if self.faster >= LOOP_FASTER_ITERATIONS {
             return Some(format!(
                 "the loop's borrows keep growing faster: each of the last {LOOP_FASTER_ITERATIONS} \
@@ -184,14 +218,21 @@ impl LoanGrowth {
                 large_iterations + 1
             ));
         }
-        if iteration >= LOOP_GROWTH_FROM && added.is_some() && made > fewest + LOOP_LOAN_GROWTH {
+        if iteration >= LOOP_GROWTH_FROM
+            && added.is_some()
+            && made > fewest + LOOP_LOAN_GROWTH
+            && let Some(before_late) = self.before_late
+            && made > before_late + LOOP_LATE_GROWTH
+        {
             return Some(format!(
-                "one iteration of the loop made {made} borrows, more than the one before it \
-                 and more than {LOOP_LOAN_GROWTH} beyond the {fewest} of the iteration before \
-                 it that made the fewest, so the check stops before the loop settles; a chain \
-                 of dozens of references, each to a field of the target of the next, advanced \
-                 in one loop (`q0 = ref (deref q1).a`) grows this way: split the chain or the \
-                 loop; {LOOP_GROWTH_ADVICE}"
+                "one iteration of the loop made {made} borrows, more than the one before it, \
+                 more than {LOOP_LOAN_GROWTH} beyond the {fewest} of the iteration before it \
+                 that made the fewest, and more than {LOOP_LATE_GROWTH} beyond the \
+                 {before_late} of the fourth iteration, so the check stops before the loop \
+                 settles; a chain of dozens of references, each to a field of the target of the \
+                 next, advanced in one loop (`q0 = ref (deref q1).a`), or a reference passed \
+                 along locals and borrowed through each of them many times (`r1 = r0`), grows \
+                 this way: split the chain or the loop; {LOOP_GROWTH_ADVICE}"
             ));
         }
         None
