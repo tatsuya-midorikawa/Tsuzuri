@@ -2714,3 +2714,65 @@ PR #105 への Copilot の 2 度目のレビュー（`src/ownership_control.rs` 
 
 - 変えたファイル: `src/ownership_control.rs`、`tests/rc.rs`（新しい 1 件、3 件の説明と `help` の確かめ、1 件の名前）、`src/explain/codes/E1017.md`、`lifetimes.md`（「現在の制限」）、`compiler/diagnostics.md` と `docs/language.md`（`E1017` の行）、`docs/architecture.md`（ループの不動点の段落）、A34（`loopplace` の「現状」・原因、背景、局所値の数え方）、A33（「検査の時間」）、このチケット（前の節への案内、この節）。
 - コミット: `93f25d12`（`src/` と `tests/rc.rs`）、`1506be7e`（500 個の上限を増えた反復だけにする、4 つの局所値に写す形のテスト）、`85189d19`（文書）、`d0f469f0`（doc comment の直しとテストの説明の折り返し）、`f62058ac`（前の節の冒頭の注と、`lifetimes.md` の局所値に渡して読む形の 32 個）、この節。
+
+#### 最後のレビュー（2026-11-16）
+
+上の「借用の増え方による打ち切り」（`93f25d12`・`1506be7e`・`85189d19`・`d0f469f0`・`f62058ac`・`2a7d9e9f`）の最後のレビュー（反例の探索 `target/scratch/a31/lg-ce/`、適合の確認 `lg-conf/`）の指摘 6 件は、どれも確かめられました。最後の回なので打ち切りの規則は増やさず、500 個の上限に条件を 1 つ足して狭めただけです（`f88d8a82`）。結果は `target/scratch/a31/lg-fix/` にあります（`sim2.mjs`・`sim3.mjs` が記録から候補の規則を試す道具、`trall.sh` が計測用のビルド `lb-fix1/bin/tsuzuri-instr3` で止めずに記録する道具、`trs/` がレビューの探査の記録、`bin/tsuzuri-v5`・`v5-dev` がこの回のリリースビルドと開発用のビルド、`tp/` が下のテストのプログラム、`pr33/` が探査の結果）。
+
+| 指摘 | 判定と対応 |
+| --- | --- |
+| [結果の変化] 代入し直す参照が 2 回目の反復で 500 個を超えて広がるインタプリタや状態機械のループが、5 個の参照の窓（`lg-ce/p/vm_trace5`）・4 回分の状態の履歴（`fsm_16_72_4`）・4 段の戻り先（`vmbt_20_4`）を持つと、5 回目の反復で `E1017` | 確かめました。500 個の上限はそれより前でいちばん少なかった反復、つまり広がる前の最初の反復から数えるので、2 回目の反復の広がり（548 個など）だけで上限を超えていて、後の反復が窓や履歴の分だけ 1〜19 個増えると、5 回目の反復で止めていました。500 個の上限に、4 回目の反復より `LOOP_LATE_GROWTH`（100）個を超えて多く作ることを足しました。指摘のループ（`vm_trace5`・`vm_trace6`・`vm_trace8`、`fsm_16_72_4`・`fsm_8_128_4`・`fsm_8_160_4`、`vmbt_*`、`vmr_*`）は、どれも両方の edition で受理します（`15d84aaf`・`main`・基準と同じ） |
+| [終わらない] 局所値に渡す形で、本体の文が多く借用をほとんど作らないもの（`lg-ce/p/lagz_*`）は、24 回続けて増えるまで止まらず、リリースビルドで 10〜17 秒（`main` は 1 秒以内） | 確かめました。規則は増やさず、A34 の `loopplace` の「現状」と `lifetimes.md` の「現在の制限」に、止まるまで時間のかかる形として、形と時間を書きました（下の「時間」） |
+| [文書] `lifetimes.md` と `LOOP_GROWING_LARGE` の doc comment が、借用の少ない大きな本体の止まるまでの時間を小さく書いている | 確かめました。`lifetimes.md`・`docs/architecture.md` に、1 回の反復の時間は反復が作る借用の数ではなく本体が評価する文の数と状態の借用の数で決まることと、借用をほとんど作らない文の多い本体の時間を書き、`LOOP_GROWING_ITERATIONS`・`LOOP_GROWING_LARGE` の doc comment も同じように直しました。500 個の上限の `help` は、連なりと、参照を局所値に渡してそれぞれを何度も通して読む形を言います |
+| [結果の変化] 一度広がったループの 5 回目からの反復が 1 個でも増えると止める（`lg-conf/p/wl_4_72_read`・`interpw2_20_4_5`・`interpdh_20_4_4`） | 確かめました。上の指摘と同じ仕組みで、同じ変更で、どれも両方の edition で受理します（`main` の値は 328・271・101）。3 つは下のテストで受理を固定しました |
+| [上限を超える] 2 つのフィールドのどちらかを指す 7 個の参照の連なり（`lg-conf/p/bc_if_7`）を、増え方が速くなる打ち切りが止める（`15d84aaf` は 0.79 秒で受理） | 確かめました。参照ごとに場所が倍になるので、増え方が反復ごとに大きくなります。`lifetimes.md`・`docs/architecture.md`・`LOOP_FASTER_ITERATIONS` と `LOOP_LOAN_GROWTH` の doc comment に、7 個以上で止まる形として書きました |
+| [文書] 上限を超える形の一覧を、それで全部のように書いている（`docs/architecture.md`、A34、`lifetimes.md`、doc comment）。`bc_if_7` と、5 個の局所値に渡してそれぞれを 20 回読む `lg-conf/p/pipe_5_8_20`（500 個の上限で止まる。`15d84aaf` は 0.23 秒で受理）が反例 | 確かめました。一覧を「分かっている形」とし、`bc_if_7` の形と、局所値に渡してそれぞれを何度も読み、最初の局所値がいくつもの場所のどれかを指す形を足しました（`pipe_5_8_20` は 4 回目の反復より 180 個多く作るので、この回の後も止まります）。`E1017.md` の直し方にも足しました |
+
+##### 変えたこと（`src/ownership_control.rs`、`f88d8a82`）
+
+- `LOOP_LATE_GROWTH`（100）: `LoanGrowth` は 4 回目の反復（反復 3）が作った借用の数を覚え、500 個の上限は、5 回目からの反復が、前の反復より多く、それより前でいちばん少なかった反復より 500 個を超えて多く、しかも 4 回目の反復より 100 個を超えて多く作ったときだけ働きます。`help` は「one iteration of the loop made N borrows, more than the one before it, more than 500 beyond the M of the iteration before it that made the fewest, and more than 100 beyond the K of the fourth iteration, so the check stops before the loop settles; a chain of dozens of references, …, or a reference passed along locals and borrowed through each of them many times (`r1 = r0`), grows this way: split the chain or the loop; …」です。
+- 増え方の 2 つの打ち切りと、500 個と 5 回目からという数は変えていません。
+
+##### 上限の決め方
+
+計測用のビルドの記録（`lb-fix1/pstat/` の 1459 個、`lb-fix1/tr/`、`lg-ce/trs/`、この回の `trs/`、合わせて 1746 個）で候補を試しました（`sim3.mjs`）。500 個の上限が最初に当たるのは、収束する形（連なり、局所値に渡して読む形、`fc4_5`、`pipe_5_8_20`）と指摘のループだけで、`loopplace` の形はどれも増え方の打ち切りが先に止めます。そのため、500 個の上限を狭めても `loopplace` の形の止まり方は変わりません。候補のうち、2 回目から 4 回目の反復の増え方が 500 個を超えたときだけ数え直す形は、増え方が 500 個の少し手前の広がりで同じ指摘が残るので、4 回目の反復からの増え方を別に数える形にしました。100 個は、指摘と探査の一度広がるループの 4 回目からの増え方（多くて 20 個。8 段の戻り先を持つ `vmbt_*_8`。1 回の反復では多くて 19 個）より大きく、上限が止める収束する形が止まるときの 4 回目からの増え方（8 個の連なりを 18 本進めるループの 180 個がいちばん小さく、33 個の連なりは 414 個）より小さい数です。記録のどれでも、100 個の条件は指摘のループのほかは止める反復を変えません（`pipe_5_8_20` も 4 回目より 180 個多い反復 4 で止まります）。
+
+##### 時間
+
+この回のリリースビルド（`bin/tsuzuri-v5`）と前の回のリリースビルド（`lb-fix1/bin/tsuzuri-v4`、`1506be7e`）で、前の回の「時間」の表の 24 個のプログラムを edition 2027 で 1 回ずつ交互に検査しました（`timing.sh`、`time-v5.txt`。負荷 4〜6 のとき）。どれも前の回と同じ位置の `E1017` で、止めた打ち切りも同じです（`help` から: 増え方が速くなる打ち切りが 10 個、24 回続けて増えた打ち切りが 8 個、8 回続けて増えた打ち切りが 6 個で、500 個の上限で止まるものはありません）。この回のビルドで 0.12〜1.54 秒です（いちばん長いのは本体が 2000 行ほどの `lagf_9_2000`、次が `hrs_1400` の 0.92 秒）。指摘のループは、この回のビルドで 0.16〜0.44 秒で受理します（`15d84aaf` は 0.19〜0.43 秒）。
+
+止まるまで時間のかかる形（指摘 2。`lg-ce/p/lagz_*`、`lg-ce/gen/lagz.mjs <局所値の数> <借用を作らない文の数>`）は、この回のビルドと `main`（`168ae4a5`、開発用のビルド）で次のとおりです（`time-lagz.txt`。負荷 4〜6 のとき）。どれも前の回のビルドと同じ位置の `E1017` で（探査の `pr32lg/`）、`help` は 500 個の上限ではなく増え方の打ち切りを言います。`15d84aaf` は `lagz_60_2000` を 60 秒たっても終えません。
+
+| プログラム | この回（`f88d8a82`） | `main` |
+| --- | --- | --- |
+| `lagz_300_0`（局所値 300 個） | `E1017` 308:9、2.70 秒 | 受理、0.32 秒 |
+| `lagz_500_0` | `E1017` 508:9、7.01 秒 | 受理、0.38 秒 |
+| `lagz_60_2000`（局所値 60 個と文 2000 個） | `E1017` 68:9、8.48 秒 | 受理、0.49 秒 |
+| `lagz_100_1500` | `E1017` 108:9、8.42 秒 | 受理、0.45 秒 |
+| `lagz_200_1000` | `E1017` 208:9、9.32 秒 | 受理、0.40 秒 |
+| `lagz_23_3000` | `E1017` 31:9、10.86 秒 | 受理、0.68 秒 |
+| `lagz_150_1500` | `E1017` 158:9、11.16 秒 | 受理、0.49 秒 |
+| `lagz_60_3000` | `E1017` 68:9、14.81 秒 | 受理、0.79 秒 |
+| `lagz_9_10000`（増え方が速くなる打ち切り） | `E1017` 17:9、41.31 秒 | 受理、4.44 秒 |
+| `lagz_23_10000` | `E1017` 31:9、83.36 秒 | 受理、4.60 秒 |
+
+##### テスト
+
+- 新しい `tests/rc.rs` の `a_loop_whose_reference_widens_once_may_settle_a_few_iterations_later`。受理（両方の edition）: `widening(8, 36, 4)` の最後の写しをループの中で読む形（`s + String.length prev3.a`。98 個、675 個の後に 1 個ずつ増え、反復 5 で収束。`main` は 328）、`interpreter(20, 4)` が直前の 5 つの名前を局所値に持って読む形（新しい `keeping_interpreter(20, 4, 5, 0)`。`lg-conf/p/interpw2_20_4_5` と同じプログラムで、183・724・728・731・733 個、271）、4 段の戻り先を局所値に持つ形（`keeping_interpreter(20, 4, 0, 4)`。`interpdh_20_4_4` と同じで、180・716・720・724・728 個、101）。`E1017`（両方の edition）: 8 個のレコードのどれかを指す参照を 5 個の局所値に渡してそれぞれを 20 回読むループ（新しい `pipeline(5, 8, 20)`。`pipe_5_8_20` と同じで、`20:9`、`help` は「made 965 borrows, … more than 500 beyond the 125 …, and more than 100 beyond the 785 of the fourth iteration」）。受理の 3 つは `1506be7e` では `E1017` です。値は `main`（`168ae4a5`）の native の `-O0`・`-O3`、位置と数は計測用のビルドの記録と合わせました。
+- `tests/rc.rs` の `a_loop_` の 6 件は、下の T1 でどれも成功しました。
+
+##### マージの条件の確かめ（この回の後）
+
+- ゲート（`gate/tools/check-r33.mjs`・`diff-r33.mjs`。15550 個・31100 組を、`r33`（この回の開発用のビルド。`lg-fix/bin/tsuzuri-v5-dev` を `gate/bin/tsuzuri-r33` に写して使い、実行の後に写しを消しました）で両方の edition で検査し直し、ほかの列は `results-r32.json` から。結果は `results-r33.json`、分類は `diff-r33.txt`（`lg-fix/gate-diff-r33.txt` に写し））: **31100 組のどれも、受理・拒否と最初の 2 つの誤り（code・kind・位置）が `r32` と同じです**。`r28`（`15d84aaf`）と比べると、RA は前と同じ 67 組で新しいものは無く、受理から拒否も拒否から受理も無く、変わったのは `r28` の時間切れの 29 組（前と同じ位置の `E1017`）だけです。検査の失敗・時間切れは 0。edition 2027 は両方が受理 5272・両方が拒否 5259・RA 38・AR 4981、2026 は 4209・7190・29・4122 で、前回と同じです。
+- 探査（`lb-fix1/probe-dirs-all.txt` の 777 個と `lg-ce/p`・`lg-conf/p` の 96 個、両方の edition の 1746 組。この回のリリースビルド、時間切れは 120 秒、`pr33/results.txt`）: 前の回の 1554 組は、どれも最初の誤りまで前の回（`lb-fix1/pr32/results.txt`）と同じです。`lg-ce/p`・`lg-conf/p` の 192 組を前の回のビルドで検査した結果（`pr32lg/results.txt`）と比べると、148 組は同じで、変わった 44 組は指摘の 22 個の一度広がるループ（`fsm_16_72_4`・`fsm_8_128_4`・`fsm_8_160_4`、`vm_trace5`・`6`・`8`、`vmbt_20_*`・`30_*`・`60_*`（4・6・8 段）、`vmr_20_4`・`20_8`・`40_4`・`40_8`、`interpdh_20_4_4`、`interpw2_20_4_5`、`wl_4_72_read`）の両方の edition が `E1017` から受理になったものだけです。時間切れは `lagz_23_10000` の両方の edition だけで、前の回のビルドも同じく時間切れです（負荷 30 ほどのとき。負荷 4 ほどでは 83 秒で止まります）。`bc_if_7`〜`10`、`fc4_5`、`pipe_5_8_20`、`lagz_*`、`lagdip_30_2`、`lp_copyp`、`t_inner` は前の回と同じ `E1017` です。
+- 生成したプログラム（`lg-fix/g-check.mjs`、15552 個・31104 組を、この回のリリースビルドで）: 危険な 18048 組はどれも拒否し、安全な 13056 組はすべて受理しました。31104 組のどれも、結果が `r30` の `loopplace2/g/g-results.json` と同じで、`E1017` は 1 組もありません（`lg-fix/g/g-results.json`・`g-summary.json`）。
+- `examples/` と `tests/fixtures/` の 155 個のプロジェクト（`_tools/step5.mjs`）を `main`（`168ae4a5`）とこの回の開発用のビルドで比べ、違いはありません（`lg-fix/step5-main.txt`）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3302 件を実行し、3301 件が成功、4 件 skip（1113 秒、負荷 25〜35 のとき。`lg-fix/nextest.log`。上の 6 件を含みます）。残りの 1 件の `tests/explain.rs` の `every_code_has_a_page` は、`E1017.md` の直し方に足した文でページが 1500 文字の上限を超えた（1572 文字）ためで、文を 1 つの言い方（「passes a reference along many locals」。写していく連なりと、渡してそれぞれを読む形の両方）にまとめて 1494 文字にし（`e592e6a8`）、`tests/explain.rs` の 16 件を回し直して成功しました。この直しの後のビルドは、上のゲート・探査・生成したプログラム・step5・E2E の検査に使ったビルド（`f88d8a82`）と `E1017` の説明のページの文だけが違います。
+- E2E（この回の開発用のビルド `bin/tsuzuri-v5-dev`、native と WASM の `-O0`・`-O3`）: `in_place_writes` 85 件、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`lg-fix/suites.log`）。
+- 文書: `check-docs.mjs`（`lifetimes.md`・`diagnostics.md`、2 ページ・83 個のリンク・7 個の例・14 回の native の実行）、`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`（19 個、古いもの 0。`e592e6a8` の後にもう一度）、`check-cli-docs.mjs`（4 個）、`check-guide-lite.mjs`（88 個）、`check-links.mjs --into`（変えた 7 つの文書へのリンク 467 個、壊れたもの 0）が成功。
+- 変えたファイル: `src/ownership_control.rs`（`LOOP_LATE_GROWTH`、500 個の上限の条件と `help`、打ち切りの doc comment）、`src/explain/codes/E1017.md`、`tests/rc.rs`（新しい 1 件と `keeping_interpreter`・`pipeline`）、`lifetimes.md`（「現在の制限」）、`compiler/diagnostics.md` と `docs/language.md`（`E1017` の行）、`docs/architecture.md`（ループの不動点の段落）、A33（「検査の時間」）、A34（`loopplace` の「現状」の止まるまで時間のかかる形と原因）、このチケット（前の節の冒頭の注、この節）。
+- コミット: `f88d8a82`（`src/` と `tests/rc.rs`）、`7cc8e272`（文書と doc comment の数）、`e592e6a8`（`E1017.md` の長さ）、この節。
