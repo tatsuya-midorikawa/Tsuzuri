@@ -8024,9 +8024,10 @@ fn each_chain(links: usize, extra: &str, result: &str, local: bool) -> String {
 /// is accepted in both editions (`main` prints 600). The loan budget of A31 (`LOOP_LOAN_GROWTH`,
 /// later removed: from the fifth iteration on, 500 loans beyond the iteration before it that made
 /// the fewest) stopped it in iteration 11, and so it did 18 chains of 8 references advanced in one
-/// loop (146, 272, ..., 650 loans) and a single chain of 33, which the check now accepts after
-/// about 2.4 seconds on a dev build and 33 seconds on a release build, as `15d84aaf` did; the
-/// test checks the shorter loop instead.
+/// loop (146, 272, ..., 650 loans) and a single chain of 33, which the check now accepts, as
+/// `15d84aaf` did: the 18 chains after about 2.4 seconds on a dev build (2.2 to 2.8 on a release
+/// build), the chain of 33 after 26 to 54 seconds on a dev build (24 to 33 on a release build), so
+/// the test checks the shorter loop instead.
 #[test]
 fn a_loop_whose_loans_grow_by_less_in_each_iteration_settles_however_many_it_makes() {
     let live = "    q0.v + q1.v + p.r0.v\n";
@@ -8577,5 +8578,115 @@ fn a_loop_whose_reference_widens_once_may_settle_a_few_iterations_later() {
         pipeline(5, 8, 20),
     ] {
         accepts_in_both_editions(&[("Main.tz", &source)]);
+    }
+}
+
+/// The A34 `loopplace` loop (`let t = ref p.s; w (\() -> String.length t)`, where `w` captures an
+/// `Arc` by value) that also copies a reference to one of `places` records along `stages` locals,
+/// one per iteration, and reads through each of them `reads` times, as `pipeline` does. With
+/// `workaround`, `w` captures a reference to the cell instead (`let cell = Arc.get (ref sink)`).
+fn masked_loopplace(stages: usize, places: usize, reads: usize, workaround: bool) -> String {
+    let mut source = String::from(
+        "record Box { cell: Mutex<[unit -> i64]>, s: string }\nrecord Instr { op: i64, name: string }\ndef run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64\nfn run2 p sink n =\n",
+    );
+    if workaround {
+        source.push_str("    let cell = Arc.get (ref sink)\n    let w = \\g -> Mutex.with_lock cell (\\o -> Array.write 0 g o)\n");
+    } else {
+        source.push_str(
+            "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n",
+        );
+    }
+    for q in 0..places {
+        source.push_str(&format!(
+            "    let i{q} = Instr {{ op: {q}, name: \"op{q}\" }}\n"
+        ));
+    }
+    source.push_str("    let mut acc = 0\n    let mut i = 0\n");
+    for j in 0..stages {
+        source.push_str(&format!("    let mut s{j} = ref i0\n"));
+    }
+    source.push_str(
+        "    while i < n do\n        let t = ref p.s\n        w (\\() -> String.length t)\n",
+    );
+    for j in 0..stages {
+        for _ in 0..reads {
+            source.push_str(&format!("        acc = acc + String.length s{j}.name\n"));
+        }
+    }
+    for j in (1..stages).rev() {
+        source.push_str(&format!("        s{j} = s{}\n", j - 1));
+    }
+    source.push_str(&format!(
+        "        s0 = match (i * 7 + acc) % {places} with\n"
+    ));
+    for q in 0..places - 1 {
+        source.push_str(&format!("            | {q} -> ref i{q}\n"));
+    }
+    source.push_str(&format!(
+        "            | _ -> ref i{}\n        i = i + 1\n    acc % 1000\n",
+        places - 1
+    ));
+    source.push_str("def run :: i64 -> i64\nfn run n =\n    let mut b = Box { cell: Mutex.create [\\() -> 3], s: \"abcd\" }\n    let keep = Arc.new (Mutex.create [\\() -> 0])\n    let k = run2 (ref mut b) (Arc.share (ref keep)) n\n    Mutex.with_lock (Arc.get (ref keep)) (\\c -> c[0] ()) + k\ndo! IO.write_line (to_string (run 1))\n");
+    source
+}
+
+/// A31, the review of the removal of the loan budget. A `loopplace` loop that also copies a
+/// reference to one of 2 records along 10 locals and reads through each of them 32 times makes
+/// 328, 681, 1003, 1295, 1559, 1799, 2023, 2247, 2503, 2855, ... loans: the locals add 32 fewer in
+/// each iteration until they settle, which hides the doubling (1, 2, 4, ... more) until it
+/// outgrows 32, so its loans grew by less in each iteration until iteration 6, by as much in 7,
+/// and faster from 8 on, and `LOOP_FASTER_ITERATIONS` stopped it only in iteration 12 (6503 loans,
+/// 19 seconds on a release build); the loan budget had stopped it in iteration 4. The state that
+/// the loop carries doubles from the first iteration on (45, 70, 110, 181, 315, 576, 1092 and 2119
+/// loans after iterations 1 to 8), so `LOOP_STATE_ITERATIONS` stops it in iteration 8, the first
+/// whose loans grow at least as much as those of the one before after 8 iterations in a row whose
+/// state grew faster. With 6 locals read through 16 times each, the locals settle when the
+/// doubling outgrows them (104, 217, 315, 399, 471, 535, 599, 663, 791, ... loans: the growth stays
+/// at 64 for three iterations), and `LOOP_FASTER_ITERATIONS` stopped it in iteration 12 (4631
+/// loans); now it stops in iteration 8 (791). Both stop at the start of the loop's body in both
+/// editions, and the loop that lets the function value capture a reference to its cell (`let cell
+/// = Arc.get (ref sink)`) settles and is accepted. The state of a loop that settles can grow faster
+/// for as many iterations while its iterations make fewer loans each time (`each_chain(9, ...)` of
+/// `a_loop_whose_loans_grow_by_less_in_each_iteration_settles_however_many_it_makes`: its state
+/// grows by 12, 13, ..., 19 loans in iterations 1 to 8 while its loans grow by 8, 7, ..., 1), so
+/// the stop counts only an iteration whose loans grow at least as much as those of the one before
+/// it.
+#[test]
+fn a_loop_whose_settling_locals_hide_its_loopplace_growth_stops_soon() {
+    accepts_in_both_editions(&[("Main.tz", &masked_loopplace(10, 2, 32, true))]);
+    for (source, at, help) in [
+        (
+            masked_loopplace(10, 2, 32, false),
+            (21, 9),
+            "(now 2119), and the last iteration made 2503 borrows",
+        ),
+        (
+            masked_loopplace(6, 2, 16, false),
+            (17, 9),
+            "(now 2079), and the last iteration made 791 borrows",
+        ),
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let error = analyze_with_edition(&source, edition).expect_err(&source);
+            assert_eq!(
+                (error.code, error.kind),
+                ("E1017", Some("loop_ownership_limit")),
+                "edition {edition}\n{source}\n{}",
+                error.message
+            );
+            assert_eq!(
+                position(&source, error.span.start),
+                at,
+                "edition {edition}\n{source}"
+            );
+            assert!(
+                error.help.as_deref().is_some_and(|text| text.contains(
+                    "the borrows that the loop carries keep growing faster: after each of the last 8 iterations"
+                ) && text.contains(help)
+                    && text.contains("`let cell = Arc.get (ref sink)`")),
+                "edition {edition}\n{source}\n{:?}",
+                error.help
+            );
+        }
     }
 }
