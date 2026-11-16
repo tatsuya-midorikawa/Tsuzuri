@@ -73,6 +73,7 @@ const LOAN_HOLDING: u8 = 32;
 /// release build, a chain of 30 links takes 9 seconds, and one of 33 takes `15d84aaf`, which had
 /// no such limit, 16 seconds (23 links that start with two places each take it 8.5 seconds, 17
 /// links that start with four 6.7 seconds).
+/// Planned test of real loops' margin to these stops: `_features/A35-loop-growth-margin-check.md`.
 const LOOP_LOAN_GROWTH: usize = 500;
 
 /// A31: the first iteration (from 0) that `LOOP_LOAN_GROWTH` applies to: the loops that settle by

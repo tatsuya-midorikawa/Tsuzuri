@@ -156,6 +156,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A32 | [規約 `[Read]`・`[Mut]` の関数型が期待される位置へ、引数を `ref T`・`ref mut T` と注釈したラムダを直接書くと `E1003` になる（`if n > 0 then text_length else \(text: ref string) -> …`）](A32-annotated-reference-lambda-under-conventions.md) | P2 | S | A18 | todo |
 | A33 | [格納と破棄の順序の検査に残る穴と保守的な制限を、記憶域の寿命と破棄の順序の 1 つのモデルで直す](A33-remaining-store-soundness-holes.md) | P0 | XL | A31 | todo |
 | A34 | [`main` が受理する安全なプログラムを、A31 の格納と破棄の順序の検査が `E1013`・`E1014` で拒否する（フィールドや要素の `Rc.get` を束縛した変数、受け取った関数値を持つ値の破棄、書き込む部分の側の参照の変数、使い終えた共有の型の判定、`Rc.get (ref r)` の持ち主、参照の仮引数から作った共有、ループの中の置き換えの後の写し、セルへ書き込んだ複数 region のレコード）か、検査が収束せず `E1017` で打ち切る（参照の仮引数の先の借用をセルを所有する関数値へ渡すループ）](A34-store-check-safe-rejections.md) | P1 | L | A31 | todo |
+| A35 | [実際のプログラムの収束するループの借用の増え方が A31 のループの打ち切り（`LoanGrowth`）の上限に近づいたら、テストを失敗させる（収束したループの増え方の統計をテストだけに見せ、`tests/` のプログラム・`examples/`・std の例の最大を、反復の数の上限の 1/2、借用の数の上限の 1/8 と比べる）](A35-loop-growth-margin-check.md) | P2 | M | A31 | todo |
 
 ### B. エラー処理・制御
 
