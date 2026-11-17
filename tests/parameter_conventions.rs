@@ -3867,10 +3867,9 @@ fn annotated_reference_parameters_follow_the_kept_parts_of_in_place_writes() {
         ),
     ];
     for (form, safe, unsafe_order) in &forms {
-        // A pipeline or a partial application of the function value that an `if` chose stands
-        // for the whole arguments (A31; A33 `fvpart`): the `if` spelling rejects their safe order,
-        // annotated or not, as `let chosen = cross` does.
-        let through_value = matches!(*form, "pipe" | "partial");
+        // The function value that an `if` chose (an annotated `else` branch, or its unannotated
+        // twin) runs its facts in a pipeline and a partial application as in a direct call (A31's
+        // fix of `fvpart`, seventh merge), so its safe order is accepted in every form too.
         for source in [safe.convention_twin(), safe.twin(), safe.annotated_def()] {
             check("2027", &source).unwrap_or_else(|error| panic!("{form}\n{source}\n{error:?}"));
         }
@@ -3884,20 +3883,7 @@ fn annotated_reference_parameters_follow_the_kept_parts_of_in_place_writes() {
             "chosen",
         );
         for source in [chosen, unannotated_choice] {
-            if through_value {
-                let error = check("2027", &source)
-                    .err()
-                    .unwrap_or_else(|| panic!("{form}: accepted:\n{source}"));
-                assert_eq!(
-                    (error.code, error.kind),
-                    ("E1013", Some("assignment_extends_borrow")),
-                    "{form}\n{source}\n{}",
-                    error.message
-                );
-            } else {
-                check("2027", &source)
-                    .unwrap_or_else(|error| panic!("{form}\n{source}\n{error:?}"));
-            }
+            check("2027", &source).unwrap_or_else(|error| panic!("{form}\n{source}\n{error:?}"));
         }
         let twin = unsafe_order.convention_twin();
         let expected = check("2027", &twin)
