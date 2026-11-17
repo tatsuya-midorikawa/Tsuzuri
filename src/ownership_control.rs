@@ -1,15 +1,299 @@
 use super::*;
 use crate::check::PatternStep;
 
-type LoanSummary = BTreeMap<usize, BTreeSet<(Place, bool)>>;
-type LoopSummary = (
-    BTreeSet<Place>,
-    LoanSummary,
-    BTreeSet<String>,
-    BTreeSet<(Place, bool)>,
-    usize,
-    BTreeMap<usize, BTreeSet<usize>>,
-);
+/// What the fixed point of a loop compares of a loan (`Checker::loop_summary`): its place, whether
+/// it is mutable, and the flags `LOAN_*` of what the checks read of it besides. Its number is no
+/// part of it: an iteration makes its loans again with fresh numbers, so a summary by number would
+/// never settle.
+type LoanKey = (Place, bool, u8);
+
+/// A31: the flags of a `LoanKey`. The loan stands for a share of a block (`Loan::share`), belongs
+/// to a pattern view (`Loan::view`), is held only as what the value read through a reference
+/// parameter (`Value::through`, by the value that holds it), or is in `Checker::exact_loans`,
+/// `Checker::ordered_loans` or `Checker::holding_loans`.
+const LOAN_SHARE: u8 = 1;
+const LOAN_VIEW: u8 = 2;
+const LOAN_THROUGH: u8 = 4;
+const LOAN_EXACT: u8 = 8;
+const LOAN_ORDERED: u8 = 16;
+const LOAN_HOLDING: u8 = 32;
+
+/// A31: the stops of `Checker::check_loop` before its limit of `MAX_NESTING` + 1 iterations. Each
+/// iteration checks the condition and the body again (with the loops and the checks inside them)
+/// from the state that the iterations before it left, and makes its loans again with fresh
+/// numbers, one for each place that a borrow gives in that state, so the loans that it makes
+/// (`self.loans.len()` after it, less before it) measure how far that state has grown, and the
+/// time of an iteration grows with them.
+///
+/// In the loops that never settle (A34 `loopplace`), a store into a function value that owns a
+/// cell adds the borrows of a reference parameter's target to the parameter, whose dereference
+/// then gives their places too, so each iteration borrows places one field deeper, and the loans
+/// that an iteration makes grow without end: about twice those of the one before, three times
+/// through a choice between reborrows, and by 1.2 to 1.6 times when the borrow passes through two
+/// to nine locals before the store, after one more loan per iteration for about as many iterations
+/// as there are locals. Each doubling makes an iteration take about four times as long, and the
+/// state that the loop carries makes each iteration of a loop inside it longer too, so the check
+/// would not reach the limit of the iterations in practical time. Three stops end such checks with
+/// `E1017` (`loop_ownership_limit`): `LOOP_FASTER_ITERATIONS` iterations in a row whose loans grow
+/// faster and faster, `LOOP_GROWING_ITERATIONS` (or `LOOP_GROWING_LARGE`) iterations in a row
+/// whose loans grow at least as fast as before, and `LOOP_STATE_ITERATIONS` iterations in a row
+/// after which the loans that the loop's state holds grow faster and faster, for a loop whose
+/// growth a part that settles hides. No stop applies to an iteration whose loans grow by less than
+/// those of the one before it, or do not grow, and the first two counts start again there.
+///
+/// In a loop that settles, the later iterations make about as many loans as the first: in the gate
+/// and generated corpora, the examples and test fixtures, the std examples and the timing programs,
+/// every loop settles within 3 iterations, and an iteration makes at most 3 more loans than the
+/// first. A reference that the loop assigns again (`code = sub0`, `cur = match op with ...`) widens
+/// to every place that the loop may give it at the first merge, and a local that copies it
+/// (`saved = code`) one iteration later, so each borrow through them makes one loan for each of
+/// those places from the second iteration on: an interpreter loop of a few dozen opcodes grows by
+/// hundreds of loans once, in its second iteration, and settles in its third. When the loop also
+/// keeps references that settle one iteration after another (a history `last4 = last3`, ...,
+/// `last0 = ref names[pc]`, a return stack `ret3 = ret2`, ..., `ret0 = code`), each of its later
+/// iterations makes a few loans more until it settles, and after the jump no iteration adds more
+/// than the one before it. So `LOOP_FASTER_ITERATIONS` does not count them, and
+/// `LOOP_GROWING_ITERATIONS` counts one iteration for each level of a return stack whose levels add
+/// the same few loans.
+///
+/// A chain of `L` references, each to a field of the target of the next, advanced in one loop
+/// (`q0 = ref (deref q1).a`, ..., `q(L-1) = ref (deref qL).a`), borrows in iteration `k` (from 0),
+/// for each link `j`, every place that link `j + 1` holds, `m` times `1 + min(k, L - 1 - j)` of
+/// them when each link starts with `m` places, so the iteration makes `m (k (k - 1) / 2 + k (L -
+/// k))` more loans than the first, at most `m L (L - 1) / 2` in iteration `L - 1`, and the loop
+/// settles in iteration `L`. Its loans grow by less in each iteration than in the one before
+/// (`m (L - k)`), and so do those of a loop that passes a reference along locals and borrows
+/// through each of them (`r1 = r0`, also when it reads through each many times and the first takes
+/// one of several places), so no stop applies to them, however many loans they make, and
+/// they keep the verdict of `15d84aaf`, which had no stops. Their check grows with about the
+/// seventh power of the chain's length: on a release build, a chain of 20 links takes about 1.5
+/// seconds, one of 30 about 18, one of 33 about 33 and one of 40 about 2 minutes, as long as the
+/// same check without stops takes. A chain whose links each take one of two fields of the next
+/// link's target doubles its places at each link instead, and meets `LOOP_FASTER_ITERATIONS`.
+///
+/// No stop counts the loans themselves. A limit on them (A31 `LOOP_LOAN_GROWTH`, removed: an
+/// iteration from the fifth on that made more than 500 loans beyond the iteration before it that
+/// made the fewest, and more than 100 beyond the fourth) stopped first, in the 1887 loop traces of
+/// the reviews of A31, only loops that settle (such chains and windows, and interpreters and state
+/// machines with a history or a return stack whose reference widened once), and every `loopplace`
+/// form met `LOOP_FASTER_ITERATIONS` or `LOOP_GROWING_ITERATIONS` before it. A `loopplace` loop
+/// that also passes a reference along locals and reads through each of them, which those traces
+/// did not have, took 10 to 90 seconds on a release build to meet `LOOP_FASTER_ITERATIONS` without
+/// the limit (which had stopped it in 0.2), and meets `LOOP_STATE_ITERATIONS` sooner.
+///
+/// What `check_loop` keeps for the stops: the loans that the last iteration made and that the
+/// state held after it, how many more of each than the iteration before, and the three counts.
+/// Planned test of real loops' margin to these stops: `_features/A35-loop-growth-margin-check.md`.
+#[derive(Default)]
+struct LoanGrowth {
+    /// The loans that the last iteration made, and how many more than the one before it (none when
+    /// it made no more).
+    last: Option<(usize, Option<usize>)>,
+    /// How many iterations in a row made more loans than the one before, and more of them than
+    /// that one added.
+    faster: usize,
+    /// How many iterations in a row made more loans than the one before, and at least as many more
+    /// as that one added.
+    growing: usize,
+    /// The loans that the state held after the last iteration (`Checker::loop_state_loans`), and
+    /// how many more than after the one before it (none when it held no more).
+    state: Option<(usize, Option<usize>)>,
+    /// How many iterations in a row left the state holding more loans than the one before, and
+    /// more of them than that one added.
+    state_faster: usize,
+}
+
+/// A31: how many iterations in a row that did not settle may each make more loans than the
+/// iteration before it, and more of them than that one added, before `Checker::check_loop` stops
+/// with `E1017`. The loans of a `loopplace` loop grow so from its second iteration on (1, 2, 4,
+/// ... more) or from the iteration whose store first gets the borrow that its locals passed on, so
+/// the check stops at its sixth iteration (iteration 5) or five iterations after that store. In the
+/// gate and generated corpora and the std examples, a loop that settles grew faster at most once
+/// in a row, while its locals widened one after another (a reference that the loop assigns again,
+/// then the locals that copy it). A chain whose links each take one of two fields of the next
+/// link's target (`qk = if c then ref (deref q(k+1)).a else ref (deref q(k+1)).b`) doubles its
+/// places at each link, so its loans grow faster in each iteration until it settles, and this
+/// stops it from 7 links on (`15d84aaf` checks 7 links in 0.8 seconds on a release build, 8 in 3.3
+/// and 9 in 16). With one of four fields, 5 links grow faster in four iterations in a row and
+/// settle in the fifth (57, 121, 313, 825, 1849 loans).
+const LOOP_FASTER_ITERATIONS: usize = 5;
+
+/// A31: how many iterations in a row that did not settle may each make more loans than the
+/// iteration before it, and at least as many more as that one added, before
+/// `Checker::check_loop` stops with `E1017`; `LOOP_GROWING_LARGE` stops a loop that makes many
+/// loans sooner. A `loopplace` loop that passes the borrow through `k` locals before the store into
+/// the function value (`t1 = t0`, A34) adds one loan per iteration for about `k` iterations before
+/// its loans grow faster, so this stops it at its 25th iteration at the latest (`k = 140`: 13
+/// seconds for the 129 iterations of the limit on a release build). An iteration costs about the
+/// statements that the body evaluates times the loans that the state holds, not the loans that the
+/// iteration makes, so a body of many statements that borrow little still runs those 24
+/// iterations: on a release build, a hand-on through 60 locals with 2000 statements that make no
+/// loans takes about 8.5 seconds, and one through 500 locals about 7 (A34 `loopplace`). A loop that
+/// copies a reference along `n` locals, one per iteration (`u(n-1) = u(n-2)`, ..., `u1 = u0`, `u0
+/// = ref a`), and borrows through the last of them adds one loan per iteration the same way and
+/// settles in iteration `n`, so this stops such a loop from 25 locals on.
+const LOOP_GROWING_ITERATIONS: usize = 24;
+
+/// A31: the iterations in a row of `LOOP_GROWING_ITERATIONS` that stop a loop whose last iteration
+/// made more loans than the second number. The loans are the only measure of the body that the
+/// stops have: a body that makes many of them takes long enough per iteration that 24 iterations
+/// would take seconds (a body of 1000 borrows and 40 locals that pass the borrow on took about 5
+/// seconds for 32), and this stops it after a third of that. A body of many statements that make
+/// few loans takes as long per iteration but runs all 24. A loop that copies a reference along 9 or
+/// more locals and makes more than 200 loans per iteration stops too.
+const LOOP_GROWING_LARGE: (usize, usize) = (8, 200);
+
+/// A31: how many iterations in a row that did not settle may each leave the loop's state holding
+/// more loans than the one before it, and more of them than that one added
+/// (`Checker::loop_state_loans`), before `Checker::check_loop` stops with `E1017` at an iteration
+/// that counts for `LOOP_GROWING_ITERATIONS`. A part of a loop that settles can hide the doubling
+/// of a `loopplace` loop from the loans that its iterations make: a reference passed along `S`
+/// locals and read through each of them `R` times (`s1 = s0`, `acc = acc + String.length
+/// s1.name`) makes about `R` fewer loans in each iteration than in the one before until the
+/// locals settle, so the loop's loans grow by less in each iteration until the doubling (1, 2, 4,
+/// ... more) outgrows `R`, about `log2 R + 2` iterations in, or the locals settle, and
+/// `LOOP_FASTER_ITERATIONS` stops it five iterations after that, each two to three times as long
+/// as the one before (on a release build, 19 seconds for `S = 10` and `R = 32`, 87 for `R = 64`).
+/// The reads multiply the loans of an iteration, not those of the state, which double from the
+/// first iteration on (27, 45, 70, 110, 181, 315, 576, 1092 for `S = 10` and `R = 32`), so this
+/// stops such a loop at the first iteration, from its ninth (iteration 8) on, whose loans grow at
+/// least as much as those of the one before it: iteration 8 for `R` up to 64 (2503 loans for `R =
+/// 32`, 4743 for `R = 64`), and one iteration later for each doubling of `R` beyond (A34
+/// `loopplace` has the times). The state of a loop that settles can grow faster for as long while
+/// its iterations make fewer loans each time (a chain that the loop advances while it stores a
+/// function value that reads it: 8 iterations in a row for `each9_store0_live`, 11 for longer
+/// chains), so this never counts an iteration whose loans grow by less than those of the one
+/// before it, and it stops no loop whose loans grow by less in each iteration, such as the chains
+/// and windows that `LoanGrowth` describes. In the loops of the reviews of A31 that settle, the
+/// state had grown faster at most 4 iterations in a row at such an iteration (a chain whose links
+/// each take one of two fields of the next link's target, of 6 links; 8 at 10 links, which
+/// `LOOP_FASTER_ITERATIONS` stops first).
+const LOOP_STATE_ITERATIONS: usize = 8;
+
+/// A31: the change that lets the loops of A34 `loopplace` settle, which the help of each stop of
+/// `LoanGrowth` names.
+const LOOP_GROWTH_ADVICE: &str = "when the loop passes a borrow of a reference parameter's target \
+     to a function value that owns a cell (a lambda that captures an `Arc` by value), let the \
+     function value capture a reference to the cell instead, such as \
+     `let cell = Arc.get (ref sink)`";
+
+impl LoanGrowth {
+    /// Notes the `made` loans of an iteration that did not settle, and returns the help of the
+    /// `E1017` that stops the loop when they meet a limit.
+    fn note(&mut self, made: usize, held: usize) -> Option<String> {
+        let held_added = self
+            .state
+            .and_then(|(before, _)| held.checked_sub(before))
+            .filter(|added| *added > 0);
+        let held_earlier = self.state.and_then(|(_, added)| added);
+        self.state_faster = match held_added {
+            Some(added) if held_earlier.is_none_or(|earlier| added > earlier) => {
+                self.state_faster + 1
+            }
+            _ => 0,
+        };
+        self.state = Some((held, held_added));
+        let added = self
+            .last
+            .and_then(|(before, _)| made.checked_sub(before))
+            .filter(|added| *added > 0);
+        let earlier = self.last.and_then(|(_, added)| added);
+        match added {
+            Some(added) => {
+                self.faster = if earlier.is_none_or(|earlier| added > earlier) {
+                    self.faster + 1
+                } else {
+                    0
+                };
+                self.growing = if earlier.is_none_or(|earlier| added >= earlier) {
+                    self.growing + 1
+                } else {
+                    0
+                };
+            }
+            None => (self.faster, self.growing) = (0, 0),
+        }
+        self.last = Some((made, added));
+        if self.faster >= LOOP_FASTER_ITERATIONS {
+            return Some(format!(
+                "the loop's borrows keep growing faster: each of the last {LOOP_FASTER_ITERATIONS} \
+                 iterations made more borrows than the one before it, and more of them than that \
+                 one added (the last made {made}), so the check stops before the loop settles; \
+                 {LOOP_GROWTH_ADVICE}"
+            ));
+        }
+        let (large_iterations, large) = LOOP_GROWING_LARGE;
+        if self.growing >= LOOP_GROWING_ITERATIONS
+            || (self.growing >= large_iterations && made > large)
+        {
+            return Some(format!(
+                "the loop's borrows keep growing: each of the last {} iterations made more \
+                 borrows than the one before it, and at least as many more as that one added (the \
+                 last made {made}), so the check stops before the loop settles; a reference that \
+                 the loop passes along {} or more locals, one per iteration (`u1 = u0`), and \
+                 borrows through grows this way, and along {} or more when its iterations make \
+                 more than {large} borrows; {LOOP_GROWTH_ADVICE}",
+                self.growing,
+                LOOP_GROWING_ITERATIONS + 1,
+                large_iterations + 1
+            ));
+        }
+        if self.state_faster >= LOOP_STATE_ITERATIONS && self.growing > 0 {
+            return Some(format!(
+                "the borrows that the loop carries keep growing faster: after each of the last \
+                 {LOOP_STATE_ITERATIONS} iterations, the loop's state held more borrows than \
+                 after the one before it, and more of them than that one added (now {held}), and \
+                 the last iteration made {made} borrows, at least as many more than the one before \
+                 it as that one added, so the check stops before the loop settles; locals that \
+                 pass a reference along and are read through make each iteration add fewer \
+                 borrows until they settle, which hides such growth for some iterations; \
+                 {LOOP_GROWTH_ADVICE}"
+            ));
+        }
+        None
+    }
+}
+
+/// What `LoopSummary` keeps of the value of a local: its loans, and those of each of its region
+/// slots (`Value::regions`).
+type LocalSummary = (BTreeSet<LoanKey>, Option<Vec<BTreeSet<LoanKey>>>);
+
+/// What the fixed point of a loop compares of the state where an iteration starts
+/// (`Checker::check_loop`). The check returns the exit state of the iteration whose summary did
+/// not change, which starts from what the iterations before it left: a fact of the state that an
+/// iteration changes and the summary leaves out would be lost after the loop, and the body would
+/// not be checked again under it. So it holds the facts of `State` that a check reads, but for the
+/// three left out below, each loan by its `LoanKey` and each move by its place (the spans of the
+/// moves would keep it from settling), and the facts of the body that only grow and that a later
+/// write or store reads where it happens (`Checker::handed`, `Checker::exports`): the next
+/// iteration's writes and stores meet those of this one. A31, Copilot's review 2:
+/// `kept_elsewhere`, `contents_elsewhere`, `moved_always`, `generic_moves`, the regions and the
+/// flags of the loans, and `exports` were missing (a copy of a target's contents or a borrow of it
+/// stored elsewhere in a loop was lost, and a later `deref p = v` ended the borrow). The aliases
+/// are not in it: only the bindings of a match, a `for` and a pattern view add them, for their own
+/// locals, and the end of their scopes takes them out (`finish_control_scope`, `eval_match`,
+/// `eval_control`), so an iteration leaves those of the locals before the loop as they were.
+/// `Value::closed_result` is not in it either: `State::merge` keeps the first state's, so the
+/// summary of a merged state never shows a change. Nor are the parents of a loan
+/// (`Loan::parents`, which `active`, `retain_live_loans`, `held_keeps`, `holders` and the move of
+/// a reborrowed exclusive reference read): with them a chain of reborrows such as
+/// `cur = ref mut (deref cur).next` would make the key grow with each iteration and the summary
+/// would never settle, and a loan of the same place and flags under other parents would conflict
+/// with the exclusive borrow of its parent.
+#[derive(PartialEq, Eq)]
+struct LoopSummary {
+    moved: BTreeSet<Place>,
+    moved_always: BTreeSet<usize>,
+    generic_moves: BTreeSet<Place>,
+    locals: BTreeMap<usize, LocalSummary>,
+    copy_variables: BTreeSet<String>,
+    kept: BTreeSet<LoanKey>,
+    kept_elsewhere: BTreeSet<LoanKey>,
+    contents_elsewhere: BTreeSet<usize>,
+    block_shares: BTreeMap<usize, BTreeSet<usize>>,
+    handed: usize,
+    exports: usize,
+}
 
 pub(super) struct LoopFlow<'a> {
     locals: BTreeSet<usize>,
@@ -366,43 +650,81 @@ impl<'a> Checker<'a, '_> {
         Ok(())
     }
 
+    /// The `LoanKey` of `loan`, held as what the holder read through a reference parameter when
+    /// `through`.
+    fn loan_key(&self, loan: usize, through: bool) -> LoanKey {
+        let held = &self.loans[loan];
+        let mut flags = 0;
+        for (set, flag) in [
+            (held.share, LOAN_SHARE),
+            (held.view.is_some(), LOAN_VIEW),
+            (through, LOAN_THROUGH),
+            (self.exact_loans.contains(&loan), LOAN_EXACT),
+            (self.ordered_loans.contains(&loan), LOAN_ORDERED),
+            (self.holding_loans.contains(&loan), LOAN_HOLDING),
+        ] {
+            if set {
+                flags |= flag;
+            }
+        }
+        (held.place.clone(), held.mutable, flags)
+    }
+
+    /// A31: the loans that the state holds, for `LOOP_STATE_ITERATIONS`: those of each local and of
+    /// each of its region slots, and those of `State::kept` and `State::kept_elsewhere`.
+    fn loop_state_loans(&self) -> usize {
+        let locals: usize = self
+            .state
+            .locals
+            .values()
+            .map(|(_, value)| {
+                value.loans.len()
+                    + value
+                        .regions
+                        .iter()
+                        .flatten()
+                        .map(BTreeSet::len)
+                        .sum::<usize>()
+            })
+            .sum();
+        locals + self.state.kept.len() + self.state.kept_elsewhere.len()
+    }
+
     fn loop_summary(&self) -> LoopSummary {
-        let loans = self
+        let keys = |loans: &BTreeSet<usize>, value: Option<&Value>| -> BTreeSet<LoanKey> {
+            loans
+                .iter()
+                .map(|loan| {
+                    let through = value.is_some_and(|value| value.through.contains(loan));
+                    self.loan_key(*loan, through)
+                })
+                .collect()
+        };
+        let locals = self
             .state
             .locals
             .iter()
             .map(|(id, (_, value))| {
-                (
-                    *id,
-                    value
-                        .loans
-                        .iter()
-                        .map(|id| {
-                            let loan = &self.loans[*id];
-                            (loan.place.clone(), loan.mutable)
-                        })
-                        .collect(),
-                )
+                let regions = value
+                    .regions
+                    .as_ref()
+                    .map(|slots| slots.iter().map(|slot| keys(slot, Some(value))).collect());
+                (*id, (keys(&value.loans, Some(value)), regions))
             })
             .collect();
-        // The places only: the spans of the moves would keep the fixpoint from converging. A31:
-        // the kept loans by place too, and the borrows handed to function-valued parameters, so
-        // that the next iteration's writes meet those of this one.
-        (
-            self.state.moved.keys().cloned().collect(),
-            loans,
-            self.copy_variables.clone(),
-            self.state
-                .kept
-                .iter()
-                .map(|id| {
-                    let loan = &self.loans[*id];
-                    (loan.place.clone(), loan.mutable)
-                })
-                .collect(),
-            self.handed.len(),
-            self.state.block_shares.clone(),
-        )
+        LoopSummary {
+            moved: self.state.moved.keys().cloned().collect(),
+            moved_always: self.state.moved_always.clone(),
+            generic_moves: self.state.generic_moves.keys().cloned().collect(),
+            locals,
+            copy_variables: self.copy_variables.clone(),
+            kept: keys(&self.state.kept, None),
+            kept_elsewhere: keys(&self.state.kept_elsewhere, None),
+            contents_elsewhere: self.state.contents_elsewhere.clone(),
+            block_shares: self.state.block_shares.clone(),
+            handed: self.handed.len(),
+            exports: self.exports.len(),
+        }
     }
 
     fn check_loop(
@@ -415,8 +737,17 @@ impl<'a> Checker<'a, '_> {
         let entry_reachable = self.reachable;
         let ids: BTreeSet<_> = entry.locals.keys().copied().collect();
         let live: BTreeSet<_> = live.intersection(&ids).copied().collect();
+        let limit = || {
+            error(
+                DiagnosticKind::LoopOwnershipLimit,
+                "loop ownership analysis exceeds the compiler limit; simplify loop-carried borrows",
+                body.span,
+            )
+        };
+        let mut growth = LoanGrowth::default();
         for _ in 0..=crate::syntax::MAX_NESTING {
             let before = self.loop_summary();
+            let made_before = self.loans.len();
             self.reachable = entry_reachable;
             if let Some(condition) = condition {
                 self.eval(condition, Use::Consume, &live)?;
@@ -452,12 +783,12 @@ impl<'a> Checker<'a, '_> {
                 }
                 return Ok(());
             }
+            if let Some(help) = growth.note(self.loans.len() - made_before, self.loop_state_loans())
+            {
+                return Err(limit().with_help(help));
+            }
         }
-        Err(error(
-            DiagnosticKind::LoopOwnershipLimit,
-            "loop ownership analysis exceeds the compiler limit; simplify loop-carried borrows",
-            body.span,
-        ))
+        Err(limit())
     }
 
     pub(super) fn eval_control(

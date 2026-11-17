@@ -2085,6 +2085,8 @@ const suites = {
       ["equality_keeps_an_operand", [], 9n],
       // The cell holds the state after the first element, 9 + 1; last is 9 + 2.
       ["fold_state_comes_back", [], (9n + 1n) * 100n + (9n + 2n)],
+      // The same through Array.foldr.
+      ["array_fold_state_comes_back", [], (9n + 1n) * 100n + (9n + 2n)],
       ["drop_stores_an_owned_function", [], 7n + 1n],
       // Review round 2. "12345" has 5 characters: k = 5 + 1, table[1] 3 = 6, moved 5, sizes[0] = 2.
       ["dispatch_table_then_move", [], 6n + 6n + 5n + 2n],
@@ -2166,6 +2168,30 @@ const suites = {
       // (5 + 7), p2's reads the second element's "123456789" (9 + 1), p1's and the elements' keep
       // 0; each_recorded returns 1.
       ["bound_parts_keep_their_strings", [], (((1n * 100n + 0n) * 100n + 10n) * 100n + 12n) * 100n + 0n],
+      // Copilot's review of PR #105. The first iteration's recorder reads "12345" after the call
+      // (5 + 1); the continue and the break in the third argument drop the string and then the
+      // recorder before the call, so those keep their first functions (72, 73); the loop adds 1.
+      // With 3 the recorder reads "123" (3 + 9) and the call gives 9; with 2^62 the overflow drops
+      // them before the call (75) and gives -1, encoded as -1 + 2.
+      ["early_exits_drop_pending_temporaries", [], ((((((1n * 100n + 6n) * 100n + 72n) * 100n + 73n) * 100n + 9n) * 100n + 12n) * 100n + 75n) * 10n + 1n],
+      // The sixth merge into A32. p2's and p3's recorders read p1's "12345" (5 + 1), p1's keeps 0;
+      // chosen_pairs returns 1.
+      ["local_function_values_keep_the_part", [], 1n * 1000n + 0n * 100n + 6n * 10n + 6n],
+      // Review round 1 after Copilot's review. p2's, p3's and p4's recorders read p1's "12345"
+      // (5 + 1), p1's keeps 0; matched_pairs returns 1.
+      ["matched_function_values_keep_the_part", [], 1n * 10000n + 0n * 1000n + 6n * 100n + 6n * 10n + 6n],
+      // Review round 2 after Copilot's review. coarse_pairs returns 0 + the length of the new x.z
+      // "123" (3); p1's recorder reads x.a.e[0]'s "12345" (5 + 1).
+      ["wrapped_coarse_parts_keep_the_outside", [], 3n * 10n + 6n],
+      // Review round 3 after Copilot's review. passed_pairs returns 0 + 0 + the length of the new
+      // x.z "1234" (4); p1's and p2's recorders read x.a.e[0]'s "12345" (5 + 1).
+      ["passed_on_parts_keep_the_outside", [], 4n * 100n + 6n * 10n + 6n],
+      // Review round 5 after Copilot's review. unrelated_pairs returns the length of "1234567" (7);
+      // r2's, p1's and h's other recorders keep 0, o's reads p1's "12345" (5 + 1).
+      ["unrelated_blocks_keep_no_borrow", [], (((7n * 10n + 0n) * 10n + 0n) * 10n + 0n) * 10n + 6n],
+      // Copilot's review 2. lent_in_a_loop returns the new value's 7; the old q records 0, d and
+      // the new q read the new "123456789" (9 + 4 and 9 + 2).
+      ["loop_lends_borrows_of_the_new_value", [], ((7n * 100n + 0n) * 100n + 13n) * 100n + 11n],
     ],
     // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
     // runtime holds one mutex at a time and traps on the second, as it does for any such program.

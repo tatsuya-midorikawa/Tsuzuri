@@ -438,6 +438,20 @@ fn fold_state_comes_back =
     let last = List.foldr (\acc x -> { Mutex.with_lock (Arc.get (ref a2)) (\slot -> Array.write 0 acc slot); \() -> String.length text + deref x }) (\() -> 0) xs
     Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ()) * 100 + last ()
 
+// The same through `Array.foldr`, which calls the callback itself: the callback's result is the
+// function that its body makes, not the callback with arguments bound, so the state is no owner of
+// the cell that the callback writes (review round 1 after Copilot's review: the rule before took
+// the result of any call of a function value for one).
+export def array_fold_state_comes_back :: i64
+fn array_fold_state_comes_back =
+    let text0 = to_string 123456789
+    let text = ref text0
+    let a = Arc.new (Mutex.create [\() -> 0])
+    let a2 = Arc.share (ref a)
+    let xs = [1, 2]
+    let last = Array.foldr (\acc x -> { Mutex.with_lock (Arc.get (ref a2)) (\slot -> Array.write 0 acc slot); \() -> String.length text + deref x }) (\() -> 0) (ref xs)
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ()) * 100 + last ()
+
 record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }
 
 instance Drop<Stash> {
@@ -1357,3 +1371,227 @@ fn bound_parts_keep_their_strings =
     let out4 = Arc.new (Mutex.create [0])
     let k = bound_parts (ref out1) (ref out2) (ref out3) (ref out4)
     (((k * 100 + recorded (ref out1)) * 100 + recorded (ref out2)) * 100 + recorded (ref out3)) * 100 + recorded (ref out4)
+
+// Copilot's review of PR #105: a call drops the temporaries that it borrows right after it returns,
+// in the order in which they were made, so a recorder made before the string keeps a borrow of it.
+// A `break`, `continue` or a handled exception in a later argument drops the pending temporaries in
+// the reverse order, but before the call, while the recorder still holds its first function.
+def fresh_recorder :: ref Arc<Mutex<[i64]>> -> i64 -> Recorder
+fn fresh_recorder out first = Recorder { cell: Mutex.create [\() -> first], out: Arc.share out }
+
+def record_length :: ref Recorder -> ref string -> i64 -> i64
+fn record_length c s n =
+    Mutex.with_lock (ref c.cell) (\x -> Array.write 0 (\() -> String.length s + n) x)
+    n
+
+def recorded_until_exit :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64
+fn recorded_until_exit out1 out2 out3 =
+    let mut i = 0
+    let mut total = 0
+    while i < 4 do
+        i = i + 1
+        let out = if i == 1 then out1 else if i == 2 then out2 else out3
+        total = total + record_length (ref (fresh_recorder out (70 + i))) (ref (to_string 12345)) ({ if i == 2 then continue else (); if i == 3 then break else (); i })
+    total
+
+def recorded_or_overflow :: ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn recorded_or_overflow out n =
+    let outcome =
+        try
+            record_length (ref (fresh_recorder out 75)) (ref (to_string 123)) (@checked n * n)
+        with
+        | e -> e
+    match outcome with
+    | Ok v -> v
+    | Error _ -> -1
+
+export def early_exits_drop_pending_temporaries :: i64
+fn early_exits_drop_pending_temporaries =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let out3 = Arc.new (Mutex.create [0])
+    let out4 = Arc.new (Mutex.create [0])
+    let out5 = Arc.new (Mutex.create [0])
+    let k = recorded_until_exit (ref out1) (ref out2) (ref out3)
+    let small = recorded_or_overflow (ref out4) 3
+    let big = recorded_or_overflow (ref out5) 4611686018427387904
+    ((((((k * 100 + recorded (ref out1)) * 100 + recorded (ref out2)) * 100 + recorded (ref out3)) * 100 + small) * 100 + recorded (ref out4)) * 100 + recorded (ref out5)) * 10 + (big + 2)
+
+// The sixth merge into A32 (`fvpart`): a local bound to `cross_recorded` (here a choice of it) runs it
+// in a pipeline and through a partial application of it as a direct call does. `p2` and `p3`, declared
+// after `p1`, keep borrows of `p1`'s string and are dropped first.
+def chosen_pairs :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn chosen_pairs out1 out2 out3 k =
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 12345 }
+    let p2 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out2 }, s: to_string 1234567 }
+    let p3 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out3 }, s: to_string 123 }
+    let chosen = if k < 0 then cross_recorded else cross_recorded
+    ref p1 |> chosen (ref p2)
+    let g = chosen (ref p3)
+    g (ref p1)
+    k
+
+export def local_function_values_keep_the_part :: i64
+fn local_function_values_keep_the_part =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let out3 = Arc.new (Mutex.create [0])
+    let k = chosen_pairs (ref out1) (ref out2) (ref out3) 1
+    k * 1000 + recorded (ref out1) * 100 + recorded (ref out2) * 10 + recorded (ref out3)
+
+// Review round 1 after Copilot's review: a local bound to a `match` of `cross_recorded`, or to a
+// block, runs the member that it holds as `chosen_pairs` does. `p2`, `p3` and `p4`, declared after
+// `p1`, keep borrows of `p1`'s string and are dropped first. (A choice of partial applications of a
+// named function is in tests/rc.rs, for the reason that `bound_parts` gives.)
+def matched_pairs :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn matched_pairs out1 out2 out3 out4 k =
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 12345 }
+    let p2 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out2 }, s: to_string 1234567 }
+    let p3 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out3 }, s: to_string 123 }
+    let p4 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out4 }, s: to_string 1234567890 }
+    let chosen = match k with
+        | 0 -> cross_recorded
+        | _ -> { cross_recorded }
+    ref p1 |> chosen (ref p2)
+    let other = { chosen }
+    other (ref p3) (ref p1)
+    let g = chosen (ref p4)
+    g (ref p1)
+    k
+
+export def matched_function_values_keep_the_part :: i64
+fn matched_function_values_keep_the_part =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let out3 = Arc.new (Mutex.create [0])
+    let out4 = Arc.new (Mutex.create [0])
+    let k = matched_pairs (ref out1) (ref out2) (ref out3) (ref out4) 1
+    k * 10000 + recorded (ref out1) * 1000 + recorded (ref out2) * 100 + recorded (ref out3) * 10 + recorded (ref out4)
+
+// Review round 2 after Copilot's review: `apply_coarse` passes its function value a place that
+// stands for a larger part (`x.a`, which holds the borrowed `x.a.e[0]`'s string), and
+// `apply_coarse_on` passes its parameters on to it. The caller of `apply_coarse_on` keeps a borrow
+// of `x.a` only, as a direct call does, so writing `x.z` is accepted. `p1`, declared after `x`,
+// is dropped first: its recorder reads "12345" (5 + 1).
+record CoarseD { s: string, e: [Rc<CoarseD>] }
+record CoarseX { a: CoarseD, z: string }
+
+def coarse_leaf :: own string -> CoarseD
+fn coarse_leaf s = CoarseD { s: s, e: [] }
+
+def apply_coarse :: i64 -> ref CoarseX -> (ref CoarseD -> unit) -> i64
+fn apply_coarse k x f = { (if k > 0 then ref (deref (Rc.get (ref x.a.e[0]))) else ref x.a) |> f; 0 }
+
+def apply_coarse_on :: i64 -> ref CoarseX -> (ref CoarseD -> unit) -> i64
+fn apply_coarse_on k x f = apply_coarse k x f
+
+def cross_coarse :: ref RecordedPair -> ref CoarseD -> unit
+fn cross_coarse a b =
+    let t = ref b.s
+    Mutex.with_lock (ref a.c.cell) (\c -> Array.write 0 (\() -> String.length t + 1) c)
+
+def coarse_pairs :: ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn coarse_pairs out1 k =
+    let mut x = CoarseX { a: CoarseD { s: to_string 12, e: [Rc.new (coarse_leaf (to_string 12345))] }, z: to_string 1 }
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 7 }
+    let r = apply_coarse_on k (ref x) (cross_coarse (ref p1))
+    x.z = to_string 123
+    r + String.length (ref x.z)
+
+export def wrapped_coarse_parts_keep_the_outside :: i64
+fn wrapped_coarse_parts_keep_the_outside =
+    let out1 = Arc.new (Mutex.create [0])
+    let k = coarse_pairs (ref out1) 1
+    k * 10 + recorded (ref out1)
+
+// Review round 3 after Copilot's review: `apply_coarse_partial` passes its parameters on to
+// `apply_coarse` through a partial application, and `apply_coarse_lambda` through a lambda that
+// captures them. Their callers keep a borrow of `x.a` only, as a direct call does, so writing
+// `x.z` is accepted. `p1` and `p2`, declared after `x`, are dropped first: each recorder reads
+// "12345" (5 + 1).
+def apply_coarse_partial :: i64 -> ref CoarseX -> (ref CoarseD -> unit) -> i64
+fn apply_coarse_partial k x f = { let g = apply_coarse k x; g f }
+
+def apply_coarse_lambda :: i64 -> ref CoarseX -> (ref CoarseD -> unit) -> i64
+fn apply_coarse_lambda k x f = (\(_u: unit) -> apply_coarse k x f) ()
+
+def passed_pairs :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn passed_pairs out1 out2 k =
+    let mut x = CoarseX { a: CoarseD { s: to_string 12, e: [Rc.new (coarse_leaf (to_string 12345))] }, z: to_string 1 }
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 7 }
+    let p2 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out2 }, s: to_string 7 }
+    let r = apply_coarse_partial k (ref x) (cross_coarse (ref p1))
+    let s = apply_coarse_lambda k (ref x) (cross_coarse (ref p2))
+    x.z = to_string 1234
+    r + s + String.length (ref x.z)
+
+export def passed_on_parts_keep_the_outside :: i64
+fn passed_on_parts_keep_the_outside =
+    let out1 = Arc.new (Mutex.create [0])
+    let out2 = Arc.new (Mutex.create [0])
+    let k = passed_pairs (ref out1) (ref out2) 1
+    k * 100 + recorded (ref out1) * 10 + recorded (ref out2)
+
+// Review round 5 after Copilot's review: `h` holds a share of `r2`'s block and a block of its
+// own; after `h`'s last use, `p1`'s string is written into `o`'s recorder, a block of a type
+// that `r2`'s type does not reach, so `r2`, which cannot free it, keeps no borrow of `p1`. `o`,
+// declared after `p1`, is dropped first: its recorder reads "12345" (5 + 1). The other recorders
+// keep 0, and the function returns the length of `r2`'s "1234567" (7).
+record RecordedOther { c: Recorder, n: i64 }
+
+record SharedPairs { rc: Rc<RecordedPair>, other: Rc<RecordedOther> }
+
+def cross_other :: ref RecordedOther -> ref RecordedPair -> unit
+fn cross_other a b =
+    let t = ref b.s
+    Mutex.with_lock (ref a.c.cell) (\x -> Array.write 0 (\() -> String.length t + 1) x)
+
+def unrelated_pairs :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64
+fn unrelated_pairs out1 out2 out3 out4 =
+    let r2 = Rc.new (RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out1 }, s: to_string 1234567 })
+    let p1 = RecordedPair { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out2 }, s: to_string 12345 }
+    let h = SharedPairs { rc: Rc.share (ref r2), other: Rc.new (RecordedOther { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out3 }, n: 1 }) }
+    let a = Rc.get (ref h.rc)
+    let o = Rc.new (RecordedOther { c: Recorder { cell: Mutex.create [\() -> 0], out: Arc.share out4 }, n: 2 })
+    cross_other (Rc.get (ref o)) (ref p1)
+    String.length (ref a.s)
+
+export def unrelated_blocks_keep_no_borrow :: i64
+fn unrelated_blocks_keep_no_borrow =
+    let out1 = Arc.new (Mutex.create [9])
+    let out2 = Arc.new (Mutex.create [9])
+    let out3 = Arc.new (Mutex.create [9])
+    let out4 = Arc.new (Mutex.create [9])
+    let k = unrelated_pairs (ref out1) (ref out2) (ref out3) (ref out4)
+    let first = (k * 10 + recorded (ref out1)) * 10 + recorded (ref out2)
+    (first * 10 + recorded (ref out3)) * 10 + recorded (ref out4)
+
+// Copilot's review 2 of PR #105: a loop whose body stores a borrow that the target of a reference
+// parameter keeps (of its new string, after the replacement) into another parameter's target.
+// The check takes what the body stored to the code after the loop. The old `q` records 0; `d`,
+// declared after `q`, is dropped first and reads the new "123456789" (9 + 4), then `q`'s recorder
+// reads it (9 + 2); the function returns the new value's 7.
+def renew_then_lend :: ref mut RecordedTriple -> ref RecordedTriple -> ref Arc<Mutex<[i64]>> -> i64 -> i64
+fn renew_then_lend p dst out n =
+    deref p = make_triple 7 out
+    let t = ref p.s
+    Mutex.with_lock (ref p.c.cell) (\b -> Array.write 0 (\() -> String.length t + 2) b)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref dst.c.cell) (\b -> Array.write 0 (\() -> String.length t + 4) b)
+        i = i + 1
+    p.n
+
+def lent_in_a_loop :: ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> ref Arc<Mutex<[i64]>> -> i64
+fn lent_in_a_loop out1 out2 out3 =
+    let mut q = make_triple 1 out1
+    let d = make_triple 2 out2
+    renew_then_lend (ref mut q) (ref d) out3 3
+
+export def loop_lends_borrows_of_the_new_value :: i64
+fn loop_lends_borrows_of_the_new_value =
+    let out1 = Arc.new (Mutex.create [9])
+    let out2 = Arc.new (Mutex.create [9])
+    let out3 = Arc.new (Mutex.create [9])
+    let k = lent_in_a_loop (ref out1) (ref out2) (ref out3)
+    ((k * 100 + recorded (ref out1)) * 100 + recorded (ref out2)) * 100 + recorded (ref out3)

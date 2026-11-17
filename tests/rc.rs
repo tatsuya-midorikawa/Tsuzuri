@@ -3986,6 +3986,106 @@ fn a_temporary_whose_drop_runs_code_keeps_no_borrow_of_one_made_before_it() {
     }
 }
 
+/// The prelude of `an_early_exit_before_the_call_keeps_the_order_of_its_borrowed_temporaries`:
+/// `keep3` keeps a borrow of its string in its holder's cell, `keep3r` the same with the string
+/// first; both take a third argument after the two temporaries.
+const EXIT_PRELUDE: &str = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = {
+        let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")];
+        do! IO.write_line ("drop holder reads " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " junk " + to_string junk.length)
+    }
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def keep3 :: ref Holder -> ref string -> i64 -> i64
+fn keep3 c s n =
+    Mutex.with_lock (ref c.cell) (\b -> Array.write 0 (\() -> look s) b)
+    n
+def keep3r :: ref string -> ref Holder -> i64 -> i64
+fn keep3r s c n =
+    Mutex.with_lock (ref c.cell) (\b -> Array.write 0 (\() -> look s) b)
+    n
+def k :: i64 -> i64 -> i64
+fn k a b = a + b
+"#;
+
+fn exit_program(body: &str) -> String {
+    format!("{EXIT_PRELUDE}{body}do! IO.write_line (to_string (run 3))\n")
+}
+
+/// A31, Copilot's review of PR #105: the lowering drops the temporaries that a call borrows right
+/// after it returns, in the order in which they were made, but a `break`, `continue` or an
+/// exception that a `try` of the same body handles drops the pending ones in the reverse order
+/// before the scopes (`emit_loop_jump`, `raise`). Such an exit can only happen while the call's
+/// arguments are evaluated, before the call, so no temporary holds a borrow of another yet: the
+/// order after the call is the only one that the drop-order rule needs. A holder made first stays
+/// accepted with an exit in a later argument, or in a later part of the statement after the call
+/// (the native and ASan runs print `drop holder reads 8` after a call and `reads 0` for a holder
+/// left before its call), and a holder made after the string stays rejected.
+#[test]
+fn an_early_exit_before_the_call_keeps_the_order_of_its_borrowed_temporaries() {
+    const LOOP: &str = "def run :: i64 -> i64\nfn run n =\n    let mut i = 0\n    let mut total = 0\n    while i < n do\n        i = i + 1\n";
+    const TRY: &str = "def run :: i64 -> i64\nfn run n =\n    let outcome =\n        try\n";
+    const HANDLE: &str = "        with\n        | e -> e\n    match outcome with\n    | Ok v -> v\n    | Error _ -> -1\n";
+    const HOLDER: &str = "ref (Holder { cell: Mutex.create [\\() -> 0] })";
+    const TEXT: &str = "ref (String.repeat 4 (ref \"123456789\"))";
+    for body in [
+        // a break in the third argument, after both temporaries are made (t1)
+        format!(
+            "{LOOP}        total = total + keep3 ({HOLDER}) ({TEXT}) ({{ if i == 2 then break else (); i }})\n    total\n"
+        ),
+        // a continue there (t2)
+        format!(
+            "{LOOP}        total = total + keep3 ({HOLDER}) ({TEXT}) ({{ if i == 2 then continue else (); i }})\n    total\n"
+        ),
+        // an exception raised there and handled by the enclosing try (t3)
+        format!("{TRY}            keep3 ({HOLDER}) ({TEXT}) (@checked n * n)\n{HANDLE}"),
+        // a break after the call, in a later argument of an outer call (t4)
+        format!(
+            "{LOOP}        total = total + k (keep3 ({HOLDER}) ({TEXT}) 1) ({{ if i == 2 then break else (); i }})\n    total\n"
+        ),
+        // an exception raised after the call (t5)
+        format!("{TRY}            k (keep3 ({HOLDER}) ({TEXT}) 1) (@checked n * n)\n{HANDLE}"),
+        // a break on the right side of a pipeline whose left side is the call (t7)
+        format!(
+            "{LOOP}        total = total + (keep3 ({HOLDER}) ({TEXT}) 1 |> k ({{ if i == 2 then break else (); i }}))\n    total\n"
+        ),
+    ] {
+        accepts_in_both_editions(&[("Main.tz", &exit_program(&body))]);
+    }
+    // The holder made after the string: the call drops the string first and the holder's drop
+    // reads it (main prints `drop holder reads -1`), whatever the exits do (u1, u2).
+    for (body, at) in [
+        (
+            format!(
+                "{LOOP}        total = total + keep3r ({TEXT}) ({HOLDER}) ({{ if i == 2 then break else (); i }})\n    total\n"
+            ),
+            (29, 25),
+        ),
+        (
+            format!(
+                "{LOOP}        total = total + keep3r ({TEXT}) ({HOLDER}) ({{ if i == 2 then continue else (); i }})\n    total\n"
+            ),
+            (29, 25),
+        ),
+        (
+            format!("{TRY}            keep3r ({TEXT}) ({HOLDER}) (@checked n * n)\n{HANDLE}"),
+            (27, 13),
+        ),
+    ] {
+        rejects_at(
+            &exit_program(&body),
+            "E1013",
+            "assignment_extends_borrow",
+            at,
+        );
+    }
+}
+
 /// A31, review round 9 (findings 3 and 7): the fields of a record, the elements of a tuple and of
 /// a collection are dropped in their order. A value that keeps a borrow of its own part (a lock's
 /// callback wrote a borrow of `p.s` into the cell of `p.h`) must not drop that part before a part
@@ -5485,6 +5585,133 @@ fn a_call_that_stores_a_part_of_one_reference_argument_in_another_keeps_a_borrow
     }
 }
 
+/// A31, the sixth merge into A32 (`fvpart`): an immutable local bound to `cross` (or to a choice
+/// of named functions, a lambda, another such local) runs `cross` in a pipeline and through a
+/// partial application of it as in a direct call (`apply_higher_once` substitutes the local's
+/// expressions after the bound arguments, `known_functions` knows `let g = chosen (ref p2)`, and
+/// the partial application runs no code and drops what the local and the bound arguments drop).
+/// They used the conservative rule of a function value whose code does not show, which kept a
+/// borrow of `p2` in `p1` (main prints `drop 8`, `drop 0`, `1`). The swapped calls keep a borrow of
+/// `p2.s` in `p1`, which is dropped after `p2` (main reads the freed string).
+#[test]
+fn a_local_bound_to_a_named_function_keeps_the_parts_in_a_pipeline_or_partial_application() {
+    const THREE: &str =
+        "\\(a: ref PairOk) (b: ref PairOk) (c: ref PairOk) -> { cross a b; cross a c }";
+    for (binding, safe, swapped) in [
+        // the repros: an alias and a choice, in a pipeline and a partial application
+        (
+            "    let chosen = cross\n",
+            "    ref p1 |> chosen (ref p2)\n",
+            "    ref p2 |> chosen (ref p1)\n",
+        ),
+        (
+            "    let chosen = cross\n",
+            "    let g = chosen (ref p2)\n    g (ref p1)\n",
+            "    let g = chosen (ref p1)\n    g (ref p2)\n",
+        ),
+        (
+            "    let chosen = if n < 0 then cross else cross\n",
+            "    ref p1 |> chosen (ref p2)\n",
+            "    ref p2 |> chosen (ref p1)\n",
+        ),
+        (
+            "    let chosen = if n < 0 then cross else outer\n",
+            "    let g = chosen (ref p2)\n    g (ref p1)\n",
+            "    let g = chosen (ref p1)\n    g (ref p2)\n",
+        ),
+        // an alias of an alias, a lambda, a partial application completed by a pipeline
+        (
+            "    let a = cross\n    let chosen = a\n",
+            "    let g = chosen (ref p2)\n    g (ref p1)\n",
+            "    let g = chosen (ref p1)\n    g (ref p2)\n",
+        ),
+        (
+            "    let chosen = \\(a: ref PairOk) (b: ref PairOk) -> cross a b\n",
+            "    ref p1 |> chosen (ref p2)\n",
+            "    ref p2 |> chosen (ref p1)\n",
+        ),
+        (
+            "    let chosen = cross\n",
+            "    let g = chosen (ref p2)\n    ref p1 |> g\n",
+            "    let g = chosen (ref p1)\n    ref p2 |> g\n",
+        ),
+    ] {
+        let declared = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n";
+        accepts_in_both_editions(&[(
+            "Main.tz",
+            &cross_program(&format!("{declared}{binding}{safe}    n\n")),
+        )]);
+        rejects_at(
+            &cross_program(&format!("{declared}{binding}{swapped}    n\n")),
+            "E1013",
+            "assignment_extends_borrow",
+            (35, 5),
+        );
+    }
+    // The partial application alone runs no code: nothing keeps a borrow (main prints `drop 0`,
+    // `drop 0`, `1`).
+    accepts_in_both_editions(&[(
+        "Main.tz",
+        &cross_program(
+            "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let chosen = cross\n    let g = chosen (ref p2)\n    n\n",
+        ),
+    )]);
+    // A choice whose taken member stores the other way (n = 1 takes the lambda, which keeps a
+    // borrow of `p2.s` in `p1`).
+    rejects_at(
+        &cross_program(
+            "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let chosen = if n < 0 then cross else (\\(a: ref PairOk) (b: ref PairOk) -> cross b a)\n    ref p1 |> chosen (ref p2)\n    n\n",
+        ),
+        "E1013",
+        "assignment_extends_borrow",
+        (35, 5),
+    );
+    // Three values and partial applications of partial applications: `p3`, declared last, keeps
+    // borrows of `p1.s` and `p2.s` (main prints `drop 16`, `drop 0`, `drop 0`, `1`).
+    let declared = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let p3 = mkpo ()\n";
+    for (safe, swapped) in [
+        (
+            "    let g = chosen (ref p3) (ref p1)\n    g (ref p2)\n",
+            "    let g = chosen (ref p1) (ref p2)\n    g (ref p3)\n",
+        ),
+        (
+            "    let g = chosen (ref p3)\n    let h = g (ref p1)\n    h (ref p2)\n",
+            "    let g = chosen (ref p1)\n    let h = g (ref p2)\n    h (ref p3)\n",
+        ),
+        (
+            "    let g = chosen (ref p3)\n    let h = g (ref p1)\n    ref p2 |> h\n",
+            "    let g = chosen (ref p1)\n    let h = g (ref p2)\n    ref p3 |> h\n",
+        ),
+        (
+            "    ref p2 |> chosen (ref p3) (ref p1)\n",
+            "    ref p3 |> chosen (ref p1) (ref p2)\n",
+        ),
+    ] {
+        let binding = format!("    let chosen = {THREE}\n");
+        accepts_in_both_editions(&[(
+            "Main.tz",
+            &cross_program(&format!("{declared}{binding}{safe}    n\n")),
+        )]);
+        rejects_at(
+            &cross_program(&format!("{declared}{binding}{swapped}    n\n")),
+            "E1013",
+            "assignment_extends_borrow",
+            (35, 5),
+        );
+    }
+    // The conservative limit that drop.md states (A33 `fvparam`): a function-valued parameter that
+    // the callee applies partially, or in a pipeline, is there a function value whose code does
+    // not show, so the caller lets each argument's borrow go into the others' targets, and `p1`
+    // keeps a borrow of `p2` (main prints `drop 8`, `drop 0`, `1`). The helpers come after `run`.
+    const APPLY_PARTIAL: &str = "def applyp :: (ref PairOk -> ref PairOk -> unit) -> ref PairOk -> ref PairOk -> i64\nfn applyp f a b = { let g = f a; g b; 0 }\ndef applyq :: (ref PairOk -> ref PairOk -> unit) -> ref PairOk -> ref PairOk -> i64\nfn applyq f a b = { b |> f a; 0 }\n";
+    for call in ["applyp", "applyq"] {
+        let source = format!(
+            "{CROSS_PRELUDE}    let p1 = mkpo ()\n    let p2 = mkpo ()\n    {call} cross (ref p2) (ref p1) + n\n{APPLY_PARTIAL}do! IO.write_line (to_string (run 1))\n"
+        );
+        rejects_at(&source, "E1013", "assignment_extends_borrow", (35, 5));
+    }
+}
+
 /// A31, after the review of the fix after review 12: the programs of
 /// `a_borrow_through_the_result_of_a_call_is_one_of_the_whole_argument`. `child n` returns a
 /// reference to the first child of `n` (`Rc.get (ref n.kids[0])`), which holds `n`'s loan while it
@@ -5793,4 +6020,2673 @@ fn a_part_bound_or_passed_to_a_function_value_keeps_a_borrow_of_that_part() {
         "self_referential_store",
         (41, 5),
     );
+}
+
+/// A31, found while checking the fix of `fvpart`: `mk a = \k f -> ...` returns a function value
+/// that owns its cell (it captured the `Arc<Mutex<...>>` by value) and writes `f` there. Applying
+/// it to its first argument (`w 0`) makes a function value of another type that holds it, so a
+/// call of that value may write into the same cell. The scan of the module's function values
+/// (`sink_flags`) took such a result for one that holds only the bound arguments, so a borrow of a
+/// block-local array that `w2 (\() -> String.length text)` wrote into the cell was not kept, and
+/// the next call ran the function after the array was gone (main and base accept; base prints
+/// `72` read through the dangling borrow, and AddressSanitizer reports a stack use after scope).
+/// The result of a call of a function value, or of the function that a named function returns,
+/// now holds that value (`HolderReach`), as a lambda that captured it does.
+#[test]
+fn a_partial_application_of_a_function_value_that_owns_its_cell_shares_the_cell() {
+    for (main, at) in [
+        // immutable bindings: the partial application of a known local (this round)
+        (
+            r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let w2 = w 0
+    let first = { let arr0 = [String.repeat 8 (ref "123456789")]; let text = ref arr0[0]; w2 (\() -> String.length text) }
+    let other = [String.repeat 8 (ref "zzzzzzzzz"), String.repeat 8 (ref "yyyyyyyyy")]
+    first + w2 (\() -> 1) + other.length * 0
+do! IO.write_line (to_string (run 123456789))
+"#,
+            (7, 17),
+        ),
+        // `let mut w2 = w 0`
+        (
+            r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let mut w2 = w 0
+    let first = { let arr0 = [String.repeat 8 (ref "123456789")]; let text = ref arr0[0]; w2 (\() -> String.length text) }
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+            (7, 17),
+        ),
+        // `let mut w = mk (...)`, then `let w2 = w 0`
+        (
+            r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let mut w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let w2 = w 0
+    let first = { let arr0 = [String.repeat 8 (ref "123456789")]; let text = ref arr0[0]; w2 (\() -> String.length text) }
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+            (7, 17),
+        ),
+        // a named function whose body returns the lambda after a binding, applied to more arguments than it takes
+        (
+            r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a =
+    let z = 0
+    \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k + z })
+def run :: i64 -> i64
+fn run n =
+    let mut w2 = mk (Arc.new (Mutex.create [\() -> 0])) 0
+    let first = { let arr0 = [String.repeat 8 (ref "123456789")]; let text = ref arr0[0]; w2 (\() -> String.length text) }
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+            (8, 17),
+        ),
+        // `let mut w2 = 0 |> w`
+        (
+            r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let mut w2 = 0 |> w
+    let first = { let arr0 = [String.repeat 8 (ref "123456789")]; let text = ref arr0[0]; w2 (\() -> String.length text) }
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+            (7, 17),
+        ),
+    ] {
+        rejects_at(main, "E1013", "assignment_extends_borrow", at);
+    }
+    for main in [
+        // the borrowed array declared before the function value (main prints `72`)
+        r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let arr0 = [String.repeat 8 (ref "123456789")]
+    let text = ref arr0[0]
+    let w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let mut w2 = w 0
+    let first = w2 (\() -> String.length text)
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+        // an owned function (main prints `7`)
+        r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a = \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })
+def run :: i64 -> i64
+fn run n =
+    let w = mk (Arc.new (Mutex.create [\() -> 0]))
+    let mut w2 = w 0
+    let first = w2 (\() -> 7)
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+        // the borrowed array declared first, through the block-bodied `mk` (main prints `72`)
+        r#"def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)
+fn mk a =
+    let z = 0
+    \k f -> Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k + z })
+def run :: i64 -> i64
+fn run n =
+    let arr0 = [String.repeat 8 (ref "123456789")]
+    let text = ref arr0[0]
+    let mut w2 = mk (Arc.new (Mutex.create [\() -> 0])) 0
+    let first = w2 (\() -> String.length text)
+    first + w2 (\() -> 1)
+do! IO.write_line (to_string (run 123456789))
+"#,
+    ] {
+        accepts_in_both_editions(&[("Main.tz", main)]);
+    }
+}
+
+/// A31, review round 1 after Copilot's review (findings 1 and 2): `applyy` and `applyx` hand
+/// their function-valued parameter a reference to a `D` inside the block of an `Rc<D>` that their
+/// argument's `e` holds. The recorded place of that borrow was merged into a shorter one (`[a]`
+/// for `if k > 0 then ref (...x.a.e[0]...) else ref x.a`) or cut to four fields
+/// (`[a, b, c, d]` for `x.a.b.c.d.e[0]`), and still counted as the place that the argument points
+/// at, so the caller made an exact copy of it, which `crossd` narrowed to the `s` of the wrong `D`
+/// (the type is the same, as `D` holds `[Rc<D>]`). Moving or replacing `e` then freed the borrowed
+/// string, which `p2`'s holder read when it was dropped (main and base accept and read the freed
+/// string: `drop -1`). A path that stands for a larger part than a borrowed place now names no
+/// place (`Source::coarse`): the caller's copy borrows the larger part (`x.a`, `x.a.b.c.d`), not
+/// narrowed further, so the move conflicts with it, and a write of `x.z` does not. Without the
+/// move, main prints `drop 8` and `1`. The body of `run` starts at line 33.
+const COARSE_PRELUDE: &str = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+record PairOk { h: Holder, s: string }
+def mkpo :: unit -> PairOk
+fn mkpo _u = PairOk { h: Holder { cell: Mutex.create [\() -> 0] }, s: String.repeat 4 (ref "123456789") }
+record D { s: string, e: [Rc<D>] }
+record X { a: D, z: string }
+record C { d: D }
+record B { c: C }
+record A { b: B }
+record Y { a: A, z: string }
+def mkd :: unit -> D
+fn mkd _u = D { s: String.repeat 4 (ref "123456789"), e: [] }
+def mkx :: unit -> X
+fn mkx _u = X { a: D { s: String.repeat 2 (ref "abc"), e: [Rc.new (mkd ())] }, z: to_string 1 }
+def mky :: unit -> Y
+fn mky _u = Y { a: A { b: B { c: C { d: D { s: String.repeat 2 (ref "abc"), e: [Rc.new (mkd ())] } } } }, z: to_string 1 }
+def applyy :: i64 -> ref X -> (ref D -> unit) -> i64
+fn applyy k x f = { (if k > 0 then ref (deref (Rc.get (ref x.a.e[0]))) else ref x.a) |> f; 0 }
+def applyx :: ref Y -> (ref D -> unit) -> i64
+fn applyx x f = { ref (deref (Rc.get (ref x.a.b.c.d.e[0]))) |> f; 0 }
+def crossd :: ref PairOk -> ref D -> unit
+fn crossd a b = { let t = ref b.s; Mutex.with_lock (ref a.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+def run :: i64 -> i64
+fn run n =
+"#;
+
+#[test]
+fn a_borrowed_place_merged_into_a_larger_part_is_no_place_that_the_argument_points_at() {
+    let program = |body: &str| {
+        format!(
+            "{COARSE_PRELUDE}{body}    let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")]\n    n + z + k * 0 + junk.length * 0\ndo! IO.write_line (to_string (run 1))\n"
+        )
+    };
+    let merged = "    let x = mkx ()\n    let p2 = mkpo ()\n    let z = applyy n (ref x) (crossd (ref p2))\n";
+    let cut =
+        "    let x = mky ()\n    let p2 = mkpo ()\n    let z = applyx (ref x) (crossd (ref p2))\n";
+    // The partial moves conflict with the borrow in both editions.
+    for (setup, moved) in [
+        (merged, "    let k = { let taken = x.a.e; taken.length }\n"),
+        (
+            cut,
+            "    let k = { let taken = x.a.b.c.d.e; taken.length }\n",
+        ),
+    ] {
+        rejects_at(
+            &program(&format!("{setup}{moved}")),
+            "E1014",
+            "borrow_conflict",
+            (36, 27),
+        );
+    }
+    // Replacing the field of a mutable local conflicts the same way in edition 2027 (edition 2026
+    // rejects the assignment itself with `E1012`, `assign_to_immutable_place`).
+    for (setup, replaced) in [
+        (merged, "    x.a.e = []\n    let k = 0\n"),
+        (cut, "    x.a.b.c.d.e = []\n    let k = 0\n"),
+    ] {
+        let setup = setup.replace("let x = ", "let mut x = ");
+        let source = program(&format!("{setup}{replaced}"));
+        let error = analyze_with_edition(&source, Edition::E2027).expect_err(&source);
+        assert_eq!(
+            (error.code, error.kind, position(&source, error.span.start)),
+            ("E1014", Some("borrow_conflict"), (36, 5)),
+            "{source}\n{}",
+            error.message
+        );
+    }
+    // Without the move, nothing conflicts (main prints `drop 8` and `1`), nor does a write of a
+    // part outside the borrowed one (edition 2027).
+    for setup in [merged, cut] {
+        accepts_in_both_editions(&[("Main.tz", &program(&format!("{setup}    let k = 0\n")))]);
+        let setup = setup.replace("let x = ", "let mut x = ");
+        let source = program(&format!("{setup}    x.z = to_string 22\n    let k = 0\n"));
+        analyze_with_edition(&source, Edition::E2027)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    }
+}
+
+/// A31, review round 1 after Copilot's review (finding 3): the fix of
+/// `a_partial_application_of_a_function_value_that_owns_its_cell_shares_the_cell` gave the result
+/// of a call of a function value the applied value's environment, by type, so builtins that apply
+/// a function argument (`Owned.call (ref w) 0`, `0 |> Owned.call (ref w)`, `new [T](1, w)`,
+/// `Array.init 1 w`, `FixedArray.init w`) kept the hole open, and `Array.foldr`, whose callback
+/// returns a function that its body makes, made `unit -> i64` the type of an owner in the
+/// `in_place_writes` fixture (main accepts it). A function value made at a site that takes `arity`
+/// arguments before its code runs now gives its partial applications, whatever applies them, the
+/// types of the rest of its parameters (`partial_types`): `w2`, a partial application of
+/// `mk`'s lambda, owns the cell, and the function that `Array.foldr`'s callback makes does not.
+/// Main accepts the rejected forms and prints `72` read through a dangling borrow; with the array
+/// declared first, it prints `72`, and with an owned function, `7`.
+#[test]
+fn a_partial_application_by_a_builtin_shares_the_cell_of_the_function_value() {
+    const MK: &str = "def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)\nfn mk a = \\k f -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })\ndef run :: i64 -> i64\nfn run _n =\n";
+    const END: &str = "do! IO.write_line (to_string (run 123456789))\n";
+    const OWNED: &str = "    let w = Owned.function (mk (Arc.new (Mutex.create [\\() -> 0])))\n";
+    const PLAIN: &str = "    let w = mk (Arc.new (Mutex.create [\\() -> 0]))\n";
+    const FIXED: &str =
+        "    let ws: [(unit -> i64) -> i64; 1] = FixedArray.init w\n    let mut w2 = ws[0]\n";
+    let forms: [(&str, &str, usize); 6] = [
+        (OWNED, "    let mut w2 = Owned.call (ref w) 0\n", 7),
+        (OWNED, "    let mut w2 = 0 |> Owned.call (ref w)\n", 7),
+        (
+            OWNED,
+            "    let g = Owned.call (ref w)\n    let mut w2 = g 0\n",
+            8,
+        ),
+        (
+            PLAIN,
+            "    let ws = new [(unit -> i64) -> i64](1, w)\n    let mut w2 = ws[0]\n",
+            8,
+        ),
+        (
+            PLAIN,
+            "    let ws = new [|(unit -> i64) -> i64|](1, w)\n    let mut w2 = ws[0]\n",
+            8,
+        ),
+        (
+            PLAIN,
+            "    let ws = Array.init 1 w\n    let mut w2 = ws[0]\n",
+            8,
+        ),
+    ];
+    let dangling = "    let first = { let arr0 = [String.repeat 8 (ref \"123456789\")]; let text = ref arr0[0]; w2 (\\() -> String.length text) }\n    first + w2 (\\() -> 1)\n";
+    let declared_first = |made: &str, applied: &str| {
+        format!(
+            "{MK}    let arr0 = [String.repeat 8 (ref \"123456789\")]\n    let text = ref arr0[0]\n{made}{applied}    let first = w2 (\\() -> String.length text)\n    first + w2 (\\() -> 1)\n{END}"
+        )
+    };
+    let owned = |made: &str, applied: &str| {
+        format!(
+            "{MK}{made}{applied}    let first = w2 (\\() -> 7)\n    first + w2 (\\() -> 1)\n{END}"
+        )
+    };
+    for (made, applied, line) in forms {
+        rejects_at(
+            &format!("{MK}{made}{applied}{dangling}{END}"),
+            "E1013",
+            "assignment_extends_borrow",
+            (line, 17),
+        );
+        accepts_in_both_editions(&[("Main.tz", &declared_first(made, applied))]);
+        accepts_in_both_editions(&[("Main.tz", &owned(made, applied))]);
+    }
+    // `FixedArray.init w` type-checks in edition 2026 (2027 lends the elements to read parameters).
+    let source = format!("{MK}{PLAIN}{FIXED}{dangling}{END}");
+    let error = analyze_with_edition(&source, Edition::E2026).expect_err(&source);
+    assert_eq!(
+        (error.code, error.kind, position(&source, error.span.start)),
+        ("E1013", Some("assignment_extends_borrow"), (8, 17)),
+        "{source}\n{}",
+        error.message
+    );
+    for source in [declared_first(PLAIN, FIXED), owned(PLAIN, FIXED)] {
+        analyze_with_edition(&source, Edition::E2026)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    }
+    // A callback that makes the function it returns gives no partial application of itself: the
+    // state of the fold is no owner of the cell that the callback writes (the `in_place_writes`
+    // suite prints `1011` for both).
+    for fold in [
+        "List.foldr (\\acc x -> { Mutex.with_lock (Arc.get (ref a2)) (\\slot -> Array.write 0 acc slot); \\() -> String.length text + deref x }) (\\() -> 0) (ref ys)",
+        "Array.foldr (\\acc x -> { Mutex.with_lock (Arc.get (ref a2)) (\\slot -> Array.write 0 acc slot); \\() -> String.length text + deref x }) (\\() -> 0) (ref xs)",
+    ] {
+        let main = format!(
+            "record Reading {{ f: unit -> i64 }}\ninstance Drop<Reading> {{\n    fn drop r = do! IO.write_line (to_string (r.f ()))\n}}\ndef folded :: i64 -> i64\nfn folded _n =\n    let text0 = to_string 123456789\n    let text = ref text0\n    let a = Arc.new (Mutex.create [\\() -> 0])\n    let a2 = Arc.share (ref a)\n    let xs = [1, 2]\n    let ys = [|1, 2|]\n    let last = {fold}\n    Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ()) * 100 + last () + xs.length * 0 + List.length ys * 0\ndef held :: i64 -> i64\nfn held _n =\n    let mut holder = Reading {{ f: \\() -> 0 }}\n    let text0 = to_string 123456789\n    let t = ref text0\n    holder = Reading {{ f: \\() -> String.length t }}\n    let k = holder.f ()\n    holder = Reading {{ f: \\() -> 3 }}\n    k\ndo! IO.write_line (to_string (folded 1 + held 1))\n"
+        );
+        accepts_in_both_editions(&[("Main.tz", &main)]);
+    }
+}
+
+/// A31, review round 1 after Copilot's review (finding 4): a local bound to a `match` of named
+/// functions, to a block (`{ cross }`), or to an `if` or `match` of partial applications
+/// (`if n < 0 then cross (ref p2) else outer (ref p2)`, `if n < 0 then cross3 (ref p3) else
+/// cross`) gets the facts of the member that it holds, as one bound to an `if` of named functions
+/// does: `known_functions` now knows such locals, and dropping one runs what its branches, arms or
+/// result run (`value_runs_drop_code`). Dropping a choice of partial applications was taken for
+/// running code that may store anything, so `p2` kept a borrow of itself; the others were
+/// function values whose code does not show. Main prints `drop 8`, `drop 0` and `1` (three
+/// values: `drop 0`, `drop 8`, `drop 0`, `1`, and for `cross3` alone `drop 16`, `drop 0`,
+/// `drop 0`, `1`); the swapped calls read a freed string in main.
+#[test]
+fn a_local_bound_to_a_match_block_or_choice_of_partial_applications_keeps_the_part() {
+    let declared = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n";
+    for binding in [
+        "    let chosen = match n with\n        | 0 -> cross\n        | _ -> cross\n",
+        "    let chosen = match n with\n        | k when k > 5 -> cross\n        | _ -> outer\n",
+        "    let chosen = { cross }\n",
+        "    let chosen = { let unused = 3; outer }\n",
+        "    let chosen = if n < 0 then { cross } else { let z = n; outer }\n",
+        "    let chosen = match n with\n        | 0 -> if n > 0 then cross else outer\n        | _ -> { cross }\n",
+    ] {
+        for (safe, swapped) in [
+            (
+                "    chosen (ref p2) (ref p1)\n",
+                "    chosen (ref p1) (ref p2)\n",
+            ),
+            (
+                "    ref p1 |> chosen (ref p2)\n",
+                "    ref p2 |> chosen (ref p1)\n",
+            ),
+            (
+                "    let g = chosen (ref p2)\n    g (ref p1)\n",
+                "    let g = chosen (ref p1)\n    g (ref p2)\n",
+            ),
+        ] {
+            accepts_in_both_editions(&[(
+                "Main.tz",
+                &cross_program(&format!("{declared}{binding}{safe}    n\n")),
+            )]);
+            rejects_at(
+                &cross_program(&format!("{declared}{binding}{swapped}    n\n")),
+                "E1013",
+                "assignment_extends_borrow",
+                (35, 5),
+            );
+        }
+    }
+    // Choices of partial applications, called, piped and through an alias; alone, they run nothing
+    // (main prints `drop 0`, `drop 0`, `1`).
+    for choice in [
+        "if n < 0 then cross (ref {X}) else cross (ref {X})",
+        "if n < 0 then cross (ref {X}) else outer (ref {X})",
+        "match n with\n        | 0 -> cross (ref {X})\n        | _ -> outer (ref {X})",
+        "{ cross (ref {X}) }",
+    ] {
+        let safe = format!("    let chosen = {}\n", choice.replace("{X}", "p2"));
+        let swapped = format!("    let chosen = {}\n", choice.replace("{X}", "p1"));
+        accepts_in_both_editions(&[(
+            "Main.tz",
+            &cross_program(&format!("{declared}{safe}    n\n")),
+        )]);
+        for (safe_call, swapped_call) in [
+            ("    chosen (ref p1)\n", "    chosen (ref p2)\n"),
+            ("    ref p1 |> chosen\n", "    ref p2 |> chosen\n"),
+            (
+                "    let g = chosen\n    g (ref p1)\n",
+                "    let g = chosen\n    g (ref p2)\n",
+            ),
+        ] {
+            accepts_in_both_editions(&[(
+                "Main.tz",
+                &cross_program(&format!("{declared}{safe}{safe_call}    n\n")),
+            )]);
+            rejects_at(
+                &cross_program(&format!("{declared}{swapped}{swapped_call}    n\n")),
+                "E1013",
+                "assignment_extends_borrow",
+                (35, 5),
+            );
+        }
+    }
+    // A choice whose taken member stores the other way (n = 1 takes the lambda, which keeps a
+    // borrow of `p2.s` in `p1`).
+    for binding in [
+        "    let chosen = match n with\n        | 0 -> cross\n        | _ -> (\\(a: ref PairOk) (b: ref PairOk) -> cross b a)\n",
+        "    let chosen = if n < 0 then { cross } else { (\\(a: ref PairOk) (b: ref PairOk) -> cross b a) }\n",
+    ] {
+        rejects_at(
+            &cross_program(&format!(
+                "{declared}{binding}    chosen (ref p2) (ref p1)\n    n\n"
+            )),
+            "E1013",
+            "assignment_extends_borrow",
+            (35, 5),
+        );
+    }
+    // Members of different arities: `three (ref p3)` and `cross` both take two more arguments.
+    // With `p2`, `p1`, `p3` declared in that order, n = 1 runs `cross p1 p2`, and n < 0 would run
+    // `three p3 p1 p2`; declared `p1`, `p2`, `p3`, `p1` keeps a borrow of `p2.s`; and with `p3`
+    // declared first, `three p3 p1 p2` (the only member) keeps borrows of `p1.s` and `p2.s` in it.
+    const THREE: &str = "    let three = \\(a: ref PairOk) (b: ref PairOk) (c: ref PairOk) -> { cross a b; cross a c }\n";
+    let ordered = "    let p2 = mkpo ()\n    let p1 = mkpo ()\n    let p3 = mkpo ()\n";
+    let swapped = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let p3 = mkpo ()\n";
+    let first = "    let p3 = mkpo ()\n    let p2 = mkpo ()\n    let p1 = mkpo ()\n";
+    for call in [
+        "    chosen (ref p1) (ref p2)\n",
+        "    ref p2 |> chosen (ref p1)\n",
+        "    let g = chosen (ref p1)\n    g (ref p2)\n",
+    ] {
+        for (choice, safe_order, unsafe_order) in [
+            (
+                "    let chosen = if n < 0 then three (ref p3) else cross\n",
+                ordered,
+                swapped,
+            ),
+            (
+                "    let chosen = match n with\n        | 0 -> three (ref p3)\n        | _ -> cross\n",
+                ordered,
+                swapped,
+            ),
+            (
+                "    let chosen = if n < 0 then three (ref p3) else three (ref p3)\n",
+                ordered,
+                first,
+            ),
+        ] {
+            accepts_in_both_editions(&[(
+                "Main.tz",
+                &cross_program(&format!("{safe_order}{THREE}{choice}{call}    n\n")),
+            )]);
+            rejects_at(
+                &cross_program(&format!("{unsafe_order}{THREE}{choice}{call}    n\n")),
+                "E1013",
+                "assignment_extends_borrow",
+                (35, 5),
+            );
+        }
+    }
+}
+
+/// A31, review round 2 after Copilot's review (finding 1): a builtin that applies a function value
+/// it gets to fewer arguments than the value takes before its code runs makes a partial
+/// application that binds what the builtin passes, and no site counted it: `Owned.call (ref w)
+/// cell` with `w` wrapping the named function `wr` of two parameters (or an alias of it, or the
+/// partial application `wr3 0`), its pipeline, `List.mapr wrr (ref cells)` and `List.foldr fold
+/// zero (ref cells)` (edition 2026) gave a function value that owns or reaches the cell, through
+/// which a closure that borrows a block-local string went into the cell. Main and base accept the
+/// rejected forms and read the freed string (`-1`). Such a builtin application is now a site as a
+/// call of an unseen function value is (`builtin_partial_applications`): with the string declared
+/// first the programs print `0 + 8`, and with owned closures only `0 + 7`.
+#[test]
+fn a_builtin_that_applies_a_function_value_to_fewer_arguments_shares_the_cell() {
+    const PRE: &str = r#"def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def wr :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64) -> i64
+fn wr a f = Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () })
+def wr3 :: i64 -> own Arc<Mutex<[unit -> i64]>> -> (unit -> i64) -> i64
+fn wr3 k a f = Mutex.with_lock (Arc.get (ref a)) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k * 0 })
+def wrr :: ref Arc<Mutex<[unit -> i64]>> -> (unit -> i64) -> i64
+fn wrr a f = Mutex.with_lock (Arc.get a) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () })
+def fold :: own ((unit -> i64) -> i64) -> ref Arc<Mutex<[unit -> i64]>> -> (unit -> i64) -> i64
+fn fold prev a f = Mutex.with_lock (Arc.get a) (\slot -> { let old = slot[0]; Array.write 0 f slot; old () + prev (\() -> 0) * 0 })
+def zero :: (unit -> i64) -> i64
+fn zero _f = 0
+def run :: i64 -> i64
+fn run _n =
+"#;
+    const CELL: &str = "Arc.new (Mutex.create [\\() -> 0])";
+    const END: &str = "    let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")]\n    first + w2 (\\() -> 1) + junk.length * 0\ndo! IO.write_line (to_string (run 123456789))\n";
+    let mapr = |piped: bool| {
+        format!(
+            "    let cells = [|{CELL}|]\n    let ws = {}\n    let mut w2 = match ws with\n        | [|g|] -> g\n        | _ -> \\_f -> 0\n",
+            if piped {
+                "ref cells |> List.mapr wrr"
+            } else {
+                "List.mapr wrr (ref cells)"
+            }
+        )
+    };
+    // (the function value, the partial application, the line of the error)
+    let forms = [
+        (
+            "    let w = Owned.function wr\n".to_string(),
+            format!("    let mut w2 = Owned.call (ref w) ({CELL})\n"),
+            20,
+        ),
+        (
+            "    let w = Owned.function wr\n".to_string(),
+            format!("    let mut w2 = {CELL} |> Owned.call (ref w)\n"),
+            20,
+        ),
+        (
+            "    let named = wr\n    let w = Owned.function named\n".to_string(),
+            format!("    let mut w2 = Owned.call (ref w) ({CELL})\n"),
+            21,
+        ),
+        (
+            "    let w = Owned.function (wr3 0)\n".to_string(),
+            format!("    let mut w2 = Owned.call (ref w) ({CELL})\n"),
+            20,
+        ),
+        (String::new(), mapr(false), 23),
+        (String::new(), mapr(true), 23),
+    ];
+    let dangling = "    let first = { let s0 = String.repeat 4 (ref \"123456789\"); let text = ref s0; w2 (\\() -> look text) }\n";
+    let declared_first = |made: &str, applied: &str| {
+        format!(
+            "{PRE}    let s0 = String.repeat 4 (ref \"123456789\")\n    let text = ref s0\n{made}{applied}    let first = w2 (\\() -> look text)\n{END}"
+        )
+    };
+    let owned = |made: &str, applied: &str| {
+        format!("{PRE}{made}{applied}    let first = w2 (\\() -> 7)\n{END}")
+    };
+    for (made, applied, line) in &forms {
+        rejects_at(
+            &format!("{PRE}{made}{applied}{dangling}{END}"),
+            "E1013",
+            "assignment_extends_borrow",
+            (*line, 17),
+        );
+        accepts_in_both_editions(&[("Main.tz", &declared_first(made, applied))]);
+        accepts_in_both_editions(&[("Main.tz", &owned(made, applied))]);
+    }
+    // `List.foldr` binds the state and a reference to the element (edition 2026, where `fold`'s
+    // state parameter type-checks).
+    let folded =
+        format!("    let cells = [|{CELL}|]\n    let mut w2 = List.foldr fold zero (ref cells)\n");
+    let source = format!("{PRE}{folded}{dangling}{END}");
+    let error = analyze_with_edition(&source, Edition::E2026).expect_err(&source);
+    assert_eq!(
+        (error.code, error.kind, position(&source, error.span.start)),
+        ("E1013", Some("assignment_extends_borrow"), (20, 17)),
+        "{source}\n{}",
+        error.message
+    );
+    for source in [declared_first("", &folded), owned("", &folded)] {
+        analyze_with_edition(&source, Edition::E2026)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    }
+    // A callback whose expression shows that it takes no more arguments than the builtin passes
+    // runs its code there, and makes no partial application.
+    let lambda = format!(
+        "    let cells = [|{CELL}|]\n    let ws = List.mapr (\\(a: ref Arc<Mutex<[unit -> i64]>>) -> \\(f: unit -> i64) -> wrr a f) (ref cells)\n    let mut w2 = match ws with\n        | [|g|] -> g\n        | _ -> \\_f -> 0\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &declared_first("", &lambda))]);
+}
+
+/// A31, review round 2 after Copilot's review (finding 2): a site that makes a function value
+/// taking two or more arguments before its code runs (`mk a = \k f -> ...`) made the types of its
+/// partial applications owner types whether or not any partial application was ever made, so
+/// `user`, which calls an unrelated `(unit -> i64) -> i64` read out of an array through a reference
+/// with a closure that borrows its local, was rejected in a program that only applies `w` to all
+/// its arguments (main, base and the previous tip accept it and print `300 + 11 + 6 = 317`). The
+/// types now count only when the module may make such a partial application (`partial_results`):
+/// a call, a pipeline, `Owned.call`, `new [T]`, `Array.init`, std's `Maybe.map`, a tuple's member.
+/// With one of them, the closure goes into the cell and `user` is rejected.
+#[test]
+fn the_partial_application_types_of_an_owner_count_only_when_the_module_makes_one() {
+    const MK: &str = "def mk :: own Arc<Mutex<[unit -> i64]>> -> (i64 -> (unit -> i64) -> i64)\nfn mk a = \\k f -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () + k })\ndef apply_thunk :: (unit -> i64) -> i64\nfn apply_thunk f = f () + 1\n";
+    // (edition, `user`, the full applications, the line of the error)
+    let editions = [
+        (
+            Edition::E2026,
+            "def user :: ref [(unit -> i64) -> i64] -> i64\nfn user fs =\n    let s = to_string 12345\n    let t = ref s\n    fs[0] (\\() -> String.length t)\n",
+            "    let a = w 3 (\\() -> 7)\n    let b = w 4 (\\() -> 1)\n",
+            (9, 5),
+        ),
+        (
+            Edition::E2027,
+            "def user :: ref [ref (unit -> i64) -> i64] -> i64\nfn user fs =\n    let s = to_string 12345\n    let t = ref s\n    let get = \\() -> String.length t\n    fs[0] get\n",
+            "    let seven = \\() -> 7\n    let one = \\() -> 1\n    let a = w 3 seven\n    let b = w 4 one\n",
+            (10, 5),
+        ),
+    ];
+    for (edition, user, full, at) in editions {
+        let program = |made: &str, fs: &str| {
+            format!(
+                "{MK}{user}def run :: i64 -> i64\nfn run _n =\n    let w = mk (Arc.new (Mutex.create [\\() -> 0]))\n{full}{made}    let fs = {fs}\n    a * 100 + b + user (ref fs)\ndo! IO.write_line (to_string (run 123456789))\n"
+            )
+        };
+        // No partial application of `w`, nor of any value of its partial application's type.
+        for made in [
+            "",
+            "    let p3 = \\(x: i64) (y: i64) (z: i64) -> x + y + z\n    let q = p3 1\n    let r = q 2 3\n",
+        ] {
+            let source = program(made, "[apply_thunk]");
+            analyze_with_edition(&source, edition).unwrap_or_else(|error| {
+                panic!(
+                    "edition {edition}\n{source}\n{}: {}",
+                    error.code, error.message
+                )
+            });
+        }
+        let new_array = if edition == Edition::E2027 {
+            "new [ref (unit -> i64) -> i64](1, w)"
+        } else {
+            "new [(unit -> i64) -> i64](1, w)"
+        };
+        for (made, fs) in [
+            ("    let w2 = w 3\n", "[w2]"),
+            ("    let w2 = 3 |> w\n", "[w2]"),
+            (
+                "    let ow = Owned.function w\n    let w2 = Owned.call (ref ow) 3\n",
+                "[w2]",
+            ),
+            ("", "Array.init 1 w"),
+            ("", new_array),
+            (
+                "    let w2 = match Maybe.map w (Maybe.Some 3) with\n        | Maybe.Some g -> g\n        | Maybe.None -> apply_thunk\n",
+                "[w2]",
+            ),
+            (
+                "    let pair = (w, 3)\n    let w2 = match pair with\n        | (g, k) -> g k\n",
+                "[w2]",
+            ),
+        ] {
+            let source = program(made, fs);
+            let error = analyze_with_edition(&source, edition).expect_err(&source);
+            assert_eq!(
+                (error.code, error.kind, position(&source, error.span.start)),
+                ("E1013", Some("store_local_borrow_through_reference"), at),
+                "edition {edition}\n{source}\n{}",
+                error.message
+            );
+        }
+    }
+}
+
+/// A31, review round 2 after Copilot's review (finding 3): the copy that a caller makes of its
+/// argument at a path that stands for a larger part than the borrowed place (`Source::coarse`) is
+/// not exact, so a body that passed it on to a function value recorded the whole parameter
+/// (`self_path`), and the caller of a function that passes its parameters on to `applyy` or
+/// `applyx` (`applyy2`, `applyy3` that calls `applyy2`, `applyyr` that reborrows, `applyyw` that
+/// passes `ref w.x`, `applyx2`, `applyx3`) kept a borrow of all of `x`: writing or moving `x.z`
+/// was rejected (the previous tip, main and base accept it and print `drop 8` and `1`). Such a
+/// copy now holds the borrowed part (`holding_loans`), and the body records its place as a coarse
+/// path (`holding_path`), as the direct call does. Moving or replacing `x.a.e` stays `E1014`.
+#[test]
+fn a_function_that_passes_its_parameters_on_keeps_the_coarse_part_of_its_callee() {
+    let prelude = COARSE_PRELUDE.replace(
+        "def run :: i64 -> i64\n",
+        "def applyy2 :: i64 -> ref X -> (ref D -> unit) -> i64\nfn applyy2 k x f = applyy k x f\ndef applyy3 :: i64 -> ref X -> (ref D -> unit) -> i64\nfn applyy3 k x f = applyy2 k x f\ndef applyyr :: i64 -> ref X -> (ref D -> unit) -> i64\nfn applyyr k x f = applyy k (ref (deref x)) f\nrecord W { x: X }\ndef applyyw :: i64 -> ref W -> (ref D -> unit) -> i64\nfn applyyw k w f = applyy k (ref w.x) f\ndef applyx2 :: ref Y -> (ref D -> unit) -> i64\nfn applyx2 x f = applyx x f\ndef applyx3 :: ref Y -> (ref D -> unit) -> i64\nfn applyx3 x f = applyx2 x f\ndef run :: i64 -> i64\n",
+    );
+    let program = |body: &str| {
+        format!(
+            "{prelude}{body}    let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")]\n    n + z + k * 0 + junk.length * 0\ndo! IO.write_line (to_string (run 1))\n"
+        )
+    };
+    // (the declaration of the value, the call, the place of `x` in the value, the borrowed field)
+    let forms = [
+        (
+            "let x = mkx ()",
+            "applyy2 n (ref x) (crossd (ref p2))",
+            "x",
+            "x.a.e",
+        ),
+        (
+            "let x = mkx ()",
+            "applyy3 n (ref x) (crossd (ref p2))",
+            "x",
+            "x.a.e",
+        ),
+        (
+            "let x = mkx ()",
+            "applyyr n (ref x) (crossd (ref p2))",
+            "x",
+            "x.a.e",
+        ),
+        (
+            "let x = mkx ()",
+            "crossd (ref p2) |> applyy2 n (ref x)",
+            "x",
+            "x.a.e",
+        ),
+        (
+            "let w = W { x: mkx () }",
+            "applyyw n (ref w) (crossd (ref p2))",
+            "w.x",
+            "w.x.a.e",
+        ),
+        (
+            "let x = mky ()",
+            "applyx2 (ref x) (crossd (ref p2))",
+            "x",
+            "x.a.b.c.d.e",
+        ),
+        (
+            "let x = mky ()",
+            "applyx3 (ref x) (crossd (ref p2))",
+            "x",
+            "x.a.b.c.d.e",
+        ),
+    ];
+    for (declared, call, value, borrowed) in forms {
+        let setup = format!("    {declared}\n    let p2 = mkpo ()\n    let z = {call}\n");
+        // A move of the borrowed field conflicts with the borrow in both editions, and so does its
+        // replacement in a mutable local (edition 2027).
+        rejects_at(
+            &program(&format!(
+                "{setup}    let k = {{ let taken = {borrowed}; taken.length }}\n"
+            )),
+            "E1014",
+            "borrow_conflict",
+            (49, 27),
+        );
+        let mutable = setup
+            .replace("let x = ", "let mut x = ")
+            .replace("let w = ", "let mut w = ");
+        let source = program(&format!("{mutable}    {borrowed} = []\n    let k = 0\n"));
+        let error = analyze_with_edition(&source, Edition::E2027).expect_err(&source);
+        assert_eq!(
+            (error.code, error.kind, position(&source, error.span.start)),
+            ("E1014", Some("borrow_conflict"), (49, 5)),
+            "{source}\n{}",
+            error.message
+        );
+        // Moving `z` out of the value, or nothing, conflicts with nothing in both editions, and
+        // writing `z` neither in edition 2027 (main prints `drop 8` and `1`).
+        accepts_in_both_editions(&[(
+            "Main.tz",
+            &program(&format!(
+                "{setup}    let k = {{ let taken = {value}.z; String.length (ref taken) }}\n"
+            )),
+        )]);
+        accepts_in_both_editions(&[("Main.tz", &program(&format!("{setup}    let k = 0\n")))]);
+        let source = program(&format!(
+            "{mutable}    {value}.z = to_string 22\n    let k = 0\n"
+        ));
+        analyze_with_edition(&source, Edition::E2027)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    }
+}
+
+/// A31, review round 3 after Copilot (findings 1 and 2): a function that passes its parameters
+/// on through a partial application (`applyyq k x f = { let g = applyy k x; g f }`, and the same
+/// with a reborrow) or a lambda that captures them (`applyyc k x f = (\(_u: unit) -> applyy k x
+/// f) ()`, a lambda bound and then called) kept no part: the caller borrowed all of `x`, so
+/// writing or moving `x.z` was `E1014`, and a lambda over a function-valued parameter even kept
+/// `crossd (ref p2)`'s borrow in `p2` (`E1013`). The previous tips reject them; main and base
+/// accept them and print `drop 8` and `1`. The argument that a partial application bound was
+/// narrowed (`bound_value`) only when it was exact in the state where the function value runs, in
+/// which the parameter that it read is no longer live and holds nothing; the evaluation of the
+/// borrow now records whether it was exact (`inexact_borrows`). The captures of a lambda were not
+/// narrowed at all; they are now, by what each captured local held where the lambda was made
+/// (`captured_loans`). A lambda that captures a function-valued parameter in edition 2026 owns
+/// it, and its drop counts as code that may store what it holds into that function value, so
+/// those forms stay `E1013` there (drop.md, A33 `fvlam`). The body of `run` starts at line 45.
+#[test]
+fn a_partial_application_or_a_lambda_that_passes_parameters_on_keeps_the_part() {
+    let prelude = COARSE_PRELUDE.replace(
+        "def run :: i64 -> i64\n",
+        "def applyp :: ref X -> (ref D -> unit) -> i64\nfn applyp x f = { ref (deref (Rc.get (ref x.a.e[0]))) |> f; 0 }\ndef applyyq :: i64 -> ref X -> (ref D -> unit) -> i64\nfn applyyq k x f = { let g = applyy k x; g f }\ndef applypq :: ref X -> (ref D -> unit) -> i64\nfn applypq x f = { let g = applyp x; g f }\ndef applypr :: ref X -> (ref D -> unit) -> i64\nfn applypr x f = { let g = applyp (ref (deref x)); g f }\ndef applyyc :: i64 -> ref X -> (ref D -> unit) -> i64\nfn applyyc k x f = (\\(_u: unit) -> applyy k x f) ()\ndef applypn :: ref X -> (ref D -> unit) -> i64\nfn applypn x f = { let g = \\(_u: unit) -> { ref (deref (Rc.get (ref x.a.e[0]))) |> f; 0 }; g () }\ndef run :: i64 -> i64\n",
+    );
+    let program = |body: &str| {
+        format!(
+            "{prelude}{body}    let junk = [String.repeat 4 (ref \"zzzzzzzzz\"), String.repeat 4 (ref \"yyyyyyyyy\")]\n    n + z + k * 0 + junk.length * 0\ndo! IO.write_line (to_string (run 1))\n"
+        )
+    };
+    // (the call, whether edition 2026 keeps it whole: a lambda that owns the function value)
+    let forms = [
+        ("applyyq n (ref x) (crossd (ref p2))", false),
+        ("applypq (ref x) (crossd (ref p2))", false),
+        ("applypr (ref x) (crossd (ref p2))", false),
+        ("applyyc n (ref x) (crossd (ref p2))", true),
+        ("applypn (ref x) (crossd (ref p2))", true),
+    ];
+    for (call, owned) in forms {
+        let setup = format!("    let x = mkx ()\n    let p2 = mkpo ()\n    let z = {call}\n");
+        let mutable = setup.replace("let x = ", "let mut x = ");
+        let moved = program(&format!(
+            "{setup}    let k = {{ let taken = x.a.e; taken.length }}\n"
+        ));
+        let replaced = program(&format!("{mutable}    x.a.e = []\n    let k = 0\n"));
+        let outside = program(&format!(
+            "{setup}    let k = {{ let taken = x.z; String.length (ref taken) }}\n"
+        ));
+        let nothing = program(&format!("{setup}    let k = 0\n"));
+        let written = program(&format!("{mutable}    x.z = to_string 22\n    let k = 0\n"));
+        // A move or a replacement of the borrowed field conflicts with the borrow (edition 2027
+        // for the replacement in a mutable local).
+        let error = analyze_with_edition(&replaced, Edition::E2027).expect_err(&replaced);
+        assert_eq!(
+            (
+                error.code,
+                error.kind,
+                position(&replaced, error.span.start)
+            ),
+            ("E1014", Some("borrow_conflict"), (48, 5)),
+            "{replaced}\n{}",
+            error.message
+        );
+        analyze_with_edition(&written, Edition::E2027)
+            .unwrap_or_else(|error| panic!("{written}\n{}: {}", error.code, error.message));
+        if owned {
+            // Edition 2027 keeps the part; edition 2026 keeps `p2`'s borrow in itself.
+            let error = analyze_with_edition(&moved, Edition::E2027).expect_err(&moved);
+            assert_eq!(
+                (error.code, error.kind, position(&moved, error.span.start)),
+                ("E1014", Some("borrow_conflict"), (48, 27)),
+                "{moved}\n{}",
+                error.message
+            );
+            for source in [&outside, &nothing] {
+                analyze_with_edition(source, Edition::E2027)
+                    .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+                let error = analyze_with_edition(source, Edition::E2026).expect_err(source);
+                assert_eq!(
+                    (error.code, error.kind, position(source, error.span.start)),
+                    ("E1013", Some("self_referential_store"), (45, 5)),
+                    "{source}\n{}",
+                    error.message
+                );
+            }
+        } else {
+            rejects_at(&moved, "E1014", "borrow_conflict", (48, 27));
+            accepts_in_both_editions(&[("Main.tz", &outside)]);
+            accepts_in_both_editions(&[("Main.tz", &nothing)]);
+        }
+    }
+}
+
+/// A31, review round 3 after Copilot (finding 2, and round 2's `bindref`): a lambda that captures
+/// two reference parameters (`outerl a b = (\(_u: unit) -> cross a b) ()`, or bound and then
+/// called) gave each capture the loans of both, so `outerl (ref p2) (ref p1)` was taken to keep
+/// `p1`'s borrow in `p1` too (`E1013`), and so did a partial application that binds parameters
+/// (`via3 a b c = { let g = cross3 a b; g c }`). Main and base accept them: `p2` reads `p1.s`
+/// when it is dropped first (`drop 8`, `drop 0`, `1`), and `via3 (ref p2) (ref p3) (ref p1)`
+/// keeps `p1.s` in `p2` and `p3` (`drop 8`, `drop 8`, `drop 0`, `1`). The reversed calls keep a
+/// borrow of a value dropped first and stay `E1013` (`assignment_extends_borrow`), and a capture
+/// that may be either parameter (`let q = if k > 0 then a else b`) keeps a borrow in both. The
+/// body of `run` starts at line 45.
+#[test]
+fn a_lambda_or_a_partial_application_over_reference_parameters_keeps_each_part() {
+    let prelude = CROSS_PRELUDE.replace(
+        "def run :: i64 -> i64\n",
+        "def cross3 :: ref PairOk -> ref PairOk -> ref PairOk -> unit\nfn cross3 a b c = { cross a c; cross b c }\ndef outerl :: ref PairOk -> ref PairOk -> unit\nfn outerl a b = (\\(_u: unit) -> cross a b) ()\ndef outerg :: ref PairOk -> ref PairOk -> unit\nfn outerg a b = { let g = \\(_u: unit) -> cross a b; g () }\ndef via3 :: ref PairOk -> ref PairOk -> ref PairOk -> unit\nfn via3 a b c = { let g = cross3 a b; g c }\ndef mixl :: i64 -> ref PairOk -> ref PairOk -> unit\nfn mixl k a b = { let q = if k > 0 then a else b; let g = \\(_u: unit) -> cross q b; g () }\ndef run :: i64 -> i64\n",
+    );
+    let program =
+        |body: &str| format!("{prelude}{body}    n\ndo! IO.write_line (to_string (run 1))\n");
+    let two = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n";
+    let three = "    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let p3 = mkpo ()\n";
+    for safe in [
+        format!("{two}    outerl (ref p2) (ref p1)\n"),
+        format!("{two}    outerg (ref p2) (ref p1)\n"),
+        format!("{three}    via3 (ref p2) (ref p3) (ref p1)\n"),
+        format!("{two}    mixl 1 (ref p2) (ref p1)\n"),
+    ] {
+        accepts_in_both_editions(&[("Main.tz", &program(&safe))]);
+    }
+    // `p1` keeps a borrow of `p2` (`p3` of `p2` for `via3`), which is dropped before it.
+    for (unsafe_call, at) in [
+        (format!("{two}    outerl (ref p1) (ref p2)\n"), (45, 5)),
+        (format!("{two}    outerg (ref p1) (ref p2)\n"), (45, 5)),
+        (
+            format!("{three}    via3 (ref p1) (ref p3) (ref p2)\n"),
+            (45, 5),
+        ),
+        (format!("{two}    mixl 1 (ref p1) (ref p2)\n"), (45, 5)),
+    ] {
+        rejects_at(
+            &program(&unsafe_call),
+            "E1013",
+            "assignment_extends_borrow",
+            at,
+        );
+    }
+}
+
+/// A31, review round 4 after Copilot (findings 1 and 2): a store into the block of an `Rc` owner
+/// reaches the other owners of the block. `let r = Rc.share (ref r2)` holds a share of `r2`'s block
+/// (`Loan::share`), which a store into `r` (through `let a = Rc.get (ref r)`) followed to `r2`.
+/// Once `r` is no longer used, its value stands for what the block holds (`keep_for_drop`), and
+/// the store reached `r` alone: `r2`, declared before `p`, frees the block after `p`, and the
+/// block's holder reads `p.s` after it was freed (main prints `drop -1`, ASan reports a
+/// heap-use-after-free with the string in a heap block). The narrowed capture of a lambda (review
+/// round 3) took the same way. Every form keeps the borrow in `r2` now (`E1013`,
+/// `assignment_extends_borrow`), and so does the block moved into an older local after the store
+/// (`hold = r2`). A store of the block's own `s` into its `h` through another owner of the block
+/// is a store into the block itself: `PairBad` drops `s` before `h` (`self_referential_store`),
+/// `PairOk` drops `h` first. With `p` declared first, `p` outlives the block (`drop 8`, `drop 0`,
+/// `1`). The body of `run` starts at line 42.
+#[test]
+fn a_store_through_one_owner_of_a_block_reaches_the_other_owners() {
+    let prelude = CROSS_PRELUDE.replace(
+        "def run :: i64 -> i64\n",
+        "record RH { rc: Rc<PairOk> }\ndef outerg :: ref PairOk -> ref PairOk -> unit\nfn outerg a b = { let g = \\(_u: unit) -> cross a b; g () }\ndef outerl :: ref PairOk -> ref PairOk -> unit\nfn outerl a b = (\\(_u: unit) -> cross a b) ()\ndef outerq :: ref PairOk -> ref PairOk -> unit\nfn outerq a b = { let g = cross a; g b }\ndef run :: i64 -> i64\n",
+    );
+    let program =
+        |body: &str| format!("{prelude}{body}    n\ndo! IO.write_line (to_string (run 1))\n");
+    let lambda = "    let b = ref p\n    let g = \\(_u: unit) -> cross a b\n    g ()\n";
+    let direct = "    cross a (ref p)\n";
+    let partial = "    let g = cross a\n    g (ref p)\n";
+    let mut forms: Vec<String> = Vec::new();
+    for using in [
+        lambda,
+        "    let b = ref p\n    (\\(_u: unit) -> cross a b) ()\n",
+        direct,
+        "    let t = ref p.s\n    Mutex.with_lock (ref a.h.cell) (\\c -> Array.write 0 (\\() -> look t) c)\n",
+        partial,
+        "    ref p |> cross a\n",
+        "    outer a (ref p)\n",
+        "    outerg a (ref p)\n",
+        "    outerl a (ref p)\n",
+        "    outerq a (ref p)\n",
+    ] {
+        forms.push(format!(
+            "    let r = Rc.share (ref r2)\n    let a = Rc.get (ref r)\n{using}"
+        ));
+    }
+    for (share, get) in [
+        ("    let r = ref r2 |> Rc.share\n", "Rc.get (ref r)"),
+        (
+            "    let h = RH { rc: Rc.share (ref r2) }\n",
+            "Rc.get (ref h.rc)",
+        ),
+        ("    let rs = [Rc.share (ref r2)]\n", "Rc.get (ref rs[0])"),
+    ] {
+        for using in [lambda, direct, partial] {
+            forms.push(format!("{share}    let a = {get}\n{using}"));
+        }
+    }
+    for form in &forms {
+        let safe = format!("    let p = mkpo ()\n    let r2 = Rc.new (mkpo ())\n{form}");
+        accepts_in_both_editions(&[("Main.tz", &program(&safe))]);
+        let unsafe_order = format!("    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n{form}");
+        rejects_at(
+            &program(&unsafe_order),
+            "E1013",
+            "assignment_extends_borrow",
+            (42, 5),
+        );
+    }
+    // The block moved into `hold`, declared before `p`, after the store.
+    let moved = "    let r2 = Rc.new (mkpo ())\n    let r = Rc.share (ref r2)\n    let a = Rc.get (ref r)\n    cross a (ref p)\n    hold = r2\n";
+    accepts_in_both_editions(&[(
+        "Main.tz",
+        &program(&format!(
+            "    let p = mkpo ()\n    let mut hold = Rc.new (mkpo ())\n{moved}"
+        )),
+    )]);
+    rejects_at(
+        &program(&format!(
+            "    let mut hold = Rc.new (mkpo ())\n    let p = mkpo ()\n{moved}"
+        )),
+        "E1013",
+        "assignment_extends_borrow",
+        (42, 5),
+    );
+    // The block's own part, through another owner of the block.
+    for (share, get) in [
+        ("    let r2 = ref r |> Rc.share\n", "Rc.get (ref r2)"),
+        ("    let rs = [Rc.share (ref r)]\n", "Rc.get (ref rs[0])"),
+    ] {
+        for using in [
+            "    crossX a b\n",
+            "    let g = \\(_u: unit) -> crossX a b\n    g ()\n",
+            "    let g = crossX a\n    g b\n",
+        ] {
+            let body = |make: &str, writer: &str| {
+                format!(
+                    "    let r = Rc.new ({make} ())\n{share}    let a = {get}\n    let b = Rc.get (ref r)\n{}",
+                    using.replace("crossX", writer)
+                )
+            };
+            accepts_in_both_editions(&[("Main.tz", &program(&body("mkpo", "cross")))]);
+            rejects_at(
+                &program(&body("mkpb", "crossb")),
+                "E1013",
+                "self_referential_store",
+                (42, 5),
+            );
+        }
+    }
+}
+
+/// A31: the store into a value whose share of another owner's block `keep_for_drop` expanded
+/// reaches that owner by the types of the blocks that both may hold (the shared block and the
+/// blocks inside it), not by every block type of the value's type: a store into an unrelated
+/// `Rc<Other>` after the share's last use does not reach `r2` (review round 5 after Copilot),
+/// while a store into a block that the other owner may free does (`o2`, which shares the `Other`
+/// block, and `r2`, whose tree holds the leaf).
+#[test]
+fn a_store_through_an_expanded_share_reaches_the_owners_that_may_free_the_block() {
+    // 15 lines before `def run`, which is then line 48: the body starts at line 50.
+    let prelude = CROSS_PRELUDE.replace(
+        "def run :: i64 -> i64\n",
+        r#"record Other { h: Holder, n: i64 }
+def mkother :: i64 -> Other
+fn mkother k = Other { h: Holder { cell: Mutex.create [\() -> 0] }, n: k }
+def crossother :: ref Other -> ref PairOk -> unit
+fn crossother w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+record RH2 { rc: Rc<PairOk>, other: Rc<Other> }
+record Leaf { h: Holder, n: i64 }
+def mkleaf :: i64 -> Leaf
+fn mkleaf k = Leaf { h: Holder { cell: Mutex.create [\() -> 0] }, n: k }
+def crossleaf :: ref Leaf -> ref PairOk -> unit
+fn crossleaf w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+record Tree2 { h: Holder, s: string, child: Rc<Leaf> }
+record W { h: Holder, keep: Maybe<Rc<PairOk>> }
+def crossw2 :: ref W -> ref PairOk -> unit
+fn crossw2 w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+def run :: i64 -> i64
+"#,
+    );
+    let program = |body: &str| format!("{prelude}{body}do! IO.write_line (to_string (run 1))\n");
+    // The store goes into an `Rc<Other>` that no owner of `r2`'s block holds: `r2` cannot free
+    // it, whether `p` is declared before or after `h`.
+    accepts_in_both_editions(&[(
+        "Main.tz",
+        &program(
+            "    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n    let h = RH2 { rc: Rc.share (ref r2), other: Rc.new (mkother 1) }\n    let a = Rc.get (ref h.rc)\n    let o = Rc.new (mkother 2)\n    crossother (Rc.get (ref o)) (ref p)\n    look (ref a.s) * 0 + n\n",
+        ),
+    )]);
+    accepts_in_both_editions(&[(
+        "Main.tz",
+        &program(
+            "    let r2 = Rc.new (mkpo ())\n    let h = RH2 { rc: Rc.share (ref r2), other: Rc.new (mkother 1) }\n    let a = Rc.get (ref h.rc)\n    let x = look (ref a.s)\n    let p = mkpo ()\n    let o = Rc.new (mkother 2)\n    crossother (Rc.get (ref o)) (ref p)\n    x * 0 + n\n",
+        ),
+    )]);
+    // The store goes into the `Other` block that `h` shares with `o2`, declared before `p`.
+    let two = |order: &str| {
+        program(&format!(
+            "{order}    let r2 = Rc.new (mkpo ())\n    let h = RH2 {{ rc: Rc.share (ref r2), other: Rc.share (ref o2) }}\n    let a = Rc.get (ref h.other)\n    crossother a (ref p)\n    n\n"
+        ))
+    };
+    accepts_in_both_editions(&[(
+        "Main.tz",
+        &two("    let p = mkpo ()\n    let o2 = Rc.new (mkother 1)\n"),
+    )]);
+    rejects_at(
+        &two("    let o2 = Rc.new (mkother 1)\n    let p = mkpo ()\n"),
+        "E1013",
+        "assignment_extends_borrow",
+        (50, 5),
+    );
+    // The store goes into the leaf that `r2`'s tree holds, through a share of the leaf made from
+    // the share `r` of the tree.
+    let leaf = |order: &str| {
+        let tree = "    let r2 = Rc.new (Tree2 { h: Holder { cell: Mutex.create [\\() -> 0] }, s: \"ab\", child: Rc.new (mkleaf 1) })\n";
+        program(&format!(
+            "{}    let r = Rc.share (ref r2)\n    let t = Rc.get (ref r)\n    let l = Rc.share (ref t.child)\n    let a = Rc.get (ref l)\n    crossleaf a (ref p)\n    n\n",
+            order.replace("TREE", tree)
+        ))
+    };
+    accepts_in_both_editions(&[("Main.tz", &leaf("    let p = mkpo ()\nTREE"))]);
+    rejects_at(
+        &leaf("TREE    let p = mkpo ()\n"),
+        "E1013",
+        "assignment_extends_borrow",
+        (50, 5),
+    );
+    // A31 limit (`sharetype`, A34): a store into a value whose type reaches the shared block's
+    // type goes to `r2` although no block is involved (`w.keep` is `Maybe.None`).
+    rejects_at(
+        &program(
+            "    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n    let r = Rc.share (ref r2)\n    let a = Rc.get (ref r)\n    let w = W { h: Holder { cell: Mutex.create [\\() -> 0] }, keep: Maybe.None }\n    crossw2 (ref w) (ref p)\n    look (ref a.s) * 0 + n\n",
+        ),
+        "E1013",
+        "assignment_extends_borrow",
+        (50, 5),
+    );
+}
+
+/// A31, review round 6 after Copilot: a dyn value's method can hand out a place inside the dyn's
+/// data (`fn leaf b = ref b.l`), which the walk by types does not see. A share of a block that a
+/// dyn value of `r2` owns (`Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))`) is a share of a
+/// block that `r2`'s drop may free, although `r2`'s type does not show it, so a store into it
+/// after the share's last use reaches `r2` (the round-5 narrowing of `export_shared_block`
+/// accepted it; `drop -1` is a read of freed memory). The same holds when the holder keeps the
+/// share inside a dyn value (`H { d: Dyn.of (Box1 { l: Rc.share (ref r2) }) }`), whose type shows
+/// no block, and when the store goes into a block inside the dyn of the shared block (pre-existing:
+/// main accepts both). With the owner of the string declared before the owner of the block, each
+/// program is accepted.
+#[test]
+fn a_store_through_a_share_behind_a_dyn_value_reaches_the_owner_that_frees_the_block() {
+    let defs = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+record Leaf { h: Holder, n: i64 }
+def mkleaf :: i64 -> Leaf
+fn mkleaf k = Leaf { h: Holder { cell: Mutex.create [\() -> 0] }, n: k }
+record PairOk { h: Holder, s: string }
+def mkpo :: unit -> PairOk
+fn mkpo _u = PairOk { h: Holder { cell: Mutex.create [\() -> 0] }, s: String.repeat 4 (ref "123456789") }
+def crossleaf :: ref Leaf -> ref PairOk -> unit
+fn crossleaf w b = { let t = ref b.s; Mutex.with_lock (ref w.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+"#;
+    let cls = "class LeafOf<'value> {\n    def leaf :: ref 'value -> ref Rc<Defs.Leaf>\n}\n";
+    let arc_cls = "class LeafOf<'value> {\n    def leaf :: ref 'value -> ref Arc<Defs.Leaf>\n}\n";
+    // Lines 1 to 7 come before the body, which starts at line 8.
+    let main = |pointer: &str, record: &str, body: &str| {
+        format!(
+            "record Box1 {{ l: {pointer}<Defs.Leaf> }}\ninstance Cls.LeafOf<Box1> {{\n    fn leaf b = ref b.l\n}}\n{record}\ndef run :: i64 -> i64\nfn run n =\n{body}do! IO.write_line (to_string (run 1))\n"
+        )
+    };
+    let with_cell = "record B {r} { h: Defs.Holder, d: dyn Cls.LeafOf {r} }";
+    let no_cell = "record B {r} { n: i64, d: dyn Cls.LeafOf {r} }";
+    let holder = "record H {r} { d: dyn Cls.LeafOf {r} }";
+    let plain = "record S {r} { h: Defs.Holder, d: dyn Cls.LeafOf {r} }";
+    let b_cell = "    let r2 = Rc.new (B { h: Defs.Holder { cell: Mutex.create [\\() -> 0] }, d: Dyn.of (Box1 { l: Rc.new (Defs.mkleaf 1) }) })\n";
+    let b_none =
+        "    let r2 = Rc.new (B { n: 0, d: Dyn.of (Box1 { l: Rc.new (Defs.mkleaf 1) }) })\n";
+    let b_arc = "    let r2 = Arc.new (B { h: Defs.Holder { cell: Mutex.create [\\() -> 0] }, d: Dyn.of (Box1 { l: Arc.new (Defs.mkleaf 1) }) })\n";
+    let s_plain = "    let r2 = S { h: Defs.Holder { cell: Mutex.create [\\() -> 0] }, d: Dyn.of (Box1 { l: Rc.new (Defs.mkleaf 1) }) }\n";
+    let leaf = "    let r2 = Rc.new (Defs.mkleaf 1)\n";
+    let p = "    let rp = Rc.new (Defs.mkpo ())\n";
+    let store = "    Defs.crossleaf a (Rc.get (ref rp))\n    n\n";
+    // (pointer, record, the owner of the block, the rest of the body before the store)
+    let cases = [
+        // d1: the share of the leaf that `r2`'s dyn field owns
+        (
+            "Rc",
+            with_cell,
+            b_cell,
+            "    let h = Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))\n    let a = Rc.get (ref h)\n",
+        ),
+        // d2_nocell: the same, `B` without a cell
+        (
+            "Rc",
+            no_cell,
+            b_none,
+            "    let h = Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))\n    let a = Rc.get (ref h)\n",
+        ),
+        // d6_plain: a record owner in place of an `Rc`
+        (
+            "Rc",
+            plain,
+            s_plain,
+            "    let h = Rc.share (Cls.LeafOf.leaf (ref r2.d))\n    let a = Rc.get (ref h)\n",
+        ),
+        // d7_arc
+        (
+            "Arc",
+            with_cell,
+            b_arc,
+            "    let h = Arc.share (Cls.LeafOf.leaf (ref (Arc.get (ref r2)).d))\n    let a = Arc.get (ref h)\n",
+        ),
+        // the share of `r2`'s whole block, and the store into the leaf in its dyn field
+        (
+            "Rc",
+            no_cell,
+            b_none,
+            "    let h = Rc.share (ref r2)\n    let a = Rc.get (Cls.LeafOf.leaf (ref (Rc.get (ref h)).d))\n",
+        ),
+        // the holder keeps the share in a dyn value
+        (
+            "Rc",
+            holder,
+            leaf,
+            "    let h = H { d: Dyn.of (Box1 { l: Rc.share (ref r2) }) }\n    let a = Rc.get (Cls.LeafOf.leaf (ref h.d))\n",
+        ),
+        // the holder keeps, in a dyn value, a share of a share of `r2`
+        (
+            "Rc",
+            holder,
+            leaf,
+            "    let h = Rc.share (ref r2)\n    let g = H { d: Dyn.of (Box1 { l: Rc.share (ref h) }) }\n    let a = Rc.get (Cls.LeafOf.leaf (ref g.d))\n",
+        ),
+    ];
+    for (pointer, record, owner, rest) in cases {
+        let class = if pointer == "Arc" { arc_cls } else { cls };
+        let unsafe_main = main(pointer, record, &format!("{owner}{p}{rest}{store}"));
+        for edition in [Edition::E2026, Edition::E2027] {
+            let modules = [
+                ("Defs.tz", defs),
+                ("Cls.tt", class),
+                ("Main.tz", unsafe_main.as_str()),
+            ];
+            let error = analyze_modules_with_edition(&modules, edition).expect_err(&unsafe_main);
+            assert_eq!(
+                (
+                    error.code,
+                    error.kind,
+                    position(&unsafe_main, error.span.start)
+                ),
+                ("E1013", Some("assignment_extends_borrow"), (8, 5)),
+                "edition {edition}\n{unsafe_main}\n{}",
+                error.message
+            );
+        }
+        let safe_main = main(pointer, record, &format!("{p}{owner}{rest}{store}"));
+        accepts_in_both_editions(&[
+            ("Defs.tz", defs),
+            ("Cls.tt", class),
+            ("Main.tz", &safe_main),
+        ]);
+    }
+    // The share of `r2`'s block also went to the caller's array, which keeps the leaf after the
+    // call returns: the store through the holder's dyn value is a store into the caller's data.
+    let put = |order: &str| {
+        format!(
+            "record Box1 {{ l: Rc<Defs.Leaf> }}\ninstance Cls.LeafOf<Box1> {{\n    fn leaf b = ref b.l\n}}\n{holder}\ndef put :: ref mut [Rc<Defs.Leaf>] -> i64 -> i64\nfn put out n =\n{order}    let g = H {{ d: Dyn.of (Box1 {{ l: Rc.share (ref r2) }}) }}\n    let a = Rc.get (Cls.LeafOf.leaf (ref g.d))\n{store}def run :: i64 -> i64\nfn run n =\n    let mut v = [Rc.new (Defs.mkleaf 0)]\n    put (ref mut v) n\ndo! IO.write_line (to_string (run 1))\n"
+        )
+    };
+    let shared = "    Array.write 0 (Rc.share (ref r2)) out\n";
+    for (order, expected) in [
+        (
+            format!("{leaf}{shared}{p}"),
+            ("E1013", Some("assignment_extends_borrow"), (8, 5)),
+        ),
+        (
+            format!("{p}{leaf}{shared}"),
+            (
+                "E1013",
+                Some("store_local_borrow_through_reference"),
+                (13, 5),
+            ),
+        ),
+    ] {
+        let program = put(&order);
+        for edition in [Edition::E2026, Edition::E2027] {
+            let modules = [
+                ("Defs.tz", defs),
+                ("Cls.tt", cls),
+                ("Main.tz", program.as_str()),
+            ];
+            let error = analyze_modules_with_edition(&modules, edition).expect_err(&program);
+            assert_eq!(
+                (error.code, error.kind, position(&program, error.span.start)),
+                expected,
+                "edition {edition}\n{program}\n{}",
+                error.message
+            );
+        }
+    }
+    // The source owner still moves after the store through a holder that keeps the share in a dyn
+    // value (`keep_for_drop` expands the share).
+    let moved = main(
+        "Rc",
+        holder,
+        &format!(
+            "{p}{leaf}    let h = H {{ d: Dyn.of (Box1 {{ l: Rc.share (ref r2) }}) }}\n    let a = Rc.get (Cls.LeafOf.leaf (ref h.d))\n    Defs.crossleaf a (Rc.get (ref rp))\n    let _r3 = r2\n    n\n"
+        ),
+    );
+    accepts_in_both_editions(&[("Defs.tz", defs), ("Cls.tt", cls), ("Main.tz", &moved)]);
+    // The other direction (pre-existing: main accepts both): `hd` shares `r2`'s block, whose type
+    // shows no cell (`B` without one), and the store goes into the leaf in its dyn field through
+    // `r2` after `hd`'s last use; and the block whose share went to the caller's array. Both
+    // owners hold a block that may hold a cell behind the dyn value (`export_block`).
+    let reverse = |order: &str| {
+        main(
+            "Rc",
+            no_cell,
+            &format!(
+                "{order}    let lf = Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))\n    Defs.crossleaf (Rc.get (ref lf)) (Rc.get (ref rp))\n    let _r3 = r2\n    n\n"
+            ),
+        )
+    };
+    let hd = "    let hd = Rc.share (ref r2)\n";
+    let unsafe_reverse = reverse(&format!("{b_none}{hd}{p}"));
+    for edition in [Edition::E2026, Edition::E2027] {
+        let modules = [
+            ("Defs.tz", defs),
+            ("Cls.tt", cls),
+            ("Main.tz", unsafe_reverse.as_str()),
+        ];
+        let error = analyze_modules_with_edition(&modules, edition).expect_err(&unsafe_reverse);
+        assert_eq!(
+            (
+                error.code,
+                error.kind,
+                position(&unsafe_reverse, error.span.start)
+            ),
+            ("E1013", Some("assignment_extends_borrow"), (8, 5)),
+            "edition {edition}\n{unsafe_reverse}\n{}",
+            error.message
+        );
+    }
+    let safe_reverse = reverse(&format!("{p}{b_none}{hd}"));
+    accepts_in_both_editions(&[
+        ("Defs.tz", defs),
+        ("Cls.tt", cls),
+        ("Main.tz", &safe_reverse),
+    ]);
+    // Lines 1 to 7 come before the body of `put`, whose store is at line 12.
+    let to_caller = format!(
+        "record Box1 {{ l: Rc<Defs.Leaf> }}\ninstance Cls.LeafOf<Box1> {{\n    fn leaf b = ref b.l\n}}\n{no_cell}\ndef put :: ref mut [Rc<B>] -> i64 -> i64\nfn put out n =\n{p}{b_none}    Array.write 0 (Rc.share (ref r2)) out\n    let lf = Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))\n    Defs.crossleaf (Rc.get (ref lf)) (Rc.get (ref rp))\n    n\ndef run :: i64 -> i64\nfn run n =\n    let mut v = [Rc.new (B {{ n: 1, d: Dyn.of (Box1 {{ l: Rc.new (Defs.mkleaf 2) }}) }})]\n    put (ref mut v) n\ndo! IO.write_line (to_string (run 1))\n"
+    );
+    for edition in [Edition::E2026, Edition::E2027] {
+        let modules = [
+            ("Defs.tz", defs),
+            ("Cls.tt", cls),
+            ("Main.tz", to_caller.as_str()),
+        ];
+        let error = analyze_modules_with_edition(&modules, edition).expect_err(&to_caller);
+        assert_eq!(
+            (
+                error.code,
+                error.kind,
+                position(&to_caller, error.span.start)
+            ),
+            (
+                "E1013",
+                Some("store_local_borrow_through_reference"),
+                (12, 5)
+            ),
+            "edition {edition}\n{to_caller}\n{}",
+            error.message
+        );
+    }
+}
+
+/// A31, Copilot's review 2 of PR #105: the fixed point of a loop compares a summary of the state
+/// where an iteration starts, and the check goes on from the exit state of the iteration whose
+/// summary did not change, which starts from what the iterations before it left. The summary had
+/// neither `State::contents_elsewhere` nor `State::kept_elsewhere`: a body that only copied what
+/// the cell of `p`'s target holds to `out`'s target, or stored the borrow of `p.a[0]` that the cell
+/// held already in `out`'s cell, changed no fact of it, so the loop ended after one iteration with
+/// the state from before the body, and `deref p = mkpa ()` after the loop ended the borrow that the
+/// copy keeps (the caller then read the freed string through `out`: `drop -1 2` and `-1` in place
+/// of `drop 8 2` and `8`, a heap use after free under ASan). Each loop form is rejected where the
+/// replacement is, as the program without a loop is; with the replacement before the loop, the
+/// copies borrow the new value and the program is accepted. The flags of a loan were not in the
+/// summary either: `x` held what it read through `p` (`Value::through`) before a loop that binds
+/// it to a lambda that captures `p` itself, so the store of `x` into `out` after the loop was a
+/// copy of `p`'s contents and not a borrow of `p`'s target (`drop -1 2` when the caller's `out`
+/// outlives `p1`); it is rejected at the call, as without a loop.
+#[test]
+fn a_loop_keeps_what_its_body_stored_elsewhere() {
+    const PRELUDE: &str = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = {
+        let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")];
+        do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " " + to_string junk.length)
+    }
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def mkh :: unit -> Holder
+fn mkh _u = Holder { cell: Mutex.create [\() -> 0] }
+def mks :: unit -> string
+fn mks _u = String.repeat 4 (ref "123456789")
+record PA { h: Holder, a: [string] }
+def mkpa :: unit -> PA
+fn mkpa _u = PA { h: mkh (), a: [mks ()] }
+def copy_out :: ref [unit -> i64] -> ref Mutex<[unit -> i64]> -> unit
+fn copy_out b out = Mutex.with_lock out (\o -> Array.write 0 b[0] o)
+def renew :: ref mut PA -> ref Holder -> i64 -> i64
+fn renew p out n =
+"#;
+    const RUN: &str = r#"    0
+def run :: i64 -> i64
+fn run n =
+    let mut p0 = mkpa ()
+    let out = mkh ()
+    let k = renew (ref mut p0) (ref out) n
+    let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy"), String.repeat 4 (ref "xxxxxxxxx")]
+    Mutex.with_lock (ref out.cell) (\b -> b[0] ()) + k + junk.length * 0
+do! IO.write_line (to_string (run 1))
+"#;
+    const KEEP: &str = "    let t = ref p.a[0]\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n";
+    const REPLACE: &str = "    deref p = mkpa ()\n";
+    let bodies = [
+        // the copy of what the cell holds (`contents_elsewhere`)
+        "Mutex.with_lock (ref p.h.cell) (\\b -> copy_out b (ref out.cell))",
+        // the borrow that the cell holds, stored in another target (`kept_elsewhere`)
+        "Mutex.with_lock (ref out.cell) (\\b -> Array.write 0 (\\() -> look t) b)",
+    ];
+    let loops: [&[&str]; 9] = [
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    BODY",
+            "    i = i + 1",
+        ],
+        &["for i in 0 ..= (n - 1) do", "    BODY"],
+        &["let xs = [1, 2]", "for x in xs do", "    BODY"],
+        &[
+            "let mut i = 0",
+            "while true do",
+            "    if i >= n then break else ()",
+            "    BODY",
+            "    i = i + 1",
+        ],
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    i = i + 1",
+            "    BODY",
+            "    if i > 0 then continue else ()",
+        ],
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    let mut j = 0",
+            "    while j < n do",
+            "        BODY",
+            "        j = j + 1",
+            "    i = i + 1",
+        ],
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    let r = try",
+            "                BODY",
+            "                @checked i * 2",
+            "            with",
+            "            | e -> e",
+            "    i = i + 1",
+        ],
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    match i with",
+            "    | 0 -> BODY",
+            "    | _ -> ()",
+            "    i = i + 1",
+        ],
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    if i == 0 then BODY else ()",
+            "    i = i + 1",
+        ],
+    ];
+    for body in bodies {
+        for lines in loops {
+            let mut looped = String::new();
+            for line in lines {
+                looped.push_str("    ");
+                looped.push_str(&line.replace("BODY", body));
+                looped.push('\n');
+            }
+            let unsafe_source = format!("{PRELUDE}{KEEP}{looped}{REPLACE}{RUN}");
+            let at = position(
+                &unsafe_source,
+                unsafe_source.find("deref p = mkpa ()").unwrap(),
+            );
+            assert_eq!(at.1, 5);
+            rejects_at(&unsafe_source, "E1014", "borrow_conflict", at);
+            let safe = format!("{PRELUDE}{REPLACE}{KEEP}{looped}{RUN}");
+            accepts_in_both_editions(&[("Main.tz", &safe)]);
+        }
+    }
+    // A value read through `p` before the loop, a lambda that captures `p` in it.
+    let through = |assigned: &str| {
+        format!(
+            r#"record Holder {{ cell: Mutex<[unit -> i64]> }}
+instance Drop<Holder> {{
+    fn drop h = {{
+        let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")];
+        do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " " + to_string junk.length)
+    }}
+}}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def mkh :: unit -> Holder
+fn mkh _u = Holder {{ cell: Mutex.create [\() -> 0] }}
+record P {{ s: string, f: unit -> i64 }}
+def stash :: ref P -> ref Holder -> i64 -> i64
+fn stash p out n =
+    let mut x = p.f
+    let mut i = 0
+    while i < n do
+        x = {assigned}
+        i = i + 1
+    Mutex.with_lock (ref out.cell) (\b -> Array.write 0 x b)
+    0
+def run :: i64 -> i64
+fn run n =
+    let out = mkh ()
+    let p1 = P {{ s: String.repeat 4 (ref "123456789"), f: \() -> 5 }}
+    stash (ref p1) (ref out) n
+do! IO.write_line (to_string (run 1))
+"#
+        )
+    };
+    rejects_at(
+        &through("\\() -> look (ref p.s)"),
+        "E1013",
+        "assignment_extends_borrow",
+        (27, 5),
+    );
+    accepts_in_both_editions(&[("Main.tz", &through("p.f"))]);
+}
+
+/// A31, the review of the fix of Copilot's review 2 (`loopplace` in
+/// `_features/A34-store-check-safe-rejections.md`): a loop that passes a borrow of the target of
+/// a reference parameter whose type has a cell (the cell's contents `b[0]`, a function that
+/// captures `ref p.s`) to a function value that owns the cell it writes (a lambda that captures an
+/// `own` parameter, an edition 2026 value parameter or a local `Arc.share`) never settled: the
+/// store into the function value added the borrows of the target to `p`, whose dereference made
+/// the places of the next iteration one field deeper (`p.cell.cell...`), and the loans that the
+/// locals hold doubled with each iteration, so that the check of `15d84aaf` did not end (killed
+/// after 120 s, 600 s for the first program; `main` accepts the safe forms within a second). The
+/// check now stops with `E1017` (`loop_ownership_limit`) at the start of the loop's body, where
+/// the limit of the iterations reports it, with a help that says how many loans the iteration
+/// made and names the change that lets the loop settle. Iteration `k` (from 0) of these loops
+/// makes `2^k + 2` loans, so from iteration 1 on each makes more loans than the one before it, and
+/// more of them than that one added, and iteration 5 (34 loans) is the fifth such iteration in a
+/// row (`LOOP_FASTER_ITERATIONS`). The unsafe twin (the caller's `keep` gets the borrow
+/// of a string that dies first) stops the same way. With that change (the lambda captures
+/// `Arc.get (ref sink)`), the safe form is accepted and the twin is rejected where its block drops
+/// the string (`E1013`). A chain of 12 references, each to a field of the target of the next,
+/// borrows deeper in each of its first 12 iterations and settles in the 13th, as on `15d84aaf` and
+/// `main`: iteration `k` makes `k (k - 1) / 2 + k (12 - k)` loans more than the first, at most 66.
+#[test]
+fn a_loop_whose_borrows_keep_growing_stops_with_e1017() {
+    const OWN: &str = r#"record Box { cell: Mutex<[unit -> i64]> }
+def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref p.cell) (\b -> w b[0])
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let mut b = Box { cell: Mutex.create [\() -> 3] }
+    let k = run2 (ref mut b) (Arc.share (ref keep)) n
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
+do! IO.write_line (to_string (run 1))
+"#;
+    const FIELD: &str = r#"record Box { cell: Mutex<[unit -> i64]>, s: string }
+def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        let t = ref p.s
+        w (\() -> String.length t)
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let mut b = Box { cell: Mutex.create [\() -> 3], s: "abcd" }
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let k = run2 (ref mut b) (Arc.share (ref keep)) n
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
+do! IO.write_line (to_string (run 1))
+"#;
+    const LOCAL: &str = r#"record Box { cell: Mutex<[unit -> i64]> }
+def run2 :: ref mut Box -> i64 -> i64
+fn run2 p n =
+    let sink = Arc.new (Mutex.create [\() -> 0])
+    let sink2 = Arc.share (ref sink)
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink2)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref p.cell) (\b -> w b[0])
+        i = i + 1
+    Mutex.with_lock (Arc.get (ref sink)) (\c -> c[0] ())
+def run :: i64 -> i64
+fn run n =
+    let mut b = Box { cell: Mutex.create [\() -> 3] }
+    run2 (ref mut b) n
+do! IO.write_line (to_string (run 1))
+"#;
+    const TWIN: &str = r#"record Box { cell: Mutex<[unit -> i64]> }
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref p.cell) (\b -> w b[0])
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let k = {
+        let s = String.repeat 4 (ref "123456789");
+        let t = ref s;
+        let mut b = Box { cell: Mutex.create [\() -> look t] };
+        run2 (ref mut b) (Arc.share (ref keep)) n
+    }
+    let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")]
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k + junk.length * 0
+do! IO.write_line (to_string (run 1))
+"#;
+    const LAMBDA: &str =
+        "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n";
+    const SETTLES: &str = "    let cell = Arc.get (ref sink)\n    let w = \\g -> Mutex.with_lock cell (\\o -> Array.write 0 g o)\n";
+    let stops = |source: &str, edition: Edition, at: (usize, usize)| {
+        let error = analyze_with_edition(source, edition).expect_err(source);
+        assert_eq!(
+            (error.code, error.kind),
+            ("E1017", Some("loop_ownership_limit")),
+            "edition {edition}\n{source}\n{}",
+            error.message
+        );
+        assert_eq!(
+            position(source, error.span.start),
+            at,
+            "edition {edition}\n{source}"
+        );
+        assert!(
+            error
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("`let cell = Arc.get (ref sink)`")),
+            "edition {edition}\n{source}\n{:?}",
+            error.help
+        );
+    };
+    for edition in [Edition::E2026, Edition::E2027] {
+        stops(OWN, edition, (7, 9));
+        let help = analyze_with_edition(OWN, edition)
+            .expect_err(OWN)
+            .help
+            .clone();
+        assert!(
+            help.as_deref().is_some_and(|help| help.contains(
+                "keep growing faster: each of the last 5 iterations made more borrows than the one \
+                 before it, and more of them than that one added (the last made 34)"
+            )),
+            "edition {edition}: {help:?}"
+        );
+        stops(FIELD, edition, (7, 9));
+        stops(LOCAL, edition, (9, 9));
+        stops(TWIN, edition, (12, 9));
+    }
+    // An edition 2026 value parameter owns the `Arc`; in edition 2027 it is a read parameter, and
+    // a lambda that captures it owns no cell.
+    let value = OWN.replace("-> own Arc", "-> Arc");
+    stops(&value, Edition::E2026, (7, 9));
+    analyze_with_edition(&value, Edition::E2027)
+        .unwrap_or_else(|error| panic!("{value}\n{}: {}", error.code, error.message));
+    assert!(OWN.contains(LAMBDA) && TWIN.contains(LAMBDA));
+    accepts_in_both_editions(&[("Main.tz", &OWN.replace(LAMBDA, SETTLES))]);
+    rejects_at(
+        &TWIN.replace(LAMBDA, SETTLES),
+        "E1013",
+        "assignment_extends_borrow",
+        (19, 13),
+    );
+    // `q0 = ref (deref q1).a`, ..., `q11 = ref (deref q12).a`, each `qk` a `ref Rk` that starts
+    // at its own `yk`: the iteration `j` (from 0) makes `q0` borrow `y(j+1).a.a...` (`j + 1`
+    // fields), up to `y12` and 12 fields in the 12th iteration, and the 13th changes nothing.
+    let mut chain = String::from("record R0 { v: i64 }\n");
+    let mut literals = vec![String::from("R0 { v: 1 }")];
+    for k in 1..=12 {
+        chain.push_str(&format!("record R{k} {{ a: R{}, v: i64 }}\n", k - 1));
+        literals.push(format!("R{k} {{ a: {}, v: {} }}", literals[k - 1], k + 1));
+    }
+    chain.push_str("def run :: i64 -> i64\nfn run n =\n");
+    for (k, literal) in literals.iter().enumerate() {
+        chain.push_str(&format!("    let y{k} = {literal}\n"));
+    }
+    for k in 0..=12 {
+        chain.push_str(&format!("    let mut q{k} = ref y{k}\n"));
+    }
+    chain.push_str("    let mut i = 0\n    while i < n do\n");
+    for k in 0..12 {
+        chain.push_str(&format!("        q{k} = ref (deref q{}).a\n", k + 1));
+    }
+    chain.push_str("        i = i + 1\n    q0.v + q1.v\ndo! IO.write_line (to_string (run 3))\n");
+    accepts_in_both_editions(&[("Main.tz", &chain)]);
+}
+
+/// The records `R0 { v }` and `Rk { a: R(k-1), v }` up to `R{links}`, and the literal of each.
+fn chain_records(links: usize) -> (String, Vec<String>) {
+    let mut records = String::from("record R0 { v: i64 }\n");
+    let mut literals = vec![String::from("R0 { v: 1 }")];
+    for k in 1..=links {
+        records.push_str(&format!("record R{k} {{ a: R{}, v: i64 }}\n", k - 1));
+        literals.push(format!("R{k} {{ a: {}, v: {} }}", literals[k - 1], k + 1));
+    }
+    (records, literals)
+}
+
+/// The loop `q0 = ref (deref q1).a`, ..., `q{links-1} = ref (deref q{links}).a`, `n` times, and
+/// the result `q0.v + q1.v`.
+fn chain_loop(links: usize) -> String {
+    let mut code = String::from("    let mut i = 0\n    while i < n do\n");
+    for k in 0..links {
+        code.push_str(&format!("        q{k} = ref (deref q{}).a\n", k + 1));
+    }
+    code.push_str("        i = i + 1\n    q0.v + q1.v\n");
+    code
+}
+
+/// A `loopplace` loop in which `t{k-1}`, ..., `t0` carry the borrow of `p.s` for `k` iterations
+/// before the store into the function value that owns a cell.
+fn late_hand_on(k: usize) -> String {
+    let mut source = String::from(
+        "record Box { cell: Mutex<[unit -> i64]>, s: string }\ndef run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64\nfn run2 p sink n =\n",
+    );
+    source.push_str(
+        "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n",
+    );
+    source.push_str("    let mut i = 0\n");
+    for j in 0..k {
+        source.push_str(&format!("    let mut t{j} = ref p.s\n"));
+    }
+    source.push_str(&format!(
+        "    while i < n do\n        let t = t{}\n        w (\\() -> String.length t)\n",
+        k - 1
+    ));
+    for j in (1..k).rev() {
+        source.push_str(&format!("        t{j} = t{}\n", j - 1));
+    }
+    source.push_str("        t0 = ref p.s\n        i = i + 1\n    0\ndef run :: i64 -> i64\nfn run n =\n    let mut b = Box { cell: Mutex.create [\\() -> 3], s: \"abcd\" }\n    let keep = Arc.new (Mutex.create [\\() -> 0])\n    let k = run2 (ref mut b) (Arc.share (ref keep)) n\n    Mutex.with_lock (Arc.get (ref keep)) (\\c -> c[0] ()) + k\ndo! IO.write_line (to_string (run 1))\n");
+    source
+}
+
+/// A31, the review of the first two `E1017` stops of `loopplace`, which guessed from the shapes of
+/// the places that a loop borrows. The first (`773ea1c4`) counted the iterations that borrowed a
+/// place deeper than before whose fields left the type that they read from the root's
+/// declaration. The place of a loan that the result of a call holds is its argument's
+/// (`top (ref y)` returns `ref y.r` with the loan of `y`), the external loan of a record parameter
+/// with a region stands for what its references point at, and so does a loan read from a
+/// reference that a parameter holds: their fields name fields of another value, so a chain of 10
+/// or more references, each to a field of the target of the next, that starts at such places got
+/// `E1017`, although `15d84aaf`, `main` and the base accept it (each prints 3). The check now
+/// stops by how the loans that each iteration makes grow (`LoanGrowth`): iteration `k` of the
+/// chains below, of 12 links, makes `k (k - 1) / 2 + k (12 - k)` loans more than the first, at
+/// most 66, and twice as many in `each`, whose links start with two places each (a field of `p`
+/// and the same field of the borrow of `p.r12` that the store before the loop added to `p`), at
+/// most 132. Their loans grow by less in each iteration than in the one before, so no stop applies
+/// to them, and they are accepted in both editions.
+///
+/// Two forms that the first stop missed stop at the start of the loop's body. A `dyn Display`
+/// field (`ref p.s`), whose loans double as in the other `loopplace` forms and whose unsafe twin
+/// `main` accepts and runs into a use after free; with `let cell = Arc.get (ref sink)` the safe
+/// form is accepted and the twin is rejected where its block drops the string (`E1013`). And a
+/// loop that hands the borrow to the function value through `t1 = t0` (two or three locals before
+/// the store, `t0` and `t1`, or `t0` to `t2`: `late_hand_on`): its loans grow by about 1.6 or 1.5
+/// times per iteration instead of doubling (3, 4, 5, 7, 10, 15, 23, 36 and 3, 4, 5, 6, 8, 11, 15,
+/// 21, 30), and its iteration 7 (36 loans) or 8 (30) is the fifth in a row that grows faster.
+#[test]
+fn a_loop_stops_by_the_loans_of_its_iterations_not_by_the_shapes_of_its_places() {
+    let (records, literals) = chain_records(12);
+    // Call results: `qk = topk (ref yk)` holds the loan of `yk` while it points at `yk.r`.
+    let mut call = records.clone();
+    for k in 0..=12 {
+        call.push_str(&format!(
+            "record Y{k} {{ pad: i64, r: R{k} }}\ndef top{k} :: ref Y{k} -> ref R{k}\nfn top{k} y = ref y.r\n"
+        ));
+    }
+    call.push_str("def run :: i64 -> i64\nfn run n =\n");
+    for (k, literal) in literals.iter().enumerate() {
+        call.push_str(&format!("    let y{k} = Y{k} {{ pad: 0, r: {literal} }}\n"));
+    }
+    for k in 0..=12 {
+        call.push_str(&format!("    let mut q{k} = top{k} (ref y{k})\n"));
+    }
+    call.push_str(&chain_loop(12));
+    call.push_str("do! IO.write_line (to_string (run 3))\n");
+    // A record parameter with one region: `qk = big.fk` holds the external loan of `big`.
+    let mut big = records.clone();
+    let fields: Vec<String> = (0..=12).map(|k| format!("f{k}: ref {{r}} R{k}")).collect();
+    big.push_str(&format!("record Big {{r}} {{ {} }}\n", fields.join(", ")));
+    big.push_str("def walk {r} :: Big {r} -> i64 -> i64\nfn walk big n =\n");
+    for k in 0..=12 {
+        big.push_str(&format!("    let mut q{k} = big.f{k}\n"));
+    }
+    big.push_str(&chain_loop(12));
+    big.push_str("def run :: i64 -> i64\nfn run n =\n");
+    for (k, literal) in literals.iter().enumerate() {
+        big.push_str(&format!("    let y{k} = {literal}\n"));
+    }
+    let lent: Vec<String> = (0..=12).map(|k| format!("f{k}: ref y{k}")).collect();
+    big.push_str(&format!(
+        "    let big = Big {{ {} }}\n    walk big n\ndo! IO.write_line (to_string (run 3))\n",
+        lent.join(", ")
+    ));
+    // A reference that a reference parameter holds: `q12 = w.r`.
+    let mut held = records.clone();
+    held.push_str("record W {r} { r: ref {r} R12 }\ndef go :: ref W -> i64 -> i64\nfn go w n =\n");
+    for (k, literal) in literals.iter().enumerate().take(12) {
+        held.push_str(&format!("    let y{k} = {literal}\n"));
+    }
+    for k in 0..12 {
+        held.push_str(&format!("    let mut q{k} = ref y{k}\n"));
+    }
+    held.push_str("    let mut q12 = w.r\n");
+    held.push_str(&chain_loop(12));
+    held.push_str(&format!(
+        "def run :: i64 -> i64\nfn run n =\n    let yl = {}\n    let w = W {{ r: ref yl }}\n    go (ref w) n\ndo! IO.write_line (to_string (run 3))\n",
+        literals[12]
+    ));
+    // Each `qk = ref p.rk` holds a field of the borrow of `p.r12` that the store before the loop
+    // added to `p`, a place that no value has; the loop stores nothing.
+    let mut each = records.clone();
+    let fields: Vec<String> = (0..=12).map(|k| format!("r{k}: R{k}")).collect();
+    each.push_str(&format!(
+        "record Box {{ cell: Mutex<[unit -> i64]>, {} }}\n",
+        fields.join(", ")
+    ));
+    each.push_str("def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64\nfn run2 p sink n =\n");
+    each.push_str(
+        "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n",
+    );
+    each.push_str("    let t = ref p.r12\n    w (\\() -> t.v)\n");
+    for k in 0..=12 {
+        each.push_str(&format!("    let mut q{k} = ref p.r{k}\n"));
+    }
+    each.push_str(&chain_loop(12));
+    let values: Vec<String> = literals
+        .iter()
+        .enumerate()
+        .map(|(k, literal)| format!("r{k}: {literal}"))
+        .collect();
+    each.push_str(&format!(
+        "def run :: i64 -> i64\nfn run n =\n    let mut b = Box {{ cell: Mutex.create [\\() -> 3], {} }}\n    let keep = Arc.new (Mutex.create [\\() -> 0])\n    let k = run2 (ref mut b) (Arc.share (ref keep)) n\n    Mutex.with_lock (Arc.get (ref keep)) (\\c -> c[0] ()) + k\ndo! IO.write_line (to_string (run 3))\n",
+        values.join(", ")
+    ));
+    for source in [&call, &big, &held, &each] {
+        accepts_in_both_editions(&[("Main.tz", source)]);
+    }
+
+    const DYN: &str = r#"record Box { cell: Mutex<[unit -> i64]>, s: dyn Display }
+def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        let t = ref p.s
+        w (\() -> String.length (Display.display t))
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let mut b = Box { cell: Mutex.create [\() -> 3], s: Dyn.of "abcd" }
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let k = run2 (ref mut b) (Arc.share (ref keep)) n
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
+do! IO.write_line (to_string (run 1))
+"#;
+    const DYN_TWIN: &str = r#"record Box { cell: Mutex<[unit -> i64]>, s: dyn Display }
+def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        let t = ref p.s
+        w (\() -> String.length (Display.display t))
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let k = {
+        let mut b = Box { cell: Mutex.create [\() -> 3], s: Dyn.of (String.repeat 4 (ref "123456789")) };
+        run2 (ref mut b) (Arc.share (ref keep)) n
+    }
+    let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")]
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k + junk.length * 0
+do! IO.write_line (to_string (run 1))
+"#;
+    const LAMBDA: &str =
+        "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n";
+    const SETTLES: &str = "    let cell = Arc.get (ref sink)\n    let w = \\g -> Mutex.with_lock cell (\\o -> Array.write 0 g o)\n";
+    let (two, three) = (late_hand_on(2), late_hand_on(3));
+    for (source, at) in [
+        (DYN, (7, 9)),
+        (DYN_TWIN, (7, 9)),
+        (&two, (9, 9)),
+        (&three, (10, 9)),
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let error = analyze_with_edition(source, edition).expect_err(source);
+            assert_eq!(
+                (error.code, error.kind),
+                ("E1017", Some("loop_ownership_limit")),
+                "edition {edition}\n{source}\n{}",
+                error.message
+            );
+            assert_eq!(
+                position(source, error.span.start),
+                at,
+                "edition {edition}\n{source}"
+            );
+            assert!(
+                error
+                    .help
+                    .as_deref()
+                    .is_some_and(|help| help.contains("`let cell = Arc.get (ref sink)`")),
+                "edition {edition}\n{source}\n{:?}",
+                error.help
+            );
+        }
+    }
+    assert!(DYN.contains(LAMBDA) && DYN_TWIN.contains(LAMBDA) && two.contains(LAMBDA));
+    accepts_in_both_editions(&[("Main.tz", &DYN.replace(LAMBDA, SETTLES))]);
+    accepts_in_both_editions(&[("Main.tz", &two.replace(LAMBDA, SETTLES))]);
+    rejects_at(
+        &DYN_TWIN.replace(LAMBDA, SETTLES),
+        "E1013",
+        "assignment_extends_borrow",
+        (15, 13),
+    );
+}
+
+/// The `each` chain of the review of the first `loopplace` stops: `qk = ref p.rk` for `k` up to
+/// `links`, after a store of the borrow of `p.r{links}` before the loop, then the loop of
+/// `chain_loop` with `extra` at the end of its body and `result` after it. The function value that
+/// owns the cell captures the `own` parameter `sink`, or a local `Arc.share` (`local`).
+fn each_chain(links: usize, extra: &str, result: &str, local: bool) -> String {
+    let (mut source, literals) = chain_records(links);
+    let fields: Vec<String> = (0..=links).map(|k| format!("r{k}: R{k}")).collect();
+    source.push_str(&format!(
+        "record Box {{ cell: Mutex<[unit -> i64]>, {} }}\n",
+        fields.join(", ")
+    ));
+    if local {
+        source.push_str("def run2 :: ref mut Box -> i64 -> i64\nfn run2 p n =\n    let sink = Arc.new (Mutex.create [\\() -> 0])\n    let sink2 = Arc.share (ref sink)\n    let w = \\g -> Mutex.with_lock (Arc.get (ref sink2)) (\\o -> Array.write 0 g o)\n");
+    } else {
+        source.push_str("def run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64\nfn run2 p sink n =\n    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n");
+    }
+    source.push_str(&format!(
+        "    let t = ref p.r{links}\n    w (\\() -> t.v)\n"
+    ));
+    for k in 0..=links {
+        source.push_str(&format!("    let mut q{k} = ref p.r{k}\n"));
+    }
+    source.push_str(&chain_loop(links).replace("        i = i + 1\n    q0.v + q1.v\n", ""));
+    source.push_str(extra);
+    source.push_str("        i = i + 1\n");
+    source.push_str(result);
+    let values: Vec<String> = literals
+        .iter()
+        .enumerate()
+        .map(|(k, literal)| format!("r{k}: {literal}"))
+        .collect();
+    source.push_str(&format!(
+        "def run :: i64 -> i64\nfn run n =\n    let mut b = Box {{ cell: Mutex.create [\\() -> 3], {} }}\n",
+        values.join(", ")
+    ));
+    if local {
+        source.push_str("    run2 (ref mut b) n\n");
+    } else {
+        source.push_str("    let keep = Arc.new (Mutex.create [\\() -> 0])\n    let k = run2 (ref mut b) (Arc.share (ref keep)) n\n    Mutex.with_lock (Arc.get (ref keep)) (\\c -> c[0] ()) + k\n");
+    }
+    source.push_str("do! IO.write_line (to_string (run 3))\n");
+    source
+}
+
+/// A31, the review of the second `E1017` stop of `loopplace` (`5f3c2a0b`), which counted the
+/// iterations whose locals held deeper places that no value has, once such places had been fed
+/// back to the local whose dereference made them. It stopped converging chains whose places a
+/// store in the loop fed back to the parameter while the loop never dereferenced the parameter
+/// again: `each9_store0_live` (9 links, the loop stores `\() -> q0.v`), `es_live_10` (10 links,
+/// `let u = q0` before the store) and `esl_local` (9 links, a local `Arc.share` sink), which
+/// `15d84aaf`, `main` and the base accept (`main` prints 5, 5 and 5). Their iteration `k` makes
+/// `2 (k (k - 1) / 2 + k (L - k))` loans more than the first (their links start with two places
+/// each), at most 72, 90 and 72; a chain of 16 references to locals makes at most 120 more. All
+/// four are accepted in both editions.
+///
+/// It never stopped the `loopplace` forms whose dereferenced reference is a local of the loop body
+/// (`let r = p; let t = ref r.s`, `e_copy2`, or `let q = p`, `bl_copy`), or the result of an `if`
+/// (`gl_if`), and a choice between reborrows of a `ref mut` parameter (`rm_ifref`) triples the
+/// loans in each iteration, so that it took more than 10 minutes. Those stop now at the start of
+/// the loop's body: from iteration 1 on, their loans grow by 1, 2, 4, 8, ... more (by 8, 24, 72,
+/// ... for `rm_ifref`), so their iteration 5 (34 loans, 35 for `gl_if`, 975 for `rm_ifref`) is the
+/// fifth in a row that grows faster (`LOOP_FASTER_ITERATIONS`). So does a loop that passes the
+/// borrow through four locals before the store (`late_hand_on(4)`, which adds one loan in each of
+/// its first four iterations: iteration 9, 28 loans).
+///
+/// No stop counts the loans themselves, and a loop whose loans grow by less in each iteration
+/// than in the one before meets no stop, however many loans it makes. A loop that passes a
+/// reference to one of two records along 16 locals, one per iteration, and reads through each of
+/// them 4 times (`pipeline(16, 2, 4)`) makes 71, 139, 203, ..., 659 and 671 loans (each iteration
+/// adds 4 fewer than the one before; 600 more than the first in all), settles in iteration 16 and
+/// is accepted in both editions (`main` prints 600). The loan budget of A31 (`LOOP_LOAN_GROWTH`,
+/// later removed: from the fifth iteration on, 500 loans beyond the iteration before it that made
+/// the fewest) stopped it in iteration 11, and so it did 18 chains of 8 references advanced in one
+/// loop (146, 272, ..., 650 loans) and a single chain of 33, which the check now accepts, as
+/// `15d84aaf` did: the 18 chains after about 2.4 seconds on a dev build (2.2 to 2.8 on a release
+/// build), the chain of 33 after 26 to 54 seconds on a dev build (24 to 33 on a release build), so
+/// the test checks the shorter loop instead.
+#[test]
+fn a_loop_whose_loans_grow_by_less_in_each_iteration_settles_however_many_it_makes() {
+    let live = "    q0.v + q1.v + p.r0.v\n";
+    // A chain of `links` references, each `qk` starting at its own local `yk`.
+    let single = |links: usize| {
+        let (mut source, literals) = chain_records(links);
+        source.push_str("def run :: i64 -> i64\nfn run n =\n");
+        for (k, literal) in literals.iter().enumerate() {
+            source.push_str(&format!("    let y{k} = {literal}\n"));
+        }
+        for k in 0..=links {
+            source.push_str(&format!("    let mut q{k} = ref y{k}\n"));
+        }
+        source.push_str(&chain_loop(links));
+        source.push_str("do! IO.write_line (to_string (run 3))\n");
+        source
+    };
+    let chain = single(16);
+    for source in [
+        each_chain(9, "        w (\\() -> q0.v)\n", live, false),
+        each_chain(
+            10,
+            "        let u = q0\n        w (\\() -> u.v)\n",
+            live,
+            false,
+        ),
+        each_chain(
+            9,
+            "        let u = q0\n        w (\\() -> u.v)\n",
+            "    q0.v + q1.v + p.r0.v + Mutex.with_lock (Arc.get (ref sink)) (\\c -> c[0] ())\n",
+            true,
+        ),
+        chain,
+    ] {
+        accepts_in_both_editions(&[("Main.tz", &source)]);
+    }
+
+    const COPY: &str = r#"record Box { cell: Mutex<[unit -> i64]>, s: string }
+def run2 :: ref Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64
+fn run2 p sink n =
+    let w = \g -> Mutex.with_lock (Arc.get (ref sink)) (\o -> Array.write 0 g o)
+    let mut i = 0
+    while i < n do
+        let r = p
+        let t = ref r.s
+        w (\() -> String.length t)
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let b = Box { cell: Mutex.create [\() -> 3], s: "abcd" }
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let k = run2 (ref b) (Arc.share (ref keep)) n
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
+do! IO.write_line (to_string (run 1))
+"#;
+    let local = COPY.replace(
+        "        let r = p\n        let t = ref r.s\n",
+        "        let q = p\n        let t = ref q.s\n",
+    );
+    let choice = COPY.replace(
+        "        let r = p\n        let t = ref r.s\n",
+        "        let t = ref (if i >= 0 then p else p).s\n",
+    );
+    let reborrow = COPY
+        .replace("ref Box ->", "ref mut Box ->")
+        .replace("    let b = Box", "    let mut b = Box")
+        .replace("run2 (ref b)", "run2 (ref mut b)")
+        .replace(
+            "        let r = p\n        let t = ref r.s\n",
+            "        let t = ref (deref (if i >= 0 then ref p else ref p)).s\n",
+        );
+    let late = late_hand_on(4);
+    for (source, at) in [
+        (COPY, (7, 9)),
+        (&local, (7, 9)),
+        (&choice, (7, 9)),
+        (&reborrow, (7, 9)),
+        (&late, (11, 9)),
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let error = analyze_with_edition(source, edition).expect_err(source);
+            assert_eq!(
+                (error.code, error.kind),
+                ("E1017", Some("loop_ownership_limit")),
+                "edition {edition}\n{source}\n{}",
+                error.message
+            );
+            assert_eq!(
+                position(source, error.span.start),
+                at,
+                "edition {edition}\n{source}"
+            );
+            assert!(
+                error
+                    .help
+                    .as_deref()
+                    .is_some_and(|help| help.contains("`let cell = Arc.get (ref sink)`")),
+                "edition {edition}\n{source}\n{:?}",
+                error.help
+            );
+        }
+    }
+
+    accepts_in_both_editions(&[("Main.tz", &pipeline(16, 2, 4))]);
+}
+
+/// A toy bytecode interpreter with `ops` opcodes of two strings and `subs` subroutines (`Call0`,
+/// ..., `Ret`): the loop assigns `code` again (`code = sub0`, `code = saved`) and copies it
+/// (`saved = code`), and each opcode's arm borrows its two strings through `code[pc]`. `run 100`
+/// runs `Op0`, then each `Calli` (whose subroutine runs `Op1 ("abc", "d")`, 5) and `Op(i+2)`.
+fn interpreter(ops: usize, subs: usize) -> String {
+    let calls: Vec<String> = (0..subs).map(|j| format!("Call{j}")).collect();
+    let opcodes: Vec<String> = (0..ops)
+        .map(|j| format!("Op{j} of string * string"))
+        .collect();
+    let mut source = format!(
+        "union Instr = Ret | Halt | {} | {}\n",
+        calls.join(" | "),
+        opcodes.join(" | ")
+    );
+    source.push_str(&format!(
+        "def exec :: ref [Instr] -> {}i64 -> i64\nfn exec main {}fuel =\n",
+        "ref [Instr] -> ".repeat(subs),
+        (0..subs).map(|j| format!("sub{j} ")).collect::<String>()
+    ));
+    source.push_str("    let mut code = main\n    let mut saved = main\n    let mut pc = 0\n    let mut back = 0\n    let mut steps = 0\n    let mut acc = 0\n    let mut running = true\n    while running && steps < fuel do\n        steps = steps + 1\n        match code[pc] with\n");
+    for j in 0..subs {
+        source.push_str(&format!(
+            "        | Call{j} ->\n            saved = code\n            back = pc + 1\n            code = sub{j}\n            pc = 0\n"
+        ));
+    }
+    source.push_str("        | Ret ->\n            code = saved\n            pc = back\n        | Halt -> running = false\n");
+    for j in 0..ops {
+        source.push_str(&format!(
+            "        | Op{j} (a, b) ->\n            acc = acc + String.length a * {} - String.length b\n            pc = pc + 1\n",
+            j + 1
+        ));
+    }
+    let main: Vec<String> = (0..subs)
+        .map(|j| format!("Call{j}, Op{} (\"x\", \"yz\")", (j + 2) % ops))
+        .collect();
+    source.push_str(&format!(
+        "    acc\ndef run :: i64 -> i64\nfn run n =\n    let main = [Op0 (\"ab\", \"c\"), {}, Halt]\n",
+        main.join(", ")
+    ));
+    for j in 0..subs {
+        source.push_str(&format!("    let sub{j} = [Op1 (\"abc\", \"d\"), Ret]\n"));
+    }
+    source.push_str(&format!(
+        "    exec (ref main) {}n\ndo! IO.write_line (to_string (run 100))\n",
+        (0..subs)
+            .map(|j| format!("(ref sub{j}) "))
+            .collect::<String>()
+    ));
+    source
+}
+
+/// A loop that borrows `pairs` times the two fields of `cur`, copies it along `copies` locals
+/// (`prev{copies-1} = prev{copies-2}`, ..., `prev0 = cur`) and assigns it again to one of `places`
+/// records (`cur = match i % places with | 0 -> ref b0 ...`). With 8 places, `run 3` adds the
+/// fields of `b0` twice and of `b1` once in each pair (`2 + 2 + 5`), and the first field of the
+/// last copy (`b0`, 1 byte; `b1`, 2 bytes, when one local copies `cur`): 290 for 32 pairs and one
+/// copy, 325 for 36 pairs and four copies.
+fn widening(places: usize, pairs: usize, copies: usize) -> String {
+    let mut source =
+        String::from("record Buf { a: string, b: string }\ndef run :: i64 -> i64\nfn run n =\n");
+    for j in 0..places {
+        source.push_str(&format!(
+            "    let b{j} = Buf {{ a: \"{}\", b: \"{}\" }}\n",
+            "x".repeat(j + 1),
+            "y".repeat(2 * j + 1)
+        ));
+    }
+    source.push_str("    let mut cur = ref b0\n");
+    for j in 0..copies {
+        source.push_str(&format!("    let mut prev{j} = ref b0\n"));
+    }
+    source.push_str("    let mut s = 0\n    let mut i = 0\n    while i < n do\n");
+    for _ in 0..pairs {
+        source.push_str("        s = s + String.length cur.a + String.length cur.b\n");
+    }
+    for j in (1..copies).rev() {
+        source.push_str(&format!("        prev{j} = prev{}\n", j - 1));
+    }
+    source.push_str(&format!(
+        "        prev0 = cur\n        cur = match i % {places} with\n"
+    ));
+    for j in 0..places - 1 {
+        source.push_str(&format!("            | {j} -> ref b{j}\n"));
+    }
+    source.push_str(&format!(
+        "            | _ -> ref b{}\n        i = i + 1\n    s + String.length prev{}.a\ndo! IO.write_line (to_string (run 3))\n",
+        places - 1,
+        copies - 1
+    ));
+    source
+}
+
+/// A loop that copies a reference along `n` locals, one per iteration (`u{n-1} = u{n-2}`, ..., `u1
+/// = u0`, `u0 = ref a`), and reads through the last of them, with `fillers` more borrows of `y`:
+/// the place of `a` reaches `u{k}` in iteration `k`, and the loop settles in iteration `n`. `run 3`
+/// reads `y` (6 bytes) through `u{n-1}` in each of its iterations when `n` is more than 3, and
+/// `fillers` times besides: `18 (fillers + 1)`.
+fn copy_chain(n: usize, fillers: usize) -> String {
+    let mut source = String::from(
+        "def run :: i64 -> i64\nfn run n =\n    let y = \"filler\"\n    let a = \"other\"\n",
+    );
+    for k in 0..n {
+        source.push_str(&format!("    let mut u{k} = ref y\n"));
+    }
+    source.push_str(&format!(
+        "    let mut z = 0\n    let mut i = 0\n    while i < n do\n        z = z + String.length u{}\n",
+        n - 1
+    ));
+    for k in (1..n).rev() {
+        source.push_str(&format!("        u{k} = u{}\n", k - 1));
+    }
+    source.push_str("        u0 = ref a\n");
+    for _ in 0..fillers {
+        source.push_str("        z = z + String.length y\n");
+    }
+    source.push_str("        i = i + 1\n    z\ndo! IO.write_line (to_string (run 3))\n");
+    source
+}
+
+/// A31, review round 1 of the loan budget (`LOOP_LOAN_GROWTH`, since removed, which then stopped a
+/// loop when an iteration made 500 loans more than the first). A reference that a loop assigns
+/// again (`code = sub0`) widens at the first merge to every place that the loop gives it, and a
+/// local that copies it (`saved = code`) one iteration later, so each borrow through them makes one
+/// loan for each of those places from the second iteration on: an interpreter of 20 opcodes and 4
+/// subroutines made 176 loans in its first iteration and 712 in its second, and a loop with 64
+/// borrows through a reference to one of 8 records 89 and 601, and both settle in their third
+/// iteration, as `15d84aaf`, `main` and the base accept them (`main` prints 31 and 290). They
+/// stopped with `E1017`. The stops now need 5 or more iterations in a row whose loans grow, and no
+/// stop counts the loans themselves, so both are accepted in both editions, and so is the second
+/// loop when it copies `cur` along four locals and borrows 72 times through it (97 loans, then 673
+/// in each of iterations 1 to 4, and it settles in iteration 5; `main` prints 325).
+///
+/// The first iteration of a `loopplace` loop whose body holds a loop that assigns a reference
+/// declared before it (`u0 = ref a`) is its largest (the inner loop settles in its second iteration
+/// there, at once afterwards), and the stop counted from it, so the loans grew far past 500 first,
+/// and the check took 10 seconds and more. A loop that passes the borrow through 40 locals before
+/// the store adds one loan per iteration for about 40 iterations, and with 140 locals never met the
+/// limit before the 129 iterations (25 seconds). Now 5 iterations in a row whose loans grow faster
+/// and faster (`LOOP_FASTER_ITERATIONS`), or 24 iterations in a row whose loans grow at least as
+/// fast as before (`LOOP_GROWING_ITERATIONS`; 8 when the last made more than 200 loans,
+/// `LOOP_GROWING_LARGE`), stop the loop: the first at the start of the outer loop's body (`11:9`:
+/// from iteration 2 on, its loans grow by 2, 4, 8, ... more, and iteration 6 is the fifth in a
+/// row), the second at that of the loop of 40 locals (`47:9`, its iteration 24). A loop that copies
+/// a reference along 24 locals settles in iteration 24 after 23 iterations that each add one loan,
+/// and is accepted (`main` prints 18); along 25 locals its iteration 24 is the 24th such iteration,
+/// and the loop stops (`33:9`), where the documents put that limit. With 200 more borrows in the
+/// body, 8 locals are accepted (`main` prints 3618), and 9 stop at iteration 8 (`17:9`, 212 loans).
+#[test]
+fn a_loop_that_grows_once_settles_and_one_that_keeps_growing_stops() {
+    accepts_in_both_editions(&[("Main.tz", &interpreter(20, 4))]);
+    accepts_in_both_editions(&[("Main.tz", &widening(8, 32, 1))]);
+    accepts_in_both_editions(&[("Main.tz", &widening(8, 36, 4))]);
+    accepts_in_both_editions(&[("Main.tz", &copy_chain(24, 0))]);
+    accepts_in_both_editions(&[("Main.tz", &copy_chain(8, 200))]);
+    let mut inner = String::from(
+        "record Box { cell: Mutex<[unit -> i64]>, s: string }\ndef run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64\nfn run2 p sink n =\n    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n    let y = \"filler\"\n    let a = \"other\"\n    let mut u0 = ref y\n    let mut z = 0\n    let mut i = 0\n    while i < n do\n        let t = ref p.s\n        w (\\() -> String.length t)\n        let mut j = 0\n        while j < 2 do\n            z = z + String.length u0\n            u0 = ref a\n",
+    );
+    for _ in 0..100 {
+        inner.push_str("            z = z + String.length y\n");
+    }
+    inner.push_str("            j = j + 1\n        i = i + 1\n    z - z\ndef run :: i64 -> i64\nfn run n =\n    let mut b = Box { cell: Mutex.create [\\() -> 3], s: \"abcd\" }\n    let keep = Arc.new (Mutex.create [\\() -> 0])\n    let k = run2 (ref mut b) (Arc.share (ref keep)) n\n    Mutex.with_lock (Arc.get (ref keep)) (\\c -> c[0] ()) + k\ndo! IO.write_line (to_string (run 1))\n");
+    let late = late_hand_on(40);
+    let long = copy_chain(25, 0);
+    let large = copy_chain(9, 200);
+    for (source, at, help) in [
+        (
+            &inner,
+            (11, 9),
+            "keep growing faster: each of the last 5 iterations",
+        ),
+        (
+            &late,
+            (47, 9),
+            "keep growing: each of the last 24 iterations",
+        ),
+        (
+            &long,
+            (33, 9),
+            "keep growing: each of the last 24 iterations",
+        ),
+        (
+            &large,
+            (17, 9),
+            "keep growing: each of the last 8 iterations made more borrows than the one before it, and at least as many more as that one added (the last made 212)",
+        ),
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let error = analyze_with_edition(source, edition).expect_err(source);
+            assert_eq!(
+                (error.code, error.kind),
+                ("E1017", Some("loop_ownership_limit")),
+                "edition {edition}\n{source}\n{}",
+                error.message
+            );
+            assert_eq!(
+                position(source, error.span.start),
+                at,
+                "edition {edition}\n{source}"
+            );
+            assert!(
+                error
+                    .help
+                    .as_deref()
+                    .is_some_and(|text| text.contains(help)
+                        && text.contains("`let cell = Arc.get (ref sink)`")),
+                "edition {edition}\n{source}\n{:?}",
+                error.help
+            );
+        }
+    }
+}
+
+/// `interpreter(ops, subs)` that also keeps the last `history` names it stepped through (`w4 =
+/// w3`, ..., `w1 = w0`, `w0 = ref names[steps % 3]`, each first `ref none`) and reads through
+/// each of them in each step, and that saves its code on a return stack of `depth` locals
+/// instead of `saved` (`ret3 = ret2`, ..., `ret0 = code` on a call, popped on `Ret`; each
+/// subroutine but the last calls the next) and adds the lengths of the saved code arrays at
+/// `Halt`.
+fn keeping_interpreter(ops: usize, subs: usize, history: usize, depth: usize) -> String {
+    let mut source = interpreter(ops, subs);
+    if history > 0 {
+        let mut declarations = String::from("    let mut saved = main\n    let none = \"-\"\n");
+        let mut step = String::from("        steps = steps + 1\n");
+        for j in 0..history {
+            declarations.push_str(&format!("    let mut w{j} = ref none\n"));
+            step.push_str(&format!("        acc = acc + String.length w{j}\n"));
+        }
+        for j in (1..history).rev() {
+            step.push_str(&format!("        w{j} = w{}\n", j - 1));
+        }
+        step.push_str("        w0 = ref names[steps % 3]\n");
+        source = source
+            .replacen("def exec :: ", "def exec :: ref [string] -> ", 1)
+            .replacen("fn exec main ", "fn exec names main ", 1)
+            .replacen("    let mut saved = main\n", &declarations, 1)
+            .replacen("        steps = steps + 1\n", &step, 1)
+            .replacen(
+                "    exec (ref main) ",
+                "    let names = [\"add\", \"sub\", \"mul\"]\n    exec (ref names) (ref main) ",
+                1,
+            );
+    }
+    if depth > 0 {
+        let mut declarations = String::new();
+        let mut push = String::new();
+        let mut pop = String::from("            code = ret0\n            pc = back0\n");
+        for r in 0..depth {
+            declarations.push_str(&format!(
+                "    let mut ret{r} = main\n    let mut back{r} = 0\n"
+            ));
+        }
+        for r in (1..depth).rev() {
+            push.push_str(&format!(
+                "            ret{r} = ret{}\n            back{r} = back{}\n",
+                r - 1,
+                r - 1
+            ));
+        }
+        push.push_str("            ret0 = code\n            back0 = pc + 1\n");
+        for r in 1..depth {
+            pop.push_str(&format!(
+                "            ret{} = ret{r}\n            back{} = back{r}\n",
+                r - 1,
+                r - 1
+            ));
+        }
+        let lengths: Vec<String> = (0..depth).map(|r| format!("Array.length ret{r}")).collect();
+        source = source
+            .replacen("    let mut saved = main\n", &declarations, 1)
+            .replacen("    let mut back = 0\n", "", 1)
+            .replace(
+                "            saved = code\n            back = pc + 1\n",
+                &push,
+            )
+            .replacen("            code = saved\n            pc = back\n", &pop, 1)
+            .replacen(
+                "        | Halt -> running = false\n",
+                &format!(
+                    "        | Halt ->\n            acc = acc + {}\n            running = false\n",
+                    lengths.join(" + ")
+                ),
+                1,
+            );
+        for j in 0..subs - 1 {
+            source = source.replacen(
+                &format!("    let sub{j} = [Op1 (\"abc\", \"d\"), Ret]\n"),
+                &format!(
+                    "    let sub{j} = [Op1 (\"abc\", \"d\"), Call{}, Ret]\n",
+                    j + 1
+                ),
+                1,
+            );
+        }
+    }
+    source
+}
+
+/// A loop that copies a reference along `stages` locals, one per iteration (`s4 = s3`, ..., `s1 =
+/// s0`), reads through each of them `reads` times, and assigns the first again to one of `places`
+/// records (`s0 = match (pc * 7 + acc) % places with | 0 -> ref i0 ...`).
+fn pipeline(stages: usize, places: usize, reads: usize) -> String {
+    let mut source = String::from(
+        "record Instr { op: i64, a: i64, b: i64, name: string }\ndef run :: i64 -> i64\nfn run n =\n",
+    );
+    for p in 0..places {
+        source.push_str(&format!(
+            "    let i{p} = Instr {{ op: {p}, a: {}, b: {}, name: \"op{p}\" }}\n",
+            p + 1,
+            p + 2
+        ));
+    }
+    for j in 0..stages {
+        source.push_str(&format!("    let mut s{j} = ref i0\n"));
+    }
+    source.push_str("    let mut pc = 0\n    let mut acc = 0\n    while pc < n do\n");
+    for j in 0..stages {
+        for _ in 0..reads {
+            source.push_str(&format!("        acc = acc + String.length s{j}.name\n"));
+        }
+    }
+    for j in (1..stages).rev() {
+        source.push_str(&format!("        s{j} = s{}\n", j - 1));
+    }
+    source.push_str(&format!(
+        "        s0 = match (pc * 7 + acc) % {places} with\n"
+    ));
+    for p in 0..places - 1 {
+        source.push_str(&format!("            | {p} -> ref i{p}\n"));
+    }
+    source.push_str(&format!(
+        "            | _ -> ref i{}\n        pc = pc + 1\n    acc % 1000\ndo! IO.write_line (to_string (run 50))\n",
+        places - 1
+    ));
+    source
+}
+
+/// A state machine over `states` records: four arms read `reads` fields of the current state in
+/// all (`String.length cur.name`, `cur.weight`), the loop keeps the last `history` states (`prev5 =
+/// prev4`, ..., `prev0 = cur`, each first `ref s0`), checks `fields` fields of each of them (the
+/// name, then the weight, then `accept`), and moves to one of the states (`cur = match (cur.weight
+/// + c) % states with | 0 -> ref s0 ...`).
+fn state_machine(states: usize, reads: usize, history: usize, fields: usize) -> String {
+    let mut source = String::from(
+        "record State { name: string, accept: bool, weight: i64 }\ndef run :: ref [i64] -> i64\nfn run input =\n",
+    );
+    for k in 0..states {
+        source.push_str(&format!(
+            "    let s{k} = State {{ name: \"s{k}\", accept: {}, weight: {} }}\n",
+            k % 3 == 0,
+            k + 1
+        ));
+    }
+    source.push_str("    let mut cur = ref s0\n");
+    for h in 0..history {
+        source.push_str(&format!("    let mut prev{h} = ref s0\n"));
+    }
+    source.push_str("    let mut score = 0\n    let mut matches = 0\n    let mut i = 0\n    while i < input.length do\n        let c = input[i]\n        match c % 4 with\n");
+    for arm in 0..4 {
+        if arm == 3 {
+            source.push_str("        | _ ->\n");
+        } else {
+            source.push_str(&format!("        | {arm} ->\n"));
+        }
+        for read in 0..reads.div_ceil(4) {
+            if read % 2 == 0 {
+                source.push_str(&format!(
+                    "            score = score + String.length cur.name * {}\n",
+                    arm + 1
+                ));
+            } else {
+                source.push_str(&format!(
+                    "            score = score + cur.weight * {read}\n"
+                ));
+            }
+        }
+    }
+    let mut checks = Vec::new();
+    for h in 0..history {
+        checks.push(format!("String.length prev{h}.name > 1"));
+        if fields >= 2 {
+            checks.push(format!("prev{h}.weight > {h}"));
+        }
+        if fields >= 3 {
+            checks.push(format!("prev{h}.accept"));
+        }
+    }
+    source.push_str(&format!(
+        "        if cur.accept && {} then matches = matches + 1\n",
+        checks.join(" && ")
+    ));
+    for h in (1..history).rev() {
+        source.push_str(&format!("        prev{h} = prev{}\n", h - 1));
+    }
+    source.push_str(&format!(
+        "        prev0 = cur\n        cur = match (cur.weight + c) % {states} with\n"
+    ));
+    for k in 0..states {
+        if k == states - 1 {
+            source.push_str(&format!("            | _ -> ref s{k}\n"));
+        } else {
+            source.push_str(&format!("            | {k} -> ref s{k}\n"));
+        }
+    }
+    source.push_str("        i = i + 1\n    score + matches\ndo! IO.write_line (to_string (run (ref [3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9])))\n");
+    source
+}
+
+/// A31, the final review of `LoanGrowth`. `LOOP_LOAN_GROWTH` counted from the iteration before
+/// that made the fewest loans, which is the first when a reference that the loop assigns again
+/// widens in the second (`code = sub0`, `cur = match ...`): an interpreter of 20 opcodes and 4
+/// subroutines made 183 loans and then 724, and the loop with 72 borrows through a reference to
+/// one of 8 records 98 and then 675, already more than 500 beyond the first. When the loop also
+/// keeps references that settle one iteration after another and borrows through them, each later
+/// iteration makes a few loans more until it settles, and the fifth was stopped with `E1017`
+/// though `15d84aaf`, `main` and the base accept the loops: the second loop reading through the
+/// last of its four copies (`s + String.length prev3.a`: 98, 675, 676, 677, 678, settles in
+/// iteration 5; `main` prints 328), the interpreter reading through a history of its last five
+/// names (183, 724, 728, 731, 733, settles in iteration 5; 271), and the interpreter keeping a
+/// return stack of four code references (180, 716, 720, 724, 728, settles in iteration 5; 101).
+/// `LOOP_LATE_GROWTH` (100 loans beyond the fourth iteration) then let these three settle, but a
+/// state machine of 16 states that keeps its last six and checks two fields of each still stopped
+/// (105, 693, 735, 775, 813, 849 and 883 loans, 108 beyond the fourth iteration in iteration 6),
+/// and so did a loop that copies a reference to one of 8 records along 5 locals and reads through
+/// each of them 20 times (125, 365, 585, 785 and 965 loans, in iteration 4). After the widening,
+/// the loans of all five grow by less in each iteration than in the one before, and no stop counts
+/// the loans themselves any more (the budget was removed), so all five settle (the state machine in
+/// iteration 7, the copies in iteration 5) and are accepted in both editions, as `15d84aaf`,
+/// `main` and the base accept them (`main` prints 9288 and 0 for the last two).
+#[test]
+fn a_loop_whose_reference_widens_once_may_settle_a_few_iterations_later() {
+    let read = widening(8, 36, 4).replacen(
+        "        prev3 = prev2\n",
+        "        s = s + String.length prev3.a\n        prev3 = prev2\n",
+        1,
+    );
+    for source in [
+        read,
+        keeping_interpreter(20, 4, 5, 0),
+        keeping_interpreter(20, 4, 0, 4),
+        state_machine(16, 72, 6, 2),
+        pipeline(5, 8, 20),
+    ] {
+        accepts_in_both_editions(&[("Main.tz", &source)]);
+    }
+}
+
+/// The A34 `loopplace` loop (`let t = ref p.s; w (\() -> String.length t)`, where `w` captures an
+/// `Arc` by value) that also copies a reference to one of `places` records along `stages` locals,
+/// one per iteration, and reads through each of them `reads` times, as `pipeline` does. With
+/// `workaround`, `w` captures a reference to the cell instead (`let cell = Arc.get (ref sink)`).
+fn masked_loopplace(stages: usize, places: usize, reads: usize, workaround: bool) -> String {
+    let mut source = String::from(
+        "record Box { cell: Mutex<[unit -> i64]>, s: string }\nrecord Instr { op: i64, name: string }\ndef run2 :: ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64\nfn run2 p sink n =\n",
+    );
+    if workaround {
+        source.push_str("    let cell = Arc.get (ref sink)\n    let w = \\g -> Mutex.with_lock cell (\\o -> Array.write 0 g o)\n");
+    } else {
+        source.push_str(
+            "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n",
+        );
+    }
+    for q in 0..places {
+        source.push_str(&format!(
+            "    let i{q} = Instr {{ op: {q}, name: \"op{q}\" }}\n"
+        ));
+    }
+    source.push_str("    let mut acc = 0\n    let mut i = 0\n");
+    for j in 0..stages {
+        source.push_str(&format!("    let mut s{j} = ref i0\n"));
+    }
+    source.push_str(
+        "    while i < n do\n        let t = ref p.s\n        w (\\() -> String.length t)\n",
+    );
+    for j in 0..stages {
+        for _ in 0..reads {
+            source.push_str(&format!("        acc = acc + String.length s{j}.name\n"));
+        }
+    }
+    for j in (1..stages).rev() {
+        source.push_str(&format!("        s{j} = s{}\n", j - 1));
+    }
+    source.push_str(&format!(
+        "        s0 = match (i * 7 + acc) % {places} with\n"
+    ));
+    for q in 0..places - 1 {
+        source.push_str(&format!("            | {q} -> ref i{q}\n"));
+    }
+    source.push_str(&format!(
+        "            | _ -> ref i{}\n        i = i + 1\n    acc % 1000\n",
+        places - 1
+    ));
+    source.push_str("def run :: i64 -> i64\nfn run n =\n    let mut b = Box { cell: Mutex.create [\\() -> 3], s: \"abcd\" }\n    let keep = Arc.new (Mutex.create [\\() -> 0])\n    let k = run2 (ref mut b) (Arc.share (ref keep)) n\n    Mutex.with_lock (Arc.get (ref keep)) (\\c -> c[0] ()) + k\ndo! IO.write_line (to_string (run 1))\n");
+    source
+}
+
+/// A31, the review of the removal of the loan budget. A `loopplace` loop that also copies a
+/// reference to one of 2 records along 10 locals and reads through each of them 32 times makes
+/// 328, 681, 1003, 1295, 1559, 1799, 2023, 2247, 2503, 2855, ... loans: the locals add 32 fewer in
+/// each iteration until they settle, which hides the doubling (1, 2, 4, ... more) until it
+/// outgrows 32, so its loans grew by less in each iteration until iteration 6, by as much in 7,
+/// and faster from 8 on, and `LOOP_FASTER_ITERATIONS` stopped it only in iteration 12 (6503 loans,
+/// 19 seconds on a release build); the loan budget had stopped it in iteration 4. The state that
+/// the loop carries doubles from the first iteration on (45, 70, 110, 181, 315, 576, 1092 and 2119
+/// loans after iterations 1 to 8), so `LOOP_STATE_ITERATIONS` stops it in iteration 8, the first
+/// whose loans grow at least as much as those of the one before after 8 iterations in a row whose
+/// state grew faster. With 6 locals read through 16 times each, the locals settle when the
+/// doubling outgrows them (104, 217, 315, 399, 471, 535, 599, 663, 791, ... loans: the growth stays
+/// at 64 for three iterations), and `LOOP_FASTER_ITERATIONS` stopped it in iteration 12 (4631
+/// loans); now it stops in iteration 8 (791). Both stop at the start of the loop's body in both
+/// editions, and the loop that lets the function value capture a reference to its cell (`let cell
+/// = Arc.get (ref sink)`) settles and is accepted. The state of a loop that settles can grow faster
+/// for as many iterations while its iterations make fewer loans each time (`each_chain(9, ...)` of
+/// `a_loop_whose_loans_grow_by_less_in_each_iteration_settles_however_many_it_makes`: its state
+/// grows by 12, 13, ..., 19 loans in iterations 1 to 8 while its loans grow by 8, 7, ..., 1), so
+/// the stop counts only an iteration whose loans grow at least as much as those of the one before
+/// it.
+#[test]
+fn a_loop_whose_settling_locals_hide_its_loopplace_growth_stops_soon() {
+    accepts_in_both_editions(&[("Main.tz", &masked_loopplace(10, 2, 32, true))]);
+    for (source, at, help) in [
+        (
+            masked_loopplace(10, 2, 32, false),
+            (21, 9),
+            "(now 2119), and the last iteration made 2503 borrows",
+        ),
+        (
+            masked_loopplace(6, 2, 16, false),
+            (17, 9),
+            "(now 2079), and the last iteration made 791 borrows",
+        ),
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let error = analyze_with_edition(&source, edition).expect_err(&source);
+            assert_eq!(
+                (error.code, error.kind),
+                ("E1017", Some("loop_ownership_limit")),
+                "edition {edition}\n{source}\n{}",
+                error.message
+            );
+            assert_eq!(
+                position(&source, error.span.start),
+                at,
+                "edition {edition}\n{source}"
+            );
+            assert!(
+                error.help.as_deref().is_some_and(|text| text.contains(
+                    "the borrows that the loop carries keep growing faster: after each of the last 8 iterations"
+                ) && text.contains(help)
+                    && text.contains("`let cell = Arc.get (ref sink)`")),
+                "edition {edition}\n{source}\n{:?}",
+                error.help
+            );
+        }
+    }
 }

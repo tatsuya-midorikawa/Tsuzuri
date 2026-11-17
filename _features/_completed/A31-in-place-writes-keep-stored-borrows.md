@@ -781,7 +781,7 @@ m_lock 系の kind は `borrow_outlives_block` に決めました（`let mut m` 
 - 本体が見えない関数値の呼び出しは、安全側に扱います（第 1 回のレビュー対応で規則を作り直しました。下の「レビューの指摘への対応（第1回）」）。プログラムのどこかに「受け取った値を自分の環境が届く場所へ書き込む関数値」があると、見えない関数値の呼び出しは引数の借用を関数値の環境の先にも残し、その関数値がセルを所有していると、環境を隠す型かセルに届く型のすべての局所値に残します。この判定はプログラム全体で行うので、離れた所の関数値が、別の関数の中の見えない呼び出しの検査を厳しくします。
 - lock のコールバックが、ロック中の値の借用を別の `Mutex` へ書いて読み戻した値を返す形は `mutex_result_retains_borrow` です（基準は受理していた危険な形）。
 - 読み取りの仮引数（edition 2027）や演算子が借りた一時値への参照そのものを、呼び出す関数が引数の先へ書き込む形は `E1013` です（`let` で束縛してから渡します）。本体が見えない関数値へ一時値を貸す形は、最後の引数なら、参照の仮引数そのものを格納する関数がプログラムにあるときだけ `E1013`、最後でない引数なら、書き込み先があれば `E1013` です。
-- 12 回のレビューの後に残る保守的な制限（基準が受理する安全な形の拒否: 自分の部分の借用を持つ値へのもう一度の `ref mut`（`mix4`・`w05`）、パイプラインの `Rc.share`（`g08`）、兄弟が借用を持ちうるフィールドの代入（`f02`）、要素の部分（`slice_self_safe_elem`）、隠れた環境の規則（`fx3`）、2 つの仮引数の部分を関数値へ渡す一時値（`h01`）、実引数の値が持つ参照の先の部分を別の仮引数の先へ書き込む関数の呼び出し（`crossw`、マージ前の追加の修正の後に残るもの）、指す場所が分からない参照（ほかの呼び出しの結果 `callres`、`let mut` の参照の変数 `mutref`）を通した同じ呼び出し、5 つ以上の部分（`cross5`）、`Array.mapr` を通した呼び出し（`mapr`）、書き込むセルを自分で所有する関数値があるプログラムでの部分適用（`fx3` と同じ規則。マージ前の追加の修正の見直しの後に残るもの）、共有を通したブロックの自己の借用を持つ `Rc` の代入・ムーブ（`r06`・`r07`・`r10`・`r11`）、`m_named_owned`）と、検査の時間、記憶域の寿命と破棄の順序の 1 つのモデルで直す計画は、後続のチケット [A33](../A33-remaining-store-soundness-holes.md) に記録しました（第12回、最終の対応）。
+- 12 回のレビューの後に残る保守的な制限（基準が受理する安全な形の拒否: 自分の部分の借用を持つ値へのもう一度の `ref mut`（`mix4`・`w05`）、パイプラインの `Rc.share`（`g08`）、兄弟が借用を持ちうるフィールドの代入（`f02`）、要素の部分（`slice_self_safe_elem`）、隠れた環境の規則（`fx3`）、2 つの仮引数の部分を関数値へ渡す一時値（`h01`）、実引数の値が持つ参照の先の部分を別の仮引数の先へ書き込む関数の呼び出し（`crossw`、マージ前の追加の修正の後に残るもの）、指す場所が分からない参照（ほかの呼び出しの結果 `callres`、`let mut` の参照の変数 `mutref`）を通した同じ呼び出し、5 つ以上の部分（`cross5`）、`Array.mapr` を通した呼び出し（`mapr`）、書き込むセルを自分で所有する関数値があるプログラムでの部分適用（`fx3` と同じ規則。マージ前の追加の修正の見直しの後に残るもの）、関数値の仮引数を本体の中で部分適用・パイプラインで呼ぶ関数を通した呼び出し（`fvparam`。下の「Copilot のレビューへの対応（第1回）と fvpart」の後に残るもの）、関数値の仮引数へ渡す値の場所を 4 段で切ったか入れ子の外側にまとめたときの、その大きな部分の借用（`coarse`。同じ節の「レビューの第1回」の後に残るもの。仮引数をそのまま渡す関数を通した呼び出しも同じ大きさの部分になったのは「レビューの第2回」）、edition 2026 で関数値の仮引数を捕捉するラムダを通した呼び出し（ラムダは関数値を所有し、その解放が関数値の環境へ格納しうるものとして扱う `fvlam`。「レビューの第2回」で見つけ、「レビューの第3回」で原因を確かめたもの。「レビューの第2回」で生成したプログラムを検査して見つけた、部分適用が束縛した場所の借用でない引数の `bindref` は「レビューの第3回」で直しました）、`match` の対象に書いた借用を束縛したパターンの変数（`matchref`）とブロックの中で束縛した関数値の別名の部分適用（`blockalias`。どちらも前の先端からあり、「レビューの第3回」のマージの条件の確かめで見つけたもの）、フィールドや要素の場所の `Rc.get` を束縛した局所値（書き込む値の側の実引数、ラムダの捕捉、ほかの引数と一緒に束縛した部分適用の引数。`rcgetpart`）、受け取った関数値を持つ値のうち、仮引数そのものかそのフィールド・要素でないもの（関数値を入れたレコード・配列・タプル・共用体のリテラル、`match` のパターンの変数、型注釈を書いたラムダの仮引数、edition 2027 で読み取りの仮引数やそのフィールドを束縛した局所値と、読み取りの仮引数の関数値をそれを破棄する関数へ渡したもの）の破棄の格納（`fvdrop`。リテラルと局所値の形は「レビューの第5回」で足したもの）、書き込む部分の側の不変の参照の変数・`if`・`ref (deref q1)` が借用元の値全体を生かすこと（参照の仮引数を受け取る関数へ `q1` を渡す形と、再借用を束縛した `q1` のラムダの捕捉も。`refsrc`。この 3 つは前の先端からあり、「レビューの第4回」と「レビューの第5回」で文書にしたもの）、使い終えた共有の持ち主を通した格納を元の所有者へブロックの型で届けるので、共有を持つ値の型と元の所有者の型の両方が持ちうるブロックの型（共有したブロック、その中のブロック、元の所有者のほかの部分のブロック）を持ちうる別の値（同じ型の別のブロック、その型のフィールドを持つブロックでない値、それを中に持つ別の型のブロック、元の所有者のほかのフィールドが持ちうる型の無関係なブロック）への格納も元の所有者に入り、どちらかの型が dyn の値か型引数に届くと届け先がさらに広がり、dyn の値か型引数に届く型の値への格納はブロックの共有が届いたどの先へも入ること（`sharetype`。「レビューの第4回」の修正によるもので、「レビューの第5回」で届ける型を元の所有者の型も届くものに狭め、「レビューの第6回」で dyn の値と型引数に届く型では狭めないようにしたもの）、`Rc.get (ref r)` の借用を、ほかの持ち主がブロックを生かしていても `r` の借用として検査する解放の順序（`rcgetowner`）と、参照の仮引数の `Rc` から関数の中で作った共有が仮引数の借用のままで、その破棄が呼び出し元の持ち主に自分自身の借用を持たせること（`shareparam`。どちらも前の先端からあり、「レビューの第5回」のマージの条件の確かめで見つけたもの）、部分適用の型をプログラム全体の型で比べること（同じ型の部分適用を作るプログラムでの無関係な関数値。「レビューの第2回」）、共有を通したブロックの自己の借用を持つ `Rc` の代入・ムーブ（`r06`・`r07`・`r10`・`r11`）、`m_named_owned`）と、格納の検査の外にある型の検査の穴（2 つ以上の引数を取る関数値を包んだ `Owned.Function` の `Owned.call` が、コピーできない値を束縛した再利用できる部分適用を作る `owned2`。「レビューの第2回」で見つけたもの）、検査の時間、記憶域の寿命と破棄の順序の 1 つのモデルで直す計画は、後続のチケット [A33](../A33-remaining-store-soundness-holes.md) に記録しました（第12回、最終の対応）。そのうち `rcgetpart`・`fvdrop`・`refsrc`・`sharetype`・`rcgetowner`・`shareparam` は、項目ごとに直すチケット [A34](../A34-store-check-safe-rejections.md) へ移しました。Copilot のレビュー 2 の点検で見つけた、ループの検査が終わらない形は、検査の時間に edition 2026 の形として足した後、その対応のレビューで、どちらの edition でも、先にセルを持つ参照の仮引数の先の借用を、書き込むセルを所有する関数値へ渡すループで起きることが分かったので、A34 の `loopplace` へ移しました（その後、検査が終わらない代わりに、ループの本体の位置の `E1017`（`loop_ownership_limit`）で止まるようにしました。下の「Copilot のレビューへの対応（第2回）」の「検査が終わらないループの打ち切り（2026-11-15）」と「借用の数による打ち切り（2026-11-15）」、今の数え方の「借用の増え方による打ち切り（2026-11-16）」）。同じレビューで見つけた、ループの前に先へ自分の部分の借用を書き込んだ関数がループの中で `deref p = v` と置き換えてから新しい値のセルの中身を写す形の拒否（`replcopy`。`if` の片方の枝で置き換えて写した後の置き換え、写した先を後で上書きする形も）と、region を持たないセルのフィールドへ借用を書き込んだ不変な複数 region のレコードが region を 1 つにまとめること（`cellslots`。ループの無い形も）も、A34 に足しました（下の「Copilot のレビューへの対応（第2回）」の「修正のレビュー」）。
 
 ### レビューの指摘への対応（第1回）（2026-11-11）
 
@@ -1707,3 +1707,1171 @@ A32 の 5 度目の merge（A31 の先端 `da4e5b85` を A32 へ）が、`main` 
 - 手順 5 の比較（`_tools/step5.mjs`、基準と対応後の `check --json`・`build --no-cache --emit llvm`）: `tests/fixtures`・`examples` の 154 個のどれも出力が同じ（`r15/step5.txt`）。
 - 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・47 個のリンク・9 個の例・18 回の native の実行）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
 - 変えたファイル: `src/ownership.rs`、`src/ownership_control.rs`、`tests/rc.rs`（2 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（制限の表の `callres`・`mutref`・`cross5`・`mapr` の行、段 3、見直しの記録）、このチケット（「残る制限」と、この節）。
+
+### Copilot のレビューへの対応（第1回）と fvpart（2026-11-14）
+
+PR #105 への Copilot のレビュー（`drop.md` の「文の一時値」の項目）と、A32 の 6 度目の merge が見つけた、`main` が受理する安全なプログラムの文書に無い拒否（`fvpart`）に対応しました。結果は `target/scratch/a31/cp1/` にあります（`cp1/v.sh` が修正後・`main`（`168ae4a5`、`m1/bin/tsuzuri-main`）・基準の最初の誤りを並べ、`RUN=1` で修正後の native の `-O0`・`-O3` と ASan の `-O0`・`-O3` の出力を足します。`o1`〜`o9` が lowering を確かめた探査、`p/` が一時値の探査、`fv/` が A32 の再現の写し、`fv2/` が fvpart の探査です）。
+
+#### Copilot の指摘: 一時値の解放の順序
+
+指摘は「作った順は文が正常に終わるときだけで、`break`・`continue` と受け止めた例外は、まだ解放していない一時値を逆の順に解放する（`src/llvm_control.rs:44`、`src/llvm_exception.rs:27`）」というものです。lowering を出口ごとに確かめると、指摘のとおりで、加えて文書の「文の終わり」も誤りでした。
+
+| 出口 | 実際の順序（`src/llvm*.rs`） |
+| --- | --- |
+| 正常な完了 | 呼び出しが借用した一時値（`BorrowOperand`: `ref (T { ... })` の引数、edition 2027 の読み取りの仮引数へ渡した値、比較の演算子の被演算子）は、その呼び出しの直後に `release_operands` が作った順に解放します。文の終わりではありません（`o3`: `k (h (ref T11) (ref T21) 0) (...)` の 11・21 は後の引数の評価より前、`o6`: フィールドを読んだ一時値は読んだ直後）。 |
+| `break`・`continue` | `emit_loop_jump` が、ループの本体を始めてから残っている一時値（`temporaries[temporary_base..]`）を作った逆の順に解放し、次にスコープを内側から束縛の逆順に解放します（`o2`: 後の引数の `break` で 22、12）。 |
+| 同じ関数の `try` が受け止める例外 | `raise` が `break` と同じく、`try` の本体を始めてから残っている一時値を逆の順に、次にスコープを解放します。ハンドラーの中の再送出（`Reraise`）も外側の `try` まで同じで、`finally` の中の送出は保留中の結果を一時値として解放します。 |
+| `try` の無い例外、別の関数の例外 | 例外は関数の境界を越えず、その場でトラップします（解放は走りません）。 |
+| `return`、コンピュテーション式の早期の脱出 | `return` は言語にありません。`?` などの早期の脱出は `Bind` が継続を呼ばないだけで、関数の通常の戻りです。 |
+| `match` の対象とパターンの変数 | スコープとして、正常な経路と脱出で同じ順に解放します。 |
+
+捕捉の後始末（既知のコールバックのクロージャ、`cleanup.iter().rev()`）は逆の順ですが、`Drop` 型の値は再利用できる関数値に捕捉できない（`E1005`）ので、`Drop.drop` の順序には関わりません。
+
+健全さ: 検査の一時値どうしの規則（`DropSlot::Temporary`、`temporary_dropped_first`）は、呼び出しが借用した一時値（`Arg::dying`）を、呼び出しの直後の作った順で比べます。逆の順になる脱出は、その呼び出しの引数の評価中、つまり呼び出しの前にしか起きず、そのとき呼び出しはまだ一時値の借用を書き込んでいません。呼び出しが戻ってから一時値を解放するまでの間に利用者のコードはありません。探査で確かめました（どれも両方の edition）。
+
+- `p/t1_break_later_arg`・`t2_continue_later_arg`・`t3_raise_later_arg`（先に作った `Holder` が後の文字列の借用を持つ `keep3` の 3 つ目の引数で `break`・`continue`・`@checked` の例外）、`t4_store_then_break`・`t5_store_then_raise`・`t7_pipe_store_then_break`（呼び出しの後の、同じ文の後の部分で脱出）: 修正後・`main`・基準が受理し、native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で手で求めた値（`t1`: `drop holder reads 8`・`reads 0`・`total 1`、`t2`: `8`・`0`・`8`・`total 4`、`t3`: `8`・`small 9`・`0`・`big -1`、`t4`・`t7`: `8`・`8`・`total 2`、`t5`: `8`・`small 10`・`8`・`big -1`）を出し、ASan は何も報告しませんでした。`break` した反復の `Holder` は書き込まれる前の関数（`0`）を読みます。
+- `p/u1_break_later_holder`・`u2_raise_later_holder`（保持する側を後に作る）: 修正後は `E1013`（`assignment_extends_borrow`）、`main`・基準は受理し、基準は正常な経路で解放した文字列を読みます（`drop holder reads -1`）。
+- `t6_fnvalue_break`（関数値への一時値の借用）は、どのバイナリも `E1013`（`borrow_of_temporary`）です。
+
+検査の変更は要りませんでした。変えたのは文書と説明です。
+
+- `drop.md`: 「文の一時値」の項目を「一時値」に書き直し（使い終わった位置で解放し、呼び出しが借用した一時値は呼び出しの直後に作った順。`g (f (ref (T { id: 1 })) 0) (h 0)` の 1 は `h` の前）、「`break`・`continue`・例外で式の途中から抜けるとき」の項目を足し、`run=` の例（`drop 11`・`drop 12`・`drop 22`・`drop 21`・`23`）を足しました。表は「文の一時値」の行を「呼び出しが借用した一時値」と「式の途中から抜けるときに残っている一時値」（作った逆の順、抜けるスコープの変数より先）の 2 行にし、「抜けるスコープの変数」の行に「残っている一時値の後」を足しました。検査の項目「呼び出しが借用した一時値」に、脱出で逆になっても呼び出しの前なので借用はまだ無いことを書きました。
+- `lifetimes.md`: 一時値は文の終わりではなく呼び出しが戻った直後に解放されることに直しました。
+- `docs/language.md`（ループの脱出）・`docs/architecture.md`（`emit_loop_jump`、例外の `raise`）: 脱出の順序と、検査が正常な経路の順序だけを見る理由を書きました。
+- `src/ownership.rs`: `DropSlot::Temporary`・`temporary_slot`・`Arg` などのコメントと、2 つのメッセージ（`temporary_borrow_stored` の `... dropped when the call returns`、`temporary_dropped_first_error` の `the temporaries that a call borrows are dropped when it returns, in the order in which they were made`）を、実際の解放の位置に合わせました（code と kind は同じ）。
+
+テスト: `tests/rc.rs` の `an_early_exit_before_the_call_keeps_the_order_of_its_borrowed_temporaries`（受理 6 形を両方の edition で、拒否 3 形を `29:25`・`27:13` の `E1013` の `assignment_extends_borrow` で）、`in_place_writes` の `early_exits_drop_pending_temporaries`（native と WASM の `-O0`・`-O3`。1 回目の反復の記録が `"12345"` の 5 + 1、`continue`・`break` の反復は書き込まれる前の 72・73、`3` では `"123"` の 3 + 9 と結果 9、`2^62` では桁あふれで 75 と結果 -1 なので、手で求めた値は `((((((1 * 100 + 6) * 100 + 72) * 100 + 73) * 100 + 9) * 100 + 12) * 100 + 75) * 10 + (-1 + 2) = 10672730912751`。基準も同じ値で、単独のプログラム `p/e1_fixture_case` は ASan でも同じ値）。
+
+#### fvpart: 名前付き関数を束縛した局所値のパイプラインと部分適用
+
+A32 の 6 度目の merge が、名前付き関数 `cross`（`b.s` の借用を `a.h` の `Mutex` へ書き込む）を局所値に束縛して（`let chosen = cross`、名前付き関数を選ぶ `if`）、パイプライン `ref p1 |> chosen (ref p2)` か部分適用 `let g = chosen (ref p2); g (ref p1)` で呼ぶ安全な形を、A31 が両方の edition で `E1013`（`assignment_extends_borrow`、`p1` が `p2` の借用を持つ）で拒否することを見つけました（`target/wt/a32/target/scratch/a32/merge6/fv/`。基準は `drop 8`・`drop 0`・`1`。直接の呼び出し `chosen (ref p2) (ref p1)` は受理）。
+
+原因は 3 つでした。
+
+- `apply_higher_once` は、部分適用の先頭が名前付き関数（`direct_callee`）のときだけ事実で置き換え、先頭が既知の局所値（`Checker::known` の `chosen`）の部分適用 `chosen (ref p2)` は本体の見えない関数値の規則（`apply_opaque`: どの引数の借用もほかの引数の先へ）でした。パイプラインは `pipe_stores` がこの形で `apply_higher` を呼びます。
+- `known_functions` は `let g = f (x)` を `f` が名前付き関数のときだけ既知の局所値にしたので、`g (ref p1)` も本体の見えない関数値でした。
+- 部分適用 `chosen (ref p2)` そのものも、`call_stores` が関数値の呼び出しとして `apply_higher` を呼び、`chosen` の式（2 つの仮引数）と引数の数が合わないので `apply_opaque` になり、`p2` が自分の借用を持ちました。さらに、`g` の破棄は、`value_runs_drop_code` が名前付き関数の部分適用しか知らないので、どんなコードも実行しうるものでした（部分適用だけの形 `fv2/s_partial_only` も `self_referential_store` で拒否していました）。
+
+変えたこと（`src/ownership.rs`）:
+
+- `known_heads`（既知の局所値の式。別の既知の局所値はその式に展開し、`let b = a` の連なりをたどる）、`known_arity`（式が実行の前に取る残りの引数の数: 名前付き関数の仮引数、持ち上げたラムダの捕捉の後の仮引数、名前付き関数か、どの式も同じ数を取る既知の局所値の部分適用の残り）、`partial_heads`（どの式もそれより多くの引数を取る）。
+- `known_functions`: どの式もまだ引数を取る既知の局所値の部分適用（`let g = chosen (ref p2)`）も既知の局所値にします。
+- `apply_higher_once`: どの式にも引数が足りない既知の局所値の呼び出しは部分適用で、何も格納しません（名前付き関数の部分適用と同じ）。先頭が既知の局所値の部分適用は、どの式も束縛した引数と残りの引数でちょうどそろうとき、束縛した引数（`bound_value` で狭めた値）を先に並べて、それぞれの式の事実で置き換えます。
+- `value_runs_drop_code`: 既知の局所値の部分適用の破棄は、局所値の関数値と束縛した引数の破棄です。
+
+確かめた形（`cp1/fv2/gen.py`、両方の edition。受理はどれも native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で手で求めた値、ASan の報告なし: `cp1/runs-fv-2027.txt`・`runs-fv-2026.txt`）:
+
+| 形 | 修正後 | 前（`m1` の merge のビルド） | `main`・基準 |
+| --- | --- | --- | --- |
+| 別名・`if` の選択・別名の別名・ラムダ・`cross` と `outer` の選択の、直接・パイプライン・部分適用・部分適用を完成させるパイプライン（`s_*` 20 個と A32 の再現 6 個） | 受理（`drop 8`・`drop 0`・`1`） | 直接だけ受理 | 受理 |
+| 3 つの値の `cross3` の別名で、2 つを束縛した部分適用・部分適用の部分適用（`s_three_*` 5 個） | 受理（`drop 16`・`drop 0`・`drop 0`・`1`） | `E1013` | 受理 |
+| 部分適用だけ（`s_partial_only`） | 受理（`drop 0`・`drop 0`・`1`） | `E1013`（`self_referential_store`） | 受理 |
+| 参照を捕捉したラムダの別名、部分適用を関数値の仮引数へ渡す呼び出し（`a_s_*` 4 個） | 受理（`drop 8`・`drop 0`・`1`） | `E1013` | 受理 |
+| 上の逆の呼び出し（`u_*` 28 個）、逆に書き込むラムダとの選択（`u_mix_*`）、逆の捕捉・渡した部分適用・タプルに入れた部分適用（`a_u_*`） | `E1013`（`assignment_extends_borrow`、`p1` の位置） | `E1013` | 受理（基準は解放した文字列を読み、`drop 0`・`drop -1`・`1`、3 つの値は `drop -2`） |
+| 部分適用の後で借用された `p1` をムーブ（`a_u_move_after`） | `E1014`（名前付き関数の部分適用と同じ） | `E1013`（部分適用の `self_referential_store`） | 受理 |
+
+残る制限（文書に書いたもの、A33 の `fvparam`）: 関数値の仮引数を本体の中で部分適用・パイプラインで呼ぶ関数（`fn applyp f a b = { let g = f a; g b; 0 }`、`fn applyq f a b = { b |> f a; 0 }`）へ `cross` を渡す `applyp cross (ref p2) (ref p1)` は、修正後も前のビルドも `E1013`（`assignment_extends_borrow`）で、`main`・基準は受理します（`drop 8`・`drop 0`・`1`、`fv2/b_s_param_*`）。高階の事実（`HigherOrderCall`）は仮引数の関数値をすべての引数で呼ぶ形だけを記録し、部分適用した `g` の呼び出しは本体の見えない関数値の呼び出しなので、呼び出し元はどの実引数の借用もほかの実引数の先へ入りうるものとして扱います。直すには、仮引数の部分適用を高階の事実に記録する必要があり、`drop.md`（「別の仮引数の先へ書き込んだ部分」の安全側の一覧）、`lifetimes.md` の「現在の制限」（本体の見えない関数値の一覧）、A33 の表、上の「残る制限」に書きました。
+
+テスト: `tests/rc.rs` の `a_local_bound_to_a_named_function_keeps_the_parts_in_a_pipeline_or_partial_application`（`CROSS_PRELUDE`。7 組の受理と逆の拒否、部分適用だけの受理、逆に書き込むラムダとの選択の拒否、3 つの値の 4 組の受理と逆の拒否を、拒否は `35:5` の `E1013` の `assignment_extends_borrow` で、両方の edition。制限の `applyp`・`applyq` の拒否も固定）、`in_place_writes` の `local_function_values_keep_the_part`（`cross_recorded` を選ぶ `if` を束縛した局所値のパイプラインと部分適用。`p2` と `p3` の記録が `p1` の `"12345"` の 5 + 1、`p1` は 0 なので、手で求めた値は `1 * 1000 + 0 * 100 + 6 * 10 + 6 = 1066`。基準も同じ値で、前のビルドはこのモジュールを `E1013` で拒否します）。
+
+#### 確かめの中で見つけて直した穴（`main` も受理）
+
+下のマージの条件の確かめ（`r17`）で、`review-a31-ce/p01_staged_int_first`（第1回のレビューの反例）が受理から拒否に変わりました。`mk a = \k f -> ...` が `Arc<Mutex<...>>` を値で捕捉したラムダを返し、`let w = mk (...)`、`let w2 = w 0` の後で、内側のブロックの局所値の借用を持つ関数を `w2` でセルへ書き込み、次の `w2` の呼び出しがそれを実行する形です。基準・`main`・前のビルド・この回の前の先端（`2ed5f692`）は受理し、局所値を配列の要素にした形（`cp1/reg/p01b`）では基準が解放した値を通して `72` を出し、ASan は stack use after scope を報告します（元の形は文字列の局所値を読むので、出力は `0` で、ASan の報告もありません）。危険な形で、fvpart の修正（既知の局所値の部分適用を事実で置き換える）が `w2` の呼び出しに `mk` のラムダの事実を当てはめ、借用を `w2` の環境に残すようになって拒否しました。
+
+同じ形でも、`let mut w2 = w 0`（`reg/v4_mut_local`）、`let mut w = mk (...)`（`v8_mut_w_imm_w2`）、本体が束縛の後でラムダを返す `mk` を引数を多く当てはめる形（`v10_block_mk_mut`）、パイプライン `0 |> w`（`v11_pipe_mut`）は、既知の局所値を通らないので受理のままで、どれも ASan が stack use after scope を報告しました（`main` も受理する前からの穴）。原因は `sink_flags` です。セルを所有する関数値の型（`owned_types`）は、関数値を作る所ごとに求め、それを環境に持つ関数値の型は holder として受け継ぎますが、関数値の呼び出しが関数を返す所（`staged`）は束縛した引数だけを見て、当てはめた関数値そのもの（結果はそれを環境に持つ）を数えていませんでした。`mk` のラムダの型 `i64 -> (unit -> i64) -> i64` は対象でも、`w 0` の型 `(unit -> i64) -> i64` は対象でなく、見えない呼び出しの規則（関数値と引数の借用を、そうした型のすべての局所値に残す）が働きませんでした。
+
+直したこと（`src/ownership.rs` の `sink_flags`、`e2593013`）: 関数値の呼び出し、名前付き関数が返す関数値への当てはめ、それを完成させないパイプラインの結果は、当てはめた関数値（`applied`・`returned`）を環境に持つ値として holder に入れます。小さな変更で、ラムダが捕捉した関数値と同じ扱いです。上の 4 形と元の形・`p01b`・関数の結果への当てはめ（`v1_callres_partial`）は、両方の edition で内側のブロックを指す `E1013`（`assignment_extends_borrow`）になり、借用される配列を関数値より先に宣言した形（`s10_mut_outer_safe`・`s12_block_mk_safe`、手で求めた値 `72`）と所有する関数だけを書き込む形（`s11_mut_owned_safe`、`7`）は受理のままで、native の `-O0`・`-O3` と ASan で同じ値でした。`lifetimes.md`（そうした関数値の型の説明）と `docs/architecture.md`（`sink_flags`）に書き、`tests/rc.rs` の `a_partial_application_of_a_function_value_that_owns_its_cell_shares_the_cell`（拒否 5 形を位置と kind で、受理 3 形を両方の edition で）を足しました。
+
+#### マージの条件の確かめ（この対応の後）
+
+上の道具を `gate/tools/check-r17.mjs`・`diff-r17.mjs`（基準と前の見直しの後の `r16` の結果を `results-r16.json` から使い、`r16` に無いプログラムは m1 の merge のビルド（`prev`）でも検査）、穴の修正の後の `check-r18.mjs`・`diff-r18.mjs`（`results-r17.json` を使う）に写し、変化を merge と この回のどちらによるかを `prev-r17.mjs`（`prev-r17.json`、前のビルドと `main` で検査し直す）で確かめました。`gate/tools/collect.mjs` で、この対応の探査（`cp1/p`・`fv`・`fv2`・`reg`・`ra`）、m1 の探査、A32 の 6 度目の merge の写しなど 286 個を足し、12901 個・25802 組を両方の edition で検査しました（`results-r17.json`・`results-r18.json`、分類は `diff-r17.txt`・`diff-r18.txt`。`cp1/gate-diff-r17.txt`・`gate-diff-r18.txt` に写し）。最終のバイナリ（`r18`）の分類です。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 4328 | 3366 |
+| 両方が拒否 | 5010 | 6719 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 3525 | 2787 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 67 組で、前の見直しの後のビルドが受理しないものは 0 組です。** 48 組は前回と同じ（安全と確かめたもの）で、新しい 19 組は、基準が匿名共用体の構文を読めない（`E0002`）プログラムです: m1 の探査 `s1`〜`s8`（とその A32 の写し）、A32 の 6 度目の merge の `au/*`、この回のビルドの写しの中の `tests/fixtures/anonymous_unions`。どれも `main`（`168ae4a5`）も受理し、探査は native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で手で求めた値（`9`、`5`、`9`、`9`、`1009`、`9`、`45`、`45`、`321`、`14`、`14`）を出し、ASan は何も報告しませんでした（`cp1/ra-runs.txt`）。fixture は `anonymous_unions` のスイートが値を確かめるものです。条件 (1) は成り立ちます。
+- **前からある 25230 組の `r16` からの変化は 3 組で、どれもこの回の変更によります**（`main` の merge だけのビルドは `r16` と同じ判定）。受理から拒否の 2 組は上の `p01_staged_int_first`（危険な形で、前からの穴を閉じたもの）、拒否から受理の 1 組は `a32/merge4/spell/p.fa3_partial_other_part__target2__ifc`（`target2` を選ぶ `if` を束縛した局所値の部分適用 `let g = chosen 1; g (ref mut p0)` の後で借用されていない `p0.n` を書き換える。基準も受理し、native・ASan で手で求めた `drop 8 2`・`11`、ASan の報告なし）です。
+- 足した 572 組では、前のビルドからの変化は上の fvpart の受理（68 組。A32 の再現と `merge6/d/*safe__ifc` を含み、どれも基準が受理する安全な形）、`a_u_move_after` の kind（`E1013` から `E1014`）、`r17` から `r18` の穴の 4 形（8 組、受理から拒否）だけです。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+
+#### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3285 件すべて成功、4 件 skip（1786 秒、`cp1/nextest-2.log`。穴の修正の前の `21caa7fe` でも 3284 件すべて成功、`cp1/nextest.log`）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 79 件（この回の 2 件を含む。基準のバイナリでも 79 件が成功）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control.mjs` 701 件、`user_drop.mjs`（`-O0`・`-O3`）がすべて成功（`cp1/suites-2.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`cp1/step5-main-2.txt`）。基準と比べると 25 個が違い、`tests/fixtures/anonymous_unions`（基準が読めない）と、LLVM IR だけが違う 24 個で、`main` との比較で同じなので merge した `main` の変更によるものです（`cp1/step5-2.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・48 個のリンク・10 個の例・20 回の native の実行。新しい `run=` の例を含む）、`node scripts/check-guide-lite.mjs`、`node scripts/check-links.mjs`、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（3 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（2 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（`fvparam` の行、fvpart と穴の記録）、このチケット（「残る制限」と、この節）。
+
+#### レビューの第1回（2026-11-14）
+
+この対応の後の先端（`88885b9f`）のレビュー（反例の探索 `target/scratch/a31/r16-review-1-ce/`、適合の確認 `target/scratch/a31/r16-review-1-conf/`）の 4 件の指摘を、修正後・先端・その前の先端（`298408bd`）・`main`（`168ae4a5`）・基準のバイナリで確かめ、どれも指摘のとおりに再現しました。指摘 1・2 は前の先端からの退行（`main` も受理する危険な形を受理）、指摘 3 は先端の穴の直し損ね（`main` も受理）、指摘 4 は `main` が受理する安全な形の文書に無い拒否です。結果は `target/scratch/a31/rr1/` にあります（`rr1/v.sh` が修正後・先端・前の先端・`main`・基準の最初の誤りを並べ、`RUN=1 ASAN=1` で native と ASan の `-O0`・`-O3` の出力を足します。`h/` が指摘 3 の探査、`k/` が指摘 4 の探査、`c/` が指摘 1・2 の安全な形、`fx*` が fixture の実験です）。
+
+##### 原因と変えたこと（`src/ownership.rs`）
+
+- **指摘 1・2（関数値の仮引数へ渡す値の場所を短くした記録）**: 呼び出し先が関数値の仮引数へ渡す値の場所（`Source::paths`・`element_paths`）は `add_self_path` が記録し、4 段で切るか、渡しうるほかの場所の中の場所を外側の場所にまとめます（`if k > 0 then ref (deref (Rc.get (ref x.a.e[0]))) else ref x.a` の `[a, e, ELEMENT]` と `[a]` は `[a]`、`ref (deref (Rc.get (ref x.a.b.c.d.e[0])))` は `[a, b, c, d]`）。それでも `Source::pointing` は真のままで、呼び出し元は短くした場所 `(x, [a])` の exact な複製を作り、`crossd` の `kept_copy` がそれを `(x, [a, s])` へ狭めました（`record D { s: string, e: [Rc<D>] }` では外側の場所も同じ型 `D`）。実際の借用は `x.a.e[0]` の `Rc` が指す `D` の `s` なので、`x.a.e` のムーブ・置き換えと競合せず、`p2` の `Holder` の `drop` が解放した文字列を読みました。`add_place_path` が場所を短くしたかを返し、短くした仮引数を `Source::coarse` に記録します。そうした仮引数の値は `pointing` にせず、`path_copy` の複製を exact にしません。複製の場所（外側の場所、4 段目までの場所）は借用した場所を含むので、元の loan を親にはしません（`path_copy` の `coarse`）。これで `x.a.e`・`x.a.b.c.d.e` のムーブ・置き換えは前の先端と同じ `E1014` になり、借用された部分の外（`x.z`）の書き換えは受理します（`c/c_merged_sibling`・`c_cut_sibling`。前の先端は拒否、`main` は `drop 8`・`1`）。外側の場所の中の借用されていない部分（`x.a.b.c.d.s`）の書き換えは、先端と同じく `E1014` で、安全側の制限です（`r16-review-1-ce/p/tp_ctl_s`、`main` は `drop 8`・`1`。A33 の `coarse`）。
+- **指摘 3（セルを所有する関数値の部分適用を組み込み関数で作る形）**: 先端の修正（`e2593013`）は、関数値の呼び出し（と名前付き関数が返す関数値への当てはめ、それを完成させないパイプライン）の結果に、当てはめた関数値を型で持たせる（holder）ものでした。組み込み関数（`Owned.call (ref w) 0`、そのパイプライン、`new [T](1, w)` と、それを使う std の `Array.init 1 w`、`FixedArray.init w`）が当てはめる形は対象外で、`w2` の型 `(unit -> i64) -> i64` は所有する関数値の型にならず、局所値の借用をセルへ書き込めました（`h1_owned_call` など。先端・前の先端・`main`・基準が受理し、ASan で stack use after scope、出力 `72`）。この規則を組み込み関数へ広げると、`in_place_writes` の fixture の 15 個の関数を拒否しました。`List.foldr` の std の関数は、コールバックの仮引数（セルを所有するラムダの型）を組み込み関数へ渡すので、状態の型 `unit -> i64` が所有する関数値の型になったためです。先端でも、fixture の `fold_state_comes_back` の `List.foldr` を `Array.foldr` に変えると同じく拒否します（`rr1/fx4`。`Array.foldr` はコールバックを `folder state (ref values[index])` と呼ぶので、先端の規則に当たります。`main`・基準は受理）。呼び出しの結果が呼び出した関数値の部分適用になるのは、その関数値がまだ本体を実行しないときだけで、そうでなければ結果は本体が作った値で、本体の中の作る所で数えます。そこで規則を作り直しました: `sink_flags` の `found` は、環境を持つ関数値を作る所で、その値が本体を実行する前に取る引数の数（持ち上げたラムダは捕捉の後の仮引数の数、部分適用は残りの仮引数の数、組み込み関数の部分適用は残りの引数の数、関数を返す見えない呼び出しの結果は分からないので仮引数のすべて）も受け取り、`partial_types` がそれに足りない数の引数を当てはめた後の型（`sink_type` で平らにした仮引数の後ろの部分）を、作る所の型と同じく sink・所有・holder に入れます。部分適用はどこで作っても同じ環境と型を持つので、当てはめる所を問わず数えます。`e2593013` の `applied`・`returned` の holder は除きました（`staged` の束縛した引数の規則は残します）。
+- **指摘 4（`match`・ブロック・部分適用の選択を束縛した局所値）**: `known_functions` の `shown` は、`if` のほかは選択を知らず、`let chosen = match n with | 0 -> cross | _ -> cross` と `let chosen = { cross }` は本体の見えない関数値（`apply_opaque`）でした。部分適用を選ぶ `if`（`if n < 0 then cross (ref p2) else cross (ref p2)`）は既知の局所値でしたが、その破棄（`value_runs_drop_code`）が `if` を知らず、どんなコードも実行しうるものとして関数値の loan を引数の先へ格納し、`p2` が自分の借用を持ちました（束縛だけの形も拒否）。`shown` が `match` のすべての腕とブロックの結果を、`value_runs_drop_code` が `if` の枝・`match` の腕・ブロックの結果を見るようにしました。ブロックの束縛した局所値は不変か、引数に現れても関数値全体の値を持つので（`bound_value`）、束縛のあるブロックも同じです。
+
+##### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（入れ子の場所をまとめた記録を指す場所とした。前の先端からの退行） | 再現（`pm_move`・`pm_assign` を先端が受理、native で `drop -1`・`1`、ASan で heap use after free。前の先端は `28:27`・`28:5` の `E1014`、`main`・基準は受理） | `Source::coarse`。`28:27`・`28:5` の `E1014`（`borrow_conflict`）で前の先端と同じ、両方の edition（`pm_assign` は edition 2027）。安全な `pm_safe` は受理（`drop 8`・`1`） | `a_borrowed_place_merged_into_a_larger_part_is_no_place_that_the_argument_points_at` |
+| 2（4 段で切った記録。前の先端からの退行） | 再現（`tp_move`・`tp_assign`・`tr_assign`。ASan で heap use after free） | 同上。`31:27`・`31:5` の `E1014`。`tp_safe` は受理、`tp_ctl_s`・`tp_ctl_whole` は `E1014` のまま | 同上 |
+| 3（組み込み関数の当てはめ。直し損ね） | 再現（`h1_owned_call`・`h6_owned_pipe`・`h8_new_array`・`h9_array_init`・`h10_owned_imm` を先端が受理、ASan で stack use after scope） | `partial_types`。どれも `7:17`・`8:17` の `E1013`（`assignment_extends_borrow`）、両方の edition。`rr1/h` の `List` の `new [\|T\|](1, w)`、`FixedArray.init w`（edition 2026）、`let g = Owned.call (ref w); g 0` も同じ。安全な形（配列を先に宣言 `s_*`: `72`、所有する関数だけ `o_*`: `7`）は受理し、native と ASan の `-O0`・`-O3` で同じ値 | `a_partial_application_by_a_builtin_shares_the_cell_of_the_function_value`、`in_place_writes` の `array_fold_state_comes_back` |
+| 4（`match`・ブロック・部分適用の選択。`main` からの退行） | 再現（`k_ifpartial_*`・`k_block_*`・`k_matchguard_*`・`m2`・`m3`・`m4`・`s_mixarity`・`c1_match_direct`・`s_match_choice` を先端が `23:5` の `E1013` で拒否、`main`・基準は手で求めた値） | `known_functions`・`value_runs_drop_code`。どれも受理 | `a_local_bound_to_a_match_block_or_choice_of_partial_applications_keeps_the_part`、`in_place_writes` の `matched_function_values_keep_the_part` |
+
+指摘 4 の形は `rr1/k/gen.py` の 100 個で両方の edition で確かめました（`rr1/k/res-2027.txt`・`res-2026.txt`）。
+
+| 形 | 修正後 | 先端 | `main`・基準 |
+| --- | --- | --- | --- |
+| `match` の選択（ガード付き、`outer` との選択）、ブロック（束縛あり・なし）、ブロックを枝にした `if`、`if` を腕にした `match` の、直接・パイプライン・部分適用・部分適用を完成させるパイプライン（`s_*` 24 個） | 受理（`drop 8`・`drop 0`・`1`） | `E1013`（`assignment_extends_borrow`） | 受理 |
+| 部分適用の `if`・`if`（`outer` と）・`match`・ブロックの、呼び出し・パイプライン・別名（`s_*` 12 個）と束縛だけ（4 個） | 受理（`drop 8`・`drop 0`・`1`、束縛だけは `drop 0`・`drop 0`・`1`） | `E1013`（`self_referential_store` か `assignment_extends_borrow`） | 受理 |
+| `cross3 (ref p3)` と `cross` の `if`・`match`、`cross3 (ref p3)` 同士の `if` の、直接・パイプライン・部分適用（`s_*` 9 個） | 受理（`drop 0`・`drop 8`・`drop 0`・`1`、`cross3` 同士は `drop 16`・`drop 0`・`drop 0`・`1`） | `E1013` | 受理 |
+| 上の逆の呼び出しと逆の宣言の順（`u_*` 45 個）、逆に書き込む `crossr` との選択（`u_mix_*` 6 個） | `23:5` の `E1013`（`assignment_extends_borrow`） | 同じ | 受理（解放した文字列を読み `drop -1`、3 つの値は `drop -2`） |
+
+受理の 49 個は、両方の edition で native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で手で求めた値を出し、ASan は何も報告しませんでした（`rr1/k/runs.txt`）。
+
+##### テスト
+
+- `tests/rc.rs` の `a_borrowed_place_merged_into_a_larger_part_is_no_place_that_the_argument_points_at`（`COARSE_PRELUDE`）: 指摘 1・2 のムーブ（両方の edition で `36:27` の `E1014`）と置き換え（edition 2027 で `36:5` の `E1014`）、ムーブの無い形と借用の外の `x.z` の書き換えの受理。
+- 同じく `a_partial_application_by_a_builtin_shares_the_cell_of_the_function_value`: 指摘 3 の 6 形（`Owned.call`、そのパイプライン、`Owned.call` の部分適用、`new [T]`、`new [|T|]`、`Array.init`）の拒否（`7:17`・`8:17` の `E1013`）と安全な 12 形の受理を両方の edition で、`FixedArray.init` の 3 形を edition 2026 で、`List.foldr`・`Array.foldr` の状態の形の受理。
+- 同じく `a_local_bound_to_a_match_block_or_choice_of_partial_applications_keeps_the_part`（`CROSS_PRELUDE`）: 指摘 4 の受理と逆の拒否（`35:5` の `E1013`）。
+- `in_place_writes` の `matched_function_values_keep_the_part`（`match` の選択のパイプライン、ブロックの別名の直接の呼び出し、部分適用。`p2`・`p3`・`p4` の記録が `p1` の `"12345"` の 5 + 1、`p1` は 0 なので、手で求めた値は `1 * 10000 + 0 * 1000 + 6 * 100 + 6 * 10 + 6 = 10666`）と `array_fold_state_comes_back`（`fold_state_comes_back` の `Array.foldr` の形。セルは 1 つ目の要素の後の状態 `9 + 1`、最後の状態は `9 + 2` なので `10 * 100 + 11 = 1011`）。どちらも基準のバイナリで同じ値で、先端はこのモジュールを拒否します。部分適用の選択はこのモジュールの隠れた環境の規則（`fx3`）に当たるので、Rust のテストで確かめます。
+
+##### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/check-r19.mjs`・`diff-r19.mjs` に写し（基準と先端（`r18`、`88885b9f` のビルドで `e2593013` と同じソース）の結果を `results-r18.json` から使い、`r18` に無いプログラムは先端でも検査）、`gate/tools/collect.mjs` でこのレビューのプログラム（`r16-review-1-ce`・`r16-review-1-conf`）とこの回の探査（`rr1/`）など 515 個を足して、13416 個・26832 組を両方の edition で検査しました（`results-r19.json`、分類は `diff-r19.txt`、`rr1/gate-diff-r19.txt` に写し）。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 4533 | 3562 |
+| 両方が拒否 | 5045 | 6767 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 3800 | 3058 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 67 組で、どれも先端も受理するもの（前回と同じ 67 組）です。新しい RA はありません。** 条件 (1) は成り立ちます。
+- **前からある 25802 組では、先端からの受理・拒否の変化は 0 組です。** 拒否のまま最初の誤りが変わったのが 2 組（`review-a31-ce-r3/h02_known_array_mixed`・`h03_known_record_mixed` の edition 2027）で、どちらも基準が受理する危険な形（内側のブロックの局所値の借用を、セルを所有する関数値を要素・フィールドに持つ配列・レコードを通してセルへ書き込む）です。先端は呼び出しの結果がその借用を持つものとしてブロックの値の束縛で `assignment_extends_borrow`、対応後は呼び出しでその借用を格納する所で `store_local_borrow_through_reference`（`cannot pass this function value here: ...`）で、edition 2026 は両方とも `assignment_extends_borrow` です。どちらの誤りも、内側のブロックの局所値の借用がブロックの外へ残ることを理由にしています。
+- 足した 1030 組での先端からの変化は、受理から拒否の 22 組（指摘 1〜3 の危険な形と `rr1/h` の `u_*`）と、拒否から受理の 137 組（指摘 4 のレビューの形と `rr1/k` の `s_*`、`rr1/x`、fixture の実験 `rr1/fx4`・`fx8_*`）です。拒否から受理のどれも基準が受理し、`rr1/k` の `s_*` と `rr1/x` は native と ASan で手で求めた値を出し、`rr1/fx4`・`fx8_*` は `in_place_writes` の fixture に安全な関数を足したものです（値は `in_place_writes` のスイートで確かめた `array_fold_state_comes_back` など）。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- 安全な形の実行: `rr1/h` の `s_*`（`72`）・`o_*`（`7`）を両方の edition（`FixedArray.init` は edition 2026）で、`rr1/c` の `c_merged_sibling`・`c_cut_sibling`（`drop 8`・`1`）を edition 2027 で、native と ASan の `-O0`・`-O3` で実行し、どれも手で求めた値で、ASan は何も報告しませんでした（`rr1/h/runs.txt`）。危険な形は `main` で実行し、指摘 1・2 は解放した文字列を読み（`drop -1`）、指摘 3 は ASan が stack use after scope を報告しました。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3288 件すべて成功、4 件 skip（1877 秒、`rr1/nextest.log`）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 81 件（この回の 2 件を含む。基準のバイナリでも 81 件が成功し、先端はこのモジュールを拒否します）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件がすべて成功（`rr1/suites.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`rr1/step5-main.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・48 個のリンク・10 個の例・20 回の native の実行）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（3 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（2 件）、`drop.md`、`lifetimes.md`、`docs/architecture.md`、A33（`coarse` の行、この回の記録）、このチケット（「残る制限」と、この節）。
+
+#### レビューの第2回（2026-11-14）
+
+第1回の対応の後の先端（`b6cef060`）のレビュー（反例の探索 `target/scratch/a31/r16-review-2-ce/`、適合の確認 `target/scratch/a31/r16-review-2-conf/`）の 4 件の指摘を、修正後・先端・その前の先端（`88885b9f`）・`main`（`168ae4a5`）・基準のバイナリで確かめ、どれも指摘のとおりに再現しました。指摘 1 は `main` も受理する前からの穴（第1回の指摘 3 と同じ種類）、指摘 2・3 は前の先端からの退行（`main` が受理する安全な形の文書に無い拒否）、指摘 4 は文書の不足です。結果は `target/scratch/a31/rr2/` にあります（`rr2/v.sh` が修正後・先端・前の先端・`main`・基準の最初の誤りを並べ、`RUN=1 ASAN=1` で native と ASan の `-O0`・`-O3` の出力を足します。`n/` が指摘 1 の探査（`n/gen.py` の `n/r/`）、`c/` が指摘 2 の探査（`c/gen.py`）、`w/` が指摘 3 の探査（`w/gen.py`）、`d/`・`w2/` がこの回に見つけた別の形、`g-check.mjs` が反例の探索の生成したプログラム（`r16-review-2-ce/g`）の検査です）。
+
+##### 原因と変えたこと（`src/ownership.rs`）
+
+- **指摘 1（組み込み関数が作る部分適用）**: `sink_flags` が環境を持つ関数値を作る所として数えるのは、ラムダ、名前付き関数の部分適用、コールバックの組み込み関数の部分適用、本体の見えない関数値の呼び出し（`staged`）で、名前付き関数は環境を持たないので数えません。`Owned.function wr`（`wr` は 2 つの仮引数の名前付き関数）を `Owned.call (ref w) cell` で呼ぶと、実行時に `wr` を `cell` に当てはめた部分適用ができて `cell` のセルを所有しますが、組み込み関数の完全適用は数える所ではなかったので、その型 `(unit -> i64) -> i64` は所有する関数値の型にならず、ブロックの局所値の借用をセルへ書き込めました。同じ形は、組み込み関数がコールバックをそれが取るより少ない引数に当てはめる所（`List.mapr wrr (ref cells)` の要素、edition 2026 の `List.foldr fold zero (ref cells)` の状態）と、`Owned.function (wr3 0)`・`Owned.function wr3` の `Owned.call` にもありました（`rr2/n/q3`・`q4`・`q7`、`n/r/u_excess` 以外の `u_*`。どのバイナリも受理し、native で解放した文字列を読んで `-1`）。`builtin_partial_applications` が、組み込み関数が受け取った関数値をそれが取るより少ない引数に当てはめうる所（スキームの関数型の仮引数のうち、その引数の数より多くを取りうるコールバック。名前付き関数・持ち上げたラムダ・名前付き関数の部分適用で、取る数が足りると分かるもの（`shown_arity`）は除きます。結果が関数の `Owned.call`。組み込み関数の仮引数より多い引数）と、その部分適用が束縛しうる値の型（ほかの引数と、部分適用した組み込み関数が後で受け取る引数）を返し、`sink_flags` はそれを本体の見えない関数値の呼び出しの結果と同じく数えます（`staged_types`。呼び出し・パイプライン・`Parallel`）。`drop_environments` も同じ所を、束縛する値で数えます。
+- **指摘 2（作られない部分適用の型）**: 第1回の修正（`partial_types`）は、コードを実行する前に 2 つ以上の引数を取る関数値を作る所で、その部分適用の型を、部分適用が作られるかによらず所有・sink・holder の型にしました。そのため、`w` をいつもすべての引数に当てはめるプログラムで、参照越しに受け取った配列の中の無関係な `(unit -> i64) -> i64`（`apply_thunk`）へ局所値の借用を持つ関数を渡す呼び出しを `E1013`（`store_local_borrow_through_reference`）で拒否しました。部分適用は、関数値をそれが取るより少ない引数に当てはめる所でしか作られません。`partial_results` が、モジュールが作りうる部分適用の型を、式の種類ごとの網羅的な `match` で集めます（関数値の呼び出しとパイプラインのうち型が関数のもの、名前付き関数か組み込み関数の仮引数より多い引数、`builtin_partial_applications`、`new [T](n, f)`・`new [|T|](n, f)` の初期化の関数、コールバックを取る host 関数。ほかの種類の式は関数値を当てはめないことを名前で書いたので、新しい種類の式は、関数値を当てはめるかを決めなければコンパイルできません）。`partial_types` の型はそこにあるものだけを数えます。特殊化した本文では式の型がその所で作りうる部分適用の型なので、型で比べて足ります。
+- **指摘 3（仮引数をそのまま渡す関数を通した `coarse` の場所）**: 第1回の修正で、短くした場所（`Source::coarse`）の `path_copy` の複製は exact でなく、親も持ちません。仮引数をそのまま渡す関数（`fn applyy2 k x f = applyy k x f`）の本体では、この複製が関数値の仮引数へ渡る値になり、`source_of` は `self_path`（exact でない loan は先全体）で仮引数全体を記録したので、`applyy2` の呼び出し元は `x` 全体の借用を持ち、`x.a` の外の `x.z` の書き換えとムーブを `E1014` で拒否しました（直接の呼び出し `applyy` は受理）。そうした複製（とその `shared_copy`・`ordered_copy`）を `holding_loans` に入れ、`source_of` は `holding_path` でその場所を coarse な場所として記録します。呼び出し元は直接の呼び出しと同じく、外側の場所（`x.a`、`x.a.b.c.d`）の、元を親に持たない exact でない複製を持ちます。`self_path` と、それを使う自己の事実・`kept_paths` は変えていません。
+- **指摘 4（文書）**: `docs/language.md` の書き込みの事実の段落に、`match`（すべての腕）・ブロック（その結果）・部分適用どうしの選択を束縛した局所値と、組み込み関数が作る部分適用（`builtin_partial_applications`）、部分適用の型の規則（`partial_types`・`partial_results`）を書きました。
+
+##### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（`Owned.call` で作る名前付き関数の部分適用。前からの穴） | 再現（`n1`・`n1b`・`n1c`・`n2_owned_alias` をすべてのバイナリが両方の edition で受理。`n1b` は native で `-1`、`n1` は ASan で stack use after scope）。同じ穴を `List.mapr`・`List.foldr`・`Owned.function (wr3 0)` でも見つけた（`rr2/n`） | `builtin_partial_applications`。`n1` は `7:17`、`n1b`・`n1c` は `12:17`、`n2_owned_alias` は `15:17`、`rr2/n/r` の `u_*` は `20:17`〜`23:17` の `E1013`（`assignment_extends_borrow`）、両方の edition（`List.foldr` は edition 2026）。文字列を先に宣言した `s_*`（`0 + 8`）と所有する関数だけを書き込む `o_*`（`0 + 7`）は受理し、native と ASan の `-O0`・`-O3` で同じ値（`rr2/n/runs.txt`、30 個） | `a_builtin_that_applies_a_function_value_to_fewer_arguments_shares_the_cell` |
+| 2（作られない部分適用の型。前の先端からの退行） | 再現（`c4_arr`（edition 2026）・`c5_arr27`（edition 2027）・`c3_b`（edition 2026）を先端が `9:5`・`10:5` の `E1013`、前の先端・`main`・基準は `317`） | `partial_results`。どれも受理し、`317`。部分適用を作る形（`w 3`、`3 \|> w`、`Owned.call`、`Array.init 1 w`、`new [T](1, w)`、`Maybe.map`、タプルの成分、edition 2026 の `List.map`）は `9:5`（edition 2026）・`10:5`（edition 2027）の `E1013`（`store_local_borrow_through_reference`）のまま（`rr2/c`） | `the_partial_application_types_of_an_owner_count_only_when_the_module_makes_one`、`lifetimes.md` の `run=` の例（`317`） |
+| 3（仮引数をそのまま渡す関数の `coarse`。前の先端からの退行） | 再現（`w_c_z`・`w_m_z`・`w_c_mvz`・`w_m_mvz` を先端が `40:5`・`40:27` の `E1014`、前の先端・`main`・基準は受理） | `holding_loans`・`holding_path`。`x.z` の書き換え（edition 2027）・ムーブ（両方の edition）は受理し、`drop 8`・`1`。`x.a.e`・`x.a.e[0]`・`x.a`・`x` のムーブ・置き換えは `E1014` のまま（`rr2/w`、76 個） | `a_function_that_passes_its_parameters_on_keeps_the_coarse_part_of_its_callee`、`in_place_writes` の `wrapped_coarse_parts_keep_the_outside` |
+| 4（文書） | 指摘のとおり（`docs/language.md` は `if` の選択だけを書き、部分適用の型の規則が無かった） | `docs/language.md` を直した | — |
+
+指摘 3 の形は `rr2/w/gen.py` で確かめました（両方の edition。`x.z` の書き換えは edition 2027 だけが型の検査を通ります）。
+
+| 呼び出し | `x.z` の書き換え・ムーブ、何もしない | `x.a.e`（`x.a.b.c.d.e`）・`x.a.e[0]`・`x.a`（`x.a.b.c.d`）・`x` のムーブ・置き換え |
+| --- | --- | --- |
+| 直接の `applyy`・`applyx` | 受理（先端も） | `E1014`（先端も） |
+| `applyy2`・`applyy3`（`applyy2` をさらに渡す）・`applyyr`（`ref (deref x)` を渡す）・`applyyw`（`ref w.x` を渡す）・パイプライン `crossd (ref p2) \|> applyy2 n (ref x)`・`applyx2`・`applyx3` | 受理（先端は `E1014`、前の先端・`main`・基準は受理） | `E1014`（先端も。前の先端は一部を受理していた危険な形） |
+| `f` をラムダで包んで渡す `applyyl` | edition 2027 は受理、edition 2026 は `E1013`（`self_referential_store`、先端・前の先端も。下の `fvlam`） | `E1014`（edition 2026 は `E1013`） |
+
+受理の形は edition 2027 の native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で `drop 8`・`1` を出し、ASan は何も報告しませんでした（`rr2/w/runs.txt`。`applyyl` の形は `main` のバイナリでも実行の前にコンパイラーのスタックがあふれるので実行していません）。
+
+##### この回の確かめで見つけたもの
+
+- **`owned2`（格納の検査の外の穴、`main` も受理）**: `Owned.call (ref w) holder` は、`w` が 2 つ以上の引数を取る関数値（名前付き関数、その部分適用）を包むとき、コピーできない値（`Mutex` と `Drop` を持つ `Holder`）を束縛した再利用できる部分適用を作り、呼び出すたびに束縛した値をムーブします（`rr2/d/d6_owned_call_moves_bound`: 2 回目の呼び出しで ASan が heap use after free、`d4s_owned_call_holder_dropped_first` も）。関数値の呼び出しが関数を返す形は `E1005`（`capture_sync_primitive_in_function_value`）で拒否する（`polymorph::captures`）のに、`Owned.call` は組み込み関数の完全適用なので `Capture` を求めないためで、型の検査の穴です。この回の修正は、`Holder` の部分適用をセルを所有する関数値として扱うので、借用を書き込む形（`d4`、`d6` の edition 2027）は `E1013` になりますが、ムーブそのものは残ります。A33 の「未修正の穴」に別の表として記録しました。`Arc` を束縛する形は呼び出しごとに複製するので安全です（`d7_owned_call_arc_moves`、`57`）。
+- **`fvlam`（文書に無い拒否、前の先端からある）**: edition 2026 で、引数で受け取った関数値を捕捉して呼ぶラムダ（`fn applypl x f = applyp x (\d -> f d)`）を渡す呼び出しは、`coarse` でない呼び出し先でも、先端・前の先端・修正後が `E1013`（`self_referential_store`）で、`main` は受理します（`rr2/w2/l_applypl`・`l_applyyl`。edition 2027 は受理）。`drop.md` の安全側の一覧、`lifetimes.md` の「現在の制限」（本体の見えない関数値の一覧）、A33 の表（`fvlam`）、上の「残る制限」に書きました。
+- **`bindref`（文書に無い拒否、前の先端からある）**: 反例の探索が生成したプログラムの検査（下）で、部分適用の値が場所の借用でない引数（参照の変数 `let q1 = ref p1` の `q1`、`ref (deref q1)`、参照の仮引数）を束縛する形を、修正後・先端・前の先端が `E1013` で拒否し、`main`・基準が受理することを見つけました。`rr2/g4` の双子: `let g = cross3 q1 (ref p2); g (ref p3)`（`p3` を `p2` より後に宣言）と `let g = cross3 (ref p1) q2; g (ref p3)`（`p1` を `p2` より後に宣言）、`fn via3 a b c = { let g = cross3 a b; g c; 0 }` は `assignment_extends_borrow`、`a.s` を `b.h` へ書き込む `crossr` の `let g = crossr q1; g (ref p2)`・`let g = crossr (ref (deref q1)); g (ref p2)`・`fn via a b = { let g = crossr a; g b; 0 }` は `self_referential_store` で、両方の edition で同じです。`main` は native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で手で求めた値（`cross3` は `drop 16`・`drop 0`・`drop 0`・`1`、`crossr` は `drop 8`・`drop 0`・`1`）を出し、ASan は何も報告しませんでした（`rr2/g4/runs.txt`・`runs-extra.txt`）。場所の借用を束縛した形（`cross3 (ref p1) (ref p2)`、`crossr (ref p1)`）、すべての引数をそろえた呼び出し（`cross3 q1 (ref p2) (ref p3)`、`crossr a b`）、名前付き関数へのパイプライン（`ref p3 |> cross3 q1 (ref p2)`、`ref p2 |> crossr q1`）は受理し、同じ値を出します。部分適用の引数で `bound_value` が関数値の値から取り出すのは場所の借用の式が作った loan だけで、そうした引数は関数値の値全体（束縛したすべての引数の loan）を値全体の借用として持つためです（第1回の記録の「引数に現れても関数値全体の値を持つ」）。指す場所を記録した局所値の分岐もありますが、この形では取り出していません（原因は A33 で調べます）。安全な形の拒否なので、この回は `src/` を変えず、`drop.md`（値全体の借用の一覧と、部分適用の束縛した引数の文）、`lifetimes.md`（その場の書き込みの段落）、`docs/language.md`、A33 の表（`bindref`）、上の「残る制限」に書きました。
+- `rr2/w/s_m_lam_*`（`applyyl` を使う安全な形）は、`main` のバイナリでも `tsuzuri run` がコンパイラーのスタックのあふれで止まります（検査は通ります）。A31 と関係の無い、関数値の仮引数を捕捉したラムダの lowering の問題です。
+
+##### テスト
+
+- `tests/rc.rs` の `a_builtin_that_applies_a_function_value_to_fewer_arguments_shares_the_cell`: 指摘 1 の 6 形（`Owned.call`、そのパイプライン、`Owned.function` の別名、`Owned.function (wr3 0)`、`List.mapr`、そのパイプライン）の拒否（`20:17`・`21:17`・`23:17` の `E1013`）と、文字列を先に宣言した形・所有する関数だけの形の受理を両方の edition で、`List.foldr` の 3 形を edition 2026 で、取る引数の数が足りるラムダのコールバックの受理。
+- 同じく `the_partial_application_types_of_an_owner_count_only_when_the_module_makes_one`: 指摘 2 の受理（部分適用を作らない形、別の型の部分適用だけを作る形）と、部分適用を作る 7 形の拒否（edition 2026 は `9:5`、edition 2027 は `10:5` の `E1013` の `store_local_borrow_through_reference`）。
+- 同じく `a_function_that_passes_its_parameters_on_keeps_the_coarse_part_of_its_callee`（`COARSE_PRELUDE` に仮引数を渡す関数を足したもの）: 指摘 3 の 7 つの呼び出しのムーブ（両方の edition で `49:27` の `E1014`）と置き換え（edition 2027 で `49:5` の `E1014`）、`z` のムーブ・何もしない形の受理（両方の edition）と `z` の書き換えの受理（edition 2027）。
+- `in_place_writes` の `wrapped_coarse_parts_keep_the_outside`（`apply_coarse` へ仮引数をそのまま渡す `apply_coarse_on` の後で `x.z` を書き換える。`coarse_pairs` は `0` と新しい `x.z` の `"123"` の長さ 3 を返し、`p1` の記録は `x.a.e[0]` の `"12345"` の 5 + 1 なので、手で求めた値は `3 * 10 + 6 = 36`）。基準のバイナリでも同じ値で、先端はこのモジュールを `E1014` で拒否します。指摘 2 の安全な形は、このモジュールではほかの関数が同じ型の所有する関数値を作るので（文書に書いた型の規則）、`lifetimes.md` の `run=` の例（`check-docs` が native の `-O0`・`-O3` で `317` を確かめます）にしました。
+
+##### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/check-r20.mjs`・`diff-r20.mjs`・`table-r20.mjs` に写し（基準と先端（`r19`、`b6cef060` のビルドで `423592d8` と同じソース）の結果を `results-r19.json` から使い、`r19` に無いプログラムは先端でも検査）、`gate/tools/collect.mjs` でこのレビューのプログラム（`r16-review-2-ce`・`r16-review-2-conf`）とこの回の探査（`rr2/`）など 476 個を足して、13892 個・27784 組を両方の edition で検査しました（`results-r20.json`、分類は `diff-r20.txt`、`rr2/gate-diff-r20.txt` に写し）。反例の探索が生成した 15552 個（`r16-review-2-ce/g`: `cross`・`crossr`・`cross3` の呼び出しの形と宣言の順の組み合わせで、どれが安全かを `meta.json` が持ちます）は、数が多いので別に `rr2/g-check.mjs` で検査しました（下）。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 4657 | 3669 |
+| 両方が拒否 | 5134 | 6916 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 4063 | 3278 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 67 組で、どれも先端も受理するもの（前回と同じ 67 組）です。新しい RA はありません。** 条件 (1) は成り立ちます。
+- **前からある 26832 組では、先端からの受理・拒否の変化も、最初の誤りの変化もありません。**
+- 足した 952 組での先端からの変化は、受理から拒否の 30 組（指摘 1 のレビューの形 `n1`・`n1b`・`n1c`・`n2_owned_alias`、`rr2/n` の `q3`・`q4`・`q7` と `n/r/u_*`、`rr2/d` の `d4`・`d4s`・`d6`（`d4s`・`d6` は edition 2027）。どれも基準が受理する危険な形）、拒否から受理の 35 組（指摘 2 の `c3_b`・`c4_arr`・`c5_arr27`、指摘 3 の `w_c_z`・`w_m_z`・`w_c_mvz`・`w_m_mvz`、`rr2/c` の `s_other_partial_*`、`rr2/doc`（`lifetimes.md` の例）、`rr2/w` の `s_*`。どれも基準が受理する安全な形）、拒否のまま最初の誤りが変わった 3 組（`r16-review-2-ce/o/o_owned_unsafe` の両方の edition が、同じ位置で `self_referential_store` から `assignment_extends_borrow` に。基準が受理する危険な形で、`Owned.call` の部分適用をセルを所有する関数値として扱うようになったため。`rr2/w/s_m_lam_mvz` の edition 2026 は、2 つ目の誤りが無くなっただけ）です。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- 安全な形の実行: `rr2/c` の `s_*` と `c3_b`・`c4_arr`・`c5_arr27`（`317`）、`r16-review-2-conf/p/w_*`（`drop 8`・`1`）を native と ASan の `-O0`・`-O3` で実行し、どれも手で求めた値で、ASan は何も報告しませんでした（`rr2/c/runs.txt`。`rr2/n/runs.txt`・`rr2/w/runs.txt` は上の表のとおり）。`rr2/w/s_m_lam_*`（edition 2027）は、`main` のバイナリでもコンパイラーのスタックがあふれて実行できないので、実行していません（`s_m_wrap_*` と同じ借用の形です）。
+- 生成したプログラム（`rr2/g-check.mjs`、15552 個・31104 組。結果は `rr2/g-results.json`・`g-summary.json`）: 危険な 18048 組（9024 個、両方の edition）はどれも拒否しました（条件 (2)）。安全な 13056 組のうち 9468 組を受理し、3588 組（両方の edition で 1794 組ずつ）を拒否しました。拒否した 3588 組は、どれも先端（`b6cef060`）も拒否し、`main`（`168ae4a5`）・基準は受理します（`rr2/g-main.mjs`、`rr2/g-main.json`）。どれも、部分適用の値（生成の `chosen`）が場所の借用でない引数（参照の変数 `qN`、`ref (deref qN)`）を束縛する同じ 1 つの形です: `crossr` の書き込む値の側に束縛した 1872 組（`alias`・`if`・`match`・ブロックなどのすべての包み方と、直接・パイプライン・`apply`・別名のすべての呼び出しの形）、`cross3` に 2 つを束縛した 1248 組（すべての呼び出しの形）、`cross3` に 1 つを束縛して残りの 2 つを部分適用・パイプラインで 1 つずつ渡す 468 組（2 つ目に束縛した引数が最後の引数より先に宣言されたもの）。同じ形を `ref pN` で束縛したもの、すべての引数をそろえた呼び出し、名前付き関数へのパイプラインは受理します。前の先端からある安全側の制限で、文書に無かったので、文書に書きました（下の「この回の確かめで見つけたもの」の `bindref`）。条件 (3) の、`main` が受理する安全な形の拒否は、どれも文書に書いた安全側の制限です。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3291 件すべて成功、4 件 skip（2306 秒、`rr2/nextest-3.log`。この回の 3 件を含みます。最初の実行 `rr2/nextest-2.log` は 2537 件の所で SIGTERM で止められたので、すべてやり直しました）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 82 件（この回の 1 件を含む。基準のバイナリでも 82 件が成功し、先端はこのモジュールを拒否します）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`rr2/suites.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`rr2/step5-main.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・48 個のリンク・11 個の例・22 回の native の実行。`bindref` を書いた後にもう一度、`rr2/docs-3.log`）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功（`rr2/doc-checks-3.log`）。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（3 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（`owned2`・`fvlam`・`bindref` の行、段 3 の一覧、この回の記録）、このチケット（「残る制限」と、この節）。
+
+#### レビューの第3回（2026-11-14）
+
+第2回の対応の後の先端（`231404d0`、その前のレビューの先端は `b6cef060`）のレビュー（反例の探索 `target/scratch/a31/r17-review-3-ce/`、適合の確認 `target/scratch/a31/r17-review-3-conf/`）の 2 件の指摘を、修正後・先端・前の先端（`b6cef060`）・`main`（`168ae4a5`）・基準のバイナリで確かめ、どちらも指摘のとおりに再現しました。どちらも `main`・基準が受理する安全な形の文書に無い拒否で、前の先端も同じく拒否します（前の先端からの退行ではありません）。反例の探索は危険な形の受理を報告しませんでした。結果は `target/scratch/a31/rr3/` にあります（`rr3/v.sh` が修正後・先端・前の先端・`main`・基準の最初の誤りを並べ、`RUN=1 ASAN=1` で native と ASan の `-O0`・`-O3` の出力を足します。`f1/` が指摘 1 の再現、`f2/` が指摘 2 の再現、`t/` がこの回の双子（`t/gen.py`）、`fx/` が fixture の実験、`g-check.mjs` が第2回の反例の探索が生成したプログラムの検査です）。
+
+##### 原因と変えたこと（`src/ownership.rs`）
+
+- **指摘 1（仮引数を部分適用で渡す関数）**: `fn applyyq k x f = { let g = applyy k x; g f }` の本体では、`g f` の位置で `g` の事実（`applyy` の事実に束縛した引数を先に並べたもの）を当てはめます。束縛した引数 `x` は `ref (deref x)` の借用の式で、部分適用の値から取り出すその引数の値（`bound_value`）は、その借用の式が作った loan（`borrow_loans`）でした。ただし `bound_value` は、借用の場所が exact か（`exact_place`）を、関数値を呼ぶ `g f` の位置の状態でもう一度求めていました。そこでは `x` は最後の使用（`applyy k x`）を過ぎて生きておらず、局所値の値が空なので `pointing_local` が偽になり、束縛した引数は部分適用の値全体を持つ exact でない値になりました。`path_copy` は exact な写しも、借用した部分を持つ写し（`holding_loans`）も作らず、`source_of` は仮引数全体を記録したので、`applyyq` の呼び出し元は `x` 全体の借用を持ちました。第2回で文書に書いた `bindref`（`let g = cross3 q1 (ref p2); g (ref p3)`、`fn via3 a b c = { let g = cross3 a b; g c; 0 }`）も同じ原因です（`q1` も `ref (deref q1)` として束縛され、`q1` は `g (ref p3)` の位置で生きていません）。借用の式を評価した所で場所が exact でなかったものを `inexact_borrows` に記録し、`bound_value` は、そこに無い借用の式なら、評価した所で exact だった loan（`borrow_loans` はそうした評価の loan だけを持ちます）を、関数値を呼ぶ所の状態によらずその引数の値とします。exact でない評価が 1 つでもあった式は、今までどおり関数値の値全体です。loan の場所は借用を作った所で決まり、その後に借用元の参照が生きていなくても変わらないので、借用を作った所で exact だった loan は exact なままです。
+- **指摘 2（仮引数を捕捉するラムダで渡す関数）**: ラムダを呼ぶ位置では、持ち上げたラムダの事実に捕捉を先に並べて当てはめますが、捕捉は狭めず（`bound(.., false)`）、どの捕捉もラムダの値全体（すべての捕捉の loan）を持っていました。`fn outerl a b = (\(_u: unit) -> cross a b) ()` では `a` が `b` の借用も持つので、`b.s` の借用を `a.h` へ書き込む事実が `p1` の借用を `p1` 自身へも入れ（`E1013`）、関数値の仮引数を捕捉する形では `x` が `f` の借用を、`f` が `x` の借用を持つので、高階の事実の引数が `f` を含み、呼び出し元は `crossd (ref p2)` の借用を `p2` 自身へ入れました。部分適用の引数と同じく捕捉も `bound_value` で狭めます。捕捉した局所値はラムダを呼ぶ所ではもう生きていないことがあるので（`let g = \(_u: unit) -> ...; g ()`）、ラムダを作った所（`E::Closure` の評価）で、捕捉した不変の局所値がその loan の場所を指していたか（`pointing_local`）を記録し（`note_capture`、`captured_loans`。指していなかった評価は `inexact_captures`）、`bound_value` はそれを使います。捕捉した局所値は不変で、ラムダより前に束縛されたものなので、ラムダが持つ値はラムダを作った所の値です。
+- **edition 2026 で関数値の仮引数を捕捉するラムダ（残る制限 `fvlam`）**: 上の修正の後も、edition 2026 では `applypl`（第2回の `fvlam`）、`applyyc`・`applypd`・`applypn` などは `E1013`（`self_referential_store`）のままです。第2回では、ラムダの中の捕捉した関数値の呼び出しが高階の事実として呼び出し元へ届かないためと書きましたが、事実を出して確かめると、高階の事実は届いていて、原因は別でした: edition 2026 のラムダは関数値の仮引数を値で捕捉して所有するので、本体の中でのラムダの解放（`drop_stores`）が、関数値の環境のコードを実行しうるものとして、ラムダが持つ loan（`x` と `f` の loan）を関数値の環境へ格納し（`applypd` の事実の `(0, Value, 1)`・`(1, Value, 1)`、`applypl` は `(1, Value, 1)`）、呼び出し元は `crossd (ref p2)` の借用を `p2` へ入れます。解放した値は本体が作ったラムダで、仮引数から受け取った値そのものではないので、呼び出し元の実引数が解放でコードを実行しないときだけ当てはめる `StoreFacts::drop_only` になりません。edition 2027 の読み取りの仮引数は呼び出し元の関数値を借りたもので、ラムダの解放は関数値を解放しないので、この格納はありません。直すには、本体が作った値の解放の格納を、その値が持つ仮引数の値の解放として `drop_only` に記録する必要があり、この回では直さず、文書に原因を直して書きました（下）。
+
+##### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（仮引数を部分適用で渡す関数。`main` が受理する安全な形の拒否） | 再現（`q/s_yq_z`・`s_yq_mvz`・`s_pq_*`、`x/a_p0q`・`a_p0q2`・`a_p0q3` を修正前・前の先端が `E1014`（`borrow_conflict`）、`main`・基準は受理して `drop 8`・`1`、`a_p0q` は `drop 8`・`3`） | `inexact_borrows`。どれも受理（edition 2026 は `x.z` の書き換えが型の検査で `E1012` の形を除いて同じ）。`x.a.e` のムーブ（`q/u_*`、`t/ux_p0q_*`）・置き換えは `E1014` のまま。第2回の `bindref` の双子（`rr2/g4` の 16 個）も両方の edition で受理 | `a_partial_application_or_a_lambda_that_passes_parameters_on_keeps_the_part`、`a_lambda_or_a_partial_application_over_reference_parameters_keeps_each_part`（`via3`）、`in_place_writes` の `passed_on_parts_keep_the_outside` |
+| 2（仮引数を捕捉するラムダで渡す関数。同上） | 再現（`x/c_outerl` を修正前・前の先端が両方の edition で `E1013`（`assignment_extends_borrow`）、`x/a_p0d`・`a_p0l`・`l/s_pc`・`s_pg`・`s_pd`・`s_pn`・`w/s_c_*` を `E1013`（`self_referential_store`）。`main` は手で求めた値） | 捕捉の狭め（`bound(.., true)`、`captured_loans`）。edition 2027 ではどれも受理、`c_outerl` は両方の edition で受理。関数値の仮引数を捕捉する形の edition 2026 は `fvlam` の制限（上）で `E1013` のまま | 同上 2 件と `in_place_writes` の同じケース（`apply_coarse_lambda`） |
+| 文書 | `drop.md`・`lifetimes.md`・A33 の `fvlam` は edition 2027 で届くと書き、`drop.md` は仮引数をそのまま渡す関数とラムダを直接の呼び出しと同じと書いていた | 部分適用・ラムダで渡す関数の受理を書き、`bindref` の一覧を消し、`fvlam` の原因と形を直した（`drop.md`、`lifetimes.md` の「現在の制限」、`docs/language.md`、`docs/architecture.md`、A33、上の「残る制限」） | — |
+
+この回の双子（`rr3/t/gen.py`、両方の edition）:
+
+| 形 | 安全な順序 | 逆の順序 |
+| --- | --- | --- |
+| すぐに呼ぶラムダ・束縛してから呼ぶラムダで `cross a b`・`cross b a`（`lam_*`・`lamg_*`）、`if` で選んだ参照を捕捉（`lamif_*`・`lammix_*`）、部分適用を捕捉したラムダ（`lampart*`）、部分適用（`part_*`・`part3r_*`） | 受理（`drop 8`・`drop 0`・`1`、`part3r_21` は `drop 8`・`drop 8`・`drop 0`・`1`） | `27:5` の `E1013`（`assignment_extends_borrow`。`main` は解放した文字列を読んで `drop -1`） |
+| `cross3 a b c` に 2 つを束縛して最後の引数を後で渡す `part3`（どちらの順でも危険） | — | `27:5` の `E1013` |
+| 指摘 1・2 の形で `x.z` をムーブ（`sx_*`） | 受理（`drop 8`・`2`。ラムダで関数値の仮引数を捕捉する 2 つは edition 2027 のみ） | `x.a` のムーブ・置き換え（`ux_*`）は `E1014`（edition 2026 のラムダの形は `E1013`）。`main` は `drop -1` |
+
+受理の形は edition 2027 の native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で手で求めた値を出し、ASan は何も報告しませんでした（`rr3/t/runs-2027.txt`。危険な形の `main` での実行は `rr3/t/runs-unsafe-main.txt`）。
+
+##### テスト
+
+- `tests/rc.rs` の `a_partial_application_or_a_lambda_that_passes_parameters_on_keeps_the_part`（`COARSE_PRELUDE` に、部分適用で渡す `applyyq`・`applypq`・`applypr` と、ラムダで渡す `applyyc`・`applypn` を足したもの）: `x.a.e` のムーブ（`48:27` の `E1014`。部分適用の形は両方の edition、ラムダの形は edition 2027）と置き換え（edition 2027 で `48:5` の `E1014`）、`x.z` のムーブ・何もしない形の受理（部分適用は両方の edition、ラムダは edition 2027。edition 2026 のラムダの形は `45:5` の `E1013`（`self_referential_store`）で、`fvlam` の制限を固定します）、`x.z` の書き換えの受理（edition 2027）。
+- 同じく `a_lambda_or_a_partial_application_over_reference_parameters_keeps_each_part`（`CROSS_PRELUDE` に `cross3`・`outerl`・`outerg`・`via3`・`mixl` を足したもの）: 安全な順序の 4 つの受理と、逆の順序の 4 つの拒否（両方の edition で `45:5` の `E1013`（`assignment_extends_borrow`））。
+- `in_place_writes` の `passed_on_parts_keep_the_outside`（`apply_coarse` へ部分適用で渡す `apply_coarse_partial` と、ラムダで渡す `apply_coarse_lambda` の後で `x.z` を書き換える。`passed_pairs` は `0 + 0` と新しい `x.z` の `"1234"` の長さ 4 を返し、`p1`・`p2` の記録は `x.a.e[0]` の `"12345"` の 5 + 1 なので、手で求めた値は `4 * 100 + 6 * 10 + 6 = 466`）。基準のバイナリでも同じ値で、先端はこのモジュールを `E1013` で拒否します。
+
+##### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/check-r21.mjs`・`diff-r21.mjs`・`table-r21.mjs` に写し（基準と先端（`r20`、`231404d0` のビルド）の結果を `results-r20.json` から使い、`r20` に無いプログラムは先端でも検査）、`gate/tools/collect-r21.mjs`（`collect.mjs` から、第2回の生成したプログラム `r16-review-2-ce/g` を除いたもの）でこのレビューのプログラム（`r17-review-3-ce` の 167 個、`r17-review-3-conf` の 127 個）とこの回の探査（`rr3/` の 38 個）、第2回の後に足した探査（`rr2/` の 28 個）の 360 個を足して、14252 個・28504 組を両方の edition で検査しました（`results-r21.json`、分類は `diff-r21.txt`、`rr3/gate-diff-r21.txt` に写し）。第2回の反例の探索が生成した 15552 個は、数が多いので別に `rr3/g-check.mjs` で検査しました（下）。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 4813 | 3773 |
+| 両方が拒否 | 5160 | 7043 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 4241 | 3407 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 67 組で、前回と同じ 67 組です。新しい RA はありません。** 条件 (1) は成り立ちます。
+- **受理から拒否に変わった組はありません。**
+- 前からある 27784 組での先端からの変化は、拒否から受理の 16 組と、拒否のまま最初の誤りが変わった 2 組です。拒否から受理の 16 組は、第2回の反例の探索の `r16-review-2-ce/k/` の安全な形 8 個（`s_blocklam`・`s_blockq2`・`s_blockq2_alias`・`s_blockq2_pipe`・`s_derefq`・`s_nestblock`・`s_shadow`・`s_shadow2`。ブロックの中の `let q = ref p2` を束縛した `crossr q` など、束縛した参照が呼ぶ所で生きていない部分適用で、指摘 1 と同じ原因）の両方の edition で、どれも基準が受理し、逆の順序の `u_*`（22 個）は両方の edition で `E1013` のままです。最初の誤りが変わったのは `_adv/x10_iter_cb`（局所値 `text` の借用を `Mutex` へ書き込んで、`Mutex.into_inner` の結果を返す危険な形）の両方の edition で、拒否のまま、`rm` の捕捉が `b` の借用を持たなくなったので `m` 自身へ `m` の借用が入らず、1 つ目の誤り（`8:32` の `E1014`）が無くなり、2 つ目の誤り（`9:5` の `E1013` の `borrow_outlives_block`、`text` の借用がブロックの外へ出る、本当の誤り）が最初になりました。
+- 足した 720 組での先端からの変化は、拒否から受理の 67 組（指摘 1・2 のレビューの形、`r17-review-3-ce/w/s_xF_z`（指摘 1 と同じ形）、第2回の `bindref` の双子 `rr2/g3/a_*`・`rr2/g4/*`、この回の双子 `rr3/t/` の安全な形。どれも基準が受理する安全な形）と、拒否のまま最初の誤りが変わった 8 組（`r17-review-3-conf/p/w/u_c_*` の 4 個と `rr3/t/ux_p0l_*`・`ux_p0n_*` の 4 個の edition 2027。どれも基準が受理する危険な形で、`E1013` の `self_referential_store` から、借用された `x.a` のムーブ・置き換えの位置の `E1014` に変わりました）です。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- 安全な形の実行: 拒否から受理に変わったこの回の双子以外のプログラム（`k/s_*` 8 個、`rr2/g3/a_*` 5 個、`s_xF_z`、`r17-review-3-conf` の `q/s_pq_*`・`s_yq_*`・`w/s_c_*`・`s_q_*`・`x/a_*`・`c_outerl`・`l/s_pc`・`s_pd`・`s_pg`・`s_pn`、32 個を edition 2027 で、そのうち edition 2026 で受理する 17 個を edition 2026 で）を、native と ASan の `-O0`・`-O3` で実行し、どれも手で求めた値を出し、ASan は何も報告しませんでした（`rr3/runs-other-2027.txt`・`runs-other-2026.txt`。`k/s_*` は `p1` が `p2.s` を読む `drop 8`・`drop 0`・`1`、`rr2/g3/a_*` は `drop 16`・`drop 0`・`drop 0`・`1`、`l/s_*` は `x.a.s` が `"abcabc"` なので `drop -1`・`1`）。
+- 前の先端から拒否していて文書に無かった安全な形: `r16-review-2-ce/k/` の `s_matchq`・`s_matchq_pipe`・`s_matchtup`・`s_nestmatch`（`match ref p2 with | q -> crossr q` のように、`match` の対象に書いた借用を束縛したパターンの変数。直接の呼び出し `crossr q (ref p1)` も拒否します: `rr3/k2/v_match_direct`）と `s_blockfn`・`s_blockfn2`・`s_blockfn_part`（`let chosen = { let f = crossr; f (ref p2) }` のように、ブロックの中で束縛した関数値の別名を通した部分適用）は、修正後・先端・前の先端が `E1013` で拒否し、`main` は `drop 8`・`drop 0`・`1` を出します（`rr3/k2/main-runs.txt`）。どちらもこの回の変更と関係の無い、前からの安全側の制限で、`drop.md` の安全側の一覧、`lifetimes.md` の「現在の制限」、A33 の表（`matchref`・`blockalias`）、上の「残る制限」に書きました。`s_blockmutq`（`let mut` の参照の変数、`mutref`）は文書にある制限で、`s_blockmutq2` は後で宣言した `p3` の借用を `p1` が持つので解放した値を読む形、`s_matchn_q` は `n` が 0 の腕で同じく危険な形です（`run 1` は安全な腕を通ります）。
+- 生成したプログラム（`rr3/g-check.mjs`、15552 個・31104 組。結果は `rr3/g-results.json`・`g-summary.json`）: 危険な 18048 組はどれも拒否し（条件 (2)）、安全な 13056 組はすべて受理しました（第2回の後は 3588 組を拒否していました。どれも `bindref` の形です）。
+
+条件 (3) の、`main` が受理する安全な形の拒否は、どれも文書に書いた安全側の制限です。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3293 件のうち 3292 件が成功、4 件 skip（1550 秒、`rr3/nextest.log`。この回の 2 件を含みます）。失敗した 1 件 `diagram_cli::kg_diagram_no_refresh_without_a_kg_is_e2009`（KG の図の CLI、所有権の検査と関係の無いテスト）は、負荷の高い中での KG の構築の失敗で、単独で 3 回実行してどれも成功しました。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 83 件（この回の 1 件を含む。基準のバイナリでも 83 件が成功し、先端はこのモジュールを拒否します）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`rr3/suites.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`rr3/step5-main.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・49 個のリンク・11 個の例・22 回の native の実行、`rr3/docs.log`）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功（`rr3/doc-checks.log`）。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（2 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（`bindref` の行を消し、`fvlam` の行を直し、`matchref`・`blockalias` の行、段 3 の一覧、この回の記録）、このチケット（「残る制限」と、この節）。
+
+#### レビューの第4回（2026-11-14）
+
+第3回の対応の後の先端（`dff92288`・`7ccca2e7`、その前のレビューの先端は `231404d0`）のレビュー（反例の探索 `target/scratch/a31/r18-review-4-ce/`、適合の確認 `target/scratch/a31/r18-review-4-conf/`）の 6 件の指摘を、修正後・先端（`dff92288`）・前の先端（`231404d0`）・`main`（`168ae4a5`）・基準のバイナリで確かめ、どれも指摘のとおりに再現しました。指摘 1 は前の先端からの退行（危険な形の受理）、指摘 2 は `main` も受理する前からの穴で、原因は同じ 1 つでした。指摘 3〜6 は `main`・基準が受理する安全な形の文書に無い拒否で、前の先端も同じく拒否します。この回からの規則（前の先端からの退行でない安全な形の拒否は `src/` を変えず、保守的な制限として文書に書く）に従い、文書に書きました。結果は `target/scratch/a31/rr4/` にあります（`rr4/v.sh` が修正後・先端・前の先端・`main`・基準の最初の誤りを並べ、`RUN=1 ASAN=1` で native と ASan の `-O0`・`-O3` の出力を足します。`t/` がこの回の双子（`t/gen.py`）、`x/` が共有の別の作り方の探査（`x/gen.py`）、`p/` が共有の元の持ち主のムーブの探査です）。
+
+##### 原因と変えたこと（`src/ownership.rs`）
+
+- **指摘 1・2（`Rc` の共有を通した格納）**: `let r = Rc.share (ref r2)` の値は `r2` のブロックの共有の loan（`Loan::share`、場所の根は `r2`）を持ち、`Rc.get (ref r)` を通した格納は、`apply_store_within` が `r` に入れた後、`r` が持つ loan のうち書き込み先になりうるもの（`store_target`）をたどって `r2` にも入れていました。ところが、破棄でコードを実行しうる局所値のうち本文がもう使わないものは、束縛のたびに `keep_for_drop` が共有の loan を元の所有者が今持つ loan に読み替え（`expand_shares`。元の所有者はムーブしうるため）、`r` の値から `r2` への道が消えます。`let a = Rc.get (ref r)` の後は `r` を使わないので、`a` を通した格納（`cross a (ref p)`、呼び出しの無い `Mutex.with_lock (ref a.h.cell) ...`、部分適用・パイプライン・`a` を渡す関数）は `r` だけに入り、`r2` は `p` の借用を持たず、`p` の後で `r2` がブロックを解放してブロックの `Holder` が解放した `p.s` を読む形を受理していました（`main` は `drop -1`。文字列をヒープのブロックに置く形は ASan が heap use after free）。一時値の `cross (Rc.get (ref r)) (ref p)` は格納の時点で `r` を使うので共有の loan が残り、拒否していました。第3回のラムダの捕捉の狭めは、捕捉した `a` に自分の loan（`r` の借用）だけを持たせたので、ラムダの形もこの道を通るようになりました（前の先端は捕捉がラムダの値全体を持ち、`p` が `r` の借用を持つという別の理由で拒否していました）。共有をパイプライン（`ref r2 |> Rc.share`）で作った形、フィールドや要素に入れた形（`RH { rc: Rc.share (ref r2) }`、`[Rc.share (ref r2)]`）も同じで、同じブロックの自分の部分 `s` を `PairBad` の `h` へ書き込む形（`let r2 = ref r |> Rc.share` の後の `crossb (Rc.get (ref r2)) (Rc.get (ref r))`）も、格納が `r2` だけに入り、`r2` を `r` と別の値として扱う（`block_shares` は直接の `Rc.share (ref r)` だけを記録します）ので受理していました。
+  `keep_for_drop` が局所値の共有を読み替えるとき、その共有の元の所有者（共有の共有もたどる、`share_sources`）へ、局所値の型が届くブロックの型で `export_block(id, ExportTarget::Local(source))` を足します。以後、その型のブロックを持ちうる局所値への格納は、`store_exported` が元の所有者へも届けます（読み替えの逆の向き `export_block(source, ExportTarget::Local(id))` は前からありました）。型で判定するので、同じ型のブロックを持つ別の局所値への格納も元の所有者へ届きます（安全側。`r` を使い終えた後で、`p` より後に宣言した同じ型の別のブロック `q` へ `p.s` の借用を書き込む安全な形 `rr4/p/s_unrelated_after`・`s_unrelated_local` も、`r2` が `p` の借用を持つものとして `26:5` の `E1013` になります。`main`・先端は受理し、`drop 8`・`drop 0`・`drop 0`・`1`（native と ASan の `-O0`・`-O3`、ASan は報告なし）。この回の規則のとおり保守的な制限として、`drop.md`・`lifetimes.md`・A33 の表（`sharetype`）・「残る制限」に書きました）。
+  局所値ごとの正確な道（読み替えた共有の loan を記録し、`apply_store_within` が持ち主の loan と同じくたどる）も試しましたが、`Rc.share` の連なり（A33 の「検査の時間」の `gen_chain.py cellshares`）では、格納が共有の loan を連なりの持ち主へ吸収させて読み替えが繰り返されるので、道の数が連なりの長さに比例して増え、検査が 3 乗になりました（n = 400 で 4491 ms、800 で 37073 ms、1600 で 300 秒を超える）。型の判定の修正も同じ連なりで 2 乗のまま定数がおよそ 2 倍になります（同じ負荷の機械で続けて測った所有権の検査: n = 400 で 273 ms（先端 138 ms）、800 で 1210 ms（550 ms）、1600 で 5109 ms（2418 ms）。`rr4/chain-times.txt`。`expand_shares` の走査を使い回し、局所値と所有者の組ごとに 1 度だけ `export_block` する形にしても変わらず、増えたのは所有者への早い出力による `store_exported_into` の呼び出しと届け先でした）。現実のプログラムの形ではないので、型の判定の修正を採り、A33 の「検査の時間」に書きました。
+  この回の規則は、前の先端からの退行には、それを入れた緩めを戻すか狭めることを求めます。ただし指摘 2 のとおり、同じ穴は捕捉を狭めない形（局所値を直接渡す呼び出し、呼び出しの無い書き込み）にもあり、捕捉の狭めを戻しても塞がりません。そこで原因の格納の規則を締め、ラムダの形を含むすべての形を拒否しました。捕捉の狭めは、部分適用と局所値の形と同じ規則（`points_at`）のまま残しています（緩めも特別な扱いも足していません）。
+- **指摘 3〜6**: 文書に書きました（下の表と「残る制限」）。原因はレビューの読みのとおりで、指摘 3・4 は `place_type` を読んで確かめました。指摘 3・4 は、フィールドや要素の場所の `Rc` の借用（`ref rs[0]`、`ref x.a.e[0]`）が、`place_type` が `Rc` を読み通してブロックの中の値の型を返すので借用の型（`Rc<PairOk>`）と合わず、`exact_loans` に入らないこと（`E::Borrow` の `typed`）です。変数全体の `ref r` は場所にフィールドが無いので exact です。捕捉・束縛した引数は `bound_value` が `None` で関数値の値全体を持ち、書き込む値の側の実引数は持ち主全体の借用として書き込み先に入り、その後の格納が持ち主のセルへ届きます。指摘 5 は、`Checker::drop_stores` が破棄を `drop_only` にするのが `parameter_part`（不変で参照でない仮引数とその部分）の破棄だけで、パターンの変数（型注釈を書いたラムダの仮引数は `\$lambdaN -> match $lambdaN with h -> ...` に下ろされます）は仮引数の根でなく、edition 2027 の読み取りの仮引数は参照の型なので `apply_facts_once` の `dropping_part` も `None` になることです。指摘 6 は、呼び出しが場所でない参照の実引数を `ref (deref q1)` として再借用し、`Checker::loan` が根の局所値の loan（`q1` が持つ `p1` 全体の借用）を親に足し、`kept_copy` の写しが元の親を持つことです。
+
+##### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（ラムダの捕捉を通した `Rc` の共有への格納。前の先端からの退行） | 再現（`u_rc_lam`・`u_rc_lam_direct`・`u_rcf_lam`・`u_rc_pipe_share_lam`・`u_arr_lam`・`u_rcp_outerg_loc`・`u_rcp_outerl_loc`・`u_rcself_bad_pipe_lam2` を先端が両方の edition で受理し、前の先端は `E1013`、`main`・基準は受理） | `share_sources`（上）。どれも両方の edition で `E1013`（`assignment_extends_borrow`、`u_rcself_bad_*` は `self_referential_store`） | `a_store_through_one_owner_of_a_block_reaches_the_other_owners` |
+| 2（同じ原因の前からの穴） | 再現（`u_rc_inline_local`・`u_rc_local_direct`・`u_rc_part`・`u_rc_partb`・`u_rc_pipe`・`u_rcf_part`・`u_rcp_outer_loc`・`u_rcp_outerq_loc`・`u_rcself_bad_pipe_loc2`・`u_rcself_bad_pipe_part2`・`u_rcself_bad_pipe_inline2`・`u_rcself_bad_arr_loc` と `_heap` の形を、どのバイナリも受理） | 同上。どれも両方の edition で `E1013` | 同上 |
+| 3（捕捉・ほかの引数と一緒に束縛した `Rc.get (ref x.a.e[0])`。`main` が受理する安全な形の拒否） | 再現（`q/C3_lam_b_only_a_bound` を修正後・先端・前の先端が両方の edition で `39:5` の `E1013`（`self_referential_store`）、`q/C7_bind2_local` は `41:5`、`p/s_arr_rc_src_lam`・`s_fld_rc_src_lam` は `27:5` の `assignment_extends_borrow`。`main` は `drop 8`・`1`） | 文書（`rcgetpart`） | — |
+| 4（書き込む値の側の `Rc.get (ref rs[0])` の局所値。同上） | 再現（`p/s_src_rcarr_local`・`s_src_rcfld_local`・`s_src_rcarr_local_pipe`・`s_arr_rc_src_part` を両方の edition で `27:5` の `E1013`（`self_referential_store`）。`main` は `drop 8`・`drop 0`・`1`） | 文書（`rcgetpart`） | — |
+| 5（パターンの変数・型注釈を書いたラムダの仮引数・読み取りの仮引数を通した関数値の破棄。同上） | 再現（`d/s_matchnamed_run` の `21:5`、`d/s_unused`・`s_min` の `19:5`、`b/s_xlamarg` の `39:5`、`c/s_lamarg` の `41:5` の `E1013`（`self_referential_store`）は両方の edition、`d/s_min_untyped`・`s_ownnamed`・`k/v4_cross_call` は edition 2027 だけ。`main` は `drop 0`・`drop 0`・`1`、`drop 8`・`drop 0`・`1`） | 文書（`fvdrop`）。`lifetimes.md` の「関数値の仮引数として扱います」は呼び出しの扱いだと書き、`fvlam` の「edition 2027 は受理」はラムダが捕捉する形だと書きました | — |
+| 6（書き込む部分の側の参照の変数が値全体を生かす。同上） | 再現（`e/w_q1` の `21:5`、`w_if` の `24:5`、`w_q1_reborrow`・`w_q1_pipe`・`w_q1_part`・`w_src_part`、`s_direct` の `23:27`・`s_part_local` の `24:27` の `E1014`（`borrow_conflict`）。`main` は `drop 0`・`drop 8`・`drop 5`・`1`、`drop 0`・`drop 8`・`1`。`w_fresh`・`w_q1_lam` は修正後も受理） | 文書（`refsrc`）。`drop.md` の「借用されていない `p1.h` は書き換えられ」と、第3回の文書の束縛した参照の変数の文に、書き込む部分の側では値全体を生かすと書きました | — |
+
+この回の双子（`rr4/t/gen.py`、両方の edition）:
+
+| 形 | 安全な順序（`p` を先に宣言） | 逆の順序（`p` をブロックの最初の持ち主より後に宣言） |
+| --- | --- | --- |
+| 直接の共有 `Rc.share (ref r2)` の `Rc.get (ref r)` を束縛した `a` を、束縛してから呼ぶラムダ・すぐに呼ぶラムダ・直接の呼び出し・呼び出しの無い `Mutex.with_lock`・部分適用・パイプライン・`outer`・`outerg`・`outerl`・`outerq` に使う形と、一時値の `Rc.get (ref r)` | 受理（`drop 8`・`drop 0`・`1`） | `40:5` の `E1013`（`assignment_extends_borrow`） |
+| パイプラインの共有・フィールドに入れた共有・要素に入れた共有の同じ 11 形 | 受理 | 同上 |
+| 書き込んだ後でブロックを前に宣言した変数へムーブ（`hold = r2`） | 受理（`drop 0`・`drop 8`・`drop 0`・`1`） | 同上（`'hold' keeps a borrow ...`） |
+| 同じブロックの自分の部分 `s` を、別の持ち主（直接・パイプライン・要素の共有）を通して `h` へ（直接の呼び出し・ラムダ・部分適用） | `PairOk` は受理（`drop 8`・`1`） | `PairBad` は `40:5` の `E1013`（`self_referential_store`） |
+
+安全な順序の 54 個はどれも先端と同じく両方の edition で受理し、逆の順序の 54 個はどれも両方の edition で拒否しました（先端はそのうち 46 個を両方の edition で受理していました。拒否していたのは一時値の 4 形と、直接の共有を通した `PairBad` の 3 形、要素の共有を通したラムダの形です）。安全な形のうち 24 個（直接の共有の 11 形、各共有のラムダ、自分の部分の 9 形、ムーブ）を edition 2027 の native の `-O0`・`-O3` と ASan の `-O0`・`-O3` で実行し、どれも手で求めた値で、ASan は何も報告しませんでした（`rr4/t-runs-2027.txt`）。共有の別の作り方（`rr4/x/`: `Maybe` に入れた共有、弱参照の `Rc.upgrade`、共有を値で受けて返す関数、`Rc.get` を返す関数、`if` で選んだ共有、内側のブロックで作った共有、ループの中の格納）も、安全な順序はどれも受理し、逆の順序はどれも拒否しました。そのうち共有を値で受けて返す関数・`Rc.get` を返す関数・`if`・内側のブロック・ループ（edition 2026）の形は、先端と `main` が受理する危険な形で、この修正で拒否になりました。書き込んだ後で共有の元の持ち主をムーブする `rr4/p/u_mvsrc_after_store`（`main` は `drop -1`）も同じです。共有が生きている間に元の持ち主をムーブする形（`rr4/p/u_mvsrc_*`）は、どのバイナリも `E1014` です。
+
+##### テスト
+
+- `tests/rc.rs` の `a_store_through_one_owner_of_a_block_reaches_the_other_owners`（`CROSS_PRELUDE` に `RH`・`outerg`・`outerl`・`outerq` を足したもの）: 直接の共有の 10 形とパイプライン・フィールド・要素の共有の 3 形ずつの、安全な順序の受理と逆の順序の拒否（両方の edition で `42:5` の `E1013`（`assignment_extends_borrow`））、書き込んだ後のムーブ（同じ）、パイプライン・要素の共有を通した自分の部分の 3 形ずつ（`PairOk` の受理、`PairBad` の `42:5` の `E1013`（`self_referential_store`））。修正を外したビルドでは、このテストが失敗することを確かめました。
+
+##### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/check-r22.mjs`・`diff-r22.mjs`・`table-r22.mjs` に写し（基準と先端（`r21`、`dff92288` のビルド）の結果を `results-r21.json` から使い、`r21` に無いプログラムは先端でも検査）、`gate/tools/collect-r22.mjs`（第2回の生成したプログラム `r16-review-2-ce/g` を除くもの）でこのレビューのプログラム（`r18-review-4-ce` の 256 個、`r18-review-4-conf` の 282 個）とこの回の探査（`rr4/` の 142 個）、第3回の後に足した探査（`rr3/` の 7 個）の 687 個を足して、14939 個・29878 組を両方の edition で検査しました（`results-r22.json`、分類は `diff-r22.txt`、`rr4/gate-diff-r22.txt` に写し）。第2回の反例の探索が生成した 15552 個は、別に `rr4/g-check.mjs` で検査しました（下）。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 5085 | 4025 |
+| 両方が拒否 | 5185 | 7102 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 4631 | 3783 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 67 組で、前回と同じ 67 組です。新しい RA はありません。** 条件 (1) は成り立ちます。
+- **拒否から受理に変わった組はありません。**
+- 前からある 28504 組では、先端からの受理・拒否の変化はなく、最初の誤りが変わったのは `review-a31-conf-r12/p/r01_rs_bad_order_reassign_rc`（基準が受理する危険な形）の両方の edition だけです。拒否のまま、先端の 1 つ目の誤り（`99:5` の `E1013` の `self_referential_store`）と 2 つ目（`103:5` の `E1014`）に代わって、`103:5` の `self_referential_store` が最初の誤りになりました（`let inner = Rc.share (ref rc)` を通した書き込みが元の持ち主 `rc` にも届くので、`rc = Rc.new (mkp ())` の位置で、古い値が持つ自分の部分の借用を部分の順序で検査します）。
+- 足した 1374 組での先端からの変化は、受理から拒否の 155 組だけで、どれも名前が `u_` の危険な形です: このレビューの指摘 1・2 の形（`r18-review-4-ce/p/u_rc_*`・`u_rcf_*`・`u_rcp_*_loc`・`u_rcself_bad_*`・`u_arr_lam`）、この回の双子（`rr4/t/u_*`）、共有の別の作り方（`rr4/x/u_getp`・`u_ident`・`u_if`・`u_inner`・edition 2026 の `u_loop`）、書き込んだ後のムーブ（`rr4/p/u_mvsrc_after_store`）。安全な形（`s_*`、`r18-review-4-conf/p/*/s_*`、`rr4/t/s_*`、`rr4/x/s_*`）は、どれも先端と同じ判定です。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- 安全な形の実行: この回の双子の安全な形のうち 24 個（上）と、`sharetype` の 2 個（`main` のバイナリ）、文書にした制限の形（`rcgetpart`・`fvdrop`・`refsrc` の 6 個、`main` のバイナリ）は、手で求めた値を出しました（`rr4/t-runs-2027.txt`、`rr4/limits-main-runs.txt`）。この回の修正で受理に変わった形はありません。
+- 生成したプログラム（`rr4/g-check.mjs`、15552 個・31104 組。結果は `rr4/g-results.json`・`g-summary.json`）: 危険な 18048 組はどれも拒否し（条件 (2)）、安全な 13056 組はすべて受理しました。
+
+条件 (3) の、`main` が受理する安全な形の拒否は、どれも文書に書いた安全側の制限です（この回の `rcgetpart`・`fvdrop`・`refsrc` と、修正による `sharetype`）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3294 件すべて成功、4 件 skip（1551 秒、`rr4/nextest.log`。この回の 1 件を含みます）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 83 件（基準のバイナリ・先端でも 83 件が成功）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`rr4/suites.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`rr4/step5-main.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・53 個のリンク・11 個の例・22 回の native の実行、`rr4/docs-2.log`）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功（`rr4/doc-checks.log`）。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（`rcgetpart`・`fvdrop`・`refsrc`・`sharetype` の行、`fvlam` の行、段 3 の一覧、この回の記録、検査の時間）、このチケット（「残る制限」と、この節）。
+
+#### レビューの第5回（2026-11-15）
+
+第4回の対応の後の先端（`2084a9e4`・`a5f81372`・`b6d30189`、その前のレビューの先端は `7ccca2e7`）のレビュー（反例の探索 `target/scratch/a31/r18-review-5-ce/`、適合の確認 `target/scratch/a31/r18-review-5-conf/`）の 5 件の指摘を、修正後・先端（`b6d30189`。`src/` は `2084a9e4` と同じ）・前の先端（`dff92288`）・`main`（`168ae4a5`）・基準のバイナリで確かめ、どれも指摘のとおりに再現しました。指摘 1・4 は第4回の締めつけによる前の先端からの退行（安全な形の拒否）、指摘 2・3 は `main`・基準が受理する安全な形の文書に無い拒否で、前の先端も同じく拒否します。指摘 5 は文書の誤りです。この回からの規則（前の先端からの退行は、締めつけを狭めるのが明らかに健全なら狭め、そうでなければ文書に書く。前の先端からの退行でない安全な形の拒否は `src/` を変えず、保守的な制限として文書に書く）に従いました。結果は `target/scratch/a31/rr5/` にあります（`rr5/v.sh` が修正後・先端・前の先端・`main`・基準の最初の誤りを並べ、`RUN=1 ASAN=1` で native と ASan の `-O0`・`-O3` の出力を足します。`rr5/n/` が狭めの探査（`rr5/n/gen.py`）、`rr5/limits-main-runs.txt` が文書にした制限の形の `main` での実行です）。
+
+##### 原因と変えたこと（`src/ownership.rs`）
+
+- **指摘 1・4（使い終えた共有の持ち主を通した格納の型の判定が、文書より広い）**: 第4回の修正は、`keep_for_drop` が局所値 `r` の共有を読み替えるとき、`export_block(r, ExportTarget::Local(r2))` で、`r` の型が届く、セルを持つすべてのブロックの型を元の所有者 `r2` への届け先として記録し、`store_exported_into` は、格納先の局所値の型がそのどれかに届けば `r2` へも格納していました。そのため、文書の書いた「同じ型の別のブロック」より広く、(a) ブロックでない値（`record W { h: Holder, keep: Maybe<Rc<PairOk>> }` の `keep` が `Maybe.None` の `w`、`record HM { h: Holder, rs: [Rc<PairOk>] }` の `rs` が空の値、`record HR { h: Holder, rc: Rc<PairOk> }` の `Holder` への格納）、(b) 共有したブロックが中に持ちうる型の無関係なブロック（`Tree { ..., child: Maybe<Rc<Leaf>> }` の後の別の `Rc<Leaf>`）、(c) 共有を持つ値の型だけが届くブロック（`RH2 { rc: Rc.share (ref r2), other: Rc<Other> }` の後の無関係な `Rc<Other>`）、(d) それを中に持つ別の型のブロック（`record Big { h: Holder, inner: Rc<PairOk> }` の `Rc<Big>`）への格納も `r2` へ届き、`p` の後に宣言した書き込み先でも `E1013` でした。
+  このうち (c) は、届け先 `r2` が解放しえないブロックです。`r2` の破棄が解放するのは `r2` の値から届くブロックで、その型は `r2` の型から型で届くもの（共有したブロックと、その中のブロック）だけです（関数値の環境の中のブロックは型で届きません。`Rc` は関数値に捕捉できない（`E1005`）ので、`Rc` のブロックはそこに入りません。`Arc` を捕捉した関数値は捕捉した共有の loan を持つので、それを書き込んだブロックの持ち主はその loan を通して共有の元の持ち主が後で持つ借用を読みます（`expand_shares_read`）。元の持ち主そのものを捕捉へムーブする形は、ほかの共有が生きている間は `E1014` です（`rr5/arc/`）。第4回の型の判定がそうしたブロックへ届けたのは、共有を持つ値の型に同じ `Arc` の型があるときだけでした）。そこで、`keep_for_drop` の元の所有者への届け先を、`r` の型と `r2` の型の両方が届くブロックの型に狭めました（`export_shared_block`。`export_block` の型の走査を `export_walk` に分け、型ごとに 1 度だけ走査します）。共有したブロックは両方の型が届くので必ず残り、その中のブロックも `r2` の型から届くので残ります（第4回の対応の前の先端が受理し、第4回の修正が塞いだ、中のブロックの共有を通した危険な形 `rr5/n/u_leaf_nested`・`u_leaf_nested_late`・`u_leaf_in_box`・`u_box_inner`・`u_box_inner_direct` は、修正後も両方の edition で拒否します。`main` は `u_leaf_nested` で `drop -1`）。共有を持つ値が 2 つの元の所有者の共有を持つ形（`RH2 { rc: Rc.share (ref r2), other: Rc.share (ref o2) }`、`rr5/n/u_two_sources*`）も、格納は `r2` と `o2` のそれぞれへ届き、拒否のままです。
+  (a)・(b)・(d) は狭めません。格納先の型が共有したブロックの型かその中のブロックの型に届く値で、その値がブロックを共有しているかどうかは型からは分かりません。呼び出し元には、格納が局所値の中のどの部分へ入ったかも分からない（事実は書き込み先の仮引数を記録し、その中の場所は記録しません）ので、ブロックでない値の部分を型で除くこともできません。局所値ごとの正確な道は第4回で 3 乗になったので採っていません。`drop.md`・`lifetimes.md`・`docs/language.md`・`docs/architecture.md`・A33 の表（`sharetype`）・「残る制限」に、実際の規則（共有したブロックの型か、それが中に持ちうるブロックの型を持ちうる値への格納）と (a)・(b)・(d) の形を書きました。`p` を `r` を使い終えた後で宣言した形（`r18-review-5-ce/g5/s_plainrec`・`s_bigblock`・`s_sametype`）は、読み替えの逆の向き（`export_block(r2, ExportTarget::Local(r))`）が前から型で判定するので、前の先端も拒否します（`r` が借用を持つ）。
+- **指摘 2・3・5**: 文書に書きました（下の表と「残る制限」）。指摘 2 は、ラムダが捕捉した局所値の loan を `captured_loans` で狭めても、再借用を束縛した局所値（`let q1 = ref (deref q0)`、`let q1 = ref (deref (ref p1))`）の loan は `Checker::loan` が元の借用の loan（`q0` が持つ `p1` 全体の借用、`ref p1` の一時の借用）を親に持つので、書き込み先が `p1` 全体を生かすことです（`refsrc` と同じ仕組み）。指摘 3 は、`Checker::drop_stores` が破棄を `drop_only` にするのが `parameter_part`（不変で参照でない仮引数、そのフィールド・要素）の破棄だけで、仮引数を入れたリテラルは仮引数の根でなく、edition 2027 の読み取りの仮引数は参照の型なので、それを束縛した局所値（`let h = f`、`let h = r.f`）の破棄も当たらないことです。`own` の仮引数と edition 2026 の値の仮引数のフィールドを束縛した局所値（`let h = r.f`）は、不変な局所値が束縛した値と同じものを破棄するので `parameter_part` に当たり、受理します（`r18-review-5-conf/p/fr_m7`、edition 2026 の `m11`）。`lifetimes.md` の「本体がそうした値を破棄するときの書き込みは、仮引数の一部の破棄として記録しません」は仮引数のフィールドを含めていたので、`own` の仮引数と edition 2026 の値の仮引数のフィールドは記録すると直しました。指摘 5 は、`drop.md` の「参照の仮引数として受け取る関数を通す」が `q1` を渡す形を含むように読めたことで、受理されるのは呼び出しの位置で `ref p1` を書く形だけだと書き直しました。
+
+##### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（使い終えた共有の持ち主を通した格納の型の判定が、ブロックでない値・別の型のブロック・中のブロックの型・共有を持つ値の型だけが届くブロックにも及ぶ。前の先端からの退行） | 再現（`g5/t_plainrec`・`t_rh2_other`・`t_bigblock` を先端が両方の edition で `36:5`、`t_tree_leaf` を `42:5` の `E1013`（`assignment_extends_borrow`）。前の先端・`main`・基準は受理し、`main` は `drop 8`・`drop 0`・`drop 0`・`1`、`drop 8`・`drop 0`・`drop 0`・`drop 0`・`1`（native と ASan の `-O0`・`-O3`、ASan は報告なし）） | `t_rh2_other`（と `s_rh2_other`）は `export_shared_block` で受理（修正後の native と ASan の `-O0`・`-O3` で `drop 8`・`drop 0`・`drop 0`・`drop 0`・`1`）。ほかは文書（`sharetype`） | `a_store_through_an_expanded_share_reaches_the_owners_that_may_free_the_block` |
+| 2（再借用を束縛した参照の変数のラムダの捕捉が、借用元の値全体を生かす。`main` が受理する安全な形の拒否） | 再現（`g7/s_lamderef_mvh` を修正後・先端・前の先端が両方の edition で `32:17`、`g7/s2_lamderefref_mvh` を `35:18` の `E1014`（`borrow_conflict`）。`main` は `drop 0`・`drop 8`・`1`。場所の借用・別名・`if`・`pick` を束縛した `q1` の捕捉（`s2_lamalias_mvh`・`s_lamif_mvh`・`s2_lampick_mvh`）は受理） | 文書（`refsrc`） | — |
+| 3（仮引数を入れたリテラル、edition 2027 の読み取りの仮引数やそのフィールドを束縛した局所値の破棄。同上） | 再現（`p/d_m13`・`d_m14`・`d_m15`・`d_m17` を両方の edition で `37:5`、`p/m8`・`m11` を edition 2027 で `35:5`、`d_m16` を `37:5`、`fr_m2` を `39:5` の `E1013`（`self_referential_store`）。`main` は `drop 0`・`drop 0`・`1`。`fr_m7`（`own`）・`fr_m3` は受理） | 文書（`fvdrop` を `parameter_part` の一般の規則で書き直し、`lifetimes.md` の仮引数のフィールドの文を直した） | — |
+| 4（指摘 1 と同じ仕組みで、局所値自身の `Holder` への格納も型で届く。前の先端からの退行） | 再現（`p/st_hm`・`st_hr` を先端が両方の edition で `36:5` の `E1013`（`assignment_extends_borrow`）。前の先端・`main`・基準は受理し、`main` は `drop 8`・`drop 0`・`drop 0`・`1`、`drop 8`・`drop 0`・`drop 0`・`drop 0`・`1`。`st_hm_noshare` は受理） | 文書（`sharetype`。格納先の値の型が共有したブロックの型に届くので、指摘 1 の (a) と同じく狭めない） | 同上（`W` の形の拒否を制限として固定） |
+| 5（`refsrc` の「参照の仮引数として受け取る関数を通す」が `q1` には当たらない。文書） | 再現（`p/rs_q1_outer`・`rs_q1_outerq` を修正後・先端・前の先端が edition 2027 で `37:5` の `E1014`。`main` は `drop 0`・`drop 8`・`drop 5`・`1`） | 文書（呼び出しの位置で `ref p1` を書く形だけを受理と書き、`outer (ref p2) q1` は拒否と書いた。`docs/language.md` も） | — |
+
+##### この回の確かめで見つけたもの
+
+マージの条件の確かめ（下）で、このレビューのプログラムのうち `main` が受理し、前の先端から拒否していて、指摘にも文書にも無かった安全な形を 4 個見つけました。どれも `main` のバイナリの native と ASan の `-O0`・`-O3` で手で求めた値を出し、ASan は何も報告しませんでした（`rr5/extra-main-runs.txt`）。この回の規則のとおり `src/` は変えず、保守的な制限として `drop.md`（「`Rc`・`Arc` の別の持ち主を通した書き込み」）、`lifetimes.md` の「現在の制限」、`docs/language.md`、A33 の表、「残る制限」に書きました。
+
+- **`rcgetowner`**（`r18-review-5-ce/g2/s_innerblock`・`g11/s_hold_self`）: `Rc.get (ref r)` の loan は `r` の loan なので、ブロックをほかの持ち主が生かしていても、それを持つ値が `r` より後に破棄されると `E1013`（`assignment_extends_borrow`）です。内側のブロックの `{ let p = mkpo (); let r = Rc.share (ref r2); let a = Rc.get (ref r); cross (ref p) a; 0 }`（`main` は `drop 8`・`drop 0`・`1`）と、ブロックの自分の部分を別の持ち主 `r3` を通して書き込んだ後の `hold = r`（`drop 0`・`drop 8`・`1`。続く `E1014` は A33 の `r07`・`r10` と同じ）。前の形は `Rc.get (ref r2)` から得れば受理します（`rr5/sp/w_inner`）。
+- **`shareparam`**（`r18-review-5-ce/g1/s_dup`・`g8/s_stashs2`）: 参照の仮引数の `Rc` から関数の中で作った共有（`fn dup r = Rc.share r` の結果、本体の `let s = Rc.share r`）は、`share_loans` が外部の loan に共有の印を付けないので仮引数の先の借用のままで、その破棄（`drop_stores`）がその借用をブロックのセルへ格納するものとして記録され（`facts.drops_write` のプログラムだけ）、`let r = dup (ref r2)` や、共有を作って捨てるだけの `sh2 (ref r2)` の呼び出しで、`r2` が自分自身の借用を持つものとして `E1013`（`self_referential_store`）です（`main` は `drop 8`・`drop 0`・`1`。`rr5/sp/v_*`。`298408bd` のビルドも拒否します）。呼び出し元で `Rc.share (ref r2)` と書けば受理します（`rr5/sp/w_dup`）。
+
+ほかに拒否される安全な形は、どれも文書にある制限でした: 関数値の仮引数やそのフィールドを束縛した局所値を呼ぶ関数（`fn m9 f b = { let h = f; h b }` の edition 2027、`fn m10 r b = { let h = r.f; h b }` の両方の edition。`r18-review-5-conf/p/m9`・`m10`・`fr_m6`）は、`lifetimes.md` の「現在の制限」が本体の見えない関数値として挙げる「引数で受け取った関数値を別名にしたもの」の呼び出しで、`r18-review-5-conf/p/rg_*` は `rcgetpart`、`r18-review-5-ce/g7/s_*` と `r18-review-5-conf/p/rs_q1_*` は `refsrc`、`r18-review-5-conf/p/fr_m4` は `fvdrop`（パターンの変数）です。`r18-review-5-conf/p/nd_inner*` は危険な形（`main` は解放した文字列を読んで `-1`）です。
+
+##### テスト
+
+- `tests/rc.rs` の `a_store_through_an_expanded_share_reaches_the_owners_that_may_free_the_block`: 共有を持つ値の型だけが届く無関係な `Rc<Other>` への格納の受理（`p` を共有の前と後に宣言する 2 形、両方の edition）、その値が共有する 2 つ目の元の所有者 `o2` のブロックへの格納の受理（`p` が先）と拒否（`o2` が先、`50:5` の `E1013`（`assignment_extends_borrow`））、共有したブロックの中のブロックの共有を通した格納の受理と拒否（同じ）、制限 `sharetype` の `W` の形の拒否（`50:5`）。修正を外したビルドでは、最初の受理が `'r2' keeps a borrow ...` で失敗することを確かめました。
+- `tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs` の `unrelated_blocks_keep_no_borrow`: 共有を持つ値の型だけが届く無関係なブロックへの格納（`t_rh2_other` の形を `Recorder` で書いたもの）。`o` の記録が `p1` の "12345" を読んで 6、ほかの記録は 0、関数は `r2` の "1234567" の長さ 7 を返すので、`70006`（記録の初期値を 9 にして、どの記録も書かれたことを確かめます）。基準のバイナリも受理し、先端は `1551:5` の `E1013` で拒否します。
+
+##### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/check-r23.mjs`・`diff-r23.mjs`・`table-r23.mjs` に写し（基準と先端（`r22`、`2084a9e4` のビルド）の結果を `results-r22.json` から使い、`r22` に無いプログラムは先端でも検査）、`gate/tools/collect-r23.mjs`（第2回の生成したプログラム `r16-review-2-ce/g` を除くもの）でこのレビューのプログラム（`r18-review-5-ce` の 139 個、`r18-review-5-conf` の 66 個）とこの回の探査（`rr5/` の 18 個）ほか 2 個の 225 個を足して、15164 個・30328 組を両方の edition で検査しました（`results-r23.json`、分類は `diff-r23.txt`、`rr5/gate-diff-r23.txt` に写し）。第2回の反例の探索が生成した 15552 個は、別に `rr5/g-check.mjs` で検査しました（下）。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 5156 | 4099 |
+| 両方が拒否 | 5213 | 7136 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 4757 | 3900 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 67 組で、前回と同じ 67 組です。新しい RA はありません。** 条件 (1) は成り立ちます。
+- 前からある 29878 組では、先端からの受理・拒否の変化も、最初の誤りの変化もありません。
+- 足した 450 組での先端からの変化は、拒否から受理の 4 組（`r18-review-5-ce/g5/t_rh2_other`・`s_rh2_other` の両方の edition。上の狭めによるもので、`main`・基準も受理し、修正後の native と ASan の `-O0`・`-O3` で `drop 8`・`drop 0`・`drop 0`・`drop 0`・`1`）だけで、受理から拒否はありません。
+- 足した組のうち基準が受理し対応後が拒否する 243 組は、名前が危険を示す形（`u_*`・`*_bad`・`arc_u*`。`r18-review-5-conf/p/nd_inner*` も危険な形）と、文書にした制限（`sharetype`・`refsrc`・`fvdrop`・`rcgetpart`、本体の見えない関数値の別名の呼び出し、この回に足した `rcgetowner`・`shareparam`）のどれかでした（`gate/ar-fresh-r23.txt`）。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- 文書にした制限の形（`sharetype` の 6 個、`refsrc` の 4 個、`fvdrop` の 8 個、この回に足した 4 個）は、`main` のバイナリの native と ASan の `-O0`・`-O3` で手で求めた値を出し、ASan は何も報告しませんでした（`rr5/limits-main-runs.txt`、`rr5/extra-main-runs.txt`）。
+- 生成したプログラム（`rr5/g-check.mjs`、15552 個・31104 組。結果は `rr5/g-results.json`・`g-summary.json`）: 危険な 18048 組はどれも拒否し（条件 (2)）、安全な 13056 組はすべて受理しました。
+
+条件 (3) の、`main` が受理する安全な形の拒否は、どれも文書に書いた安全側の制限です（指摘 1・4 の残りの `sharetype`、指摘 2・5 の `refsrc`、指摘 3 の `fvdrop`、この回の確かめで見つけた `rcgetowner`・`shareparam`）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3295 件すべて成功、4 件 skip（1376 秒、`rr5/nextest.log`。この回の 1 件を含みます）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 84 件（基準のバイナリでも 84 件が成功。先端はこの回の件のモジュールを拒否します）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`rr5/suites.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`rr5/step5-main.txt`）。
+- 検査の時間: `gen_chain.py cellshares` の所有権の検査は、n = 400 で 226 ms（先端 214 ms）、800 で 1007 ms（908 ms）で、同じ程度です（同じ負荷の機械で続けて測りました）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・55 個のリンク・11 個の例・22 回の native の実行、`rr5/docs.log`）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功（`rr5/doc-checks.log`）。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（1 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（`sharetype`・`refsrc`・`fvdrop` の行、新しい `rcgetowner`・`shareparam` の行、段 3 の一覧、この回の記録）、このチケット（「残る制限」と、この節）。
+
+#### レビューの第6回（2026-11-15）
+
+第5回の対応の後の先端（`6e4f0537`・`e5614a3e`・`1191ba64`・`253a78e7`・`c18c0433`、A34 の起票 `953747a2`）の最後のレビュー（反例の探索 `target/scratch/a31/r19-review-6-ce/`、適合の確認 `target/scratch/a31/r19-review-6-conf/`）の 2 件の指摘を、修正後・先端（`953747a2`。`src/` は `6e4f0537` と同じ）・前の先端（`b6d30189`。`src/` は `2084a9e4` と同じ）・`main`（`168ae4a5`）・基準のバイナリで確かめ、どちらも指摘のとおりに再現しました。指摘 1 は第5回の狭めによる前の先端からの退行で、`main` も受理する危険なプログラムの受理です。指摘 2 は文書の誤りです。最後の回の規則（検査を緩める変更はしない。前の先端や `main` からの危険な退行は、締めつけ（第5回の狭めを戻す・狭める）と回帰のテストで直し、それで拒否に変わる安全な形は制限として文書に書く。安全な形の拒否は `src/` を変えずに文書と A34 に書く）に従いました。結果は `target/scratch/a31/rr6/` にあります（`rr6/v.sh` が修正後・先端・前の先端・`main`・基準の最初の誤りを並べ、`RUN=1 ASAN=1` で native と ASan の `-O0`・`-O3` の出力を足します。`rr6/n/` が修正の周りの探査、`rr6/lim/` と `rr6/a34/` が修正による安全側の拒否の形です）。
+
+##### 原因と変えたこと（`src/ownership.rs`）
+
+- **指摘 1（dyn の値の中の共有を通した格納が、ブロックを解放する元の所有者へ届かない。前の先端からの退行）**: 第5回の `export_shared_block(h, r2)` は、`keep_for_drop` が読み替えた局所値 `h` の型が届くブロックの型のうち、元の所有者 `r2` の型も届くものだけを `r2` への届け先にしていました。型の走査（`TypeContext::reaches`。`type_arena::children` は `Type::Dyn`・型引数などに子を持たせません）は dyn の値の中を見ないので、`record B {r} { h: Holder, d: dyn Cls.LeafOf {r} }` の `Rc<B>` から届くのは `Rc<B>` だけで、dyn の値の中の `Box1` の `Rc<Leaf>` は見えません。一方、dyn の値のメソッドは中身の場所の参照を返せる（`def leaf :: ref 'value -> ref Rc<Defs.Leaf>`、`fn leaf b = ref b.l`）ので、`let h = Rc.share (Cls.LeafOf.leaf (ref (Rc.get (ref r2)).d))` は、`r2` の破棄が（`B` → dyn → `Box1` → `Rc<Leaf>` と）解放しうる `Leaf` のブロックの共有です。`let a = Rc.get (ref h)` の後で `h` は使われないので読み替えられ、届け先は `{Rc<Leaf>} ∩ {Rc<B>} = ∅` になり、`Defs.crossleaf a (ref p)` の `p` の借用は `h` にだけ入りました。実行では `h`（`Leaf` の持ち主を 2 から 1 に）、`p`、`r2`（`B`・dyn・`Leaf` を解放）の順に解放され、`Leaf` の `Holder` の `drop` が解放した `p.s` を読みます（`d1` は `drop -1`、`d1_heap`・`d2_*`・`d6_plain`・`d7_arc` は ASan の `-O0`・`-O3` で heap-use-after-free）。第4回の先端は `h` の型が届くすべての型（`{Rc<Leaf>}`）を届けたので拒否していました。第5回のチケットの「`r2` の破棄が解放するのは `r2` の型から型で届くブロックだけ」は、dyn の値（と元の所有者のほかの部分。指摘 2）について誤りでした。関数値は環境の中の場所を渡せない（捕捉した値の参照を返すラムダは `E1013`。`r19-review-6-ce/p/f1`）ので、関数値の環境は同じ問題を持ちません。
+  修正（`5e99c1c0`）: 値の型が dyn の値か型引数（`Type::Dyn`・`Variable`・`Infer`・`Partial`・`Application`・`Error`）に届くかを答える `walk_hides_blocks` を足し、
+  (a) `export_shared_block` は、`r2` の型がそうした値に届くなら狭めず、`h` の型が届くセルを持つブロックの型をすべて届けます（第4回の先端の扱い。指摘の勧めた直し方です）。
+  (b) `h` の型がそうした値に届くなら（`H { d: Dyn.of (Box1 { l: Rc.share (ref r2) }) }`。共有そのものが dyn の値の中にあり、`h` の型からはブロックが見えません）、印 `HIDDEN_BLOCK`（`Type::Error`。ブロックの型にはならない）を `r2` への届け先に足し、`store_exported_into` は、格納先の型が dyn の値か型引数かセルを持つブロックに届けば、この印の届け先へ格納します。
+  (c) `store_exported_into` は、格納先の型が dyn の値か型引数に届けば、記録したすべての届け先へ格納します（そうした値はどの型のブロックも持ちうるため。型で届くブロックの型が同じことで連なりを伝えていた規則の、dyn の値の場合です）。
+  (d) 逆の向き（`expand_shares` から、元の所有者を通した後の格納を共有の持ち主・呼び出し元のデータ・隠れた環境へ届ける `export_block`）も、所有者の型が dyn の値か型引数に届くなら `HIDDEN_BLOCK` を記録します（`e45887c8`。セルを持たない `B` の `Rc<B>` の dyn の値の中のブロックはセルを持ちうるのに、`export_walk(Rc<B>)` は空でした）。
+  確かめの中で、`main`・基準・前の先端・先端がどれも受理する、同じ仕組みの危険な形を見つけ、(b)・(c) で塞ぎました（`main` の ASan の `-O0`・`-O3` は heap-use-after-free）: 共有を持つ値の型が dyn の値に届く形（`rr6/n/u_hrecdyn`）、セルを持たない `B {r} { n: i64, d: dyn ... }` の `Rc<B>` 全体を共有して dyn のフィールドの中の `Leaf` へ書き込む形（`u_bdyn_whole`。`export_walk(Rc<B>)` は空なので、第4回の先端も何も届けませんでした）、共有の共有を dyn の値に入れた形（`u_chain_dyn`。`h` の読み替えで `h` から `r2` への道が消え、`store_exported` は届け先の局所値の届け先をたどらない（`exporting`）ので、dyn の値への格納はすべての届け先へ届ける必要があります）、呼び出し元の配列へも共有を入れた形（`u_extchain`・`u_extchain_rpfirst`。届け先は呼び出し元のデータ）。(d) で、逆の向きの同じ穴（セルを持たない `B` の `r2` の共有 `hd` を持ち続け、`r2` の dyn のフィールドの中の `Leaf` の共有を通して書き込む `u_rev_nocell`・`u_rev_nocell2`・`u_rev_lchain`、`r2` の共有を呼び出し元の配列へ入れた `u_ext_nocell`・`u_ext_lchain`）も塞ぎました。
+  修正による安全側の拒否（`main` と先端は受理）: `h` の型が dyn の値に届くときの無関係な `Rc<Other>` への格納（`rr6/lim/s_dynholder_other`、`rr6/a34/s_sharetype_dynholder`）、`r2` の型が dyn の値に届き `h` の型が `Rc<Other>` を持ちうるときの同じ格納（`s_dynsrc_other`・`s_sharetype_dynsrc`。前の先端も拒否）、使い終えた共有の後の、dyn の値を持つ無関係な局所値への格納（`s_dynstore`・`s_sharetype_dynstore`）、呼び出し元の配列へ共有を入れた関数の中の同じ格納（`s_dynstore_ext`、`store_local_borrow_through_reference`）、(d) による、`r2` の型が dyn の値に届くときに `r2` の共有を持ち続ける値やその共有を入れた呼び出し元のデータへの、無関係な `Rc<Other>` への格納（`s_rev_dynowner_other`・`s_sharetype_dynowner`、`s_ext_dynowner_other`）。どれも `main` の native と ASan の `-O0`・`-O3`（edition 2027。A34 の形は edition 2026 の native の `-O0`・`-O3` も）で手で求めた値を出し、ASan は何も報告しませんでした（`rr6/lim-main-runs.txt`・`lim-main-runs2.txt`、`rr6/a34-runs.txt`）。`drop.md`・`lifetimes.md`・`docs/language.md`・`docs/architecture.md`・A34 の `sharetype`（「`sharetype` に A31 のレビューの第6回で足した形」。最小のプログラムと危険な双子）・A33 の表の行・「残る制限」に書きました。
+- **指摘 2（`sharetype` の文書が、届け先を共有したブロックとその中のブロックの型と書いていた。文書）**: `export_shared_block` の判定は、`h` の型と `r2` の型全体の両方が届くブロックの型で、`r2` がレコードなどでほかのフィールドにもブロックを持てば、そのブロックの型も入ります（`r2 = RS { rc: Rc<PairOk>, other: Rc<Other> }` と `h = RH2 { rc: Rc.share (ref r2.rc), other: Rc.new (mkother 2) }` の後の無関係な `Rc<Other>` への格納が `r2` へ届く。`r19-review-6-conf/st/s_srcrec_other`）。前の先端も同じく拒否する安全な形で、`src/` は変えず、実際の規則とこの形を `drop.md`・`lifetimes.md`・`docs/language.md`・`docs/architecture.md`・A34 の `sharetype`（`s_sharetype_srcrec` とその危険な双子）・「残る制限」に書きました。指摘の言うとおり、共有したブロック自身の型の走査に狭めても健全です（`r2` のほかのフィールドのブロックは、そのブロック自身の共有の loan で `r2` へ届くため）が、最後の回なので検査を緩める変更はしていません。
+
+##### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 | テスト |
+| --- | --- | --- | --- |
+| 1（dyn の値の中の共有を通した格納が元の所有者へ届かない。前の先端からの退行、危険） | 再現（`r19-review-6-ce/p/d1`・`d1_heap`・`d2_nocell`・`d2_heap`・`d6_plain`・`d7_arc` を先端が両方の edition で受理し、前の先端は `8:5` の `E1013`（`assignment_extends_borrow`）。`main`・基準は受理し、`d1` は `drop 0`・`drop 0`・`drop -1`・`1`、ほかは ASan の `-O0`・`-O3` で heap-use-after-free。安全な双子 `d3_safe`・`d3_heap`・`d6_plain_safe` はどのバイナリも受理。`d4_lam`・`d5_pipe`・`e1_rev` は先端も拒否） | 修正後はどれも両方の edition で `8:5` の `E1013`（`assignment_extends_borrow`）。安全な双子は受理（`drop 0`・`drop 8`・`drop 0`・`1`、`drop 0`・`drop 36`・`drop 0`・`1`）。同じ仕組みの `main` からの穴 10 個も拒否 | `a_store_through_a_share_behind_a_dyn_value_reaches_the_owner_that_frees_the_block` |
+| 2（`sharetype` の文書の規則が実際より狭い。文書） | 再現（`r19-review-6-conf/st/s_srcrec_other` を先端・前の先端が両方の edition で `63:5` の `E1013`。`main`・基準は受理し `drop 8`・`drop 0`・`drop 0`・`drop 0`・`drop 0`・`1`。`s_srcrec_other_nob`・`s_rh2_other` は受理） | 文書（実際の規則と、元の所有者のほかの部分のブロックの形） | — |
+
+##### テスト
+
+- `tests/rc.rs` の `a_store_through_a_share_behind_a_dyn_value_reaches_the_owner_that_frees_the_block`（`Defs.tz`・`Cls.tt`・`Main.tz` の 3 つのモジュール）: dyn の値を通した 7 つの危険な形（指摘 1 の `d1`・`d2_nocell`・`d6_plain`・`d7_arc`、`Rc<B>` 全体の共有の後の dyn の中の `Leaf` への書き込み、共有を dyn の値に持つ値、共有の共有を dyn の値に持つ値）を両方の edition で `8:5` の `E1013`（`assignment_extends_borrow`）で拒否し、それぞれの安全な双子（借用される値を元の所有者より先に宣言する）を受理します。共有を呼び出し元の配列へも入れた形は `8:5` の `E1013`（`assignment_extends_borrow`）と、借用される値を先に宣言すると `13:5` の `E1013`（`store_local_borrow_through_reference`）です。dyn の値に共有を持つ値を通して書き込んだ後で元の所有者をムーブする形は受理します（読み替えは保つ）。逆の向き（`u_rev_nocell`）は `8:5` の `E1013`（`assignment_extends_borrow`）で、その安全な双子は受理し、呼び出し元の配列へ共有を入れた形（`u_ext_nocell`）は `12:5` の `E1013`（`store_local_borrow_through_reference`）です。`5e99c1c0` の前のビルドでは最初の拒否（`d1`）が、`e45887c8` の前のビルドでは逆の向きの拒否が受理されて失敗することを確かめました。
+- E2E は足していません（dyn の値の形はクラスのファイルが要り、`in_place_writes` の fixture は 1 つのモジュールです）。
+
+##### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/check-r24.mjs`・`check-r25.mjs` と `diff-r24.mjs`・`diff-r25.mjs`・`table-r24.mjs`・`table-r25.mjs` に写し、`gate/tools/collect-r24.mjs`・`collect-r25.mjs` でこのレビューのプログラム（`r19-review-6-ce` と `r19-review-6-conf`）とこの回の探査（`rr6/n/`・`rr6/lim/`・`rr6/a34/`）ほかの 187 個を足して、15351 個・30702 組を両方の edition で検査しました。`r24` は最初の修正（`5e99c1c0`）のビルド、`r25` は今の先端（`e45887c8`）のビルドで、基準・先端（`r23`、`6e4f0537` のビルド）・`r24` の結果は前の結果から使い、無いプログラムはそれぞれで検査しました（`results-r25.json`、分類は `diff-r25.txt`、`rr6/gate-diff-r25.txt` に写し）。第2回の反例の探索が生成した 15552 個は、別に `rr6/g-check.mjs` で検査しました（下）。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 5208 | 4155 |
+| 両方が拒否 | 5230 | 7156 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 4875 | 4011 |
+| 検査の失敗・時間切れ | 0 | 0 |
+
+- **RA は 67 組で、前回と同じ 67 組です。新しい RA はありません。** 条件 (1) は成り立ちます。
+- 前回からある 30328 組では、先端からの受理・拒否の変化も、最初の誤りの変化もありません。
+- 足した 374 組での先端からの変化は、受理から拒否の 62 組（31 個）だけで、拒否から受理はありません。31 個は、指摘 1 の危険な形（`d1`・`d1_heap`・`d2_nocell`・`d2_heap`・`d6_plain`・`d7_arc`）、この回に塞いだ `main` からの穴（`rr6/n/u_*` と、名前に反して危険な `s_extchain` = `u_extchain_rpfirst`、`rr6/lim2/t` = `d1` の `Defs` を `Main.tz` に入れた形）、A34 の危険な双子（`rr6/a34/u_sharetype_dyn*`）、修正による安全側の制限として文書に書いた形（`rr6/lim/s_*`、`rr6/a34/s_sharetype_dyn*`）のどれかです。`r24` から `r25` への変化は、`e45887c8` が塞いだ逆の向きと呼び出し元のデータの 5 個と A34 の危険な双子 `u_sharetype_dynowner`、文書に書いた 3 個（`s_rev_dynowner_other`・`s_ext_dynowner_other`・`s_sharetype_dynowner`）だけです。
+- 足した組のうち基準が受理し対応後が拒否する安全そうな名前の形（`rr6/ar-fresh-r25.txt`）は、どれも先端も拒否する文書にある制限（A34 の 6 つの項目の形と、`r19-review-6-conf` の `fv`（`fvdrop`）・`rg`（`rcgetowner`）・`rs`（`refsrc`）・`sp`・`sp2`（`shareparam`）・`st`・`t5`（`sharetype`、指摘 2 の `s_srcrec_other` を含む））、危険な形（`e1_rev`）、この回の制限、または `rr6/n/s_gen`・`s_gen2` です。後の 2 つは型引数の値（`own 'a`）を局所値へムーブして、そのクラスのメソッドが返した参照の先の共有を通して書き込む汎用の関数で、A31 のどの先端も `E1013`（`store_local_borrow_through_reference`）で拒否します。型引数の値は呼び出し元のデータの参照を持つ値でもありうる（インスタンスのメソッドがその参照を返せる）ので、本体はその場合にも健全でなければならず、安全な形の拒否ではありません。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- キャッシュを足した `a2726750` のビルド（`r26`、`gate/tools/check-r26.mjs`、`results-r26.json`）は、30702 組のすべてで `r25` と同じ結果でした（検査の失敗も無し）。
+- 前の回の先端（第4回）の回帰の確かめに使われた 40 個（`r19-review-6-ce/r4/`、`r18-review-4-ce/p/u_rc_*`・`u_rcf_*`・`u_arr_*`・`u_rcself_*`）は、修正後も両方の edition で 80 組すべて拒否します。1232 個の探査のディレクトリ（`a34/`、`r18-review-4-*`・`r18-review-5-*`・`r19-review-6-*`、`rr4/`・`rr5/`・`rr6/n/`）で `5e99c1c0` のビルドと先端を比べた結果は、指摘 1 の 6 個とこの回の `rr6/n/u_*` だけが拒否に変わりました（`rr6/diffnh-1.txt`）。
+- 生成したプログラム（`rr6/g-check.mjs`、15552 個・31104 組を `e45887c8` のビルドで。結果は `rr6/g-results.json`・`g-summary.json`）: 危険な 18048 組はどれも拒否し（条件 (2)）、安全な 13056 組はすべて受理しました。
+
+条件 (3) の、`main` が受理する安全な形の拒否は、どれも文書に書いた安全側の制限です（この回の修正による `sharetype` の dyn の値と型引数の形、指摘 2 で文書にした `sharetype` の元の所有者のほかの部分の形、前からの A34 の 6 つの項目）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: `a2726750` で 3296 件すべて成功、4 件 skip（1393 秒、`rr6/nextest2.log`。この回の 1 件を含みます）。その前の `e45887c8` の実行では、`tests/formatter.rs` の `corpus_is_idempotent_and_semantically_unchanged` が 1 件、走査中のディレクトリが同時に走るほかのテストで消えた（`read_dir` の `NotFound`）ために失敗し、単独で回すと成功しました（`rr6/nextest.log`・`nextest-rerun.log`）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 84 件（基準のバイナリと先端でも 84 件）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件が、`e45887c8` と `a2726750` のビルドの両方ですべて成功（`rr6/suites.log`・`suites2.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`rr6/step5-main.txt`）。
+- 検査の時間: `5e99c1c0`・`e45887c8` の `walk_hides_blocks` は呼び出しのたびに型を走査したので、`gen_chain.py cellshares` の所有権の検査が先端のおよそ 3.5 倍になりました（n = 400 で 1389 ms（先端 380 ms）、800 で 5911 ms（1707 ms）、1600 で 24540 ms（7632 ms））。型ごとのキャッシュ（`hidden_walks`、`a2726750`）で、n = 400 で 401 ms（先端 380 ms）、800 で 1693 ms（1707 ms）、1600 で 10022 ms（9732 ms）に戻りました（同じ負荷の機械で続けて測りました。`rr6/chain-times.txt`・`rr6/chain2.sh`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・62 個のリンク・11 個の例・22 回の native の実行、`rr6/docs.log`）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功（`rr6/doc-checks.log`）。A34 の第6回の 8 個のプログラムのブロックは `rr6/a34/` のファイルと同じ内容です（取り出して比べました）。
+- コミット: `5e99c1c0`（修正とテスト）、`f1e8636f`（文書）、`e45887c8`（`export_block` の締めつけとテスト）、`d381de9b`（文書）、`a2726750`（キャッシュ）、この節。
+- 変えたファイル: `src/ownership.rs`、`tests/rc.rs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（A34 へ移した行の `sharetype` の説明と、この回に塞いだ穴の記録）、A34（`sharetype` の第6回の形、原因・方針・落とし穴・テスト計画）、このチケット（「残る制限」と、この節）。
+
+### Copilot のレビューへの対応（第2回）（2026-11-15）
+
+PR #105 への Copilot の 2 度目のレビュー（`src/ownership_control.rs` への指摘 4575655989、重大度は高）に対応しました。指摘は「ループが、対象がすでに借用を持つ中身をほかへ書き出すと、要約のどの事実も変えずに `contents_elsewhere` が変わる。`check_loop` は本体の前の `exit` の状態を返すので書き出しが失われ、後の置き換えが、書き出した写しがまだ必要とする借用を終わらせる。`contents_elsewhere` と `kept_elsewhere` を `LoopSummary` とその構成に入れ、`kept_elsewhere` は `kept` と同じく `(place, mutable)` で正規化すること」というものです。修正後・先端（`fbd7d194`。`src/` は `a2726750` と同じ）・`main`（`168ae4a5`）・基準のバイナリで確かめ、指摘のとおりに再現しました。結果は `target/scratch/a31/copilot2/` にあります（`copilot2/v.sh` が修正後・先端・`main`・基準の最初の誤りを並べ、`RUN=1 ASAN=1` で native と ASan の `-O0`・`-O3` の出力を足します。`p/` が探査で、`gen/gen1.py` がループの形を生成します。`tip-runs-gen1.txt` が先端での実行、`new-safe-runs.txt` が修正後の安全な形の実行です）。
+
+#### 再現と原因
+
+`check_loop` は、反復の始まりの状態の要約（`loop_summary`）が、本体の後の状態（入口の状態と `continue` の状態の合流）の要約と同じになるまで反復し、同じになった反復の出口の状態（その反復の始まりの状態から条件を評価したもの）を返します。要約は、ムーブした場所、局所値ごとの loan の `(place, mutable)`、`copy_variables`、`kept` の `(place, mutable)`、`handed` の数、`block_shares` だけで、`State` の `kept_elsewhere`・`contents_elsewhere`・`moved_always`・`generic_moves` と、loan の場所と可変性のほかの性質（`Value::through` など）を持ちませんでした。本体がそれだけを変えると、最初の反復で要約が変わらず、ループの後は本体の前の状態になり、本体もその事実の下で検査し直されません。
+
+- **`contents_elsewhere`**（`p/u_ce_*`）: `fn renew p out n` が `let t = ref p.a[0]` の借用を `p.h` のセルへ書き込み（`kept` の自分の部分の借用）、ループの中で `Mutex.with_lock (ref p.h.cell) (\b -> copy_out b (ref out.cell))` でセルの中身を `out` のセルへ写し、ループの後で `deref p = mkpa ()` で置き換えます。ループの無い形（第12回の `f09`、`p/u_ce_noloop`）は先端も `deref` の位置の `E1014` ですが、ループの形では写しが失われ、置き換えが借用を終わらせて受理していました。呼び出し元は `out` の写しを通して、置き換えで解放した文字列を読みます。
+- **`kept_elsewhere`**（`p/u_ke_*`）: ループの中で、セルに書き込んだのと同じ借用 `t` を `out` のセルへも書き込む形。loan は同じ番号なので `kept` の `(place, mutable)` は変わらず、`kept_elsewhere` への追加だけが失われました。
+- ループの形は、`while`、範囲の `for`、配列の `for`、本体の前の `break`、`continue`、入れ子のループ、ループの中の `try`・`match`・`if` の 9 つです。どれも先端・`main`・基準が両方の edition で受理し、先端の native の `-O0`・`-O3` で `drop 8 2`・`drop -1 2`・`drop 0 2`・`-1`（正しくは 2 行目が `drop 8 2`、結果が `8`）、ASan の `-O0`・`-O3` で heap-use-after-free でした（`copilot2/tip-runs-gen1.txt`）。条件の中で書き込む形（`u_*_condblock`）は、出口の状態が条件の後なので、先端も拒否していました。仮引数の先を部分の借用ごと渡す関数で写す形（`p/u_helper_while`、第12回の `f14` のループの形）と、写しを隠れた環境へ書き込む形（`p/u_hidden_while`、`f5u3` のループの形、edition 2027）も、先端は受理していました。
+- **`Value::through`**（点検で見つけた、同じ仕組みの穴。`p/u_th_while`）: `fn stash p out n` が `let mut x = p.f`（`p` の中身の写しで、loan を `through` で持つ）の後、ループの中で `x = \() -> look (ref p.s)`（`p` そのものを捕捉し、同じ loan を `through` でなく持つ）とし、ループの後で `x` を `out` のセルへ書き込む形です。合流はその loan を `through` でなくしますが、要約は場所と可変性だけなので変わらず、ループの後の `x` は `p` の中身の写しのままで、格納は `p` の先の借用でなく中身の写し（`Part::Contents`）として記録されました。呼び出し元は `out` が `p1` の借用を持つことを知らず、`out` を `p1` より先に宣言した `run` を受理し、`out` の破棄が `p1` の破棄の後の `p1.s` を読みます（先端の native と ASan の `-O0`・`-O3` で `drop -1 2`。正しくは `drop 8 2`）。ループの無い形（`u_th_noloop`）は先端も `24:5` の `E1013`（`assignment_extends_borrow`）です。
+
+どれも `main`・基準も受理する穴（`main` は格納を追跡しません）ですが、ループの無い形は A31 が拒否するもので、A31 の規則（`contents_elsewhere`・`kept_elsewhere`・`through`）がループで抜けていました。
+
+#### 変えたこと（`src/ownership_control.rs`、`df307296`）
+
+`LoopSummary` を構造体にし、`State` の事実をすべて入れました。
+
+- loan は `LoanKey`（場所、可変性と、検査が読むほかの性質の印: ブロックの共有 `Loan::share`、パターンの view、値が `through` で持つこと、`exact_loans`・`ordered_loans`・`holding_loans` に入ること）で比べます。印はどれも loan を作る所で決まるので、反復ごとに作り直す loan も同じ組になり、不動点は前と同じく収束します。指摘の勧めた `(place, mutable)` より細かい組です（同じ場所の loan が印だけ違う形も比べるため）。
+- 比べる事実: ムーブした場所、`moved_always`、推論のジェネリックなムーブの場所、局所値ごとの loan と region の slot（`Value::regions`）、`copy_variables`、`kept`・`kept_elsewhere`（`LoanKey` で）、`contents_elsewhere`、`block_shares`、`handed` の数、`exports` の数（ブロックの共有が行った先。`handed` と同じく、増えるだけで、後の格納がその場で読みます）。
+- 入れないもの: `State::aliases`（match・`for`・パターンの view の束縛が自分の局所値にだけ足し、スコープの終わりで外すので、ループの前の局所値のものは反復で変わりません）と `Value::closed_result`（`State::merge` が最初の状態のものを残すので、合流した状態の要約で変わりません）、借用の親 `Loan::parents`（下の点検の表。`docs/architecture.md` と `LoopSummary` の doc comment には、この対応の後のレビューの指摘 4 で書きました）。
+
+#### 点検（同じ種類の抜け）
+
+ループの不動点のほかの部分と、検査のほかの不動点・状態の要約を点検しました。探査は両方の edition で、先端と修正後で確かめました。
+
+| 部分 | 反復で変わりうるか | 危険な受理 | 対応 |
+| --- | --- | --- | --- |
+| `kept_elsewhere`・`contents_elsewhere`（A31） | 変わる | ある（`u_ke_*`・`u_ce_*`・`u_helper_while`・`u_hidden_while`） | 要約に入れた |
+| `Value::through`（A31） | 変わる | ある（`u_th_while`） | `LoanKey` の印 |
+| `moved_always`（A31） | 丸ごとムーブした局所値をループで代入し直すと変わる | 見つからない。丸ごとのムーブは局所値の loan を消す（`clear_loans`）ので、意味のある代入し直しは loan を足して要約を変え、loan の無い値は破棄の順序の検査が見ません（`u_ma_while`・`u_ma2_while` は先端も拒否、`s_ma_*` は受理） | 要約に入れた |
+| `generic_moves`（基準から） | 推論のときだけ、ムーブと一緒に | 無い（失うと推論が Copy を求めず、ムーブの後の使用が誤りになる側） | 場所を要約に入れた |
+| `aliases`（基準から） | ループの前の局所値のものは変わらない | — | 入れない |
+| `Loan::share`（A31） | 原理的には | 見つからない（`u_sh*_while` は先端も拒否。保持する値の共有は、ループの前に `keep_for_drop` がブロックの中身に読み替えます） | 印に入れた |
+| `exact_loans`・`ordered_loans`・`holding_loans`（A31） | loan を作る所で決まり、同じ場所の別の loan が足されうる | 見つからない | 印に入れた |
+| `Loan::view`（基準から） | 推論のときだけ | 無い（Copy を求める側） | 印に入れた |
+| `Loan::parents`（基準から） | 同じ場所の loan を別の参照を通して得るには、排他の借用と競合する | 見つからない | 入れない（`cur = ref mut (deref cur).next` のような再借用の連なりで組が伸び続けるため） |
+| `Value::regions`（A12） | 可変の局所値は代入で slot を失い（`s_rg_mut` はどのバイナリも拒否）、不変の局所値はセルへの格納で `None` になる | 見つからない（`u_rg_while` はどのバイナリも拒否） | 要約に入れた |
+| `Value::closed_result`（基準から） | 合流が最初の状態のものを残す | 無い（ロックのコールバックの検査は、局所値を通した関数値を証明済みとしません。`s_cr_let`・`s_cr_mut` はどのバイナリも拒否） | 入れない |
+| `handed`（A31） | 増える | — | 前から要約に入っている |
+| `exports`（A31、`Checker`） | 増え、後の格納がその場で読む | 見つからない（`u_ex*_while` は先端も拒否。共有を通した格納は元の所有者の loan に届きます） | 数を要約に入れた |
+| `break`・`continue`（`LoopFlow`） | 状態をまるごと持ち、合流する | — | 最後の反復のものを使う（要約がそろえば、最後の反復の始まりの状態は前の反復のものを含みます） |
+| `TryFlow` | 状態をまるごと持ち、合流する | — | — |
+| `State::merge`・`merge_reachable` | 和（`kept`・`kept_elsewhere`・`contents_elsewhere`・`moved`・`generic_moves`）と積（`moved_always`・`block_shares`）。`through` は両方が `through` のときだけで、region は違えば `None` | — | — |
+| `State::same`（A25 の重複の省略、`2ed5f692` で A31 の事実も比べる） | loan の番号まで比べる（同じ状態だけ） | — | — |
+| `joint_facts`・`StoreFacts::join` | 要素をすべて比べる（`stores`・`calls`・`hidden` の数、`drop_only`・`shared_only`・`ordered`・`hidden_shared`、`shared_some` の数、場所の道） | — | — |
+| `owner_facts` | `Own` 全体を比べる | — | — |
+| `settle`（呼び出しごとの格納の不動点） | `store_changes` が、局所値の loan と `through` の数、`exports`、隠れた環境の記録、事実の変化を数える | — | — |
+| `closed_returns` | 単調な印 | — | — |
+
+点検で見つけた危険な受理は、すべてこの修正で拒否します。
+
+点検の探査の中で、先端からある、edition 2026 でループの検査が収束しない形を見つけました。`ref mut` の仮引数 `p` の先のセルの中身を、値の仮引数 `sink` を捕捉したラムダ `w` を通して隠れた環境へ書き込むループ（`p/u_hidden_while`、置き換えをループの前にした安全な形 `p/s_hidden_while`）です。隠れた環境への格納（`store_hidden_except`）が仮引数 `p` の値にも写した中身の loan（`p` の先の `h.cell` の場所）を足し、`deref p` の場所は `p` の値のすべての loan の場所から作る（`Checker::place`）ので、反復ごとに `p.h.cell.h.cell` と場所が 2 段ずつ伸び、要約が変わり続けます（先端の要約も局所値の loan の場所を持つので同じです）。先端も修正後も、両方の形の edition 2026 の検査が 50 分（CPU で 45 分）で終わらず、`main` は 0.7 秒で受理します（安全な形は native と ASan の `-O0`・`-O3` で手で求めた `drop 0 2`・`drop 8 2`・`8`、ASan の報告なし）。edition 2027 ではどちらも 1 秒ほどで終わり、安全な形を受理し、危険な形を修正後は `31:5` の `E1014` で拒否します（先端は受理していました）。直すには、参照の指す場所の求め方か場所の長さを変える必要があり、小さな変更ではないので、A33 の「検査の時間」に再現のプログラムとともに記録し、`lifetimes.md` の「現在の制限」に書きました。
+
+#### テスト
+
+- `tests/rc.rs` の `a_loop_keeps_what_its_body_stored_elsewhere`: 2 つの事実（写しと、別の先への借用）× 9 つのループの形を、両方の edition で `deref` の位置の `E1014`（`borrow_conflict`）で拒否し、置き換えをループの前にした安全な双子を受理します。`through` の形は `27:5` の `E1013`（`assignment_extends_borrow`）で、ループで `p.f` を束縛し直す双子は受理します。先端の `src/ownership_control.rs` に戻したビルドでは、最初の形（`while`）が受理されて失敗することを確かめました。
+- `tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs` の `loop_lends_borrows_of_the_new_value`: 置き換えの後に、新しい値の借用をループの中で別の仮引数の先へ書き込む安全な形です。古い `q` の記録が 0、`d` と新しい `q` の記録が新しい "123456789" を読んで 9 + 4 と 9 + 2、関数は新しい値の 7 を返すので、`((7 * 100 + 0) * 100 + 13) * 100 + 11 = 7001311`。基準と先端のバイナリでも同じ値で、85 件が成功します。
+- 安全な双子（`s_ce_while`・`s_ke_while`・`s_ce_nested`・`s_ke_tryin`・`s_ce_breakfirst`・`s_ke_foreach`）は、修正後の native と ASan の `-O0`・`-O3` で手で求めた `drop 0 2`・`drop 8 2`・`drop 8 2`・`8`（`s_th_while` は `drop 5 2`・`0`）を出し、ASan は何も報告しませんでした（`copilot2/new-safe-runs.txt`）。
+
+#### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/collect-r27.mjs`・`check-r27.mjs`・`diff-r27.mjs`・`table-r27.mjs` に写し（基準と先端（`r26`、`a2726750` のビルド。`fbd7d194` と同じ）の結果は `results-r26.json` から使い、無いプログラムは基準と先端でも検査）、この回の探査（`copilot2/p/` の 88 個）を足して、15439 個・30878 組を両方の edition で検査しました（`results-r27.json`、分類は `diff-r27.txt`、`copilot2/gate-diff-r27.txt` に写し）。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 5240 | 4186 |
+| 両方が拒否 | 5241 | 7167 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 4920 | 4057 |
+| 検査の失敗・時間切れ | 0 | 2 |
+
+- **RA は 67 組で、前回と同じ 67 組です。新しい RA はありません。** 条件 (1) は成り立ちます。
+- 前回からある 30702 組では、先端からの受理・拒否の変化も、最初の誤りの変化もありません。
+- 足した 176 組での先端からの変化は、受理から拒否の 41 組だけで、拒否から受理はありません。41 組は、`u_ce_*`・`u_ke_*` の 9 つの形（`ce_while` は `u_ce_while` と同じプログラム）と `u_th_while` の両方の edition の 38 組、`u_helper_while` の両方の edition、`u_hidden_while` の edition 2027 で、どれも危険な形です。
+- 時間切れの 2 組（240 秒）は、上の edition 2026 の `s_hidden_while`・`u_hidden_while` で、先端も同じく時間切れです。表では AR に数えています。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- 生成したプログラム（`copilot2/g-check.mjs`、15552 個・31104 組。結果は `copilot2/g-results.json`・`g-summary.json`）: 危険な 18048 組はどれも拒否し（条件 (2)）、安全な 13056 組はすべて受理しました。
+
+条件 (3) の、`main` が受理する安全な形の拒否に、この回で増えたものはありません。edition 2026 の収束しない形は先端からあるもので、A33 と `lifetimes.md` に書きました。（この 2 つの文は誤りでした。後のレビューで、ループの中で置き換えてから新しい値の中身を写す形と、セルのフィールドへ借用を書き込んだ複数 region のレコードのループの形が、この修正で拒否に変わった安全な形であること、収束しない形が edition 2026 に限らないことが分かりました。下の「修正のレビュー」）
+
+#### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3297 件すべて成功、4 件 skip（1801 秒、`copilot2/nextest.log`。この回の 1 件を含みます）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 85 件（基準と先端のバイナリでも 85 件）、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`copilot2/suites.log`）。
+- 手順 5 の比較（`_tools/step5.mjs`）: `main`（`168ae4a5`）と比べて 155 個のどれも出力が同じ（`copilot2/step5-main.txt`）。
+- 検査の時間（`copilot2/perf.sh`、`TSUZURI_KG=0 TSUZURI_TIME_PASSES=1 tsuzuri check` の所有権の検査の中央値、交互に 5 回、ms。基準・先端・修正後）: `perf_loop_breaks_400` 143 / 390 / 366、`perf_try_checked_400` 225 / 402 / 377、`perf_ho_wrap_120` 0.55 / 2.68 / 2.61、`perf_ho_chain_320` 1.48 / 26.2 / 26.4、`drop_locals_600` 3.73 / 5.87 / 5.79、`pattern_param_chain_200` 1.38 / 6.84 / 7.05、`perf_match_nest_30` 1.40 / 1.60 / 1.51、`p01_relay_chain_400` 1.34 / 15.5 / 15.3、`x01_many_holders_800` 676 / 1254 / 1208、`x04_nested_loops_30` 4.48 / 8.12 / 8.01、`p_cellshares_400` 21.3 / 233 / 232、`p_cellshares_800` 85.5 / 995 / 995 で、先端と同じ程度です（`copilot2/time-perf.txt`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・63 個のリンク・11 個の例・22 回の native の実行、`copilot2/docs.log`）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）が成功（`copilot2/doc-checks.log`）。
+- コミット: `df307296`（修正とテスト）、`aadc449d`（文書）、この節と A33 の検査の時間・`lifetimes.md` の制限。
+- 変えたファイル: `src/ownership_control.rs`、`tests/rc.rs`（1 件）、`tests/fixtures/in_place_writes/Main.tz` と `tests/features.mjs`（1 件）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（この回に塞いだ穴の記録、検査の時間）、このチケット（「残る制限」と、この節）。
+
+#### 修正のレビュー（2026-11-15）
+
+この対応（`df307296`・`aadc449d`・`8fbcd40e`）のレビュー（反例の探索 `target/scratch/a31/copilot2-review-ce/`、適合の確認 `target/scratch/a31/copilot2-review-conf/`）の 4 件の指摘を、修正後（`8fbcd40e`。`src/` は `df307296` と同じ）・先端（`fbd7d194`）・`main`（`168ae4a5`）・基準のバイナリで確かめ、どれも指摘のとおりに再現しました。危険なプログラムの受理はありません。指摘 1・3 は修正による先端からの退行（`main` も先端も受理する安全な形の拒否）、指摘 2 は先端からある検査が終わらない形の文書の誤り（範囲が実際より狭い）、指摘 4 は文書の誤りです。この回の規則（検査を緩める変更はしない。安全な形の拒否は、`src/` を変えずに文書と A34 に書く）に従い、`src/` は `LoopSummary` の doc comment だけを直しました。結果は `target/scratch/a31/copilot2/rv/` にあります（`p/`・`ph/` が再現と探査、`a34/` が A34 に書いたプログラム、`tools/quick.sh` が修正後と `main` の両方の edition の最初の誤り。`../v.sh` は修正後・先端・`main`・基準を並べ、`RUN=1 ASAN=1` で `main` の native と ASan の `-O0`・`-O3` を足します）。
+
+##### 指摘ごとの判定
+
+| 指摘 | 確かめたこと | 対応 |
+| --- | --- | --- |
+| 1（ループの中で置き換えてから新しい値の中身を写す形の拒否。先端からの退行） | 再現（`p/s_rc_while` を修正後が両方の edition で `28:9`、範囲の `for` の `s_rc_forrange` を `27:9` の `E1014`（`borrow_conflict`）。先端・`main`・基準は受理し、`main` の native と ASan の `-O0`・`-O3` は手で求めた `drop 8 2`・`drop 0 2`・`drop 0 2`・`drop 0 2`・`0`、ASan の報告なし）。`if` の形 `s_rc_if` は先端も `27:5` の `E1014`（A31 の前からの拒否で、文書に無かったもの）。写した先を後で上書きする `u_ce_replin`（名前に反して安全）と入れ子の `u_ce_nestrepl` は修正後が `28:23`、先端は受理、`main` は `drop 8 2`・`drop 0 2`・`drop 0 2`・`0`。対照の `s_rc_twice`・`s_rc_nokept`・`s_rc_noloop` はどのバイナリも受理 | 文書（`drop.md` の「値全体の代入」、`lifetimes.md` の「現在の制限」、`docs/language.md`、`docs/architecture.md`）と A34 の `replcopy`（安全な形、同じく拒否する形、危険な双子 2 つ）、「残る制限」 |
+| 2（検査が終わらない形は edition 2026 だけではない。文書） | 再現（`ph/h8_simple_own`（edition 2027、`ref mut Box` と `own` の `Arc`）を修正後と先端が両方の edition で 120 秒で打ち切り、`main`・基準は 1 秒以内に受理して `3`。`h10_localsink`・`h16_refparam_local`・`h2_own2027`・`h9_refp_own` も両方の edition で同じ。ループの無い `h12_noloop` はどれも受理）。範囲を広げて調べ（下）、条件を「先にセルを持つ参照の仮引数の先の借用を、書き込むセルを所有する関数値へ渡すループ」と特定 | 文書（`lifetimes.md` の「現在の制限」、`docs/architecture.md` の `E1017` の文）と A34 の `loopplace`（A33 の「検査の時間」から移した）、「残る制限」 |
+| 3（セルのフィールドへ借用を書き込んだ複数 region のレコードの region。先端からの退行） | 再現（`p/rg_cell_while2` を修正後が両方の edition で `20:17`、`rg_cell_for2` を `18:17` の `E1014`（`borrow_conflict`）。先端・`main`・基準は受理し、`main` の native と ASan の `-O0`・`-O3` は手で求めた `836`、ASan の報告なし）。ループの無い `rg_cell_noloop2` と `if` の `rg_cell_if2` は先端も `17:17`（A31 の前からの拒否で、文書に無かったもの） | 文書（`lifetimes.md` の「現在の制限」の表と複数 region のレコードの段落、`docs/architecture.md` のスロットの段落）と A34 の `cellslots`、「残る制限」 |
+| 4（`docs/architecture.md` と `LoopSummary` の doc comment が、比べない事実から `Loan::parents` を落としていた。文書） | 確認（`loan_key` は `(place, mutable, flags)` で、`Loan::parents` は `active`・`retain_live_loans`・`held_keeps`・`holders` と再借用した排他参照のムーブの検査が読む） | `docs/architecture.md` のループの不動点の段落と `src/ownership_control.rs` の `LoopSummary` の doc comment に、比べないものとその理由（再借用の連なりで組が伸び続ける。同じ場所と印の借用を別の親で得るには親の排他の借用と競合する）を書いた。上の「変えたこと」の「入れないもの」にも足した |
+
+##### 原因
+
+- **指摘 1**: `check_loop` の反復の始まりの状態は、入口の状態と `continue` の状態の合流（`State::merge` の和）です。`renew` はループの前に `p.a[0]` の借用 `t` を `p.h` のセルへ書き込むので、入口の状態の `kept` は `t` の借用を持ちます。1 回目の反復は、置き換えで `t` の借用を終わらせ（`replaced_target`）、新しい値の中身を写して `contents_elsewhere` に `p` を入れます。2 回目の反復の始まりの状態は、入口の `kept` の `t` の借用と、1 回目の反復の `contents_elsewhere` の `p` を合わせて持ち、`replaced_target` は根が `contents_elsewhere` にあると `kept` の借用を終わらせずに戻るので、置き換えが `t` の借用と競合します。実行では、この 2 つが同時に成り立つことはありません。先端は、要約が `contents_elsewhere` を比べなかったので 2 回目の反復を検査せず、受理していました（その抜けが Copilot の指摘した穴です）。`if` の合流も同じ和なので、`s_rc_if` は先端も拒否していました。
+- **指摘 2**: セルを所有する関数値の呼び出しは、`store_hidden_except` で、セルに届く型か環境を隠す型のすべての局所値へ、渡した値の借用を格納します。先にセルを持つ参照の仮引数 `p` もその局所値なので、`p` の値は先の場所の借用を持つようになり、`Checker::place` は参照の先の場所を参照の値のすべての借用の場所から作るので、反復ごとに場所が 1 段ずつ深くなります。要約は場所を比べるので変わり続け、反復ごとに借用が増えて 1 回の反復の検査も重くなり、反復の上限（`MAX_NESTING` + 1 回、`E1017`）に届く前に検査が実用的な時間で終わりません（検査中のプロセスの標本は、`joint_facts` の中の本体の検査の `check_loop` の下の `access`・`active` でした。`rv/h8-sample.txt`）。関数値がセルを所有することが条件で、edition 2026 の値の仮引数に限りません（edition 2027 の `own` の仮引数、局所値の `Arc.share` の捕捉、部分適用）。
+- **指摘 3**: `absorb_owner` は、局所の持ち主へ借用を持つ値を格納すると、格納先のフィールドを問わず、持ち主の region の slot を捨てます（`owner.regions = None`）。`let t = x.b` は `x` のすべての借用を持ち、`t` が生きている間の `eat s1` が競合します。先端は要約が slot を比べなかったので、ループの後は本体の前の状態（slot がある）に戻り、受理していました。修正が slot を要約に入れたので、ループの形もループの無い形と同じ拒否になりました。
+
+##### 決めたこと
+
+- 指摘 1 の勧め（根ごとに、写したときの `kept` の借用を記録し、置き換えはそれだけを残す）は、拒否を受理に変える変更で、写しの記録とループの要約の両方に関わるので、この回では入れず、A34 の `replcopy` の方針案にしました。危険な双子（置き換えの前に古い値の中身を写す形、片方の枝の写しを別の反復の置き換えが無効にする形）は、写しが `t` の借用を記録するので、その案でも拒否のままです。写した先を後で上書きする形（`u_ce_replin`）は、置き換えの前に古い値の中身を写しているので、その案でも拒否のまま残ります（セルへの書き込みを上書きとして扱わないため。A34 の「対象外」）。
+- 指摘 2 は、直すには隠れた環境への格納先か参照の先の場所の求め方を変える必要があり、小さな変更ではないので、文書と A34 の `loopplace` に書きました。場所の長さに上限を設けて `E1017` で打ち切る締めつけも考えましたが、上限の値と、上限に届く既存の安全なプログラムが無いことを確かめる必要があり、検査の結果を変える変更なので、A34 の方針案 (c) に置きました（場所をまとめて受理に変える案です。検査を止めるだけの打ち切りは、後で入れました。下の「検査が終わらないループの打ち切り（2026-11-15）」、「借用の数による打ち切り（2026-11-15）」と「借用の増え方による打ち切り（2026-11-16）」）。`docs/architecture.md` の「上限を超える複雑な解析は `E1017` として安全に打ち切ります」は、反復の回数の上限と、その上限に届く前に終わらない形があることに書き直しました。
+- 指摘 3 の勧め（region を持たないフィールドへの格納では slot を保つ）は、レコードリテラル（`record_value`）の扱いと同じですが、拒否を受理に変える変更なので入れず、A34 の `cellslots` の方針案にしました。
+
+##### この回の確かめで見つけたもの
+
+- 検査が終わらない形の範囲（`rv/f2-verdicts.txt`・`f2-scope.txt`・`f2-scope2.txt`。修正後を 20 秒か 120 秒で打ち切り）: 終わらないのは、edition 2027 の読み取りの仮引数 `Box`（`ph/h20_readparam`。edition 2026 では値の仮引数なので終わります）、セルの中身でなく `ref p.s` を捕捉した関数を渡す形（`h21_fieldborrow`、両方の edition）、範囲の `for`（`h25_forrange`、両方の edition）、edition 2026 の部分適用 `put (Arc.share (ref sink))`（`h15_partial`）、edition 2026 の値の仮引数の形（`h1_doc` = `s_hidden_while`・`h3_nokeep`・`h4_noreplace`・`h5_refp`・`h7_simple`）。終わるのは、ループの無い並び（`h12_noloop`）、局所値の先のセル（`h13_localowner`・`h14_localref`）、先にセルを持たない仮引数（`h17_array`・`h18_array_for`・`h19_recarray`・`h24_mutexparam`・`h26_fieldborrow_nocell`）、セルへの参照を捕捉した関数値（`p/s_loopplace_ref`。回避の書き方）です。危険な双子（`a34/u_loopplace`）も修正後と先端で終わらず、`main` は受理して `-1`（解放した文字列を読む）を出します。
+- 指摘 1 の探査の `u_ce_replorcopy`（ループの本体を `if i > 0 then deref p = mkpa () else` 写し、にしたもの）は、先端が受理し、`main` の ASan の `-O0`・`-O3` が heap-use-after-free の危険な形で、修正後は `28:23` の `E1014` です（Copilot のレビュー 2 の修正で塞いだ穴。A34 の `replcopy` の危険な双子 2）。
+- `replcopy` の回避の書き方（最初の反復をループの前に書く `p/s_replcopy_peel2`）は受理し、`if n > 0` で囲んだ形（`s_replcopy_peel`）は合流で `32:9` の `E1014` です。`cellslots` の回避の書き方（書き込みの前に読む `p/s_cellslots_readfirst`）は受理します。
+
+##### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/collect-r28.mjs`・`check-r28.mjs`・`diff-r28.mjs`・`table-r28.mjs` に写し、この回のプログラム（レビューの `copilot2-review-ce/`・`copilot2-review-conf/` と `copilot2/rv/`）のうち新しい 111 個を足して、15550 個・31100 組を両方の edition で検査しました（`r28` はこの回のビルド。`src/` の変更は doc comment だけです）。前回からある組は、基準・先端（`r26`、`fbd7d194`）・前回の修正後（`r27`、`df307296`）の結果を `results-r27.json` から使い、`r28` はすべての組で検査し直しました。新しいプログラムは 4 つのバイナリで検査しました（120 秒で打ち切り）。結果は `results-r28.json`、分類は `diff-r28.txt`（`copilot2/rv/gate-diff-r28.txt` に写し）、新しい組の一覧は `copilot2/rv/gate-fresh-r28.txt` です。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 5272 | 4209 |
+| 両方が拒否 | 5259 | 7190 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 4981 | 4122 |
+| 検査の失敗 | 0 | 0 |
+| 時間切れ（AR に数える） | 9 | 20 |
+
+- **RA は 67 組で、前回と同じ 67 組です。新しい RA はありません。** 条件 (1) は成り立ちます。
+- `r27` から `r28` への受理・拒否の変化はどの組にもありません（前回からある 30878 組のうち、最初の誤りの文字列が変わったのは、前回 `FAIL SIGKILL` と記録した edition 2026 の `s_hidden_while`・`u_hidden_while` の 2 組が `TIMEOUT` になったことだけで、道具が時間切れを別に記録するようにしたためです）。新しい 222 組でも `r27` と `r28` の結果は同じです。
+- 先端（`r26`）から `r28` への変化は、受理から拒否の 98 組だけで、拒否から受理はありません。98 組は、前回の 41 組（危険な形）と、新しい 57 組です。新しい 57 組は、危険な形（`u_ce_contlast`・`u_ce_forown`・`u_ce_matcharms`・`u_ce_tryaround`・`u_ce_replorcopy`、`u_hid_*`（edition 2027）、`u_th_*`、`l_ce_breakrepl`・`l_ce_second`・`l_ke_second`、例外のハンドラーの中で写す `l_ce_try_handler`・`l_ke_try_handler`（`@checked i * 2` が溢れる入力では写しの後に置き換える））と、文書に書いた安全側の制限（`replcopy`: `s_replcopy`・`s_rc_forrange`・`u_ce_replin`・`u_ce_nestrepl`。`cellslots`: `s_cellslots`・`rg_cell_for2`。前回の文書の「写しや別の仮引数の先への書き込みがループの本体にあっても同じ」に当たる、先の別のセル `h2` の中身を写す `v2_keep_copyh2_while`（ループの無い形は先端も拒否））のどれかです。
+- 時間切れの 29 組は、どれも `loopplace` の形（edition 2026 の `u_hid_*`・`s_hidden_while`・`u_hidden_while` を含む）で、先端と前回の修正後も同じく時間切れ、基準は受理します。
+- 基準が受理し対応後が拒否する新しい組のうち名前が危険を示さないものは、上の文書に書いた制限、危険な形（`l_*`。条件の中で写す `l_ce_whilecond_true`・`l_ke_whilecond_true` とラムダの中で格納する `l_ke_lambda` は先端も拒否）、時間切れの `loopplace` の形、`if n > 0` で囲んだ回避の書き方 `s_replcopy_peel`（A34 の `replcopy` に書いた形）のどれかです。
+- 基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- 生成したプログラム（`copilot2/rv/g-check.mjs`、15552 個・31104 組を `r28` のビルドで。結果は `copilot2/rv/g-results.json`・`g-summary.json`）: 危険な 18048 組はどれも拒否し（条件 (2)）、安全な 13056 組はすべて受理しました。
+
+条件 (3) の、`main` が受理する安全な形の拒否のうち、この回の前の修正で増えたもの（`replcopy`・`cellslots` のループの形）と、前からあって文書に無かったもの（`replcopy` の `if` の形、`cellslots` のループの無い形と `if` の形）は、文書と A34 に書いた安全側の制限です。検査が終わらない形（`loopplace`）は先端からあるもので、範囲を正して文書と A34 に書きました。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功（`rv/clippy.log`）。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3297 件すべて成功、4 件 skip（2509 秒、`rv/nextest.log`。この回はテストを足していません。`src/` の変更は doc comment だけです）。
+- E2E（開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 85 件、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`rv/suites.log`）。
+- 文書: `node scripts/check-docs.mjs`（`drop.md`・`lifetimes.md`、2 ページ・67 個のリンク・11 個の例・22 回の native の実行、`rv/docs.log`）、`node scripts/gen-docs.mjs --check`（19 個のブロック）、`node scripts/check-cli-docs.mjs`（4 個の検査）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs`（117 個のリンク）が成功（`rv/doc-checks.log`）。
+- コミット: `37817ff2`（文書と `LoopSummary` の doc comment）、`1b1c3afb`（A34 の `replcopy`・`cellslots`・`loopplace`、A33、`_features/README.md`）、この節。
+- 変えたファイル: `src/ownership_control.rs`（doc comment）、`drop.md`、`lifetimes.md`、`docs/language.md`、`docs/architecture.md`、A33（「検査の時間」の段落を A34 への案内に、表の A34 の行、記録）、A34（3 つの項目）、`_features/README.md`（A34 の行）、このチケット（「入れないもの」、条件 (3) の誤った文への注記、「残る制限」、この節）。
+
+#### 検査が終わらないループの打ち切り（2026-11-15）
+
+この節の仕組み（`Checker::leaves_type`、9 回）は、下の「借用の数による打ち切り（2026-11-15）」で、反復ごとの借用の数の上限（`LOOP_LOAN_GROWTH`）に置き換え、さらに「借用の増え方による打ち切り（2026-11-16）」で、借用の増え方の打ち切り（`LoanGrowth`）に改めました。
+
+この節の数え方（`Checker::leaves_type`、9 回）は `773ea1c4` のものです。そのレビューで、型から外れる場所の判定が誤って収束するループを止めることと、止まらない形が残ることが分かり、`5f3c2a0b` で置き換えました（下の「打ち切りのレビューへの対応（2026-11-15）」）。
+
+上の「修正のレビュー」の指摘 2（`loopplace`）は先端からある形ですが、`main` が 1 秒以内に受理する短い安全なプログラムの検査が終わらないコンパイラは出荷できないので、この回の規則（検査を緩める変更はしない。許すのは締めつけと、解析を止めることだけ）の中で、検査が終わらない代わりに `E1017` で止まるようにしました。収束するループの結果は変えず、`loopplace` の安全な形の受理は A34 に残します。結果は `target/scratch/a31/loopplace/` にあります（`profile.md` と `prof/` が計測、`t.sh` が最初の誤りと検査の時間、`tests/` が下のテストのプログラム、`conv2/` が参照の連なり、`wk/` が回避の書き方の形、`bin/` がこの回のビルド）。
+
+##### 何が増えるか（計測）
+
+`check_loop`・`Checker::place`・`settle` に一時的に計測を入れた開発用のビルド（計測は戻しました）で、ユーザーのループの反復ごとの状態を記録しました（時間はループの検査を始めてからの、反復の始まりまでの時間）。
+
+| 反復（0 から） | `h8_simple_own`（edition 2027）: 時間 | loan の数 | いちばん深い場所の段数 | 局所値が持つ loan | `u_hidden_while`（edition 2026）: 時間 | いちばん深い場所の段数 | 局所値が持つ loan |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | 0.025 秒 | 9 | 2 | 8 | 0.001 秒 | 4 | 8 |
+| 6 | 0.027 秒 | 77 | 6 | 128 | 0.003 秒 | 12 | 128 |
+| 10 | 0.080 秒 | 1045 | 10 | 2048 | 0.054 秒 | 20 | 2048 |
+| 11 | 0.231 秒 | 2071 | 11 | 4096 | 0.210 秒 | 22 | 4096 |
+| 12 | 0.930 秒 | 4121 | 12 | 8192 | 0.921 秒 | 24 | 8192 |
+| 13 | 4.045 秒 | 8219 | 13 | 16384 | 4.115 秒 | 26 | 16384 |
+| 14 | 18.463 秒 | 16413 | 14 | 32768 | 18.973 秒 | 28 | 32768 |
+
+- いちばん深い loan の場所は、反復ごとに書き込む道の長さ（`p.cell` は 1 段、`p.h.cell` は 2 段）ずつ深くなり、局所値が持つ loan の数は反復ごとに倍になります。`deref p` の場所（`Checker::place` の `E::Dereference`）は反復 `k` で `2^k` 個で、`p` の loan ごとに 1 つ（場所は `p.cell` に `cell` を `k` 回付けたもので、場所が同じで親が違うものが多い）です。`settle` の pass は呼び出しごとに 2 回のままでした。
+- 1 回の反復の時間は前の反復の約 4 倍です（`active` が、アクセスのたびに局所値が持つすべての loan とその親をたどり、アクセスの数も場所の数とともに増えるため）。上限（129 回）までの反復を検査することはなく、14 回目の反復（反復 13）が約 4 秒、15 回目が約 18 秒の時点で始まります。
+- 検査が終わらない探査（`copilot2/rv/ph/*`・`copilot2/rv/a34/{s,u}_loopplace`・`copilot2-review-conf/ph/*`・`copilot2/p/{s,u}_hidden_while`、両方の edition の 47 組。`prof/*.txt`）は、どれも同じ形でした。
+
+##### 変えたこと（`src/ownership_control.rs`、`773ea1c4`）
+
+- `check_loop` は、収束しなかった反復（最初の反復を除く）のうち、型から外れる場所の loan を、それまでの反復が作ったどの型から外れる場所よりも深く作った反復を数え、`DEEPER_ITERATIONS`（9）回になると `E1017`（`loop_ownership_limit`）を報告します。位置と文は反復の上限の `E1017` と同じ（ループの本体、`loop ownership analysis exceeds the compiler limit; simplify loop-carried borrows`）で、`help` が回避の書き方を言います（「the loop's borrows reach a deeper place in every iteration and never settle; when the loop passes a borrow of a reference parameter's target to a function value that owns a cell (a lambda that captures an `Arc` by value), capture a reference to the cell instead, such as `let cell = Arc.get (ref sink)`」）。反復の上限の `E1017` は前のままで、`help` はありません。
+- 型から外れる場所（`Checker::leaves_type`）は、その段の型に無い段を持つ場所です: レコードとタプルでない値のフィールドか、レコードやタプルに無いフィールド、コレクションでない値の要素。各段は `place_type` と同じく `Rc`・`Arc` を読み通します。共用体のペイロードの後（どのケースか場所が言わない）、型変数・その適用・`dyn` の値、型の分からない根（静的データ）は外れるとしません。region の slot の印は段に数えません（`unmarked_fields`）。`loopplace` の場所は、`record Mutex<'a> { cell: [(i32u * 'a)] }` なので `p.cell.cell` までは型に沿い、3 回目の反復の `p.cell.cell.cell`（配列のフィールド）から外れます（`ref p.s` を捕捉する形は 2 回目の反復の `p.s.s`（文字列のフィールド）から）。
+- 収束するループの結果を変えない理由: 数えるのは収束しなかった反復だけで、最初の反復は数えないので、10 回以内の反復で収束するループは 9 回に届きません。場所が型に沿ってだけ深くなるループは数えられません（共用体を通らない型の入れ子には限りがあるので、そうした場所は限りなく深くはなりません。ペイロードの後は外れるとしないので、共用体を通るものも数えません）。止まりうるのは、11 回以上の反復で収束し、そのうち 9 回で型から外れる場所がそれまでより深くなるループだけで、ゲートのコーパス・生成したプログラム・テストに無いことを下で確かめました。（2 つ目の理由は誤りでした: 場所のフィールドを根の宣言の型から読むので、関数の呼び出しの結果、region を持つレコードの仮引数、仮引数が持つ参照から始まる連なりは、型に沿っていても型から外れると読まれ、10 個以上の連なりが `E1017` になりました。region の slot の印の後のフィールドも、印の region の先の型のものです。下の節で直しました。）
+- 退けた案: (1) 型を問わず、それまでより深い場所を作った反復を数える案は、それぞれが次の参照の先のフィールドを指す 11 個以上の参照の連なり（`conv2/c11`〜`c13`。`q0 = ref (deref q1).a` … のループで、先端・`main` とも受理）を `E1017` にしたので採りませんでした（反復ごとに場所が深くなり、連なりの数の反復の後に収束します）。(2) `place_type` が型を返さない場所を数える案は、`loopplace` の場所では同じ結果ですが、静的データの根・ペイロード・region の slot の印を持つ場所も数えるので、専用の `leaves_type` にしました。(3) 関数の構文から作れる深さに余裕を足した絶対の上限は、呼び出し先の事実が足す道（`kept_copy`・`path_copy`）を数えると `loopplace` の打ち切りが遅れすぎ（反復の時間が 4 倍ずつ増えるため）、数えないと事実を通した連なりを止めうるので採りませんでした。(4) 場所を大きな部分にまとめてループを収束させる案は受理に変える変更なので、A34 の方針案 (c) のままです。
+- `help` の書き方は、知られているどの形でも正しいことを確かめました: 関数値に `let cell = Arc.get (ref sink)`（局所値の形は `Arc.get (ref sink2)`）を捕捉させた形（`wk/w_*`、15 の形）は両方の edition で受理し、native の `-O0`・`-O3` の出力は `main` と同じ（`3`、`ref p.s` の形は `4`、`Holder` を持つ形は `drop 0 2`・`drop 8 2`・`8` など。`wk-runs.txt`）です。同じ書き方にした危険な双子（`wk/w_u_loopplace`・`w_u_hidden_while`）は、`19:13` の `E1013`（`assignment_extends_borrow`）と `32:5` の `E1014` で拒否し、`main` は受理します。
+
+##### 時間
+
+リリースビルドの `r29`（`loopplace/bin/tsuzuri-r29`）で、キャッシュを温めた後に 3 回ずつ `check` を測った中央値です（`loopplace/time.sh`、`time-probes-r29.txt`。std を含むプログラム全体の経過時間と CPU 時間）。ほかの作業で機械の負荷が高いとき（load average 26〜42）に測ったので、経過時間は CPU 時間より長く出ています。
+
+| 探査 | edition 2027 | edition 2026 |
+| --- | --- | --- |
+| `a34/s_loopplace` | `E1017`、1.19 秒（CPU 0.73 秒） | `E1017`、1.30 秒（CPU 0.73 秒） |
+| `a34/u_loopplace` | `E1017`、1.20 秒（CPU 0.73 秒） | `E1017`、1.25 秒（CPU 0.73 秒） |
+| `ph/h10_localsink` | `E1017`、1.38 秒（CPU 0.80 秒） | `E1017`、1.38 秒（CPU 0.79 秒） |
+| `ph/h15_partial` | `E1013`、0.43 秒（CPU 0.25 秒） | `E1017`、1.26 秒（CPU 0.79 秒） |
+| `ph/h16_refparam_local` | `E1017`、1.38 秒（CPU 0.79 秒） | `E1017`、1.32 秒（CPU 0.79 秒） |
+| `ph/h1_doc` | 受理、0.99 秒（CPU 0.28 秒） | `E1017`、0.66 秒（CPU 0.40 秒） |
+| `ph/h20_readparam` | `E1017`、1.11 秒（CPU 0.69 秒） | 受理、0.39 秒（CPU 0.28 秒） |
+| `ph/h21_fieldborrow` | `E1017`、0.67 秒（CPU 0.38 秒） | `E1017`、0.56 秒（CPU 0.38 秒） |
+| `ph/h25_forrange` | `E1017`、1.14 秒（CPU 0.70 秒） | `E1017`、1.37 秒（CPU 0.77 秒） |
+| `ph/h2_own2027` | `E1017`、0.73 秒（CPU 0.38 秒） | `E1017`、0.70 秒（CPU 0.40 秒） |
+| `ph/h3_nokeep` | 受理、0.50 秒（CPU 0.27 秒） | `E1017`、0.67 秒（CPU 0.40 秒） |
+| `ph/h4_noreplace` | 受理、0.48 秒（CPU 0.26 秒） | `E1017`、0.65 秒（CPU 0.39 秒） |
+| `ph/h5_refp` | 受理、1.15 秒（CPU 0.27 秒） | `E1017`、0.69 秒（CPU 0.39 秒） |
+| `ph/h7_simple` | 受理、0.40 秒（CPU 0.27 秒） | `E1017`、1.23 秒（CPU 0.71 秒） |
+| `ph/h8_simple_own` | `E1017`、1.03 秒（CPU 0.65 秒） | `E1017`、1.26 秒（CPU 0.70 秒） |
+| `ph/h9_refp_own` | `E1017`、0.68 秒（CPU 0.39 秒） | `E1017`、0.63 秒（CPU 0.39 秒） |
+| `ph/s_hidden_while` | 受理、0.51 秒（CPU 0.28 秒） | `E1017`、0.62 秒（CPU 0.40 秒） |
+| `ph/u_hidden_while` | `E1014`、0.48 秒（CPU 0.29 秒） | `E1017`、0.67 秒（CPU 0.40 秒） |
+| `p/u_hid_nested` | `E1014`、0.48 秒（CPU 0.28 秒） | `E1017`、0.66 秒（CPU 0.40 秒） |
+| `conv2/c12` | 受理、0.64 秒（CPU 0.36 秒） | 受理、0.58 秒（CPU 0.37 秒） |
+| `wk/w_h8_simple_own` | 受理、0.48 秒（CPU 0.28 秒） | 受理、0.45 秒（CPU 0.27 秒） |
+
+- `E1017` で止まる形は、どれも経過時間 1.4 秒以内（CPU 0.8 秒以内）です。同じ大きさの受理するプログラム（回避の書き方の `wk/w_h8_simple_own` など）が CPU 0.27 秒ほどなので、打ち切りまでのループの検査は CPU 0.1〜0.5 秒です。開発用のビルドでは、負荷の低いときに経過時間 0.3〜1.1 秒でした（`t.sh`）。`15d84aaf` は同じ形を 120 秒で打ち切っても終わらず（`tests-head-120.txt`）、`main` は 1 秒以内に受理します。
+- `p.cell` の形（1 段ずつ深くなる）は 3 回目の反復から型から外れ、11 回目の反復の後に止まります。`p.h.cell` の形（2 段ずつ）と `ref p.s` の形は 2 回目の反復から外れ、10 回目の反復の後に止まり、借用も少ないので早く止まります（CPU 0.4 秒ほど）。
+
+##### テスト
+
+- `tests/rc.rs` の `a_loop_whose_borrows_keep_getting_deeper_stops_with_e1017`: `own` の仮引数の形（`h8`、A34 の安全な形）、`ref p.s` を捕捉した関数を渡す形、局所値の `Arc.share` を捕捉する形、危険な双子を、両方の edition でループの本体の位置（`7:9`・`7:9`・`9:9`・`12:9`）の `E1017`（`loop_ownership_limit`）と回避の書き方の `help` で止めること、edition 2026 の値の仮引数の形を `7:9` で止め、edition 2027 では受理すること（読み取りの仮引数を捕捉したラムダはセルを所有しません）、回避の書き方にした安全な形を両方の edition で受理し、双子を `19:13` の `E1013` で拒否すること、12 個の参照の連なり（12 回目の反復まで場所が深くなり、13 回目で収束する）を両方の edition で受理することを固定しました。位置は、反復の上限の `E1017` と同じループの本体の最初の式で、手で数えました。
+- 同じプログラムを `15d84aaf` のビルドで 120 秒で打ち切ると、止める形（`own`・`field`・`local`・`twin` の両方の edition と、`value` の edition 2026）はどれも時間切れで、連なりと回避の書き方の形は受理、回避の書き方の双子は `19:13` の `E1013` でした（`loopplace/tests-head-120.txt`）。
+
+##### マージの条件の確かめ（この回の後）
+
+上の道具を `gate/tools/check-r29.mjs`・`diff-r29.mjs`・`table-r29.mjs` に写し、15550 個・31100 組のすべてを `r29`（`773ea1c4` の開発用のビルド。`r26`〜`r28` と同じ開発用のビルドにしました。`gate/bin/REV`）で、両方の edition で検査し直しました（新しいプログラムは足していません。240 秒で打ち切り）。基準・先端（`r26`、`fbd7d194`）・`r27`（`df307296`）・`r28`（`15d84aaf` と同じ `src/`）の結果は `results-r28.json` から使いました。結果は `results-r29.json`、分類は `diff-r29.txt`（`loopplace/gate-diff-r29.txt` に写し）です。
+
+| 分類 | 2027 | 2026 |
+| --- | --- | --- |
+| 両方が受理 | 5272 | 4209 |
+| 両方が拒否 | 5259 | 7190 |
+| 基準が拒否し対応後が受理（RA） | 38 | 29 |
+| 基準が受理し対応後が拒否（AR） | 4981 | 4122 |
+| 検査の失敗 | 0 | 0 |
+| 時間切れ | 0 | 0 |
+
+- **`r28` が検査を終えた 31071 組は、どれも受理・拒否と、道具が記録する最初の誤り（最初の 2 つの誤りの code・kind・位置）が `r28` と同じです。** 変わったのは `r28` の時間切れの 29 組（edition 2027 が 9 組、2026 が 20 組）だけで、どれもループの本体の位置の `E1017`（`loop_ownership_limit`）になりました: `a34/s_loopplace`（両方の edition、`7:9`）・`a34/u_loopplace`（両方、`12:9`）、`ph/h10_localsink`・`h16_refparam_local`（両方、`9:9`）・`h21_fieldborrow`・`h25_forrange`（両方、`7:9`）・`h2_own2027`（両方、`30:9`）・`h9_refp_own`（両方、`27:9`）・`h20_readparam`（2027、`7:9`）・`h15_partial`（2026、`10:9`）・`h3_nokeep`（2026、`28:9`）・`h4_noreplace`・`h5_refp`（2026、`27:9`）・`h7_simple`（2026、`7:9`）、edition 2026 の `copilot2/p/s_hidden_while`（`30:9`）・`u_hidden_while`（`29:9`）、`copilot2-review-ce/p/u_hid_breakfirst`・`u_hid_continue`・`u_hid_tryin`（`29:9`）・`u_hid_forrange`（`28:9`）・`u_hid_nested`（`31:13`、内側のループ）。
+- RA は 67 組で、前回と同じ 67 組です。新しい RA はありません（条件 (1)）。受理から拒否に変わった組はなく（`r28` が受理したものはどれも受理のまま）、先端（`r26`）からの変化は前回と同じ受理から拒否の 98 組だけで、拒否から受理はありません。基準も対応後も受理するプログラムのうち名前が危険を示すものは、前回と同じ 33 組です。
+- 時間切れだった危険な形（`u_loopplace`・`u_hidden_while`・`u_hid_*`）は、検査が終わって拒否になりました（条件 (2)）。安全な形（`s_loopplace`・`s_hidden_while`・`h*`）は、前も受理していなかった（時間切れ）ので、条件 (3) の「`main` が受理する安全な形」の拒否として、文書（`lifetimes.md` の「現在の制限」）と A34 の `loopplace` に書いた安全側の制限です。
+- 生成したプログラム（`loopplace/g-check.mjs`、15552 個・31104 組を `r29` のリリースビルドで。結果は `loopplace/g/g-results.json`・`g-summary.json`）: 危険な 18048 組はどれも拒否し（条件 (2)）、安全な 13056 組はすべて受理しました。31104 組のどれも、結果（受理か、最初の誤りの code と位置）が `r28` の `copilot2/rv/g-results.json` と同じです。
+- 探査（`copilot2/rv/ph/*`・`copilot2/rv/a34/{s,u}_loopplace`・`copilot2-review-conf/ph/*`・`copilot2/p/{s,u}_hidden_while`、両方の edition の 100 組。`loopplace/probes-all-head.txt`・`probes-all-r29.txt`）: `15d84aaf` で 15 秒で打ち切った 47 組はどれも `E1017` になり、ほかの 53 組は最初の誤りまで同じでした。
+- `examples/` と `tests/fixtures/` の 155 個のプロジェクト（`_tools/step5.mjs`、`check --json` と `build --no-cache --emit llvm`）を `main`（`168ae4a5`）と `r29` で比べました: 155 個のどれにも違いはありません（`loopplace/step5-main.txt`）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功（`loopplace/clippy.log`）。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3298 件すべて成功、4 件 skip（1479 秒、`loopplace/nextest-2.log`。新しいテスト 1 件を含みます）。最初の実行（`nextest.log`）では、`E1017` の `tsuzuri explain` のページに回避の書き方を 7 つ目の対処として足したので `tests/explain.rs` の `every_code_has_a_page`（対処は 6 つまで）が失敗し、ループの本体の対処の項目にまとめて（`2287d47f`）から通しました。
+- E2E（`r29` の開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 85 件、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`loopplace/suites.log`）。
+- 文書: `node scripts/check-docs.mjs`（`lifetimes.md`・`diagnostics.md`、2 ページ・83 個のリンク・7 個の例・14 回の native の実行、`loopplace/docs.log`）、`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`（19 個のブロック、古いもの 0）、`node scripts/check-cli-docs.mjs`（4 個の検査）、`node scripts/check-guide-lite.mjs`（88 個の参照）、`node scripts/check-links.mjs --into`（変えた `_features/` と言語リファレンスのページへの 128 個のリンク、壊れたもの 0）が成功。
+- コミット: `773ea1c4`（`src/ownership_control.rs` の打ち切りと `tests/rc.rs` のテスト）、`2d3c9f5a`（文書）、`2287d47f`（`E1017` のページの対処の数）、この節。
+- 変えたファイル: `src/ownership_control.rs`、`tests/rc.rs`（1 件）、`src/explain/codes/E1017.md`、`lifetimes.md`（「現在の制限」）、`compiler/diagnostics.md`（`E1017` の行）、`docs/language.md`（`E1017` の行）、`docs/architecture.md`（ループの不動点の段落）、A34（`loopplace` の「現状」・原因・方針・テスト計画・受け入れ条件、題名）、A33（「検査の時間」）、`_features/README.md`（A34 の行）、このチケット（「残る制限」と上の「決めたこと」の案内、この節）。
+- 性能: 所有権の検査の時間は前回と同じ組で変わりません（下の表）。
+
+所有権の検査の時間（`loopplace/perf.sh`。`TSUZURI_TIME_PASSES=1` の `ownership` の段の ms を、`r28`（`15d84aaf` の `src/`）と `r29` の開発用のビルドで交互に 7 回ずつ測った中央値。前回と同じ組。`loopplace/time-perf-2.txt`）:
+
+| プログラム | `r28`（ms） | `r29`（ms） |
+| --- | --- | --- |
+| `perf_loop_breaks_400` | 730.424 | 751.984 |
+| `perf_try_checked_400` | 738.886 | 726.257 |
+| `perf_ho_wrap_120` | 4.394 | 4.234 |
+| `perf_ho_chain_320` | 45.904 | 48.621 |
+| `drop_locals_600` | 8.668 | 9.288 |
+| `pattern_param_chain_200` | 11.849 | 12.517 |
+| `perf_match_nest_30` | 2.272 | 2.329 |
+| `p01_relay_chain_400` | 27.814 | 27.452 |
+| `x01_many_holders_800` | 2346.298 | 2329.912 |
+| `x04_nested_loops_30` | 12.799 | 14.934 |
+| `p_cellshares_400` | 411.884 | 390.858 |
+| `p_cellshares_800` | 1725.426 | 1746.188 |
+
+差は揺れの範囲です。差がいちばん大きかった `x04_nested_loops_30` を 15 回ずつ測り直すと 12.16 ms と 12.38 ms、`perf_loop_breaks_400` は 670.6 ms と 681.4 ms でした（`time-perf-3.txt`。最初の 5 回ずつの測定 `time-perf.txt` は負荷の高いときのもので、値は約 2 倍ですが、同じく揺れの範囲です）。打ち切りの検査は、収束しなかった反復で作った loan を 1 度ずつたどり、型をたどるのはそれまでの型から外れる場所より深いもの（最初はすべて）だけなので、ループの多い関数でも遅くなりません。
+
+#### 打ち切りのレビューへの対応（2026-11-15）
+
+この節の仕組み（`artifact_loans`・`DEEPER_ITERATIONS`）は、下の「借用の数による打ち切り（2026-11-15）」で、反復ごとの借用の数の上限（`LOOP_LOAN_GROWTH`）に置き換え、さらに「借用の増え方による打ち切り（2026-11-16）」で、借用の増え方の打ち切り（`LoanGrowth`）に改めました。
+
+上の打ち切り（`773ea1c4`）のレビューの 6 件の指摘（反例の探索 `target/scratch/a31/loopplace-review-ce/`、適合の確認 `loopplace-review-conf/`）は、どれも確かめられました。この回の規則（締めつけと解析を止めることだけ。`15d84aaf` が収束させたループの結果は変えない）で直しました。結果は `target/scratch/a31/loopplace2/` にあります（`bin/` がこの回のビルド、`cmp.sh`・`one.sh` が新しいビルド・`a8623235`・`15d84aaf`・`main` の最初の誤り、`probes.sh` が前回の 100 組、`q/` が足した形、`tests/` が下のテストのプログラム）。
+
+| 指摘 | 判定と対応 |
+| --- | --- |
+| 1・4（結果が変わった: 近似した場所から始まる 10 個以上の参照の連なりが `E1017`） | 確かめました。`leaves_type` は場所のフィールドを根の宣言の型から読みますが、関数の呼び出しの結果は引数の借用（`top1 (ref y1)` の結果は `y1` 全体の借用）を持ち、region を持つレコードの仮引数の外部の借用や、仮引数が持つ参照（`w.r`）から読んだ借用は、参照の先を表すので、フィールドは別の値のものです。型から外れる場所の判定をやめ、どの値にも無い場所だけを数えるようにしました（下）。レビューの連なり（`call_*`・`chain_*`・`refw-*`・`valw-*`・`arrw-*`・`generic-12`・`capturew-12`）はどれも、両方の edition で `15d84aaf`・`main` と同じく受理します |
+| 2（終わらない: フィールドが `dyn` の値の形） | 確かめました。`leaves_type` は `dyn` の値の後の段を外れるとしないので数えませんでした。新しい数え方は型の段を見ないので、`d_field`・`d_arr`・`d_local` と、`main` が受理して実行が SIGSEGV になる危険な双子 `d_twin` を、両方の edition で `7:9`（局所値の形は `9:9`）の `E1017` で止めます（開発用のビルドで 0.3〜1.2 秒）。回避の書き方にすると、安全な形は受理、双子は `15:13` の `E1013` です |
+| 5（終わらない: 借用を局所値に渡してから関数値へ渡す形） | 確かめました（`lag2` は `773ea1c4` で 146 秒、`lag3` は 1 時間ほど）。いちばん深い場所は `k + 1` 回の反復に 1 回しか深くなりませんが、`t0`・`t1`・`p` が順に深くなるので、保持者ごとに数えるようにしました。`lag1`〜`lag3` と足した `lag4`・`lag6`・`lag9`（`q/`）は、両方の edition でループの本体の `E1017` で 1 秒以内に止まります |
+| 3・6（文書・テストの説明） | 確かめました。`lifetimes.md`・`diagnostics.md`・`docs/language.md`・`docs/architecture.md`・A34・A33、`DEEPER_ITERATIONS` とテストの doc comment を新しい数え方に書き直し、上の節の誤った理由に注を付けました。テストの説明の「10 回」は、新しい数え方で数える 8 回（10 回目の反復の後に止まる）にしました |
+
+##### 変えたこと（`src/ownership.rs`・`src/ownership_control.rs`、`5f3c2a0b`）
+
+- 場所の借用（`ref`・`ref mut`・スライス・読み取りの借用・パターンの view）は、借用した式の型を `loan_types` に記録し（同じ場所の写しにも写します）、どの値にも無い場所の借用（`artifact_loans`）かを決めます（`Checker::artifact_place`）。場所が `deref r` から来て、その参照外しが返した借用（`Checker::place` の `via` の最も新しいもの。親はそれより前に作られます）が、(1) それ自身どの値にも無い場所の借用か、(2) `r` が束縛されたときに持っていた場所を指す変更できない参照の局所値（`pointing`）で、束縛のときに持っていなかった借用（後の格納が足したもので、先が持つもの）か、(3) 借用した値の型から `r` の先の型に届かない（`Checker::reaches`: レコードのフィールドと型引数、共用体のペイロードと型引数、タプルとコレクションの要素、参照の先、`Rc`・`Arc` のブロック、関数値の結果、プログラムが `dyn` へ入れるすべての型をたどり、型変数とその適用、extern のハンドルはすべてに届きます。文字列はレコード・共用体・タプル・関数・`dyn`・ブロック・参照以外に届きます）借用なら、そうした場所です。(2)・(3) のとき、参照外しした式の根の局所値を元（`artifact_sources`）として覚えます。写しは印を受け継ぎます（場所を深くする `kept_copy`・`path_copy` は型を受け継ぎません）。
+- `check_loop` は、収束しなかった反復（最初を除く）の終わりに、反復の始まりにもそうした借用を持っていて、それより深く持つ保持者（局所値とその region の slot、`kept`、`kept_elsewhere`）があるかを見て、元の局所値自身が深くなった反復から後、そうした反復が `DEEPER_ITERATIONS`（8）回になると、前と同じ `E1017` と `help` を報告します。`leaves_type` は消しました。
+- `loopplace` の形の数え方: `deref p` が格納の足した借用（`p` が束縛のときに持っていなかったもの）の場所を返し、2 回目の反復がそのフィールドの借用（`p.s.s`）を作って `p` へ格納し、3 回目の反復から毎回 `p` が深くなるので、10 回目の反復の後に止まります（前と同じ反復。`p.cell` の形は前より 1 回早くなりました）。
+- 収束するループの結果を変えない理由: 数えるのは収束しなかった反復だけで、10 回以内の反復で収束するループは届きません。参照の連なりは、局所値・仮引数・関数の呼び出しの結果のどこから始まっても、参照外しが返す借用が参照の指すものかそれに届く値の借用なので、どの値にも無い場所を作りません。ループの前の格納で作ったそうした場所を写したり、そこから借用を連ねたりするだけのループ（`q/art_copy`・`art_deref`・`art_each`。`art_deref`・`art_each` は `773ea1c4` が `E1017` にしていました）は、保持者がそれぞれ一度受け取るだけで、元の局所値も深くならないので数えません。止まりうるのは、元の局所値へそうした場所を戻して深くしながら、なお 11 回以上の反復で収束するループだけで、そうした形は知られていません（そうした戻りは反復ごとに場所を深くするので、収束しません）。
+- 退けた案: (1) `leaves_type` の根の型をあいまいにする（各段の前に、届くすべての型を許す）案は、近似には効きますが、`Box` に深い入れ子のフィールドがあると `loopplace` の打ち切りがその深さの分だけ遅れるおそれがあり（反復ごとに時間が約 4 倍）、`dyn` の値も止められないので、試さずに退けました。(2) 外部の根と slot の印だけを除く案は、関数の呼び出しの結果（局所値の根）の連なりを止めたままでした。(3) 保持者ごとに数えるだけ（元の局所値の条件なし）の案は、`art_each`（ループの前の格納のそうした場所から始まる 12 個の連なり。`15d84aaf`・`main` は受理）を止めたので、元の局所値が深くなる条件を足しました。
+
+##### テスト
+
+- `tests/rc.rs` の `a_loop_stops_only_when_places_that_no_value_has_keep_getting_deeper`（新しい 1 件）: 12 個の参照の連なりを、関数の呼び出しの結果・region を持つレコードの仮引数・参照の仮引数が持つ参照・ループの前の格納のどの値にも無い場所から始めた 4 つの形で、両方の edition で受理すること（`a8623235` はどれも `E1017`、`15d84aaf`・`main` は受理。`main` の実行は連なりの形が `3`、最後の形が `16`。手で求めた値: 3 回の反復の後の `q0` は `R0`（`v` が 1）、`q1` は `R1`（2）で、最後の形はセルの関数の `t.v` が 13）、`dyn` の値のフィールドの形とその危険な双子、借用を局所値に 2 つ・3 つ渡してから関数値へ渡す形を、両方の edition でループの本体（`7:9`・`7:9`・`9:9`・`10:9`）の `E1017` と `help` で止めること、回避の書き方にした `dyn` の形と 2 つ渡す形を受理し、`dyn` の双子を `15:13` の `E1013` で拒否することを固定しました。
+- 前のテスト `a_loop_whose_borrows_keep_getting_deeper_stops_with_e1017` の期待は変えず、説明を新しい数え方にしました。
+
+##### マージの条件の確かめ（この回の後）
+
+- ゲート（`gate/tools/check-r30.mjs`・`diff-r30.mjs`。15550 個・31100 組を、`r30`（`5f3c2a0b` の開発用のビルド、`gate/bin/tsuzuri-r30`）で両方の edition で検査し直し、ほかの列は `results-r29.json` から。結果は `results-r30.json`、分類は `diff-r30.txt`（`loopplace2/gate-diff-r30.txt` に写し））: **31100 組のどれも、受理・拒否と最初の 2 つの誤り（code・kind・位置）が `r29` と同じです。** `r28`（`15d84aaf`）と比べると、RA は前と同じ 67 組で新しいものは無く、受理から拒否も拒否から受理も無く、変わったのは `r28` の時間切れの 29 組（`r29` と同じ `E1017`）だけです。検査の失敗・時間切れは 0。edition 2027 は両方が受理 5272・両方が拒否 5259・RA 38・AR 4981、2026 は 4209・7190・29・4122 で、前回と同じです。
+- 生成したプログラム（`loopplace2/g-check.mjs`、31104 組を `r30` のリリースビルドで）: 危険な 18048 組はどれも拒否し、安全な 13056 組はすべて受理しました。31104 組のどれも、結果が `r29` の `loopplace/g/g-results.json` と同じです。
+- 探査（前回の 100 組、`loopplace2/probes.sh`・`probes-v2.txt`）: どれも最初の誤りまで `r29` と同じです（47 組が `E1017`）。レビューの探査（`loopplace-review-ce/p`・`loopplace-review-conf/p` と `q/`、82 個・164 組、`cmp.sh`・`review-v2.txt`）: `15d84aaf` が検査を終える組は、どれも最初の誤りまで `15d84aaf` と同じで、時間切れは 0 です。`a8623235` と違うのは、上の連なり（受理に戻った）と `dyn`・局所値に渡す形（`E1017` で止まるようになった）だけです。
+- `examples/` と `tests/fixtures/` の 155 個のプロジェクト（`_tools/step5.mjs`）を `main` と `r30` で比べ、違いはありません（`loopplace2/step5-main.txt`）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3299 件すべて成功、4 件 skip（1434 秒、`loopplace2/nextest.log`。新しいテスト 1 件を含みます）。
+- E2E（`r30` の開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 85 件、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`loopplace2/suites.log`）。
+- 文書: `check-docs.mjs`（`lifetimes.md`・`diagnostics.md`、2 ページ・83 個のリンク・7 個の例・14 回の native の実行）、`gen-docs.mjs --check`（19 個、古いもの 0）、`check-cli-docs.mjs`（4 個）、`check-guide-lite.mjs`（88 個）、`check-links.mjs --into`（変えた 7 つの文書への 467 個のリンク、壊れたもの 0）が成功。
+- 時間（リリースビルド、キャッシュを温めた後の 3 回の中央値、`loopplace2/time-probes-r30.txt`。負荷 load average 17 ほど）: `E1017` で止まる形はどれも経過時間 0.16〜0.18 秒（`lag9` は 0.29 秒）、受理する連なりは 0.16〜0.30 秒、回避の書き方の形は 0.12 秒です。同じときに測った `r29` は `h8_simple_own` が 0.35 秒（この回は 1 回早く止まります）、`h21_fieldborrow` が 0.17 秒でした。
+- 所有権の検査の時間（`loopplace2/perf.sh`、`r29` と `r30` の開発用のビルドを交互に 7 回ずつ、前回と同じ 12 個。`time-perf.txt`）: 揺れの範囲です。差が出た `perf_ho_chain_320`・`perf_match_nest_30`・`perf_ho_wrap_120` を 15 回ずつ測り直すと、44.7 と 44.3 ms、1.88 と 2.11 ms、3.71 と 4.21 ms で、後の 2 つを順番を逆にして（`r30` を先に）測ると 2.09 と 2.02 ms、2.64 と 2.71 ms でした（`time-perf-2.txt`）。差は測る順番によるものです。借用ごとに型を 1 つ記録し、どの値にも無い場所の借用が無い本体（ほとんどすべて）では、ループの数え方は何もしません。
+- コミット: `5f3c2a0b`（`src/ownership.rs`・`src/ownership_control.rs` と `tests/rc.rs`）、`7aa2f63d`（文書）、この節。
+
+#### 借用の数による打ち切り（2026-11-15）
+
+借用の数の上限そのもの（`LOOP_LOAN_GROWTH`・`LOOP_LATE_GROWTH`・`LOOP_GROWTH_FROM`）は、下の「借用の数の上限を外す（2026-11-16）」で外しました。先に止めるのが収束するループだけだったためです。
+
+この節の上限（2 回目からの反復が最初の反復より 500 個を超えて多く借用を作ると止める）は、下の「借用の増え方による打ち切り（2026-11-16）」で、借用の増え方の打ち切り（`LoanGrowth`）と、5 回目からの、前の反復より増えた反復に働く 500 個の上限に改めました。この節の上限のレビューで、一度だけ大きく増えて収束するループを止め、最初の反復がいちばん大きい形とゆっくり増え始める形を 10〜35 秒止めないことが分かったためです。
+
+上の打ち切り（`5f3c2a0b`）のレビュー（第1回。反例の探索 `target/scratch/a31/lp-r1-ce/`、適合の確認 `lp-r1-conf/`）の指摘はどれも確かめられました。`773ea1c4` と `5f3c2a0b` は、どちらも借用した場所の形（型から外れる段、どの値にも無い場所、それを作った局所値へ戻ること）から収束しないループを推し量っていて、レビューのたびに、収束するループを止める反例と止まらない形の両方が見つかりました。場所の形を推し量るのをやめ、検査を遅くしているものそのもの、つまり 1 回の反復が作る借用の数で止めるようにしました。検査を緩める変更はしない、`15d84aaf` が実用的な時間で検査を終えるループの結果は上限を超えない限り変えない、という前の回からの規則のままです。結果は `target/scratch/a31/lp-budget/` にあります（`bin/` がこの回のビルドと計測用のビルド、`one.sh`・`probes.sh` が探査の検査、`agg.mjs`・`stops.mjs`・`chains.mjs`・`ratio.mjs` が記録の集計、`chain/` が参照の連なり、`bigbody/` が本体の大きな `loopplace` の形、`wa/` が回避の書き方の形、`tests/` が下のテストの形）。
+
+| 指摘 | 判定と対応 |
+| --- | --- |
+| 収束する連なりを止めた（`lp-r1-conf/p/each9_store0_live` など、`lp-r1-ce/p/es_live_9`・`es_live_10`・`each_store_live`・`esl_*`） | 確かめました。ループの中の格納が連なりの場所を仮引数へ戻しても、ループが仮引数を参照外ししなければ場所は深くなり続けず、連なりの数の反復の後に収束します（`15d84aaf`・`main`・基準は受理し、`main` の値は 5）。新しい上限では、これらの反復が最初の反復より多く作る借用は多くても 132 個（12 個の `each_store_live`）で、どれも両方の edition で受理します |
+| 止まらない: 本体の局所値を参照外しする形（`lp-r1-conf/p/e_copy2`・`e_field2`、`lp-r1-ce/p/bl_*`） | 確かめました（元の局所値が反復の終わりに無いので、数え始めませんでした）。新しい上限では、10 回目の反復（最初の反復が 3 個、10 回目が 514 個）で止まります |
+| 止まらない: `if`・`match`・ブロック・ラムダの結果を参照外しする形（`lp-r1-ce/p/gl_*`・`ge_lamin_ref`） | 確かめました（根が局所値でないので、元を記録しませんでした）。新しい上限では、10 回目の反復（最初が 4 個、10 回目が 515 個）で止まります |
+| 止まらない: `ref mut` の仮引数の再借用を選ぶ形（`lp-r1-ce/p/rm_*`。借用が反復ごとに 3 倍） | 確かめました。新しい上限では、6 回目の反復（最初が 7 個、6 回目が 975 個）で止まります |
+| 文書（収束する反復の数の 1 つのずれ、「元へ戻すと収束しない」という誤った主張、`diagnostics.md`・`docs/language.md` の条件の書き落とし） | 確かめました。数え方ごと書き直しました（下） |
+
+##### 変えたこと（`src/ownership.rs`・`src/ownership_control.rs`）
+
+- `src/ownership.rs` は `15d84aaf` に戻しました（`loan_types`・`artifact_loans`・`artifact_sources`・`reach_cache`・`Checker::artifact_place`・`note_borrowed`・`reaches`・`inherit_marks` を消しました）。`src/ownership_control.rs` からも `artifact_depths`・`DEEPER_ITERATIONS`・`LOOP_DEEPER_HELP` を消し、`check_loop` に次の数え方だけを足しました。
+- `check_loop` は、反復ごとに、条件と本体の検査（中のループと検査を含みます）の前後の `self.loans.len()` の差を、その反復が作った借用の数とします。収束しなかった反復（最初を除く）が、最初の反復より `LOOP_LOAN_GROWTH`（500）個を超えて多く借用を作ると、反復の上限と同じ `E1017`（`loop_ownership_limit`、ループの本体の位置、同じ文）を、次の `help` を付けて報告します: 「the loop's borrows keep growing: one iteration made N borrows, more than 500 beyond the M of the first iteration, so the check stops before the loop settles; when the loop passes a borrow of a reference parameter's target to a function value that owns a cell (a lambda that captures an `Arc` by value), let the function value capture a reference to the cell instead, such as `let cell = Arc.get (ref sink)`」。上限は長い参照の連なりのような `loopplace` でない形も止めるので、回避の書き方は条件を付けて言います。上限で止まった 104 個の探査（関数値を作るラムダがある形すべて）を回避の書き方にすると、どれも `E1017` にならず、192 組が受理、危険な双子 14 組と、edition 2027 の呼び出しの位置の `E1013`（関数値の実引数、2 組）が拒否でした（`wares/results.txt`）。
+- 最初の反復を基準にした理由: 状態は反復ごとに入口の状態との合流で大きくなるだけなので、後の反復が作る借用は最初の反復より少なくなっても数個です（探査のループで最大 8 個、gate のループで 7 個少ない）。いちばん少ない反復を基準にしても、どのコーパスの最大も同じでした（`minbase.mjs`）。
+- 最初の反復の何倍という上限にしなかった理由: レビューの連なりを余裕をもって受理する倍率（48 倍、下の (a)）では、`loopplace` の形の本体に借用を足すほど止まるのが遅れ、最初の反復が 63 個の形は 8.9 秒、203 個の形は 120 秒たっても止まりませんでした（`bigbody/`）。500 個を超えて多いという上限では、同じ形が 0.4〜0.7 秒で止まります。
+
+##### 上限の決め方
+
+(a) 収束するループが後の反復で多く作る借用（計測用のビルド `bin/tsuzuri-stat`・`tsuzuri-stat-rel`。`15d84aaf` の `src/` に、ループごとの反復の借用の数を `TZ_LOOPSTAT` のファイルへ書く計測を足し、`TZ_LOOPSTAT_NOSTOP` で止めないもの。計測は戻しました）:
+
+| 実行 | 組・件 | 収束したループ（関数ごと、検査の回ごと） | 後の反復が最初の反復より多く作った借用の最大 | 収束までの反復の最大 |
+| --- | --- | --- | --- | --- |
+| ゲート（15550 個、両方の edition。`tests/` から取り出した 1721 個を含む。`gate/tools/stat-r31.mjs`、開発用のビルド） | 31100 組 | 8,816,803 | 3（`p29396`、`3,4,6`） | 3 |
+| 生成したプログラム（`r16-review-2-ce/g`、両方の edition。`g-stat.mjs`、リリースビルド） | 31104 組 | 9,051,264 | 0 | 3 |
+| `examples/` と `tests/fixtures/`（step5 の 155 個） | 155 個 | 49,579 | 2（`tests/fixtures/borrowed_records`、`10,12`） | 3 |
+| std の例（`tsuzuri test --doc std`） | 873 個（すべて成功） | 263,523 | 0 | 3 |
+| 時間を測る 12 個（両方の edition） | 24 組 | 7,070 | 0 | 3 |
+| 前の回までの探査（414 個、両方の edition。連なりの探査 `es_live_*`・`each*_live`・`call_*`・`chain_*`・`refw`/`valw`/`arrw-*`・`generic-12`・`capturew-12`・`art_*` を含む） | 828 組 | 233,925 | 132（`each12` などの 12 個の連なり。参照がそれぞれ 2 つの場所から始まる） | 14（`conv2/c13`） |
+
+収束しなかったループ（反復の上限に届いたもの）はどの実行にもありません。探査の 197 組は、この回のビルドでも止まる `loopplace` の形です（上限を 1000 にした計測でも同じ 197 組）。いちばん少ない反復を基準にした最大も、どの実行でも同じでした。
+
+(b) 参照の連なりの閉じた形: それぞれが次の参照の先のフィールドを指す参照 L 個を 1 つのループで進める（`q0 = ref (deref q1).a`、…、`q(L-1) = ref (deref qL).a`）と、反復 k（0 から）は、参照 j ごとに参照 j+1 が反復の始まりに持つ場所をすべて借用します。参照がそれぞれ m 個の場所から始まるとき、参照 j+1 が持つ場所は m(1 + min(k, L−1−j)) 個なので、反復 k が最初の反復より多く作る借用は m·Σ_j min(k, L−1−j) = m(k(k−1)/2 + k(L−k)) 個で、最大は反復 L−1 の mL(L−1)/2 個、反復 L で収束します。計測と合います（m = 1 の `chain/c10`〜`c45` は 45・190・435・780・990 個、m = 2 の `each` の形は 12 個で 132 個）。上限 500 個に届くのは m = 1 で 33 個から（32 個は 496 個）、m = 2（参照の仮引数の先のフィールドから始まり、ループの前の格納がその仮引数へ借用を足した連なり）で 23 個から（22 個は 462 個）です。反復の上限（129 回）が 129 個以上の連なりを止めるのと同じ種類の上限です。上限は本体のすべての借用を数えるので、8 個の連なり（28 個）を 18 本進めるループ（504 個）も止まり、17 本（476 個）は止まりません。連なりの検査はもともと L の 7 乗ほどで延びます（負荷の低いときのリリースビルド、`chain/`）: 20 個は 0.8 秒、30 個は 8.8 秒、32 個は 13.5 秒（どれも受理で、上限が働かないので `15d84aaf` と同じ検査です）、33 個は `15d84aaf` で 16.4 秒かけて受理していたものを、この回のビルドが 4.4 秒で止めます。参照がそれぞれ 2 つの場所から始まる連なりは、22 個が 6.2 秒で受理、23 個は `15d84aaf` が 8.5 秒で受理していたものを 6.9 秒で止めます。8 個の連なりを 18 本進めるループも、`15d84aaf` の 1.8 秒の受理を 0.7 秒で止めます。この 2 つは、`15d84aaf` が 10 秒以内に検査を終える形の結果を変えますが、上限を超える形として文書に書いたもので、実際のプログラムが書く形ではありません。上限が働かない 32 個以下の連なりは、どれも `15d84aaf` と同じ結果です。
+
+(c) `loopplace` の形が止まるまでの時間: この回のリリースビルド（`bin/tsuzuri-r31`）で、負荷の低いとき（load average 3〜5）に、上限で止まる探査の 197 組、`copilot2-review-ce/p/u_hid_*`（edition 2026 の 5 組。入れ子のループの `u_hid_nested` を含む）、本体に借用を足した `bigbody/k10`・`k30`・`k100`（最初の反復が 23・63・203 個。両方の edition の 6 組）の計 208 組を 1 回ずつ測りました（`time-r31.txt`。std を含むプログラム全体の `check` の経過時間）。どれもループの本体の `E1017` で、経過時間は 0.19〜0.66 秒（中央値 0.22 秒）です。いちばん長いのは局所値に 9 回渡す `lag9`（0.66 秒）で、`lag2`〜`lag6` は 0.29〜0.46 秒、倍になる形（`h*`・`d_*`・`e_copy2`・`e_field2`・`bl_*`・`gl_*`・`ge_lamin_ref` など）は 0.19〜0.3 秒、再借用を選ぶ形（`rm_*`）は 0.23〜0.28 秒、入れ子のループ（`u_hid_nested` の内側のループ、`v_nested3`）は 0.2〜0.3 秒、`k100` は 0.48 秒でした。受理する同じ大きさのプログラム（回避の書き方の形）は 0.16〜0.21 秒です。
+
+(a) と (c) は、借用の数の差だけの上限では両立しませんでした。チケットの方針は (a) の最大の 8 倍以上の余裕（132 × 8 = 1056 個以上）でしたが、1056 個以上にすると、倍になる形は 11 回目の反復（2050 個）まで進んで 1.2 秒、局所値に 9 回渡す形（`lag9`）は 2.4 秒、`lag2` と再借用を選ぶ形は 1.1 秒かかりました（負荷 4 ほどのときのリリースビルド）。1 秒以内にするには 640 個ほどまでで、`lag9` の時間を見て 500 個にしました。余裕は、レビューの連なり（132 個）に対して 3.8 倍、それ以外のすべてのコーパス（多くても 3 個）に対して 160 倍以上です。倍率の上限なら両立しますが、上のとおり本体の大きな `loopplace` の形が止まらなくなります。
+
+##### テスト
+
+- `tests/rc.rs` の `a_loop_whose_borrows_keep_growing_stops_with_e1017`（前の `a_loop_whose_borrows_keep_getting_deeper_stops_with_e1017`）: 期待は変えていません（両方の edition の `7:9`・`7:9`・`9:9`・`12:9` の `E1017` と回避の書き方の `help`、edition 2026 の値の仮引数の `7:9`、回避の書き方の受理と双子の `19:13` の `E1013`、12 個の連なりの受理）。`own` の形の `help` が両方の edition で「one iteration made 514 borrows, more than 500 beyond the 3 of the first」を含むことを足し、説明を新しい数え方にしました（反復 k が 2^k + 2 個を作り、反復 9 の 514 個が最初の 3 個より 500 個を超えて多い最初の反復。連なりは反復 k が k(k−1)/2 + k(12−k) 個多く、最大 66 個）。
+- `a_loop_stops_by_the_loans_of_its_iterations_not_by_the_shapes_of_its_places`（前の `a_loop_stops_only_when_places_that_no_value_has_keep_getting_deeper`）: 期待は変えていません（12 個の連なりの 4 つの形の受理、`dyn` の値のフィールドの形と双子、局所値に 2 つ・3 つ渡す形の `7:9`・`7:9`・`9:9`・`10:9` の `E1017`、回避の書き方の受理と `15:13` の `E1013`）。局所値に渡す形を作るクロージャを関数 `late_hand_on` にし、説明を新しい数え方にしました（`each` の連なりは参照がそれぞれ 2 つの場所から始まるので最大 132 個、局所値に 2 つ・3 つ渡す形は借用が反復ごとに約 1.6 倍・1.5 倍で、反復 12（612 個）・15（597 個）で止まる）。
+- 新しい `a_loop_stops_when_an_iteration_makes_500_loans_more_than_the_first`: レビューの形を固定しました。受理（両方の edition）: `each9_store0_live`・`es_live_10`・`esl_local`（ループの中の格納が連なりの場所を仮引数へ戻す 9・10・9 個の連なり。最大 72・90・72 個多い。`15d84aaf`・`main`・基準は受理し、`main` の native の `-O0` の値はどれも 5）と、局所値から始まる 16 個の連なり（最大 120 個）。`E1017`（両方の edition、ループの本体、回避の書き方の `help`）: 本体の局所値を参照外しする形（`let r = p` と `let q = p`、`7:9`。反復 9 が 514 個、最初が 3 個）、`if` の結果を参照外しする形（`7:9`、515 個と 4 個）、再借用を選ぶ形（`7:9`、反復 5 が 975 個、最初が 7 個）、局所値に 4 つ渡す形（`late_hand_on(4)`、`11:9`、反復 18 が 659 個、最初が 4 個）。上限の位置: 8 個の連なりを 17 本進めるループ（最大 17 × 28 = 476 個多い）を受理し、18 本（反復 7 が 504 個多い）をループの本体の最初の式の位置の `E1017` で止め、`help` が「more than 500 beyond」を含むこと。1 本の連なりでも、局所値から始まる 33 個の連なり（反復 26 が 26 × 25 / 2 + 26 × 7 = 507 個多く、反復 25 は 500 個）を両方の edition でループの本体の最初の式の位置の `E1017` で止めることを固定しました（上限に届かない 32 個の連なりは、リリースビルドでも検査に 13 秒ほどかかるので、テストにしていません）。位置と数は手で数え、計測用のビルドの記録（`tests/`、`chain/m17x8`・`m18x8`・`c33`）と合わせました。
+- 3 件はどれも成功しました（`cargo test --test rc`、`running 3 tests`、負荷の高いときに 26 秒。33 個の連なりを足した後の新しいテストだけで 27.8 秒）。
+
+##### マージの条件の確かめ（この回の後）
+
+- ゲート（`gate/tools/check-r31.mjs`・`diff-r31.mjs`。15550 個・31100 組を、`r31`（この回の開発用のビルド、`gate/bin/tsuzuri-r31`）で両方の edition で検査し直し、ほかの列は `results-r30.json` から。結果は `results-r31.json`、分類は `diff-r31.txt`（`lp-budget/gate-diff-r31.txt` に写し））: **31100 組のどれも、受理・拒否と最初の 2 つの誤り（code・kind・位置）が `r30` と同じです**（変わった組は 0 なので、前の打ち切りの `E1017` だけで拒否していた組の変化を一つずつ確かめる必要もありませんでした）。`r28`（`15d84aaf`）と比べると、RA は前と同じ 67 組で新しいものは無く、受理から拒否も拒否から受理も無く、変わったのは `r28` の時間切れの 29 組（`r29`・`r30` と同じ位置の `E1017`）だけです。検査の失敗・時間切れは 0。edition 2027 は両方が受理 5272・両方が拒否 5259・RA 38・AR 4981、2026 は 4209・7190・29・4122 で、前回と同じです。上の (a) の計測用のビルドの実行（`gate/stat-r31.json`、止めないもの）も、31100 組のどれも `r28` と同じでした。
+- 探査（`probe-dirs.txt` の 414 個、両方の edition の 828 組。前の回までのすべての探査: `lp-r1-ce/p`・`lp-r1-conf/p`・`loopplace-review-ce/p`・`loopplace-review-conf/p`・`loopplace2/{p,q,tests}`・`copilot2/rv/{ph,a34,p}`・`copilot2-review-conf/ph`・`copilot2/p`・`loopplace/{conv,conv2,tests,wk}`。`pr31/results.txt`）: `r31` は 197 組を `E1017` で止め、時間切れは 0 です。止めなかった 631 組は、上限が一度も働かないので `15d84aaf` と同じ検査で、最初の誤りまで計測用のビルド（`15d84aaf` の `src/`）と同じでした。止めた 197 組は、どれも `15d84aaf` の `src/` のリリースビルドで止めずに 20 秒で打ち切っても終わらず、反復ごとの借用が倍・3 倍・1.2〜1.6 倍に増え続けていました（`ns20.txt`。前のレビューでも `15d84aaf` は 60〜120 秒で終わりませんでした）。どれも `loopplace` の形で、止める位置はループの本体です。前の打ち切り（`5f3c2a0b`）のレビューの探査（`loopplace-review-ce/p`・`loopplace-review-conf/p`・`loopplace2/q` の 162 組）は、最初の誤りまで `r30` と同じです（`loopplace2/review-v2.txt`）。
+- 生成したプログラム（`g-stat.mjs`、15552 個・31104 組を、`15d84aaf` の `src/` に計測を足したリリースビルドで止めずに）: 危険な 18048 組はどれも拒否し、安全な 13056 組はすべて受理しました。31104 組のどれも、結果（受理か、最初の誤りの code と位置）が `r30` の `loopplace2/g/g-results.json` と同じです。どのループも後の反復で最初の反復より多く借用を作らない（最大 0 個）ので、`r31` の上限は一度も働かず、`r31` の結果もこれと同じです。
+- `examples/` と `tests/fixtures/` の 155 個のプロジェクト（`_tools/step5.mjs`、`check --json` と `build --no-cache --emit llvm`）を `main`（`168ae4a5`）と `r31` で比べ、違いはありません（`lp-budget/step5-main.txt`）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功（`lp-budget/clippy.log`）。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3300 件すべて成功、4 件 skip（1454 秒、`lp-budget/nextest.log`。新しいテスト 1 件を含みます）。その後、新しいテストに 33 個の連なりを足し、そのテストだけを実行し直して成功しました（`running 1 test`、27.8 秒）。
+- E2E（この回の開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 85 件、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`lp-budget/suites.log`）。
+- 文書: `check-docs.mjs`（`lifetimes.md`・`diagnostics.md`、2 ページ・83 個のリンク・7 個の例・14 回の native の実行）、`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`（19 個、古いもの 0）、`check-cli-docs.mjs`（4 個）、`check-guide-lite.mjs`（88 個）、`check-links.mjs --into`（変えた 7 つの文書へのリンク、壊れたもの 0）が成功。
+- 所有権の検査の時間（`lp-budget/perf.sh`。`TSUZURI_TIME_PASSES=1` の `ownership` の段の ms を、`r28`（`15d84aaf` の `src/`）・`r30`（`5f3c2a0b`）・`r31` の開発用のビルドで交互に 7 回ずつ測った中央値。前回と同じ 12 個。負荷の低いとき。`time-perf.txt`）: 揺れの範囲です。数え方は反復ごとに `self.loans.len()` を 2 回読むだけです。
+
+| プログラム | `r28`（ms） | `r30`（ms） | `r31`（ms） |
+| --- | --- | --- | --- |
+| `perf_loop_breaks_400` | 363.401 | 363.647 | 365.539 |
+| `perf_try_checked_400` | 376.360 | 377.133 | 377.821 |
+| `perf_ho_wrap_120` | 2.592 | 2.674 | 2.595 |
+| `perf_ho_chain_320` | 25.439 | 25.432 | 25.291 |
+| `drop_locals_600` | 5.648 | 5.799 | 5.729 |
+| `pattern_param_chain_200` | 6.696 | 6.669 | 6.796 |
+| `perf_match_nest_30` | 1.491 | 1.517 | 1.497 |
+| `p01_relay_chain_400` | 14.665 | 14.764 | 14.565 |
+| `x01_many_holders_800` | 1189.964 | 1196.397 | 1194.678 |
+| `x04_nested_loops_30` | 7.885 | 7.907 | 7.844 |
+| `p_cellshares_400` | 229.191 | 230.439 | 228.516 |
+| `p_cellshares_800` | 983.059 | 991.956 | 979.364 |
+
+- 変えたファイル: `src/ownership.rs`（`15d84aaf` に戻した）、`src/ownership_control.rs`、`tests/rc.rs`（2 件の名前と説明、新しい 1 件）、`src/explain/codes/E1017.md`、`lifetimes.md`（「現在の制限」）、`compiler/diagnostics.md` と `docs/language.md`（`E1017` の行）、`docs/architecture.md`（ループの不動点の段落）、A34（`loopplace` の「現状」・原因・方針案、背景）、A33（「検査の時間」）、このチケット（上の 2 つの節の冒頭の注、「残る制限」と「修正のレビュー」の案内、この節）。
+- コミット: `dbbe8338`（`src/` と `tests/rc.rs`）、`509760e6`（33 個の連なりのテストと doc comment の時間）、`43aae285`（文書とこの節）。
+
+#### 借用の増え方による打ち切り（2026-11-16）
+
+借用の数の上限そのもの（`LOOP_LOAN_GROWTH`・`LOOP_LATE_GROWTH`・`LOOP_GROWTH_FROM`）は、下の「借用の数の上限を外す（2026-11-16）」で外しました。先に止めるのが収束するループだけだったためです。
+
+この節の 500 個の上限は、下の「最後のレビュー（2026-11-16）」で、4 回目の反復より 100 個（`LOOP_LATE_GROWTH`）を超えて多く借用を作った反復だけに働くようにしました。2 回目の反復で 500 個を超えて広がってから数個ずつ増えて収束するループ（参照の履歴や戻り先を局所値に持つインタプリタなど）を、5 回目の反復で止めていたためです。この節の止まるまでの時間（0.16〜1.61 秒）は測ったプログラムの範囲のもので、借用をほとんど作らない文の多い本体で局所値に何度も渡す形は、何秒もかかります（同じ節）。
+
+上の「借用の数による打ち切り」（`dbbe8338`・`509760e6`・`43aae285`・`1b21f734`）のレビュー（第1回。反例の探索 `target/scratch/a31/lb-r1-ce/`、適合の確認 `lb-r1-conf/`）の指摘 8 件は、どれも確かめられました。1 回の反復の借用の数を最初の反復と比べるだけの上限は、代入し直す参照を通した借用の多いループが一度だけ大きく増えて収束するのを止め、最初の反復がいちばん大きい形と、ゆっくり増え始める形を 10〜35 秒止めませんでした。借用の数の大きさではなく、反復ごとの増え方の形で止めるようにしました。終わらないループの借用は、増え方が速くなり続けるか、前以上の増え方が続きます。収束するループの借用は、一度だけ増えるか、反復ごとに増え方が小さくなります（連なり）。規則は前の回と同じです（検査を緩める変更はしない、`15d84aaf` が 10 秒以内に検査を終えるループの結果は上限を超えない限り変えず、上限を超える形は実際のプログラムが書かない形として文書に書く、終わらない形は 1 秒ほどで止める）。結果は `target/scratch/a31/lb-fix1/` にあります（`instr/` が計測と規則の切り替えを足した `src/` の写し、`bin/` がそのビルド `tsuzuri-instr3` と候補の規則のビルド `tsuzuri-v1`〜`v4`（`v4` が `1506be7e`）、`sim.mjs` が記録から規則を試す道具、`trace.sh`・`knob.sh`・`cmp.sh`・`v.sh`・`one.sh`・`probes.sh` が探査の検査、`gen/` が参照を写していく局所値（`cc_*`）・局所値に渡して読む形（`win_*`）・遅れて写すインタプリタの形（`wl_*`）の探査、`tp/` が下のテストのプログラム、`tr/` が記録、`pstat/`・`pr32/` が探査の結果）。
+
+| 指摘 | 判定と対応 |
+| --- | --- |
+| [結果の変化] 連なりの無いループが 500 個の上限を超える: 何か所も借用される参照が 2 回目の反復で P 個の場所に広がり、3 回目で収束する（`lb-r1-ce/p/int_o32_r8`・`ws_n8_l1_m64`・`n_d5_b8_u1`・`n_d3_b8_u16`・`n_d5_b2_u16`） | 確かめました。ループの中で代入し直す参照は最初の合流で場所が広がり、写す局所値（`last = acc`・`prev = cur`）は 1 回遅れて広がるので、それらを通した借用は 2 回目の反復で一度だけ（借用する箇所の数 × 場所の数だけ）増えます。増え方の打ち切りは一度の増加では止めず、500 個の上限は 5 回目の反復からなので、どれも両方の edition で受理します（`15d84aaf`・`main`・基準と同じ。`main` の値は 79・290・186・314・1274） |
+| [結果の変化] 26 の腕のインタプリタのループ（`lb-r1-conf/p/interps_20_4`。`interp_83`・`interps_30_3`・`pipematch_42_2`・`pipe_45_4` も） | 確かめました。同じ仕組みです（`interps_20_4` は 176 個、712 個の後、3 回目で収束）。どれも両方の edition で受理します（`main` の値は `interps_20_4` で 31） |
+| [終わらない] 中のループのせいで最初の反復がいちばん大きく、500 個を大きく超えてから止まる（`lb-r1-ce/p/hrs_1200` 10.7 秒、`hr_15_250` 32.9 秒、`hrn_2_1000` 21.4 秒） | 確かめました。外のループが倍にする状態は、中のループの 1 回の検査も長くします（`hrs_1200` の外のループの状態は反復ごとに倍、中のループの検査は 20 ミリ秒から反復ごとに約 2.3 倍）。外のループの借用は 2 回目から 2・4・8 個…と増え方が速くなるので、増え方の打ち切りが 6 回目の反復で止めます。500 個の上限も、最初の反復ではなく、それより前でいちばん少なかった反復から数えます（`hr_15_250` は、中のループが参照を 16 個の局所値に写していき、1 回の反復で 200 個を超える借用を作る、上限を超える形なので、それより先に中のループで止まります）。時間は下の表 |
+| [終わらない] 局所値に多く渡す形と本体の大きな形（`lb-r1-ce/p/lag_14`〜`lag_140`、`lagf_9_1200`。`lag_140` は 500 個の上限に届かず 129 回の上限まで 25.7 秒） | 確かめました。局所値に k 回渡す形は、k 回ほどの反復で借用が 1 個ずつ増えてから速く増えます。1 個ずつでも前以上に増える反復が 24 回続けば止め（200 個を超える反復なら 8 回）、速く増え始めたら 5 回で止めます。時間は下の表 |
+| [上限を超える] 選択から始まる連なりは、利用者向けの文書の 33 個より短く止まる（`if` で 23 個、4 つの腕の `match` で 17 個。`15d84aaf` は 17 個を 6.7 秒で受理） | 確かめました。連なりは増え方が反復ごとに小さくなるので、今も 500 個の上限だけが当たり、数は変わりません。`lifetimes.md` に、参照がそれぞれ 2 つの場所から始まる連なり（`if`）は 23 個以上、4 つの場所から始まる連なり（4 つの腕の `match`）は 17 個以上と書きました |
+| [文書] 上限の `help` が、次の反復で収束し関数値も無いループに「増え続ける」と言い、関数値の回避の書き方を指す | 確かめました。そうしたループはもう止めません。`help` は止めた増え方（速くなり続ける、前以上に続く、それより前でいちばん少ない反復より 500 個多い）を言い、連なりなら連なりかループを分けるように言い、関数値の回避の書き方は条件付きで最後に言います |
+| [終わらない] 局所値に多く渡す形、本体の大きな形が 12〜22 秒（`lb-r1-conf/p/lag_25`〜`lag_100`、`lagbig_15_400`・`lagbig_25_400`） | 確かめました（上の指摘と同じ仕組み）。時間は下の表 |
+| [文書] 局所値に渡す形の局所値の数え方が 2 通り | 確かめました。`late_hand_on(k)` は `t0`〜`t(k-1)` の k 個の局所値に渡す形なので、A34 を「局所値が 2 つ（`t0`・`t1`）で約 1.6 倍、3 つで約 1.5 倍、9 つで約 1.2 倍」にし、テストの説明の「one or two locals」を「two or three locals」にしました |
+
+##### 変えたこと（`src/ownership_control.rs`、`93f25d12`・`1506be7e`）
+
+- `check_loop` は、収束しなかった反復ごとに、その反復が作った借用の数（条件と本体の検査の前後の `self.loans.len()` の差）を `LoanGrowth::note` へ渡します。`LoanGrowth` は、借用がいちばん少なかった反復の数、前の反復の数とその前からの増えた数、増え方が速くなった反復と前以上に増えた反復が何回続いたかを持ち、次のどれかに当たると、反復の上限と同じ `E1017`（`loop_ownership_limit`、ループの本体の位置、同じ文）を、止めた増え方を言う `help` を付けて報告します。
+  - `LOOP_FASTER_ITERATIONS`（5）: 5 回続けて、前の反復より多く、しかも前の反復が増えた数より多く借用を作った（`help`: 「the loop's borrows keep growing faster: each of the last 5 iterations made more borrows than the one before it, and more of them than that one added (the last made N), so the check stops before the loop settles; …」）。
+  - `LOOP_GROWING_ITERATIONS`（24）と `LOOP_GROWING_LARGE`（8 回と 200 個）: 24 回続けて、前の反復より多く、前の反復が増えた数以上に借用を作った。その反復が 200 個を超える借用を作ったなら 8 回続けて（`help`: 「the loop's borrows keep growing: each of the last 24 iterations made more borrows than the one before it, and at least as many more as that one added (the last made N), …; a reference that the loop passes along 25 or more locals, one per iteration (`u1 = u0`), and borrows through grows this way, and along 9 or more when its iterations make more than 200 borrows; …」）。
+  - `LOOP_LOAN_GROWTH`（500）と `LOOP_GROWTH_FROM`（4）: 5 回目（反復 4）からの反復が、前の反復より多く、しかもそれより前でいちばん少なかった反復より 500 個を超えて多く借用を作った（`help`: 「one iteration of the loop made N borrows, more than the one before it and more than 500 beyond the M of the iteration before it that made the fewest, so the check stops before the loop settles; a chain of dozens of references, … advanced in one loop (`q0 = ref (deref q1).a`) grows this way: split the chain or the loop; …」）。前の回は最初の反復を基準にし、2 回目から数えていました。
+  - どの `help` も、最後に回避の書き方（関数値にセルへの参照 `Arc.get (ref sink)` を捕捉させる）を条件付きで言います。指摘 5 の「増え続ける」は、止めた増え方の形を言う文にしました。
+- 増え方の 2 つの打ち切りは、一度だけの増加（2 回目の反復）を数えません（1 回では続いたことにならず、5 回か 24 回（200 個を超える借用を作る反復なら 8 回）続く必要があります）。500 個の上限は 5 回目から、前の反復より増えた反復だけに働くので、代入し直す参照を写す局所値が多くて収束が遅れても（`prev3 = prev2`、…、`prev0 = cur`。`1506be7e`）、増えない反復では止めません。
+
+##### 上限の決め方
+
+(a) 何が時間を使うか（計測用のビルド `bin/tsuzuri-instr3`。`TZ_LB_TRACE=1` で反復ごとに作った借用の数・状態が持つ借用の数・評価した式の数・時間を書き、`TZ_LB_NOSTOP=1` で止めません）: 1 回の反復の時間は、本体で評価する式の数と、状態が持つ借用の数の積でほぼ決まります。`hrs_1200` の外のループの状態は反復ごとに倍（8、16、…、2048 個）で、中のループの 1 回の検査は 20 ミリ秒から 428 ミリ秒まで延びますが、外のループが作る借用は 1208 個から 1718 個までしか増えません。`lag_140` は反復ごとに借用が 1 個ずつしか増えないのに、1 回の反復が 3 ミリ秒から 260 ミリ秒まで延びます（140 個の写しの文）。借用の数の差だけの上限では、本体が大きいほど、またゆっくり増える形ほど止まるのが遅れます。
+
+(b) 増え方の形（`sim.mjs` で記録から規則を試しました）: 終わらない形は、倍・3 倍の形が 2 回目の反復から増え方が速くなり続け（増えた数が 1・2・4・8…）、局所値に k 回渡す形は k 回ほど 1 個ずつ増えてから速くなり（`late_hand_on(9)` は 3、4、…、12、14、17、21、26、32）、中のループのある形は最初の反復の後に減ってから速くなります（2410、1208、1210、1214、1222…）。収束する形は、一度だけ増えるか（インタプリタ 176・712・712、`widening(8, 36, 4)` 97・673・673・673・673・673）、増え方が反復ごとに小さくなるか（連なり m(L−k)。8 個の連なり 10・17・23・28・32・35・37・38、局所値に渡してそれぞれを通して読む形 `win_25` 29・54・78・…・354）、参照を局所値に写していく形が 1 個ずつ増えます（`cc_25` 4、5、…、28。最後の局所値だけを通して読む形）。
+
+(c) 探査の収束したループの増え方（`pstat/`: 前の回までの 414 個に `lb-r1-ce/p`・`lb-r1-conf/p` の 315 個を加えた 729 個の両方の edition を、この回の候補の規則で止めながら記録し、`pstat-sim.txt` に集計）: 1458 組の記録の、収束した 424,031 回のループの検査（std の前置きを含む）のどれも、増え方が続けて速くなった回数は多くても 1 回、前以上に増えた回数も、`lb-r1-ce/p/hr_*`（中のループで参照を 11〜41 個の局所値に写していく、レビューが作った形。収束したものは 10〜30 回）を除いて多くても 1 回です（`pstat-simall.txt`）。gate・生成したコーパス・examples と tests/fixtures・std の例・時間を測るプログラムは、前の回の計測（`lp-budget/`）で、どのループも 3 回以内の反復で収束し、後の反復が増えても 3 個なので、5 回続けて増えることも、5 回目の反復もありません。
+
+(d) 数の選び方: 増え方が速くなる回数は、5 回で `hrs_1200` を 0.82 秒（6 回で 1.04 秒）、倍になる形を 6 回目の反復（34 個）で止めます。前以上に増える回数は、24 回で `lag_140` を 0.82 秒（32 回で 1.28 秒）にし、参照を写していく局所値は 25 個から止めます。32 回のままでは、本体に 1000 個の借用がある `lagf_40_1000` が 5.6 秒かかったので、200 個を超える借用を作る反復は 8 回にしました（0.96 秒。参照を写していく局所値はそうしたループで 9 個から）。8 回をすべてのループに使うと 9 個の局所値に写すだけのループも止めるので、本体の大きさで分けました。500 個の上限は前の回と同じ値にし（連なりの数 33・23・17 個と、8 個の連なりの 17 本・18 本は変わりません）、5 回目からにして、それより前でいちばん少なかった反復から数え、前の反復より増えた反復だけに働くようにしました。
+
+これらの上限と、下の「最後のレビュー」の `LOOP_LATE_GROWTH` は、リポジトリの外の計測用のビルドと記録（`lp-budget/`・`lb-fix1/`・`lg-fix/`）で一度だけ決めたものです。後の変更が実際のプログラムのループの借用を長く・速く増やすようにしても、そうしたループを含むテストが無ければ気づけません。収束したループの借用の増え方の統計をテストだけが読めるようにし、`tests/` のプログラム・`examples/`・std の例で、その最大が上限の決まった割合（反復の数の上限の 1/2、借用の数の上限の 1/8）に近づいたら失敗するテストを足すことを、[A35](../A35-loop-growth-margin-check.md) に起票しました（2026-11-16）。
+
+##### 時間
+
+この回のリリースビルド（`bin/tsuzuri-v4`）と前の版（`1b21f734` のリリースビルド `lb-r1-ce/bin/tsuzuri-rel`）で、レビューが時間を指摘したプログラムとテストの止まる形を、edition 2027 で 1 回ずつ交互に検査しました（`timing.sh`、`time-v4.txt`。std を含むプログラム全体の `check` の経過時間。負荷 5〜6 のとき）。どれも前の版と同じ `E1017` で、止まるまでの時間は 0.16〜1.61 秒です（前の版は 0.21〜46.2 秒）。1 秒を超えるのは、本体が 1400 行ほどの `hrs_1400`（1.05 秒）と 2000 行ほどの `lagf_9_2000`（1.61 秒）だけです。`hr_15_250` だけは止まる位置が変わり、中のループ（`30:13`）が先に止まります。中のループは参照を 16 個の局所値に写していき、1 回の反復が 200 個を超える借用を作るので、上限を超える形（9 個以上）として、8 回続けて増えたところで止めます（`help` は「each of the last 8 iterations … (the last made 261)」）。前の版は外のループ（`26:9`）を 33.6 秒で止めていました。
+
+| プログラム | この回（`1506be7e`） | 前の版（`1b21f734`） |
+| --- | --- | --- |
+| `lb-r1-ce/p/hrs_1200` | `E1017` 11:9、0.90 秒 | `E1017` 11:9、9.85 秒 |
+| `lb-r1-ce/p/hrs_1400` | `E1017` 11:9、1.05 秒 | `E1017` 11:9、11.46 秒 |
+| `lb-r1-ce/p/hr_15_250` | `E1017` 30:13、0.30 秒 | `E1017` 26:9、33.57 秒 |
+| `lb-r1-ce/p/hrn_2_1000` | `E1017` 12:9、0.84 秒 | `E1017` 12:9、22.27 秒 |
+| `lb-r1-ce/p/lag_14` | `E1017` 21:9、0.16 秒 | `E1017` 21:9、1.11 秒 |
+| `lb-r1-ce/p/lag_20` | `E1017` 27:9、0.19 秒 | `E1017` 27:9、1.73 秒 |
+| `lb-r1-ce/p/lag_40` | `E1017` 47:9、0.23 秒 | `E1017` 47:9、3.86 秒 |
+| `lb-r1-ce/p/lag_80` | `E1017` 87:9、0.39 秒 | `E1017` 87:9、12.83 秒 |
+| `lb-r1-ce/p/lag_100` | `E1017` 107:9、0.52 秒 | `E1017` 107:9、22.88 秒 |
+| `lb-r1-ce/p/lag_120` | `E1017` 127:9、0.67 秒 | `E1017` 127:9、22.13 秒 |
+| `lb-r1-ce/p/lag_140` | `E1017` 147:9、0.82 秒 | `E1017` 147:9、25.21 秒 |
+| `lb-r1-ce/p/lagf_9_1200` | `E1017` 18:9、0.77 秒 | `E1017` 18:9、9.81 秒 |
+| `lb-r1-ce/p/lagf_9_2000` | `E1017` 18:9、1.61 秒 | `E1017` 18:9、17.14 秒 |
+| `lb-r1-ce/p/lagf_40_1000` | `E1017` 49:9、0.87 秒 | `E1017` 49:9、46.23 秒 |
+| `lb-r1-conf/p/lag_9` | `E1017` 16:9、0.18 秒 | `E1017` 16:9、0.63 秒 |
+| `lb-r1-conf/p/lag_25` | `E1017` 32:9、0.20 秒 | `E1017` 32:9、2.46 秒 |
+| `lb-r1-conf/p/lag_60` | `E1017` 67:9、0.30 秒 | `E1017` 67:9、7.16 秒 |
+| `lb-r1-conf/p/lag_100` | `E1017` 107:9、0.50 秒 | `E1017` 107:9、22.08 秒 |
+| `lb-r1-conf/p/lagbig_15_400` | `E1017` 24:9、0.32 秒 | `E1017` 24:9、5.55 秒 |
+| `lb-r1-conf/p/lagbig_25_400` | `E1017` 34:9、0.32 秒 | `E1017` 34:9、12.48 秒 |
+| `lb-fix1/tp/own` | `E1017` 7:9、0.16 秒 | `E1017` 7:9、0.21 秒 |
+| `lb-fix1/tp/late2` | `E1017` 9:9、0.16 秒 | `E1017` 9:9、0.28 秒 |
+| `lb-fix1/tp/late9` | `E1017` 16:9、0.17 秒 | `E1017` 16:9、0.64 秒 |
+| `lb-fix1/tp/reborrow` | `E1017` 7:9、0.23 秒 | `E1017` 7:9、0.23 秒 |
+
+##### テスト
+
+- 新しい `tests/rc.rs` の `a_loop_that_grows_once_settles_and_one_that_keeps_growing_stops`。受理（両方の edition）: 命令 20 個・サブルーチン 4 個のインタプリタ（`interpreter(20, 4)`。`lb-r1-conf/p/interps_20_4` と同じプログラムで、`main` は 31）、8 個のレコードのどれかを指す参照を 64 回借用して 1 つの局所値に写すループ（`widening(8, 32, 1)`。`lb-r1-ce/p/ws_n8_l1_m64` と同じ借用で、290）と 4 つの局所値に順に写すループ（`widening(8, 36, 4)`。97 個の後に 673 個が 4 回続き、反復 5 で収束。325）、参照を 24 個の局所値に写していくループ（`copy_chain(24, 0)`。18）、200 個の借用を足して 8 個の局所値に写していくループ（`copy_chain(8, 200)`。3618）。`E1017`（両方の edition、ループの本体の位置、`help` の文と回避の書き方）: 本体に中のループがある `loopplace` の形（中のループの借用 100 個。外のループの本体の `11:9`、「keep growing faster: each of the last 5 iterations」）、40 個の局所値に渡す形（`late_hand_on(40)`。`47:9`、「keep growing: each of the last 24 iterations」）、25 個の局所値に写していくループ（`33:9`、同じ文）、200 個の借用を足して 9 個の局所値に写していくループ（`17:9`、「each of the last 8 iterations … (the last made 212)」）。位置と値は手で数え、`main`（`168ae4a5`）の native の `-O0`・`-O3` の値（31・290・325・18・3618）と、前の版（`1b21f734` のリリースビルド）がインタプリタと 2 つの `widening` を `E1017` で止めることと合わせました。
+- 前の 3 件（`a_loop_whose_borrows_keep_growing_stops_with_e1017`・`a_loop_stops_by_the_loans_of_its_iterations_not_by_the_shapes_of_its_places`・3 件目）: 期待の code・kind・位置は変えていません。`own` の形の `help` の確かめを、「one iteration made 514 borrows, more than 500 beyond the 3 of the first」から「keep growing faster: each of the last 5 iterations made more borrows than the one before it, and more of them than that one added (the last made 34)」に変えました（反復 k が 2^k + 2 個を作り、反復 5 が 5 回続けて速く増えた反復）。説明を新しい止め方にしました（局所値に 2 つ・3 つ渡す形は反復 7（36 個）・8（30 個）、本体の局所値・`if` の結果・再借用を選ぶ形は反復 5（34・35・975 個）、局所値に 4 つ渡す形は反復 9（28 個）。計測用のビルドの記録 `tr/` と合わせました）。局所値の数え方を直しました（指摘 8）。3 件目の名前を `a_loop_stops_when_an_iteration_makes_500_loans_more_than_the_first` から `a_loop_stops_when_a_later_iteration_makes_500_loans_more_than_an_earlier_one` に変えました（8 個の連なりを 17 本進めるループは受理、18 本と 33 個の連なりは 500 個の上限の `E1017` で、期待は同じです。連なりの借用は増え続けるので、前の反復より増えた反復だけを数えても同じ反復で止まります）。
+- `tests/rc.rs` の `a_loop_` の 5 件（この 4 件と `a_loop_keeps_what_its_body_stored_elsewhere`）は、下の T1 でどれも成功しました（負荷の高いときに、新しいテストが 7.0 秒、3 件目が 54.7 秒）。
+
+##### マージの条件の確かめ（この回の後）
+
+- ゲート（`gate/tools/check-r32.mjs`・`diff-r32.mjs`。15550 個・31100 組を、`r32`（この回の開発用のビルド `1506be7e`。`lb-fix1/bin/tsuzuri-v4-dev` を `gate/bin/tsuzuri-r32` に写して使い、実行の後に写しを消しました）で両方の edition で検査し直し、ほかの列は `results-r31.json` から。結果は `results-r32.json`、分類は `diff-r32.txt`（`lb-fix1/gate-diff-r32.txt` に写し））: **31100 組のどれも、受理・拒否と最初の 2 つの誤り（code・kind・位置）が `r31` と同じです**（変わった組は 0 なので、前の上限の `E1017` だけで拒否していた組の変化を一つずつ確かめる必要もありませんでした）。`r28`（`15d84aaf`）と比べると、RA は前と同じ 67 組で新しいものは無く、受理から拒否も拒否から受理も無く、変わったのは `r28` の時間切れの 29 組（`r29`〜`r31` と同じ位置の `E1017`）だけです。この 29 組は、`15d84aaf` のビルド（`copilot2-review-ce/bin/tsuzuri-new`）で検査し直しても 120 秒で終わりません（`lb-fix1/gate-x/x15.txt`）。検査の失敗・時間切れは 0。edition 2027 は両方が受理 5272・両方が拒否 5259・RA 38・AR 4981、2026 は 4209・7190・29・4122 で、前回と同じです。
+- 探査（`probe-dirs-all.txt` の 777 個、両方の edition の 1554 組。前の回までの 414 個に、`lb-r1-ce/p`・`lb-r1-conf/p` の 315 個と、この回の `gen/`・`tp/` を加えたもの。この回のリリースビルド、`pr32/results.txt`）: 時間切れは 0 です。前の回までの 828 組は、どれも最初の誤りまで `r31`（`lp-budget/pr31/results.txt`）と同じです。新しい 726 組のうち、`E1017` で止めた 267 組は、どれも `loopplace` の形（`lag*`・`lagf*`・`lagbig*`・`hr*`・`hrs*`・`hrn*`・`lv_*`、`tp/` の止まる形、`t_copy`・`t_choice`・`t_reborrow`）か、上限を超える収束する形（`c_match4_17`・`_22`・`_23`、`c_if_23`、`t_each_23`、`t_chains_1x33`・`18x8`・`2x23`・`3x19`、`gen/cc_25_0`・`cc_26_0`・`cc_33_0`・`cc_25_150`・`cc_9_190`・`cc_9_200`・`cc_9_300`、`gen/win_32`・`win_33`）です（この後に足した `gen/win_31` は、両方の edition で受理します。局所値が 31 個の窓は最初の反復より 496 個、32 個は 528 個多く作ります）。止めなかった 459 組では打ち切りが一度も働かないので、検査は `15d84aaf` と同じです。前の版（`1b21f734` のリリースビルド `lb-r1-ce/bin/tsuzuri-rel`、`prhead/results.txt`）でこの 230 個の両方の edition の 460 組（止めた `tp/value2026` の edition 2026 を含む）を検査し直すと、384 組は最初の誤りまで同じで、76 組（38 個の両方の edition）を `E1017` で止めていました。76 組はどれも一度だけ広がって収束する形で、この回が受理するものです（`lb-r1-ce/p` の `int_o32_r8`・`int_o128_r2`・`n_d*` 8 個・`ws_*` 8 個・`wsa_*` 8 個、`lb-r1-conf/p` の `interp_83`・`interp_84`・`interp_100`・`interps_20_4`・`interps_30_3`・`pipe_45_4`・`pipematch_42_2`・`pipematch_50_2`、`gen/wl_4_72`・`wl_5_72`、`tp/dump_interp`・`dump_widen`）。前の版の時間切れも 0 です。
+- 生成したプログラム（`lb-fix1/g-check.mjs`、15552 個・31104 組を、この回のリリースビルドで）: 危険な 18048 組はどれも拒否し、安全な 13056 組はすべて受理しました。31104 組のどれも、結果（受理か、最初の誤りの code と位置）が `r30` の `loopplace2/g/g-results.json`（`r31` も同じ）と同じで、`E1017` は 1 組もありません（`lb-fix1/g/g-results.json`・`g-summary.json`）。
+- この回のリリースビルド（`bin/tsuzuri-v4`）は `d0f469f0` から作り直したリリースビルドとバイト単位で同じで、開発用のビルド（`bin/tsuzuri-v4-dev`、ゲートの `r32`）も、コードとデータの部分が同じです（違いはリンカの記号表と署名だけ。`85189d19` と `d0f469f0` は `src/` ではコメントと `E1017.md` の文だけを変え、その文はこのビルドにもう入っていました。`lb-fix1/v5/`）。上の結果は、どれも `d0f469f0` の検査の結果です。
+- `examples/` と `tests/fixtures/` の 155 個のプロジェクト（`_tools/step5.mjs`、`check --json` と `build --no-cache --emit llvm`）を `main`（`168ae4a5`）とこの回の開発用のビルドで比べ、違いはありません（`lb-fix1/step5-main.txt`）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3301 件を実行し、3300 件が成功、4 件 skip（1519 秒、`lb-fix1/nextest.log`。上の 5 件を含みます）。残りの 1 件の `tests/formatter.rs` の `corpus_is_idempotent_and_semantically_unchanged` は、走査中のディレクトリが同時に走るほかのテストで消えた（`read_dir` の `NotFound`。前に `rr6/nextest.log` でも起きたもの）ために失敗し、単独で回すと成功しました（`running 1 test`）。
+- E2E（この回の開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 85 件、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`lb-fix1/suites.log`）。
+- 文書: `check-docs.mjs`（`lifetimes.md`・`diagnostics.md`、2 ページ・83 個のリンク・7 個の例・14 回の native の実行）、`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`（19 個、古いもの 0）、`check-cli-docs.mjs`（4 個）、`check-guide-lite.mjs`（88 個）、`check-links.mjs --into`（変えた 8 つの文書へのリンク 467 個、壊れたもの 0）が成功。`f62058ac` の後に、`check-docs.mjs`（`lifetimes.md`、1 ページ・33 個のリンク・7 個の例・14 回の native の実行）、`gen-docs.mjs --check`（19 個、古いもの 0）、`check-cli-docs.mjs`（4 個）、`check-guide-lite.mjs`（88 個）をもう一度実行し、成功しました。
+- 所有権の検査の時間（`lb-fix1/perf.sh`。`TSUZURI_TIME_PASSES=1` の `ownership` の段の ms を、`r28`（`15d84aaf` の `src/`）・`r31`（`dbbe8338`）・`r32`（この回）の開発用のビルドで交互に 7 回ずつ測った中央値。前回と同じ 12 個。負荷 5 ほどのとき。`lb-fix1/time-perf.txt`）: 揺れの範囲です（`r28` との差は多くても 1.8%。前回の `r28`・`r30`・`r31` の差も 1% ほどでした）。数え方は、反復ごとに `self.loans.len()` を 2 回読み、`LoanGrowth::note` で数をいくつか比べるだけです。
+
+| プログラム | `r28`（ms） | `r31`（ms） | `r32`（ms） |
+| --- | --- | --- | --- |
+| `perf_loop_breaks_400` | 360.406 | 361.052 | 366.954 |
+| `perf_try_checked_400` | 375.461 | 376.402 | 378.747 |
+| `perf_ho_wrap_120` | 2.588 | 2.579 | 2.596 |
+| `perf_ho_chain_320` | 25.324 | 25.203 | 25.527 |
+| `drop_locals_600` | 5.647 | 5.763 | 5.748 |
+| `pattern_param_chain_200` | 6.722 | 6.784 | 6.73 |
+| `perf_match_nest_30` | 1.514 | 1.488 | 1.491 |
+| `p01_relay_chain_400` | 14.851 | 14.734 | 14.908 |
+| `x01_many_holders_800` | 1188.116 | 1192.014 | 1200.945 |
+| `x04_nested_loops_30` | 7.957 | 7.939 | 7.962 |
+| `p_cellshares_400` | 228.983 | 230.855 | 229.939 |
+| `p_cellshares_800` | 985.462 | 983.351 | 986.812 |
+
+- 変えたファイル: `src/ownership_control.rs`、`tests/rc.rs`（新しい 1 件、3 件の説明と `help` の確かめ、1 件の名前）、`src/explain/codes/E1017.md`、`lifetimes.md`（「現在の制限」）、`compiler/diagnostics.md` と `docs/language.md`（`E1017` の行）、`docs/architecture.md`（ループの不動点の段落）、A34（`loopplace` の「現状」・原因、背景、局所値の数え方）、A33（「検査の時間」）、このチケット（前の節への案内、この節）。
+- コミット: `93f25d12`（`src/` と `tests/rc.rs`）、`1506be7e`（500 個の上限を増えた反復だけにする、4 つの局所値に写す形のテスト）、`85189d19`（文書）、`d0f469f0`（doc comment の直しとテストの説明の折り返し）、`f62058ac`（前の節の冒頭の注と、`lifetimes.md` の局所値に渡して読む形の 32 個）、この節。
+
+#### 最後のレビュー（2026-11-16）
+
+借用の数の上限そのもの（`LOOP_LOAN_GROWTH`・`LOOP_LATE_GROWTH`・`LOOP_GROWTH_FROM`）は、下の「借用の数の上限を外す（2026-11-16）」で外しました。先に止めるのが収束するループだけだったためです。
+
+上の「借用の増え方による打ち切り」（`93f25d12`・`1506be7e`・`85189d19`・`d0f469f0`・`f62058ac`・`2a7d9e9f`）の最後のレビュー（反例の探索 `target/scratch/a31/lg-ce/`、適合の確認 `lg-conf/`）の指摘 6 件は、どれも確かめられました。最後の回なので打ち切りの規則は増やさず、500 個の上限に条件を 1 つ足して狭めただけです（`f88d8a82`）。結果は `target/scratch/a31/lg-fix/` にあります（`sim2.mjs`・`sim3.mjs` が記録から候補の規則を試す道具、`trall.sh` が計測用のビルド `lb-fix1/bin/tsuzuri-instr3` で止めずに記録する道具、`trs/` がレビューの探査の記録、`bin/tsuzuri-v5`・`v5-dev` がこの回のリリースビルドと開発用のビルド、`tp/` が下のテストのプログラム、`pr33/` が探査の結果）。
+
+| 指摘 | 判定と対応 |
+| --- | --- |
+| [結果の変化] 代入し直す参照が 2 回目の反復で 500 個を超えて広がるインタプリタや状態機械のループが、5 個の参照の窓（`lg-ce/p/vm_trace5`）・4 回分の状態の履歴（`fsm_16_72_4`）・4 段の戻り先（`vmbt_20_4`）を持つと、5 回目の反復で `E1017` | 確かめました。500 個の上限はそれより前でいちばん少なかった反復、つまり広がる前の最初の反復から数えるので、2 回目の反復の広がり（548 個など）だけで上限を超えていて、後の反復が窓や履歴の分だけ 1〜19 個増えると、5 回目の反復で止めていました。500 個の上限に、4 回目の反復より `LOOP_LATE_GROWTH`（100）個を超えて多く作ることを足しました。指摘のループ（`vm_trace5`・`vm_trace6`・`vm_trace8`、`fsm_16_72_4`・`fsm_8_128_4`・`fsm_8_160_4`、`vmbt_*`、`vmr_*`）は、どれも両方の edition で受理します（`15d84aaf`・`main`・基準と同じ） |
+| [終わらない] 局所値に渡す形で、本体の文が多く借用をほとんど作らないもの（`lg-ce/p/lagz_*`）は、24 回続けて増えるまで止まらず、リリースビルドで 10〜17 秒（`main` は 1 秒以内） | 確かめました。規則は増やさず、A34 の `loopplace` の「現状」と `lifetimes.md` の「現在の制限」に、止まるまで時間のかかる形として、形と時間を書きました（下の「時間」） |
+| [文書] `lifetimes.md` と `LOOP_GROWING_LARGE` の doc comment が、借用の少ない大きな本体の止まるまでの時間を小さく書いている | 確かめました。`lifetimes.md`・`docs/architecture.md` に、1 回の反復の時間は反復が作る借用の数ではなく本体が評価する文の数と状態の借用の数で決まることと、借用をほとんど作らない文の多い本体の時間を書き、`LOOP_GROWING_ITERATIONS`・`LOOP_GROWING_LARGE` の doc comment も同じように直しました。500 個の上限の `help` は、連なりと、参照を局所値に渡してそれぞれを何度も通して読む形を言います |
+| [結果の変化] 一度広がったループの 5 回目からの反復が 1 個でも増えると止める（`lg-conf/p/wl_4_72_read`・`interpw2_20_4_5`・`interpdh_20_4_4`） | 確かめました。上の指摘と同じ仕組みで、同じ変更で、どれも両方の edition で受理します（`main` の値は 328・271・101）。3 つは下のテストで受理を固定しました |
+| [上限を超える] 2 つのフィールドのどちらかを指す 7 個の参照の連なり（`lg-conf/p/bc_if_7`）を、増え方が速くなる打ち切りが止める（`15d84aaf` は 0.79 秒で受理） | 確かめました。参照ごとに場所が倍になるので、増え方が反復ごとに大きくなります。`lifetimes.md`・`docs/architecture.md`・`LOOP_FASTER_ITERATIONS` と `LOOP_LOAN_GROWTH` の doc comment に、7 個以上で止まる形として書きました |
+| [文書] 上限を超える形の一覧を、それで全部のように書いている（`docs/architecture.md`、A34、`lifetimes.md`、doc comment）。`bc_if_7` と、5 個の局所値に渡してそれぞれを 20 回読む `lg-conf/p/pipe_5_8_20`（500 個の上限で止まる。`15d84aaf` は 0.23 秒で受理）が反例 | 確かめました。一覧を「分かっている形」とし、`bc_if_7` の形と、局所値に渡してそれぞれを何度も読み、最初の局所値がいくつもの場所のどれかを指す形を足しました（`pipe_5_8_20` は 4 回目の反復より 180 個多く作るので、この回の後も止まります）。`E1017.md` の直し方にも足しました |
+
+##### 変えたこと（`src/ownership_control.rs`、`f88d8a82`）
+
+- `LOOP_LATE_GROWTH`（100）: `LoanGrowth` は 4 回目の反復（反復 3）が作った借用の数を覚え、500 個の上限は、5 回目からの反復が、前の反復より多く、それより前でいちばん少なかった反復より 500 個を超えて多く、しかも 4 回目の反復より 100 個を超えて多く作ったときだけ働きます。`help` は「one iteration of the loop made N borrows, more than the one before it, more than 500 beyond the M of the iteration before it that made the fewest, and more than 100 beyond the K of the fourth iteration, so the check stops before the loop settles; a chain of dozens of references, …, or a reference passed along locals and borrowed through each of them many times (`r1 = r0`), grows this way: split the chain or the loop; …」です。
+- 増え方の 2 つの打ち切りと、500 個と 5 回目からという数は変えていません。
+
+##### 上限の決め方
+
+計測用のビルドの記録（`lb-fix1/pstat/` の 1459 個、`lb-fix1/tr/`、`lg-ce/trs/`、この回の `trs/`、合わせて 1746 個）で候補を試しました（`sim3.mjs`）。500 個の上限が最初に当たるのは、収束する形（連なり、局所値に渡して読む形、`fc4_5`、`pipe_5_8_20`）と指摘のループだけで、`loopplace` の形はどれも増え方の打ち切りが先に止めます。そのため、500 個の上限を狭めても `loopplace` の形の止まり方は変わりません。候補のうち、2 回目から 4 回目の反復の増え方が 500 個を超えたときだけ数え直す形は、増え方が 500 個の少し手前の広がりで同じ指摘が残るので、4 回目の反復からの増え方を別に数える形にしました。100 個は、指摘と探査の一度広がるループの 4 回目からの増え方（多くて 20 個。8 段の戻り先を持つ `vmbt_*_8`。1 回の反復では多くて 19 個）より大きく、上限が止める収束する形が止まるときの 4 回目からの増え方（8 個の連なりを 18 本進めるループの 180 個がいちばん小さく、33 個の連なりは 414 個）より小さい数です。記録のどれでも、100 個の条件は指摘のループのほかは止める反復を変えません（`pipe_5_8_20` も 4 回目より 180 個多い反復 4 で止まります）。
+
+##### 時間
+
+この回のリリースビルド（`bin/tsuzuri-v5`）と前の回のリリースビルド（`lb-fix1/bin/tsuzuri-v4`、`1506be7e`）で、前の回の「時間」の表の 24 個のプログラムを edition 2027 で 1 回ずつ交互に検査しました（`timing.sh`、`time-v5.txt`。負荷 4〜6 のとき）。どれも前の回と同じ位置の `E1017` で、止めた打ち切りも同じです（`help` から: 増え方が速くなる打ち切りが 10 個、24 回続けて増えた打ち切りが 8 個、8 回続けて増えた打ち切りが 6 個で、500 個の上限で止まるものはありません）。この回のビルドで 0.12〜1.54 秒です（いちばん長いのは本体が 2000 行ほどの `lagf_9_2000`、次が `hrs_1400` の 0.92 秒）。指摘のループは、この回のビルドで 0.16〜0.44 秒で受理します（`15d84aaf` は 0.19〜0.43 秒）。
+
+止まるまで時間のかかる形（指摘 2。`lg-ce/p/lagz_*`、`lg-ce/gen/lagz.mjs <局所値の数> <借用を作らない文の数>`）は、この回のビルドと `main`（`168ae4a5`、開発用のビルド）で次のとおりです（`time-lagz.txt`。負荷 4〜6 のとき）。どれも前の回のビルドと同じ位置の `E1017` で（探査の `pr32lg/`）、`help` は 500 個の上限ではなく増え方の打ち切りを言います。`15d84aaf` は `lagz_60_2000` を 60 秒たっても終えません。
+
+| プログラム | この回（`f88d8a82`） | `main` |
+| --- | --- | --- |
+| `lagz_300_0`（局所値 300 個） | `E1017` 308:9、2.70 秒 | 受理、0.32 秒 |
+| `lagz_500_0` | `E1017` 508:9、7.01 秒 | 受理、0.38 秒 |
+| `lagz_60_2000`（局所値 60 個と文 2000 個） | `E1017` 68:9、8.48 秒 | 受理、0.49 秒 |
+| `lagz_100_1500` | `E1017` 108:9、8.42 秒 | 受理、0.45 秒 |
+| `lagz_200_1000` | `E1017` 208:9、9.32 秒 | 受理、0.40 秒 |
+| `lagz_23_3000` | `E1017` 31:9、10.86 秒 | 受理、0.68 秒 |
+| `lagz_150_1500` | `E1017` 158:9、11.16 秒 | 受理、0.49 秒 |
+| `lagz_60_3000` | `E1017` 68:9、14.81 秒 | 受理、0.79 秒 |
+| `lagz_9_10000`（増え方が速くなる打ち切り） | `E1017` 17:9、41.31 秒 | 受理、4.44 秒 |
+| `lagz_23_10000` | `E1017` 31:9、83.36 秒 | 受理、4.60 秒 |
+
+##### テスト
+
+- 新しい `tests/rc.rs` の `a_loop_whose_reference_widens_once_may_settle_a_few_iterations_later`。受理（両方の edition）: `widening(8, 36, 4)` の最後の写しをループの中で読む形（`s + String.length prev3.a`。98 個、675 個の後に 1 個ずつ増え、反復 5 で収束。`main` は 328）、`interpreter(20, 4)` が直前の 5 つの名前を局所値に持って読む形（新しい `keeping_interpreter(20, 4, 5, 0)`。`lg-conf/p/interpw2_20_4_5` と同じプログラムで、183・724・728・731・733 個、271）、4 段の戻り先を局所値に持つ形（`keeping_interpreter(20, 4, 0, 4)`。`interpdh_20_4_4` と同じで、180・716・720・724・728 個、101）。`E1017`（両方の edition）: 8 個のレコードのどれかを指す参照を 5 個の局所値に渡してそれぞれを 20 回読むループ（新しい `pipeline(5, 8, 20)`。`pipe_5_8_20` と同じで、`20:9`、`help` は「made 965 borrows, … more than 500 beyond the 125 …, and more than 100 beyond the 785 of the fourth iteration」）。受理の 3 つは `1506be7e` では `E1017` です。値は `main`（`168ae4a5`）の native の `-O0`・`-O3`、位置と数は計測用のビルドの記録と合わせました。
+- `tests/rc.rs` の `a_loop_` の 6 件は、下の T1 でどれも成功しました。
+
+##### マージの条件の確かめ（この回の後）
+
+- ゲート（`gate/tools/check-r33.mjs`・`diff-r33.mjs`。15550 個・31100 組を、`r33`（この回の開発用のビルド。`lg-fix/bin/tsuzuri-v5-dev` を `gate/bin/tsuzuri-r33` に写して使い、実行の後に写しを消しました）で両方の edition で検査し直し、ほかの列は `results-r32.json` から。結果は `results-r33.json`、分類は `diff-r33.txt`（`lg-fix/gate-diff-r33.txt` に写し））: **31100 組のどれも、受理・拒否と最初の 2 つの誤り（code・kind・位置）が `r32` と同じです**。`r28`（`15d84aaf`）と比べると、RA は前と同じ 67 組で新しいものは無く、受理から拒否も拒否から受理も無く、変わったのは `r28` の時間切れの 29 組（前と同じ位置の `E1017`）だけです。検査の失敗・時間切れは 0。edition 2027 は両方が受理 5272・両方が拒否 5259・RA 38・AR 4981、2026 は 4209・7190・29・4122 で、前回と同じです。
+- 探査（`lb-fix1/probe-dirs-all.txt` の 777 個と `lg-ce/p`・`lg-conf/p` の 96 個、両方の edition の 1746 組。この回のリリースビルド、時間切れは 120 秒、`pr33/results.txt`）: 前の回の 1554 組は、どれも最初の誤りまで前の回（`lb-fix1/pr32/results.txt`）と同じです。`lg-ce/p`・`lg-conf/p` の 192 組を前の回のビルドで検査した結果（`pr32lg/results.txt`）と比べると、148 組は同じで、変わった 44 組は指摘の 22 個の一度広がるループ（`fsm_16_72_4`・`fsm_8_128_4`・`fsm_8_160_4`、`vm_trace5`・`6`・`8`、`vmbt_20_*`・`30_*`・`60_*`（4・6・8 段）、`vmr_20_4`・`20_8`・`40_4`・`40_8`、`interpdh_20_4_4`、`interpw2_20_4_5`、`wl_4_72_read`）の両方の edition が `E1017` から受理になったものだけです。時間切れは `lagz_23_10000` の両方の edition だけで、前の回のビルドも同じく時間切れです（負荷 30 ほどのとき。負荷 4 ほどでは 83 秒で止まります）。`bc_if_7`〜`10`、`fc4_5`、`pipe_5_8_20`、`lagz_*`、`lagdip_30_2`、`lp_copyp`、`t_inner` は前の回と同じ `E1017` です。
+- 生成したプログラム（`lg-fix/g-check.mjs`、15552 個・31104 組を、この回のリリースビルドで）: 危険な 18048 組はどれも拒否し、安全な 13056 組はすべて受理しました。31104 組のどれも、結果が `r30` の `loopplace2/g/g-results.json` と同じで、`E1017` は 1 組もありません（`lg-fix/g/g-results.json`・`g-summary.json`）。
+- `examples/` と `tests/fixtures/` の 155 個のプロジェクト（`_tools/step5.mjs`）を `main`（`168ae4a5`）とこの回の開発用のビルドで比べ、違いはありません（`lg-fix/step5-main.txt`）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3302 件を実行し、3301 件が成功、4 件 skip（1113 秒、負荷 25〜35 のとき。`lg-fix/nextest.log`。上の 6 件を含みます）。残りの 1 件の `tests/explain.rs` の `every_code_has_a_page` は、`E1017.md` の直し方に足した文でページが 1500 文字の上限を超えた（1572 文字）ためで、文を 1 つの言い方（「passes a reference along many locals」。写していく連なりと、渡してそれぞれを読む形の両方）にまとめて 1494 文字にし（`e592e6a8`）、`tests/explain.rs` の 16 件を回し直して成功しました。この直しの後のビルドは、上のゲート・探査・生成したプログラム・step5・E2E の検査に使ったビルド（`f88d8a82`）と `E1017` の説明のページの文だけが違います。
+- E2E（この回の開発用のビルド `bin/tsuzuri-v5-dev`、native と WASM の `-O0`・`-O3`）: `in_place_writes` 85 件、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`lg-fix/suites.log`）。
+- 文書: `check-docs.mjs`（`lifetimes.md`・`diagnostics.md`、2 ページ・83 個のリンク・7 個の例・14 回の native の実行）、`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`（19 個、古いもの 0。`e592e6a8` の後にもう一度）、`check-cli-docs.mjs`（4 個）、`check-guide-lite.mjs`（88 個）、`check-links.mjs --into`（変えた 7 つの文書へのリンク 467 個、壊れたもの 0）が成功。
+- 変えたファイル: `src/ownership_control.rs`（`LOOP_LATE_GROWTH`、500 個の上限の条件と `help`、打ち切りの doc comment）、`src/explain/codes/E1017.md`、`tests/rc.rs`（新しい 1 件と `keeping_interpreter`・`pipeline`）、`lifetimes.md`（「現在の制限」）、`compiler/diagnostics.md` と `docs/language.md`（`E1017` の行）、`docs/architecture.md`（ループの不動点の段落）、A33（「検査の時間」）、A34（`loopplace` の「現状」の止まるまで時間のかかる形と原因）、このチケット（前の節の冒頭の注、この節）。
+- コミット: `f88d8a82`（`src/` と `tests/rc.rs`）、`7cc8e272`（文書と doc comment の数）、`e592e6a8`（`E1017.md` の長さ）、この節。
+
+#### 借用の数の上限を外す（2026-11-16）
+
+上の「最後のレビュー」（`f88d8a82`・`7cc8e272`・`e592e6a8`・`c2085c7d`）の後の点検（`target/scratch/a31/lg-recheck/`）で、500 個の上限が、まだ収束するループを止めることが分かりました。状態の履歴を持つ状態機械（`lg-recheck/p/fsmh_16_72_6_2` は 16 個の状態のうち直前の 6 つを局所値に持ち、それぞれの 2 つのフィールドを読むもの）と、32 個の状態の状態機械（`fsm_32_40_6`）など 15 個のディレクトリの両方の edition で、`15d84aaf`・`main`・基準は受理し、`f88d8a82` 以降は `E1017` です。代入し直す参照が 2 回目の反復で一度広がり（105 個から 693 個）、その後の反復が履歴の分だけ 34〜42 個ずつ増えて、4 回目の反復より 100 個多くなった反復で上限に当たっていました。記録で確かめると、借用の数の上限は収束するループしか先に止めていなかったので、条件を足して狭めるのをやめ、上限そのものを外しました。打ち切りは、増え方の 2 つ（5 回続けて速くなる、24 回（200 個を超える反復なら 8 回）続けて前以上に増える）だけです（後の「再点検」で、反復の後の状態の借用の増え方で止める 3 つ目を足しました）。結果は `target/scratch/a31/nobudget/` にあります（`sim4.mjs` が記録で今の規則と上限を外した規則を比べる道具、`classify.sh` が最初の誤りと `help` から止めた打ち切りを出す道具、`trs-recheck/`・`trs-chains/`・`trs-win/` がこの回に止めずに取った記録、`bin/tsuzuri-nb`・`tsuzuri-nb-dev` がこの回のリリースビルドと開発用のビルド、`pr34/` が探査の結果）。
+
+##### 外した理由
+
+- 計測用のビルド（`lb-fix1/bin/tsuzuri-instr3`。`15d84aaf` の検査に、止めずに反復ごとの借用の数を書く計測を足したもの）の記録 1887 個（`lb-fix1/pstat/` の 1458 個、`lb-fix1/tr/` の 59 個、`lg-ce/trs/` の 56 個、`lg-fix/trs/` の 172 個、`lg-fix/trs-tp/` の 8 個と、この回に `lg-recheck/p` の 67 個のディレクトリを両方の edition で取った 134 個（反復の上限は 129 回））で、今の規則と上限を外した規則が最初に止める所を比べました（`sim4.mjs`、`sim4.txt`）。増え方が速くなる打ち切りが先に止める 356 個と、前以上の増え方が続く打ち切りが先に止める 82 個は、どちらの規則でも同じ反復の同じ数で止まります。どちらも止めない 1394 個も同じです。違うのは、今の規則で 500 個の上限が先に止める 55 個だけで、上限を外すとどれも収束します（記録の終わりまでにすべてのループが収束し、検査は成功で終わります）。
+- `lb-fix1/pstat/` の連なりの記録は、上限で止まった所で終わっていたので、連なりの 9 個のディレクトリ（`lb-r1-ce/p/c_if_23`・`c_match4_17`・`22`・`23`、`lb-r1-conf/p/t_chains_18x8`・`1x33`・`2x23`・`3x19`・`t_each_23`）と、局所値に渡してそれぞれを読む `lb-fix1/gen/win_32`・`win_33` を、両方の edition で止めずに記録し直しました（`trs-chains/`・`trs-win/`）。22 個のどれも収束します。
+- 突き合わせ: 前の回のリリースビルドの探査で `E1017` か時間切れだった 502 組と `lg-recheck/p` の 134 組を、前の回のリリースビルドで検査し直して止めた打ち切りを `help` から分けると（`classify-v6.txt`）、増え方が速くなる打ち切り 368 組、24 回続けて増えた打ち切り 74 組、8 回続けて増えた打ち切り 34 組、500 個の上限 56 組、受理 104 組です。500 個の上限の 56 組は、`win_32`・`win_33`、`c_if_23`、`c_match4_17`・`22`・`23`、`t_chains_18x8`・`1x33`・`2x23`・`3x19`、`t_each_23`、`fc4_5`、`pipe_5_8_20`、`lg-recheck/p` の 15 個（`fsm_32_40_6` と `fsmh_*`）の両方の edition で、どれも上の記録で収束します。収束しない形で 500 個の上限に頼るものはありません（この記録の中では。記録に無かった形は下の「再点検」）。
+- 代わりに、収束する長い連なりは、`15d84aaf` と同じく収束するまで検査します（下の「時間」）。それぞれの参照が 2 つのフィールドのどちらかを指す連なり（7 個以上）と、参照を写していく 25 個以上の局所値（200 個を超える反復なら 9 個以上）は、前の回と同じく増え方の打ち切りが止めます。
+- 増え方が反復ごとに大きくなったり小さくなったりしながら収束しないループは、どちらの打ち切りにも当たらず、反復の上限（129 回）まで検査します。記録にはそうした形はありません（`docs/architecture.md` に書きました）。
+
+##### 変えたこと（`src/ownership_control.rs`）
+
+- `LOOP_LOAN_GROWTH`・`LOOP_LATE_GROWTH`・`LOOP_GROWTH_FROM`、`LoanGrowth` の `fewest`・`before_late`、500 個の上限の `help`、`LoanGrowth::note` の反復の番号の引数を外しました。`LoanGrowth` は前の反復の数と増えた数（`last`）と 2 つの連続（`faster`・`growing`）だけを持ちます。増え方の 2 つの打ち切りの条件・数・`help` は変えていません。
+- 打ち切りの説明の doc comment（前は `LOOP_LOAN_GROWTH` に付いていました）を `LoanGrowth` に移し、連なりと受け渡しはどちらの打ち切りにも当たらず `15d84aaf` の結果のままであることと、その検査の時間、借用の数の上限を外した理由を書きました。`LOOP_FASTER_ITERATIONS` の doc comment に、4 つのフィールドのどれかを指す 5 個の連なり（`fc4_5`）が 4 回続けて速くなってから収束することを足しました。
+- `src/explain/codes/E1017.md` の直し方は、写していく局所値と、いくつものフィールドのどれかを指す参照の連なりを言います（1497 文字）。
+
+##### テスト
+
+- `tests/rc.rs` の `a_loop_stops_when_a_later_iteration_makes_500_loans_more_than_an_earlier_one` を `a_loop_whose_loans_grow_by_less_in_each_iteration_settles_however_many_it_makes` に改名し、8 個の連なりの 17 本（受理）と 18 本・33 個の連なり（`E1017`）の代わりに、2 つのレコードのどちらかを指す参照を 16 個の局所値に渡してそれぞれを 4 回読むループ（`pipeline(16, 2, 4)`。71・139・203・…・659・671 個と反復ごとに 4 個ずつ少なく増え、最初より 600 個多く作って反復 16 で収束。前の回は反復 11 で止めていました。`main` は 600）の受理を両方の edition で確かめます。18 本の連なりは開発用のビルドで 1 回の検査に 2.4 秒ほど、33 個の連なりは 26〜54 秒かかるので、テストには入れません（どちらも探査で受理を確かめました）。`loopplace` の形の 5 つの打ち切り（`COPY`・`local`・`choice`・`reborrow`・`late_hand_on(4)`）はそのままです。
+- `a_loop_whose_reference_widens_once_may_settle_a_few_iterations_later` は、`pipeline(5, 8, 20)` の `E1017` を受理に変え（`main` は 0）、新しい `state_machine(16, 72, 6, 2)`（`lg-recheck/p/fsmh_16_72_6_2` と同じプログラム。105・693・735・775・813・849・883 個の後、反復 7 で収束。`main` は 9288）の受理を両方の edition で足しました。前の回のビルドは 2 つとも `E1017` です。
+- ほかの 2 件（`a_loop_stops_by_the_loans_of_its_iterations_not_by_the_shapes_of_its_places`・`a_loop_that_grows_once_settles_and_one_that_keeps_growing_stops`）は doc comment だけを直し、増え方の打ち切りの境界（写していく 24 個と 25 個の局所値、200 個の借用を足した 8 個と 9 個、中のループのある形、局所値 40 個に渡す形）はそのままです。
+- `a_loop_` の 6 件は開発用のビルドで成功します（`rc-loop.log`。改名した 1 件は 6.4 秒で、前の回の 33 個の連なりを含む同じテストは T1 で 54.7 秒でした）。
+
+##### 時間
+
+連なりの検査の時間（リリースビルド、edition 2027、1 回ずつ、負荷 2〜5 のとき。`chaintime.txt`・`chainrel.txt`）。この回のビルドは、`15d84aaf` の検査を止めずに走らせるリリースビルド（計測用のビルド `lb-fix1/bin/tsuzuri-instr3` に `TZ_LB_NOSTOP=1`）と同じ時間で受理します。前の回のビルドは、どれも 500 個の上限で `E1017` でした（33 個以上の連なり、18 本の連なりなど）。
+
+| プログラム | この回 | 止めない `15d84aaf`（リリース） |
+| --- | --- | --- |
+| 20 個の参照の連なり（`lp-budget/chain/c20`） | 受理、1.51 秒 | 1.51 秒 |
+| 30 個（`c30`） | 受理、17.54 秒 | 17.64 秒 |
+| 33 個（`c33`） | 受理、32.78 秒 | 32.46 秒 |
+| 40 個（`c40`） | 受理、117.29 秒 | 117.22 秒 |
+| 8 個の連なり 18 本（`m18x8`） | 受理、2.79 秒 | 2.84 秒 |
+| 2 つの場所から始まる 23 個の `each` の連なり（`lb-r1-conf/p/t_each_23`） | 受理、16.41 秒 | 17.46 秒 |
+| 4 つの腕の `match` から始まる 17 個（`lb-r1-ce/p/c_match4_17`）・23 個（`c_match4_23`） | 受理、6.43 秒・45.91 秒 | – |
+| 5 個の局所値を 20 回ずつ読む窓（`lg-conf/p/pipe_5_8_20`）、履歴を持つ状態機械（`lg-recheck/p/fsmh_16_72_6_2`） | 受理、0.32 秒・0.26 秒 | – |
+
+`15d84aaf` の参照に使ってきた `copilot2-review-ce/bin/tsuzuri-new` は開発用のビルドで、同じ連なりに 1.6 倍ほどかかります（20 個 2.39 秒、30 個 27.64 秒、33 個 51.27 秒、40 個 182.23 秒）。
+
+前の回の「時間」の表の 24 個のプログラムを、この回と前の回のリリースビルドで edition 2027 で 1 回ずつ交互に検査しました（`timing.sh`、`time-nb.txt`。負荷 3 ほどのとき）。どれも同じ位置の `E1017` で、止めた打ち切りと `help` の借用の数も同じです（増え方が速くなる打ち切り 10 個、24 回続けて増えた打ち切り 8 個、8 回続けて増えた打ち切り 6 個）。この回のビルドで 0.11〜1.54 秒です（いちばん長いのは `lagf_9_2000`、次が `hrs_1400` の 0.93 秒）。
+
+止まるまで時間のかかる形（`lg-ce/p/lagz_*`）は前の回と同じ打ち切りで止まり、時間も変わりません（`time-lagz.txt`。edition 2027、負荷 3 ほどのとき。括弧は `main` の開発用のビルド）: `lagz_300_0` 2.67 秒（0.24 秒）、`lagz_500_0` 6.97 秒（0.40 秒）、`lagz_60_2000` 8.54 秒（0.49 秒）、`lagz_100_1500` 8.47 秒（0.49 秒）、`lagz_200_1000` 9.45 秒（0.39 秒）、`lagz_23_3000` 10.92 秒（0.68 秒）、`lagz_150_1500` 11.32 秒（0.49 秒）、`lagz_60_3000` 14.88 秒（0.80 秒）、`lagz_9_10000`（増え方が速くなる打ち切り）41.37 秒（4.47 秒）、`lagz_23_10000` 83.47 秒（4.65 秒。edition 2026 も 83.44 秒）。いちばん遅く止まる `loopplace` の形は、今も `lagz_23_10000` です（収束していく部分と同じループにある形は、下の「再点検」のとおり、この節のビルドでは 90 秒近くかかるものがありました）。
+
+所有権の検査の時間（`perf.sh`。`TSUZURI_TIME_PASSES=1` の `ownership` の段の ms を、`r28`（`15d84aaf` の `src/`）・前の回・この回の開発用のビルドで、12 個のプログラムを 7 回ずつ交互に測った中央値。`time-perf.txt`、負荷 3〜5 のとき）: この回と前の回の差は 0.5% 以内で、向きもまちまちです（`perf_loop_breaks_400` 369.4 / 367.8、`x01_many_holders_800` 1216.0 / 1212.1、`p_cellshares_800` 976.0 / 978.3）。
+
+##### マージの条件の確かめ（この回の後）
+
+- ゲート（`gate/tools/check-r34.mjs`・`diff-r34.mjs`。15550 個・31100 組を、`r34`（この回の開発用のビルド。`bin/tsuzuri-nb-dev` を `gate/bin/tsuzuri-r34` に写して使い、実行の後に写しを消しました）で両方の edition で検査し直し、ほかの列は `results-r33.json` から。結果は `results-r34.json`、分類は `diff-r34.txt`（`nobudget/gate-diff-r34.txt` に写し））: **31100 組のどれも、受理・拒否と最初の 2 つの誤り（code・kind・位置）が `r33` と同じです**（ゲートには 500 個の上限で止まるループがありませんでした）。`r28`（`15d84aaf`）と比べると、RA は前と同じ 67 組で新しいものは無く、受理から拒否も拒否から受理も無く、変わったのは `r28` の時間切れの 29 組（前と同じ位置の `E1017`）だけです。検査の失敗・時間切れは 0。edition 2027 は両方が受理 5272・両方が拒否 5259・RA 38・AR 4981、2026 は 4209・7190・29・4122 で、前回と同じです。
+- 探査（`lg-fix/probe-dirs-r33.txt` の 873 個と `lg-recheck/p` の 67 個、両方の edition の 1880 組。この回のリリースビルド、時間切れは 120 秒、4 つずつ並べて。`pr34/results.txt`、比べる道具 `cmp-probes.mjs`、`pr34/cmp.txt`）: 1822 組は、最初の誤りと止めた打ち切りまで前の回のリリースビルド（`lg-recheck/v6.txt`・`classify-v6.txt`）と同じです。変わった 58 組は、500 個の上限で止めていた 56 組（上の「外した理由」の一覧）が受理になったものと、`lagz_23_10000` の両方の edition が並べて走らせた負荷で 120 秒を超えたものです（1 つだけで走らせると 83.4 秒と 83.5 秒で、前と同じ `31:9` の `E1017` で止まります。前の回の探査 `pr33/` でも負荷の高いときは時間切れでした）。受理になった 56 組は、`15d84aaf`（参照の開発用のビルド、120 秒）もどれも受理します（`pr34/old-changed.txt`。いちばん長いのは `c_match4_23` の 39.7 秒）。打ち切りで止まる組は、増え方が速くなる打ち切り 368 組、24 回続けて増えた打ち切り 74 組（`lagz_23_10000` を含む）、8 回続けて増えた打ち切り 34 組で、どれも前の回と同じ位置と打ち切りです。`loopplace` の形はどれも止まり、`help` の無い `E1017`（反復の上限）は 1 組もありません。打ち切りで止まる組のうち `15d84aaf` が受理するのは、前から書いてある増え方の打ち切りの形（2 つのフィールドのどちらかを指す 7 個以上の連なり `bc_if_7`〜`10`、写していく 25 個以上の局所値や 200 個を超える反復で 9 個以上の局所値 `cc_*`・`hr_*`）だけで、この回で変わったものはありません。
+- 生成したプログラム（`nobudget/g-check.mjs`、15552 個・31104 組を、この回のリリースビルドで）: 危険な 18048 組はどれも拒否し、安全な 13056 組はすべて受理しました。31104 組のどれも、結果が `r30` の `loopplace2/g/g-results.json` と同じで、`E1017` も検査の失敗も 1 組もありません（`nobudget/g/g-results.json`・`g-summary.json`）。
+- `examples/` と `tests/fixtures/` の 155 個のプロジェクト（`_tools/step5.mjs`）を `main`（`168ae4a5`）とこの回の開発用のビルドで比べ、違いはありません（`step5-main.txt`）。
+
+##### 確かめたこと
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功。
+- T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`）: 3302 件を実行し、3301 件が成功、4 件 skip（1594 秒、生成したプログラムの検査と同時に走らせた負荷 30〜50 のとき。`nextest.log`。上の 6 件を含み、改名した 1 件は 12.1 秒）。残りの 1 件の `tests/diagram_cli.rs` の `kg_diagram_argument_errors` は、一時ディレクトリの KG の置き場所が「KG ではない」と言われたもので（ほかのテストと同時に走ったときの競合）、1 つだけで回し直すと `tests/diagram_cli.rs` の 12 件が成功しました（`diagram-rerun.log`）。この回の変更は所有権の検査の打ち切りだけで、図の CLI は通りません。
+- E2E（この回の開発用のビルド、native と WASM の `-O0`・`-O3`）: `in_place_writes` 85 件、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`suites.log`）。
+- 文書: `check-docs.mjs`（`lifetimes.md`・`diagnostics.md`、2 ページ・83 個のリンク・7 個の例・14 回の native の実行）、`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`（19 個、古いもの 0）、`check-cli-docs.mjs`（4 個）、`check-guide-lite.mjs`（88 個）、`check-links.mjs --into`（変えた 8 つの文書へのリンク 470 個、壊れたもの 0）、`tests/explain.rs`（16 件。`E1017.md` は 1497 文字）が成功。
+- 変えたファイル: `src/ownership_control.rs`（`LoanGrowth` から借用の数の上限を外し、打ち切りの doc comment を `LoanGrowth` へ）、`src/explain/codes/E1017.md`、`tests/rc.rs`（1 件の改名と、`pipeline(16, 2, 4)`・`pipeline(5, 8, 20)`・新しい `state_machine(16, 72, 6, 2)` の受理）、`lifetimes.md`（「現在の制限」）、`compiler/diagnostics.md` と `docs/language.md`（`E1017` の行）、`docs/architecture.md`（ループの不動点の段落）、A33、A34（`loopplace` の原因と、双子の止まり方の古い記述）、A35（借用の数の上限の統計 `beyond_fewest`・`beyond_fourth` を外し、定数を 3 つに、行番号と探査の今の値を直しました）、このチケット（前の 3 つの節の冒頭の注、この節）。
+- コミット: `73a3402b`（`src/` と `tests/rc.rs`）、`2a85ef4b`（文書）、`b0ec89ab`（この節。A35 の行番号の直しを含みます）、`15dd4be0`（`_features/README.md` の A35 の行）。
+
+##### 再点検（2026-11-16）: 収束していく部分が隠す `loopplace` の増え方
+
+この節の後の点検（`target/scratch/a31/nb-recheck/`）で、`loopplace` のループに、参照を局所値に 1 つずつ渡していきそれぞれを何度も読む部分（`nb-recheck/gen/mask.mjs`）があると、増え方が速くなる打ち切りまで 10〜90 秒かかることが分かりました（この節のビルドで、10 個の局所値を 32 回ずつ読む `mask_0_10_2_32` が 19 秒、64 回ずつの `mask_0_10_2_64` が 87 秒。上限のあった前の回は 0.2 秒ほどで止め、`main` は 1 秒以内に受理します。どれも同じ位置の `E1017` で、結果は変わっていません）。その部分の借用は収束するまで反復ごとに読む回数ほど少なく増えるので、倍々の増え方が隠れ、反復の借用の増え方は、倍々の分が読む回数を超えるまで小さくなり続けていました（`mask_0_10_2_32` は 328・681・1003・…・2247・2503 個と、増え方が 353・322・…・224・224・256 と小さくなってから大きくなり、5 回続けて速くなるのは 13 回目の反復の 6503 個でした）。上の「外した理由」と「時間」の、収束しない形が上限に頼らないことと、いちばん遅く止まる形は、1887 個の記録の中でだけ正しいものでした。2 つ目の指摘は、`tests/rc.rs` の連なりのテストの doc comment が、33 個の連なりに 18 本の連なりの開発用のビルドの時間（2.4 秒）を付けていたことで、それぞれの時間に直しました。結果は `target/scratch/a31/nobudget2/` にあります（`sim5.mjs` が記録で規則の案を比べる道具、`smargin.mjs` が収束するループの余裕を数える道具、`gen/probes.mjs` と `p/` がこの回の探査のプログラム、`bin/tsuzuri-st`・`tsuzuri-st-dev` がこの回のビルド（`src/` のコメントの 4 行を直す前に作ったもので、リリースビルドの機械語は `02be92c2` から作り直した `bin/tsuzuri-head` と同じです。`bin/tsuzuri-head-dev` は `02be92c2` の開発用のビルド）、`pr35/` が探査の結果）。
+
+- 変えたこと（`02be92c2`）: 3 つ目の打ち切り `LOOP_STATE_ITERATIONS`（8）を足しました。反復の後の状態が持つ借用（`Checker::loop_state_loans`: 局所値とその region の slot の借用と、`kept`・`kept_elsewhere`。計測用のビルドの記録の `st1` と同じ数）が、8 回続けて前の反復の後より多く、しかも前の反復が増えた数より多く増えた後で、前の反復より多く、前の反復が増えた数以上に借用を作った反復で止めます。読む回数は反復の借用を増やしますが、状態の借用は増やさないので、`mask_0_10_2_32` の状態の借用は最初の反復から倍々に増えます（27・45・70・110・181・315・576・1092・2119 個）。反復の借用の増え方が小さくなっている反復で止めないのは、収束するループでも、その間に状態の借用が続けて速く増えるものがあるからです（関数値へ格納しながら進める参照の連なり `each9_store0_live` で 8 回、ほかの `each*` で 11 回まで。絞らない規則は記録の収束する 80 個を止めました）。反復の借用の 3 階の差で見る案は、局所値ごとに読む回数が違う収束する窓（`nobudget2/p/win_10_2_cave`・`win_14_2_cave`）を止めるか、絞ると、窓が倍々の増え方に追い越されるときに収束する形（`mask_0_6_2_16`）を見落としたので、使いませんでした。
+- 記録（`sim5.mjs`。前の 1909 個に `nb-recheck` の 13 個とこの回の 30 個を足した 1952 個）: 前の打ち切りと最初に止める所が違うのは `mask*`・`mwin*` の 13 個だけで（0 から数えて、増え方が速くなる打ち切りが止めていた反復 9〜20 が反復 8〜14 に。前はどの打ち切りも止めず、記録の終わりまで検査していた `mwin_0_10_2_32_cave`・`cvx` は反復 11 と 9 に）、収束するループを止めるものはありません（`sim5-T8.txt`。前の打ち切りと同じ所で止めるのは、増え方が速くなる打ち切り 361 個と前以上の増え方が続く打ち切り 83 個、どちらも止めないのは 1495 個）。収束するループで、`growing` に数える反復までの状態の速くなる増え方の連続は、2 つか 4 つのフィールドのどれかを指す連なり（`bc_if_*`・`bcwin_*`・`fc4_*`）を除いて多くても 2 回です（`bc_if_7`〜`10` と `bcwin_7`・`8` は 5〜8 回ですが、`LOOP_FASTER_ITERATIONS` が先に止めます）。
+- テスト: `tests/rc.rs` の `a_loop_whose_settling_locals_hide_its_loopplace_growth_stops_soon`（10 個の局所値を 32 回ずつ読む形は `21:9` の 2503 個・状態 2119 個、6 個を 16 回ずつ読む形は `17:9` の 791 個・2079 個の `E1017`、回避の書き方の形は受理。両方の edition）。
+- 時間（リリースビルド、edition 2027、1 回ずつ、負荷 2〜3 のとき。`timed.sh`）:
+  - `loopplace` の形（`time-mask.txt`。括弧は `73a3402b`（前の節）のリリースビルド、上限のあった `c2085c7d` のリリースビルド、`main` の開発用のビルド）: `mask_0_10_2_32` 0.81 秒（18.53 秒、0.15 秒、0.38 秒）、`mask_0_10_2_64` 1.68 秒（86.10 秒、0.18 秒、0.70 秒）、`mask_0_12_17_16` 1.21 秒（9.79 秒、0.12 秒、0.71 秒）、`mask_3_14_2_32` 2.74 秒（36.68 秒、0.15 秒、0.80 秒）、`mask_0_6_2_16` 0.27 秒（8.52 秒、0.19 秒、0.14 秒）、`mask_2_12_2_32` 1.04 秒（6.09 秒、0.14 秒、0.52 秒）、`mask_0_14_2_32` 1.40 秒（26.99 秒、0.15 秒、0.77 秒）。edition 2026 も同じです（`mask_0_10_2_32` 0.83 秒、`mask_0_10_2_64` 1.73 秒）。どれも前と同じ位置の `E1017` で、止める打ち切りだけが変わりました。読む回数が 64 回を超える `mask_0_10_2_128`・`mask_0_10_2_256` は、反復 9・10（10 回目・11 回目。9863 個・20231 個。計測用のビルドの記録 `tmp/mask_0_10_2_128.tr`・`256.tr` で確かめました）で、6.49 秒・27.93 秒です（`c2085c7d` 0.33 秒・0.85 秒、`main` 1.88 秒・5.84 秒。`73a3402b` は探査の 150 秒で止まりませんでした）。読む回数を局所値ごとに変えた窓と同じループにある `mwin_0_10_2_32_cvx`・`cave`・`geo`（読む文が 3080・5720・16368 個）は、1 回の反復が長いので 18.00 秒・129.74 秒・257.19 秒かかります（`c2085c7d` 1.14 秒・3.40 秒・24.25 秒、`main` も 7.53 秒・24.64 秒・165.46 秒。`73a3402b` はどれも 150 秒で止まりませんでした）。いちばん遅く止まる `loopplace` の形は、読む文が数千個あるこの 2 つで、それを除くと今も `lagz_23_10000` です。
+  - 受理する形: 回避の書き方の `maskok_0_10_2_32`・`64` は 0.40 秒・0.86 秒（`main` 0.34 秒・0.69 秒）、収束する窓 `win_10_2_cave`・`win_14_2_cave` は 0.51 秒・3.84 秒（`main` 0.76 秒・5.78 秒）です。
+  - 前の回の「時間」の表の 24 個のプログラム（`time-st.txt`）: この回と `73a3402b` のリリースビルドで交互に検査し、どれも同じ位置の `E1017`、同じ打ち切り、`help` の同じ借用の数で、この回のビルドで 0.10〜1.51 秒です。
+  - `lg-ce/p/lagz_*`（`time-lagz.txt`）: 前と同じ打ち切りで、時間も変わりません（この回 2.70〜82.26 秒、`73a3402b` 2.65〜82.62 秒。`lagz_23_10000` 82.26 秒、`lagz_9_10000` 41.00 秒）。
+  - 連なり（`time-chain.txt`）: `c20` 0.75 秒、`c30` 8.78 秒、`m18x8` 1.41 秒、`pipe_5_8_20` 0.12 秒、`fsmh_16_72_6_2` 0.16 秒で受理し、`73a3402b` と同じです（0.76 秒、8.83 秒、1.43 秒、0.12 秒、0.16 秒）。`timing.sh` は `TSUZURI_KG=0` で測ります。前の節の「時間」の表（`c20` 1.51 秒、`c30` 17.54 秒）は `TSUZURI_KG=0` を付けずにプロジェクトを初めて検査した時間で、そのときは KG も書くので約 2 倍かかります（`c20` を `73a3402b` で続けて検査すると、1 回目 1.45 秒、2 回目からは 0.76 秒）。
+  - 所有権の検査の時間（`TSUZURI_TIME_PASSES=1` の `ownership` の段の ms の中央値。12 個のプログラム）: リリースビルドを 11 回ずつ交互に測ると（`perf-rel.sh`、`time-perf-rel.txt`）、この回・`73a3402b`・`c2085c7d` の差は、10 ms を超える 6 個で 0.6% 以内、数 ms の 6 個で 2.4% 以内で、向きもまちまちです（`perf_loop_breaks_400` 217.8 / 217.7 / 221.3、`x01_many_holders_800` 680.5 / 682.9 / 686.3、`p_cellshares_800` 628.0 / 630.2 / 630.2）。開発用のビルド（`perf.sh`、7 回ずつ、`time-perf.txt`）では、ループの多い 3 個でこの回が 2〜4% 遅く（`perf_loop_breaks_400` 379.4 / 365.2（`73a3402b`）、`perf_try_checked_400` 387.9 / 376.7、`x01_many_holders_800` 1222.2 / 1199.4）、11 回ずつ順を変えても同じでした（`time-perf2.txt`）。この回の 2 つの開発用のビルド（`bin/tsuzuri-st-dev` と、コメントの 4 行だけが違う `02be92c2` の `bin/tsuzuri-head-dev`）は同じ値で（`time-perf3.txt`）、リリースビルドには差が無いので、`opt-level = 1` のコード生成の違いと見ています。`Checker::loop_state_loans` は収束しない反復ごとに 1 回、局所値を数えるだけで、これらのプログラムのループは数回の反復で収束します。
+- マージの条件の確かめ（`02be92c2` の後）:
+  - ゲート（`gate/tools/check-r35.mjs`・`diff-r35.mjs`。15550 個・31100 組を、`r35`（この回の開発用のビルド `bin/tsuzuri-st-dev` を `gate/bin/tsuzuri-r35` に写して使い、実行の後に写しを消しました）で両方の edition で検査し直しました。`results-r35.json`、分類は `diff-r35.txt`（`nobudget2/gate-diff-r35.txt` に写し））: **31100 組のどれも、受理・拒否と最初の 2 つの誤りが `r34` と同じです**。`r28`（`15d84aaf`）と比べると、RA は前と同じ 67 組で新しいものは無く、受理から拒否も拒否から受理も無く、変わったのは `r28` の時間切れの 29 組（前と同じ位置の `E1017`）だけです。検査の失敗・時間切れは 0。edition 2027 は両方が受理 5272・両方が拒否 5259・RA 38・AR 4981、2026 は 4209・7190・29・4122 で、前回と同じです。
+  - 探査（前の節の 1880 組に、`nb-recheck/p` と `nobudget2/p` の 57 個のディレクトリの両方の edition の 114 組を足した 1994 組。この回のリリースビルド、時間切れは 120 秒、3 つずつ並べて、負荷 30〜40 のとき。`pr35/results.txt`、`cmp-probes.mjs` で比べた `pr35/cmp.txt`。足した 114 組の `73a3402b` は `pr35-nb/results.txt`、時間切れは 150 秒）: 前の節の 1880 組は、最初の誤りと止めた打ち切りまで `pr34` と同じです。足した 114 組のうち、`mask*` の 16 個と `mwin_0_10_2_32_cvx` のディレクトリの 34 組は、同じ位置の `E1017` を 3 つ目の打ち切りで報告します（並べた負荷で 0.45〜6.5 秒、`mask_0_10_2_128` 14.8 秒、`mask_0_10_2_256` 64 秒、`mwin_0_10_2_32_cvx` 43 秒）。`73a3402b` は同じ位置を増え方が速くなる打ち切りで止めるのに 0.5〜88 秒かかり、`mask_0_10_2_64`・`128`・`256` と `mwin_0_10_2_32_cvx` は 150 秒の時間切れでした。ほかの 80 組は 2 つのビルドで同じです: 回避の書き方の `maskok_*`、収束する窓 `win_*`・`uneven_*`、`bcwin_5`・`6`、`pipeline_*`・`pipe_safe`・`fc4_5c`・`c20copy` は受理、危険な双子 `fsmh_unsafe`・`fsmh_unsafe2`・`pipe_unsafe` は `E1014`、2 つのフィールドのどちらかを指す連なりと窓を合わせた `bcwin_7`・`8`（収束しますが、前から書いてある形です）と `mask_9_10_2_32`・`nestmask_0_10_2_32`・`a34twin` は増え方が速くなる打ち切り、`maskz_*` は 8 回続けて増えた打ち切り、`stg_140_a` は 24 回続けて増えた打ち切り、`stg_140_6x21`（140 個の局所値に渡し、21 個の写しの連なりを 6 本持つ 3093 行の本体）・`mwin_0_10_2_32_cave`・`geo` はどちらのビルドでも時間切れです（上の「時間」のとおり、この回のビルドは 1 つだけで走らせると `cave`・`geo` を 130 秒・257 秒で止めます）。止めた打ち切りは、増え方が速くなる打ち切り 378 組、24 回続けて増えた打ち切り 74 組、8 回続けて増えた打ち切り 38 組、3 つ目の打ち切り 34 組で、`help` の無い `E1017`（反復の上限）は 1 組もありません。前の節と同じく、`lagz_23_10000` の両方の edition は並べた負荷で時間切れでした。
+  - 生成したプログラム（`nobudget2/g-check.mjs`、15552 個・31104 組を、この回のリリースビルド `bin/tsuzuri-st` で。8000 組を T1 と同時に、残りを 2026-11-18 に 4 つずつ並べて）: 危険な 18048 組はどれも拒否し、安全な 13056 組はすべて受理しました。31104 組のどれも、結果が `r30` の `loopplace2/g/g-results.json` と同じで、`E1017` も検査の失敗も 1 組もありません（`nobudget2/g/g-results.json`・`g-summary.json`）。
+  - `examples/` と `tests/fixtures/` の 155 個のプロジェクト（`_tools/step5.mjs`）を `main`（`168ae4a5`）と `02be92c2` の開発用のビルドで比べ、違いはありません（`step5-main.txt`）。
+- 確かめたこと:
+  - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 成功（`02be92c2` と、この節の `tests/rc.rs` の doc comment の直しの後）。
+  - T1（`node scripts/slot.mjs -- cargo nextest run --locked --no-fail-fast`、`02be92c2`）: 3303 件をすべて成功、4 件 skip（1515 秒、生成したプログラムの検査と同時に走らせたとき。`nextest.log`。新しいテストを含む `a_loop_` の 7 件も成功）。
+  - E2E（`02be92c2` の開発用のビルド `bin/tsuzuri-head-dev`、native と WASM の `-O0`・`-O3`）: `in_place_writes` 85 件、`conventions` 39 件、`mutable_slices` 49 件、`rc` 39 件、`borrowed_records` 57 件、`control` 701 件がすべて成功（`suites.log`）。
+  - 文書: `check-docs.mjs`（`lifetimes.md`・`diagnostics.md`、2 ページ・83 個のリンク・7 個の例・14 回の native の実行）、`TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`（19 個、古いもの 0）、`check-cli-docs.mjs`（4 個）、`check-guide-lite.mjs`（88 個）、`check-links.mjs --into`（変えた 8 つの文書へのリンク 470 個、壊れたもの 0）、`tests/explain.rs`（16 件。`E1017.md` は 1497 文字のまま）が成功（`check-docs.log`・`docchecks.log`）。
+  - 変えたファイル: `src/ownership_control.rs`（`LOOP_STATE_ITERATIONS`、`LoanGrowth` の `state`・`state_faster`、`LoanGrowth::note` の `held` の引数と 3 つ目の `help`、`Checker::loop_state_loans`、`LoanGrowth` の doc comment）、`tests/rc.rs`（新しいテスト 1 件、連なりのテストの doc comment の時間、この節で `no stop` への直し）、`lifetimes.md`（「現在の制限」の打ち切りの一覧と、収束していく部分と同じループにある形の段落）、`compiler/diagnostics.md` と `docs/language.md`（`E1017` の行）、`docs/architecture.md`（ループの不動点の段落）、A33、A34（`loopplace` の原因と「現状」の、収束していく部分と同じループにある形）、A35（定数を 4 つに、`state` の統計、行番号）、このチケット（前の節の冒頭の注、この節）。`src/explain/codes/E1017.md` は変えていません（回避の書き方は 3 つ目の打ち切りの `help` も同じです）。
+  - コミット: `02be92c2`（`src/` と `tests/rc.rs`）、`d4c3107d`（文書とこの節、`tests/rc.rs` の doc comment の直し）。
