@@ -269,6 +269,7 @@ a + b + c + d
   - 結果の型変数を型に含む局所の値から呼ぶ呼び出し（`let get = Array.get` のように多相の関数を局所に入れた `get 0 xs`）。局所の値を通して結果に触れられるので、推測を待ちません。`id (get 0 xs)` は `E1003` です。`let` で束縛すれば通ります（`let r = get 0 xs` と `id r`）。
 - 一時値の借用は呼び出しの間だけです。部分適用（`let f = add (n as i64)`）のように借用が呼び出しのあとまで残り得る場合は `E1013` です。先に `let` で束縛します。
 - `if`・`match`・`try`・ブロックの値の型は、仮引数の型から推論しません。edition 2027 で関数型の仮引数へ `if c then \p -> p.x else \p -> p.y` を渡すと、ラムダの仮引数の型が決まらずエラーになります。`\(p: Point) -> p.x` と型を書くか、`let pick: Point -> i64 = if c then …` と束縛してから渡します。
+- 規約 `[Read]`・`[Mut]` を持つ関数型が期待される位置（`if n > 0 then text_length else …` の `else` の枝など）のラムダは、引数を値の型（`\(text: string) -> …`）でも参照の型（`\(text: ref string) -> …`、`\(counter: ref mut Counter) -> …`）でも注釈できます。値の型なら引数は参照先の値を読み、参照の型なら注釈のとおり参照になります（[ラムダ式](../values-and-functions/lambda-expressions.md#型注釈とパターン引数)）。
 
 ```tsuzuri run=109
 def read :: ref i64 -> i64 = \value -> deref value

@@ -9165,10 +9165,18 @@ fn check_modules_collect(
                 checker.kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
                 checker.members = scheme.members.clone();
                 let mut parameters = Vec::new();
+                // A32: `def … = \(counter: ref mut Counter) -> …` keeps the lambda's parameters,
+                // and their annotations, in the chain of matches that starts the body.
+                let annotations = closures::parameter_annotations(&function.body);
                 for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
                     let local = checker.bind(&parameter.name, ty.clone(), parameter.mutable);
+                    let annotated = |checker: &mut Checker<'_>| {
+                        let annotation = annotations.get(parameter.name.text.as_str()).copied();
+                        checker.binds_annotated_reference(ty, annotation)
+                    };
                     if scheme.parameter_conventions.get(parameters.len())
                         == Some(&ParameterConvention::Mut)
+                        && !annotated(&mut checker)
                     {
                         checker.read_value_parameters.insert(local.id);
                     }
@@ -9181,12 +9189,14 @@ fn check_modules_collect(
                         );
                         if types.reaches(inner, |part| {
                             matches!(part, Type::Variable(_) | Type::Function(..))
-                        }) {
+                        }) && !annotated(&mut checker)
+                        {
                             checker.read_value_parameters.insert(local.id);
                         }
                     }
                     parameters.push(local);
                 }
+                drop(annotations);
                 computation::expand(&mut function.body, &names, module)?;
                 for clause in &mut function.contracts {
                     computation::expand(&mut clause.condition, &names, module)?;

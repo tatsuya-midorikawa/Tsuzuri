@@ -228,6 +228,203 @@ def identity_own :: own own -> own
 fn identity_own value = value
 export def contextual_own_type_name :: i64 = (identity_own (own { n: 42 })).n
 
+// A32: a lambda whose parameters are annotated `ref T` or `ref mut T`, written where a function
+// type with the conventions [Read] or [Own, Mut] is expected, and in the body of a `def`.
+record Counter { count: i64 }
+record Holder<'a> { value: 'a }
+type Borrowed<'a> = ref 'a
+
+def text_size :: string -> i64 = \text -> text.length
+def text_pair :: string -> string -> i64 = \left right -> left.length + right.length
+def pair_size :: (string * string) -> i64 = \pair -> match pair with | (a, b) -> a.length + b.length
+def put_first :: mut [i64] -> unit = \values -> values[0] = 7
+def bump_counter :: i64 -> mut Counter -> unit = \step counter -> counter.count = counter.count + step
+def scale_counter :: i64 -> mut Counter -> unit = \(step: i64) (counter: ref mut Counter) ->
+    counter.count = counter.count + step * 10
+def annotated_size :: 'a -> i64 = \(_: ref 'a) -> 3
+def store_length :: string -> mut [i64] -> unit = \(text: ref string) (cells: ref mut [i64]) -> cells[1] = text.length
+
+export def annotated_reference_lambdas :: i64 -> i64 = \n ->
+    let text = "hello"
+    let by_if = if n > 0 then text_size else \(text: ref string) -> text.length * 10
+    let by_match =
+        match n with
+        | 0 -> text_size
+        | _ -> \(text: ref string) -> text.length * 100
+    let first = Holder { value: text_size }
+    let holder = if n > 0 then first else Holder { value: \(text: ref string) -> text.length * 1000 }
+    let by_holder = holder.value
+    let mut readers = Vec.empty()
+    Vec.push text_size readers
+    Vec.push (\(text: ref string) -> text.length * 10000 + n) readers
+    let second = readers[1]
+    let change = if n > 0 then bump_counter else \(step: i64) (counter: ref mut Counter) -> counter.count = counter.count + step * 100
+    let mut counter = Counter { count: 1 }
+    change 3 (ref mut counter)
+    scale_counter 2 counter
+    by_if (ref text) + by_match (ref text) + by_holder (ref text) + second (ref text) + counter.count
+
+export def annotated_reference_forms :: i64 -> i64 = \n ->
+    let text = "hello"
+    let other = "hi"
+    let pair = ("abc", "de")
+    let guarded = if n > 0 then text_size else \(text: ref string) when text.length > 0 -> text.length * 10
+    let two = if n > 0 then text_pair else \(a: ref string) (b: ref string) -> a.length * 10 + b.length * 100
+    let mixed = if n > 0 then text_pair else \a (b: ref string) -> a.length * 1000 + b.length
+    let ignored = if n > 0 then text_size else \(_: ref string) -> 7
+    let aliased = if n > 0 then text_size else \(text: Borrowed<string>) -> text.length * 3
+    let split = if n > 0 then pair_size else \((a, b): ref (string * string)) -> a.length * 10 + b.length
+    let counted = if n > 0 then first else \(xs: ref [i64]) -> xs.length * 100
+    let change = if n > 0 then put_first else \(xs: ref mut [i64]) -> xs[0] = 9
+    let mut values = [1, 2, 3, 4, 5]
+    change (ref mut values)
+    store_length other values
+    let a = guarded (ref text) + two (ref text) (ref other) + mixed (ref text) (ref other)
+    let b = ignored (ref text) + aliased (ref text) + split (ref pair) + counted (ref values)
+    a + b + values[0] * 1000000 + annotated_size text + values[1] * 10000000
+
+// A32: the read callbacks of `Array` and `List` take a lambda whose element parameter is annotated
+// `ref string`, directly and through a pipeline.
+export def annotated_read_callbacks :: i64 -> i64 = \n ->
+    let texts = ["a", "bb", "ccc"]
+    let items = [|"dddd", "ee"|]
+    let mapped = texts |> Array.map (\(text: ref string) -> text.length * 10)
+    let indexed = items |> List.mapi (\i (text: ref string) -> i * 100 + text.length)
+    let folded = Array.fold (\sum (text: ref string) -> sum * 10 + text.length) n texts
+    let back = items |> List.fold_back (\(text: ref string) sum -> sum * 10 + text.length) 0
+    texts |> Array.iter (\(_: ref string) -> ())
+    items |> List.iteri (\_ (_: ref string) -> ())
+    Array.sum mapped + List.fold (\sum value -> sum + value) 0 indexed * 1000 + folded * 1000000 + back * 10000000000
+
+// A32, review 3: the element of a number-literal array is still the open type of the literals
+// when the callback is checked; a `ref i64` annotation binds the reference and decides the
+// element type, as it does for the lambda bound by `let`.
+export def annotated_literal_callbacks :: i64 -> i64 = \n ->
+    let doubled = [1, 2, 3] |> Array.map (\(x: ref i64) -> deref x * 2 + n)
+    let xs = [4, -5, 6]
+    let total = xs |> Array.fold (\acc (x: ref i64) -> acc * 10 + deref x) n
+    let listed = [|7, 8|] |> List.map (\(x: ref i64) -> deref x * 3)
+    let indexed = [10, 20] |> Array.mapi (\i (x: ref i64) -> i * 100 + deref x)
+    let ys = [1, 2, 3]
+    let count = \() -> ys.length
+    let captured = (ys |> Array.fold (\acc (x: ref i64) -> acc + deref x) 0) * 10 + count ()
+    Array.sum doubled + List.fold (\sum value -> sum + value) 0 listed * 100 + Array.sum indexed * 100000 + captured * 100000000 + total * 10000000000
+
+// A32: where the expected parameter is `ref ?t` or `ref (ref string)`, a `ref string` annotation
+// is still compared with the value read through the parameter (audit x16c and x18), and a
+// function parameter annotated `ref (i64 -> i64)` is called through `deref`.
+def apply_ref :: (i64 -> i64) -> i64 -> i64 = \(f: ref (i64 -> i64)) value -> (deref f) ((deref f) value)
+
+export def annotated_reference_kept :: i64 -> i64 = \n ->
+    let text = "hello"
+    let r = ref text
+    let chosen = if n > 0 then inspect else \(text: ref string) -> text.length * 10
+    let mut readers = Vec.empty()
+    Vec.push inspect readers
+    let scaled = \(text: ref (ref string)) -> text.length * 10
+    Vec.push scaled readers
+    Vec.push (\(text: ref string) -> text.length * 100 + n) readers
+    let first_reader = readers[0]
+    let second_reader = readers[1]
+    let third_reader = readers[2]
+    let kept = first_reader r + second_reader r * 1000 + third_reader r * 1000000
+    chosen r + kept * 100 + apply_ref (\x -> x * 2 + n) 5 * 1000000000000
+
+// A32 on A31: in-place writes through annotated reference parameters whose owners outlive the
+// target, and stores that hold no loan of them (review seed r2_ag01 among them); A31's store facts
+// reject the same writes when the owner dies first.
+def stored_constant :: mut [(unit -> i64)] -> 'a -> ('a -> i64) -> unit = \(slot: ref mut [(unit -> i64)]) (v: ref 'a) (measure: ref ('a -> i64)) -> Array.write 0 (\() -> 1) slot
+def stored_reader :: mut [(unit -> i64)] -> [i64] -> unit = \(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> Array.write 0 (\() -> xs[0] * 1000 + xs.length) slot
+def stored_plain :: mut [(unit -> i64)] -> [i64] -> unit = \slot xs -> Array.write 0 (\() -> xs[0] * 1000 + xs.length) slot
+def stored_function :: mut [(unit -> i64)] -> (i64 -> i64) -> unit = \(slot: ref mut [(unit -> i64)]) (f: ref (i64 -> i64)) -> Array.write 0 (\() -> (deref f) 1000) slot
+def stored_number :: mut [i64] -> [i64] -> unit = \(slot: ref mut [i64]) (xs: ref [i64]) -> Array.write 0 (xs[0] * 1000 + xs.length) slot
+def stored_keep :: mut [(unit -> i64)] -> (unit -> i64) -> unit = \slots f -> Array.set 0 f slots
+
+export def annotated_reference_stores :: i64 -> i64 = \n ->
+    let local = [n, n + 1, n + 2]
+    let k = [n, n + 1, n + 2, n + 3]
+    let g = \x -> x + k[0] + k.length
+    let mut constant = [\() -> 0]
+    { let scratch = [n, n + 1, n + 2, n + 3]; stored_constant constant scratch (\xs -> xs.length) }
+    let mut chosen_slots = [\() -> 0]
+    let chosen = if n > 0 then stored_plain else \(slot: ref mut [(unit -> i64)]) (xs: ref [i64]) -> Array.write 0 (\() -> xs[0] * 100 + xs.length * 7) slot
+    chosen (ref mut chosen_slots) (ref local)
+    let mut direct = [\() -> 0]
+    stored_reader direct local
+    let mut applied = [\() -> 0]
+    stored_function applied g
+    let mut numbers = [0]
+    { let scratch = [n, n + 1, n + 2, n + 3]; stored_number numbers scratch }
+    let text = "hello"
+    let measure = if n > 0 then text_size else \(text: ref string) -> text.length * 10
+    let mut kept = [\() -> 0]
+    stored_keep kept (\() -> n)
+    let picked = measure (ref text) + kept[0] ()
+    constant[0] () + chosen_slots[0] () * 10 + direct[0] () * 100000 + applied[0] () * 1000000000 + numbers[0] * 10000000000000 + picked * 7
+
+// A32 on A31, second merge (A31 reviews 4 to 7): annotated reference parameters follow A31's later
+// rules as named functions with `ref` parameters do. A borrow of a writable parameter that the
+// target keeps allows a write to another field; a borrow handed to a function parameter that only
+// calls it allows a push afterwards; a view of a read parameter's referent is a borrow of the
+// caller's data; a function reached through a tuple pattern is called as the parameter.
+record LaterOwner { name: string, count: i64 }
+def later_kept :: mut LaterOwner -> mut [(unit -> i64)] -> unit = \(owner: ref mut LaterOwner) (slot: ref mut [(unit -> i64)]) -> { let name = ref owner.name; Array.write 0 (\() -> String.length name) slot; owner.count = 5 }
+def later_handed :: mut Vec<string> -> ((unit -> i64) -> unit) -> unit = \(words: ref mut Vec<string>) use -> { let first = ref words[0]; use (\() -> String.length first); Vec.push_mut (to_string 1) words; Vec.push_mut (to_string 2) words }
+def later_view :: (Maybe<string> * i64) -> mut [(unit -> i64)] -> unit = \(pair: ref (Maybe<string> * i64)) (slot: ref mut [(unit -> i64)]) -> match deref pair with | (Maybe.Some text, _) -> { let r = ref text; Array.write 0 (\() -> String.length r) slot } | _ -> ()
+def later_path :: (((unit -> i64) -> unit) * i64) -> i64 = \((use, z): ref (((unit -> i64) -> unit) * i64)) -> { let text = to_string 1234567; let r = ref text; use (\() -> String.length r); z }
+
+export def annotated_reference_later_rules :: i64 -> i64 = \n ->
+    let mut owner = LaterOwner { name: to_string (n * 1000), count: 0 }
+    let mut kept = [\() -> 0]
+    later_kept owner kept
+    let mut words: Vec<string> = Vec.empty()
+    Vec.push_mut (to_string n) (ref mut words)
+    later_handed words (\g -> { let _x = g (); () })
+    let pair = (Maybe.Some (to_string (n * 10)), 1)
+    let mut viewed = [\() -> 0]
+    later_view pair viewed
+    let m = Mutex.create [\() -> 0]
+    let mr = ref m
+    let put = \f -> Mutex.with_lock mr (\slot -> Array.write 0 f slot)
+    put (\() -> n)
+    let handler = ((\f -> { let _x = f (); () }), 2)
+    let z = later_path handler
+    kept[0] () + owner.count + words.length * 100 + viewed[0] () * 1000 + (z + Mutex.with_lock (ref m) (\slot -> slot[0] ())) * 100000
+
+// A32 on A31, third merge (A31 reviews 8 and 9): annotated reference parameters follow A31's rules
+// for shared borrows handed to a function parameter, parts of one value, temporaries lent to read
+// parameters and cells of the caller's data as named functions with the same conventions do. In
+// each safe order below, the value whose drop reads a borrow is dropped before the borrowed text.
+record DropRec { name: string, count: i64 }
+record DropHolder { cell: Mutex<[unit -> i64]> }
+instance Drop<DropHolder> {
+    fn drop h = { let _x = Mutex.with_lock (ref h.cell) (\b -> b[0] ()); () }
+}
+record DropCaller { f: unit -> i64 }
+instance Drop<DropCaller> {
+    fn drop c = { let _x = c.f (); () }
+}
+record DropPair { h: DropHolder, s: string }
+def drop_shared :: mut DropRec -> ((unit -> i64) -> unit) -> unit = \(r: ref mut DropRec) use -> { let name = ref r.name; use (\() -> String.length name) }
+def drop_part :: DropPair -> i64 = \(p: ref DropPair) -> { let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\b -> Array.write 0 (\() -> String.length t) b); String.length t }
+def drop_temps :: DropHolder -> string -> i64 = \(c: ref DropHolder) (s: ref string) -> { let t = ref s; Mutex.with_lock (ref c.cell) (\b -> Array.write 0 (\() -> String.length t) b); String.length t }
+def drop_cell :: string -> Mutex<[DropCaller]> -> unit = \(s: ref string) (m: ref Mutex<[DropCaller]>) -> { let t = ref s; Mutex.with_lock m (\b -> Array.write 0 (DropCaller { f: \() -> String.length t }) b) }
+
+export def annotated_reference_drop_rules :: i64 -> i64 = \n ->
+    let m = Mutex.create [\() -> 0]
+    let mr = ref m
+    let mut owner = DropRec { name: to_string n, count: 3 }
+    drop_shared owner (\g -> Mutex.with_lock mr (\slot -> Array.write 0 g slot))
+    let shared = Mutex.with_lock mr (\slot -> slot[0] ()) + owner.count
+    let pair = DropPair { h: DropHolder { cell: Mutex.create [\() -> 0] }, s: to_string (n * 7) }
+    let part = drop_part pair
+    let temps = drop_temps (DropHolder { cell: Mutex.create [\() -> 0] }) (to_string (n * 11))
+    let text = to_string (n * 13)
+    let callers = Mutex.create [DropCaller { f: \() -> 0 }]
+    drop_cell text callers
+    let cell = Mutex.with_lock (ref callers) (\b -> b[0].f ())
+    shared + part * 100 + temps * 10000 + cell * 1000000
+
 type OwnAlias = own
 
 // A31, after review 9: a vector of lambdas that capture a value, in a module with a `Drop`

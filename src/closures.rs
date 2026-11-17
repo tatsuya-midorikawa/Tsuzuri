@@ -67,6 +67,11 @@ impl Checker<'_> {
                 _ => None,
             })
             .unwrap_or_default();
+        let annotations = if conventions.is_empty() {
+            BTreeMap::new()
+        } else {
+            parameter_annotations(body)
+        };
         for (index, ((name, mutable), ty)) in names.iter().zip(parameter_types).enumerate() {
             if name.text != "_" && !seen.insert(name.text.clone()) {
                 return Err(duplicate(name));
@@ -76,6 +81,10 @@ impl Checker<'_> {
                 conventions.get(index),
                 Some(ParameterConvention::Read | ParameterConvention::Mut)
             ) && matches!(local.ty, Type::Reference(..))
+                && !self.binds_annotated_reference(
+                    &local.ty,
+                    annotations.get(name.text.as_str()).copied(),
+                )
             {
                 self.read_value_parameters.insert(local.id);
             }
@@ -87,6 +96,132 @@ impl Checker<'_> {
         let body = body?;
         self.scopes.pop();
         self.group_lambda(parameters, body, &outer, expected, span, kind, recursive)
+    }
+
+    /// Whether a parameter of type `ref inner` (`parameter`) that a convention would read through
+    /// (`read_value_parameters`) binds its reference instead, because its pattern is annotated
+    /// with a reference type (A32): `\(text: ref string) -> …` where `[Read] string -> i64` is
+    /// expected, or `\(counter: ref mut Counter) -> …` for a `mut Counter` parameter.
+    ///
+    /// It binds the reference only where the annotation could never match the value read
+    /// through the parameter: `inner` is no inference variable, reference, type application,
+    /// partial application of a type constructor or error, and `unify` equates `ref T` with
+    /// nothing else. So each program that this changes is one whose annotated pattern failed with
+    /// `E1003` before, and the parameter gets the type that the same lambda bound by `let` has.
+    /// It also needs the annotation to match `parameter` itself (`Inference::unifies`, which
+    /// solves nothing), and every class constraint on an open variable inside `inner` to hold
+    /// with the solution that this match gives it (`[?]` of `[[1, 2], [3]]` cannot take `string`
+    /// from `ref [string]`): a mistyped annotation (`ref [string]`, or `ref mut string` where the
+    /// convention reads) keeps reading the value, so the pattern reports the error that it
+    /// reported before, with the `ref` that the annotation has (`expected ref [string], found
+    /// string`). The annotation is resolved without the side effects of `Checker::annotation`,
+    /// which checks it again with the pattern; one that does not resolve counts as no reference.
+    ///
+    /// The one inference variable that it accepts as `inner` is the open type of a number
+    /// literal (`[1, 2, 3] |> Array.map (\(x: ref i64) -> …)`, review 3): its `Integer`,
+    /// `SignedInteger` or `Float` constraint holds for no reference and a program cannot add an
+    /// instance of these classes, so reading the value failed there too, at the literal
+    /// (`expected an integer, found ref i64`). It binds the reference only when the referent
+    /// of the annotation is a number type that meets every constraint on the variable
+    /// (`annotated_literal_takes`), so a mistyped referent (`ref string`, `ref u8` for `-1`) keeps that
+    /// error.
+    pub(super) fn binds_annotated_reference(
+        &mut self,
+        parameter: &Type,
+        annotation: Option<&TypeExpr>,
+    ) -> bool {
+        let (Some(annotation), Type::Reference(inner, _)) = (annotation, parameter) else {
+            return false;
+        };
+        let inner = self.inference.resolve(inner);
+        let literal = match inner {
+            Type::Infer(id) if self.inference.is_numeric_literal(&inner) => Some(id),
+            Type::Infer(_) | Type::Reference(..) | Type::Application(..) | Type::Partial(..) => {
+                return false;
+            }
+            _ if inner.contains_error() => return false,
+            _ => None,
+        };
+        let Ok(annotated @ Type::Reference(..)) =
+            resolve_type_with_kinds(annotation, self.module, self.names, &self.kinds)
+        else {
+            return false;
+        };
+        if let (Some(root), Type::Reference(referent, _)) = (literal, &annotated)
+            && !self.annotated_literal_takes(root, referent)
+        {
+            return false;
+        }
+        // The trial solves the open variables that `inner` holds (`[?]` of `[[1, 2], [3]]` takes
+        // `string` from `ref [string]`, review 4). Reading the value failed at the annotation
+        // whatever they were, so the reference is bound only when every constraint on them holds
+        // with the trial's solutions: one that would fail elsewhere (the literal's `Integer`)
+        // keeps the parameter reading the value and the error where it was.
+        let open = self.inference.open_variables(&inner);
+        if open.is_empty() {
+            return self
+                .inference
+                .unifies(parameter, &annotated, &self.types, |_| true);
+        }
+        let mentions_open = |ty: &Type| open.iter().any(|id| self.inference.mentions(ty, *id));
+        if self
+            .members
+            .iter()
+            .any(|member| mentions_open(&member.receiver))
+        {
+            return false;
+        }
+        let constraints: Vec<_> = self
+            .constraints
+            .iter()
+            .filter(|constraint| mentions_open(&constraint.ty))
+            .collect();
+        let (classes, types) = (&self.classes, &self.types);
+        self.inference
+            .unifies(parameter, &annotated, types, |inference| {
+                constraints.iter().all(|constraint| {
+                    let ty = inference.resolve(&constraint.ty);
+                    !inference.is_open(&ty) && classes.holds_class(constraint.class, &ty, types)
+                })
+            })
+    }
+
+    /// Whether the open type of a number literal (the variable `root`) can become `referent`
+    /// without a new error from the constraints on it: `referent` is an integer or
+    /// floating-point type; every class constraint that mentions `root` holds once `referent`
+    /// takes its place, and mentions no other open variable (`Capture<[?]>` of an array that a
+    /// function captures holds, `Show<?>` of a class without an instance for `i64` does not);
+    /// one of them constrains `root` itself (the literal's own); and no member constraint
+    /// mentions `root`. The program read the value before and failed at the literal, so a
+    /// constraint that would fail now keeps it reading the value and failing as before.
+    fn annotated_literal_takes(&self, root: usize, referent: &Type) -> bool {
+        if !(referent.is_integer() || referent.is_float()) {
+            return false;
+        }
+        let mut constrained = false;
+        for constraint in &self.constraints {
+            if !self.inference.mentions(&constraint.ty, root) {
+                continue;
+            }
+            let ty = polymorph::map_type(&self.inference.resolve(&constraint.ty), &mut |part| {
+                if *part == Type::Infer(root) {
+                    referent.clone()
+                } else {
+                    part.clone()
+                }
+            });
+            if self.inference.is_open(&ty)
+                || !self.classes.holds_class(constraint.class, &ty, &self.types)
+            {
+                return false;
+            }
+            constrained |= ty == *referent;
+        }
+        constrained
+            && !self
+                .members
+                .iter()
+                .any(|member| self.inference.mentions(&member.receiver, root))
     }
 
     pub(super) fn checked_lambda(
@@ -182,6 +317,35 @@ impl Checker<'_> {
             span,
         })
     }
+}
+
+/// The type annotations of the parameters that a lambda destructures, by the parameter's
+/// generated name (A32). `explicit_lambda` names a parameter that is not a plain name `$lambda…`
+/// and wraps the body in one `MatchOrigin::LambdaDestructuring` match on it with a single arm,
+/// the first parameter outermost; a guard adds the innermost match, on `()`. A `def` whose body
+/// is such a lambda takes its parameters and keeps the chain as its body. The walk stops at the
+/// first expression that is not one of these matches.
+pub(super) fn parameter_annotations(body: &Expr) -> BTreeMap<&str, &TypeExpr> {
+    let mut annotations = BTreeMap::new();
+    let mut current = body;
+    while let ExprKind::Match {
+        value,
+        arms,
+        origin: MatchOrigin::LambdaDestructuring,
+    } = &current.kind
+    {
+        let (ExprKind::Name(name), [arm]) = (&value.kind, arms.as_slice()) else {
+            break;
+        };
+        if arm.guard.is_some() {
+            break;
+        }
+        if let PatternKind::Annotated(_, annotation) = &arm.pattern.kind {
+            annotations.insert(name.text.as_str(), annotation);
+        }
+        current = &arm.body;
+    }
+    annotations
 }
 
 fn note_local(used: &mut Vec<u64>, id: usize) {

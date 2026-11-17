@@ -730,6 +730,7 @@ fn start_checker<'a, 'run>(
         inexact_captures: BTreeSet::new(),
         parameter_paths: std::cell::RefCell::new(BTreeMap::new()),
         parameter_path_steps: std::cell::Cell::new(0),
+        matched_by: None,
         injections: BTreeSet::new(),
     };
     if !infer && facts.seeded {
@@ -5314,6 +5315,61 @@ fn error(kind: DiagnosticKind, message: impl Into<String>, span: Span) -> Diagno
     Diagnostic::of(kind, message, span)
 }
 
+/// The `E1012` for a use of the local `name` after its value (`whole`) or a part of it moved.
+/// A name that the compiler generated (`$…`) is not shown, since nobody can write it.
+///
+/// The hidden parameter that a lambda, or a `def` through it, gets for a pattern (`$lambda12` for
+/// `\((c as d): ref mut Counter) -> …`) cannot be named in the body. Only two things use it: the
+/// pattern, and the function clauses that may follow the arrow (`\(s: string) -> | t -> …`), which
+/// match the parameter itself again (`guarded_definition`). `rematched` is the span of those
+/// clauses when the moved value is read as their subject; the error then points at them. Any other
+/// second use is the pattern binding a value that is not Copy to a second name (`as`, `&`).
+#[cold]
+#[inline(never)]
+fn use_after_move(name: &str, whole: bool, span: Span, rematched: Option<Span>) -> Diagnostic {
+    let pattern_parameter = name
+        .strip_prefix("$lambda")
+        .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()));
+    if pattern_parameter && let Some(clauses) = rematched {
+        return Diagnostic::of(
+            DiagnosticKind::UseAfterMove,
+            "use of moved or partially moved value: these clauses match the parameter again after its pattern moved the value",
+            clauses,
+        )
+        .with_help(
+            "a value that is not Copy, such as an owned value or a 'ref mut' reference, moves into the names of the parameter's pattern, so the clauses after '->' cannot match the parameter again; match those names with 'match' in the body instead, or write clauses that only test conditions on them, as in '| x > 0 -> …'",
+        );
+    }
+    let (message, help) = if !name.starts_with('$') {
+        (
+            format!("use of moved or partially moved value '{name}'"),
+            if whole {
+                format!("borrow the value with 'ref {name}' or move it last")
+            } else {
+                format!(
+                    "borrow the field with 'ref' instead of moving it out of '{name}', or move it last"
+                )
+            },
+        )
+    } else if pattern_parameter {
+        (
+            "use of moved or partially moved value: this parameter's pattern binds the value, or a part of it, to more than one name".to_owned(),
+            "a value that is not Copy, such as an owned value or a 'ref mut' reference, moves into the first name that binds it, and an 'as' or '&' pattern cannot bind it again; keep only one of the names".to_owned(),
+        )
+    } else {
+        (
+            "use of moved or partially moved value".to_owned(),
+            if whole {
+                "borrow the value with 'ref' or move it last"
+            } else {
+                "borrow the field with 'ref' instead of moving it, or move it last"
+            }
+            .to_owned(),
+        )
+    };
+    Diagnostic::of(DiagnosticKind::UseAfterMove, message, span).with_help(help)
+}
+
 /// Whether `callee` is `Dyn.of` building a dyn value without a region, which owns all it holds (A14).
 fn owned_dyn_of(callee: &TypedExpr) -> bool {
     matches!(&callee.kind, E::Function(crate::check::FunctionRef::Builtin(instance))
@@ -5633,6 +5689,10 @@ struct Checker<'a, 'run> {
     parameter_paths: std::cell::RefCell<BTreeMap<usize, (Option<ParameterPath>, usize)>>,
     /// A31: the steps that `parameter_path_at` took, for the test of its cost.
     parameter_path_steps: std::cell::Cell<usize>,
+    /// The span of the `match` whose subject the check is reading (`eval_match`), for the `E1012`
+    /// of function clauses that match a parameter again after its pattern moved the value
+    /// (`use_after_move`).
+    matched_by: Option<Span>,
     /// The spans of the values that moved into an anonymous union when they were injected (A24),
     /// for the help of a later use: a borrow cannot be injected.
     injections: BTreeSet<(Option<usize>, usize, usize)>,
@@ -7014,12 +7074,17 @@ impl<'a, 'run> Checker<'a, 'run> {
                 .max_by_key(|(_, origin)| (origin.start, origin.end))
                 .map(|(moved, origin)| (moved.clone(), *origin))
         {
-            let name = self
+            let (name, declared) = self
                 .state
                 .locals
                 .get(&place.root)
-                .map_or("value", |(local, _)| local.name.as_str())
-                .to_owned();
+                .map_or(("value", None), |(local, _)| {
+                    (local.name.as_str(), Some(local.span))
+                });
+            let name = name.to_owned();
+            // A hidden pattern parameter is read by its own name, at its declaration, only as the
+            // subject of a `match`: its pattern's, which comes first, or the function clauses'.
+            let rematched = (declared == Some(span)).then(|| self.matched_by.unwrap_or(span));
             let widening = (!moved.fields.is_empty() && origin.end > origin.start)
                 .then(|| widened_at(self.body, origin))
                 .flatten();
@@ -7074,6 +7139,50 @@ impl<'a, 'run> Checker<'a, 'run> {
                     local.provenance == crate::syntax::Provenance::Generated
                         && local.name.starts_with("$match")
                 });
+            // A widening or an injection (A24, A25, A26) explains the move of a value that the
+            // source names. Any other generated name (a hidden pattern parameter) takes the
+            // message of `use_after_move`, which shows no generated name.
+            let explained = if name.starts_with('$') {
+                None
+            } else if let Some((wider, path, part)) = &widened {
+                // `ref` of the narrower value is never widened: the wider value is bound once.
+                let wider = wider.display(&self.module.types());
+                let out_of = if *part {
+                    format!(" out of '{name}'")
+                } else {
+                    String::new()
+                };
+                Some(format!(
+                    "a widening moves '{path}'{out_of}; bind the wider value once with 'let wide: {wider} = {path}' and borrow 'wide', or move it last"
+                ))
+            } else if self
+                .injections
+                .contains(&(origin.source, origin.start, origin.end))
+            {
+                // A24, A26: a value injected into an anonymous union, also by a comparison
+                // (`v == s`), moves; `ref s` cannot be injected.
+                Some(if moved.fields.is_empty() {
+                    let ty = self
+                        .state
+                        .locals
+                        .get(&place.root)
+                        .map(|(local, _)| &local.ty);
+                    let copy = match ty {
+                        Some(Type::String) => format!(" (clone_string ref {name})"),
+                        Some(Type::Utf8String) => format!(" (Utf8String.clone ref {name})"),
+                        _ => String::new(),
+                    };
+                    format!(
+                        "an anonymous union holds its value, so injecting '{name}' moved it; use '{name}' before that, or inject a copy{copy}"
+                    )
+                } else {
+                    format!(
+                        "an anonymous union holds its value, so injecting the field moved it out of '{name}'; use the field before that, or inject a copy"
+                    )
+                })
+            } else {
+                None
+            };
             let mut diagnostic = if matched {
                 Diagnostic::of(
                     DiagnosticKind::UseAfterMove,
@@ -7083,51 +7192,15 @@ impl<'a, 'run> Checker<'a, 'run> {
                 .with_help(
                     "bind the whole value with 'as' or bind its parts, not both, and match the bound value again in the arm",
                 )
-            } else {
+            } else if let Some(help) = explained {
                 Diagnostic::of(
                     DiagnosticKind::UseAfterMove,
                     format!("use of moved or partially moved value '{name}'"),
                     span,
                 )
-                .with_help(if let Some((wider, path, part)) = &widened {
-                    // `ref` of the narrower value is never widened: the wider value is bound once.
-                    let wider = wider.display(&self.module.types());
-                    let out_of = if *part {
-                        format!(" out of '{name}'")
-                    } else {
-                        String::new()
-                    };
-                    format!(
-                        "a widening moves '{path}'{out_of}; bind the wider value once with 'let wide: {wider} = {path}' and borrow 'wide', or move it last"
-                    )
-                } else if self
-                    .injections
-                    .contains(&(origin.source, origin.start, origin.end))
-                {
-                    // A24, A26: a value injected into an anonymous union, also by a comparison
-                    // (`v == s`), moves; `ref s` cannot be injected.
-                    if moved.fields.is_empty() {
-                        let ty = self.state.locals.get(&place.root).map(|(local, _)| &local.ty);
-                        let copy = match ty {
-                            Some(Type::String) => format!(" (clone_string ref {name})"),
-                            Some(Type::Utf8String) => format!(" (Utf8String.clone ref {name})"),
-                            _ => String::new(),
-                        };
-                        format!(
-                            "an anonymous union holds its value, so injecting '{name}' moved it; use '{name}' before that, or inject a copy{copy}"
-                        )
-                    } else {
-                        format!(
-                            "an anonymous union holds its value, so injecting the field moved it out of '{name}'; use the field before that, or inject a copy"
-                        )
-                    }
-                } else if moved.fields.is_empty() {
-                    format!("borrow the value with 'ref {name}' or move it last")
-                } else {
-                    format!(
-                        "borrow the field with 'ref' instead of moving it out of '{name}', or move it last"
-                    )
-                })
+                .with_help(help)
+            } else {
+                use_after_move(&name, moved.fields.is_empty(), span, rematched)
             };
             if origin.end > origin.start {
                 diagnostic = diagnostic.related(RelatedRole::MovedHere, message, origin);

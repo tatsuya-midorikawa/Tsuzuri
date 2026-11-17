@@ -1607,7 +1607,35 @@ region 契約を読む前に宣言の引数型にも同じ表面上の補完を�
 `Type::Function` の box 化した `FunctionParameters` は物理引数型と `Own`・`Read`・`Mut` の規約を保持します。
 全引数が `Own` の metadata は空に正規化し、2026 の型同一性を保ちます。規約は型変数の中へ埋めず、
 単相化・部分適用・型の解決で引数リストと一緒に引き継ぎます。読み取り・可変引数の本体と contextual lambda は
-参照先の値 view を使います。callback の adapter は既存の Copy・loan 検査を通し、callback 自体の構築は 1 回だけです。
+参照先の値 view を使います（`read_value_parameters`）。例外は A32 の、参照の型を注釈した引数です。
+`closures::parameter_annotations` が本体の先頭の `MatchOrigin::LambdaDestructuring` の連なりから引数の最上位の注釈を集め、
+`Checker::binds_annotated_reference` が、注釈が `resolve_type_with_kinds` で参照の型に解決され、参照先の型が
+`Infer`・`Reference`・`Application`・`Partial`・誤りのどれでもなく、注釈が引数の参照の型と合う（`Inference::unifies`。
+解いた推論変数を戻す試しの `unify` で、`Inference::trial` に解いた変数を記録する）と確かめたときだけ、`lambda` と `def` の引数の束縛は view にしません。
+`Infer` のうち数値リテラルの型（`Inference::is_numeric_literal`）は、`Integer`・`SignedInteger`・`Float` の制約が参照では成り立たず、
+利用者はこれらの instance を足せないので、参照になりえません。そのときは `closures::annotated_literal_takes` が、注釈の参照先が整数か浮動小数点の型で、
+その変数を含む class 制約のすべてが参照先へ置き換えても成り立ち（ほかの未決の変数を含まない）、変数そのものの制約が 1 つ以上あり、member 制約が
+その変数を含まないことを確かめたときだけ束縛します（`[1, 2, 3] |> Array.map (\(x: ref i64) -> …)`）。満たさない注釈は view のままで、リテラルの
+`E1003`（`expected an integer, found ref string`）は変わりません。
+参照先の型の内側の未決の変数（`[[1, 2], [3]]` の要素 `[?]`）は、`Inference::unifies` の試しが解いたままの間に、その変数を含む class 制約のすべてが
+閉じて成り立つ（`Inference::open_variables`、member 制約はその変数を含まない）ときだけ束縛します。成り立たない注釈は view のままで、パターンの `E1003` は変わりません。
+試しの解でも閉じない制約（`(p, q) == (p, q)` の後の `[[p]]` の `Eq (?p * ?q)`）は成り立つと数えないので、その形は `let` で束縛したラムダと違って view のままです（保守的な選択で、型エラーになるだけです）。
+このとき view は注釈と `unify` で決して合わないか、合ってもリテラルの制約で必ず失敗するので、変わるのは型エラーだったプログラムだけで、その引数の型と生成コードは
+`let` で束縛したラムダと同じです。引数の参照の型と合わない注釈は view のままなので、パターンは A32 の前と同じ
+`E1003`（`expected ref [string], found string`）を報告します。参照を束縛した引数の所有権検査は `let` で束縛したラムダの引数と同じで、
+その場の書き込み（`Array.write` など）が注釈した参照の借用を書き込み先へ残すことは、A31 の書き込みの事実（`ownership::StoreFacts`）が
+注釈のない綴りと同じく追跡します。A31 の後の規則（書き込める仮引数の先の借用を残した後の書き込み、関数値の仮引数へ渡した借用、
+ビューの読み替え、`parameter_path`、`Source::locked`・`Source::shared`、仮引数・一時値・自己 loan の破棄の順序、`StoreFacts::ordered`、
+排他の借用で届く持ち主の共有の自己 loan（`StoreFacts::shared_some`・`self_paths`）、値全体の置き換え（`replaced_value`・`replaced_target`）、
+参照の実引数の片ごとの自己の事実の写し（`referent_pieces`）、`ref mut` で貸した共有の `forget_block_share`、`deref p = v` が外さない借用
+（`State::contents_elsewhere`・`place_leaves_storage`・`replacement_frees_kept`）、別の参照の仮引数の先へ書き込んだ部分の借用
+（`StoreFacts::kept_paths`・`kept_copy`。部分が分かるのは `Checker::points_at` が真の実引数だけで、注釈した引数を束縛したパターンの変数は、
+不変な参照の仮引数である隠れた引数の loan とともに、`Checker::note_pointing` が `pointing` に記録する））、ループの不動点がすべての事実を比べる要約
+（`ownership_control::LoopSummary`）と、収束しないループの打ち切り（`LoanGrowth` の `E1017`）も、
+同じ規約か `ref` の型の仮引数を持つ名前付き関数と同じ結果です。隠れた引数を束縛したパターンの変数は隠れた引数の loan
+（またはそれを親に持つ loan）を持ち、`writable_external` などは loan の外部の根で判定し、`parameter_path` はパターンの束縛を仮引数までたどるからです。
+例外は、注釈した引数をそのまま関数値の仮引数へ渡す本体に呼び出し元が貸した一時値の順序で、`ref` の型の署名に注釈したラムダ（A32 の前からの形）と同じく、
+名前付き関数と注釈の無いラムダが受理する安全な順序も `E1013`（`assignment_extends_borrow`）です（保守的な扱い、A33）。callback の adapter は既存の Copy・loan 検査を通し、callback 自体の構築は 1 回だけです。
 `BORROWING_APIS` は 2027 の Array／List の読み取り入口と Vec の可変入口、および旧版を保存する `_owned` 入口をまとめます。
 `Vec.push_mut` は `Vec.push_owned` と異なる builtin identity と LLVM helper を持ち、混在版の ABI を衝突させません。
 

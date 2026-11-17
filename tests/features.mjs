@@ -651,6 +651,100 @@ const suites = {
       ["mutable_local_projections", [1n], 9n + 9n + 7n + 11n],
       ["borrowed_callable_temporaries", [], 3n * 42n],
       ["contextual_own_type_name", [], 42n],
+      // A32: each lambda annotated `ref T` (`ref mut T`) gives its own value; the declared
+      // function gives the plain lengths. "hello" has 5 characters, "hi" 2, ("abc", "de") 3 and 2.
+      ...[-3, 0, 1].map((n) => {
+        const text = 5n, w = BigInt(n);
+        const byIf = n > 0 ? text : text * 10n;
+        const byMatch = n === 0 ? text : text * 100n;
+        const byHolder = n > 0 ? text : text * 1000n;
+        const second = text * 10000n + w;
+        const counter = 1n + (n > 0 ? 3n : 300n) + 2n * 10n;
+        return ["annotated_reference_lambdas", [w], byIf + byMatch + byHolder + second + counter];
+      }),
+      ...[-3, 0, 1].map((n) => {
+        const text = 5n, other = 2n, left = 3n, right = 2n, size = 5n;
+        const on = n > 0;
+        const guarded = on ? text : text * 10n;
+        const two = on ? text + other : text * 10n + other * 100n;
+        const mixed = on ? text + other : text * 1000n + other;
+        const ignored = on ? text : 7n;
+        const aliased = on ? text : text * 3n;
+        const split = on ? left + right : left * 10n + right;
+        const counted = on ? size : size * 100n;
+        const first = on ? 7n : 9n;
+        // `store_length other values` writes the length of "hi" into the second element.
+        const stored = other;
+        return ["annotated_reference_forms", [BigInt(n)],
+          guarded + two + mixed + ignored + aliased + split + counted + first * 1000000n + 3n + stored * 10000000n];
+      }),
+      // A32, review 1: the read callbacks with `ref string` lambdas. map: 1, 2, 3 characters times
+      // 10; mapi over ("dddd", "ee"): 0 * 100 + 4 and 1 * 100 + 2; fold from n: ((n * 10 + 1) * 10
+      // + 2) * 10 + 3; fold_back from the right: ("ee" first) (0 * 10 + 2) * 10 + 4.
+      ...[-3, 0, 1].map((n) => {
+        const w = BigInt(n);
+        const mapped = 10n + 20n + 30n;
+        const indexed = 4n + 102n;
+        const folded = ((w * 10n + 1n) * 10n + 2n) * 10n + 3n;
+        const back = (0n * 10n + 2n) * 10n + 4n;
+        return ["annotated_read_callbacks", [w], mapped + indexed * 1000n + folded * 1000000n + back * 10000000000n];
+      }),
+      // A32, review 3: `ref i64` callbacks over number-literal arrays. doubled: (1 + 2 + 3) * 2 +
+      // 3n; total: fold from n over 4, -5, 6 with acc * 10 + x; listed: (7 + 8) * 3; indexed:
+      // 0 * 100 + 10 and 1 * 100 + 20; captured: (1 + 2 + 3) * 10 + 3 elements.
+      ...[-3, 0, 1].map((n) => {
+        const w = BigInt(n);
+        const doubled = 12n + 3n * w;
+        const total = ((w * 10n + 4n) * 10n - 5n) * 10n + 6n;
+        const listed = 45n;
+        const indexed = 10n + 120n;
+        const captured = 6n * 10n + 3n;
+        return ["annotated_literal_callbacks", [w],
+          doubled + listed * 100n + indexed * 100000n + captured * 100000000n + total * 10000000000n];
+      }),
+      // A32, review 1: audit x16c (`inspect` gives 3, the lambda reads "hello" through
+      // `ref ref string`: 5 * 10) and x18 (3 + 50 * 1000 + (5 * 100 + n) * 1000000), and
+      // `apply_ref` applies `x * 2 + n` twice to 5.
+      ...[-3, 0, 1].map((n) => {
+        const w = BigInt(n);
+        const chosen = n > 0 ? 3n : 50n;
+        const kept = 3n + 50n * 1000n + (500n + w) * 1000000n;
+        const applied = (5n * 2n + w) * 2n + w;
+        return ["annotated_reference_kept", [w], chosen + kept * 100n + applied * 1000000000000n];
+      }),
+      // A32 on A31: in-place writes through annotated reference parameters. `constant` holds
+      // `\() -> 1` (r2_ag01); `local` is [n, n + 1, n + 2], so the declared writer gives
+      // n * 1000 + 3 and the annotated lambda n * 100 + 3 * 7; `g 1000` is 1000 + k[0] + 4; the
+      // number store gives n * 1000 + 4; `measure` reads "hello" (5, or 5 * 10) and `kept` gives n.
+      ...[-3, 0, 1, 5].map((n) => {
+        const w = BigInt(n);
+        const constant = 1n;
+        const chosen = n > 0 ? w * 1000n + 3n : w * 100n + 21n;
+        const direct = w * 1000n + 3n;
+        const applied = 1000n + w + 4n;
+        const numbers = w * 1000n + 4n;
+        const picked = (n > 0 ? 5n : 50n) + w;
+        return ["annotated_reference_stores", [w],
+          constant + chosen * 10n + direct * 100000n + applied * 1000000000n + numbers * 10000000000000n + picked * 7n];
+      }),
+      // A32 on A31, second merge: `kept` reads the length of the decimal text of n * 1000 and the
+      // later write sets `count` to 5; `words` holds one text and two pushes; `viewed` reads the
+      // length of the decimal text of n * 10; `later_path` gives 2 and the mutex slot holds `n`.
+      ...[-3, 0, 1, 5].map((n) => {
+        const w = BigInt(n);
+        const kept = BigInt(String(n * 1000).length) + 5n;
+        const words = 3n;
+        const viewed = BigInt(String(n * 10).length);
+        return ["annotated_reference_later_rules", [w], kept + words * 100n + viewed * 1000n + (2n + w) * 100000n];
+      }),
+      // A32 on A31, third merge: `shared` is the length of the decimal text of n plus the count 3;
+      // `part`, `temps` and `cell` are the lengths of the decimal texts of n * 7, n * 11 and n * 13.
+      ...[-3, 0, 1, 5].map((n) => {
+        const len = (v) => BigInt(String(v).length);
+        const shared = len(n) + 3n;
+        return ["annotated_reference_drop_rules", [BigInt(n)],
+          shared + len(n * 7) * 100n + len(n * 11) * 10000n + len(n * 13) * 1000000n];
+      }),
       ["trap", [1n], 10n + 20n + 20n],
     ],
     traps: [

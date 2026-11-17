@@ -747,6 +747,27 @@ fn callback_contract(
     })
 }
 
+/// The name of `function` as the program writes it: an instance of a generic function is
+/// `leak.$mono.2`, and the function that an instance of a polymorphic builtin becomes is
+/// `Vec.push_mut.3`; both show the declared name.
+fn written_name(function: &CheckedFunction) -> &str {
+    let name = function
+        .name
+        .split(".$mono.")
+        .next()
+        .unwrap_or(&function.name);
+    match name.rsplit_once('.') {
+        Some((declared, number))
+            if function.module == "$builtin"
+                && !number.is_empty()
+                && number.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            declared
+        }
+        _ => name,
+    }
+}
+
 /// A function whose parameters have region-quantified types runs only in direct calls with
 /// every parameter, so each callback argument is checked against its contract. So does a
 /// function that may store an input through an exclusive reference (A13 Phase 2): its callers
@@ -771,7 +792,7 @@ pub(super) fn validate_contract_calls(module: &CheckedModule) -> Result<(), Diag
         _ => None,
     };
     let direct_only = |id: usize, span: Span| {
-        let name = &module.functions[id].name;
+        let name = written_name(&module.functions[id]);
         failure(
             DiagnosticKind::RegionCallbackStoresExclusiveInput,
             span,

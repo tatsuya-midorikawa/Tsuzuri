@@ -302,7 +302,7 @@ done
 - `_tsuzuri/language-reference/built-in-types-and-modules/channel.md`（要素と借用）
 - `_tsuzuri/language-reference/types-and-type-inference/type-classes.md`（動的ディスパッチ）
 - `_features/README.md`（状態。3 回目に A32 の行）
-- `_features/A32-annotated-reference-lambda-under-conventions.md`（3 回目。2 回目に見つけた既存の問題の起票）
+- `_features/_completed/A32-annotated-reference-lambda-under-conventions.md`（3 回目。2 回目に見つけた既存の問題の起票）
 
 ### 変更したファイル
 
@@ -439,7 +439,7 @@ clang が拒否しました（`E2002`。base の binary では `redefinition of 
     具体化、再帰型の helper 3 つ、`tz.dyn.drop`、vtable とそのスロット）を 1 回にしたことだけです（新しい IR の `pure.fn` を `fn` に戻すと、新しい IR の定義はすべて base の IR にあります）。
   - 同じ入力で 2 回出力した `generic_records` の IR は native と wasm32 で一致しました（決定的）。
 - 見つけた既存の問題（`main` でも同じなので変えていません）: 期待の型が規約 `[Read]` の関数型のとき、引数に `ref string` と注釈したラムダを直接書くと `E1003`（`expected ref string, found string`）
-  になります（`if n > 0 then first else Box { value: \(text: ref string) -> … }`）。ラムダをいったん変数に束縛すると通ります。型検査の側の問題なので、この branch では扱いません。3 回目に [A32](../A32-annotated-reference-lambda-under-conventions.md) として起票しました。
+  になります（`if n > 0 then first else Box { value: \(text: ref string) -> … }`）。ラムダをいったん変数に束縛すると通ります。型検査の側の問題なので、この branch では扱いません。3 回目に [A32](A32-annotated-reference-lambda-under-conventions.md) として起票しました。
 
 ##### 2 回目に実行したコマンド
 - `cargo fmt --all -- --check`: 成功。`cargo clippy --all-targets -- -D warnings`: 成功。
@@ -499,7 +499,7 @@ clang が拒否しました（`E2002`。base の binary では `redefinition of 
   結果の型などで決まるようになったためです。綴りと定義の集合は変わりません。検証の形（`Box { value: text_length }`・`Box { value: \(text: ref string) -> text.length > 2 }`・`Box { value: bump }` と、
   `text_length` とその `bool` のラムダの `Vec`）は両方の binary で `13413` を返し、IR は native と wasm32 のどちらも 10 行（型 2 つと `Vec.empty`・`Vec.push_mut` の 2 組）の並びだけが違い、
   行を並べ替えると一致しました。`docs/architecture.md` の組み込み関数のシンボルの節に、この並びと、ユーザーの drop を同一性で探すことを足しました。
-- 2 回目に見つけた既存の問題（規約 `[Read]` の関数型が期待される位置の、`ref string` と注釈したラムダの `E1003`）を、[A32](../A32-annotated-reference-lambda-under-conventions.md) として起票しました
+- 2 回目に見つけた既存の問題（規約 `[Read]` の関数型が期待される位置の、`ref string` と注釈したラムダの `E1003`）を、[A32](A32-annotated-reference-lambda-under-conventions.md) として起票しました
   （`_features/README.md` の A の表、状態 todo）。チケットの「再現」と「同じ原因の形」の表は、base の binary で実行して確かめた結果です。`match` の腕の形の値（`pick 0 + pick 1 * 100` で `5005`）と、
   束縛した形の値もそれぞれ確かめました。A31 はほかの branch で起票中なので、番号は A32 です。
 - 手順 4 の IR の比較のやり直し: `tests/fixtures/*` と `examples/*` の 176 個のディレクトリ（`Main.tz` を持つのは 153 個）と、`main` の版の `dyn_dispatch`・`generic_records`・`preemption` を、

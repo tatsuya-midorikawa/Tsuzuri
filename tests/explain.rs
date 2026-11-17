@@ -116,6 +116,39 @@ fn every_page_example_behaves() {
 }
 
 #[test]
+fn call_non_function_page_covers_references_to_functions() {
+    // Review 3 of A32: a parameter annotated `ref (i64 -> i64)` binds a reference, so calling it
+    // is `call_non_function` with a help that says to dereference it. The page shows that call
+    // and its fix, so its text agrees with the diagnostic.
+    let page = explain::kind_page(DiagnosticKind::CallNonFunction).unwrap();
+    let section = |name: &str| {
+        explain::sections(page)
+            .into_iter()
+            .find(|(heading, _)| *heading == name)
+            .unwrap_or_else(|| panic!("no {name}"))
+            .1
+    };
+    assert!(section("Why").contains("reference to a function"), "{page}");
+    let example = |name: &str| explain::examples(section(name)).remove(0).1;
+    let bad = example("Bad");
+    let Err(set) = analyze_modules_all(&[("Main", bad.as_str())]) else {
+        panic!("accepted:\n{bad}");
+    };
+    assert!(
+        set.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == Some("call_non_function")
+                && diagnostic
+                    .help
+                    .as_deref()
+                    .is_some_and(|help| help.contains("is a reference to a function"))
+        }),
+        "{bad}\n{:?}",
+        set.diagnostics
+    );
+    assert!(example("Good").contains("(deref g) x"), "{page}");
+}
+
+#[test]
 fn resolve_accepts_kinds_and_codes() {
     assert_eq!(
         explain::resolve("use_after_move"),
