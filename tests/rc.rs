@@ -8017,7 +8017,7 @@ fn each_chain(links: usize, extra: &str, result: &str, local: bool) -> String {
 /// its first four iterations: iteration 9, 28 loans).
 ///
 /// No stop counts the loans themselves, and a loop whose loans grow by less in each iteration
-/// than in the one before meets neither stop, however many loans it makes. A loop that passes a
+/// than in the one before meets no stop, however many loans it makes. A loop that passes a
 /// reference to one of two records along 16 locals, one per iteration, and reads through each of
 /// them 4 times (`pipeline(16, 2, 4)`) makes 71, 139, 203, ..., 659 and 671 loans (each iteration
 /// adds 4 fewer than the one before; 600 more than the first in all), settles in iteration 16 and

@@ -8,7 +8,7 @@
 | 依存 | A31 |
 | 後続 | – |
 | 状態 | todo |
-| 起票 | 2026-11-16（A31（PR #105）の打ち切り `LoanGrowth`（`93f25d12`・`1506be7e`・`f88d8a82`）の後。2026-11-15 に利用者が受け入れた後続。受け入れたときの案は 1 つの上限（`LOOP_LOAN_GROWTH`）だけを比べるものでしたが、打ち切りが借用の増え方の形で止めるようになったので、そのすべての上限に合わせました。A31 の「借用の数の上限を外す（2026-11-16）」で `LOOP_LOAN_GROWTH`・`LOOP_LATE_GROWTH`・`LOOP_GROWTH_FROM` を外したので、比べるのは増え方の上限だけです） |
+| 起票 | 2026-11-16（A31（PR #105）の打ち切り `LoanGrowth`（`93f25d12`・`1506be7e`・`f88d8a82`）の後。2026-11-15 に利用者が受け入れた後続。受け入れたときの案は 1 つの上限（`LOOP_LOAN_GROWTH`）だけを比べるものでしたが、打ち切りが借用の増え方の形で止めるようになったので、そのすべての上限に合わせました。A31 の「借用の数の上限を外す（2026-11-16）」で `LOOP_LOAN_GROWTH`・`LOOP_LATE_GROWTH`・`LOOP_GROWTH_FROM` を外したので、比べるのは増え方の上限だけです。その後の再点検で `LOOP_STATE_ITERATIONS`（反復の後の状態の借用の増え方の連続）を足したので、それも比べます） |
 | 承認 | 不要（テストと、テストだけが呼ぶ内部の関数を足すだけで、検査の結果・診断・生成コード・言語の意味は変えない） |
 | 改善する劣位 | 検証の欠落: A31 の打ち切りの上限は、リポジトリの外の計測用のビルドと記録（A31 のワークツリーの `target/scratch/a31/lp-budget/`・`lb-fix1/`・`lg-fix/`）で一度だけ決めたもの。後の変更が実際のループの借用を長く・速く増やすようにしても、そうしたループを含むテストが無ければ CI は通り、利用者の安全なプログラムが `E1017` で拒否されて初めて分かる |
 | 手本にする既存実装 | `src/ownership.rs` の `copy_reads`・`events_abstract`（`check_body` に集める先 `copies`・`events` を渡し、検査そのものは変えない）、`src/backend/mod.rs` の `layout_of`（テストだけが呼ぶ `#[doc(hidden)]` の公開関数）、`tests/capabilities.rs` の `corpus`・`corpus_table`（`tests/fixtures` と `examples` の `Main.tz` のあるプロジェクトを 4 つのスレッドで解析する）、`tests/std_examples.rs`（`stdlib::SOURCES` と `doctest` から std の例を集める） |
@@ -16,7 +16,7 @@
 
 ## 目的
 
-A31 は、収束しないループの所有権の検査を `E1017`（`loop_ownership_limit`）で止める打ち切り（`src/ownership_control.rs` の `LoanGrowth`）を入れました。上限は 3 つの定数（増え方の連続の 2 つと、その片方を早める借用の数）で、どれも「実際のプログラムの収束するループは、この形では増えない」という計測から、届くのが実際のプログラムが書かない形だけになるように選んであります。その計測はリポジトリの外の道具で一度だけしたものです。後の変更（ループの要約が比べる事実を増やす、借用の作り方を変える、新しい種類の loan を足すなど）が実際のループの反復を増やしたり、反復ごとの借用を増やしたりしても、CI はそれを見ません。上限を超えるまで何も失敗せず、超えたときに初めて、安全なプログラムが `E1017` で拒否されます。
+A31 は、収束しないループの所有権の検査を `E1017`（`loop_ownership_limit`）で止める打ち切り（`src/ownership_control.rs` の `LoanGrowth`）を入れました。上限は 4 つの定数（反復が作る借用の増え方の連続の 2 つと、その片方を早める借用の数、反復の後の状態が持つ借用の増え方の連続）で、どれも「実際のプログラムの収束するループは、この形では増えない」という計測から、届くのが実際のプログラムが書かない形だけになるように選んであります。その計測はリポジトリの外の道具で一度だけしたものです。後の変更（ループの要約が比べる事実を増やす、借用の作り方を変える、新しい種類の loan を足すなど）が実際のループの反復を増やしたり、反復ごとの借用を増やしたりしても、CI はそれを見ません。上限を超えるまで何も失敗せず、超えたときに初めて、安全なプログラムが `E1017` で拒否されます。
 
 このチケットは、収束したループの借用の増え方の統計（決定的な数で、時間ではありません）をテストだけが読めるようにし、`tests/` のプログラム・`examples/`・std の例で、その最大が上限の決まった割合（反復の数の上限には 1/2。`LOOP_GROWING_LARGE` の借用の数は 1/8 で数える）に近づいたら失敗する Rust のテストを足します。統計の今の値はテストとこのチケットに記録します。
 
@@ -25,7 +25,7 @@ A31 は、収束しないループの所有権の検査を `E1017`（`loop_owner
 ## 背景
 
 - 打ち切りのいきさつは A31 のチケットの「借用の数による打ち切り（2026-11-15）」「借用の増え方による打ち切り（2026-11-16）」「最後のレビュー（2026-11-16）」にあります（[A31](_completed/A31-in-place-writes-keep-stored-borrows.md)）。打ち切りは検査を緩めず、`E1017` を足すだけです。上限を超える形は、実際のプログラムが書かない形として `lifetimes.md` の「現在の制限」と `docs/architecture.md` のループの不動点の段落に書いてあります。
-- A31 の作業中、打ち切りが安全なループを止めていたことは、どれもレビューの探査（リポジトリの外の道具）で見つかりました。借用の数だけを比べた `1b21f734` は、一度だけ広がるインタプリタのループ（探査の 38 個のディレクトリ）を止めていました。`1506be7e` は、2 回目の反復で 500 個を超えて広がった後に数個ずつ増えるループ（22 個）を止めていました。`f88d8a82` も、状態の履歴を持つ状態機械（15 個）を止めていたので、A31 は借用の数の上限を外しました。リポジトリのテスト（`tests/rc.rs` の `a_loop_` の 6 件）は、そうして見つけた形の結果を固定していますが、`tests/fixtures`・`examples`・std のループが上限からどれだけ離れているかは測っていません。A31 がマージされてワークツリーを消すと、計測の道具も無くなります。
+- A31 の作業中、打ち切りが安全なループを止めていたことは、どれもレビューの探査（リポジトリの外の道具）で見つかりました。借用の数だけを比べた `1b21f734` は、一度だけ広がるインタプリタのループ（探査の 38 個のディレクトリ）を止めていました。`1506be7e` は、2 回目の反復で 500 個を超えて広がった後に数個ずつ増えるループ（22 個）を止めていました。`f88d8a82` も、状態の履歴を持つ状態機械（15 個）を止めていたので、A31 は借用の数の上限を外しました。リポジトリのテスト（`tests/rc.rs` の `a_loop_` の 7 件）は、そうして見つけた形の結果を固定していますが、`tests/fixtures`・`examples`・std のループが上限からどれだけ離れているかは測っていません。A31 がマージされてワークツリーを消すと、計測の道具も無くなります。
 - AGENTS.md の「Do not add speed pass/fail thresholds to shared CI runners」は当てはまりません。このテストが比べるのは、検査が作った借用の数と反復の数で、機械や負荷で変わりません。
 
 ## 着手条件と停止条件
@@ -40,27 +40,29 @@ A31 は、収束しないループの所有権の検査を `E1017`（`loop_owner
 
 ## 現状
 
-A31 の先端（ブランチ `fix/a31-in-place-writes-keep-borrows`、借用の数の上限を外した `73a3402b`）で確かめました。行番号はそのコミットのものです。
+A31 の先端（ブランチ `fix/a31-in-place-writes-keep-borrows`、借用の数の上限を外した後に状態の借用の増え方の打ち切りを足した `02be92c2`）で確かめました。行番号はそのコミットのものです。
 
 ### 打ち切りと上限（`src/ownership_control.rs`）
 
-`Checker::check_loop`（648 行）は、反復ごとに、条件と本体の検査の前後の `self.loans.len()` の差をその反復が作った借用の数とし、収束しなかった反復ごとに `LoanGrowth::note`（145 行）へ渡します（704 行）。要約が前の反復と同じなら（696 行の `self.loop_summary() == before`）、その反復は `note` に渡さずに `Ok` を返します。`note` が止める条件は次の 3 つの定数で決まります（定数はどれも非公開）。借用の数そのものの上限はありません。
+`Checker::check_loop`（730 行）は、反復ごとに、条件と本体の検査の前後の `self.loans.len()` の差をその反復が作った借用の数とし、収束しなかった反復ごとに `LoanGrowth::note`（183 行）へ、反復の後の状態が持つ借用の数（`Checker::loop_state_loans`、675 行）と一緒に渡します（786 行）。要約が前の反復と同じなら（778 行の `self.loop_summary() == before`）、その反復は `note` に渡さずに `Ok` を返します。`note` が止める条件は次の 4 つの定数で決まります（定数はどれも非公開）。借用の数そのものの上限はありません。
 
 | 定数 | 行 | 値 | 止める条件 |
 | --- | --- | --- | --- |
-| `LOOP_FASTER_ITERATIONS` | 108 | 5 | 5 回続けて、前の反復より多く、しかも前の反復が増えた数より多く借用を作った（`LoanGrowth::faster`） |
-| `LOOP_GROWING_ITERATIONS` | 124 | 24 | 24 回続けて、前の反復より多く、前の反復が増えた数以上に作った（`LoanGrowth::growing`） |
-| `LOOP_GROWING_LARGE` | 133 | (8, 200) | 同じ数え方で 8 回続き、しかもその反復が 200 個を超えて作った |
+| `LOOP_FASTER_ITERATIONS` | 119 | 5 | 5 回続けて、前の反復より多く、しかも前の反復が増えた数より多く借用を作った（`LoanGrowth::faster`） |
+| `LOOP_GROWING_ITERATIONS` | 135 | 24 | 24 回続けて、前の反復より多く、前の反復が増えた数以上に作った（`LoanGrowth::growing`） |
+| `LOOP_GROWING_LARGE` | 144 | (8, 200) | 同じ数え方で 8 回続き、しかもその反復が 200 個を超えて作った |
+| `LOOP_STATE_ITERATIONS` | 171 | 8 | 8 回続けて、反復の後の状態が持つ借用（`Checker::loop_state_loans`: 局所値とその region の slot の借用と `kept`・`kept_elsewhere`）が前の反復の後より多く、しかも前の反復が増えた数より多く増え（`LoanGrowth::state_faster`）、その反復が `growing` に数える反復だった |
 
-`LoanGrowth`（83 行）は、前の反復の数とその前から増えた数（`last`）と、2 つの連続（`faster`・`growing`）だけを持ちます。止めずに収束したループのこれらの値は、どこにも残りません。
+`LoanGrowth`（88 行）は、前の反復の数とその前から増えた数（`last`）、反復の後の状態の借用の数とその前から増えた数（`state`）と、3 つの連続（`faster`・`growing`・`state_faster`）だけを持ちます。止めずに収束したループのこれらの値は、どこにも残りません。
 
-確かめ方: `grep -nE "^const LOOP_|^struct LoanGrowth|fn note|fn check_loop|growth.note|loop_summary\(\) == before" src/ownership_control.rs`。
+確かめ方: `grep -nE "^const LOOP_|^struct LoanGrowth|fn note|fn loop_state_loans|fn check_loop|growth.note|loop_summary\(\) == before" src/ownership_control.rs`。
 
 ### 上限の決め方と、その計測が残っていないこと
 
 | 上限 | 決めた回 | 計測の道具（リポジトリの外） | 実際のプログラムの値 | 上限が止める形の値 |
 | --- | --- | --- | --- | --- |
 | `LOOP_FASTER_ITERATIONS`・`LOOP_GROWING_ITERATIONS`・`LOOP_GROWING_LARGE` | 借用の増え方による打ち切り（`93f25d12`・`1506be7e`） | `lb-fix1/bin/tsuzuri-instr3`（`TZ_LB_TRACE` で反復ごとの借用の数を書き、`TZ_LB_NOSTOP` で止めない）と、記録から規則を試す `sim.mjs` | 探査の 1458 組の記録の、収束した 424,031 回のループの検査で、速くなる増え方の連続は多くても 1 回、前以上の増え方の連続も 1 回（レビューが作った、参照を局所値に写していく `hr_*` の 10〜30 回を除く） | `loopplace` の倍になる形は 5 回続けて速くなり、局所値に渡す形は 24 回（200 個を超える反復なら 8 回）続けて増える |
+| `LOOP_STATE_ITERATIONS` | 借用の数の上限を外した後の再点検（A31 のチケットの「借用の数の上限を外す（2026-11-16）」の「再点検」） | 同じ計測用のビルド（記録の `st1` が反復の後の状態の借用の数）と、`nobudget2/sim5.mjs`・`smargin.mjs` | 1952 組の記録の収束したループで、`growing` に数える反復までの状態の速くなる増え方の連続は、レビューが作った、2 つか 4 つのフィールドのどれかを指す参照の連なり（`bc_if_*`・`bcwin_*`・`fc4_*`。7 個以上の `bc_if` と `bcwin_7`・`8` は `LOOP_FASTER_ITERATIONS` が先に止め、そこまで 5〜8 回）を除いて多くても 2 回。`growing` で絞らないと、関数値へ格納しながら進める参照の連なり（`each*`）で 11 回まで | 局所値に渡して何度も読む部分と同じループにある `loopplace` の形は、状態の借用が最初の反復から速く増え続け、反復の借用の増え方が小さくならなくなった反復（9 回目から）で止まる |
 
 借用の数の上限を外した後の 1909 組の記録（2026-11-16。止めずに取った記録なので、収束したループの値は今の打ち切りのものと同じです）でも、収束したループの速くなる増え方の連続は、レビューが作った、2 つか 4 つのフィールドのどれかを指す参照の連なり（`bc_if_*`・`fc4_*`。打ち切りは 7 個以上の `bc_if` を止め、`fc4_5` は 4 回）を除いて多くても 1 回、前以上の増え方の連続は、レビューが作った形（参照を写していく局所値の `hr_*`・`cc_*`、戻り先や履歴を局所値に順に持つインタプリタの `vmbt_*`・`vmr_*`・`pipe_5_8_80_last`。多くても 30 回）を除いて多くても 2 回です。最初の計測にあった後の反復が最初の反復より多く作った借用の数（gate 3、`tests/fixtures` と `examples` 2、std の例 0）は、借用の数の上限だけが比べていたので、もう比べません。
 
@@ -68,7 +70,7 @@ A31 の先端の `src/` は、`15d84aaf` と `src/ownership_control.rs` の打�
 
 ### 今あるテストが見ないもの
 
-`tests/rc.rs` の `a_loop_` の 6 件は、上限のすぐ内側と外側に作った形の結果を固定しています（参照を写していく 24 個と 25 個の局所値、200 個の借用を足した 8 個と 9 個、`loopplace` の形の打ち切り、一度広がるインタプリタ・`widening`・状態機械と、増え方が小さくなっていく `pipeline(16, 2, 4)`・`pipeline(5, 8, 20)` の受理）。これらは、実際のプログラムのループが上限からどれだけ離れているかを測りません。たとえば、ループの要約が比べる事実を増やす変更（A31 の Copilot のレビュー 2 の修正がそうでした）がどのループの収束も 1〜2 回遅らせ、遅れた反復が少しずつ借用を増やすなら、`tests/fixtures` や `examples` のループは増え方の連続に近づきます。それでも、上限に合わせて作った形の結果は変わらないことがあり、そのときは利用者のプログラムが上限を超えるまで何も失敗しません。
+`tests/rc.rs` の `a_loop_` の 7 件は、上限のすぐ内側と外側に作った形の結果を固定しています（参照を写していく 24 個と 25 個の局所値、200 個の借用を足した 8 個と 9 個、`loopplace` の形の打ち切り、一度広がるインタプリタ・`widening`・状態機械と、増え方が小さくなっていく `pipeline(16, 2, 4)`・`pipeline(5, 8, 20)` の受理）。これらは、実際のプログラムのループが上限からどれだけ離れているかを測りません。たとえば、ループの要約が比べる事実を増やす変更（A31 の Copilot のレビュー 2 の修正がそうでした）がどのループの収束も 1〜2 回遅らせ、遅れた反復が少しずつ借用を増やすなら、`tests/fixtures` や `examples` のループは増え方の連続に近づきます。それでも、上限に合わせて作った形の結果は変わらないことがあり、そのときは利用者のプログラムが上限を超えるまで何も失敗しません。
 
 ## 仕様
 
@@ -81,6 +83,7 @@ A31 の先端の `src/` は、`15d84aaf` と `src/ownership_control.rs` の打�
 | `faster` | `LoanGrowth::faster` の最大（速くなる増え方の連続） | `LOOP_FASTER_ITERATIONS` |
 | `growing` | `LoanGrowth::growing` の最大（前以上の増え方の連続） | `LOOP_GROWING_ITERATIONS` |
 | `growing_large` | その反復が `LOOP_GROWING_LARGE` の借用の数の 1/8（25 個）を超えて作ったときの `LoanGrowth::growing` の最大 | `LOOP_GROWING_LARGE` の反復の数 |
+| `state` | `growing` に数える反復での `LoanGrowth::state_faster` の最大（打ち切りが比べる値） | `LOOP_STATE_ITERATIONS` |
 | `iterations` | 収束した反復を含む反復の数の最大 | なし（記録だけ） |
 
 `iterations` は、どの打ち切りも反復の数だけでは止めないので比べず、記録して出力するだけにします。
@@ -96,6 +99,7 @@ A31 の先端の `src/` は、`15d84aaf` と `src/ownership_control.rs` の打�
 | `faster` | 1/2 | `LOOP_FASTER_ITERATIONS` の半分以上、つまり 3 以上 |
 | `growing` | 1/2 | 12 以上 |
 | `growing_large` | 1/2 | 4 以上 |
+| `state` | 1/2 | 4 以上 |
 
 整数の比べ方は「値 × 分母 ≥ 上限 × 分子」です（5 の半分は 2.5 なので 3 で失敗します）。
 
@@ -110,6 +114,7 @@ A31 の計測から分かっている値です（借用の数の上限を外し�
 | `faster` | 3 | 多くても 2（どのループも 3 回以内の反復で収束するので。探査の 1909 組の記録では、レビューが作った `bc_if_*`・`fc4_*` を除いて 1） |
 | `growing` | 12 | 多くても 2（探査の記録でも、レビューが作った `hr_*`・`cc_*`・`vmbt_*`・`vmr_*`・`pipe_5_8_80_last` を除いて 2） |
 | `growing_large` | 4 | 多くても 2 |
+| `state` | 4 | 多くても 2（どのループも 3 回以内の反復で収束するので。探査の 1952 組の記録でも、レビューが作った `bc_if_*`・`bcwin_*`・`fc4_*` を除いて 2） |
 | `iterations` | – | 3 |
 
 ### コーパス
@@ -124,7 +129,7 @@ A31 の計測から分かっている値です（借用の数の上限を外し�
 
 ### 集める側（`src/ownership_control.rs`・`src/ownership.rs`）
 
-- `LoanGrowth` に、そのループの統計の最大（`faster`・`growing`・`growing_large`）と、集めるときだけ反復ごとの借用の数を足す。`note` は、今の数え方のあとでそれを更新する（`growing_large` は `made * 8 > LOOP_GROWING_LARGE.1` の反復の `growing`）。止める条件と `help` の文は変えない。
+- `LoanGrowth` に、そのループの統計の最大（`faster`・`growing`・`growing_large`・`state`）と、集めるときだけ反復ごとの借用の数を足す。`note` は、今の数え方のあとでそれを更新する（`growing_large` は `made * 8 > LOOP_GROWING_LARGE.1` の反復の `growing`、`state` は `growing` が 0 でない反復の `state_faster`）。止める条件と `help` の文は変えない。
 - `Checker` に `growth_stats: Option<SettledLoopGrowth>` を足す（`stores`・`dropped` と同じく、呼んだ側が求めたときだけ `Some`）。`check_loop` は、収束して `Ok` を返す所で、`Some` なら `LoanGrowth` の値と反復の数とループの本体の位置を合わせる。`None` のときの費用は、収束したループごとの分岐 1 つです。
 - テストだけが呼ぶ公開の関数（`#[doc(hidden)]`。D1）:
 
@@ -139,7 +144,7 @@ pub fn settled_loop_growth(module: &CheckedModule) -> SettledLoopGrowth;
 pub fn loop_growth_limits() -> LoopGrowthLimits;
 ```
 
-  `SettledLoopGrowth` は統計ごとに値・関数の番号と名前・ループの本体の `Span`・反復ごとの借用の数を持ち、`LoopGrowthLimits` は 3 つの定数を持つ。同じ値のときは先に見つけた方を残す（関数の番号順、検査の順）。
+  `SettledLoopGrowth` は統計ごとに値・関数の番号と名前・ループの本体の `Span`・反復ごとの借用の数を持ち、`LoopGrowthLimits` は 4 つの定数を持つ。同じ値のときは先に見つけた方を残す（関数の番号順、検査の順）。
 - `settled_loop_growth` は `copy_reads` と同じく、`call_facts` の後で関数ごとに `check_body` を順に（並列にせず）呼ぶので、`TSUZURI_THREADS` やスレッドの数に依らない。`call_facts` の不動点の検査（`check_facts`・`drops_stop_reads`）も打ち切りで止まりうるので、そこも数える（D2）。
 - `check_functions` は、リリースビルドでは借用を扱わない本体（`ownership_free`）を飛ばします。そうした本体のループは借用を作らないので統計を変えませんが、`settled_loop_growth` はプロファイルに依らず同じ本体を検査する。
 
@@ -190,8 +195,8 @@ pub fn loop_growth_limits() -> LoopGrowthLimits;
 - `tests/loop_growth.rs`（新規）:
   - `settling_loops_of_the_corpus_stay_far_from_the_loop_stops`（「設計」）。
   - `the_statistic_counts_what_the_stops_count`: 増え方の分かっている形で、統計が `LoanGrowth` の数え方と同じ値になること。閉じた形と A31 の記録から求めた値（実装のときに手で数え直す）: `tests/rc.rs` の `a_loop_whose_borrows_keep_growing_stops_with_e1017` の 12 個の連なり（反復 `k` が最初より `k(k−1)/2 + k(12−k)` 個多く、反復 12 で収束）は `faster` 1、`growing` 1、`iterations` 13。`keeping_interpreter(20, 4, 0, 4)`（180・716・720・724・728 個）は `faster` 1、`growing` 2。`state_machine(16, 72, 6, 2)`（105・693・735・775・813・849・883 個）と `pipeline(16, 2, 4)`（71・139・…・671 個）は `faster` 1、`growing` 1。`copy_chain(n, 0)`（1 個ずつ増え、反復 `n` で収束）は `growing` が `n − 1`。打ち切りで止まる形（`late_hand_on(40)` など）は統計に入らないこと。
-  - `the_margins_fail_at_their_fractions`: 比べる関数を、上限を引数に取る純粋な関数にし、境界の値で確かめる（`faster` 2 は成功・3 は失敗、`growing` 11・12、`growing_large` 3・4。上限は `loop_growth_limits` から）。
-- 既存のテスト: 変わらない（停止条件）。`tests/rc.rs` の `a_loop_` の 6 件は、打ち切りの境界を固定するテストとしてそのまま残す。
+  - `the_margins_fail_at_their_fractions`: 比べる関数を、上限を引数に取る純粋な関数にし、境界の値で確かめる（`faster` 2 は成功・3 は失敗、`growing` 11・12、`growing_large` 3・4、`state` 3・4。上限は `loop_growth_limits` から）。
+- 既存のテスト: 変わらない（停止条件）。`tests/rc.rs` の `a_loop_` の 7 件は、打ち切りの境界を固定するテストとしてそのまま残す。
 
 ### E2E
 
@@ -205,7 +210,7 @@ pub fn loop_growth_limits() -> LoopGrowthLimits;
 ## ドキュメント
 
 - `docs/architecture.md` のループの不動点の段落（`LoanGrowth` の説明の後）: 収束したループの統計、`tests/loop_growth.rs` が比べる割合、記録した今の値、上限を変えるときはそのテストの値も見ること。
-- `src/ownership_control.rs` の 3 つの定数の doc comment: 実際のプログラムの余裕を `tests/loop_growth.rs` が確かめること（`LoanGrowth` の doc comment の、このチケットを指す 1 行を置き換える）。
+- `src/ownership_control.rs` の 4 つの定数の doc comment: 実際のプログラムの余裕を `tests/loop_growth.rs` が確かめること（`LoanGrowth` の doc comment の、このチケットを指す 1 行を置き換える）。
 - `README.md` の「変更の種類別」の「所有権・借用・region」の行に `tests/loop_growth.rs` を足す。
 - `_features/README.md` の状態。
 - 言語リファレンス（`_tsuzuri/language-reference/`）は変えない（利用者から見える振る舞いを変えないので、PR の説明にそう書く）。
@@ -226,7 +231,7 @@ pub fn loop_growth_limits() -> LoopGrowthLimits;
 - 数えるのは収束したループだけです。打ち切りで止めたループや反復の上限に届いたループを数えると、`tests/rc.rs` の上限の形のような入力が統計を上限まで押し上げます（それらはコーパスに入れませんが、std やコーパスの入力が `E1017` になったときも、統計ではなく失敗として報告する）。
 - 中のループは外のループの反復ごとに、関数は不動点の回ごとに検査し直すので、同じループの検査が何度も入ります。統計は検査ごとの最大で、ループの数ではありません。
 - 決定的であること: 統計の型に `HashMap` の順序を入れない。関数は番号順に順に検査し、入力の結果は入力の順に合わせる。同じ値のときの位置の選び方を決めておく。
-- テストに 5・24・8・200 を書かない（上限を変えたときに割合が動かなくなる）。`loop_growth_limits` から読む。
+- テストに 5・24・8・200 と `LOOP_STATE_ITERATIONS` の 8 を書かない（上限を変えたときに割合が動かなくなる）。`loop_growth_limits` から読む。
 - 不動点の検査（`check_facts`）が打ち切りで止まると、その本体の事実は `top` になり、検査は `failed` になります。`check_functions` の検査だけを数えると、不動点の回だけで上限に近づくループを見落とします（D2）。
 - edition: プロジェクトはマニフェストの edition で解析する。gate はどちらの edition でも同じ最大でしたが、時間に余裕があれば `tests/conformance` のプログラムは両方の edition で解析してよい。
 
@@ -234,7 +239,7 @@ pub fn loop_growth_limits() -> LoopGrowthLimits;
 
 - 打ち切りの規則と上限の値を変えること、較正し直すこと。
 - A31 のリポジトリの外のコーパス（gate の 15550 個、生成した 15552 個、探査の 873 個のディレクトリ）と計測用のビルドをリポジトリに入れること。
-- `tests/` の Rust のテストに文字列で書いたプログラム（取り出す道具が要ります。打ち切りの境界は `tests/rc.rs` の `a_loop_` の 6 件が固定しています）。
+- `tests/` の Rust のテストに文字列で書いたプログラム（取り出す道具が要ります。打ち切りの境界は `tests/rc.rs` の `a_loop_` の 7 件が固定しています）。
 - 検査の時間の合否（AGENTS.md）。止まるまで時間のかかる形（A34 の `loopplace` の「現状」の、借用をほとんど作らない文の多い本体）の時間は A34 の範囲です。
 - 利用者向けの CLI の旗や環境変数。
 - A33・A34 のループの検査の変更（それらが借用の数を変えたら、このテストの値を測り直して記録する）。
