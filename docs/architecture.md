@@ -1630,7 +1630,8 @@ region 契約を読む前に宣言の引数型にも同じ表面上の補完を�
 参照の実引数の片ごとの自己の事実の写し（`referent_pieces`）、`ref mut` で貸した共有の `forget_block_share`、`deref p = v` が外さない借用
 （`State::contents_elsewhere`・`place_leaves_storage`・`replacement_frees_kept`）、別の参照の仮引数の先へ書き込んだ部分の借用
 （`StoreFacts::kept_paths`・`kept_copy`。部分が分かるのは `Checker::points_at` が真の実引数だけで、注釈した引数を束縛したパターンの変数は、
-不変な参照の仮引数である隠れた引数の loan とともに、`Checker::note_pointing` が `pointing` に記録する））も、
+不変な参照の仮引数である隠れた引数の loan とともに、`Checker::note_pointing` が `pointing` に記録する））、ループの不動点がすべての事実を比べる要約
+（`ownership_control::LoopSummary`）と、収束しないループの打ち切り（`LoanGrowth` の `E1017`）も、
 同じ規約か `ref` の型の仮引数を持つ名前付き関数と同じ結果です。隠れた引数を束縛したパターンの変数は隠れた引数の loan
 （またはそれを親に持つ loan）を持ち、`writable_external` などは loan の外部の根で判定し、`parameter_path` はパターンの束縛を仮引数までたどるからです。
 例外は、注釈した引数をそのまま関数値の仮引数へ渡す本体に呼び出し元が貸した一時値の順序で、`ref` の型の署名に注釈したラムダ（A32 の前からの形）と同じく、
