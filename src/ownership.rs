@@ -121,7 +121,7 @@ fn call_slots(sources: &RegionSources) -> Option<Box<[BTreeSet<usize>]>> {
 #[inline(never)]
 fn join(result: &mut Value, value: Value) {
     if result.loans.is_empty() && result.regions.is_none() {
-        result.regions = value.regions;
+        result.regions = value.regions.clone();
     } else if let (Some(slots), Some(other)) = (result.regions.as_mut(), value.regions.as_ref())
         && slots.len() == other.len()
     {
@@ -131,7 +131,7 @@ fn join(result: &mut Value, value: Value) {
     } else if !value.loans.is_empty() {
         result.regions = None;
     }
-    result.loans.extend(value.loans);
+    result.absorb(&value);
 }
 
 const MOVE_OUT_OF_DROP: &str = "cannot move a field or payload out of a value whose type implements Drop; borrow it with 'ref' instead";
@@ -149,6 +149,49 @@ struct Value {
     /// loan belong to every slot. Read only through `Checker::slots`, which validates it.
     regions: Option<Box<[BTreeSet<usize>]>>,
     closed_result: [bool; 2],
+    /// A31: the loans of `loans` that the value holds only as what it read through a reference
+    /// parameter (`read_places`): they stand for the borrows inside the parameter's target, not
+    /// for the reference itself (`Part::Contents`). A loan is in it only when every way the value
+    /// got the loan was such a read; a site that does not keep it leaves the loan out, which
+    /// counts the loan as held itself (`Part::Value`), the conservative choice.
+    through: BTreeSet<usize>,
+}
+
+impl Value {
+    /// Adds `loans` as loans that the value holds itself.
+    fn hold(&mut self, loans: impl IntoIterator<Item = usize>) {
+        for loan in loans {
+            self.loans.insert(loan);
+            self.through.remove(&loan);
+        }
+    }
+
+    /// Adds what `other` holds: a loan stays read through only when both values hold it so, or
+    /// only one holds it and holds it so.
+    fn absorb(&mut self, other: &Value) {
+        // One loan of `other` at a time, so that adding a few loans to a value that holds many
+        // costs as many steps as the few (`Checker::store_hidden` adds to every local).
+        if !self.through.is_empty() {
+            let loans = &self.loans;
+            self.through.retain(|loan| loans.contains(loan));
+        }
+        for &loan in &other.loans {
+            let through = other.through.contains(&loan);
+            if self.loans.insert(loan) {
+                if through {
+                    self.through.insert(loan);
+                }
+            } else if !through {
+                self.through.remove(&loan);
+            }
+        }
+    }
+
+    /// Drops every loan.
+    fn clear_loans(&mut self) {
+        self.loans.clear();
+        self.through.clear();
+    }
 }
 
 #[derive(Clone)]
@@ -162,6 +205,10 @@ struct Loan {
     view: Option<Type>,
     /// The expression that created the loan, for the diagnostics that name it.
     span: Span,
+    /// A31: the loan stands for a share of the block that the `Rc` or `Arc` owner at its place
+    /// owns: the result of `Rc.share (ref owner)` and its kin holds it in place of what the block
+    /// holds when the check does not read through (A28). It is no pointer to the owner's storage.
+    share: bool,
 }
 
 #[derive(Clone, Default)]
@@ -169,12 +216,42 @@ struct State<'a> {
     locals: BTreeMap<usize, (&'a Local, Value)>,
     aliases: BTreeMap<usize, Vec<(Place, BTreeSet<usize>)>>,
     /// The places that were moved, with the span of the move that the diagnostics point at.
+    /// After a join of paths it holds the places moved on any of them.
     moved: BTreeMap<Place, Span>,
     generic_moves: BTreeMap<Place, Type>,
+    /// A31: the locals moved away whole on every path that reaches this point (a join keeps the
+    /// locals that both paths moved), a subset of the whole places of `moved`. Only these are
+    /// not dropped where their scopes end: a local that one path moves is dropped on the other.
+    moved_always: BTreeSet<usize>,
+    /// A31: loans that stay live until the body ends, held by no local: borrows of the target of
+    /// a parameter through which the body may write, which the body stored where the caller's
+    /// data or a hidden environment reaches (`store_external`, `store_hidden_except`). A later
+    /// access through the parameter that conflicts with one is `E1014`, as with a live local
+    /// borrow; a disjoint one (another field) is not.
+    kept: BTreeSet<usize>,
+    /// A31: the loans of `kept` that the body stored somewhere other than the target of the
+    /// parameter that they borrow (another parameter's target, a hidden environment). A whole
+    /// replacement of that target (`deref p = v`) drops the old value with the borrows of its own
+    /// parts that it keeps, but not these (`Checker::replaced_target`).
+    kept_elsewhere: BTreeSet<usize>,
+    /// A31: the external roots of the parameters whose contents (what their targets hold, read
+    /// through them: a copy of what a cell of the target holds) the body stored somewhere other
+    /// than the target of the same parameter (another parameter's target, a hidden environment).
+    /// Such a copy may hold a borrow of `kept` without its loan, so a whole replacement of that
+    /// target ends none of them (`Checker::replaced_target`).
+    contents_elsewhere: BTreeSet<usize>,
+    /// A31: the locals whose value was, when they were bound or assigned last, a share of the
+    /// block of local owners (`Rc.share (ref rc)`, `Loan::share`), with those owners. A borrow of
+    /// the contents of the block through such a local points into the same block as one through
+    /// the owner (`Checker::same_block_loan`), which outlives the local while the owner holds it. A
+    /// join keeps what both paths agree on.
+    block_shares: BTreeMap<usize, BTreeSet<usize>>,
 }
 
 impl State<'_> {
-    /// Whether the two states hold the same locals with the same values, aliases and moves.
+    /// Whether the two states hold the same locals with the same values, aliases and moves, and
+    /// the same A31 facts of the path (the locals moved on every path, the kept loans, what was
+    /// stored elsewhere, the shares of blocks): a later check from either gives the same results.
     fn same(&self, other: &Self) -> bool {
         self.locals.len() == other.locals.len()
             && self
@@ -185,6 +262,11 @@ impl State<'_> {
             && self.aliases == other.aliases
             && self.moved == other.moved
             && self.generic_moves == other.generic_moves
+            && self.moved_always == other.moved_always
+            && self.kept == other.kept
+            && self.kept_elsewhere == other.kept_elsewhere
+            && self.contents_elsewhere == other.contents_elsewhere
+            && self.block_shares == other.block_shares
     }
 }
 
@@ -441,6 +523,9 @@ struct Contract<'a> {
     /// write (an exclusive reference or a mutable cell) to other code (A28, `lending_bodies`);
     /// `None` asks the body alone when a read through needs it.
     lends_mutable: Option<bool>,
+    /// A31: how many of the first parameters are the captures of a lifted lambda (or the
+    /// captures and the functions of the `let rec` group of a lambda that is not lifted).
+    captures: usize,
 }
 
 impl<'a> Contract<'a> {
@@ -451,6 +536,7 @@ impl<'a> Contract<'a> {
             slots: function.region_slots.as_ref(),
             builtin_wrapper: function.module == "$builtin",
             lends_mutable: None,
+            captures: function.capture_count,
         }
     }
 }
@@ -504,7 +590,14 @@ fn check_body<'a>(
         user_drop,
         contract,
     );
-    let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
+    // The body's value goes to the caller, which applies the drop hook where it keeps it.
+    checker.bound_next = true;
+    let mut result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
+    if let Some(deferred) = checker.deferred.first() {
+        return Err(deferred.clone());
+    }
+    checker.check_parameter_drop_order(parameters.clone(), body.span)?;
+    checker.absorb_hidden(0, &mut result, &body.ty, Some(body));
     if checker.events.is_some() {
         let end = Span {
             start: body.span.end,
@@ -580,8 +673,75 @@ fn start_checker<'a, 'run>(
         drop_types: BTreeMap::new(),
         read_through_used: false,
         drops_stop_reads: false,
+        stores: None,
+        deferred: Vec::new(),
+        parameter_roots: parameters
+            .clone()
+            .enumerate()
+            .map(|(index, parameter)| (usize::MAX - parameter.id, index))
+            .collect(),
+        path_copies: BTreeMap::new(),
+        capture_roots: parameters
+            .clone()
+            .take(contract.captures)
+            .map(|parameter| usize::MAX - parameter.id)
+            .collect(),
+        cell_types: BTreeMap::new(),
+        shared_cell_types: BTreeMap::new(),
+        hidden_types: BTreeMap::new(),
+        shared_targets: BTreeMap::new(),
+        argument_types: BTreeMap::new(),
+        known: BTreeMap::new(),
+        known_parts: BTreeMap::new(),
+        bound: BTreeMap::new(),
+        projections: BTreeMap::new(),
+        store_memo: None,
+        store_changes: 0,
+        hidden_log: Vec::new(),
+        drop_site: None,
+        bound_next: false,
+        tail_bound: false,
+        dropping: None,
+        replaced_root: None,
+        owner_scan: None,
+        drop_hidden_types: BTreeMap::new(),
+        drop_hiding: false,
+        exports: Vec::new(),
+        exported: BTreeSet::new(),
+        export_walks: BTreeMap::new(),
+        hidden_walks: BTreeMap::new(),
+        exporting: false,
+        views: BTreeSet::new(),
+        drop_read_types: BTreeMap::new(),
+        drop_read_locals: BTreeMap::new(),
+        binding_order: BTreeMap::new(),
+        next_binding: 0,
+        handed: BTreeSet::new(),
+        shared_copies: BTreeMap::new(),
+        ordered_copies: BTreeMap::new(),
+        ordered_loans: BTreeSet::new(),
+        exact_loans: BTreeSet::new(),
+        holding_loans: BTreeSet::new(),
+        kept_copies: BTreeMap::new(),
+        pointing: BTreeMap::new(),
+        borrow_loans: BTreeMap::new(),
+        inexact_borrows: BTreeSet::new(),
+        captured_loans: BTreeMap::new(),
+        inexact_captures: BTreeSet::new(),
+        parameter_paths: std::cell::RefCell::new(BTreeMap::new()),
+        parameter_path_steps: std::cell::Cell::new(0),
         injections: BTreeSet::new(),
     };
+    if !infer && facts.seeded {
+        known_functions(
+            module,
+            body,
+            &mut checker.known,
+            &mut checker.known_parts,
+            &mut checker.bound,
+            &mut checker.projections,
+        );
+    }
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
         // An `Owned.Function` holds no borrow: `Owned.function` rejects an argument that holds one
@@ -592,6 +752,13 @@ fn start_checker<'a, 'run>(
         let types = module.types();
         if !task && parameter.ty.carries_loans_beside_owned_functions(&types) {
             checker.external_loans(parameter, index, contract.slots, &mut value);
+        }
+        // A31: an immutable reference parameter points at its target, the place of its loan.
+        if matches!(parameter.ty, Type::Reference(..))
+            && !parameter.mutable
+            && !value.loans.is_empty()
+        {
+            checker.pointing.insert(parameter.id, value.loans.clone());
         }
         checker
             .state
@@ -745,6 +912,365 @@ fn closed_returns(module: &CheckedModule) -> Vec<bool> {
     }
 }
 
+/// A31: which loans of an argument a store fact stores: those of the argument's value itself, or
+/// those of the borrows inside the target of the reference that it is (`Value::through`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Part {
+    Value,
+    Contents,
+}
+
+/// A31: where a storage is dropped, for the drop-order rule (`Checker::borrow_dropped_first`).
+/// The ranks of one kind compare storages that one check sees together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DropSlot {
+    /// A local of scopes that end together, by the order of its binding: the locals of a block
+    /// where it ends, the parameters of a body where it ends (after its locals), the pattern
+    /// variables and pattern temporaries of a match arm where it ends, the locals of the scopes
+    /// that a `break`, `continue` or a raise leaves. They are dropped in the reverse order of
+    /// their bindings: a larger rank is dropped first.
+    Scoped(usize),
+    /// A temporary that a call borrows, by the source position where it is made: the lowering
+    /// drops the borrowed temporaries of a call right after it returns (`release_operands`), in
+    /// the order in which they were made (the operands from left to right, the left side of a
+    /// pipeline first), before the locals that are in scope there. A `break`, `continue` or raise
+    /// that leaves while they are pending drops them in the reverse order (`emit_loop_jump`,
+    /// `raise`), but it can only happen while the call's arguments are evaluated, before the
+    /// call: no store of the call has kept a borrow of one in another yet, so only the order
+    /// after the call counts.
+    Temporary(usize),
+    /// A storage whose drop position the check does not know: a value that a callee passed on
+    /// (a part of a temporary, or a value that the callee made).
+    Unknown,
+}
+
+impl DropSlot {
+    /// Whether this storage may be dropped before `holder` (or at the same time): an unknown
+    /// position counts.
+    fn dropped_before(self, holder: DropSlot) -> bool {
+        match (self, holder) {
+            (DropSlot::Scoped(source), DropSlot::Scoped(holder)) => source > holder,
+            (DropSlot::Temporary(source), DropSlot::Temporary(holder)) => source <= holder,
+            // A local that is in scope where the call returns outlives its temporaries.
+            (DropSlot::Scoped(_), DropSlot::Temporary(_)) => false,
+            (DropSlot::Temporary(_), DropSlot::Scoped(_))
+            | (DropSlot::Unknown, _)
+            | (_, DropSlot::Unknown) => true,
+        }
+    }
+}
+
+/// A31: what a holder keeps a borrow of, for the drop-order rule (`Checker::borrow_dropped_first`):
+/// a part of itself (at `fields`; with `proven`, a callee showed the order of the parts inside
+/// it, `StoreFacts::ordered`), or another storage.
+#[derive(Clone, Copy, Debug)]
+enum Borrowed<'f> {
+    Part { fields: &'f [usize], proven: bool },
+    Other(DropSlot),
+}
+
+/// A31: where an argument of a call of a function-valued parameter comes from: the parameters
+/// (or the contents of their targets) whose loans it holds, whether it holds a loan of a local
+/// value of the body, and whether it is a borrowed temporary (`Arg::temporary`, `Arg::dying`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct Source {
+    parameters: BTreeSet<(usize, Part)>,
+    local: bool,
+    /// The argument holds a borrow of the target of a parameter through which the body writes
+    /// after the call, which may free what the borrow points at (`Checker::overwrite_handed`):
+    /// the function value that runs must not keep it beyond the call, as with a borrow of a
+    /// local value (`local`).
+    overwritten: bool,
+    temporary: bool,
+    /// The argument is a reference to a temporary of the body (`Arg::dying`).
+    dying: bool,
+    /// The argument is a reference itself (`Arg::lent`).
+    lent: bool,
+    /// The argument's type may hold a function value that owns the cell that it writes, or
+    /// reaches a cell (`Arg::hides`).
+    hides: bool,
+    /// The argument's type may be a place that a store reaches through it other than by running
+    /// the code of a function value that it holds (`Arg::target`, `may_reach_store_beside_code`).
+    target: bool,
+    /// The argument holds the borrow of a lock's contents that the lock lends to its callback
+    /// (`Arg::locked`).
+    locked: bool,
+    /// The parameters of `parameters` whose `Part::Value` loans in the argument are all shared
+    /// borrows of what an exclusive reference parameter points at (`ref r.name`), as for
+    /// `StoreFacts::shared_only`: a caller that passes a fresh exclusive borrow there passes on a
+    /// shared borrow of the same place (`Checker::shared_copy`).
+    shared: BTreeSet<usize>,
+    /// The type of the value passed, as the body sees it (`Arg::ty`, `Checker::value_type`): a
+    /// borrowed temporary is a shared reference to it. The specialized bodies, which decide, have
+    /// concrete types.
+    ty: Option<Type>,
+    /// The argument is the parameter with this index itself, passed on unchanged (`f p`, or a
+    /// value that a callee passed on from such an argument): the caller's argument for it is the
+    /// value passed, so the drop-order rule knows its expression (`Arg::origin`).
+    passed: Option<usize>,
+    /// For a reference parameter of `parameters` (`Part::Value`) all of whose loans in the
+    /// argument are shared borrows of parts of its target (`f (ref p.h) (ref p.s)`), the parts
+    /// (`Checker::self_path`, bounded as `StoreFacts::self_paths` is): the caller passes shared
+    /// borrows of those parts of its argument's place (`Checker::path_copy`), so that a function
+    /// value that keeps one in another part of the same value keeps a borrow of that part only,
+    /// which the drop order of the value's parts decides. Without an entry, the whole target.
+    paths: BTreeMap<usize, BTreeSet<Vec<usize>>>,
+    /// For a reference parameter of `parameters` without `paths` all of whose loans in the
+    /// argument are shared borrows of parts of its target at places that also step into elements
+    /// (`f (ref values[index])`, which `Array.iterr` passes on), the parts. They decide no drop
+    /// order between two arguments (an element place stands for every element), so only a caller
+    /// whose argument points at its place (`Checker::argument_points`) passes shared borrows of
+    /// those parts of it (`Checker::path_copy`), which `pointing` then says point at their places.
+    element_paths: BTreeMap<usize, BTreeSet<Vec<usize>>>,
+    /// The parameters whose `paths` or `element_paths` stand for larger parts than the places of
+    /// some loans (`add_place_path`: a place of more than `SELF_PATH_FIELDS` fields, or one inside
+    /// another recorded place, `if k > 0 then ref x.a.e[0] else ref x.a`): a path then names a
+    /// part that holds the borrowed place, of which the caller makes a copy that is not exact
+    /// (`Checker::path_copy`), and the argument points at no recorded place (`pointing`).
+    coarse: BTreeSet<usize>,
+    /// The argument is a reference that points at the place of one of its loans
+    /// (`Checker::argument_points`), each of them a whole target of `parameters` (`Part::Value`)
+    /// or a part of one at `paths` or `element_paths` that is not `coarse`: the caller's value for
+    /// it points so when its arguments for those parameters do (`Arg::pointing`).
+    pointing: bool,
+}
+
+/// A31: a call of the function-valued parameter `callee` of a body with `arguments`; with a
+/// `path`, of the function value at those tuple or record fields (or union payloads, `PAYLOAD`,
+/// whatever the case, as for places: the cases that an OR pattern binds agree) of the parameter's
+/// value (`\(use, z) -> use x`, `p.handler x`), through shared references
+/// (`Checker::parameter_path`).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct HigherOrderCall {
+    callee: usize,
+    path: Vec<usize>,
+    arguments: Vec<Source>,
+}
+
+/// A31: what a call of a function may store, from its body (`store_facts`): `(from, part, to)`
+/// stores the loans of argument `from` (`Part`) where the target of argument `to` reaches; a call
+/// in `calls` runs a function-valued argument, whose own facts the caller substitutes; `top` may
+/// store any argument that may hold loans wherever any argument reaches (a body that does not
+/// check, or one that the budget did not settle).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct StoreFacts {
+    stores: BTreeSet<(usize, Part, usize)>,
+    /// The entries of `stores` that only the drop of a value made (`Checker::drop_stores`): the
+    /// drop of a value that the body got from argument `from`, judged by its type. A caller applies
+    /// one only when its argument may run code when it is dropped (`value_runs_drop_code`): a
+    /// record literal of a reference and a lambda that captured one runs none.
+    drop_only: BTreeSet<(usize, Part, usize)>,
+    /// The entries of `stores` whose argument `from` is an exclusive reference (`ref mut`) and
+    /// whose stores were all of shared borrows of what it points at (`ref r.name`), never of the
+    /// exclusive reference itself (`Checker::store_external`). A caller that passes a fresh
+    /// exclusive borrow (`ref mut v0`) there keeps a shared borrow of the same place, not the
+    /// exclusive one, which ends with the call (`Checker::shared_copy`): it may read `v0` while the
+    /// place that took the borrow lives, as it may after storing `ref v0.name` itself.
+    shared_only: BTreeSet<(usize, Part, usize)>,
+    /// The entries of `stores` some of whose stores were of shared borrows of what the exclusive
+    /// reference parameter `from` points at (a superset of `shared_only`). For an entry
+    /// `(p, Part::Value, p)`, the body kept such a borrow in the value that `p` points at itself
+    /// (`ref p.s` written into the cell of `p.h`): the caller's value then keeps a shared borrow of
+    /// itself, whatever reference it passed (`Checker::apply_facts_once`), and code that the check
+    /// does not see may do the same with a value of that type (`CallFacts::self_borrow_types`).
+    shared_some: BTreeSet<(usize, Part, usize)>,
+    /// The entries `(p, Part::Value, p)` of `stores` whose stores were all of borrows of a part of
+    /// what the reference parameter `p` points at, kept in that same value, where the borrowed
+    /// part is dropped after every part of the value whose drop may read borrows
+    /// (`Checker::self_borrow_dropped_first`): `keep (ref pair)` that puts a borrow of `pair.s`
+    /// into the cell of `pair.h`, declared before `s`. The drop order of the value's own parts
+    /// keeps such a borrow valid, so a caller checks only the levels of its own value above the
+    /// argument's place (`Checker::ordered_copy`).
+    ordered: BTreeSet<(usize, Part, usize)>,
+    /// For a reference parameter `p` with an entry `(p, Part::Value, p)`: the places, as fields
+    /// from what `p` points at, of the borrows of its own target that the body kept in it (`[s]`
+    /// for `ref p.s` written into the cell of `p.h`; `[]`, the whole target, when the place does
+    /// not show, `self_path`). A caller keeps borrows of those parts of its argument's place
+    /// (`Checker::path_copy`), so that a later write of another part (`p0.n = 9`) does not
+    /// conflict with them. A path covers the longer paths that start with it (`add_self_path`).
+    self_paths: BTreeMap<usize, BTreeSet<Vec<usize>>>,
+    /// For an entry `(p, Part::Value, q)` with `p != q` and a reference parameter `p`: the places,
+    /// as fields from what `p` points at, of the borrows of `p`'s target that the body stored where
+    /// `q` reaches, as `self_paths` keeps them for the value itself (`[s]` for `ref b.s` written
+    /// into the cell of `a.h`); the whole target (`[]`) for a borrow whose place is not the part
+    /// that it borrows (`Checker::exact_loan`: `ref w.p.s` through a reference that the target
+    /// holds). A caller that passes a shared reference there stores borrows of those parts of its
+    /// argument's place (`Checker::kept_copy`): a borrow of a part that holds nothing (a string)
+    /// is no place that a later store reaches through (`Checker::store_target`), and when the two
+    /// arguments point at one value (`cross (ref p) (ref p)`), the drop order of the borrowed part
+    /// decides the borrow that the value keeps of itself. An entry without paths stands for the
+    /// whole target.
+    kept_paths: BTreeMap<(usize, usize), BTreeSet<Vec<usize>>>,
+    calls: BTreeSet<HigherOrderCall>,
+    /// The loans of these arguments may be stored in an environment that the check cannot name
+    /// (`Checker::store_hidden`): every value of the caller that may share one holds them.
+    hidden: BTreeSet<(usize, Part)>,
+    /// The entries of `hidden` that are shared borrows of what an exclusive reference parameter
+    /// points at, as for `shared_only`.
+    hidden_shared: BTreeSet<(usize, Part)>,
+    top: bool,
+}
+
+impl StoreFacts {
+    fn top() -> Self {
+        Self {
+            top: true,
+            ..Self::default()
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.top && self.stores.is_empty() && self.calls.is_empty() && self.hidden.is_empty()
+    }
+
+    /// The union of `self` and `other`; whether it grew.
+    fn join(&mut self, other: &StoreFacts) -> bool {
+        if self.top {
+            return false;
+        }
+        if other.top {
+            *self = Self::top();
+            return true;
+        }
+        let before = (self.stores.len(), self.calls.len(), self.hidden.len());
+        // An entry that either side makes by a store that is no drop is no longer drop-only.
+        let drop_only: BTreeSet<(usize, Part, usize)> = self
+            .drop_only
+            .iter()
+            .filter(|entry| !other.stores.contains(entry) || other.drop_only.contains(entry))
+            .chain(
+                other
+                    .drop_only
+                    .iter()
+                    .filter(|entry| !self.stores.contains(entry)),
+            )
+            .copied()
+            .collect();
+        // An entry that either side makes by a store of an exclusive borrow is no longer
+        // shared-only.
+        let shared_only: BTreeSet<(usize, Part, usize)> = self
+            .shared_only
+            .iter()
+            .filter(|entry| !other.stores.contains(entry) || other.shared_only.contains(entry))
+            .chain(
+                other
+                    .shared_only
+                    .iter()
+                    .filter(|entry| !self.stores.contains(entry)),
+            )
+            .copied()
+            .collect();
+        // As for `shared_only`: an entry that either side makes by a store whose drop order its
+        // value does not keep is no longer ordered.
+        let ordered: BTreeSet<(usize, Part, usize)> = self
+            .ordered
+            .iter()
+            .filter(|entry| !other.stores.contains(entry) || other.ordered.contains(entry))
+            .chain(
+                other
+                    .ordered
+                    .iter()
+                    .filter(|entry| !self.stores.contains(entry)),
+            )
+            .copied()
+            .collect();
+        let hidden_shared: BTreeSet<(usize, Part)> = self
+            .hidden_shared
+            .iter()
+            .filter(|entry| !other.hidden.contains(entry) || other.hidden_shared.contains(entry))
+            .chain(
+                other
+                    .hidden_shared
+                    .iter()
+                    .filter(|entry| !self.hidden.contains(entry)),
+            )
+            .copied()
+            .collect();
+        let shared_some = self.shared_some.len();
+        self.shared_some.extend(other.shared_some.iter().copied());
+        let mut paths = false;
+        for (parameter, found) in &other.self_paths {
+            let known = self.self_paths.entry(*parameter).or_default();
+            for path in found {
+                paths |= add_self_path(known, path.clone());
+            }
+        }
+        // An entry that a side has without paths stands for the whole target there.
+        for (entry, found) in &other.kept_paths {
+            let whole = self.stores.contains(&(entry.0, Part::Value, entry.1))
+                && !self.kept_paths.contains_key(entry);
+            let known = self.kept_paths.entry(*entry).or_default();
+            if whole {
+                known.insert(Vec::new());
+            }
+            for path in found {
+                paths |= add_self_path(known, path.clone());
+            }
+        }
+        for &(from, part, to) in &other.stores {
+            if from != to
+                && part == Part::Value
+                && !other.kept_paths.contains_key(&(from, to))
+                && let Some(known) = self.kept_paths.get_mut(&(from, to))
+            {
+                paths |= add_self_path(known, Vec::new());
+            }
+        }
+        self.stores.extend(other.stores.iter().copied());
+        self.calls.extend(other.calls.iter().cloned());
+        self.hidden.extend(other.hidden.iter().copied());
+        let narrowed = paths
+            || drop_only != self.drop_only
+            || shared_some != self.shared_some.len()
+            || shared_only != self.shared_only
+            || ordered != self.ordered
+            || hidden_shared != self.hidden_shared;
+        self.drop_only = drop_only;
+        self.shared_only = shared_only;
+        self.ordered = ordered;
+        self.hidden_shared = hidden_shared;
+        narrowed || before != (self.stores.len(), self.calls.len(), self.hidden.len())
+    }
+}
+
+/// A31: how many fields a path of `StoreFacts::self_paths` keeps (a longer one is cut to them, a
+/// borrow of a larger part), and how many paths one parameter keeps (more stand for the whole
+/// target), so that the facts of recursive functions settle.
+const SELF_PATH_FIELDS: usize = 4;
+const SELF_PATHS: usize = 4;
+
+/// A31: adds `path` to the places `paths` of the borrows of a value's own parts
+/// (`StoreFacts::self_paths`): cut to `SELF_PATH_FIELDS` fields, left out when a path that it
+/// starts with is there, in place of the paths that start with it; more than `SELF_PATHS` paths
+/// become the whole value (`[]`). Whether `paths` changed.
+fn add_self_path(paths: &mut BTreeSet<Vec<usize>>, mut path: Vec<usize>) -> bool {
+    path.truncate(SELF_PATH_FIELDS);
+    if paths.iter().any(|known| path.starts_with(known)) {
+        return false;
+    }
+    paths.retain(|known| !known.starts_with(&path));
+    paths.insert(path);
+    if paths.len() > SELF_PATHS {
+        paths.clear();
+        paths.insert(Vec::new());
+    }
+    true
+}
+
+/// A31: adds `path` to the places `paths` of the parts that an argument borrows
+/// (`Source::paths`, `Source::element_paths`) as `add_self_path` does, and gives whether that made
+/// a recorded place stand for a larger part: it cut `path`, left it out for a path that it starts
+/// with, or put it in place of paths that start with it. Such paths name parts that hold the
+/// borrowed places, not those places (`Source::coarse`).
+fn add_place_path(paths: &mut BTreeSet<Vec<usize>>, path: Vec<usize>) -> bool {
+    let coarse = path.len() > SELF_PATH_FIELDS
+        || paths
+            .iter()
+            .any(|known| *known != path && (path.starts_with(known) || known.starts_with(&path)));
+    add_self_path(paths, path);
+    coarse
+}
+
 /// What the bodies of the functions prove about their direct calls: the results that hold no
 /// borrow at all (`closed_returns`) and, for the others, the arguments whose loans a result can
 /// hold (A28, `parameter_retention`).
@@ -756,9 +1282,93 @@ struct CallFacts {
     /// lifted from) or the body of a lambda lifted from it, lends a way to write or hands a value
     /// to code that the analysis does not see (`lending_bodies`).
     lending: Lending,
+    /// A31: by function, what a complete call of it may store (`store_facts`); empty in the
+    /// abstract bodies of the inference, which keep A28's guard instead (`lending_bodies`).
+    stores: Vec<StoreFacts>,
+    /// A31: some `Drop.drop` of the module may store (`store_candidates`), so dropping a value
+    /// whose type may run code when it is dropped stores what it holds where it reaches
+    /// (`Checker::drop_stores`).
+    drops_write: bool,
+    /// A31: some function of the specialized module stores a value that may hold loans with a
+    /// seed builtin (`StoreCandidates::seeded`); without one, no store escapes the checks and the
+    /// store facts are not applied at all.
+    seeded: bool,
+    /// A31: by function, whether `joint_facts` revoked the closed result that `closed_returns`
+    /// proved: its check returns a loan that a store into a local cell put there, so the same
+    /// syntactic proof of a callback's result (`Checker::callback_returns_closed`) fails as well.
+    revoked: Vec<bool>,
+    /// A31: some function value of the module stores what it is given (or what its environment
+    /// holds) where its environment reaches (`sink_flags`): a call of a function value that the
+    /// check does not see may then store its arguments' loans where the value's loans reach. In a
+    /// module without one, no function value does, so such a call stores only where its arguments
+    /// reach.
+    sinks: bool,
+    /// A31: one of them owns the cell that it writes (a lambda that captured an
+    /// `Arc<Mutex<...>>` by value, a dyn value that stores one): its copies share the cell
+    /// without holding a loan, so a store into it reaches every value that may be a copy
+    /// (`Checker::store_hidden`).
+    owned_sinks: bool,
+    /// A31: the types (`sink_type`) of the function values that may be such an owner, or may
+    /// hold one in their environment (`sink_flags`): a call of a function value of any other type,
+    /// with arguments that hide no environment, reaches none.
+    owned_types: BTreeSet<Type>,
+    /// A31: the types (`sink_type`) of the function values that may store into what their
+    /// environment reaches, or hold such a value in their environment (`sink_flags`): a call of a
+    /// function value of any other type stores nothing where the value's environment reaches, and
+    /// a place that holds only function values of other types is no place to store into.
+    sink_types: BTreeSet<Type>,
+    /// A31: the module hands a value that may hold such a function value to code that runs it
+    /// later, where no check follows it: the captures of a tzroutine, the item of a channel, an
+    /// owned function that a builtin takes (`Routine.go`), the result of an `OnceValue`
+    /// initializer, a host function with callbacks, the value of a dyn value without a region.
+    /// Those are checked to hold no borrow where they are handed over (A30), which a later store
+    /// into the cell that they share would undo, so no borrow may be stored in a hidden
+    /// environment at all (`Checker::store_hidden`).
+    escapes: bool,
+    /// A31: some function of the module stores a shared reference that it gets as a parameter
+    /// (the reference itself, `Part::Value`, not what its target holds), or stores anything
+    /// (`top`): only then may code that the check does not see keep the reference that a read
+    /// parameter or an operator lends (`Arg::reference`, `Arg::dying`).
+    reference_sinks: bool,
+    /// A31: the dyn types (`DynType::vtable_key`) that have vtables in the module, and those
+    /// whose methods may store or give back a value through which a store may reach
+    /// (`sink_flags`): a store through a borrow of a place that holds a dyn value reaches what the
+    /// value stores only for those (`Checker::store_target`). A dyn type without vtables counts
+    /// as one of them.
+    dyn_types: BTreeSet<crate::check::DynType>,
+    dyn_targets: BTreeSet<crate::check::DynType>,
+    /// A31: by function, whether its body does not check (`joint_facts`): the program is
+    /// rejected there, so a call of it stores nothing more for its callers to report.
+    failed: Vec<bool>,
+    /// A31: by function, what the result of a complete call of it may hold that shares a hidden
+    /// environment (`owner_facts`); computed once some function value owns its cell
+    /// (`owned_sinks`), empty before (every call then counts as fresh).
+    owners: Vec<Own>,
+    /// A31: the function values whose environment may hold a value with a user `Drop` instance
+    /// (`drop_environments`), for the order of the drops at the end of a block
+    /// (`Checker::drop_reads`).
+    drop_environments: DropEnvironments,
+    /// A31: the types `T` (`without_views`) of the values that some function of the module keeps
+    /// a borrow of a part of in the value itself, through a `ref mut T` or `ref T` parameter
+    /// (`self_borrow_types`), each with whether every such function kept it in the drop order of
+    /// the value's parts (`StoreFacts::ordered`): code that the check does not see and that gets a
+    /// reference to a `T` may do the same (`Checker::apply_opaque`), and only such code. With
+    /// `self_borrow_any`, any type, in any order (a function that may store anything,
+    /// `StoreFacts::top`).
+    self_borrow_types: BTreeMap<Type, bool>,
+    /// A31: for each type of `self_borrow_types`, the places of the borrowed parts
+    /// (`StoreFacts::self_paths`) that those functions kept.
+    self_borrow_paths: BTreeMap<Type, BTreeSet<Vec<usize>>>,
+    self_borrow_any: bool,
 }
 
 impl CallFacts {
+    /// A31: whether a store may reach through a dyn value of type `dyn_type` (`dyn_targets`).
+    fn dyn_target(&self, dyn_type: &crate::check::DynType) -> bool {
+        let key = dyn_type.vtable_key();
+        !self.dyn_types.contains(&key) || self.dyn_targets.contains(&key)
+    }
+
     /// Whether a complete direct call of `function` passes none of the loans of its argument
     /// `index` to its result.
     fn temporary(&self, function: usize, index: usize) -> bool {
@@ -781,11 +1391,33 @@ impl CallFacts {
 fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
     let closed = closed_returns(module);
     let lending = lending_bodies(module, infer);
-    let retained = parameter_retention(module, &closed, &lending, infer);
+    let joint = joint_facts(module, &closed, &lending, infer, None);
     CallFacts {
-        closed,
-        retained,
+        revoked: closed
+            .iter()
+            .zip(&joint.closed)
+            .map(|(proved, kept)| *proved && !*kept)
+            .collect(),
+        closed: joint.closed,
+        retained: joint.retained,
         lending,
+        stores: joint.stores,
+        drops_write: joint.drops_write,
+        seeded: joint.seeded,
+        sinks: joint.sinks,
+        owned_sinks: joint.owned_sinks,
+        owned_types: joint.owned_types,
+        sink_types: joint.sink_types,
+        escapes: joint.escapes,
+        reference_sinks: joint.reference_sinks,
+        dyn_types: joint.dyn_types,
+        dyn_targets: joint.dyn_targets,
+        failed: joint.failed,
+        owners: joint.owners,
+        drop_environments: joint.drop_environments,
+        self_borrow_types: joint.self_borrow_types,
+        self_borrow_paths: joint.self_borrow_paths,
+        self_borrow_any: joint.self_borrow_any,
     }
 }
 
@@ -823,12 +1455,130 @@ fn piped_application(right: &TypedExpr) -> (&TypedExpr, &[TypedExpr]) {
     }
 }
 
+/// A31: the reference parameters of function `id` one of which its result is, unchanged: its
+/// body's result is an immutable parameter of a reference type, or a choice of such parameters
+/// (`if`, `match`, the result of a block), as in `pick k x y = if k > 0 then x else y`. The
+/// result then points where the argument for one of them does (`Checker::points_at`). `None` for
+/// any other body, and for a function whose parameters have region slots.
+fn returned_parameters(module: &CheckedModule, id: usize) -> Option<BTreeSet<usize>> {
+    let function = module.functions.get(id)?;
+    if function.region_slots.is_some() || !matches!(function.body.ty, Type::Reference(..)) {
+        return None;
+    }
+    let mut returned = BTreeSet::new();
+    let mut pending = vec![&function.body];
+    while let Some(expression) = pending.pop() {
+        match &expression.kind {
+            E::Local(local) => {
+                let index = function.parameters.iter().position(|parameter| {
+                    parameter.id == *local
+                        && !parameter.mutable
+                        && matches!(parameter.ty, Type::Reference(..))
+                })?;
+                returned.insert(index);
+            }
+            E::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                pending.push(then_branch);
+                pending.push(else_branch);
+            }
+            E::Match { arms, .. } if !arms.is_empty() => {
+                pending.extend(arms.iter().map(|arm| &arm.body));
+            }
+            E::Block { result, .. } => pending.push(result),
+            _ => return None,
+        }
+    }
+    (!returned.is_empty()).then_some(returned)
+}
+
 /// The function that a call's callee names directly.
 fn direct_callee(callee: &TypedExpr) -> Option<usize> {
     match callee.kind {
         E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => Some(id),
         _ => None,
     }
+}
+
+/// A31: the expressions of the known local `id` (`known_functions`), each that is another known
+/// local replaced by that local's expressions (`let b = a` after `let a = cross`). `None` when one
+/// is a local that is not known, or past `STORE_SUBSTITUTION_DEPTH` locals.
+fn known_heads<'a>(
+    known: &BTreeMap<usize, Vec<&'a TypedExpr>>,
+    id: usize,
+    depth: usize,
+) -> Option<Vec<&'a TypedExpr>> {
+    if depth > STORE_SUBSTITUTION_DEPTH {
+        return None;
+    }
+    let mut heads = Vec::new();
+    for head in known.get(&id)? {
+        match &head.kind {
+            E::Local(other) => heads.extend(known_heads(known, *other, depth + 1)?),
+            _ => heads.push(*head),
+        }
+    }
+    Some(heads)
+}
+
+/// A31: how many more arguments the function value `expression` (one of the expressions of a
+/// known local, `known_functions`) takes before its code runs: a named function's parameters, a
+/// lifted lambda's beyond its captures, a partial application's beyond its bound arguments (of a
+/// named function, or of a known local whose expressions all take the same number). `None` for
+/// any other expression.
+fn known_arity(
+    module: &CheckedModule,
+    known: &BTreeMap<usize, Vec<&TypedExpr>>,
+    expression: &TypedExpr,
+    depth: usize,
+) -> Option<usize> {
+    match &expression.kind {
+        E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => {
+            Some(module.functions[*id].parameters.len())
+        }
+        E::Closure(id, captures) => module.functions[*id]
+            .parameters
+            .len()
+            .checked_sub(captures.len()),
+        E::Call(function, bound) => {
+            let arity = match (&function.kind, direct_callee(function)) {
+                (_, Some(id)) => module.functions[id].parameters.len(),
+                (E::Local(id), None) if depth <= STORE_SUBSTITUTION_DEPTH => {
+                    let heads = known_heads(known, *id, 0)?;
+                    let arities: BTreeSet<Option<usize>> = heads
+                        .iter()
+                        .map(|head| known_arity(module, known, head, depth + 1))
+                        .collect();
+                    match arities.into_iter().collect::<Vec<_>>().as_slice() {
+                        [Some(arity)] => *arity,
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            };
+            arity.checked_sub(bound.len())
+        }
+        _ => None,
+    }
+}
+
+/// A31: whether every expression of the known local `id` (`known_heads`) takes more than `given`
+/// arguments (`known_arity`), so that a call of the local with `given` arguments is a partial
+/// application, which runs none of them.
+fn partial_heads(
+    module: &CheckedModule,
+    known: &BTreeMap<usize, Vec<&TypedExpr>>,
+    id: usize,
+    given: usize,
+) -> bool {
+    known_heads(known, id, 0).is_some_and(|heads| {
+        heads
+            .iter()
+            .all(|head| known_arity(module, known, head, 0).is_some_and(|arity| arity > given))
+    })
 }
 
 /// How many bodies `parameter_retention` may check for each function that it computes, and in
@@ -856,7 +1606,7 @@ const RETENTION_EXTRA_CHECKS: usize = 1024;
 /// concrete, give the facts of the check that accepts or rejects the program.
 /// Functions whose results named regions already decide (A12, A13), the generated functions that
 /// apply builtins, `Drop.drop` bodies and tzroutine bodies keep all their arguments' loans.
-#[inline(never)]
+#[cfg(test)]
 fn parameter_retention(
     module: &CheckedModule,
     closed: &[bool],
@@ -867,6 +1617,7 @@ fn parameter_retention(
 }
 
 /// `parameter_retention` with `budget` checks of bodies in place of the default.
+#[cfg(test)]
 fn parameter_retention_within(
     module: &CheckedModule,
     closed: &[bool],
@@ -874,14 +1625,317 @@ fn parameter_retention_within(
     infer: bool,
     budget: Option<usize>,
 ) -> Vec<Option<Box<[bool]>>> {
-    let count = module.functions.len();
-    if lending.untracked {
-        return vec![None; count];
+    joint_facts(module, closed, lending, infer, budget).retained
+}
+
+/// What `joint_facts` finds: the closed results that survive the store facts, A28's retention
+/// facts and A31's store facts.
+struct JointFacts {
+    closed: Vec<bool>,
+    retained: Vec<Option<Box<[bool]>>>,
+    stores: Vec<StoreFacts>,
+    drops_write: bool,
+    seeded: bool,
+    sinks: bool,
+    owned_sinks: bool,
+    owned_types: BTreeSet<Type>,
+    sink_types: BTreeSet<Type>,
+    escapes: bool,
+    reference_sinks: bool,
+    dyn_types: BTreeSet<crate::check::DynType>,
+    dyn_targets: BTreeSet<crate::check::DynType>,
+    failed: Vec<bool>,
+    owners: Vec<Own>,
+    drop_environments: DropEnvironments,
+    self_borrow_types: BTreeMap<Type, bool>,
+    self_borrow_paths: BTreeMap<Type, BTreeSet<Vec<usize>>>,
+    self_borrow_any: bool,
+}
+
+/// A31: the builtins that store a value that they get where an exclusive reference that they get
+/// reaches: (stored argument, target argument). `Array.write` (which `Array.set`, `Array.fill`,
+/// `Array.blit` and the other std functions that write in place call), `SyncMap.__replace` (through
+/// the `ref mut` that `RwMutex.with_write` lends) and `Vec.push_mut`, whose region slots add the
+/// pushed value's loans to the vector's owner only at a direct call (`store_arguments`), not when a
+/// lock or another function calls it.
+///
+/// Every builtin of `Builtin::ALL` whose scheme has a `ref mut` parameter, or that takes a shared
+/// reference to a cell and a value, was decided (A28, 8th review; A31):
+///
+/// - Seeds: the three above.
+/// - Store numbers only, so never a loan: `Simd.store` (a lane value: `SimdNumeric` holds only for
+///   SIMD vectors of numbers), and `Atomic.store`, `Atomic.swap`, `Atomic.compare_exchange` and the
+///   `Atomic.fetch_*` operations (`AtomicValue` holds only for the integers and `bool`, and a
+///   program cannot give a builtin class an instance).
+/// - Tracked otherwise: `Channel.send`, `Channel.try_send`, `SendOnly.send`, `SendOnly.try_send`
+///   and `DataChannel.send` (the item is checked to hold no borrow, `Checker::sent_item`),
+///   `OnceValue.get` (the initializer's result is checked to hold no borrow,
+///   `Checker::locked_result`), `WaitGroup.go` and `Context.__after_func` (an `Owned.Function`,
+///   which holds no borrow, A30).
+/// - Store nothing that they get: `Array.swap_in` (exchanges two elements of the same view),
+///   `Array.split_at_mut` and `Vec.__view` (return views of what they get), `RwMutex.with_read`
+///   (lends a shared reference), `Rc.ptr_eq` and `Arc.ptr_eq` (compare), and `Timer.__reset`,
+///   `Ticker.__reset`,
+///   `WaitGroup.add`, `Semaphore.acquire`, `Semaphore.try_acquire`, `Semaphore.release`,
+///   `Context.__with_timeout` and `Context.__with_deadline` (take integers).
+/// - Lend a `ref mut` to a callback and store nothing themselves: `Mutex.with_lock`,
+///   `RwMutex.with_write`, `Cond.wait_with` and `Parallel.for_each_chunk`. What the callback
+///   stores, it stores with an assignment (tracked), a seed or a call, and its body is a function
+///   of the module: the facts of the call run it (`Checker::builtin_stores`).
+/// - Run a function value that they get with an input that they get: `Owned.call`, which is a
+///   call of the owned function with the input (`Checker::builtin_stores`).
+///
+/// The builtins that take an array, a vector or a map by value and return the updated one
+/// (`Array.__set`, `Array.update`, `Array.swap`, `Vec.push`, ...) store nothing through a reference:
+/// their result holds the loans of every argument.
+fn store_seed(builtin: crate::check::Builtin) -> Option<(usize, usize)> {
+    use crate::check::Builtin::{ArrayWrite, SyncMapReplace, VecPushMut};
+    match builtin {
+        ArrayWrite => Some((1, 2)),
+        SyncMapReplace | VecPushMut => Some((0, 1)),
+        _ => None,
     }
+}
+
+/// A31: which functions may store, from their bodies alone: `may_store` names a builtin that
+/// stores a value that may hold loans (`Array.write`, `SyncMap.__replace`) or runs a callback,
+/// calls a function value (or the result of a call given more arguments than the named function
+/// has parameters), runs an initializer, a host function with callbacks, or the methods of dyn
+/// values, or names a function that may store (the least fixed point over `mentions`). A body that
+/// dispatches to a dyn method runs one of the slot functions of the vtables (`dispatch`), and
+/// may store anything (`top`) when none takes as many parameters. When some `Drop.drop` may store,
+/// a body that holds a value of a type that may run it does too. The other bodies store nothing
+/// that may hold loans: their stores are assignments and region contracts, which every check
+/// tracks.
+///
+/// Every store that the check of a body does not track goes through a seed (`store_seed`) whose
+/// stored value may hold loans: assignments are tracked, a store through a reference that a body
+/// gets needs named regions, which the check of that body enforces, and the code of a function
+/// value, a dyn method, a callback or a `Drop.drop` is a body of the module. So a module with no
+/// such seed (`seeded` false) has no store facts at all, and none of the rest is needed.
+struct StoreCandidates {
+    seeded: bool,
+    may_store: Vec<bool>,
+    top: Vec<bool>,
+    mentions: Vec<BTreeSet<usize>>,
+    /// The functions that dispatch a dyn method, with the slot functions of the vtables that
+    /// take as many parameters: the dispatch runs one of them, so its facts are their join.
+    dispatch: BTreeMap<usize, Vec<usize>>,
+}
+
+impl StoreCandidates {
+    fn none(count: usize) -> Self {
+        Self {
+            seeded: false,
+            may_store: vec![false; count],
+            top: vec![false; count],
+            mentions: vec![BTreeSet::new(); count],
+            dispatch: BTreeMap::new(),
+        }
+    }
+}
+
+fn store_candidates(module: &CheckedModule, infer: bool) -> StoreCandidates {
     let types = module.types();
-    // The complete direct calls whose results may hold loans and are not proven closed, and the
-    // pipelines that complete one (`f |> pass (ref key)`, and `ref key |> make` into a unary
-    // function, which binds no argument before the piped one).
+    let count = module.functions.len();
+    let mut seeded = false;
+    let mut may_store = vec![false; count];
+    let mut top = vec![false; count];
+    let mut mentions = vec![BTreeSet::new(); count];
+    // `Owned.call` runs the owned function that it gets, and `Seq.next` the step function that
+    // the sequence holds.
+    let callback_builtin = |builtin: crate::check::Builtin| {
+        matches!(
+            builtin,
+            crate::check::Builtin::OwnedCall | crate::check::Builtin::SeqNext
+        ) || builtin
+            .scheme()
+            .parameters
+            .iter()
+            .any(|parameter| matches!(parameter, crate::check::BuiltinType::Function(..)))
+    };
+    let mut dispatch: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    // In the abstract bodies of the inference a type variable carries no loans: each instance of
+    // a generic writer is a function of the specialized module, which has its own facts.
+    let stores_loans = |expression: &TypedExpr, index: usize| match &expression.ty {
+        Type::Function(parameters, _) => parameters.get(index).is_none_or(|stored| {
+            stored.carries_loans(&types) || (!infer && stored.contains_unknown())
+        }),
+        _ => true,
+    };
+    // Whether a call of `callee` with `arguments` arguments runs code that is not a complete call
+    // of a named function.
+    let opaque = |callee: &TypedExpr, arguments: usize| match &callee.kind {
+        E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => {
+            arguments > module.functions[*id].parameters.len()
+        }
+        E::Function(crate::check::FunctionRef::Builtin(_)) | E::CaseConstructor { .. } => false,
+        _ => true,
+    };
+    for (id, function) in module.functions.iter().enumerate() {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            match &expression.kind {
+                E::Function(crate::check::FunctionRef::User(callee))
+                | E::GenericFunction(callee, _)
+                | E::Closure(callee, _) => {
+                    mentions[id].insert(*callee);
+                }
+                E::Function(crate::check::FunctionRef::Builtin(instance)) => {
+                    let seed = store_seed(instance.builtin)
+                        .is_some_and(|(stored, _)| stores_loans(expression, stored));
+                    seeded |= seed;
+                    if seed || callback_builtin(instance.builtin) {
+                        may_store[id] = true;
+                    }
+                }
+                E::Call(callee, arguments) => may_store[id] |= opaque(callee, arguments.len()),
+                E::Binary(BinaryOp::Pipe, _, right) => {
+                    let (callee, arguments) = piped_application(right);
+                    may_store[id] |= opaque(callee, arguments.len() + 1);
+                }
+                E::NewArray(..) | E::NewList(..) | E::Parallel(..) => may_store[id] = true,
+                E::HostCall(import, _) => may_store[id] |= import.callbacks,
+                E::Interpolated(interpolation) => {
+                    may_store[id] |= interpolation
+                        .holes
+                        .iter()
+                        .any(|hole| hole.method.as_ref().is_some_and(|method| opaque(method, 1)));
+                }
+                E::StructuralCompare(_, operands)
+                | E::StructuralHash(operands)
+                | E::StructuralDisplay(operands) => {
+                    may_store[id] |= operands
+                        .iter()
+                        .any(|operand| types.reaches(&operand.ty, |ty| matches!(ty, Type::Dyn(_))));
+                }
+                E::DynDispatch { .. } => {
+                    // The slot functions take the dispatch's parameters in the same order
+                    // (`llvm::dyn_dispatch` passes them on), so their facts are the dispatch's.
+                    let targets: BTreeSet<usize> = module
+                        .vtables
+                        .values()
+                        .flatten()
+                        .copied()
+                        .filter(|slot| {
+                            module.functions[*slot].parameters.len() == function.parameters.len()
+                                && !matches!(
+                                    module.functions[*slot].body.kind,
+                                    E::DynDispatch { .. }
+                                )
+                        })
+                        .collect();
+                    if targets.is_empty() {
+                        top[id] = true;
+                    } else {
+                        mentions[id].extend(&targets);
+                        dispatch.insert(id, targets.into_iter().collect());
+                    }
+                }
+                _ => {}
+            }
+            expression
+                .try_for_each_child(&mut |child| {
+                    pending.push(child);
+                    Ok(())
+                })
+                .expect("collecting calls cannot fail");
+        }
+    }
+    let mut mentioned_by = vec![Vec::new(); count];
+    for (id, mentioned) in mentions.iter().enumerate() {
+        for &callee in mentioned {
+            mentioned_by[callee].push(id);
+        }
+    }
+    if !seeded {
+        return StoreCandidates::none(count);
+    }
+    let mut marks: Vec<bool> = (0..count).map(|id| may_store[id] || top[id]).collect();
+    close_marks(&mut marks, &mentioned_by);
+    // A value whose drop may store stores where it is dropped, with no call in the body: a body
+    // that holds a value of a type that may run such a `Drop.drop` (`drop_runs_code`) may store
+    // (`Checker::drop_stores`), and so may the bodies that name it.
+    if module.user_drops.values().any(|drop| marks[*drop]) {
+        let mut runs: BTreeMap<&Type, bool> = BTreeMap::new();
+        for (id, function) in module.functions.iter().enumerate() {
+            if marks[id] {
+                continue;
+            }
+            let drops = |ty: &'_ Type| -> bool { drop_runs_code(ty, &types) };
+            let mut found = function
+                .parameters
+                .iter()
+                .any(|parameter| *runs.entry(&parameter.ty).or_insert_with_key(|ty| drops(ty)));
+            let mut pending = vec![&function.body];
+            while let Some(expression) = pending.pop() {
+                if found {
+                    break;
+                }
+                found = *runs
+                    .entry(&expression.ty)
+                    .or_insert_with_key(|ty| drops(ty));
+                expression
+                    .try_for_each_child(&mut |child| {
+                        pending.push(child);
+                        Ok(())
+                    })
+                    .expect("collecting types cannot fail");
+            }
+            marks[id] = found;
+        }
+        close_marks(&mut marks, &mentioned_by);
+    }
+    for (id, mark) in marks.into_iter().enumerate() {
+        may_store[id] = mark && !top[id];
+    }
+    StoreCandidates {
+        seeded,
+        may_store,
+        top,
+        mentions,
+        dispatch,
+    }
+}
+
+/// A28 and A31: the facts of the calls, the least fixed point over the call graph of A28's
+/// retention facts (`parameter_retention`), A31's store facts (`StoreFacts`) and the closed
+/// results that survive them. One check of a body under the facts so far gives all three:
+///
+/// - the retention facts of a function that a complete call needs them for (`callers`), when the
+///   body may have them (`Lending::no_facts`);
+/// - the store facts of a function that may store (`store_candidates`): what the check stores
+///   where a parameter reaches (`Checker::store_external`), and the calls of its function-valued
+///   parameters (`Checker::apply_higher`); a body that does not check stores anything (`top`);
+/// - whether a closed function (`closed_returns`) that may store and whose result may hold loans
+///   still returns no loan: `closed` assumes that a local's loans do not grow after it is bound,
+///   and a store into a cell that the local is (`let m = Mutex.create ...` written by a lock's
+///   callback) breaks that. A check whose result holds a loan revokes the closed result, which then
+///   goes through the retention facts like any other.
+///
+/// Every fact only grows (closed only goes false), so the iteration ends. A change of a function's
+/// facts requeues the functions that name it. The store facts decide three flags of the module
+/// (`sink_flags`: whether some function value stores into what its environment reaches, whether
+/// one owns the cell that it writes, whether some function keeps a shared reference parameter),
+/// which widen what a call of a function value that the check does not see may store; when one
+/// rises, every body is checked again under it (they only rise). Past the budget, every function
+/// still to check, and every function whose facts were computed from theirs, keeps all its
+/// arguments' loans, stores anything and returns what it may (every function that may store,
+/// when the flags were not yet the highest). The abstract bodies of the inference (`infer`) have
+/// no store facts and no revocation: their type variables carry no loans, and each instance of a
+/// generic body is a function of the specialized module, which has them.
+fn joint_facts(
+    module: &CheckedModule,
+    closed: &[bool],
+    lending: &Lending,
+    infer: bool,
+    budget: Option<usize>,
+) -> JointFacts {
+    let count = module.functions.len();
+    let types = module.types();
+    // The complete direct calls whose results may hold loans, and the pipelines that complete one
+    // (`f |> pass (ref key)`, and `ref key |> make` into a unary function, which binds no argument
+    // before the piped one). A closed callee needs no facts until a check revokes its result.
     let mut callers: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     let mut callees: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     for (caller, function) in module.functions.iter().enumerate() {
@@ -897,7 +1951,6 @@ fn parameter_retention_within(
             };
             if let Some((callee, arguments)) = call
                 && let Some(id) = direct_callee(callee)
-                && !closed[id]
                 && retention_eligible(module, id)
                 && arguments >= module.functions[id].parameters.len()
                 && if arguments == module.functions[id].parameters.len() {
@@ -922,40 +1975,124 @@ fn parameter_retention_within(
                 .expect("collecting calls cannot fail");
         }
     }
+    let candidates = if infer {
+        StoreCandidates::none(count)
+    } else {
+        store_candidates(module, false)
+    };
+    let drops_write = candidates.seeded
+        && module
+            .user_drops
+            .values()
+            .any(|drop| candidates.may_store[*drop] || candidates.top[*drop]);
     let mut facts = CallFacts {
         closed: closed.to_vec(),
         retained: vec![None; count],
         lending: lending.clone(),
+        drops_write,
+        seeded: candidates.seeded,
+        sinks: false,
+        owned_sinks: false,
+        owned_types: BTreeSet::new(),
+        sink_types: BTreeSet::new(),
+        escapes: false,
+        reference_sinks: false,
+        dyn_types: module.vtables.keys().map(|(key, _)| key.clone()).collect(),
+        dyn_targets: BTreeSet::new(),
+        failed: vec![false; count],
+        owners: Vec::new(),
+        drop_environments: drop_environments(module),
+        self_borrow_types: BTreeMap::new(),
+        self_borrow_paths: BTreeMap::new(),
+        self_borrow_any: false,
+        revoked: vec![false; count],
+        stores: (0..count)
+            .map(|id| {
+                if candidates.top[id] {
+                    StoreFacts::top()
+                } else {
+                    StoreFacts::default()
+                }
+            })
+            .collect(),
     };
-    for &id in callers.keys() {
-        facts.retained[id] = Some(
-            module.functions[id]
-                .parameters
-                .iter()
-                .map(|parameter| {
-                    // The parameters that may hold borrows but get no loan in the body: those
-                    // that `start_checker` gives no caller loan (borrows only in owned
-                    // functions, as A30 has it) and type variables of an abstract body.
-                    (parameter.ty.carries_loans(&types) || parameter.ty.contains_unknown())
-                        && !parameter.ty.carries_loans_beside_owned_functions(&types)
-                })
-                .collect(),
-        );
+    let initial = |id: usize| -> Box<[bool]> {
+        module.functions[id]
+            .parameters
+            .iter()
+            .map(|parameter| {
+                // The parameters that may hold borrows but get no loan in the body: those that
+                // `start_checker` gives no caller loan (borrows only in owned functions, as A30
+                // has it) and type variables of an abstract body.
+                (parameter.ty.carries_loans(&types) || parameter.ty.contains_unknown())
+                    && !parameter.ty.carries_loans_beside_owned_functions(&types)
+            })
+            .collect()
+    };
+    let revocable =
+        |id: usize| candidates.may_store[id] && !owned(&module.functions[id].body.ty, module);
+    let mut retention: BTreeSet<usize> =
+        callers.keys().copied().filter(|id| !closed[*id]).collect();
+    for &id in &retention {
+        facts.retained[id] = Some(initial(id));
+    }
+    // A store fact stores where a parameter reaches, or runs a function-valued parameter: a
+    // function none of whose parameters a store may reach through (`may_reach_store`: an `i64`, a
+    // `ref string`) has no store facts to compute, whatever its body stores into its own locals.
+    let storing: Vec<bool> = (0..count)
+        .map(|id| {
+            candidates.may_store[id]
+                && module.functions[id]
+                    .parameters
+                    .iter()
+                    .any(|parameter| may_reach_store(&parameter.ty, &types))
+        })
+        .collect();
+    let checked: BTreeSet<usize> = callers
+        .keys()
+        .copied()
+        .chain((0..count).filter(|id| storing[*id] || (closed[*id] && revocable(*id))))
+        .collect();
+    // The functions whose checks read the facts of each function.
+    let mut dependents: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for (&callee, users) in &callers {
+        dependents
+            .entry(callee)
+            .or_default()
+            .extend(users.iter().filter(|user| checked.contains(user)));
+    }
+    for &user in &checked {
+        for &callee in &candidates.mentions[user] {
+            dependents.entry(callee).or_default().insert(user);
+        }
+    }
+    // A body that drops a value runs a `Drop.drop` without naming it, and reads its facts
+    // (`Checker::drop_borrows_self`): every body depends on the facts of every `Drop.drop`.
+    if drops_write {
+        for drop in module.user_drops.values() {
+            dependents
+                .entry(*drop)
+                .or_default()
+                .extend(checked.iter().filter(|user| *user != drop));
+        }
     }
     // Callees before their callers, so that a chain without recursion settles in one pass.
-    let mut order = Vec::with_capacity(callers.len());
+    let mut order = Vec::with_capacity(checked.len());
     let mut visited = BTreeSet::new();
     let children = |id: usize| -> Vec<usize> {
         callees
             .get(&id)
             .into_iter()
             .flatten()
+            .chain(&candidates.mentions[id])
             .copied()
-            .filter(|callee| callers.contains_key(callee))
+            .filter(|callee| checked.contains(callee))
+            .collect::<BTreeSet<usize>>()
+            .into_iter()
             .rev()
             .collect()
     };
-    for &root in callers.keys() {
+    for &root in &checked {
         if !visited.insert(root) {
             continue;
         }
@@ -974,66 +2111,1630 @@ fn parameter_retention_within(
             }
         }
     }
-    let mut queued: BTreeSet<usize> = order.iter().copied().collect();
-    let mut work: std::collections::VecDeque<usize> = order.into();
-    let mut budget =
-        budget.unwrap_or(callers.len() * RETENTION_CHECKS_PER_FUNCTION + RETENTION_EXTRA_CHECKS);
-    while let Some(id) = work.pop_front() {
-        if budget == 0 {
-            // The functions still to check, and every function whose facts were computed from
-            // theirs, keep all their arguments' loans. The others were checked under the facts
-            // that their callees have now, so they stay a fixed point of their part of the graph.
-            let mut unsettled = queued;
-            let mut pending: Vec<usize> = unsettled.iter().copied().collect();
-            while let Some(callee) = pending.pop() {
-                for caller in callers.get(&callee).into_iter().flatten() {
-                    if callers.contains_key(caller) && unsettled.insert(*caller) {
-                        pending.push(*caller);
-                    }
-                }
-            }
-            for id in unsettled {
-                facts.retained[id] = None;
-            }
-            return facts.retained;
-        }
-        queued.remove(&id);
-        budget -= 1;
-        let old = facts.retained[id].as_deref().expect("a computed function");
-        let new: Box<[bool]> = match retained_parameters(module, id, infer, &facts) {
-            Some(found) => old
-                .iter()
-                .zip(&found)
-                .map(|(old, new)| *old || *new)
-                .collect(),
-            None => vec![true; old.len()].into_boxed_slice(),
-        };
-        if *old == *new {
-            continue;
-        }
-        facts.retained[id] = Some(new);
-        for caller in callers.get(&id).into_iter().flatten() {
-            if callers.contains_key(caller) && queued.insert(*caller) {
-                work.push_back(*caller);
+    // The functions whose facts the sink flags read (`sink_flags`: the code of the function
+    // values that the module makes, and the slot functions of the vtables) and the `Drop.drop`
+    // bodies, whose facts every body that drops a value reads, with the functions whose facts
+    // theirs come from. They settle first, with the flags, before the other bodies
+    // are checked under the flags that result: a large body that calls function values is then
+    // checked once rather than once more for each rise of the flags.
+    let mut first = if infer || !candidates.seeded {
+        BTreeSet::new()
+    } else {
+        let mut sites = flag_sites(module);
+        sites.extend(module.user_drops.values().copied());
+        sites
+    };
+    let mut pending: Vec<usize> = first.iter().copied().collect();
+    while let Some(id) = pending.pop() {
+        for &callee in callees
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .chain(&candidates.mentions[id])
+        {
+            if first.insert(callee) {
+                pending.push(callee);
             }
         }
     }
-    facts.retained
+    first.retain(|id| checked.contains(id));
+    let mut staged = !first.is_empty() && first.len() < order.len();
+    let mut queued: BTreeSet<usize> = order
+        .iter()
+        .copied()
+        .filter(|id| !staged || first.contains(id))
+        .collect();
+    let mut work: std::collections::VecDeque<usize> = order
+        .iter()
+        .copied()
+        .filter(|id| queued.contains(id))
+        .collect();
+    let mut budget =
+        budget.unwrap_or(checked.len() * RETENTION_CHECKS_PER_FUNCTION + RETENTION_EXTRA_CHECKS);
+    let mut exhausted = false;
+    // The bodies that do not check (`CallFacts::failed`): the program is rejected, so what they
+    // would store (`top`) tells the sink flags nothing, and no other body gets a diagnostic for it.
+    // The sink flags (`sink_flags`) come from the store facts and widen what the checks store, so
+    // the fixed point is taken again when they rise; they only rise.
+    loop {
+        while let Some(id) = work.pop_front() {
+            if budget == 0 {
+                exhausted = true;
+                // The functions still to check, and every function whose facts were computed from
+                // theirs, keep all their arguments' loans, store anything and return what they may.
+                // The others were checked under the facts that their callees have now, so they stay a
+                // fixed point of their part of the graph.
+                let mut unsettled = std::mem::take(&mut queued);
+                // The bodies that wait for the functions that the flags read have no facts yet.
+                if staged {
+                    unsettled.extend(order.iter().copied().filter(|id| !first.contains(id)));
+                }
+                let mut pending: Vec<usize> = unsettled.iter().copied().collect();
+                while let Some(callee) = pending.pop() {
+                    for user in dependents.get(&callee).into_iter().flatten() {
+                        if unsettled.insert(*user) {
+                            pending.push(*user);
+                        }
+                    }
+                }
+                for id in unsettled {
+                    facts.retained[id] = None;
+                    if candidates.may_store[id] {
+                        facts.stores[id] = StoreFacts::top();
+                    }
+                    if revocable(id) && facts.closed[id] {
+                        facts.closed[id] = false;
+                        facts.revoked[id] = true;
+                    }
+                }
+                break;
+            }
+            queued.remove(&id);
+            budget -= 1;
+            let outcome = check_facts(
+                module,
+                id,
+                infer,
+                &facts,
+                retention.contains(&id),
+                storing[id],
+                facts.closed[id] && revocable(id),
+            );
+            facts.failed[id] |= outcome.failed;
+            let mut changed = false;
+            if retention.contains(&id) {
+                let old = facts.retained[id].as_deref().expect("a computed function");
+                let new: Box<[bool]> = match &outcome.retained {
+                    Some(found) => old
+                        .iter()
+                        .zip(found.iter())
+                        .map(|(old, new)| *old || *new)
+                        .collect(),
+                    None => vec![true; old.len()].into_boxed_slice(),
+                };
+                if *old != *new {
+                    facts.retained[id] = Some(new);
+                    changed = true;
+                }
+            }
+            if storing[id] {
+                changed |= facts.stores[id].join(&outcome.stores);
+                // A dyn method's dispatch runs one of the slot functions of the vtables.
+                if let Some(targets) = candidates.dispatch.get(&id) {
+                    for target in targets {
+                        let found = facts.stores[*target].clone();
+                        changed |= facts.stores[id].join(&found);
+                    }
+                }
+            }
+            if outcome.revoke {
+                facts.closed[id] = false;
+                facts.revoked[id] = true;
+                changed = true;
+                // The callers now need the retention facts that the closed result made needless.
+                if callers.contains_key(&id) && retention.insert(id) {
+                    facts.retained[id] = Some(initial(id));
+                    if queued.insert(id) {
+                        work.push_back(id);
+                    }
+                }
+            }
+            if changed {
+                for user in dependents.get(&id).into_iter().flatten() {
+                    if (!staged || first.contains(user)) && queued.insert(*user) {
+                        work.push_back(*user);
+                    }
+                }
+            }
+        }
+        if infer || !candidates.seeded {
+            break;
+        }
+        if exhausted {
+            // The checks that were made saw the flags of their time: when those were not the
+            // highest, every function that may store stores anything.
+            if !(facts.sinks && facts.owned_sinks && facts.reference_sinks && facts.escapes) {
+                for id in 0..count {
+                    if candidates.may_store[id] {
+                        facts.stores[id] = StoreFacts::top();
+                        facts.retained[id] = None;
+                    }
+                    if revocable(id) && facts.closed[id] {
+                        facts.closed[id] = false;
+                        facts.revoked[id] = true;
+                    }
+                }
+                facts.sinks = true;
+                facts.owned_sinks = true;
+                facts.reference_sinks = true;
+                facts.escapes = true;
+                facts.self_borrow_any = true;
+            }
+            if facts.owners.is_empty() {
+                facts.owners = owner_facts(module);
+            }
+            // The facts that stand now (`top` for the unsettled functions) may make more
+            // function values owners than the checks saw, and the calls that the settled
+            // functions recorded judged their arguments by the types of their time: every
+            // argument may now hold an owner or be a place to store into, and every dyn type
+            // may be one.
+            let found = sink_flags(module, &facts.stores, &facts.failed);
+            facts.owned_types.extend(found.owned_types);
+            facts.sink_types.extend(found.sink_types);
+            for stores in &mut facts.stores {
+                if !stores.calls.is_empty() {
+                    stores.calls = std::mem::take(&mut stores.calls)
+                        .into_iter()
+                        .map(|mut call| {
+                            for source in &mut call.arguments {
+                                source.hides = true;
+                                source.target = true;
+                            }
+                            call
+                        })
+                        .collect();
+                }
+            }
+            facts.dyn_targets = facts.dyn_types.clone();
+            break;
+        }
+        let found = sink_flags(module, &facts.stores, &facts.failed);
+        let flags = (
+            found.sinks || found.owned || facts.sinks,
+            found.owned || facts.owned_sinks,
+            found.references || facts.reference_sinks,
+        );
+        let mut types = std::mem::take(&mut facts.owned_types);
+        let known = types.len();
+        if flags.1 {
+            types.extend(found.owned_types.iter().cloned());
+        }
+        let escapes = facts.escapes || (flags.1 && found.escapes(module, &types));
+        let dyn_known = facts.dyn_targets.len();
+        facts.dyn_targets.extend(found.dyn_targets);
+        let sinks_known = facts.sink_types.len();
+        if flags.0 {
+            facts.sink_types.extend(found.sink_types);
+        }
+        let self_known = (
+            facts.self_borrow_types.clone(),
+            facts.self_borrow_paths.clone(),
+            facts.self_borrow_any,
+        );
+        let (self_types, self_paths, self_any) =
+            self_borrow_types(module, &facts.stores, &facts.failed);
+        for (ty, ordered) in self_types {
+            *facts.self_borrow_types.entry(ty).or_insert(true) &= ordered;
+        }
+        for (ty, paths) in self_paths {
+            let known = facts.self_borrow_paths.entry(ty).or_default();
+            for path in paths {
+                add_self_path(known, path);
+            }
+        }
+        facts.self_borrow_any |= self_any;
+        let grew = types.len() != known
+            || escapes != facts.escapes
+            || facts.dyn_targets.len() != dyn_known
+            || facts.sink_types.len() != sinks_known
+            || (
+                &facts.self_borrow_types,
+                &facts.self_borrow_paths,
+                facts.self_borrow_any,
+            ) != (&self_known.0, &self_known.1, self_known.2);
+        facts.owned_types = types;
+        facts.escapes = escapes;
+        if flags == (facts.sinks, facts.owned_sinks, facts.reference_sinks) && !grew {
+            if !staged {
+                break;
+            }
+            // The functions that the flags read have settled: the others now get their checks.
+            staged = false;
+            for &id in &order {
+                if !first.contains(&id) && queued.insert(id) {
+                    work.push_back(id);
+                }
+            }
+            continue;
+        }
+        (facts.sinks, facts.owned_sinks, facts.reference_sinks) = flags;
+        if facts.owned_sinks && facts.owners.is_empty() {
+            facts.owners = owner_facts(module);
+        }
+        for &id in &order {
+            if (!staged || first.contains(&id)) && queued.insert(id) {
+                work.push_back(id);
+            }
+        }
+    }
+    JointFacts {
+        closed: facts.closed,
+        retained: facts.retained,
+        stores: facts.stores,
+        drops_write,
+        seeded: candidates.seeded,
+        sinks: facts.sinks,
+        owned_sinks: facts.owned_sinks,
+        owned_types: facts.owned_types,
+        sink_types: facts.sink_types,
+        escapes: facts.escapes,
+        reference_sinks: facts.reference_sinks,
+        dyn_types: facts.dyn_types,
+        dyn_targets: facts.dyn_targets,
+        failed: facts.failed,
+        owners: facts.owners,
+        drop_environments: facts.drop_environments,
+        self_borrow_types: facts.self_borrow_types,
+        self_borrow_paths: facts.self_borrow_paths,
+        self_borrow_any: facts.self_borrow_any,
+    }
 }
 
-/// The parameters of `function` whose loans its result holds, under the facts so far; `None`
-/// when the body does not check, when its result holds a loan of its own locals, or when it lends
-/// a way to write or makes an opaque call (`lending_bodies`).
-fn retained_parameters(
+/// A31: the types `T` (`without_views`) of the values that a function of the module keeps a
+/// borrow of a part of in the value itself, through a `ref mut T` parameter (`StoreFacts::
+/// shared_some` of an entry `(p, Part::Value, p)`) or a `ref T` one (the entry itself), with
+/// whether every such entry is ordered (`StoreFacts::ordered`) and the places of the borrowed
+/// parts (`StoreFacts::self_paths`), and whether a function that may store anything
+/// (`StoreFacts::top`, not one that does not check) may do so for any type
+/// (`CallFacts::self_borrow_types`).
+#[allow(clippy::type_complexity)]
+fn self_borrow_types(
+    module: &CheckedModule,
+    stores: &[StoreFacts],
+    failed: &[bool],
+) -> (
+    BTreeMap<Type, bool>,
+    BTreeMap<Type, BTreeSet<Vec<usize>>>,
+    bool,
+) {
+    let mut found: BTreeMap<Type, bool> = BTreeMap::new();
+    let mut places: BTreeMap<Type, BTreeSet<Vec<usize>>> = BTreeMap::new();
+    let mut any = false;
+    for (id, (function, facts)) in module.functions.iter().zip(stores).enumerate() {
+        let target = |index: usize| match function.parameters.get(index).map(|p| &p.ty) {
+            Some(Type::Reference(target, exclusive)) => Some((without_views(target), *exclusive)),
+            _ => None,
+        };
+        if facts.top {
+            any |= !failed.get(id).copied().unwrap_or(false)
+                && (0..function.parameters.len()).any(|index| target(index).is_some());
+            continue;
+        }
+        for &(from, part, to) in &facts.stores {
+            if from != to || part != Part::Value {
+                continue;
+            }
+            let Some((ty, exclusive)) = target(from) else {
+                continue;
+            };
+            if exclusive && !facts.shared_some.contains(&(from, part, to)) {
+                continue;
+            }
+            let ordered = facts.ordered.contains(&(from, part, to));
+            *found.entry(ty.clone()).or_insert(true) &= ordered;
+            let known = places.entry(ty).or_default();
+            match facts.self_paths.get(&from) {
+                Some(paths) => {
+                    for path in paths {
+                        add_self_path(known, path.clone());
+                    }
+                }
+                None => {
+                    add_self_path(known, Vec::new());
+                }
+            }
+        }
+    }
+    (found, places, any)
+}
+
+/// A31: what `sink_flags` finds at one place where a function value is made: whether it is a sink,
+/// whether it owns its cell, and the types of the values that hide an environment that it holds.
+type SinkSite = (bool, bool, Vec<Type>);
+
+/// A31: whether some function value of the module stores into what its environment reaches
+/// (`CallFacts::sinks`), and whether one owns the cell that it writes (`CallFacts::owned_sinks`),
+/// from the store facts `stores` of the functions and the places where the module makes a
+/// function value with an environment:
+///
+/// - a lifted lambda with its captures and a partial application of a named function with the
+///   arguments that it binds (a pipeline that leaves parameters open too): the value is a sink
+///   when the facts of its code store into a bound parameter, pass a bound parameter to a call of
+///   a function value (which may store there), store in a hidden environment, or are unknown
+///   (`top`); it owns its cell when a bound value owns a mutable cell (`owns_mutable_cell`);
+/// - a partial application of a builtin that runs a callback (`Mutex.with_lock (ref m)`), whose
+///   callback stores where the bound lock reaches;
+/// - a call of a function value that this scan does not see (or of the function that a named
+///   function returns) whose result is a function: the result may be that value with the
+///   arguments bound, so it is a sink when an argument can be stored into or holds a loan, and
+///   owns its cell when an argument does;
+/// - a builtin that applies a function value it gets to fewer arguments than the value takes
+///   (`builtin_partial_applications`: `Owned.call (ref w) cell` with `w` wrapping a named
+///   function of two parameters, `List.mapr wr (ref cells)`), whose partial application binds
+///   values that the builtin makes from its other arguments: as the call above;
+/// - `Dyn.of value`, whose methods get the stored value through the receiver: it owns its cell
+///   when the value owns a mutable cell or hides an environment itself.
+///
+/// A function value that takes more than one argument before its code runs (a lambda
+/// `\k f -> ...`, a partial application that leaves two parameters) gives its environment to its
+/// partial applications, whatever makes them (`w 0`, `Owned.call (ref w) 0`, the elements of
+/// `new [T](1, w)`): their types, the rest of its parameters (`partial_types`), count as its own
+/// does, when the module may make a partial application of that type (`partial_results`). A call
+/// that runs the code gives what the body returns, whose function values are sites of their own.
+///
+/// A named function has no environment, and a function value that only calls a captured function
+/// value with its own arguments stores where that value's code does, which is a site of its own.
+/// So in a module where no site is a sink, a call of any function value stores only where its
+/// arguments reach, by induction over the calls that it makes.
+///
+/// `references` (`CallFacts::reference_sinks`) says that some function stores a shared
+/// reference parameter itself, or anything. `owned_types` (`CallFacts::owned_types`) are the types
+/// of the function values that own their cell and of those that hold, in their environment, a
+/// value that may hold one of them (to a fixed point); `sink_types` (`CallFacts::sink_types`) are
+/// those of the sinks and of the function values that hold one in the same way. A bound value that
+/// names a function holds nothing. The dyn types whose methods may store or give back a place to
+/// store into are `dyn_targets` (`CallFacts::dyn_targets`).
+fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) -> SinkFlags {
+    let types = module.types();
+    // A function keeps a shared reference parameter when it stores the parameter's own loan, or
+    // hands a value that holds it (not the reference itself, which the function value gets as a
+    // parameter of its own) to a function value, which may store that value.
+    let references =
+        module
+            .functions
+            .iter()
+            .zip(stores)
+            .enumerate()
+            .any(|(id, (function, facts))| {
+                let reference = |from: &usize| {
+                    matches!(
+                        function
+                            .parameters
+                            .get(*from)
+                            .map(|parameter| &parameter.ty),
+                        Some(Type::Reference(_, false))
+                    )
+                };
+                (facts.top && !failed[id])
+                    || facts
+                        .stores
+                        .iter()
+                        .any(|(from, part, _)| *part == Part::Value && reference(from))
+                    || facts
+                        .hidden
+                        .iter()
+                        .any(|(from, part)| *part == Part::Value && reference(from))
+                    || facts.calls.iter().any(|call| {
+                        call.arguments.iter().any(|source| {
+                            !source.lent
+                                && source
+                                    .parameters
+                                    .iter()
+                                    .any(|(from, part)| *part == Part::Value && reference(from))
+                        })
+                    })
+            });
+    let (mut sinks, mut owned) = (false, false);
+    // The types of the function values that own the cell that they write, and of those that
+    // may hold a function value in their environment, which may be such an owner.
+    let mut owned_types = BTreeSet::new();
+    // The types of the function values that store into what their environment reaches, and of
+    // those that may hold such a value in their environment.
+    let mut sink_types = BTreeSet::new();
+    // The function values that hold values that hide an environment, with the types of those
+    // values: such a function value reaches the owners and the sinks that those values reach.
+    let mut holders: Vec<(Type, Vec<Type>)> = Vec::new();
+    // The types of the values that the module hands to code that runs later (`SinkFlags::escapes`).
+    let mut escaping: BTreeSet<Type> = BTreeSet::new();
+    // The types of the function values that `Owned.function` wraps, and whether a builtin takes
+    // an owned function to run it later.
+    let mut wrapped: BTreeSet<Type> = BTreeSet::new();
+    let mut takes_owned = false;
+    // A bound value that names a function (`plus_one`, or the local that the adapter of a
+    // function with other parameter conventions binds it to) has no environment.
+    let named = |value: &TypedExpr, locals: &BTreeSet<usize>| match &value.kind {
+        E::Function(_) | E::GenericFunction(..) => true,
+        E::Local(id) => locals.contains(id),
+        _ => false,
+    };
+    let site = |id: usize,
+                bound: &mut dyn Iterator<Item = &TypedExpr>,
+                locals: &BTreeSet<usize>|
+     -> (bool, bool, Vec<Type>) {
+        let bound: Vec<&TypedExpr> = bound.collect();
+        let facts = &stores[id];
+        let count = bound.len();
+        // A bound value that a call of a function value gets counts only when a store may reach
+        // through it other than by its own code (`Source::target`): the function value stores
+        // what it gets where its own arguments reach or where its environment does, and the latter
+        // is a site of its own; a bound function value is stored into only by its own code, which
+        // is a site of its own too, and this value holds it (the holders below).
+        let sink = (facts.top && !failed[id])
+            || !facts.hidden.is_empty()
+            || facts.stores.iter().any(|(_, _, to)| *to < count)
+            || facts.calls.iter().any(|call| {
+                call.arguments.iter().any(|source| {
+                    source.target
+                        && source
+                            .parameters
+                            .iter()
+                            .any(|(parameter, _)| *parameter < count)
+                })
+            });
+        let owns = sink
+            && (!facts.hidden.is_empty()
+                || bound
+                    .iter()
+                    .any(|value| !named(value, locals) && value.ty.owns_mutable_cell(&types)));
+        let held = bound
+            .iter()
+            .filter(|value| !named(value, locals))
+            .map(|value| without_views(&value.ty))
+            .filter(|ty| hides_environment(ty, &types))
+            .collect();
+        (sink, owns, held)
+    };
+    // A call of a function value that the scan does not see (or of the function that a named
+    // function returns) whose result is a function: it may be that function value with the
+    // arguments bound, which the rest of its parameters complete, so it is a sink when an argument
+    // is a place that a store may reach (`may_reach_store_beside_code`), or hides an environment.
+    // An argument that only holds a loan (the `ref i64` that edition 2027 lends to a read
+    // parameter) is no place to store into. A builtin that applies a function value it gets to
+    // fewer arguments than the value takes (`builtin_partial_applications`) makes such a value
+    // with the values that it passes, whose types (`bound`) are given.
+    let staged_types = |bound: Vec<Type>, result: &Type| -> (bool, bool, Vec<Type>) {
+        if !matches!(result, Type::Function(..)) {
+            return (false, false, Vec::new());
+        }
+        let held: Vec<Type> = bound
+            .iter()
+            .filter(|ty| hides_environment(ty, &types))
+            .cloned()
+            .collect();
+        let sink = !held.is_empty()
+            || bound
+                .iter()
+                .any(|ty| may_reach_store_beside_code(ty, &types));
+        let owns = sink && bound.iter().any(|ty| ty.owns_mutable_cell(&types));
+        (sink, owns, held)
+    };
+    let staged = |bound: &mut dyn Iterator<Item = &TypedExpr>, result: &Type| {
+        staged_types(
+            bound.map(|value| without_views(&value.ty)).collect(),
+            result,
+        )
+    };
+    // A function value made at a site, of type `ty`, that takes `arity` arguments before its code
+    // runs (`None`: not known): its partial applications hold its environment and have the types
+    // of the rest of its parameters (`partial_types`), so they are sinks, owners and holders as it
+    // is. `w 0`, `Owned.call (ref w) 0`, `0 |> w` and the elements of `new [T](1, w)` are such
+    // applications of `w = mk (...)` with `mk a = \k f -> ...`, whatever applies them.
+    // Only the partial applications that the module may make (`partial_results`) count: a value
+    // of the type of one that it never makes holds no environment of the site.
+    let partials = partial_results(module);
+    let mut found = |(sink, owns, held): SinkSite, ty: &Type, arity: Option<usize>| {
+        sinks |= sink;
+        owned |= owns;
+        if !sink && !owns && held.is_empty() {
+            return;
+        }
+        let made = partial_types(ty, arity)
+            .into_iter()
+            .filter(|partial| partials.contains(partial));
+        for ty in std::iter::once(sink_type(ty)).chain(made) {
+            if sink {
+                sink_types.insert(ty.clone());
+            }
+            if owns {
+                owned_types.insert(ty.clone());
+            }
+            if !held.is_empty() {
+                holders.push((ty, held.clone()));
+            }
+        }
+    };
+    for function in &module.functions {
+        let locals = named_locals(&function.body);
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            match &expression.kind {
+                E::Closure(id, captures) => {
+                    let arity = module.functions[*id]
+                        .parameters
+                        .len()
+                        .checked_sub(captures.len());
+                    found(
+                        site(*id, &mut captures.iter(), &locals),
+                        &expression.ty,
+                        arity,
+                    );
+                    if matches!(expression.ty, Type::Once(_)) {
+                        escaping.extend(captures.iter().map(|capture| without_views(&capture.ty)));
+                    }
+                }
+                // A send keeps its item and `OnceValue.get` the result of its initializer: the
+                // parameter types of the builtin name them. `Owned.function` wraps its argument
+                // in a value that the builtins that take an owned function run later
+                // (`Routine.go`, `WaitGroup.go`, `Time.after_func`).
+                E::Function(_) => {
+                    use crate::check::Builtin::{
+                        ChannelSend, ChannelTrySend, DataChannelSend, OnceValueGet, OwnedCall,
+                        OwnedFunction, SendOnlySend, SendOnlyTrySend,
+                    };
+                    let builtin = builtin_called(module, expression);
+                    if let (Some(builtin), Type::Function(parameters, _)) =
+                        (builtin, &expression.ty)
+                    {
+                        let kept = match builtin {
+                            OnceValueGet => Some(0),
+                            ChannelSend | ChannelTrySend | DataChannelSend | SendOnlySend
+                            | SendOnlyTrySend => Some(1),
+                            _ => None,
+                        };
+                        if let Some(ty) = kept.and_then(|kept| parameters.types.get(kept)) {
+                            escaping.insert(without_views(ty));
+                        }
+                        if builtin == OwnedFunction {
+                            wrapped.extend(parameters.types.first().map(without_views));
+                        } else if builtin != OwnedCall {
+                            takes_owned |= parameters.types.iter().any(|ty| {
+                                types.reaches(&without_views(ty), |part| {
+                                    part.is_owned_function(&types)
+                                })
+                            });
+                        }
+                    }
+                }
+                E::SelectWait(wait) => {
+                    escaping.extend(wait.arms.iter().map(|arm| without_views(&arm.item)));
+                }
+                E::HostCall(import, arguments) if import.callbacks => {
+                    escaping.extend(arguments.iter().map(|value| without_views(&value.ty)));
+                }
+                E::Call(callee, arguments) if !arguments.is_empty() => {
+                    if let Some(id) = direct_callee(callee) {
+                        let count = module.functions[id].parameters.len();
+                        if arguments.len() < count {
+                            found(
+                                site(id, &mut arguments.iter(), &locals),
+                                &expression.ty,
+                                Some(count - arguments.len()),
+                            );
+                        } else if arguments.len() > count {
+                            // The function that the call returns binds the arguments beyond.
+                            found(
+                                staged(&mut arguments[count..].iter(), &expression.ty),
+                                &expression.ty,
+                                None,
+                            );
+                        }
+                    } else if !matches!(
+                        callee.kind,
+                        E::Function(crate::check::FunctionRef::Builtin(_))
+                            | E::CaseConstructor { .. }
+                    ) {
+                        found(
+                            staged(&mut arguments.iter(), &expression.ty),
+                            &expression.ty,
+                            None,
+                        );
+                    } else if let E::Function(crate::check::FunctionRef::Builtin(instance)) =
+                        &callee.kind
+                    {
+                        // The builtin runs the callback with what its other arguments reach (the
+                        // contents that a lock lends): the partial application stores into what
+                        // it binds only when a store may reach through a bound value.
+                        let scheme = instance.builtin.scheme();
+                        if arguments.len() < scheme.parameters.len()
+                            && scheme.parameters.iter().any(|parameter| {
+                                matches!(parameter, crate::check::BuiltinType::Function(..))
+                            })
+                            && arguments
+                                .iter()
+                                .any(|value| may_reach_store(&value.ty, &types))
+                        {
+                            found(
+                                (true, false, Vec::new()),
+                                &expression.ty,
+                                scheme.parameters.len().checked_sub(arguments.len()),
+                            );
+                        }
+                        // A dyn value without a region holds no borrow where it is made
+                        // (A30), and its type says so wherever it goes afterwards.
+                        if owned_dyn_of(callee) {
+                            escaping.extend(arguments.iter().map(|value| without_views(&value.ty)));
+                        }
+                        if instance.builtin == crate::check::Builtin::DynOf
+                            && arguments.iter().any(|value| {
+                                value.ty.owns_mutable_cell(&types)
+                                    || hides_environment(&value.ty, &types)
+                            })
+                        {
+                            found((true, true, Vec::new()), &expression.ty, Some(0));
+                        }
+                        // A partial application that the builtin makes of a function value that
+                        // it gets (`Owned.call (ref w) cell`, `List.mapr wr (ref cells)`) binds
+                        // what it passes: a site as a call of an unseen function value is.
+                        let all: Vec<&TypedExpr> = arguments.iter().collect();
+                        for (applied, bound) in builtin_partial_applications(
+                            module,
+                            instance.builtin,
+                            &all,
+                            &expression.ty,
+                        ) {
+                            found(staged_types(bound, &applied), &applied, None);
+                        }
+                    }
+                }
+                E::Parallel(builtin, arguments) => {
+                    let all: Vec<&TypedExpr> = arguments.iter().collect();
+                    for (applied, bound) in
+                        builtin_partial_applications(module, *builtin, &all, &expression.ty)
+                    {
+                        found(staged_types(bound, &applied), &applied, None);
+                    }
+                }
+                E::Binary(BinaryOp::Pipe, left, right) => {
+                    let (callee, arguments) = piped_application(right);
+                    if let E::Function(crate::check::FunctionRef::Builtin(instance)) = &callee.kind
+                    {
+                        let all: Vec<&TypedExpr> = arguments.iter().chain([&**left]).collect();
+                        for (applied, bound) in builtin_partial_applications(
+                            module,
+                            instance.builtin,
+                            &all,
+                            &expression.ty,
+                        ) {
+                            found(staged_types(bound, &applied), &applied, None);
+                        }
+                    }
+                    let mut all = arguments.iter().chain([&**left]);
+                    match direct_callee(callee) {
+                        Some(id) => {
+                            let count = module.functions[id].parameters.len();
+                            if arguments.len() + 1 < count {
+                                found(
+                                    site(id, &mut all, &locals),
+                                    &expression.ty,
+                                    Some(count - arguments.len() - 1),
+                                );
+                            } else if arguments.len() + 1 > count {
+                                found(staged(&mut all, &expression.ty), &expression.ty, None);
+                            }
+                        }
+                        None if !matches!(
+                            callee.kind,
+                            E::Function(crate::check::FunctionRef::Builtin(_))
+                                | E::CaseConstructor { .. }
+                        ) =>
+                        {
+                            found(staged(&mut all, &expression.ty), &expression.ty, None);
+                        }
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
+            expression
+                .try_for_each_child(&mut |child| {
+                    pending.push(child);
+                    Ok(())
+                })
+                .expect("collecting function values cannot fail");
+        }
+    }
+    // A function value that holds another in its environment reaches whatever that one does:
+    // its type joins those of the owners (and of the sinks) when a value that it holds may hold
+    // one of them, until no more do. A closure that captured a `ref` to a record whose cell holds
+    // functions of no such type reaches none.
+    if (sinks || owned) && !holders.is_empty() {
+        let reach = HolderReach::new(&holders, &types);
+        if sinks {
+            reach.close(&holders, &mut sink_types);
+        }
+        if owned {
+            reach.close(&holders, &mut owned_types);
+        }
+    }
+    // Code that gets a dyn value reaches the value that it stores only through the methods of
+    // the vtables: a store reaches through it when one of them may store (its facts), or gives
+    // back a value through which a store may reach (a reference to a cell inside the value).
+    let mut dyn_targets = BTreeSet::new();
+    for ((key, _), slots) in &module.vtables {
+        if slots.iter().any(|&slot| {
+            stores.get(slot).is_none_or(|facts| {
+                (facts.top && !failed[slot])
+                    || !facts.stores.is_empty()
+                    || !facts.calls.is_empty()
+                    || !facts.hidden.is_empty()
+            }) || module
+                .functions
+                .get(slot)
+                .is_none_or(|function| may_reach_store(&function.body.ty, &types))
+        }) {
+            dyn_targets.insert(key.clone());
+        }
+    }
+    SinkFlags {
+        sinks,
+        owned,
+        owned_types,
+        sink_types,
+        references,
+        escaping,
+        wrapped,
+        takes_owned,
+        dyn_targets,
+    }
+}
+
+/// A31: the functions whose store facts `sink_flags` reads: the lifted lambdas that the module
+/// makes into function values, the named functions that it applies partially (in a call or a
+/// pipeline), and the slot functions of the vtables.
+fn flag_sites(module: &CheckedModule) -> BTreeSet<usize> {
+    let mut sites: BTreeSet<usize> = module.vtables.values().flatten().copied().collect();
+    for function in &module.functions {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            match &expression.kind {
+                E::Closure(id, _) => {
+                    sites.insert(*id);
+                }
+                E::Call(callee, arguments) => {
+                    if let Some(id) = direct_callee(callee)
+                        && arguments.len() < module.functions[id].parameters.len()
+                    {
+                        sites.insert(id);
+                    }
+                }
+                E::Binary(BinaryOp::Pipe, _, right) => {
+                    let (callee, arguments) = piped_application(right);
+                    if let Some(id) = direct_callee(callee)
+                        && arguments.len() + 1 < module.functions[id].parameters.len()
+                    {
+                        sites.insert(id);
+                    }
+                }
+                _ => {}
+            }
+            expression
+                .try_for_each_child(&mut |child| {
+                    pending.push(child);
+                    Ok(())
+                })
+                .expect("collecting function values cannot fail");
+        }
+    }
+    sites
+}
+
+/// A31: the function types of a set of `CallFacts::owned_types` or `CallFacts::sink_types` as
+/// `owned_suffix` compares them, as paths of a trie: a type `(p1, ..., pn) -> r` (a `sink_type`,
+/// whose result is no function) is the path of its result `r` and then of its parameters from the
+/// last to the first. The types that a value of it gives after some of its arguments (`r`,
+/// `pn -> r`, ..., the type itself) are the nodes along that path, so whether one of them is in a
+/// set costs one lookup of each parameter rather than a copy and a comparison of every suffix.
+/// The result and parameter types are numbered once each (`symbols`).
+#[derive(Default)]
+struct SuffixTrie {
+    symbols: BTreeMap<Type, usize>,
+    nodes: BTreeMap<(usize, usize), usize>,
+}
+
+impl SuffixTrie {
+    /// The parent of the nodes of the results.
+    const ROOT: usize = usize::MAX;
+
+    /// The steps of the path of `ty`: its result, then its parameters from the last.
+    fn steps(ty: &Type) -> (&Type, &[Type]) {
+        match ty {
+            Type::Function(parameters, result) => (&**result, &parameters.types[..]),
+            _ => (ty, &[]),
+        }
+    }
+
+    /// The nodes along the path of the `sink_type` `ty`, made when missing: the first is the node of
+    /// its result (`owned_suffix` with every argument applied), the last the node of `ty` itself.
+    fn path(&mut self, ty: &Type) -> Vec<usize> {
+        let (result, parameters) = Self::steps(ty);
+        let mut path = Vec::with_capacity(parameters.len() + 1);
+        let mut node = Self::ROOT;
+        for step in std::iter::once(result).chain(parameters.iter().rev()) {
+            let next = self.symbols.len();
+            let symbol = *self.symbols.entry(step.clone()).or_insert(next);
+            let next = self.nodes.len();
+            node = *self.nodes.entry((node, symbol)).or_insert(next);
+            path.push(node);
+        }
+        path
+    }
+
+    /// The node of the type `ty` itself, when the trie has its whole path. A function type that no
+    /// `sink_type` has (pure, with conventions, without parameters or with a function result) is
+    /// no suffix of one, and has none.
+    fn node(&self, ty: &Type) -> Option<usize> {
+        if let Type::Function(parameters, result) = ty
+            && (parameters.pure
+                || !parameters.conventions.is_empty()
+                || parameters.types.is_empty()
+                || matches!(**result, Type::Function(..)))
+        {
+            return None;
+        }
+        let (result, parameters) = Self::steps(ty);
+        let mut node = Self::ROOT;
+        for step in std::iter::once(result).chain(parameters.iter().rev()) {
+            node = *self.nodes.get(&(node, *self.symbols.get(step)?))?;
+        }
+        Some(node)
+    }
+}
+
+/// A31: what the values that the holders of `sink_flags` hold reach, for closing a set of types
+/// (`CallFacts::owned_types` or `CallFacts::sink_types`) under them: a holder joins the set when a
+/// function value that its held values reach (through stored values and references) gives a type
+/// of the set after some of its arguments (`owned_suffix`), when they reach a dyn value and the set
+/// has a dyn type, or when they reach an `Owned.Function`. The function values are paths of `trie`,
+/// and `watchers` lists, for each node, the holders whose function values pass through it, so a
+/// holder is looked at again only when a type that it may reach joins the set, rather than every
+/// holder after each one that joins (a chain of closures that each capture the one before at a
+/// longer type joined one type per pass over all of them).
+struct HolderReach {
+    trie: SuffixTrie,
+    watchers: BTreeMap<usize, Vec<usize>>,
+    /// The holders whose held values reach an `Owned.Function`, and those that reach a dyn value.
+    owned: Vec<usize>,
+    dynamic: Vec<usize>,
+}
+
+impl HolderReach {
+    fn new(holders: &[(Type, Vec<Type>)], types: &crate::check::TypeContext<'_>) -> Self {
+        let mut reach = Self {
+            trie: SuffixTrie::default(),
+            watchers: BTreeMap::new(),
+            owned: Vec::new(),
+            dynamic: Vec::new(),
+        };
+        for (index, (_, held)) in holders.iter().enumerate() {
+            let functions = std::cell::RefCell::new(Vec::new());
+            let (owned, dynamic) = (std::cell::Cell::new(false), std::cell::Cell::new(false));
+            for value in held {
+                types.reaches(value, |part| {
+                    match part {
+                        Type::Function(..) => functions.borrow_mut().push(sink_type(part)),
+                        Type::Dyn(_) => dynamic.set(true),
+                        _ => owned.set(owned.get() || part.is_owned_function(types)),
+                    }
+                    false
+                });
+            }
+            if owned.get() {
+                reach.owned.push(index);
+            }
+            if dynamic.get() {
+                reach.dynamic.push(index);
+            }
+            for function in functions.into_inner() {
+                for node in reach.trie.path(&function) {
+                    let watchers = reach.watchers.entry(node).or_default();
+                    if watchers.last() != Some(&index) {
+                        watchers.push(index);
+                    }
+                }
+            }
+        }
+        reach
+    }
+
+    /// Adds to `set` the types of the holders that reach one of its types, to a fixed point. It
+    /// gives how many times it looked at a holder, for the tests of its cost: at most once for
+    /// each node that the holder's function values pass through, beside `owned` and `dynamic`.
+    fn close(&self, holders: &[(Type, Vec<Type>)], set: &mut BTreeSet<Type>) -> usize {
+        let mut looks = 0;
+        let mut done = vec![false; holders.len()];
+        let mut marked = BTreeSet::new();
+        let mut pending: Vec<usize> = self.owned.clone();
+        let mut dynamic = false;
+        for ty in set.iter() {
+            dynamic |= matches!(ty, Type::Dyn(_));
+            if let Some(node) = self.trie.node(ty)
+                && marked.insert(node)
+            {
+                pending.extend(self.watchers.get(&node).into_iter().flatten());
+            }
+        }
+        if dynamic {
+            pending.extend(&self.dynamic);
+        }
+        while let Some(index) = pending.pop() {
+            looks += 1;
+            if std::mem::replace(&mut done[index], true) {
+                continue;
+            }
+            let ty = &holders[index].0;
+            if !set.insert(ty.clone()) {
+                continue;
+            }
+            if !dynamic && matches!(ty, Type::Dyn(_)) {
+                dynamic = true;
+                pending.extend(&self.dynamic);
+            }
+            if let Some(node) = self.trie.node(ty)
+                && marked.insert(node)
+            {
+                pending.extend(self.watchers.get(&node).into_iter().flatten());
+            }
+        }
+        looks
+    }
+}
+
+/// A31: the values whose types do not show that dropping them may run a user `Drop.drop`
+/// (`drop_environments`, `Checker::drop_reads`).
+#[derive(Clone, Debug, Default)]
+struct DropEnvironments {
+    /// The types (`sink_type`) of the function values whose environment may hold a value with a
+    /// user `Drop` instance: those of the closures and partial applications that bind such a value,
+    /// and of those that hold a function value of one of these types (closed under the holders,
+    /// `HolderReach`).
+    functions: BTreeSet<Type>,
+    /// A dyn value, an `Owned.Function` or a tzroutine body of the module may hold such a value
+    /// (or a function value of one of `functions`, a dyn value or an `Owned.Function`): then every
+    /// function value may.
+    others: bool,
+}
+
+/// A31: the function values of `module` whose environment may hold a value with a user `Drop`
+/// instance, so that dropping them may run its `Drop.drop` (`DropEnvironments`). A function type
+/// does not show its environment, but the module makes every function value that has one: a
+/// lifted lambda with its captures, a partial application with its bound arguments, the function
+/// that a call returns with the arguments beyond its parameters, `Dyn.of` and `Owned.function`
+/// with their argument. A module without a user `Drop` instance has none.
+fn drop_environments(module: &CheckedModule) -> DropEnvironments {
+    let mut found = DropEnvironments::default();
+    if module.user_drops.is_empty() {
+        return found;
+    }
+    let types = module.types();
+    let mut holders: Vec<(Type, Vec<Type>)> = Vec::new();
+    // The values that hide an environment that dyn values, owned functions and tzroutine bodies
+    // hold: they decide `others` once `functions` is known.
+    let mut others_held: Vec<Type> = Vec::new();
+    // The types of the values that a site binds, a bound named function left out (it has no
+    // environment).
+    let bound_types = |bound: Vec<&TypedExpr>| -> Vec<Type> {
+        bound
+            .into_iter()
+            .filter(|value| !matches!(value.kind, E::Function(_) | E::GenericFunction(..)))
+            .map(|value| value.ty.clone())
+            .collect()
+    };
+    let mut site = |ty: &Type, bound: Vec<Type>, found: &mut DropEnvironments| {
+        let drops = |bound: &Type| bound.drops_some(&types, |part| part.has_user_drop(&types));
+        if !matches!(ty, Type::Function(..)) {
+            // A dyn value, an `Owned.Function` or a tzroutine body.
+            found.others |= bound.iter().any(drops);
+            others_held.extend(
+                bound
+                    .iter()
+                    .map(without_views)
+                    .filter(|ty| hides_environment(ty, &types)),
+            );
+            return;
+        }
+        if bound.iter().any(drops) {
+            found.functions.insert(sink_type(ty));
+        }
+        let held: Vec<Type> = bound
+            .iter()
+            .map(without_views)
+            .filter(|ty| hides_environment(ty, &types))
+            .collect();
+        if !held.is_empty() {
+            holders.push((sink_type(ty), held));
+        }
+    };
+    for function in &module.functions {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            match &expression.kind {
+                E::Closure(_, captures) => {
+                    site(
+                        &expression.ty,
+                        bound_types(captures.iter().collect()),
+                        &mut found,
+                    );
+                }
+                E::Call(callee, arguments) if !arguments.is_empty() => {
+                    if let Some(id) = direct_callee(callee) {
+                        let count = module.functions[id].parameters.len();
+                        if arguments.len() < count {
+                            site(
+                                &expression.ty,
+                                bound_types(arguments.iter().collect()),
+                                &mut found,
+                            );
+                        } else if arguments.len() > count {
+                            site(
+                                &expression.ty,
+                                bound_types(arguments[count..].iter().collect()),
+                                &mut found,
+                            );
+                        }
+                    } else if let E::Function(crate::check::FunctionRef::Builtin(instance)) =
+                        &callee.kind
+                    {
+                        use crate::check::Builtin::{DynOf, OwnedFunction};
+                        if matches!(instance.builtin, DynOf | OwnedFunction)
+                            || arguments.len() < instance.builtin.scheme().parameters.len()
+                        {
+                            site(
+                                &expression.ty,
+                                bound_types(arguments.iter().collect()),
+                                &mut found,
+                            );
+                        }
+                        // The partial applications that the builtin makes of a function value
+                        // that it gets (`builtin_partial_applications`).
+                        let all: Vec<&TypedExpr> = arguments.iter().collect();
+                        for (applied, bound) in builtin_partial_applications(
+                            module,
+                            instance.builtin,
+                            &all,
+                            &expression.ty,
+                        ) {
+                            site(&applied, bound, &mut found);
+                        }
+                    } else if !matches!(callee.kind, E::CaseConstructor { .. })
+                        && matches!(expression.ty, Type::Function(..))
+                    {
+                        site(
+                            &expression.ty,
+                            bound_types(arguments.iter().collect()),
+                            &mut found,
+                        );
+                    }
+                }
+                E::Binary(BinaryOp::Pipe, left, right)
+                    if matches!(expression.ty, Type::Function(..)) =>
+                {
+                    let (_, arguments) = piped_application(right);
+                    site(
+                        &expression.ty,
+                        bound_types(arguments.iter().chain([&**left]).collect()),
+                        &mut found,
+                    );
+                }
+                E::Binary(BinaryOp::Pipe, left, right) => {
+                    let (callee, arguments) = piped_application(right);
+                    if let E::Function(crate::check::FunctionRef::Builtin(instance)) = &callee.kind
+                    {
+                        let all: Vec<&TypedExpr> = arguments.iter().chain([&**left]).collect();
+                        for (applied, bound) in builtin_partial_applications(
+                            module,
+                            instance.builtin,
+                            &all,
+                            &expression.ty,
+                        ) {
+                            site(&applied, bound, &mut found);
+                        }
+                    }
+                }
+                E::Parallel(builtin, arguments) => {
+                    let all: Vec<&TypedExpr> = arguments.iter().collect();
+                    for (applied, bound) in
+                        builtin_partial_applications(module, *builtin, &all, &expression.ty)
+                    {
+                        site(&applied, bound, &mut found);
+                    }
+                }
+                _ => {}
+            }
+            expression
+                .try_for_each_child(&mut |child| {
+                    pending.push(child);
+                    Ok(())
+                })
+                .expect("collecting function values cannot fail");
+        }
+    }
+    if !found.functions.is_empty() && !holders.is_empty() {
+        let reach = HolderReach::new(&holders, &types);
+        reach.close(&holders, &mut found.functions);
+    }
+    let functions = &found.functions;
+    found.others |= others_held.iter().any(|ty| {
+        types.reaches(ty, |part| match part {
+            Type::Function(..) => owned_suffix(part, usize::MAX, functions),
+            Type::Dyn(_) => true,
+            _ => part.is_owned_function(&types),
+        })
+    });
+    found
+}
+
+/// A31: how many arguments the function value of `value` takes before its code runs, when its
+/// expression shows it: the parameters of a named function, those of a lifted lambda after its
+/// captures, the rest of the parameters of a partial application of a named function. `None` for
+/// any other value (a local, a parameter, the result of a call).
+fn shown_arity(module: &CheckedModule, value: &TypedExpr) -> Option<usize> {
+    match &value.kind {
+        E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => {
+            Some(module.functions[*id].parameters.len())
+        }
+        E::Closure(id, captures) => module.functions[*id]
+            .parameters
+            .len()
+            .checked_sub(captures.len()),
+        E::Call(callee, arguments) => direct_callee(callee)
+            .and_then(|id| {
+                module.functions[id]
+                    .parameters
+                    .len()
+                    .checked_sub(arguments.len())
+            })
+            .filter(|rest| *rest > 0),
+        _ => None,
+    }
+}
+
+/// A31: the partial applications that a call of the builtin `builtin` with `arguments` (whose
+/// type is `result`) may make of a function value that it gets, each with its type (`sink_type`)
+/// and the types of the values that it may bind (`sink_flags`, `drop_environments`,
+/// `partial_results`). The builtin applies a callback (a parameter of a function type in its
+/// scheme) to as many arguments as that type has parameters, made from its other arguments (the
+/// elements of a list, a reference to one, the state of a fold, the contents of a lock), and
+/// `Owned.call` applies the owned function to its argument. When the function value takes more
+/// arguments before its code runs (a named function, a partial application of one or a lambda
+/// with more parameters, or a value whose expression does not show it: `shown_arity`), the result
+/// is a partial application that holds those values, whose types the other arguments, and the
+/// arguments that a partial application of the builtin leaves (the parameters of `result`),
+/// reach. A call with more arguments than the builtin takes applies its result to the rest, which
+/// may bind them all. A bound named function has no environment.
+fn builtin_partial_applications(
+    module: &CheckedModule,
+    builtin: crate::check::Builtin,
+    arguments: &[&TypedExpr],
+    result: &Type,
+) -> Vec<(Type, Vec<Type>)> {
+    let scheme = builtin.scheme();
+    let named = |value: &TypedExpr| matches!(value.kind, E::Function(_) | E::GenericFunction(..));
+    // The values that the builtin passes to a callback come from its other arguments, and from
+    // those that it does not get yet when the call applies it partially.
+    let later: Vec<Type> = match result {
+        Type::Function(parameters, _) if arguments.len() < scheme.parameters.len() => {
+            parameters.types.iter().map(without_views).collect()
+        }
+        _ => Vec::new(),
+    };
+    let bound = |skip: Option<usize>| -> Vec<Type> {
+        arguments
+            .iter()
+            .enumerate()
+            .filter(|(index, value)| Some(*index) != skip && !named(value))
+            .map(|(_, value)| without_views(&value.ty))
+            .chain(later.iter().cloned())
+            .collect()
+    };
+    let mut made = Vec::new();
+    if matches!(result, Type::Function(..)) {
+        if builtin == crate::check::Builtin::OwnedCall && arguments.len() >= 2 {
+            made.push((sink_type(result), bound(Some(0))));
+        } else if arguments.len() > scheme.parameters.len() {
+            made.push((sink_type(result), bound(None)));
+        }
+    }
+    for (index, parameter) in scheme.parameters.iter().enumerate() {
+        let (crate::check::BuiltinType::Function(parameters, _), Some(callback)) =
+            (parameter, arguments.get(index))
+        else {
+            continue;
+        };
+        let count = parameters.len();
+        if shown_arity(module, callback).is_some_and(|arity| arity <= count) {
+            continue;
+        }
+        if let Type::Function(types, last) = sink_type(&callback.ty)
+            && types.types.len() > count
+        {
+            let applied = Type::Function(
+                Box::new(crate::check::FunctionParameters {
+                    types: types.types[count..].to_vec(),
+                    conventions: Box::default(),
+                    pure: false,
+                }),
+                last,
+            );
+            made.push((applied, bound(Some(index))));
+        }
+    }
+    made
+}
+
+/// A31: the types (`sink_type`) of the partial applications of function values that `module` may
+/// make. A partial application of a function value is made only where something applies the value
+/// to fewer arguments than it takes before its code runs:
+///
+/// - a call or a pipeline of a function value (a local, a parameter, a field, the result of a
+///   call, a method), or of the function that a named function or a builtin returns, applied to
+///   the arguments beyond its parameters: the call's type, when it is a function;
+/// - a builtin that applies a function value it gets (`builtin_partial_applications`);
+/// - `new [T](n, f)` and `new [|T|](n, f)`, which apply `f` to an index;
+/// - code outside the module that runs a callback that a host import gets (any partial
+///   application of the callback's type).
+///
+/// A partial application of a named function is a site of its own (`sink_flags`). Specialization
+/// gives every body its concrete types, so the type of an application is that of the partial
+/// application that it may make. `sink_flags` counts the types of the partial applications of a
+/// function value made at a site (`partial_types`) only when one of them is here: a value of such
+/// a type that the module never makes as a partial application holds no environment of the site.
+/// The match over the kinds of expressions names each kind, so a new kind has to say whether it
+/// applies a function value.
+fn partial_results(module: &CheckedModule) -> BTreeSet<Type> {
+    let mut made = BTreeSet::new();
+    let function_type = |ty: &Type| matches!(ty, Type::Function(..)).then(|| sink_type(ty));
+    for function in &module.functions {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            match &expression.kind {
+                E::Call(callee, arguments) => {
+                    let all: Vec<&TypedExpr> = arguments.iter().collect();
+                    applications(module, expression, callee, &all, &mut made);
+                }
+                E::Binary(BinaryOp::Pipe, left, right) => {
+                    let (callee, arguments) = piped_application(right);
+                    let all: Vec<&TypedExpr> = arguments.iter().chain([&**left]).collect();
+                    applications(module, expression, callee, &all, &mut made);
+                }
+                E::Parallel(builtin, arguments) => {
+                    let all: Vec<&TypedExpr> = arguments.iter().collect();
+                    made.extend(
+                        builtin_partial_applications(module, *builtin, &all, &expression.ty)
+                            .into_iter()
+                            .map(|(applied, _)| applied),
+                    );
+                }
+                E::NewArray(_, initializer) | E::NewList(_, initializer) => {
+                    if !shown_arity(module, initializer).is_some_and(|arity| arity <= 1)
+                        && let Some(Type::Function(parameters, result)) =
+                            function_type(&initializer.ty)
+                        && parameters.types.len() > 1
+                    {
+                        made.insert(Type::Function(
+                            Box::new(crate::check::FunctionParameters {
+                                types: parameters.types[1..].to_vec(),
+                                conventions: Box::default(),
+                                pure: false,
+                            }),
+                            result,
+                        ));
+                    }
+                }
+                E::HostCall(import, arguments) => {
+                    if import.callbacks {
+                        for argument in arguments {
+                            if matches!(argument.ty, Type::Function(..)) {
+                                made.extend(partial_types(&argument.ty, None));
+                            }
+                        }
+                    }
+                }
+                // Values, places, control and the values that the module makes: none applies a
+                // function value. An operator, an index, a format or a structural comparison of a
+                // user type calls its instance's named functions with all their arguments, a
+                // tzroutine body takes none, and a `select` runs its arms as a `match`.
+                E::Error
+                | E::Int(_)
+                | E::Float(_)
+                | E::String(_)
+                | E::Bool(_)
+                | E::Unit
+                | E::Break
+                | E::Continue
+                | E::Local(_)
+                | E::Static(_)
+                | E::Function(_)
+                | E::GenericFunction(..)
+                | E::Method(..)
+                | E::TypeFunction { .. }
+                | E::GenericInteger(..)
+                | E::GenericFloat(_)
+                | E::Unary(..)
+                | E::Binary(..)
+                | E::Lambda { .. }
+                | E::Closure(..)
+                | E::RoutineGo(_)
+                | E::SelectWait(_)
+                | E::StructuralCompare(..)
+                | E::StructuralHash(_)
+                | E::StructuralDisplay(_)
+                | E::Interpolated(_)
+                | E::If { .. }
+                | E::While { .. }
+                | E::ForRange { .. }
+                | E::ForEach { .. }
+                | E::Match { .. }
+                | E::Block { .. }
+                | E::Record(_)
+                | E::RecordUpdate { .. }
+                | E::Array(_)
+                | E::List(_)
+                | E::Tuple(_)
+                | E::ListTail(..)
+                | E::NewLiteral(_)
+                | E::Field(..)
+                | E::Index(..)
+                | E::Slice { .. }
+                | E::Length(_)
+                | E::StringLength(_)
+                | E::Borrow(..)
+                | E::BorrowOperand(_)
+                | E::Dereference(_)
+                | E::Assign(..)
+                | E::Cast(_)
+                | E::SaturatingIndex(_)
+                | E::CaseConstructor { .. }
+                | E::Construct { .. }
+                | E::UnionTag(_)
+                | E::UnionPayload { .. }
+                | E::Checked(_)
+                | E::Try(_)
+                | E::RaisedException
+                | E::Reraise
+                | E::DynDispatch { .. } => {}
+            }
+            expression
+                .try_for_each_child(&mut |child| {
+                    pending.push(child);
+                    Ok(())
+                })
+                .expect("collecting applications cannot fail");
+        }
+    }
+    made
+}
+
+/// A31: the partial applications (`partial_results`) that the call or pipeline `expression` of
+/// `callee` with `arguments` may make.
+fn applications(
+    module: &CheckedModule,
+    expression: &TypedExpr,
+    callee: &TypedExpr,
+    arguments: &[&TypedExpr],
+    made: &mut BTreeSet<Type>,
+) {
+    let result = matches!(expression.ty, Type::Function(..)).then(|| sink_type(&expression.ty));
+    if let Some(id) = direct_callee(callee) {
+        // A partial application of a named function is a site of its own; the arguments beyond
+        // its parameters apply the function that it returns.
+        if arguments.len() > module.functions[id].parameters.len() {
+            made.extend(result);
+        }
+    } else if let E::Function(crate::check::FunctionRef::Builtin(instance)) = &callee.kind {
+        made.extend(
+            builtin_partial_applications(module, instance.builtin, arguments, &expression.ty)
+                .into_iter()
+                .map(|(applied, _)| applied),
+        );
+    } else if !matches!(callee.kind, E::CaseConstructor { .. }) {
+        made.extend(result);
+    }
+}
+
+/// A31: the types (`sink_type`) of the partial applications of a function value of type `ty` that
+/// takes `arity` arguments before its code runs (`None`: any number up to all its parameters): the
+/// rest of its parameters after each number of arguments short of `arity` (`sink_flags`).
+fn partial_types(ty: &Type, arity: Option<usize>) -> Vec<Type> {
+    let Type::Function(parameters, result) = sink_type(ty) else {
+        return Vec::new();
+    };
+    let count = parameters.types.len();
+    let given = arity.map_or(count, |arity| arity.min(count));
+    (1..given)
+        .map(|applied| {
+            Type::Function(
+                Box::new(crate::check::FunctionParameters {
+                    types: parameters.types[applied..].to_vec(),
+                    conventions: Box::default(),
+                    pure: false,
+                }),
+                result.clone(),
+            )
+        })
+        .collect()
+}
+
+/// A31: the immutable locals of `body` bound to a named function, which has no environment.
+fn named_locals(body: &TypedExpr) -> BTreeSet<usize> {
+    let mut locals = BTreeSet::new();
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        if let E::Block { bindings, .. } = &expression.kind {
+            for (local, value) in bindings {
+                if !local.mutable && matches!(value.kind, E::Function(_) | E::GenericFunction(..)) {
+                    locals.insert(local.id);
+                }
+            }
+        }
+        expression
+            .try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })
+            .expect("collecting bindings cannot fail");
+    }
+    locals
+}
+
+/// What `sink_flags` finds.
+struct SinkFlags {
+    sinks: bool,
+    owned: bool,
+    owned_types: BTreeSet<Type>,
+    /// The types (`sink_type`) of the function values that store into what their environment
+    /// reaches, and of those that may hold one in their environment (`CallFacts::sink_types`).
+    sink_types: BTreeSet<Type>,
+    references: bool,
+    /// The types of the values that the module hands to code that runs later.
+    escaping: BTreeSet<Type>,
+    /// The types of the function values that the module wraps with `Owned.function`.
+    wrapped: BTreeSet<Type>,
+    /// Some builtin of the module takes an owned function, to run it later.
+    takes_owned: bool,
+    /// The dyn types (`DynType::vtable_key`) whose methods may store, or give back a value
+    /// through which a store may reach (`CallFacts::dyn_targets`).
+    dyn_targets: BTreeSet<crate::check::DynType>,
+}
+
+impl SinkFlags {
+    /// Whether a value that the module hands to code that runs later may hold a function value
+    /// of one of the types `owned` (`CallFacts::owned_types`): directly, in a dyn value (when
+    /// some dyn type is among them), or in an `Owned.Function` (when `Owned.function` wraps such
+    /// a value somewhere), whose types do not show what they store. An owned function that wraps
+    /// such a value is itself handed over when a builtin takes one to run it later.
+    fn escapes(&self, module: &CheckedModule, owned: &BTreeSet<Type>) -> bool {
+        let types = module.types();
+        let dynamic = owned.iter().any(|ty| matches!(ty, Type::Dyn(_)));
+        let holds = |ty: &Type, wrapped: bool| {
+            types.reaches(ty, |part| match part {
+                Type::Function(..) => owned.contains(&sink_type(part)),
+                Type::Dyn(_) => dynamic,
+                _ => wrapped && part.is_owned_function(&types),
+            })
+        };
+        let wrapped = self.wrapped.iter().any(|ty| holds(ty, false));
+        (wrapped && self.takes_owned) || self.escaping.iter().any(|ty| holds(ty, wrapped))
+    }
+}
+
+/// A31: the type `ty` of a function value as `CallFacts::owned_types` compares it: the purity,
+/// which a cast changes, is left out, and so are the parameter conventions and the references
+/// around a parameter's type (a lambda's read parameter of edition 2027 is `ref (unit -> i64)`
+/// where the declared type of a value that holds the lambda says `unit -> i64`); a curried chain
+/// is one list of parameters. Two types that a value may have both compare equal, which is what
+/// a test of membership needs; a few more compare equal too, which only widens it.
+fn sink_type(ty: &Type) -> Type {
+    match ty {
+        Type::Function(parameters, result) => {
+            let mut types: Vec<Type> = parameters
+                .types
+                .iter()
+                .map(|parameter| {
+                    let mut parameter = parameter;
+                    while let Type::Reference(target, _) = parameter {
+                        parameter = target;
+                    }
+                    sink_type(parameter)
+                })
+                .collect();
+            let mut result = sink_type(result);
+            while let Type::Function(more, last) = result {
+                types.extend(more.types);
+                result = *last;
+            }
+            Type::Function(
+                Box::new(crate::check::FunctionParameters {
+                    types,
+                    conventions: Box::default(),
+                    pure: false,
+                }),
+                Box::new(result),
+            )
+        }
+        Type::Reference(target, mutable) => Type::Reference(Box::new(sink_type(target)), *mutable),
+        Type::Array(element) | Type::ArrayView(element) => {
+            Type::Array(Box::new(sink_type(element)))
+        }
+        Type::List(element) => Type::List(Box::new(sink_type(element))),
+        Type::Vec(element) => Type::Vec(Box::new(sink_type(element))),
+        Type::Shared(element, kind) => Type::Shared(Box::new(sink_type(element)), *kind),
+        Type::Tuple(elements) => Type::Tuple(elements.iter().map(sink_type).collect()),
+        Type::Record(id, arguments) => Type::Record(*id, arguments.iter().map(sink_type).collect()),
+        Type::Union(id, arguments) => Type::Union(*id, arguments.iter().map(sink_type).collect()),
+        _ => ty.clone(),
+    }
+}
+
+/// A31: whether the function type `ty`, or the type of the function that a value of it gives after
+/// at most `arguments` arguments, is one of `owned` (`CallFacts::owned_types`, compared as
+/// `sink_type` has it).
+fn owned_suffix(ty: &Type, arguments: usize, owned: &BTreeSet<Type>) -> bool {
+    let Type::Function(parameters, result) = sink_type(ty) else {
+        return owned.contains(&sink_type(ty));
+    };
+    (0..=arguments.min(parameters.types.len())).any(|applied| {
+        let rest = if applied == parameters.types.len() {
+            (*result).clone()
+        } else {
+            Type::Function(
+                Box::new(crate::check::FunctionParameters {
+                    types: parameters.types[applied..].to_vec(),
+                    conventions: Box::default(),
+                    pure: false,
+                }),
+                result.clone(),
+            )
+        };
+        owned.contains(&rest)
+    })
+}
+
+/// What one check of a body gives `joint_facts`.
+struct FactsOutcome {
+    /// The parameters whose loans the result holds; `None` holds them all.
+    retained: Option<Box<[bool]>>,
+    stores: StoreFacts,
+    /// The closed result is revoked: the result holds a loan.
+    revoke: bool,
+    /// The body does not check: the program is rejected, whatever the facts become.
+    failed: bool,
+}
+
+/// One check of the body of function `id` under `facts`, for `joint_facts`: the parameters whose
+/// loans its result holds (`retention`; `None` when the body does not check, when its result holds
+/// a loan of its own locals, or when it lends a way to write or makes an opaque call,
+/// `lending_bodies`), its store facts (`stores`; `top` when it does not check), and whether its
+/// result holds a loan (`revocable`).
+fn check_facts(
     module: &CheckedModule,
     id: usize,
     infer: bool,
     facts: &CallFacts,
-) -> Option<Box<[bool]>> {
+    retention: bool,
+    stores: bool,
+    revocable: bool,
+) -> FactsOutcome {
     let function = &module.functions[id];
-    if facts.lending.no_facts(id) {
-        return None;
+    let retention = retention && !facts.lending.no_facts(id);
+    if !retention && !stores && !revocable {
+        return FactsOutcome {
+            retained: None,
+            stores: StoreFacts::default(),
+            revoke: false,
+            failed: false,
+        };
     }
+    let user_drop = module.user_drops.values().any(|drop| *drop == id);
     let mut recovered = Vec::new();
     let mut checker = start_checker(
         module,
@@ -1041,8 +3742,8 @@ fn retained_parameters(
         &function.body,
         infer,
         facts,
-        false,
-        false,
+        function.is_once,
+        user_drop,
         facts.contract(module, id),
         &mut recovered,
         None,
@@ -1054,16 +3755,46 @@ fn retained_parameters(
         &function.body,
         infer,
         facts,
-        false,
-        false,
+        function.is_once,
+        user_drop,
         facts.contract(module, id),
     );
     checker.collect_drops();
-    let result = checker
+    if stores {
+        checker.stores = Some(StoreFacts::default());
+    }
+    // The body's value goes to the caller, which applies the drop hook where it keeps it.
+    checker.bound_next = true;
+    let evaluated = checker
         .eval(&function.body, Use::Consume, &BTreeSet::new())
-        .ok()?;
-    if !checker.recovered.is_empty() {
-        return None;
+        .map(|mut result| {
+            checker.absorb_hidden(0, &mut result, &function.body.ty, Some(&function.body));
+            result
+        });
+    let result = match evaluated {
+        Ok(result) if checker.recovered.is_empty() && checker.deferred.is_empty() => result,
+        _ => {
+            return FactsOutcome {
+                retained: None,
+                stores: StoreFacts::top(),
+                revoke: revocable,
+                failed: true,
+            };
+        }
+    };
+    let found = checker.stores.take().unwrap_or_default();
+    let revoke = revocable
+        && result
+            .loans
+            .iter()
+            .any(|loan| !is_static_root(checker.loans[*loan].place.root));
+    if !retention {
+        return FactsOutcome {
+            retained: None,
+            stores: found,
+            revoke,
+            failed: false,
+        };
     }
     let roots: BTreeMap<usize, usize> = function
         .parameters
@@ -1075,7 +3806,12 @@ fn retained_parameters(
         let root = checker.loans[*loan].place.root;
         !roots.contains_key(&root) && !is_static_root(root)
     }) {
-        return None;
+        return FactsOutcome {
+            retained: None,
+            stores: found,
+            revoke,
+            failed: false,
+        };
     }
     let mut retained = if infer {
         hidden_parameters(module, function)
@@ -1098,7 +3834,12 @@ fn retained_parameters(
         }
         pending.extend(&loan.parents);
     }
-    Some(retained.into_boxed_slice())
+    FactsOutcome {
+        retained: Some(retained.into_boxed_slice()),
+        stores: found,
+        revoke,
+        failed: false,
+    }
 }
 
 /// Whether `body` hands to other code a way to write into a place that its values reach: an
@@ -1108,47 +3849,52 @@ fn retained_parameters(
 /// that holds one, a `MatrixView.Mut`) or a mutable cell (a `Mutex`, `RwMutex`, `OnceValue`,
 /// `SyncMap`, channel or `ErrGroup` whose contents may hold a borrow), through stored values, the
 /// targets of references, the contents of `Rc` and `Arc`, and the parameter and result types of
-/// function types (a callback `put text : ref mut [T] -> unit`).
+/// function types (a callback `put text : ref mut [T] -> unit`). Exclusive references count when
+/// `exclusive` is true.
 ///
 /// A28 trusts the loans that the check of a body gives its result: the facts drop the arguments
 /// that do not reach it, and `read_through` takes what a borrowed local owner holds. Both are
 /// sound when the loans that the check gives the values are complete: a value that holds another
 /// holds its loans.
 ///
-/// The primary argument is program-wide (`untracked_loan_store`, `Lending::untracked`). The check
-/// tracks every store that the language makes but those of a few builtins (`untracked_writer`):
-/// `Array.write`, which `Array.set`, `Array.fill`, `Array.blit` and the other std functions that
-/// write in place call, and `SyncMap.__replace` do not add the stored value's loans to the owner
-/// of the place (A31). An assignment, `deref r = v`, `Vec.push_mut` (its region slots) and a
-/// function with a region contract add them; a store through a reference that a body gets
-/// (a `ref mut` parameter, or the `ref mut` that a lock lends its callback) needs a named region
-/// for a value that holds loans; a channel's items, an `OnceValue`'s initializer and an
-/// `Owned.Function` are checked to hold no borrow. Code that runs without a call in the source
-/// (a drop, an operator, a class method, a dyn method) and the code of a function value are bodies
-/// of the module, checked under the same rules, and a store of a value that holds no loan cannot
-/// make a loan incomplete. So when no function of the program, std functions, lifted lambdas and
-/// the generated functions of builtins included, stores a value whose type may carry loans with
-/// an untracked writer, every value's loans are complete wherever the check meets it, through any
-/// number of calls, callbacks, drops and opaque function values: the facts hold (a callee leaves
+/// The primary argument is A31's store facts. The check tracks every store that the language
+/// makes: an assignment, `deref r = v` and a function with a region contract add the stored
+/// value's loans to the owner of the place; a store through a reference that a body gets (a
+/// `ref mut` parameter, or the `ref mut` that a lock lends its callback) needs a named region for
+/// a value that holds loans, and a function with such a contract runs only in direct calls
+/// (`regions::validate_contract_calls`); a channel's items, an `OnceValue`'s initializer and an
+/// `Owned.Function` are checked to hold no borrow; and the builtins that store a value where an
+/// exclusive reference or a cell that they get reaches (`store_seed`: `Array.write`, which
+/// `Array.set`, `Array.fill`, `Array.blit` and the other std functions that write in place call,
+/// `SyncMap.__replace` and `Vec.push_mut`) have store facts, which every call of them or of a
+/// function that calls them applies, directly, through a pipeline, as a callback or as a function
+/// value (`StoreFacts`, `Checker::apply_store`); the other writers store numbers. Code that runs
+/// without a call in the source (a drop, an operator, a class method, a dyn method) and the code of
+/// a function value are bodies of the module, checked under the same rules, and a store of a value
+/// that holds no loan cannot make a loan incomplete. So every value's loans are complete wherever
+/// the check meets it, through any number of calls and callbacks: the facts hold (a callee leaves
 /// out of its result the arguments that do not reach it, whatever they hold) and so does the
-/// read-through (a share holds what its owner's loans say the owner holds). When some function
-/// makes such a store, no body of the program has facts or reads through, the rule from before
-/// A28. A31 (`_features/A31-in-place-writes-keep-stored-borrows.md`) is the ticket that tracks
-/// those stores; once they are tracked, the guard has nothing to find and A28 applies to every
-/// program.
+/// read-through (a share holds what its owner's loans say the owner holds), beside the stores of
+/// code whose body the analysis does not see and of drops, which the local guards below handle.
+/// Before A31 the seeds had no facts, and a program that stored a value that may hold loans with
+/// one had no facts at all and read nothing through (A28, 8th review).
 ///
-/// The local guards of the third to seventh reviews stay as defense in depth: they keep a body
-/// that may make a store its check misses from using facts or reading through, whatever the rest
-/// of the program does. The rest of this comment is their argument, which enumerates the ways a
-/// value can reach a place that the check misses rather than the writers. A store that the check
-/// does not track writes through an exclusive reference or through a mutable cell: other stores
-/// are tracked, and a shared reference to anything else lends no way to write.
+/// The local guards of the third to seventh reviews keep a body that may make a store its check
+/// misses from using facts or reading through, whatever the rest of the program does. The rest of
+/// this comment is their argument, which enumerates the ways a value can reach a place that the
+/// check misses rather than the writers. A store that the check does not track writes through an
+/// exclusive reference or through a mutable cell: other stores are tracked, and a shared reference
+/// to anything else lends no way to write.
 ///
 /// A body's value (a parameter's loan included) can thus reach a place that its result does not
 /// show in four ways only. Each of the first three makes the body lending (`lending_bodies`: no
 /// facts, no read-through, the rule from before A28; a call that is opaque only through the
 /// callee's environment drops the facts alone, `OpaqueCalls::environment`), and the fourth keeps
-/// the facts but retains what the dropped values hold:
+/// the facts but retains what the dropped values hold. Since A31, (a) keeps only part of its
+/// guard (`lending_bodies`): what code stores through an exclusive reference or a cell that the
+/// body hands it is applied at the call (the store facts), so the body keeps its facts, and it
+/// reads through unless it hands out a cell, which an `Rc` or `Arc` may share with other owners
+/// whose loans a store into it does not reach. `Lending::drops_store` keeps all four:
 ///
 /// - (a) A store through an exclusive reference or a cell that the body hands to code as one of
 ///   the operands above, which this function finds. The reference or the cell comes from the body:
@@ -1192,8 +3938,10 @@ fn retained_parameters(
 ///   that std collections call, the instances that `src/derive.rs` derives, which are checked as
 ///   written instances) are named instance functions after specialization, or the vtable's
 ///   dispatch of a dyn value (`E::DynDispatch`, opaque). An interpolation hole's method is a call
-///   for `opaque_calls`; structural comparison, hashing and display run no user code beside that
-///   of the dyn values they reach, which `opaque_calls` counts.
+///   for `opaque_calls`; structural comparison, hashing and display of an array, a list or a
+///   tuple run the methods of the element types, which the expression lists as function values
+///   after its operands (the store facts apply them, `Checker::eval_value`), and the methods of
+///   the dyn values that they reach, which `opaque_calls` counts.
 /// - `for x in seq` is a loop of calls of `Seq` functions (`control::sequence_loop`), and `for x
 ///   in channel` calls `recv`; a loop over an array, list or string runs no code.
 /// - `as` (`E::Cast`) converts numbers and the purity of a function type only, `deref` reads a
@@ -1218,8 +3966,8 @@ fn retained_parameters(
 /// In an abstract body a type variable counts as neither an exclusive reference nor the contents
 /// of a cell that may hold a borrow: those facts only infer Copy constraints, and each instance,
 /// whose types are concrete, is checked with its own facts. The same holds for `opaque_calls`.
-fn lends_mutable(body: &TypedExpr, types: &crate::check::TypeContext<'_>) -> bool {
-    let lends = |operand: &TypedExpr| operand.ty.lends_mutable(types);
+fn lends_mutable(body: &TypedExpr, types: &crate::check::TypeContext<'_>, exclusive: bool) -> bool {
+    let lends = |operand: &TypedExpr| operand.ty.lends_mutable(types, exclusive);
     let mut pending = vec![body];
     while let Some(expression) = pending.pop() {
         let lending = match &expression.kind {
@@ -1555,174 +4303,108 @@ fn opaque_bodies(module: &CheckedModule, related: &[Vec<usize>]) -> (Vec<bool>, 
 /// What `lending_bodies` finds, by function.
 #[derive(Clone)]
 struct Lending {
-    /// The body has no facts: it lends a way to write, or makes an opaque call (the local guards;
-    /// `untracked` holds for every body beside them, `Lending::no_facts`).
+    /// The body has no facts: it makes an opaque call.
     facts: Vec<bool>,
-    /// Nothing is read through in the body: it lends a way to write, or makes an opaque call with
+    /// Nothing is read through in the body: it lends a mutable cell, or makes an opaque call with
     /// an argument that may hold loans.
     reads: Vec<bool>,
     /// `opaque_bodies` without the environments, for the bodies that are not functions of the
     /// module.
     opaque: Vec<bool>,
-    /// Some `Drop.drop` body of the module has no facts (`facts`): it lends a way to write or
-    /// hands a value to code that the analysis does not see, so dropping a value may make a store
-    /// that the check does not track (`drop_runs_code`).
+    /// Some `Drop.drop` body of the module lends a way to write or hands a value to code that the
+    /// analysis does not see (A28's guard, which A31 keeps), so dropping a value may make a store
+    /// that the check does not track where its result does not show it (`drop_runs_code`).
     drops_store: bool,
-    /// Some function of the module stores a value that may hold loans with a builtin that does
-    /// not track the store (`untracked_loan_store`): no body has facts or reads through.
-    untracked: bool,
 }
 
 impl Lending {
-    /// Whether the body of function `id` has no facts: the program makes a store that the check
-    /// does not track (`untracked`), or the body lends a way to write or makes an opaque call.
+    /// Whether the body of function `id` has no facts: it makes an opaque call.
     fn no_facts(&self, id: usize) -> bool {
-        self.untracked || self.facts[id]
+        self.facts[id]
     }
 
-    /// Whether nothing is read through in the body of function `id` (`untracked`, `reads`).
+    /// Whether nothing is read through in the body of function `id` (`reads`).
     fn no_reads(&self, id: usize) -> bool {
-        self.untracked || self.reads[id]
+        self.reads[id]
     }
 }
 
-/// By function: whether its body lends a way to write (`lends_mutable`) or may hand a value to
-/// code whose body the analysis does not see (`opaque_bodies`), or the body of a lambda lifted from
-/// it, or of the function that it was lifted from, does. Downward: a lambda's captures hold what
-/// the enclosing body gave them, and that misses what an untracked store put there, so a lambda
-/// whose captures were made in such a body reads nothing through them either: in
-/// `let mut arr = [Arc.new f]`, `Array.write 0 (Arc.new borrowing) (ref mut arr)` and
-/// `\() -> Arc.share (ref arr[0])`, the share would hold what `arr` held before the write (and
-/// `read_through` keeps the borrow of a capture in any lambda, since a capture is a parameter of
-/// the lifted function; this mark also drops the lambda's facts, as for its enclosing body).
-/// Upward: a lambda that lends a way to write (it passes a captured cell, or its own exclusive
-/// parameter, to a writer) may write into what the enclosing body gave it, so the enclosing body
-/// keeps the rule from before A28 too; the scan of an unlifted body sees the bodies of its
-/// `E::Lambda`s already. Each body is scanned once; the lifted lambdas follow the `E::Closure`
-/// that makes them, through the lambdas in lambdas and the groups of `let rec`.
+/// By function: whether its body has no facts and whether it reads nothing through (`Lending`),
+/// because it may hand a value to code whose body the analysis does not see (`opaque_bodies`) or
+/// lends a mutable cell (`lends_mutable`), or the body of a lambda lifted from it, or of the
+/// function that it was lifted from, does.
+///
+/// The checks apply the store facts of every call (A31), so a body that lends an exclusive
+/// reference or a cell to code keeps its facts: what the code stores there is in the owner's loans
+/// after the call. It reads nothing through when it lends a cell: the cell may be in a block that
+/// an `Rc` or `Arc` shares, and a store into it through one owner reaches that owner's loans, not
+/// the copies that a share read through another owner holds (`Arc.share (ref a)` and then
+/// `Mutex.with_lock (Arc.get (ref a)) ...`). An exclusive reference cannot reach into such a block:
+/// the contents of `Rc` and `Arc` are read-only but for cells. A `Drop.drop` that lends any way to
+/// write keeps A28's guard (`drops_store`), and so does a body of the inference that lends any way
+/// to write and may store, since the abstract bodies apply no store facts.
+///
+/// Downward: a lambda's captures hold what the enclosing body gave them, and that misses what a
+/// store that the check misses put there, so a lambda whose captures were made in such a body reads
+/// nothing through them either (and `read_through` keeps the borrow of a capture in any lambda,
+/// since a capture is a parameter of the lifted function; this mark also drops the lambda's facts,
+/// as for its enclosing body). Upward: a lambda that hands a value to unseen code, or lends a cell,
+/// may write into what the enclosing body gave it, so the enclosing body keeps the same rule; the
+/// scan of an unlifted body sees the bodies of its `E::Lambda`s already. The lifted lambdas follow
+/// the `E::Closure` that makes them, through the lambdas in lambdas and the groups of `let rec`.
 fn lending_bodies(module: &CheckedModule, infer: bool) -> Lending {
     let types = module.types();
     let related = related_bodies(module);
     let (any, direct) = opaque_bodies(module, &related);
-    let lends: Vec<bool> = module
+    // Only a body that reads something through, or one related to it, asks `reads`
+    // (`Checker::may_read_through`, and the lambdas that `eval_lambda` checks with its answer), so
+    // the cells are looked for there alone.
+    let mut sharing: Vec<bool> = module
         .functions
         .iter()
-        .map(|function| lends_mutable(&function.body, &types))
+        .map(|function| calls_read_through(module, &function.body))
         .collect();
-    let mut facts: Vec<bool> = lends.iter().zip(&any).map(|(a, b)| *a || *b).collect();
-    let mut reads: Vec<bool> = lends.iter().zip(&direct).map(|(a, b)| *a || *b).collect();
+    close_marks(&mut sharing, &related);
+    let cells: Vec<bool> = module
+        .functions
+        .iter()
+        .zip(&sharing)
+        .map(|(function, sharing)| *sharing && lends_mutable(&function.body, &types, false))
+        .collect();
+    // Whether the body of function `id` lends any way to write; asked only where it matters.
+    let lends = |id: usize| cells[id] || lends_mutable(&module.functions[id].body, &types, true);
+    let or =
+        |a: &[bool], b: &[bool]| -> Vec<bool> { a.iter().zip(b).map(|(a, b)| *a || *b).collect() };
+    // A28's guard for the drops: some body related to a `Drop.drop` (`related` is symmetric, so
+    // these are the bodies that the marks of `close_marks` would carry to it) lends a way to write
+    // or makes an opaque call.
+    let mut dropping = vec![false; module.functions.len()];
+    for drop in module.user_drops.values() {
+        dropping[*drop] = true;
+    }
+    close_marks(&mut dropping, &related);
+    let drops_store = (0..module.functions.len()).any(|id| dropping[id] && (any[id] || lends(id)));
+    // The abstract bodies of the inference apply no store facts (their lambdas are not lifted, and
+    // a type variable carries no loans): a body there that lends a way to write and may store
+    // (`store_candidates`, with the concrete types of the abstract module) keeps the rule from
+    // before A28.
+    let (mut facts, mut reads) = if infer {
+        let candidates = store_candidates(module, true);
+        let guarded: Vec<bool> = (0..module.functions.len())
+            .map(|id| (candidates.may_store[id] || candidates.top[id]) && lends(id))
+            .collect();
+        (or(&any, &guarded), or(&or(&cells, &guarded), &direct))
+    } else {
+        (any, or(&cells, &direct))
+    };
     close_marks(&mut facts, &related);
     close_marks(&mut reads, &related);
-    let drops_store = module.user_drops.values().any(|drop| facts[*drop]);
-    let untracked = untracked_loan_store(module, &types, infer);
     Lending {
         facts,
         reads,
         opaque: direct,
         drops_store,
-        untracked,
     }
-}
-
-/// The builtins that store a value that they get through an exclusive reference, or into a cell,
-/// without adding its loans to the owner of the place (`untracked_loan_store`), each with the
-/// index of the parameter whose value it stores.
-///
-/// Every builtin of `Builtin::ALL` whose scheme has a `ref mut` parameter, or that takes a shared
-/// reference to a cell and a value, was decided (A28, 8th review):
-///
-/// - Counted: `Array.write` (stores its second argument into the element of the exclusive view:
-///   `Array.set`, `Array.fill`, `Array.blit` and the other std functions that write in place call
-///   it), `SyncMap.__replace` (stores its first argument through the `ref mut` that
-///   `RwMutex.with_write` lends), `Simd.store` (stores a lane value; numbers only, so it never
-///   holds a loan, but it is a write through a view all the same), and `Atomic.store`,
-///   `Atomic.swap` and `Atomic.compare_exchange` (store into the cell through a shared reference;
-///   the contents are numbers or `bool`, counted all the same).
-/// - Tracked, not counted: `Vec.push_mut` (its region slots add the pushed value's loans to the
-///   vector's owner, `src/closures.rs`), `Channel.send`, `Channel.try_send`, `SendOnly.send`,
-///   `SendOnly.try_send` and `DataChannel.send` (the item is checked to hold no borrow,
-///   `Checker::sent_item`), `OnceValue.get` (the initializer's result is checked to hold no borrow,
-///   `Checker::locked_result`), `WaitGroup.go` and `Context.__after_func` (an `Owned.Function`,
-///   which holds no borrow, A30), and the `Atomic.fetch_*` operations (integers).
-/// - Store nothing that they get, so not counted: `Array.swap_in` (exchanges two elements of the
-///   same view), `Array.split_at_mut` and `Vec.__view` (return views of what they get),
-///   `RwMutex.with_read` (lends a shared reference), `Rc.ptr_eq` and `Arc.ptr_eq` (compare),
-///   `Owned.call` (runs the function, whose body is a function of the module), and
-///   `Timer.__reset`, `Ticker.__reset`, `WaitGroup.add`, `Semaphore.acquire`,
-///   `Semaphore.try_acquire`, `Semaphore.release`, `Context.__with_timeout` and
-///   `Context.__with_deadline` (take integers).
-/// - Lend a `ref mut` to a callback and store nothing themselves: `Mutex.with_lock`,
-///   `RwMutex.with_write`, `Cond.wait_with` and `Parallel.for_each_chunk` (the callback's result is
-///   returned or `unit`, not stored). What the callback stores, it stores with an assignment
-///   (tracked), with a counted builtin or by calling a function; the callback is a lambda or a
-///   function value whose body is a function of the module, or the generated function of a
-///   builtin (`$builtin`), and is scanned as one.
-///
-/// The builtins that take an array, a vector or a map by value and return the updated one
-/// (`Array.__set`, `Array.update`, `Array.swap`, `Vec.push`, ...) store nothing through a reference:
-/// their result holds the loans of every argument. A std function is not a writer itself: its body
-/// is a function of the module, scanned like any other.
-fn untracked_writer(builtin: crate::check::Builtin) -> Option<usize> {
-    use crate::check::Builtin::{
-        ArrayWrite, AtomicCompareExchange, AtomicStore, AtomicSwap, SimdStore, SyncMapReplace,
-    };
-    match builtin {
-        SyncMapReplace => Some(0),
-        ArrayWrite | AtomicStore | AtomicSwap => Some(1),
-        SimdStore | AtomicCompareExchange => Some(2),
-        _ => None,
-    }
-}
-
-/// A28's program-wide guard: whether some function of `module` (a std function, a lifted lambda
-/// and the generated function of a builtin, `$builtin`, included) names an untracked writer
-/// (`untracked_writer`) whose stored value has a type that may carry loans (`carries_loans`). When
-/// one does, no body of the module has facts or reads through (`Lending::untracked`), which is the
-/// rule from before A28; the argument is at `lends_mutable`. Every mention of the builtin counts, a
-/// complete call, a pipeline, a partial application or the function value, so the stored type is
-/// read from the builtin's own type at the mention, and a mention whose type does not show the
-/// stored parameter counts.
-///
-/// In the specialized module (`infer` false), which decides whether the program is accepted, a
-/// type variable or an unsolved type in the stored type counts as well. In the abstract module of
-/// the inference it counts as no loans, as in `lends_mutable`: that module holds the generic body
-/// of every std function that the program loads, called or not (`Array.set` writes a `'a`), so
-/// counting it would keep the rule from before A28 in the inference of every such program; the
-/// abstract facts only infer Copy constraints, and each instance of a generic writer is a concrete
-/// function of the specialized module, which this guard sees.
-fn untracked_loan_store(
-    module: &CheckedModule,
-    types: &crate::check::TypeContext<'_>,
-    infer: bool,
-) -> bool {
-    let stores_loans = |expression: &TypedExpr, builtin: crate::check::Builtin, index: usize| {
-        let arity = builtin.scheme().parameters.len();
-        let mut parameters: Vec<&Type> = Vec::with_capacity(arity);
-        let mut ty = &expression.ty;
-        while parameters.len() < arity {
-            let Type::Function(next, result) = ty else {
-                break;
-            };
-            parameters.extend(next.iter());
-            ty = result;
-        }
-        parameters.get(index).is_none_or(|stored| {
-            stored.carries_loans(types) || (!infer && stored.contains_unknown())
-        })
-    };
-    module.functions.iter().any(|function| {
-        let mut pending = vec![&function.body];
-        while let Some(expression) = pending.pop() {
-            if let E::Function(crate::check::FunctionRef::Builtin(instance)) = &expression.kind
-                && let Some(index) = untracked_writer(instance.builtin)
-                && stores_loans(expression, instance.builtin, index)
-            {
-                return true;
-            }
-            pending.extend(expression.children());
-        }
-        false
-    })
 }
 
 /// The parameters of an abstract body whose loans may pass through a value whose type has a type
@@ -1903,6 +4585,731 @@ fn collect_declarations<'a>(body: &'a TypedExpr, locals: &mut BTreeMap<usize, &'
     }
 }
 
+/// A31: where a value that may share the environment of a function value that owns its cell can
+/// come from (`OwnerScan`): from something other than the function's parameters (`fresh`: a
+/// value that reaches a mutable cell, whose contents may change after it is made, or one that the
+/// scan does not follow), from the values of the parameters in `values`, or from the results of
+/// calls of the function-valued parameters in `results`. A value with none of the three holds no
+/// such owner, no copy of one, no value that holds one and no cell, whatever happens later: the
+/// store into a hidden environment (`Checker::store_hidden`) cannot reach what it holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Own {
+    fresh: bool,
+    values: BTreeSet<usize>,
+    results: BTreeSet<usize>,
+}
+
+impl Own {
+    fn fresh() -> Self {
+        Self {
+            fresh: true,
+            ..Self::default()
+        }
+    }
+
+    fn is_none(&self) -> bool {
+        !self.fresh && self.values.is_empty() && self.results.is_empty()
+    }
+
+    fn join(&mut self, other: Own) {
+        self.fresh |= other.fresh;
+        self.values.extend(other.values);
+        self.results.extend(other.results);
+    }
+}
+
+/// How deep `OwnerScan::result_of` follows the locals bound to function values.
+const OWNER_SCAN_DEPTH: usize = 16;
+
+/// A31: the provenance of the values of a body that may share a hidden environment (`Own`), from
+/// its expressions and the facts of the functions that it calls (`owner_facts`). The types narrow
+/// it first: a value of a type that reaches no function value, dyn value, `Owned.Function` or
+/// mutable cell holds no owner; one whose type reaches a mutable cell counts as fresh (its
+/// contents may change after it is made, and it may be the cell of an owner). Otherwise:
+///
+/// - a named function holds nothing; a lambda (and a partial application) holds what its
+///   captures (bound arguments) hold; a literal what its elements hold; a field, an element, a
+///   borrow or a dereference what the value that it is read from holds; an `if`, a `match` and a
+///   block what their results hold;
+/// - an immutable local what its binding holds (`env`, bound in the order of the body, and an
+///   element of a `for` loop what the sequence holds); a local of a pattern what the projection
+///   of the matched value that the pattern stores in it holds (the steps of an active pattern
+///   bind the result of its call), joined over the alternatives of an OR pattern; an immutable
+///   parameter its own value (`values`), and a mutable one (`fn f mut a`, `\mut a ->`) is fresh:
+///   the body may assign it anything;
+/// - a complete call of a named function what its facts say of the arguments (its own `fresh`,
+///   the arguments in `values`, the results of the calls of those in `results`); `Owned.function`
+///   what its argument holds; a call of a function-valued parameter its result (`results`), its
+///   own value and its arguments; `new [T](n, f)` the results of `f`;
+/// - anything else (another builtin, a mutable local or pattern local, a call of any other
+///   function value) is fresh.
+struct OwnerScan<'m, 'f> {
+    module: &'m CheckedModule,
+    facts: &'f [Own],
+    /// The immutable parameters (local id, index). A mutable parameter is left out, so that it
+    /// counts as fresh like a `let mut` local.
+    params: BTreeMap<usize, usize>,
+    /// The immutable locals bound so far: what their values hold, and what a call of them gives
+    /// (`result_of` of the binding).
+    env: BTreeMap<usize, (Own, Own)>,
+    owner_types: BTreeMap<Type, (bool, bool)>,
+    /// What `own` found for each expression (by address): a call reads its arguments once for
+    /// itself and once more for the callee's facts, so without it a chain of calls that pass
+    /// their argument on (`f (f (f x))`, `x |> f a |> f b`) costs twice as much at each level.
+    /// The bindings of a body come before their uses, so an expression's answer does not change
+    /// once it is found. It keeps only the expressions that outlive the scan (`lasting`): an
+    /// address is a key only while its expression lives.
+    memo: BTreeMap<usize, Own>,
+    /// The addresses of the expressions that outlive the scan (those of the body that it
+    /// scans), or `None` when every expression that it sees does (the bodies of the module, for
+    /// `owner_facts`). The answers for other expressions (a `TypedExpr` that the check makes
+    /// for a moment, as `Checker::capture_loans` does for each capture) go to `scratch`, which
+    /// lasts one question (`query`): a later expression may take the address of a dropped one.
+    lasting: Option<BTreeSet<usize>>,
+    scratch: BTreeMap<usize, Own>,
+    /// How many expressions the scan has looked at (`own_uncached`), for the tests of its cost.
+    visits: usize,
+}
+
+impl<'m, 'f> OwnerScan<'m, 'f> {
+    fn new(
+        module: &'m CheckedModule,
+        facts: &'f [Own],
+        parameters: impl Iterator<Item = (usize, usize)>,
+    ) -> Self {
+        Self {
+            module,
+            facts,
+            params: parameters.collect(),
+            env: BTreeMap::new(),
+            owner_types: BTreeMap::new(),
+            memo: BTreeMap::new(),
+            lasting: None,
+            scratch: BTreeMap::new(),
+            visits: 0,
+        }
+    }
+
+    /// The scan for the questions of a check of `body`, which may ask about expressions that it
+    /// makes for a moment: only the answers for the expressions of `body` are kept (`lasting`).
+    fn lasting_in(mut self, body: &TypedExpr) -> Self {
+        let mut lasting = BTreeSet::new();
+        let mut pending = vec![body];
+        while let Some(expression) = pending.pop() {
+            lasting.insert(std::ptr::from_ref(expression) as usize);
+            pending.extend(expression.children());
+        }
+        self.lasting = Some(lasting);
+        self
+    }
+
+    /// What the value of `expression` may hold (`own`), for a question from outside the scan:
+    /// the answers for expressions that do not outlive the scan are forgotten afterwards.
+    fn query(&mut self, expression: &TypedExpr) -> Own {
+        let found = self.own(expression);
+        self.scratch.clear();
+        found
+    }
+
+    /// Whether a value of type `ty` may hold an owner at all, and whether it reaches a mutable
+    /// cell (then it counts as fresh).
+    fn owner_type(&mut self, ty: &Type) -> (bool, bool) {
+        if let Some(known) = self.owner_types.get(ty) {
+            return *known;
+        }
+        let types = self.module.types();
+        let plain = without_views(ty);
+        let cell = types.reaches(&plain, |part| part.is_mutable_cell(&types));
+        let found = (cell || hides_environment(&plain, &types), cell);
+        self.owner_types.insert(ty.clone(), found);
+        found
+    }
+
+    /// The facts of function `id` applied to a call with `arguments` (more parameters than
+    /// arguments: the rest are the call's own, which the call accounts for).
+    fn apply(&mut self, id: usize, arguments: &[&TypedExpr], depth: usize) -> Own {
+        let Some(facts) = self.facts.get(id) else {
+            return Own::fresh();
+        };
+        let facts = facts.clone();
+        let mut own = Own {
+            fresh: facts.fresh,
+            ..Own::default()
+        };
+        for index in facts.values {
+            if let Some(argument) = arguments.get(index) {
+                own.join(self.own(argument));
+            }
+        }
+        for index in facts.results {
+            match arguments.get(index) {
+                Some(argument) => own.join(self.result_of(argument, depth + 1)),
+                None => own.fresh = true,
+            }
+        }
+        own
+    }
+
+    /// What a call of the function value `callee` gives, beside what its arguments hold (the
+    /// call accounts for those).
+    fn result_of(&mut self, callee: &TypedExpr, depth: usize) -> Own {
+        if depth > OWNER_SCAN_DEPTH {
+            return Own::fresh();
+        }
+        let module = self.module;
+        match &callee.kind {
+            E::Closure(id, captures) => {
+                let captures: Vec<&TypedExpr> = captures.iter().collect();
+                self.apply(*id, &captures, depth)
+            }
+            E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => {
+                self.apply(*id, &[], depth)
+            }
+            E::Call(function, bound)
+                if direct_callee(function)
+                    .is_some_and(|id| bound.len() < module.functions[id].parameters.len()) =>
+            {
+                let bound: Vec<&TypedExpr> = bound.iter().collect();
+                self.apply(
+                    direct_callee(function).expect("checked above"),
+                    &bound,
+                    depth,
+                )
+            }
+            E::Local(id) => {
+                if let Some(&index) = self.params.get(id) {
+                    return Own {
+                        results: BTreeSet::from([index]),
+                        ..Own::default()
+                    };
+                }
+                match self.env.get(id) {
+                    Some((_, result)) => result.clone(),
+                    None => Own::fresh(),
+                }
+            }
+            E::Dereference(inner) | E::BorrowOperand(inner) => self.result_of(inner, depth),
+            _ => Own::fresh(),
+        }
+    }
+
+    /// Binds the immutable locals of `bindings` (and those of the blocks inside their values).
+    fn bind(&mut self, local: &crate::check::Local, value: &TypedExpr) {
+        let own = self.own(value);
+        if local.mutable {
+            return;
+        }
+        let result = self.result_of(value, 1);
+        self.env.insert(local.id, (own, result));
+    }
+
+    /// Binds the locals of the patterns of `arm` (`PatternAlternative`): each holds what the
+    /// projection of the matched value (or, in the steps of an active pattern, the call of its
+    /// function) that the pattern stores in it holds. The alternatives of an OR pattern bind the
+    /// same locals, so a local holds what any of them stores; the body comes after all of them.
+    fn bind_patterns(&mut self, arm: &crate::check::TypedMatchArm) {
+        for alternative in &arm.alternatives {
+            for step in &alternative.steps {
+                match step {
+                    crate::check::PatternStep::Test(test) => self.walk(test),
+                    crate::check::PatternStep::Bind(local, value) => self.bind_joined(local, value),
+                }
+            }
+            for (local, value) in &alternative.bindings {
+                self.bind_joined(local, value);
+            }
+        }
+    }
+
+    /// Binds the immutable local of a pattern to what `value` holds, joined with what the
+    /// alternatives before bound it to.
+    fn bind_joined(&mut self, local: &crate::check::Local, value: &TypedExpr) {
+        let own = self.own(value);
+        if local.mutable {
+            return;
+        }
+        let result = self.result_of(value, 1);
+        match self.env.entry(local.id) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let (held, gives) = entry.get_mut();
+                held.join(own);
+                gives.join(result);
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert((own, result));
+            }
+        }
+    }
+
+    fn own(&mut self, expression: &TypedExpr) -> Own {
+        let key = std::ptr::from_ref(expression) as usize;
+        if let Some(known) = self.memo.get(&key).or_else(|| self.scratch.get(&key)) {
+            return known.clone();
+        }
+        let found = self.own_uncached(expression);
+        if self
+            .lasting
+            .as_ref()
+            .is_none_or(|lasting| lasting.contains(&key))
+        {
+            self.memo.insert(key, found.clone());
+        } else {
+            self.scratch.insert(key, found.clone());
+        }
+        found
+    }
+
+    fn own_uncached(&mut self, expression: &TypedExpr) -> Own {
+        self.visits += 1;
+        let (may, cell) = self.owner_type(&expression.ty);
+        // The bindings of the blocks inside are made whatever the value's type.
+        if !may {
+            self.walk(expression);
+            return Own::default();
+        }
+        if cell {
+            self.walk(expression);
+            return Own::fresh();
+        }
+        match &expression.kind {
+            E::Function(_) | E::GenericFunction(..) => Own::default(),
+            E::Closure(_, parts) | E::Array(parts) | E::List(parts) | E::Tuple(parts) => {
+                let mut own = Own::default();
+                for part in parts {
+                    own.join(self.own(part));
+                }
+                own
+            }
+            E::Record(fields) => {
+                let mut own = Own::default();
+                for (_, value) in fields {
+                    own.join(self.own(value));
+                }
+                own
+            }
+            E::RecordUpdate { base, fields } => {
+                let mut own = self.own(base);
+                for (_, value) in fields {
+                    own.join(self.own(value));
+                }
+                own
+            }
+            E::Construct { payload, .. } => match payload {
+                Some(payload) => self.own(payload),
+                None => Own::default(),
+            },
+            E::NewLiteral(inner)
+            | E::Borrow(inner, _)
+            | E::BorrowOperand(inner)
+            | E::Dereference(inner)
+            | E::Field(inner, _)
+            | E::ListTail(inner, _)
+            | E::Cast(inner)
+            | E::Checked(inner)
+            | E::UnionPayload { value: inner, .. }
+            | E::Slice { value: inner, .. } => {
+                let own = self.own(inner);
+                self.walk_children_except(expression, inner);
+                own
+            }
+            E::Index(base, index) => {
+                let own = self.own(base);
+                self.walk(index);
+                own
+            }
+            E::Local(id) => match self.params.get(id) {
+                Some(&index) => Own {
+                    values: BTreeSet::from([index]),
+                    ..Own::default()
+                },
+                None => self
+                    .env
+                    .get(id)
+                    .map_or_else(Own::fresh, |(own, _)| own.clone()),
+            },
+            E::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.walk(condition);
+                let mut own = self.own(then_branch);
+                own.join(self.own(else_branch));
+                own
+            }
+            E::Block { bindings, result } => {
+                for (local, value) in bindings {
+                    self.bind(local, value);
+                }
+                self.own(result)
+            }
+            E::Match { local, value, arms } => {
+                self.bind(local, value);
+                let mut own = Own::default();
+                for arm in arms {
+                    self.bind_patterns(arm);
+                    if let Some(guard) = &arm.guard {
+                        self.walk(guard);
+                    }
+                    own.join(self.own(&arm.body));
+                }
+                own
+            }
+            E::NewArray(length, initializer) | E::NewList(length, initializer) => {
+                self.walk(length);
+                self.own(initializer);
+                self.result_of(initializer, 0)
+            }
+            E::Call(callee, arguments) => {
+                let parts: Vec<&TypedExpr> = arguments.iter().collect();
+                self.call(callee, &parts)
+            }
+            E::Binary(BinaryOp::Pipe, left, right) => {
+                let (callee, bound) = piped_application(right);
+                let parts: Vec<&TypedExpr> = bound.iter().chain([&**left]).collect();
+                self.call(callee, &parts)
+            }
+            _ => {
+                self.walk(expression);
+                Own::fresh()
+            }
+        }
+    }
+
+    /// A call of `callee` with `arguments`.
+    fn call(&mut self, callee: &TypedExpr, arguments: &[&TypedExpr]) -> Own {
+        let module = self.module;
+        let mut values = Own::default();
+        for argument in arguments {
+            values.join(self.own(argument));
+        }
+        if let Some(id) = direct_callee(callee) {
+            let count = module.functions[id].parameters.len();
+            return match arguments.len().cmp(&count) {
+                std::cmp::Ordering::Less => values,
+                std::cmp::Ordering::Equal => self.apply(id, arguments, 0),
+                std::cmp::Ordering::Greater => Own::fresh(),
+            };
+        }
+        // `Owned.function` holds its argument. The builtins of `Rc` and `Arc` that give back the
+        // block, a share or a weak pointer of it, or its value (`Rc.new`, `Rc.get`, `Rc.share`,
+        // `Rc.try_unwrap`, `Rc.downgrade`, `Rc.upgrade`) give what their argument holds: nothing
+        // replaces the value of a block after it is made (a block of a cell is fresh by its type).
+        if arguments.len() == 1
+            && builtin_called(module, callee).is_some_and(|builtin| {
+                use crate::check::Builtin::{
+                    ArcDowngrade, ArcGet, ArcNew, ArcShare, ArcTryUnwrap, ArcUpgrade,
+                    OwnedFunction, RcDowngrade, RcGet, RcNew, RcShare, RcTryUnwrap, RcUpgrade,
+                };
+                matches!(
+                    builtin,
+                    OwnedFunction
+                        | RcNew
+                        | RcGet
+                        | RcShare
+                        | RcTryUnwrap
+                        | RcDowngrade
+                        | RcUpgrade
+                        | ArcNew
+                        | ArcGet
+                        | ArcShare
+                        | ArcTryUnwrap
+                        | ArcDowngrade
+                        | ArcUpgrade
+                )
+            })
+        {
+            return values;
+        }
+        let parameter = match &callee.kind {
+            E::Local(id) => self.params.get(id).copied(),
+            E::Dereference(inner) => match &inner.kind {
+                E::Local(id) => self.params.get(id).copied(),
+                _ => None,
+            },
+            _ => None,
+        };
+        match parameter {
+            Some(index) => {
+                values.join(self.own(callee));
+                values.results.insert(index);
+                values
+            }
+            None => {
+                self.walk(callee);
+                Own::fresh()
+            }
+        }
+    }
+
+    /// Makes the bindings of the blocks inside `expression`.
+    fn walk(&mut self, expression: &TypedExpr) {
+        match &expression.kind {
+            E::Block { bindings, result } => {
+                for (local, value) in bindings {
+                    self.bind(local, value);
+                }
+                self.walk(result);
+            }
+            E::Match { local, value, arms } => {
+                self.bind(local, value);
+                for arm in arms {
+                    self.bind_patterns(arm);
+                    if let Some(guard) = &arm.guard {
+                        self.walk(guard);
+                    }
+                    self.walk(&arm.body);
+                }
+            }
+            E::ForEach {
+                owner,
+                local,
+                source,
+                body,
+            } => {
+                let own = self.own(source);
+                self.env.insert(owner.id, (own.clone(), Own::fresh()));
+                if !local.mutable {
+                    self.env.insert(local.id, (own, Own::fresh()));
+                }
+                self.walk(body);
+            }
+            E::Lambda { .. } => {}
+            _ => {
+                for child in expression.children() {
+                    self.walk(child);
+                }
+            }
+        }
+    }
+
+    fn walk_children_except(&mut self, expression: &TypedExpr, skip: &TypedExpr) {
+        for child in expression.children() {
+            if !std::ptr::eq(child, skip) {
+                self.walk(child);
+            }
+        }
+    }
+}
+
+/// A31: the provenance facts of the functions of the module (`Own`, `OwnerScan`): what the result
+/// of a complete call of each may hold, as the least fixed point over the calls. Every fact only
+/// grows, so the iteration ends. A body is scanned again only when the fact of a function that it
+/// names (calls, partially applies or lifts as a lambda) grew: a work list over the callers, which
+/// starts from the last function so that a chain declared before its callees (`f1` calls `f2`
+/// calls ... `fN`) settles in one pass rather than one function per pass over all of them. The
+/// scans share what the types say (`OwnerScan::owner_type`).
+fn owner_facts(module: &CheckedModule) -> Vec<Own> {
+    owner_facts_counted(module).0
+}
+
+/// `owner_facts`, with the number of body scans that it made (for the tests of its cost).
+fn owner_facts_counted(module: &CheckedModule) -> (Vec<Own>, usize) {
+    let count = module.functions.len();
+    let mut scans = 0;
+    let mut facts = vec![Own::default(); count];
+    let mut callers: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); count];
+    for (id, function) in module.functions.iter().enumerate() {
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            if let E::Function(crate::check::FunctionRef::User(callee))
+            | E::GenericFunction(callee, _)
+            | E::Closure(callee, _) = &expression.kind
+                && *callee < count
+            {
+                callers[*callee].insert(id);
+            }
+            for child in expression.children() {
+                pending.push(child);
+            }
+        }
+    }
+    let mut work: std::collections::VecDeque<usize> = (0..count).rev().collect();
+    let mut queued = vec![true; count];
+    let mut owner_types = BTreeMap::new();
+    while let Some(id) = work.pop_front() {
+        queued[id] = false;
+        scans += 1;
+        let function = &module.functions[id];
+        let found = {
+            let parameters = function
+                .parameters
+                .iter()
+                .enumerate()
+                .filter(|(_, parameter)| !parameter.mutable)
+                .map(|(index, parameter)| (parameter.id, index));
+            let mut scan = OwnerScan::new(module, &facts, parameters);
+            scan.owner_types = std::mem::take(&mut owner_types);
+            let found = scan.own(&function.body);
+            owner_types = scan.owner_types;
+            found
+        };
+        let mut joined = facts[id].clone();
+        joined.join(found);
+        if joined != facts[id] {
+            facts[id] = joined;
+            for &caller in &callers[id] {
+                if !queued[caller] {
+                    queued[caller] = true;
+                    work.push_back(caller);
+                }
+            }
+        }
+    }
+    (facts, scans)
+}
+
+/// A31: the immutable locals of `body` that are bound to a function value whose code the body
+/// shows, with the expressions that the value may be (`Checker::known`): a lifted lambda, a named
+/// function, a partial application of a named function or of a local that is known already and
+/// whose every expression takes more arguments (`partial_heads`: `let g = chosen (ref p2)` after
+/// `let chosen = cross`), another local, the argument of `Owned.function`, or an `if`, a `match`
+/// or a block whose value is one of such. A call of the local runs one of them with the
+/// environment that the local holds, so `Checker::apply_higher` substitutes their facts where it
+/// would otherwise take the call for one of code that it does not see. The local is immutable and
+/// its binding comes before every use, so the expressions name the code of every call. An
+/// immutable local bound to an array literal of such values, or to a record literal, gives
+/// `parts` the expressions that an element (`(local, None)`) or a field (`(local, Some(field))`)
+/// may be: `hs[0] x` with `let hs = [\f -> f () + 1, \f -> f () * 2]` runs one of the two.
+///
+/// `projections` gets, for the subject of each `match` and each immutable local that a pattern
+/// binds (a step of the pattern or a variable of an alternative), the expressions that give its
+/// value: the matched value, and the projections of the subject that the code generation binds
+/// (`PatternAlternative::bindings`), one for each alternative of an OR pattern
+/// (`Checker::parameter_path`).
+fn known_functions<'a>(
+    module: &CheckedModule,
+    body: &'a TypedExpr,
+    known: &mut BTreeMap<usize, Vec<&'a TypedExpr>>,
+    parts: &mut BTreeMap<(usize, Option<usize>), Vec<&'a TypedExpr>>,
+    bound: &mut BTreeMap<usize, &'a TypedExpr>,
+    projections: &mut BTreeMap<usize, Vec<&'a TypedExpr>>,
+) {
+    fn shown<'a>(
+        module: &CheckedModule,
+        value: &'a TypedExpr,
+        found: &mut Vec<&'a TypedExpr>,
+        known: &BTreeMap<usize, Vec<&'a TypedExpr>>,
+    ) -> bool {
+        match &value.kind {
+            E::Closure(..)
+            | E::Function(crate::check::FunctionRef::User(_))
+            | E::GenericFunction(..)
+            | E::Local(_) => {
+                found.push(value);
+                true
+            }
+            E::Call(callee, arguments) => {
+                if let Some(id) = direct_callee(callee) {
+                    if arguments.len() < module.functions[id].parameters.len() {
+                        found.push(value);
+                        return true;
+                    }
+                    return false;
+                }
+                // A partial application of a known local: every expression of the local takes
+                // more arguments, so the call runs none of them yet.
+                if let E::Local(id) = &callee.kind {
+                    if partial_heads(module, known, *id, arguments.len()) {
+                        found.push(value);
+                        return true;
+                    }
+                    return false;
+                }
+                arguments.len() == 1
+                    && builtin_called(module, callee) == Some(crate::check::Builtin::OwnedFunction)
+                    && shown(module, &arguments[0], found, known)
+            }
+            E::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                shown(module, then_branch, found, known) && shown(module, else_branch, found, known)
+            }
+            // The value of a `match` is that of one of its arms (`match n with | 0 -> cross | _ ->
+            // cross3 (ref p3)`), and that of a block its result (`{ cross }`): the locals that
+            // the block binds are immutable or give the whole function value's loans where an
+            // argument names them (`Checker::bound_value`).
+            E::Match { arms, .. } => {
+                !arms.is_empty()
+                    && arms
+                        .iter()
+                        .all(|arm| shown(module, &arm.body, found, known))
+            }
+            E::Block { result, .. } => shown(module, result, found, known),
+            _ => false,
+        }
+    }
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        match &expression.kind {
+            E::Block { bindings, .. } => {
+                for (local, value) in bindings {
+                    if local.mutable {
+                        continue;
+                    }
+                    bound.insert(local.id, value);
+                    let mut found = Vec::new();
+                    if shown(module, value, &mut found, known) {
+                        known.insert(local.id, found);
+                        continue;
+                    }
+                    // An immutable array or record made of such values: an element or a field
+                    // of it is one of them (nothing writes into an immutable local).
+                    match &value.kind {
+                        E::Array(elements) if !elements.is_empty() => {
+                            let mut found = Vec::new();
+                            if elements
+                                .iter()
+                                .all(|element| shown(module, element, &mut found, known))
+                            {
+                                parts.insert((local.id, None), found);
+                            }
+                        }
+                        E::Record(fields) => {
+                            for (field, value) in fields {
+                                let mut found = Vec::new();
+                                if shown(module, value, &mut found, known) {
+                                    parts.insert((local.id, Some(*field)), found);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            E::Match { local, value, arms } => {
+                if !local.mutable {
+                    projections.entry(local.id).or_default().push(value);
+                }
+                for alternative in arms.iter().flat_map(|arm| &arm.alternatives) {
+                    for step in &alternative.steps {
+                        if let crate::check::PatternStep::Bind(local, value) = step
+                            && !local.mutable
+                        {
+                            projections.entry(local.id).or_default().push(value);
+                        }
+                    }
+                    for (local, projection) in &alternative.bindings {
+                        if !local.mutable {
+                            projections.entry(local.id).or_default().push(projection);
+                        }
+                    }
+                }
+            }
+            E::Lambda { .. } => continue,
+            _ => {}
+        }
+        expression
+            .try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })
+            .expect("collecting bindings cannot fail");
+    }
+}
+
 fn error(kind: DiagnosticKind, message: impl Into<String>, span: Span) -> Diagnostic {
     Diagnostic::of(kind, message, span)
 }
@@ -1984,8 +5391,7 @@ fn drops_stop_reads<'a>(
     user_drop: bool,
     contract: Contract<'a>,
 ) -> bool {
-    if facts.lending.untracked
-        || !facts.lending.drops_store
+    if !facts.lending.drops_store
         || contract.lends_mutable == Some(true)
         || !calls_read_through(module, body)
     {
@@ -2054,17 +5460,416 @@ struct Checker<'a, 'run> {
     /// run code when they are dropped (`drop_runs_code`), when the caller asks for them
     /// (`retained_parameters`, `drops_stop_reads`).
     dropped: Option<BTreeSet<usize>>,
-    /// `drop_runs_code` by type, for `dropped`.
-    drop_types: BTreeMap<Type, bool>,
+    /// `drop_runs_code` by type, for `dropped`, and the answer of the A31 drop hooks
+    /// (`drop_code`).
+    drop_types: BTreeMap<Type, (bool, bool)>,
     /// Whether the check read something through the borrow of an owner (`read_through`).
     read_through_used: bool,
     /// Nothing is read through: the body drops a value that holds loans and may run code when it
     /// is dropped (`drops_stop_reads`).
     drops_stop_reads: bool,
+    /// A31: the store facts of the body, when the caller asks for them (`store_facts`).
+    stores: Option<StoreFacts>,
+    /// A31: the errors that the check finds where the body stores a borrow of its own local
+    /// value where its caller's data reaches; `check_body` returns the first one after the
+    /// body's evaluation, so the errors that the evaluation finds come first.
+    deferred: Vec<Diagnostic>,
+    /// A31: the index of each parameter, by its external root.
+    parameter_roots: BTreeMap<usize, usize>,
+    /// A31: the copy of a loan at a path of its place (`path_copy`), by loan, path, whether the
+    /// copy is exact (`exact_loans`) and whether its place holds the borrowed part (no parent).
+    path_copies: BTreeMap<(usize, Vec<usize>, bool, bool), usize>,
+    /// A31: the external roots of the parameters that are captures of a lifted lambda
+    /// (`Contract::captures`). The function value's environment owns them, not a call: each call
+    /// gets a copy of them in its own frame, and the environment, which outlives the call, drops
+    /// them. So a cell that a capture stores is the caller's data, as one behind a reference
+    /// parameter is, and a borrow of a capture is one of the call's frame, as one of a local is.
+    capture_roots: BTreeSet<usize>,
+    /// A31: whether a type reaches a mutable cell whose contents may hold a loan, by type.
+    cell_types: BTreeMap<Type, bool>,
+    /// A31: whether a type reaches such a cell behind a reference or a shared pointer, by type
+    /// (`reaches_shared_cell`).
+    shared_cell_types: BTreeMap<Type, bool>,
+    /// A31: whether a type reaches a value that hides an environment (`hides_environment`), and
+    /// whether a place of the type can hold a stored loan (`holds_stored`), by type.
+    hidden_types: BTreeMap<Type, (bool, bool, bool)>,
+    /// A31: whether a store through a shared borrow of a place of a type that hides an
+    /// environment reaches what the place holds (`store_target`), by type.
+    shared_targets: BTreeMap<Type, bool>,
+    /// A31: whether a value of a type may be a place that a store reaches through it other than
+    /// by running the code of a function value that it holds (`may_reach_store_beside_code`), and
+    /// whether it may hold a function value of one of the types that own the cell that they
+    /// write, or reach a cell (`argument_hides`), by type.
+    argument_types: BTreeMap<Type, (bool, bool)>,
+    /// A31: the immutable locals of the body that are bound to a function value whose code the
+    /// body shows (a lambda, a named function, a partial application of one, an `Owned.function`
+    /// of one, or a choice between such), with those expressions (`known_functions`): a call of
+    /// such a local substitutes their facts.
+    known: BTreeMap<usize, Vec<&'a TypedExpr>>,
+    /// A31: the elements (`(local, None)`) and fields (`(local, Some(field))`) of the immutable
+    /// locals bound to an array or record literal of such values (`known_functions`).
+    known_parts: BTreeMap<(usize, Option<usize>), Vec<&'a TypedExpr>>,
+    /// A31: the value that each immutable local of the body is bound to (`known_functions`), for
+    /// what dropping it runs (`value_runs_drop_code`).
+    bound: BTreeMap<usize, &'a TypedExpr>,
+    /// A31: the expressions that give the value of the subject of each `match` and of each
+    /// immutable local that a pattern binds (`known_functions`), for the parameter whose function
+    /// value a call runs (`parameter_path`).
+    projections: BTreeMap<usize, Vec<&'a TypedExpr>>,
+    /// A31: the applications of store facts that the current pass over a call has made
+    /// (`settle`); one made again in the same pass changes nothing.
+    store_memo: Option<BTreeSet<StoreKey>>,
+    /// A31: how many times a store changed what a place holds or what the body's facts say.
+    store_changes: usize,
+    /// A31: what was stored in environments that the check cannot name (`store_hidden`), in the
+    /// order of the stores: a value that is bound afterwards may be a copy made before the store,
+    /// so a binding absorbs what was stored while its value was evaluated.
+    hidden_log: Vec<Value>,
+    /// A31: the span that reports what the drop of a temporary stores (`drop_stores`): the
+    /// declaration or the call that the temporary is evaluated for.
+    drop_site: Option<Span>,
+    /// A31: the next value that `eval` gives is bound to a local, whose binding applies the drop
+    /// hook itself (`eval_block`).
+    bound_next: bool,
+    /// A31: `bound_next` of the expression that `eval` is evaluating, for the block or `if` that
+    /// passes it on to its result.
+    tail_bound: bool,
+    /// A31: the provenance of the values of the body that may share a hidden environment
+    /// (`OwnerScan`), made at the first question (`may_own`).
+    owner_scan: Option<OwnerScan<'a, 'run>>,
+    /// A31: the stores being made are those of the drop of a part of the value of the parameter
+    /// with this index (`drop_stores`, `parameter_part`), or of a drop-only fact of a callee
+    /// applied to such a part: the store facts from that parameter that they make are drop-only
+    /// (`StoreFacts::drop_only`).
+    dropping: Option<usize>,
+    /// A31: the local whose old value a whole assignment drops now (`drop_stores` of the old
+    /// value): a loan of that local that the old value holds points into the dropped value (a
+    /// borrow of a part of it kept in its own cell), which reaches no place that outlives it, and
+    /// not into the new value of the local (`apply_store_within` leaves such targets out).
+    replaced_root: Option<usize>,
+    /// A31: what dropping a value of a type may store in hidden environments (`drop_hidden`), by
+    /// type.
+    drop_hidden_types: BTreeMap<Type, DropHidden>,
+    /// A31: a store of a drop's hidden facts is being made (`drop_hides_owner`): the owners that it
+    /// reaches hold what is stored there already, so their own drops add nothing.
+    drop_hiding: bool,
+    /// A31: the blocks with a cell that a share of a local `Rc` or `Arc` owner of the body took to
+    /// the caller's data or to a hidden environment (`export_block`), by the type of their strong
+    /// owner (`block_owner_type`), with where they went: a later store into a local that may own
+    /// such a block goes there too (`store_exported`).
+    exports: Vec<(Type, ExportTarget)>,
+    /// A31: the entries of `exports`, for the test of whether one is there.
+    exported: BTreeSet<(Type, ExportTarget)>,
+    /// A31: the types of the blocks that an owner of each type may share (`export_block`).
+    export_walks: BTreeMap<Type, Vec<Type>>,
+    /// A31: `walk_hides_blocks` of each type that the exports asked about.
+    hidden_walks: BTreeMap<Type, bool>,
+    /// A31: `store_exported` is making its stores, which do not lead to it again.
+    exporting: bool,
+    /// A31: the pattern variables of the body bound as read-only views of the matched storage
+    /// (`view`): a borrow of one points into that storage (`expand_views`).
+    views: BTreeSet<usize>,
+    /// A31: whether dropping a value of a type may run a user `Drop.drop` (`drop_reads`), by type,
+    /// and by local (`local_drop_reads`).
+    drop_read_types: BTreeMap<Type, bool>,
+    drop_read_locals: BTreeMap<usize, bool>,
+    /// A31: when each local of the body was bound last (`note_binding`): the locals that a jump
+    /// leaves were bound in the order of their declarations (`check_exit_drop_order`).
+    binding_order: BTreeMap<usize, usize>,
+    next_binding: usize,
+    /// A31: borrows of the target of a parameter through which the body may write, which the body
+    /// handed to a call of a function-valued parameter (`record_higher`): the place, the call
+    /// recorded in the body's facts, and the argument that holds the borrow. A later write through
+    /// the parameter that may reach the place (`overwrite_handed`) records the call again with that
+    /// argument as one that must not outlive the call (`Source::overwritten`): the caller rejects a
+    /// function value that keeps it.
+    handed: BTreeSet<(Place, HigherOrderCall, usize)>,
+    /// A31: the shared copy of each exclusive loan that `shared_copy` made.
+    shared_copies: BTreeMap<usize, usize>,
+    /// A31: the copy of each loan that `ordered_copy` made, and the set of those copies: borrows
+    /// that a callee stored into the value that they borrow (`StoreFacts::ordered`).
+    ordered_copies: BTreeMap<usize, usize>,
+    ordered_loans: BTreeSet<usize>,
+    /// A31: the loans with fields whose places are the parts that they borrow (`exact_place`):
+    /// the borrows of a chain of fields and elements of a local value, or of what a reference
+    /// local points at (`pointing`), and the copies of such a loan (`shared_copy`,
+    /// `ordered_copy`), or of a loan of a value that points at its place (`kept_copy`,
+    /// `path_copy`). A borrow through a reference that a value holds (`ref w.p.s`, whose place is
+    /// `w`'s external root with the fields of `p`'s target), that a call returned (`ref (geth
+    /// q).n`, `let q = child b; ref q.s`) names fields of another value than its root's, and is
+    /// none.
+    exact_loans: BTreeSet<usize>,
+    /// A31: the copies whose places hold the parts that they borrow without being them: the copies
+    /// that `path_copy` makes at a path that stands for a larger part than a borrowed place
+    /// (`Source::coarse`) of a loan of a value that points at its place, and the copies of such a
+    /// copy (`shared_copy`, `ordered_copy`). They are not exact, but a body that passes one on to
+    /// a function value records its place as a coarse path (`Checker::holding_path`), so that a
+    /// function that passes its parameters on unchanged keeps the caller's part as a direct call
+    /// does.
+    holding_loans: BTreeSet<usize>,
+    /// A31: the copy of each loan and path that `kept_copy` made.
+    kept_copies: BTreeMap<(usize, Vec<usize>), usize>,
+    /// A31: the immutable locals whose value is a reference that points at the place of one of
+    /// its loans, not at a part of what that place reaches (`points_at`): a reference parameter,
+    /// whose loan is its target, and a local bound to a borrow of an exact place (`ref p.s`), to
+    /// such a local, or to a choice of them (`if c then ref a else ref b`), each with the loans
+    /// that it held when it was bound. A local bound to the result of a call (`let q = child b`,
+    /// whose loan is `b`'s while it points at a value that `b` reaches) is none.
+    pointing: BTreeMap<usize, BTreeSet<usize>>,
+    /// A31: the loans that each borrow expression made (by the address of the expression) where
+    /// its place was exact (`exact_place`), for the arguments that a partial application bound
+    /// and the captures of a lambda (`bound_value`).
+    borrow_loans: BTreeMap<usize, BTreeSet<usize>>,
+    /// A31: the borrow expressions (by address) that made a loan where their place was not exact.
+    inexact_borrows: BTreeSet<usize>,
+    /// A31: the loans that each capture of a lambda that is a local (by the address of the
+    /// expression) held where the local pointed at their places when the lambda was made
+    /// (`pointing_local`), for the captures that `bound_value` narrows.
+    captured_loans: BTreeMap<usize, BTreeSet<usize>>,
+    /// A31: the captures (by address) of a local that did not point so when a lambda was made.
+    inexact_captures: BTreeSet<usize>,
+    /// A31: the answers of `parameter_path` for the locals that patterns bind, with the depth that
+    /// each needed (`parameter_path_at`).
+    parameter_paths: std::cell::RefCell<BTreeMap<usize, (Option<ParameterPath>, usize)>>,
+    /// A31: the steps that `parameter_path_at` took, for the test of its cost.
+    parameter_path_steps: std::cell::Cell<usize>,
     /// The spans of the values that moved into an anonymous union when they were injected (A24),
     /// for the help of a later use: a borrow cannot be injected.
     injections: BTreeSet<(Option<usize>, usize, usize)>,
 }
+
+/// A31: the parameter of a body and the path of tuple or record fields (or union payloads) in its
+/// value that a value is (`Checker::parameter_path`).
+type ParameterPath = (usize, Vec<usize>);
+
+/// A31: where a share of a block took it (`Checker::exports`): to the target of the parameter or
+/// capture with this external root (`store_external`), to the environments that the check
+/// cannot name (`store_hidden`), or to a local whose drop may run a user `Drop.drop` and that the
+/// rest of the body does not use (`Checker::keep_for_drop`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ExportTarget {
+    External(usize),
+    Hidden,
+    Local(usize),
+}
+
+/// A31: what the `Drop.drop` that dropping a value of a type may run stores in the environments
+/// that the check cannot name (`StoreFacts::hidden` of its body, or anything for `top`):
+/// `contents`, what the dropped value holds (its fields, the contents of its cells); `itself`, a
+/// borrow of the dropped value (`let nm = ref s.name` kept in a function that it hands to
+/// `s.out`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DropHidden {
+    contents: bool,
+    itself: bool,
+}
+
+/// A31: one application of the store facts of a function to arguments, for `Checker::store_memo`:
+/// the function and, by argument, its expression (by address), loans, loans read through, and
+/// flags.
+type StoreKey = (usize, Vec<(usize, Vec<usize>, Vec<usize>, u16)>);
+
+/// A31: an argument of a call whose store facts are applied: its expression when the call has
+/// one, its value, and, for an argument of a call of a function-valued parameter that a callee's
+/// facts substitute, whether it holds a loan of a local value of that callee (`local`) and whether
+/// it comes from the callee's parameters (`external`).
+///
+/// `temporary`: the argument is a borrowed temporary (`E::BorrowOperand`: the implicit borrow of a
+/// value that a read parameter of edition 2027 gets, `put (\() -> ...) (ref mut arr)` with
+/// `put :: (unit -> i64) -> ...`), whose value is what the temporary holds, not a borrow of a
+/// place: those loans are already the contents of the reference that the parameter gets, so a
+/// fact that stores the contents (`Part::Contents`) stores them (`Checker::argument_part`). The
+/// captures of a lambda and the arguments of a partial application that `apply_higher` binds
+/// count as temporaries too: their value is that of the whole function value, or the part of it
+/// that a reference to an exact place made (`Checker::bound_value`).
+///
+/// A fact that stores the reference itself (`Part::Value`) of a borrowed operand stores a borrow
+/// of the operand: `reference` holds its loans when the operand is a place (`a == b` lends both
+/// operands to a user `Eq.eq`, `Checker::argument`), and `dying` says that it is a temporary,
+/// which is dropped right after the call returns, so that nothing may keep the reference.
+///
+/// `environment`: the argument is a capture of the function value that is called (or an argument
+/// that a partial application bound), so a store into it goes into that value's environment.
+#[derive(Clone)]
+struct Arg<'e> {
+    expression: Option<&'e TypedExpr>,
+    value: Value,
+    local: bool,
+    external: bool,
+    temporary: bool,
+    dying: bool,
+    reference: Option<BTreeSet<usize>>,
+    environment: bool,
+    /// The argument is a reference itself (its expression has a reference type, or a builtin
+    /// lends it to a callback), not a value that holds one: `sink_flags` asks which function
+    /// hands a value that holds a shared reference parameter to a function value.
+    lent: bool,
+    /// Without an expression: whether the value's type may hold a function value of one of the
+    /// types that own the cell that they write, or reach a cell (`Checker::argument_hides`), as
+    /// the callee that passed it on saw it. With one, its type says.
+    hides: bool,
+    /// Without an expression: whether the value's type may be a place that a store reaches
+    /// through it other than by running the code of a function value that it holds
+    /// (`may_reach_store_beside_code`), as the callee that passed it on saw it. With one, its type
+    /// says.
+    target: bool,
+    /// `local` holds only because the argument is a borrow that the callee overwrites after the
+    /// call (`Source::overwritten`), for the error that says so.
+    overwritten: bool,
+    /// The argument is the borrow of a lock's contents that `Mutex.with_lock`, `RwMutex.with_read`,
+    /// `RwMutex.with_write` or `Cond.wait_with` lends to its callback (its `Part::Value`; what
+    /// the contents hold is `Part::Contents`), or a value that a callee made from it. The borrow
+    /// is valid only while the callback runs, under the lock: once it is released, a write under
+    /// the lock through any shared reference to it may replace and free what the borrow points at.
+    /// So no code may keep it beyond the call, as no result of the callback may hold it (F10).
+    locked: bool,
+    /// Without an expression: the type of the value, as the callee that passed it on saw it
+    /// (`Source::ty`; a borrowed temporary is a reference to it), or `None` when unknown. The
+    /// drop-order rule asks it what a drop of the value may read (`Checker::temporary_type`).
+    /// With an expression, the expression's type says.
+    ty: Option<Type>,
+    /// Without an expression: the expression of the argument of an outer call whose value this
+    /// one is, unchanged (`Source::passed`): the temporary that it may be, made where that
+    /// expression is (`Checker::temporary_slot`), whose type says what its drop may read.
+    origin: Option<&'e TypedExpr>,
+    /// Without an expression: the value is a shared borrow of the part at these fields of what the
+    /// argument of an outer call (the expression) points at (`Source::paths`: a callee that got
+    /// `ref (mkpo ())` passed `ref p.s` to a function value). Two such values of one outer
+    /// argument are parts of one value, whose drop order decides a borrow of one kept in the
+    /// other (`Checker::temporary_dropped_first`).
+    part: Option<(&'e TypedExpr, Vec<usize>)>,
+    /// With an expression, the value is that of a whole function value that holds it (an argument
+    /// that a pipeline's right side applies, `Checker::pipe_stores`), not its own.
+    approximate: bool,
+    /// Without an expression, or with one whose value is not its own (`environment`,
+    /// `approximate`): whether the value is a reference that points at the place of one of the
+    /// loans that it holds itself (`Checker::argument_points`): a value that a callee's facts made
+    /// of such arguments (`Source::pointing`), or the value that `Checker::bound_value` found.
+    pointing: bool,
+}
+
+impl<'e> Arg<'e> {
+    fn of(expression: Option<&'e TypedExpr>, value: Value) -> Self {
+        let operand = expression.and_then(|expression| match &expression.kind {
+            E::BorrowOperand(inner) => Some(&**inner),
+            _ => None,
+        });
+        Self {
+            expression,
+            value,
+            local: false,
+            external: false,
+            temporary: operand.is_some(),
+            dying: operand.is_some_and(|inner| !Checker::is_place(inner)),
+            reference: None,
+            environment: false,
+            lent: expression.is_some_and(|e| matches!(e.ty, Type::Reference(..))),
+            hides: true,
+            target: true,
+            overwritten: false,
+            locked: false,
+            ty: None,
+            origin: None,
+            part: None,
+            approximate: false,
+            pointing: false,
+        }
+    }
+}
+
+/// A31: how many passes `Checker::settle` makes over the facts of one call before it takes the
+/// call for one of code that the check does not see.
+const STORE_PASSES: usize = 16;
+
+/// A31: the entry of `Checker::exports` for the blocks that a value may own where the walk by types
+/// does not see them (`walk_hides_blocks`), which may be of any type: a store into a value whose
+/// type hides blocks or reaches a block with a cell goes where this entry went
+/// (`store_exported_into`). No value has the type `Error` when the ownership check runs, so no
+/// block type is this one.
+const HIDDEN_BLOCK: Type = Type::Error;
+
+/// A31: whether a value of type `ty` may own a block that `Checker::export_walk` does not list,
+/// behind a value that can hand out a place inside what it holds: it reaches a dyn value (whose
+/// methods get a reference to its data and may return a reference into it) or a value of a type
+/// that the check does not know (a type parameter, whose class methods may do the same).
+fn walk_hides_blocks(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    types.reaches(ty, |part| {
+        matches!(
+            part,
+            Type::Dyn(_)
+                | Type::Variable(_)
+                | Type::Infer(_)
+                | Type::Partial(_)
+                | Type::Application(..)
+                | Type::Error
+        )
+    })
+}
+
+/// A31: whether a value of type `ty` reaches (through stored values, references and shared
+/// pointers) a value whose type does not show what it holds or reaches: a function value (its
+/// captures), a dyn value (the value that it stores) or an `Owned.Function`.
+fn hides_environment(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    types.reaches(ty, |part| {
+        matches!(part, Type::Function(..) | Type::Dyn(_)) || part.is_owned_function(types)
+    })
+}
+
+/// A31: whether a value of type `ty` may be a place that a store reaches through it: it reaches a
+/// mutable cell whose contents may hold a loan, an exclusive reference, or a value whose type
+/// hides an environment (a function value, a dyn value, an `Owned.Function`). Code that gets a
+/// value of any other type (an `i64`, a `ref string`, a `[i64]`) cannot store into what it reaches.
+fn may_reach_store(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    let plain = without_views(ty);
+    hides_environment(&plain, types)
+        || types.reaches(&plain, |part| {
+            part.is_mutable_cell(types) || matches!(part, Type::Reference(_, true))
+        })
+}
+
+/// A31: whether a store may reach through a value of type `ty` other than by running the code of
+/// a function value that the value holds (`may_reach_store` without the function values): it
+/// reaches a mutable cell whose contents may hold a loan, an exclusive reference, a dyn value (its
+/// methods are the vtable's) or an `Owned.Function`. Code that gets a function value stores into
+/// what the value's environment reaches only by calling it, and then the value's own code stores
+/// there: that code is a site of its own (`sink_flags`), and a function value that holds it
+/// reaches what it reaches (the holders). So a lambda that hands a captured function value to a
+/// call of another (`\() -> h g`) is no sink for that call (`Source::target`).
+fn may_reach_store_beside_code(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    types.reaches(&without_views(ty), |part| {
+        part.is_mutable_cell(types)
+            || matches!(part, Type::Reference(_, true) | Type::Dyn(_))
+            || part.is_owned_function(types)
+    })
+}
+
+/// A31: `ty` with the target `[T..]` of each exclusive slice (C08) written as the array `[T]`:
+/// the walks of `TypeContext::reaches` and `Type::carries_loans` do not look inside a view type,
+/// and what a view can hold is what its elements can.
+fn without_views(ty: &Type) -> Type {
+    match ty {
+        Type::ArrayView(element) | Type::Array(element) => {
+            Type::Array(Box::new(without_views(element)))
+        }
+        Type::Reference(target, mutable) => {
+            Type::Reference(Box::new(without_views(target)), *mutable)
+        }
+        Type::List(element) => Type::List(Box::new(without_views(element))),
+        Type::Vec(element) => Type::Vec(Box::new(without_views(element))),
+        Type::Shared(element, kind) => Type::Shared(Box::new(without_views(element)), *kind),
+        Type::Tuple(elements) => Type::Tuple(elements.iter().map(without_views).collect()),
+        _ => ty.clone(),
+    }
+}
+
+/// How deep the substitution of the facts of function-valued arguments goes before it treats the
+/// call as one of code that the analysis does not see.
+const STORE_SUBSTITUTION_DEPTH: usize = 16;
+
+/// A31: how many fields and payloads a `HigherOrderCall::path` may take before the call is taken
+/// for one of code that the analysis does not see (`apply_part`): the paths stay finite, so the
+/// facts settle.
+const HIGHER_ORDER_PATH: usize = 6;
 
 /// How many expressions the diagnostics of one function may look at, in all, to find where a
 /// borrow is used later; past it they leave `BorrowUsedHere` out.
@@ -2195,6 +6000,7 @@ impl<'a> Checker<'a, '_> {
                             slots: None,
                             builtin_wrapper: function.module == "$builtin",
                             lends_mutable: Some(self.facts.lending.no_reads(*id)),
+                            captures: captures.len(),
                         },
                         &mut Vec::new(),
                         None,
@@ -2210,7 +6016,7 @@ impl<'a> Checker<'a, '_> {
     }
 }
 
-impl<'a> Checker<'a, '_> {
+impl<'a, 'run> Checker<'a, 'run> {
     fn callback_returns_closed(&self, expression: &TypedExpr, arity: usize) -> bool {
         if let E::Call(callee, arguments) = &expression.kind {
             return self.callback_returns_closed(callee, arity + arguments.len());
@@ -2225,6 +6031,9 @@ impl<'a> Checker<'a, '_> {
             E::Function(crate::check::FunctionRef::User(id))
             | E::GenericFunction(id, _)
             | E::Closure(id, _) => {
+                if self.facts.revoked.get(*id) == Some(&true) {
+                    return false;
+                }
                 let function = &self.module.functions[*id];
                 (
                     &function.body,
@@ -2285,7 +6094,7 @@ impl<'a> Checker<'a, '_> {
         id: usize,
         right: &TypedExpr,
         live: &BTreeSet<usize>,
-    ) -> Result<Value, Diagnostic> {
+    ) -> Result<(Value, Vec<Value>), Diagnostic> {
         let (callee, arguments) = piped_application(right);
         let mut during = live.clone();
         uses(right, &mut during);
@@ -2297,13 +6106,71 @@ impl<'a> Checker<'a, '_> {
             let value = self.eval(argument, Use::Consume, &during)?;
             self.event_targets(mark, argument.span, callee);
             if !self.facts.temporary(id, index) {
-                result.loans.extend(&value.loans);
+                result.absorb(&value);
             }
             self.held.push(value);
         }
+        let values = self.held.split_off(start + 1);
         self.held.truncate(start);
         result.regions = None;
-        Ok(result)
+        Ok((result, values))
+    }
+
+    /// A31: the stores of the pipeline `left |> right`, with `value` and `callee` the values of
+    /// its sides (`arguments`, those of the arguments that `right` applies, when they were
+    /// evaluated one by one): the facts of a named function that the pipeline completes, with the
+    /// value of `right` standing for each argument that it applies when they were not, and the
+    /// rule of a function value for anything else that the pipeline calls.
+    #[allow(clippy::too_many_arguments)]
+    fn pipe_stores(
+        &mut self,
+        left: &TypedExpr,
+        right: &TypedExpr,
+        value: &Value,
+        callee: &Value,
+        arguments: Option<Vec<Value>>,
+        span: Span,
+        live: &BTreeSet<usize>,
+    ) {
+        let (head, bound) = piped_application(right);
+        if let Some(id) = direct_callee(head) {
+            let count = self.module.functions[id].parameters.len();
+            if bound.len() + 1 < count {
+                return;
+            }
+            if bound.len() + 1 == count {
+                if self.facts.stores.get(id).is_none_or(StoreFacts::is_empty) {
+                    return;
+                }
+                let mut all: Vec<Arg<'_>> = match arguments {
+                    Some(values) if values.len() == bound.len() => bound
+                        .iter()
+                        .zip(values)
+                        .map(|(argument, value)| Arg::of(Some(argument), value))
+                        .collect(),
+                    // Each argument that the right side applies has the value of the whole function
+                    // value, or the part of it that a reference to an exact place made
+                    // (`bound_value`).
+                    _ => bound
+                        .iter()
+                        .map(|argument| {
+                            let own = self.bound_value(argument, callee);
+                            Arg {
+                                approximate: true,
+                                pointing: own.is_some(),
+                                ..Arg::of(Some(argument), own.unwrap_or_else(|| callee.clone()))
+                            }
+                        })
+                        .collect(),
+                };
+                all.push(self.argument(left, value.clone(), live));
+                self.apply_facts(id, &all, span, 0);
+                return;
+            }
+        }
+        let function = Arg::of(Some(right), callee.clone());
+        let piped = self.argument(left, value.clone(), live);
+        self.apply_higher(&function, &[piped], span, 0);
     }
 
     /// A28: whether `callee` is `share`, `downgrade` or `upgrade` of `Rc` or `Arc` (or the generated
@@ -2315,7 +6182,7 @@ impl<'a> Checker<'a, '_> {
         reads_through(self.module, callee)
     }
 
-    /// Whether the checked body, or a related one, lends a way to write (`lends_mutable`) or hands
+    /// Whether the checked body, or a related one, lends a mutable cell (`lends_mutable`) or hands
     /// a value to code that the analysis does not see (`opaque_calls`, `opaque_bodies`): a store
     /// that the check does not track may then have put in the owner, or in a value that a lambda
     /// captured, what its loans miss, so nothing is read through the owner's borrow
@@ -2324,15 +6191,14 @@ impl<'a> Checker<'a, '_> {
         if let Some(lends) = self.lends_mutable {
             return lends;
         }
-        let lends =
-            self.facts.lending.untracked || lends_mutable(self.body, &self.module.types()) || {
-                let found = opaque_calls(self.body, self.module, &mut BTreeMap::new());
-                found.direct
-                    || found
-                        .callees
-                        .iter()
-                        .any(|callee| self.facts.lending.opaque[*callee])
-            };
+        let lends = lends_mutable(self.body, &self.module.types(), false) || {
+            let found = opaque_calls(self.body, self.module, &mut BTreeMap::new());
+            found.direct
+                || found
+                    .callees
+                    .iter()
+                    .any(|callee| self.facts.lending.opaque[*callee])
+        };
         self.lends_mutable = Some(lends);
         lends
     }
@@ -2344,19 +6210,16 @@ impl<'a> Checker<'a, '_> {
     ///
     /// A borrow whose target holds a loan from the caller (an external loan: the target is a
     /// parameter, a capture of a lifted lambda, or a local that took a value from one) is not read
-    /// through: it stands for itself, as before A28. The guards make the loans of this body's own
-    /// values complete: the program makes no untracked store of a value that may hold loans
-    /// (`Lending::untracked`, which `body_lends_mutable` reads), and, as defense in depth, the body
-    /// lends no way to write and drops no value that may store what it holds
-    /// (`body_lends_mutable`, `drops_stop_reads`), so no untracked store put in them what their
-    /// loans miss (A31). An external loan stands for what the
-    /// caller's value holds, and the caller's loans may miss what its own untracked stores put
-    /// there: in `fn wrap arr = Arc.share (ref arr[0])`, a caller that wrote a
-    /// borrowing value into `arr` with `Array.write` passes `arr` with the loans that it held
-    /// before the write. Reading through, the share held only `arr`'s external loan, the caller's
-    /// result held the caller's incomplete loans, and the share outlived the borrowed value. Kept
-    /// as the borrow of `arr`, the share is a borrow of a local that `wrap` drops, which the check
-    /// rejects as the A30 tip does.
+    /// through: it stands for itself, as before A28. The store facts make the loans of this body's
+    /// own values complete (A31, the argument at `lends_mutable`), and, as defense in depth, the
+    /// body lends no way to write and drops no value that may store what it holds
+    /// (`body_lends_mutable`, `drops_stop_reads`). An external loan stands for what the caller's
+    /// value holds, which this body cannot see: in `fn wrap arr = Arc.share (ref arr[0])`, a caller
+    /// whose loans missed what it stored into `arr` (as with `Array.write` before A31) passes `arr`
+    /// with the loans that it held before the store. Reading through, the share held only `arr`'s
+    /// external loan, the caller's result held the caller's incomplete loans, and the share
+    /// outlived the borrowed value. Kept as the borrow of `arr`, the share is a borrow of a local
+    /// that `wrap` drops, which the check rejects as the A30 tip does.
     ///
     /// The result holds a copy of each loan read through, with the same place, mutability and
     /// parents: it keeps the same data borrowed, and the block checks and conflicts see it as they
@@ -2374,7 +6237,8 @@ impl<'a> Checker<'a, '_> {
                     .iter()
                     .any(|id| self.external.contains(&self.loans[*id].place.root));
             if from_caller {
-                kept.insert(loan);
+                // A31: the borrow of the owner stands for a share of its block (`Loan::share`).
+                kept.extend(self.share_loans(&BTreeSet::from([loan])));
             } else {
                 held.extend(through);
             }
@@ -2382,13 +6246,47 @@ impl<'a> Checker<'a, '_> {
         let copies: Vec<usize> = held
             .into_iter()
             .map(|id| {
-                let copy = self.loans[id].clone();
+                let mut copy = self.loans[id].clone();
+                // Inside `Drop.drop`, a borrow of a place of the dropped value stands for a share
+                // of its block (`share_loans`).
+                if self.drop_root == Some(copy.place.root) && !copy.mutable {
+                    copy.share = true;
+                }
                 self.loans.push(copy);
                 self.loans.len() - 1
             })
             .collect();
         kept.extend(copies);
         kept
+    }
+
+    /// A31: copies of the loans `loans` that stand for shares of the blocks that their places
+    /// own (`Loan::share`): what the result of `Rc.share (ref owner)` and its kin holds when the
+    /// check does not read through the borrow of the owner. A copy keeps the same data borrowed,
+    /// as the original does, and has it as its parent.
+    ///
+    /// Inside `Drop.drop`, the borrow of a place of the dropped value (`Arc.share (ref s.out)`) is
+    /// marked too: the share is an owner of the block, no borrow of the dropped value, and a store
+    /// of it is a store of what the value holds (`Part::Contents`, `store_external`), not one of a
+    /// borrow of the value itself (`drop_borrows_self`). Any other external loan stands for itself.
+    fn share_loans(&mut self, loans: &BTreeSet<usize>) -> BTreeSet<usize> {
+        loans
+            .iter()
+            .map(|&id| {
+                let root = self.loans[id].place.root;
+                if is_static_root(root)
+                    || (self.external.contains(&root) && self.drop_root != Some(root))
+                    || self.loans[id].mutable
+                {
+                    return id;
+                }
+                let mut copy = self.loans[id].clone();
+                copy.share = true;
+                copy.parents.insert(id);
+                self.loans.push(copy);
+                self.loans.len() - 1
+            })
+            .collect()
     }
 
     /// The loans that the target of the borrow `loan` holds (`read_through`).
@@ -2596,6 +6494,9 @@ impl<'a> Checker<'a, '_> {
         for (moved, ty) in moved {
             if self.require_copy(&ty) {
                 self.state.moved.remove(&moved);
+                if moved.fields.is_empty() {
+                    self.state.moved_always.remove(&moved.root);
+                }
                 self.state.generic_moves.remove(&moved);
             }
         }
@@ -2618,6 +6519,7 @@ impl<'a> Checker<'a, '_> {
             parents,
             view: None,
             span,
+            share: false,
         });
         id
     }
@@ -2808,6 +6710,7 @@ impl<'a> Checker<'a, '_> {
                 loans: value.loans.clone(),
                 regions: None,
                 closed_result: value.closed_result,
+                through: value.through.clone(),
             };
         };
         let records = &self.module.records;
@@ -2847,20 +6750,28 @@ impl<'a> Checker<'a, '_> {
                 .copied()
                 .collect()
         };
-        if maps.len() >= 2 && maps.len() == self.region_count(ty) {
+        let mut projected = if maps.len() >= 2 && maps.len() == self.region_count(ty) {
             let regions: Box<[_]> = maps.iter().map(|mask| loans(*mask)).collect();
             Value {
                 loans: regions.iter().flatten().copied().collect(),
                 regions: Some(regions),
                 closed_result: value.closed_result,
+                through: BTreeSet::new(),
             }
         } else {
             Value {
                 loans: loans(maps.iter().fold(0, |all, mask| all | mask)),
                 regions: None,
                 closed_result: value.closed_result,
+                through: BTreeSet::new(),
             }
-        }
+        };
+        projected.through = value
+            .through
+            .intersection(&projected.loans)
+            .copied()
+            .collect();
+        projected
     }
 
     /// The value that reading `place` yields from its owner's stored value: only the reached
@@ -2874,6 +6785,7 @@ impl<'a> Checker<'a, '_> {
             } else {
                 Value {
                     loans: stored.loans.clone(),
+                    through: stored.through.clone(),
                     ..Value::default()
                 }
             },
@@ -2948,7 +6860,7 @@ impl<'a> Checker<'a, '_> {
                     }
                 }
             }
-            result.loans.extend(&value.loans);
+            result.absorb(&value);
             self.held.push(value);
         }
         self.held.truncate(start);
@@ -2981,7 +6893,7 @@ impl<'a> Checker<'a, '_> {
                 if let Some(slots) = current.regions.as_mut() {
                     slots[result_slot].extend(&loans);
                 }
-                current.loans.extend(loans);
+                current.hold(loans);
             }
         }
     }
@@ -2995,18 +6907,27 @@ impl<'a> Checker<'a, '_> {
             .filter(|(id, _)| live.contains(id))
             .flat_map(|(_, (_, value))| value.loans.iter())
             .chain(self.held.iter().flat_map(|value| value.loans.iter()))
+            .chain(self.state.kept.iter())
             .copied()
             .collect();
         let mut visited = BTreeSet::new();
         while let Some(id) = pending.pop() {
             if visited.insert(id) {
-                keep.insert(self.loans[id].place.root);
+                let root = self.loans[id].place.root;
                 pending.extend(&self.loans[id].parents);
+                // A31: a local that stays borrowed keeps what it holds now, not only what it
+                // held when the borrow was made: a store through a shared borrow of a cell adds
+                // loans to it afterwards, and those keep their own roots alive in turn.
+                if keep.insert(root)
+                    && let Some((_, value)) = self.state.locals.get(&root)
+                {
+                    pending.extend(&value.loans);
+                }
             }
         }
         for (id, (_, value)) in &mut self.state.locals {
             if !keep.contains(id) {
-                value.loans.clear();
+                value.clear_loans();
             }
         }
     }
@@ -3018,6 +6939,7 @@ impl<'a> Checker<'a, '_> {
             .values()
             .flat_map(|(_, value)| value.loans.iter())
             .chain(self.held.iter().flat_map(|value| value.loans.iter()))
+            .chain(self.state.kept.iter())
             .copied()
             .collect();
         let mut pending: Vec<_> = active.iter().copied().collect();
@@ -3076,6 +6998,12 @@ impl<'a> Checker<'a, '_> {
     ) -> Result<(), Diagnostic> {
         if usage != Use::Write {
             self.revive_generic_moves(place);
+        }
+        if matches!(usage, Use::MutBorrow | Use::Write) && !self.state.block_shares.is_empty() {
+            self.forget_block_share(place.root);
+        }
+        if !self.handed.is_empty() && matches!(usage, Use::MutBorrow | Use::Write | Use::Consume) {
+            self.overwrite_handed(place);
         }
         if usage != Use::Write
             && let Some((moved, origin)) = self
@@ -3447,6 +7375,13 @@ impl<'a> Checker<'a, '_> {
                 used,
             );
         }
+        // A31: a borrow that the body stored where the caller's data or a hidden environment
+        // reaches (`State::kept`) is held by no local of the body.
+        if self.state.kept.contains(&loan) {
+            return diagnostic.with_help(
+                "this function stored the borrow where its caller's data or a function value's environment reaches, so the borrow stays alive after the function returns: make this access before the borrow is stored, or store an owned value",
+            );
+        }
         match holder {
             Some(name) => diagnostic.with_help(format!(
                 "end the borrow before this access: stop using '{name}' first, or move this access after its last use"
@@ -3812,14 +7747,26 @@ impl<'a> Checker<'a, '_> {
             }
             return Ok(());
         }
-        let Some((_, owner)) = self.state.locals.get_mut(&place.root) else {
+        let Some((local, owner)) = self.state.locals.get_mut(&place.root) else {
             return Err(error(DiagnosticKind::StoreRegionUnnamed, UNNAMED, span));
         };
-        owner.loans.extend(&value.loans);
+        let ty = local.ty.clone();
+        owner.absorb(value);
         owner.regions = None;
         for (owned, stored) in owner.closed_result.iter_mut().zip(value.closed_result) {
             *owned &= stored;
         }
+        // A31: an owner that may run code when it is dropped now holds what was stored (A28's
+        // `dropped`).
+        if self.dropped.is_some() && !value.loans.is_empty() && self.drop_runs(&ty) {
+            self.dropped
+                .as_mut()
+                .expect("checked above")
+                .extend(&value.loans);
+        }
+        let root = place.root;
+        self.store_exported(root, value, span, false);
+        self.drop_hides_owner(root, &ty, value, span);
         Ok(())
     }
 
@@ -3935,6 +7882,3769 @@ impl<'a> Checker<'a, '_> {
             }
         }
         Ok(())
+    }
+
+    /// A31: whether store facts apply in this check: the specialized bodies, whose types are
+    /// concrete and whose lambdas are lifted, of a module that has a seed (`CallFacts::seeded`).
+    /// The abstract bodies of the inference keep A28's guard where they lend a way to write and
+    /// may store (`lending_bodies`).
+    fn tracks_stores(&self) -> bool {
+        !self.infer && self.facts.seeded
+    }
+
+    /// A31: whether a value of type `ty` reaches a mutable cell whose contents may hold a loan
+    /// (`Type::is_mutable_cell`), through stored values, references and shared pointers.
+    fn reaches_cell(&mut self, ty: &Type) -> bool {
+        if let Some(known) = self.cell_types.get(ty) {
+            return *known;
+        }
+        let types = self.module.types();
+        let found = types.reaches(&without_views(ty), |part| part.is_mutable_cell(&types));
+        self.cell_types.insert(ty.clone(), found);
+        found
+    }
+
+    /// A31: the type of the local `id` when it is an owned parameter of the body (`own m`, or a
+    /// by-value parameter of edition 2026): one whose type is no reference, whose external loan
+    /// (`external_loans`) stands for what the caller's value holds. A capture of a lifted lambda
+    /// is none: the environment owns it (`capture_roots`).
+    fn owned_parameter(&self, id: usize) -> Option<Type> {
+        let root = usize::MAX - id;
+        if !self.parameter_roots.contains_key(&root) || self.capture_roots.contains(&root) {
+            return None;
+        }
+        self.declarations
+            .get(&id)
+            .map(|local| local.ty.clone())
+            .filter(|ty| !matches!(ty, Type::Reference(..)))
+    }
+
+    /// A31: whether the place at `fields` in a value of type `ty` is a mutable cell
+    /// (`Type::is_mutable_cell`) that the value stores itself: a field of a record, an element of
+    /// a tuple or of a collection on the way (a payload or a region slot names no type, and counts
+    /// as none).
+    fn place_is_cell(&self, ty: &Type, fields: &[usize]) -> bool {
+        let types = self.module.types();
+        let mut current = ty.clone();
+        for &field in fields {
+            current = match &current {
+                Type::Record(id, arguments) if field < types.records[*id].fields.len() => {
+                    types.record_field(*id, arguments, field)
+                }
+                Type::Tuple(elements) if field < elements.len() => elements[field].clone(),
+                Type::Array(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _)
+                    if field == ELEMENT =>
+                {
+                    (**inner).clone()
+                }
+                _ => return false,
+            };
+        }
+        current.is_mutable_cell(&types)
+    }
+
+    /// A31: whether a value of type `ty` reaches a mutable cell whose contents may hold a loan
+    /// (`reaches_cell`) behind a reference or a shared pointer (`Rc`, `Arc` or a weak pointer):
+    /// a cell that other values than one that owns the value may reach. Cached by type.
+    fn reaches_shared_cell(&mut self, ty: &Type) -> bool {
+        if let Some(known) = self.shared_cell_types.get(ty) {
+            return *known;
+        }
+        let types = self.module.types();
+        let found = types.reaches(&without_views(ty), |part| {
+            matches!(part, Type::Reference(..) | Type::Shared(..))
+                && types.reaches(part, |inner| inner.is_mutable_cell(&types))
+        });
+        self.shared_cell_types.insert(ty.clone(), found);
+        found
+    }
+
+    /// A31: what the type `ty` says about the stores that reach a value of it, cached by type:
+    ///
+    /// - `hides`: it reaches (through stored values, references and shared pointers) a value
+    ///   whose type does not show what it holds or reaches: a function value, a dyn value or an
+    ///   `Owned.Function` (`hides_environment`);
+    /// - `holds`: a place of the type can hold a stored loan: the type carries loans, hides an
+    ///   environment or reaches a cell whose contents may hold one (a `[i64]` or an `i64` cannot);
+    /// - `dynamic`: it reaches a dyn value, whose stored value a method gets through its receiver.
+    fn hidden_type(&mut self, ty: &Type) -> (bool, bool, bool) {
+        if let Some(known) = self.hidden_types.get(ty) {
+            return *known;
+        }
+        let types = self.module.types();
+        let plain = without_views(ty);
+        let hides = hides_environment(&plain, &types);
+        let dynamic = types.reaches(&plain, |part| matches!(part, Type::Dyn(_)));
+        let holds = hides || plain.carries_loans(&types) || self.reaches_cell(ty);
+        self.hidden_types
+            .insert(ty.clone(), (hides, holds, dynamic));
+        (hides, holds, dynamic)
+    }
+
+    /// A31: the provenance scan of the body (`OwnerScan`), made with every binding of the body.
+    /// It keeps the answers for the expressions of the body only (`OwnerScan::lasting_in`): the
+    /// check also asks about expressions that it makes for a moment.
+    fn owner_scan(&mut self) -> &mut OwnerScan<'a, 'run> {
+        if self.owner_scan.is_none() {
+            let facts: &'run CallFacts = self.facts;
+            // A mutable parameter counts as fresh (`OwnerScan::params`).
+            let declarations = &self.declarations;
+            let parameters = self
+                .parameter_roots
+                .iter()
+                .map(|(root, index)| (usize::MAX - root, *index))
+                .filter(|(id, _)| declarations.get(id).is_some_and(|local| !local.mutable));
+            let mut scan =
+                OwnerScan::new(self.module, &facts.owners, parameters).lasting_in(self.body);
+            scan.walk(self.body);
+            self.owner_scan = Some(scan);
+        }
+        self.owner_scan.as_mut().expect("made above")
+    }
+
+    /// A31: whether the value of `expression` may share a hidden environment (`Own`): be or hold
+    /// a function value that owns its cell (or a copy of one), or reach a cell. One that cannot
+    /// gives a call no way into such an environment, and keeps nothing that is stored there.
+    fn may_own(&mut self, expression: &TypedExpr) -> bool {
+        !self.owner_scan().query(expression).is_none()
+    }
+
+    /// A31: whether the immutable local `id` is bound to a value that cannot share a hidden
+    /// environment (`may_own`).
+    fn holds_no_owner(&mut self, id: usize) -> bool {
+        self.owner_scan()
+            .env
+            .get(&id)
+            .is_some_and(|(own, _)| own.is_none())
+    }
+
+    /// A31: whether a value of type `ty` may share, with values that hold no loan of it, the cell
+    /// that a function value that owns it writes (`store_hidden`): it may hold such a function
+    /// value (a type of `CallFacts::owned_types`, a dyn value when one is, an `Owned.Function`),
+    /// or reaches a cell (`argument_type`). A closure that captured a `ref string`, and a function
+    /// of a type that no such owner has, share nothing.
+    fn shares_hidden(&mut self, ty: &Type) -> bool {
+        self.argument_type(ty).1
+    }
+
+    /// A31: whether a store through the borrow `loan` reaches what its place holds. An exclusive
+    /// borrow does when a place of the type that it borrows can hold a stored loan (`ref mut
+    /// [i64..]` and `ref mut i64` cannot). A shared borrow does when the type of its place reaches
+    /// a mutable cell, a dyn value whose methods may store or give back a place to store into
+    /// (`CallFacts::dyn_target`), or, in a module where some function value stores into what its
+    /// environment reaches (`CallFacts::sinks`), a function value or an `Owned.Function`. The
+    /// type of a local root is its declaration's and that of an external root its parameter's
+    /// (the target of a reference parameter, for an exclusive borrow); a root without a
+    /// declaration counts as reaching one.
+    fn store_target(&mut self, loan: usize) -> bool {
+        let root = self.loans[loan].place.root;
+        if is_static_root(root) {
+            return false;
+        }
+        let external = self.external.contains(&root);
+        let id = if external { usize::MAX - root } else { root };
+        let Some(ty) = self.declarations.get(&id).map(|local| local.ty.clone()) else {
+            return true;
+        };
+        // A shared borrow of a part of the root that can hold nothing (no cell, no loan, no
+        // environment, no dyn value: a string or a number, `ref p1.s`) leads nowhere, whatever
+        // the rest of the root reaches: a store reaches no place through it. So a borrow of
+        // `p1.s` that a call kept in the cell of `p2.h` (`StoreFacts::kept_paths`) does not make
+        // a later store where `p2` reaches a store into `p1`. Only a place that is the part that
+        // the loan borrows (`exact_loan`) tells its type: the fields of a borrow through a
+        // reference that a value holds name a part of another value.
+        if !self.loans[loan].mutable
+            && !self.loans[loan].place.fields.is_empty()
+            && self.exact_loan(loan)
+            && let Some(part) = self.place_type(&self.loans[loan].place.clone())
+            && !part.contains_unknown()
+            && self.hidden_type(&part) == (false, false, false)
+        {
+            return false;
+        }
+        if self.loans[loan].mutable {
+            let place = match ty {
+                Type::Reference(target, _) if external => *target,
+                ty => ty,
+            };
+            return self.hidden_type(&place).1;
+        }
+        // An owned parameter (`own m`, or a by-value parameter of edition 2026) owns the cells that
+        // it stores itself: the caller moved it in, and a plain cell cannot be shared. Only a cell
+        // behind a reference or a shared pointer (`Arc<Mutex<...>>`) may be the caller's too, so
+        // only through one does a store into the parameter's cells reach the caller's data. A
+        // capture of a lifted lambda is the environment's, which outlives the call: its cells are
+        // the caller's data (`capture_roots`).
+        if self.reaches_cell(&ty)
+            && (!external
+                || matches!(ty, Type::Reference(..))
+                || self.capture_roots.contains(&root)
+                || self.reaches_shared_cell(&ty))
+        {
+            return true;
+        }
+        let (hides, _, dynamic) = self.hidden_type(&ty);
+        if !hides {
+            return false;
+        }
+        if let Some(known) = self.shared_targets.get(&ty) {
+            return *known;
+        }
+        let types = self.module.types();
+        let facts: &CallFacts = self.facts;
+        let plain = without_views(&ty);
+        // A dyn value is reached through the methods of its vtables (`CallFacts::dyn_targets`);
+        // a function value of a type that may store into what its environment reaches
+        // (`CallFacts::sink_types`), or an `Owned.Function`, in a module where some function value
+        // does.
+        let found = (dynamic
+            && types.reaches(
+                &plain,
+                |part| matches!(part, Type::Dyn(dyn_type) if facts.dyn_target(dyn_type)),
+            ))
+            || (facts.sinks
+                && types.reaches(&plain, |part| match part {
+                    Type::Function(..) => owned_suffix(part, usize::MAX, &facts.sink_types),
+                    _ => part.is_owned_function(&types),
+                }));
+        self.shared_targets.insert(ty, found);
+        found
+    }
+
+    /// A31: whether a store where `target` reaches stores anywhere (`store_target`).
+    fn has_targets(&mut self, target: &Value) -> bool {
+        let loans: Vec<usize> = target.loans.iter().copied().collect();
+        loans.into_iter().any(|loan| self.store_target(loan))
+    }
+
+    /// A31: the first deferred error of the body (`deferred`).
+    fn defer(&mut self, diagnostic: Diagnostic) {
+        if self.deferred.is_empty() {
+            self.deferred.push(diagnostic);
+            self.store_changes += 1;
+        }
+    }
+
+    #[cold]
+    fn local_borrow_stored(span: Span) -> Diagnostic {
+        error(
+            DiagnosticKind::StoreLocalBorrowThroughReference,
+            "cannot store a borrow of a local value through a reference parameter; the caller's data would outlive it",
+            span,
+        )
+    }
+
+    /// A31: the error of a call of a callee whose body passes a borrow of its own local value to
+    /// the function value that the call hands it, when that function value may keep the borrow
+    /// where the caller's data reaches: one whose body the check does not see (`seen` false), or
+    /// one whose facts store it there. The local value is the callee's, so the error names the
+    /// callee (`callee`, the named function of the call) rather than a local of this body.
+    #[cold]
+    fn callee_borrow_stored(
+        &self,
+        callee: Option<usize>,
+        span: Span,
+        seen: bool,
+        overwritten: bool,
+    ) -> Diagnostic {
+        let subject = callee.map_or_else(|| "the callee".to_owned(), |id| self.callee_subject(id));
+        // A31: a borrow of the target of a 'ref mut' parameter that the callee writes afterwards.
+        if overwritten {
+            let message = if seen {
+                format!(
+                    "cannot pass this function value here: {subject} passes it a borrow of what one of its own 'ref mut' parameters points at and writes there afterwards, and the function value stores what it is given where it outlives that write"
+                )
+            } else {
+                format!(
+                    "cannot pass this function value here: {subject} passes it a borrow of what one of its own 'ref mut' parameters points at and writes there afterwards, and a function value whose body the check does not see may keep what it is given beyond that write"
+                )
+            };
+            return error(DiagnosticKind::StoreLocalBorrowThroughReference, message, span)
+                .with_help(if seen {
+                    "pass a function value that does not store its argument, or make the callee write before it passes the borrow"
+                } else {
+                    "pass a lambda or a named function directly, so that the check sees what it stores, or make the callee write before it passes the borrow"
+                });
+        }
+        let message = if seen {
+            format!(
+                "cannot pass this function value here: {subject} passes it a borrow of a local value of its own, and the function value stores what it is given where the caller's data would outlive that value"
+            )
+        } else {
+            format!(
+                "cannot pass this function value here: {subject} passes it a borrow of a local value of its own, and a function value whose body the check does not see may keep what it is given where the caller's data would outlive that value"
+            )
+        };
+        error(DiagnosticKind::StoreLocalBorrowThroughReference, message, span).with_help(
+            if seen {
+                "pass a function value that does not store its argument, or make the callee pass an owned value"
+            } else {
+                "pass a lambda or a named function directly, so that the check sees what it stores, or make the callee pass an owned value"
+            },
+        )
+    }
+
+    /// A31: how an error names the callee `id`: its declared name (an instance of a generic
+    /// function is `leak.$mono.2`); for a method of an instance (`$instance.816.leak`), the
+    /// method; for a lambda (lifted to a function named by its number), the local of this body
+    /// that is bound to it (`let leak = \r k -> ...`, or a `let rec`), else "the lambda".
+    #[cold]
+    fn callee_subject(&self, id: usize) -> String {
+        let function = &self.module.functions[id];
+        let name = function.name.as_str();
+        let name = name.split(".$mono.").next().unwrap_or(name);
+        if let Some(rest) = name.strip_prefix("$instance.") {
+            let method = rest.rsplit('.').next().unwrap_or(rest);
+            return format!("the instance method '{method}'");
+        }
+        if !matches!(function.module.as_str(), "$lambda" | "$once") {
+            return format!("'{name}'");
+        }
+        let mut pending = vec![self.body];
+        while let Some(expression) = pending.pop() {
+            if let E::Block { bindings, .. } = &expression.kind
+                && let Some((local, _)) = bindings
+                    .iter()
+                    .find(|(_, value)| matches!(value.kind, E::Closure(lifted, _) if lifted == id))
+            {
+                return format!("'{}'", local.name);
+            }
+            pending.extend(expression.children());
+        }
+        "the lambda".to_owned()
+    }
+
+    /// A31: whether `argument` is a fresh exclusive borrow (`ref mut v0`), which ends with the
+    /// call: where the callee keeps only shared borrows of what it points at
+    /// (`StoreFacts::shared_only`), the caller keeps a shared borrow of the same place
+    /// (`shared_copy`). An exclusive reference that lives on after the call (a `ref mut` variable
+    /// or parameter) keeps its exclusive loan there.
+    fn fresh_exclusive(argument: &Arg<'_>) -> bool {
+        argument
+            .expression
+            .is_some_and(|expression| matches!(expression.kind, E::Borrow(_, true)))
+    }
+
+    /// A31: the error of a lock's callback that keeps the borrow of the locked value that the lock
+    /// lends it (`Arg::locked`) where it outlives the call: in a cell or a value that another
+    /// argument or the callback's environment reaches, in a hidden environment, or in code that
+    /// may keep it. F10 rejects a result of the callback that holds the borrow for the same reason.
+    #[cold]
+    fn locked_borrow_kept(span: Span) -> Diagnostic {
+        error(
+            DiagnosticKind::MutexResultRetainsBorrow,
+            "a lock's callback cannot keep a borrow of the locked value beyond the call: it stores the borrow, or a value that holds it, where it outlives the lock, and a later write under the lock (through any reference to the lock) may replace and free what it points at",
+            span,
+        )
+        .with_help(
+            "store an owned copy of what the callback reads, or read the locked value again under the lock where it is needed",
+        )
+    }
+
+    /// A31: the error of a call that stores a reference to a temporary argument: the callee keeps
+    /// the reference that a read parameter or an operator gets (not what the value holds) where
+    /// one of its arguments reaches, and the temporary is dropped right after the call returns.
+    #[cold]
+    fn temporary_borrow_stored(span: Span) -> Diagnostic {
+        error(
+            DiagnosticKind::StoreLocalBorrowThroughReference,
+            "cannot store a borrow of a temporary value: the call keeps a reference to this argument where another argument reaches, and the temporary is dropped when the call returns",
+            span,
+        )
+        .with_help("bind the value with 'let' before the call, in a scope that outlives the place that keeps the reference")
+    }
+
+    /// A31: the error of a call that keeps a reference to a temporary argument in itself or in a
+    /// temporary made after it (`temporary_dropped_first`).
+    #[cold]
+    fn temporary_dropped_first_error(span: Span) -> Diagnostic {
+        error(
+            DiagnosticKind::AssignmentExtendsBorrow,
+            "cannot keep a borrow of a temporary value in itself or in a temporary made after it: the temporaries that a call borrows are dropped when it returns, in the order in which they were made, as are the parts of a value, and dropping the later one may run a Drop.drop that uses the borrow",
+            span,
+        )
+        .with_help("bind the borrowed value with 'let' before the statement, or make the temporary that keeps the borrow first")
+    }
+
+    /// A31: the type of the temporary that the value of `argument` may be or point at, whose
+    /// drop the drop-order rule asks about: for a borrowed temporary (`E::BorrowOperand`), the
+    /// temporary's; for a reference (or a view), what it points at (`ref Pair` that a callee
+    /// passes on points at a `Pair`, or at a part of a temporary that drops one); for a value that
+    /// holds no borrow, its own (the element of an `[i64]` that `Array.map` passes on); for any
+    /// other value (a closure or a record that holds references), `None`: what it borrows does
+    /// not show (`value_type`).
+    fn temporary_type(&self, argument: &Arg<'_>) -> Option<Type> {
+        if let Some(expression) = argument.expression.or(argument.origin)
+            && let E::BorrowOperand(inner) = &expression.kind
+        {
+            return Some(inner.ty.clone());
+        }
+        match Self::value_type(argument)? {
+            Type::Reference(target, _) => Some(without_views(&target)),
+            ty @ Type::ArrayView(_) => Some(without_views(&ty)),
+            ty if !ty.carries_loans(&self.module.types()) => Some(ty),
+            _ => None,
+        }
+    }
+
+    /// A31: the type of the value of `argument`: its expression's, the outer argument's that it
+    /// is (`Arg::origin`), or the type that the callee that passed it on saw (`Arg::ty`).
+    fn value_type(argument: &Arg<'_>) -> Option<Type> {
+        argument
+            .expression
+            .or(argument.origin)
+            .map(|expression| expression.ty.clone())
+            .or_else(|| argument.ty.clone())
+    }
+
+    /// A31: the parameter of the body that `argument` is, passed on unchanged (`Source::passed`):
+    /// an immutable parameter itself, or a reborrow of the whole target of a reference parameter
+    /// (`ref *p`, as a reference argument is passed on), written as such or reached as the outer
+    /// argument that a callee passed on (`Arg::origin`).
+    fn passed_parameter(&self, argument: &Arg<'_>) -> Option<usize> {
+        let mut expression = argument.expression.or(argument.origin)?;
+        if let E::Borrow(inner, _) = &expression.kind
+            && let E::Dereference(reference) = &inner.kind
+            && matches!(reference.ty, Type::Reference(..))
+        {
+            expression = reference;
+        }
+        let E::Local(id) = &expression.kind else {
+            return None;
+        };
+        let index = *self.parameter_roots.get(&(usize::MAX - *id))?;
+        self.declarations
+            .get(id)
+            .is_some_and(|local| !local.mutable)
+            .then_some(index)
+    }
+
+    /// A31: where the borrowed temporary argument `argument` is dropped (`DropSlot`): the
+    /// temporaries that a call borrows are dropped right after it returns, in the order in which
+    /// they were made (`f (ref (T { id: 1 })) (ref (T { id: 2 }))` drops 1, then 2; an early exit
+    /// drops them in the reverse order, but only before the call: `DropSlot::Temporary`), which
+    /// is the order of their operands in the source: arguments are evaluated from left to right,
+    /// and the left side of a pipeline first. A value without an expression (one that a callee
+    /// passed on, a part of a temporary or a value that the callee made) has no known position.
+    fn temporary_slot(argument: &Arg<'_>) -> DropSlot {
+        match argument.expression.or(argument.origin) {
+            Some(expression) => DropSlot::Temporary(expression.span.start),
+            None => DropSlot::Unknown,
+        }
+    }
+
+    /// A31: whether a borrow of the temporary argument `source` that a call keeps in the
+    /// temporary argument `target` (the same argument when they are one) may be read by a
+    /// `Drop.drop` of `target` after `source` is gone: the drop-order rule
+    /// (`borrow_dropped_first`) for two temporaries of a statement (`temporary_slot`), decided by
+    /// what a drop of the target's type may read (`temporary_type`; unknown counts). A borrow of
+    /// a temporary kept in itself is checked against the drop order of its parts; with
+    /// `proven`, the callee showed that order (`StoreFacts::ordered`).
+    fn temporary_dropped_first(
+        &mut self,
+        source: &Arg<'_>,
+        target: &Arg<'_>,
+        proven: bool,
+    ) -> bool {
+        if !source.dying || !target.dying || self.module.user_drops.is_empty() {
+            return false;
+        }
+        let ty = self.temporary_type(target);
+        // A part of what an outer argument points at, kept in another part of it or in it.
+        let to = target
+            .part
+            .as_ref()
+            .map(|(outer, _)| *outer)
+            .or(target.expression)
+            .or(target.origin);
+        if let Some((from, fields)) = &source.part
+            && to.is_some_and(|to| std::ptr::eq(*from, to))
+        {
+            let ty = match &from.kind {
+                E::BorrowOperand(inner) => Some(inner.ty.clone()),
+                _ => match &from.ty {
+                    Type::Reference(target, _) => Some(without_views(target)),
+                    _ => None,
+                },
+            };
+            let borrowed = Borrowed::Part {
+                fields,
+                proven: false,
+            };
+            return self.borrow_dropped_first(DropSlot::Unknown, ty.as_ref(), borrowed);
+        }
+        let borrowed = if std::ptr::eq(source, target) {
+            Borrowed::Part {
+                fields: &[],
+                proven,
+            }
+        } else {
+            Borrowed::Other(Self::temporary_slot(source))
+        };
+        self.borrow_dropped_first(Self::temporary_slot(target), ty.as_ref(), borrowed)
+    }
+
+    /// A31: the drop-order rule, one for every kind of storage. A value that keeps a borrow
+    /// (`holder`, of type `ty`) may run a user `Drop.drop` that reads it when it is dropped, so
+    /// what the borrow points at must still be there: a borrow of another storage (`source`) must
+    /// be of one that is dropped strictly after the holder (`DropSlot::dropped_before`), and a
+    /// borrow of a part of the holder itself must be of a part that its parts that may read are
+    /// dropped before (`self_borrow_dropped_first`). Only a holder whose drop may read a borrow
+    /// counts (`drop_reads`: a user `Drop` instance that may hold a borrow, reached through the
+    /// stored parts of its type or the environments of its function values); an unknown type
+    /// counts. Where the borrow came from (an assignment, a write in place, a lock's callback, a
+    /// store fact of a callee, a hidden environment) does not matter: the callers look at what
+    /// each holder keeps where it is dropped.
+    fn borrow_dropped_first(
+        &mut self,
+        holder: DropSlot,
+        ty: Option<&Type>,
+        borrowed: Borrowed<'_>,
+    ) -> bool {
+        let Some(ty) = ty else {
+            return true;
+        };
+        match borrowed {
+            Borrowed::Part { fields, proven } => self.self_borrow_dropped_first(ty, fields, proven),
+            Borrowed::Other(source) => source.dropped_before(holder) && self.drop_reads_cached(ty),
+        }
+    }
+
+    /// A31: `temporary_dropped_first` for a borrow of the temporary argument `source` that a call
+    /// keeps in a hidden environment: one that a temporary argument whose type (`temporary_type`,
+    /// for a value that a callee passed on the type that it saw) hides an environment
+    /// (`hidden_type`) reaches.
+    fn temporary_hidden_first(&mut self, source: &Arg<'_>, arguments: &[Arg<'_>]) -> bool {
+        if !source.dying || self.module.user_drops.is_empty() {
+            return false;
+        }
+        arguments.iter().any(|target| {
+            target.dying
+                && self
+                    .temporary_type(target)
+                    .is_none_or(|ty| self.hidden_type(&ty).0)
+                && self.temporary_dropped_first(source, target, false)
+        })
+    }
+
+    /// A31: `temporary_dropped_first` for code that the check does not see, given `arguments`:
+    /// it may keep a borrow of any temporary argument in itself or in any other that may be a
+    /// place to store into (`may_reach_store` of `temporary_type`: the element of an `[i64]`
+    /// that `Array.map` passes to its callback is none).
+    fn temporaries_dropped_first(&mut self, arguments: &[Arg<'_>]) -> bool {
+        if self.module.user_drops.is_empty() || !arguments.iter().any(|a| a.dying) {
+            return false;
+        }
+        let types = self.module.types();
+        arguments.iter().any(|source| {
+            source.dying
+                && arguments.iter().any(|target| {
+                    target.dying
+                        && self
+                            .temporary_type(target)
+                            .is_none_or(|ty| may_reach_store(&ty, &types))
+                        && self.temporary_dropped_first(source, target, false)
+                })
+        })
+    }
+
+    /// A31: adds what `kept` holds to the local owner `root`, as an assignment into it does.
+    fn absorb_owner(&mut self, root: usize, kept: &Value) {
+        if kept.loans.is_empty() {
+            return;
+        }
+        let Some((local, owner)) = self.state.locals.get_mut(&root) else {
+            return;
+        };
+        let ty = local.ty.clone();
+        let before = (owner.loans.len(), owner.through.len());
+        owner.absorb(kept);
+        if before != (owner.loans.len(), owner.through.len()) {
+            self.store_changes += 1;
+        }
+        owner.regions = None;
+        for (owned, stored) in owner.closed_result.iter_mut().zip(kept.closed_result) {
+            *owned &= stored;
+        }
+        if self.dropped.is_some() && self.drop_runs(&ty) {
+            let loans = kept.loans.clone();
+            self.dropped.as_mut().expect("checked above").extend(loans);
+        }
+    }
+
+    /// A31: stores a value that holds `stored`'s loans where `target` reaches, as `arr[i] = v`
+    /// does: the owner of each local place that a target loan (`store_target`) borrows keeps the
+    /// loans, and so do the places that its own target loans borrow (the array behind a
+    /// `MatrixView.Mut` window, the block that several `Arc`s share). A target of the caller's
+    /// (an external root) becomes a store fact of the body, unless what is stored borrows a local
+    /// value of the body, which is an error: the caller's data would outlive it.
+    fn apply_store(&mut self, stored: &Value, target: &Value, span: Span) {
+        self.apply_store_within(stored, target, span, false);
+    }
+
+    /// `apply_store`; with `local_only`, the targets of the caller's (the external roots) are
+    /// left out: the caller substitutes the code that stores there.
+    fn apply_store_within(&mut self, stored: &Value, target: &Value, span: Span, local_only: bool) {
+        if stored.loans.is_empty() || target.loans.is_empty() {
+            return;
+        }
+        // The places that the store reaches: (root, whether through exclusive borrows only).
+        let mut pending: Vec<(usize, bool)> = Vec::new();
+        for &loan in &target.loans {
+            if self.replaced_root == Some(self.loans[loan].place.root) {
+                continue;
+            }
+            if self.store_target(loan) {
+                pending.push((loan, self.loans[loan].mutable));
+            }
+        }
+        let mut seen = BTreeSet::new();
+        let mut reached: Vec<(usize, bool)> = Vec::new();
+        // The reached owners whose loans the store followed (all but a store into an owned
+        // parameter's own cell).
+        let mut followed: BTreeSet<(usize, bool)> = BTreeSet::new();
+        // The external roots, and whether only exclusive borrows reach each.
+        let mut external: BTreeMap<usize, bool> = BTreeMap::new();
+        // The external roots that a target loan reaches at a place that is not the storage of the
+        // parameter's target itself (`place_leaves_storage`).
+        let mut leaving: BTreeSet<usize> = BTreeSet::new();
+        while let Some((loan, exclusive)) = pending.pop() {
+            if !seen.insert((loan, exclusive)) {
+                continue;
+            }
+            let root = self.loans[loan].place.root;
+            if is_static_root(root) {
+                continue;
+            }
+            if self.external.contains(&root) {
+                *external.entry(root).or_insert(true) &= exclusive;
+                if !leaving.contains(&root) && self.place_leaves_storage(&self.loans[loan].place) {
+                    leaving.insert(root);
+                }
+                continue;
+            }
+            // A store into a cell that an owned parameter stores itself (`Mutex.with_lock (ref
+            // c.cell)`, `ref m` for `own m: Mutex<...>`) stays in the parameter's storage: it
+            // reaches none of what the caller's value holds (the parameter's own loan), neither a
+            // cell behind a reference or a shared pointer nor the environment of a function value
+            // that the parameter holds, which only a call of that function value writes.
+            let own_cell = self.owned_parameter(root).is_some_and(|ty| {
+                let fields = self.loans[loan].place.fields.clone();
+                self.place_is_cell(&ty, &fields)
+            });
+            if reached.contains(&(root, exclusive)) {
+                if own_cell || followed.contains(&(root, exclusive)) {
+                    continue;
+                }
+            } else {
+                reached.push((root, exclusive));
+            }
+            let Some((_, owner)) = self.state.locals.get(&root) else {
+                continue;
+            };
+            let held: Vec<usize> = owner.loans.iter().copied().collect();
+            if !own_cell {
+                followed.insert((root, exclusive));
+            }
+            for loan in held {
+                if own_cell && self.loans[loan].place.root == usize::MAX - root {
+                    continue;
+                }
+                // A borrow of a part of the owner that the owner keeps (`ref p.s` in the cell of
+                // `p.h`) leads back to the owner, which the store reached already: following it
+                // would reach the owner through a shared borrow too, so that an exclusive borrow of
+                // the owner stored there would no longer be a write back.
+                if self.loans[loan].place.root == root {
+                    continue;
+                }
+                if self.store_target(loan) {
+                    let mutable = self.loans[loan].mutable;
+                    pending.push((loan, exclusive && mutable));
+                }
+            }
+        }
+        if !local_only {
+            for (root, exclusive) in external {
+                let leaves = leaving.contains(&root);
+                self.store_external(root, exclusive, leaves, stored, span);
+            }
+        }
+        // Through exclusive borrows, an exclusive loan of a place on the way can only be one of
+        // those borrows or a reborrow of one (any other exclusive borrow of the place would
+        // conflict with them): storing it writes back what the place holds. A shared loan of such
+        // a place is none of them: it is what a callee kept of the place in the place itself (the
+        // shared borrow `ref p.s` that a `ref mut p` callee wrote into the cell of `p.h`, whose
+        // copy `shared_copy` made after the call), a borrow of a part of the owner kept in the
+        // owner, which the owner keeps like any other, so that the drop order of its parts is
+        // checked and a later write of the borrowed part conflicts with it. Through a shared
+        // borrow of a cell, it is a borrow of the cell kept inside it, which the owner keeps too.
+        let exclusive_roots: BTreeSet<usize> = reached
+            .iter()
+            .filter(|(_, exclusive)| *exclusive)
+            .map(|(root, _)| *root)
+            .collect();
+        let mut through_exclusive = stored.clone();
+        {
+            let loans = &self.loans;
+            through_exclusive.loans.retain(|id| {
+                !(loans[*id].mutable && exclusive_roots.contains(&loans[*id].place.root))
+            });
+            let kept = &through_exclusive.loans;
+            through_exclusive.through.retain(|id| kept.contains(id));
+        }
+        for (root, exclusive) in reached {
+            let mut kept = if exclusive {
+                through_exclusive.clone()
+            } else {
+                stored.clone()
+            };
+            // The loan that the result of `Rc.share (ref owner)` or `Arc.share (ref owner)` holds
+            // in place of what the block holds (`Loan::share`; A28 did not read it through) is no
+            // pointer to the owner: kept in the block that the owner shares, it is a cycle that
+            // keeps the block alive, which moving the owner does not invalidate. A real borrow
+            // of the owner (`ref owner`) stays: it points at the owner's own storage.
+            if !exclusive {
+                let loans = &self.loans;
+                kept.loans
+                    .retain(|id| !(loans[*id].share && loans[*id].place.root == root));
+                let held = &kept.loans;
+                kept.through.retain(|id| held.contains(id));
+            }
+            self.absorb_owner(root, &kept);
+            // A block that the owner may share went to the caller's data or to a hidden
+            // environment earlier: what it took goes there too.
+            self.store_exported(root, &kept, span, false);
+            // What the owner's drop may hand to a function value that owns the cell that it
+            // writes now includes what was stored.
+            if let Some(ty) = self
+                .state
+                .locals
+                .get(&root)
+                .map(|(local, _)| local.ty.clone())
+            {
+                self.drop_hides_owner(root, &ty, &kept, span);
+            }
+        }
+    }
+
+    /// A31: a store of `stored` where the parameter with external root `root` reaches: a store
+    /// fact from each parameter whose loan it holds, and the error of a borrow of a local value.
+    /// A store of the contents of a parameter's own target into that target, through exclusive
+    /// borrows only (`exclusive`), writes back what the caller's value holds (`rotate`, `sort`),
+    /// which is no fact. Through a cell it is one: the cell may be shared with other owners
+    /// (an `Arc<Mutex<...>>` in the value), which do not hold what the value holds. A share of a
+    /// local `Rc` or `Arc` owner (`Loan::share`) is an owner of the block, not a borrow of the
+    /// local: it stores what the local holds, and the block, which outlives the local in the
+    /// caller's data, takes what the body stores into a cell of it later (`export_block`).
+    ///
+    /// With `leaves`, the store may reach a place that is not the storage of the target itself (a
+    /// cell in the block of an `Rc` or `Arc` that it holds, `place_leaves_storage`): a borrow of
+    /// the target kept there outlives a replacement of the target (`State::kept_elsewhere`).
+    fn store_external(
+        &mut self,
+        root: usize,
+        exclusive: bool,
+        leaves: bool,
+        stored: &Value,
+        span: Span,
+    ) {
+        let Some(&to) = self.parameter_roots.get(&root) else {
+            return;
+        };
+        let stored = &self.expand_views(stored);
+        let mut pending: Vec<(usize, bool)> = stored
+            .loans
+            .iter()
+            .map(|loan| (*loan, stored.through.contains(loan)))
+            .collect();
+        let mut seen = BTreeSet::new();
+        while let Some((loan, through)) = pending.pop() {
+            if !seen.insert(loan) {
+                continue;
+            }
+            let source = self.loans[loan].place.root;
+            if is_static_root(source) {
+                continue;
+            }
+            if let Some(&from) = self.parameter_roots.get(&source) {
+                // A share of a block of the dropped value (`share_loans`) stands for what the
+                // value holds.
+                let part = if through || self.loans[loan].share {
+                    Part::Contents
+                } else {
+                    Part::Value
+                };
+                if exclusive && from == to && part == Part::Contents {
+                    continue;
+                }
+                // A borrow of the target of a parameter through which the body may write stays
+                // live in the caller's data after the store: a later write through the parameter
+                // (a push that moves a vector's elements) must not invalidate it. It stays live
+                // for the rest of the body (`State::kept`), so that such a write conflicts with it
+                // as with a live local borrow, and a write of a disjoint place does not.
+                if part == Part::Value && self.writable_external(source) {
+                    self.state.kept.insert(loan);
+                    if from != to || leaves {
+                        self.state.kept_elsewhere.insert(loan);
+                    }
+                }
+                if part == Part::Contents && from != to {
+                    self.state.contents_elsewhere.insert(source);
+                }
+                let dropping = self.dropping == Some(from);
+                // A shared borrow of what an exclusive reference parameter points at.
+                let shared = part == Part::Value && self.shared_borrow_of_exclusive(loan);
+                // A borrow of a part of the parameter's target kept in that target, which the drop
+                // order of the target's parts keeps valid (`StoreFacts::ordered`): one that the
+                // body borrowed itself, or the copy of what a callee kept in the same target and
+                // proved so (`ordered_loans`: `fn target p = inner p` passes on what `inner`
+                // proved).
+                // Only a place that is the part that the loan borrows (`exact_loan`) tells it: `let
+                // q = child b; ref q.s` borrows a part of a value that `b`'s target reaches.
+                let ordered = part == Part::Value
+                    && from == to
+                    && self.exact_loan(loan)
+                    && self.ordered_self_borrow(loan);
+                // The place of a borrow of a part of a reference parameter's target, kept in it or
+                // where another parameter reaches (`StoreFacts::self_paths`, `kept_paths`: only a
+                // place that is the part that the loan borrows, and the whole target otherwise,
+                // `self_path`).
+                let path = (part == Part::Value)
+                    .then(|| self.self_path(loan))
+                    .flatten();
+                if let Some(stores) = self.stores.as_mut() {
+                    let entry = (from, part, to);
+                    let some = shared && stores.shared_some.insert(entry);
+                    let placed = path.is_some_and(|path| {
+                        let paths = if from == to {
+                            stores.self_paths.entry(from).or_default()
+                        } else {
+                            stores.kept_paths.entry((from, to)).or_default()
+                        };
+                        add_self_path(paths, path)
+                    });
+                    let changed = if stores.stores.insert(entry) {
+                        if dropping {
+                            stores.drop_only.insert(entry);
+                        }
+                        if shared {
+                            stores.shared_only.insert(entry);
+                        }
+                        if ordered {
+                            stores.ordered.insert(entry);
+                        }
+                        true
+                    } else {
+                        let widened = !dropping && stores.drop_only.remove(&entry);
+                        let exclusive = !shared && stores.shared_only.remove(&entry);
+                        let unordered = !ordered && stores.ordered.remove(&entry);
+                        widened || exclusive || unordered || some || placed
+                    };
+                    if changed {
+                        self.store_changes += 1;
+                    }
+                }
+            } else if !self.external.contains(&source) {
+                if self.loans[loan].share
+                    && let Some(held) = self.owner_held(source)
+                {
+                    pending.extend(held);
+                    self.export_block(source, ExportTarget::External(root));
+                    continue;
+                }
+                self.defer(Self::local_borrow_stored(span));
+                return;
+            }
+        }
+    }
+
+    /// A31: `value` with each borrow of a read-only view of matched storage (`views`) in place of
+    /// the loans of the view, through views of views. A view is no value of its own: the code
+    /// generation binds the pattern variable to the address of the matched storage (`match m with
+    /// Maybe.Some s` reads `s` inside `*m`), so `ref s` points where the view's loans do, into the
+    /// caller's data for a view of a shared reference parameter's target, as `ref r.name` does. A
+    /// view of a local value or of a temporary has loans of that local, which stay local. So does
+    /// a view of the target of a parameter through which the body may write (`writable_external`):
+    /// the body may replace the matched value afterwards (`deref m = Maybe.None`), and the stored
+    /// borrow would then read the storage of another case.
+    fn expand_views(&self, value: &Value) -> Value {
+        if self.views.is_empty()
+            || !value
+                .loans
+                .iter()
+                .any(|loan| self.views.contains(&self.loans[*loan].place.root))
+        {
+            return value.clone();
+        }
+        let mut expanded = Value {
+            closed_result: value.closed_result,
+            ..Value::default()
+        };
+        let mut pending: Vec<(usize, bool)> = value
+            .loans
+            .iter()
+            .map(|loan| (*loan, value.through.contains(loan)))
+            .collect();
+        let mut seen = BTreeSet::new();
+        while let Some((loan, through)) = pending.pop() {
+            if !seen.insert(loan) {
+                continue;
+            }
+            let root = self.loans[loan].place.root;
+            if self.views.contains(&root)
+                && let Some(held) = self.owner_held(root)
+                && !held
+                    .iter()
+                    .any(|(held, _)| self.writable_external(self.loans[*held].place.root))
+            {
+                pending.extend(held);
+                continue;
+            }
+            expanded.loans.insert(loan);
+            if through {
+                expanded.through.insert(loan);
+            }
+        }
+        expanded
+    }
+
+    /// A31: whether `root` is the external root of a parameter (or capture) whose type reaches an
+    /// exclusive reference, through which the body may write into the caller's data.
+    fn writable_external(&self, root: usize) -> bool {
+        self.external.contains(&root)
+            && self
+                .declarations
+                .get(&(usize::MAX - root))
+                .is_some_and(|local| local.ty.reaches_exclusive(&self.module.types()))
+    }
+
+    /// A31: the loans that the local owner `root` holds, each with whether it holds it only as
+    /// what it read through a reference parameter (`Value::through`).
+    fn owner_held(&self, root: usize) -> Option<Vec<(usize, bool)>> {
+        let (_, owner) = self.state.locals.get(&root)?;
+        Some(
+            owner
+                .loans
+                .iter()
+                .map(|held| (*held, owner.through.contains(held)))
+                .collect(),
+        )
+    }
+
+    /// A31: the type of the strong owner of the block that a value of the `Rc`, `Arc` or weak
+    /// pointer type `ty` shares (`Rc<T>` for `Rc.Weak<T>`), which identifies the block's type
+    /// apart from how a value points at it.
+    fn block_owner_type(ty: &Type) -> Option<Type> {
+        let Type::Shared(value, kind) = ty else {
+            return None;
+        };
+        let strong = match kind {
+            crate::check::SharedKind::Rc | crate::check::SharedKind::RcWeak => {
+                crate::check::SharedKind::Rc
+            }
+            crate::check::SharedKind::Arc | crate::check::SharedKind::ArcWeak => {
+                crate::check::SharedKind::Arc
+            }
+        };
+        Some(Type::Shared(value.clone(), strong))
+    }
+
+    /// A31: a share of a block of the local owner `owner` (`Loan::share`) went to `target`, which
+    /// outlives the local: the caller's data (`store_external`) or a hidden environment
+    /// (`store_hidden`). What went there is what the owner held then; a block with a cell takes
+    /// more when the body writes into the cell later, through the owner, another share of the
+    /// block, a borrow of its contents, a weak pointer that it upgrades or the value that the
+    /// owner moves into. The check does not follow the block through those values, so it keeps the
+    /// types of the blocks with a cell that the owner may share (`exports`): a later store into a
+    /// local whose value may own such a block goes to `target` too (`store_exported`). A block
+    /// without a cell takes nothing after it is made. A block that the owner holds behind a dyn
+    /// value or a value of a type that the check does not know is not walked by types, and may
+    /// hold a cell although the type of its owner shows none (`Rc<B>` of `record B {r} { n: i64,
+    /// d: dyn C {r} }`), so such an owner also takes `HIDDEN_BLOCK` there.
+    fn export_block(&mut self, owner: usize, target: ExportTarget) {
+        let Some((local, _)) = self.state.locals.get(&owner) else {
+            return;
+        };
+        let ty = local.ty.clone();
+        let mut blocks = self.export_walk(&ty);
+        if self.hides_blocks(&ty) {
+            blocks.push(HIDDEN_BLOCK);
+        }
+        self.add_exports(blocks, target);
+    }
+
+    /// A31: `export_block(holder, ExportTarget::Local(source))` for a local `holder` whose shares
+    /// of the block of the local owner `source` `keep_for_drop` expanded, limited to the types of
+    /// blocks that `source`'s type reaches too, when that type shows every block that a value of
+    /// it may own. `source`'s drop frees only blocks that it owns: the shared block, each block
+    /// that the shared block may hold (`Rc<Leaf>` in `Tree { child: Maybe<Rc<Leaf>> }`), and the
+    /// blocks of `source`'s other parts. A block that only `holder`'s type reaches (the
+    /// `Rc<Other>` of `RH2 { rc: Rc.share (ref r2), other: Rc<Other> }`) is not one of them, so a
+    /// store into it does not concern `source`.
+    ///
+    /// The walk by types does not see into a dyn value, whose methods get a reference to its data
+    /// and may return a reference into it (`Rc.share (C.leaf (ref (Rc.get (ref r2)).d))` shares
+    /// an `Rc<Leaf>` that `r2`'s dyn field owns), nor into a value of a type that the check does not
+    /// know (a type parameter, whose class methods may do the same). When `source`'s type reaches
+    /// one of these (`walk_hides_blocks`), the shared block may be of a type that the walk of
+    /// `source`'s type misses, so every block type of `holder`'s type goes to `source`. When
+    /// `holder`'s type reaches one, the share itself may be inside it (`H { d: Dyn.of (Box1 { l:
+    /// Rc.share (ref r2) }) }`), and so may the blocks that a store into `holder` reaches: a store
+    /// into any local whose type reaches one goes to `source` too (`HIDDEN_BLOCK`). A function
+    /// value hands out no place inside its environment (a lambda that returns a reference to what
+    /// it captured is `E1013`), so no share of a block of the environment is made; a store into
+    /// such a block is a store into a hidden environment (`store_hidden`), which every local that
+    /// may hold such a value takes.
+    fn export_shared_block(&mut self, holder: usize, source: usize) {
+        let (Some((holder_local, _)), Some((source_local, _))) = (
+            self.state.locals.get(&holder),
+            self.state.locals.get(&source),
+        ) else {
+            return;
+        };
+        let (holder_ty, source_ty) = (holder_local.ty.clone(), source_local.ty.clone());
+        let (holder_hides, source_hides) =
+            (self.hides_blocks(&holder_ty), self.hides_blocks(&source_ty));
+        let blocks = self.export_walk(&holder_ty);
+        let mut blocks: Vec<Type> = if source_hides {
+            blocks
+        } else {
+            let freed = self.export_walk(&source_ty);
+            blocks
+                .into_iter()
+                .filter(|block| freed.contains(block))
+                .collect()
+        };
+        if holder_hides {
+            blocks.push(HIDDEN_BLOCK);
+        }
+        self.add_exports(blocks, ExportTarget::Local(source));
+    }
+
+    /// A31: the types of the blocks with a cell that a value of type `ty` may own
+    /// (`export_block`), by the type of their strong owner, cached by type.
+    fn export_walk(&mut self, ty: &Type) -> Vec<Type> {
+        if let Some(blocks) = self.export_walks.get(ty) {
+            return blocks.clone();
+        }
+        let types = self.module.types();
+        let blocks = std::cell::RefCell::new(Vec::new());
+        types.reaches(ty, |part| {
+            if let Some(block) = Self::block_owner_type(part)
+                && let Type::Shared(value, _) = part
+                && value.owns_mutable_cell(&types)
+            {
+                blocks.borrow_mut().push(block);
+            }
+            false
+        });
+        let blocks = blocks.into_inner();
+        self.export_walks.insert(ty.clone(), blocks.clone());
+        blocks
+    }
+
+    /// A31: `walk_hides_blocks` of `ty`, cached by type.
+    fn hides_blocks(&mut self, ty: &Type) -> bool {
+        if let Some(hides) = self.hidden_walks.get(ty) {
+            return *hides;
+        }
+        let hides = walk_hides_blocks(ty, &self.module.types());
+        self.hidden_walks.insert(ty.clone(), hides);
+        hides
+    }
+
+    /// A31: the entries of `exports` for `blocks` that went to `target`.
+    fn add_exports(&mut self, blocks: Vec<Type>, target: ExportTarget) {
+        for block in blocks {
+            if self.exported.insert((block.clone(), target)) {
+                self.exports.push((block, target));
+                self.store_changes += 1;
+            }
+        }
+    }
+
+    /// A31: `stored` with each share of a block of a local owner (`Loan::share`) in place of what
+    /// the owner holds, through shares of shares, for a store in `target` (`export_block`).
+    fn expand_shares(&mut self, stored: &Value, target: ExportTarget) -> Value {
+        if !stored.loans.iter().any(|loan| self.loans[*loan].share) {
+            return stored.clone();
+        }
+        let mut expanded = Value {
+            closed_result: stored.closed_result,
+            ..Value::default()
+        };
+        let mut pending: Vec<(usize, bool)> = stored
+            .loans
+            .iter()
+            .map(|loan| (*loan, stored.through.contains(loan)))
+            .collect();
+        let mut seen = BTreeSet::new();
+        let mut owners = Vec::new();
+        while let Some((loan, through)) = pending.pop() {
+            if !seen.insert(loan) {
+                continue;
+            }
+            let source = self.loans[loan].place.root;
+            if self.loans[loan].share
+                && !is_static_root(source)
+                && !self.external.contains(&source)
+                && let Some(held) = self.owner_held(source)
+            {
+                pending.extend(held);
+                owners.push(source);
+                continue;
+            }
+            expanded.loans.insert(loan);
+            if through {
+                expanded.through.insert(loan);
+            }
+        }
+        // What a block owner exports depends on its type only: one walk per type, so that a chain
+        // of shares (`let s2 = Rc.share (ref s1)`, ...) costs one walk, not one per owner.
+        let mut walked: Vec<Type> = Vec::new();
+        for owner in owners {
+            let Some((local, _)) = self.state.locals.get(&owner) else {
+                continue;
+            };
+            if walked.contains(&local.ty) {
+                continue;
+            }
+            walked.push(local.ty.clone());
+            self.export_block(owner, target);
+        }
+        expanded
+    }
+
+    /// A31: the local `root` took `kept` (`absorb_owner`). When its value may own a block that went
+    /// to the caller's data or to a hidden environment (`exports`), the store may have been into
+    /// that block, so `kept` goes there too. `hidden` is a store of `store_hidden`, which every
+    /// hidden environment took already.
+    fn store_exported(&mut self, root: usize, kept: &Value, span: Span, hidden: bool) {
+        if self.exports.is_empty() || self.exporting || kept.loans.is_empty() {
+            return;
+        }
+        let Some((local, _)) = self.state.locals.get(&root) else {
+            return;
+        };
+        let ty = local.ty.clone();
+        self.store_exported_into(&ty, kept, span, hidden);
+    }
+
+    /// A31: `store_exported` for a store into a value of type `ty`, which may be one that no local
+    /// root of the body leads to: the value of a local owner moved into the callee whose facts
+    /// store there (`put_into (ref local) lr`, `apply_facts_once`), or into code that the check
+    /// does not see (`apply_opaque`). When `ty` may own a block that went to the caller's data, to
+    /// a hidden environment or to a local that keeps it for its drop, the store may have been into
+    /// that block. A value of a type that hides the blocks that it may own (`walk_hides_blocks`)
+    /// may own one of every type; the blocks that a value of a hiding type took (`HIDDEN_BLOCK`)
+    /// may be of every type that holds a cell.
+    fn store_exported_into(&mut self, ty: &Type, kept: &Value, span: Span, hidden: bool) {
+        if self.exports.is_empty() || self.exporting || kept.loans.is_empty() {
+            return;
+        }
+        let hides = self.hides_blocks(ty);
+        let types = self.module.types();
+        let exports = &self.exports;
+        let mut targets: Vec<ExportTarget> = Vec::new();
+        let mut seen: BTreeSet<ExportTarget> = BTreeSet::new();
+        // One walk of `ty` per type of block, however many places it went to.
+        let mut reached: BTreeMap<&Type, bool> = BTreeMap::new();
+        for (block, target) in exports {
+            if (hidden && *target == ExportTarget::Hidden) || seen.contains(target) {
+                continue;
+            }
+            let reaches = hides
+                || *reached.entry(block).or_insert_with(|| {
+                    if *block == HIDDEN_BLOCK {
+                        return types.reaches(ty, |part| {
+                            matches!(part, Type::Shared(value, _) if value.owns_mutable_cell(&types))
+                        });
+                    }
+                    types.reaches(ty, |part| {
+                        Self::block_owner_type(part).is_some_and(|owner| owner == *block)
+                    })
+                });
+            if reaches {
+                seen.insert(*target);
+                targets.push(*target);
+            }
+        }
+        if targets.is_empty() {
+            return;
+        }
+        self.exporting = true;
+        for target in targets {
+            match target {
+                ExportTarget::External(external) => {
+                    self.store_external(external, false, true, kept, span);
+                }
+                ExportTarget::Hidden => self.store_hidden(kept, span),
+                ExportTarget::Local(holder) => self.absorb_owner(holder, kept),
+            }
+        }
+        self.exporting = false;
+    }
+
+    /// A31: a store of `stored` in an environment that the check cannot name: that of a function
+    /// value, a dyn value or an `Owned.Function` that owns the cell that its code writes (a
+    /// lambda that captured an `Arc<Mutex<...>>` by value), in a module that makes such a value
+    /// (`CallFacts::owned_sinks`). The value may be a copy, and a copy shares the cell without
+    /// holding a loan of anything, so every value that may share it holds what was stored: every
+    /// local whose type may hold such a function value or reaches a cell (`shares_hidden`), the values bound
+    /// later that were made before (`hidden_log`), and the caller's values of such types (a fact of
+    /// the body, `StoreFacts::hidden`, when a parameter has such a type). A borrow of a local value
+    /// of the body cannot go where the caller's data reaches.
+    fn store_hidden(&mut self, stored: &Value, span: Span) {
+        self.store_hidden_except(stored, span, None);
+    }
+
+    /// `store_hidden`, where the local `except` does not take what is stored (the borrow of a
+    /// local that its own drop keeps, `drop_keeps_self`).
+    fn store_hidden_except(&mut self, stored: &Value, span: Span, except: Option<usize>) {
+        if stored.loans.is_empty() || !self.facts.owned_sinks {
+            return;
+        }
+        // A share of a block of a local owner (`Loan::share`) is no borrow of the local: the
+        // environment takes what the block holds, and what the body stores into the block later
+        // (`expand_shares`, `export_block`).
+        let stored = &self.expand_shares(stored, ExportTarget::Hidden);
+        let stored = &self.expand_views(stored);
+        if stored.loans.is_empty() {
+            return;
+        }
+        // A value that may share the environment is handed, somewhere in the module, to code
+        // that runs it later: it was checked to hold no borrow there, and no check follows it.
+        if self.facts.escapes
+            && stored
+                .loans
+                .iter()
+                .any(|loan| !is_static_root(self.loans[*loan].place.root))
+        {
+            self.defer(error(
+                DiagnosticKind::TaskCaptureRetainsBorrow,
+                "cannot store a borrow in the environment of a function value here: this program hands a function value that may share that environment to a tzroutine, a channel or other code that runs it later, which may use the borrow after the borrowed value is gone",
+                span,
+            ).with_help("store an owned value, or a function that captures a copy"));
+        }
+        let kept = Value {
+            loans: stored.loans.clone(),
+            through: stored.through.clone(),
+            ..Value::default()
+        };
+        if !self
+            .hidden_log
+            .iter()
+            .any(|logged| kept.loans.is_subset(&logged.loans))
+        {
+            self.hidden_log.push(kept.clone());
+            self.store_changes += 1;
+        }
+        // A parameter keeps only the caller's loans here: a loan of a local value of the body
+        // that reaches the caller's values is the error below, which names what happened.
+        let outside = {
+            let loans = &self.loans;
+            let external = &self.external;
+            let mut outside = kept.clone();
+            outside.loans.retain(|loan| {
+                let root = loans[*loan].place.root;
+                is_static_root(root) || external.contains(&root)
+            });
+            let held = &outside.loans;
+            outside.through.retain(|loan| held.contains(loan));
+            outside
+        };
+        let ids: Vec<usize> = self.state.locals.keys().copied().collect();
+        for id in ids {
+            let local = self.state.locals[&id].0;
+            if Some(id) == except || !self.shares_hidden(&local.ty) {
+                continue;
+            }
+            if self.parameter_roots.contains_key(&(usize::MAX - id)) {
+                self.absorb_owner(id, &outside);
+                self.store_exported(id, &outside, span, true);
+            } else if !self.holds_no_owner(id) {
+                // A local bound to a value that cannot share the environment (`let base =
+                // seven`, a lambda that captured a `ref string`, handlers that `Array.map` made)
+                // keeps nothing of it.
+                self.absorb_owner(id, &kept);
+                self.store_exported(id, &kept, span, true);
+            }
+        }
+        let parameters: Vec<Type> = self
+            .parameter_roots
+            .keys()
+            .filter_map(|root| self.declarations.get(&(usize::MAX - *root)))
+            .map(|local| local.ty.clone())
+            .collect();
+        if !parameters.into_iter().any(|ty| self.shares_hidden(&ty)) {
+            return;
+        }
+        let mut pending: Vec<(usize, bool)> = kept
+            .loans
+            .iter()
+            .map(|loan| (*loan, kept.through.contains(loan)))
+            .collect();
+        let mut seen = BTreeSet::new();
+        while let Some((loan, through)) = pending.pop() {
+            if !seen.insert(loan) {
+                continue;
+            }
+            let source = self.loans[loan].place.root;
+            if is_static_root(source) {
+                continue;
+            }
+            if let Some(&from) = self.parameter_roots.get(&source) {
+                let part = if through || self.loans[loan].share {
+                    Part::Contents
+                } else {
+                    Part::Value
+                };
+                // A borrow of the target of a parameter through which the body may write, in an
+                // environment that the caller's values may share, stays live for the rest of the
+                // body, as one stored into the caller's data does (`store_external`).
+                if part == Part::Value && self.writable_external(source) {
+                    self.state.kept.insert(loan);
+                    self.state.kept_elsewhere.insert(loan);
+                }
+                if part == Part::Contents {
+                    self.state.contents_elsewhere.insert(source);
+                }
+                let shared = part == Part::Value && self.shared_borrow_of_exclusive(loan);
+                if let Some(stores) = self.stores.as_mut() {
+                    let entry = (from, part);
+                    let changed = if stores.hidden.insert(entry) {
+                        if shared {
+                            stores.hidden_shared.insert(entry);
+                        }
+                        true
+                    } else {
+                        !shared && stores.hidden_shared.remove(&entry)
+                    };
+                    if changed {
+                        self.store_changes += 1;
+                    }
+                }
+            } else if !self.external.contains(&source) {
+                self.defer(Self::local_borrow_stored(span));
+                return;
+            }
+        }
+    }
+
+    /// A31: gives `value`, which a local of type `ty` is bound to (or which the body returns),
+    /// what was stored in hidden environments since `mark` (`store_hidden`): the value may be a
+    /// copy, made before the store, of a value that shares such an environment.
+    fn absorb_hidden(
+        &mut self,
+        mark: usize,
+        value: &mut Value,
+        ty: &Type,
+        origin: Option<&TypedExpr>,
+    ) {
+        if mark >= self.hidden_log.len() || !self.shares_hidden(ty) {
+            return;
+        }
+        // A value that cannot share the environment (`may_own`) is no copy made before the store.
+        if origin.is_some_and(|origin| !self.may_own(origin)) {
+            return;
+        }
+        for logged in &self.hidden_log[mark..] {
+            value.absorb(logged);
+        }
+    }
+
+    /// A31: the value of the borrows inside the targets of the references `references`: what a
+    /// local owner holds, the target loans of a parameter's slot with a named target region, and a
+    /// parameter's own loan as what it reads through (`Value::through`).
+    fn contents_value(&self, references: &Value) -> Value {
+        let mut value = Value::default();
+        for &id in &references.loans {
+            let place = &self.loans[id].place;
+            if let Some((_, owner)) = self.state.locals.get(&place.root) {
+                value.absorb(&Value {
+                    loans: owner.loans.clone(),
+                    through: owner.through.clone(),
+                    ..Value::default()
+                });
+            } else if let Some(slot) = self
+                .slots
+                .get(&(place.root, place_slot(place)))
+                .filter(|slot| !slot.target.is_empty())
+            {
+                value.hold(slot.target.iter().copied());
+            } else {
+                value.absorb(&Value {
+                    loans: BTreeSet::from([id]),
+                    through: BTreeSet::from([id]),
+                    ..Value::default()
+                });
+            }
+        }
+        value
+    }
+
+    fn part_value(&self, value: &Value, part: Part) -> Value {
+        match part {
+            Part::Value => Value {
+                loans: value.loans.clone(),
+                through: value.through.clone(),
+                ..Value::default()
+            },
+            Part::Contents => self.contents_value(value),
+        }
+    }
+
+    /// A31: what a fact's `part` of `argument` stores. The contents of a borrowed temporary
+    /// (`Arg::temporary`) are its value: its loans are what the temporary holds, which is what the
+    /// reference that the parameter gets points at. The targets of those loans are kept as well,
+    /// for a temporary that `apply_higher` approximates by a whole function value. The value of
+    /// a borrowed operand that is a place is the borrow of the place (`Arg::reference`), which the
+    /// operand's own value, what the place holds, does not show.
+    fn argument_part(&self, argument: &Arg<'_>, part: Part) -> Value {
+        let mut value = self.part_value(&argument.value, part);
+        if argument.temporary && part == Part::Contents {
+            value.absorb(&self.part_value(&argument.value, Part::Value));
+        }
+        if part == Part::Value
+            && let Some(reference) = &argument.reference
+        {
+            value.hold(reference.iter().copied());
+        }
+        value
+    }
+
+    /// A31: what code that the check does not see may keep of `argument`: its value, and the
+    /// borrow of a borrowed operand that is a place (`Arg::reference`) in a module where some
+    /// function keeps a shared reference that it gets (`CallFacts::reference_sinks`). In any other
+    /// module the code, which is a function of the module, keeps at most what the operand holds.
+    fn handed(&self, argument: &Arg<'_>) -> Value {
+        if self.facts.reference_sinks {
+            self.argument_part(argument, Part::Value)
+        } else {
+            self.part_value(&argument.value, Part::Value)
+        }
+    }
+
+    /// A31: what the type `ty` of an argument says (`argument_types`): whether a store may reach
+    /// through a value of it other than by running the code of a function value that it holds
+    /// (`may_reach_store_beside_code`, for `Source::target`), and whether it may hold a function
+    /// value that may own the cell that it writes, or reaches a cell (`argument_hides`).
+    fn argument_type(&mut self, ty: &Type) -> (bool, bool) {
+        if let Some(known) = self.argument_types.get(ty) {
+            return *known;
+        }
+        let types = self.module.types();
+        let reach = may_reach_store(ty, &types);
+        let target = reach && may_reach_store_beside_code(ty, &types);
+        let facts: &CallFacts = self.facts;
+        let dynamic = facts
+            .owned_types
+            .iter()
+            .any(|owned| matches!(owned, Type::Dyn(_)));
+        let plain = without_views(ty);
+        let hides = reach
+            && (types.reaches(&plain, |part| match part {
+                Type::Function(..) => owned_suffix(part, usize::MAX, &facts.owned_types),
+                Type::Dyn(_) => dynamic,
+                _ => part.is_owned_function(&types),
+            }) || self.reaches_cell(ty));
+        self.argument_types.insert(ty.clone(), (target, hides));
+        (target, hides)
+    }
+
+    /// A31: whether the value of `argument` may hold a function value of one of the types that
+    /// may own the cell that they write (`CallFacts::owned_types`, or a type whose function after
+    /// some arguments is one), a dyn value when a dyn type is one of them, or an `Owned.Function`,
+    /// or reaches a cell. Unseen code that gets the argument reaches an environment that the check
+    /// cannot name only through such a value: a closure that captured a `ref string` and a
+    /// function of a type that no owner has are neither.
+    fn argument_hides(&mut self, argument: &Arg<'_>) -> bool {
+        match argument.expression {
+            Some(expression) => self.argument_type(&expression.ty).1 && self.may_own(expression),
+            None => argument.hides,
+        }
+    }
+
+    /// A31: whether a store may reach through the value of `argument` other than by running the
+    /// code of a function value that it holds (`may_reach_store_beside_code`).
+    fn argument_target(&mut self, argument: &Arg<'_>) -> bool {
+        match argument.expression {
+            Some(expression) => self.argument_type(&expression.ty).0,
+            None => argument.target,
+        }
+    }
+
+    /// A31: whether a call of `callee` with `arguments` arguments may run a function value that
+    /// owns the cell that it writes, or reach one through its environment: its type, or the type
+    /// of the function that it gives after some of the arguments, is one of
+    /// `CallFacts::owned_types`. A value that is not of a function type (an `Owned.Function`) may.
+    /// A value without an expression (an argument that a callee's facts pass on) may when the
+    /// callee saw that its type may (`Arg::hides`).
+    fn may_own_sink(&mut self, callee: &Arg<'_>, arguments: usize) -> bool {
+        let Some(expression) = callee.expression else {
+            return callee.hides;
+        };
+        // A value that cannot share a hidden environment (`may_own`) runs code that reaches none.
+        if !self.may_own(expression) {
+            return false;
+        }
+        let mut ty = &expression.ty;
+        while let Type::Reference(target, _) = ty {
+            ty = target;
+        }
+        if !matches!(ty, Type::Function(..)) {
+            return self.sequence_steps(ty, &self.facts.owned_types);
+        }
+        owned_suffix(ty, arguments, &self.facts.owned_types)
+    }
+
+    /// A31: whether `Seq.next` on a value of type `ty` may run a step function of one of the
+    /// types `set` (`CallFacts::owned_types` or `CallFacts::sink_types`): the step functions of a
+    /// sequence are of the function types that its type reaches. Any other value that is not a
+    /// function value (an `Owned.Function`) may run anything.
+    fn sequence_steps(&self, ty: &Type, set: &BTreeSet<Type>) -> bool {
+        let types = self.module.types();
+        if ty.sequence_element(&types).is_none() {
+            return true;
+        }
+        types.reaches(ty, |part| match part {
+            Type::Function(..) => owned_suffix(part, usize::MAX, set),
+            Type::Dyn(_) => true,
+            _ => part.is_owned_function(&types),
+        })
+    }
+
+    /// A31: whether a call of `callee` with `arguments` arguments may run code that stores into
+    /// what the function value's environment reaches: in a module where some function value does
+    /// (`CallFacts::sinks`), when its type, or the type of the function that it gives after some of
+    /// the arguments, is one of `CallFacts::sink_types`. A value that is not of a function type
+    /// (an `Owned.Function`), or whose expression is not known here, may.
+    fn may_be_sink(&self, callee: &Arg<'_>, arguments: usize) -> bool {
+        if !self.facts.sinks {
+            return false;
+        }
+        let Some(expression) = callee.expression else {
+            return true;
+        };
+        let mut ty = &expression.ty;
+        while let Type::Reference(target, _) = ty {
+            ty = target;
+        }
+        if !matches!(ty, Type::Function(..)) {
+            return self.sequence_steps(ty, &self.facts.sink_types);
+        }
+        owned_suffix(ty, arguments, &self.facts.sink_types)
+    }
+
+    /// A31: where the loans of `value` come from, for a fact of a call of a function-valued
+    /// parameter: the parameters (or the contents of their targets) and the local values, and
+    /// the parameters whose `Part::Value` loans there are all shared borrows of what an exclusive
+    /// reference parameter points at (`Source::shared`).
+    fn source_of(&self, value: &Value) -> Source {
+        let mut source = Source::default();
+        let mut exclusive = BTreeSet::new();
+        // The parameters with a loan that borrows its whole target, or not as a shared borrow.
+        let mut whole = BTreeSet::new();
+        // The same, with a place that steps into elements counted as a part (`element_paths`).
+        let mut elements = BTreeSet::new();
+        // Whether each loan is a whole target of a parameter or a part of one at `paths`, which a
+        // caller's value for it replaces place for place (`Source::pointing`); for each parameter,
+        // whether all its loans are its whole target.
+        let mut precise = !value.loans.is_empty()
+            && !value
+                .loans
+                .iter()
+                .any(|loan| self.views.contains(&self.loans[*loan].place.root));
+        let mut targets: BTreeMap<usize, bool> = BTreeMap::new();
+        // The parameters whose `paths` and whose `element_paths` stand for a larger part than a
+        // loan's place (`Source::coarse`).
+        let (mut coarse_paths, mut coarse_elements) = (BTreeSet::new(), BTreeSet::new());
+        let value = &self.expand_views(value);
+        for &loan in &value.loans {
+            let root = self.loans[loan].place.root;
+            if is_static_root(root) {
+                precise = false;
+                continue;
+            }
+            match self.parameter_roots.get(&root) {
+                Some(&index) => {
+                    let part = if value.through.contains(&loan) || self.loans[loan].share {
+                        Part::Contents
+                    } else {
+                        Part::Value
+                    };
+                    source.parameters.insert((index, part));
+                    if part == Part::Contents {
+                        precise = false;
+                    } else {
+                        *targets.entry(index).or_insert(true) &=
+                            self.loans[loan].place.fields.is_empty();
+                    }
+                    if part == Part::Value {
+                        if self.shared_borrow_of_exclusive(loan) {
+                            source.shared.insert(index);
+                        } else {
+                            exclusive.insert(index);
+                        }
+                        // Only fields: an element or a payload is one place for every element or
+                        // case, so its borrow stays one of the whole target (the element of
+                        // `ref values[index]` that `Array.iterir` passes on). A place that also
+                        // steps into elements is one of `element_paths`. A copy whose place holds
+                        // the borrowed part (a coarse path of a callee that this body passes its
+                        // parameter on to, `holding_path`) gives that place as a coarse path.
+                        let holding = self.holding_path(loan);
+                        let held = holding.is_some();
+                        match holding.or_else(|| self.self_path(loan)) {
+                            Some(path)
+                                if !path.is_empty()
+                                    && !self.loans[loan].mutable
+                                    && path.iter().all(|step| *step != PAYLOAD) =>
+                            {
+                                if path.contains(&ELEMENT) {
+                                    whole.insert(index);
+                                } else if add_place_path(
+                                    source.paths.entry(index).or_default(),
+                                    path.clone(),
+                                ) || held
+                                {
+                                    coarse_paths.insert(index);
+                                }
+                                if add_place_path(
+                                    source.element_paths.entry(index).or_default(),
+                                    path,
+                                ) || held
+                                {
+                                    coarse_elements.insert(index);
+                                }
+                            }
+                            _ => {
+                                whole.insert(index);
+                                elements.insert(index);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    source.local = true;
+                    precise = false;
+                }
+            }
+        }
+        source.shared.retain(|index| !exclusive.contains(index));
+        source
+            .paths
+            .retain(|index, paths| !whole.contains(index) && !paths.contains(&Vec::new()));
+        let paths = &source.paths;
+        source.element_paths.retain(|index, element_paths| {
+            whole.contains(index)
+                && !elements.contains(index)
+                && !paths.contains_key(index)
+                && !element_paths.contains(&Vec::new())
+        });
+        source.coarse = source
+            .paths
+            .keys()
+            .filter(|index| coarse_paths.contains(*index))
+            .chain(
+                source
+                    .element_paths
+                    .keys()
+                    .filter(|index| coarse_elements.contains(*index)),
+            )
+            .copied()
+            .collect();
+        source.pointing = precise
+            && targets.iter().all(|(index, target)| {
+                *target
+                    || ((source.paths.contains_key(index)
+                        || source.element_paths.contains_key(index))
+                        && !source.coarse.contains(index))
+            });
+        source
+    }
+
+    /// A31: whether the `Part::Value` loan `loan` of a parameter is a shared borrow of what an
+    /// exclusive reference parameter points at (`ref r.name` with `r: ref mut Rec`), never the
+    /// exclusive reference itself (`StoreFacts::shared_only`).
+    fn shared_borrow_of_exclusive(&self, loan: usize) -> bool {
+        !self.loans[loan].mutable
+            && self
+                .declarations
+                .get(&(usize::MAX - self.loans[loan].place.root))
+                .is_some_and(|local| matches!(local.ty, Type::Reference(_, true)))
+    }
+
+    /// A31: `value` with each exclusive loan in place of a shared loan of the same place
+    /// (`StoreFacts::shared_only`): what a callee kept of a fresh exclusive borrow that it got,
+    /// which ends with the call, when it stored only shared borrows of what the borrow points at.
+    /// The copy has no parents: it is a borrow of the place itself, kept where the callee stored
+    /// it, not one reached through the reference that the caller passed. A reborrow through a
+    /// `ref mut` variable (`let r = ref mut p0; target r`) or the left side of a pipeline has the
+    /// variable's borrow of the whole value as a parent, which would keep the whole value borrowed
+    /// for as long as the copy lives; a later access through the variable that reaches the copied
+    /// place conflicts with the copy itself. The copy of a loan is made once (`shared_copies`), so
+    /// that applying the facts again adds nothing new.
+    fn shared_copy(&mut self, value: &Value) -> Value {
+        let mut copied = Value {
+            closed_result: value.closed_result,
+            ..Value::default()
+        };
+        for &loan in &value.loans {
+            let held = if self.loans[loan].mutable {
+                match self.shared_copies.get(&loan) {
+                    Some(copy) => *copy,
+                    None => {
+                        let original = &self.loans[loan];
+                        let copy = Loan {
+                            place: original.place.clone(),
+                            mutable: false,
+                            parents: BTreeSet::new(),
+                            view: None,
+                            span: original.span,
+                            share: false,
+                        };
+                        let exact = self.exact_loan(loan);
+                        self.loans.push(copy);
+                        let id = self.loans.len() - 1;
+                        self.shared_copies.insert(loan, id);
+                        // The same place, as exact as the original's (`exact_loans`), and holding
+                        // the borrowed part when the original's does (`holding_loans`).
+                        if exact {
+                            self.exact_loans.insert(id);
+                        }
+                        if self.holding_loans.contains(&loan) {
+                            self.holding_loans.insert(id);
+                        }
+                        id
+                    }
+                }
+            } else {
+                loan
+            };
+            copied.loans.insert(held);
+            if value.through.contains(&loan) {
+                copied.through.insert(held);
+            }
+        }
+        copied
+    }
+
+    /// A31: the value of a reference argument split by the places that it may point at, for the
+    /// store of a borrow of a part of what the reference points at in that same value (a self
+    /// entry of the store facts, or a function value that keeps one as a function of the module
+    /// does). The reference points at one of the places that the loans that the value holds itself
+    /// borrow (`if c then ref a else ref b`, an element of `[ref a, ref b]`, the result of a
+    /// function that returns one of its reference arguments), or at a part of what one of those
+    /// places reaches: the callee keeps a borrow of a part of that place in that place, which
+    /// `apply_store` extends to what the place reaches, and not in the other places. So each piece
+    /// holds one of those loans with every loan that the value holds as contents
+    /// (`Value::through`), and is both what is stored and where. `None` (one piece, the whole
+    /// value stored where all of it reaches) when the value holds at most one loan itself, or the
+    /// argument is a borrowed operand whose borrow `argument_part` adds (`Arg::reference`).
+    fn referent_pieces(argument: &Arg<'_>, value: &Value) -> Option<Vec<Value>> {
+        if argument.reference.is_some() {
+            return None;
+        }
+        let own: Vec<usize> = value
+            .loans
+            .iter()
+            .copied()
+            .filter(|loan| !value.through.contains(loan))
+            .collect();
+        if own.len() < 2 {
+            return None;
+        }
+        Some(
+            own.into_iter()
+                .map(|loan| {
+                    let mut piece = Value {
+                        closed_result: value.closed_result,
+                        ..Value::default()
+                    };
+                    piece.loans.insert(loan);
+                    for &held in &value.through {
+                        piece.loans.insert(held);
+                        piece.through.insert(held);
+                    }
+                    piece
+                })
+                .collect(),
+        )
+    }
+
+    /// A31: whether the borrow `loan` of a part of what a reference parameter points at, stored
+    /// in that same value, is one that the drop order of the value's parts keeps valid
+    /// (`StoreFacts::ordered`): the borrowed part is dropped after every part of the value whose
+    /// drop may read borrows (`self_borrow_dropped_first`). A place behind a region slot of a
+    /// record parameter names no field of the value, and counts as none. The copy of a borrow
+    /// that a callee kept in the same target and proved so (`ordered_loans`, `ordered_copy`)
+    /// needs only the levels above the place that it borrows, so that a function that passes
+    /// its parameter on (`fn target p = inner p`) passes on what `inner` proved.
+    fn ordered_self_borrow(&mut self, loan: usize) -> bool {
+        let place = self.loans[loan].place.clone();
+        if place
+            .fields
+            .first()
+            .is_some_and(|field| is_region_field(*field))
+        {
+            return false;
+        }
+        let Some(Type::Reference(target, _)) = self
+            .declarations
+            .get(&(usize::MAX - place.root))
+            .map(|local| local.ty.clone())
+        else {
+            return false;
+        };
+        // The copy of what a callee proved inside the borrowed place needs only the levels above.
+        let proven = self.ordered_loans.contains(&loan);
+        !self.self_borrow_dropped_first(&target, &place.fields, proven)
+    }
+
+    /// A31: whether the places of a borrow of `expression` (`place`) are the parts that it
+    /// borrows (`exact_loans`): a chain of fields and elements (`p.s`, `arr[i].s`) of a local
+    /// value, or of what a reference local points at (`b.s` for a parameter `b: ref Pair`) when
+    /// the local points at the places of its loans (`pointing`), each loan is exact itself
+    /// (`exact_loan`) and borrows a value of the reference's target type. Any other dereference
+    /// (of a field, an element or the result of a call: `w.p.s`, `(geth q).n`) gives the places of
+    /// the loans that the dereferenced value holds, to which the borrow adds fields of another
+    /// value. So does a local bound to the result of a call (`let q = child b; ref q.s`): the
+    /// result holds `b`'s loan, whose place is `b`'s target, while it points at a value that
+    /// `b`'s target reaches (`Rc.get (ref n.kids[0])`), which may even be of the same type.
+    fn exact_place(&self, expression: &TypedExpr) -> bool {
+        match &expression.kind {
+            E::Local(id) => !self.state.aliases.contains_key(id),
+            E::Field(value, _) | E::UnionPayload { value, .. } | E::ListTail(value, _) => {
+                self.exact_place(value)
+            }
+            E::Index(value, _)
+                if matches!(
+                    value.ty,
+                    Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                ) =>
+            {
+                self.exact_place(value)
+            }
+            // What a reference that points at its loans' places points at (`points_at`): a
+            // reborrow, `ref (deref (ref p))`, which a pipeline makes of its left side, or `ref
+            // (deref (if c then ref a else ref b))`, which a call makes of a reference argument.
+            E::Dereference(reference) if !matches!(reference.kind, E::Local(_)) => {
+                self.points_at(reference)
+            }
+            E::Dereference(reference) => {
+                let E::Local(id) = &reference.kind else {
+                    return false;
+                };
+                let Type::Reference(target, _) = &reference.ty else {
+                    return false;
+                };
+                if self.state.aliases.contains_key(id) {
+                    return false;
+                }
+                let target = without_views(target);
+                self.pointing_local(*id)
+                    && self.state.locals.get(id).is_some_and(|(_, value)| {
+                        value.loans.iter().all(|loan| {
+                            self.exact_loan(*loan)
+                                && self.place_type(&self.loans[*loan].place).as_ref()
+                                    == Some(&target)
+                        })
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// A31: records the immutable `local`, bound to `bound` whose value is `value`, as a local that
+    /// points at its loans' places (`pointing`) when `bound` does (`points_at`).
+    pub(super) fn note_pointing(&mut self, local: &Local, bound: &TypedExpr, value: &Value) {
+        if local.mutable || !self.points_at(bound) {
+            return;
+        }
+        let own = value
+            .loans
+            .iter()
+            .copied()
+            .filter(|loan| !value.through.contains(loan));
+        self.pointing.entry(local.id).or_default().extend(own);
+    }
+
+    /// A31: records what the capture `capture` of a lambda, a local, held where the lambda was
+    /// made (`value`), when the local pointed at its loans' places there (`pointing_local`), for
+    /// `bound_value`; or that it did not, at some making of the lambda (`inexact_captures`).
+    fn note_capture(&mut self, capture: &TypedExpr, pointing: bool, value: &Value) {
+        let key = std::ptr::from_ref(capture) as usize;
+        if !pointing {
+            self.inexact_captures.insert(key);
+            return;
+        }
+        let own = value
+            .loans
+            .iter()
+            .copied()
+            .filter(|loan| !value.through.contains(loan));
+        self.captured_loans.entry(key).or_default().extend(own);
+    }
+
+    /// A31: whether the local `id` holds a reference that points at the place of one of its
+    /// loans (`pointing`): it does when it was bound, and holds no other loan now.
+    fn pointing_local(&self, id: usize) -> bool {
+        !self.state.aliases.contains_key(&id) && self.holds_pointing(id, id)
+    }
+
+    /// A31: whether the local `holder` holds only loans that the local `bound`, which points at
+    /// its loans' places, held when it was bound (`pointing`).
+    fn holds_pointing(&self, bound: usize, holder: usize) -> bool {
+        let (Some(bound), Some((_, value))) =
+            (self.pointing.get(&bound), self.state.locals.get(&holder))
+        else {
+            return false;
+        };
+        !value.loans.is_empty()
+            && value
+                .loans
+                .iter()
+                .all(|loan| !value.through.contains(loan) && bound.contains(loan))
+    }
+
+    /// A31: whether the value of `expression` is a reference that points at the place of one of
+    /// the loans that it holds itself, not at a part of what that place reaches: a borrow of an
+    /// exact place (`exact_place`), a local that points so (`pointing_local`), a choice of them,
+    /// and `Rc.get` or `Arc.get` of one (the block is the place of the owner's loan, as
+    /// `place_type` reads it). The result of any other call holds the loans of its arguments
+    /// while it may point at what they reach (`Rc.get (ref n.kids[0])` returned by a function).
+    fn points_at(&self, expression: &TypedExpr) -> bool {
+        match &expression.kind {
+            E::Borrow(place, _) => self.exact_place(place),
+            // The subject of a `match` of such a local is that local (`alias_source`).
+            E::Local(id) if self.state.aliases.contains_key(id) => {
+                match self.state.aliases[id].as_slice() {
+                    [(place, _)] if place.fields.is_empty() => self.holds_pointing(place.root, *id),
+                    _ => false,
+                }
+            }
+            E::Local(id) => self.pointing_local(*id),
+            E::If {
+                then_branch,
+                else_branch,
+                ..
+            } => self.points_at(then_branch) && self.points_at(else_branch),
+            E::Match { arms, .. } => {
+                !arms.is_empty() && arms.iter().all(|arm| self.points_at(&arm.body))
+            }
+            E::Block { bindings, result } if bindings.is_empty() => self.points_at(result),
+            E::Call(callee, arguments)
+                if arguments.len() == 1
+                    && matches!(
+                        self.builtin_called(callee),
+                        Some(crate::check::Builtin::RcGet | crate::check::Builtin::ArcGet)
+                    ) =>
+            {
+                self.points_at(&arguments[0])
+            }
+            // A complete call of a function that returns one of its reference parameters
+            // (`pick k x y = if k > 0 then x else y`), with arguments that point so there: the
+            // result holds their loans (`parameter_retention`).
+            E::Call(callee, arguments) => direct_callee(callee).is_some_and(|id| {
+                arguments.len() == self.module.functions[id].parameters.len()
+                    && returned_parameters(self.module, id).is_some_and(|returned| {
+                        returned
+                            .iter()
+                            .all(|index| self.points_at(&arguments[*index]))
+                    })
+            }),
+            _ => false,
+        }
+    }
+
+    /// A31: whether the value of `argument` points at the place of one of its own loans
+    /// (`points_at`): the value of its expression, or what a callee's facts or a partial
+    /// application say of a value without one (`Arg::pointing`). A borrowed operand points at
+    /// its place when that place is exact (its borrow is `Arg::reference`; what the place holds,
+    /// which the value adds, is stored as well, as before); a borrowed temporary is none.
+    fn argument_points(&self, argument: &Arg<'_>) -> bool {
+        if let Some(E::BorrowOperand(inner)) = argument.expression.map(|e| &e.kind)
+            && !argument.environment
+            && !argument.approximate
+        {
+            return argument.reference.is_some() && self.exact_place(inner);
+        }
+        if argument.reference.is_some() || argument.temporary {
+            return false;
+        }
+        match argument.expression {
+            Some(expression) if !argument.environment && !argument.approximate => {
+                self.points_at(expression)
+            }
+            _ => argument.pointing,
+        }
+    }
+
+    /// A31: the value of `expression`, an argument that a partial application bound, a capture of
+    /// a lambda (or an argument that the right side of a pipeline applies), out of `whole`, the
+    /// value of the function value: the loans of `whole` that the borrow of an exact place made
+    /// (`borrow_loans`), that a captured local held where it pointed at their places when the
+    /// lambda was made (`captured_loans`), or that a local that points at its loans' places holds
+    /// (`pointing_local`). They are the reference that the parameter gets, which points at the
+    /// place of one of them. `None` for any other value, when `whole` holds none of them, or when
+    /// some evaluation of the borrow or the capture was not one of those
+    /// (`inexact_borrows`, `inexact_captures`): its loans, which `whole` may hold, point at a
+    /// part of what their places reach.
+    ///
+    /// What the function value holds was made where the borrow or the capture was evaluated,
+    /// which may be before the local or the reference that it reads stops being live (`let g =
+    /// cross a; g b`, whose `a` holds nothing once `cross a` has read it), so the evaluation
+    /// records whether it was exact, rather than the state where the function value runs.
+    fn bound_value(&self, expression: &TypedExpr, whole: &Value) -> Option<Value> {
+        let key = std::ptr::from_ref(expression) as usize;
+        let own: &BTreeSet<usize> = match &expression.kind {
+            E::Borrow(..) => {
+                if self.inexact_borrows.contains(&key) {
+                    return None;
+                }
+                self.borrow_loans.get(&key)?
+            }
+            E::Local(_) if self.inexact_captures.contains(&key) => return None,
+            E::Local(_) if self.captured_loans.contains_key(&key) => &self.captured_loans[&key],
+            E::Local(id) if self.pointing_local(*id) => &self.state.locals.get(id)?.1.loans,
+            _ => return None,
+        };
+        let loans: BTreeSet<usize> = whole
+            .loans
+            .iter()
+            .copied()
+            .filter(|loan| {
+                own.contains(loan) && !whole.through.contains(loan) && self.exact_loan(*loan)
+            })
+            .collect();
+        (!loans.is_empty()).then(|| Value {
+            loans,
+            closed_result: whole.closed_result,
+            ..Value::default()
+        })
+    }
+
+    /// A31: whether the place of `loan` is the part that it borrows: the whole root, or a part
+    /// that an exact borrow named (`exact_loans`). A view's loan and a share are none.
+    fn exact_loan(&self, loan: usize) -> bool {
+        let loan_ref = &self.loans[loan];
+        loan_ref.view.is_none()
+            && !loan_ref.share
+            && (loan_ref.place.fields.is_empty() || self.exact_loans.contains(&loan))
+    }
+
+    /// A31: `value` with each loan of a `target` (`place_type`) whose place is the part that it
+    /// borrows (`exact_loan`) replaced by shared borrows of the parts at `paths` of that place
+    /// (`StoreFacts::kept_paths`): what a callee stored of the target of its reference parameter
+    /// where another parameter reaches. Only a value that `points` at the place of one of its
+    /// loans (`argument_points`) is so replaced: the result of a call holds its argument's loan
+    /// while it may point at a value that the loan's place reaches (`Rc.get (ref n.kids[0])`
+    /// returned by a function), whose parts are not those of the place. With `exclusive`, the
+    /// value is a fresh exclusive borrow, which ends with the call, of which the callee stored
+    /// only shared borrows (`StoreFacts::shared_only`): any other loan becomes a shared copy
+    /// (`shared_copy`); without it, exclusive loans stay as they are. Unlike `path_copy`'s, a copy
+    /// keeps the original's parents, as the original that the caller stored before did, so it
+    /// keeps live what the borrowed value holds; it is exact. Any other loan (one held as
+    /// contents, a view, a share, a loan of a larger value) is kept whole. One copy per loan and
+    /// path, so that the check of a loop settles.
+    fn kept_copy(
+        &mut self,
+        value: &Value,
+        paths: &BTreeSet<Vec<usize>>,
+        target: Option<&Type>,
+        exclusive: bool,
+        points: bool,
+    ) -> Value {
+        let mut copied = Value {
+            closed_result: value.closed_result,
+            ..Value::default()
+        };
+        for &loan in &value.loans {
+            let through = value.through.contains(&loan);
+            let plain = points
+                && !through
+                && (exclusive || !self.loans[loan].mutable)
+                && self.exact_loan(loan)
+                && target.is_some_and(|target| {
+                    self.place_type(&self.loans[loan].place).as_ref() == Some(target)
+                });
+            // The loan itself, or its shared copy for a fresh exclusive borrow.
+            let whole = |checker: &mut Self| {
+                if exclusive && checker.loans[loan].mutable {
+                    let single = Value {
+                        loans: BTreeSet::from([loan]),
+                        ..Value::default()
+                    };
+                    let shared = checker.shared_copy(&single);
+                    *shared.loans.first().expect("one loan in, one out")
+                } else {
+                    loan
+                }
+            };
+            if !plain || paths.is_empty() {
+                let held = whole(self);
+                copied.loans.insert(held);
+                if through {
+                    copied.through.insert(held);
+                }
+                continue;
+            }
+            for path in paths {
+                if path.is_empty() {
+                    let held = whole(self);
+                    copied.loans.insert(held);
+                    continue;
+                }
+                let held = if let Some(copy) = self.kept_copies.get(&(loan, path.clone())) {
+                    *copy
+                } else {
+                    let types = self.module.types();
+                    let original = &self.loans[loan];
+                    // A step that starts at a value whose type implements Drop, as `place` marks it.
+                    let mut through_drop = original.place.through_drop;
+                    let mut current = target.cloned();
+                    for &field in path {
+                        let Some(ty) = current.take() else {
+                            break;
+                        };
+                        through_drop |= ty.has_user_drop(&types);
+                        current = match ty {
+                            Type::Record(id, arguments)
+                                if field < types.records[id].fields.len() =>
+                            {
+                                Some(types.record_field(id, &arguments, field))
+                            }
+                            Type::Tuple(elements) if field < elements.len() => {
+                                Some(elements[field].clone())
+                            }
+                            _ => None,
+                        };
+                    }
+                    let mut fields = original.place.fields.clone();
+                    fields.extend_from_slice(path);
+                    let copy = Loan {
+                        place: Place {
+                            root: original.place.root,
+                            fields,
+                            through_drop,
+                        },
+                        mutable: false,
+                        parents: original.parents.clone(),
+                        view: None,
+                        span: original.span,
+                        share: false,
+                    };
+                    self.loans.push(copy);
+                    let id = self.loans.len() - 1;
+                    self.kept_copies.insert((loan, path.clone()), id);
+                    self.exact_loans.insert(id);
+                    id
+                };
+                copied.loans.insert(held);
+            }
+        }
+        copied
+    }
+
+    /// A31: the place, as fields from what a reference parameter points at, of the borrow `loan`
+    /// of a part of that target, kept in it (`StoreFacts::self_paths`): `None` for a parameter
+    /// that is no reference; the whole target (`[]`) for a view (`ref mut [Pair..]`, whose caller
+    /// may pass a part of an array), a reference to a reference, a borrow through a view, or a
+    /// place that is not the part that the loan borrows (`exact_loan`: `let q = child b; ref q.s`
+    /// borrows a part of a value that `b`'s target reaches, not `b.s`); the fields up to a region
+    /// slot.
+    fn self_path(&self, loan: usize) -> Option<Vec<usize>> {
+        let place = &self.loans[loan].place;
+        let Some(Type::Reference(target, _)) = self
+            .declarations
+            .get(&(usize::MAX - place.root))
+            .map(|local| &local.ty)
+        else {
+            return None;
+        };
+        if matches!(**target, Type::ArrayView(_) | Type::Reference(..))
+            || self.loans[loan].view.is_some()
+            || !self.exact_loan(loan)
+        {
+            return Some(Vec::new());
+        }
+        Some(
+            place
+                .fields
+                .iter()
+                .copied()
+                .take_while(|field| !is_region_field(*field))
+                .collect(),
+        )
+    }
+
+    /// A31: the place, as fields from what a reference parameter points at, of the copy `loan`
+    /// whose place holds the part that it borrows (`holding_loans`): `self_path` takes it for the
+    /// whole target, as it is not exact, but its place names a part of the parameter's target
+    /// that holds the borrowed part, which `source_of` records as a coarse path (`Source::coarse`).
+    /// `None` for any other loan, and where `self_path` gives the whole target for another reason
+    /// (a view, a reference to a reference).
+    fn holding_path(&self, loan: usize) -> Option<Vec<usize>> {
+        let loan_ref = &self.loans[loan];
+        if !self.holding_loans.contains(&loan) || loan_ref.view.is_some() || loan_ref.share {
+            return None;
+        }
+        let Some(Type::Reference(target, _)) = self
+            .declarations
+            .get(&(usize::MAX - loan_ref.place.root))
+            .map(|local| &local.ty)
+        else {
+            return None;
+        };
+        if matches!(**target, Type::ArrayView(_) | Type::Reference(..)) {
+            return None;
+        }
+        Some(
+            loan_ref
+                .place
+                .fields
+                .iter()
+                .copied()
+                .take_while(|field| !is_region_field(*field))
+                .collect(),
+        )
+    }
+
+    /// A31: the type of the value at `place`: its root's (what a reference parameter points at,
+    /// for an external root), then each field, element or block of an `Rc` or `Arc` (which a
+    /// field of the place names directly) on the way; `None` when a step names no type (a payload
+    /// or a region slot) or the root has no declaration.
+    fn place_type(&self, place: &Place) -> Option<Type> {
+        let types = self.module.types();
+        let mut current = if self.external.contains(&place.root) {
+            match &self.declarations.get(&(usize::MAX - place.root))?.ty {
+                Type::Reference(target, _) => (**target).clone(),
+                ty => ty.clone(),
+            }
+        } else {
+            self.declarations.get(&place.root)?.ty.clone()
+        };
+        let unwrap = |mut ty: Type| {
+            while let Type::Shared(
+                inner,
+                crate::check::SharedKind::Rc | crate::check::SharedKind::Arc,
+            ) = ty
+            {
+                ty = *inner;
+            }
+            ty
+        };
+        for &field in &place.fields {
+            current = match unwrap(current) {
+                Type::Record(id, arguments) if field < types.records[id].fields.len() => {
+                    types.record_field(id, &arguments, field)
+                }
+                Type::Tuple(elements) if field < elements.len() => elements[field].clone(),
+                Type::Array(inner)
+                | Type::ArrayView(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _)
+                    if field == ELEMENT =>
+                {
+                    *inner
+                }
+                _ => return None,
+            };
+        }
+        Some(without_views(&unwrap(current)))
+    }
+
+    /// A31: `value` with each loan replaced by shared borrows of the parts at `paths` of the place
+    /// that it borrows (`StoreFacts::self_paths`): what a callee kept of its reference argument,
+    /// which points at a `target`, in the argument's value. A path `[]` is the place itself (a
+    /// shared copy, `shared_copy`). A loan is extended only when its place is a `target`
+    /// (`place_type`), so that it is the value that the callee's parameter pointed at: a loan of
+    /// a larger value (the array whose element a callee passed on to the function value), one
+    /// held as contents, one through a view and a share are kept whole. A copy has no parents, as
+    /// one of `shared_copy` has none. A copy is exact (`exact_loans`) when the value `points` at
+    /// the place of one of its loans (`argument_points`) and the loan is exact: the result of a
+    /// call holds its argument's loan while it may point at a value that the loan's place reaches,
+    /// whose part the copy does not name. With `coarse`, a path stands for a part that holds the
+    /// borrowed place (`Source::coarse`): the copy is not exact either, but it names a part that
+    /// holds what the loan's value points at when that value points so. One copy per loan, path,
+    /// exactness and parent, so that the check of a loop settles.
+    fn path_copy(
+        &mut self,
+        value: &Value,
+        paths: &BTreeSet<Vec<usize>>,
+        target: Option<&Type>,
+        points: bool,
+        coarse: bool,
+    ) -> Value {
+        let whole = BTreeSet::from([Vec::new()]);
+        let mut copied = Value {
+            closed_result: value.closed_result,
+            ..Value::default()
+        };
+        for &loan in &value.loans {
+            let through = value.through.contains(&loan);
+            let plain = !through
+                && self.loans[loan].view.is_none()
+                && !self.loans[loan].share
+                && target.is_some_and(|target| {
+                    self.place_type(&self.loans[loan].place).as_ref() == Some(target)
+                });
+            let paths = if !plain || paths.is_empty() {
+                &whole
+            } else {
+                paths
+            };
+            for path in paths {
+                let held = if path.is_empty() {
+                    let single = Value {
+                        loans: BTreeSet::from([loan]),
+                        ..Value::default()
+                    };
+                    let shared = self.shared_copy(&single);
+                    *shared.loans.first().expect("one loan in, one out")
+                } else {
+                    // The copy's place holds the borrowed part; it is that part unless `coarse`.
+                    let holds = points && self.exact_loan(loan);
+                    let exact = holds && !coarse;
+                    let key = (loan, path.clone(), exact, holds);
+                    if let Some(copy) = self.path_copies.get(&key) {
+                        *copy
+                    } else {
+                        let original = &self.loans[loan];
+                        let mut fields = original.place.fields.clone();
+                        fields.extend_from_slice(path);
+                        // A copy that may name a part of another value than the one borrowed
+                        // keeps the original live as its parent (`active`): the borrowed part is
+                        // somewhere that the original's place reaches (`let q = child (ref n1)`
+                        // points into a block of `n1.kids`), so that a write that may free it
+                        // (`n1.kids = []`) conflicts with the copy wherever it went. A copy whose
+                        // place holds the borrowed part conflicts with such a write itself.
+                        let parents = if holds {
+                            BTreeSet::new()
+                        } else {
+                            BTreeSet::from([loan])
+                        };
+                        let copy = Loan {
+                            place: Place {
+                                root: original.place.root,
+                                fields,
+                                through_drop: original.place.through_drop,
+                            },
+                            mutable: false,
+                            parents,
+                            view: None,
+                            span: original.span,
+                            share: false,
+                        };
+                        self.loans.push(copy);
+                        let id = self.loans.len() - 1;
+                        self.path_copies.insert(key, id);
+                        if exact {
+                            self.exact_loans.insert(id);
+                        } else if holds {
+                            // Coarse: the place holds the borrowed part (`holding_loans`).
+                            self.holding_loans.insert(id);
+                        }
+                        id
+                    }
+                };
+                copied.loans.insert(held);
+                if through {
+                    copied.through.insert(held);
+                }
+            }
+        }
+        copied
+    }
+
+    /// A31: `value` with each loan replaced by a copy that `check_drop_order_of` takes for a
+    /// self-borrow whose drop order a callee proved inside the place that the loan borrows
+    /// (`StoreFacts::ordered`, `ordered_loans`). The copy borrows the same place in the same way;
+    /// one copy per loan, so that the check of a loop settles.
+    fn ordered_copy(&mut self, value: &Value) -> Value {
+        let mut copied = Value {
+            closed_result: value.closed_result,
+            ..Value::default()
+        };
+        for &loan in &value.loans {
+            let copy = match self.ordered_copies.get(&loan) {
+                Some(copy) => *copy,
+                None => {
+                    let copy = self.loans[loan].clone();
+                    self.loans.push(copy);
+                    let id = self.loans.len() - 1;
+                    self.ordered_copies.insert(loan, id);
+                    self.ordered_loans.insert(id);
+                    // The same place, as exact as the original's (`exact_loans`), and holding the
+                    // borrowed part when the original's does (`holding_loans`).
+                    if self.exact_loans.contains(&loan) {
+                        self.exact_loans.insert(id);
+                    }
+                    if self.holding_loans.contains(&loan) {
+                        self.holding_loans.insert(id);
+                    }
+                    id
+                }
+            };
+            copied.loans.insert(copy);
+            if value.through.contains(&loan) {
+                copied.through.insert(copy);
+            }
+        }
+        copied
+    }
+
+    /// A31: the key of an application of the facts of `id` to `arguments` (`store_memo`).
+    fn store_key(id: usize, arguments: &[Arg<'_>]) -> StoreKey {
+        (
+            id,
+            arguments
+                .iter()
+                .map(|argument| {
+                    let mut loans: Vec<usize> = argument.value.loans.iter().copied().collect();
+                    if let Some(reference) = &argument.reference {
+                        loans.push(usize::MAX);
+                        loans.extend(reference.iter().copied());
+                    }
+                    (
+                        argument
+                            .expression
+                            .map_or(0, |expression| std::ptr::from_ref(expression) as usize),
+                        loans,
+                        argument.value.through.iter().copied().collect(),
+                        u16::from(argument.local)
+                            | u16::from(argument.external) << 1
+                            | u16::from(argument.temporary) << 2
+                            | u16::from(argument.dying) << 3
+                            | u16::from(argument.environment) << 4
+                            | u16::from(argument.lent) << 5
+                            | u16::from(argument.overwritten) << 6
+                            | u16::from(argument.approximate) << 7
+                            | u16::from(argument.pointing) << 8,
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// A31: runs `apply`, which applies store facts to a call, until a pass changes nothing: a
+    /// store of one fact can widen what the target of another reaches (a reference stored into a
+    /// cell, then a value stored through it), and a callee runs its stores in any order and any
+    /// number of times. Within a pass, an application of the same facts to the same arguments is
+    /// made once (`store_memo`), which keeps the substitution of nested function values linear in
+    /// the distinct applications. Past the limit the call counts as one of code that the check
+    /// does not see (`fallback`).
+    fn settle(&mut self, mut apply: impl FnMut(&mut Self), fallback: impl FnOnce(&mut Self)) {
+        if self.store_memo.is_some() {
+            apply(self);
+            return;
+        }
+        let mut settled = false;
+        for _ in 0..STORE_PASSES {
+            self.store_memo = Some(BTreeSet::new());
+            let before = self.store_changes;
+            apply(self);
+            if self.store_changes == before {
+                settled = true;
+                break;
+            }
+        }
+        self.store_memo = None;
+        if !settled {
+            fallback(self);
+        }
+    }
+
+    /// A31: applies the store facts of function `id` to a complete call of it with `arguments`.
+    fn apply_facts<'e>(&mut self, id: usize, arguments: &[Arg<'e>], span: Span, depth: usize)
+    where
+        'a: 'e,
+    {
+        self.settle(
+            |checker| checker.apply_facts_once(id, arguments, span, depth, id),
+            |checker| checker.apply_opaque(None, arguments, span, false, Some(id)),
+        );
+    }
+
+    /// One pass of `apply_facts`. `named` is the named callee of the call in the source, for the
+    /// errors that name it.
+    fn apply_facts_once<'e>(
+        &mut self,
+        id: usize,
+        arguments: &[Arg<'e>],
+        span: Span,
+        depth: usize,
+        named: usize,
+    ) where
+        'a: 'e,
+    {
+        let facts: &CallFacts = self.facts;
+        let Some(stores) = facts.stores.get(id) else {
+            return;
+        };
+        if stores.is_empty() {
+            return;
+        }
+        let key = Self::store_key(id, arguments);
+        if let Some(memo) = self.store_memo.as_mut()
+            && !memo.insert(key)
+        {
+            return;
+        }
+        if stores.top {
+            // A body that does not check is reported there.
+            if facts.failed.get(id) != Some(&true) {
+                self.apply_opaque(None, arguments, span, false, Some(named));
+            }
+            return;
+        }
+        for &(from, part, to) in &stores.stores {
+            let (Some(source), Some(target)) = (arguments.get(from), arguments.get(to)) else {
+                self.apply_opaque(None, arguments, span, false, Some(named));
+                return;
+            };
+            // A store that only the drop of a part of the argument's value makes happens only when
+            // that value may run code when it is dropped, as the expression that makes it shows;
+            // applied to a part of a parameter's value, it is a drop-only store of this body too.
+            let drop_only = stores.drop_only.contains(&(from, part, to));
+            let mut dropping_part = None;
+            if drop_only && let Some(expression) = source.expression {
+                if !self.value_runs_drop_code(Some(expression), &expression.ty, 0) {
+                    continue;
+                }
+                dropping_part = self.parameter_part(expression);
+            }
+            let dropping = std::mem::replace(&mut self.dropping, dropping_part);
+            if source.local && target.external {
+                self.defer(self.callee_borrow_stored(Some(named), span, true, source.overwritten));
+            }
+            // The borrow of a lock's contents, stored where it outlives the callback.
+            if source.locked && part == Part::Value {
+                self.defer(Self::locked_borrow_kept(span));
+            }
+            // A shared borrow of what an exclusive reference parameter points at, kept in that
+            // same value (`StoreFacts::shared_some`): the caller's value keeps a shared borrow of
+            // itself, whatever reference it passed (a fresh `ref mut p0`, a `ref mut` variable, a
+            // value that a callee passed on), which `apply_store_within` keeps where the exclusive
+            // borrow itself is a write back. It borrows the parts that the callee borrowed
+            // (`StoreFacts::self_paths`, `path_copy`), as does what a callee kept of a shared
+            // reference parameter's target in that target.
+            let entry = (from, part, to);
+            let self_entry = from == to && part == Part::Value;
+            let self_shared = self_entry && stores.shared_some.contains(&entry);
+            let reference = if self_entry {
+                match self.module.functions[id]
+                    .parameters
+                    .get(from)
+                    .map(|p| &p.ty)
+                {
+                    Some(Type::Reference(_, exclusive)) => Some(*exclusive),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let whole = BTreeSet::from([Vec::new()]);
+            let paths = stores.self_paths.get(&from).unwrap_or(&whole);
+            // What the callee's parameter points at, whose parts the paths name.
+            let pointed = match self.module.functions[id]
+                .parameters
+                .get(from)
+                .map(|p| &p.ty)
+            {
+                Some(Type::Reference(target, _)) => Some(without_views(target)),
+                _ => None,
+            };
+            // Borrows of parts of what a reference parameter points at, stored where another
+            // parameter reaches (`StoreFacts::kept_paths`): borrows of those parts of the
+            // argument's place, for a shared reference parameter and for the shared borrows that a
+            // fresh exclusive borrow leaves (`shared_only`). They reach no further than those parts
+            // (`store_target`), and when the target is the same value, the drop order of the
+            // borrowed part decides them.
+            let kept_paths = if !self_entry
+                && part == Part::Value
+                && matches!(
+                    self.module.functions[id]
+                        .parameters
+                        .get(from)
+                        .map(|p| &p.ty),
+                    Some(Type::Reference(..))
+                ) {
+                stores
+                    .kept_paths
+                    .get(&(from, to))
+                    .filter(|paths| !paths.contains(&Vec::new()))
+            } else {
+                None
+            };
+            // A reference argument that may point at one of several places (`if c then ref a
+            // else ref b`) is one of them at run time, and the callee keeps a borrow of a part of
+            // what its parameter points at in that same value: each place keeps a borrow of its
+            // own part, not of the others' (`referent_pieces`). Anything else is one piece, stored
+            // where the whole argument reaches.
+            let whole_value = self.argument_part(source, part);
+            // Whether the argument points at the place of one of its loans, whose parts the paths
+            // then name (`argument_points`).
+            let points = self.argument_points(source);
+            let pieces = match reference {
+                Some(_) => Self::referent_pieces(source, &whole_value),
+                None => None,
+            };
+            let pieces: Vec<(Value, Value)> = match pieces {
+                Some(pieces) => pieces
+                    .into_iter()
+                    .map(|piece| (piece.clone(), piece))
+                    .collect(),
+                None => vec![(whole_value, target.value.clone())],
+            };
+            let mut applied: Vec<(Value, Value)> = Vec::with_capacity(pieces.len());
+            for (mut stored, reached) in pieces {
+                let mut kept_self = None;
+                // A fresh exclusive borrow passed where the callee stores only shared borrows of
+                // what it points at leaves a shared borrow of the same place.
+                if stores.shared_only.contains(&entry)
+                    && (Self::fresh_exclusive(source) || self_shared)
+                {
+                    stored = if self_shared {
+                        self.path_copy(&stored, paths, pointed.as_ref(), points, false)
+                    } else if let Some(kept) = kept_paths {
+                        self.kept_copy(&stored, kept, pointed.as_ref(), true, points)
+                    } else {
+                        self.shared_copy(&stored)
+                    };
+                } else if self_shared {
+                    kept_self =
+                        Some(self.path_copy(&stored, paths, pointed.as_ref(), points, false));
+                } else if reference == Some(false) {
+                    stored = self.path_copy(&stored, paths, pointed.as_ref(), points, false);
+                } else if let Some(kept) = kept_paths
+                    && matches!(
+                        self.module.functions[id]
+                            .parameters
+                            .get(from)
+                            .map(|p| &p.ty),
+                        Some(Type::Reference(_, false))
+                    )
+                {
+                    stored = self.kept_copy(&stored, kept, pointed.as_ref(), false, points);
+                }
+                // A borrow of a part of the argument's place kept in that place, in the drop order
+                // of its parts (`StoreFacts::ordered`).
+                if stores.ordered.contains(&entry) {
+                    stored = self.ordered_copy(&stored);
+                    kept_self = kept_self.map(|kept| self.ordered_copy(&kept));
+                }
+                if let Some(kept) = &kept_self {
+                    self.apply_store(kept, &reached, span);
+                }
+                applied.push((stored, reached));
+            }
+            if part == Part::Value && source.dying {
+                let reached = target.value.clone();
+                if self.has_targets(&reached) || target.environment {
+                    self.defer(Self::temporary_borrow_stored(span));
+                } else if self.temporary_dropped_first(
+                    source,
+                    target,
+                    stores.ordered.contains(&(from, part, to)),
+                ) {
+                    self.defer(Self::temporary_dropped_first_error(span));
+                }
+            }
+            for (piece, reached) in &applied {
+                self.apply_store(piece, reached, span);
+            }
+            let mut pieces = applied.into_iter().map(|(piece, _)| piece);
+            let mut stored = pieces.next().unwrap_or_default();
+            for piece in pieces {
+                stored.absorb(&piece);
+            }
+            // A store into an owner that the call took by value reaches its block, which may have
+            // gone where an earlier share took it (`exports`); no local root leads there now.
+            if let Some(expression) = target.expression
+                && !self.exports.is_empty()
+            {
+                let ty = expression.ty.clone();
+                self.store_exported_into(&ty, &stored, span, false);
+            }
+            // A store into a capture of a function value goes into its environment, which its
+            // copies share when the capture owns the cell.
+            if target.environment
+                && target
+                    .expression
+                    .is_some_and(|capture| self.shares_hidden(&capture.ty))
+            {
+                self.store_hidden(&stored, span);
+            }
+            self.dropping = dropping;
+        }
+        for &(from, part) in &stores.hidden {
+            let Some(source) = arguments.get(from) else {
+                self.apply_opaque(None, arguments, span, false, Some(named));
+                return;
+            };
+            if source.local {
+                self.defer(self.callee_borrow_stored(Some(named), span, false, source.overwritten));
+            }
+            if source.locked && part == Part::Value {
+                self.defer(Self::locked_borrow_kept(span));
+            }
+            if part == Part::Value
+                && source.dying
+                && self.facts.reference_sinks
+                && self.facts.owned_sinks
+            {
+                self.defer(Self::temporary_borrow_stored(span));
+            }
+            // A hidden environment that a temporary argument made after this one reaches.
+            if part == Part::Value && self.temporary_hidden_first(source, arguments) {
+                self.defer(Self::temporary_dropped_first_error(span));
+            }
+            let mut stored = if part == Part::Value {
+                self.handed(source)
+            } else {
+                self.argument_part(source, part)
+            };
+            // As for the stores above (`StoreFacts::hidden_shared`).
+            if stores.hidden_shared.contains(&(from, part)) && Self::fresh_exclusive(source) {
+                stored = self.shared_copy(&stored);
+            }
+            self.store_hidden(&stored, span);
+        }
+        for call in &stores.calls {
+            let Some(callee) = arguments.get(call.callee) else {
+                self.apply_opaque(None, arguments, span, false, Some(named));
+                return;
+            };
+            let mut sources = Vec::with_capacity(call.arguments.len());
+            for source in &call.arguments {
+                let mut value = Value::default();
+                let mut local = source.local;
+                let mut overwritten = source.overwritten;
+                let mut external = false;
+                let mut dying = source.dying;
+                let mut locked = source.locked;
+                // The value passed is at the level of a temporary's contents when the callee
+                // passed a temporary, or passed on the value of an argument that is one.
+                let mut temporary = source.temporary;
+                // It points at the place of one of its loans when the callee's did, place for
+                // place, and the arguments that it replaces do (`Source::pointing`).
+                let mut pointing = source.pointing && !source.local && !source.overwritten;
+                for &(index, part) in &source.parameters {
+                    if let Some(argument) = arguments.get(index) {
+                        let points = self.argument_points(argument);
+                        pointing &= part == Part::Value && points;
+                        let mut passed = self.argument_part(argument, part);
+                        // Shared borrows of parts of what the parameter points at: those parts
+                        // of the argument's place (`Source::paths`, and `element_paths` for an
+                        // argument that points at its place).
+                        let paths = (part == Part::Value)
+                            .then(|| {
+                                source.paths.get(&index).or_else(|| {
+                                    points.then(|| source.element_paths.get(&index)).flatten()
+                                })
+                            })
+                            .flatten();
+                        if let Some(paths) = paths {
+                            let pointed = match self.module.functions[id]
+                                .parameters
+                                .get(index)
+                                .map(|p| &p.ty)
+                            {
+                                Some(Type::Reference(target, _)) => Some(without_views(target)),
+                                _ => None,
+                            };
+                            // A path that stands for a larger part than a borrowed place names
+                            // no exact place (`Source::coarse`).
+                            let coarse = source.coarse.contains(&index);
+                            passed =
+                                self.path_copy(&passed, paths, pointed.as_ref(), points, coarse);
+                        } else if part == Part::Value
+                            && source.shared.contains(&index)
+                            && Self::fresh_exclusive(argument)
+                        {
+                            // A fresh exclusive borrow of which the callee passes on only shared
+                            // borrows of what it points at, as for the stores above.
+                            passed = self.shared_copy(&passed);
+                        }
+                        value.absorb(&passed);
+                        local |= argument.local && !argument.overwritten;
+                        overwritten |= argument.overwritten;
+                        external |= argument.external || argument.expression.is_some();
+                        temporary |= argument.temporary && part == Part::Value;
+                        dying |= argument.dying && part == Part::Value;
+                        locked |= argument.locked && part == Part::Value;
+                    } else {
+                        pointing = false;
+                    }
+                }
+                // A parameter that the callee passes on unchanged is the caller's argument.
+                let origin = source
+                    .passed
+                    .and_then(|index| arguments.get(index))
+                    .and_then(|argument| argument.expression.or(argument.origin));
+                // A shared borrow of one part of what one argument points at.
+                let part = match (source.parameters.iter().next(), source.parameters.len()) {
+                    (Some(&(index, Part::Value)), 1) => source
+                        .paths
+                        .get(&index)
+                        .filter(|paths| paths.len() == 1)
+                        .and_then(|paths| paths.first())
+                        .zip(arguments.get(index))
+                        .and_then(|(path, argument)| {
+                            argument
+                                .expression
+                                .or(argument.origin)
+                                .map(|outer| (outer, path.clone()))
+                        }),
+                    _ => None,
+                };
+                sources.push(Arg {
+                    expression: None,
+                    value,
+                    local: local || overwritten,
+                    overwritten: overwritten && !local,
+                    external,
+                    temporary,
+                    dying,
+                    reference: None,
+                    environment: false,
+                    lent: source.lent,
+                    hides: source.hides,
+                    target: source.target,
+                    locked,
+                    ty: source.ty.clone(),
+                    origin,
+                    part,
+                    approximate: false,
+                    pointing: pointing && !temporary && !dying,
+                });
+            }
+            let callee = callee.clone();
+            self.apply_higher_once(&callee, &call.path, &sources, span, depth + 1, Some(named));
+        }
+    }
+
+    /// A31: a call of the function value `callee` with `arguments`: the facts of the lambda,
+    /// named function or partial application that it is, substituted; those of the expressions
+    /// that an immutable local is bound to (`known`); a record of the call in this body's facts
+    /// when it is a parameter of the body (and the conservative rule for its local targets); the
+    /// conservative rule for any other value (`apply_opaque`).
+    fn apply_higher<'e>(
+        &mut self,
+        callee: &Arg<'e>,
+        arguments: &[Arg<'e>],
+        span: Span,
+        depth: usize,
+    ) where
+        'a: 'e,
+    {
+        self.settle(
+            |checker| checker.apply_higher_once(callee, &[], arguments, span, depth, None),
+            |checker| checker.apply_opaque(Some(callee), arguments, span, false, None),
+        );
+    }
+
+    /// One pass of `apply_higher`. With a `path`, the function value that runs is the one at those
+    /// tuple or record fields of the value of `callee` (`HigherOrderCall::path`).
+    fn apply_higher_once<'e>(
+        &mut self,
+        callee: &Arg<'e>,
+        path: &[usize],
+        arguments: &[Arg<'e>],
+        span: Span,
+        depth: usize,
+        named: Option<usize>,
+    ) where
+        'a: 'e,
+    {
+        let module = self.module;
+        if depth > STORE_SUBSTITUTION_DEPTH {
+            let unknown = self.unknown_part(callee, path);
+            self.apply_opaque(Some(&unknown), arguments, span, false, named);
+            return;
+        }
+        if !path.is_empty() {
+            self.apply_part(callee, path, arguments, span, depth, named);
+            return;
+        }
+        // The captures of a lambda and the arguments of a partial application come from where the
+        // function value was made: outside any body whose locals a substitution tracks. One that
+        // is a reference to an exact place, or a local that points at its places, where the
+        // function value was made, is the part of the function value's loans that it made
+        // (`bound_value`); any other has the value of the whole function value.
+        let bound = |checker: &Self,
+                     expressions: &'e [TypedExpr],
+                     value: &Value,
+                     narrow: bool|
+         -> Vec<Arg<'e>> {
+            expressions
+                .iter()
+                .map(|expression| {
+                    let own = narrow
+                        .then(|| checker.bound_value(expression, value))
+                        .flatten();
+                    (expression, own)
+                })
+                .map(|(expression, own)| Arg {
+                    expression: Some(expression),
+                    pointing: own.is_some(),
+                    value: own.unwrap_or_else(|| value.clone()),
+                    approximate: false,
+                    local: callee.local,
+                    external: true,
+                    // A bound value that was lent as a borrowed temporary is one here too. Any
+                    // other is the value that the parameter gets: its contents are those of
+                    // the whole function value's loans (`contents_value`), so a reference that
+                    // a lambda captured keeps the level of what it points at.
+                    temporary: matches!(expression.kind, E::BorrowOperand(_)),
+                    dying: false,
+                    reference: None,
+                    environment: true,
+                    lent: matches!(expression.ty, Type::Reference(..)),
+                    hides: true,
+                    target: true,
+                    overwritten: callee.overwritten,
+                    // What the function value holds is its own environment, not a borrow of the
+                    // contents of a lock that holds it (`Arg::locked`).
+                    locked: false,
+                    ty: None,
+                    origin: None,
+                    part: None,
+                })
+                .collect()
+        };
+        // A function value lent to a read parameter is a borrowed temporary whose value is the
+        // function value's own.
+        let expression = callee.expression.map(|expression| match &expression.kind {
+            E::BorrowOperand(inner) => &**inner,
+            _ => expression,
+        });
+        // A shared borrow of a local whose code the body shows (`Owned.call (ref w) x`, `apply
+        // (ref w) f`) calls that code with what the local holds.
+        if let Some(E::Borrow(inner, false)) = expression.map(|e| &e.kind)
+            && let E::Local(id) = &inner.kind
+            && self.known.contains_key(id)
+        {
+            let lent = Arg {
+                expression: Some(&**inner),
+                value: self.contents_value(&callee.value),
+                ..callee.clone()
+            };
+            self.apply_higher_once(&lent, &[], arguments, span, depth + 1, named);
+            return;
+        }
+        // An element or a field of an immutable local bound to a literal of such values.
+        let part = expression.and_then(|expression| match &expression.kind {
+            E::Index(base, _) => match &base.kind {
+                E::Local(id) => self.known_parts.get(&(*id, None)),
+                _ => None,
+            },
+            E::Field(base, field) => match &base.kind {
+                E::Local(id) => self.known_parts.get(&(*id, Some(*field))),
+                _ => None,
+            },
+            _ => None,
+        });
+        // A call of a known local that gives each of its expressions fewer arguments than it
+        // takes is a partial application, which runs no code (`let g = chosen (ref p2)` after
+        // `let chosen = cross`), as one of a named function is (`call_stores`).
+        if let Some(E::Local(id)) = expression.map(|e| &e.kind)
+            && partial_heads(module, &self.known, *id, arguments.len())
+        {
+            return;
+        }
+        let shown = match expression.map(|e| &e.kind) {
+            Some(E::Local(id)) => self.known.get(id).cloned(),
+            _ => part.cloned(),
+        };
+        if let Some(shown) = shown {
+            for expression in shown {
+                let one = Arg {
+                    expression: Some(expression),
+                    ..callee.clone()
+                };
+                self.apply_higher_once(&one, &[], arguments, span, depth + 1, named);
+            }
+            return;
+        }
+        // A partial application of an immutable local whose code the body shows (`ref p1 |>
+        // chosen (ref p2)` or `let g = chosen (ref p2)` after `let chosen = cross`): each of the
+        // local's expressions runs with the bound arguments before `arguments`, as a partial
+        // application of it does, when each takes exactly that many.
+        if let Some(E::Call(function, partial)) = expression.map(|e| &e.kind)
+            && let E::Local(id) = &function.kind
+            && let Some(heads) = known_heads(&self.known, *id, 0)
+            && heads.iter().all(|head| {
+                known_arity(module, &self.known, head, 0) == Some(partial.len() + arguments.len())
+            })
+        {
+            let mut all = bound(self, partial, &callee.value, true);
+            all.extend(arguments.iter().cloned());
+            for head in heads {
+                let one = Arg {
+                    expression: Some(head),
+                    ..callee.clone()
+                };
+                self.apply_higher_once(&one, &[], &all, span, depth + 1, named);
+            }
+            return;
+        }
+        let substituted: Option<(usize, Vec<Arg<'e>>)> = match expression.map(|e| &e.kind) {
+            Some(E::Closure(id, captures))
+                if module.functions[*id].parameters.len() == captures.len() + arguments.len() =>
+            {
+                Some((*id, bound(self, captures, &callee.value, true)))
+            }
+            Some(E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _))
+                if module.functions[*id].parameters.len() == arguments.len() =>
+            {
+                Some((*id, Vec::new()))
+            }
+            Some(E::Call(function, partial))
+                if direct_callee(function).is_some_and(|id| {
+                    module.functions[id].parameters.len() == partial.len() + arguments.len()
+                }) =>
+            {
+                Some((
+                    direct_callee(function).expect("checked above"),
+                    bound(self, partial, &callee.value, true),
+                ))
+            }
+            _ => None,
+        };
+        if let Some((id, mut all)) = substituted {
+            all.extend(arguments.iter().cloned());
+            self.apply_facts_once(id, &all, span, depth, named.unwrap_or(id));
+            return;
+        }
+        // A parameter of the body that is the function value, or a shared reference to it (a read
+        // parameter of edition 2027, or a `ref` parameter, is called through `deref`), or a part
+        // of one that a field or a pattern takes (`parameter_path`): the caller's argument is the
+        // function that runs, or holds it there.
+        let parameter = expression
+            .and_then(|expression| self.parameter_path(expression, 0))
+            .filter(|(_, path)| path.len() <= HIGHER_ORDER_PATH);
+        if let Some((index, path)) = parameter {
+            self.record_higher(index, path, callee, arguments, span, named);
+            return;
+        }
+        self.apply_opaque(Some(callee), arguments, span, false, named);
+    }
+
+    /// A31: the call of the function value at `path` in the value of the parameter `index` of the
+    /// body (`apply_higher_once`): a fact of the body (`HigherOrderCall`), whose caller substitutes
+    /// the function that its argument holds there, and the conservative rule for the local targets.
+    fn record_higher(
+        &mut self,
+        index: usize,
+        path: Vec<usize>,
+        callee: &Arg<'_>,
+        arguments: &[Arg<'_>],
+        span: Span,
+        named: Option<usize>,
+    ) {
+        // A share of the block of a local `Rc` or `Arc` owner (`Loan::share`) is an owner of the
+        // block, not a borrow of the local: it passes on what the owner holds, and the block,
+        // which the function value may keep where its environment reaches in the caller's data,
+        // or in an environment of its own that the check cannot name, takes what the body stores
+        // into a cell of it later (`export_block`), as when the body stores the share there itself
+        // (`store_external`, `store_hidden`).
+        let target = self
+            .parameter_roots
+            .iter()
+            .find(|(_, at)| **at == index)
+            .map(|(root, _)| ExportTarget::External(*root));
+        let passed: Vec<Value> = arguments
+            .iter()
+            .map(|argument| {
+                let value = self.argument_part(argument, Part::Value);
+                let expanded = self.expand_shares(&value, ExportTarget::Hidden);
+                match target {
+                    Some(target) => self.expand_shares(&value, target),
+                    None => expanded,
+                }
+            })
+            .collect();
+        if self.stores.is_some() {
+            let call = HigherOrderCall {
+                callee: index,
+                path,
+                arguments: arguments
+                    .iter()
+                    .zip(&passed)
+                    .map(|(argument, passed)| {
+                        let mut source = self.source_of(passed);
+                        source.local |= argument.local && !argument.overwritten;
+                        source.overwritten |= argument.overwritten;
+                        source.temporary |= argument.temporary;
+                        source.dying |= argument.dying;
+                        source.lent = argument.lent;
+                        source.locked |= argument.locked;
+                        source
+                    })
+                    .collect::<Vec<Source>>()
+                    .into_iter()
+                    .zip(arguments)
+                    .map(|(mut source, argument)| {
+                        source.hides = self.argument_hides(argument);
+                        source.target = self.argument_target(argument);
+                        source.ty = Self::value_type(argument);
+                        source.passed = self.passed_parameter(argument);
+                        source.pointing &= self.argument_points(argument);
+                        source
+                    })
+                    .collect(),
+            };
+            // A borrow of the target of a parameter through which the body may write, which a
+            // later write may invalidate (`overwrite_handed`).
+            let mut handed = Vec::new();
+            for (at, argument) in arguments.iter().enumerate() {
+                let value = self.expand_views(&self.argument_part(argument, Part::Value));
+                for loan in &value.loans {
+                    let root = self.loans[*loan].place.root;
+                    if self.parameter_roots.contains_key(&root)
+                        && !value.through.contains(loan)
+                        && !self.loans[*loan].share
+                        && self.writable_external(root)
+                    {
+                        handed.push((self.loans[*loan].place.clone(), at));
+                    }
+                }
+            }
+            for (place, at) in handed {
+                self.handed.insert((place, call.clone(), at));
+            }
+            if let Some(stores) = self.stores.as_mut()
+                && stores.calls.insert(call)
+            {
+                self.store_changes += 1;
+            }
+        }
+        self.apply_opaque(Some(callee), arguments, span, true, named);
+    }
+
+    /// A31: a write that may reach `place` (an access through a parameter that writes, or the move
+    /// of a reference that passes on what it may write through): each call of a function-valued
+    /// parameter that was handed a borrow of an overlapping place earlier (`handed`) is recorded
+    /// again with that argument as one that the function value must not keep beyond the call
+    /// (`Source::overwritten`). The caller rejects a function value that keeps it, as one that
+    /// keeps a borrow of a local value of the body. The write comes after the call on some path
+    /// (in the order of the evaluation, or in the next iteration of a loop).
+    fn overwrite_handed(&mut self, place: &Place) {
+        let marked: Vec<HigherOrderCall> = self
+            .handed
+            .iter()
+            .filter(|(handed, _, _)| handed.overlaps(place))
+            .map(|(_, call, at)| {
+                let mut call = call.clone();
+                call.arguments[*at].overwritten = true;
+                call
+            })
+            .collect();
+        if let Some(stores) = self.stores.as_mut() {
+            for call in marked {
+                if stores.calls.insert(call) {
+                    self.store_changes += 1;
+                }
+            }
+        }
+    }
+
+    /// A31: the parameter of the body whose value, or the part of it at the tuple or record fields
+    /// of the path, the value of `expression` is: the immutable parameter itself, a shared
+    /// reference to it (a read parameter of edition 2027, or a `ref` parameter, is called through
+    /// `deref`), a field or a union payload of either, or an immutable local that a pattern binds
+    /// to one of those (`projections`). The annotated or destructured parameter of a lambda is such a local:
+    /// `\(use: T) -> use x` is `\p -> match p with use -> use x`, and `\(use, z) -> use x` takes
+    /// field 0. A local that the alternatives of an OR pattern bind gives the parameter only when
+    /// they all agree.
+    fn parameter_path(&self, expression: &TypedExpr, depth: usize) -> Option<ParameterPath> {
+        self.parameter_path_at(expression, depth).0
+    }
+
+    /// `parameter_path`, with the height of the walk below `depth` that the answer needed. The
+    /// walk ends past `STORE_SUBSTITUTION_DEPTH`; an answer that the limit did not cut (`depth`
+    /// plus the height within the limit) is the same from any depth that leaves the walk room, and
+    /// from a deeper one the limit would cut it (any cut answers `None`). So the answer for a
+    /// local is kept with its height (`parameter_paths`; the projections are those of the body),
+    /// and the walk visits each local once rather than once for each way to reach it through the
+    /// alternatives of nested OR patterns, which grows as their number to the power of the depth.
+    fn parameter_path_at(
+        &self,
+        expression: &TypedExpr,
+        depth: usize,
+    ) -> (Option<ParameterPath>, usize) {
+        self.parameter_path_steps
+            .set(self.parameter_path_steps.get() + 1);
+        if depth > STORE_SUBSTITUTION_DEPTH {
+            return (None, 0);
+        }
+        match &expression.kind {
+            E::Local(id) => {
+                if let Some(&index) = self.parameter_roots.get(&(usize::MAX - *id)) {
+                    let immutable = self
+                        .declarations
+                        .get(id)
+                        .is_some_and(|local| !local.mutable);
+                    return (immutable.then(|| (index, Vec::new())), 0);
+                }
+                let cached = self.parameter_paths.borrow().get(id).cloned();
+                if let Some((answer, height)) = cached {
+                    if depth + height > STORE_SUBSTITUTION_DEPTH {
+                        return (None, height);
+                    }
+                    return (answer, height);
+                }
+                let Some(sources) = self.projections.get(id) else {
+                    return (None, 0);
+                };
+                let mut found: Option<ParameterPath> = None;
+                let mut height = 0;
+                let mut agreed = true;
+                for source in sources {
+                    let (one, below) = self.parameter_path_at(source, depth + 1);
+                    height = height.max(below + 1);
+                    match one {
+                        Some(one) if found.as_ref().is_none_or(|found| *found == one) => {
+                            found = Some(one);
+                        }
+                        _ => {
+                            agreed = false;
+                            break;
+                        }
+                    }
+                }
+                let answer = if agreed { found } else { None };
+                if depth + height <= STORE_SUBSTITUTION_DEPTH {
+                    self.parameter_paths
+                        .borrow_mut()
+                        .insert(*id, (answer.clone(), height));
+                }
+                (answer, height)
+            }
+            E::Dereference(reference) if matches!(reference.ty, Type::Reference(_, false)) => {
+                let (answer, below) = self.parameter_path_at(reference, depth + 1);
+                (answer, below + 1)
+            }
+            // A shared borrow of the value (a function value that the body lends on to a read
+            // parameter of edition 2027, `put v use`) runs the value's code.
+            E::Borrow(inner, false) => {
+                let (answer, below) = self.parameter_path_at(inner, depth + 1);
+                (answer, below + 1)
+            }
+            E::Field(base, field) => {
+                let (answer, below) = self.parameter_path_at(base, depth + 1);
+                let answer = answer.map(|(index, mut path)| {
+                    path.push(*field);
+                    (index, path)
+                });
+                (answer, below + 1)
+            }
+            E::UnionPayload { value, .. } => {
+                let (answer, below) = self.parameter_path_at(value, depth + 1);
+                let answer = answer.map(|(index, mut path)| {
+                    path.push(PAYLOAD);
+                    (index, path)
+                });
+                (answer, below + 1)
+            }
+            _ => (None, 0),
+        }
+    }
+
+    /// A31: a call of the function value at the tuple or record fields (or union payloads) `path`
+    /// of the value of `callee` (`HigherOrderCall::path`): the component of a tuple or record
+    /// literal or the payload of a case, one of the functions that a field of an immutable local
+    /// bound to a record literal may be (`known_parts`), the part of the value that another
+    /// immutable local is bound to (`bound`); the part of a parameter of this body, which its own
+    /// caller substitutes (`record_higher`); and the conservative rule for any other value
+    /// (`unknown_part`).
+    fn apply_part<'e>(
+        &mut self,
+        callee: &Arg<'e>,
+        path: &[usize],
+        arguments: &[Arg<'e>],
+        span: Span,
+        depth: usize,
+        named: Option<usize>,
+    ) where
+        'a: 'e,
+    {
+        let Some((&field, rest)) = path.split_first() else {
+            self.apply_higher_once(callee, &[], arguments, span, depth, named);
+            return;
+        };
+        if depth > STORE_SUBSTITUTION_DEPTH {
+            let unknown = self.unknown_part(callee, path);
+            self.apply_opaque(Some(&unknown), arguments, span, false, named);
+            return;
+        }
+        // A value lent to a read parameter or borrowed for a `ref` parameter holds the part
+        // where the value does.
+        let expression = callee.expression.map(|expression| match &expression.kind {
+            E::BorrowOperand(inner) | E::Borrow(inner, false) => &**inner,
+            _ => expression,
+        });
+        let component = expression.and_then(|expression| match &expression.kind {
+            E::Tuple(items) if field != PAYLOAD => items.get(field),
+            E::Record(fields) if field != PAYLOAD => fields
+                .iter()
+                .find(|(id, _)| *id == field)
+                .map(|(_, value)| value),
+            E::Construct {
+                payload: Some(payload),
+                ..
+            } if field == PAYLOAD => Some(&**payload),
+            _ => None,
+        });
+        if let Some(component) = component {
+            let one = Arg {
+                expression: Some(component),
+                ..callee.clone()
+            };
+            self.apply_part(&one, rest, arguments, span, depth + 1, named);
+            return;
+        }
+        if let Some(E::Local(id)) = expression.map(|e| &e.kind)
+            && field != PAYLOAD
+            && let Some(shown) = self.known_parts.get(&(*id, Some(field))).cloned()
+        {
+            for expression in shown {
+                let one = Arg {
+                    expression: Some(expression),
+                    ..callee.clone()
+                };
+                self.apply_part(&one, rest, arguments, span, depth + 1, named);
+            }
+            return;
+        }
+        // An immutable local holds the value that it is bound to (`bound`).
+        if let Some(E::Local(id)) = expression.map(|e| &e.kind)
+            && let Some(&value) = self.bound.get(id)
+        {
+            let one = Arg {
+                expression: Some(value),
+                ..callee.clone()
+            };
+            self.apply_part(&one, path, arguments, span, depth + 1, named);
+            return;
+        }
+        // A path longer than `HIGHER_ORDER_PATH` (a recursive function that passes on a part of
+        // a recursive value, `chain_total rest text`, would lengthen it at each pass) is taken for
+        // a call of code that the analysis does not see, so that the facts settle.
+        if let Some((index, mut prefix)) =
+            expression.and_then(|expression| self.parameter_path(expression, 0))
+            && prefix.len() + path.len() <= HIGHER_ORDER_PATH
+        {
+            prefix.extend_from_slice(path);
+            self.record_higher(index, prefix, callee, arguments, span, named);
+            return;
+        }
+        let unknown = self.unknown_part(callee, path);
+        self.apply_opaque(Some(&unknown), arguments, span, false, named);
+    }
+
+    /// A31: `callee` as the function value at `path` in its value, when the check does not see
+    /// which one that is: no expression, the loans of the whole value, and whether the whole
+    /// value may hold a function value that owns the cell that it writes (`argument_hides`).
+    fn unknown_part<'e>(&mut self, callee: &Arg<'e>, path: &[usize]) -> Arg<'e> {
+        if path.is_empty() {
+            return callee.clone();
+        }
+        Arg {
+            expression: None,
+            hides: self.argument_hides(callee),
+            target: self.argument_target(callee),
+            ..callee.clone()
+        }
+    }
+
+    /// A31: the conservative rule for code that the analysis does not see, given `callee` (the
+    /// function value that runs, when there is one) and `arguments`:
+    ///
+    /// - what any of them holds may be stored wherever an argument reaches (`store_target`): the
+    ///   code gets the arguments, and may call the function values that it finds in them;
+    /// - what the arguments and the function value hold may be stored where the function value's
+    ///   environment reaches, in a module where some function value stores into what its
+    ///   environment reaches (`CallFacts::sinks`; in any other module no function value does,
+    ///   whatever value this is), when the value's type is one that such a function value may
+    ///   have (`may_be_sink`);
+    /// - and in the environment itself, in a module where one owns the cell that it writes
+    ///   (`store_hidden`), when the function value's type, or the type of an argument, may hold
+    ///   such an owner (`may_own_sink`, `argument_hides`).
+    ///
+    /// With `local_only`, only the local targets get it (the caller substitutes the code for the
+    /// rest). `named` is the named callee whose facts lead here, for the error that names it.
+    fn apply_opaque(
+        &mut self,
+        callee: Option<&Arg<'_>>,
+        arguments: &[Arg<'_>],
+        span: Span,
+        local_only: bool,
+        named: Option<usize>,
+    ) {
+        // Unseen code keeps the reference that an operand lends only in a module where some
+        // function stores a reference parameter itself (`handed`); it may write wherever the
+        // operand reaches in any module.
+        let references = self.facts.reference_sinks;
+        let handed: Vec<Value> = arguments
+            .iter()
+            .map(|argument| self.handed(argument))
+            .collect();
+        // The code of the function value gets its own environment, not the reference to the
+        // function value that the call goes through (`Owned.call (ref w) x`): through one, it may
+        // store what the environment holds (the contents), but not the borrow of itself.
+        let own = match callee {
+            Some(callee) if callee.lent => self.contents_value(&callee.value),
+            Some(callee) => self.handed(callee),
+            None => Value::default(),
+        };
+        let mut stored = own.clone();
+        for value in &handed {
+            stored.absorb(value);
+        }
+        // The arguments that are references, with what they point at (`without_views`): the code
+        // keeps a borrow of a part of what one points at in that same value only as a function
+        // of the module does (below); the others are where any of it may go.
+        let referents: Vec<Option<Type>> = arguments
+            .iter()
+            .map(|argument| match Self::value_type(argument) {
+                Some(Type::Reference(target, _)) => Some(without_views(&target)),
+                _ => None,
+            })
+            .collect();
+        let mut reached = Value::default();
+        for (argument, referent) in arguments.iter().zip(&referents) {
+            if referent.is_none() {
+                reached.hold(self.argument_part(argument, Part::Value).loans);
+            }
+        }
+        // The function value's own loans are where its environment reaches, when its code, or
+        // the code of the function that it gives after some of the arguments, may store there.
+        let sink = callee.is_some_and(|callee| self.may_be_sink(callee, arguments.len()));
+        let mut environment = Value::default();
+        if let Some(callee) = callee.filter(|_| sink) {
+            environment.hold(self.argument_part(callee, Part::Value).loans);
+        }
+        // A loan of a local value of the body that a callee's facts substitute here may go
+        // wherever the code reaches: an argument from outside that body, or the environment of
+        // the function value. A reference to a temporary argument may go wherever any does.
+        // The store reaches a hidden environment when the function value that runs may own a
+        // cell or hold a value that does (`may_own_sink`), or an argument may: unseen code may
+        // call the function values that it finds in its arguments.
+        let mut hidden = !local_only && self.facts.owned_sinks;
+        if hidden && callee.is_some_and(|callee| !self.may_own_sink(callee, arguments.len())) {
+            hidden = false;
+            for argument in arguments {
+                hidden |= self.argument_hides(argument);
+            }
+        }
+        let operands = || callee.into_iter().chain(arguments);
+        if !local_only && operands().any(|operand| operand.local) {
+            // The places that the code may store the local loan into: what an argument from
+            // outside the callee's body reaches, and, in a module where a function value may store
+            // into what its environment reaches, what the function value's own loans reach. A
+            // function value made in the callee's body (a local operand with no other loans) has
+            // an environment of the callee's own values, and a call with no argument hands it
+            // nothing: `get ()` in `\get -> get () * 2` stores nothing anywhere.
+            let outside: Vec<Value> = operands()
+                .filter(|operand| operand.external)
+                .map(|operand| operand.value.clone())
+                .collect();
+            if callee.is_some_and(|callee| sink && self.has_targets(&callee.value))
+                || hidden
+                || outside.iter().any(|value| self.has_targets(value))
+            {
+                let overwritten = operands()
+                    .filter(|operand| operand.local)
+                    .all(|operand| operand.overwritten);
+                self.defer(self.callee_borrow_stored(named, span, false, overwritten));
+            }
+        }
+        // The borrow of a lock's contents (`Arg::locked`) that the code gets may be kept where it
+        // may store the loan of a local value of a callee, and in the contents themselves, which
+        // outlive the call. A function value that the contents hold and that runs here gets its
+        // own environment, which is what the contents hold, not the borrow of them.
+        if !local_only && arguments.iter().any(|argument| argument.locked) {
+            let outside = operands()
+                .filter(|operand| operand.external || operand.locked)
+                .any(|operand| self.has_targets(&operand.value));
+            if callee.is_some_and(|callee| sink && self.has_targets(&callee.value))
+                || hidden
+                || outside
+            {
+                self.defer(Self::locked_borrow_kept(span));
+            }
+        }
+        // A reference to a temporary: an argument before the last may be kept by the function
+        // that the first arguments give (`w (temporary) (ref mut arr)` applies `w` in stages),
+        // and the last one by code that keeps a reference parameter (`reference_sinks`).
+        let last = arguments.len().saturating_sub(1);
+        let dying = arguments
+            .iter()
+            .enumerate()
+            .any(|(index, argument)| argument.dying && (references || index < last));
+        if !local_only
+            && dying
+            && (self.has_targets(&reached) || self.has_targets(&environment) || hidden)
+        {
+            self.defer(Self::temporary_borrow_stored(span));
+        }
+        // A borrowed temporary that the code may keep in another one, made after it, whose drop
+        // may read it (`temporary_dropped_first`).
+        if !local_only && self.temporaries_dropped_first(arguments) {
+            self.defer(Self::temporary_dropped_first_error(span));
+        }
+        // The code of the function value may store what its own environment holds where that
+        // environment reaches, as well as what it is given: a closure that captured a borrow and
+        // a cell puts the borrow into the cell (`ts[0] ()`).
+        self.apply_store_within(&stored, &reached, span, local_only);
+        // What a reference argument points at may keep what the function value and the other
+        // arguments hand the code, and what this one holds beyond the borrow that it is.
+        for (at, argument) in arguments.iter().enumerate() {
+            let Some(referent) = &referents[at] else {
+                continue;
+            };
+            let value = self.argument_part(argument, Part::Value);
+            let mut into = own.clone();
+            for (other, given) in handed.iter().enumerate() {
+                if other != at {
+                    into.absorb(given);
+                }
+            }
+            let mut beyond = handed[at].clone();
+            beyond.loans.retain(|loan| !value.loans.contains(loan));
+            beyond.through.retain(|loan| !value.loans.contains(loan));
+            into.absorb(&beyond);
+            self.apply_store_within(&into, &value, span, local_only);
+            // The code may keep a borrow of a part of what the reference points at in that value
+            // itself, as a function of the module does through a reference parameter to a value
+            // of that type (`CallFacts::self_borrow_types`), at the parts that those functions
+            // borrowed (`self_borrow_paths`): the value keeps a shared borrow of those parts of
+            // itself, which the store above leaves out (and which a write back through an
+            // exclusive borrow would not keep).
+            let whole = BTreeSet::from([Vec::new()]);
+            let facts: &CallFacts = self.facts;
+            let (ordered, paths) = if facts.self_borrow_any {
+                (false, &whole)
+            } else if let Some(ordered) = facts.self_borrow_types.get(referent) {
+                (
+                    *ordered,
+                    facts.self_borrow_paths.get(referent).unwrap_or(&whole),
+                )
+            } else {
+                continue;
+            };
+            // The reference points at one of the places that its loans borrow, which keeps a
+            // borrow of its own part (`referent_pieces`).
+            let pieces =
+                Self::referent_pieces(argument, &value).unwrap_or_else(|| vec![value.clone()]);
+            let points = self.argument_points(argument);
+            for piece in pieces {
+                let mut kept = self.path_copy(&piece, paths, Some(referent), points, false);
+                // Every function that does so keeps the drop order of the value's parts.
+                if ordered {
+                    kept = self.ordered_copy(&kept);
+                }
+                self.apply_store_within(&kept, &piece, span, local_only);
+            }
+        }
+        self.apply_store_within(&stored, &environment, span, local_only);
+        // An owner that the code took by value reaches its block, which may have gone where an
+        // earlier share took it (`exports`), whichever code runs.
+        if !self.exports.is_empty() {
+            let types: Vec<Type> = operands()
+                .filter_map(|operand| operand.expression.map(|expression| expression.ty.clone()))
+                .collect();
+            for ty in types {
+                self.store_exported_into(&ty, &stored, span, false);
+            }
+        }
+        if hidden {
+            // Unseen code may call the function values that it finds in its arguments, whose
+            // environments are as hidden as that of the function value that runs.
+            self.store_hidden(&stored, span);
+        }
+    }
+
+    /// A31: the stores of a call that the facts of a named callee do not cover (`eval_call`, whose
+    /// argument values are on `held` from `start`): those of a builtin (`builtin_stores`), of a
+    /// function value (`apply_higher`), and of the function that a complete call of a named
+    /// function returns, called with the arguments beyond its parameters.
+    #[allow(clippy::too_many_arguments)]
+    fn call_stores(
+        &mut self,
+        callee: &TypedExpr,
+        arguments: &[TypedExpr],
+        known: Option<usize>,
+        boundary: Option<usize>,
+        start: usize,
+        span: Span,
+        live: &BTreeSet<usize>,
+    ) {
+        if let E::Function(crate::check::FunctionRef::Builtin(instance)) = &callee.kind {
+            self.builtin_stores(callee, instance.builtin, arguments, start, span, live);
+            return;
+        }
+        let (callee, first) = match (known, boundary) {
+            (Some(_), Some(boundary)) if arguments.len() > boundary => (None, boundary),
+            (None, _) if !matches!(callee.kind, E::CaseConstructor { .. }) => (Some(callee), 0),
+            _ => return,
+        };
+        let function = Arg::of(callee, self.held[start].clone());
+        let rest: Vec<Arg<'_>> = arguments[first..]
+            .iter()
+            .enumerate()
+            .map(|(at, argument)| self.argument(argument, self.held[start + 1 + at].clone(), live))
+            .collect();
+        self.apply_higher(&function, &rest, span, 0);
+    }
+
+    /// A31: the argument `expression` of a call, whose value is `value`. For a borrowed operand
+    /// that is a place (`a == b` with a user instance, a place lent to a read parameter by an
+    /// operator), the loans of the borrow of the place are found here, where the liveness is
+    /// known, for the facts that store the reference itself (`Arg::reference`).
+    fn argument<'e>(
+        &mut self,
+        expression: &'e TypedExpr,
+        value: Value,
+        live: &BTreeSet<usize>,
+    ) -> Arg<'e> {
+        let mut argument = Arg::of(Some(expression), value);
+        if let E::BorrowOperand(inner) = &expression.kind
+            && Self::is_place(inner)
+            && inner.ty.carries_loans(&self.module.types())
+            && let Ok(places) = self.place(inner, live)
+        {
+            let mut loans = BTreeSet::new();
+            // A31: the borrow of an exact place is exact (`exact_loans`).
+            let exact = self.exact_place(inner);
+            for (place, via) in places {
+                let loan = self.loan(place, false, via, expression.span);
+                if exact {
+                    self.exact_loans.insert(loan);
+                }
+                loans.insert(loan);
+            }
+            argument.reference = Some(loans);
+        }
+        argument
+    }
+
+    /// A31: the stores of a direct call of `builtin` with the argument values on `held` from
+    /// `start` (the callee first): `Array.write` stores its value where its view reaches, and
+    /// `SyncMap.__replace` its value where its `ref mut` reaches, when the value's type may hold a
+    /// loan; a builtin that runs a callback runs it with what its other arguments reach (the locks
+    /// lend their contents), and with what the callback itself holds when its result comes back
+    /// as an argument of a later call (the state of `List.foldr`); `Owned.call` runs the owned
+    /// function with its input. The other builtins store nothing that may hold a loan (the audit
+    /// at `store_seed`).
+    fn builtin_stores(
+        &mut self,
+        callee: &TypedExpr,
+        builtin: crate::check::Builtin,
+        arguments: &[TypedExpr],
+        start: usize,
+        span: Span,
+        live: &BTreeSet<usize>,
+    ) {
+        let scheme = builtin.scheme();
+        if arguments.len() < scheme.parameters.len() {
+            return;
+        }
+        let value = |checker: &Self, index: usize| checker.held[start + 1 + index].clone();
+        if let Some((from, to)) = store_seed(builtin) {
+            let parameter = match &callee.ty {
+                Type::Function(parameters, _) => parameters.get(from),
+                _ => None,
+            };
+            if parameter
+                .is_none_or(|ty| ty.carries_loans(&self.module.types()) || ty.contains_unknown())
+            {
+                let (stored, target) = (value(self, from), value(self, to));
+                self.apply_store(&stored, &target, span);
+            }
+            return;
+        }
+        if builtin == crate::check::Builtin::OwnedCall {
+            let function = Arg::of(Some(&arguments[0]), value(self, 0));
+            let input = self.argument(&arguments[1], value(self, 1), live);
+            self.apply_higher(&function, &[input], span, 0);
+            return;
+        }
+        // `Seq.next` runs the step function that the sequence holds, with `()`: a function value
+        // of the module whose code the check does not see here, and whose environment the
+        // sequence's loans are. The sequence goes in as the function value that runs (its type
+        // narrows the rule by the step function's type, `may_be_sink` and `may_own_sink`). In a
+        // body whose parameter is the sequence, what it stores where the parameter reaches is a
+        // store fact of the body (`store_external`), which a caller applies to its argument.
+        if builtin == crate::check::Builtin::SeqNext {
+            let sequence = Arg::of(Some(&arguments[0]), value(self, 0));
+            self.apply_opaque(Some(&sequence), &[], span, false, None);
+            return;
+        }
+        let callbacks: Vec<(usize, usize, bool)> = scheme
+            .parameters
+            .iter()
+            .enumerate()
+            .filter_map(|(index, parameter)| match parameter {
+                crate::check::BuiltinType::Function(parameters, result) => {
+                    let returned = format!("{result:?}");
+                    let feeds_back = parameters
+                        .iter()
+                        .any(|parameter| format!("{parameter:?}") == returned);
+                    Some((index, parameters.len(), feeds_back))
+                }
+                _ => None,
+            })
+            .collect();
+        if callbacks.is_empty() {
+            return;
+        }
+        let mut others = Value::default();
+        for index in 0..scheme.parameters.len() {
+            if !callbacks.iter().any(|(callback, ..)| *callback == index) {
+                others.absorb(&value(self, index));
+            }
+        }
+        // The locks lend their callbacks a borrow of the locked value (`Arg::locked`).
+        let locks = matches!(
+            builtin,
+            crate::check::Builtin::MutexWith
+                | crate::check::Builtin::RwMutexWithRead
+                | crate::check::Builtin::RwMutexWithWrite
+                | crate::check::Builtin::CondWaitWith
+        );
+        for (index, arity, feeds_back) in callbacks {
+            let callee = Arg::of(Some(&arguments[index]), value(self, index));
+            let mut given = others.clone();
+            if feeds_back {
+                given.absorb(&callee.value);
+            }
+            // What a builtin gives its callback is a reference that it makes or an element.
+            let mut source = Arg {
+                lent: true,
+                locked: locks,
+                ..Arg::of(None, given)
+            };
+            // A lock lends a reference to its contents, whose type says what code that gets it
+            // may reach through it (`argument_type`), as the type of an argument's expression does.
+            if locks
+                && let Type::Function(lent, _) = &arguments[index].ty
+                && let Some(ty) = lent.first()
+            {
+                let (target, hides) = self.argument_type(ty);
+                source.target = target;
+                source.hides = hides;
+            }
+            let sources = vec![source; arity];
+            self.apply_higher(&callee, &sources, span, 0);
+        }
     }
 
     fn is_place(expression: &TypedExpr) -> bool {
@@ -4078,7 +11788,7 @@ impl<'a> Checker<'a, '_> {
             )?;
             if expression.ty.carries_loans(&self.module.types()) {
                 if let Some(stored) = self.stored_value(&place, &expression.ty, single) {
-                    value.loans.extend(stored.loans);
+                    value.absorb(&stored);
                     value.regions = stored.regions;
                 } else if self.external.contains(&place.root) {
                     // Borrowed data behind a reference with a named target region has that region.
@@ -4087,8 +11797,13 @@ impl<'a> Checker<'a, '_> {
                         .get(&(place.root, place_slot(&place)))
                         .filter(|slot| !slot.target.is_empty())
                     {
-                        Some(slot) => value.loans.extend(&slot.target),
-                        None => value.loans.extend(&via),
+                        Some(slot) => value.hold(slot.target.iter().copied()),
+                        // A31: the reference's loans stand for what its target holds.
+                        None => value.absorb(&Value {
+                            loans: via.clone(),
+                            through: via.clone(),
+                            ..Value::default()
+                        }),
                     }
                 } else {
                     return Err(error(
@@ -4116,6 +11831,20 @@ impl<'a> Checker<'a, '_> {
             }
             if moving {
                 self.state.moved.insert(place.clone(), expression.span);
+                if place.fields.is_empty() {
+                    self.state.moved_always.insert(place.root);
+                }
+                // A31: moving a reference passes on what it may write through.
+                if !self.handed.is_empty() {
+                    let places: Vec<Place> = value
+                        .loans
+                        .iter()
+                        .map(|loan| self.loans[*loan].place.clone())
+                        .collect();
+                    for place in &places {
+                        self.overwrite_handed(place);
+                    }
+                }
                 self.event(
                     place.root,
                     EventKind::Move,
@@ -4133,8 +11862,7 @@ impl<'a> Checker<'a, '_> {
                         .get_mut(&place.root)
                         .unwrap()
                         .1
-                        .loans
-                        .clear();
+                        .clear_loans();
                 }
             }
         }
@@ -4147,6 +11875,10 @@ impl<'a> Checker<'a, '_> {
         usage: Use,
         live: &BTreeSet<usize>,
     ) -> Result<Value, Diagnostic> {
+        // A31: whether the value goes into a binding, which applies the drop hook itself; a
+        // block and an `if` pass that on to their results (`tail_bound`).
+        let bound = std::mem::take(&mut self.bound_next);
+        self.tail_bound = bound;
         let value = match expression.kind {
             E::While { .. } | E::ForRange { .. } | E::ForEach { .. } | E::Match { .. } => {
                 self.eval_control(expression, live)
@@ -4156,9 +11888,32 @@ impl<'a> Checker<'a, '_> {
             E::Lambda { .. } => self.eval_lambda(expression, live),
             _ => self.eval_value(expression, usage, live),
         }?;
+        self.bound_next = false;
         if self.dropped.is_some() && !value.loans.is_empty() && self.drop_runs(&expression.ty) {
             let dropped = self.dropped.as_mut().expect("checked above");
             dropped.extend(&value.loans);
+        }
+        // A31: a value that is not bound is a temporary, dropped where its use ends, by the end
+        // of the statement at the latest (the scrutinee of a `match`, a value lent to a call right
+        // after it returns, a record that a field is read from), or handed to code that drops it.
+        // A temporary whose drop may hand a borrow of itself to a hidden environment is checked
+        // even when it holds no loan.
+        if !bound
+            && self.facts.drops_write
+            && self.tracks_stores()
+            && (!value.loans.is_empty()
+                || (self.facts.owned_sinks
+                    && self.runs_drop_code(&expression.ty)
+                    && self.drop_hidden(&expression.ty).itself))
+        {
+            let span = self.drop_site.unwrap_or(expression.span);
+            self.drop_stores(
+                &value,
+                &expression.ty,
+                span,
+                Some(expression),
+                Some(expression),
+            );
         }
         Ok(value)
     }
@@ -4166,15 +11921,388 @@ impl<'a> Checker<'a, '_> {
     /// `drop_runs_code`, cached by type; no type when no `Drop.drop` of the module may make a store
     /// that the check does not track (`Lending::drops_store`).
     fn drop_runs(&mut self, ty: &Type) -> bool {
-        if !self.facts.lending.drops_store {
-            return false;
-        }
+        self.facts.lending.drops_store && self.drop_code(ty).0
+    }
+
+    /// Whether dropping a value of type `ty` may run code, cached by type: `drop_runs_code` (A28's
+    /// `dropped`), and the answer of the A31 drop hooks (`runs_drop_code`).
+    fn drop_code(&mut self, ty: &Type) -> (bool, bool) {
         if let Some(known) = self.drop_types.get(ty) {
             return *known;
         }
-        let runs = drop_runs_code(ty, &self.module.types());
-        self.drop_types.insert(ty.clone(), runs);
-        runs
+        let types = self.module.types();
+        let runs = drop_runs_code(ty, &types);
+        let hooks = runs && ty.drops_some(&types, |part| part.runs_on_drop(&types));
+        self.drop_types.insert(ty.clone(), (runs, hooks));
+        (runs, hooks)
+    }
+
+    /// A31: whether dropping a value of type `ty` may run code (`drop_runs_code`), for the drop
+    /// hooks: a weak pointer runs nothing of what it points at, since the last strong owner drops
+    /// the block's value (`Type::drops_some`).
+    fn runs_drop_code(&mut self, ty: &Type) -> bool {
+        self.drop_code(ty).1
+    }
+
+    /// A31: a value of type `ty` that is dropped, or handed by value to code that may drop it,
+    /// runs the `Drop.drop` of the values with a user `Drop` instance that it stores (or that the
+    /// environment of a function value or the vtable of a dyn value holds, `drop_runs_code`), and
+    /// that `Drop.drop` gets only the value: what it stores is what the value holds, where the
+    /// value reaches (`Stash { cell: a, f }` puts `f` into the cell that `a` shares). When some
+    /// `Drop.drop` of the module may store (`CallFacts::drops_write`), the value's loans are stored
+    /// where its own target loans reach, as the check of an assignment would: a local cell keeps
+    /// them, and one of the caller's records a fact, or the error of a borrow of a local value.
+    /// The hook runs where the value is bound or assigned over and wherever a value that is not
+    /// bound is evaluated (`eval`: a temporary, or an argument that a callee drops), which is no
+    /// later than its drop.
+    ///
+    /// `temporary` is the expression of a value that is not bound. A `Drop.drop` may also store a
+    /// borrow of the dropped value itself (`let nm = ref s.name`, kept in a function that it
+    /// writes into `s.cell`), which dangles once the value is gone: for a temporary, or a value
+    /// that a callee drops, that is an error wherever the value reaches a place to store in; a
+    /// bound value stores a borrow of its local instead (`drop_keeps_self`).
+    ///
+    /// `origin` is the expression that gives the value, when it is known: a lambda whose captures
+    /// run no code when they are dropped (`\() -> String.length bt`) runs none either, whatever its
+    /// type says (`value_runs_drop_code`).
+    ///
+    /// A `Drop.drop` may also hand what the value holds, or a borrow of the value, to a function
+    /// value that owns the cell that it writes (`s.out` holds a copy of a registry): its hidden
+    /// facts (`drop_hidden`) store that in the hidden environments (`store_hidden`), as a call of
+    /// the `Drop.drop` with the value would. A value that cannot share such an environment
+    /// (`may_own` of `origin`) reaches none of them.
+    fn drop_stores(
+        &mut self,
+        value: &Value,
+        ty: &Type,
+        span: Span,
+        temporary: Option<&TypedExpr>,
+        origin: Option<&TypedExpr>,
+    ) {
+        if !self.tracks_stores() || !self.facts.drops_write {
+            return;
+        }
+        let hidden = if self.facts.owned_sinks && self.runs_drop_code(ty) {
+            self.drop_hidden(ty)
+        } else {
+            DropHidden::default()
+        };
+        let temporary =
+            temporary.is_some_and(|expression| !Self::is_place(expression) || !self.is_copy(ty));
+        let hides_itself = hidden.itself && temporary;
+        if (value.loans.is_empty() && !hides_itself) || !self.value_runs_drop_code(origin, ty, 0) {
+            return;
+        }
+        let part = origin.and_then(|origin| self.parameter_part(origin));
+        let dropping = std::mem::replace(&mut self.dropping, part);
+        self.apply_store(value, value, span);
+        self.dropping = dropping;
+        let shares =
+            (hidden.contents || hides_itself) && origin.is_none_or(|origin| self.may_own(origin));
+        if shares && hidden.contents {
+            self.drop_hides(value, span);
+        }
+        if !temporary {
+            return;
+        }
+        let message = if self.drop_borrows_self(ty) && self.has_targets(value) {
+            "cannot drop this value here: its Drop.drop stores a borrow of the dropped value in a place that the value shares, and the value is a temporary or is handed to a callee, so the borrow would outlive it"
+        } else if shares && hidden.itself {
+            "cannot drop this value here: its Drop.drop hands a borrow of the dropped value to a function value that may keep it in a cell that other values share, and the value is a temporary or is handed to a callee, so the borrow would outlive it"
+        } else {
+            return;
+        };
+        self.defer(
+            error(DiagnosticKind::StoreLocalBorrowThroughReference, message, span).with_help(
+                "bind the value with 'let' in a scope that outlives every other owner of the place, or make Drop.drop store owned values only",
+            ),
+        );
+    }
+
+    /// A31: what dropping a value of type `ty` may store in hidden environments (`DropHidden`):
+    /// the hidden facts of the `Drop.drop` of each type with a user `Drop` instance that `ty`
+    /// stores, or of all of them when `ty` stores a dyn value. `top`, or a call of a function-valued
+    /// parameter (a `Drop.drop` has none), may store both. A weak pointer drops nothing of what it
+    /// points at (`Type::drops_some`).
+    fn drop_hidden(&mut self, ty: &Type) -> DropHidden {
+        if let Some(known) = self.drop_hidden_types.get(ty) {
+            return *known;
+        }
+        let module = self.module;
+        let facts: &CallFacts = self.facts;
+        let types = module.types();
+        let any = ty.drops_some(&types, |part| matches!(part, Type::Dyn(_)));
+        let mut found = DropHidden::default();
+        for (dropped, id) in &module.user_drops {
+            if !(any || ty.drops_some(&types, |part| part == dropped)) {
+                continue;
+            }
+            let Some(stores) = facts.stores.get(*id) else {
+                continue;
+            };
+            if stores.top || !stores.calls.is_empty() {
+                found = DropHidden {
+                    contents: true,
+                    itself: true,
+                };
+                break;
+            }
+            for &(from, part) in &stores.hidden {
+                if from != 0 {
+                    continue;
+                }
+                match part {
+                    Part::Value => found.itself = true,
+                    Part::Contents => found.contents = true,
+                }
+            }
+        }
+        self.drop_hidden_types.insert(ty.clone(), found);
+        found
+    }
+
+    /// A31: stores `stored`, what a dropped value holds, in the hidden environments that its
+    /// `Drop.drop` may reach (`drop_stores`, `drop_hides_owner`). Nested stores of the same
+    /// loans are left out (`drop_hiding`).
+    fn drop_hides(&mut self, stored: &Value, span: Span) {
+        if self.drop_hiding || stored.loans.is_empty() {
+            return;
+        }
+        self.drop_hiding = true;
+        let kept = Value {
+            loans: stored.loans.clone(),
+            through: stored.through.clone(),
+            ..Value::default()
+        };
+        self.store_hidden(&kept, span);
+        self.drop_hiding = false;
+    }
+
+    /// A31: the local owner `root`, of type `ty`, now holds `stored` as well (a store into its
+    /// cell, an assignment to a field): when its drop may hand what it holds to a function value
+    /// that owns the cell that it writes (`drop_hidden`), that goes into the hidden environments
+    /// now, since the binding's hook saw only what the owner held then.
+    fn drop_hides_owner(&mut self, root: usize, ty: &Type, stored: &Value, span: Span) {
+        if self.drop_hiding
+            || stored.loans.is_empty()
+            || !self.facts.owned_sinks
+            || !self.tracks_stores()
+            || !self.facts.drops_write
+            || !self.runs_drop_code(ty)
+            || !self.drop_hidden(ty).contents
+            || self.holds_no_owner(root)
+        {
+            return;
+        }
+        self.drop_hides(stored, span);
+    }
+
+    /// A31: whether dropping the value of `origin`, of type `ty`, may run code (`drop_runs_code`).
+    /// A function value's type does not show its environment, but the expression that makes it
+    /// may: a lambda drops its captures, a partial application of a named function the arguments
+    /// that it binds (one of a known local also what the local drops), a named function nothing,
+    /// and an immutable local bound to such values (`Checker::known`) what they drop. An array,
+    /// list, tuple, record or union literal drops what its elements drop, and a record or union
+    /// value runs its type's own `Drop.drop`. Any other value counts as its type says.
+    fn value_runs_drop_code(
+        &mut self,
+        origin: Option<&TypedExpr>,
+        ty: &Type,
+        depth: usize,
+    ) -> bool {
+        if !self.runs_drop_code(ty) {
+            return false;
+        }
+        let Some(origin) = origin.filter(|_| depth <= STORE_SUBSTITUTION_DEPTH) else {
+            return true;
+        };
+        let module = self.module;
+        match &origin.kind {
+            E::Closure(_, captures) => captures
+                .iter()
+                .any(|capture| self.value_runs_drop_code(Some(capture), &capture.ty, depth + 1)),
+            E::Function(crate::check::FunctionRef::User(_)) | E::GenericFunction(..) => false,
+            E::Call(callee, bound)
+                if direct_callee(callee)
+                    .is_some_and(|id| bound.len() < module.functions[id].parameters.len()) =>
+            {
+                bound
+                    .iter()
+                    .any(|value| self.value_runs_drop_code(Some(value), &value.ty, depth + 1))
+            }
+            // A partial application of a known local (`chosen (ref p2)` after `let chosen =
+            // cross`) drops a copy of the local's function value and the arguments that it binds.
+            E::Call(callee, bound)
+                if matches!(&callee.kind, E::Local(id)
+                    if partial_heads(module, &self.known, *id, bound.len())) =>
+            {
+                self.value_runs_drop_code(Some(callee), &callee.ty, depth + 1)
+                    || bound
+                        .iter()
+                        .any(|value| self.value_runs_drop_code(Some(value), &value.ty, depth + 1))
+            }
+            // A literal drops its elements, and a record or union value its own `Drop.drop` when
+            // its type has one: `Ctx { buf: ref mut arr, cb: \() -> String.length nr }` drops a
+            // reference and a lambda that captured one, which run nothing.
+            E::Array(elements) | E::List(elements) | E::Tuple(elements) => elements
+                .iter()
+                .any(|value| self.value_runs_drop_code(Some(value), &value.ty, depth + 1)),
+            E::Record(fields) => {
+                self.has_own_drop(ty)
+                    || fields.iter().any(|(_, value)| {
+                        self.value_runs_drop_code(Some(value), &value.ty, depth + 1)
+                    })
+            }
+            E::Construct { payload, .. } => {
+                self.has_own_drop(ty)
+                    || payload.as_deref().is_some_and(|value| {
+                        self.value_runs_drop_code(Some(value), &value.ty, depth + 1)
+                    })
+            }
+            // A choice is the value of one of its branches or arms (`if n < 0 then cross (ref p2)
+            // else cross3 (ref p3)`), and a block's value that of its result: its bindings are
+            // dropped where it ends.
+            E::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.value_runs_drop_code(Some(then_branch), &then_branch.ty, depth + 1)
+                    || self.value_runs_drop_code(Some(else_branch), &else_branch.ty, depth + 1)
+            }
+            E::Match { arms, .. } => arms
+                .iter()
+                .any(|arm| self.value_runs_drop_code(Some(&arm.body), &arm.body.ty, depth + 1)),
+            E::Block { result, .. } => {
+                self.value_runs_drop_code(Some(result), &result.ty, depth + 1)
+            }
+            E::Local(id) if self.known.contains_key(id) => {
+                let shown = self.known[id].clone();
+                shown
+                    .into_iter()
+                    .any(|value| self.value_runs_drop_code(Some(value), &value.ty, depth + 1))
+            }
+            // An immutable local runs what its binding runs, unless it reaches a cell, whose
+            // contents may change after it is bound.
+            E::Local(id) if self.bound.contains_key(id) && !self.reaches_cell(ty) => {
+                let value = self.bound[id];
+                self.value_runs_drop_code(Some(value), &value.ty, depth + 1)
+            }
+            _ => true,
+        }
+    }
+
+    /// A31: the index of the parameter whose value `expression` is a part of: the parameter, or a
+    /// field or an element of such a part, read by value (not through a reference) from an
+    /// immutable parameter that is not a reference. Dropping a copy of such a part runs only what
+    /// the caller's argument may run when it is dropped (`StoreFacts::drop_only`).
+    fn parameter_part(&self, expression: &TypedExpr) -> Option<usize> {
+        match &expression.kind {
+            E::Local(id) => {
+                let index = *self.parameter_roots.get(&(usize::MAX - *id))?;
+                let local = self.declarations.get(id)?;
+                (!local.mutable && !matches!(local.ty, Type::Reference(..))).then_some(index)
+            }
+            E::Field(base, _) if !matches!(base.ty, Type::Reference(..)) => {
+                self.parameter_part(base)
+            }
+            E::Index(base, _)
+                if matches!(
+                    base.ty,
+                    Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                ) =>
+            {
+                self.parameter_part(base)
+            }
+            _ => None,
+        }
+    }
+
+    /// A31: whether the record or union type `ty` has a user `Drop` instance of its own (with any
+    /// type arguments), which dropping a value of it runs.
+    fn has_own_drop(&self, ty: &Type) -> bool {
+        self.module
+            .user_drops
+            .keys()
+            .any(|dropped| match (dropped, ty) {
+                (Type::Record(a, _), Type::Record(b, _))
+                | (Type::Union(a, _), Type::Union(b, _)) => a == b,
+                _ => dropped == ty,
+            })
+    }
+
+    /// A31: whether dropping a value of type `ty` may run a `Drop.drop` whose facts store a
+    /// borrow of the dropped value itself (its parameter's own loan, `Part::Value`), or anything
+    /// (`top`): that of a type with a user `Drop` instance that `ty` stores (not through a weak
+    /// pointer, `Type::drops_some`), or any of them when `ty` stores a dyn value, whose stored type
+    /// it does not show.
+    fn drop_borrows_self(&mut self, ty: &Type) -> bool {
+        let module = self.module;
+        let facts: &CallFacts = self.facts;
+        let types = module.types();
+        let keeps = |id: usize| {
+            facts.stores.get(id).is_some_and(|stores| {
+                stores.top
+                    || stores
+                        .stores
+                        .iter()
+                        .any(|(from, part, _)| *from == 0 && *part == Part::Value)
+                    || stores.hidden.contains(&(0, Part::Value))
+                    || stores.calls.iter().any(|call| {
+                        call.arguments
+                            .iter()
+                            .any(|source| source.parameters.contains(&(0, Part::Value)))
+                    })
+            })
+        };
+        let any = ty.drops_some(&types, |part| matches!(part, Type::Dyn(_)));
+        module.user_drops.iter().any(|(dropped, id)| {
+            keeps(*id) && (any || ty.drops_some(&types, |part| part == dropped))
+        })
+    }
+
+    /// A31: the local `id` of type `ty` was bound to a value whose `Drop.drop` may store a borrow
+    /// of the dropped value itself (`drop_borrows_self`): a borrow of the local goes where the
+    /// value's own target loans reach, so that a place that keeps it cannot outlive the local.
+    /// A `Drop.drop` that may hand a borrow of the dropped value to a function value that owns the
+    /// cell that it writes (`DropHidden::itself`) puts the borrow of the local in the hidden
+    /// environments (`store_hidden`), unless the local cannot share one (`holds_no_owner`).
+    fn drop_keeps_self(&mut self, id: usize, ty: &Type, span: Span) {
+        if !self.tracks_stores() || !self.facts.drops_write || !self.runs_drop_code(ty) {
+            return;
+        }
+        let Some((_, value)) = self.state.locals.get(&id) else {
+            return;
+        };
+        let value = value.clone();
+        let targets =
+            !value.loans.is_empty() && self.drop_borrows_self(ty) && self.has_targets(&value);
+        let hidden =
+            self.facts.owned_sinks && self.drop_hidden(ty).itself && !self.holds_no_owner(id);
+        if !targets && !hidden {
+            return;
+        }
+        let loan = self.loan(
+            Place {
+                root: id,
+                fields: Vec::new(),
+                through_drop: false,
+            },
+            false,
+            BTreeSet::new(),
+            span,
+        );
+        let stored = Value {
+            loans: BTreeSet::from([loan]),
+            ..Value::default()
+        };
+        if targets {
+            self.apply_store(&stored, &value, span);
+        }
+        if hidden {
+            // The local itself does not keep a borrow of itself.
+            self.store_hidden_except(&stored, span, Some(id));
+        }
     }
 
     /// Starts `dropped` with the parameters' loans: a parameter whose type may run code when it is
@@ -4309,6 +12437,7 @@ impl<'a> Checker<'a, '_> {
         else {
             unreachable!("eval dispatches blocks here")
         };
+        let tail_bound = self.tail_bound;
         let mut future = BTreeMap::new();
         count_uses(tail, &mut future);
         for (_, value) in bindings {
@@ -4318,7 +12447,17 @@ impl<'a> Checker<'a, '_> {
         for (local, value) in bindings {
             let mut current = live.clone();
             current.extend(future.keys().copied());
-            let value_result = self.eval(value, Use::Consume, &current)?;
+            // A31: the drops of the temporaries of the bound value are reported at the binding.
+            let mark = self.hidden_log.len();
+            let site = self.drop_site.replace(local.span);
+            self.bound_next = true;
+            let value_result = self.eval(value, Use::Consume, &current);
+            self.drop_site = site;
+            let mut value_result = value_result?;
+            // A31: an immutable local bound to a reference that points at its loans' places.
+            self.note_pointing(local, value, &value_result);
+            self.absorb_hidden(mark, &mut value_result, &local.ty, Some(value));
+            self.drop_stores(&value_result, &local.ty, local.span, None, Some(value));
             let mut consumed = BTreeMap::new();
             count_uses(value, &mut consumed);
             for (id, count) in consumed {
@@ -4331,15 +12470,21 @@ impl<'a> Checker<'a, '_> {
             self.state
                 .locals
                 .insert(local.id, (self.declarations[&local.id], value_result));
+            self.note_block_share(local.id, value);
             self.state.moved.retain(|place, _| place.root != local.id);
+            self.state.moved_always.remove(&local.id);
             self.state
                 .generic_moves
                 .retain(|place, _| place.root != local.id);
+            self.note_binding(local.id);
             ids.insert(local.id);
+            self.drop_keeps_self(local.id, &local.ty, local.span);
             let mut keep = live.clone();
             keep.extend(future.keys().copied());
+            self.keep_for_drop(&mut keep);
             self.retain_live_loans(&keep);
         }
+        self.bound_next = tail_bound;
         let result = self.eval(tail, Use::Consume, live)?;
         for id in &result.loans {
             if ids.contains(&self.loans[*id].place.root)
@@ -4361,11 +12506,50 @@ impl<'a> Checker<'a, '_> {
                     ));
             }
         }
+        // A31: a borrow of the block of an outer `Rc` or `Arc` owner taken through a share of the
+        // block that this block drops (`same_block_loan`) points into the block, which the outer
+        // owner keeps: the drop order of the block's parts decides it.
+        let groups = self.block_groups();
+        let mut block_parts: Vec<(usize, usize)> = Vec::new();
+        for (id, (_, value)) in &self.state.locals {
+            if ids.contains(id) {
+                continue;
+            }
+            for loan in &value.loans {
+                let root = self.loans[*loan].place.root;
+                if ids.contains(&root)
+                    && !self.reported.contains(&root)
+                    && self.same_block_loan(&groups, *loan, *id)
+                {
+                    block_parts.push((*id, *loan));
+                }
+            }
+        }
+        for (id, loan) in block_parts {
+            let Some((holder, _)) = self.state.locals.get(&id) else {
+                continue;
+            };
+            let holder: &'a Local = holder;
+            let ty = holder.ty.clone();
+            if self.loans[loan].share || !self.drop_reads_cached(&ty) {
+                continue;
+            }
+            let fields = self.loans[loan].place.fields.clone();
+            let proven = self.ordered_loans.contains(&loan);
+            let borrowed = Borrowed::Part {
+                fields: &fields,
+                proven,
+            };
+            if self.borrow_dropped_first(DropSlot::Unknown, Some(&ty), borrowed) {
+                return Err(self.self_borrow_error(holder, loan, expression.span));
+            }
+        }
         for (id, (_, value)) in &self.state.locals {
             if !ids.contains(id)
                 && let Some(loan) = value.loans.iter().find(|loan| {
                     ids.contains(&self.loans[**loan].place.root)
                         && !self.reported.contains(&self.loans[**loan].place.root)
+                        && !self.same_block_loan(&groups, **loan, *id)
                 })
             {
                 return Err(self
@@ -4383,6 +12567,7 @@ impl<'a> Checker<'a, '_> {
                     ));
             }
         }
+        self.check_drop_order(bindings, expression.span)?;
         if self.events.is_some() {
             let end = Span {
                 start: expression.span.end,
@@ -4395,6 +12580,931 @@ impl<'a> Checker<'a, '_> {
             self.state.locals.remove(&id);
         }
         Ok(result)
+    }
+
+    /// A31: the locals of a block are dropped at its end in the reverse order of their
+    /// declarations, so a value whose drop may run a user `Drop.drop` (`drop_reads`) must not hold
+    /// a borrow of a local declared after it in the same block: that local is gone when the
+    /// `Drop.drop` runs and may read the borrow (`holder = Caller { f: \() -> String.length t }`
+    /// with `holder` declared before the string). The check looks at what each local holds when
+    /// the block ends, however it got there: an assignment, a write in place, a lock's callback, or
+    /// a store in a hidden environment. A value moved away whole on every path is not dropped
+    /// here; one that only some path moved is (`State::moved_always`). A local that holds a
+    /// borrow of a part of itself is checked too, against the drop order of its own parts
+    /// (`self_borrow_dropped_first`), so one local is enough.
+    fn check_drop_order(
+        &mut self,
+        bindings: &[(Local, TypedExpr)],
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        if self.module.user_drops.is_empty() || bindings.is_empty() {
+            return Ok(());
+        }
+        let order: Vec<usize> = bindings.iter().map(|(local, _)| local.id).collect();
+        self.check_drop_order_of(&order, span)
+    }
+
+    /// A31: `check_drop_order` for the parameters of a body, which are dropped when the body ends
+    /// (after its locals) in the reverse order of their declarations: in `fn keep mut c s`, `s` is
+    /// gone when the `Drop.drop` of `c` runs. A parameter that the body does not own (a `ref`
+    /// parameter, or a read parameter of edition 2027) is a reference, whose drop runs nothing,
+    /// and a borrow of one has the root of the caller's data, which outlives the call.
+    fn check_parameter_drop_order(
+        &mut self,
+        parameters: impl Iterator<Item = &'a Local>,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        if self.module.user_drops.is_empty() {
+            return Ok(());
+        }
+        let order: Vec<usize> = parameters.map(|parameter| parameter.id).collect();
+        if order.is_empty() {
+            return Ok(());
+        }
+        self.check_drop_order_of(&order, span)
+    }
+
+    /// A31: `check_drop_order` where a `break` or `continue` (or an exception that a `try`
+    /// handles) leaves the scopes of `locals` at `span`: they are dropped there in the reverse
+    /// order of their bindings (`binding_order`; the locals of the scopes that the jump leaves
+    /// form a stack), whatever the code after the jump puts into them.
+    pub(super) fn check_exit_drop_order(
+        &mut self,
+        locals: &BTreeSet<usize>,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        if self.module.user_drops.is_empty() || locals.is_empty() {
+            return Ok(());
+        }
+        let mut order: Vec<(usize, usize)> = locals
+            .iter()
+            .filter_map(|id| self.binding_order.get(id).map(|at| (*at, *id)))
+            .collect();
+        order.sort_unstable();
+        let order: Vec<usize> = order.into_iter().map(|(_, id)| id).collect();
+        self.check_drop_order_of(&order, span)
+    }
+
+    /// A31: records that the local `id` is bound now (`binding_order`).
+    pub(super) fn note_binding(&mut self, id: usize) {
+        self.binding_order.insert(id, self.next_binding);
+        self.next_binding += 1;
+    }
+
+    /// A31: the drop-order test of `check_drop_order` for the locals `order`, in the order of
+    /// their declarations (or bindings), which are dropped in the reverse order at `span`: the
+    /// drop-order rule (`borrow_dropped_first`) for each local that is dropped here, with the
+    /// locals of `order` as `DropSlot::Scoped` by their positions, against each borrow that it
+    /// keeps of one of them or of a part of itself.
+    fn check_drop_order_of(&mut self, order: &[usize], span: Span) -> Result<(), Diagnostic> {
+        // The position of each local in the order of the declarations.
+        let positions: BTreeMap<usize, usize> =
+            order.iter().enumerate().map(|(at, id)| (*id, at)).collect();
+        let moved = self.moved_always();
+        let groups = self.block_groups();
+        for (at, id) in order.iter().enumerate() {
+            let Some((holder, value)) = self.state.locals.get(id) else {
+                continue;
+            };
+            let holder: &'a Local = holder;
+            if value.loans.is_empty() || moved.contains(id) {
+                continue;
+            }
+            // Every borrow that the rule counts needs a holder whose drop may read one (a part
+            // that may read is a part of the holder's stored parts): the common case stops here.
+            let ty = holder.ty.clone();
+            if !self.drop_reads_cached(&ty) {
+                continue;
+            }
+            // A share of the block of a local owner holds what the block holds, and a borrow of a
+            // local is read through: the holder may read what that local holds now.
+            let Some((_, value)) = self.state.locals.get(id) else {
+                continue;
+            };
+            let held = self.expand_shares_read(value, *id);
+            let slot = DropSlot::Scoped(at);
+            let later = held.iter().copied().find(|loan| {
+                let root = self.loans[*loan].place.root;
+                root != *id
+                    && !self.reported.contains(&root)
+                    && !self.same_block_loan(&groups, *loan, *id)
+                    && positions.get(&root).is_some_and(|position| {
+                        let source = DropSlot::Scoped(*position);
+                        self.borrow_dropped_first(slot, Some(&ty), Borrowed::Other(source))
+                    })
+            });
+            let Some(loan) = later else {
+                // A borrow of a part of the local itself (a lock's callback wrote a borrow of
+                // `p.s` into the cell of `p.h`), or of the block that it owns, taken through
+                // another owner of the block.
+                if self.reported.contains(id) {
+                    continue;
+                }
+                if let Some(loan) = held.iter().copied().find(|loan| {
+                    if (self.loans[*loan].place.root != *id
+                        && !self.same_block_loan(&groups, *loan, *id))
+                        || self.loans[*loan].share
+                    {
+                        return false;
+                    }
+                    let fields = self.loans[*loan].place.fields.clone();
+                    let proven = self.ordered_loans.contains(loan);
+                    let borrowed = Borrowed::Part {
+                        fields: &fields,
+                        proven,
+                    };
+                    self.borrow_dropped_first(slot, Some(&ty), borrowed)
+                }) {
+                    return Err(self.self_borrow_error(holder, loan, span));
+                }
+                continue;
+            };
+            let mut diagnostic = self
+                .escape(
+                    loan,
+                    span,
+                    &format!(
+                        "'{{name}}' is declared here, after '{}', so it is dropped before it",
+                        holder.name
+                    ),
+                    error(
+                        DiagnosticKind::AssignmentExtendsBorrow,
+                        format!(
+                            "'{}' keeps a borrow of a value that is dropped before it, and dropping '{}' may run a Drop.drop that uses the borrow",
+                            holder.name, holder.name
+                        ),
+                        span,
+                    ),
+                )
+                .with_help(
+                    "declare the borrowed value before the variable that keeps the borrow, so that it is dropped after it",
+                );
+            if holder.span.end > holder.span.start {
+                diagnostic.add_related(
+                    RelatedRole::DeclaredHere,
+                    format!("'{}' is declared here", holder.name),
+                    holder.span,
+                );
+            }
+            return Err(diagnostic);
+        }
+        Ok(())
+    }
+
+    /// A31: an assignment of a whole local `root` (`p = v`) drops the old value after the new one
+    /// is made, so the borrows of the old value's own parts that it keeps (a lock's callback put a
+    /// borrow of `p.s` into the cell of `p.h`, or a callee kept one, `shared_copy`) end with it:
+    /// they must stay valid while it is dropped, which the drop order of its parts decides as
+    /// where its scope ends (`borrow_dropped_first`, `Borrowed::Part`), and they do not conflict
+    /// with the write. This checks the first, and leaves those borrows out of the old value for
+    /// the check of the write, whose caller puts back the value that it returns. A borrow that
+    /// something else holds as well (a live `ref p.s`, the new value) still conflicts.
+    fn replaced_value(&mut self, root: usize, span: Span) -> Result<Option<Value>, Diagnostic> {
+        let Some((holder, value)) = self.state.locals.get(&root) else {
+            return Ok(None);
+        };
+        // A borrow of a part of the block of an `Rc` or `Arc` owner through another owner of that
+        // block (`same_block_loan`) is one of a part of the old value too: the block keeps it in
+        // itself, and its last owner drops it with the block.
+        let groups = self.block_groups();
+        let own: Vec<usize> = value
+            .loans
+            .iter()
+            .copied()
+            .filter(|loan| {
+                self.loans[*loan].place.root == root || self.same_block_loan(&groups, *loan, root)
+            })
+            .collect();
+        if own.is_empty() {
+            return Ok(None);
+        }
+        let holder: &'a Local = holder;
+        let saved = value.clone();
+        let ty = holder.ty.clone();
+        if self.drop_reads_cached(&ty) {
+            for &loan in &own {
+                if self.loans[loan].share {
+                    continue;
+                }
+                let fields = self.loans[loan].place.fields.clone();
+                let proven = self.ordered_loans.contains(&loan);
+                let borrowed = Borrowed::Part {
+                    fields: &fields,
+                    proven,
+                };
+                if self.borrow_dropped_first(DropSlot::Unknown, Some(&ty), borrowed) {
+                    return Err(self.self_borrow_error(holder, loan, span));
+                }
+            }
+        }
+        if let Some((_, value)) = self.state.locals.get_mut(&root) {
+            for loan in &own {
+                value.loans.remove(loan);
+                value.through.remove(loan);
+            }
+        }
+        Ok(Some(saved))
+    }
+
+    /// A31: records whether the local `id`, which was just bound or assigned the value of
+    /// `value`, is a share of the block of a local owner (`State::block_shares`): only the direct
+    /// call `Rc.share (ref owner)` (or `Arc.share`) of a whole local counts, so that a value that
+    /// may come from somewhere else (a branch, a call) is never taken for one.
+    fn note_block_share(&mut self, id: usize, value: &TypedExpr) {
+        let (callee, argument) = match &value.kind {
+            E::Call(callee, arguments) if arguments.len() == 1 => (&**callee, &arguments[0]),
+            _ => {
+                self.state.block_shares.remove(&id);
+                return;
+            }
+        };
+        let owner = match (&argument.kind, self.builtin_called(callee)) {
+            (
+                E::Borrow(owner, false),
+                Some(crate::check::Builtin::RcShare | crate::check::Builtin::ArcShare),
+            ) => match owner.kind {
+                E::Local(owner) if self.state.locals.contains_key(&owner) => Some(owner),
+                _ => None,
+            },
+            _ => None,
+        };
+        match owner {
+            Some(owner) => {
+                self.state.block_shares.insert(id, BTreeSet::from([owner]));
+            }
+            None => {
+                self.state.block_shares.remove(&id);
+            }
+        }
+    }
+
+    /// A31: forgets that the local `id` shares the block of other owners and that others share
+    /// its block (`State::block_shares`): a write of it, or an exclusive borrow through which code
+    /// may write it (`renew (ref mut inner)` whose body does `deref r = Rc.new (...)`, `let r =
+    /// ref mut inner`), may make it the owner of another block. An assignment of the whole local
+    /// records what its new value is afterwards (`note_block_share`).
+    fn forget_block_share(&mut self, id: usize) {
+        self.state.block_shares.remove(&id);
+        self.state
+            .block_shares
+            .retain(|_, owners| !owners.contains(&id));
+    }
+
+    /// A31: whether `loan`, which the local `holder` keeps, borrows a part of the block that
+    /// `holder` owns through another owner of that block: both are `Rc` or `Arc` locals, one a
+    /// share of the other (through shares of shares, `State::block_shares`), and the loan names a
+    /// part of the block's value (`ref (Rc.get (ref inner)).s`; a place without fields may be the
+    /// owner itself). Such a borrow is one of a part of the holder itself, which the drop order
+    /// of the value's parts decides (`self_borrow_dropped_first`), whichever owner is dropped
+    /// first.
+    fn same_block_loan(&self, groups: &BTreeMap<usize, usize>, loan: usize, holder: usize) -> bool {
+        let place = &self.loans[loan].place;
+        let root = place.root;
+        if root == holder || place.fields.is_empty() || self.state.block_shares.is_empty() {
+            return false;
+        }
+        let block_owner = |id: usize| {
+            self.declarations.get(&id).is_some_and(|local| {
+                matches!(
+                    local.ty,
+                    Type::Shared(
+                        _,
+                        crate::check::SharedKind::Rc | crate::check::SharedKind::Arc
+                    )
+                )
+            })
+        };
+        if !block_owner(root) || !block_owner(holder) {
+            return false;
+        }
+        // The owners of one block form a connected group of `block_shares` (`block_groups`).
+        let group = |id: usize| groups.get(&id).copied().unwrap_or(id);
+        group(root) == group(holder)
+    }
+
+    /// A31: the group of the owners of one block (`State::block_shares`) of each local that is a
+    /// share of another, by one member of the group; a local that is no share is in the group that
+    /// it names itself. A share names one owner (`note_block_share`), so a group is a tree (or a
+    /// cycle) whose root (or cycle) every owner's chain of shares reaches: its member is that root
+    /// (the least local of the cycle). Made once for a check that asks `same_block_loan` of many
+    /// loans, so that each answer costs a lookup, not a walk of the shares.
+    fn block_groups(&self) -> BTreeMap<usize, usize> {
+        let shares = &self.state.block_shares;
+        let mut groups: BTreeMap<usize, usize> = BTreeMap::new();
+        for &start in shares.keys() {
+            if groups.contains_key(&start) {
+                continue;
+            }
+            let mut path = vec![start];
+            let mut on_path = BTreeSet::from([start]);
+            let mut current = start;
+            let member = loop {
+                let Some(next) = shares
+                    .get(&current)
+                    .and_then(|owners| owners.first())
+                    .copied()
+                else {
+                    break current;
+                };
+                if let Some(&known) = groups.get(&next) {
+                    break known;
+                }
+                if !on_path.insert(next) {
+                    let at = path.iter().position(|id| *id == next).unwrap_or(0);
+                    break path[at..].iter().copied().min().unwrap_or(next);
+                }
+                path.push(next);
+                current = next;
+            };
+            for id in path {
+                groups.insert(id, member);
+            }
+        }
+        groups
+    }
+
+    /// A31: the type of the part at `place` (a field path of a local, written directly) when that
+    /// part holds all that the local may hold: no other field or element on the way may hold a
+    /// borrow (`drop_part_holds_loans`; `Box { p: Pair, n: i64 }` for `bx.p`). An assignment of
+    /// such a part then replaces what the local holds, as one of the whole local does
+    /// (`replaced_field`). A step into an element or a payload, or a sibling that may hold a
+    /// borrow, gives `None`: the local keeps what the old part held with the new one (`join`).
+    fn replaced_part(&self, place: &Place) -> Option<Type> {
+        let (local, _) = self.state.locals.get(&place.root)?;
+        let types = self.module.types();
+        let mut current = local.ty.clone();
+        for &field in &place.fields {
+            let parts = match &current {
+                Type::Record(id, arguments) if field < types.records[*id].fields.len() => {
+                    types.record_fields(*id, arguments)
+                }
+                Type::Tuple(elements) if field < elements.len() => elements.clone(),
+                _ => return None,
+            };
+            if parts
+                .iter()
+                .enumerate()
+                .any(|(at, part)| at != field && Self::drop_part_holds_loans(part, &types))
+            {
+                return None;
+            }
+            current = parts[field].clone();
+        }
+        Some(current)
+    }
+
+    /// A31: `replaced_value` for an assignment of the part at `place` of a local, of type `ty`,
+    /// that holds all that the local holds (`replaced_part`: `bx.p = mkpo ()`). The old part is
+    /// dropped after the new one is made, with the borrows of its own parts that it keeps (a
+    /// lock's callback put a borrow of `bx.p.s` into the cell of `bx.p.h`): the drop order of the
+    /// part's parts decides whether they stay valid while it is dropped (`borrow_dropped_first`,
+    /// `Borrowed::Part`), and they do not conflict with the write. The caller puts back the value
+    /// that this returns before it replaces what the local holds with the new part's loans. A
+    /// borrow that something else holds as well still conflicts.
+    fn replaced_field(
+        &mut self,
+        place: &Place,
+        ty: &Type,
+        span: Span,
+    ) -> Result<Option<Value>, Diagnostic> {
+        let Some((holder, value)) = self.state.locals.get(&place.root) else {
+            return Ok(None);
+        };
+        let own: Vec<usize> = value
+            .loans
+            .iter()
+            .copied()
+            .filter(|loan| {
+                let borrowed = &self.loans[*loan].place;
+                borrowed.root == place.root && borrowed.fields.starts_with(&place.fields)
+            })
+            .collect();
+        if own.is_empty() {
+            return Ok(None);
+        }
+        let holder: &'a Local = holder;
+        let saved = value.clone();
+        if self.drop_reads_cached(ty) {
+            for &loan in &own {
+                if self.loans[loan].share {
+                    continue;
+                }
+                let fields = self.loans[loan].place.fields[place.fields.len()..].to_vec();
+                let proven = self.ordered_loans.contains(&loan);
+                let borrowed = Borrowed::Part {
+                    fields: &fields,
+                    proven,
+                };
+                if self.borrow_dropped_first(DropSlot::Unknown, Some(ty), borrowed) {
+                    return Err(self.self_borrow_error(holder, loan, span));
+                }
+            }
+        }
+        if let Some((_, value)) = self.state.locals.get_mut(&place.root) {
+            for loan in &own {
+                value.loans.remove(loan);
+                value.through.remove(loan);
+            }
+        }
+        Ok(Some(saved))
+    }
+
+    /// A31: `replaced_value` for a whole write of the target of a reference parameter whose
+    /// external root is `root` (`deref p = mkp 7`): the old value of the caller's is dropped after
+    /// the new one is made, with the borrows of its own parts that the body kept in it (a lock's
+    /// callback put a borrow of `p.s` into the cell of `p.h`, or a callee kept one,
+    /// `State::kept`). They must stay valid while it is dropped, which the drop order of its parts
+    /// decides (`borrow_dropped_first`, `Borrowed::Part`), and then they end: the write does not
+    /// conflict with them. A borrow that the body stored elsewhere as well (another parameter's
+    /// target, a hidden environment: `State::kept_elsewhere`), or that a local of the body holds,
+    /// still conflicts. The store facts of the body stay as they are (the caller keeps a copy of
+    /// the borrow, the conservative choice).
+    fn replaced_target(&mut self, root: usize, span: Span) -> Result<(), Diagnostic> {
+        let own: Vec<usize> = self
+            .state
+            .kept
+            .iter()
+            .copied()
+            .filter(|loan| {
+                self.loans[*loan].place.root == root && !self.state.kept_elsewhere.contains(loan)
+            })
+            .collect();
+        if own.is_empty() {
+            return Ok(());
+        }
+        let Some(holder) = self.declarations.get(&(usize::MAX - root)).copied() else {
+            return Ok(());
+        };
+        let ty = match &holder.ty {
+            Type::Reference(target, _) => (**target).clone(),
+            ty => ty.clone(),
+        };
+        // The borrows end with the old value only when every copy of them goes with it: the body
+        // copied nothing that the target's cells hold to another place
+        // (`State::contents_elsewhere`), and the places in the value that may keep them are its
+        // own (`replacement_frees_kept`). Otherwise they stay kept, and the write conflicts with
+        // them.
+        if self.state.contents_elsewhere.contains(&root) || !self.replacement_frees_kept(&ty) {
+            return Ok(());
+        }
+        if self.drop_reads_cached(&ty) {
+            for &loan in &own {
+                if self.loans[loan].share {
+                    continue;
+                }
+                let fields = self.loans[loan].place.fields.clone();
+                let proven = self.ordered_loans.contains(&loan);
+                let borrowed = Borrowed::Part {
+                    fields: &fields,
+                    proven,
+                };
+                if self.borrow_dropped_first(DropSlot::Unknown, Some(&ty), borrowed) {
+                    return Err(self.self_borrow_error(holder, loan, span));
+                }
+            }
+        }
+        for loan in &own {
+            self.state.kept.remove(loan);
+        }
+        Ok(())
+    }
+
+    /// A31: whether a whole replacement of a value of type `ty` that the body reaches through a
+    /// reference parameter (`replaced_target`) frees every place in it that may keep a borrow of
+    /// its own parts. A store into the value may reach a place that is not its own: the block of
+    /// an `Rc` or `Arc` (or what a weak pointer upgrades to), which another owner of the caller's
+    /// may share (`store_external`); the target of a reference that it holds, when a store may go
+    /// there (`may_reach_store`); a dyn value or a value of a type that the check does not know.
+    /// Its drop may copy what its cells hold where it reaches, when the `Drop.drop` of a type that
+    /// it stores has store facts, or it stores a value of a type that may be any (a dyn value, a
+    /// type variable) and some `Drop.drop` of the module has them: the hook of a local's
+    /// replacement (`drop_stores`) has no counterpart here.
+    fn replacement_frees_kept(&mut self, ty: &Type) -> bool {
+        if !self.tracks_stores() || !self.facts.drops_write || !self.runs_drop_code(ty) {
+            return true;
+        }
+        let module = self.module;
+        let types = module.types();
+        let facts: &CallFacts = self.facts;
+        let storing = |id: &usize| {
+            facts
+                .stores
+                .get(*id)
+                .is_none_or(|stores| !stores.is_empty())
+        };
+        // A dyn value, a value of a type that the check does not know, an `Owned.Function` or a
+        // tzroutine body (whose environments own what they captured) may hold any of them. The
+        // environment of a function value owns no value with a `Drop` instance (`E1005`): what its
+        // drop reaches of the value is a borrow of a part of the value kept in the value, which the
+        // drop order of the parts checks, or a block of an `Rc` or `Arc`, whose cells are no
+        // places of the value's own.
+        let unseen = ty.drops_some(&types, |part| {
+            matches!(
+                part,
+                Type::Once(_)
+                    | Type::Dyn(_)
+                    | Type::Variable(_)
+                    | Type::Infer(_)
+                    | Type::Partial(_)
+                    | Type::Application(..)
+                    | Type::Error
+            ) || part.is_owned_function(&types)
+        });
+        !module.user_drops.iter().any(|(dropped, id)| {
+            storing(id) && (unseen || ty.drops_some(&types, |part| part == dropped))
+        })
+    }
+
+    /// A31: whether a store into the place `place` of a parameter's target may reach a place that
+    /// is not the storage of that target itself (`store_external`'s `leaves`): a step of the place,
+    /// or a part of the value at it, is the block of an `Rc` or `Arc` (or a weak pointer to one),
+    /// which another owner of the caller's may share, a reference through which a store may go
+    /// (`may_reach_store`), a dyn value, or a value of a type that the check does not know. A step
+    /// that names no type (a payload, a region slot) counts as one.
+    fn place_leaves_storage(&self, place: &Place) -> bool {
+        let types = self.module.types();
+        let leaves = |part: &Type| match part {
+            Type::Shared(..)
+            | Type::Dyn(_)
+            | Type::Variable(_)
+            | Type::Infer(_)
+            | Type::Partial(_)
+            | Type::Application(..)
+            | Type::Error => true,
+            Type::Reference(target, exclusive) => *exclusive || may_reach_store(target, &types),
+            _ => false,
+        };
+        let Some(declared) = self.declarations.get(&(usize::MAX - place.root)) else {
+            return true;
+        };
+        let mut current = match &declared.ty {
+            Type::Reference(target, _) => without_views(target),
+            _ => return true,
+        };
+        for &field in &place.fields {
+            if matches!(current, Type::Shared(..) | Type::Reference(..)) || leaves(&current) {
+                return true;
+            }
+            current = match current {
+                Type::Record(id, arguments) if field < types.records[id].fields.len() => {
+                    types.record_field(id, &arguments, field)
+                }
+                Type::Tuple(elements) if field < elements.len() => elements[field].clone(),
+                Type::Array(inner)
+                | Type::ArrayView(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _)
+                    if field == ELEMENT =>
+                {
+                    *inner
+                }
+                _ => return true,
+            };
+        }
+        current.stores_some(&types, leaves)
+    }
+
+    /// A31: whether the part at `fields` of a value of type `ty`, which a borrow that the value
+    /// itself holds points at (`check_drop_order_of`), may be gone when a `Drop.drop` of the value
+    /// reads the borrow. A value's own `Drop.drop` runs before its parts are dropped, and the
+    /// fields of a record and the elements of a tuple are dropped in the order of their
+    /// declarations (`Pair { s, h }` drops `s` before `h`): a borrow of `p.s` kept in the cell of
+    /// `p.h` is read after `p.s` is gone, and one of `p.h` kept in `p.s` is read while `p.h` is
+    /// still there. So the borrowed part is gone too early when a part dropped after it on the
+    /// way (a later field at some level) or a part of the borrowed value itself may read borrows
+    /// (`drop_reads`). An element of a collection, a payload, or another step that the place does
+    /// not order counts as gone too early whenever its container may read borrows. With `proven`,
+    /// a callee showed that the parts of the borrowed place keep the order inside it
+    /// (`StoreFacts::ordered`), and only the levels above it count.
+    ///
+    /// A view (`[Pair..]`, the target of a `ref mut [Pair..]` parameter) drops nothing itself: its
+    /// elements are those of the array behind it, which that array drops, so the parts are those of
+    /// the array (`without_views`). The block of an `Rc` or `Arc` holds one value, which a field of
+    /// the place names directly (`ref (Rc.get (ref rc)).s` borrows `rc` at the field `s`): when the
+    /// block is dropped, by whichever owner is the last, the value's parts are dropped in their
+    /// order, so a step into the block keeps the order of the value inside it. A place without
+    /// fields may be the owner itself, which other owners of the block may outlive, and keeps the
+    /// rule of the whole value.
+    ///
+    /// A proven borrow (`ordered_loans`) is one that a callee kept in the value that its reference
+    /// parameter pointed at, where the argument's place may step into an element (`ref arr[0]`,
+    /// or the element that `Array.iterr` lends, `Source::element_paths`): the borrow and the part
+    /// that keeps it are in that one element, which is dropped as a whole, so the step keeps the
+    /// order inside the element (the other elements keep no borrow of it).
+    fn self_borrow_dropped_first(&mut self, ty: &Type, fields: &[usize], proven: bool) -> bool {
+        let types = self.module.types();
+        let mut current = without_views(ty);
+        for &field in fields {
+            while let Type::Shared(
+                inner,
+                crate::check::SharedKind::Rc | crate::check::SharedKind::Arc,
+            ) = &current
+            {
+                current = (**inner).clone();
+            }
+            if proven
+                && field == ELEMENT
+                && let Type::Array(inner)
+                | Type::List(inner)
+                | Type::Vec(inner)
+                | Type::FixedArray(inner, _)
+                | Type::ArrayView(inner) = &current
+            {
+                current = without_views(inner);
+                continue;
+            }
+            let parts = match &current {
+                Type::Record(id, arguments) if field < types.records[*id].fields.len() => {
+                    types.record_fields(*id, arguments)
+                }
+                Type::Tuple(elements) if field < elements.len() => elements.clone(),
+                _ => return self.parts_drop_read(&current),
+            };
+            if parts[field + 1..]
+                .iter()
+                .any(|later| self.drop_reads_cached(later))
+            {
+                return true;
+            }
+            current = parts[field].clone();
+        }
+        !proven && self.parts_drop_read(&current)
+    }
+
+    /// A31: whether dropping the parts of a value of type `ty` may run a user `Drop.drop` that
+    /// reads a borrow (`drop_reads`): the value's own `Drop.drop` runs first, while every part is
+    /// there, and reads nothing that is gone; the parts are dropped after it, one after another
+    /// (`self_borrow_dropped_first`).
+    fn parts_drop_read(&mut self, ty: &Type) -> bool {
+        let types = self.module.types();
+        let parts: Vec<Type> = match ty {
+            Type::Record(id, arguments) => types.record_fields(*id, arguments),
+            Type::Tuple(elements) => elements.clone(),
+            Type::Union(id, arguments) => types
+                .union_payloads(*id, arguments)
+                .into_iter()
+                .flatten()
+                .collect(),
+            _ => return self.drop_reads_cached(ty),
+        };
+        parts.iter().any(|part| self.drop_reads_cached(part))
+    }
+
+    /// A31: the error of `check_drop_order_of` for a local `holder` that keeps the borrow `loan`
+    /// of a part of itself, which is dropped before a part whose `Drop.drop` may read it
+    /// (`self_borrow_dropped_first`).
+    #[cold]
+    fn self_borrow_error(&self, holder: &Local, loan: usize, span: Span) -> Diagnostic {
+        let mut diagnostic = error(
+            DiagnosticKind::SelfReferentialStore,
+            format!(
+                "'{}' keeps a borrow of a part of itself, and the parts of a value are dropped in the order of their declarations: the borrowed part may be gone when a Drop.drop of a part dropped after it uses the borrow",
+                holder.name
+            ),
+            span,
+        )
+        .with_help(format!(
+            "declare the borrowed field after the fields whose drops may use it, or keep the borrowed value in its own variable declared before '{}'",
+            holder.name
+        ));
+        let borrowed = self.loans[loan].span;
+        if borrowed.end > borrowed.start {
+            diagnostic.add_related(
+                RelatedRole::BorrowedHere,
+                format!("a part of '{}' is borrowed here", holder.name),
+                borrowed,
+            );
+        }
+        if holder.span.end > holder.span.start {
+            diagnostic.add_related(
+                RelatedRole::DeclaredHere,
+                format!("'{}' is declared here", holder.name),
+                holder.span,
+            );
+        }
+        diagnostic
+    }
+
+    /// A31: a local whose drop may run a user `Drop.drop` uses what it holds where its scope ends
+    /// (`check_drop_order`), so its loans stay live until then (`dropped_later`), as the loans of
+    /// a local that the rest of the block reads do. A share of the block of a local owner
+    /// (`Loan::share`) that such a local holds, and that the rest of the body does not use, stands
+    /// for what the block holds rather than a borrow of the owner: the owner may move, as it may
+    /// while the share is dead. It holds what the owner holds now, and the block's later contents
+    /// (`expand_shares` to an `ExportTarget::Local`).
+    ///
+    /// The share was also the way from the local to the owners of its block: a store into the
+    /// local (through `Rc.get (ref r)` of `let r = Rc.share (ref r2)`, or of an `Rc` that a field or
+    /// an element holds) followed it to `r2` (`apply_store_within`), whose drop may be the one
+    /// that frees the block. The expanded value leads nowhere, so a store into a value whose type
+    /// reaches the type of a block that the local's type and such an owner's type both reach (the
+    /// shared block, the blocks that it may hold, and the blocks of the owner's other parts; every
+    /// block type of the local's type when the owner's type reaches a dyn value or a type that the
+    /// check does not know) goes to that owner too (`export_shared_block`, `store_exported`); when
+    /// the local's own type reaches one, so does a store into a value whose type reaches one or a
+    /// block with a cell (`HIDDEN_BLOCK`). The test is by type: a store into another value that
+    /// may hold a block of such a type (another `Rc<PairOk>`, a record with a `Maybe<Rc<PairOk>>`
+    /// field) goes there as well.
+    fn keep_for_drop(&mut self, keep: &mut BTreeSet<usize>) {
+        for id in self.dropped_later() {
+            if keep.insert(id)
+                && let Some((_, value)) = self.state.locals.get(&id)
+                && value.loans.iter().any(|loan| self.loans[*loan].share)
+            {
+                let value = value.clone();
+                let sources = self.share_sources(&value);
+                let expanded = self.expand_shares(&value, ExportTarget::Local(id));
+                if let Some((_, owner)) = self.state.locals.get_mut(&id) {
+                    owner.loans = expanded.loans;
+                    owner.through = expanded.through;
+                    owner.regions = None;
+                }
+                for source in sources {
+                    if source != id {
+                        self.export_shared_block(id, source);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A31: the local owners of the blocks whose shares (`Loan::share`) `value` holds, through
+    /// shares of shares, as `expand_shares` walks them.
+    fn share_sources(&self, value: &Value) -> Vec<usize> {
+        let mut pending: Vec<usize> = value.loans.iter().copied().collect();
+        let mut seen = BTreeSet::new();
+        let mut sources = Vec::new();
+        while let Some(loan) = pending.pop() {
+            if !seen.insert(loan) || !self.loans[loan].share {
+                continue;
+            }
+            let source = self.loans[loan].place.root;
+            if is_static_root(source) || self.external.contains(&source) {
+                continue;
+            }
+            if let Some((_, owner)) = self.state.locals.get(&source) {
+                pending.extend(owner.loans.iter().copied());
+                if !sources.contains(&source) {
+                    sources.push(source);
+                }
+            }
+        }
+        sources
+    }
+
+    /// A31: the locals that are not moved away whole on every path and whose drops may run a
+    /// user `Drop.drop` (`drop_reads`).
+    fn dropped_later(&mut self) -> Vec<usize> {
+        if self.module.user_drops.is_empty() {
+            return Vec::new();
+        }
+        let moved = self.moved_always();
+        let candidates: Vec<usize> = self
+            .state
+            .locals
+            .iter()
+            .filter(|(id, (_, value))| !value.loans.is_empty() && !moved.contains(*id))
+            .map(|(id, _)| *id)
+            .collect();
+        candidates
+            .into_iter()
+            .filter(|id| self.local_drop_reads(*id))
+            .collect()
+    }
+
+    /// `drop_reads` of the type of the local `id`, cached by local.
+    fn local_drop_reads(&mut self, id: usize) -> bool {
+        if let Some(known) = self.drop_read_locals.get(&id) {
+            return *known;
+        }
+        let reads = match self.state.locals.get(&id) {
+            Some((local, _)) => {
+                let ty = local.ty.clone();
+                self.drop_reads_cached(&ty)
+            }
+            None => false,
+        };
+        self.drop_read_locals.insert(id, reads);
+        reads
+    }
+
+    /// A31: the locals moved away whole on every path (`State::moved_always`), which are not
+    /// dropped where their scopes end. A local that some path did not move is dropped there.
+    fn moved_always(&self) -> BTreeSet<usize> {
+        self.state
+            .moved_always
+            .iter()
+            .copied()
+            .filter(|id| {
+                let whole = Place {
+                    root: *id,
+                    fields: Vec::new(),
+                    through_drop: false,
+                };
+                self.state
+                    .moved
+                    .range(whole..)
+                    .next()
+                    .is_some_and(|(place, _)| place.root == *id && place.fields.is_empty())
+            })
+            .collect()
+    }
+
+    /// `drop_reads`, cached by type.
+    fn drop_reads_cached(&mut self, ty: &Type) -> bool {
+        if let Some(known) = self.drop_read_types.get(ty) {
+            return *known;
+        }
+        let reads = self.drop_reads(ty);
+        self.drop_read_types.insert(ty.clone(), reads);
+        reads
+    }
+
+    /// A31: the loans that the local `holder`, whose value is `value`, may read where it is
+    /// dropped: those of `value`, with each share of the block of a local owner (`Loan::share`) in
+    /// place of what the owner holds, through shares of shares (`expand_shares`, without recording
+    /// where the block went), and, for each borrow of another local, what that local holds now.
+    /// A `Drop.drop` reads through a borrow that its value holds (`Caller { f: read_cell (ref m)
+    /// }` reads the cell of `m`), and a lock's callback or a callee may have put a borrow of a
+    /// local declared after the holder into the borrowed local after the borrow was taken, which
+    /// the drop order must then cover as if the holder held it itself.
+    fn expand_shares_read(&self, value: &Value, holder: usize) -> BTreeSet<usize> {
+        let mut held = BTreeSet::new();
+        let mut pending: Vec<usize> = value.loans.iter().copied().collect();
+        let mut seen = BTreeSet::new();
+        let mut read = BTreeSet::new();
+        while let Some(loan) = pending.pop() {
+            if !seen.insert(loan) {
+                continue;
+            }
+            let root = self.loans[loan].place.root;
+            let local = !is_static_root(root) && !self.external.contains(&root);
+            if self.loans[loan].share
+                && local
+                && let Some((_, owner)) = self.state.locals.get(&root)
+            {
+                pending.extend(owner.loans.iter().copied());
+                continue;
+            }
+            held.insert(loan);
+            if local
+                && root != holder
+                && read.insert(root)
+                && let Some((_, owner)) = self.state.locals.get(&root)
+            {
+                pending.extend(owner.loans.iter().copied());
+            }
+        }
+        held
+    }
+
+    /// A31: whether dropping a value of type `ty` may run a user `Drop.drop` that reads a borrow
+    /// that the value holds: the type stores (not through a reference or a weak pointer,
+    /// `Type::drops_some`) a type with a user `Drop` instance that may itself hold a borrow
+    /// (`drop_part_holds_loans`), or a function value whose environment may hold such a value
+    /// (`drop_environments`), or a dyn value, an `Owned.Function` or a tzroutine body when some
+    /// environment may hold one. A `Drop.drop` gets only its own value, so the drop of a part that
+    /// cannot hold a borrow (`Guard { id: i64 }` beside a `label: ref string`) reads none of the
+    /// borrows of the parts beside it, as Rust's drop check does not ask a field without a
+    /// reference to outlive anything.
+    fn drop_reads(&self, ty: &Type) -> bool {
+        let types = self.module.types();
+        let environments = &self.facts.drop_environments;
+        let any = environments.others || !environments.functions.is_empty();
+        ty.drops_some(&types, |part| {
+            (part.has_user_drop(&types) && Self::drop_part_holds_loans(part, &types))
+                || match part {
+                    Type::Function(..) => {
+                        environments.others
+                            || owned_suffix(part, usize::MAX, &environments.functions)
+                    }
+                    Type::Dyn(_) | Type::Once(_) => any,
+                    _ => any && part.is_owned_function(&types),
+                }
+        })
+    }
+
+    /// A31: whether a value of the user `Drop` type `ty` may hold a borrow that its `Drop.drop`
+    /// reads: a reference, a function value, a dyn value, a tzroutine body or an `Owned.Function`
+    /// (whose environments may own cells that hold borrows), or a type that the check does not
+    /// know yet, stored anywhere in it: in fields, payloads, elements, cells and the blocks of
+    /// strong and weak pointers (a `Drop.drop` may upgrade a weak pointer and read the block).
+    fn drop_part_holds_loans(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+        ty.stores_some(types, |part| {
+            matches!(
+                part,
+                Type::Reference(..)
+                    | Type::Function(..)
+                    | Type::Dyn(_)
+                    | Type::Once(_)
+                    | Type::Variable(_)
+                    | Type::Infer(_)
+                    | Type::Partial(_)
+                    | Type::Application(..)
+                    | Type::Error
+            ) || part.is_owned_function(types)
+        })
     }
 
     fn eval_call(
@@ -4444,6 +13554,9 @@ impl<'a> Checker<'a, '_> {
         let value = if locked.is_some() || sent.is_some() || owned_function {
             Value::default()
         } else {
+            // A31: a callee read from a place is called where it is, not copied: the call drops
+            // nothing of it (the place's own drop is accounted where the place is bound).
+            self.bound_next = Self::is_place(callee);
             self.eval(callee, Use::Consume, &during)?
         };
         let (known, region_sources, callback) = self.call_contract(callee, arguments)?;
@@ -4473,7 +13586,12 @@ impl<'a> Checker<'a, '_> {
         self.held.push(value);
         for (index, argument) in arguments.iter().enumerate() {
             let mark = self.events.as_ref().map_or(0, |events| events.len());
-            let value = self.eval(argument, Use::Consume, &during)?;
+            // A31: an argument that the callee may drop, and the temporaries of the argument,
+            // are reported at the call.
+            let site = self.drop_site.replace(expression.span);
+            let value = self.eval(argument, Use::Consume, &during);
+            self.drop_site = site;
+            let value = value?;
             self.event_targets(mark, argument.span, callee);
             // The callback runs under the lock, so a result that holds a borrow of the locked value
             // would use it after the lock is released: the value may be replaced and freed, or be
@@ -4562,18 +13680,40 @@ impl<'a> Checker<'a, '_> {
                     } else {
                         self.read_through(&value.loans)
                     };
-                    current.loans.extend(loans);
+                    current.hold(loans);
                 }
                 // A28: the callee's body never puts this argument in its result. The argument
                 // stays lent until the call returns (it is on `held`).
                 None if retention.is_some_and(|boundary| index < boundary)
                     && known.is_some_and(|id| self.facts.temporary(id, index)) => {}
-                None => current.loans.extend(&value.loans),
+                // A31: without the read-through, the result of `Rc.share` and its kin holds the
+                // borrow of the owner in place of what the block holds (`Loan::share`).
+                None if index == 0 && self.reads_through(callee) => {
+                    let shares = self.share_loans(&value.loans);
+                    current.hold(shares);
+                }
+                None => current.absorb(&value),
             }
             self.held.push(value);
             if boundary == Some(index + 1) {
                 let id = known.unwrap();
                 self.store_arguments(id, arguments, start, expression.span)?;
+                // A31: what the callee's body stores where its arguments reach, before a closed
+                // result drops the arguments' loans.
+                if self.tracks_stores()
+                    && self
+                        .facts
+                        .stores
+                        .get(id)
+                        .is_some_and(|facts| !facts.is_empty())
+                {
+                    let mut held: Vec<Arg<'_>> = Vec::with_capacity(index + 1);
+                    for (at, argument) in arguments[..=index].iter().enumerate() {
+                        let value = self.held[start + 1 + at].clone();
+                        held.push(self.argument(argument, value, &during));
+                    }
+                    self.apply_facts(id, &held, expression.span, 0);
+                }
                 if self.facts.closed[id]
                     || !callee
                         .ty
@@ -4585,6 +13725,17 @@ impl<'a> Checker<'a, '_> {
                 self.held.truncate(start);
                 self.held.push(current.clone());
             }
+        }
+        if self.tracks_stores() {
+            self.call_stores(
+                callee,
+                arguments,
+                known,
+                boundary,
+                start,
+                expression.span,
+                &during,
+            );
         }
         if expression.ty.carries_loans(&self.module.types()) {
             // An item that a receiver takes out of a channel was checked when it went in: it holds
@@ -4608,7 +13759,7 @@ impl<'a> Checker<'a, '_> {
                     BTreeSet::new(),
                     expression.span,
                 );
-                result.loans.insert(loan);
+                result.hold([loan]);
                 for slot in result.regions.iter_mut().flat_map(|slots| slots.iter_mut()) {
                     slot.insert(loan);
                 }
@@ -4645,8 +13796,9 @@ impl<'a> Checker<'a, '_> {
         };
         // The functions of a `let rec` group are in scope in the body like captured function values.
         let locals: Vec<_> = captures.iter().chain(recursive).chain(parameters).collect();
-        // The captures hold what they held here, which misses what an untracked store put there
-        // when this body lends a way to write (`lending_bodies`).
+        let captured = locals.len() - parameters.len();
+        // A lambda of a body that reads nothing through reads nothing through either
+        // (`lending_bodies`).
         let lends_mutable = self.body_lends_mutable().then_some(true);
         self.copy_variables.extend(check_body(
             self.module,
@@ -4658,6 +13810,7 @@ impl<'a> Checker<'a, '_> {
             false,
             Contract {
                 lends_mutable,
+                captures: captured,
                 ..Contract::default()
             },
             self.recovered,
@@ -4715,7 +13868,7 @@ impl<'a> Checker<'a, '_> {
                     expression.span,
                 ));
             }
-            result.loans.extend(value.loans);
+            result.absorb(&value);
         }
         Ok(())
     }
@@ -4822,6 +13975,8 @@ impl<'a> Checker<'a, '_> {
                 self.held.pop();
             }
             E::Borrow(value, mutable) => {
+                // A31: whether the places of this borrow are the parts that it borrows.
+                let exact = self.exact_place(value);
                 let places = if *mutable {
                     self.shared_exclusive(value, expression.span)?;
                     self.exclusive_places(value, &during)?
@@ -4840,20 +13995,60 @@ impl<'a> Checker<'a, '_> {
                         expression.span,
                     )?;
                     self.borrow_event(&place, via.is_empty(), *mutable, expression.span);
-                    result
-                        .loans
-                        .insert(self.loan(place, *mutable, via, expression.span));
+                    // The place of an exact borrow is of the borrowed value's type, as far as
+                    // `place_type` reads it.
+                    let typed = self
+                        .place_type(&place)
+                        .is_none_or(|ty| ty == without_views(&value.ty));
+                    let loan = self.loan(place, *mutable, via, expression.span);
+                    if exact && typed {
+                        self.exact_loans.insert(loan);
+                    }
+                    result.loans.insert(loan);
+                }
+                let key = std::ptr::from_ref(expression) as usize;
+                if exact {
+                    self.borrow_loans
+                        .entry(key)
+                        .or_default()
+                        .extend(result.loans.iter().copied());
+                } else {
+                    self.inexact_borrows.insert(key);
                 }
             }
             E::Assign(place, value) => {
                 self.shared_exclusive(place, expression.span)?;
+                let assigned = &**value;
                 let value = self.eval(value, Use::Consume, &during)?;
                 self.held.push(value.clone());
                 for (place, via) in self.exclusive_places(place, &during)? {
                     if !unmarked_fields(&place).is_empty() {
                         self.access(&place, &via, Use::Borrow, expression.span)?;
                     }
-                    self.access(&place, &via, Use::Write, expression.span)?;
+                    // A31: an assignment of a whole local drops the old value, with the borrows
+                    // of its own parts that it keeps (`replaced_value`).
+                    let part = if via.is_empty() && !place.fields.is_empty() {
+                        self.replaced_part(&place)
+                    } else {
+                        None
+                    };
+                    let saved = if via.is_empty() && place.fields.is_empty() {
+                        self.replaced_value(place.root, expression.span)?
+                    } else if let Some(part) = &part {
+                        self.replaced_field(&place, part, expression.span)?
+                    } else {
+                        if place.fields.is_empty() && self.external.contains(&place.root) {
+                            self.replaced_target(place.root, expression.span)?;
+                        }
+                        None
+                    };
+                    let written = self.access(&place, &via, Use::Write, expression.span);
+                    if let Some(saved) = saved
+                        && let Some((_, stored)) = self.state.locals.get_mut(&place.root)
+                    {
+                        *stored = saved;
+                    }
+                    written?;
                     if value.loans.iter().any(|id| {
                         let source = &self.loans[*id].place;
                         source.overlaps(&place)
@@ -4867,17 +14062,51 @@ impl<'a> Checker<'a, '_> {
                         ));
                     }
                     self.state.moved.retain(|moved, _| !moved.overlaps(&place));
+                    self.state.moved_always.remove(&place.root);
                     self.state
                         .generic_moves
                         .retain(|moved, _| !moved.overlaps(&place));
                     if via.is_empty() {
-                        let stored = &mut self.state.locals.get_mut(&place.root).unwrap().1;
-                        if place.fields.is_empty() {
-                            *stored = value.clone();
+                        let (local, stored) = self.state.locals.get_mut(&place.root).unwrap();
+                        let ty = local.ty.clone();
+                        let whole = place.fields.is_empty();
+                        let old = if whole {
+                            Some(std::mem::replace(stored, value.clone()))
+                        } else if part.is_some() {
+                            // The replaced part holds all that the local holds.
+                            let mut new = value.clone();
+                            new.regions = None;
+                            new.closed_result = [false; 2];
+                            Some(std::mem::replace(stored, new))
                         } else {
                             join(stored, value.clone());
                             stored.regions = None;
                             stored.closed_result = [false; 2];
+                            None
+                        };
+                        // A31: the old value is dropped, and a value that may run code when it
+                        // is dropped now holds what was stored (A28's `dropped`), which its drop
+                        // may store where it reaches.
+                        match old {
+                            Some(old) => {
+                                let replaced = self.replaced_root.replace(place.root);
+                                self.drop_stores(&old, &ty, expression.span, None, None);
+                                self.replaced_root = replaced;
+                            }
+                            None => {
+                                let owner = self.state.locals[&place.root].1.clone();
+                                self.drop_stores(&owner, &ty, expression.span, None, None);
+                            }
+                        }
+                        if whole {
+                            self.note_block_share(place.root, assigned);
+                        }
+                        self.drop_keeps_self(place.root, &ty, expression.span);
+                        if self.dropped.is_some() && !value.loans.is_empty() && self.drop_runs(&ty) {
+                            self.dropped
+                                .as_mut()
+                                .expect("checked above")
+                                .extend(&value.loans);
                         }
                     } else if !value.loans.is_empty() {
                         self.store_through(&place, &value, expression.span)?;
@@ -4890,14 +14119,17 @@ impl<'a> Checker<'a, '_> {
                 then_branch,
                 else_branch,
             } => {
+                let tail_bound = self.tail_bound;
                 self.eval(condition, Use::Consume, &during)?;
                 let before = self.state.clone();
                 let before_reachable = self.reachable;
+                self.bound_next = tail_bound;
                 let then_value = self.eval(then_branch, usage, live)?;
                 let then_state = self.state.clone();
                 let then_reachable = self.reachable;
                 self.state = before;
                 self.reachable = before_reachable;
+                self.bound_next = tail_bound;
                 let else_value = self.eval(else_branch, usage, live)?;
                 result.closed_result = std::array::from_fn(|index| {
                     then_value.closed_result[index] && else_value.closed_result[index]
@@ -4922,6 +14154,12 @@ impl<'a> Checker<'a, '_> {
                     self.callback_returns_closed(expression, index + 1)
                 });
                 for capture in captures {
+                    // A31: whether the capture is an immutable local that points at its loans'
+                    // places here, where the lambda is made (`bound_value`).
+                    let pointing = match &capture.kind {
+                        E::Local(id) => Some(self.pointing_local(*id)),
+                        _ => None,
+                    };
                     let value = self.eval(capture, Use::Consume, &during)?;
                     if matches!(expression.ty, Type::Once(_)) && !value.loans.is_empty() {
                         return Err(error(DiagnosticKind::TaskCaptureRetainsBorrow,
@@ -4929,7 +14167,10 @@ impl<'a> Checker<'a, '_> {
                             expression.span,
                         ));
                     }
-                    result.loans.extend(value.loans);
+                    if let Some(pointing) = pointing {
+                        self.note_capture(capture, pointing, &value);
+                    }
+                    result.absorb(&value);
                 }
             }
             E::RoutineGo(value) => {
@@ -4980,8 +14221,49 @@ impl<'a> Checker<'a, '_> {
             E::StructuralCompare(_, arguments)
             | E::StructuralHash(arguments)
             | E::StructuralDisplay(arguments) => {
+                let mut values = Vec::with_capacity(arguments.len());
                 for argument in arguments {
-                    self.eval(argument, Use::Consume, &during)?;
+                    values.push(self.eval(argument, Use::Consume, &during)?);
+                }
+                // A31: they run the methods of the dyn values that they reach, and the method of
+                // each element type (`Eq.eq`, `Hash.hash` or `Display.display`: the function
+                // values after the operands), with references to the elements of the operands.
+                let types = self.module.types();
+                if self.tracks_stores() {
+                    let operands: Vec<Arg<'_>> = arguments
+                        .iter()
+                        .zip(values)
+                        .map(|(argument, value)| Arg::of(Some(argument), value))
+                        .collect();
+                    if arguments
+                        .iter()
+                        .any(|argument| types.reaches(&argument.ty, |ty| matches!(ty, Type::Dyn(_))))
+                    {
+                        self.apply_opaque(None, &operands, expression.span, false, None);
+                    }
+                    let compared = operands
+                        .iter()
+                        .take_while(|operand| {
+                            !matches!(
+                                operand.expression.map(|e| &e.ty),
+                                Some(Type::Function(..))
+                            )
+                        })
+                        .count();
+                    for method in &operands[compared..] {
+                        let Some(Type::Function(parameters, _)) =
+                            method.expression.map(|e| &e.ty)
+                        else {
+                            continue;
+                        };
+                        // Each parameter may be an element of any operand.
+                        let mut element = Value::default();
+                        for operand in &operands[..compared] {
+                            element.absorb(&operand.value);
+                        }
+                        let elements = vec![Arg::of(None, element); parameters.len()];
+                        self.apply_higher(method, &elements, expression.span, 0);
+                    }
                 }
             }
             E::Parallel(operation, arguments) => {
@@ -5044,6 +14326,30 @@ impl<'a> Checker<'a, '_> {
                     }
                     self.held.push(value);
                 }
+                // A31: the callback runs with what the other arguments reach (the chunks of an
+                // exclusive slice, the elements of the input).
+                if self.tracks_stores() && callback < arguments.len() {
+                    let mut others = Value::default();
+                    for (index, value) in self.held[base..].iter().enumerate() {
+                        if index != callback {
+                            others.absorb(value);
+                        }
+                    }
+                    let function = &arguments[callback];
+                    let arity = match &function.kind {
+                        E::Closure(id, captures) => self.module.functions[*id]
+                            .parameters
+                            .len()
+                            .saturating_sub(captures.len()),
+                        _ => match &function.ty {
+                            Type::Function(parameters, _) => parameters.len(),
+                            _ => 1,
+                        },
+                    };
+                    let callee = Arg::of(Some(function), self.held[base + callback].clone());
+                    let sources = vec![Arg::of(None, others); arity];
+                    self.apply_higher(&callee, &sources, expression.span, 0);
+                }
                 self.held.truncate(base);
             }
             E::Binary(operator, left, right) => {
@@ -5082,14 +14388,23 @@ impl<'a> Checker<'a, '_> {
                 let completed = (*operator == BinaryOp::Pipe)
                     .then(|| self.piped_callee(expression, right))
                     .flatten();
+                let mut piped = None;
                 let callee = if owned_function {
                     Value::default()
                 } else if let Some(id) = completed {
-                    self.eval_piped_arguments(id, right, &during)?
+                    let (callee, values) = self.eval_piped_arguments(id, right, &during)?;
+                    piped = Some(values);
+                    callee
                 } else {
+                    // A31: a function value read from a place is called where it is.
+                    self.bound_next = Self::is_place(right);
                     self.eval(right, usage, &during)?
                 };
                 self.held.pop();
+                if *operator == BinaryOp::Pipe && !owned_function && self.tracks_stores() {
+                    self.drop_stores(&value, &left.ty, expression.span, Some(left), Some(left));
+                    self.pipe_stores(left, right, &value, &callee, piped, expression.span, &during);
+                }
                 if *operator == BinaryOp::Pipe && expression.ty.carries_loans(&self.module.types())
                 {
                     result = value;
@@ -5100,25 +14415,30 @@ impl<'a> Checker<'a, '_> {
                             && self.builtin_called(inner) == Some(crate::check::Builtin::OwnedCall));
                     if let Some(id) = completed {
                         let piped = piped_application(right).1.len();
-                        // A closed result is used here only where every store is tracked: before
-                        // A28 a pipeline kept its loans, and in a program with an untracked store
-                        // (A31) `closed_returns` can miss what a callee stored, so the pipeline
-                        // keeps them there as before (the direct call keeps main's rule).
-                        if self.facts.closed[id] && !self.facts.lending.untracked {
-                            result.loans.clear();
+                        // A closed result holds no loan, as at a direct call: `joint_facts` revokes
+                        // the closed result of a function whose check returns a loan that a store
+                        // into a local cell put there (A31).
+                        if self.facts.closed[id] {
+                            result.clear_loans();
                         } else if self.facts.temporary(id, piped) {
                             result.loans = callee.loans;
+                            result.through = callee.through;
                         } else {
-                            result.loans.extend(callee.loans);
+                            result.absorb(&callee);
                         }
                     } else if self.reads_through(right) && self.may_read_through() {
                         // `ref shared |> Arc.share` is `Arc.share (ref shared)`.
                         if !matches!(left.kind, E::BorrowOperand(_)) {
                             result.loans = self.read_through(&result.loans);
+                            result.through.clear();
                         }
-                        result.loans.extend(callee.loans);
+                        result.absorb(&callee);
+                    } else if self.reads_through(right) {
+                        result.loans = self.share_loans(&result.loans);
+                        result.through.clear();
+                        result.absorb(&callee);
                     } else if !owned_call {
-                        result.loans.extend(callee.loans);
+                        result.absorb(&callee);
                     }
                     result.regions = None;
                 }
@@ -5142,9 +14462,21 @@ impl<'a> Checker<'a, '_> {
                 for element in elements {
                     let value = self.eval(element, Use::Consume, &during)?;
                     if !matches!(expression.kind, E::HostCall(..)) {
-                        result.loans.extend(&value.loans);
+                        result.absorb(&value);
                     }
                     self.held.push(value);
+                }
+                // A31: a host function that takes callbacks may run them with its arguments.
+                if let E::HostCall(import, _) = &expression.kind
+                    && import.callbacks
+                    && self.tracks_stores()
+                {
+                    let arguments: Vec<Arg<'_>> = elements
+                        .iter()
+                        .zip(&self.held[start..])
+                        .map(|(element, value)| Arg::of(Some(element), value.clone()))
+                        .collect();
+                    self.apply_opaque(None, &arguments, expression.span, false, None);
                 }
                 self.held.truncate(start);
             }
@@ -5155,11 +14487,32 @@ impl<'a> Checker<'a, '_> {
                     let value = self.eval(&hole.operand, Use::Consume, &during)?;
                     self.held.push(value);
                 }
+                // A31: a hole's method is a call of the instance (or of a dyn value's method).
+                if self.tracks_stores() {
+                    for (hole, value) in interpolation.holes.iter().zip(start..) {
+                        if let Some(method) = &hole.method {
+                            let operand =
+                                self.argument(&hole.operand, self.held[value].clone(), &during);
+                            let method = Arg::of(Some(method), Value::default());
+                            self.apply_higher(&method, &[operand], expression.span, 0);
+                        }
+                    }
+                }
                 self.held.truncate(start);
             }
             E::NewArray(length, initializer) | E::NewList(length, initializer) => {
                 self.eval(length, Use::Consume, &during)?;
                 let value = self.eval(initializer, Use::Consume, &during)?;
+                // A31: the initializer runs with each index.
+                if self.tracks_stores() {
+                    let function = Arg::of(Some(initializer), value.clone());
+                    self.apply_higher(
+                        &function,
+                        &[Arg::of(None, Value::default())],
+                        expression.span,
+                        0,
+                    );
+                }
                 if expression.ty.carries_loans(&self.module.types()) {
                     result = value;
                 }
@@ -5250,6 +14603,20 @@ impl<'a> Checker<'a, '_> {
     }
 
     fn merge(&mut self, other: &State<'a>) {
+        // A31: a local is moved on every path only when both paths moved it.
+        self.state
+            .moved_always
+            .retain(|id| other.moved_always.contains(id));
+        self.state.kept.extend(other.kept.iter().copied());
+        self.state
+            .kept_elsewhere
+            .extend(other.kept_elsewhere.iter().copied());
+        self.state
+            .contents_elsewhere
+            .extend(other.contents_elsewhere.iter().copied());
+        self.state
+            .block_shares
+            .retain(|id, owners| other.block_shares.get(id) == Some(owners));
         // The latest move of a place is kept, so the result does not depend on the order of the
         // merged branches.
         for (place, span) in &other.moved {
@@ -5266,7 +14633,7 @@ impl<'a> Checker<'a, '_> {
         self.state.generic_moves.extend(other.generic_moves.clone());
         for (id, (_, value)) in &mut self.state.locals {
             if let Some((_, other_value)) = other.locals.get(id) {
-                value.loans.extend(&other_value.loans);
+                value.absorb(other_value);
                 if value.regions != other_value.regions {
                     value.regions = None;
                 }
@@ -6292,30 +15659,16 @@ mod event_tests {
 mod retention_tests {
     use super::*;
 
-    /// The facts of the local guards alone, without the program-wide one
-    /// (`untracked_loan_store`), so that a test of a local guard may use `Array.write`.
-    fn local_facts(module: &CheckedModule, infer: bool) -> CallFacts {
-        let closed = closed_returns(module);
-        let mut lending = lending_bodies(module, infer);
-        assert!(lending.untracked, "the program makes an untracked store");
-        lending.untracked = false;
-        let retained = parameter_retention(module, &closed, &lending, infer);
-        CallFacts {
-            closed,
-            retained,
-            lending,
-        }
-    }
-
-    /// A28, eighth review: a program in which some function stores a value that may hold loans
-    /// with a builtin that does not track the store (`Array.write` of a function here, in a
-    /// function that no other one calls, in a partial application, or in the instance of
-    /// `Array.set` that a pipeline calls) has no facts at all and reads nothing through; the same
-    /// program with the store of an `i64` keeps them.
+    /// A31, step 4: a program in which some function stores a value that may hold loans with a
+    /// seed (`Array.write` of a function here, in a function that no other one calls, in a partial
+    /// application, or in the instance of `Array.set` that a pipeline calls) keeps the facts of the
+    /// functions that store nothing, as the same program with the store of an `i64` does. A28's
+    /// eighth review dropped every fact of such a program (`untracked_loan_store`), until A31
+    /// tracked the stores of the seeds.
     #[test]
-    fn an_untracked_store_anywhere_leaves_no_facts() {
+    fn a_tracked_store_anywhere_keeps_the_facts() {
         let functions = "def a28_pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn a28_pass _key f = f\n";
-        for (store, untracked) in [
+        for (store, seeded) in [
             (
                 "def a28_store :: own (unit -> i64) -> i64\nfn a28_store g =\n    let mut arr = [\\() -> 0]\n    Array.write 0 g (ref mut arr)\n    arr[0] ()\n",
                 true,
@@ -6344,24 +15697,17 @@ mod retention_tests {
                 .unwrap();
             for infer in [false, true] {
                 let facts = call_facts(&module, infer);
-                assert_eq!(facts.lending.untracked, untracked, "{source} {infer}");
-                if untracked {
-                    assert!(
-                        facts.retained.iter().all(Option::is_none),
-                        "{source} {infer}"
-                    );
-                    assert!(
-                        (0..module.functions.len())
-                            .all(|id| facts.contract(&module, id).lends_mutable == Some(true)),
-                        "{source} {infer}"
-                    );
-                } else {
-                    assert_eq!(
-                        facts.retained[pass].as_deref(),
-                        Some(&[false, true][..]),
-                        "{source} {infer}"
-                    );
-                }
+                assert_eq!(facts.seeded, seeded && !infer, "{source} {infer}");
+                assert_eq!(
+                    facts.retained[pass].as_deref(),
+                    Some(&[false, true][..]),
+                    "{source} {infer}"
+                );
+                assert_eq!(
+                    facts.contract(&module, pass).lends_mutable,
+                    Some(false),
+                    "{source} {infer}"
+                );
             }
         }
     }
@@ -6405,11 +15751,13 @@ mod retention_tests {
         }
     }
 
-    /// A28 review: a body that lends an exclusive borrow to a call has no facts, in the checks of
-    /// the instances and in the inference: the check does not see what `Array.write` stores (A31).
-    /// A body that only reads its array keeps them.
+    /// A28 review: a body that lends an exclusive borrow to `Array.write` keeps `text`, which the
+    /// write stores in its array, in its result. A28 gave such a body no facts; since A31 the
+    /// checks of the instances apply the store facts and keep the facts, and the inference, which
+    /// applies none, keeps A28's rule for a body that may store. A body that only reads its array
+    /// keeps its facts in both.
     #[test]
-    fn a_body_that_lends_an_exclusive_borrow_has_no_facts() {
+    fn a_body_that_lends_an_exclusive_borrow_keeps_what_the_write_stores() {
         let module = crate::analyze(
             "def a28_stash :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_stash text g =\n    let mut arr = [g]\n    Array.write 0 (\\() -> String.length text) (ref mut arr)\n    arr[0]\n\
              def a28_piped :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_piped text g =\n    let mut arr = [g]\n    ref mut arr |> Array.set 0 (\\() -> String.length text)\n    arr[0]\n\
@@ -6420,7 +15768,7 @@ mod retention_tests {
         )
         .unwrap();
         for infer in [false, true] {
-            let facts = local_facts(&module, infer);
+            let facts = call_facts(&module, infer);
             let retained = |name: &str| {
                 let id = module
                     .functions
@@ -6432,14 +15780,28 @@ mod retention_tests {
             assert_eq!(retained("a28_stash"), Some(vec![true, true]), "{infer}");
             assert_eq!(retained("a28_piped"), Some(vec![true, true]), "{infer}");
             assert_eq!(retained("a28_read"), Some(vec![false, true]), "{infer}");
+            let lending = |name: &str| {
+                let id = module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == name)
+                    .unwrap_or_else(|| panic!("{name}"));
+                facts.lending.facts[id]
+            };
+            assert_eq!(lending("a28_stash"), infer, "{infer}");
+            assert_eq!(lending("a28_piped"), infer, "{infer}");
+            assert!(!lending("a28_read"), "{infer}");
         }
     }
 
-    /// A28 review (5th round): a body that passes its `Mutex` to a lock builtin lends a way to
-    /// write, whatever the callback's form, since the callback stores what the check does not see
-    /// (A31). An `Atomic<i64>` holds no borrow, so a body that only counts with one keeps its facts.
+    /// A28 review (5th round): a body that passes its `Mutex` to a lock builtin keeps what the
+    /// callback stores there in its result, whatever the callback's form. The lock runs a function
+    /// value, code whose body the analysis does not see (`opaque_calls`, which A31 keeps), so the
+    /// body has no facts and reads nothing through in both modules (A31's store facts put what the
+    /// callback stores in `m` as well). An `Atomic<i64>` holds no borrow, so a body that only counts
+    /// with one keeps its facts and its read-through.
     #[test]
-    fn a_body_that_lends_a_mutable_cell_has_no_facts() {
+    fn a_body_that_lends_a_mutable_cell_keeps_what_the_callback_stores() {
         let module = crate::analyze(
             "def a28_put :: ref string -> ref mut [(unit -> i64)] -> unit\nfn a28_put text slot = Array.write 0 (\\() -> String.length text) slot\n\
              def a28_locked :: ref string -> own (unit -> i64) -> (unit -> i64)\nfn a28_locked text g =\n    let m = Mutex.create [g]\n    Mutex.with_lock (ref m) (a28_put text)\n    let arr = Mutex.into_inner m\n    arr[0]\n\
@@ -6450,7 +15812,7 @@ mod retention_tests {
         )
         .unwrap();
         for infer in [false, true] {
-            let facts = local_facts(&module, infer);
+            let facts = call_facts(&module, infer);
             let retained = |name: &str| {
                 let id = module
                     .functions
@@ -6461,6 +15823,17 @@ mod retention_tests {
             };
             assert_eq!(retained("a28_locked"), Some(vec![true, true]), "{infer}");
             assert_eq!(retained("a28_counted"), Some(vec![false, true]), "{infer}");
+            let id = |name: &str| {
+                module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == name)
+                    .unwrap_or_else(|| panic!("{name}"))
+            };
+            assert!(facts.lending.facts[id("a28_locked")], "{infer}");
+            assert!(facts.lending.reads[id("a28_locked")], "{infer}");
+            assert!(!facts.lending.facts[id("a28_counted")], "{infer}");
+            assert!(!facts.lending.reads[id("a28_counted")], "{infer}");
         }
     }
 
@@ -6645,6 +16018,688 @@ mod retention_tests {
         assert!(
             partial,
             "some budget settles `a28_pass` but not the recursive pair"
+        );
+    }
+
+    /// A31, review round 2: the functions that the sink flags read are checked first
+    /// (`flag_sites`); when the checks run out before the others are checked, those others store
+    /// anything, as an unsettled function does, and every budget gives facts that are either the
+    /// fixed point's or `top`.
+    #[test]
+    fn an_exhausted_budget_before_the_other_bodies_leaves_them_storing_anything() {
+        let module = crate::analyze(
+            "def a31_put :: own (unit -> i64) -> ref mut [(unit -> i64)..] -> unit\nfn a31_put f target = Array.write 0 f target\n\
+             def a31_writer :: ref Mutex<[unit -> i64]> -> ((unit -> i64) -> unit)\nfn a31_writer m = \\g -> Mutex.with_lock m (\\slot -> Array.write 0 g slot)\n\
+             let m = Mutex.create [\\() -> 0]\nlet w = a31_writer (ref m)\nw (\\() -> 1)\n\
+             let mut a = [\\() -> 1]\na31_put (\\() -> 2) (ref mut a)\na[0] () + Mutex.with_lock (ref m) (\\slot -> slot[0] ())",
+        )
+        .unwrap();
+        let closed = closed_returns(&module);
+        let lending = lending_bodies(&module, false);
+        let put = module
+            .functions
+            .iter()
+            .position(|function| function.name == "a31_put")
+            .expect("a31_put");
+        let full = joint_facts(&module, &closed, &lending, false, None);
+        assert_eq!(
+            full.stores[put],
+            StoreFacts {
+                stores: BTreeSet::from([(0, Part::Value, 1)]),
+                ..StoreFacts::default()
+            }
+        );
+        let mut topped = false;
+        for budget in 0..24 {
+            let facts = joint_facts(&module, &closed, &lending, false, Some(budget));
+            for (function, stores) in facts.stores.iter().enumerate() {
+                assert!(
+                    stores.top || *stores == full.stores[function],
+                    "{budget} {function}: {stores:?}"
+                );
+            }
+            topped |= facts.stores[put].top;
+        }
+        assert!(topped, "some budget runs out before `a31_put` is checked");
+    }
+
+    /// A31: the store facts of the bodies. `Array.write`'s generated function stores its value
+    /// into its view; `put` and the instance of `Array.set` inherit that; `copy_first` stores what
+    /// it reads through `source` (`Part::Contents`); `rotate` writes back its own contents (no
+    /// fact); `apply` calls its function-valued parameter with its array (a higher-order fact); a
+    /// body that only reads stores nothing. The abstract bodies of the inference have no facts.
+    /// A31, review round 1: the flags that widen what a call of a function value that the check
+    /// does not see may store come from the function values that the module makes.
+    #[test]
+    fn the_sink_flags_follow_the_function_values_of_the_module() {
+        let flags = |source: &str| {
+            let module = crate::analyze(source).unwrap_or_else(|error| {
+                panic!("{source}\n{}: {}", error.code, error.message);
+            });
+            let facts = call_facts(&module, false);
+            (
+                facts.sinks,
+                facts.owned_sinks,
+                facts.reference_sinks,
+                facts.owned_types.len(),
+            )
+        };
+        // A lambda that stores its argument where a reference that it captured reaches.
+        assert_eq!(
+            flags(
+                "let m = Mutex.create [\\() -> 0]\nlet mr = ref m\n\
+                 let w = \\g -> Mutex.with_lock mr (\\slot -> Array.write 0 g slot)\n\
+                 w (\\() -> 1)\nMutex.with_lock (ref m) (\\slot -> slot[0] ())"
+            ),
+            (true, false, false, 0)
+        );
+        // A partial application of a builtin that runs a callback with the lock that it binds.
+        assert_eq!(
+            flags(
+                "let m = Mutex.create [\\() -> 0]\nlet lock = Mutex.with_lock (ref m)\n\
+                 lock (\\slot -> Array.write 0 (\\() -> 1) slot)\nMutex.with_lock (ref m) (\\slot -> slot[0] ())"
+            ),
+            (true, false, false, 0)
+        );
+        // A lambda that owns the cell that it writes: its type is the one that a call must not
+        // lose sight of.
+        assert_eq!(
+            flags(
+                "def a31_mk :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\n\
+                 fn a31_mk a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\n\
+                 let w = a31_mk (Arc.new (Mutex.create [\\() -> 0]))\nw (\\() -> 1)\n0"
+            ),
+            // The lambda. The callback that it gives the lock holds `g`, whose type no owner
+            // has and which can hold no owner, so it is no holder of one.
+            (true, true, false, 1)
+        );
+        // A lambda that holds such an owner reaches its cell: its type joins them.
+        assert_eq!(
+            flags(
+                "def a31_mk :: own Arc<Mutex<[unit -> i64]>> -> ((unit -> i64) -> unit)\n\
+                 fn a31_mk a = \\g -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> Array.write 0 g slot)\n\
+                 let w = a31_mk (Arc.new (Mutex.create [\\() -> 0]))\nlet h = \\() -> w (\\() -> 1)\nh ()\n0"
+            ),
+            (true, true, false, 2)
+        );
+        // A lambda that only reads the cell that it owns stores nothing.
+        assert_eq!(
+            flags(
+                "def a31_reader :: own Arc<Mutex<[unit -> i64]>> -> (unit -> i64)\n\
+                 fn a31_reader a = \\() -> Mutex.with_lock (Arc.get (ref a)) (\\slot -> slot[0] ())\n\
+                 let mut arr = [\\() -> 1]\nArray.set 0 (\\() -> 2) (ref mut arr)\n\
+                 let r = a31_reader (Arc.new (Mutex.create [\\() -> 0]))\nr () + arr[0] ()"
+            ),
+            (false, false, false, 0)
+        );
+        // A function that keeps the reference that it gets, in a function that it stores.
+        assert_eq!(
+            flags(
+                "def a31_keep :: ref string -> ref mut [(unit -> i64)..] -> unit\n\
+                 fn a31_keep s slot = Array.write 0 (\\() -> String.length s) slot\n\
+                 let text = \"abc\"\nlet mut arr = [\\() -> 1]\na31_keep (ref text) (ref mut arr)\narr[0] ()"
+            ),
+            (false, false, true, 0)
+        );
+    }
+
+    #[test]
+    fn store_facts_follow_what_the_bodies_store() {
+        let module = crate::analyze(
+            "def a31_put :: own (unit -> i64) -> ref mut [(unit -> i64)..] -> unit\nfn a31_put f target = Array.write 0 f target\n\
+             def a31_copy_first :: ref [(unit -> i64)] -> ref mut [(unit -> i64)..] -> unit\nfn a31_copy_first source target = Array.write 0 source[0] target\n\
+             def a31_rotate :: ref mut [(unit -> i64)..] -> unit\nfn a31_rotate arr =\n    let second = arr[1]\n    Array.write 0 second arr\n\
+             def a31_apply :: own (ref mut [(unit -> i64)..] -> i64) -> ref mut [(unit -> i64)..] -> i64\nfn a31_apply g arr = g arr\n\
+             def a31_read :: ref [(unit -> i64)] -> i64\nfn a31_read arr = arr[0] ()\n\
+             let mut a = [\\() -> 1, \\() -> 2]\n\
+             let b = [\\() -> 3]\n\
+             a31_put (\\() -> 4) (ref mut a)\n\
+             a31_copy_first (ref b) (ref mut a)\n\
+             a31_rotate (ref mut a)\n\
+             Array.set 1 (\\() -> 5) (ref mut a)\n\
+             a31_apply (\\x -> x[0] ()) (ref mut a) + a31_read (ref b)",
+        )
+        .unwrap();
+        let id = |name: &str| {
+            module
+                .functions
+                .iter()
+                .position(|function| function.name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        let facts = call_facts(&module, false);
+        let stores = |name: &str| facts.stores[id(name)].clone();
+        let only = |entries: &[(usize, Part, usize)]| StoreFacts {
+            stores: entries.iter().copied().collect(),
+            ..StoreFacts::default()
+        };
+        assert_eq!(stores("a31_put"), only(&[(0, Part::Value, 1)]));
+        assert_eq!(stores("a31_copy_first"), only(&[(0, Part::Contents, 1)]));
+        assert_eq!(stores("a31_rotate"), StoreFacts::default());
+        assert_eq!(stores("a31_read"), StoreFacts::default());
+        assert_eq!(
+            stores("a31_apply"),
+            StoreFacts {
+                calls: BTreeSet::from([HigherOrderCall {
+                    callee: 0,
+                    path: Vec::new(),
+                    // `arr` is a reference itself, to an array of function values: a store
+                    // may reach through it (`target`), and it holds no function value of a type
+                    // that owns the cell that it writes (no such function value here). Its type
+                    // is the parameter's, as the body sees it (`Source::ty`).
+                    arguments: vec![Source {
+                        parameters: BTreeSet::from([(1, Part::Value)]),
+                        lent: true,
+                        hides: false,
+                        target: true,
+                        ty: Some(module.functions[id("a31_apply")].parameters[1].ty.clone()),
+                        ..Source::default()
+                    }],
+                }]),
+                ..StoreFacts::default()
+            }
+        );
+        // No function value of this program stores into what its environment reaches.
+        assert!(facts.seeded);
+        assert_eq!(
+            (facts.sinks, facts.owned_sinks, facts.reference_sinks),
+            (false, false, false)
+        );
+        // The instance of `Array.set` that the program calls, and `Array.write`'s generated
+        // function, store their value into their view.
+        let set: Vec<usize> = module
+            .functions
+            .iter()
+            .enumerate()
+            .filter(|(_, function)| {
+                function.module.ends_with("Array")
+                    && function.name.starts_with("set")
+                    && function.parameters.len() == 3
+                    && matches!(&function.parameters[1].ty, Type::Function(..))
+            })
+            .map(|(id, _)| id)
+            .collect();
+        assert!(
+            !set.is_empty(),
+            "the instance of Array.set: {:?}",
+            module
+                .functions
+                .iter()
+                .filter(|function| function.name.contains("set"))
+                .map(|function| function.qualified_name())
+                .collect::<Vec<_>>()
+        );
+        for set in set {
+            assert_eq!(facts.stores[set], only(&[(1, Part::Value, 2)]));
+        }
+        let write = module
+            .functions
+            .iter()
+            .position(|function| {
+                function.module == "$builtin"
+                    && matches!(&function.body.kind, E::Call(callee, _)
+                        if matches!(&callee.kind, E::Function(crate::check::FunctionRef::Builtin(instance))
+                            if instance.builtin == crate::check::Builtin::ArrayWrite)
+                        && matches!(&function.parameters[1].ty, Type::Function(..)))
+            })
+            .expect("the generated function of Array.write");
+        assert_eq!(facts.stores[write], only(&[(1, Part::Value, 2)]));
+        let abstract_facts = call_facts(&module, true);
+        assert!(abstract_facts.stores.iter().all(StoreFacts::is_empty));
+    }
+
+    /// A31, review round 4 (findings 2, 5 and 6): the provenance scan looks at each expression
+    /// once, so a chain of calls that pass their argument on costs one look per call, not twice
+    /// as many at each level; the facts settle through the callers, so a chain of functions
+    /// declared before their callees costs one scan of each body, not one pass over all of them
+    /// per function of the chain; and a mutable parameter, which the body may assign, counts as
+    /// fresh.
+    #[test]
+    fn the_owner_provenance_looks_at_each_expression_once_and_follows_the_callers() {
+        let registry = "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\n";
+        let index = |module: &CheckedModule, name: &str| {
+            module
+                .functions
+                .iter()
+                .position(|function| function.name == name)
+                .unwrap()
+        };
+        let depth = 24;
+        let mut nested = "reg".to_owned();
+        for _ in 0..depth {
+            nested = format!("pass ({nested})");
+        }
+        let source = format!(
+            "{registry}def pass :: ((unit -> i64) -> i64) -> ((unit -> i64) -> i64)\nfn pass h = h\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let h = {nested}\n    h (\\() -> n)\nrun 5"
+        );
+        let module = crate::analyze(&source).unwrap();
+        let facts = owner_facts(&module);
+        assert!(facts[index(&module, "make_registry")].fresh);
+        assert_eq!(
+            facts[index(&module, "pass")],
+            Own {
+                values: BTreeSet::from([0]),
+                ..Own::default()
+            }
+        );
+        let run = &module.functions[index(&module, "run")];
+        let parameters = run
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| (parameter.id, index));
+        let mut scan = OwnerScan::new(&module, &facts, parameters);
+        scan.own(&run.body);
+        assert!(scan.visits <= 3 * depth + 16, "{} looks", scan.visits);
+        let h = scan
+            .env
+            .iter()
+            .find(|(_, (own, _))| own.fresh)
+            .map(|(id, _)| *id);
+        assert!(h.is_some(), "the copies of the registry are fresh");
+
+        let chain = 120;
+        let mut source = registry.to_owned();
+        for at in 1..chain {
+            source.push_str(&format!(
+                "def f{at} :: unit -> ((unit -> i64) -> i64)\nfn f{at} u = f{} u\n",
+                at + 1
+            ));
+        }
+        source.push_str(&format!(
+            "def f{chain} :: unit -> ((unit -> i64) -> i64)\nfn f{chain} u = make_registry u\nlet h = f1 ()\nh (\\() -> 1)"
+        ));
+        let module = crate::analyze(&source).unwrap();
+        let (facts, scans) = owner_facts_counted(&module);
+        assert!(facts[index(&module, "f1")].fresh);
+        assert!(
+            scans <= 3 * module.functions.len(),
+            "{scans} scans of {} functions",
+            module.functions.len()
+        );
+
+        for (source, name) in [
+            (
+                "def renew :: ((unit -> i64) -> i64) -> ((unit -> i64) -> i64)\nfn renew mut a = { a = make_registry (); a }\nrenew (\\_f -> 1) (\\() -> 1)",
+                "renew",
+            ),
+            (
+                "def pick :: ((unit -> i64) -> i64) -> ((unit -> i64) -> i64) -> ((unit -> i64) -> i64)\nfn pick mut a b = { a = b; a }\npick (\\_f -> 1) (make_registry ()) (\\() -> 1)",
+                "pick",
+            ),
+        ] {
+            let module = crate::analyze(&format!("{registry}{source}")).unwrap();
+            assert!(owner_facts(&module)[index(&module, name)].fresh, "{source}");
+        }
+    }
+
+    /// A31, after review round 9: a function that keeps a shared borrow of a part of what its
+    /// `ref mut` parameter points at in that same value records the entry in `shared_some` (and,
+    /// in the safe order of the parts, in `ordered`), and the module's `self_borrow_types` holds
+    /// the parameter's target type with whether every such entry is ordered; a function that
+    /// stores nothing of the kind adds nothing.
+    #[test]
+    fn shared_self_borrows_through_exclusive_references_are_facts_of_the_module() {
+        let holder = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}\n";
+        let target = "def target :: ref mut Pair -> i64\nfn target p = { let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> String.length t) b); 0 }\ndef plain :: ref mut Pair -> i64\nfn plain p = String.length (ref p.s)\n";
+        // No call: the facts are those of the bodies, whichever order the program checks.
+        let run = "0";
+        for (pair, ordered) in [
+            ("record Pair { s: string, h: Holder }\n", false),
+            ("record Pair { h: Holder, s: string }\n", true),
+        ] {
+            let source = format!("{holder}{pair}{target}{run}");
+            let module = crate::analyze(&source)
+                .unwrap_or_else(|error| panic!("{source}\n{}", error.message));
+            let facts = call_facts(&module, false);
+            let id = |name: &str| {
+                module
+                    .functions
+                    .iter()
+                    .position(|function| function.name == name)
+                    .unwrap_or_else(|| panic!("{name}"))
+            };
+            let stores = &facts.stores[id("target")];
+            let entry = (0, Part::Value, 0);
+            assert!(stores.shared_some.contains(&entry), "{stores:?}");
+            assert_eq!(stores.ordered.contains(&entry), ordered, "{stores:?}");
+            assert_eq!(facts.stores[id("plain")].shared_some, BTreeSet::new());
+            let Type::Reference(pair_type, true) = &module.functions[id("target")].parameters[0].ty
+            else {
+                panic!("target takes a ref mut Pair");
+            };
+            assert_eq!(
+                facts.self_borrow_types,
+                BTreeMap::from([((**pair_type).clone(), ordered)])
+            );
+            assert!(!facts.self_borrow_any);
+        }
+    }
+
+    /// A31, review round 7 (finding 9): the parameter that a local bound by nested OR patterns is
+    /// part of is found with one look at each local, not one for each way through the
+    /// alternatives (their number to the power of the depth), and the answer is the one that the
+    /// walk without the memo gives.
+    #[test]
+    fn the_parameter_path_looks_at_each_local_once() {
+        let cases = 12;
+        let levels = 3;
+        let alternatives = |var: &str| -> String {
+            (0..cases)
+                .map(|i| format!("C{i} {var}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        let names = ["p", "v0", "v1", "v2"];
+        let mut body =
+            "(match v2 with | Leaf use -> use (\\() -> 1) + use (\\() -> 2) | _ -> 0)".to_owned();
+        for level in (0..levels).rev() {
+            body = format!(
+                "(match {} with | {} -> {body} | Leaf _ -> 0)",
+                names[level],
+                alternatives(names[level + 1])
+            );
+        }
+        // A function that writes in place, so that the module has store facts at all.
+        let mut source = "def keep :: own (unit -> i64) -> ref mut [(unit -> i64)..] -> unit\nfn keep f slot = Array.write 0 f slot\nunion U =\n".to_owned();
+        for i in 0..cases {
+            source.push_str(&format!("    | C{i} of U\n"));
+        }
+        source.push_str(&format!(
+            "    | Leaf of ((unit -> i64) -> i64)\ndef go :: own U -> i64\nfn go p =\n    {body}\nlet mut arr = [\\() -> 0]\nkeep (\\() -> 1) (ref mut arr)\ngo (C0 (C1 (C2 (Leaf (\\f -> f ()))))) + arr[0] ()"
+        ));
+        let module = crate::analyze(&source).unwrap();
+        let facts = call_facts(&module, false);
+        let id = module
+            .functions
+            .iter()
+            .position(|function| function.name == "go")
+            .unwrap();
+        let function = &module.functions[id];
+        let mut recovered = Vec::new();
+        let checker = start_checker(
+            &module,
+            function.parameters.iter(),
+            &function.body,
+            false,
+            &facts,
+            function.is_once,
+            false,
+            facts.contract(&module, id),
+            &mut recovered,
+            None,
+            None,
+        );
+        let local = checker
+            .declarations
+            .values()
+            .find(|local| local.name == "use")
+            .copied()
+            .expect("the pattern local");
+        let expression = TypedExpr {
+            kind: E::Local(local.id),
+            ty: local.ty.clone(),
+            span: local.span,
+        };
+        assert_eq!(
+            checker.parameter_path(&expression, 0),
+            Some((0, vec![PAYLOAD; levels + 1]))
+        );
+        let steps = checker.parameter_path_steps.get();
+        assert!(
+            steps <= 4 * (cases + 1) * (levels + 2),
+            "{steps} steps for {cases} cases and {levels} levels"
+        );
+        // Asked again, and from a depth that leaves the walk no room, the kept answers agree with
+        // the limit.
+        assert_eq!(
+            checker.parameter_path(&expression, 0),
+            Some((0, vec![PAYLOAD; levels + 1]))
+        );
+        assert_eq!(
+            checker.parameter_path(&expression, STORE_SUBSTITUTION_DEPTH),
+            None
+        );
+    }
+
+    /// A31, review round 5 (finding 2): the answers of the provenance scan of a check are kept by
+    /// the address of the expression, and the check also asks about expressions that it makes for
+    /// a moment (`Checker::capture_loans`): the next one may take the address of the last. The
+    /// scan keeps only the answers for the expressions of its body (`OwnerScan::lasting_in`), so
+    /// the second question about one place in memory, now holding the registry, is not answered
+    /// with what the first found for a capture-less lambda.
+    #[test]
+    fn the_owner_provenance_forgets_the_expressions_made_for_a_moment() {
+        let source = "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { Array.write 0 f slot; 1 })\ndef run :: i64 -> i64\nfn run n =\n    let reg = make_registry ()\n    let plain = \\(f: unit -> i64) -> f () + n\n    plain (\\() -> 1) + reg (\\() -> 2)\nrun 5";
+        let module = crate::analyze(source).unwrap();
+        let facts = owner_facts(&module);
+        let run = module
+            .functions
+            .iter()
+            .find(|function| function.name == "run")
+            .unwrap();
+        let mut locals = BTreeMap::new();
+        let mut pending = vec![&run.body];
+        while let Some(expression) = pending.pop() {
+            if let E::Block { bindings, .. } = &expression.kind {
+                for (local, _) in bindings {
+                    locals.insert(local.name.clone(), local.clone());
+                }
+            }
+            pending.extend(expression.children());
+        }
+        let (plain, reg) = (&locals["plain"], &locals["reg"]);
+        let parameters = run
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| (parameter.id, index));
+        let mut scan = OwnerScan::new(&module, &facts, parameters).lasting_in(&run.body);
+        scan.walk(&run.body);
+        let mut moment = TypedExpr {
+            kind: E::Local(plain.id),
+            ty: plain.ty.clone(),
+            span: run.body.span,
+        };
+        assert!(scan.query(&moment).is_none(), "a capture-less lambda");
+        moment.kind = E::Local(reg.id);
+        moment.ty = reg.ty.clone();
+        assert!(
+            scan.query(&moment).fresh,
+            "the registry at the same address"
+        );
+        // The expressions of the body keep their answers; the others are forgotten.
+        let body = std::ptr::from_ref(&run.body) as usize;
+        assert!(!scan.memo.contains_key(&body));
+        scan.query(&run.body);
+        assert!(scan.memo.contains_key(&body));
+        assert!(scan.scratch.is_empty());
+    }
+
+    /// A31, review round 5 (finding 1): the types of the owners and of the sinks are closed under
+    /// the holders (`HolderReach`) by looking at a holder again only when a type that its held
+    /// function values give after some arguments joins the set. A chain of closures that each
+    /// capture the one before at a longer curried type (`\(u: i64) -> h`) joined one type per pass
+    /// over all the holders, with a copy and a comparison of every suffix of every held type in
+    /// each pass. The closure agrees with those passes (`owned_suffix`) on holders of curried and
+    /// flattened types, tuples, arrays, references, dyn values and `Owned.Function`s.
+    #[test]
+    fn closing_the_types_under_the_holders_follows_the_types_that_join() {
+        let depth = 100;
+        let mut source = "def make_registry :: unit -> ((unit -> i64) -> i64)\nfn make_registry _u =\n    let cell = Arc.new (Mutex.create [\\() -> 0])\n    \\f -> Mutex.with_lock (Arc.get (ref cell)) (\\slot -> { let old = slot[0]; Array.write 0 f slot; old () })\ndef run :: i64 -> i64\nfn run n =\n    let h0 = make_registry ()\n".to_owned();
+        for at in 1..=depth {
+            source.push_str(&format!("    let h{at} = \\(u{at}: i64) -> h{}\n", at - 1));
+        }
+        source.push_str("    h0 (\\() -> n)\nrun 5");
+        let module = crate::analyze(&source).unwrap();
+        let facts = call_facts(&module, false);
+        assert!(facts.owned_sinks);
+        let run = module
+            .functions
+            .iter()
+            .find(|function| function.name == "run")
+            .unwrap();
+        let mut closures = 0;
+        let mut pending = vec![&run.body];
+        while let Some(expression) = pending.pop() {
+            // The closures of the chain, not the thunk `\() -> n` that `h0` gets.
+            if let (E::Closure(..), Type::Function(parameters, _)) =
+                (&expression.kind, &expression.ty)
+                && parameters.types.first() != Some(&Type::Unit)
+            {
+                closures += 1;
+                assert!(
+                    facts.owned_types.contains(&sink_type(&expression.ty)),
+                    "{:?}",
+                    expression.ty
+                );
+            }
+            pending.extend(expression.children());
+        }
+        assert_eq!(closures, depth);
+
+        let types = module.types();
+        let int = Type::Integer(64, true);
+        let function = |parameters: Vec<Type>, result: Type| {
+            Type::Function(
+                Box::new(crate::check::FunctionParameters {
+                    types: parameters,
+                    conventions: Box::default(),
+                    pure: false,
+                }),
+                Box::new(result),
+            )
+        };
+        let thunk = function(vec![Type::Unit], int.clone());
+        // A chain of holders, listed from the last: each holds the one before.
+        let mut chain = vec![function(vec![thunk.clone()], int.clone())];
+        for _ in 0..depth {
+            let last = chain.last().unwrap().clone();
+            chain.push(function(vec![int.clone()], last));
+        }
+        let holders: Vec<(Type, Vec<Type>)> = (1..chain.len())
+            .rev()
+            .map(|at| (sink_type(&chain[at]), vec![chain[at - 1].clone()]))
+            .collect();
+        let reach = HolderReach::new(&holders, &types);
+        // The held types are suffixes of one another: one path of the trie, a node for each
+        // parameter, rather than a copy of every suffix of every held type.
+        assert_eq!(reach.trie.nodes.len(), chain.len());
+        let entries: usize = reach.watchers.values().map(Vec::len).sum();
+        let mut set = BTreeSet::from([sink_type(&chain[0])]);
+        let looks = reach.close(&holders, &mut set);
+        assert_eq!(set.len(), chain.len());
+        assert!(
+            looks <= entries + reach.owned.len() + reach.dynamic.len(),
+            "{looks} looks at {entries} entries"
+        );
+
+        // The passes of the closure before, as the reference.
+        let passes = |holders: &[(Type, Vec<Type>)], set: &mut BTreeSet<Type>| loop {
+            let dynamic = set.iter().any(|ty| matches!(ty, Type::Dyn(_)));
+            let mut grew = false;
+            for (ty, held) in holders {
+                if set.contains(ty) {
+                    continue;
+                }
+                let reaches = held.iter().any(|value| {
+                    types.reaches(value, |part| match part {
+                        Type::Function(..) => owned_suffix(part, usize::MAX, set),
+                        Type::Dyn(_) => dynamic,
+                        _ => part.is_owned_function(&types),
+                    })
+                });
+                if reaches {
+                    set.insert(ty.clone());
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        };
+        let owned_function = types
+            .records
+            .iter()
+            .position(|record| record.name == "Owned.Function")
+            .map(|id| Type::Record(id, Box::new([Type::Unit, int.clone()])));
+        let dynamic = Type::Dyn(Box::new(crate::check::DynType {
+            classes: Box::new([Box::from("Show")]),
+            copy: false,
+            send: false,
+            borrowed: false,
+        }));
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % bound as u64).unwrap()
+        };
+        let atoms = [int.clone(), Type::Unit, Type::Bool, Type::String];
+        let mut functions: Vec<Type> = Vec::new();
+        for _ in 0..40 {
+            let count = 1 + next(3);
+            let parameters = (0..count)
+                .map(|_| match next(4) {
+                    0 if !functions.is_empty() => functions[next(functions.len())].clone(),
+                    1 => Type::Reference(Box::new(atoms[next(atoms.len())].clone()), false),
+                    _ => atoms[next(atoms.len())].clone(),
+                })
+                .collect();
+            let result = match next(4) {
+                0 if !functions.is_empty() => functions[next(functions.len())].clone(),
+                1 => dynamic.clone(),
+                _ => atoms[next(atoms.len())].clone(),
+            };
+            functions.push(function(parameters, result));
+        }
+        let (mut grew, mut stayed) = (0, 0);
+        for round in 0..200 {
+            let held = |next: &mut dyn FnMut(usize) -> usize| {
+                let one = functions[next(functions.len())].clone();
+                match next(7) {
+                    0 => Type::Tuple(vec![int.clone(), one]),
+                    1 => Type::Array(Box::new(one)),
+                    2 => Type::Reference(Box::new(one), false),
+                    3 => dynamic.clone(),
+                    4 => owned_function.clone().unwrap_or(one),
+                    _ => one,
+                }
+            };
+            let holders: Vec<(Type, Vec<Type>)> = (0..1 + next(12))
+                .map(|_| {
+                    let ty = sink_type(&functions[next(functions.len())]);
+                    let held = (0..1 + next(2)).map(|_| held(&mut next)).collect();
+                    (ty, held)
+                })
+                .collect();
+            let mut start = BTreeSet::new();
+            for _ in 0..next(3) {
+                let chosen = sink_type(&functions[next(functions.len())]);
+                // A suffix of a chosen type, or a result.
+                let chosen = match (&chosen, next(3)) {
+                    (Type::Function(parameters, result), 0) if parameters.types.len() > 1 => {
+                        function(parameters.types[1..].to_vec(), (**result).clone())
+                    }
+                    (Type::Function(_, result), 1) => (**result).clone(),
+                    _ => chosen,
+                };
+                start.insert(chosen);
+            }
+            let reach = HolderReach::new(&holders, &types);
+            let known = start.len();
+            let (mut closed, mut expected) = (start.clone(), start);
+            reach.close(&holders, &mut closed);
+            passes(&holders, &mut expected);
+            assert_eq!(closed, expected, "round {round}: {holders:?}");
+            grew += usize::from(expected.len() > known);
+            stayed += usize::from(holders.iter().any(|(ty, _)| !expected.contains(ty)));
+        }
+        // Both outcomes occur often enough for the comparison to mean something.
+        assert!(
+            grew >= 20 && stayed >= 20,
+            "{grew} grew, {stayed} left holders out"
         );
     }
 }

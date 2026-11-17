@@ -229,4 +229,15 @@ fn identity_own value = value
 export def contextual_own_type_name :: i64 = (identity_own (own { n: 42 })).n
 
 type OwnAlias = own
+
+// A31, after review 9: a vector of lambdas that capture a value, in a module with a `Drop`
+// instance (`DropFields`): `callback_constructed_once` above still lends its temporaries to
+// `Array.map`, whose callback gets an element of an `[i64]`, which keeps no borrow.
+export def capturing_readers :: i64 -> i64 = \n ->
+    let text = "hello"
+    let mut readers = Vec.empty()
+    Vec.push (\(text: string) -> text.length * 10000 + n) readers
+    let first = readers[0]
+    first text
+
 (contextual_own_type_name)

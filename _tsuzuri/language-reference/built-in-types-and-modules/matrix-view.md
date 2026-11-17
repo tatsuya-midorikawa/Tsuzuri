@@ -176,6 +176,8 @@ deref (Matrix.at 1 2 (ref changed))
 | 局所の行列を借りた窓を関数から返す | `E1013`（`does not live long enough`） |
 | 窓が生きている間に、持ち主の行列を move・置換・`Matrix.to_array` する | `E1014` |
 | 書き込める窓が生きている間に、元の配列を読む、2 つ目の窓を作る、`row_mut` の行を残して窓に書く | `E1014` |
+| 借用を持つ値（借用を捕捉した関数など）を窓へ書いた後、元の配列が生きている間に借用元を move する | `E1014` |
+| 借用を持つ値を窓へ書いた元の配列を、借用元より長く使う | `E1013` |
 | 書き込める窓を move した後で使う | `E1012` |
 | `tzroutine { }` の本体で窓を使う | `E1013`（`values that move to another tzroutine or thread must be owned`） |
 | フィールド参照、パターン分解、`{ view with ... }`、リテラルでの構築 | `E1022` |
@@ -200,6 +202,18 @@ MatrixView.rows view
 ```
 
 最後の `MatrixView.rows view` が借用を生かしているので、`let moved = m` が `E1014` です。`view` を使い終えた後なら、`m` を動かせます。
+
+書き込める窓へ書いた値の借用は、`data[i] = v` の代入と同じく、窓が借りている配列の持ち主が持ちます（`MatrixView.write`・`fill`・`copy_from`・`map_in_place` と、窓の行へ書く `Array.write`）。窓を使い終えた後も、配列が生きている間は借用元を動かせません。
+
+```text
+let text = to_string 123456789
+let borrowed = ref text
+let mut data = [\() -> 1, \() -> 2]
+let mut grid = MatrixView.of_array_mut 1 2 (ref mut data)
+MatrixView.write 0 0 (\() -> String.length borrowed) (ref mut grid)
+let moved = text          // E1014: data[0] が text を借用している
+data[0] () * 100 + moved.length
+```
 
 引数は左から右に評価します。前提条件の検査は、確保や callback より前に済ませます。
 

@@ -634,6 +634,9 @@ const suites = {
       ["read_list_mapi", [], 15n],
       ["read_iters", [], 4n],
       ["callback_constructed_once", [], 109n],
+      // A31, after review 9: "hello".length * 10000 + n.
+      ["capturing_readers", [0n], 50000n],
+      ["capturing_readers", [7n], 50007n],
       ["mutable_record", [], 10n],
       ["mutable_elements", [0n], 14n],
       ["mutable_elements", [1n], 13n],
@@ -1927,6 +1930,187 @@ const suites = {
       // parallel_dynamic takes the path that copies the callback for each job.
       assert.match(ir, /getelementptr inbounds %tz\.closure, ptr %[\w.]+, i64 %chunk/);
     },
+  },
+  // A31: the safe programs of the baseline stay accepted with these values (computed by hand from the programs).
+  in_place_writes: {
+    cases: [
+      // [a] becomes [b].
+      ["set_reference", [], 2n],
+      // [a, b]: fill index 0 with c, then set index 1 to c, so 3 + 3.
+      ["fill_and_pipe_references", [], 6n],
+      ["pick_second", [], 7n],
+      // a[0] becomes 9, then base = 5; refs[0] becomes q = 2.
+      ["generic_put", [], 5n + 2n],
+      ["region_put", [], 4n],
+      ["reference_put", [], 2n],
+      // "cde".
+      ["region_store", [], 3n],
+      ["function_put", [], 4n],
+      // [1, 2] becomes [2, 2].
+      ["rotate_once", [], 2n],
+      ["rotate_twice_then_move", [], 2n + 2n],
+      ["last_to_first", [], 2n],
+      // [1, 2] becomes [2, 3].
+      ["bump_in_place", [], 2n + 3n],
+      // data[0] becomes base = 4, cells[0] becomes b = 2.
+      ["region_matrix_put", [], 4n + 2n],
+      ["plain_matrix_put", [], 4n],
+      ["region_matrix_fill", [], 4n + 2n],
+      // [1, 2]: write (0, 1) gives [1, 20], fill [1000, 1000], copy [7, 8], map [8, 9], write (0, 0) [1000, 9].
+      ["matrix_writers", [], 1000n + 9n],
+      // put 1, then Array.set 5.
+      ["partial_writers", [], 5n],
+      ["partial_set", [], 5n],
+      ["partial_put", [], 1n],
+      ["partial_matrix", [], 2n],
+      // "abc".
+      ["set_text_reference", [], 3n],
+      // [a, b, a] becomes [c, b, a].
+      ["pipe_set_reference", [], 3n * 100n + 2n * 10n + 1n + 2n],
+      // [a, b, b] becomes [c, b, b].
+      ["fill_reference", [], 3n * 100n + 2n * 10n + 2n],
+      // dst [b] becomes [a], then src [a] becomes [b].
+      ["blit_then_write_source", [], 1n * 10n + 2n],
+      // "123456789" has 9 characters: n = 3 + 9, then 3 + n + 9.
+      ["lock_read_then_move", [], 3n + (3n + 9n) + 9n],
+      ["partial_read_then_move", [], 3n + (3n + 9n) + 9n],
+      ["function_value_read_then_move", [], 3n + (3n + 9n) + 9n],
+      // make returns the array's own first function.
+      ["closed_cell_read", [], 7n],
+      // "123" has 3 characters; arr[0] becomes \() -> 7.
+      ["read_parameter_writes_owned", [], 3n + 3n + 7n],
+      // k = 9 is copied into the written function; the moved text still has 9 characters.
+      ["read_parameter_reads_capture", [], 9n + 9n],
+      // Review round 1. "12345" has 5 characters: buf[0] = 5, moved 5, fs[0] () = 1.
+      ["local_lambda_adds_lengths", [], 5n + 5n + 1n],
+      // k = 5 + 1; twice_length gives 5 * 2 + 2; the first call of the swapper returns the old 0.
+      ["handlers_then_move", [], 6n + 12n + 0n],
+      // The first call returns the old 0, the second the length 9 of the first argument.
+      ["owned_cell_keeps_a_long_lived_borrow", [], 0n + 9n],
+      // The stored function reads c2.name, 9 characters; e is true.
+      ["equality_keeps_an_operand", [], 9n],
+      // The cell holds the state after the first element, 9 + 1; last is 9 + 2.
+      ["fold_state_comes_back", [], (9n + 1n) * 100n + (9n + 2n)],
+      // The same through Array.foldr.
+      ["array_fold_state_comes_back", [], (9n + 1n) * 100n + (9n + 2n)],
+      ["drop_stores_an_owned_function", [], 7n + 1n],
+      // Review round 2. "12345" has 5 characters: k = 5 + 1, table[1] 3 = 6, moved 5, sizes[0] = 2.
+      ["dispatch_table_then_move", [], 6n + 6n + 5n + 2n],
+      // k = 5 + 1, moved 5, the first call of the swapper returns the old 0.
+      ["other_type_handlers_then_move", [], 6n + 5n + 0n],
+      // "123456789" has 9 characters, doubled; ys[0] = 2; arr[0] () is the length 1 of "5".
+      ["callback_calls_a_callee_closure", [], 18n + 2n + 1n],
+      // f () = 1 + 5 twice, moved 5, m[0] () = 1.
+      ["closure_over_references_then_move", [], 12n + 5n + 1n],
+      // k = 5, moved 5, h.run (ref moved) = 5.
+      ["handler_record_then_move", [], 5n + 5n + 5n],
+      // Review round 3. m[0] () is the length 9 of "123456789"; the sequence gives one 1.
+      ["seq_step_writes_a_long_lived_borrow", [], 9n + 1n],
+      // a = 9 + 1, moved 9, r = 1, hs[1] (\() -> 1) = 1 + 2.
+      ["registry_and_mapped_handlers", [], 10n + 9n + 1n + 3n],
+      // a = 9 + 1 + 0, moved 9, base 0 = 7, the notifier's registry call gives 1.
+      ["functions_beside_a_named_function", [], 10n + 9n + 7n + 1n],
+      // Review round 4. The drop writes \() -> 5 into a's block.
+      ["drop_shares_its_rc_and_writes_the_out", [], 5n],
+      // "12345" has 5 characters: h gives 5 + 1, moved 5, each registry call gives 1.
+      ["handler_read_from_an_rc", [], 6n + 5n + 1n + 1n],
+      // Review round 5. h gives 5 + 1, g 5 * 2, k 5 * 3, moved 5, the registry call 1.
+      ["handlers_taken_out_by_patterns", [], 6n + 10n + 15n + 5n + 1n],
+      // Review round 6. The share in arr reads "123456789" (9 characters), that in brr gives 5.
+      ["shared_cell_written_after_the_share", [], 9n * 10n + 5n],
+      // The drop of r hands \() -> 9 to the registry (whose old 0 it gets back); the next call returns it.
+      ["dropped_share_hands_the_block", [], 9n],
+      // lk returns 10, lt returns z = 20, the writer put \() -> 2 into m.
+      ["pattern_parameters_call_what_they_get", [], 10n + 20n + 2n],
+      // arr[0] reads "123456789" through the Maybe, arr[1] "12345" through the record.
+      ["views_of_the_callers_data", [], 9n * 100n + 5n],
+      // take_cell reads 3 from a's block; later's cell reads "12345".
+      ["drop_runner_after_its_borrows", [], 3n + 5n],
+      // Review round 7. arr[0] reads "123456789" (9 characters); the count becomes 3 + 5.
+      ["disjoint_field_after_a_stored_borrow", [], 9n * 100n + 8n],
+      // The callbacks get the length 9 (doubled by the second); 1 + 20 + 20 elements.
+      ["handed_borrow_called_then_pushed", [], 9n * 1000n + 18n * 10n + 41n / 10n],
+      // len 9, the replaced text "5" has 1 character, d reads "1234".
+      ["drop_beside_a_borrow_it_cannot_read", [], 9n * 100n + 1n * 10n + 4n],
+      // read_once reads 9; the loop reads "12345" twice and breaks; holder reads 3.
+      ["drop_runners_moved_on_one_path_or_left_at_a_break", [], 9n * 1000n + 10n * 10n + 3n],
+      // Review round 8. The inner handler catches the overflow: holder reads "9" afterwards, plus 1.
+      ["catch_all_handler_inside_a_try", [123456789n], 9n + 1n],
+      // "123456789" read through the later parameter.
+      ["parameter_holder_after_what_it_borrows", [], 9n],
+      // "123456789" (9) + count 3, then the registry's previous function reads "1234" (4) + count 5.
+      ["shared_borrows_handed_to_function_values", [], (9n + 3n) * 100n + 4n + 5n],
+      // Review round 9. Each recorder is dropped while the string that it reads (9) is there.
+      ["pattern_variables_in_drop_order", [], 1n * 100n + 9n],
+      ["temporaries_in_drop_order", [], 1n * 100n + 9n],
+      // The direct store reads 9; the callee's reads 9 + 1.
+      ["own_parts_in_drop_order", [], (1n * 100n + 9n) * 1000n + 1n * 100n + 10n],
+      ["owned_parameter_cells", [], 1n * 100n + 9n],
+      // After review 9: each of the three calls returns 1 and its recorder reads 9 + 2.
+      ["exclusive_parts_in_drop_order", [], ((1n * 100n + 11n) * 1000n + 1n * 100n + 11n) * 1000n + 1n * 100n + 11n],
+      // Review round 10. k = 1, nothing recorded before the assignment, the old recorder reads
+      // 9 + 3 when the assignment drops it, and the new value's n is 7.
+      ["whole_replacement_in_drop_order", [], (1n * 100n + 0n) * 1000n + (9n + 3n) * 10n + 7n],
+      ["shared_block_parts_in_drop_order", [], 1n * 100n + 9n + 4n],
+      ["relayed_temporaries_in_drop_order", [], 9n + 5n],
+      // Review round 11. The old recorders read 9 + 3, 9 + 6 and 9 + 7 when the assignments drop
+      // them; the moved value's n is 2, the callee returns 1 and leaves n = 3.
+      ["replaced_values_stay_usable", [], ((((12n * 100n + 2n) * 100n + 15n) * 10n + 1n) * 10n + 3n) * 100n + 16n],
+      ["reads_through_a_borrow_in_drop_order", [], 1n * 100n + 9n + 8n],
+      ["reference_variables_leave_the_part", [], (1n * 10n + 1n) * 100n + 4n * 10n + 5n],
+      ["shared_owner_parts_in_drop_order", [], 1n * 100n + 9n + 9n],
+      ["parts_handed_to_function_values", [], 1n * 100n + 9n + 5n],
+      // Review round 12. With true, a's recorder reads "12345" (5 + 1) and b's keeps 0; with false,
+      // a's keeps 0 and b's reads "1234567" (7 + 1).
+      ["one_of_two_targets_keeps_its_own_part", [], (1n + 1n) * 10000n + 6n * 1000n + 0n * 100n + 0n * 10n + 8n],
+      // The old block's recorder reads "123" (3 + 5) when the assignment drops it; the new one keeps 2.
+      ["replaced_rc_drops_its_block_parts", [], 1n * 100n + 8n * 10n + 2n],
+      // The old value's recorder reads "1234" (4 + 1) when `deref p = v` drops it; the new one keeps 3.
+      ["replaced_target_with_an_arc_drops_its_parts", [], 1n * 100n + 5n * 10n + 3n],
+      // After review 12. p2's and p4's recorders read p1's "12345" (5 + 1), p3's its own "123"
+      // (3 + 1), and p1's keeps 0; the function value returns 1.
+      ["crossed_references_keep_the_part", [], 1n * 10000n + 0n * 1000n + 6n * 100n + 4n * 10n + 6n],
+      // After the review of that fix. p3's recorder reads p1's "12345" and p2's "1234567"
+      // (5 + 7), p2's reads the second element's "123456789" (9 + 1), p1's and the elements' keep
+      // 0; each_recorded returns 1.
+      ["bound_parts_keep_their_strings", [], (((1n * 100n + 0n) * 100n + 10n) * 100n + 12n) * 100n + 0n],
+      // Copilot's review of PR #105. The first iteration's recorder reads "12345" after the call
+      // (5 + 1); the continue and the break in the third argument drop the string and then the
+      // recorder before the call, so those keep their first functions (72, 73); the loop adds 1.
+      // With 3 the recorder reads "123" (3 + 9) and the call gives 9; with 2^62 the overflow drops
+      // them before the call (75) and gives -1, encoded as -1 + 2.
+      ["early_exits_drop_pending_temporaries", [], ((((((1n * 100n + 6n) * 100n + 72n) * 100n + 73n) * 100n + 9n) * 100n + 12n) * 100n + 75n) * 10n + 1n],
+      // The sixth merge into A32. p2's and p3's recorders read p1's "12345" (5 + 1), p1's keeps 0;
+      // chosen_pairs returns 1.
+      ["local_function_values_keep_the_part", [], 1n * 1000n + 0n * 100n + 6n * 10n + 6n],
+      // Review round 1 after Copilot's review. p2's, p3's and p4's recorders read p1's "12345"
+      // (5 + 1), p1's keeps 0; matched_pairs returns 1.
+      ["matched_function_values_keep_the_part", [], 1n * 10000n + 0n * 1000n + 6n * 100n + 6n * 10n + 6n],
+      // Review round 2 after Copilot's review. coarse_pairs returns 0 + the length of the new x.z
+      // "123" (3); p1's recorder reads x.a.e[0]'s "12345" (5 + 1).
+      ["wrapped_coarse_parts_keep_the_outside", [], 3n * 10n + 6n],
+      // Review round 3 after Copilot's review. passed_pairs returns 0 + 0 + the length of the new
+      // x.z "1234" (4); p1's and p2's recorders read x.a.e[0]'s "12345" (5 + 1).
+      ["passed_on_parts_keep_the_outside", [], 4n * 100n + 6n * 10n + 6n],
+      // Review round 5 after Copilot's review. unrelated_pairs returns the length of "1234567" (7);
+      // r2's, p1's and h's other recorders keep 0, o's reads p1's "12345" (5 + 1).
+      ["unrelated_blocks_keep_no_borrow", [], (((7n * 10n + 0n) * 10n + 0n) * 10n + 0n) * 10n + 6n],
+      // Copilot's review 2. lent_in_a_loop returns the new value's 7; the old q records 0, d and
+      // the new q read the new "123456789" (9 + 4 and 9 + 2).
+      ["loop_lends_borrows_of_the_new_value", [], ((7n * 100n + 0n) * 100n + 13n) * 100n + 11n],
+    ],
+    // These drops hold the inbox's lock while they take a's: WebAssembly without the tzroutine
+    // runtime holds one mutex at a time and traps on the second, as it does for any such program.
+    nativeCases: [
+      // Review round 4. The drop moves the function that reads "123456789" (9 characters) into a's block.
+      ["drop_moves_its_inbox_through_a_share", [], 9n],
+      ["drop_moves_its_inbox_in_a_helper", [], 9n],
+      // Review round 8 (nested locks). The copy of the first function (7), the shared "123" (3),
+      // the wrapper's reader of "12345" (5) and SyncMap.with_value's reader of "1234" (4).
+      ["lock_contents_copied_out_of_their_callbacks", [], 7n * 1000n + 3n * 100n + 5n * 10n + 4n],
+      // The block that the share went to took the later function, which returns 8.
+      ["share_handed_to_a_function_parameter", [], 8n],
+    ],
   },
   fixed_arrays: {
     cases: [

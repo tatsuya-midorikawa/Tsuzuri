@@ -761,6 +761,37 @@ impl Type {
         !types.stored_all(self, |part| !part.runs_on_drop(types))
     }
 
+    /// A31: whether a value of this type stores (not through a reference) a value of a type
+    /// that `found` accepts: in fields, payloads, elements, cells, and the blocks of strong and
+    /// weak pointers.
+    pub(crate) fn stores_some(
+        &self,
+        types: &TypeContext<'_>,
+        found: impl Fn(&Type) -> bool,
+    ) -> bool {
+        !types.stored_all(self, |part| !found(part))
+    }
+
+    /// A31: whether destroying a value of this type destroys a value of a type that `found`
+    /// accepts: it stores one (not through a reference), except that a weak pointer destroys
+    /// nothing of what it points at (the last strong owner destroys the block's value).
+    pub(crate) fn drops_some(
+        &self,
+        types: &TypeContext<'_>,
+        found: impl Fn(&Type) -> bool,
+    ) -> bool {
+        !types.stored_all_closed(
+            self,
+            |part| !found(part),
+            |part| {
+                matches!(
+                    part,
+                    Self::Shared(_, SharedKind::RcWeak | SharedKind::ArcWeak)
+                )
+            },
+        )
+    }
+
     /// Whether destroying a value of this type itself, beside what it stores, may run code: a
     /// user `Drop` instance, a function value or a tzroutine body (its environment may hold a
     /// value with one), an `Owned.Function`, or a dyn value (its drop is the vtable's). A type
@@ -956,15 +987,23 @@ impl Type {
                 && arguments.iter().any(|argument| argument.carries_loans(types)))
     }
 
+    /// A31: whether a value of this type owns a mutable cell (`is_mutable_cell`): it stores one,
+    /// or an `Rc` or `Arc` that it stores shares one, without a reference on the way. A function
+    /// value that captures such a value by value shares the cell with its copies.
+    pub(crate) fn owns_mutable_cell(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |part| !part.is_mutable_cell(types))
+    }
+
     /// A28: whether code that receives a value of this type may write into a place that the giver
-    /// reaches, so that a store that the ownership check does not track (A31) lands where the
-    /// giver's values can read it. That needs an exclusive reference (a `ref mut`, or a record
-    /// with exclusive regions such as `MatrixView.Mut`) or a mutable cell (`is_mutable_cell`),
-    /// reached through stored values, the targets of references, the contents of `Rc`, `Arc` and
-    /// their weak pointers, and the parameter and result types of function types (and the result
-    /// of a tzroutine body): a callback `put text : ref mut [T] -> unit` is a writer although its
-    /// own value holds no exclusive borrow. Each function type is walked once.
-    pub(crate) fn lends_mutable(&self, types: &TypeContext<'_>) -> bool {
+    /// reaches. That needs an exclusive reference (a `ref mut`, or a record with exclusive regions
+    /// such as `MatrixView.Mut`; counted when `exclusive` is true) or a mutable cell
+    /// (`is_mutable_cell`), reached through stored values, the targets of references, the contents
+    /// of `Rc`, `Arc` and their weak pointers, and the parameter and result types of function
+    /// types (and the result of a tzroutine body): a callback `put text : ref mut [T] -> unit` is a
+    /// writer although its own value holds no exclusive borrow. Each function type is walked once.
+    /// The ownership check tracks the stores through both (A31); a cell that an `Rc` or `Arc`
+    /// shares is still written behind the other owners' loans (`ownership::lending_bodies`).
+    pub(crate) fn lends_mutable(&self, types: &TypeContext<'_>, exclusive: bool) -> bool {
         let functions = std::cell::RefCell::new(Vec::new());
         let reaches = |root: &Type| {
             types.reaches(root, |ty| {
@@ -975,8 +1014,9 @@ impl Type {
                     Type::Once(result) => functions.borrow_mut().push((**result).clone()),
                     _ => {}
                 }
-                matches!(ty, Type::Reference(_, true))
-                    || matches!(ty, Type::Record(id, _) if types.records[*id].exclusive_regions != 0)
+                (exclusive
+                    && (matches!(ty, Type::Reference(_, true))
+                        || matches!(ty, Type::Record(id, _) if types.records[*id].exclusive_regions != 0)))
                     || ty.is_mutable_cell(types)
             })
         };

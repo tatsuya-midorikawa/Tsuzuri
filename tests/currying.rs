@@ -257,7 +257,13 @@ fn a_pipeline_that_completes_a_call_uses_its_facts() {
 
 /// A28, Copilot's review of #100: `x |> f` into a unary `f` completes `f x` as well, so it uses
 /// the facts of `f` with no argument bound before the piped one, and keeps every guard of the
-/// call. Each program is checked in both forms with the same result.
+/// call. Each program is checked in both forms with the same result. A31 (step 4): a program that
+/// stores a function with `Array.write` keeps the facts too, since the store facts track that
+/// store (A28's eighth review dropped every fact of such a program; `wrap 1` returns `\() -> 42`,
+/// which borrows nothing, so `g ()` prints 42), and so does a body that lends `ref mut g` to a
+/// callee that stores an owned function there (`make` returns `\() -> 2`, which borrows nothing;
+/// A28 gave a body that lends a way to write no facts). A callee that stores a function over
+/// `text` keeps it in `make`'s result.
 #[test]
 fn a_pipeline_into_a_unary_function_uses_its_facts() {
     const PASS: &str = "def pass :: ref i64 -> own (unit -> i64) -> (unit -> i64)\nfn pass _key f = f\ndef make :: ref i64 -> (unit -> i64)\nfn make key = pass key (\\() -> 42)\n";
@@ -265,19 +271,37 @@ fn a_pipeline_into_a_unary_function_uses_its_facts() {
         assert!(source.contains(direct), "{source}");
         [source.to_owned(), source.replace(direct, piped)]
     };
-    for source in both(
-        &format!(
-            "{PASS}def wrap :: own i64 -> (unit -> i64)\nfn wrap key = make (ref key)\nlet g = wrap 1\ng ()"
+    const MARK: &str =
+        "def mark :: ref mut (unit -> i64) -> unit\nfn mark r = deref r = \\() -> 2\n";
+    for (program, direct, piped) in [
+        (
+            format!(
+                "{PASS}def wrap :: own i64 -> (unit -> i64)\nfn wrap key = make (ref key)\nlet g = wrap 1\ng ()"
+            ),
+            "make (ref key)",
+            "ref key |> make",
         ),
-        "make (ref key)",
-        "ref key |> make",
-    ) {
-        accepts(&source);
+        (
+            format!(
+                "{PASS}def wrap :: own i64 -> (unit -> i64)\nfn wrap key = make (ref key)\nlet mut arr = [\\() -> 0]\nArray.write 0 (\\() -> 1) (ref mut arr)\nlet g = wrap 1\ng ()"
+            ),
+            "make (ref key)",
+            "ref key |> make",
+        ),
+        (
+            format!(
+                "{MARK}def make :: ref string -> (unit -> i64)\nfn make _text =\n    let mut g = \\() -> 0\n    mark (ref mut g)\n    g\ndef leak :: own string -> (unit -> i64)\nfn leak text = make (ref text)\nlet f = leak \"abc\"\nf ()"
+            ),
+            "make (ref text)",
+            "ref text |> make",
+        ),
+    ] {
+        for source in both(&program, direct, piped) {
+            accepts(&source);
+        }
     }
     const KEEP: &str =
         "def keep :: ref string -> (unit -> i64)\nfn keep text = \\() -> String.length text\n";
-    const MARK: &str =
-        "def mark :: ref mut (unit -> i64) -> unit\nfn mark r = deref r = \\() -> 2\n";
     for (source, direct, piped) in [
         // keep_leak: the result captures the reference.
         (
@@ -287,36 +311,59 @@ fn a_pipeline_into_a_unary_function_uses_its_facts() {
             "keep (ref text)",
             "ref text |> keep",
         ),
-        // A body that lends a way to write has no facts (`lending_bodies`).
+        // A body that lends a way to write keeps what the callee stores there (A31's store facts).
         (
-            format!(
-                "{MARK}def make :: ref string -> (unit -> i64)\nfn make _text =\n    let mut g = \\() -> 0\n    mark (ref mut g)\n    g\ndef leak :: own string -> (unit -> i64)\nfn leak text = make (ref text)\n0"
-            ),
+            "def mark :: ref string -> ref mut [(unit -> i64)] -> unit\nfn mark text r = Array.write 0 (\\() -> String.length text) r\ndef make :: ref string -> (unit -> i64)\nfn make text =\n    let mut g = [\\() -> 0]\n    mark text (ref mut g)\n    g[0]\ndef leak :: own string -> (unit -> i64)\nfn leak text = make (ref text)\n0".to_owned(),
             "make (ref text)",
             "ref text |> make",
-        ),
-        // A program with an untracked store of a value that may hold loans has no facts.
-        (
-            format!(
-                "{PASS}def wrap :: own i64 -> (unit -> i64)\nfn wrap key = make (ref key)\nlet mut arr = [\\() -> 0]\nArray.write 0 (\\() -> 1) (ref mut arr)\nlet g = wrap 1\ng ()"
-            ),
-            "make (ref key)",
-            "ref key |> make",
         ),
     ] {
         for source in both(&source, direct, piped) {
             rejects_with_kind(&source, "E1013", "task_result_retains_borrow");
         }
     }
-    // A closed result serves a pipeline only where every store is tracked: here a lock callback
-    // stores a closure that borrows `text` with `Array.write` (A31), which `closed_returns` cannot
-    // see, so the pipeline keeps the borrow of `text`, as before A28. (The direct call keeps the
-    // rule of `main`, which A31 fixes.)
+    // A closed result serves a pipeline as it serves the direct call: here a lock callback stores
+    // a closure that borrows `text` in `stash`'s own `m` with `Array.write`, so the check of
+    // `stash` returns that borrow and revokes the closed result that `closed_returns` proved
+    // (A31), and the pipeline keeps the borrow of `text`.
     rejects_with_kind(
         "def stash :: ref string -> (unit -> i64)\nfn stash text =\n    let m = Mutex.create [\\() -> 0]\n    Mutex.with_lock (ref m) (\\slot -> Array.write 0 (\\() -> String.length text) slot)\n    let arr = Mutex.into_inner m\n    arr[0]\ndef leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    ref text |> stash\nlet f = leak 123456789\nf ()",
         "E1013",
         "borrow_outlives_block",
     );
+}
+
+/// A31: the direct call and the pipeline of a function whose lock callback stores a borrow of
+/// `text` in its own `let m` keep the borrow of `text` in the result: `stash`'s result is read out
+/// of `m`, so it holds what the callback wrote there (main accepts the direct call, because
+/// `closed_returns` takes `m` for a value that holds no borrow, and `f ()` reads the freed `text`).
+/// Both forms are rejected at the call, where `leak` returns what borrows its `text`.
+#[test]
+fn a_call_of_a_lock_writer_keeps_the_written_borrow_in_both_forms() {
+    let direct = "def stash :: ref string -> (unit -> i64)\nfn stash text =\n    let m = Mutex.create [\\() -> 0]\n    Mutex.with_lock (ref m) (\\slot -> Array.write 0 (\\() -> String.length text) slot)\n    let arr = Mutex.into_inner m\n    arr[0]\ndef leak :: own i64 -> (unit -> i64)\nfn leak n =\n    let text = to_string n\n    stash (ref text)\nlet f = leak 123456789\nf ()";
+    assert!(direct.contains("stash (ref text)"));
+    for source in [
+        direct.to_owned(),
+        direct.replace("stash (ref text)", "ref text |> stash"),
+    ] {
+        let error = analyze(&source).expect_err(&source);
+        assert_eq!(
+            (error.code, error.kind),
+            ("E1013", Some("borrow_outlives_block")),
+            "{source}\n{}",
+            error.message
+        );
+        let before = &source[..error.span.start];
+        assert_eq!(
+            (
+                before.matches('\n').count() + 1,
+                before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1,
+            ),
+            (10, 5),
+            "{source}\n{}",
+            error.message
+        );
+    }
 }
 
 /// A28 review: in the abstract body of a generic function, a value of type `'v` has no loans,

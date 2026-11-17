@@ -376,6 +376,37 @@ values[0] + values[2]
 2027 は可変な所有者・排他参照からの添字代入も使えます。可変スライスは Copy ではなく、
 通常のクロージャへの捕捉（`E1005`）や `task` への送信（`E1013`）もできません。
 
+### 書き込んだ値の借用
+
+借用を持つ値（借用を捕捉した関数、`ref string` など）を可変スライスへ書き込むと、`values[i] = v` の代入と同じく、元の配列の持ち主がその借用を持ちます。`Array.write` だけでなく、それで書き込む std の関数（`Array.set`・`Array.fill`・`Array.blit` など）、書き込む関数を部分適用した関数値、パイプライン、`Mutex.with_lock` などのコールバックでの書き込み、利用者の instance のメソッドが演算子（`==`・`<` など）や文字列補間の中で行う書き込みも同じです。借用元が配列より長く生きる間は、そのまま使えます。
+
+```tsuzuri run=8
+let text = "abc"
+let borrowed = ref text
+let mut actions = [\() -> 1]
+Array.write 0 (\() -> String.length borrowed + 5) (ref mut actions)
+actions[0] ()
+```
+
+実行結果:
+
+```text
+8
+```
+
+配列が生きている間に借用元をムーブ・変更すると `E1014`、配列やその要素を借用元のブロックの外へ出すと `E1013` です。
+
+```text
+let text = to_string 123456789
+let borrowed = ref text
+let mut actions = [\() -> 1]
+Array.write 0 (\() -> String.length borrowed) (ref mut actions)
+let moved = text          // E1014: actions[0] が text を借用している
+actions[0] ()
+```
+
+関数が自分の局所値の借用を `ref mut` の引数の先へ書き込むと、書き込みの位置で `E1013` です。詳しい規則は [ライフタイムと region の現在の制限](lifetimes.md#現在の制限) にあります。
+
 ## 借用中の所有者の保護
 
 値が借用されている間は、元の所有値をムーブしたり、変数全体を上書き代入したりすることはできません。もしこれを許可すると、参照先が解放されたり破壊されたりしてダングリング参照が発生するためです。
