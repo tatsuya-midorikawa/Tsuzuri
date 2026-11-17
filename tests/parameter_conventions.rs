@@ -3925,6 +3925,242 @@ fn annotated_reference_parameters_follow_the_kept_parts_of_in_place_writes() {
 }
 
 #[test]
+fn annotated_reference_parameters_follow_the_loop_rules_of_in_place_writes() {
+    // A32 stacked on A31, seventh merge (A31's fix of Copilot's review 2 and its loop stops): a
+    // loop in the body of a lambda whose parameters are annotated with reference types is checked
+    // as in A31's own spelling, a named function with `ref` parameter types (tests/rc.rs:
+    // `a_loop_keeps_what_its_body_stored_elsewhere`,
+    // `a_loop_whose_settling_locals_hide_its_loopplace_growth_stops_soon`). The fixed point keeps
+    // what the body copied from the cell of `p`'s target to `out`'s target, or the borrow that the
+    // cell holds stored in `out`'s cell, so `deref p = mkpa ()` after the loop is `E1014` where it
+    // is written, and the replacement before the loop is accepted; a value read through `p` before
+    // a loop that binds it to a lambda capturing `p` keeps `p`'s borrow (`E1013` at the caller's
+    // `out`); a `loopplace` loop stops with `E1017` at the start of its body, and its workaround
+    // (`let cell = Arc.get (ref sink)`) is accepted. Every spelling fails with the same code and
+    // kind at the same text. Before this merge the unsafe programs were accepted in every
+    // spelling, A31's own too, and the `loopplace` loop did not settle.
+    const HOLDER: &str = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def mkh :: unit -> Holder
+fn mkh _u = Holder { cell: Mutex.create [\() -> 0] }
+"#;
+    // A31's spelling, the same conventions with annotated parameters, and the `ref` signature
+    // with annotated parameters (the spelling that A32 did not change).
+    let spellings =
+        |name: &str, explicit: &str, conventions: &str, plain: &str, annotated: &str| {
+            vec![
+                format!("def {name} :: {explicit}\nfn {name} {plain} =\n"),
+                format!("def {name} :: {conventions} = \\{annotated} ->\n"),
+                format!("def {name} :: {explicit} = \\{annotated} ->\n"),
+            ]
+        };
+    let rejects = |source: &str, code: &str, kind: &str, marker: &str| {
+        let error = check("2027", source)
+            .err()
+            .unwrap_or_else(|| panic!("accepted:\n{source}"));
+        assert_eq!(
+            (error.code, error.kind),
+            (code, Some(kind)),
+            "{source}\n{}",
+            error.message
+        );
+        assert!(
+            source[error.span.start..].starts_with(marker),
+            "{source}\n{}: {:?}",
+            error.message,
+            &source[error.span.start..]
+        );
+    };
+    let accepts = |source: &str| {
+        check("2027", source).unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+    };
+
+    // `renew`: the loops of Copilot's review 2. The conventions spelling without annotations
+    // cannot write `deref p` (`p` is a value view), so it is not among the spellings.
+    let renew = spellings(
+        "renew",
+        "ref mut PA -> ref Holder -> i64 -> i64",
+        "mut PA -> Holder -> i64 -> i64",
+        "p out n",
+        "(p: ref mut PA) (out: ref Holder) n",
+    );
+    const PA: &str = r#"record PA { h: Holder, a: [string] }
+def mkpa :: unit -> PA
+fn mkpa _u = PA { h: mkh (), a: [String.repeat 4 (ref "123456789")] }
+def copy_out :: ref [unit -> i64] -> ref Mutex<[unit -> i64]> -> unit
+fn copy_out b out = Mutex.with_lock out (\o -> Array.write 0 b[0] o)
+"#;
+    const RENEW_RUN: &str = r#"    0
+def run :: i64 -> i64
+fn run n =
+    let mut p0 = mkpa ()
+    let out = mkh ()
+    let k = renew (ref mut p0) (ref out) n
+    Mutex.with_lock (ref out.cell) (\b -> b[0] ()) + k
+do! IO.write_line (to_string (run 1))
+"#;
+    const KEEP: &str = "    let t = ref p.a[0]\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n";
+    const REPLACE: &str = "    deref p = mkpa ()\n";
+    let bodies = [
+        "Mutex.with_lock (ref p.h.cell) (\\b -> copy_out b (ref out.cell))",
+        "Mutex.with_lock (ref out.cell) (\\b -> Array.write 0 (\\() -> look t) b)",
+    ];
+    let loops: [&[&str]; 3] = [
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    BODY",
+            "    i = i + 1",
+        ],
+        &[
+            "let mut i = 0",
+            "while true do",
+            "    if i >= n then break else ()",
+            "    BODY",
+            "    i = i + 1",
+        ],
+        &[
+            "let mut i = 0",
+            "while i < n do",
+            "    let r = try",
+            "                BODY",
+            "                @checked i * 2",
+            "            with",
+            "            | e -> e",
+            "    i = i + 1",
+        ],
+    ];
+    for body in bodies {
+        for lines in loops {
+            let looped: String = lines
+                .iter()
+                .map(|line| format!("    {}\n", line.replace("BODY", body)))
+                .collect();
+            for declaration in &renew {
+                let unsafe_source =
+                    format!("{HOLDER}{PA}{declaration}{KEEP}{looped}{REPLACE}{RENEW_RUN}");
+                rejects(
+                    &unsafe_source,
+                    "E1014",
+                    "borrow_conflict",
+                    "deref p = mkpa ()",
+                );
+                accepts(&format!(
+                    "{HOLDER}{PA}{declaration}{REPLACE}{KEEP}{looped}{RENEW_RUN}"
+                ));
+            }
+        }
+    }
+
+    // `stash`: a value read through `p` before the loop, a lambda that captures `p` in it. It
+    // dereferences nothing, so the conventions spellings are compared too.
+    let mut stash = spellings(
+        "stash",
+        "ref P -> ref Holder -> i64 -> i64",
+        "P -> Holder -> i64 -> i64",
+        "p out n",
+        "(p: ref P) (out: ref Holder) n",
+    );
+    stash.push("def stash :: P -> Holder -> i64 -> i64\nfn stash p out n =\n".to_string());
+    stash.push("def stash :: P -> Holder -> i64 -> i64 = \\p out n ->\n".to_string());
+    let through = |declaration: &str, assigned: &str| {
+        let mut source = format!("{HOLDER}record P {{ s: string, f: unit -> i64 }}\n{declaration}");
+        source.push_str("    let mut x = p.f\n    let mut i = 0\n    while i < n do\n");
+        source.push_str(&format!("        x = {assigned}\n"));
+        source.push_str(
+            r#"        i = i + 1
+    Mutex.with_lock (ref out.cell) (\b -> Array.write 0 x b)
+    0
+def run :: i64 -> i64
+fn run n =
+    let out = mkh ()
+    let p1 = P { s: String.repeat 4 (ref "123456789"), f: \() -> 5 }
+    stash (ref p1) (ref out) n
+do! IO.write_line (to_string (run 1))
+"#,
+        );
+        source
+    };
+    for declaration in &stash {
+        rejects(
+            &through(declaration, "\\() -> look (ref p.s)"),
+            "E1013",
+            "assignment_extends_borrow",
+            "let out = mkh ()",
+        );
+        accepts(&through(declaration, "p.f"));
+    }
+
+    // `run2`: the `loopplace` loop of tests/rc.rs (`masked_loopplace(6, 2, 16, _)`).
+    let run2 = spellings(
+        "run2",
+        "ref mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64",
+        "mut Box -> own Arc<Mutex<[unit -> i64]>> -> i64 -> i64",
+        "p sink n",
+        "(p: ref mut Box) sink n",
+    );
+    let loopplace = |declaration: &str, workaround: bool| {
+        let mut source = format!(
+            "record Box {{ cell: Mutex<[unit -> i64]>, s: string }}\nrecord Instr {{ op: i64, name: string }}\n{declaration}"
+        );
+        source.push_str(if workaround {
+            "    let cell = Arc.get (ref sink)\n    let w = \\g -> Mutex.with_lock cell (\\o -> Array.write 0 g o)\n"
+        } else {
+            "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n"
+        });
+        source.push_str("    let i0 = Instr { op: 0, name: \"op0\" }\n    let i1 = Instr { op: 1, name: \"op1\" }\n    let mut acc = 0\n    let mut i = 0\n");
+        for stage in 0..6 {
+            source.push_str(&format!("    let mut s{stage} = ref i0\n"));
+        }
+        source.push_str(
+            "    while i < n do\n        let t = ref p.s\n        w (\\() -> String.length t)\n",
+        );
+        for stage in 0..6 {
+            for _ in 0..16 {
+                source.push_str(&format!(
+                    "        acc = acc + String.length s{stage}.name\n"
+                ));
+            }
+        }
+        for stage in (1..6).rev() {
+            source.push_str(&format!("        s{stage} = s{}\n", stage - 1));
+        }
+        source.push_str(
+            r#"        s0 = match (i * 7 + acc) % 2 with
+            | 0 -> ref i0
+            | _ -> ref i1
+        i = i + 1
+    acc % 1000
+def run :: i64 -> i64
+fn run n =
+    let mut b = Box { cell: Mutex.create [\() -> 3], s: "abcd" }
+    let keep = Arc.new (Mutex.create [\() -> 0])
+    let k = run2 (ref mut b) (Arc.share (ref keep)) n
+    Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
+do! IO.write_line (to_string (run 1))
+"#,
+        );
+        source
+    };
+    for declaration in &run2 {
+        rejects(
+            &loopplace(declaration, false),
+            "E1017",
+            "loop_ownership_limit",
+            "let t = ref p.s",
+        );
+        accepts(&loopplace(declaration, true));
+    }
+}
+
+#[test]
 fn documented_exceptions_of_annotated_reference_parameters() {
     // The language reference lists these forms as exceptions (review 2 of A32); each keeps the
     // diagnostic that it had before A32, and the documented alternative is accepted.
