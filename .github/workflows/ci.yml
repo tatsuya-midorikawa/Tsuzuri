@@ -1,6 +1,6 @@
 name: Tsuzuri CI
 
-# The gate of a pull request, on five Linux jobs that run in parallel (about 20 minutes in all):
+# The gate of a pull request, on five Linux jobs that run in parallel (15 to 22 minutes in all, November 2026):
 #   lint    formatting, lints, a type check of the other four supported platforms, and the platform contracts;
 #   rust    the Rust tests (cargo-nextest; the dev profile of Cargo.toml is opt-level 1), in three slices of the whole list
 #           (`--partition slice:N/3`, which deals the tests of every binary round-robin), each building the tests itself;

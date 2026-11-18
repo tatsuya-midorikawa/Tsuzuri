@@ -12,7 +12,8 @@ name: Tsuzuri targets
 # (ci.yml is the gate of every pull request).
 #
 # Each host runs four or five jobs in parallel (`matrix.group`), so that a run takes about as long as its longest group
-# (40 to 50 minutes) instead of the sum of every step (150 to 175 minutes in one job each, November 2026):
+# (35 to 55 minutes; darwin-arm64 is the longest, as its release builds take 7 to 10 minutes) instead of the sum of every step
+# (150 to 175 minutes in one job each, November 2026):
 #   suites         the release compiler and the bundle, the targets, and the language, runtime and fuzz suites;
 #   strings-tools  the release compiler and the bundle, compact strings, the handoff and build tools, benchmark correctness;
 #   fast           the fast backend (its own build), its suites, parity, and its Rust tests; and, on a release build of the
@@ -80,7 +81,7 @@ jobs:
             host: linux-arm64
             f16: hardware
     runs-on: ${{ matrix.os }}
-    # A group takes 20 to 50 minutes on a hosted runner. The fast backend and the compact-string Rust tests have
+    # A group takes 20 to 55 minutes on a hosted runner. The fast backend and the compact-string Rust tests have
     # step-specific limits too. The limit only stops a hung job: it is not a speed check.
     timeout-minutes: 150
     steps:

@@ -99,12 +99,12 @@ it runs 0 tests: check `running N tests`.
 
 ## CI
 
-- A pull request gets `ci.yml` (about 20 minutes in five parallel jobs: `lint` with fmt, clippy and a type check of the other
-  platforms, three slices of the Rust tests, and `suites` with the core end-to-end suites) and, when it changes the language reference, `reference.yml` (the changed pages). `targets.yml`,
-  `windows.yml` and `vscode.yml` (40 to 50 minutes, each host split into parallel jobs) run after every merge to `main` that
-  changes what they build or read and on a pull request with the label `ci:full`; add it when
-  the change can behave differently per OS or toolchain (`src/runtime/`, `scripts/toolchain/`, caches, paths, child
-  processes, line endings, `vsc/`).
+- A pull request gets `ci.yml` (15 to 25 minutes in five parallel jobs: `lint` with fmt, clippy and a type check of the
+  other platforms, three slices of the Rust tests, and `suites` with the core end-to-end suites) and, when it changes the
+  language reference, `reference.yml` (the changed pages). `targets.yml`, `windows.yml` and `vscode.yml` (35 to 55
+  minutes, each host split into parallel jobs) run after every merge to `main` that changes what they build or read and
+  on a pull request with the label `ci:full`; add it when the change can behave differently per OS or toolchain
+  (`src/runtime/`, `scripts/toolchain/`, caches, paths, child processes, line endings, `vsc/`).
 - Read CI yourself: `gh run list --branch <branch>`, `gh run watch <id> --exit-status`, `gh run view <id> --log-failed`.
   Do not ask a person to paste logs. A red job is blocking. Read `.github/instructions/ci.instructions.md` (the Windows,
   toolchain-bundle and VS Code lessons; it also applies when you edit workflows, `scripts/toolchain/`, `vsc/`,

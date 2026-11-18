@@ -8,7 +8,7 @@ name: Windows MSVC
 #   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 the Rust tests. Each host runs W3 in jobs of its own
 #   (`matrix.group` tests-N: cargo-nextest, in slices of the whole list, `--partition slice:N/M`: three on win32-x64, whose
 #   runner takes 1.7 times as long as Linux's for the same tests, and two on win32-arm64), next to the job `gate` with every
-#   other step, so a run takes about as long as its longest job (about 30 minutes; 70 to 105 in one job with `cargo test`,
+#   other step, so a run takes about as long as its longest job (about 32 minutes; 70 to 105 in one job with `cargo test`,
 #   November 2026). linux-arm64 in targets.yml keeps the `cargo test` run that shares one process per binary.
 #   A step that fails does not hide the ones after it,
 #   except that W5-W8 and the numeric casts run the tsuzuri.exe of W4, so a failed W4 skips them.
