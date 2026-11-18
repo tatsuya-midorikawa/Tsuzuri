@@ -1,3 +1,5 @@
+mod common;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use tsuzuri::{analyze, llvm, trap::TrapSource};
@@ -640,10 +642,11 @@ fn pruning_problems(
 /// Nearly every example, fixture and benchmark is a library, and the executables are the only builds that prune, so each
 /// project is made an executable: as it is if it has an entry, else with a constant entry (and with its exports as plain
 /// public functions, so that nothing is reachable but the drops of std types). The IR of the pruned executable is checked
-/// without Clang (benchmarks/check-handoff-equivalence.mjs builds and runs them against a baseline compiler).
-#[test]
-fn pruning_keeps_the_ir_of_every_project_valid() {
+/// without Clang (benchmarks/check-handoff-equivalence.mjs builds and runs them against a baseline compiler). Slice
+/// `slice` of `slices` checks the projects whose index in `project_directories` is `slice` modulo `slices`.
+fn pruning_keeps_the_ir_of_every_project_valid(slice: usize, slices: usize) {
     let directories = project_directories();
+    let directories: Vec<&PathBuf> = common::slice(&directories, slice, slices).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let totals = std::sync::Mutex::new((0usize, 0usize, Vec::<String>::new()));
     let workers = std::thread::available_parallelism()
@@ -712,9 +715,25 @@ fn pruning_keeps_the_ir_of_every_project_valid() {
         }
     });
     let (programs, emissions, problems) = totals.into_inner().unwrap();
-    println!("pruning: {programs} programs, {emissions} builds checked");
+    println!(
+        "pruning, slice {} of {slices}: {programs} programs, {emissions} builds checked",
+        slice + 1
+    );
     assert!(problems.is_empty(), "{}", problems.join("\n"));
-    // The corpus is checked, not skipped: 130 projects make about 300 programs that analyze and emit.
-    assert!(programs >= 200, "only {programs} programs were checked");
-    assert!(emissions >= 600, "only {emissions} builds were checked");
+    // The corpus is checked, not skipped: 130 projects make about 300 programs that analyze and emit, and each
+    // slice checks its share of the 200 programs and 600 builds that the whole corpus must reach at least.
+    assert!(
+        programs * slices >= 200,
+        "only {programs} programs were checked, fewer than 200 / {slices}"
+    );
+    assert!(
+        emissions * slices >= 600,
+        "only {emissions} builds were checked, fewer than 600 / {slices}"
+    );
 }
+
+common::slices!(pruning_keeps_the_ir_of_every_project_valid, 3:
+    1 => pruning_keeps_the_ir_of_every_project_valid_1_of_3,
+    2 => pruning_keeps_the_ir_of_every_project_valid_2_of_3,
+    3 => pruning_keeps_the_ir_of_every_project_valid_3_of_3,
+);
