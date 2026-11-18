@@ -2,6 +2,8 @@
 //! instruction may carry `nsw` or `nuw`; these tests pin that baseline and the loop shapes that the
 //! structural proofs (R1-R5) depend on.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::process::Command;
 
@@ -1409,9 +1411,14 @@ fn flagged_operations(body: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-#[test]
-fn proven_flags_are_those_of_an_evaluation_of_every_input() {
-    for case in cases() {
+common::slices!(proven_flags_are_those_of_an_evaluation_of_every_input, 2:
+    1 => proven_flags_are_those_of_an_evaluation_of_every_input_1_of_2,
+    2 => proven_flags_are_those_of_an_evaluation_of_every_input_2_of_2,
+);
+
+/// Slice `slice` of `slices` of `cases()`.
+fn proven_flags_are_those_of_an_evaluation_of_every_input(slice: usize, slices: usize) {
+    for case in common::slice(&cases(), slice, slices) {
         let source = case.source;
         // For each operation: whether none of its executions overflows as signed, as unsigned.
         let mut free = vec![(true, true); case.operators.len()];
