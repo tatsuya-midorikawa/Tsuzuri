@@ -36,11 +36,14 @@ Lessons from the PR #3 and #4 VS Code workflow failures, and from the Windows ga
   a state that never happened (a C host test died with `0xC000001D` at `-O1` and passed at `-O0`). Start such
   hosts with `#undef NDEBUG`, and read a pass of an optimized run as meaningful only if its checks were compiled in.
 - `windows.yml` is the Windows gate (G10). Its job `gate` runs every step but the Rust tests; W3 runs them with
-  `cargo nextest` in jobs of their own (two slices on `windows-2022`, one on `windows-11-arm`). The first Windows run of a
+  `cargo nextest` in jobs of their own (three slices on `windows-2022`, two on `windows-11-arm`). The first Windows run of a
   step is rarely the last: dispatch the workflow on your branch with `fast` set (`gh workflow run windows.yml --ref <branch>
   -f fast=true`), which skips W3 and reads every other step in about 10 minutes, and merge the fixes back. The log
   of a running job cannot be read. `cargo test`, which runs a binary's tests as threads of one process, stays on
   linux-arm64 in `targets.yml`.
+- Defender's real-time protection is off on `windows-2022` (actions/runner-images turns it off) and on on
+  `windows-11-arm`. Excluding the work directories there changed no step time (PR #109: the release build 7.4 minutes
+  against a median of 7.1 over 24 runs, the toolchain bundle 10.8 against 10.6), so the workflows leave Defender alone.
 - To debug a Windows-only failure without 25-minute loops, push a throwaway branch whose workflow runs `on: push` for
   that branch only, cache `vsc/toolchain` with `actions/cache` (about 4 minutes per loop once cached), print what the
   failing program does (progress lines, an unhandled-exception filter that prints the code and address), and delete the

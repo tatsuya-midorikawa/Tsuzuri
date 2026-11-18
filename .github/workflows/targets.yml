@@ -15,7 +15,8 @@ name: Tsuzuri targets
 # (40 to 50 minutes) instead of the sum of every step (150 to 175 minutes in one job each, November 2026):
 #   suites         the release compiler and the bundle, the targets, and the language, runtime and fuzz suites;
 #   strings-tools  the release compiler and the bundle, compact strings, the handoff and build tools, benchmark correctness;
-#   fast           the fast backend (its own build), its suites, parity, and its Rust tests;
+#   fast           the fast backend (its own build), its suites, parity, and its Rust tests; and, on a release build of the
+#                  default compiler of its own, the frontend's independence of the thread count (it needs no bundle);
 #   tests-N        the Rust tests: cargo-nextest on darwin-arm64; the compact string form (PM03) in two nextest slices on
 #                  linux-x64; and `cargo test` on linux-arm64, which runs the tests of a binary as threads of one process
 #                  and so catches what nextest's one process per test cannot (two tests sharing a temporary name, #107).
@@ -435,8 +436,14 @@ jobs:
       # (diagnostics, IR, exit codes, frontend cache bytes). This replaces PB02's isolated equivalence: that runner overlaid the
       # frontend files of the tree on the sources of a621fada, and since PB04 they need src/parallel.rs and the callers in
       # src/lib.rs (and the later tickets change what the frontend records), so the overlay no longer builds.
+      # In the group fast, which has time to spare and needs no bundle for it: the default compiler (not the fast backend's
+      # build, which goes to target/fast), built here.
+      - name: Release compiler
+        id: release
+        if: ${{ !cancelled() && matrix.group == 'fast' }}
+        run: cargo build --release --locked
       - name: Frontend output independent of the thread count
-        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'fast' && steps.release.outcome == 'success' }}
         timeout-minutes: 25
         env:
           RUST_MIN_STACK: "4194304"

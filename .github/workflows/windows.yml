@@ -6,9 +6,10 @@ name: Windows MSVC
 # _tsuzuri/language-reference/compiler/platforms.md claims only what a step of this file checks.
 #   W1 cargo fmt, W2 cargo clippy, W4 the release build, W5 tests/windows.mjs, W6 tests/cache.mjs,
 #   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 the Rust tests. Each host runs W3 in jobs of its own
-#   (`matrix.group` tests-N: cargo-nextest, in two slices of the whole list on win32-x64, `--partition slice:N/2`), next to the
-#   job `gate` with every other step, so a run takes about as long as its longest job (35 to 45 minutes; 70 to 105 in one job
-#   with `cargo test`, November 2026). linux-arm64 in targets.yml keeps the `cargo test` run that shares one process per binary.
+#   (`matrix.group` tests-N: cargo-nextest, in slices of the whole list, `--partition slice:N/M`: three on win32-x64, whose
+#   runner takes 1.7 times as long as Linux's for the same tests, and two on win32-arm64), next to the job `gate` with every
+#   other step, so a run takes about as long as its longest job (about 30 minutes; 70 to 105 in one job with `cargo test`,
+#   November 2026). linux-arm64 in targets.yml keeps the `cargo test` run that shares one process per binary.
 #   A step that fails does not hide the ones after it,
 #   except that W5-W8 and the numeric casts run the tsuzuri.exe of W4, so a failed W4 skips them.
 #   tests/numeric_casts.mjs, a reference record of G10 that passed on the first run, stays as a step.
@@ -67,10 +68,10 @@ jobs:
       fail-fast: false
       matrix:
         host: [win32-x64, win32-arm64]
-        group: [gate, tests-1, tests-2]
+        group: [gate, tests-1, tests-2, tests-3]
         exclude:
           - host: win32-arm64
-            group: tests-2
+            group: tests-3
         include:
           - os: windows-2022
             host: win32-x64
@@ -78,14 +79,14 @@ jobs:
             vs_directory: '2022'
             installer: LLVM-21.1.8-win64.exe
             checksum: 7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113
-            slices: 2
+            slices: 3
           - os: windows-11-arm
             host: win32-arm64
             arch: arm64
             vs_directory: '18'
             installer: LLVM-21.1.8-woa64.exe
             checksum: 1a770a49460b73667c1750b79f90e7027ead468f966c5d30e180cae19f61d91e
-            slices: 1
+            slices: 2
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     env:
@@ -99,26 +100,6 @@ jobs:
       # The runner checks out with core.autocrlf=true, which turns the fixtures and src/runtime/*.ll into CRLF.
       - name: Keep LF line endings
         run: git config --global core.autocrlf false
-      # The windows-2022 image turns Defender's real-time protection off (actions/runner-images,
-      # images/windows/scripts/build/Configure-WindowsDefender.ps1); windows-11-arm comes from another image. This shows
-      # the state and, where real-time protection is on, keeps the work directories out of the scan, so that the builds
-      # and the tests do not wait for it. It never fails the job.
-      - name: Defender
-        shell: pwsh
-        run: |
-          $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
-          if ($null -eq $status) { 'Defender: no status (not installed or not running)'; exit 0 }
-          $status | Select-Object AMRunningMode, AntivirusEnabled, RealTimeProtectionEnabled | Format-List | Out-String
-          if ($status.RealTimeProtectionEnabled) {
-            $paths = @($env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, $env:TEMP, (Join-Path $env:USERPROFILE '.cargo'), (Join-Path $env:USERPROFILE '.rustup'))
-            try {
-              Add-MpPreference -ExclusionPath $paths -ErrorAction Stop
-              "Excluded from real-time scanning: $($paths -join ', ')"
-            } catch {
-              Write-Warning "Defender exclusions were not added: $_"
-            }
-          }
-          exit 0
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
