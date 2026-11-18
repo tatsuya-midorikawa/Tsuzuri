@@ -112,13 +112,13 @@ jobs:
         run: node tests/platforms.mjs
       # Four MiB per test thread, as in targets.yml and windows.yml. Each slice lists every test and runs its share.
       - name: Rust tests
-        if: matrix.group == 'rust'
+        if: ${{ !cancelled() && matrix.group == 'rust' }}
         env:
           RUST_MIN_STACK: "4194304"
         run: cargo nextest run --locked --profile ci --partition slice:${{ matrix.slice }}/${{ matrix.slices }}
       - name: Dev binary
         id: build
-        if: matrix.group == 'suites'
+        if: ${{ !cancelled() && matrix.group == 'suites' }}
         run: cargo build --locked
       - name: Slot script
         if: ${{ !cancelled() && matrix.group == 'suites' }}

@@ -306,12 +306,12 @@ jobs:
       # after 15 minutes.
       - uses: actions/cache@v6
         id: nextest
-        if: startsWith(matrix.group, 'tests-') && !inputs.fast
+        if: ${{ !cancelled() && startsWith(matrix.group, 'tests-') && !inputs.fast }}
         with:
           path: ~/.cargo/bin/cargo-nextest.exe
           key: nextest-0.9.148-${{ runner.os }}-${{ runner.arch }}
       - name: cargo-nextest
-        if: startsWith(matrix.group, 'tests-') && !inputs.fast && steps.nextest.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && startsWith(matrix.group, 'tests-') && !inputs.fast && steps.nextest.outputs.cache-hit != 'true' }}
         run: cargo install --locked cargo-nextest --version 0.9.148
       - name: W3 Rust tests
         if: ${{ !cancelled() && startsWith(matrix.group, 'tests-') && !inputs.fast }}

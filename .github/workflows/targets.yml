@@ -33,6 +33,7 @@ on:
       - tests/**
       - benchmarks/**
       - Cargo.*
+      - .config/**
       - scripts/toolchain/**
       - spec/**
       - scripts/conformance.mjs
@@ -565,12 +566,12 @@ jobs:
       # killed after 15 minutes.
       - uses: actions/cache@v4
         id: nextest
-        if: matrix.group == 'fast' || (startsWith(matrix.group, 'tests-') && matrix.host != 'linux-arm64')
+        if: ${{ !cancelled() && (matrix.group == 'fast' || (startsWith(matrix.group, 'tests-') && matrix.host != 'linux-arm64')) }}
         with:
           path: ~/.cargo/bin/cargo-nextest
           key: nextest-0.9.148-${{ runner.os }}-${{ runner.arch }}
       - name: cargo-nextest
-        if: (matrix.group == 'fast' || (startsWith(matrix.group, 'tests-') && matrix.host != 'linux-arm64')) && steps.nextest.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && (matrix.group == 'fast' || (startsWith(matrix.group, 'tests-') && matrix.host != 'linux-arm64')) && steps.nextest.outputs.cache-hit != 'true' }}
         run: cargo install --locked cargo-nextest --version 0.9.148
       - name: Rust tests
         if: ${{ !cancelled() && matrix.group == 'tests-1' && matrix.host == 'darwin-arm64' }}
