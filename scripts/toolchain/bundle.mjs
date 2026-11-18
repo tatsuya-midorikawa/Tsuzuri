@@ -119,17 +119,31 @@ export async function entries(directory, prefix = '') {
   return result;
 }
 
+/** The tar that reads every archive this script handles: on Windows, libarchive's bsdtar in System32 (Windows 10 1803
+ * and Server 2019 on), since Git for Windows puts a GNU tar first on PATH, which cannot read zip archives. */
+export function systemTar() {
+  return process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+}
+
+/** Extracts `archive` into the existing `directory`. On Windows, bsdtar reads a zip of many small files several times
+ * faster than PowerShell's Expand-Archive, which took about 6 minutes for Zig's 19,500 files on windows-2022;
+ * scripts/toolchain/smoke.mjs already extracts the bundled archives with it. */
 export function extractArchive(archive, directory) {
-  if (process.platform !== 'win32') {
-    run('tar', ['-xf', archive, '-C', directory]);
-    return;
+  run(systemTar(), ['-xf', archive, '-C', directory]);
+}
+
+/** Moves the directory `source` to `target` when both are on one volume (Windows, where copying Zig's library of
+ * 19,500 files takes minutes), and copies it otherwise, dereferencing links as before. */
+async function moveOrCopy(source, target) {
+  if (process.platform === 'win32') {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      if (!['EXDEV', 'EPERM', 'EACCES', 'EBUSY'].includes(error.code)) { throw error; }
+    }
   }
-  // A PSModulePath inherited from PowerShell 7 makes Windows PowerShell load incompatible modules.
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== 'psmodulepath'));
-  execFileSync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-Command',
-    '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $env:TSUZURI_ARCHIVE -DestinationPath $env:TSUZURI_EXTRACTED -Force',
-  ], { cwd: repository, stdio: 'inherit', env: { ...env, TSUZURI_ARCHIVE: archive, TSUZURI_EXTRACTED: directory } });
+  await cp(source, target, { recursive: true, dereference: true });
 }
 
 export async function verify(destination) {
@@ -245,7 +259,7 @@ export async function bundle(destination) {
       const zig = path.join(extracted, `zig-${zigPlatform}-${zigVersion}`);
       await mkdir(path.join(stage, 'zig'), { recursive: true });
       await copyFile(path.join(zig, `zig${suffix}`), path.join(stage, 'zig', `zig${suffix}`));
-      await cp(path.join(zig, 'lib'), path.join(stage, 'zig', 'lib'), { recursive: true, dereference: true });
+      await moveOrCopy(path.join(zig, 'lib'), path.join(stage, 'zig', 'lib'));
       await copyFile(path.join(zig, 'LICENSE'), path.join(stage, 'licenses', 'Zig.txt'));
       if (process.platform !== 'win32') { await chmod(path.join(stage, 'zig', 'zig'), 0o755); }
     }

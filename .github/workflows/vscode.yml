@@ -55,8 +55,12 @@ jobs:
             target: linux-arm64
           - os: windows-2022
             target: win32-x64
+            llvm_installer: LLVM-21.1.8-win64.exe
+            llvm_sha256: 7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113
           - os: windows-11-arm
             target: win32-arm64
+            llvm_installer: LLVM-21.1.8-woa64.exe
+            llvm_sha256: 1a770a49460b73667c1750b79f90e7027ead468f966c5d30e180cae19f61d91e
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:
@@ -72,7 +76,24 @@ jobs:
           cache-dependency-path: vsc/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
+      # The crates, and what scripts/toolchain/bundle.mjs and vsc/scripts/toolchain.mjs download into target/vsc-downloads (Zig
+      # or llvm-mingw, CodeLLDB). download() verifies the pinned SHA-256 whether or not a file came from here.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/vsc-downloads
+          key: vscode-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'scripts/toolchain/bundle.mjs', 'vsc/scripts/toolchain.mjs') }}
+          restore-keys: vscode-${{ runner.os }}-${{ runner.arch }}-
+      # The LLVM installer, with the path and key of windows.yml, so that the two workflows share it.
+      - uses: actions/cache@v6
+        if: runner.os == 'Windows'
+        with:
+          path: target/llvm-installer
+          key: windows-llvm-installer-${{ matrix.llvm_sha256 }}
       - name: Check host architecture
         env:
           EXPECTED_TARGET: ${{ matrix.target }}
@@ -93,20 +114,20 @@ jobs:
           sudo -n apt-get update
           sudo -n apt-get install -y clang-21 lld-21 llvm-21 libclang-rt-21-dev
           printf 'LLVM_PREFIX=/usr/lib/llvm-21\n' >> "$GITHUB_ENV"
+      # The installer comes from download() of scripts/toolchain/bundle.mjs, as in windows.yml: it verifies the pinned SHA-256
+      # whether or not the file came from the cache above, skips a source that is silent for 30 seconds, and makes three passes.
       - name: LLVM on Windows
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          LLVM_INSTALLER: ${{ matrix.llvm_installer }}
+          LLVM_INSTALLER_SHA256: ${{ matrix.llvm_sha256 }}
         run: |
-          if ('${{ matrix.target }}' -eq 'win32-arm64') {
-            $asset = 'LLVM-21.1.8-woa64.exe'
-            $expected = '1a770a49460b73667c1750b79f90e7027ead468f966c5d30e180cae19f61d91e'
-          } else {
-            $asset = 'LLVM-21.1.8-win64.exe'
-            $expected = '7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113'
-          }
-          $installer = Join-Path $env:RUNNER_TEMP $asset
-          Invoke-WebRequest "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/$asset" -OutFile $installer
-          if ((Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'LLVM checksum mismatch' }
+          $installer = Join-Path (Split-Path $PWD -Parent) "target\llvm-installer\$env:LLVM_INSTALLER"
+          New-Item -ItemType Directory -Force (Split-Path $installer) | Out-Null
+          $env:LLVM_INSTALLER_PATH = $installer
+          node --input-type=module -e "import { download } from '../scripts/toolchain/bundle.mjs'; await download(['https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/' + process.env.LLVM_INSTALLER], process.env.LLVM_INSTALLER_PATH, process.env.LLVM_INSTALLER_SHA256)"
+          if ($LASTEXITCODE -ne 0) { throw "LLVM installer download failed: $LASTEXITCODE" }
           $prefix = Join-Path $env:RUNNER_TEMP 'llvm21'
           $process = Start-Process $installer -ArgumentList '/S', "/D=$prefix" -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "LLVM installation failed: $($process.ExitCode)" }
@@ -114,8 +135,10 @@ jobs:
       - run: npm ci
       - name: Supported IDE and distribution platforms
         run: node ../tests/platforms.mjs
-      - run: cargo fmt --manifest-path ../Cargo.toml --check
-      - run: cargo clippy --manifest-path ../Cargo.toml --locked --all-targets -- -D warnings
+      # Formatting and the default-feature lints of linux-x64 are ci.yml's, and those of the two Windows hosts are windows.yml's
+      # (W1, W2). macOS and Linux Arm64 lint their own cfg code here only: ci.yml just type-checks those two targets.
+      - if: matrix.target == 'darwin-arm64' || matrix.target == 'linux-arm64'
+        run: cargo clippy --manifest-path ../Cargo.toml --locked --all-targets -- -D warnings
       # PB05: the fast backend is compiled only with its feature. Windows does not run it yet, so this is where its Windows code is checked.
       - run: cargo clippy --manifest-path ../Cargo.toml --locked --all-targets --features fast-backend -- -D warnings
       - run: npm run test:unit
