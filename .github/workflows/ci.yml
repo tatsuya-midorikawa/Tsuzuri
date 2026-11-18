@@ -10,6 +10,8 @@ name: Tsuzuri CI
 
 on:
   workflow_dispatch:
+  # Everything the Rust tests and the suites build or read: tests embed benchmarks/, guide/ and scripts/ with include_str!,
+  # and read the language reference (_tsuzuri/) at run time.
   pull_request:
     paths:
       - src/**
@@ -17,6 +19,9 @@ on:
       - tests/**
       - examples/**
       - scripts/**
+      - benchmarks/**
+      - guide/**
+      - _tsuzuri/**
       - Cargo.*
       - .config/**
       - .github/workflows/**
