@@ -145,7 +145,7 @@ Tsuzuri は、型エラーがあるとコードを出しません。数値型の
 | 対象 | 確認できたこと |
 | --- | --- |
 | VS Code 拡張の案内 | Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 環境だけです。Windows Arm64 のソースデバッグは未対応です。根拠は [vsc/README.md](../../../vsc/README.md) です。 |
-| 処理系の Windows の実行 | [Windows MSVC の CI](../../../.github/workflows/windows.yml) が x64 の `windows-2022` と Arm64 の `windows-11-arm` で `cargo test`、native とホストの MSVC triple の `-O0`・`-O3`、ファイルの置換、WASM を検証します。MinGW の配布物は `vscode.yml` が検証します。 |
+| 処理系の Windows の実行 | [Windows MSVC の CI](../../../.github/workflows/windows.yml) が x64 の `windows-2022` と Arm64 の `windows-11-arm` で Rust テスト、native とホストの MSVC triple の `-O0`・`-O3`、ファイルの置換、WASM を検証します。MinGW の配布物は `vscode.yml` が検証します。 |
 | OS API | Windows 上のコンパイラが、OS API に到達するネイティブバイナリを出すと `E2002` です。純粋な計算には影響しません。仕様は[WASM と Windows](../../../docs/language.md#wasm-と-windows)にあります。 |
 | CI | `.github/workflows/` には、5 環境の型検査をする `ci.yml`、5 環境の拡張機能と配布物の `vscode.yml`、macOS と Linux の 3 ホストの `targets.yml`、Windows x64/Arm64 の `windows.yml` があります。 |
 

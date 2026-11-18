@@ -10,6 +10,19 @@ name: Tsuzuri targets
 # Windows hosts are not here: tests/windows.rs, tests/windows.mjs and vscode.yml cover them.
 # These three hosts run after every merge to main that changes the compiler and, on a pull request, with the label `ci:full`
 # (ci.yml is the gate of every pull request).
+#
+# Each host runs four or five jobs in parallel (`matrix.group`), so that a run takes about as long as its longest group
+# (35 to 55 minutes; darwin-arm64 is the longest, as its release builds take 7 to 10 minutes) instead of the sum of every step
+# (150 to 175 minutes in one job each, November 2026):
+#   suites         the release compiler and the bundle, the targets, and the language, runtime and fuzz suites;
+#   strings-tools  the release compiler and the bundle, compact strings, the handoff and build tools, benchmark correctness;
+#   fast           the fast backend (its own build), its suites, parity, and its Rust tests; and, on a release build of the
+#                  default compiler of its own, the frontend's independence of the thread count (it needs no bundle);
+#   tests-N        the Rust tests: cargo-nextest on darwin-arm64; the compact string form (PM03) in two nextest slices on
+#                  linux-x64; and `cargo test` on linux-arm64, which runs the tests of a binary as threads of one process
+#                  and so catches what nextest's one process per test cannot (two tests sharing a temporary name, #107).
+#                  The default string form on linux-x64 is ci.yml's Rust tests.
+# A step that fails does not hide the later steps of its group (`!cancelled()`), as before the split.
 
 on:
   workflow_dispatch:
@@ -22,6 +35,7 @@ on:
       - tests/**
       - benchmarks/**
       - Cargo.*
+      - .config/**
       - scripts/toolchain/**
       - spec/**
       - scripts/conformance.mjs
@@ -43,10 +57,19 @@ concurrency:
 jobs:
   targets:
     if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'ci:full') && (github.event.action != 'labeled' || github.event.label.name == 'ci:full')) }}
-    name: targets (${{ matrix.host }})
+    name: targets (${{ matrix.host }}, ${{ matrix.group }})
     strategy:
       fail-fast: false
       matrix:
+        host: [darwin-arm64, linux-x64, linux-arm64]
+        group: [suites, strings-tools, fast, tests-1, tests-2]
+        # Only the compact string Rust tests of linux-x64 are in two slices. macOS has five concurrent jobs per account, so
+        # darwin-arm64 keeps four, which leaves one for vscode.yml.
+        exclude:
+          - host: darwin-arm64
+            group: tests-2
+          - host: linux-arm64
+            group: tests-2
         include:
           - os: macos-15
             host: darwin-arm64
@@ -58,8 +81,9 @@ jobs:
             host: linux-arm64
             f16: hardware
     runs-on: ${{ matrix.os }}
-    # The fast backend and the compact-string Rust tests on linux-x64 have step-specific limits too.
-    timeout-minutes: 300
+    # A group takes 20 to 55 minutes on a hosted runner. The fast backend and the compact-string Rust tests have
+    # step-specific limits too. The limit only stops a hung job: it is not a speed check.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -67,7 +91,8 @@ jobs:
           node-version: 24
       - uses: dtolnay/rust-toolchain@stable
       # The crates, and the Zig archive that scripts/toolchain/bundle.mjs downloads (it verifies the
-      # pinned SHA-256 whether or not the file came from here).
+      # pinned SHA-256 whether or not the file came from here). Only the groups that build the bundle have the archive, and
+      # the first job of a key to finish saves it, so they keep a key of their own.
       - uses: actions/cache@v4
         with:
           path: |
@@ -75,13 +100,14 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target/vsc-downloads
-          key: targets-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'scripts/toolchain/bundle.mjs') }}
-          restore-keys: targets-${{ runner.os }}-${{ runner.arch }}-
+          key: targets-${{ runner.os }}-${{ runner.arch }}-${{ (matrix.group == 'suites' || matrix.group == 'strings-tools') && 'bundle' || 'crates' }}-${{ hashFiles('Cargo.lock', 'scripts/toolchain/bundle.mjs') }}
+          restore-keys: targets-${{ runner.os }}-${{ runner.arch }}-${{ (matrix.group == 'suites' || matrix.group == 'strings-tools') && 'bundle' || 'crates' }}-
       - name: Check host architecture
         env:
           EXPECTED_HOST: ${{ matrix.host }}
         run: node -e 'if (`${process.platform}-${process.arch}` !== process.env.EXPECTED_HOST) process.exit(1)'
       - name: Supported hosts and Apple Silicon-only macOS
+        if: matrix.group == 'suites'
         run: node tests/platforms.mjs
       # LLVM 21 as in vscode.yml: the system Clang that builds the host's programs and every object, and
       # what the bundle copies. The Linux jobs also install qemu-user, which runs the foreign static
@@ -106,13 +132,14 @@ jobs:
       # launcher tsuzuri-clang, LLVM's clang, and Zig, laid out as the VS Code extension ships them.
       - name: Build the compiler and the bundled toolchain
         id: bundle
+        if: matrix.group == 'suites' || matrix.group == 'strings-tools'
         run: node scripts/toolchain/bundle.mjs target/toolchain
       # Each of the nine triples reports "executed", "linked only" or "object only". The opt-in
       # variables make a missing cross toolchain or emulator a failure here instead of a skip:
       #   TSUZURI_CROSS_LINK=1     link every target the bundled Zig can link (needs TSUZURI_CROSS_CLANG);
       #   TSUZURI_CROSS_EXECUTE=1  run the static musl targets of the other architectures under qemu-user.
       - name: Targets
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
@@ -121,13 +148,13 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then export TSUZURI_CROSS_EXECUTE=1; fi
           node tests/targets.mjs target/release/tsuzuri
       - name: End-to-end compiler tests
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/e2e.mjs target/release/tsuzuri
       - name: Language conformance suite
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
@@ -135,7 +162,7 @@ jobs:
           node tests/conformance_harness.mjs target/release/tsuzuri
       # G34: the examples of `///` (the fixture of tests/doctest.rs, and every public std function).
       - name: Documentation examples
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           target/release/tsuzuri test --doc tests/fixtures/doctest/pass
@@ -144,7 +171,7 @@ jobs:
       # D14: Text.f and Regex.*_text give the values of the direct calls (JavaScript references), and each Text
       # instance method is a single direct call.
       - name: Text class (D14) - values against JavaScript references, instance methods are single direct calls
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
@@ -154,13 +181,13 @@ jobs:
       # A24: anonymous unions (i64 | string) built by injection and read back by `:?` type tests, against JavaScript
       # references (live == 0), native and WASM at -O0/-O3; the IR has one type per instantiation in the canonical order.
       - name: Anonymous unions (A24)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/features.mjs target/release/tsuzuri anonymous_unions
       - name: Memory and LLVM fact semantics
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         env:
           TSUZURI_CACHE_DIR: ${{ github.workspace }}/target/phase2-cache
         run: |
@@ -175,7 +202,7 @@ jobs:
       # direct, piped, partial and callback forms) give the values computed by hand, native and WASM at -O0/-O3.
       # in_place_writes holds the safe programs that tracking the stored borrows must keep accepted.
       - name: Exclusive slices and in-place writes (C08, A31)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
@@ -185,7 +212,7 @@ jobs:
       # 4,194,305 elements included), and the Parallel functions with pure callbacks return what their sequential
       # counterparts return, native and WASM at -O0/-O3. tests/monoid.rs runs only the native law tests.
       - name: Sequential-equivalent data parallelism (F15)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
@@ -195,7 +222,7 @@ jobs:
       # through a C host that asserts live == 0; debugger_static.mjs asks the LLDB formatter about the DWARF types of a -g build
       # without running a process (LLDB is on the macOS runners only).
       - name: Function values (PM02)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         timeout-minutes: 30
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
@@ -209,7 +236,7 @@ jobs:
       # sanitizer programs that never start; see the size-class allocator step below). TZ09: the tzroutines of wasm32 with
       # --wasm-feature jspi through the generated glue, on the Node.js 24 of this job.
       - name: tzroutine, Channel and select (TZ01, TZ02, TZ03, TZ04, TZ09)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         timeout-minutes: 20
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
@@ -236,7 +263,7 @@ jobs:
       # trap_boundary.mjs runs the WebAssembly boundary and its frames in Node. The sanitizer builds are left out on macOS,
       # whose Homebrew LLVM builds sanitizer programs that never start (see the size-class allocator step below).
       - name: Trap boundaries and failure domains (E14, B10)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         timeout-minutes: 30
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
@@ -249,7 +276,7 @@ jobs:
       # million calls natively and in V8 (with --wasm-feature tail-call), and checks that the default WebAssembly build has no tail call.
       # llvm-objdump counts the return_call instructions. The same suite runs again with the fast backend below.
       - name: Stack depth and guaranteed tail calls (PM09)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         timeout-minutes: 20
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
@@ -259,7 +286,7 @@ jobs:
       # PM05: the WASM heap alone, the unit tests of the size-class allocator (plain, ASan+UBSan, TSan), --allocator small end
       # to end, and the vec and storage suites with every block of the size classes accounted for.
       - name: WASM heap and size-class allocator
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
@@ -275,12 +302,12 @@ jobs:
           TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri storage
           TSUZURI_TEST_ALLOCATOR=small node tests/features.mjs target/release/tsuzuri list_chunks
       - name: Last-use differential fuzz smoke
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           node tests/last_use_fuzz.mjs target/release/tsuzuri 40 1 4
       - name: Integer range proofs (audit mode and differential fuzz)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
@@ -288,7 +315,7 @@ jobs:
           TSUZURI_RANGE_FLAGS=proven node tests/control.mjs target/release/tsuzuri
           node tests/integer_ranges_fuzz.mjs target/release/tsuzuri 20 1 3
       - name: UTF SIMD and scalar fallbacks
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_OBJDUMP="$LLVM_PREFIX/bin/llvm-objdump"
@@ -297,7 +324,7 @@ jobs:
       # runtime functions, every form pair of every string operation compiled in both modes, the LLDB formatter without a
       # live session, and the existing string suites run in both modes.
       - name: Compact strings (PM03)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         timeout-minutes: 40
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
@@ -309,25 +336,25 @@ jobs:
           python3 tests/lldb_lists.py
           node tests/compact_strings_modes.mjs target/release/tsuzuri quick compact utf16
       - name: Prebuilt runtime cache and fallback
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/prebuilt_runtime.mjs target/release/tsuzuri
       - name: Size levels and artifact size
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/size.mjs target/release/tsuzuri
       - name: Integer text against a Python reference
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/integer_format.mjs
       - name: Handoff to Clang (PB03) - pruning, C runtime cache, linker choice, bundle identity
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
@@ -337,14 +364,14 @@ jobs:
       # PR07: --profile-generate and --profile-use. LLVM_PREFIX turns every skip of tests/pgo.mjs into a failure, so the Clang here
       # must have its profile runtime (libclang-rt-21-dev on Linux) and sit next to llvm-profdata.
       - name: Profile-guided optimization (PR07)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         timeout-minutes: 30
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/pgo.mjs target/release/tsuzuri
       - name: Numeric display and parse references
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
@@ -360,7 +387,7 @@ jobs:
       # the full hardware path. The ubuntu-24.04 x86-64 runner must expose F16C, but accepts full hardware
       # when its VM also exposes AVX512-FP16.
       - name: f16 paths
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         env:
           TSUZURI_F16_EXPECT: ${{ matrix.f16 }}
         run: |
@@ -368,12 +395,12 @@ jobs:
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/f16_hardware.mjs target/release/tsuzuri
       - uses: actions/setup-go@v7
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         with:
           go-version: "1.27.2"
           cache: false
       - name: Benchmark correctness and metric records
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
@@ -399,7 +426,7 @@ jobs:
           node benchmarks/run-apps.mjs target/release/tsuzuri --quick --metrics target/perf/ci-apps
           node benchmarks/metrics.mjs report target/perf/ci-core target/perf/ci-build target/perf/ci-apps
       - name: Frontend benchmark record smoke
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         timeout-minutes: 5
         env:
           RUST_MIN_STACK: "4194304"
@@ -410,8 +437,14 @@ jobs:
       # (diagnostics, IR, exit codes, frontend cache bytes). This replaces PB02's isolated equivalence: that runner overlaid the
       # frontend files of the tree on the sources of a621fada, and since PB04 they need src/parallel.rs and the callers in
       # src/lib.rs (and the later tickets change what the frontend records), so the overlay no longer builds.
+      # In the group fast, which has time to spare and needs no bundle for it: the default compiler (not the fast backend's
+      # build, which goes to target/fast), built here.
+      - name: Release compiler
+        id: release
+        if: ${{ !cancelled() && matrix.group == 'fast' }}
+        run: cargo build --release --locked
       - name: Frontend output independent of the thread count
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'fast' && steps.release.outcome == 'success' }}
         timeout-minutes: 25
         env:
           RUST_MIN_STACK: "4194304"
@@ -421,7 +454,7 @@ jobs:
       # PB06: tsuzuri watch and the resident build server. A request must give the same output, exit code and artifacts as the command
       # alone; the socket path of the server must fit sun_path, so TMPDIR is the short runner temp directory.
       - name: Watch mode and the resident build server (PB06)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         timeout-minutes: 30
         env:
           TMPDIR: ${{ runner.temp }}
@@ -435,7 +468,7 @@ jobs:
       # units that an edit compiles again, and DWARF. LLVM_PREFIX turns its skips (no llvm-dwarfdump, no objcopy, no wasm-ld) into
       # failures. Windows hosts always build one unit and the suite exits there (windows.yml).
       - name: Codegen units (PB07)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         timeout-minutes: 30
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
@@ -450,7 +483,7 @@ jobs:
       # server.mjs sends --backend fast through the resident server (TMPDIR is the short runner temp directory for its socket).
       - name: Fast backend (PB05)
         id: fast
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'fast' }}
         timeout-minutes: 45
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target/fast
@@ -495,7 +528,7 @@ jobs:
           node tests/fast_backend.mjs wasm target/fast/release/tsuzuri
           node tests/fast_backend.mjs parity control primitives numeric_casts integer_intrinsics strings user_drop examples e2e
       - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'strings-tools' && steps.bundle.outcome == 'success' }}
         with:
           name: benchmark-correctness-${{ matrix.host }}
           path: target/perf/ci-*
@@ -503,7 +536,7 @@ jobs:
       # G36: random typed programs run by the constant evaluator, native -O0/-O3 and wasm32 -O0/-O3 against an independent BigInt
       # evaluator, and ownership programs checked for leaks. A difference is minimized and saved under target/progfuzz/failures.
       - name: Whole-language differential fuzz (G36)
-        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         timeout-minutes: 30
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
@@ -514,18 +547,20 @@ jobs:
       # A failed --self-test keeps its sources and minimized failures under target/progfuzz/self-test (and the fuzz runs after it
       # do not start), so that subtree is kept too.
       - uses: actions/upload-artifact@v7
-        if: ${{ failure() }}
+        if: ${{ failure() && matrix.group == 'suites' }}
         with:
           name: progfuzz-failures-${{ matrix.host }}
           path: |
             target/progfuzz/failures
             target/progfuzz/self-test
           if-no-files-found: ignore
-      # Other tickets' end-to-end steps for these three hosts go here, before the Rust tests: that step takes
-      # 25-70 minutes, so it is last and a slow runner cannot cost the results above. Start each step with
-      # `if: ${{ !cancelled() }}` so that a failure above does not hide it.
+      # Other tickets' end-to-end steps for these three hosts go in the group whose length they fit, with `!cancelled()` so that a
+      # failure above does not hide them, and the outcome of the build they use:
+      #   suites, strings-tools  `if: ${{ !cancelled() && matrix.group == '<group>' && steps.bundle.outcome == 'success' }}`;
+      #   fast                   `steps.fast.outcome` for the fast backend's build (target/fast), or `steps.release.outcome` for
+      #                          the default release compiler (the group builds no bundle, so `steps.bundle` is always skipped there).
       #
-      # The depth-limit tests (parser::tests::bounds_recursive_and_flat_expression_depth,
+      # The Rust tests. The depth-limit tests (parser::tests::bounds_recursive_and_flat_expression_depth,
       # computations::bounds_computation_syntax_and_expansion, ...) feed 200 nested levels to a debug build
       # whose recursive-descent frames take 2.03-2.13 MB, against the 2 MiB (2,097,152 bytes) of a test
       # thread. How far over depends on the target and rustc release: on linux-arm64 (rustc 1.99) two of them
@@ -534,32 +569,57 @@ jobs:
       # depend on the toolchain; each test still checks that its limit is reported as a diagnostic. (Those frames are
       # from opt-level 0; the dev profile of Cargo.toml has used opt-level 1 since, which makes them smaller, and the
       # 4 MiB stays for the same reason.)
+      #
+      # cargo-nextest (the version of ci.yml) spreads every test of every binary over the cores; `cargo test` runs the
+      # binaries one after another, so the slowest test of each binary holds the others back (50 minutes on darwin-arm64
+      # against about 40 with nextest). --profile ci is .config/nextest.toml's: no fail-fast, and a test that hangs is
+      # killed after 15 minutes.
+      - uses: actions/cache@v4
+        id: nextest
+        if: ${{ !cancelled() && (matrix.group == 'fast' || (startsWith(matrix.group, 'tests-') && matrix.host != 'linux-arm64')) }}
+        with:
+          path: ~/.cargo/bin/cargo-nextest
+          key: nextest-0.9.148-${{ runner.os }}-${{ runner.arch }}
+      - name: cargo-nextest
+        if: ${{ !cancelled() && (matrix.group == 'fast' || (startsWith(matrix.group, 'tests-') && matrix.host != 'linux-arm64')) && steps.nextest.outputs.cache-hit != 'true' }}
+        run: cargo install --locked cargo-nextest --version 0.9.148
       - name: Rust tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.group == 'tests-1' && matrix.host == 'darwin-arm64' }}
+        env:
+          RUST_MIN_STACK: "4194304"
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          cargo nextest run --locked --profile ci
+      # The same tests as threads of one process per binary, on one host.
+      - name: Rust tests in one process per binary (cargo test)
+        if: ${{ !cancelled() && matrix.group == 'tests-1' && matrix.host == 'linux-arm64' }}
         env:
           RUST_MIN_STACK: "4194304"
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           cargo test --locked --no-fail-fast
-      # PM03: the whole Rust suite with every program compiled in the compact string form (about 27 minutes), on one host, so that the
-      # opt-in mode stays as correct as the default. The tests that pin the UTF-16 IR text fix their form explicitly.
+      # PM03: the whole Rust suite with every program compiled in the compact string form, on one host, so that the opt-in mode
+      # stays as correct as the default. The tests that pin the UTF-16 IR text fix their form explicitly. Two slices of the whole
+      # list (`--partition slice:N/2`), one per job.
       - name: Rust tests with compact strings (PM03)
-        if: ${{ !cancelled() && matrix.host == 'linux-x64' }}
+        if: ${{ !cancelled() && startsWith(matrix.group, 'tests-') && matrix.host == 'linux-x64' }}
         env:
           RUST_MIN_STACK: "4194304"
           TSUZURI_STRINGS: compact
+          SLICE: ${{ matrix.group }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
-          cargo test --locked --no-fail-fast
+          cargo nextest run --locked --profile ci --partition "slice:${SLICE#tests-}/2"
       # PB05: the unit tests of the library and the binaries and the two integration tests of the fast backend, built with the feature (the
-      # run above does not compile src/backend). All three hosts execute the code of their own architecture.
+      # runs above do not compile src/backend). All three hosts execute the code of their own architecture.
       - name: Rust tests of the fast backend (PB05)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.group == 'fast' }}
         env:
           RUST_MIN_STACK: "4194304"
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
-          cargo test --locked --no-fail-fast --features fast-backend --lib --bins --test fast_backend --test fast_backend_ops
+          cargo nextest run --locked --profile ci --features fast-backend --lib --bins --test fast_backend --test fast_backend_ops

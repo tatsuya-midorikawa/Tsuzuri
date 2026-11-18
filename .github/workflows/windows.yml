@@ -5,9 +5,12 @@ name: Windows MSVC
 # W1-W8 extend the gate of _features/_completed/G10-windows.md; the tiers in
 # _tsuzuri/language-reference/compiler/platforms.md claims only what a step of this file checks.
 #   W1 cargo fmt, W2 cargo clippy, W4 the release build, W5 tests/windows.mjs, W6 tests/cache.mjs,
-#   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 cargo test, which comes last because it is the longest step
-#   (40 to 50 minutes before the dev profile of Cargo.toml used opt-level 1): every other step reports first. A step that
-#   fails does not hide the ones after it,
+#   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 the Rust tests. Each host runs W3 in jobs of its own
+#   (`matrix.group` tests-N: cargo-nextest, in slices of the whole list, `--partition slice:N/M`: three on win32-x64, whose
+#   runner takes 1.7 times as long as Linux's for the same tests, and two on win32-arm64), next to the job `gate` with every
+#   other step, so a run takes about as long as its longest job (about 32 minutes; 70 to 105 in one job with `cargo test`,
+#   November 2026). linux-arm64 in targets.yml keeps the `cargo test` run that shares one process per binary.
+#   A step that fails does not hide the ones after it,
 #   except that W5-W8 and the numeric casts run the tsuzuri.exe of W4, so a failed W4 skips them.
 #   tests/numeric_casts.mjs, a reference record of G10 that passed on the first run, stays as a step.
 # The MSVC toolset and the Windows SDK are selected below and checked by Show tools, so the documents that
@@ -19,18 +22,32 @@ name: Windows MSVC
 # calls, which no Windows run has checked, so targets.yml runs it on the three Linux and macOS hosts and platforms.md claims it for no
 # Windows target. cargo test (W3) does run the Rust tests of the IR (tests/tail_recursion.rs, tests/stack_frames.rs).
 # This gate runs after every merge to main and, on a pull request, with the label `ci:full` (ci.yml is the gate of every
-# pull request). `workflow_dispatch` with `fast` set skips W3, so that a branch reads every other step in about 10 minutes.
+# pull request). `workflow_dispatch` with `fast` set skips W3 (its jobs only set up), so that a branch reads every other step in
+# about 10 minutes.
 
 on:
   workflow_dispatch:
     inputs:
       fast:
-        description: Skip W3 cargo test, which takes 40 to 50 minutes
+        description: Skip W3, the Rust tests (25 to 40 minutes in jobs of their own)
         type: boolean
         default: false
+  # A merge that changes none of what the gate builds or reads (the language reference is read by Rust tests) starts no run.
   push:
     branches:
       - main
+    paths:
+      - src/**
+      - std/**
+      - tests/**
+      - examples/**
+      - benchmarks/**
+      - guide/**
+      - scripts/**
+      - _tsuzuri/**
+      - Cargo.*
+      - .config/**
+      - .github/workflows/windows.yml
   pull_request:
     types: [opened, reopened, synchronize, labeled]
 
@@ -46,10 +63,15 @@ concurrency:
 jobs:
   windows:
     if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'ci:full') && (github.event.action != 'labeled' || github.event.label.name == 'ci:full')) }}
-    name: Windows MSVC (${{ matrix.host }})
+    name: Windows MSVC (${{ matrix.host }}, ${{ matrix.group }})
     strategy:
       fail-fast: false
       matrix:
+        host: [win32-x64, win32-arm64]
+        group: [gate, tests-1, tests-2, tests-3]
+        exclude:
+          - host: win32-arm64
+            group: tests-3
         include:
           - os: windows-2022
             host: win32-x64
@@ -57,12 +79,14 @@ jobs:
             vs_directory: '2022'
             installer: LLVM-21.1.8-win64.exe
             checksum: 7a5386c26497db1691f320121e5b113364dd0274b98e55f15f4dbc00c0450113
+            slices: 3
           - os: windows-11-arm
             host: win32-arm64
             arch: arm64
             vs_directory: '18'
             installer: LLVM-21.1.8-woa64.exe
             checksum: 1a770a49460b73667c1750b79f90e7027ead468f966c5d30e180cae19f61d91e
+            slices: 2
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     env:
@@ -138,18 +162,19 @@ jobs:
           if ($link -notlike "*\Microsoft Visual Studio\$($env:GATE_VS_DIRECTORY)\*\VC\Tools\MSVC\$($env:VCToolsVersion)\*") { throw "link.exe is not the linker of Visual Studio installation $env:GATE_VS_DIRECTORY MSVC $($env:VCToolsVersion): $link" }
           if ($eol -notmatch 'w/lf') { throw "src/runtime/string.ll is not checked out with LF: $eol" }
       - name: W1 cargo fmt
+        if: matrix.group == 'gate'
         run: cargo fmt --all -- --check
       - name: W2 cargo clippy
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.group == 'gate' }}
         run: cargo clippy --locked --all-targets -- -D warnings
       # TZ01 Phase 2: the tzroutine runtime on fibers (tests/tzroutine_runtime.c with the MSVC ABI clang and lld). TZ10: the
       # preemption cases of Phase 1 (Windows has no signal stops: the cases of Phase 2 report that they are not built).
       - name: tzroutine runtime (TZ01)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.group == 'gate' }}
         run: node tests/tzroutine_runtime.mjs
       - name: W4 release build
         id: build
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.group == 'gate' }}
         run: cargo build --release --locked
       - name: W5 Windows MSVC end-to-end
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -255,11 +280,28 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Display/Parse failed: $LASTEXITCODE" }
           node tests/display_parse_exhaustive.mjs --f32-samples 100000 --f64 100000 --jobs 2 --baseline-runtime target/numeric-ci/before.ll
           if ($LASTEXITCODE -ne 0) { throw "Numeric differential failed: $LASTEXITCODE" }
+      # W3: the Rust tests, with cargo-nextest (the version of ci.yml), which spreads every test of every binary over the cores.
       # The depth-limit tests feed 200 nested levels to a dev-profile build (opt-level 1 since the profile in Cargo.toml was
       # tuned; its frames were near the 2 MiB of a test thread at opt-level 0, GUIDE D-45), so the whole run keeps 4 MiB per
-      # test thread, as targets.yml does.
-      - name: W3 cargo test
-        if: ${{ !cancelled() && !inputs.fast }}
+      # test thread, as targets.yml does. --profile ci is .config/nextest.toml's: no fail-fast, and a test that hangs is killed
+      # after 15 minutes.
+      - uses: actions/cache@v6
+        id: nextest
+        if: ${{ !cancelled() && startsWith(matrix.group, 'tests-') && !inputs.fast }}
+        with:
+          path: ~/.cargo/bin/cargo-nextest.exe
+          key: nextest-0.9.148-${{ runner.os }}-${{ runner.arch }}
+      - name: cargo-nextest
+        if: ${{ !cancelled() && startsWith(matrix.group, 'tests-') && !inputs.fast && steps.nextest.outputs.cache-hit != 'true' }}
+        run: cargo install --locked cargo-nextest --version 0.9.148
+      - name: W3 Rust tests
+        if: ${{ !cancelled() && startsWith(matrix.group, 'tests-') && !inputs.fast }}
         env:
           RUST_MIN_STACK: "4194304"
-        run: cargo test --locked --no-fail-fast
+          SLICE: ${{ matrix.group }}
+          SLICES: ${{ matrix.slices }}
+        run: |
+          $partition = @()
+          if ($env:SLICES -ne '1') { $partition = @('--partition', "slice:$($env:SLICE -replace '^tests-', '')/$env:SLICES") }
+          cargo nextest run --locked --profile ci @partition
+          if ($LASTEXITCODE -ne 0) { throw "cargo nextest failed: $LASTEXITCODE" }
