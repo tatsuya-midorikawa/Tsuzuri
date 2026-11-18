@@ -1,7 +1,8 @@
 name: Tsuzuri IDE
 
-# The extension and its toolchain bundle on the five supported hosts. They run after every merge to main, on a `vsc-v*` tag and, on a
-# pull request, with the label `ci:full` (ci.yml is the gate of every pull request).
+# The extension and its toolchain bundle on the five supported hosts. They run after every merge to main that changes what the bundle
+# or the extension is made of, on a `vsc-v*` tag (paths do not filter tags) and, on a pull request, with the label `ci:full` (ci.yml is
+# the gate of every pull request).
 
 on:
   workflow_dispatch:
@@ -12,6 +13,16 @@ on:
       - main
     tags:
       - vsc-v*
+    paths:
+      - vsc/**
+      - src/**
+      - std/**
+      - guide/**
+      - tests/**
+      - scripts/**
+      - Cargo.*
+      - LICENSE
+      - .github/workflows/vscode.yml
 
 permissions:
   contents: read
@@ -47,6 +58,26 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
+      # As in windows.yml: the windows-2022 image turns Defender's real-time protection off, windows-11-arm comes from another
+      # image. This shows the state and, where real-time protection is on, keeps the work directories out of the scan.
+      - name: Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: .
+        run: |
+          $status = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          if ($null -eq $status) { 'Defender: no status (not installed or not running)'; exit 0 }
+          $status | Select-Object AMRunningMode, AntivirusEnabled, RealTimeProtectionEnabled | Format-List | Out-String
+          if ($status.RealTimeProtectionEnabled) {
+            $paths = @($env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, $env:TEMP, (Join-Path $env:USERPROFILE '.cargo'), (Join-Path $env:USERPROFILE '.rustup'))
+            try {
+              Add-MpPreference -ExclusionPath $paths -ErrorAction Stop
+              "Excluded from real-time scanning: $($paths -join ', ')"
+            } catch {
+              Write-Warning "Defender exclusions were not added: $_"
+            }
+          }
+          exit 0
       - uses: actions/setup-node@v7
         with:
           node-version: 24

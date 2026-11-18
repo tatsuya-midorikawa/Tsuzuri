@@ -1,9 +1,12 @@
 name: Tsuzuri CI
 
-# The gate of a pull request, on one Linux host in 30 to 50 minutes: formatting, lints, the Rust tests (cargo-nextest; the
-# dev profile of Cargo.toml is opt-level 1), a type check of all five supported platforms, and the end-to-end suites that a compiler
-# change breaks most often, run on the dev binary. targets.yml, windows.yml and vscode.yml are the slow matrices: they run
-# after every merge to main and, on a pull request, with the label `ci:full`. reference.yml checks the language reference.
+# The gate of a pull request, on five Linux jobs that run in parallel (about 20 minutes in all):
+#   lint    formatting, lints, a type check of the other four supported platforms, and the platform contracts;
+#   rust    the Rust tests (cargo-nextest; the dev profile of Cargo.toml is opt-level 1), in three slices of the whole list
+#           (`--partition slice:N/3`, which deals the tests of every binary round-robin), each building the tests itself;
+#   suites  the end-to-end suites that a compiler change breaks most often, run on the dev binary.
+# targets.yml, windows.yml and vscode.yml are the slow matrices: they run after every merge to main and, on a pull request,
+# with the label `ci:full`. reference.yml checks the language reference.
 
 on:
   workflow_dispatch:
@@ -29,12 +32,27 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  rust:
+  checks:
+    name: ${{ matrix.group }}${{ matrix.slice && format(' ({0}/{1})', matrix.slice, matrix.slices) || '' }}
     runs-on: ubuntu-24.04
-    # A hosted runner of ubuntu-24.04 runs the Rust tests in 23 to 30 minutes or, on slower hardware, in 40 to 44
-    # (November 2026, about 3,100 tests); the steps before and after them take about 20 more, so a slow runner needs
-    # about 65. The limit only stops a hung job: it is not a speed check.
-    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: lint
+          - group: rust
+            slice: 1
+            slices: 3
+          - group: rust
+            slice: 2
+            slices: 3
+          - group: rust
+            slice: 3
+            slices: 3
+          - group: suites
+    # A slice of the Rust tests takes about 15 minutes on a hosted ubuntu-24.04 runner and suites about 15 (November 2026,
+    # about 3,300 tests); slower hardware takes up to twice as long. The limit only stops a hung job: it is not a speed check.
+    timeout-minutes: 60
     env:
       TSUZURI_CLANG: /usr/lib/llvm-21/bin/clang
       TSUZURI_WASM_LD: /usr/lib/llvm-21/bin/wasm-ld
@@ -57,14 +75,16 @@ jobs:
           restore-keys: ci-${{ runner.os }}-${{ runner.arch }}-
       - uses: actions/cache@v4
         id: nextest
+        if: matrix.group == 'rust'
         with:
           path: ~/.cargo/bin/cargo-nextest
           key: nextest-0.9.148-${{ runner.os }}-${{ runner.arch }}
       - name: cargo-nextest
-        if: steps.nextest.outputs.cache-hit != 'true'
+        if: matrix.group == 'rust' && steps.nextest.outputs.cache-hit != 'true'
         run: cargo install --locked cargo-nextest --version 0.9.148
-      # LLVM 21 as in targets.yml: the system Clang that builds the programs of the tests.
+      # LLVM 21 as in targets.yml: the system Clang that builds the programs of the tests. lint compiles no program.
       - name: LLVM on Linux
+        if: matrix.group != 'lint'
         run: |
           sudo -n apt-get update
           sudo -n apt-get install -y ca-certificates wget gnupg patchelf
@@ -73,33 +93,34 @@ jobs:
           sudo -n apt-get update
           sudo -n apt-get install -y clang-21 lld-21 lldb-21 llvm-21 libclang-rt-21-dev
       - name: Format
+        if: matrix.group == 'lint'
         run: cargo fmt --all -- --check
       - name: Clippy
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.group == 'lint' }}
         run: cargo clippy --locked --all-targets -- -D warnings
       # Linux x64 is checked by Clippy above; the other four platforms are compiled here, not run.
       - name: Type check of all supported platforms
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.group == 'lint' }}
         run: |
           cargo check --locked --all-targets --target x86_64-pc-windows-msvc
           cargo check --locked --all-targets --target aarch64-pc-windows-msvc
           cargo check --locked --all-targets --target aarch64-unknown-linux-gnu
           cargo check --locked --all-targets --target aarch64-apple-darwin
       - name: Supported platform and distribution contracts
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.group == 'lint' }}
         run: node tests/platforms.mjs
-      # Four MiB per test thread, as in targets.yml and windows.yml.
+      # Four MiB per test thread, as in targets.yml and windows.yml. Each slice lists every test and runs its share.
       - name: Rust tests
-        if: ${{ !cancelled() }}
+        if: matrix.group == 'rust'
         env:
           RUST_MIN_STACK: "4194304"
-        run: cargo nextest run --locked --profile ci
+        run: cargo nextest run --locked --profile ci --partition slice:${{ matrix.slice }}/${{ matrix.slices }}
       - name: Dev binary
         id: build
-        if: ${{ !cancelled() }}
+        if: matrix.group == 'suites'
         run: cargo build --locked
       - name: Slot script
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.group == 'suites' }}
         run: node tests/slot.mjs
       - name: LLDB collection views and stepping
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
