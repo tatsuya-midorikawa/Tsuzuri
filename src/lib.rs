@@ -1273,7 +1273,20 @@ mod tests {
     }
 
     #[test]
-    fn examples_and_fixtures_analyze_identically_on_every_thread_count() {
+    fn examples_and_fixtures_analyze_identically_on_every_thread_count_1_of_2() {
+        examples_and_fixtures_analyze_identically_on_every_thread_count(0, 2);
+    }
+
+    #[test]
+    fn examples_and_fixtures_analyze_identically_on_every_thread_count_2_of_2() {
+        examples_and_fixtures_analyze_identically_on_every_thread_count(1, 2);
+    }
+
+    /// Slice `slice` of `slices` of the examples and fixtures, the projects whose index is `slice` modulo `slices`.
+    fn examples_and_fixtures_analyze_identically_on_every_thread_count(
+        slice: usize,
+        slices: usize,
+    ) {
         // Every stage of every project runs on workers (`eager`), however small the project is.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut projects = Vec::new();
@@ -1287,7 +1300,7 @@ mod tests {
         }
         projects.sort();
         let (mut analyzed, mut accepted) = (0, 0);
-        for path in &projects {
+        for path in projects.iter().skip(slice).step_by(slices) {
             let Ok(project) = driver::Project::load(path) else {
                 continue;
             };
@@ -1308,7 +1321,15 @@ mod tests {
             analyzed += 1;
             accepted += usize::from(sequential.starts_with("Ok("));
         }
-        assert!(analyzed >= 90 && accepted >= 90, "{analyzed} {accepted}");
+        // The whole corpus must have at least 90 projects that analyze and 90 that are accepted, and every project adds
+        // one to each. Each slice checks its share (1/N) of these floors: together the slices imply them, and a slice
+        // below its share either lost projects or was dealt fewer of the projects that load.
+        assert!(
+            analyzed * slices >= 90 && accepted * slices >= 90,
+            "slice {} of {slices}: {analyzed} projects analyzed and {accepted} accepted, below the slice's share of the corpus floor of 90 of each (90 / {slices} = {:.1})",
+            slice + 1,
+            90.0 / slices as f64
+        );
     }
 
     #[test]

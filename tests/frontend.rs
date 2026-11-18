@@ -1,3 +1,5 @@
+mod common;
+
 use tsuzuri::{analyze, analyze_modules, llvm};
 
 #[test]
@@ -11,8 +13,14 @@ fn all_semantics_fixture_functions_lower_deterministically() {
     assert!(first.contains("@llvm.fptosi.sat.i64.f64"));
 }
 
-#[test]
-fn deterministic_source_mutations_do_not_panic() {
+common::slices!(deterministic_source_mutations_do_not_panic, 3:
+    1 => deterministic_source_mutations_do_not_panic_1_of_3,
+    2 => deterministic_source_mutations_do_not_panic_2_of_3,
+    3 => deterministic_source_mutations_do_not_panic_3_of_3,
+);
+
+/// Slice `slice` of `slices` of the mutated sources: every slice generates all of them, in order, and analyzes its own.
+fn deterministic_source_mutations_do_not_panic(slice: usize, slices: usize) {
     let originals = [
         "fn rec f(n: i64) -> i64 { if n == 0 { 1 } else { f(n - 1) } }",
         "record R { x: i64 } export fn f() -> i64 { let r = R { x: 1 }; r.x }",
@@ -53,7 +61,9 @@ fn deterministic_source_mutations_do_not_panic() {
             sources.push(String::from_utf8(bytes).unwrap());
         }
     }
-    // The inputs are generated in order above, so the set is the same on every run; only the analysis is spread over threads.
+    // The inputs are generated in order above, so the set is the same on every run; only the analysis is spread over
+    // the slices and their threads.
+    let sources: Vec<&String> = common::slice(&sources, slice, slices).collect();
     let workers = std::thread::available_parallelism()
         .map_or(1, usize::from)
         .min(8);

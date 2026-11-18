@@ -1,3 +1,5 @@
+mod common;
+
 use tsuzuri::check::CheckedModule;
 use tsuzuri::driver::{Target, TestOptions, run_tests};
 use tsuzuri::{analyze, analyze_modules, llvm};
@@ -254,36 +256,56 @@ fn every_function_of_the_fsharp_list_module_is_defined() {
     assert!(missing.is_empty(), "missing from std/List.tz: {missing:?}");
 }
 
-#[test]
-fn the_fsharp_functions_agree_with_their_documentation_on_every_target() {
+common::slices!(the_fsharp_functions_agree_with_their_documentation_on_every_target, 4:
+    1 => the_fsharp_functions_agree_with_their_documentation_on_every_target_1_of_4,
+    2 => the_fsharp_functions_agree_with_their_documentation_on_every_target_2_of_4,
+    3 => the_fsharp_functions_agree_with_their_documentation_on_every_target_3_of_4,
+    4 => the_fsharp_functions_agree_with_their_documentation_on_every_target_4_of_4,
+);
+
+/// Slice `slice` of `slices` of the targets and optimization levels.
+fn the_fsharp_functions_agree_with_their_documentation_on_every_target(
+    slice: usize,
+    slices: usize,
+) {
     let expected = count_tests(BEHAVIOR);
     assert!(expected >= 44, "{expected} tests");
-    for target in [Target::Native, Target::Wasm32] {
-        for optimization in [0, 3] {
-            let results = run(BEHAVIOR, target, optimization);
-            assert_eq!(results.len(), expected);
-            let failed: Vec<_> = results
-                .iter()
-                .filter_map(|outcome| {
-                    outcome
-                        .failure
-                        .as_ref()
-                        .map(|reason| format!("{}: {reason}", outcome.name))
-                })
-                .collect();
-            assert!(
-                failed.is_empty(),
-                "{target:?} -O{optimization} failed: {failed:?}"
-            );
-        }
+    let builds = [
+        (Target::Native, 0),
+        (Target::Native, 3),
+        (Target::Wasm32, 0),
+        (Target::Wasm32, 3),
+    ];
+    for &(target, optimization) in common::slice(&builds, slice, slices) {
+        let results = run(BEHAVIOR, target, optimization);
+        assert_eq!(results.len(), expected);
+        let failed: Vec<_> = results
+            .iter()
+            .filter_map(|outcome| {
+                outcome
+                    .failure
+                    .as_ref()
+                    .map(|reason| format!("{}: {reason}", outcome.name))
+            })
+            .collect();
+        assert!(
+            failed.is_empty(),
+            "{target:?} -O{optimization} failed: {failed:?}"
+        );
     }
 }
 
-#[test]
-fn contract_violations_trap_where_fsharp_raises() {
+common::slices!(contract_violations_trap_where_fsharp_raises, 2:
+    1 => contract_violations_trap_where_fsharp_raises_1_of_2,
+    2 => contract_violations_trap_where_fsharp_raises_2_of_2,
+);
+
+/// Slice `slice` of `slices` of the targets and optimization levels.
+fn contract_violations_trap_where_fsharp_raises(slice: usize, slices: usize) {
     let expected = count_tests(TRAPS);
     assert!(expected >= 100, "{expected} tests");
-    for (target, optimization) in [(Target::Native, 0), (Target::Wasm32, 3)] {
+    let builds = [(Target::Native, 0), (Target::Wasm32, 3)];
+    for &(target, optimization) in common::slice(&builds, slice, slices) {
         let results = run(TRAPS, target, optimization);
         assert_eq!(results.len(), expected);
         let survived: Vec<_> = results
