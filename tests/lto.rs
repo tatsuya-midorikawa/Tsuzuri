@@ -1,5 +1,7 @@
 //! `--emit bitcode` (PR08): the target attributes of the IR, the bitcode of a build, and the hosts that link it.
 
+mod common;
+
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -304,15 +306,8 @@ fn library_ir(path: &Path, levels: u8) -> Option<String> {
     .map(|output| output.ir)
 }
 
-#[test]
-fn stamps_the_ir_of_every_fixture_and_example() {
-    let directory = scratch("corpus");
-    let generic = TargetAttributes::new("x86-64", Some("generic"), None);
-    let native = TargetAttributes::new(
-        "skylake-avx512",
-        Some("generic"),
-        Some("+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87,+avx512f"),
-    );
+/// The examples and fixtures, sorted.
+fn corpus_projects() -> Vec<PathBuf> {
     let mut projects: Vec<PathBuf> = ["examples", "tests/fixtures"]
         .iter()
         .flat_map(|base| fs::read_dir(root().join(base)).unwrap())
@@ -320,21 +315,40 @@ fn stamps_the_ir_of_every_fixture_and_example() {
         .filter(|path| path.is_dir())
         .collect();
     projects.sort();
+    projects
+}
+
+/// The functions of `ir` that name target features of their own: the `@cpu` versions (F08).
+fn feature_versions(ir: &str) -> usize {
+    ir.lines()
+        .filter(|line| line.starts_with("define ") && line.contains("\"target-features\"=\""))
+        .count()
+}
+
+common::slices!(stamps_the_ir_of_every_fixture_and_example, 2:
+    1 => stamps_the_ir_of_every_fixture_and_example_1_of_2,
+    2 => stamps_the_ir_of_every_fixture_and_example_2_of_2,
+);
+
+/// Slice `slice` of `slices` of the examples and fixtures. That the corpus has versions that name features is
+/// `stamps_the_ir_of_every_fixture_and_example_with_versions_that_name_features`.
+fn stamps_the_ir_of_every_fixture_and_example(slice: usize, slices: usize) {
+    let directory = scratch("corpus");
+    let generic = TargetAttributes::new("x86-64", Some("generic"), None);
+    let native = TargetAttributes::new(
+        "skylake-avx512",
+        Some("generic"),
+        Some("+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87,+avx512f"),
+    );
+    let projects = corpus_projects();
     let (mut checked, mut versions) = (0, 0);
-    for path in &projects {
+    for path in common::slice(&projects, slice, slices) {
         let label = path.file_name().unwrap().to_string_lossy().into_owned();
         // A CPU that detects the x86-64 levels, with the `@cpu` versions that name features of their own (F08).
         let Some(ir) = library_ir(path, 0b1110) else {
             continue;
         };
-        let named = |ir: &str| {
-            ir.lines()
-                .filter(|line| {
-                    line.starts_with("define ") && line.contains("\"target-features\"=\"")
-                })
-                .count()
-        };
-        versions += named(&ir);
+        versions += feature_versions(&ir);
         check_stamped(
             &ir,
             &native,
@@ -344,19 +358,62 @@ fn stamps_the_ir_of_every_fixture_and_example() {
         check_stamped(&ir, &generic, &directory, &format!("{label} (x86-64)"));
         checked += 2;
         // AArch64 Linux has its own two levels.
-        if named(&ir) > 0 {
+        if feature_versions(&ir) > 0 {
             let ir = library_ir(path, 0b11_0000).unwrap();
-            versions += named(&ir);
+            versions += feature_versions(&ir);
             check_stamped(&ir, &generic, &directory, &format!("{label} (AArch64)"));
             checked += 1;
         }
     }
-    assert!(checked >= 200, "only {checked} modules were checked");
+    println!(
+        "slice {} of {slices}: {checked} modules, {versions} versions that name features",
+        slice + 1
+    );
+    // Every project adds to this, and each slice checks its share of the 200 modules that the whole corpus must reach.
+    assert!(
+        checked * slices >= 200,
+        "only {checked} modules were checked, fewer than 200 / {slices}"
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+/// The corpus has at least 50 versions that name features, counted as the slices of
+/// `stamps_the_ir_of_every_fixture_and_example` count them. A few fixtures hold them all: the projects whose sources
+/// name `@cpu` are read first, the others in their order (a stable sort), and the search ends when 50 are found.
+#[test]
+fn stamps_the_ir_of_every_fixture_and_example_with_versions_that_name_features() {
+    fn names_cpu(directory: &Path) -> bool {
+        fs::read_dir(directory).unwrap().any(|entry| {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                names_cpu(&path)
+            } else {
+                path.extension().is_some_and(|extension| extension == "tz")
+                    && fs::read_to_string(&path).unwrap().contains("@cpu")
+            }
+        })
+    }
+    let mut projects = corpus_projects();
+    projects.sort_by_cached_key(|path| !names_cpu(path));
+    let (mut read, mut versions) = (0, 0);
+    for path in &projects {
+        if versions >= 50 {
+            break;
+        }
+        read += 1;
+        let Some(ir) = library_ir(path, 0b1110) else {
+            continue;
+        };
+        versions += feature_versions(&ir);
+        if feature_versions(&ir) > 0 {
+            versions += feature_versions(&library_ir(path, 0b11_0000).unwrap());
+        }
+    }
+    println!("{read} projects: {versions} versions that name features");
     assert!(
         versions >= 50,
         "only {versions} versions that name features"
     );
-    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
