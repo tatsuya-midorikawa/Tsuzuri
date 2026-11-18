@@ -12,7 +12,7 @@
 | 承認 | 不要（検査の情報を増やし、原因に合わせてランタイムかテストを直す。言語の意味・診断・生成コードは変えない。ランタイムの振る舞いを変えるときは、その差をこのチケットに記録する） |
 | 改善する劣位 | CI の信頼性: 変更と関係なく Windows x64 のゲートが落ち、失敗した job を流し直すまでマージできない。不具合の可能性: (1) ある CPU で、tzroutine のスタックのあふれが Windows の `STATUS_STACK_OVERFLOW` で終わらない。(2) スケジューラーの spinning の M の数 `tzr_sched.nmspinning` が 10 秒たっても 0 に戻らない（数え間違いか、起こした M が起きない） |
 | 手本にする既存実装 | `tests/tzroutine_runtime.c` の `run_child_with`（Windows は `CreateProcessA` と `GetExitCodeProcess`）、`test_stack_size`・`test_donor`、`tests/tzroutine_runtime.mjs`（`-O0`・`-O3` × `TSUZURI_MAXPROCS` 1・2・4、Linux の TSan・ASan のビルド）、`src/runtime/tzroutine-windows.h` の `tzr_fiber_create`（`CreateFiberEx(commit, reserve, …)`。64 KiB の reserve なら commit は 16 KiB）、`src/runtime/tzroutine.c` の `tzr_wakep`・`tzr_startm`・`tzr_findrunnable`・`tzr_serve_pwait`・`tzr_schedule`（`nmspinning` を増減する所） |
-| 主な影響ファイル | `tests/tzroutine_runtime.c`, `tests/tzroutine_runtime.mjs`, `src/runtime/tzroutine-windows.h`, `src/runtime/tzroutine.c`（原因しだい）, `.github/instructions/ci.instructions.md`（Windows の教訓）, `_features/README.md` |
+| 主な影響ファイル | `tests/tzroutine_runtime.c`, `tests/tzroutine_runtime.mjs`, `src/runtime/tzroutine.c`（手順 1 のテスト用の M の登録。マクロを定義しないビルドは変えない。手順 3 は原因しだい）, `src/runtime/tzroutine-windows.h`（原因しだい）, `.github/instructions/ci.instructions.md`（Windows の教訓）, `_features/README.md` |
 
 ## 目的
 
@@ -100,7 +100,10 @@ Linux の `locked_yielders`（`:2090`、`yields_after_queued < 100`）も 3 回�
 ### 手順 1: 失敗を説明できる情報をテストに出させる
 
 - `run_child_with` の呼び出し側が、期待と違う終了を報告するとき、実際の値を出す。Windows は 16 進の終了コード、POSIX は signal と終了コードです。`CHECK` を、値を書く形（例えば `CHECK_STATUS(overflowed, s)`）にする。
-- `test_donor` の待ちが 10 秒を超えたとき、`CHECK` の前にスケジューラーの状態を出す。`nmspinning`・`npidle`・`nmidle`・`npwait`・`mcount`・`runq_size`、`allm` をたどった M ごとの `spinning`・`p`・`nextp`・待ちの状態、`allp` の各 P の状態と run queue の長さです。テストは `src/runtime/tzroutine.c` を `#include` していて `tzr_sched` を直接読めるので、テスト側の関数で足ります。
+- `test_donor` の待ちが 10 秒を超えたとき、`CHECK` の前にスケジューラーの状態を出す。`nmspinning`・`npidle`・`nmidle`・`npwait`・`mcount`・`runq_size`、M ごとの `spinning`・`p`・`nextp`・待ちの状態、`allp` の各 P の状態と run queue の長さです。テストは `src/runtime/tzroutine.c` を `#include` していて `tzr_sched` を直接読めます。
+  - ただし、全 M の一覧 `tzr_sched.allm` と `tzr_m.all_next` は `TZR_ASYNC` のときだけあり、`TZR_ASYNC` は macOS と Linux の TSan でないビルドでだけ有効です（`src/runtime/tzroutine.c` の 232 行）。`donor` が落ちた Windows と TSan のビルドでは M を列挙できません（`midle` の連鎖は休んでいる M だけです）。
+  - そこで、どのビルドでも使える M の登録を足す。製品のランタイムを変えないよう、テストが `#include` の前に定義するマクロ（例えば `TZR_TEST_INTROSPECTION`）のときだけ、`tzr_startm` が作った M を登録する一覧を持たせる。`TZR_ASYNC` の `allm` と同じく、M は解放しないので、登録だけで足ります。`TZR_ASYNC` が有効なビルドでは、どちらか一方にまとめる（二重に持たない）。
+  - 製品のランタイムに一覧を常に持たせる案（M を作るときの atomic な push が 1 回増える）は、手順 3 でスケジューラーを直すときに要るなら、その時に比べる。
 - Windows では、`stack_size` の子の前に、使える拡張状態（`GetEnabledXStateFeatures`）と、`InitializeContext2(CONTEXT_ALL | CONTEXT_XSTATE)` が求める大きさを 1 行出す（H1 の材料）。
 
 この手順だけでもマージしてよい。以後の CI の失敗が、原因を判断する情報を残すようになります。
