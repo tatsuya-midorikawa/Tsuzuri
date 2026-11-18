@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.7 - 2026-11-19
+
+- Refresh the bundled compiler, standard library, completions, and offline handbook with the merged language and tooling updates.
+- Add tzroutines, lightweight threads on an M:N scheduler for native macOS, Linux, and Windows: `tzroutine { }` and the `Routine` module (such as `go`, `yield`, `scope`, and `with_locked_thread`), Go-style two-way `Channel` with `SendOnly` / `ReceiveOnly` ends, the `select` expression, timers (`Time.sleep`, `after`, `tick`, `after_func`, `Timer`, `Ticker`), the sync types `WaitGroup`, `Once`, `OnceValue`, `RwMutex`, `Cond`, `Semaphore`, and `SyncMap`, and `Context` / `ErrGroup` for cancellation. `main`, exports, tests, and bench samples wait for the tzroutines they spawn. Blocking calls and socket waits no longer stop the other tzroutines, and long-running tzroutines are preempted. On WebAssembly, tzroutines take turns on the single JavaScript thread with `--wasm-feature jspi`. Native programs also run `Parallel`, `Mutex`, and `DataChannel` on this scheduler.
+- **Compatibility:** the channel with separate sender and receiver ends is now `DataChannel` (`DataChannel.bounded`, `Sender`, `Receiver`, `clone_sender`). The old `Channel` names are `E1040`, and `tsuzuri fix` rewrites them.
+- **Compatibility:** `task { }`, `Task<T>`, and `Task.*` are removed (`E1040`). Use `tzroutine { }`, channels, or `Routine.scope`; `tsuzuri fix` rewrites `Task.scope` to `Routine.scope`. `task` is an ordinary identifier again.
+- **Compatibility:** `Async`, `async { }`, and the `Net.*_async` functions are removed (`E1040`) without an automatic fix. Call the synchronous `Net` functions inside a tzroutine instead.
+- **Compatibility:** `Owned.function` rejects a function value that holds a borrow (`E1013`), and in-place writes such as `Array.write` and `Vec.push_mut` keep the borrows they store. Earlier versions accepted both kinds of program, which then read freed memory.
+- Add anonymous unions `(A | B)` with injection, widening, and narrowing, the type-test pattern `:? T [as x]`, and the built-in `Eq`, `Ord`, `Hash`, `Display`, and JSON `Encode` / `Decode` when every member has them.
+- New Project reserves the `Routine`, `DataChannel`, `SendOnly`, `ReceiveOnly`, `Timer`, `Ticker`, `WaitGroup`, `Once`, `OnceValue`, `RwMutex`, `Cond`, `Semaphore`, `SyncMap`, `Context`, and `ErrGroup` namespaces consistently with the compiler, and no longer reserves `Async`, `Task`, or `task`. Syntax highlighting adds `tzroutine` and the `select` arms (`recv ... from`, `send`, `default`) and drops `task`, `Task`, and `Async`.
+- Signature help finds the call on a line that follows a closing bracket.
+- Fix a false `E1003` for call results passed to `ref` parameters and for lambdas with `ref` / `ref mut` parameter annotations, a false `E1013` for call results that contain functions, `E2002` for builtins over `dyn` types with markers such as `Channel<dyn (C, Send)>`, a data race with `--allocator small` in nested `Parallel` calls, and `tsuzuri bindgen` reading an unnamed `typedef struct`, `union`, or `enum` as an unrelated tag with Clang 23.
+
 ## 0.1.6 - 2026-11-01
 
 - Refresh the bundled compiler, standard library, completions, and offline handbook with the merged language and tooling updates.
