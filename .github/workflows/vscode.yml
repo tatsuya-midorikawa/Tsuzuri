@@ -42,6 +42,8 @@ concurrency:
 
 jobs:
   package:
+    # The installer and checksum of the Windows entries stay out of the name.
+    name: package (${{ matrix.os }}, ${{ matrix.target }})
     if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'ci:full') && (github.event.action != 'labeled' || github.event.label.name == 'ci:full')) }}
     strategy:
       fail-fast: false
