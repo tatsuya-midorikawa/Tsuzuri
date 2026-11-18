@@ -553,9 +553,11 @@ jobs:
             target/progfuzz/failures
             target/progfuzz/self-test
           if-no-files-found: ignore
-      # Other tickets' end-to-end steps for these three hosts go in the group whose length they fit (suites or strings-tools, or
-      # fast for the fast backend), with `if: ${{ !cancelled() && matrix.group == '<group>' && steps.bundle.outcome == 'success' }}`
-      # so that a failure above does not hide them.
+      # Other tickets' end-to-end steps for these three hosts go in the group whose length they fit, with `!cancelled()` so that a
+      # failure above does not hide them, and the outcome of the build they use:
+      #   suites, strings-tools  `if: ${{ !cancelled() && matrix.group == '<group>' && steps.bundle.outcome == 'success' }}`;
+      #   fast                   `steps.fast.outcome` for the fast backend's build (target/fast), or `steps.release.outcome` for
+      #                          the default release compiler (the group builds no bundle, so `steps.bundle` is always skipped there).
       #
       # The Rust tests. The depth-limit tests (parser::tests::bounds_recursive_and_flat_expression_depth,
       # computations::bounds_computation_syntax_and_expansion, ...) feed 200 nested levels to a debug build
