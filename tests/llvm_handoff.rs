@@ -720,15 +720,21 @@ fn pruning_keeps_the_ir_of_every_project_valid(slice: usize, slices: usize) {
         slice + 1
     );
     assert!(problems.is_empty(), "{}", problems.join("\n"));
-    // The corpus is checked, not skipped: 130 projects make about 300 programs that analyze and emit, and each
-    // slice checks its share of the 200 programs and 600 builds that the whole corpus must reach at least.
+    // The corpus is checked, not skipped: 130 projects make about 300 programs that analyze and emit, so the whole
+    // corpus must reach at least 200 programs and 600 builds. Each slice checks its share (1/N) of these floors:
+    // together the slices imply them, and a slice below its share either lost projects or was dealt fewer of the
+    // projects that make programs.
     assert!(
         programs * slices >= 200,
-        "only {programs} programs were checked, fewer than 200 / {slices}"
+        "slice {} of {slices}: only {programs} programs were checked, below the slice's share of the corpus floor of 200 programs (200 / {slices} = {:.1})",
+        slice + 1,
+        200.0 / slices as f64
     );
     assert!(
         emissions * slices >= 600,
-        "only {emissions} builds were checked, fewer than 600 / {slices}"
+        "slice {} of {slices}: only {emissions} builds were checked, below the slice's share of the corpus floor of 600 builds (600 / {slices} = {:.1})",
+        slice + 1,
+        600.0 / slices as f64
     );
 }
 

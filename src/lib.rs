@@ -1321,11 +1321,14 @@ mod tests {
             analyzed += 1;
             accepted += usize::from(sequential.starts_with("Ok("));
         }
-        // Each slice checks its share of the 90 projects that the whole corpus must reach at least.
+        // The whole corpus must have at least 90 projects that analyze and 90 that are accepted, and every project adds
+        // one to each. Each slice checks its share (1/N) of these floors: together the slices imply them, and a slice
+        // below its share either lost projects or was dealt fewer of the projects that load.
         assert!(
             analyzed * slices >= 90 && accepted * slices >= 90,
-            "slice {} of {slices}: {analyzed} {accepted}",
-            slice + 1
+            "slice {} of {slices}: {analyzed} projects analyzed and {accepted} accepted, below the slice's share of the corpus floor of 90 of each (90 / {slices} = {:.1})",
+            slice + 1,
+            90.0 / slices as f64
         );
     }
 

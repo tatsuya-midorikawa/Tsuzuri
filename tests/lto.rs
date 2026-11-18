@@ -369,10 +369,14 @@ fn stamps_the_ir_of_every_fixture_and_example(slice: usize, slices: usize) {
         "slice {} of {slices}: {checked} modules, {versions} versions that name features",
         slice + 1
     );
-    // Every project adds to this, and each slice checks its share of the 200 modules that the whole corpus must reach.
+    // The whole corpus must reach at least 200 modules, and every project adds two or three. Each slice checks its
+    // share (1/N) of this floor: together the slices imply it, and a slice below its share either lost projects or
+    // was dealt fewer of the projects that emit.
     assert!(
         checked * slices >= 200,
-        "only {checked} modules were checked, fewer than 200 / {slices}"
+        "slice {} of {slices}: only {checked} modules were checked, below the slice's share of the corpus floor of 200 modules (200 / {slices} = {:.1})",
+        slice + 1,
+        200.0 / slices as f64
     );
     fs::remove_dir_all(directory).unwrap();
 }

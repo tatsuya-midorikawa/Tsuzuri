@@ -2435,15 +2435,20 @@ entry:
             cut.crossing,
             cut.markers
         );
-        // Every program adds to these, and each slice checks its share of what the whole repository must reach: more
-        // than 60 programs and 1000 units.
+        // The whole repository must have more than 60 programs and 1000 units, and every program adds to both. Each
+        // slice checks its share (1/N) of these floors: together the slices imply them, and a slice at or below its
+        // share either lost programs or was dealt fewer of the directories that are programs.
         assert!(
             programs * slices > 60,
-            "{programs} programs, not more than 60 / {slices}"
+            "slice {} of {slices}: only {programs} programs, not above the slice's share of the repository's floor of more than 60 programs (60 / {slices} = {:.1})",
+            slice + 1,
+            60.0 / slices as f64
         );
         assert!(
             units * slices > 1000,
-            "{units} units, not more than 1000 / {slices}"
+            "slice {} of {slices}: only {units} units, not above the slice's share of the repository's floor of more than 1000 units (1000 / {slices} = {:.1})",
+            slice + 1,
+            1000.0 / slices as f64
         );
     }
 
