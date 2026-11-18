@@ -24,6 +24,10 @@ Lessons from the PR #3 and #4 VS Code workflow failures, and from the Windows ga
   verifies the pinned SHA-256, skips a source silent for 30 seconds, and makes up to three passes because GitHub release
   downloads also return transient 5xx errors. Do not depend on one origin with a total timeout; ziglang.org is a single
   server, so Zig comes from shuffled community mirrors first. Refresh that snapshot when bumping Zig.
+- On Windows, extract and create archives with libarchive's `System32\tar.exe` (`systemTar()` in
+  `scripts/toolchain/bundle.mjs`), not PowerShell's `Expand-Archive`, and move or hard-link large trees instead of copying
+  them. `Expand-Archive` took about 6 minutes for Zig's 19,500 files on `windows-2022`. Git for Windows puts a GNU tar first
+  on `PATH`, and that tar cannot read or write zip archives.
 - `fs::canonicalize` returns verbatim `\\?\` paths on Windows. Use `cache::real_path` for paths shown to users or
   passed to child tools, and normalize expected paths in tests the same way.
 - Type-check Windows code from other hosts with `cargo check --all-targets --target x86_64-pc-windows-msvc` (and
