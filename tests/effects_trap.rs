@@ -5,6 +5,7 @@
 mod common;
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use common::ir_scan;
 use tsuzuri::analyze;
@@ -35,19 +36,26 @@ fn scratch(name: &str) -> std::path::PathBuf {
     directory
 }
 
-#[test]
-fn ir_trap_sites_are_covered_by_the_rule() {
-    let scratch = scratch("effects-trap");
-    let projects = ir_scan::corpus();
-    assert!(
-        projects.len() >= 100,
-        "found only {} projects",
-        projects.len()
-    );
-    let (mut sites, mut functions_checked) = (0, 0);
-    let mut missing = Vec::new();
-    for directory in &projects {
-        let (ir, table) = ir_scan::emit(directory, &scratch);
+/// What the comparison of the rule with the trap sites of the IR found in some programs of the corpus.
+#[derive(Default)]
+struct Coverage {
+    /// The logical trap sites that the IR keeps.
+    sites: usize,
+    /// The functions whose inherited trap context names a logical kind.
+    functions_checked: usize,
+    /// The traps of both kinds that have no `trap` site of the rule.
+    missing: Vec<String>,
+}
+
+impl Coverage {
+    /// Compares the `trap` sites of the program in `directory` with the IR that it emits.
+    fn add(&mut self, directory: &Path, scratch: &Path) {
+        let Coverage {
+            sites,
+            functions_checked,
+            missing,
+        } = self;
+        let (ir, table) = ir_scan::emit(directory, scratch);
         let project = Project::load_for_tests(directory).unwrap();
         let module = project.analyze().unwrap();
         let summary = effects::summarize(
@@ -89,7 +97,7 @@ fn ir_trap_sites_are_covered_by_the_rule() {
             if !real.contains(&id) || !LOGICAL.contains(&kind) {
                 continue;
             }
-            sites += 1;
+            *sites += 1;
             let path = site["path"].as_str().unwrap().to_owned();
             let start = site["span"]["start"].as_u64().unwrap() as usize;
             let end = site["span"]["end"].as_u64().unwrap() as usize;
@@ -128,7 +136,7 @@ fn ir_trap_sites_are_covered_by_the_rule() {
             if !logical {
                 continue;
             }
-            functions_checked += 1;
+            *functions_checked += 1;
             if !summary
                 .sites(id)
                 .iter()
@@ -141,17 +149,74 @@ fn ir_trap_sites_are_covered_by_the_rule() {
             }
         }
     }
-    let _ = std::fs::remove_dir_all(&scratch);
-    println!(
-        "logical trap sites checked: {sites}; functions with logical trap kinds: {functions_checked}"
+}
+
+common::slices!(ir_trap_sites_are_covered_by_the_rule, 6:
+    1 => ir_trap_sites_are_covered_by_the_rule_1_of_6,
+    2 => ir_trap_sites_are_covered_by_the_rule_2_of_6,
+    3 => ir_trap_sites_are_covered_by_the_rule_3_of_6,
+    4 => ir_trap_sites_are_covered_by_the_rule_4_of_6,
+    5 => ir_trap_sites_are_covered_by_the_rule_5_of_6,
+    6 => ir_trap_sites_are_covered_by_the_rule_6_of_6,
+);
+
+/// Slice `slice` of `slices` of the corpus. That the corpus has logical trap sites and functions at all is
+/// `ir_trap_sites_are_covered_by_the_rule_and_the_corpus_has_some`.
+fn ir_trap_sites_are_covered_by_the_rule(slice: usize, slices: usize) {
+    // `cargo test` runs the slices as threads of one process: each has its own directory.
+    let scratch = scratch(&format!("effects-trap-{}-of-{slices}", slice + 1));
+    let projects = ir_scan::corpus();
+    assert!(
+        projects.len() >= 100,
+        "found only {} projects",
+        projects.len()
     );
-    assert!(sites > 0 && functions_checked > 0);
+    let mut coverage = Coverage::default();
+    for directory in common::slice(&projects, slice, slices) {
+        coverage.add(directory, &scratch);
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    let Coverage {
+        sites,
+        functions_checked,
+        missing,
+    } = coverage;
+    println!(
+        "slice {} of {slices}: logical trap sites checked: {sites}; functions with logical trap kinds: {functions_checked}",
+        slice + 1
+    );
     assert!(
         missing.is_empty(),
         "{} logical traps have no 'trap' site of the rule:\n{}",
         missing.len(),
         missing.join("\n")
     );
+}
+
+/// The slices check something: the corpus has a logical trap site and a function with a logical trap kind. The
+/// programs are read in the order of the corpus until both have been seen.
+#[test]
+fn ir_trap_sites_are_covered_by_the_rule_and_the_corpus_has_some() {
+    let scratch = scratch("effects-trap-some");
+    let mut coverage = Coverage::default();
+    let mut programs = 0;
+    for directory in &ir_scan::corpus() {
+        if coverage.sites > 0 && coverage.functions_checked > 0 {
+            break;
+        }
+        coverage.add(directory, &scratch);
+        programs += 1;
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    let Coverage {
+        sites,
+        functions_checked,
+        ..
+    } = coverage;
+    println!(
+        "{programs} programs: logical trap sites checked: {sites}; functions with logical trap kinds: {functions_checked}"
+    );
+    assert!(sites > 0 && functions_checked > 0);
 }
 
 const MAIN: &str = "def main :: unit -> i32 = \\() -> 0\n";
