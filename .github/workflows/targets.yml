@@ -88,7 +88,8 @@ jobs:
           node-version: 24
       - uses: dtolnay/rust-toolchain@stable
       # The crates, and the Zig archive that scripts/toolchain/bundle.mjs downloads (it verifies the
-      # pinned SHA-256 whether or not the file came from here).
+      # pinned SHA-256 whether or not the file came from here). Only the groups that build the bundle have the archive, and
+      # the first job of a key to finish saves it, so they keep a key of their own.
       - uses: actions/cache@v4
         with:
           path: |
@@ -96,8 +97,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target/vsc-downloads
-          key: targets-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'scripts/toolchain/bundle.mjs') }}
-          restore-keys: targets-${{ runner.os }}-${{ runner.arch }}-
+          key: targets-${{ runner.os }}-${{ runner.arch }}-${{ (matrix.group == 'suites' || matrix.group == 'strings-tools') && 'bundle' || 'crates' }}-${{ hashFiles('Cargo.lock', 'scripts/toolchain/bundle.mjs') }}
+          restore-keys: targets-${{ runner.os }}-${{ runner.arch }}-${{ (matrix.group == 'suites' || matrix.group == 'strings-tools') && 'bundle' || 'crates' }}-
       - name: Check host architecture
         env:
           EXPECTED_HOST: ${{ matrix.host }}

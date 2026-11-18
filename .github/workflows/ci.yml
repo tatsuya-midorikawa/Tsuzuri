@@ -65,14 +65,15 @@ jobs:
         with:
           components: rustfmt, clippy
           targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc, aarch64-unknown-linux-gnu, aarch64-apple-darwin
+      # lint also fetches the crates of the other four platforms; the first job of a key to finish saves it.
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: ci-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ci-${{ runner.os }}-${{ runner.arch }}-
+          key: ci-${{ runner.os }}-${{ runner.arch }}-${{ matrix.group == 'lint' && 'lint' || 'host' }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ci-${{ runner.os }}-${{ runner.arch }}-${{ matrix.group == 'lint' && 'lint' || 'host' }}-
       - uses: actions/cache@v4
         id: nextest
         if: matrix.group == 'rust'
