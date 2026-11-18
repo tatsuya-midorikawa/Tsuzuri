@@ -2297,17 +2297,97 @@ entry:
         assert_eq!(failures, 0);
     }
 
-    /// Every program of `examples/`, `benchmarks/` and `tests/fixtures/` that is one directory of sources, built for
-    /// `-O0` with and without trap information (stable numbers), is cut into units that define every function and
-    /// variable once and name nothing that no unit defines or declares.
-    #[test]
-    fn splits_the_programs_of_the_repository() {
-        use crate::llvm::TrapNumbering;
+    /// What the cut of some programs of the repository made.
+    #[derive(Default)]
+    struct RepositoryCut {
+        programs: usize,
+        units: usize,
+        promoted: usize,
+        tail_calls: usize,
+        crossing: usize,
+        markers: usize,
+    }
+
+    impl RepositoryCut {
+        /// Cuts the program in `directory` and checks its units, if it is one directory of sources that checks as a
+        /// program on its own: built for `-O0` with and without trap information (stable numbers), it is cut into
+        /// units that define every function and variable once and name nothing that no unit defines or declares.
+        fn add(&mut self, directory: &std::path::Path) {
+            use crate::llvm::TrapNumbering;
+            let mut files = Vec::new();
+            let mut flat = true;
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    // `target/` holds what commands write there (the knowledge graph), not
+                    // sources.
+                    if path.file_name() != Some(std::ffi::OsStr::new("target")) {
+                        flat = false;
+                    }
+                } else if path.extension().is_some_and(|extension| extension == "tz") {
+                    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                    files.push((name, std::fs::read_to_string(&path).unwrap()));
+                }
+            }
+            files.sort();
+            if !flat || !files.iter().any(|(name, _)| name == "Main.tz") {
+                return;
+            }
+            let sources: Vec<(&str, &str)> = files
+                .iter()
+                .map(|(name, text)| (name.as_str(), text.as_str()))
+                .collect();
+            // A directory that does not check as a program on its own (an example of an error) is left out.
+            let Ok(module) = crate::analyze_modules(&sources) else {
+                return;
+            };
+            // A program with failure domains (B10) is instrumented like `--trap-mode return` and never cut.
+            if !crate::check::domain_calls(&module).is_empty() {
+                return;
+            }
+            // A program with an entry is built for an executable with and without trap information; the others
+            // are libraries (an object of exports) and are cut without.
+            let numberings: &[Option<TrapNumbering>] = if module.entry.is_some() {
+                &[None, Some(TrapNumbering::Stable)]
+            } else {
+                &[None]
+            };
+            for &numbering in numberings {
+                let (ir, modules, _) = executable_ir_with(&sources, numbering);
+                let modules: Vec<&str> = modules.iter().map(String::as_str).collect();
+                let units = split(&SplitInput {
+                    ir: &ir,
+                    modules: &modules,
+                })
+                .unwrap_or_else(|error| panic!("{}: {error}", directory.display()));
+                let found = check(&ir, &modules, &units);
+                assert!(
+                    found.is_empty(),
+                    "{} ({numbering:?}): {}",
+                    directory.display(),
+                    found.join("\n")
+                );
+                let again = split(&SplitInput {
+                    ir: &ir,
+                    modules: &modules,
+                })
+                .unwrap();
+                assert_eq!(units, again, "{} is deterministic", directory.display());
+                self.units += units.len();
+                self.promoted += assert_reserved_names(&ir, &units);
+                let tail = assert_tail_calls_and_markers(&units);
+                self.tail_calls += tail.calls;
+                self.crossing += tail.across;
+                self.markers += tail.markers;
+            }
+            self.programs += 1;
+        }
+    }
+
+    /// The directories of `examples/`, `benchmarks/` and `tests/fixtures/`, in this order, each parent's sorted.
+    fn repository_directories() -> Vec<std::path::PathBuf> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut programs = 0;
-        let mut units_made = 0;
-        let mut promoted = 0;
-        let (mut tail_calls, mut crossing, mut markers) = (0, 0, 0);
+        let mut all = Vec::new();
         for parent in ["examples", "benchmarks", "tests/fixtures"] {
             let mut directories: Vec<_> = std::fs::read_dir(root.join(parent))
                 .unwrap()
@@ -2315,88 +2395,127 @@ entry:
                 .filter(|path| path.is_dir())
                 .collect();
             directories.sort();
-            for directory in directories {
-                let mut files = Vec::new();
-                let mut flat = true;
-                for entry in std::fs::read_dir(&directory).unwrap() {
-                    let path = entry.unwrap().path();
-                    if path.is_dir() {
-                        // `target/` holds what commands write there (the knowledge graph), not
-                        // sources.
-                        if path.file_name() != Some(std::ffi::OsStr::new("target")) {
-                            flat = false;
-                        }
-                    } else if path.extension().is_some_and(|extension| extension == "tz") {
-                        let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                        files.push((name, std::fs::read_to_string(&path).unwrap()));
-                    }
-                }
-                files.sort();
-                if !flat || !files.iter().any(|(name, _)| name == "Main.tz") {
-                    continue;
-                }
-                let sources: Vec<(&str, &str)> = files
-                    .iter()
-                    .map(|(name, text)| (name.as_str(), text.as_str()))
-                    .collect();
-                // A directory that does not check as a program on its own (an example of an error) is left out.
-                let Ok(module) = crate::analyze_modules(&sources) else {
-                    continue;
-                };
-                // A program with failure domains (B10) is instrumented like `--trap-mode return` and never cut.
-                if !crate::check::domain_calls(&module).is_empty() {
-                    continue;
-                }
-                // A program with an entry is built for an executable with and without trap information; the others
-                // are libraries (an object of exports) and are cut without.
-                let numberings: &[Option<TrapNumbering>] = if module.entry.is_some() {
-                    &[None, Some(TrapNumbering::Stable)]
-                } else {
-                    &[None]
-                };
-                for &numbering in numberings {
-                    let (ir, modules, _) = executable_ir_with(&sources, numbering);
-                    let modules: Vec<&str> = modules.iter().map(String::as_str).collect();
-                    let units = split(&SplitInput {
-                        ir: &ir,
-                        modules: &modules,
-                    })
-                    .unwrap_or_else(|error| panic!("{}: {error}", directory.display()));
-                    let found = check(&ir, &modules, &units);
-                    assert!(
-                        found.is_empty(),
-                        "{} ({numbering:?}): {}",
-                        directory.display(),
-                        found.join("\n")
-                    );
-                    let again = split(&SplitInput {
-                        ir: &ir,
-                        modules: &modules,
-                    })
-                    .unwrap();
-                    assert_eq!(units, again, "{} is deterministic", directory.display());
-                    units_made += units.len();
-                    promoted += assert_reserved_names(&ir, &units);
-                    let tail = assert_tail_calls_and_markers(&units);
-                    tail_calls += tail.calls;
-                    crossing += tail.across;
-                    markers += tail.markers;
-                }
-                programs += 1;
-            }
+            all.extend(directories);
         }
-        assert!(programs > 60, "{programs} programs");
-        assert!(units_made > 1000, "{units_made} units");
+        all
+    }
+
+    #[test]
+    fn splits_the_programs_of_the_repository_1_of_3() {
+        splits_the_programs_of_the_repository(0, 3);
+    }
+
+    #[test]
+    fn splits_the_programs_of_the_repository_2_of_3() {
+        splits_the_programs_of_the_repository(1, 3);
+    }
+
+    #[test]
+    fn splits_the_programs_of_the_repository_3_of_3() {
+        splits_the_programs_of_the_repository(2, 3);
+    }
+
+    /// Every program of `examples/`, `benchmarks/` and `tests/fixtures/` that is one directory of sources is cut and
+    /// its units checked (`RepositoryCut::add`). Slice `slice` of `slices` takes the directories whose index in
+    /// `repository_directories` is `slice` modulo `slices`. The totals that a few programs carry are
+    /// `splits_the_programs_of_the_repository_with_tail_calls_markers_and_promoted_names`.
+    fn splits_the_programs_of_the_repository(slice: usize, slices: usize) {
+        let mut cut = RepositoryCut::default();
+        for directory in repository_directories().iter().skip(slice).step_by(slices) {
+            cut.add(directory);
+        }
+        let RepositoryCut {
+            programs, units, ..
+        } = cut;
+        println!(
+            "slice {} of {slices}: {programs} programs, {units} units, {} promoted generic names, {} guaranteed tail calls, {} of them across units, {} lifetime markers",
+            slice + 1,
+            cut.promoted,
+            cut.tail_calls,
+            cut.crossing,
+            cut.markers
+        );
+        // Every program adds to these, and each slice checks its share of what the whole repository must reach: more
+        // than 60 programs and 1000 units.
+        assert!(
+            programs * slices > 60,
+            "{programs} programs, not more than 60 / {slices}"
+        );
+        assert!(
+            units * slices > 1000,
+            "{units} units, not more than 1000 / {slices}"
+        );
+    }
+
+    /// The totals of the repository that a few programs carry, whichever slice of
+    /// `splits_the_programs_of_the_repository` cuts them. The programs are cut in an order that meets them early, and
+    /// each search ends when its totals are reached: it reads every program before it fails.
+    #[test]
+    fn splits_the_programs_of_the_repository_with_tail_calls_markers_and_promoted_names() {
+        let directories = repository_directories();
+        // The builds with trap information embed the numeric runtime of a program that needs it, whose helpers
+        // (`decode`, `power`, ...) have generic names. The programs are read in their order.
+        let mut cut = RepositoryCut::default();
+        for directory in &directories {
+            if cut.promoted >= 19 && cut.markers > 100 {
+                break;
+            }
+            cut.add(directory);
+        }
+        println!(
+            "{} programs: {} promoted generic names, {} lifetime markers",
+            cut.programs, cut.promoted, cut.markers
+        );
+        assert!(
+            cut.promoted >= 19,
+            "{} promoted generic names",
+            cut.promoted
+        );
         // The programs of PM09 have guaranteed tail calls and lifetime markers (the calls between units are those of
         // `guaranteed_tail_calls_and_lifetime_markers_survive_the_cut`: no program of the repository has a group over
         // more than one module).
         assert!(
-            tail_calls > 10 && markers > 100,
-            "{tail_calls} guaranteed tail calls, {crossing} of them across units, {markers} lifetime markers"
+            cut.markers > 100,
+            "{} guaranteed tail calls, {} of them across units, {} lifetime markers",
+            cut.tail_calls,
+            cut.crossing,
+            cut.markers
         );
-        // The builds with trap information embed the numeric runtime of a program that needs it, whose helpers
-        // (`decode`, `power`, ...) have generic names.
-        assert!(promoted >= 19, "{promoted} promoted generic names");
+        // A guaranteed tail call is a call between the functions of one recursion: the programs with the most
+        // recursive definitions are read first, the others in their order (a stable sort).
+        let recursive = |directory: &std::path::PathBuf| {
+            std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.extension().is_some_and(|extension| extension == "tz"))
+                .map(|path| {
+                    std::fs::read_to_string(path)
+                        .unwrap()
+                        .matches(" rec ")
+                        .count()
+                })
+                .sum::<usize>()
+        };
+        let mut by_recursion = directories.clone();
+        by_recursion.sort_by_cached_key(|directory| std::cmp::Reverse(recursive(directory)));
+        let mut cut = RepositoryCut::default();
+        for directory in &by_recursion {
+            if cut.tail_calls > 10 {
+                break;
+            }
+            cut.add(directory);
+        }
+        println!(
+            "{} programs: {} guaranteed tail calls",
+            cut.programs, cut.tail_calls
+        );
+        assert!(
+            cut.tail_calls > 10,
+            "{} guaranteed tail calls, {} of them across units, {} lifetime markers",
+            cut.tail_calls,
+            cut.crossing,
+            cut.markers
+        );
     }
 
     #[test]
