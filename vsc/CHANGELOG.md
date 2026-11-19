@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.8 - 2026-11-20
 
 - Fix the extension's `Tsuzuri` copies of errors and warnings, and the task markers, that stayed in the Problems panel and as squiggles after they were fixed. The language server alone reports the errors and warnings of the code as you type. The test discovery that runs after each save no longer adds a `Tsuzuri` copy of a saved error; a failed discovery shows on the project in the Testing view.
 - The results of a test run, a test debug, and Debug Project (source `Tsuzuri`) stay until the project changes: an edit, a created or written source, `Tsuzuri.toml`, or `Tsuzuri.lock`, a deleted file or folder (also a folder moved or renamed away), or a removed workspace folder. A folder moved into the project from elsewhere and a created or rebuilt `[native]` link input do not count; run the tests again after them. A result in a path dependency outside the project also clears when a Tsuzuri source outside the project changes or a folder there is deleted, and a run whose project changed while it ran shows no result. The results leave out what the language server already reports at the same place with the same code, keep what it does not check (such as `E1036`, link errors (`E2002`), and failed tests (`E2006`)), and place a diagnostic on the first line of a file with a UTF-8 byte order mark at the right column.
+- On Windows, the results of a test run, a test debug, and Debug Project now appear on the file they name instead of a separate `\\?\` path, and the Testing view links tests to the files as VS Code opened them; a project opened through a symbolic link is handled the same way.
 - **Compatibility:** the Run, Build, Check, Test, Debug, and Wasm tasks of the extension no longer report to the Problems panel, whose task markers stayed until the next task. Their diagnostics print to the terminal, where `path:line:column` opens the location. The `$tsuzuri` problem matcher remains for your own `tasks.json`.
 
 ## 0.1.7 - 2026-11-19
