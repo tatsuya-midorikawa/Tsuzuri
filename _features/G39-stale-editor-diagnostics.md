@@ -1,0 +1,561 @@
+# G39: VS Code で直した警告・エラーが消えない（拡張の `tsuzuri-build` とタスクの problem matcher が出す写しが残る。言語サーバーは前に送った URI を覚えていない）
+
+| 項目 | 内容 |
+| --- | --- |
+| ID | G39 |
+| 優先度 | P1（拡張を使う人のほぼ全員が、ふつうの編集で踏む。エラーのある状態で一度保存すると、直して保存しても問題パネルと波線に `Tsuzuri` の写しが残り、言語サーバーを再起動しても消えない） |
+| 規模 | L（Phase 1 は拡張の 3 か所と統合テスト、Phase 2 は言語サーバーの publish の記録、Phase 3 は言語サーバーの要求の待ち行列と取り消し。どれも S〜M） |
+| 依存 | G07, G12, G14, G16（すべて done） |
+| 後続 | – |
+| 状態 | todo |
+| 起票 | 2026-11-19（利用者の報告「VS Code と Tsuzuri の拡張で開発すると、警告やエラーの箇所を直しても表示され続ける」を受けて起票。HEAD `af644794`（拡張 0.1.7）で、VS Code 1.103.2 に拡張と同梱のツールチェーンを入れて再現した。原因 1・2 は、利用者の環境（VS Code Insiders 1.148.0 と Marketplace の拡張 0.1.6）でも同じように再現した） |
+| 承認 | 不要（言語と CLI の意味は変えない。拡張と言語サーバーが出す診断がいつ消えるかを直す。拡張のタスクが問題パネルへ診断を出さなくなること（D3）と、言語サーバーがプロジェクトを読み込めない間ほかのファイルの診断を消すこと（D6）と、根の外の依存のファイルに解析の診断を送らないこと（D9）は、利用者から見える変更なので `vsc/README.md` と言語リファレンスに書く） |
+| 改善する劣位 | 不具合: (1) エラーのある状態で保存すると、問題パネルに source `Tsuzuri` の写しが増え、直して保存しても消えない。消えるのはテストを実行するか Debug したときだけ。(2) ▷ Run・Build・Check の後は、直した警告・エラーが次にタスクを流すまで残る。(3) テストの実行と Debug の後は、直した警告・エラーが次の実行まで残る。(4) ファイルの削除・名前の変更・移動、`Tsuzuri.toml` の誤り、プロジェクトの読み込みの失敗、シンボリックリンクを通したフォルダーでは、言語サーバー自身の診断（source `tsuzuri`）も残る。(5) 電球のコードアクションの要求が修正案ごとにプロジェクトを解析し直し、取り消されても最後まで計算するので、直した結果が 0.6〜3 秒、大きいプロジェクトでは 20 秒近く遅れて出る |
+| 手本にする既存実装 | 拡張: `vsc/src/workflow.ts` の `publishDiagnostics`（根ごとに前の URI を消してから入れ直す）、`vsc/src/test/extension.test.ts` の「diagnostics cleared」の検査（未保存の編集だけを見ている）。言語サーバー: `src/lsp.rs` の `Session::publish`・`Session::refresh`、`tests/lsp.rs` の `scripted`・`session`（50〜130 行）、`tests/lsp_sessions.mjs` の `workspace/didChangeWatchedFiles` の場面（122〜140 行） |
+| 主な影響ファイル | `vsc/src/testing.ts`, `vsc/src/workflow.ts`, `vsc/src/extension.ts`, `vsc/src/core.ts`, `vsc/src/test/extension.test.ts`, `vsc/src/test/core.test.ts`, `vsc/README.md`, `vsc/CHANGELOG.md`, `src/lsp.rs`, `src/fix.rs`, `tests/lsp.rs`, `tests/lsp_sessions.mjs`, `_tsuzuri/language-reference/compiler/diagnostics.md`, `_tsuzuri/language-reference/compiler/usage.md`, `docs/architecture.md`, `_features/README.md` |
+
+## 目的
+
+エディターに出る警告とエラーを、今のソースの状態と食い違わないようにする。直した箇所の診断は、直した直後に消える。
+今は、同じ診断が 2 つか 3 つの出どころから別々に出ていて、言語サーバー以外の出どころは編集を見ていない。
+利用者には、直したのに消えない `Tsuzuri` の写しと、生きている `tsuzuri` の診断の区別がつかない（範囲・コード・メッセージが同じで、source の大文字・小文字だけが違う）。
+
+1. 構文・型・所有権などの前段の診断は、言語サーバーだけが出す（Phase 1）。
+2. 拡張が自分で出す診断（テストの実行・Debug のビルドの結果）は、プロジェクトが変わったら消す（Phase 1）。
+3. 言語サーバーは、前に診断を送った URI を覚え、今は送るものがない URI に空の一覧を送る（Phase 2）。
+4. 言語サーバーは、古くなった要求や取り消された要求に時間を使わず、最新の本文の診断を先に出す（Phase 3）。
+
+## 着手条件と停止条件
+
+### 着手条件
+
+- G07・G12・G14・G16 が `_features/README.md` で done であること（HEAD で done）。
+- AGENTS.md の T0 と T1 が `main` の最新の `ci.yml` と同じ結果になること。
+- 下の「現状」の再現 1（保存したエラーの写しが残る）を、手元の VS Code か `vsc/scripts/test-extension.mjs` と同じ方法で確かめていること。
+  `vsc/` の統合テストは、`ELECTRON_RUN_AS_NODE` と `VSCODE_*` の環境変数を外して動かす（VS Code の中の端末から動かすと、テスト用の VS Code が Node として起動して失敗する）。
+
+### 停止条件
+
+次の場合は即興で回避せず、作業を止めて状況と候補案を報告する（GUIDE §13）。
+
+- 言語サーバーが報告しない診断（`E1036` のケーパビリティの検査、リンク・ツールチェーンの `E2xxx`、実行時のトラップ）が、Phase 1 の後に問題パネルにも端末にも出なくなる。
+- `tests/lsp.rs`・`tests/lsp_sessions.mjs`・`vsc/src/test/extension.test.ts` の既存の期待値を、このチケットの決定事項にない理由で変えないと通らない。
+- D8（クライアントの表記の URI）で、Windows のドライブ文字・UNC・`\\?\` のパスの往復が `tests/lsp.rs` の `windows_file_uris_round_trip_drive_letters_and_canonical_paths` の期待と食い違う。
+- D9（根の外の依存の診断を送らない）で、根の中の依存（`path = "lib"` のような入れ子のパッケージ）の診断まで消える。
+- Phase 3 で、クイックフィックスの検証（適用後にもう一度検査して確かめた修正案だけを出す）を外さないと、電球の要求による遅れが縮まない（D12）。
+
+## 現状（2026-11-19、`main` の `af644794` で確認）
+
+### 調べた範囲
+
+- VS Code 1.103.2（`vsc/.vscode-test` にある統合テスト用の版）に、開発中の拡張と同梱のツールチェーンを入れて動かした。
+  `vsc/dist/extension.js` は `vsc/src` から作り直したものとバイト単位で同じで、`vsc/toolchain/bin/tsuzuri` の SHA-256 は `target/release/tsuzuri` と同じ。
+  起動の仕方は `vsc/scripts/test-extension.mjs` と同じ `@vscode/test-electron` で、各手順の後に `vscode.languages.getDiagnostics()` を記録した。
+  問題の位置を巡る `editor.action.marker.next` で、UI 側のマーカーの一覧とも照らした。
+- 言語サーバーは、vscode-languageclient 9.0.1 と同じ `initialize`（`rootUri`・`workspaceFolders`）を送る JSON-RPC の driver で、`target/debug/tsuzuri lsp` と `target/release/tsuzuri lsp` を動かした。
+- CLI の出力（`check`・`build`・`run`・`test --list --json`・`test --json`）を、拡張が渡す引数（`vsc/src/core.ts` の `commandArguments`・`testDebugArguments`）で取った。
+- 発見ごとに、別の担当が自分の harness で再現し直し、反証を試みた。下に「確認済み」と書いたものは両方で再現している。
+- 利用者の環境でも確かめた。VS Code Insiders 1.148.0-insider に、インストール済みの Marketplace の拡張 0.1.6 を読み取り専用で読み込み、別の user-data で動かすと、原因 1・2 が同じ行で再現した（`target/scratch/g39/critic/save.out`・`task.out`）。
+  0.1.6 と 0.1.7 の `vsc/src/extension.ts`・`testing.ts`・`workflow.ts` の違いは文字列 1 つで、`src/lsp.rs` の違いはシグネチャヘルプとキーワードの一覧だけです。利用者の設定は既定のまま（自動保存なし、電球は有効）。
+- harness と記録は `target/scratch/g39/` にある（VS Code の harness は `vscode-e2e/runner.mjs`・`verify-vscode-e2e/runner.mjs`、言語サーバーの driver は `lsp-lifecycle/driver.mjs`・`verify-lsp-lifecycle/lsp.mjs`）。リポジトリには置かない。下の再現手順だけで作り直せる。
+
+### 診断の出どころは 3 つある
+
+| 出どころ | 問題パネルの source | 入れる処理 | 消える時 |
+| --- | --- | --- | --- |
+| 言語サーバー（`tsuzuri lsp`） | `tsuzuri` | 変更から 200 ms 後の `Session::refresh`（`src/lsp.rs:366-427`）。読み込んだプロジェクトの利用者のソースごとに送る（`src/lsp.rs:396-408`） | 次の refresh がその URI へ送るとき。送る先は今のプロジェクトのソースだけ |
+| 拡張の診断の集まり `tsuzuri-build`（`vsc/src/workflow.ts:34`） | `Tsuzuri` | `--json` の stderr。テストの発見が失敗したとき（`vsc/src/testing.ts:46-48`）、テストの実行（`:200`）、テストのデバッグ（`:265`）、Debug Project のビルド（`vsc/src/workflow.ts:177`） | 同じ根で `publishDiagnostics` がもう一度呼ばれたときだけ（`vsc/src/workflow.ts:76`） |
+| タスクの problem matcher `$tsuzuri`（`vsc/package.json:80-83`、owner `tsuzuri-task`） | `Tsuzuri`（行と桁だけなので幅 0 の範囲） | 拡張のタスク（`vsc/src/workflow.ts:117-119`）。▷ Run と Build のボタン（エディターの右上）、Check と Wasm のコマンド、Tasks: Run Task | 次に `$tsuzuri` のタスクが終わったとき。VS Code の仕様で、拡張からは消せない |
+
+言語サーバーは、ふつうの編集では自分の診断を正しく消している（下の「原因ではなかったもの」）。
+利用者が見ている「消えない診断」のほとんどは source `Tsuzuri` の写しで、出どころは 2 段目か 3 段目です。
+
+### 原因 1（主因・エラー）: 保存のたびに動くテストの発見が、エラーの写しを `tsuzuri-build` に入れ、成功しても消さない
+
+確認済み。再現 1（`tsuzuri new` で作ったプロジェクト。`Main.tz` にテストが 1 件ある）:
+
+1. `Main.tz` の `main` の `0` を `missing` に変えて保存する（`E1002`）。問題パネルに `E1002` が 2 件並ぶ（source `tsuzuri` と `Tsuzuri`）。
+2. `missing` を `0` に戻して保存する。`tsuzuri` の 1 件は約 0.6 秒で消える。`Tsuzuri` の 1 件は同じ位置に残り続ける。
+
+次の記録は、別の harness のプロジェクト（`Main.tz` と `Helper.tz`、テスト 1 件）で、`calculate` に `let unused = 7` を足し、`let result = value + Helper.offset()` の末尾に `+ true` を足して保存し、元に戻して保存したものです。
+
+```text
+SNAPSHOT S.1 error saved +3s: Main.tz [Tsuzuri] E1003 Error @4:43-4:47 | Main.tz [tsuzuri] E1003 Error @4:43-4:47
+ok after 622 ms: LSP (source tsuzuri) diagnostics cleared
+SNAPSHOT S.2 fixed+saved +30s: Main.tz [Tsuzuri] E1003 Error @4:43-4:47
+SNAPSHOT S.3 after restartLanguageServer +5s: Main.tz [Tsuzuri] E1003 Error @4:43-4:47
+SNAPSHOT S.4 another clean save +5s: Main.tz [Tsuzuri] E1003 Error @4:43-4:47
+```
+
+（`target/scratch/g39/vscode-e2e/save.out`。同じ流れを別の harness で: `verify-vscode-e2e/save.out` の S2〜S6。`tsuzuri new` と同じ形のプロジェクトで上の再現 1 の手順を踏んだもの: `verify-build-collection/vscode/result-main.json` の M1〜M3c。利用者の環境: `critic/save.out` の S2〜S6）
+
+仕組み:
+
+- `vsc/src/testing.ts:112-113` の watcher は、ワークスペースのすべての `**/*.{tz,tt,tc,toml}` の作成・変更・削除を見る。
+  `changed`（`:98-111`）が 300 ms 後に `discover(root)` を呼び、`discover` は `tsuzuri test <root> --list --json` を動かす（`:46`）。
+- 終了コードが 0 でないときだけ、`publishDiagnostics(root, result.stderr)` を呼ぶ（`:47-48`）。成功の経路（`:51-73`）は呼ばない。
+- `tsuzuri-build` の項目を消すのは `publishDiagnostics` の先頭（`vsc/src/workflow.ts:76`）だけなので、直した後の成功した発見では消えない。
+  「Restart Language Server」（`vsc/src/extension.ts:80-84`）は言語クライアントだけを止めて起こすので、この集まりに触れない。
+
+起きる条件:
+
+- プロジェクトにエラーがある状態での保存すべて。Ctrl+S、自動保存、Run・Build・Check・Test が先に行う `saveAll`。
+  `files.autoSave` が `afterDelay` なら、壊れた行で手を止めるたびに写しが入り、直して自動保存しても消えない（`verify-vscode-e2e/autosave.out` の K1・K2、`verify-build-collection` の M11・M12）。
+- 保存でなくても、発見が動くときはすべて。watcher のイベント（Explorer での削除・名前の変更、`git checkout`、外のツールやエージェントの書き込み）と、ウィンドウを開いた直後に Testing の項目を解決するときの発見（`vsc/src/testing.ts:129-133` の `resolveHandler`）。
+  発見はエディターのバッファではなくディスクを読むので、写しがエディターの本文と違う状態を表すことがある。
+  Explorer で `Helper.tz` を消すと、未保存の編集を持つ `Main.tz` に、ディスクの本文の `E1002`（`unknown value 'Helper'`）が入り、直して保存しても残った（`verify-vscode-e2e/delete.out` の D2・D3）。
+- 写しが入るのはエラーだけ。警告だけなら `tsuzuri test --list --json` は終了コード 0 で（stderr には警告が出る）、拡張は終了コードが 0 のとき stderr を読まない（`vsc/src/testing.ts:47`）。エラーと警告が両方あれば、stderr にはエラーだけが出る。
+- 言語サーバーはケーパビリティを検査しない（`_tsuzuri/language-reference/organizing-tsuzuri/packages.md:363`）。
+  そのため、`E1036` がエディターに出るのはこの写しを通してだけで、`Tsuzuri.toml` を直して保存しても残る（`verify-task-matcher/e2e/e2e-extra.log` の X3・X4）。
+
+消えるのは、同じ根の次の `publishDiagnostics` だけです。後の失敗した発見（そのときのエラーで置き換わる）、1 件以上のテストを選んだテストの実行、テストのデバッグ、Debug Project のどれかです。
+テストのないプロジェクトでは、Test Project も消せない。選んだテストが 0 件だと `run` が `publishDiagnostics` の前に `continue` するため（`vsc/src/testing.ts:192-193`、`verify-task-matcher/e2e/e2e-discovery.log` の D8）。
+
+### 原因 2（主因・警告）: Run・Build・Check のタスクの problem matcher のマーカーが、次のタスクまで残る
+
+確認済み。再現 2:
+
+1. `Main.tz` に `let unused = 7` を足す（`W1001`。言語サーバーの警告が出る）。
+2. ▷（Run Project）を押す。端末に `<絶対パス>/Main.tz:<行>:<桁>: warning[W1001]: ...` が出て、問題パネルに幅 0 の `Tsuzuri` の `W1001` が増える。
+3. その行を消して保存する。`tsuzuri` の警告は消えるが、`Tsuzuri` の `W1001` は残る。言語サーバーを再起動しても残り、次に Tsuzuri のタスクをどれか流すと消える。
+
+```text
+SNAPSHOT 3a.1 after check task (warning state): Main.tz [tsuzuri] W1001 Warning @3:8-3:14 | Main.tz [Tsuzuri] W1001 Warning @3:8-3:8
+SNAPSHOT 3a.2 fixed+saved after check task +15s: Main.tz [Tsuzuri] W1001 Warning @3:8-3:8
+M7 after restartLanguageServer +5s: Main.tz src=Tsuzuri W1001/W @3:8-3:8 (zero-width)
+M3 after a clean Run task: (none)
+```
+
+（`target/scratch/g39/vscode-e2e/tasks.out`、`verify-vscode-e2e/task.out`、`verify-task-matcher/e2e/e2e-tasks.log` の T1〜T8）
+
+仕組み:
+
+- `vsc/src/workflow.ts:117-119` が、拡張のすべてのタスク（build・check・run・test・debug・wasm）に problem matcher `$tsuzuri` を付ける。
+- VS Code は、problem matcher のマーカーを、同じ owner のタスクが次に終わるまで持つ。文書の編集・保存・クローズでは消さない。拡張には、ほかの owner のマーカーを消す API がない。
+- 正規表現は CLI の行（`src/diagnostic.rs:497-498` の `{path}:{line}:{column}: {severity}[{code}]: {message}`）と合い、パスは絶対パスなので、マーカーは正しいファイルに付く。
+  行と桁だけなので範囲は幅 0 になる。
+
+起きる条件:
+
+- 診断を出す Run・Build・Check・Wasm のタスクすべて（`test` のタスクは Tasks: Run Task からだけ。Test Project と Testing ビューはタスクを使わない）。
+- 警告が残る主な経路はこれと原因 3 です（原因 1 の発見は警告の写しを入れない）。報告にある「警告が消えない」は、この 2 つから来る。
+- エラーがあれば、1 つのエラーが 3 件並ぶことがある。言語サーバーの範囲つきの 1 件、発見の写し（T1 ではウィンドウを開いた直後の発見が入れたもの。未保存のエラーを Run の `saveAll` が保存したときも入る）、タスクの幅 0 のマーカーです（`verify-task-matcher/e2e/e2e-tasks-run1.log` の T0・T1）。
+- owner が共通なので、別のプロジェクトのタスクでも消える（`e2e-misc.log` の M3）。残る原因にはならない。
+
+### 原因 3: テストの実行・テストのデバッグ・Debug Project の結果が、直した後も残る
+
+確認済み（テストのデバッグは、同じ `publishDiagnostics` を呼ぶことをコードで確認しただけ）。
+
+```text
+SNAPSHOT 4a.1 after test run (warning state): Main.tz [Tsuzuri] W1001 Warning @3:8-3:14 | Main.tz [tsuzuri] W1001 Warning @3:8-3:14
+SNAPSHOT 4a.2 fixed+saved after test run +15s: Main.tz [Tsuzuri] W1001 Warning @3:8-3:14
+SNAPSHOT 4b.3 after a passing test run: (none)
+G2 after Debug Project in the warning state: Main.tz src=Tsuzuri W1001/W @3:8-3:14 || Main.tz src=tsuzuri W1001/W @3:8-3:14
+G3 fixed and saved +10s: Main.tz src=Tsuzuri W1001/W @3:8-3:14
+```
+
+（`target/scratch/g39/vscode-e2e/testrun.out`、`verify-vscode-e2e/debug.out`。Debug は同梱の CodeLLDB で動かした）
+
+- `vsc/src/testing.ts:200`・`:265` と `vsc/src/workflow.ts:177` は、コンパイルの stderr を毎回 `tsuzuri-build` に入れる。テストが通っても警告は stderr に出るので、警告も入る。
+  直して保存すると成功した発見が動くだけで、何も消えない。
+- エディターの右上の 3 つのボタンは、どれも直した警告を残しうる。Run と Build は原因 2、Debug はこれです。
+- UTF-8 の BOM で始まるファイルでは、1 行目の写しが 1 桁右にずれる。`vsc/src/workflow.ts:84-91` がディスクのバイト列（BOM を含む）で位置を数えるが、VS Code は BOM を除いた本文を言語サーバーへ渡すため（`verify-build-collection/vscode/result-bom.json`: `Tsuzuri E0002 0:16-0:17` と `tsuzuri E0002 0:15-0:16`）。
+- ワークスペースのフォルダーを外しても、その根の項目は残る（`vsc/src/testing.ts:115-126` は `diagnosticsByRoot` を消さない）。
+
+### 原因 4: 言語サーバーが、前に診断を送った URI を覚えていない
+
+共通の原因は、`Session` が「どの URI に空でない診断を送ったか」を持たないことです。
+送る先は、読み込めたときは今のプロジェクトの利用者のソース（`src/lsp.rs:396-408`）、読み込めないときは `error.path` の 1 か所（`src/lsp.rs:374-380`）だけで、それ以外は `didClose` で消えるのを当てにしている。
+次の場合、言語サーバー自身の `tsuzuri` の診断が残る。「Restart Language Server」では消える（クライアントの停止が集まりを捨てる。`vsc/node_modules/vscode-languageclient/lib/common/client.js:1012-1014`）。
+
+#### 4a. 開いていないファイルが、削除・名前の変更・移動でプロジェクトから外れた
+
+確認済み。開いていない `Helper.tz` に別のファイルから来たエラーがある状態で、`Helper.tz` を消す:
+
+```text
+886ms publish <base>/real/proj/Helper.tz ["E1003@0:20"]
+3005ms --- deleted Helper.tz on disk, didChange Main.tz (no longer uses Helper), didChangeWatchedFiles type 3
+3759ms publish <base>/real/proj/Main.tz []
+```
+
+`Helper.tz` には空の一覧が送られない（`target/scratch/g39/verify-vscode-e2e/lsp-delete.out`）。
+VS Code でも、名前の変更・削除の後に古いパスの `Helper.tz [tsuzuri] E1003` が残る（`vscode-e2e/remove.out` の R.3・R.5、R.6 の再起動で消える）。
+同じ仕組みで、コピーを消した後の `Main copy.tz [tsuzuri] E1011`（`verify-lsp-lifecycle/e2e/copy.out`）、外した path 依存のファイル（`logs/depdrop.log`）、読めなくなったディレクトリ（`logs/dirperm.log`）も残る。
+開いているファイルなら、VS Code の `didClose` で消える。
+
+#### 4b. `Tsuzuri.toml` の誤りが、直した後も残る
+
+確認済み。マニフェストの誤りは `src/lsp.rs:378` で `Tsuzuri.toml` へ送られるが、refresh はソース（`project.sources`）だけを回り、マニフェスト（`project.manifests`、`src/driver.rs:2763-2791`）には送らない。
+
+```text
+M.1 broken manifest saved: Tsuzuri.toml [Tsuzuri] E0002 @7:0 | Tsuzuri.toml [tsuzuri] E0002 @0:0
+M.2 fixed manifest saved +5s: (same two)
+M.3 after an edit of Main.tz +5s: (same two)
+```
+
+（`target/scratch/g39/verify-lsp-lifecycle/e2e/manifest.out`、`logs/manifest.log`）
+範囲はいつも 0:0 で、CLI の `--json` の span（この例では 7:0）を捨てている。
+
+#### 4c. 読み込みに失敗している間、ほかのファイルの診断が凍り、失敗の理由が隠れることがある
+
+確認済み。
+
+- 凍る: 読み込みに失敗すると、`refresh` は `error.path` に 1 件送って返る（`src/lsp.rs:376-380`）。ほかのファイルには何も送らないので、前の解析の診断が残る。
+  マニフェストが壊れている間に `Main.tz` のエラーを直しても、`Main.tz` の `E1003` は消えない（`logs/freeze.log`）。
+- 隠れる: 失敗の理由のファイルを一度開いて閉じていると、`Session::publish` が閉じた文書への空でない診断を捨てる（`src/lsp.rs:347`）。利用者には凍った古いエラーだけが見え、理由が出ない。
+  `Main.old.tz`（stem に `.` を含むので `E1011`）を開いて閉じた後に `Main.tz` を直すと、`Main.tz [tsuzuri] E1003` が残り、理由の `E1011` は原因 1 の写しでしか見えなかった（`verify-lsp-lifecycle/e2e/hidden2.out` の H.2・H.3）。
+- 読み込みの失敗になるもの: マニフェストの誤り、stem に `.` を含むファイル（`Main.old.tz`・`foo.test.tz`）、ソースのシンボリックリンク、読めないディレクトリ、UTF-8 でないファイル、4 MiB を超えるファイル。
+
+#### 4d. 根の文書をすべて閉じると、ディスクの変更を解析しない
+
+確認済み。`workspace/didChangeWatchedFiles`（`src/lsp.rs:487-493`）は、開いているバッファの根だけを schedule する。
+利用者が根の `.tz` のエディターをすべて閉じても、クライアントは止まらない。その後の `git checkout` や外のツールでの修正は解析されず、前の診断が残る（`verify-lsp-lifecycle/e2e/noopen2.out` の N.2: ディスクで直した後も `Helper.tz [tsuzuri] E1003`）。
+
+#### 4e. 開いていないファイルの URI が、クライアントの表記と違うことがある
+
+確認済み（シンボリックリンクと NFC・NFD）。`document_path` はクライアントの URI の親を正準化し（`src/lsp.rs:257-265`）、`Project::load_with_overlays` も根を正準化する（`src/driver.rs:2396-2412`）。
+開いていないファイルへは `file_uri(正準化したパス)`（`src/lsp.rs:350-355`・`178`）で送るので、ワークスペースのパスにシンボリックリンク（`/tmp` は `/private/tmp`、リンクにした作業ディレクトリ）か Unicode の正規化の違いがあると、最初の診断が別の URI に付く。
+そのファイルをワークスペースのパスで開くと、以後はバッファの URI へ送り、最初の URI には二度と送らない。
+
+```text
+SNAPSHOT A.1 cross-file error, Helper closed (unsaved): <real>/Helper.tz [tsuzuri] E1003 Error @0:20-0:31
+SNAPSHOT A.2 Helper opened through the workspace path +3s: <real>/Helper.tz [tsuzuri] E1003 Error @0:20-0:31 | Helper.tz [tsuzuri] E1003 Error @0:20-0:31
+SNAPSHOT A.3 fixed (unsaved) +5s: <real>/Helper.tz [tsuzuri] E1003 Error @0:20-0:31
+SNAPSHOT A.4 after restartLanguageServer +5s: (none)
+```
+
+（`target/scratch/g39/vscode-e2e/alias-symlink.out`。NFD は `alias-nfd.out`）
+大文字・小文字だけの違いは残らない。macOS と Windows の VS Code は、大文字・小文字だけが違う URI を 1 つにまとめる（`alias-case.out`）。
+`docs/architecture.md` の言語サーバーの節の「クライアントから受信したドキュメント URI の表記揺れはそのまま内部で保持され、診断情報や定義ジャンプの応答において正確にクライアントへ返却されます」は、開いていないファイルについては正しくない。
+
+#### 4f. クライアントの根の外にある path 依存のファイルの診断が、二重に出て片方が残る
+
+確認済み。アプリのサーバーは、根の外の依存（`../lib`）のファイルにも診断を送る。
+依存のファイルを開くと、拡張はその根（`lib/`）の別のクライアントを起動する。そこで直しても、アプリのサーバーには変更が届かない（watcher と documentSelector はアプリの根の下だけ。`vsc/src/extension.ts:37`・`42`）。
+
+```text
+D.1 lib error: lib/Calc.tz [tsuzuri] E1003 @2:20 | lib/Calc.tz [tsuzuri] E1003 @2:20
+D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
+```
+
+（`target/scratch/g39/verify-lsp-lifecycle/e2e/dep.out`）根の中の依存なら、両方のクライアントが消すので残らない。
+
+### 原因 5（遅れ）: 言語サーバーが古い要求や取り消された要求を計算している間、直した本文の診断が出ない
+
+確認済み。残り続けることはない（実際の VS Code の 20 回の実行のすべてで、最後の版の診断は届いた）。ただし、直した後の数秒、大きいプロジェクトでは 20 秒近く、直す前の診断が見え続ける。
+計測の harness と記録は `target/scratch/g39/lsp-latency-robustness/` と `target/scratch/g39/verify-lsp-latency-robustness/` にある。時間は Apple Silicon の macOS で、ほかの作業と共有した機械の値です（性能の主張ではなく、仕組みの裏付け）。
+
+- **1 回の refresh の重さ**: `didChange` から同じ版の `publishDiagnostics` まで（200 ms の debounce を含む。release の中央値）は、1 ファイルで 745 ms、21 KB で 821 ms、70 KB で 1009 ms、6 ファイル 215 KB で 1929〜2126 ms。
+  時間の約 95 % は型検査で、エディターの経路はすべての std モジュールを毎回検査する（`src/driver.rs:2449`、D-40）。同じ 1 ファイルの `tsuzuri check .` は 0.09〜0.17 秒です。
+- **debounce がほとんど効かない**: VS Code は打鍵の直後に `textDocument/completion` などを送り、それらの処理（`src/lsp.rs:574`・`651`・`676`・`709`・`724`・`736`・`746`）が `Session::document` を通してすぐに refresh する。
+- **版をまとめない**: `serve` は受け取った順に 1 つずつ処理する（`src/lsp.rs:2864-2944`）。要求が挟まると、待っている途中の版を 1 つずつ解析して送る。電球を切った VS Code で 215 KB のプロジェクトを 1 秒に 1 回直すと、版ごとの診断が約 1.7 秒おきに届き、最後の版は最後の編集の 5.3 秒後だった（`vscode/run-big-prefix-1000-nolightbulb`）。
+- **電球のコードアクション**: VS Code はカーソルが止まるたびに、`only` なしで `triggerKind` 2（Automatic）の `textDocument/codeAction` を送る。
+  `Session::code_actions`（`src/lsp.rs:1106-1125`）は、範囲の診断の修正案ごとに `fix_edit` でプロジェクトを読み込み直して解析し（`src/lsp.rs:1187-1225`・`1269-1316`）、文書に `certain` の修正案が 1 つでもあれば、カーソルの位置に関係なく `fix_all`（`src/lsp.rs:1130-1184`）で `tsuzuri fix` と同じラウンドを回す。
+  1 回の費用は、1 ファイル（`W1001` が 3 つ）で診断のない行が約 0.9 秒、診断の上が約 1.4 秒。163 KB で 1.8 秒と 2.9 秒、215 KB で 2.5 秒と 3.9 秒。
+  ところが VS Code 1.103.2 は、自動の要求の結果から source の action を捨てる（`workbench.desktop.main.js` の `xes` の `!i.includeSourceActions&&t&&Fn.Source.contains(t)`。電球の要求は `filter` を持たない）。電球のための `fix_all` の計算は、すべて捨てられている。
+- **取り消しが効かない**: 取り消しを確かめるのは処理の前と後だけ（`src/lsp.rs:2924-2944`）なので、計算の途中で取り消された要求も最後まで計算し、-32800 で答える。
+  1 つの修正の後の遅れは、1 ファイルで電球ありが 1.57 秒・なしが 0.58 秒、163 KB で約 3.0 秒と 1.25 秒だった（`verify-lsp-latency-robustness/vscode/s600-*`・`big2-single-*`）。
+- **受信の詰まり**: 受信のスレッドは、読んだときにだけ取り消しを記録し（`src/lsp.rs:2834-2842`）、容量 8 の `sync_channel`（`src/lsp.rs:2827`）への送信で止まる（`2844`）。
+  忙しい処理の後ろに 9 個以上の通知や要求が並ぶと、後の `$/cancelRequest` を読めず、取り消された要求を普通に計算して答える（`cancel-queue-release.log`: 間に 8 個で計算した後に -32800、9 個以上で結果を返した）。
+  refresh とコードアクションの時間が編集の間隔に近いとこれが連鎖し、215 KB のプロジェクトを 1 秒に 1 回直すと、最後の診断は最後の編集の 8.8〜20.4 秒後になった（電球なしは 5.3 秒）。163 KB・9 ファイルの別のプロジェクトでは連鎖せず、電球の有無で差がなかった（2.3 秒）。閾値のある現象で、20 秒は典型ではない。
+- **取り消しの id が溜まる**: 答えた後に読んだ取り消しの id は集合から消えない（消すのは同じ id の要求の前後の確認だけ）。集合は 1024 個で新しい id を拒む（`src/lsp.rs:2840`）ので、そこから先は取り消しがまったく効かない。
+  215 KB のプロジェクトを編集し続けると 1 秒に約 0.4 個溜まった（約 40〜45 分で上限。外挿で、観測はしていない）。
+- vscode-languageclient は、`publishDiagnostics` の版を見ずに順に適用する（`client.js:1073-1083`）。古い版の診断も、届いた順に表示される。
+
+### 原因ではなかったもの
+
+- 言語サーバーが、編集したファイルの診断を消さない: 未保存でも保存しても消える（`vscode-e2e/lsp.out` の 1a.3、1b.3 は修正の保存から 649 ms で消えた）。
+- 編集したファイルが原因で別のファイルに出たエラーが残る: 別のファイルが開いていてもいなくても、約 0.6 秒で消える（`vscode-e2e/multi.out`）。
+- 小さいプロジェクトで打鍵だけで遅れる: 2 ファイルで `type`・`deleteLeft` で実際に打つと、エラーは 333〜401 ms で出て、消すと最後のキーから 567〜621 ms で消える（`vscode-e2e/typing.out`）。遅れが大きくなるのは原因 5 の条件のときです。
+- 入力の途中の状態で言語サーバーが panic・スタックあふれ・終了し、クライアントが古い診断を持ち続ける: 起きない。例と fixture の 1724 通りの切り詰め・括弧の不釣り合い・書きかけの文字列と補間を、ほかの要求と一緒に送っても、プロセスは一度も終わらなかった（`lsp-latency-robustness/fuzz-large.log`・`fuzz-examples.log`。入れ子は 128 段で `E0002` になる）。
+- 最後の版の診断が、次の編集まで送られない: 起きない（上記）。
+- 原因 1 の発見が警告の写しを入れる: 入れない（上記）。
+- problem matcher の正規表現が CLI の行と合わない、パスが相対で別の URI に付く: 合っていて絶対パス。例外は [wasm] の検査の 1 か所だけ（対象外を参照）。
+- PB06 の stat のキャッシュが古い本文を返す、言語サーバーがバッファでなくディスクを読む: どちらも起きない（`lsp-lifecycle` の h1、`tests/lsp_sessions.mjs` の 2 秒の窓の検査と同じ結果）。
+- publish の `version` で vscode-languageclient が診断を捨てる: 捨てない。
+- 大文字・小文字だけが違うワークスペースのパス: 上記 4e。
+
+### 関連する観測（このチケットの対象外）
+
+- **入れ子のパッケージを覆う根のクライアント**: ワークスペースのフォルダー自体がプロジェクトでなく（直下に `Tsuzuri.toml` も `Main.tz` もない）、その下にパッケージがあると、パッケージの外の `.tz` を開いたときにフォルダーの根のクライアントが起動し、その documentSelector（`<根>/**/*.{tz,tt,tc}`）がパッケージのファイルも拾う。
+  マニフェストを読まないフォルダーとしての解析になるので、マニフェストの名前空間に頼るファイル（ヘッダーのない `app/Util.tz` を `App::Util` で参照）に、直しても消えない偽のエラーが出る（`verify-lsp-lifecycle/e2e/fallback.out`、`logs/noheader.log`）。
+  このリポジトリ自身を開いて `std/` や `tests/` の `.tz` を開くと、根のクライアントの読み込みが `E1017`（`module discovery exceeds 1024 directories or 16 path segments`）で毎回失敗し、それがディレクトリの URI に付く（`verify-lsp-lifecycle/logs/repo-root.log`）。
+  どのクライアントがどの文書を受け持つかの問題で、診断の寿命の問題ではないので、別のチケットにする。
+- **4 MiB を超える `didChange`**: 拒否して前のバッファを残す（`src/lsp.rs:532-537`）ので、前の診断も残る。縮めると戻る。直すと `tests/lsp.rs` の `rejects_documents_over_the_source_limit` の期待が変わる。
+- **[wasm] の検査のエラーの相対パス**: `src/main.rs:4167-4175` が `Tsuzuri.toml:1:1` と相対パスで出すので、絶対パスの problem matcher が `file:///Tsuzuri.toml` に付け、次の Wasm のタスクまで残る（`verify-task-matcher/e2e/e2e-misc.log` の M5〜M7）。D3 で matcher を外せばマーカーにはならないが、ほかの診断と同じ絶対パスで出すのが正しい。
+- **1 回の refresh の費用そのもの**: エディターの経路はすべての std モジュールを毎回検査し（D-40）、1 ファイルのプロジェクトの refresh の標本の 49 % が `check::warnings::unused_private`（`src/warnings.rs:286`、`src/check.rs:9525` から）で、std を含むすべての関数を走査している（`verify-lsp-latency-robustness/sample-hello-debug.txt`）。
+  CLI の `check` との差（約 5 倍）を縮めるのは性能の作業で、`_perfs/` の別のチケットにする。Phase 3 はこの費用を変えず、無駄な計算と待ちだけを除く。
+- **エラーがある間、ほかのファイルの警告が消える**: 解析が失敗すると `analyze`（`src/lsp.rs:1549-1553`）は警告を返さないので、どこかにエラーがある間はプロジェクトのすべての警告が消え、直すと戻る。直した警告が戻ることはない。残る原因ではない。
+- **超線形の入力**: 1 つのブロックに `let v = v + 1;` を 10000 個並べると refresh が 16.7 秒（`tsuzuri check` も 10〜21 秒）、要素 30000 の配列リテラルの整形が 8 秒、10 万個の `else if` などは 120 秒で答えなかった。その間はどのファイルの診断も出ない。機械が生成した大きなブロックだけの問題で、別に扱う。
+- 実行中のテスト・Debug のビルドが、修正の保存の前にディスクを読んでいると、修正の後に古い結果を入れうる（コードを読んだだけで、再現していない。落とし穴を参照）。
+- 確かめていないこと: Linux での大文字・小文字だけの名前の変更（別の URI になるので、4a と同じく残るはず）、`tsuzuri serve`（常駐ビルドサーバー）が動いているときの `check`・`build` の転送（`src/main.rs:4124-4131`）、CR だけの改行の文書への要求が `-32602`（`position is outside the document`）になったこと（`lsp-latency-robustness/deep-release.log`）。
+- run・build・test のタスクの後、プロジェクトの根に 0 バイトの `a.o` が残った（`vscode-e2e/runs/tasks/real/project/a.o` など。調べていない）。
+
+## 仕様（直した後の振る舞い）
+
+### Phase 1: 拡張
+
+1. 構文・型・所有権・警告などの前段の診断は、言語サーバー（source `tsuzuri`）だけが出す。
+2. テストの発見は診断を出さない。発見の失敗は、今と同じく Testing ビューのプロジェクトの項目のエラーに出す（`vsc/src/testing.ts:75`）。
+3. テストの実行・テストのデバッグ・Debug Project のビルドの診断（source `Tsuzuri`）は、その実行の結果として出し、その根のプロジェクトが変わったら消す。
+   変わったとは、根の下の文書のエディターでの編集、根の下の `.tz`・`.tt`・`.tc`・`.toml` の作成・削除、根の下のフォルダーの削除・移動、実行を始めた後の変更（保存を含む）、ワークスペースのフォルダーの削除のどれかです。
+   実行の途中で根が変わったら、その実行の結果は入れない。
+4. 3 の診断のうち、言語サーバーが同じ URI・コード・範囲の開始で出しているものは出さない（重複させない）。言語サーバーが出さない診断（`E1036`、`E2xxx`、言語サーバーが読み込めない状態の診断）は残る。
+5. 3 の位置は、VS Code の文書と同じ本文（BOM を除く）で数える。
+6. 拡張のタスク（build・check・run・test・debug・wasm）は problem matcher を持たない。結果は端末に出し、`<path>:<line>:<column>:` は端末のリンクとして開ける。
+   `package.json` の `$tsuzuri` の定義は残し、利用者の `tasks.json` から使える。そのマーカーが次のタスクまで残るのは VS Code の仕様で、`vsc/README.md` に書く。
+
+### Phase 2: 言語サーバー
+
+7. 根ごとに、直前の refresh で空でない診断を送ったパスと、そのとき使った URI を持つ。次の refresh で、そこにあって今回は空でない診断を送らないパスには、記録した URI へ `[]` を送る。同じパスへ前と違う URI で送るときは、前の URI にも `[]` を送る。読み込めたときも読み込めないときも同じ。
+   これで、プロジェクトから外れたファイル、直した `Tsuzuri.toml`、外した依存の診断が消える。
+8. 読み込めないとき: エラーを `error.path` へ送る。その文書が閉じていても送る（閉じた文書への抑止を読み込みのエラーには使わない）。範囲は、エラーの span があればその位置、なければ 0:0。
+   ほかのファイルの前の解析の診断は、7 によって消える。
+9. `workspace/didChangeWatchedFiles` は、変わった各 URI のパスを、存在する最も近い祖先のディレクトリで正準化し（`document_path` と同じ。消したファイルやディレクトリは、残っている親まで遡る）、それが入るクライアントの根を schedule する。
+   どのクライアントの根にも入らない URI では、親のディレクトリを根にしない。加えて、開いているバッファの根（今と同じ）と、7 の記録を持つ根を schedule する。
+10. 開いていないファイルの URI は、クライアントの表記で作る。`initialize` の `rootUri`・`workspaceFolders` の URI と、それを正準化したパスの組を持ち、正準化したパスの接頭辞をクライアントの根の URI に置き換える。
+    どの根にも入らないパスは、今と同じく `file_uri` で作る。
+11. クライアントの根（refresh した根のディレクトリ）の外にある利用者のソースには、解析の診断を送らない。そのファイルを開けば、拡張がそのファイルの根のクライアントを起動し、そのクライアントが送る。
+    読み込みのエラー（8）は例外で、`error.path` が根の外（根の外の依存の `Tsuzuri.toml` やソース）でも送る。送らないと、8 でほかの診断を消した根に何も出ない。根の外のファイルの変更はこのクライアントに届かないので、そのエラーは根の次の refresh まで残る。
+    拡張は、フォルダーの削除・移動でも `didChangeWatchedFiles` が届くよう、根の `**` の削除を見る watcher を足す（VS Code はフォルダーの中のファイルの事象を親の 1 件にまとめ、`**/*.{tz,tt,tc,toml}` には届かない）。
+
+### Phase 3: 言語サーバーの待ち行列と取り消し
+
+12. 要求を処理する前に、届いている入力をすべて取り込む。要求の文書に、後から届いた `didChange`・`didClose` があれば、その要求は計算せず、`ContentModified`（-32801）で答える。
+    全文同期なので、同じ文書の続いた `didChange` は最後の 1 つを取り込めば足りる（版が増えていることの検査は今と同じ）。
+13. `$/cancelRequest` は、待ち行列の長さに関わらず、その要求を始める前に効く。主ループの計算中も受信のスレッドは背圧の上限まで読み続けるので、処理中の要求の取り消しも 14 の確認で効く。
+    待ち行列にも処理中にもない id の取り消しは捨て、答えた id は集合から消し、件数の上限で新しい取り消しを拒まない。
+14. `textDocument/codeAction` は、修正案の検証の間（修正案ごと、fix all のラウンドごと）に取り消しを確かめ、取り消されたらそこで -32800 を答える。
+15. `context.triggerKind` が 2（Automatic）で `context.only` がない要求には、`source.fixAll.tsuzuri` を計算しない。`triggerKind` が 1（Invoked）かない要求と、`only` に `source` 系がある要求は今と同じ。
+    クイックフィックスの検証（適用後の再検査で、その診断のコードが減り、どのコードのエラーも増えない修正案だけを出す）は変えない。
+
+## 設計
+
+### Phase 1 の変更
+
+| ファイル | 関数・場所 | 変更 |
+| --- | --- | --- |
+| `vsc/src/testing.ts` | `discover`（46〜50 行） | `publishDiagnostics` を呼ばない。失敗は `throw` して `project.error` に出す（今と同じ） |
+| `vsc/src/workflow.ts` | `publishDiagnostics`（75〜108 行） | 実行の開始時刻を受け取り、根ごとに記録する。言語サーバーの診断（`vscode.languages.getDiagnostics(uri)` の source `tsuzuri`）と URI・コード・範囲の開始が同じ記録を除く。位置は BOM を除いた本文で数える |
+| `vsc/src/workflow.ts` | 新しい購読 | `onDidChangeTextDocument`（`contentChanges` が空でないもの）、watcher の作成・削除と、その根で最後に始めた実行の開始より新しい mtime の変更、`onDidChangeWorkspaceFolders` の削除で、その根の項目を消し、根ごとの変更の番号を増やす。フォルダーの削除・移動は、VS Code が中のファイルの事象を親の 1 件にまとめるので `**/*.{tz,tt,tc,toml}` には届かない。根ごとに `new vscode.RelativePattern(root, '**')` の削除だけを見る watcher も足す（名前が `.` で始まる所と `target/tz/` の下は、モジュールの発見が読まず、拡張のランナーと知識グラフ（G27）が実行のたびに書き換えるので除く） |
+| `vsc/src/workflow.ts` | `task`（110〜123 行） | `new vscode.Task(..., '$tsuzuri')` の最後の引数を `[]` にする |
+| `vsc/src/testing.ts`・`vsc/src/workflow.ts` | `run`（196〜200 行）、`debug`（263〜265 行）、`debugConfiguration`（172〜177 行） | コンパイラを起動する直前の時刻と根の変更の番号を `publishDiagnostics` へ渡す。結果を入れるときに番号が変わっていれば入れない |
+| `vsc/src/core.ts` | 新しい純粋な関数 | バイトの offset から VS Code の位置への変換（BOM・CRLF・UTF-16）、重複の判定、パスがどの根に入るかの判定。`vsc/src/test/core.test.ts` で単体に検査する |
+
+`publishDiagnostics` の消し方は、根ごとの今の `diagnosticsByRoot` を使う。項目を消すときは、その根の URI をすべて消す（ファイル単位にしない。1 つのファイルの変更は、ほかのファイルの診断も変えるため）。
+
+### Phase 2 の変更
+
+| ファイル | 関数・場所 | 変更 |
+| --- | --- | --- |
+| `src/lsp.rs` | `Session` | `published: BTreeMap<PathBuf, BTreeMap<PathBuf, String>>`（根 → 空でない診断を送ったパスと、そのとき使った URI）、`client_roots: Vec<(PathBuf, String)>`（正準化した根 → クライアントの根の URI）を足す |
+| `src/lsp.rs` | `Session::refresh`（366〜427 行） | 送ったパスと URI を集め、前の記録にあって今回送らないパスには記録した URI へ `[]` を送り、同じパスへ前と違う URI で送ったときは前の URI にも `[]` を送ってから、記録を置き換える。読み込みの失敗の経路（374〜380 行）も同じ。根の外のソースには解析の診断を送らない（D9。読み込みのエラーは例外） |
+| `src/lsp.rs` | `Session::publish`（341〜364 行） | 読み込みのエラーは `closed` でも送る（引数か別の関数で区別する）。URI はバッファ → `closed` → クライアントの根の表記 → `file_uri` の順 |
+| `src/lsp.rs` | 読み込みの失敗の診断（378 行） | `error.diagnostic.span` を `PositionMapper` で範囲にする。本文を読めなければ 0:0 |
+| `src/lsp.rs` | `initialize`（440〜455 行） | クライアントの根の URI と正準化したパスの組を記録する |
+| `src/lsp.rs` | `workspace/didChangeWatchedFiles`（487〜493 行） | `params.changes` の各 URI を 9 の規則で正準化してから `project_root` に渡し、クライアントの根に入るものだけを schedule する。開いているバッファの根と `published` の根も schedule する。`uri_path` の値をそのまま渡さない（正準化した根と前方一致しないと、`project_root` は親のディレクトリを根として返す。Windows の `c:/...` と `\\?\C:\...`、シンボリックリンクの根で起きる） |
+| `src/lsp.rs` | `Session::uri`（800〜805 行） | 10 と同じ規則でクライアントの表記を返す（定義・参照の応答も同じ URI になる） |
+| `vsc/src/extension.ts` | `open` の `synchronize.fileEvents`（37〜44 行） | 根の `**` の削除だけを見る watcher を足す（除く場所は Phase 1 と同じ）。フォルダーを消したり移したりしたときにも `didChangeWatchedFiles` が届くようにする |
+
+### Phase 3 の変更
+
+| ファイル | 関数・場所 | 変更 |
+| --- | --- | --- |
+| `src/lsp.rs` | `serve`（2822〜2962 行） | 容量 8 の `sync_channel` をやめ、受信のスレッドが読み続けられるようにする。背圧は、読んで主ループがまだ処理していないメッセージの本文の合計（主ループの待ち行列の分を含む）にかけ、64 MiB（`MAX_MESSAGE` の 4 倍）を超えたら受信のスレッドは減るまで読むのを待つ。主ループは毎回チャンネルを `try_recv` で空にして自前の待ち行列へ移し、`didChange` は文書ごとに最後の 1 つだけを、その位置に残す。要求の前に、同じ文書の後の text sync が待ち行列にあれば -32801 で答える |
+| `src/lsp.rs` | 受信のスレッド（2830〜2858 行）と取り消しの集合（2828・2924〜2944 行） | 受信のスレッドは、読んだ `$/cancelRequest` の id を今と同じく共有の集合に入れる（処理中の要求の途中の確認のため）。主ループは待ち行列へ移すときに照合し、待っている要求なら始めずに -32800 で答える。待ち行列にも処理中にもない id（答えた後の取り消し、存在しない id）は、そのとき集合から捨てる。答えた id も消す。件数の上限は置かない（大きさは上の背圧で抑えられる） |
+| `src/lsp.rs` | `code_actions`・`quick_fixes`・`fix_all`・`fix_edit`（1106〜1330 行） | 取り消しを確かめる関数を受け取り、修正案ごととラウンドごとに呼ぶ。`triggerKind` 2 で `only` がなければ `fix_all` を呼ばない |
+| `src/fix.rs` | `run`（637 行〜） | ラウンドの間に取り消しを確かめる関数を受け取る（今の `analyze: &mut dyn FnMut(&Project) -> Analysis` では途中で止められない） |
+
+待ち行列と取り消しの集合の大きさは、上の 64 MiB の背圧で抑える（今の容量 8 の `sync_channel` は 8 × 16 MiB を守っていたが、主ループの計算中に 9 個目より後の取り消しを読めなかった）。
+解析を別のスレッドで動かして古い解析を捨てる案は、このチケットでは採らない（対象外）。
+
+## 実装手順
+
+各段で、先に回帰テストを書き、HEAD で落ちることを確かめてから直す。
+
+### Phase 1（拡張）
+
+#### 段 1: テストの発見の写しをやめる
+
+- 変更: `vsc/src/testing.ts` の `discover`。
+- 確認: `vsc/src/test/extension.test.ts` に次を足す。エラーを保存し、`api.testing.roots.get(root)!.error` が入る（保存の後の発見が失敗した）まで待つ。直して保存し、`error` が `undefined` に戻る（直した後の発見が成功した）まで待つ。その時点で source `Tsuzuri` の診断がない。
+  発見の終わりを `error` で待つので、待ち時間に関わらず HEAD で落ち、直した後に通る（既存のテストも `api.testing.roots` を待っている。`vsc/src/test/extension.test.ts:124-128`）。
+  `cd vsc && npm run test:unit`、`npm test`（環境変数の注意は着手条件を参照）。
+
+#### 段 2: 実行の結果を、プロジェクトが変わったら消す
+
+- 変更: `vsc/src/workflow.ts`・`vsc/src/testing.ts`・`vsc/src/core.ts`。
+- 確認: 統合テストに次を足す。言語サーバーが出さない診断（例えば `Tsuzuri.toml` の `[capabilities]` を `allow = []` にして `IO` を使う `E1036`）の状態でテストを実行すると、実行の直後に source `Tsuzuri` の `E1036` がある（`saveAll` の後で結果が消えない）。
+  本文を編集すると消え、もう一度実行して `Tsuzuri.toml` を直して保存しても消える。Debug Project の同じ検査は、デバッグを試す既存の節（`supportsDebug()` の分岐）に足す。
+  言語サーバーも出す警告（`W1001`）では検査しない（段 3 の重複の除外で、実行の直後に source `Tsuzuri` の警告がなくなる）。
+
+#### 段 3: 言語サーバーの診断との重複を除き、BOM の位置を直す
+
+- 変更: `vsc/src/workflow.ts`・`vsc/src/core.ts`。
+- 確認: `vsc/src/test/core.test.ts` に、BOM・CRLF・補助平面の文字の位置と、重複の判定の単体テストを足す。統合テストで、source `tsuzuri` の `W1001` が出るのを待ってからテストを実行し、その直後に、同じ警告が source `tsuzuri` の 1 件だけであることを検査する。
+
+#### 段 4: タスクの problem matcher を外す
+
+- 変更: `vsc/src/workflow.ts` の `task`。
+- 確認: 統合テストで、警告のある状態で check と run のタスクを流し、直して保存した後、UI のマーカーに source `Tsuzuri` のものがない。
+  マーカーは `vscode.languages.getDiagnostics` ではなく `editor.action.marker.next` で巡って数える（落とし穴を参照）。既存の build・run・check のタスクの終了コードの検査は変えない。
+
+#### 段 5: 文書
+
+- `vsc/README.md` の「コードを書く」「実行とビルド」「テスト」: 問題パネルの診断は言語サーバーが出すこと、テストの実行と Debug の結果は次の変更まで出ること、タスクは問題パネルへ出さず端末のリンクで開けること。
+- `vsc/CHANGELOG.md` の次の版の節。
+
+### Phase 2（言語サーバー）
+
+#### 段 6: 送った URI を覚え、送らなくなった URI に `[]` を送る
+
+- 変更: `src/lsp.rs` の `Session`・`refresh`、`tests/lsp.rs` の helper。
+- 確認:
+  - `tests/lsp.rs` の `session` は入力をすべて先に書いて `serve` を最後まで動かし、根を正準化した 1 つの一時ディレクトリに固定するので、途中でディスクを変える場面・シンボリックリンクの根・根の外の依存は書けない（最後の `shutdown` は待っている refresh も捨てる。`src/lsp.rs:494-497`）。
+    段 6 で、`serve` を別のスレッドで動かし、メッセージを 1 通ずつ送って出力を順に読み、その間にディスクを変えられる helper（親の一時ディレクトリの下に根と依存を置き、`rootUri` を指定できるもの）を `tests/lsp.rs` に足し、段 6〜9 の検査はそれで書く。
+  - 開いていないファイルにエラーがある状態で、そのファイルを消すか名前を変えて `didChangeWatchedFiles` を送ると、古い URI に `[]` が届く。フォルダーごと消した場合も同じ。
+  - `Tsuzuri.toml` を壊して直すと、`Tsuzuri.toml` に `[]` が届く。
+  - 根の中の path 依存（`path = "lib"`）を項目から外して `lib/` を消すと、`lib/` のファイルに `[]` が届く（項目を外すだけだと `lib/` は根のモジュールとして読み込まれ、根の外の依存には段 9 の後は初めから送らないので、どちらもこの検査に使わない）。
+  - `cargo nextest run --locked --test lsp`（`running N tests` を確かめる）。
+
+#### 段 7: 読み込みの失敗
+
+- 変更: `src/lsp.rs` の `refresh` の失敗の経路、`publish`。
+- 確認: `tests/lsp.rs` に次を足す。マニフェストが壊れている間に `Main.tz` を直すと、`Main.tz` に `[]` が届く。
+  一度開いて閉じた `Main.old.tz` があると、その URI に `E1011` が届く。マニフェストの誤りの範囲が CLI の `--json` の span と同じ位置になる。
+
+#### 段 8: 開いているバッファがなくてもディスクの変更を解析する
+
+- 変更: `src/lsp.rs` の `workspace/didChangeWatchedFiles`。
+- 確認: `tests/lsp.rs` に次を足す。ファイルを開いて閉じた後、ディスクで別のファイルのエラーを直して `didChangeWatchedFiles` を送ると、そのファイルに `[]` が届く。
+  サブディレクトリのファイルを変えて `didChangeWatchedFiles` を送っても、そのサブディレクトリを根とする解析の診断が届かない。
+
+#### 段 9: クライアントの表記の URI と、根の外の依存
+
+- 変更: `src/lsp.rs` の `initialize`・`publish`・`uri`・`refresh`。
+- 確認: `tests/lsp.rs` に次を足す。シンボリックリンクを通した根で、開いていないファイルの診断がリンクの表記の URI に届き、正準化したパスの URI には届かない（Unix だけ。Windows はシンボリックリンクの作成に権限が要るので skip する）。
+  根の外の path 依存のファイルには解析の診断が届かず、根の外の依存の `Tsuzuri.toml` の読み込みのエラーは届く。
+  `windows_file_uris_round_trip_drive_letters_and_canonical_paths`（`#[cfg(windows)]`。`ci:full` の `windows.yml` でだけ動く）は変えずに通る。
+
+#### 段 10: 文書
+
+- `_tsuzuri/language-reference/compiler/diagnostics.md` の「LSP での表示」: 読み込みのエラーは閉じた文書にも根の外のファイルにも送ること、読み込めない間はほかのファイルの前の解析の診断を消すこと（D6）、プロジェクトから外れたファイルの診断を消すこと、根の外の path 依存のファイルには解析の診断を送らず、そのファイルを開いたときの根のサーバーが送ること（D9）、マニフェストの誤りの範囲。
+  「入力を読めないときも、同じオブジェクトを 1 件出します。閉じた文書に新しい診断を送り続けることはしません」を、この振る舞いに合わせて書き直す。
+- `_tsuzuri/language-reference/compiler/usage.md` の `lsp` の節: ファイルの変更の通知で、開いていない根も解析し直すこと。
+- `docs/architecture.md` の言語サーバーの節: URI の表記の規則（開いていないファイルはクライアントの根の表記）と、送った URI の記録。
+
+### Phase 3（言語サーバーの待ち行列と取り消し）
+
+#### 段 11: 待ち行列と取り消し
+
+- 変更: `src/lsp.rs` の `serve`。
+- 確認: `tests/lsp.rs` に次を足す。どれも応答の種類を見る検査で、経過時間の閾値は置かない（AGENTS.md: 共有の CI に速さの合否を置かない）。
+  - refresh で忙しいサーバーに、`codeAction`、9 個以上の通知、その `$/cancelRequest` の順に送ると、`codeAction` の応答が -32800 になる（HEAD では結果が返る）。
+  - 存在しない id の取り消しを 1100 個送った後でも、`didChange` の直後の `hover`（refresh を伴うので、取り消しを読む前に答え終わらない）の取り消しが効く（HEAD では 1024 個で効かなくなる）。
+  - `hover` の refresh で忙しくしたサーバーに、`didChange`（版 2）、`hover`、`didChange`（版 3）、`documentSymbol` を続けて送ると、2 つ目の `hover` は -32801 で答え、`documentSymbol` は結果を返し、その文書の診断は版 2 のものが届かず、版 3 の 1 回だけ届く（`session` の最後の `shutdown` は待っている refresh を捨てるので、版 3 の refresh を起こす要求が要る）。
+
+#### 段 12: コードアクションの取り消しと `triggerKind`
+
+- 変更: `src/lsp.rs` の `code_actions`・`quick_fixes`・`fix_all`・`fix_edit`。
+- 確認: `tests/lsp.rs` に、`triggerKind` 2 で `only` のない `codeAction` が `source.fixAll.tsuzuri` を返さないこと、`triggerKind` 1 では返すことを足す。
+  `code_action_fix_all_is_offered_only_when_asked_and_when_there_is_something_to_fix` など、`triggerKind` を送らない既存のテストは変えずに通る。
+  `src/lsp.rs` の `mod tests` に、1 回目から取り消しを返す関数を `code_actions` に渡すと、関数がちょうど 1 回呼ばれて -32800 を返す（最初の修正案の検証と `fix_all` のラウンドを始めない）検査を足す。応答の種類だけでは、計算し終えてから -32800 を返す HEAD と区別できない。
+
+#### 段 13: 計測
+
+- 「現状」の原因 5 の計測を、同じ harness と同じプロジェクトで直す前と後に取り、このチケットに表で記録する。少なくとも、215 KB のプロジェクトを 1 秒に 1 回直したときの最後の編集から最後の診断まで（電球あり・なし）と、1 ファイルで 1 つ直したとき。
+  GUIDE §14 のとおり、着手前の release を `target/perf/G39/tsuzuri-before` に写して比べ、ほかの作業のない機械で各組を 9 回以上測り、中央値と最小・最大を記録する（環境は §14.2）。遅れが縮まったと書くのは、この計測で示せた範囲だけにする。
+
+#### 段 14: 文書
+
+- `_tsuzuri/language-reference/compiler/diagnostics.md` の「LSP での表示」: `source.fixAll.tsuzuri` を返す条件に `triggerKind` を足す。
+- `docs/architecture.md` の言語サーバーの節: 受信の待ち行列、取り消し、`ContentModified`。
+
+## テスト計画
+
+- 拡張の統合テスト（`vsc/src/test/extension.test.ts`。CI では `vscode.yml` が 5 環境で動かす）:
+  保存したエラーの写し（段 1）、テストの実行と Debug の結果（段 2）、重複（段 3）、タスクのマーカー（段 4）。
+  Phase 2 の後に、開いていないファイルの名前の変更・削除で言語サーバーの診断が消えること（Explorer と同じ `WorkspaceEdit.renameFile`・`workspace.fs.delete`。フォルダーの名前の変更も 1 つ）。
+- 拡張の単体テスト（`vsc/src/test/core.test.ts`、`npm run test:unit`）: 位置の変換、重複の判定、根の判定。
+- 言語サーバー（`tests/lsp.rs`。段 6 で足す、1 通ずつ送る helper）: 段 6〜9 の各場面。どれも、空の一覧が届くべき URI に届くことと、届くべきでない URI に診断が届かないことの両方を見る。段 11・12 の取り消し・`ContentModified`・`triggerKind`。
+- 実プロセスのセッション（`tests/lsp_sessions.mjs`）: 開いていないファイルの削除と `didChangeWatchedFiles` で、古い URI に `[]` が届く場面を 1 つ足す（`cargo build` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri`）。
+- 既存のテストへの影響: `tests/lsp.rs` と `tests/lsp_sessions.mjs` の期待は変えない。`vsc/src/test/extension.test.ts` の build・run・check のタスクの終了コードの検査は変えない。
+- Phase 1 は `vsc/` を、Phase 2 は Windows のパスと URI の扱い（D8、9 の正準化）を変えるので、どちらの PR にも `ci:full` のラベルを付ける（AGENTS.md の CI）。Windows の Rust テストは `windows.yml`、`tests/lsp_sessions.mjs` と拡張の統合テストは `vscode.yml` だけが動かす。
+
+## ドキュメント
+
+- `vsc/README.md`、`vsc/CHANGELOG.md`（Phase 1）。
+- `_tsuzuri/language-reference/compiler/diagnostics.md`、`_tsuzuri/language-reference/compiler/usage.md`、`docs/architecture.md`（Phase 2・3）。
+- `node scripts/check-docs.mjs <変更したページ>`。
+- 完了したら、`_features/README.md` の G39 の行を done にし、このチケットを `_features/_completed/` へ移す。
+
+## 受け入れ条件
+
+- [ ] エラーを保存し、直して保存すると、source `Tsuzuri` の写しが残らない（自動保存でも）。
+- [ ] テストの実行・Debug Project の後に直して保存すると、その結果の警告・エラーが消える。実行の直後には、言語サーバーが出さない結果（`E1036` など）が出ている。実行の途中で根が変わったら、その結果は入らない。
+- [ ] テストの実行の直後に、言語サーバーと同じ警告が 2 件並ばない。`E1036` と `E2xxx` は実行の結果として出る。
+- [ ] Run・Build・Check のタスクの後に直して保存すると、問題パネルに source `Tsuzuri` のマーカーが残らない。端末の `path:line:column` はクリックで開ける。
+- [ ] 開いていないファイルを削除・名前の変更・移動すると（フォルダーごとでも）、その古い URI の言語サーバーの診断が消える。
+- [ ] `Tsuzuri.toml` を直すと、その診断が消える。マニフェストの誤りの範囲は CLI の `--json` と同じ位置。
+- [ ] プロジェクトを読み込めない間、ほかのファイルに前の解析の診断が残らない。読み込みのエラーは、そのファイルを一度開いて閉じていても出る。
+- [ ] 根の文書をすべて閉じた後も、ディスクの変更で診断が更新される。
+- [ ] シンボリックリンクを通したワークスペースで、開いていないファイルの診断がワークスペースの表記の URI に付き、開いて直すと消える。
+- [ ] 根の外の path 依存のファイルに、依存する側のサーバーが解析の診断を送らない（読み込みのエラーは送る）。
+- [ ] ファイルの変更の通知が、サブディレクトリや正準化していないパス（Windows の `c:/...`、シンボリックリンク）のものでも、別の根の解析を始めない。
+- [ ] 待ち行列に何個並んでいても、始める前に取り消された要求は計算せずに -32800 で答える。取り消しの id が溜まって取り消しが効かなくなることがない。
+- [ ] 後の `didChange` がある文書への要求は -32801 で答え、途中の版の診断を 1 つずつ送らない。
+- [ ] 電球の自動の要求（`triggerKind` 2、`only` なし）で `fix_all` を計算しない。明示の要求の結果は今と同じ。
+- [ ] 段 13 の計測を、直す前と後でこのチケットに記録している。
+- [ ] T0・T1・T2（`node tests/lsp_sessions.mjs target/debug/tsuzuri`、`cd vsc && npm run test:unit && npm test`（`src/lsp.rs` を変えた後は、先に `npm run toolchain` で `vsc/toolchain/bin/tsuzuri` を作り直す。拡張のテストは同梱のコンパイラを使う）、`node scripts/check-docs.mjs <変更したページ>`）と、`ci:full` の `vscode.yml`・`windows.yml` が通る。
+
+## 落とし穴
+
+- `vscode.languages.getDiagnostics()` は、タスクのマーカー（拡張の外の owner）の削除を、同じ URI に拡張の診断が残っている間は反映しないことがある。
+  VS Code 1.103.2 の `MainThreadDiagnostics` は、その URI のマーカーが 0 件になるか、外の owner のマーカーが残るときだけ拡張側へ送る（`workbench.desktop.main.js` の `if(n.length===0)t.push([s,[]]);else{const r=n.filter(o=>o?.origin!==this.e);r.length>0&&t.push([s,r])}`）。
+  タスクのマーカーの検査は、`editor.action.marker.next` で UI のマーカーを巡るか、拡張の診断のない URI で行う。
+- `workspace.openTextDocument` で開いた文書は、エディターを閉じても開いたままで、`didClose` が送られない。閉じる場面の検査は、Explorer と同じ `vscode.open` コマンドで開く。
+- Run・Test・Debug は実行の前に `saveAll` する。その保存の watcher のイベントは、実行の結果を入れた後に届くことがある（macOS の FSEvents は遅れる）。
+  watcher の変更の mtime は、その根で最後に始めた実行の開始と比べ、実行より前の保存のイベントで新しい結果を消さない（前の実行の開始と比べると、遅れて届いた `saveAll` の事象で新しい実行の結果を捨てる）。
+- 実行の途中で根が変わったら、その実行の結果は入れない。入れた後に消すだけだと、結果を入れる処理が後から古い結果を入れ直す。
+  根ごとに、仕様 3 の「変わった」が起きるたびに増やす番号を持ち、コンパイラを起動する直前に読んだ番号と結果を入れるときの番号が違えば入れない（エディターでの編集は mtime を変えないので、mtime だけで判定すると実行中の未保存の編集の後に古い結果が入る）。
+- VS Code は macOS と Windows で、大文字・小文字だけが違う URI を 1 つにまとめる（`IUriIdentityService.asCanonicalUri`）。大文字・小文字を区別して数える driver は、残る診断を多く数えすぎる。Linux では別の URI です。
+- 段 6 の集合は、読み込みの成功と失敗の両方の経路で更新する。`[]` は `closed` の抑止の対象外（今も空の一覧は閉じた文書へ送る。`src/lsp.rs:347`）。
+- 段 9 の根の外の判定は、refresh した根のディレクトリ（`project_root` の値）で行う。依存の `package.id.root` で判定すると、根の中の依存まで外れる。
+- 段 3 の重複の判定は、言語サーバーが遅れていると外れて一時的に 2 件並ぶ。段 2 で次の変更のときに消えるので、残り続けることはない。重複を除くために待つ処理は入れない。
+- 段 11 の -32801 は、要求の文書に後の text sync が待ち行列にあるときだけ使う。通知は捨てず、`didOpen`・`didClose` は届いた順に処理する。`didChange` をまとめても、`document versions must increase` の検査は最後の版で行う。
+- 段 11・12 の検査に、経過時間の閾値を置かない。応答の種類（-32800・-32801・結果）と、届いた診断の版で判定する。
+- 原因 5 の 8.8〜20.4 秒は、refresh とコードアクションの時間が編集の間隔に近いときだけ起きる連鎖です。計測は同じプロジェクト・同じ打鍵の間隔で比べ、典型の値として書かない。
+
+## 対象外
+
+- どのクライアントがどの文書を受け持つかの見直し（入れ子のパッケージを覆う根のクライアント、このリポジトリを開いたときの `E1017`）。別のチケットにする。
+- 4 MiB を超える `didChange` を受け付けて `E0003` を出すこと。
+- [wasm] の検査のエラーを絶対パスで出すこと（`src/main.rs:4167-4175`）。
+- 言語サーバーでのケーパビリティの検査（`E1036` を入力中に出す）。`packages.md` の「言語サーバーは検査しません」を変えることになる。
+- Run・Build・Check を `CustomExecution` と疑似端末で動かし、`--json` の結果を拡張の集まりへ入れること（D3 の代案）。
+- タスクの後に残る `a.o`。
+- 1 回の refresh の費用を減らすこと（エディターの経路の std の全モジュールの検査、`unused_private` の std の走査）。`_perfs/` の別のチケットにする。
+- 解析を別のスレッドで動かし、古い解析を途中で捨てること。
+- クイックフィックスの検証を `codeAction/resolve` へ遅らせること（修正案は検証したものだけを出す、という今の約束を変える）。
+- エラーがある間にほかのファイルの警告が消えること、超線形の入力（関連する観測を参照）。
+
+## 決定事項
+
+- **D1: テストの発見は診断を出さない**（既定案）。理由: 発見はエディターのバッファではなくディスクを読み、言語サーバーは同じ前段の診断を入力のたびに出している。成功したときに消す処理を足すだけでは、エラーの間の重複と、ディスクの本文に基づく写しが残る。
+  失う表示は、保存のたびの `E1036` だけで、これはテストの実行・Debug Project・端末に出る。
+- **D2: `tsuzuri-build` は、最後のテストの実行・テストのデバッグ・Debug Project の結果を、その根のプロジェクトが変わるまで持つ**（既定案）。言語サーバーと URI・コード・範囲の開始が同じものは除く。
+  コードの範囲（`E0xxx`・`E1xxx`・`Wxxxx` は言語サーバーの担当）で除く案は採らない。言語サーバーの解析は CLI のすべての段を通るとは限らず、CLI だけが出す `E1xxx` を隠すおそれがある。
+- **D3: 拡張のタスクから problem matcher を外す**（既定案）。理由: 拡張はほかの owner のマーカーを消せない。`applyTo: "closedDocuments"` は開いた文書にマーカーを作らないだけで、閉じた文書のマーカーは次のタスクまで残る。
+  `CustomExecution` と疑似端末で `--json` を拡張の集まりへ流す案は、Run の標準入力（`IO.read_line`）を中継する端末を作り直すことになるので、このチケットでは採らない。
+  `$tsuzuri` の定義は `package.json` に残す（利用者の `tasks.json` が名指ししている可能性がある）。
+- **D4: `tsuzuri-build` の項目は根単位で消す**（既定案）。1 つのファイルの変更が、ほかのファイルの診断を変えるため。
+- **D5: 言語サーバーは、根ごとに空でない診断を送ったパスとそのときの URI を覚え、送らなくなったパスと使わなくなった URI に `[]` を送る**（既定案）。パスだけを覚えると、消すときに作り直す URI が、空でない一覧を送った URI と違うことがある（4e の仕組み）。
+- **D6: 読み込みの失敗の間、ほかのファイルの前の解析の診断は消す**（既定案）。理由: 解析できない状態で前の結果を出し続けると、直したファイルのエラーが理由の表示なしに残る（4c）。
+  失敗の理由は、そのファイルが閉じていても出す。前の解析の結果を薄く残す（タグを付ける）案は、LSP の診断に「古い」を表す標準の印がないので採らない。
+- **D7: `didChangeWatchedFiles` は、変わった URI を正準化して入るクライアントの根と、この session で診断を送った根を解析し直す**（既定案）。どのクライアントの根にも入らない URI から、新しい根を作らない。
+- **D8: 開いていないファイルの URI は、クライアントが `initialize` で送った根の表記で作る**（既定案）。どの根にも入らないパスは `file_uri` のまま。
+- **D9: クライアントの根の外にある利用者のソースには診断を送らない**（既定案）。理由: 根の外のファイルの変更は、その根のクライアントの watcher に届かず、送った診断を直す手段がない。そのファイルは、開けばその根のクライアントが受け持つ。
+- **D10: 後の text sync が届いている文書への要求は `ContentModified`（-32801）で答える**（既定案）。理由: その結果は古い本文に基づき、クライアントはどのみち捨てる。LSP 3.17 の `ContentModified` はこの用途のためにあり、VS Code は表示せずに読み捨てる。
+- **D11: 自動の要求（`triggerKind` 2）で `only` がなければ `source.fixAll.tsuzuri` を計算しない**（既定案）。理由: VS Code 1.103.2 は自動の要求の結果から source の action を捨てるので、見える変化がない（`workbench.desktop.main.js` の `xes`）。
+  `triggerKind` のない要求は明示（1）として扱い、今と同じく返す（`only` を送らないほかのエディターの明示の要求を変えない）。
+- **D12: クイックフィックスの検証は残す**（既定案）。検証の費用は、取り消し（段 12）と `fix_all` の省略（D11）で、使われない計算だけを除く。検証を外すか遅らせる案は、言語リファレンスの約束を変えるので採らない。
