@@ -140,6 +140,7 @@ CLI の `check`、ms。
 
 - 診断: コード・kind・メッセージ・span・順序・件数（修正案の検証は件数で比べる。`src/lsp.rs` の `fix_removes`）。警告の有無と順序。
 - 言語サーバーの応答: 補完・ホバー・定義・参照・セマンティックトークン・ドキュメントシンボル・インレイヒント・修正案（quickfix と `source.fixAll.tsuzuri`）。
+- 生成する IR と機械語（O3 は instance の選び方、O4(b) は特殊化の後のモジュールに触れるので、IR を before の compiler と比べる。手順 2）。
 - スレッドの数に依らない出力（`src/lib.rs:345-349`、`src/check.rs:9124-9127` の不変条件）。
 - `costly_sites` 以外の `copies::sites`・`ownership::copy_reads` の利用者の結果。`effects.rs:2185`（`@no_copy`・`@no_alloc` と `inferred_effects`）、`llvm.rs:2594-2618`（暗黙の複製の一覧の検証）、`kg/facts.rs:188` が std を含む全関数の結果を使う。
 - Phase 1 では、言語サーバーが読む std の集合（D-40）。
@@ -154,7 +155,8 @@ CLI の `check`、ms。
 | **O3** | `Classes::matching_instance`（`src/polymorph.rs:2385-2423`）だけが使う「静かな」`Inference` にする。不一致のとき、`mismatch()` の文字列を作らずに空のメッセージの `Diagnostic` を返す。制御の流れ（unify の中の `E1003` の判定を含む）は変えず、捨てられる Err の中身だけが変わる | hello −63 ms（−12 %）、big −131、syn200 −113（試作） |
 | **O3(b)**（任意） | instance を（型クラス、頭の型構成子）で索引し、`variables(&instance.head)` を前もって求める。変数・別名・匿名共用体は保守的に扱い、instance の順を保つ | O3 の後も `matching_instance` は hello の 16.7 %。約 −30 ms（見積もり） |
 | **O4(a)** | `costly_sites` だけが使う変種（例えば `copies::sites_where`・`ownership::copy_reads_where`）で、利用者の関数だけの `check_body` を動かす。共有の `copy_reads`・`sites` は変えない | big −59 ms（試作）、ほかは 0 |
-| **O4(b)** | `costly_sites` の `call_facts` を、検査の `check_all_with`（`src/check.rs:9628`）が求めたものの再利用にする。`gpu_devices::lower_kernels`（`src/check.rs:9686`）は、デバイス呼び出しの instance があるときだけ利用者の本体を書き換える（`src/gpu_devices.rs:336-338` の早期 return の後、`:363` の `number`）。facts は書き換えがなかったときだけ `CheckedModule` で運び、書き換えたときは運ばずに、`costly_sites` が今と同じく求め直す（言語サーバーは検査の外で `costly_sites` を呼ぶため） | big 約 −157 ms（O4(a) の後に残る `call_facts` の時間） |
+| **O4(b)** | `costly_sites` の `call_facts` を、検査の `check_all_with`（`src/check.rs:9628`）が求めたものの再利用にする。`gpu_devices::lower_kernels`（`src/check.rs:9686`）は、デバイス呼び出しの instance があるときだけ利用者の本体を書き換える（`src/gpu_devices.rs:336-338` の早期 return の後、`:363` の `number`）。facts は書き換えがなかったときだけ、言語サーバーの解析の入口が返す crate 内の私的な結果（例えば `CheckedModule` と facts の組。`CheckedModule` の公開の field には置かない）で運び、言語サーバーはそのモジュールを変えずに私的な `costly_sites` の変種へ渡す。
+`CheckedModule.functions` は公開で書き換えられ、`copies::costly_sites` は公開の API なので、公開の `costly_sites` は今と同じく facts を求め直す（呼び出し側が関数を変えたり足したりした後に古い facts を使うと、結果が古くなるか添字が範囲を外れる）。書き換えがあったモジュールでも求め直す | big 約 −157 ms（O4(a) の後に残る `call_facts` の時間） |
 | **O2**（任意） | `unused_private` の辺を、到達した節点を取り出すときに作る（`src/warnings.rs:449-460` の走査は到達した節点の辺しか読まない）。入口の式の辺（`:438-446`）は入口の節点にまとめる | O1 の後の `unused_private` 全体が hello 約 8 ms（4.0 %）・big 約 11 ms（1.2 %）で、効果はその一部（上限） |
 | **O5** | 言語サーバーの `analyze` と、それを呼ぶ `fix_edit`・rename の検証は、`Parallelism::command_line()` を使う（`TSUZURI_THREADS` があればそれ）。並列度を受け取る入口を `src/lib.rs` に足す | 今: −11 %（big）〜−20 %（conventions）。hello は −16 %。O1・O3・O4(a) の後: −41 %・−19 %・−28 %（hello・big・syn200。試作） |
 | **O9** | `Session::refresh` で、`costly_sites` と `inferred_effects`（`src/lsp.rs:383-391`）を診断を送る処理（`:395-409`）の後へ移す。送る内容は同じで、診断が早く届く | big で約 −250 ms（今）、O4(a) の後は約 −190 ms（`costly_sites` が再解析の 20.8 %）、O4(b) の後は約 −30 ms（残るのは利用者の関数の `check_body` など 3.6 %）の `didChange`→`publishDiagnostics` |
@@ -179,6 +181,8 @@ CLI の `check`、ms。
 - `check --json` の golden（454 個、1 スレッドと自動）と、言語サーバーの記録（すべての URI の診断、セマンティックトークン、全ファイルのインレイヒント、ドキュメントシンボル、決めた位置のホバーと補完（`Matrix.`・`Json.`・最上位のモジュールの一覧を含む）、quickfix と `source.fixAll.tsuzuri`）を before の binary で作る。
   試作の `target/scratch/g40-pb08/verify-pb08-refresh-cost/golden-cli.mjs` を手本にし、script は手順 1 の driver と同じ `benchmarks/` に置いて、そのコマンドをこのチケットに書く。
   golden は before の binary で 2 回作って比べ、before 同士で揺れる target を先に見つける（揺れがあれば、変更の前に報告する。上の `fx-json-allstd` の 1 件を参照）。
+- 生成する IR は、既存の `tests/parallel_frontend.mjs` に before の compiler を渡して比べる: `TSUZURI_BASELINE=target/perf/PB08/tsuzuri-before node tests/parallel_frontend.mjs target/release/tsuzuri`（README の検証の節。`TSUZURI_BASELINE` を付けると、その compiler とも診断・IR・終了コードを比べる）。
+  `check --json` と言語サーバーの記録には IR が入らないので、instance の選び方や特殊化が変わって生成コードだけが変わっても、それだけでは見つからない。各手順の後に動かす。
 
 ### 手順 3: O1
 
@@ -230,7 +234,33 @@ CLI の `check`、ms。
 
 - `examples/hello`・`examples/point`・`examples/polymorphism`（std の固定費）。
 - `tests/fixtures/conventions`（21 KB）・`json`（24 KB。`Json` を名指しするので CLI も読む）・`anonymous_unions`・`list_fsharp`（43 KB）・`in_place_writes`（70 KB）。
-- big（6 ファイル 215 KB）: G39 の調査の `Main.tz`（関数 4 つ、`W1001` が 6 つ）と、`tests/fixtures/{array_fsharp,vec_dotnet,in_place_writes,json,list_fsharp}/Main.tz` をそのまま `ArrayF.tz`・`VecD.tz`・`InPlace.tz`・`JsonT.tz`・`ListF.tz` にしたもの（今の写しは `target/scratch/g39/lsp-latency-robustness/projects/big`）。手順 1 で作り方を driver に入れる。
+- big（6 ファイル 215 KB、`Tsuzuri.toml` なしのフォルダー）: 下の `Main.tz`（415 B。修正案を持つ `W1001` が 6 つ）と、`tests/fixtures/{array_fsharp,vec_dotnet,in_place_writes,json,list_fsharp}/Main.tz` をそのまま `ArrayF.tz`・`VecD.tz`・`InPlace.tz`・`JsonT.tz`・`ListF.tz` に写したもの（起票時の写しは `target/scratch/g39/lsp-latency-robustness/projects/big` で、5 つの写しは fixture とバイト単位で同じ）。
+  手順 1 で、この `Main.tz` と写し方を driver か `benchmarks/` の下の追跡されるファイルに入れる。
+
+```tsuzuri
+def alpha :: own i64 -> i64 = \n -> {
+    let first = n + 1;
+    let second = n + 2;
+    n
+}
+
+def beta :: own i64 -> i64 = \m -> {
+    let third = m * 2;
+    let fourth = m * 3;
+    m
+}
+
+def gamma :: own i64 -> own i64 -> i64 = \a b -> a
+
+def delta :: own i64 -> i64 = \k -> {
+    let fifth = k - 1;
+    k
+}
+
+def main :: own unit -> i32 = \() ->
+    do! IO.write_line (alpha 1 + beta 2 + gamma 3 4 + delta 5)
+    0
+```
 - syn200: `benchmarks/build/generate.mjs` の `writeProject(dir, 200)`（201 ファイル、727 KB）。
 - 全 std の CLI: hello の 1 行目のコメントにすべての opt-in のモジュール名を書いたもの（`sources_for` は本文の識別子を数えるので、CLI も全部読む）。
 
@@ -243,7 +273,7 @@ CLI の `check`、ms。
 ## 生成コードの確認
 
 生成する IR と機械語は変えない（フロントエンドの内部の計算だけを変える）。
-代わりに手順 8 の profile で、除いた frame が消えたことを示し、golden で出力が 1 byte も変わらないことを示す。
+手順 2 の `TSUZURI_BASELINE` つきの `tests/parallel_frontend.mjs` で、IR が before の compiler と同じことを示す。手順 8 の profile で、除いた frame が消えたことを示し、golden で診断と言語サーバーの応答が 1 byte も変わらないことを示す。
 
 ## テスト計画
 
@@ -263,6 +293,7 @@ CLI の `check`、ms。
 
 ## 受け入れ条件
 
+- [ ] `TSUZURI_BASELINE=target/perf/PB08/tsuzuri-before node tests/parallel_frontend.mjs target/release/tsuzuri` が通る（IR が before と同じ）。
 - [ ] 手順 2 の golden が、1 スレッドと自動・8 スレッドで before と 1 byte も違わない（Phase 2 を行ったときは、D7 で変わると決めた、名前を書いていない opt-in の std モジュールの補完とホバーを除く）。
 - [ ] M1 の目標（同じ機械の before に対して、hello 0.29 倍以下、big 0.48 倍以下、syn200 0.23 倍以下）に届くか、届かない理由を計測で示している。コアの数を記録している。
 - [ ] CLI の `check` と PX03 の `check` がどの workload でも遅くならず、値を `docs/benchmarks.md` に記録している。
@@ -292,6 +323,7 @@ CLI の `check`、ms。
 - **D2: O1 は `named_type` の Ok の条件と同じ照合を helper にして、`named_type` と `TypeReferences::named` の両方から使う**（既定案）。
 - **D3: O3 は `Inference` の「静かな」設定で、捨てる Err の中身だけを変える**（既定案）。unify の制御の流れを変えないので、成功のときの置き換えは同じ。
 - **D4: O4(a) は `costly_sites` だけの変種にする**（既定案）。共有の `copy_reads` の結果は std を含めて使われているため。
+  O4(b) の facts の再利用も、言語サーバーの解析の入口から私的な変種へ渡す経路だけにし、公開の `copies::costly_sites` は facts を求め直す（`CheckedModule` の field は公開で書き換えられるため）。
 - **D5: 言語サーバーは CLI と同じ `Parallelism::command_line()` を使う**（既定案）。出力はスレッドの数に依らないことが検査済みで、エディターの中の短い並列は CLI の `check` と同じ。`TSUZURI_THREADS` で上限を決められる。
 - **D6: 共有の CI に速さの合否を入れない**（既定案。GUIDE §14.7）。
 - **D7: Phase 2 の O6（言語サーバーも、名前を書いた opt-in の std だけを読む）**（承認済み。2026-11-19。Phase 1 の後の計測で目標に届かないときだけ行う）。D-40（言語サーバーは補完のため常に全部を読む）を変え、名前を書く前の opt-in のモジュールの補完とホバーを、別に作る索引から答えることになる。
