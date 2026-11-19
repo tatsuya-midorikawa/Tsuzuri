@@ -108,6 +108,15 @@ export async function run(): Promise<void> {
 			assert.equal(await waitFor(`VS Code ${action} task`, () => exitCode, 180000), 0);
 		} finally { taskSubscription.dispose(); }
 	}
+	// G39: the test discovery that a save starts reports no diagnostics, so no copy of a fixed error stays behind.
+	await replace(original.replace('calculate 2', 'calculate missing'));
+	assert.ok(await document.save());
+	await waitFor('failed test discovery after saving an error', () => api.testing.roots.get(root)!.error !== undefined ? true : undefined);
+	await replace(original);
+	assert.ok(await document.save());
+	await waitFor('test discovery after saving the fix', () => api.testing.roots.get(root)!.error === undefined ? true : undefined);
+	assert.deepEqual(vscode.languages.getDiagnostics(uri).filter(item => item.source === 'Tsuzuri').map(item => item.code), []);
+	console.log('VS Code: test discovery after saving an error and its fix leaves no copy of the error.');
 	await api.testing.discover(root);
 	const project = api.testing.roots.get(root)!;
 	const tests: vscode.TestItem[] = [];

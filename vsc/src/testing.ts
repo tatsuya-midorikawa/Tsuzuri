@@ -44,10 +44,9 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			project.busy = true;
 			try {
 				const result = await runCompiler(context, root, ['test', root, '--list', '--json'], { signal, timeout: 60000 });
-				if (result.code !== 0) {
-					await publishDiagnostics(root, result.stderr);
-					throw new Error(result.stderr || 'Test discovery failed.');
-				}
+				// Discovery reads the files on disk and reports no diagnostics (G39 D1); the language server reports the
+				// same errors as the user types, and an explicit run or debug reports this failure as its result.
+				if (result.code !== 0) { throw new Error(result.stderr || 'Test discovery failed.'); }
 				const records = jsonLines(result.stdout);
 				const revision = createHash('sha256').update(result.stdout).digest('hex').slice(0, 16);
 				const files = new Map<string, vscode.TestItem>();
