@@ -49,6 +49,74 @@ export async function projectRoot(file: string, workspaceRoot?: string): Promise
 	}
 }
 
+/** Whether `file` is `root` or lies under it. Windows compares without case, as its file systems do. */
+export function inRoot(root: string, file: string, platform: string = process.platform): boolean {
+	const paths = platform === 'win32' ? path.win32 : path.posix;
+	const relative = paths.relative(root, file);
+	return !paths.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${paths.sep}`);
+}
+
+/**
+ * The path that a Windows verbatim path stands for: `\\?\C:\dir` is `C:\dir`, and `\\?\UNC\server\share\dir` is
+ * `\\server\share\dir`. The compiler prints canonical paths, which `fs::canonicalize` makes verbatim on Windows; any other
+ * path is returned as it is.
+ */
+export function plainPath(file: string): string {
+	if (file.startsWith('\\\\?\\UNC\\')) { return `\\\\${file.slice(8)}`; }
+	if (file.startsWith('\\\\?\\') && /^[A-Za-z]:\\/.test(file.slice(4))) { return file.slice(4); }
+	return file;
+}
+
+/**
+ * `file`, a path that the compiler printed for a project at `root`, spelled under `root` as VS Code names it. The compiler
+ * canonicalizes the root (`real`, its real path: symbolic links resolved), so a path under `real` but not under `root` is
+ * moved under `root`; any other path is returned as it is.
+ */
+export function rootSpelling(root: string, real: string, file: string, platform: string = process.platform): string {
+	if (inRoot(root, file, platform) || !inRoot(real, file, platform)) { return file; }
+	const paths = platform === 'win32' ? path.win32 : path.posix;
+	return paths.join(root, paths.relative(real, file));
+}
+
+/**
+ * Whether deleting `file` can change a project at `root` or in a package under it: a path under it, except names that
+ * start with `.` and a knowledge graph under a `target/tz/`, which module discovery does not read and the compiler
+ * rewrites on each run.
+ */
+export function affectsRoot(root: string, file: string, platform: string = process.platform): boolean {
+	if (!inRoot(root, file, platform)) { return false; }
+	const parts = (platform === 'win32' ? path.win32 : path.posix).relative(root, file).split(/[\\/]/);
+	return !parts.some((part, index) => part.startsWith('.') || (part === 'target' && parts[index + 1] === 'tz' && index + 2 < parts.length));
+}
+
+/**
+ * The zero-based line and UTF-16 character of the compiler's byte `offset` into the UTF-8 file `bytes`, in the text that
+ * VS Code shows: without the byte order mark, which the offsets count, and with CRLF, CR, and LF each ending a line.
+ */
+export function sourcePosition(bytes: Uint8Array, offset: number): { line: number; character: number } {
+	const start = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+	let end = Math.min(Math.max(offset, start), bytes.length);
+	while (end > start && end < bytes.length && (bytes[end] & 0xc0) === 0x80) { end--; }
+	let text = Buffer.from(bytes.buffer, bytes.byteOffset + start, end - start).toString('utf8');
+	// An offset at the LF of a CRLF is the end of the line, as VS Code has no position between the two.
+	if (text.endsWith('\r') && bytes[end] === 0x0a) { text = text.slice(0, -1); }
+	const lines = text.split(/\r\n|\r|\n/);
+	return { line: lines.length - 1, character: lines[lines.length - 1].length };
+}
+
+/** Whether the language server reports `diagnostic`: one of `server` has its code and starts where it starts (G39 D2). */
+export function reportedByServer(diagnostic: { code?: string; line: number; character: number }, server: { code?: string; line: number; character: number }[]): boolean {
+	return server.some(item => item.code === diagnostic.code && item.line === diagnostic.line && item.character === diagnostic.character);
+}
+
+/** The sources, manifests, and lock file of a Tsuzuri project, as a glob of one path segment. */
+export const sourceFiles = '{*.tz,*.tt,*.tc,*.toml,Tsuzuri.lock}';
+
+/** Whether `file` is a Tsuzuri source, manifest, or lock file (`sourceFiles`), which the extension's watchers report. */
+export function projectFile(file: string): boolean {
+	return /(?:\.(?:tz|tt|tc|toml)|(?:^|[\\/])Tsuzuri\.lock)$/.test(file);
+}
+
 export type Action = 'check' | 'build' | 'run' | 'test' | 'debug' | 'wasm';
 
 export function commandArguments(action: Action, root: string, optimization = 3, denyWarnings = false): string[] {

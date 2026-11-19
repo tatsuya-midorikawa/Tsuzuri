@@ -85,7 +85,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	);
 	updateStatus();
 	await Promise.all(vscode.workspace.textDocuments.map(document => open(document).catch(error => reportError(error, output))));
-	return { clients, testing };
+	return { clients, testing, workflow };
 }
 
 export async function deactivate() {

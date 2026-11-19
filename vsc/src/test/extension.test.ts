@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { activate } from '../extension';
@@ -98,7 +98,7 @@ export async function run(): Promise<void> {
 	const tasks = await vscode.tasks.fetchTasks({ type: 'tsuzuri' });
 	assert.ok(tasks.some(task => task.definition.action === 'build'));
 	assert.ok(tasks.some(task => task.definition.action === 'test'));
-	for (const action of ['build', 'run', 'check']) {
+	const runTask = async (action: string) => {
 		let exitCode: number | undefined;
 		const taskSubscription = vscode.tasks.onDidEndTaskProcess(event => {
 			if (event.execution.task.definition.action === action && event.execution.task.definition.project === root) { exitCode = event.exitCode; }
@@ -107,7 +107,37 @@ export async function run(): Promise<void> {
 			await vscode.commands.executeCommand(`tsuzuri.${action}`, uri);
 			assert.equal(await waitFor(`VS Code ${action} task`, () => exitCode, 180000), 0);
 		} finally { taskSubscription.dispose(); }
-	}
+	};
+	for (const action of ['build', 'run', 'check']) { await runTask(action); }
+	// G39: the tasks have no problem matcher, whose markers VS Code keeps until the next task. getDiagnostics can miss the
+	// removal of such markers, so the editor's marker navigation tells whether Main.tz has any.
+	const hasMarkers = async () => {
+		const editor = await vscode.window.showTextDocument(document);
+		const last = document.lineAt(document.lineCount - 1).range.end;
+		editor.selection = new vscode.Selection(last, last);
+		await vscode.commands.executeCommand('editor.action.marker.next');
+		const moved = await waitFor('marker navigation', () => editor.selection.active.isEqual(last) ? undefined : true, 2000).catch(() => false);
+		await vscode.commands.executeCommand('closeMarkersNavigation');
+		return moved;
+	};
+	await replace(original.replace('    let result', '    let unused = 7\n    let result'));
+	for (const action of ['check', 'run']) { await runTask(action); }
+	await waitFor('language server warning', () => vscode.languages.getDiagnostics(uri).find(item => item.code === 'W1001' && item.source === 'tsuzuri'));
+	assert.equal(await hasMarkers(), true);
+	await replace(original);
+	assert.ok(await document.save());
+	await waitFor('language server warning cleared', () => vscode.languages.getDiagnostics(uri).some(item => item.source === 'tsuzuri') ? undefined : true);
+	assert.equal(await hasMarkers(), false);
+	console.log('VS Code: Check and Run tasks with a warning leave no marker after the fix.');
+	// G39: the test discovery that a save starts reports no diagnostics, so no copy of a fixed error stays behind.
+	await replace(original.replace('calculate 2', 'calculate missing'));
+	assert.ok(await document.save());
+	await waitFor('failed test discovery after saving an error', () => api.testing.roots.get(root)!.error !== undefined ? true : undefined);
+	await replace(original);
+	assert.ok(await document.save());
+	await waitFor('test discovery after saving the fix', () => api.testing.roots.get(root)!.error === undefined ? true : undefined);
+	assert.deepEqual(vscode.languages.getDiagnostics(uri).filter(item => item.source === 'Tsuzuri').map(item => item.code), []);
+	console.log('VS Code: test discovery after saving an error and its fix leaves no copy of the error.');
 	await api.testing.discover(root);
 	const project = api.testing.roots.get(root)!;
 	const tests: vscode.TestItem[] = [];
@@ -120,6 +150,16 @@ export async function run(): Promise<void> {
 		assert.deepEqual(await api.testing.run(new vscode.TestRunRequest([tests[0]]), cancellation.token, 0), { passed: 1, failed: 0, errored: 0, skipped: 0 });
 		assert.deepEqual(await api.testing.run(new vscode.TestRunRequest([tests[1]]), cancellation.token, 3), { passed: 0, failed: 1, errored: 0, skipped: 0 });
 	} finally { cancellation.dispose(); }
+	// G39: a test run leaves out the warnings that the language server reports at the same place.
+	await replace(original.replace('    let result', '    let unused = 7\n    let result'));
+	await waitFor('language server warning', () => vscode.languages.getDiagnostics(uri).find(item => item.code === 'W1001' && item.source === 'tsuzuri'));
+	const warned = new vscode.CancellationTokenSource();
+	try {
+		assert.deepEqual(await api.testing.run(new vscode.TestRunRequest([project]), warned.token, 0), { passed: 1, failed: 1, errored: 0, skipped: 0 });
+	} finally { warned.dispose(); }
+	assert.deepEqual(vscode.languages.getDiagnostics(uri).filter(item => item.code === 'W1001').map(item => item.source).sort(), ['tsuzuri']);
+	assert.deepEqual(vscode.languages.getDiagnostics(uri).filter(item => item.source === 'Tsuzuri').map(item => item.code), ['E2006']);
+	console.log('VS Code: a test run shows no copy of a language server warning.');
 	await replace(`${original}\ntest "new" = assert true\n`);
 	assert.ok(await document.save());
 	await waitFor('automatic test discovery after save', () => {
@@ -136,11 +176,182 @@ export async function run(): Promise<void> {
 	});
 	console.log('VS Code: build task, test discovery, duplicate-name selection, pass/fail reporting passed.');
 
+	// G39: an explicit test run reports its failed discovery, such as E1036 that the language server does not check,
+	// until the project changes: an edit, a deleted folder, or a changed manifest. The run's own saveAll keeps it.
+	const packages = vscode.Uri.file(process.env.TSUZURI_TEST_PACKAGES!).fsPath;
+	const copies = (target: vscode.Uri, code?: string) => vscode.languages.getDiagnostics(target).filter(item => item.source === 'Tsuzuri' && (!code || item.code === code));
+	const cleared = (description: string, target: vscode.Uri) => waitFor(description, () => copies(target).length ? undefined : true);
+	const runProject = async (project: string) => {
+		const token = new vscode.CancellationTokenSource();
+		try { return await api.testing.run(new vscode.TestRunRequest([api.testing.roots.get(project)!]), token.token, 0); }
+		finally { token.dispose(); }
+	};
+	const failed = { passed: 0, failed: 0, errored: 1, skipped: 0 };
+	const limited = path.join(packages, 'capabilities');
+	const limitedUri = vscode.Uri.file(path.join(limited, 'Main.tz'));
+	const limitedDocument = await vscode.workspace.openTextDocument(limitedUri);
+	const limitedText = limitedDocument.getText();
+	const editLimited = async (text: string) => {
+		const edit = new vscode.WorkspaceEdit();
+		edit.replace(limitedUri, new vscode.Range(limitedDocument.positionAt(0), limitedDocument.positionAt(limitedDocument.getText().length)), text);
+		assert.ok(await vscode.workspace.applyEdit(edit));
+	};
+	await waitFor('capabilities project', () => api.testing.roots.get(limited));
+	const saves = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(limited, 'Main.tz'), false, false, true);
+	try {
+		const saved = new Promise(resolve => { saves.onDidCreate(resolve); saves.onDidChange(resolve); });
+		await editLimited(`${limitedText}\n`);
+		assert.deepEqual(await runProject(limited), failed);
+		assert.equal(copies(limitedUri, 'E1036').length, 1);
+		// The watcher reports the saveAll of the run late, as a change or as a creation, or (on macOS, for the first
+		// saves of a file in a session) not at all.
+		await Promise.race([saved, new Promise(resolve => setTimeout(resolve, 3000))]);
+		await new Promise(resolve => setTimeout(resolve, 500));
+		assert.equal(copies(limitedUri, 'E1036').length, 1);
+	} finally { saves.dispose(); }
+	await editLimited(limitedText);
+	await cleared('run result cleared by an edit', limitedUri);
+	assert.deepEqual(await runProject(limited), failed);
+	assert.equal(copies(limitedUri, 'E1036').length, 1);
+	await rm(path.join(limited, 'Extra'), { recursive: true });
+	await cleared('run result cleared by a deleted folder', limitedUri);
+	assert.deepEqual(await runProject(limited), failed);
+	assert.equal(copies(limitedUri, 'E1036').length, 1);
+	await writeFile(path.join(limited, 'Fresh.tz'), 'def fresh :: i64 = 2\n');
+	await cleared('run result cleared by a created source', limitedUri);
+	assert.deepEqual(await runProject(limited), failed);
+	assert.equal(copies(limitedUri, 'E1036').length, 1);
+	const manifest = path.join(limited, 'Tsuzuri.toml');
+	const denied = await readFile(manifest, 'utf8');
+	await writeFile(manifest, denied.replace('allow = []', 'allow = ["stdio"]'));
+	await cleared('run result cleared by a manifest change', limitedUri);
+	console.log('VS Code: a test run reports E1036 of its discovery until an edit, a deleted folder, a created source, or a manifest change.');
+
+	// G39: a root that a run first follows after its start (found by refreshRoots) keeps an edit made before that.
+	const lateRoot = async (name: string) => {
+		const root = path.join(packages, name);
+		await mkdir(root, { recursive: true });
+		await writeFile(path.join(root, 'Main.tz'), 'def late :: i64 = 1\n');
+		const uri = vscode.Uri.file(path.join(root, 'Main.tz'));
+		return { root, uri, text: JSON.stringify({ severity: 'error', code: 'E2005', message: 'late', path: uri.fsPath, span: { start: 0, end: 3 } }) };
+	};
+	const edited = await lateRoot('late-edited');
+	let lateStart = api.workflow.begin([]);
+	const lateDocument = await vscode.workspace.openTextDocument(edited.uri);
+	const lateEdit = new vscode.WorkspaceEdit();
+	lateEdit.insert(edited.uri, lateDocument.positionAt(0), '\n');
+	assert.ok(await vscode.workspace.applyEdit(lateEdit));
+	api.workflow.track(edited.root);
+	await api.workflow.publishDiagnostics(edited.root, edited.text, lateStart);
+	assert.equal(copies(edited.uri).length, 0);
+	assert.ok(await lateDocument.save());
+	const untouched = await lateRoot('late-untouched');
+	lateStart = api.workflow.begin([]);
+	api.workflow.track(untouched.root);
+	await api.workflow.publishDiagnostics(untouched.root, untouched.text, lateStart);
+	assert.equal(copies(untouched.uri, 'E2005').length, 1);
+	console.log('VS Code: a root that a run follows after its start keeps the edits made before.');
+
+	// G39: a result in a path dependency outside the root (../lib) depends on every source outside the root: a change
+	// there clears it, also one that is not in the result's files, and a change during the run drops it.
+	const app = path.join(packages, 'app');
+	const calc = vscode.Uri.file(path.join(packages, 'lib', 'Calc.tz'));
+	const shapes = path.join(packages, 'lib', 'Shapes.tz');
+	await api.testing.discover(app).catch(() => undefined);
+	assert.deepEqual(await runProject(app), failed);
+	assert.equal(copies(calc, 'E1003').length, 1);
+	await writeFile(shapes, 'export def base :: i64 = 0\n');
+	await cleared('dependency result cleared by a change of another file outside the root', calc);
+	await writeFile(calc.fsPath, 'export def twice :: i64 -> i64 = \\value ->\n    let unused = 7\n    value * 2 + Shapes.base()\n');
+	const passed = { passed: 1, failed: 0, errored: 0, skipped: 0 };
+	// The language server also reports this W1001, and a run leaves out what it reports (step 3). No client covers lib
+	// until Calc.tz opens below, so the run's copy shows; the checks of a dropped run below rely on that.
+	const server = () => vscode.languages.getDiagnostics(calc).filter(item => item.source === 'tsuzuri').map(item => item.code);
+	assert.deepEqual(await runProject(app), passed);
+	assert.deepEqual(server(), []);
+	assert.equal(copies(calc, 'W1001').length, 1);
+	const latest = () => { let item: vscode.TestItem | undefined; api.testing.roots.get(app)!.children.forEach(child => { item = child; }); return item; };
+	/**
+	 * Runs app and makes `change` once the run's discovery has replaced the items. The run takes the change numbers and
+	 * starts the compiler in the same task as that replacement, so the change comes during the compilation. An edit in
+	 * the editor counts at once, without a watcher or a file time.
+	 */
+	const changedDuringRun = async (change: () => Promise<void>) => {
+		const discovered = latest();
+		const inFlight = runProject(app);
+		await waitFor('the discovery of the run', () => latest() !== discovered ? true : undefined);
+		await change();
+		return inFlight;
+	};
+	const replaceText = async (target: vscode.TextDocument, text: string) => {
+		const edit = new vscode.WorkspaceEdit();
+		edit.replace(target.uri, new vscode.Range(target.positionAt(0), target.positionAt(target.getText().length)), text);
+		assert.ok(await vscode.workspace.applyEdit(edit));
+	};
+	// An edit of a Tsuzuri document outside the root (other/Main.tz, open since the start) during the run drops a result
+	// that points outside the root.
+	const otherText = other.getText();
+	assert.deepEqual(await changedDuringRun(() => replaceText(other, `${otherText}\n`)), passed);
+	assert.deepEqual(copies(calc), []);
+	await replaceText(other, otherText);
+	assert.ok(await other.save());
+	assert.deepEqual(await runProject(app), passed);
+	assert.deepEqual(server(), []);
+	assert.equal(copies(calc, 'W1001').length, 1);
+	// An edit of any document under the root during the run drops its result: the root's own change number.
+	const notes = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(app, 'notes.txt')));
+	const notesText = notes.getText();
+	assert.deepEqual(await changedDuringRun(() => replaceText(notes, `${notesText}More.\n`)), passed);
+	assert.deepEqual(copies(calc), []);
+	await replaceText(notes, notesText);
+	assert.ok(await notes.save());
+	// A change on disk clears a result made before it, also when a later run of the root started after the change but
+	// stopped after its discovery without a result (here, a run that excludes every test).
+	const appMain = vscode.Uri.file(path.join(app, 'Main.tz'));
+	const appText = await readFile(appMain.fsPath, 'utf8');
+	await writeFile(appMain.fsPath, appText.replace('== 4', '== 5'));
+	assert.deepEqual(await runProject(app), { passed: 0, failed: 1, errored: 0, skipped: 0 });
+	assert.equal(copies(appMain, 'E2006').length, 1);
+	await writeFile(appMain.fsPath, appText);
+	const appItem = api.testing.roots.get(app)!;
+	const none = new vscode.CancellationTokenSource();
+	try {
+		assert.deepEqual(await api.testing.run(new vscode.TestRunRequest([appItem], [appItem]), none.token, 0), { passed: 0, failed: 0, errored: 0, skipped: 0 });
+	} finally { none.dispose(); }
+	await cleared('run result cleared by a change on disk before a run that stopped after its discovery', appMain);
+	await writeFile(calc.fsPath, 'export def twice :: i64 -> i64 = \\value -> value * 2 + true\n');
+	assert.deepEqual(await runProject(app), failed);
+	assert.equal(copies(calc, 'E1003').length, 1);
+	// VS Code reports a deleted folder as one event of the folder, also outside the root.
+	await rm(path.join(packages, 'lib', 'Extra'), { recursive: true });
+	await cleared('dependency result cleared by a deleted folder outside the root', calc);
+	assert.deepEqual(await runProject(app), failed);
+	assert.equal(copies(calc, 'E1003').length, 1);
+	const library = await vscode.workspace.openTextDocument(calc);
+	await replaceText(library, 'export def twice :: i64 -> i64 = \\value -> value * 2\n');
+	assert.ok(await library.save());
+	await cleared('dependency result cleared by an edit outside the root', calc);
+	console.log('VS Code: a result in a path dependency clears on changes outside the root, and a run changed while it runs shows no result.');
+
+	// G39: removing a workspace folder clears the results of its projects. This is the last check, as the language
+	// servers restart. The packages folder is not the first, whose removal would restart the extension host.
+	const removeFolder = async () => {
+		await writeFile(manifest, denied);
+		assert.deepEqual(await runProject(limited), failed);
+		assert.equal(copies(limitedUri, 'E1036').length, 1);
+		const index = vscode.workspace.workspaceFolders!.findIndex(folder => folder.uri.fsPath === packages);
+		assert.equal(index, 2);
+		assert.ok(vscode.workspace.updateWorkspaceFolders(index, 1));
+		await cleared('run result cleared by removing its workspace folder', limitedUri);
+		console.log('VS Code: removing a workspace folder clears the run results of its projects.');
+	};
+
 	if (!supportsDebug()) {
 		assert.equal(process.platform, 'win32');
 		assert.equal(process.arch, 'arm64');
 		assert.equal(vscode.extensions.getExtension('vadimcn.vscode-lldb'), undefined);
 		assert.equal(await vscode.commands.executeCommand('tsuzuri.debug', uri), false);
+		await removeFolder();
 		console.log('Windows ARM64: editing, diagnostics, build, tests passed; only debugging is unavailable.');
 		return;
 	}
@@ -204,5 +415,14 @@ export async function run(): Promise<void> {
 		debugging.dispose();
 		if (vscode.debug.activeDebugSession) { await vscode.debug.stopDebugging(); }
 	}
+
+	// G39: Debug Project reports E1036 of its build until the project changes.
+	await writeFile(manifest, denied);
+	assert.equal(await vscode.commands.executeCommand('tsuzuri.debug', limitedUri), false);
+	assert.equal(copies(limitedUri, 'E1036').length, 1);
+	await editLimited(`${limitedText}\n`);
+	await cleared('Debug Project result cleared by an edit', limitedUri);
+	console.log('VS Code: Debug Project reports E1036 of its build until an edit.');
+	await removeFolder();
 	console.log('All Tsuzuri VS Code integration checks passed.');
 }

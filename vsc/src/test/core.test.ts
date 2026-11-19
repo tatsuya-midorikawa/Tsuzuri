@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { assertSupportedHost, commandArguments, defaultNamespace, endsInPath, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, projectRoot, reservedWords, runProcess, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
+import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, plainPath, projectFile, projectRoot, reportedByServer, rootSpelling, reservedWords, runProcess, sourcePosition, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
 
 test('only the five supported hosts enable the IDE, with debugging disabled on Windows ARM64', () => {
 	const supported = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
@@ -148,6 +148,84 @@ test('project root respects nested projects and source subdirectories', async ()
 		await writeFile(path.join(root, 'Library.tz'), '');
 		assert.equal(await projectRoot(path.join(root, 'Library.tz'), root), root);
 	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('run results belong to the roots that contain their files, and deletions that module discovery reads change a root', () => {
+	assert.ok(inRoot('/w/app', '/w/app', 'linux'));
+	assert.ok(inRoot('/w/app', '/w/app/Main.tz', 'linux'));
+	assert.ok(inRoot('/w/app', '/w/app/lib/Calc.tz', 'darwin'));
+	assert.ok(inRoot('/w/app', '/w/app/..data/Calc.tz', 'linux'));
+	for (const file of ['/w/lib/Calc.tz', '/w/application/Main.tz', '/w', '/other/app/Main.tz']) {
+		assert.ok(!inRoot('/w/app', file, 'linux'), file);
+	}
+	// Windows compares paths without case, as its file systems do, and another drive is never inside.
+	assert.ok(inRoot('c:\\w\\app', 'C:\\W\\App\\Main.tz', 'win32'));
+	assert.ok(!inRoot('c:\\w\\app', 'd:\\w\\app\\Main.tz', 'win32'));
+	assert.ok(!inRoot('c:\\w\\app', 'c:\\w\\lib\\Calc.tz', 'win32'));
+	for (const file of ['/w/app/Main.tz', '/w/app/Geometry', '/w/app/target', '/w/app/target/Main.tz', '/w/app/target/tzx/a', '/w/app']) {
+		assert.ok(affectsRoot('/w/app', file, 'linux'), file);
+	}
+	// Module discovery reads no name that starts with '.', and each build rewrites the knowledge graph in target/tz/, also
+	// of a package under the root or, for a deletion outside every root, under its workspace folder.
+	for (const file of ['/w/app/.tsuzuri', '/w/app/.tsuzuri/test/runner-1', '/w/app/Geometry/.hidden/Point.tz', '/w/app/target/tz/kg', '/w/app/target/tz/kg/nodes.jsonl', '/w/app/lib/target/tz/kg', '/w/lib/Calc.tz']) {
+		assert.ok(!affectsRoot('/w/app', file, 'linux'), file);
+	}
+	for (const file of ['/w/app/lib/target/tz', '/w/app/lib/target/Calc.tz', '/w/app/lib/tz/kg']) { assert.ok(affectsRoot('/w/app', file, 'linux'), file); }
+	assert.ok(!affectsRoot('c:\\w\\app', 'C:\\w\\app\\target\\tz\\kg', 'win32'));
+	assert.ok(affectsRoot('c:\\w\\app', 'C:\\w\\app\\Shapes', 'win32'));
+	for (const file of ['Main.tz', 'lib/Calc.tt', 'Show.tc', 'Tsuzuri.toml', 'C:\\w\\Main.tz', '/w/app/Tsuzuri.lock', 'C:\\w\\Tsuzuri.lock', 'Tsuzuri.lock']) { assert.ok(projectFile(file), file); }
+	for (const file of ['README.md', 'Main.tzx', 'main.c', 'Tsuzuri.toml.bak', 'tz', '/w/app/Cargo.lock', '/w/app/MyTsuzuri.lock', 'Tsuzuri.lock.bak']) { assert.ok(!projectFile(file), file); }
+});
+
+test('compiler paths are spelled as VS Code names the project: no verbatim prefix, under the root as opened', () => {
+	// fs::canonicalize makes the compiler's paths verbatim on Windows (G39 Phase 1 found it in the Windows CI).
+	assert.equal(plainPath('\\\\?\\D:\\a\\Tsuzuri\\Main.tz'), 'D:\\a\\Tsuzuri\\Main.tz');
+	assert.equal(plainPath('\\\\?\\UNC\\server\\share\\Main.tz'), '\\\\server\\share\\Main.tz');
+	assert.equal(plainPath('\\\\?\\GLOBALROOT\\Device\\X'), '\\\\?\\GLOBALROOT\\Device\\X');
+	assert.equal(plainPath('/private/tmp/p/Main.tz'), '/private/tmp/p/Main.tz');
+	assert.equal(plainPath('Main.tz'), 'Main.tz');
+	// A root opened through a symbolic link: the compiler names the real path.
+	assert.equal(rootSpelling('/tmp/p', '/private/tmp/p', '/private/tmp/p/A/B.tz', 'darwin'), '/tmp/p/A/B.tz');
+	assert.equal(rootSpelling('/tmp/p', '/private/tmp/p', '/tmp/p/B.tz', 'darwin'), '/tmp/p/B.tz');
+	assert.equal(rootSpelling('/tmp/p', '/private/tmp/p', '/private/tmp/lib/C.tz', 'darwin'), '/private/tmp/lib/C.tz');
+	// Windows compares paths without case, as VS Code's lower-case drive letters need.
+	assert.equal(rootSpelling('d:\\a\\p', 'D:\\a\\p', 'D:\\a\\p\\Main.tz', 'win32'), 'D:\\a\\p\\Main.tz');
+	assert.equal(inRoot('d:\\a\\p', plainPath('\\\\?\\D:\\a\\p\\Main.tz'), 'win32'), true);
+});
+
+test('compiler byte offsets become the positions of the text that VS Code shows', () => {
+	const at = (text: string | number[], offset: number) => {
+		const position = sourcePosition(typeof text === 'string' ? Buffer.from(text, 'utf8') : Uint8Array.from(text), offset);
+		return [position.line, position.character];
+	};
+	assert.deepEqual(at('ab\ncd', 4), [1, 1]);
+	assert.deepEqual(at('ab\ncd', 0), [0, 0]);
+	// The byte order mark is not part of the editor's text, though the compiler's offsets count it.
+	const bom = [0xef, 0xbb, 0xbf, ...Buffer.from('def x :: i64 = true\r\ndef y :: i64 = "\u{1f600}" + 1\r\n')];
+	assert.deepEqual([18, 22, 39, 45].map(offset => at(bom, offset)), [[0, 15], [0, 19], [1, 15], [1, 19]]);
+	for (const offset of [0, 1, 2, 3]) { assert.deepEqual(at(bom, offset), [0, 0], String(offset)); }
+	assert.deepEqual(at('\ufeffx', 4), [0, 1]);
+	// CRLF and a lone CR end a line, as in VS Code; the LF of a CRLF is still the end of its line.
+	assert.deepEqual([1, 2, 3, 4].map(offset => at('a\r\nbc', offset)), [[0, 1], [0, 1], [1, 0], [1, 1]]);
+	assert.deepEqual([1, 2, 3].map(offset => at('a\rb', offset)), [[0, 1], [1, 0], [1, 1]]);
+	assert.deepEqual(at('a\r\n\r\nb', 5), [2, 0]);
+	// Columns count UTF-16 code units: a supplementary-plane character is two, a CJK character one.
+	assert.deepEqual(at('x = "\u{1f600}" + \u65e5 1', 9), [0, 7]);
+	assert.deepEqual(at('x = "\u{1f600}" + \u65e5 1', 16), [0, 12]);
+	// An offset inside a character starts at the character; one past the end is the end.
+	assert.deepEqual(at('a\u00e9b', 2), [0, 1]);
+	assert.deepEqual(at('ab\nc', 99), [1, 1]);
+	assert.deepEqual(at('ab', -5), [0, 0]);
+});
+
+test('a run result duplicates a language server diagnostic of the same code that starts at the same position', () => {
+	const server = [{ code: 'W1001', line: 2, character: 8 }, { code: 'E1003', line: 4, character: 0 }];
+	assert.ok(reportedByServer({ code: 'W1001', line: 2, character: 8 }, server));
+	assert.ok(reportedByServer({ code: 'E1003', line: 4, character: 0 }, server));
+	assert.ok(!reportedByServer({ code: 'W1001', line: 2, character: 9 }, server));
+	assert.ok(!reportedByServer({ code: 'W1001', line: 3, character: 8 }, server));
+	assert.ok(!reportedByServer({ code: 'E1036', line: 2, character: 8 }, server));
+	assert.ok(!reportedByServer({ code: 'E2006', line: 0, character: 0 }, []));
 });
 
 test('process execution captures Unicode without a shell and can be cancelled', async () => {
