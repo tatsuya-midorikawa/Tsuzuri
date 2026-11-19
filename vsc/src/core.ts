@@ -57,13 +57,14 @@ export function inRoot(root: string, file: string, platform: string = process.pl
 }
 
 /**
- * Whether deleting `file` can change the project at `root`: a path under it, except names that start with `.` and the
- * knowledge graph under `target/tz/`, which module discovery does not read and the compiler rewrites on each run.
+ * Whether deleting `file` can change a project at `root` or in a package under it: a path under it, except names that
+ * start with `.` and a knowledge graph under a `target/tz/`, which module discovery does not read and the compiler
+ * rewrites on each run.
  */
 export function affectsRoot(root: string, file: string, platform: string = process.platform): boolean {
 	if (!inRoot(root, file, platform)) { return false; }
 	const parts = (platform === 'win32' ? path.win32 : path.posix).relative(root, file).split(/[\\/]/);
-	return !parts.some(part => part.startsWith('.')) && !(parts.length > 2 && parts[0] === 'target' && parts[1] === 'tz');
+	return !parts.some((part, index) => part.startsWith('.') || (part === 'target' && parts[index + 1] === 'tz' && index + 2 < parts.length));
 }
 
 /**
@@ -86,9 +87,12 @@ export function reportedByServer(diagnostic: { code?: string; line: number; char
 	return server.some(item => item.code === diagnostic.code && item.line === diagnostic.line && item.character === diagnostic.character);
 }
 
-/** Whether `file` is a Tsuzuri source or manifest, the files that the extension's watchers report. */
+/** The sources, manifests, and lock file of a Tsuzuri project, as a glob of one path segment. */
+export const sourceFiles = '{*.tz,*.tt,*.tc,*.toml,Tsuzuri.lock}';
+
+/** Whether `file` is a Tsuzuri source, manifest, or lock file (`sourceFiles`), which the extension's watchers report. */
 export function projectFile(file: string): boolean {
-	return /\.(?:tz|tt|tc|toml)$/.test(file);
+	return /(?:\.(?:tz|tt|tc|toml)|(?:^|[\\/])Tsuzuri\.lock)$/.test(file);
 }
 
 export type Action = 'check' | 'build' | 'run' | 'test' | 'debug' | 'wasm';

@@ -217,11 +217,15 @@ export async function run(): Promise<void> {
 	await cleared('run result cleared by a deleted folder', limitedUri);
 	assert.deepEqual(await runProject(limited), failed);
 	assert.equal(copies(limitedUri, 'E1036').length, 1);
+	await writeFile(path.join(limited, 'Fresh.tz'), 'def fresh :: i64 = 2\n');
+	await cleared('run result cleared by a created source', limitedUri);
+	assert.deepEqual(await runProject(limited), failed);
+	assert.equal(copies(limitedUri, 'E1036').length, 1);
 	const manifest = path.join(limited, 'Tsuzuri.toml');
 	const denied = await readFile(manifest, 'utf8');
 	await writeFile(manifest, denied.replace('allow = []', 'allow = ["stdio"]'));
 	await cleared('run result cleared by a manifest change', limitedUri);
-	console.log('VS Code: a test run reports E1036 of its discovery until an edit, a deleted folder, or a manifest change.');
+	console.log('VS Code: a test run reports E1036 of its discovery until an edit, a deleted folder, a created source, or a manifest change.');
 
 	// G39: a result in a path dependency outside the root (../lib) depends on every source outside the root: a change
 	// there clears it, also one that is not in the result's files, and a change during the run drops it.
@@ -235,32 +239,94 @@ export async function run(): Promise<void> {
 	await cleared('dependency result cleared by a change of another file outside the root', calc);
 	await writeFile(calc.fsPath, 'export def twice :: i64 -> i64 = \\value ->\n    let unused = 7\n    value * 2 + Shapes.base()\n');
 	const passed = { passed: 1, failed: 0, errored: 0, skipped: 0 };
+	// The language server also reports this W1001, and a run leaves out what it reports (step 3). No client covers lib
+	// until Calc.tz opens below, so the run's copy shows; the checks of a dropped run below rely on that.
+	const server = () => vscode.languages.getDiagnostics(calc).filter(item => item.source === 'tsuzuri').map(item => item.code);
 	assert.deepEqual(await runProject(app), passed);
+	assert.deepEqual(server(), []);
 	assert.equal(copies(calc, 'W1001').length, 1);
 	const latest = () => { let item: vscode.TestItem | undefined; api.testing.roots.get(app)!.children.forEach(child => { item = child; }); return item; };
-	const discovered = latest();
-	const inFlight = runProject(app);
-	// The run's discovery replaces the items, after which the run has taken the change numbers and started the compiler.
-	await waitFor('the discovery of the run', () => latest() !== discovered ? true : undefined);
-	await writeFile(shapes, 'export def base :: i64 = 0\n\n');
-	assert.deepEqual(await inFlight, passed);
+	/**
+	 * Runs app and makes `change` once the run's discovery has replaced the items. The run takes the change numbers and
+	 * starts the compiler in the same task as that replacement, so the change comes during the compilation. An edit in
+	 * the editor counts at once, without a watcher or a file time.
+	 */
+	const changedDuringRun = async (change: () => Promise<void>) => {
+		const discovered = latest();
+		const inFlight = runProject(app);
+		await waitFor('the discovery of the run', () => latest() !== discovered ? true : undefined);
+		await change();
+		return inFlight;
+	};
+	const replaceText = async (target: vscode.TextDocument, text: string) => {
+		const edit = new vscode.WorkspaceEdit();
+		edit.replace(target.uri, new vscode.Range(target.positionAt(0), target.positionAt(target.getText().length)), text);
+		assert.ok(await vscode.workspace.applyEdit(edit));
+	};
+	// An edit of a Tsuzuri document outside the root (other/Main.tz, open since the start) during the run drops a result
+	// that points outside the root.
+	const otherText = other.getText();
+	assert.deepEqual(await changedDuringRun(() => replaceText(other, `${otherText}\n`)), passed);
 	assert.deepEqual(copies(calc), []);
+	await replaceText(other, otherText);
+	assert.ok(await other.save());
+	assert.deepEqual(await runProject(app), passed);
+	assert.deepEqual(server(), []);
+	assert.equal(copies(calc, 'W1001').length, 1);
+	// An edit of any document under the root during the run drops its result: the root's own change number.
+	const notes = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(app, 'notes.txt')));
+	const notesText = notes.getText();
+	assert.deepEqual(await changedDuringRun(() => replaceText(notes, `${notesText}More.\n`)), passed);
+	assert.deepEqual(copies(calc), []);
+	await replaceText(notes, notesText);
+	assert.ok(await notes.save());
+	// A change on disk clears a result made before it, also when a later run of the root started after the change but
+	// stopped after its discovery without a result (here, a run that excludes every test).
+	const appMain = vscode.Uri.file(path.join(app, 'Main.tz'));
+	const appText = await readFile(appMain.fsPath, 'utf8');
+	await writeFile(appMain.fsPath, appText.replace('== 4', '== 5'));
+	assert.deepEqual(await runProject(app), { passed: 0, failed: 1, errored: 0, skipped: 0 });
+	assert.equal(copies(appMain, 'E2006').length, 1);
+	await writeFile(appMain.fsPath, appText);
+	const appItem = api.testing.roots.get(app)!;
+	const none = new vscode.CancellationTokenSource();
+	try {
+		assert.deepEqual(await api.testing.run(new vscode.TestRunRequest([appItem], [appItem]), none.token, 0), { passed: 0, failed: 0, errored: 0, skipped: 0 });
+	} finally { none.dispose(); }
+	await cleared('run result cleared by a change on disk before a run that stopped after its discovery', appMain);
 	await writeFile(calc.fsPath, 'export def twice :: i64 -> i64 = \\value -> value * 2 + true\n');
 	assert.deepEqual(await runProject(app), failed);
 	assert.equal(copies(calc, 'E1003').length, 1);
+	// VS Code reports a deleted folder as one event of the folder, also outside the root.
+	await rm(path.join(packages, 'lib', 'Extra'), { recursive: true });
+	await cleared('dependency result cleared by a deleted folder outside the root', calc);
+	assert.deepEqual(await runProject(app), failed);
+	assert.equal(copies(calc, 'E1003').length, 1);
 	const library = await vscode.workspace.openTextDocument(calc);
-	const fix = new vscode.WorkspaceEdit();
-	fix.replace(calc, new vscode.Range(library.positionAt(0), library.positionAt(library.getText().length)), 'export def twice :: i64 -> i64 = \\value -> value * 2\n');
-	assert.ok(await vscode.workspace.applyEdit(fix));
+	await replaceText(library, 'export def twice :: i64 -> i64 = \\value -> value * 2\n');
 	assert.ok(await library.save());
 	await cleared('dependency result cleared by an edit outside the root', calc);
-	console.log('VS Code: a result in a path dependency clears on changes outside the root and drops on a change during the run.');
+	console.log('VS Code: a result in a path dependency clears on changes outside the root, and a run changed while it runs shows no result.');
+
+	// G39: removing a workspace folder clears the results of its projects. This is the last check, as the language
+	// servers restart. The packages folder is not the first, whose removal would restart the extension host.
+	const removeFolder = async () => {
+		await writeFile(manifest, denied);
+		assert.deepEqual(await runProject(limited), failed);
+		assert.equal(copies(limitedUri, 'E1036').length, 1);
+		const index = vscode.workspace.workspaceFolders!.findIndex(folder => folder.uri.fsPath === packages);
+		assert.equal(index, 2);
+		assert.ok(vscode.workspace.updateWorkspaceFolders(index, 1));
+		await cleared('run result cleared by removing its workspace folder', limitedUri);
+		console.log('VS Code: removing a workspace folder clears the run results of its projects.');
+	};
 
 	if (!supportsDebug()) {
 		assert.equal(process.platform, 'win32');
 		assert.equal(process.arch, 'arm64');
 		assert.equal(vscode.extensions.getExtension('vadimcn.vscode-lldb'), undefined);
 		assert.equal(await vscode.commands.executeCommand('tsuzuri.debug', uri), false);
+		await removeFolder();
 		console.log('Windows ARM64: editing, diagnostics, build, tests passed; only debugging is unavailable.');
 		return;
 	}
@@ -332,5 +398,6 @@ export async function run(): Promise<void> {
 	await editLimited(`${limitedText}\n`);
 	await cleared('Debug Project result cleared by an edit', limitedUri);
 	console.log('VS Code: Debug Project reports E1036 of its build until an edit.');
+	await removeFolder();
 	console.log('All Tsuzuri VS Code integration checks passed.');
 }

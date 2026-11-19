@@ -1,26 +1,34 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { Action, affectsRoot, commandArguments, defaultNamespace, exists, inRoot, isNamespace, jsonLines, lldbLaunch, outputPath, projectFile, projectRoot, reportedByServer, sourcePosition, supportsDebug } from './core';
+import { Action, affectsRoot, commandArguments, defaultNamespace, exists, inRoot, isNamespace, jsonLines, lldbLaunch, outputPath, projectFile, projectRoot, reportedByServer, sourceFiles, sourcePosition, supportsDebug } from './core';
 import { runCompiler, toolchain } from './toolchain';
 
-/** The change numbers of a project root just before a run of the compiler started (`begin`), which its result must match. */
+/**
+ * A run of the compiler in a project root (`begin`): the root's change numbers just before it started, which its result
+ * must match, and the time it started, which no file that a watcher reports written may follow.
+ */
 export interface RunStart {
 	changed: number;
 	outside: number;
+	started: number;
 }
 
 /**
  * The result of the last test run, test debug, or Debug Project of a project root (G39 D2): its URIs, whether one is
- * outside the root (a path dependency), the numbers of the root's last change and of its last change outside the
- * root, the start of its last run, and the watcher of deletions under the root.
+ * outside the root (a path dependency), and the start of the run that produced it. The numbers of the root's last
+ * change and of its last change outside the root count the changes that have no time (an edit in the editor, a
+ * deletion); the newest times of a file that a watcher reported written under the root and outside it count the others.
+ * Each run compares them with its own start, not with the root's latest run, which may stop before it has a result.
  */
 interface RootResult {
 	uris: vscode.Uri[];
 	external: boolean;
+	shown: number;
 	changed: number;
 	outside: number;
-	started: number;
+	written: number;
+	writtenOutside: number;
 	deletions: vscode.FileSystemWatcher;
 }
 
@@ -61,8 +69,8 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		let state = roots.get(root);
 		if (!state) {
 			const created: RootResult = {
-				uris: [], external: false, changed: ++changes, outside: changes, started: -Infinity,
-				// A folder that is deleted or moved arrives as one event of the folder, which the source watcher does not match.
+				uris: [], external: false, shown: -Infinity, changed: ++changes, outside: changes, written: -Infinity, writtenOutside: -Infinity,
+				// Every deletion under the root. A folder that is deleted or moved arrives as one event of the folder.
 				deletions: vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**'), true, true, false),
 			};
 			created.deletions.onDidDelete(uri => { if (affectsRoot(root, uri.fsPath)) { created.changed = ++changes; clear(created); } });
@@ -75,42 +83,65 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		state.uris = [];
 		state.external = false;
 	}
+	/** A change outside the root, which every source outside the root can cause in a result there (G39 spec 3). */
+	function changedOutside(state: RootResult) {
+		state.outside = ++changes;
+		if (state.external) { clear(state); }
+	}
 	/**
-	 * A change of `file` (G39 spec 3) changes the roots that contain it, and when it is a Tsuzuri source, also the
-	 * results of the other roots that point outside their root. A watcher's event of a written file gives the file's
-	 * `modified` time, which counts only after the root's last run started: the saveAll before a run can reach the
-	 * watcher late.
+	 * An edit of `file` in the editor (G39 spec 3) changes the roots that contain it, and when it is a Tsuzuri source, also
+	 * the results of the other roots that point outside their root.
 	 */
-	function changed(file: string, source: boolean, modified?: number) {
+	function edited(file: string, source: boolean) {
 		for (const [root, state] of roots) {
-			if (modified !== undefined && modified <= state.started) { continue; }
 			if (inRoot(root, file)) {
 				state.changed = ++changes;
 				clear(state);
-			} else if (source) {
-				state.outside = ++changes;
-				if (state.external) { clear(state); }
+			} else if (source) { changedOutside(state); }
+		}
+	}
+	/**
+	 * A source that a watcher reports created or written at `time` makes stale the results of the runs that started
+	 * before it, whether shown or still running; it is not a change for a run that started after it, which read it. The
+	 * saveAll before a run can reach the watcher after the run has started, or after its result is shown.
+	 */
+	function written(file: string, time: number) {
+		for (const [root, state] of roots) {
+			if (inRoot(root, file)) {
+				state.written = Math.max(state.written, time);
+				if (time > state.shown) { clear(state); }
+			} else {
+				state.writtenOutside = Math.max(state.writtenOutside, time);
+				if (state.external && time > state.shown) { clear(state); }
 			}
 		}
 	}
 	/** Records the start of a run of the compiler in `root`, just before it starts; `publishDiagnostics` takes the result. */
 	function begin(root: string): RunStart {
 		const state = rootState(root);
-		state.started = Date.now();
-		return { changed: state.changed, outside: state.outside };
+		return { changed: state.changed, outside: state.outside, started: Date.now() };
 	}
 	// VS Code 1.103 on macOS can report the saveAll before a run as a creation, so a creation counts by the file's times
 	// like a change. The status change time is new after a move, which keeps the modification time.
-	const written = (uri: vscode.Uri) => {
+	const stamped = (uri: vscode.Uri) => {
 		void stat(uri.fsPath).then(info => Math.trunc(Math.max(info.mtimeMs, info.ctimeMs)), () => Date.now())
-			.then(modified => changed(uri.fsPath, true, modified));
+			.then(time => written(uri.fsPath, time));
 	};
-	const sources = vscode.workspace.createFileSystemWatcher('**/*.{tz,tt,tc,toml}');
-	context.subscriptions.push(sources, sources.onDidCreate(written), sources.onDidChange(written),
-		sources.onDidDelete(uri => changed(uri.fsPath, true)),
+	const sources = vscode.workspace.createFileSystemWatcher(`**/${sourceFiles}`);
+	// Each root's own watcher sees the deletions under it; this one sees those outside it, where a path dependency's
+	// deleted folder also arrives as one event. Names that module discovery does not read are left out, as under a root.
+	const removals = vscode.workspace.createFileSystemWatcher('**', true, true, false);
+	context.subscriptions.push(sources, sources.onDidCreate(stamped), sources.onDidChange(stamped), removals,
+		removals.onDidDelete(uri => {
+			const folder = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath;
+			if (folder && !affectsRoot(folder, uri.fsPath)) { return; }
+			for (const [root, state] of roots) {
+				if (!inRoot(root, uri.fsPath)) { changedOutside(state); }
+			}
+		}),
 		vscode.workspace.onDidChangeTextDocument(event => {
 			const document = event.document.uri;
-			if (event.contentChanges.length && document.scheme === 'file') { changed(document.fsPath, projectFile(document.fsPath)); }
+			if (event.contentChanges.length && document.scheme === 'file') { edited(document.fsPath, projectFile(document.fsPath)); }
 		}),
 		vscode.workspace.onDidChangeWorkspaceFolders(event => {
 			for (const [root, state] of roots) {
@@ -187,8 +218,10 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		// on every source outside the root, since any of them can cause it.
 		const state = roots.get(root);
 		const external = [...grouped.keys()].some(file => !inRoot(root, file));
-		if (!state || state.changed !== start.changed || external && state.outside !== start.outside) { return; }
+		if (!state || state.changed !== start.changed || state.written > start.started
+			|| external && (state.outside !== start.outside || state.writtenOutside > start.started)) { return; }
 		clear(state);
+		state.shown = start.started;
 		const position = (item: vscode.Diagnostic) => ({
 			code: typeof item.code === 'object' ? String(item.code.value) : item.code === undefined ? undefined : String(item.code),
 			line: item.range.start.line, character: item.range.start.character,

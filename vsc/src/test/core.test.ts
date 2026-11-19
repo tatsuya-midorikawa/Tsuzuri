@@ -150,7 +150,7 @@ test('project root respects nested projects and source subdirectories', async ()
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('run results belong to the roots that contain their files, and only source deletions change a root', () => {
+test('run results belong to the roots that contain their files, and deletions that module discovery reads change a root', () => {
 	assert.ok(inRoot('/w/app', '/w/app', 'linux'));
 	assert.ok(inRoot('/w/app', '/w/app/Main.tz', 'linux'));
 	assert.ok(inRoot('/w/app', '/w/app/lib/Calc.tz', 'darwin'));
@@ -165,14 +165,16 @@ test('run results belong to the roots that contain their files, and only source 
 	for (const file of ['/w/app/Main.tz', '/w/app/Geometry', '/w/app/target', '/w/app/target/Main.tz', '/w/app/target/tzx/a', '/w/app']) {
 		assert.ok(affectsRoot('/w/app', file, 'linux'), file);
 	}
-	// Module discovery reads no name that starts with '.', and each build rewrites the knowledge graph in target/tz/.
-	for (const file of ['/w/app/.tsuzuri', '/w/app/.tsuzuri/test/runner-1', '/w/app/Geometry/.hidden/Point.tz', '/w/app/target/tz/kg', '/w/app/target/tz/kg/nodes.jsonl', '/w/lib/Calc.tz']) {
+	// Module discovery reads no name that starts with '.', and each build rewrites the knowledge graph in target/tz/, also
+	// of a package under the root or, for a deletion outside every root, under its workspace folder.
+	for (const file of ['/w/app/.tsuzuri', '/w/app/.tsuzuri/test/runner-1', '/w/app/Geometry/.hidden/Point.tz', '/w/app/target/tz/kg', '/w/app/target/tz/kg/nodes.jsonl', '/w/app/lib/target/tz/kg', '/w/lib/Calc.tz']) {
 		assert.ok(!affectsRoot('/w/app', file, 'linux'), file);
 	}
+	for (const file of ['/w/app/lib/target/tz', '/w/app/lib/target/Calc.tz', '/w/app/lib/tz/kg']) { assert.ok(affectsRoot('/w/app', file, 'linux'), file); }
 	assert.ok(!affectsRoot('c:\\w\\app', 'C:\\w\\app\\target\\tz\\kg', 'win32'));
 	assert.ok(affectsRoot('c:\\w\\app', 'C:\\w\\app\\Shapes', 'win32'));
-	for (const file of ['Main.tz', 'lib/Calc.tt', 'Show.tc', 'Tsuzuri.toml', 'C:\\w\\Main.tz']) { assert.ok(projectFile(file), file); }
-	for (const file of ['README.md', 'Main.tzx', 'main.c', 'Tsuzuri.toml.bak', 'tz']) { assert.ok(!projectFile(file), file); }
+	for (const file of ['Main.tz', 'lib/Calc.tt', 'Show.tc', 'Tsuzuri.toml', 'C:\\w\\Main.tz', '/w/app/Tsuzuri.lock', 'C:\\w\\Tsuzuri.lock', 'Tsuzuri.lock']) { assert.ok(projectFile(file), file); }
+	for (const file of ['README.md', 'Main.tzx', 'main.c', 'Tsuzuri.toml.bak', 'tz', '/w/app/Cargo.lock', '/w/app/MyTsuzuri.lock', 'Tsuzuri.lock.bak']) { assert.ok(!projectFile(file), file); }
 });
 
 test('compiler byte offsets become the positions of the text that VS Code shows', () => {
