@@ -91,9 +91,11 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 	 * discovery (or while the debugger installs) makes the run's result stale, as the compiler reads the saved files.
 	 */
 	async function discoverForRun(root: string, signal: AbortSignal): Promise<RunStart> {
+		// Taken before waiting for a discovery that is still running: the saveAll is done, so an edit during the wait leaves
+		// the saved files that the discovery and the compiler read behind the editor too.
+		const start = workflow.begin(root);
 		// A discovery that started before the run's saveAll may have read older files.
 		await refreshes.get(root)?.catch(() => undefined);
-		const start = workflow.begin(root);
 		try { await discover(root, signal); } catch (error) {
 			if (error instanceof DiscoveryError) { await publishDiagnostics(root, error.stderr, start); }
 			throw error;
