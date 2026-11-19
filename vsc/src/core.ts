@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, stat } from 'node:fs/promises';
+import { access, readdir, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 
 export const sourcePattern = '**/*.{tz,tt,tc}';
@@ -30,23 +30,187 @@ export async function exists(file: string): Promise<boolean> {
 	}
 }
 
-export async function projectRoot(file: string, workspaceRoot?: string): Promise<string> {
-	let directory = path.dirname(file);
-	try {
-		if ((await stat(file)).isDirectory()) { directory = file; }
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; }
-	}
-	const fallback = workspaceRoot ?? directory;
-	while (true) {
-		if (await exists(path.join(directory, 'Tsuzuri.toml')) || await exists(path.join(directory, 'Main.tz'))) {
-			return directory;
+/** The files that make their directory a project root: a manifest, or an entry module without one. */
+const markers = new Set(['Tsuzuri.toml', 'Main.tz']);
+/** The file that marks a knowledge graph's directory (`src/kg/write.rs`), which module discovery does not read. */
+const graphMarker = '.tsuzuri-kg';
+/** The limits of module discovery (`src/driver.rs`, `collect_sources`): directories with the root, the depth of a
+ * directory below the root, and source files. */
+const discovery = { directories: 1024, depth: 16, sources: 4096 };
+
+/** An entry of a directory, as module discovery tells it apart. */
+export interface DirectoryEntry {
+	name: string;
+	kind: 'file' | 'directory' | 'symlink' | 'other';
+	/** What a symbolic link points to; undefined when the link is broken. */
+	target?: 'file' | 'directory' | 'other';
+}
+
+/** The file system that finding a project root reads (`ProjectRoots`); the unit tests replace it. */
+export interface RootFileSystem {
+	/** The entries of `directory`; rejects with the code ENOENT or ENOTDIR when it is not a directory. */
+	list(directory: string): Promise<DirectoryEntry[]>;
+	exists(file: string): Promise<boolean>;
+	isDirectory(file: string): Promise<boolean>;
+}
+
+const missing = (error: unknown) => ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '');
+
+export const diskFileSystem: RootFileSystem = {
+	async list(directory) {
+		return Promise.all((await readdir(directory, { withFileTypes: true })).map(async (entry): Promise<DirectoryEntry> => {
+			if (!entry.isSymbolicLink()) {
+				return { name: entry.name, kind: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other' };
+			}
+			const target = await stat(path.join(directory, entry.name)).catch(() => undefined);
+			return { name: entry.name, kind: 'symlink', target: target && (target.isDirectory() ? 'directory' : target.isFile() ? 'file' : 'other') };
+		}));
+	},
+	exists,
+	async isDirectory(file) {
+		try { return (await stat(file)).isDirectory(); } catch (error) {
+			if (missing(error)) { return false; }
+			throw error;
 		}
-		if (directory === workspaceRoot || path.dirname(directory) === directory) {
-			return fallback;
-		}
-		directory = path.dirname(directory);
+	},
+};
+
+/**
+ * What a directory holds, as module discovery reads it from there: whether it contains a project marker or something
+ * that makes the discovery fail, whether it is a knowledge graph's directory, and otherwise its counts.
+ */
+type Contents = { holds: true; graph: boolean } | { holds: false; graph: boolean; directories: number; sources: number; depth: number };
+
+/** The root of a file (G40 D1), and whether it is a remaining root: one that holds another project below it. */
+export interface ProjectRoot {
+	root: string;
+	remaining: boolean;
+}
+
+/**
+ * Finds the project roots of files (G40 D1) and keeps what each directory holds until `clear`, so that a file's root
+ * is read from the disk once. A change of the files below a workspace folder clears it (`changed`).
+ */
+export class ProjectRoots {
+	private contents = new Map<string, Promise<Contents>>();
+
+	constructor(private readonly files: RootFileSystem = diskFileSystem) {}
+
+	clear() { this.contents = new Map(); }
+
+	/** Clears the cache when a file or directory created or deleted at `file` below `folder` can change a root. */
+	changed(folder: string, file: string, platform: string = process.platform): boolean {
+		if (!affectsRoot(folder, file, platform)) { return false; }
+		this.clear();
+		return true;
 	}
+
+	/** The root of `file`, or of the directory `file`, in the workspace folder `workspaceRoot`. */
+	async find(file: string, workspaceRoot?: string): Promise<ProjectRoot> {
+		return this.findForDirectory(await this.files.isDirectory(file) ? file : path.dirname(file), workspaceRoot);
+	}
+
+	/**
+	 * The root of a file in `directory`: the nearest directory with a marker up to the workspace folder; without one,
+	 * the highest directory up to the workspace folder that holds no other project, or `directory` itself when it holds
+	 * one (a remaining root). Outside every workspace folder, the nearest directory with a marker up to the file system's
+	 * root, or else `directory`.
+	 */
+	async findForDirectory(directory: string, workspaceRoot?: string): Promise<ProjectRoot> {
+		const cache = this.contents;
+		for (let current = directory; ; current = path.dirname(current)) {
+			if (await this.files.exists(path.join(current, 'Tsuzuri.toml')) || await this.files.exists(path.join(current, 'Main.tz'))) {
+				return { root: current, remaining: false };
+			}
+			if (current === workspaceRoot || path.dirname(current) === current) { break; }
+		}
+		if ((await this.holds(cache, directory)).holds) { return { root: directory, remaining: true }; }
+		let root = directory;
+		while (workspaceRoot !== undefined && root !== workspaceRoot) {
+			const parent = path.dirname(root);
+			if (parent === root || !inRoot(workspaceRoot, parent) || (await this.holds(cache, parent)).holds) { break; }
+			root = parent;
+		}
+		return { root, remaining: false };
+	}
+
+	private holds(cache: Map<string, Promise<Contents>>, directory: string): Promise<Contents> {
+		let contents = cache.get(directory);
+		if (!contents) {
+			contents = this.scan(cache, directory);
+			cache.set(directory, contents);
+		}
+		return contents;
+	}
+
+	/**
+	 * Reads `root` breadth first by the rules of module discovery (G40 D3): names that start with `.` and knowledge
+	 * graphs' directories are not read. It stops at a marker, and at what makes the discovery fail (too many directories
+	 * or sources, a directory too deep, a source or directory symbolic link, a source that is not a regular file, a
+	 * directory that cannot be listed), which it counts as another project. A subdirectory already read is not read again.
+	 */
+	private async scan(cache: Map<string, Promise<Contents>>, root: string): Promise<Contents> {
+		const queue: [string, number][] = [[root, 0]];
+		let directories = 0, sources = 0, depth = 0, graph = false;
+		for (let index = 0; index < queue.length; index++) {
+			const [directory, level] = queue[index];
+			let entries: DirectoryEntry[];
+			try { entries = await this.files.list(directory); } catch (error) {
+				if (!missing(error)) { return { holds: true, graph }; }
+				entries = [];
+			}
+			const generated = entries.some(entry => entry.name === graphMarker && entry.kind === 'file');
+			if (directory === root) { graph = generated; } else if (generated) { continue; }
+			directories++;
+			depth = Math.max(depth, level);
+			if (directories > discovery.directories || level >= discovery.depth) { return { holds: true, graph }; }
+			for (const entry of entries) {
+				if (entry.name.startsWith('.')) { continue; }
+				if (markers.has(entry.name)) { return { holds: true, graph }; }
+				const source = /\.(?:tz|tt|tc)$/.test(entry.name);
+				if (entry.kind === 'symlink') {
+					if (source || entry.target === undefined || entry.target === 'directory') { return { holds: true, graph }; }
+				} else if (entry.kind === 'directory') {
+					const child = path.join(directory, entry.name);
+					const known = cache.get(child);
+					if (!known) {
+						queue.push([child, level + 1]);
+						continue;
+					}
+					const contents = await known;
+					if (contents.graph) { continue; }
+					if (contents.holds) { return { holds: true, graph }; }
+					directories += contents.directories;
+					sources += contents.sources;
+					depth = Math.max(depth, level + 1 + contents.depth);
+					if (directories > discovery.directories || depth >= discovery.depth || sources > discovery.sources) { return { holds: true, graph }; }
+				} else if (source && (entry.kind !== 'file' || ++sources > discovery.sources)) {
+					return { holds: true, graph };
+				}
+			}
+		}
+		return { holds: false, graph, directories, sources, depth };
+	}
+}
+
+/** The root of `file` (`ProjectRoots.find`), read with `roots`, a new cache unless one is given. */
+export async function projectRoot(file: string, workspaceRoot?: string, roots: ProjectRoots = new ProjectRoots()): Promise<string> {
+	return (await roots.find(file, workspaceRoot)).root;
+}
+
+/** Whether `file` lies directly in the directory `root`, the files that a remaining root's client serves (G40 D2). */
+export function directlyIn(root: string, file: string, platform: string = process.platform): boolean {
+	const paths = platform === 'win32' ? path.win32 : path.posix;
+	const relative = paths.relative(root, file);
+	return relative !== '' && relative !== '..' && !paths.isAbsolute(relative) && !relative.includes(paths.sep);
+}
+
+/**
+ * The glob of the sources that the client of `root` serves: every source below it, or for a remaining root only those
+ * directly in it, so that no file has two clients (G40 D2). The glob's special characters in `root` match themselves.
+ */
+export function sourceSelector(root: string, remaining: boolean): string {
+	return `${root.replaceAll('\\', '/').replace(/[\[\]{}*?]/g, '[$&]')}/${remaining ? '*.{tz,tt,tc}' : sourcePattern}`;
 }
 
 /** Whether `file` is `root` or lies under it. Windows compares without case, as its file systems do. */
