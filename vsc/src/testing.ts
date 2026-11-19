@@ -85,8 +85,12 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		try { await refresh; } finally { refreshes.delete(root); }
 	}
 
-	/** Discovers the tests of `root` for an explicit run or debug, which reports a failed discovery as its result. */
-	async function discoverForRun(root: string, signal: AbortSignal) {
+	/**
+	 * Discovers the tests of `root` for an explicit run or debug, which reports a failed discovery as its result. The start
+	 * that it returns, taken before the discovery, also stands for the compilation that follows: an edit during the
+	 * discovery (or while the debugger installs) makes the run's result stale, as the compiler reads the saved files.
+	 */
+	async function discoverForRun(root: string, signal: AbortSignal): Promise<RunStart> {
 		// A discovery that started before the run's saveAll may have read older files.
 		await refreshes.get(root)?.catch(() => undefined);
 		const start = workflow.begin(root);
@@ -94,6 +98,7 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			if (error instanceof DiscoveryError) { await publishDiagnostics(root, error.stderr, start); }
 			throw error;
 		}
+		return start;
 	}
 
 	async function refreshRoots() {
@@ -204,14 +209,13 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			await refreshRoots();
 			for (const root of requestedRoots(request)) {
 				if (token.isCancellationRequested) { break; }
-				await discoverForRun(root, abort.signal);
+				const start = await discoverForRun(root, abort.signal);
 				const selected = selection(request, root);
 				if (!selected.length) { continue; }
 				const byIndex = new Map(selected.map(item => [cases.get(item.id)!.index, item]));
 				for (const item of selected) { execution.enqueued(item); execution.started(item); pending.add(item); }
 				const args = ['test', root, '--json', `-O${optimization}`,
 					...selected.flatMap(item => ['--index', String(cases.get(item.id)!.index)])];
-				const start = workflow.begin(root);
 				const result = await runCompiler(context, root, args, { signal: abort.signal });
 				execution.appendOutput((result.stdout + result.stderr).replace(/\r?\n/g, '\r\n'));
 				await publishDiagnostics(root, result.stderr, start);
@@ -262,8 +266,9 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			if (!await vscode.workspace.saveAll(false)) { return summary; }
 			await refreshRoots();
 			const selected: vscode.TestItem[] = [];
+			const starts = new Map<string, RunStart>();
 			for (const root of requestedRoots(request)) {
-				await discoverForRun(root, abort.signal);
+				starts.set(root, await discoverForRun(root, abort.signal));
 				selected.push(...selection(request, root));
 			}
 			if (selected.length !== 1) {
@@ -277,7 +282,7 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			await workflow.ensureDebugger();
 			const run = `${process.pid}-${++debugRuns}`;
 			runner = testRunnerPath(root, run);
-			const start = workflow.begin(root);
+			const start = starts.get(root) ?? workflow.begin(root);
 			const result = await runCompiler(context, root, testDebugArguments(root, index, run), { signal: abort.signal });
 			execution.appendOutput((result.stdout + result.stderr).replace(/\r?\n/g, '\r\n'));
 			await publishDiagnostics(root, result.stderr, start);

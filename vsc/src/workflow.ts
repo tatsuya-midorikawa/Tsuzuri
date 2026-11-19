@@ -29,7 +29,7 @@ interface RootResult {
 	outside: number;
 	written: number;
 	writtenOutside: number;
-	deletions: vscode.FileSystemWatcher;
+	watcher: vscode.FileSystemWatcher;
 }
 
 export async function projectFor(resource?: vscode.Uri): Promise<string> {
@@ -70,10 +70,15 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		if (!state) {
 			const created: RootResult = {
 				uris: [], external: false, shown: -Infinity, changed: ++changes, outside: changes, written: -Infinity, writtenOutside: -Infinity,
-				// Every deletion under the root. A folder that is deleted or moved arrives as one event of the folder.
-				deletions: vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**'), true, true, false),
+				// Every deletion under the root (a folder that is deleted or moved arrives as one event of the folder), and the
+				// sources created or written under it, which the workspace's watcher misses for a root outside the workspace
+				// folders (`tsuzuri.projectPath`, an absolute `project` of a debug configuration).
+				watcher: vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**')),
 			};
-			created.deletions.onDidDelete(uri => { if (affectsRoot(root, uri.fsPath)) { created.changed = ++changes; clear(created); } });
+			created.watcher.onDidDelete(uri => { if (affectsRoot(root, uri.fsPath)) { created.changed = ++changes; clear(created); } });
+			const write = (uri: vscode.Uri) => { if (projectFile(uri.fsPath) && affectsRoot(root, uri.fsPath)) { stamped(uri); } };
+			created.watcher.onDidCreate(write);
+			created.watcher.onDidChange(write);
 			roots.set(root, state = created);
 		}
 		return state;
@@ -147,12 +152,12 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 			for (const [root, state] of roots) {
 				if (event.removed.some(folder => inRoot(folder.uri.fsPath, root))) {
 					clear(state);
-					state.deletions.dispose();
+					state.watcher.dispose();
 					roots.delete(root);
 				}
 			}
 		}),
-		new vscode.Disposable(() => { for (const state of roots.values()) { state.deletions.dispose(); } }),
+		new vscode.Disposable(() => { for (const state of roots.values()) { state.watcher.dispose(); } }),
 	);
 	let debuggerInstallation: PromiseLike<void> | undefined;
 	async function ensureDebugger() {

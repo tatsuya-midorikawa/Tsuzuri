@@ -689,6 +689,15 @@ Phase 1（段 1〜5）を実装した。Phase 2・3 は未着手なので、状�
 - レビューの harness（`review-races/runner.mjs`）で、R1（`masked`・`overlap`）と R3（`depfolder`）が直ったことを確かめた（`fix/harness-*.out`: `masked` の M3、`overlap` の O2、`depfolder` の D3 がどれも空）。`native` は、リンクの入力を作っても `E2001` が残り（N3。残る問題）、`notes.txt` の削除で結果が消える（N6。R4 を採らない）。
 - `node tests/platforms.mjs`: 成功。`git diff --check`: 差分なし。`node scripts/check-links.mjs`: 0 broken。
 
+### Copilot のレビュー（PR #117、2026-11-20）
+
+| 指摘 | 結果 |
+| --- | --- |
+| 明示した実行の発見の間に、未保存のバッファで直すと、`run` が発見の後に取り直した開始で、保存された古い本文の `E2006` を出しうる。テストのデバッグも同じ（`ensureDebugger` の待ちの間の編集を含む） | 直した。`discoverForRun` は発見の前に取った開始を返し、`run`・`debug` はそれをコンパイルと結果の表示まで使う（取り直さない）。発見や CodeLLDB の導入の間の編集は、その実行の結果を古いものにする |
+| ワークスペースのフォルダーの外の根（`tsuzuri.projectPath`、デバッグ構成の絶対パスの `project`）では、ソースの作成・書き込みを見る watcher がない（ワークスペースの watcher はフォルダーの中だけ） | 直した。根ごとの watcher（`RelativePattern(root, '**')`）が、削除に加えて、根の下のソースとマニフェスト（`projectFile`）の作成・書き込みを、ワークスペースの watcher と同じくファイルの時刻で扱う。ワークスペースの中の根では 2 つの watcher が同じ事象を受けるが、時刻の最大を取るだけなので結果は変わらない |
+
+確認: `npm run check-types`・`lint`・`test:unit`（19 件成功）・`npm test`（13 の `VS Code:` 行と `All Tsuzuri VS Code integration checks passed.`）。2 つとも統合テストでは時刻の窓を決めて再現できないので、テストは足していない（コードの読みと既存の検査で確かめた）。
+
 ### 更新した文書と変更したファイル
 
 - 言語リファレンスは変えていない（Phase 1 は拡張だけを変える。チケットの「ドキュメント」も Phase 1 は `vsc/README.md` と `vsc/CHANGELOG.md`）。
