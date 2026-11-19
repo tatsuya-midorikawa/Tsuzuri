@@ -7,7 +7,7 @@
 | 規模 | L（Phase 1 は拡張の 3 か所と統合テスト、Phase 2 は言語サーバーの publish の記録、Phase 3 は言語サーバーの要求の待ち行列と取り消し。どれも S〜M） |
 | 依存 | G07, G12, G14, G16（すべて done） |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | doing（Phase 1 done） |
 | 起票 | 2026-11-19（利用者の報告「VS Code と Tsuzuri の拡張で開発すると、警告やエラーの箇所を直しても表示され続ける」を受けて起票。HEAD `af644794`（拡張 0.1.7）で、VS Code 1.103.2 に拡張と同梱のツールチェーンを入れて再現した。原因 1・2 は、利用者の環境（VS Code Insiders 1.148.0 と Marketplace の拡張 0.1.6）でも同じように再現した） |
 | 承認 | 不要（言語と CLI の意味は変えない。拡張と言語サーバーが出す診断がいつ消えるかを直す。拡張のタスクが問題パネルへ診断を出さなくなること（D3）と、言語サーバーがプロジェクトを読み込めない間ほかのファイルの診断を消すこと（D6）と、根の外の依存のファイルに解析の診断を送らないこと（D9）は、利用者から見える変更なので `vsc/README.md` と言語リファレンスに書く） |
 | 改善する劣位 | 不具合: (1) エラーのある状態で保存すると、問題パネルに source `Tsuzuri` の写しが増え、直して保存しても消えない。消えるのはテストを実行するか Debug したときだけ。(2) ▷ Run・Build・Check の後は、直した警告・エラーが次にタスクを流すまで残る。(3) テストの実行と Debug の後は、直した警告・エラーが次の実行まで残る。(4) ファイルの削除・名前の変更・移動、`Tsuzuri.toml` の誤り、プロジェクトの読み込みの失敗、シンボリックリンクを通したフォルダーでは、言語サーバー自身の診断（source `tsuzuri`）も残る。(5) 電球のコードアクションの要求が修正案ごとにプロジェクトを解析し直し、取り消されても最後まで計算するので、直した結果が 0.6〜3 秒、大きいプロジェクトでは 20 秒近く遅れて出る |
@@ -572,3 +572,76 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 - **D11: 自動の要求（`triggerKind` 2）で `only` がなければ `source.fixAll.tsuzuri` を計算しない**（既定案）。理由: VS Code 1.103.2 は自動の要求の結果から source の action を捨てるので、見える変化がない（`workbench.desktop.main.js` の `xes`）。
   `triggerKind` のない要求は明示（1）として扱い、今と同じく返す（`only` を送らないほかのエディターの明示の要求を変えない）。
 - **D12: クイックフィックスの検証は残す**（既定案）。検証の費用は、取り消し（段 12）と `fix_all` の省略（D11）で、使われない計算だけを除く。検証を外すか遅らせる案は、言語リファレンスの約束を変えるので採らない。
+
+## 実装と検証（Phase 1、2026-11-19）
+
+Phase 1（段 1〜5）を実装した。Phase 2・3 は未着手なので、状態は `doing（Phase 1 done）` のままで、このファイルは `_features/` に置く。
+着手時の HEAD は `4d612da4`（ブランチ `fix/g39-phase1-extension-diagnostics`）。コンパイラ・言語サーバー・`vsc/package.json` の `problemMatchers` の定義は変えていない。
+拡張のテストは同梱のコンパイラ（`vsc/toolchain/bin/tsuzuri`。SHA-256 は `target/release/tsuzuri`（`af644794`）と同じ `48068cd7…`）で動かした。
+
+### 実装
+
+- 段 1（`vsc/src/testing.ts`）: `discover` は `publishDiagnostics` を呼ばない。コンパイラの失敗は stderr を持つ `DiscoveryError` として投げ、今と同じく `project.error` に出す。
+- 段 2:
+  - `vsc/src/workflow.ts`: `diagnosticsByRoot` を根ごとの記録 `RootResult`（結果の URI、結果が根の外を指すか、根の最後の変更の番号、根の外の最後の変更の番号、最後に始めた実行の開始時刻、根の下の削除の watcher）に置き換えた。
+    `begin(root)` は、コンパイラを起動する直前に開始時刻を記録して 2 つの番号を返す。`publishDiagnostics(root, text, start)` は、根の番号が変わっていれば入れず、根の外を指す結果は根の外の番号も比べる。入れるときは、その根の前の項目を URI ごとすべて消してから入れる（D4）。
+  - 変わったとして数えるもの: `onDidChangeTextDocument`（`contentChanges` が空でない `file` の文書。根の下はどの文書も、根の外は `.tz`・`.tt`・`.tc`・`.toml`）、ワークスペースの watcher `**/*.{tz,tt,tc,toml}` の削除（つねに）と作成・変更（ファイルの mtime と ctime の大きい方が、その根の最後の実行の開始より新しいとき）、
+    根ごとの `RelativePattern(root, '**')` の削除だけを見る watcher（`.` で始まる名前と `target/tz/` の下を除く。`core.ts` の `affectsRoot`）、`onDidChangeWorkspaceFolders` の削除（その根の記録ごと消す）。
+    根の下の変化はその根の番号を増やして項目を消す。根の外のソースの変化は根の外の番号を増やし、根の外を指す結果だけを消す。
+  - `vsc/src/testing.ts`: `run`・`debug` の発見は `discoverForRun` を通す。動いている発見があれば終わるのを待ち、`begin` してから発見を始め、`DiscoveryError` ならその stderr をその実行の結果として `publishDiagnostics` へ渡す。
+    テストのコンパイル・テストのデバッグのビルド・Debug Project のビルド（`workflow.ts` の `debugConfiguration`）も、コンパイラを起動する直前に `begin` する。
+  - `vsc/src/core.ts`: `inRoot`（Windows は大文字・小文字を区別しない）、`affectsRoot`、`projectFile`。
+- 段 3: `core.ts` の `sourcePosition`（BOM を除き、CRLF・CR・LF を改行として数え、UTF-16 の桁を返す。CRLF の LF を指す offset は行末）と `reportedByServer`（コードと範囲の開始が同じ）。
+  `publishDiagnostics` は、入れる直前の `vscode.languages.getDiagnostics(uri)` の source `tsuzuri` と重なる記録を除く。
+- 段 4: `workflow.ts` の `task` の problem matcher を `[]` にした。`package.json` の `$tsuzuri` は残した。
+- 段 5: `vsc/README.md` の「コードを書く」「実行とビルド」「テスト」と、`vsc/CHANGELOG.md` の `## Unreleased`（公開のときに版の名前にする）。
+- 統合テストの fixture（`vsc/scripts/test-extension.mjs`）に、3 つ目のワークスペースフォルダー `packages`（`capabilities`: `[capabilities] allow = []` で `IO` を使う。`app`: path 依存 `../lib`。`lib`: `Calc.tz`・`Shapes.tz`）を足した。
+
+### テスト（各段で先に書き、直す前に落ちることを確かめた）
+
+記録は `target/scratch/g39-phase1/`（コミットしない）にある。
+
+| 段 | テスト | 直す前 |
+| --- | --- | --- |
+| 1 | `extension.test.ts`: `Main.tz` にエラーを保存して発見の失敗（`roots.get(root).error`）を待ち、直して保存して `error` が `undefined` に戻るのを待つと、source `Tsuzuri` の診断がない | HEAD で `['E1002']` が残って落ちた（`step1-before.out`） |
+| 2 | `extension.test.ts`: `capabilities` で未保存の編集のあとテストを実行すると、直後に source `Tsuzuri` の `E1036` がある。saveAll の watcher の事象（最長 3 秒）と 0.5 秒の後も残る。本文の編集、フォルダー `Extra` の削除、`Tsuzuri.toml` のディスクでの書き換えのそれぞれで消える | 段 1 だけの状態で `0 !== 1`（実行が発見の失敗を出さない）で落ちた（`step2-before.out`） |
+| 2 | `extension.test.ts`: `app` のテストの実行で、`Shapes.tz` の型が原因の `lib/Calc.tz` の `E1003` が出て、`Shapes.tz` の書き換え（結果の URI でないファイル）で消える。`Calc.tz` の `W1001` が出て、実行の途中（実行の発見が済んだ後）に `Shapes.tz` を書き換えると入らない。`Calc.tz` の `E1003` は、エディターで開いて直して保存すると消える | 段 1 だけの状態では上の検査で止まる。途中の変更の検査は、`outside` の比較を外した変異で `W1001` が残って落ちることを確かめた（`step2-mutant-no-inflight-check.out`） |
+| 2 | `extension.test.ts`（`supportsDebug()` の分岐）: Debug Project の直後に `E1036` があり、本文の編集で消える | 同上 |
+| 2 | `core.test.ts`: `inRoot`・`affectsRoot`・`projectFile` | 関数がなく型検査で落ちた（`step2-unit-before.out`） |
+| 3 | `core.test.ts`: `sourcePosition`（BOM・CRLF・CR・補助平面・CJK・文字の途中・範囲外。期待値は手で数えた）、`reportedByServer` | 関数がなく型検査で落ちた（`step3-unit-before.out`） |
+| 3 | `extension.test.ts`: source `tsuzuri` の `W1001` を待ってテストを実行すると、直後の `W1001` は `tsuzuri` の 1 件だけで、`Tsuzuri` は `E2006` だけ | 段 2 までの状態で `['Tsuzuri', 'tsuzuri']` で落ちた（`step3-before.out`） |
+| 4 | `extension.test.ts`: 警告の状態で check と run のタスクを流し、`editor.action.marker.next` でマーカーがあることを確かめ、直して保存して言語サーバーの警告が消えた後にマーカーがない | 段 3 までの状態で `true !== false`（タスクのマーカーが残る）で落ちた（`step4-before.out`） |
+
+既存の build・run・check のタスクの終了コードの検査は、同じ内容を `runTask` にまとめただけで、期待値は変えていない。
+
+### 確認（macOS 27.2、Apple Silicon、VS Code 1.103.2（`vsc/.vscode-test`）、Node 24.22.2）
+
+- `cd vsc && npm run test:unit`: 19 passed、0 failed（前は 16 件。3 件を足した）。
+- `npm run check-types`、`npm run lint`: エラーなし。
+- `node ../scripts/slot.mjs -- npm test`（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）: 12 の段の `VS Code: …` と `All Tsuzuri VS Code integration checks passed.`（約 60 秒。続けて 2 回繰り返しても通った。`final-vsc.out`・`final-vsc-repeat2.out`・`final-vsc-repeat3.out`）。
+- `node tests/platforms.mjs`: 成功。`git diff --check`: 差分なし。`node scripts/check-links.mjs`: 0 broken。
+- Rust のテストと `tests/lsp_sessions.mjs` は、コンパイラと言語サーバーを変えていないので動かしていない。`ci:full` の `vscode.yml`（5 環境）は push していないので未実行（PR には `ci:full` のラベルが要る）。
+- 受け入れ条件のうち Phase 1 の 4 つ（保存したエラーの写し、テストの実行・Debug Project の結果、重複、タスクのマーカー）を上のテストで確かめた。自動保存は、保存と同じ経路なので統合テストに足していない。端末の `path:line:column` は CLI が絶対パスで出し、VS Code の端末のリンクの検出で開くが、クリックは自動で確かめていない。
+
+### チケットから外れた判断
+
+1. **根の外の変化は、1 つの時刻ではなく根ごとの番号で記録した。** 仕様 3 は「根の外の変化の最後の時刻を 1 つ記録する」と書く。実装は根ごとに「根の外の最後の変更の番号」を持ち、`begin` で読んだ番号と入れるときの番号を比べる。
+   外から見た振る舞いは同じで、ミリ秒の時刻と mtime の比較の境界（実行の開始と同じミリ秒の編集）を持ち込まない。根の番号も同じ通し番号で数えるので、ワークスペースから外して足し直した根が、古い実行の番号と一致しない。
+2. **watcher の作成の事象も、ファイルの時刻で判定する。** 設計は作成・削除をつねに変更に数える。VS Code 1.103.2 の macOS の watcher は、セッションで最初の数回の保存を報告せず、後の保存を作成として届けることがある
+   （`target/scratch/g39-phase1/watch-probe/gaps.out`: 起動の前に作ったファイルを保存すると、1・2 回目は事象なし、3 回目が `create`、以後は `change`）。作成をつねに数えると、実行の saveAll の遅れた作成の事象が、その実行の結果を消す。
+   作成と変更はどちらも、mtime と ctime の大きい方をその根の最後の実行の開始と比べる（ctime は移動で新しくなるので、mtime を保つ移動も数える）。削除は今までどおりつねに数える。
+3. **明示した実行の発見は、動いている発見の終わりを待ってから始める。** 設計の「発見を始める直前の変更の番号」を守るため。saveAll の前に始まった裏の発見に相乗りすると、saveAll の前に読んだ本文の失敗を、saveAll の後の番号で入れてしまう（saveAll の事象は時刻の比較で数えないので、番号が変わらない）。
+4. **統合テストの fixture に 3 つ目のワークスペースフォルダー `packages` を足した。** 既存のプロジェクトに `Tsuzuri.toml` を足すと既定の名前空間が変わり、既存の検査に影響するため。
+5. **saveAll の後で結果が消えないことの検査は、watcher の事象を最長 3 秒待つだけで、事象が届かなくても落とさない。** 上の 2 のとおり macOS では事象が届かないことがあるため。事象が届く環境（Linux・Windows の CI）で意味を持つ。
+
+### 残る問題
+
+- 根の外からフォルダーごと根の下へ移動すると、VS Code はフォルダーの作成の 1 件にまとめるので、ソースの watcher にも削除の watcher にも届かず、結果が残る。設計どおり削除だけを見ているため。作成も見ると、Debug Project のビルドが根に作る `a.o` や、最初の実行が作る `target/` で、その実行の結果を捨てる。
+- 重複の除外は、入れる時点の言語サーバーの診断で判定するので、言語サーバーが遅れていると一時的に 2 件並ぶ（落とし穴のとおり、次の変更で消える）。
+- 2 つの根が同じ URI に結果を出すと（`app` と `lib` が `lib/Calc.tz` に）、後の方が前の方を置き換え、どちらかの根の変化でその URI が消える。古い結果が残る方向ではない（前の `diagnosticsByRoot` と同じ）。
+- 根の外の watcher の事象は、ワークスペースのフォルダーの中だけに届く。ワークスペースの外の path 依存の変化は、エディターでの編集だけで数える（設計のとおり）。
+
+### 更新した文書と変更したファイル
+
+- 言語リファレンスは変えていない（Phase 1 は拡張だけを変える。チケットの「ドキュメント」も Phase 1 は `vsc/README.md` と `vsc/CHANGELOG.md`）。
+- `vsc/src/workflow.ts`、`vsc/src/testing.ts`、`vsc/src/core.ts`、`vsc/src/test/extension.test.ts`、`vsc/src/test/core.test.ts`、`vsc/scripts/test-extension.mjs`、`vsc/README.md`、`vsc/CHANGELOG.md`、`_features/G39-stale-editor-diagnostics.md`、`_features/README.md`。
