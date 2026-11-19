@@ -5,12 +5,12 @@
 | ID | PB08 |
 | 分類 | ビルド速度（エディターの応答と `check` のフロントエンド） |
 | 優先度 | P1（言語サーバーは編集のたびと、クイックフィックスの検証のたびにこの再解析をする。同じ無駄は CLI の `check`・`build`・`test` にもあり、1 ファイルの `check` の約 4 割を占める） |
-| 規模 | M（Phase 1。Phase 2 は要承認の別段） |
+| 規模 | M（Phase 1。Phase 2 は Phase 1 の計測で足りないときだけ行う別段） |
 | 依存 | – |
 | 関連 | G39（言語サーバーの待ち行列と取り消し。Phase 3）, G40, PB04（フロントエンドの並列化）, PB06（常駐状態）, G17（フロントエンドの cache）, D-40（言語サーバーは opt-in の std を常に読む） |
 | 状態 | todo |
 | 起票 | 2026-11-19（G39 の調査で見つけ、利用者の依頼で別のチケットにした。HEAD `af644794` を、strip しない release で `sample` し、別の担当が試作（環境変数で切り替える patch）で効果と出力の同一性を測り直した） |
-| 承認 | Phase 1 は不要（出力を変えない。D5 は言語サーバーが使うスレッドの数の方針で既定案）。Phase 2 は要承認: D7（D-40 を変え、名前を書いていない opt-in の std モジュールの補完とホバーが変わる） |
+| 承認 | Phase 1 は不要（出力を変えない。D5 は言語サーバーが使うスレッドの数の方針で既定案）。Phase 2 の D7（D-40 を変え、名前を書いていない opt-in の std モジュールの補完とホバーが変わる）は、2026-11-19 に利用者が承認した（「承認が必要なものについては、あなたが考えるベストな方法であれば全て承認します」）。起票者が最善と判断した形のまま承認したので、Phase 1 の後の計測で目標に届かないときだけ行うという条件も含む |
 | 手本にする既存実装 | 型の名前の静かな照合: `src/check.rs` の `Names::check_type_path`・`type_choice`（`named_type` の Ok の条件そのもの）。CLI の並列度: `src/driver.rs` の `analyze_cached_core`（`Parallelism::command_line()`）。スレッドの数に依らない出力の検査: `src/lib.rs` の `warnings_and_the_semantic_index_do_not_depend_on_the_thread_count` など、`tests/parallel_frontend.mjs`。計測の形: PB06 の「現状と計測」、GUIDE §14 |
 | 主な影響ファイル | `src/warnings.rs`（`TypeReferences::named`、`unused_private`）、`src/check.rs`（共有の照合の helper）、`src/polymorph.rs`（`Classes::matching_instance`、`Inference`）、`src/copies.rs`・`src/ownership.rs`（`costly_sites` だけが使う変種、`call_facts` の再利用）、`src/lsp.rs`（`analyze` の並列度、`refresh` の順序）、`src/lib.rs`（並列度を受け取る入口）、`benchmarks/`（言語サーバーの再解析の driver と golden の script。新規）、`docs/benchmarks.md`、`_tsuzuri/language-reference/compiler/option.md`・`usage.md`（O5 のスレッドの数）、`_perfs/README.md` |
 | 計測対象 | 言語サーバーの 1 回の再解析（`didChange` からその直後の `textDocument/semanticTokens/full` の応答まで）、CLI の `check` の時間（1 スレッドと自動）、PX03 の `run-build.mjs` の `check`（200・1,000 module） |
@@ -36,7 +36,7 @@ Phase 1 では、言語サーバーの 1 回の再解析を、出力（診断・
 - 「変えてはいけない意味」の golden の比較で、1 byte でも違いが出て、その理由を変更の誤りとして説明できない。
 - O1 の静かな照合が `named_type` と食い違う型の名前（Ok と Some が一致しない）が見つかる。
 - O4(b) で、`lower_kernels`（`src/check.rs:9686`）が本体を書き換えたモジュールにも、検査の `check_all_with` の facts を使う必要が出る。
-- Phase 2 に着手する前に D7 の承認がない。
+- Phase 1 の計測で目標に届いているのに、Phase 2 に着手しようとしている（D7 の承認は、届かないときだけ行うという条件つき）。
 
 ## 現状と計測（HEAD `af644794`）
 
@@ -160,7 +160,7 @@ CLI の `check`、ms。
 | **O9** | `Session::refresh` で、`costly_sites` と `inferred_effects`（`src/lsp.rs:383-391`）を診断を送る処理（`:395-409`）の後へ移す。送る内容は同じで、診断が早く届く | big で約 −250 ms（今）、O4(a) の後は約 −190 ms（`costly_sites` が再解析の 20.8 %）、O4(b) の後は約 −30 ms（残るのは利用者の関数の `check_body` など 3.6 %）の `didChange`→`publishDiagnostics` |
 | **O8**（任意） | 言語サーバーの process の中で、std の構文解析の結果を再解析をまたいで使う（G17 の `FrontendCache` は source の番号を付け替えられる。`src/frontend_cache.rs:1-13`） | 約 −18 ms（Phase 1 の後は hello の約 9 %） |
 
-### Phase 2（要承認: D7）
+### Phase 2（D7。承認済み、Phase 1 で足りないときだけ）
 
 - **O6**: 言語サーバーも、ソース（未保存のバッファを含む）が名前を書いた opt-in の std だけを読む（`stdlib::sources_for`）。
   モジュール名の補完は `stdlib::SOURCES` の静的な一覧から出す。名前を書く前の `Json.` のメンバーの補完とホバーは、全 std の宣言の索引を process に 1 回だけ作って答える。
@@ -213,7 +213,7 @@ CLI の `check`、ms。
 - `docs/benchmarks.md` に、日付・環境・コミット・中央値・生データの場所を書く。CLI の `check` と PX03 の値も書く。
 - `node benchmarks/metrics.mjs report target/perf/PB08-after --baseline target/perf/PB08-before` の表を完了報告に添える（_perfs/README の運用ルール）。
 
-### 手順 9（Phase 2。D7 の承認の後だけ）: O6
+### 手順 9（Phase 2。手順 8 の計測で目標に届かないときだけ）: O6
 
 - 変更: `src/driver.rs`（`load_with_overlays` の std の選び方）、`src/lsp.rs`（`ModuleNames` の一覧、opt-in の索引）。
 - 確認: 名前を書いていないプロジェクトで、最上位の補完が opt-in のモジュール名を出す。本文が構文解析できない最初の編集で `Json.` のメンバーを補完する。opt-in のモジュール名のホバー。`tests/lsp.rs` の `opt_in_matrix_module_completes_and_hovers_when_named`・`opt_in_view_and_tensor_modules_complete_when_named`。
@@ -268,7 +268,7 @@ CLI の `check`、ms。
 - [ ] CLI の `check` と PX03 の `check` がどの workload でも遅くならず、値を `docs/benchmarks.md` に記録している。
 - [ ] profile で、捨てる診断を作る frame と 2 回目の `call_facts` が消えている。
 - [ ] 新しい単体テストと既存のテストが通る（T0・T1、`TSUZURI_THREADS=8 cargo nextest run --locked`、`node tests/lsp_sessions.mjs target/debug/tsuzuri`、`node tests/parallel_frontend.mjs target/release/tsuzuri`）。
-- [ ] Phase 2 は D7 の承認があるときだけ行っている。
+- [ ] Phase 2 は、手順 8 の計測で Phase 1 が目標に届かなかったときだけ行っている（行ったときは、GUIDE の D-40 と、言語サーバーが全 std を読むと書いた文書を更新している）。
 
 ## 落とし穴
 
@@ -294,4 +294,4 @@ CLI の `check`、ms。
 - **D4: O4(a) は `costly_sites` だけの変種にする**（既定案）。共有の `copy_reads` の結果は std を含めて使われているため。
 - **D5: 言語サーバーは CLI と同じ `Parallelism::command_line()` を使う**（既定案）。出力はスレッドの数に依らないことが検査済みで、エディターの中の短い並列は CLI の `check` と同じ。`TSUZURI_THREADS` で上限を決められる。
 - **D6: 共有の CI に速さの合否を入れない**（既定案。GUIDE §14.7）。
-- **D7: Phase 2 の O6（言語サーバーも、名前を書いた opt-in の std だけを読む）**（要承認）。D-40（言語サーバーは補完のため常に全部を読む）を変え、名前を書く前の opt-in のモジュールの補完とホバーを、別に作る索引から答えることになる。Phase 1 の後の計測で足りないときだけ判断する。
+- **D7: Phase 2 の O6（言語サーバーも、名前を書いた opt-in の std だけを読む）**（承認済み。2026-11-19。Phase 1 の後の計測で目標に届かないときだけ行う）。D-40（言語サーバーは補完のため常に全部を読む）を変え、名前を書く前の opt-in のモジュールの補完とホバーを、別に作る索引から答えることになる。
