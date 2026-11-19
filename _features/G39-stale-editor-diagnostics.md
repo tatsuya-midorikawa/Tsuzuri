@@ -583,19 +583,20 @@ Phase 1（段 1〜5）を実装した。Phase 2・3 は未着手なので、状�
 
 - 段 1（`vsc/src/testing.ts`）: `discover` は `publishDiagnostics` を呼ばない。コンパイラの失敗は stderr を持つ `DiscoveryError` として投げ、今と同じく `project.error` に出す。
 - 段 2:
-  - `vsc/src/workflow.ts`: `diagnosticsByRoot` を根ごとの記録 `RootResult`（結果の URI、結果が根の外を指すか、根の最後の変更の番号、根の外の最後の変更の番号、最後に始めた実行の開始時刻、根の下の削除の watcher）に置き換えた。
-    `begin(root)` は、コンパイラを起動する直前に開始時刻を記録して 2 つの番号を返す。`publishDiagnostics(root, text, start)` は、根の番号が変わっていれば入れず、根の外を指す結果は根の外の番号も比べる。入れるときは、その根の前の項目を URI ごとすべて消してから入れる（D4）。
-  - 変わったとして数えるもの: `onDidChangeTextDocument`（`contentChanges` が空でない `file` の文書。根の下はどの文書も、根の外は `.tz`・`.tt`・`.tc`・`.toml`）、ワークスペースの watcher `**/*.{tz,tt,tc,toml}` の削除（つねに）と作成・変更（ファイルの mtime と ctime の大きい方が、その根の最後の実行の開始より新しいとき）、
-    根ごとの `RelativePattern(root, '**')` の削除だけを見る watcher（`.` で始まる名前と `target/tz/` の下を除く。`core.ts` の `affectsRoot`）、`onDidChangeWorkspaceFolders` の削除（その根の記録ごと消す）。
-    根の下の変化はその根の番号を増やして項目を消す。根の外のソースの変化は根の外の番号を増やし、根の外を指す結果だけを消す。
+  - `vsc/src/workflow.ts`: `diagnosticsByRoot` を根ごとの記録 `RootResult`（結果の URI、結果が根の外を指すか、結果を出した実行の開始時刻、根の最後の変更の番号、根の外の最後の変更の番号、watcher が作成・変更を届けたファイルの最新の時刻（根の下と根の外の 2 つ）、根の下の削除の watcher）に置き換えた。
+    `begin(root)` は、コンパイラを起動する直前の 2 つの番号と時刻を返す。`publishDiagnostics(root, text, start)` は、根の番号が変わったか、根の下にその実行の開始より新しい書き込みがあれば入れず、根の外を指す結果は根の外の番号と書き込みも比べる。入れるときは、その根の前の項目を URI ごとすべて消してから入れ（D4）、その実行の開始時刻を記録する。
+  - 番号で数えるもの（時刻を持たない変化）: `onDidChangeTextDocument`（`contentChanges` が空でない `file` の文書。根の下はどの文書も、根の外は `.tz`・`.tt`・`.tc`・`.toml`・`Tsuzuri.lock`）、根ごとの `RelativePattern(root, '**')` の削除だけを見る watcher（`.` で始まる名前と、どの深さでも `target/tz/` の下を除く。`core.ts` の `affectsRoot`）、
+    ワークスペース全体の `**` の削除だけを見る watcher（根の外の削除。ワークスペースのフォルダーから見て同じ名前を除く）、`onDidChangeWorkspaceFolders` の削除（その根の記録ごと消す）。
+    根の下の変化はその根の番号を増やして項目を消す。根の外の変化は根の外の番号を増やし、根の外を指す結果だけを消す。
+  - 時刻で数えるもの: ワークスペースの watcher `**/{*.tz,*.tt,*.tc,*.toml,Tsuzuri.lock}` の作成・変更（`core.ts` の `sourceFiles`）。ファイルの mtime と ctime の大きい方を、根の下か根の外の最新の書き込みとして記録し、出ている結果を出した実行の開始より新しければ、その結果を消す（根の外の書き込みは、根の外を指す結果だけ）。動いている実行は、結果を入れるときに自分の開始と比べる。
   - `vsc/src/testing.ts`: `run`・`debug` の発見は `discoverForRun` を通す。動いている発見があれば終わるのを待ち、`begin` してから発見を始め、`DiscoveryError` ならその stderr をその実行の結果として `publishDiagnostics` へ渡す。
     テストのコンパイル・テストのデバッグのビルド・Debug Project のビルド（`workflow.ts` の `debugConfiguration`）も、コンパイラを起動する直前に `begin` する。
-  - `vsc/src/core.ts`: `inRoot`（Windows は大文字・小文字を区別しない）、`affectsRoot`、`projectFile`。
+  - `vsc/src/core.ts`: `inRoot`（Windows は大文字・小文字を区別しない）、`affectsRoot`、`projectFile`、`sourceFiles`。
 - 段 3: `core.ts` の `sourcePosition`（BOM を除き、CRLF・CR・LF を改行として数え、UTF-16 の桁を返す。CRLF の LF を指す offset は行末）と `reportedByServer`（コードと範囲の開始が同じ）。
   `publishDiagnostics` は、入れる直前の `vscode.languages.getDiagnostics(uri)` の source `tsuzuri` と重なる記録を除く。
 - 段 4: `workflow.ts` の `task` の problem matcher を `[]` にした。`package.json` の `$tsuzuri` は残した。
 - 段 5: `vsc/README.md` の「コードを書く」「実行とビルド」「テスト」と、`vsc/CHANGELOG.md` の `## Unreleased`（公開のときに版の名前にする）。
-- 統合テストの fixture（`vsc/scripts/test-extension.mjs`）に、3 つ目のワークスペースフォルダー `packages`（`capabilities`: `[capabilities] allow = []` で `IO` を使う。`app`: path 依存 `../lib`。`lib`: `Calc.tz`・`Shapes.tz`）を足した。
+- 統合テストの fixture（`vsc/scripts/test-extension.mjs`）に、3 つ目のワークスペースフォルダー `packages`（`capabilities`: `[capabilities] allow = []` で `IO` を使う。`app`: path 依存 `../lib` と、ソースでない `notes.txt`。`lib`: `Calc.tz`・`Shapes.tz`・`Extra/Note.tz`）を足した。
 
 ### テスト（各段で先に書き、直す前に落ちることを確かめた）
 
@@ -611,6 +612,10 @@ Phase 1（段 1〜5）を実装した。Phase 2・3 は未着手なので、状�
 | 3 | `core.test.ts`: `sourcePosition`（BOM・CRLF・CR・補助平面・CJK・文字の途中・範囲外。期待値は手で数えた）、`reportedByServer` | 関数がなく型検査で落ちた（`step3-unit-before.out`） |
 | 3 | `extension.test.ts`: source `tsuzuri` の `W1001` を待ってテストを実行すると、直後の `W1001` は `tsuzuri` の 1 件だけで、`Tsuzuri` は `E2006` だけ | 段 2 までの状態で `['Tsuzuri', 'tsuzuri']` で落ちた（`step3-before.out`） |
 | 4 | `extension.test.ts`: 警告の状態で check と run のタスクを流し、`editor.action.marker.next` でマーカーがあることを確かめ、直して保存して言語サーバーの警告が消えた後にマーカーがない | 段 3 までの状態で `true !== false`（タスクのマーカーが残る）で落ちた（`step4-before.out`） |
+| 2（レビュー） | `extension.test.ts`: `app` の実行の発見が済んだ後（実行は同じタスクで番号を取ってコンパイラを起動している）に、根の外の `other/Main.tz` をエディターで編集すると、根の外を指す `W1001` が入らない。根の下の `notes.txt` をエディターで編集しても入らない | `outside` の比較を外した変異と `changed` の比較を外した変異で、それぞれ `W1001` が残って落ちた（`fix/mutant-no-outside-check.out`・`fix/mutant-no-changed-check.out`） |
+| 2（レビュー） | `extension.test.ts`: `app/Main.tz` の失敗するテストで `E2006` を出し、ディスクで直した直後に、すべてのテストを除いた実行（発見の後で止まり、結果を出さない）を始めても、`E2006` が消える | レビューの前の `workflow.ts`（根の最後の実行の開始と比べる）で、消えずに時間切れで落ちた（`fix/mutant-old-workflow.out`） |
+| 2（レビュー） | `extension.test.ts`: `capabilities/Fresh.tz` の作成で `E1036` が消える。`lib/Extra` の削除（根の外のフォルダー）で `lib/Calc.tz` の `E1003` が消える。最後に、ワークスペースから `packages` を外すと `E1036` が消える | 作成の購読を外した変異、根の外の削除の watcher を外した変異、フォルダーの削除の処理を外した変異で、それぞれ時間切れで落ちた（`fix/mutant-no-create.out`・`fix/mutant-no-removals.out`・`fix/mutant-no-folder-removal.out`） |
+| 2（レビュー） | `core.test.ts`: `affectsRoot` の入れ子の `target/tz/`、`projectFile` の `Tsuzuri.lock` | — |
 
 既存の build・run・check のタスクの終了コードの検査は、同じ内容を `runTask` にまとめただけで、期待値は変えていない。
 
@@ -618,28 +623,71 @@ Phase 1（段 1〜5）を実装した。Phase 2・3 は未着手なので、状�
 
 - `cd vsc && npm run test:unit`: 19 passed、0 failed（前は 16 件。3 件を足した）。
 - `npm run check-types`、`npm run lint`: エラーなし。
-- `node ../scripts/slot.mjs -- npm test`（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）: 12 の段の `VS Code: …` と `All Tsuzuri VS Code integration checks passed.`（約 60 秒。続けて 2 回繰り返しても通った。`final-vsc.out`・`final-vsc-repeat2.out`・`final-vsc-repeat3.out`）。
+- `node ../scripts/slot.mjs -- npm test`（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）: 12 の段の `VS Code: …` と `All Tsuzuri VS Code integration checks passed.`（約 60 秒。続けて 2 回繰り返しても通った。`final-vsc.out`・`final-vsc-repeat2.out`・`final-vsc-repeat3.out`）。レビューの後の結果は下の「レビューの 1 回目」。
 - `node tests/platforms.mjs`: 成功。`git diff --check`: 差分なし。`node scripts/check-links.mjs`: 0 broken。
 - Rust のテストと `tests/lsp_sessions.mjs` は、コンパイラと言語サーバーを変えていないので動かしていない。`ci:full` の `vscode.yml`（5 環境）は push していないので未実行（PR には `ci:full` のラベルが要る）。
-- 受け入れ条件のうち Phase 1 の 4 つ（保存したエラーの写し、テストの実行・Debug Project の結果、重複、タスクのマーカー）を上のテストで確かめた。自動保存は、保存と同じ経路なので統合テストに足していない。端末の `path:line:column` は CLI が絶対パスで出し、VS Code の端末のリンクの検出で開くが、クリックは自動で確かめていない。
+- 受け入れ条件のうち Phase 1 の 4 つ（保存したエラーの写し、テストの実行・Debug Project の結果、重複、タスクのマーカー）を上のテストで確かめた。ただし「実行の途中で根が変わったら、その結果は入らない」は、最初の版では根の外の変化だけを検査していた。レビューの後は、根の下と根の外のエディターでの編集の両方を検査する。実行の途中のディスクの書き込みは、実行の後に届いた事象と同じ時刻の比較で判定し、その比較は実行の後の書き込みの検査が確かめる。自動保存は、保存と同じ経路なので統合テストに足していない。端末の `path:line:column` は CLI が絶対パスで出し、VS Code の端末のリンクの検出で開くが、クリックは自動で確かめていない。
 
 ### チケットから外れた判断
 
-1. **根の外の変化は、1 つの時刻ではなく根ごとの番号で記録した。** 仕様 3 は「根の外の変化の最後の時刻を 1 つ記録する」と書く。実装は根ごとに「根の外の最後の変更の番号」を持ち、`begin` で読んだ番号と入れるときの番号を比べる。
-   外から見た振る舞いは同じで、ミリ秒の時刻と mtime の比較の境界（実行の開始と同じミリ秒の編集）を持ち込まない。根の番号も同じ通し番号で数えるので、ワークスペースから外して足し直した根が、古い実行の番号と一致しない。
+1. **変化を 2 種類に分けて数える。時刻を持たない変化は番号で、watcher の作成・変更はファイルの時刻で、それぞれの実行の開始と比べる。**
+   仕様 3 は「根の外の変化の最後の時刻を 1 つ記録する」と書き、設計と落とし穴は、watcher の作成・削除と、その根で最後に始めた実行の開始より新しい mtime の変更で番号を増やすと書く。
+   実装は、エディターでの編集・削除（根の下は根ごとの watcher、根の外はワークスペースの watcher）・ワークスペースのフォルダーの削除を、根の番号と根の外の番号で数える。この比較はミリ秒の時刻を持たない。根の番号も同じ通し番号で数えるので、ワークスペースから外して足し直した根が、古い実行の番号と一致しない。
+   watcher の作成・変更は番号を増やさず、ファイルの mtime と ctime の大きい方を、根の下と根の外のそれぞれの最新の書き込みとして記録する。動いている実行は、結果を入れるときに自分の開始と比べる。出ている結果は、それを出した実行の開始と比べて消す（レビュー R1）。
+   根で最後に始めた実行の開始と比べる方法は、後の実行が結果を出さずに止まると、その開始より前の書き込みを数えず、古い結果が残った。止まるのは、選んだテストが 0 件、テストのデバッグで 2 件以上を選んだ、CodeLLDB を入れられない、取り消しのとき。同じ根の 2 つの実行が重なって古い方が後に終わったときも残った（`target/scratch/g39-phase1/review-races/masked.out`・`overlap.out`）。
+   落とし穴の意図は変わらない。実行の前の saveAll の事象が実行の開始の後に届いても、その書き込みは実行の開始より前なので、その実行の結果を捨てない。根の外の作成・変更の事象も、仕様 3 の「届けていれば入れない」ではなく、同じくファイルの時刻で判定する。実行の前の書き込みの事象が遅れて届いても、その実行の結果を捨てないためです。
+   残る境界: 実行の開始と同じミリ秒の書き込みは、実行の前の書き込みとして扱う。Linux と Windows のファイルの時刻の粗さ（数ミリ秒から 1 tick）の分も同じです。コンパイラはその後に起動してソースを読むので、その結果は書き込みの後の本文に基づく見込みが高い。
 2. **watcher の作成の事象も、ファイルの時刻で判定する。** 設計は作成・削除をつねに変更に数える。VS Code 1.103.2 の macOS の watcher は、セッションで最初の数回の保存を報告せず、後の保存を作成として届けることがある
    （`target/scratch/g39-phase1/watch-probe/gaps.out`: 起動の前に作ったファイルを保存すると、1・2 回目は事象なし、3 回目が `create`、以後は `change`）。作成をつねに数えると、実行の saveAll の遅れた作成の事象が、その実行の結果を消す。
-   作成と変更はどちらも、mtime と ctime の大きい方をその根の最後の実行の開始と比べる（ctime は移動で新しくなるので、mtime を保つ移動も数える）。削除は今までどおりつねに数える。
-3. **明示した実行の発見は、動いている発見の終わりを待ってから始める。** 設計の「発見を始める直前の変更の番号」を守るため。saveAll の前に始まった裏の発見に相乗りすると、saveAll の前に読んだ本文の失敗を、saveAll の後の番号で入れてしまう（saveAll の事象は時刻の比較で数えないので、番号が変わらない）。
+   作成と変更はどちらも、mtime と ctime の大きい方を記録する（ctime は移動で新しくなるので、mtime を保つ移動も数える）。削除は今までどおりつねに数える。
+3. **明示した実行の発見は、動いている発見の終わりを待ってから始める。** 設計の「発見を始める直前の変更の番号」を守るため。saveAll の前に始まった裏の発見に相乗りすると、saveAll の前に読んだ本文の失敗を、saveAll の後の番号で入れてしまう（saveAll の書き込みはその実行の開始より前なので、時刻の比較でも変化に数えない）。
 4. **統合テストの fixture に 3 つ目のワークスペースフォルダー `packages` を足した。** 既存のプロジェクトに `Tsuzuri.toml` を足すと既定の名前空間が変わり、既存の検査に影響するため。
 5. **saveAll の後で結果が消えないことの検査は、watcher の事象を最長 3 秒待つだけで、事象が届かなくても落とさない。** 上の 2 のとおり macOS では事象が届かないことがあるため。事象が届く環境（Linux・Windows の CI）で意味を持つ。
+6. **`Tsuzuri.lock` も変化に数える（レビュー R2）。** 仕様 3 の `.tz`・`.tt`・`.tc`・`.toml` に足した。依存の取得と検証の誤り（`E2007` の `Tsuzuri.lock is missing` など）は実行の結果にしか出ず、端末の `tsuzuri fetch` で lock を作っても次の変更か実行まで残った。
+   lock を書くのは `tsuzuri fetch` だけで（`src/fetch.rs` の `write_lock`）、拡張の実行（`test`・`test --list`・Debug Project のビルド）は書かないことを確かめた。実行が自分の書き込みでその結果を捨てることはない。
+7. **根の外の削除も watcher で数える（レビュー R3）。** フォルダーごとの削除は VS Code がフォルダーの 1 件の事象にまとめるので、根の外の依存のフォルダーを消しても、ソースの watcher（`**/*.{tz,tt,tc,toml}`）に届かず、依存を指す結果が残った。設計は根の下にだけ削除の watcher を置いていた。
+   ワークスペース全体の `**` の削除だけを見る watcher を足し、根の外の削除を根の外の番号に数える。除く名前は根の下と同じで、ワークスペースのフォルダーから見る。ソースの watcher の削除の購読は、根ごとの watcher とこの watcher に任せて外した。
+   `affectsRoot` は、どの深さの `target/tz/` の下も除くようにした（前は根の直下だけ）。入れ子のパッケージや根の外の依存の知識グラフを、その実行が書き換えるため。
 
 ### 残る問題
 
-- 根の外からフォルダーごと根の下へ移動すると、VS Code はフォルダーの作成の 1 件にまとめるので、ソースの watcher にも削除の watcher にも届かず、結果が残る。設計どおり削除だけを見ているため。作成も見ると、Debug Project のビルドが根に作る `a.o` や、最初の実行が作る `target/` で、その実行の結果を捨てる。
+- 根の外からフォルダーごと根の下へ移動すると、VS Code はフォルダーの作成の 1 件にまとめるので、ソースの watcher にも削除の watcher にも届かず、結果が残る（`vsc/README.md`・`vsc/CHANGELOG.md` にも、数えないと書いた）。設計どおり削除だけを見ているため。
+  フォルダーの作成も数えるには、最初の実行が根に作る `target/` を除くかを、チケットの持ち主が決める必要がある。除かないと、その実行の結果を捨てる。モジュールの発見は `target/` を読み、飛ばすのは知識グラフの印のあるディレクトリだけです（`src/driver.rs` の `collect_sources`）。
+  最初の版はこの理由に「Debug Project のビルドが根に作る `a.o`」も挙げたが、誤りだった。拡張と同じ引数の `test --list`・`test`・テストのデバッグ・Debug Project のビルド・`build`・`check` は、根の `.tsuzuri/` と `target/` の外に何も作らない（レビューの `target/scratch/g39-phase1/review-spec/watch.mjs` と、手元で同梱のコンパイラを動かして確かめた）。`a.o` は「関連する観測」のとおり、タスクの後に見たもの。
+- `[native]` のリンクの入力（`.o`・`.a` など）の作成・変更は、変化に数えない（レビュー R2）。入力がないときの `E2001`（`cannot read link input`）などが、入力を作った後も次の変更か実行まで残る（`target/scratch/g39-phase1/review-races/native.out`）。
+  入力はマニフェストが名指しする任意のパスで、根の外にもありうる。拡張子で watcher を置く案は、ツールチェーンやタスクが根に書くもの（上の `a.o`）でその実行の結果を捨てるおそれがある。仕様 3 にない入力なので、チケットの持ち主の判断を待つ。それまでは `vsc/README.md`・`vsc/CHANGELOG.md` で、実行し直すように書いた。
+- 根の下の削除は、名前によらず変化に数える（`.` で始まる名前と `target/tz/` の下を除く。設計のとおり）。ソースでもフォルダーでもないファイル（例えば `notes.txt`）を消しても結果が消える。実行の途中にテストや Debug Project のプログラムが根の下のファイルを消すと、その実行の結果が入らない（Testing ビューの成否は出る）。
+  古い結果が残る向きではない。名前で絞る案（レビュー R4）を採らなかった理由は「レビューの 1 回目」に書いた。
 - 重複の除外は、入れる時点の言語サーバーの診断で判定するので、言語サーバーが遅れていると一時的に 2 件並ぶ（落とし穴のとおり、次の変更で消える）。
 - 2 つの根が同じ URI に結果を出すと（`app` と `lib` が `lib/Calc.tz` に）、後の方が前の方を置き換え、どちらかの根の変化でその URI が消える。古い結果が残る方向ではない（前の `diagnosticsByRoot` と同じ）。
 - 根の外の watcher の事象は、ワークスペースのフォルダーの中だけに届く。ワークスペースの外の path 依存の変化は、エディターでの編集だけで数える（設計のとおり）。
+
+### レビューの 1 回目（2026-11-20）
+
+独立した 3 人のレビュー（仕様、競合、テスト）の指摘 13 件を、コードと照らして確かめた。記録と harness は `target/scratch/g39-phase1/`（`review-spec/`・`review-races/`・`review-tests/`、直した後の確認は `fix/`）にある。
+
+| 指摘 | 結果 | 内容 |
+| --- | --- | --- |
+| G39P1-SPEC-1・T1 | 直した | 根の下で実行の途中に変わる場面を検査していなかった。`workflow.ts` の `state.changed !== start.changed` を外しても、すべてのテストが通った。根の下の `notes.txt` をエディターで編集する検査を足した（上のテストの表）。エディターの編集は watcher もファイルの時刻も通らないので、決定的に落ちる。「確認」の受け入れ条件の文も直した |
+| G39P1-SPEC-2 | 直した | 根の外の結果の検査に、言語サーバーも出す `W1001` を使っている。写しが出るのは lib を受け持つクライアントがないからなので、その前提（`lib/Calc.tz` に source `tsuzuri` の診断がない）を、写しを数える前に毎回検査し、理由をコメントに書いた |
+| G39P1-SPEC-3 | 直した（文書） | 外からフォルダーごと移すと消えないのに、README・CHANGELOG は移動を無条件に数えると書いていた。消えるのは削除と、ほかの場所への移動・名前の変更だけで、外から移したフォルダーは数えないと書き直した。残る問題の理由（`a.o`）の誤りを直した。フォルダーの作成を数えるかは `target/` の判断が要るので、残る問題に残した |
+| R1 | 直した | 書き込みの事象を、根で最後に始めた実行の開始と比べていたので、後の実行が結果を出さずに止まるか、重なった古い実行が後に終わると、古い結果が残った。それぞれの実行の開始と比べるようにした（外れた判断 1）。結果を出さずに止まる実行の検査を足した |
+| R2 | 一部を直した | `Tsuzuri.lock` を数える（外れた判断 6）。`[native]` のリンクの入力は仕様 3 にない入力で、置き方にチケットの持ち主の判断が要るので、残る問題に書いた。`Tsuzuri.lock` の統合テストは足していない（作成・変更は同じ watcher と時刻の比較を通り、その経路は `Fresh.tz` と `Tsuzuri.toml` の検査が確かめる。名前の照合は `projectFile` の単体テスト） |
+| R3 | 直した | 根の外の依存のフォルダーを消しても、依存を指す結果が残った。ワークスペース全体の削除の watcher を足した（外れた判断 7）。`lib/Extra` を消す検査を足した |
+| R4 | 採らない | 根の下の、ソースでもフォルダーでもないファイルの削除でも結果が消える。設計が選んだ watcher のとおりで、消すのが早すぎるだけで古い結果は残らない。提案の絞り込み（拡張子のない名前と、プロジェクトのファイル・入力だけを数える）は、モジュールの発見が `.` で始まらないすべてのディレクトリを読むので、名前に `.` を含むフォルダー（`v1.2` など）の削除を数えず、そこにあったソースの古い結果を残しうる。G39 は古い結果を残さない方を優先する。残る問題に書いた |
+| T2 | 直した | 根の外の途中の変更をディスクに書いていたので、書き込みが実行の開始と同じミリ秒に入るか、watcher の事象がコンパイルの終わりより遅れると、誤って落ちえた。エディターでの `other/Main.tz` の編集に替えた。`lib` のファイルは開かない（lib のクライアントが `W1001` を除き、検査が空振りする） |
+| T3 | 直した | README・CHANGELOG に書いた変化のうち、ソースの作成とワークスペースのフォルダーの削除を検査していなかった。`capabilities/Fresh.tz` の作成と、`packages` を外す検査を足した。`packages` は 3 つ目のフォルダーなので、外しても拡張ホストは再起動しない。言語サーバーが再起動するので最後に置いた（Windows ARM64 でデバッグの節を飛ばすときも、戻る前に行う） |
+| T4 | 直した | 外れた判断 1 が、根の外の watcher の事象もファイルの時刻で判定していることと、そのミリ秒の境界を書いていなかった。1 と 2 を書き直した |
+| D1 | 直した | 言語サーバーの診断は Phase 2・3 の前なので、まだ消えない場面と遅れが残る。README の「すぐに」を外し、CHANGELOG の見出しを拡張の `Tsuzuri` の写しとタスクのマーカーに絞った |
+| D2 | 直した | README・CHANGELOG のコードの分類を直した（リンクの失敗は `E2002`、`E2006` も `E2xxx` の 1 つ） |
+
+レビューの後の確認（macOS 27.2、VS Code 1.103.2、Node 24.22.2）:
+
+- `cd vsc && npm run test:unit`: 19 passed、0 failed。`npm run check-types`、`npm run lint`: エラーなし。
+- `node ../scripts/slot.mjs -- npm test`（環境変数を外す）: 13 の段の `VS Code: …` と `All Tsuzuri VS Code integration checks passed.`（約 70〜100 秒。`fix/run1.out` と、文書を直した後に続けて 2 回の `fix/final-1.out`・`fix/final-2.out`）。
+- 変異（`fix/mutants-summary.out`）: レビューの前の `workflow.ts`、`changed` の比較なし、`outside` の比較なし、根の外の削除の watcher なし、作成の購読なし、フォルダーの削除の処理なし。どれも、その場面の検査で落ちた（順に、結果を出さずに止まる実行の後の `E2006` の時間切れ、`notes.txt` の検査の `W1001`、`other/Main.tz` の検査の `W1001`、`lib/Extra` の削除の時間切れ、`Fresh.tz` の作成の時間切れ、フォルダーの削除の時間切れ）。
+- レビューの harness（`review-races/runner.mjs`）で、R1（`masked`・`overlap`）と R3（`depfolder`）が直ったことを確かめた（`fix/harness-*.out`: `masked` の M3、`overlap` の O2、`depfolder` の D3 がどれも空）。`native` は、リンクの入力を作っても `E2001` が残り（N3。残る問題）、`notes.txt` の削除で結果が消える（N6。R4 を採らない）。
+- `node tests/platforms.mjs`: 成功。`git diff --check`: 差分なし。`node scripts/check-links.mjs`: 0 broken。
 
 ### 更新した文書と変更したファイル
 
