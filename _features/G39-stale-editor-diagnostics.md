@@ -284,7 +284,7 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 - **4 MiB を超える `didChange`**: 拒否して前のバッファを残す（`src/lsp.rs:532-537`）ので、前の診断も残る。縮めると戻る。直すと `tests/lsp.rs` の `rejects_documents_over_the_source_limit` の期待が変わる。
 - **[wasm] の検査のエラーの相対パス**: `src/main.rs:4167-4175` が `Tsuzuri.toml:1:1` と相対パスで出すので、絶対パスの problem matcher が `file:///Tsuzuri.toml` に付け、次の Wasm のタスクまで残る（`verify-task-matcher/e2e/e2e-misc.log` の M5〜M7）。D3 で matcher を外せばマーカーにはならないが、ほかの診断と同じ絶対パスで出すのが正しい。
 - **1 回の refresh の費用そのもの**: エディターの経路はすべての std モジュールを毎回検査し（D-40）、1 ファイルのプロジェクトの refresh の標本の 49 % が `check::warnings::unused_private`（`src/warnings.rs:286`、`src/check.rs:9525` から）で、std を含むすべての関数を走査している（`verify-lsp-latency-robustness/sample-hello-debug.txt`）。
-  CLI の `check` との差（約 5 倍）を縮めるのは性能の作業で、`_perfs/` の別のチケットにする。Phase 3 はこの費用を変えず、無駄な計算と待ちだけを除く。
+  CLI の `check` との差（約 5 倍）を縮めるのは性能の作業で、[PB08](../_perfs/PB08-lsp-refresh-cost.md) で扱う。Phase 3 はこの費用を変えず、無駄な計算と待ちだけを除く。
 - **エラーがある間、ほかのファイルの警告が消える**: 解析が失敗すると `analyze`（`src/lsp.rs:1549-1553`）は警告を返さないので、どこかにエラーがある間はプロジェクトのすべての警告が消え、直すと戻る。直した警告が戻ることはない。残る原因ではない。
 - **超線形の入力**: 1 つのブロックに `let v = v + 1;` を 10000 個並べると refresh が 16.7 秒（`tsuzuri check` も 10〜21 秒）、要素 30000 の配列リテラルの整形が 8 秒、10 万個の `else if` などは 120 秒で答えなかった。その間はどのファイルの診断も出ない。機械が生成した大きなブロックだけの問題で、別に扱う。
 - 実行中のテスト・Debug のビルドが、修正の保存の前にディスクを読んでいると、修正の後に古い結果を入れうる（コードを読んだだけで、再現していない。落とし穴を参照）。
@@ -547,7 +547,7 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 - 言語サーバーでのケーパビリティの検査（`E1036` を入力中に出す）。`packages.md` の「言語サーバーは検査しません」を変えることになる。
 - Run・Build・Check を `CustomExecution` と疑似端末で動かし、`--json` の結果を拡張の集まりへ入れること（D3 の代案）。
 - タスクの後に残る `a.o`。
-- 1 回の refresh の費用を減らすこと（エディターの経路の std の全モジュールの検査、`unused_private` の std の走査）。`_perfs/` の別のチケットにする。
+- 1 回の refresh の費用を減らすこと（エディターの経路の std の全モジュールの検査、`unused_private` の std の走査）。[PB08](../_perfs/PB08-lsp-refresh-cost.md) で扱う。
 - 解析を別のスレッドで動かし、古い解析を途中で捨てること。
 - クイックフィックスの検証を `codeAction/resolve` へ遅らせること（修正案は検証したものだけを出す、という今の約束を変える）。
 - エラーがある間にほかのファイルの警告が消えること、超線形の入力（関連する観測を参照）。
