@@ -129,6 +129,16 @@ export async function run(): Promise<void> {
 		assert.deepEqual(await api.testing.run(new vscode.TestRunRequest([tests[0]]), cancellation.token, 0), { passed: 1, failed: 0, errored: 0, skipped: 0 });
 		assert.deepEqual(await api.testing.run(new vscode.TestRunRequest([tests[1]]), cancellation.token, 3), { passed: 0, failed: 1, errored: 0, skipped: 0 });
 	} finally { cancellation.dispose(); }
+	// G39: a test run leaves out the warnings that the language server reports at the same place.
+	await replace(original.replace('    let result', '    let unused = 7\n    let result'));
+	await waitFor('language server warning', () => vscode.languages.getDiagnostics(uri).find(item => item.code === 'W1001' && item.source === 'tsuzuri'));
+	const warned = new vscode.CancellationTokenSource();
+	try {
+		assert.deepEqual(await api.testing.run(new vscode.TestRunRequest([project]), warned.token, 0), { passed: 1, failed: 1, errored: 0, skipped: 0 });
+	} finally { warned.dispose(); }
+	assert.deepEqual(vscode.languages.getDiagnostics(uri).filter(item => item.code === 'W1001').map(item => item.source).sort(), ['tsuzuri']);
+	assert.deepEqual(vscode.languages.getDiagnostics(uri).filter(item => item.source === 'Tsuzuri').map(item => item.code), ['E2006']);
+	console.log('VS Code: a test run shows no copy of a language server warning.');
 	await replace(`${original}\ntest "new" = assert true\n`);
 	assert.ok(await document.save());
 	await waitFor('automatic test discovery after save', () => {

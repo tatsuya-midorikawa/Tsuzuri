@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, projectFile, projectRoot, reservedWords, runProcess, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
+import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, projectFile, projectRoot, reportedByServer, reservedWords, runProcess, sourcePosition, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
 
 test('only the five supported hosts enable the IDE, with debugging disabled on Windows ARM64', () => {
 	const supported = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
@@ -173,6 +173,41 @@ test('run results belong to the roots that contain their files, and only source 
 	assert.ok(affectsRoot('c:\\w\\app', 'C:\\w\\app\\Shapes', 'win32'));
 	for (const file of ['Main.tz', 'lib/Calc.tt', 'Show.tc', 'Tsuzuri.toml', 'C:\\w\\Main.tz']) { assert.ok(projectFile(file), file); }
 	for (const file of ['README.md', 'Main.tzx', 'main.c', 'Tsuzuri.toml.bak', 'tz']) { assert.ok(!projectFile(file), file); }
+});
+
+test('compiler byte offsets become the positions of the text that VS Code shows', () => {
+	const at = (text: string | number[], offset: number) => {
+		const position = sourcePosition(typeof text === 'string' ? Buffer.from(text, 'utf8') : Uint8Array.from(text), offset);
+		return [position.line, position.character];
+	};
+	assert.deepEqual(at('ab\ncd', 4), [1, 1]);
+	assert.deepEqual(at('ab\ncd', 0), [0, 0]);
+	// The byte order mark is not part of the editor's text, though the compiler's offsets count it.
+	const bom = [0xef, 0xbb, 0xbf, ...Buffer.from('def x :: i64 = true\r\ndef y :: i64 = "\u{1f600}" + 1\r\n')];
+	assert.deepEqual([18, 22, 39, 45].map(offset => at(bom, offset)), [[0, 15], [0, 19], [1, 15], [1, 19]]);
+	for (const offset of [0, 1, 2, 3]) { assert.deepEqual(at(bom, offset), [0, 0], String(offset)); }
+	assert.deepEqual(at('\ufeffx', 4), [0, 1]);
+	// CRLF and a lone CR end a line, as in VS Code; the LF of a CRLF is still the end of its line.
+	assert.deepEqual([1, 2, 3, 4].map(offset => at('a\r\nbc', offset)), [[0, 1], [0, 1], [1, 0], [1, 1]]);
+	assert.deepEqual([1, 2, 3].map(offset => at('a\rb', offset)), [[0, 1], [1, 0], [1, 1]]);
+	assert.deepEqual(at('a\r\n\r\nb', 5), [2, 0]);
+	// Columns count UTF-16 code units: a supplementary-plane character is two, a CJK character one.
+	assert.deepEqual(at('x = "\u{1f600}" + \u65e5 1', 9), [0, 7]);
+	assert.deepEqual(at('x = "\u{1f600}" + \u65e5 1', 16), [0, 12]);
+	// An offset inside a character starts at the character; one past the end is the end.
+	assert.deepEqual(at('a\u00e9b', 2), [0, 1]);
+	assert.deepEqual(at('ab\nc', 99), [1, 1]);
+	assert.deepEqual(at('ab', -5), [0, 0]);
+});
+
+test('a run result duplicates a language server diagnostic of the same code that starts at the same position', () => {
+	const server = [{ code: 'W1001', line: 2, character: 8 }, { code: 'E1003', line: 4, character: 0 }];
+	assert.ok(reportedByServer({ code: 'W1001', line: 2, character: 8 }, server));
+	assert.ok(reportedByServer({ code: 'E1003', line: 4, character: 0 }, server));
+	assert.ok(!reportedByServer({ code: 'W1001', line: 2, character: 9 }, server));
+	assert.ok(!reportedByServer({ code: 'W1001', line: 3, character: 8 }, server));
+	assert.ok(!reportedByServer({ code: 'E1036', line: 2, character: 8 }, server));
+	assert.ok(!reportedByServer({ code: 'E2006', line: 0, character: 0 }, []));
 });
 
 test('process execution captures Unicode without a shell and can be cancelled', async () => {

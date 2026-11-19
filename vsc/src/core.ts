@@ -66,6 +66,26 @@ export function affectsRoot(root: string, file: string, platform: string = proce
 	return !parts.some(part => part.startsWith('.')) && !(parts.length > 2 && parts[0] === 'target' && parts[1] === 'tz');
 }
 
+/**
+ * The zero-based line and UTF-16 character of the compiler's byte `offset` into the UTF-8 file `bytes`, in the text that
+ * VS Code shows: without the byte order mark, which the offsets count, and with CRLF, CR, and LF each ending a line.
+ */
+export function sourcePosition(bytes: Uint8Array, offset: number): { line: number; character: number } {
+	const start = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+	let end = Math.min(Math.max(offset, start), bytes.length);
+	while (end > start && end < bytes.length && (bytes[end] & 0xc0) === 0x80) { end--; }
+	let text = Buffer.from(bytes.buffer, bytes.byteOffset + start, end - start).toString('utf8');
+	// An offset at the LF of a CRLF is the end of the line, as VS Code has no position between the two.
+	if (text.endsWith('\r') && bytes[end] === 0x0a) { text = text.slice(0, -1); }
+	const lines = text.split(/\r\n|\r|\n/);
+	return { line: lines.length - 1, character: lines[lines.length - 1].length };
+}
+
+/** Whether the language server reports `diagnostic`: one of `server` has its code and starts where it starts (G39 D2). */
+export function reportedByServer(diagnostic: { code?: string; line: number; character: number }, server: { code?: string; line: number; character: number }[]): boolean {
+	return server.some(item => item.code === diagnostic.code && item.line === diagnostic.line && item.character === diagnostic.character);
+}
+
 /** Whether `file` is a Tsuzuri source or manifest, the files that the extension's watchers report. */
 export function projectFile(file: string): boolean {
 	return /\.(?:tz|tt|tc|toml)$/.test(file);

@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { Action, affectsRoot, commandArguments, defaultNamespace, exists, inRoot, isNamespace, jsonLines, lldbLaunch, outputPath, projectFile, projectRoot, supportsDebug } from './core';
+import { Action, affectsRoot, commandArguments, defaultNamespace, exists, inRoot, isNamespace, jsonLines, lldbLaunch, outputPath, projectFile, projectRoot, reportedByServer, sourcePosition, supportsDebug } from './core';
 import { runCompiler, toolchain } from './toolchain';
 
 /** The change numbers of a project root just before a run of the compiler started (`begin`), which its result must match. */
@@ -167,19 +167,15 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		for (const record of jsonLines(text)) {
 			if (typeof record.path !== 'string' || typeof record.message !== 'string') { continue; }
 			const file = path.resolve(root, record.path);
-			let start = new vscode.Position(0, 0);
-			let end = start;
+			let range = new vscode.Range(0, 0, 0, 0);
 			try {
 				const source = await readFile(file);
 				const span = record.span as { start?: number; end?: number } | undefined;
-				const position = (offset: number) => {
-					const prefix = source.subarray(0, Math.max(0, offset)).toString('utf8').split('\n');
-					return new vscode.Position(prefix.length - 1, prefix.at(-1)!.length);
-				};
-				start = position(span?.start ?? 0);
-				end = position(span?.end ?? span?.start ?? 0);
-			} catch { end = start; }
-			const diagnostic = new vscode.Diagnostic(new vscode.Range(start, end), record.message,
+				const from = sourcePosition(source, span?.start ?? 0);
+				const to = sourcePosition(source, span?.end ?? span?.start ?? 0);
+				range = new vscode.Range(from.line, from.character, to.line, to.character);
+			} catch { /* A file that cannot be read keeps its diagnostic at the start. */ }
+			const diagnostic = new vscode.Diagnostic(range, record.message,
 				record.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error);
 			diagnostic.source = 'Tsuzuri';
 			diagnostic.code = typeof record.code === 'string' ? record.code : undefined;
@@ -193,9 +189,17 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		const external = [...grouped.keys()].some(file => !inRoot(root, file));
 		if (!state || state.changed !== start.changed || external && state.outside !== start.outside) { return; }
 		clear(state);
+		const position = (item: vscode.Diagnostic) => ({
+			code: typeof item.code === 'object' ? String(item.code.value) : item.code === undefined ? undefined : String(item.code),
+			line: item.range.start.line, character: item.range.start.character,
+		});
 		for (const [file, entries] of grouped) {
 			const uri = vscode.Uri.file(file);
-			diagnostics.set(uri, entries);
+			// The language server reports the front-end diagnostics as the user types, so the run adds only the others.
+			const server = vscode.languages.getDiagnostics(uri).filter(item => item.source === 'tsuzuri').map(position);
+			const added = entries.filter(entry => !reportedByServer(position(entry), server));
+			if (!added.length) { continue; }
+			diagnostics.set(uri, added);
 			state.uris.push(uri);
 		}
 		state.external = external;
