@@ -23,7 +23,7 @@ class DiscoveryError extends Error {
 }
 
 export function registerTesting(context: vscode.ExtensionContext, output: vscode.OutputChannel, workflow: {
-	begin: (root: string) => RunStart; publishDiagnostics: (root: string, text: string, start: RunStart) => Promise<void>; ensureDebugger: () => Promise<void>;
+	begin: (roots: readonly string[]) => RunStart; track: (root: string) => void; publishDiagnostics: (root: string, text: string, start: RunStart) => Promise<void>; ensureDebugger: () => Promise<void>;
 }) {
 	const { publishDiagnostics } = workflow;
 	const controller = vscode.tests.createTestController('tsuzuri', 'Tsuzuri');
@@ -89,21 +89,19 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 	}
 
 	/**
-	 * Discovers the tests of `root` for an explicit run or debug, which reports a failed discovery as its result. The start
-	 * that it returns, taken before the discovery, also stands for the compilation that follows: an edit during the
-	 * discovery (or while the debugger installs) makes the run's result stale, as the compiler reads the saved files.
+	 * Discovers the tests of `root` for an explicit run or debug that started at `start` (taken right after its saveAll),
+	 * which reports a failed discovery as its result. The same start stands for the compilation that follows: an edit
+	 * after the saveAll (while the roots refresh, a discovery or an earlier root runs, or the debugger installs) makes the
+	 * result stale, as the compiler reads the saved files.
 	 */
-	async function discoverForRun(root: string, signal: AbortSignal): Promise<RunStart> {
-		// Taken before waiting for a discovery that is still running: the saveAll is done, so an edit during the wait leaves
-		// the saved files that the discovery and the compiler read behind the editor too.
-		const start = workflow.begin(root);
+	async function discoverForRun(root: string, signal: AbortSignal, start: RunStart) {
+		workflow.track(root);
 		// A discovery that started before the run's saveAll may have read older files.
 		await refreshes.get(root)?.catch(() => undefined);
 		try { await discover(root, signal); } catch (error) {
 			if (error instanceof DiscoveryError) { await publishDiagnostics(root, error.stderr, start); }
 			throw error;
 		}
-		return start;
 	}
 
 	async function refreshRoots() {
@@ -211,10 +209,11 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		const pending = new Set<vscode.TestItem>();
 		try {
 			if (!await vscode.workspace.saveAll(false)) { return summary; }
+			const start = workflow.begin([...roots.keys()]);
 			await refreshRoots();
 			for (const root of requestedRoots(request)) {
 				if (token.isCancellationRequested) { break; }
-				const start = await discoverForRun(root, abort.signal);
+				await discoverForRun(root, abort.signal, start);
 				const selected = selection(request, root);
 				if (!selected.length) { continue; }
 				const byIndex = new Map(selected.map(item => [cases.get(item.id)!.index, item]));
@@ -269,11 +268,11 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		let runner: string | undefined;
 		try {
 			if (!await vscode.workspace.saveAll(false)) { return summary; }
+			const start = workflow.begin([...roots.keys()]);
 			await refreshRoots();
 			const selected: vscode.TestItem[] = [];
-			const starts = new Map<string, RunStart>();
 			for (const root of requestedRoots(request)) {
-				starts.set(root, await discoverForRun(root, abort.signal));
+				await discoverForRun(root, abort.signal, start);
 				selected.push(...selection(request, root));
 			}
 			if (selected.length !== 1) {
@@ -287,7 +286,6 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			await workflow.ensureDebugger();
 			const run = `${process.pid}-${++debugRuns}`;
 			runner = testRunnerPath(root, run);
-			const start = starts.get(root) ?? workflow.begin(root);
 			const result = await runCompiler(context, root, testDebugArguments(root, index, run), { signal: abort.signal });
 			execution.appendOutput((result.stdout + result.stderr).replace(/\r?\n/g, '\r\n'));
 			await publishDiagnostics(root, result.stderr, start);

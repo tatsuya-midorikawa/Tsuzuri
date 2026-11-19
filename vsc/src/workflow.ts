@@ -9,8 +9,7 @@ import { runCompiler, toolchain } from './toolchain';
  * must match, and the time it started, which no file that a watcher reports written may follow.
  */
 export interface RunStart {
-	changed: number;
-	outside: number;
+	epoch: number;
 	started: number;
 }
 
@@ -63,13 +62,18 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 	context.subscriptions.push(diagnostics);
 	/** The result of each project root, until the project changes. */
 	const roots = new Map<string, RootResult>();
-	/** Numbers every change, so a root that is removed and added again never matches a run that started before. */
+	/**
+	 * Numbers every change. A run keeps the number reached at its saveAll (`epoch`), and a change numbered after it in
+	 * its root (or outside it, for a result there) makes its result stale.
+	 */
 	let changes = 0;
+	/** The number of the last removal of each root's workspace folder, so a run that started before it shows nothing. */
+	const removed = new Map<string, number>();
 	function rootState(root: string): RootResult {
 		let state = roots.get(root);
 		if (!state) {
 			const created: RootResult = {
-				uris: [], external: false, shown: -Infinity, changed: ++changes, outside: changes, written: -Infinity, writtenOutside: -Infinity,
+				uris: [], external: false, shown: -Infinity, changed: 0, outside: 0, written: -Infinity, writtenOutside: -Infinity,
 				// Every deletion under the root (a folder that is deleted or moved arrives as one event of the folder), and the
 				// sources created or written under it, which the workspace's watcher misses for a root outside the workspace
 				// folders (`tsuzuri.projectPath`, an absolute `project` of a debug configuration).
@@ -121,11 +125,17 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 			}
 		}
 	}
-	/** Records the start of a run of the compiler in `root`, just before it starts; `publishDiagnostics` takes the result. */
-	function begin(root: string): RunStart {
-		const state = rootState(root);
-		return { changed: state.changed, outside: state.outside, started: Date.now() };
+	/**
+	 * Records the start of runs of the compiler in `roots`, right after the saveAll that precedes them (G39 spec 3): an edit
+	 * after it leaves the saved files that the compiler reads behind the editor. `publishDiagnostics` takes the result; a
+	 * root that the run finds later (`track`) shares the start.
+	 */
+	function begin(roots: readonly string[]): RunStart {
+		for (const root of roots) { rootState(root); }
+		return { epoch: changes, started: Date.now() };
 	}
+	/** Starts following the changes of `root`, a root of a run that found it after its start. */
+	function track(root: string) { rootState(root); }
 	// VS Code 1.103 on macOS can report the saveAll before a run as a creation, so a creation counts by the file's times
 	// like a change. The status change time is new after a move, which keeps the modification time.
 	const stamped = (uri: vscode.Uri) => {
@@ -151,6 +161,7 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		vscode.workspace.onDidChangeWorkspaceFolders(event => {
 			for (const [root, state] of roots) {
 				if (event.removed.some(folder => inRoot(folder.uri.fsPath, root))) {
+					removed.set(root, ++changes);
 					clear(state);
 					state.watcher.dispose();
 					roots.delete(root);
@@ -225,8 +236,8 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		// on every source outside the root, since any of them can cause it.
 		const state = roots.get(root);
 		const external = [...grouped.keys()].some(file => !inRoot(root, file));
-		if (!state || state.changed !== start.changed || state.written > start.started
-			|| external && (state.outside !== start.outside || state.writtenOutside > start.started)) { return; }
+		if (!state || state.changed > start.epoch || (removed.get(root) ?? 0) > start.epoch || state.written > start.started
+			|| external && (state.outside > start.epoch || state.writtenOutside > start.started)) { return; }
 		clear(state);
 		state.shown = start.started;
 		const position = (item: vscode.Diagnostic) => ({
@@ -297,15 +308,16 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		token: vscode.CancellationToken): Promise<vscode.DebugConfiguration | undefined> {
 		try {
 			await ensureDebugger();
-			if (!await vscode.workspace.saveAll(false)) { return undefined; }
+			// The root is found before the saveAll, so that nothing waits between the saveAll and the start of the build.
 			const root = configuration.project ? path.resolve(folder?.uri.fsPath ?? '', configuration.project)
 				: await projectFor(folder?.uri);
+			if (!await vscode.workspace.saveAll(false)) { return undefined; }
+			const start = begin([root]);
 			const controller = new AbortController();
 			const cancellation = token.onCancellationRequested(() => controller.abort());
 			try {
 				if (token.isCancellationRequested) { return undefined; }
 				output.show(true);
-				const start = begin(root);
 				const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Tsuzuri: Building for Debug', cancellable: true },
 					async (_progress, progressToken) => {
 						const cancel = progressToken.onCancellationRequested(() => controller.abort());
@@ -372,5 +384,5 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 			} catch (error) { reportError(error, output); }
 		}),
 	);
-	return { begin, publishDiagnostics, ensureDebugger };
+	return { begin, track, publishDiagnostics, ensureDebugger };
 }
