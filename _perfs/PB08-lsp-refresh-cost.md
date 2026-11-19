@@ -166,6 +166,9 @@ CLI の `check`、ms。
 
 - **O6**: 言語サーバーも、ソース（未保存のバッファを含む）が名前を書いた opt-in の std だけを読む（`stdlib::sources_for`）。
   モジュール名の補完は `stdlib::SOURCES` の静的な一覧から出す。名前を書く前の `Json.` のメンバーの補完とホバーは、全 std の宣言の索引を process に 1 回だけ作って答える。
+  同じ索引で、次も今と同じにする（変わってよいのは、名前を書いていない opt-in のモジュールの補完とホバーの出どころだけで、答えは今と同じ）。
+  - 診断の候補と修正案: 未解決の名前の候補（`Matrx.init` に `Matrix` を勧める、など）は、読み込んでいない opt-in のモジュールの名前とメンバーも候補に入れる。今は全 std を読むので候補にあり、その置き換えの修正案とクイックフィックスが出る。
+  - シグネチャヘルプ: 名前を書いた最初の編集が構文解析できない間（`Json.parse (` を打ち始めたところ）は、シグネチャヘルプが最後に成功した索引に戻る（`src/lsp.rs` の `view`）。その索引に `Json.parse` がないので、opt-in の索引からも引く。
   CLI の値で見積もると、O1・O3 の後でも hello の全 std と基本 std の差は約 70 ms（自動）。Phase 1 で目標に届けば着手しない。1 コアの機械や遅い機械で足りないと分かったときの選択肢として残す。
 
 ## 実装手順
@@ -221,6 +224,8 @@ CLI の `check`、ms。
 
 - 変更: `src/driver.rs`（`load_with_overlays` の std の選び方）、`src/lsp.rs`（`ModuleNames` の一覧、opt-in の索引）。
 - 確認: 名前を書いていないプロジェクトで、最上位の補完が opt-in のモジュール名を出す。本文が構文解析できない最初の編集で `Json.` のメンバーを補完する。opt-in のモジュール名のホバー。`tests/lsp.rs` の `opt_in_matrix_module_completes_and_hovers_when_named`・`opt_in_view_and_tensor_modules_complete_when_named`。
+  ほかに `Matrix` を参照しないプロジェクトで `Matrx.init` と書くと、今と同じ候補・置き換えの修正案・クイックフィックスが出る。`Json` を参照しない成功した解析の後、`Json.parse (` と打ち始めたところで `textDocument/signatureHelp` が `Json.parse` を返す。
+  手順 2 の golden（Phase 2 用に、この 2 つの場面を足したもの）が、名前を書いていない opt-in のモジュールの補完とホバーの出どころを除いて一致する。
 
 ## 計測手順
 
@@ -294,7 +299,7 @@ def main :: own unit -> i32 = \() ->
 ## 受け入れ条件
 
 - [ ] `TSUZURI_BASELINE=target/perf/PB08/tsuzuri-before node tests/parallel_frontend.mjs target/release/tsuzuri` が通る（IR が before と同じ）。
-- [ ] 手順 2 の golden が、1 スレッドと自動・8 スレッドで before と 1 byte も違わない（Phase 2 を行ったときは、D7 で変わると決めた、名前を書いていない opt-in の std モジュールの補完とホバーを除く）。
+- [ ] 手順 2 の golden が、1 スレッドと自動・8 スレッドで before と 1 byte も違わない（Phase 2 を行ったときは、D7 で変わると決めた、名前を書いていない opt-in の std モジュールの補完とホバーを除く。診断の候補・修正案・シグネチャヘルプは Phase 2 でも同じ）。
 - [ ] M1 の目標（同じ機械の before に対して、hello 0.29 倍以下、big 0.48 倍以下、syn200 0.23 倍以下）に届くか、届かない理由を計測で示している。コアの数を記録している。
 - [ ] CLI の `check` と PX03 の `check` がどの workload でも遅くならず、値を `docs/benchmarks.md` に記録している。
 - [ ] profile で、捨てる診断を作る frame と 2 回目の `call_facts` が消えている。
@@ -327,3 +332,4 @@ def main :: own unit -> i32 = \() ->
 - **D5: 言語サーバーは CLI と同じ `Parallelism::command_line()` を使う**（既定案）。出力はスレッドの数に依らないことが検査済みで、エディターの中の短い並列は CLI の `check` と同じ。`TSUZURI_THREADS` で上限を決められる。
 - **D6: 共有の CI に速さの合否を入れない**（既定案。GUIDE §14.7）。
 - **D7: Phase 2 の O6（言語サーバーも、名前を書いた opt-in の std だけを読む）**（承認済み。2026-11-19。Phase 1 の後の計測で目標に届かないときだけ行う）。D-40（言語サーバーは補完のため常に全部を読む）を変え、名前を書く前の opt-in のモジュールの補完とホバーを、別に作る索引から答えることになる。
+  同じ索引から、読み込んでいない opt-in のモジュールの名前とメンバーを診断の候補（修正案）とシグネチャヘルプにも出し、それらは今と変えない（O6 の説明を参照）。
