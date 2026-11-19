@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { excludedPattern, exists, jsonLines, lldbLaunch, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from './core';
 import { runCompiler } from './toolchain';
-import { formatters, projectFor, reportError } from './workflow';
+import { formatters, projectFor, reportError, RunStart } from './workflow';
 
 interface TestCase {
 	index: number;
@@ -17,8 +17,14 @@ interface TestCase {
 /** Numbers the debug runs of this extension host, which name their runners (`testRunnerPath`). */
 let debugRuns = 0;
 
-export function registerTesting(context: vscode.ExtensionContext, output: vscode.OutputChannel,
-	workflow: { publishDiagnostics: (root: string, text: string) => Promise<void>; ensureDebugger: () => Promise<void> }) {
+/** A failed `tsuzuri test --list --json`, whose diagnostics an explicit run or debug reports. */
+class DiscoveryError extends Error {
+	constructor(readonly stderr: string) { super(stderr || 'Test discovery failed.'); }
+}
+
+export function registerTesting(context: vscode.ExtensionContext, output: vscode.OutputChannel, workflow: {
+	begin: (root: string) => RunStart; publishDiagnostics: (root: string, text: string, start: RunStart) => Promise<void>; ensureDebugger: () => Promise<void>;
+}) {
 	const { publishDiagnostics } = workflow;
 	const controller = vscode.tests.createTestController('tsuzuri', 'Tsuzuri');
 	context.subscriptions.push(controller);
@@ -46,7 +52,7 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 				const result = await runCompiler(context, root, ['test', root, '--list', '--json'], { signal, timeout: 60000 });
 				// Discovery reads the files on disk and reports no diagnostics (G39 D1); the language server reports the
 				// same errors as the user types, and an explicit run or debug reports this failure as its result.
-				if (result.code !== 0) { throw new Error(result.stderr || 'Test discovery failed.'); }
+				if (result.code !== 0) { throw new DiscoveryError(result.stderr); }
 				const records = jsonLines(result.stdout);
 				const revision = createHash('sha256').update(result.stdout).digest('hex').slice(0, 16);
 				const files = new Map<string, vscode.TestItem>();
@@ -77,6 +83,17 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		})();
 		refreshes.set(root, refresh);
 		try { await refresh; } finally { refreshes.delete(root); }
+	}
+
+	/** Discovers the tests of `root` for an explicit run or debug, which reports a failed discovery as its result. */
+	async function discoverForRun(root: string, signal: AbortSignal) {
+		// A discovery that started before the run's saveAll may have read older files.
+		await refreshes.get(root)?.catch(() => undefined);
+		const start = workflow.begin(root);
+		try { await discover(root, signal); } catch (error) {
+			if (error instanceof DiscoveryError) { await publishDiagnostics(root, error.stderr, start); }
+			throw error;
+		}
 	}
 
 	async function refreshRoots() {
@@ -187,16 +204,17 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			await refreshRoots();
 			for (const root of requestedRoots(request)) {
 				if (token.isCancellationRequested) { break; }
-				await discover(root, abort.signal);
+				await discoverForRun(root, abort.signal);
 				const selected = selection(request, root);
 				if (!selected.length) { continue; }
 				const byIndex = new Map(selected.map(item => [cases.get(item.id)!.index, item]));
 				for (const item of selected) { execution.enqueued(item); execution.started(item); pending.add(item); }
 				const args = ['test', root, '--json', `-O${optimization}`,
 					...selected.flatMap(item => ['--index', String(cases.get(item.id)!.index)])];
+				const start = workflow.begin(root);
 				const result = await runCompiler(context, root, args, { signal: abort.signal });
 				execution.appendOutput((result.stdout + result.stderr).replace(/\r?\n/g, '\r\n'));
-				await publishDiagnostics(root, result.stderr);
+				await publishDiagnostics(root, result.stderr, start);
 				for (const record of jsonLines(result.stdout)) {
 					if (record.type !== 'test' || typeof record.index !== 'number') { continue; }
 					const item = byIndex.get(record.index);
@@ -245,7 +263,7 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			await refreshRoots();
 			const selected: vscode.TestItem[] = [];
 			for (const root of requestedRoots(request)) {
-				await discover(root, abort.signal);
+				await discoverForRun(root, abort.signal);
 				selected.push(...selection(request, root));
 			}
 			if (selected.length !== 1) {
@@ -259,9 +277,10 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			await workflow.ensureDebugger();
 			const run = `${process.pid}-${++debugRuns}`;
 			runner = testRunnerPath(root, run);
+			const start = workflow.begin(root);
 			const result = await runCompiler(context, root, testDebugArguments(root, index, run), { signal: abort.signal });
 			execution.appendOutput((result.stdout + result.stderr).replace(/\r?\n/g, '\r\n'));
-			await publishDiagnostics(root, result.stderr);
+			await publishDiagnostics(root, result.stderr, start);
 			const built = jsonLines(result.stdout).find(record => record.type === 'debug');
 			if (result.code !== 0 || !built || typeof built.program !== 'string' || !Array.isArray(built.arguments)) {
 				throw new Error(result.stderr || 'The test debug build failed.');

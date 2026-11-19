@@ -1,8 +1,28 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { Action, commandArguments, defaultNamespace, exists, isNamespace, jsonLines, lldbLaunch, outputPath, projectRoot, supportsDebug } from './core';
+import { Action, affectsRoot, commandArguments, defaultNamespace, exists, inRoot, isNamespace, jsonLines, lldbLaunch, outputPath, projectFile, projectRoot, supportsDebug } from './core';
 import { runCompiler, toolchain } from './toolchain';
+
+/** The change numbers of a project root just before a run of the compiler started (`begin`), which its result must match. */
+export interface RunStart {
+	changed: number;
+	outside: number;
+}
+
+/**
+ * The result of the last test run, test debug, or Debug Project of a project root (G39 D2): its URIs, whether one is
+ * outside the root (a path dependency), the numbers of the root's last change and of its last change outside the
+ * root, the start of its last run, and the watcher of deletions under the root.
+ */
+interface RootResult {
+	uris: vscode.Uri[];
+	external: boolean;
+	changed: number;
+	outside: number;
+	started: number;
+	deletions: vscode.FileSystemWatcher;
+}
 
 export async function projectFor(resource?: vscode.Uri): Promise<string> {
 	resource ??= vscode.window.activeTextEditor?.document.uri;
@@ -33,7 +53,76 @@ export function reportError(error: unknown, output: vscode.OutputChannel) {
 export function registerWorkflow(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
 	const diagnostics = vscode.languages.createDiagnosticCollection('tsuzuri-build');
 	context.subscriptions.push(diagnostics);
-	const diagnosticsByRoot = new Map<string, vscode.Uri[]>();
+	/** The result of each project root, until the project changes. */
+	const roots = new Map<string, RootResult>();
+	/** Numbers every change, so a root that is removed and added again never matches a run that started before. */
+	let changes = 0;
+	function rootState(root: string): RootResult {
+		let state = roots.get(root);
+		if (!state) {
+			const created: RootResult = {
+				uris: [], external: false, changed: ++changes, outside: changes, started: -Infinity,
+				// A folder that is deleted or moved arrives as one event of the folder, which the source watcher does not match.
+				deletions: vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**'), true, true, false),
+			};
+			created.deletions.onDidDelete(uri => { if (affectsRoot(root, uri.fsPath)) { created.changed = ++changes; clear(created); } });
+			roots.set(root, state = created);
+		}
+		return state;
+	}
+	function clear(state: RootResult) {
+		for (const uri of state.uris) { diagnostics.delete(uri); }
+		state.uris = [];
+		state.external = false;
+	}
+	/**
+	 * A change of `file` (G39 spec 3) changes the roots that contain it, and when it is a Tsuzuri source, also the
+	 * results of the other roots that point outside their root. A watcher's event of a written file gives the file's
+	 * `modified` time, which counts only after the root's last run started: the saveAll before a run can reach the
+	 * watcher late.
+	 */
+	function changed(file: string, source: boolean, modified?: number) {
+		for (const [root, state] of roots) {
+			if (modified !== undefined && modified <= state.started) { continue; }
+			if (inRoot(root, file)) {
+				state.changed = ++changes;
+				clear(state);
+			} else if (source) {
+				state.outside = ++changes;
+				if (state.external) { clear(state); }
+			}
+		}
+	}
+	/** Records the start of a run of the compiler in `root`, just before it starts; `publishDiagnostics` takes the result. */
+	function begin(root: string): RunStart {
+		const state = rootState(root);
+		state.started = Date.now();
+		return { changed: state.changed, outside: state.outside };
+	}
+	// VS Code 1.103 on macOS can report the saveAll before a run as a creation, so a creation counts by the file's times
+	// like a change. The status change time is new after a move, which keeps the modification time.
+	const written = (uri: vscode.Uri) => {
+		void stat(uri.fsPath).then(info => Math.trunc(Math.max(info.mtimeMs, info.ctimeMs)), () => Date.now())
+			.then(modified => changed(uri.fsPath, true, modified));
+	};
+	const sources = vscode.workspace.createFileSystemWatcher('**/*.{tz,tt,tc,toml}');
+	context.subscriptions.push(sources, sources.onDidCreate(written), sources.onDidChange(written),
+		sources.onDidDelete(uri => changed(uri.fsPath, true)),
+		vscode.workspace.onDidChangeTextDocument(event => {
+			const document = event.document.uri;
+			if (event.contentChanges.length && document.scheme === 'file') { changed(document.fsPath, projectFile(document.fsPath)); }
+		}),
+		vscode.workspace.onDidChangeWorkspaceFolders(event => {
+			for (const [root, state] of roots) {
+				if (event.removed.some(folder => inRoot(folder.uri.fsPath, root))) {
+					clear(state);
+					state.deletions.dispose();
+					roots.delete(root);
+				}
+			}
+		}),
+		new vscode.Disposable(() => { for (const state of roots.values()) { state.deletions.dispose(); } }),
+	);
 	let debuggerInstallation: PromiseLike<void> | undefined;
 	async function ensureDebugger() {
 		if (!supportsDebug()) {
@@ -72,8 +161,8 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		await debuggerExtension.activate();
 	}
 
-	async function publishDiagnostics(root: string, text: string) {
-		for (const uri of diagnosticsByRoot.get(root) ?? []) { diagnostics.delete(uri); }
+	/** Shows the diagnostics of the run of `root` that started at `start` in place of its previous result. */
+	async function publishDiagnostics(root: string, text: string, start: RunStart) {
 		const grouped = new Map<string, vscode.Diagnostic[]>();
 		for (const record of jsonLines(text)) {
 			if (typeof record.path !== 'string' || typeof record.message !== 'string') { continue; }
@@ -98,13 +187,18 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 			entries.push(diagnostic);
 			grouped.set(file, entries);
 		}
-		const uris: vscode.Uri[] = [];
+		// A change since the run started makes its result stale (G39 spec 3). A result in a file outside the root depends
+		// on every source outside the root, since any of them can cause it.
+		const state = roots.get(root);
+		const external = [...grouped.keys()].some(file => !inRoot(root, file));
+		if (!state || state.changed !== start.changed || external && state.outside !== start.outside) { return; }
+		clear(state);
 		for (const [file, entries] of grouped) {
 			const uri = vscode.Uri.file(file);
 			diagnostics.set(uri, entries);
-			uris.push(uri);
+			state.uris.push(uri);
 		}
-		diagnosticsByRoot.set(root, uris);
+		state.external = external;
 	}
 
 	async function task(action: Action, root: string, definition?: vscode.TaskDefinition): Promise<vscode.Task> {
@@ -165,6 +259,7 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 			try {
 				if (token.isCancellationRequested) { return undefined; }
 				output.show(true);
+				const start = begin(root);
 				const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Tsuzuri: Building for Debug', cancellable: true },
 					async (_progress, progressToken) => {
 						const cancel = progressToken.onCancellationRequested(() => controller.abort());
@@ -174,7 +269,7 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 							});
 						} finally { cancel.dispose(); }
 					});
-				await publishDiagnostics(root, result.stderr);
+				await publishDiagnostics(root, result.stderr, start);
 				if (result.code !== 0) { throw new Error('Tsuzuri debug build failed. See Problems and Tsuzuri Output.'); }
 				if (controller.signal.aborted) { return undefined; }
 			} finally { cancellation.dispose(); }
@@ -231,5 +326,5 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 			} catch (error) { reportError(error, output); }
 		}),
 	);
-	return { publishDiagnostics, ensureDebugger };
+	return { begin, publishDiagnostics, ensureDebugger };
 }

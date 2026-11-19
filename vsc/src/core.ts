@@ -49,6 +49,28 @@ export async function projectRoot(file: string, workspaceRoot?: string): Promise
 	}
 }
 
+/** Whether `file` is `root` or lies under it. Windows compares without case, as its file systems do. */
+export function inRoot(root: string, file: string, platform: string = process.platform): boolean {
+	const paths = platform === 'win32' ? path.win32 : path.posix;
+	const relative = paths.relative(root, file);
+	return !paths.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${paths.sep}`);
+}
+
+/**
+ * Whether deleting `file` can change the project at `root`: a path under it, except names that start with `.` and the
+ * knowledge graph under `target/tz/`, which module discovery does not read and the compiler rewrites on each run.
+ */
+export function affectsRoot(root: string, file: string, platform: string = process.platform): boolean {
+	if (!inRoot(root, file, platform)) { return false; }
+	const parts = (platform === 'win32' ? path.win32 : path.posix).relative(root, file).split(/[\\/]/);
+	return !parts.some(part => part.startsWith('.')) && !(parts.length > 2 && parts[0] === 'target' && parts[1] === 'tz');
+}
+
+/** Whether `file` is a Tsuzuri source or manifest, the files that the extension's watchers report. */
+export function projectFile(file: string): boolean {
+	return /\.(?:tz|tt|tc|toml)$/.test(file);
+}
+
 export type Action = 'check' | 'build' | 'run' | 'test' | 'debug' | 'wasm';
 
 export function commandArguments(action: Action, root: string, optimization = 3, denyWarnings = false): string[] {

@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { assertSupportedHost, commandArguments, defaultNamespace, endsInPath, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, projectRoot, reservedWords, runProcess, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
+import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, projectFile, projectRoot, reservedWords, runProcess, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
 
 test('only the five supported hosts enable the IDE, with debugging disabled on Windows ARM64', () => {
 	const supported = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
@@ -148,6 +148,31 @@ test('project root respects nested projects and source subdirectories', async ()
 		await writeFile(path.join(root, 'Library.tz'), '');
 		assert.equal(await projectRoot(path.join(root, 'Library.tz'), root), root);
 	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('run results belong to the roots that contain their files, and only source deletions change a root', () => {
+	assert.ok(inRoot('/w/app', '/w/app', 'linux'));
+	assert.ok(inRoot('/w/app', '/w/app/Main.tz', 'linux'));
+	assert.ok(inRoot('/w/app', '/w/app/lib/Calc.tz', 'darwin'));
+	assert.ok(inRoot('/w/app', '/w/app/..data/Calc.tz', 'linux'));
+	for (const file of ['/w/lib/Calc.tz', '/w/application/Main.tz', '/w', '/other/app/Main.tz']) {
+		assert.ok(!inRoot('/w/app', file, 'linux'), file);
+	}
+	// Windows compares paths without case, as its file systems do, and another drive is never inside.
+	assert.ok(inRoot('c:\\w\\app', 'C:\\W\\App\\Main.tz', 'win32'));
+	assert.ok(!inRoot('c:\\w\\app', 'd:\\w\\app\\Main.tz', 'win32'));
+	assert.ok(!inRoot('c:\\w\\app', 'c:\\w\\lib\\Calc.tz', 'win32'));
+	for (const file of ['/w/app/Main.tz', '/w/app/Geometry', '/w/app/target', '/w/app/target/Main.tz', '/w/app/target/tzx/a', '/w/app']) {
+		assert.ok(affectsRoot('/w/app', file, 'linux'), file);
+	}
+	// Module discovery reads no name that starts with '.', and each build rewrites the knowledge graph in target/tz/.
+	for (const file of ['/w/app/.tsuzuri', '/w/app/.tsuzuri/test/runner-1', '/w/app/Geometry/.hidden/Point.tz', '/w/app/target/tz/kg', '/w/app/target/tz/kg/nodes.jsonl', '/w/lib/Calc.tz']) {
+		assert.ok(!affectsRoot('/w/app', file, 'linux'), file);
+	}
+	assert.ok(!affectsRoot('c:\\w\\app', 'C:\\w\\app\\target\\tz\\kg', 'win32'));
+	assert.ok(affectsRoot('c:\\w\\app', 'C:\\w\\app\\Shapes', 'win32'));
+	for (const file of ['Main.tz', 'lib/Calc.tt', 'Show.tc', 'Tsuzuri.toml', 'C:\\w\\Main.tz']) { assert.ok(projectFile(file), file); }
+	for (const file of ['README.md', 'Main.tzx', 'main.c', 'Tsuzuri.toml.bak', 'tz']) { assert.ok(!projectFile(file), file); }
 });
 
 test('process execution captures Unicode without a shell and can be cancelled', async () => {

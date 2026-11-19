@@ -12,6 +12,8 @@ await mkdir(cache, { recursive: true });
 const directory = await mkdtemp(path.join(cache, 'integration-'));
 const project = path.join(directory, 'project # [one]');
 const other = path.join(directory, 'other');
+// Packages for the run results of G39: one that may not use IO (E1036), and one with a path dependency outside its root.
+const packages = path.join(directory, 'packages');
 const extensions = path.join(directory, 'extensions');
 const userData = path.join(directory, 'user-data');
 const executable = process.env.VSCODE_EXECUTABLE_PATH ?? await downloadAndUnzipVSCode('1.103.2');
@@ -25,8 +27,17 @@ try {
   await writeFile(path.join(project, 'Shapes', 'Circle.tz'), 'namespace Demo::Shapes\n\ndef radius :: i64 = 0\n');
   await writeFile(path.join(project, 'Report.tz'), 'namespace Demo\n\nusing Demo::Shapes\n\ndef total :: i64 = Circle.radius() + Shapes::Circle.radius()\n');
   await writeFile(path.join(other, 'Main.tz'), 'def main :: unit -> i32 = \\() -> 7\n');
+  for (const folder of ['capabilities/Extra', 'app', 'lib']) { await mkdir(path.join(packages, folder), { recursive: true }); }
+  await writeFile(path.join(packages, 'capabilities', 'Tsuzuri.toml'), '[package]\nname = "capabilities"\nversion = "0.1.0"\n\n[capabilities]\nallow = []\n');
+  await writeFile(path.join(packages, 'capabilities', 'Main.tz'), 'def main :: unit -> i32 = \\() ->\n    do! IO.write_line "denied"\n    0\n\ntest "runs" = assert true\n');
+  await writeFile(path.join(packages, 'capabilities', 'Extra', 'Note.tz'), 'def note :: i64 = 1\n');
+  await writeFile(path.join(packages, 'app', 'Tsuzuri.toml'), '[package]\nname = "app"\nversion = "0.1.0"\n\n[dependencies]\nlib = { path = "../lib" }\n');
+  await writeFile(path.join(packages, 'app', 'Main.tz'), 'def main :: unit -> i32 = \\() -> 0\n\ntest "uses lib" = assert (Lib::Calc.twice 2 == 4)\n');
+  await writeFile(path.join(packages, 'lib', 'Tsuzuri.toml'), '[package]\nname = "lib"\nversion = "0.1.0"\n');
+  await writeFile(path.join(packages, 'lib', 'Calc.tz'), 'export def twice :: i64 -> i64 = \\value -> value * 2 + Shapes.base()\n');
+  await writeFile(path.join(packages, 'lib', 'Shapes.tz'), 'export def base :: bool = true\n');
   const workspace = path.join(directory, 'integration.code-workspace');
-  await writeFile(workspace, JSON.stringify({ folders: [{ path: project }, { path: other }], settings: { 'telemetry.telemetryLevel': 'off', 'chat.disableAIFeatures': true, 'update.mode': 'none', 'extensions.autoUpdate': false, 'security.workspace.trust.enabled': false } }));
+  await writeFile(workspace, JSON.stringify({ folders: [{ path: project }, { path: other }, { path: packages }], settings: { 'telemetry.telemetryLevel': 'off', 'chat.disableAIFeatures': true, 'update.mode': 'none', 'extensions.autoUpdate': false, 'security.workspace.trust.enabled': false } }));
   let developmentPath = extension;
   if (process.argv.includes('--installed')) {
     const [cli, ...args] = resolveCliArgsFromVSCodeExecutablePath(executable, { reuseMachineInstall: true });
@@ -43,7 +54,7 @@ try {
     vscodeExecutablePath: executable,
     extensionDevelopmentPath: developmentPath,
     extensionTestsPath: path.join(extension, 'out', 'test', 'extension.test.js'),
-    extensionTestsEnv: { TSUZURI_TEST_PROJECT: project, TSUZURI_TEST_OTHER: other, TSUZURI_TEST_INSTALLED: process.argv.includes('--installed') ? '1' : '0' },
+    extensionTestsEnv: { TSUZURI_TEST_PROJECT: project, TSUZURI_TEST_OTHER: other, TSUZURI_TEST_PACKAGES: packages, TSUZURI_TEST_INSTALLED: process.argv.includes('--installed') ? '1' : '0' },
     launchArgs: [workspace, '--extensions-dir', extensions, '--user-data-dir', userData, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--disable-gpu', '--no-sandbox'],
   });
 } finally {
