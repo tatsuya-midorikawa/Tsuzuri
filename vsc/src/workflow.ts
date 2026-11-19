@@ -73,7 +73,7 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		let state = roots.get(root);
 		if (!state) {
 			const created: RootResult = {
-				uris: [], external: false, shown: -Infinity, changed: 0, outside: 0, written: -Infinity, writtenOutside: -Infinity,
+				uris: [], external: false, shown: -Infinity, changed: changes, outside: changes, written: -Infinity, writtenOutside: -Infinity,
 				// Every deletion under the root (a folder that is deleted or moved arrives as one event of the folder), and the
 				// sources created or written under it, which the workspace's watcher misses for a root outside the workspace
 				// folders (`tsuzuri.projectPath`, an absolute `project` of a debug configuration).
@@ -134,7 +134,11 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		for (const root of roots) { rootState(root); }
 		return { epoch: changes, started: Date.now() };
 	}
-	/** Starts following the changes of `root`, a root of a run that found it after its start. */
+	/**
+	 * Starts following the changes of `root`, a root of a run that found it after its start. The edits and deletions
+	 * before a root is followed are not recorded for it, so a new root starts at the number of the last change anywhere:
+	 * a run that started before that change shows no result in it (an unrelated change only hides a result early).
+	 */
 	function track(root: string) { rootState(root); }
 	// VS Code 1.103 on macOS can report the saveAll before a run as a creation, so a creation counts by the file's times
 	// like a change. The status change time is new after a move, which keeps the modification time.

@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { activate } from '../extension';
@@ -226,6 +226,31 @@ export async function run(): Promise<void> {
 	await writeFile(manifest, denied.replace('allow = []', 'allow = ["stdio"]'));
 	await cleared('run result cleared by a manifest change', limitedUri);
 	console.log('VS Code: a test run reports E1036 of its discovery until an edit, a deleted folder, a created source, or a manifest change.');
+
+	// G39: a root that a run first follows after its start (found by refreshRoots) keeps an edit made before that.
+	const lateRoot = async (name: string) => {
+		const root = path.join(packages, name);
+		await mkdir(root, { recursive: true });
+		await writeFile(path.join(root, 'Main.tz'), 'def late :: i64 = 1\n');
+		const uri = vscode.Uri.file(path.join(root, 'Main.tz'));
+		return { root, uri, text: JSON.stringify({ severity: 'error', code: 'E2005', message: 'late', path: uri.fsPath, span: { start: 0, end: 3 } }) };
+	};
+	const edited = await lateRoot('late-edited');
+	let lateStart = api.workflow.begin([]);
+	const lateDocument = await vscode.workspace.openTextDocument(edited.uri);
+	const lateEdit = new vscode.WorkspaceEdit();
+	lateEdit.insert(edited.uri, lateDocument.positionAt(0), '\n');
+	assert.ok(await vscode.workspace.applyEdit(lateEdit));
+	api.workflow.track(edited.root);
+	await api.workflow.publishDiagnostics(edited.root, edited.text, lateStart);
+	assert.equal(copies(edited.uri).length, 0);
+	assert.ok(await lateDocument.save());
+	const untouched = await lateRoot('late-untouched');
+	lateStart = api.workflow.begin([]);
+	api.workflow.track(untouched.root);
+	await api.workflow.publishDiagnostics(untouched.root, untouched.text, lateStart);
+	assert.equal(copies(untouched.uri, 'E2005').length, 1);
+	console.log('VS Code: a root that a run follows after its start keeps the edits made before.');
 
 	// G39: a result in a path dependency outside the root (../lib) depends on every source outside the root: a change
 	// there clears it, also one that is not in the result's files, and a change during the run drops it.
