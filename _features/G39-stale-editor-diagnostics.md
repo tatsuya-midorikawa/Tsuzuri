@@ -699,6 +699,12 @@ Phase 1（段 1〜5）を実装した。Phase 2・3 は未着手なので、状�
 
 確認: `npm run check-types`・`lint`・`test:unit`（19 件成功）・`npm test`（13 の `VS Code:` 行と `All Tsuzuri VS Code integration checks passed.`）。どれも統合テストでは時刻の窓を決めて再現できないので、テストは足していない（コードの読みと既存の検査で確かめた）。
 
+### CI で見つけたこと（PR #117 の `ci:full`、2026-11-20）
+
+- Windows x64 と Windows Arm64 の `VS Code integration` だけが、テストの実行の直後の `E1036` の検査（`0 !== 1`）で落ちた。macOS・Linux は通った。
+- 原因: コンパイラの `--json` の `path` は正準化した絶対パスで（macOS ではシンボリックリンクを解いた `/private/tmp/...`）、Windows では `fs::canonicalize` の verbatim パス `\\?\D:\...\Main.tz` になる（`.github/instructions/ci.instructions.md` の注意どおり）。拡張はそれをそのまま `path.resolve` して URI にしていたので、診断が `Main.tz` とは別の URI に付き、根の外の結果としても扱われた。G39 の前から、テストの実行・Debug Project の写しは Windows で別の URI に付いていたことになる。
+- 直したこと: `vsc/src/core.ts` に `plainPath`（`\\?\C:\...` を `C:\...`、`\\?\UNC\server\share` を `\\server\share` にする）と `rootSpelling`（根の実のパスの下のパスを、VS Code が開いた根の綴りの下へ移す。シンボリックリンクを通した根のため）を足し、実行の結果の診断（`publishDiagnostics`）とテストの発見の項目の URI の両方で使う。単体テスト `compiler paths are spelled as VS Code names the project: no verbatim prefix, under the root as opened` を足した（20 件成功）。コンパイラの出力は変えていない。
+
 ### 更新した文書と変更したファイル
 
 - 言語リファレンスは変えていない（Phase 1 は拡張だけを変える。チケットの「ドキュメント」も Phase 1 は `vsc/README.md` と `vsc/CHANGELOG.md`）。

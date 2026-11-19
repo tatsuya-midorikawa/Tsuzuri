@@ -57,6 +57,28 @@ export function inRoot(root: string, file: string, platform: string = process.pl
 }
 
 /**
+ * The path that a Windows verbatim path stands for: `\\?\C:\dir` is `C:\dir`, and `\\?\UNC\server\share\dir` is
+ * `\\server\share\dir`. The compiler prints canonical paths, which `fs::canonicalize` makes verbatim on Windows; any other
+ * path is returned as it is.
+ */
+export function plainPath(file: string): string {
+	if (file.startsWith('\\\\?\\UNC\\')) { return `\\\\${file.slice(8)}`; }
+	if (file.startsWith('\\\\?\\') && /^[A-Za-z]:\\/.test(file.slice(4))) { return file.slice(4); }
+	return file;
+}
+
+/**
+ * `file`, a path that the compiler printed for a project at `root`, spelled under `root` as VS Code names it. The compiler
+ * canonicalizes the root (`real`, its real path: symbolic links resolved), so a path under `real` but not under `root` is
+ * moved under `root`; any other path is returned as it is.
+ */
+export function rootSpelling(root: string, real: string, file: string, platform: string = process.platform): string {
+	if (inRoot(root, file, platform) || !inRoot(real, file, platform)) { return file; }
+	const paths = platform === 'win32' ? path.win32 : path.posix;
+	return paths.join(root, paths.relative(real, file));
+}
+
+/**
  * Whether deleting `file` can change a project at `root` or in a package under it: a path under it, except names that
  * start with `.` and a knowledge graph under a `target/tz/`, which module discovery does not read and the compiler
  * rewrites on each run.

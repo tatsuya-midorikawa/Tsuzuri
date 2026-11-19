@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, projectFile, projectRoot, reportedByServer, reservedWords, runProcess, sourcePosition, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
+import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, plainPath, projectFile, projectRoot, reportedByServer, rootSpelling, reservedWords, runProcess, sourcePosition, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
 
 test('only the five supported hosts enable the IDE, with debugging disabled on Windows ARM64', () => {
 	const supported = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
@@ -175,6 +175,22 @@ test('run results belong to the roots that contain their files, and deletions th
 	assert.ok(affectsRoot('c:\\w\\app', 'C:\\w\\app\\Shapes', 'win32'));
 	for (const file of ['Main.tz', 'lib/Calc.tt', 'Show.tc', 'Tsuzuri.toml', 'C:\\w\\Main.tz', '/w/app/Tsuzuri.lock', 'C:\\w\\Tsuzuri.lock', 'Tsuzuri.lock']) { assert.ok(projectFile(file), file); }
 	for (const file of ['README.md', 'Main.tzx', 'main.c', 'Tsuzuri.toml.bak', 'tz', '/w/app/Cargo.lock', '/w/app/MyTsuzuri.lock', 'Tsuzuri.lock.bak']) { assert.ok(!projectFile(file), file); }
+});
+
+test('compiler paths are spelled as VS Code names the project: no verbatim prefix, under the root as opened', () => {
+	// fs::canonicalize makes the compiler's paths verbatim on Windows (G39 Phase 1 found it in the Windows CI).
+	assert.equal(plainPath('\\\\?\\D:\\a\\Tsuzuri\\Main.tz'), 'D:\\a\\Tsuzuri\\Main.tz');
+	assert.equal(plainPath('\\\\?\\UNC\\server\\share\\Main.tz'), '\\\\server\\share\\Main.tz');
+	assert.equal(plainPath('\\\\?\\GLOBALROOT\\Device\\X'), '\\\\?\\GLOBALROOT\\Device\\X');
+	assert.equal(plainPath('/private/tmp/p/Main.tz'), '/private/tmp/p/Main.tz');
+	assert.equal(plainPath('Main.tz'), 'Main.tz');
+	// A root opened through a symbolic link: the compiler names the real path.
+	assert.equal(rootSpelling('/tmp/p', '/private/tmp/p', '/private/tmp/p/A/B.tz', 'darwin'), '/tmp/p/A/B.tz');
+	assert.equal(rootSpelling('/tmp/p', '/private/tmp/p', '/tmp/p/B.tz', 'darwin'), '/tmp/p/B.tz');
+	assert.equal(rootSpelling('/tmp/p', '/private/tmp/p', '/private/tmp/lib/C.tz', 'darwin'), '/private/tmp/lib/C.tz');
+	// Windows compares paths without case, as VS Code's lower-case drive letters need.
+	assert.equal(rootSpelling('d:\\a\\p', 'D:\\a\\p', 'D:\\a\\p\\Main.tz', 'win32'), 'D:\\a\\p\\Main.tz');
+	assert.equal(inRoot('d:\\a\\p', plainPath('\\\\?\\D:\\a\\p\\Main.tz'), 'win32'), true);
 });
 
 test('compiler byte offsets become the positions of the text that VS Code shows', () => {

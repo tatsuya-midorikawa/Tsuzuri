@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { realpath, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { excludedPattern, exists, jsonLines, lldbLaunch, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from './core';
+import { excludedPattern, exists, jsonLines, lldbLaunch, plainPath, rootSpelling, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from './core';
 import { runCompiler } from './toolchain';
 import { formatters, projectFor, reportError, RunStart } from './workflow';
 
@@ -54,6 +54,7 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 				// same errors as the user types, and an explicit run or debug reports this failure as its result.
 				if (result.code !== 0) { throw new DiscoveryError(result.stderr); }
 				const records = jsonLines(result.stdout);
+				const real = await realpath(root).catch(() => root);
 				const revision = createHash('sha256').update(result.stdout).digest('hex').slice(0, 16);
 				const files = new Map<string, vscode.TestItem>();
 				for (const [id, data] of cases) { if (data.root === root) { cases.delete(id); } }
@@ -62,11 +63,13 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 						throw new Error('Invalid test discovery response.');
 					}
 					const testCase = record as unknown as TestCase;
-					const uri = vscode.Uri.file(testCase.path);
-					let file = files.get(testCase.path);
+					// The compiler names files by their canonical paths: verbatim on Windows, and with symbolic links resolved.
+					const source = rootSpelling(root, real, path.resolve(root, plainPath(testCase.path)));
+					const uri = vscode.Uri.file(source);
+					let file = files.get(source);
 					if (!file) {
-						file = controller.createTestItem(`${root}:${testCase.path}`, testCase.module, uri);
-						files.set(testCase.path, file);
+						file = controller.createTestItem(`${root}:${source}`, testCase.module, uri);
+						files.set(source, file);
 					}
 					const id = `${root}#${revision}:${testCase.index}`;
 					const item = controller.createTestItem(id, testCase.name || '(unnamed test)', uri);

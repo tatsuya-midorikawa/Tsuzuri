@@ -1,7 +1,7 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { Action, affectsRoot, commandArguments, defaultNamespace, exists, inRoot, isNamespace, jsonLines, lldbLaunch, outputPath, projectFile, projectRoot, reportedByServer, sourceFiles, sourcePosition, supportsDebug } from './core';
+import { Action, affectsRoot, commandArguments, defaultNamespace, exists, inRoot, isNamespace, jsonLines, lldbLaunch, outputPath, plainPath, projectFile, projectRoot, reportedByServer, rootSpelling, sourceFiles, sourcePosition, supportsDebug } from './core';
 import { runCompiler, toolchain } from './toolchain';
 
 /**
@@ -200,9 +200,11 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 	/** Shows the diagnostics of the run of `root` that started at `start` in place of its previous result. */
 	async function publishDiagnostics(root: string, text: string, start: RunStart) {
 		const grouped = new Map<string, vscode.Diagnostic[]>();
+		// The compiler names files by their canonical paths: verbatim on Windows, and with symbolic links resolved.
+		const real = await realpath(root).catch(() => root);
 		for (const record of jsonLines(text)) {
 			if (typeof record.path !== 'string' || typeof record.message !== 'string') { continue; }
-			const file = path.resolve(root, record.path);
+			const file = rootSpelling(root, real, path.resolve(root, plainPath(record.path)));
 			let range = new vscode.Range(0, 0, 0, 0);
 			try {
 				const source = await readFile(file);
