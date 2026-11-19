@@ -212,9 +212,11 @@ export function registerWorkflow(context: vscode.ExtensionContext, output: vscod
 		const settings = vscode.workspace.getConfiguration('tsuzuri', uri);
 		const args = commandArguments(action, root, settings.get<number>('optimization', 3), settings.get<boolean>('denyWarnings', false));
 		const env = Object.fromEntries(Object.entries(tools.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+		// No problem matcher (G39 D3): VS Code keeps a matcher's markers until the next task, and the extension cannot clear
+		// them. The terminal links the `path:line:column` of each diagnostic; `$tsuzuri` stays for users' tasks.json.
 		const item = new vscode.Task(definition ?? { type: 'tsuzuri', action, project: root },
 			folder ?? vscode.TaskScope.Workspace, `${action}: ${path.basename(root)}`, 'Tsuzuri',
-			new vscode.ProcessExecution(tools.compiler, args, { cwd: root, env }), '$tsuzuri');
+			new vscode.ProcessExecution(tools.compiler, args, { cwd: root, env }), []);
 		item.group = action === 'test' ? vscode.TaskGroup.Test : action === 'build' ? vscode.TaskGroup.Build : undefined;
 		item.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated, clear: true };
 		return item;

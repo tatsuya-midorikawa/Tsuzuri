@@ -98,7 +98,7 @@ export async function run(): Promise<void> {
 	const tasks = await vscode.tasks.fetchTasks({ type: 'tsuzuri' });
 	assert.ok(tasks.some(task => task.definition.action === 'build'));
 	assert.ok(tasks.some(task => task.definition.action === 'test'));
-	for (const action of ['build', 'run', 'check']) {
+	const runTask = async (action: string) => {
 		let exitCode: number | undefined;
 		const taskSubscription = vscode.tasks.onDidEndTaskProcess(event => {
 			if (event.execution.task.definition.action === action && event.execution.task.definition.project === root) { exitCode = event.exitCode; }
@@ -107,7 +107,28 @@ export async function run(): Promise<void> {
 			await vscode.commands.executeCommand(`tsuzuri.${action}`, uri);
 			assert.equal(await waitFor(`VS Code ${action} task`, () => exitCode, 180000), 0);
 		} finally { taskSubscription.dispose(); }
-	}
+	};
+	for (const action of ['build', 'run', 'check']) { await runTask(action); }
+	// G39: the tasks have no problem matcher, whose markers VS Code keeps until the next task. getDiagnostics can miss the
+	// removal of such markers, so the editor's marker navigation tells whether Main.tz has any.
+	const hasMarkers = async () => {
+		const editor = await vscode.window.showTextDocument(document);
+		const last = document.lineAt(document.lineCount - 1).range.end;
+		editor.selection = new vscode.Selection(last, last);
+		await vscode.commands.executeCommand('editor.action.marker.next');
+		const moved = await waitFor('marker navigation', () => editor.selection.active.isEqual(last) ? undefined : true, 2000).catch(() => false);
+		await vscode.commands.executeCommand('closeMarkersNavigation');
+		return moved;
+	};
+	await replace(original.replace('    let result', '    let unused = 7\n    let result'));
+	for (const action of ['check', 'run']) { await runTask(action); }
+	await waitFor('language server warning', () => vscode.languages.getDiagnostics(uri).find(item => item.code === 'W1001' && item.source === 'tsuzuri'));
+	assert.equal(await hasMarkers(), true);
+	await replace(original);
+	assert.ok(await document.save());
+	await waitFor('language server warning cleared', () => vscode.languages.getDiagnostics(uri).some(item => item.source === 'tsuzuri') ? undefined : true);
+	assert.equal(await hasMarkers(), false);
+	console.log('VS Code: Check and Run tasks with a warning leave no marker after the fix.');
 	// G39: the test discovery that a save starts reports no diagnostics, so no copy of a fixed error stays behind.
 	await replace(original.replace('calculate 2', 'calculate missing'));
 	assert.ok(await document.save());
