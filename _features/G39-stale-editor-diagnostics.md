@@ -296,7 +296,8 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 ### Phase 1: 拡張
 
 1. 構文・型・所有権・警告などの前段の診断は、言語サーバー（source `tsuzuri`）だけが出す。
-2. テストの発見は診断を出さない。発見の失敗は、今と同じく Testing ビューのプロジェクトの項目のエラーに出す（`vsc/src/testing.ts:75`）。
+2. 裏で動くテストの発見（watcher の事象、`resolveHandler`・`refreshHandler`）は診断を出さない。発見の失敗は、今と同じく Testing ビューのプロジェクトの項目のエラーに出す（`vsc/src/testing.ts:75`）。
+   利用者が明示したテストの実行とテストのデバッグ（`run`・`debug`）は、最初に `discover` を待ち（`vsc/src/testing.ts:191`・`249`）、ケーパビリティの検査（`E1036`）などで発見が失敗するとそこで終わる。そのときの発見の失敗は、その実行の結果として 3 の規則（変更の番号の確かめ、言語サーバーとの重複の除外、変更で消す）で出す。
 3. テストの実行・テストのデバッグ・Debug Project のビルドの診断（source `Tsuzuri`）は、その実行の結果として出し、その根のプロジェクトが変わったら消す。
    変わったとは、根の下の文書のエディターでの編集、根の下の `.tz`・`.tt`・`.tc`・`.toml` の作成・削除、根の下のフォルダーの削除・移動、実行を始めた後の変更（保存を含む）、ワークスペースのフォルダーの削除のどれかです。
    実行の途中で根が変わったら、その実行の結果は入れない。
@@ -335,7 +336,7 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 
 | ファイル | 関数・場所 | 変更 |
 | --- | --- | --- |
-| `vsc/src/testing.ts` | `discover`（46〜50 行） | `publishDiagnostics` を呼ばない。失敗は `throw` して `project.error` に出す（今と同じ） |
+| `vsc/src/testing.ts` | `discover`（46〜50 行） | `publishDiagnostics` を呼ばない。失敗は `throw` して `project.error` に出す（今と同じ）。`run`・`debug` から呼んだときは、失敗の stderr を呼び出し側へ返し、`run`・`debug` が実行の結果として `publishDiagnostics` へ渡す（発見を始める直前の変更の番号を使う）。裏の発見（`changed`・`resolveHandler`・`refreshHandler`）は出さない |
 | `vsc/src/workflow.ts` | `publishDiagnostics`（75〜108 行） | 実行の開始時刻を受け取り、根ごとに記録する。言語サーバーの診断（`vscode.languages.getDiagnostics(uri)` の source `tsuzuri`）と URI・コード・範囲の開始が同じ記録を除く。位置は BOM を除いた本文で数える |
 | `vsc/src/workflow.ts` | 新しい購読 | `onDidChangeTextDocument`（`contentChanges` が空でないもの）、watcher の作成・削除と、その根で最後に始めた実行の開始より新しい mtime の変更、`onDidChangeWorkspaceFolders` の削除で、その根の項目を消し、根ごとの変更の番号を増やす。フォルダーの削除・移動は、VS Code が中のファイルの事象を親の 1 件にまとめるので `**/*.{tz,tt,tc,toml}` には届かない。根ごとに `new vscode.RelativePattern(root, '**')` の削除だけを見る watcher も足す（名前が `.` で始まる所と `target/tz/` の下は、モジュールの発見が読まず、拡張のランナーと知識グラフ（G27）が実行のたびに書き換えるので除く） |
 | `vsc/src/workflow.ts` | `task`（110〜123 行） | `new vscode.Task(..., '$tsuzuri')` の最後の引数を `[]` にする |
@@ -386,6 +387,7 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 
 - 変更: `vsc/src/workflow.ts`・`vsc/src/testing.ts`・`vsc/src/core.ts`。
 - 確認: 統合テストに次を足す。言語サーバーが出さない診断（例えば `Tsuzuri.toml` の `[capabilities]` を `allow = []` にして `IO` を使う `E1036`）の状態でテストを実行すると、実行の直後に source `Tsuzuri` の `E1036` がある（`saveAll` の後で結果が消えない）。
+  `E1036` は `run` の最初の `discover` が失敗して出るので、この検査は仕様 2 の「明示した実行は発見の失敗を出す」も確かめる（段 1 だけを入れた状態では落ちる）。
   本文を編集すると消え、もう一度実行して `Tsuzuri.toml` を直して保存しても消える。Debug Project の同じ検査は、デバッグを試す既存の節（`supportsDebug()` の分岐）に足す。
   言語サーバーも出す警告（`W1001`）では検査しない（段 3 の重複の除外で、実行の直後に source `Tsuzuri` の警告がなくなる）。
 
@@ -448,7 +450,10 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 
 #### 段 11: 待ち行列と取り消し
 
-- 変更: `src/lsp.rs` の `serve`。
+- 変更: `src/lsp.rs` の `serve`、`tests/lsp.rs` の既存の scripted なテスト。
+- 既存のテストの移行: `tests/lsp.rs` の `session`・`scripted` は、入力をすべて先に書いてから `serve` を動かす（`tests/lsp.rs:50-130`）。
+  `completion_offers_fields_members_locals_and_keywords` のように、要求の後に同じ文書の `didChange` が続くテストは、仕様 12 でその要求が -32801 になりうる。
+  そうしたテストは、段 6 で足す 1 通ずつ送る helper に移し、各応答を待ってから次の編集を送る。期待値は変えない。先送りの入力（応答を待たずに続けて送る）は、待ち行列そのものを試すテストだけに使う。
 - 確認: `tests/lsp.rs` に次を足す。どれも応答の種類を見る検査で、経過時間の閾値は置かない（AGENTS.md: 共有の CI に速さの合否を置かない）。
   - refresh で忙しいサーバーに、`codeAction`、9 個以上の通知、その `$/cancelRequest` の順に送ると、`codeAction` の応答が -32800 になる（HEAD では結果が返る）。
   - 存在しない id の取り消しを 1100 個送った後でも、`didChange` の直後の `hover`（refresh を伴うので、取り消しを読む前に答え終わらない）の取り消しが効く（HEAD では 1024 個で効かなくなる）。
@@ -479,7 +484,7 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 - 拡張の単体テスト（`vsc/src/test/core.test.ts`、`npm run test:unit`）: 位置の変換、重複の判定、根の判定。
 - 言語サーバー（`tests/lsp.rs`。段 6 で足す、1 通ずつ送る helper）: 段 6〜9 の各場面。どれも、空の一覧が届くべき URI に届くことと、届くべきでない URI に診断が届かないことの両方を見る。段 11・12 の取り消し・`ContentModified`・`triggerKind`。
 - 実プロセスのセッション（`tests/lsp_sessions.mjs`）: 開いていないファイルの削除と `didChangeWatchedFiles` で、古い URI に `[]` が届く場面を 1 つ足す（`cargo build` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri`）。
-- 既存のテストへの影響: `tests/lsp.rs` と `tests/lsp_sessions.mjs` の期待は変えない。`vsc/src/test/extension.test.ts` の build・run・check のタスクの終了コードの検査は変えない。
+- 既存のテストへの影響: `tests/lsp.rs` と `tests/lsp_sessions.mjs` の期待は変えない。要求の後に同じ文書の編集を先送りで続ける `tests/lsp.rs` のテストは、段 11 で 1 通ずつ送る helper に移す（期待値はそのまま）。`vsc/src/test/extension.test.ts` の build・run・check のタスクの終了コードの検査は変えない。
 - Phase 1 は `vsc/` を、Phase 2 は Windows のパスと URI の扱い（D8、9 の正準化）を変えるので、どちらの PR にも `ci:full` のラベルを付ける（AGENTS.md の CI）。Windows の Rust テストは `windows.yml`、`tests/lsp_sessions.mjs` と拡張の統合テストは `vscode.yml` だけが動かす。
 
 ## ドキュメント
@@ -542,7 +547,7 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 ## 決定事項
 
 - **D1: テストの発見は診断を出さない**（既定案）。理由: 発見はエディターのバッファではなくディスクを読み、言語サーバーは同じ前段の診断を入力のたびに出している。成功したときに消す処理を足すだけでは、エラーの間の重複と、ディスクの本文に基づく写しが残る。
-  失う表示は、保存のたびの `E1036` だけで、これはテストの実行・Debug Project・端末に出る。
+  失う表示は、保存のたびの `E1036` だけで、これは明示したテストの実行・テストのデバッグ（発見の失敗として。仕様 2）、Debug Project、端末に出る。
 - **D2: `tsuzuri-build` は、最後のテストの実行・テストのデバッグ・Debug Project の結果を、その根のプロジェクトが変わるまで持つ**（既定案）。言語サーバーと URI・コード・範囲の開始が同じものは除く。
   コードの範囲（`E0xxx`・`E1xxx`・`Wxxxx` は言語サーバーの担当）で除く案は採らない。言語サーバーの解析は CLI のすべての段を通るとは限らず、CLI だけが出す `E1xxx` を隠すおそれがある。
 - **D3: 拡張のタスクから problem matcher を外す**（既定案）。理由: 拡張はほかの owner のマーカーを消せない。`applyTo: "closedDocuments"` は開いた文書にマーカーを作らないだけで、閉じた文書のマーカーは次のタスクまで残る。
