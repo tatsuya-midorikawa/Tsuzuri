@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { directoryExists, excludedPattern, exists, jsonLines, lldbLaunch, plainPath, rootSpelling, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from './core';
 import { runCompiler } from './toolchain';
-import { directoryRoot, documentHasProject, formatters, projectFor, projectRootFor, projectRoots, reportError, RunStart } from './workflow';
+import { directoryRoot, documentHasProject, formatters, missingProject, projectFor, projectRootFor, projectRoots, reportError, ResourceRoot, RunStart } from './workflow';
 
 interface TestCase {
 	index: number;
@@ -138,6 +138,17 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 	 */
 	async function refreshRoots() {
 		await projectRoots.settled(usedRoots, used => { for (const root of used) { addProject(root); } });
+	}
+
+	/**
+	 * Calls `use` with the root of the open document `uri` and whether it has a project (`documentHasProject`), in the same
+	 * task as the last check: the lookup is read again when a change cleared the cache meanwhile (G40 D4).
+	 */
+	function documentRoot<R>(uri: vscode.Uri, use: (found: ResourceRoot, readable: boolean) => R) {
+		return projectRoots.settled(async () => {
+			const found = await projectRootFor(uri);
+			return { found, readable: await documentHasProject(uri, found) };
+		}, ({ found, readable }) => use(found, readable));
 	}
 
 	function removeProject(root: string) {
@@ -410,19 +421,25 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 	context.subscriptions.push(
 		vscode.workspace.onDidOpenTextDocument(document => {
 			if (document.languageId === 'tsuzuri' && document.uri.scheme === 'file') {
-				void projectRoots.settled(() => projectFor(document.uri), addProject).catch(error => output.appendLine(String(error)));
+				// A document left open in a folder that was deleted or moved, also one deleted while the lookup ran, has no
+				// project: its root would be one above the deleted folder or a directory that does not exist (G40 D4).
+				void documentRoot(document.uri, (found, readable) => { if (readable) { addProject(found.root); } })
+					.catch(error => output.appendLine(String(error)));
 			}
 		}),
 		vscode.commands.registerCommand('tsuzuri.test', async () => {
 			const cancellation = new vscode.CancellationTokenSource();
 			try {
 				await vscode.commands.executeCommand('workbench.view.testing.focus');
-				// The root of the active file is read again when a change cleared the cache meanwhile (G40 D4). Without one,
-				// the root is a workspace folder's, which the cache does not decide, and reading it again would ask the user
-				// to pick the folder again.
+				// The root of the active file is read again when a change cleared the cache meanwhile, and an active file left
+				// open in a folder that was deleted or moved has no project to test (G40 D4). Without an active file, the root
+				// is a workspace folder's, which the cache does not decide, and reading it again would ask the user to pick
+				// the folder again.
 				const active = vscode.window.activeTextEditor?.document.uri;
-				const project = active?.scheme === 'file' ? await projectRoots.settled(() => projectFor(active), addProject)
-					: addProject(await projectFor());
+				const project = active?.scheme === 'file' ? await documentRoot(active, (found, readable) => {
+					if (!readable) { throw missingProject(active, found); }
+					return addProject(found.root);
+				}) : addProject(await projectFor());
 				return await run(new vscode.TestRunRequest([project]), cancellation.token, 0);
 			} catch (error) { reportError(error, output); return undefined; }
 			finally { cancellation.dispose(); }

@@ -72,6 +72,12 @@ export function documentHasProject(uri: vscode.Uri, found: ResourceRoot): Promis
 	return directoryExists(found.configured ? found.root : path.dirname(uri.fsPath));
 }
 
+/** The error of a command for the open document `uri` that has no project (`documentHasProject`): it names the missing folder. */
+export function missingProject(uri: vscode.Uri, found: ResourceRoot): Error {
+	return new Error(found.configured ? `The project folder of tsuzuri.projectPath does not exist: ${found.root}`
+		: `The folder of ${path.basename(uri.fsPath)} does not exist: ${path.dirname(uri.fsPath)}`);
+}
+
 export async function projectFor(resource?: vscode.Uri): Promise<string> {
 	return (await projectRootFor(resource)).root;
 }

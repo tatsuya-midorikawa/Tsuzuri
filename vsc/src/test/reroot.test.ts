@@ -52,17 +52,19 @@ const passed = { code: 0, stdout: '', stderr: '' };
 /**
  * The extension's modules with a stubbed vscode API, in a temporary folder `top` whose files decide the roots: while the
  * package `top/b` exists, each folder below `top` is a root (`top/a` for `top/a/X.tz`, which is open); once the package
- * is deleted (`deletePackage`), `top` is the root of every file. A lookup of a root reads the files when it starts and
- * can be paused before it returns (`pauseLookup`), as a slow scan is.
+ * is deleted (`deletePackage`), or the folder `top/a` (`deleteFolder`), `top` is the root of every file. A lookup of a
+ * root reads the files when it starts and can be paused before it returns (`pauseLookup`), as a slow scan is.
  */
 async function host() {
 	const top = await mkdtemp(path.join(os.tmpdir(), 'tsuzuri-reroot-'));
 	const app = path.join(top, 'a');
 	const file = path.join(app, 'X.tz');
+	const pkg = path.join(top, 'b');
 	await mkdir(app);
+	await mkdir(pkg);
 	const uri = (fsPath: string): Uri => ({ fsPath, scheme: 'file' });
 	const document = (fsPath: string): Document => ({ languageId: 'tsuzuri', uri: uri(fsPath) });
-	const files = { package: true };
+	const files: { package: boolean; configured?: string } = { package: true };
 	const documents = [document(file)];
 	const projectRoots = new core.ProjectRoots();
 	let pause: { reached: () => void; resume: Promise<void> } | undefined;
@@ -75,7 +77,7 @@ async function host() {
 			paused.reached();
 			await paused.resume;
 		}
-		return { root, remaining: false, configured: false };
+		return files.configured ? { root: files.configured, remaining: false, configured: true } : { root, remaining: false, configured: false };
 	}
 	const output: string[] = [];
 	const disposable = { dispose() {} };
@@ -150,32 +152,34 @@ async function host() {
 			await held?.promise;
 		}
 	}
+	const fakeTimers = {
+		setTimeout: (callback: () => void) => timers.push(callback),
+		clearTimeout: (handle?: number) => { if (handle) { timers[handle - 1] = () => undefined; } },
+	};
+	const toolchain = {
+		async toolchain() { return { compiler: 'tsuzuri', env: {} }; },
+		runCompiler(_context: unknown, _root: string, args: string[]) {
+			compiled.push(args);
+			const result = held;
+			held = undefined;
+			return result ? result.promise : Promise.resolve(passed);
+		},
+	};
+	// Whether a document has a project, and the error that names its missing folder, read the disk as the extension does.
+	const { documentHasProject, missingProject } = load('workflow', { vscode, './core': core, './toolchain': toolchain }, fakeTimers);
 	const modules = {
 		vscode,
 		'vscode-languageclient/node': { LanguageClient },
 		'./core': core,
 		'./editor': { registerEditor() {} },
-		'./toolchain': {
-			async toolchain() { return { compiler: 'tsuzuri', env: {} }; },
-			runCompiler(_context: unknown, _root: string, args: string[]) {
-				compiled.push(args);
-				const result = held;
-				held = undefined;
-				return result ? result.promise : Promise.resolve(passed);
-			},
-		},
+		'./toolchain': toolchain,
 		'./workflow': {
-			projectRoots, projectRootFor,
+			projectRoots, projectRootFor, documentHasProject, missingProject,
 			async projectFor(resource?: Uri) { return (await projectRootFor(resource)).root; },
 			directoryRoot: (directory: string) => projectRootFor(uri(directory), true),
-			async documentHasProject() { return true; },
 			formatters: () => '',
 			reportError: (error: unknown) => { output.push(String(error)); },
 		},
-	};
-	const fakeTimers = {
-		setTimeout: (callback: () => void) => timers.push(callback),
-		clearTimeout: (handle?: number) => { if (handle) { timers[handle - 1] = () => undefined; } },
 	};
 	const context = { subscriptions: [] as unknown[] };
 	const workflow = { begin: () => ({ epoch: 0, started: 0 }), track() {}, async publishDiagnostics() {}, async ensureDebugger() {} };
@@ -214,6 +218,17 @@ async function host() {
 		 * the creation or deletion clears the cache of roots, and then the test roots are rebuilt.
 		 */
 		async deletePackage(testing: { reroot: () => Promise<void> }) {
+			await rm(pkg, { recursive: true, force: true });
+			files.package = false;
+			projectRoots.clear();
+			await testing.reroot();
+		},
+		/**
+		 * Deletes the folder top/a with the open file X.tz in it, as a package's folder is deleted: the walk up from a file
+		 * left open there ends at top, which remains. The Test Explorer support is re-rooted as for `deletePackage`.
+		 */
+		async deleteFolder(testing: { reroot: () => Promise<void> }) {
+			await rm(app, { recursive: true, force: true });
 			files.package = false;
 			projectRoots.clear();
 			await testing.reroot();
@@ -296,6 +311,57 @@ test('a root that was read before a change cleared the cache is not added to the
 			} finally { await stubbed.dispose(); }
 		});
 	}
+});
+
+test('Test Project reports that the folder of the active file does not exist, and adds no root above it', async () => {
+	const stubbed = await host();
+	const { app, compiled, commands } = stubbed;
+	try {
+		const testing = await stubbed.testing();
+		assert.deepEqual([...testing.roots.keys()], [app]);
+		// top/a is deleted while X.tz stays open and active: the walk up from it ends at top, which holds other files.
+		await stubbed.deleteFolder(testing);
+		assert.deepEqual([...testing.roots.keys()], []);
+		const summary = await commands.get('tsuzuri.test')!();
+		assert.deepEqual([...testing.roots.keys()], []);
+		assert.deepEqual(compiled, []);
+		assert.deepEqual(stubbed.output, [`Error: The folder of X.tz does not exist: ${app}`]);
+		assert.equal(summary, undefined);
+	} finally { await stubbed.dispose(); }
+});
+
+test('Test Project reports that the folder of tsuzuri.projectPath does not exist, as opening a document does', async () => {
+	const stubbed = await host();
+	const { top, compiled, commands, files } = stubbed;
+	try {
+		const testing = await stubbed.testing();
+		const configured = path.join(top, 'gone');
+		files.configured = configured;
+		const summary = await commands.get('tsuzuri.test')!();
+		assert.equal(testing.roots.has(configured), false);
+		assert.deepEqual(compiled, []);
+		assert.deepEqual(stubbed.output, [`Error: The project folder of tsuzuri.projectPath does not exist: ${configured}`]);
+		assert.equal(summary, undefined);
+	} finally { await stubbed.dispose(); }
+});
+
+test('a document whose folder is deleted while its root is read adds no root above it when the lookup ends', async () => {
+	const stubbed = await host();
+	const { app } = stubbed;
+	try {
+		const testing = await stubbed.testing();
+		// The lookup for top/a/Y.tz reads the root top/a; top/a is deleted, and the re-rooting removes it, before the lookup
+		// returns. The lookup is read again, and the walk up from Y.tz now ends at top.
+		const lookup = stubbed.pauseLookup();
+		stubbed.open(stubbed.document(path.join(app, 'Y.tz')));
+		await lookup.reached;
+		await stubbed.deleteFolder(testing);
+		assert.deepEqual([...testing.roots.keys()], []);
+		lookup.resume();
+		await settle();
+		assert.deepEqual([...testing.roots.keys()], []);
+		assert.deepEqual(stubbed.output, []);
+	} finally { await stubbed.dispose(); }
 });
 
 test('a client that starts while Restart Language Server stops the others stays tracked, so no server runs without one', async () => {
