@@ -26,7 +26,10 @@
 // matches (`Tensr`, `WaitGrop`, `Tickr`, `Rgex`, `Semaphor`, `Contxt`), in signatures, a type annotation, a record
 // literal and a record pattern: the diagnostics, the code actions of the document, source.fixAll.tsuzuri and a
 // quickfix for every diagnostic of Main.tz.
-// `--threads` sets TSUZURI_THREADS (`auto` and `unset` leave it unset). No timing is recorded.
+// `--threads` sets TSUZURI_THREADS (`auto` and `unset` leave it unset; a count from 1 to 32), `--jobs` is a positive
+// integer. `compare` refuses a CLI golden with a blank line, a line that is not an entry or no entries, and a directory
+// without transcripts or with a transcript that holds no request (tests/benchmark_lsp_golden.mjs). No timing is
+// recorded.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -44,6 +47,22 @@ function option(args, name, fallback) {
   if (index < 0) return fallback;
   const [, value] = args.splice(index, 2);
   assert.ok(value !== undefined, `${name} needs a value`);
+  return value;
+}
+
+// `--jobs`: a positive safe integer. With none, no worker would start: the golden would hold blank lines and still
+// report every target.
+function jobCount(value) {
+  const jobs = /^[1-9][0-9]*$/.test(value) ? Number(value) : NaN;
+  assert.ok(Number.isSafeInteger(jobs), `--jobs takes a positive integer, not '${value}'`);
+  return jobs;
+}
+
+// `--threads`: `auto` or `unset`, or a count that TSUZURI_THREADS takes (1 to `MAX_THREADS`, 32, in src/parallel.rs).
+// Any other value would make every `check` report the variable's error, and two such goldens would compare equal.
+function threadSetting(value) {
+  assert.ok(value === "auto" || value === "unset" || (/^[1-9][0-9]*$/.test(value) && Number(value) <= 32),
+    `--threads takes auto, unset or a count from 1 to 32, not '${value}'`);
   return value;
 }
 
@@ -124,6 +143,8 @@ async function cli(compiler, out, { threads, workloads, jobs }) {
   };
   await Promise.all(Array.from({ length: jobs }, (_, slot) => worker(slot)));
   rmSync(scratch, { recursive: true, force: true });
+  const missing = entries.findIndex((entry) => entry === undefined);
+  assert.equal(missing, -1, `no entry for ${targets[missing]}`);
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
   const summary = {
@@ -342,9 +363,10 @@ async function typeTranscript(compiler, project, env) {
 async function lspTranscripts(compiler, out, { threads, workloads, projects }) {
   const all = readWorkloads(workloads);
   const names = projects ?? Object.keys(all).filter((name) => !name.endsWith("-allstd"));
+  assert.ok(names.length > 0, `no project to record in ${workloads}`);
+  for (const name of names) assert.ok(all[name], `unknown workload ${name}`);
   mkdirSync(out, { recursive: true });
   for (const name of names) {
-    assert.ok(all[name], `unknown workload ${name}`);
     const value = await transcript(compiler, all[name], environment(threads));
     const text = JSON.stringify(value);
     writeFileSync(join(out, `${name}.json`), text + "\n");
@@ -357,10 +379,41 @@ async function lspTranscripts(compiler, out, { threads, workloads, projects }) {
   }
 }
 
+// The entries of a CLI golden, one per line. A blank line, a line that is not a whole entry or a file without entries
+// is refused: it would compare equal to another such file without comparing any output of the compiler.
+function cliEntries(file) {
+  const text = readFileSync(file, "utf8");
+  assert.ok(text.length > 0 && text !== "\n", `${file} has no entries`);
+  assert.ok(text.endsWith("\n"), `${file} does not end with a newline`);
+  return text.slice(0, -1).split("\n").map((line, index) => {
+    assert.ok(line.trim().length > 0, `line ${index + 1} of ${file} is blank`);
+    const entry = JSON.parse(line);
+    const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+    assert.ok(object(entry) && typeof entry.target === "string" && entry.target.length > 0
+      && (typeof entry.status === "number" || entry.status === null) && (typeof entry.signal === "string" || entry.signal === null)
+      && typeof entry.stdout === "string" && typeof entry.stderr === "string" && object(entry.kg),
+    `line ${index + 1} of ${file} is not an entry (target, status, signal, stdout, stderr and kg)`);
+    return entry;
+  });
+}
+
+// A transcript of `lsp`: its requests (at least one) and publishes. A blank file or one without requests is refused.
+function transcriptText(file) {
+  const text = readFileSync(file, "utf8");
+  let value = null;
+  try {
+    value = JSON.parse(text);
+  } catch {}
+  assert.ok(value !== null && Array.isArray(value.log) && value.log.length > 0 && Array.isArray(value.publishes),
+    `${file} is not a transcript (log with at least one request, publishes)`);
+  return text;
+}
+
 function compare(left, right) {
   const pairs = [];
   if (statSync(left).isDirectory()) {
     const names = new Set([...readdirSync(left), ...readdirSync(right)].filter((name) => name.endsWith(".json")));
+    assert.ok(names.size > 0, `${left} and ${right} hold no transcripts`);
     for (const name of [...names].sort()) pairs.push([join(left, name), join(right, name)]);
   } else {
     pairs.push([left, right]);
@@ -373,8 +426,7 @@ function compare(left, right) {
       continue;
     }
     if (a.endsWith(".jsonl")) {
-      const read = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-      const [x, y] = [read(a), read(b)];
+      const [x, y] = [cliEntries(a), cliEntries(b)];
       assert.deepEqual(x.map((entry) => entry.target), y.map((entry) => entry.target), `${a} and ${b} have different targets`);
       for (const [index, entry] of x.entries()) {
         if (JSON.stringify(entry) === JSON.stringify(y[index])) same++;
@@ -388,7 +440,7 @@ function compare(left, right) {
         }
       }
     } else {
-      const [x, y] = [readFileSync(a, "utf8"), readFileSync(b, "utf8")];
+      const [x, y] = [transcriptText(a), transcriptText(b)];
       if (x === y) same++;
       else {
         differ++;
@@ -405,9 +457,9 @@ function compare(left, right) {
 
 const args = process.argv.slice(2);
 const command = args.shift();
-const threads = option(args, "--threads", command === "cli" ? "auto" : "unset");
+const threads = threadSetting(option(args, "--threads", command === "cli" ? "auto" : "unset"));
 const workloads = option(args, "--workloads", join(root, "target/perf/PB08/projects"));
-const jobs = Number(option(args, "--jobs", "1"));
+const jobs = jobCount(option(args, "--jobs", "1"));
 const projects = option(args, "--projects", null)?.split(",");
 if (command === "cli") {
   assert.equal(args.length, 2, "usage: golden.mjs cli <compiler> <out.jsonl> [--threads 1|auto|N] [--workloads DIR] [--jobs N]");
