@@ -148,6 +148,7 @@ CLI の `check`、ms。
 - スレッドの数に依らない出力（`src/lib.rs:345-349`、`src/check.rs:9124-9127` の不変条件）。
 - `costly_sites` 以外の `copies::sites`・`ownership::copy_reads` の利用者の結果。`effects.rs:2185`（`@no_copy`・`@no_alloc` と `inferred_effects`）、`llvm.rs:2594-2618`（暗黙の複製の一覧の検証）、`kg/facts.rs:188` が std を含む全関数の結果を使う。
 - Phase 1 では、言語サーバーが読む std の集合（D-40）。
+- 注（Phase 2 のレビュー、2026-11-20）: O6 で言語サーバーが読む std が `check` と同じになるので、読み込んだ std の instance や予算の全体を見る検査（instance の重なり、重なりの検査の 1,024 組の予算、特殊化の 65,536 の予算）は、名前を書いていない opt-in のモジュールについて、言語サーバーでも `check` と同じ結果になる。全部を読んでいたときの言語サーバーと違い得る唯一の種類の答えで、「実装と検証（Phase 2）」の「チケットから外れた判断」に、例と採った理由を書いた。
 
 ## 設計
 
@@ -759,9 +760,10 @@ O3(b) の頭にエラーを含む instance を `None` の列に入れること�
 - O6 のホバー: 全 std の索引を使う経路はない（上の「実装」）。チケットの「名前を書いていない opt-in のモジュールのホバー」は、名前を書いた編集のホバーとして golden とテストで比べた。
 - `check::EditorCheck` は、Phase 1 の O4(b) の `copy_facts: Option<&mut Option<CopyFacts>>` 引数（`analyze_inputs_unannotated`・`check_modules_with_capture`・`check_modules_collect`）を置き換えた（引数を増やさず、言語サーバーの解析の要求を 1 つにまとめるため）。
 - golden: Phase 2 の場面を足したので、言語サーバーの before の golden を作り直した（`p2-before-a`・`p2-before-b`）。Phase 2 の場面に `unknown_probe`（`parse`・`Null`）と `Json.Value.`・`std::` の補完を足した（チケットの 2 つの場面に加えて）。
+- （レビューで足した）読み込んだ std の instance や予算の全体を見る検査の答えは変わる: instance の重なり、重なりの検査の 1,024 組の予算、特殊化の 65,536 の予算は、名前を書いていない opt-in のモジュールについて、言語サーバーでも `check` と同じになった。例（レビューの `monoid_none`）: `Main.tz` が `instance Classes.Zero<'a> => Monoid<'a>` を宣言し、`combine` の引数 `b` を使わないプロジェクトで、全部を読んでいた言語サーバーは、読み込んだだけの `std/Monoids.tz` の instance との重なりで 9 個の `E1016` を出し（std のファイルの診断なので発行されない）、`Main.tz` には何も出さなかった。今は `check` と同じく `W1001` とその `certain` の修正案（クイックフィックス）を出す。チケットの「答えは変えない」から外れるが、エディターが `check` と同じ診断を出すようにする改善（手順 8 の予算の端と同じ種類）なので、採った。利用者の委任（「承認が必要なものについては、あなたが考えるベストな方法であれば全て承認します」）に基づいて採ったもので、別に承認を求めていない。`tests/lsp.rs` の `diagnostics_follow_check_for_an_opt_in_module_that_no_source_names` が、言語サーバーの診断が `check --json` と同じであることを確かめる。
 
 ### 残っている問題
 
 - 手順 9 の計測（M1〜M4、PX03）と profile は、負荷の低い機械で `tsuzuri-p1` と `tsuzuri-p2`（と before）を比べて別に行い、Phase 1 の値と分けて記録する（最後の受け入れ条件）。syn200 の `tokens-8` の差も、そこでもう一度見る。言語サーバーの `TSUZURI_TIME_PASSES` の累計は、補完やシグネチャヘルプが `std_index` を作った process では、全 std の解析 1 回を含む（M1・M4 の driver の要求は作らない）。
-- 全 std を読むことでだけ変わる検査の結果（特殊化の予算 65,536 を std の特殊化が使う量、instance の重なりの検査の予算 1,024 組）は、名前を書いていない opt-in のモジュールについて、言語サーバーでも `check` と同じになった。golden と単体テストでは違いは出ていない（チケットの「変わってよいのは出どころだけ」の外にあり得る差として記録する）。
+- 全 std を読むことでだけ変わる検査の結果（特殊化の予算 65,536 を std の特殊化が使う量、instance の重なりの検査の予算 1,024 組）は、名前を書いていない opt-in のモジュールについて、言語サーバーでも `check` と同じになった。golden と単体テストでは違いは出ていない（チケットの「変わってよいのは出どころだけ」の外にあり得る差として記録する）。（レビューで、instance の重なりの例が見つかった。上の「チケットから外れた判断」に、外れた判断として記録した。）
 - G39 の Phase 2・3 との統合: `refresh`（根のディレクトリを取るようになる）の中の読み込みの 1 行、`fix_edit`・`verify_edits` の読み込みの 1 行、`lsp::tests::refresh_loads_the_std_modules_that_check_loads` の `refresh` の呼び出し（引数がディレクトリになる）を合わせる。

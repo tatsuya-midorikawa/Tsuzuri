@@ -2179,6 +2179,103 @@ fn unknown_names_get_the_candidates_and_quickfixes_of_unloaded_opt_in_modules() 
     );
 }
 
+/// PB08 review of Phase 2: the language server loads the opt-in std modules that `check` loads, so
+/// a check over every loaded std instance (here the overlap of instances) follows `check` for an
+/// opt-in module that no source names. `Main.tz` gives `Monoid` a blanket instance, which overlapped
+/// the instances of `std/Monoids.tz` while the server loaded every std module (9 `E1016` in that
+/// file, none in `Main.tz`). The editor publishes what `check --json` reports, the `W1001` of `b`
+/// with its `certain` fix.
+#[test]
+fn diagnostics_follow_check_for_an_opt_in_module_that_no_source_names() {
+    use serde_json::{Value, json};
+    const CLASSES: &str = "class Zero<'a> { def zero :: unit -> 'a }\n";
+    const MAIN: &str = "instance Classes.Zero<'a> => Monoid<'a> {\n    fn empty _ = Classes.Zero.zero ()\n    fn combine a b = a\n}\ninstance Classes.Zero<i64> { fn zero _ = 0 }\ndef main :: own unit -> i32 = \\() -> 0\n";
+    let files = [("Classes.tt", CLASSES), ("Main.tz", MAIN)];
+    let mut main = String::new();
+    let (messages, _) = session(&files, "utf-16", |uri| {
+        main = uri("Main.tz");
+        // A request makes the server analyze the project and publish its diagnostics.
+        vec![
+            json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": {"line": 2, "character": 7}}}),
+        ]
+    });
+    let mut published = std::collections::BTreeMap::new();
+    for message in &messages {
+        if message["method"] == "textDocument/publishDiagnostics" {
+            published.insert(
+                message["params"]["uri"].as_str().unwrap().to_owned(),
+                message["params"]["diagnostics"].clone(),
+            );
+        }
+    }
+    for (uri, diagnostics) in &published {
+        if *uri != main {
+            assert_eq!(*diagnostics, json!([]), "{uri}");
+        }
+    }
+    // `check --json` of the same files, as the server writes a diagnostic: zero-based positions
+    // (the text is ASCII, so columns are UTF-16 code units), the kind and the fix titles in `data`.
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-lsp-follows-check-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    for (name, text) in files {
+        std::fs::write(root.join(name), text).unwrap();
+    }
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .args(["check", root.to_str().unwrap(), "--json"])
+        .env("TSUZURI_CACHE_DIR", "")
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let position = |line: &Value, column: &Value| json!({"line": line.as_u64().unwrap() - 1, "character": column.as_u64().unwrap() - 1});
+    // `check --json` writes its diagnostics to stderr, one JSON object per line.
+    let checked: Vec<Value> = String::from_utf8(output.stderr)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let diagnostic: Value = serde_json::from_str(line).unwrap();
+            assert!(diagnostic["path"].as_str().unwrap().ends_with("Main.tz"), "{line}");
+            let span = &diagnostic["span"];
+            let mut data = serde_json::Map::new();
+            if let Some(kind) = diagnostic.get("kind") {
+                data.insert("kind".into(), kind.clone());
+            }
+            if let Some(fixes) = diagnostic["fixes"].as_array() {
+                let titles: Vec<Value> = fixes
+                    .iter()
+                    .map(|fix| json!({"title": fix["title"], "applicability": fix["applicability"]}))
+                    .collect();
+                data.insert("fixes".into(), json!(titles));
+            }
+            json!({
+                "range": {"start": position(&span["line"], &span["column"]), "end": position(&span["end_line"], &span["end_column"])},
+                "severity": if diagnostic["severity"] == "error" { 1 } else { 2 },
+                "code": diagnostic["code"],
+                "source": "tsuzuri",
+                "message": diagnostic["message"],
+                "data": data,
+            })
+        })
+        .collect();
+    assert_eq!(published[&main], json!(checked));
+    // The parameter `b` of `combine` is unused, and nothing else is wrong.
+    assert_eq!(
+        published[&main],
+        json!([{
+            "range": range(2, 17, 18),
+            "severity": 2,
+            "code": "W1001",
+            "source": "tsuzuri",
+            "message": "unused local 'b'; prefix it with '_' to silence this warning",
+            "data": {"kind": "unused_local", "fixes": [{"title": "Prefix 'b' with '_'", "applicability": "certain"}]},
+        }])
+    );
+}
+
 #[test]
 fn deprecated_uses_from_other_packages_are_published_as_warnings() {
     use serde_json::json;
