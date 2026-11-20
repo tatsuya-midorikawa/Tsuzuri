@@ -3082,6 +3082,12 @@ const MESSAGE_COST: usize = 1024;
 /// arrived (one may precede its request), and of the requests it answered last (a later
 /// cancellation of one is dropped).
 const MAX_REMEMBERED_IDS: usize = 1024;
+/// The longest id (its JSON text) that the main loop keeps among those. An id may be as long as a
+/// message, and the ids stay after their messages are handled, so the count alone would let 1024
+/// long ones hold gigabytes (Copilot review 2 of PR #119). A cancellation of a longer id that no
+/// queued request has is dropped at once, as is a late one of its answered request; one that
+/// precedes its request has no effect.
+const MAX_REMEMBERED_ID: usize = 256;
 const TEXT_SYNC: [&str; 3] = [
     "textDocument/didOpen",
     "textDocument/didChange",
@@ -3264,11 +3270,12 @@ struct Queue {
 
 impl Queue {
     /// Takes a message from the reader. A cancellation of a queued request is kept for it; one of an
-    /// answered request is dropped; any other is kept for a request that may follow, the latest
-    /// `MAX_REMEMBERED_IDS` of them (a repeated one at its latest place), and belongs to that request
-    /// once it arrives (later unknown ids no longer push it out). A request with the id of an
-    /// answered one (ids need be unique only among outstanding requests) makes the server forget the
-    /// answered one, so that the new request's cancellation is not dropped as a late one.
+    /// answered request is dropped; any other with an id of at most `MAX_REMEMBERED_ID` bytes is kept
+    /// for a request that may follow, the latest `MAX_REMEMBERED_IDS` of them (a repeated one at its
+    /// latest place), and belongs to that request once it arrives (later unknown ids no longer push
+    /// it out); any other is dropped. A request with the id of an answered one (ids need be unique
+    /// only among outstanding requests) makes the server forget the answered one, so that the new
+    /// request's cancellation is not dropped as a late one.
     fn push(&mut self, event: InputEvent, inbox: &Inbox) {
         let item = Queued::new(event);
         if let Some(id) = item.message().and_then(cancelled_id) {
@@ -3277,7 +3284,7 @@ impl Queue {
                 // request with the same id, queued before the reused request, may have forgotten it
                 // since.
                 inbox.cancel(id);
-            } else if self.recent.contains(&id) {
+            } else if self.recent.contains(&id) || id.len() > MAX_REMEMBERED_ID {
                 inbox.forget(&id);
             } else {
                 // Once, at the place of the latest: pushing out an older copy would forget the
@@ -3322,9 +3329,10 @@ impl Queue {
         self.items.is_empty()
     }
 
-    /// Records that the request `id` is answered and forgets its cancellation; whether it had one.
+    /// Records that the request `id` is answered (unless the id is longer than `MAX_REMEMBERED_ID`)
+    /// and forgets its cancellation; whether it had one.
     fn answer(&mut self, id: &str, inbox: &Inbox) -> bool {
-        if self.recent.insert(id.to_owned()) {
+        if id.len() <= MAX_REMEMBERED_ID && self.recent.insert(id.to_owned()) {
             self.answered.push_back(id.to_owned());
             if self.answered.len() > MAX_REMEMBERED_IDS
                 && let Some(oldest) = self.answered.pop_front()
@@ -3799,6 +3807,46 @@ mod tests {
         arrive(&inbox, &mut queue, cancel(json!("ghost-last")));
         arrive(&inbox, &mut queue, symbol_request(json!(6)));
         assert!(inbox.is_cancelled("6"));
+    }
+
+    /// Copilot review 2 of PR #119: an id may be as long as a message, so the ids that the main loop
+    /// keeps after their requests are answered, or for a request that may follow, are bounded by
+    /// their length as well as by their count: long ones are not kept at all. Short ones still are.
+    #[test]
+    fn long_ids_are_not_remembered() {
+        let (inbox, mut queue) = (Inbox::default(), Queue::default());
+        let long = |n: usize| json!(format!("{n:0>64000}"));
+        for n in 0..64 {
+            // As the main loop does: take the request, then answer it.
+            arrive(&inbox, &mut queue, symbol_request(long(n)));
+            let id = queue.pop(&inbox).unwrap().request_id().unwrap();
+            queue.answer(&id, &inbox);
+            // A late cancellation of it, and one of an id that no request has.
+            arrive(&inbox, &mut queue, cancel(long(n)));
+            arrive(&inbox, &mut queue, cancel(long(1000 + n)));
+            while queue.pop(&inbox).is_some() {}
+        }
+        let kept: usize = queue
+            .answered
+            .iter()
+            .chain(&queue.recent)
+            .chain(&queue.unmatched)
+            .chain(&inbox.state.lock().unwrap().cancelled)
+            .map(String::len)
+            .sum();
+        assert_eq!(kept, 0);
+        // A late cancellation of an answered request with a short id is dropped, and a cancellation
+        // that precedes its request with a short id belongs to it.
+        arrive(&inbox, &mut queue, symbol_request(json!(7)));
+        let id = queue.pop(&inbox).unwrap().request_id().unwrap();
+        queue.answer(&id, &inbox);
+        arrive(&inbox, &mut queue, cancel(json!(7)));
+        queue.pop(&inbox);
+        assert!(!inbox.is_cancelled("7"));
+        assert!(queue.recent.contains("7"));
+        arrive(&inbox, &mut queue, cancel(json!(8)));
+        arrive(&inbox, &mut queue, symbol_request(json!(8)));
+        assert!(inbox.is_cancelled("8"));
     }
 
     /// Copilot review of PR #119: an empty message costs nothing by its body, but it counts against
