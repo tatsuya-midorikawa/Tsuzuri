@@ -8,7 +8,7 @@
 | 規模 | M（Phase 1。Phase 2 は別段で、2026-11-20 の利用者の指示で行う） |
 | 依存 | – |
 | 関連 | G39（言語サーバーの待ち行列と取り消し。Phase 3）, G40, PB04（フロントエンドの並列化）, PB06（常駐状態）, G17（フロントエンドの cache）, D-40（言語サーバーは opt-in の std を常に読む） |
-| 状態 | doing（Phase 1 done・measured 2026-11-20（M1 の目標に届いた）。Phase 2 は 2026-11-20 の利用者の指示で実装中） |
+| 状態 | doing（Phase 1 done・measured 2026-11-20（M1 の目標に届いた）。Phase 2 は 2026-11-20 の利用者の指示で実装した。Phase 2 の計測待ち） |
 | 起票 | 2026-11-19（G39 の調査で見つけ、利用者の依頼で別のチケットにした。HEAD `af644794` を、strip しない release で `sample` し、別の担当が試作（環境変数で切り替える patch）で効果と出力の同一性を測り直した） |
 | 承認 | Phase 1 は不要（出力を変えない。D5 は言語サーバーが使うスレッドの数の方針で既定案）。Phase 2 の D7（D-40 を変え、名前を書いていない opt-in の std モジュールの補完・ホバー・診断の候補・シグネチャヘルプを別の索引から答える。答えは変えない）は、2026-11-19 に利用者が承認した（「承認が必要なものについては、あなたが考えるベストな方法であれば全て承認します」）。起票者が最善と判断した形のまま承認したので、Phase 1 の後の計測で目標に届かないときだけ行うという条件も含んでいた。この条件は、2026-11-20 の利用者の指示「もし実装に際し複数フェーズにまたがる場合には、その全てのフェーズを完了させること」で外れた。Phase 1 は目標に届いたが、Phase 2 も行う |
 | 手本にする既存実装 | 型の名前の静かな照合: `src/check.rs` の `Names::check_type_path`・`type_choice`（`named_type` の Ok の条件そのもの）。CLI の並列度: `src/driver.rs` の `analyze_cached_core`（`Parallelism::command_line()`）。スレッドの数に依らない出力の検査: `src/lib.rs` の `warnings_and_the_semantic_index_do_not_depend_on_the_thread_count` など、`tests/parallel_frontend.mjs`。計測の形: PB06 の「現状と計測」、GUIDE §14 |
@@ -633,3 +633,135 @@ after の構文解析の CPU が増えたのは、O5 で 8 スレッドに分け
 
 - 手順 8 は済んだ（上の「手順 8: 計測」）。syn200 の `tokens-8`（変更なしの `semanticTokens/full`）の 0.5 ms の差は、Phase 2 の計測でもう一度見る。
 - G39 の Phase 3 で再解析を途中で取り消すなら、O5 で並列になった段の worker にも届くようにする（「落とし穴」）。
+
+## 実装と検証（Phase 2、2026-11-20）
+
+### 範囲
+
+2026-11-20 の利用者の指示（「もし実装に際し複数フェーズにまたがる場合には、その全てのフェーズを完了させること」）で、Phase 2 を行った。手順 8 の記録（D1）で決めた O3(b) を O6 より前のコミットで行い、手順 9（O6）を実装した。O2・O8 は D1 の判断のとおり行っていない。
+**手順 9 の計測**（M1〜M4、PX03）は、実装の後に負荷の低い機械で別に行う（実装の間は 3 つのチケットを同じ機械で並行して build しており、load average が 50〜125 だった）。比べる binary は次の 2 つ。
+
+- `target/perf/PB08/tsuzuri-p1`: Phase 1 と O3(b)（`83e62e1a` の release、SHA-256 `b487bbfa…`）。
+- `target/perf/PB08/tsuzuri-p2`: それに O6 を足したもの（`040f6089` の release、SHA-256 `9e815d41…`。その後のコミットは文書だけ）。
+
+### コミット
+
+| コミット | 内容 |
+| --- | --- |
+| `c311be52` | 承認・D7・停止条件・最後の受け入れ条件・手順 9 の見出し・状態の行（Phase 2 を行う理由） |
+| `83e62e1a` | O3(b) |
+| `716e3768` | 手順 2 の golden に Phase 2 の場面を足した（`benchmarks/lsp/golden.mjs`） |
+| `de730f64` | O6: 言語サーバー専用の読み込みの入口 |
+| `85275fe8` | O6: 未解決の名前の候補・help・修正案 |
+| `65bd6bb9` | O6: モジュール名の一覧 |
+| `040f6089` | O6: 全 std の索引（メンバーの補完、シグネチャヘルプ） |
+| `e9d543be` | 文書 |
+| （この節） | 実装と検証 |
+
+### 実装
+
+- **O3(b)**（`src/polymorph.rs`）: `Classes` に `lookup`（（型クラス、`head_constructor` の鍵）→ instance の番号の列、宣言の順）を足し、`InstanceTemplate` は `variables(&head)` を持つ（`collect` の唯一の `instances.push` で、既にある `type_parameters` を使う）。鍵は重なりの検査（D08）の `head_constructor` と同じで、構成子のない頭（変数・適用・参照・関数・`dyn` など）とエラーを含む頭は `None` の列に入る。`matching_instance` の `unifying_instance` は `instance_candidates` を試す: 問い合わせの型に構成子があればその列と `None` の列を宣言の順に併せたもの、構成子がなければ `None` の列だけ。問い合わせの型が適用・部分適用・匿名共用体か、エラーを含むときは、今までどおりすべての instance を順に試す。`unify` は外側の構成子が違う 2 つの型を、推論変数（頭の型変数）・適用・部分適用・エラーを通してしか一致させないので、飛ばした instance はどれも一致しない。最初に一致する instance と置き換えは同じ。
+- **O6 の読み込み**（`src/driver.rs`・`src/lsp.rs`）: crate 内の `Project::load_for_editor` は `load_with_overlays` と同じ正規化をして、`load_from_root` を `all_std` false で呼ぶ（`stdlib::sources_for` が、開いたバッファで置き換えたソースから選ぶ。CLI と同じ）。公開の `load_with_overlays` は今までどおり全 std を読む。`Session::refresh`・`fix_edit`・rename の検証（`verify_edits`。`fix_edit` と同じ読み込みと `analyze`）が使う。`source.fixAll.tsuzuri`（`fix_all`）は `tsuzuri fix` の手順（`fix::run` と `fix::analyze_project`）なので、チケットのとおり変えていない。
+- **O6 の診断の候補**（`src/find.rs`・`src/check.rs`・`src/lib.rs`）: `find::OptInNames` は、opt-in の std の各モジュールについて、それを読んだ検査の `Names` が持つもの（モジュール、公開で `hidden` でない関数・定数・extern と候補の signature の語、公開の union の case。`Module.name` の鍵）を、std のソースの構文解析から process に 1 回だけ（最初に候補の pool を作るとき）読む。`check::EditorCheck` は、Phase 1 の `copy_facts` 引数（O4(b)）を置き換えた言語サーバーの解析の要求で、`opt_in_candidates` を持つ。`analyze_inputs_for_editor` がこれを立てると、`value_pool`（最後の部分が一致する関数・case と、大文字で始まる名前のモジュール）と `function_pool`（関数・case の全部）が、検査が読み込んでいない opt-in のモジュールの項目を足す。std のモジュールの鍵には `.` がないので、モジュールの項目は `module_path` の結果に依らず `Pooled::new(鍵, 3, "module")` と同じになる。足す項目は既存の項目と同じ (距離, 群, 綴り) にならないので、pool の中の順は結果に影響しない。member_pool は名前を書いたモジュールにしか使わず（書けば読み込む）、型の pool・パターンの pool は opt-in の宣言を候補にしない（D-40）ので、変えていない。
+- **O6 のモジュール名**（`src/lsp.rs`）: `ModuleNames::new` は、`stdlib::SOURCES` のうちプロジェクトが読み込んでいないモジュール（`unloaded_std`）の鍵と名前空間 `std` を、ソースの後に足す。最上位のモジュールの補完、`std::` の補完、補完とシグネチャヘルプのモジュールのパスの解決（`resolve`）が今までどおりそれらを出す。
+- **O6 の全 std の索引**（`src/lsp.rs`）: `std_index` は、最小のプログラム（`0`）とすべての std を `analyze_inputs_for_editor` で解析した意味の索引を、最初に要るときに process に 1 回だけ作る（`OnceLock`）。std の宣言の索引の内容（詳細・文書・引数）はプログラムに依らないので、全 std を読んでいたときのプロジェクトの索引の std の宣言と同じ。`View::members(key)` は、`key` がプロジェクトの読み込んでいない std のモジュールならこの索引を、そうでなければ view の索引を返す。補完の `Module.` のメンバーと `Module.Union.` の case、シグネチャヘルプの関数の検索は、名前の位置の定義（`definition_at`。view の索引）がないときに `members` から引く。
+- **ホバー**: ホバーは今の解析の索引だけを読み（解析が失敗していれば診断だけ）、今の解析はソースが名前を書いたモジュールをすべて読むので、全 std の索引は要らない。名前を書いていない opt-in のモジュールのホバーは、名前を書いた編集のホバーとして golden とテストで比べた（下）。
+- `src/lsp.rs` の変更は、読み込みの 3 か所の 1 行、`ModuleNames` の field と `new` の 2 か所と `is_unloaded`、新しい関数 `unloaded_std`・`std_index`・`View::members`、補完とシグネチャヘルプの 3 か所の検索、単体テスト 1 つ（G39 の Phase 2・3 との統合のため、`Session` と `refresh` の本体には読み込みの 1 行のほか触れていない）。
+
+### golden（手順 2・手順 9）
+
+```sh
+node benchmarks/lsp/golden.mjs lsp target/perf/PB08/tsuzuri-before target/perf/PB08/golden/p2-before-<a|b>/lsp-unset
+node benchmarks/lsp/golden.mjs lsp <compiler> target/perf/PB08/golden/<p1|p2>/lsp-<unset|1|8> --threads <unset|1|8>
+node benchmarks/lsp/golden.mjs cli <compiler> target/perf/PB08/golden/<p1|p2>/cli-<1|auto>.jsonl --threads <1|auto> --jobs 3
+node benchmarks/lsp/golden.mjs compare <a> <b>
+TSUZURI_BASELINE=target/perf/PB08/tsuzuri-before node tests/parallel_frontend.mjs <compiler>
+```
+
+- 言語サーバーの golden に、Phase 2 の場面を足した（`716e3768`）。どの workload でも、元の本文に次を足した編集の後で記録する。
+  - `Matrix` と `Json` を名指しして検査が通る `def opt_in_probe`: 名前を書いていない opt-in のモジュール名とメンバー（`Matrix`・`init`・`rows`・`Json`・`parse`）のホバー。
+  - `Matrx.init` を書いた `def misspelt_def_probe`: 候補と置き換えの修正案とクイックフィックス（M4 の 5 つの `codeAction` と診断ごとの quickfix）。最上位のコードの `Matrx.init`（Phase 1 からある場面）は `def main` を持つ hello・big・syn200 では `E2004` になって候補が出ないので、`def` の中に書く場面を足した。
+  - `parse` と `Null` を値として書いた `def unknown_probe`: 最後の部分だけが opt-in のモジュールの関数・case と一致する未解決の名前（`parse` は `Format.parse` と `Json.parse` が並ぶので修正案なし、`Null` は `Json.Null` の修正案とクイックフィックス）。
+  - 補完の場面に `Json.Value.`（union の case）と `std::`（名前空間のモジュール）を足した（Phase 1 からの `Matrix.`・`Json.`・最上位の行に加えて）。
+  - 元に戻した本文の解析（`Json` を書いていない成功した解析）の後、`Json.parse (` と打ち始めた構文解析できない編集: その位置の `textDocument/signatureHelp`、`Json.` の直後の補完、`Json` と `parse` のホバー。
+- 名前を書いていない（`Matrix` も `Json` も書いていない）workload は hello・point・polymorphism・conventions・in_place_writes・list_fsharp・syn200 の 7 つ。json・anonymous_unions・big は `Json` を書いているので、それらの `Json.` の答えは今の索引から出る（比べる対象には含めた）。
+- **before 同士の揺れ**: 新しい golden を before の binary で 2 回作り（`p2-before-a`・`p2-before-b`）、10/10 が一致した。CLI の golden は script の CLI の部分を変えていないので、Phase 1 の `before-a` の `cli-1.jsonl`（`before-b` と一致を確かめたもの）を使った。
+
+| binary | コミット | CLI 1 スレッド | CLI 自動 | 言語サーバー 未設定 | 言語サーバー 1 | 言語サーバー 8 | IR（`parallel_frontend.mjs`、`TSUZURI_BASELINE`） |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `tsuzuri-p1` | `83e62e1a` | 442/442 | 442/442 | 10/10 | | | ok |
+| `tsuzuri-p2` | `040f6089` | 442/442 | 442/442 | 10/10 | 10/10 | 10/10 | ok |
+
+どれも before（`target/perf/PB08/tsuzuri-before`）の golden（CLI は 1 スレッドの `before-a`、言語サーバーは未設定の `p2-before-a`）と 1 byte も違わない。binary はどちらも `cargo build --release --locked`。
+
+### O3(b) だけの後の確認
+
+- `cargo test --locked --lib -- polymorph::tests` は 8 件が通った。`quiet_instance_trials_choose_like_loud_ones` は 312,564 回の `matching_instance` を比べ、そのうち 312,113 回が索引を使い、残り（適用と匿名共用体の型）はすべての instance を試した。
+- `matching_instance` で、索引の試行とすべての instance の順の試行（quiet と通常の両方）を常に比べる一時的な build で、`cargo test --locked --test polymorphism --test text_class` が通った（35・13 件。テストが起動する compiler の binary も同じ build なので、2 つのテストの process で 320 万回以上を比べた）。build は戻した。
+- golden と IR（上の表の `tsuzuri-p1`）は before と同じ。
+
+### 単体テスト（回帰テスト）
+
+| テスト | 内容 | Phase 1 のコードでの結果 |
+| --- | --- | --- |
+| `check::polymorph::tests::quiet_instance_trials_choose_like_loud_ones`（広げた） | 12 の fixture に、すべての opt-in のモジュール名をコメントに書いたプログラム（全 std）、`higher_kinds`（3 ファイル）、`anonymous_unions` を足した 15 のプログラムで、索引の quiet な試行が、すべての instance を順に試す quiet な試行と通常の試行と同じ instance と置き換えを選ぶ。9 割より多くが索引を使い、すべてを試す経路も通る | 索引の数え方（`INDEXED_INSTANCE_TRIALS`）と `unifying_instance` の引数が新しいので build できない。索引から `None` の列を外す変更（構成子のある型だけ、ない型だけの 2 通り）で失敗する |
+| `check::polymorph::tests::instance_index_tries_every_head_that_may_unify` | 頭の構成子が整数・2 要素と 3 要素のタプル・配列・文字列・関数・union・record・bool の instance と、すべての型に一致する変数の頭の instance、型が変数になる generic な本体（`instance Classes.Any<'a>` と `def generic`）で、索引の試行がすべての instance を順に試す試行と同じものを選ぶ | Phase 1 のコードで build でき、通る（Phase 1 はすべてを順に試すので、比べる相手そのもの）。上の 2 通りの変更で失敗する |
+| `lsp::tests::refresh_loads_the_std_modules_that_check_loads` | `Session::refresh` が読む std が `sources_for(ソース)` と同じ: 名前を書いていない 2 ファイルのプロジェクトでは基本の 34 モジュール（`SOURCES` − `OPT_IN`）、未保存のバッファが `Json` を書くと `std/Json.tz` が 1 つ増える | **失敗**（Phase 1 は全 std を読む。`load_for_editor` を `all_std` true に戻すと失敗する） |
+| `check::warnings::tests::opt_in_names_are_the_checker_names` | `find::OptInNames::read` の 388 項目（32 のモジュール、関数・定数、case）が、全 std を読む検査の `Names`（`NAMES_PROBE`）から取った opt-in のモジュールの項目と同じ | 新しい型を使うので build できない |
+| `tests::editor_diagnostics_with_the_named_std_modules_are_those_with_every_std_module` | 言語サーバーの解析（`analyze_inputs_for_editor`）の診断（候補・help・修正案を含む全体の `Debug`）が、名前を書いた std だけを入力にしたときと全 std を入力にしたときで同じ。入力は、すべての opt-in のモジュール名の綴り違い、opt-in の std のソースのすべての識別子（opt-in のモジュールを読み込む名前を除く）を値として書いたもの、予約名で std のソースのないモジュールの未知の関数で、40 個ずつの `def` に分けた （1,249 の入力、全 std での診断 1,249 のうち 437 が候補つき） | **失敗**（Phase 1 の言語サーバーの解析には読み込んでいない opt-in のモジュールの候補がない。`opt_in_candidates` を false にすると失敗する。Phase 1 にある API だけを使う） |
+
+`tests/lsp.rs`（言語サーバーを動かす）:
+
+| テスト | 内容 | Phase 1 のコードでの結果 |
+| --- | --- | --- |
+| `opt_in_module_names_complete_in_a_project_that_names_none` | 名前を書いていないプロジェクトの最上位の補完が、`stdlib::SOURCES` のすべてのモジュールを `kind` 9、`module std::<名前>` で出す | 通る（Phase 1 は全 std を読むので答えが同じ。答えを変えないのが O6 なので、Phase 1 で失敗するテストは書けない）。`ModuleNames` に読み込んでいないモジュールを足さない変更で失敗する |
+| `opt_in_members_complete_and_sign_while_the_first_edit_that_names_them_does_not_parse` | `Json` も `Matrix` も書いていない成功した解析の後、構文解析できない最初の編集で、`Json.`・`Matrix.`・`Json.Value.` の補完と `Json.parse (` のシグネチャヘルプが、別のファイルのコメントで `Json` と `Matrix` を書いた（どの解析も読み込む）プロジェクトの同じ要求と同じ。`parse`・`Null`・`init`・`Items` などを含み、シグネチャは `parse (` で始まり `ref utf8string` を含む | 通る（同上）。`View::members` が常に view の索引を返す変更と、`ModuleNames` の変更で失敗する |
+| `opt_in_module_names_hover_once_an_edit_names_them` | 名前を書いていないプロジェクトで、`Json.parse` と `Matrix.init` を書いた編集の後の `Json`・`parse`・`Matrix`・`init` のホバーが、名前を書いたプロジェクトと同じで、std の文書（「Parses one JSON text」「once per element」）を含む | 通る。ホバーは全 std の索引を使わないので、上のどの変更でも通る（答えが変わらないことを見張るテスト） |
+| `unknown_names_get_the_candidates_and_quickfixes_of_unloaded_opt_in_modules` | `Matrix` も `Json` も書いていないプロジェクトの `Matrx.init`・`parse`・`Null` の診断・修正案・クイックフィックスが、名前を書いたプロジェクトと同じ。`Matrx` は `Matrix`（1 文字違い）、`Null` は `Json.Null`（最後の部分が一致する唯一の名前）の置き換えで、`parse` は `Format.parse` と `Json.parse` が並ぶので修正案がない（期待は名前の距離と std の宣言から手で決めた） | 通る（同上）。`opt_in_candidates` を false にすると失敗する |
+
+既存の `opt_in_matrix_module_completes_and_hovers_when_named`・`opt_in_view_and_tensor_modules_complete_when_named` は通る。
+
+ほかに、テストが変更を捉えることを、変更を 1 つずつ戻した build で確かめた（戻した build のテストの結果。どれも元に戻した）:
+
+| 戻した変更 | 失敗したテスト |
+| --- | --- |
+| O3(b): 構成子のある型で `None` の列を試さない | `instance_index_tries_every_head_that_may_unify` |
+| O3(b): 構成子のない型で `None` の列を試さない | `instance_index_tries_every_head_that_may_unify`・`quiet_instance_trials_choose_like_loud_ones` |
+| O6: `View::members` が常に view の索引を返す | `opt_in_members_complete_and_sign_while_the_first_edit_that_names_them_does_not_parse` |
+| O6: `opt_in_candidates` を立てない | `editor_diagnostics_with_the_named_std_modules_are_those_with_every_std_module`・`unknown_names_get_the_candidates_and_quickfixes_of_unloaded_opt_in_modules` |
+| O6: `ModuleNames` に読み込んでいないモジュールを足さない | `opt_in_module_names_complete_in_a_project_that_names_none`・`opt_in_members_complete_and_sign_while_the_first_edit_that_names_them_does_not_parse` |
+| O6: `load_for_editor` が全 std を読む（Phase 1 の読み込み） | `refresh_loads_the_std_modules_that_check_loads` |
+
+O3(b) の頭にエラーを含む instance を `None` の列に入れること、2 つの列を併せる順は、どのテストでも結果が変わらない（検査の通るプログラムの頭はエラーを含まず、重なりの検査が、閉じた型に一致し得る instance を 1 つにするため）。どちらも `unify` の規則からの保守的な選択として残した。
+
+### T0・T1・T2
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` は各コミットで通った。area のテスト: `cargo test --locked --test lsp`（56 件）、`--lib lsp`（8 件）、`--lib stdlib`（9 件）、`--lib driver`（91 件）、`--lib polymorph`（8 件）、`--lib warnings`（13 件）、`--lib find`（31 件）、`--lib` の全体（748 件が通過、1 件が ignore）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked` は 3,367 件が通過、4 件が skip（1,043 秒。load average 70〜125）。
+- T2: `cargo build --locked` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は UTF-16・UTF-8 の session と features の 4 つが通った。golden と IR は上の表。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/usage.md` は通った（1 page、88 links、5 examples、native の O0/O3 4 runs、test project 1）。`node scripts/gen-docs.mjs --check`（19 blocks、0 stale）、`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-cli-docs.mjs`（4 checks、0 failed）、`node scripts/check-links.mjs`（0 broken）、`node scripts/check-guide-lite.mjs`（0 failed）。`src/runtime/` は変えていない。
+- `TSUZURI_THREADS=8 cargo nextest run --locked` は動かしていない（O3(b)・O6 は並列度を変えない。言語サーバーの golden は 1・8 スレッドでも before と同じ）。VS Code の拡張のテストも動かしていない（拡張は変えておらず、言語サーバーの応答は golden で before と同じ）。
+
+### 文書
+
+- `_features/GUIDE.md` の D-40: 言語サーバーは補完のため全部を読んでいた、と過去形にし、PB08 Phase 2 の改訂（`load_for_editor`、`stdlib::SOURCES` のモジュール名、`std_index`、`find::OptInNames`）を足した。
+- `docs/language.md`: 言語サーバーも名前を書いた opt-in のモジュールだけを読み、名前を書いていないモジュールの補完・シグネチャヘルプ・未解決の名前の候補と修正案は全 std を読んだときと同じ（`source.fixAll.tsuzuri` の検証だけは全部を読む）。
+- `_tsuzuri/language-reference/compiler/usage.md` の `lsp` の節: 再解析が読む std と、答えが全 std を読んだときと同じこと。
+- `docs/architecture.md`: opt-in std の節（`Project::load` 系の例外は公開の `load_with_overlays` だけになったこと、`ModuleNames`・`std_index`・`find::OptInNames`・`EditorCheck`）、`src/lsp.rs` の行、`src/polymorph.rs` の行（O3(b) の索引）。
+- `docs/benchmarks.md` の PB08 の節: O3(b) と O6 を行い O2・O8 を行わないこと、Phase 2 の経路、比べる binary。値は計測の後に足す。
+- `README.md` は誤りにならないので変えていない（言語サーバーが std を全部読むとは書いていない）。言語リファレンスのほかのページ（opt-in のモジュールのページの「名前を書いたプログラムだけが読み込む」）は、言語サーバーにもそのまま当てはまるようになった。
+
+### チケットから外れた判断
+
+- O3(b): チケットの設計は頭の側（変数・別名・匿名共用体を保守的に扱う）を書いている。問い合わせの型に外側の構成子がないとき（型変数・参照・関数など。比べた試行の大部分は generic な本体の型変数）も、`None` の列だけを試す。`unify` の規則で一致しないことが言え、比べるテストがこの経路を通る（構成子のある型の `None` の列と、構成子のない型の `None` の列をそれぞれ外すと失敗する）。別名は検査の前に展開されて `Type` に残らない。匿名共用体の問い合わせは、規則の上では鍵で引けるが、チケットのとおりすべてを試す。
+- O3(b) の比べるプログラムに、全 std（すべての opt-in のモジュール名をコメントに書いたもの）と、すべてを試す経路を通る `higher_kinds`・`anonymous_unions` を足した（チケットの「12 の fixture と std」）。
+- O6 の読み込み: チケットは `Session::refresh` と `fix_edit` だけが新しい入口を使うと書く。rename の検証（`verify_edits`）も `fix_edit` と同じ読み込みと解析なので同じ入口にした（指示のとおり）。`source.fixAll.tsuzuri` は `tsuzuri fix` の手順で、チケットの対象に入っていないので変えていない。
+- O6 の「同じ索引」: 補完とシグネチャヘルプは全 std の解析の意味の索引（`std_index`）から、診断の候補は std のソースの構文解析から読む名前（`find::OptInNames`）から答える。診断の候補は解析の途中（pool を作るとき）に要るので、解析の前に揃っていなければならない。意味の索引から作ると、最初の再解析が全 std の解析を 1 回余分に払う。構文解析は軽く、候補の pool を作る最初のときに 1 回だけ読む。どちらも process に 1 回だけで、`opt_in_names_are_the_checker_names` が `Names` と同じであることを確かめる。
+- O6 のホバー: 全 std の索引を使う経路はない（上の「実装」）。チケットの「名前を書いていない opt-in のモジュールのホバー」は、名前を書いた編集のホバーとして golden とテストで比べた。
+- `check::EditorCheck` は、Phase 1 の O4(b) の `copy_facts: Option<&mut Option<CopyFacts>>` 引数（`analyze_inputs_unannotated`・`check_modules_with_capture`・`check_modules_collect`）を置き換えた（引数を増やさず、言語サーバーの解析の要求を 1 つにまとめるため）。
+- golden: Phase 2 の場面を足したので、言語サーバーの before の golden を作り直した（`p2-before-a`・`p2-before-b`）。Phase 2 の場面に `unknown_probe`（`parse`・`Null`）と `Json.Value.`・`std::` の補完を足した（チケットの 2 つの場面に加えて）。
+
+### 残っている問題
+
+- 手順 9 の計測（M1〜M4、PX03）と profile は、負荷の低い機械で `tsuzuri-p1` と `tsuzuri-p2`（と before）を比べて別に行い、Phase 1 の値と分けて記録する（最後の受け入れ条件）。syn200 の `tokens-8` の差も、そこでもう一度見る。言語サーバーの `TSUZURI_TIME_PASSES` の累計は、補完やシグネチャヘルプが `std_index` を作った process では、全 std の解析 1 回を含む（M1・M4 の driver の要求は作らない）。
+- 全 std を読むことでだけ変わる検査の結果（特殊化の予算 65,536 を std の特殊化が使う量、instance の重なりの検査の予算 1,024 組）は、名前を書いていない opt-in のモジュールについて、言語サーバーでも `check` と同じになった。golden と単体テストでは違いは出ていない（チケットの「変わってよいのは出どころだけ」の外にあり得る差として記録する）。
+- G39 の Phase 2・3 との統合: `refresh`（根のディレクトリを取るようになる）の中の読み込みの 1 行、`fix_edit`・`verify_edits` の読み込みの 1 行、`lsp::tests::refresh_loads_the_std_modules_that_check_loads` の `refresh` の呼び出し（引数がディレクトリになる）を合わせる。
