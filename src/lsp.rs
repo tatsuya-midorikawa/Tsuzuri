@@ -3116,6 +3116,13 @@ impl Inbox {
         }
     }
 
+    /// Records the cancellation of `id` again.
+    fn cancel(&self, id: String) {
+        if let Ok(mut state) = self.state.lock() {
+            state.cancelled.insert(id);
+        }
+    }
+
     fn handled(&self, bytes: usize) {
         if let Ok(mut state) = self.state.lock() {
             state.bytes = state.bytes.saturating_sub(bytes);
@@ -3237,10 +3244,13 @@ impl Queue {
     /// request's cancellation is not dropped as a late one.
     fn push(&mut self, event: InputEvent, inbox: &Inbox) {
         let item = Queued::new(event);
-        if let Some(id) = item.message().and_then(cancelled_id)
-            && !self.requests.contains_key(&id)
-        {
-            if self.recent.contains(&id) {
+        if let Some(id) = item.message().and_then(cancelled_id) {
+            if self.requests.contains_key(&id) {
+                // The reader recorded it when it read it, but a late cancellation of an answered
+                // request with the same id, queued before the reused request, may have forgotten it
+                // since.
+                inbox.cancel(id);
+            } else if self.recent.contains(&id) {
                 inbox.forget(&id);
             } else {
                 self.unmatched.push_back(id);

@@ -2909,30 +2909,51 @@ fn cancellations_of_unknown_ids_leave_room_for_later_ones() {
 /// G39 段 11: JSON-RPC ids need be unique only among outstanding requests. A client that reuses the
 /// id of an answered request can cancel the new request: the server forgets the answered id when a
 /// request with it arrives, so the cancellation is not taken for a late one of the answered request.
+/// A late cancellation of the answered request (one sent while its response was on the way) that
+/// arrives just before the new request cancels neither the new request nor drops its cancellation.
 #[test]
 fn a_reused_request_id_can_be_cancelled() {
     use serde_json::json;
     let (fixture, mut server) = live_session(&P1);
     let main = fixture.uri("Main.tz");
     let hover = json!({"textDocument": {"uri": main}, "position": position(P1_MAIN, "read (read", "utf-16")});
-    server.send(json!({"id": 7, "method": "textDocument/hover", "params": hover}));
-    let first = server.response(7);
-    assert!(first["result"]["contents"].is_object(), "{first}");
-    // The change makes the next hover refresh, so that the rest arrives while it is computed.
+    for id in [7, 8, 9] {
+        server.send(json!({"id": id, "method": "textDocument/hover", "params": hover}));
+        let first = server.response(id);
+        assert!(first["result"]["contents"].is_object(), "{first}");
+    }
+    // The change makes the next hover refresh, so that the rest arrives while it is computed and
+    // joins the queue at once.
     server.change(&main, 2, P1_MAIN);
     let busy = ask(&mut server, "textDocument/hover", hover);
-    server.send(json!({"id": 7, "method": "textDocument/documentSymbol", "params": {"textDocument": {"uri": main}}}));
+    let symbols = |id: u64| json!({"id": id, "method": "textDocument/documentSymbol", "params": {"textDocument": {"uri": main}}});
+    // 7: reused and cancelled.
+    server.send(symbols(7));
     server.notify("$/cancelRequest", json!({"id": 7}));
+    // 8: a late cancellation of the answered 8, then 8 reused and cancelled.
+    server.notify("$/cancelRequest", json!({"id": 8}));
+    server.send(symbols(8));
+    server.notify("$/cancelRequest", json!({"id": 8}));
+    // 9: a late cancellation of the answered 9, then 9 reused and not cancelled.
+    server.notify("$/cancelRequest", json!({"id": 9}));
+    server.send(symbols(9));
     assert!(server.response(busy).get("result").is_some());
-    let second = server.wait(
-        |message| {
-            message.get("id") == Some(&json!(7))
-                && message.get("method").is_none()
-                && (message.get("error").is_some() || message["result"].is_array())
-        },
-        "the response to the second request 7",
-    );
-    assert_eq!(second["error"]["code"], -32800, "{second}");
+    let second = |server: &mut live::Server, id: u64| {
+        server.wait(
+            |message| {
+                message.get("id") == Some(&json!(id))
+                    && message.get("method").is_none()
+                    && (message.get("error").is_some() || message["result"].is_array())
+            },
+            &format!("the response to the second request {id}"),
+        )
+    };
+    for id in [7, 8] {
+        let response = second(&mut server, id);
+        assert_eq!(response["error"]["code"], -32800, "{response}");
+    }
+    let response = second(&mut server, 9);
+    assert!(response["result"].is_array(), "{response}");
     server.finish();
 }
 
