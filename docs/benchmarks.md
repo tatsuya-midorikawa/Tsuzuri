@@ -5709,6 +5709,34 @@ PB07 の個別の測定（上の「既定の判断」）は、1 分の load aver
 
 速度の合否は置かず、測った値を記録します。Apple M1 Max・macOS 27.0.1・`rustc 1.98.1` の release ビルドで、load average は 9〜25 でした。G27 の 200 モジュールの合成プロジェクトの `check`（知識グラフを消してから。7 回）を `TSUZURI_TIME_PASSES=1` で測ると、`views/*.mmd` を作る `kg-views` は 3.03〜3.11 ms で、知識グラフの段（`kg-capture` から `kg-publish` まで、約 151 ms）の約 2%、`check` 全体（約 280 ms）の約 1.1% です（G30 の停止条件 4 の 5% に届きません）。200 モジュールでは `module` の図はノードの上限 60 で畳まれ、`types` は 200 の record を 60 を超えるのでモジュールごとにまとめます。
 
+## 言語サーバーの再解析（PB08、2026-11-20〜）
+
+言語サーバーの 1 回の再解析と CLI の `check` から、捨てる診断を作る計算と重複した解析を除いた変更（[PB08](../_perfs/PB08-lsp-refresh-cost.md) の Phase 1）の記録です。速度の合否は置きません。
+
+**実装した経路**: 出力（診断・補完・ホバー・インレイヒント・修正案、IR）は変えません。
+
+- O1: 未使用の私的な宣言の到達の走査（`unused_private`）が、std を含むすべての関数の型の名前を、診断を作らない照合（`Names::quiet_named_type`。`named_type` の Ok の条件と同じ `type_lookup`）で引きます。宣言された型でない名前（`i64`、型変数）ごとに、プログラムのすべての型の名前の候補の表を作っていました。
+- O3: `matching_instance` が型クラスの instance を順に試すときの unify は、合わない instance の `E1003` の文言を作りません（コード・kind・位置は同じで、unify の判断は変わりません）。
+- O4(a)・O4(b): インレイヒントと `W1006` の `costly_sites` は、利用者の関数の本体だけを所有権の検査にかけ、言語サーバーでは型検査の所有権の検査が求めた call facts を使います（`gpu_devices::lower_kernels` が本体を書き換えたときは求め直します）。
+- O5: 言語サーバーの再解析と、修正案・リネームの検証の再解析は、CLI と同じく使える core 数（最大 8、`TSUZURI_THREADS` があればそれ）で解析します。
+- O9: 言語サーバーは、診断を送ってから、インレイヒントの複製と効果の推論を求めます。
+
+計画のまま、計測で効果が見えたら足すもの: O2（`unused_private` の辺を到達した節点だけ作る）、O3(b)（instance の索引）、O8（std の構文解析の結果を再解析をまたいで使う）。Phase 2（O6、言語サーバーも名前を書いた opt-in の std だけを読む）は、Phase 1 の計測で目標に届かないときだけ行います。
+
+**測り方**: workload はチケットの「計測手順」のとおりで、`node benchmarks/lsp/workloads.mjs target/perf/PB08/projects` が作り直します（`examples` の hello・point・polymorphism、`tests/fixtures` の conventions・json・anonymous_unions・list_fsharp・in_place_writes の写し、6 ファイル 215 KB の big、201 ファイル 727 KB の syn200、すべての opt-in のモジュール名をコメントに書いた hello・big の `-allstd`）。
+
+```sh
+node benchmarks/run-lsp.mjs <compiler> --out target/perf/PB08-after --projects hello,big,syn200 --threads unset,1,8 --samples 11
+node benchmarks/run-build.mjs <compiler> --sizes 200,1000 --languages tsuzuri --variants check --out target/perf/PB08-px03-after
+node benchmarks/metrics.mjs report target/perf/PB08-after --baseline target/perf/PB08-before
+```
+
+`run-lsp.mjs` は PX01 の record（suite `lsp`）を書きます: 1 回の再解析（`didChange` からその直後の `semanticTokens/full` の応答まで。`refresh-<スレッド>`）、変更なしの `semanticTokens/full`（`tokens-<スレッド>`）、`didChange` からその版の `publishDiagnostics` まで（200 ms の debounce を含む。`publish-comment-<スレッド>`・`publish-error-<スレッド>`）、big の 5 つの `codeAction`（`codeaction-*`。action の題の一覧は `projects.json`）、CLI の `check`（`TSUZURI_CACHE_DIR=`、1 スレッドと自動。`check-1`・`check-auto`）。
+
+出力が変わらないことは、`benchmarks/lsp/golden.mjs` の golden（`check --json` の終了コード・stdout・stderr と知識グラフのファイル、442 個、1 スレッドと自動。10 の workload の言語サーバーの記録）と、`TSUZURI_BASELINE=<before> node tests/parallel_frontend.mjs <after>`（IR）で確かめます。
+
+**結果**: 計測待ちです。before と after の交互の計測（各組 9 回以上、M1 は 11 回以上）と profile は、負荷の低い機械で行い、日付・環境・コミット・中央値・生データの場所をここに書きます。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。
