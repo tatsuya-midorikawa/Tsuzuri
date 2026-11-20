@@ -3265,8 +3265,9 @@ struct Queue {
 impl Queue {
     /// Takes a message from the reader. A cancellation of a queued request is kept for it; one of an
     /// answered request is dropped; any other is kept for a request that may follow, the latest
-    /// `MAX_REMEMBERED_IDS` of them. A request with the id of an answered one (ids need be unique
-    /// only among outstanding requests) makes the server forget the answered one, so that the new
+    /// `MAX_REMEMBERED_IDS` of them, and belongs to that request once it arrives (later unknown ids
+    /// no longer push it out). A request with the id of an answered one (ids need be unique only
+    /// among outstanding requests) makes the server forget the answered one, so that the new
     /// request's cancellation is not dropped as a late one.
     fn push(&mut self, event: InputEvent, inbox: &Inbox) {
         let item = Queued::new(event);
@@ -3291,6 +3292,9 @@ impl Queue {
             if self.recent.remove(&id) {
                 self.answered.retain(|answered| *answered != id);
             }
+            // A cancellation that arrived before the request is now the queued request's: dropping
+            // it as the oldest unmatched one would forget it (Copilot review of PR #119).
+            self.unmatched.retain(|unmatched| *unmatched != id);
             *self.requests.entry(id).or_default() += 1;
         }
         if let Some(document) = item.modified() {
@@ -3724,6 +3728,31 @@ mod tests {
         assert_eq!(result.unwrap_err().0, -32800);
         assert_eq!(calls.get(), 1);
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// Copilot review of PR #119: a cancellation that arrives before its request belongs to the
+    /// request once the request is queued, so the cancellations of unknown ids that follow cannot
+    /// push it out of the ones kept for a request that may follow.
+    #[test]
+    fn a_cancellation_before_its_request_survives_later_unknown_ones() {
+        let inbox = Inbox::default();
+        let mut queue = Queue::default();
+        // As the reader does: count and record a message, then pass it on.
+        let mut arrive = |message: Value| {
+            let message = Ok(message);
+            inbox.received(&message, 1);
+            queue.push(InputEvent::Message(message, 1), &inbox);
+        };
+        arrive(json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": 5}}));
+        arrive(
+            json!({"jsonrpc": "2.0", "id": 5, "method": "workspace/symbol", "params": {"query": ""}}),
+        );
+        for ghost in 0..=MAX_REMEMBERED_IDS {
+            arrive(
+                json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": format!("ghost-{ghost}")}}),
+            );
+        }
+        assert!(inbox.is_cancelled("5"));
     }
 
     /// Copilot review of PR #119: an empty message costs nothing by its body, but it counts against
