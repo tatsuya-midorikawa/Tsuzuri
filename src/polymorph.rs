@@ -415,15 +415,21 @@ pub(super) struct Inference {
 thread_local! {
     /// How many mismatch messages `mismatch` wrote on this thread (PB08).
     pub(crate) static MISMATCH_TEXTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// Whether `matching_instance` also tries every instance of the class in order, with quiet
-    /// inferences and with inferences that write their messages, and checks that they choose the
-    /// same instance and types as its indexed quiet trials (PB08 O3 and O3(b)).
-    static COMPARE_INSTANCE_TRIALS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// How many times `matching_instance` compared the two.
-    static COMPARED_INSTANCE_TRIALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// How many of those trials the index narrowed (PB08 O3(b)).
-    static INDEXED_INSTANCE_TRIALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
+
+/// While `parallel::COMPARE_INSTANCE_TRIALS` is set on a thread (and on the workers of the stages
+/// that it starts), `matching_instance` also tries every instance of the class in order, with
+/// quiet inferences and with inferences that write their messages, and checks that they choose
+/// the same instance and types as its indexed quiet trials (PB08 O3 and O3(b)). It counts in the
+/// process, workers included: how many times it compared the two, and how many of those trials the
+/// index narrowed. The tests that set the switch take turns (`COMPARING`), so that each counts
+/// only its own trials.
+#[cfg(test)]
+static COMPARED_INSTANCE_TRIALS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static INDEXED_INSTANCE_TRIALS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// The `E1003` of a type mismatch; `expected` and `found` are the displayed types.
 fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
@@ -2443,10 +2449,11 @@ impl Classes {
     ) -> Option<(&InstanceTemplate, BTreeMap<String, Type>)> {
         let found = self.unifying_instance(class, ty, types, Inference::quiet, true);
         #[cfg(test)]
-        if COMPARE_INSTANCE_TRIALS.get() {
-            COMPARED_INSTANCE_TRIALS.set(COMPARED_INSTANCE_TRIALS.get() + 1);
+        if crate::parallel::COMPARE_INSTANCE_TRIALS.get() {
+            use std::sync::atomic::Ordering::Relaxed;
+            COMPARED_INSTANCE_TRIALS.fetch_add(1, Relaxed);
             if self.instance_candidates(class, ty, types).is_some() {
-                INDEXED_INSTANCE_TRIALS.set(INDEXED_INSTANCE_TRIALS.get() + 1);
+                INDEXED_INSTANCE_TRIALS.fetch_add(1, Relaxed);
             }
             let key = |found: &Option<(&InstanceTemplate, BTreeMap<String, Type>)>| {
                 found.as_ref().map(|(instance, substitutions)| {
@@ -6644,9 +6651,74 @@ mod tests {
         assert!(unified >= 5 && failed >= 10, "{unified} {failed}");
     }
 
+    /// Analyzes each of `programs` on `threads` threads (`Parallelism::eager`: every stage with two
+    /// items or more runs on workers) while `matching_instance` compares its trials, and returns how
+    /// many trials it compared and how many of them the index narrowed. Every program must check.
+    fn compared_instance_trials(programs: &[&[(&str, &str)]], threads: usize) -> (usize, usize) {
+        use crate::check::ModuleOrigin;
+        use crate::parallel::COMPARE_INSTANCE_TRIALS;
+        use std::sync::atomic::Ordering::Relaxed;
+        /// The tests that compare take turns, so that the counts are theirs alone.
+        static COMPARING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        /// Turns the switch off again, also when an analysis panics.
+        struct Off;
+        impl Drop for Off {
+            fn drop(&mut self) {
+                COMPARE_INSTANCE_TRIALS.set(false);
+            }
+        }
+        let _turn = COMPARING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = super::COMPARED_INSTANCE_TRIALS.load(Relaxed);
+        let indexed_before = super::INDEXED_INSTANCE_TRIALS.load(Relaxed);
+        COMPARE_INSTANCE_TRIALS.set(true);
+        let off = Off;
+        let results: Vec<_> = programs
+            .iter()
+            .map(|sources| {
+                let std = crate::stdlib::sources_for(sources.iter().map(|(_, text)| *text));
+                let inputs: Vec<_> = sources
+                    .iter()
+                    .map(|(path, text)| (*path, *text, ModuleOrigin::User))
+                    .chain(
+                        std.iter()
+                            .map(|(path, text)| (*path, *text, ModuleOrigin::Std)),
+                    )
+                    .map(|(path, text, origin)| crate::SourceInput {
+                        path,
+                        text,
+                        origin,
+                        namespace: "",
+                        edition: crate::syntax::Edition::LATEST,
+                        package: None,
+                    })
+                    .collect();
+                crate::analyze_inputs_with(
+                    &inputs,
+                    None,
+                    None,
+                    crate::parallel::Parallelism::eager(threads),
+                )
+            })
+            .collect();
+        drop(off);
+        for (sources, result) in programs.iter().zip(results) {
+            if let Err(errors) = result {
+                panic!("{}: {errors:?}", sources[0].1.lines().next().unwrap_or(""));
+            }
+        }
+        (
+            super::COMPARED_INSTANCE_TRIALS.load(Relaxed) - before,
+            super::INDEXED_INSTANCE_TRIALS.load(Relaxed) - indexed_before,
+        )
+    }
+
     /// PB08 O3 and O3(b): the indexed quiet trials of `matching_instance` choose the same instance
     /// and the same types as trying every instance in order, quietly and with messages, in programs
     /// with many instances and in std (a program that names every opt-in module loads all of it).
+    /// The comparison reaches the workers of the parallel stages: it compares as many trials on 8
+    /// threads as on 1.
     #[test]
     fn quiet_instance_trials_choose_like_loud_ones() {
         let every_std = format!(
@@ -6743,29 +6815,18 @@ mod tests {
                 include_str!("../tests/fixtures/anonymous_unions/Main.tz"),
             )],
         ];
-        let before = super::COMPARED_INSTANCE_TRIALS.get();
-        let indexed_before = super::INDEXED_INSTANCE_TRIALS.get();
-        super::COMPARE_INSTANCE_TRIALS.set(true);
-        let results: Vec<_> = programs
-            .iter()
-            .map(|sources| {
-                crate::analyze_modules_with_edition(sources, crate::syntax::Edition::LATEST)
-            })
-            .collect();
-        super::COMPARE_INSTANCE_TRIALS.set(false);
-        for (sources, result) in programs.iter().zip(results) {
-            if let Err(error) = result {
-                panic!("{}: {error:?}", sources[0].1.lines().next().unwrap_or(""));
-            }
-        }
-        let compared = super::COMPARED_INSTANCE_TRIALS.get() - before;
-        let indexed = super::INDEXED_INSTANCE_TRIALS.get() - indexed_before;
+        let (compared, indexed) = compared_instance_trials(&programs, 1);
         eprintln!("compared {compared} instance trials, {indexed} of them indexed");
         assert!(compared > 1000, "{compared}");
         // Nearly every trial is indexed, and the rest try every instance.
         assert!(
             compared / 10 * 9 < indexed && indexed < compared,
             "{indexed} of {compared}"
+        );
+        assert_eq!(
+            compared_instance_trials(&programs, 8),
+            (compared, indexed),
+            "on 8 threads"
         );
     }
 
@@ -6802,16 +6863,14 @@ let maybe: Maybe<i64> = Some 1
 let total = Classes.Tag.tag (ref five) + Classes.Tag.tag (ref pair) + Classes.Tag.tag (ref triple) + Classes.Tag.tag (ref items) + Classes.Tag.tag (ref "s") + Classes.Tag.tag (ref f) + Classes.Tag.tag (ref maybe) + Classes.Tag.tag (ref (Point { x: 1 })) + Classes.Tag.tag (ref true) + Classes.Any.any (ref five) + Classes.Any.any (ref "x") + generic five + generic [true]
 total
 "#;
-        let before = super::COMPARED_INSTANCE_TRIALS.get();
-        super::COMPARE_INSTANCE_TRIALS.set(true);
-        let result = crate::analyze_modules_with_edition(
-            &[("Main.tz", main), ("Classes.tt", classes)],
-            crate::syntax::Edition::LATEST,
-        );
-        super::COMPARE_INSTANCE_TRIALS.set(false);
-        result.unwrap_or_else(|error| panic!("{error:?}"));
-        let compared = super::COMPARED_INSTANCE_TRIALS.get() - before;
+        let program: &[(&str, &str)] = &[("Main.tz", main), ("Classes.tt", classes)];
+        let (compared, _) = compared_instance_trials(&[program], 1);
         assert!(compared > 20, "{compared}");
+        assert_eq!(
+            compared_instance_trials(&[program], 8).0,
+            compared,
+            "on 8 threads"
+        );
     }
 
     #[test]

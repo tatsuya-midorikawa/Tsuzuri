@@ -135,6 +135,11 @@ thread_local! {
     /// How many stages started workers on this thread: tests use it to see that a stage really ran
     /// in parallel (or, for a small input, did not).
     pub(crate) static PARALLEL_STAGES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Whether `polymorph`'s `matching_instance` compares its indexed trials with trying every
+    /// instance (PB08 O3(b)). A test sets it on its own thread, and the workers of every stage take
+    /// it from the thread that starts the stage, so it reaches the whole of the test's analyses at
+    /// any thread count and none of the other tests that share the process.
+    pub(crate) static COMPARE_INSTANCE_TRIALS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The results of the chunks that the workers have finished, and the chunk that the consumer waits for.
@@ -282,7 +287,11 @@ fn ordered_for_each_with_stack<T, P, C>(
         }),
         ready: Condvar::new(),
     };
+    #[cfg(test)]
+    let compare_instance_trials = COMPARE_INSTANCE_TRIALS.get();
     let work = || {
+        #[cfg(test)]
+        COMPARE_INSTANCE_TRIALS.set(compare_instance_trials);
         while !shared.stop.load(Ordering::Relaxed) {
             let position = shared.claimed.fetch_add(1, Ordering::Relaxed);
             if position >= chunks {
