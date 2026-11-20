@@ -139,6 +139,19 @@ async function session(encoding) {
     utimesSync(join(root, "Shapes.tz"), stamped.atime, stamped.mtime);
     notify("workspace/didChangeWatchedFiles", { changes: [{ uri: shapesUri, type: 2 }] });
     assert.ok((await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") })).result);
+    // G39: a file that is not open and leaves the project gets an empty list at the URI of its diagnostics.
+    const unused = join(root, "Unused.tz");
+    const unusedUri = pathToFileURL(unused).href;
+    writeFileSync(unused, "fn unused() -> i64 { true }");
+    notify("workspace/didChangeWatchedFiles", { changes: [{ uri: unusedUri, type: 1 }] });
+    await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") });
+    const reported = await wait((message) => message.method === "textDocument/publishDiagnostics" && message.params.uri.endsWith("/Unused.tz") && message.params.diagnostics.length > 0, "diagnostics for Unused.tz");
+    assert.equal(reported.params.diagnostics[0].code, "E1003");
+    rmSync(unused);
+    notify("workspace/didChangeWatchedFiles", { changes: [{ uri: unusedUri, type: 3 }] });
+    assert.ok((await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") })).result);
+    const removed = await wait((message) => message.method === "textDocument/publishDiagnostics" && message.params.uri === reported.params.uri && message.params.diagnostics.length === 0, "an empty list for the removed Unused.tz");
+    assert.equal(removed.params.version, undefined);
     notify("textDocument/didOpen", { textDocument: { uri: nestedUri, languageId: "tsuzuri", version: 1, text: "fn nested() -> i64 { true }" } });
     assert.equal((await request("textDocument/hover", { textDocument: { uri }, position: position(valid, "identity number") })).result, null);
     notify("textDocument/didChange", { textDocument: { uri: nestedUri, version: 2 }, contentChanges: [{ text: "fn nested() -> i64 { 42 }" }] });

@@ -188,6 +188,12 @@ pub fn file_uri(path: &Path) -> Option<String> {
     if cfg!(windows) && path.as_bytes().get(1) == Some(&b':') {
         uri.push('/');
     }
+    escape_path(&mut uri, path);
+    Some(uri)
+}
+
+/// Appends `path` to a URI, escaping every byte but ASCII letters, digits and `/-._~:`.
+fn escape_path(uri: &mut String, path: &str) {
     for byte in path.bytes() {
         if byte.is_ascii_alphanumeric() || b"/-._~:".contains(&byte) {
             uri.push(char::from(byte));
@@ -196,7 +202,41 @@ pub fn file_uri(path: &Path) -> Option<String> {
             let _ = write!(uri, "%{byte:02X}");
         }
     }
+}
+
+/// The URI `root` followed by the components of `relative`, each escaped as `file_uri` escapes it
+/// (G39 D8): the client's spelling of a file under one of its roots.
+fn uri_under(root: &str, relative: &Path) -> Option<String> {
+    let mut uri = root.to_owned();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return None;
+        };
+        if !uri.ends_with('/') {
+            uri.push('/');
+        }
+        escape_path(&mut uri, name.to_str()?);
+    }
     Some(uri)
+}
+
+/// `path` with its longest existing ancestor canonicalized, as `document_path` places a document:
+/// a removed file or directory stays under the directory that remains (G39 段 8).
+fn canonical_existing(path: &Path) -> Option<PathBuf> {
+    let mut removed = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(canonical) = current.canonicalize() {
+            return Some(
+                removed
+                    .iter()
+                    .rev()
+                    .fold(canonical, |path, name| path.join(name)),
+            );
+        }
+        removed.push(current.file_name()?);
+        current = current.parent()?;
+    }
 }
 
 pub fn uri_path(uri: &str) -> Result<PathBuf, String> {
@@ -290,13 +330,19 @@ struct Session {
     initialized: bool,
     shutdown: bool,
     encoding: PositionEncoding,
-    roots: Vec<PathBuf>,
+    /// The roots of `initialize` (`rootUri`, `workspaceFolders`), each with the URI that the client
+    /// named it with (G39 D8).
+    client_roots: Vec<(PathBuf, String)>,
     buffers: BTreeMap<PathBuf, OpenBuffer>,
     projects: BTreeMap<PathBuf, ProjectState>,
     /// The last analyzed state of each root, kept while edits break analysis.
     good: BTreeMap<PathBuf, ProjectState>,
-    pending: BTreeMap<PathBuf, (PathBuf, Instant)>,
+    /// The roots to analyze again, each by when.
+    pending: BTreeMap<PathBuf, Instant>,
     closed: BTreeMap<PathBuf, String>,
+    /// For each analyzed root, the files that its last refresh sent a non-empty list to, with the URI
+    /// it sent to (G39 D5).
+    published: BTreeMap<PathBuf, BTreeMap<PathBuf, String>>,
 }
 
 impl Default for Session {
@@ -305,56 +351,120 @@ impl Default for Session {
             initialized: false,
             shutdown: false,
             encoding: PositionEncoding::Utf16,
-            roots: Vec::new(),
+            client_roots: Vec::new(),
             buffers: BTreeMap::new(),
             projects: BTreeMap::new(),
             good: BTreeMap::new(),
             pending: BTreeMap::new(),
             closed: BTreeMap::new(),
+            published: BTreeMap::new(),
         }
     }
 }
 
+/// What one refresh of a root sent: the URI of each file that got a non-empty list, and every URI
+/// that got a list (G39 D5).
+#[derive(Default)]
+struct Sent {
+    nonempty: BTreeMap<PathBuf, String>,
+    uris: BTreeSet<String>,
+}
+
+impl Sent {
+    fn note(&mut self, path: &Path, uri: Option<String>, nonempty: bool) {
+        let Some(uri) = uri else {
+            return;
+        };
+        if nonempty {
+            self.nonempty.insert(path.to_owned(), uri.clone());
+        }
+        self.uris.insert(uri);
+    }
+}
+
 impl Session {
-    fn project_root(&self, path: &Path) -> PathBuf {
-        self.roots
+    /// The client's roots that exist, canonicalized, with the URI that the client named each with.
+    fn canonical_roots(&self) -> impl Iterator<Item = (PathBuf, &str)> {
+        self.client_roots
             .iter()
-            .filter_map(|root| root.canonicalize().ok())
-            .filter(|root| path.starts_with(root))
-            .max_by_key(|root| root.components().count())
+            .filter_map(|(root, uri)| Some((root.canonicalize().ok()?, uri.as_str())))
+    }
+
+    /// The innermost client root that contains the canonical `path`, with its URI.
+    fn client_root(&self, path: &Path) -> Option<(PathBuf, &str)> {
+        self.canonical_roots()
+            .filter(|(root, _)| path.starts_with(root))
+            .max_by_key(|(root, _)| root.components().count())
+    }
+
+    fn project_root(&self, path: &Path) -> PathBuf {
+        self.client_root(path)
+            .map(|(root, _)| root)
             .unwrap_or_else(|| path.parent().unwrap().to_owned())
     }
 
     fn schedule(&mut self, path: &Path) {
         let directory = self.project_root(path);
+        self.schedule_root(directory);
+    }
+
+    fn schedule_root(&mut self, directory: PathBuf) {
         if let Some(state) = self.projects.remove(&directory)
             && state.index.is_some()
         {
             self.good.insert(directory.clone(), state);
         }
-        self.pending.insert(
-            directory,
-            (path.to_owned(), Instant::now() + Duration::from_millis(200)),
-        );
+        self.pending
+            .insert(directory, Instant::now() + Duration::from_millis(200));
     }
 
+    /// The roots that a change of the files at `uris` makes the server analyze again (G39 D7): the
+    /// client root of each changed path, placed by its directory that remains, the roots of the open
+    /// documents, and the roots whose diagnostics are on the client. A path outside every client root
+    /// adds no root.
+    fn changed_roots<'u>(&self, uris: impl Iterator<Item = &'u str>) -> BTreeSet<PathBuf> {
+        let mut roots: BTreeSet<PathBuf> = uris
+            .filter_map(|uri| canonical_existing(&uri_path(uri).ok()?))
+            .filter_map(|path| Some(self.client_root(&path)?.0))
+            .collect();
+        roots.extend(self.buffers.keys().map(|path| self.project_root(path)));
+        roots.extend(self.published.keys().cloned());
+        roots
+    }
+
+    /// Sends `diagnostics` for `path` and returns the URI it sent to. An analysis's non-empty list
+    /// is not sent to a document that the client closed (`None`); a load error is (G39 D6).
     fn publish(
         &self,
         output: &mut impl Write,
         path: &Path,
         diagnostics: Vec<Value>,
-    ) -> io::Result<()> {
-        if self.closed.contains_key(path) && !diagnostics.is_empty() {
-            return Ok(());
+        load_error: bool,
+    ) -> io::Result<Option<String>> {
+        if !load_error && self.closed.contains_key(path) && !diagnostics.is_empty() {
+            return Ok(None);
         }
-        let uri = self
-            .buffers
-            .get(path)
-            .map(|buffer| buffer.uri.clone())
-            .or_else(|| self.closed.get(path).cloned())
-            .or_else(|| file_uri(path));
+        let Some(uri) = self.uri(path) else {
+            return Ok(None);
+        };
+        self.send_diagnostics(output, &uri, Some(path), diagnostics)?;
+        Ok(Some(uri))
+    }
+
+    /// One `publishDiagnostics` to `uri`, with the version of `path`'s open buffer when the buffer
+    /// has that URI.
+    fn send_diagnostics(
+        &self,
+        output: &mut impl Write,
+        uri: &str,
+        path: Option<&Path>,
+        diagnostics: Vec<Value>,
+    ) -> io::Result<()> {
         let mut params = json!({"uri": uri, "diagnostics": diagnostics});
-        if let Some(buffer) = self.buffers.get(path) {
+        if let Some(buffer) = path
+            .and_then(|path| self.buffers.get(path))
+            .filter(|buffer| buffer.uri == uri)
+        {
             params["version"] = json!(buffer.version);
         }
         write_message(
@@ -363,20 +473,58 @@ impl Session {
         )
     }
 
-    fn refresh(&mut self, path: &Path, output: &mut impl Write) -> io::Result<()> {
-        let directory = self.project_root(path);
-        self.pending.remove(&directory);
+    /// Clears what the last refresh of `directory` sent and this one did not replace: an empty list
+    /// to each URI of its record that this refresh sent nothing to (a file that left the project or
+    /// no longer has diagnostics, a URI that the file is no longer spelled with). This refresh's
+    /// record replaces it (G39 D5).
+    fn retire(&mut self, output: &mut impl Write, directory: &Path, sent: Sent) -> io::Result<()> {
+        for (path, uri) in self.published.remove(directory).unwrap_or_default() {
+            if !sent.uris.contains(&uri) {
+                self.send_diagnostics(output, &uri, Some(&path), Vec::new())?;
+            }
+        }
+        if !sent.nonempty.is_empty() {
+            self.published.insert(directory.to_owned(), sent.nonempty);
+        }
+        Ok(())
+    }
+
+    /// The diagnostic of a project that does not load, at its span in the file's current text (an
+    /// open buffer's or the disk's), or at 0:0 when the text cannot be read or has no such span.
+    fn load_error(&self, error: &crate::driver::SourceError) -> Value {
+        let span = error.diagnostic.span;
+        let range = (span.end > 0)
+            .then(|| {
+                let text = match self.buffers.get(&error.path) {
+                    Some(buffer) => std::borrow::Cow::Borrowed(buffer.text.as_str()),
+                    None => crate::driver::read_source_text(&error.path).ok()?.into(),
+                };
+                PositionMapper::new(&text, self.encoding).range(&text, span)
+            })
+            .flatten()
+            .unwrap_or_else(
+                || json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}),
+            );
+        json!({"range": range, "severity": 1, "code": error.diagnostic.code, "source": "tsuzuri", "message": error.diagnostic.message})
+    }
+
+    fn refresh(&mut self, directory: &Path, output: &mut impl Write) -> io::Result<()> {
+        self.pending.remove(directory);
         let overlays = self
             .buffers
             .iter()
             .map(|(path, buffer)| (path.clone(), buffer.text.clone()))
             .collect();
-        let project = match Project::load_with_overlays(&directory, &overlays) {
+        let mut sent = Sent::default();
+        let project = match Project::load_with_overlays(directory, &overlays) {
             Ok(project) => project,
             Err(error) => {
-                self.projects.remove(&directory);
-                self.publish(output, &error.path, vec![json!({"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "severity": 1, "code": error.diagnostic.code, "source": "tsuzuri", "message": error.diagnostic.message})])?;
-                return Ok(());
+                self.projects.remove(directory);
+                // The reason is sent wherever it is, and the other files lose the diagnostics of the
+                // last analysis (G39 D6).
+                let uri = self.publish(output, &error.path, vec![self.load_error(&error)], true)?;
+                sent.note(&error.path, uri, true);
+                return self.retire(output, directory, sent);
             }
         };
         let (analyzed, diagnostics, counts) = analyze(&project);
@@ -393,25 +541,27 @@ impl Session {
             .iter()
             .map(|source| PositionMapper::new(&source.text, self.encoding))
             .collect();
-        for (id, source) in project
-            .sources
-            .iter()
-            .enumerate()
-            .filter(|(_, source)| source.origin == ModuleOrigin::User)
-        {
-            let messages = diagnostics
+        // A source outside the root (a path dependency beside it) is left to the client of its own
+        // root, which sees its changes (G39 D9).
+        for (id, source) in project.sources.iter().enumerate().filter(|(_, source)| {
+            source.origin == ModuleOrigin::User && source.path.starts_with(directory)
+        }) {
+            let messages: Vec<Value> = diagnostics
                 .iter()
                 .filter(|diagnostic| diagnostic.span.source.unwrap_or(project.root) == id)
                 .filter_map(|diagnostic| self.diagnostic_value(&project, &mappers, id, diagnostic))
                 .collect();
-            self.publish(output, &source.path, messages)?;
+            let nonempty = !messages.is_empty();
+            let uri = self.publish(output, &source.path, messages, false)?;
+            sent.note(&source.path, uri, nonempty);
         }
+        self.retire(output, directory, sent)?;
         if index.is_some() {
-            self.good.remove(&directory);
+            self.good.remove(directory);
         }
         let modules = ModuleNames::new(&project);
         self.projects.insert(
-            directory,
+            directory.to_owned(),
             ProjectState {
                 project,
                 index,
@@ -438,19 +588,20 @@ impl Session {
                 self.encoding = PositionEncoding::Utf8;
             }
             if let Some(uri) = params["rootUri"].as_str() {
-                self.roots
-                    .push(uri_path(uri).map_err(|message| invalid(&message))?);
+                self.client_roots.push((
+                    uri_path(uri).map_err(|message| invalid(&message))?,
+                    uri.to_owned(),
+                ));
             }
             if let Some(folders) = params["workspaceFolders"].as_array() {
                 for folder in folders {
-                    self.roots.push(
-                        uri_path(
-                            folder["uri"]
-                                .as_str()
-                                .ok_or_else(|| invalid("workspace folder needs a URI"))?,
-                        )
-                        .map_err(|message| invalid(&message))?,
-                    );
+                    let uri = folder["uri"]
+                        .as_str()
+                        .ok_or_else(|| invalid("workspace folder needs a URI"))?;
+                    self.client_roots.push((
+                        uri_path(uri).map_err(|message| invalid(&message))?,
+                        uri.to_owned(),
+                    ));
                 }
             }
             self.initialized = true;
@@ -485,9 +636,11 @@ impl Session {
         match method {
             "initialized" | "$/cancelRequest" => Ok(Value::Null),
             "workspace/didChangeWatchedFiles" => {
-                let paths: Vec<_> = self.buffers.keys().cloned().collect();
-                for path in paths {
-                    self.schedule(&path);
+                let changes = params["changes"].as_array().map_or(&[][..], Vec::as_slice);
+                let roots =
+                    self.changed_roots(changes.iter().filter_map(|change| change["uri"].as_str()));
+                for root in roots {
+                    self.schedule_root(root);
                 }
                 Ok(Value::Null)
             }
@@ -566,7 +719,7 @@ impl Session {
                     .ok_or_else(|| invalid("textDocument.uri is required"))?;
                 self.closed.insert(path.clone(), uri.to_owned());
                 self.schedule(&path);
-                self.publish(output, &path, Vec::new())
+                self.publish(output, &path, Vec::new(), false)
                     .map_err(|error| (-32603, error.to_string()))?;
                 Ok(Value::Null)
             }
@@ -693,13 +846,9 @@ impl Session {
                 }
             }
             "workspace/symbol" => {
-                let due: Vec<_> = self
-                    .pending
-                    .values()
-                    .map(|(path, _)| path.clone())
-                    .collect();
-                for path in due {
-                    self.refresh(&path, output)
+                let due: Vec<_> = self.pending.keys().cloned().collect();
+                for directory in due {
+                    self.refresh(&directory, output)
                         .map_err(|error| (-32603, error.to_string()))?;
                 }
                 Ok(self.workspace_symbols(params["query"].as_str().unwrap_or("")))
@@ -784,7 +933,7 @@ impl Session {
         let path = document_path(params)?;
         let directory = self.project_root(&path);
         if self.pending.contains_key(&directory) || !self.projects.contains_key(&directory) {
-            self.refresh(&path, output)
+            self.refresh(&directory, output)
                 .map_err(|error| (-32603, error.to_string()))?;
         }
         let source = self.projects.get(&directory).and_then(|state| {
@@ -797,10 +946,17 @@ impl Session {
         Ok((directory, source))
     }
 
+    /// The URI of `path` for the client: its open buffer's, the one it was closed with, or the path
+    /// under the client's spelling of the root that holds it; `file_uri` outside every root (G39 D8).
     fn uri(&self, path: &Path) -> Option<String> {
         self.buffers
             .get(path)
             .map(|buffer| buffer.uri.clone())
+            .or_else(|| self.closed.get(path).cloned())
+            .or_else(|| {
+                let (root, uri) = self.client_root(path)?;
+                uri_under(uri, path.strip_prefix(&root).ok()?)
+            })
             .or_else(|| file_uri(path))
     }
 
@@ -2862,12 +3018,7 @@ pub fn serve(
     let mut resident = crate::resident::ResidentState::new();
     let _resident = crate::resident::Scope::enter(&mut resident);
     loop {
-        let event = if let Some(deadline) = session
-            .pending
-            .values()
-            .map(|(_, deadline)| *deadline)
-            .min()
-        {
+        let event = if let Some(deadline) = session.pending.values().copied().min() {
             receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
         } else {
             receiver
@@ -2878,12 +3029,12 @@ pub fn serve(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let due: Vec<_> = session
                     .pending
-                    .values()
-                    .filter(|(_, deadline)| *deadline <= Instant::now())
-                    .map(|(path, _)| path.clone())
+                    .iter()
+                    .filter(|(_, deadline)| **deadline <= Instant::now())
+                    .map(|(directory, _)| directory.clone())
                     .collect();
-                for path in due {
-                    if let Err(error) = session.refresh(&path, &mut output) {
+                for directory in due {
+                    if let Err(error) = session.refresh(&directory, &mut output) {
                         let _ = writeln!(stderr, "LSP output failed: {error}");
                         return 1;
                     }

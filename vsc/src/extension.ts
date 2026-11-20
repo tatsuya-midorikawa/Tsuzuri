@@ -1,14 +1,14 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
-import { assertSupportedHost, sourcePattern, supportsDebug } from './core';
+import { affectsRoot, assertSupportedHost, sourcePattern, supportsDebug } from './core';
 import { registerEditor } from './editor';
 import { registerTesting } from './testing';
 import { toolchain } from './toolchain';
 import { projectFor, registerWorkflow, reportError } from './workflow';
 
 const clients = new Map<string, LanguageClient>();
-const watchers = new Map<string, vscode.FileSystemWatcher>();
+const watchers = new Map<string, vscode.FileSystemWatcher[]>();
 
 export async function activate(context: vscode.ExtensionContext) {
 	if (!vscode.workspace.isTrusted) {
@@ -34,18 +34,29 @@ export async function activate(context: vscode.ExtensionContext) {
 		}
 		const start = (async () => {
 			const tools = await toolchain(context, document.uri);
-			const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{tz,tt,tc,toml}'));
-			watchers.set(root, watcher);
+			// VS Code reports the files of a deleted or moved folder as one event of the folder, which the source pattern
+			// does not match; the second watcher tells the server of it (G39). The server reads neither the names that
+			// start with '.' nor target/tz/, which the extension's runs rewrite.
+			const fileEvents = [
+				vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{tz,tt,tc,toml}')),
+				vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**'), true, true, false),
+			];
+			watchers.set(root, fileEvents);
 			const client = new LanguageClient('tsuzuri', 'Tsuzuri', {
 				command: tools.compiler, args: ['lsp'], options: { cwd: root, env: tools.env },
 			}, {
 				documentSelector: [{ language: 'tsuzuri', scheme: 'file', pattern: `${root.replaceAll('\\', '/').replace(/[\[\]{}*?]/g, '[$&]')}/${sourcePattern}` }],
 				workspaceFolder: { uri: vscode.Uri.file(root), name: path.basename(root), index: 0 },
-				synchronize: { fileEvents: watcher }, outputChannel: output,
+				synchronize: { fileEvents }, outputChannel: output,
+				middleware: {
+					workspace: {
+						didChangeWatchedFile: (event, next) => affectsRoot(root, vscode.Uri.parse(event.uri).fsPath) ? next(event) : Promise.resolve(),
+					},
+				},
 			});
 			clients.set(root, client);
 			try { await client.start(); }
-			catch (error) { clients.delete(root); watchers.delete(root); watcher.dispose(); throw error; }
+			catch (error) { clients.delete(root); watchers.delete(root); fileEvents.forEach(watcher => watcher.dispose()); throw error; }
 		})();
 		pending.set(root, start);
 		try { await start; } finally { pending.delete(root); }
@@ -89,7 +100,7 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export async function deactivate() {
-	for (const watcher of watchers.values()) { watcher.dispose(); }
+	for (const watcher of [...watchers.values()].flat()) { watcher.dispose(); }
 	watchers.clear();
 	await Promise.allSettled([...clients.values()].map(client => client.stop()));
 	clients.clear();

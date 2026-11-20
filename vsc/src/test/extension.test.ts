@@ -69,6 +69,36 @@ export async function run(): Promise<void> {
 	await waitFor('diagnostics cleared', () => !vscode.languages.getDiagnostics(uri).length ? true : undefined);
 	console.log('VS Code: unsaved Unicode errors, warnings, clearing, multi-root isolation passed.');
 
+	// G39: renaming or deleting a file that is not open clears the language server's diagnostics of its old name, also
+	// when its folder is renamed or deleted (the operations of the Explorer: WorkspaceEdit.renameFile, workspace.fs.delete).
+	const serverCodes = (target: vscode.Uri) => vscode.languages.getDiagnostics(target).filter(item => item.source === 'tsuzuri').map(item => String(item.code));
+	const reported = (description: string, target: vscode.Uri) => waitFor(description, () => serverCodes(target).includes('E1003') ? true : undefined);
+	const gone = (description: string, target: vscode.Uri) => waitFor(description, () => serverCodes(target).length ? undefined : true);
+	const renameFile = async (from: vscode.Uri, to: vscode.Uri) => {
+		const edit = new vscode.WorkspaceEdit();
+		edit.renameFile(from, to);
+		assert.ok(await vscode.workspace.applyEdit(edit));
+	};
+	const stale = vscode.Uri.file(path.join(root, 'Stale.tz'));
+	const renamed = vscode.Uri.file(path.join(root, 'Renamed.tz'));
+	await vscode.workspace.fs.writeFile(stale, Buffer.from('def stale :: i64 = true\n'));
+	await reported('diagnostics of a file that is not open', stale);
+	await renameFile(stale, renamed);
+	await gone('diagnostics of the old name of a renamed file', stale);
+	await reported('diagnostics of the new name of a renamed file', renamed);
+	await vscode.workspace.fs.delete(renamed);
+	await gone('diagnostics of a deleted file', renamed);
+	const folder = vscode.Uri.file(path.join(root, 'Stale'));
+	const moved = vscode.Uri.file(path.join(root, 'Moved'));
+	await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder, 'Inner.tz'), Buffer.from('def inner :: i64 = true\n'));
+	await reported('diagnostics of a file in a folder', vscode.Uri.joinPath(folder, 'Inner.tz'));
+	await renameFile(folder, moved);
+	await gone('diagnostics of a file in a renamed folder', vscode.Uri.joinPath(folder, 'Inner.tz'));
+	await reported('diagnostics of the file in the folder of the new name', vscode.Uri.joinPath(moved, 'Inner.tz'));
+	await vscode.workspace.fs.delete(moved, { recursive: true });
+	await gone('diagnostics of a file in a deleted folder', vscode.Uri.joinPath(moved, 'Inner.tz'));
+	console.log('VS Code: renaming or deleting a file or folder that is not open clears its language server diagnostics.');
+
 	await replace('def reuse :: own [i64] -> i64\nfn reuse a =\n    let b = a\n    Array.length (ref a) + Array.length (ref b)\n');
 	const hints = await waitFor('implicit copy inlay hint', async () => {
 		const values = await vscode.commands.executeCommand<vscode.InlayHint[]>('vscode.executeInlayHintProvider', uri, new vscode.Range(0, 0, 4, 0));
