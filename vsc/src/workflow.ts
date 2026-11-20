@@ -1,7 +1,7 @@
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { Action, affectsRoot, commandArguments, defaultNamespace, exists, inRoot, isNamespace, jsonLines, lldbLaunch, outputPath, plainPath, projectFile, projectRoot, reportedByServer, rootSpelling, sourceFiles, sourcePosition, supportsDebug } from './core';
+import { Action, affectsRoot, commandArguments, defaultNamespace, exists, inRoot, isNamespace, jsonLines, lldbLaunch, outputPath, plainPath, projectFile, ProjectRoot, ProjectRoots, reportedByServer, rootSpelling, sourceFiles, sourcePosition, supportsDebug } from './core';
 import { runCompiler, toolchain } from './toolchain';
 
 /**
@@ -31,20 +31,47 @@ interface RootResult {
 	watcher: vscode.FileSystemWatcher;
 }
 
-export async function projectFor(resource?: vscode.Uri): Promise<string> {
+/**
+ * The project roots of the files (G40 D1). Each directory is read once, until a file or directory below a workspace
+ * folder is created or deleted (`ProjectRoots.changed`) or the workspace folders change.
+ */
+export const projectRoots = new ProjectRoots();
+
+/** The root of a resource, and whether it comes from `tsuzuri.projectPath`, which no change of the files moves. */
+export interface ResourceRoot extends ProjectRoot {
+	configured: boolean;
+}
+
+/** The root of `resource` (by default the active editor's file, or a workspace folder that the user picks). */
+export async function projectRootFor(resource?: vscode.Uri, directory = false): Promise<ResourceRoot> {
 	resource ??= vscode.window.activeTextEditor?.document.uri;
 	let folder = resource ? vscode.workspace.getWorkspaceFolder(resource) : undefined;
 	if (!resource || resource.scheme !== 'file') {
 		folder = vscode.workspace.workspaceFolders?.length === 1 ? vscode.workspace.workspaceFolders[0]
 			: await vscode.window.showWorkspaceFolderPick({ placeHolder: 'Select a Tsuzuri project' });
 		resource = folder?.uri;
+		directory = false;
 	}
 	if (!resource) { throw new Error('Open a Tsuzuri folder or source file first.'); }
 	const configured = vscode.workspace.getConfiguration('tsuzuri', resource).get<string>('projectPath');
 	if (configured) {
-		return path.resolve(folder?.uri.fsPath ?? path.dirname(resource.fsPath), configured);
+		return { root: path.resolve(folder?.uri.fsPath ?? (directory ? resource.fsPath : path.dirname(resource.fsPath)), configured), remaining: false, configured: true };
 	}
-	return projectRoot(resource.fsPath, folder?.uri.fsPath);
+	const found = directory ? await projectRoots.findForDirectory(resource.fsPath, folder?.uri.fsPath)
+		: await projectRoots.find(resource.fsPath, folder?.uri.fsPath);
+	return { ...found, configured: false };
+}
+
+export async function projectFor(resource?: vscode.Uri): Promise<string> {
+	return (await projectRootFor(resource)).root;
+}
+
+/**
+ * The root of a file directly in `directory`. A client or test root whose directory is no longer that root (or, for a
+ * client, whose kind of root changed) is stopped or removed when the files change (G40 D4).
+ */
+export function directoryRoot(directory: string): Promise<ResourceRoot> {
+	return projectRootFor(vscode.Uri.file(directory), true);
 }
 
 /** The Tsuzuri LLDB formatters that the extension ships. */
@@ -59,7 +86,9 @@ export function reportError(error: unknown, output: vscode.OutputChannel) {
 
 export function registerWorkflow(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
 	const diagnostics = vscode.languages.createDiagnosticCollection('tsuzuri-build');
-	context.subscriptions.push(diagnostics);
+	// A workspace folder bounds the roots of its files (G40 D1). This listener comes before those of testing and of the
+	// language servers, which read the roots again.
+	context.subscriptions.push(diagnostics, vscode.workspace.onDidChangeWorkspaceFolders(() => projectRoots.clear()));
 	/** The result of each project root, until the project changes. */
 	const roots = new Map<string, RootResult>();
 	/**

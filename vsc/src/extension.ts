@@ -1,14 +1,20 @@
+import { realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
-import { assertSupportedHost, sourcePattern, supportsDebug } from './core';
+import { assertSupportedHost, directlyIn, sourceSelector, supportsDebug } from './core';
 import { registerEditor } from './editor';
 import { registerTesting } from './testing';
 import { toolchain } from './toolchain';
-import { projectFor, registerWorkflow, reportError } from './workflow';
+import { directoryRoot, projectRootFor, projectRoots, registerWorkflow, reportError } from './workflow';
 
 const clients = new Map<string, LanguageClient>();
 const watchers = new Map<string, vscode.FileSystemWatcher>();
+/**
+ * How the root of each client was found: a remaining root's client serves only the files directly in it (G40 D2), and
+ * a root of `tsuzuri.projectPath` does not move when files change.
+ */
+const kinds = new Map<string, { remaining: boolean; configured: boolean }>();
 
 export async function activate(context: vscode.ExtensionContext) {
 	if (!vscode.workspace.isTrusted) {
@@ -27,29 +33,92 @@ export async function activate(context: vscode.ExtensionContext) {
 		if (document.languageId !== 'tsuzuri' || document.uri.scheme !== 'file') {
 			return;
 		}
-		const root = await projectFor(document.uri);
+		const { root, remaining, configured } = await projectRootFor(document.uri);
 		if (pending.has(root)) { return pending.get(root); }
 		if (clients.has(root)) {
 			return;
 		}
 		const start = (async () => {
 			const tools = await toolchain(context, document.uri);
+			// The server of a remaining root reads the packages below it too, which have clients of their own (G40 D2). Its
+			// paths can be canonical: with symbolic links resolved.
+			const real = remaining ? await realpath(root).catch(() => root) : root;
+			const own = (uri: vscode.Uri) => directlyIn(root, uri.fsPath) || directlyIn(real, uri.fsPath);
 			const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{tz,tt,tc,toml}'));
 			watchers.set(root, watcher);
 			const client = new LanguageClient('tsuzuri', 'Tsuzuri', {
 				command: tools.compiler, args: ['lsp'], options: { cwd: root, env: tools.env },
 			}, {
-				documentSelector: [{ language: 'tsuzuri', scheme: 'file', pattern: `${root.replaceAll('\\', '/').replace(/[\[\]{}*?]/g, '[$&]')}/${sourcePattern}` }],
+				documentSelector: [{ language: 'tsuzuri', scheme: 'file', pattern: sourceSelector(root, remaining) }],
 				workspaceFolder: { uri: vscode.Uri.file(root), name: path.basename(root), index: 0 },
 				synchronize: { fileEvents: watcher }, outputChannel: output,
+				middleware: remaining ? {
+					handleDiagnostics: (uri, diagnostics, next) => next(uri, own(uri) ? diagnostics : []),
+					provideWorkspaceSymbols: async (query, token, next) => (await next(query, token))?.filter(symbol => own(symbol.location.uri)),
+				} : {},
 			});
 			clients.set(root, client);
+			kinds.set(root, { remaining, configured });
 			try { await client.start(); }
-			catch (error) { clients.delete(root); watchers.delete(root); watcher.dispose(); throw error; }
+			catch (error) { clients.delete(root); kinds.delete(root); watchers.delete(root); watcher.dispose(); throw error; }
 		})();
 		pending.set(root, start);
 		try { await start; } finally { pending.delete(root); }
 	}
+
+	async function stop(root: string) {
+		const client = clients.get(root);
+		clients.delete(root);
+		kinds.delete(root);
+		watchers.get(root)?.dispose();
+		watchers.delete(root);
+		await client?.stop().catch(() => undefined);
+	}
+
+	/** Runs the changes of the set of clients one after another. */
+	let queue: Promise<unknown> = Promise.resolve();
+	const serial = (task: () => Promise<void>) => {
+		const next = queue.then(task);
+		queue = next.catch(() => undefined);
+		return next;
+	};
+
+	/**
+	 * Decides the roots again after files below a workspace folder were created or deleted (G40 D4). A client stops when
+	 * its root is no longer the root of the files directly in it, or when it becomes a remaining root or stops being one
+	 * (its selector changes); otherwise it would keep serving files of other clients. Then the open documents start the
+	 * clients that they lack, and the test roots are rebuilt, in this order and with a cleared cache.
+	 */
+	async function reroot() {
+		projectRoots.clear();
+		await Promise.allSettled(pending.values());
+		const stale: string[] = [];
+		for (const [root, kind] of kinds) {
+			if (kind.configured) { continue; }
+			const found = await directoryRoot(root);
+			if (found.root !== root || found.remaining !== kind.remaining) { stale.push(root); }
+		}
+		await Promise.all(stale.map(stop));
+		await Promise.all(vscode.workspace.textDocuments.map(document => open(document).catch(error => reportError(error, output))));
+		await testing.reroot();
+	}
+	let rerootTimer: NodeJS.Timeout | undefined;
+	// Changes come in bursts (a git checkout), so the roots are decided again once they pause, as test discovery does.
+	const scheduleReroot = () => {
+		clearTimeout(rerootTimer);
+		rerootTimer = setTimeout(() => {
+			rerootTimer = undefined;
+			void serial(reroot).catch(error => output.appendLine(String(error)));
+		}, 300);
+	};
+	// Every creation and deletion below a workspace folder, whatever its name: a marker, a source (the limit of 4096
+	// sources), or a directory (the limit of 1024 directories). A folder that is deleted or moved arrives as one event of
+	// the folder. A changed file's contents do not change a root.
+	const rootChanges = vscode.workspace.createFileSystemWatcher('**', false, true, false);
+	const rootChanged = (uri: vscode.Uri) => {
+		const folder = vscode.workspace.getWorkspaceFolder(uri);
+		if (folder && projectRoots.changed(folder.uri.fsPath, uri.fsPath)) { scheduleReroot(); }
+	};
 
 	const safelyOpen = (document: vscode.TextDocument) => { void open(document).catch(error => reportError(error, output)); };
 	const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 15);
@@ -61,9 +130,14 @@ export async function activate(context: vscode.ExtensionContext) {
 	};
 	context.subscriptions.push(
 		status,
+		rootChanges, rootChanges.onDidCreate(rootChanged), rootChanges.onDidDelete(rootChanged),
+		new vscode.Disposable(() => clearTimeout(rerootTimer)),
 		vscode.window.onDidChangeActiveTextEditor(updateStatus),
 		vscode.workspace.onDidOpenTextDocument(safelyOpen),
-		vscode.workspace.onDidChangeWorkspaceFolders(() => { void vscode.commands.executeCommand('tsuzuri.restartLanguageServer'); }),
+		vscode.workspace.onDidChangeWorkspaceFolders(() => {
+			void vscode.commands.executeCommand('tsuzuri.restartLanguageServer');
+			scheduleReroot();
+		}),
 		vscode.workspace.onDidChangeConfiguration(event => {
 			if (['tsuzuri.compilerPath', 'tsuzuri.toolchainPath', 'tsuzuri.projectPath'].some(key => event.affectsConfiguration(key))) {
 				void vscode.commands.executeCommand('tsuzuri.restartLanguageServer');
@@ -77,11 +151,12 @@ export async function activate(context: vscode.ExtensionContext) {
 				await vscode.commands.executeCommand(`tsuzuri.${command}`);
 			}
 		}),
-		vscode.commands.registerCommand('tsuzuri.restartLanguageServer', async () => {
+		vscode.commands.registerCommand('tsuzuri.restartLanguageServer', () => serial(async () => {
+			projectRoots.clear();
 			await Promise.allSettled(pending.values());
 			await deactivate();
 			vscode.workspace.textDocuments.forEach(safelyOpen);
-		}),
+		})),
 	);
 	updateStatus();
 	await Promise.all(vscode.workspace.textDocuments.map(document => open(document).catch(error => reportError(error, output))));
@@ -91,6 +166,7 @@ export async function activate(context: vscode.ExtensionContext) {
 export async function deactivate() {
 	for (const watcher of watchers.values()) { watcher.dispose(); }
 	watchers.clear();
+	kinds.clear();
 	await Promise.allSettled([...clients.values()].map(client => client.stop()));
 	clients.clear();
 }

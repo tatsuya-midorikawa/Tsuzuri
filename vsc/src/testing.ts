@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { excludedPattern, exists, jsonLines, lldbLaunch, plainPath, rootSpelling, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from './core';
 import { runCompiler } from './toolchain';
-import { formatters, projectFor, reportError, RunStart } from './workflow';
+import { directoryRoot, formatters, projectFor, reportError, RunStart } from './workflow';
 
 interface TestCase {
 	index: number;
@@ -104,19 +104,47 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		}
 	}
 
-	async function refreshRoots() {
+	/** The roots of the workspace folders and of the open documents. */
+	async function usedRoots(): Promise<Set<string>> {
+		const used = new Set<string>();
 		for (const folder of vscode.workspace.workspaceFolders ?? []) {
 			if (await exists(path.join(folder.uri.fsPath, 'Main.tz')) || await exists(path.join(folder.uri.fsPath, 'Tsuzuri.toml'))
 				|| vscode.workspace.getConfiguration('tsuzuri', folder.uri).get<string>('projectPath')) {
-				addProject(await projectFor(folder.uri));
+				used.add(await projectFor(folder.uri));
 			} else {
 				const sources = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '*.{tz,tc,tt}'), excludedPattern, 1);
-				if (sources.length) { addProject(folder.uri.fsPath); }
+				if (sources.length) { used.add(folder.uri.fsPath); }
 			}
 		}
 		for (const document of vscode.workspace.textDocuments) {
-			if (document.languageId === 'tsuzuri' && document.uri.scheme === 'file') { addProject(await projectFor(document.uri)); }
+			if (document.languageId === 'tsuzuri' && document.uri.scheme === 'file') { used.add(await projectFor(document.uri)); }
 		}
+		return used;
+	}
+
+	async function refreshRoots() {
+		for (const root of await usedRoots()) { addProject(root); }
+	}
+
+	function removeProject(root: string) {
+		controller.items.delete(root);
+		roots.delete(root);
+		clearTimeout(timers.get(root));
+		timers.delete(root);
+		for (const [id, data] of cases) { if (data.root === root) { cases.delete(id); } }
+	}
+
+	/**
+	 * Rebuilds the roots after files below a workspace folder were created or deleted (G40 D4): a root that neither a
+	 * workspace folder nor an open document gives, and that is no longer the root of the files directly in it, goes, and
+	 * the new roots come. The extension calls it after it clears the cache of roots, so no root is found from old files.
+	 */
+	async function reroot() {
+		const used = await usedRoots();
+		for (const root of [...roots.keys()]) {
+			if (!used.has(root) && (await directoryRoot(root)).root !== root) { removeProject(root); }
+		}
+		for (const root of used) { addProject(root); }
 	}
 
 	const changed = async (uri: vscode.Uri) => {
@@ -138,13 +166,7 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		new vscode.Disposable(() => { for (const timer of timers.values()) { clearTimeout(timer); } }),
 		vscode.workspace.onDidChangeWorkspaceFolders(event => {
 			for (const [root] of roots) {
-				if (event.removed.some(folder => root === folder.uri.fsPath || root.startsWith(folder.uri.fsPath + path.sep))) {
-					controller.items.delete(root);
-					roots.delete(root);
-					clearTimeout(timers.get(root));
-					timers.delete(root);
-					for (const [id, data] of cases) { if (data.root === root) { cases.delete(id); } }
-				}
+				if (event.removed.some(folder => root === folder.uri.fsPath || root.startsWith(folder.uri.fsPath + path.sep))) { removeProject(root); }
 			}
 			void refreshRoots().catch(error => output.appendLine(String(error)));
 		}),
@@ -188,16 +210,19 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 
 	/** The tests of the discovered `root` that `request` selects, without its exclusions. */
 	function selection(request: vscode.TestRunRequest, root: string): vscode.TestItem[] {
+		// A root that stopped being one while the run discovered it (G40 D4) has nothing to run.
+		const project = roots.get(root);
+		if (!project) { return []; }
 		const excluded = new Set((request.exclude ?? []).flatMap(item => leaves(item).map(leaf => leaf.id)));
 		const included = request.include ? request.include.flatMap(item => {
 			if (item.id.startsWith(`${root}#`)) {
 				if (!cases.has(item.id)) { throw new Error('Test declarations changed. Refresh Tests before selecting individual tests.'); }
 				return [item];
 			}
-			if (item.id === root) { return leaves(roots.get(root)!); }
-			const current = roots.get(root)!.children.get(item.id);
+			if (item.id === root) { return leaves(project); }
+			const current = project.children.get(item.id);
 			return current ? leaves(current) : [];
-		}) : leaves(roots.get(root)!);
+		}) : leaves(project);
 		return [...new Map(included.filter(item => !excluded.has(item.id) && cases.get(item.id)?.root === root).map(item => [item.id, item])).values()];
 	}
 
@@ -382,5 +407,5 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		}),
 	);
 	void refreshRoots().catch(error => output.appendLine(String(error)));
-	return { controller, discover, roots, run, debug };
+	return { controller, discover, roots, run, debug, reroot };
 }
