@@ -3266,8 +3266,27 @@ fn cancelled_id(message: &Value) -> Option<String> {
     if message["method"] != "$/cancelRequest" {
         return None;
     }
-    let id = message["params"].get("id")?;
-    (id.is_string() || id.is_i64() || id.is_u64()).then(|| id.to_string())
+    id_key(message["params"].get("id")?)
+}
+
+/// Whether a JSON-RPC id is valid: a string or an integer.
+fn valid_id(id: &Value) -> bool {
+    id.is_string() || id.is_i64() || id.is_u64()
+}
+
+/// The key of a valid JSON-RPC id (`Value::to_string`).
+fn id_key(id: &Value) -> Option<String> {
+    valid_id(id).then(|| id.to_string())
+}
+
+/// The method of a message whose envelope is valid: `jsonrpc` is `"2.0"`, `method` is a string, and
+/// the id, if there is one, is a string or an integer. The main loop answers any other message with
+/// -32600.
+fn envelope_method(message: &Value) -> Option<&str> {
+    (message.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+        && message.get("id").is_none_or(valid_id))
+    .then(|| message.get("method").and_then(Value::as_str))
+    .flatten()
 }
 
 /// A message that the main loop took from the reader, with the document that it syncs or asks
@@ -3305,11 +3324,18 @@ impl Queued {
             .unwrap_or("")
     }
 
-    /// The key of a request's id: of a message with a valid id that is not a text sync.
+    /// The key of the message's id, when it is a string or an integer. The main loop answers every
+    /// message that has one through `Queue::answer`, whatever it does with the message, also when it
+    /// rejects its envelope (Copilot review 4 of PR #119).
+    fn id_key(&self) -> Option<String> {
+        id_key(self.message()?.get("id")?)
+    }
+
+    /// The key of a request's id: of a message with a valid id that is not a text sync, whatever its
+    /// envelope.
     fn request_id(&self) -> Option<String> {
-        let id = self.message()?.get("id")?;
-        ((id.is_string() || id.is_i64() || id.is_u64()) && !TEXT_SYNC.contains(&self.method()))
-            .then(|| id.to_string())
+        self.id_key()
+            .filter(|_| !TEXT_SYNC.contains(&self.method()))
     }
 
     /// The document that this message changes or closes.
@@ -3338,7 +3364,9 @@ impl Queued {
 /// disposes of it: when it is dropped as it arrives, pushed out of `unmatched`, or replaced there by
 /// a later one of the same id, and when the request that `held` keeps it for is answered. So `Inbox`
 /// counts, for each id, the cancellations on their way to the queue, its entry of `unmatched`, and
-/// its count in `held` (Copilot review 3 of PR #119).
+/// its count in `held` (Copilot review 3 of PR #119). The main loop answers every message with a
+/// valid id that it takes, also one whose envelope it rejects (`Queued::id_key`), so `held` keeps
+/// ids only for the queued requests and the message being answered (Copilot review 4).
 struct Queue {
     items: VecDeque<Queued>,
     /// How many queued requests have each id.
@@ -3567,6 +3595,9 @@ pub fn serve(
             continue;
         };
         let request = item.request_id().is_some();
+        // Every message with a valid id is answered through `Queue::answer` below, whichever way it
+        // takes, so that the cancellations kept for its id are let go of.
+        let key = item.id_key();
         let Queued { event, document } = item;
         let message = match event {
             InputEvent::End => return i32::from(!session.shutdown),
@@ -3583,18 +3614,17 @@ pub fn serve(
             }
             InputEvent::Message(Ok(message), _) => message,
         };
-        let id = message.get("id").cloned();
-        let method = message.get("method").and_then(Value::as_str);
-        if message.get("jsonrpc") != Some(&json!("2.0"))
-            || method.is_none()
-            || id
-                .as_ref()
-                .is_some_and(|id| !id.is_string() && !id.is_i64() && !id.is_u64())
-        {
+        let Some(method) = envelope_method(&message) else {
+            // The queue took a valid id as a request's whatever the envelope, and kept the
+            // cancellations of that id for it; unanswered, they would stay after the queue is empty
+            // and cancel the next request with the id (Copilot review 4 of PR #119).
+            if let Some(key) = &key {
+                queue.answer(key, &inbox);
+            }
             if write_message(&mut output, &json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "invalid JSON-RPC request"}})).is_err() { return 1; }
             continue;
-        }
-        let method = method.unwrap();
+        };
+        let id = message.get("id").cloned();
         if method == "exit" {
             return i32::from(!session.shutdown);
         }
@@ -3604,7 +3634,6 @@ pub fn serve(
         // has replaced (Copilot review 2 of PR #119). Applying it only schedules its root, and
         // nothing is analyzed before a computed request or an empty queue, so a replaced text is
         // not analyzed (G39 spec 12).
-        let key = id.as_ref().map(Value::to_string);
         let cancelled = || key.as_deref().is_some_and(|key| inbox.is_cancelled(key));
         let result = if cancelled() {
             Err(request_cancelled())
@@ -3922,10 +3951,60 @@ mod tests {
         assert!(inbox.is_cancelled("5"));
     }
 
+    /// Copilot review 4 of PR #119: a message with a valid id but an invalid envelope (no `jsonrpc`,
+    /// another version, no `method`, a `method` that is not a string) is queued as a request, so a
+    /// cancellation of its id that precedes or follows it is kept for it. Answering it with -32600
+    /// lets go of that cancellation: kept, it would never be let go of (one id more for each such
+    /// message, after the queue is empty), and it cancelled the next valid request with the same id.
+    #[test]
+    fn a_malformed_request_lets_go_of_its_cancellations() {
+        let messages = [
+            cancel(json!(5)),
+            json!({"id": 5, "method": "workspace/symbol", "params": {"query": ""}}),
+            symbol_request(json!(5)),
+            json!({"jsonrpc": "2.0", "id": 6, "result": null}),
+            cancel(json!(6)),
+            symbol_request(json!(6)),
+            json!({"jsonrpc": "2.0", "id": "seven", "method": 7}),
+            cancel(json!("seven")),
+            symbol_request(json!("seven")),
+            cancel(json!(8)),
+            json!({"jsonrpc": "1.0", "id": 8, "method": "workspace/symbol"}),
+            symbol_request(json!(8)),
+        ];
+        let mut input = Vec::new();
+        for message in &messages {
+            write_message(&mut input, message).unwrap();
+        }
+        let (mut output, mut stderr) = (Vec::new(), Vec::new());
+        serve(Cursor::new(input), &mut output, &mut stderr);
+        let mut output = Cursor::new(output);
+        let mut answers = BTreeMap::new();
+        let mut invalid = 0;
+        while let Some(message) = read_message(&mut output).unwrap() {
+            let message = message.unwrap();
+            match &message["id"] {
+                Value::Null if message["error"]["code"] == -32600 => invalid += 1,
+                Value::Null => {}
+                id => {
+                    answers.insert(id.to_string(), message["error"]["code"].clone());
+                }
+            }
+        }
+        assert_eq!(invalid, 4, "{answers:?}");
+        // Before `initialize`, a request that is not cancelled is answered with -32002.
+        for id in ["5", "6", "\"seven\"", "8"] {
+            assert_eq!(answers.get(id), Some(&json!(-32002)), "{id}: {answers:?}");
+        }
+    }
+
     /// The reference for `cancellations_agree_with_a_reference_model_in_any_interleaving`: the main
     /// loop alone keeps the cancellations, by the rules of `Queue::push` (G39 spec 13 and the
     /// deviations 1 and 11), and the request being computed is cancelled as well by one that the
-    /// reader has read and the queue has not taken yet (it can only follow the request).
+    /// reader has read and the queue has not taken yet (it can only follow the request). A message
+    /// with a valid id that is not a text sync is a request whatever its envelope, and answering a
+    /// message with a valid id (a rejected one and a text sync too) lets go of every cancellation
+    /// kept for that id (Copilot review 4 of PR #119).
     struct CancelModel {
         remembered: usize,
         /// The cancellations kept for a request that may follow, oldest first, each id once.
@@ -3940,32 +4019,34 @@ mod tests {
     }
 
     impl CancelModel {
-        fn push(&mut self, cancel: bool, id: &str) {
-            let short = id.len() <= MAX_REMEMBERED_ID;
-            if cancel {
-                if self.queued.contains_key(id) {
-                    self.cancelled.insert(id.to_owned());
-                } else if short && !self.answered.iter().any(|answered| answered == id) {
-                    self.unmatched.retain(|unmatched| unmatched != id);
-                    self.unmatched.push_back(id.to_owned());
-                    if self.unmatched.len() > self.remembered {
-                        self.unmatched.pop_front();
-                    }
+        fn cancel(&mut self, id: &str) {
+            if self.queued.contains_key(id) {
+                self.cancelled.insert(id.to_owned());
+            } else if id.len() <= MAX_REMEMBERED_ID
+                && !self.answered.iter().any(|answered| answered == id)
+            {
+                self.unmatched.retain(|unmatched| unmatched != id);
+                self.unmatched.push_back(id.to_owned());
+                if self.unmatched.len() > self.remembered {
+                    self.unmatched.pop_front();
                 }
-            } else {
-                self.answered.retain(|answered| answered != id);
-                if self.unmatched.iter().any(|unmatched| unmatched == id) {
-                    self.unmatched.retain(|unmatched| unmatched != id);
-                    self.cancelled.insert(id.to_owned());
-                }
-                *self.queued.entry(id.to_owned()).or_default() += 1;
             }
         }
 
-        /// Whether the request `id` that was taken and computed is cancelled; `arriving` says whether
-        /// the reader has read a cancellation of `id` that the queue has not taken.
+        fn request(&mut self, id: &str) {
+            self.answered.retain(|answered| answered != id);
+            if self.unmatched.iter().any(|unmatched| unmatched == id) {
+                self.unmatched.retain(|unmatched| unmatched != id);
+                self.cancelled.insert(id.to_owned());
+            }
+            *self.queued.entry(id.to_owned()).or_default() += 1;
+        }
+
+        /// Whether the message `id` that was taken is cancelled; `arriving` says whether the reader
+        /// has read a cancellation of `id` that the queue has not taken.
         fn answer(&mut self, id: &str, arriving: bool) -> bool {
             let cancelled = self.cancelled.remove(id) || arriving;
+            self.unmatched.retain(|unmatched| unmatched != id);
             if id.len() <= MAX_REMEMBERED_ID && !self.answered.iter().any(|answered| answered == id)
             {
                 self.answered.push_back(id.to_owned());
@@ -3977,14 +4058,87 @@ mod tests {
         }
     }
 
-    /// Copilot review 3 of PR #119: the reader records each cancellation in `Inbox` when it reads it
-    /// and sends it on after; the main loop queues all that has been sent, takes one message,
-    /// computes a request and answers it, while the reader goes on. In any interleaving of those
-    /// steps, each request is cancelled exactly when `CancelModel` says so, and after every step
-    /// `Inbox` counts, for each id, the cancellations on their way to the queue, its entry of
-    /// `unmatched` and its count in `held`. Short memories (one or two ids), two short ids and one
-    /// longer than `MAX_REMEMBERED_ID` make pushing out, repeating, reusing and dropping ids occur
-    /// within a few messages. The interleavings are drawn from a fixed seed.
+    /// The messages of `cancellations_agree_with_a_reference_model_in_any_interleaving`, one for
+    /// each way through `serve` that a message with an id or a cancellation can take.
+    #[derive(Clone, Copy, Debug)]
+    enum Kind {
+        /// `$/cancelRequest`.
+        Cancel,
+        /// `$/cancelRequest` without `jsonrpc`: rejected with -32600, it cancels all the same.
+        BareCancel,
+        /// `$/cancelRequest` with an id of its own: it cancels, and it is computed as a request.
+        CancelWithId,
+        /// A request: computed and answered.
+        Request,
+        /// Requests rejected with -32600 and answered: without `jsonrpc`, a response (no
+        /// `method`), and a request whose `method` is a number.
+        NoVersion,
+        NoMethod,
+        NumericMethod,
+        /// A text sync with an id: applied and answered, not queued as a request.
+        SyncWithId,
+        /// Messages without an id to answer: a notification, a request whose id is `null`
+        /// (rejected with -32600), and one that is not JSON (-32700).
+        Notification,
+        NullId,
+        NotJson,
+    }
+
+    impl Kind {
+        const ALL: [Kind; 11] = [
+            Kind::Cancel,
+            Kind::BareCancel,
+            Kind::CancelWithId,
+            Kind::Request,
+            Kind::NoVersion,
+            Kind::NoMethod,
+            Kind::NumericMethod,
+            Kind::SyncWithId,
+            Kind::Notification,
+            Kind::NullId,
+            Kind::NotJson,
+        ];
+
+        fn cancels(self) -> bool {
+            matches!(self, Kind::Cancel | Kind::BareCancel | Kind::CancelWithId)
+        }
+
+        /// Whether the queue takes the message's own id as a request's.
+        fn is_request(self) -> bool {
+            matches!(
+                self,
+                Kind::CancelWithId
+                    | Kind::Request
+                    | Kind::NoVersion
+                    | Kind::NoMethod
+                    | Kind::NumericMethod
+            )
+        }
+
+        /// Whether the main loop computes the message as a request, rather than answering it at
+        /// once.
+        fn is_computed(self) -> bool {
+            matches!(self, Kind::CancelWithId | Kind::Request)
+        }
+
+        /// Whether the message has a valid id of its own, which the main loop answers.
+        fn is_answered(self) -> bool {
+            self.is_request() || matches!(self, Kind::SyncWithId)
+        }
+    }
+
+    /// Copilot reviews 3 and 4 of PR #119: the reader records each cancellation in `Inbox` when it
+    /// reads it and sends it on after; the main loop queues all that has been sent, takes one
+    /// message, and answers it as `serve` does (it computes a valid request first; it answers a
+    /// message with a valid id that it rejects or that is a text sync at once), while the reader
+    /// goes on. In any interleaving of those steps, each computed request is cancelled exactly when
+    /// `CancelModel` says so, and after every step `Inbox` counts, for each id, the cancellations on
+    /// their way to the queue, its entry of `unmatched` and its count in `held`; `held` keeps
+    /// nothing but the ids of queued requests and of the message being answered; and the ids kept
+    /// for cancellations and answers are the model's. Once all is answered, the queue keeps nothing
+    /// but those bounded ids. Short memories (one or two ids), two short ids and one longer than
+    /// `MAX_REMEMBERED_ID` make pushing out, repeating, reusing and dropping ids occur within a few
+    /// messages. The interleavings are drawn from a fixed seed.
     #[test]
     fn cancellations_agree_with_a_reference_model_in_any_interleaving() {
         let ids = [json!(1), json!("two"), json!("3".repeat(MAX_REMEMBERED_ID))];
@@ -3996,16 +4150,60 @@ mod tests {
             seed ^= seed << 17;
             (seed % below as u64) as usize
         };
-        for run in 0..20_000 {
+        for run in 0..40_000 {
             let remembered = 1 + random(2);
             let reader_odds = 1 + random(3);
-            // Each message: whether it is a cancellation (or a request), and its id.
-            let stream: Vec<(bool, usize)> = (0..1 + random(8))
-                .map(|_| (random(2) == 0, random(ids.len())))
+            // Each message: its kind, the id that it cancels or has, and the id of its own of a
+            // `CancelWithId`. Cancellations and requests are as frequent as the other kinds together.
+            let stream: Vec<(Kind, usize, usize)> = (0..1 + random(8))
+                .map(|_| {
+                    let kind = if random(2) == 0 {
+                        [Kind::Cancel, Kind::Request][random(2)]
+                    } else {
+                        Kind::ALL[random(Kind::ALL.len())]
+                    };
+                    (kind, random(ids.len()), random(ids.len()))
+                })
                 .collect();
-            let message = |at: usize| match stream[at] {
-                (true, id) => cancel(ids[id].clone()),
-                (false, id) => symbol_request(ids[id].clone()),
+            let message = |at: usize| -> Result<Value, String> {
+                let (kind, id, own) = stream[at];
+                let (id, own) = (ids[id].clone(), ids[own].clone());
+                Ok(match kind {
+                    Kind::Cancel => cancel(id),
+                    Kind::BareCancel => json!({"method": "$/cancelRequest", "params": {"id": id}}),
+                    Kind::CancelWithId => {
+                        json!({"jsonrpc": "2.0", "id": own, "method": "$/cancelRequest", "params": {"id": id}})
+                    }
+                    Kind::Request => symbol_request(id),
+                    Kind::NoVersion => {
+                        json!({"id": id, "method": "workspace/symbol", "params": {"query": ""}})
+                    }
+                    Kind::NoMethod => json!({"jsonrpc": "2.0", "id": id, "result": null}),
+                    Kind::NumericMethod => json!({"jsonrpc": "2.0", "id": id, "method": 7}),
+                    Kind::SyncWithId => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": "textDocument/didChange",
+                        "params": {"textDocument": {"uri": "file:///w/A.tz", "version": 2}, "contentChanges": []},
+                    }),
+                    Kind::Notification => json!({"jsonrpc": "2.0", "method": "initialized"}),
+                    Kind::NullId => json!({"jsonrpc": "2.0", "id": null, "method": "shutdown"}),
+                    Kind::NotJson => return Err("expected value at line 1 column 1".into()),
+                })
+            };
+            let kind_at = |at: usize| stream[at].0;
+            // The key of the id that the message `at` cancels, and of its own id.
+            let cancelled_key = |at: usize| {
+                let (kind, id, _) = stream[at];
+                kind.cancels().then(|| keys[id].clone())
+            };
+            let own_key = |at: usize| {
+                let (kind, id, own) = stream[at];
+                match kind {
+                    Kind::CancelWithId => Some(keys[own].clone()),
+                    kind if kind.is_answered() => Some(keys[id].clone()),
+                    _ => None,
+                }
             };
             let (inbox, mut queue) = (Inbox::default(), Queue::remembering(remembered));
             let mut model = CancelModel {
@@ -4016,22 +4214,22 @@ mod tests {
                 answered: VecDeque::new(),
             };
             // The reader has recorded the first `read` messages and sent the first `sent`; the main
-            // loop has queued the first `queued`. Its step: queue what was sent, take one message
-            // (`drained`), answer the request it took (`computing`, with whether it was cancelled
-            // when taken).
-            let (mut read, mut sent, mut queued) = (0, 0, 0);
+            // loop has queued the first `queued` and taken the first `taken`. Its step: queue what
+            // was sent, take one message (`drained`), answer the message with an id that it took
+            // (`answering`: its id, whether it was cancelled when taken, whether it is computed).
+            let (mut read, mut sent, mut queued, mut taken) = (0, 0, 0, 0);
             let mut drained = false;
-            let mut computing: Option<(String, bool)> = None;
+            let mut answering: Option<(String, bool, bool)> = None;
             let mut trace = Vec::new();
             // The cancellations of `id` that the reader has recorded and the queue has not taken.
             let on_the_way = |id: &str, queued: usize, read: usize| {
                 (queued..read)
-                    .filter(|&at| stream[at].0 && keys[stream[at].1] == id)
+                    .filter(|&at| cancelled_key(at).as_deref() == Some(id))
                     .count()
             };
             loop {
                 let reader = sent < read || read < stream.len();
-                let main = computing.is_some() || drained || !queue.is_empty() || queued < sent;
+                let main = answering.is_some() || drained || !queue.is_empty() || queued < sent;
                 if !reader && !main {
                     break;
                 }
@@ -4041,30 +4239,47 @@ mod tests {
                         sent += 1;
                     } else {
                         trace.push(format!("read {read}"));
-                        inbox.received(&Ok(message(read)), 1);
+                        inbox.received(&message(read), 1);
                         read += 1;
                     }
-                } else if let Some((id, when_taken)) = computing.take() {
+                } else if let Some((id, when_taken, computed)) = answering.take() {
                     let cancelled = queue.answer(&id, &inbox) || when_taken;
                     let arriving = on_the_way(&id, queued, read) > 0;
                     trace.push(format!("answer {id}: cancelled {cancelled}"));
                     let expected = model.answer(&id, arriving);
-                    assert_eq!(cancelled, expected, "run {run}, {stream:?}, {trace:?}");
+                    if computed {
+                        assert_eq!(cancelled, expected, "run {run}, {stream:?}, {trace:?}");
+                    }
                 } else if drained {
                     drained = false;
                     let item = queue.pop(&inbox).expect("a drained queue has a message");
-                    if let Some(id) = item.request_id() {
-                        trace.push(format!("compute {id}"));
-                        decrement(&mut model.queued, id.as_str());
-                        computing = Some((id.clone(), inbox.is_cancelled(&id)));
-                    } else {
-                        trace.push("take a cancellation".into());
+                    let kind = kind_at(taken);
+                    // As `serve` decides: a valid request is computed, and any other message with a
+                    // valid id is answered at once.
+                    let computed = item.request_id().is_some()
+                        && item.message().and_then(envelope_method).is_some();
+                    assert_eq!(item.id_key(), own_key(taken), "run {run}, {trace:?}");
+                    assert_eq!(computed, kind.is_computed(), "run {run}, {kind:?}");
+                    if kind.is_request() {
+                        decrement(&mut model.queued, own_key(taken).unwrap().as_str());
                     }
+                    if let Some(id) = item.id_key() {
+                        trace.push(format!("take {kind:?} {id}"));
+                        answering = Some((id.clone(), inbox.is_cancelled(&id), computed));
+                    } else {
+                        trace.push(format!("take {kind:?}"));
+                    }
+                    taken += 1;
                 } else {
                     trace.push(format!("queue {queued}..{sent}"));
                     for at in queued..sent {
-                        queue.push(InputEvent::Message(Ok(message(at)), 1), &inbox);
-                        model.push(stream[at].0, &keys[stream[at].1]);
+                        queue.push(InputEvent::Message(message(at), 1), &inbox);
+                        if let Some(id) = cancelled_key(at) {
+                            model.cancel(&id);
+                        }
+                        if kind_at(at).is_request() {
+                            model.request(&own_key(at).unwrap());
+                        }
                     }
                     queued = sent;
                     drained = true;
@@ -4077,8 +4292,37 @@ mod tests {
                     let count = counted.get(id).copied().unwrap_or(0);
                     assert_eq!(count, kept, "run {run}, {id}, {stream:?}, {trace:?}");
                 }
+                for id in queue.held.keys() {
+                    assert!(
+                        queue.requests.contains_key(id)
+                            || answering
+                                .as_ref()
+                                .is_some_and(|(answering, ..)| answering == id),
+                        "run {run}, {id} is held for no request, {stream:?}, {trace:?}"
+                    );
+                }
                 assert_eq!(queue.unmatched, model.unmatched, "run {run}, {trace:?}");
+                assert_eq!(queue.answered, model.answered, "run {run}, {trace:?}");
             }
+            // Drained and answered: nothing is kept for a request, and every id still counted is a
+            // cancellation kept for a request that may follow.
+            assert!(
+                queue.held.is_empty() && queue.requests.is_empty(),
+                "run {run}"
+            );
+            assert!(
+                model.cancelled.is_empty() && model.queued.is_empty(),
+                "run {run}"
+            );
+            let state = inbox.state.lock().unwrap();
+            assert_eq!(state.bytes, 0, "run {run}");
+            let unmatched: BTreeMap<String, usize> =
+                queue.unmatched.iter().map(|id| (id.clone(), 1)).collect();
+            assert_eq!(
+                state.cancelled, unmatched,
+                "run {run}, {stream:?}, {trace:?}"
+            );
+            assert_eq!(queue.recent.len(), queue.answered.len(), "run {run}");
         }
     }
 
