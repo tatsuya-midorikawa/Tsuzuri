@@ -8,7 +8,7 @@
 | 規模 | M（Phase 1。Phase 2 は Phase 1 の計測で足りないときだけ行う別段） |
 | 依存 | – |
 | 関連 | G39（言語サーバーの待ち行列と取り消し。Phase 3）, G40, PB04（フロントエンドの並列化）, PB06（常駐状態）, G17（フロントエンドの cache）, D-40（言語サーバーは opt-in の std を常に読む） |
-| 状態 | todo |
+| 状態 | doing（Phase 1 implemented, measurement pending） |
 | 起票 | 2026-11-19（G39 の調査で見つけ、利用者の依頼で別のチケットにした。HEAD `af644794` を、strip しない release で `sample` し、別の担当が試作（環境変数で切り替える patch）で効果と出力の同一性を測り直した） |
 | 承認 | Phase 1 は不要（出力を変えない。D5 は言語サーバーが使うスレッドの数の方針で既定案）。Phase 2 の D7（D-40 を変え、名前を書いていない opt-in の std モジュールの補完・ホバー・診断の候補・シグネチャヘルプを別の索引から答える。答えは変えない）は、2026-11-19 に利用者が承認した（「承認が必要なものについては、あなたが考えるベストな方法であれば全て承認します」）。起票者が最善と判断した形のまま承認したので、Phase 1 の後の計測で目標に届かないときだけ行うという条件も含む |
 | 手本にする既存実装 | 型の名前の静かな照合: `src/check.rs` の `Names::check_type_path`・`type_choice`（`named_type` の Ok の条件そのもの）。CLI の並列度: `src/driver.rs` の `analyze_cached_core`（`Parallelism::command_line()`）。スレッドの数に依らない出力の検査: `src/lib.rs` の `warnings_and_the_semantic_index_do_not_depend_on_the_thread_count` など、`tests/parallel_frontend.mjs`。計測の形: PB06 の「現状と計測」、GUIDE §14 |
@@ -304,12 +304,12 @@ def main :: own unit -> i32 = \() ->
 
 ## 受け入れ条件
 
-- [ ] `TSUZURI_BASELINE=target/perf/PB08/tsuzuri-before node tests/parallel_frontend.mjs target/release/tsuzuri` が通る（IR が before と同じ）。
-- [ ] 手順 2 の golden が、1 スレッドと自動・8 スレッドで before と 1 byte も違わない（Phase 2 を行ったときも同じ。Phase 2 は名前を書いていない opt-in の std モジュールの補完・ホバー・診断の候補・修正案・シグネチャヘルプの出どころを別の索引に変えるが、答えは変えない）。Phase 2 を行ったときは、手順 8 の計測を O6 の後にもう一度行い、Phase 1 の後の値と分けて記録している。
+- [x] `TSUZURI_BASELINE=target/perf/PB08/tsuzuri-before node tests/parallel_frontend.mjs target/release/tsuzuri` が通る（IR が before と同じ）。
+- [x] 手順 2 の golden が、1 スレッドと自動・8 スレッドで before と 1 byte も違わない（Phase 2 を行ったときも同じ。Phase 2 は名前を書いていない opt-in の std モジュールの補完・ホバー・診断の候補・修正案・シグネチャヘルプの出どころを別の索引に変えるが、答えは変えない）。Phase 2 を行ったときは、手順 8 の計測を O6 の後にもう一度行い、Phase 1 の後の値と分けて記録している。
 - [ ] M1 の目標（同じ機械の before に対して、hello 0.29 倍以下、big 0.48 倍以下、syn200 0.23 倍以下）に届くか、届かない理由を計測で示している。コアの数を記録している。
 - [ ] CLI の `check` と PX03 の `check` がどの workload でも遅くならず、値を `docs/benchmarks.md` に記録している。
 - [ ] profile で、捨てる診断を作る frame と 2 回目の `call_facts` が消えている。
-- [ ] 新しい単体テストと既存のテストが通る（T0・T1、`TSUZURI_THREADS=8 cargo nextest run --locked`、`node tests/lsp_sessions.mjs target/debug/tsuzuri`、`node tests/parallel_frontend.mjs target/release/tsuzuri`）。
+- [x] 新しい単体テストと既存のテストが通る（T0・T1、`TSUZURI_THREADS=8 cargo nextest run --locked`、`node tests/lsp_sessions.mjs target/debug/tsuzuri`、`node tests/parallel_frontend.mjs target/release/tsuzuri`）。
 - [ ] Phase 2 は、手順 8 の計測で Phase 1 が目標に届かなかったときだけ行っている（行ったときは、GUIDE の D-40 と、言語サーバーが全 std を読むと書いた文書を更新している）。
 
 ## 落とし穴
@@ -339,3 +339,125 @@ def main :: own unit -> i32 = \() ->
 - **D6: 共有の CI に速さの合否を入れない**（既定案。GUIDE §14.7）。
 - **D7: Phase 2 の O6（言語サーバーも、名前を書いた opt-in の std だけを読む）**（承認済み。2026-11-19。Phase 1 の後の計測で目標に届かないときだけ行う）。D-40（言語サーバーは補完のため常に全部を読む）を変え、名前を書く前の opt-in のモジュールの補完とホバーを、別に作る索引から答えることになる。
   同じ索引から、読み込んでいない opt-in のモジュールの名前とメンバーを診断の候補（修正案）とシグネチャヘルプにも出し、それらは今と変えない（O6 の説明を参照）。
+
+## 実装と検証（2026-11-20）
+
+### 範囲
+
+Phase 1 の手順 1〜5・7 と、手順 8 のうちコードの部分（driver・golden・文書の枠）を実装した。
+**手順 8 の計測は未実施（pending）**: before と after の交互の計測（各組 9 回以上、M1 は 11 回以上）、strip しない release の `sample` による profile、`docs/benchmarks.md` の結果、PX03、`metrics.mjs report` の表、それに基づく O2・O3(b)・O8 と Phase 2 の判断は、負荷の低い機械で別に行う（実装の間は 3 つのチケットを同じ機械で並行して build しており、load average が 20〜145 だった）。
+手順 6（O2・O8。任意）も、計測で効果を見てから決めるので行っていない。手順 6 の「std の関数を通してだけ到達する利用者の私的な型と関数」のテストは、O2 で辺の作り方を変えるときの安全網なので、O2 と一緒に足す。
+
+### コミット
+
+| コミット | 内容 |
+| --- | --- |
+| `20bdee57` | 手順 1・2: `benchmarks/run-lsp.mjs`（M1・M4・M3 の PX01 record）、`benchmarks/lsp/workloads.mjs`（workload）、`benchmarks/lsp/golden.mjs`（golden）、`benchmarks/lsp/client.mjs`（JSON-RPC の client） |
+| `70fb84ef` | O1 |
+| `c0fd6cf7` | O3 |
+| `6682a931` | O4(a)・O4(b)・O9 |
+| `4c5d81a4` | O5 |
+| `8bfb4efc` | 文書 |
+
+### 実装
+
+- **O1**（`src/check.rs`・`src/warnings.rs`）: `Names::type_lookup`（`check_type_path` の後に `type_choice`）に `named_type` の Ok の条件を 1 か所にまとめ、`named_type` もそれを使う。`Names::quiet_named_type` は `Ok(Choice::Found)` のときだけ型を返し、診断を作らない。`TypeReferences::named` はこれを使う（D2）。
+- **O3**（`src/polymorph.rs`）: `Inference` に `quiet` を足し、`Inference::quiet()` は `matching_instance` だけが作る。3 か所の `mismatch(...)` を `type_mismatch`（quiet なら空のメッセージの `E1003`。コード・kind・span は同じ）にした。unify の制御の流れは変えていない（D3）。`matching_instance` の本体は `unifying_instance` に移し、`cfg(test)` のときだけ quiet でない試行とも比べられる。O3(b) は行っていない。
+- **O4(a)**（`src/copies.rs`・`src/ownership.rs`）: `ownership::copy_reads_of_users` は利用者のモジュールの関数だけで `check_body` を動かす。`copies::costly_sites`（公開）もこの変種を使う。共有の `copy_reads`・`sites` の結果は変えていない（`sites` は `sites_of` に filter を渡すだけ）。
+- **O4(b)**（`src/ownership.rs`・`src/check.rs`・`src/gpu_devices.rs`・`src/lib.rs`・`src/copies.rs`）: `check_all_with_facts` が検査の call facts を返し（`CopyFacts`、中身は私的な `CallFacts`）、`check_modules_collect` は `gpu_devices::lower_kernels`（書き換えたかどうかを `bool` で返すようにした）が本体を書き換えなかったときだけ facts を渡す。言語サーバーの入口 `analyze_inputs_for_editor` は `copies::EditorModule`（module と facts の組。field は `copies.rs` の私的なもので、module は警告を取り出すほかは読み取り専用）を返し、`EditorModule::costly_sites` が facts を使う。公開の `costly_sites` は facts を求め直す（D4）。
+- **O9**（`src/lsp.rs`）: `Session::refresh` は、診断を送る loop の後に `costly_sites` と `inferred_effects` を求める。
+- **O5**（`src/lib.rs`・`src/lsp.rs`）: `src/lsp.rs` の `analyze`（`refresh`・`fix_edit`・rename の検証が使う）は `analyze_inputs_for_editor` に `Parallelism::command_line()` を渡す（D5）。
+
+`src/lsp.rs` の変更は、`analyze` の入口と並列度、`refresh` の中の `costly_sites`・`inferred_effects` の位置、`use` の 1 行、単体テスト 1 つだけ（G39 の Phase 2・3 との統合のため）。
+
+### 手順 1: driver と workload
+
+```sh
+node benchmarks/lsp/workloads.mjs target/perf/PB08/projects            # workload を作り直す（--force で上書き）
+node benchmarks/run-lsp.mjs <compiler> --out <dir> [--projects hello,big,syn200] [--threads unset,1,8] [--samples 11] [--parts refresh,publish,codeaction,cli] [--quick]
+```
+
+- workload: hello・point・polymorphism（`examples`）、conventions・json・anonymous_unions・list_fsharp・in_place_writes（`tests/fixtures`）の写し、big（上の `Main.tz` と 5 つの fixture の写し。215,197 B）、syn200（`writeProject(dir, 200)`。727,244 B）、全 std の CLI 用の `hello-allstd`・`big-allstd`（1 行目のコメントに `src/stdlib.rs` の `OPT_IN` のすべての名前）。
+- `run-lsp.mjs` は suite `lsp` の record を書く。variant は `refresh-<auto|1|8>`（M1）、`tokens-<…>`（変更なしの `semanticTokens/full`）、`publish-comment-<…>`・`publish-error-<…>`（M4 の `didChange`→`publishDiagnostics`）、`codeaction-{cursor,diagnostic,quickfix,document,fixall}-<…>`（M4 の big の 5 つの要求。action の題は `projects.json`）、`check-1`・`check-auto`（M3。`TSUZURI_CACHE_DIR=`、`TSUZURI_TIME_PASSES=1`）。`metrics.mjs` の段の名前にない段（`effects`）が出たときは、その workload の段の record だけを省く。
+- before の M1〜M4 は手順 8 と一緒に取る（上の「範囲」）。
+
+### 手順 2: golden
+
+```sh
+node benchmarks/lsp/golden.mjs cli <compiler> target/perf/PB08/golden/<名>/cli-<1|auto|8>.jsonl --threads <1|auto|8> --jobs 3
+node benchmarks/lsp/golden.mjs lsp <compiler> target/perf/PB08/golden/<名>/lsp-<unset|1|8> --threads <unset|1|8>
+node benchmarks/lsp/golden.mjs compare <a.jsonl|a-dir> <b.jsonl|b-dir>
+TSUZURI_BASELINE=target/perf/PB08/tsuzuri-before node tests/parallel_frontend.mjs <compiler>
+```
+
+- CLI: `check <target> --json` の終了コード・stdout・stderr と、`check` が書く知識グラフのファイル（`TSUZURI_KG_DIR` の別の置き場。`.tsuzuri-kg` の stamp は除く）。target は 442 個（`examples` 13、`tests/fixtures` 166、`tests/conformance` の `.tz` 251、workload 12。終了コードが 0 でないもの 262、知識グラフを書くもの 188）。
+- 言語サーバー: 10 の workload（`-allstd` を除く）ごとに、すべての URI の診断（各変更の後）、全ファイルのセマンティックトークン・インレイヒント（big は 107 件）・ドキュメントシンボル、決めた位置（識別子を均等に Main.tz 60・ほかのファイル 20）のホバーと定義、prepareRename と rename、M4 の 5 つの `codeAction` と Main.tz の診断ごとの quickfix、`E1002` を足した編集・`Matrx.init` の編集・`Matrix.`・`Json.`・最上位の行の補完、元に戻した後。
+- **before 同士の揺れ**: before の binary で 2 回作り（`before-a`・`before-b`）、CLI の 1 スレッド・自動（442/442 ずつ）、言語サーバー（10/10）がすべて一致した。CLI の 1 スレッドと自動も一致した。揺れる target はなかった（起票時の `fx-json-allstd` の 1 件に当たるものは出ていない）。
+
+### 各手順の後の golden と IR
+
+| binary | コミット | CLI 1 スレッド | CLI 自動 | CLI 8 スレッド | 言語サーバー 未設定 | 言語サーバー 1 | 言語サーバー 8 | IR（`parallel_frontend.mjs`、`TSUZURI_BASELINE`） |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `tsuzuri-o1` | `70fb84ef` | 442/442 | 442/442 | | 10/10 | | | ok |
+| `tsuzuri-o3` | `c0fd6cf7` | 442/442 | 442/442 | | 10/10 | | | ok |
+| `tsuzuri-o4` | `6682a931` | 442/442 | 442/442 | | 10/10 | | | ok |
+| `tsuzuri-o5` | `4c5d81a4` | 442/442 | 442/442 | 442/442 | 10/10 | 10/10 | 10/10 | ok |
+
+どれも before（`target/perf/PB08/tsuzuri-before`、main `295ffcb4` の release）の golden（CLI は 1 スレッド、言語サーバーは未設定）と 1 byte も違わない。binary はどれも `cargo build --release --locked` で、各コミットの `src/` を取り出して作った。
+
+### 単体テスト（回帰テスト）
+
+| テスト | 内容 | base での結果 |
+| --- | --- | --- |
+| `check::warnings::tests::a_successful_check_builds_no_type_suggestions` | 成功する検査が型の候補の表（`type_pool`）を作らない。報告する未知の型は候補を持つ | 失敗（2,062 回作っていた） |
+| `check::warnings::tests::quiet_type_lookup_agrees_with_named_type` | `quiet_named_type` と `named_type` が一致し、手で書いた期待とも一致する: 基本型・std の型・自分と import した record・別名・extern type・私的な型・曖昧な名前（2 つのモジュールの `Item`、2 つの `using` の `Text`）・`::` のパス・`.` でつないだ名前空間（`namespace_spelling`）・モジュール名を繰り返したパス（`Sample::Point.Point`、`Maybe.Maybe`）・`Async`・`Async.Operation`・`bigint` | 新しい関数を呼ぶので base では build できない（同値の検査） |
+| `check::polymorph::tests::instance_trials_write_no_mismatch_message` | 成功する解析が不一致のメッセージを書かない。報告する `E1003` は書く | 失敗（O1 の後で 29,713 回） |
+| `check::polymorph::tests::quiet_inference_unifies_like_the_loud_one` | 19 組の型で、quiet と通常の unify の成否・コード・kind・span・解が同じ。`E1003` だけメッセージが空 | build できない（同値） |
+| `check::polymorph::tests::quiet_instance_trials_choose_like_loud_ones` | 12 の fixture（instance の多いもの）と std の解析で、`matching_instance` の quiet な試行と通常の試行が同じ instance と置き換えを選ぶ（1,000 回以上比べる） | build できない（同値） |
+| `copies::tests::costly_sites_from_the_check_facts_are_the_recomputed_ones` | `tests/copy_cost.rs` の 14 の入力で、facts を使う `EditorModule::costly_sites`・公開の `costly_sites`・PB08 の前の計算（全関数の `sites` を filter）が同じで、facts を使うほうは `call_facts` を求めない。`tests/gpu.rs` の `DEVICE_PROGRAM` に配列の複製を足した例は facts を持たず、求め直して同じ | build できない（新しい入口） |
+| `tests::the_editor_analysis_does_not_depend_on_the_thread_count` | 30 module の言語サーバーの解析の module・索引・costly sites が 1・2・8 スレッドで同じ | build できない（新しい入口） |
+| `lsp::tests::analysis_uses_the_threads_of_the_command_line` | 言語サーバーの解析が並列の段を動かす（`command_line()` の数が 2 以上のとき） | 失敗（`Parallelism::library()` に戻すと並列の段 0） |
+
+ほかに、`matching_instance` の比較を常に動かす一時的な build で `cargo test --locked --test polymorphism --test text_class` が通った（35・13 件。手順 4 の確認。build は戻した）。
+
+### T0・T1・T2
+
+- T0（各編集）: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` は通った。area のテスト: `cargo test --locked --lib warnings`（12 件）、`--test warnings`（14 件）、`--lib polymorph::tests`（7 件）、`--test copy_cost`（16 件）・`--test gpu`（17 件）、`--test lsp`（52 件、`inlay_hints_show_implicit_copies` を含む）、`--test polymorphism`（35 件）・`--test text_class`（13 件）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked` は 3,359 件が通過、4 件が skip（1,061 秒。load average 60〜145）。
+- `TSUZURI_THREADS=8 node scripts/slot.mjs -- cargo nextest run --locked` は 3,359 件が通過、4 件が skip（976 秒）。
+- T2: `cargo build` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は UTF-16・UTF-8 の session と features の 4 つが通った。`TSUZURI_BASELINE=… node tests/parallel_frontend.mjs` は上の表。`TSUZURI_BIN=target/perf/PB08/tsuzuri-o5 node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/option.md _tsuzuri/language-reference/compiler/usage.md` は通った（2 pages、180 links、6 examples、native の O0/O3 6 runs、test project 1）。`node scripts/gen-docs.mjs --check`（19 blocks、0 stale）、`node scripts/check-cli-docs.mjs`（4 checks、0 failed）、`node scripts/check-links.mjs`（0 broken）、`node scripts/check-guide-lite.mjs`（0 failed）。`src/runtime/` は変えていない。
+- VS Code の拡張のテストは動かしていない（拡張は変えておらず、言語サーバーの応答は golden で before と同じであることを示した）。
+
+### 速さの目安（参考。手順 8 の計測ではない）
+
+負荷の高い共有機（Apple M3、8 コア、macOS 27.2.1、rustc 1.99.1、Node v24.22.2）で、`node benchmarks/run-lsp.mjs <compiler> --out target/scratch/pb08/sanity-<before|after> --projects hello,big,syn200 --threads unset --parts refresh,publish,cli --quick`（標本 3 個）を before、after の順に 1 回ずつ動かした。before の間の load average は 13〜18、after の間は 33〜39 で、条件は揃っていない。値は中央値（ms）で、手順 8 の判定には使わない。
+
+| workload | M1 before | M1 after | M4 `publish-comment` before | M4 after |
+| --- | ---: | ---: | ---: | ---: |
+| hello | 669 | 371 | 814 | 568 |
+| big | 2,248 | 2,046 | 2,686 | 1,470 |
+| syn200 | 3,519 | 1,112 | 3,759 | 1,222 |
+
+big の M1 は、after の 8 スレッドがこの負荷で取れるコアが少ないので差が小さく出た。`TSUZURI_THREADS=1` で before と after を交互に 2 回ずつ（各 4 回の再解析。`benchmarks/lsp/client.mjs` を使う使い捨ての script で、server の `TSUZURI_TIME_PASSES` も読んだ。load average 約 40）動かすと、big の 1 回の再解析は 3,731〜3,987 ms から 1,637〜1,886 ms（約 0.46 倍）で、server の `TSUZURI_TIME_PASSES` の再解析あたりの `check` の段は約 1,910 → 約 560 ms、`specialize` は約 620 → 約 420 ms だった。
+
+CLI の `check` の wall はこの負荷では読めなかった（3 標本の中央値が前後で逆転するものがあった）。before と after を交互に 5 回ずつ動かした `TSUZURI_THREADS=1 TSUZURI_TIME_PASSES=1 TSUZURI_CACHE_DIR= tsuzuri check target/perf/PB08/projects/hello` の `total_ms` は、中央値で 321 → 217 ms（`check` の段は 258 → 170 ms。load average 約 50）。
+
+### 文書
+
+- `_tsuzuri/language-reference/compiler/option.md`: 「コンパイラのスレッド数」の表で `lsp` を「使える core 数（最大 8）」の側へ移し、言語サーバーの検証の再解析も同じと書いた。
+- `_tsuzuri/language-reference/compiler/usage.md`: `lsp` の節にスレッドの数と、診断を先に送ることを書いた。
+- `docs/architecture.md`: `src/copies.rs`・`src/lsp.rs` の行と、フロントエンドのスレッドの行。
+- `docs/benchmarks.md`: 「言語サーバーの再解析（PB08、2026-11-20〜）」の節（実装した経路、測り方とコマンド、結果は計測待ち）。
+- `docs/language.md`・`README.md` は誤りにならないので変えていない（README の「CLI は使える core 数」は `lsp` を含む CLI のコマンドの説明として正しくなった）。
+
+### チケットから外れた判断
+
+- golden の target は 442 個（起票時の 454 個は、試作の workload の写し 23 個を含んでいた。ここでは手順 1 の workload 12 個）。golden には、チケットの項目に加えて、知識グラフのファイル、定義・rename・`Matrx.init` の修正案を入れた。
+- O4(b) の facts を運ぶ型は、チケットの例（`CheckedModule` と facts の組）の代わりに `copies::EditorModule` にした。field を `copies.rs` の私的なものにして、crate の中でも module を書き換えられない（警告を取り出すだけ）ようにするため。`check::check_modules_captured` は、facts の引数を足した `check_modules_with_capture` に統合した。
+- O4(a) は公開の `costly_sites`（CLI の `--warn-implicit-copy`）にも効く（`costly_sites` だけの変種なので、チケットの範囲）。
+- テストのために `cfg(test)` の計数と hook を足した（`find::TYPE_POOLS`、`warnings::NAMES_PROBE`、`polymorph::MISMATCH_TEXTS`・`COMPARE_INSTANCE_TRIALS`、`ownership::CALL_FACTS`）。release の binary には入らない。
+
+### 残っている問題
+
+- 手順 8（pending）: before と after の交互の計測（M1〜M4、CLI の `check`、PX03）、profile（`Names::type_pool`・`find::with_suggestions`・`polymorph::mismatch`・`Type::display_with`・2 回目の `call_facts` が消えたこと）、`docs/benchmarks.md` の結果、受け入れ条件の M1 の目標の判定、O2・O3(b)・O8 と Phase 2 の判断。
+- G39 の Phase 3 で再解析を途中で取り消すなら、O5 で並列になった段の worker にも届くようにする（「落とし穴」）。
