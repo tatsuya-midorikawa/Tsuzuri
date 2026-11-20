@@ -1,7 +1,7 @@
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { Action, affectsRoot, commandArguments, defaultNamespace, exists, inRoot, isNamespace, jsonLines, lldbLaunch, outputPath, plainPath, projectFile, ProjectRoot, ProjectRoots, reportedByServer, rootSpelling, sourceFiles, sourcePosition, supportsDebug } from './core';
+import { Action, affectsRoot, commandArguments, defaultNamespace, directoryExists, exists, inRoot, isNamespace, jsonLines, lldbLaunch, outputPath, plainPath, projectFile, ProjectRoot, ProjectRoots, reportedByServer, rootSpelling, sourceFiles, sourcePosition, supportsDebug } from './core';
 import { runCompiler, toolchain } from './toolchain';
 
 /**
@@ -60,6 +60,16 @@ export async function projectRootFor(resource?: vscode.Uri, directory = false): 
 	const found = directory ? await projectRoots.findForDirectory(resource.fsPath, folder?.uri.fsPath)
 		: await projectRoots.find(resource.fsPath, folder?.uri.fsPath);
 	return { ...found, configured: false };
+}
+
+/**
+ * Whether the open document `uri`, whose root is `found`, has a project that can be read. One left open in a folder that
+ * was deleted or moved has none, also when the walk up from it ends at a folder above that remains; a root of
+ * `tsuzuri.projectPath` must exist itself (G40 D4).
+ */
+export function documentHasProject(uri: vscode.Uri, found: ResourceRoot): Promise<boolean> {
+	// Any other root is the document's directory or one above it, which exists when the document's directory does.
+	return directoryExists(found.configured ? found.root : path.dirname(uri.fsPath));
 }
 
 export async function projectFor(resource?: vscode.Uri): Promise<string> {

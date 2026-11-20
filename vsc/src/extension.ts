@@ -7,7 +7,7 @@ import { assertSupportedHost, directlyIn, directoryExists, sourceSelector, suppo
 import { registerEditor } from './editor';
 import { registerTesting } from './testing';
 import { toolchain } from './toolchain';
-import { directoryRoot, projectRootFor, projectRoots, registerWorkflow, reportError } from './workflow';
+import { directoryRoot, documentHasProject, projectRootFor, projectRoots, registerWorkflow, reportError } from './workflow';
 
 const clients = new Map<string, LanguageClient>();
 const watchers = new Map<string, vscode.FileSystemWatcher>();
@@ -39,8 +39,8 @@ export async function activate(context: vscode.ExtensionContext) {
 		return projectRoots.settled(async () => {
 			const found = await projectRootFor(document.uri);
 			// A document left open in a folder that was deleted or moved has no project: its root would be a directory that
-			// does not exist, whose server could not read the document either (G40 D4).
-			return { ...found, readable: pending.has(found.root) || clients.has(found.root) || await directoryExists(found.root) };
+			// does not exist or one above the deleted folder, whose server could not read the document either (G40 D4).
+			return { ...found, readable: pending.has(found.root) || clients.has(found.root) || await documentHasProject(document.uri, found) };
 		}, ({ root, remaining, configured, readable }) => {
 			if (!readable) {
 				if (configured) { throw new Error(`The project folder of tsuzuri.projectPath does not exist: ${root}`); }

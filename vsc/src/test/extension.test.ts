@@ -129,9 +129,9 @@ export async function run(): Promise<void> {
 	await waitFor('the roots after the marker was deleted', () => api.clients.has(scratch) && api.testing.roots.has(scratch)
 		&& selector(loose)?.endsWith('/loose/*.{tz,tt,tc}') ? true : undefined);
 	assert.ok(api.clients.has(looseApp));
-	// A deleted folder with open files in it leaves no client or test root in a directory that does not exist: not for an
-	// open file of a project in it (its root would now be the deleted folder, as the folder above holds App), and not for
-	// a root that is the deleted folder itself.
+	// A deleted folder with open files in it leaves no client or test root: not for an open file of a project in it, whose
+	// walk up now ends at the folder above, which remains (extra, as loose above it holds App), and not for a root that is
+	// the deleted folder itself.
 	const extra = path.join(loose, 'extra');
 	const demo = path.join(extra, 'demo');
 	const gone = path.join(loose, 'gone');
@@ -146,12 +146,12 @@ export async function run(): Promise<void> {
 	await api.testing.discover(gone);
 	// A short-lived compiler run in the folder (a test discovery) can hold it on Windows for a moment; a language server
 	// would hold it for good, which the retries do not outlast.
-	await rm(extra, { recursive: true, maxRetries: 10, retryDelay: 100 });
+	await rm(demo, { recursive: true, maxRetries: 10, retryDelay: 100 });
 	await rm(gone, { recursive: true, maxRetries: 10, retryDelay: 100 });
 	await waitFor('the roots after folders with open files were deleted', () => !api.clients.has(demo) && !api.clients.has(gone)
 		&& !api.testing.roots.has(demo) && !api.testing.roots.has(gone) ? true : undefined);
-	assert.ok(!api.clients.has(extra), 'no client in the deleted folder');
-	assert.ok(!api.testing.roots.has(extra), 'no test root in the deleted folder');
+	assert.ok(!api.clients.has(extra), 'no client for the folder above the deleted folder');
+	assert.ok(!api.testing.roots.has(extra), 'no test root for the folder above the deleted folder');
 	const restored = api.clients.get(loose);
 	await rm(looseApp, { recursive: true, maxRetries: 10, retryDelay: 100 });
 	await waitFor('the roots after the package folder was deleted', () => !api.clients.has(scratch) && !api.clients.has(looseApp)

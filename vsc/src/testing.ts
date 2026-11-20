@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { directoryExists, excludedPattern, exists, jsonLines, lldbLaunch, plainPath, rootSpelling, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from './core';
 import { runCompiler } from './toolchain';
-import { directoryRoot, formatters, projectFor, reportError, RunStart } from './workflow';
+import { directoryRoot, documentHasProject, formatters, projectFor, projectRootFor, reportError, RunStart } from './workflow';
 
 interface TestCase {
 	index: number;
@@ -106,7 +106,7 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 
 	/**
 	 * The roots of the workspace folders and of the open documents, except a document left open in a folder that was
-	 * deleted or moved, whose root would be a directory that does not exist (G40 D4).
+	 * deleted or moved, whose root would be a directory that does not exist or one above the deleted folder (G40 D4).
 	 */
 	async function usedRoots(): Promise<Set<string>> {
 		const used = new Set<string>();
@@ -121,8 +121,8 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		}
 		for (const document of vscode.workspace.textDocuments) {
 			if (document.languageId === 'tsuzuri' && document.uri.scheme === 'file') {
-				const root = await projectFor(document.uri);
-				if (await directoryExists(root)) { used.add(root); }
+				const found = await projectRootFor(document.uri);
+				if (await documentHasProject(document.uri, found)) { used.add(found.root); }
 			}
 		}
 		return used;
