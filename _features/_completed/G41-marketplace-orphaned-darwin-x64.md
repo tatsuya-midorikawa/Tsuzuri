@@ -7,7 +7,7 @@
 | 規模 | S（Marketplace 管理画面での旧版 0.1.0・0.1.1 の削除、公開検証スクリプト `verify-release.mjs` と単体テスト、公開スキルと `Publishing.md` の更新） |
 | 依存 | G14（done） |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（Marketplace から旧版 `0.1.0`・`0.1.1` を削除して孤立した `darwin-x64` を除去し、`verify-release.mjs` で全公開バージョンの `targetPlatform` と `IncludeLatestVersionOnly` の応答を検査するようにした） |
 | 起票 | 2026-11-20（利用者の報告「VSCode で Tsuzuri 拡張機能をインストールしようとしたが `'Tsuzuri' 拡張機能は Mac Silicon プラットフォームの Visual Studio Code では使用できません` と表示されインストールできなかった」を受けて原因を特定し起票。HEAD `295ffcb4`（拡張 0.1.8）、Apple Silicon macOS 上の VS Code 1.147.0 で再現・確認） |
 | 承認 | 要（Marketplace 上の旧版 `0.1.0`・`0.1.1` の削除は不可逆であり、現行の `.claude/skills/vscode-publish/SKILL.md` が「古い Intel Mac 版なども勝手に削除しない」と定めているため、削除操作の実施前に利用者の承認を要する。言語・コンパイラ・拡張本体のコードと既存の 0.1.2〜0.1.8 の VSIX は変更しない） |
 | 改善する劣位 | 不具合: (1) 新版公開後のクールダウン期間中、公開直後の版を留保する Marketplace プロキシ経由の VS Code（Apple Silicon Mac の `darwin-arm64` を含む全 5 対応環境）で、拡張機能ビューの検索結果と `code --install-extension tmidorikawa.tsuzuri` が `0.1.1@darwin-x64` のみを返し、インストールボタンが無効化されて `'Tsuzuri' 拡張機能は Mac Silicon プラットフォームの Visual Studio Code では使用できません` と表示される。(2) 公式の公開 Marketplace でも `IncludeLatestVersionOnly` と `/latest` に廃止済みの `0.1.1@darwin-x64` が残り続け、対象外の Intel Mac に古い 0.1.1 が配布可能に見えてしまう。(3) `verify-release.mjs` が指定バージョンの 5 target しか見ず、過去版に残った対象外 `targetPlatform` や `IncludeLatestVersionOnly` の汚染を検出できない |
@@ -179,11 +179,11 @@ code --install-extension /path/to/tsuzuri-0.1.8-darwin-arm64.vsix
 
 ## 受け入れ条件
 
-- [ ] `node --test .claude/skills/vscode-publish/scripts/verify-release.test.mjs` が通り、過去版や `IncludeLatestVersionOnly` に 5 対応ホスト以外の `targetPlatform`（`darwin-x64` や universal を含む）が残っているケースを確実に拒否する。
-- [ ] `node tests/platforms.mjs` が通る。
-- [ ] Marketplace から `0.1.0` と `0.1.1` の `darwin-x64` が除去され、`0.1.2`〜最新版の 5 対応ホストはすべて `Validated` のまま保持されている。
-- [ ] `node .claude/skills/vscode-publish/scripts/verify-release.mjs marketplace <最新版>` が成功し、`IncludeLatestVersionOnly` の公開照会でも最新版の 5 対応ホストのみが返る。
-- [ ] Apple Silicon Mac（`darwin-arm64`）の VS Code で拡張機能ビューから `Tsuzuri` を検索・表示したとき、「Mac Silicon プラットフォームの Visual Studio Code では使用できません」が出ず、そのままインストールできる。
+- [x] `node --test .claude/skills/vscode-publish/scripts/verify-release.test.mjs` が通り、過去版や `IncludeLatestVersionOnly` に 5 対応ホスト以外の `targetPlatform`（`darwin-x64` や universal を含む）が残っているケースを確実に拒否する。
+- [x] `node tests/platforms.mjs` が通る。
+- [x] Marketplace から `0.1.0` と `0.1.1` の `darwin-x64` が除去され、`0.1.2`〜最新版の 5 対応ホストはすべて `Validated` のまま保持されている。
+- [x] `node .claude/skills/vscode-publish/scripts/verify-release.mjs marketplace <最新版>` が成功し、`IncludeLatestVersionOnly` の公開照会でも最新版の 5 対応ホストのみが返る。
+- [x] Apple Silicon Mac（`darwin-arm64`）の VS Code で拡張機能ビューから `Tsuzuri` を検索・表示したとき、「Mac Silicon プラットフォームの Visual Studio Code では使用できません」が出ず、そのままインストールできる。
 
 ## 落とし穴
 
@@ -208,3 +208,33 @@ code --install-extension /path/to/tsuzuri-0.1.8-darwin-arm64.vsix
   - pre-release 版を公開して VS Code 側の `hasPreReleaseVersion` 分岐（`IncludeVersions` 再照会）を誘発させる: VS Code クライアントの内部実装詳細に依存する脆い回避策であり、公開 Marketplace 上で `0.1.1@darwin-x64` が広告され続ける問題も直らないため採用しない。
 - **D2: `verify-release.mjs` の `marketplace` 検査で、全公開バージョンの `targetPlatform` と `IncludeLatestVersionOnly` の応答も検証する**（既定案）。指定バージョンだけを見る検査では過去版の孤立 `targetPlatform` を見逃したため、カタログ全体の不変条件として機械的に検査する。
 - **D3: `SKILL.md` と `vsc/Publishing.md` で「拡張全体の削除（`vsce unpublish`／`Remove`）の禁止」と「廃止済み `targetPlatform` をカタログに残さない原則」を明確に分けて記載する**（既定案）。
+
+## 実装と検証（2026-11-20）
+
+- **範囲**: 段 1〜段 4 をすべて実施した。コンパイラ・標準ライブラリ・拡張機能本体のソースコード、および既存の `0.1.2`〜`0.1.8` の公開済み VSIX は変更していない。
+- **段 1（公開検証チェッカーと単体テスト）**:
+  - `.claude/skills/vscode-publish/scripts/verify-release.mjs` に公開 Gallery API（`POST /_apis/public/gallery/extensionquery`、`filterType: 7` = `tmidorikawa.tsuzuri`、`filterType: 8` = `Microsoft.VisualStudio.Code`、`flags: IncludeLatestVersionOnly | IncludeVersionProperties | ExcludeNonValidated` = `560`）を認証なしで照会し `ContractSerializer.deserialize` で復元する `queryLatestMarketplace` を追加した。
+  - `verifyMarketplace(version, metadata, latestMetadata)` で、指定バージョンの 5 対応ホストおよび `Validated` フラグに加えて、`metadata.versions` の全エントリに 5 対応ホスト以外（`darwin-x64` や universal など）が存在しないこと、および `latestMetadata` が渡された場合にその全エントリが `version` かつ 5 対応ホストと一致しすべて `Validated` であることを検査するようにした。
+  - `.claude/skills/vscode-publish/scripts/verify-release.test.mjs` を更新し、5 ホストのみの旧版（`0.1.6`）混在時の成功、過去版の `darwin-x64`・universal 残存の拒否、`IncludeLatestVersionOnly` への旧 target／旧版混入・target 欠落・未検証フラグの拒否、`queryLatestMarketplace` のリクエスト形式とデシリアライズを単体テストした（`node --test .claude/skills/vscode-publish/scripts/verify-release.test.mjs`: 4 件すべて成功）。
+  - 旧版削除前の Marketplace に対して `node .claude/skills/vscode-publish/scripts/verify-release.mjs marketplace 0.1.8` を実行し、`Marketplace has unsupported or orphaned targetPlatform entries: 0.1.1@darwin-x64, 0.1.0@darwin-x64` で終了コード `1` になることを確認した。
+- **段 2（公開スキルと公開手順書）**:
+  - `.claude/skills/vscode-publish/SKILL.md` と `vsc/Publishing.md`（§2・§10・§11）を更新し、公開カタログの全バージョンを 5 対応 target のみに保つこと、特定旧版の削除（**More Actions > Reports > Manage > Delete this version**）と拡張全体の削除（`vsce unpublish`／**More Actions > Remove**、拡張 ID の永久ロック）の違い、`'Tsuzuri' 拡張機能は ... プラットフォームの Visual Studio Code では使用できません` 発生時の確認項目と回避策を明記した。
+  - `node tests/platforms.mjs` が成功することを確認した。
+- **段 3（Marketplace 上の旧版 `0.1.0`・`0.1.1` の削除と実機確認）**:
+  - 利用者の明示的な削除許可を確認し、着手前に `vsce show tmidorikawa.tsuzuri --json` で全 47 エントリ（`0.1.2`〜`0.1.8` の各 5 環境計 35 件 + `0.1.1`・`0.1.0` の各 6 環境計 12 件）がすべて `Validated`（`flags: 1`）であることを確認した。
+  - Marketplace 管理画面の **Reports > Manage > Delete this version**（`ManageExtensionSource.deleteVersion`）が呼ぶのと同じバージョン指定削除エンドポイント（`DELETE /_apis/gallery/publishers/tmidorikawa/extensions/tsuzuri?version=<version>`、`api-version=7.2-preview.2`、クエリ引数 `version` の厳密一致を事前 assert）で、まず `0.1.1` を削除して HTTP `204` と残り 41 件（`0.1.2`〜`0.1.8` 無傷）を確認し、続けて `0.1.0` を削除して HTTP `204` と残り 35 件（`0.1.2`〜`0.1.8` の全 7 版 × 5 対応ホストすべて `flags=1`）を確認した。
+  - 削除・伝播後に以下をすべて確認した:
+    1. `node .claude/skills/vscode-publish/scripts/verify-release.mjs marketplace 0.1.8` が終了コード `0` で `{ "publisher": "tmidorikawa", "name": "tsuzuri", "version": "0.1.8", "hosts": ["darwin-arm64", "linux-arm64", "linux-x64", "win32-arm64", "win32-x64"], "validated": true }` を返すこと。
+    2. `GET https://marketplace.visualstudio.com/_apis/public/gallery/vscode/tmidorikawa/tsuzuri/latest` および `https://www.vscode-unpkg.net/_gallery/tmidorikawa/tsuzuri/latest` が `0.1.8` の 5 環境のみを返し、`darwin-x64` を含まないこと。
+    3. 管理ポリシー `ExtensionGalleryServiceUrl` のクールダウン付き Marketplace プロキシに対して VS Code 1.147.0 と同じ `IncludeLatestVersionOnly` 照会を行った結果、フォールバックが正常に発動してクールダウン通過済みの `0.1.6` の全 5 対応環境（`darwin-arm64` を含む）が `validated` で返り、`darwin-x64` が 1 件も返らないこと。
+    4. Apple Silicon Mac（`arm64`、VS Code 1.147.0）で分離拡張ディレクトリへの `code --install-extension tmidorikawa.tsuzuri` が成功し、`tmidorikawa.tsuzuri-0.1.8-darwin-arm64`（`toolchain/manifest.json`: `darwin-arm64`）がインストールされること。
+- **チケットから外れた判断**:
+  - 段 3 の旧版削除は、管理画面の **Reports > Manage > Delete this version** のフロントエンド実装（`ManageExtensionSource.deleteVersion`）を照合したうえで、同一のバージョン指定 Gallery REST API（`?version=0.1.1`・`?version=0.1.0` をハードアサートして拡張全体の削除を防止）を `vsce` の Publisher 資格情報で 1 版ずつ実行し、各ステップ直後に `0.1.2`〜`0.1.8` の全 35 件の保持を確認した。
+- **実行したコマンドと結果**:
+  - `node --test .claude/skills/vscode-publish/scripts/verify-release.test.mjs`: 4 件すべて成功。
+  - `node tests/platforms.mjs`: 成功。
+  - `node .claude/skills/vscode-publish/scripts/verify-release.mjs marketplace 0.1.8`: 成功（`validated: true`、5 ホスト一致、孤立 target 0 件）。
+  - `node scripts/check-guide-lite.mjs`: 成功。
+  - `node tests/repo_kb.mjs`: 成功。
+- **更新した文書**: `.claude/skills/vscode-publish/SKILL.md`、`vsc/Publishing.md`、`_features/README.md`、本チケット（`_features/_completed/` へ移動）。`_tsuzuri/language-reference/`・`docs/language.md`・`README.md` は変更不要。
+- **変更したファイル**: `.claude/skills/vscode-publish/scripts/verify-release.mjs`、`.claude/skills/vscode-publish/scripts/verify-release.test.mjs`、`.claude/skills/vscode-publish/SKILL.md`、`vsc/Publishing.md`、`_features/README.md`、`_features/_completed/G41-marketplace-orphaned-darwin-x64.md`（`_features/G41-marketplace-orphaned-darwin-x64.md` から移動）。
