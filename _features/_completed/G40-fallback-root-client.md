@@ -310,7 +310,6 @@ VS Code はフォルダーの削除・移動を親の 1 件にまとめる（`vs
 - macOS の VS Code は保存を作成として知らせることがあり（`vsc/src/workflow.ts` の G39 の注記）、そのときも 300 ms 後に根を決め直す。cache を捨てるので次の走査は読み直すが、このリポジトリでも `std` で約 20 ms、上限に当たるフォルダーで約 0.5 秒。
 - `vscode.yml`（`ci:full`、5 環境）はこの作業では動かしていない（push しないため）。Windows ではシンボリックリンクの単体テストを飛ばし、論理は差し替えた走査のテストで確かめている。レビューの指摘 1（Windows で作業ディレクトリのフォルダーを消せない）の修正は、この macOS では修正前の失敗を再現できないので、`ci:full` の Windows の 2 環境の結果で確かめる。
 - テストの根の外し方（仕様 5 からの逸脱）は、2026-11-20 に実装の規則を採り、仕様 5 をそれに合わせて改めた（利用者の「承認が必要なものについては、あなたが考えるベストな方法であれば全て承認します」（2026-11-19）による委任で、起票者が判断した。字面どおりの規則は G39 Phase 1 の統合テストを壊し、文書を閉じたプロジェクトを Testing ビューから消す）。
-- レビューが証明できていないとした競合: `ProjectRoots.findForDirectory` は始めに cache を捕まえるので、文書を開いた直後に作成・削除が届き、その根の走査が 300 ms のまとめより長いと、決め直しのあとで古い根のクライアントが起動しうる（次の決め直しか **Restart Language Server** で直る）。再現していない。
 
 ### レビューの指摘と対応（2026-11-20）
 
@@ -348,7 +347,7 @@ VS Code はフォルダーの削除・移動を親の 1 件にまとめる（`vs
    ホバーとシンボルが 1 つずつの検査は、チケットの段 4 のとおり残した。ただし、注記で、それだけでは 2 つ目のクライアントのサーバーが答えたときにしか分からないと書いた。
    変異の確認: 残る根の selector を `**` にする変異（`sourceSelector(root, false)`）を入れ、selector の文字列の検査と `loose` の `matches` の検査を外して動かすと、`assert.equal(matches(loose2, app2Document), 0)` が `10 !== 0` で落ちた（`target/scratch/g40/fix/integration-mutation.log`）。待ちなしで、`loose2` の検査だけでこの誤りが分かる。
 
-レビューが「証明できていない」とした競合（`findForDirectory` が await の前に cache を捕まえるので、300 ms のまとめより長い走査の途中で作成・削除が届くと、決め直しの後に古い根のクライアントが起動しうる）は、再現していないので直していない。下の「残っている問題」に書いた。
+レビューが「証明できていない」とした競合（`findForDirectory` が await の前に cache を捕まえるので、300 ms のまとめより長い走査の途中で作成・削除が届くと、決め直しの後に古い根のクライアントが起動しうる）は、再現していないので直していない。下の「残っている問題」に書いた（Copilot のレビューの 1 で直し、「残っている問題」から外した。下の「Copilot のレビュー」）。
 
 #### 指摘への対応の検証
 
@@ -361,6 +360,36 @@ VS Code はフォルダーの削除・移動を親の 1 件にまとめる（`vs
 - 統合テストの記録には、2 の修正の前後とも、サーバーが要求を断った `document directory does not exist` の応答が 1 回出る（どの要求かは確かめていない）。フォルダーを消してから 300 ms のまとめと決め直しが終わるまでは、まだ止まっていない `demo`・`gone` のクライアントが消えたフォルダーの文書を受け持っているので、その間に VS Code が送った要求だと考えている。通知は出ず、テストは通る。サーバーの断り方は言語サーバーの振る舞いで、このチケットでは変えない（D5）。
 - 変異の実行は、テストが失敗したあと VS Code の本体が終わるまで約 5 分半かかった（通る実行では待たない）。記録は最後まで取れている。
 
+### Copilot のレビュー（PR #120、2026-11-20）
+
+GitHub Copilot の最初のレビュー（`6d24246c` に対する 3 件）を、コードと照らして確かめた。3 件とも実在したので、それぞれを回帰テストと一緒に別のコミットで直した。決定事項と既存のテストの期待値は変えていない。記録は `target/scratch/g40/copilot1/` にある。
+
+1. **4638756878（`vsc/src/extension.ts:106`）: 決め直しは `pending`（起動を始めたクライアント）しか待たないので、根を読んでいる途中の `open` を待たない。** 実在した。上の「残っている問題」に「再現していない」として書いていた競合と同じもので、直した。
+   遅い走査の途中で印が作られ、その事象で cache が捨てられて決め直しが先に終わると、古い cache で読んだ `open` が、新しい小さな根のクライアントの横に古い根（再帰の `**` のワークスペースのフォルダーなど）のクライアントを起動し、次の決め直しまで重複が残りえた。
+   - `vsc/src/core.ts` の `ProjectRoots.settled(lookup, use)` を足した。`lookup` の途中で cache が捨てられたら（`clear`・`changed`）読み直し、捨てられなかった読み込みの結果で、その確かめと同じタスクのうちに `use` を呼ぶ。
+   - `vsc/src/extension.ts` の `open` は、根の読み込みと根のフォルダーの確かめを `lookup` にし、クライアントの起動（`startClient` に分けた。中身は変えていない）を `use` で行う。クライアントは確かめと同じタスクで `pending` に入るので、その後に始まる決め直しはそれを待ち、根か selector の種類が変わっていれば止める。
+   - cache を捨てるのは、作成・削除（300 ms 後に決め直す）、決め直し、**Restart Language Server**、ワークスペースのフォルダーの変化（決め直す）だけで、どれも後で開いている文書ごとに `open` を呼ぶ。作成・削除が続くあいだ（`git checkout` など）は読み直しも続くが、決め直しもその間は動かない。
+   - 回帰テスト: `core.test.ts` の `a root that was read while a change cleared the cache is read again before it is used`。差し替えたファイル システムで `app/` の一覧を取ったところで走査を止め、そこに `Main.tz` を作って `changed` で cache を捨ててから走査を続ける。`use` は 1 回だけ、新しい根 `/w/notes` で呼ばれる。
+     `6d24246c` では `settled` がなく型検査で落ちる（`unit-head-comment1.log`）。`settled` を 1 回だけ読む形（`6d24246c` の `open` と同じ）にすると、`actual: '/w'`・`expected: '/w/notes'` で落ちる（`unit-single-lookup-comment1.log`）。
+2. **4638756935（`vsc/src/core.ts:194`）: 走査がキューに入れて読んだディレクトリは cache されず、`holds` に渡した根だけが cache される。** 実在した。印のないワークスペースの `a/X.tz`・`b/Y.tz` で、`a/X.tz` の根を決めるワークスペースの走査が `b` を読み、`b/Y.tz` を開くと、変化がないのに `b` とその下を読み直していた。
+   - cache（`RootCache`）に、走査が一覧を読んだディレクトリごとの項目（`RootFileSystem.list` の結果の `Promise`）を足した。走査は一覧を cache から取るだけで、規則（上限、深さの数え方、下の結果の使い回し）は変えていないので、根は変わらない。
+     項目は中身と一緒に `clear`・`changed` で捨てる。`changed` が見ない事象は、走査が読まないか飛ばす名前（`.` で始まる名前、`target/tz/` の下の知識グラフ）のもので、中身の cache と同じ。
+   - このリポジトリで 8 つのファイルを続けて調べると、根は修正前と同じで、`vsc/toolchain` の走査（1024 個で打ち切り）で読んだ `vsc/toolchain/lib` と、`docs` の `list` がそれぞれ 1 回減った。持つ項目は全部で約 21,000 個（`measure2.out`）。
+   - 回帰テスト: `core.test.ts` の `a directory that a scan listed is not listed again for a file opened in it later, and the roots stay the same`。`a/X.tz` の後に `b/Y.tz`・`b/c/Z.tz`・`b/c/d/W.tz` を開いても `list` を呼ばない（`6d24246c` では `actual: 11`・`expected: 5` で落ちる。`unit-head-comment2.log`）。
+     同じテストで、印、ディレクトリの上限、深さの上限を含む 3 つの木について、cache を共有して調べた根が、ファイルごとに新しい `ProjectRoots` で調べた根と、両方の順で一致することも確かめる。
+3. **4638756983（`vsc/src/extension.ts:40`、`vsc/src/testing.ts:125`）: ワークスペースの唯一のパッケージ `/w/App` を消して `Main.tz` を開いたままにすると、上への探索が残った `/w` で止まり、存在しない文書のためにクライアントと空のテストの根ができる。** 実在した。
+   前のレビューの指摘 2 の修正は根のフォルダーがあるかだけを見ていたので、上への探索が、消えたフォルダーより上の残ったフォルダーに着くと防げなかった。
+   - `vsc/src/workflow.ts` に `documentHasProject` を足し、`open` と `usedRoots` がそれを使う。ファイルから決めた根では、文書のフォルダーがあるかを見る（根は文書のフォルダーかその上なので、根があるかも兼ねる）。`tsuzuri.projectPath` の根は、今までどおり根自体を見る（ないときのエラーも変えない）。
+   - 回帰テスト: 統合テストの削除の場面で、`loose/extra` でなく `loose/extra/demo`（`Main.tz` を開いた入れ子のプロジェクト）を消す。上への探索は、App を含む `loose` の下の、残った `extra` で止まる。`extra` にクライアントもテストの根もないという検査は前と同じ。
+     `6d24246c` では `AssertionError [ERR_ASSERTION]: no client for the folder above the deleted folder` で落ちた（`integration-head-comment3.log`）。根のフォルダー自体が消える場面は、`gone` で今までどおり確かめる。
+- 文書: `vsc/Development.md`（cache が一覧も持つこと、消えたフォルダーの文書には上のフォルダーが残っていても作らないこと、読んでいる途中に cache が捨てられたら読み直すこと）と `docs/architecture.md`（cache が一覧も持つこと）を直した。`vsc/README.md`・`vsc/CHANGELOG.md`・`_tsuzuri/language-reference/compiler/usage.md` は、書いている振る舞いが変わらないので変えていない（CHANGELOG の「a file left open in it gets none」は、3 の修正でコードと合った）。
+
+#### Copilot のレビューへの対応の検証
+
+- `cd vsc && npm run test:unit && npm run check-types && npm run lint`: 単体テストは 26 件すべて通過（1 と 2 のテストを 1 件ずつ足した）、型検査と lint はエラーなし。
+- `cd vsc && node ../scripts/slot.mjs -- npm test`（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）: `All Tsuzuri VS Code integration checks passed.`（`integration-fixed.log`）。言語サーバーは変えていないので、同梱の `vsc/toolchain` を使った。サーバーが要求を断る `document directory does not exist` は、前と同じく 1 回出る。
+- `cargo fmt --all -- --check`（差分なし）、`node scripts/check-links.mjs --into _features/README.md`、`node scripts/check-guide-lite.mjs`、`node tests/platforms.mjs`、`git diff --check`。
+- 言語リファレンスのページは変えていないので、`check-docs.mjs` は動かしていない。Rust のコードも変えていない。
 
 ### 変更したファイル
 
