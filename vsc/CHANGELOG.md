@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Fix a workspace folder that is not a project (no `Main.tz` or `Tsuzuri.toml` at its top) with a package below it. The folder's language server also analyzed the package's files without the package's `Tsuzuri.toml`: false errors stayed in them after every fix, diagnostics, hovers, symbols, and completions showed twice, the hover, definitions, and symbols of the other files of the folder came back empty, and a large folder failed with `E1017` on a directory. A file without a marker now belongs to the highest directory up to the workspace folder that holds no other project and that the compiler can read at once (at most 1024 directories and 4096 sources, no directory 16 levels down, and no source or directory symbolic links). A file directly beside a package still reads the folder with the package, as `tsuzuri check` does, but that language server now serves only the files directly in the folder and leaves the package's files to the package's language server.
+- Creating or deleting a file or folder below a workspace folder (such as `Main.tz`, `Tsuzuri.toml`, or a package's folder) decides the projects again: the language servers whose project changed restart, and the Testing view drops the projects that are no longer projects.
+- **Compatibility:** in a folder that holds a package, a file without a marker now belongs to a smaller project, so its module name counts from that project, and a reference to a file in another directory of the folder is `E1002`, as with `tsuzuri check` on the file. A folder without a package that the compiler can read at once keeps one project, as before.
+
 ## 0.1.8 - 2026-11-20
 
 - Fix the extension's `Tsuzuri` copies of errors and warnings, and the task markers, that stayed in the Problems panel and as squiggles after they were fixed. The language server alone reports the errors and warnings of the code as you type. The test discovery that runs after each save no longer adds a `Tsuzuri` copy of a saved error; a failed discovery shows on the project in the Testing view.

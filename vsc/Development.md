@@ -76,13 +76,16 @@ macOS の `.dwarf` は自動で読み込みます。現状は DWARF に記録さ
 
 | 設定 | 既定値 | 用途 |
 | --- | --- | --- |
-| tsuzuri.projectPath | 空 | workspace からの相対、または絶対プロジェクトディレクトリ。空なら Main.tz／Tsuzuri.toml を探索 |
+| tsuzuri.projectPath | 空 | workspace からの相対、または絶対プロジェクトディレクトリ。空なら Main.tz／Tsuzuri.toml を探索し、なければほかのプロジェクトを含まない最も上のディレクトリ |
 | tsuzuri.optimization | 3 | build／run の最適化。debug は常に O0 |
 | tsuzuri.denyWarnings | false | 警告でも check／build／run を失敗させる |
 | tsuzuri.compilerPath | 空 | 開発用コンパイラの絶対パス。通常は変更不要 |
 | tsuzuri.toolchainPath | 空 | 開発用ツールチェーンの絶対パス。通常は同梱物を使用 |
 
 通常は最も近い Main.tz／Tsuzuri.toml をプロジェクト root とします。親 root の下に独立プロジェクトを置く構成は、別 workspace folder に分けるか projectPath を明示してください。
+Main.tz／Tsuzuri.toml が workspace folder まで見つからないファイルの root は、下に Main.tz／Tsuzuri.toml も、モジュールの発見が失敗するもの（1024 個を超えるディレクトリ、深さ 16 以上のディレクトリ、4096 個を超えるソース、ソースかディレクトリの symlink）も含まない最も上のディレクトリです（`vsc/src/core.ts` の `ProjectRoots`。`.` で始まる名前と知識グラフのディレクトリは数えません）。
+ファイルのディレクトリ自体がそれを含む場合（パッケージと同じフォルダーの直下のファイル）は、そのディレクトリが残る root です。`tsuzuri check` と同じくパッケージを含めて読みますが、言語サーバーは selector `<root>/*.{tz,tt,tc}` で直下のファイルだけを受け持ち、直下でないファイルの診断とワークスペースのシンボルを middleware で捨てます。1 つのファイルを 2 つの言語サーバーが受け持つのは、Main.tz／Tsuzuri.toml を持つ root の下に別のプロジェクトを置いたときだけです。
+走査は幅優先で、ディレクトリごとの結果を cache します。workspace folder の下でファイルかディレクトリが作られるか消えると cache を捨て、300 ms 後に root か残る root かが変わった言語サーバーを止めて開き直し、root でなくなったテストの root を外します。
 信頼していない workspace ではコード・コンパイラ・設定由来のプログラムを起動しません。テレメトリは追加していません。
 プロセスは引数配列で起動し、ユーザーのパスをシェルのコードとして評価しません。
 
