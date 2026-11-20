@@ -2734,7 +2734,24 @@ fn a_linked_root_keeps_the_clients_spelling() {
         "workspace/didChangeWatchedFiles",
         json!({"changes": [{"uri": fixture.uri_under(&link, "Helper.tz"), "type": 2}, {"uri": fixture.uri_under(&link, "Sub/Util.tz"), "type": 2}]}),
     );
-    server.settle();
+    // `workspace/symbol` lists the symbols of every analyzed root: D9 hides the diagnostics of a
+    // root analyzed by mistake (`link` itself, or `link/Sub`), but not its symbols.
+    let symbols = server.request("workspace/symbol", json!({"query": "util"}));
+    let found: Vec<_> = symbols["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{symbols}"))
+        .iter()
+        .map(|symbol| {
+            (
+                symbol["name"].as_str().unwrap().to_owned(),
+                symbol["location"]["uri"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [("util".to_owned(), fixture.uri_under(&link, "Sub/Util.tz"))]
+    );
     assert!(
         server
             .codes(&fixture.uri_under(&link, "Helper.tz"))
@@ -2753,6 +2770,37 @@ fn a_linked_root_keeps_the_clients_spelling() {
             server.published(&uri)
         );
     }
+    server.finish();
+}
+
+/// G39 段 8 (spec 9): a changed path is placed by its nearest existing ancestor directory, as
+/// `document_path` places a document, not through the file itself: a source link created in the
+/// root and pointing outside it analyzes the root, whose module discovery rejects it (E1011).
+#[cfg(unix)]
+#[test]
+fn a_link_created_in_the_root_is_placed_by_its_directory() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("app/Main.tz", main);
+    fixture.write("other/Ext.tz", "fn ext() -> i64 { 2 }\n");
+    let mut server = live::Server::start(&fixture.uri("app"), "utf-16");
+    server.open(&fixture.uri("app/Main.tz"), main);
+    server.settle();
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": fixture.uri("app/Main.tz")}}),
+    );
+    // No open document and nothing published: only the changed path can name the root.
+    server.settle();
+    std::os::unix::fs::symlink(fixture.path("other/Ext.tz"), fixture.path("app/Ext.tz")).unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": fixture.uri("app/Ext.tz"), "type": 1}]}),
+    );
+    server.settle();
+    assert_eq!(server.codes(&fixture.uri("app/Ext.tz")), ["E1011"]);
+    assert!(server.published(&fixture.uri("other/Ext.tz")).is_empty());
     server.finish();
 }
 
@@ -2855,6 +2903,36 @@ fn cancellations_of_unknown_ids_leave_room_for_later_ones() {
     server.notify("$/cancelRequest", json!({"id": hover}));
     let response = server.response(hover);
     assert_eq!(response["error"]["code"], -32800, "{response}");
+    server.finish();
+}
+
+/// G39 段 11: JSON-RPC ids need be unique only among outstanding requests. A client that reuses the
+/// id of an answered request can cancel the new request: the server forgets the answered id when a
+/// request with it arrives, so the cancellation is not taken for a late one of the answered request.
+#[test]
+fn a_reused_request_id_can_be_cancelled() {
+    use serde_json::json;
+    let (fixture, mut server) = live_session(&P1);
+    let main = fixture.uri("Main.tz");
+    let hover = json!({"textDocument": {"uri": main}, "position": position(P1_MAIN, "read (read", "utf-16")});
+    server.send(json!({"id": 7, "method": "textDocument/hover", "params": hover}));
+    let first = server.response(7);
+    assert!(first["result"]["contents"].is_object(), "{first}");
+    // The change makes the next hover refresh, so that the rest arrives while it is computed.
+    server.change(&main, 2, P1_MAIN);
+    let busy = ask(&mut server, "textDocument/hover", hover);
+    server.send(json!({"id": 7, "method": "textDocument/documentSymbol", "params": {"textDocument": {"uri": main}}}));
+    server.notify("$/cancelRequest", json!({"id": 7}));
+    assert!(server.response(busy).get("result").is_some());
+    let second = server.wait(
+        |message| {
+            message.get("id") == Some(&json!(7))
+                && message.get("method").is_none()
+                && (message.get("error").is_some() || message["result"].is_array())
+        },
+        "the response to the second request 7",
+    );
+    assert_eq!(second["error"]["code"], -32800, "{second}");
     server.finish();
 }
 

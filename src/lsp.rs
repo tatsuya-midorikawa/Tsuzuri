@@ -226,11 +226,12 @@ fn uri_under(root: &str, relative: &Path) -> Option<String> {
     Some(uri)
 }
 
-/// `path` with its longest existing ancestor canonicalized, as `document_path` places a document:
-/// a removed file or directory stays under the directory that remains (G39 段 8).
+/// `path` with its nearest existing ancestor directory canonicalized, as `document_path` places a
+/// document (G39 spec 9): a removed file or directory stays under the directory that remains, and a
+/// path that is itself a symbolic link stays where the client named it.
 fn canonical_existing(path: &Path) -> Option<PathBuf> {
-    let mut removed = Vec::new();
-    let mut current = path;
+    let mut removed = vec![path.file_name()?];
+    let mut current = path.parent()?;
     loop {
         if let Ok(canonical) = current.canonicalize() {
             return Some(
@@ -3229,15 +3230,19 @@ struct Queue {
 }
 
 impl Queue {
-    /// Takes a message from the reader. A cancellation of an answered request is dropped; one that
-    /// no queued request has is kept for a request that may follow, the latest
-    /// `MAX_REMEMBERED_IDS` of them.
+    /// Takes a message from the reader. A cancellation of a queued request is kept for it; one of an
+    /// answered request is dropped; any other is kept for a request that may follow, the latest
+    /// `MAX_REMEMBERED_IDS` of them. A request with the id of an answered one (ids need be unique
+    /// only among outstanding requests) makes the server forget the answered one, so that the new
+    /// request's cancellation is not dropped as a late one.
     fn push(&mut self, event: InputEvent, inbox: &Inbox) {
         let item = Queued::new(event);
-        if let Some(id) = item.message().and_then(cancelled_id) {
+        if let Some(id) = item.message().and_then(cancelled_id)
+            && !self.requests.contains_key(&id)
+        {
             if self.recent.contains(&id) {
                 inbox.forget(&id);
-            } else if !self.requests.contains_key(&id) {
+            } else {
                 self.unmatched.push_back(id);
                 if self.unmatched.len() > MAX_REMEMBERED_IDS
                     && let Some(oldest) = self.unmatched.pop_front()
@@ -3247,6 +3252,9 @@ impl Queue {
             }
         }
         if let Some(id) = item.request_id() {
+            if self.recent.remove(&id) {
+                self.answered.retain(|answered| *answered != id);
+            }
             *self.requests.entry(id).or_default() += 1;
         }
         if let Some(document) = item.modified() {
