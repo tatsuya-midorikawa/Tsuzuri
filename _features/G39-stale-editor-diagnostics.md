@@ -7,7 +7,7 @@
 | 規模 | L（Phase 1 は拡張の 3 か所と統合テスト、Phase 2 は言語サーバーの publish の記録、Phase 3 は言語サーバーの要求の待ち行列と取り消し。どれも S〜M） |
 | 依存 | G07, G12, G14, G16（すべて done） |
 | 後続 | – |
-| 状態 | done（Phase 1〜3、2026-11-20。段 13 の計測は、ほかの作業のない機械で別に取る） |
+| 状態 | doing（Phase 1 done。Phase 2 と Phase 3 の段 11・12・14 は実装済み（2026-11-20）。段 13 の計測と、`ci:full` の `vscode.yml`・`windows.yml` が残る） |
 | 起票 | 2026-11-19（利用者の報告「VS Code と Tsuzuri の拡張で開発すると、警告やエラーの箇所を直しても表示され続ける」を受けて起票。HEAD `af644794`（拡張 0.1.7）で、VS Code 1.103.2 に拡張と同梱のツールチェーンを入れて再現した。原因 1・2 は、利用者の環境（VS Code Insiders 1.148.0 と Marketplace の拡張 0.1.6）でも同じように再現した） |
 | 承認 | 不要（言語と CLI の意味は変えない。拡張と言語サーバーが出す診断がいつ消えるかを直す。拡張のタスクが問題パネルへ診断を出さなくなること（D3）と、言語サーバーがプロジェクトを読み込めない間ほかのファイルの診断を消すこと（D6）と、根の外の依存のファイルに解析の診断を送らないこと（D9）は、利用者から見える変更なので `vsc/README.md` と言語リファレンスに書く） |
 | 改善する劣位 | 不具合: (1) エラーのある状態で保存すると、問題パネルに source `Tsuzuri` の写しが増え、直して保存しても消えない。消えるのはテストを実行するか Debug したときだけ。(2) ▷ Run・Build・Check の後は、直した警告・エラーが次にタスクを流すまで残る。(3) テストの実行と Debug の後は、直した警告・エラーが次の実行まで残る。(4) ファイルの削除・名前の変更・移動、`Tsuzuri.toml` の誤り、プロジェクトの読み込みの失敗、シンボリックリンクを通したフォルダーでは、言語サーバー自身の診断（source `tsuzuri`）も残る。(5) 電球のコードアクションの要求が修正案ごとにプロジェクトを解析し直し、取り消されても最後まで計算するので、直した結果が 0.6〜3 秒、大きいプロジェクトでは 20 秒近く遅れて出る |
@@ -280,11 +280,11 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 - **入れ子のパッケージを覆う根のクライアント**: ワークスペースのフォルダー自体がプロジェクトでなく（直下に `Tsuzuri.toml` も `Main.tz` もない）、その下にパッケージがあると、パッケージの外の `.tz` を開いたときにフォルダーの根のクライアントが起動し、その documentSelector（`<根>/**/*.{tz,tt,tc}`）がパッケージのファイルも拾う。
   マニフェストを読まないフォルダーとしての解析になるので、マニフェストの名前空間に頼るファイル（ヘッダーのない `app/Util.tz` を `App::Util` で参照）に、直しても消えない偽のエラーが出る（`verify-lsp-lifecycle/e2e/fallback.out`、`logs/noheader.log`）。
   このリポジトリ自身を開いて `std/` や `tests/` の `.tz` を開くと、根のクライアントの読み込みが `E1017`（`module discovery exceeds 1024 directories or 16 path segments`）で毎回失敗し、それがディレクトリの URI に付く（`verify-lsp-lifecycle/logs/repo-root.log`）。
-  どのクライアントがどの文書を受け持つかの問題で、診断の寿命の問題ではないので、[G40](../G40-fallback-root-client.md) で扱う。
+  どのクライアントがどの文書を受け持つかの問題で、診断の寿命の問題ではないので、[G40](G40-fallback-root-client.md) で扱う。
 - **4 MiB を超える `didChange`**: 拒否して前のバッファを残す（`src/lsp.rs:532-537`）ので、前の診断も残る。縮めると戻る。直すと `tests/lsp.rs` の `rejects_documents_over_the_source_limit` の期待が変わる。
 - **[wasm] の検査のエラーの相対パス**: `src/main.rs:4167-4175` が `Tsuzuri.toml:1:1` と相対パスで出すので、絶対パスの problem matcher が `file:///Tsuzuri.toml` に付け、次の Wasm のタスクまで残る（`verify-task-matcher/e2e/e2e-misc.log` の M5〜M7）。D3 で matcher を外せばマーカーにはならないが、ほかの診断と同じ絶対パスで出すのが正しい。
 - **1 回の refresh の費用そのもの**: エディターの経路はすべての std モジュールを毎回検査し（D-40）、1 ファイルのプロジェクトの refresh の標本の 49 % が `check::warnings::unused_private`（`src/warnings.rs:286`、`src/check.rs:9525` から）で、std を含むすべての関数を走査している（`verify-lsp-latency-robustness/sample-hello-debug.txt`）。
-  CLI の `check` との差（約 5 倍）を縮めるのは性能の作業で、[PB08](../../_perfs/PB08-lsp-refresh-cost.md) で扱う。Phase 3 はこの費用を変えず、無駄な計算と待ちだけを除く。
+  CLI の `check` との差（約 5 倍）を縮めるのは性能の作業で、[PB08](../_perfs/PB08-lsp-refresh-cost.md) で扱う。Phase 3 はこの費用を変えず、無駄な計算と待ちだけを除く。
 - **エラーがある間、ほかのファイルの警告が消える**: 解析が失敗すると `analyze`（`src/lsp.rs:1549-1553`）は警告を返さないので、どこかにエラーがある間はプロジェクトのすべての警告が消え、直すと戻る。直した警告が戻ることはない。残る原因ではない。
 - **超線形の入力**: 1 つのブロックに `let v = v + 1;` を 10000 個並べると refresh が 16.7 秒（`tsuzuri check` も 10〜21 秒）、要素 30000 の配列リテラルの整形が 8 秒、10 万個の `else if` などは 120 秒で答えなかった。その間はどのファイルの診断も出ない。機械が生成した大きなブロックだけの問題で、別に扱う。
 - 実行中のテスト・Debug のビルドが、修正の保存の前にディスクを読んでいると、修正の後に古い結果を入れうる（コードを読んだだけで、再現していない。落とし穴を参照）。
@@ -541,13 +541,13 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 
 ## 対象外
 
-- どのクライアントがどの文書を受け持つかの見直し（入れ子のパッケージを覆う根のクライアント、このリポジトリを開いたときの `E1017`）。[G40](../G40-fallback-root-client.md) で扱う。
+- どのクライアントがどの文書を受け持つかの見直し（入れ子のパッケージを覆う根のクライアント、このリポジトリを開いたときの `E1017`）。[G40](G40-fallback-root-client.md) で扱う。
 - 4 MiB を超える `didChange` を受け付けて `E0003` を出すこと。
 - [wasm] の検査のエラーを絶対パスで出すこと（`src/main.rs:4167-4175`）。
 - 言語サーバーでのケーパビリティの検査（`E1036` を入力中に出す）。`packages.md` の「言語サーバーは検査しません」を変えることになる。
 - Run・Build・Check を `CustomExecution` と疑似端末で動かし、`--json` の結果を拡張の集まりへ入れること（D3 の代案）。
 - タスクの後に残る `a.o`。
-- 1 回の refresh の費用を減らすこと（エディターの経路の std の全モジュールの検査、`unused_private` の std の走査）。[PB08](../../_perfs/PB08-lsp-refresh-cost.md) で扱う。
+- 1 回の refresh の費用を減らすこと（エディターの経路の std の全モジュールの検査、`unused_private` の std の走査）。[PB08](../_perfs/PB08-lsp-refresh-cost.md) で扱う。
 - 解析を別のスレッドで動かし、古い解析を途中で捨てること。
 - クイックフィックスの検証を `codeAction/resolve` へ遅らせること（修正案は検証したものだけを出す、という今の約束を変える）。
 - エラーがある間にほかのファイルの警告が消えること、超線形の入力（関連する観測を参照）。
@@ -722,9 +722,9 @@ Phase 2（段 6〜10）と Phase 3（段 11・12・14）を実装した。段 13
 - 段 6（`src/lsp.rs`）: `Session::published`（根 → 空でない一覧を送ったパスと、そのときの URI）を足した。`Session::refresh` は送った先を `Sent` に集め、`Session::retire` が、前の記録にあって今回どの一覧も送らなかった URI に `[]` を送ってから記録を置き換える（同じパスを別の URI で送ったときの前の URI も、こうして消える）。読み込みの成功と失敗の両方の経路で呼ぶ。`publish` は送った URI を返し、閉じた文書への解析の一覧を捨てたときは `None` を返す（記録に入れない）。
   `refresh` は、パスではなく根のディレクトリを受け取るようにした（`pending` も根 → 期限）。記録の根や `didChangeWatchedFiles` の根を、ファイルのパスを介さずに解析し直すため。
 - 段 7: 読み込みの失敗は `Session::load_error` で、`SourceError` の span を、開いているバッファか `driver::read_source_text` で読んだ本文の `PositionMapper` で範囲にする（読めないか span がなければ 0:0）。`publish(..., load_error = true)` は閉じた文書にも送る。ほかのファイルの前の診断は段 6 の記録で消える（D6）。
-- 段 8: `workspace/didChangeWatchedFiles` は `Session::changed_roots` で、各 URI のパスを存在する最も近い祖先で正準化し（`canonical_existing`。消したファイルやフォルダーは残っている親の下に置く）、それが入るクライアントの根、開いているバッファの根、`published` の根を `schedule_root` する。どのクライアントの根にも入らないパスからは根を作らない（D7）。
+- 段 8: `workspace/didChangeWatchedFiles` は `Session::changed_roots` で、各 URI のパスを存在する最も近い祖先のディレクトリで正準化し（`canonical_existing`。`document_path` と同じく親から始めるので、パス自身がシンボリックリンクでもたどらない。消したファイルやフォルダーは残っている親の下に置く）、それが入るクライアントの根、開いているバッファの根、`published` の根を `schedule_root` する。どのクライアントの根にも入らないパスからは根を作らない（D7）。
 - 段 9: `Session::client_roots`（`initialize` の `rootUri`・`workspaceFolders` のパスと URI と、そのときに正準化した根。そのときなかった根は使うときに正準化する。refresh が送るファイルごとに根を正準化し直さないため）と `uri_under` を足し、`Session::uri` を、バッファ → `closed` → クライアントの根の表記 → `file_uri` の順にした。診断・定義・参照・リネーム・コードアクションの URI はすべてこれを通る（D8）。`refresh` は、根のディレクトリの外の利用者のソースに解析の一覧を送らない（D9。読み込みのエラーは例外）。
-  拡張（`vsc/src/extension.ts`）: 言語クライアントの `synchronize.fileEvents` に、根の `**` の削除だけを見る watcher を足した。両方の watcher の事象は middleware の `didChangeWatchedFile` で `affectsRoot`（Phase 1 と同じ。`.` で始まる名前と `target/tz/` の下を除く）に通す。
+  拡張（`vsc/src/extension.ts`）: 言語クライアントの `synchronize.fileEvents` に、根の `**` の削除だけを見る watcher を足した。middleware の `didChangeWatchedFile` は、`.tz`・`.tt`・`.tc`・`.toml` の事象（ソースの watcher が前から送っていたもの）をそのまま送り、それ以外のパス（`**` の削除の watcher だけが送るもの）を `affectsRoot`（Phase 1 と同じ。`.` で始まる名前と `target/tz/` の下を除く）に通す（`notifiesServer`。下のレビューの指摘 5）。
 - 段 11（`src/lsp.rs` の `serve`）: 容量 8 の `sync_channel` をやめ、受信のスレッド（`read_input`）は、読んで主ループがまだ処理していない本文の合計（`Inbox`）が `MAX_QUEUED_BYTES`（64 MiB、`MAX_MESSAGE` の 4 倍）を超える間だけ `Condvar` で待つ。`$/cancelRequest` の ID は読んだときに `Inbox` の集合へ入れる。主ループは各メッセージの前にチャンネルを `try_recv` で空にして `Queue` へ移す。
   `Queue` は、待っている要求の ID と、文書ごとの後の `didChange`・`didClose` の件数を持つ。取り消された要求は計算せずに -32800、後に同じ文書の `didChange`・`didClose` がある要求は -32801（`content modified`）で答える。`didChange` を飛ばすのは、後に同じ文書の `didChange` があり、その間の要求がどれも計算されない（取り消されたか、自分の文書が後で変わる）ときだけ（`Queue::superseded`）。答えた ID は `Queue::answer` が集合から消す。
 - 段 12: `handle` が取り消しを確かめる関数を受け取り、`code_actions` から `quick_fixes`（各修正案の `fix_edit` の前）と `fix_all`（読み込みの前）へ渡す。`src/fix.rs` の `run` は第 4 引数の `cancelled` を各ラウンドの解析の前に呼び、取り消されたらすべての本文を戻して `Stop::Cancelled` の報告を返す（CLI の `fix`・`tz_fix_plan`・`canonical_round` は取り消さない関数を渡す）。`context.triggerKind` が 2 で `only` がない要求には `fix_all` を呼ばない（D11）。
@@ -740,7 +740,7 @@ Phase 2（段 6〜10）と Phase 3（段 11・12・14）を実装した。段 13
 | 6 | `a_fixed_manifest_and_a_dropped_dependency_get_an_empty_list`: 壊して直した `Tsuzuri.toml` と、項目から外して消した根の中の依存 `lib/Calc.tz` に `[]` が届く | `Tsuzuri.toml` の `E0002` が残って落ちた |
 | 7 | `a_load_error_clears_the_other_files_and_reaches_closed_documents`: マニフェストが壊れている間に直した `Main.tz` に `[]`、範囲が `Project::load` の span（CLI の `--json` と同じ）、開いて閉じた `Main.old.tz` に `E1011` | `Main.tz` の `E1003` が残って落ちた。`E1011` の部分は、閉じた文書の抑止を読み込みのエラーにも掛ける変異で `[] != ["E1011"]` で落ちた（`mutant-closed.out`） |
 | 8 | `disk_changes_are_analyzed_without_open_documents`: 根の文書を閉じた後、ディスクで直した `Helper.tz` に `[]` が届く | 落ちた（`phase2-before-2.out`）。最初の版は、`didClose` 自身が根を解析し直すので HEAD でも通った。閉じた後の解析を待ってからディスクを変えるように直した |
-| 8・9 | `a_linked_root_keeps_the_clients_spelling`（Unix）: シンボリックリンクの根で、開いていない `Helper.tz` の診断がリンクの表記の URI に届き、正準化した URI には届かない。`Sub/Util.tz` の変更の通知で、`Sub` を根とする解析（`E1002`）が届かない | リンクの表記の URI に何も届かず落ちた |
+| 8・9 | `a_linked_root_keeps_the_clients_spelling`（Unix）: シンボリックリンクの根で、開いていない `Helper.tz` の診断がリンクの表記の URI に届き、正準化した URI には届かない。`Sub/Util.tz` の変更の通知の後、`workspace/symbol` の `util` がちょうど 1 件（`link/Sub/Util.tz`）で、`Sub` やリンクの表記の根を別に解析していない（D9 は誤って解析した根の診断も隠すので、診断だけでは見分けられない。レビューの指摘 2 で足した） | リンクの表記の URI に何も届かず落ちた。`workspace/symbol` の検査は、`uri_path` の値をそのまま `project_root` に渡す変異で 2 件になって落ちる |
 | 9 | `dependencies_outside_the_root_get_only_load_errors`: 根の外の path 依存 `../lib/Calc.tz` に解析の診断が届かず、`../lib/Tsuzuri.toml` の読み込みのエラーは届く | `lib/Calc.tz` に `E1003` が届いて落ちた |
 | 6 | `tests/lsp_sessions.mjs`: 開いていない `Unused.tz` を消して `didChangeWatchedFiles` を送ると、その URI に `[]` が届く | 空の一覧を待って時間切れで落ちた（`sessions-before.out`） |
 | 6・9 | `vsc/src/test/extension.test.ts`: 開いていない `Stale.tz` の `WorkspaceEdit.renameFile`・`workspace.fs.delete`、フォルダー `Stale` の名前の変更と削除で、古い URI の source `tsuzuri` の診断が消える | 同梱のコンパイラ（0.1.8）で `Timed out: diagnostics of the old name of a renamed file`（`vsc-base-compiler.out`）。拡張の `**` の削除の watcher を外す変異では `Timed out: diagnostics of a file in a renamed folder`（`vsc-mutant-no-folder-watcher.out`） |
@@ -757,7 +757,7 @@ Phase 2（段 6〜10）と Phase 3（段 11・12・14）を実装した。段 13
 
 ### 確認（macOS 27.2、Apple Silicon、ほかのワークツリーと共有する機械、Node 24.22.2、VS Code 1.103.2）
 
-T0・T1・T2 の結果は下の「最終の確認」に書く。
+T0・T1・T2 の結果は下の「レビューの前の確認」と「独立レビューの指摘と対応」に書く。
 
 - `cd vsc && npm run test:unit`: 20 passed、0 failed。`npm run check-types`・`npm run lint`: エラーなし。
 - 拡張の統合テスト（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）: 16 の段の `VS Code: …` と `All Tsuzuri VS Code integration checks passed.`（`vsc-new-compiler-2.out`）。
@@ -766,7 +766,7 @@ T0・T1・T2 の結果は下の「最終の確認」に書く。
 - `node tests/lsp_sessions.mjs target/debug/tsuzuri`: 4 つのセッションが成功（`t2-sessions.out`）。
 - `node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/diagnostics.md _tsuzuri/language-reference/compiler/usage.md`: 2 ページ、137 リンク、5 例、4 回の native の実行（O0/O3）、成功（`check-docs.out`）。
 
-### 最終の確認（コードは `d7801925`）
+### レビューの前の確認（コードは `d7801925`）
 
 - T0: `cargo fmt --all -- --check` は差分なし、`cargo clippy --locked --all-targets -- -D warnings` は警告なし。`cargo nextest run --locked --test lsp --lib -E 'binary(lsp) | test(lsp::) | test(fix::)'` は 96 passed（`tests/lsp.rs` は 63 件。前は 52 件で、11 件を足した）。
 - T1（`cargo nextest run --locked`）: Phase 2 の後（`7b1872e8`）3357 passed・4 skipped、Phase 3 と文書の後（`a8a7063d`）3364 passed・4 skipped、最後（`d7801925`）3364 passed・4 skipped。
@@ -785,7 +785,7 @@ T0・T1・T2 の結果は下の「最終の確認」に書く。
 1. **待ち行列にない ID の取り消しを、そのとき捨てずに直近の 1024 件だけ残す。** 仕様 13 は「待ち行列にも処理中にもない id の取り消しは捨て」と書く。だが `tests/lsp_sessions.mjs` は取り消しを要求より先に送り（`notify("$/cancelRequest", { id: nextId })` の後に `request`）、-32800 を期待している。主ループが取り消しを読んだ時点で要求がまだ届いていないことがあるので、捨てるとこの既存の検査が時々落ちる（停止条件の「既存の期待値を変えないと通らない」を避けた）。
    答えた要求の取り消しは捨てる（`Queue::answer` が直近 1024 件の答えた ID を覚え、後から届いた取り消しを集合から消す）。それ以外の待ち行列にない取り消しは、直近 1024 件を残して古いものから集合から消す。件数の上限で新しい取り消しを拒むことはないので、受け入れ条件（取り消しが効かなくならない）と段 11 の 1100 個の検査は満たす。
 2. **`fix::run` の取り消しは、`Stop` の新しい値 `Cancelled` で返す。** 設計は「ラウンドの間に取り消しを確かめる関数を受け取る」だけを決めている。誤り（`SourceError`）にすると診断コードが要るので、報告の停止の理由にした。最初の解析の前の確認は `fix_all` が読み込みの前に行い、`run` は各ラウンドの解析の前に確かめる。CLI は取り消さないので、`--json` の `stop` に `cancelled` は出ない。
-3. **watcher の事象の絞り込みは、拡張の 2 つの watcher の両方に掛ける。** 設計は `**` の削除の watcher にだけ「除く場所は Phase 1 と同じ」と書く。middleware はどちらの watcher の事象も受けるので、ソースの watcher の `.` で始まる名前と `target/tz/` の下の事象も送らなくなった。モジュールの発見はどちらも読まないので、解析の結果は変わらない。
+3. （取り下げた）最初の実装は、watcher の事象の絞り込みを拡張の 2 つの watcher の両方に掛け、「モジュールの発見はどちらも読まない」とした。発見は知識グラフの印のない `target/tz/` の下のソースを読むので、この前提は誤りだった（レビューの指摘 5）。設計のとおり、`**` の削除の watcher だけが送るパスに絞った。
 4. **-32801 は要求だけに使う。** ID を持つ text sync（`rejects_documents_over_the_source_limit` のような `didOpen` の要求）は、今までどおり反映して答える。
 5. **URI を作れないパス（UTF-8 でないパス）には送らない。** 前は `"uri": null` の通知を送っていた。
 6. **`vsc/README.md`・`vsc/CHANGELOG.md`（`## Unreleased`）も更新した。** チケットの「ドキュメント」は Phase 2・3 に拡張の文書を挙げていないが、拡張の利用者から見える振る舞い（消える診断、拡張の watcher）が変わるため。
@@ -797,6 +797,35 @@ T0・T1・T2 の結果は下の「最終の確認」に書く。
 - 根の外のファイルの読み込みのエラーは、そのファイルの変更がこのクライアントに届かないので、根の次の解析まで残る（仕様 11 のとおり）。
 - `Queue::superseded` は、計算する要求に当たるまで待ち行列を前から見る。取り消された要求が大量に並ぶ病的な入力では待ち行列の長さの 2 乗になるが、待ち行列は 64 MiB の背圧で抑えられる。
 - どのクライアントの根にも入らない文書（親のディレクトリを根とするもの）の D9 は、その親のディレクトリで判定する（今と同じ根の決め方）。
+- ID を使い回すクライアント（VS Code は使い回さない）で、答えた要求への遅れた取り消し、同じ ID の新しい要求、その取り消しが続けて届き、受信のスレッドが 3 つ目を読んで集合へ入れてからチャンネルへ送るまでの間に、主ループが 1 つ目を待ち行列へ移し（集合から消す）、3 つ目を移す前に新しい要求を始めると、その取り消しは効かない（下のレビューの指摘 4。3 つが 1 回の `try_recv` の間に揃う普通の場合は効く）。直すには、取り消しと要求に届いた順の番号を付けて比べる必要があり、この稀な場合のためには入れていない。
+- 壊れた `Tsuzuri.toml` で、`tsuzuri check --json` の `line`・`column` が span（5 行目の 58..63）でなく `1`・`1` になる（独立レビューの観察。G39 より前からの CLI の振る舞い）。言語サーバーの範囲は span から作るので、受け入れ条件の「CLI の `--json` と同じ位置」は span で満たす。CLI の行と列は別に扱う。
+
+### 独立レビューの指摘と対応（2026-11-20）
+
+`d7d03bf0` への独立レビューの指摘 5 件（major 1、minor 4）を、それぞれコードで確かめた。5 件とも採用した。記録は `target/scratch/g39/fix/`・`target/scratch/g39/fix2/`。
+
+1. **major: 受け入れ条件を満たさないまま done にし、`_completed/` へ移していた。** 段 13 の計測（「段 13 の計測を、直す前と後でこのチケットに記録している」）と `ci:full` の `vscode.yml`・`windows.yml` が残っている（GUIDE §0: すべての受け入れ条件を確かめてから done）。
+   採用。チケットを `_features/` へ戻し、状態と `_features/README.md` の行を doing（Phase 1 done。Phase 2 と Phase 3 の段 11・12・14 は実装済み。段 13 の計測と `ci:full` が残る）にした。チケットの中の相対リンク（G40、PB08）を戻した。段 13 は GUIDE §14 のとおり、ほかの作業のない機械で取る。この機械はほかのワークツリーと共有しているので、ここでは取らない。
+2. **minor: `a_linked_root_keeps_the_clients_spelling` の `Sub/Util.tz` の部分が、「変更の通知が別の根を始めない」誤りを見つけられない。** 設計の表が警告する誤り（`changed_roots` で `uri_path(uri)` をそのまま `project_root` に渡す）を入れても、D9 が、正準化していないディレクトリを根とする誤った解析の診断を隠すので、テストの診断の検査は通った。
+   採用。通知の後に `workspace/symbol` の `util` がちょうど 1 件（`link/Sub/Util.tz`）であることを確かめるようにした。その変異では 2 件になって落ち（`fix/mutant-subroot.out`）、このブランチでは通る。テストの表の行も直した。
+3. **minor: 仕様 9 からの逸脱。変わったパスが存在すると、親のディレクトリでなくパス自身を正準化していた（`canonical_existing`）。** 根の中に作った、根の外を指すソースのシンボリックリンクが、どのクライアントの根の外へ解決され、事象が捨てられた。
+   採用。`document_path` と同じく親から始めるようにした。`a_link_created_in_the_root_is_placed_by_its_directory`（Unix）を足した: 根の文書を閉じて何も送っていない状態で `app/Ext.tz`（`other/Ext.tz` へのリンク）を作って通知すると、根を解析し、発見の `E1011` が `app/Ext.tz` に届き、`other/Ext.tz` には何も届かない。直す前は `app/Ext.tz` に何も届かず落ちた（`fix/before.out`）。
+4. **minor: 応答の後に ID を使い回すクライアントの取り消しが捨てられる（退行）。** `Queue::push` が待ち行列の要求より先に答えた ID を見ていたので、使い回した ID の要求の取り消しを、前の要求への遅れた取り消しとして捨てた。
+   採用。取り消しは待ち行列の要求を先に見て、答えた ID と同じ ID の要求が届いたら、その ID を答えた ID の記録から外すようにした。確かめる中で、同じ原因の別の場合も見つけた: 答えた要求への遅れた取り消し、同じ ID の新しい要求、その取り消しが 1 回の `try_recv` の間に揃うと、1 つ目を移すときの `inbox.forget` が、受信のスレッドが 3 つ目のために入れた ID を消す。待ち行列の要求の取り消しを移すときに、ID を集合へ入れ直す（`Inbox::cancel`）ようにした。
+   `a_reused_request_id_can_be_cancelled`: ID 7（使い回して取り消す）は `d7d03bf0` で結果が返って落ち（`fix/before.out`）、ID 8（遅れた取り消しの後に使い回して取り消す）は `4c16e7dc` で結果が返って落ちた（`fix2/before.out`）。ID 9（遅れた取り消しの後に使い回し、取り消さない）は結果が返ることを確かめ、遅れた取り消しが新しい要求を取り消さないことを見る。
+   指摘の後半（前の要求の `Queue::answer` が新しい要求の取り消しも消す）は直していない。`answer` は応答を書く前に呼ぶので、応答を受けてから ID を使い回すクライアントの新しい取り消しは、その時点ではまだ届いていない。届くのは答えていない ID を使い回す場合だけで、JSON-RPC が許さない。残る狭い競合は上の「残る問題」。
+5. **minor: 逸脱 3 の前提が誤りで、`target/tz/` の下のソースの事象が届かなくなっていた。** モジュールの発見が飛ばすのは `.` で始まる名前、パッケージの根、知識グラフの印のあるディレクトリだけ（`src/driver.rs` の発見）で、ほかの `target/tz/**/*.tz` は読む。
+   採用。`vsc/src/core.ts` に `notifiesServer` を足し、middleware は `.tz`・`.tt`・`.tc`・`.toml` の事象をそのまま送り、それ以外のパス（`**` の削除の watcher だけが送るもの）を `affectsRoot` に通すようにした（設計のとおり）。`vsc/src/test/core.test.ts` に検査を足した: 直す前の `affectsRoot` では `/w/app/target/tz/gen/Gen.tz` で落ちた（`fix/unit-before.out`）。拡張のコメントと逸脱 3 を直した（逸脱 3 は取り下げ）。
+
+数えない観察の 2 つのうち、マニフェストの誤りの CLI の行と列は上の「残る問題」に書いた。VS Code の統合テストが段 3 の後で 14 分止まった 1 回（両方の言語サーバーは入力を待って止まっていた）は、下の確認の統合テストでは再現しなかった。`vscode.yml` で見る。
+
+#### 指摘への対応の後の確認（コードは `a01e2665`）
+
+- T0: `cargo fmt --all -- --check` は差分なし、`cargo clippy --locked --all-targets -- -D warnings` は警告なし。`cargo nextest run --locked --test lsp --lib -E 'binary(lsp) | test(lsp::) | test(fix::)'` は 98 passed（`tests/lsp.rs` は 65 件。指摘 3 と 4 で 2 件を足した。`fix2/after-lsp.out`）。待ち行列と指摘 2〜4 のテスト 6 件（`-E 'test(a_reused_request_id) | test(a_link_created) | test(a_linked_root) | test(cancel) | test(content_modified)'`）を 6 回続けて動かし、6 回とも通った。
+- T1（`cargo nextest run --locked`）: 3366 passed・4 skipped（`fix2/t1.out`）。
+- T2: `cargo build --locked` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は 4 つのセッションが成功（`fix2/sessions.out`）。`node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/diagnostics.md _tsuzuri/language-reference/compiler/usage.md` は 2 ページ、137 リンク、5 例、4 回の native の実行（O0/O3）で成功（`fix2/check-docs.out`）。`cd vsc && npm run test:unit` は 21 passed（指摘 5 で 1 件を足した）、`npm run check-types`・`npm run lint` はエラーなし（`fix2/vsc-unit.out`）。
+  拡張の統合テスト（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）は、16 の段と `All Tsuzuri VS Code integration checks passed.`（`fix2/vsc.out`）。同梱のツールチェーンは作り直さず、テストのワークスペースの `tsuzuri.compilerPath` を `a01e2665` の `target/debug/tsuzuri` にした。そのために `vsc/scripts/test-extension.mjs` を、追跡しない写し（`--user-data-dir` を短い `target/scratch/g39/ud` にし、設定に `tsuzuri.compilerPath` を足したもの）で動かし、終わってから消した。
+  `node tests/platforms.mjs` は成功、`node scripts/check-links.mjs`（`--into _features/README.md` も）は 0 broken、`node scripts/check-guide-lite.mjs` は 88 references・0 failed、`git diff --check` は差分なし。`src/runtime/` は変えていないので `check-runtime-includes.sh` は動かしていない。
 
 ### PB08 との合流
 
@@ -806,4 +835,4 @@ PB08 が同時に `src/lsp.rs` を変える（`analyze` に CLI の `Parallelism
 ### 更新した文書と変更したファイル
 
 - 言語リファレンス: `_tsuzuri/language-reference/compiler/diagnostics.md`（LSP での表示）、`_tsuzuri/language-reference/compiler/usage.md`（`lsp`）。`docs/architecture.md`（言語サーバー）。`vsc/README.md`、`vsc/CHANGELOG.md`。`docs/language.md` と `README.md` は、言語サーバーの診断の寿命と待ち行列を書いておらず、誤りにならないので変えていない。
-- `src/lsp.rs`、`src/fix.rs`、`src/mcp/check.rs`（`fix::run` の引数）、`tests/lsp.rs`、`tests/lsp_sessions.mjs`、`vsc/src/extension.ts`、`vsc/src/test/extension.test.ts`、`_features/G39-stale-editor-diagnostics.md`、`_features/README.md`。
+- `src/lsp.rs`、`src/fix.rs`、`src/mcp/check.rs`（`fix::run` の引数）、`tests/lsp.rs`、`tests/lsp_sessions.mjs`、`vsc/src/extension.ts`、`vsc/src/core.ts`（`notifiesServer`。レビューの指摘 5）、`vsc/src/test/extension.test.ts`、`vsc/src/test/core.test.ts`、`_features/G39-stale-editor-diagnostics.md`、`_features/README.md`。
