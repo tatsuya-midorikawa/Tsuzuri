@@ -820,6 +820,7 @@ T0・T1・T2 の結果は下の「レビューの前の確認」と「独立レ�
 12. **クライアントの根は、`initialize` のときに加えて refresh のたびに正準化し直す。** 設計（Phase 2 の変更の `Session`・`initialize`）は、`initialize` のときにクライアントの根の URI と正準化したパスの組を記録すると書く。シンボリックリンクの根は消されたり向き先を変えられたりするので、一度だけの正準化では、前の向き先の診断をリンクの表記で出し続ける（下の Copilot の 2 回目のレビューの 2）。
     前のディレクトリをどのクライアントの根も指さなくなったら、Copilot の 1 回目のレビューの 1 の消した根と同じく、そのディレクトリの解析を捨てて記録の URI に空の一覧を送る。新しいディレクトリは予定に入れる。
     Copilot の 3 回目のレビューで、ファイルの変更の通知でも、変わったパスを根に当てる前に正準化し直すようにした（下の 3 回目の 2。記録も開いている文書もない根では、通知のほかに予定に入れるものがない）。
+    Copilot の 5 回目のレビューで、前に解決しなかった根が解決したとき（消したリンクを作り直したとき）も、そのディレクトリを予定に入れるようにした（下の 5 回目の 1。根の解決の遷移の表もそこにある）。
 13. **`Inbox` の取り消しは、ID の集合でなく ID ごとの件数で持つ。** 設計（Phase 3 の変更の受信のスレッドと取り消しの集合）は、受信のスレッドが読んだ ID を「今と同じく共有の集合に入れる」と書く。集合では、主ループが 1 つの取り消しを手放すとき（押し出す、遅れたものとして捨てる、答える）に、受信のスレッドが先に読み、主ループがまだ待ち行列へ移していない同じ ID の取り消しの記録まで消える（下の Copilot の 3 回目のレビューの 3）。
     件数にし、主ループは自分が持つ取り消し（`Queue::unmatched` の 1 件と、待ち行列の要求の分の `Queue::held`）を手放すときに、ちょうどその件数を減らす。どの取り消しが効くかの規則（仕様 13、逸脱 1・11）は変わらない。
 
@@ -980,9 +981,38 @@ GitHub Copilot の 4 回目のレビューの 1 件（2026-11-20）をコード�
 - T2: `cargo build --locked` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は 4 つのセッションが成功（`sessions.out`）。`node scripts/check-links.mjs`（`--into _features/README.md` も）は 0 broken、`node scripts/check-guide-lite.mjs` は 88 references・0 failed、`git diff --check` は差分なし。言語リファレンスのページは変えていないので `check-docs` は動かしていない。
   `vsc/` は変えていないので、`npm run test:unit` などと拡張の統合テストは動かしていない。変わるのは、形の正しくないメッセージの ID の取り消しの扱いだけで、ふつうの診断の流れは変えない。`src/runtime/` は変えていないので `check-runtime-includes.sh` は動かしていない。段 13 の計測は取り直していない（形の正しいメッセージの扱いは変わらない）。`ci:full` は未実行。
 
+#### 5 回目（`20640c12` のコード）
+
+GitHub Copilot の 5 回目のレビューの 1 件（2026-11-20）をコードで確かめた。本当の誤りで、直した。修正は、直す前に落ちる回帰テストと一緒にコミットした。記録は `target/scratch/g39/copilot5/`。
+
+1. **4642269589（`src/lsp.rs:590`）: 消したシンボリックリンクの根を作り直し、リンクそのものの変更を通知しても、その根を解析しない。** 直した。
+   `resolve_client_roots` は、前に正準化したディレクトリを持つ根（`Some`）の変化だけを見ていた。文書を閉じた根 `link`（→ `real`）を消して通知すると、`Some(real)` → `None` で `real` の解析を捨て、予定から外し、記録の URI に `[]` を送り、記録もなくなる（2 回目の 2）。リンクを作り直してリンクそのものを通知すると、`None` → `Some(real)` を見逃した。通知のパスは、`canonical_existing` が親のディレクトリから正準化するので（仕様 9。パス自身のリンクはたどらない）、`real` でなくリンクの親の下の `link` に置かれてどの根にも入らない。記録も開いている文書もないので、何も予定に入らず、診断も `workspace/symbol` も、リンクの下の変更が届くまで空のままだった。
+   `resolve_client_roots` は、解決が変わった根をすべて比べ、前に解決しなかった根が解決したら、そのディレクトリを予定に入れる（refresh しているディレクトリなら入れない。前と違うディレクトリに解決した根の新しいディレクトリと同じ扱い。逸脱 12 の補足）。仕様 9 の `canonical_existing`（親のディレクトリから始める）は変えていない: リンクそのものの通知のパスの置き方ではなく、根の解決で拾う。
+   根の解決の遷移（前の `ClientRoot::canonical` → 今の `canonicalize`）と、それぞれの扱い:
+
+   | 前 → 今 | 扱い |
+   | --- | --- |
+   | `None` → `None` | 何もしない。前のディレクトリは解決しなくなったときに外したので、初めから解決しない根と同じく解析するものがない |
+   | `None` → `Some(b)` | `b` を予定に入れる（refresh している `b` は除く）。**この修正で足した** |
+   | `Some(a)` → `None` | ほかのクライアントの根が `a` を指さなければ、`a` の解析を捨て、予定から外し、記録の URI に `[]` を送る（`refresh(a)` はそこで終わる）。指していれば、その根の表記で送るよう `a` を予定に入れる（refresh している `a` は除く） |
+   | `Some(a)` → `Some(b)` | `b` を予定に入れ（refresh している `b` は除く）、`a` は上と同じ |
+   | `Some(a)` → `Some(a)` | 何もしない。変わったパスの根、開いている文書の根、記録の根は、今までどおり `changed_roots` が予定に入れる |
+
+   テスト `a_root_link_made_again_is_analyzed_again`（Unix）: `link`（→ `real`。開いていない `Helper.tz` に `W1001`）を根にして文書を閉じた後、`link` を消して根を通知すると、`link/Helper.tz` に `[]` が届き、`workspace/symbol` は `offset` を返さない。`link` を作り直して根（リンクそのもの）だけを通知すると、`link/Helper.tz` が `W1001` に戻り、`workspace/symbol` が `offset` を `link/Helper.tz` の URI で返し、`real/Helper.tz` の表記には何も届かない。開いていないファイルの診断はエラーでなく警告にした（エラーのあるプロジェクトは記号の索引を持たないので、記号の検査ができない）。
+   直す前（`20640c12`）は、作り直した後の `link/Helper.tz` が空のままで落ち（`left: [] right: ["W1001"]`。`before.out`）、その検査を外すと `workspace/symbol` が空で落ちた（`before-symbols.out`）。ほかの遷移は、既存のテストが確かめている: `Some(a)` → `None` と `Some(a)` → `Some(b)` は `a_removed_or_repointed_root_link_is_resolved_again`・`a_change_under_a_repointed_clean_root_link_analyzes_the_new_directory`・`a_root_dropped_by_an_earlier_analysis_is_not_analyzed`、消した根の後の `None` → `None` は `a_removed_root_is_not_loaded_through_its_parent`（2 つ目の通知の後に、根の下の空の一覧のほかは何も送らない）。
+
+文書: `docs/architecture.md` の言語サーバーの節（前に解決しなかった根も、解決したディレクトリを予定に入れること）、`_tsuzuri/language-reference/compiler/diagnostics.md` の「LSP での表示」（消した根のフォルダーやリンクを作り直したとき）。決定事項と既存のテストの期待値は変えていない。`vsc/` は変えていない。
+
+#### 5 回目の対応の後の確認（コードは `eb1c9fb0`）
+
+- T0: `cargo fmt --all -- --check` は差分なし、`cargo clippy --locked --all-targets -- -D warnings` は警告なし（`clippy.out`）。`cargo nextest run --locked --test lsp --lib -E 'binary(lsp) | test(lsp::) | test(fix::)'` は 113 passed（`tests/lsp.rs` は 73 件。指摘 1 で 1 件を足した。`t0-area.out`）。待ち行列・取り消し・根のテストの 23 件（4 回目の確認の 22 件の式に `test(made_again)` を足したもの）を 6 回続けて動かし、6 回とも通った（`repeat.out`）。
+- T1（`cargo nextest run --locked`）: 3381 passed・4 skipped（`t1.out`）。
+- T2: `cargo build --locked` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は 4 つのセッションが成功（`sessions.out`）。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/diagnostics.md` は 1 ページ、50 リンクで成功（`check-docs.out`）。`node scripts/check-links.mjs`（`--into _features/README.md` も）は 0 broken、`node scripts/check-guide-lite.mjs` は 88 references・0 failed、`git diff --check` は差分なし（`checks.out`）。
+  `vsc/` は変えていないので、`npm run test:unit` などと拡張の統合テストは動かしていない。変わるのは、前に解決しなかったクライアントの根が解決したときに予定に入れることだけで、ふつうの診断の流れは変えない。`src/runtime/` は変えていないので `check-runtime-includes.sh` は動かしていない。段 13 の計測は取り直していない（根の解決が変わらない間の解析の回数は変わらない）。`ci:full` は未実行。
+
 ### PB08 との合流
 
-PB08 が同時に `src/lsp.rs` を変える（`analyze` に CLI の `Parallelism` を渡す、`refresh` の publish の後へ `costly_sites`・`inferred_effects` を移す、所有権の事実の再利用）。このブランチの `refresh` の変更は、読み込みの失敗の経路（`load_error`・`retire`）、publish のループ（根の外の除外と `Sent`）、ループの後の `retire` の呼び出しだけで、`analyze` と `costly_sites`・`inferred_effects` の行は変えていない。ただし `refresh` の引数は根のディレクトリ（`&Path`）になり、`self.projects.insert(directory.to_owned(), …)` のように `directory` の扱いが変わったので、合流では PB08 の `refresh` の本文をこの形に合わせる。Copilot の 2 回目のレビューで、`refresh` の最初に `resolve_client_roots` と、どの根も指さなくなったディレクトリの `retire` を足した（解析の前で、`analyze` の行は変えていない）。3 回目のレビューで、その `retire` を `resolve_client_roots` の中へ移し、`serve` の期限の経路と `workspace/symbol` の refresh の繰り返しを `Session::refresh_due` にした（`refresh` の呼び方だけで、`refresh` の本文の解析の部分は変えていない）。4 回目のレビューで、`serve` の -32600 の経路が `Queue::answer` を呼ぶようにし、形の検査を `envelope_method`、ID の鍵を `Queued::id_key` にした（`refresh` は変えていない）。
+PB08 が同時に `src/lsp.rs` を変える（`analyze` に CLI の `Parallelism` を渡す、`refresh` の publish の後へ `costly_sites`・`inferred_effects` を移す、所有権の事実の再利用）。このブランチの `refresh` の変更は、読み込みの失敗の経路（`load_error`・`retire`）、publish のループ（根の外の除外と `Sent`）、ループの後の `retire` の呼び出しだけで、`analyze` と `costly_sites`・`inferred_effects` の行は変えていない。ただし `refresh` の引数は根のディレクトリ（`&Path`）になり、`self.projects.insert(directory.to_owned(), …)` のように `directory` の扱いが変わったので、合流では PB08 の `refresh` の本文をこの形に合わせる。Copilot の 2 回目のレビューで、`refresh` の最初に `resolve_client_roots` と、どの根も指さなくなったディレクトリの `retire` を足した（解析の前で、`analyze` の行は変えていない）。3 回目のレビューで、その `retire` を `resolve_client_roots` の中へ移し、`serve` の期限の経路と `workspace/symbol` の refresh の繰り返しを `Session::refresh_due` にした（`refresh` の呼び方だけで、`refresh` の本文の解析の部分は変えていない）。4 回目のレビューで、`serve` の -32600 の経路が `Queue::answer` を呼ぶようにし、形の検査を `envelope_method`、ID の鍵を `Queued::id_key` にした（`refresh` は変えていない）。5 回目のレビューで、`resolve_client_roots` が、前に解決しなかった根のディレクトリも予定に入れるようにした（`refresh` は変えていない）。
 送った URI の記録は `Sent`・`retire`・`load_error`・`changed_roots`・`uri`・`uri_under`、待ち行列は `Inbox`・`Queued`・`Queue`・`read_input`、取り消しの確認は `handle`・`code_actions`・`quick_fixes`・`fix_all` の引数 `cancelled` にまとめた。
 
 ### 更新した文書と変更したファイル
