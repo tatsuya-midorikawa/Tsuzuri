@@ -328,13 +328,15 @@ fn blob(
     }))
 }
 
-/// Builds the kernels of the calls of `init_on` and `map_on` and numbers them (pass 2).
-pub(crate) fn lower_kernels(module: &mut CheckedModule) -> Result<(), Diagnostic> {
+/// Builds the kernels of the calls of `init_on` and `map_on` and numbers them (pass 2). Whether it
+/// rewrote the bodies of user functions, which it does only when the module has an instance of
+/// `init_on` or `map_on`.
+pub(crate) fn lower_kernels(module: &mut CheckedModule) -> Result<bool, Diagnostic> {
     let sources = Sources::of(module);
     module.gpu.vulkan = sources.spirv;
     let instances = instances(module);
     if instances.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let mut sites = BTreeSet::new();
     for id in (0..module.functions.len()).filter(|id| is_user(module, *id)) {
@@ -368,7 +370,7 @@ pub(crate) fn lower_kernels(module: &mut CheckedModule) -> Result<(), Diagnostic
         features,
         vulkan: sources.spirv,
     };
-    Ok(())
+    Ok(true)
 }
 
 fn number(

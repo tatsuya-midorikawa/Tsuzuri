@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::check::semantic::{Reference, Role, SemanticIndex, SymbolKind};
-use crate::check::{CheckedModule, ModuleOrigin, semantic};
+use crate::check::{ModuleOrigin, semantic};
 use crate::copies::{CopyKind, CopySite};
 use crate::diagnostic::{Applicability, Diagnostic, Edit, Fix, Severity, Span, apply_edits};
 use crate::driver::Project;
@@ -380,14 +380,6 @@ impl Session {
             }
         };
         let (analyzed, diagnostics, counts) = analyze(&project);
-        let (index, copies, effects) =
-            analyzed.map_or((None, Vec::new(), BTreeMap::new()), |(index, module)| {
-                (
-                    Some(index),
-                    crate::copies::costly_sites(&module),
-                    inferred_effects(&module),
-                )
-            });
         let mappers: Vec<_> = project
             .sources
             .iter()
@@ -406,6 +398,15 @@ impl Session {
                 .collect();
             self.publish(output, &source.path, messages)?;
         }
+        // PB08 O9: the inlay hints and the effects of hovers after the diagnostics are sent.
+        let (index, copies, effects) =
+            analyzed.map_or((None, Vec::new(), BTreeMap::new()), |(index, module)| {
+                (
+                    Some(index),
+                    module.costly_sites(),
+                    inferred_effects(module.module()),
+                )
+            });
         if index.is_some() {
             self.good.remove(&directory);
         }
@@ -1518,7 +1519,7 @@ fn diagnostic_counts(diagnostics: &[Diagnostic]) -> BTreeMap<(Severity, &'static
 fn analyze(
     project: &Project,
 ) -> (
-    Option<(SemanticIndex, CheckedModule)>,
+    Option<(SemanticIndex, crate::copies::EditorModule)>,
     Vec<Diagnostic>,
     DiagnosticCounts,
 ) {
@@ -1539,10 +1540,14 @@ fn analyze(
         })
         .collect();
     let mut semantic = SemanticIndex::default();
-    match crate::analyze_inputs_semantic(&inputs, &mut semantic) {
+    match crate::analyze_inputs_for_editor(
+        &inputs,
+        &mut semantic,
+        crate::parallel::Parallelism::library(),
+    ) {
         Ok(mut module) => {
             add_function_heads(&mut semantic, project);
-            let warnings = std::mem::take(&mut module.warnings);
+            let warnings = module.take_warnings();
             let counts = Some(diagnostic_counts(&warnings));
             (Some((semantic, module)), warnings, counts)
         }

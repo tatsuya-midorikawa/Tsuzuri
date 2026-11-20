@@ -383,12 +383,45 @@ pub(crate) fn analyze_inputs_core(
     capture: Option<&mut check::kg_capture::Capture>,
     contracts: check::contracts::ContractMode,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
-    analyze_inputs_unannotated(inputs, semantic, cache, parallelism, capture, contracts).map_err(
-        |mut set| {
-            hints::annotate(&mut set, inputs);
-            set
-        },
+    analyze_inputs_unannotated(
+        inputs,
+        semantic,
+        cache,
+        parallelism,
+        capture,
+        contracts,
+        None,
     )
+    .map_err(|mut set| {
+        hints::annotate(&mut set, inputs);
+        set
+    })
+}
+
+/// The language server's analysis (PB08): `analyze_inputs_semantic` with `parallelism`, whose
+/// module keeps the call facts of its ownership check for `copies::EditorModule::costly_sites`.
+pub(crate) fn analyze_inputs_for_editor(
+    inputs: &[SourceInput<'_>],
+    index: &mut check::semantic::SemanticIndex,
+    parallelism: parallel::Parallelism,
+) -> Result<copies::EditorModule, DiagnosticSet> {
+    let mut facts = None;
+    let checked = analyze_inputs_unannotated(
+        inputs,
+        Some(&mut *index),
+        None,
+        parallelism,
+        None,
+        check::contracts::ContractMode::Check,
+        Some(&mut facts),
+    )
+    .map_err(|mut set| {
+        hints::annotate(&mut set, inputs);
+        set
+    });
+    let texts: Vec<_> = inputs.iter().map(|input| input.text).collect();
+    index.retain_spelled(&texts);
+    checked.map(|module| copies::EditorModule::new(module, facts))
 }
 
 /// Checks `inputs` once and fills `capture` (G26), keeping only references of the semantic index
@@ -413,7 +446,8 @@ pub(crate) fn analyze_inputs_captured(
     checked
 }
 
-/// `analyze_inputs_with` without the hints of the failed analysis.
+/// `analyze_inputs_with` without the hints of the failed analysis. `copy_facts` receives the call
+/// facts of the ownership check when the module keeps the bodies that they describe (PB08 O4(b)).
 fn analyze_inputs_unannotated(
     inputs: &[SourceInput<'_>],
     semantic: Option<&mut check::semantic::SemanticIndex>,
@@ -421,6 +455,7 @@ fn analyze_inputs_unannotated(
     parallelism: parallel::Parallelism,
     capture: Option<&mut check::kg_capture::Capture>,
     contracts: check::contracts::ContractMode,
+    copy_facts: Option<&mut Option<ownership::CopyFacts>>,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
     let mut programs = Vec::new();
     let mut diagnostics = Diagnostics::new(0);
@@ -525,8 +560,22 @@ fn analyze_inputs_unannotated(
         )?;
     }
     let checked = match capture {
-        Some(capture) => check::check_modules_captured(&modules, capture, parallelism, contracts),
-        None => check::check_modules_indexed_all(&modules, semantic, parallelism, contracts),
+        Some(capture) => check::check_modules_with_capture(
+            &modules,
+            None,
+            Some(capture),
+            parallelism,
+            contracts,
+            copy_facts,
+        ),
+        None => check::check_modules_with_capture(
+            &modules,
+            semantic,
+            None,
+            parallelism,
+            contracts,
+            copy_facts,
+        ),
     };
     checked.map(|mut module| {
         module.warnings.extend(skipped);

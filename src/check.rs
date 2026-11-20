@@ -7685,27 +7685,21 @@ pub(crate) fn check_modules_indexed_all(
     parallelism: Parallelism,
     contracts: contracts::ContractMode,
 ) -> Result<CheckedModule, DiagnosticSet> {
-    check_modules_with_capture(modules, semantic, None, parallelism, contracts)
+    check_modules_with_capture(modules, semantic, None, parallelism, contracts, None)
 }
 
 /// `check_modules_indexed_all` that also fills `capture`, the declaration view of the knowledge
-/// graph (G26). The capture only reads the checker's state: the result and the diagnostics are
-/// those of the same analysis without it.
-pub(crate) fn check_modules_captured(
-    modules: &[ModuleInput<'_>],
-    capture: &mut kg_capture::Capture,
-    parallelism: Parallelism,
-    contracts: contracts::ContractMode,
-) -> Result<CheckedModule, DiagnosticSet> {
-    check_modules_with_capture(modules, None, Some(capture), parallelism, contracts)
-}
-
-fn check_modules_with_capture(
+/// graph (G26), and gives `copy_facts` the call facts of the ownership check when the module still
+/// has the bodies that they describe (PB08 O4(b)). The capture only reads the checker's state: the
+/// result and the diagnostics are those of the same analysis without it. With a capture, the
+/// semantic index is the capture's: `semantic` is `None`.
+pub(crate) fn check_modules_with_capture(
     modules: &[ModuleInput<'_>],
     semantic: Option<&mut semantic::SemanticIndex>,
     capture: Option<&mut kg_capture::Capture>,
     parallelism: Parallelism,
     contracts: contracts::ContractMode,
+    copy_facts: Option<&mut Option<crate::ownership::CopyFacts>>,
 ) -> Result<CheckedModule, DiagnosticSet> {
     let mut diagnostics = Diagnostics::new(0);
     match check_modules_collect(
@@ -7716,6 +7710,7 @@ fn check_modules_with_capture(
         capture,
         parallelism,
         contracts,
+        copy_facts,
     ) {
         Ok(module) => Ok(module),
         Err(error) => {
@@ -7725,6 +7720,9 @@ fn check_modules_with_capture(
     }
 }
 
+/// Checks `modules`. `copy_facts` receives the call facts of the ownership check when the
+/// returned module still has the bodies that they describe (PB08 O4(b)).
+#[allow(clippy::too_many_arguments)]
 fn check_modules_collect(
     modules: &[ModuleInput<'_>],
     diagnostics: &mut Diagnostics,
@@ -7733,6 +7731,7 @@ fn check_modules_collect(
     mut capture: Option<&mut kg_capture::Capture>,
     parallelism: Parallelism,
     contract_mode: contracts::ContractMode,
+    copy_facts: Option<&mut Option<crate::ownership::CopyFacts>>,
 ) -> Result<CheckedModule, Diagnostic> {
     let check_time = crate::timings::Phase::start("check");
     // A `@deprecated` declaration needs the references that the semantic index records (W1005),
@@ -9648,7 +9647,8 @@ fn check_modules_collect(
         regions::validate_contract_calls(&module)?;
     }
     let ownership_time = crate::timings::Phase::start("ownership");
-    diagnostics.extend(crate::ownership::check_all_with(&module, parallelism));
+    let (ownership_errors, facts) = crate::ownership::check_all_with_facts(&module, parallelism);
+    diagnostics.extend(ownership_errors);
     drop(ownership_time);
     if let Err(error) = crate::gpu::validate_calls(&module) {
         diagnostics.push(error);
@@ -9706,7 +9706,14 @@ fn check_modules_collect(
     }
     names.flush_renamed(diagnostics).check()?;
     // F09 Phase 2: the calls are validated, so their callbacks are known functions.
-    crate::gpu_devices::lower_kernels(&mut module)?;
+    let rewritten = crate::gpu_devices::lower_kernels(&mut module)?;
+    // PB08 O4(b): the call facts describe the bodies that the ownership check saw, which nothing
+    // after it changes unless `lower_kernels` numbered device calls.
+    if let Some(kept) = copy_facts
+        && !rewritten
+    {
+        *kept = Some(facts);
+    }
     Ok(module)
 }
 

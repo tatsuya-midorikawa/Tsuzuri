@@ -1359,6 +1359,7 @@ mod tests {
                 None,
                 crate::parallel::Parallelism::SEQUENTIAL,
                 crate::check::contracts::ContractMode::Check,
+                None,
             )
             .unwrap();
             let warnings: Vec<_> = module
