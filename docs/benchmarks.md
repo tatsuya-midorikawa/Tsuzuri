@@ -5735,7 +5735,33 @@ node benchmarks/metrics.mjs report target/perf/PB08-after --baseline target/perf
 
 出力が変わらないことは、`benchmarks/lsp/golden.mjs` の golden（`check --json` の終了コード・stdout・stderr と知識グラフのファイル、442 個、1 スレッドと自動。10 の workload の言語サーバーの記録）と、`TSUZURI_BASELINE=<before> node tests/parallel_frontend.mjs <after>`（IR）で確かめます。
 
-**結果**: 計測待ちです。before と after の交互の計測（各組 9 回以上、M1 は 11 回以上）と profile は、負荷の低い機械で行い、日付・環境・コミット・中央値・生データの場所をここに書きます。
+**結果（Phase 1、2026-11-20）**
+
+- **環境**: Apple M3（8 コア）、macOS 27.2.1、Node v24.22.2。計測中の load average は 2.9〜6.0。
+- **比べた binary**: before は main `295ffcb4` の release、after は PB08 Phase 1 の `4c5d81a4` の release。
+- **手順**: before と after を chunk ごとに順を入れ替えて交互に測った。M1・M4 は各 11 回（warm-up 2 回）、CLI は 11 回、PX03 は 9 回。
+- **生データ**: `target/perf/PB08-before`・`target/perf/PB08-after`（chunk は `target/perf/PB08-chunks/`）。
+- 中央値（ms）を下に挙げる。全体の表と最小・最大はチケットの「手順 8: 計測」にある。
+
+| 指標 | before | after | after/before |
+| --- | ---: | ---: | ---: |
+| M1 hello（`TSUZURI_THREADS` 未設定） | 493 | 134 | 0.271 |
+| M1 big | 1,576 | 594 | 0.377 |
+| M1 syn200 | 2,288 | 464 | 0.203 |
+| M1 hello（1 スレッド） | 488 | 190 | 0.390 |
+| M1 big（1 スレッド） | 1,538 | 725 | 0.471 |
+| M1 syn200（1 スレッド） | 2,285 | 615 | 0.269 |
+| M4 `didChange`→`publishDiagnostics` big（診断が変わらない編集） | 1,778 | 781 | 0.439 |
+| M4 big の `codeAction`（文書全体、`triggerKind` 1） | 10,124 | 4,282 | 0.423 |
+| CLI `check` hello（自動） | 101 | 57 | 0.563 |
+| CLI `check` big（自動） | 759 | 464 | 0.611 |
+| CLI `check` syn200（自動） | 776 | 265 | 0.341 |
+| PX03 `check` 200 module | 785 | 272 | 0.346 |
+| PX03 `check` 1,000 module | 4,114 | 1,213 | 0.295 |
+
+M1 はチケットの目標（hello 0.29 倍以下、big 0.48 倍以下、syn200 0.23 倍以下）に届いた。CLI の `check`（12 の workload、1 スレッドと自動）と PX03 の `check` は、どの workload も遅くなっていない。
+
+strip しない release の `sample` では、捨てる診断を作る frame（`find::with_suggestions`、`polymorph::mismatch`）と、`costly_sites` の下の 2 回目の `call_facts`（big で 1 回の再解析あたり約 113 CPU ms）が消えた。
 
 ## 現実的な次の指標
 
