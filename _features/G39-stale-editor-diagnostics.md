@@ -726,7 +726,7 @@ Phase 2（段 6〜10）と Phase 3（段 11・12・14）を実装した。段 13
 - 段 8: `workspace/didChangeWatchedFiles` は `Session::changed_roots` で、各 URI のパスを存在する最も近い祖先のディレクトリで正準化し（`canonical_existing`。`document_path` と同じく親から始めるので、パス自身がシンボリックリンクでもたどらない。消したファイルやフォルダーは残っている親の下に置く）、それが入るクライアントの根、開いているバッファの根、`published` の根を `schedule_root` する。どのクライアントの根にも入らないパスからは根を作らない（D7）。
 - 段 9: `Session::client_roots`（`initialize` の `rootUri`・`workspaceFolders` のパスと URI と、そのときに正準化した根。そのときなかった根は使うときに正準化する。refresh が送るファイルごとに根を正準化し直さないため。Copilot の 2 回目のレビューで、refresh のたびに正準化し直すようにした（逸脱 12））と `uri_under` を足し、`Session::uri` を、バッファ → `closed` → クライアントの根の表記 → `file_uri` の順にした。診断・定義・参照・リネーム・コードアクションの URI はすべてこれを通る（D8）。`refresh` は、根のディレクトリの外の利用者のソースに解析の一覧を送らない（D9。読み込みのエラーは例外）。
   拡張（`vsc/src/extension.ts`）: 言語クライアントの `synchronize.fileEvents` に、根の `**` の削除だけを見る watcher を足した。middleware の `didChangeWatchedFile` は、`.tz`・`.tt`・`.tc`・`.toml` の事象（ソースの watcher が前から送っていたもの）をそのまま送り、それ以外のパス（`**` の削除の watcher だけが送るもの）を `affectsRoot`（Phase 1 と同じ。`.` で始まる名前と `target/tz/` の下を除く）に通す（`notifiesServer`。下のレビューの指摘 5）。
-- 段 11（`src/lsp.rs` の `serve`）: 容量 8 の `sync_channel` をやめ、受信のスレッド（`read_input`）は、読んで主ループがまだ処理していない本文の合計（`Inbox`）が `MAX_QUEUED_BYTES`（64 MiB、`MAX_MESSAGE` の 4 倍）を超える間だけ `Condvar` で待つ。`$/cancelRequest` の ID は読んだときに `Inbox` の集合へ入れる。主ループは各メッセージの前にチャンネルを `try_recv` で空にして `Queue` へ移す。
+- 段 11（`src/lsp.rs` の `serve`）: 容量 8 の `sync_channel` をやめ、受信のスレッド（`read_input`）は、読んで主ループがまだ処理していない本文の合計（`Inbox`）が `MAX_QUEUED_BYTES`（64 MiB、`MAX_MESSAGE` の 4 倍）を超える間だけ `Condvar` で待つ。`$/cancelRequest` の ID は読んだときに `Inbox` の集合へ入れる（Copilot の 3 回目のレビューで、集合を ID ごとの件数にした。逸脱 13）。主ループは各メッセージの前にチャンネルを `try_recv` で空にして `Queue` へ移す。
   `Queue` は、待っている要求の ID と、文書ごとの後の `didChange`・`didClose` の件数を持つ。取り消された要求は計算せずに -32800、後に同じ文書の `didChange`・`didClose` がある要求は -32801（`content modified`）で答える。`didChange` を飛ばすのは、後に同じ文書の `didChange` があり、その間の要求がどれも計算されない（取り消されたか、自分の文書が後で変わる）ときだけだった（`Queue::superseded`。Copilot の 2 回目のレビューで、飛ばさずにすべて反映して検査するようにした。逸脱 10）。答えた ID は `Queue::answer` が集合から消す。
 - 段 12: `handle` が取り消しを確かめる関数を受け取り、`code_actions` から `quick_fixes`（各修正案の `fix_edit` の前）と `fix_all`（読み込みの前）へ渡す。`src/fix.rs` の `run` は第 4 引数の `cancelled` を各ラウンドの解析の前に呼び、取り消されたらすべての本文を戻して `Stop::Cancelled` の報告を返す（CLI の `fix`・`tz_fix_plan`・`canonical_round` は取り消さない関数を渡す）。`context.triggerKind` が 2 で `only` がない要求には `fix_all` を呼ばない（D11）。
 - 段 10・14（文書）: 下の「更新した文書」。
@@ -819,14 +819,17 @@ T0・T1・T2 の結果は下の「レビューの前の確認」と「独立レ�
     そうした ID の答えた要求への遅れた取り消しは、待ち行列にない取り消しとしてすぐ捨てるので、今までどおり効かない。失うのは、そうした ID で要求より先に届いた取り消しだけ（その要求は計算する）。待ち行列の要求と処理中の要求の取り消しは、ID の長さに関わらず効く。
 12. **クライアントの根は、`initialize` のときに加えて refresh のたびに正準化し直す。** 設計（Phase 2 の変更の `Session`・`initialize`）は、`initialize` のときにクライアントの根の URI と正準化したパスの組を記録すると書く。シンボリックリンクの根は消されたり向き先を変えられたりするので、一度だけの正準化では、前の向き先の診断をリンクの表記で出し続ける（下の Copilot の 2 回目のレビューの 2）。
     前のディレクトリをどのクライアントの根も指さなくなったら、Copilot の 1 回目のレビューの 1 の消した根と同じく、そのディレクトリの解析を捨てて記録の URI に空の一覧を送る。新しいディレクトリは予定に入れる。
+    Copilot の 3 回目のレビューで、ファイルの変更の通知でも、変わったパスを根に当てる前に正準化し直すようにした（下の 3 回目の 2。記録も開いている文書もない根では、通知のほかに予定に入れるものがない）。
+13. **`Inbox` の取り消しは、ID の集合でなく ID ごとの件数で持つ。** 設計（Phase 3 の変更の受信のスレッドと取り消しの集合）は、受信のスレッドが読んだ ID を「今と同じく共有の集合に入れる」と書く。集合では、主ループが 1 つの取り消しを手放すとき（押し出す、遅れたものとして捨てる、答える）に、受信のスレッドが先に読み、主ループがまだ待ち行列へ移していない同じ ID の取り消しの記録まで消える（下の Copilot の 3 回目のレビューの 3）。
+    件数にし、主ループは自分が持つ取り消し（`Queue::unmatched` の 1 件と、待ち行列の要求の分の `Queue::held`）を手放すときに、ちょうどその件数を減らす。どの取り消しが効くかの規則（仕様 13、逸脱 1・11）は変わらない。
 
 ### 残る問題
 
 - `ci:full`（`windows.yml`・`vscode.yml`）は push していないので未実行。Windows の `\\?\` の根と `file:///c%3A/...` の根の URI の表記（`uri_under`）は、手元では確かめていない（`windows_file_uris_round_trip_drive_letters_and_canonical_paths` は変えていない）。シンボリックリンクの根の検査は Unix だけ。
 - 根の外のファイルの読み込みのエラーは、そのファイルの変更がこのクライアントに届かないので、根の次の解析まで残る（仕様 11 のとおり）。
 - どのクライアントの根にも入らない文書（親のディレクトリを根とするもの）の D9 は、その親のディレクトリで判定する（今と同じ根の決め方）。
-- クライアントの根を正準化し直すのは refresh のときだけ（逸脱 12）。根のシンボリックリンクを変えてから最初の refresh までの間は、ファイルの変更の通知が前の向き先で根を決める。前の向き先には記録があるので、その通知で解析し直され、その refresh で直る。
-- ID を使い回すクライアント（VS Code は使い回さない）で、答えた要求への遅れた取り消し、同じ ID の新しい要求、その取り消しが続けて届き、受信のスレッドが 3 つ目を読んで集合へ入れてからチャンネルへ送るまでの間に、主ループが 1 つ目を待ち行列へ移し（集合から消す）、3 つ目を移す前に新しい要求を始めると、その取り消しは効かない（下のレビューの指摘 4。3 つが 1 回の `try_recv` の間に揃う普通の場合は効く）。直すには、取り消しと要求に届いた順の番号を付けて比べる必要があり、この稀な場合のためには入れていない。
+- クライアントの根を正準化し直すのは、refresh のときとファイルの変更の通知のとき（逸脱 12。通知の分は Copilot の 3 回目のレビューの 2）。根のシンボリックリンクを変えてから、そのどちらかまでの間に届いた text sync と要求は、前の向き先で文書の根を決める（`project_root`）。その根の refresh は最初に根を正準化し直し、新しい向き先を予定に入れ、前の向き先を外す。
+- （Copilot の 3 回目のレビューの 3 で閉じた）ID を使い回すクライアントで、答えた要求への遅れた取り消し、同じ ID の新しい要求、その取り消しが続けて届き、受信のスレッドが 3 つ目を記録してからチャンネルへ送るまでの間に、主ループが 1 つ目を移して記録を消し、新しい要求を始めると、その取り消しが効かなかった。取り消しを件数で数え、1 つ目を捨てるときは 1 つ目の分だけを減らすので（逸脱 13）、3 つ目の記録は残り、新しい要求は取り消される。
 - 1 つのサーバーの複数の根が同じ URI に違う一覧を出すとき（入れ子の根。G40）、出さなくなった根の `retire` は、別の根の記録にあるその URI に `[]` を送らない（逸脱 8）。その URI には最後に送った一覧が残り、それが出さなくなった根のものなら、別の根の次の解析まで残る（記録のある根なので、次のファイルの変更の通知で解析し直す）。根の外の読み込みのエラーは、どの根から見ても同じファイルの同じ誤りなので、この場合に当たらない。
 - 壊れた `Tsuzuri.toml` で、`tsuzuri check --json` の `line`・`column` が span（5 行目の 58..63）でなく `1`・`1` になる（独立レビューの観察。G39 より前からの CLI の振る舞い）。言語サーバーの範囲は span から作るので、受け入れ条件の「CLI の `--json` と同じ位置」は span で満たす。CLI の行と列は別に扱う。
 
@@ -925,9 +928,40 @@ GitHub Copilot の 2 回目のレビューの 4 件（2026-11-20）を、それ�
 - T2: `cargo build --locked` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は 4 つのセッションが成功（`sessions.out`）。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/diagnostics.md` は 1 ページ、50 リンクで成功（`check-docs.out`）。`node scripts/check-links.mjs`（`--into _features/README.md` も）は 0 broken、`node scripts/check-guide-lite.mjs` は 88 references・0 failed、`git diff --check` は差分なし。
   `vsc/` は変えていないので、`npm run test:unit` などと拡張の統合テストは動かしていない。この修正は、ふつうの診断の流れ（`tests/lsp_sessions.mjs` と統合テストが試すもの）を変えない: 変わるのは、シンボリックリンクの根を消したり向き先を変えたりしたとき、後の版が拒まれたときと共有の上限に当たったとき、取り消しの記録の端の場合だけ。`src/runtime/` は変えていないので `check-runtime-includes.sh` は動かしていない。段 13 の計測は取り直していない（上の 4）。`ci:full` は未実行。
 
+#### 3 回目（`b4e32228` のコード）
+
+GitHub Copilot の 3 回目のレビューの 3 件（2026-11-20。インラインの 1 件と、概要の「前に見落とした」2 件）を、それぞれコードで確かめた。3 件とも本当の誤りで、すべて直した。各修正は、直す前に落ちる回帰テストと一緒に 1 つずつコミットした。記録は `target/scratch/g39/copilot3/`。
+
+1. **4640400937（`src/lsp.rs:592`）: 同じ一覧の前の根の refresh が外したディレクトリを、写した一覧から refresh する。** 直した。
+   `workspace/symbol` とデバウンスの期限の経路は、予定の根を写した一覧を順に refresh する。前の根の refresh の `resolve_client_roots` が、リンクを消した根の前のディレクトリを外しても（解析を捨て、予定から外し、記録の URI に `[]`）、一覧に残ったそのディレクトリを次に refresh し、まだあるディレクトリを読み込んで、記号を索引に戻し、どの根にも入らない正準化した URI へ診断を送っていた（その記録も残るので、後の変更の通知のたびに解析し直す）。
+   両方の経路を `Session::refresh_due` にまとめ、順が来たときに予定にない根を飛ばす。
+   テスト `a_root_dropped_by_an_earlier_analysis_is_not_analyzed`（Unix）: `workspaceFolders` の 2 つの根 `a_link`（→ `a_real`）・`b_link`（→ `b_real`）で、`b_link` を消し、それぞれの根の文書を変え（変更の通知を介さずに両方を予定に入れる。通知は 2 の修正で根を先に正準化し直す）、`workspace/symbol` を送る。`b_real` の記号 `only_in_b` が返らず、`b_link/Helper.tz` に `[]` が届き、`b_real/Helper.tz` の表記には何も届かない。`b` の文書は、リンクを消した後も変えられるよう `b_real` の表記で開く。
+   直す前は `only_in_b` が `b_real/Helper.tz` の URI で返って落ち（`before-1.out`）、記号の検査を後ろに回すと `b_real/Helper.tz` に `W1001` が届いて落ちた（`before-1-diagnostics.out`）。デバウンスの期限の経路は同じ関数を通る（2 つの根が同じ期限の一覧に入る順を、テストで確実に作る方法がないので、`workspace/symbol` の経路で確かめる）。
+2. **概要の指摘（`src/lsp.rs:461`）: 文書を閉じた、診断のないシンボリックリンクの根の向き先を変えると、その下の変更の通知がどの根にも当たらない。** 直した。
+   `changed_roots` は、変わったパスを存在する祖先で正準化して新しい向き先の下に置くが、それを前の refresh で正準化した前の向き先と比べていた。記録も開いている文書もない根では、ほかに予定に入れるものがないので、新しい向き先のエラーが出なかった。
+   Copilot の 2 回目のレビューの `resolve_client_roots` を `changed_roots` の最初で呼ぶ（別の仕組みは足していない）。どの根も指さなくなったディレクトリを外す処理（解析・予定・記録。前は `refresh` が `resolve_client_roots` の後に行っていた）を `resolve_client_roots` の中へ移したので、通知の経路でも前の向き先は外れる（逸脱 12 の補足）。
+   テスト `a_change_under_a_repointed_clean_root_link_analyzes_the_new_directory`（Unix）: 診断のない `link`（→ `real`）の文書を閉じた後、`link` を `moved` へ向け直し、`moved/Helper.tz`（`E1003`）の作成を通知すると、`link/Helper.tz` に `E1003` が届き、`real` の記号 `only_in_real` は返らず、送った診断の URI はすべてリンクの表記。直す前（`b4e32228`）は `link/Helper.tz` に何も届かず落ちた（`before-2-b4e32228-diagnostics.out`）。`changed_roots` で正準化し直すだけで前の向き先を外さない変異では、`only_in_real` が `real/Old.tz` の URI で残って落ちる（`mutant-2-no-retire.out`）。
+   2 回目の `a_removed_or_repointed_root_link_is_resolved_again` の向け直しの場合は、通知が新しいディレクトリを予定に入れるようになったので、`settle` を 1 回にした（期待値は変えていない）。
+3. **概要の指摘（`src/lsp.rs:3335`）: 古い取り消しを押し出すとき、受信のスレッドが先に読んだ同じ ID の取り消しの記録も消す。** 直した。
+   受信のスレッドが cancel(A)、存在しない ID の取り消し 1024 個、cancel(A)、request(A) を、主ループが待ち行列へ移す前に読むと、1 つ目の A を押し出すときの `inbox.forget(A)` が、2 つ目の A の記録（集合なので 1 つ）も消す。2 つ目の A は `unmatched` に残るが集合にはなく、A を計算していた。
+   1 つの並びだけを直すのでなく、`Inbox`（受信のスレッドの記録）と `Queue`（主ループが持つもの）の不変条件を決めて守るようにした。`Inbox` は ID ごとに、受信のスレッドが読んで主ループが手放していない取り消しの件数を持つ。主ループは、持つ取り消し（`unmatched` の 1 件と、待ち行列の要求の分の新しい `Queue::held`。要求が届くと `unmatched` の 1 件はそこへ移る）を手放すとき（届いたときに捨てる、押し出す、同じ ID の後のものに置き換える、それを持つ要求に答える）に、ちょうどその件数を `Inbox::release` で減らす。
+   こうして ID ごとの件数は、まだ待ち行列へ来ていない取り消し、`unmatched` の 1 件、`held` の合計に等しく、片方から消すことで、もう片方がまだ要る記録を失うことがない。再記録（`Inbox::cancel`）と `Inbox::forget` はなくなった（逸脱 13）。この形で、「残る問題」にあった ID の使い回しの狭い競合も閉じた。
+   テスト `src/lsp.rs` の `a_cancellation_read_again_outlives_its_pushed_out_copy`: 上の並びを、すべて記録してから待ち行列へ移しても、A の取り消しが残る。直す前は `assertion failed: inbox.is_cancelled("5")` で落ちた（`before-3.out`）。
+   テスト `cancellations_agree_with_a_reference_model_in_any_interleaving`: 受信のスレッドの「記録する」「送る」と、主ループの「送られたものを待ち行列へ移す」「1 つ取る」「答える」の交互を、固定の種で無作為に 20,000 通り作る（メッセージは 1〜8 個、2 つの短い ID と `MAX_REMEMBERED_ID` を超える ID、覚える数は 1 か 2。`Queue::remembering` で注入する）。各要求の結果が参照のモデル `CancelModel`（取り消しは主ループだけが持ち、受信のスレッドが読んで待ち行列へまだ来ていない取り消しは、計算中の要求を取り消す）と同じこと、各段の後に `Inbox` の件数が「まだ来ていない分 + `unmatched` + `held`」に等しいこと、`unmatched` がモデルと同じことを確かめる。
+   `b4e32228` の論理を写した変異は 146 通り目（この並びの族）で、集合の意味だけを戻した変異は 15 通り目（ID の使い回しの競合）で、どちらも結果の比較で落ちた（件数の検査を外して動かした。`mutant-3-b4e32228-logic.out`・`mutant-3-set-outcome-only.out`）。20,000 通りは約 0.2 秒。
+
+文書: `docs/architecture.md` の言語サーバーの節（変更の通知でも根を正準化し直すこと、予定から外したディレクトリを同じ一覧で refresh しないこと、取り消しの件数と手放し方）。言語リファレンスは変えていない: `diagnostics.md` の「リンクの向き先を変えたときは、前の向き先の診断を消して新しい向き先を検査します」と `usage.md` の `lsp` の取り消しの記述は、この修正で正しくなるか正しいままで、取り消しの記録の仕組みは書いていない。`vsc/` は変えていない。
+
+#### 3 回目の対応の後の確認（コードは `cd6d23c8`）
+
+- T0: `cargo fmt --all -- --check` は差分なし、`cargo clippy --locked --all-targets -- -D warnings` は警告なし（`clippy.out`）。`cargo nextest run --locked --test lsp --lib -E 'binary(lsp) | test(lsp::) | test(fix::)'` は 111 passed（`tests/lsp.rs` は 72 件。指摘 1 と 2 で 2 件、`src/lsp.rs` の `mod tests` に指摘 3 で 2 件を足した。`t0-area.out`）。待ち行列・取り消し・根のテストの 21 件（2 回目の確認の 17 件の式に `test(a_root_dropped) | test(repointed_clean_root_link) | test(read_again) | test(reference_model)` を足したもの）を 6 回続けて動かし、6 回とも通った（`repeat.out`）。
+- T1（`cargo nextest run --locked`）: 3379 passed・4 skipped（`t1.out`）。
+- T2: `cargo build --locked` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は 4 つのセッションが成功（`sessions.out`）。`node scripts/check-links.mjs`（`--into _features/README.md` も）は 0 broken、`node scripts/check-guide-lite.mjs` は 88 references・0 failed、`git diff --check` は差分なし。言語リファレンスのページは変えていないので `check-docs` は動かしていない。
+  `vsc/` は変えていないので、`npm run test:unit` などと拡張の統合テストは動かしていない。変わるのは、シンボリックリンクの根の向き先を変えたり消したりしたときと、取り消しの記録の数え方だけで、ふつうの診断の流れは変えない。`src/runtime/` は変えていないので `check-runtime-includes.sh` は動かしていない。段 13 の計測は取り直していない（解析の回数と、待ち行列の要求の扱いは変わらない）。`ci:full` は未実行。
+
 ### PB08 との合流
 
-PB08 が同時に `src/lsp.rs` を変える（`analyze` に CLI の `Parallelism` を渡す、`refresh` の publish の後へ `costly_sites`・`inferred_effects` を移す、所有権の事実の再利用）。このブランチの `refresh` の変更は、読み込みの失敗の経路（`load_error`・`retire`）、publish のループ（根の外の除外と `Sent`）、ループの後の `retire` の呼び出しだけで、`analyze` と `costly_sites`・`inferred_effects` の行は変えていない。ただし `refresh` の引数は根のディレクトリ（`&Path`）になり、`self.projects.insert(directory.to_owned(), …)` のように `directory` の扱いが変わったので、合流では PB08 の `refresh` の本文をこの形に合わせる。Copilot の 2 回目のレビューで、`refresh` の最初に `resolve_client_roots` と、どの根も指さなくなったディレクトリの `retire` を足した（解析の前で、`analyze` の行は変えていない）。
+PB08 が同時に `src/lsp.rs` を変える（`analyze` に CLI の `Parallelism` を渡す、`refresh` の publish の後へ `costly_sites`・`inferred_effects` を移す、所有権の事実の再利用）。このブランチの `refresh` の変更は、読み込みの失敗の経路（`load_error`・`retire`）、publish のループ（根の外の除外と `Sent`）、ループの後の `retire` の呼び出しだけで、`analyze` と `costly_sites`・`inferred_effects` の行は変えていない。ただし `refresh` の引数は根のディレクトリ（`&Path`）になり、`self.projects.insert(directory.to_owned(), …)` のように `directory` の扱いが変わったので、合流では PB08 の `refresh` の本文をこの形に合わせる。Copilot の 2 回目のレビューで、`refresh` の最初に `resolve_client_roots` と、どの根も指さなくなったディレクトリの `retire` を足した（解析の前で、`analyze` の行は変えていない）。3 回目のレビューで、その `retire` を `resolve_client_roots` の中へ移し、`serve` の期限の経路と `workspace/symbol` の refresh の繰り返しを `Session::refresh_due` にした（`refresh` の呼び方だけで、`refresh` の本文の解析の部分は変えていない）。
 送った URI の記録は `Sent`・`retire`・`load_error`・`changed_roots`・`uri`・`uri_under`、待ち行列は `Inbox`・`Queued`・`Queue`・`read_input`、取り消しの確認は `handle`・`code_actions`・`quick_fixes`・`fix_all` の引数 `cancelled` にまとめた。
 
 ### 更新した文書と変更したファイル
