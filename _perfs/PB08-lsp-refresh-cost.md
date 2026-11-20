@@ -358,6 +358,8 @@ Phase 1 の手順 1〜5・7 と、手順 8 のうちコードの部分（driver�
 | `6682a931` | O4(a)・O4(b)・O9 |
 | `4c5d81a4` | O5 |
 | `8bfb4efc` | 文書 |
+| `b073473a` | この節（実装と検証） |
+| `86934130` | レビューの指摘 1: copies のテストに `tests/copy_cost.rs` の残りの 5 つの入力を足した |
 
 ### 実装
 
@@ -414,7 +416,7 @@ TSUZURI_BASELINE=target/perf/PB08/tsuzuri-before node tests/parallel_frontend.mj
 | `check::polymorph::tests::instance_trials_write_no_mismatch_message` | 成功する解析が不一致のメッセージを書かない。報告する `E1003` は書く | 失敗（O1 の後で 29,713 回） |
 | `check::polymorph::tests::quiet_inference_unifies_like_the_loud_one` | 19 組の型で、quiet と通常の unify の成否・コード・kind・span・解が同じ。`E1003` だけメッセージが空 | build できない（同値） |
 | `check::polymorph::tests::quiet_instance_trials_choose_like_loud_ones` | 12 の fixture（instance の多いもの）と std の解析で、`matching_instance` の quiet な試行と通常の試行が同じ instance と置き換えを選ぶ（1,000 回以上比べる） | build できない（同値） |
-| `copies::tests::costly_sites_from_the_check_facts_are_the_recomputed_ones` | `tests/copy_cost.rs` の 14 の入力で、facts を使う `EditorModule::costly_sites`・公開の `costly_sites`・PB08 の前の計算（全関数の `sites` を filter）が同じで、facts を使うほうは `call_facts` を求めない。`tests/gpu.rs` の `DEVICE_PROGRAM` に配列の複製を足した例は facts を持たず、求め直して同じ | build できない（新しい入口） |
+| `copies::tests::costly_sites_from_the_check_facts_are_the_recomputed_ones` | `tests/copy_cost.rs` の 19 の入力すべて（レビューの指摘 1 で、初めの 14 に `MOVED_TWICE`・`SCALAR_RECORD`・`ARGUMENT_MOVED`・`EXPLICIT`・`EXPLICIT_LIST` を足した）で、facts を使う `EditorModule::costly_sites`・公開の `costly_sites`・PB08 の前の計算（全関数の `sites` を filter）が同じで、facts を使うほうは `call_facts` を求めない。`tests/gpu.rs` の `DEVICE_PROGRAM` に配列の複製を足した例は facts を持たず、求め直して同じ | build できない（新しい入口） |
 | `tests::the_editor_analysis_does_not_depend_on_the_thread_count` | 30 module の言語サーバーの解析の module・索引・costly sites が 1・2・8 スレッドで同じ | build できない（新しい入口） |
 | `lsp::tests::analysis_uses_the_threads_of_the_command_line` | 言語サーバーの解析が並列の段を動かす（`command_line()` の数が 2 以上のとき） | 失敗（`Parallelism::library()` に戻すと並列の段 0） |
 
@@ -456,6 +458,20 @@ CLI の `check` の wall はこの負荷では読めなかった（3 標本の�
 - O4(b) の facts を運ぶ型は、チケットの例（`CheckedModule` と facts の組）の代わりに `copies::EditorModule` にした。field を `copies.rs` の私的なものにして、crate の中でも module を書き換えられない（警告を取り出すだけ）ようにするため。`check::check_modules_captured` は、facts の引数を足した `check_modules_with_capture` に統合した。
 - O4(a) は公開の `costly_sites`（CLI の `--warn-implicit-copy`）にも効く（`costly_sites` だけの変種なので、チケットの範囲）。
 - テストのために `cfg(test)` の計数と hook を足した（`find::TYPE_POOLS`、`warnings::NAMES_PROBE`、`polymorph::MISMATCH_TEXTS`・`COMPARE_INSTANCE_TRIALS`、`ownership::CALL_FACTS`）。release の binary には入らない。
+
+### レビュー（2026-11-20）
+
+独立したレビュー（HEAD `b073473a` と origin/main `295ffcb4` の比較）は、blocker・major の問題はなく、minor の指摘を 1 つ挙げた。レビューは自分で作った HEAD の release で、CLI の golden（自動、442/442）、言語サーバーの golden（未設定・`TSUZURI_THREADS=8`、10/10）、GPU のデバイス呼び出しの project と `effects_sweep` の transcript（2/2）、`parallel_frontend.mjs`（ok）、check が通る golden の target の `build --emit llvm -O0 --no-cache` の IR（180/180 が同じ）、`check` の最大 RSS（±1 % 以内）が before と同じであることと、新しい 8 つのテストがそれぞれの変更を戻すと失敗することを確かめた。
+
+| 指摘 | 結果 |
+| --- | --- |
+| 1（minor）: `copies::tests::costly_sites_from_the_check_facts_are_the_recomputed_ones` の `SOURCES` は `tests/copy_cost.rs` の 19 の入力のうち 14 だけで、`MOVED_TWICE`・`SCALAR_RECORD`・`ARGUMENT_MOVED`・`EXPLICIT`・`EXPLICIT_LIST` が抜けていた（`EXPLICIT`・`EXPLICIT_LIST` は O4(a) の利用者の関数だけの filter が効く、std の関数が複製する例）。手順 5 の確認は「`tests/copy_cost.rs` の入力で」で、記録は「14 の入力」と書いていた | **直した**。コードで確かめると指摘のとおりだった。5 つを `tests/copy_cost.rs` と 1 byte も違わない literal で `SOURCES` に足し（`[&str; 19]`、`tests/copy_cost.rs` の順）、上の単体テストの表の記録を直した。`cargo test --locked --lib -- copies::tests::costly_sites_from_the_check_facts_are_the_recomputed_ones` は `TSUZURI_THREADS` 未設定・`=1`・`=8` で通った。検査するコードは変えておらず（テストの入力を足しただけ）、テストは base では build できない（新しい入口）ので、base で失敗することは確かめられない |
+
+#### レビューの後の検証
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` は通った。`cargo test --locked --lib copies`（4 件）、`--test copy_cost`（16 件）・`--test gpu`（17 件）・`--test lsp`（52 件）が通った。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked` は 3,359 件が通過、4 件が skip（1,938 秒。load average 50〜83）。
+- T2: `cargo build --locked` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は 4 つの session が通り、`TSUZURI_BASELINE=target/perf/PB08/tsuzuri-before node tests/parallel_frontend.mjs target/debug/tsuzuri` は ok。`node scripts/check-links.mjs`（`--into _perfs/README.md` も）・`node scripts/check-guide-lite.mjs`・`node scripts/gen-docs.mjs --check` は clean。言語リファレンスと `src/runtime/` は変えていないので、`check-docs.mjs` と `check-runtime-includes.sh` は動かしていない。テストの入力を足しただけで release の binary は変わらないので、golden は作り直していない。
 
 ### 残っている問題
 
