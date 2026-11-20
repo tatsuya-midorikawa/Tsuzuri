@@ -455,14 +455,24 @@ impl Session {
     /// client root of each changed path, placed by its directory that remains, the roots of the open
     /// documents, and the roots whose diagnostics are on the client. A path outside every client root
     /// adds no root.
-    fn changed_roots<'u>(&self, uris: impl Iterator<Item = &'u str>) -> BTreeSet<PathBuf> {
+    ///
+    /// The client roots are resolved again first (`resolve_client_roots`): a changed path resolves
+    /// through a root link that points elsewhere now, and placed against the directory it pointed
+    /// to, it would find no root when nothing else schedules one, as for a clean project with its
+    /// documents closed (Copilot review 3 of PR #119).
+    fn changed_roots<'u>(
+        &mut self,
+        uris: impl Iterator<Item = &'u str>,
+        output: &mut impl Write,
+    ) -> io::Result<BTreeSet<PathBuf>> {
+        self.resolve_client_roots(None, output)?;
         let mut roots: BTreeSet<PathBuf> = uris
             .filter_map(|uri| canonical_existing(&uri_path(uri).ok()?))
             .filter_map(|path| Some(self.client_root(&path)?.0))
             .collect();
         roots.extend(self.buffers.keys().map(|path| self.project_root(path)));
         roots.extend(self.published.keys().cloned());
-        roots
+        Ok(roots)
     }
 
     /// Sends `diagnostics` for `path` and returns the URI it sent to. An analysis's non-empty list
@@ -554,9 +564,16 @@ impl Session {
     /// Canonicalizes the client roots again (Copilot review 2 of PR #119): a root that no longer
     /// resolves to the directory it was canonicalized as (removed or moved away, or a symbolic link
     /// removed or pointed elsewhere) takes its new directory, which is scheduled unless it is
-    /// `directory`. Returns the directories that no client root resolves to any more; another one
-    /// that a client root still resolves to is scheduled, to be published at that root's spelling.
-    fn resolve_client_roots(&mut self, directory: &Path) -> Vec<PathBuf> {
+    /// `refreshing`. A directory that no client root resolves to any more has no project for this
+    /// client: analyzed, its diagnostics would go to the URIs of a root that is gone, such as a
+    /// removed link's. Its analysis is dropped and its diagnostics cleared, and it is returned.
+    /// Another one that a client root still resolves to is scheduled, to be published at that root's
+    /// spelling.
+    fn resolve_client_roots(
+        &mut self,
+        refreshing: Option<&Path>,
+        output: &mut impl Write,
+    ) -> io::Result<Vec<PathBuf>> {
         let mut moved = Vec::new();
         for root in &mut self.client_roots {
             let now = root.path.canonicalize().ok();
@@ -568,16 +585,22 @@ impl Session {
         }
         let mut left = Vec::new();
         for (before, now) in moved {
-            if let Some(now) = now.filter(|now| now != directory) {
+            if let Some(now) = now.filter(|now| Some(now.as_path()) != refreshing) {
                 self.schedule_root(now);
             }
             if !self.canonical_roots().any(|(root, _)| root == before) {
                 left.push(before);
-            } else if before != directory {
+            } else if Some(before.as_path()) != refreshing {
                 self.schedule_root(before);
             }
         }
-        left
+        for gone in &left {
+            self.projects.remove(gone);
+            self.good.remove(gone);
+            self.pending.remove(gone);
+            self.retire(output, gone, Sent::default())?;
+        }
+        Ok(left)
     }
 
     /// Refreshes each root of `due` that is still pending when its turn comes. The refresh of one can
@@ -595,15 +618,7 @@ impl Session {
 
     fn refresh(&mut self, directory: &Path, output: &mut impl Write) -> io::Result<()> {
         self.pending.remove(directory);
-        // A directory that no client root names any more has no project for this client: analyzed,
-        // its diagnostics would go to the URIs of a root that is gone, such as a removed link's.
-        let left = self.resolve_client_roots(directory);
-        for gone in &left {
-            self.projects.remove(gone);
-            self.good.remove(gone);
-            self.pending.remove(gone);
-            self.retire(output, gone, Sent::default())?;
-        }
+        let left = self.resolve_client_roots(Some(directory), output)?;
         if left.iter().any(|gone| gone == directory) {
             return Ok(());
         }
@@ -744,8 +759,12 @@ impl Session {
             "initialized" | "$/cancelRequest" => Ok(Value::Null),
             "workspace/didChangeWatchedFiles" => {
                 let changes = params["changes"].as_array().map_or(&[][..], Vec::as_slice);
-                let roots =
-                    self.changed_roots(changes.iter().filter_map(|change| change["uri"].as_str()));
+                let roots = self
+                    .changed_roots(
+                        changes.iter().filter_map(|change| change["uri"].as_str()),
+                        output,
+                    )
+                    .map_err(|error| (-32603, error.to_string()))?;
                 for root in roots {
                     self.schedule_root(root);
                 }

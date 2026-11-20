@@ -2934,7 +2934,8 @@ fn a_removed_or_repointed_root_link_is_resolved_again() {
     assert!(server.codes(&helper).is_empty());
     assert!(server.published(&fixture.uri("real/Helper.tz")).is_empty());
     server.finish();
-    // Pointed elsewhere. The analysis that finds it schedules the new directory.
+    // Pointed elsewhere. The change notification resolves the root again and schedules the new
+    // directory.
     let (fixture, link, mut server) = start();
     let helper = fixture.uri_under(&link, "Helper.tz");
     std::fs::remove_file(&link).unwrap();
@@ -2943,7 +2944,6 @@ fn a_removed_or_repointed_root_link_is_resolved_again() {
         "workspace/didChangeWatchedFiles",
         json!({"changes": [{"uri": helper, "type": 2}]}),
     );
-    server.settle();
     server.settle();
     assert_eq!(server.codes(&helper), ["E1002"]);
     for real in ["real/Helper.tz", "moved/Helper.tz"] {
@@ -2999,6 +2999,55 @@ fn a_root_dropped_by_an_earlier_analysis_is_not_analyzed() {
     assert!(server.codes(&b_helper).is_empty());
     let unlinked = fixture.uri("b_real/Helper.tz");
     assert!(server.published(&unlinked).is_empty());
+    server.finish();
+}
+
+/// Copilot review 3 of PR #119: a clean project named through a symbolic link, with its documents
+/// closed, has no diagnostics on the client, so a change notification finds a root only by the
+/// changed path. Once the link points elsewhere, that path resolves under the new directory: the
+/// notification resolves the client roots again before it places the path, so the new directory is
+/// analyzed and the old one dropped.
+#[cfg(unix)]
+#[test]
+fn a_change_under_a_repointed_clean_root_link_analyzes_the_new_directory() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("real/Main.tz", main);
+    fixture.write("real/Old.tz", "fn only_in_real() -> i64 { 2 }\n");
+    let link = fixture.base.join("link");
+    std::os::unix::fs::symlink(fixture.path("real"), &link).unwrap();
+    let mut server = live::Server::start(&fixture.uri_under(&link, ""), "utf-16");
+    let link_main = fixture.uri_under(&link, "Main.tz");
+    server.open(&link_main, main);
+    server.settle();
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": link_main}}),
+    );
+    let symbols = server.request("workspace/symbol", json!({"query": "only_in_real"}));
+    assert_eq!(symbols["result"].as_array().unwrap().len(), 1, "{symbols}");
+    let repointed = server.seen.len();
+    // The link points to `moved`, where a new file has an error.
+    fixture.write("moved/Main.tz", main);
+    fixture.write("moved/Helper.tz", "fn offset() -> i64 { true }\n");
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(fixture.path("moved"), &link).unwrap();
+    let helper = fixture.uri_under(&link, "Helper.tz");
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": helper, "type": 1}]}),
+    );
+    let symbols = server.request("workspace/symbol", json!({"query": "only_in_real"}));
+    assert_eq!(symbols["result"], json!([]), "{symbols}");
+    assert_eq!(server.codes(&helper), ["E1003"]);
+    let link_root = fixture.uri_under(&link, "");
+    for message in &server.seen[repointed..] {
+        if message["method"] == "textDocument/publishDiagnostics" {
+            let uri = message["params"]["uri"].as_str().unwrap();
+            assert!(uri.starts_with(&format!("{link_root}/")), "{message}");
+        }
+    }
     server.finish();
 }
 
