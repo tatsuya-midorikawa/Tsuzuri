@@ -14,7 +14,7 @@ argument-hint: "[version | patch] [prepare-only]"
 - `prepare-only` では Marketplace への書き込み、release タグの push、PR のマージを行わない。CI までの準備を明示的に頼まれた場合は、branch を ref にした `workflow_dispatch` を使い、公開の許可まで release タグは作らない。
 - 明示された版を優先する。公開依頼が `patch` なら現在の版からパッチを 1 つ上げる。再開時は既存のリリースを調べ、もう一度版を上げない。pre-release は別の明示的な依頼が必要。
 - 対応は `darwin-arm64`、`linux-arm64`、`linux-x64`、`win32-arm64`、`win32-x64` の 5 つだけ。Windows Arm64 のソースデバッグは未対応のまま。universal や Intel Mac の新パッケージを作らない。
-- 既存の版・target を上書きせず、古い Intel Mac 版なども勝手に削除しない。`unpublish`、`--skip-duplicate`、タグの付け替え、保護ルールの回避を使わない。
+- 公開カタログの全バージョンが 5 対応 target のみで構成される状態を保つ。既存の版・target の上書きや無断削除、拡張全体を削除して拡張 ID を永久ロックする `vsce unpublish`・管理画面の `More Actions > Remove`、`--skip-duplicate`、タグの付け替え、保護ルールの回避を使わない（廃止した target を含む特定旧版の削除は、利用者の明示承認のもと管理画面の **More Actions > Reports > Manage > Delete this version** で行う）。
 - PAT・アクセストークンをチャット、コマンド引数、ファイル、Git、ログへ書かない。資格情報ストアの中身を表示しない。
 - この手順を実行しても CI は自動公開しない。公開操作は、検証済み VSIX を指定する `vsce publish --packagePath` の段階だけ。
 
@@ -100,7 +100,7 @@ vsc/node_modules/.bin/vsce publish --packagePath \
 node .claude/skills/vscode-publish/scripts/verify-release.mjs marketplace "$VERSION"
 ```
 
-- このコマンドは認証なしの公開カタログの 5 target と各版の Validated フラグを検査し、ログインやトークンの取得は行わない。1 つでも未検証なら失敗する。
+- このコマンドは認証なしの公開カタログ（`vsce show --json` と公開 Gallery API の `IncludeLatestVersionOnly`）を照会し、指定バージョンの 5 target と Validated フラグに加えて、全公開バージョンの `targetPlatform` に 5 対応 target 以外（`darwin-x64` や universal など）が残っていないこと、`IncludeLatestVersionOnly` でも指定バージョンの 5 target だけが返ることを検査する。ログインやトークンの取得は行わない。1 つでも未検証または不整合なら失敗する。
 - 検証待ちなら、おおむね 1 分間隔で再確認する。非ゼロ終了の理由を読み、ネットワーク障害や validation エラーを検証待ちと混同しない。長く待つ場合は管理画面や認証済み公式 Gallery API の `validationResultMessage` も調べる。
 - アップロード受理後でも、公開カタログへの反映待ちで target が不足することがある。`target set mismatch` だけを根拠に再アップロードせず、公開ログと管理側の版・target を照合する。余分な target や重複を正常な検証待ちとして扱わない。
 - 検証エラー・手動審査待ちで解決できなければ「アップロード済み・公開確認未完了」と正確に報告する。公開完了を装わず、同じ版を上書きしない。
