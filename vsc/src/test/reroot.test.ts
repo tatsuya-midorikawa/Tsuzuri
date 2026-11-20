@@ -52,7 +52,8 @@ const passed = { code: 0, stdout: '', stderr: '' };
 /**
  * The extension's modules with a stubbed vscode API, in a temporary folder `top` whose files decide the roots: while the
  * package `top/b` exists, each folder below `top` is a root (`top/a` for `top/a/X.tz`, which is open); once the package
- * is deleted (`deletePackage`), `top` is the root of every file.
+ * is deleted (`deletePackage`), `top` is the root of every file. A lookup of a root reads the files when it starts and
+ * can be paused before it returns (`pauseLookup`), as a slow scan is.
  */
 async function host() {
 	const top = await mkdtemp(path.join(os.tmpdir(), 'tsuzuri-reroot-'));
@@ -64,14 +65,23 @@ async function host() {
 	const files = { package: true };
 	const documents = [document(file)];
 	const projectRoots = new core.ProjectRoots();
+	let pause: { reached: () => void; resume: Promise<void> } | undefined;
 	async function projectRootFor(resource: Uri = documents[0].uri, directory = false) {
 		const folder = directory ? resource.fsPath : path.dirname(resource.fsPath);
 		const root = files.package ? path.join(top, path.relative(top, folder).split(path.sep)[0]) : top;
+		const paused = pause;
+		if (paused) {
+			pause = undefined;
+			paused.reached();
+			await paused.resume;
+		}
 		return { root, remaining: false, configured: false };
 	}
 	const output: string[] = [];
 	const disposable = { dispose() {} };
+	const opened: ((document: Document) => unknown)[] = [];
 	const watchers: { pattern: unknown; changed: ((uri: Uri) => unknown)[] }[] = [];
+	const commands = new Map<string, (...args: unknown[]) => any>();
 	const token = () => ({ isCancellationRequested: false, onCancellationRequested: () => disposable });
 	const controller = {
 		items: new Items(),
@@ -85,6 +95,7 @@ async function host() {
 		Uri: { file: uri },
 		Disposable: class { constructor(readonly dispose: () => void) {} },
 		TestRunRequest: class { constructor(readonly include?: Item[], readonly exclude?: Item[]) {} },
+		CancellationTokenSource: class { token = token(); dispose() {} },
 		TestRunProfileKind: { Run: 1, Debug: 2 },
 		tests: { createTestController: () => controller },
 		workspace: {
@@ -98,14 +109,16 @@ async function host() {
 				const listen = (listener: (uri: Uri) => unknown) => { watcher.changed.push(listener); return disposable; };
 				return { onDidCreate: () => disposable, onDidChange: listen, onDidDelete: () => disposable, dispose() {} };
 			},
-			onDidOpenTextDocument: () => disposable,
+			onDidOpenTextDocument: (listener: (document: Document) => unknown) => { opened.push(listener); return disposable; },
 			onDidChangeWorkspaceFolders: () => disposable,
 		},
 		window: {
+			activeTextEditor: { document: documents[0] },
 			createOutputChannel: () => ({ appendLine: (line: string) => output.push(line), dispose() {} }),
 		},
 		commands: {
-			registerCommand: () => disposable,
+			registerCommand: (name: string, callback: (...args: unknown[]) => unknown) => { commands.set(name, callback); return disposable; },
+			executeCommand: async () => undefined,
 		},
 	};
 	/** The arguments of each compiler run; the first run after `holdCompiler` returns only when it is resolved. */
@@ -139,7 +152,7 @@ async function host() {
 	const context = { subscriptions: [] as unknown[] };
 	const workflow = { begin: () => ({ epoch: 0, started: 0 }), track() {}, async publishDiagnostics() {}, async ensureDebugger() {} };
 	return {
-		top, app, file, files, controller, compiled, timers, output, vscode, token,
+		top, app, file, files, documents, document, projectRoots, controller, commands, compiled, timers, output, vscode, token,
 		/** Registers the Test Explorer support and waits for its first roots. */
 		async testing() {
 			const testing = load('testing', modules, fakeTimers).registerTesting(context, vscode.window.createOutputChannel(), workflow);
@@ -148,9 +161,19 @@ async function host() {
 		},
 		/** Makes the next compiler run wait until the returned deferred is resolved. */
 		holdCompiler() { return held = deferred<typeof passed>(); },
+		/** Pauses the next lookup of a root after it read the files; it continues at `resume`. */
+		pauseLookup() {
+			const reached = deferred(), resume = deferred();
+			pause = { reached: reached.resolve, resume: resume.promise };
+			return { reached: reached.promise, resume: resume.resolve };
+		},
 		/** Saves `changed` in an editor: the Test Explorer support's watcher reports it. */
 		save(changed: string) {
 			for (const watcher of watchers) { if (watcher.pattern === '**/*.{tz,tt,tc,toml}') { watcher.changed.forEach(listener => listener(uri(changed))); } }
+		},
+		open(added: Document) {
+			documents.push(added);
+			opened.forEach(listener => listener(added));
 		},
 		/**
 		 * Deletes the package and re-roots the Test Explorer support as the extension does (`reroot` in `extension.ts`):
@@ -211,4 +234,32 @@ test('an explicit run that waits for an earlier discovery does not bring back a 
 		assert.deepEqual(compiled.map(args => args[1]), [app]);
 		assert.deepEqual(stubbed.output, []);
 	} finally { await stubbed.dispose(); }
+});
+
+test('a root that was read before a change cleared the cache is not added to the Test Explorer after the re-rooting', async t => {
+	// The three places that add the root of a lookup: a refresh of the roots, an opened document, and Test Project.
+	for (const entry of ['refresh', 'open', 'command'] as const) {
+		await t.test(entry, async () => {
+			const stubbed = await host();
+			const { app, top, controller, commands } = stubbed;
+			try {
+				const testing = await stubbed.testing();
+				assert.deepEqual([...testing.roots.keys()], [app]);
+				// The lookup reads the root top/a of top/a/X.tz while the package exists; the package is deleted, and the
+				// re-rooting removes top/a, before the lookup returns.
+				const lookup = stubbed.pauseLookup();
+				const done = entry === 'refresh' ? controller.resolveHandler()
+					: entry === 'open' ? stubbed.open(stubbed.document(path.join(app, 'Y.tz')))
+					: commands.get('tsuzuri.test')!();
+				await lookup.reached;
+				await stubbed.deletePackage(testing);
+				assert.deepEqual([...testing.roots.keys()], [top]);
+				lookup.resume();
+				await done;
+				await settle();
+				assert.deepEqual([...testing.roots.keys()], [top]);
+				assert.deepEqual(stubbed.output, []);
+			} finally { await stubbed.dispose(); }
+		});
+	}
 });
