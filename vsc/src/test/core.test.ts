@@ -170,7 +170,9 @@ test('run results belong to the roots that contain their files, and deletions th
 	for (const file of ['/w/app/.tsuzuri', '/w/app/.tsuzuri/test/runner-1', '/w/app/Geometry/.hidden/Point.tz', '/w/app/target/tz/kg', '/w/app/target/tz/kg/nodes.jsonl', '/w/app/lib/target/tz/kg', '/w/lib/Calc.tz']) {
 		assert.ok(!affectsRoot('/w/app', file, 'linux'), file);
 	}
-	for (const file of ['/w/app/lib/target/tz', '/w/app/lib/target/Calc.tz', '/w/app/lib/tz/kg']) { assert.ok(affectsRoot('/w/app', file, 'linux'), file); }
+	// Outside a knowledge graph, module discovery reads target/tz/ like any other directory: a deleted folder of sources there
+	// changes the project (Copilot review of PR #119).
+	for (const file of ['/w/app/lib/target/tz', '/w/app/lib/target/Calc.tz', '/w/app/lib/tz/kg', '/w/app/target/tz/gen', '/w/app/target/tz/gen/Gen.tz', '/w/app/target/tz/kgx', '/w/app/lib/target/tz/gen']) { assert.ok(affectsRoot('/w/app', file, 'linux'), file); }
 	assert.ok(!affectsRoot('c:\\w\\app', 'C:\\w\\app\\target\\tz\\kg', 'win32'));
 	assert.ok(affectsRoot('c:\\w\\app', 'C:\\w\\app\\Shapes', 'win32'));
 	for (const file of ['Main.tz', 'lib/Calc.tt', 'Show.tc', 'Tsuzuri.toml', 'C:\\w\\Main.tz', '/w/app/Tsuzuri.lock', 'C:\\w\\Tsuzuri.lock', 'Tsuzuri.lock']) { assert.ok(projectFile(file), file); }
@@ -180,13 +182,14 @@ test('run results belong to the roots that contain their files, and deletions th
 test('the language server hears of every source and manifest event, and of the other deletions that can change its root', () => {
 	// The source watcher reported these before G39 added the delete watcher of '**'; module discovery reads sources under
 	// target/tz/ outside a knowledge graph, so they are not filtered.
-	for (const file of ['/w/app/Main.tz', '/w/app/target/tz/gen/Gen.tz', '/w/app/target/tz/kg/Show.tc', '/w/app/.hidden/Point.tt', '/w/app/lib/Tsuzuri.toml', '/w/app/Geometry', '/w/app/target']) {
+	for (const file of ['/w/app/Main.tz', '/w/app/target/tz/gen/Gen.tz', '/w/app/target/tz/kg/Show.tc', '/w/app/.hidden/Point.tt', '/w/app/lib/Tsuzuri.toml', '/w/app/Geometry', '/w/app/target', '/w/app/target/tz/gen', '/w/app/target/tz']) {
 		assert.ok(notifiesServer('/w/app', file, 'linux'), file);
 	}
 	for (const file of ['/w/app/.tsuzuri', '/w/app/.tsuzuri/test/runner-1', '/w/app/target/tz/kg', '/w/app/target/tz/kg/nodes.jsonl', '/w/app/.git']) {
 		assert.ok(!notifiesServer('/w/app', file, 'linux'), file);
 	}
 	assert.ok(notifiesServer('c:\\w\\app', 'C:\\w\\app\\target\\tz\\gen\\Gen.tz', 'win32'));
+	assert.ok(notifiesServer('c:\\w\\app', 'C:\\w\\app\\target\\tz\\gen', 'win32'));
 	assert.ok(!notifiesServer('c:\\w\\app', 'C:\\w\\app\\target\\tz\\kg', 'win32'));
 });
 

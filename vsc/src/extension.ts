@@ -36,8 +36,8 @@ export async function activate(context: vscode.ExtensionContext) {
 			const tools = await toolchain(context, document.uri);
 			// VS Code reports the files of a deleted or moved folder as one event of the folder, which the source pattern
 			// does not match; the second watcher tells the server of it (G39). Of its events, those under a name that starts
-			// with '.' (module discovery reads none) or under target/tz/ (where each build rewrites the knowledge graph) are not
-			// sent; every event of the source watcher is, as before.
+			// with '.' (module discovery reads none) or under target/tz/kg/ (the knowledge graph, which each check, build, run,
+			// and test discovery replaces) are not sent; every event of the source watcher is, as before.
 			const fileEvents = [
 				vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{tz,tt,tc,toml}')),
 				vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**'), true, true, false),

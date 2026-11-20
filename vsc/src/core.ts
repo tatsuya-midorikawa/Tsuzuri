@@ -80,19 +80,21 @@ export function rootSpelling(root: string, real: string, file: string, platform:
 
 /**
  * Whether deleting `file` can change a project at `root` or in a package under it: a path under it, except names that
- * start with `.` and a knowledge graph under a `target/tz/`, which module discovery does not read and the compiler
- * rewrites on each run.
+ * start with `.` and the knowledge graph `target/tz/kg/` of the root or of a package under it, which module discovery
+ * does not read (it skips a directory with the graph's marker) and the compiler replaces on each check, build, run, and
+ * test, also on each test discovery. Module discovery reads every other directory under `target/tz/`, whose deletion is
+ * kept (Copilot review of PR #119).
  */
 export function affectsRoot(root: string, file: string, platform: string = process.platform): boolean {
 	if (!inRoot(root, file, platform)) { return false; }
 	const parts = (platform === 'win32' ? path.win32 : path.posix).relative(root, file).split(/[\\/]/);
-	return !parts.some((part, index) => part.startsWith('.') || (part === 'target' && parts[index + 1] === 'tz' && index + 2 < parts.length));
+	return !parts.some((part, index) => part.startsWith('.') || (part === 'target' && parts[index + 1] === 'tz' && parts[index + 2] === 'kg'));
 }
 
 /**
  * Whether the language server of `root` hears of a watched-file event of `file` (G39): every event of a source or manifest,
  * which the source watcher reports as it did before, and of the other paths, which only the delete watcher of `**` reports,
- * those that `affectsRoot` keeps. Module discovery reads the sources under a `target/tz/` outside a knowledge graph.
+ * those that `affectsRoot` keeps (a deleted folder of sources under `target/tz/` outside the knowledge graph among them).
  */
 export function notifiesServer(root: string, file: string, platform: string = process.platform): boolean {
 	return /\.(?:tz|tt|tc|toml)$/.test(file) || affectsRoot(root, file, platform);
