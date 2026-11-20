@@ -2015,6 +2015,15 @@ fn opt_in_sessions(
     ]
 }
 
+fn labels(result: &serde_json::Value) -> Vec<&str> {
+    result["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{result}"))
+        .iter()
+        .map(|item| item["label"].as_str().unwrap())
+        .collect()
+}
+
 #[test]
 fn opt_in_module_names_complete_in_a_project_that_names_none() {
     use serde_json::json;
@@ -2033,6 +2042,86 @@ fn opt_in_module_names_complete_in_a_project_that_names_none() {
             .unwrap_or_else(|| panic!("{name}: {items:?}"));
         assert_eq!(item["kind"], 9, "{item}");
         assert_eq!(item["detail"], format!("module std::{name}"), "{item}");
+    }
+}
+
+#[test]
+fn opt_in_members_complete_and_sign_while_the_first_edit_that_names_them_does_not_parse() {
+    use serde_json::json;
+    let main = "let answer = 42\nanswer\n";
+    let edits = [
+        "let answer = 42\nanswer\nlet probe = Json.",
+        "let answer = 42\nanswer\nlet probe = Matrix.",
+        "let answer = 42\nanswer\nlet probe = Json.Value.",
+        "let answer = 42\nanswer\nlet probe = Json.parse (",
+    ];
+    let [unnamed, named] = opt_in_sessions(main, |uri| {
+        let main = uri("Main.tz");
+        // The analysis of the text that names neither module, which the requests fall back to.
+        let mut steps = vec![
+            json!({"id": 0, "method": "textDocument/documentSymbol", "params": {"textDocument": {"uri": main}}}),
+        ];
+        for (version, text) in edits.iter().enumerate() {
+            let line = text.lines().last().unwrap();
+            let at = json!({"line": 2, "character": line.len()});
+            let method = if text.ends_with('(') {
+                "textDocument/signatureHelp"
+            } else {
+                "textDocument/completion"
+            };
+            steps.push(json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": main, "version": version + 2}, "contentChanges": [{"text": text}]}}));
+            steps.push(json!({"id": version + 1, "method": method, "params": {"textDocument": {"uri": main}, "position": at}}));
+        }
+        steps
+    });
+    assert_eq!(unnamed.0, named.0);
+    let [_, json, matrix, value, signature] = unnamed.0.as_slice() else {
+        panic!("{:?}", unnamed.0);
+    };
+    for member in ["parse", "serialize", "Value", "Error", "Null"] {
+        assert!(labels(json).contains(&member), "{member}: {json}");
+    }
+    for member in ["init", "rows", "of_array", "transpose"] {
+        assert!(labels(matrix).contains(&member), "{member}: {matrix}");
+    }
+    for case in ["Null", "Bool", "Number", "Items"] {
+        assert!(labels(value).contains(&case), "{case}: {value}");
+    }
+    let label = signature["signatures"][0]["label"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        label.starts_with("parse (") && label.contains("ref utf8string"),
+        "{signature}"
+    );
+    assert_eq!(signature["activeParameter"], 0, "{signature}");
+}
+
+#[test]
+fn opt_in_module_names_hover_once_an_edit_names_them() {
+    use serde_json::json;
+    let main = "let answer = 42\nanswer\n";
+    let edited = "let parsed = Json.parse (ref u8\"1\")\nlet m = Matrix.init 2 2 (\\i j -> i)\nlet answer = 42\nanswer\n";
+    let [unnamed, named] = opt_in_sessions(main, |uri| {
+        let main = uri("Main.tz");
+        let hover = |id: u64, needle: &str| json!({"id": id, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": position(edited, needle, "utf-16")}});
+        vec![
+            json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": main, "version": 2}, "contentChanges": [{"text": edited}]}}),
+            hover(1, "Json"),
+            hover(2, "parse ("),
+            hover(3, "Matrix"),
+            hover(4, "init"),
+        ]
+    });
+    assert_eq!(unnamed.0, named.0);
+    for (result, doc) in unnamed.0.iter().zip([
+        "Parses one JSON text",
+        "Parses one JSON text",
+        "once per element",
+        "once per element",
+    ]) {
+        let value = result["contents"]["value"].as_str().unwrap_or_default();
+        assert!(value.contains(doc), "{doc}: {result}");
     }
 }
 

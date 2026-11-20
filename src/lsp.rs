@@ -1818,7 +1818,7 @@ struct View<'s> {
     map: StaleMap,
 }
 
-impl View<'_> {
+impl<'s> View<'s> {
     fn module(&self) -> Option<String> {
         self.state.modules.key(self.source).map(str::to_owned)
     }
@@ -1845,6 +1845,16 @@ impl View<'_> {
     fn is_std(&self, definition: usize) -> bool {
         !is_user(&self.state.project, self.index.definitions[definition].span)
     }
+
+    /// The index that holds the declarations of the module `key`: the view's, or for a std module
+    /// that the project does not load, the index of every std module (PB08 O6).
+    fn members(&self, key: &str) -> &'s SemanticIndex {
+        if self.state.modules.is_unloaded(key) {
+            std_index()
+        } else {
+            self.index
+        }
+    }
 }
 
 /// Module keys, which qualify declarations in the semantic index, by source
@@ -1857,6 +1867,8 @@ struct ModuleNames {
     full: BTreeMap<String, String>,
     /// The namespaces that each source's `using` declarations import.
     usings: Vec<Vec<String>>,
+    /// The keys of the std modules that the project does not load (PB08 O6).
+    unloaded: BTreeSet<&'static str>,
 }
 
 impl ModuleNames {
@@ -1909,6 +1921,7 @@ impl ModuleNames {
             sources,
             full,
             usings: Vec::new(),
+            unloaded,
         };
         names.usings = headers
             .iter()
@@ -2075,11 +2088,16 @@ impl ModuleNames {
     fn is_module(&self, full: &str) -> bool {
         self.full.contains_key(full) || self.keys().any(|key| key == full)
     }
+
+    /// Whether `key` names a std module that the project does not load (PB08 O6).
+    fn is_unloaded(&self, key: &str) -> bool {
+        self.unloaded.contains(key)
+    }
 }
 
 /// The std modules of `stdlib::SOURCES` that `project` does not load, in their order: the opt-in
 /// modules that its sources do not name (PB08 O6). Module names and paths still offer them, as
-/// when the language server loaded every std module.
+/// when the language server loaded every std module; their declarations come from `std_index`.
 fn unloaded_std(project: &Project) -> BTreeSet<&'static str> {
     let loaded: BTreeSet<&str> = project
         .sources
@@ -2092,6 +2110,50 @@ fn unloaded_std(project: &Project) -> BTreeSet<&'static str> {
         .filter_map(|(path, _)| crate::stdlib::module_name(path))
         .filter(|name| !loaded.contains(name))
         .collect()
+}
+
+/// The semantic index of a program that loads every std module, made once per process the first
+/// time a request needs the declarations of a std module that its project does not load (PB08 O6):
+/// the members that completion offers after `Json.` before a source names `Json`, and the
+/// signature of `Json.parse` while the first edit that names it does not parse. The declarations
+/// of a std module do not depend on the program, so they are those of the project's index when
+/// it loaded every std module.
+fn std_index() -> &'static SemanticIndex {
+    static INDEX: std::sync::OnceLock<SemanticIndex> = std::sync::OnceLock::new();
+    INDEX.get_or_init(|| {
+        let inputs: Vec<_> = std::iter::once(crate::SourceInput {
+            path: "Main.tz",
+            text: "0\n",
+            origin: ModuleOrigin::User,
+            namespace: "",
+            edition: crate::syntax::Edition::LATEST,
+            package: None,
+        })
+        .chain(
+            crate::stdlib::SOURCES
+                .iter()
+                .map(|(path, text)| crate::SourceInput {
+                    path,
+                    text,
+                    origin: ModuleOrigin::Std,
+                    namespace: "",
+                    edition: crate::syntax::Edition::LATEST,
+                    package: None,
+                }),
+        )
+        .collect();
+        let mut index = SemanticIndex::default();
+        // Every std module checks (`stdlib::tests::every_std_module_type_checks_when_named`); were
+        // it not so, the requests would find no declarations instead of stopping the server.
+        match crate::analyze_inputs_for_editor(
+            &inputs,
+            &mut index,
+            crate::parallel::Parallelism::command_line(),
+        ) {
+            Ok(_) => index,
+            Err(_) => SemanticIndex::default(),
+        }
+    })
 }
 
 /// The completion detail of a module or namespace by its dotted full name,
@@ -2310,7 +2372,9 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
         if let Some(key) = view.module_path(&path_text(&tokens, &chain)) {
             // A type named after its module is the module path itself, not a member.
             let stem = key.rsplit('.').next().unwrap_or(key);
-            for (definition, item) in index.definitions.iter().enumerate() {
+            let members = view.members(key);
+            items.index = members;
+            for (definition, item) in members.definitions.iter().enumerate() {
                 if item.module == key
                     && top_level(item.kind)
                     && (item.public || key == module)
@@ -2330,19 +2394,28 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
             } else {
                 view.module_path(&qualifier).unwrap_or(&qualifier)
             };
-            let union = view
-                .definition_at(last.span)
-                .or_else(|| {
-                    index.definitions.iter().position(|item| {
-                        item.kind == SymbolKind::Union
-                            && item.module == owner
-                            && (item.public || owner == module)
-                            && item.name == ident(last)
-                    })
-                })
-                .filter(|&definition| index.definitions[definition].kind == SymbolKind::Union);
-            let (container, kind) = if let Some(union) = union {
-                (Some(union), SymbolKind::Case)
+            // A definition at the name, or else a union of the owner, whose cases follow the dot.
+            let union = match view.definition_at(last.span) {
+                Some(definition) => Some((index, definition)),
+                None => {
+                    let members = view.members(owner);
+                    members
+                        .definitions
+                        .iter()
+                        .position(|item| {
+                            item.kind == SymbolKind::Union
+                                && item.module == owner
+                                && (item.public || owner == module)
+                                && item.name == ident(last)
+                        })
+                        .map(|definition| (members, definition))
+                }
+            }
+            .filter(|(members, definition)| {
+                members.definitions[*definition].kind == SymbolKind::Union
+            });
+            let (members, container, kind) = if let Some((members, union)) = union {
+                (members, Some(union), SymbolKind::Case)
             } else {
                 let dot = view.map.backward(dot.span.start);
                 let record = index
@@ -2351,9 +2424,10 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
                     .filter(|(span, _)| span.source == Some(view.source) && Some(span.end) == dot)
                     .max_by_key(|(span, _)| span.end - span.start)
                     .map(|(_, record)| *record);
-                (record, SymbolKind::Field)
+                (index, record, SymbolKind::Field)
             };
-            for (definition, item) in index.definitions.iter().enumerate() {
+            items.index = members;
+            for (definition, item) in members.definitions.iter().enumerate() {
                 if container.is_some() && item.container == container && item.kind == kind {
                     items.definition(2, definition);
                 }
@@ -2655,17 +2729,18 @@ fn signature(view: &View<'_>, tokens: &[Token], head: usize, active: usize) -> O
         module.clone()
     };
     let callable = |kind: SymbolKind| matches!(kind, SymbolKind::Function | SymbolKind::Extern);
-    let definition = view.definition_at(tokens[head].span).or_else(|| {
-        index.definitions.iter().position(|item| {
+    // A definition at the name, or else a function of the owner (PB08 O6: of the index of every
+    // std module when the project does not load the owner).
+    let item = match view.definition_at(tokens[head].span) {
+        Some(definition) => Some(&index.definitions[definition]),
+        None => view.members(&owner).definitions.iter().find(|item| {
             callable(item.kind)
                 && item.module == owner
                 && (item.public || owner == module)
                 && item.name == ident(&tokens[head])
-        })
-    });
-    let item = definition
-        .map(|definition| &index.definitions[definition])
-        .filter(|item| callable(item.kind))?;
+        }),
+    }
+    .filter(|item| callable(item.kind))?;
     let parameters = if item.parameters.is_empty() {
         "()".to_owned()
     } else {
