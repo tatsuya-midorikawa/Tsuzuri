@@ -5721,7 +5721,7 @@ PB07 の個別の測定（上の「既定の判断」）は、1 分の load aver
 - O5: 言語サーバーの再解析と、修正案・リネームの検証の再解析は、CLI と同じく使える core 数（最大 8、`TSUZURI_THREADS` があればそれ）で解析します。
 - O9: 言語サーバーは、診断を送ってから、インレイヒントの複製と効果の推論を求めます。
 
-計画のまま、計測で効果が見えたら足すもの: O2（`unused_private` の辺を到達した節点だけ作る）、O3(b)（instance の索引）、O8（std の構文解析の結果を再解析をまたいで使う）。Phase 2（O6、言語サーバーも名前を書いた opt-in の std だけを読む）は、Phase 1 の計測で目標に届かないときだけ行います。
+O2（`unused_private` の辺を到達した節点だけ作る）と O8（std の構文解析の結果を再解析をまたいで使う）は、Phase 1 の計測で効果が広がりより小さかったので行いません。O3(b) と Phase 2（O6）は、2026-11-20 の利用者の指示で行いました（下の「Phase 2」。Phase 1 の計測は目標に届いていました）。
 
 **測り方**: workload はチケットの「計測手順」のとおりで、`node benchmarks/lsp/workloads.mjs target/perf/PB08/projects` が作り直します（`examples` の hello・point・polymorphism、`tests/fixtures` の conventions・json・anonymous_unions・list_fsharp・in_place_writes の写し、6 ファイル 215 KB の big、201 ファイル 727 KB の syn200、すべての opt-in のモジュール名をコメントに書いた hello・big の `-allstd`）。
 
@@ -5762,6 +5762,13 @@ node benchmarks/metrics.mjs report target/perf/PB08-after --baseline target/perf
 M1 はチケットの目標（hello 0.29 倍以下、big 0.48 倍以下、syn200 0.23 倍以下）に届いた。CLI の `check`（12 の workload、1 スレッドと自動）と PX03 の `check` は、どの workload も遅くなっていない。
 
 strip しない release の `sample` では、捨てる診断を作る frame（`find::with_suggestions`、`polymorph::mismatch`）と、`costly_sites` の下の 2 回目の `call_facts`（big で 1 回の再解析あたり約 113 CPU ms）が消えた。
+
+**Phase 2（O3(b)・O6、2026-11-20）**: 出力（診断・補完・ホバー・インレイヒント・シグネチャヘルプ・修正案、IR）は変えません。
+
+- O3(b): `matching_instance` は、instance を（型クラス、頭の外側の型構成子）で索引し、unify し得る instance（同じ構成子のものと、変数・適用・参照・関数などの構成子のない頭のもの）だけを宣言の順に試します。頭の変数は前もって求めておきます。適用・部分適用・匿名共用体・エラーを含む型は、今までどおりすべてを試します。
+- O6: 言語サーバーも、ソース（未保存のバッファを含む）が名前を書いた opt-in の std モジュールだけを読みます（再解析と、クイックフィックス・リネームの検証の再解析）。名前を書いていないモジュールの名前の補完、メンバーの補完、シグネチャヘルプ、未解決の名前の候補と修正案は、すべての std を読んでいたときと同じ答えを、process に 1 回だけ作る索引から返します。
+
+比べる binary は、Phase 1 と O3(b) の release（`target/perf/PB08/tsuzuri-p1`）と、それに O6 を足した release（`target/perf/PB08/tsuzuri-p2`）です。計測の値は、負荷の低い機械で測った後にここへ足します。
 
 ## 現実的な次の指標
 
