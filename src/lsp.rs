@@ -569,6 +569,11 @@ impl Session {
     /// removed link's. Its analysis is dropped and its diagnostics cleared, and it is returned.
     /// Another one that a client root still resolves to is scheduled, to be published at that root's
     /// spelling.
+    ///
+    /// A root that resolves again after it did not (a removed link made again) is scheduled as well
+    /// (Copilot review 5 of PR #119): with its documents closed, nothing else schedules it, since its
+    /// directory left the record when the root went away, and the change notification of the link
+    /// itself is placed beside the directory it points to (`canonical_existing` does not follow it).
     fn resolve_client_roots(
         &mut self,
         refreshing: Option<&Path>,
@@ -577,9 +582,8 @@ impl Session {
         let mut moved = Vec::new();
         for root in &mut self.client_roots {
             let now = root.path.canonicalize().ok();
-            if let Some(before) = std::mem::replace(&mut root.canonical, now.clone())
-                && now.as_ref() != Some(&before)
-            {
+            let before = std::mem::replace(&mut root.canonical, now.clone());
+            if before != now {
                 moved.push((before, now));
             }
         }
@@ -588,6 +592,9 @@ impl Session {
             if let Some(now) = now.filter(|now| Some(now.as_path()) != refreshing) {
                 self.schedule_root(now);
             }
+            let Some(before) = before else {
+                continue;
+            };
             if !self.canonical_roots().any(|(root, _)| root == before) {
                 left.push(before);
             } else if Some(before.as_path()) != refreshing {

@@ -3051,6 +3051,62 @@ fn a_change_under_a_repointed_clean_root_link_analyzes_the_new_directory() {
     server.finish();
 }
 
+/// Copilot review 5 of PR #119: a root link that is removed and then made again resolves again with
+/// no directory before it. With the documents closed, the change notification of the link alone
+/// places the link beside its directory (spec 9 starts from the parent directory and does not follow
+/// the link), and nothing is recorded or open: only the resolution of the root can schedule it, so
+/// its diagnostics and its symbols come back. (The file not open has a warning: a project with an
+/// error has no symbols.)
+#[cfg(unix)]
+#[test]
+fn a_root_link_made_again_is_analyzed_again() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("real/Main.tz", main);
+    fixture.write(
+        "real/Helper.tz",
+        "fn offset() -> i64 { let spare = 1; 2 }\n",
+    );
+    let link = fixture.base.join("link");
+    std::os::unix::fs::symlink(fixture.path("real"), &link).unwrap();
+    let root = fixture.uri_under(&link, "");
+    let link_main = fixture.uri_under(&link, "Main.tz");
+    let helper = fixture.uri_under(&link, "Helper.tz");
+    let mut server = live::Server::start(&root, "utf-16");
+    server.open(&link_main, main);
+    server.settle();
+    assert_eq!(server.codes(&helper), ["W1001"]);
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": link_main}}),
+    );
+    server.settle();
+    // Removed: the diagnostics at the link's spelling are cleared.
+    std::fs::remove_file(&link).unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": root, "type": 3}]}),
+    );
+    let symbols = server.request("workspace/symbol", json!({"query": "offset"}));
+    assert_eq!(symbols["result"], json!([]), "{symbols}");
+    assert!(server.codes(&helper).is_empty());
+    // Made again, and only the link itself is notified.
+    std::os::unix::fs::symlink(fixture.path("real"), &link).unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": root, "type": 1}]}),
+    );
+    server.settle();
+    assert_eq!(server.codes(&helper), ["W1001"]);
+    let symbols = server.request("workspace/symbol", json!({"query": "offset"}));
+    let found = symbols["result"].as_array().unwrap();
+    assert_eq!(found.len(), 1, "{symbols}");
+    assert_eq!(found[0]["location"]["uri"], json!(helper), "{symbols}");
+    assert!(server.published(&fixture.uri("real/Helper.tz")).is_empty());
+    server.finish();
+}
+
 /// Copilot review of PR #119: two roots of one server that depend on the same broken manifest both
 /// report its load error. When one of them drops the dependency, the error stays: the client
 /// replaces a URI's whole list, and the other root still reports it there.
