@@ -643,7 +643,7 @@ after の構文解析の CPU が増えたのは、O5 で 8 スレッドに分け
 **手順 9 の計測**（M1〜M4、PX03）は、実装の後に負荷の低い機械で別に行った（実装の間は 3 つのチケットを同じ機械で並行して build しており、load average が 50〜125 だった。結果は下の「手順 9: 計測」）。比べた binary は次の 2 つ。
 
 - `target/perf/PB08/tsuzuri-p1`: Phase 1 と O3(b)（`83e62e1a` の release、SHA-256 `b487bbfa…`）。
-- `target/perf/PB08/tsuzuri-p2`: それに O6 を足したもの。レビュー（下の「レビュー（Phase 2、2026-11-20）」）の直しの後に作り直した（`40e7f72c` の release、SHA-256 `f580ceb24177fcb2f4197b69eec30373bdbebc870ec03476f30d93cbda33acfd`。その後のコミットは文書だけ）。レビューの前は `040f6089` の release（SHA-256 `9e815d41…`）だった。
+- `target/perf/PB08/tsuzuri-p2`: それに O6 を足したもの。レビュー（下の「レビュー（Phase 2、2026-11-20）」）の直しの後に作り直した（`40e7f72c` の release、SHA-256 `f580ceb24177fcb2f4197b69eec30373bdbebc870ec03476f30d93cbda33acfd`。その後のコミットは文書だけ）。レビューの前は `040f6089` の release（SHA-256 `9e815d41…`）だった。PR #122 の Copilot のレビューの直しの後に、もう一度作り直した（`3fac3711` の release、SHA-256 `1d097045da9b731fdd217ed6950e8dfd5feacefaad125cdf9b1c3611be41bafb`。下の「Copilot のレビュー（PR #122、2026-11-20）」）。手順 9 の計測は `f580ceb2…` のもの。
 
 ### コミット
 
@@ -777,7 +777,7 @@ O3(b) の頭にエラーを含む instance を `None` の列に入れること�
 
 #### 指摘 1
 
-- `find::OptInModule::types`: モジュールと同じ名前の、公開の record・union・extern type・型の別名（`type_choice` が見るのと同じ 4 種類）。`type_choice` の規則から導いた: 利用者のモジュールの無修飾の型の名前は、自分のモジュールの宣言、正規化した完全な名前（無修飾の名前には当たらない）、モジュールのパス、`choose` の順に探される。読み込んでいない opt-in のモジュールと同じ鍵のモジュールはない（`unloaded` がそれを確かめ、モジュールの鍵はプロジェクトの中で一意）ので、全 std を読んだ検査のモジュールのパスは、どの名前空間からも（`using std` を書いても）その std のモジュールに着き、そのモジュールの同名の型が見えれば（公開なら）それを返す。ほかの opt-in の宣言は `choose` が利用者のモジュールの無修飾の候補から外す。該当するのは 22 のモジュール（`Arena`・`Regex`・`Gen`・`Matrix`・`Atomic`・`Mutex`・`MatrixView`・`Tensor`・`Channel`・`SendOnly`・`ReceiveOnly`・`Timer`・`Ticker`・`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap`・`Context`・`ErrGroup`）で、レビューの挙げた一覧と同じ。`RegexText` の同名の宣言は型クラスで、型クラスの未解決（`E1016`）と型の適用の頭（`Mutx<i64>`）には候補の pool がない。
+- `find::OptInModule::types`: モジュールと同じ名前の、公開の record・union・extern type・型の別名（`type_choice` が見るのと同じ 4 種類）。`type_choice` の規則から導いた: 利用者のモジュールの無修飾の型の名前は、自分のモジュールの宣言、正規化した完全な名前（無修飾の名前には当たらない）、モジュールのパス、`choose` の順に探される。読み込んでいない opt-in のモジュールと同じ鍵のモジュールはない（`unloaded` がそれを確かめ、モジュールの鍵はプロジェクトの中で一意）ので、全 std を読んだ検査のモジュールのパスは、どの名前空間からも（`using std` を書いても）その std のモジュールに着き、そのモジュールの同名の型が見えれば（公開なら）それを返す。（この推論は誤りだった: モジュールのパスは鍵より先に、要求元の名前空間・それを囲む名前空間・`using` の名前空間の完全な名前を探すので、同じ名前の利用者のモジュール `Sample::Tensor` が先に答えるか、`using std` と並んで名前を曖昧にする。下の「Copilot のレビュー（PR #122、2026-11-20）」で直した。）ほかの opt-in の宣言は `choose` が利用者のモジュールの無修飾の候補から外す。該当するのは 22 のモジュール（`Arena`・`Regex`・`Gen`・`Matrix`・`Atomic`・`Mutex`・`MatrixView`・`Tensor`・`Channel`・`SendOnly`・`ReceiveOnly`・`Timer`・`Ticker`・`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap`・`Context`・`ErrGroup`）で、レビューの挙げた一覧と同じ。`RegexText` の同名の宣言は型クラスで、型クラスの未解決（`E1016`）と型の適用の頭（`Mutx<i64>`）には候補の pool がない。
 - `Names::type_pool` は、`opt_in_candidates` が立ち、要求したモジュールが利用者のモジュールのとき、読み込んでいない opt-in のモジュールのこの型を、読み込んだときと同じ `Pooled::new(名前, 4, "type")` で足す（std のモジュールは未解決の型を持たない。全 std を読んだ検査で std のモジュールが要求すると `choose` は opt-in を外さないが、その経路は起きない）。
 - パターンの位置: record の literal（`Semaphor { count: 1 }`）と record のパターン（`Contxt { done = d }`）は `record` → `named_type` → `type_pool` なので、同じ直しで戻る。型テストのパターン（`:? Tensr`）も `named_type` を通る。case のパターン（`| Nul x`）の `pattern_pool` は、無修飾で解決する case と active pattern だけを持ち（どちらも `choose` が opt-in を外す）、全 std でも足すものがない。
 - テスト: `opt_in_names_are_the_checker_names` に、全 std を読んだ検査の `Names` の型の別名（record・union・型の別名・extern type）のうち、`type_choice("Main", 名前)` が見つけ、その宣言の module がその opt-in のモジュールであるものを `type 名前 Module.名前` として足した。`editor_diagnostics_with_the_named_std_modules_are_those_with_every_std_module` は、値の位置の 1,249 の語に加えて、同じ語を型の位置（シグネチャの `ref X`。構文解析できる 1,249 語）、record の literal と record のパターン（大文字で始まる 260 語）、case のパターン（258 語）に置いた本文を、位置の種類ごとに別に作る（ある段の誤りが別の段の誤りを隠さないように）。85 の本文、全 std での診断 3,246 のうち候補つき 570、opt-in の型を候補に持つもの 80 が、名前を書いた std だけの解析と 1 byte も違わない。レビューの失敗するテスト（`review-type-candidates-test.diff` の `Tensr`・`WaitGrop`・`Semaphor { count: 1 }`）はこの中に含まれる。
@@ -787,9 +787,9 @@ O3(b) の頭にエラーを含む instance を `None` の列に入れること�
 
 | 経路 | 全 std を読んでいたときに使っていたもの | O6 の後 |
 | --- | --- | --- |
-| `value_pool` | 読み込んだ opt-in の関数・定数・case（最後の部分が一致するもの）とモジュール | `OptInNames` の関数・case・モジュール |
+| `value_pool` | 読み込んだ opt-in の関数・定数・case（最後の部分が一致するもの）とモジュール。利用者のモジュールを無修飾で書くか名前空間つきで書くかは、全 std を読んだ検査のモジュールのパスで決まる | `OptInNames` の関数・case・モジュール。利用者のモジュールの書き方は `candidate_module_path`（読み込んでいない opt-in のモジュールも読み込んだとしたパス。Copilot のレビューで直した: `using Sample` と `using std` では `Sample::Tensor` が曖昧になり、名前空間つきで書く） |
 | `function_pool` | 読み込んだ opt-in の関数・case の全部 | `OptInNames` の関数・case |
-| `type_pool` | `type_choice` が見つける名前（opt-in ではモジュールと同じ名前の型だけ） | `OptInNames::types`（このレビューで足した） |
+| `type_pool` | `type_choice` が見つける名前（opt-in ではモジュールと同じ名前の型だけ。無修飾の名前のモジュールのパスがその std のモジュールに着く要求元だけ） | `OptInNames::types`（このレビューで足した）のうち、`candidate_module_path` がその std のモジュールに着く要求元だけ（Copilot のレビューで直した: 同じ名前の利用者のモジュールが先に答えるか曖昧にするところでは足さない） |
 | `member_pool` | `module_path` が解決したモジュールのメンバー | モジュールの名前を書けば読み込むので、読み込んだモジュールにしか使わない |
 | `field_pool` | 型の分かった record の field | record の型は、名前を書いた（読み込んだ）モジュールにしかない |
 | `pattern_pool` | 無修飾で解決する case と active pattern（`choose` が opt-in を外す） | 同じ |
@@ -958,6 +958,45 @@ Phase 1 で 1・8 スレッドの big・syn200 の `publish-error` が +1〜+8 %
 - 2 回目の応答は、o5 が 0.4 ms、p2 が 0.5 ms。
 - 補完の後の server の RSS は o5 が 86.6 MB、p2 が 87.2 MB で、`std_index` を作った後の p2 は全 std を読む o5 と同じくらい。作る前の p2 は、レビューの測った約 45 MB。
 - この費用は process に 1 回だけで、読み込んでいない opt-in のモジュールのメンバーの補完かシグネチャヘルプを最初に求めたときにかかる。M1・M4 の要求は作らない。
+
+### Copilot のレビュー（PR #122、2026-11-20）
+
+GitHub Copilot の最初のレビュー（`f1839c32`）は 2 つの指摘を挙げた。どちらも本当の誤りだった。どちらも回帰テストを先に書き、`f1839c32` のコード（テストだけを足した木）で失敗することを確かめてから直した（記録は `target/scratch/pb08/copilot1/`。下の表の 3 列目がその要約）。
+
+| 指摘 | 結果 | テスト: `f1839c32` のコード → 直した後 |
+| --- | --- | --- |
+| 4641364283（`benchmarks/lsp/golden.mjs:410`）: `--jobs 0`・負の数・数でない値では CLI の golden の worker が 1 つも動かず、`entries` は穴のある配列のまま残る。それでも target の数を全部と報告し、空行だけを書く。`compare` は空行を捨てるので、そうした 2 つのファイルの比較は、コンパイラの出力を何も比べずに一致する | **直した**（`9885f6f0`）。下の「Copilot の指摘 1」 | `tests/benchmark_lsp_golden.mjs`（compiler を動かさない）: 6 つのうち 5 つが失敗（`--jobs 0` が 430 の target を報告して 0 で終わる、`--threads 0` は存在しない compiler を起動して ENOENT で終わる、project のない `lsp` が transcript を 1 つも書かずに 0 で終わる、空行だけの 2 つの CLI の golden と空の 2 つのディレクトリの比較が一致する）→ 6 つが通る |
+| 4641364335（`src/find.rs:1265`）: 補った型の候補が、読み込んだ宣言が通る要求元ごとの `type_choice` の絞り込みを通らない。`Main.tz` が `namespace Sample` で `ref Tensr` を書き、`Tensor.tz` が同じ名前空間で値だけを宣言すると、`Sample.Tensor` が std のモジュールを隠して型を宣言しないのに「Replace 'Tensr' with 'Tensor'」が出る。全 std の解析はその候補を出さない | **直した**（`3fac3711`）。下の「Copilot の指摘 2」 | `tests::editor_diagnostics_with_the_named_std_modules_are_those_with_every_std_module`（名前の影の 16 の project を足した）: 最初の影の本文（`namespace Sample` の `Main.tz`、値だけの `Sample::Tensor`、何も宣言しない `Sample::Ticker`）で失敗。言語サーバーの解析だけが、型の位置の `Tensox`・`Tensr` に `Tensor`、`Tickex` に `Ticker` を勧め、`Tickr` には `Timer` の代わりに `Ticker` を勧める → 通る |
+
+#### Copilot の指摘 1
+
+- `--jobs` は正の安全な整数だけを受け付ける（`0`・`-1`・`abc`・`1.5`・空・`1e3`・`9007199254740992` を拒む）。`--threads` は `auto`・`unset` か、`TSUZURI_THREADS` が受け付ける 1〜32 の数だけを受け付ける（範囲外の数では、どの `check` も変数の誤り（`E2000`）を報告して終わり、2 つの compiler の golden がその誤りの文だけで一致してしまう）。どちらも、worker を起動する前、出力を書く前に拒む。
+- `lsp` は project のない実行（workload が空、または `--projects` の名前がない）を、出力のディレクトリを作る前に拒む。`cli` は、worker の後にすべての target の項目があることを確かめる。
+- `compare` は、CLI の golden の空行・項目でない行（`target`・`status`・`signal`・`stdout`・`stderr`・`kg` の型を確かめる）・項目のないファイル・末尾に改行のないファイルと、transcript のないディレクトリ、要求（`log`）のない transcript を拒む。既存の golden（`before-a/cli-1.jsonl` と `p2fix/cli-1.jsonl`、`p2fix-before-a/lsp-unset` と `p2fix/lsp-unset`）は、直した `compare` でも 442/442・20/20 で一致する。
+- ほかの数の option: `run-lsp.mjs` の `--samples` は既に正の安全な整数だけを受け付け、`--threads` は `unset` か正の数だけを受け付ける。範囲外の数（33 以上）では言語サーバーが起動時に `E2000` で終わり、`run-lsp.mjs` の `open` が失敗を報告するので、黙って何も測らない経路はない（`cli` の部分は `1` と未設定だけを使う）。`run-lsp.mjs` は変えていない。
+- `tests/benchmark_lsp_golden.mjs` は、存在しない compiler と空の workload で各拒否を確かめ、正しい 2 つの golden の一致と 1 項目の違いも確かめる。`targets.yml` の benchmark のテスト（`benchmark_report.mjs`・`benchmark_apps.mjs`）の隣で動かし、README の検証のコマンドに足した。
+
+#### Copilot の指摘 2
+
+- 指摘 1 の直し（上の「指摘 1」）は、読み込んでいない opt-in のモジュールと同じ鍵の読み込んだモジュールはないので、無修飾の名前のモジュールのパスはどの名前空間からもその std のモジュールに着く、と推論した。誤りだった: `module_path` は鍵より先に、要求元の名前空間・（無修飾の名前なら）`using` の名前空間・それを囲む名前空間の完全な名前を探す。利用者のモジュール `Sample::Tensor`（鍵 `Sample.Tensor`）は、名前空間 `Sample`・その中の名前空間・`using Sample` からの `Tensor` に先に答える。`using Sample` と `using std` を並べると、`Tensor` は 2 つのモジュールに当たって曖昧になり、どこにも着かない。
+- 直し（`src/check.rs`・`src/find.rs`）: `Names::module_path_with` は、読み込んでいない opt-in のモジュール 1 つを読み込んだとして `module_path` を引く（完全な名前 `std.<鍵>`、`using std` の取り込み、最後の鍵の検索の 3 か所）。`module_path` は `module_path_with(.., None)` になった。`Names::candidate_module_path` は、`opt_in_candidates` のとき、パスの最後の部分と同じ名前の読み込んでいない opt-in のモジュールを渡す（ほかのモジュールはこのパスの答えを変えない）。`type_pool` は `OptInModule::types` の型を、このパスがその std のモジュールに着く要求元にだけ足す。`type_choice` の手順と同じになる: 要求元のモジュールの同名の型は `declared` に既にあり、正規化した完全な名前の検索は無修飾の名前に当たらず、パスが着いたモジュールの同名の型を取り、ほかの opt-in の型は `choose` が外す。
+- 点検で見つけた 2 つ目の差（同じコミットで直した）: `value_pool` の利用者のモジュールの項目。`value_pool` は、モジュールのパスがそのモジュールに着くときは無修飾で、着かないときは名前空間つきで書く。`using Sample` と `using std` を並べた要求元では、全 std の検査では `Tensor` が曖昧になるので `Sample::Tensor` と書くが、言語サーバーの解析は `std::Tensor` を読み込んでいないので `Tensor` と書いていた（`Tensox` の help が、全 std では「did you mean one of: 'Sample::Tensor', 'Tensor'?」で修正案なし、言語サーバーでは「did you mean 'Tensor'?」で置き換えの修正案つき）。`value_pool` のモジュールの比較も `candidate_module_path` にした。この差は、`type_pool` だけを直した build で、広げたテストが `using Sample` と `using std` の値の本文で失敗して見つかった。
+- 変わらないもの: `value_pool`・`function_pool` が足す std の関数・case は、どの要求元からも std のページの綴り（`declaration_display`）で書き、std のモジュールはその鍵で書く（std のモジュールの名前空間つきの綴りは鍵と同じ）ので、パスに依らない。`member_pool`・`namespace_spelling` の hint・`check_module` の曖昧さの検査は、ソースに書いた名前にだけ使い、書いた opt-in の名前はそのモジュールを読み込む。`pattern_pool` は `choose` だけを使う。言語サーバー以外の解析（`opt_in_candidates` が false）では `candidate_module_path` は `module_path` と同じで、`check` の出力は変わらない（下の CLI の golden）。
+- テスト: 名前空間 `Sample` に、opt-in のモジュールと同じ名前の利用者のモジュール `Tensor`・`Json`・`Matrix`・`Ticker` を置き、値だけ・モジュールと同じ名前の型だけ・両方・どちらもなし、を 4 通りに回した。名前を書かないのは値だけとどちらもなしで、型を宣言すると名前を書くので std のモジュールも読み込む（その project は読み込んだときの一致を確かめる）。名前空間 `Sample::Gen` のモジュールも置いた（名前空間の宣言は `Gen` を書くので、std の `Gen` も読み込む）。要求元の `Main.tz` は、名前空間 `Sample`・`Sample::Inner`・ルートで `using Sample`・ルートで `using Sample` と `using std`・名前空間 `Other`・ルート（最初の回しで 6 つ、ほかの回しで最初の 3 つ）。予約された名前空間 `namespace Matrix` の project も足した（両方の解析が同じ予約の誤りで止まる）。本文は、opt-in のモジュール名の綴り違い 32 個と `Tensr`・`Matrx`・`Jsn`・`Tickr`・`Null`・`parse`・`Matrx.init`・`Tensr.zeros` を、値・シグネチャの型・record の literal の位置に置いたもの（record のパターンは literal と同じく型を引き、case のパターンはモジュールのパスを通らない）。16 の project の 48 の本文で、全 std での診断 1,788 のうち候補つき 1,332、opt-in の型を候補に持つもの 732 が、名前を書いた std だけの解析と 1 byte も違わない（もとの 85 の本文は前と同じ 3,246・570・80）。参照（全 std の解析）で、値だけの `Sample::Tensor` があるとき型の位置の `Tensox` の候補に `Tensor` が入るのは、要求元がルートと名前空間 `Other` のときだけであることもテストが確かめる（期待はモジュールのパスの規則から手で決めた）。
+- golden: `benchmarks/lsp/golden.mjs` の型の場面（`<workload>.types.json`）の最後に、指摘の場面を足した: 元の本文に戻した後、未保存のバッファ `Tensor.tz`（`namespace Sample` で値だけ）と `ShadowProbe.tz`（`namespace Sample` で `ref Tensr` と `ref Tickr`）を開き、`ShadowProbe.tz` の診断、文書全体の code action、fixAll、診断ごとの quickfix を記録する（どちらのファイルも書かない）。before の binary で 2 回作り（`target/perf/PB08/golden/c1-before-a`・`c1-before-b`）、20/20 が一致した。もとの 10 の transcript は `p2fix-before-a` と 1 byte も違わない。before の答えは、`Tensr` に候補なし、`Tickr` に `Ticker` の修正案。古い `tsuzuri-p2`（`f580ceb2…`）では hello と point の新しい場面が違った（最初の違いは `shadowed diagnostics`。「Replace 'Tensr' with 'Tensor'」）。
+- 監査の表（上の「指摘 1 の点検」）の `value_pool`・`type_pool` の行を直した。D-40（`_features/GUIDE.md`）と `docs/architecture.md` の opt-in std の節に、型を足す要求元の条件と `candidate_module_path` を書いた。言語リファレンスと `docs/language.md` は、名前を書いていないモジュールの候補が全 std を読んだときと同じと書いており、直しでその記述が正しくなったので変えていない。
+- 計測: 手順 9 の値は直す前の `f580ceb2…` のもの。直しが通る経路は、報告する診断の候補を作るとき（`value_pool`・`type_pool`）と、`module_path` が `module_path_with(.., None)` を呼ぶことだけで、計測し直していない。
+
+#### Copilot のレビューの後の検証
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` は各コミットで通った。area のテスト: `cargo test --locked --test lsp`（57 件）、`--lib find`（31 件）、`--lib warnings`（13 件）、`--test warnings`（14 件）、`--lib lsp`（8 件）、`--lib driver`（91 件）、`--test fix`（26 件）、`--test alias`（10 件）が通った。`tests::editor_diagnostics_with_the_named_std_modules_are_those_with_every_std_module` は 133 の本文で通った（load average 70〜100 で 82 秒）。`node tests/benchmark_lsp_golden.mjs` は 6 つが通った。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked` は 3,368 件が通過、4 件が skip（910 秒。load average 25〜100）。
+- T2: `cargo build --locked` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は UTF-16・UTF-8 の session と features の 4 つが通った。`node scripts/check-links.mjs`（`--into _perfs/README.md` も。0 broken）、`node scripts/check-guide-lite.mjs`（88 references、0 failed）、`node scripts/gen-docs.mjs --check`（19 blocks、0 stale）、`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-cli-docs.mjs`（4 checks、0 failed）、`git diff --check` は clean。言語リファレンスのページは変えていない（`check-docs` の対象なし）。`src/runtime/` は変えていない。
+- golden と IR: 直した後の release（`cargo build --release --locked`、`3fac3711`）を `target/perf/PB08/tsuzuri-p2` に写し（SHA-256 `1d097045da9b731fdd217ed6950e8dfd5feacefaad125cdf9b1c3611be41bafb`）、golden を作り直した（`target/perf/PB08/golden/c1/`）。CLI は Phase 1 の `before-a` の `cli-1.jsonl` と、言語サーバーは `c1-before-a/lsp-unset` と比べた。
+
+| binary | コミット | CLI 1 スレッド | CLI 自動 | 言語サーバー 未設定 | 言語サーバー 1 | 言語サーバー 8 | IR（`parallel_frontend.mjs`、`TSUZURI_BASELINE`） |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `tsuzuri-p2`（Copilot のレビューの後） | `3fac3711` | 442/442 | 442/442 | 20/20 | 20/20 | 20/20 | ok |
 
 ### 残っている問題
 
