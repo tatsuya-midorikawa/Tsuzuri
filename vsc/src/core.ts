@@ -32,6 +32,11 @@ export async function exists(file: string): Promise<boolean> {
 
 /** The files that make their directory a project root: a manifest, or an entry module without one. */
 const markers = new Set(['Tsuzuri.toml', 'Main.tz']);
+/**
+ * The markers by their names in lower case. A case-insensitive volume (macOS and Windows by default) finds a marker under
+ * another case of its name, as the walk up from a file (`exists`) and the compiler do, so the scan asks the volume too.
+ */
+const foldedMarkers = new Map([...markers].map(marker => [marker.toLowerCase(), marker]));
 /** The file that marks a knowledge graph's directory (`src/kg/write.rs`), which module discovery does not read. */
 const graphMarker = '.tsuzuri-kg';
 /** The limits of module discovery (`src/driver.rs`, `collect_sources`): directories with the root, the depth of a
@@ -145,9 +150,10 @@ export class ProjectRoots {
 
 	/**
 	 * Reads `root` breadth first by the rules of module discovery (G40 D3): names that start with `.` and knowledge
-	 * graphs' directories are not read. It stops at a marker, and at what makes the discovery fail (too many directories
-	 * or sources, a directory too deep, a source or directory symbolic link, a source that is not a regular file, a
-	 * directory that cannot be listed), which it counts as another project. A subdirectory already read is not read again.
+	 * graphs' directories are not read. It stops at a marker (under any case of its name that the volume finds as the
+	 * marker), and at what makes the discovery fail (too many directories or sources, a directory too deep, a source or
+	 * directory symbolic link, a source that is not a regular file, a directory that cannot be listed), which it counts as
+	 * another project. A subdirectory already read is not read again.
 	 */
 	private async scan(cache: Map<string, Promise<Contents>>, root: string): Promise<Contents> {
 		const queue: [string, number][] = [[root, 0]];
@@ -167,6 +173,8 @@ export class ProjectRoots {
 			for (const entry of entries) {
 				if (entry.name.startsWith('.')) { continue; }
 				if (markers.has(entry.name)) { return { holds: true, graph }; }
+				const folded = foldedMarkers.get(entry.name.toLowerCase());
+				if (folded && await this.files.exists(path.join(directory, folded))) { return { holds: true, graph }; }
 				const source = /\.(?:tz|tt|tc)$/.test(entry.name);
 				if (entry.kind === 'symlink') {
 					if (source || entry.target === undefined || entry.target === 'directory') { return { holds: true, graph }; }

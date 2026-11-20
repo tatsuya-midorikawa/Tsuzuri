@@ -190,11 +190,14 @@ test('project root respects nested projects and source subdirectories', async ()
 	}
 });
 
-/** A file system of directories and their entries, which counts the directories that it lists. */
+/**
+ * A file system of directories and their entries, which counts the directories that it lists. A case-insensitive one
+ * (macOS and Windows by default) finds a file under any case of its name, as `access` does there.
+ */
 class VirtualFileSystem implements RootFileSystem {
 	readonly directories = new Map<string, DirectoryEntry[]>();
 	lists = 0;
-	constructor(readonly top: string) { this.directories.set(top, []); }
+	constructor(readonly top: string, readonly caseInsensitive = false) { this.directories.set(top, []); }
 	add(file: string, kind: DirectoryEntry['kind'] = 'file', target?: DirectoryEntry['target']) {
 		const parent = path.dirname(file);
 		if (!this.directories.has(parent)) { this.add(parent, 'directory'); }
@@ -211,7 +214,10 @@ class VirtualFileSystem implements RootFileSystem {
 		if (!entries) { throw Object.assign(new Error(`ENOENT: ${directory}`), { code: 'ENOENT' }); }
 		return entries;
 	}
-	async exists(file: string) { return this.directories.get(path.dirname(file))?.some(entry => entry.name === path.basename(file)) ?? false; }
+	async exists(file: string) {
+		const fold = (name: string) => this.caseInsensitive ? name.toLowerCase() : name;
+		return this.directories.get(path.dirname(file))?.some(entry => fold(entry.name) === fold(path.basename(file))) ?? false;
+	}
 	async isDirectory(file: string) { return this.directories.has(file); }
 }
 
@@ -296,6 +302,35 @@ test('project roots read each directory once until a change that module discover
 	}
 	assert.equal((await roots.find(notes, top)).root, top);
 	assert.equal(files.lists, kept);
+});
+
+test('a marker that the volume finds under another case of its name holds another project', async () => {
+	const top = path.resolve('/w');
+	const app = path.join(top, 'app');
+	const scratch = path.join(top, 'scratch');
+	for (const caseInsensitive of [true, false]) {
+		for (const marker of ['tsuzuri.toml', 'main.tz', 'MAIN.TZ']) {
+			const files = new VirtualFileSystem(top, caseInsensitive);
+			files.add(path.join(scratch, 'Try.tz'));
+			files.add(path.join(app, marker));
+			const roots = new ProjectRoots(files);
+			const label = `${marker}, case-insensitive: ${caseInsensitive}`;
+			// The walk up finds the marker under the volume's case rule, as the compiler does, so the scan
+			// counts it too: otherwise the folder's client would serve the package's files beside the package's own.
+			assert.deepEqual(await roots.find(path.join(app, 'Util.tz'), top), { root: caseInsensitive ? app : top, remaining: false }, label);
+			assert.deepEqual(await roots.find(path.join(scratch, 'Try.tz'), top), { root: caseInsensitive ? scratch : top, remaining: false }, label);
+			assert.deepEqual(await roots.find(path.join(top, 'Notes.tz'), top), { root: top, remaining: caseInsensitive }, label);
+		}
+	}
+	// The same on the disk of this host, whichever case rule its temporary directory has.
+	const disk = await mkdtemp(path.join(os.tmpdir(), 'tsuzuri-case-'));
+	try {
+		await mkdir(path.join(disk, 'app'));
+		await mkdir(path.join(disk, 'scratch'));
+		await writeFile(path.join(disk, 'app', 'tsuzuri.toml'), '');
+		const insensitive = await projectRoot(path.join(disk, 'app', 'Util.tz'), disk) === path.join(disk, 'app');
+		assert.equal(await projectRoot(path.join(disk, 'scratch', 'Try.tz'), disk), insensitive ? path.join(disk, 'scratch') : disk);
+	} finally { await rm(disk, { recursive: true, force: true }); }
 });
 
 test('a remaining root serves only the files directly in it', () => {
