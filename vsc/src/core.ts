@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, readdir, stat } from 'node:fs/promises';
+import { access, lstat, readdir, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 
 export const sourcePattern = '**/*.{tz,tt,tc}';
@@ -57,6 +57,8 @@ export interface RootFileSystem {
 	list(directory: string): Promise<DirectoryEntry[]>;
 	exists(file: string): Promise<boolean>;
 	isDirectory(file: string): Promise<boolean>;
+	/** Whether `file` is itself a regular file, without following a symbolic link; false when it cannot be inspected. */
+	isRegularFile(file: string): Promise<boolean>;
 }
 
 const missing = (error: unknown) => ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '');
@@ -77,6 +79,9 @@ export const diskFileSystem: RootFileSystem = {
 			if (missing(error)) { return false; }
 			throw error;
 		}
+	},
+	async isRegularFile(file) {
+		try { return (await lstat(file)).isFile(); } catch { return false; }
 	},
 };
 
@@ -194,24 +199,30 @@ export class ProjectRoots {
 
 	/**
 	 * Reads `root` breadth first by the rules of module discovery (G40 D3): names that start with `.` and knowledge
-	 * graphs' directories are not read. It stops at a marker (under any case of its name that the volume finds as the
-	 * marker), and at what makes the discovery fail (too many directories or sources, a directory too deep, a source or
-	 * directory symbolic link, a source that is not a regular file, a directory that cannot be listed), which it counts as
-	 * another project. A subdirectory whose contents are known is not read again, and a directory that an earlier scan
-	 * listed is not listed again.
+	 * graphs' directories below the root are not read. It stops at a marker (under any case of its name that the volume
+	 * finds as the marker), and at what makes the discovery fail (too many directories or sources, a directory too deep, a
+	 * source or directory symbolic link, a source that is not a regular file, a directory that cannot be listed), which it
+	 * counts as another project. A subdirectory whose contents are known is not read again, and a directory that an
+	 * earlier scan listed is not listed again.
 	 */
 	private async scan(cache: RootCache, root: string): Promise<Contents> {
 		const queue: [string, number][] = [[root, 0]];
 		let directories = 0, sources = 0, depth = 0, graph = false;
 		for (let index = 0; index < queue.length; index++) {
 			const [directory, level] = queue[index];
-			let entries: DirectoryEntry[];
+			let entries: DirectoryEntry[] | undefined;
 			try { entries = await this.list(cache, directory); } catch (error) {
-				if (!missing(error)) { return { holds: true, graph }; }
-				entries = [];
+				if (missing(error)) { entries = []; }
 			}
-			const generated = entries.some(entry => entry.name === graphMarker && entry.kind === 'file');
+			// Module discovery skips a directory below the root whose `.tsuzuri-kg` is a regular file, which it inspects
+			// without following a link before it lists the directory (`symlink_metadata`): a graph that cannot be listed is
+			// skipped too, and a marker in a directory that cannot be searched does not count. A directory whose listing
+			// names no marker under any case has none, so the marker is inspected only when the listing names one or failed,
+			// and the result is the same as inspecting it first.
+			const generated = (!entries || entries.some(entry => entry.name.toLowerCase() === graphMarker))
+				&& await this.files.isRegularFile(path.join(directory, graphMarker));
 			if (directory === root) { graph = generated; } else if (generated) { continue; }
+			if (!entries) { return { holds: true, graph }; }
 			directories++;
 			depth = Math.max(depth, level);
 			if (directories > discovery.directories || level >= discovery.depth) { return { holds: true, graph }; }

@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, symlink } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, writeFile, rm, symlink } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
@@ -196,10 +196,13 @@ test('project root respects nested projects and source subdirectories', async ()
 
 /**
  * A file system of directories and their entries, which counts the directories that it lists. A case-insensitive one
- * (macOS and Windows by default) finds a file under any case of its name, as `access` does there.
+ * (macOS and Windows by default) finds a file under any case of its name, as `access` does there. A directory can be
+ * unreadable (it cannot be listed) or unsearchable (nothing in it can be inspected, and no directory below it listed).
  */
 class VirtualFileSystem implements RootFileSystem {
 	readonly directories = new Map<string, DirectoryEntry[]>();
+	readonly unreadable = new Set<string>();
+	readonly unsearchable = new Set<string>();
 	lists = 0;
 	/** A directory whose listing, once taken, is returned only after `resume`: a change can come meanwhile. */
 	pause?: { directory: string; listed: () => void; resume: Promise<void> };
@@ -216,6 +219,9 @@ class VirtualFileSystem implements RootFileSystem {
 	}
 	async list(directory: string) {
 		this.lists++;
+		if (this.unreadable.has(directory) || this.unsearchable.has(path.dirname(directory))) {
+			throw Object.assign(new Error(`EACCES: ${directory}`), { code: 'EACCES' });
+		}
 		const entries = this.directories.get(directory);
 		if (!entries) { throw Object.assign(new Error(`ENOENT: ${directory}`), { code: 'ENOENT' }); }
 		const listing = [...entries];
@@ -227,11 +233,15 @@ class VirtualFileSystem implements RootFileSystem {
 		}
 		return listing;
 	}
-	async exists(file: string) {
+	/** The entry of `file`, under the volume's case rule; none in a directory that cannot be searched. */
+	private entry(file: string) {
+		if (this.unsearchable.has(path.dirname(file))) { return undefined; }
 		const fold = (name: string) => this.caseInsensitive ? name.toLowerCase() : name;
-		return this.directories.get(path.dirname(file))?.some(entry => fold(entry.name) === fold(path.basename(file))) ?? false;
+		return this.directories.get(path.dirname(file))?.find(entry => fold(entry.name) === fold(path.basename(file)));
 	}
+	async exists(file: string) { return this.entry(file) !== undefined; }
 	async isDirectory(file: string) { return this.directories.has(file); }
+	async isRegularFile(file: string) { return this.entry(file)?.kind === 'file'; }
 }
 
 test('a folder that module discovery cannot read within its limits counts as one that holds another project', async () => {
@@ -274,6 +284,81 @@ test('a folder that module discovery cannot read within its limits counts as one
 	// An unsaved file in a directory that does not exist: the directory is empty.
 	const unlisted = new VirtualFileSystem(top);
 	assert.deepEqual(await new ProjectRoots(unlisted).find(path.join(top, 'gone', 'New.tz'), top), { root: top, remaining: false });
+});
+
+test('a knowledge graph is told by its marker as module discovery tells it, also when it cannot be listed or searched', async () => {
+	const top = path.resolve('/w');
+	const notes = path.join(top, 'notes', 'X.tz');
+	const graph = path.join(top, 'target', 'tz', 'kg');
+	const marker = path.join(graph, '.tsuzuri-kg');
+	// `collect_sources` checks a directory's marker with `symlink_metadata` before it lists the directory: it skips one
+	// whose marker is a regular file, also when the directory cannot be listed, and lists any other, which fails when the
+	// directory cannot be listed or a directory below it cannot be read. A marker that is a link or a directory does not
+	// count, and neither does one in a directory that cannot be searched.
+	for (const [label, build, holds, caseInsensitive] of [
+		['a graph', files => files.add(marker), false],
+		['a graph that cannot be listed', files => { files.add(marker); files.unreadable.add(graph); }, false],
+		['a directory without a marker that cannot be listed', files => { files.add(graph, 'directory'); files.unreadable.add(graph); }, true],
+		['a linked marker in a directory that cannot be listed', files => { files.add(marker, 'symlink', 'file'); files.unreadable.add(graph); }, true],
+		['a directory marker in a directory that cannot be listed', files => { files.add(marker, 'directory'); files.unreadable.add(graph); }, true],
+		['a marker in a directory that cannot be searched, with a directory in it', files => {
+			files.add(marker); files.add(path.join(graph, 'nodes'), 'directory'); files.unsearchable.add(graph);
+		}, true],
+		['a marker in a directory that cannot be searched, with a file in it', files => {
+			files.add(marker); files.add(path.join(graph, 'manifest.json')); files.unsearchable.add(graph);
+		}, false],
+		['a marker under another case, on a case-insensitive volume', files => { files.add(path.join(graph, '.TSUZURI-KG')); files.add(path.join(graph, 'Main.tz')); }, false, true],
+		['a marker under another case, on a case-sensitive volume', files => { files.add(path.join(graph, '.TSUZURI-KG')); files.add(path.join(graph, 'Main.tz')); }, true, false],
+	] as [string, (files: VirtualFileSystem) => void, boolean, boolean?][]) {
+		const files = new VirtualFileSystem(top, caseInsensitive);
+		files.add(notes);
+		build(files);
+		assert.deepEqual(await new ProjectRoots(files).find(notes, top), { root: holds ? path.join(top, 'notes') : top, remaining: false }, label);
+	}
+	// A graph that was the folder of a lookup first is skipped as well by the scan of a folder above it, which takes what
+	// the lookup found.
+	const files = new VirtualFileSystem(top);
+	files.add(notes);
+	files.add(marker);
+	files.unreadable.add(graph);
+	const roots = new ProjectRoots(files);
+	assert.deepEqual(await roots.find(path.join(graph, 'Notes.tz'), top), { root: graph, remaining: true });
+	assert.deepEqual(await roots.find(notes, top), { root: top, remaining: false });
+	// The same on the disk of this host, where permissions apply (not on Windows, and not to the superuser).
+	if (process.platform === 'win32' || process.getuid?.() === 0) { return; }
+	const disk = await mkdtemp(path.join(os.tmpdir(), 'tsuzuri-graph-'));
+	const locked: string[] = [];
+	const lock = async (directory: string, mode: number) => { await chmod(directory, mode); locked.push(directory); };
+	try {
+		const tree = async (name: string) => {
+			const folder = path.join(disk, name);
+			await mkdir(path.join(folder, 'notes'), { recursive: true });
+			await mkdir(path.join(folder, 'target', 'tz', 'kg'), { recursive: true });
+			await writeFile(path.join(folder, 'notes', 'X.tz'), '');
+			return { folder, kg: path.join(folder, 'target', 'tz', 'kg') };
+		};
+		const rootOn = async (folder: string) => path.relative(folder, await projectRoot(path.join(folder, 'notes', 'X.tz'), folder)) || '.';
+		const unlisted = await tree('unlisted');
+		await writeFile(path.join(unlisted.kg, '.tsuzuri-kg'), '');
+		await lock(unlisted.kg, 0o311);
+		assert.equal(await rootOn(unlisted.folder), '.', 'a graph that cannot be listed');
+		const plain = await tree('plain');
+		await lock(plain.kg, 0o311);
+		assert.equal(await rootOn(plain.folder), 'notes', 'a directory without a marker that cannot be listed');
+		const linked = await tree('linked');
+		await writeFile(path.join(linked.folder, 'target', 'tz', 'real'), '');
+		await symlink(path.join('..', 'real'), path.join(linked.kg, '.tsuzuri-kg'));
+		await lock(linked.kg, 0o311);
+		assert.equal(await rootOn(linked.folder), 'notes', 'a linked marker in a directory that cannot be listed');
+		const unsearched = await tree('unsearched');
+		await writeFile(path.join(unsearched.kg, '.tsuzuri-kg'), '');
+		await mkdir(path.join(unsearched.kg, 'nodes'));
+		await lock(unsearched.kg, 0o644);
+		assert.equal(await rootOn(unsearched.folder), 'notes', 'a marker in a directory that cannot be searched, with a directory in it');
+	} finally {
+		for (const directory of locked) { await chmod(directory, 0o755); }
+		await rm(disk, { recursive: true, force: true });
+	}
 });
 
 test('project roots read each directory once until a change that module discovery can see', async () => {
