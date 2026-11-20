@@ -3255,7 +3255,7 @@ struct Queue {
     requests: BTreeMap<String, usize>,
     /// How many queued text syncs change or close each document.
     modifications: BTreeMap<PathBuf, usize>,
-    /// The cancellations that no queued request had, oldest first.
+    /// The cancellations that no queued request had, oldest first, each id once.
     unmatched: VecDeque<String>,
     /// The requests answered last, oldest first, and the same as a set.
     answered: VecDeque<String>,
@@ -3265,10 +3265,10 @@ struct Queue {
 impl Queue {
     /// Takes a message from the reader. A cancellation of a queued request is kept for it; one of an
     /// answered request is dropped; any other is kept for a request that may follow, the latest
-    /// `MAX_REMEMBERED_IDS` of them, and belongs to that request once it arrives (later unknown ids
-    /// no longer push it out). A request with the id of an answered one (ids need be unique only
-    /// among outstanding requests) makes the server forget the answered one, so that the new
-    /// request's cancellation is not dropped as a late one.
+    /// `MAX_REMEMBERED_IDS` of them (a repeated one at its latest place), and belongs to that request
+    /// once it arrives (later unknown ids no longer push it out). A request with the id of an
+    /// answered one (ids need be unique only among outstanding requests) makes the server forget the
+    /// answered one, so that the new request's cancellation is not dropped as a late one.
     fn push(&mut self, event: InputEvent, inbox: &Inbox) {
         let item = Queued::new(event);
         if let Some(id) = item.message().and_then(cancelled_id) {
@@ -3280,6 +3280,9 @@ impl Queue {
             } else if self.recent.contains(&id) {
                 inbox.forget(&id);
             } else {
+                // Once, at the place of the latest: pushing out an older copy would forget the
+                // cancellation that the newer one keeps (Copilot review 2 of PR #119).
+                self.unmatched.retain(|unmatched| *unmatched != id);
                 self.unmatched.push_back(id);
                 if self.unmatched.len() > MAX_REMEMBERED_IDS
                     && let Some(oldest) = self.unmatched.pop_front()
@@ -3753,6 +3756,49 @@ mod tests {
             );
         }
         assert!(inbox.is_cancelled("5"));
+    }
+
+    /// Passes `message` to the queue as the reader thread does: counts it and records a
+    /// cancellation, then sends it on.
+    fn arrive(inbox: &Inbox, queue: &mut Queue, message: Value) {
+        let message = Ok(message);
+        inbox.received(&message, 1);
+        queue.push(InputEvent::Message(message, 1), inbox);
+    }
+
+    fn cancel(id: Value) -> Value {
+        json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}})
+    }
+
+    fn symbol_request(id: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": "workspace/symbol", "params": {"query": ""}})
+    }
+
+    /// Copilot review 2 of PR #119: a cancellation that arrives more than once before its request is
+    /// kept once, at the place of the latest one, so the cancellations of unknown ids that follow
+    /// push it out no sooner than they would push out that latest one.
+    #[test]
+    fn a_repeated_cancellation_before_its_request_is_kept_at_its_latest_place() {
+        // Twice in a row, then unknown ids that fill the rest of the room.
+        let (inbox, mut queue) = (Inbox::default(), Queue::default());
+        arrive(&inbox, &mut queue, cancel(json!(5)));
+        arrive(&inbox, &mut queue, cancel(json!(5)));
+        for ghost in 1..MAX_REMEMBERED_IDS {
+            arrive(&inbox, &mut queue, cancel(json!(format!("ghost-{ghost}"))));
+        }
+        arrive(&inbox, &mut queue, symbol_request(json!(5)));
+        assert!(inbox.is_cancelled("5"));
+        // Once, unknown ids that fill the room, again, and one more unknown id: the second takes the
+        // newest place, so the unknown id that pushes out the first place does not forget it.
+        let (inbox, mut queue) = (Inbox::default(), Queue::default());
+        arrive(&inbox, &mut queue, cancel(json!(6)));
+        for ghost in 1..MAX_REMEMBERED_IDS {
+            arrive(&inbox, &mut queue, cancel(json!(format!("ghost-{ghost}"))));
+        }
+        arrive(&inbox, &mut queue, cancel(json!(6)));
+        arrive(&inbox, &mut queue, cancel(json!("ghost-last")));
+        arrive(&inbox, &mut queue, symbol_request(json!(6)));
+        assert!(inbox.is_cancelled("6"));
     }
 
     /// Copilot review of PR #119: an empty message costs nothing by its body, but it counts against
