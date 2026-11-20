@@ -8,7 +8,7 @@
 | 規模 | M（Phase 1。Phase 2 は別段で、2026-11-20 の利用者の指示で行う） |
 | 依存 | – |
 | 関連 | G39（言語サーバーの待ち行列と取り消し。Phase 3）, G40, PB04（フロントエンドの並列化）, PB06（常駐状態）, G17（フロントエンドの cache）, D-40（言語サーバーは opt-in の std を常に読む） |
-| 状態 | doing（Phase 1・2 は実装・計測済み（2026-11-20）。M1 は Phase 2 の後 hello 0.097 倍・big 0.335 倍・syn200 0.157 倍。G39 との合流は済んだ（2026-11-20）。PR #122 のレビューが残る） |
+| 状態 | done（Phase 1・2。2026-11-20。M1 は Phase 1 の後 hello 0.271 倍・big 0.377 倍・syn200 0.203 倍、Phase 2 の後 0.097 倍・0.335 倍・0.157 倍。G39 と合流し、PR #122） |
 | 起票 | 2026-11-19（G39 の調査で見つけ、利用者の依頼で別のチケットにした。HEAD `af644794` を、strip しない release で `sample` し、別の担当が試作（環境変数で切り替える patch）で効果と出力の同一性を測り直した） |
 | 承認 | Phase 1 は不要（出力を変えない。D5 は言語サーバーが使うスレッドの数の方針で既定案）。Phase 2 の D7（D-40 を変え、名前を書いていない opt-in の std モジュールの補完・ホバー・診断の候補・シグネチャヘルプを別の索引から答える。答えは変えない）は、2026-11-19 に利用者が承認した（「承認が必要なものについては、あなたが考えるベストな方法であれば全て承認します」）。起票者が最善と判断した形のまま承認したので、Phase 1 の後の計測で目標に届かないときだけ行うという条件も含んでいた。この条件は、2026-11-20 の利用者の指示「もし実装に際し複数フェーズにまたがる場合には、その全てのフェーズを完了させること」で外れた。Phase 1 は目標に届いたが、Phase 2 も行う |
 | 手本にする既存実装 | 型の名前の静かな照合: `src/check.rs` の `Names::check_type_path`・`type_choice`（`named_type` の Ok の条件そのもの）。CLI の並列度: `src/driver.rs` の `analyze_cached_core`（`Parallelism::command_line()`）。スレッドの数に依らない出力の検査: `src/lib.rs` の `warnings_and_the_semantic_index_do_not_depend_on_the_thread_count` など、`tests/parallel_frontend.mjs`。計測の形: PB06 の「現状と計測」、GUIDE §14 |
@@ -1012,7 +1012,7 @@ GitHub Copilot の最初のレビュー（`f1839c32`）は 2 つの指摘を挙�
 
 ### G39 との合流（2026-11-20）
 
-G39 の Phase 2・3（[G39](../_features/_completed/G39-stale-editor-diagnostics.md)、PR #119、`origin/fix/g39-phase2-3` の `3091bf86`。origin/main の G40（#120）・G41・E17 を含む）を、このブランチに merge した（`cf1e4799`。G39 は PB08 より先に main に入る）。G39 の側の記録は、そのチケットの「PB08 との合流」にある。
+G39 の Phase 2・3（[G39](../../_features/_completed/G39-stale-editor-diagnostics.md)、PR #119、`origin/fix/g39-phase2-3` の `3091bf86`。origin/main の G40（#120）・G41・E17 を含む）を、このブランチに merge した（`cf1e4799`。G39 は PB08 より先に main に入る）。G39 の側の記録は、そのチケットの「PB08 との合流」にある。
 
 **衝突と解き方**
 

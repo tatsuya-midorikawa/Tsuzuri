@@ -186,7 +186,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PB05 | [デバッグビルド用の高速バックエンド](_completed/PB05-fast-debug-backend.md) | P2 | XL | PB01, PB02 | done |
 | PB06 | [常駐ビルドサーバーと watch モード](_completed/PB06-build-server.md) | P2 | L | PB02, (G17) | done |
 | PB07 | [関数単位の増分コード生成と増分リンク](_completed/PB07-incremental-codegen.md) | P3 | XL | PB06, G17 | done |
-| PB08 | [言語サーバーの 1 回の再解析と `check` の、捨てる診断を作る計算と重複した解析を除く](PB08-lsp-refresh-cost.md) | P1 | M | – | doing（Phase 1・2 は実装・計測済み（2026-11-20）。M1 は Phase 2 の後 hello 0.097 倍・big 0.335 倍・syn200 0.157 倍。G39 との合流は済んだ（2026-11-20）。PR #122 のレビューが残る） |
+| PB08 | [言語サーバーの 1 回の再解析と `check` の、捨てる診断を作る計算と重複した解析を除く](_completed/PB08-lsp-refresh-cost.md) | P1 | M | – | done（Phase 1・2。M1 は Phase 2 の後 hello 0.097 倍・big 0.335 倍・syn200 0.157 倍） |
 
 ## `_features` との関係
 
