@@ -47,6 +47,18 @@ async function settle() {
 	for (let turn = 0; turn < 20; turn++) { await new Promise(resolve => setImmediate(resolve)); }
 }
 
+/**
+ * Waits until `condition` holds, letting the extension's callbacks, promises and file-system calls run. A fixed number
+ * of turns is not enough when a step waits for the file system (`documentHasProject`) on a loaded machine.
+ */
+async function until(condition: () => boolean, what: string) {
+	const end = Date.now() + 10_000;
+	while (!condition()) {
+		if (Date.now() > end) { assert.fail(`timed out: ${what}`); }
+		await new Promise(resolve => setTimeout(resolve, 1));
+	}
+}
+
 const passed = { code: 0, stdout: '', stderr: '' };
 /** A discovery of top/a that lists the test `adds` of top/a/X.tz. */
 const listed = {
@@ -445,14 +457,17 @@ test('a client that starts while Restart Language Server stops the others stays 
 		// The restart waits while the server of top/a stops, and a document of the package top/b is opened meanwhile.
 		const stopping = stubbed.holdStop();
 		const restart = commands.get('tsuzuri.restartLanguageServer')!();
-		await settle();
-		assert.ok(languageClients[0].stopped);
+		await until(() => languageClients[0].stopped, 'the restart stops the server of top/a');
 		const other = path.join(top, 'b');
 		stubbed.open(stubbed.document(path.join(other, 'Main.tz')));
-		await settle();
+		await until(() => languageClients.length === 2, 'the document of top/b starts a client');
 		assert.deepEqual(languageClients.map(client => client.root), [app, other]);
 		stopping.resolve();
 		await restart;
+		// The restart reopens the documents without waiting for them: wait until each running server has its client in
+		// the map (never true with the old deactivate(), whose untracked server keeps running), then let anything late run.
+		const tracked = () => languageClients.filter(client => !client.stopped);
+		await until(() => tracked().length >= 2 && tracked().every(client => api.clients.get(client.root) === client), 'each running server is tracked');
 		await settle();
 		// Each server that runs has its client in the map, one for each root.
 		const running = languageClients.filter(client => !client.stopped);
