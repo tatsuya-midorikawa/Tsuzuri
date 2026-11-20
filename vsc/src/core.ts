@@ -150,9 +150,12 @@ export class ProjectRoots {
 		}
 	}
 
-	/** The root of `file`, or of the directory `file`, in the workspace folder `workspaceRoot`. */
+	/**
+	 * The root of `file`, or of the directory `file`, in the workspace folder `workspaceRoot`. The workspace folder is a
+	 * directory also when it was deleted, so that its root is not the folder above it.
+	 */
 	async find(file: string, workspaceRoot?: string): Promise<ProjectRoot> {
-		return this.findForDirectory(await this.files.isDirectory(file) ? file : path.dirname(file), workspaceRoot);
+		return this.findForDirectory(file === workspaceRoot || await this.files.isDirectory(file) ? file : path.dirname(file), workspaceRoot);
 	}
 
 	/**

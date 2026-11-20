@@ -439,6 +439,19 @@ test('a directory that a scan listed is not listed again for a file opened in it
 	}
 });
 
+test('a workspace folder that does not exist is its own root, and nothing above it is read', async () => {
+	// A workspace folder deleted while VS Code has it open, as Test Project, the commands, and the tasks without an active
+	// file look it up: the folder above it holds other projects.
+	const top = path.resolve('/home/projects');
+	const files = new VirtualFileSystem(top);
+	files.add(path.join(top, 'other', 'Main.tz'));
+	files.add(path.join(top, 'Notes.tz'));
+	const folder = path.join(top, 'gone');
+	assert.deepEqual(await new ProjectRoots(files).find(folder, folder), { root: folder, remaining: false });
+	assert.equal(files.lists, 1);
+	assert.equal(await projectRoot(folder, folder, new ProjectRoots(files)), folder);
+});
+
 test('a root that was read while a change cleared the cache is read again before it is used', async () => {
 	const top = path.resolve('/w');
 	const notes = path.join(top, 'notes', 'X.tz');
