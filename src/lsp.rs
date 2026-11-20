@@ -1,7 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::check::semantic::{Reference, Role, SemanticIndex, SymbolKind};
@@ -40,6 +40,11 @@ const TOKEN_TYPES: [&str; 11] = [
 const TOKEN_MODIFIERS: [&str; 3] = ["declaration", "readonly", "defaultLibrary"];
 
 pub fn read_message(input: &mut impl BufRead) -> io::Result<Option<Result<Value, String>>> {
+    Ok(read_frame(input)?.map(|(message, _)| message))
+}
+
+/// `read_message` with the length of the message's body.
+fn read_frame(input: &mut impl BufRead) -> io::Result<Option<(Result<Value, String>, usize)>> {
     let mut length = None;
     let mut header_bytes = 0;
     loop {
@@ -89,9 +94,10 @@ pub fn read_message(input: &mut impl BufRead) -> io::Result<Option<Result<Value,
         })?;
     let mut body = vec![0; length];
     input.read_exact(&mut body)?;
-    Ok(Some(
+    Ok(Some((
         serde_json::from_slice(&body).map_err(|error| error.to_string()),
-    ))
+        length,
+    )))
 }
 
 pub fn write_message(output: &mut impl Write, message: &Value) -> io::Result<()> {
@@ -188,6 +194,12 @@ pub fn file_uri(path: &Path) -> Option<String> {
     if cfg!(windows) && path.as_bytes().get(1) == Some(&b':') {
         uri.push('/');
     }
+    escape_path(&mut uri, path);
+    Some(uri)
+}
+
+/// Appends `path` to a URI, escaping every byte but ASCII letters, digits and `/-._~:`.
+fn escape_path(uri: &mut String, path: &str) {
     for byte in path.bytes() {
         if byte.is_ascii_alphanumeric() || b"/-._~:".contains(&byte) {
             uri.push(char::from(byte));
@@ -196,7 +208,42 @@ pub fn file_uri(path: &Path) -> Option<String> {
             let _ = write!(uri, "%{byte:02X}");
         }
     }
+}
+
+/// The URI `root` followed by the components of `relative`, each escaped as `file_uri` escapes it
+/// (G39 D8): the client's spelling of a file under one of its roots.
+fn uri_under(root: &str, relative: &Path) -> Option<String> {
+    let mut uri = root.to_owned();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return None;
+        };
+        if !uri.ends_with('/') {
+            uri.push('/');
+        }
+        escape_path(&mut uri, name.to_str()?);
+    }
     Some(uri)
+}
+
+/// `path` with its nearest existing ancestor directory canonicalized, as `document_path` places a
+/// document (G39 spec 9): a removed file or directory stays under the directory that remains, and a
+/// path that is itself a symbolic link stays where the client named it.
+fn canonical_existing(path: &Path) -> Option<PathBuf> {
+    let mut removed = vec![path.file_name()?];
+    let mut current = path.parent()?;
+    loop {
+        if let Ok(canonical) = current.canonicalize() {
+            return Some(
+                removed
+                    .iter()
+                    .rev()
+                    .fold(canonical, |path, name| path.join(name)),
+            );
+        }
+        removed.push(current.file_name()?);
+        current = current.parent()?;
+    }
 }
 
 pub fn uri_path(uri: &str) -> Result<PathBuf, String> {
@@ -290,13 +337,19 @@ struct Session {
     initialized: bool,
     shutdown: bool,
     encoding: PositionEncoding,
-    roots: Vec<PathBuf>,
+    /// The roots of `initialize` (`rootUri`, `workspaceFolders`), each with the URI that the client
+    /// named it with (G39 D8).
+    client_roots: Vec<ClientRoot>,
     buffers: BTreeMap<PathBuf, OpenBuffer>,
     projects: BTreeMap<PathBuf, ProjectState>,
     /// The last analyzed state of each root, kept while edits break analysis.
     good: BTreeMap<PathBuf, ProjectState>,
-    pending: BTreeMap<PathBuf, (PathBuf, Instant)>,
+    /// The roots to analyze again, each by when.
+    pending: BTreeMap<PathBuf, Instant>,
     closed: BTreeMap<PathBuf, String>,
+    /// For each analyzed root, the files that its last refresh sent a non-empty list to, with the URI
+    /// it sent to (G39 D5).
+    published: BTreeMap<PathBuf, BTreeMap<PathBuf, String>>,
 }
 
 impl Default for Session {
@@ -305,56 +358,156 @@ impl Default for Session {
             initialized: false,
             shutdown: false,
             encoding: PositionEncoding::Utf16,
-            roots: Vec::new(),
+            client_roots: Vec::new(),
             buffers: BTreeMap::new(),
             projects: BTreeMap::new(),
             good: BTreeMap::new(),
             pending: BTreeMap::new(),
             closed: BTreeMap::new(),
+            published: BTreeMap::new(),
         }
     }
 }
 
+/// A root that the client named in `initialize`.
+struct ClientRoot {
+    /// The path of its URI.
+    path: PathBuf,
+    /// The path canonicalized when the client named it and again at each refresh (a symbolic link
+    /// can be removed or pointed elsewhere), so that a refresh does not resolve it for every file it
+    /// publishes; `None` when it did not resolve then.
+    canonical: Option<PathBuf>,
+    uri: String,
+}
+
+impl ClientRoot {
+    fn new(uri: &str) -> Result<Self, (i64, String)> {
+        let path = uri_path(uri).map_err(|message| invalid(&message))?;
+        Ok(Self {
+            canonical: path.canonicalize().ok(),
+            path,
+            uri: uri.to_owned(),
+        })
+    }
+}
+
+/// What one refresh of a root sent: the URI of each file that got a non-empty list, and every URI
+/// that got a list (G39 D5).
+#[derive(Default)]
+struct Sent {
+    nonempty: BTreeMap<PathBuf, String>,
+    uris: BTreeSet<String>,
+}
+
+impl Sent {
+    fn note(&mut self, path: &Path, uri: Option<String>, nonempty: bool) {
+        let Some(uri) = uri else {
+            return;
+        };
+        if nonempty {
+            self.nonempty.insert(path.to_owned(), uri.clone());
+        }
+        self.uris.insert(uri);
+    }
+}
+
 impl Session {
+    /// The client's roots that exist, canonicalized, with the URI that the client named each with.
+    fn canonical_roots(&self) -> impl Iterator<Item = (PathBuf, &str)> {
+        self.client_roots.iter().filter_map(|root| {
+            let canonical = root
+                .canonical
+                .clone()
+                .or_else(|| root.path.canonicalize().ok())?;
+            Some((canonical, root.uri.as_str()))
+        })
+    }
+
+    /// The innermost client root that contains the canonical `path`, with its URI.
+    fn client_root(&self, path: &Path) -> Option<(PathBuf, &str)> {
+        self.canonical_roots()
+            .filter(|(root, _)| path.starts_with(root))
+            .max_by_key(|(root, _)| root.components().count())
+    }
+
     fn project_root(&self, path: &Path) -> PathBuf {
-        self.roots
-            .iter()
-            .filter_map(|root| root.canonicalize().ok())
-            .filter(|root| path.starts_with(root))
-            .max_by_key(|root| root.components().count())
+        self.client_root(path)
+            .map(|(root, _)| root)
             .unwrap_or_else(|| path.parent().unwrap().to_owned())
     }
 
     fn schedule(&mut self, path: &Path) {
         let directory = self.project_root(path);
+        self.schedule_root(directory);
+    }
+
+    fn schedule_root(&mut self, directory: PathBuf) {
         if let Some(state) = self.projects.remove(&directory)
             && state.index.is_some()
         {
             self.good.insert(directory.clone(), state);
         }
-        self.pending.insert(
-            directory,
-            (path.to_owned(), Instant::now() + Duration::from_millis(200)),
-        );
+        self.pending
+            .insert(directory, Instant::now() + Duration::from_millis(200));
     }
 
+    /// The roots that a change of the files at `uris` makes the server analyze again (G39 D7): the
+    /// client root of each changed path, placed by its directory that remains, the roots of the open
+    /// documents, and the roots whose diagnostics are on the client. A path outside every client root
+    /// adds no root.
+    ///
+    /// The client roots are resolved again first (`resolve_client_roots`): a changed path resolves
+    /// through a root link that points elsewhere now, and placed against the directory it pointed
+    /// to, it would find no root when nothing else schedules one, as for a clean project with its
+    /// documents closed (Copilot review 3 of PR #119).
+    fn changed_roots<'u>(
+        &mut self,
+        uris: impl Iterator<Item = &'u str>,
+        output: &mut impl Write,
+    ) -> io::Result<BTreeSet<PathBuf>> {
+        self.resolve_client_roots(None, output)?;
+        let mut roots: BTreeSet<PathBuf> = uris
+            .filter_map(|uri| canonical_existing(&uri_path(uri).ok()?))
+            .filter_map(|path| Some(self.client_root(&path)?.0))
+            .collect();
+        roots.extend(self.buffers.keys().map(|path| self.project_root(path)));
+        roots.extend(self.published.keys().cloned());
+        Ok(roots)
+    }
+
+    /// Sends `diagnostics` for `path` and returns the URI it sent to. An analysis's non-empty list
+    /// is not sent to a document that the client closed (`None`); a load error is (G39 D6).
     fn publish(
         &self,
         output: &mut impl Write,
         path: &Path,
         diagnostics: Vec<Value>,
-    ) -> io::Result<()> {
-        if self.closed.contains_key(path) && !diagnostics.is_empty() {
-            return Ok(());
+        load_error: bool,
+    ) -> io::Result<Option<String>> {
+        if !load_error && self.closed.contains_key(path) && !diagnostics.is_empty() {
+            return Ok(None);
         }
-        let uri = self
-            .buffers
-            .get(path)
-            .map(|buffer| buffer.uri.clone())
-            .or_else(|| self.closed.get(path).cloned())
-            .or_else(|| file_uri(path));
+        let Some(uri) = self.uri(path) else {
+            return Ok(None);
+        };
+        self.send_diagnostics(output, &uri, Some(path), diagnostics)?;
+        Ok(Some(uri))
+    }
+
+    /// One `publishDiagnostics` to `uri`, with the version of `path`'s open buffer when the buffer
+    /// has that URI.
+    fn send_diagnostics(
+        &self,
+        output: &mut impl Write,
+        uri: &str,
+        path: Option<&Path>,
+        diagnostics: Vec<Value>,
+    ) -> io::Result<()> {
         let mut params = json!({"uri": uri, "diagnostics": diagnostics});
-        if let Some(buffer) = self.buffers.get(path) {
+        if let Some(buffer) = path
+            .and_then(|path| self.buffers.get(path))
+            .filter(|buffer| buffer.uri == uri)
+        {
             params["version"] = json!(buffer.version);
         }
         write_message(
@@ -363,20 +516,142 @@ impl Session {
         )
     }
 
-    fn refresh(&mut self, path: &Path, output: &mut impl Write) -> io::Result<()> {
-        let directory = self.project_root(path);
-        self.pending.remove(&directory);
+    /// Clears what the last refresh of `directory` sent and this one did not replace: an empty list
+    /// to each URI of its record that this refresh sent nothing to (a file that left the project or
+    /// no longer has diagnostics, a URI that the file is no longer spelled with). This refresh's
+    /// record replaces it (G39 D5).
+    ///
+    /// A URI that the record of another root still has keeps its list: the client replaces a URI's
+    /// whole list, so an empty one would hide what the other root still reports there, such as the
+    /// load error of a manifest outside both roots that both depend on (Copilot review of PR #119).
+    /// It is cleared when the last root that reports it stops.
+    fn retire(&mut self, output: &mut impl Write, directory: &Path, sent: Sent) -> io::Result<()> {
+        for (path, uri) in self.published.remove(directory).unwrap_or_default() {
+            let reported = || {
+                self.published
+                    .values()
+                    .any(|record| record.values().any(|other| *other == uri))
+            };
+            if !sent.uris.contains(&uri) && !reported() {
+                self.send_diagnostics(output, &uri, Some(&path), Vec::new())?;
+            }
+        }
+        if !sent.nonempty.is_empty() {
+            self.published.insert(directory.to_owned(), sent.nonempty);
+        }
+        Ok(())
+    }
+
+    /// The diagnostic of a project that does not load, at its span in the file's current text (an
+    /// open buffer's or the disk's), or at 0:0 when the text cannot be read or has no such span.
+    fn load_error(&self, error: &crate::driver::SourceError) -> Value {
+        let span = error.diagnostic.span;
+        let range = (span.end > 0)
+            .then(|| {
+                let text = match self.buffers.get(&error.path) {
+                    Some(buffer) => std::borrow::Cow::Borrowed(buffer.text.as_str()),
+                    None => crate::driver::read_source_text(&error.path).ok()?.into(),
+                };
+                PositionMapper::new(&text, self.encoding).range(&text, span)
+            })
+            .flatten()
+            .unwrap_or_else(
+                || json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}),
+            );
+        json!({"range": range, "severity": 1, "code": error.diagnostic.code, "source": "tsuzuri", "message": error.diagnostic.message})
+    }
+
+    /// Canonicalizes the client roots again (Copilot review 2 of PR #119): a root that no longer
+    /// resolves to the directory it was canonicalized as (removed or moved away, or a symbolic link
+    /// removed or pointed elsewhere) takes its new directory, which is scheduled unless it is
+    /// `refreshing`. A directory that no client root resolves to any more has no project for this
+    /// client: analyzed, its diagnostics would go to the URIs of a root that is gone, such as a
+    /// removed link's. Its analysis is dropped and its diagnostics cleared, and it is returned.
+    /// Another one that a client root still resolves to is scheduled, to be published at that root's
+    /// spelling.
+    ///
+    /// A root that resolves again after it did not (a removed link made again) is scheduled as well
+    /// (Copilot review 5 of PR #119): with its documents closed, nothing else schedules it, since its
+    /// directory left the record when the root went away, and the change notification of the link
+    /// itself is placed beside the directory it points to (`canonical_existing` does not follow it).
+    fn resolve_client_roots(
+        &mut self,
+        refreshing: Option<&Path>,
+        output: &mut impl Write,
+    ) -> io::Result<Vec<PathBuf>> {
+        let mut moved = Vec::new();
+        for root in &mut self.client_roots {
+            let now = root.path.canonicalize().ok();
+            let before = std::mem::replace(&mut root.canonical, now.clone());
+            if before != now {
+                moved.push((before, now));
+            }
+        }
+        let mut left = Vec::new();
+        for (before, now) in moved {
+            if let Some(now) = now.filter(|now| Some(now.as_path()) != refreshing) {
+                self.schedule_root(now);
+            }
+            let Some(before) = before else {
+                continue;
+            };
+            if !self.canonical_roots().any(|(root, _)| root == before) {
+                left.push(before);
+            } else if Some(before.as_path()) != refreshing {
+                self.schedule_root(before);
+            }
+        }
+        for gone in &left {
+            self.projects.remove(gone);
+            self.good.remove(gone);
+            self.pending.remove(gone);
+            self.retire(output, gone, Sent::default())?;
+        }
+        Ok(left)
+    }
+
+    /// Refreshes each root of `due` that is still pending when its turn comes. The refresh of one can
+    /// drop another (`resolve_client_roots`: a directory that no client root resolves to any more),
+    /// which a refresh from this list would load again, with its symbols and its diagnostics at the
+    /// URIs of no remaining root (Copilot review 3 of PR #119).
+    fn refresh_due(&mut self, due: Vec<PathBuf>, output: &mut impl Write) -> io::Result<()> {
+        for directory in due {
+            if self.pending.contains_key(&directory) {
+                self.refresh(&directory, output)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh(&mut self, directory: &Path, output: &mut impl Write) -> io::Result<()> {
+        self.pending.remove(directory);
+        let left = self.resolve_client_roots(Some(directory), output)?;
+        if left.iter().any(|gone| gone == directory) {
+            return Ok(());
+        }
+        if !directory.is_dir() {
+            // The root was removed or moved away (the parent directory of a document outside every
+            // client root, say). `load_for_editor` would load its parent directory, with the
+            // projects beside it; the root has no project, and its diagnostics are cleared.
+            self.projects.remove(directory);
+            self.good.remove(directory);
+            return self.retire(output, directory, Sent::default());
+        }
         let overlays = self
             .buffers
             .iter()
             .map(|(path, buffer)| (path.clone(), buffer.text.clone()))
             .collect();
-        let project = match Project::load_for_editor(&directory, &overlays) {
+        let mut sent = Sent::default();
+        let project = match Project::load_for_editor(directory, &overlays) {
             Ok(project) => project,
             Err(error) => {
-                self.projects.remove(&directory);
-                self.publish(output, &error.path, vec![json!({"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "severity": 1, "code": error.diagnostic.code, "source": "tsuzuri", "message": error.diagnostic.message})])?;
-                return Ok(());
+                self.projects.remove(directory);
+                // The reason is sent wherever it is, and the other files lose the diagnostics of the
+                // last analysis (G39 D6).
+                let uri = self.publish(output, &error.path, vec![self.load_error(&error)], true)?;
+                sent.note(&error.path, uri, true);
+                return self.retire(output, directory, sent);
             }
         };
         let (analyzed, diagnostics, counts) = analyze(&project);
@@ -385,20 +660,23 @@ impl Session {
             .iter()
             .map(|source| PositionMapper::new(&source.text, self.encoding))
             .collect();
-        for (id, source) in project
-            .sources
-            .iter()
-            .enumerate()
-            .filter(|(_, source)| source.origin == ModuleOrigin::User)
-        {
-            let messages = diagnostics
+        // A source outside the root (a path dependency beside it) is left to the client of its own
+        // root, which sees its changes (G39 D9).
+        for (id, source) in project.sources.iter().enumerate().filter(|(_, source)| {
+            source.origin == ModuleOrigin::User && source.path.starts_with(directory)
+        }) {
+            let messages: Vec<Value> = diagnostics
                 .iter()
                 .filter(|diagnostic| diagnostic.span.source.unwrap_or(project.root) == id)
                 .filter_map(|diagnostic| self.diagnostic_value(&project, &mappers, id, diagnostic))
                 .collect();
-            self.publish(output, &source.path, messages)?;
+            let nonempty = !messages.is_empty();
+            let uri = self.publish(output, &source.path, messages, false)?;
+            sent.note(&source.path, uri, nonempty);
         }
-        // PB08 O9: the inlay hints and the effects of hovers after the diagnostics are sent.
+        self.retire(output, directory, sent)?;
+        // PB08 O9: the inlay hints and the effects of hovers after the diagnostics are sent, the
+        // empty lists of `retire` included.
         let (index, copies, effects) =
             analyzed.map_or((None, Vec::new(), BTreeMap::new()), |(index, module)| {
                 (
@@ -408,11 +686,11 @@ impl Session {
                 )
             });
         if index.is_some() {
-            self.good.remove(&directory);
+            self.good.remove(directory);
         }
         let modules = ModuleNames::new(&project);
         self.projects.insert(
-            directory,
+            directory.to_owned(),
             ProjectState {
                 project,
                 index,
@@ -427,7 +705,15 @@ impl Session {
         Ok(())
     }
 
-    fn handle(&mut self, method: &str, params: &Value, output: &mut impl Write) -> RpcResult {
+    /// Answers one message. `cancelled` says whether the client has cancelled the request; a long
+    /// computation asks it between its steps (G39 段 12).
+    fn handle(
+        &mut self,
+        method: &str,
+        params: &Value,
+        output: &mut impl Write,
+        cancelled: &dyn Fn() -> bool,
+    ) -> RpcResult {
         if method == "initialize" {
             if self.initialized {
                 return Err((-32600, "server is already initialized".into()));
@@ -439,19 +725,14 @@ impl Session {
                 self.encoding = PositionEncoding::Utf8;
             }
             if let Some(uri) = params["rootUri"].as_str() {
-                self.roots
-                    .push(uri_path(uri).map_err(|message| invalid(&message))?);
+                self.client_roots.push(ClientRoot::new(uri)?);
             }
             if let Some(folders) = params["workspaceFolders"].as_array() {
                 for folder in folders {
-                    self.roots.push(
-                        uri_path(
-                            folder["uri"]
-                                .as_str()
-                                .ok_or_else(|| invalid("workspace folder needs a URI"))?,
-                        )
-                        .map_err(|message| invalid(&message))?,
-                    );
+                    let uri = folder["uri"]
+                        .as_str()
+                        .ok_or_else(|| invalid("workspace folder needs a URI"))?;
+                    self.client_roots.push(ClientRoot::new(uri)?);
                 }
             }
             self.initialized = true;
@@ -486,9 +767,15 @@ impl Session {
         match method {
             "initialized" | "$/cancelRequest" => Ok(Value::Null),
             "workspace/didChangeWatchedFiles" => {
-                let paths: Vec<_> = self.buffers.keys().cloned().collect();
-                for path in paths {
-                    self.schedule(&path);
+                let changes = params["changes"].as_array().map_or(&[][..], Vec::as_slice);
+                let roots = self
+                    .changed_roots(
+                        changes.iter().filter_map(|change| change["uri"].as_str()),
+                        output,
+                    )
+                    .map_err(|error| (-32603, error.to_string()))?;
+                for root in roots {
+                    self.schedule_root(root);
                 }
                 Ok(Value::Null)
             }
@@ -567,7 +854,7 @@ impl Session {
                     .ok_or_else(|| invalid("textDocument.uri is required"))?;
                 self.closed.insert(path.clone(), uri.to_owned());
                 self.schedule(&path);
-                self.publish(output, &path, Vec::new())
+                self.publish(output, &path, Vec::new(), false)
                     .map_err(|error| (-32603, error.to_string()))?;
                 Ok(Value::Null)
             }
@@ -694,15 +981,9 @@ impl Session {
                 }
             }
             "workspace/symbol" => {
-                let due: Vec<_> = self
-                    .pending
-                    .values()
-                    .map(|(path, _)| path.clone())
-                    .collect();
-                for path in due {
-                    self.refresh(&path, output)
-                        .map_err(|error| (-32603, error.to_string()))?;
-                }
+                let due: Vec<_> = self.pending.keys().cloned().collect();
+                self.refresh_due(due, output)
+                    .map_err(|error| (-32603, error.to_string()))?;
                 Ok(self.workspace_symbols(params["query"].as_str().unwrap_or("")))
             }
             "textDocument/completion" | "textDocument/signatureHelp" => {
@@ -748,7 +1029,7 @@ impl Session {
                 let Some(source_id) = source_id else {
                     return Ok(json!([]));
                 };
-                self.code_actions(&directory, source_id, params)
+                self.code_actions(&directory, source_id, params, cancelled)
             }
             "textDocument/formatting" => {
                 let path = document_path(params)?;
@@ -785,7 +1066,7 @@ impl Session {
         let path = document_path(params)?;
         let directory = self.project_root(&path);
         if self.pending.contains_key(&directory) || !self.projects.contains_key(&directory) {
-            self.refresh(&path, output)
+            self.refresh(&directory, output)
                 .map_err(|error| (-32603, error.to_string()))?;
         }
         let source = self.projects.get(&directory).and_then(|state| {
@@ -798,10 +1079,17 @@ impl Session {
         Ok((directory, source))
     }
 
+    /// The URI of `path` for the client: its open buffer's, the one it was closed with, or the path
+    /// under the client's spelling of the root that holds it; `file_uri` outside every root (G39 D8).
     fn uri(&self, path: &Path) -> Option<String> {
         self.buffers
             .get(path)
             .map(|buffer| buffer.uri.clone())
+            .or_else(|| self.closed.get(path).cloned())
+            .or_else(|| {
+                let (root, uri) = self.client_root(path)?;
+                uri_under(uri, path.strip_prefix(&root).ok()?)
+            })
             .or_else(|| file_uri(path))
     }
 
@@ -1104,7 +1392,15 @@ impl Session {
         )
     }
 
-    fn code_actions(&self, directory: &Path, source_id: usize, params: &Value) -> RpcResult {
+    /// The code actions of the requested range. `cancelled` is asked before each verification of a
+    /// fix and each round of fix all; a cancelled request stops there with -32800 (G39 段 12).
+    fn code_actions(
+        &self,
+        directory: &Path,
+        source_id: usize,
+        params: &Value,
+        cancelled: &dyn Fn() -> bool,
+    ) -> RpcResult {
         let only = params["context"]["only"].as_array();
         let asks = |kinds: &[&str]| {
             only.is_none_or(|only| {
@@ -1112,13 +1408,17 @@ impl Session {
                     .any(|kind| kinds.iter().any(|asked| kind == asked))
             })
         };
+        // VS Code drops the source actions of an automatic request (the light bulb, `triggerKind`
+        // 2) that has no `only`, so fix all is not computed for one (G39 D11).
+        let automatic = params["context"]["triggerKind"] == 2 && only.is_none();
         let state = &self.projects[directory];
         let mut actions = Vec::new();
         if asks(&["quickfix"]) {
-            actions = self.quick_fixes(directory, state, source_id, params)?;
+            actions = self.quick_fixes(directory, state, source_id, params, cancelled)?;
         }
-        if asks(&["source", "source.fixAll", FIX_ALL])
-            && let Some(action) = self.fix_all(directory, state, source_id)
+        if !automatic
+            && asks(&["source", "source.fixAll", FIX_ALL])
+            && let Some(action) = self.fix_all(directory, state, source_id, cancelled)?
         {
             actions.push(action);
         }
@@ -1127,10 +1427,17 @@ impl Session {
 
     /// `source.fixAll.tsuzuri`: every `certain` fix of the document, applied by `tsuzuri fix`'s
     /// rounds to the project with the open buffers. `None` when the project has no `certain` fix,
-    /// the run fails, or nothing in the document changes. The project loads the std modules that
-    /// `tsuzuri fix` and the analysis load (`load_for_editor`, PB08 O6), so the rounds see the
-    /// diagnostics whose fixes the quick fixes offer.
-    fn fix_all(&self, directory: &Path, state: &ProjectState, source_id: usize) -> Option<Value> {
+    /// the run fails, or nothing in the document changes; -32800 when `cancelled` says so before a
+    /// round. The project loads the std modules that `tsuzuri fix` and the analysis load
+    /// (`load_for_editor`, PB08 O6), so the rounds see the diagnostics whose fixes the quick fixes
+    /// offer.
+    fn fix_all(
+        &self,
+        directory: &Path,
+        state: &ProjectState,
+        source_id: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<Value>, (i64, String)> {
         // Only a `certain` fix that edits this document alone can change it: without one, skip
         // loading and analyzing the project again.
         let root = state.project.root;
@@ -1143,29 +1450,46 @@ impl Session {
                         .all(|edit| edit.span.source.unwrap_or(root) == source_id)
             })
         }) {
-            return None;
+            return Ok(None);
+        }
+        if cancelled() {
+            return Err(request_cancelled());
         }
         let overlays: BTreeMap<PathBuf, String> = self
             .buffers
             .iter()
             .map(|(path, buffer)| (path.clone(), buffer.text.clone()))
             .collect();
-        let mut project = Project::load_for_editor(directory, &overlays).ok()?;
+        let Ok(mut project) = Project::load_for_editor(directory, &overlays) else {
+            return Ok(None);
+        };
         let path = &state.project.sources[source_id].path;
-        let index = project
+        let Some(index) = project
             .sources
             .iter()
-            .position(|source| source.path == *path)?;
+            .position(|source| source.path == *path)
+        else {
+            return Ok(None);
+        };
         let options = crate::fix::Options {
             threshold: crate::fix::Threshold::Certain,
             scope: crate::fix::Scope::File(index),
             only_codes: None,
         };
-        let report = crate::fix::run(&mut project, &options, &mut |project| {
-            crate::fix::analyze_project(project, false)
-        })
-        .ok()?;
-        let change = report.files.iter().find(|change| change.source == index)?;
+        let Ok(report) = crate::fix::run(
+            &mut project,
+            &options,
+            &mut |project| crate::fix::analyze_project(project, false),
+            cancelled,
+        ) else {
+            return Ok(None);
+        };
+        if report.stop == crate::fix::Stop::Cancelled {
+            return Err(request_cancelled());
+        }
+        let Some(change) = report.files.iter().find(|change| change.source == index) else {
+            return Ok(None);
+        };
         let mapper = PositionMapper::new(&change.original, self.encoding);
         let edits: Vec<Value> = match crate::diff::line_edits(&change.original, &change.fixed) {
             Some(edits) => edits
@@ -1179,11 +1503,14 @@ impl Session {
                 "newText": change.fixed,
             })],
         };
-        Some(json!({
+        let Some(uri) = self.uri(path) else {
+            return Ok(None);
+        };
+        Ok(Some(json!({
             "title": "Fix all auto-fixable problems",
             "kind": FIX_ALL,
-            "edit": {"changes": {self.uri(path)?: edits}},
-        }))
+            "edit": {"changes": {uri: edits}},
+        })))
     }
 
     /// The quick fixes of the diagnostics in the requested range.
@@ -1193,6 +1520,7 @@ impl Session {
         state: &ProjectState,
         source_id: usize,
         params: &Value,
+        cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<Value>, (i64, String)> {
         let source = &state.project.sources[source_id];
         let mapper = &state.mappers[source_id];
@@ -1214,6 +1542,9 @@ impl Session {
                 continue;
             }
             for fix in &diagnostic.fixes {
+                if cancelled() {
+                    return Err(request_cancelled());
+                }
                 let Ok(edit) = self.fix_edit(directory, state, diagnostic, fix) else {
                     continue;
                 };
@@ -1334,6 +1665,11 @@ const NO_RENAMABLE_NAME: &str = "no renamable name at this position; place the c
 
 fn failed(message: impl Into<String>) -> (i64, String) {
     (-32803, message.into())
+}
+
+/// The answer to a request that the client cancelled.
+fn request_cancelled() -> (i64, String) {
+    (-32800, "request cancelled".into())
 }
 
 fn position_offset(
@@ -2921,10 +3257,404 @@ fn format_document(
     }
 }
 
+/// The most that the messages the reader holds before the main loop has handled them may count
+/// (their bodies, and `MESSAGE_COST` each): four messages of the largest size (G39). At the limit the
+/// reader waits, so the queue and the cancelled ids stay bounded while the main loop computes.
+const MAX_QUEUED_BYTES: usize = 4 * MAX_MESSAGE;
+/// What each message counts against `MAX_QUEUED_BYTES` besides its body, for its entry in the
+/// channel and the queue. By their bodies alone, empty or tiny messages would count next to nothing,
+/// and a client could pile them up without bound (Copilot review of PR #119); with it, the reader
+/// waits after about 65,536 messages, however small.
+const MESSAGE_COST: usize = 1024;
+/// How many ids the main loop keeps of the cancellations that no queued request had when they
+/// arrived (one may precede its request), and of the requests it answered last (a later
+/// cancellation of one is dropped).
+const MAX_REMEMBERED_IDS: usize = 1024;
+/// The longest id (its JSON text) that the main loop keeps among those. An id may be as long as a
+/// message, and the ids stay after their messages are handled, so the count alone would let 1024
+/// long ones hold gigabytes (Copilot review 2 of PR #119). A cancellation of a longer id that no
+/// queued request has is dropped at once, as is a late one of its answered request; one that
+/// precedes its request has no effect.
+const MAX_REMEMBERED_ID: usize = 256;
+const TEXT_SYNC: [&str; 3] = [
+    "textDocument/didOpen",
+    "textDocument/didChange",
+    "textDocument/didClose",
+];
+
 enum InputEvent {
-    Message(Result<Value, String>),
+    /// A message and what it counts against `MAX_QUEUED_BYTES`: the length of its body and
+    /// `MESSAGE_COST`.
+    Message(Result<Value, String>, usize),
     Failure(String),
     End,
+}
+
+/// What the reader thread shares with the main loop (G39 段 11).
+#[derive(Default)]
+struct Inbox {
+    state: Mutex<InboxState>,
+    handled: Condvar,
+}
+
+#[derive(Default)]
+struct InboxState {
+    /// What the messages that the reader has read and the main loop has not handled count: their
+    /// bodies and `MESSAGE_COST` each.
+    bytes: usize,
+    /// The main loop has returned.
+    closed: bool,
+    /// For each id (`Value::to_string`), how many of the `$/cancelRequest` messages that cancel it
+    /// the reader has read and the main loop has not let go of (Copilot review 3 of PR #119): one
+    /// still on its way to the queue, one of `Queue::unmatched`, or one of `Queue::held`. A request
+    /// is cancelled while its id has one. The reader records a cancellation when it reads it, so
+    /// that it takes effect at once, also for the request being computed; the main loop lets go of
+    /// exactly the ones it disposes of. Were the ids a set, letting go of one copy would forget
+    /// another that the reader read before the main loop queued it.
+    cancelled: BTreeMap<String, usize>,
+}
+
+impl Inbox {
+    /// Waits while the unhandled messages count more than `MAX_QUEUED_BYTES`; `false` once the main
+    /// loop has returned.
+    fn wait_for_room(&self) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        while state.bytes > MAX_QUEUED_BYTES && !state.closed {
+            let Ok(next) = self.handled.wait(state) else {
+                return false;
+            };
+            state = next;
+        }
+        !state.closed
+    }
+
+    /// Counts a message that the reader read; a cancellation takes effect at once, also for the
+    /// request that the main loop is computing.
+    fn received(&self, message: &Result<Value, String>, bytes: usize) {
+        if let Ok(mut state) = self.state.lock() {
+            state.bytes += bytes;
+            if let Some(id) = message.as_ref().ok().and_then(cancelled_id) {
+                *state.cancelled.entry(id).or_default() += 1;
+            }
+        }
+    }
+
+    /// Lets go of `count` cancellations of `id` that the main loop has disposed of.
+    fn release(&self, id: &str, count: usize) {
+        if count == 0 {
+            return;
+        }
+        if let Ok(mut state) = self.state.lock()
+            && let Some(held) = state.cancelled.get_mut(id)
+        {
+            *held = held.saturating_sub(count);
+            if *held == 0 {
+                state.cancelled.remove(id);
+            }
+        }
+    }
+
+    fn handled(&self, bytes: usize) {
+        if let Ok(mut state) = self.state.lock() {
+            state.bytes = state.bytes.saturating_sub(bytes);
+        }
+        self.handled.notify_all();
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+        }
+        self.handled.notify_all();
+    }
+
+    fn is_cancelled(&self, id: &str) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|state| state.cancelled.contains_key(id))
+    }
+}
+
+/// The id that a `$/cancelRequest` cancels, as a key of `InboxState::cancelled`.
+fn cancelled_id(message: &Value) -> Option<String> {
+    if message["method"] != "$/cancelRequest" {
+        return None;
+    }
+    id_key(message["params"].get("id")?)
+}
+
+/// Whether a JSON-RPC id is valid: a string or an integer.
+fn valid_id(id: &Value) -> bool {
+    id.is_string() || id.is_i64() || id.is_u64()
+}
+
+/// The key of a valid JSON-RPC id (`Value::to_string`).
+fn id_key(id: &Value) -> Option<String> {
+    valid_id(id).then(|| id.to_string())
+}
+
+/// The method of a message whose envelope is valid: `jsonrpc` is `"2.0"`, `method` is a string, and
+/// the id, if there is one, is a string or an integer. The main loop answers any other message with
+/// -32600.
+fn envelope_method(message: &Value) -> Option<&str> {
+    (message.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+        && message.get("id").is_none_or(valid_id))
+    .then(|| message.get("method").and_then(Value::as_str))
+    .flatten()
+}
+
+/// A message that the main loop took from the reader, with the document that it syncs or asks
+/// about.
+struct Queued {
+    event: InputEvent,
+    document: Option<PathBuf>,
+}
+
+impl Queued {
+    fn new(event: InputEvent) -> Self {
+        let document = match &event {
+            InputEvent::Message(Ok(message), _)
+                if message["method"]
+                    .as_str()
+                    .is_some_and(|method| method.starts_with("textDocument/")) =>
+            {
+                document_path(&message["params"]).ok()
+            }
+            _ => None,
+        };
+        Self { event, document }
+    }
+
+    fn message(&self) -> Option<&Value> {
+        match &self.event {
+            InputEvent::Message(Ok(message), _) => Some(message),
+            _ => None,
+        }
+    }
+
+    fn method(&self) -> &str {
+        self.message()
+            .and_then(|message| message["method"].as_str())
+            .unwrap_or("")
+    }
+
+    /// The key of the message's id, when it is a string or an integer. The main loop answers every
+    /// message that has one through `Queue::answer`, whatever it does with the message, also when it
+    /// rejects its envelope (Copilot review 4 of PR #119).
+    fn id_key(&self) -> Option<String> {
+        id_key(self.message()?.get("id")?)
+    }
+
+    /// The key of a request's id: of a message with a valid id that is not a text sync, whatever its
+    /// envelope.
+    fn request_id(&self) -> Option<String> {
+        self.id_key()
+            .filter(|_| !TEXT_SYNC.contains(&self.method()))
+    }
+
+    /// The document that this message changes or closes.
+    fn modified(&self) -> Option<&Path> {
+        matches!(
+            self.method(),
+            "textDocument/didChange" | "textDocument/didClose"
+        )
+        .then_some(self.document.as_deref())
+        .flatten()
+    }
+
+    /// What the message counts against `MAX_QUEUED_BYTES`.
+    fn bytes(&self) -> usize {
+        match self.event {
+            InputEvent::Message(_, bytes) => bytes,
+            _ => 0,
+        }
+    }
+}
+
+/// The messages that the main loop has taken from the reader and not handled, in the order they
+/// arrived, with the ids that it keeps for cancellations (G39 spec 12, 13).
+///
+/// Each cancellation that the reader recorded in `Inbox` is let go of there exactly when the queue
+/// disposes of it: when it is dropped as it arrives, pushed out of `unmatched`, or replaced there by
+/// a later one of the same id, and when the request that `held` keeps it for is answered. So `Inbox`
+/// counts, for each id, the cancellations on their way to the queue, its entry of `unmatched`, and
+/// its count in `held` (Copilot review 3 of PR #119). The main loop answers every message with a
+/// valid id that it takes, also one whose envelope it rejects (`Queued::id_key`), so `held` keeps
+/// ids only for the queued requests and the message being answered (Copilot review 4).
+struct Queue {
+    items: VecDeque<Queued>,
+    /// How many queued requests have each id.
+    requests: BTreeMap<String, usize>,
+    /// How many queued text syncs change or close each document.
+    modifications: BTreeMap<PathBuf, usize>,
+    /// The cancellations that no queued request had, oldest first, each id once.
+    unmatched: VecDeque<String>,
+    /// How many cancellations belong to the queued requests (or the one being computed) of each id,
+    /// to be let go of when it is answered.
+    held: BTreeMap<String, usize>,
+    /// The requests answered last, oldest first, and the same as a set.
+    answered: VecDeque<String>,
+    recent: BTreeSet<String>,
+    /// How many ids `unmatched` and `answered` keep: `MAX_REMEMBERED_IDS`, fewer in tests.
+    remembered: usize,
+}
+
+impl Default for Queue {
+    fn default() -> Self {
+        Self::remembering(MAX_REMEMBERED_IDS)
+    }
+}
+
+impl Queue {
+    fn remembering(remembered: usize) -> Self {
+        Self {
+            items: VecDeque::new(),
+            requests: BTreeMap::new(),
+            modifications: BTreeMap::new(),
+            unmatched: VecDeque::new(),
+            held: BTreeMap::new(),
+            answered: VecDeque::new(),
+            recent: BTreeSet::new(),
+            remembered,
+        }
+    }
+
+    /// Takes a message from the reader. A cancellation of a queued request is kept for it; one of an
+    /// answered request is dropped; any other with an id of at most `MAX_REMEMBERED_ID` bytes is kept
+    /// for a request that may follow, the latest `remembered` of them (a repeated one at its latest
+    /// place), and belongs to that request once it arrives (later unknown ids no longer push it
+    /// out); any other is dropped. A request with the id of an answered one (ids need be unique only
+    /// among outstanding requests) makes the server forget the answered one, so that the new
+    /// request's cancellation is not dropped as a late one.
+    fn push(&mut self, event: InputEvent, inbox: &Inbox) {
+        let item = Queued::new(event);
+        if let Some(id) = item.message().and_then(cancelled_id) {
+            if self.requests.contains_key(&id) {
+                *self.held.entry(id).or_default() += 1;
+            } else if self.recent.contains(&id) || id.len() > MAX_REMEMBERED_ID {
+                inbox.release(&id, 1);
+            } else {
+                // Once, at the place of the latest (Copilot review 2 of PR #119): the older copy is
+                // let go of, and the newer one keeps the id cancelled.
+                if let Some(at) = self.unmatched.iter().position(|unmatched| *unmatched == id) {
+                    self.unmatched.remove(at);
+                    inbox.release(&id, 1);
+                }
+                self.unmatched.push_back(id);
+                if self.unmatched.len() > self.remembered
+                    && let Some(oldest) = self.unmatched.pop_front()
+                {
+                    inbox.release(&oldest, 1);
+                }
+            }
+        }
+        if let Some(id) = item.request_id() {
+            if self.recent.remove(&id) {
+                self.answered.retain(|answered| *answered != id);
+            }
+            // A cancellation that arrived before the request is now the queued request's: dropping
+            // it as the oldest unmatched one would forget it (Copilot review of PR #119).
+            if let Some(at) = self.unmatched.iter().position(|unmatched| *unmatched == id) {
+                self.unmatched.remove(at);
+                *self.held.entry(id.clone()).or_default() += 1;
+            }
+            *self.requests.entry(id).or_default() += 1;
+        }
+        if let Some(document) = item.modified() {
+            *self.modifications.entry(document.to_owned()).or_default() += 1;
+        }
+        self.items.push_back(item);
+    }
+
+    fn pop(&mut self, inbox: &Inbox) -> Option<Queued> {
+        let item = self.items.pop_front()?;
+        inbox.handled(item.bytes());
+        if let Some(id) = item.request_id() {
+            decrement(&mut self.requests, &id);
+        }
+        if let Some(document) = item.modified() {
+            decrement(&mut self.modifications, document);
+        }
+        Some(item)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Records that the request `id` is answered (unless the id is longer than `MAX_REMEMBERED_ID`)
+    /// and lets go of the cancellations kept for it; whether it had one. One that the reader has
+    /// read and the queue has not taken yet stays recorded until the queue drops it as a late one.
+    fn answer(&mut self, id: &str, inbox: &Inbox) -> bool {
+        if id.len() <= MAX_REMEMBERED_ID && self.recent.insert(id.to_owned()) {
+            self.answered.push_back(id.to_owned());
+            if self.answered.len() > self.remembered
+                && let Some(oldest) = self.answered.pop_front()
+            {
+                self.recent.remove(&oldest);
+            }
+        }
+        let cancelled = inbox.is_cancelled(id);
+        let mut held = self.held.remove(id).unwrap_or(0);
+        // A message with an id that is not a request (a text sync) does not take the cancellation
+        // that preceded it from `unmatched`; once it is answered, that one goes as well.
+        if let Some(at) = self.unmatched.iter().position(|unmatched| unmatched == id) {
+            self.unmatched.remove(at);
+            held += 1;
+        }
+        inbox.release(id, held);
+        cancelled
+    }
+
+    /// Whether a later text sync changes or closes `document`: a request about it would answer for a
+    /// text that the client has replaced (G39 D10).
+    fn modified_later(&self, document: &Path) -> bool {
+        self.modifications.contains_key(document)
+    }
+}
+
+fn decrement<K: Ord + ?Sized + ToOwned>(counts: &mut BTreeMap<K::Owned, usize>, key: &K)
+where
+    K::Owned: Ord + std::borrow::Borrow<K>,
+{
+    if let Some(count) = counts.get_mut(key) {
+        *count -= 1;
+        if *count == 0 {
+            counts.remove(key);
+        }
+    }
+}
+
+/// The reader thread: reads messages while the unhandled ones stay within `MAX_QUEUED_BYTES` and
+/// passes them on, through the end of the input or its first failure.
+fn read_input(input: impl Read, sender: &mpsc::Sender<InputEvent>, inbox: &Inbox) {
+    let mut input = io::BufReader::new(input);
+    while inbox.wait_for_room() {
+        let event = match read_frame(&mut input) {
+            Ok(Some((message, bytes))) => {
+                let cost = bytes + MESSAGE_COST;
+                inbox.received(&message, cost);
+                InputEvent::Message(message, cost)
+            }
+            Ok(None) => InputEvent::End,
+            Err(error) => InputEvent::Failure(error.to_string()),
+        };
+        let last = !matches!(event, InputEvent::Message(..));
+        if sender.send(event).is_err() || last {
+            return;
+        }
+    }
+}
+
+/// Lets the reader stop waiting for room once the main loop has returned.
+struct Closing<'a>(&'a Inbox);
+
+impl Drop for Closing<'_> {
+    fn drop(&mut self) {
+        self.0.close();
+    }
 }
 
 pub fn serve(
@@ -2932,123 +3662,115 @@ pub fn serve(
     mut output: impl Write,
     mut stderr: impl Write,
 ) -> i32 {
-    let (sender, receiver) = mpsc::sync_channel(8);
-    let cancelled = Arc::new(Mutex::new(BTreeSet::<String>::new()));
-    let reader_cancelled = Arc::clone(&cancelled);
-    std::thread::spawn(move || {
-        let mut input = io::BufReader::new(input);
-        loop {
-            match read_message(&mut input) {
-                Ok(Some(message)) => {
-                    if let Ok(message) = &message
-                        && message["method"] == "$/cancelRequest"
-                        && let Some(id) = message["params"].get("id")
-                        && (id.is_string() || id.is_i64() || id.is_u64())
-                        && let Ok(mut pending) = reader_cancelled.lock()
-                        && pending.len() < 1024
-                    {
-                        pending.insert(id.to_string());
-                    }
-                    if sender.send(InputEvent::Message(message)).is_err() {
-                        break;
-                    }
-                }
-                Ok(None) => {
-                    let _ = sender.send(InputEvent::End);
-                    break;
-                }
-                Err(error) => {
-                    let _ = sender.send(InputEvent::Failure(error.to_string()));
-                    break;
-                }
-            }
-        }
-    });
+    let (sender, receiver) = mpsc::channel();
+    let inbox = Arc::new(Inbox::default());
+    let reader = Arc::clone(&inbox);
+    std::thread::spawn(move || read_input(input, &sender, &reader));
+    let _closing = Closing(&inbox);
     let mut session = Session::default();
     // The sources that the project loads again at every change are read from memory while their
     // `stat` says that they are the same (PB06).
     let mut resident = crate::resident::ResidentState::new();
     let _resident = crate::resident::Scope::enter(&mut resident);
+    let mut queue = Queue::default();
     loop {
-        let event = if let Some(deadline) = session
-            .pending
-            .values()
-            .map(|(_, deadline)| *deadline)
-            .min()
-        {
-            receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        } else {
-            receiver
-                .recv()
-                .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
-        };
-        let message = match event {
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let due: Vec<_> = session
-                    .pending
-                    .values()
-                    .filter(|(_, deadline)| *deadline <= Instant::now())
-                    .map(|(path, _)| path.clone())
-                    .collect();
-                for path in due {
-                    if let Err(error) = session.refresh(&path, &mut output) {
+        if queue.is_empty() {
+            let event = if let Some(deadline) = session.pending.values().copied().min() {
+                receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            } else {
+                receiver
+                    .recv()
+                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+            };
+            match event {
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let due: Vec<_> = session
+                        .pending
+                        .iter()
+                        .filter(|(_, deadline)| **deadline <= Instant::now())
+                        .map(|(directory, _)| directory.clone())
+                        .collect();
+                    if let Err(error) = session.refresh_due(due, &mut output) {
                         let _ = writeln!(stderr, "LSP output failed: {error}");
                         return 1;
                     }
+                    continue;
                 }
-                continue;
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return i32::from(!session.shutdown);
+                }
+                Ok(event) => queue.push(event, &inbox),
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) | Ok(InputEvent::End) => {
-                return i32::from(!session.shutdown);
-            }
-            Ok(InputEvent::Failure(message)) => {
+        }
+        // Every message that has arrived joins the queue before the next one is handled, so that a
+        // cancellation or a newer text is seen before the request starts (G39 spec 12, 13).
+        while let Ok(event) = receiver.try_recv() {
+            queue.push(event, &inbox);
+        }
+        let Some(item) = queue.pop(&inbox) else {
+            continue;
+        };
+        let request = item.request_id().is_some();
+        // Every message with a valid id is answered through `Queue::answer` below, whichever way it
+        // takes, so that the cancellations kept for its id are let go of.
+        let key = item.id_key();
+        let Queued { event, document } = item;
+        let message = match event {
+            InputEvent::End => return i32::from(!session.shutdown),
+            InputEvent::Failure(message) => {
                 let _ = write_message(
                     &mut output,
                     &json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": message}}),
                 );
                 return 1;
             }
-            Ok(InputEvent::Message(Err(message))) => {
+            InputEvent::Message(Err(message), _) => {
                 if write_message(&mut output, &json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": message}})).is_err() { return 1; }
                 continue;
             }
-            Ok(InputEvent::Message(Ok(message))) => message,
+            InputEvent::Message(Ok(message), _) => message,
         };
-        let id = message.get("id").cloned();
-        let method = message.get("method").and_then(Value::as_str);
-        if message.get("jsonrpc") != Some(&json!("2.0"))
-            || method.is_none()
-            || id
-                .as_ref()
-                .is_some_and(|id| !id.is_string() && !id.is_i64() && !id.is_u64())
-        {
+        let Some(method) = envelope_method(&message) else {
+            // The queue took a valid id as a request's whatever the envelope, and kept the
+            // cancellations of that id for it; unanswered, they would stay after the queue is empty
+            // and cancel the next request with the id (Copilot review 4 of PR #119).
+            if let Some(key) = &key {
+                queue.answer(key, &inbox);
+            }
             if write_message(&mut output, &json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "invalid JSON-RPC request"}})).is_err() { return 1; }
             continue;
-        }
-        let method = method.unwrap();
+        };
+        let id = message.get("id").cloned();
         if method == "exit" {
             return i32::from(!session.shutdown);
         }
-        let is_cancelled = || {
-            id.as_ref().is_some_and(|id| {
-                cancelled
-                    .lock()
-                    .is_ok_and(|mut pending| pending.remove(&id.to_string()))
-            })
-        };
-        let result = if is_cancelled() {
-            Err((-32800, "request cancelled".into()))
+        // A text sync is applied and checked in order, also when a later one of its document
+        // replaces it: skipped, it would be lost if the later one were rejected, and the changes of
+        // other documents would meet the limit of the open buffers beside a text that the client
+        // has replaced (Copilot review 2 of PR #119). Applying it only schedules its root, and
+        // nothing is analyzed before a computed request or an empty queue, so a replaced text is
+        // not analyzed (G39 spec 12).
+        let cancelled = || key.as_deref().is_some_and(|key| inbox.is_cancelled(key));
+        let result = if cancelled() {
+            Err(request_cancelled())
+        } else if request
+            && document
+                .as_deref()
+                .is_some_and(|document| queue.modified_later(document))
+        {
+            // The client has sent a newer text of the document; it drops this answer (G39 D10).
+            Err((-32801, "content modified".into()))
         } else {
             session.handle(
                 method,
                 message.get("params").unwrap_or(&Value::Null),
                 &mut output,
+                &cancelled,
             )
         };
-        let result = if is_cancelled() {
-            Err((-32800, "request cancelled".into()))
-        } else {
-            result
+        let result = match &key {
+            Some(key) if queue.answer(key, &inbox) => Err(request_cancelled()),
+            _ => result,
         };
         if let Some(id) = id {
             let response = match result {
@@ -3195,6 +3917,605 @@ mod tests {
         );
     }
 
+    /// G39 段 12: a code action asks for cancellation before its first verification and stops there
+    /// with -32800, without verifying a fix or starting fix all's rounds.
+    #[test]
+    fn a_cancelled_code_action_stops_before_its_first_verification() {
+        let directory = std::env::temp_dir().join(format!(
+            "tsuzuri-lsp-cancel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let directory = directory.canonicalize().unwrap();
+        let text = "fn warn() -> i64 { let spare = 1; 2 }\n";
+        std::fs::write(directory.join("Warn.tz"), text).unwrap();
+        let uri = file_uri(&directory.join("Warn.tz")).unwrap();
+        let never = || false;
+        let mut session = Session::default();
+        let mut output = Vec::new();
+        session
+            .handle(
+                "initialize",
+                &json!({"rootUri": file_uri(&directory), "capabilities": {}}),
+                &mut output,
+                &never,
+            )
+            .unwrap();
+        session
+            .handle(
+                "textDocument/didOpen",
+                &json!({"textDocument": {"uri": uri, "languageId": "tsuzuri", "version": 1, "text": text}}),
+                &mut output,
+                &never,
+            )
+            .unwrap();
+        let params = json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 37}}, "context": {"diagnostics": []}});
+        let (root, source) = session.document(&params, &mut output).unwrap();
+        let source = source.unwrap();
+        // The fix of `spare` is in the range and `certain`: without a cancellation, both a quick fix
+        // and fix all would be verified.
+        let actions = session
+            .code_actions(&root, source, &params, &never)
+            .unwrap();
+        assert_eq!(actions.as_array().unwrap().len(), 2, "{actions}");
+        let calls = std::cell::Cell::new(0);
+        let cancelled = || {
+            calls.set(calls.get() + 1);
+            true
+        };
+        let result = session.code_actions(&root, source, &params, &cancelled);
+        assert_eq!(result.unwrap_err().0, -32800);
+        assert_eq!(calls.get(), 1);
+        // Without a quick fix in the range, fix all asks before its first round.
+        let elsewhere = json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 2}}, "context": {"diagnostics": []}});
+        calls.set(0);
+        let result = session.code_actions(&root, source, &elsewhere, &cancelled);
+        assert_eq!(result.unwrap_err().0, -32800);
+        assert_eq!(calls.get(), 1);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// Copilot review of PR #119: a cancellation that arrives before its request belongs to the
+    /// request once the request is queued, so the cancellations of unknown ids that follow cannot
+    /// push it out of the ones kept for a request that may follow.
+    #[test]
+    fn a_cancellation_before_its_request_survives_later_unknown_ones() {
+        let inbox = Inbox::default();
+        let mut queue = Queue::default();
+        // As the reader does: count and record a message, then pass it on.
+        let mut arrive = |message: Value| {
+            let message = Ok(message);
+            inbox.received(&message, 1);
+            queue.push(InputEvent::Message(message, 1), &inbox);
+        };
+        arrive(json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": 5}}));
+        arrive(
+            json!({"jsonrpc": "2.0", "id": 5, "method": "workspace/symbol", "params": {"query": ""}}),
+        );
+        for ghost in 0..=MAX_REMEMBERED_IDS {
+            arrive(
+                json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": format!("ghost-{ghost}")}}),
+            );
+        }
+        assert!(inbox.is_cancelled("5"));
+    }
+
+    /// Passes `message` to the queue as the reader thread does: counts it and records a
+    /// cancellation, then sends it on.
+    fn arrive(inbox: &Inbox, queue: &mut Queue, message: Value) {
+        let message = Ok(message);
+        inbox.received(&message, 1);
+        queue.push(InputEvent::Message(message, 1), inbox);
+    }
+
+    fn cancel(id: Value) -> Value {
+        json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}})
+    }
+
+    fn symbol_request(id: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": "workspace/symbol", "params": {"query": ""}})
+    }
+
+    /// Copilot review 2 of PR #119: a cancellation that arrives more than once before its request is
+    /// kept once, at the place of the latest one, so the cancellations of unknown ids that follow
+    /// push it out no sooner than they would push out that latest one.
+    #[test]
+    fn a_repeated_cancellation_before_its_request_is_kept_at_its_latest_place() {
+        // Twice in a row, then unknown ids that fill the rest of the room.
+        let (inbox, mut queue) = (Inbox::default(), Queue::default());
+        arrive(&inbox, &mut queue, cancel(json!(5)));
+        arrive(&inbox, &mut queue, cancel(json!(5)));
+        for ghost in 1..MAX_REMEMBERED_IDS {
+            arrive(&inbox, &mut queue, cancel(json!(format!("ghost-{ghost}"))));
+        }
+        arrive(&inbox, &mut queue, symbol_request(json!(5)));
+        assert!(inbox.is_cancelled("5"));
+        // Once, unknown ids that fill the room, again, and one more unknown id: the second takes the
+        // newest place, so the unknown id that pushes out the first place does not forget it.
+        let (inbox, mut queue) = (Inbox::default(), Queue::default());
+        arrive(&inbox, &mut queue, cancel(json!(6)));
+        for ghost in 1..MAX_REMEMBERED_IDS {
+            arrive(&inbox, &mut queue, cancel(json!(format!("ghost-{ghost}"))));
+        }
+        arrive(&inbox, &mut queue, cancel(json!(6)));
+        arrive(&inbox, &mut queue, cancel(json!("ghost-last")));
+        arrive(&inbox, &mut queue, symbol_request(json!(6)));
+        assert!(inbox.is_cancelled("6"));
+    }
+
+    /// Copilot review 3 of PR #119: the reader records each cancellation when it reads it, before
+    /// the main loop queues it. Here it reads a whole burst first: a cancellation of 5, cancellations
+    /// of unknown ids that push the first out of the ones kept, the cancellation of 5 again, and the
+    /// request 5. Pushing out the first must not forget the second, which the reader recorded too.
+    #[test]
+    fn a_cancellation_read_again_outlives_its_pushed_out_copy() {
+        let (inbox, mut queue) = (Inbox::default(), Queue::default());
+        let burst: Vec<Value> = std::iter::once(cancel(json!(5)))
+            .chain((0..MAX_REMEMBERED_IDS).map(|ghost| cancel(json!(format!("ghost-{ghost}")))))
+            .chain([cancel(json!(5)), symbol_request(json!(5))])
+            .collect();
+        for message in &burst {
+            inbox.received(&Ok(message.clone()), 1);
+        }
+        for message in burst {
+            queue.push(InputEvent::Message(Ok(message), 1), &inbox);
+        }
+        assert!(inbox.is_cancelled("5"));
+    }
+
+    /// Copilot review 4 of PR #119: a message with a valid id but an invalid envelope (no `jsonrpc`,
+    /// another version, no `method`, a `method` that is not a string) is queued as a request, so a
+    /// cancellation of its id that precedes or follows it is kept for it. Answering it with -32600
+    /// lets go of that cancellation: kept, it would never be let go of (one id more for each such
+    /// message, after the queue is empty), and it cancelled the next valid request with the same id.
+    #[test]
+    fn a_malformed_request_lets_go_of_its_cancellations() {
+        let messages = [
+            cancel(json!(5)),
+            json!({"id": 5, "method": "workspace/symbol", "params": {"query": ""}}),
+            symbol_request(json!(5)),
+            json!({"jsonrpc": "2.0", "id": 6, "result": null}),
+            cancel(json!(6)),
+            symbol_request(json!(6)),
+            json!({"jsonrpc": "2.0", "id": "seven", "method": 7}),
+            cancel(json!("seven")),
+            symbol_request(json!("seven")),
+            cancel(json!(8)),
+            json!({"jsonrpc": "1.0", "id": 8, "method": "workspace/symbol"}),
+            symbol_request(json!(8)),
+        ];
+        let mut input = Vec::new();
+        for message in &messages {
+            write_message(&mut input, message).unwrap();
+        }
+        let (mut output, mut stderr) = (Vec::new(), Vec::new());
+        serve(Cursor::new(input), &mut output, &mut stderr);
+        let mut output = Cursor::new(output);
+        let mut answers = BTreeMap::new();
+        let mut invalid = 0;
+        while let Some(message) = read_message(&mut output).unwrap() {
+            let message = message.unwrap();
+            match &message["id"] {
+                Value::Null if message["error"]["code"] == -32600 => invalid += 1,
+                Value::Null => {}
+                id => {
+                    answers.insert(id.to_string(), message["error"]["code"].clone());
+                }
+            }
+        }
+        assert_eq!(invalid, 4, "{answers:?}");
+        // Before `initialize`, a request that is not cancelled is answered with -32002.
+        for id in ["5", "6", "\"seven\"", "8"] {
+            assert_eq!(answers.get(id), Some(&json!(-32002)), "{id}: {answers:?}");
+        }
+    }
+
+    /// The reference for `cancellations_agree_with_a_reference_model_in_any_interleaving`: the main
+    /// loop alone keeps the cancellations, by the rules of `Queue::push` (G39 spec 13 and the
+    /// deviations 1 and 11), and the request being computed is cancelled as well by one that the
+    /// reader has read and the queue has not taken yet (it can only follow the request). A message
+    /// with a valid id that is not a text sync is a request whatever its envelope, and answering a
+    /// message with a valid id (a rejected one and a text sync too) lets go of every cancellation
+    /// kept for that id (Copilot review 4 of PR #119).
+    struct CancelModel {
+        remembered: usize,
+        /// The cancellations kept for a request that may follow, oldest first, each id once.
+        unmatched: VecDeque<String>,
+        /// How many queued requests have each id.
+        queued: BTreeMap<String, usize>,
+        /// The ids of the queued requests (and of the one being computed) that a cancellation was
+        /// kept for.
+        cancelled: BTreeSet<String>,
+        /// The requests answered last, oldest first.
+        answered: VecDeque<String>,
+    }
+
+    impl CancelModel {
+        fn cancel(&mut self, id: &str) {
+            if self.queued.contains_key(id) {
+                self.cancelled.insert(id.to_owned());
+            } else if id.len() <= MAX_REMEMBERED_ID
+                && !self.answered.iter().any(|answered| answered == id)
+            {
+                self.unmatched.retain(|unmatched| unmatched != id);
+                self.unmatched.push_back(id.to_owned());
+                if self.unmatched.len() > self.remembered {
+                    self.unmatched.pop_front();
+                }
+            }
+        }
+
+        fn request(&mut self, id: &str) {
+            self.answered.retain(|answered| answered != id);
+            if self.unmatched.iter().any(|unmatched| unmatched == id) {
+                self.unmatched.retain(|unmatched| unmatched != id);
+                self.cancelled.insert(id.to_owned());
+            }
+            *self.queued.entry(id.to_owned()).or_default() += 1;
+        }
+
+        /// Whether the message `id` that was taken is cancelled; `arriving` says whether the reader
+        /// has read a cancellation of `id` that the queue has not taken.
+        fn answer(&mut self, id: &str, arriving: bool) -> bool {
+            let cancelled = self.cancelled.remove(id) || arriving;
+            self.unmatched.retain(|unmatched| unmatched != id);
+            if id.len() <= MAX_REMEMBERED_ID && !self.answered.iter().any(|answered| answered == id)
+            {
+                self.answered.push_back(id.to_owned());
+                if self.answered.len() > self.remembered {
+                    self.answered.pop_front();
+                }
+            }
+            cancelled
+        }
+    }
+
+    /// The messages of `cancellations_agree_with_a_reference_model_in_any_interleaving`, one for
+    /// each way through `serve` that a message with an id or a cancellation can take.
+    #[derive(Clone, Copy, Debug)]
+    enum Kind {
+        /// `$/cancelRequest`.
+        Cancel,
+        /// `$/cancelRequest` without `jsonrpc`: rejected with -32600, it cancels all the same.
+        BareCancel,
+        /// `$/cancelRequest` with an id of its own: it cancels, and it is computed as a request.
+        CancelWithId,
+        /// A request: computed and answered.
+        Request,
+        /// Requests rejected with -32600 and answered: without `jsonrpc`, a response (no
+        /// `method`), and a request whose `method` is a number.
+        NoVersion,
+        NoMethod,
+        NumericMethod,
+        /// A text sync with an id: applied and answered, not queued as a request.
+        SyncWithId,
+        /// Messages without an id to answer: a notification, a request whose id is `null`
+        /// (rejected with -32600), and one that is not JSON (-32700).
+        Notification,
+        NullId,
+        NotJson,
+    }
+
+    impl Kind {
+        const ALL: [Kind; 11] = [
+            Kind::Cancel,
+            Kind::BareCancel,
+            Kind::CancelWithId,
+            Kind::Request,
+            Kind::NoVersion,
+            Kind::NoMethod,
+            Kind::NumericMethod,
+            Kind::SyncWithId,
+            Kind::Notification,
+            Kind::NullId,
+            Kind::NotJson,
+        ];
+
+        fn cancels(self) -> bool {
+            matches!(self, Kind::Cancel | Kind::BareCancel | Kind::CancelWithId)
+        }
+
+        /// Whether the queue takes the message's own id as a request's.
+        fn is_request(self) -> bool {
+            matches!(
+                self,
+                Kind::CancelWithId
+                    | Kind::Request
+                    | Kind::NoVersion
+                    | Kind::NoMethod
+                    | Kind::NumericMethod
+            )
+        }
+
+        /// Whether the main loop computes the message as a request, rather than answering it at
+        /// once.
+        fn is_computed(self) -> bool {
+            matches!(self, Kind::CancelWithId | Kind::Request)
+        }
+
+        /// Whether the message has a valid id of its own, which the main loop answers.
+        fn is_answered(self) -> bool {
+            self.is_request() || matches!(self, Kind::SyncWithId)
+        }
+    }
+
+    /// Copilot reviews 3 and 4 of PR #119: the reader records each cancellation in `Inbox` when it
+    /// reads it and sends it on after; the main loop queues all that has been sent, takes one
+    /// message, and answers it as `serve` does (it computes a valid request first; it answers a
+    /// message with a valid id that it rejects or that is a text sync at once), while the reader
+    /// goes on. In any interleaving of those steps, each computed request is cancelled exactly when
+    /// `CancelModel` says so, and after every step `Inbox` counts, for each id, the cancellations on
+    /// their way to the queue, its entry of `unmatched` and its count in `held`; `held` keeps
+    /// nothing but the ids of queued requests and of the message being answered; and the ids kept
+    /// for cancellations and answers are the model's. Once all is answered, the queue keeps nothing
+    /// but those bounded ids. Short memories (one or two ids), two short ids and one longer than
+    /// `MAX_REMEMBERED_ID` make pushing out, repeating, reusing and dropping ids occur within a few
+    /// messages. The interleavings are drawn from a fixed seed.
+    #[test]
+    fn cancellations_agree_with_a_reference_model_in_any_interleaving() {
+        let ids = [json!(1), json!("two"), json!("3".repeat(MAX_REMEMBERED_ID))];
+        let keys: Vec<String> = ids.iter().map(Value::to_string).collect();
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut random = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % below as u64) as usize
+        };
+        for run in 0..40_000 {
+            let remembered = 1 + random(2);
+            let reader_odds = 1 + random(3);
+            // Each message: its kind, the id that it cancels or has, and the id of its own of a
+            // `CancelWithId`. Cancellations and requests are as frequent as the other kinds together.
+            let stream: Vec<(Kind, usize, usize)> = (0..1 + random(8))
+                .map(|_| {
+                    let kind = if random(2) == 0 {
+                        [Kind::Cancel, Kind::Request][random(2)]
+                    } else {
+                        Kind::ALL[random(Kind::ALL.len())]
+                    };
+                    (kind, random(ids.len()), random(ids.len()))
+                })
+                .collect();
+            let message = |at: usize| -> Result<Value, String> {
+                let (kind, id, own) = stream[at];
+                let (id, own) = (ids[id].clone(), ids[own].clone());
+                Ok(match kind {
+                    Kind::Cancel => cancel(id),
+                    Kind::BareCancel => json!({"method": "$/cancelRequest", "params": {"id": id}}),
+                    Kind::CancelWithId => {
+                        json!({"jsonrpc": "2.0", "id": own, "method": "$/cancelRequest", "params": {"id": id}})
+                    }
+                    Kind::Request => symbol_request(id),
+                    Kind::NoVersion => {
+                        json!({"id": id, "method": "workspace/symbol", "params": {"query": ""}})
+                    }
+                    Kind::NoMethod => json!({"jsonrpc": "2.0", "id": id, "result": null}),
+                    Kind::NumericMethod => json!({"jsonrpc": "2.0", "id": id, "method": 7}),
+                    Kind::SyncWithId => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": "textDocument/didChange",
+                        "params": {"textDocument": {"uri": "file:///w/A.tz", "version": 2}, "contentChanges": []},
+                    }),
+                    Kind::Notification => json!({"jsonrpc": "2.0", "method": "initialized"}),
+                    Kind::NullId => json!({"jsonrpc": "2.0", "id": null, "method": "shutdown"}),
+                    Kind::NotJson => return Err("expected value at line 1 column 1".into()),
+                })
+            };
+            let kind_at = |at: usize| stream[at].0;
+            // The key of the id that the message `at` cancels, and of its own id.
+            let cancelled_key = |at: usize| {
+                let (kind, id, _) = stream[at];
+                kind.cancels().then(|| keys[id].clone())
+            };
+            let own_key = |at: usize| {
+                let (kind, id, own) = stream[at];
+                match kind {
+                    Kind::CancelWithId => Some(keys[own].clone()),
+                    kind if kind.is_answered() => Some(keys[id].clone()),
+                    _ => None,
+                }
+            };
+            let (inbox, mut queue) = (Inbox::default(), Queue::remembering(remembered));
+            let mut model = CancelModel {
+                remembered,
+                unmatched: VecDeque::new(),
+                queued: BTreeMap::new(),
+                cancelled: BTreeSet::new(),
+                answered: VecDeque::new(),
+            };
+            // The reader has recorded the first `read` messages and sent the first `sent`; the main
+            // loop has queued the first `queued` and taken the first `taken`. Its step: queue what
+            // was sent, take one message (`drained`), answer the message with an id that it took
+            // (`answering`: its id, whether it was cancelled when taken, whether it is computed).
+            let (mut read, mut sent, mut queued, mut taken) = (0, 0, 0, 0);
+            let mut drained = false;
+            let mut answering: Option<(String, bool, bool)> = None;
+            let mut trace = Vec::new();
+            // The cancellations of `id` that the reader has recorded and the queue has not taken.
+            let on_the_way = |id: &str, queued: usize, read: usize| {
+                (queued..read)
+                    .filter(|&at| cancelled_key(at).as_deref() == Some(id))
+                    .count()
+            };
+            loop {
+                let reader = sent < read || read < stream.len();
+                let main = answering.is_some() || drained || !queue.is_empty() || queued < sent;
+                if !reader && !main {
+                    break;
+                }
+                if reader && (!main || random(4) < reader_odds) {
+                    if sent < read {
+                        trace.push(format!("send {sent}"));
+                        sent += 1;
+                    } else {
+                        trace.push(format!("read {read}"));
+                        inbox.received(&message(read), 1);
+                        read += 1;
+                    }
+                } else if let Some((id, when_taken, computed)) = answering.take() {
+                    let cancelled = queue.answer(&id, &inbox) || when_taken;
+                    let arriving = on_the_way(&id, queued, read) > 0;
+                    trace.push(format!("answer {id}: cancelled {cancelled}"));
+                    let expected = model.answer(&id, arriving);
+                    if computed {
+                        assert_eq!(cancelled, expected, "run {run}, {stream:?}, {trace:?}");
+                    }
+                } else if drained {
+                    drained = false;
+                    let item = queue.pop(&inbox).expect("a drained queue has a message");
+                    let kind = kind_at(taken);
+                    // As `serve` decides: a valid request is computed, and any other message with a
+                    // valid id is answered at once.
+                    let computed = item.request_id().is_some()
+                        && item.message().and_then(envelope_method).is_some();
+                    assert_eq!(item.id_key(), own_key(taken), "run {run}, {trace:?}");
+                    assert_eq!(computed, kind.is_computed(), "run {run}, {kind:?}");
+                    if kind.is_request() {
+                        decrement(&mut model.queued, own_key(taken).unwrap().as_str());
+                    }
+                    if let Some(id) = item.id_key() {
+                        trace.push(format!("take {kind:?} {id}"));
+                        answering = Some((id.clone(), inbox.is_cancelled(&id), computed));
+                    } else {
+                        trace.push(format!("take {kind:?}"));
+                    }
+                    taken += 1;
+                } else {
+                    trace.push(format!("queue {queued}..{sent}"));
+                    for at in queued..sent {
+                        queue.push(InputEvent::Message(message(at), 1), &inbox);
+                        if let Some(id) = cancelled_key(at) {
+                            model.cancel(&id);
+                        }
+                        if kind_at(at).is_request() {
+                            model.request(&own_key(at).unwrap());
+                        }
+                    }
+                    queued = sent;
+                    drained = true;
+                }
+                let counted = inbox.state.lock().unwrap().cancelled.clone();
+                for id in &keys {
+                    let kept = on_the_way(id, queued, read)
+                        + usize::from(queue.unmatched.contains(id))
+                        + queue.held.get(id).copied().unwrap_or(0);
+                    let count = counted.get(id).copied().unwrap_or(0);
+                    assert_eq!(count, kept, "run {run}, {id}, {stream:?}, {trace:?}");
+                }
+                for id in queue.held.keys() {
+                    assert!(
+                        queue.requests.contains_key(id)
+                            || answering
+                                .as_ref()
+                                .is_some_and(|(answering, ..)| answering == id),
+                        "run {run}, {id} is held for no request, {stream:?}, {trace:?}"
+                    );
+                }
+                assert_eq!(queue.unmatched, model.unmatched, "run {run}, {trace:?}");
+                assert_eq!(queue.answered, model.answered, "run {run}, {trace:?}");
+            }
+            // Drained and answered: nothing is kept for a request, and every id still counted is a
+            // cancellation kept for a request that may follow.
+            assert!(
+                queue.held.is_empty() && queue.requests.is_empty(),
+                "run {run}"
+            );
+            assert!(
+                model.cancelled.is_empty() && model.queued.is_empty(),
+                "run {run}"
+            );
+            let state = inbox.state.lock().unwrap();
+            assert_eq!(state.bytes, 0, "run {run}");
+            let unmatched: BTreeMap<String, usize> =
+                queue.unmatched.iter().map(|id| (id.clone(), 1)).collect();
+            assert_eq!(
+                state.cancelled, unmatched,
+                "run {run}, {stream:?}, {trace:?}"
+            );
+            assert_eq!(queue.recent.len(), queue.answered.len(), "run {run}");
+        }
+    }
+
+    /// Copilot review 2 of PR #119: an id may be as long as a message, so the ids that the main loop
+    /// keeps after their requests are answered, or for a request that may follow, are bounded by
+    /// their length as well as by their count: long ones are not kept at all. Short ones still are.
+    #[test]
+    fn long_ids_are_not_remembered() {
+        let (inbox, mut queue) = (Inbox::default(), Queue::default());
+        let long = |n: usize| json!(format!("{n:0>64000}"));
+        for n in 0..64 {
+            // As the main loop does: take the request, then answer it.
+            arrive(&inbox, &mut queue, symbol_request(long(n)));
+            let id = queue.pop(&inbox).unwrap().request_id().unwrap();
+            queue.answer(&id, &inbox);
+            // A late cancellation of it, and one of an id that no request has.
+            arrive(&inbox, &mut queue, cancel(long(n)));
+            arrive(&inbox, &mut queue, cancel(long(1000 + n)));
+            while queue.pop(&inbox).is_some() {}
+        }
+        let kept: usize = queue
+            .answered
+            .iter()
+            .chain(&queue.recent)
+            .chain(&queue.unmatched)
+            .chain(inbox.state.lock().unwrap().cancelled.keys())
+            .map(String::len)
+            .sum();
+        assert_eq!(kept, 0);
+        // A late cancellation of an answered request with a short id is dropped, and a cancellation
+        // that precedes its request with a short id belongs to it.
+        arrive(&inbox, &mut queue, symbol_request(json!(7)));
+        let id = queue.pop(&inbox).unwrap().request_id().unwrap();
+        queue.answer(&id, &inbox);
+        arrive(&inbox, &mut queue, cancel(json!(7)));
+        queue.pop(&inbox);
+        assert!(!inbox.is_cancelled("7"));
+        assert!(queue.recent.contains("7"));
+        arrive(&inbox, &mut queue, cancel(json!(8)));
+        arrive(&inbox, &mut queue, symbol_request(json!(8)));
+        assert!(inbox.is_cancelled("8"));
+    }
+
+    /// Copilot review of PR #119: an empty message costs nothing by its body, but it counts against
+    /// the reader's limit all the same, so a stream of them makes the reader wait as larger ones do.
+    #[test]
+    fn empty_messages_count_against_the_readers_limit() {
+        let frames = 100_000;
+        let input = Cursor::new(b"Content-Length: 0\r\n\r\n".repeat(frames));
+        let inbox = Arc::new(Inbox::default());
+        let (sender, receiver) = mpsc::channel();
+        let reader = {
+            let inbox = Arc::clone(&inbox);
+            std::thread::spawn(move || read_input(input, &sender, &inbox))
+        };
+        let mut read = 0;
+        while inbox.state.lock().unwrap().bytes <= MAX_QUEUED_BYTES {
+            match receiver.recv() {
+                Ok(InputEvent::Message(Err(_), _)) => read += 1,
+                Ok(InputEvent::Message(Ok(message), _)) => panic!("{message}"),
+                Ok(InputEvent::Failure(failure)) => panic!("{failure}"),
+                Ok(InputEvent::End) | Err(_) => {
+                    panic!("the reader read all {read} empty messages without waiting")
+                }
+            }
+        }
+        // The reader waits for room before it reads the next message; closing ends its wait.
+        inbox.close();
+        reader.join().unwrap();
+        let rest: Vec<_> = receiver.try_iter().collect();
+        assert!(
+            rest.iter()
+                .all(|event| matches!(event, InputEvent::Message(Err(_), _)))
+        );
+        assert!(read + rest.len() < frames, "{}", read + rest.len());
+    }
+
     #[test]
     fn positions_preserve_utf8_utf16_crlf_and_eof() {
         let text = "a\u{65e5}\u{1f600}\r\nz\n";
@@ -3308,9 +4629,11 @@ mod tests {
         std::fs::write(root.join("Other.tz"), "def other :: i64 = 1\n").unwrap();
         let path = root.join("Main.tz");
         let mut session = Session::default();
-        session.roots.push(root.clone());
+        session
+            .client_roots
+            .push(ClientRoot::new(&file_uri(&root).unwrap()).unwrap());
         let loaded = |session: &mut Session| {
-            session.refresh(&path, &mut Vec::new()).unwrap();
+            session.refresh(&root, &mut Vec::new()).unwrap();
             session.projects[&root]
                 .project
                 .sources

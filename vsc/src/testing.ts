@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 import { realpath, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { excludedPattern, exists, jsonLines, lldbLaunch, plainPath, rootSpelling, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from './core';
+import { directoryExists, excludedPattern, exists, jsonLines, lldbLaunch, plainPath, rootSpelling, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from './core';
 import { runCompiler } from './toolchain';
-import { formatters, projectFor, reportError, RunStart } from './workflow';
+import { directoryRoot, documentHasProject, formatters, missingProject, projectFor, projectRootFor, projectRoots, reportError, ResourceRoot, RunStart } from './workflow';
 
 interface TestCase {
 	index: number;
@@ -55,6 +55,10 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 				if (result.code !== 0) { throw new DiscoveryError(result.stderr); }
 				const records = jsonLines(result.stdout);
 				const real = await realpath(root).catch(() => root);
+				// A re-rooting may have removed the root, and added it back as a new item, while the compiler ran (G40 D4):
+				// the results, like a failure, go to the root's current item, and a root that is gone records nothing.
+				const current = roots.get(root);
+				if (!current) { return; }
 				const revision = createHash('sha256').update(result.stdout).digest('hex').slice(0, 16);
 				const files = new Map<string, vscode.TestItem>();
 				for (const [id, data] of cases) { if (data.root === root) { cases.delete(id); } }
@@ -77,10 +81,11 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 					file.children.add(item);
 					cases.set(id, { root, index: testCase.index });
 				}
-				project.children.replace([...files.values()]);
-				project.error = undefined;
+				current.children.replace([...files.values()]);
+				current.error = undefined;
 			} catch (error) {
-				project.error = String(error);
+				const current = roots.get(root);
+				if (current) { current.error = String(error); }
 				throw error;
 			} finally { project.busy = false; }
 		})();
@@ -98,25 +103,81 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		workflow.track(root);
 		// A discovery that started before the run's saveAll may have read older files.
 		await refreshes.get(root)?.catch(() => undefined);
+		// A root that stopped being one meanwhile (G40 D4), here or while an earlier root ran, has nothing to run;
+		// discovering it would add it back.
+		if (!roots.has(root)) { return; }
 		try { await discover(root, signal); } catch (error) {
 			if (error instanceof DiscoveryError) { await publishDiagnostics(root, error.stderr, start); }
 			throw error;
 		}
 	}
 
-	async function refreshRoots() {
+	/**
+	 * The roots of the workspace folders and of the open documents, except a document left open in a folder that was
+	 * deleted or moved, whose root would be a directory that does not exist or one above the deleted folder (G40 D4).
+	 */
+	async function usedRoots(): Promise<Set<string>> {
+		const used = new Set<string>();
 		for (const folder of vscode.workspace.workspaceFolders ?? []) {
 			if (await exists(path.join(folder.uri.fsPath, 'Main.tz')) || await exists(path.join(folder.uri.fsPath, 'Tsuzuri.toml'))
 				|| vscode.workspace.getConfiguration('tsuzuri', folder.uri).get<string>('projectPath')) {
-				addProject(await projectFor(folder.uri));
+				used.add(await projectFor(folder.uri));
 			} else {
 				const sources = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '*.{tz,tc,tt}'), excludedPattern, 1);
-				if (sources.length) { addProject(folder.uri.fsPath); }
+				if (sources.length) { used.add(folder.uri.fsPath); }
 			}
 		}
 		for (const document of vscode.workspace.textDocuments) {
-			if (document.languageId === 'tsuzuri' && document.uri.scheme === 'file') { addProject(await projectFor(document.uri)); }
+			if (document.languageId === 'tsuzuri' && document.uri.scheme === 'file') {
+				const found = await projectRootFor(document.uri);
+				if (await documentHasProject(document.uri, found)) { used.add(found.root); }
+			}
 		}
+		return used;
+	}
+
+	/**
+	 * Adds the roots that are used. A lookup that a change cleared the cache during is read again, and the roots are added
+	 * in the same task as the last check, so that a root read from older files does not come back after a re-rooting
+	 * removed it (G40 D4).
+	 */
+	async function refreshRoots() {
+		await projectRoots.settled(usedRoots, used => { for (const root of used) { addProject(root); } });
+	}
+
+	/**
+	 * Calls `use` with the root of the open document `uri` and whether it has a project (`documentHasProject`), in the same
+	 * task as the last check: the lookup is read again when a change cleared the cache meanwhile (G40 D4).
+	 */
+	function documentRoot<R>(uri: vscode.Uri, use: (found: ResourceRoot, readable: boolean) => R) {
+		return projectRoots.settled(async () => {
+			const found = await projectRootFor(uri);
+			return { found, readable: await documentHasProject(uri, found) };
+		}, ({ found, readable }) => use(found, readable));
+	}
+
+	function removeProject(root: string) {
+		controller.items.delete(root);
+		roots.delete(root);
+		clearTimeout(timers.get(root));
+		timers.delete(root);
+		for (const [id, data] of cases) { if (data.root === root) { cases.delete(id); } }
+	}
+
+	/**
+	 * Rebuilds the roots after files below a workspace folder were created or deleted (G40 D4): a root that neither a
+	 * workspace folder nor an open document gives, and that is no longer the root of the files directly in it or whose
+	 * folder was deleted or moved, goes, and the new roots come, both at once. The extension calls it after it clears the
+	 * cache of roots, so no root is found from old files.
+	 */
+	async function reroot() {
+		const used = await usedRoots();
+		const stale: string[] = [];
+		for (const root of [...roots.keys()]) {
+			if (!used.has(root) && (!(await directoryExists(root)) || (await directoryRoot(root)).root !== root)) { stale.push(root); }
+		}
+		stale.forEach(removeProject);
+		for (const root of used) { addProject(root); }
 	}
 
 	const changed = async (uri: vscode.Uri) => {
@@ -128,7 +189,8 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 				timers.delete(root);
 				void (async () => {
 					await refreshes.get(root)?.catch(() => undefined);
-					await discover(root);
+					// A root removed while the earlier discovery ran (G40 D4) is not discovered, which would add it back.
+					if (roots.has(root)) { await discover(root); }
 				})().catch(error => output.appendLine(String(error)));
 			}, 300));
 		} catch (error) { output.appendLine(String(error)); }
@@ -138,13 +200,7 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		new vscode.Disposable(() => { for (const timer of timers.values()) { clearTimeout(timer); } }),
 		vscode.workspace.onDidChangeWorkspaceFolders(event => {
 			for (const [root] of roots) {
-				if (event.removed.some(folder => root === folder.uri.fsPath || root.startsWith(folder.uri.fsPath + path.sep))) {
-					controller.items.delete(root);
-					roots.delete(root);
-					clearTimeout(timers.get(root));
-					timers.delete(root);
-					for (const [id, data] of cases) { if (data.root === root) { cases.delete(id); } }
-				}
+				if (event.removed.some(folder => root === folder.uri.fsPath || root.startsWith(folder.uri.fsPath + path.sep))) { removeProject(root); }
 			}
 			void refreshRoots().catch(error => output.appendLine(String(error)));
 		}),
@@ -188,16 +244,19 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 
 	/** The tests of the discovered `root` that `request` selects, without its exclusions. */
 	function selection(request: vscode.TestRunRequest, root: string): vscode.TestItem[] {
+		// A root that stopped being one while the run discovered it (G40 D4) has nothing to run.
+		const project = roots.get(root);
+		if (!project) { return []; }
 		const excluded = new Set((request.exclude ?? []).flatMap(item => leaves(item).map(leaf => leaf.id)));
 		const included = request.include ? request.include.flatMap(item => {
 			if (item.id.startsWith(`${root}#`)) {
 				if (!cases.has(item.id)) { throw new Error('Test declarations changed. Refresh Tests before selecting individual tests.'); }
 				return [item];
 			}
-			if (item.id === root) { return leaves(roots.get(root)!); }
-			const current = roots.get(root)!.children.get(item.id);
+			if (item.id === root) { return leaves(project); }
+			const current = project.children.get(item.id);
 			return current ? leaves(current) : [];
-		}) : leaves(roots.get(root)!);
+		}) : leaves(project);
 		return [...new Map(included.filter(item => !excluded.has(item.id) && cases.get(item.id)?.root === root).map(item => [item.id, item])).values()];
 	}
 
@@ -367,20 +426,30 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 	context.subscriptions.push(
 		vscode.workspace.onDidOpenTextDocument(document => {
 			if (document.languageId === 'tsuzuri' && document.uri.scheme === 'file') {
-				void projectFor(document.uri).then(addProject).catch(error => output.appendLine(String(error)));
+				// A document left open in a folder that was deleted or moved, also one deleted while the lookup ran, has no
+				// project: its root would be one above the deleted folder or a directory that does not exist (G40 D4).
+				void documentRoot(document.uri, (found, readable) => { if (readable) { addProject(found.root); } })
+					.catch(error => output.appendLine(String(error)));
 			}
 		}),
 		vscode.commands.registerCommand('tsuzuri.test', async () => {
 			const cancellation = new vscode.CancellationTokenSource();
 			try {
 				await vscode.commands.executeCommand('workbench.view.testing.focus');
-				const root = await projectFor();
-				const project = addProject(root);
+				// The root of the active file is read again when a change cleared the cache meanwhile, and an active file left
+				// open in a folder that was deleted or moved has no project to test (G40 D4). Without an active file, the root
+				// is a workspace folder's, which the cache does not decide, and reading it again would ask the user to pick
+				// the folder again.
+				const active = vscode.window.activeTextEditor?.document.uri;
+				const project = active?.scheme === 'file' ? await documentRoot(active, (found, readable) => {
+					if (!readable) { throw missingProject(active, found); }
+					return addProject(found.root);
+				}) : addProject(await projectFor());
 				return await run(new vscode.TestRunRequest([project]), cancellation.token, 0);
 			} catch (error) { reportError(error, output); return undefined; }
 			finally { cancellation.dispose(); }
 		}),
 	);
 	void refreshRoots().catch(error => output.appendLine(String(error)));
-	return { controller, discover, roots, run, debug };
+	return { controller, discover, roots, cases, run, debug, reroot };
 }

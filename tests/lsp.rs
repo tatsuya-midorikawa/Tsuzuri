@@ -457,7 +457,7 @@ fn completion_offers_fields_members_locals_and_keywords() {
             .map(|item| item["label"].as_str().unwrap().to_owned())
             .collect()
     };
-    let responses = scripted(&P1, "utf-16", |uri| {
+    let responses = stepwise(&P1, "utf-16", |uri| {
         let main = uri("Main.tz");
         let change = |version: u64, text: &str| json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": main, "version": version}, "contentChanges": [{"text": text}]}});
         vec![
@@ -662,7 +662,7 @@ fn signature_help_inside_brackets_that_an_earlier_line_opened() {
         (body(&["Steps.add(", "    ()", "    (n) "]), &add),
         ("Steps.add n)\n    Steps.one (\n".to_owned(), &one),
     ];
-    let responses = scripted(
+    let responses = stepwise(
         &[("Main.tz", primer), ("Steps.tz", steps)],
         "utf-16",
         |uri| {
@@ -737,7 +737,7 @@ fn stale_fallbacks_hide_private_declarations_of_other_modules() {
         "Secret.open ",
     ]
     .map(|tail| main.replace("= n\n", &format!("= {tail}\n")));
-    let responses = scripted(
+    let responses = stepwise(
         &[("Main.tz", main), ("Secret.tz", secret)],
         "utf-16",
         |uri| {
@@ -986,7 +986,7 @@ fn inlay_hints_show_implicit_copies() {
     use serde_json::json;
     let text = "record Bag { items: [i64] }\ndef total :: own Bag -> i64\nfn total bag =\n    let xs = bag.items\n    let ys = bag.items\n    Array.length (ref xs) + Array.length (ref ys)\ndef reuse :: own [i64] -> i64\nfn reuse a =\n    let b = a\n    let moved = [1]\n    let n = 2\n    let m = n\n    Array.length (ref a) + Array.length (ref b) + Array.length (ref moved) + m\n";
     let broken = format!("{text}fn (");
-    let responses = scripted(&[("Main.tz", text)], "utf-16", |uri| {
+    let responses = stepwise(&[("Main.tz", text)], "utf-16", |uri| {
         let request = |id: u64, range: serde_json::Value| json!({"id": id, "method": "textDocument/inlayHint", "params": {"textDocument": {"uri": uri("Main.tz")}, "range": range}});
         let whole =
             json!({"start": {"line": 0, "character": 0}, "end": {"line": 13, "character": 0}});
@@ -1677,7 +1677,7 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
     };
     let edited = |tail: &str| N_REPORT.replace("Circle.radius x + Shapes::Circle.radius x", tail);
     let mut circle = String::new();
-    let responses = scripted(&files, "utf-16", |uri| {
+    let responses = stepwise(&files, "utf-16", |uri| {
         circle = uri("Circle.tz");
         let report = uri("Report.tz");
         let change = |version: u64, text: &str| json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": report, "version": version}, "contentChanges": [{"text": text}]}});
@@ -1810,7 +1810,7 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
     ];
     let files = files.each_ref().map(|(name, text)| (*name, text.as_str()));
     let roots = report.replace("Circle.radius x", "C");
-    let responses = scripted(&files, "utf-16", |uri| {
+    let responses = stepwise(&files, "utf-16", |uri| {
         circle = uri("Circle.tz");
         let report_uri = uri("Report.tz");
         let mut at = position(&roots, "\\x -> C", "utf-16");
@@ -1849,7 +1849,7 @@ fn opt_in_matrix_module_completes_and_hovers_when_named() {
     use serde_json::json;
     let valid = "let m = Matrix.init 2 2 (\\i j -> i)\nlet n = Matrix.rows (ref m)\n";
     let incomplete = "let m = Matrix.init 2 2 (\\i j -> i)\nlet n = Matrix.";
-    let responses = scripted(&[("Main.tz", valid)], "utf-16", |uri| {
+    let responses = stepwise(&[("Main.tz", valid)], "utf-16", |uri| {
         let main = uri("Main.tz");
         vec![
             json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": position(valid, "rows", "utf-16")}}),
@@ -1947,7 +1947,7 @@ fn opt_in_view_and_tensor_modules_complete_when_named() {
         ),
     ];
     for (valid, incomplete, last_line, members) in cases {
-        let responses = scripted(&[("Main.tz", valid)], "utf-16", |uri| {
+        let responses = stepwise(&[("Main.tz", valid)], "utf-16", |uri| {
             let main = uri("Main.tz");
             vec![
                 json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": {"line": 0, "character": 4}}}),
@@ -1970,31 +1970,47 @@ fn opt_in_view_and_tensor_modules_complete_when_named() {
 /// PB08 O6: the language server loads only the opt-in std modules that the sources name. Runs
 /// `steps` on `main` alone, which names none, and with a second file whose comment names `Json` and
 /// `Matrix`, so that every analysis loads them as every analysis did before; returns the results of
-/// the requests and the last diagnostics of `Main.tz` of each, with the root written `ROOT/`.
+/// the requests and the last diagnostics of `Main.tz` of each, with the root written `ROOT/`. The
+/// steps go one at a time, each request after the response to the one before, as in `stepwise`
+/// (G39): a request followed by an edit of its document answers for the text it was sent for.
 fn opt_in_sessions(
     main: &str,
     steps: impl Fn(&dyn Fn(&str) -> String) -> Vec<serde_json::Value>,
 ) -> [(Vec<serde_json::Value>, serde_json::Value); 2] {
     let run = |files: &[(&str, &str)]| {
-        let mut root = String::new();
-        let (messages, ids) = session(files, "utf-16", |uri| {
-            root = uri("Main.tz").strip_suffix("Main.tz").unwrap().to_owned();
-            steps(uri)
-        });
+        let fixture = live::Fixture::new();
+        for (name, text) in files {
+            fixture.write(name, text);
+        }
+        let mut server = live::Server::start(&fixture.uri(""), "utf-16");
+        for (name, text) in files {
+            server.open(&fixture.uri(name), text);
+        }
+        let root = fixture
+            .uri("Main.tz")
+            .strip_suffix("Main.tz")
+            .unwrap()
+            .to_owned();
         let rooted = |value: &serde_json::Value| -> serde_json::Value {
             serde_json::from_str(&value.to_string().replace(&root, "ROOT/")).unwrap()
         };
-        let results = ids
-            .iter()
-            .map(|id| {
-                let response = messages
-                    .iter()
-                    .find(|message| message.get("id") == Some(id))
-                    .unwrap_or_else(|| panic!("no response {id}"));
-                rooted(&response["result"])
-            })
-            .collect();
-        let diagnostics = messages
+        let uri = |name: &str| fixture.uri(name);
+        let mut results = Vec::new();
+        for step in steps(&uri) {
+            match step.get("id").cloned() {
+                Some(id) => {
+                    server.send(step);
+                    let response = server.wait(
+                        |message| message.get("id") == Some(&id) && message.get("method").is_none(),
+                        &format!("the response {id}"),
+                    );
+                    results.push(rooted(&response["result"]));
+                }
+                None => server.send(step),
+            }
+        }
+        let diagnostics = server
+            .seen
             .iter()
             .rfind(|message| {
                 message["method"] == "textDocument/publishDiagnostics"
@@ -2004,6 +2020,7 @@ fn opt_in_sessions(
             })
             .map(|message| rooted(&message["params"]["diagnostics"]))
             .unwrap_or_default();
+        server.finish();
         (results, diagnostics)
     };
     [
@@ -2520,4 +2537,1292 @@ fn hover_shows_complete_effects_in_namespaces() {
         .unwrap_or_else(|| panic!("{}", responses[0]));
     assert!(hover.contains("Demo::Shapes"), "{hover}");
     assert!(hover.contains("inferred effects: trap"), "{hover}");
+}
+
+/// A server on its own thread that the test feeds one message at a time and whose output it reads
+/// as it comes, so that a test can change the disk between messages (G39). Pipelined input (messages
+/// sent without waiting for their answers) is for the tests of the server's queue only.
+mod live {
+    use serde_json::{Value, json};
+    use std::io::{self, Read, Write};
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tsuzuri::lsp::{file_uri, serve, write_message};
+
+    /// The bytes that the test sends, read by the server as they arrive.
+    struct Input {
+        receiver: mpsc::Receiver<Vec<u8>>,
+        chunk: Vec<u8>,
+        at: usize,
+    }
+
+    impl Read for Input {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            while self.at == self.chunk.len() {
+                match self.receiver.recv() {
+                    Ok(chunk) => (self.chunk, self.at) = (chunk, 0),
+                    Err(_) => return Ok(0),
+                }
+            }
+            let count = buffer.len().min(self.chunk.len() - self.at);
+            buffer[..count].copy_from_slice(&self.chunk[self.at..self.at + count]);
+            self.at += count;
+            Ok(count)
+        }
+    }
+
+    /// The server's output, handed to the test a message at a time.
+    struct Output {
+        buffer: Vec<u8>,
+        sender: mpsc::Sender<Value>,
+    }
+
+    impl Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.buffer.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            loop {
+                let Some(end) = self
+                    .buffer
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                else {
+                    return Ok(());
+                };
+                let header = std::str::from_utf8(&self.buffer[..end]).unwrap();
+                let length: usize = header
+                    .strip_prefix("Content-Length: ")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                if self.buffer.len() < end + 4 + length {
+                    return Ok(());
+                }
+                let body: Vec<u8> = self
+                    .buffer
+                    .drain(..end + 4 + length)
+                    .skip(end + 4)
+                    .collect();
+                let _ = self.sender.send(serde_json::from_slice(&body).unwrap());
+            }
+        }
+    }
+
+    pub struct Server {
+        input: Option<mpsc::Sender<Vec<u8>>>,
+        output: mpsc::Receiver<Value>,
+        thread: Option<std::thread::JoinHandle<i32>>,
+        next: u64,
+        /// Every message that the server wrote so far, in order.
+        pub seen: Vec<Value>,
+    }
+
+    impl Server {
+        /// Starts a server and initializes it with `root_uri` as the root.
+        pub fn start(root_uri: &str, encoding: &str) -> Self {
+            let capabilities = if encoding == "utf-8" {
+                json!({"general": {"positionEncodings": ["utf-8"]}})
+            } else {
+                json!({})
+            };
+            Self::start_with(json!({"rootUri": root_uri, "capabilities": capabilities}))
+        }
+
+        /// Starts a server and initializes it with the parameters `initialize`.
+        pub fn start_with(initialize: Value) -> Self {
+            let (input, receiver) = mpsc::channel();
+            let (sender, output) = mpsc::channel();
+            let thread = std::thread::spawn(move || {
+                serve(
+                    Input {
+                        receiver,
+                        chunk: Vec::new(),
+                        at: 0,
+                    },
+                    Output {
+                        buffer: Vec::new(),
+                        sender,
+                    },
+                    Vec::new(),
+                )
+            });
+            let mut server = Self {
+                input: Some(input),
+                output,
+                thread: Some(thread),
+                // Above the small ids that the tests' own steps use.
+                next: 1000,
+                seen: Vec::new(),
+            };
+            let response = server.request("initialize", initialize);
+            assert!(response.get("result").is_some(), "{response}");
+            server
+        }
+
+        /// Sends one message without waiting for anything.
+        pub fn send(&mut self, mut message: Value) {
+            message["jsonrpc"] = json!("2.0");
+            let mut bytes = Vec::new();
+            write_message(&mut bytes, &message).unwrap();
+            self.input.as_ref().unwrap().send(bytes).unwrap();
+        }
+
+        pub fn notify(&mut self, method: &str, params: Value) {
+            self.send(json!({"method": method, "params": params}));
+        }
+
+        pub fn open(&mut self, uri: &str, text: &str) {
+            self.notify(
+                "textDocument/didOpen",
+                json!({"textDocument": {"uri": uri, "languageId": "tsuzuri", "version": 1, "text": text}}),
+            );
+        }
+
+        pub fn change(&mut self, uri: &str, version: i64, text: &str) {
+            self.notify(
+                "textDocument/didChange",
+                json!({"textDocument": {"uri": uri, "version": version}, "contentChanges": [{"text": text}]}),
+            );
+        }
+
+        /// A fresh request id.
+        pub fn id(&mut self) -> u64 {
+            self.next += 1;
+            self.next
+        }
+
+        /// Sends a request and waits for its response.
+        pub fn request(&mut self, method: &str, params: Value) -> Value {
+            let id = self.id();
+            self.send(json!({"id": id, "method": method, "params": params}));
+            self.response(id)
+        }
+
+        /// Waits for the response to the request `id`.
+        pub fn response(&mut self, id: u64) -> Value {
+            self.wait(
+                |message| message.get("id") == Some(&json!(id)) && message.get("method").is_none(),
+                &format!("the response {id}"),
+            )
+        }
+
+        /// The first message from `self.seen` on that satisfies `predicate`, waiting for it.
+        pub fn wait(&mut self, predicate: impl Fn(&Value) -> bool, what: &str) -> Value {
+            if let Some(found) = self.seen.iter().find(|message| predicate(message)) {
+                return found.clone();
+            }
+            loop {
+                let message = self
+                    .output
+                    .recv_timeout(Duration::from_secs(120))
+                    .unwrap_or_else(|_| panic!("no {what}; received {:#?}", self.seen));
+                self.seen.push(message.clone());
+                if predicate(&message) {
+                    return message;
+                }
+            }
+        }
+
+        /// The diagnostics of every `publishDiagnostics` for `uri` so far, in order.
+        pub fn published(&self, uri: &str) -> Vec<Value> {
+            self.seen
+                .iter()
+                .filter(|message| {
+                    message["method"] == "textDocument/publishDiagnostics"
+                        && message["params"]["uri"] == uri
+                })
+                .map(|message| message["params"]["diagnostics"].clone())
+                .collect()
+        }
+
+        /// The codes of the last diagnostics published for `uri`.
+        pub fn codes(&self, uri: &str) -> Vec<String> {
+            let published = self.published(uri);
+            let last = published
+                .last()
+                .unwrap_or_else(|| panic!("nothing published for {uri}: {:#?}", self.seen));
+            last.as_array()
+                .unwrap()
+                .iter()
+                .map(|diagnostic| diagnostic["code"].as_str().unwrap().to_owned())
+                .collect()
+        }
+
+        /// Makes the server analyze every root it has scheduled and waits until it has
+        /// (`workspace/symbol` refreshes the pending roots first).
+        pub fn settle(&mut self) {
+            let response = self.request("workspace/symbol", json!({"query": ""}));
+            assert!(response.get("result").is_some(), "{response}");
+        }
+
+        /// Shuts the server down and checks that it exits with 0.
+        pub fn finish(mut self) {
+            let response = self.request("shutdown", Value::Null);
+            assert!(response["result"].is_null(), "{response}");
+            self.notify("exit", Value::Null);
+            self.input.take();
+            assert_eq!(self.thread.take().unwrap().join().unwrap(), 0);
+        }
+    }
+
+    impl Drop for Server {
+        fn drop(&mut self) {
+            // A failed test must not leave the server's thread reading forever.
+            self.input.take();
+        }
+    }
+
+    /// A temporary directory, canonicalized, that holds a test's roots and dependencies.
+    pub struct Fixture {
+        pub base: PathBuf,
+    }
+
+    impl Fixture {
+        pub fn new() -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static FIXTURES: AtomicUsize = AtomicUsize::new(0);
+            let base = std::env::temp_dir().join(format!(
+                "tsuzuri-lsp-live-{}-{}-{}",
+                std::process::id(),
+                FIXTURES.fetch_add(1, Ordering::Relaxed),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&base).unwrap();
+            Self {
+                base: base.canonicalize().unwrap(),
+            }
+        }
+
+        pub fn path(&self, name: &str) -> PathBuf {
+            if name.is_empty() {
+                self.base.clone()
+            } else {
+                self.base.join(name)
+            }
+        }
+
+        pub fn write(&self, name: &str, text: &str) {
+            let path = self.path(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+
+        pub fn remove(&self, name: &str) {
+            let path = self.path(name);
+            if path.is_dir() {
+                std::fs::remove_dir_all(path).unwrap();
+            } else {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+
+        pub fn rename(&self, from: &str, to: &str) {
+            std::fs::rename(self.path(from), self.path(to)).unwrap();
+        }
+
+        /// The URI of `name` under the canonical base.
+        pub fn uri(&self, name: &str) -> String {
+            file_uri(&self.path(name)).unwrap()
+        }
+
+        /// The URI of `name` under another spelling of the base (a symbolic link to it).
+        pub fn uri_under(&self, base: &Path, name: &str) -> String {
+            file_uri(&if name.is_empty() {
+                base.to_owned()
+            } else {
+                base.join(name)
+            })
+            .unwrap()
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+}
+
+/// Runs `steps` as `scripted` does, but sends one message at a time and waits for each request's
+/// response before the next message (G39): a request followed by an edit of its document answers
+/// for the text it was sent for.
+fn stepwise(
+    files: &[(&str, &str)],
+    encoding: &str,
+    steps: impl FnOnce(&dyn Fn(&str) -> String) -> Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let fixture = live::Fixture::new();
+    for (name, text) in files {
+        fixture.write(name, text);
+    }
+    let mut server = live::Server::start(&fixture.uri(""), encoding);
+    for (name, text) in files {
+        server.open(&fixture.uri(name), text);
+    }
+    let uri = |name: &str| fixture.uri(name);
+    let mut responses = Vec::new();
+    for step in steps(&uri) {
+        match step.get("id").cloned() {
+            Some(id) => {
+                server.send(step);
+                responses.push(server.wait(
+                    |message| message.get("id") == Some(&id) && message.get("method").is_none(),
+                    &format!("the response {id}"),
+                ));
+            }
+            None => server.send(step),
+        }
+    }
+    server.finish();
+    responses
+}
+
+/// G39 段 6: a file that leaves the project (removed, renamed, or in a removed folder) gets an empty
+/// list at the URI that its diagnostics were sent to.
+#[test]
+fn files_that_leave_the_project_get_an_empty_list() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("Main.tz", main);
+    fixture.write("Helper.tz", "fn offset() -> i64 { true }\n");
+    fixture.write("Old.tz", "fn old() -> i64 { true }\n");
+    fixture.write("Sub/Inner.tz", "fn inner() -> i64 { true }\n");
+    let mut server = live::Server::start(&fixture.uri(""), "utf-16");
+    server.open(&fixture.uri("Main.tz"), main);
+    server.settle();
+    for name in ["Helper.tz", "Old.tz", "Sub/Inner.tz"] {
+        assert_eq!(server.codes(&fixture.uri(name)), ["E1003"], "{name}");
+    }
+    fixture.remove("Helper.tz");
+    fixture.rename("Old.tz", "New.tz");
+    fixture.remove("Sub");
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [
+            {"uri": fixture.uri("Helper.tz"), "type": 3},
+            {"uri": fixture.uri("Old.tz"), "type": 3},
+            {"uri": fixture.uri("New.tz"), "type": 1},
+            {"uri": fixture.uri("Sub"), "type": 3},
+        ]}),
+    );
+    server.settle();
+    for name in ["Helper.tz", "Old.tz", "Sub/Inner.tz"] {
+        assert!(server.codes(&fixture.uri(name)).is_empty(), "{name}");
+    }
+    assert_eq!(server.codes(&fixture.uri("New.tz")), ["E1003"]);
+    server.finish();
+}
+
+const APP_MANIFEST: &str = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n";
+
+/// G39 段 6: a fixed manifest gets an empty list, and so do the files of a path dependency inside the
+/// root that the manifest no longer names.
+#[test]
+fn a_fixed_manifest_and_a_dropped_dependency_get_an_empty_list() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    let with_lib = format!("{APP_MANIFEST}\n[dependencies]\nlib = {{ path = \"lib\" }}\n");
+    fixture.write("Tsuzuri.toml", &with_lib);
+    fixture.write("Main.tz", main);
+    fixture.write(
+        "lib/Tsuzuri.toml",
+        "[package]\nname = \"lib\"\nversion = \"0.1.0\"\n",
+    );
+    fixture.write("lib/Calc.tz", "fn calc() -> i64 { true }\n");
+    let mut server = live::Server::start(&fixture.uri(""), "utf-16");
+    server.open(&fixture.uri("Main.tz"), main);
+    server.settle();
+    assert_eq!(server.codes(&fixture.uri("lib/Calc.tz")), ["E1003"]);
+    let changed = |server: &mut live::Server| {
+        server.notify(
+            "workspace/didChangeWatchedFiles",
+            json!({"changes": [{"uri": fixture.uri("Tsuzuri.toml"), "type": 2}]}),
+        );
+        server.settle();
+    };
+    fixture.write("Tsuzuri.toml", &format!("{with_lib}bogus\n"));
+    changed(&mut server);
+    assert_eq!(server.codes(&fixture.uri("Tsuzuri.toml")), ["E0002"]);
+    fixture.write("Tsuzuri.toml", &with_lib);
+    changed(&mut server);
+    assert!(server.codes(&fixture.uri("Tsuzuri.toml")).is_empty());
+    assert_eq!(server.codes(&fixture.uri("lib/Calc.tz")), ["E1003"]);
+    fixture.write("Tsuzuri.toml", APP_MANIFEST);
+    fixture.remove("lib");
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": fixture.uri("Tsuzuri.toml"), "type": 2}, {"uri": fixture.uri("lib"), "type": 3}]}),
+    );
+    server.settle();
+    assert!(server.codes(&fixture.uri("lib/Calc.tz")).is_empty());
+    server.finish();
+}
+
+/// G39 段 7: while the project does not load, the other files' diagnostics of the last analysis are
+/// cleared, and the load error reaches a document that was opened and closed. A manifest error is at
+/// the span that the CLI reports.
+#[test]
+fn a_load_error_clears_the_other_files_and_reaches_closed_documents() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let broken = "fn value() -> i64 { true }\n";
+    let fixed = "fn value() -> i64 { 1 }\n";
+    fixture.write("Tsuzuri.toml", APP_MANIFEST);
+    fixture.write("Main.tz", broken);
+    let main = fixture.uri("Main.tz");
+    let mut server = live::Server::start(&fixture.uri(""), "utf-16");
+    server.open(&main, broken);
+    server.settle();
+    assert_eq!(server.codes(&main), ["E1003"]);
+    let manifest = format!("{APP_MANIFEST}edition = \"2027\"\nbogus\n");
+    fixture.write("Tsuzuri.toml", &manifest);
+    server.change(&main, 2, fixed);
+    server.settle();
+    assert!(server.codes(&main).is_empty());
+    assert_eq!(server.codes(&fixture.uri("Tsuzuri.toml")), ["E0002"]);
+    // The range is the span of the CLI's `--json`, in the file's text.
+    let error = tsuzuri::driver::Project::load(&fixture.base).unwrap_err();
+    let span = error.diagnostic.span;
+    assert!(span.start > 0, "{span:?}");
+    let place = |offset: usize| {
+        let prefix = &manifest[..offset];
+        json!({"line": prefix.matches('\n').count(), "character": prefix.len() - prefix.rfind('\n').map_or(0, |at| at + 1)})
+    };
+    let published = server.published(&fixture.uri("Tsuzuri.toml"));
+    assert_eq!(
+        published.last().unwrap()[0]["range"],
+        json!({"start": place(span.start), "end": place(span.end)})
+    );
+    fixture.write("Tsuzuri.toml", APP_MANIFEST);
+    // `Main.old.tz` does not load (its stem has a '.'); opened and closed, it still gets the error.
+    let old = fixture.uri("Main.old.tz");
+    fixture.write("Main.old.tz", fixed);
+    server.open(&old, fixed);
+    server.settle();
+    assert_eq!(server.codes(&old), ["E1011"]);
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": old}}),
+    );
+    server.change(&main, 3, broken);
+    server.settle();
+    assert_eq!(server.codes(&old), ["E1011"]);
+    assert!(server.codes(&main).is_empty());
+    server.finish();
+}
+
+/// G39 段 8: with every document of the root closed, a change on the disk is analyzed.
+#[test]
+fn disk_changes_are_analyzed_without_open_documents() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("Main.tz", main);
+    fixture.write("Helper.tz", "fn offset() -> i64 { true }\n");
+    let helper = fixture.uri("Helper.tz");
+    let mut server = live::Server::start(&fixture.uri(""), "utf-16");
+    server.open(&fixture.uri("Main.tz"), main);
+    server.settle();
+    assert_eq!(server.codes(&helper), ["E1003"]);
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": fixture.uri("Main.tz")}}),
+    );
+    // The close analyzes the root once more; the disk changes after that.
+    server.settle();
+    fixture.write("Helper.tz", "fn offset() -> i64 { 2 }\n");
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": helper, "type": 2}]}),
+    );
+    server.settle();
+    assert!(server.codes(&helper).is_empty());
+    server.finish();
+}
+
+/// G39 段 8・9: through a root that the client names by a symbolic link, the diagnostics of a file
+/// that is not open go to the link's spelling, and a change in a subdirectory analyzes the root, not
+/// the subdirectory.
+#[cfg(unix)]
+#[test]
+fn a_linked_root_keeps_the_clients_spelling() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("real/Main.tz", main);
+    fixture.write("real/Helper.tz", "fn offset() -> i64 { true }\n");
+    // Analyzed with `Sub` as its root, `Helper` would be unknown (E1002).
+    fixture.write("real/Sub/Util.tz", "fn util() -> i64 { Helper.offset() }\n");
+    let link = fixture.base.join("link");
+    std::os::unix::fs::symlink(fixture.path("real"), &link).unwrap();
+    let mut server = live::Server::start(&fixture.uri_under(&link, ""), "utf-16");
+    server.open(&fixture.uri_under(&link, "Main.tz"), main);
+    server.settle();
+    assert_eq!(
+        server.codes(&fixture.uri_under(&link, "Helper.tz")),
+        ["E1003"]
+    );
+    assert!(server.published(&fixture.uri("real/Helper.tz")).is_empty());
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": fixture.uri_under(&link, "Main.tz")}}),
+    );
+    server.settle();
+    fixture.write("real/Helper.tz", "fn offset() -> i64 { 2 }\n");
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": fixture.uri_under(&link, "Helper.tz"), "type": 2}, {"uri": fixture.uri_under(&link, "Sub/Util.tz"), "type": 2}]}),
+    );
+    // `workspace/symbol` lists the symbols of every analyzed root: D9 hides the diagnostics of a
+    // root analyzed by mistake (`link` itself, or `link/Sub`), but not its symbols.
+    let symbols = server.request("workspace/symbol", json!({"query": "util"}));
+    let found: Vec<_> = symbols["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{symbols}"))
+        .iter()
+        .map(|symbol| {
+            (
+                symbol["name"].as_str().unwrap().to_owned(),
+                symbol["location"]["uri"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [("util".to_owned(), fixture.uri_under(&link, "Sub/Util.tz"))]
+    );
+    assert!(
+        server
+            .codes(&fixture.uri_under(&link, "Helper.tz"))
+            .is_empty()
+    );
+    for uri in [
+        fixture.uri_under(&link, "Sub/Util.tz"),
+        fixture.uri("real/Sub/Util.tz"),
+    ] {
+        assert!(
+            server
+                .published(&uri)
+                .iter()
+                .all(|diagnostics| diagnostics == &json!([])),
+            "{uri}: {:?}",
+            server.published(&uri)
+        );
+    }
+    server.finish();
+}
+
+/// G39 段 8 (spec 9): a changed path is placed by its nearest existing ancestor directory, as
+/// `document_path` places a document, not through the file itself: a source link created in the
+/// root and pointing outside it analyzes the root, whose module discovery rejects it (E1011).
+#[cfg(unix)]
+#[test]
+fn a_link_created_in_the_root_is_placed_by_its_directory() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("app/Main.tz", main);
+    fixture.write("other/Ext.tz", "fn ext() -> i64 { 2 }\n");
+    let mut server = live::Server::start(&fixture.uri("app"), "utf-16");
+    server.open(&fixture.uri("app/Main.tz"), main);
+    server.settle();
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": fixture.uri("app/Main.tz")}}),
+    );
+    // No open document and nothing published: only the changed path can name the root.
+    server.settle();
+    std::os::unix::fs::symlink(fixture.path("other/Ext.tz"), fixture.path("app/Ext.tz")).unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": fixture.uri("app/Ext.tz"), "type": 1}]}),
+    );
+    server.settle();
+    assert_eq!(server.codes(&fixture.uri("app/Ext.tz")), ["E1011"]);
+    assert!(server.published(&fixture.uri("other/Ext.tz")).is_empty());
+    server.finish();
+}
+
+/// G39 段 9: the files of a path dependency outside the root get no analysis diagnostics; the load
+/// error of its manifest does reach the client.
+#[test]
+fn dependencies_outside_the_root_get_only_load_errors() {
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write(
+        "app/Tsuzuri.toml",
+        &format!("{APP_MANIFEST}\n[dependencies]\nlib = {{ path = \"../lib\" }}\n"),
+    );
+    fixture.write("app/Main.tz", main);
+    let lib_manifest = "[package]\nname = \"lib\"\nversion = \"0.1.0\"\n";
+    fixture.write("lib/Tsuzuri.toml", lib_manifest);
+    fixture.write("lib/Calc.tz", "fn calc() -> i64 { true }\n");
+    let app = fixture.uri("app/Main.tz");
+    let mut server = live::Server::start(&fixture.uri("app"), "utf-16");
+    server.open(&app, main);
+    server.settle();
+    assert!(server.codes(&app).is_empty());
+    assert!(
+        server.published(&fixture.uri("lib/Calc.tz")).is_empty(),
+        "{:?}",
+        server.published(&fixture.uri("lib/Calc.tz"))
+    );
+    fixture.write("lib/Tsuzuri.toml", &format!("{lib_manifest}bogus\n"));
+    server.change(&app, 2, main);
+    server.settle();
+    assert_eq!(server.codes(&fixture.uri("lib/Tsuzuri.toml")), ["E0002"]);
+    server.finish();
+}
+
+/// Copilot review of PR #119: a client root that is removed is not analyzed through its parent
+/// directory (which `Project::load_with_overlays` loads for a path that is not a directory): its
+/// diagnostics are cleared, and nothing of the directories beside it is indexed or published.
+#[test]
+fn a_removed_root_is_not_loaded_through_its_parent() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("app/Main.tz", main);
+    fixture.write("app/Helper.tz", "fn offset() -> i64 { true }\n");
+    fixture.write("other/Other.tz", "fn beside_the_root() -> i64 { 2 }\n");
+    let app = fixture.uri("app");
+    let helper = fixture.uri("app/Helper.tz");
+    let mut server = live::Server::start(&app, "utf-16");
+    server.open(&fixture.uri("app/Main.tz"), main);
+    server.settle();
+    assert_eq!(server.codes(&helper), ["E1003"]);
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": fixture.uri("app/Main.tz")}}),
+    );
+    server.settle();
+    let removed = server.seen.len();
+    fixture.remove("app");
+    // The root has diagnostics on the client, so the change analyzes it again.
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": app, "type": 3}]}),
+    );
+    let symbols = server.request("workspace/symbol", json!({"query": "beside"}));
+    assert_eq!(symbols["result"], json!([]), "{symbols}");
+    assert!(server.codes(&helper).is_empty());
+    // A load error beside the root (a source whose stem has a '.') is not published either.
+    fixture.write("Stray.old.tz", main);
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": fixture.uri("app/Main.tz"), "type": 3}]}),
+    );
+    server.settle();
+    for message in &server.seen[removed..] {
+        if message["method"] == "textDocument/publishDiagnostics" {
+            let uri = message["params"]["uri"].as_str().unwrap();
+            assert!(
+                uri.starts_with(&format!("{app}/"))
+                    && message["params"]["diagnostics"] == json!([]),
+                "{message}"
+            );
+        }
+    }
+    server.finish();
+}
+
+/// Copilot review 2 of PR #119: a client root named through a symbolic link is resolved again when a
+/// root is analyzed. Once the link is removed, the diagnostics sent at its spelling are cleared, not
+/// sent there again for the directory it pointed to; once it points elsewhere, the files at its
+/// spelling are those of the new directory.
+#[cfg(unix)]
+#[test]
+fn a_removed_or_repointed_root_link_is_resolved_again() {
+    use serde_json::json;
+    let main = "fn value() -> i64 { 1 }\n";
+    // A server whose root is `link` (to `real`), with the documents closed and an error in
+    // `link/Helper.tz` on the client.
+    let start = || {
+        let fixture = live::Fixture::new();
+        fixture.write("real/Main.tz", main);
+        fixture.write("real/Helper.tz", "fn offset() -> i64 { true }\n");
+        fixture.write("moved/Main.tz", main);
+        fixture.write("moved/Helper.tz", "fn offset() -> i64 { missing }\n");
+        let link = fixture.base.join("link");
+        std::os::unix::fs::symlink(fixture.path("real"), &link).unwrap();
+        let mut server = live::Server::start(&fixture.uri_under(&link, ""), "utf-16");
+        server.open(&fixture.uri_under(&link, "Main.tz"), main);
+        server.settle();
+        assert_eq!(
+            server.codes(&fixture.uri_under(&link, "Helper.tz")),
+            ["E1003"]
+        );
+        server.notify(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": fixture.uri_under(&link, "Main.tz")}}),
+        );
+        server.settle();
+        (fixture, link, server)
+    };
+    // Removed.
+    let (fixture, link, mut server) = start();
+    let helper = fixture.uri_under(&link, "Helper.tz");
+    std::fs::remove_file(&link).unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": fixture.uri_under(&link, ""), "type": 3}]}),
+    );
+    server.settle();
+    assert!(server.codes(&helper).is_empty());
+    assert!(server.published(&fixture.uri("real/Helper.tz")).is_empty());
+    server.finish();
+    // Pointed elsewhere. The change notification resolves the root again and schedules the new
+    // directory.
+    let (fixture, link, mut server) = start();
+    let helper = fixture.uri_under(&link, "Helper.tz");
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(fixture.path("moved"), &link).unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": helper, "type": 2}]}),
+    );
+    server.settle();
+    assert_eq!(server.codes(&helper), ["E1002"]);
+    for real in ["real/Helper.tz", "moved/Helper.tz"] {
+        assert!(server.published(&fixture.uri(real)).is_empty(), "{real}");
+    }
+    server.finish();
+}
+
+/// Copilot review 3 of PR #119: two roots are due together, and the analysis of the first finds that
+/// the second one's link is gone and drops the directory it pointed to. That directory is not then
+/// analyzed from the list of due roots taken before: it would be loaded again, its symbols indexed
+/// and its diagnostics sent outside every root that remains. (`workspace/symbol` and the debounce
+/// timer take their lists alike and refresh them through the same function.)
+#[cfg(unix)]
+#[test]
+fn a_root_dropped_by_an_earlier_analysis_is_not_analyzed() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    for (name, function) in [("a_real", "in_a"), ("b_real", "only_in_b")] {
+        let helper = format!("fn {function}() -> i64 {{ let spare = 1; 2 }}\n");
+        fixture.write(&format!("{name}/Main.tz"), main);
+        fixture.write(&format!("{name}/Helper.tz"), &helper);
+    }
+    let a_link = fixture.base.join("a_link");
+    let b_link = fixture.base.join("b_link");
+    std::os::unix::fs::symlink(fixture.path("a_real"), &a_link).unwrap();
+    std::os::unix::fs::symlink(fixture.path("b_real"), &b_link).unwrap();
+    let folders = json!([
+        {"uri": fixture.uri_under(&a_link, ""), "name": "a"},
+        {"uri": fixture.uri_under(&b_link, ""), "name": "b"},
+    ]);
+    let mut server = live::Server::start_with(
+        json!({"rootUri": null, "workspaceFolders": folders, "capabilities": {}}),
+    );
+    // `b`'s document is open at its directory's own spelling, so that it can still change once the
+    // link is gone.
+    let a_main = fixture.uri_under(&a_link, "Main.tz");
+    let b_main = fixture.uri("b_real/Main.tz");
+    server.open(&a_main, main);
+    server.open(&b_main, main);
+    server.settle();
+    let b_helper = fixture.uri_under(&b_link, "Helper.tz");
+    assert_eq!(server.codes(&b_helper), ["W1001"]);
+    // `b`'s link goes, and a change of a document in each root schedules both again, with no change
+    // notification (which resolves the roots before it schedules any).
+    std::fs::remove_file(&b_link).unwrap();
+    server.change(&a_main, 2, main);
+    server.change(&b_main, 2, main);
+    // `a_real` sorts first, and its analysis drops `b_real`, which was due as well.
+    let symbols = server.request("workspace/symbol", json!({"query": "only_in_b"}));
+    assert_eq!(symbols["result"], json!([]), "{symbols}");
+    assert!(server.codes(&b_helper).is_empty());
+    let unlinked = fixture.uri("b_real/Helper.tz");
+    assert!(server.published(&unlinked).is_empty());
+    server.finish();
+}
+
+/// Copilot review 3 of PR #119: a clean project named through a symbolic link, with its documents
+/// closed, has no diagnostics on the client, so a change notification finds a root only by the
+/// changed path. Once the link points elsewhere, that path resolves under the new directory: the
+/// notification resolves the client roots again before it places the path, so the new directory is
+/// analyzed and the old one dropped.
+#[cfg(unix)]
+#[test]
+fn a_change_under_a_repointed_clean_root_link_analyzes_the_new_directory() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("real/Main.tz", main);
+    fixture.write("real/Old.tz", "fn only_in_real() -> i64 { 2 }\n");
+    let link = fixture.base.join("link");
+    std::os::unix::fs::symlink(fixture.path("real"), &link).unwrap();
+    let mut server = live::Server::start(&fixture.uri_under(&link, ""), "utf-16");
+    let link_main = fixture.uri_under(&link, "Main.tz");
+    server.open(&link_main, main);
+    server.settle();
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": link_main}}),
+    );
+    let symbols = server.request("workspace/symbol", json!({"query": "only_in_real"}));
+    assert_eq!(symbols["result"].as_array().unwrap().len(), 1, "{symbols}");
+    let repointed = server.seen.len();
+    // The link points to `moved`, where a new file has an error.
+    fixture.write("moved/Main.tz", main);
+    fixture.write("moved/Helper.tz", "fn offset() -> i64 { true }\n");
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(fixture.path("moved"), &link).unwrap();
+    let helper = fixture.uri_under(&link, "Helper.tz");
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": helper, "type": 1}]}),
+    );
+    let symbols = server.request("workspace/symbol", json!({"query": "only_in_real"}));
+    assert_eq!(symbols["result"], json!([]), "{symbols}");
+    assert_eq!(server.codes(&helper), ["E1003"]);
+    let link_root = fixture.uri_under(&link, "");
+    for message in &server.seen[repointed..] {
+        if message["method"] == "textDocument/publishDiagnostics" {
+            let uri = message["params"]["uri"].as_str().unwrap();
+            assert!(uri.starts_with(&format!("{link_root}/")), "{message}");
+        }
+    }
+    server.finish();
+}
+
+/// Copilot review 5 of PR #119: a root link that is removed and then made again resolves again with
+/// no directory before it. With the documents closed, the change notification of the link alone
+/// places the link beside its directory (spec 9 starts from the parent directory and does not follow
+/// the link), and nothing is recorded or open: only the resolution of the root can schedule it, so
+/// its diagnostics and its symbols come back. (The file not open has a warning: a project with an
+/// error has no symbols.)
+#[cfg(unix)]
+#[test]
+fn a_root_link_made_again_is_analyzed_again() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("real/Main.tz", main);
+    fixture.write(
+        "real/Helper.tz",
+        "fn offset() -> i64 { let spare = 1; 2 }\n",
+    );
+    let link = fixture.base.join("link");
+    std::os::unix::fs::symlink(fixture.path("real"), &link).unwrap();
+    let root = fixture.uri_under(&link, "");
+    let link_main = fixture.uri_under(&link, "Main.tz");
+    let helper = fixture.uri_under(&link, "Helper.tz");
+    let mut server = live::Server::start(&root, "utf-16");
+    server.open(&link_main, main);
+    server.settle();
+    assert_eq!(server.codes(&helper), ["W1001"]);
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": link_main}}),
+    );
+    server.settle();
+    // Removed: the diagnostics at the link's spelling are cleared.
+    std::fs::remove_file(&link).unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": root, "type": 3}]}),
+    );
+    let symbols = server.request("workspace/symbol", json!({"query": "offset"}));
+    assert_eq!(symbols["result"], json!([]), "{symbols}");
+    assert!(server.codes(&helper).is_empty());
+    // Made again, and only the link itself is notified.
+    std::os::unix::fs::symlink(fixture.path("real"), &link).unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": root, "type": 1}]}),
+    );
+    server.settle();
+    assert_eq!(server.codes(&helper), ["W1001"]);
+    let symbols = server.request("workspace/symbol", json!({"query": "offset"}));
+    let found = symbols["result"].as_array().unwrap();
+    assert_eq!(found.len(), 1, "{symbols}");
+    assert_eq!(found[0]["location"]["uri"], json!(helper), "{symbols}");
+    assert!(server.published(&fixture.uri("real/Helper.tz")).is_empty());
+    server.finish();
+}
+
+/// Copilot review of PR #119: two roots of one server that depend on the same broken manifest both
+/// report its load error. When one of them drops the dependency, the error stays: the client
+/// replaces a URI's whole list, and the other root still reports it there.
+#[test]
+fn a_load_error_that_another_root_reports_stays() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    let manifest = |name: &str, dependency: bool| {
+        let mut text = format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n");
+        if dependency {
+            text.push_str("\n[dependencies]\nlib = { path = \"../lib\" }\n");
+        }
+        text
+    };
+    for name in ["one", "two"] {
+        fixture.write(&format!("{name}/Tsuzuri.toml"), &manifest(name, true));
+        fixture.write(&format!("{name}/Main.tz"), main);
+    }
+    fixture.write(
+        "lib/Tsuzuri.toml",
+        &format!("{}bogus\n", manifest("lib", false)),
+    );
+    fixture.write("lib/Calc.tz", "fn calc() -> i64 { 2 }\n");
+    let lib = fixture.uri("lib/Tsuzuri.toml");
+    let folders: Vec<_> = ["one", "two"]
+        .iter()
+        .map(|name| json!({"uri": fixture.uri(name), "name": name}))
+        .collect();
+    let mut server = live::Server::start_with(
+        json!({"rootUri": null, "workspaceFolders": folders, "capabilities": {}}),
+    );
+    for name in ["one", "two"] {
+        server.open(&fixture.uri(&format!("{name}/Main.tz")), main);
+    }
+    server.settle();
+    assert_eq!(server.codes(&lib), ["E0002"]);
+    // `two` drops the dependency. Both roots have diagnostics on the client, so both are analyzed
+    // again, `one` first: `two` would then clear the error that `one` has just reported.
+    let drop_dependency = |server: &mut live::Server, name: &str| {
+        fixture.write(&format!("{name}/Tsuzuri.toml"), &manifest(name, false));
+        server.notify(
+            "workspace/didChangeWatchedFiles",
+            json!({"changes": [{"uri": fixture.uri(&format!("{name}/Tsuzuri.toml")), "type": 2}]}),
+        );
+        server.settle();
+    };
+    drop_dependency(&mut server, "two");
+    assert_eq!(server.codes(&lib), ["E0002"]);
+    // Once no root reports it, it is cleared.
+    drop_dependency(&mut server, "one");
+    assert!(server.codes(&lib).is_empty());
+    server.finish();
+}
+
+/// Opens the files of `files` in a fresh root, one message at a time.
+fn live_session(files: &[(&str, &str)]) -> (live::Fixture, live::Server) {
+    let fixture = live::Fixture::new();
+    for (name, text) in files {
+        fixture.write(name, text);
+    }
+    let mut server = live::Server::start(&fixture.uri(""), "utf-16");
+    for (name, text) in files {
+        server.open(&fixture.uri(name), text);
+    }
+    (fixture, server)
+}
+
+/// Sends a request without waiting for its response and returns its id.
+fn ask(server: &mut live::Server, method: &str, params: serde_json::Value) -> u64 {
+    let id = server.id();
+    server.send(serde_json::json!({"id": id, "method": method, "params": params}));
+    id
+}
+
+/// G39 段 11: a request that the client cancels before the server starts it gets -32800, however many
+/// messages wait before the cancellation (the reader no longer stops at eight).
+#[test]
+fn a_request_cancelled_behind_many_messages_is_not_computed() {
+    use serde_json::json;
+    let (fixture, mut server) = live_session(&P1);
+    // The hover's refresh keeps the server busy while the rest arrives.
+    let busy = ask(
+        &mut server,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": fixture.uri("Main.tz")}, "position": position(P1_MAIN, "read (read", "utf-16")}),
+    );
+    let action = ask(
+        &mut server,
+        "textDocument/codeAction",
+        json!({"textDocument": {"uri": fixture.uri("Warn.tz")}, "range": range(0, 0, 37), "context": {"diagnostics": []}}),
+    );
+    for _ in 0..10 {
+        server.notify("initialized", json!({}));
+    }
+    server.notify("$/cancelRequest", json!({"id": action}));
+    let hovered = server.response(busy);
+    assert!(hovered.get("result").is_some(), "{hovered}");
+    let response = server.response(action);
+    assert_eq!(response["error"]["code"], -32800, "{response}");
+    server.finish();
+}
+
+/// G39 段 11: cancellations of ids that no request has do not pile up and stop later cancellations
+/// from taking effect.
+#[test]
+fn cancellations_of_unknown_ids_leave_room_for_later_ones() {
+    use serde_json::json;
+    let (fixture, mut server) = live_session(&P1);
+    let main = fixture.uri("Main.tz");
+    for ghost in 0..1100 {
+        server.notify("$/cancelRequest", json!({"id": format!("ghost-{ghost}")}));
+    }
+    server.change(&main, 2, P1_MAIN);
+    // The change makes the hover refresh first, so that it does not end before its cancellation.
+    let hover = ask(
+        &mut server,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": main}, "position": position(P1_MAIN, "read (read", "utf-16")}),
+    );
+    server.notify("$/cancelRequest", json!({"id": hover}));
+    let response = server.response(hover);
+    assert_eq!(response["error"]["code"], -32800, "{response}");
+    server.finish();
+}
+
+/// G39 段 11: JSON-RPC ids need be unique only among outstanding requests. A client that reuses the
+/// id of an answered request can cancel the new request: the server forgets the answered id when a
+/// request with it arrives, so the cancellation is not taken for a late one of the answered request.
+/// A late cancellation of the answered request (one sent while its response was on the way) that
+/// arrives just before the new request cancels neither the new request nor drops its cancellation.
+#[test]
+fn a_reused_request_id_can_be_cancelled() {
+    use serde_json::json;
+    let (fixture, mut server) = live_session(&P1);
+    let main = fixture.uri("Main.tz");
+    let hover = json!({"textDocument": {"uri": main}, "position": position(P1_MAIN, "read (read", "utf-16")});
+    for id in [7, 8, 9] {
+        server.send(json!({"id": id, "method": "textDocument/hover", "params": hover}));
+        let first = server.response(id);
+        assert!(first["result"]["contents"].is_object(), "{first}");
+    }
+    // The change makes the next hover refresh, so that the rest arrives while it is computed and
+    // joins the queue at once.
+    server.change(&main, 2, P1_MAIN);
+    let busy = ask(&mut server, "textDocument/hover", hover);
+    let symbols = |id: u64| json!({"id": id, "method": "textDocument/documentSymbol", "params": {"textDocument": {"uri": main}}});
+    // 7: reused and cancelled.
+    server.send(symbols(7));
+    server.notify("$/cancelRequest", json!({"id": 7}));
+    // 8: a late cancellation of the answered 8, then 8 reused and cancelled.
+    server.notify("$/cancelRequest", json!({"id": 8}));
+    server.send(symbols(8));
+    server.notify("$/cancelRequest", json!({"id": 8}));
+    // 9: a late cancellation of the answered 9, then 9 reused and not cancelled.
+    server.notify("$/cancelRequest", json!({"id": 9}));
+    server.send(symbols(9));
+    assert!(server.response(busy).get("result").is_some());
+    let second = |server: &mut live::Server, id: u64| {
+        server.wait(
+            |message| {
+                message.get("id") == Some(&json!(id))
+                    && message.get("method").is_none()
+                    && (message.get("error").is_some() || message["result"].is_array())
+            },
+            &format!("the response to the second request {id}"),
+        )
+    };
+    for id in [7, 8] {
+        let response = second(&mut server, id);
+        assert_eq!(response["error"]["code"], -32800, "{response}");
+    }
+    let response = second(&mut server, 9);
+    assert!(response["result"].is_array(), "{response}");
+    server.finish();
+}
+
+/// G39 段 11: a request sees every text sync that arrived before it, of any document, and none that
+/// arrived after it: the changes of a document are not merged across a request that is computed.
+#[test]
+fn a_request_sees_the_changes_that_arrived_before_it() {
+    use serde_json::json;
+    let shapes = |ty: &str| format!("def value :: {ty} = 1\n");
+    let main = "def probe :: unit -> unit = \\_ -> { let _v = Shapes.value; () }\n";
+    let first = shapes("i64");
+    let (fixture, mut server) = live_session(&[("Main.tz", main), ("Shapes.tz", &first)]);
+    let hover = json!({"textDocument": {"uri": fixture.uri("Main.tz")}, "position": position(main, "value;", "utf-16")});
+    let busy = ask(&mut server, "textDocument/hover", hover.clone());
+    server.change(&fixture.uri("Shapes.tz"), 2, &shapes("i32"));
+    let between = ask(&mut server, "textDocument/hover", hover.clone());
+    server.change(&fixture.uri("Shapes.tz"), 3, &shapes("i16"));
+    let last = ask(&mut server, "textDocument/hover", hover);
+    let detail = |server: &mut live::Server, id: u64| {
+        let response = server.response(id);
+        response["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{response}"))
+            .to_owned()
+    };
+    assert!(detail(&mut server, busy).contains("i64"));
+    let between = detail(&mut server, between);
+    assert!(
+        between.contains("i32") && !between.contains("i16"),
+        "{between}"
+    );
+    assert!(detail(&mut server, last).contains("i16"));
+    server.finish();
+}
+
+/// G39 段 11: a request about a document with a later change in the queue gets -32801, and the text
+/// between is never analyzed: its diagnostics are not sent, those of the last text once.
+#[test]
+fn a_request_for_a_replaced_text_gets_content_modified() {
+    use serde_json::json;
+    let valid = "fn value() -> i64 { 1 }\n";
+    let other = "fn other() -> i64 { 2 }\n";
+    let (fixture, mut server) = live_session(&[("Main.tz", valid), ("Other.tz", other)]);
+    let main = fixture.uri("Main.tz");
+    let at = |text: &str| json!({"textDocument": {"uri": main}, "position": position(text, "value", "utf-16")});
+    // A hover of another document of the root: computed, it analyzes the root while the rest arrives.
+    let busy = ask(
+        &mut server,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": fixture.uri("Other.tz")}, "position": position(other, "other", "utf-16")}),
+    );
+    let mismatched = "fn value() -> i64 { true }\n";
+    server.change(&main, 2, mismatched);
+    let stale = ask(&mut server, "textDocument/hover", at(mismatched));
+    server.change(&main, 3, "fn value() -> i64 { missing }\n");
+    let symbols = ask(
+        &mut server,
+        "textDocument/documentSymbol",
+        json!({"textDocument": {"uri": main}}),
+    );
+    assert!(server.response(busy).get("result").is_some());
+    let response = server.response(stale);
+    assert_eq!(response["error"]["code"], -32801, "{response}");
+    let response = server.response(symbols);
+    assert!(response["result"].is_array(), "{response}");
+    let versions: Vec<_> = server
+        .seen
+        .iter()
+        .filter(|message| {
+            message["method"] == "textDocument/publishDiagnostics"
+                && message["params"]["uri"] == main.as_str()
+        })
+        .map(|message| message["params"]["version"].clone())
+        .collect();
+    assert!(!versions.contains(&json!(2)), "{versions:?}");
+    assert_eq!(
+        versions.iter().filter(|version| **version == 3).count(),
+        1,
+        "{versions:?}"
+    );
+    assert_eq!(server.codes(&main), ["E1002"]);
+    server.finish();
+}
+
+/// Copilot review 2 of PR #119: a change that a later change of the same document replaces is still
+/// applied, so that it stays when the later one is rejected (here for its size).
+#[test]
+fn a_change_before_a_rejected_one_is_kept() {
+    use serde_json::json;
+    let valid = "fn value() -> i64 { 1 }\n";
+    let other = "fn other() -> i64 { 2 }\n";
+    let (fixture, mut server) = live_session(&[("Main.tz", valid), ("Other.tz", other)]);
+    let main = fixture.uri("Main.tz");
+    // A hover of another document of the root: computed, it analyzes the root while the rest arrives.
+    let busy = ask(
+        &mut server,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": fixture.uri("Other.tz")}, "position": position(other, "other", "utf-16")}),
+    );
+    server.change(&main, 2, "fn renamed() -> i64 { 1 }\n");
+    let limit = tsuzuri::syntax::MAX_SOURCE_BYTES;
+    server.change(&main, 3, &" ".repeat(limit + 1));
+    let symbols = ask(
+        &mut server,
+        "textDocument/documentSymbol",
+        json!({"textDocument": {"uri": main}}),
+    );
+    assert!(server.response(busy).get("result").is_some());
+    let rejected = server.wait(
+        |message| message["method"] == "window/logMessage",
+        "the rejection of the third version",
+    );
+    assert_eq!(
+        rejected["params"]["message"],
+        format!("source exceeds the {limit}-byte limit")
+    );
+    let response = server.response(symbols);
+    let names: Vec<_> = response["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{response}"))
+        .iter()
+        .map(|symbol| symbol["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(names, ["renamed"]);
+    server.finish();
+}
+
+/// Copilot review 2 of PR #119: the changes of several documents are checked against the shared
+/// limit of the open buffers in the order they arrive. A shrinks, B grows into the room that A left,
+/// and A shrinks again: B's change fits, although it would not beside A's first text.
+#[test]
+fn changes_of_two_documents_meet_the_shared_limit_in_order() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("Main.tz", main);
+    // The project does not load the sources under a directory whose name starts with '.', so the
+    // large buffers cost the analysis nothing.
+    std::fs::create_dir(fixture.path(".big")).unwrap();
+    let mut server = live::Server::start(&fixture.uri(""), "utf-16");
+    server.open(&fixture.uri("Main.tz"), main);
+    // Eight buffers of the largest size would fill the 32 MiB: six, A, and Main.tz leave less room
+    // than one more.
+    let full = " ".repeat(tsuzuri::syntax::MAX_SOURCE_BYTES);
+    for n in 0..6 {
+        server.open(&fixture.uri(&format!(".big/Fill{n}.tz")), &full);
+    }
+    let (a, b) = (fixture.uri(".big/A.tz"), fixture.uri(".big/B.tz"));
+    server.open(&a, &full);
+    server.open(&b, "");
+    // The first request analyzes the root while the rest arrives.
+    let busy = ask(
+        &mut server,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": fixture.uri("Main.tz")}, "position": position(main, "value", "utf-16")}),
+    );
+    server.change(&a, 2, "  ");
+    // Sent as a request, the notification's error would come back as a response.
+    let grow = server.id();
+    server.send(json!({"id": grow, "method": "textDocument/didChange", "params": {"textDocument": {"uri": b, "version": 2}, "contentChanges": [{"text": full}]}}));
+    server.change(&a, 3, " ");
+    assert!(server.response(busy).get("result").is_some());
+    let response = server.response(grow);
+    assert!(
+        response.get("error").is_none() && response["result"].is_null(),
+        "{response}"
+    );
+    server.finish();
+}
+
+/// G39 段 12: the light bulb's automatic request (`triggerKind` 2) without `only` gets no fix all,
+/// which VS Code would drop; an invoked one and one that asks for source actions do.
+#[test]
+fn automatic_code_action_requests_skip_fix_all() {
+    use serde_json::json;
+    let responses = scripted(&P1, "utf-16", |uri| {
+        let warn = uri("Warn.tz");
+        let request = |id: u64, context: serde_json::Value| json!({"id": id, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": warn}, "range": range(0, 0, 37), "context": context}});
+        vec![
+            request(1, json!({"diagnostics": [], "triggerKind": 2})),
+            request(2, json!({"diagnostics": [], "triggerKind": 1})),
+            request(
+                3,
+                json!({"diagnostics": [], "triggerKind": 2, "only": ["source.fixAll"]}),
+            ),
+        ]
+    });
+    let kinds = |index: usize| -> Vec<String> {
+        responses[index]["result"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{:?}", responses[index]))
+            .iter()
+            .map(|action| action["kind"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(kinds(0), ["quickfix"]);
+    assert_eq!(kinds(1), ["quickfix", "source.fixAll.tsuzuri"]);
+    assert_eq!(kinds(2), ["source.fixAll.tsuzuri"]);
 }

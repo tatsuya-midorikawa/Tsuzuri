@@ -57,6 +57,108 @@ export async function run(): Promise<void> {
 
 	const other = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(process.env.TSUZURI_TEST_OTHER!, 'Main.tz')));
 	await waitFor('independent workspace language servers', () => api.clients.size === 2 ? true : undefined);
+
+	// G40: a folder that is not a project, with a package below it. Each file has one client: a file outside the package
+	// takes the highest directory that holds no other project, and a file beside the package takes a remaining root,
+	// whose client serves only the files directly in the folder.
+	const tsuzuri = (target: vscode.Uri, code?: string) => vscode.languages.getDiagnostics(target).filter(item => item.source === 'tsuzuri' && (!code || item.code === code));
+	const opened = async (target: vscode.Uri) => {
+		await vscode.commands.executeCommand('vscode.open', target);
+		return vscode.workspace.openTextDocument(target);
+	};
+	const hovers = async (target: vscode.TextDocument, needle: string) =>
+		await vscode.commands.executeCommand<vscode.Hover[]>('vscode.executeHoverProvider', target.uri, target.positionAt(target.getText().indexOf(needle))) ?? [];
+	const outline = async (target: vscode.TextDocument) =>
+		(await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', target.uri) ?? []).map(symbol => symbol.name);
+	const hovered = (description: string, target: vscode.TextDocument, needle: string) =>
+		waitFor(description, async () => (await hovers(target, needle)).length ? true : undefined);
+	const selector = (root: string) => {
+		const filter = api.clients.get(root)?.clientOptions.documentSelector?.[0];
+		return typeof filter === 'object' && 'pattern' in filter ? String(filter.pattern) : undefined;
+	};
+	// VS Code sends a document to every client whose selector matches it, by its own matching of the glob.
+	const matches = (root: string, target: vscode.TextDocument) =>
+		vscode.languages.match(api.clients.get(root)!.clientOptions.documentSelector as unknown as vscode.DocumentSelector, target);
+	const loose = vscode.Uri.file(process.env.TSUZURI_TEST_LOOSE!).fsPath;
+	const scratch = path.join(loose, 'scratch');
+	const looseApp = path.join(loose, 'App');
+	const packageMain = vscode.Uri.file(path.join(looseApp, 'Main.tz'));
+	const scratchDocument = await opened(vscode.Uri.file(path.join(scratch, 'Try.tz')));
+	await hovered('hover of a file outside the package', scratchDocument, 't()');
+	assert.ok(api.clients.has(scratch));
+	assert.ok(!api.clients.has(loose));
+	assert.deepEqual(tsuzuri(packageMain, 'E1002'), []);
+	const appDocument = await opened(packageMain);
+	await hovered('hover of the package', appDocument, 'main');
+	assert.ok(api.clients.has(looseApp));
+	assert.deepEqual(tsuzuri(packageMain), []);
+	assert.equal((await hovers(appDocument, 'main')).length, 1);
+	assert.deepEqual(await outline(appDocument), ['main']);
+	const looseNotes = vscode.Uri.file(path.join(loose, 'Notes.tz'));
+	const looseNotesDocument = await opened(looseNotes);
+	await waitFor('the error of the file beside the package', () => tsuzuri(looseNotes, 'E1003')[0]);
+	assert.ok(selector(loose)?.endsWith('/loose/*.{tz,tt,tc}'), selector(loose));
+	assert.ok(matches(loose, looseNotesDocument) > 0);
+	assert.equal(matches(loose, appDocument), 0);
+	// The remaining root's server reads App without its manifest; its E1002 in App/Main.tz, sent before Notes.tz, is dropped.
+	assert.deepEqual(tsuzuri(packageMain), []);
+	assert.equal((await hovers(appDocument, 'main')).length, 1);
+	assert.deepEqual(await outline(appDocument), ['main']);
+	// With namespace headers both servers read App alike: one hover and one symbol show that only App's client serves it.
+	const loose2 = vscode.Uri.file(process.env.TSUZURI_TEST_LOOSE2!).fsPath;
+	const notes2Document = await opened(vscode.Uri.file(path.join(loose2, 'Notes.tz')));
+	await hovered('hover beside a package with headers', notes2Document, 'n()');
+	assert.ok(selector(loose2)?.endsWith('/loose2/*.{tz,tt,tc}'), selector(loose2));
+	const app2Document = await opened(vscode.Uri.file(path.join(loose2, 'App', 'Main.tz')));
+	await hovered('hover of the package with headers', app2Document, 'main');
+	// The remaining root's client is never sent App/Main.tz, which only App's client serves. The matching decides this
+	// without timing; the counts below agree with it, but alone they would show a second client only once its server
+	// answers.
+	assert.ok(matches(loose2, notes2Document) > 0);
+	assert.equal(matches(loose2, app2Document), 0);
+	assert.ok(matches(path.join(loose2, 'App'), app2Document) > 0);
+	assert.equal((await hovers(app2Document, 'main')).length, 1);
+	assert.deepEqual(await outline(app2Document), ['main']);
+	console.log('VS Code: a folder with a package gives each file one client, and a remaining root serves only its own files.');
+	// G40 D4: a created or deleted marker, or a deleted package folder, decides the roots again.
+	const remaining = api.clients.get(loose);
+	await writeFile(path.join(loose, 'Main.tz'), 'def main :: unit -> i32 = \\() -> 0\n');
+	await waitFor('the roots after a marker was created', () => !api.clients.has(scratch) && !api.testing.roots.has(scratch)
+		&& api.clients.get(loose) !== remaining && selector(loose)?.endsWith('/loose/**/*.{tz,tt,tc}') ? true : undefined);
+	await rm(path.join(loose, 'Main.tz'));
+	await waitFor('the roots after the marker was deleted', () => api.clients.has(scratch) && api.testing.roots.has(scratch)
+		&& selector(loose)?.endsWith('/loose/*.{tz,tt,tc}') ? true : undefined);
+	assert.ok(api.clients.has(looseApp));
+	// A deleted folder with open files in it leaves no client or test root: not for an open file of a project in it, whose
+	// walk up now ends at the folder above, which remains (extra, as loose above it holds App), and not for a root that is
+	// the deleted folder itself.
+	const extra = path.join(loose, 'extra');
+	const demo = path.join(extra, 'demo');
+	const gone = path.join(loose, 'gone');
+	await mkdir(demo, { recursive: true });
+	await mkdir(gone);
+	await writeFile(path.join(demo, 'Main.tz'), 'def main :: unit -> i32 = \\() -> 0\n');
+	await writeFile(path.join(gone, 'Other.tz'), 'fn o() -> i64 { 1 }\n');
+	await hovered('hover of a project in a folder to delete', await opened(vscode.Uri.file(path.join(demo, 'Main.tz'))), 'main');
+	await hovered('hover of a root to delete', await opened(vscode.Uri.file(path.join(gone, 'Other.tz'))), 'o()');
+	assert.ok(api.clients.has(demo) && api.clients.has(gone));
+	await api.testing.discover(demo);
+	await api.testing.discover(gone);
+	// A short-lived compiler run in the folder (a test discovery) can hold it on Windows for a moment; a language server
+	// would hold it for good, which the retries do not outlast.
+	await rm(demo, { recursive: true, maxRetries: 10, retryDelay: 100 });
+	await rm(gone, { recursive: true, maxRetries: 10, retryDelay: 100 });
+	await waitFor('the roots after folders with open files were deleted', () => !api.clients.has(demo) && !api.clients.has(gone)
+		&& !api.testing.roots.has(demo) && !api.testing.roots.has(gone) ? true : undefined);
+	assert.ok(!api.clients.has(extra), 'no client for the folder above the deleted folder');
+	assert.ok(!api.testing.roots.has(extra), 'no test root for the folder above the deleted folder');
+	const restored = api.clients.get(loose);
+	await rm(looseApp, { recursive: true, maxRetries: 10, retryDelay: 100 });
+	await waitFor('the roots after the package folder was deleted', () => !api.clients.has(scratch) && !api.clients.has(looseApp)
+		&& !api.testing.roots.has(scratch) && !api.testing.roots.has(looseApp)
+		&& api.clients.get(loose) !== restored && selector(loose)?.endsWith('/loose/**/*.{tz,tt,tc}') ? true : undefined);
+	console.log('VS Code: creating or deleting a marker or a package folder decides the roots of the language servers and tests again.');
+	await vscode.window.showTextDocument(document);
 	const invalid = 'def bad :: i64 = { let _text = "\u65e5\u{1f600}"; true }\n';
 	await replace(invalid);
 	const error = await waitFor('unsaved UTF-16 diagnostic', () => vscode.languages.getDiagnostics(uri).find(item => item.code === 'E1003'));
@@ -68,6 +170,36 @@ export async function run(): Promise<void> {
 	await replace(original);
 	await waitFor('diagnostics cleared', () => !vscode.languages.getDiagnostics(uri).length ? true : undefined);
 	console.log('VS Code: unsaved Unicode errors, warnings, clearing, multi-root isolation passed.');
+
+	// G39: renaming or deleting a file that is not open clears the language server's diagnostics of its old name, also
+	// when its folder is renamed or deleted (the operations of the Explorer: WorkspaceEdit.renameFile, workspace.fs.delete).
+	const serverCodes = (target: vscode.Uri) => vscode.languages.getDiagnostics(target).filter(item => item.source === 'tsuzuri').map(item => String(item.code));
+	const reported = (description: string, target: vscode.Uri) => waitFor(description, () => serverCodes(target).includes('E1003') ? true : undefined);
+	const serverCleared = (description: string, target: vscode.Uri) => waitFor(description, () => serverCodes(target).length ? undefined : true);
+	const renameFile = async (from: vscode.Uri, to: vscode.Uri) => {
+		const edit = new vscode.WorkspaceEdit();
+		edit.renameFile(from, to);
+		assert.ok(await vscode.workspace.applyEdit(edit));
+	};
+	const stale = vscode.Uri.file(path.join(root, 'Stale.tz'));
+	const renamed = vscode.Uri.file(path.join(root, 'Renamed.tz'));
+	await vscode.workspace.fs.writeFile(stale, Buffer.from('def stale :: i64 = true\n'));
+	await reported('diagnostics of a file that is not open', stale);
+	await renameFile(stale, renamed);
+	await serverCleared('diagnostics of the old name of a renamed file', stale);
+	await reported('diagnostics of the new name of a renamed file', renamed);
+	await vscode.workspace.fs.delete(renamed);
+	await serverCleared('diagnostics of a deleted file', renamed);
+	const folder = vscode.Uri.file(path.join(root, 'Stale'));
+	const moved = vscode.Uri.file(path.join(root, 'Moved'));
+	await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder, 'Inner.tz'), Buffer.from('def inner :: i64 = true\n'));
+	await reported('diagnostics of a file in a folder', vscode.Uri.joinPath(folder, 'Inner.tz'));
+	await renameFile(folder, moved);
+	await serverCleared('diagnostics of a file in a renamed folder', vscode.Uri.joinPath(folder, 'Inner.tz'));
+	await reported('diagnostics of the file in the folder of the new name', vscode.Uri.joinPath(moved, 'Inner.tz'));
+	await vscode.workspace.fs.delete(moved, { recursive: true });
+	await serverCleared('diagnostics of a file in a deleted folder', vscode.Uri.joinPath(moved, 'Inner.tz'));
+	console.log('VS Code: renaming or deleting a file or folder that is not open clears its language server diagnostics.');
 
 	await replace('def reuse :: own [i64] -> i64\nfn reuse a =\n    let b = a\n    Array.length (ref a) + Array.length (ref b)\n');
 	const hints = await waitFor('implicit copy inlay hint', async () => {
@@ -289,12 +421,15 @@ export async function run(): Promise<void> {
 		assert.ok(await vscode.workspace.applyEdit(edit));
 	};
 	// An edit of a Tsuzuri document outside the root (other/Main.tz, open since the start) during the run drops a result
-	// that points outside the root.
-	const otherText = other.getText();
-	assert.deepEqual(await changedDuringRun(() => replaceText(other, `${otherText}\n`)), passed);
+	// that points outside the root. VS Code releases a document that an extension opened and never showed about three
+	// minutes after it was opened, and `other` was opened at the start, so take a live document here: on a slow host
+	// the steps above take longer than that, and `other.save()` then fails with "Document has been closed".
+	const liveOther = await vscode.workspace.openTextDocument(other.uri);
+	const otherText = liveOther.getText();
+	assert.deepEqual(await changedDuringRun(() => replaceText(liveOther, `${otherText}\n`)), passed);
 	assert.deepEqual(copies(calc), []);
-	await replaceText(other, otherText);
-	assert.ok(await other.save());
+	await replaceText(liveOther, otherText);
+	assert.ok(await liveOther.save());
 	assert.deepEqual(await runProject(app), passed);
 	assert.deepEqual(server(), []);
 	assert.equal(copies(calc, 'W1001').length, 1);

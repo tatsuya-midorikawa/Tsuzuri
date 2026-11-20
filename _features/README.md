@@ -229,6 +229,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | E14 | [埋め込み時のトラップ境界とスタック枯渇の報告](_completed/E14-trap-boundary.md) | P1 | L | G04, E05, (B06) | done |
 | E15 | [信頼境界と権限（`@trusted`・`tsuzuri audit`・`[capabilities]`）](_completed/E15-trust-boundary-and-capabilities.md) | P2 | L | (A20) | done（全 Phase） |
 | E16 | [新しい Clang の AST で、bindgen が無名の struct の typedef を tag の struct と取り違える](_completed/E16-bindgen-unnamed-tags-new-clang.md) | P1 | S | E11 | done（無名の struct・union・enum を名付ける typedef を、名前のない `ownedTagDecl`（Clang 21）か、名前のない tag の `id` の集合にある `decl`（Clang 21 と 23）で見分け、Clang 21 と 23 で同じ出力にする。Clang 23 の `struct (unnamed at …)` の綴りも `struct (unnamed struct)` にそろえる） |
+| E17 | [`IO` の入出力関数名の統一（`readln`／`writeln`／`write_err`／`write_errln` と `try_` 版）](E17-io-function-names.md) | P1 | M | E02, G23, G24, G34, G35 | todo |
 
 ### F. 並列・性能バックエンド
 
@@ -292,8 +293,9 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G36 | [言語全体の差分ファズ（プログラム生成型。コンパイル時評価を参照実装に）](_completed/G36-language-differential-fuzz.md) | P2 | L | D11, (F14) | done（全 Phase。edition 2027 の正準形で生成） |
 | G37 | [LSP のシグネチャヘルプが、閉じ括弧で終わる行の次の行の呼び出しで何も返さない](_completed/G37-lsp-signature-help-after-closer.md) | P2 | S | G07, G12 | done（前の行が `)`・`]`・`}`・`\|]`・補間の閉じで終わっても、カーソルの行の呼び出しのシグネチャヘルプを返す。前の行で開いた組・括弧・`name(` の中の行でも同じで、`name(` の中では、カーソルの行のカーソルの前が識別子で始まり、その頭が関数を指すのでなければ、その `name(` の呼び出しを返す（`-Steps.one (` のように前置の演算子やリテラルで始まる行は、外側の `name(` のまま）） |
 | G38 | [`features.mjs` の `regex`・`unicode` の期待値が、テストを動かす Node の Unicode の版で変わる](_completed/G38-unicode-test-references-pinned.md) | P2 | S | D09 | done（V8 の期待値を std と同じ Unicode 17.0 の Node で `tests/unicode-v8.mjs`・`tests/regex-v8.mjs` に書き出して commit した。どの Node でも suite が通り、版が同じ Node は計算し直して比べる） |
-| G39 | [VS Code で直した警告・エラーが消えない（拡張の `tsuzuri-build` とタスクの problem matcher が出す写しが残る。言語サーバーは前に送った URI を覚えていない）](G39-stale-editor-diagnostics.md) | P1 | L | G07, G12, G14, G16 | doing（Phase 1 done） |
-| G40 | [VS Code でプロジェクトでないフォルダーを開くと、その根のクライアントが中のパッケージのファイルまで受け持つ（消えない偽のエラー、診断・ホバーの重複、このリポジトリでの `E1017`）](G40-fallback-root-client.md) | P2 | M | G14, G16, (G39) | todo |
+| G39 | [VS Code で直した警告・エラーが消えない（拡張の `tsuzuri-build` とタスクの problem matcher が出す写しが残る。言語サーバーは前に送った URI を覚えていない）](_completed/G39-stale-editor-diagnostics.md) | P1 | L | G07, G12, G14, G16 | done（Phase 1〜3。Phase 1 は拡張 0.1.8、Phase 2・3 は PR #119） |
+| G40 | [VS Code でプロジェクトでないフォルダーを開くと、その根のクライアントが中のパッケージのファイルまで受け持つ（消えない偽のエラー、診断・ホバーの重複、このリポジトリでの `E1017`）](_completed/G40-fallback-root-client.md) | P2 | M | G14, G16, (G39) | done |
+| G41 | [VS Code で Tsuzuri 拡張機能が「Mac Silicon プラットフォームの Visual Studio Code では使用できません」となりインストールできない（Marketplace に残った 0.1.0・0.1.1 の `darwin-x64` が `IncludeLatestVersionOnly` に残り続け、クールダウン付きギャラリーで `allTargetPlatforms` が `["darwin-x64"]` だけになる）](_completed/G41-marketplace-orphaned-darwin-x64.md) | P1 | S | G14 | done（Marketplace から旧版 `0.1.0`・`0.1.1` を削除して孤立した `darwin-x64` を除去し、`verify-release.mjs` で全公開バージョンの `targetPlatform` と `IncludeLatestVersionOnly` の応答を検査するようにした） |
 
 ### TZ. tzroutine（Go の goroutine に相当する並行処理。第4期）
 
