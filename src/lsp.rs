@@ -1127,7 +1127,9 @@ impl Session {
 
     /// `source.fixAll.tsuzuri`: every `certain` fix of the document, applied by `tsuzuri fix`'s
     /// rounds to the project with the open buffers. `None` when the project has no `certain` fix,
-    /// the run fails, or nothing in the document changes.
+    /// the run fails, or nothing in the document changes. The project loads the std modules that
+    /// `tsuzuri fix` and the analysis load (`load_for_editor`, PB08 O6), so the rounds see the
+    /// diagnostics whose fixes the quick fixes offer.
     fn fix_all(&self, directory: &Path, state: &ProjectState, source_id: usize) -> Option<Value> {
         // Only a `certain` fix that edits this document alone can change it: without one, skip
         // loading and analyzing the project again.
@@ -1148,7 +1150,7 @@ impl Session {
             .iter()
             .map(|(path, buffer)| (path.clone(), buffer.text.clone()))
             .collect();
-        let mut project = Project::load_with_overlays(directory, &overlays).ok()?;
+        let mut project = Project::load_for_editor(directory, &overlays).ok()?;
         let path = &state.project.sources[source_id].path;
         let index = project
             .sources

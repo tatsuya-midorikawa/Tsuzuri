@@ -2184,9 +2184,9 @@ fn unknown_names_get_the_candidates_and_quickfixes_of_unloaded_opt_in_modules() 
 /// opt-in module that no source names. `Main.tz` gives `Monoid` a blanket instance, which overlapped
 /// the instances of `std/Monoids.tz` while the server loaded every std module (9 `E1016` in that
 /// file, none in `Main.tz`). The editor publishes what `check --json` reports, the `W1001` of `b`
-/// with its `certain` fix.
+/// with its `certain` fix, and `source.fixAll.tsuzuri` applies what `tsuzuri fix` applies.
 #[test]
-fn diagnostics_follow_check_for_an_opt_in_module_that_no_source_names() {
+fn diagnostics_and_fix_all_follow_check_and_fix_for_an_opt_in_module_that_no_source_names() {
     use serde_json::{Value, json};
     const CLASSES: &str = "class Zero<'a> { def zero :: unit -> 'a }\n";
     const MAIN: &str = "instance Classes.Zero<'a> => Monoid<'a> {\n    fn empty _ = Classes.Zero.zero ()\n    fn combine a b = a\n}\ninstance Classes.Zero<i64> { fn zero _ = 0 }\ndef main :: own unit -> i32 = \\() -> 0\n";
@@ -2197,6 +2197,7 @@ fn diagnostics_follow_check_for_an_opt_in_module_that_no_source_names() {
         // A request makes the server analyze the project and publish its diagnostics.
         vec![
             json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": {"line": 2, "character": 7}}}),
+            json!({"id": 2, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": main}, "range": range(0, 0, 0), "context": {"diagnostics": [], "only": ["source.fixAll"]}}}),
         ]
     });
     let mut published = std::collections::BTreeMap::new();
@@ -2225,11 +2226,18 @@ fn diagnostics_follow_check_for_an_opt_in_module_that_no_source_names() {
     for (name, text) in files {
         std::fs::write(root.join(name), text).unwrap();
     }
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
-        .args(["check", root.to_str().unwrap(), "--json"])
-        .env("TSUZURI_CACHE_DIR", "")
-        .output()
-        .unwrap();
+    let tsuzuri = |arguments: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args(arguments)
+            .env("TSUZURI_CACHE_DIR", "")
+            .output()
+            .unwrap()
+    };
+    let output = tsuzuri(&["check", root.to_str().unwrap(), "--json"]);
+    // And what `tsuzuri fix` writes.
+    let fixed = tsuzuri(&["fix", root.to_str().unwrap()]);
+    assert!(fixed.status.success(), "{fixed:?}");
+    let fixed = std::fs::read_to_string(root.join("Main.tz")).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
     let position = |line: &Value, column: &Value| json!({"line": line.as_u64().unwrap() - 1, "character": column.as_u64().unwrap() - 1});
     // `check --json` writes its diagnostics to stderr, one JSON object per line.
@@ -2274,6 +2282,18 @@ fn diagnostics_follow_check_for_an_opt_in_module_that_no_source_names() {
             "data": {"kind": "unused_local", "fixes": [{"title": "Prefix 'b' with '_'", "applicability": "certain"}]},
         }])
     );
+    let response = messages
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(2)))
+        .unwrap();
+    let actions = response["result"].as_array().unwrap();
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(actions[0]["kind"], "source.fixAll.tsuzuri");
+    let edits = actions[0]["edit"]["changes"][main.as_str()]
+        .as_array()
+        .unwrap();
+    assert_eq!(apply_text_edits(MAIN, edits), fixed);
+    assert_eq!(fixed, MAIN.replace("fn combine a b", "fn combine a _b"));
 }
 
 #[test]
