@@ -373,8 +373,9 @@ impl Default for Session {
 struct ClientRoot {
     /// The path of its URI.
     path: PathBuf,
-    /// The path canonicalized when the client named it, so that a refresh does not resolve it again
-    /// for every file it publishes; `None` when it did not exist then.
+    /// The path canonicalized when the client named it and again at each refresh (a symbolic link
+    /// can be removed or pointed elsewhere), so that a refresh does not resolve it for every file it
+    /// publishes; `None` when it did not resolve then.
     canonical: Option<PathBuf>,
     uri: String,
 }
@@ -550,12 +551,53 @@ impl Session {
         json!({"range": range, "severity": 1, "code": error.diagnostic.code, "source": "tsuzuri", "message": error.diagnostic.message})
     }
 
+    /// Canonicalizes the client roots again (Copilot review 2 of PR #119): a root that no longer
+    /// resolves to the directory it was canonicalized as (removed or moved away, or a symbolic link
+    /// removed or pointed elsewhere) takes its new directory, which is scheduled unless it is
+    /// `directory`. Returns the directories that no client root resolves to any more; another one
+    /// that a client root still resolves to is scheduled, to be published at that root's spelling.
+    fn resolve_client_roots(&mut self, directory: &Path) -> Vec<PathBuf> {
+        let mut moved = Vec::new();
+        for root in &mut self.client_roots {
+            let now = root.path.canonicalize().ok();
+            if let Some(before) = std::mem::replace(&mut root.canonical, now.clone())
+                && now.as_ref() != Some(&before)
+            {
+                moved.push((before, now));
+            }
+        }
+        let mut left = Vec::new();
+        for (before, now) in moved {
+            if let Some(now) = now.filter(|now| now != directory) {
+                self.schedule_root(now);
+            }
+            if !self.canonical_roots().any(|(root, _)| root == before) {
+                left.push(before);
+            } else if before != directory {
+                self.schedule_root(before);
+            }
+        }
+        left
+    }
+
     fn refresh(&mut self, directory: &Path, output: &mut impl Write) -> io::Result<()> {
         self.pending.remove(directory);
+        // A directory that no client root names any more has no project for this client: analyzed,
+        // its diagnostics would go to the URIs of a root that is gone, such as a removed link's.
+        let left = self.resolve_client_roots(directory);
+        for gone in &left {
+            self.projects.remove(gone);
+            self.good.remove(gone);
+            self.pending.remove(gone);
+            self.retire(output, gone, Sent::default())?;
+        }
+        if left.iter().any(|gone| gone == directory) {
+            return Ok(());
+        }
         if !directory.is_dir() {
-            // The root was removed or moved away (a client root is canonicalized once, so a change
-            // under it still names it). `load_with_overlays` would load its parent directory, with
-            // the projects beside it; the root has no project, and its diagnostics are cleared.
+            // The root was removed or moved away (the parent directory of a document outside every
+            // client root, say). `load_with_overlays` would load its parent directory, with the
+            // projects beside it; the root has no project, and its diagnostics are cleared.
             self.projects.remove(directory);
             self.good.remove(directory);
             return self.retire(output, directory, Sent::default());

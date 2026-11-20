@@ -2889,6 +2889,69 @@ fn a_removed_root_is_not_loaded_through_its_parent() {
     server.finish();
 }
 
+/// Copilot review 2 of PR #119: a client root named through a symbolic link is resolved again when a
+/// root is analyzed. Once the link is removed, the diagnostics sent at its spelling are cleared, not
+/// sent there again for the directory it pointed to; once it points elsewhere, the files at its
+/// spelling are those of the new directory.
+#[cfg(unix)]
+#[test]
+fn a_removed_or_repointed_root_link_is_resolved_again() {
+    use serde_json::json;
+    let main = "fn value() -> i64 { 1 }\n";
+    // A server whose root is `link` (to `real`), with the documents closed and an error in
+    // `link/Helper.tz` on the client.
+    let start = || {
+        let fixture = live::Fixture::new();
+        fixture.write("real/Main.tz", main);
+        fixture.write("real/Helper.tz", "fn offset() -> i64 { true }\n");
+        fixture.write("moved/Main.tz", main);
+        fixture.write("moved/Helper.tz", "fn offset() -> i64 { missing }\n");
+        let link = fixture.base.join("link");
+        std::os::unix::fs::symlink(fixture.path("real"), &link).unwrap();
+        let mut server = live::Server::start(&fixture.uri_under(&link, ""), "utf-16");
+        server.open(&fixture.uri_under(&link, "Main.tz"), main);
+        server.settle();
+        assert_eq!(
+            server.codes(&fixture.uri_under(&link, "Helper.tz")),
+            ["E1003"]
+        );
+        server.notify(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": fixture.uri_under(&link, "Main.tz")}}),
+        );
+        server.settle();
+        (fixture, link, server)
+    };
+    // Removed.
+    let (fixture, link, mut server) = start();
+    let helper = fixture.uri_under(&link, "Helper.tz");
+    std::fs::remove_file(&link).unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": fixture.uri_under(&link, ""), "type": 3}]}),
+    );
+    server.settle();
+    assert!(server.codes(&helper).is_empty());
+    assert!(server.published(&fixture.uri("real/Helper.tz")).is_empty());
+    server.finish();
+    // Pointed elsewhere. The analysis that finds it schedules the new directory.
+    let (fixture, link, mut server) = start();
+    let helper = fixture.uri_under(&link, "Helper.tz");
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(fixture.path("moved"), &link).unwrap();
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": helper, "type": 2}]}),
+    );
+    server.settle();
+    server.settle();
+    assert_eq!(server.codes(&helper), ["E1002"]);
+    for real in ["real/Helper.tz", "moved/Helper.tz"] {
+        assert!(server.published(&fixture.uri(real)).is_empty(), "{real}");
+    }
+    server.finish();
+}
+
 /// Copilot review of PR #119: two roots of one server that depend on the same broken manifest both
 /// report its load error. When one of them drops the dependency, the error stays: the client
 /// replaces a URI's whole list, and the other root still reports it there.
