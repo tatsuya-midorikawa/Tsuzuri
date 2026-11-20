@@ -3188,8 +3188,14 @@ struct InboxState {
     bytes: usize,
     /// The main loop has returned.
     closed: bool,
-    /// The ids (`Value::to_string`) of the requests that `$/cancelRequest` cancelled.
-    cancelled: BTreeSet<String>,
+    /// For each id (`Value::to_string`), how many of the `$/cancelRequest` messages that cancel it
+    /// the reader has read and the main loop has not let go of (Copilot review 3 of PR #119): one
+    /// still on its way to the queue, one of `Queue::unmatched`, or one of `Queue::held`. A request
+    /// is cancelled while its id has one. The reader records a cancellation when it reads it, so
+    /// that it takes effect at once, also for the request being computed; the main loop lets go of
+    /// exactly the ones it disposes of. Were the ids a set, letting go of one copy would forget
+    /// another that the reader read before the main loop queued it.
+    cancelled: BTreeMap<String, usize>,
 }
 
 impl Inbox {
@@ -3214,15 +3220,23 @@ impl Inbox {
         if let Ok(mut state) = self.state.lock() {
             state.bytes += bytes;
             if let Some(id) = message.as_ref().ok().and_then(cancelled_id) {
-                state.cancelled.insert(id);
+                *state.cancelled.entry(id).or_default() += 1;
             }
         }
     }
 
-    /// Records the cancellation of `id` again.
-    fn cancel(&self, id: String) {
-        if let Ok(mut state) = self.state.lock() {
-            state.cancelled.insert(id);
+    /// Lets go of `count` cancellations of `id` that the main loop has disposed of.
+    fn release(&self, id: &str, count: usize) {
+        if count == 0 {
+            return;
+        }
+        if let Ok(mut state) = self.state.lock()
+            && let Some(held) = state.cancelled.get_mut(id)
+        {
+            *held = held.saturating_sub(count);
+            if *held == 0 {
+                state.cancelled.remove(id);
+            }
         }
     }
 
@@ -3243,14 +3257,7 @@ impl Inbox {
     fn is_cancelled(&self, id: &str) -> bool {
         self.state
             .lock()
-            .is_ok_and(|state| state.cancelled.contains(id))
-    }
-
-    /// Forgets the cancellation of `id`; whether it had one.
-    fn forget(&self, id: &str) -> bool {
-        self.state
-            .lock()
-            .is_ok_and(|mut state| state.cancelled.remove(id))
+            .is_ok_and(|state| state.cancelled.contains_key(id))
     }
 }
 
@@ -3326,7 +3333,12 @@ impl Queued {
 
 /// The messages that the main loop has taken from the reader and not handled, in the order they
 /// arrived, with the ids that it keeps for cancellations (G39 spec 12, 13).
-#[derive(Default)]
+///
+/// Each cancellation that the reader recorded in `Inbox` is let go of there exactly when the queue
+/// disposes of it: when it is dropped as it arrives, pushed out of `unmatched`, or replaced there by
+/// a later one of the same id, and when the request that `held` keeps it for is answered. So `Inbox`
+/// counts, for each id, the cancellations on their way to the queue, its entry of `unmatched`, and
+/// its count in `held` (Copilot review 3 of PR #119).
 struct Queue {
     items: VecDeque<Queued>,
     /// How many queued requests have each id.
@@ -3335,38 +3347,62 @@ struct Queue {
     modifications: BTreeMap<PathBuf, usize>,
     /// The cancellations that no queued request had, oldest first, each id once.
     unmatched: VecDeque<String>,
+    /// How many cancellations belong to the queued requests (or the one being computed) of each id,
+    /// to be let go of when it is answered.
+    held: BTreeMap<String, usize>,
     /// The requests answered last, oldest first, and the same as a set.
     answered: VecDeque<String>,
     recent: BTreeSet<String>,
+    /// How many ids `unmatched` and `answered` keep: `MAX_REMEMBERED_IDS`, fewer in tests.
+    remembered: usize,
+}
+
+impl Default for Queue {
+    fn default() -> Self {
+        Self::remembering(MAX_REMEMBERED_IDS)
+    }
 }
 
 impl Queue {
+    fn remembering(remembered: usize) -> Self {
+        Self {
+            items: VecDeque::new(),
+            requests: BTreeMap::new(),
+            modifications: BTreeMap::new(),
+            unmatched: VecDeque::new(),
+            held: BTreeMap::new(),
+            answered: VecDeque::new(),
+            recent: BTreeSet::new(),
+            remembered,
+        }
+    }
+
     /// Takes a message from the reader. A cancellation of a queued request is kept for it; one of an
     /// answered request is dropped; any other with an id of at most `MAX_REMEMBERED_ID` bytes is kept
-    /// for a request that may follow, the latest `MAX_REMEMBERED_IDS` of them (a repeated one at its
-    /// latest place), and belongs to that request once it arrives (later unknown ids no longer push
-    /// it out); any other is dropped. A request with the id of an answered one (ids need be unique
-    /// only among outstanding requests) makes the server forget the answered one, so that the new
+    /// for a request that may follow, the latest `remembered` of them (a repeated one at its latest
+    /// place), and belongs to that request once it arrives (later unknown ids no longer push it
+    /// out); any other is dropped. A request with the id of an answered one (ids need be unique only
+    /// among outstanding requests) makes the server forget the answered one, so that the new
     /// request's cancellation is not dropped as a late one.
     fn push(&mut self, event: InputEvent, inbox: &Inbox) {
         let item = Queued::new(event);
         if let Some(id) = item.message().and_then(cancelled_id) {
             if self.requests.contains_key(&id) {
-                // The reader recorded it when it read it, but a late cancellation of an answered
-                // request with the same id, queued before the reused request, may have forgotten it
-                // since.
-                inbox.cancel(id);
+                *self.held.entry(id).or_default() += 1;
             } else if self.recent.contains(&id) || id.len() > MAX_REMEMBERED_ID {
-                inbox.forget(&id);
+                inbox.release(&id, 1);
             } else {
-                // Once, at the place of the latest: pushing out an older copy would forget the
-                // cancellation that the newer one keeps (Copilot review 2 of PR #119).
-                self.unmatched.retain(|unmatched| *unmatched != id);
+                // Once, at the place of the latest (Copilot review 2 of PR #119): the older copy is
+                // let go of, and the newer one keeps the id cancelled.
+                if let Some(at) = self.unmatched.iter().position(|unmatched| *unmatched == id) {
+                    self.unmatched.remove(at);
+                    inbox.release(&id, 1);
+                }
                 self.unmatched.push_back(id);
-                if self.unmatched.len() > MAX_REMEMBERED_IDS
+                if self.unmatched.len() > self.remembered
                     && let Some(oldest) = self.unmatched.pop_front()
                 {
-                    inbox.forget(&oldest);
+                    inbox.release(&oldest, 1);
                 }
             }
         }
@@ -3376,7 +3412,10 @@ impl Queue {
             }
             // A cancellation that arrived before the request is now the queued request's: dropping
             // it as the oldest unmatched one would forget it (Copilot review of PR #119).
-            self.unmatched.retain(|unmatched| *unmatched != id);
+            if let Some(at) = self.unmatched.iter().position(|unmatched| *unmatched == id) {
+                self.unmatched.remove(at);
+                *self.held.entry(id.clone()).or_default() += 1;
+            }
             *self.requests.entry(id).or_default() += 1;
         }
         if let Some(document) = item.modified() {
@@ -3402,17 +3441,27 @@ impl Queue {
     }
 
     /// Records that the request `id` is answered (unless the id is longer than `MAX_REMEMBERED_ID`)
-    /// and forgets its cancellation; whether it had one.
+    /// and lets go of the cancellations kept for it; whether it had one. One that the reader has
+    /// read and the queue has not taken yet stays recorded until the queue drops it as a late one.
     fn answer(&mut self, id: &str, inbox: &Inbox) -> bool {
         if id.len() <= MAX_REMEMBERED_ID && self.recent.insert(id.to_owned()) {
             self.answered.push_back(id.to_owned());
-            if self.answered.len() > MAX_REMEMBERED_IDS
+            if self.answered.len() > self.remembered
                 && let Some(oldest) = self.answered.pop_front()
             {
                 self.recent.remove(&oldest);
             }
         }
-        inbox.forget(id)
+        let cancelled = inbox.is_cancelled(id);
+        let mut held = self.held.remove(id).unwrap_or(0);
+        // A message with an id that is not a request (a text sync) does not take the cancellation
+        // that preceded it from `unmatched`; once it is answered, that one goes as well.
+        if let Some(at) = self.unmatched.iter().position(|unmatched| unmatched == id) {
+            self.unmatched.remove(at);
+            held += 1;
+        }
+        inbox.release(id, held);
+        cancelled
     }
 
     /// Whether a later text sync changes or closes `document`: a request about it would answer for a
@@ -3853,6 +3902,186 @@ mod tests {
         assert!(inbox.is_cancelled("6"));
     }
 
+    /// Copilot review 3 of PR #119: the reader records each cancellation when it reads it, before
+    /// the main loop queues it. Here it reads a whole burst first: a cancellation of 5, cancellations
+    /// of unknown ids that push the first out of the ones kept, the cancellation of 5 again, and the
+    /// request 5. Pushing out the first must not forget the second, which the reader recorded too.
+    #[test]
+    fn a_cancellation_read_again_outlives_its_pushed_out_copy() {
+        let (inbox, mut queue) = (Inbox::default(), Queue::default());
+        let burst: Vec<Value> = std::iter::once(cancel(json!(5)))
+            .chain((0..MAX_REMEMBERED_IDS).map(|ghost| cancel(json!(format!("ghost-{ghost}")))))
+            .chain([cancel(json!(5)), symbol_request(json!(5))])
+            .collect();
+        for message in &burst {
+            inbox.received(&Ok(message.clone()), 1);
+        }
+        for message in burst {
+            queue.push(InputEvent::Message(Ok(message), 1), &inbox);
+        }
+        assert!(inbox.is_cancelled("5"));
+    }
+
+    /// The reference for `cancellations_agree_with_a_reference_model_in_any_interleaving`: the main
+    /// loop alone keeps the cancellations, by the rules of `Queue::push` (G39 spec 13 and the
+    /// deviations 1 and 11), and the request being computed is cancelled as well by one that the
+    /// reader has read and the queue has not taken yet (it can only follow the request).
+    struct CancelModel {
+        remembered: usize,
+        /// The cancellations kept for a request that may follow, oldest first, each id once.
+        unmatched: VecDeque<String>,
+        /// How many queued requests have each id.
+        queued: BTreeMap<String, usize>,
+        /// The ids of the queued requests (and of the one being computed) that a cancellation was
+        /// kept for.
+        cancelled: BTreeSet<String>,
+        /// The requests answered last, oldest first.
+        answered: VecDeque<String>,
+    }
+
+    impl CancelModel {
+        fn push(&mut self, cancel: bool, id: &str) {
+            let short = id.len() <= MAX_REMEMBERED_ID;
+            if cancel {
+                if self.queued.contains_key(id) {
+                    self.cancelled.insert(id.to_owned());
+                } else if short && !self.answered.iter().any(|answered| answered == id) {
+                    self.unmatched.retain(|unmatched| unmatched != id);
+                    self.unmatched.push_back(id.to_owned());
+                    if self.unmatched.len() > self.remembered {
+                        self.unmatched.pop_front();
+                    }
+                }
+            } else {
+                self.answered.retain(|answered| answered != id);
+                if self.unmatched.iter().any(|unmatched| unmatched == id) {
+                    self.unmatched.retain(|unmatched| unmatched != id);
+                    self.cancelled.insert(id.to_owned());
+                }
+                *self.queued.entry(id.to_owned()).or_default() += 1;
+            }
+        }
+
+        /// Whether the request `id` that was taken and computed is cancelled; `arriving` says whether
+        /// the reader has read a cancellation of `id` that the queue has not taken.
+        fn answer(&mut self, id: &str, arriving: bool) -> bool {
+            let cancelled = self.cancelled.remove(id) || arriving;
+            if id.len() <= MAX_REMEMBERED_ID && !self.answered.iter().any(|answered| answered == id)
+            {
+                self.answered.push_back(id.to_owned());
+                if self.answered.len() > self.remembered {
+                    self.answered.pop_front();
+                }
+            }
+            cancelled
+        }
+    }
+
+    /// Copilot review 3 of PR #119: the reader records each cancellation in `Inbox` when it reads it
+    /// and sends it on after; the main loop queues all that has been sent, takes one message,
+    /// computes a request and answers it, while the reader goes on. In any interleaving of those
+    /// steps, each request is cancelled exactly when `CancelModel` says so, and after every step
+    /// `Inbox` counts, for each id, the cancellations on their way to the queue, its entry of
+    /// `unmatched` and its count in `held`. Short memories (one or two ids), two short ids and one
+    /// longer than `MAX_REMEMBERED_ID` make pushing out, repeating, reusing and dropping ids occur
+    /// within a few messages. The interleavings are drawn from a fixed seed.
+    #[test]
+    fn cancellations_agree_with_a_reference_model_in_any_interleaving() {
+        let ids = [json!(1), json!("two"), json!("3".repeat(MAX_REMEMBERED_ID))];
+        let keys: Vec<String> = ids.iter().map(Value::to_string).collect();
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut random = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % below as u64) as usize
+        };
+        for run in 0..20_000 {
+            let remembered = 1 + random(2);
+            let reader_odds = 1 + random(3);
+            // Each message: whether it is a cancellation (or a request), and its id.
+            let stream: Vec<(bool, usize)> = (0..1 + random(8))
+                .map(|_| (random(2) == 0, random(ids.len())))
+                .collect();
+            let message = |at: usize| match stream[at] {
+                (true, id) => cancel(ids[id].clone()),
+                (false, id) => symbol_request(ids[id].clone()),
+            };
+            let (inbox, mut queue) = (Inbox::default(), Queue::remembering(remembered));
+            let mut model = CancelModel {
+                remembered,
+                unmatched: VecDeque::new(),
+                queued: BTreeMap::new(),
+                cancelled: BTreeSet::new(),
+                answered: VecDeque::new(),
+            };
+            // The reader has recorded the first `read` messages and sent the first `sent`; the main
+            // loop has queued the first `queued`. Its step: queue what was sent, take one message
+            // (`drained`), answer the request it took (`computing`, with whether it was cancelled
+            // when taken).
+            let (mut read, mut sent, mut queued) = (0, 0, 0);
+            let mut drained = false;
+            let mut computing: Option<(String, bool)> = None;
+            let mut trace = Vec::new();
+            // The cancellations of `id` that the reader has recorded and the queue has not taken.
+            let on_the_way = |id: &str, queued: usize, read: usize| {
+                (queued..read)
+                    .filter(|&at| stream[at].0 && keys[stream[at].1] == id)
+                    .count()
+            };
+            loop {
+                let reader = sent < read || read < stream.len();
+                let main = computing.is_some() || drained || !queue.is_empty() || queued < sent;
+                if !reader && !main {
+                    break;
+                }
+                if reader && (!main || random(4) < reader_odds) {
+                    if sent < read {
+                        trace.push(format!("send {sent}"));
+                        sent += 1;
+                    } else {
+                        trace.push(format!("read {read}"));
+                        inbox.received(&Ok(message(read)), 1);
+                        read += 1;
+                    }
+                } else if let Some((id, when_taken)) = computing.take() {
+                    let cancelled = queue.answer(&id, &inbox) || when_taken;
+                    let arriving = on_the_way(&id, queued, read) > 0;
+                    trace.push(format!("answer {id}: cancelled {cancelled}"));
+                    let expected = model.answer(&id, arriving);
+                    assert_eq!(cancelled, expected, "run {run}, {stream:?}, {trace:?}");
+                } else if drained {
+                    drained = false;
+                    let item = queue.pop(&inbox).expect("a drained queue has a message");
+                    if let Some(id) = item.request_id() {
+                        trace.push(format!("compute {id}"));
+                        decrement(&mut model.queued, id.as_str());
+                        computing = Some((id.clone(), inbox.is_cancelled(&id)));
+                    } else {
+                        trace.push("take a cancellation".into());
+                    }
+                } else {
+                    trace.push(format!("queue {queued}..{sent}"));
+                    for at in queued..sent {
+                        queue.push(InputEvent::Message(Ok(message(at)), 1), &inbox);
+                        model.push(stream[at].0, &keys[stream[at].1]);
+                    }
+                    queued = sent;
+                    drained = true;
+                }
+                let counted = inbox.state.lock().unwrap().cancelled.clone();
+                for id in &keys {
+                    let kept = on_the_way(id, queued, read)
+                        + usize::from(queue.unmatched.contains(id))
+                        + queue.held.get(id).copied().unwrap_or(0);
+                    let count = counted.get(id).copied().unwrap_or(0);
+                    assert_eq!(count, kept, "run {run}, {id}, {stream:?}, {trace:?}");
+                }
+                assert_eq!(queue.unmatched, model.unmatched, "run {run}, {trace:?}");
+            }
+        }
+    }
+
     /// Copilot review 2 of PR #119: an id may be as long as a message, so the ids that the main loop
     /// keeps after their requests are answered, or for a request that may follow, are bounded by
     /// their length as well as by their count: long ones are not kept at all. Short ones still are.
@@ -3875,7 +4104,7 @@ mod tests {
             .iter()
             .chain(&queue.recent)
             .chain(&queue.unmatched)
-            .chain(&inbox.state.lock().unwrap().cancelled)
+            .chain(inbox.state.lock().unwrap().cancelled.keys())
             .map(String::len)
             .sum();
         assert_eq!(kept, 0);
