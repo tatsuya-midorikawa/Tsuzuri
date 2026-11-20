@@ -580,6 +580,19 @@ impl Session {
         left
     }
 
+    /// Refreshes each root of `due` that is still pending when its turn comes. The refresh of one can
+    /// drop another (`resolve_client_roots`: a directory that no client root resolves to any more),
+    /// which a refresh from this list would load again, with its symbols and its diagnostics at the
+    /// URIs of no remaining root (Copilot review 3 of PR #119).
+    fn refresh_due(&mut self, due: Vec<PathBuf>, output: &mut impl Write) -> io::Result<()> {
+        for directory in due {
+            if self.pending.contains_key(&directory) {
+                self.refresh(&directory, output)?;
+            }
+        }
+        Ok(())
+    }
+
     fn refresh(&mut self, directory: &Path, output: &mut impl Write) -> io::Result<()> {
         self.pending.remove(directory);
         // A directory that no client root names any more has no project for this client: analyzed,
@@ -941,10 +954,8 @@ impl Session {
             }
             "workspace/symbol" => {
                 let due: Vec<_> = self.pending.keys().cloned().collect();
-                for directory in due {
-                    self.refresh(&directory, output)
-                        .map_err(|error| (-32603, error.to_string()))?;
-                }
+                self.refresh_due(due, output)
+                    .map_err(|error| (-32603, error.to_string()))?;
                 Ok(self.workspace_symbols(params["query"].as_str().unwrap_or("")))
             }
             "textDocument/completion" | "textDocument/signatureHelp" => {
@@ -3467,11 +3478,9 @@ pub fn serve(
                         .filter(|(_, deadline)| **deadline <= Instant::now())
                         .map(|(directory, _)| directory.clone())
                         .collect();
-                    for directory in due {
-                        if let Err(error) = session.refresh(&directory, &mut output) {
-                            let _ = writeln!(stderr, "LSP output failed: {error}");
-                            return 1;
-                        }
+                    if let Err(error) = session.refresh_due(due, &mut output) {
+                        let _ = writeln!(stderr, "LSP output failed: {error}");
+                        return 1;
                     }
                     continue;
                 }

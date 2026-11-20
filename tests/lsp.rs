@@ -2952,6 +2952,56 @@ fn a_removed_or_repointed_root_link_is_resolved_again() {
     server.finish();
 }
 
+/// Copilot review 3 of PR #119: two roots are due together, and the analysis of the first finds that
+/// the second one's link is gone and drops the directory it pointed to. That directory is not then
+/// analyzed from the list of due roots taken before: it would be loaded again, its symbols indexed
+/// and its diagnostics sent outside every root that remains. (`workspace/symbol` and the debounce
+/// timer take their lists alike and refresh them through the same function.)
+#[cfg(unix)]
+#[test]
+fn a_root_dropped_by_an_earlier_analysis_is_not_analyzed() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    for (name, function) in [("a_real", "in_a"), ("b_real", "only_in_b")] {
+        let helper = format!("fn {function}() -> i64 {{ let spare = 1; 2 }}\n");
+        fixture.write(&format!("{name}/Main.tz"), main);
+        fixture.write(&format!("{name}/Helper.tz"), &helper);
+    }
+    let a_link = fixture.base.join("a_link");
+    let b_link = fixture.base.join("b_link");
+    std::os::unix::fs::symlink(fixture.path("a_real"), &a_link).unwrap();
+    std::os::unix::fs::symlink(fixture.path("b_real"), &b_link).unwrap();
+    let folders = json!([
+        {"uri": fixture.uri_under(&a_link, ""), "name": "a"},
+        {"uri": fixture.uri_under(&b_link, ""), "name": "b"},
+    ]);
+    let mut server = live::Server::start_with(
+        json!({"rootUri": null, "workspaceFolders": folders, "capabilities": {}}),
+    );
+    // `b`'s document is open at its directory's own spelling, so that it can still change once the
+    // link is gone.
+    let a_main = fixture.uri_under(&a_link, "Main.tz");
+    let b_main = fixture.uri("b_real/Main.tz");
+    server.open(&a_main, main);
+    server.open(&b_main, main);
+    server.settle();
+    let b_helper = fixture.uri_under(&b_link, "Helper.tz");
+    assert_eq!(server.codes(&b_helper), ["W1001"]);
+    // `b`'s link goes, and a change of a document in each root schedules both again, with no change
+    // notification (which resolves the roots before it schedules any).
+    std::fs::remove_file(&b_link).unwrap();
+    server.change(&a_main, 2, main);
+    server.change(&b_main, 2, main);
+    // `a_real` sorts first, and its analysis drops `b_real`, which was due as well.
+    let symbols = server.request("workspace/symbol", json!({"query": "only_in_b"}));
+    assert_eq!(symbols["result"], json!([]), "{symbols}");
+    assert!(server.codes(&b_helper).is_empty());
+    let unlinked = fixture.uri("b_real/Helper.tz");
+    assert!(server.published(&unlinked).is_empty());
+    server.finish();
+}
+
 /// Copilot review of PR #119: two roots of one server that depend on the same broken manifest both
 /// report its load error. When one of them drops the dependency, the error stays: the client
 /// replaces a URI's whole list, and the other root still reports it there.
