@@ -1165,6 +1165,62 @@ mod tests {
         assert!(pools() > before);
     }
 
+    /// PB08 O6: the names that `find::OptInNames` reads from the opt-in std sources are those that
+    /// `Names` holds of the opt-in modules when a check loads every std module: each module, its
+    /// public functions, constants and extern functions that are not hidden, with the word of their
+    /// candidate signature, and the cases of its public unions.
+    #[test]
+    fn opt_in_names_are_the_checker_names() {
+        let every = format!(
+            "// {}\n0\n",
+            crate::stdlib::OPT_IN
+                .iter()
+                .map(|module| module.module)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let read = super::find::OptInNames::read(crate::stdlib::SOURCES).entries();
+        let found = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let into = found.clone();
+        with_names(&[("Main.tz", every.as_str())], move |names| {
+            let hidden = |name: &str| name.contains('$') || name.contains("__");
+            let mut entries = Vec::new();
+            for (key, origin) in &names.modules {
+                if *origin != ModuleOrigin::Std || !crate::stdlib::is_opt_in(key) {
+                    continue;
+                }
+                entries.push(format!("module {key}"));
+                for (name, info) in &names.functions {
+                    if info.module == *key && info.visible_from("Main") && !hidden(name) {
+                        let word = if names.constants.contains(&info.id) {
+                            "constant"
+                        } else {
+                            "function"
+                        };
+                        entries.push(format!("function {name} {word}"));
+                    }
+                }
+                for (name, case) in &names.cases {
+                    if case.info.module == *key && case.info.visible_from("Main") {
+                        entries.push(format!("case {name}"));
+                    }
+                }
+            }
+            entries.sort();
+            *into.borrow_mut() = entries;
+        });
+        let found = found.borrow();
+        assert_eq!(
+            found
+                .iter()
+                .filter(|entry| entry.starts_with("module "))
+                .count(),
+            crate::stdlib::OPT_IN.len()
+        );
+        assert!(found.len() > 300, "{}", found.len());
+        assert_eq!(read, *found);
+    }
+
     /// Runs `probe` on the names of the program of `sources`, which must check.
     fn with_names(sources: &[(&str, &str)], probe: impl FnMut(&Names) + 'static) {
         let ran = std::rc::Rc::new(std::cell::Cell::new(false));

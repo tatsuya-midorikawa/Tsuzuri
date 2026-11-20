@@ -399,13 +399,17 @@ pub(crate) fn analyze_inputs_core(
 }
 
 /// The language server's analysis (PB08): `analyze_inputs_semantic` with `parallelism`, whose
-/// module keeps the call facts of its ownership check for `copies::EditorModule::costly_sites`.
+/// module keeps the call facts of its ownership check for `copies::EditorModule::costly_sites`,
+/// and whose unresolved names also find the opt-in std modules that `inputs` do not hold (O6).
 pub(crate) fn analyze_inputs_for_editor(
     inputs: &[SourceInput<'_>],
     index: &mut check::semantic::SemanticIndex,
     parallelism: parallel::Parallelism,
 ) -> Result<copies::EditorModule, DiagnosticSet> {
-    let mut facts = None;
+    let mut editor = check::EditorCheck {
+        copy_facts: None,
+        opt_in_candidates: true,
+    };
     let checked = analyze_inputs_unannotated(
         inputs,
         Some(&mut *index),
@@ -413,7 +417,7 @@ pub(crate) fn analyze_inputs_for_editor(
         parallelism,
         None,
         check::contracts::ContractMode::Check,
-        Some(&mut facts),
+        Some(&mut editor),
     )
     .map_err(|mut set| {
         hints::annotate(&mut set, inputs);
@@ -421,7 +425,7 @@ pub(crate) fn analyze_inputs_for_editor(
     });
     let texts: Vec<_> = inputs.iter().map(|input| input.text).collect();
     index.retain_spelled(&texts);
-    checked.map(|module| copies::EditorModule::new(module, facts))
+    checked.map(|module| copies::EditorModule::new(module, editor.copy_facts))
 }
 
 /// Checks `inputs` once and fills `capture` (G26), keeping only references of the semantic index
@@ -446,8 +450,8 @@ pub(crate) fn analyze_inputs_captured(
     checked
 }
 
-/// `analyze_inputs_with` without the hints of the failed analysis. `copy_facts` receives the call
-/// facts of the ownership check when the module keeps the bodies that they describe (PB08 O4(b)).
+/// `analyze_inputs_with` without the hints of the failed analysis, doing what `editor` asks
+/// (`check::EditorCheck`, PB08).
 fn analyze_inputs_unannotated(
     inputs: &[SourceInput<'_>],
     semantic: Option<&mut check::semantic::SemanticIndex>,
@@ -455,7 +459,7 @@ fn analyze_inputs_unannotated(
     parallelism: parallel::Parallelism,
     capture: Option<&mut check::kg_capture::Capture>,
     contracts: check::contracts::ContractMode,
-    copy_facts: Option<&mut Option<ownership::CopyFacts>>,
+    editor: Option<&mut check::EditorCheck>,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
     let mut programs = Vec::new();
     let mut diagnostics = Diagnostics::new(0);
@@ -566,7 +570,7 @@ fn analyze_inputs_unannotated(
             Some(capture),
             parallelism,
             contracts,
-            copy_facts,
+            editor,
         ),
         None => check::check_modules_with_capture(
             &modules,
@@ -574,7 +578,7 @@ fn analyze_inputs_unannotated(
             None,
             parallelism,
             contracts,
-            copy_facts,
+            editor,
         ),
     };
     checked.map(|mut module| {
@@ -1283,6 +1287,96 @@ mod tests {
             assert!(stages >= 4, "{threads} threads: {stages} parallel stages");
             assert!(parallel == sequential, "{threads} threads");
         }
+    }
+
+    /// PB08 O6: the language server's analysis loads only the opt-in std modules that the sources
+    /// name, and its diagnostics (with their candidates, help and fixes) are those of the same
+    /// analysis with every std module, as the language server's were before: misspelt names of
+    /// every opt-in module, every identifier of the opt-in sources as an unknown value (which the
+    /// public functions, constants and cases match by their last part), and unknown functions of
+    /// reserved modules without a source.
+    #[test]
+    fn editor_diagnostics_with_the_named_std_modules_are_those_with_every_std_module() {
+        let names: std::collections::BTreeSet<&str> = stdlib::OPT_IN
+            .iter()
+            .flat_map(|module| module.names.iter().copied())
+            .collect();
+        let parses = |line: &str| parser::parse(&format!("{line}\n0\n")).is_ok();
+        let mut probes: Vec<String> = Vec::new();
+        for module in stdlib::OPT_IN {
+            let name = module.module;
+            let last = if name.ends_with('x') { 'q' } else { 'x' };
+            probes.push(format!("{}{last}", &name[..name.len() - 1]));
+        }
+        let mut words = std::collections::BTreeSet::new();
+        for (path, text) in stdlib::SOURCES {
+            if !stdlib::module_name(path).is_some_and(stdlib::is_opt_in) {
+                continue;
+            }
+            let (tokens, _) = lexer::lex_all(text, syntax::Edition::LATEST);
+            for token in tokens {
+                if let syntax::TokenKind::Ident(word) = token.kind
+                    && !names.contains(word.as_str())
+                {
+                    words.insert(word);
+                }
+            }
+        }
+        probes.extend(words);
+        probes.extend(["Rc.parse", "Int.Null", "Routine.init"].map(str::to_owned));
+        let probes: Vec<String> = probes
+            .into_iter()
+            .filter(|probe| parses(&format!("let probe = {probe}")))
+            .collect();
+        assert!(probes.len() > 1000, "{}", probes.len());
+        let mut compared = (0, 0);
+        for chunk in probes.chunks(40) {
+            let text: String = chunk
+                .iter()
+                .enumerate()
+                .map(|(index, probe)| format!("def probe{index} :: i64 = {probe}\n"))
+                .collect::<String>()
+                + "0\n";
+            let named = stdlib::sources_for([text.as_str()]);
+            assert!(
+                named.len() < stdlib::SOURCES.len(),
+                "the probes load every std module"
+            );
+            let analyze = |std: &[(&'static str, &'static str)]| {
+                let inputs: Vec<_> =
+                    std::iter::once(("Main.tz", text.as_str(), ModuleOrigin::User))
+                        .chain(
+                            std.iter()
+                                .map(|(path, text)| (*path, *text, ModuleOrigin::Std)),
+                        )
+                        .map(|(path, text, origin)| SourceInput {
+                            path,
+                            text,
+                            origin,
+                            namespace: "",
+                            edition: syntax::Edition::LATEST,
+                            package: None,
+                        })
+                        .collect();
+                let mut index = check::semantic::SemanticIndex::default();
+                match analyze_inputs_for_editor(&inputs, &mut index, Parallelism::fixed(1)) {
+                    Ok(mut module) => module.take_warnings(),
+                    Err(errors) => errors.diagnostics,
+                }
+            };
+            let (with_named, with_all) = (analyze(&named), analyze(stdlib::SOURCES));
+            compared.0 += with_all.len();
+            compared.1 += with_all
+                .iter()
+                .filter(|diagnostic| !diagnostic.detail.candidates.is_empty())
+                .count();
+            assert_eq!(
+                format!("{with_named:#?}"),
+                format!("{with_all:#?}"),
+                "{text}"
+            );
+        }
+        assert!(compared.0 > 1000 && compared.1 > 300, "{compared:?}");
     }
 
     /// Analyzes `sources` as the user modules and compares the whole result at 1, 2 and 8 threads.

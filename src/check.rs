@@ -5918,6 +5918,9 @@ struct Names {
     active_aliases: BTreeMap<String, Vec<String>>,
     /// The declarations that typed holes search (G25), built on the first hole of a check.
     search_index: std::sync::OnceLock<Vec<find::Entry>>,
+    /// Whether the candidates of an unresolved name also come from the opt-in std modules that the
+    /// check does not load, as `EditorCheck::opt_in_candidates` asks (PB08 O6).
+    opt_in_candidates: bool,
 }
 
 /// How the name before `{` of a computation expression resolves.
@@ -7688,10 +7691,22 @@ pub(crate) fn check_modules_indexed_all(
     check_modules_with_capture(modules, semantic, None, parallelism, contracts, None)
 }
 
+/// What the language server's analysis asks of a check besides the module (PB08).
+#[derive(Default)]
+pub(crate) struct EditorCheck {
+    /// Set by the check: the call facts of the ownership check, when the module still has the
+    /// bodies that they describe (O4(b)).
+    pub(crate) copy_facts: Option<crate::ownership::CopyFacts>,
+    /// Whether the candidates of an unresolved name (`value_pool`, `function_pool`) also come from
+    /// the opt-in std modules that the check does not load, as those of a check that loads every
+    /// std module do (O6). The language server loads only the opt-in modules that the sources
+    /// name; its candidates, help and fixes stay those of a check that loads them all.
+    pub(crate) opt_in_candidates: bool,
+}
+
 /// `check_modules_indexed_all` that also fills `capture`, the declaration view of the knowledge
-/// graph (G26), and gives `copy_facts` the call facts of the ownership check when the module still
-/// has the bodies that they describe (PB08 O4(b)). The capture only reads the checker's state: the
-/// result and the diagnostics are those of the same analysis without it. With a capture, the
+/// graph (G26), and does what `editor` asks (PB08). The capture only reads the checker's state:
+/// the result and the diagnostics are those of the same analysis without it. With a capture, the
 /// semantic index is the capture's: `semantic` is `None`.
 pub(crate) fn check_modules_with_capture(
     modules: &[ModuleInput<'_>],
@@ -7699,7 +7714,7 @@ pub(crate) fn check_modules_with_capture(
     capture: Option<&mut kg_capture::Capture>,
     parallelism: Parallelism,
     contracts: contracts::ContractMode,
-    copy_facts: Option<&mut Option<crate::ownership::CopyFacts>>,
+    editor: Option<&mut EditorCheck>,
 ) -> Result<CheckedModule, DiagnosticSet> {
     let mut diagnostics = Diagnostics::new(0);
     match check_modules_collect(
@@ -7710,7 +7725,7 @@ pub(crate) fn check_modules_with_capture(
         capture,
         parallelism,
         contracts,
-        copy_facts,
+        editor,
     ) {
         Ok(module) => Ok(module),
         Err(error) => {
@@ -7720,8 +7735,7 @@ pub(crate) fn check_modules_with_capture(
     }
 }
 
-/// Checks `modules`. `copy_facts` receives the call facts of the ownership check when the
-/// returned module still has the bodies that they describe (PB08 O4(b)).
+/// Checks `modules`, doing what `editor` asks (PB08).
 #[allow(clippy::too_many_arguments)]
 fn check_modules_collect(
     modules: &[ModuleInput<'_>],
@@ -7731,7 +7745,7 @@ fn check_modules_collect(
     mut capture: Option<&mut kg_capture::Capture>,
     parallelism: Parallelism,
     contract_mode: contracts::ContractMode,
-    copy_facts: Option<&mut Option<crate::ownership::CopyFacts>>,
+    editor: Option<&mut EditorCheck>,
 ) -> Result<CheckedModule, Diagnostic> {
     let check_time = crate::timings::Phase::start("check");
     // A `@deprecated` declaration needs the references that the semantic index records (W1005),
@@ -7740,6 +7754,9 @@ fn check_modules_collect(
     let indexing = semantic.is_some() || capture.is_some() || !deprecations.is_empty();
     let mut names = Names {
         warning_options,
+        opt_in_candidates: editor
+            .as_ref()
+            .is_some_and(|editor| editor.opt_in_candidates),
         ..Names::default()
     };
     let module_editions: BTreeMap<_, _> = modules
@@ -9709,10 +9726,10 @@ fn check_modules_collect(
     let rewritten = crate::gpu_devices::lower_kernels(&mut module)?;
     // PB08 O4(b): the call facts describe the bodies that the ownership check saw, which nothing
     // after it changes unless `lower_kernels` numbered device calls.
-    if let Some(kept) = copy_facts
+    if let Some(editor) = editor
         && !rewritten
     {
-        *kept = Some(facts);
+        editor.copy_facts = Some(facts);
     }
     Ok(module)
 }
