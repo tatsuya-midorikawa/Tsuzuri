@@ -36,6 +36,7 @@ Copilot（VS Code）や Claude Code で同じ手順を実行するときは、�
 
 対応するのは上の 5 環境だけです。Intel Mac、x86 32-bit、Web、Alpine 用のパッケージは作成しません。
 Linux の拡張ホストは glibc ベースの環境を対象にします。
+廃止した `targetPlatform`（旧版の `darwin-x64` など）や target 未指定（universal）の旧パッケージを Marketplace 上に残さないでください。Visual Studio Marketplace の `IncludeLatestVersionOnly` は過去に公開された各 `targetPlatform` の最新版を返すため、廃止済み target の旧版が残っていると、公開カタログで対象外環境に古い版が配布され続けるだけでなく、公開直後の版を一定期間留保（クールダウン）する Marketplace プロキシ環境で旧版の対象外 target だけが生き残ってフォールバックを妨げ、Apple Silicon Mac を含む全 5 対応環境で検索・インストールができなくなります。公開カタログは常に全バージョンが上の 5 環境のみで構成される状態を保ちます。
 
 [scripts/package.mjs](scripts/package.mjs) は `process.platform` と `process.arch` から target を決定します。
 VSIX 作成と `--verify`／`--scan`、ツールチェーンの作成・再検証、IDE 統合テストは、処理の最初に対応ホストを検査します。対象外では、既存の配布物を再利用しても `Unsupported toolchain host` で失敗します。VSIX の再検証は、ツールチェーンの manifest の OS／CPU がホストと一致することも検査します。
@@ -305,7 +306,7 @@ CLI 認証を使わず、[Marketplace の管理画面](https://marketplace.visua
 ## 10. 公開後の確認と更新
 
 - `vsce publish` の `Published` や、公開カタログに版が表示されたことだけを完了条件にしません。5 target それぞれの `ExtensionVersionFlags.Validated`（ビットマスク `1`）が必要です。アップロード直後は、カタログに版が見えても一部の target が未検証のことがあります。
-- [公開状態チェッカー](../.claude/skills/vscode-publish/scripts/verify-release.mjs) の `marketplace VERSION` は、ログインやトークンの取得を行わず、公開カタログを照会して5 target 全部の検証完了を確認します。未検証なら待って再確認し、同じ版を再アップロードしません。validation エラーや手動審査待ちは、公開完了と区別して報告します。
+- [公開状態チェッカー](../.claude/skills/vscode-publish/scripts/verify-release.mjs) の `marketplace VERSION` は、ログインやトークンの取得を行わず、公開カタログ（全バージョン一覧と `IncludeLatestVersionOnly` 応答）を照会して、指定バージョンの 5 target 全部の検証完了、過去版を含む全バージョンの `targetPlatform` が 5 対応環境のみであること、`IncludeLatestVersionOnly` に旧版や対象外 target が混入していないことを確認します。未検証なら待って再確認し、同じ版を再アップロードしません。validation エラーや手動審査待ちは、公開完了と区別して報告します。
 - 管理画面で Publisher、バージョン、target の一覧、検証結果を確認する。
 - Marketplace の説明、PNG アイコン、ライセンス、リンクが正しく表示されることを確認する。
 - 対象プラットフォームのクリーンな VS Code からインストールして動作を確認する。
@@ -338,10 +339,11 @@ code --install-extension tmidorikawa.tsuzuri
 | 同じバージョン・target が既に存在する | 不足 target の追加か、内容変更による新バージョンかを区別する |
 | アイコン／README 画像で公開エラー | アイコンは PNG。README／CHANGELOG の画像 URL は HTTPS で、独自 SVG を使わない |
 | 別 OS でコンパイラが起動しない | ファイル名ではなく VSIX 内の target とバイナリを確認。対象 OS／CPU で生成・試験する |
+| `'Tsuzuri' 拡張機能は ... プラットフォームの Visual Studio Code では使用できません` | 対応ホスト上でも発生する場合、廃止済み `targetPlatform`（旧版の `darwin-x64` 等）や universal 版が Marketplace に残って `IncludeLatestVersionOnly` とクールダウン付きプロキシを汚染していないか `verify-release.mjs marketplace` で確認。緊急回避は `code --install-extension tmidorikawa.tsuzuri@<クールダウン通過済みの版>` または検証済み VSIX を直接指定 |
 | ファイル数の警告 | SDK 同梱により多くなる。許可リストと内容を確認し、必要な SDK ファイルを無根拠に削らない |
 
-公開停止や削除が必要な場合は、管理画面の **Unpublish** と **Remove** を混同しないでください。
-`vsce unpublish` は拡張の削除操作で、復元できない影響があります。更新のやり直しや公開停止のために安易に実行しないでください。
+特定の旧バージョンだけを削除する必要がある場合（廃止した `targetPlatform` を含む過去版の整理など）は、管理画面の対象拡張から **More Actions > Reports** を開き、**Manage** タブの **Delete this version** を使用します（最新版は削除できず、削除したバージョン番号は再利用できません）。
+公開停止や拡張全体の削除とは明確に区別してください。**More Actions > Unpublish** は拡張全体の公開停止であり、**More Actions > Remove** および `vsce unpublish` は**拡張機能全体を削除して拡張 ID（`tmidorikawa.tsuzuri`）を元の Publisher でも永久に再利用不能にする不可逆操作**です。特定バージョンの整理や更新のやり直しのために `vsce unpublish` や **More Actions > Remove** を絶対に実行しないでください。
 
 ## 公式資料
 
