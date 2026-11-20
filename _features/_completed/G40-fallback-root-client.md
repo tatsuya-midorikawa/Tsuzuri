@@ -391,6 +391,41 @@ GitHub Copilot の最初のレビュー（`6d24246c` に対する 3 件）を、
 - `cargo fmt --all -- --check`（差分なし）、`node scripts/check-links.mjs --into _features/README.md`、`node scripts/check-guide-lite.mjs`、`node tests/platforms.mjs`、`git diff --check`。
 - 言語リファレンスのページは変えていないので、`check-docs.mjs` は動かしていない。Rust のコードも変えていない。
 
+#### 2 回目のレビュー（`b80175ed` に対する 2 件と、1 回目の対応で見つけた競合）
+
+GitHub Copilot の 2 回目のレビュー（`b80175ed` に対するインラインの 1 件と、概要の「前回見落とした」1 件）と、1 回目の対応で見つけた **Restart Language Server** の競合（G40 より前からある。`main` の `295ffcb4`）を、コードと照らして確かめた。3 件とも実在したので、それぞれを回帰テストと一緒に別のコミットで直した。決定事項と既存のテストの期待値は変えていない。記録は `target/scratch/g40/copilot2/` にある。
+
+回帰テストは新しい `vsc/src/test/reroot.test.ts`（`npm run test:unit` に足した）に置いた。コンパイルした `testing.js`・`extension.js` を、差し替えた vscode の API、テストが進めるタイマー、止めておけるコンパイラの実行と言語クライアントで読み込む（`core.test.ts` の対象外のホストのテストと同じく、VS Code を使わない）。
+根は一時フォルダー `top` の中で決まり、パッケージ `top/b` があるあいだは開いている `top/a/X.tz` の根が `top/a`、パッケージを消すと `top` になる。根の読み込みは、ファイルを読んだ後で止められる（遅い走査の代わり）。パッケージを消す操作は、拡張の `reroot` と同じく cache を捨ててから `testing.reroot` を呼ぶ。
+
+1. **4639451854（`vsc/src/testing.ts:139`）: タイマーを止めても、先の発見を待っているコールバックは止まらない。** 実在した。保存はその根の発見を 300 ms 後に予約し、コールバックはまず実行中の同じ根の発見を待つ。明示の実行とデバッグ（`discoverForRun`）も同じく待つ。
+   根を外すとタイマーは消えるが、すでに待っているコールバックと実行は残る。その間に決め直しが根を外すと、`discover(root)` の `addProject(root)` が古い根を Testing ビューに戻し、次の変化まで残った。
+   - 両方とも、待った後に根がまだ Testing ビューにあるときだけ発見する。実行はその根で何も走らせない（発見の途中で外れた根と同じ。`selection`）。`discoverForRun` は、前の根を実行している間に外れた根も飛ばす。
+     Copilot は根の項目か世代を待つ前に取って後で比べることを勧めたが、外れたことを知るには待った後の `roots.has(root)` で足りる（外れてから足し直された根は今の根なので、発見してよい）ので、それを使った。
+   - 回帰テスト: `a discovery that waits for an earlier one does not bring back a root that a re-rooting removed meanwhile` と `an explicit run that waits for an earlier discovery does not bring back a root that a re-rooting removed meanwhile`。
+     `top/a` の発見を止めておき、保存のコールバック（または明示の実行）がそれを待つ間にパッケージを消して決め直し、発見を終わらせる。`b80175ed` では両方とも、`top` の横に `top/a` が戻って落ちる（`unit-item1-before.log`）。
+2. **概要の「前回見落とした」指摘（`vsc/src/testing.ts:132`）: `refreshRoots` は、捨てられた cache から根を足しうる。** 実在した。遅い走査の途中でパッケージの印が作られるか消え、決め直しが先に終わって古い根を外すと、`usedRoots()` が返った後の繰り返しが古い根を戻し、次の変化まで残った。
+   開いた文書の購読（`onDidOpenTextDocument`）と **Test Project**（`tsuzuri.test`）も、読んだ根を後で足すので同じ。
+   - 3 か所とも、1 回目の 1 で `open` に入れた `ProjectRoots.settled` を使う。読んでいる途中に cache が捨てられたら読み直し、その確かめと同じタスクで根を足す。Test Project は、そうして足した今の根を走らせる。
+     Copilot は `refreshRoots` と `onDidOpenTextDocument` を挙げたが、Test Project も同じ形なので一緒に直した。Test Project が読み直すのはアクティブなファイルの根だけで、アクティブなファイルがなければ今までどおりワークスペースのフォルダーを選ばせて 1 回だけ読む（その根は cache で決まらず、読み直すとフォルダーをもう一度選ばせることになる）。`testing.reroot` は cache を捨てた直後に動き、その途中で cache が捨てられれば次の決め直しが続くので、変えていない。
+   - 回帰テスト: `a root that was read before a change cleared the cache is not added to the Test Explorer after the re-rooting`。3 つの入口（`refresh`・`open`・`command`）それぞれで、`top/a` を読んだところで読み込みを止め、パッケージを消して決め直してから続ける。
+     1 の修正（`98e40490`）の後でも、3 つとも `top/a` が戻って落ちる（`unit-item2-before.log`）。
+3. **Restart Language Server の競合（1 回目の対応で見つけた。G40 より前からある）。** 実在した。`deactivate()` は、クライアントがすべて止まるのを待ってから `clients` を空にしていた。その間に言語サーバーのないプロジェクトの文書を開くと、`open` が起動したクライアントが、空にするときに map から落ちる。
+   再起動が最後に開いている文書ごとに `open` を呼ぶと同じ根の 2 つ目のクライアントが起動し、1 つ目は止める手段のないまま、窓を閉じるまで同じファイルを受け持った（診断とホバーが 2 つずつ）。拡張の終了でも `deactivate()` が動くが、そのとき起動したクライアントは拡張ホストと一緒に終わる。
+   - `deactivate()` は、止まるのを待つ前に `clients`・`kinds`・`watchers` を空にする（1 つの根を止める `stop` と同じ順）。その間に起動したクライアントは map に残り、再起動の最後の `open` はそれを見つける。
+     古い順に頼るものはない。`deactivate()` を呼ぶのは再起動と拡張の終了だけで、再起動は決め直しと 1 本の列で動く。止まりかけのクライアントの根で `open` が新しいクライアントを起動しても、`LanguageClient.stop()` は止め始めた時点でそのクライアントの機能（診断・プロバイダー）を捨てる（`vscode-languageclient` の `shutdown` の `cleanUp`）ので、結果は 2 つにならない。前の順では、その根は再起動の最後の `open` で起動していた。
+   - 回帰テスト: `a client that starts while Restart Language Server stops the others stays tracked, so no server runs without one`。差し替えた `vscode-languageclient` で、`top/a` のクライアントが止まるのを待たせ、その間に `top/b` の文書を開いてから止まらせる。
+     2 の修正（`1025a5e0`）の後でも、`top/b` のクライアントが 2 つ動き、map には 2 つ目だけがあって落ちる（`unit-item3-before.log`）。言語クライアントを差し替えれば順序を決めて動かせるので、統合テストにはしていない。
+- 文書: `vsc/Development.md`（テストの根を足すときも読み直すこと、外したテストの根は待っていた発見や実行でも戻さないこと）と、3 について `vsc/CHANGELOG.md` の `## Unreleased`（0.1.8 にもある不具合なので 1 行足した）。
+  1 と 2 は CHANGELOG の「the Testing view drops the projects that are no longer projects」をそのとおりにするだけなので、CHANGELOG を変えていない。`docs/architecture.md`（テストの根の決め直しを書いていない）、`vsc/README.md`、言語リファレンスは、書いている振る舞いが変わらないので変えていない。
+
+#### 2 回目の対応の検証
+
+- `cd vsc && npm run test:unit && npm run check-types && npm run lint`: 単体テストは 33 件すべて通過（前の 26 件に、`reroot.test.ts` の 4 件（そのうち 1 件は 3 つの入口の下位テスト）の 7 件を足した）、型検査と lint はエラーなし（`unit-final.log`）。`reroot.test.ts` は 30 回続けて動かして、毎回通った。
+- `cd vsc && node ../scripts/slot.mjs -- npm test`（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）: 16 の `VS Code:` 行と `All Tsuzuri VS Code integration checks passed.`（`integration-final.log`）。言語サーバーは変えていないので、同梱の `vsc/toolchain` を使った。サーバーが要求を断る `document directory does not exist` は、前と同じく 1 回出る。
+- `cargo fmt --all -- --check`（差分なし）、`node scripts/check-links.mjs --into _features/README.md`（11 リンク、0 件の切れ）、`node scripts/check-guide-lite.mjs`（88 件、0 件の失敗）、`node tests/platforms.mjs`、`git diff --check`。
+- 言語リファレンスのページと Rust のコードは変えていないので、`check-docs.mjs` と `cargo nextest` は動かしていない。
+
 ### 変更したファイル
 
-`vsc/src/core.ts`、`vsc/src/extension.ts`、`vsc/src/workflow.ts`、`vsc/src/testing.ts`、`vsc/src/test/core.test.ts`、`vsc/src/test/extension.test.ts`、`vsc/scripts/test-extension.mjs`、`vsc/README.md`、`vsc/Development.md`、`vsc/CHANGELOG.md`、`docs/architecture.md`、`_tsuzuri/language-reference/compiler/usage.md`、`_features/README.md`、`_features/G39-stale-editor-diagnostics.md`（リンクだけ）、このチケット。
+`vsc/src/core.ts`、`vsc/src/extension.ts`、`vsc/src/workflow.ts`、`vsc/src/testing.ts`、`vsc/src/test/core.test.ts`、`vsc/src/test/extension.test.ts`、`vsc/src/test/reroot.test.ts`、`vsc/scripts/test-extension.mjs`、`vsc/package.json`（`test:unit` に `reroot.test.js` を足した）、`vsc/README.md`、`vsc/Development.md`、`vsc/CHANGELOG.md`、`docs/architecture.md`、`_tsuzuri/language-reference/compiler/usage.md`、`_features/README.md`、`_features/G39-stale-editor-diagnostics.md`（リンクだけ）、このチケット。
