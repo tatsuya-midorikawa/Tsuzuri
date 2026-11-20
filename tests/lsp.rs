@@ -457,7 +457,7 @@ fn completion_offers_fields_members_locals_and_keywords() {
             .map(|item| item["label"].as_str().unwrap().to_owned())
             .collect()
     };
-    let responses = scripted(&P1, "utf-16", |uri| {
+    let responses = stepwise(&P1, "utf-16", |uri| {
         let main = uri("Main.tz");
         let change = |version: u64, text: &str| json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": main, "version": version}, "contentChanges": [{"text": text}]}});
         vec![
@@ -662,7 +662,7 @@ fn signature_help_inside_brackets_that_an_earlier_line_opened() {
         (body(&["Steps.add(", "    ()", "    (n) "]), &add),
         ("Steps.add n)\n    Steps.one (\n".to_owned(), &one),
     ];
-    let responses = scripted(
+    let responses = stepwise(
         &[("Main.tz", primer), ("Steps.tz", steps)],
         "utf-16",
         |uri| {
@@ -737,7 +737,7 @@ fn stale_fallbacks_hide_private_declarations_of_other_modules() {
         "Secret.open ",
     ]
     .map(|tail| main.replace("= n\n", &format!("= {tail}\n")));
-    let responses = scripted(
+    let responses = stepwise(
         &[("Main.tz", main), ("Secret.tz", secret)],
         "utf-16",
         |uri| {
@@ -986,7 +986,7 @@ fn inlay_hints_show_implicit_copies() {
     use serde_json::json;
     let text = "record Bag { items: [i64] }\ndef total :: own Bag -> i64\nfn total bag =\n    let xs = bag.items\n    let ys = bag.items\n    Array.length (ref xs) + Array.length (ref ys)\ndef reuse :: own [i64] -> i64\nfn reuse a =\n    let b = a\n    let moved = [1]\n    let n = 2\n    let m = n\n    Array.length (ref a) + Array.length (ref b) + Array.length (ref moved) + m\n";
     let broken = format!("{text}fn (");
-    let responses = scripted(&[("Main.tz", text)], "utf-16", |uri| {
+    let responses = stepwise(&[("Main.tz", text)], "utf-16", |uri| {
         let request = |id: u64, range: serde_json::Value| json!({"id": id, "method": "textDocument/inlayHint", "params": {"textDocument": {"uri": uri("Main.tz")}, "range": range}});
         let whole =
             json!({"start": {"line": 0, "character": 0}, "end": {"line": 13, "character": 0}});
@@ -1677,7 +1677,7 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
     };
     let edited = |tail: &str| N_REPORT.replace("Circle.radius x + Shapes::Circle.radius x", tail);
     let mut circle = String::new();
-    let responses = scripted(&files, "utf-16", |uri| {
+    let responses = stepwise(&files, "utf-16", |uri| {
         circle = uri("Circle.tz");
         let report = uri("Report.tz");
         let change = |version: u64, text: &str| json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": report, "version": version}, "contentChanges": [{"text": text}]}});
@@ -1810,7 +1810,7 @@ fn namespaces_and_using_resolve_definitions_completions_and_tokens() {
     ];
     let files = files.each_ref().map(|(name, text)| (*name, text.as_str()));
     let roots = report.replace("Circle.radius x", "C");
-    let responses = scripted(&files, "utf-16", |uri| {
+    let responses = stepwise(&files, "utf-16", |uri| {
         circle = uri("Circle.tz");
         let report_uri = uri("Report.tz");
         let mut at = position(&roots, "\\x -> C", "utf-16");
@@ -1849,7 +1849,7 @@ fn opt_in_matrix_module_completes_and_hovers_when_named() {
     use serde_json::json;
     let valid = "let m = Matrix.init 2 2 (\\i j -> i)\nlet n = Matrix.rows (ref m)\n";
     let incomplete = "let m = Matrix.init 2 2 (\\i j -> i)\nlet n = Matrix.";
-    let responses = scripted(&[("Main.tz", valid)], "utf-16", |uri| {
+    let responses = stepwise(&[("Main.tz", valid)], "utf-16", |uri| {
         let main = uri("Main.tz");
         vec![
             json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": position(valid, "rows", "utf-16")}}),
@@ -1947,7 +1947,7 @@ fn opt_in_view_and_tensor_modules_complete_when_named() {
         ),
     ];
     for (valid, incomplete, last_line, members) in cases {
-        let responses = scripted(&[("Main.tz", valid)], "utf-16", |uri| {
+        let responses = stepwise(&[("Main.tz", valid)], "utf-16", |uri| {
             let main = uri("Main.tz");
             vec![
                 json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": {"line": 0, "character": 4}}}),
@@ -2298,7 +2298,8 @@ mod live {
                 input: Some(input),
                 output,
                 thread: Some(thread),
-                next: 1,
+                // Above the small ids that the tests' own steps use.
+                next: 1000,
                 seen: Vec::new(),
             };
             let capabilities = if encoding == "utf-8" {
@@ -2499,6 +2500,40 @@ mod live {
             let _ = std::fs::remove_dir_all(&self.base);
         }
     }
+}
+
+/// Runs `steps` as `scripted` does, but sends one message at a time and waits for each request's
+/// response before the next message (G39): a request followed by an edit of its document answers
+/// for the text it was sent for.
+fn stepwise(
+    files: &[(&str, &str)],
+    encoding: &str,
+    steps: impl FnOnce(&dyn Fn(&str) -> String) -> Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let fixture = live::Fixture::new();
+    for (name, text) in files {
+        fixture.write(name, text);
+    }
+    let mut server = live::Server::start(&fixture.uri(""), encoding);
+    for (name, text) in files {
+        server.open(&fixture.uri(name), text);
+    }
+    let uri = |name: &str| fixture.uri(name);
+    let mut responses = Vec::new();
+    for step in steps(&uri) {
+        match step.get("id").cloned() {
+            Some(id) => {
+                server.send(step);
+                responses.push(server.wait(
+                    |message| message.get("id") == Some(&id) && message.get("method").is_none(),
+                    &format!("the response {id}"),
+                ));
+            }
+            None => server.send(step),
+        }
+    }
+    server.finish();
+    responses
 }
 
 /// G39 段 6: a file that leaves the project (removed, renamed, or in a removed folder) gets an empty
@@ -2750,4 +2785,186 @@ fn dependencies_outside_the_root_get_only_load_errors() {
     server.settle();
     assert_eq!(server.codes(&fixture.uri("lib/Tsuzuri.toml")), ["E0002"]);
     server.finish();
+}
+
+/// Opens the files of `files` in a fresh root, one message at a time.
+fn live_session(files: &[(&str, &str)]) -> (live::Fixture, live::Server) {
+    let fixture = live::Fixture::new();
+    for (name, text) in files {
+        fixture.write(name, text);
+    }
+    let mut server = live::Server::start(&fixture.uri(""), "utf-16");
+    for (name, text) in files {
+        server.open(&fixture.uri(name), text);
+    }
+    (fixture, server)
+}
+
+/// Sends a request without waiting for its response and returns its id.
+fn ask(server: &mut live::Server, method: &str, params: serde_json::Value) -> u64 {
+    let id = server.id();
+    server.send(serde_json::json!({"id": id, "method": method, "params": params}));
+    id
+}
+
+/// G39 段 11: a request that the client cancels before the server starts it gets -32800, however many
+/// messages wait before the cancellation (the reader no longer stops at eight).
+#[test]
+fn a_request_cancelled_behind_many_messages_is_not_computed() {
+    use serde_json::json;
+    let (fixture, mut server) = live_session(&P1);
+    // The hover's refresh keeps the server busy while the rest arrives.
+    let busy = ask(
+        &mut server,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": fixture.uri("Main.tz")}, "position": position(P1_MAIN, "read (read", "utf-16")}),
+    );
+    let action = ask(
+        &mut server,
+        "textDocument/codeAction",
+        json!({"textDocument": {"uri": fixture.uri("Warn.tz")}, "range": range(0, 0, 37), "context": {"diagnostics": []}}),
+    );
+    for _ in 0..10 {
+        server.notify("initialized", json!({}));
+    }
+    server.notify("$/cancelRequest", json!({"id": action}));
+    let hovered = server.response(busy);
+    assert!(hovered.get("result").is_some(), "{hovered}");
+    let response = server.response(action);
+    assert_eq!(response["error"]["code"], -32800, "{response}");
+    server.finish();
+}
+
+/// G39 段 11: cancellations of ids that no request has do not pile up and stop later cancellations
+/// from taking effect.
+#[test]
+fn cancellations_of_unknown_ids_leave_room_for_later_ones() {
+    use serde_json::json;
+    let (fixture, mut server) = live_session(&P1);
+    let main = fixture.uri("Main.tz");
+    for ghost in 0..1100 {
+        server.notify("$/cancelRequest", json!({"id": format!("ghost-{ghost}")}));
+    }
+    server.change(&main, 2, P1_MAIN);
+    // The change makes the hover refresh first, so that it does not end before its cancellation.
+    let hover = ask(
+        &mut server,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": main}, "position": position(P1_MAIN, "read (read", "utf-16")}),
+    );
+    server.notify("$/cancelRequest", json!({"id": hover}));
+    let response = server.response(hover);
+    assert_eq!(response["error"]["code"], -32800, "{response}");
+    server.finish();
+}
+
+/// G39 段 11: a request sees every text sync that arrived before it, of any document, and none that
+/// arrived after it: the changes of a document are not merged across a request that is computed.
+#[test]
+fn a_request_sees_the_changes_that_arrived_before_it() {
+    use serde_json::json;
+    let shapes = |ty: &str| format!("def value :: {ty} = 1\n");
+    let main = "def probe :: unit -> unit = \\_ -> { let _v = Shapes.value; () }\n";
+    let first = shapes("i64");
+    let (fixture, mut server) = live_session(&[("Main.tz", main), ("Shapes.tz", &first)]);
+    let hover = json!({"textDocument": {"uri": fixture.uri("Main.tz")}, "position": position(main, "value;", "utf-16")});
+    let busy = ask(&mut server, "textDocument/hover", hover.clone());
+    server.change(&fixture.uri("Shapes.tz"), 2, &shapes("i32"));
+    let between = ask(&mut server, "textDocument/hover", hover.clone());
+    server.change(&fixture.uri("Shapes.tz"), 3, &shapes("i16"));
+    let last = ask(&mut server, "textDocument/hover", hover);
+    let detail = |server: &mut live::Server, id: u64| {
+        let response = server.response(id);
+        response["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{response}"))
+            .to_owned()
+    };
+    assert!(detail(&mut server, busy).contains("i64"));
+    let between = detail(&mut server, between);
+    assert!(
+        between.contains("i32") && !between.contains("i16"),
+        "{between}"
+    );
+    assert!(detail(&mut server, last).contains("i16"));
+    server.finish();
+}
+
+/// G39 段 11: a request about a document with a later change in the queue gets -32801, and the text
+/// between is never analyzed: its diagnostics are not sent, those of the last text once.
+#[test]
+fn a_request_for_a_replaced_text_gets_content_modified() {
+    use serde_json::json;
+    let valid = "fn value() -> i64 { 1 }\n";
+    let other = "fn other() -> i64 { 2 }\n";
+    let (fixture, mut server) = live_session(&[("Main.tz", valid), ("Other.tz", other)]);
+    let main = fixture.uri("Main.tz");
+    let at = |text: &str| json!({"textDocument": {"uri": main}, "position": position(text, "value", "utf-16")});
+    // A hover of another document of the root: computed, it analyzes the root while the rest arrives.
+    let busy = ask(
+        &mut server,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": fixture.uri("Other.tz")}, "position": position(other, "other", "utf-16")}),
+    );
+    let mismatched = "fn value() -> i64 { true }\n";
+    server.change(&main, 2, mismatched);
+    let stale = ask(&mut server, "textDocument/hover", at(mismatched));
+    server.change(&main, 3, "fn value() -> i64 { missing }\n");
+    let symbols = ask(
+        &mut server,
+        "textDocument/documentSymbol",
+        json!({"textDocument": {"uri": main}}),
+    );
+    assert!(server.response(busy).get("result").is_some());
+    let response = server.response(stale);
+    assert_eq!(response["error"]["code"], -32801, "{response}");
+    let response = server.response(symbols);
+    assert!(response["result"].is_array(), "{response}");
+    let versions: Vec<_> = server
+        .seen
+        .iter()
+        .filter(|message| {
+            message["method"] == "textDocument/publishDiagnostics"
+                && message["params"]["uri"] == main.as_str()
+        })
+        .map(|message| message["params"]["version"].clone())
+        .collect();
+    assert!(!versions.contains(&json!(2)), "{versions:?}");
+    assert_eq!(
+        versions.iter().filter(|version| **version == 3).count(),
+        1,
+        "{versions:?}"
+    );
+    assert_eq!(server.codes(&main), ["E1002"]);
+    server.finish();
+}
+
+/// G39 段 12: the light bulb's automatic request (`triggerKind` 2) without `only` gets no fix all,
+/// which VS Code would drop; an invoked one and one that asks for source actions do.
+#[test]
+fn automatic_code_action_requests_skip_fix_all() {
+    use serde_json::json;
+    let responses = scripted(&P1, "utf-16", |uri| {
+        let warn = uri("Warn.tz");
+        let request = |id: u64, context: serde_json::Value| json!({"id": id, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": warn}, "range": range(0, 0, 37), "context": context}});
+        vec![
+            request(1, json!({"diagnostics": [], "triggerKind": 2})),
+            request(2, json!({"diagnostics": [], "triggerKind": 1})),
+            request(
+                3,
+                json!({"diagnostics": [], "triggerKind": 2, "only": ["source.fixAll"]}),
+            ),
+        ]
+    });
+    let kinds = |index: usize| -> Vec<String> {
+        responses[index]["result"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{:?}", responses[index]))
+            .iter()
+            .map(|action| action["kind"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(kinds(0), ["quickfix"]);
+    assert_eq!(kinds(1), ["quickfix", "source.fixAll.tsuzuri"]);
+    assert_eq!(kinds(2), ["source.fixAll.tsuzuri"]);
 }
