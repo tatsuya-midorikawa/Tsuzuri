@@ -1228,6 +1228,9 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
     （`lsp::std_index`）から、未解決の名前の候補・help・修正案（`Matrx.init` に `Matrix`、型の `Tensr` に `Tensor`）は、読み込んでいない opt-in のモジュールの
     名前と公開の関数・case を `value_pool`・`function_pool` に、モジュールと同じ名前の公開の型（利用者のモジュールが無修飾で書ける唯一の opt-in の宣言。
     `type_choice` のモジュールのパスの規則）を `type_pool` に足して答える（`find::OptInNames`。std のソースから process に 1 回だけ読む）。
+    その型は、無修飾の名前のモジュールのパスが、読み込んでいない opt-in のモジュールも読み込んだとして（`Names::candidate_module_path`）その std の
+    モジュールに着く要求元にだけ足す（同じ名前の利用者のモジュール `Sample::Tensor` が先に答えるか、`using std` と並んで曖昧にするところでは足さない。
+    PR #122 の Copilot のレビュー）。
     読み込んだ std の instance や予算の全体を見る検査（instance の重なり、重なりの検査の 1,024 組の予算、特殊化の 65,536 の予算）は、名前を書いていない opt-in の
     モジュールについて `check` と同じになった（全部を読んでいたときは、利用者の blanket instance `Monoid<'a>` が読み込んだだけの `std/Monoids.tz` の instance と
     重なって 9 個の `E1016` になり、`Main.tz` の `W1001` が出なかった）。答えが変わる唯一の種類で、エディターを `check` に合わせるので採った（PB08 のレビュー。

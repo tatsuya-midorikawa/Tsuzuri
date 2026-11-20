@@ -1297,6 +1297,9 @@ mod tests {
     /// reserved modules without a source. The same probes are also types (in a signature, and the
     /// capitalized ones in a record literal and a record pattern), whose candidates include the
     /// opt-in types that a user module names bare (`Tensor`, `WaitGroup`), and case patterns.
+    /// The misspelt names are also checked in projects whose user modules are named like opt-in
+    /// modules (`Sample::Tensor`), where the module path of a bare name may reach the user module
+    /// before the std one (the first Copilot review of PR #122).
     #[test]
     fn editor_diagnostics_with_the_named_std_modules_are_those_with_every_std_module() {
         let names: std::collections::BTreeSet<&str> = stdlib::OPT_IN
@@ -1310,6 +1313,7 @@ mod tests {
             let last = if name.ends_with('x') { 'q' } else { 'x' };
             probes.push(format!("{}{last}", &name[..name.len() - 1]));
         }
+        let misspelt = probes.clone();
         let mut words = std::collections::BTreeSet::new();
         for (path, text) in stdlib::SOURCES {
             if !stdlib::module_name(path).is_some_and(stdlib::is_opt_in) {
@@ -1371,8 +1375,10 @@ mod tests {
                 true,
             ),
         ];
-        let mut texts = Vec::new();
-        for (kind, (line, capitalized)) in kinds.iter().enumerate() {
+        // The probe lines of each kind of position, in texts of at most 40 lines (a text reports at
+        // most 50 errors).
+        let chunks = |probes: &[String], kind: usize| -> Vec<String> {
+            let (line, capitalized) = kinds[kind];
             let probes: Vec<&String> = probes
                 .iter()
                 .filter(|probe| {
@@ -1380,48 +1386,147 @@ mod tests {
                         && (!capitalized || probe.starts_with(|c: char| c.is_ascii_uppercase()))
                 })
                 .collect();
-            assert!(probes.len() > 200, "{kind}: {}", probes.len());
-            for chunk in probes.chunks(40) {
-                let text: String = chunk
-                    .iter()
-                    .enumerate()
-                    .map(|(index, probe)| line(index, probe))
-                    .collect::<String>()
-                    + "0\n";
-                texts.push((kind, text));
+            probes
+                .chunks(40)
+                .map(|chunk| {
+                    chunk
+                        .iter()
+                        .enumerate()
+                        .map(|(index, probe)| line(index, probe))
+                        .collect::<String>()
+                        + "0\n"
+                })
+                .collect()
+        };
+        // Each text is a project: its user sources, `Main.tz` first.
+        let mut texts: Vec<(usize, Vec<(String, String)>)> = Vec::new();
+        for kind in 0..kinds.len() {
+            let chunks = chunks(&probes, kind);
+            assert!(chunks.len() > 5, "{kind}: {}", chunks.len());
+            texts.extend(
+                chunks
+                    .into_iter()
+                    .map(|text| (kind, vec![("Main.tz".to_owned(), text)])),
+            );
+        }
+        let base = texts.len();
+        // Shadowing (the first Copilot review of PR #122): user modules in the namespace `Sample`
+        // named like opt-in modules, which declare a value only, a type named after the module
+        // only, both, or neither (only a module that does not write its name leaves the std module
+        // unloaded: a value only, or neither), and a namespace `Sample::Gen`. The module path of a
+        // bare name (`type_choice`) reaches `Sample::Tensor` from the namespace `Sample`, from the
+        // enclosed `Sample::Inner` and through `using Sample`, and neither it nor `std::Tensor`
+        // through `using Sample` and `using std` together; from `Other` and from the root without a
+        // `using` it reaches the std module. A namespace `Matrix` is reserved. The positions are a
+        // value, a type in a signature and a record literal: a record pattern looks its type up as
+        // a record literal does, and a case pattern follows no module path.
+        let mut shadowing = misspelt;
+        shadowing.extend(
+            [
+                "Tensr",
+                "Matrx",
+                "Jsn",
+                "Tickr",
+                "Null",
+                "parse",
+                "Matrx.init",
+                "Tensr.zeros",
+            ]
+            .map(str::to_owned),
+        );
+        let declarations = |kind: usize, module: &str| match kind {
+            0 => "def shadow_value :: i64 = 1\n".to_owned(),
+            1 => format!("record {module} {{ count: i64 }}\n"),
+            2 => format!("record {module} {{ count: i64 }}\ndef shadow_value :: i64 = 1\n"),
+            _ => String::new(),
+        };
+        let requesters = [
+            "namespace Sample\n",
+            "namespace Sample::Inner\n",
+            "using Sample\n",
+            "using Sample\nusing std\n",
+            "namespace Other\n",
+            "",
+        ];
+        let mut projects: Vec<(&str, Vec<(String, String)>)> = Vec::new();
+        for rotation in 0..4 {
+            let modules: Vec<(String, String)> = ["Tensor", "Json", "Matrix", "Ticker"]
+                .iter()
+                .enumerate()
+                .map(|(index, module)| {
+                    (
+                        format!("{module}.tz"),
+                        format!(
+                            "namespace Sample\n{}",
+                            declarations((index + rotation) % 4, module)
+                        ),
+                    )
+                })
+                .chain([(
+                    "Deep.tz".to_owned(),
+                    "namespace Sample::Gen\ndef deep :: i64 = 2\n".to_owned(),
+                )])
+                .collect();
+            for requester in &requesters[..if rotation == 0 { 6 } else { 3 }] {
+                projects.push((requester, modules.clone()));
             }
         }
-        // Diagnostics, those with candidates, and those whose candidates hold an opt-in type.
-        let mut compared = (0, 0, 0);
-        for (kind, text) in &texts {
-            let named = stdlib::sources_for([text.as_str()]);
+        projects.push((
+            "",
+            vec![(
+                "Shadow.tz".to_owned(),
+                "namespace Matrix\ndef shadow_value :: i64 = 1\n".to_owned(),
+            )],
+        ));
+        for (requester, modules) in &projects {
+            for kind in 0..3 {
+                for text in chunks(&shadowing, kind) {
+                    let main = ("Main.tz".to_owned(), format!("{requester}{text}"));
+                    texts.push((
+                        kind,
+                        std::iter::once(main)
+                            .chain(modules.iter().cloned())
+                            .collect(),
+                    ));
+                }
+            }
+        }
+        let analyze = |users: &[(String, String)], std: &[(&'static str, &'static str)]| {
+            let inputs: Vec<_> = users
+                .iter()
+                .map(|(path, text)| (path.as_str(), text.as_str(), ModuleOrigin::User))
+                .chain(
+                    std.iter()
+                        .map(|(path, text)| (*path, *text, ModuleOrigin::Std)),
+                )
+                .map(|(path, text, origin)| SourceInput {
+                    path,
+                    text,
+                    origin,
+                    namespace: "",
+                    edition: syntax::Edition::LATEST,
+                    package: None,
+                })
+                .collect();
+            let mut index = check::semantic::SemanticIndex::default();
+            match analyze_inputs_for_editor(&inputs, &mut index, Parallelism::fixed(1)) {
+                Ok(mut module) => module.take_warnings(),
+                Err(errors) => errors.diagnostics,
+            }
+        };
+        // Diagnostics, those with candidates, and those whose candidates hold an opt-in type, of
+        // the texts without and with shadowing; and whether the `Tensor` type is a candidate of
+        // the misspelt `Tensox` in a signature, by requester, with `Sample::Tensor` a value only.
+        let mut compared = [(0, 0, 0); 2];
+        let mut tensor = std::collections::BTreeMap::new();
+        for (number, (kind, users)) in texts.iter().enumerate() {
+            let named = stdlib::sources_for(users.iter().map(|(_, text)| text.as_str()));
             assert!(
                 named.len() < stdlib::SOURCES.len(),
                 "the probes load every std module"
             );
-            let analyze = |std: &[(&'static str, &'static str)]| {
-                let inputs: Vec<_> =
-                    std::iter::once(("Main.tz", text.as_str(), ModuleOrigin::User))
-                        .chain(
-                            std.iter()
-                                .map(|(path, text)| (*path, *text, ModuleOrigin::Std)),
-                        )
-                        .map(|(path, text, origin)| SourceInput {
-                            path,
-                            text,
-                            origin,
-                            namespace: "",
-                            edition: syntax::Edition::LATEST,
-                            package: None,
-                        })
-                        .collect();
-                let mut index = check::semantic::SemanticIndex::default();
-                match analyze_inputs_for_editor(&inputs, &mut index, Parallelism::fixed(1)) {
-                    Ok(mut module) => module.take_warnings(),
-                    Err(errors) => errors.diagnostics,
-                }
-            };
-            let (with_named, with_all) = (analyze(&named), analyze(stdlib::SOURCES));
+            let (with_named, with_all) = (analyze(users, &named), analyze(users, stdlib::SOURCES));
+            let compared = &mut compared[usize::from(number >= base)];
             compared.0 += with_all.len();
             compared.1 += with_all
                 .iter()
@@ -1436,17 +1541,58 @@ mod tests {
                         })
                 })
                 .count();
+            if *kind == 1
+                && users.iter().any(|(path, text)| {
+                    path == "Tensor.tz" && text == "namespace Sample\ndef shadow_value :: i64 = 1\n"
+                })
+            {
+                let main = &users[0].1;
+                let requester = &main[..main.find("def probe").expect("a probe")];
+                let offered = with_all.iter().any(|diagnostic| {
+                    diagnostic.message.contains("'Tensox'")
+                        && diagnostic
+                            .detail
+                            .candidates
+                            .iter()
+                            .any(|candidate| candidate.name == "Tensor")
+                });
+                *tensor.entry(requester.to_owned()).or_insert(false) |= offered;
+            }
+            let sources: String = users
+                .iter()
+                .map(|(path, text)| format!("// {path}\n{text}"))
+                .collect();
             assert_eq!(
                 format!("{with_named:#?}"),
                 format!("{with_all:#?}"),
-                "{text}"
+                "{sources}"
             );
         }
-        eprintln!("{} texts, {compared:?}", texts.len());
-        assert!(
-            compared.0 > 3000 && compared.1 > 500 && compared.2 > 60,
-            "{compared:?}"
+        eprintln!(
+            "{} texts ({base} without shadowing), {compared:?}",
+            texts.len()
         );
+        let [without, with] = compared;
+        assert!(
+            without.0 > 3000 && without.1 > 500 && without.2 > 60,
+            "{without:?}"
+        );
+        assert!(with.0 > 1500 && with.1 > 1000 && with.2 > 500, "{with:?}");
+        // The reference: every std module loaded, `Sample::Tensor` hides the std `Tensor` from the
+        // requesters whose module path reaches it, and `using std` beside `using Sample` makes the
+        // bare name reach neither.
+        let expected: std::collections::BTreeMap<String, bool> = [
+            ("", true),
+            ("namespace Other\n", true),
+            ("namespace Sample\n", false),
+            ("namespace Sample::Inner\n", false),
+            ("using Sample\n", false),
+            ("using Sample\nusing std\n", false),
+        ]
+        .into_iter()
+        .map(|(requester, offered)| (requester.to_owned(), offered))
+        .collect();
+        assert_eq!(tensor, expected);
     }
 
     /// Analyzes `sources` as the user modules and compares the whole result at 1, 2 and 8 threads.

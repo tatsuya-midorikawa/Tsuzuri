@@ -25,7 +25,9 @@
 // above stay as they were: misspelt types that only the type of an opt-in std module named after the module
 // matches (`Tensr`, `WaitGrop`, `Tickr`, `Rgex`, `Semaphor`, `Contxt`), in signatures, a type annotation, a record
 // literal and a record pattern: the diagnostics, the code actions of the document, source.fixAll.tsuzuri and a
-// quickfix for every diagnostic of Main.tz.
+// quickfix for every diagnostic of Main.tz. Then the same for misspelt types in an unsaved buffer of the namespace
+// `Sample` beside an unsaved `Sample::Tensor` that hides the std `Tensor` type there (the first Copilot review of
+// PR #122); neither file is written.
 // `--threads` sets TSUZURI_THREADS (`auto` and `unset` leave it unset; a count from 1 to 32), `--jobs` is a positive
 // integer. `compare` refuses a CLI golden with a blank line, a line that is not an entry or no entries, and a directory
 // without transcripts or with a transcript that holds no request (tests/benchmark_lsp_golden.mjs). No timing is
@@ -352,6 +354,33 @@ async function typeTranscript(compiler, project, env) {
     for (const [index, diagnostic] of diagnostics.slice(0, 30).entries()) {
       await result(`${label} codeAction quickfix ${index}`, "textDocument/codeAction", { ...document, range: diagnostic.range, context: { diagnostics: [diagnostic], only: ["quickfix"], triggerKind: 2 } });
     }
+  }
+  // The first Copilot review of PR #122, after the original text is restored: two unsaved buffers in the namespace
+  // `Sample`, a module named like the opt-in `Tensor` that declares a value only, whose module path hides the std
+  // `Tensor` type from that namespace, and a module with the misspelt types `Tensr` (no candidate `Tensor`) and
+  // `Tickr` (`Ticker`, which no module hides).
+  version++;
+  lsp.notify("textDocument/didChange", { textDocument: { uri: mainUri, version }, contentChanges: [{ text: original }] });
+  await lsp.wait(isDiagnostics(mainUri, version));
+  const shadowing = [
+    [join(project, "Tensor.tz"), "namespace Sample\ndef shadow_value :: i64 = 1\n"],
+    [join(project, "ShadowProbe.tz"), "namespace Sample\ndef shadow_probe_1 :: ref Tensr -> i64 = \\_x -> 0\n" +
+      "def shadow_probe_2 :: ref Tickr -> i64 = \\_x -> 0\n"],
+  ];
+  for (const [path] of shadowing) assert.ok(!existsSync(path), `${path} exists`);
+  for (const [path, text] of shadowing) {
+    lsp.notify("textDocument/didOpen", { textDocument: { uri: uriOf(path), languageId: "tsuzuri", version: 1, text } });
+  }
+  const [probe, probeText] = shadowing[1];
+  const probeDocument = { textDocument: { uri: uriOf(probe) } };
+  await lsp.wait(isDiagnostics(uriOf(probe), 1));
+  const diagnostics = diagnosticsOf(uriOf(probe));
+  log.push(["shadowed diagnostics", diagnostics]);
+  const origin = { line: 0, character: 0 };
+  await result("shadowed codeAction document", "textDocument/codeAction", { ...probeDocument, range: { start: origin, end: endPosition(probeText) }, context: { diagnostics, triggerKind: 1 } });
+  await result("shadowed codeAction fixAll", "textDocument/codeAction", { ...probeDocument, range: { start: origin, end: origin }, context: { diagnostics: [], only: ["source.fixAll"], triggerKind: 1 } });
+  for (const [index, diagnostic] of diagnostics.entries()) {
+    await result(`shadowed codeAction quickfix ${index}`, "textDocument/codeAction", { ...probeDocument, range: diagnostic.range, context: { diagnostics: [diagnostic], only: ["quickfix"], triggerKind: 2 } });
   }
   const publishes = lsp.messages.filter((message) => message.method === "textDocument/publishDiagnostics")
     .map((message) => [relative(project, fileURLToPath(message.params.uri)), message.params.version ?? null, message.params.diagnostics]);

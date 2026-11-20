@@ -6366,14 +6366,41 @@ impl Names {
     /// module key. A bare name that several `using` namespaces hold names
     /// nothing (see `check_module`).
     fn module_path(&self, requester: &str, path: &str) -> Option<&str> {
+        self.module_path_with(requester, path, None)
+    }
+
+    /// `module_path` as if the std module `unloaded` were loaded too: the key of an opt-in std
+    /// module that the check does not load, which is its name, in the namespace `std` (PB08 O6).
+    /// The language server loads only the opt-in modules that the sources name, and `type_pool`
+    /// asks what a check that loads every std module would find: a user module of that name in
+    /// the requester's namespace, an enclosing one or a `using` namespace still answers first,
+    /// and `using std` beside a `using` namespace that holds a module of that name makes the bare
+    /// name name nothing.
+    fn module_path_with<'s>(
+        &'s self,
+        requester: &str,
+        path: &str,
+        unloaded: Option<&'s str>,
+    ) -> Option<&'s str> {
         if path.contains('.') || path.starts_with(KEY_PATH) {
             return None;
         }
+        debug_assert!(unloaded.is_none_or(|key| !self.modules.contains_key(key)));
         let bare = !path.contains("::");
         let dotted = if bare {
             std::borrow::Cow::Borrowed(path)
         } else {
             std::borrow::Cow::Owned(path.replace("::", "."))
+        };
+        // The key of the module whose full name is `full`, the unloaded module's included.
+        let module = |full: &str| -> Option<&'s str> {
+            self.full_modules.get(full).map(String::as_str).or_else(|| {
+                unloaded.filter(|key| {
+                    full.strip_prefix(crate::stdlib::NAMESPACE)
+                        .and_then(|rest| rest.strip_prefix('.'))
+                        == Some(*key)
+                })
+            })
         };
         let mut scope = self
             .module_namespaces
@@ -6382,15 +6409,22 @@ impl Names {
         let mut usings = self.module_usings.get(requester).filter(|_| bare);
         loop {
             let found = if scope.is_empty() {
-                self.full_modules.get(dotted.as_ref())
+                module(dotted.as_ref())
             } else {
-                self.full_modules.get(&format!("{scope}.{dotted}"))
+                module(&format!("{scope}.{dotted}"))
             };
             if let Some(key) = found {
                 return Some(key);
             }
             if let Some(namespaces) = usings.take() {
-                let mut imported = self.imported(namespaces, path);
+                let mut imported = self
+                    .imported(namespaces, path)
+                    .chain(unloaded.filter(|key| {
+                        *key == path
+                            && namespaces
+                                .iter()
+                                .any(|namespace| namespace == crate::stdlib::NAMESPACE)
+                    }));
                 match (imported.next(), imported.next()) {
                     (Some(key), None) => return Some(key),
                     (Some(_), Some(_)) => return None,
@@ -6406,6 +6440,7 @@ impl Names {
             self.modules
                 .get_key_value(path)
                 .map(|(key, _)| key.as_str())
+                .or_else(|| unloaded.filter(|key| *key == path))
         })
         .flatten()
     }

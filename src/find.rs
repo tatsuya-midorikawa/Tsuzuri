@@ -1071,9 +1071,10 @@ impl Checker<'_> {
                     continue;
                 }
                 // The stem is compared with the target; it is written alone only where it names
-                // this module, and with its namespace elsewhere.
+                // this module, and with its namespace elsewhere (as a check that loads every std
+                // module sees it, PB08 O6).
                 let stem = module_stem(key);
-                if self.names.module_path(self.module, stem) == Some(key.as_str()) {
+                if self.names.candidate_module_path(self.module, stem) == Some(key.as_str()) {
                     pool.push(Pooled::new(stem, 3, "module"));
                 } else {
                     pool.push(Pooled::qualified(
@@ -1237,6 +1238,26 @@ impl Names {
         }
     }
 
+    /// `module_path` as a check that loads every std module answers it, for the candidates of an
+    /// unresolved name (PB08 O6): with `opt_in_candidates`, an opt-in module that the check does
+    /// not load counts as loaded. Only the one named like the last segment of `path` can change
+    /// the answer, as the module of `std::Name`, of the bare key `Name`, or of a bare `Name` that
+    /// `using std` imports, which makes the name ambiguous when another `using` namespace holds a
+    /// module of that name.
+    fn candidate_module_path(&self, requester: &str, path: &str) -> Option<&str> {
+        let name = path.rsplit("::").next().unwrap_or(path);
+        let unloaded = self
+            .opt_in_candidates
+            .then(|| {
+                opt_in_names()
+                    .unloaded(self)
+                    .find(|module| module.key == name)
+                    .map(|module| module.key)
+            })
+            .flatten();
+        self.module_path_with(requester, path, unloaded)
+    }
+
     /// Whether the unqualified case name `alias` resolves from `module`: visible and not ambiguous.
     fn resolves_case(&self, module: &str, alias: &str) -> bool {
         self.case(module, alias, Span::default())
@@ -1257,12 +1278,19 @@ impl Names {
             .map(String::as_str)
             .filter(|name| matches!(self.type_choice(module, name), Choice::Found(..)));
         // PB08 O6: the types that a user module names bare in the opt-in std modules that the
-        // check does not load (`OptInModule::types`), as when the check loads them.
+        // check does not load (`OptInModule::types`), where a check that loads them finds them:
+        // `type_choice` reaches such a type, named after its module, through the module path of
+        // the bare name, which a user module of that name may answer first (`Sample::Tensor` from
+        // the namespace `Sample`, an enclosed one or `using Sample`) or make ambiguous (`using
+        // Sample` and `using std`), and the requester's own type of that name is in `declared`
+        // already.
         let unloaded = (self.opt_in_candidates && self.origin(module) == ModuleOrigin::User)
             .then(|| {
-                opt_in_names()
-                    .unloaded(self)
-                    .flat_map(|module| module.types.iter().copied())
+                opt_in_names().unloaded(self).flat_map(move |opt_in| {
+                    opt_in.types.iter().copied().filter(move |name| {
+                        self.candidate_module_path(module, name) == Some(opt_in.key)
+                    })
+                })
             })
             .into_iter()
             .flatten();
@@ -1288,7 +1316,14 @@ impl Names {
 /// it and a user module looks it up. The language server loads only the opt-in modules that the
 /// sources name; with `Names::opt_in_candidates`, `value_pool`, `function_pool` and `type_pool`
 /// add the entries of the others, so that an unknown name gets the candidates, help and fix of a
-/// check that loads every std module, as the language server's did before. The other pools need
+/// check that loads every std module, as the language server's did before. `value_pool` and
+/// `function_pool` spell a std declaration and a std module the same from every requester (a
+/// std declaration as std's pages write it, a std module by its key, which has no namespace to
+/// qualify it), so their entries need no resolution; `type_pool` offers an opt-in type only where
+/// the module path of its bare name reaches it (`OptInModule::types`), and the module path of
+/// both (`Names::candidate_module_path`) counts the unloaded modules as loaded, which can make a
+/// user module's bare name ambiguous (`using Sample` and `using std` beside `Sample::Tensor`, which
+/// `value_pool` then spells in full). The other pools need
 /// none: `member_pool` and `field_pool` serve a module or record that the source names (which
 /// loads it), and `pattern_pool` holds only the cases and active patterns that resolve bare, which
 /// an opt-in module's never do (`choose`). `opt_in_names_are_the_checker_names` (in `warnings.rs`)
@@ -1305,12 +1340,13 @@ pub(crate) struct OptInModule {
     functions: Vec<(String, &'static str)>,
     /// The cases of its public unions, as `Names::cases` keys them (`Module.Case`).
     cases: Vec<String>,
-    /// The types that a user module names bare, as `type_pool` offers them: its public record,
-    /// union, extern type or type alias named after the module (`Tensor`, `WaitGroup`), if it has
-    /// one. `type_choice` follows the module path of a bare name to the module of that name (no
-    /// loaded module has the key, so no other module answers first, and `using std` reaches the
-    /// same module) and takes that module's own type of the same name when it is visible; the
-    /// other declarations of an opt-in module resolve only qualified (`choose`).
+    /// The types that a user module may name bare: its public record, union, extern type or type
+    /// alias named after the module (`Tensor`, `WaitGroup`), if it has one. `type_choice` follows
+    /// the module path of a bare name and takes the own type of the module it reaches when that
+    /// type is visible; the other declarations of an opt-in module resolve only qualified
+    /// (`choose`). The path reaches this std module unless a user module of the same name answers
+    /// first (`Sample::Tensor` from the namespace `Sample`), so `type_pool` offers the type only
+    /// where `Names::module_path_with`, with this module as if loaded, reaches it.
     types: Vec<&'static str>,
 }
 
