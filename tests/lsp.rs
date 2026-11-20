@@ -2545,7 +2545,7 @@ fn hover_shows_complete_effects_in_namespaces() {
 mod live {
     use serde_json::{Value, json};
     use std::io::{self, Read, Write};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::mpsc;
     use std::time::Duration;
     use tsuzuri::lsp::{file_uri, serve, write_message};
@@ -2832,8 +2832,10 @@ mod live {
             file_uri(&self.path(name)).unwrap()
         }
 
-        /// The URI of `name` under another spelling of the base (a symbolic link to it).
-        pub fn uri_under(&self, base: &Path, name: &str) -> String {
+        /// The URI of `name` under another spelling of the base (a symbolic link to it). Only the tests of symbolic
+        /// links use it, and they run on Unix.
+        #[cfg(unix)]
+        pub fn uri_under(&self, base: &std::path::Path, name: &str) -> String {
             file_uri(&if name.is_empty() {
                 base.to_owned()
             } else {
