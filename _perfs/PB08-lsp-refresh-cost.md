@@ -8,7 +8,7 @@
 | 規模 | M（Phase 1。Phase 2 は別段で、2026-11-20 の利用者の指示で行う） |
 | 依存 | – |
 | 関連 | G39（言語サーバーの待ち行列と取り消し。Phase 3）, G40, PB04（フロントエンドの並列化）, PB06（常駐状態）, G17（フロントエンドの cache）, D-40（言語サーバーは opt-in の std を常に読む） |
-| 状態 | doing（Phase 1・2 は実装・計測済み（2026-11-20）。M1 は Phase 2 の後 hello 0.097 倍・big 0.335 倍・syn200 0.157 倍。PR #122 のレビューと G39 との合流が残る） |
+| 状態 | doing（Phase 1・2 は実装・計測済み（2026-11-20）。M1 は Phase 2 の後 hello 0.097 倍・big 0.335 倍・syn200 0.157 倍。G39 との合流は済んだ（2026-11-20）。PR #122 のレビューが残る） |
 | 起票 | 2026-11-19（G39 の調査で見つけ、利用者の依頼で別のチケットにした。HEAD `af644794` を、strip しない release で `sample` し、別の担当が試作（環境変数で切り替える patch）で効果と出力の同一性を測り直した） |
 | 承認 | Phase 1 は不要（出力を変えない。D5 は言語サーバーが使うスレッドの数の方針で既定案）。Phase 2 の D7（D-40 を変え、名前を書いていない opt-in の std モジュールの補完・ホバー・診断の候補・シグネチャヘルプを別の索引から答える。答えは変えない）は、2026-11-19 に利用者が承認した（「承認が必要なものについては、あなたが考えるベストな方法であれば全て承認します」）。起票者が最善と判断した形のまま承認したので、Phase 1 の後の計測で目標に届かないときだけ行うという条件も含んでいた。この条件は、2026-11-20 の利用者の指示「もし実装に際し複数フェーズにまたがる場合には、その全てのフェーズを完了させること」で外れた。Phase 1 は目標に届いたが、Phase 2 も行う |
 | 手本にする既存実装 | 型の名前の静かな照合: `src/check.rs` の `Names::check_type_path`・`type_choice`（`named_type` の Ok の条件そのもの）。CLI の並列度: `src/driver.rs` の `analyze_cached_core`（`Parallelism::command_line()`）。スレッドの数に依らない出力の検査: `src/lib.rs` の `warnings_and_the_semantic_index_do_not_depend_on_the_thread_count` など、`tests/parallel_frontend.mjs`。計測の形: PB06 の「現状と計測」、GUIDE §14 |
@@ -1009,9 +1009,65 @@ GitHub Copilot の最初のレビュー（`f1839c32`）は 2 つの指摘を挙�
   - 0 でない終了（診断の fixture）は、終わった検査として今までどおり比べる。
 - **テスト**: `tests/benchmark_lsp_golden.mjs` に 3 つの場合（`status: null` と `SIGKILL`、`status: null` だけ、`status: 1` と `SIGSEGV`）と、0 でない終了の entry が一致する場合を足した。直す前の `golden.mjs` では「compare killed succeeded」で落ち、直した後は 6 つのテストがすべて通る。
 - **既存の golden**: 新しい `compare` でも一致した（CLI 442/442、言語サーバー 20/20。未設定・1・8 スレッド）。どの entry も終わった検査だった。
+
+### G39 との合流（2026-11-20）
+
+G39 の Phase 2・3（[G39](../_features/_completed/G39-stale-editor-diagnostics.md)、PR #119、`origin/fix/g39-phase2-3` の `3091bf86`。origin/main の G40（#120）・G41・E17 を含む）を、このブランチに merge した（`cf1e4799`。G39 は PB08 より先に main に入る）。G39 の側の記録は、そのチケットの「PB08 との合流」にある。
+
+**衝突と解き方**
+
+| 場所 | G39 | PB08 | 合流 |
+| --- | --- | --- | --- |
+| `src/lsp.rs` の `Session::refresh` の読み込み | 根のディレクトリ（`&Path`）を受け取り、送った先を `Sent` に集める。読み込みは `load_with_overlays` | `load_for_editor`（O6） | G39 の形のまま `Project::load_for_editor(directory, ..)`。読み込みの失敗の経路は G39 の `load_error`・`retire` |
+| `refresh` の publish の後 | publish のループの後に `retire` | publish の後に `costly_sites`・`inferred_effects` を求める（O9） | `retire` を先に呼び、その後で O9 の 2 つを求める（`retire` の空の一覧も、インレイヒントと効果より先に届く） |
+| `fix_all` の注釈と引数 | `cancelled` を受け取り、`Result<Option<Value>, _>` を返す | 注釈に `load_for_editor` を書く | G39 の引数と型に、2 つの注釈を併せた |
+| `fix_all` の読み込み | `let Ok(..) = Project::load_with_overlays(..) else { return Ok(None) }` | `Project::load_for_editor(..).ok()?` | `load_for_editor` を G39 の形で |
+| `compiler/usage.md` の `lsp` | ファイルの変更の通知、待ち行列と取り消しの 2 段落と、`diagnostics.md#lsp-での表示` への link | スレッドの数と O9 の順、読み込む std の 2 段落 | 4 段落を PB08・G39 の順に並べ、最後の link は G39 のもの |
+
+衝突のない合わせ:
+
+- `lsp::tests::refresh_loads_the_std_modules_that_check_loads`: `Session::roots` がなくなったので `ClientRoot` を足し、`refresh` にファイルでなく根のディレクトリを渡す。期待は同じ。
+- `tests/lsp.rs` の `opt_in_sessions`: 要求の後に同じ文書の `didChange` を先送りで続けていたので、G39 の待ち行列が -32801 で答え、`opt_in_members_complete_and_sign_while_the_first_edit_that_names_them_does_not_parse` が null の結果で落ちた。G39 が 7 つのテストを `stepwise` に移したのと同じく、`live::Server` で各応答を待ってから次を送るようにした。期待は変えていない。
+- `docs/architecture.md`（自動で merge された）: 言語サーバーの節に `load_for_editor` を使うこと、G39 の根のディレクトリがなくなったときの文の `load_with_overlays` を `load_for_editor` に、`src/lsp.rs` の行の O9 の順に `retire` の空の一覧を含むことを書いた。`_features/GUIDE.md`（D-40）と `docs/language.md` は PB08 の側だけが変えており、G39 の記述と食い違わない。
+- G39 の取り消しは、`fix_all` では読み込みの前と `fix::run` の各ラウンドの前に、クイックフィックスでは各 `fix_edit` の前に確かめる。どちらの読み込みも `load_for_editor`（`verify_edits` も同じ）。G39 の待ち行列（`Inbox`・`Queue`・`read_input`）には触れていない。
+- 「落とし穴」の O5 と取り消し: G39 は解析の途中では取り消さない（修正案の検証の間と `fix::run` のラウンドの間だけ）ので、O5 で並列になった段の worker に取り消しを届けるものはない。
+- G39 のテストに、全 std の読み込みに依るものはなかった（上の 2 つの合わせの後、`--test lsp` と `lsp::`・`fix::` の 120 件が通った）。
+- このチケットには G39 のチケットへの link がなかった（名前だけで書いていた）ので、移動（`_features/_completed/`）で直す link はなかった。この節の link が最初のもの。
+
+**golden と IR**
+
+G39 は言語サーバーが送るものを変えるので、言語サーバーの golden は G39 だけの基準と比べた。G39 の基準と前の before（`c1-before-a/lsp-unset`）の違いは 3 つの workload（big・conventions・in_place_writes）の `open codeAction cursor`・`open codeAction first`（`triggerKind` 2 で `only` なし）だけで、`source.fixAll.tsuzuri` が出なくなった（G39 D11）。publish は 20 の transcript とも同じ。
+
+- `target/perf/PB08/tsuzuri-g39`: G39 の `3091bf86` の release（別のワークツリーと `CARGO_TARGET_DIR` で `cargo build --release --locked`。SHA-256 `fb7746fe2774c164615862dd5c4553bee6fd82abe84f0325ff21e42936833483`）。
+- `target/perf/PB08/tsuzuri-merged`: 合流の `cf1e4799` の release（SHA-256 `c2c6c0451abc1ca99e3d69b830135ee368e4e2a4060b0256892f00c01a3e1454`）。
+- golden は `target/perf/PB08/golden/g39-base-a`・`g39-base-b`（`tsuzuri-g39`、未設定）と `target/perf/PB08/golden/merged/`。
+
+| 比べたもの | 基準 | 結果 |
+| --- | --- | --- |
+| 言語サーバー `g39-base-b`（`tsuzuri-g39`、未設定） | `g39-base-a/lsp-unset` | 20/20 |
+| 言語サーバー `tsuzuri-merged`、未設定 | `g39-base-a/lsp-unset` | 20/20 |
+| 言語サーバー `tsuzuri-merged`、1 スレッド | `g39-base-a/lsp-unset` | 20/20 |
+| 言語サーバー `tsuzuri-merged`、8 スレッド | `g39-base-a/lsp-unset` | 20/20 |
+| CLI `tsuzuri-merged`、1 スレッド | `before-a/cli-1.jsonl` | 442/442 |
+| CLI `tsuzuri-merged`、自動 | `before-a/cli-1.jsonl` | 442/442 |
+| IR（`TSUZURI_BASELINE=target/perf/PB08/tsuzuri-before node tests/parallel_frontend.mjs target/perf/PB08/tsuzuri-merged`） | `tsuzuri-before` | ok |
+
+どれも 1 byte も違わない。G39 は CLI の出力を変えないので、CLI は前の before の golden と比べた。
+
+**確認**（記録は `target/scratch/pb08/merge-g39/`。ほかのワークツリーと共有する機械で、見た時点の load average は 6〜58）
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings` は通った。`cargo nextest run --locked --test lsp --lib -E 'binary(lsp) | test(lsp::) | test(fix::)'` は 120 件が通った（`opt_in_sessions` を合わせる前は 119 件が通過、1 件が失敗）。area のテスト: `--test alias`（10 件）、`--lib` の `find`（31 件）・`warnings`（13 件）・`polymorph`（8 件）・`driver`（91 件）、`--test fix`（26 件）、`--test copy_cost`（16 件）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked` は 3,398 件が通過、4 件が skip（878 秒）。`TSUZURI_THREADS=8 node scripts/slot.mjs -- cargo nextest run --locked --test lsp --lib` は 836 件が通過、1 件が skip（G39 の待ち行列と O5 の 8 スレッド）。
+- T2: `cargo build --locked` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は 4 つの session が通った。`node tests/benchmark_lsp_golden.mjs` は 6 つが通った。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs` の `compiler/usage.md`・`diagnostics.md`・`option.md` は通った（3 pages、230 links、6 examples、native の O0/O3 6 runs、test project 1、generated block 1）。`node scripts/gen-docs.mjs --check`（19 blocks、0 stale）、`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-cli-docs.mjs`（4 checks、0 failed）、`node scripts/check-links.mjs`（`--into _perfs/README.md`・`--into _features/README.md` も。0 broken）、`node scripts/check-guide-lite.mjs`（88 references、0 failed）、`git diff --check`（両方の親に対して）は clean。`src/runtime/` は変えていない。
+- VS Code の拡張の統合テスト（VS Code 1.103.2、`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）: `vsc/` で `npm ci` と `npm run pretest` の後、`vsc/scripts/test-extension.mjs` の追跡しない写しで、ワークスペースの設定 `tsuzuri.compilerPath` を合流の `target/debug/tsuzuri` に、`--user-data-dir` を短い `target/scratch/pb08/ud` にして動かした。17 の段の `VS Code: …` と `All Tsuzuri VS Code integration checks passed.`（`vsc-integration.out`）。写しと user data は消した。`vsc/resources/codelldb.vsix` は共有の `target/vsc-downloads` の VSIX（SHA-256 が `vsc/scripts/toolchain.mjs` の値と同じ）を写した。G40 の段の途中に一度出る `document directory does not exist` の行は、消したフォルダーの文書への要求のエラーの応答で、G40 の通った記録にも同じ行がある。
+
+**計測**
+
+手順 8・9 の計測は合流の前に、このブランチの binary（`tsuzuri-o5`・`tsuzuri-p2`）で取った。G39 は 1 回の refresh の費用を変えない: refresh に足したのは、クライアントの根の正準化し直し（根ごとに `canonicalize` 1 回）、根のディレクトリがあることの確認（`is_dir` 1 回）、根の外のソースの除外（パスの前方一致）、送った先の記録と `retire`（送ったファイルの map の比較と空の一覧）だけで、読み込み・解析・診断を作る計算は同じ。G39 の待ち行列と取り消しが変えるのは、どの版をいつ解析するか（後の版のある要求に -32801、取り消された要求を計算しない）で、1 回の解析の費用ではない（G39 の段 13 の記録と同じ）。M4 の `codeaction-cursor`・`codeaction-diagnostic`（`triggerKind` 2 で `only` なし）は、合流の後は `source.fixAll.tsuzuri` を計算しない（G39 D11）ので、手順 8・9 のその 2 つの値は合流の後の要求の費用ではない（`docs/benchmarks.md` に挙げた M4 の `codeAction` は `triggerKind` 1 の文書全体の要求で、変わらない）。合流の後は計測し直していない。
+
 ### 残っている問題
 
 - 手順 9 は済んだ（上の「手順 9: 計測」）。言語サーバーの `TSUZURI_TIME_PASSES` の累計は、補完やシグネチャヘルプが `std_index` を作った process では、全 std の解析 1 回を含む（M1・M4 の driver の要求は作らない）。
 - 全 std を読むことでだけ変わる検査の結果（特殊化の予算 65,536 を std の特殊化が使う量、instance の重なりの検査の予算 1,024 組）は、名前を書いていない opt-in のモジュールについて、言語サーバーでも `check` と同じになった。golden と単体テストでは違いは出ていない（チケットの「変わってよいのは出どころだけ」の外にあり得る差として記録する）。（レビューで、instance の重なりの例が見つかった。上の「チケットから外れた判断」に、外れた判断として記録した。）
-- G39 の Phase 2・3 との統合: `refresh`（根のディレクトリを取るようになる）の中の読み込みの 1 行、`fix_edit`・`verify_edits`・`fix_all`（レビューの指摘 3）の読み込みの 1 行、`lsp::tests::refresh_loads_the_std_modules_that_check_loads` の `refresh` の呼び出し（引数がディレクトリになる）を合わせる。
+- （済んだ）G39 の Phase 2・3 との統合: `refresh`（根のディレクトリを取るようになった）の中の読み込み、`fix_edit`・`verify_edits`・`fix_all`（レビューの指摘 3）の読み込み、`lsp::tests::refresh_loads_the_std_modules_that_check_loads` の `refresh` の呼び出しを合わせた。上の「G39 との合流（2026-11-20）」。
 - 既知の費用（レビューの指摘 6。設計は変えない）: 読み込んでいない opt-in のモジュールの最初のメンバーの補完かシグネチャヘルプ（`Json.` や、名前を書いた最初の編集が構文解析できない間の `Json.parse (`）は、その要求の中で `std_index`（最小のプログラムと全 std の解析）を同期に作る。レビューは、load average 50 の機械でその要求に 133〜147 ms、process のメモリが 45 MB から 87 MB になったと測った。process に 1 回だけで、M1・M4 の driver の要求は作らない。負荷の低い機械の値は「手順 9: 計測」にある（1 回目の補完が 126.9 ms、o5 は 10.5 ms）。
