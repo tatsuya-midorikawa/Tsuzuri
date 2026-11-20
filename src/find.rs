@@ -1209,6 +1209,8 @@ impl Names {
     /// The pool of `unknown record, union, or type alias 'n'` in `module`: the type names that
     /// resolve there (visible and not ambiguous) and the primitive types.
     pub(super) fn type_pool(&self, module: &str) -> Vec<Pooled> {
+        #[cfg(test)]
+        TYPE_POOLS.with(|count| count.set(count.get() + 1));
         let declared = self
             .record_aliases
             .keys()
@@ -1231,6 +1233,13 @@ impl Names {
             .map(|name| Pooled::new(name, 4, "type"))
             .collect()
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times `type_pool` ran on this thread: each run looks up every type name of the
+    /// program, so only a diagnostic that is reported may build one (PB08).
+    pub(crate) static TYPE_POOLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]

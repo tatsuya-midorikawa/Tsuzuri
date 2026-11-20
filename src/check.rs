@@ -6883,8 +6883,7 @@ impl Names {
         name: &str,
         span: Span,
     ) -> Result<NamedType<'_>, Diagnostic> {
-        self.check_type_path(module, name, span)?;
-        let choice = self.type_choice(module, name);
+        let choice = self.type_lookup(module, name, span)?;
         if matches!(choice, Choice::Missing)
             && let Some(spelling) = self.namespace_spelling(module, name)
         {
@@ -6904,6 +6903,30 @@ impl Names {
                 unknown
             }
         })
+    }
+
+    /// The lookup behind `named_type`: the checks of the path, then the choice. `named_type`
+    /// returns `Ok` exactly for `Ok(Choice::Found(..))`; its errors add the message and the
+    /// suggestions of a missing name.
+    fn type_lookup(
+        &self,
+        module: &str,
+        name: &str,
+        span: Span,
+    ) -> Result<Choice<NamedType<'_>>, Diagnostic> {
+        self.check_type_path(module, name, span)?;
+        Ok(self.type_choice(module, name))
+    }
+
+    /// The type for which `named_type` returns `Ok`, and `None` where it returns an error, without
+    /// building that error: the private reachability of `unused_private` looks up every type
+    /// name of every function, std included, and most of them (`i64`, type variables) name no
+    /// declared type (PB08 O1).
+    fn quiet_named_type(&self, module: &str, name: &str, span: Span) -> Option<NamedType<'_>> {
+        match self.type_lookup(module, name, span) {
+            Ok(Choice::Found(named, _)) => Some(named),
+            _ => None,
+        }
     }
 
     /// `check_path` for a type name. A bare name is also a module name, so
