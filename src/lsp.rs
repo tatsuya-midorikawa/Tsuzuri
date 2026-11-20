@@ -1851,7 +1851,8 @@ impl View<'_> {
 /// and by full name (`Namespace.File`), as the checker resolves them.
 #[derive(Default)]
 struct ModuleNames {
-    /// Each source's key and namespace.
+    /// Each source's key and namespace, then those of the std modules that the project does not
+    /// load (`unloaded_std`).
     sources: Vec<Option<(String, String)>>,
     full: BTreeMap<String, String>,
     /// The namespaces that each source's `using` declarations import.
@@ -1868,6 +1869,7 @@ impl ModuleNames {
                 ModuleOrigin::Std => (None, Vec::new()),
             })
             .collect();
+        let unloaded = unloaded_std(project);
         let sources: Vec<_> = project
             .sources
             .iter()
@@ -1885,6 +1887,11 @@ impl ModuleNames {
                     .and_then(crate::stdlib::module_name)
                     .map(|name| (name.to_owned(), crate::stdlib::NAMESPACE.to_owned())),
             })
+            .chain(
+                unloaded
+                    .iter()
+                    .map(|name| Some(((*name).to_owned(), crate::stdlib::NAMESPACE.to_owned()))),
+            )
             .collect();
         let full = sources
             .iter()
@@ -2068,6 +2075,23 @@ impl ModuleNames {
     fn is_module(&self, full: &str) -> bool {
         self.full.contains_key(full) || self.keys().any(|key| key == full)
     }
+}
+
+/// The std modules of `stdlib::SOURCES` that `project` does not load, in their order: the opt-in
+/// modules that its sources do not name (PB08 O6). Module names and paths still offer them, as
+/// when the language server loaded every std module.
+fn unloaded_std(project: &Project) -> BTreeSet<&'static str> {
+    let loaded: BTreeSet<&str> = project
+        .sources
+        .iter()
+        .filter(|source| source.origin == ModuleOrigin::Std)
+        .filter_map(|source| source.path.to_str().and_then(crate::stdlib::module_name))
+        .collect();
+    crate::stdlib::SOURCES
+        .iter()
+        .filter_map(|(path, _)| crate::stdlib::module_name(path))
+        .filter(|name| !loaded.contains(name))
+        .collect()
 }
 
 /// The completion detail of a module or namespace by its dotted full name,

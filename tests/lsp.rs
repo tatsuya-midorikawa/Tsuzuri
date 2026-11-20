@@ -1967,6 +1967,129 @@ fn opt_in_view_and_tensor_modules_complete_when_named() {
     }
 }
 
+/// PB08 O6: the language server loads only the opt-in std modules that the sources name. Runs
+/// `steps` on `main` alone, which names none, and with a second file whose comment names `Json` and
+/// `Matrix`, so that every analysis loads them as every analysis did before; returns the results of
+/// the requests and the last diagnostics of `Main.tz` of each, with the root written `ROOT/`.
+fn opt_in_sessions(
+    main: &str,
+    steps: impl Fn(&dyn Fn(&str) -> String) -> Vec<serde_json::Value>,
+) -> [(Vec<serde_json::Value>, serde_json::Value); 2] {
+    let run = |files: &[(&str, &str)]| {
+        let mut root = String::new();
+        let (messages, ids) = session(files, "utf-16", |uri| {
+            root = uri("Main.tz").strip_suffix("Main.tz").unwrap().to_owned();
+            steps(uri)
+        });
+        let rooted = |value: &serde_json::Value| -> serde_json::Value {
+            serde_json::from_str(&value.to_string().replace(&root, "ROOT/")).unwrap()
+        };
+        let results = ids
+            .iter()
+            .map(|id| {
+                let response = messages
+                    .iter()
+                    .find(|message| message.get("id") == Some(id))
+                    .unwrap_or_else(|| panic!("no response {id}"));
+                rooted(&response["result"])
+            })
+            .collect();
+        let diagnostics = messages
+            .iter()
+            .rfind(|message| {
+                message["method"] == "textDocument/publishDiagnostics"
+                    && message["params"]["uri"]
+                        .as_str()
+                        .is_some_and(|uri| uri.ends_with("/Main.tz"))
+            })
+            .map(|message| rooted(&message["params"]["diagnostics"]))
+            .unwrap_or_default();
+        (results, diagnostics)
+    };
+    [
+        run(&[("Main.tz", main)]),
+        run(&[
+            ("Main.tz", main),
+            ("Names.tz", "// Json Matrix\ndef names_marker :: i64 = 0\n"),
+        ]),
+    ]
+}
+
+#[test]
+fn opt_in_module_names_complete_in_a_project_that_names_none() {
+    use serde_json::json;
+    let main = "let answer = 42\nanswer\n";
+    let responses = scripted(&[("Main.tz", main)], "utf-16", |uri| {
+        vec![
+            json!({"id": 1, "method": "textDocument/completion", "params": {"textDocument": {"uri": uri("Main.tz")}, "position": {"line": 2, "character": 0}}}),
+        ]
+    });
+    let items = responses[0]["result"]["items"].as_array().unwrap();
+    for (path, _) in tsuzuri::stdlib::SOURCES {
+        let name = tsuzuri::stdlib::module_name(path).unwrap();
+        let item = items
+            .iter()
+            .find(|item| item["label"] == name)
+            .unwrap_or_else(|| panic!("{name}: {items:?}"));
+        assert_eq!(item["kind"], 9, "{item}");
+        assert_eq!(item["detail"], format!("module std::{name}"), "{item}");
+    }
+}
+
+#[test]
+fn unknown_names_get_the_candidates_and_quickfixes_of_unloaded_opt_in_modules() {
+    use serde_json::json;
+    let main = "let m = Matrx.init 2 2 (\\i j -> i)\nlet a = parse\nlet b = Null\n0\n";
+    let [unnamed, named] = opt_in_sessions(main, |uri| {
+        let main = uri("Main.tz");
+        let quickfix = |id: u64, line: usize, start: usize, end: usize| json!({"id": id, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": main}, "range": range(line, start, end), "context": {"diagnostics": [], "only": ["quickfix"]}}});
+        vec![
+            quickfix(1, 0, 8, 13),
+            quickfix(2, 1, 8, 13),
+            quickfix(3, 2, 8, 12),
+        ]
+    });
+    assert_eq!(unnamed, named);
+    let fixes = |message: &str| {
+        let diagnostic = unnamed
+            .1
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|diagnostic| diagnostic["message"] == message)
+            .unwrap_or_else(|| panic!("{message}: {}", unnamed.1))
+            .clone();
+        diagnostic["data"]["fixes"].clone()
+    };
+    // `Matrix` is one edit away; `parse` is the last part of `Format.parse` and of `Json.parse`, so
+    // no name is best; `Null` is the last part of `Json.Null` alone.
+    assert_eq!(
+        fixes("unknown value 'Matrx'"),
+        json!([{"title": "Replace 'Matrx' with 'Matrix'", "applicability": "maybe"}])
+    );
+    assert_eq!(fixes("unknown value 'parse'"), serde_json::Value::Null);
+    assert_eq!(
+        fixes("unknown value 'Null'"),
+        json!([{"title": "Replace 'Null' with 'Json.Null'", "applicability": "maybe"}])
+    );
+    let [matrix, parse, null] = unnamed.0.as_slice() else {
+        panic!("{:?}", unnamed.0);
+    };
+    assert_eq!(
+        matrix[0]["title"], "Replace 'Matrx' with 'Matrix'",
+        "{matrix}"
+    );
+    assert_eq!(
+        matrix[0]["edit"]["changes"]["ROOT/Main.tz"],
+        json!([{"range": range(0, 8, 13), "newText": "Matrix"}])
+    );
+    assert_eq!(*parse, json!([]));
+    assert_eq!(
+        null[0]["title"], "Replace 'Null' with 'Json.Null'",
+        "{null}"
+    );
+}
+
 #[test]
 fn deprecated_uses_from_other_packages_are_published_as_warnings() {
     use serde_json::json;
