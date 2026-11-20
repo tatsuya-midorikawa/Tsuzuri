@@ -296,6 +296,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G39 | [VS Code で直した警告・エラーが消えない（拡張の `tsuzuri-build` とタスクの problem matcher が出す写しが残る。言語サーバーは前に送った URI を覚えていない）](_completed/G39-stale-editor-diagnostics.md) | P1 | L | G07, G12, G14, G16 | done（Phase 1〜3。Phase 1 は拡張 0.1.8、Phase 2・3 は PR #119） |
 | G40 | [VS Code でプロジェクトでないフォルダーを開くと、その根のクライアントが中のパッケージのファイルまで受け持つ（消えない偽のエラー、診断・ホバーの重複、このリポジトリでの `E1017`）](_completed/G40-fallback-root-client.md) | P2 | M | G14, G16, (G39) | done |
 | G41 | [VS Code で Tsuzuri 拡張機能が「Mac Silicon プラットフォームの Visual Studio Code では使用できません」となりインストールできない（Marketplace に残った 0.1.0・0.1.1 の `darwin-x64` が `IncludeLatestVersionOnly` に残り続け、クールダウン付きギャラリーで `allTargetPlatforms` が `["darwin-x64"]` だけになる）](_completed/G41-marketplace-orphaned-darwin-x64.md) | P1 | S | G14 | done（Marketplace から旧版 `0.1.0`・`0.1.1` を削除して孤立した `darwin-x64` を除去し、`verify-release.mjs` で全公開バージョンの `targetPlatform` と `IncludeLatestVersionOnly` の応答を検査するようにした） |
+| G42 | [Windows x64 の VS Code で、テストの実行の結果が表示の直後に消えることがある（拡張の統合テストが Windows x64 でだけ時々落ちる）](G42-windows-run-results-cleared-early.md) | P2 | S〜M | G39, G40 | todo |
 
 ### TZ. tzroutine（Go の goroutine に相当する並行処理。第4期）
 
