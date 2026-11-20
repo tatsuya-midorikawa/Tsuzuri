@@ -3348,30 +3348,6 @@ impl Queue {
     fn modified_later(&self, document: &Path) -> bool {
         self.modifications.contains_key(document)
     }
-
-    /// Whether a later `didChange` of `document` replaces the one being handled before any request
-    /// that the server computes in between: with full synchronization the last one is enough
-    /// (G39 spec 12). A request between them is computed unless it is cancelled or its own document
-    /// changes after it.
-    fn superseded(&self, document: &Path, inbox: &Inbox) -> bool {
-        for (index, item) in self.items.iter().enumerate() {
-            if item.document.as_deref() == Some(document) && TEXT_SYNC.contains(&item.method()) {
-                return item.method() == "textDocument/didChange";
-            }
-            if let Some(id) = item.request_id() {
-                let modified = item.document.as_deref().is_some_and(|asked| {
-                    self.items
-                        .iter()
-                        .skip(index + 1)
-                        .any(|later| later.modified() == Some(asked))
-                });
-                if !inbox.is_cancelled(&id) && !modified {
-                    return false;
-                }
-            }
-        }
-        false
-    }
 }
 
 fn decrement<K: Ord + ?Sized + ToOwned>(counts: &mut BTreeMap<K::Owned, usize>, key: &K)
@@ -3503,14 +3479,12 @@ pub fn serve(
         if method == "exit" {
             return i32::from(!session.shutdown);
         }
-        if id.is_none()
-            && method == "textDocument/didChange"
-            && document
-                .as_deref()
-                .is_some_and(|document| queue.superseded(document, &inbox))
-        {
-            continue;
-        }
+        // A text sync is applied and checked in order, also when a later one of its document
+        // replaces it: skipped, it would be lost if the later one were rejected, and the changes of
+        // other documents would meet the limit of the open buffers beside a text that the client
+        // has replaced (Copilot review 2 of PR #119). Applying it only schedules its root, and
+        // nothing is analyzed before a computed request or an empty queue, so a replaced text is
+        // not analyzed (G39 spec 12).
         let key = id.as_ref().map(Value::to_string);
         let cancelled = || key.as_deref().is_some_and(|key| inbox.is_cancelled(key));
         let result = if cancelled() {

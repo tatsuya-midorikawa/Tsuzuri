@@ -3147,6 +3147,92 @@ fn a_request_for_a_replaced_text_gets_content_modified() {
     server.finish();
 }
 
+/// Copilot review 2 of PR #119: a change that a later change of the same document replaces is still
+/// applied, so that it stays when the later one is rejected (here for its size).
+#[test]
+fn a_change_before_a_rejected_one_is_kept() {
+    use serde_json::json;
+    let valid = "fn value() -> i64 { 1 }\n";
+    let other = "fn other() -> i64 { 2 }\n";
+    let (fixture, mut server) = live_session(&[("Main.tz", valid), ("Other.tz", other)]);
+    let main = fixture.uri("Main.tz");
+    // A hover of another document of the root: computed, it analyzes the root while the rest arrives.
+    let busy = ask(
+        &mut server,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": fixture.uri("Other.tz")}, "position": position(other, "other", "utf-16")}),
+    );
+    server.change(&main, 2, "fn renamed() -> i64 { 1 }\n");
+    let limit = tsuzuri::syntax::MAX_SOURCE_BYTES;
+    server.change(&main, 3, &" ".repeat(limit + 1));
+    let symbols = ask(
+        &mut server,
+        "textDocument/documentSymbol",
+        json!({"textDocument": {"uri": main}}),
+    );
+    assert!(server.response(busy).get("result").is_some());
+    let rejected = server.wait(
+        |message| message["method"] == "window/logMessage",
+        "the rejection of the third version",
+    );
+    assert_eq!(
+        rejected["params"]["message"],
+        format!("source exceeds the {limit}-byte limit")
+    );
+    let response = server.response(symbols);
+    let names: Vec<_> = response["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{response}"))
+        .iter()
+        .map(|symbol| symbol["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(names, ["renamed"]);
+    server.finish();
+}
+
+/// Copilot review 2 of PR #119: the changes of several documents are checked against the shared
+/// limit of the open buffers in the order they arrive. A shrinks, B grows into the room that A left,
+/// and A shrinks again: B's change fits, although it would not beside A's first text.
+#[test]
+fn changes_of_two_documents_meet_the_shared_limit_in_order() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("Main.tz", main);
+    // The project does not load the sources under a directory whose name starts with '.', so the
+    // large buffers cost the analysis nothing.
+    std::fs::create_dir(fixture.path(".big")).unwrap();
+    let mut server = live::Server::start(&fixture.uri(""), "utf-16");
+    server.open(&fixture.uri("Main.tz"), main);
+    // Eight buffers of the largest size would fill the 32 MiB: six, A, and Main.tz leave less room
+    // than one more.
+    let full = " ".repeat(tsuzuri::syntax::MAX_SOURCE_BYTES);
+    for n in 0..6 {
+        server.open(&fixture.uri(&format!(".big/Fill{n}.tz")), &full);
+    }
+    let (a, b) = (fixture.uri(".big/A.tz"), fixture.uri(".big/B.tz"));
+    server.open(&a, &full);
+    server.open(&b, "");
+    // The first request analyzes the root while the rest arrives.
+    let busy = ask(
+        &mut server,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": fixture.uri("Main.tz")}, "position": position(main, "value", "utf-16")}),
+    );
+    server.change(&a, 2, "  ");
+    // Sent as a request, the notification's error would come back as a response.
+    let grow = server.id();
+    server.send(json!({"id": grow, "method": "textDocument/didChange", "params": {"textDocument": {"uri": b, "version": 2}, "contentChanges": [{"text": full}]}}));
+    server.change(&a, 3, " ");
+    assert!(server.response(busy).get("result").is_some());
+    let response = server.response(grow);
+    assert!(
+        response.get("error").is_none() && response["result"].is_null(),
+        "{response}"
+    );
+    server.finish();
+}
+
 /// G39 段 12: the light bulb's automatic request (`triggerKind` 2) without `only` gets no fix all,
 /// which VS Code would drop; an invoked one and one that asks for source actions do.
 #[test]
