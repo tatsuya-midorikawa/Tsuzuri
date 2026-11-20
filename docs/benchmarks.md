@@ -5709,6 +5709,88 @@ PB07 の個別の測定（上の「既定の判断」）は、1 分の load aver
 
 速度の合否は置かず、測った値を記録します。Apple M1 Max・macOS 27.0.1・`rustc 1.98.1` の release ビルドで、load average は 9〜25 でした。G27 の 200 モジュールの合成プロジェクトの `check`（知識グラフを消してから。7 回）を `TSUZURI_TIME_PASSES=1` で測ると、`views/*.mmd` を作る `kg-views` は 3.03〜3.11 ms で、知識グラフの段（`kg-capture` から `kg-publish` まで、約 151 ms）の約 2%、`check` 全体（約 280 ms）の約 1.1% です（G30 の停止条件 4 の 5% に届きません）。200 モジュールでは `module` の図はノードの上限 60 で畳まれ、`types` は 200 の record を 60 を超えるのでモジュールごとにまとめます。
 
+## 言語サーバーの再解析（PB08、2026-11-20〜）
+
+言語サーバーの 1 回の再解析と CLI の `check` から、捨てる診断を作る計算と重複した解析を除いた変更（[PB08](../_perfs/_completed/PB08-lsp-refresh-cost.md) の Phase 1）の記録です。速度の合否は置きません。
+
+**実装した経路**: 出力（診断・補完・ホバー・インレイヒント・修正案、IR）は変えません。
+
+- O1: 未使用の私的な宣言の到達の走査（`unused_private`）が、std を含むすべての関数の型の名前を、診断を作らない照合（`Names::quiet_named_type`。`named_type` の Ok の条件と同じ `type_lookup`）で引きます。宣言された型でない名前（`i64`、型変数）ごとに、プログラムのすべての型の名前の候補の表を作っていました。
+- O3: `matching_instance` が型クラスの instance を順に試すときの unify は、合わない instance の `E1003` の文言を作りません（コード・kind・位置は同じで、unify の判断は変わりません）。
+- O4(a)・O4(b): インレイヒントと `W1006` の `costly_sites` は、利用者の関数の本体だけを所有権の検査にかけ、言語サーバーでは型検査の所有権の検査が求めた call facts を使います（`gpu_devices::lower_kernels` が本体を書き換えたときは求め直します）。
+- O5: 言語サーバーの再解析と、修正案・リネームの検証の再解析は、CLI と同じく使える core 数（最大 8、`TSUZURI_THREADS` があればそれ）で解析します。
+- O9: 言語サーバーは、診断を送ってから、インレイヒントの複製と効果の推論を求めます。
+
+O2（`unused_private` の辺を到達した節点だけ作る）と O8（std の構文解析の結果を再解析をまたいで使う）は、Phase 1 の計測で効果が広がりより小さかったので行いません。O3(b) と Phase 2（O6）は、2026-11-20 の利用者の指示で行いました（下の「Phase 2」。Phase 1 の計測は目標に届いていました）。
+
+**測り方**: workload はチケットの「計測手順」のとおりで、`node benchmarks/lsp/workloads.mjs target/perf/PB08/projects` が作り直します（`examples` の hello・point・polymorphism、`tests/fixtures` の conventions・json・anonymous_unions・list_fsharp・in_place_writes の写し、6 ファイル 215 KB の big、201 ファイル 727 KB の syn200、すべての opt-in のモジュール名をコメントに書いた hello・big の `-allstd`）。
+
+```sh
+node benchmarks/run-lsp.mjs <compiler> --out target/perf/PB08-after --projects hello,big,syn200 --threads unset,1,8 --samples 11
+node benchmarks/run-build.mjs <compiler> --sizes 200,1000 --languages tsuzuri --variants check --out target/perf/PB08-px03-after
+node benchmarks/metrics.mjs report target/perf/PB08-after --baseline target/perf/PB08-before
+```
+
+`run-lsp.mjs` は PX01 の record（suite `lsp`）を書きます: 1 回の再解析（`didChange` からその直後の `semanticTokens/full` の応答まで。`refresh-<スレッド>`）、変更なしの `semanticTokens/full`（`tokens-<スレッド>`）、`didChange` からその版の `publishDiagnostics` まで（200 ms の debounce を含む。`publish-comment-<スレッド>`・`publish-error-<スレッド>`）、big の 5 つの `codeAction`（`codeaction-*`。action の題の一覧は `projects.json`）、CLI の `check`（`TSUZURI_CACHE_DIR=`、1 スレッドと自動。`check-1`・`check-auto`）。
+
+出力が変わらないことは、`benchmarks/lsp/golden.mjs` の golden（`check --json` の終了コード・stdout・stderr と知識グラフのファイル、442 個、1 スレッドと自動。10 の workload の言語サーバーの記録）と、`TSUZURI_BASELINE=<before> node tests/parallel_frontend.mjs <after>`（IR）で確かめます。
+
+**結果（Phase 1、2026-11-20）**
+
+- **環境**: Apple M3（8 コア）、macOS 27.2.1、Node v24.22.2。計測中の load average は 2.9〜6.0。
+- **比べた binary**: before は main `295ffcb4` の release、after は PB08 Phase 1 の `4c5d81a4` の release。
+- **手順**: before と after を chunk ごとに順を入れ替えて交互に測った。M1・M4 は各 11 回（warm-up 2 回）、CLI は 11 回、PX03 は 9 回。
+- **生データ**: `target/perf/PB08-before`・`target/perf/PB08-after`（chunk は `target/perf/PB08-chunks/`）。
+- 中央値（ms）を下に挙げる。全体の表と最小・最大はチケットの「手順 8: 計測」にある。
+
+| 指標 | before | after | after/before |
+| --- | ---: | ---: | ---: |
+| M1 hello（`TSUZURI_THREADS` 未設定） | 493 | 134 | 0.271 |
+| M1 big | 1,576 | 594 | 0.377 |
+| M1 syn200 | 2,288 | 464 | 0.203 |
+| M1 hello（1 スレッド） | 488 | 190 | 0.390 |
+| M1 big（1 スレッド） | 1,538 | 725 | 0.471 |
+| M1 syn200（1 スレッド） | 2,285 | 615 | 0.269 |
+| M4 `didChange`→`publishDiagnostics` big（診断が変わらない編集） | 1,778 | 781 | 0.439 |
+| M4 big の `codeAction`（文書全体、`triggerKind` 1） | 10,124 | 4,282 | 0.423 |
+| CLI `check` hello（自動） | 101 | 57 | 0.563 |
+| CLI `check` big（自動） | 759 | 464 | 0.611 |
+| CLI `check` syn200（自動） | 776 | 265 | 0.341 |
+| PX03 `check` 200 module | 785 | 272 | 0.346 |
+| PX03 `check` 1,000 module | 4,114 | 1,213 | 0.295 |
+
+M1 はチケットの目標（hello 0.29 倍以下、big 0.48 倍以下、syn200 0.23 倍以下）に届いた。CLI の `check`（12 の workload、1 スレッドと自動）と PX03 の `check` は、どの workload も遅くなっていない。
+
+strip しない release の `sample` では、捨てる診断を作る frame（`find::with_suggestions`、`polymorph::mismatch`）と、`costly_sites` の下の 2 回目の `call_facts`（big で 1 回の再解析あたり約 113 CPU ms）が消えた。
+
+**Phase 2（O3(b)・O6、2026-11-20）**: 出力（診断・補完・ホバー・インレイヒント・シグネチャヘルプ・修正案、IR）は変えません。例外は、読み込んだ std の instance や予算の全体を見る言語サーバーの検査（instance の重なり、重なりの検査の 1,024 組の予算、特殊化の 65,536 の予算）で、O6 の後は名前を書いていない opt-in のモジュールについて `check` と同じ結果です（全部を読んでいたときは、利用者の blanket instance と `std/Monoids.tz` の instance の重なりを、`check` にない `E1016` にしていました）。
+
+- O3(b): `matching_instance` は、instance を（型クラス、頭の外側の型構成子）で索引し、unify し得る instance（同じ構成子のものと、変数・適用・参照・関数などの構成子のない頭のもの）だけを宣言の順に試します。頭の変数は前もって求めておきます。適用・部分適用・匿名共用体・エラーを含む型は、今までどおりすべてを試します。
+- O6: 言語サーバーも、ソース（未保存のバッファを含む）が名前を書いた opt-in の std モジュールだけを読みます（再解析と、クイックフィックス・リネームの検証の再解析）。名前を書いていないモジュールの名前の補完、メンバーの補完、シグネチャヘルプ、未解決の名前の候補と修正案は、すべての std を読んでいたときと同じ答えを、process に 1 回だけ作る索引から返します。
+
+**結果（Phase 2、2026-11-20）**
+
+- **環境と手順**: Phase 1 と同じ機械・同じ手順で、計測中の load average は 3.6〜7.3。
+- **比べた binary**: before（main `295ffcb4`）と、Phase 2（O3(b) と O6、`40e7f72c` の release）。
+- **生データ**: `target/perf/PB08-p2-before`・`target/perf/PB08-p2-after`。O3(b) だけの比較は `target/perf/PB08-o3b-*`。
+- 中央値（ms）を下に挙げる。全体と最小・最大はチケットの「手順 9: 計測」にある。
+
+| 指標 | before | Phase 2 | Phase 2/before | Phase 1/before |
+| --- | ---: | ---: | ---: | ---: |
+| M1 hello（`TSUZURI_THREADS` 未設定） | 488 | 47 | 0.097 | 0.271 |
+| M1 big | 1,569 | 525 | 0.335 | 0.377 |
+| M1 syn200 | 2,296 | 360 | 0.157 | 0.203 |
+| M1 hello（1 スレッド） | 493 | 68 | 0.138 | 0.390 |
+| M4 `didChange`→`publishDiagnostics` hello（診断が変わらない編集） | 732 | 263 | 0.359 | 0.504 |
+| M4 `didChange`→`publishDiagnostics` big | 1,819 | 724 | 0.398 | 0.439 |
+| M4 big の `codeAction`（文書全体、`triggerKind` 1） | 10,230 | 3,702 | 0.362 | 0.423 |
+| CLI `check` syn200（自動） | 801 | 273 | 0.341 | 0.341 |
+| PX03 `check` 1,000 module | 4,164 | 1,226 | 0.294 | 0.295 |
+
+- **O3(b) だけの効果**（Phase 1 → Phase 1 と O3(b)、M1 未設定）: hello 136 → 111 ms、big 596 → 541 ms、syn200 482 → 439 ms。
+- **CLI**: CLI の `check` と PX03 は O3(b) だけが変わり、どの workload も遅くなっていない。big-allstd の 1 スレッドの `check` の最大 RSS は +0.7 %。
+- **最初の補完の費用**: 読み込んでいない opt-in のモジュールのメンバーの補完（`Json.`）は、process で最初の 1 回だけ、全 std の索引を作るので 127 ms かかる（Phase 1 は 10 ms）。2 回目からは 0.5 ms。
+
 ## 現実的な次の指標
 
 性能目標の完全な達成に向けては、代表的な実アプリケーションワークロード、主要アルゴリズムカーネル、コンパイル所要時間、生成バイナリのフットプリント、ホスト境界呼び出しのオーバーヘッド、ならびにピークメモリ消費量（RSS）の継続的なベンチマーク測定が不可欠です。

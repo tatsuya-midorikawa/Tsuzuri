@@ -5918,6 +5918,9 @@ struct Names {
     active_aliases: BTreeMap<String, Vec<String>>,
     /// The declarations that typed holes search (G25), built on the first hole of a check.
     search_index: std::sync::OnceLock<Vec<find::Entry>>,
+    /// Whether the candidates of an unresolved name also come from the opt-in std modules that the
+    /// check does not load, as `EditorCheck::opt_in_candidates` asks (PB08 O6).
+    opt_in_candidates: bool,
 }
 
 /// How the name before `{` of a computation expression resolves.
@@ -6363,14 +6366,41 @@ impl Names {
     /// module key. A bare name that several `using` namespaces hold names
     /// nothing (see `check_module`).
     fn module_path(&self, requester: &str, path: &str) -> Option<&str> {
+        self.module_path_with(requester, path, None)
+    }
+
+    /// `module_path` as if the std module `unloaded` were loaded too: the key of an opt-in std
+    /// module that the check does not load, which is its name, in the namespace `std` (PB08 O6).
+    /// The language server loads only the opt-in modules that the sources name, and `type_pool`
+    /// asks what a check that loads every std module would find: a user module of that name in
+    /// the requester's namespace, an enclosing one or a `using` namespace still answers first,
+    /// and `using std` beside a `using` namespace that holds a module of that name makes the bare
+    /// name name nothing.
+    fn module_path_with<'s>(
+        &'s self,
+        requester: &str,
+        path: &str,
+        unloaded: Option<&'s str>,
+    ) -> Option<&'s str> {
         if path.contains('.') || path.starts_with(KEY_PATH) {
             return None;
         }
+        debug_assert!(unloaded.is_none_or(|key| !self.modules.contains_key(key)));
         let bare = !path.contains("::");
         let dotted = if bare {
             std::borrow::Cow::Borrowed(path)
         } else {
             std::borrow::Cow::Owned(path.replace("::", "."))
+        };
+        // The key of the module whose full name is `full`, the unloaded module's included.
+        let module = |full: &str| -> Option<&'s str> {
+            self.full_modules.get(full).map(String::as_str).or_else(|| {
+                unloaded.filter(|key| {
+                    full.strip_prefix(crate::stdlib::NAMESPACE)
+                        .and_then(|rest| rest.strip_prefix('.'))
+                        == Some(*key)
+                })
+            })
         };
         let mut scope = self
             .module_namespaces
@@ -6379,15 +6409,22 @@ impl Names {
         let mut usings = self.module_usings.get(requester).filter(|_| bare);
         loop {
             let found = if scope.is_empty() {
-                self.full_modules.get(dotted.as_ref())
+                module(dotted.as_ref())
             } else {
-                self.full_modules.get(&format!("{scope}.{dotted}"))
+                module(&format!("{scope}.{dotted}"))
             };
             if let Some(key) = found {
                 return Some(key);
             }
             if let Some(namespaces) = usings.take() {
-                let mut imported = self.imported(namespaces, path);
+                let mut imported = self
+                    .imported(namespaces, path)
+                    .chain(unloaded.filter(|key| {
+                        *key == path
+                            && namespaces
+                                .iter()
+                                .any(|namespace| namespace == crate::stdlib::NAMESPACE)
+                    }));
                 match (imported.next(), imported.next()) {
                     (Some(key), None) => return Some(key),
                     (Some(_), Some(_)) => return None,
@@ -6403,6 +6440,7 @@ impl Names {
             self.modules
                 .get_key_value(path)
                 .map(|(key, _)| key.as_str())
+                .or_else(|| unloaded.filter(|key| *key == path))
         })
         .flatten()
     }
@@ -6883,8 +6921,7 @@ impl Names {
         name: &str,
         span: Span,
     ) -> Result<NamedType<'_>, Diagnostic> {
-        self.check_type_path(module, name, span)?;
-        let choice = self.type_choice(module, name);
+        let choice = self.type_lookup(module, name, span)?;
         if matches!(choice, Choice::Missing)
             && let Some(spelling) = self.namespace_spelling(module, name)
         {
@@ -6904,6 +6941,30 @@ impl Names {
                 unknown
             }
         })
+    }
+
+    /// The lookup behind `named_type`: the checks of the path, then the choice. `named_type`
+    /// returns `Ok` exactly for `Ok(Choice::Found(..))`; its errors add the message and the
+    /// suggestions of a missing name.
+    fn type_lookup(
+        &self,
+        module: &str,
+        name: &str,
+        span: Span,
+    ) -> Result<Choice<NamedType<'_>>, Diagnostic> {
+        self.check_type_path(module, name, span)?;
+        Ok(self.type_choice(module, name))
+    }
+
+    /// The type for which `named_type` returns `Ok`, and `None` where it returns an error, without
+    /// building that error: the private reachability of `unused_private` looks up every type
+    /// name of every function, std included, and most of them (`i64`, type variables) name no
+    /// declared type (PB08 O1).
+    fn quiet_named_type(&self, module: &str, name: &str, span: Span) -> Option<NamedType<'_>> {
+        match self.type_lookup(module, name, span) {
+            Ok(Choice::Found(named, _)) => Some(named),
+            _ => None,
+        }
     }
 
     /// `check_path` for a type name. A bare name is also a module name, so
@@ -7662,27 +7723,33 @@ pub(crate) fn check_modules_indexed_all(
     parallelism: Parallelism,
     contracts: contracts::ContractMode,
 ) -> Result<CheckedModule, DiagnosticSet> {
-    check_modules_with_capture(modules, semantic, None, parallelism, contracts)
+    check_modules_with_capture(modules, semantic, None, parallelism, contracts, None)
+}
+
+/// What the language server's analysis asks of a check besides the module (PB08).
+#[derive(Default)]
+pub(crate) struct EditorCheck {
+    /// Set by the check: the call facts of the ownership check, when the module still has the
+    /// bodies that they describe (O4(b)).
+    pub(crate) copy_facts: Option<crate::ownership::CopyFacts>,
+    /// Whether the candidates of an unresolved name (`value_pool`, `function_pool`) also come from
+    /// the opt-in std modules that the check does not load, as those of a check that loads every
+    /// std module do (O6). The language server loads only the opt-in modules that the sources
+    /// name; its candidates, help and fixes stay those of a check that loads them all.
+    pub(crate) opt_in_candidates: bool,
 }
 
 /// `check_modules_indexed_all` that also fills `capture`, the declaration view of the knowledge
-/// graph (G26). The capture only reads the checker's state: the result and the diagnostics are
-/// those of the same analysis without it.
-pub(crate) fn check_modules_captured(
-    modules: &[ModuleInput<'_>],
-    capture: &mut kg_capture::Capture,
-    parallelism: Parallelism,
-    contracts: contracts::ContractMode,
-) -> Result<CheckedModule, DiagnosticSet> {
-    check_modules_with_capture(modules, None, Some(capture), parallelism, contracts)
-}
-
-fn check_modules_with_capture(
+/// graph (G26), and does what `editor` asks (PB08). The capture only reads the checker's state:
+/// the result and the diagnostics are those of the same analysis without it. With a capture, the
+/// semantic index is the capture's: `semantic` is `None`.
+pub(crate) fn check_modules_with_capture(
     modules: &[ModuleInput<'_>],
     semantic: Option<&mut semantic::SemanticIndex>,
     capture: Option<&mut kg_capture::Capture>,
     parallelism: Parallelism,
     contracts: contracts::ContractMode,
+    editor: Option<&mut EditorCheck>,
 ) -> Result<CheckedModule, DiagnosticSet> {
     let mut diagnostics = Diagnostics::new(0);
     match check_modules_collect(
@@ -7693,6 +7760,7 @@ fn check_modules_with_capture(
         capture,
         parallelism,
         contracts,
+        editor,
     ) {
         Ok(module) => Ok(module),
         Err(error) => {
@@ -7702,6 +7770,8 @@ fn check_modules_with_capture(
     }
 }
 
+/// Checks `modules`, doing what `editor` asks (PB08).
+#[allow(clippy::too_many_arguments)]
 fn check_modules_collect(
     modules: &[ModuleInput<'_>],
     diagnostics: &mut Diagnostics,
@@ -7710,6 +7780,7 @@ fn check_modules_collect(
     mut capture: Option<&mut kg_capture::Capture>,
     parallelism: Parallelism,
     contract_mode: contracts::ContractMode,
+    editor: Option<&mut EditorCheck>,
 ) -> Result<CheckedModule, Diagnostic> {
     let check_time = crate::timings::Phase::start("check");
     // A `@deprecated` declaration needs the references that the semantic index records (W1005),
@@ -7718,6 +7789,9 @@ fn check_modules_collect(
     let indexing = semantic.is_some() || capture.is_some() || !deprecations.is_empty();
     let mut names = Names {
         warning_options,
+        opt_in_candidates: editor
+            .as_ref()
+            .is_some_and(|editor| editor.opt_in_candidates),
         ..Names::default()
     };
     let module_editions: BTreeMap<_, _> = modules
@@ -9625,7 +9699,8 @@ fn check_modules_collect(
         regions::validate_contract_calls(&module)?;
     }
     let ownership_time = crate::timings::Phase::start("ownership");
-    diagnostics.extend(crate::ownership::check_all_with(&module, parallelism));
+    let (ownership_errors, facts) = crate::ownership::check_all_with_facts(&module, parallelism);
+    diagnostics.extend(ownership_errors);
     drop(ownership_time);
     if let Err(error) = crate::gpu::validate_calls(&module) {
         diagnostics.push(error);
@@ -9683,7 +9758,14 @@ fn check_modules_collect(
     }
     names.flush_renamed(diagnostics).check()?;
     // F09 Phase 2: the calls are validated, so their callbacks are known functions.
-    crate::gpu_devices::lower_kernels(&mut module)?;
+    let rewritten = crate::gpu_devices::lower_kernels(&mut module)?;
+    // PB08 O4(b): the call facts describe the bodies that the ownership check saw, which nothing
+    // after it changes unless `lower_kernels` numbered device calls.
+    if let Some(editor) = editor
+        && !rewritten
+    {
+        editor.copy_facts = Some(facts);
+    }
     Ok(module)
 }
 

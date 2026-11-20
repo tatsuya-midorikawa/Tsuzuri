@@ -1967,6 +1967,352 @@ fn opt_in_view_and_tensor_modules_complete_when_named() {
     }
 }
 
+/// PB08 O6: the language server loads only the opt-in std modules that the sources name. Runs
+/// `steps` on `main` alone, which names none, and with a second file whose comment names `Json` and
+/// `Matrix`, so that every analysis loads them as every analysis did before; returns the results of
+/// the requests and the last diagnostics of `Main.tz` of each, with the root written `ROOT/`. The
+/// steps go one at a time, each request after the response to the one before, as in `stepwise`
+/// (G39): a request followed by an edit of its document answers for the text it was sent for.
+fn opt_in_sessions(
+    main: &str,
+    steps: impl Fn(&dyn Fn(&str) -> String) -> Vec<serde_json::Value>,
+) -> [(Vec<serde_json::Value>, serde_json::Value); 2] {
+    let run = |files: &[(&str, &str)]| {
+        let fixture = live::Fixture::new();
+        for (name, text) in files {
+            fixture.write(name, text);
+        }
+        let mut server = live::Server::start(&fixture.uri(""), "utf-16");
+        for (name, text) in files {
+            server.open(&fixture.uri(name), text);
+        }
+        let root = fixture
+            .uri("Main.tz")
+            .strip_suffix("Main.tz")
+            .unwrap()
+            .to_owned();
+        let rooted = |value: &serde_json::Value| -> serde_json::Value {
+            serde_json::from_str(&value.to_string().replace(&root, "ROOT/")).unwrap()
+        };
+        let uri = |name: &str| fixture.uri(name);
+        let mut results = Vec::new();
+        for step in steps(&uri) {
+            match step.get("id").cloned() {
+                Some(id) => {
+                    server.send(step);
+                    let response = server.wait(
+                        |message| message.get("id") == Some(&id) && message.get("method").is_none(),
+                        &format!("the response {id}"),
+                    );
+                    results.push(rooted(&response["result"]));
+                }
+                None => server.send(step),
+            }
+        }
+        let diagnostics = server
+            .seen
+            .iter()
+            .rfind(|message| {
+                message["method"] == "textDocument/publishDiagnostics"
+                    && message["params"]["uri"]
+                        .as_str()
+                        .is_some_and(|uri| uri.ends_with("/Main.tz"))
+            })
+            .map(|message| rooted(&message["params"]["diagnostics"]))
+            .unwrap_or_default();
+        server.finish();
+        (results, diagnostics)
+    };
+    [
+        run(&[("Main.tz", main)]),
+        run(&[
+            ("Main.tz", main),
+            ("Names.tz", "// Json Matrix\ndef names_marker :: i64 = 0\n"),
+        ]),
+    ]
+}
+
+fn labels(result: &serde_json::Value) -> Vec<&str> {
+    result["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{result}"))
+        .iter()
+        .map(|item| item["label"].as_str().unwrap())
+        .collect()
+}
+
+#[test]
+fn opt_in_module_names_complete_in_a_project_that_names_none() {
+    use serde_json::json;
+    let main = "let answer = 42\nanswer\n";
+    let responses = scripted(&[("Main.tz", main)], "utf-16", |uri| {
+        vec![
+            json!({"id": 1, "method": "textDocument/completion", "params": {"textDocument": {"uri": uri("Main.tz")}, "position": {"line": 2, "character": 0}}}),
+        ]
+    });
+    let items = responses[0]["result"]["items"].as_array().unwrap();
+    for (path, _) in tsuzuri::stdlib::SOURCES {
+        let name = tsuzuri::stdlib::module_name(path).unwrap();
+        let item = items
+            .iter()
+            .find(|item| item["label"] == name)
+            .unwrap_or_else(|| panic!("{name}: {items:?}"));
+        assert_eq!(item["kind"], 9, "{item}");
+        assert_eq!(item["detail"], format!("module std::{name}"), "{item}");
+    }
+}
+
+#[test]
+fn opt_in_members_complete_and_sign_while_the_first_edit_that_names_them_does_not_parse() {
+    use serde_json::json;
+    let main = "let answer = 42\nanswer\n";
+    let edits = [
+        "let answer = 42\nanswer\nlet probe = Json.",
+        "let answer = 42\nanswer\nlet probe = Matrix.",
+        "let answer = 42\nanswer\nlet probe = Json.Value.",
+        "let answer = 42\nanswer\nlet probe = Json.parse (",
+    ];
+    let [unnamed, named] = opt_in_sessions(main, |uri| {
+        let main = uri("Main.tz");
+        // The analysis of the text that names neither module, which the requests fall back to.
+        let mut steps = vec![
+            json!({"id": 0, "method": "textDocument/documentSymbol", "params": {"textDocument": {"uri": main}}}),
+        ];
+        for (version, text) in edits.iter().enumerate() {
+            let line = text.lines().last().unwrap();
+            let at = json!({"line": 2, "character": line.len()});
+            let method = if text.ends_with('(') {
+                "textDocument/signatureHelp"
+            } else {
+                "textDocument/completion"
+            };
+            steps.push(json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": main, "version": version + 2}, "contentChanges": [{"text": text}]}}));
+            steps.push(json!({"id": version + 1, "method": method, "params": {"textDocument": {"uri": main}, "position": at}}));
+        }
+        steps
+    });
+    assert_eq!(unnamed.0, named.0);
+    let [_, json, matrix, value, signature] = unnamed.0.as_slice() else {
+        panic!("{:?}", unnamed.0);
+    };
+    for member in ["parse", "serialize", "Value", "Error", "Null"] {
+        assert!(labels(json).contains(&member), "{member}: {json}");
+    }
+    for member in ["init", "rows", "of_array", "transpose"] {
+        assert!(labels(matrix).contains(&member), "{member}: {matrix}");
+    }
+    for case in ["Null", "Bool", "Number", "Items"] {
+        assert!(labels(value).contains(&case), "{case}: {value}");
+    }
+    let label = signature["signatures"][0]["label"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        label.starts_with("parse (") && label.contains("ref utf8string"),
+        "{signature}"
+    );
+    assert_eq!(signature["activeParameter"], 0, "{signature}");
+}
+
+#[test]
+fn opt_in_module_names_hover_once_an_edit_names_them() {
+    use serde_json::json;
+    let main = "let answer = 42\nanswer\n";
+    let edited = "let parsed = Json.parse (ref u8\"1\")\nlet m = Matrix.init 2 2 (\\i j -> i)\nlet answer = 42\nanswer\n";
+    let [unnamed, named] = opt_in_sessions(main, |uri| {
+        let main = uri("Main.tz");
+        let hover = |id: u64, needle: &str| json!({"id": id, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": position(edited, needle, "utf-16")}});
+        vec![
+            json!({"method": "textDocument/didChange", "params": {"textDocument": {"uri": main, "version": 2}, "contentChanges": [{"text": edited}]}}),
+            hover(1, "Json"),
+            hover(2, "parse ("),
+            hover(3, "Matrix"),
+            hover(4, "init"),
+        ]
+    });
+    assert_eq!(unnamed.0, named.0);
+    for (result, doc) in unnamed.0.iter().zip([
+        "Parses one JSON text",
+        "Parses one JSON text",
+        "once per element",
+        "once per element",
+    ]) {
+        let value = result["contents"]["value"].as_str().unwrap_or_default();
+        assert!(value.contains(doc), "{doc}: {result}");
+    }
+}
+
+#[test]
+fn unknown_names_get_the_candidates_and_quickfixes_of_unloaded_opt_in_modules() {
+    use serde_json::json;
+    let main = "let m = Matrx.init 2 2 (\\i j -> i)\nlet a = parse\nlet b = Null\n0\n";
+    let [unnamed, named] = opt_in_sessions(main, |uri| {
+        let main = uri("Main.tz");
+        let quickfix = |id: u64, line: usize, start: usize, end: usize| json!({"id": id, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": main}, "range": range(line, start, end), "context": {"diagnostics": [], "only": ["quickfix"]}}});
+        vec![
+            quickfix(1, 0, 8, 13),
+            quickfix(2, 1, 8, 13),
+            quickfix(3, 2, 8, 12),
+        ]
+    });
+    assert_eq!(unnamed, named);
+    let fixes = |message: &str| {
+        let diagnostic = unnamed
+            .1
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|diagnostic| diagnostic["message"] == message)
+            .unwrap_or_else(|| panic!("{message}: {}", unnamed.1))
+            .clone();
+        diagnostic["data"]["fixes"].clone()
+    };
+    // `Matrix` is one edit away; `parse` is the last part of `Format.parse` and of `Json.parse`, so
+    // no name is best; `Null` is the last part of `Json.Null` alone.
+    assert_eq!(
+        fixes("unknown value 'Matrx'"),
+        json!([{"title": "Replace 'Matrx' with 'Matrix'", "applicability": "maybe"}])
+    );
+    assert_eq!(fixes("unknown value 'parse'"), serde_json::Value::Null);
+    assert_eq!(
+        fixes("unknown value 'Null'"),
+        json!([{"title": "Replace 'Null' with 'Json.Null'", "applicability": "maybe"}])
+    );
+    let [matrix, parse, null] = unnamed.0.as_slice() else {
+        panic!("{:?}", unnamed.0);
+    };
+    assert_eq!(
+        matrix[0]["title"], "Replace 'Matrx' with 'Matrix'",
+        "{matrix}"
+    );
+    assert_eq!(
+        matrix[0]["edit"]["changes"]["ROOT/Main.tz"],
+        json!([{"range": range(0, 8, 13), "newText": "Matrix"}])
+    );
+    assert_eq!(*parse, json!([]));
+    assert_eq!(
+        null[0]["title"], "Replace 'Null' with 'Json.Null'",
+        "{null}"
+    );
+}
+
+/// PB08 review of Phase 2: the language server loads the opt-in std modules that `check` loads, so
+/// a check over every loaded std instance (here the overlap of instances) follows `check` for an
+/// opt-in module that no source names. `Main.tz` gives `Monoid` a blanket instance, which overlapped
+/// the instances of `std/Monoids.tz` while the server loaded every std module (9 `E1016` in that
+/// file, none in `Main.tz`). The editor publishes what `check --json` reports, the `W1001` of `b`
+/// with its `certain` fix, and `source.fixAll.tsuzuri` applies what `tsuzuri fix` applies.
+#[test]
+fn diagnostics_and_fix_all_follow_check_and_fix_for_an_opt_in_module_that_no_source_names() {
+    use serde_json::{Value, json};
+    const CLASSES: &str = "class Zero<'a> { def zero :: unit -> 'a }\n";
+    const MAIN: &str = "instance Classes.Zero<'a> => Monoid<'a> {\n    fn empty _ = Classes.Zero.zero ()\n    fn combine a b = a\n}\ninstance Classes.Zero<i64> { fn zero _ = 0 }\ndef main :: own unit -> i32 = \\() -> 0\n";
+    let files = [("Classes.tt", CLASSES), ("Main.tz", MAIN)];
+    let mut main = String::new();
+    let (messages, _) = session(&files, "utf-16", |uri| {
+        main = uri("Main.tz");
+        // A request makes the server analyze the project and publish its diagnostics.
+        vec![
+            json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": main}, "position": {"line": 2, "character": 7}}}),
+            json!({"id": 2, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": main}, "range": range(0, 0, 0), "context": {"diagnostics": [], "only": ["source.fixAll"]}}}),
+        ]
+    });
+    let mut published = std::collections::BTreeMap::new();
+    for message in &messages {
+        if message["method"] == "textDocument/publishDiagnostics" {
+            published.insert(
+                message["params"]["uri"].as_str().unwrap().to_owned(),
+                message["params"]["diagnostics"].clone(),
+            );
+        }
+    }
+    for (uri, diagnostics) in &published {
+        if *uri != main {
+            assert_eq!(*diagnostics, json!([]), "{uri}");
+        }
+    }
+    // `check --json` of the same files, as the server writes a diagnostic: zero-based positions
+    // (the text is ASCII, so columns are UTF-16 code units), the kind and the fix titles in `data`.
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-lsp-follows-check-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    for (name, text) in files {
+        std::fs::write(root.join(name), text).unwrap();
+    }
+    let tsuzuri = |arguments: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args(arguments)
+            .env("TSUZURI_CACHE_DIR", "")
+            .output()
+            .unwrap()
+    };
+    let output = tsuzuri(&["check", root.to_str().unwrap(), "--json"]);
+    // And what `tsuzuri fix` writes.
+    let fixed = tsuzuri(&["fix", root.to_str().unwrap()]);
+    assert!(fixed.status.success(), "{fixed:?}");
+    let fixed = std::fs::read_to_string(root.join("Main.tz")).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let position = |line: &Value, column: &Value| json!({"line": line.as_u64().unwrap() - 1, "character": column.as_u64().unwrap() - 1});
+    // `check --json` writes its diagnostics to stderr, one JSON object per line.
+    let checked: Vec<Value> = String::from_utf8(output.stderr)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let diagnostic: Value = serde_json::from_str(line).unwrap();
+            assert!(diagnostic["path"].as_str().unwrap().ends_with("Main.tz"), "{line}");
+            let span = &diagnostic["span"];
+            let mut data = serde_json::Map::new();
+            if let Some(kind) = diagnostic.get("kind") {
+                data.insert("kind".into(), kind.clone());
+            }
+            if let Some(fixes) = diagnostic["fixes"].as_array() {
+                let titles: Vec<Value> = fixes
+                    .iter()
+                    .map(|fix| json!({"title": fix["title"], "applicability": fix["applicability"]}))
+                    .collect();
+                data.insert("fixes".into(), json!(titles));
+            }
+            json!({
+                "range": {"start": position(&span["line"], &span["column"]), "end": position(&span["end_line"], &span["end_column"])},
+                "severity": if diagnostic["severity"] == "error" { 1 } else { 2 },
+                "code": diagnostic["code"],
+                "source": "tsuzuri",
+                "message": diagnostic["message"],
+                "data": data,
+            })
+        })
+        .collect();
+    assert_eq!(published[&main], json!(checked));
+    // The parameter `b` of `combine` is unused, and nothing else is wrong.
+    assert_eq!(
+        published[&main],
+        json!([{
+            "range": range(2, 17, 18),
+            "severity": 2,
+            "code": "W1001",
+            "source": "tsuzuri",
+            "message": "unused local 'b'; prefix it with '_' to silence this warning",
+            "data": {"kind": "unused_local", "fixes": [{"title": "Prefix 'b' with '_'", "applicability": "certain"}]},
+        }])
+    );
+    let response = messages
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(2)))
+        .unwrap();
+    let actions = response["result"].as_array().unwrap();
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(actions[0]["kind"], "source.fixAll.tsuzuri");
+    let edits = actions[0]["edit"]["changes"][main.as_str()]
+        .as_array()
+        .unwrap();
+    assert_eq!(apply_text_edits(MAIN, edits), fixed);
+    assert_eq!(fixed, MAIN.replace("fn combine a b", "fn combine a _b"));
+}
+
 #[test]
 fn deprecated_uses_from_other_packages_are_published_as_warnings() {
     use serde_json::json;

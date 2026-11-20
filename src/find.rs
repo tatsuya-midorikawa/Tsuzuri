@@ -1071,9 +1071,10 @@ impl Checker<'_> {
                     continue;
                 }
                 // The stem is compared with the target; it is written alone only where it names
-                // this module, and with its namespace elsewhere.
+                // this module, and with its namespace elsewhere (as a check that loads every std
+                // module sees it, PB08 O6).
                 let stem = module_stem(key);
-                if self.names.module_path(self.module, stem) == Some(key.as_str()) {
+                if self.names.candidate_module_path(self.module, stem) == Some(key.as_str()) {
                     pool.push(Pooled::new(stem, 3, "module"));
                 } else {
                     pool.push(Pooled::qualified(
@@ -1091,6 +1092,32 @@ impl Checker<'_> {
             for builtin in Builtin::ALL {
                 if let Some((prefix, _)) = builtin.name().split_once('.') {
                     pool.push(Pooled::new(prefix, 3, "module"));
+                }
+            }
+        }
+        // PB08 O6: what the opt-in std modules that the check does not load add, as above. They are
+        // std modules that only qualified names reach: a function or case whose last part is
+        // `target`, written as std's pages write it, and the module (its key is its name).
+        if self.names.opt_in_candidates {
+            let capitalized = target.starts_with(|c: char| c.is_ascii_uppercase());
+            for module in opt_in_names().unloaded(self.names) {
+                for (key, word) in &module.functions {
+                    if last_segment(key) == target {
+                        pool.push(Pooled::qualified(declaration_display(key), target, 1, word));
+                    }
+                }
+                for key in &module.cases {
+                    if last_segment(key) == target {
+                        pool.push(Pooled::qualified(
+                            declaration_display(key),
+                            target,
+                            2,
+                            "union case",
+                        ));
+                    }
+                }
+                if capitalized {
+                    pool.push(Pooled::new(module.key, 3, "module"));
                 }
             }
         }
@@ -1155,6 +1182,17 @@ impl Checker<'_> {
                 pool.push(Pooled::new(name, 1, "builtin"));
             }
         }
+        // PB08 O6: the functions and cases of the opt-in std modules that the check does not load.
+        if self.names.opt_in_candidates {
+            for module in opt_in_names().unloaded(self.names) {
+                for (key, word) in &module.functions {
+                    pool.push(Pooled::new(declaration_display(key), 1, *word));
+                }
+                for key in &module.cases {
+                    pool.push(Pooled::new(declaration_display(key), 2, "union case"));
+                }
+            }
+        }
         pool
     }
 
@@ -1200,6 +1238,26 @@ impl Names {
         }
     }
 
+    /// `module_path` as a check that loads every std module answers it, for the candidates of an
+    /// unresolved name (PB08 O6): with `opt_in_candidates`, an opt-in module that the check does
+    /// not load counts as loaded. Only the one named like the last segment of `path` can change
+    /// the answer, as the module of `std::Name`, of the bare key `Name`, or of a bare `Name` that
+    /// `using std` imports, which makes the name ambiguous when another `using` namespace holds a
+    /// module of that name.
+    fn candidate_module_path(&self, requester: &str, path: &str) -> Option<&str> {
+        let name = path.rsplit("::").next().unwrap_or(path);
+        let unloaded = self
+            .opt_in_candidates
+            .then(|| {
+                opt_in_names()
+                    .unloaded(self)
+                    .find(|module| module.key == name)
+                    .map(|module| module.key)
+            })
+            .flatten();
+        self.module_path_with(requester, path, unloaded)
+    }
+
     /// Whether the unqualified case name `alias` resolves from `module`: visible and not ambiguous.
     fn resolves_case(&self, module: &str, alias: &str) -> bool {
         self.case(module, alias, Span::default())
@@ -1209,6 +1267,8 @@ impl Names {
     /// The pool of `unknown record, union, or type alias 'n'` in `module`: the type names that
     /// resolve there (visible and not ambiguous) and the primitive types.
     pub(super) fn type_pool(&self, module: &str) -> Vec<Pooled> {
+        #[cfg(test)]
+        TYPE_POOLS.with(|count| count.set(count.get() + 1));
         let declared = self
             .record_aliases
             .keys()
@@ -1217,6 +1277,23 @@ impl Names {
             .chain(self.handle_aliases.keys())
             .map(String::as_str)
             .filter(|name| matches!(self.type_choice(module, name), Choice::Found(..)));
+        // PB08 O6: the types that a user module names bare in the opt-in std modules that the
+        // check does not load (`OptInModule::types`), where a check that loads them finds them:
+        // `type_choice` reaches such a type, named after its module, through the module path of
+        // the bare name, which a user module of that name may answer first (`Sample::Tensor` from
+        // the namespace `Sample`, an enclosed one or `using Sample`) or make ambiguous (`using
+        // Sample` and `using std`), and the requester's own type of that name is in `declared`
+        // already.
+        let unloaded = (self.opt_in_candidates && self.origin(module) == ModuleOrigin::User)
+            .then(|| {
+                opt_in_names().unloaded(self).flat_map(move |opt_in| {
+                    opt_in.types.iter().copied().filter(move |name| {
+                        self.candidate_module_path(module, name) == Some(opt_in.key)
+                    })
+                })
+            })
+            .into_iter()
+            .flatten();
         let primitive = crate::numeric::NUMERIC_NAMES.into_iter().chain([
             "bool",
             "unit",
@@ -1227,10 +1304,166 @@ impl Names {
             "bigint",
         ]);
         declared
+            .chain(unloaded)
             .chain(primitive)
             .map(|name| Pooled::new(name, 4, "type"))
             .collect()
     }
+}
+
+/// The names that the opt-in std modules give to the candidates of unresolved names (PB08 O6),
+/// read once per process from their sources: what `Names` holds of each module when a check loads
+/// it and a user module looks it up. The language server loads only the opt-in modules that the
+/// sources name; with `Names::opt_in_candidates`, `value_pool`, `function_pool` and `type_pool`
+/// add the entries of the others, so that an unknown name gets the candidates, help and fix of a
+/// check that loads every std module, as the language server's did before. `value_pool` and
+/// `function_pool` spell a std declaration and a std module the same from every requester (a
+/// std declaration as std's pages write it, a std module by its key, which has no namespace to
+/// qualify it), so their entries need no resolution; `type_pool` offers an opt-in type only where
+/// the module path of its bare name reaches it (`OptInModule::types`), and the module path of
+/// both (`Names::candidate_module_path`) counts the unloaded modules as loaded, which can make a
+/// user module's bare name ambiguous (`using Sample` and `using std` beside `Sample::Tensor`, which
+/// `value_pool` then spells in full). The other pools need
+/// none: `member_pool` and `field_pool` serve a module or record that the source names (which
+/// loads it), and `pattern_pool` holds only the cases and active patterns that resolve bare, which
+/// an opt-in module's never do (`choose`). `opt_in_names_are_the_checker_names` (in `warnings.rs`)
+/// keeps this equal to `Names`.
+pub(crate) struct OptInNames {
+    modules: Vec<OptInModule>,
+}
+
+pub(crate) struct OptInModule {
+    /// The module's key, which is its name.
+    key: &'static str,
+    /// Its public functions, constants and extern functions that are not `hidden`, as
+    /// `Names::functions` keys them (`Module.name`), with the word of their candidate signature.
+    functions: Vec<(String, &'static str)>,
+    /// The cases of its public unions, as `Names::cases` keys them (`Module.Case`).
+    cases: Vec<String>,
+    /// The types that a user module may name bare: its public record, union, extern type or type
+    /// alias named after the module (`Tensor`, `WaitGroup`), if it has one. `type_choice` follows
+    /// the module path of a bare name and takes the own type of the module it reaches when that
+    /// type is visible; the other declarations of an opt-in module resolve only qualified
+    /// (`choose`). The path reaches this std module unless a user module of the same name answers
+    /// first (`Sample::Tensor` from the namespace `Sample`), so `type_pool` offers the type only
+    /// where `Names::module_path_with`, with this module as if loaded, reaches it.
+    types: Vec<&'static str>,
+}
+
+impl OptInNames {
+    /// The names of the opt-in modules among `sources` (std paths and texts), in their order.
+    pub(crate) fn read(sources: &[(&'static str, &'static str)]) -> Self {
+        let modules = sources
+            .iter()
+            .filter_map(|(path, text)| {
+                let key = crate::stdlib::module_name(path)?;
+                if !crate::stdlib::is_opt_in(key) {
+                    return None;
+                }
+                let program =
+                    crate::parser::parse_with_source_all(text, 0, crate::syntax::Edition::LATEST)
+                        .unwrap_or_else(|_| panic!("{path} parses"));
+                let public = |visibility: Visibility| visibility == Visibility::Public;
+                let functions =
+                    program
+                        .functions
+                        .iter()
+                        .map(|function| (&function.name.text, function.visibility, "function"))
+                        .chain(
+                            program.constants.iter().map(|constant| {
+                                (&constant.name.text, constant.visibility, "constant")
+                            }),
+                        )
+                        .chain(
+                            program.externs.iter().map(|external| {
+                                (&external.name.text, external.visibility, "function")
+                            }),
+                        )
+                        .filter(|(_, visibility, _)| public(*visibility))
+                        .map(|(name, _, word)| (format!("{key}.{name}"), word))
+                        .filter(|(qualified, _)| !hidden(qualified))
+                        .collect();
+                let cases = program
+                    .unions
+                    .iter()
+                    .filter(|union| public(union.visibility))
+                    .flat_map(|union| &union.cases)
+                    .map(|case| format!("{key}.{}", case.name.text))
+                    .collect();
+                let own_type = program
+                    .records
+                    .iter()
+                    .map(|record| (&record.name, record.visibility))
+                    .chain(
+                        program
+                            .unions
+                            .iter()
+                            .map(|union| (&union.name, union.visibility)),
+                    )
+                    .chain(
+                        program
+                            .extern_types
+                            .iter()
+                            .map(|handle| (&handle.name, handle.visibility)),
+                    )
+                    .chain(
+                        program
+                            .type_aliases
+                            .iter()
+                            .map(|alias| (&alias.name, alias.visibility)),
+                    )
+                    .any(|(name, visibility)| name.text == key && public(visibility));
+                Some(OptInModule {
+                    key,
+                    functions,
+                    cases,
+                    types: own_type.then_some(key).into_iter().collect(),
+                })
+            })
+            .collect();
+        Self { modules }
+    }
+
+    /// Every entry, as `module M`, `function M.f <word>`, `case M.C` and `type T M.T`, sorted
+    /// (PB08 tests).
+    #[cfg(test)]
+    pub(super) fn entries(&self) -> Vec<String> {
+        let mut entries = Vec::new();
+        for module in &self.modules {
+            entries.push(format!("module {}", module.key));
+            for (key, word) in &module.functions {
+                entries.push(format!("function {key} {word}"));
+            }
+            for key in &module.cases {
+                entries.push(format!("case {key}"));
+            }
+            for name in &module.types {
+                entries.push(format!("type {name} {}.{name}", module.key));
+            }
+        }
+        entries.sort();
+        entries
+    }
+
+    /// The modules that `names` does not hold: those that the check does not load.
+    fn unloaded<'s>(&'s self, names: &'s Names) -> impl Iterator<Item = &'s OptInModule> {
+        self.modules
+            .iter()
+            .filter(|module| !names.modules.contains_key(module.key))
+    }
+}
+
+/// The opt-in names of the embedded std sources, read on the first use in this process.
+fn opt_in_names() -> &'static OptInNames {
+    static NAMES: std::sync::OnceLock<OptInNames> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| OptInNames::read(crate::stdlib::SOURCES))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times `type_pool` ran on this thread: each run looks up every type name of the
+    /// program, so only a diagnostic that is reported may build one (PB08).
+    pub(crate) static TYPE_POOLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]

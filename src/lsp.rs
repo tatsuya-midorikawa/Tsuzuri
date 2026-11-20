@@ -5,7 +5,7 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::check::semantic::{Reference, Role, SemanticIndex, SymbolKind};
-use crate::check::{CheckedModule, ModuleOrigin, semantic};
+use crate::check::{ModuleOrigin, semantic};
 use crate::copies::{CopyKind, CopySite};
 use crate::diagnostic::{Applicability, Diagnostic, Edit, Fix, Severity, Span, apply_edits};
 use crate::driver::Project;
@@ -631,7 +631,7 @@ impl Session {
         }
         if !directory.is_dir() {
             // The root was removed or moved away (the parent directory of a document outside every
-            // client root, say). `load_with_overlays` would load its parent directory, with the
+            // client root, say). `load_for_editor` would load its parent directory, with the
             // projects beside it; the root has no project, and its diagnostics are cleared.
             self.projects.remove(directory);
             self.good.remove(directory);
@@ -643,7 +643,7 @@ impl Session {
             .map(|(path, buffer)| (path.clone(), buffer.text.clone()))
             .collect();
         let mut sent = Sent::default();
-        let project = match Project::load_with_overlays(directory, &overlays) {
+        let project = match Project::load_for_editor(directory, &overlays) {
             Ok(project) => project,
             Err(error) => {
                 self.projects.remove(directory);
@@ -655,14 +655,6 @@ impl Session {
             }
         };
         let (analyzed, diagnostics, counts) = analyze(&project);
-        let (index, copies, effects) =
-            analyzed.map_or((None, Vec::new(), BTreeMap::new()), |(index, module)| {
-                (
-                    Some(index),
-                    crate::copies::costly_sites(&module),
-                    inferred_effects(&module),
-                )
-            });
         let mappers: Vec<_> = project
             .sources
             .iter()
@@ -683,6 +675,16 @@ impl Session {
             sent.note(&source.path, uri, nonempty);
         }
         self.retire(output, directory, sent)?;
+        // PB08 O9: the inlay hints and the effects of hovers after the diagnostics are sent, the
+        // empty lists of `retire` included.
+        let (index, copies, effects) =
+            analyzed.map_or((None, Vec::new(), BTreeMap::new()), |(index, module)| {
+                (
+                    Some(index),
+                    module.costly_sites(),
+                    inferred_effects(module.module()),
+                )
+            });
         if index.is_some() {
             self.good.remove(directory);
         }
@@ -1264,7 +1266,7 @@ impl Session {
             }
             overlays.insert(file.path.clone(), text);
         }
-        let project = Project::load_with_overlays(directory, &overlays)
+        let project = Project::load_for_editor(directory, &overlays)
             .map_err(|error| format!("{}: {}", error.diagnostic.code, error.diagnostic.message))?;
         let (renamed, diagnostics, _) = analyze(&project);
         let describe =
@@ -1426,7 +1428,9 @@ impl Session {
     /// `source.fixAll.tsuzuri`: every `certain` fix of the document, applied by `tsuzuri fix`'s
     /// rounds to the project with the open buffers. `None` when the project has no `certain` fix,
     /// the run fails, or nothing in the document changes; -32800 when `cancelled` says so before a
-    /// round.
+    /// round. The project loads the std modules that `tsuzuri fix` and the analysis load
+    /// (`load_for_editor`, PB08 O6), so the rounds see the diagnostics whose fixes the quick fixes
+    /// offer.
     fn fix_all(
         &self,
         directory: &Path,
@@ -1456,7 +1460,7 @@ impl Session {
             .iter()
             .map(|(path, buffer)| (path.clone(), buffer.text.clone()))
             .collect();
-        let Ok(mut project) = Project::load_with_overlays(directory, &overlays) else {
+        let Ok(mut project) = Project::load_for_editor(directory, &overlays) else {
             return Ok(None);
         };
         let path = &state.project.sources[source_id].path;
@@ -1627,7 +1631,7 @@ impl Session {
                 apply_edits(&file.text, edits).ok_or("the edits overlap or are out of range")?;
             overlays.insert(file.path.clone(), text);
         }
-        let project = Project::load_with_overlays(directory, &overlays)
+        let project = Project::load_for_editor(directory, &overlays)
             .map_err(|error| format!("{}: {}", error.diagnostic.code, error.diagnostic.message))?;
         let (_, _, after) = analyze(&project);
         let (Some(before), Some(after)) = (&state.counts, &after) else {
@@ -1849,11 +1853,13 @@ fn diagnostic_counts(diagnostics: &[Diagnostic]) -> BTreeMap<(Severity, &'static
     counts
 }
 
-/// Analyzes a project; a successful index also records `def` and `fn` heads.
+/// Analyzes a project; a successful index also records `def` and `fn` heads. Like the commands of
+/// the command line, it uses the available cores, at most 8, unless `TSUZURI_THREADS` says
+/// otherwise (PB08 O5); the result does not depend on the number.
 fn analyze(
     project: &Project,
 ) -> (
-    Option<(SemanticIndex, CheckedModule)>,
+    Option<(SemanticIndex, crate::copies::EditorModule)>,
     Vec<Diagnostic>,
     DiagnosticCounts,
 ) {
@@ -1874,10 +1880,14 @@ fn analyze(
         })
         .collect();
     let mut semantic = SemanticIndex::default();
-    match crate::analyze_inputs_semantic(&inputs, &mut semantic) {
+    match crate::analyze_inputs_for_editor(
+        &inputs,
+        &mut semantic,
+        crate::parallel::Parallelism::command_line(),
+    ) {
         Ok(mut module) => {
             add_function_heads(&mut semantic, project);
-            let warnings = std::mem::take(&mut module.warnings);
+            let warnings = module.take_warnings();
             let counts = Some(diagnostic_counts(&warnings));
             (Some((semantic, module)), warnings, counts)
         }
@@ -2146,7 +2156,7 @@ struct View<'s> {
     map: StaleMap,
 }
 
-impl View<'_> {
+impl<'s> View<'s> {
     fn module(&self) -> Option<String> {
         self.state.modules.key(self.source).map(str::to_owned)
     }
@@ -2173,17 +2183,30 @@ impl View<'_> {
     fn is_std(&self, definition: usize) -> bool {
         !is_user(&self.state.project, self.index.definitions[definition].span)
     }
+
+    /// The index that holds the declarations of the module `key`: the view's, or for a std module
+    /// that the project does not load, the index of every std module (PB08 O6).
+    fn members(&self, key: &str) -> &'s SemanticIndex {
+        if self.state.modules.is_unloaded(key) {
+            std_index()
+        } else {
+            self.index
+        }
+    }
 }
 
 /// Module keys, which qualify declarations in the semantic index, by source
 /// and by full name (`Namespace.File`), as the checker resolves them.
 #[derive(Default)]
 struct ModuleNames {
-    /// Each source's key and namespace.
+    /// Each source's key and namespace, then those of the std modules that the project does not
+    /// load (`unloaded_std`).
     sources: Vec<Option<(String, String)>>,
     full: BTreeMap<String, String>,
     /// The namespaces that each source's `using` declarations import.
     usings: Vec<Vec<String>>,
+    /// The keys of the std modules that the project does not load (PB08 O6).
+    unloaded: BTreeSet<&'static str>,
 }
 
 impl ModuleNames {
@@ -2196,6 +2219,7 @@ impl ModuleNames {
                 ModuleOrigin::Std => (None, Vec::new()),
             })
             .collect();
+        let unloaded = unloaded_std(project);
         let sources: Vec<_> = project
             .sources
             .iter()
@@ -2213,6 +2237,11 @@ impl ModuleNames {
                     .and_then(crate::stdlib::module_name)
                     .map(|name| (name.to_owned(), crate::stdlib::NAMESPACE.to_owned())),
             })
+            .chain(
+                unloaded
+                    .iter()
+                    .map(|name| Some(((*name).to_owned(), crate::stdlib::NAMESPACE.to_owned()))),
+            )
             .collect();
         let full = sources
             .iter()
@@ -2230,6 +2259,7 @@ impl ModuleNames {
             sources,
             full,
             usings: Vec::new(),
+            unloaded,
         };
         names.usings = headers
             .iter()
@@ -2396,6 +2426,72 @@ impl ModuleNames {
     fn is_module(&self, full: &str) -> bool {
         self.full.contains_key(full) || self.keys().any(|key| key == full)
     }
+
+    /// Whether `key` names a std module that the project does not load (PB08 O6).
+    fn is_unloaded(&self, key: &str) -> bool {
+        self.unloaded.contains(key)
+    }
+}
+
+/// The std modules of `stdlib::SOURCES` that `project` does not load, in their order: the opt-in
+/// modules that its sources do not name (PB08 O6). Module names and paths still offer them, as
+/// when the language server loaded every std module; their declarations come from `std_index`.
+fn unloaded_std(project: &Project) -> BTreeSet<&'static str> {
+    let loaded: BTreeSet<&str> = project
+        .sources
+        .iter()
+        .filter(|source| source.origin == ModuleOrigin::Std)
+        .filter_map(|source| source.path.to_str().and_then(crate::stdlib::module_name))
+        .collect();
+    crate::stdlib::SOURCES
+        .iter()
+        .filter_map(|(path, _)| crate::stdlib::module_name(path))
+        .filter(|name| !loaded.contains(name))
+        .collect()
+}
+
+/// The semantic index of a program that loads every std module, made once per process the first
+/// time a request needs the declarations of a std module that its project does not load (PB08 O6):
+/// the members that completion offers after `Json.` before a source names `Json`, and the
+/// signature of `Json.parse` while the first edit that names it does not parse. The declarations
+/// of a std module do not depend on the program, so they are those of the project's index when
+/// it loaded every std module.
+fn std_index() -> &'static SemanticIndex {
+    static INDEX: std::sync::OnceLock<SemanticIndex> = std::sync::OnceLock::new();
+    INDEX.get_or_init(|| {
+        let inputs: Vec<_> = std::iter::once(crate::SourceInput {
+            path: "Main.tz",
+            text: "0\n",
+            origin: ModuleOrigin::User,
+            namespace: "",
+            edition: crate::syntax::Edition::LATEST,
+            package: None,
+        })
+        .chain(
+            crate::stdlib::SOURCES
+                .iter()
+                .map(|(path, text)| crate::SourceInput {
+                    path,
+                    text,
+                    origin: ModuleOrigin::Std,
+                    namespace: "",
+                    edition: crate::syntax::Edition::LATEST,
+                    package: None,
+                }),
+        )
+        .collect();
+        let mut index = SemanticIndex::default();
+        // Every std module checks (`stdlib::tests::every_std_module_type_checks_when_named`); were
+        // it not so, the requests would find no declarations instead of stopping the server.
+        match crate::analyze_inputs_for_editor(
+            &inputs,
+            &mut index,
+            crate::parallel::Parallelism::command_line(),
+        ) {
+            Ok(_) => index,
+            Err(_) => SemanticIndex::default(),
+        }
+    })
 }
 
 /// The completion detail of a module or namespace by its dotted full name,
@@ -2614,7 +2710,9 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
         if let Some(key) = view.module_path(&path_text(&tokens, &chain)) {
             // A type named after its module is the module path itself, not a member.
             let stem = key.rsplit('.').next().unwrap_or(key);
-            for (definition, item) in index.definitions.iter().enumerate() {
+            let members = view.members(key);
+            items.index = members;
+            for (definition, item) in members.definitions.iter().enumerate() {
                 if item.module == key
                     && top_level(item.kind)
                     && (item.public || key == module)
@@ -2634,19 +2732,28 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
             } else {
                 view.module_path(&qualifier).unwrap_or(&qualifier)
             };
-            let union = view
-                .definition_at(last.span)
-                .or_else(|| {
-                    index.definitions.iter().position(|item| {
-                        item.kind == SymbolKind::Union
-                            && item.module == owner
-                            && (item.public || owner == module)
-                            && item.name == ident(last)
-                    })
-                })
-                .filter(|&definition| index.definitions[definition].kind == SymbolKind::Union);
-            let (container, kind) = if let Some(union) = union {
-                (Some(union), SymbolKind::Case)
+            // A definition at the name, or else a union of the owner, whose cases follow the dot.
+            let union = match view.definition_at(last.span) {
+                Some(definition) => Some((index, definition)),
+                None => {
+                    let members = view.members(owner);
+                    members
+                        .definitions
+                        .iter()
+                        .position(|item| {
+                            item.kind == SymbolKind::Union
+                                && item.module == owner
+                                && (item.public || owner == module)
+                                && item.name == ident(last)
+                        })
+                        .map(|definition| (members, definition))
+                }
+            }
+            .filter(|(members, definition)| {
+                members.definitions[*definition].kind == SymbolKind::Union
+            });
+            let (members, container, kind) = if let Some((members, union)) = union {
+                (members, Some(union), SymbolKind::Case)
             } else {
                 let dot = view.map.backward(dot.span.start);
                 let record = index
@@ -2655,9 +2762,10 @@ fn completion(view: Option<&View<'_>>, text: &str, offset: usize) -> Value {
                     .filter(|(span, _)| span.source == Some(view.source) && Some(span.end) == dot)
                     .max_by_key(|(span, _)| span.end - span.start)
                     .map(|(_, record)| *record);
-                (record, SymbolKind::Field)
+                (index, record, SymbolKind::Field)
             };
-            for (definition, item) in index.definitions.iter().enumerate() {
+            items.index = members;
+            for (definition, item) in members.definitions.iter().enumerate() {
                 if container.is_some() && item.container == container && item.kind == kind {
                     items.definition(2, definition);
                 }
@@ -2959,17 +3067,18 @@ fn signature(view: &View<'_>, tokens: &[Token], head: usize, active: usize) -> O
         module.clone()
     };
     let callable = |kind: SymbolKind| matches!(kind, SymbolKind::Function | SymbolKind::Extern);
-    let definition = view.definition_at(tokens[head].span).or_else(|| {
-        index.definitions.iter().position(|item| {
+    // A definition at the name, or else a function of the owner (PB08 O6: of the index of every
+    // std module when the project does not load the owner).
+    let item = match view.definition_at(tokens[head].span) {
+        Some(definition) => Some(&index.definitions[definition]),
+        None => view.members(&owner).definitions.iter().find(|item| {
             callable(item.kind)
                 && item.module == owner
                 && (item.public || owner == module)
                 && item.name == ident(&tokens[head])
-        })
-    });
-    let item = definition
-        .map(|definition| &index.definitions[definition])
-        .filter(|item| callable(item.kind))?;
+        }),
+    }
+    .filter(|item| callable(item.kind))?;
     let parameters = if item.parameters.is_empty() {
         "()".to_owned()
     } else {
@@ -4473,6 +4582,92 @@ mod tests {
         let body = &source[source.find("fn identifier").unwrap()..];
         let body = &body[..body.find("name => TokenKind::Ident").unwrap()];
         assert_eq!(body.matches("=> TokenKind::").count(), KEYWORDS.len());
+    }
+
+    /// PB08 O5: the language server analyzes with the threads of the command line (the available
+    /// cores, at most 8, unless `TSUZURI_THREADS` says otherwise), so its stages run on workers.
+    #[test]
+    fn analysis_uses_the_threads_of_the_command_line() {
+        let root = std::env::temp_dir().join(format!(
+            "tsuzuri-lsp-threads-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Main.tz"),
+            "let values = [1, 2]\nArray.length (ref values)\n",
+        )
+        .unwrap();
+        let project = Project::load_with_overlays(&root, &BTreeMap::new());
+        let before = crate::parallel::PARALLEL_STAGES.get();
+        let analyzed = project.map(|project| analyze(&project).0.is_some());
+        let stages = crate::parallel::PARALLEL_STAGES.get() - before;
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(analyzed.ok(), Some(true));
+        if crate::parallel::Parallelism::command_line().workers(usize::MAX, 1) > 1 {
+            assert!(stages > 0, "{stages}");
+        } else {
+            assert_eq!(stages, 0);
+        }
+    }
+
+    /// PB08 O6: the language server loads the std modules that `check` loads, `sources_for` of the
+    /// project's sources with the open buffers in place of their files: the base modules for a
+    /// project that names no opt-in module, and `Json` too once an unsaved buffer names it.
+    #[test]
+    fn refresh_loads_the_std_modules_that_check_loads() {
+        let root = std::env::temp_dir().join(format!(
+            "tsuzuri-lsp-opt-in-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let saved = "let answer = 42\nanswer\n";
+        std::fs::write(root.join("Main.tz"), saved).unwrap();
+        std::fs::write(root.join("Other.tz"), "def other :: i64 = 1\n").unwrap();
+        let path = root.join("Main.tz");
+        let mut session = Session::default();
+        session
+            .client_roots
+            .push(ClientRoot::new(&file_uri(&root).unwrap()).unwrap());
+        let loaded = |session: &mut Session| {
+            session.refresh(&root, &mut Vec::new()).unwrap();
+            session.projects[&root]
+                .project
+                .sources
+                .iter()
+                .filter(|source| source.origin == ModuleOrigin::Std)
+                .map(|source| source.path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let expected = |texts: &[&str]| {
+            crate::stdlib::sources_for(texts.iter().copied())
+                .iter()
+                .map(|(path, _)| (*path).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let base = loaded(&mut session);
+        let edited = "let value = Json.Null\nlet answer = 42\nanswer\n";
+        session.buffers.insert(
+            path.clone(),
+            OpenBuffer {
+                uri: file_uri(&path).unwrap(),
+                text: edited.to_owned(),
+                version: 2,
+            },
+        );
+        let named = loaded(&mut session);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(base, expected(&[saved, "def other :: i64 = 1\n"]));
+        assert_eq!(
+            base.len(),
+            crate::stdlib::SOURCES.len() - crate::stdlib::OPT_IN.len()
+        );
+        assert_eq!(named, expected(&[edited, "def other :: i64 = 1\n"]));
+        assert!(named.iter().any(|path| path == "std/Json.tz"), "{named:?}");
+        assert_eq!(named.len(), base.len() + 1);
     }
 
     #[test]

@@ -405,10 +405,36 @@ pub(super) struct Inference {
     defaults: BTreeMap<usize, Type>,
     /// While `Inference::unifies` runs, the variables that `unify` solved, which it opens again.
     trial: Option<Vec<usize>>,
+    /// Whether a mismatch has no message: `matching_instance` tries the instances of a class and
+    /// drops the error of each one that does not unify, so it writes none of their types (PB08
+    /// O3). The code and the span stay, and with them every decision that `unify` makes.
+    quiet: bool,
 }
+
+#[cfg(test)]
+thread_local! {
+    /// How many mismatch messages `mismatch` wrote on this thread (PB08).
+    pub(crate) static MISMATCH_TEXTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// While `parallel::COMPARE_INSTANCE_TRIALS` is set on a thread (and on the workers of the stages
+/// that it starts), `matching_instance` also tries every instance of the class in order, with
+/// quiet inferences and with inferences that write their messages, and checks that they choose
+/// the same instance and types as its indexed quiet trials (PB08 O3 and O3(b)). It counts in the
+/// process, workers included: how many times it compared the two, and how many of those trials the
+/// index narrowed. The tests that set the switch take turns (`COMPARING`), so that each counts
+/// only its own trials.
+#[cfg(test)]
+static COMPARED_INSTANCE_TRIALS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static INDEXED_INSTANCE_TRIALS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// The `E1003` of a type mismatch; `expected` and `found` are the displayed types.
 fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
+    #[cfg(test)]
+    MISMATCH_TEXTS.with(|count| count.set(count.get() + 1));
     Diagnostic::of(
         DiagnosticKind::TypeMismatch,
         format!("expected {expected}, found {found}"),
@@ -418,6 +444,29 @@ fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
 }
 
 impl Inference {
+    /// An inference whose mismatches have no message (PB08 O3).
+    fn quiet() -> Self {
+        Self {
+            quiet: true,
+            ..Self::default()
+        }
+    }
+
+    /// The `E1003` of a mismatch between `expected` and `found`, which the closures display; a
+    /// quiet inference displays neither.
+    fn type_mismatch(
+        &self,
+        span: Span,
+        expected: impl FnOnce() -> String,
+        found: impl FnOnce() -> String,
+    ) -> Diagnostic {
+        if self.quiet {
+            Diagnostic::of(DiagnosticKind::TypeMismatch, String::new(), span)
+        } else {
+            mismatch(expected(), found(), span)
+        }
+    }
+
     pub(super) fn fresh(&mut self) -> Type {
         let id = self.solutions.len();
         self.solutions.push(None);
@@ -584,10 +633,10 @@ impl Inference {
             (Type::FixedArray(a, n), Type::FixedArray(b, m)) => {
                 self.unify(n, m, types, span).map_err(|error| {
                     if error.code == "E1003" {
-                        return mismatch(
-                            self.resolve(&expected).display(types),
-                            self.resolve(&actual).display(types),
+                        return self.type_mismatch(
                             error.span,
+                            || self.resolve(&expected).display(types),
+                            || self.resolve(&actual).display(types),
                         );
                     }
                     error
@@ -617,10 +666,10 @@ impl Inference {
                         // Report the whole type when both sides were known before unification;
                         // partially inferred arguments would otherwise show intermediate bindings.
                         if error.code == "E1003" && !inferred(&actual) && !inferred(&expected) {
-                            return mismatch(
-                                expected.display(types),
-                                actual.display(types),
+                            return self.type_mismatch(
                                 error.span,
+                                || expected.display(types),
+                                || actual.display(types),
                             );
                         }
                         error
@@ -648,11 +697,7 @@ impl Inference {
             }
             _ => {}
         }
-        Err(mismatch(
-            expected.display(types),
-            actual.display(types),
-            span,
-        ))
+        Err(self.type_mismatch(span, || expected.display(types), || actual.display(types)))
     }
 
     /// Whether `actual` unifies with `expected` and `check` accepts the solutions that this takes,
@@ -816,6 +861,11 @@ pub(super) struct Classes {
     declarations: Vec<Class>,
     names: BTreeMap<String, usize>,
     instances: Vec<InstanceTemplate>,
+    /// The instances by class and the outermost constructor of their head (`head_constructor`), in
+    /// declaration order (PB08 O3(b)). A head that has no such constructor (a variable, an
+    /// application, a reference, a function...) or that holds an erroneous type, which unifies
+    /// with anything, is under `None`: `matching_instance` tries those for every type.
+    lookup: BTreeMap<(usize, Option<HeadKey>), Vec<usize>>,
     function_reads: BTreeMap<String, Box<[bool]>>,
     /// The synthesized declarations behind anonymous unions (A24): a union of one of them has the
     /// structural instances of `structural` (A26).
@@ -825,6 +875,8 @@ pub(super) struct Classes {
 struct InstanceTemplate {
     class: usize,
     head: Type,
+    /// `variables(&head)`, which every trial of `matching_instance` instantiates (PB08 O3(b)).
+    variables: Vec<String>,
     constraints: Vec<Constraint>,
     methods: Vec<(usize, Vec<Type>)>,
     span: Span,
@@ -975,6 +1027,7 @@ impl Classes {
             declarations: Vec::new(),
             names: BTreeMap::new(),
             instances: Vec::new(),
+            lookup: BTreeMap::new(),
             function_reads: BTreeMap::new(),
             anonymous: names.anonymous_unions.iter().copied().collect(),
         };
@@ -2223,9 +2276,11 @@ impl Classes {
                                 .collect(),
                         ));
                     }
+                    let lookup = key.filter(|_| !ty.contains_error());
                     self.instances.push(InstanceTemplate {
                         class: id,
                         head: ty,
+                        variables: type_parameters,
                         constraints: context,
                         methods: implementations,
                         span: instance.class.span,
@@ -2233,6 +2288,10 @@ impl Classes {
                     });
                     heads
                         .entry((id, key))
+                        .or_default()
+                        .push(self.instances.len() - 1);
+                    self.lookup
+                        .entry((id, lookup))
                         .or_default()
                         .push(self.instances.len() - 1);
                     Ok(())
@@ -2388,6 +2447,85 @@ impl Classes {
         ty: &Type,
         types: &TypeContext<'_>,
     ) -> Option<(&InstanceTemplate, BTreeMap<String, Type>)> {
+        let found = self.unifying_instance(class, ty, types, Inference::quiet, true);
+        #[cfg(test)]
+        if crate::parallel::COMPARE_INSTANCE_TRIALS.get() {
+            use std::sync::atomic::Ordering::Relaxed;
+            COMPARED_INSTANCE_TRIALS.fetch_add(1, Relaxed);
+            if self.instance_candidates(class, ty, types).is_some() {
+                INDEXED_INSTANCE_TRIALS.fetch_add(1, Relaxed);
+            }
+            let key = |found: &Option<(&InstanceTemplate, BTreeMap<String, Type>)>| {
+                found.as_ref().map(|(instance, substitutions)| {
+                    (std::ptr::from_ref(*instance), substitutions.clone())
+                })
+            };
+            // PB08 O3(b): the indexed trials choose what every instance in order chooses.
+            let linear = self.unifying_instance(class, ty, types, Inference::quiet, false);
+            assert_eq!(key(&found), key(&linear), "{}", ty.display(types));
+            // PB08 O3: and so do the trials that write their messages.
+            let loud = self.unifying_instance(class, ty, types, Inference::default, false);
+            assert_eq!(key(&found), key(&loud), "{}", ty.display(types));
+        }
+        found
+    }
+
+    /// The instances of `class` whose head may unify with the closed type `ty`, in declaration
+    /// order (PB08 O3(b)): those under `None` in `lookup`, and those whose head has the outermost
+    /// constructor of `ty` when `head_constructor` gives one. A head of another constructor never
+    /// unifies with `ty`: `unify` matches two types with different outermost constructors only
+    /// through an inference variable (a head's type variable), an application or a partial
+    /// application, or an erroneous type, and those heads are under `None`. `None` (try every
+    /// instance) when `ty` itself is an application, a partial application or an anonymous union,
+    /// or holds an erroneous type.
+    fn instance_candidates(
+        &self,
+        class: usize,
+        ty: &Type,
+        types: &TypeContext<'_>,
+    ) -> Option<impl Iterator<Item = usize> + '_> {
+        let anonymous = matches!(ty, Type::Union(id, _)
+            if types.unions.get(*id).is_some_and(CheckedUnion::is_anonymous));
+        if anonymous
+            || matches!(ty, Type::Application(..) | Type::Partial(_))
+            || ty.contains_error()
+        {
+            return None;
+        }
+        let bucket = |key| {
+            self.lookup
+                .get(&(class, key))
+                .map_or(&[][..], Vec::as_slice)
+        };
+        // Without an outermost constructor (a type variable, a reference, a function...), only the
+        // heads under `None` may unify.
+        let mut keyed = head_constructor(ty)
+            .map_or(&[][..], |key| bucket(Some(key)))
+            .iter()
+            .copied()
+            .peekable();
+        let mut open = bucket(None).iter().copied().peekable();
+        // Both lists are in declaration order; merge them.
+        Some(std::iter::from_fn(move || {
+            match (keyed.peek(), open.peek()) {
+                (Some(left), Some(right)) if left < right => keyed.next(),
+                (Some(_), Some(_)) | (None, _) => open.next(),
+                (Some(_), None) => keyed.next(),
+            }
+        }))
+    }
+
+    /// The first instance of `class` whose head unifies with the closed type `ty`, and the types
+    /// of its variables, unified by inferences that `inference` makes. With `indexed`, only the
+    /// `instance_candidates` are tried; the others never unify, so the first is the same.
+    fn unifying_instance(
+        &self,
+        class: usize,
+        ty: &Type,
+        types: &TypeContext<'_>,
+        inference: fn() -> Inference,
+        indexed: bool,
+    ) -> Option<(&InstanceTemplate, BTreeMap<String, Type>)> {
         // The fresh inference below knows nothing of the caller's variables.
         let mut open = false;
         map_type(ty, &mut |ty| {
@@ -2397,29 +2535,43 @@ impl Classes {
         if open {
             return None;
         }
-        self.instances
-            .iter()
-            .filter(|instance| instance.class == class)
-            .find_map(|instance| {
-                let mut inference = Inference::default();
-                let substitutions: BTreeMap<_, _> = variables(&instance.head)
-                    .into_iter()
-                    .map(|name| (name, inference.fresh()))
-                    .collect();
-                inference
-                    .unify(
-                        &substitute(&instance.head, &substitutions),
-                        ty,
-                        types,
-                        instance.span,
-                    )
-                    .ok()?;
-                let substitutions = substitutions
-                    .into_iter()
-                    .map(|(name, ty)| (name, inference.resolve(&ty)))
-                    .collect();
-                Some((instance, substitutions))
-            })
+        let trial = |instance: &'_ InstanceTemplate| {
+            let mut inference = inference();
+            let substitutions: BTreeMap<_, _> = instance
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inference.fresh()))
+                .collect();
+            inference
+                .unify(
+                    &substitute(&instance.head, &substitutions),
+                    ty,
+                    types,
+                    instance.span,
+                )
+                .ok()?;
+            let substitutions = substitutions
+                .into_iter()
+                .map(|(name, ty)| (name, inference.resolve(&ty)))
+                .collect();
+            Some(substitutions)
+        };
+        match indexed
+            .then(|| self.instance_candidates(class, ty, types))
+            .flatten()
+        {
+            Some(mut candidates) => candidates.find_map(|index| {
+                let instance = &self.instances[index];
+                trial(instance).map(|substitutions| (instance, substitutions))
+            }),
+            None => self
+                .instances
+                .iter()
+                .filter(|instance| instance.class == class)
+                .find_map(|instance| {
+                    trial(instance).map(|substitutions| (instance, substitutions))
+                }),
+        }
     }
 
     pub(super) fn derived_error(&self, function: usize, mut error: Diagnostic) -> Diagnostic {
@@ -6360,6 +6512,364 @@ mod tests {
         assert_eq!(
             message,
             "more than 64 specializations of generic functions; call them at fewer distinct types, or use 'dyn' for values of many types"
+        );
+    }
+
+    /// PB08 O3: `matching_instance` tries the instances of a class in order and drops the error
+    /// of each one that does not unify; a successful analysis writes no mismatch message.
+    #[test]
+    fn instance_trials_write_no_mismatch_message() {
+        let texts = || super::MISMATCH_TEXTS.with(std::cell::Cell::get);
+        let before = texts();
+        crate::analyze(
+            "record Box<'a> { value: 'a }\nclass Size<'a> { def size :: ref 'a -> i64 }\n\
+            instance Size<'a> => Size<Box<'a>> { fn size value = Size.size (ref value.value) }\n\
+            instance Size<string> { fn size value = value.length }\ninstance Size<[i32]> { fn size value = Array.length value }\n\
+            record Point { x: i64, label: string } deriving (Eq, Ord, Display)\n\
+            let boxed = Box { value: Box { value: \"abc\" } }\nlet items = [1, 2, 3]\n\
+            let p = Point { x: 1, label: \"p\" }\nlet q = Point { x: 2, label: \"q\" }\n\
+            let order = if p < q then 1 else 0\nlet shown = Display.display (ref p)\n\
+            Size.size (ref boxed) + Size.size (ref items) + order + shown.length",
+        )
+        .unwrap();
+        assert_eq!(
+            texts(),
+            before,
+            "a successful analysis wrote mismatch messages"
+        );
+        // A reported mismatch still has its message.
+        let error = crate::analyze("let x: i64 = \"text\"\nx").unwrap_err();
+        assert_eq!(error.code, "E1003", "{error:?}");
+        assert!(texts() > before);
+    }
+
+    /// PB08 O3: a quiet inference decides every unification as one that writes its messages: the
+    /// same result, the same code, kind and span of an error, the same solutions. Only the message
+    /// of an `E1003` is left empty.
+    #[test]
+    fn quiet_inference_unifies_like_the_loud_one() {
+        use super::Inference;
+        use crate::check::Type;
+        use crate::diagnostic::Span;
+        let module = crate::analyze(
+            "record Pair<'a> { first: 'a }\nunion Choice<'a> = Picked of 'a | Neither\n\
+            let p = Pair { first: 1 }\nlet c: Choice<i64> = Neither\np.first",
+        )
+        .unwrap();
+        let types = module.types();
+        let pair = module
+            .records
+            .iter()
+            .position(|record| record.name == "Main.Pair")
+            .unwrap();
+        let choice = module
+            .unions
+            .iter()
+            .position(|union| union.name == "Main.Choice")
+            .unwrap();
+        let infer = Type::Infer;
+        let array = |ty| Type::Array(Box::new(ty));
+        let record = |arguments: Vec<Type>| Type::Record(pair, arguments.into());
+        let union = |arguments: Vec<Type>| Type::Union(choice, arguments.into());
+        let fixed = |ty, length| Type::FixedArray(Box::new(ty), Box::new(Type::Length(length)));
+        let tuple = Type::Tuple;
+        let cases = [
+            (Type::I64, Type::I64),
+            (Type::I64, Type::Bool),
+            (infer(0), array(Type::I64)),
+            (array(infer(0)), array(Type::String)),
+            (array(Type::I64), Type::List(Box::new(Type::I64))),
+            (
+                tuple(vec![Type::I64, infer(1)]),
+                tuple(vec![Type::I64, Type::Bool]),
+            ),
+            (
+                tuple(vec![Type::I64, Type::I64]),
+                tuple(vec![Type::I64, Type::Bool]),
+            ),
+            (record(vec![Type::I64]), record(vec![Type::Bool])),
+            (record(vec![infer(0)]), record(vec![Type::Bool])),
+            (
+                record(vec![tuple(vec![infer(0), Type::I64])]),
+                record(vec![tuple(vec![Type::Bool, Type::Bool])]),
+            ),
+            (
+                union(vec![array(Type::I64)]),
+                union(vec![array(Type::Bool)]),
+            ),
+            (union(vec![infer(1)]), record(vec![infer(1)])),
+            (fixed(Type::I64, 3), fixed(Type::I64, 4)),
+            (fixed(infer(0), 2), fixed(Type::Bool, 2)),
+            (fixed(Type::I64, 2), fixed(Type::Bool, 2)),
+            (infer(0), array(infer(0))),
+            (
+                Type::function(vec![Type::I64], Type::Bool),
+                Type::function(vec![Type::I64], Type::I64),
+            ),
+            (
+                Type::function(vec![infer(0)], infer(1)),
+                Type::function(vec![Type::String], Type::Unit),
+            ),
+            (
+                Type::Reference(Box::new(Type::I64), false),
+                Type::Reference(Box::new(Type::I64), true),
+            ),
+        ];
+        let (mut unified, mut failed) = (0, 0);
+        for (actual, expected) in &cases {
+            let run = |mut inference: Inference| {
+                let variables = [inference.fresh(), inference.fresh()];
+                let result = inference.unify(actual, expected, &types, Span::default());
+                (
+                    result,
+                    variables.map(|variable| inference.resolve(&variable)),
+                )
+            };
+            let (loud, loud_solutions) = run(Inference::default());
+            let (quiet, quiet_solutions) = run(Inference::quiet());
+            let case = format!("{actual:?} and {expected:?}");
+            assert_eq!(quiet_solutions, loud_solutions, "{case}");
+            match (loud, quiet) {
+                (Ok(()), Ok(())) => unified += 1,
+                (Err(loud), Err(quiet)) => {
+                    failed += 1;
+                    assert_eq!(
+                        (quiet.code, quiet.kind, quiet.span),
+                        (loud.code, loud.kind, loud.span),
+                        "{case}"
+                    );
+                    if loud.code == "E1003" {
+                        assert!(!loud.message.is_empty(), "{case}");
+                        assert!(quiet.message.is_empty(), "{case}: {}", quiet.message);
+                    } else {
+                        assert_eq!(quiet.message, loud.message, "{case}");
+                    }
+                }
+                (loud, quiet) => panic!("{case}: {loud:?} but quietly {quiet:?}"),
+            }
+        }
+        assert!(unified >= 5 && failed >= 10, "{unified} {failed}");
+    }
+
+    /// Analyzes each of `programs` on `threads` threads (`Parallelism::eager`: every stage with two
+    /// items or more runs on workers) while `matching_instance` compares its trials, and returns how
+    /// many trials it compared and how many of them the index narrowed. Every program must check.
+    fn compared_instance_trials(programs: &[&[(&str, &str)]], threads: usize) -> (usize, usize) {
+        use crate::check::ModuleOrigin;
+        use crate::parallel::COMPARE_INSTANCE_TRIALS;
+        use std::sync::atomic::Ordering::Relaxed;
+        /// The tests that compare take turns, so that the counts are theirs alone.
+        static COMPARING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        /// Turns the switch off again, also when an analysis panics.
+        struct Off;
+        impl Drop for Off {
+            fn drop(&mut self) {
+                COMPARE_INSTANCE_TRIALS.set(false);
+            }
+        }
+        let _turn = COMPARING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = super::COMPARED_INSTANCE_TRIALS.load(Relaxed);
+        let indexed_before = super::INDEXED_INSTANCE_TRIALS.load(Relaxed);
+        COMPARE_INSTANCE_TRIALS.set(true);
+        let off = Off;
+        let results: Vec<_> = programs
+            .iter()
+            .map(|sources| {
+                let std = crate::stdlib::sources_for(sources.iter().map(|(_, text)| *text));
+                let inputs: Vec<_> = sources
+                    .iter()
+                    .map(|(path, text)| (*path, *text, ModuleOrigin::User))
+                    .chain(
+                        std.iter()
+                            .map(|(path, text)| (*path, *text, ModuleOrigin::Std)),
+                    )
+                    .map(|(path, text, origin)| crate::SourceInput {
+                        path,
+                        text,
+                        origin,
+                        namespace: "",
+                        edition: crate::syntax::Edition::LATEST,
+                        package: None,
+                    })
+                    .collect();
+                crate::analyze_inputs_with(
+                    &inputs,
+                    None,
+                    None,
+                    crate::parallel::Parallelism::eager(threads),
+                )
+            })
+            .collect();
+        drop(off);
+        for (sources, result) in programs.iter().zip(results) {
+            if let Err(errors) = result {
+                panic!("{}: {errors:?}", sources[0].1.lines().next().unwrap_or(""));
+            }
+        }
+        (
+            super::COMPARED_INSTANCE_TRIALS.load(Relaxed) - before,
+            super::INDEXED_INSTANCE_TRIALS.load(Relaxed) - indexed_before,
+        )
+    }
+
+    /// PB08 O3 and O3(b): the indexed quiet trials of `matching_instance` choose the same instance
+    /// and the same types as trying every instance in order, quietly and with messages, in programs
+    /// with many instances and in std (a program that names every opt-in module loads all of it).
+    /// The comparison reaches the workers of the parallel stages: it compares as many trials on 8
+    /// threads as on 1.
+    #[test]
+    fn quiet_instance_trials_choose_like_loud_ones() {
+        let every_std = format!(
+            "// {}\n0\n",
+            crate::stdlib::OPT_IN
+                .iter()
+                .map(|module| module.module)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let programs: [&[(&str, &str)]; 15] = [
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/in_place_writes/Main.tz"),
+            )],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/user_drop/Main.tz"),
+            )],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/string_interpolation/Main.tz"),
+            )],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/generic_records/Main.tz"),
+            )],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/text_user_instance/Main.tz"),
+            )],
+            &[("Main.tz", include_str!("../tests/fixtures/monoid/Main.tz"))],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/display_parse/Main.tz"),
+            )],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/hash_map/Main.tz"),
+            )],
+            &[("Main.tz", include_str!("../tests/fixtures/json/Main.tz"))],
+            &[
+                (
+                    "Main.tz",
+                    include_str!("../tests/fixtures/typeclasses/Main.tz"),
+                ),
+                (
+                    "Traits.tt",
+                    include_str!("../tests/fixtures/typeclasses/Traits.tt"),
+                ),
+            ],
+            &[
+                (
+                    "Main.tz",
+                    include_str!("../tests/fixtures/dyn_dispatch/Main.tz"),
+                ),
+                (
+                    "Shapes.tt",
+                    include_str!("../tests/fixtures/dyn_dispatch/Shapes.tt"),
+                ),
+            ],
+            &[
+                (
+                    "Main.tz",
+                    include_str!("../tests/fixtures/polymorphism/Main.tz"),
+                ),
+                (
+                    "Classes.tt",
+                    include_str!("../tests/fixtures/polymorphism/Classes.tt"),
+                ),
+                (
+                    "Geometry.tz",
+                    include_str!("../tests/fixtures/polymorphism/Geometry.tz"),
+                ),
+            ],
+            &[("Main.tz", every_std.as_str())],
+            // Applications of type constructors and anonymous unions, which try every instance.
+            &[
+                (
+                    "Main.tz",
+                    include_str!("../tests/fixtures/higher_kinds/Main.tz"),
+                ),
+                (
+                    "Instances.tz",
+                    include_str!("../tests/fixtures/higher_kinds/Instances.tz"),
+                ),
+                (
+                    "Traits.tt",
+                    include_str!("../tests/fixtures/higher_kinds/Traits.tt"),
+                ),
+            ],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/anonymous_unions/Main.tz"),
+            )],
+        ];
+        let (compared, indexed) = compared_instance_trials(&programs, 1);
+        eprintln!("compared {compared} instance trials, {indexed} of them indexed");
+        assert!(compared > 1000, "{compared}");
+        // Nearly every trial is indexed, and the rest try every instance.
+        assert!(
+            compared / 10 * 9 < indexed && indexed < compared,
+            "{indexed} of {compared}"
+        );
+        assert_eq!(
+            compared_instance_trials(&programs, 8),
+            (compared, indexed),
+            "on 8 threads"
+        );
+    }
+
+    /// PB08 O3(b): heads of every kind of outermost constructor, a function head, a variable head
+    /// that unifies with every type, and a generic body whose type is a variable: the indexed trials
+    /// choose what trying every instance in order chooses.
+    #[test]
+    fn instance_index_tries_every_head_that_may_unify() {
+        let classes = r#"class Tag<'a> { def tag :: ref 'a -> i64 }
+class Any<'a> { def any :: ref 'a -> i64 }
+"#;
+        let main = r#"record Point { x: i64 }
+instance Classes.Tag<i64> { fn tag _ = 1 }
+instance Classes.Tag<(i64 * i64)> { fn tag _ = 2 }
+instance Classes.Tag<(i64 * i64 * i64)> { fn tag _ = 3 }
+instance Classes.Tag<'a> => Classes.Tag<['a]> { fn tag _ = 4 }
+instance Classes.Tag<string> { fn tag _ = 5 }
+instance Classes.Tag<(i64 -> i64)> { fn tag _ = 6 }
+instance Classes.Tag<'a> => Classes.Tag<Maybe<'a>> { fn tag _ = 7 }
+instance Classes.Tag<Point> { fn tag _ = 8 }
+instance Classes.Tag<bool> { fn tag _ = 9 }
+
+instance Classes.Any<'a> { fn any _ = 10 }
+
+def generic :: Classes.Tag<'b> => own 'b -> i64
+fn generic value = Classes.Tag.tag (ref value) + Classes.Any.any (ref value)
+
+let f: i64 -> i64 = \x -> x + 1
+let five: i64 = 5
+let pair: (i64 * i64) = (1, 2)
+let triple: (i64 * i64 * i64) = (1, 2, 3)
+let items: [i64] = [1]
+let maybe: Maybe<i64> = Some 1
+let total = Classes.Tag.tag (ref five) + Classes.Tag.tag (ref pair) + Classes.Tag.tag (ref triple) + Classes.Tag.tag (ref items) + Classes.Tag.tag (ref "s") + Classes.Tag.tag (ref f) + Classes.Tag.tag (ref maybe) + Classes.Tag.tag (ref (Point { x: 1 })) + Classes.Tag.tag (ref true) + Classes.Any.any (ref five) + Classes.Any.any (ref "x") + generic five + generic [true]
+total
+"#;
+        let program: &[(&str, &str)] = &[("Main.tz", main), ("Classes.tt", classes)];
+        let (compared, _) = compared_instance_trials(&[program], 1);
+        assert!(compared > 20, "{compared}");
+        assert_eq!(
+            compared_instance_trials(&[program], 8).0,
+            compared,
+            "on 8 threads"
         );
     }
 

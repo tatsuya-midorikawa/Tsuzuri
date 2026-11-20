@@ -288,9 +288,25 @@ pub fn check_all(module: &CheckedModule) -> Vec<Diagnostic> {
 }
 
 pub(crate) fn check_all_with(module: &CheckedModule, parallelism: Parallelism) -> Vec<Diagnostic> {
-    check_functions(module, false, parallelism)
+    check_all_with_facts(module, parallelism).0
+}
+
+/// The call facts of a checked module that `check_all_with` computed, which `copy_reads_of_users`
+/// reuses (PB08 O4(b)). They describe the functions of the module as it was then: only
+/// `copies::EditorModule` keeps them, with its module read only, and only when nothing rewrote the
+/// bodies after the check.
+pub(crate) struct CopyFacts(CallFacts);
+
+/// `check_all_with`, and the call facts that it computed.
+pub(crate) fn check_all_with_facts(
+    module: &CheckedModule,
+    parallelism: Parallelism,
+) -> (Vec<Diagnostic>, CopyFacts) {
+    let facts = call_facts(module, false);
+    let errors = check_functions_with(module, false, &facts, parallelism)
         .err()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (errors, CopyFacts(facts))
 }
 
 pub(crate) fn infer_copy_all(
@@ -324,16 +340,43 @@ pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
 
 /// The consuming reads of Copy values that need a drop, per function of a checked module (A15).
 pub(crate) fn copy_reads(module: &CheckedModule) -> Vec<Vec<CopyRead>> {
-    let facts = call_facts(module, false);
+    copy_reads_where(module, &call_facts(module, false), |_| true)
+}
+
+/// `copy_reads` of the functions of user modules, and none of the others, from `facts` when the
+/// module's check kept them: `copies::costly_sites` reports only those (PB08 O4).
+pub(crate) fn copy_reads_of_users(
+    module: &CheckedModule,
+    facts: Option<&CopyFacts>,
+) -> Vec<Vec<CopyRead>> {
+    let user = |function: &crate::check::CheckedFunction| {
+        function.origin.module == crate::check::ModuleOrigin::User
+    };
+    match facts {
+        Some(CopyFacts(facts)) => copy_reads_where(module, facts, user),
+        None => copy_reads_where(module, &call_facts(module, false), user),
+    }
+}
+
+/// The consuming reads of the functions that `keep` accepts; the others have none.
+fn copy_reads_where(
+    module: &CheckedModule,
+    facts: &CallFacts,
+    keep: impl Fn(&crate::check::CheckedFunction) -> bool,
+) -> Vec<Vec<CopyRead>> {
     let mut reads = Vec::with_capacity(module.functions.len());
     for (id, function) in module.functions.iter().enumerate() {
         let mut copies = Vec::new();
+        if !keep(function) {
+            reads.push(copies);
+            continue;
+        }
         let _ = check_body(
             module,
             function.parameters.iter(),
             &function.body,
             false,
-            &facts,
+            facts,
             function.is_once,
             module.user_drops.values().any(|drop| *drop == id),
             facts.contract(module, id),
@@ -360,7 +403,16 @@ fn check_functions(
     infer: bool,
     parallelism: Parallelism,
 ) -> Result<Vec<BTreeSet<String>>, Vec<Diagnostic>> {
-    let facts = call_facts(module, infer);
+    check_functions_with(module, infer, &call_facts(module, infer), parallelism)
+}
+
+/// `check_functions` with the call facts of `module` for `infer`.
+fn check_functions_with(
+    module: &CheckedModule,
+    infer: bool,
+    facts: &CallFacts,
+    parallelism: Parallelism,
+) -> Result<Vec<BTreeSet<String>>, Vec<Diagnostic>> {
     let mut constraints = Vec::new();
     let mut diagnostics = Diagnostics::new(0);
     let count = module.functions.len();
@@ -381,7 +433,7 @@ fn check_functions(
                 function.parameters.iter(),
                 &function.body,
                 infer,
-                &facts,
+                facts,
                 function.is_once,
                 module.user_drops.values().any(|drop| *drop == id),
                 facts.contract(module, id),
@@ -1389,7 +1441,15 @@ impl CallFacts {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times `call_facts` ran on this thread (PB08 O4(b)).
+    pub(crate) static CALL_FACTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
+    #[cfg(test)]
+    CALL_FACTS.with(|count| count.set(count.get() + 1));
     let closed = closed_returns(module);
     let lending = lending_bodies(module, infer);
     let joint = joint_facts(module, &closed, &lending, infer, None);

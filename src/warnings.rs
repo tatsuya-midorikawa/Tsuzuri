@@ -283,6 +283,16 @@ enum Dependency {
     Type(String),
 }
 
+/// What a test runs on the names of the program whose private declarations `unused_private`
+/// finds (PB08).
+#[cfg(test)]
+type NamesProbe = Option<Box<dyn FnMut(&Names)>>;
+
+#[cfg(test)]
+thread_local! {
+    static NAMES_PROBE: std::cell::RefCell<NamesProbe> = const { std::cell::RefCell::new(None) };
+}
+
 pub(super) fn unused_private(
     functions: &[CheckedFunction],
     declarations: &[(String, FunctionDecl)],
@@ -292,6 +302,12 @@ pub(super) fn unused_private(
     calls: &[Vec<usize>],
     entry: Option<usize>,
 ) -> Vec<Diagnostic> {
+    #[cfg(test)]
+    NAMES_PROBE.with_borrow_mut(|probe| {
+        if let Some(probe) = probe {
+            probe(names);
+        }
+    });
     let mut edges = BTreeMap::new();
     let mut roots = BTreeSet::new();
     let mut candidates = BTreeMap::new();
@@ -470,7 +486,7 @@ struct TypeReferences<'a> {
 
 impl TypeReferences<'_> {
     fn named(&mut self, name: &str, span: Span) {
-        if let Ok(ty) = self.names.named_type(self.module, name, span) {
+        if let Some(ty) = self.names.quiet_named_type(self.module, name, span) {
             self.references
                 .insert(Dependency::Type(ty.info().name.clone()));
         }
@@ -1117,6 +1133,256 @@ mod tests {
         assert_eq!(collections(), before + 4);
     }
 
+    /// PB08 O1: the private reachability of `unused_private` looks up every type name of every
+    /// function, std included; a successful check builds no suggestion pool for the names that
+    /// are not declared types (`i64`, `string`, type variables of std's signatures).
+    #[test]
+    fn a_successful_check_builds_no_type_suggestions() {
+        let pools = || crate::check::find::TYPE_POOLS.with(std::cell::Cell::get);
+        let before = pools();
+        crate::analyze_modules(&[
+            (
+                "Main.tz",
+                "record Point { x: i64, label: string }\ntype Meters = f64\nprivate record Kept { value: Meters }\n\
+                def length :: Point -> i64 = \\point -> point.x + Geometry.area (Geometry.Circle { radius: 2 })\n\
+                let kept = Kept { value: 1.5 }\nlet total: Maybe<i64> = Some 1\nlet extra = match total with\n    | Some value -> value\n    | None -> 0\nlength (Point { x: 1, label: \"a\" }) + extra",
+            ),
+            (
+                "Geometry.tz",
+                "record Circle { radius: i64 }\ndef area :: Circle -> i64 = \\circle -> circle.radius * circle.radius\n",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            pools(),
+            before,
+            "a successful check built a type suggestion pool"
+        );
+        // A reported unknown type still has its suggestions.
+        let error = crate::analyze("def f :: Pointt -> i64 = \\p -> 1\nrecord Point { x: i64 }\n0")
+            .unwrap_err();
+        assert_eq!(error.code, "E1004", "{error:?}");
+        assert!(pools() > before);
+    }
+
+    /// PB08 O6: the names that `find::OptInNames` reads from the opt-in std sources are those that
+    /// `Names` holds of the opt-in modules when a check loads every std module: each module, its
+    /// public functions, constants and extern functions that are not hidden, with the word of their
+    /// candidate signature, the cases of its public unions, and the types that a user module names
+    /// bare (`type_choice` finds them, as `type_pool` asks, and they are declared in the module).
+    #[test]
+    fn opt_in_names_are_the_checker_names() {
+        let every = format!(
+            "// {}\n0\n",
+            crate::stdlib::OPT_IN
+                .iter()
+                .map(|module| module.module)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let read = super::find::OptInNames::read(crate::stdlib::SOURCES).entries();
+        let found = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let into = found.clone();
+        with_names(&[("Main.tz", every.as_str())], move |names| {
+            let hidden = |name: &str| name.contains('$') || name.contains("__");
+            let mut entries = Vec::new();
+            for (key, origin) in &names.modules {
+                if *origin != ModuleOrigin::Std || !crate::stdlib::is_opt_in(key) {
+                    continue;
+                }
+                entries.push(format!("module {key}"));
+                for (name, info) in &names.functions {
+                    if info.module == *key && info.visible_from("Main") && !hidden(name) {
+                        let word = if names.constants.contains(&info.id) {
+                            "constant"
+                        } else {
+                            "function"
+                        };
+                        entries.push(format!("function {name} {word}"));
+                    }
+                }
+                for (name, case) in &names.cases {
+                    if case.info.module == *key && case.info.visible_from("Main") {
+                        entries.push(format!("case {name}"));
+                    }
+                }
+                let types: BTreeSet<&String> = names
+                    .record_aliases
+                    .keys()
+                    .chain(names.union_aliases.keys())
+                    .chain(names.type_alias_names.keys())
+                    .chain(names.handle_aliases.keys())
+                    .collect();
+                for name in types {
+                    if let Choice::Found(named, _) = names.type_choice("Main", name)
+                        && named.info().module == *key
+                    {
+                        entries.push(format!("type {name} {}", named.info().name));
+                    }
+                }
+            }
+            entries.sort();
+            *into.borrow_mut() = entries;
+        });
+        let found = found.borrow();
+        assert_eq!(
+            found
+                .iter()
+                .filter(|entry| entry.starts_with("module "))
+                .count(),
+            crate::stdlib::OPT_IN.len()
+        );
+        assert!(found.len() > 300, "{}", found.len());
+        assert_eq!(read, *found);
+    }
+
+    /// Runs `probe` on the names of the program of `sources`, which must check.
+    fn with_names(sources: &[(&str, &str)], probe: impl FnMut(&Names) + 'static) {
+        let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut probe = probe;
+        let flag = ran.clone();
+        NAMES_PROBE.set(Some(Box::new(move |names: &Names| {
+            probe(names);
+            flag.set(true);
+        })));
+        let checked = crate::analyze_modules(sources);
+        NAMES_PROBE.set(None);
+        checked.unwrap_or_else(|error| panic!("{error:?}"));
+        assert!(ran.get());
+    }
+
+    /// PB08 O1: `quiet_named_type` finds a type exactly where `named_type` returns `Ok`, and the
+    /// same type. `expected` is the type, written `kind key-qualified-name`, or `None` for an error.
+    fn quiet_lookup_agrees(sources: &[(&str, &str)], cases: &[(&str, &str, Option<&str>)]) {
+        let cases: Vec<(String, String, Option<String>)> = cases
+            .iter()
+            .map(|(module, name, expected)| {
+                (
+                    (*module).to_owned(),
+                    (*name).to_owned(),
+                    expected.map(str::to_owned),
+                )
+            })
+            .collect();
+        with_names(sources, move |names| {
+            let describe = |named: NamedType<'_>| format!("{} {}", named.kind(), named.info().name);
+            for (module, name, expected) in &cases {
+                let span = Span::default();
+                let quiet = names.quiet_named_type(module, name, span).map(describe);
+                let named = names.named_type(module, name, span);
+                let message = named.as_ref().err().map(|error| error.message.clone());
+                assert_eq!(
+                    quiet,
+                    named.ok().map(describe),
+                    "{module}: {name}: {message:?}"
+                );
+                assert_eq!(quiet, *expected, "{module}: {name}: {message:?}");
+            }
+        });
+    }
+
+    #[test]
+    fn quiet_type_lookup_agrees_with_named_type() {
+        // Primitive and std types, records, aliases, extern types, private and ambiguous names.
+        quiet_lookup_agrees(
+            &[
+                (
+                    "Main.tz",
+                    "type Meters = f64\nextern type Handle\nrecord Point { x: i64 }\n\
+                    def size :: Point -> Geometry.Circle -> i64 = \\p c -> p.x + c.radius + Secret.value()\n0",
+                ),
+                ("Geometry.tz", "record Circle { radius: i64 }\n"),
+                (
+                    "Secret.tz",
+                    "private record Hidden { value: i64 }\ndef value :: i64 = 1\n",
+                ),
+                ("Left.tz", "record Item { left: i64 }\n"),
+                ("Right.tz", "record Item { right: i64 }\n"),
+            ],
+            &[
+                ("Main", "i64", None),
+                ("Main", "string", None),
+                ("Main", "bigint", None),
+                ("Main", "Async", None),
+                ("Main", "Async.Operation", None),
+                ("Main", "Display", None),
+                ("Main", "Unknown", None),
+                ("Main", "Meters", Some("type alias Main.Meters")),
+                ("Main", "Handle", Some("extern type Main.Handle")),
+                ("Main", "Point", Some("record Main.Point")),
+                ("Main", "Main.Point", Some("record Main.Point")),
+                ("Main", "Geometry.Circle", Some("record Geometry.Circle")),
+                ("Main", "Circle", Some("record Geometry.Circle")),
+                ("Main", "Secret.Hidden", None),
+                ("Main", "Hidden", None),
+                ("Secret", "Hidden", Some("record Secret.Hidden")),
+                ("Main", "Item", None),
+                ("Main", "Left.Item", Some("record Left.Item")),
+                ("Main", "Maybe", Some("union Maybe.Maybe")),
+                ("Main", "Maybe.Maybe", None),
+                ("Main", "Result", Some("union Result.Result")),
+            ],
+        );
+        // Namespaces: `::` paths, module-named types, a path that joins a namespace with `.`
+        // (`namespace_spelling`) and one that repeats its module's name (`check_module_type`).
+        let shape = "namespace Sample\n\nunion Shape =\n    | Circle of f64\n    | Rect of f64 * f64\n\nunion Maybe<'a> = None | Some of 'a\n";
+        let point = "namespace Sample\n\nrecord Point { x: f64, y: f64 }\n";
+        let other = "namespace Other\n\nrecord Point { x: f64, y: f64 }\n";
+        let main = "namespace Sample\n\nlet p = Sample::Point { x: 1.0, y: 2.0 }\np.x\n";
+        quiet_lookup_agrees(
+            &[
+                ("Shape", shape),
+                ("Point", point),
+                ("Other/Point", other),
+                ("Main", main),
+            ],
+            &[
+                ("Sample.Main", "Point", Some("record Sample.Point.Point")),
+                (
+                    "Sample.Main",
+                    "Sample::Point",
+                    Some("record Sample.Point.Point"),
+                ),
+                (
+                    "Sample.Main",
+                    "Other::Point",
+                    Some("record Other.Point.Point"),
+                ),
+                ("Sample.Main", "Shape", Some("union Sample.Shape.Shape")),
+                (
+                    "Sample.Main",
+                    "Sample::Shape.Maybe",
+                    Some("union Sample.Shape.Maybe"),
+                ),
+                ("Sample.Main", "Sample::Point.Point", None),
+                ("Sample.Main", "Sample::Shape.Shape", None),
+                ("Sample.Main", "Sample.Point", None),
+                ("Sample.Main", "Sample.Shape.Maybe", None),
+                ("Sample.Main", "Missing::Point", None),
+                ("Sample.Main", "i64", None),
+            ],
+        );
+        // A bare module name that two `using` declarations make ambiguous (`check_module`).
+        quiet_lookup_agrees(
+            &[
+                (
+                    "Left/Text",
+                    "namespace Left\n\nrecord Text { value: i64 }\n",
+                ),
+                (
+                    "Right/Text",
+                    "namespace Right\n\nrecord Text { value: i64 }\n",
+                ),
+                ("Main", "using Left\nusing Right\n\nlet x = 1\nx\n"),
+            ],
+            &[
+                ("Main", "Text", None),
+                ("Main", "Left::Text", Some("record Left.Text.Text")),
+                ("Main", "Right::Text", Some("record Right.Text.Text")),
+            ],
+        );
+    }
+
     #[test]
     fn deprecation_note_reads_the_first_tag_line() {
         let documented = |text: &str| {
@@ -1164,6 +1430,7 @@ mod tests {
                 None,
                 crate::parallel::Parallelism::SEQUENTIAL,
                 crate::check::contracts::ContractMode::Check,
+                None,
             )
             .unwrap();
             let warnings: Vec<_> = module
