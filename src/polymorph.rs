@@ -405,10 +405,27 @@ pub(super) struct Inference {
     defaults: BTreeMap<usize, Type>,
     /// While `Inference::unifies` runs, the variables that `unify` solved, which it opens again.
     trial: Option<Vec<usize>>,
+    /// Whether a mismatch has no message: `matching_instance` tries the instances of a class and
+    /// drops the error of each one that does not unify, so it writes none of their types (PB08
+    /// O3). The code and the span stay, and with them every decision that `unify` makes.
+    quiet: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many mismatch messages `mismatch` wrote on this thread (PB08).
+    pub(crate) static MISMATCH_TEXTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Whether `matching_instance` also tries the instances with inferences that write their
+    /// messages, and checks that they choose the same instance and types (PB08 O3).
+    static COMPARE_INSTANCE_TRIALS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How many times `matching_instance` compared the two.
+    static COMPARED_INSTANCE_TRIALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The `E1003` of a type mismatch; `expected` and `found` are the displayed types.
 fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
+    #[cfg(test)]
+    MISMATCH_TEXTS.with(|count| count.set(count.get() + 1));
     Diagnostic::of(
         DiagnosticKind::TypeMismatch,
         format!("expected {expected}, found {found}"),
@@ -418,6 +435,29 @@ fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
 }
 
 impl Inference {
+    /// An inference whose mismatches have no message (PB08 O3).
+    fn quiet() -> Self {
+        Self {
+            quiet: true,
+            ..Self::default()
+        }
+    }
+
+    /// The `E1003` of a mismatch between `expected` and `found`, which the closures display; a
+    /// quiet inference displays neither.
+    fn type_mismatch(
+        &self,
+        span: Span,
+        expected: impl FnOnce() -> String,
+        found: impl FnOnce() -> String,
+    ) -> Diagnostic {
+        if self.quiet {
+            Diagnostic::of(DiagnosticKind::TypeMismatch, String::new(), span)
+        } else {
+            mismatch(expected(), found(), span)
+        }
+    }
+
     pub(super) fn fresh(&mut self) -> Type {
         let id = self.solutions.len();
         self.solutions.push(None);
@@ -584,10 +624,10 @@ impl Inference {
             (Type::FixedArray(a, n), Type::FixedArray(b, m)) => {
                 self.unify(n, m, types, span).map_err(|error| {
                     if error.code == "E1003" {
-                        return mismatch(
-                            self.resolve(&expected).display(types),
-                            self.resolve(&actual).display(types),
+                        return self.type_mismatch(
                             error.span,
+                            || self.resolve(&expected).display(types),
+                            || self.resolve(&actual).display(types),
                         );
                     }
                     error
@@ -617,10 +657,10 @@ impl Inference {
                         // Report the whole type when both sides were known before unification;
                         // partially inferred arguments would otherwise show intermediate bindings.
                         if error.code == "E1003" && !inferred(&actual) && !inferred(&expected) {
-                            return mismatch(
-                                expected.display(types),
-                                actual.display(types),
+                            return self.type_mismatch(
                                 error.span,
+                                || expected.display(types),
+                                || actual.display(types),
                             );
                         }
                         error
@@ -648,11 +688,7 @@ impl Inference {
             }
             _ => {}
         }
-        Err(mismatch(
-            expected.display(types),
-            actual.display(types),
-            span,
-        ))
+        Err(self.type_mismatch(span, || expected.display(types), || actual.display(types)))
     }
 
     /// Whether `actual` unifies with `expected` and `check` accepts the solutions that this takes,
@@ -2388,6 +2424,30 @@ impl Classes {
         ty: &Type,
         types: &TypeContext<'_>,
     ) -> Option<(&InstanceTemplate, BTreeMap<String, Type>)> {
+        let found = self.unifying_instance(class, ty, types, Inference::quiet);
+        #[cfg(test)]
+        if COMPARE_INSTANCE_TRIALS.get() {
+            COMPARED_INSTANCE_TRIALS.set(COMPARED_INSTANCE_TRIALS.get() + 1);
+            let loud = self.unifying_instance(class, ty, types, Inference::default);
+            let key = |found: &Option<(&InstanceTemplate, BTreeMap<String, Type>)>| {
+                found.as_ref().map(|(instance, substitutions)| {
+                    (std::ptr::from_ref(*instance), substitutions.clone())
+                })
+            };
+            assert_eq!(key(&found), key(&loud), "{}", ty.display(types));
+        }
+        found
+    }
+
+    /// The first instance of `class` whose head unifies with the closed type `ty`, and the types
+    /// of its variables, unified by inferences that `inference` makes.
+    fn unifying_instance(
+        &self,
+        class: usize,
+        ty: &Type,
+        types: &TypeContext<'_>,
+        inference: fn() -> Inference,
+    ) -> Option<(&InstanceTemplate, BTreeMap<String, Type>)> {
         // The fresh inference below knows nothing of the caller's variables.
         let mut open = false;
         map_type(ty, &mut |ty| {
@@ -2401,7 +2461,7 @@ impl Classes {
             .iter()
             .filter(|instance| instance.class == class)
             .find_map(|instance| {
-                let mut inference = Inference::default();
+                let mut inference = inference();
                 let substitutions: BTreeMap<_, _> = variables(&instance.head)
                     .into_iter()
                     .map(|name| (name, inference.fresh()))
@@ -6361,6 +6421,230 @@ mod tests {
             message,
             "more than 64 specializations of generic functions; call them at fewer distinct types, or use 'dyn' for values of many types"
         );
+    }
+
+    /// PB08 O3: `matching_instance` tries the instances of a class in order and drops the error
+    /// of each one that does not unify; a successful analysis writes no mismatch message.
+    #[test]
+    fn instance_trials_write_no_mismatch_message() {
+        let texts = || super::MISMATCH_TEXTS.with(std::cell::Cell::get);
+        let before = texts();
+        crate::analyze(
+            "record Box<'a> { value: 'a }\nclass Size<'a> { def size :: ref 'a -> i64 }\n\
+            instance Size<'a> => Size<Box<'a>> { fn size value = Size.size (ref value.value) }\n\
+            instance Size<string> { fn size value = value.length }\ninstance Size<[i32]> { fn size value = Array.length value }\n\
+            record Point { x: i64, label: string } deriving (Eq, Ord, Display)\n\
+            let boxed = Box { value: Box { value: \"abc\" } }\nlet items = [1, 2, 3]\n\
+            let p = Point { x: 1, label: \"p\" }\nlet q = Point { x: 2, label: \"q\" }\n\
+            let order = if p < q then 1 else 0\nlet shown = Display.display (ref p)\n\
+            Size.size (ref boxed) + Size.size (ref items) + order + shown.length",
+        )
+        .unwrap();
+        assert_eq!(
+            texts(),
+            before,
+            "a successful analysis wrote mismatch messages"
+        );
+        // A reported mismatch still has its message.
+        let error = crate::analyze("let x: i64 = \"text\"\nx").unwrap_err();
+        assert_eq!(error.code, "E1003", "{error:?}");
+        assert!(texts() > before);
+    }
+
+    /// PB08 O3: a quiet inference decides every unification as one that writes its messages: the
+    /// same result, the same code, kind and span of an error, the same solutions. Only the message
+    /// of an `E1003` is left empty.
+    #[test]
+    fn quiet_inference_unifies_like_the_loud_one() {
+        use super::Inference;
+        use crate::check::Type;
+        use crate::diagnostic::Span;
+        let module = crate::analyze(
+            "record Pair<'a> { first: 'a }\nunion Choice<'a> = Picked of 'a | Neither\n\
+            let p = Pair { first: 1 }\nlet c: Choice<i64> = Neither\np.first",
+        )
+        .unwrap();
+        let types = module.types();
+        let pair = module
+            .records
+            .iter()
+            .position(|record| record.name == "Main.Pair")
+            .unwrap();
+        let choice = module
+            .unions
+            .iter()
+            .position(|union| union.name == "Main.Choice")
+            .unwrap();
+        let infer = Type::Infer;
+        let array = |ty| Type::Array(Box::new(ty));
+        let record = |arguments: Vec<Type>| Type::Record(pair, arguments.into());
+        let union = |arguments: Vec<Type>| Type::Union(choice, arguments.into());
+        let fixed = |ty, length| Type::FixedArray(Box::new(ty), Box::new(Type::Length(length)));
+        let tuple = Type::Tuple;
+        let cases = [
+            (Type::I64, Type::I64),
+            (Type::I64, Type::Bool),
+            (infer(0), array(Type::I64)),
+            (array(infer(0)), array(Type::String)),
+            (array(Type::I64), Type::List(Box::new(Type::I64))),
+            (
+                tuple(vec![Type::I64, infer(1)]),
+                tuple(vec![Type::I64, Type::Bool]),
+            ),
+            (
+                tuple(vec![Type::I64, Type::I64]),
+                tuple(vec![Type::I64, Type::Bool]),
+            ),
+            (record(vec![Type::I64]), record(vec![Type::Bool])),
+            (record(vec![infer(0)]), record(vec![Type::Bool])),
+            (
+                record(vec![tuple(vec![infer(0), Type::I64])]),
+                record(vec![tuple(vec![Type::Bool, Type::Bool])]),
+            ),
+            (
+                union(vec![array(Type::I64)]),
+                union(vec![array(Type::Bool)]),
+            ),
+            (union(vec![infer(1)]), record(vec![infer(1)])),
+            (fixed(Type::I64, 3), fixed(Type::I64, 4)),
+            (fixed(infer(0), 2), fixed(Type::Bool, 2)),
+            (fixed(Type::I64, 2), fixed(Type::Bool, 2)),
+            (infer(0), array(infer(0))),
+            (
+                Type::function(vec![Type::I64], Type::Bool),
+                Type::function(vec![Type::I64], Type::I64),
+            ),
+            (
+                Type::function(vec![infer(0)], infer(1)),
+                Type::function(vec![Type::String], Type::Unit),
+            ),
+            (
+                Type::Reference(Box::new(Type::I64), false),
+                Type::Reference(Box::new(Type::I64), true),
+            ),
+        ];
+        let (mut unified, mut failed) = (0, 0);
+        for (actual, expected) in &cases {
+            let run = |mut inference: Inference| {
+                let variables = [inference.fresh(), inference.fresh()];
+                let result = inference.unify(actual, expected, &types, Span::default());
+                (
+                    result,
+                    variables.map(|variable| inference.resolve(&variable)),
+                )
+            };
+            let (loud, loud_solutions) = run(Inference::default());
+            let (quiet, quiet_solutions) = run(Inference::quiet());
+            let case = format!("{actual:?} and {expected:?}");
+            assert_eq!(quiet_solutions, loud_solutions, "{case}");
+            match (loud, quiet) {
+                (Ok(()), Ok(())) => unified += 1,
+                (Err(loud), Err(quiet)) => {
+                    failed += 1;
+                    assert_eq!(
+                        (quiet.code, quiet.kind, quiet.span),
+                        (loud.code, loud.kind, loud.span),
+                        "{case}"
+                    );
+                    if loud.code == "E1003" {
+                        assert!(!loud.message.is_empty(), "{case}");
+                        assert!(quiet.message.is_empty(), "{case}: {}", quiet.message);
+                    } else {
+                        assert_eq!(quiet.message, loud.message, "{case}");
+                    }
+                }
+                (loud, quiet) => panic!("{case}: {loud:?} but quietly {quiet:?}"),
+            }
+        }
+        assert!(unified >= 5 && failed >= 10, "{unified} {failed}");
+    }
+
+    /// PB08 O3: the quiet trials of `matching_instance` choose the same instance and the same types
+    /// as trials that write their messages, in programs with many instances and in std.
+    #[test]
+    fn quiet_instance_trials_choose_like_loud_ones() {
+        let programs: [&[(&str, &str)]; 12] = [
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/in_place_writes/Main.tz"),
+            )],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/user_drop/Main.tz"),
+            )],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/string_interpolation/Main.tz"),
+            )],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/generic_records/Main.tz"),
+            )],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/text_user_instance/Main.tz"),
+            )],
+            &[("Main.tz", include_str!("../tests/fixtures/monoid/Main.tz"))],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/display_parse/Main.tz"),
+            )],
+            &[(
+                "Main.tz",
+                include_str!("../tests/fixtures/hash_map/Main.tz"),
+            )],
+            &[("Main.tz", include_str!("../tests/fixtures/json/Main.tz"))],
+            &[
+                (
+                    "Main.tz",
+                    include_str!("../tests/fixtures/typeclasses/Main.tz"),
+                ),
+                (
+                    "Traits.tt",
+                    include_str!("../tests/fixtures/typeclasses/Traits.tt"),
+                ),
+            ],
+            &[
+                (
+                    "Main.tz",
+                    include_str!("../tests/fixtures/dyn_dispatch/Main.tz"),
+                ),
+                (
+                    "Shapes.tt",
+                    include_str!("../tests/fixtures/dyn_dispatch/Shapes.tt"),
+                ),
+            ],
+            &[
+                (
+                    "Main.tz",
+                    include_str!("../tests/fixtures/polymorphism/Main.tz"),
+                ),
+                (
+                    "Classes.tt",
+                    include_str!("../tests/fixtures/polymorphism/Classes.tt"),
+                ),
+                (
+                    "Geometry.tz",
+                    include_str!("../tests/fixtures/polymorphism/Geometry.tz"),
+                ),
+            ],
+        ];
+        let before = super::COMPARED_INSTANCE_TRIALS.get();
+        super::COMPARE_INSTANCE_TRIALS.set(true);
+        let results: Vec<_> = programs
+            .iter()
+            .map(|sources| {
+                crate::analyze_modules_with_edition(sources, crate::syntax::Edition::LATEST)
+            })
+            .collect();
+        super::COMPARE_INSTANCE_TRIALS.set(false);
+        for (sources, result) in programs.iter().zip(results) {
+            if let Err(error) = result {
+                panic!("{}: {error:?}", sources[0].1.lines().next().unwrap_or(""));
+            }
+        }
+        let compared = super::COMPARED_INSTANCE_TRIALS.get() - before;
+        assert!(compared > 1000, "{compared}");
     }
 
     #[test]
