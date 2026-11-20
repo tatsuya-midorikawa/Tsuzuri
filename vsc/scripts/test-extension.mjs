@@ -14,6 +14,10 @@ const project = path.join(directory, 'project # [one]');
 const other = path.join(directory, 'other');
 // Packages for the run results of G39: one that may not use IO (E1036), and one with a path dependency outside its root.
 const packages = path.join(directory, 'packages');
+// Folders that are not projects, with a package below them (G40): one whose package reads only with its manifest, and
+// one whose files all have namespace headers.
+const loose = path.join(directory, 'loose');
+const loose2 = path.join(directory, 'loose2');
 const extensions = path.join(directory, 'extensions');
 const userData = path.join(directory, 'user-data');
 const executable = process.env.VSCODE_EXECUTABLE_PATH ?? await downloadAndUnzipVSCode('1.103.2');
@@ -38,8 +42,17 @@ try {
   await writeFile(path.join(packages, 'lib', 'Calc.tz'), 'export def twice :: i64 -> i64 = \\value -> value * 2 + Shapes.base()\n');
   await writeFile(path.join(packages, 'lib', 'Shapes.tz'), 'export def base :: bool = true\n');
   await writeFile(path.join(packages, 'lib', 'Extra', 'Note.tz'), 'export def note :: i64 = 1\n');
+  for (const [folder, util, notes] of [[loose, 'def value :: i32 = 0\n', 'fn n() -> i64 { true }\n'], [loose2, 'namespace App\n\ndef value :: i32 = 0\n', 'fn n() -> i64 { 1 }\n']]) {
+    await mkdir(path.join(folder, 'scratch'), { recursive: true });
+    await mkdir(path.join(folder, 'App'));
+    await writeFile(path.join(folder, 'scratch', 'Try.tz'), 'fn t() -> i64 { 1 }\n');
+    await writeFile(path.join(folder, 'App', 'Tsuzuri.toml'), '[package]\nname = "app"\nversion = "0.1.0"\nnamespace = "App"\n');
+    await writeFile(path.join(folder, 'App', 'Main.tz'), 'namespace App\n\ndef main :: unit -> i32 = \\() -> App::Util.value()\n');
+    await writeFile(path.join(folder, 'App', 'Util.tz'), util);
+    await writeFile(path.join(folder, 'Notes.tz'), notes);
+  }
   const workspace = path.join(directory, 'integration.code-workspace');
-  await writeFile(workspace, JSON.stringify({ folders: [{ path: project }, { path: other }, { path: packages }], settings: { 'telemetry.telemetryLevel': 'off', 'chat.disableAIFeatures': true, 'update.mode': 'none', 'extensions.autoUpdate': false, 'security.workspace.trust.enabled': false } }));
+  await writeFile(workspace, JSON.stringify({ folders: [{ path: project }, { path: other }, { path: packages }, { path: loose }, { path: loose2 }], settings: { 'telemetry.telemetryLevel': 'off', 'chat.disableAIFeatures': true, 'update.mode': 'none', 'extensions.autoUpdate': false, 'security.workspace.trust.enabled': false } }));
   let developmentPath = extension;
   if (process.argv.includes('--installed')) {
     const [cli, ...args] = resolveCliArgsFromVSCodeExecutablePath(executable, { reuseMachineInstall: true });
@@ -56,7 +69,7 @@ try {
     vscodeExecutablePath: executable,
     extensionDevelopmentPath: developmentPath,
     extensionTestsPath: path.join(extension, 'out', 'test', 'extension.test.js'),
-    extensionTestsEnv: { TSUZURI_TEST_PROJECT: project, TSUZURI_TEST_OTHER: other, TSUZURI_TEST_PACKAGES: packages, TSUZURI_TEST_INSTALLED: process.argv.includes('--installed') ? '1' : '0' },
+    extensionTestsEnv: { TSUZURI_TEST_PROJECT: project, TSUZURI_TEST_OTHER: other, TSUZURI_TEST_PACKAGES: packages, TSUZURI_TEST_LOOSE: loose, TSUZURI_TEST_LOOSE2: loose2, TSUZURI_TEST_INSTALLED: process.argv.includes('--installed') ? '1' : '0' },
     launchArgs: [workspace, '--extensions-dir', extensions, '--user-data-dir', userData, '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--disable-gpu', '--no-sandbox'],
   });
 } finally {
