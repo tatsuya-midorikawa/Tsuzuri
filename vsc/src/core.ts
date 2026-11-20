@@ -132,6 +132,19 @@ export class ProjectRoots {
 		return true;
 	}
 
+	/**
+	 * Calls `lookup` again until no change cleared the cache while it ran, and then `use` with its result in the same
+	 * task. A re-rooting does not wait for a lookup that has not started a client yet, so a client started from a root
+	 * that was read before a change would stay beside the clients of the new roots (G40 D4).
+	 */
+	async settled<T, R>(lookup: () => Promise<T>, use: (value: T) => R): Promise<Awaited<R>> {
+		for (;;) {
+			const cache = this.cache;
+			const value = await lookup();
+			if (cache === this.cache) { return use(value) as Awaited<R>; }
+		}
+	}
+
 	/** The root of `file`, or of the directory `file`, in the workspace folder `workspaceRoot`. */
 	async find(file: string, workspaceRoot?: string): Promise<ProjectRoot> {
 		return this.findForDirectory(await this.files.isDirectory(file) ? file : path.dirname(file), workspaceRoot);

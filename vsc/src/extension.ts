@@ -34,17 +34,28 @@ export async function activate(context: vscode.ExtensionContext) {
 		if (document.languageId !== 'tsuzuri' || document.uri.scheme !== 'file') {
 			return;
 		}
-		const { root, remaining, configured } = await projectRootFor(document.uri);
-		// A document left open in a folder that was deleted or moved has no project: its root would be a directory that
-		// does not exist, whose server could not read the document either (G40 D4).
-		if (!pending.has(root) && !clients.has(root) && !(await directoryExists(root))) {
-			if (configured) { throw new Error(`The project folder of tsuzuri.projectPath does not exist: ${root}`); }
-			return;
-		}
-		if (pending.has(root)) { return pending.get(root); }
-		if (clients.has(root)) {
-			return;
-		}
+		// A lookup that a change cleared the cache during is read again, and the client starts in the same task as the last
+		// check: a re-rooting waits only for clients that have started (`pending`), not for this lookup (G40 D4).
+		return projectRoots.settled(async () => {
+			const found = await projectRootFor(document.uri);
+			// A document left open in a folder that was deleted or moved has no project: its root would be a directory that
+			// does not exist, whose server could not read the document either (G40 D4).
+			return { ...found, readable: pending.has(found.root) || clients.has(found.root) || await directoryExists(found.root) };
+		}, ({ root, remaining, configured, readable }) => {
+			if (!readable) {
+				if (configured) { throw new Error(`The project folder of tsuzuri.projectPath does not exist: ${root}`); }
+				return;
+			}
+			if (pending.has(root)) { return pending.get(root); }
+			if (clients.has(root)) {
+				return;
+			}
+			return startClient(document, root, remaining, configured);
+		});
+	}
+
+	/** Starts the client of `root` for `document`; it is in `pending` before this returns. */
+	function startClient(document: vscode.TextDocument, root: string, remaining: boolean, configured: boolean) {
 		const start = (async () => {
 			const tools = await toolchain(context, document.uri);
 			// The server of a remaining root reads the packages below it too, which have clients of their own (G40 D2). Its
@@ -73,7 +84,7 @@ export async function activate(context: vscode.ExtensionContext) {
 			catch (error) { clients.delete(root); kinds.delete(root); watchers.delete(root); watcher.dispose(); throw error; }
 		})();
 		pending.set(root, start);
-		try { await start; } finally { pending.delete(root); }
+		return start.finally(() => { pending.delete(root); });
 	}
 
 	async function stop(root: string) {

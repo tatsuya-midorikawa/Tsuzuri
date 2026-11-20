@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, DirectoryEntry, directlyIn, directoryExists, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, plainPath, projectFile, projectRoot, ProjectRoots, reportedByServer, RootFileSystem, rootSpelling, reservedWords, runProcess, sourcePosition, sourceSelector, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
+import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, DirectoryEntry, directlyIn, directoryExists, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, plainPath, projectFile, ProjectRoot, projectRoot, ProjectRoots, reportedByServer, RootFileSystem, rootSpelling, reservedWords, runProcess, sourcePosition, sourceSelector, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
 
 test('only the five supported hosts enable the IDE, with debugging disabled on Windows ARM64', () => {
 	const supported = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
@@ -201,6 +201,8 @@ test('project root respects nested projects and source subdirectories', async ()
 class VirtualFileSystem implements RootFileSystem {
 	readonly directories = new Map<string, DirectoryEntry[]>();
 	lists = 0;
+	/** A directory whose listing, once taken, is returned only after `resume`: a change can come meanwhile. */
+	pause?: { directory: string; listed: () => void; resume: Promise<void> };
 	constructor(readonly top: string, readonly caseInsensitive = false) { this.directories.set(top, []); }
 	add(file: string, kind: DirectoryEntry['kind'] = 'file', target?: DirectoryEntry['target']) {
 		const parent = path.dirname(file);
@@ -216,7 +218,14 @@ class VirtualFileSystem implements RootFileSystem {
 		this.lists++;
 		const entries = this.directories.get(directory);
 		if (!entries) { throw Object.assign(new Error(`ENOENT: ${directory}`), { code: 'ENOENT' }); }
-		return entries;
+		const listing = [...entries];
+		const pause = this.pause;
+		if (pause?.directory === directory) {
+			this.pause = undefined;
+			pause.listed();
+			await pause.resume;
+		}
+		return listing;
 	}
 	async exists(file: string) {
 		const fold = (name: string) => this.caseInsensitive ? name.toLowerCase() : name;
@@ -343,6 +352,33 @@ test('a directory that a scan listed is not listed again for a file opened in it
 			for (const file of order) { assert.deepEqual(await shared.find(file, top), alone[sources.indexOf(file)], file); }
 		}
 	}
+});
+
+test('a root that was read while a change cleared the cache is read again before it is used', async () => {
+	const top = path.resolve('/w');
+	const notes = path.join(top, 'notes', 'X.tz');
+	const app = path.join(top, 'app');
+	const files = new VirtualFileSystem(top);
+	files.add(notes);
+	files.add(path.join(app, 'Util.tz'));
+	const roots = new ProjectRoots(files);
+	let listed!: () => void, resume!: () => void;
+	const reached = new Promise<void>(resolve => { listed = resolve; });
+	files.pause = { directory: app, listed, resume: new Promise<void>(resolve => { resume = resolve; }) };
+	const used: ProjectRoot[] = [];
+	const settled = roots.settled(() => roots.find(notes, top), found => { used.push(found); return found.root; });
+	// The scan of the folder has listed app/ without a marker. A marker is created there, and its event clears the cache
+	// before the lookup ends: a client started from that lookup would serve the folder beside the clients of the new roots.
+	await reached;
+	files.add(path.join(app, 'Main.tz'));
+	assert.equal(roots.changed(top, path.join(app, 'Main.tz')), true);
+	resume();
+	assert.equal(await settled, path.join(top, 'notes'));
+	assert.deepEqual(used, [{ root: path.join(top, 'notes'), remaining: false }]);
+	// Without a change meanwhile, the lookup runs once, from the cache.
+	const lists = files.lists;
+	assert.equal(await roots.settled(() => roots.find(notes, top), found => found.root), path.join(top, 'notes'));
+	assert.equal(files.lists, lists);
 });
 
 test('a marker that the volume finds under another case of its name holds another project', async () => {
