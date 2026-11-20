@@ -55,6 +55,10 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 				if (result.code !== 0) { throw new DiscoveryError(result.stderr); }
 				const records = jsonLines(result.stdout);
 				const real = await realpath(root).catch(() => root);
+				// A re-rooting may have removed the root, and added it back as a new item, while the compiler ran (G40 D4):
+				// the results, like a failure, go to the root's current item, and a root that is gone records nothing.
+				const current = roots.get(root);
+				if (!current) { return; }
 				const revision = createHash('sha256').update(result.stdout).digest('hex').slice(0, 16);
 				const files = new Map<string, vscode.TestItem>();
 				for (const [id, data] of cases) { if (data.root === root) { cases.delete(id); } }
@@ -77,10 +81,11 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 					file.children.add(item);
 					cases.set(id, { root, index: testCase.index });
 				}
-				project.children.replace([...files.values()]);
-				project.error = undefined;
+				current.children.replace([...files.values()]);
+				current.error = undefined;
 			} catch (error) {
-				project.error = String(error);
+				const current = roots.get(root);
+				if (current) { current.error = String(error); }
 				throw error;
 			} finally { project.busy = false; }
 		})();
@@ -446,5 +451,5 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		}),
 	);
 	void refreshRoots().catch(error => output.appendLine(String(error)));
-	return { controller, discover, roots, run, debug, reroot };
+	return { controller, discover, roots, cases, run, debug, reroot };
 }

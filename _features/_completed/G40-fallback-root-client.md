@@ -472,6 +472,26 @@ GitHub Copilot の 3 回目のレビュー（`229acf41` に対するインライ
 - `cargo fmt --all -- --check`（差分なし）、`node scripts/check-links.mjs --into _features/README.md`（11 リンク、0 件の切れ）、`node scripts/check-guide-lite.mjs`（88 件、0 件の失敗）、`node tests/platforms.mjs`、`git diff --check`。
 - 言語リファレンスのページと Rust のコードは変えていないので、`check-docs.mjs` と `cargo nextest` は動かしていない。
 
+#### 4 回目のレビュー（`d2902e31` に対する概要の注記 1 件）
+
+GitHub Copilot の 4 回目のレビューに、未解決の指摘はなかった。概要の「人が詳しく見るべき」注記（根を外して足し直す決め直しをまたぐ発見は、外れた項目を埋め、発見が成功しても今の Testing の根を空のままにしうる）は、2 回目の対応でも気づいていたもので、コードと照らすと実在した（G40 D4 の決め直しで起きやすくなった）。回帰テストと一緒にこのコミットで直した。決定事項と既存のテストの期待値は変えていない。記録は `target/scratch/g40/copilot4/` にある。
+
+- 原因: `discover(root)` は、コンパイラを動かす前に `addProject(root)` の項目を取り、返った結果をその項目に書いていた。コンパイラが動いているあいだに決め直しが根を外し（`removeProject`）、また足すと、結果は外れた古い項目に入る。その間に足し直した根の `discover` は動いている発見（`refreshes`）を返すだけなので、新しい項目は次の変更か **Refresh Tests** まで空のままだった。根が外れたまま戻らなければ、外れた根の `cases` が残った（誰も読まないごみ）。
+- 直し方: コンパイラが返った後、最後の `await` の後で書き込みと同じタスクのうちに、根の今の項目（`roots.get(root)`）を引く。なければ何も書かない（`cases` も子も）。あれば、子・`error`・`cases` をその項目に書く。発見の失敗の `error` も今の項目に書き、根がなければ書かない（失敗は今までどおり投げる）。`busy` は印を付けた項目（発見を始めたときの項目）で外す。ほかの振る舞いは変えていない。
+- 回帰テスト: `reroot.test.ts` の 2 つ。テストが `cases` を読めるように `registerTesting` の戻り値に `cases` を足し、差し替えた vscode の API に `Range` を、テストのホストにパッケージを作り直して決め直す `createPackage` を足した。
+  - `a discovery that a re-rooting outlasts gives its tests to the root that was added back meanwhile`: `top/a` の発見を止めておき、パッケージを消して（`top/a` が外れる）作り直し（`top/a` が新しい項目で戻る）、戻った根の `discover` も動いている発見を待たせてから、テスト `adds` を 1 件返して続ける。今の項目にそのテストがあって `error` がなく、`cases` はその 1 件だけで、どちらの項目も `busy` でない。
+  - `a discovery whose root a re-rooting removed meanwhile records no tests for it`: パッケージを消して `top/a` が外れたまま続ける。`cases` は空。
+  - `d2902e31`（戻り値に `cases` を足しただけ）では、1 つ目が `actual: []`・`expected: [ 'adds' ]`、2 つ目が外れた根の `cases` の 1 件で落ちる（`unit-before.log`）。
+
+#### 4 回目の対応の検証
+
+- `cd vsc && npm run test:unit && npm run check-types && npm run lint`: 単体テストは 40 件すべて通過（前の 38 件に 2 件を足した）、型検査と lint はエラーなし（`unit-after.log`）。
+- `reroot.test.ts` を続けて動かすと、足した 2 つは毎回通ったが、ほかの作業で混んだ機械（load average 20〜100）で、既存の `a client that starts while Restart Language Server stops the others stays tracked, so no server runs without one` がまれに落ちた（この版で 439 回中 5 回）。
+  `d2902e31` でも 4 つ並べて動かすと 200 回中 1 回落ち（`z-base-fail-3-43.log`）、この版で足した 2 つを飛ばしても落ちる（`x-skip-fail-49.log`）ので、この対応とは関係しない。**Restart Language Server** は開き直しを待たずに返り、テストはその後の `settle()`（`setImmediate` 20 回）のうちに、開き直した `top/a/X.tz` の `documentHasProject`（`fs.stat`）が終わると見込んでいる。混んだ機械ではそれが間に合わない、テストの待ち方の揺れで、この対応では変えていない。
+- `cd vsc && node ../scripts/slot.mjs -- npm test`（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）: 16 の `VS Code:` 行と `All Tsuzuri VS Code integration checks passed.`（`integration.log`）。サーバーが要求を断る `document directory does not exist` は、前と同じく 1 回出る。
+- `cargo fmt --all -- --check`（差分なし）、`node scripts/check-guide-lite.mjs`（88 件、0 件の失敗）、`git diff --check`。
+- 言語リファレンスのページと Rust のコードは変えていないので、`check-docs.mjs` と `cargo nextest` は動かしていない。G40 より前も、発見のあいだにワークスペースのフォルダーを外して足し直せば起きえたが、狭い場面で、G40 の決め直しの説明（CHANGELOG の `## Unreleased`）が書く振る舞いに合わせる修正なので、CHANGELOG には書いていない。
+
 ### 変更したファイル
 
 `vsc/src/core.ts`、`vsc/src/extension.ts`、`vsc/src/workflow.ts`、`vsc/src/testing.ts`、`vsc/src/test/core.test.ts`、`vsc/src/test/extension.test.ts`、`vsc/src/test/reroot.test.ts`、`vsc/scripts/test-extension.mjs`、`vsc/package.json`（`test:unit` に `reroot.test.js` を足した）、`vsc/README.md`、`vsc/Development.md`、`vsc/CHANGELOG.md`、`docs/architecture.md`、`_tsuzuri/language-reference/compiler/usage.md`、`_features/README.md`、`_features/G39-stale-editor-diagnostics.md`（リンクだけ）、このチケット。

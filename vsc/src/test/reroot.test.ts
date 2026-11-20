@@ -48,6 +48,19 @@ async function settle() {
 }
 
 const passed = { code: 0, stdout: '', stderr: '' };
+/** A discovery of top/a that lists the test `adds` of top/a/X.tz. */
+const listed = {
+	code: 0,
+	stdout: `${JSON.stringify({ type: 'test', index: 0, name: 'adds', module: 'X', path: 'X.tz', range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } } })}\n`,
+	stderr: '',
+};
+
+/** The names of the tests below the root `project`. */
+function testNames(project: Item) {
+	const names: string[] = [];
+	project.children.forEach(file => file.children.forEach(item => names.push((item as Item & { label: string }).label)));
+	return names;
+}
 
 /**
  * The extension's modules with a stubbed vscode API, in a temporary folder `top` whose files decide the roots: while the
@@ -95,6 +108,7 @@ async function host() {
 	};
 	const vscode = {
 		Uri: { file: uri },
+		Range: class { constructor(readonly startLine: number, readonly startCharacter: number, readonly endLine: number, readonly endCharacter: number) {} },
 		Disposable: class { constructor(readonly dispose: () => void) {} },
 		TestRunRequest: class { constructor(readonly include?: Item[], readonly exclude?: Item[]) {} },
 		CancellationTokenSource: class { token = token(); dispose() {} },
@@ -223,6 +237,13 @@ async function host() {
 			projectRoots.clear();
 			await testing.reroot();
 		},
+		/** Creates the package top/b again and re-roots as `deletePackage` does: each folder below top is a root again. */
+		async createPackage(testing: { reroot: () => Promise<void> }) {
+			await mkdir(pkg);
+			files.package = true;
+			projectRoots.clear();
+			await testing.reroot();
+		},
 		/**
 		 * Deletes the folder top/a with the open file X.tz in it, as a package's folder is deleted: the walk up from a file
 		 * left open there ends at top, which remains. The Test Explorer support is re-rooted as for `deletePackage`.
@@ -281,6 +302,57 @@ test('an explicit run that waits for an earlier discovery does not bring back a 
 		assert.deepEqual(await run, { passed: 0, failed: 0, errored: 0, skipped: 0 });
 		assert.deepEqual([...testing.roots.keys()], [top]);
 		assert.deepEqual(compiled.map(args => args[1]), [app]);
+		assert.deepEqual(stubbed.output, []);
+	} finally { await stubbed.dispose(); }
+});
+
+test('a discovery that a re-rooting outlasts gives its tests to the root that was added back meanwhile', async () => {
+	const stubbed = await host();
+	const { app, top, compiled } = stubbed;
+	try {
+		const testing = await stubbed.testing();
+		const removed = testing.roots.get(app)!;
+		const earlier = stubbed.holdCompiler();
+		const discovery = testing.discover(app);
+		await settle();
+		// The package is deleted, which removes top/a, and created again, which adds it back, while the compiler runs.
+		await stubbed.deletePackage(testing);
+		assert.deepEqual([...testing.roots.keys()], [top]);
+		await stubbed.createPackage(testing);
+		const current = testing.roots.get(app)!;
+		assert.notEqual(current, removed);
+		// A discovery of the root that was added back waits for the one that runs.
+		const again = testing.discover(app);
+		earlier.resolve(listed);
+		await Promise.all([discovery, again]);
+		assert.deepEqual(testNames(current), ['adds']);
+		assert.equal(current.error, undefined);
+		assert.equal(current.busy, false);
+		assert.deepEqual(testNames(removed), []);
+		assert.equal(removed.busy, false);
+		assert.deepEqual([...testing.cases.values()], [{ root: app, index: 0 }]);
+		assert.deepEqual(compiled.map(args => args[1]), [app]);
+		assert.deepEqual(stubbed.output, []);
+	} finally { await stubbed.dispose(); }
+});
+
+test('a discovery whose root a re-rooting removed meanwhile records no tests for it', async () => {
+	const stubbed = await host();
+	const { app, top } = stubbed;
+	try {
+		const testing = await stubbed.testing();
+		const removed = testing.roots.get(app)!;
+		const earlier = stubbed.holdCompiler();
+		const discovery = testing.discover(app);
+		await settle();
+		await stubbed.deletePackage(testing);
+		assert.deepEqual([...testing.roots.keys()], [top]);
+		earlier.resolve(listed);
+		await discovery;
+		assert.deepEqual([...testing.cases.keys()], []);
+		assert.deepEqual(testNames(removed), []);
+		assert.equal(removed.busy, false);
+		assert.deepEqual([...testing.roots.keys()], [top]);
 		assert.deepEqual(stubbed.output, []);
 	} finally { await stubbed.dispose(); }
 });
