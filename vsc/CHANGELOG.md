@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The language server clears the diagnostics that it reported for a file that left the project (a deleted, renamed, or moved file, also inside a deleted or moved folder), for a fixed `Tsuzuri.toml`, and for a dependency removed from `[dependencies]`. Changes on disk are analyzed after you close every editor of the project. While the project does not load, only the reason shows, also in a closed file, at its position in the file; the other files lose their earlier diagnostics. The files of a path dependency outside the project get their diagnostics from the language server of their own folder when you open them, and a project opened through a symbolic link keeps its spelling for the files that are not open.
+- The language server no longer computes answers that the editor drops: it answers a request whose text you have changed since with `ContentModified`, stops a request that you have cancelled before it starts (and a code action also while it verifies its fixes), and no longer computes **Fix all auto-fixable problems** for the light bulb, which does not show it.
+
 ## 0.1.8 - 2026-11-20
 
 - Fix the extension's `Tsuzuri` copies of errors and warnings, and the task markers, that stayed in the Problems panel and as squiggles after they were fixed. The language server alone reports the errors and warnings of the code as you type. The test discovery that runs after each save no longer adds a `Tsuzuri` copy of a saved error; a failed discovery shows on the project in the Testing view.
