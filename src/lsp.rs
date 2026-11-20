@@ -3059,10 +3059,15 @@ fn format_document(
     }
 }
 
-/// The most bytes of message bodies that the reader holds before the main loop has handled them:
-/// four messages of the largest size (G39). At the limit the reader waits, so the queue and the
-/// cancelled ids stay bounded while the main loop computes.
+/// The most that the messages the reader holds before the main loop has handled them may count
+/// (their bodies, and `MESSAGE_COST` each): four messages of the largest size (G39). At the limit the
+/// reader waits, so the queue and the cancelled ids stay bounded while the main loop computes.
 const MAX_QUEUED_BYTES: usize = 4 * MAX_MESSAGE;
+/// What each message counts against `MAX_QUEUED_BYTES` besides its body, for its entry in the
+/// channel and the queue. By their bodies alone, empty or tiny messages would count next to nothing,
+/// and a client could pile them up without bound (Copilot review of PR #119); with it, the reader
+/// waits after about 65,536 messages, however small.
+const MESSAGE_COST: usize = 1024;
 /// How many ids the main loop keeps of the cancellations that no queued request had when they
 /// arrived (one may precede its request), and of the requests it answered last (a later
 /// cancellation of one is dropped).
@@ -3074,7 +3079,8 @@ const TEXT_SYNC: [&str; 3] = [
 ];
 
 enum InputEvent {
-    /// A message and the length of its body.
+    /// A message and what it counts against `MAX_QUEUED_BYTES`: the length of its body and
+    /// `MESSAGE_COST`.
     Message(Result<Value, String>, usize),
     Failure(String),
     End,
@@ -3089,7 +3095,8 @@ struct Inbox {
 
 #[derive(Default)]
 struct InboxState {
-    /// The bytes of the bodies that the reader has read and the main loop has not handled.
+    /// What the messages that the reader has read and the main loop has not handled count: their
+    /// bodies and `MESSAGE_COST` each.
     bytes: usize,
     /// The main loop has returned.
     closed: bool,
@@ -3098,8 +3105,8 @@ struct InboxState {
 }
 
 impl Inbox {
-    /// Waits while the unhandled bodies exceed `MAX_QUEUED_BYTES`; `false` once the main loop has
-    /// returned.
+    /// Waits while the unhandled messages count more than `MAX_QUEUED_BYTES`; `false` once the main
+    /// loop has returned.
     fn wait_for_room(&self) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
@@ -3220,6 +3227,7 @@ impl Queued {
         .flatten()
     }
 
+    /// What the message counts against `MAX_QUEUED_BYTES`.
     fn bytes(&self) -> usize {
         match self.event {
             InputEvent::Message(_, bytes) => bytes,
@@ -3360,8 +3368,9 @@ fn read_input(input: impl Read, sender: &mpsc::Sender<InputEvent>, inbox: &Inbox
     while inbox.wait_for_room() {
         let event = match read_frame(&mut input) {
             Ok(Some((message, bytes))) => {
-                inbox.received(&message, bytes);
-                InputEvent::Message(message, bytes)
+                let cost = bytes + MESSAGE_COST;
+                inbox.received(&message, cost);
+                InputEvent::Message(message, cost)
             }
             Ok(None) => InputEvent::End,
             Err(error) => InputEvent::Failure(error.to_string()),
@@ -3705,6 +3714,40 @@ mod tests {
         assert_eq!(result.unwrap_err().0, -32800);
         assert_eq!(calls.get(), 1);
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// Copilot review of PR #119: an empty message costs nothing by its body, but it counts against
+    /// the reader's limit all the same, so a stream of them makes the reader wait as larger ones do.
+    #[test]
+    fn empty_messages_count_against_the_readers_limit() {
+        let frames = 100_000;
+        let input = Cursor::new(b"Content-Length: 0\r\n\r\n".repeat(frames));
+        let inbox = Arc::new(Inbox::default());
+        let (sender, receiver) = mpsc::channel();
+        let reader = {
+            let inbox = Arc::clone(&inbox);
+            std::thread::spawn(move || read_input(input, &sender, &inbox))
+        };
+        let mut read = 0;
+        while inbox.state.lock().unwrap().bytes <= MAX_QUEUED_BYTES {
+            match receiver.recv() {
+                Ok(InputEvent::Message(Err(_), _)) => read += 1,
+                Ok(InputEvent::Message(Ok(message), _)) => panic!("{message}"),
+                Ok(InputEvent::Failure(failure)) => panic!("{failure}"),
+                Ok(InputEvent::End) | Err(_) => {
+                    panic!("the reader read all {read} empty messages without waiting")
+                }
+            }
+        }
+        // The reader waits for room before it reads the next message; closing ends its wait.
+        inbox.close();
+        reader.join().unwrap();
+        let rest: Vec<_> = receiver.try_iter().collect();
+        assert!(
+            rest.iter()
+                .all(|event| matches!(event, InputEvent::Message(Err(_), _)))
+        );
+        assert!(read + rest.len() < frames, "{}", read + rest.len());
     }
 
     #[test]
