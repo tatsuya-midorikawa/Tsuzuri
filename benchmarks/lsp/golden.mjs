@@ -15,6 +15,12 @@
 // and rename, the code actions of the ticket's M4 (quickfix and source.fixAll.tsuzuri, and a quickfix for every
 // diagnostic of Main.tz), and the same after an edit that adds an E1002, after one that misspells a module
 // (`Matrx.init`: candidates and a replacement) and after the text is restored.
+// The scenes of Phase 2 (O6), where the language server reads only the opt-in std modules that the sources name:
+// a `def` that names `Matrix` and `Json` (hover of the module names and members), a `def` that misspells `Matrix`
+// (its candidates, replacement fix and quickfix where top-level code would clash with `def main`), a `def` with
+// unknown values that only members of opt-in modules match (`parse`, `Null`), completion
+// after `Json.Value.` and `std::`, and, after the restored text has been analyzed, an edit that starts
+// `Json.parse (` and does not parse: signature help, `Json.` completion and hover there.
 // `--threads` sets TSUZURI_THREADS (`auto` and `unset` leave it unset). No timing is recorded.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -234,7 +240,30 @@ async function transcript(compiler, project, env) {
     await result("misspelt semanticTokens", "textDocument/semanticTokens/full", document(main));
   });
   await actions("misspelt", misspelt);
-  for (const [label, suffix] of [["matrix", "\nlet completion_probe = Matrix."], ["json", "\nlet completion_probe = Json."], ["top", "\n"]]) {
+  // Phase 2: a definition that names two opt-in modules and checks; hover of their names and members.
+  const named = `${original}\ndef opt_in_probe :: own unit -> i64 = \\() -> {\n    let m = Matrix.init 2 2 (\\i j -> i);\n    let parsed = Json.parse (ref u8"1");\n    Matrix.rows (ref m) + (if Result.is_ok (ref parsed) then 1 else 0)\n}\n`;
+  await change("named", named, async (text) => {
+    await result("named semanticTokens", "textDocument/semanticTokens/full", document(main));
+    const at = (needle, into) => ({ ...document(main), position: position(text, text.lastIndexOf(needle) + into) });
+    for (const [label, needle, into] of [["Matrix", "Matrix.init", 1], ["init", "Matrix.init", 8], ["rows", "Matrix.rows", 8], ["Json", "Json.parse", 1], ["parse", "Json.parse", 6]]) {
+      await result(`named hover ${label}`, "textDocument/hover", at(needle, into));
+    }
+  });
+  // Phase 2: a misspelt module inside a definition, which a project with `def main` accepts.
+  const misspeltDef = `${original}\ndef misspelt_def_probe :: own unit -> i64 = \\() -> {\n    let m = Matrx.init 2 2 (\\i j -> i);\n    0\n}\n`;
+  await change("misspelt-def", misspeltDef, async () => {
+    await result("misspelt-def semanticTokens", "textDocument/semanticTokens/full", document(main));
+  });
+  await actions("misspelt-def", misspeltDef);
+  // Phase 2: unknown values that members of opt-in modules match by their last part: `parse` (`Format.parse` and
+  // `Json.parse`, so no single best name and no fix) and `Null` (`Json.Null`).
+  const unknown = `${original}\ndef unknown_probe :: own unit -> i64 = \\() -> {\n    let a = parse;\n    let b = Null;\n    0\n}\n`;
+  await change("unknown", unknown, async () => {
+    await result("unknown semanticTokens", "textDocument/semanticTokens/full", document(main));
+  });
+  await actions("unknown", unknown);
+  for (const [label, suffix] of [["matrix", "\nlet completion_probe = Matrix."], ["json", "\nlet completion_probe = Json."], ["top", "\n"],
+    ["json-value", "\nlet completion_probe = Json.Value."], ["std", "\nlet completion_probe = std::"]]) {
     await change(`completion ${label}`, original + suffix, async (text) => {
       await result(`completion ${label}`, "textDocument/completion", { ...document(main), position: endPosition(text) });
     });
@@ -242,6 +271,15 @@ async function transcript(compiler, project, env) {
   await change("restored", original, async (text) => {
     await result("restored semanticTokens", "textDocument/semanticTokens/full", document(main));
     await result("restored inlayHint", "textDocument/inlayHint", { ...document(main), range: full(text) });
+  });
+  // Phase 2: after that analysis, the first edit that names `Json` does not parse; the requests fall back to it.
+  const signature = `${original}\nlet signature_probe = Json.parse (`;
+  await change("signature", signature, async (text) => {
+    await result("signature signatureHelp", "textDocument/signatureHelp", { ...document(main), position: endPosition(text) });
+    const dot = text.lastIndexOf("Json.") + 5;
+    await result("signature completion", "textDocument/completion", { ...document(main), position: position(text, dot) });
+    await result("signature hover Json", "textDocument/hover", { ...document(main), position: position(text, dot - 4) });
+    await result("signature hover parse", "textDocument/hover", { ...document(main), position: position(text, dot + 1) });
   });
   const publishes = lsp.messages.filter((message) => message.method === "textDocument/publishDiagnostics")
     .map((message) => [relative(project, fileURLToPath(message.params.uri)), message.params.version ?? null, message.params.diagnostics]);
