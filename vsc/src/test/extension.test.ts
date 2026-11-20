@@ -192,8 +192,16 @@ export async function run(): Promise<void> {
 	await serverCleared('diagnostics of a deleted file', renamed);
 	const folder = vscode.Uri.file(path.join(root, 'Stale'));
 	const moved = vscode.Uri.file(path.join(root, 'Moved'));
-	await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder, 'Inner.tz'), Buffer.from('def inner :: i64 = true\n'));
-	await reported('diagnostics of a file in a folder', vscode.Uri.joinPath(folder, 'Inner.tz'));
+	// VS Code's watcher on Linux can miss a file written right after its folder was created (the folder is not watched
+	// yet), and then the server never hears of it. Writing it again sends a change event once the folder is watched; the
+	// renames and deletions below are what this part checks.
+	for (let attempt = 1; ; attempt++) {
+		await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder, 'Inner.tz'), Buffer.from('def inner :: i64 = true\n'));
+		try {
+			await waitFor('diagnostics of a file in a folder', () => serverCodes(vscode.Uri.joinPath(folder, 'Inner.tz')).includes('E1003') ? true : undefined, 10000);
+			break;
+		} catch (error) { if (attempt === 3) { throw error; } }
+	}
 	await renameFile(folder, moved);
 	await serverCleared('diagnostics of a file in a renamed folder', vscode.Uri.joinPath(folder, 'Inner.tz'));
 	await reported('diagnostics of the file in the folder of the new name', vscode.Uri.joinPath(moved, 'Inner.tz'));
