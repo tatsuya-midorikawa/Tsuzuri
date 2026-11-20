@@ -509,9 +509,19 @@ impl Session {
     /// to each URI of its record that this refresh sent nothing to (a file that left the project or
     /// no longer has diagnostics, a URI that the file is no longer spelled with). This refresh's
     /// record replaces it (G39 D5).
+    ///
+    /// A URI that the record of another root still has keeps its list: the client replaces a URI's
+    /// whole list, so an empty one would hide what the other root still reports there, such as the
+    /// load error of a manifest outside both roots that both depend on (Copilot review of PR #119).
+    /// It is cleared when the last root that reports it stops.
     fn retire(&mut self, output: &mut impl Write, directory: &Path, sent: Sent) -> io::Result<()> {
         for (path, uri) in self.published.remove(directory).unwrap_or_default() {
-            if !sent.uris.contains(&uri) {
+            let reported = || {
+                self.published
+                    .values()
+                    .any(|record| record.values().any(|other| *other == uri))
+            };
+            if !sent.uris.contains(&uri) && !reported() {
                 self.send_diagnostics(output, &uri, Some(&path), Vec::new())?;
             }
         }

@@ -2278,6 +2278,16 @@ mod live {
     impl Server {
         /// Starts a server and initializes it with `root_uri` as the root.
         pub fn start(root_uri: &str, encoding: &str) -> Self {
+            let capabilities = if encoding == "utf-8" {
+                json!({"general": {"positionEncodings": ["utf-8"]}})
+            } else {
+                json!({})
+            };
+            Self::start_with(json!({"rootUri": root_uri, "capabilities": capabilities}))
+        }
+
+        /// Starts a server and initializes it with the parameters `initialize`.
+        pub fn start_with(initialize: Value) -> Self {
             let (input, receiver) = mpsc::channel();
             let (sender, output) = mpsc::channel();
             let thread = std::thread::spawn(move || {
@@ -2302,15 +2312,7 @@ mod live {
                 next: 1000,
                 seen: Vec::new(),
             };
-            let capabilities = if encoding == "utf-8" {
-                json!({"general": {"positionEncodings": ["utf-8"]}})
-            } else {
-                json!({})
-            };
-            let response = server.request(
-                "initialize",
-                json!({"rootUri": root_uri, "capabilities": capabilities}),
-            );
+            let response = server.request("initialize", initialize);
             assert!(response.get("result").is_some(), "{response}");
             server
         }
@@ -2884,6 +2886,61 @@ fn a_removed_root_is_not_loaded_through_its_parent() {
             );
         }
     }
+    server.finish();
+}
+
+/// Copilot review of PR #119: two roots of one server that depend on the same broken manifest both
+/// report its load error. When one of them drops the dependency, the error stays: the client
+/// replaces a URI's whole list, and the other root still reports it there.
+#[test]
+fn a_load_error_that_another_root_reports_stays() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    let manifest = |name: &str, dependency: bool| {
+        let mut text = format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n");
+        if dependency {
+            text.push_str("\n[dependencies]\nlib = { path = \"../lib\" }\n");
+        }
+        text
+    };
+    for name in ["one", "two"] {
+        fixture.write(&format!("{name}/Tsuzuri.toml"), &manifest(name, true));
+        fixture.write(&format!("{name}/Main.tz"), main);
+    }
+    fixture.write(
+        "lib/Tsuzuri.toml",
+        &format!("{}bogus\n", manifest("lib", false)),
+    );
+    fixture.write("lib/Calc.tz", "fn calc() -> i64 { 2 }\n");
+    let lib = fixture.uri("lib/Tsuzuri.toml");
+    let folders: Vec<_> = ["one", "two"]
+        .iter()
+        .map(|name| json!({"uri": fixture.uri(name), "name": name}))
+        .collect();
+    let mut server = live::Server::start_with(
+        json!({"rootUri": null, "workspaceFolders": folders, "capabilities": {}}),
+    );
+    for name in ["one", "two"] {
+        server.open(&fixture.uri(&format!("{name}/Main.tz")), main);
+    }
+    server.settle();
+    assert_eq!(server.codes(&lib), ["E0002"]);
+    // `two` drops the dependency. Both roots have diagnostics on the client, so both are analyzed
+    // again, `one` first: `two` would then clear the error that `one` has just reported.
+    let drop_dependency = |server: &mut live::Server, name: &str| {
+        fixture.write(&format!("{name}/Tsuzuri.toml"), &manifest(name, false));
+        server.notify(
+            "workspace/didChangeWatchedFiles",
+            json!({"changes": [{"uri": fixture.uri(&format!("{name}/Tsuzuri.toml")), "type": 2}]}),
+        );
+        server.settle();
+    };
+    drop_dependency(&mut server, "two");
+    assert_eq!(server.codes(&lib), ["E0002"]);
+    // Once no root reports it, it is cleared.
+    drop_dependency(&mut server, "one");
+    assert!(server.codes(&lib).is_empty());
     server.finish();
 }
 
