@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, DirectoryEntry, directlyIn, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, plainPath, projectFile, projectRoot, ProjectRoots, reportedByServer, RootFileSystem, rootSpelling, reservedWords, runProcess, sourcePosition, sourceSelector, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
+import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, DirectoryEntry, directlyIn, directoryExists, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, plainPath, projectFile, projectRoot, ProjectRoots, reportedByServer, RootFileSystem, rootSpelling, reservedWords, runProcess, sourcePosition, sourceSelector, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
 
 test('only the five supported hosts enable the IDE, with debugging disabled on Windows ARM64', () => {
 	const supported = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
@@ -163,8 +163,12 @@ test('project root respects nested projects and source subdirectories', async ()
 		// Outside every workspace folder, the file's directory is the root, and a remaining one when it holds a project.
 		assert.deepEqual(await new ProjectRoots().find(path.join(root, 'Notes.tz')), { root, remaining: true });
 		assert.deepEqual(await new ProjectRoots().find(path.join(root, 'scratch', 'Try.tz')), { root: path.join(root, 'scratch'), remaining: false });
-		// An unsaved file in a directory that does not exist.
+		// An unsaved file in a directory that does not exist. Such a root has no client or test root (G40 D4).
 		assert.deepEqual(await new ProjectRoots().find(path.join(root, 'missing', 'deeper', 'New.tz'), root), { root: path.join(root, 'missing'), remaining: false });
+		assert.equal(await directoryExists(path.join(root, 'missing')), false);
+		assert.equal(await directoryExists(path.join(root, 'Library.tz')), false);
+		assert.equal(await directoryExists(path.join(root, 'Library.tz', 'below')), false);
+		assert.equal(await directoryExists(root), true);
 		// A folder without a package keeps one root for every file, as before.
 		await mkdir(path.join(loose, 'a', 'b'), { recursive: true });
 		await writeFile(path.join(loose, 'a', 'X.tz'), '');

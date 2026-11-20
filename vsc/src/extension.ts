@@ -1,8 +1,9 @@
 import { realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
-import { assertSupportedHost, directlyIn, sourceSelector, supportsDebug } from './core';
+import { assertSupportedHost, directlyIn, directoryExists, sourceSelector, supportsDebug } from './core';
 import { registerEditor } from './editor';
 import { registerTesting } from './testing';
 import { toolchain } from './toolchain';
@@ -34,6 +35,12 @@ export async function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 		const { root, remaining, configured } = await projectRootFor(document.uri);
+		// A document left open in a folder that was deleted or moved has no project: its root would be a directory that
+		// does not exist, whose server could not read the document either (G40 D4).
+		if (!pending.has(root) && !clients.has(root) && !(await directoryExists(root))) {
+			if (configured) { throw new Error(`The project folder of tsuzuri.projectPath does not exist: ${root}`); }
+			return;
+		}
 		if (pending.has(root)) { return pending.get(root); }
 		if (clients.has(root)) {
 			return;
@@ -46,8 +53,11 @@ export async function activate(context: vscode.ExtensionContext) {
 			const own = (uri: vscode.Uri) => directlyIn(root, uri.fsPath) || directlyIn(real, uri.fsPath);
 			const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{tz,tt,tc,toml}'));
 			watchers.set(root, watcher);
+			// The server takes its root from `initialize`, not from its working directory. Windows does not let a folder that
+			// is a running process's working directory be deleted or moved, so a working directory in the root would keep
+			// the user from deleting or moving a package folder while its server runs (G40 D4).
 			const client = new LanguageClient('tsuzuri', 'Tsuzuri', {
-				command: tools.compiler, args: ['lsp'], options: { cwd: root, env: tools.env },
+				command: tools.compiler, args: ['lsp'], options: { cwd: tmpdir(), env: tools.env },
 			}, {
 				documentSelector: [{ language: 'tsuzuri', scheme: 'file', pattern: sourceSelector(root, remaining) }],
 				workspaceFolder: { uri: vscode.Uri.file(root), name: path.basename(root), index: 0 },
@@ -85,9 +95,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	/**
 	 * Decides the roots again after files below a workspace folder were created or deleted (G40 D4). A client stops when
-	 * its root is no longer the root of the files directly in it, or when it becomes a remaining root or stops being one
-	 * (its selector changes); otherwise it would keep serving files of other clients. Then the open documents start the
-	 * clients that they lack, and the test roots are rebuilt, in this order and with a cleared cache.
+	 * its root is no longer the root of the files directly in it, when it becomes a remaining root or stops being one
+	 * (its selector changes; otherwise it would keep serving files of other clients), or when its folder was deleted or
+	 * moved. Then the open documents start the clients that they lack, and the test roots are rebuilt, in this order and
+	 * with a cleared cache. This runs in the background, so its errors go to the output, not to a notification on each
+	 * change of the files.
 	 */
 	async function reroot() {
 		projectRoots.clear();
@@ -96,10 +108,10 @@ export async function activate(context: vscode.ExtensionContext) {
 		for (const [root, kind] of kinds) {
 			if (kind.configured) { continue; }
 			const found = await directoryRoot(root);
-			if (found.root !== root || found.remaining !== kind.remaining) { stale.push(root); }
+			if (found.root !== root || found.remaining !== kind.remaining || !(await directoryExists(root))) { stale.push(root); }
 		}
 		await Promise.all(stale.map(stop));
-		await Promise.all(vscode.workspace.textDocuments.map(document => open(document).catch(error => reportError(error, output))));
+		await Promise.all(vscode.workspace.textDocuments.map(document => open(document).catch(error => output.appendLine(String(error)))));
 		await testing.reroot();
 	}
 	let rerootTimer: NodeJS.Timeout | undefined;

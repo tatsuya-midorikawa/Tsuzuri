@@ -76,6 +76,9 @@ export async function run(): Promise<void> {
 		const filter = api.clients.get(root)?.clientOptions.documentSelector?.[0];
 		return typeof filter === 'object' && 'pattern' in filter ? String(filter.pattern) : undefined;
 	};
+	// VS Code sends a document to every client whose selector matches it, by its own matching of the glob.
+	const matches = (root: string, target: vscode.TextDocument) =>
+		vscode.languages.match(api.clients.get(root)!.clientOptions.documentSelector as unknown as vscode.DocumentSelector, target);
 	const loose = vscode.Uri.file(process.env.TSUZURI_TEST_LOOSE!).fsPath;
 	const scratch = path.join(loose, 'scratch');
 	const looseApp = path.join(loose, 'App');
@@ -92,21 +95,28 @@ export async function run(): Promise<void> {
 	assert.equal((await hovers(appDocument, 'main')).length, 1);
 	assert.deepEqual(await outline(appDocument), ['main']);
 	const looseNotes = vscode.Uri.file(path.join(loose, 'Notes.tz'));
-	await opened(looseNotes);
+	const looseNotesDocument = await opened(looseNotes);
 	await waitFor('the error of the file beside the package', () => tsuzuri(looseNotes, 'E1003')[0]);
 	assert.ok(selector(loose)?.endsWith('/loose/*.{tz,tt,tc}'), selector(loose));
+	assert.ok(matches(loose, looseNotesDocument) > 0);
+	assert.equal(matches(loose, appDocument), 0);
 	// The remaining root's server reads App without its manifest; its E1002 in App/Main.tz, sent before Notes.tz, is dropped.
 	assert.deepEqual(tsuzuri(packageMain), []);
 	assert.equal((await hovers(appDocument, 'main')).length, 1);
 	assert.deepEqual(await outline(appDocument), ['main']);
 	// With namespace headers both servers read App alike: one hover and one symbol show that only App's client serves it.
 	const loose2 = vscode.Uri.file(process.env.TSUZURI_TEST_LOOSE2!).fsPath;
-	await hovered('hover beside a package with headers', await opened(vscode.Uri.file(path.join(loose2, 'Notes.tz'))), 'n()');
+	const notes2Document = await opened(vscode.Uri.file(path.join(loose2, 'Notes.tz')));
+	await hovered('hover beside a package with headers', notes2Document, 'n()');
 	assert.ok(selector(loose2)?.endsWith('/loose2/*.{tz,tt,tc}'), selector(loose2));
 	const app2Document = await opened(vscode.Uri.file(path.join(loose2, 'App', 'Main.tz')));
 	await hovered('hover of the package with headers', app2Document, 'main');
-	// A remaining root's client that served App/Main.tz would answer at once, as its server has read App already.
-	await new Promise(resolve => setTimeout(resolve, 1000));
+	// The remaining root's client is never sent App/Main.tz, which only App's client serves. The matching decides this
+	// without timing; the counts below agree with it, but alone they would show a second client only once its server
+	// answers.
+	assert.ok(matches(loose2, notes2Document) > 0);
+	assert.equal(matches(loose2, app2Document), 0);
+	assert.ok(matches(path.join(loose2, 'App'), app2Document) > 0);
 	assert.equal((await hovers(app2Document, 'main')).length, 1);
 	assert.deepEqual(await outline(app2Document), ['main']);
 	console.log('VS Code: a folder with a package gives each file one client, and a remaining root serves only its own files.');
@@ -119,8 +129,31 @@ export async function run(): Promise<void> {
 	await waitFor('the roots after the marker was deleted', () => api.clients.has(scratch) && api.testing.roots.has(scratch)
 		&& selector(loose)?.endsWith('/loose/*.{tz,tt,tc}') ? true : undefined);
 	assert.ok(api.clients.has(looseApp));
+	// A deleted folder with open files in it leaves no client or test root in a directory that does not exist: not for an
+	// open file of a project in it (its root would now be the deleted folder, as the folder above holds App), and not for
+	// a root that is the deleted folder itself.
+	const extra = path.join(loose, 'extra');
+	const demo = path.join(extra, 'demo');
+	const gone = path.join(loose, 'gone');
+	await mkdir(demo, { recursive: true });
+	await mkdir(gone);
+	await writeFile(path.join(demo, 'Main.tz'), 'def main :: unit -> i32 = \\() -> 0\n');
+	await writeFile(path.join(gone, 'Other.tz'), 'fn o() -> i64 { 1 }\n');
+	await hovered('hover of a project in a folder to delete', await opened(vscode.Uri.file(path.join(demo, 'Main.tz'))), 'main');
+	await hovered('hover of a root to delete', await opened(vscode.Uri.file(path.join(gone, 'Other.tz'))), 'o()');
+	assert.ok(api.clients.has(demo) && api.clients.has(gone));
+	await api.testing.discover(demo);
+	await api.testing.discover(gone);
+	// A short-lived compiler run in the folder (a test discovery) can hold it on Windows for a moment; a language server
+	// would hold it for good, which the retries do not outlast.
+	await rm(extra, { recursive: true, maxRetries: 10, retryDelay: 100 });
+	await rm(gone, { recursive: true, maxRetries: 10, retryDelay: 100 });
+	await waitFor('the roots after folders with open files were deleted', () => !api.clients.has(demo) && !api.clients.has(gone)
+		&& !api.testing.roots.has(demo) && !api.testing.roots.has(gone) ? true : undefined);
+	assert.ok(!api.clients.has(extra), 'no client in the deleted folder');
+	assert.ok(!api.testing.roots.has(extra), 'no test root in the deleted folder');
 	const restored = api.clients.get(loose);
-	await rm(looseApp, { recursive: true });
+	await rm(looseApp, { recursive: true, maxRetries: 10, retryDelay: 100 });
 	await waitFor('the roots after the package folder was deleted', () => !api.clients.has(scratch) && !api.clients.has(looseApp)
 		&& !api.testing.roots.has(scratch) && !api.testing.roots.has(looseApp)
 		&& api.clients.get(loose) !== restored && selector(loose)?.endsWith('/loose/**/*.{tz,tt,tc}') ? true : undefined);

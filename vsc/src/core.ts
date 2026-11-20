@@ -81,6 +81,14 @@ export const diskFileSystem: RootFileSystem = {
 };
 
 /**
+ * Whether `directory` is a directory. One that cannot be checked for a reason other than its absence counts as one, so
+ * that only a deleted or moved folder loses its project (G40 D4).
+ */
+export async function directoryExists(directory: string): Promise<boolean> {
+	try { return (await stat(directory)).isDirectory(); } catch (error) { return !missing(error); }
+}
+
+/**
  * What a directory holds, as module discovery reads it from there: whether it contains a project marker or something
  * that makes the discovery fail, whether it is a knowledge graph's directory, and otherwise its counts.
  */

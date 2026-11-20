@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { realpath, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { excludedPattern, exists, jsonLines, lldbLaunch, plainPath, rootSpelling, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from './core';
+import { directoryExists, excludedPattern, exists, jsonLines, lldbLaunch, plainPath, rootSpelling, supportsDebug, testDebugArguments, testRunnerFiles, testRunnerPath } from './core';
 import { runCompiler } from './toolchain';
 import { directoryRoot, formatters, projectFor, reportError, RunStart } from './workflow';
 
@@ -104,7 +104,10 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		}
 	}
 
-	/** The roots of the workspace folders and of the open documents. */
+	/**
+	 * The roots of the workspace folders and of the open documents, except a document left open in a folder that was
+	 * deleted or moved, whose root would be a directory that does not exist (G40 D4).
+	 */
 	async function usedRoots(): Promise<Set<string>> {
 		const used = new Set<string>();
 		for (const folder of vscode.workspace.workspaceFolders ?? []) {
@@ -117,7 +120,10 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 			}
 		}
 		for (const document of vscode.workspace.textDocuments) {
-			if (document.languageId === 'tsuzuri' && document.uri.scheme === 'file') { used.add(await projectFor(document.uri)); }
+			if (document.languageId === 'tsuzuri' && document.uri.scheme === 'file') {
+				const root = await projectFor(document.uri);
+				if (await directoryExists(root)) { used.add(root); }
+			}
 		}
 		return used;
 	}
@@ -136,14 +142,17 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 
 	/**
 	 * Rebuilds the roots after files below a workspace folder were created or deleted (G40 D4): a root that neither a
-	 * workspace folder nor an open document gives, and that is no longer the root of the files directly in it, goes, and
-	 * the new roots come. The extension calls it after it clears the cache of roots, so no root is found from old files.
+	 * workspace folder nor an open document gives, and that is no longer the root of the files directly in it or whose
+	 * folder was deleted or moved, goes, and the new roots come, both at once. The extension calls it after it clears the
+	 * cache of roots, so no root is found from old files.
 	 */
 	async function reroot() {
 		const used = await usedRoots();
+		const stale: string[] = [];
 		for (const root of [...roots.keys()]) {
-			if (!used.has(root) && (await directoryRoot(root)).root !== root) { removeProject(root); }
+			if (!used.has(root) && (!(await directoryExists(root)) || (await directoryRoot(root)).root !== root)) { stale.push(root); }
 		}
+		stale.forEach(removeProject);
 		for (const root of used) { addProject(root); }
 	}
 
