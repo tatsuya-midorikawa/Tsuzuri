@@ -90,6 +90,15 @@ export function affectsRoot(root: string, file: string, platform: string = proce
 }
 
 /**
+ * Whether the language server of `root` hears of a watched-file event of `file` (G39): every event of a source or manifest,
+ * which the source watcher reports as it did before, and of the other paths, which only the delete watcher of `**` reports,
+ * those that `affectsRoot` keeps. Module discovery reads the sources under a `target/tz/` outside a knowledge graph.
+ */
+export function notifiesServer(root: string, file: string, platform: string = process.platform): boolean {
+	return /\.(?:tz|tt|tc|toml)$/.test(file) || affectsRoot(root, file, platform);
+}
+
+/**
  * The zero-based line and UTF-16 character of the compiler's byte `offset` into the UTF-8 file `bytes`, in the text that
  * VS Code shows: without the byte order mark, which the offsets count, and with CRLF, CR, and LF each ending a line.
  */

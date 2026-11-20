@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
-import { affectsRoot, assertSupportedHost, sourcePattern, supportsDebug } from './core';
+import { assertSupportedHost, notifiesServer, sourcePattern, supportsDebug } from './core';
 import { registerEditor } from './editor';
 import { registerTesting } from './testing';
 import { toolchain } from './toolchain';
@@ -35,8 +35,9 @@ export async function activate(context: vscode.ExtensionContext) {
 		const start = (async () => {
 			const tools = await toolchain(context, document.uri);
 			// VS Code reports the files of a deleted or moved folder as one event of the folder, which the source pattern
-			// does not match; the second watcher tells the server of it (G39). The server reads neither the names that
-			// start with '.' nor target/tz/, which the extension's runs rewrite.
+			// does not match; the second watcher tells the server of it (G39). Of its events, those under a name that starts
+			// with '.' (module discovery reads none) or under target/tz/ (where each build rewrites the knowledge graph) are not
+			// sent; every event of the source watcher is, as before.
 			const fileEvents = [
 				vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{tz,tt,tc,toml}')),
 				vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**'), true, true, false),
@@ -50,7 +51,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				synchronize: { fileEvents }, outputChannel: output,
 				middleware: {
 					workspace: {
-						didChangeWatchedFile: (event, next) => affectsRoot(root, vscode.Uri.parse(event.uri).fsPath) ? next(event) : Promise.resolve(),
+						didChangeWatchedFile: (event, next) => notifiesServer(root, vscode.Uri.parse(event.uri).fsPath) ? next(event) : Promise.resolve(),
 					},
 				},
 			});
