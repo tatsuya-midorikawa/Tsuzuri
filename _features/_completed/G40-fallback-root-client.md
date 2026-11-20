@@ -7,7 +7,7 @@
 | 規模 | M（拡張だけ。根の決め方、残る場合の selector と診断の絞り込み、印の変化への追従、統合テスト） |
 | 依存 | G14, G16（すべて done）, (G39) |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（段 1〜5。2026-11-20。テストの根は、作り直した集合になく、根として成り立たなくなったものだけを外す。「実装と検証」を参照） |
 | 起票 | 2026-11-19（G39 の調査で見つけ、利用者の依頼で別のチケットにした。HEAD `af644794`（拡張 0.1.7）で、VS Code 1.103.2 に拡張を入れ、言語サーバーの各プロセスが受け取ったメッセージを記録する compiler の shim（`tsuzuri.compilerPath`）で再現した） |
 | 承認 | D1 は 2026-11-19 に利用者が承認した（「承認が必要なものについては、あなたが考えるベストな方法であれば全て承認します」。D1 は起票者が拡張だけの案のうち最善と判断した案のまま）。D1 は印のないファイルの根の決め方を変える。言語と CLI は変えないが、そうしたファイルのモジュール名と、ディレクトリをまたぐ参照の解決が変わる。D2〜D6 は既定案 |
 | 改善する劣位 | 不具合: (1) フォルダーの根のクライアントが、中のパッケージのファイルにマニフェストを読まない解析で偽のエラーを出し、直しても消えない。(2) 同じ診断・ホバー・シンボル・補完が 2 つずつ出る。(3) 根の外の `.tz`（メモ、試し書き）のホバー・定義・シンボル・色分けが、中のパッケージの解析の失敗のせいで何も返さない。(4) このリポジトリでは根のクライアントの読み込みが毎回 `E1017` で失敗し、それがディレクトリの URI に付く。テストの発見も、ビルドできないフォルダーの根を対象にする（タスクがワークスペースのフォルダーの根にしか出ないことは対象外） |
@@ -260,3 +260,55 @@ VS Code はフォルダーの削除・移動を親の 1 件にまとめる（`vs
   新しい規則で根として成り立たなくなったクライアント（例: `ws/app` の印を消した後の `ws/app` と `ws/scratch`）は、開いている文書がなくても止める。
 - **D5: 言語サーバーとモジュールの発見は変えない**（既定案）。
 - **D6: プロジェクトの中のプロジェクトは今のままにする**（既定案）。再現 (c) で外側のサーバーは依存の未保存のバッファを使い、(c2) の外側のエラーは CLI と同じなので、どちらも絞ると正しい情報を失う。
+
+## 実装と検証（2026-11-20）
+
+段 1〜5 をすべて実装した（D1〜D6）。拡張だけを変え、言語サーバー（`src/lsp.rs`）とモジュールの発見（`src/driver.rs`）は変えていない（D5）。基準は `origin/main` の `295ffcb4`（拡張 0.1.8。G39 Phase 1 を含む）。
+
+- **段 1（根の決め方）**: `vsc/src/core.ts` に `ProjectRoots`（`find`・`findForDirectory`・`clear`・`changed`）を足し、`projectRoot` はその薄い包みにした（既定は cache を共有しない新しい `ProjectRoots`）。印のある最も近いディレクトリ（今と同じ）がなければ、ワークスペースのフォルダーまでで下に印を含まない最も上のディレクトリ、ファイルのディレクトリ自体が含むならそのディレクトリを残る根（`remaining: true`）にする。ワークスペースのフォルダーに入らないファイルは、印がなければファイルのディレクトリで、それが含むなら残る根。
+  走査（D3）は幅優先で、`collect_sources` と同じく `.` で始まる名前と、`.tsuzuri-kg`（通常のファイル）を持つ知識グラフのディレクトリを辿らない。印、根を含めて 1024 個を超えるディレクトリ、深さ 16 以上のディレクトリ、4096 個を超えるソース、ソースかディレクトリか壊れたシンボリックリンクで「含む」として止める。結果は調べた根ごとに `Promise` で cache し、上のディレクトリを調べるときは下の結果（ディレクトリ数・ソース数・深さ）を使い回す。ファイル システムは `RootFileSystem` で差し替えられる。
+  `directlyIn`（根の直下か）と `sourceSelector`（`<根>/**/*.{tz,tt,tc}` か `<根>/*.{tz,tt,tc}`。今の escape をそのまま移した）も `core.ts` に置いた。
+- **段 2（残る根の selector と診断の絞り込み）**: `vsc/src/extension.ts` の `open` は、残る根に `sourceSelector(root, true)` と `middleware.handleDiagnostics`（直下でない URI を空にする）・`middleware.provideWorkspaceSymbols`（直下のものだけを残す）を付ける。直下かどうかは根と、その `realpath` の両方で比べる（サーバーが正規化したパスで送るときのため）。
+- **段 3（印の変化への追従）**: `vsc/src/workflow.ts` の `projectFor` は共有の `projectRoots` を使い、`projectRootFor`（根・残る根か・`tsuzuri.projectPath` 由来か）と `directoryRoot`（直下の仮のファイルの根）を足した。ワークスペースのフォルダーの変化で cache を捨てる購読は `registerWorkflow` に置き、testing の購読より先に動くようにした。
+  `extension.ts` は文字列の glob `**` の作成・削除の watcher で cache を捨て（`ProjectRoots.changed`）、最後の事象から 300 ms 後に `reroot` を動かす。`reroot` は cache を捨て、起動中のクライアントを待ってから、根ごとに `directoryRoot` の根か残る根かが変わったクライアントを止め（`tsuzuri.projectPath` の根は動かないので調べない）、開いている文書ごとに `open` を呼び、最後に `testing.reroot` でテストの根を作り直す。`reroot` と **Restart Language Server** は 1 本の列で順に動かす（再起動も cache を捨てる）。
+  `vsc/src/testing.ts` は `refreshRoots` の規則を `usedRoots` に分け、`reroot` を足した。`selection` は走査の途中で外れた根に何も選ばない。
+- **段 4（統合テスト）**: `vsc/scripts/test-extension.mjs` にワークスペースのフォルダー `loose`・`loose2` を足し、`vsc/src/test/extension.test.ts` の `api.clients.size === 2` の検査の後に、手順 4 の 1〜3、`loose2` の変種、段 3 の `<loose>/Main.tz` の作成・削除と `App/` の削除を置いた。最後に `showTextDocument(document)` で `Main.tz` をアクティブに戻す。selector は `clientOptions.documentSelector` の pattern でも確かめる。
+- **段 5（文書）**: `vsc/README.md`（設定の表と、複数のプロジェクトの段落の後の 3 段落）、`vsc/Development.md`（設定の表と root の段落）、`vsc/CHANGELOG.md`（新しい `## Unreleased`）、`docs/architecture.md`（言語サーバーの節の VS Code 拡張の段落の後に 1 段落）、`_tsuzuri/language-reference/compiler/usage.md`（「VS Code 拡張」に 1 段落）。`docs/language.md`・`README.md` は言語と CLI が変わらないので変えていない。
+
+### 回帰テストと修正前の失敗
+
+- 単体テスト（`vsc/src/test/core.test.ts`）: `project root respects nested projects and source subdirectories` に `scratch/Try.tz` の検査を足し、修正前のコードで `<root>` が返って落ちることを確かめた（`AssertionError ... + '<tmp>/tsuzuri-project-hvxwdl' - '<tmp>/tsuzuri-project-hvxwdl/scratch'`）。同じテストに残る根、`app/lib/Tsuzuri.toml`、ワークスペースなし、存在しないディレクトリ、パッケージのないフォルダー（修正前も通る）、シンボリックリンク（win32 以外）を足した。新しいテスト `a folder that module discovery cannot read within its limits counts as one that holds another project`（1024／1025 個のディレクトリ、深さ 15／16、リンクと通常でないソース、`.git` と知識グラフ）、`project roots read each directory once until a change that module discovery can see`（2 回目に `list` を呼ばない、cache を捨てると足した印が見える、ソース 4096／4097 個を両方向、`.` で始まる名前と `target/tz/` の事象は cache を残す）、`a remaining root serves only the files directly in it` は、修正前は API がないので型検査で落ちる。
+- 統合テスト: 修正前の `vsc/src/{core,extension,workflow,testing}.ts` と `core.test.ts` に戻して `npm test` を動かし、`Error: Timed out: hover of a file outside the package` で落ちることを確かめた（`target/scratch/g40/base-integration.log`）。
+- `loose2` の検査の効き目: 残る根の selector を `**` のままにする変異（`sourceSelector(root, false)`）を入れ、selector の明示の検査を外して動かすと、`loose2/App/Main.tz` のホバーが `2 !== 1` で落ちた。`loose` 側の検査は、ここでもホバー 1・`E1002` なしで通った（チケットの予想どおり）。
+
+### 実行したコマンドと結果
+
+- T0: `cargo fmt --all -- --check`（差分なし）、`cargo clippy --all-targets -- -D warnings`（警告なし）、`cd vsc && npx tsc --noEmit && npx eslint src`（エラーなし）、`npm run test:unit`（23 件すべて通過。基準の 20 件に 3 件を足し、既存の 1 件に検査を足した）。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked`（3,351 件すべて通過、4 件 skip）。Rust のコードは変えていない。
+- T2: `cd vsc && node ../scripts/slot.mjs -- npm test`（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す。`All Tsuzuri VS Code integration checks passed.`。G39 Phase 1 までの検査もすべて通過）。統合テストのコンパイラは同梱の `vsc/toolchain`（0.1.8 の同梱物の写し。言語サーバーを変えないので作り直していない）。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/usage.md`（1 ページ、87 リンク、5 例、4 回の実行、1 テストプロジェクト）。`src/runtime/` は変えていないので `check-runtime-includes.sh` は動かしていない。
+- 計測（受け入れ条件の走査）: このリポジトリの worktree で、`std/Array.tz` の根は `std`（`readdir` 22 回）、`tests/conformance/ABI/…` は `tests/conformance/ABI`（17 回）、`examples/point/Main.tz` は印で `examples/point`（0 回）。`vsc/toolchain` の直下のファイルは 1024 個のディレクトリを数えて打ち切り（`readdir` 1025 回、約 0.5 秒）、残る根になる。どれも 2 回目の呼び出しは `readdir` 0 回（`target/scratch/g40/measure.cjs`）。
+- 計測（場面 a・a2・b・c・c2・d・e）: `target/scratch/g40-pb08/g40/e2e/` の harness を `target/scratch/g40/e2e/` に写し、拡張をこの worktree の `vsc/`（`dist` を作り直した）、場面 b のリポジトリをこの worktree に向けて動かした（main の作業ツリーには書かない）。
+  - (a): クライアントは `ws/scratch` と `ws/app`。偽の `E1002` も重複もなく、`app/Main.tz` に入れた本物のエラーは 1 件で、直すと消える。`scratch/Try.tz` のホバー・定義・参照・シンボル・色分けが返る（ホバーは `Scratch::Try.t`。モジュール名が `Ws::scratch::Try` から変わった）。テストの根は `ws/scratch`・`ws/app` で、`ws` はない。タスクは今と同じく `ws` の 6 つ（対象外）。
+  - (a2): `app/Main.tz` のホバー 1、シンボル 1（`[main]`）。修正前は 2 と `[main, main]`。補完の重複ラベル 61 件は、クライアントが 1 つの場面 d と同じ数（拡張の静的な補完とサーバーの重なりで、G40 の重複ではない）。
+  - (b): クライアントは `examples/point`・`std`・`tests/conformance/ABI` で、リポジトリの根のクライアントもテストの根もない。ディレクトリの URI の `E1017` は 0 件。`std` の解析は `E1011` を 50 件、ABI の fixture は 11 件出す（予想どおり）。
+  - (c)・(c2)・(d)・(e): 言語サーバーの診断（source `tsuzuri`）、クライアントと selector、プロバイダーの結果、テストの根、タスクは元の `runs/*/events.log` と同じ。違いは、元の記録（拡張 0.1.7）にあったテストの発見の写し（source `Tsuzuri`）が G39 Phase 1 でなくなったことと、記録の時点のクライアントの状態（起動中か動作中か）だけ。
+  - 最初の一巡では、7 場面のうち a・a2・c で、場面が終わり拡張ホストが終了した後も VS Code の本体が窓なしで残った（watchdog が 60 秒後に止めた。記録はそれぞれ最後まで取れている）。同時に他のチケットの重い作業が動いていた。修正前の拡張で c を、この拡張で c と a をもう一度動かすと、どれも正常に終了した。再現しないので、拡張の変更によるものではないと判断した。
+
+### チケットから外れた判断
+
+- **テストの根の外し方（仕様 5）**: 仕様は「作り直した集合（ワークスペースのフォルダーと開いている文書の根）にない根を外す」だが、集合になく、かつ直下の仮のファイルの根がその根でなくなった根だけを外した（クライアントの D4 と同じ規則）。理由: G39 Phase 1 の統合テストは `packages/app` を開いている文書なしに `api.testing.discover` で根にし、`packages/lib/Extra` を消した後もその根を走らせる。仕様どおりだとその削除の決め直しで根が消えて落ちる。実際の使い方でも、文書を閉じたプロジェクトの根が、無関係なファイルの作成（テストの実行が初めて作る `target/` を含む）で Testing ビューから消える。チケットの統合テストの期待（`<loose>/scratch` と `<loose>/App` の根が消える）はこの規則で満たし、使っていない根のクライアントを止めない対象外とも揃う。
+- **watcher が見ない事象**: 設計は「名前に関わらず」すべての作成・削除で cache を捨てるとしているが、ワークスペースのフォルダーからの相対パスに `.` で始まる部分があるものと `target/tz/` の下（知識グラフ）は見ない（G39 Phase 1 の `affectsRoot` を使った）。走査もモジュールの発見も読まない名前で、`.git`（git の操作ごと）・`.tsuzuri/`（ビルドの出力）・知識グラフ（`check`・`build`・`run`・`test` ごと）のたびに決め直さないため。そのため、根が `.` で始まるディレクトリ自体になるファイル（`ws/.notes/a.tz` など）は、その中の変化では決め直さない（**Restart Language Server** で決め直す）。
+- **「含む」とみなす条件の追加**: 仕様の 4 つ（ディレクトリ数・深さ・ソース数・リンク）に加え、通常のファイルでないソースと、`ENOENT`・`ENOTDIR` 以外で読めないディレクトリも「含む」とみなす。どちらも `collect_sources` が失敗する条件で、仕様 1 の 3 の「モジュールの発見と同じ規則で数える」に従った。消えたディレクトリ（`ENOENT`・`ENOTDIR`）は空として扱う。
+- **ワークスペースのフォルダーの番号**: チケットは `loose` を 3 つ目のフォルダーとしているが、G39 Phase 1 が 3 つ目に `packages` を足したので、`loose` は 4 つ目、`loose2` は 5 つ目にした（`packages` の番号 2 を前提にする G39 の検査は変わらない）。
+- **統合テストの環境**: この worktree には `vsc/resources/codelldb.vsix`（`npm run toolchain` が作る gitignore の同梱物）がなく、最初の実行は Debug の検査で CodeLLDB を入れられずに落ちた。main の作業ツリーの同じファイル（SHA-256 が `vsc/scripts/toolchain.mjs` の `darwin-arm64` の値と一致）を写して動かした。コードの変更ではない。
+
+### 残っている問題
+
+- 残る根（パッケージと同じフォルダーの直下のファイル）は、仕様の「変わること」のとおり、今と同じくパッケージをマニフェストなしで読む。そう読めないパッケージ（ヘッダーのない `Util.tz` など）があると、そのファイルのホバー・定義・シンボルは空で、フォルダーのテストの根も同じ偽の `E1002` で発見に失敗する。
+- タスクはワークスペースのフォルダーごとのまま（対象外）。このリポジトリの `std/` を開くと `E1011` が 50 件出る（対象外）。
+- macOS の VS Code は保存を作成として知らせることがあり（`vsc/src/workflow.ts` の G39 の注記）、そのときも 300 ms 後に根を決め直す。cache を捨てるので次の走査は読み直すが、このリポジトリでも `std` で約 20 ms、上限に当たるフォルダーで約 0.5 秒。
+- `vscode.yml`（`ci:full`、5 環境）はこの作業では動かしていない（push しないため）。Windows ではシンボリックリンクの単体テストを飛ばし、論理は差し替えた走査のテストで確かめている。
+
+### 変更したファイル
+
+`vsc/src/core.ts`、`vsc/src/extension.ts`、`vsc/src/workflow.ts`、`vsc/src/testing.ts`、`vsc/src/test/core.test.ts`、`vsc/src/test/extension.test.ts`、`vsc/scripts/test-extension.mjs`、`vsc/README.md`、`vsc/Development.md`、`vsc/CHANGELOG.md`、`docs/architecture.md`、`_tsuzuri/language-reference/compiler/usage.md`、`_features/README.md`、`_features/G39-stale-editor-diagnostics.md`（リンクだけ）、このチケット。
