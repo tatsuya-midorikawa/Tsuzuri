@@ -94,6 +94,19 @@ export async function directoryExists(directory: string): Promise<boolean> {
  */
 type Contents = { holds: true; graph: boolean } | { holds: false; graph: boolean; directories: number; sources: number; depth: number };
 
+/**
+ * What `ProjectRoots` keeps until `clear`: what each directory that a lookup asked about holds, and the entries of each
+ * directory that a scan listed, so that a later scan of a directory below or beside it lists none of them again. Both
+ * change only with a creation or deletion below the workspace folder, which clears them (`changed`), except for names
+ * that a scan does not read or skips: those that start with `.`, and knowledge graphs under `target/tz/`.
+ */
+interface RootCache {
+	contents: Map<string, Promise<Contents>>;
+	listings: Map<string, Promise<DirectoryEntry[]>>;
+}
+
+const emptyCache = (): RootCache => ({ contents: new Map(), listings: new Map() });
+
 /** The root of a file (G40 D1), and whether it is a remaining root: one that holds another project below it. */
 export interface ProjectRoot {
 	root: string;
@@ -101,15 +114,16 @@ export interface ProjectRoot {
 }
 
 /**
- * Finds the project roots of files (G40 D1) and keeps what each directory holds until `clear`, so that a file's root
- * is read from the disk once. A change of the files below a workspace folder clears it (`changed`).
+ * Finds the project roots of files (G40 D1) and keeps what each directory holds and each listed directory's entries
+ * until `clear` (`RootCache`), so that each directory is read from the disk once. A change of the files below a
+ * workspace folder clears them (`changed`).
  */
 export class ProjectRoots {
-	private contents = new Map<string, Promise<Contents>>();
+	private cache = emptyCache();
 
 	constructor(private readonly files: RootFileSystem = diskFileSystem) {}
 
-	clear() { this.contents = new Map(); }
+	clear() { this.cache = emptyCache(); }
 
 	/** Clears the cache when a file or directory created or deleted at `file` below `folder` can change a root. */
 	changed(folder: string, file: string, platform: string = process.platform): boolean {
@@ -130,7 +144,7 @@ export class ProjectRoots {
 	 * root, or else `directory`.
 	 */
 	async findForDirectory(directory: string, workspaceRoot?: string): Promise<ProjectRoot> {
-		const cache = this.contents;
+		const cache = this.cache;
 		for (let current = directory; ; current = path.dirname(current)) {
 			if (await this.files.exists(path.join(current, 'Tsuzuri.toml')) || await this.files.exists(path.join(current, 'Main.tz'))) {
 				return { root: current, remaining: false };
@@ -147,13 +161,22 @@ export class ProjectRoots {
 		return { root, remaining: false };
 	}
 
-	private holds(cache: Map<string, Promise<Contents>>, directory: string): Promise<Contents> {
-		let contents = cache.get(directory);
+	private holds(cache: RootCache, directory: string): Promise<Contents> {
+		let contents = cache.contents.get(directory);
 		if (!contents) {
 			contents = this.scan(cache, directory);
-			cache.set(directory, contents);
+			cache.contents.set(directory, contents);
 		}
 		return contents;
+	}
+
+	private list(cache: RootCache, directory: string): Promise<DirectoryEntry[]> {
+		let listing = cache.listings.get(directory);
+		if (!listing) {
+			listing = this.files.list(directory);
+			cache.listings.set(directory, listing);
+		}
+		return listing;
 	}
 
 	/**
@@ -161,15 +184,16 @@ export class ProjectRoots {
 	 * graphs' directories are not read. It stops at a marker (under any case of its name that the volume finds as the
 	 * marker), and at what makes the discovery fail (too many directories or sources, a directory too deep, a source or
 	 * directory symbolic link, a source that is not a regular file, a directory that cannot be listed), which it counts as
-	 * another project. A subdirectory already read is not read again.
+	 * another project. A subdirectory whose contents are known is not read again, and a directory that an earlier scan
+	 * listed is not listed again.
 	 */
-	private async scan(cache: Map<string, Promise<Contents>>, root: string): Promise<Contents> {
+	private async scan(cache: RootCache, root: string): Promise<Contents> {
 		const queue: [string, number][] = [[root, 0]];
 		let directories = 0, sources = 0, depth = 0, graph = false;
 		for (let index = 0; index < queue.length; index++) {
 			const [directory, level] = queue[index];
 			let entries: DirectoryEntry[];
-			try { entries = await this.files.list(directory); } catch (error) {
+			try { entries = await this.list(cache, directory); } catch (error) {
 				if (!missing(error)) { return { holds: true, graph }; }
 				entries = [];
 			}
@@ -188,7 +212,7 @@ export class ProjectRoots {
 					if (source || entry.target === undefined || entry.target === 'directory') { return { holds: true, graph }; }
 				} else if (entry.kind === 'directory') {
 					const child = path.join(directory, entry.name);
-					const known = cache.get(child);
+					const known = cache.contents.get(child);
 					if (!known) {
 						queue.push([child, level + 1]);
 						continue;

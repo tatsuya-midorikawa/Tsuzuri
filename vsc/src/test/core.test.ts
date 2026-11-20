@@ -308,6 +308,43 @@ test('project roots read each directory once until a change that module discover
 	assert.equal(files.lists, kept);
 });
 
+test('a directory that a scan listed is not listed again for a file opened in it later, and the roots stay the same', async () => {
+	const top = path.resolve('/w');
+	const files = new VirtualFileSystem(top);
+	for (const file of ['a/X.tz', 'b/Y.tz', 'b/c/Z.tz', 'b/c/d/W.tz']) { files.add(path.join(top, file)); }
+	const roots = new ProjectRoots(files);
+	assert.deepEqual(await roots.find(path.join(top, 'a', 'X.tz'), top), { root: top, remaining: false });
+	// The scan of the folder for a/X.tz listed b/ and the directories below it; a file opened there lists none again.
+	const lists = files.lists;
+	for (const file of ['b/Y.tz', 'b/c/Z.tz', 'b/c/d/W.tz']) {
+		assert.deepEqual(await roots.find(path.join(top, file), top), { root: top, remaining: false }, file);
+	}
+	assert.equal(files.lists, lists);
+	// Each file has the root that a lookup of its own finds, in either order of the lookups: with a marker beside the
+	// files, at the limits of the directories and the depth, which the folder reaches and a directory below it does not.
+	const tree = (sources: string[]) => {
+		const files = new VirtualFileSystem(top);
+		for (const file of sources) { files.add(path.join(top, file)); }
+		return files;
+	};
+	const wide = tree(['notes/X.tz', 'many/M.tz', 'many/d0/D.tz', 'b/c/Y.tz']);
+	for (let index = 1; index < 1021; index++) { wide.add(path.join(top, 'many', `d${index}`), 'directory'); }
+	const chain = Array.from({ length: 16 }, (_, index) => `s${index}`);
+	for (const files of [
+		tree(['a/X.tz', 'b/c/Y.tz', 'b/pkg/Main.tz', 'b/pkg/Util.tz', 'b/Z.tz', 'd/e/f/W.tz', 'Top.tz']),
+		wide,
+		tree(['notes/X.tz', 's0/F.tz', `${chain.join('/')}/G.tz`, `${chain.slice(0, 8).join('/')}/H.tz`]),
+	]) {
+		const sources = [...files.directories].flatMap(([directory, entries]) =>
+			entries.filter(entry => entry.kind === 'file').map(entry => path.join(directory, entry.name)));
+		const alone = await Promise.all(sources.map(file => new ProjectRoots(files).find(file, top)));
+		for (const order of [sources, [...sources].reverse()]) {
+			const shared = new ProjectRoots(files);
+			for (const file of order) { assert.deepEqual(await shared.find(file, top), alone[sources.indexOf(file)], file); }
+		}
+	}
+});
+
 test('a marker that the volume finds under another case of its name holds another project', async () => {
 	const top = path.resolve('/w');
 	const app = path.join(top, 'app');
