@@ -21,6 +21,11 @@
 // unknown values that only members of opt-in modules match (`parse`, `Null`), completion
 // after `Json.Value.` and `std::`, and, after the restored text has been analyzed, an edit that starts
 // `Json.parse (` and does not parse: signature help, `Json.` completion and hover there.
+// The scene of the review of Phase 2, in a session of its own (`<workload>.types.json`), so that the transcripts
+// above stay as they were: misspelt types that only the type of an opt-in std module named after the module
+// matches (`Tensr`, `WaitGrop`, `Tickr`, `Rgex`, `Semaphor`, `Contxt`), in signatures, a type annotation, a record
+// literal and a record pattern: the diagnostics, the code actions of the document, source.fixAll.tsuzuri and a
+// quickfix for every diagnostic of Main.tz.
 // `--threads` sets TSUZURI_THREADS (`auto` and `unset` leave it unset). No timing is recorded.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -288,6 +293,52 @@ async function transcript(compiler, project, env) {
   return { project: relative(root, project), files: paths.map(name), log, publishes };
 }
 
+// The review scene of Phase 2: misspelt types in the places that look up a type name (`type_pool`).
+const TYPE_SCENES = [
+  ["signatures", "\ndef type_probe_1 :: ref Tensr -> i64 = \\_x -> 0\ndef type_probe_2 :: ref WaitGrop -> i64 = \\_x -> 0\n" +
+    "def type_probe_3 :: ref Tickr -> i64 = \\_x -> 0\ndef type_probe_4 :: own Maybe<Rgex> -> i64 = \\_x -> 0\n" +
+    "def type_probe_5 :: ref Valu -> i64 = \\_x -> 0\n"],
+  ["bodies", "\ndef type_probe_6 :: own unit -> i64 = \\() -> {\n    let _s = Semaphor { count: 1 };\n    let _t: Tickr = 0;\n    0\n}\n" +
+    "def type_probe_7 :: own i64 -> i64 = \\v -> match v with\n    | Contxt { done = d } -> d\n"],
+];
+
+async function typeTranscript(compiler, project, env) {
+  const lsp = connect(compiler, { env });
+  const log = [];
+  const result = async (label, method, params) => {
+    const response = await lsp.request(method, params).response;
+    log.push([label, response.error ? { error: response.error } : response.result]);
+    return response.result;
+  };
+  await lsp.initialize(project);
+  const paths = userFiles(project);
+  const main = paths[0], mainUri = uriOf(main), original = readFileSync(main, "utf8");
+  const document = { textDocument: { uri: mainUri } };
+  const diagnosticsOf = (uri) => lsp.messages.filter(isDiagnostics(uri)).at(-1)?.params.diagnostics ?? [];
+  let version = 1;
+  lsp.notify("textDocument/didOpen", { textDocument: { uri: mainUri, languageId: "tsuzuri", version, text: original } });
+  await lsp.wait(isDiagnostics(mainUri, version));
+  for (const [label, suffix] of TYPE_SCENES) {
+    const text = original + suffix;
+    version++;
+    lsp.notify("textDocument/didChange", { textDocument: { uri: mainUri, version }, contentChanges: [{ text }] });
+    await lsp.wait(isDiagnostics(mainUri, version));
+    const diagnostics = diagnosticsOf(mainUri);
+    log.push([`${label} diagnostics`, diagnostics]);
+    const origin = { line: 0, character: 0 };
+    await result(`${label} codeAction document`, "textDocument/codeAction", { ...document, range: { start: origin, end: endPosition(text) }, context: { diagnostics, triggerKind: 1 } });
+    await result(`${label} codeAction fixAll`, "textDocument/codeAction", { ...document, range: { start: origin, end: origin }, context: { diagnostics: [], only: ["source.fixAll"], triggerKind: 1 } });
+    for (const [index, diagnostic] of diagnostics.slice(0, 30).entries()) {
+      await result(`${label} codeAction quickfix ${index}`, "textDocument/codeAction", { ...document, range: diagnostic.range, context: { diagnostics: [diagnostic], only: ["quickfix"], triggerKind: 2 } });
+    }
+  }
+  const publishes = lsp.messages.filter((message) => message.method === "textDocument/publishDiagnostics")
+    .map((message) => [relative(project, fileURLToPath(message.params.uri)), message.params.version ?? null, message.params.diagnostics]);
+  const exit = await lsp.shutdown();
+  assert.equal(exit.code, 0, `the server of ${project} exited with ${exit.code ?? exit.signal}:\n${lsp.stderr}`);
+  return { project: relative(root, project), log, publishes };
+}
+
 async function lspTranscripts(compiler, out, { threads, workloads, projects }) {
   const all = readWorkloads(workloads);
   const names = projects ?? Object.keys(all).filter((name) => !name.endsWith("-allstd"));
@@ -299,6 +350,10 @@ async function lspTranscripts(compiler, out, { threads, workloads, projects }) {
     writeFileSync(join(out, `${name}.json`), text + "\n");
     const hints = value.log.filter(([label]) => label.startsWith("inlayHint ")).reduce((sum, [, hints]) => sum + (Array.isArray(hints) ? hints.length : 0), 0);
     console.log(JSON.stringify({ threads, project: name, requests: value.log.length, publishes: value.publishes.length, hints, sha256: sha256(text) }));
+    const types = await typeTranscript(compiler, all[name], environment(threads));
+    const typesText = JSON.stringify(types);
+    writeFileSync(join(out, `${name}.types.json`), typesText + "\n");
+    console.log(JSON.stringify({ threads, project: `${name}.types`, requests: types.log.length, publishes: types.publishes.length, sha256: sha256(typesText) }));
   }
 }
 
