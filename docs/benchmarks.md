@@ -5768,7 +5768,28 @@ strip しない release の `sample` では、捨てる診断を作る frame（`
 - O3(b): `matching_instance` は、instance を（型クラス、頭の外側の型構成子）で索引し、unify し得る instance（同じ構成子のものと、変数・適用・参照・関数などの構成子のない頭のもの）だけを宣言の順に試します。頭の変数は前もって求めておきます。適用・部分適用・匿名共用体・エラーを含む型は、今までどおりすべてを試します。
 - O6: 言語サーバーも、ソース（未保存のバッファを含む）が名前を書いた opt-in の std モジュールだけを読みます（再解析と、クイックフィックス・リネームの検証の再解析）。名前を書いていないモジュールの名前の補完、メンバーの補完、シグネチャヘルプ、未解決の名前の候補と修正案は、すべての std を読んでいたときと同じ答えを、process に 1 回だけ作る索引から返します。
 
-比べる binary は、Phase 1 と O3(b) の release（`target/perf/PB08/tsuzuri-p1`）と、それに O6 を足した release（`target/perf/PB08/tsuzuri-p2`）です。計測の値は、負荷の低い機械で測った後にここへ足します。
+**結果（Phase 2、2026-11-20）**
+
+- **環境と手順**: Phase 1 と同じ機械・同じ手順で、計測中の load average は 3.6〜7.3。
+- **比べた binary**: before（main `295ffcb4`）と、Phase 2（O3(b) と O6、`40e7f72c` の release）。
+- **生データ**: `target/perf/PB08-p2-before`・`target/perf/PB08-p2-after`。O3(b) だけの比較は `target/perf/PB08-o3b-*`。
+- 中央値（ms）を下に挙げる。全体と最小・最大はチケットの「手順 9: 計測」にある。
+
+| 指標 | before | Phase 2 | Phase 2/before | Phase 1/before |
+| --- | ---: | ---: | ---: | ---: |
+| M1 hello（`TSUZURI_THREADS` 未設定） | 488 | 47 | 0.097 | 0.271 |
+| M1 big | 1,569 | 525 | 0.335 | 0.377 |
+| M1 syn200 | 2,296 | 360 | 0.157 | 0.203 |
+| M1 hello（1 スレッド） | 493 | 68 | 0.138 | 0.390 |
+| M4 `didChange`→`publishDiagnostics` hello（診断が変わらない編集） | 732 | 263 | 0.359 | 0.504 |
+| M4 `didChange`→`publishDiagnostics` big | 1,819 | 724 | 0.398 | 0.439 |
+| M4 big の `codeAction`（文書全体、`triggerKind` 1） | 10,230 | 3,702 | 0.362 | 0.423 |
+| CLI `check` syn200（自動） | 801 | 273 | 0.341 | 0.341 |
+| PX03 `check` 1,000 module | 4,164 | 1,226 | 0.294 | 0.295 |
+
+- **O3(b) だけの効果**（Phase 1 → Phase 1 と O3(b)、M1 未設定）: hello 136 → 111 ms、big 596 → 541 ms、syn200 482 → 439 ms。
+- **CLI**: CLI の `check` と PX03 は O3(b) だけが変わり、どの workload も遅くなっていない。big-allstd の 1 スレッドの `check` の最大 RSS は +0.7 %。
+- **最初の補完の費用**: 読み込んでいない opt-in のモジュールのメンバーの補完（`Json.`）は、process で最初の 1 回だけ、全 std の索引を作るので 127 ms かかる（Phase 1 は 10 ms）。2 回目からは 0.5 ms。
 
 ## 現実的な次の指標
 

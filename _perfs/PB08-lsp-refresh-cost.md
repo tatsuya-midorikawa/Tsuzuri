@@ -8,7 +8,7 @@
 | 規模 | M（Phase 1。Phase 2 は別段で、2026-11-20 の利用者の指示で行う） |
 | 依存 | – |
 | 関連 | G39（言語サーバーの待ち行列と取り消し。Phase 3）, G40, PB04（フロントエンドの並列化）, PB06（常駐状態）, G17（フロントエンドの cache）, D-40（言語サーバーは opt-in の std を常に読む） |
-| 状態 | doing（Phase 1 done・measured 2026-11-20（M1 の目標に届いた）。Phase 2 は 2026-11-20 の利用者の指示で実装した。Phase 2 の計測待ち） |
+| 状態 | doing（Phase 1・2 は実装・計測済み（2026-11-20）。M1 は Phase 2 の後 hello 0.097 倍・big 0.335 倍・syn200 0.157 倍。PR #122 のレビューと G39 との合流が残る） |
 | 起票 | 2026-11-19（G39 の調査で見つけ、利用者の依頼で別のチケットにした。HEAD `af644794` を、strip しない release で `sample` し、別の担当が試作（環境変数で切り替える patch）で効果と出力の同一性を測り直した） |
 | 承認 | Phase 1 は不要（出力を変えない。D5 は言語サーバーが使うスレッドの数の方針で既定案）。Phase 2 の D7（D-40 を変え、名前を書いていない opt-in の std モジュールの補完・ホバー・診断の候補・シグネチャヘルプを別の索引から答える。答えは変えない）は、2026-11-19 に利用者が承認した（「承認が必要なものについては、あなたが考えるベストな方法であれば全て承認します」）。起票者が最善と判断した形のまま承認したので、Phase 1 の後の計測で目標に届かないときだけ行うという条件も含んでいた。この条件は、2026-11-20 の利用者の指示「もし実装に際し複数フェーズにまたがる場合には、その全てのフェーズを完了させること」で外れた。Phase 1 は目標に届いたが、Phase 2 も行う |
 | 手本にする既存実装 | 型の名前の静かな照合: `src/check.rs` の `Names::check_type_path`・`type_choice`（`named_type` の Ok の条件そのもの）。CLI の並列度: `src/driver.rs` の `analyze_cached_core`（`Parallelism::command_line()`）。スレッドの数に依らない出力の検査: `src/lib.rs` の `warnings_and_the_semantic_index_do_not_depend_on_the_thread_count` など、`tests/parallel_frontend.mjs`。計測の形: PB06 の「現状と計測」、GUIDE §14 |
@@ -311,7 +311,7 @@ def main :: own unit -> i32 = \() ->
 - [x] CLI の `check` と PX03 の `check` がどの workload でも遅くならず、値を `docs/benchmarks.md` に記録している。
 - [x] profile で、捨てる診断を作る frame と 2 回目の `call_facts` が消えている。
 - [x] 新しい単体テストと既存のテストが通る（T0・T1、`TSUZURI_THREADS=8 cargo nextest run --locked`、`node tests/lsp_sessions.mjs target/debug/tsuzuri`、`node tests/parallel_frontend.mjs target/release/tsuzuri`）。
-- [ ] Phase 2 は、2026-11-20 の利用者の指示で行った（手順 8 の計測で Phase 1 は目標に届いたが、D7 の「届かないときだけ」という条件は指示で外れた）。Phase 2 の後の値（手順 9）は Phase 1 の後の値と分けて記録している。GUIDE の D-40 と、言語サーバーが全 std を読むと書いた文書を更新している。
+- [x] Phase 2 は、2026-11-20 の利用者の指示で行った（手順 8 の計測で Phase 1 は目標に届いたが、D7 の「届かないときだけ」という条件は指示で外れた）。Phase 2 の後の値（手順 9）は Phase 1 の後の値と分けて記録している。GUIDE の D-40 と、言語サーバーが全 std を読むと書いた文書を更新している。
 
 ## 落とし穴
 
@@ -640,7 +640,7 @@ after の構文解析の CPU が増えたのは、O5 で 8 スレッドに分け
 ### 範囲
 
 2026-11-20 の利用者の指示（「もし実装に際し複数フェーズにまたがる場合には、その全てのフェーズを完了させること」）で、Phase 2 を行った。手順 8 の記録（D1）で決めた O3(b) を O6 より前のコミットで行い、手順 9（O6）を実装した。O2・O8 は D1 の判断のとおり行っていない。
-**手順 9 の計測**（M1〜M4、PX03）は、実装の後に負荷の低い機械で別に行う（実装の間は 3 つのチケットを同じ機械で並行して build しており、load average が 50〜125 だった）。比べる binary は次の 2 つ。
+**手順 9 の計測**（M1〜M4、PX03）は、実装の後に負荷の低い機械で別に行った（実装の間は 3 つのチケットを同じ機械で並行して build しており、load average が 50〜125 だった。結果は下の「手順 9: 計測」）。比べた binary は次の 2 つ。
 
 - `target/perf/PB08/tsuzuri-p1`: Phase 1 と O3(b)（`83e62e1a` の release、SHA-256 `b487bbfa…`）。
 - `target/perf/PB08/tsuzuri-p2`: それに O6 を足したもの。レビュー（下の「レビュー（Phase 2、2026-11-20）」）の直しの後に作り直した（`40e7f72c` の release、SHA-256 `f580ceb24177fcb2f4197b69eec30373bdbebc870ec03476f30d93cbda33acfd`。その後のコミットは文書だけ）。レビューの前は `040f6089` の release（SHA-256 `9e815d41…`）だった。
@@ -825,9 +825,143 @@ O3(b) の頭にエラーを含む instance を `None` の列に入れること�
 
 - プローブ: レビューの `typefix`・`typefix2`・`typefix3`・`typepos` と、このレビューで足した型の位置（型テストのパターン `:? Tensr`、record のパターン、`Maybe<Tickr>` など）・case のパターン・型付きの穴のプローブで、直した `tsuzuri-p2` の言語サーバーの答え（`lsp-small-full.mjs`: 診断、ホバー、インレイヒント、fixAll、診断ごとの quickfix）は before と 1 byte も違わない。`typefix2` はレビューの期待（`out/typefix2-before.json`）と同じ。`monoid_none` だけが、採った変化（指摘 2・3: `W1001`、そのクイックフィックス、fixAll）で before と違う。
 
+### 手順 9: 計測（2026-11-20、Phase 2）
+
+手順 8 と同じ手順・同じ driver・同じ workload で、before（`target/perf/PB08/tsuzuri-before`、main `295ffcb4`）と Phase 2（`target/perf/PB08/tsuzuri-p2`、`40e7f72c` の release、SHA-256 `f580ceb2…`）を chunk ごとに交互に測った。
+
+- **環境**: Apple M3（8 コア）、macOS 27.2.1、Node v24.22.2。ほかのワークツリーの作業は止めていた。
+- **負荷**: 計測中の 1 分の load average は 3.6〜7.3（各 chunk の前後は `target/perf/PB08-p2-chunks/orchestrate.log`）。
+- **生データ**: `target/perf/PB08-p2-before`・`target/perf/PB08-p2-after`（chunk は `target/perf/PB08-p2-chunks/`）。`metrics.mjs report` の表は `target/scratch/pb08/measure/report-phase2.md`。
+- **O3(b) だけの効果**: Phase 1 の `tsuzuri-o5` と O3(b) を足した `tsuzuri-p1` を、hello・big・syn200 の M1・M4 の `publish` で別に交互に測った（`target/perf/PB08-o3b-*`、`report-o3b.md`）。最初の実行では、p1 の hello と big の chunk の間に load average が 36 になったので、その 2 つの chunk（両側）を測り直した（除いた記録は `target/perf/PB08-o3b-chunks/spiked/`）。
+- **binary の版**: 計測の後、Copilot のレビュー（PR #122）の直しで p2 を作り直す。直しは診断の候補の選び方と golden の script だけで、再解析の経路は変えない。
+
+**M1（主）**: 1 回の再解析（ms）。Phase 2 の後、目標（hello 0.29 倍以下、big 0.48 倍以下、syn200 0.23 倍以下）はさらに下回った。hello は 0.097 倍、big は 0.335 倍、syn200 は 0.157 倍。
+
+| workload・variant | before 中央値（最小〜最大） | Phase 2 中央値（最小〜最大） | Phase 2/before | Phase 1/before（手順 8） |
+| --- | ---: | ---: | ---: | ---: |
+| hello `refresh-auto` | 488（484〜510） | 47（46〜59） | 0.097 | 0.271 |
+| hello `refresh-1` | 493（482〜503） | 68（67〜71） | 0.138 | 0.390 |
+| hello `refresh-8` | 405（402〜414） | 54（46〜56） | 0.134 | 0.309 |
+| big `refresh-auto` | 1569（1561〜1591） | 525（501〜561） | 0.335 | 0.377 |
+| big `refresh-1` | 1568（1562〜1576） | 612（606〜670） | 0.391 | 0.471 |
+| big `refresh-8` | 1396（1388〜1403） | 492（488〜496） | 0.353 | 0.420 |
+| syn200 `refresh-auto` | 2296（2287〜2307） | 360（358〜408） | 0.157 | 0.203 |
+| syn200 `refresh-1` | 2301（2289〜2363） | 454（451〜458） | 0.197 | 0.269 |
+| syn200 `refresh-8` | 2110（2103〜2149） | 360（356〜363） | 0.170 | 0.217 |
+| point `refresh-auto` | 485（484〜515） | 47（46〜52） | 0.096 | 0.265 |
+| polymorphism `refresh-auto` | 490（488〜494） | 51（49〜54） | 0.104 | 0.249 |
+| conventions `refresh-auto` | 562（560〜563） | 64（62〜69） | 0.113 | 0.249 |
+| json `refresh-auto` | 693（691〜703） | 158（156〜161） | 0.229 | 0.335 |
+| anonymous_unions `refresh-auto` | 610（608〜616） | 103（102〜106） | 0.170 | 0.275 |
+| list_fsharp `refresh-auto` | 620（618〜623） | 98（97〜102） | 0.158 | 0.294 |
+| in_place_writes `refresh-auto` | 711（709〜718） | 135（135〜159） | 0.190 | 0.294 |
+
+O3(b) だけの効果（`tsuzuri-o5` → `tsuzuri-p1`、`TSUZURI_THREADS` 未設定の M1）は、hello が 136 → 111 ms（0.816 倍）、big が 596 → 541 ms（0.907 倍）、syn200 が 482 → 439 ms（0.910 倍）。1 スレッドと 8 スレッドでは `metrics.mjs` の判定はどれも「改善」で、未設定は広がりが大きく「差なし」と出た。起票時の見積もり（hello で約 −30 ms）に近い。
+
+変更なしの `semanticTokens/full` は、9 つの組のすべてで before と同じ（0.958〜1.071 倍、0.09〜0.65 ms）。手順 8 で syn200 の `tokens-8` に出た 0.5 ms の差は再現せず（0.63 → 0.61 ms）、測り方の揺れだった。
+
+**M4**: `didChange` → `publishDiagnostics`（ms、200 ms の debounce を含む）と big の `codeAction`（ms）。
+
+| workload・variant | before 中央値（最小〜最大） | Phase 2 中央値（最小〜最大） | Phase 2/before | Phase 1/before（手順 8） |
+| --- | ---: | ---: | ---: | ---: |
+| hello `publish-comment-auto` | 732（712〜752） | 263（257〜289） | 0.359 | 0.504 |
+| hello `publish-comment-1` | 726（697〜743） | 306（291〜316） | 0.421 | 0.603 |
+| hello `publish-comment-8` | 646（625〜652） | 284（265〜297） | 0.440 | 0.578 |
+| hello `publish-error-auto` | 419（394〜423） | 261（254〜285） | 0.624 | 0.814 |
+| hello `publish-error-1` | 408（369〜420） | 296（281〜303） | 0.725 | 0.941 |
+| hello `publish-error-8` | 345（314〜375） | 278（271〜283） | 0.805 | 0.985 |
+| big `publish-comment-auto` | 1819（1810〜1829） | 724（678〜743） | 0.398 | 0.439 |
+| big `publish-comment-1` | 1821（1807〜1831） | 831（823〜841） | 0.456 | 0.520 |
+| big `publish-comment-8` | 1639（1624〜1650） | 720（705〜732） | 0.440 | 0.480 |
+| big `publish-error-auto` | 526（521〜529） | 403（374〜414） | 0.766 | 0.853 |
+| big `publish-error-1` | 522（504〜528） | 457（442〜462） | 0.876 | 1.012 |
+| big `publish-error-8` | 414（389〜418） | 405（385〜413） | 0.979 | 1.079 |
+| syn200 `publish-comment-auto` | 2539（2521〜2554） | 605（593〜621） | 0.238 | 0.259 |
+| syn200 `publish-comment-1` | 2551（2536〜2566） | 694（684〜704） | 0.272 | 0.322 |
+| syn200 `publish-comment-8` | 2369（2352〜2424） | 603（587〜616） | 0.255 | 0.280 |
+| syn200 `publish-error-auto` | 645（637〜648） | 464（444〜470） | 0.719 | 0.810 |
+| syn200 `publish-error-1` | 646（621〜663） | 543（525〜547） | 0.841 | 0.987 |
+| syn200 `publish-error-8` | 503（496〜534） | 472（446〜495） | 0.938 | 1.058 |
+
+Phase 1 で 1・8 スレッドの big・syn200 の `publish-error` が +1〜+8 %（「差なし」）だったものも、Phase 2 の後は 0.84〜0.98 倍。
+
+| workload・variant | before 中央値（最小〜最大） | Phase 2 中央値（最小〜最大） | Phase 2/before | Phase 1/before（手順 8） |
+| --- | ---: | ---: | ---: | ---: |
+| big `codeaction-cursor-auto` | 2255（2247〜2284） | 890（881〜957） | 0.395 | 0.464 |
+| big `codeaction-cursor-1` | 2606（2595〜2621） | 1104（1098〜1121） | 0.424 | 0.510 |
+| big `codeaction-cursor-8` | 2266（2261〜2351） | 887（884〜902） | 0.392 | 0.454 |
+| big `codeaction-diagnostic-auto` | 3578（3568〜3633） | 1354（1344〜1362） | 0.378 | 0.443 |
+| big `codeaction-diagnostic-1` | 3943（3933〜3962） | 1682（1677〜1768） | 0.427 | 0.514 |
+| big `codeaction-diagnostic-8` | 3436（3403〜3466） | 1383（1348〜1405） | 0.403 | 0.466 |
+| big `codeaction-quickfix-auto` | 1328（1327〜1338） | 470（465〜479） | 0.354 | 0.411 |
+| big `codeaction-quickfix-1` | 1333（1323〜1361） | 579（576〜583） | 0.435 | 0.520 |
+| big `codeaction-quickfix-8` | 1164（1157〜1169） | 471（465〜477） | 0.405 | 0.476 |
+| big `codeaction-document-auto` | 10230（10198〜10294） | 3702（3681〜3859） | 0.362 | 0.423 |
+| big `codeaction-document-1` | 10614（10600〜10738） | 4603（4580〜4729） | 0.434 | 0.524 |
+| big `codeaction-document-8` | 9253（9221〜9314） | 3709（3698〜3730） | 0.401 | 0.467 |
+| big `codeaction-fixall-auto` | 2258（2247〜2291） | 887（876〜892） | 0.393 | 0.461 |
+| big `codeaction-fixall-1` | 2614（2611〜2637） | 1103（1097〜1123） | 0.422 | 0.513 |
+| big `codeaction-fixall-8` | 2272（2263〜2344） | 893（881〜969） | 0.393 | 0.456 |
+
+**M3**: CLI の `check`（ms）。CLI の経路は O3(b) だけが変わる（O6 は言語サーバーだけ）。どの workload も遅くなっていない。
+
+| workload・variant | before 中央値（最小〜最大） | Phase 2 中央値（最小〜最大） | Phase 2/before | Phase 1/before（手順 8） |
+| --- | ---: | ---: | ---: | ---: |
+| hello `check-1` | 123（121〜131） | 79（77〜135） | 0.642 | 0.643 |
+| hello `check-auto` | 105（99〜125） | 59（58〜64） | 0.566 | 0.563 |
+| hello-allstd `check-1` | 496（490〜514） | 171（163〜195） | 0.345 | 0.407 |
+| hello-allstd `check-auto` | 414（409〜421） | 112（108〜140） | 0.269 | 0.307 |
+| point `check-1` | 122（119〜132） | 77（75〜88） | 0.631 | 0.679 |
+| point `check-auto` | 107（100〜124） | 65（62〜70） | 0.608 | 0.677 |
+| polymorphism `check-1` | 129（125〜172） | 85（78〜113） | 0.657 | 0.742 |
+| polymorphism `check-auto` | 110（101〜115） | 59（54〜66） | 0.536 | 0.573 |
+| conventions `check-1` | 163（159〜173） | 105（94〜111） | 0.643 | 0.610 |
+| conventions `check-auto` | 136（134〜157） | 76（73〜80） | 0.556 | 0.569 |
+| json `check-1` | 347（338〜382） | 227（209〜256） | 0.656 | 0.734 |
+| json `check-auto` | 283（281〜287） | 164（161〜167） | 0.581 | 0.642 |
+| anonymous_unions `check-1` | 277（269〜291） | 150（145〜160） | 0.542 | 0.615 |
+| anonymous_unions `check-auto` | 223（221〜230） | 110（105〜134） | 0.492 | 0.531 |
+| list_fsharp `check-1` | 193（189〜206） | 128（126〜147） | 0.662 | 0.653 |
+| list_fsharp `check-auto` | 158（155〜162） | 107（96〜121） | 0.681 | 0.658 |
+| in_place_writes `check-1` | 272（264〜279） | 169（164〜190） | 0.621 | 0.643 |
+| in_place_writes `check-auto` | 226（222〜234） | 128（123〜152） | 0.566 | 0.564 |
+| big `check-1` | 913（910〜955） | 573（568〜622） | 0.628 | 0.655 |
+| big `check-auto` | 789（783〜837） | 463（461〜468） | 0.587 | 0.611 |
+| big-allstd `check-1` | 1344（1335〜1415） | 636（627〜662） | 0.473 | 0.504 |
+| big-allstd `check-auto` | 1172（1163〜1176） | 499（494〜509） | 0.425 | 0.455 |
+| syn200 `check-1` | 925（898〜962） | 409（370〜526） | 0.442 | 0.426 |
+| syn200 `check-auto` | 801（796〜830） | 273（271〜278） | 0.341 | 0.341 |
+
+`metrics.mjs` の判定で「悪化」は 1 つだけ: big-allstd の 1 スレッドの `check` の最大 RSS が 142.7 MB → 143.7 MB（+0.7 %、広がり 0.9 MB）。O3(b) の instance の索引の分。
+
+**PX03**: `run-build.mjs` の `check`（ms、wall）。12 の workload の中央値は 0.29〜0.56 倍で、遅くなったものはない（代表の行。全体は `report-phase2.md`）。
+
+| workload・variant | before 中央値（最小〜最大） | Phase 2 中央値（最小〜最大） | Phase 2/before | Phase 1/before（手順 8） |
+| --- | ---: | ---: | ---: | ---: |
+| benchmarks/computations | 109（107〜133） | 61（57〜68） | 0.561 | 0.528 |
+| examples/hello | 100（97〜122） | 55（55〜62） | 0.554 | 0.563 |
+| synthetic (200) | 803（800〜834） | 290（275〜335） | 0.362 | 0.346 |
+| synthetic (1000) | 4164（4131〜4183） | 1226（1219〜1316） | 0.294 | 0.295 |
+
+**M2**: `TSUZURI_TIME_PASSES` の 1 回の再解析あたりの段（ms、wall。`profile.mjs`）。
+
+| 段 | hello Phase 1 | hello Phase 2 | big Phase 1 | big Phase 2 | syn200 Phase 1 | syn200 Phase 2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 合計 | 184.1 | 77.6 | 774.5 | 673.5 | 654.3 | 517.0 |
+| `check` | 133.2 | 59.7 | 221.3 | 163.3 | 367.2 | 276.0 |
+| `specialize` | 29.4 | 6.0 | 212.6 | 161.3 | 88.4 | 43.9 |
+| `parse` | 9.6 | 5.9 | 15.0 | 11.7 | 24.1 | 21.5 |
+| `ownership` | 0.2 | 0.1 | 233.0 | 242.0 | 41.8 | 44.3 |
+
+**`std_index` の最初の費用（レビューの指摘 6）**: 新しい server で hello を開き、`Json` を名前に書く最初の編集（`Json.` で終わり、構文解析できない）の後に、補完を 2 回送った（`first-completion.mjs`。o5 と p2 を交互に 9 回ずつ、毎回新しい server）。
+- 1 回目の応答は、o5 が 10.5 ms（9.4〜11.9）、p2 が 126.9 ms（123.8〜132.9）。p2 はこの要求の中で `std_index` を作る。
+- 2 回目の応答は、o5 が 0.4 ms、p2 が 0.5 ms。
+- 補完の後の server の RSS は o5 が 86.6 MB、p2 が 87.2 MB で、`std_index` を作った後の p2 は全 std を読む o5 と同じくらい。作る前の p2 は、レビューの測った約 45 MB。
+- この費用は process に 1 回だけで、読み込んでいない opt-in のモジュールのメンバーの補完かシグネチャヘルプを最初に求めたときにかかる。M1・M4 の要求は作らない。
+
 ### 残っている問題
 
-- 手順 9 の計測（M1〜M4、PX03）と profile は、負荷の低い機械で `tsuzuri-p1` と `tsuzuri-p2`（と before）を比べて別に行い、Phase 1 の値と分けて記録する（最後の受け入れ条件）。syn200 の `tokens-8` の差も、そこでもう一度見る。言語サーバーの `TSUZURI_TIME_PASSES` の累計は、補完やシグネチャヘルプが `std_index` を作った process では、全 std の解析 1 回を含む（M1・M4 の driver の要求は作らない）。
+- 手順 9 は済んだ（上の「手順 9: 計測」）。言語サーバーの `TSUZURI_TIME_PASSES` の累計は、補完やシグネチャヘルプが `std_index` を作った process では、全 std の解析 1 回を含む（M1・M4 の driver の要求は作らない）。
 - 全 std を読むことでだけ変わる検査の結果（特殊化の予算 65,536 を std の特殊化が使う量、instance の重なりの検査の予算 1,024 組）は、名前を書いていない opt-in のモジュールについて、言語サーバーでも `check` と同じになった。golden と単体テストでは違いは出ていない（チケットの「変わってよいのは出どころだけ」の外にあり得る差として記録する）。（レビューで、instance の重なりの例が見つかった。上の「チケットから外れた判断」に、外れた判断として記録した。）
 - G39 の Phase 2・3 との統合: `refresh`（根のディレクトリを取るようになる）の中の読み込みの 1 行、`fix_edit`・`verify_edits`・`fix_all`（レビューの指摘 3）の読み込みの 1 行、`lsp::tests::refresh_loads_the_std_modules_that_check_loads` の `refresh` の呼び出し（引数がディレクトリになる）を合わせる。
-- 既知の費用（レビューの指摘 6。設計は変えない）: 読み込んでいない opt-in のモジュールの最初のメンバーの補完かシグネチャヘルプ（`Json.` や、名前を書いた最初の編集が構文解析できない間の `Json.parse (`）は、その要求の中で `std_index`（最小のプログラムと全 std の解析）を同期に作る。レビューは、load average 50 の機械でその要求に 133〜147 ms、process のメモリが 45 MB から 87 MB になったと測った。process に 1 回だけで、M1・M4 の driver の要求は作らない。手順 9 の計測で、負荷の低い機械の値を測って記録する。
+- 既知の費用（レビューの指摘 6。設計は変えない）: 読み込んでいない opt-in のモジュールの最初のメンバーの補完かシグネチャヘルプ（`Json.` や、名前を書いた最初の編集が構文解析できない間の `Json.parse (`）は、その要求の中で `std_index`（最小のプログラムと全 std の解析）を同期に作る。レビューは、load average 50 の機械でその要求に 133〜147 ms、process のメモリが 45 MB から 87 MB になったと測った。process に 1 回だけで、M1・M4 の driver の要求は作らない。負荷の低い機械の値は「手順 9: 計測」にある（1 回目の補完が 126.9 ms、o5 は 10.5 ms）。
