@@ -295,7 +295,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G38 | [`features.mjs` の `regex`・`unicode` の期待値が、テストを動かす Node の Unicode の版で変わる](_completed/G38-unicode-test-references-pinned.md) | P2 | S | D09 | done（V8 の期待値を std と同じ Unicode 17.0 の Node で `tests/unicode-v8.mjs`・`tests/regex-v8.mjs` に書き出して commit した。どの Node でも suite が通り、版が同じ Node は計算し直して比べる） |
 | G39 | [VS Code で直した警告・エラーが消えない（拡張の `tsuzuri-build` とタスクの problem matcher が出す写しが残る。言語サーバーは前に送った URI を覚えていない）](G39-stale-editor-diagnostics.md) | P1 | L | G07, G12, G14, G16 | doing（Phase 1 done） |
 | G40 | [VS Code でプロジェクトでないフォルダーを開くと、その根のクライアントが中のパッケージのファイルまで受け持つ（消えない偽のエラー、診断・ホバーの重複、このリポジトリでの `E1017`）](G40-fallback-root-client.md) | P2 | M | G14, G16, (G39) | todo |
-| G41 | [VS Code で Tsuzuri 拡張機能が「Mac Silicon プラットフォームの Visual Studio Code では使用できません」となりインストールできない（Marketplace に残った 0.1.0・0.1.1 の `darwin-x64` が `IncludeLatestVersionOnly` に残り続け、クールダウン付きギャラリーで `allTargetPlatforms` が `["darwin-x64"]` だけになる）](G41-marketplace-orphaned-darwin-x64.md) | P1 | S | G14 | todo |
+| G41 | [VS Code で Tsuzuri 拡張機能が「Mac Silicon プラットフォームの Visual Studio Code では使用できません」となりインストールできない（Marketplace に残った 0.1.0・0.1.1 の `darwin-x64` が `IncludeLatestVersionOnly` に残り続け、クールダウン付きギャラリーで `allTargetPlatforms` が `["darwin-x64"]` だけになる）](_completed/G41-marketplace-orphaned-darwin-x64.md) | P1 | S | G14 | done（Marketplace から旧版 `0.1.0`・`0.1.1` を削除して孤立した `darwin-x64` を除去し、`verify-release.mjs` で全公開バージョンの `targetPlatform` と `IncludeLatestVersionOnly` の応答を検査するようにした） |
 
 ### TZ. tzroutine（Go の goroutine に相当する並行処理。第4期）
 

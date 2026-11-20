@@ -8,7 +8,7 @@ import * as path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { hosts, verifyMarketplace, verifyVsix } from './verify-release.mjs';
+import { hosts, queryLatestMarketplace, verifyMarketplace, verifyVsix } from './verify-release.mjs';
 import { platforms, mingwChecksums } from '../../../../scripts/toolchain/bundle.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -54,22 +54,93 @@ test('the verifier has no publish command', () => {
   assert.match(result.stderr, /Usage: verify-release\.mjs/);
 });
 
-test('catalog visibility is not completion until every exact target is validated', () => {
+test('catalog visibility is not completion until every exact target is validated and no orphaned targets remain', async () => {
   const metadata = {
     publisher: { publisherName: 'tmidorikawa' }, extensionName: 'tsuzuri',
-    versions: [...hosts.map(targetPlatform => ({ version, targetPlatform, flags: 1 })), { version: '0.1.1', targetPlatform: 'darwin-x64', flags: 1 }],
+    versions: [
+      ...hosts.map(targetPlatform => ({ version, targetPlatform, flags: 1 })),
+      ...hosts.map(targetPlatform => ({ version: '0.1.6', targetPlatform, flags: 1 })),
+    ],
+  };
+  const latestMetadata = {
+    publisher: { publisherName: 'tmidorikawa' }, extensionName: 'tsuzuri',
+    versions: hosts.map(targetPlatform => ({ version, targetPlatform, flags: 1 })),
   };
   assert.equal(verifyMarketplace(version, metadata).validated, true);
+  assert.equal(verifyMarketplace(version, metadata, latestMetadata).validated, true);
+
   const copy = () => structuredClone(metadata);
+  const copyLatest = () => structuredClone(latestMetadata);
+
   const pending = copy();
   pending.versions[1].flags = 0;
-  assert.throws(() => verifyMarketplace(version, pending), /validation is not complete: linux-arm64/);
+  assert.throws(() => verifyMarketplace(version, pending, latestMetadata), /validation is not complete: linux-arm64/);
+
   const missing = copy();
   missing.versions.splice(0, 1);
-  assert.throws(() => verifyMarketplace(version, missing), /target set mismatch/);
+  assert.throws(() => verifyMarketplace(version, missing, latestMetadata), /target set mismatch/);
+
   const unsupported = copy();
   unsupported.versions.push({ version, targetPlatform: 'darwin-x64', flags: 1 });
-  assert.throws(() => verifyMarketplace(version, unsupported), /target set mismatch/);
+  assert.throws(() => verifyMarketplace(version, unsupported, latestMetadata), /target set mismatch/);
+
+  const orphanedDarwinX64 = copy();
+  orphanedDarwinX64.versions.push({ version: '0.1.1', targetPlatform: 'darwin-x64', flags: 1 });
+  assert.throws(() => verifyMarketplace(version, orphanedDarwinX64, latestMetadata),
+    /unsupported or orphaned targetPlatform entries: 0\.1\.1@darwin-x64/);
+
+  const orphanedUniversal = copy();
+  orphanedUniversal.versions.push({ version: '0.1.0', targetPlatform: undefined, flags: 1 });
+  assert.throws(() => verifyMarketplace(version, orphanedUniversal, latestMetadata),
+    /unsupported or orphaned targetPlatform entries: 0\.1\.0@universal/);
+
+  const latestOrphaned = copyLatest();
+  latestOrphaned.versions.push({ version: '0.1.1', targetPlatform: 'darwin-x64', flags: 1 });
+  assert.throws(() => verifyMarketplace(version, metadata, latestOrphaned),
+    /IncludeLatestVersionOnly has unsupported or orphaned targetPlatform entries: 0\.1\.1@darwin-x64/);
+
+  const latestStaleHost = copyLatest();
+  latestStaleHost.versions[0].version = '0.1.6';
+  assert.throws(() => verifyMarketplace(version, metadata, latestStaleHost),
+    /IncludeLatestVersionOnly returned unexpected version entries: 0\.1\.6@darwin-arm64/);
+
+  const latestMissingHost = copyLatest();
+  latestMissingHost.versions.splice(0, 1);
+  assert.throws(() => verifyMarketplace(version, metadata, latestMissingHost),
+    /IncludeLatestVersionOnly target set mismatch/);
+
+  const latestUnvalidated = copyLatest();
+  latestUnvalidated.versions[0].flags = 0;
+  assert.throws(() => verifyMarketplace(version, metadata, latestUnvalidated),
+    /IncludeLatestVersionOnly validation is not complete: darwin-arm64/);
+
+  let capturedRequest;
+  const deserializedLatest = await queryLatestMarketplace(async (url, options) => {
+    capturedRequest = { url, options, body: JSON.parse(options.body) };
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({
+        results: [{
+          extensions: [{
+            publisher: { publisherName: 'tmidorikawa' },
+            extensionName: 'tsuzuri',
+            versions: hosts.map(targetPlatform => ({ version, targetPlatform, flags: 'validated' })),
+          }],
+        }],
+      }),
+    };
+  });
+  assert.match(capturedRequest.url, /\/_apis\/public\/gallery\/extensionquery$/);
+  assert.equal(capturedRequest.options.method, 'POST');
+  assert.deepEqual(capturedRequest.body.filters[0].criteria, [
+    { filterType: 7, value: 'tmidorikawa.tsuzuri' },
+    { filterType: 8, value: 'Microsoft.VisualStudio.Code' },
+  ]);
+  assert.equal(capturedRequest.body.flags, 0x200 | 0x10 | 0x20);
+  assert.equal(verifyMarketplace(version, metadata, deserializedLatest).validated, true);
+
   const wrongPublisher = copy();
   wrongPublisher.publisher.publisherName = 'other';
   assert.throws(() => verifyMarketplace(version, wrongPublisher), /publisher mismatch/);
