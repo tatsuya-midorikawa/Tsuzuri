@@ -2835,6 +2835,58 @@ fn dependencies_outside_the_root_get_only_load_errors() {
     server.finish();
 }
 
+/// Copilot review of PR #119: a client root that is removed is not analyzed through its parent
+/// directory (which `Project::load_with_overlays` loads for a path that is not a directory): its
+/// diagnostics are cleared, and nothing of the directories beside it is indexed or published.
+#[test]
+fn a_removed_root_is_not_loaded_through_its_parent() {
+    use serde_json::json;
+    let fixture = live::Fixture::new();
+    let main = "fn value() -> i64 { 1 }\n";
+    fixture.write("app/Main.tz", main);
+    fixture.write("app/Helper.tz", "fn offset() -> i64 { true }\n");
+    fixture.write("other/Other.tz", "fn beside_the_root() -> i64 { 2 }\n");
+    let app = fixture.uri("app");
+    let helper = fixture.uri("app/Helper.tz");
+    let mut server = live::Server::start(&app, "utf-16");
+    server.open(&fixture.uri("app/Main.tz"), main);
+    server.settle();
+    assert_eq!(server.codes(&helper), ["E1003"]);
+    server.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": fixture.uri("app/Main.tz")}}),
+    );
+    server.settle();
+    let removed = server.seen.len();
+    fixture.remove("app");
+    // The root has diagnostics on the client, so the change analyzes it again.
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": app, "type": 3}]}),
+    );
+    let symbols = server.request("workspace/symbol", json!({"query": "beside"}));
+    assert_eq!(symbols["result"], json!([]), "{symbols}");
+    assert!(server.codes(&helper).is_empty());
+    // A load error beside the root (a source whose stem has a '.') is not published either.
+    fixture.write("Stray.old.tz", main);
+    server.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": fixture.uri("app/Main.tz"), "type": 3}]}),
+    );
+    server.settle();
+    for message in &server.seen[removed..] {
+        if message["method"] == "textDocument/publishDiagnostics" {
+            let uri = message["params"]["uri"].as_str().unwrap();
+            assert!(
+                uri.starts_with(&format!("{app}/"))
+                    && message["params"]["diagnostics"] == json!([]),
+                "{message}"
+            );
+        }
+    }
+    server.finish();
+}
+
 /// Opens the files of `files` in a fresh root, one message at a time.
 fn live_session(files: &[(&str, &str)]) -> (live::Fixture, live::Server) {
     let fixture = live::Fixture::new();

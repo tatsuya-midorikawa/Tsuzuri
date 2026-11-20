@@ -542,6 +542,14 @@ impl Session {
 
     fn refresh(&mut self, directory: &Path, output: &mut impl Write) -> io::Result<()> {
         self.pending.remove(directory);
+        if !directory.is_dir() {
+            // The root was removed or moved away (a client root is canonicalized once, so a change
+            // under it still names it). `load_with_overlays` would load its parent directory, with
+            // the projects beside it; the root has no project, and its diagnostics are cleared.
+            self.projects.remove(directory);
+            self.good.remove(directory);
+            return self.retire(output, directory, Sent::default());
+        }
         let overlays = self
             .buffers
             .iter()
