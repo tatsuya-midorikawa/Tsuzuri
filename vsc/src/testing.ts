@@ -98,6 +98,9 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 		workflow.track(root);
 		// A discovery that started before the run's saveAll may have read older files.
 		await refreshes.get(root)?.catch(() => undefined);
+		// A root that stopped being one meanwhile (G40 D4), here or while an earlier root ran, has nothing to run;
+		// discovering it would add it back.
+		if (!roots.has(root)) { return; }
 		try { await discover(root, signal); } catch (error) {
 			if (error instanceof DiscoveryError) { await publishDiagnostics(root, error.stderr, start); }
 			throw error;
@@ -165,7 +168,8 @@ export function registerTesting(context: vscode.ExtensionContext, output: vscode
 				timers.delete(root);
 				void (async () => {
 					await refreshes.get(root)?.catch(() => undefined);
-					await discover(root);
+					// A root removed while the earlier discovery ran (G40 D4) is not discovered, which would add it back.
+					if (roots.has(root)) { await discover(root); }
 				})().catch(error => output.appendLine(String(error)));
 			}, 300));
 		} catch (error) { output.appendLine(String(error)); }
