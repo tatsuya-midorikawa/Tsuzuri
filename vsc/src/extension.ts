@@ -3,14 +3,14 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { LanguageClient } from 'vscode-languageclient/node';
-import { assertSupportedHost, directlyIn, directoryExists, sourceSelector, supportsDebug } from './core';
+import { assertSupportedHost, directlyIn, directoryExists, notifiesServer, sourceSelector, supportsDebug } from './core';
 import { registerEditor } from './editor';
 import { registerTesting } from './testing';
 import { toolchain } from './toolchain';
 import { directoryRoot, documentHasProject, missingProject, projectRootFor, projectRoots, registerWorkflow, reportError } from './workflow';
 
 const clients = new Map<string, LanguageClient>();
-const watchers = new Map<string, vscode.FileSystemWatcher>();
+const watchers = new Map<string, vscode.FileSystemWatcher[]>();
 /**
  * How the root of each client was found: a remaining root's client serves only the files directly in it (G40 D2), and
  * a root of `tsuzuri.projectPath` does not move when files change.
@@ -63,8 +63,15 @@ export async function activate(context: vscode.ExtensionContext) {
 			// paths can be canonical: with symbolic links resolved.
 			const real = remaining ? await realpath(root).catch(() => root) : root;
 			const own = (uri: vscode.Uri) => directlyIn(root, uri.fsPath) || directlyIn(real, uri.fsPath);
-			const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{tz,tt,tc,toml}'));
-			watchers.set(root, watcher);
+			// VS Code reports the files of a deleted or moved folder as one event of the folder, which the source pattern
+			// does not match; the second watcher tells the server of it (G39). Of its events, those under a name that starts
+			// with '.' (module discovery reads none) or under target/tz/kg/ (the knowledge graph, which each check, build, run,
+			// and test discovery replaces) are not sent; every event of the source watcher is, as before.
+			const fileEvents = [
+				vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{tz,tt,tc,toml}')),
+				vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**'), true, true, false),
+			];
+			watchers.set(root, fileEvents);
 			// The server takes its root from `initialize`, not from its working directory. Windows does not let a folder that
 			// is a running process's working directory be deleted or moved, so a working directory in the root would keep
 			// the user from deleting or moving a package folder while its server runs (G40 D4).
@@ -73,16 +80,21 @@ export async function activate(context: vscode.ExtensionContext) {
 			}, {
 				documentSelector: [{ language: 'tsuzuri', scheme: 'file', pattern: sourceSelector(root, remaining) }],
 				workspaceFolder: { uri: vscode.Uri.file(root), name: path.basename(root), index: 0 },
-				synchronize: { fileEvents: watcher }, outputChannel: output,
-				middleware: remaining ? {
-					handleDiagnostics: (uri, diagnostics, next) => next(uri, own(uri) ? diagnostics : []),
-					provideWorkspaceSymbols: async (query, token, next) => (await next(query, token))?.filter(symbol => own(symbol.location.uri)),
-				} : {},
+				synchronize: { fileEvents }, outputChannel: output,
+				middleware: {
+					workspace: {
+						didChangeWatchedFile: (event, next) => notifiesServer(root, vscode.Uri.parse(event.uri).fsPath) ? next(event) : Promise.resolve(),
+					},
+					...(remaining ? {
+						handleDiagnostics: (uri: vscode.Uri, diagnostics: vscode.Diagnostic[], next: (uri: vscode.Uri, diagnostics: vscode.Diagnostic[]) => void) => next(uri, own(uri) ? diagnostics : []),
+						provideWorkspaceSymbols: async (query: string, token: vscode.CancellationToken, next: (query: string, token: vscode.CancellationToken) => vscode.ProviderResult<vscode.SymbolInformation[]>) => (await next(query, token))?.filter(symbol => own(symbol.location.uri)),
+					} : {}),
+				},
 			});
 			clients.set(root, client);
 			kinds.set(root, { remaining, configured });
 			try { await client.start(); }
-			catch (error) { clients.delete(root); kinds.delete(root); watchers.delete(root); watcher.dispose(); throw error; }
+			catch (error) { clients.delete(root); kinds.delete(root); watchers.delete(root); fileEvents.forEach(watcher => watcher.dispose()); throw error; }
 		})();
 		pending.set(root, start);
 		return start.finally(() => { pending.delete(root); });
@@ -92,7 +104,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		const client = clients.get(root);
 		clients.delete(root);
 		kinds.delete(root);
-		watchers.get(root)?.dispose();
+		watchers.get(root)?.forEach(watcher => watcher.dispose());
 		watchers.delete(root);
 		await client?.stop().catch(() => undefined);
 	}
@@ -191,7 +203,7 @@ export async function deactivate() {
 	// The maps are emptied before the servers stop, as `stop` does: a client that starts meanwhile (a document opened while
 	// Restart Language Server waits here) stays in them, rather than running with no entry that would stop it.
 	const stopping = [...clients.values()];
-	for (const watcher of watchers.values()) { watcher.dispose(); }
+	for (const watcher of [...watchers.values()].flat()) { watcher.dispose(); }
 	clients.clear();
 	kinds.clear();
 	watchers.clear();

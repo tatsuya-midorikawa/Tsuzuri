@@ -140,6 +140,9 @@ pub struct RecordedEdit {
 pub enum Stop {
     FixedPoint,
     RoundLimit,
+    /// The caller's cancellation check said to stop between two rounds; every text is restored
+    /// and nothing is reported as applied (the language server's code actions, G39).
+    Cancelled,
 }
 
 /// A source that the run changed, with the number of applied fixes that edit it.
@@ -634,10 +637,13 @@ fn verification_failed(project: &Project, diagnostic: &Diagnostic) -> SourceErro
 /// project's current texts. A round that makes the diagnostics worse, apart from the ones that the
 /// next round fixes, restores every text and fails with `E2008`, and so does an end that is worse
 /// than the start. The project's texts are the fixed ones afterwards; no file is written.
+/// `cancelled` is asked before each round's analysis: when it says so, every text is restored and
+/// the report stops with `Stop::Cancelled`.
 pub fn run(
     project: &mut Project,
     options: &Options,
     analyze: &mut dyn FnMut(&Project) -> Analysis,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<Report, SourceError> {
     let mut saved = BTreeMap::new();
     let mut applied: Vec<(FixRecord, Vec<ResolvedEdit>)> = Vec::new();
@@ -655,6 +661,16 @@ pub fn run(
                 ..candidate.record
             }));
             break (Stop::RoundLimit, skipped);
+        }
+        if cancelled() {
+            restore(project, &saved);
+            return Ok(Report {
+                rounds,
+                stop: Stop::Cancelled,
+                records: Vec::new(),
+                files: Vec::new(),
+                last: current,
+            });
         }
         apply(project, &chosen, &mut saved);
         // A fix may name an opt-in std module that the sources did not (`DataChannel`, TZ03).
@@ -1006,6 +1022,7 @@ pub(crate) fn render_json(
         json_string(match report.stop {
             Stop::FixedPoint => "fixed_point",
             Stop::RoundLimit => "round_limit",
+            Stop::Cancelled => "cancelled",
         }),
         report.records.len() - applied,
         report.files.len(),
@@ -1084,7 +1101,12 @@ pub fn execute_with(
         scope,
         only_codes: None,
     };
-    let report = run(project, &options, &mut |project| analyze(project, false))?;
+    let report = run(
+        project,
+        &options,
+        &mut |project| analyze(project, false),
+        &|| false,
+    )?;
     if !arguments.dry_run {
         let updates: Vec<FileUpdate> = report
             .files
@@ -1129,6 +1151,7 @@ pub fn canonical_round(
             only_codes: Some(&["W1007"]),
         },
         &mut |project| analyze(project, true),
+        &|| false,
     )
 }
 
@@ -1137,6 +1160,11 @@ mod tests {
     use super::*;
     use crate::diagnostic::Edit;
     use crate::driver::SourceFile;
+
+    /// A cancellation check that never cancels.
+    fn never() -> bool {
+        false
+    }
 
     fn project(text: &str) -> Project {
         Project::single_main(PathBuf::from("Main.tz"), text.to_owned())
@@ -1440,7 +1468,7 @@ mod tests {
                 x_warnings(project)
             }
         };
-        let error = run(&mut project, &options(Scope::Project), &mut analyze).unwrap_err();
+        let error = run(&mut project, &options(Scope::Project), &mut analyze, &never).unwrap_err();
         assert_eq!(error.diagnostic.kind, Some("fix_verification_failed"));
         assert_eq!(project.sources[0].text, "x");
     }
@@ -1455,7 +1483,7 @@ mod tests {
         };
         let (chosen, _) = collect(&project, &twice(&project), &options(Scope::Project)).unwrap();
         assert_eq!(chosen.len(), 1);
-        let report = run(&mut project, &options(Scope::Project), &mut twice).unwrap();
+        let report = run(&mut project, &options(Scope::Project), &mut twice, &never).unwrap();
         assert_eq!(applied(&report), 1);
         assert_eq!(project.sources[0].text, "y");
     }
@@ -1478,7 +1506,13 @@ mod tests {
     #[test]
     fn candidate_limit_is_e1017() {
         let mut project = project(&"x ".repeat(MAX_CANDIDATES + 1));
-        let error = run(&mut project, &options(Scope::Project), &mut x_warnings).unwrap_err();
+        let error = run(
+            &mut project,
+            &options(Scope::Project),
+            &mut x_warnings,
+            &never,
+        )
+        .unwrap_err();
         assert_eq!(error.diagnostic.code, "E1017");
         assert_eq!(error.diagnostic.kind, Some("fix_candidate_limit"));
     }
@@ -1486,7 +1520,13 @@ mod tests {
     #[test]
     fn rounds_stop_at_the_fixed_point() {
         let mut project = project("x x");
-        let report = run(&mut project, &options(Scope::Project), &mut x_warnings).unwrap();
+        let report = run(
+            &mut project,
+            &options(Scope::Project),
+            &mut x_warnings,
+            &never,
+        )
+        .unwrap();
         assert_eq!((report.rounds, report.stop), (1, Stop::FixedPoint));
         assert_eq!(report.files.len(), 1);
         assert_eq!(report.files[0].fixed, "y y");
@@ -1495,10 +1535,37 @@ mod tests {
         assert!(report.last.warnings.is_empty());
     }
 
+    /// G39: a cancellation between two rounds restores every text and applies nothing.
+    #[test]
+    fn a_cancelled_run_restores_the_texts() {
+        let mut project = project("xx");
+        let rounds = std::cell::Cell::new(0);
+        let report = run(
+            &mut project,
+            &options(Scope::Project),
+            &mut x_warnings,
+            &|| {
+                rounds.set(rounds.get() + 1);
+                rounds.get() > 1
+            },
+        )
+        .unwrap();
+        assert_eq!((report.rounds, report.stop), (1, Stop::Cancelled));
+        assert_eq!(rounds.get(), 2);
+        assert!(report.files.is_empty() && report.records.is_empty());
+        assert_eq!(project.sources[0].text, "xx");
+    }
+
     #[test]
     fn touching_fixes_apply_in_two_rounds() {
         let mut project = project("xx");
-        let report = run(&mut project, &options(Scope::Project), &mut x_warnings).unwrap();
+        let report = run(
+            &mut project,
+            &options(Scope::Project),
+            &mut x_warnings,
+            &never,
+        )
+        .unwrap();
         assert_eq!(report.rounds, 2);
         assert_eq!(report.files[0].fixed, "yy");
         let rounds: Vec<_> = report.records.iter().map(|record| record.status).collect();
@@ -1537,18 +1604,24 @@ mod tests {
     fn a_round_may_bring_to_light_what_the_next_one_fixes() {
         // One error becomes two that the next round fixes, and then none.
         let mut growing = project("a");
-        let report = run(&mut growing, &options(Scope::Project), &mut |project| {
-            renames(project, &[('a', "bb"), ('b', "c")])
-        })
+        let report = run(
+            &mut growing,
+            &options(Scope::Project),
+            &mut |project| renames(project, &[('a', "bb"), ('b', "c")]),
+            &never,
+        )
         .unwrap();
         assert_eq!(report.files[0].fixed, "cc");
         // The two edits of `bb` touch, so they take a round each.
         assert_eq!(report.rounds, 3);
         // Errors that keep growing until the round limit end worse than the start.
         let mut endless = project("a");
-        let error = run(&mut endless, &options(Scope::Project), &mut |project| {
-            renames(project, &[('a', "aa")])
-        })
+        let error = run(
+            &mut endless,
+            &options(Scope::Project),
+            &mut |project| renames(project, &[('a', "aa")]),
+            &never,
+        )
         .unwrap_err();
         assert_eq!(error.diagnostic.kind, Some("fix_verification_failed"));
         assert_eq!(endless.sources[0].text, "a");
@@ -1572,7 +1645,7 @@ mod tests {
                 x_warnings(project)
             }
         };
-        let error = run(&mut project, &options(Scope::Project), &mut analyze).unwrap_err();
+        let error = run(&mut project, &options(Scope::Project), &mut analyze, &never).unwrap_err();
         assert_eq!(error.diagnostic.code, "E2008");
         assert_eq!(error.diagnostic.kind, Some("fix_verification_failed"));
         assert_eq!(
@@ -1611,17 +1684,17 @@ mod tests {
     #[test]
     fn a_round_that_adds_a_warning_aborts_only_when_errors_were_absent() {
         let mut clean = project("x");
-        let error = run(&mut clean, &options(Scope::Project), &mut staged).unwrap_err();
+        let error = run(&mut clean, &options(Scope::Project), &mut staged, &never).unwrap_err();
         assert_eq!(error.diagnostic.kind, Some("fix_verification_failed"));
         assert_eq!(clean.sources[0].text, "x");
         let mut broken = project("e");
-        assert!(run(&mut broken, &options(Scope::Project), &mut staged).is_ok());
+        assert!(run(&mut broken, &options(Scope::Project), &mut staged, &never).is_ok());
     }
 
     #[test]
     fn error_fixes_may_reveal_hidden_warnings() {
         let mut project = project("e");
-        let report = run(&mut project, &options(Scope::Project), &mut staged).unwrap();
+        let report = run(&mut project, &options(Scope::Project), &mut staged, &never).unwrap();
         assert_eq!(report.rounds, 2);
         assert_eq!(project.sources[0].text, "v");
         assert_eq!(applied(&report), 2);
@@ -1645,7 +1718,7 @@ mod tests {
                 )],
             )
         };
-        let report = run(&mut project, &options(Scope::Project), &mut grow).unwrap();
+        let report = run(&mut project, &options(Scope::Project), &mut grow, &never).unwrap();
         assert_eq!((report.rounds, report.stop), (MAX_ROUNDS, Stop::RoundLimit));
         assert_eq!(project.sources[0].text, "x".repeat(MAX_ROUNDS + 1));
         assert_eq!(
@@ -1684,13 +1757,19 @@ mod tests {
                 Vec::new(),
             ),
         };
-        assert!(run(&mut project, &options(Scope::Project), &mut analyze).is_ok());
+        assert!(run(&mut project, &options(Scope::Project), &mut analyze, &never).is_ok());
     }
 
     #[test]
     fn file_scope_skips_other_files() {
         let mut project = two_files("x", "x");
-        let report = run(&mut project, &options(Scope::File(0)), &mut x_warnings).unwrap();
+        let report = run(
+            &mut project,
+            &options(Scope::File(0)),
+            &mut x_warnings,
+            &never,
+        )
+        .unwrap();
         assert_eq!(project.sources[0].text, "y");
         assert_eq!(project.sources[1].text, "x");
         let statuses: Vec<_> = report.records.iter().map(|record| record.status).collect();

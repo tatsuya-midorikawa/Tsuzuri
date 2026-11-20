@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, DirectoryEntry, directlyIn, directoryExists, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, plainPath, projectFile, ProjectRoot, projectRoot, ProjectRoots, reportedByServer, RootFileSystem, rootSpelling, reservedWords, runProcess, sourcePosition, sourceSelector, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
+import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, DirectoryEntry, directlyIn, directoryExists, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, notifiesServer, plainPath, projectFile, ProjectRoot, projectRoot, ProjectRoots, reportedByServer, RootFileSystem, rootSpelling, reservedWords, runProcess, sourcePosition, sourceSelector, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
 
 test('only the five supported hosts enable the IDE, with debugging disabled on Windows ARM64', () => {
 	const supported = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
@@ -541,11 +541,27 @@ test('run results belong to the roots that contain their files, and deletions th
 	for (const file of ['/w/app/.tsuzuri', '/w/app/.tsuzuri/test/runner-1', '/w/app/Geometry/.hidden/Point.tz', '/w/app/target/tz/kg', '/w/app/target/tz/kg/nodes.jsonl', '/w/app/lib/target/tz/kg', '/w/lib/Calc.tz']) {
 		assert.ok(!affectsRoot('/w/app', file, 'linux'), file);
 	}
-	for (const file of ['/w/app/lib/target/tz', '/w/app/lib/target/Calc.tz', '/w/app/lib/tz/kg']) { assert.ok(affectsRoot('/w/app', file, 'linux'), file); }
+	// Outside a knowledge graph, module discovery reads target/tz/ like any other directory: a deleted folder of sources there
+	// changes the project (Copilot review of PR #119).
+	for (const file of ['/w/app/lib/target/tz', '/w/app/lib/target/Calc.tz', '/w/app/lib/tz/kg', '/w/app/target/tz/gen', '/w/app/target/tz/gen/Gen.tz', '/w/app/target/tz/kgx', '/w/app/lib/target/tz/gen']) { assert.ok(affectsRoot('/w/app', file, 'linux'), file); }
 	assert.ok(!affectsRoot('c:\\w\\app', 'C:\\w\\app\\target\\tz\\kg', 'win32'));
 	assert.ok(affectsRoot('c:\\w\\app', 'C:\\w\\app\\Shapes', 'win32'));
 	for (const file of ['Main.tz', 'lib/Calc.tt', 'Show.tc', 'Tsuzuri.toml', 'C:\\w\\Main.tz', '/w/app/Tsuzuri.lock', 'C:\\w\\Tsuzuri.lock', 'Tsuzuri.lock']) { assert.ok(projectFile(file), file); }
 	for (const file of ['README.md', 'Main.tzx', 'main.c', 'Tsuzuri.toml.bak', 'tz', '/w/app/Cargo.lock', '/w/app/MyTsuzuri.lock', 'Tsuzuri.lock.bak']) { assert.ok(!projectFile(file), file); }
+});
+
+test('the language server hears of every source and manifest event, and of the other deletions that can change its root', () => {
+	// The source watcher reported these before G39 added the delete watcher of '**'; module discovery reads sources under
+	// target/tz/ outside a knowledge graph, so they are not filtered.
+	for (const file of ['/w/app/Main.tz', '/w/app/target/tz/gen/Gen.tz', '/w/app/target/tz/kg/Show.tc', '/w/app/.hidden/Point.tt', '/w/app/lib/Tsuzuri.toml', '/w/app/Geometry', '/w/app/target', '/w/app/target/tz/gen', '/w/app/target/tz']) {
+		assert.ok(notifiesServer('/w/app', file, 'linux'), file);
+	}
+	for (const file of ['/w/app/.tsuzuri', '/w/app/.tsuzuri/test/runner-1', '/w/app/target/tz/kg', '/w/app/target/tz/kg/nodes.jsonl', '/w/app/.git']) {
+		assert.ok(!notifiesServer('/w/app', file, 'linux'), file);
+	}
+	assert.ok(notifiesServer('c:\\w\\app', 'C:\\w\\app\\target\\tz\\gen\\Gen.tz', 'win32'));
+	assert.ok(notifiesServer('c:\\w\\app', 'C:\\w\\app\\target\\tz\\gen', 'win32'));
+	assert.ok(!notifiesServer('c:\\w\\app', 'C:\\w\\app\\target\\tz\\kg', 'win32'));
 });
 
 test('compiler paths are spelled as VS Code names the project: no verbatim prefix, under the root as opened', () => {

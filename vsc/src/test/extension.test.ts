@@ -171,6 +171,44 @@ export async function run(): Promise<void> {
 	await waitFor('diagnostics cleared', () => !vscode.languages.getDiagnostics(uri).length ? true : undefined);
 	console.log('VS Code: unsaved Unicode errors, warnings, clearing, multi-root isolation passed.');
 
+	// G39: renaming or deleting a file that is not open clears the language server's diagnostics of its old name, also
+	// when its folder is renamed or deleted (the operations of the Explorer: WorkspaceEdit.renameFile, workspace.fs.delete).
+	const serverCodes = (target: vscode.Uri) => vscode.languages.getDiagnostics(target).filter(item => item.source === 'tsuzuri').map(item => String(item.code));
+	const reported = (description: string, target: vscode.Uri) => waitFor(description, () => serverCodes(target).includes('E1003') ? true : undefined);
+	const serverCleared = (description: string, target: vscode.Uri) => waitFor(description, () => serverCodes(target).length ? undefined : true);
+	const renameFile = async (from: vscode.Uri, to: vscode.Uri) => {
+		const edit = new vscode.WorkspaceEdit();
+		edit.renameFile(from, to);
+		assert.ok(await vscode.workspace.applyEdit(edit));
+	};
+	const stale = vscode.Uri.file(path.join(root, 'Stale.tz'));
+	const renamed = vscode.Uri.file(path.join(root, 'Renamed.tz'));
+	await vscode.workspace.fs.writeFile(stale, Buffer.from('def stale :: i64 = true\n'));
+	await reported('diagnostics of a file that is not open', stale);
+	await renameFile(stale, renamed);
+	await serverCleared('diagnostics of the old name of a renamed file', stale);
+	await reported('diagnostics of the new name of a renamed file', renamed);
+	await vscode.workspace.fs.delete(renamed);
+	await serverCleared('diagnostics of a deleted file', renamed);
+	const folder = vscode.Uri.file(path.join(root, 'Stale'));
+	const moved = vscode.Uri.file(path.join(root, 'Moved'));
+	// VS Code's watcher on Linux can miss a file written right after its folder was created (the folder is not watched
+	// yet), and then the server never hears of it. Writing it again sends a change event once the folder is watched; the
+	// renames and deletions below are what this part checks.
+	for (let attempt = 1; ; attempt++) {
+		await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder, 'Inner.tz'), Buffer.from('def inner :: i64 = true\n'));
+		try {
+			await waitFor('diagnostics of a file in a folder', () => serverCodes(vscode.Uri.joinPath(folder, 'Inner.tz')).includes('E1003') ? true : undefined, 10000);
+			break;
+		} catch (error) { if (attempt === 3) { throw error; } }
+	}
+	await renameFile(folder, moved);
+	await serverCleared('diagnostics of a file in a renamed folder', vscode.Uri.joinPath(folder, 'Inner.tz'));
+	await reported('diagnostics of the file in the folder of the new name', vscode.Uri.joinPath(moved, 'Inner.tz'));
+	await vscode.workspace.fs.delete(moved, { recursive: true });
+	await serverCleared('diagnostics of a file in a deleted folder', vscode.Uri.joinPath(moved, 'Inner.tz'));
+	console.log('VS Code: renaming or deleting a file or folder that is not open clears its language server diagnostics.');
+
 	await replace('def reuse :: own [i64] -> i64\nfn reuse a =\n    let b = a\n    Array.length (ref a) + Array.length (ref b)\n');
 	const hints = await waitFor('implicit copy inlay hint', async () => {
 		const values = await vscode.commands.executeCommand<vscode.InlayHint[]>('vscode.executeInlayHintProvider', uri, new vscode.Range(0, 0, 4, 0));

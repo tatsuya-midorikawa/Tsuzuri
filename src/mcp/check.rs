@@ -202,9 +202,12 @@ pub(crate) fn fix_plan(
         only_codes: None,
     };
     backend.count_analysis();
-    let report = crate::fix::run(&mut project, &options, &mut |project| {
-        crate::fix::analyze_project(project, false)
-    })
+    let report = crate::fix::run(
+        &mut project,
+        &options,
+        &mut |project| crate::fix::analyze_project(project, false),
+        &|| false,
+    )
     .map_err(|error| ToolError(scrub(&error.diagnostic.message, root)))?;
     // The analysis is done: the plan's paths are relative to the root, as `tz_check`'s are (a
     // project at `path` below the root names its files from its own directory).
