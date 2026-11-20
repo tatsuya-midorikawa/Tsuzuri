@@ -391,12 +391,15 @@ export async function run(): Promise<void> {
 		assert.ok(await vscode.workspace.applyEdit(edit));
 	};
 	// An edit of a Tsuzuri document outside the root (other/Main.tz, open since the start) during the run drops a result
-	// that points outside the root.
-	const otherText = other.getText();
-	assert.deepEqual(await changedDuringRun(() => replaceText(other, `${otherText}\n`)), passed);
+	// that points outside the root. VS Code releases a document that an extension opened and never showed about three
+	// minutes after it was opened, and `other` was opened at the start, so take a live document here: on a slow host
+	// the steps above take longer than that, and `other.save()` then fails with "Document has been closed".
+	const liveOther = await vscode.workspace.openTextDocument(other.uri);
+	const otherText = liveOther.getText();
+	assert.deepEqual(await changedDuringRun(() => replaceText(liveOther, `${otherText}\n`)), passed);
 	assert.deepEqual(copies(calc), []);
-	await replaceText(other, otherText);
-	assert.ok(await other.save());
+	await replaceText(liveOther, otherText);
+	assert.ok(await liveOther.save());
 	assert.deepEqual(await runProject(app), passed);
 	assert.deepEqual(server(), []);
 	assert.equal(copies(calc, 'W1001').length, 1);

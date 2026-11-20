@@ -311,7 +311,6 @@ VS Code はフォルダーの削除・移動を親の 1 件にまとめる（`vs
 - `vscode.yml`（`ci:full`、5 環境）はこの作業では動かしていない（push しないため）。Windows ではシンボリックリンクの単体テストを飛ばし、論理は差し替えた走査のテストで確かめている。レビューの指摘 1（Windows で作業ディレクトリのフォルダーを消せない）の修正は、この macOS では修正前の失敗を再現できないので、`ci:full` の Windows の 2 環境の結果で確かめる。
 - 消えたフォルダーの文書がアクティブなときのコマンド（Run・Build・Check・Wasm・Debug Project）とタスクは、上への探索が着いた根（残った上のフォルダーなど）でコンパイラを動かす（Copilot の 3 回目の確認で見つけた。G40 より前はワークスペースのフォルダーで動かしていた）。テストの根もクライアントも作らないので、この対応では変えていない。
 - アクティブなファイルがない Test Project は、消えたワークスペースのフォルダーをテストの根にし、発見は作業ディレクトリがないので失敗する。`tsuzuri.projectPath` がないワークスペースのフォルダーも、`usedRoots` のワークスペースのフォルダーの枝がテストの根にする（Test Project はエラーを出すが、Testing ビューには発見に失敗する根が残る）。どちらも G40 より前と同じで、ほかのプロジェクトのテストは走らせない。
-- 統合テストの G39 Phase 1 の部分は、最初に開いて表示しない `other/Main.tz` を 3 分を超えてから保存するので、混んだ機械では `Document has been closed` で落ちうる（3 回目の対応の検証の 1 回目の実行）。G40 の検査がその前に増えたので、起動から保存までの時間が延びている。保存の前に `other` を開き直すか、エディターに表示しておけば時間に関係なくなるが、この対応では変えていない。
 - テストの根の外し方（仕様 5 からの逸脱）は、2026-11-20 に実装の規則を採り、仕様 5 をそれに合わせて改めた（利用者の「承認が必要なものについては、あなたが考えるベストな方法であれば全て承認します」（2026-11-19）による委任で、起票者が判断した。字面どおりの規則は G39 Phase 1 の統合テストを壊し、文書を閉じたプロジェクトを Testing ビューから消す）。
 
 ### レビューの指摘と対応（2026-11-20）
@@ -469,7 +468,7 @@ GitHub Copilot の 3 回目のレビュー（`229acf41` に対するインライ
 - `cd vsc && npm run test:unit && npm run check-types && npm run lint`: 単体テストは 38 件すべて通過（前の 33 件に、1 と 3 の 1 件ずつと 2 の 3 件を足した）、型検査と lint はエラーなし（`unit-final.log`）。
 - `cd vsc && node ../scripts/slot.mjs -- npm test`（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）: 2 回目で 16 の `VS Code:` 行と `All Tsuzuri VS Code integration checks passed.`（`integration-final.log`。VS Code の起動から終わりまで約 1 分半）。言語サーバーは変えていないので、同梱の `vsc/toolchain` を使った。サーバーが要求を断る `document directory does not exist` は、前と同じく 1 回出る。
   1 回目は、G39 Phase 1 の部分（`extension.test.ts` の `assert.ok(await other.save())`）が `Error: Document has been closed` で落ちた（`integration-run1-flaky.log`。11 の `VS Code:` 行の後）。ほかの作業で混んだ機械で、VS Code の起動から落ちるまで 3 分 15 秒かかっていた。
-  `other`（`other/Main.tz`）はテストの最初に `openTextDocument` で開いてエディターに表示しない文書で、VS Code 1.103.2 は拡張が開いた文書の参照を 3 分（`workbench.desktop.main.js` の `1e3*60*3`）で手放すので、その後の `other` は閉じた文書になり、`applyEdit` は同じ URI の新しい文書を開く。この対応の変更とは関係しない時間の揺れだと判断した（下の「残っている問題」）。
+  `other`（`other/Main.tz`）はテストの最初に `openTextDocument` で開いてエディターに表示しない文書で、VS Code 1.103.2 は拡張が開いた文書の参照を 3 分（`workbench.desktop.main.js` の `1e3*60*3`）で手放すので、その後の `other` は閉じた文書になり、`applyEdit` は同じ URI の新しい文書を開く。この対応の変更とは関係しない時間の揺れだった。G40 の検査が増えて起動から保存までの時間が延びたので、CI の遅いホストでも起きうる。そこで、その部分の編集と保存の前に `vscode.workspace.openTextDocument(other.uri)` で生きている文書を取り直すようにした（`extension.test.ts`。期待値は変えていない）。2 回目の実行は通り、取り直した後の実行も通った（`integration-live-other.log`。16 の `VS Code:` 行と `All Tsuzuri VS Code integration checks passed.`）。
 - `cargo fmt --all -- --check`（差分なし）、`node scripts/check-links.mjs --into _features/README.md`（11 リンク、0 件の切れ）、`node scripts/check-guide-lite.mjs`（88 件、0 件の失敗）、`node tests/platforms.mjs`、`git diff --check`。
 - 言語リファレンスのページと Rust のコードは変えていないので、`check-docs.mjs` と `cargo nextest` は動かしていない。
 
