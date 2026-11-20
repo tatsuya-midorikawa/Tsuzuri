@@ -176,6 +176,8 @@ Windows SDK と、Visual Studio Build Tools の MSVC C++ ツールセット、�
 <!-- rule: CLI-008 -->
 コマンドパレットの **Tsuzuri: New Project** は、同梱コンパイラの `tsuzuri new` で `Main.tz`、`Tsuzuri.toml`、`.gitignore` を作ります。エディター右上の実行は、未保存のファイルを保存してからビルドします。検査、WebAssembly のビルド、Test Explorer、ブレークポイントも拡張側の操作です。設定の `tsuzuri.optimization` の既定は 3 で、デバッグ実行は常に 0 です。
 
+`Main.tz` も `Tsuzuri.toml` もないファイルは、ワークスペースフォルダーまでで、ほかのプロジェクトを含まない最も上のフォルダーをプロジェクトとして解析します。パッケージと同じフォルダーの直下にあるファイルは `tsuzuri check` と同じくパッケージを含むフォルダーとして読まれ、パッケージのファイルはパッケージの言語サーバーだけが扱います。
+
 信頼していないフォルダーでは、コンパイラもユーザーのプログラムも起動しません。詳しい操作は [VS Code 拡張の README](../../../vsc/README.md) を見てください。
 
 ## サブコマンド

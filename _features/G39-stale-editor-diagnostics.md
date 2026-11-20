@@ -280,7 +280,7 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 - **入れ子のパッケージを覆う根のクライアント**: ワークスペースのフォルダー自体がプロジェクトでなく（直下に `Tsuzuri.toml` も `Main.tz` もない）、その下にパッケージがあると、パッケージの外の `.tz` を開いたときにフォルダーの根のクライアントが起動し、その documentSelector（`<根>/**/*.{tz,tt,tc}`）がパッケージのファイルも拾う。
   マニフェストを読まないフォルダーとしての解析になるので、マニフェストの名前空間に頼るファイル（ヘッダーのない `app/Util.tz` を `App::Util` で参照）に、直しても消えない偽のエラーが出る（`verify-lsp-lifecycle/e2e/fallback.out`、`logs/noheader.log`）。
   このリポジトリ自身を開いて `std/` や `tests/` の `.tz` を開くと、根のクライアントの読み込みが `E1017`（`module discovery exceeds 1024 directories or 16 path segments`）で毎回失敗し、それがディレクトリの URI に付く（`verify-lsp-lifecycle/logs/repo-root.log`）。
-  どのクライアントがどの文書を受け持つかの問題で、診断の寿命の問題ではないので、[G40](G40-fallback-root-client.md) で扱う。
+  どのクライアントがどの文書を受け持つかの問題で、診断の寿命の問題ではないので、[G40](_completed/G40-fallback-root-client.md) で扱う。
 - **4 MiB を超える `didChange`**: 拒否して前のバッファを残す（`src/lsp.rs:532-537`）ので、前の診断も残る。縮めると戻る。直すと `tests/lsp.rs` の `rejects_documents_over_the_source_limit` の期待が変わる。
 - **[wasm] の検査のエラーの相対パス**: `src/main.rs:4167-4175` が `Tsuzuri.toml:1:1` と相対パスで出すので、絶対パスの problem matcher が `file:///Tsuzuri.toml` に付け、次の Wasm のタスクまで残る（`verify-task-matcher/e2e/e2e-misc.log` の M5〜M7）。D3 で matcher を外せばマーカーにはならないが、ほかの診断と同じ絶対パスで出すのが正しい。
 - **1 回の refresh の費用そのもの**: エディターの経路はすべての std モジュールを毎回検査し（D-40）、1 ファイルのプロジェクトの refresh の標本の 49 % が `check::warnings::unused_private`（`src/warnings.rs:286`、`src/check.rs:9525` から）で、std を含むすべての関数を走査している（`verify-lsp-latency-robustness/sample-hello-debug.txt`）。
@@ -541,7 +541,7 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
 
 ## 対象外
 
-- どのクライアントがどの文書を受け持つかの見直し（入れ子のパッケージを覆う根のクライアント、このリポジトリを開いたときの `E1017`）。[G40](G40-fallback-root-client.md) で扱う。
+- どのクライアントがどの文書を受け持つかの見直し（入れ子のパッケージを覆う根のクライアント、このリポジトリを開いたときの `E1017`）。[G40](_completed/G40-fallback-root-client.md) で扱う。
 - 4 MiB を超える `didChange` を受け付けて `E0003` を出すこと。
 - [wasm] の検査のエラーを絶対パスで出すこと（`src/main.rs:4167-4175`）。
 - 言語サーバーでのケーパビリティの検査（`E1036` を入力中に出す）。`packages.md` の「言語サーバーは検査しません」を変えることになる。

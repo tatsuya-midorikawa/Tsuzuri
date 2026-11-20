@@ -125,7 +125,7 @@
     "vsix": "node scripts/package.mjs",
     "vsix:verify": "node scripts/package.mjs --verify",
     "test:toolchain": "node ../scripts/toolchain/smoke.mjs toolchain",
-    "test:unit": "npm run compile-tests && node --test out/test/core.test.js out/test/grammar.test.js",
+    "test:unit": "npm run compile-tests && node --test out/test/core.test.js out/test/grammar.test.js out/test/reroot.test.js",
     "test:installed": "npm run compile-tests && node scripts/test-extension.mjs --installed",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",

@@ -10,7 +10,13 @@ import { fileURLToPath } from 'node:url';
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const require = createRequire(path.join(repository, 'vsc', 'package.json'));
 const { readVSIXPackage, readZip } = require('@vscode/vsce/out/zip');
-const { ExtensionVersionFlags } = require('azure-devops-node-api/interfaces/GalleryInterfaces');
+const {
+  ExtensionQueryFilterType,
+  ExtensionQueryFlags,
+  ExtensionVersionFlags,
+  TypeInfo,
+} = require('azure-devops-node-api/interfaces/GalleryInterfaces');
+const { ContractSerializer } = require('azure-devops-node-api/Serialization');
 export const hosts = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
 
 function validateVersion(version) {
@@ -64,7 +70,60 @@ export async function verifyVsix(version, host, file) {
   return { publisher: manifest.publisher, name: manifest.name, version, host, sha256: checksum[0], toolchainId: tools.id, file: path.resolve(file) };
 }
 
-export function verifyMarketplace(version, metadata) {
+function formatVersionTarget(item) {
+  return `${item?.version ?? 'unknown'}@${item?.targetPlatform || 'universal'}`;
+}
+
+function assertValidatedTargets(items, label) {
+  for (const item of items) {
+    assert.ok(Number.isInteger(item.flags), `Invalid ${label} flags: ${item.targetPlatform}`);
+    assert.equal(item.flags & ExtensionVersionFlags.Validated, ExtensionVersionFlags.Validated,
+      `${label} validation is not complete: ${item.targetPlatform}${item.validationResultMessage ? `: ${item.validationResultMessage}` : ''}. Do not republish uploaded packages.`);
+  }
+}
+
+export async function queryLatestMarketplace(fetchImpl = globalThis.fetch) {
+  const marketplaceUrl = (process.env.VSCE_MARKETPLACE_URL || 'https://marketplace.visualstudio.com').replace(/\/+$/, '');
+  const response = await fetchImpl(`${marketplaceUrl}/_apis/public/gallery/extensionquery`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json;api-version=3.0-preview.1',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      filters: [{
+        pageNumber: 1,
+        pageSize: 1,
+        criteria: [
+          { filterType: ExtensionQueryFilterType.Name, value: 'tmidorikawa.tsuzuri' },
+          { filterType: ExtensionQueryFilterType.InstallationTarget, value: 'Microsoft.VisualStudio.Code' },
+        ],
+      }],
+      flags: ExtensionQueryFlags.IncludeLatestVersionOnly
+        | ExtensionQueryFlags.IncludeVersionProperties
+        | ExtensionQueryFlags.ExcludeNonValidated,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+  assert.ok(response.ok, `Marketplace extensionquery failed: HTTP ${response.status} ${response.statusText}`);
+  const payload = await response.json();
+  if (payload?.errorCode !== undefined) {
+    throw new Error(payload.message || `Marketplace extensionquery error: ${payload.errorCode}`);
+  }
+  const extensions = ContractSerializer.deserialize(
+    payload?.results?.[0]?.extensions ?? [],
+    TypeInfo.PublishedExtension,
+    false,
+    false,
+  );
+  const match = extensions?.find(
+    item => `${item.publisher?.publisherName ?? ''}.${item.extensionName ?? ''}`.toLowerCase() === 'tmidorikawa.tsuzuri',
+  );
+  assert.ok(match, 'Extension tmidorikawa.tsuzuri not found in Marketplace IncludeLatestVersionOnly query');
+  return match;
+}
+
+export function verifyMarketplace(version, metadata, latestMetadata) {
   validateVersion(version);
   assert.equal(metadata.publisher?.publisherName, 'tmidorikawa', 'Marketplace publisher mismatch');
   assert.equal(metadata.extensionName, 'tsuzuri', 'Marketplace name mismatch');
@@ -72,10 +131,25 @@ export function verifyMarketplace(version, metadata) {
   const versions = metadata.versions.filter(item => item.version === version);
   assert.deepEqual(versions.map(item => item.targetPlatform).sort(), hosts,
     'Marketplace target set mismatch (missing, duplicate, or unexpected targets). If uploads were accepted, inspect propagation before retrying publication.');
-  for (const item of versions) {
-    assert.ok(Number.isInteger(item.flags), `Invalid Marketplace flags: ${item.targetPlatform}`);
-    assert.equal(item.flags & ExtensionVersionFlags.Validated, ExtensionVersionFlags.Validated,
-      `Marketplace validation is not complete: ${item.targetPlatform}${item.validationResultMessage ? `: ${item.validationResultMessage}` : ''}. Do not republish uploaded packages.`);
+  assertValidatedTargets(versions, 'Marketplace');
+  const orphaned = metadata.versions.filter(item => !hosts.includes(item.targetPlatform));
+  assert.equal(orphaned.length, 0,
+    `Marketplace has unsupported or orphaned targetPlatform entries: ${orphaned.map(formatVersionTarget).join(', ')}`);
+
+  if (latestMetadata !== undefined) {
+    assert.ok(latestMetadata && typeof latestMetadata === 'object', 'Missing Marketplace IncludeLatestVersionOnly metadata');
+    assert.equal(latestMetadata.publisher?.publisherName, 'tmidorikawa', 'Marketplace IncludeLatestVersionOnly publisher mismatch');
+    assert.equal(latestMetadata.extensionName, 'tsuzuri', 'Marketplace IncludeLatestVersionOnly name mismatch');
+    assert.ok(Array.isArray(latestMetadata.versions), 'Missing Marketplace IncludeLatestVersionOnly versions');
+    const orphanedLatest = latestMetadata.versions.filter(item => !hosts.includes(item.targetPlatform));
+    assert.equal(orphanedLatest.length, 0,
+      `Marketplace IncludeLatestVersionOnly has unsupported or orphaned targetPlatform entries: ${orphanedLatest.map(formatVersionTarget).join(', ')}`);
+    const wrongVersionLatest = latestMetadata.versions.filter(item => item.version !== version);
+    assert.equal(wrongVersionLatest.length, 0,
+      `Marketplace IncludeLatestVersionOnly returned unexpected version entries: ${wrongVersionLatest.map(formatVersionTarget).join(', ')}`);
+    assert.deepEqual(latestMetadata.versions.map(item => item.targetPlatform).sort(), hosts,
+      'Marketplace IncludeLatestVersionOnly target set mismatch (missing, duplicate, or unexpected targets).');
+    assertValidatedTargets(latestMetadata.versions, 'Marketplace IncludeLatestVersionOnly');
   }
   return { publisher: 'tmidorikawa', name: 'tsuzuri', version, hosts, validated: true };
 }
@@ -90,7 +164,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     } else if (command === 'marketplace' && args.length === 0) {
       const json = execFileSync(process.execPath, [require.resolve('@vscode/vsce/vsce'), 'show', 'tmidorikawa.tsuzuri', '--json'],
         { encoding: 'utf8', timeout: 120000, maxBuffer: 8 * 1024 * 1024 });
-      result = verifyMarketplace(version, JSON.parse(json));
+      const latestMetadata = await queryLatestMarketplace();
+      result = verifyMarketplace(version, JSON.parse(json), latestMetadata);
     } else {
       throw new Error('Usage: verify-release.mjs vsix VERSION HOST FILE | marketplace VERSION');
     }

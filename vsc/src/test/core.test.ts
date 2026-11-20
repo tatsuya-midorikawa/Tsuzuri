@@ -1,10 +1,10 @@
 import * as assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, writeFile, rm, symlink } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, notifiesServer, plainPath, projectFile, projectRoot, reportedByServer, rootSpelling, reservedWords, runProcess, sourcePosition, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
+import { affectsRoot, assertSupportedHost, commandArguments, defaultNamespace, DirectoryEntry, directlyIn, directoryExists, endsInPath, inRoot, isNamespace, jsonLines, libraryModules, libraryQualifier, lldbLaunch, notifiesServer, plainPath, projectFile, ProjectRoot, projectRoot, ProjectRoots, reportedByServer, RootFileSystem, rootSpelling, reservedWords, runProcess, sourcePosition, sourceSelector, supportsDebug, supportsHost, testDebugArguments, testRunnerFiles, testRunnerPath } from '../core';
 
 test('only the five supported hosts enable the IDE, with debugging disabled on Windows ARM64', () => {
 	const supported = ['darwin-arm64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
@@ -137,6 +137,7 @@ test('namespace rules use the lexer reserved words and reserved standard library
 
 test('project root respects nested projects and source subdirectories', async () => {
 	const root = await mkdtemp(path.join(os.tmpdir(), 'tsuzuri-project-'));
+	const loose = await mkdtemp(path.join(os.tmpdir(), 'tsuzuri-loose-'));
 	try {
 		const app = path.join(root, 'app');
 		await mkdir(path.join(app, 'Geometry'), { recursive: true });
@@ -147,7 +148,377 @@ test('project root respects nested projects and source subdirectories', async ()
 		assert.equal(await projectRoot(path.join(app, 'Geometry', 'Unsaved.tz'), root), app);
 		await writeFile(path.join(root, 'Library.tz'), '');
 		assert.equal(await projectRoot(path.join(root, 'Library.tz'), root), root);
-	} finally { await rm(root, { recursive: true, force: true }); }
+		// G40 D1: a file without a marker takes the highest directory that contains no other project.
+		await mkdir(path.join(root, 'scratch'));
+		await writeFile(path.join(root, 'scratch', 'Try.tz'), '');
+		assert.equal(await projectRoot(path.join(root, 'scratch', 'Try.tz'), root), path.join(root, 'scratch'));
+		// A file beside the package stays at the folder, which is a remaining root (G40 spec 1.4); a marked root never is,
+		// also with another package below it.
+		assert.deepEqual(await new ProjectRoots().find(path.join(root, 'Library.tz'), root), { root, remaining: true });
+		assert.deepEqual(await new ProjectRoots().find(path.join(root, 'scratch', 'Try.tz'), root), { root: path.join(root, 'scratch'), remaining: false });
+		await mkdir(path.join(app, 'lib'));
+		await writeFile(path.join(app, 'lib', 'Tsuzuri.toml'), '');
+		assert.deepEqual(await new ProjectRoots().find(path.join(app, 'Main.tz'), root), { root: app, remaining: false });
+		assert.deepEqual(await new ProjectRoots().find(path.join(app, 'Geometry', 'Point.tz'), root), { root: app, remaining: false });
+		// Outside every workspace folder, the file's directory is the root, and a remaining one when it holds a project.
+		assert.deepEqual(await new ProjectRoots().find(path.join(root, 'Notes.tz')), { root, remaining: true });
+		assert.deepEqual(await new ProjectRoots().find(path.join(root, 'scratch', 'Try.tz')), { root: path.join(root, 'scratch'), remaining: false });
+		// An unsaved file in a directory that does not exist. Such a root has no client or test root (G40 D4).
+		assert.deepEqual(await new ProjectRoots().find(path.join(root, 'missing', 'deeper', 'New.tz'), root), { root: path.join(root, 'missing'), remaining: false });
+		assert.equal(await directoryExists(path.join(root, 'missing')), false);
+		assert.equal(await directoryExists(path.join(root, 'Library.tz')), false);
+		assert.equal(await directoryExists(path.join(root, 'Library.tz', 'below')), false);
+		assert.equal(await directoryExists(root), true);
+		// A folder without a package keeps one root for every file, as before.
+		await mkdir(path.join(loose, 'a', 'b'), { recursive: true });
+		await writeFile(path.join(loose, 'a', 'X.tz'), '');
+		await writeFile(path.join(loose, 'Top.tz'), '');
+		assert.equal(await projectRoot(path.join(loose, 'a', 'X.tz'), loose), loose);
+		assert.equal(await projectRoot(path.join(loose, 'a', 'b', 'Y.tz'), loose), loose);
+		assert.deepEqual(await new ProjectRoots().find(path.join(loose, 'Top.tz'), loose), { root: loose, remaining: false });
+		if (process.platform !== 'win32') {
+			// Module discovery stops at a directory or source symbolic link, so a folder with one holds another project.
+			await mkdir(path.join(loose, 'real'));
+			await symlink(path.join(loose, 'real'), path.join(loose, 'linked'));
+			assert.equal(await projectRoot(path.join(loose, 'a', 'X.tz'), loose), path.join(loose, 'a'));
+			await rm(path.join(loose, 'linked'));
+			await writeFile(path.join(loose, 'real', 'data.txt'), '');
+			await symlink(path.join(loose, 'real', 'data.txt'), path.join(loose, 'data.txt'));
+			assert.equal(await projectRoot(path.join(loose, 'a', 'X.tz'), loose), loose);
+			await symlink(path.join(loose, 'real', 'Gone.tz'), path.join(loose, 'Broken.tz'));
+			assert.equal(await projectRoot(path.join(loose, 'a', 'X.tz'), loose), path.join(loose, 'a'));
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+		await rm(loose, { recursive: true, force: true });
+	}
+});
+
+/**
+ * A file system of directories and their entries, which counts the directories that it lists. A case-insensitive one
+ * (macOS and Windows by default) finds a file under any case of its name, as `access` does there. A directory can be
+ * unreadable (it cannot be listed) or unsearchable (nothing in it can be inspected, and no directory below it listed).
+ */
+class VirtualFileSystem implements RootFileSystem {
+	readonly directories = new Map<string, DirectoryEntry[]>();
+	readonly unreadable = new Set<string>();
+	readonly unsearchable = new Set<string>();
+	lists = 0;
+	/** A directory whose listing, once taken, is returned only after `resume`: a change can come meanwhile. */
+	pause?: { directory: string; listed: () => void; resume: Promise<void> };
+	constructor(readonly top: string, readonly caseInsensitive = false) { this.directories.set(top, []); }
+	add(file: string, kind: DirectoryEntry['kind'] = 'file', target?: DirectoryEntry['target']) {
+		const parent = path.dirname(file);
+		if (!this.directories.has(parent)) { this.add(parent, 'directory'); }
+		this.directories.get(parent)!.push({ name: path.basename(file), kind, target });
+		if (kind === 'directory') { this.directories.set(file, []); }
+	}
+	remove(file: string) {
+		const entries = this.directories.get(path.dirname(file))!;
+		entries.splice(entries.findIndex(entry => entry.name === path.basename(file)), 1);
+	}
+	async list(directory: string) {
+		this.lists++;
+		if (this.unreadable.has(directory) || this.unsearchable.has(path.dirname(directory))) {
+			throw Object.assign(new Error(`EACCES: ${directory}`), { code: 'EACCES' });
+		}
+		const entries = this.directories.get(directory);
+		if (!entries) { throw Object.assign(new Error(`ENOENT: ${directory}`), { code: 'ENOENT' }); }
+		const listing = [...entries];
+		const pause = this.pause;
+		if (pause?.directory === directory) {
+			this.pause = undefined;
+			pause.listed();
+			await pause.resume;
+		}
+		return listing;
+	}
+	/** The entry of `file`, under the volume's case rule; none in a directory that cannot be searched. */
+	private entry(file: string) {
+		if (this.unsearchable.has(path.dirname(file))) { return undefined; }
+		const fold = (name: string) => this.caseInsensitive ? name.toLowerCase() : name;
+		return this.directories.get(path.dirname(file))?.find(entry => fold(entry.name) === fold(path.basename(file)));
+	}
+	async exists(file: string) { return this.entry(file) !== undefined; }
+	async isDirectory(file: string) { return this.directories.has(file); }
+	async isRegularFile(file: string) { return this.entry(file)?.kind === 'file'; }
+}
+
+test('a folder that module discovery cannot read within its limits counts as one that holds another project', async () => {
+	const top = path.resolve('/w');
+	const notes = path.join(top, 'notes', 'X.tz');
+	const rootOf = (files: VirtualFileSystem) => new ProjectRoots(files).find(notes, top).then(found => found.root);
+	const tree = () => { const files = new VirtualFileSystem(top); files.add(notes); return files; };
+	// 1024 directories with the root are read, the 1025th is not.
+	const wide = tree();
+	for (let index = 0; index < 1022; index++) { wide.add(path.join(top, 'many', `d${index}`), 'directory'); }
+	assert.equal(wide.directories.size, 1025);
+	assert.equal(await rootOf(wide), path.join(top, 'notes'));
+	wide.remove(path.join(top, 'many', 'd0'));
+	assert.equal(await rootOf(wide), top);
+	// A directory 15 segments below the root is read, one 16 segments below is not.
+	const deep = tree();
+	const chain = Array.from({ length: 15 }, (_, index) => `s${index}`);
+	deep.add(path.join(top, ...chain), 'directory');
+	assert.equal(await rootOf(deep), top);
+	deep.add(path.join(top, ...chain, 's15'), 'directory');
+	assert.equal(await rootOf(deep), path.join(top, 'notes'));
+	// Source and directory symbolic links, broken ones included, and sources that are not regular files stop module
+	// discovery; a link to another file does not.
+	for (const [name, kind, target, holds] of [
+		['Link.tz', 'symlink', 'file', true], ['linked', 'symlink', 'directory', true], ['broken', 'symlink', undefined, true],
+		['data.txt', 'symlink', 'file', false], ['fifo', 'symlink', 'other', false], ['Pipe.tz', 'other', undefined, true], ['socket', 'other', undefined, false],
+	] as const) {
+		const files = tree();
+		files.add(path.join(top, 'sub', name), kind, target);
+		assert.equal(await rootOf(files), holds ? path.join(top, 'notes') : top, name);
+	}
+	// Module discovery reads no name that starts with '.', and no knowledge graph's directory.
+	const hidden = tree();
+	hidden.add(path.join(top, '.git', 'Main.tz'));
+	hidden.add(path.join(top, 'target', 'tz', 'kg', '.tsuzuri-kg'));
+	hidden.add(path.join(top, 'target', 'tz', 'kg', 'Main.tz'));
+	assert.equal(await rootOf(hidden), top);
+	hidden.add(path.join(top, 'target', 'Main.tz'));
+	assert.equal(await rootOf(hidden), path.join(top, 'notes'));
+	// An unsaved file in a directory that does not exist: the directory is empty.
+	const unlisted = new VirtualFileSystem(top);
+	assert.deepEqual(await new ProjectRoots(unlisted).find(path.join(top, 'gone', 'New.tz'), top), { root: top, remaining: false });
+});
+
+test('a knowledge graph is told by its marker as module discovery tells it, also when it cannot be listed or searched', async () => {
+	const top = path.resolve('/w');
+	const notes = path.join(top, 'notes', 'X.tz');
+	const graph = path.join(top, 'target', 'tz', 'kg');
+	const marker = path.join(graph, '.tsuzuri-kg');
+	// `collect_sources` checks a directory's marker with `symlink_metadata` before it lists the directory: it skips one
+	// whose marker is a regular file, also when the directory cannot be listed, and lists any other, which fails when the
+	// directory cannot be listed or a directory below it cannot be read. A marker that is a link or a directory does not
+	// count, and neither does one in a directory that cannot be searched.
+	for (const [label, build, holds, caseInsensitive] of [
+		['a graph', files => files.add(marker), false],
+		['a graph that cannot be listed', files => { files.add(marker); files.unreadable.add(graph); }, false],
+		['a directory without a marker that cannot be listed', files => { files.add(graph, 'directory'); files.unreadable.add(graph); }, true],
+		['a linked marker in a directory that cannot be listed', files => { files.add(marker, 'symlink', 'file'); files.unreadable.add(graph); }, true],
+		['a directory marker in a directory that cannot be listed', files => { files.add(marker, 'directory'); files.unreadable.add(graph); }, true],
+		['a marker in a directory that cannot be searched, with a directory in it', files => {
+			files.add(marker); files.add(path.join(graph, 'nodes'), 'directory'); files.unsearchable.add(graph);
+		}, true],
+		['a marker in a directory that cannot be searched, with a file in it', files => {
+			files.add(marker); files.add(path.join(graph, 'manifest.json')); files.unsearchable.add(graph);
+		}, false],
+		['a marker under another case, on a case-insensitive volume', files => { files.add(path.join(graph, '.TSUZURI-KG')); files.add(path.join(graph, 'Main.tz')); }, false, true],
+		['a marker under another case, on a case-sensitive volume', files => { files.add(path.join(graph, '.TSUZURI-KG')); files.add(path.join(graph, 'Main.tz')); }, true, false],
+	] as [string, (files: VirtualFileSystem) => void, boolean, boolean?][]) {
+		const files = new VirtualFileSystem(top, caseInsensitive);
+		files.add(notes);
+		build(files);
+		assert.deepEqual(await new ProjectRoots(files).find(notes, top), { root: holds ? path.join(top, 'notes') : top, remaining: false }, label);
+	}
+	// A graph that was the folder of a lookup first is skipped as well by the scan of a folder above it, which takes what
+	// the lookup found.
+	const files = new VirtualFileSystem(top);
+	files.add(notes);
+	files.add(marker);
+	files.unreadable.add(graph);
+	const roots = new ProjectRoots(files);
+	assert.deepEqual(await roots.find(path.join(graph, 'Notes.tz'), top), { root: graph, remaining: true });
+	assert.deepEqual(await roots.find(notes, top), { root: top, remaining: false });
+	// The same on the disk of this host, where permissions apply (not on Windows, and not to the superuser).
+	if (process.platform === 'win32' || process.getuid?.() === 0) { return; }
+	const disk = await mkdtemp(path.join(os.tmpdir(), 'tsuzuri-graph-'));
+	const locked: string[] = [];
+	const lock = async (directory: string, mode: number) => { await chmod(directory, mode); locked.push(directory); };
+	try {
+		const tree = async (name: string) => {
+			const folder = path.join(disk, name);
+			await mkdir(path.join(folder, 'notes'), { recursive: true });
+			await mkdir(path.join(folder, 'target', 'tz', 'kg'), { recursive: true });
+			await writeFile(path.join(folder, 'notes', 'X.tz'), '');
+			return { folder, kg: path.join(folder, 'target', 'tz', 'kg') };
+		};
+		const rootOn = async (folder: string) => path.relative(folder, await projectRoot(path.join(folder, 'notes', 'X.tz'), folder)) || '.';
+		const unlisted = await tree('unlisted');
+		await writeFile(path.join(unlisted.kg, '.tsuzuri-kg'), '');
+		await lock(unlisted.kg, 0o311);
+		assert.equal(await rootOn(unlisted.folder), '.', 'a graph that cannot be listed');
+		const plain = await tree('plain');
+		await lock(plain.kg, 0o311);
+		assert.equal(await rootOn(plain.folder), 'notes', 'a directory without a marker that cannot be listed');
+		const linked = await tree('linked');
+		await writeFile(path.join(linked.folder, 'target', 'tz', 'real'), '');
+		await symlink(path.join('..', 'real'), path.join(linked.kg, '.tsuzuri-kg'));
+		await lock(linked.kg, 0o311);
+		assert.equal(await rootOn(linked.folder), 'notes', 'a linked marker in a directory that cannot be listed');
+		const unsearched = await tree('unsearched');
+		await writeFile(path.join(unsearched.kg, '.tsuzuri-kg'), '');
+		await mkdir(path.join(unsearched.kg, 'nodes'));
+		await lock(unsearched.kg, 0o644);
+		assert.equal(await rootOn(unsearched.folder), 'notes', 'a marker in a directory that cannot be searched, with a directory in it');
+	} finally {
+		for (const directory of locked) { await chmod(directory, 0o755); }
+		await rm(disk, { recursive: true, force: true });
+	}
+});
+
+test('project roots read each directory once until a change that module discovery can see', async () => {
+	const top = path.resolve('/w');
+	const notes = path.join(top, 'notes', 'X.tz');
+	const files = new VirtualFileSystem(top);
+	files.add(notes);
+	for (let index = 0; index < 4095; index++) { files.add(path.join(top, 'src', `S${index}.tz`)); }
+	const roots = new ProjectRoots(files);
+	assert.deepEqual(await roots.find(notes, top), { root: top, remaining: false });
+	const lists = files.lists;
+	assert.ok(lists > 0);
+	assert.deepEqual(await roots.find(notes, top), { root: top, remaining: false });
+	assert.deepEqual(await roots.find(path.join(top, 'notes', 'Other.tz'), top), { root: top, remaining: false });
+	assert.deepEqual(await roots.find(path.join(top, 'Top.tz'), top), { root: top, remaining: false });
+	assert.equal(files.lists, lists);
+	// A marker below the folder shows after the change clears the cache.
+	files.add(path.join(top, 'app', 'Main.tz'));
+	assert.equal((await roots.find(notes, top)).root, top);
+	assert.equal(roots.changed(top, path.join(top, 'app')), true);
+	assert.deepEqual(await roots.find(notes, top), { root: path.join(top, 'notes'), remaining: false });
+	assert.deepEqual(await roots.find(path.join(top, 'Top.tz'), top), { root: top, remaining: true });
+	files.remove(path.join(top, 'app'));
+	assert.equal(roots.changed(top, path.join(top, 'app')), true);
+	assert.equal((await roots.find(notes, top)).root, top);
+	// 4096 sources are read, the 4097th is not: a created source splits the root, and its deletion joins it again.
+	const extra = path.join(top, 'src', 'Extra.tz');
+	files.add(extra);
+	assert.equal((await roots.find(notes, top)).root, top);
+	assert.equal(roots.changed(top, extra), true);
+	assert.equal((await roots.find(notes, top)).root, path.join(top, 'notes'));
+	files.remove(extra);
+	assert.equal(roots.changed(top, extra), true);
+	assert.equal((await roots.find(notes, top)).root, top);
+	// Changes that module discovery does not read keep the cache: names that start with '.' and knowledge graphs.
+	const kept = files.lists;
+	for (const file of [path.join(top, '.git', 'index.lock'), path.join(top, 'src', '.cache'), path.join(top, 'target', 'tz', 'kg'), path.join(top, 'app', '.tsuzuri', 'bin')]) {
+		assert.equal(roots.changed(top, file), false, file);
+	}
+	assert.equal((await roots.find(notes, top)).root, top);
+	assert.equal(files.lists, kept);
+});
+
+test('a directory that a scan listed is not listed again for a file opened in it later, and the roots stay the same', async () => {
+	const top = path.resolve('/w');
+	const files = new VirtualFileSystem(top);
+	for (const file of ['a/X.tz', 'b/Y.tz', 'b/c/Z.tz', 'b/c/d/W.tz']) { files.add(path.join(top, file)); }
+	const roots = new ProjectRoots(files);
+	assert.deepEqual(await roots.find(path.join(top, 'a', 'X.tz'), top), { root: top, remaining: false });
+	// The scan of the folder for a/X.tz listed b/ and the directories below it; a file opened there lists none again.
+	const lists = files.lists;
+	for (const file of ['b/Y.tz', 'b/c/Z.tz', 'b/c/d/W.tz']) {
+		assert.deepEqual(await roots.find(path.join(top, file), top), { root: top, remaining: false }, file);
+	}
+	assert.equal(files.lists, lists);
+	// Each file has the root that a lookup of its own finds, in either order of the lookups: with a marker beside the
+	// files, at the limits of the directories and the depth, which the folder reaches and a directory below it does not.
+	const tree = (sources: string[]) => {
+		const files = new VirtualFileSystem(top);
+		for (const file of sources) { files.add(path.join(top, file)); }
+		return files;
+	};
+	const wide = tree(['notes/X.tz', 'many/M.tz', 'many/d0/D.tz', 'b/c/Y.tz']);
+	for (let index = 1; index < 1021; index++) { wide.add(path.join(top, 'many', `d${index}`), 'directory'); }
+	const chain = Array.from({ length: 16 }, (_, index) => `s${index}`);
+	for (const files of [
+		tree(['a/X.tz', 'b/c/Y.tz', 'b/pkg/Main.tz', 'b/pkg/Util.tz', 'b/Z.tz', 'd/e/f/W.tz', 'Top.tz']),
+		wide,
+		tree(['notes/X.tz', 's0/F.tz', `${chain.join('/')}/G.tz`, `${chain.slice(0, 8).join('/')}/H.tz`]),
+	]) {
+		const sources = [...files.directories].flatMap(([directory, entries]) =>
+			entries.filter(entry => entry.kind === 'file').map(entry => path.join(directory, entry.name)));
+		const alone = await Promise.all(sources.map(file => new ProjectRoots(files).find(file, top)));
+		for (const order of [sources, [...sources].reverse()]) {
+			const shared = new ProjectRoots(files);
+			for (const file of order) { assert.deepEqual(await shared.find(file, top), alone[sources.indexOf(file)], file); }
+		}
+	}
+});
+
+test('a workspace folder that does not exist is its own root, and nothing above it is read', async () => {
+	// A workspace folder deleted while VS Code has it open, as Test Project, the commands, and the tasks without an active
+	// file look it up: the folder above it holds other projects.
+	const top = path.resolve('/home/projects');
+	const files = new VirtualFileSystem(top);
+	files.add(path.join(top, 'other', 'Main.tz'));
+	files.add(path.join(top, 'Notes.tz'));
+	const folder = path.join(top, 'gone');
+	assert.deepEqual(await new ProjectRoots(files).find(folder, folder), { root: folder, remaining: false });
+	assert.equal(files.lists, 1);
+	assert.equal(await projectRoot(folder, folder, new ProjectRoots(files)), folder);
+});
+
+test('a root that was read while a change cleared the cache is read again before it is used', async () => {
+	const top = path.resolve('/w');
+	const notes = path.join(top, 'notes', 'X.tz');
+	const app = path.join(top, 'app');
+	const files = new VirtualFileSystem(top);
+	files.add(notes);
+	files.add(path.join(app, 'Util.tz'));
+	const roots = new ProjectRoots(files);
+	let listed!: () => void, resume!: () => void;
+	const reached = new Promise<void>(resolve => { listed = resolve; });
+	files.pause = { directory: app, listed, resume: new Promise<void>(resolve => { resume = resolve; }) };
+	const used: ProjectRoot[] = [];
+	const settled = roots.settled(() => roots.find(notes, top), found => { used.push(found); return found.root; });
+	// The scan of the folder has listed app/ without a marker. A marker is created there, and its event clears the cache
+	// before the lookup ends: a client started from that lookup would serve the folder beside the clients of the new roots.
+	await reached;
+	files.add(path.join(app, 'Main.tz'));
+	assert.equal(roots.changed(top, path.join(app, 'Main.tz')), true);
+	resume();
+	assert.equal(await settled, path.join(top, 'notes'));
+	assert.deepEqual(used, [{ root: path.join(top, 'notes'), remaining: false }]);
+	// Without a change meanwhile, the lookup runs once, from the cache.
+	const lists = files.lists;
+	assert.equal(await roots.settled(() => roots.find(notes, top), found => found.root), path.join(top, 'notes'));
+	assert.equal(files.lists, lists);
+});
+
+test('a marker that the volume finds under another case of its name holds another project', async () => {
+	const top = path.resolve('/w');
+	const app = path.join(top, 'app');
+	const scratch = path.join(top, 'scratch');
+	for (const caseInsensitive of [true, false]) {
+		for (const marker of ['tsuzuri.toml', 'main.tz', 'MAIN.TZ']) {
+			const files = new VirtualFileSystem(top, caseInsensitive);
+			files.add(path.join(scratch, 'Try.tz'));
+			files.add(path.join(app, marker));
+			const roots = new ProjectRoots(files);
+			const label = `${marker}, case-insensitive: ${caseInsensitive}`;
+			// The walk up finds the marker under the volume's case rule, as the compiler does, so the scan
+			// counts it too: otherwise the folder's client would serve the package's files beside the package's own.
+			assert.deepEqual(await roots.find(path.join(app, 'Util.tz'), top), { root: caseInsensitive ? app : top, remaining: false }, label);
+			assert.deepEqual(await roots.find(path.join(scratch, 'Try.tz'), top), { root: caseInsensitive ? scratch : top, remaining: false }, label);
+			assert.deepEqual(await roots.find(path.join(top, 'Notes.tz'), top), { root: top, remaining: caseInsensitive }, label);
+		}
+	}
+	// The same on the disk of this host, whichever case rule its temporary directory has.
+	const disk = await mkdtemp(path.join(os.tmpdir(), 'tsuzuri-case-'));
+	try {
+		await mkdir(path.join(disk, 'app'));
+		await mkdir(path.join(disk, 'scratch'));
+		await writeFile(path.join(disk, 'app', 'tsuzuri.toml'), '');
+		const insensitive = await projectRoot(path.join(disk, 'app', 'Util.tz'), disk) === path.join(disk, 'app');
+		assert.equal(await projectRoot(path.join(disk, 'scratch', 'Try.tz'), disk), insensitive ? path.join(disk, 'scratch') : disk);
+	} finally { await rm(disk, { recursive: true, force: true }); }
+});
+
+test('a remaining root serves only the files directly in it', () => {
+	assert.ok(directlyIn('/w/loose', '/w/loose/Notes.tz', 'linux'));
+	assert.ok(directlyIn('/w/loose', '/w/loose/..Notes.tz', 'linux'));
+	for (const file of ['/w/loose', '/w/loose/App/Main.tz', '/w/loose/scratch/Try.tz', '/w/other/Notes.tz', '/w/Notes.tz', '/w/loose2/Notes.tz']) {
+		assert.ok(!directlyIn('/w/loose', file, 'linux'), file);
+	}
+	assert.ok(directlyIn('c:\\w\\loose', 'C:\\W\\Loose\\Notes.tz', 'win32'));
+	assert.ok(!directlyIn('c:\\w\\loose', 'C:\\w\\loose\\App\\Main.tz', 'win32'));
+	assert.equal(sourceSelector('/w/a [b] {c}', false), '/w/a [[]b[]] [{]c[}]/**/*.{tz,tt,tc}');
+	assert.equal(sourceSelector('/w/loose', true), '/w/loose/*.{tz,tt,tc}');
+	assert.equal(sourceSelector('C:\\w\\loose', true), 'C:/w/loose/*.{tz,tt,tc}');
 });
 
 test('run results belong to the roots that contain their files, and deletions that module discovery reads change a root', () => {
