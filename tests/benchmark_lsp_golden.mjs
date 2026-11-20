@@ -91,8 +91,15 @@ try {
       ["fields", lines({ target: "examples/hello" }), /line 1 of .* is not an entry/],
       ["null", lines("null"), /line 1 of .* is not an entry/],
       ["kg", lines({ ...entry("examples/hello"), kg: null }), /line 1 of .* is not an entry/],
+      ["killed", lines({ ...entry("examples/hello"), status: null, signal: "SIGKILL" }), /line 1 of .* is not an entry/],
+      ["no-status", lines({ ...entry("examples/hello"), status: null }), /line 1 of .* is not an entry/],
+      ["signal", lines({ ...entry("examples/hello"), status: 1, signal: "SIGSEGV" }), /line 1 of .* is not an entry/],
     ];
     for (const [name, text, pattern] of cases) refused(pair(name, text), pattern, `compare ${name}`);
+    // A diagnostic fixture's check exits nonzero and finishes: its entries compare.
+    const failing = { ...entry("tests/fixtures/broken"), status: 1 };
+    const nonzero = pair("nonzero", lines(failing));
+    assert.equal(nonzero.status, 0, `compare of finished checks that exit nonzero:\n${nonzero.stderr}`);
   });
 
   const transcript = (log) => JSON.stringify({ project: "target/perf/PB08/projects/hello", log, publishes: [] }) + "\n";

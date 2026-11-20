@@ -998,6 +998,17 @@ GitHub Copilot の最初のレビュー（`f1839c32`）は 2 つの指摘を挙�
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `tsuzuri-p2`（Copilot のレビューの後） | `3fac3711` | 442/442 | 442/442 | 20/20 | 20/20 | 20/20 | ok |
 
+
+#### 2 回目（2026-11-20）
+
+1 件の指摘（4642450397、`benchmarks/lsp/golden.mjs`）を直した。
+- **指摘**: `check()` は時間切れの compiler を `SIGKILL` で止め、その entry は `status: null` になる。時間切れや signal で落ちた entry どうしは、どちらの検査も終わっていないのに `compare` で一致した。
+- **直し**:
+  - `check()` は、終了の状態がない（signal で止まった）検査で golden を書かずに失敗する。
+  - `compare` は、`status` が整数でないか `signal` がある entry を受け付けない。
+  - 0 でない終了（診断の fixture）は、終わった検査として今までどおり比べる。
+- **テスト**: `tests/benchmark_lsp_golden.mjs` に 3 つの場合（`status: null` と `SIGKILL`、`status: null` だけ、`status: 1` と `SIGSEGV`）と、0 でない終了の entry が一致する場合を足した。直す前の `golden.mjs` では「compare killed succeeded」で落ち、直した後は 6 つのテストがすべて通る。
+- **既存の golden**: 新しい `compare` でも一致した（CLI 442/442、言語サーバー 20/20。未設定・1・8 スレッド）。どの entry も終わった検査だった。
 ### 残っている問題
 
 - 手順 9 は済んだ（上の「手順 9: 計測」）。言語サーバーの `TSUZURI_TIME_PASSES` の累計は、補完やシグネチャヘルプが `std_index` を作った process では、全 std の解析 1 回を含む（M1・M4 の driver の要求は作らない）。

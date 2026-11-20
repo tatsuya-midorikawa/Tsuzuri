@@ -121,6 +121,13 @@ function check(compiler, target, env, kg) {
     child.on("error", reject);
     child.on("close", (status, signal) => {
       clearTimeout(timer);
+      // A compiler that was killed (the timeout above) or died of a signal did not finish its check: two such entries
+      // would compare equal without comparing any output, so the golden is not written.
+      if (status === null) {
+        rmSync(kg, { recursive: true, force: true });
+        reject(new Error(`check of ${relative(root, target)} did not finish: ${signal ?? "no exit status"}`));
+        return;
+      }
       const entry = {
         target: relative(root, target), status, signal,
         stdout: Buffer.concat(stdout).toString(), stderr: Buffer.concat(stderr).toString(), kg: files(kg),
@@ -408,8 +415,9 @@ async function lspTranscripts(compiler, out, { threads, workloads, projects }) {
   }
 }
 
-// The entries of a CLI golden, one per line. A blank line, a line that is not a whole entry or a file without entries
-// is refused: it would compare equal to another such file without comparing any output of the compiler.
+// The entries of a CLI golden, one per line. A blank line, a line that is not a whole entry, an entry of a check that did
+// not finish (killed by the timeout or a signal: no exit status) or a file without entries is refused: it would compare
+// equal to another such file without comparing any output of the compiler. A nonzero exit status is a finished check.
 function cliEntries(file) {
   const text = readFileSync(file, "utf8");
   assert.ok(text.length > 0 && text !== "\n", `${file} has no entries`);
@@ -419,9 +427,9 @@ function cliEntries(file) {
     const entry = JSON.parse(line);
     const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
     assert.ok(object(entry) && typeof entry.target === "string" && entry.target.length > 0
-      && (typeof entry.status === "number" || entry.status === null) && (typeof entry.signal === "string" || entry.signal === null)
+      && Number.isSafeInteger(entry.status) && entry.signal === null
       && typeof entry.stdout === "string" && typeof entry.stderr === "string" && object(entry.kg),
-    `line ${index + 1} of ${file} is not an entry (target, status, signal, stdout, stderr and kg)`);
+    `line ${index + 1} of ${file} is not an entry of a finished check (target, an exit status and no signal, stdout, stderr and kg)`);
     return entry;
   });
 }
