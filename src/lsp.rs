@@ -371,7 +371,7 @@ impl Session {
             .iter()
             .map(|(path, buffer)| (path.clone(), buffer.text.clone()))
             .collect();
-        let project = match Project::load_with_overlays(&directory, &overlays) {
+        let project = match Project::load_for_editor(&directory, &overlays) {
             Ok(project) => project,
             Err(error) => {
                 self.projects.remove(&directory);
@@ -978,7 +978,7 @@ impl Session {
             }
             overlays.insert(file.path.clone(), text);
         }
-        let project = Project::load_with_overlays(directory, &overlays)
+        let project = Project::load_for_editor(directory, &overlays)
             .map_err(|error| format!("{}: {}", error.diagnostic.code, error.diagnostic.message))?;
         let (renamed, diagnostics, _) = analyze(&project);
         let describe =
@@ -1298,7 +1298,7 @@ impl Session {
                 apply_edits(&file.text, edits).ok_or("the edits overlap or are out of range")?;
             overlays.insert(file.path.clone(), text);
         }
-        let project = Project::load_with_overlays(directory, &overlays)
+        let project = Project::load_for_editor(directory, &overlays)
             .map_err(|error| format!("{}: {}", error.diagnostic.code, error.diagnostic.message))?;
         let (_, _, after) = analyze(&project);
         let (Some(before), Some(after)) = (&state.counts, &after) else {
@@ -3188,6 +3188,62 @@ mod tests {
         } else {
             assert_eq!(stages, 0);
         }
+    }
+
+    /// PB08 O6: the language server loads the std modules that `check` loads, `sources_for` of the
+    /// project's sources with the open buffers in place of their files: the base modules for a
+    /// project that names no opt-in module, and `Json` too once an unsaved buffer names it.
+    #[test]
+    fn refresh_loads_the_std_modules_that_check_loads() {
+        let root = std::env::temp_dir().join(format!(
+            "tsuzuri-lsp-opt-in-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let saved = "let answer = 42\nanswer\n";
+        std::fs::write(root.join("Main.tz"), saved).unwrap();
+        std::fs::write(root.join("Other.tz"), "def other :: i64 = 1\n").unwrap();
+        let path = root.join("Main.tz");
+        let mut session = Session::default();
+        session.roots.push(root.clone());
+        let loaded = |session: &mut Session| {
+            session.refresh(&path, &mut Vec::new()).unwrap();
+            session.projects[&root]
+                .project
+                .sources
+                .iter()
+                .filter(|source| source.origin == ModuleOrigin::Std)
+                .map(|source| source.path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let expected = |texts: &[&str]| {
+            crate::stdlib::sources_for(texts.iter().copied())
+                .iter()
+                .map(|(path, _)| (*path).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let base = loaded(&mut session);
+        let edited = "let value = Json.Null\nlet answer = 42\nanswer\n";
+        session.buffers.insert(
+            path.clone(),
+            OpenBuffer {
+                uri: file_uri(&path).unwrap(),
+                text: edited.to_owned(),
+                version: 2,
+            },
+        );
+        let named = loaded(&mut session);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(base, expected(&[saved, "def other :: i64 = 1\n"]));
+        assert_eq!(
+            base.len(),
+            crate::stdlib::SOURCES.len() - crate::stdlib::OPT_IN.len()
+        );
+        assert_eq!(named, expected(&[edited, "def other :: i64 = 1\n"]));
+        assert!(named.iter().any(|path| path == "std/Json.tz"), "{named:?}");
+        assert_eq!(named.len(), base.len() + 1);
     }
 
     #[test]

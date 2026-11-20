@@ -2393,9 +2393,30 @@ impl crate::parallel_report::Sources for Project {
 }
 
 impl Project {
+    /// The package at `input` with the open buffers `overlays` in place of their files. Every std
+    /// module is loaded, the opt-in ones too (D-40): a caller that has no index of the opt-in
+    /// modules still finds them all in `sources`.
     pub fn load_with_overlays(
         input: &Path,
         overlays: &std::collections::BTreeMap<PathBuf, String>,
+    ) -> Result<Self, SourceError> {
+        Self::load_overlaid(input, overlays, true)
+    }
+
+    /// `load_with_overlays` for the language server (PB08 O6): only the opt-in std modules that the
+    /// sources, the open buffers included, name are loaded (`stdlib::sources_for`), as for `check`.
+    /// The language server answers for the others from its index of every std module.
+    pub(crate) fn load_for_editor(
+        input: &Path,
+        overlays: &std::collections::BTreeMap<PathBuf, String>,
+    ) -> Result<Self, SourceError> {
+        Self::load_overlaid(input, overlays, false)
+    }
+
+    fn load_overlaid(
+        input: &Path,
+        overlays: &std::collections::BTreeMap<PathBuf, String>,
+        all_std: bool,
     ) -> Result<Self, SourceError> {
         let directory = if input.is_dir() {
             input
@@ -2446,8 +2467,7 @@ impl Project {
                 normalized.insert(path, text.clone());
             }
         }
-        // The editor offers every std module, so it loads the opt-in ones too (D-40).
-        Self::load_from_root(&directory, None, &normalized, true, true)
+        Self::load_from_root(&directory, None, &normalized, all_std, true)
     }
 
     /// The package at `input` with its `Main.tz` replaced by `text`, or added when it has none
@@ -9120,7 +9140,7 @@ mod tests {
             std.iter()
                 .all(|source| source.origin == ModuleOrigin::Std && source.path.starts_with("std"))
         );
-        // The editor loads every std module.
+        // The public loader with open buffers loads every std module.
         let edited = Project::load_with_overlays(&directory.path, &Default::default()).unwrap();
         assert_eq!(
             edited
