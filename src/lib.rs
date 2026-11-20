@@ -1294,7 +1294,9 @@ mod tests {
     /// analysis with every std module, as the language server's were before: misspelt names of
     /// every opt-in module, every identifier of the opt-in sources as an unknown value (which the
     /// public functions, constants and cases match by their last part), and unknown functions of
-    /// reserved modules without a source.
+    /// reserved modules without a source. The same probes are also types (in a signature, and the
+    /// capitalized ones in a record literal and a record pattern), whose candidates include the
+    /// opt-in types that a user module names bare (`Tensor`, `WaitGroup`), and case patterns.
     #[test]
     fn editor_diagnostics_with_the_named_std_modules_are_those_with_every_std_module() {
         let names: std::collections::BTreeSet<&str> = stdlib::OPT_IN
@@ -1329,14 +1331,69 @@ mod tests {
             .filter(|probe| parses(&format!("let probe = {probe}")))
             .collect();
         assert!(probes.len() > 1000, "{}", probes.len());
-        let mut compared = (0, 0);
-        for chunk in probes.chunks(40) {
-            let text: String = chunk
+        // Each kind of position has texts of its own, so that the errors of one stage of the check
+        // do not hide those of another: a value (`value_pool`, `function_pool`), a type in a
+        // signature, a record literal and a record pattern (`type_pool`), and a case pattern
+        // (`pattern_pool`). Types and cases are capitalized; a lowercase word before `{` would be
+        // a computation expression.
+        type Line = fn(usize, &str) -> String;
+        let kinds: [(Line, bool); 5] = [
+            (
+                |index, probe| format!("def probe{index} :: i64 = {probe}\n"),
+                false,
+            ),
+            (
+                |index, probe| format!("def probe{index} :: ref {probe} -> i64 = \\_x -> 0\n"),
+                false,
+            ),
+            (
+                |index, probe| {
+                    format!(
+                        "def probe{index} :: own i64 -> i64 = \\_v -> {{ let _r = {probe} {{ count: 1 }}; 0 }}\n"
+                    )
+                },
+                true,
+            ),
+            (
+                |index, probe| {
+                    format!(
+                        "def probe{index} :: own i64 -> i64 = \\v -> match v with\n    | {probe} {{ count = c }} -> c\n"
+                    )
+                },
+                true,
+            ),
+            (
+                |index, probe| {
+                    format!(
+                        "def probe{index} :: own Maybe<i64> -> i64 = \\v -> match v with\n    | {probe} _ -> 0\n    | _ -> 1\n"
+                    )
+                },
+                true,
+            ),
+        ];
+        let mut texts = Vec::new();
+        for (kind, (line, capitalized)) in kinds.iter().enumerate() {
+            let probes: Vec<&String> = probes
                 .iter()
-                .enumerate()
-                .map(|(index, probe)| format!("def probe{index} :: i64 = {probe}\n"))
-                .collect::<String>()
-                + "0\n";
+                .filter(|probe| {
+                    (kind == 0 || parses(&line(0, probe)))
+                        && (!capitalized || probe.starts_with(|c: char| c.is_ascii_uppercase()))
+                })
+                .collect();
+            assert!(probes.len() > 200, "{kind}: {}", probes.len());
+            for chunk in probes.chunks(40) {
+                let text: String = chunk
+                    .iter()
+                    .enumerate()
+                    .map(|(index, probe)| line(index, probe))
+                    .collect::<String>()
+                    + "0\n";
+                texts.push((kind, text));
+            }
+        }
+        // Diagnostics, those with candidates, and those whose candidates hold an opt-in type.
+        let mut compared = (0, 0, 0);
+        for (kind, text) in &texts {
             let named = stdlib::sources_for([text.as_str()]);
             assert!(
                 named.len() < stdlib::SOURCES.len(),
@@ -1370,13 +1427,26 @@ mod tests {
                 .iter()
                 .filter(|diagnostic| !diagnostic.detail.candidates.is_empty())
                 .count();
+            compared.2 += with_all
+                .iter()
+                .filter(|diagnostic| {
+                    *kind > 0
+                        && diagnostic.detail.candidates.iter().any(|candidate| {
+                            candidate.signature == "type" && stdlib::is_opt_in(&candidate.name)
+                        })
+                })
+                .count();
             assert_eq!(
                 format!("{with_named:#?}"),
                 format!("{with_all:#?}"),
                 "{text}"
             );
         }
-        assert!(compared.0 > 1000 && compared.1 > 300, "{compared:?}");
+        eprintln!("{} texts, {compared:?}", texts.len());
+        assert!(
+            compared.0 > 3000 && compared.1 > 500 && compared.2 > 60,
+            "{compared:?}"
+        );
     }
 
     /// Analyzes `sources` as the user modules and compares the whole result at 1, 2 and 8 threads.

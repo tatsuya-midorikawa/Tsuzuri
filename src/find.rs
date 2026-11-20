@@ -1256,6 +1256,16 @@ impl Names {
             .chain(self.handle_aliases.keys())
             .map(String::as_str)
             .filter(|name| matches!(self.type_choice(module, name), Choice::Found(..)));
+        // PB08 O6: the types that a user module names bare in the opt-in std modules that the
+        // check does not load (`OptInModule::types`), as when the check loads them.
+        let unloaded = (self.opt_in_candidates && self.origin(module) == ModuleOrigin::User)
+            .then(|| {
+                opt_in_names()
+                    .unloaded(self)
+                    .flat_map(|module| module.types.iter().copied())
+            })
+            .into_iter()
+            .flatten();
         let primitive = crate::numeric::NUMERIC_NAMES.into_iter().chain([
             "bool",
             "unit",
@@ -1266,6 +1276,7 @@ impl Names {
             "bigint",
         ]);
         declared
+            .chain(unloaded)
             .chain(primitive)
             .map(|name| Pooled::new(name, 4, "type"))
             .collect()
@@ -1275,10 +1286,13 @@ impl Names {
 /// The names that the opt-in std modules give to the candidates of unresolved names (PB08 O6),
 /// read once per process from their sources: what `Names` holds of each module when a check loads
 /// it and a user module looks it up. The language server loads only the opt-in modules that the
-/// sources name; with `Names::opt_in_candidates`, `value_pool` and `function_pool` add the entries
-/// of the others, so that an unknown name gets the candidates, help and fix of a check that loads
-/// every std module, as the language server's did before. `opt_in_names_are_the_checker_names`
-/// (in `warnings.rs`) keeps this equal to `Names`.
+/// sources name; with `Names::opt_in_candidates`, `value_pool`, `function_pool` and `type_pool`
+/// add the entries of the others, so that an unknown name gets the candidates, help and fix of a
+/// check that loads every std module, as the language server's did before. The other pools need
+/// none: `member_pool` and `field_pool` serve a module or record that the source names (which
+/// loads it), and `pattern_pool` holds only the cases and active patterns that resolve bare, which
+/// an opt-in module's never do (`choose`). `opt_in_names_are_the_checker_names` (in `warnings.rs`)
+/// keeps this equal to `Names`.
 pub(crate) struct OptInNames {
     modules: Vec<OptInModule>,
 }
@@ -1291,6 +1305,13 @@ pub(crate) struct OptInModule {
     functions: Vec<(String, &'static str)>,
     /// The cases of its public unions, as `Names::cases` keys them (`Module.Case`).
     cases: Vec<String>,
+    /// The types that a user module names bare, as `type_pool` offers them: its public record,
+    /// union, extern type or type alias named after the module (`Tensor`, `WaitGroup`), if it has
+    /// one. `type_choice` follows the module path of a bare name to the module of that name (no
+    /// loaded module has the key, so no other module answers first, and `using std` reaches the
+    /// same module) and takes that module's own type of the same name when it is visible; the
+    /// other declarations of an opt-in module resolve only qualified (`choose`).
+    types: Vec<&'static str>,
 }
 
 impl OptInNames {
@@ -1333,17 +1354,42 @@ impl OptInNames {
                     .flat_map(|union| &union.cases)
                     .map(|case| format!("{key}.{}", case.name.text))
                     .collect();
+                let own_type = program
+                    .records
+                    .iter()
+                    .map(|record| (&record.name, record.visibility))
+                    .chain(
+                        program
+                            .unions
+                            .iter()
+                            .map(|union| (&union.name, union.visibility)),
+                    )
+                    .chain(
+                        program
+                            .extern_types
+                            .iter()
+                            .map(|handle| (&handle.name, handle.visibility)),
+                    )
+                    .chain(
+                        program
+                            .type_aliases
+                            .iter()
+                            .map(|alias| (&alias.name, alias.visibility)),
+                    )
+                    .any(|(name, visibility)| name.text == key && public(visibility));
                 Some(OptInModule {
                     key,
                     functions,
                     cases,
+                    types: own_type.then_some(key).into_iter().collect(),
                 })
             })
             .collect();
         Self { modules }
     }
 
-    /// Every entry, as `module M`, `function M.f <word>` and `case M.C`, sorted (PB08 tests).
+    /// Every entry, as `module M`, `function M.f <word>`, `case M.C` and `type T M.T`, sorted
+    /// (PB08 tests).
     #[cfg(test)]
     pub(super) fn entries(&self) -> Vec<String> {
         let mut entries = Vec::new();
@@ -1354,6 +1400,9 @@ impl OptInNames {
             }
             for key in &module.cases {
                 entries.push(format!("case {key}"));
+            }
+            for name in &module.types {
+                entries.push(format!("type {name} {}.{name}", module.key));
             }
         }
         entries.sort();

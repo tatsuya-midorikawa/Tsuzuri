@@ -1224,8 +1224,9 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   - 改訂（PB08 Phase 2 の O6、2026-11-20。チケットの D7）: 言語サーバーも、ソース（未保存のバッファを含む）が名前を書いた opt-in のモジュールだけを読む
     （`Project::load_for_editor`。公開の `Project::load_with_overlays` は今も全部を読む）。答えは変えない: モジュール名の補完は `stdlib::SOURCES` の一覧から、
     名前を書く前の `Json.` のメンバーの補完と、最初の編集が構文解析できない間の `Json.parse (` のシグネチャヘルプは、process に 1 回だけ作る全 std の索引
-    （`lsp::std_index`）から、未解決の名前の候補・help・修正案（`Matrx.init` に `Matrix`）は、読み込んでいない opt-in のモジュールの名前と公開の関数・case
-    （`find::OptInNames`。std のソースから process に 1 回だけ読む）を `value_pool`・`function_pool` に足して答える。
+    （`lsp::std_index`）から、未解決の名前の候補・help・修正案（`Matrx.init` に `Matrix`、型の `Tensr` に `Tensor`）は、読み込んでいない opt-in のモジュールの
+    名前と公開の関数・case を `value_pool`・`function_pool` に、モジュールと同じ名前の公開の型（利用者のモジュールが無修飾で書ける唯一の opt-in の宣言。
+    `type_choice` のモジュールのパスの規則）を `type_pool` に足して答える（`find::OptInNames`。std のソースから process に 1 回だけ読む）。
 - C10 Phase 1: std `Arena`。`Arena.Handle<'a>` の phantom 型引数は opaque な std record にだけ許す（利用者の record は従来どおり `E1024`）。arena ID は std 専用の
   組み込み `Arena.__next_id`（`@tz.arena.next_id` の `atomicrmw add monotonic`）。空き slot の世代は `-1 - g` で表し、ハンドルは使用中の slot にだけ一致する。
 - C10 D13・D14（Phase 2）: 参照カウントを導入した。`Rc<'a>`・`Rc.Weak<'a>`・`Arc<'a>`・`Arc.Weak<'a>` は `Type::Shared(Box<Type>, SharedKind)` の組み込みの型で、

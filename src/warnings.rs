@@ -1168,7 +1168,8 @@ mod tests {
     /// PB08 O6: the names that `find::OptInNames` reads from the opt-in std sources are those that
     /// `Names` holds of the opt-in modules when a check loads every std module: each module, its
     /// public functions, constants and extern functions that are not hidden, with the word of their
-    /// candidate signature, and the cases of its public unions.
+    /// candidate signature, the cases of its public unions, and the types that a user module names
+    /// bare (`type_choice` finds them, as `type_pool` asks, and they are declared in the module).
     #[test]
     fn opt_in_names_are_the_checker_names() {
         let every = format!(
@@ -1203,6 +1204,20 @@ mod tests {
                 for (name, case) in &names.cases {
                     if case.info.module == *key && case.info.visible_from("Main") {
                         entries.push(format!("case {name}"));
+                    }
+                }
+                let types: BTreeSet<&String> = names
+                    .record_aliases
+                    .keys()
+                    .chain(names.union_aliases.keys())
+                    .chain(names.type_alias_names.keys())
+                    .chain(names.handle_aliases.keys())
+                    .collect();
+                for name in types {
+                    if let Choice::Found(named, _) = names.type_choice("Main", name)
+                        && named.info().module == *key
+                    {
+                        entries.push(format!("type {name} {}", named.info().name));
                     }
                 }
             }
