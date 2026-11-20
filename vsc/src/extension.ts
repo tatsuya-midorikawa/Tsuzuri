@@ -187,9 +187,12 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export async function deactivate() {
+	// The maps are emptied before the servers stop, as `stop` does: a client that starts meanwhile (a document opened while
+	// Restart Language Server waits here) stays in them, rather than running with no entry that would stop it.
+	const stopping = [...clients.values()];
 	for (const watcher of watchers.values()) { watcher.dispose(); }
-	watchers.clear();
-	kinds.clear();
-	await Promise.allSettled([...clients.values()].map(client => client.stop()));
 	clients.clear();
+	kinds.clear();
+	watchers.clear();
+	await Promise.allSettled(stopping.map(client => client.stop()));
 }

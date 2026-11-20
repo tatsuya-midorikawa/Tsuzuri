@@ -97,12 +97,16 @@ async function host() {
 		TestRunRequest: class { constructor(readonly include?: Item[], readonly exclude?: Item[]) {} },
 		CancellationTokenSource: class { token = token(); dispose() {} },
 		TestRunProfileKind: { Run: 1, Debug: 2 },
+		RelativePattern: class { constructor(readonly base: unknown, readonly pattern: string) {} },
+		StatusBarAlignment: { Left: 1 },
 		tests: { createTestController: () => controller },
 		workspace: {
+			isTrusted: true,
 			textDocuments: documents,
 			getConfiguration: () => ({ get: () => undefined }),
 			findFiles: async () => [],
 			saveAll: async () => true,
+			getWorkspaceFolder: () => undefined,
 			createFileSystemWatcher(pattern: unknown) {
 				const watcher = { pattern, changed: [] as ((uri: Uri) => unknown)[] };
 				watchers.push(watcher);
@@ -111,10 +115,13 @@ async function host() {
 			},
 			onDidOpenTextDocument: (listener: (document: Document) => unknown) => { opened.push(listener); return disposable; },
 			onDidChangeWorkspaceFolders: () => disposable,
+			onDidChangeConfiguration: () => disposable,
 		},
 		window: {
 			activeTextEditor: { document: documents[0] },
 			createOutputChannel: () => ({ appendLine: (line: string) => output.push(line), dispose() {} }),
+			createStatusBarItem: () => ({ show() {}, hide() {}, dispose() {} }),
+			onDidChangeActiveTextEditor: () => disposable,
 		},
 		commands: {
 			registerCommand: (name: string, callback: (...args: unknown[]) => unknown) => { commands.set(name, callback); return disposable; },
@@ -125,10 +132,31 @@ async function host() {
 	const compiled: string[][] = [];
 	let held: ReturnType<typeof deferred<typeof passed>> | undefined;
 	const timers: (() => void)[] = [];
+	/** The language clients that the extension made; the first `stop` after `holdStop` returns only when it is resolved. */
+	const languageClients: { root: string; stopped: boolean }[] = [];
+	let stopHeld: ReturnType<typeof deferred<void>> | undefined;
+	class LanguageClient {
+		readonly root: string;
+		stopped = false;
+		constructor(_id: string, _name: string, _server: unknown, options: { workspaceFolder: { uri: Uri } }) {
+			this.root = options.workspaceFolder.uri.fsPath;
+			languageClients.push(this);
+		}
+		async start() {}
+		async stop() {
+			this.stopped = true;
+			const held = stopHeld;
+			stopHeld = undefined;
+			await held?.promise;
+		}
+	}
 	const modules = {
 		vscode,
+		'vscode-languageclient/node': { LanguageClient },
 		'./core': core,
+		'./editor': { registerEditor() {} },
 		'./toolchain': {
+			async toolchain() { return { compiler: 'tsuzuri', env: {} }; },
 			runCompiler(_context: unknown, _root: string, args: string[]) {
 				compiled.push(args);
 				const result = held;
@@ -152,13 +180,19 @@ async function host() {
 	const context = { subscriptions: [] as unknown[] };
 	const workflow = { begin: () => ({ epoch: 0, started: 0 }), track() {}, async publishDiagnostics() {}, async ensureDebugger() {} };
 	return {
-		top, app, file, files, documents, document, projectRoots, controller, commands, compiled, timers, output, vscode, token,
+		top, app, file, files, documents, document, projectRoots, controller, commands, compiled, timers, languageClients, output, vscode, token,
 		/** Registers the Test Explorer support and waits for its first roots. */
 		async testing() {
 			const testing = load('testing', modules, fakeTimers).registerTesting(context, vscode.window.createOutputChannel(), workflow);
 			await controller.resolveHandler();
 			return testing;
 		},
+		/** Activates the extension with `modules['./testing']` in place of the Test Explorer support. */
+		async activate(testing: unknown) {
+			return load('extension', { ...modules, './testing': { registerTesting: () => testing }, './workflow': { ...modules['./workflow'], registerWorkflow: () => ({}) } }, fakeTimers).activate(context);
+		},
+		/** Makes the next language client's `stop` wait until the returned deferred is resolved. */
+		holdStop() { return stopHeld = deferred(); },
 		/** Makes the next compiler run wait until the returned deferred is resolved. */
 		holdCompiler() { return held = deferred<typeof passed>(); },
 		/** Pauses the next lookup of a root after it read the files; it continues at `resume`. */
@@ -262,4 +296,30 @@ test('a root that was read before a change cleared the cache is not added to the
 			} finally { await stubbed.dispose(); }
 		});
 	}
+});
+
+test('a client that starts while Restart Language Server stops the others stays tracked, so no server runs without one', async () => {
+	const stubbed = await host();
+	const { app, top, commands, languageClients } = stubbed;
+	try {
+		const api = await stubbed.activate({ async reroot() {} });
+		assert.deepEqual([...api.clients.keys()], [app]);
+		// The restart waits while the server of top/a stops, and a document of the package top/b is opened meanwhile.
+		const stopping = stubbed.holdStop();
+		const restart = commands.get('tsuzuri.restartLanguageServer')!();
+		await settle();
+		assert.ok(languageClients[0].stopped);
+		const other = path.join(top, 'b');
+		stubbed.open(stubbed.document(path.join(other, 'Main.tz')));
+		await settle();
+		assert.deepEqual(languageClients.map(client => client.root), [app, other]);
+		stopping.resolve();
+		await restart;
+		await settle();
+		// Each server that runs has its client in the map, one for each root.
+		const running = languageClients.filter(client => !client.stopped);
+		assert.deepEqual(running.map(client => client.root).sort(), [app, other].sort());
+		for (const client of running) { assert.equal(api.clients.get(client.root), client); }
+		assert.deepEqual(stubbed.output, []);
+	} finally { await stubbed.dispose(); }
 });
