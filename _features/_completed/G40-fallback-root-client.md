@@ -309,6 +309,9 @@ VS Code はフォルダーの削除・移動を親の 1 件にまとめる（`vs
 - タスクはワークスペースのフォルダーごとのまま（対象外）。このリポジトリの `std/` を開くと `E1011` が 50 件出る（対象外）。
 - macOS の VS Code は保存を作成として知らせることがあり（`vsc/src/workflow.ts` の G39 の注記）、そのときも 300 ms 後に根を決め直す。cache を捨てるので次の走査は読み直すが、このリポジトリでも `std` で約 20 ms、上限に当たるフォルダーで約 0.5 秒。
 - `vscode.yml`（`ci:full`、5 環境）はこの作業では動かしていない（push しないため）。Windows ではシンボリックリンクの単体テストを飛ばし、論理は差し替えた走査のテストで確かめている。レビューの指摘 1（Windows で作業ディレクトリのフォルダーを消せない）の修正は、この macOS では修正前の失敗を再現できないので、`ci:full` の Windows の 2 環境の結果で確かめる。
+- 消えたフォルダーの文書がアクティブなときのコマンド（Run・Build・Check・Wasm・Debug Project）とタスクは、上への探索が着いた根（残った上のフォルダーなど）でコンパイラを動かす（Copilot の 3 回目の確認で見つけた。G40 より前はワークスペースのフォルダーで動かしていた）。テストの根もクライアントも作らないので、この対応では変えていない。
+- アクティブなファイルがない Test Project は、消えたワークスペースのフォルダーをテストの根にし、発見は作業ディレクトリがないので失敗する。`tsuzuri.projectPath` がないワークスペースのフォルダーも、`usedRoots` のワークスペースのフォルダーの枝がテストの根にする（Test Project はエラーを出すが、Testing ビューには発見に失敗する根が残る）。どちらも G40 より前と同じで、ほかのプロジェクトのテストは走らせない。
+- 統合テストの G39 Phase 1 の部分は、最初に開いて表示しない `other/Main.tz` を 3 分を超えてから保存するので、混んだ機械では `Document has been closed` で落ちうる（3 回目の対応の検証の 1 回目の実行）。G40 の検査がその前に増えたので、起動から保存までの時間が延びている。保存の前に `other` を開き直すか、エディターに表示しておけば時間に関係なくなるが、この対応では変えていない。
 - テストの根の外し方（仕様 5 からの逸脱）は、2026-11-20 に実装の規則を採り、仕様 5 をそれに合わせて改めた（利用者の「承認が必要なものについては、あなたが考えるベストな方法であれば全て承認します」（2026-11-19）による委任で、起票者が判断した。字面どおりの規則は G39 Phase 1 の統合テストを壊し、文書を閉じたプロジェクトを Testing ビューから消す）。
 
 ### レビューの指摘と対応（2026-11-20）
@@ -423,6 +426,50 @@ GitHub Copilot の 2 回目のレビュー（`b80175ed` に対するインライ
 
 - `cd vsc && npm run test:unit && npm run check-types && npm run lint`: 単体テストは 33 件すべて通過（前の 26 件に、`reroot.test.ts` の 4 件（そのうち 1 件は 3 つの入口の下位テスト）の 7 件を足した）、型検査と lint はエラーなし（`unit-final.log`）。`reroot.test.ts` は 30 回続けて動かして、毎回通った。
 - `cd vsc && node ../scripts/slot.mjs -- npm test`（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）: 16 の `VS Code:` 行と `All Tsuzuri VS Code integration checks passed.`（`integration-final.log`）。言語サーバーは変えていないので、同梱の `vsc/toolchain` を使った。サーバーが要求を断る `document directory does not exist` は、前と同じく 1 回出る。
+- `cargo fmt --all -- --check`（差分なし）、`node scripts/check-links.mjs --into _features/README.md`（11 リンク、0 件の切れ）、`node scripts/check-guide-lite.mjs`（88 件、0 件の失敗）、`node tests/platforms.mjs`、`git diff --check`。
+- 言語リファレンスのページと Rust のコードは変えていないので、`check-docs.mjs` と `cargo nextest` は動かしていない。
+
+#### 3 回目のレビュー（`229acf41` に対する 2 件と、ほかの入口の確認で見つけた退行）
+
+GitHub Copilot の 3 回目のレビュー（`229acf41` に対するインラインの 2 件）を、コードと照らして確かめた。2 件とも実在したので、それぞれを回帰テストと一緒に別のコミットで直した。
+あわせて、テストの根を足す場所とクライアントを起動する場所が `documentHasProject`・`settled` を飛ばしていないかを確かめ、G40 で入った退行を 1 件見つけて、同じく直した。
+決定事項と既存のテストの期待値は変えていない（`reroot.test.ts` の差し替えた `documentHasProject` を本物にしたのはテストの道具の変更で、既存の検査の期待値は同じ）。記録は `target/scratch/g40/copilot3/` にある。
+
+1. **4639825991（`vsc/src/core.ts:210`）: 一覧は読めないが中を調べられる知識グラフのディレクトリ（通常のファイルの `.tsuzuri-kg` を持つ）を、走査は `EACCES` で「含む」にするが、`collect_sources`（`src/driver.rs:1811-1814`）は一覧を読む前に印を見て飛ばす。** 実在した。
+   `collect_sources` と照らすと、違いは 3 つあった。発見が失敗する条件（一覧を読めないディレクトリ、下のディレクトリを読めないこと）は同じだった。
+   - 順序: `collect_sources` は根より下のディレクトリの `.tsuzuri-kg` を `fs::symlink_metadata` で調べ、通常のファイルなら一覧を読まずに飛ばす（根自体は調べない）。走査は一覧を読んでから一覧の中の印を見ていたので、一覧を読めないと印を見る前に「含む」になった（指摘の場面）。
+   - 辿らない調べ方: 一覧の項目の種類も辿らない種類なので、symlink の印を数えない点は同じだった。ただし `symlink_metadata` はディレクトリの検索の権限が要るので、一覧は読めるが中を調べられない（`r--`）ディレクトリでは失敗し、`collect_sources` はそのディレクトリを知識グラフとみなさずに読んで、下のディレクトリで失敗する。走査は一覧に印があるので飛ばしていた（逆向きの食い違い）。
+   - 大文字と小文字を区別しないボリューム: `symlink_metadata` は `.TSUZURI-KG` も見つけるが、走査は名前を完全一致で比べていた。
+   - 直し方: `RootFileSystem` に `isRegularFile`（`lstat`。symlink を辿らない）を足した。走査は、一覧が `ENOENT`・`ENOTDIR` 以外で失敗したときと、一覧に小文字にすると `.tsuzuri-kg` になる名前があるときだけ、印をそれで調べる。一覧のどの名前も印でなければボリュームも印を見つけないので、先に調べるのと結果は同じで、ディレクトリごとに 1 回だけ読むことも変わらない。根の `graph`（上の走査が cache を使い回すときに飛ばすかどうか）も同じ調べ方で決める。
+     `collect_sources` と同じ順に毎回先に `lstat` する形は、このリポジトリの 1024 個のディレクトリの走査で `lstat` が 1023 回増え、ほかの作業で混んだこの機械の暖まった 3 回の計測で、1 回の走査が 294〜354 ms から 393〜474 ms になった（`bench.out`）ので採らなかった。
+   - 独立した参照: コンパイラ（`target/debug/tsuzuri test <dir> --list --json`）で、A 読めない知識グラフ（成功）、B 読めない印のないディレクトリ（`E2001`）、C 読めないディレクトリの symlink の印（`E2001`）、D 調べられないディレクトリの印と下のディレクトリ（下のディレクトリで `E2001`）、E 調べられないディレクトリの印とファイル（成功）、F `.TSUZURI-KG` と壊れた symlink（このボリュームでは成功）、G 壊れた symlink だけ（`E1011`）を確かめた。
+     `229acf41` の走査は A・D・F で食い違い（`disk-head.out`・`disk-head-case.out`）、直した後はすべて一致する（`disk-after.out`・`disk-after-case.out`）。
+   - 回帰テスト: `core.test.ts` の `a knowledge graph is told by its marker as module discovery tells it, also when it cannot be listed or searched`。差し替えた file system（一覧を読めないディレクトリと中を調べられないディレクトリを足した）で 9 つの場面を確かめ、読めない知識グラフを先に根として調べた順でも確かめる。このホストのディスクでも（Windows とスーパーユーザーを除く）A・B・C・D の 4 つを確かめる。
+     `229acf41` では `a graph that cannot be listed` が `actual: '/w/notes'`・`expected: '/w'` で落ちる（`unit-item1-before.log`）。場面ごとには、読めない知識グラフ、調べられないディレクトリの印と下のディレクトリ、大文字と小文字を区別しないボリュームの `.TSUZURI-KG` の 3 つが食い違った（`unit-item1-cases-before.log`）。
+2. **4639826032（`vsc/src/testing.ts:425`）: 文書を開いたままプロジェクトのフォルダーを消すと、Test Project が残った上のフォルダーをテストの根にして、そこのテストを走らせる。開いた文書の購読（`:413`）も、遅い読み込みが消去と決め直しの後に終わると、その根を戻す。** 実在した。2 回目の対応で 2 か所に `settled` を入れたが、`documentHasProject` を見ていなかった。
+   - 2 か所とも、根と `documentHasProject` を同じ `settled` の読み込みで調べる（`testing.ts` の `documentRoot`）。読んでいる途中に cache が捨てられれば両方を読み直し、その確かめと同じタスクで使う。
+     開いた文書は、プロジェクトがなければ何も足さない。Test Project は、根を足さずに、なくなったフォルダーを名指すエラーを出す（`workflow.ts` の `missingProject`。`The folder of X.tz does not exist: <フォルダー>`）。
+     `tsuzuri.projectPath` の根がないときは、文書を開いたときと同じ `The project folder of tsuzuri.projectPath does not exist: <根>` を出す（`open` も同じ関数を使う）。それまでの Test Project は、ない根をテストの根にして発見に失敗していた（G40 より前から）ので、これは小さな振る舞いの変化で、CHANGELOG に書いた。
+   - 回帰テスト: `reroot.test.ts` の 3 つ。差し替えた `./workflow` の `documentHasProject`（常に真）を、コンパイルした `workflow.js` の本物（ディスクを読む）に替え、パッケージ `top/b` のフォルダーもディスクに作った。
+     - `Test Project reports that the folder of the active file does not exist, and adds no root above it`: アクティブな `top/a/X.tz` のフォルダー `top/a` を消して決め直してから Test Project を動かす。`229acf41` では残った `top` がテストの根になって落ちる（`unit-item2-before.log`）。
+     - `Test Project reports that the folder of tsuzuri.projectPath does not exist, as opening a document does`: `229acf41` では、ない `top/gone` がテストの根になって落ちる。
+     - `a document whose folder is deleted while its root is read adds no root above it when the lookup ends`: `top/a/Y.tz` を開いた読み込みを止めておき、その間に `top/a` を消して決め直してから続ける。`229acf41` では `top` が足されて落ちる。
+3. **ほかの入口の確認で見つけた退行: ワークスペースのフォルダー自体が消えると、その根が上のフォルダーになる。** 実在した（G40 で入った）。
+   確かめた入口: テストの根を足すのは、`discover`（呼び出し元が待った後に `roots.has` を確かめる）、`refreshRoots`・`testing.reroot`（`usedRoots` が文書ごとに `documentHasProject` を見る）、開いた文書と Test Project（2 で直した）、Test Project のアクティブなファイルがない枝。クライアントを起動するのは `open` だけで、`settled` と `documentHasProject` を使う（起動時、文書を開いたとき、決め直し、Restart Language Server のどれもそこを通る）。
+   残ったのは、アクティブなファイルがない Test Project（ワークスペースのフォルダーを選ぶ枝）だけで、2 回目に書いた理由で `settled` を使わず、文書がないので `documentHasProject` も当てはまらない。
+   ただし、そのワークスペースのフォルダーが消えていると、`ProjectRoots.find` はディレクトリでないパスをファイルとみなして親から探すので、根はワークスペースのフォルダーの上のフォルダーになり（それを走査し、ほかのプロジェクトを含めば残る根）、Test Project はそこをテストの根にしてテストを走らせた。アクティブなファイルがないときのコマンド（Run・Build・Check・Wasm・Debug Project）とタスクも同じ根を使う。G40 より前の `projectRoot` は、そのときワークスペースのフォルダー自体を返していた。
+   - `find` は、ワークスペースのフォルダーを、あるかどうかに関わらずディレクトリとして扱う。G40 より前と同じ根に戻り、上のフォルダーを読まない。
+   - 回帰テスト: `core.test.ts` の `a workspace folder that does not exist is its own root, and nothing above it is read`。直す前（`0a3df0e8`）は根が `/home/projects`（残る根）になって落ちる（`unit-item3-before.log`）。
+- 文書: `vsc/Development.md`（知識グラフのディレクトリの見分け方と、消えたフォルダーの文書がアクティブなときの Test Project のエラー）と、`vsc/CHANGELOG.md` の `## Unreleased`（消えたフォルダーの文書と、ない `tsuzuri.projectPath` での Test Project）。
+  `docs/architecture.md`（`collect_sources` を失敗させるものとして書いており、読めない知識グラフはそれに当たらないので正しいまま）、`vsc/README.md`、言語リファレンスは、書いている振る舞いが変わらないので変えていない。3 は G40 より前の振る舞いに戻すだけで、出していない版の退行なので CHANGELOG に書いていない。
+- この確認で見つけて直していないもの（テストの根もクライアントも作らないコマンドとタスク、G40 より前と同じで、ほかのプロジェクトのテストを走らせないもの）は、下の「残っている問題」に足した。
+
+#### 3 回目の対応の検証
+
+- `cd vsc && npm run test:unit && npm run check-types && npm run lint`: 単体テストは 38 件すべて通過（前の 33 件に、1 と 3 の 1 件ずつと 2 の 3 件を足した）、型検査と lint はエラーなし（`unit-final.log`）。
+- `cd vsc && node ../scripts/slot.mjs -- npm test`（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）: 2 回目で 16 の `VS Code:` 行と `All Tsuzuri VS Code integration checks passed.`（`integration-final.log`。VS Code の起動から終わりまで約 1 分半）。言語サーバーは変えていないので、同梱の `vsc/toolchain` を使った。サーバーが要求を断る `document directory does not exist` は、前と同じく 1 回出る。
+  1 回目は、G39 Phase 1 の部分（`extension.test.ts` の `assert.ok(await other.save())`）が `Error: Document has been closed` で落ちた（`integration-run1-flaky.log`。11 の `VS Code:` 行の後）。ほかの作業で混んだ機械で、VS Code の起動から落ちるまで 3 分 15 秒かかっていた。
+  `other`（`other/Main.tz`）はテストの最初に `openTextDocument` で開いてエディターに表示しない文書で、VS Code 1.103.2 は拡張が開いた文書の参照を 3 分（`workbench.desktop.main.js` の `1e3*60*3`）で手放すので、その後の `other` は閉じた文書になり、`applyEdit` は同じ URI の新しい文書を開く。この対応の変更とは関係しない時間の揺れだと判断した（下の「残っている問題」）。
 - `cargo fmt --all -- --check`（差分なし）、`node scripts/check-links.mjs --into _features/README.md`（11 リンク、0 件の切れ）、`node scripts/check-guide-lite.mjs`（88 件、0 件の失敗）、`node tests/platforms.mjs`、`git diff --check`。
 - 言語リファレンスのページと Rust のコードは変えていないので、`check-docs.mjs` と `cargo nextest` は動かしていない。
 
