@@ -317,9 +317,10 @@ fn builders_of_one_name_in_two_namespaces_are_told_apart_by_their_aliases() {
 }
 
 #[test]
-fn the_language_server_analysis_resolves_aliases_with_all_of_std_loaded() {
-    // The editor analyzes with every std module loaded, opt-in ones included; no std builder declares an alias since TZ13,
-    // so an alias is the user's builder, whichever modules sit beside it.
+fn an_analysis_with_every_std_module_resolves_aliases_to_the_user_builder() {
+    // `analyze_modules_with_semantics` loads every std module, opt-in ones included, as the public
+    // `Project::load_with_overlays` does (the language server loads only the named ones since PB08 O6); no std
+    // builder declares an alias since TZ13, so an alias is the user's builder, whichever modules sit beside it.
     let mine = builder("@alias mine");
     let (module, _index) = analyze_modules_with_semantics(&[
         (
