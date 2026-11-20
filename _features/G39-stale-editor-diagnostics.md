@@ -563,6 +563,7 @@ D.3 lib fixed and saved +5s: lib/Calc.tz [tsuzuri] E1003 @2:20
   `$tsuzuri` の定義は `package.json` に残す（利用者の `tasks.json` が名指ししている可能性がある）。
 - **D4: `tsuzuri-build` の項目は根単位で消す**（既定案）。1 つのファイルの変更が、ほかのファイルの診断を変えるため。
 - **D5: 言語サーバーは、根ごとに空でない診断を送ったパスとそのときの URI を覚え、送らなくなったパスと使わなくなった URI に `[]` を送る**（既定案）。パスだけを覚えると、消すときに作り直す URI が、空でない一覧を送った URI と違うことがある（4e の仕組み）。
+  Copilot のレビュー（PR #119）で補った: 同じサーバーの別の根の記録にまだある URI には `[]` を送らない（下の「チケットから外れた判断」8）。
 - **D6: 読み込みの失敗の間、ほかのファイルの前の解析の診断は消す**（既定案）。理由: 解析できない状態で前の結果を出し続けると、直したファイルのエラーが理由の表示なしに残る（4c）。
   失敗の理由は、そのファイルが閉じていても出す。前の解析の結果を薄く残す（タグを付ける）案は、LSP の診断に「古い」を表す標準の印がないので採らない。
 - **D7: `didChangeWatchedFiles` は、変わった URI を正準化して入るクライアントの根と、この session で診断を送った根を解析し直す**（既定案）。どのクライアントの根にも入らない URI から、新しい根を作らない。
@@ -808,6 +809,9 @@ T0・T1・T2 の結果は下の「レビューの前の確認」と「独立レ�
 4. **-32801 は要求だけに使う。** ID を持つ text sync（`rejects_documents_over_the_source_limit` のような `didOpen` の要求）は、今までどおり反映して答える。
 5. **URI を作れないパス（UTF-8 でないパス）には送らない。** 前は `"uri": null` の通知を送っていた。
 6. **`vsc/README.md`・`vsc/CHANGELOG.md`（`## Unreleased`）も更新した。** チケットの「ドキュメント」は Phase 2・3 に拡張の文書を挙げていないが、拡張の利用者から見える振る舞い（消える診断、拡張の watcher）が変わるため。
+7. **背圧は、本文の長さに加えて、メッセージごとに 1 KiB（`MESSAGE_COST`）を数える。** 設計（段 11）は、まだ処理していないメッセージの本文の合計にかけると書く。本文だけを数えると、本文が空か小さいメッセージを際限なく溜められる（下の Copilot のレビューの 2）。大きいメッセージの上限（16 MiB の本文 4 つ分）はほとんど変わらない。
+8. **同じサーバーの別の根の記録にまだある URI には `[]` を送らない（D5 の補足）。** D5・仕様 7 は、送らなくなった URI に `[]` を送ると書く。クライアントは URI の一覧を丸ごと置き換えるので、1 つのサーバーの複数の根が同じ URI に出すとき（両方が依存する根の外の `Tsuzuri.toml` の読み込みのエラー）、片方の `[]` がもう片方の診断を消す（下の Copilot のレビューの 3）。最後に出していた根が出さなくなったときに消す。D6 は変わらない。
+9. **拡張の `**` の削除の watcher が除くのは、`.` で始まる名前と `target/tz/kg/` だけ。** 設計の表（Phase 1 の新しい購読、Phase 2 の「除く場所は Phase 1 と同じ」）は `target/tz/` の下を除くと書き、理由を「モジュールの発見が読まず」とするが、発見は知識グラフの印のない `target/tz/` の下を読む（下の Copilot のレビューの 5）。コンパイラが `target/tz/` で入れ替えるのは知識グラフだけなので、そこだけを除く。`tsuzuri-build` の結果の消し方（Phase 1）も同じ関数を使う。
 
 ### 残る問題
 
@@ -816,6 +820,7 @@ T0・T1・T2 の結果は下の「レビューの前の確認」と「独立レ�
 - `Queue::superseded` は、計算する要求に当たるまで待ち行列を前から見る。取り消された要求が大量に並ぶ病的な入力では待ち行列の長さの 2 乗になるが、待ち行列は 64 MiB の背圧で抑えられる。
 - どのクライアントの根にも入らない文書（親のディレクトリを根とするもの）の D9 は、その親のディレクトリで判定する（今と同じ根の決め方）。
 - ID を使い回すクライアント（VS Code は使い回さない）で、答えた要求への遅れた取り消し、同じ ID の新しい要求、その取り消しが続けて届き、受信のスレッドが 3 つ目を読んで集合へ入れてからチャンネルへ送るまでの間に、主ループが 1 つ目を待ち行列へ移し（集合から消す）、3 つ目を移す前に新しい要求を始めると、その取り消しは効かない（下のレビューの指摘 4。3 つが 1 回の `try_recv` の間に揃う普通の場合は効く）。直すには、取り消しと要求に届いた順の番号を付けて比べる必要があり、この稀な場合のためには入れていない。
+- 1 つのサーバーの複数の根が同じ URI に違う一覧を出すとき（入れ子の根。G40）、出さなくなった根の `retire` は、別の根の記録にあるその URI に `[]` を送らない（逸脱 8）。その URI には最後に送った一覧が残り、それが出さなくなった根のものなら、別の根の次の解析まで残る（記録のある根なので、次のファイルの変更の通知で解析し直す）。根の外の読み込みのエラーは、どの根から見ても同じファイルの同じ誤りなので、この場合に当たらない。
 - 壊れた `Tsuzuri.toml` で、`tsuzuri check --json` の `line`・`column` が span（5 行目の 58..63）でなく `1`・`1` になる（独立レビューの観察。G39 より前からの CLI の振る舞い）。言語サーバーの範囲は span から作るので、受け入れ条件の「CLI の `--json` と同じ位置」は span で満たす。CLI の行と列は別に扱う。
 
 ### 独立レビューの指摘と対応（2026-11-20）
@@ -844,6 +849,42 @@ T0・T1・T2 の結果は下の「レビューの前の確認」と「独立レ�
 - T2: `cargo build --locked` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は 4 つのセッションが成功（`fix2/sessions.out`）。`node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/diagnostics.md _tsuzuri/language-reference/compiler/usage.md` は 2 ページ、137 リンク、5 例、4 回の native の実行（O0/O3）で成功（`fix2/check-docs.out`）。`cd vsc && npm run test:unit` は 21 passed（指摘 5 で 1 件を足した）、`npm run check-types`・`npm run lint` はエラーなし（`fix2/vsc-unit.out`）。
   拡張の統合テスト（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）は、16 の段と `All Tsuzuri VS Code integration checks passed.`（`fix2/vsc.out`）。同梱のツールチェーンは作り直さず、テストのワークスペースの `tsuzuri.compilerPath` を `a01e2665` の `target/debug/tsuzuri` にした。そのために `vsc/scripts/test-extension.mjs` を、追跡しない写し（`--user-data-dir` を短い `target/scratch/g39/ud` にし、設定に `tsuzuri.compilerPath` を足したもの）で動かし、終わってから消した。
   `node tests/platforms.mjs` は成功、`node scripts/check-links.mjs`（`--into _features/README.md` も）は 0 broken、`node scripts/check-guide-lite.mjs` は 88 references・0 failed、`git diff --check` は差分なし。`src/runtime/` は変えていないので `check-runtime-includes.sh` は動かしていない。
+
+### Copilot のレビュー（PR #119、2026-11-20）
+
+GitHub Copilot の 1 回目のレビュー（`a01e2665` のコード）の 5 件を、それぞれコードで確かめた。5 件とも本当の誤りで、すべて直した。各修正は、直す前に落ちる回帰テストと一緒に 1 つずつコミットした。記録は `target/scratch/g39/copilot1/`（`before.out` は 4 つの Rust のテストを直す前のコードで動かしたもの）。
+
+1. **4638745418（`src/lsp.rs:551`）: 消した・移したクライアントの根を、親のディレクトリとして読み込む。** 直した。
+   `ClientRoot` は根を `initialize` のときに一度だけ正準化するので、根のディレクトリを消した後も、その下の変更の通知と `published` の記録がその根を `schedule_root` する。`Project::load_with_overlays` はディレクトリでないパスには親のディレクトリを読む（`src/driver.rs:2400-2408`）ので、隣のプロジェクトを索引に入れ、その読み込みのエラーを送っていた（D9 の除外は根のディレクトリで判定するので、解析の診断は漏れていなかった）。
+   `refresh` は、根がディレクトリでなければ、読み込まずにその根を `projects`・`good` から捨て、空の `Sent` で `retire` する（記録の URI に `[]`）。読み込みのエラーは送らない（消えた根に、直すファイルはない）。
+   テスト `a_removed_root_is_not_loaded_through_its_parent`: 根 `app` を消して通知すると、`workspace/symbol` に隣の `other/Other.tz` の `beside_the_root` が出ず、`app/Helper.tz` に `[]` が届き、隣に置いた `Stray.old.tz` を通知した後も、`app` の下の空の一覧のほかは何も送られない。直す前は `beside_the_root` が返って落ち（`before.out`）、記号の検査を外すと `Stray.old.tz` に `E1011` が届いて落ちた（`before-1-phase2.out`）。
+2. **4638745452（`src/lsp.rs:3357`）: 本文が空のメッセージが背圧に数えられない。** 直した。
+   `Content-Length: 0` の枠は JSON の誤りとして待ち行列に入るが、本文の長さ 0 しか数えないので、主ループが計算している間に際限なく溜まる（本文の小さいメッセージも、待ち行列の項目に比べてほとんど数えない）。空の枠を拒む案は、今の振る舞い（`-32700` で答えて続ける）を変え、小さいメッセージの場合を残すので採らなかった。
+   受信のスレッドは、メッセージごとに本文の長さと `MESSAGE_COST`（1 KiB。チャンネルと待ち行列の項目の分）を数え、その値を `InputEvent::Message` に入れる。主ループは処理したときに同じ値（`Queued::bytes`）を引くので、数は釣り合う。どれだけ小さいメッセージでも、約 65,536 個で受信のスレッドが待つ（逸脱 7）。
+   テスト `src/lsp.rs` の `empty_messages_count_against_the_readers_limit`: 空の枠 100,000 個を `read_input` に渡すと、`Inbox` の数が `MAX_QUEUED_BYTES` を超えたところで受信のスレッドが待ち、終わりまで読まない。直す前は `the reader read all 100000 empty messages without waiting` で落ちた。
+3. **4638745474（`src/lsp.rs:514`）: ある根の `retire` が、別の根がまだ出している URI の一覧を消す。** 直した。
+   1 つのサーバーが複数の根（`workspaceFolders`）を受け持つと、両方が依存する根の外の壊れた `lib/Tsuzuri.toml` の `E0002` を両方の根が送り、それぞれの記録に入る。片方が依存を外すと、その `retire` が `[]` を送り、もう片方がまだ読み込めない理由が消えた（ファイルの変更の通知は記録のある根をすべて解析し直し、その順はパスの順なので、外した根が後に解析されると起きる）。
+   `retire` は、別の根の記録にまだある URI に `[]` を送らない。最後に出していた根が出さなくなったとき、その根の `retire` が消す（逸脱 8）。D6（読み込めない根のほかのファイルの診断を消す）は変わらない。D9 で解析の診断はその根の中のファイルにだけ送るので、別の根の記録と重なるのは、根の外の読み込みのエラーと、入れ子の根（G40。「残る問題」）だけ。VS Code の拡張は根ごとに別のクライアントを起動するので、この場面は複数の根を 1 つのサーバーに渡すエディターで起きる。
+   テスト `a_load_error_that_another_root_reports_stays`（`live::Server::start_with` を足し、`workspaceFolders` で 2 つの根を渡す）: 根 `one`・`two` が `../lib` に依存し、`lib/Tsuzuri.toml` が壊れている。`two` が依存を外すと（`one` が先に解析される）、`lib/Tsuzuri.toml` の `E0002` が残り、`one` も外すと `[]` が届く。直す前は `two` の後に `[]` になって落ちた（`left: [] right: ["E0002"]`）。
+4. **4638745506（`src/lsp.rs:3268`）: 要求より先に届いた取り消しが、その要求が届いた後も「待ち行列にない取り消し」に残る。** 直した。
+   cancel(A)、request(A)、存在しない ID の取り消し 1024 個が続くと、A が最も古いものとして外れ、`inbox.forget(A)` が取り消しを消すので、待ち行列の A を計算していた。
+   `Queue::push` は、要求が届いたら、その ID を `unmatched` から外す（取り消しはその要求のものになり、答えたときに `Queue::answer` が消す）。
+   テスト `src/lsp.rs` の `a_cancellation_before_its_request_survives_later_unknown_ones`: `Queue` と `Inbox` に、受信のスレッドと同じ順で cancel(5)・request(5)・存在しない ID の取り消し 1025 個を入れても、5 の取り消しが残る（時間に依らない）。直す前は `assertion failed: inbox.is_cancelled("5")` で落ちた。
+5. **4638745548（`vsc/src/core.ts:98`）: `target/tz/` の下のソースのフォルダーの削除が言語サーバーに届かない。** 直した。
+   モジュールの発見が飛ばすのは、`.` で始まる名前、パッケージの根、知識グラフの印（`.tsuzuri-kg`）のあるディレクトリだけで（`src/driver.rs` の発見）、`target/tz/` のほかのディレクトリは読む。`affectsRoot` は `target/tz/` の下のすべての削除を捨てていたので、`target/tz/gen`（`Gen.tz` を含む）を消しても、VS Code が送るフォルダーの 1 件の事象が言語サーバーに届かず、テストの実行の結果（`tsuzuri-build`）も消えなかった。
+   `affectsRoot` は、`target/tz/kg/`（根か根の下のパッケージの知識グラフ）とその下だけを捨てるようにした（逸脱 9）。コンパイラが `target/tz/` に書くのは知識グラフと、その入れ替えの一時ディレクトリ（`.tsuzuri-<pid>-<n>`。`.` で始まる）だけ。`target/tz/` のすべての削除を送る案は採らなかった: テストの発見（`tsuzuri test --list --json`。保存のたびに動く）も知識グラフを入れ替える（失敗した発見でも書くことを、このブランチの binary で確かめた）ので、保存のたびに refresh が 1 回増える。`--kg-dir`・`TSUZURI_KG_DIR` で根の中のほかの場所に置いた知識グラフの削除は送る（refresh が 1 回増えるだけ）。
+   テスト `vsc/src/test/core.test.ts`: `affectsRoot` と `notifiesServer` が `/w/app/target/tz/gen`（Windows の `C:\w\app\target\tz\gen` も）を通し、`target/tz/kg` とその下は今までどおり捨てる。直す前は `/w/app/target/tz/gen` で 21 件中 2 件が落ちた（`vsc-unit-before.out`）。
+
+文書: `docs/architecture.md` の言語サーバーの節（根がなくなったとき、別の根の記録にある URI、`MESSAGE_COST`、要求が届いた取り消し）、`_tsuzuri/language-reference/compiler/diagnostics.md` の「LSP での表示」（根のフォルダーの削除、別の根が出している診断）、`_tsuzuri/language-reference/compiler/usage.md` の `lsp`（背圧の数え方）。`vsc/README.md`・`vsc/CHANGELOG.md` は、除く場所を書いておらず、「プロジェクトの下のファイルやフォルダーの削除」の記述がこの修正で正しくなるので変えていない。
+
+#### 対応の後の確認（コードは `c7ae761d`）
+
+- T0: `cargo fmt --all -- --check` は差分なし、`cargo clippy --locked --all-targets -- -D warnings` は警告なし。`cargo nextest run --locked --test lsp --lib -E 'binary(lsp) | test(lsp::) | test(fix::)'` は 102 passed（`tests/lsp.rs` は 67 件。指摘 1 と 3 で 2 件、`src/lsp.rs` の `mod tests` に指摘 2 と 4 で 2 件を足した。`t0-area.out`）。待ち行列と新しいテストの 12 件（`-E 'test(a_reused_request_id) | test(a_link_created) | test(a_linked_root) | test(cancel) | test(content_modified) | test(removed_root) | test(another_root) | test(empty_messages)'`）を 6 回続けて動かし、6 回とも通った（`repeat.out`）。
+- `cd vsc && npm run test:unit` は 21 passed（指摘 5 は既存の 2 つのテストに場合を足した）、`npm run check-types`・`npm run lint` はエラーなし。
+- T1（`cargo nextest run --locked`）: 3370 passed・4 skipped（`t1.out`）。
+- T2: `cargo build --locked` の後、`node tests/lsp_sessions.mjs target/debug/tsuzuri` は 4 つのセッションが成功（`sessions.out`）。`TSUZURI_BIN=target/debug/tsuzuri node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/diagnostics.md _tsuzuri/language-reference/compiler/usage.md` は 2 ページ、137 リンク、5 例、4 回の native の実行（O0/O3）で成功（`check-docs.out`）。`node scripts/check-links.mjs`（`--into _features/README.md` も）は 0 broken、`node scripts/check-guide-lite.mjs` は 88 references・0 failed、`git diff --check` は差分なし。
+  拡張の統合テスト（`ELECTRON_RUN_AS_NODE` と `VSCODE_*` を外す）は、前の確認と同じ 15 行の `VS Code: …` と `All Tsuzuri VS Code integration checks passed.`（`vsc.out`）。前と同じく、テストのワークスペースの `tsuzuri.compilerPath` を `c7ae761d` の `target/debug/tsuzuri` にした追跡しない写し（`--user-data-dir` は `target/scratch/g39/ud`）で動かし、終わってから消した。
+  `src/runtime/` は変えていないので `check-runtime-includes.sh` は動かしていない。段 13 の計測は取り直していない（この修正は、待ち行列に入ったメッセージの数え方と、まれな取り消しと根の場合だけを変える）。`ci:full` は未実行。
 
 ### PB08 との合流
 
