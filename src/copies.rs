@@ -230,20 +230,26 @@ mod tests {
     use super::*;
     use crate::syntax::Edition;
 
-    /// The inputs of tests/copy_cost.rs.
-    const SOURCES: [&str; 14] = [
+    /// The inputs of tests/copy_cost.rs, all 19 of them.
+    const SOURCES: [&str; 19] = [
         // tests/copy_cost.rs `REUSED`.
         "let a = [1, 2, 3]\nlet b = a\nArray.length (ref a) + Array.length (ref b)",
         // tests/copy_cost.rs `MOVED`.
         "let a = [1, 2, 3]\nlet b = a\nArray.length (ref b)",
+        // tests/copy_cost.rs `MOVED_TWICE`.
+        "let a = [1, 2, 3]\nlet b = a\nlet c = b\nArray.length (ref c)",
         // tests/copy_cost.rs `SCALAR`.
         "let n = 5\nlet m = n\nn + m",
+        // tests/copy_cost.rs `SCALAR_RECORD`.
+        "record Point { value: i64 }\nlet p = Point { value: 1 }\nlet q = p\np.value + q.value",
         // tests/copy_cost.rs `FIELD`.
         "record Bag { items: [i64] }\nlet bag = Bag { items: [1, 2] }\nlet xs = bag.items\nlet ys = bag.items\nArray.length (ref xs) + Array.length (ref ys)",
         // tests/copy_cost.rs `LIST_REUSED`.
         "let a = [|1, 2, 3|]\nlet b = a\nList.length (ref a) + List.length (ref b)",
         // tests/copy_cost.rs `ARGUMENT_KEPT`.
         "def total :: [i64] -> i64\nfn total values = Array.length (ref values)\nlet a = [1, 2]\ntotal a + Array.length (ref a)",
+        // tests/copy_cost.rs `ARGUMENT_MOVED`.
+        "def total :: [i64] -> i64\nfn total values = Array.length (ref values)\nlet a = [1, 2]\ntotal a",
         // tests/copy_cost.rs `AGGREGATE_COPY`.
         "record Bag { items: [i64] }\nlet bag = Bag { items: [1] }\nlet other = bag\nArray.length (ref bag.items) + Array.length (ref other.items)",
         // tests/copy_cost.rs `DEREFERENCE`.
@@ -252,6 +258,10 @@ mod tests {
         "let offset = 1\nlet add = x -> x + offset\nlet f = add\nf 1 + add 2",
         // tests/copy_cost.rs `SPECIALIZED`.
         "def dup :: Copy<'a> => 'a -> ('a * 'a)\nfn dup value = (value, value)\nlet a = dup [1, 2]\nlet b = dup [1.5]\n0",
+        // tests/copy_cost.rs `EXPLICIT`.
+        "let a = [1, 2, 3]\nlet b = Array.copy (ref a)\nArray.length (ref a) + Array.length (ref b)",
+        // tests/copy_cost.rs `EXPLICIT_LIST`.
+        "let a = [|1, 2, 3|]\nlet b = List.copy (ref a)\nList.length (ref a) + List.length (ref b)",
         // tests/copy_cost.rs `BINDING`.
         "let pair = ([1, 2], 3)\nlet count = match pair with\n    | (items, n) -> Array.length (ref items) + n\nlet r = ref pair\ncount",
         // tests/copy_cost.rs `ELEMENT`.
