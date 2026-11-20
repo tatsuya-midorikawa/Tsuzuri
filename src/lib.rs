@@ -1247,6 +1247,44 @@ mod tests {
         }
     }
 
+    /// PB08 O5: the language server analyzes with up to 8 threads; its module, index and costly
+    /// sites (from the call facts of the check) are those of one thread.
+    #[test]
+    fn the_editor_analysis_does_not_depend_on_the_thread_count() {
+        let sources: Vec<_> = (0..30)
+            .map(|index| {
+                let mut text = String::new();
+                for function in 0..12 {
+                    text += &format!(
+                        "def f{function} :: i64 -> i64 = \\x ->\n    let unused{function} = x + {index}\n    let kept = [x, {function}]\n    let copy = kept\n    Array.length (ref kept) + Array.length (ref copy)\n\n"
+                    );
+                }
+                (format!("Module{index}.tz"), text)
+            })
+            .collect();
+        let analyze = |threads| {
+            with_inputs(&sources, |inputs| {
+                let mut index = check::semantic::SemanticIndex::default();
+                let module =
+                    analyze_inputs_for_editor(inputs, &mut index, Parallelism::fixed(threads))
+                        .unwrap();
+                let sites = module.costly_sites();
+                (
+                    format!("{:?}", module.module()),
+                    format!("{index:?}"),
+                    sites,
+                )
+            })
+        };
+        let sequential = analyze(1);
+        assert_eq!(sequential.2.len(), 30 * 12);
+        for threads in [2, 8] {
+            let (parallel, stages) = parallel_stages(|| analyze(threads));
+            assert!(stages >= 4, "{threads} threads: {stages} parallel stages");
+            assert!(parallel == sequential, "{threads} threads");
+        }
+    }
+
     /// Analyzes `sources` as the user modules and compares the whole result at 1, 2 and 8 threads.
     fn assert_same_on_every_thread_count(sources: &[(String, String)]) -> String {
         let sequential = format!("{:?}", analyze_on(1, sources));

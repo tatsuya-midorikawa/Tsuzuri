@@ -1515,7 +1515,9 @@ fn diagnostic_counts(diagnostics: &[Diagnostic]) -> BTreeMap<(Severity, &'static
     counts
 }
 
-/// Analyzes a project; a successful index also records `def` and `fn` heads.
+/// Analyzes a project; a successful index also records `def` and `fn` heads. Like the commands of
+/// the command line, it uses the available cores, at most 8, unless `TSUZURI_THREADS` says
+/// otherwise (PB08 O5); the result does not depend on the number.
 fn analyze(
     project: &Project,
 ) -> (
@@ -1543,7 +1545,7 @@ fn analyze(
     match crate::analyze_inputs_for_editor(
         &inputs,
         &mut semantic,
-        crate::parallel::Parallelism::library(),
+        crate::parallel::Parallelism::command_line(),
     ) {
         Ok(mut module) => {
             add_function_heads(&mut semantic, project);
@@ -3158,6 +3160,34 @@ mod tests {
         let body = &source[source.find("fn identifier").unwrap()..];
         let body = &body[..body.find("name => TokenKind::Ident").unwrap()];
         assert_eq!(body.matches("=> TokenKind::").count(), KEYWORDS.len());
+    }
+
+    /// PB08 O5: the language server analyzes with the threads of the command line (the available
+    /// cores, at most 8, unless `TSUZURI_THREADS` says otherwise), so its stages run on workers.
+    #[test]
+    fn analysis_uses_the_threads_of_the_command_line() {
+        let root = std::env::temp_dir().join(format!(
+            "tsuzuri-lsp-threads-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Main.tz"),
+            "let values = [1, 2]\nArray.length (ref values)\n",
+        )
+        .unwrap();
+        let project = Project::load_with_overlays(&root, &BTreeMap::new());
+        let before = crate::parallel::PARALLEL_STAGES.get();
+        let analyzed = project.map(|project| analyze(&project).0.is_some());
+        let stages = crate::parallel::PARALLEL_STAGES.get() - before;
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(analyzed.ok(), Some(true));
+        if crate::parallel::Parallelism::command_line().workers(usize::MAX, 1) > 1 {
+            assert!(stages > 0, "{stages}");
+        } else {
+            assert_eq!(stages, 0);
+        }
     }
 
     #[test]
