@@ -338,7 +338,7 @@ struct Session {
     encoding: PositionEncoding,
     /// The roots of `initialize` (`rootUri`, `workspaceFolders`), each with the URI that the client
     /// named it with (G39 D8).
-    client_roots: Vec<(PathBuf, String)>,
+    client_roots: Vec<ClientRoot>,
     buffers: BTreeMap<PathBuf, OpenBuffer>,
     projects: BTreeMap<PathBuf, ProjectState>,
     /// The last analyzed state of each root, kept while edits break analysis.
@@ -368,6 +368,27 @@ impl Default for Session {
     }
 }
 
+/// A root that the client named in `initialize`.
+struct ClientRoot {
+    /// The path of its URI.
+    path: PathBuf,
+    /// The path canonicalized when the client named it, so that a refresh does not resolve it again
+    /// for every file it publishes; `None` when it did not exist then.
+    canonical: Option<PathBuf>,
+    uri: String,
+}
+
+impl ClientRoot {
+    fn new(uri: &str) -> Result<Self, (i64, String)> {
+        let path = uri_path(uri).map_err(|message| invalid(&message))?;
+        Ok(Self {
+            canonical: path.canonicalize().ok(),
+            path,
+            uri: uri.to_owned(),
+        })
+    }
+}
+
 /// What one refresh of a root sent: the URI of each file that got a non-empty list, and every URI
 /// that got a list (G39 D5).
 #[derive(Default)]
@@ -391,9 +412,13 @@ impl Sent {
 impl Session {
     /// The client's roots that exist, canonicalized, with the URI that the client named each with.
     fn canonical_roots(&self) -> impl Iterator<Item = (PathBuf, &str)> {
-        self.client_roots
-            .iter()
-            .filter_map(|(root, uri)| Some((root.canonicalize().ok()?, uri.as_str())))
+        self.client_roots.iter().filter_map(|root| {
+            let canonical = root
+                .canonical
+                .clone()
+                .or_else(|| root.path.canonicalize().ok())?;
+            Some((canonical, root.uri.as_str()))
+        })
     }
 
     /// The innermost client root that contains the canonical `path`, with its URI.
@@ -602,20 +627,14 @@ impl Session {
                 self.encoding = PositionEncoding::Utf8;
             }
             if let Some(uri) = params["rootUri"].as_str() {
-                self.client_roots.push((
-                    uri_path(uri).map_err(|message| invalid(&message))?,
-                    uri.to_owned(),
-                ));
+                self.client_roots.push(ClientRoot::new(uri)?);
             }
             if let Some(folders) = params["workspaceFolders"].as_array() {
                 for folder in folders {
                     let uri = folder["uri"]
                         .as_str()
                         .ok_or_else(|| invalid("workspace folder needs a URI"))?;
-                    self.client_roots.push((
-                        uri_path(uri).map_err(|message| invalid(&message))?,
-                        uri.to_owned(),
-                    ));
+                    self.client_roots.push(ClientRoot::new(uri)?);
                 }
             }
             self.initialized = true;
