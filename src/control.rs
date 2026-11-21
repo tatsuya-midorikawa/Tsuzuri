@@ -1955,7 +1955,7 @@ impl Checker<'_> {
     fn poisoned_payload<'p>(&self, id: usize, arguments: &'p [Pattern]) -> Option<&'p Pattern> {
         let declared = self.names.declared.get(id)?;
         let arity = declared.parameters.len();
-        (arity > 0 && !declared.boolean_result && arguments.len() == arity)
+        (arity > 0 && !declared.bool_partial && arguments.len() == arity)
             .then(|| arguments.last())
             .flatten()
     }

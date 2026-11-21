@@ -7,7 +7,7 @@
 | 規模 | S〜M（`src/control.rs` の `active_pattern`、認識器の引数の数の記録、回帰テスト） |
 | 依存 | G44（done） |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-21（G44 の実装中に見つけた、G44 より前からある振る舞い。G44 で試した直し方はレビューで崩れたので外し、ここに記録する） |
 | 承認 | 不要（診断の連鎖を減らす直し。受け付けるプログラムは変えない） |
 | 改善する劣位 | 不具合: 本体やシグネチャのエラーでシグネチャが毒になった認識器を使う節では、ペイロードのパターンが名前を束縛しないので、節の本体のその名前が `unknown value`（`E1002`）になる |
@@ -46,3 +46,22 @@ match 42 with | Small value -> value | Large value -> value + 1 | _ -> 0
 - [ ] 観測のプログラムの `tsuzuri check` が、本体の `E1003` だけを出す。
 - [ ] 上の形のどれでも panic しない。誤ったプログラムを受け付けない（宣言のエラーが残る）。
 - [ ] 毒でない認識器の節の検査と、既存のテストが変わらない。
+
+## 実装と検証（2026-11-21）
+
+`main` `4c36bd1a` で着手した。
+
+- `DeclaredFunction` に `bool_partial`（部分パターンの認識器で、宣言した結果が `bool` に解決する。別名を含む）を足し、認識器を登録するところ（`src/check.rs`）で `resolve_type` から決める。シグネチャのほかの部分が毒になっても残る。
+- `src/control.rs` の `active_pattern` の毒の分岐で、`poisoned_payload`（宣言の引数の数と同じ数の引数を書いたときの最後の引数。`bool_partial` ならなし）を `payload_binders`（パターンの字句から束縛する名前を集める。ケース名・認識器・修飾した名前・値の引数は除く。or パターンは左側、入れ子の認識器は同じ規則でペイロードだけ）で歩き、それぞれを `TypedExpr::error(name.span)` に束縛する。`pattern_alternatives` は通さない（G44 で外した方法の panic を避ける）。
+- テスト（`tests/control.rs` の `a_poisoned_recognizer_still_binds_its_payload_names`）: 観測のプログラム、`Maybe.Some q`、修飾したレコード、タプル、or パターン、`::`、入れ子のケース、型テスト、入れ子の認識器（`Even`・`n & Even`・`as`）、配列、注釈のペイロードで、宣言の `E1003` だけが出て、束縛しない名前（`missing`）は `E1002` のまま。シグネチャで毒になった部分パターン（`ref Missing -> Maybe<Maybe<i64>>`）、`bool` を返す単一ケースの全域の認識器（ペイロードを束縛する）、`bool`（と別名）を返す部分パターン（`Even x` の `x` は束縛しない）、ペイロードの前の値の引数（外の `k` のまま）。
+- 文書: `active-pattern.md`、`docs/language.md`。
+
+### レビュー
+
+独立のレビュー（コンパイラ・文書とテストの 2 つの観点と、指摘ごとの反証）で、最初の実装が `bool` の規則を全域の単一ケースの認識器にも当てていた誤り（`(|IsBig|) :: … -> bool` のペイロードを束縛しなかった）、`bool` の別名を見ないこと、テストの不足（型テスト・入れ子の認識器・配列・`as`・注釈、`bool` の規則だけで決まる例、値の引数の検査が弱いこと）、文書の言い過ぎ（「報告するのは宣言のエラーだけ」、複数ケースだけに見える置き場所）を直した。panic・誤って受け付けるプログラム・外の変数を隠す束縛は見つからなかった。
+
+### 検証（macOS arm64、dev ビルド）
+
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`（ホストと `x86_64-pc-windows-msvc`）。
+- `cargo nextest run --locked`（全体）、`tests/control.rs`（33 件）。
+- `node scripts/check-docs.mjs _tsuzuri/language-reference/pattern-matching/active-pattern.md`。

@@ -394,6 +394,18 @@ fn a_poisoned_recognizer_still_binds_its_payload_names() {
             "def (|Inner|Outer|) :: i64 -> 'T = \\value ->\n{body}    if value < 10 then Inner (Maybe.Some (value, value)) else Outer value\n",
             "| Inner (Maybe.Some (x, y)) -> x + y | Inner Maybe.None -> 0 | Outer o -> o | _ -> 0",
         ),
+        (
+            "def (|Num|Rest|) :: i64 -> 'T = \\value ->\n{body}    let u: (i64 | string) = value\n    if value < 10 then Num u else Rest value\n",
+            "| Num (:? i64 as n) -> n | Num _ -> 0 | Rest o -> o | _ -> 0",
+        ),
+        (
+            "def (|Even|_|) :: i64 -> bool = \\value -> value % 2 == 0\n\ndef (|Small|Large|) :: i64 -> 'T = \\value ->\n{body}    if value < 10 then Small value else Large value\n",
+            "| Small (Even) -> 1 | Small (n & Even) -> n | Large (whole as copy) -> whole + copy | _ -> 0",
+        ),
+        (
+            "def (|Small|Large|) :: i64 -> 'T = \\value ->\n{body}    if value < 10 then Small [|value|] else Large value\n",
+            "| Small [|first|] -> first | Large (n: i64) -> n | _ -> 0",
+        ),
     ] {
         let source = format!(
             "{}\nmatch 42 with {arms}\n",
@@ -417,31 +429,49 @@ fn a_poisoned_recognizer_still_binds_its_payload_names() {
         [("E1004", source.find("Missing").unwrap())],
         "{source}"
     );
-    // The value arguments of a poisoned recognizer bind nothing: a partial recognizer declared
-    // `bool` has no payload, and an argument before the payload is an expression, so the outer
-    // `limit` and `k` keep their meaning (here `limit + "s"` is still an error).
-    let source = "def (|Big|_|) :: i64 -> Missing -> bool = \\limit value -> true\n\ndef f :: i64 -> i64 -> i64\nfn f n limit = match n with | Big limit -> limit + \"s\" | _ -> n\n\nf 12 3\n";
+    // A total single-case recognizer whose declared result is `bool` has a payload: its name is
+    // bound (only the declaration's error).
+    let source = "def (|IsBig|) :: ref Missing -> bool = \\value -> true\n\nmatch \"a\" with | IsBig b -> if b then 1 else 0\n";
+    assert_eq!(
+        error_sites(source),
+        [("E1004", source.find("Missing").unwrap())],
+        "{source}"
+    );
+    // A partial recognizer declared `bool` (also through an alias) has no payload: `Even x` binds
+    // nothing, so `x` is still the unknown value it is on main.
+    for declaration in [
+        "def (|Even|_|) :: Missing -> bool = \\value -> true\n",
+        "type Flag = bool\n\ndef (|Even|_|) :: Missing -> Flag = \\value -> true\n",
+    ] {
+        let source = format!("{declaration}\nmatch 1 with | Even x -> x | _ -> 0\n");
+        assert_eq!(
+            error_sites(&source),
+            [
+                ("E1004", source.find("Missing").unwrap()),
+                ("E1002", source.rfind("-> x").unwrap() + 3),
+            ],
+            "{source}"
+        );
+    }
+    // A value argument before the payload binds nothing: the outer `k` keeps its meaning, here a
+    // correct use, and the payload `q` is bound.
+    let source = "def (|Div|_|) :: i64 -> Missing -> Maybe<i64> = \\divisor value -> Maybe.None\n\ndef f :: i64 -> i64 -> i64\nfn f n k = match n with | Div k q -> q + k | Div k -> k | _ -> n\n\nf 12 3\n";
+    assert_eq!(
+        error_sites(source),
+        [("E1004", source.find("Missing").unwrap())],
+        "{source}"
+    );
+    // The outer `x` (a string) also stays the outer value for a `bool` partial recognizer, so
+    // returning it where `i64` is expected is still an error.
+    let source = "def (|Even|_|) :: Missing -> bool = \\value -> true\n\ndef f :: i64 -> string -> i64\nfn f n x = match n with | Even x -> x | _ -> n\n\nf 12 \"a\"\n";
     let sites = error_sites(source);
+    assert_eq!(sites.len(), 2, "{source}: {sites:?}");
     assert_eq!(
         sites[0],
         ("E1004", source.find("Missing").unwrap()),
         "{source}"
     );
-    assert!(
-        sites.iter().any(|(code, _)| *code == "E1003"),
-        "{source}: {sites:?}"
-    );
-    let source = "def (|Div|_|) :: i64 -> Missing -> Maybe<i64> = \\divisor value -> Maybe.None\n\ndef f :: i64 -> i64 -> i64\nfn f n k = match n with | Div k -> k + \"s\" | _ -> n\n\nf 12 3\n";
-    let sites = error_sites(source);
-    assert_eq!(
-        sites[0],
-        ("E1004", source.find("Missing").unwrap()),
-        "{source}"
-    );
-    assert!(
-        sites.iter().any(|(code, _)| *code == "E1003"),
-        "{source}: {sites:?}"
-    );
+    assert_eq!(sites[1].0, "E1003", "{source}: {sites:?}");
 }
 
 #[test]
