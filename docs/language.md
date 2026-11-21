@@ -1325,7 +1325,7 @@ def main :: unit -> i32 = \() ->
 WASM は到達する操作だけを `tsuzuri_io.read_line(ptr) -> i32`／`tsuzuri_io.write(i32, ptr, i64) -> i32` として import し、未提供時に無視しません。
 read_line は改行を除いた所有 UTF-8 bytes の descriptor（offset0 pointer、offset8 i64 length、size16）を全経路で設定し、0=行／1=EOF／2=失敗を返します。
 所有バッファは `tsuzuri_alloc` で確保し、空行・EOF・失敗は NULL／0 にできます。状態・長さ・NULL・範囲を受領時に検査し、UTF-8 検査は通常の from_bytes で行います。
-write は fd1／fd2 と借用 UTF-8 bytes を受け、0=全量書き込み・flush 成功、非0=失敗です。ホストは変更・解放・非同期保持をせず、line 版の LF を重複追加しません。
+write は fd1／fd2 と借用 UTF-8 bytes を受け、0=全量書き込み・flush 成功、非0=失敗です。ホストは変更・解放・非同期保持をせず、`ln` 版（`writeln`・`write_errln` とそれらの `try_` 版）が付けた LF を重複追加しません。
 IO を使わないプログラムの import 要件は変えません。既定の WASM 出力に WASI は要りません。`--wasm-host wasi` を指定したときだけ、標準入出力と OS API を WASI preview1 の import に下げます（[WASM と Windows](#wasm-と-windows)）。非同期イベントループは追加しません。
 API と詳しい利用例は [IO リファレンス](../_tsuzuri/language-reference/built-in-types-and-modules/io.md)にあります。
 

@@ -319,7 +319,7 @@ def main :: unit -> i32 = \() ->
 | `IO.write_error` / `IO.try_write_error` | `IO.write_err` / `IO.try_write_err` |
 | `IO.write_error_line` / `IO.try_write_error_line` | `IO.write_errln` / `IO.try_write_errln` |
 
-どれも確かな（`certain`）修正案を持ち、`tsuzuri fix` が 1 回ですべての箇所の関数名だけを書き換えます。`std::IO.` の修飾や空白は書いたまま残り、直したプログラムの意味は以前と同じです。自分の名前空間に置いたモジュール `IO`（`namespace App` の `App/IO.tz`）は標準の `IO` ではないので、そこにない関数は従来どおり `E1002` です（[エラーコード](../compiler/diagnostics.md#エラーコード)）。
+どれも確かな（`certain`）修正案を持ち、`tsuzuri fix` が関数名だけを書き換えます。`std::IO.` の修飾や空白、間のコメントは書いたまま残り、直したプログラムの意味は以前と同じです。`tsuzuri fix` は 1 ラウンドで解析が報告した箇所（エラーの表示の上限の 50 件まで）をまとめて直し、1 回の実行でこれを最大 5 ラウンド繰り返します。それより多くの箇所があるときは残りがあると表示するので、`tsuzuri fix` をもう一度実行します。`///` の例の中の名前は `tsuzuri check` と `tsuzuri fix` が読まないので、`tsuzuri test --doc` が報告する `E1040` を見て手で直します。プロジェクトのモジュール `IO`（たとえば名前空間 `App::Tools` の `Tools/IO.tz`）は標準の `IO` ではないので、そこにない関数は従来どおり `E1002` です（[エラーコード](../compiler/diagnostics.md#エラーコード)）。
 
 ## 所有権
 

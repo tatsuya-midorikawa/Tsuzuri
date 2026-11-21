@@ -305,8 +305,9 @@ IO {
   assert.equal(trapped.status, 1);
   assert.equal(JSON.parse(trapped.stderr.trim()).code, "E2005");
 
-  // The writers without try_ trap where their try_ form gives an Error (an isolated surrogate; for
-  // write and writeln also a closed standard output), after what they wrote before is out.
+  // The writers without try_ trap where their try_ form gives an Error (here an isolated surrogate),
+  // after what they wrote before is out. A closed standard output does not stop the writers to
+  // standard error.
   for (const [name, stdout, stderr] of [["write", "x", ""], ["writeln", "x\n", ""], ["write_err", "", "x"], ["write_errln", "", "x\n"]]) {
     writeFileSync(source, `IO {
     do! IO.${name} "x"
@@ -338,6 +339,42 @@ IO {
         assert.equal(result.stdout, expectedStdout, `${name} WASM ${optimization}`);
         assert.equal(result.stderr, stderr, `${name} WASM ${optimization}`);
       }
+    }
+  }
+  // On a closed standard output, write and writeln trap at their first write (WriteFailed): the write
+  // to standard error after them does not run.
+  for (const [name, stdout] of [["write", "x"], ["writeln", "x\n"]]) {
+    writeFileSync(source, `IO {
+    do! IO.${name} "x"
+    do! IO.write_err "after"
+}
+`);
+    for (const optimization of ["-O0", "-O3"]) {
+      const executable = join(root, `closed-${name}${optimization}`);
+      execute(compiler, ["build", source, optimization, "-o", executable]);
+      const open = execute(executable, [], {}, false);
+      assert.equal(open.status, 0, `${name} open stdout`);
+      assert.equal(open.stdout, stdout, `${name} open stdout`);
+      assert.equal(open.stderr, "after", `${name} open stdout`);
+      const readOnly = openSync(source, "r");
+      try {
+        const closed = execute(executable, [], { stdio: ["pipe", readOnly, "pipe"] }, false);
+        assert.notEqual(closed.status, 0, `${name} closed stdout`);
+        assert.equal(closed.stderr, "", `${name} closed stdout`);
+      } finally {
+        closeSync(readOnly);
+      }
+      const wasm = `${executable}.wasm`;
+      execute(compiler, ["build", source, "--target", "wasm32", optimization, "-o", wasm]);
+      const module = new WebAssembly.Module(readFileSync(wasm));
+      const written = host(module);
+      assert.equal(written.instance.exports.tsuzuri_main(), 0, `${name} WASM ${optimization}`);
+      assert.equal(written.stdout, stdout, `${name} WASM ${optimization}`);
+      assert.equal(written.stderr, "after", `${name} WASM ${optimization}`);
+      const failed = host(module, [], { writeFailure: true });
+      assert.throws(() => failed.instance.exports.tsuzuri_main(), WebAssembly.RuntimeError, `${name} WASM ${optimization} write failure`);
+      assert.equal(failed.stdout, "", `${name} WASM ${optimization} write failure`);
+      assert.equal(failed.stderr, "", `${name} WASM ${optimization} write failure`);
     }
   }
   console.log("IO: try_ writers give InvalidEncoding/WriteFailed and the trapping writers trap on native/WASM -O0/-O3");

@@ -789,6 +789,7 @@ fn tsuzuri_fix_writes_the_new_io_names() {
     let run = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
         .arg("fix")
         .arg(&directory)
+        .arg("--json")
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
@@ -797,7 +798,28 @@ fn tsuzuri_fix_writes_the_new_io_names() {
         "{stdout}\n{}",
         String::from_utf8_lossy(&run.stderr)
     );
-    assert!(stdout.contains("applied 10 fixes in 2 files"), "{stdout}");
+    // Every fix is applied in the first round, and the second analysis finds nothing to fix.
+    let events: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect(line))
+        .collect();
+    let fixes: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|event| event["event"] == "fix")
+        .collect();
+    assert_eq!(fixes.len(), 10, "{stdout}");
+    for fix in fixes {
+        assert_eq!(fix["status"], "applied", "{stdout}");
+        assert_eq!(fix["round"], 1, "{stdout}");
+        assert_eq!(fix["code"], "E1040", "{stdout}");
+        assert_eq!(fix["kind"], "renamed_io_function", "{stdout}");
+    }
+    let summary = events.last().expect("a summary");
+    assert_eq!(summary["event"], "summary", "{stdout}");
+    assert_eq!(summary["rounds"], 1, "{stdout}");
+    assert_eq!(summary["stop"], "fixed_point", "{stdout}");
+    assert_eq!(summary["applied"], 10, "{stdout}");
+    assert_eq!(summary["files"], 2, "{stdout}");
     assert_eq!(
         std::fs::read_to_string(directory.join("Main.tz")).unwrap(),
         new
