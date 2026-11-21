@@ -1425,3 +1425,39 @@ fn the_counts_follow_every_channel_call_rewrite_past_the_display_limit() {
     let errors = analyze_all(&fixed).expect_err("old names");
     assert_eq!(errors.counts.get(&(Severity::Error, "E1040")), Some(&50));
 }
+
+#[test]
+fn the_counts_follow_only_the_calls_that_the_rewrite_turns_into_e1040() {
+    // E19: a call whose types make it a candidate but whose callee is not written as the old name
+    // (`(+Channel.recv)`) stays an E1003, also past the 50 shown diagnostics, so the counts move
+    // only the calls that become E1040s, and fixing one of them lowers E1040 and leaves E1003.
+    let function = |index: usize, call: &str| {
+        format!(
+            "def f{index} :: own DataChannel.Receiver<i64> -> i64\nfn f{index} receiver =\n    match {call} (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n"
+        )
+    };
+    let mut source: String = (0..50)
+        .map(|index| function(index, "Channel.recv"))
+        .collect();
+    source.push_str(&function(50, "(+Channel.recv)"));
+    source.push_str("0\n");
+    use tsuzuri::diagnostic::Severity;
+    let errors = analyze_all(&source).expect_err("old names");
+    assert_eq!(errors.omitted, 1);
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1040")), Some(&50));
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1003")), Some(&1));
+    let fixed = source.replacen("match Channel.recv", "match DataChannel.recv", 1);
+    let errors = analyze_all(&fixed).expect_err("old names");
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1040")), Some(&49));
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1003")), Some(&1));
+    // The shown `(+Channel.recv)` stays the E1003 that it is.
+    assert!(
+        errors.diagnostics.iter().any(|error| error.code == "E1003"),
+        "{:?}",
+        errors
+            .diagnostics
+            .iter()
+            .map(|error| &error.message)
+            .collect::<Vec<_>>()
+    );
+}

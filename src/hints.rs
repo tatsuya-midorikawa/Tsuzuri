@@ -107,52 +107,72 @@ pub(crate) fn renames_to_data_channel(diagnostic: &Diagnostic) -> Option<(&'stat
         .then_some((function, callee))
 }
 
+/// The tokens of the old name `[path::]Channel.<function>` that the callee at `callee` is written
+/// as, whatever their spacing and the parentheses around it (its span holds those): the path
+/// before `Channel` (identifiers and `::`), `Channel`, and the function's name.
+fn old_channel_name<'t>(
+    tokens: &'t [Token],
+    callee: Span,
+    function: &str,
+) -> Option<(Vec<&'t Token>, &'t Token, &'t Token)> {
+    let inside: Vec<&Token> = tokens
+        .iter()
+        .filter(|token| token.span.start >= callee.start && token.span.end <= callee.end)
+        .filter(|token| !matches!(token.kind, TokenKind::LeftParen | TokenKind::RightParen))
+        .collect();
+    let [path @ .., module, dot, name] = inside.as_slice() else {
+        return None;
+    };
+    let is =
+        |token: &Token, text: &str| matches!(&token.kind, TokenKind::Ident(word) if word == text);
+    let qualified = path.len() % 2 == 0
+        && path.chunks(2).all(|pair| {
+            matches!(pair[0].kind, TokenKind::Ident(_))
+                && matches!(pair[1].kind, TokenKind::PathSep)
+        });
+    (qualified && is(module, "Channel") && matches!(dot.kind, TokenKind::Dot) && is(name, function))
+        .then(|| (path.to_vec(), *module, *name))
+}
+
 fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
     let mut lexed: BTreeMap<usize, Vec<Token>> = BTreeMap::new();
-    // The candidates that stay `E1003` (their tokens are not the old name): every other candidate,
-    // shown or past the display limit, counts as the `E1040` it becomes, so that the language
+    let user = |source: usize| {
+        inputs
+            .get(source)
+            .filter(|input| input.origin == ModuleOrigin::User)
+    };
+    // Every candidate whose callee is the old name in a source of the program becomes an `E1040`,
+    // shown or past the display limit: the counts of the codes follow, so that the language
     // server, which offers a quick fix only when it lowers the count of its code, offers this one.
-    let mut kept = 0;
+    let candidates = std::mem::take(&mut set.data_channel_candidates);
+    let mut renamed = 0;
+    for (callee, function) in &candidates {
+        let source = callee.source.unwrap_or(0);
+        let Some(input) = user(source) else {
+            continue;
+        };
+        let tokens = lexed
+            .entry(source)
+            .or_insert_with(|| lexer::lex_all(input.text, input.edition).0);
+        if old_channel_name(tokens, *callee, function).is_some() {
+            renamed += 1;
+        }
+    }
     for diagnostic in &mut set.diagnostics {
         let Some((function, callee)) = renames_to_data_channel(diagnostic) else {
             continue;
         };
-        // A candidate that does not become an `E1040` below stays an `E1003`.
-        kept += 1;
         let source = callee.source.or(diagnostic.span.source).unwrap_or(0);
-        let Some(input) = inputs
-            .get(source)
-            .filter(|input| input.origin == ModuleOrigin::User)
-        else {
+        let Some(input) = user(source) else {
             continue;
         };
-        // The callee's tokens, whatever their spacing: `Channel.recv`, `Channel . recv`, a path
-        // before it (`std::Channel.recv`), and parentheses around it (its span holds those).
         let tokens = lexed
             .entry(source)
             .or_insert_with(|| lexer::lex_all(input.text, input.edition).0);
-        let inside: Vec<&Token> = tokens
-            .iter()
-            .filter(|token| token.span.start >= callee.start && token.span.end <= callee.end)
-            .filter(|token| !matches!(token.kind, TokenKind::LeftParen | TokenKind::RightParen))
-            .collect();
-        let [path @ .., module, dot, name] = inside.as_slice() else {
+        let Some((path, module, name)) = old_channel_name(tokens, callee, function) else {
             continue;
         };
-        let is = |token: &Token, text: &str| matches!(&token.kind, TokenKind::Ident(word) if word == text);
-        let qualified = path.len() % 2 == 0
-            && path.chunks(2).all(|pair| {
-                matches!(pair[0].kind, TokenKind::Ident(_))
-                    && matches!(pair[1].kind, TokenKind::PathSep)
-            });
-        if !qualified
-            || !is(module, "Channel")
-            || !matches!(dot.kind, TokenKind::Dot)
-            || !is(name, function)
-        {
-            continue;
-        }
-        let mut span = path.first().unwrap_or(module).span;
+        let mut span = path.first().copied().unwrap_or(module).span;
         span.end = name.span.end;
         span.source = Some(source);
         // The name as written, with `DataChannel` for `Channel`.
@@ -206,11 +226,8 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
             ),
             None => renamed,
         };
-        kept -= 1;
     }
-    let renamed = set.data_channel_candidates.saturating_sub(kept);
-    // Moved once: a second pass over the same set finds no candidate to move.
-    set.data_channel_candidates = 0;
+    // The candidates are taken: a second pass over the same set moves nothing.
     if renamed > 0 {
         let mismatches = (crate::diagnostic::Severity::Error, "E1003");
         if let Some(count) = set.counts.get_mut(&mismatches) {

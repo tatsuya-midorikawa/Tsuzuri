@@ -28,10 +28,12 @@ pub struct DiagnosticSet {
     /// How many diagnostics of each severity and code were collected, the omitted ones included
     /// (up to the collection limit; `omitted_is_lower_bound` says whether it was reached).
     pub counts: BTreeMap<(Severity, &'static str), usize>,
-    /// How many of the counted diagnostics are `E1003`s that `hints::renamed_channel_calls` turns
-    /// into `E1040`s (`hints::renames_to_data_channel`), the omitted ones included: the rewrite
-    /// moves them between the two codes in `counts` (E19).
-    pub data_channel_candidates: usize,
+    /// The callee (with its source) and the function of each counted diagnostic, the omitted ones
+    /// included, that is an `E1003` of `Channel.send` or `Channel.recv` given an end of a
+    /// `DataChannel` by its types (`hints::renames_to_data_channel`): `hints::renamed_channel_calls`
+    /// moves the ones whose callee is written as the old name from `E1003` to `E1040` in `counts`
+    /// (E19).
+    pub data_channel_candidates: Vec<(Span, &'static str)>,
 }
 
 impl DiagnosticSet {
@@ -147,13 +149,15 @@ impl Diagnostics {
     pub fn finish(self) -> DiagnosticSet {
         let omitted_is_lower_bound = self.is_full();
         let mut counts = BTreeMap::new();
-        let mut data_channel_candidates = 0;
+        let mut data_channel_candidates = Vec::new();
         for diagnostic in self.entries.values() {
             *counts
                 .entry((diagnostic.severity, diagnostic.code))
                 .or_insert(0) += 1;
-            if crate::hints::renames_to_data_channel(diagnostic).is_some() {
-                data_channel_candidates += 1;
+            if let Some((function, mut callee)) = crate::hints::renames_to_data_channel(diagnostic)
+            {
+                callee.source = callee.source.or(diagnostic.span.source);
+                data_channel_candidates.push((callee, function));
             }
         }
         DiagnosticSet {
