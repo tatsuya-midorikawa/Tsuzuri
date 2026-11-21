@@ -6425,6 +6425,7 @@ impl Names {
         spelled: &str,
         member: &str,
         span: Span,
+        local: &dyn Fn(&str) -> bool,
     ) -> Option<(Diagnostic, Option<String>)> {
         let (module, prefix) = self.removed_module(requester, spelled)?;
         let (kind, message, help, replacement) = removed_feature(module, member)?;
@@ -6434,8 +6435,9 @@ impl Names {
             message.replacen(&format!("'{module}."), &format!("'{prefix}{module}."), 1)
         };
         // The replacement as written: after `std::`, with `std::`; else bare, or with `std::`
-        // where the bare module is not the std one. Where neither spelling names it, there is
-        // no fix and no recovery.
+        // where the bare module is not the std one or a local binding of the value position
+        // (`local`) has its name. Where neither spelling names it, there is no fix and no
+        // recovery.
         let replacement = replacement.and_then(|text| {
             let (target, _) = text.rsplit_once('.')?;
             let candidates: &[&str] = if prefix.is_empty() {
@@ -6444,7 +6446,8 @@ impl Names {
                 &[prefix]
             };
             let chosen = candidates.iter().find(|candidate| {
-                self.names_std_module(requester, &format!("{candidate}{target}"), target)
+                !(candidate.is_empty() && local(target))
+                    && self.names_std_module(requester, &format!("{candidate}{target}"), target)
             })?;
             let written = format!("{chosen}{text}");
             message = message.replace(&format!("'{text}'"), &format!("'{written}'"));
@@ -6481,7 +6484,7 @@ impl Names {
         let (module, _, member) = self.removed_qualified(requester, name)?;
         let (written, _) = name.rsplit_once('.')?;
         (module == "Async")
-            .then(|| self.removed_written(requester, written, member, span))?
+            .then(|| self.removed_written(requester, written, member, span, &|_| false))?
             .map(|(diagnostic, _)| diagnostic)
     }
 
@@ -6948,7 +6951,7 @@ impl Names {
             _ if self.removed_qualified(module, &head.text).is_some() => {
                 let (written, name) = head.text.rsplit_once('.').expect("a qualified name");
                 let (removed, replacement) = self
-                    .removed_written(module, written, name, head.span)
+                    .removed_written(module, written, name, head.span, &|_| false)
                     .expect("a removed name");
                 // The name that replaced it resolves in its place, and the `E1040` waits in
                 // `renamed`, so that one analysis finds every use of the old names.
@@ -13414,10 +13417,13 @@ impl<'a> Checker<'a> {
                         self.recovered.push(renamed);
                         return self.value_expression(&replaced, expected);
                     }
-                    if let Some((removed, replacement)) =
-                        self.names
-                            .removed_written(self.module, &spelled, &field.text, whole)
-                    {
+                    if let Some((removed, replacement)) = self.names.removed_written(
+                        self.module,
+                        &spelled,
+                        &field.text,
+                        whole,
+                        &|name| self.local(name).is_some(),
+                    ) {
                         // Recovery checks the name that replaced it, so that one analysis finds
                         // every use of the old names and `tsuzuri fix` moves a program in a round.
                         // The replacement is a whole expression of its own type, so the function

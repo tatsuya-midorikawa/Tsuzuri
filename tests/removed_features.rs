@@ -1269,4 +1269,18 @@ fn the_replacement_says_std_where_the_program_has_the_module() {
     assert_eq!(error.code, "E1040", "{}", error.message);
     assert_eq!(error.kind, Some("renamed_to_data_channel"));
     assert!(error.fixes.is_empty(), "{:?}", error.fixes);
+    // A local binding named like the replacement module takes the bare name in a value
+    // position: the fix says `std::`, and the fixed program calls the std function.
+    let source = "record Box { bounded: i64 -> i64, scope: i64 -> i64 }\n\ndef f :: unit -> i64\nfn f _unit = {\n    let DataChannel = Box { bounded: \\n -> n + 1, scope: \\n -> n };\n    let pair: (std::DataChannel.Sender<i64> * std::DataChannel.Receiver<i64>) = Channel.bounded 3;\n    0\n}\n\n0\n";
+    let error = analyze(source).unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert_eq!(
+        error.message,
+        "'Channel.bounded' is now 'std::DataChannel.bounded'"
+    );
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.bounded");
+    let source = "record Box { scope: i64 -> i64 }\n\ndef f :: unit -> i64\nfn f _unit = {\n    let Routine = Box { scope: \\n -> n };\n    let base = 10i64;\n    let values = Task.scope (ref base) 4 (\\shared index -> deref shared + index);\n    Array.sum (ref values)\n}\n\n0\n";
+    let error = analyze(source).unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert_eq!(error.fixes[0].edits[0].text, "std::Routine.scope");
 }
