@@ -1975,15 +1975,18 @@ impl Checker<'_> {
                     binders.push(name.clone());
                 }
             }
-            PatternKind::Apply(name, arguments) => match self.active_recognizer(name) {
-                Ok(Some((id, _))) => {
-                    if let Some(payload) = self.poisoned_payload(id, arguments) {
-                        self.payload_binders(payload, binders);
+            // A case comes before a recognizer of the same name, as in `pattern_alternatives`.
+            PatternKind::Apply(name, arguments) => match self.pattern_case(name) {
+                Ok(Some(_)) => {
+                    for argument in arguments {
+                        self.payload_binders(argument, binders);
                     }
                 }
                 Ok(None) => {
-                    for argument in arguments {
-                        self.payload_binders(argument, binders);
+                    if let Ok(Some((id, _))) = self.active_recognizer(name)
+                        && let Some(payload) = self.poisoned_payload(id, arguments)
+                    {
+                        self.payload_binders(payload, binders);
                     }
                 }
                 Err(_) => {}

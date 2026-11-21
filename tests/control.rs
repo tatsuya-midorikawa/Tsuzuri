@@ -429,6 +429,43 @@ fn a_poisoned_recognizer_still_binds_its_payload_names() {
         [("E1004", source.find("Missing").unwrap())],
         "{source}"
     );
+    // A union case comes before a recognizer of the same name in another module, as in the
+    // patterns of a recognizer that is not poisoned: `Even q` binds `q`.
+    let main = "union Parity = Even of i64 | Odd\n\ndef (|Small|Large|) :: i64 -> 'T = \\value ->\n    let bad = 1 + \"x\"\n    if value < 10 then Small (Even value) else Large Odd\n\nmatch 4 with | Small (Even q) -> q | Large _ -> 0 | _ -> 0\n";
+    let error = analyze_modules(&[
+        ("Main.tz", main),
+        (
+            "Other.tz",
+            "def (|Even|_|) :: i64 -> bool = \\value -> value % 2 == 0\n",
+        ),
+    ])
+    .unwrap_err();
+    assert_eq!(
+        (error.code, error.span.start),
+        ("E1003", main.find("1 + \"x\"").unwrap()),
+        "{}",
+        error.message
+    );
+    let all = tsuzuri::analyze_modules_all(&[
+        ("Main.tz", main),
+        (
+            "Other.tz",
+            "def (|Even|_|) :: i64 -> bool = \\value -> value % 2 == 0\n",
+        ),
+    ])
+    .unwrap_err();
+    assert_eq!(
+        all.diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.starts_with('E'))
+            .count(),
+        1,
+        "{:?}",
+        all.diagnostics
+            .iter()
+            .map(|diagnostic| &diagnostic.message)
+            .collect::<Vec<_>>()
+    );
     // A total single-case recognizer whose declared result is `bool` has a payload: its name is
     // bound (only the declaration's error).
     let source = "def (|IsBig|) :: ref Missing -> bool = \\value -> true\n\nmatch \"a\" with | IsBig b -> if b then 1 else 0\n";
