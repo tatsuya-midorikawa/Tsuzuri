@@ -233,6 +233,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | E17 | [`IO` の入出力関数名の統一（`readln`／`writeln`／`write_err`／`write_errln` と `try_` 版）](_completed/E17-io-function-names.md) | P1 | M | E02, G23, G24, G34, G35 | done（`IO` の入出力関数を `readln`・`writeln`・`write_err`・`write_errln` と `try_` 版の 10 個にし、`write_line` と別名 `writeln` を `writeln` に統合。旧名 8 個は `E1040`（`renamed_io_function`）と、関数名だけを書き換える確かな修正案。プロジェクトの名前空間のモジュール `IO` は `E1002` のまま。リポジトリ全体の呼び出し・テスト・文書を移行） |
 | E18 | [`E1040` の旧名の検出を std モジュールへの解決にそろえる（`Channel`・`Net`・`Task`・`Async`）](_completed/E18-removed-names-resolve-std-modules.md) | P3 | S | E17 | done（書いたモジュールが std のモジュールに解決するときだけ `E1040`、プロジェクトのモジュールにない名前は `E1002`・`E1004`。`std::` 付きも `E1040` で、メッセージと修正案は `std::` を保つ。置き換えのモジュールがプロジェクトのものなら `std::` を付ける。確かな改名の回復は関数を毒にしない） |
 | E19 | [`DataChannel` の端に使った `Channel.send`・`Channel.recv` の書き換えも、置き換えの名前を確かめる](_completed/E19-data-channel-call-rewrite-spelling.md) | P3 | S | E18 | done（検査器が呼び出しの位置から `DataChannel` と `std::DataChannel` が std のモジュールを指すかを `detail.data_channel` に書き、`hints.rs` の書き換えはそれで裸・`std::`・修正案なしを選ぶ） |
+| E20 | [利用者の共用体と同じ名前の std の組み込みモジュールの関数を、`std::` を付けて書いても共用体のケースとして探す](E20-std-qualified-builtin-beside-user-union.md) | P3 | S〜M | E19 | todo |
 
 ### F. 並列・性能バックエンド
 

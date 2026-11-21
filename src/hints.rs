@@ -73,6 +73,9 @@ pub(crate) fn annotate(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
 /// module `Channel` of the program keeps its `E1003`.
 fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
     let mut lexed: BTreeMap<usize, Vec<Token>> = BTreeMap::new();
+    // How many E1003s became E1040s: `set.counts` follows, so that the language server, which
+    // offers a quick fix only when it lowers the count of its code, offers this one (E19).
+    let mut replaced = 0;
     for diagnostic in &mut set.diagnostics {
         if diagnostic.kind != Some("type_mismatch") {
             continue;
@@ -192,6 +195,19 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
             ),
             None => renamed,
         };
+        replaced += 1;
+    }
+    if replaced > 0 {
+        let mismatches = (crate::diagnostic::Severity::Error, "E1003");
+        if let Some(count) = set.counts.get_mut(&mismatches) {
+            *count = count.saturating_sub(replaced);
+            if *count == 0 {
+                set.counts.remove(&mismatches);
+            }
+        }
+        *set.counts
+            .entry((crate::diagnostic::Severity::Error, "E1040"))
+            .or_default() += replaced;
     }
 }
 

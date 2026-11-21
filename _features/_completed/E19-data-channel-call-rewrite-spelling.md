@@ -12,7 +12,7 @@
 | 承認 | 不要（E18 の D2 と同じ規則を、`renamed_to_data_channel` のもう 1 つの出どころにも当てはめる直し） |
 | 改善する劣位 | 不具合: `hints.rs` の書き換えは、型の検査の後で字句から `DataChannel.send` を作るので、プロジェクトのモジュールやローカルの束縛が裸の `DataChannel` を持つところでも、そのまま書いていた |
 | 手本にする既存実装 | E18 の `Names::removed_written`・`Names::names_std_module`（D2）と、値の位置のローカルの束縛の確かめ |
-| 主な影響ファイル | `src/check.rs`, `src/diagnostic.rs`, `src/hints.rs`, `tests/removed_features.rs`, `_tsuzuri/language-reference/compiler/diagnostics.md`, `_tsuzuri/language-reference/built-in-types-and-modules/channel.md`, `docs/language.md`, `docs/architecture.md` |
+| 主な影響ファイル | `src/check.rs`, `src/diagnostic.rs`, `src/hints.rs`, `tests/removed_features.rs`, `tests/lsp.rs`, `_tsuzuri/language-reference/compiler/diagnostics.md`, `_tsuzuri/language-reference/built-in-types-and-modules/channel.md`, `docs/language.md`, `docs/architecture.md` |
 
 ## 観測
 
@@ -32,3 +32,14 @@
 - `src/hints.rs`: 上の仕様の綴りの選択。
 - テスト（`tests/removed_features.rs` の `the_channel_call_rewrite_writes_a_data_channel_that_keeps_its_meaning`）: プロジェクトのモジュール `DataChannel` があるときの `std::DataChannel.recv`（メッセージ・題・直したプログラムが通ること）、ローカルの束縛 `DataChannel` があるとき、プロジェクトの名前空間 `std` の `DataChannel` もあって修正案がないとき（`Main` は `DataChannel` を書かず、別の名前空間の関数から受け手を得る）、書いた `std::` がその名前空間に取られて修正案がないとき、何もないときの裸の `DataChannel.recv`。既存の `names_the_data_channel_names`（`std::Channel.recv` を含む）は変わらない。
 - 文書: `compiler/diagnostics.md`（`E1040`）、`channel.md`（旧 `Channel` のプログラム）、`docs/language.md`（`E1040` の行）、`docs/architecture.md`（`E1040` の節）。E18 の「残る制限」から本チケットを指した。
+
+### レビュー
+
+独立のレビュー（コンパイラ・文書とテストの 2 つの観点と、指摘ごとの反証）で、プロジェクトの `DataChannel` もローカルの束縛もないプログラムは `tests/`・`examples/` の 541 ファイルの `check --json` が `main` と同じこと、修正案のあるときは直したプログラムが通って std の関数を呼ぶこと、`tsuzuri fix` が 1 ラウンドで収束することを確かめた。指摘を受けて次を直した。
+
+- テストが直接の呼び出しだけで、パイプライン（`|>`）の 2 か所と `Channel.send` を、プロジェクトの `DataChannel`・ローカルの束縛と一緒に通していなかった。両方を足した。
+- `channel.md` が、修正案のない場合（プロジェクトの名前空間 `std` も `DataChannel` を持つとき）を書いていなかった。
+- E19 より前から: この書き換えの `E1040` のクイックフィックスを、言語サーバーが一度も出していなかった（`main` でも同じ）。`hints::annotate` が `E1003` を `E1040` に変えるのは `DiagnosticSet::counts` を数えた後で、言語サーバーは修正案がそのコードの数を減らすときだけクイックフィックスを出すので、`E1040` の数が 0 のままだった。`renamed_channel_calls` が `counts` も合わせるようにし、`tests/lsp.rs` の `the_channel_call_rewrite_is_a_quick_fix` で、プロジェクトの `DataChannel` があるときの `write 'std::DataChannel.recv'` を含めて確かめた。
+- E19 より前から（別のチケット）: 利用者の共用体と同じ名前の std の組み込みモジュール（`DataChannel`・`Channel`・`Mutex`・`Atomic`）の関数を、`std::` を付けても共用体のケースとして探して `E1002` になる。共用体はモジュールでもローカルの束縛でもないので、E18 D2・E19 の確かめを通り、修正案は裸の名前のままになる（`tsuzuri fix` は `E2008` で止まり、どのファイルも書かない）。[E20](../E20-std-qualified-builtin-beside-user-union.md) にした。
+
+検証（macOS arm64、dev ビルド）: `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`（ホストと `x86_64-pc-windows-msvc`）、`cargo nextest run --locked`（全体）、`tests/removed_features.rs`（22 件）・`tests/lsp.rs`、`node scripts/check-docs.mjs`（変えた 2 ページ）。

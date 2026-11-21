@@ -1363,4 +1363,29 @@ fn the_channel_call_rewrite_writes_a_data_channel_that_keeps_its_meaning() {
     // Without such modules or bindings, the bare name stays.
     let error = check(&[("Main.tz", body)]);
     assert_eq!(error.fixes[0].edits[0].text, "DataChannel.recv");
+    // The pipeline form and `Channel.send` choose the same way, with a module and with a local
+    // binding of the program.
+    let piped = body.replace(
+        "match Channel.recv (ref receiver)",
+        "match (ref receiver) |> Channel.recv",
+    );
+    let main = format!("namespace App\n\n{piped}");
+    let error = check(&[("Main.tz", &main), own]);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.recv");
+    let local_piped = local.replace(
+        "match Channel.recv (ref receiver)",
+        "match (ref receiver) |> Channel.recv",
+    );
+    let error = check(&[("Main.tz", &local_piped)]);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.recv");
+    let send = "def f :: ref std::DataChannel.Sender<i64> -> i64\nfn f sender =\n    match Channel.send sender 1 with\n    | Result.Ok _ -> 1\n    | Result.Error _ -> 0\n\n0\n";
+    let main = format!("namespace App\n\n{send}");
+    let error = check(&[("Main.tz", &main), own]);
+    assert_eq!(
+        error.message,
+        "'Channel.send' of a DataChannel.Sender is now 'std::DataChannel.send'"
+    );
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.send");
+    let error = check(&[("Main.tz", send)]);
+    assert_eq!(error.fixes[0].edits[0].text, "DataChannel.send");
 }

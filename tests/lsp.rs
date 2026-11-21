@@ -3828,3 +3828,67 @@ fn automatic_code_action_requests_skip_fix_all() {
     assert_eq!(kinds(1), ["quickfix", "source.fixAll.tsuzuri"]);
     assert_eq!(kinds(2), ["source.fixAll.tsuzuri"]);
 }
+
+/// E19: the quick fix of the `E1040` that rewrites an old `Channel.recv` given an end of a
+/// DataChannel is offered (the counts of the codes follow the rewrite), with the spelling that
+/// names the std `DataChannel` where the call is.
+#[test]
+fn the_channel_call_rewrite_is_a_quick_fix() {
+    use serde_json::json;
+    let body = "def f :: own std::DataChannel.Receiver<i64> -> i64\nfn f receiver =\n    match Channel.recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n0\n";
+    let own = "namespace App\n\ndef recv :: ref i64 -> i64\nfn recv value = deref value\n";
+    for (files, expected) in [
+        (vec![("Main.tz", body.to_owned())], "DataChannel.recv"),
+        (
+            vec![
+                ("Main.tz", format!("namespace App\n\n{body}")),
+                ("App/DataChannel.tz", own.to_owned()),
+            ],
+            "std::DataChannel.recv",
+        ),
+    ] {
+        let files: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(name, text)| (*name, text.as_str()))
+            .collect();
+        let line = files[0]
+            .1
+            .lines()
+            .position(|line| line.contains("Channel.recv"))
+            .unwrap();
+        let (messages, _) = session(&files, "utf-16", |uri| {
+            let main = uri("Main.tz");
+            vec![
+                json!({"id": 1, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": main}, "range": range(line, 0, 40), "context": {"diagnostics": [], "only": ["quickfix"]}}}),
+            ]
+        });
+        let actions = messages
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(1)))
+            .expect("the code actions")["result"]
+            .clone();
+        let titles: Vec<&str> = actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|action| action["title"].as_str())
+            .collect();
+        assert!(
+            titles.contains(&format!("write '{expected}'").as_str()),
+            "{expected}: {actions}"
+        );
+        let edit = actions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|action| action["title"] == format!("write '{expected}'"))
+            .unwrap();
+        let changes = edit["edit"]["changes"].as_object().unwrap();
+        let new_text: Vec<&str> = changes
+            .values()
+            .flat_map(|edits| edits.as_array().unwrap())
+            .filter_map(|edit| edit["newText"].as_str())
+            .collect();
+        assert_eq!(new_text, [expected], "{actions}");
+    }
+}
