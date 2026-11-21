@@ -196,7 +196,7 @@ int main(int argc, char **argv) {
       for (const [operation, name] of selection) {
         const call = operation === "leading_zeros" ? `${name} l${index}` : `${name} l${index} r${index}`;
         const text = String(reference(operation, left, right, 0n, bits, signed));
-        statements.push(`    do! IO.write_line (${call})`, `    do! IO.write_line ($"{(${call}):>4}")`);
+        statements.push(`    do! IO.writeln (${call})`, `    do! IO.writeln ($"{(${call}):>4}")`);
         expected.push(text, text.padStart(4));
       }
     }
@@ -209,7 +209,7 @@ int main(int argc, char **argv) {
       shownLines += expected.length;
     }
   }
-  console.log(`integer intrinsics beside number formatting: ${shownLines} printed lines (IO.write_line and ">4" interpolation), native -O0/-O3`);
+  console.log(`integer intrinsics beside number formatting: ${shownLines} printed lines (IO.writeln and ">4" interpolation), native -O0/-O3`);
 
   let stringified = 0;
   for (const signed of [true, false]) {

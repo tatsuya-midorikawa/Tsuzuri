@@ -3069,8 +3069,8 @@ fn annotated_reference_parameters_follow_the_drop_order_and_lock_rules_of_in_pla
     // made each value keep a borrow of the other's part, so every spelling of the safe order was
     // rejected (`assignment_extends_borrow` at `a`); the unsafe order is still rejected.
     const OTHER: &str = "let other = [to_string 777777, to_string 88888888, to_string 12345678]";
-    const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}";
-    const CALLER: &str = "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.write_line (\"drop \" + to_string (c.f ()))\n}";
+    const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.writeln (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}";
+    const CALLER: &str = "record Caller { f: unit -> i64 }\ninstance Drop<Caller> {\n    fn drop c = do! IO.writeln (\"drop \" + to_string (c.f ()))\n}";
     const LOOK: &str = "def look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1";
     const LOCK_RUN: &[&str] = &[
         "let m = Mutex.create [to_string n]",
@@ -3504,8 +3504,8 @@ fn annotated_reference_parameters_follow_the_replacement_rules_of_in_place_write
     // conventions twins cannot dereference their value views (`E1005`), so the annotated `def` is
     // compared with `twin`. Before this merge every unsafe spelling here, the twin too, was
     // accepted and read freed text (`-1`).
-    const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}";
-    const HOLDER2: &str = "record Holder2 { cell: Arc<Mutex<[unit -> i64]>> }\ninstance Drop<Holder2> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (Arc.get (ref h.cell)) (\\b -> b[0] ())))\n}";
+    const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.writeln (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}";
+    const HOLDER2: &str = "record Holder2 { cell: Arc<Mutex<[unit -> i64]>> }\ninstance Drop<Holder2> {\n    fn drop h = do! IO.writeln (\"drop \" + to_string (Mutex.with_lock (Arc.get (ref h.cell)) (\\b -> b[0] ())))\n}";
     const LOOK: &str = "def look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1";
     const PA: &str = "record PA { h: Holder, a: [string] }\ndef mkpa :: unit -> PA\nfn mkpa _u = PA { h: Holder { cell: Mutex.create [\\() -> 0] }, a: [String.repeat 4 (ref \"123456789\")] }";
     const COPY_OUT: &str = "def copy_out :: ref [unit -> i64] -> ref Mutex<[unit -> i64]> -> unit\nfn copy_out b out = Mutex.with_lock out (\\o -> Array.write 0 b[0] o)";
@@ -3631,7 +3631,7 @@ fn annotated_reference_parameters_passed_to_a_function_value_with_temporaries() 
         program(&[
             "record Holder { cell: Mutex<[unit -> i64]> }",
             "instance Drop<Holder> {",
-            "    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))",
+            "    fn drop h = do! IO.writeln (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))",
             "}",
             "def look :: ref string -> i64",
             "fn look t =",
@@ -3709,7 +3709,7 @@ fn annotated_reference_parameters_follow_the_kept_parts_of_in_place_writes() {
     // unsafe order fails with the twin's code and kind at the same expression. Before this merge
     // every spelling of the safe order was rejected (`self_referential_store` at `p1`, or
     // `assignment_extends_borrow` for the reference to one of two values), A31's own too.
-    const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}";
+    const HOLDER: &str = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.writeln (\"drop \" + to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}";
     const LOOK: &str = "def look :: ref string -> i64\nfn look t =\n    match String.find (ref \"9\") t with\n    | Maybe.Some i -> i\n    | Maybe.None -> -1";
     const PAIR_OK: &str = "record PairOk { h: Holder, s: string }\ndef mkpo :: unit -> PairOk\nfn mkpo _u = PairOk { h: Holder { cell: Mutex.create [\\() -> 0] }, s: String.repeat 4 (ref \"123456789\") }";
     const CROSS_BODY: &str =
@@ -3941,7 +3941,7 @@ fn annotated_reference_parameters_follow_the_loop_rules_of_in_place_writes() {
     // spelling, A31's own too, and the `loopplace` loop did not settle.
     const HOLDER: &str = r#"record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -4004,7 +4004,7 @@ fn run n =
     let out = mkh ()
     let k = renew (ref mut p0) (ref out) n
     Mutex.with_lock (ref out.cell) (\b -> b[0] ()) + k
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 "#;
     const KEEP: &str = "    let t = ref p.a[0]\n    Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> look t) b)\n";
     const REPLACE: &str = "    deref p = mkpa ()\n";
@@ -4083,7 +4083,7 @@ fn run n =
     let out = mkh ()
     let p1 = P { s: String.repeat 4 (ref "123456789"), f: \() -> 5 }
     stash (ref p1) (ref out) n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 "#,
         );
         source
@@ -4144,7 +4144,7 @@ fn run n =
     let keep = Arc.new (Mutex.create [\() -> 0])
     let k = run2 (ref mut b) (Arc.share (ref keep)) n
     Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 "#,
         );
         source

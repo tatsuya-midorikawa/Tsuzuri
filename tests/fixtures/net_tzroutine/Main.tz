@@ -45,7 +45,7 @@ def main :: unit -> i32 = \() ->
         match Channel.recv results with
         | Maybe.Some true -> echoes = echoes + 1
         | _ -> ()
-    do! IO.write_line $"echoes: {echoes}"
+    do! IO.writeln $"echoes: {echoes}"
     // A read with nobody writing times out, and the other tzroutines go on meanwhile.
     let! idle_bound = Net.bind (Maybe.get (Net.parse_address (ref "127.0.0.1:0")))
     let idle_listener = Result.get idle_bound
@@ -70,7 +70,7 @@ def main :: unit -> i32 = \() ->
             | Result.Ok _ -> "data"
             | Result.Error error -> to_string (Net.error_kind error)
         let after = Atomic.load (Arc.get (ref ticks_seen))
-        do! IO.write_line $"read: {kind}, others ran: {after > before}"
+        do! IO.writeln $"read: {kind}, others ran: {after > before}"
         Atomic.store (Arc.get (ref stopper)) true
         let! _closed = Net.close stream
     }
@@ -100,7 +100,7 @@ def main :: unit -> i32 = \() ->
     let read_after_close = match Channel.recv reads with
         | Maybe.Some text -> text
         | Maybe.None -> "none"
-    do! IO.write_line $"read across a close: {read_after_close}"
+    do! IO.writeln $"read across a close: {read_after_close}"
     let! _closed_peer = Net.close peer
     let! _closed_listener = Net.close_listener idle_listener
     0

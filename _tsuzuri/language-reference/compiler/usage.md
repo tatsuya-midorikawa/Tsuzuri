@@ -383,7 +383,7 @@ let word = (
 
 word
 let broken = 10 / (base - 6)
-do! IO.write_line "hello"
+do! IO.writeln "hello"
 :list
 :quit
 ```
@@ -434,7 +434,7 @@ let word = (
 - `let` の再実行は値を変えませんが、`Debug.print` と `Debug.trace` の出力は評価のたびに標準エラーへ出ます。
 - `;` で終わる式（`c = c + 1;` など）は文としてセッションに残ります。`;` のない最後の式は 1 回評価するだけで残りません。`it` も残りません。値を残すときは `let` にします。
 - セッション全体を毎回検査するので、型も毎回推論し直します。接尾辞のない整数リテラルの `let base = 6` は単独なら `i32` ですが、後の入力で `i64` を受け取る関数に渡すと、その入力の中では `i64` になります。
-- 評価するプログラムの標準入力は空です。`IO.read_line ()` は常に `None` を返します。
+- 評価するプログラムの標準入力は空です。`IO.readln ()` は常に `None` を返します。
 - `extern`、`test`、`bench`、`main` の定義、`namespace` と `using` は受け付けません（`E2000`）。作業ディレクトリの `.tz` も読みません。警告は表示しません。
 
 #### コマンド
@@ -476,7 +476,7 @@ tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FI
 ```tsuzuri
 #!/usr/bin/env -S tsuzuri script
 def main :: Array<string> -> i32 = \args ->
-    do! IO.write_line ("hi " + String.join (ref " ") (ref args))
+    do! IO.writeln ("hi " + String.join (ref " ") (ref args))
     0
 ```
 
@@ -673,7 +673,7 @@ package app 0.1.0 (root)
   allowed: fs stdio
   used: stdio
     stdio: 1 site
-      Main.tz:3:9  IO.write_line
+      Main.tz:3:9  IO.writeln
   denied: none
   unused: fs
   externs: none
@@ -999,7 +999,7 @@ warning: integer overflow wrapped at ./Main.tz:1:45 (i32u add)
 | コンパイル時に畳み込まれる式（トップレベルの `let` の定数、`const`） | しない（実行時に演算が残らない） |
 | 標準ライブラリ・依存パッケージ・コンパイラが作る補助関数・ベンチ | しない |
 
-報告の行は `warning: integer overflow wrapped at <パス>:<行>:<列> (<型> <演算>)` です。パスはビルドに渡した綴り、行と列は演算子の位置（`a + b` の `+`、`-x` の `-`。演算子のない `Add.add a b` は式の始まり。列は文字数）、型は `i8`〜`i128u`、演算は `add`・`sub`・`mul`・`neg`・`pow` です。1 つの地点は最初に折り返したときに 1 回だけ書き、100 地点を書いたあとは `warning: integer overflow reports stop after 100 sites` を 1 回書いて止めます。報告は native では書き込みのたびに標準エラーへ出るので、トラップで止まったプログラムでも、それまでの報告は残ります。プログラムが改行で終えなかった出力（`IO.write_error "prefix"`）のすぐあとに折り返すと、報告はその行の続きになります。`run --json` と `tsuzuri test` は行の途中の報告も見つけ、`run --json` はその前の出力を 1 行にしてから警告を書きます。
+報告の行は `warning: integer overflow wrapped at <パス>:<行>:<列> (<型> <演算>)` です。パスはビルドに渡した綴り、行と列は演算子の位置（`a + b` の `+`、`-x` の `-`。演算子のない `Add.add a b` は式の始まり。列は文字数）、型は `i8`〜`i128u`、演算は `add`・`sub`・`mul`・`neg`・`pow` です。1 つの地点は最初に折り返したときに 1 回だけ書き、100 地点を書いたあとは `warning: integer overflow reports stop after 100 sites` を 1 回書いて止めます。報告は native では書き込みのたびに標準エラーへ出るので、トラップで止まったプログラムでも、それまでの報告は残ります。プログラムが改行で終えなかった出力（`IO.write_err "prefix"`）のすぐあとに折り返すと、報告はその行の続きになります。`run --json` と `tsuzuri test` は行の途中の報告も見つけ、`run --json` はその前の出力を 1 行にしてから警告を書きます。
 
 WebAssembly は報告を書きません（import を足しません）。地点ごとに折り返したかどうかを記録し、2 つの関数を export します。`tsuzuri_overflow_count()` は地点の数、`tsuzuri_overflow_hit(i)` は地点 `i` が折り返したなら 1（範囲外の `i` は 0）です。地点の説明は `<出力>.overflow.json` にあり、`sites[i].message` が native の報告と同じ文です（[WebAssembly の折り返しの報告](webassembly.md#整数の折り返しの報告)）。
 

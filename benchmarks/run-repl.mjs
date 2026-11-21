@@ -213,7 +213,7 @@ async function session(level) {
     "new expression (cache miss)": index => [`${unique + index} + 1`, `it: i32 = ${unique + index + 1}`],
     "repeated expression (cache hit)": () => ["1 + 1", "it: i32 = 2"],
     "new let (cache miss)": index => [`let v = ${unique + index}`, "v: i32"],
-    "new action (cache miss)": index => [`do! IO.write_line "${unique + index}"`, `${unique + index}`],
+    "new action (cache miss)": index => [`do! IO.writeln "${unique + index}"`, `${unique + index}`],
   };
   for (const [name, input] of Object.entries(kinds)) {
     const values = [];

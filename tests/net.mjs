@@ -373,7 +373,7 @@ try {
     writeFileSync(join(connecting, "Main.tz"), `def main :: unit -> i32 = \\() ->
     let address = Maybe.get (Net.parse_address (ref "127.0.0.1:9"))
     let! connected = Net.connect address Maybe.None
-    do! IO.write_line (Result.is_ok (ref connected))
+    do! IO.writeln (Result.is_ok (ref connected))
     0
 `);
     for (const optimization of optimizations) {

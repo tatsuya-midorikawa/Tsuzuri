@@ -356,12 +356,12 @@ test("C8 concurrent builds", async () => {
 // `B.divide` by N - 1 and `C.divide` by N - 2.
 const TRAP_FILES = {
   "Main.tz": `def main :: unit -> i32 = \\() ->
-    let! line = IO.read_line ()
+    let! line = IO.readln ()
     let text = Maybe.default_value "" line
     let n = String.length text as i64
-    do! IO.write_line (to_string (A.divide 100 n))
-    do! IO.write_line (to_string (B.divide 100 (n - 1)))
-    do! IO.write_line (to_string (C.divide 100 (n - 2)))
+    do! IO.writeln (to_string (A.divide 100 n))
+    do! IO.writeln (to_string (B.divide 100 (n - 1)))
+    do! IO.writeln (to_string (C.divide 100 (n - 2)))
     0
 `,
   "A.tz": "def divide :: i64 -> i64 -> i64 = \\a b -> a / b\n",
@@ -672,8 +672,8 @@ def half_sum :: i64 -> i64 -> f16
 fn half_sum left right = (left as f16) + (right as f16)
 
 def main :: unit -> i32 = \\() ->
-    do! IO.write_line (host_value 4)
-    do! IO.write_line (half_sum 3 0 as i64 + 1)
+    do! IO.writeln (host_value 4)
+    do! IO.writeln (half_sum 3 0 as i64 + 1)
     0
 `,
 };
@@ -864,7 +864,7 @@ fn tail_frames n = One.frames n
 const TAIL_NAMES = ["tail_ring", "tail_cycle", "tail_generic", "tail_local", "tail_ticks", "tail_frames"];
 const TAIL_MAIN = String.raw`
 def main :: unit -> i32 = \() ->
-${TAIL_NAMES.map((name) => `    do! IO.write_line (${name} 10000000)`).join("\n")}
+${TAIL_NAMES.map((name) => `    do! IO.writeln (${name} 10000000)`).join("\n")}
     0
 `;
 // What the six functions return for a depth of ten million: the parity, the depth, 107 + 14 (the generic groups end in `tock` at an

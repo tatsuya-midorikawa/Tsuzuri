@@ -86,7 +86,7 @@ fn show_matches_the_appendix_output() {
         (vec!["show", "Acme::Shop::Cart.total"], "show_total.txt"),
         (vec!["show", "Acme::Shop::Main.main"], "show_main.txt"),
         (vec!["show", "Acme::Shop::Cart.Line"], "show_line.txt"),
-        (vec!["show", "IO.write_line"], "show_io.txt"),
+        (vec!["show", "IO.writeln"], "show_io.txt"),
         (
             vec!["show", "Acme::Shop::Cart.total", "--budget", "200"],
             "show_total_budget_200.txt",
@@ -151,7 +151,7 @@ fn resolution_stages_and_errors() {
         first_line("Acme::Shop::Cart.l"),
         "Acme::Shop::Cart.line_total"
     );
-    assert_eq!(first_line("IO.write_lin"), "IO.write_line");
+    assert_eq!(first_line("IO.writel"), "IO.writeln");
     for (text, code, message) in [
         (
             "t",
@@ -169,9 +169,9 @@ fn resolution_stages_and_errors() {
             "unknown id 'zzz'; use tsuzuri kg search TEXT to find ids",
         ),
         (
-            "IO.writ_line",
+            "IO.writln",
             1,
-            "unknown id 'IO.writ_line'; did you mean: IO.write_line",
+            "unknown id 'IO.writln'; did you mean: IO.writeln",
         ),
         ("", 2, "id must not be empty"),
     ] {
@@ -222,7 +222,7 @@ fn json_rows_of_the_queries() {
         show[0]["callees"][0]["to"],
         "Acme::Shop::Report.print_total"
     );
-    let io = rows(&query(&root, &["show", "IO.write_line", "--json"]));
+    let io = rows(&query(&root, &["show", "IO.writeln", "--json"]));
     assert_eq!(io[0]["symbol"], serde_json::Value::Null);
     assert_eq!(
         io[0]["callers"][0]["from"],
@@ -842,7 +842,7 @@ fn std_ids_resolve_when_the_std_kg_exists() {
     assert!(text.starts_with("Array.length\n"), "{text}");
     assert!(text.contains("\nsignature: "), "{text}");
     // A call into std from the project is an edge of the project's graph.
-    let output = run(&["kg", "callers", "IO.write_line"]);
+    let output = run(&["kg", "callers", "IO.writeln"]);
     assert!(
         stdout(&output).contains("1 Acme::Shop::Report.print_total  Report.tz:6:9"),
         "{}",

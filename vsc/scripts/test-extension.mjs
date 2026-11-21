@@ -26,14 +26,14 @@ try {
   await mkdir(path.join(project, 'Shapes'), { recursive: true });
   await mkdir(other);
   await writeFile(path.join(project, 'Main.tz'),
-    'def calculate :: i64 -> i64 = \\value ->\n    let label = "ok"\n    let result = value + Geometry::Point.offset() + label.length - 2\n    result\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (calculate 2)\n    0\n\ntest "same" = assert true\ntest "same" = assert false\n');
+    'def calculate :: i64 -> i64 = \\value ->\n    let label = "ok"\n    let result = value + Geometry::Point.offset() + label.length - 2\n    result\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.writeln (calculate 2)\n    0\n\ntest "same" = assert true\ntest "same" = assert false\n');
   await writeFile(path.join(project, 'Geometry', 'Point.tz'), 'def offset :: i64 = 40\n');
   await writeFile(path.join(project, 'Shapes', 'Circle.tz'), 'namespace Demo::Shapes\n\ndef radius :: i64 = 0\n');
   await writeFile(path.join(project, 'Report.tz'), 'namespace Demo\n\nusing Demo::Shapes\n\ndef total :: i64 = Circle.radius() + Shapes::Circle.radius()\n');
   await writeFile(path.join(other, 'Main.tz'), 'def main :: unit -> i32 = \\() -> 7\n');
   for (const folder of ['capabilities/Extra', 'app', 'lib/Extra']) { await mkdir(path.join(packages, folder), { recursive: true }); }
   await writeFile(path.join(packages, 'capabilities', 'Tsuzuri.toml'), '[package]\nname = "capabilities"\nversion = "0.1.0"\n\n[capabilities]\nallow = []\n');
-  await writeFile(path.join(packages, 'capabilities', 'Main.tz'), 'def main :: unit -> i32 = \\() ->\n    do! IO.write_line "denied"\n    0\n\ntest "runs" = assert true\n');
+  await writeFile(path.join(packages, 'capabilities', 'Main.tz'), 'def main :: unit -> i32 = \\() ->\n    do! IO.writeln "denied"\n    0\n\ntest "runs" = assert true\n');
   await writeFile(path.join(packages, 'capabilities', 'Extra', 'Note.tz'), 'def note :: i64 = 1\n');
   await writeFile(path.join(packages, 'app', 'Tsuzuri.toml'), '[package]\nname = "app"\nversion = "0.1.0"\n\n[dependencies]\nlib = { path = "../lib" }\n');
   await writeFile(path.join(packages, 'app', 'Main.tz'), 'def main :: unit -> i32 = \\() -> 0\n\ntest "uses lib" = assert (Lib::Calc.twice 2 == 4)\n');

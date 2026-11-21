@@ -6131,6 +6131,27 @@ pub(crate) fn removed_feature(
     }
 }
 
+/// The help of `E1040` for the renamed functions of `IO` (E17).
+const RENAMED_IO_HELP: &str = "the line and stderr functions of IO use 'ln' and 'err' (IO.readln, IO.writeln, IO.write_err, IO.write_errln, and their 'try_' forms)";
+
+/// E17: the name of the function of the std module `IO` that replaced `name`, which the
+/// functions that read or write a line (`ln`) or write to standard error (`err`) had before.
+/// `IO.write_line` and its alias `IO.writeln` became the one `IO.writeln`. It is asked only when
+/// `IO.name` resolves to nothing and `IO` is the std module (`Checker::renamed_io_function`).
+pub(crate) fn renamed_io_function(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "try_read_line" => "try_readln",
+        "read_line" => "readln",
+        "try_write_line" => "try_writeln",
+        "try_write_error" => "try_write_err",
+        "try_write_error_line" => "try_write_errln",
+        "write_line" => "writeln",
+        "write_error" => "write_err",
+        "write_error_line" => "write_errln",
+        _ => return None,
+    })
+}
+
 /// The `E1040` of a type of the removed `Async` (TZ13) named `name` at `span`: the bare `Async`
 /// (`Async.Async`) or a qualified name of the module.
 fn removed_async_type(name: &str, span: Span) -> Option<Diagnostic> {
@@ -13265,6 +13286,28 @@ impl<'a> Checker<'a> {
                         end: field.span.end,
                         source: field.span.source,
                     };
+                    if let Some(renamed) = self.renamed_io_function(&spelled, field, whole) {
+                        // Recovery checks the new name with the module as written (`IO`,
+                        // `std::IO`), so that one analysis finds every old name.
+                        if !self.recovering {
+                            return Err(renamed);
+                        }
+                        let replaced = Expr {
+                            kind: ExprKind::Field(
+                                value.clone(),
+                                Ident {
+                                    text: renamed.fixes[0].edits[0].text.clone(),
+                                    span: field.span,
+                                    provenance: field.provenance,
+                                },
+                            ),
+                            span: expression.span,
+                            depth: expression.depth,
+                        };
+                        self.recovered.push(renamed);
+                        self.poisoned = true;
+                        return self.value_expression(&replaced, expected);
+                    }
                     if let Some(removed) = removed_name(&spelled, &field.text, whole) {
                         // Recovery checks the name that replaced it, so that one analysis finds
                         // every use of the old names and `tsuzuri fix` moves a program in a round.
@@ -14996,6 +15039,34 @@ impl<'a> Checker<'a> {
 
     fn local(&self, name: &str) -> Option<&Local> {
         self.scopes.iter().rev().find_map(|scope| scope.get(name))
+    }
+
+    /// The `E1040` of `spelled.field` (E17) when `spelled` names the std module `IO` (`IO`,
+    /// `std::IO`) and `field` is one of its renamed functions: `whole` covers the qualified name,
+    /// and the certain fix rewrites the function's name alone, which keeps the module, the spaces
+    /// and the comments as written. A module `IO` of the program's own namespace keeps its
+    /// `E1002`.
+    fn renamed_io_function(&self, spelled: &str, field: &Ident, whole: Span) -> Option<Diagnostic> {
+        let name = renamed_io_function(&field.text)?;
+        if self.names.module_path(self.module, spelled) != Some("IO") {
+            return None;
+        }
+        Some(
+            Diagnostic::of(
+                DiagnosticKind::RenamedIoFunction,
+                format!("'{spelled}.{}' is now '{spelled}.{name}'", field.text),
+                whole,
+            )
+            .with_help(RENAMED_IO_HELP)
+            .fix(
+                format!("write '{spelled}.{name}'"),
+                crate::diagnostic::Applicability::Certain,
+                vec![crate::diagnostic::Edit {
+                    span: field.span,
+                    text: name.to_owned(),
+                }],
+            ),
+        )
     }
 
     /// Whether `name.x` can only mean a function or case of the namespace

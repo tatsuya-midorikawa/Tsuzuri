@@ -445,7 +445,7 @@ fn script_accepts_edition() {
         "script-edition",
         &[(
             "legacy.tz",
-            "let x = 41\nlet r = &x\ndo! IO.write_line $\"{*r + 1}\"\n",
+            "let x = 41\nlet r = &x\ndo! IO.writeln $\"{*r + 1}\"\n",
         )],
     );
     let script = root.join("legacy.tz");

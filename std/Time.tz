@@ -16,8 +16,8 @@ fn pause milliseconds =
 /// let! _slept = Time.sleep_ms 10
 /// let! stop = Time.monotonic_ns ()
 /// match (start, stop) with
-/// | (Result.Ok first, Result.Ok last) -> IO.write_line (to_string ((last - first) / 1000000) + " ms")
-/// | _ -> IO.write_line "no clock"
+/// | (Result.Ok first, Result.Ok last) -> IO.writeln (to_string ((last - first) / 1000000) + " ms")
+/// | _ -> IO.writeln "no clock"
 /// ```
 def monotonic_ns :: own unit -> IO<Result<i64, Os.Error>>
 fn monotonic_ns _unit = IO.map (\() -> reading 0i32) (IO.pure ())
@@ -27,8 +27,8 @@ fn monotonic_ns _unit = IO.map (\() -> reading 0i32) (IO.pure ())
 /// ```tsuzuri
 /// let! now = Time.unix_ns ()
 /// match now with
-/// | Result.Ok nanoseconds -> IO.write_line (to_string (nanoseconds / 1000000000) + " s since 1970")
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok nanoseconds -> IO.writeln (to_string (nanoseconds / 1000000000) + " s since 1970")
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def unix_ns :: own unit -> IO<Result<i64, Os.Error>>
 fn unix_ns _unit = IO.map (\() -> reading 1i32) (IO.pure ())
@@ -38,8 +38,8 @@ fn unix_ns _unit = IO.map (\() -> reading 1i32) (IO.pure ())
 /// ```tsuzuri
 /// let! slept = Time.sleep_ms 250
 /// match slept with
-/// | Result.Ok _ -> IO.write_line "a quarter second later"
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok _ -> IO.writeln "a quarter second later"
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def sleep_ms :: own i64 -> IO<Result<unit, Os.Error>>
 fn sleep_ms milliseconds = IO.map (\() -> pause milliseconds) (IO.pure ())

@@ -182,7 +182,7 @@ Markdown 形式で記述するドキュメンテーション用のコメント�
 ```tsuzuri
 #!/usr/bin/env -S tsuzuri script
 def main :: Array<string> -> i32 = \args ->
-    do! IO.write_line (String.join (ref " ") (ref args))
+    do! IO.writeln (String.join (ref " ") (ref args))
     0
 ```
 

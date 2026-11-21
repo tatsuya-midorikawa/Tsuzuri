@@ -28,8 +28,8 @@ fn write_text_with mode path text =
 /// ```tsuzuri
 /// let! loaded = File.read_bytes "photo.png"
 /// match loaded with
-/// | Result.Ok bytes -> IO.write_line (to_string bytes.length + " bytes")
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok bytes -> IO.writeln (to_string bytes.length + " bytes")
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def read_bytes :: own string -> IO<Result<[ubyte], Os.Error>>
 fn read_bytes path = IO.map (\() -> read_with (ref path)) (IO.pure ())
@@ -40,7 +40,7 @@ fn read_bytes path = IO.map (\() -> read_with (ref path)) (IO.pure ())
 /// let! loaded = File.read_text "notes.txt"
 /// match loaded with
 /// | Result.Ok text -> IO.write text
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def read_text :: own string -> IO<Result<string, Os.Error>>
 fn read_text path = IO.map (\() ->
@@ -53,8 +53,8 @@ fn read_text path = IO.map (\() ->
 /// ```tsuzuri
 /// let! written = File.write_bytes "data.bin" [1ubyte, 2ubyte, 3ubyte]
 /// match written with
-/// | Result.Ok _ -> IO.write_line "saved"
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok _ -> IO.writeln "saved"
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def write_bytes :: own string -> own [ubyte] -> IO<Result<unit, Os.Error>>
 fn write_bytes path data = IO.map (\() -> write_with 0i32 (ref path) (ref data)) (IO.pure ())
@@ -64,8 +64,8 @@ fn write_bytes path data = IO.map (\() -> write_with 0i32 (ref path) (ref data))
 /// ```tsuzuri
 /// let! written = File.write_text "notes.txt" "first line\n"
 /// match written with
-/// | Result.Ok _ -> IO.write_line "saved"
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok _ -> IO.writeln "saved"
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def write_text :: own string -> own string -> IO<Result<unit, Os.Error>>
 fn write_text path text = IO.map (\() -> write_text_with 0i32 (ref path) (ref text)) (IO.pure ())
@@ -75,8 +75,8 @@ fn write_text path text = IO.map (\() -> write_text_with 0i32 (ref path) (ref te
 /// ```tsuzuri
 /// let! appended = File.append_text "app.log" "started\n"
 /// match appended with
-/// | Result.Ok _ -> IO.write_line "logged"
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok _ -> IO.writeln "logged"
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def append_text :: own string -> own string -> IO<Result<unit, Os.Error>>
 fn append_text path text = IO.map (\() -> write_text_with 1i32 (ref path) (ref text)) (IO.pure ())
@@ -86,8 +86,8 @@ fn append_text path text = IO.map (\() -> write_text_with 1i32 (ref path) (ref t
 /// ```tsuzuri
 /// let! removed = File.remove "old.log"
 /// match removed with
-/// | Result.Ok _ -> IO.write_line "removed"
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok _ -> IO.writeln "removed"
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def remove :: own string -> IO<Result<unit, Os.Error>>
 fn remove path = IO.map (\() ->
@@ -151,8 +151,8 @@ fn open path mode = IO.map (\() -> open_with (ref path) mode) (IO.pure ())
 /// # let handle = Result.get opened
 /// let! chunk = File.read handle 4096
 /// match chunk with
-/// | Result.Ok bytes -> IO.write_line (if bytes.length == 0 then "end of file" else to_string bytes.length + " bytes")
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok bytes -> IO.writeln (if bytes.length == 0 then "end of file" else to_string bytes.length + " bytes")
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def read :: own Handle -> own i64 -> IO<Result<[ubyte], Os.Error>>
 fn read handle count = IO.map (\() ->
@@ -190,8 +190,8 @@ fn flush handle = IO.map (\() ->
 /// # let handle = Result.get opened
 /// let! closed = File.close handle
 /// match closed with
-/// | Result.Ok _ -> IO.write_line "closed"
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok _ -> IO.writeln "closed"
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def close :: own Handle -> IO<Result<unit, Os.Error>>
 fn close handle = IO.map (\() ->
@@ -204,9 +204,9 @@ fn close handle = IO.map (\() ->
 /// ```tsuzuri
 /// let! header = File.with_open "data.bin" File.Read (\handle -> File.read handle 16)
 /// match header with
-/// | Result.Ok (Result.Ok bytes) -> IO.write_line (to_string bytes.length + " bytes")
-/// | Result.Ok (Result.Error error) -> IO.write_line (Os.message error)
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok (Result.Ok bytes) -> IO.writeln (to_string bytes.length + " bytes")
+/// | Result.Ok (Result.Error error) -> IO.writeln (Os.message error)
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def with_open :: Capture<'a> => own string -> own Mode -> own (Handle -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_open path mode body =
@@ -248,8 +248,8 @@ fn metadata_with operation path =
 /// ```tsuzuri
 /// let! described = File.metadata "notes.txt"
 /// match described with
-/// | Result.Ok info -> IO.write_line (to_string info.size + " bytes")
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok info -> IO.writeln (to_string info.size + " bytes")
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def metadata :: own string -> IO<Result<Metadata, Os.Error>>
 fn metadata path = IO.map (\() -> metadata_with 4i32 (ref path)) (IO.pure ())
@@ -258,7 +258,7 @@ fn metadata path = IO.map (\() -> metadata_with 4i32 (ref path)) (IO.pure ())
 ///
 /// ```tsuzuri
 /// let! described = File.link_metadata "current"
-/// IO.write_line (match described with
+/// IO.writeln (match described with
 ///     | Result.Ok info -> (match info.kind with | File.Symlink -> "a symbolic link" | _ -> "not a link")
 ///     | Result.Error error -> Os.message error)
 /// ```

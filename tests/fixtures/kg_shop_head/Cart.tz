@@ -5,7 +5,7 @@ record Line { sku: string, quantity: i64, unit_price: i64, tax: i64 }
 
 /// The price of one line in cents.
 def line_total :: ref Line -> i64 = \line ->
-    do! IO.write_line line.quantity
+    do! IO.writeln line.quantity
     line.quantity * line.unit_price + line.tax
 
 /// The price of all lines in cents.

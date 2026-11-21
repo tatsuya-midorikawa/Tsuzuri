@@ -50,7 +50,7 @@ $"done={Atomic.load (Arc.get (ref done))}"
 def spawn :: own Owned.Function<unit, unit> -> unit = \work -> Routine.go work
 
 spawn (Owned.function (\() -> {
-    do! IO.write_line "hello from Routine.go"
+    do! IO.writeln "hello from Routine.go"
 }))
 0
 ```

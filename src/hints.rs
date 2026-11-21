@@ -432,14 +432,14 @@ fn f _unit = 1
     },
     Hint {
         id: "print-macro",
-        title: "Printing is IO.write_line",
+        title: "Printing is IO.writeln",
         kind: "unknown_value",
         message_has: &[],
         patterns: &[&["@println", "!"]],
-        help: "write a line with 'IO.write_line' in an IO block, or use 'Debug.print' while debugging",
+        help: "write a line with 'IO.writeln' in an IO block, or use 'Debug.print' while debugging",
         bad: r#"def f :: unit -> unit = \_ -> println!("x")
 "#,
-        good: r#"IO.write_line "x"
+        good: r#"IO.writeln "x"
 "#,
         fix: None,
     },

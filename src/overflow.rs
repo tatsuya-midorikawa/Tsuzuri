@@ -248,7 +248,7 @@ pub fn report_lines(stderr: &str) -> Vec<&str> {
 
 /// The report that `line`, without its line break, ends with: from the last `REPORT_PREFIX`, or
 /// the line that stops the report. A report starts a line of its own, but the program's own
-/// output that did not end its line (`IO.write_error "prefix"`) comes before it on that line.
+/// output that did not end its line (`IO.write_err "prefix"`) comes before it on that line.
 fn report(line: &str) -> Option<&str> {
     report_bytes(line.as_bytes()).map(|start| &line[start..])
 }

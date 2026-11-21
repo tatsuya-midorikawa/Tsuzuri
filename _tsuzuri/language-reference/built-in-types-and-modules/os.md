@@ -30,31 +30,31 @@ record Error { kind: ErrorKind, code: i32 }
 ```tsuzuri run=not%20found%20(os%20error%202)%0Ainvalid%20encoding%0A6%0Ainvalid%20encoding%0Ainvalid%20encoding%0A8%0Aa,b%0Anot%20found%20(os%20error%202)
 def main :: unit -> i32 = \() ->
     let missing = Os.Error { kind: Os.NotFound, code: 2i32 }
-    do! IO.write_line (Os.message (ref missing))
+    do! IO.writeln (Os.message (ref missing))
     let local = Os.Error { kind: Os.InvalidEncoding, code: 0i32 }
-    do! IO.write_line (Os.message (ref local))
+    do! IO.writeln (Os.message (ref local))
     let encoded = Os.encode "注文"
-    do! IO.write_line (match encoded with
+    do! IO.writeln (match encoded with
         | Result.Ok text -> to_string (Utf8String.to_bytes text).length
         | Result.Error error -> Os.message (ref error))
     let bad = Os.encode "\uD800"
-    do! IO.write_line (match bad with
+    do! IO.writeln (match bad with
         | Result.Ok _ -> "unexpected"
         | Result.Error error -> Os.message (ref error))
     let raw = [255ubyte]
-    do! IO.write_line (match Os.decode raw with
+    do! IO.writeln (match Os.decode raw with
         | Result.Ok _ -> "decoded"
         | Result.Error error -> Os.message (ref error))
     let packed = [8ubyte, 0ubyte, 0ubyte, 0ubyte, 0ubyte, 0ubyte, 0ubyte, 0ubyte]
-    do! IO.write_line (to_string (Os.decode_i64 0 (ref packed)))
+    do! IO.writeln (to_string (Os.decode_i64 0 (ref packed)))
     let names = [97ubyte, 0ubyte, 98ubyte, 0ubyte]
-    do! IO.write_line (match Os.split_names (ref names) with
+    do! IO.writeln (match Os.split_names (ref names) with
         | Result.Ok found ->
             let separator = ","
             String.join (ref separator) (ref found)
         | Result.Error error -> Os.message (ref error))
     let status = Os.error_of_status ((1i64 <<< 32) | 2i64)
-    do! IO.write_line (Os.message (ref status))
+    do! IO.writeln (Os.message (ref status))
     0
 ```
 

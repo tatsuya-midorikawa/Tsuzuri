@@ -100,7 +100,7 @@ test "adds numbers" = assert (1 + 2 == 3)
 
 | 操作 | 方法 | 結果 |
 | --- | --- | --- |
-| 実行 | ▷ ボタン、**Tsuzuri: Run Project** | ビルドしてターミナルで実行。`IO.read_line` による入力も可能 |
+| 実行 | ▷ ボタン、**Tsuzuri: Run Project** | ビルドしてターミナルで実行。`IO.readln` による入力も可能 |
 | ビルド | **Tsuzuri: Build Project**、**Tasks: Run Build Task** | `.tsuzuri/bin/Main`（Windows は `Main.exe`）を作成 |
 | 検査 | **Tsuzuri: Check Project** | 実行ファイルを作らずにエラーだけを確認 |
 | WebAssembly | **Tsuzuri: Build WebAssembly** | `.tsuzuri/bin/Main.wasm` を作成 |

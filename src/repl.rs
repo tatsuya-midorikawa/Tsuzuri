@@ -1503,20 +1503,17 @@ mod tests {
 
     #[test]
     fn classifies_bang_statements_as_actions() {
-        let action = classify_text("do! IO.write_line \"hello\"");
+        let action = classify_text("do! IO.writeln \"hello\"");
         assert_eq!(
             action.body,
-            Body::Action("do! IO.write_line \"hello\"".into(), vec![(0, 0)])
+            Body::Action("do! IO.writeln \"hello\"".into(), vec![(0, 0)])
         );
         // `let` and `do!` together are one computation that the session does not keep.
-        let mixed = classify_text("let base = 6\ndo! IO.write_line (to_string base)");
+        let mixed = classify_text("let base = 6\ndo! IO.writeln (to_string base)");
         assert!(mixed.bindings.is_empty());
         assert!(matches!(mixed.body, Body::Action(..)));
-        let value = classify_text("IO.write_line \"y\"");
-        assert_eq!(
-            value.body,
-            Body::Expression("IO.write_line \"y\"".into(), 0)
-        );
+        let value = classify_text("IO.writeln \"y\"");
+        assert_eq!(value.body, Body::Expression("IO.writeln \"y\"".into(), 0));
     }
 
     #[test]
@@ -1749,23 +1746,23 @@ mod tests {
 
     #[test]
     fn moves_indented_actions_to_column_zero() {
-        let single = classify_text("   do! IO.write_line \"a\"");
+        let single = classify_text("   do! IO.writeln \"a\"");
         assert_eq!(
             single.body,
-            Body::Action("do! IO.write_line \"a\"".into(), vec![(0, 3)])
+            Body::Action("do! IO.writeln \"a\"".into(), vec![(0, 3)])
         );
-        let text = "  do! IO.write_line \"a\"\n  do! IO.write_line \"b\"";
+        let text = "  do! IO.writeln \"a\"\n  do! IO.writeln \"b\"";
         let lines = classify_text(text);
         assert_eq!(
             lines.body,
             Body::Action(
-                "do! IO.write_line \"a\"\ndo! IO.write_line \"b\"".into(),
-                vec![(0, 2), (22, 26)]
+                "do! IO.writeln \"a\"\ndo! IO.writeln \"b\"".into(),
+                vec![(0, 2), (19, 23)]
             )
         );
         // After the session's statements, the moved action still begins the computation.
         let current = Session::default().merged(&classify_text("let base = 6"));
-        let input = classify_text("   do! IO.write_line (to_string base)");
+        let input = classify_text("   do! IO.writeln (to_string base)");
         let Body::Action(action, pieces) = &input.body else {
             panic!("{:?}", input.body)
         };
@@ -1776,7 +1773,7 @@ mod tests {
             generated.text
         );
         // Positions in the moved lines map back to the input.
-        let wrong = classify_text("   do! IO.write_line missing_name");
+        let wrong = classify_text("   do! IO.writeln missing_name");
         let Body::Action(action, pieces) = &wrong.body else {
             panic!("{:?}", wrong.body)
         };
@@ -1904,7 +1901,7 @@ mod tests {
             ("square base", "i64"),
             ("square", "i64 -> i64"),
             ("\"hi\"", "string"),
-            ("IO.write_line \"y\"", "IO<unit>"),
+            ("IO.writeln \"y\"", "IO<unit>"),
             ("1 + 1", "i32"),
             (
                 "(\n    match base with\n    | 6 -> \"six\"\n    | _ -> \"other\"\n)",

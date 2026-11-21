@@ -1,6 +1,6 @@
 //! `E1040`: names that the language had and has no longer, with the help and the certain fix that
 //! `tsuzuri fix` applies (TZ03: the channel with separate ends is `DataChannel`; TZ12 and TZ13 add
-//! their rows to `check::removed_feature`).
+//! their rows to `check::removed_feature`; E17: the functions of `IO` named with `ln` and `err`).
 use std::path::Path;
 use std::process::Command;
 
@@ -569,4 +569,313 @@ fn run n = n + 1
     .unwrap_err();
     assert_eq!(error.code, "E1040", "{}", error.message);
     assert_eq!(error.kind, Some("removed_async"), "{}", error.message);
+}
+
+/// E17: the old names of the functions of `IO` and the names that replaced them.
+const RENAMED_IO: [(&str, &str); 8] = [
+    ("try_read_line", "try_readln"),
+    ("read_line", "readln"),
+    ("try_write_line", "try_writeln"),
+    ("try_write_error", "try_write_err"),
+    ("try_write_error_line", "try_write_errln"),
+    ("write_line", "writeln"),
+    ("write_error", "write_err"),
+    ("write_error_line", "write_errln"),
+];
+
+const IO_HELP: &str = "the line and stderr functions of IO use 'ln' and 'err' (IO.readln, IO.writeln, IO.write_err, IO.write_errln, and their 'try_' forms)";
+
+/// The argument of a call of the `IO` function `name`.
+fn io_argument(name: &str) -> &'static str {
+    if name.contains("read") { "()" } else { "\"x\"" }
+}
+
+/// The `E1040` of the renamed `IO` function in `source`, written as `written` (`IO.write_line`,
+/// `std::IO.write_line`, `IO . write_line`): its message, the title of its one certain fix, and
+/// `source` with the fix applied. The diagnostic covers the whole qualified name, and the edit
+/// the function's name alone.
+fn renamed_io(source: &str, written: &str) -> (String, String, String) {
+    let error = analyze(source).expect_err(source);
+    assert_eq!(error.code, "E1040", "{source}\n{}", error.message);
+    assert_eq!(error.kind, Some("renamed_io_function"), "{source}");
+    assert_eq!(error.help.as_deref(), Some(IO_HELP), "{source}");
+    let start = source.find(written).expect("the old name");
+    assert_eq!(
+        (error.span.start, error.span.end),
+        (start, start + written.len()),
+        "{source}"
+    );
+    assert_eq!(error.fixes.len(), 1, "{source}");
+    let fix = &error.fixes[0];
+    assert_eq!(fix.applicability.as_str(), "certain", "{source}");
+    assert_eq!(fix.edits.len(), 1, "{source}");
+    let edit = &fix.edits[0];
+    let old = written.rsplit(['.', ' ']).next().unwrap();
+    assert_eq!(
+        (edit.span.start, edit.span.end),
+        (start + written.len() - old.len(), start + written.len()),
+        "{source}"
+    );
+    let fixed = format!(
+        "{}{}{}",
+        &source[..edit.span.start],
+        edit.text,
+        &source[edit.span.end..]
+    );
+    (error.message.clone(), fix.title.clone(), fixed)
+}
+
+#[test]
+fn names_the_renamed_io_functions() {
+    for (old, new) in RENAMED_IO {
+        let argument = io_argument(old);
+        let source = format!("let action = IO.{old} {argument}\n0\n");
+        let (message, title, fixed) = renamed_io(&source, &format!("IO.{old}"));
+        assert_eq!(message, format!("'IO.{old}' is now 'IO.{new}'"), "{source}");
+        assert_eq!(title, format!("write 'IO.{new}'"), "{source}");
+        assert_eq!(fixed, format!("let action = IO.{new} {argument}\n0\n"));
+        // The fixed source is a program of the new names.
+        analyze(&fixed).unwrap_or_else(|e| panic!("{fixed}\n{}: {}", e.code, e.message));
+    }
+}
+
+#[test]
+fn the_io_fix_keeps_the_module_as_written() {
+    // `std::IO`, spaces around the dot, parentheses, and a pipeline: the fix rewrites the
+    // function's name alone.
+    for (source, written, message, title, expected) in [
+        (
+            "let action = std::IO.write_line \"x\"\n0\n",
+            "std::IO.write_line",
+            "'std::IO.write_line' is now 'std::IO.writeln'",
+            "write 'std::IO.writeln'",
+            "let action = std::IO.writeln \"x\"\n0\n",
+        ),
+        (
+            "let action = IO . write_line \"x\"\n0\n",
+            "IO . write_line",
+            "'IO.write_line' is now 'IO.writeln'",
+            "write 'IO.writeln'",
+            "let action = IO . writeln \"x\"\n0\n",
+        ),
+        (
+            "let action = (IO.write_error_line) \"x\"\n0\n",
+            "IO.write_error_line",
+            "'IO.write_error_line' is now 'IO.write_errln'",
+            "write 'IO.write_errln'",
+            "let action = (IO.write_errln) \"x\"\n0\n",
+        ),
+        (
+            "let action = \"x\" |> IO.try_write_error\n0\n",
+            "IO.try_write_error",
+            "'IO.try_write_error' is now 'IO.try_write_err'",
+            "write 'IO.try_write_err'",
+            "let action = \"x\" |> IO.try_write_err\n0\n",
+        ),
+        (
+            "let action = std::IO . read_line ()\n0\n",
+            "std::IO . read_line",
+            "'std::IO.read_line' is now 'std::IO.readln'",
+            "write 'std::IO.readln'",
+            "let action = std::IO . readln ()\n0\n",
+        ),
+    ] {
+        let (found, fix_title, fixed) = renamed_io(source, written);
+        assert_eq!(found, message, "{source}");
+        assert_eq!(fix_title, title, "{source}");
+        assert_eq!(fixed, expected, "{source}");
+        analyze(&fixed).unwrap_or_else(|e| panic!("{fixed}\n{}: {}", e.code, e.message));
+    }
+}
+
+/// A `main` that uses every renamed function of `IO` under the names that `name` gives.
+fn io_program(name: impl Fn(&str) -> String) -> String {
+    format!(
+        "def main :: unit -> i32 = \\() ->\n    let! line = {} ()\n    let! tried = {} ()\n    do! {} (Maybe.default_value \"\" line)\n    do! {} (Result.is_ok tried)\n    do! {} \"a\"\n    do! {} \"b\"\n    let! one = {} \"c\"\n    let! two = {} \"d\"\n    let! three = {} \"e\"\n    do! IO.writeln (Result.is_ok one && Result.is_ok two && Result.is_ok three)\n    0\n",
+        name("read_line"),
+        name("try_read_line"),
+        name("write_line"),
+        name("write_line"),
+        name("write_error"),
+        name("write_error_line"),
+        name("try_write_line"),
+        name("try_write_error"),
+        name("try_write_error_line"),
+    )
+}
+
+fn new_io_name(old: &str) -> &'static str {
+    RENAMED_IO
+        .iter()
+        .find(|(from, _)| *from == old)
+        .map(|(_, to)| *to)
+        .expect("a renamed IO function")
+}
+
+#[test]
+fn reports_every_old_io_name_in_one_analysis() {
+    // Recovery checks each old name as the new one, so one analysis reports all nine uses, and
+    // nothing else: the values they give are checked with the new functions' types.
+    let source = io_program(|old| {
+        if old == "write_error" {
+            format!("std::IO.{old}")
+        } else {
+            format!("IO.{old}")
+        }
+    });
+    let errors = analyze_all(&source).expect_err("old names");
+    let mut found: Vec<(usize, String)> = errors
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.starts_with('E'))
+        .map(|error| {
+            assert_eq!(error.code, "E1040", "{}", error.message);
+            assert_eq!(error.kind, Some("renamed_io_function"), "{}", error.message);
+            (error.span.start, error.message.clone())
+        })
+        .collect();
+    found.sort();
+    let messages: Vec<String> = found.into_iter().map(|(_, message)| message).collect();
+    let expected: Vec<String> = [
+        "read_line",
+        "try_read_line",
+        "write_line",
+        "write_line",
+        "write_error",
+        "write_error_line",
+        "try_write_line",
+        "try_write_error",
+        "try_write_error_line",
+    ]
+    .iter()
+    .map(|old| {
+        let module = if *old == "write_error" {
+            "std::IO"
+        } else {
+            "IO"
+        };
+        format!("'{module}.{old}' is now '{module}.{}'", new_io_name(old))
+    })
+    .collect();
+    assert_eq!(messages, expected, "{source}");
+    // The program of the new names is accepted.
+    let renamed = io_program(|old| format!("IO.{}", new_io_name(old)));
+    analyze(&renamed).unwrap_or_else(|e| panic!("{renamed}\n{}: {}", e.code, e.message));
+}
+
+#[test]
+fn tsuzuri_fix_writes_the_new_io_names() {
+    // One round of `tsuzuri fix` moves a project to the new names, with the module and the spaces
+    // as written, and the project then checks.
+    let directory = std::env::temp_dir().join(format!("tsuzuri-removed-io-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let old = io_program(|old| match old {
+        "write_error" => format!("std::IO.{old}"),
+        "write_error_line" => format!("IO . {old}"),
+        _ => format!("IO.{old}"),
+    });
+    let new = io_program(|old| match old {
+        "write_error" => format!("std::IO.{}", new_io_name(old)),
+        "write_error_line" => format!("IO . {}", new_io_name(old)),
+        _ => format!("IO.{}", new_io_name(old)),
+    });
+    std::fs::write(directory.join("Main.tz"), &old).unwrap();
+    std::fs::write(
+        directory.join("Other.tz"),
+        "def greet :: unit -> IO<unit>\nfn greet _unit = \"hi\" |> IO.write_line\n",
+    )
+    .unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("fix")
+        .arg(&directory)
+        .arg("--json")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    // Every fix is applied in the first round, and the second analysis finds nothing to fix.
+    let events: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect(line))
+        .collect();
+    let fixes: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|event| event["event"] == "fix")
+        .collect();
+    assert_eq!(fixes.len(), 10, "{stdout}");
+    for fix in fixes {
+        assert_eq!(fix["status"], "applied", "{stdout}");
+        assert_eq!(fix["round"], 1, "{stdout}");
+        assert_eq!(fix["code"], "E1040", "{stdout}");
+        assert_eq!(fix["kind"], "renamed_io_function", "{stdout}");
+    }
+    let summary = events.last().expect("a summary");
+    assert_eq!(summary["event"], "summary", "{stdout}");
+    assert_eq!(summary["rounds"], 1, "{stdout}");
+    assert_eq!(summary["stop"], "fixed_point", "{stdout}");
+    assert_eq!(summary["applied"], 10, "{stdout}");
+    assert_eq!(summary["files"], 2, "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(directory.join("Main.tz")).unwrap(),
+        new
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.join("Other.tz")).unwrap(),
+        "def greet :: unit -> IO<unit>\nfn greet _unit = \"hi\" |> IO.writeln\n"
+    );
+    let check = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("check")
+        .arg(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_module_io_of_the_program_keeps_its_unknown_member() {
+    // A module `IO` of the program's namespace is not the std one: a function it lacks is the
+    // E1002 of any module, written bare or with the namespace. `std::IO` still names the std one.
+    let own = (
+        "App/IO.tz",
+        "namespace App\n\ndef hello :: unit -> i64\nfn hello _unit = 1\n",
+    );
+    for (call, module) in [
+        ("IO.write_line \"x\"", "IO"),
+        ("App::IO.read_line ()", "App::IO"),
+        ("IO.try_write_error_line \"x\"", "IO"),
+    ] {
+        let main = format!("namespace App\n\nlet action = {call}\n0\n");
+        let error = analyze_modules(&[("Main.tz", &main), own]).unwrap_err();
+        assert_eq!(error.code, "E1002", "{main}\n{}", error.message);
+        assert_eq!(error.kind, Some("unknown_module_member"), "{main}");
+        assert!(
+            error
+                .message
+                .starts_with(&format!("module '{module}' has no function")),
+            "{main}\n{}",
+            error.message
+        );
+    }
+    let main = "namespace App\n\nlet action = std::IO.write_line \"x\"\n0\n";
+    let error = analyze_modules(&[("Main.tz", main), own]).unwrap_err();
+    assert_eq!(error.kind, Some("renamed_io_function"), "{}", error.message);
+    // A module `IO` of the program that defines the old name has it.
+    analyze_modules(&[
+        ("Main.tz", "namespace App\n\nIO.write_line 4\n"),
+        (
+            "App/IO.tz",
+            "namespace App\n\ndef write_line :: i64 -> i64\nfn write_line n = n + 1\n",
+        ),
+    ])
+    .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
 }

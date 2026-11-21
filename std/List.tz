@@ -1787,8 +1787,8 @@ fn listed action = IO.map (\outcome ->
 /// def main :: unit -> i32 = \() ->
 ///     let! shuffled = List.random_shuffle [|1, 2, 3|]
 ///     match shuffled with
-///     | Ok values -> do! IO.write_line $"{values}"
-///     | Error _ -> do! IO.write_line "no entropy"
+///     | Ok values -> do! IO.writeln $"{values}"
+///     | Error _ -> do! IO.writeln "no entropy"
 ///     0
 /// ```
 def random_shuffle :: Copy<'a> => own [|'a|] -> IO<Result<[|'a|], Os.Error>>
@@ -1803,8 +1803,8 @@ fn random_shuffle values = listed (Array.random_shuffle (List.to_array values))
 /// def main :: unit -> i32 = \() ->
 ///     let! chosen = List.random_choice [|10, 20, 30|]
 ///     match chosen with
-///     | Ok value -> do! IO.write_line $"{value}"
-///     | Error _ -> do! IO.write_line "no entropy"
+///     | Ok value -> do! IO.writeln $"{value}"
+///     | Error _ -> do! IO.writeln "no entropy"
 ///     0
 /// ```
 def random_choice :: Copy<'a> => own [|'a|] -> IO<Result<'a, Os.Error>>
@@ -1818,8 +1818,8 @@ fn random_choice values = Array.random_choice (List.to_array values)
 /// def main :: unit -> i32 = \() ->
 ///     let! chosen = List.random_choices 2 [|10, 20, 30|]
 ///     match chosen with
-///     | Ok values -> do! IO.write_line $"{values}"
-///     | Error _ -> do! IO.write_line "no entropy"
+///     | Ok values -> do! IO.writeln $"{values}"
+///     | Error _ -> do! IO.writeln "no entropy"
 ///     0
 /// ```
 def random_choices :: Copy<'a> => own i64 -> own [|'a|] -> IO<Result<[|'a|], Os.Error>>
@@ -1833,8 +1833,8 @@ fn random_choices count values = listed (Array.random_choices count (List.to_arr
 /// def main :: unit -> i32 = \() ->
 ///     let! sampled = List.random_sample 2 [|10, 20, 30|]
 ///     match sampled with
-///     | Ok values -> do! IO.write_line $"{values}"
-///     | Error _ -> do! IO.write_line "no entropy"
+///     | Ok values -> do! IO.writeln $"{values}"
+///     | Error _ -> do! IO.writeln "no entropy"
 ///     0
 /// ```
 def random_sample :: Copy<'a> => own i64 -> own [|'a|] -> IO<Result<[|'a|], Os.Error>>

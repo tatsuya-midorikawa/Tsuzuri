@@ -71,11 +71,11 @@ def main :: unit -> i32 = \\() ->
     let! gpu_end = Time.monotonic_ns ()
     let cpu_check = rounds (ref reference) (ref values) 3
     let gpu_check = rounds (ref device) (ref values) 3
-    do! IO.write_line (Result.get cpu_end - Result.get cpu_start)
-    do! IO.write_line (Result.get open_end - Result.get open_start)
-    do! IO.write_line (Result.get first_end - Result.get open_end)
-    do! IO.write_line (Result.get gpu_end - Result.get first_end)
-    do! IO.write_line (if Math.abs (cpu_check - gpu_check) <= 0.0001 * Math.abs cpu_check && cpu_total > 0.0 && gpu_total > 0.0 && first_total > 0.0 then 1 else 0)
+    do! IO.writeln (Result.get cpu_end - Result.get cpu_start)
+    do! IO.writeln (Result.get open_end - Result.get open_start)
+    do! IO.writeln (Result.get first_end - Result.get open_end)
+    do! IO.writeln (Result.get gpu_end - Result.get first_end)
+    do! IO.writeln (if Math.abs (cpu_check - gpu_check) <= 0.0001 * Math.abs cpu_check && cpu_total > 0.0 && gpu_total > 0.0 && first_total > 0.0 then 1 else 0)
     0
 `;
 const wasmSource = (count, kernel) => `${prelude(count, kernel)}

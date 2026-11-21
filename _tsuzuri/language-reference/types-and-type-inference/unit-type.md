@@ -65,7 +65,7 @@ compute ()
 
 ラムダ式のパラメータパターンに `\() -> ...` と書くことで、引数の `()` をパターンマッチで受け取ります。呼び出し側も `get_base_port ()` のように `()` を引数として渡します。
 
-ログのように計算結果を返さない関数は、戻り値を `unit` にします。`IO.write_line` のシグネチャは `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` です。`ref string -> IO<unit>` ではありません。
+ログのように計算結果を返さない関数は、戻り値を `unit` にします。`IO.writeln` のシグネチャは `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` です。`ref string -> IO<unit>` ではありません。
 
 ## `ignore` と `|> ignore` による値の破棄
 

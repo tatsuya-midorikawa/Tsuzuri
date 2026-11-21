@@ -1,5 +1,5 @@
 def bound :: i32 -> i32 = \n ->
-    do! IO.write_line ("bound " + to_string n)
+    do! IO.writeln ("bound " + to_string n)
     n
 
 let mut sum = 0

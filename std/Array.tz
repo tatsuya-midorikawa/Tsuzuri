@@ -2484,8 +2484,8 @@ fn shuffled_with generator source =
 /// def main :: unit -> i32 = \() ->
 ///     let! result = Array.random_shuffle_in_place [1, 2, 3, 4]
 ///     match result with
-///     | Ok shuffled -> do! IO.write_line $"{shuffled}"
-///     | Error _ -> do! IO.write_line "no entropy"
+///     | Ok shuffled -> do! IO.writeln $"{shuffled}"
+///     | Error _ -> do! IO.writeln "no entropy"
 ///     0
 /// ```
 def random_shuffle_in_place :: own ['a] -> IO<Result<['a], Os.Error>>
@@ -2499,8 +2499,8 @@ fn random_shuffle_in_place source = entropy (\generator -> shuffled_with generat
 /// def main :: unit -> i32 = \() ->
 ///     let! result = Array.random_shuffle [1, 2, 3, 4]
 ///     match result with
-///     | Ok shuffled -> do! IO.write_line $"{shuffled}"
-///     | Error _ -> do! IO.write_line "no entropy"
+///     | Ok shuffled -> do! IO.writeln $"{shuffled}"
+///     | Error _ -> do! IO.writeln "no entropy"
 ///     0
 /// ```
 def random_shuffle :: Copy<'a> => own ['a] -> IO<Result<['a], Os.Error>>
@@ -2515,8 +2515,8 @@ fn random_shuffle source = entropy (\generator -> shuffled_with generator source
 /// def main :: unit -> i32 = \() ->
 ///     let! result = Array.random_choice [10, 20, 30]
 ///     match result with
-///     | Ok item -> do! IO.write_line $"{item}"
-///     | Error _ -> do! IO.write_line "no entropy"
+///     | Ok item -> do! IO.writeln $"{item}"
+///     | Error _ -> do! IO.writeln "no entropy"
 ///     0
 /// ```
 def random_choice :: Copy<'a> => own ['a] -> IO<Result<'a, Os.Error>>
@@ -2532,8 +2532,8 @@ fn random_choice source = entropy (\generator ->
 /// def main :: unit -> i32 = \() ->
 ///     let! result = Array.random_choices 5 [10, 20, 30]
 ///     match result with
-///     | Ok items -> do! IO.write_line $"{items}"
-///     | Error _ -> do! IO.write_line "no entropy"
+///     | Ok items -> do! IO.writeln $"{items}"
+///     | Error _ -> do! IO.writeln "no entropy"
 ///     0
 /// ```
 def random_choices :: Copy<'a> => own i64 -> own ['a] -> IO<Result<['a], Os.Error>>
@@ -2549,8 +2549,8 @@ fn random_choices count source = entropy (\generator ->
 /// def main :: unit -> i32 = \() ->
 ///     let! result = Array.random_sample 2 [10, 20, 30]
 ///     match result with
-///     | Ok items -> do! IO.write_line $"{items}"
-///     | Error _ -> do! IO.write_line "no entropy"
+///     | Ok items -> do! IO.writeln $"{items}"
+///     | Error _ -> do! IO.writeln "no entropy"
 ///     0
 /// ```
 def random_sample :: Copy<'a> => own i64 -> own ['a] -> IO<Result<['a], Os.Error>>

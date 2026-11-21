@@ -161,7 +161,7 @@ ErrGroup
 
 ```tsuzuri run=Hello%2C%20Tsuzuri!
 def main :: unit -> i32 = \() ->
-    do! IO.write_line "Hello, Tsuzuri!"
+    do! IO.writeln "Hello, Tsuzuri!"
     0
 ```
 
@@ -175,7 +175,7 @@ Hello, Tsuzuri!
 
 ```text
 def main :: Array<string> -> i32 = \args ->
-    do! IO.write_line ("arguments count: " + to_string args.length)
+    do! IO.writeln ("arguments count: " + to_string args.length)
     0
 ```
 

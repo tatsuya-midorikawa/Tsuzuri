@@ -90,7 +90,7 @@ ${counts.map((count, index) => `    let values${index} = make ${count}
     let device${index} = checksum (Gpu.map (ref vulkan) kernel (Gpu.from_array (ref vulkan) (&values${index})))
     let chosen${index} = checksum (Gpu.map (ref auto) kernel (Gpu.from_array (ref auto) (&values${index})))
     let served${index} = code (Gpu.last_backend ())
-    do! IO.write_line ("${count} " + to_string served${index} + " " + to_string (expected${index} == device${index} && expected${index} == chosen${index}))`).join("\n")}
+    do! IO.writeln ("${count} " + to_string served${index} + " " + to_string (expected${index} == device${index} && expected${index} == chosen${index}))`).join("\n")}
     0
 `;
 // Cold costs: the first request of the device and the first call of the kernel (shader module and pipeline), 1024 lanes.
@@ -108,7 +108,7 @@ def main :: unit -> i32 = \\() ->
     let! second_start = Time.monotonic_ns ()
     let output2 = Gpu.map (ref vulkan) kernel input2
     let! second_end = Time.monotonic_ns ()
-    do! IO.write_line (to_string (Result.get open_end - Result.get open_start) + " " + to_string (Result.get first_end - Result.get first_start) + " " + to_string (Result.get second_end - Result.get second_start) + " " + to_string (checksum output + checksum output2))
+    do! IO.writeln (to_string (Result.get open_end - Result.get open_start) + " " + to_string (Result.get first_end - Result.get first_start) + " " + to_string (Result.get second_end - Result.get second_start) + " " + to_string (checksum output + checksum output2))
     0
 `;
 

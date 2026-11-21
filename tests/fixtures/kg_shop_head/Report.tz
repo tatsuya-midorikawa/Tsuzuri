@@ -3,4 +3,4 @@ namespace Acme::Shop
 using Acme::Shop
 
 def print_total :: [Line] -> unit = \lines ->
-    do! IO.write_line (Cart.total (ref lines))
+    do! IO.writeln (Cart.total (ref lines))

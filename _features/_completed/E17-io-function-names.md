@@ -7,7 +7,7 @@
 | 規模 | M（`std/IO.tc` の改名と `E1040` の機械的移行は小さいが、`std/`・テスト・適合性スイート・KG golden・`guide/`・`vsc/`・言語リファレンスなど約 160 ファイルの呼び出し箇所と文書の一括更新がある） |
 | 依存 | E02, G23, G24, G34, G35（すべて done） |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-20（利用者の依頼。HEAD `295ffcb4` で確認） |
 | 承認 | 承認済み（2026-11-20 の利用者の依頼）。決定事項 D1〜D4 は既定案 |
 | 改善する劣位 | 同じ動作に 2 つの名前（`IO.write_line` と別名 `IO.writeln`）があり、行単位の `_line` と `ln`、標準エラーの `_error` と `_err` の表記が揃っていない（D-50 の「同じ意味に複数の書き方がある」の解消） |
@@ -20,7 +20,7 @@
 2. **触ってはいけない**: `IO` の意味・型・評価順序・所有権・フラッシュ、std 専用の内部組み込み `IO.__read_line`・`IO.__write`、ランタイム C 関数 `tsuzuri_io_read_line`・`tsuzuri_io_write`、WebAssembly のホスト import 名 `tsuzuri_io.read_line`・`tsuzuri_io.write`（`docs/stability.md` の公開 ABI。D3）、Rust 内部の関数名（`mcp::rpc::read_line`・`server::read_line_limited` など）。単純な全文一括置換（`read_line` → `readln`）はこれらを壊すので絶対に行わない（「落とし穴」参照）。
 3. **最初に読む**: ① 本チケットの「仕様」1〜3 と「落とし穴」、② `std/IO.tc`（213 行）、③ `src/check.rs` の `removed_feature`・`removed_name`（6029〜6165 行）と `ExprKind::Field` の回復（13166〜13220 行）、④ `tests/removed_features.rs`（1〜185 行）、⑤ `tests/std_examples.rs`（`("IO", 14)` → `13`）。
 4. **進め方**: 手順 1（`std/IO.tc` + `E1040` + `std/` の doc 例 + `removed_features.rs`・`std_examples.rs`）→ 手順 2（`src/` 単体テスト・Rust 統合テスト・fixture・適合性テスト・KG golden・`std-table.txt`）→ 手順 3（Node E2E・`examples/`・`benchmarks/`・`scripts/`・`guide/`・`vsc/`）→ 手順 4（言語リファレンス・`docs/`・`README.md`・生成表・未完了チケット）。1 チケット 1 ブランチ・1 PR。
-5. **完了の見分け方**: `git grep -nE '\bIO\.(try_read_line|read_line|try_write_line|try_write_error_line|try_write_error|write_line|write_error_line|write_error)\b'` が、`E1040` の実装・テスト・説明ページ（`src/check.rs`・`src/explain/codes/E1040.md`・`tests/removed_features.rs`・`diagnostics.md`・`docs/language.md` の `E1040` 節）と過去の履歴（`_features/_completed/`・`_specs/_archive/`）以外で **0 件**になり、T1・関連 Node E2E・`tsuzuri test --doc std`・文書検査がすべて通る。
+5. **完了の見分け方**: `git grep -nE '\bIO\.(try_read_line|read_line|try_write_line|try_write_error_line|try_write_error|write_line|write_error_line|write_error)\b'` が、`E1040` の実装・テスト・説明ページ（`src/check.rs`・`src/explain/codes/E1040.md`・`tests/removed_features.rs`・`diagnostics.md`・`docs/language.md` の `E1040` 節・`io.md` の「以前の関数名」の表）と本チケット・過去の履歴（`_features/_completed/`・`_specs/_archive/`）以外で **0 件**になり、T1・関連 Node E2E・`tsuzuri test --doc std`・文書検査がすべて通る。
 
 ## 目的
 
@@ -103,9 +103,9 @@
 | `IO.write_error` | `IO.write_err` | `'IO.write_error' is now 'IO.write_err'` |
 | `IO.write_error_line` | `IO.write_errln` | `'IO.write_error_line' is now 'IO.write_errln'` |
 
-- **`std::` 修飾と空白の保持**: `std::IO.write_line` と書いたときのメッセージは `'std::IO.write_line' is now 'std::IO.writeln'`、修正案の title は `write 'std::IO.writeln'`。`Edit` の `span` は修飾名全体（`value.span.start..field.span.end`、既存の `removed_name` と同じ）とし、置換文字列はソース上の `value.span.start..field.span.start`（`IO.`・`std::IO.`・`IO . ` などの元の綴り）に新しいメンバー名を連結したものにする。これにより `IO.write_line`・`std::IO.write_line`・`IO . write_line`・`(IO.write_line)`・`"x" |> IO.write_line` のすべてで元の修飾と空白を保ったまま `tsuzuri fix` が 1 ラウンドで動く。
+- **`std::` 修飾と空白の保持**: `std::IO.write_line` と書いたときのメッセージは `'std::IO.write_line' is now 'std::IO.writeln'`、修正案の title は `write 'std::IO.writeln'`。診断の `span` は修飾名全体（`value.span.start..field.span.end`、既存の `removed_name` と同じ）とし、`Edit` は関数名の識別子だけ（`field.span`）を新しいメンバー名に置き換える（2026-11-21 の実装で確定。型検査器はソースの文字列を持たないので、起票時の案「`value.span.start..field.span.start` の元の綴りに新名を連結して修飾名全体を置き換える」と結果が同じで、間のコメントや改行も保つこの形にした）。これにより `IO.write_line`・`std::IO.write_line`・`IO . write_line`・`(IO.write_line)`・`"x" |> IO.write_line` のすべてで元の修飾と空白を保ったまま `tsuzuri fix` が 1 ラウンドで動く。
 - **`help`**: `"the line and stderr functions of IO use 'ln' and 'err' (IO.readln, IO.writeln, IO.write_err, IO.write_errln, and their 'try_' forms)"`。
-- **利用者定義モジュールとの分離**: `E1040` にするのは、`self.names.module_path(self.module, &spelled) == Some("IO")`（つまり参照先モジュールが標準ライブラリの `std::IO` に解決したとき）に限る。`namespace App` に `App/IO.tz` があるときの `IO.write_line` や `App::IO.write_line` は `module_path` が `Some("App.IO")` になるため `E1040` にせず、従来どおり `E1002`（`unknown_member`）にする。
+- **利用者定義モジュールとの分離**: `E1040` にするのは、`self.names.module_path(self.module, &spelled) == Some("IO")`（つまり参照先モジュールが標準ライブラリの `std::IO` に解決したとき）に限る。`namespace App` に `App/IO.tz` があるときの `IO.write_line` や `App::IO.write_line` は `module_path` が `Some("App.IO")` になるため `E1040` にせず、従来どおり `E1002`（`unknown_member`）にする。（2026-11-21 の実装で確認: `Tsuzuri.toml` の `namespace` が `App` のプロジェクトでは、`App/IO.tz` は既定の名前空間のモジュールなので `E1011`（`module name 'IO' is reserved`）になる。名前空間 `App` を宣言した `App/IO.tz` が成り立つのは既定の名前空間が別のときで、`tests/removed_features.rs` はその形を `analyze_modules` で検査する。利用者向けの文書の例は、どのプロジェクトでも成り立つ名前空間 `App::Tools` の `Tools/IO.tz` にした）
 - **エラー回復**: `self.recovering` のときは、モジュール式 `(**value).clone()` を保ったままメンバー識別子だけを新名に差し替えた `ExprKind::Field` で型検査を続行し、1 回の `tsuzuri check` でファイル内のすべての旧名を報告する。
 
 ### 3. ヒント DB（`src/hints.rs`）
@@ -126,8 +126,8 @@
 | ファイル | 変更内容 |
 | --- | --- |
 | `src/diagnostic_kinds.rs` | `since "0.1.0"` の `// E1040` 群に、`(code, id)` 順で `(RenamedIoFunction, "renamed_io_function", "E1040")` を追加（`RenamedToDataChannel` の直前） |
-| `src/check.rs` | ① `removed_feature`（または `IO` 用の補助関数）に 8 つの旧名 → 新名の対応を追加。② `ExprKind::Field`（13186 行付近）で、`IO`／`std::IO` の旧名は `self.names.module_path(self.module, &spelled) == Some("IO")` のときだけ `E1040` を出し、置換文字列で `value.span.start..field.span.start` を保ち、回復時はモジュールが変わらない場合 `(**value).clone()` を使って `std::IO` 修飾もそのまま通す |
-| `src/explain/codes/E1040.md` | `What it covers`・`Fixes`・`See also` に `renamed_io_function`（`IO.readln`・`IO.writeln`・`IO.write_err`・`IO.write_errln` と `try_` 版への改名、`tsuzuri fix` 対応）を追記 |
+| `src/check.rs` | ① `IO` 用の表 `renamed_io_function`（8 つの旧名 → 新名。`removed_feature` には足さない。型の位置の `Names::type_head` は `removed_feature` を聞くので、そこで `IO.write_line` を型として報告しないため）。② `ExprKind::Field` で、`IO`／`std::IO` の旧名は `self.names.module_path(self.module, &spelled) == Some("IO")` のときだけ `E1040` を出す（`Checker::renamed_io_function`）。診断の `span` は修飾名全体、確かな修正案の `Edit` は関数名の識別子（`field.span`）だけ（仕様 2）。回復時は左辺のモジュールの式（`value.clone()`）を保って新しい名前で検査を続け、`std::IO` 修飾もそのまま通す |
+| `src/explain/codes/E1040.md` | `What it covers`・`Fixes` に `renamed_io_function`（`IO.readln`・`IO.writeln`・`IO.write_err`・`IO.write_errln` と `try_` 版への改名、`tsuzuri fix` 対応）を追記。ページは `tests/explain.rs` の `CODE_PAGE_LIMIT`（1500 字）に既に近かった（1497 字）ので、任意の `See also`（kind の一覧）を外し、ほかの行を短くした（1496 字。`tsuzuri explain E1040` は kind の一覧を自分で出す。A24 の `E1041` と同じ扱い） |
 | `src/hints.rs` | `"print-macro"`（435〜444 行）の `IO.write_line` を `IO.writeln` に更新 |
 | `src/overflow.rs` | 251 行のコメント内の `IO.write_error "prefix"` を `IO.write_err "prefix"` に更新 |
 | `src/{stdlib,repl,llvm_split,ownership}.rs`, `src/kg/suggest.rs` | モジュール内単体テストのソース文字列・候補文字列の `IO.read_line`／`IO.write_line` を `IO.readln`／`IO.writeln` に更新 |
@@ -138,7 +138,7 @@
 | --- | --- |
 | `tests/std_examples.rs` | `FLOORS` の `("IO", 14)` を `("IO", 13)` に更新し、理由（`E17`: `write_line` と `writeln` の統合で公開小文字関数が 14 → 13）をコメントに添える |
 | `tests/removed_features.rs` | `IO` の旧名 8 個すべて、`std::IO.write_line`、空白入り `IO . write_line`、括弧 `(IO.write_line)`、パイプ `"a" \|> IO.write_line`、1 ファイル内の複数箇所の一括報告、`tsuzuri fix` による自動書き換え、および `namespace App` の利用者モジュール `App/IO.tz` が `E1002` のままになるテストを追加 |
-| `tests/fixtures/capabilities/std-table.txt` | `IO.*` の 11 行を、新名 10 行（辞書順: `IO.readln`・`IO.try_readln`・`IO.try_write`・`IO.try_write_err`・`IO.try_write_errln`・`IO.try_writeln`・`IO.write`・`IO.write_err`・`IO.write_errln`・`IO.writeln`、すべて `: stdio`）に更新 |
+| `tests/fixtures/capabilities/std-table.txt`, `tests/capabilities.rs` | `IO.*` の 11 行を、新名 10 行（辞書順: `IO.readln`・`IO.try_readln`・`IO.try_write`・`IO.try_write_err`・`IO.try_write_errln`・`IO.try_writeln`・`IO.write`・`IO.write_err`・`IO.write_errln`・`IO.writeln`、すべて `: stdio`）に更新。表は 89 行 → 88 行になるので、`std_table_file_lists_the_89_functions` を `..._88_functions` にする |
 | `tests/audit.rs` | テスト入力と期待出力（テキストと `--json`）の `IO.read_line`・`IO.write_line` を `IO.readln`・`IO.writeln` に更新 |
 | `tests/kg_query.rs`, `tests/fixtures/kg_shop/Report.tz`, `tests/fixtures/kg_shop_head/{Cart,Report}.tz`, `tests/golden/kg/**` | `Report.tz` などの `IO.write_line` を `IO.writeln` に更新し、`kg_query.rs` のクエリと補完候補（`IO.write_lin` → `IO.writel`、`IO.writ_line` → `IO.writln` など）および `tests/golden/kg/` の 6 ファイル（`show_io.txt`・`callees_main_3.txt`・`Acme.Shop.Report.print_total.md`・`edges.jsonl`・`facts/Main.jsonl`・`facts/Report.jsonl`、3 文字短縮に伴う `span` と `column` と `via` の変化を含む）を更新 |
 | `tests/io.mjs` | Tsuzuri ソース文字列内の `IO.read_line`・`IO.try_read_line`・`IO.write_line`・`IO.write_error_line` を新名に更新し、`IO.try_writeln`・`IO.try_write_err`・`IO.try_write_errln`・`IO.write_err` も網羅する。**WASM import 検査の `"tsuzuri_io.read_line"` と JS ホストオブジェクトの `read_line(out)` は変更しない** |
@@ -276,3 +276,39 @@
 | D2 | 旧関数名 8 個は `@deprecated` による別名維持をせず `std/IO.tc` から削除し、`E1040`（kind `renamed_io_function`）と `Applicability::Certain` の修正案を出して `tsuzuri fix` で機械的に移行できるようにする | 今回の目的自体が `write_line`／`writeln` の二重定義の解消であり、0.x の改名方針（D-61・TZ03 の `DataChannel` 改名）と同じく、別名を残さず `E1040` + `tsuzuri fix` で即時・確実に移行するのが最も単純で誤用も防げるため | 既定案 |
 | D3 | std 内部組み込み `IO.__read_line`・`IO.__write`、C ランタイム関数 `tsuzuri_io_read_line`・`tsuzuri_io_write`、WebAssembly import `tsuzuri_io.read_line`・`tsuzuri_io.write` は変更しない | 利用者から見える Tsuzuri の関数名ではなくホストとの公開 ABI（`docs/stability.md`）および内部プリミティブであり、変更しても利用者の利便性は変わらず既存の WASM ホスト実装だけを壊すため | 既定案 |
 | D4 | `docs/benchmarks.md` 内のサンプルコード・表の説明に現れる `IO.write_line` は、再計測を伴わない範囲で新名（または計測時点の表記である旨が分かる形）に整え、`docs/benchmarks-data/*.json` の計測データは書き換えない | 関数名の変更は生成コードの性能を変えず、ベンチマーク数値の捏造や無意味な再計測を避けるため | 既定案 |
+
+## 実装と検証（2026-11-21）
+
+`main` `b6bbdcb5`（起票時の `295ffcb4` から 115 コミット後）で着手した。起票後の変化: G39・PB08 が `_completed/` へ移った（履歴なので触らない）、旧名を含むファイルに `benchmarks/lsp/workloads.mjs`・`vsc/scripts/test-extension.mjs`・`docs/benchmarks.md`（D4）が加わった。改名前の参照は履歴を除いて 162 ファイル・1,056 箇所だった。
+
+### 仕様からの変更（実装で確定）
+
+- 修正案の `Edit` は関数名の識別子だけを置き換える（仕様 2。型検査器はソースの文字列を持たないため。修飾・空白・間のコメントと改行を保つ）。
+- 旧名の表は `removed_feature` ではなく `IO` 用の `renamed_io_function` にした（型の位置で `IO.write_line` を `E1040` にしないため）。
+- `E1040.md` の `See also` を外した（`CODE_PAGE_LIMIT`）。`tests/capabilities.rs` の表の行数を 89 → 88 にした。
+- 利用者向けの文書の「プロジェクトのモジュール `IO`」の例は `App::Tools` の `Tools/IO.tz`（仕様 2 の注記）。`io.md` の「以前の関数名」には、`tsuzuri fix` の 1 回の実行が最大 5 ラウンド（1 ラウンドはエラーの表示の上限 50 件まで）で、`///` の例の中は `tsuzuri test --doc` で見つけて手で直すことを書いた。
+
+### 手順と結果
+
+- 手順 1: `std/IO.tc` を改名し（公開の小文字関数 13 個、`FLOORS` の `("IO", 13)`）、`E1040`（`renamed_io_function`）・`hints.rs`・`overflow.rs`・`E1040.md` を更新した。`tests/removed_features.rs` に E17 のテスト 5 つ（8 つの旧名のメッセージ・help・確かな修正案と直した結果、`std::IO`・空白・括弧・パイプ・`std::IO . read_line`、1 回の解析で 9 か所を過不足なく報告、`tsuzuri fix --json` が 1 ラウンド・10 件・2 ファイルで直し `tsuzuri check` が通る、名前空間のモジュール `IO` が `E1002` のまま）を足した。
+- 手順 2: `\bIO\.<旧名>\b` だけを対象にした置換で、履歴・本チケット・`src/check.rs` を除くリポジトリ全体を移行した。改名で文字位置が動いた期待値（`src/repl.rs` の `(22, 26)` → `(19, 23)`、KG の golden の `Report.tz:6:24` → `6:21` と `span`・`column` の -3、`manifest.json` のハッシュ（各ファイルの SHA-256 を `shasum` で照合）、`tests/kg_brief.rs` の source のハッシュ）と、`kg_query` の問い合わせ（`IO.write_lin` → `IO.writel`、`IO.writ_line` → `IO.writln`）を直した。`gen-docs` で `diagnostics.md` の生成ブロックを更新した。
+- 手順 3: `tests/io.mjs` が 10 関数すべてを使うようにした（使われないアクションが動かないこと、`try_` 版の `InvalidEncoding`・`WriteFailed`・`Ok`、トラップ版の孤立サロゲートでのトラップ、閉じた標準出力での `write`・`writeln` のトラップ（`WriteFailed`）、native と WASM の `-O0`／`-O3`）。`tests/benchmark_report.mjs` の正規表現（`IO\.read_line`）、`vsc/src/test/extension.test.ts` の補完のラベル（`'writeln'`）、`benchmarks/lsp/workloads.mjs` のバイト数のコメントを直した。
+- 手順 4: 言語リファレンス（`io.md` を書き直し、「以前の関数名」の節を足した。ほか 33 ページは置換と文の直し）、`diagnostics.md`・`docs/language.md`・`docs/architecture.md`・`README.md`・`_features/GUIDE.md`（D-55）を更新した。
+
+検証（macOS arm64、dev ビルド）:
+
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`（ホストと `x86_64-pc-windows-msvc`）が通った。
+- `cargo nextest run --locked`: 3403 passed（改名前は 3398。E17 のテスト 5 つが増えた）。
+- `tsuzuri test --doc std`: `-O0`・`-O3` とも 872 passed。
+- Node: `io.mjs`・`os.mjs`・`repl.mjs`・`script.mjs`・`tzroutine.mjs`（163 runs）・`allocator.mjs`・`codegen_units.mjs`・`conformance_harness.mjs`・`integer_intrinsics.mjs`・`last_use_fuzz.mjs`・`local_recursion_fuzz.mjs`・`progfuzz.mjs`・`size.mjs`・`net.mjs`・`gpu_vulkan_language.mjs`（Vulkan の機器なしで 1 件 skip）・`benchmark_report.mjs`、`scripts/conformance.mjs`（241 ok）、`check-guide.mjs` が通った。`fast_backend.mjs` は `--features fast-backend` のビルドが要るので、その 2 つのプログラムを LLVM の経路で実行して期待値（`2` とトラップ位置、`4950`）を確かめた。
+- 文書: `check-docs.mjs`（変えた 34 ページ、215 例・408 回のネイティブ実行）、`gen-docs.mjs --check`、`check-cli-docs.mjs`、`check-spec.mjs`、`check-guide-lite.mjs`、`repo-kb.mjs build`・`verify` が通った。
+- 例と道具: `examples/{currying,functional,hello,io}` を `-O0`／`-O3` で実行し、WASM の import が `tsuzuri_io.read_line`・`tsuzuri_io.write` のままであることを確かめた。`vsc` は `npx tsc --noEmit` と `eslint` が通り、言語サーバーの補完が新名 10 個を出し旧名を出さないことを確かめた（拡張のホストのテストは `ci:full` の `vscode.yml`）。
+
+### レビュー
+
+独立のレビュー（コンパイラ・網羅と文書・テストの 3 つの観点と、指摘ごとの反証）で、この変更が入れた 6 件（`io.mjs` の閉じた標準出力の検査が必ず通っていたこと、`tsuzuri fix` のテストが 1 ラウンドを確かめていなかったこと、`io.md` の「1 回ですべて」の言い過ぎ、`docs/language.md` の「line 版」、`App/IO.tz` の例が `namespace = "App"` のプロジェクトで `E1011` になること、本チケットの設計の表の食い違い）を直した。E17 より前からある次の 2 つは、別のチケットにした。
+
+- [E18](../E18-removed-names-resolve-std-modules.md): `Channel`・`Net`・`Task`・`Async` の旧名の `E1040` が、書いたモジュール名の綴りだけで照合する（プロジェクトのモジュール `Channel` に無い `Channel.bounded` が `DataChannel.bounded` への確かな修正案を持つ `E1040` になり、`std::Channel.bounded` は `E1002` になる）。確かな改名の回復が関数を毒にして `finish` のエラーを隠し、`tsuzuri fix` が `E2008` で止まることがある点も、改善の候補として書いた。
+- [G44](../G44-active-pattern-body-recovery.md): 複数ケースのアクティブパターンの本体が、最初のエラーしか報告しない（`infer_active_result` が回復しない）。
+
+E17 より前からあり、この変更の範囲外のもの: `benchmarks/run-gpu-vulkan.mjs` の生成するプログラムと `tests/fixtures/mcp/tool-examples.json` の tz_guide の例が、edition 2027 の `E0004`（`&`・`1 .. n`）になる（どちらも名前の変更とは関係しない）。

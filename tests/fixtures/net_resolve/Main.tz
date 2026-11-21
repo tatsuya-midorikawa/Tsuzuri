@@ -34,7 +34,7 @@ fn rec resolve_each hosts index =
 	else
 		let resolving = Net.resolve (String.repeat 1 (ref hosts[index])) 80
 		IO.bind (\found ->
-			IO.bind (\_done -> resolve_each hosts (index + 1)) (IO.write_line (addresses_text found))) resolving
+			IO.bind (\_done -> resolve_each hosts (index + 1)) (IO.writeln (addresses_text found))) resolving
 
 def main :: own unit -> i32 = \() ->
 	do! resolve_each (Corpus.hosts ()) 0

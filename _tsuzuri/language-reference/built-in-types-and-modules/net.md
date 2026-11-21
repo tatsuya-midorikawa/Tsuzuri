@@ -31,13 +31,13 @@ fn show text =
     | Maybe.None -> "none"
 
 def main :: unit -> i32 = \() ->
-    do! IO.write_line (show (ref "127.0.0.1:8080"))
-    do! IO.write_line (show (ref "[2001:DB8:0:0:0:0:0:1]:443"))
-    do! IO.write_line (show (ref "[::ffff:192.0.2.1]:53"))
-    do! IO.write_line (show (ref "127.1:80"))
-    do! IO.write_line (show (ref "010.0.0.1:80"))
-    do! IO.write_line (show (ref "[fe80::1%en0]:80"))
-    do! IO.write_line (show (ref "1.2.3.4"))
+    do! IO.writeln (show (ref "127.0.0.1:8080"))
+    do! IO.writeln (show (ref "[2001:DB8:0:0:0:0:0:1]:443"))
+    do! IO.writeln (show (ref "[::ffff:192.0.2.1]:53"))
+    do! IO.writeln (show (ref "127.1:80"))
+    do! IO.writeln (show (ref "010.0.0.1:80"))
+    do! IO.writeln (show (ref "[fe80::1%en0]:80"))
+    do! IO.writeln (show (ref "1.2.3.4"))
     0
 ```
 
@@ -96,7 +96,7 @@ def main :: unit -> i32 = \() ->
     let! outcome = Net.with_listener loopback (\listener ->
         Net.with_connection (Net.local_addr listener) (Maybe.Some 1000) (\client ->
             Net.with_accepted listener (Maybe.Some 1000) (\server -> exchange client server)))
-    do! IO.write_line (match outcome with
+    do! IO.writeln (match outcome with
         | Result.Ok (Result.Ok (Result.Ok line)) -> line
         | _ -> "failed")
     0
@@ -156,18 +156,18 @@ def main :: unit -> i32 = \() ->
     let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
     let! bound = Net.bind loopback
     match bound with
-    | Result.Error _ -> do! IO.write_line "bind failed"
+    | Result.Error _ -> do! IO.writeln "bind failed"
     | Result.Ok listener ->
         let! quiet = Net.accept listener (Maybe.Some 50)
         let! first = Net.close_listener listener
         let! second = Net.close_listener listener
         let! late = Net.accept listener (Maybe.Some 50)
         let! none = Net.accept listener (Maybe.Some 0)
-        do! IO.write_line ("accept: " + kind_text quiet)
-        do! IO.write_line ("close: " + kind_text first)
-        do! IO.write_line ("close again: " + kind_text second)
-        do! IO.write_line ("accept after close: " + kind_text late)
-        do! IO.write_line ("timeout of 0: " + kind_text none)
+        do! IO.writeln ("accept: " + kind_text quiet)
+        do! IO.writeln ("close: " + kind_text first)
+        do! IO.writeln ("close again: " + kind_text second)
+        do! IO.writeln ("accept after close: " + kind_text late)
+        do! IO.writeln ("timeout of 0: " + kind_text none)
     0
 ```
 
@@ -213,7 +213,7 @@ fn talk receiver sender = IO {
 def main :: unit -> i32 = \() ->
     let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
     let! outcome = Net.with_udp loopback (\receiver -> Net.with_udp loopback (\sender -> talk receiver sender))
-    do! IO.write_line (match outcome with
+    do! IO.writeln (match outcome with
         | Result.Ok (Result.Ok line) -> line
         | _ -> "failed")
     0
@@ -262,13 +262,13 @@ def main :: unit -> i32 = \() ->
     let! short = Net.resolve "127.1" 80
     let! zone = Net.resolve "fe80::1%en0" 80
     let! wide = Net.resolve "１２７．０．０．１" 80
-    do! IO.write_line (show numeric)
-    do! IO.write_line (show v6)
-    do! IO.write_line (show empty)
-    do! IO.write_line (show bad_port)
-    do! IO.write_line (show short)
-    do! IO.write_line (show zone)
-    do! IO.write_line (show wide)
+    do! IO.writeln (show numeric)
+    do! IO.writeln (show v6)
+    do! IO.writeln (show empty)
+    do! IO.writeln (show bad_port)
+    do! IO.writeln (show short)
+    do! IO.writeln (show zone)
+    do! IO.writeln (show wide)
     0
 ```
 
@@ -326,7 +326,7 @@ def main :: unit -> i32 = \() ->
         match Channel.recv results with
         | Maybe.Some true -> echoes = echoes + 1
         | _ -> ()
-    do! IO.write_line $"echoes: {echoes}"
+    do! IO.writeln $"echoes: {echoes}"
     0
 ```
 

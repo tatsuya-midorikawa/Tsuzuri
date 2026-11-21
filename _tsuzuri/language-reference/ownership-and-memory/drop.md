@@ -30,13 +30,13 @@ Tsuzuri では、所有権システムによってすべての値の寿命が静
 record Ticket { id: i64 }
 
 instance Drop<Ticket> {
-    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+    fn drop value = do! IO.writeln ("drop " + to_string value.id)
 }
 
 def main :: unit -> i32 = \() ->
     let first = Ticket { id: 1 }
     let second = Ticket { id: 2 }
-    do! IO.write_line (to_string (first.id + second.id))
+    do! IO.writeln (to_string (first.id + second.id))
     0
 ```
 
@@ -110,18 +110,18 @@ flowchart TD
 record Inner { name: string }
 
 instance Drop<Inner> {
-    fn drop _value = do! IO.write_line "inner drop"
+    fn drop _value = do! IO.writeln "inner drop"
 }
 
 record Outer { inner: Inner }
 
 instance Drop<Outer> {
-    fn drop _value = do! IO.write_line "outer drop"
+    fn drop _value = do! IO.writeln "outer drop"
 }
 
 def main :: unit -> i32 = \() ->
     let _obj = Outer { inner: Inner { name: "test" } }
-    do! IO.write_line "main done"
+    do! IO.writeln "main done"
     0
 ```
 
@@ -141,7 +141,7 @@ inner drop
 record T { id: i64 }
 
 instance Drop<T> {
-    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+    fn drop value = do! IO.writeln ("drop " + to_string value.id)
 }
 
 def sum3 :: ref T -> ref T -> i64 -> i64
@@ -156,7 +156,7 @@ fn run limit =
         total = total + sum3 (ref (T { id: 10 * i + 1 })) (ref (T { id: 10 * i + 2 })) ({ if i == limit then break else (); 0 })
     total
 
-do! IO.write_line (to_string (run 2))
+do! IO.writeln (to_string (run 2))
 ```
 
 実行結果:
@@ -225,7 +225,7 @@ drop 21
 ```text
 record Caller { f: unit -> i64 }
 instance Drop<Caller> {
-    fn drop c = do! IO.write_line ("drop " + to_string (c.f ()))
+    fn drop c = do! IO.writeln ("drop " + to_string (c.f ()))
 }
 def run :: i64 -> i64
 fn run n =
@@ -268,13 +268,13 @@ error[E1005]: 'use' needs a value whose type implements Drop; i32 does not, so b
 record Ticket { id: i64 }
 
 instance Drop<Ticket> {
-    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+    fn drop value = do! IO.writeln ("drop " + to_string value.id)
 }
 
 def main :: unit -> i32 = \() ->
     let ticket = Ticket { id: 7 }
     Owned.drop ticket
-    do! IO.write_line "after"
+    do! IO.writeln "after"
     0
 ```
 

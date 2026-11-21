@@ -3463,7 +3463,7 @@ entry:
         ),
         (
             "Main.tz",
-            "def main :: unit -> i32 = \\() ->\n    do! IO.write_line (One.run 5 + Two.run 5 + One.local 6 + Two.local 6 + One.frames 4 + C.ca 9 0 + Lib.tick 8 0)\n    do! IO.write_line (A.even 100)\n    0\n",
+            "def main :: unit -> i32 = \\() ->\n    do! IO.writeln (One.run 5 + Two.run 5 + One.local 6 + Two.local 6 + One.frames 4 + C.ca 9 0 + Lib.tick 8 0)\n    do! IO.writeln (A.even 100)\n    0\n",
         ),
     ];
 
@@ -3681,10 +3681,10 @@ entry:
 
     const HELPER: &str = "def twice :: Add<'a> -> 'a = \\value -> value + value\n\ndef run :: i64u -> i64u = \\seed ->\n    let offset = seed % 7\n    let add = \\value -> value + offset\n    add (add (twice seed))\n";
     const OTHER: &str = "def run :: i64u -> i64u = \\seed ->\n    let shift = seed % 3\n    let scale = \\value -> value * 2 + shift\n    scale (scale seed)\n";
-    const MAIN: &str = "def main :: unit -> i32 = \\() ->\n    let a = Helper.run 5i64u\n    let b = Other.run 6i64u\n    do! IO.write_line (to_string (a + b))\n    0\n";
+    const MAIN: &str = "def main :: unit -> i32 = \\() ->\n    let a = Helper.run 5i64u\n    let b = Other.run 6i64u\n    do! IO.writeln (to_string (a + b))\n    0\n";
     /// `MAIN` with a lambda and an instance of a generic function added before everything else: every serial
     /// number of the generated functions after them shifts.
-    const MAIN_WITH_NEW_CODE: &str = "def main :: unit -> i32 = \\() ->\n    let inc = \\value -> value + 1i32\n    do! IO.write_line (to_string (inc (Helper.twice 4i32)))\n    let a = Helper.run 5i64u\n    let b = Other.run 6i64u\n    do! IO.write_line (to_string (a + b))\n    0\n";
+    const MAIN_WITH_NEW_CODE: &str = "def main :: unit -> i32 = \\() ->\n    let inc = \\value -> value + 1i32\n    do! IO.writeln (to_string (inc (Helper.twice 4i32)))\n    let a = Helper.run 5i64u\n    let b = Other.run 6i64u\n    do! IO.writeln (to_string (a + b))\n    0\n";
 
     /// A change in `Main` that adds a lambda and an instance leaves the text of the other modules' units, and the
     /// text and the names of the generated functions that did not change.
@@ -3747,7 +3747,7 @@ entry:
         );
     }
 
-    const TRAP_MAIN: &str = "def main :: unit -> i32 = \\() ->\n    do! IO.write_line (to_string (A.divide 100 5))\n    do! IO.write_line (to_string (B.divide 100 7))\n    0\n";
+    const TRAP_MAIN: &str = "def main :: unit -> i32 = \\() ->\n    do! IO.writeln (to_string (A.divide 100 5))\n    do! IO.writeln (to_string (B.divide 100 7))\n    0\n";
     const TRAP_A: &str = "def divide :: i64 -> i64 -> i64 = \\a b -> a / b\n";
     const TRAP_B: &str = "def divide :: i64 -> i64 -> i64 = \\a b -> a / b\n";
 

@@ -1,6 +1,6 @@
 def main :: own unit -> i32 = \() ->
     do! IO.write "Name: "
-    let! line = IO.read_line ()
+    let! line = IO.readln ()
     let name = Maybe.default_value "world" line
-    do! IO.write_line ("Hello, " + name + "!")
+    do! IO.writeln ("Hello, " + name + "!")
     0

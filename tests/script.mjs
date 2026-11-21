@@ -33,10 +33,10 @@ function expect(result, status, stdout, errors = []) {
 const shebang = "#!/usr/bin/env tsuzuri script\n";
 const files = {
   "hello.tz": `${shebang}let name = "script"\n"hello, " + name\n`,
-  "args.tz": `${shebang}def main :: Array<string> -> i32 = \\args ->\n    do! IO.write_line (String.join (ref "|") (ref args))\n    0\n`,
+  "args.tz": `${shebang}def main :: Array<string> -> i32 = \\args ->\n    do! IO.writeln (String.join (ref "|") (ref args))\n    0\n`,
   "exit.tz": `${shebang}def main :: unit -> i32 = \\() -> 3\n`,
   "trap.tz": `${shebang}let x = 10 / (5 - 5)\nx\n`,
-  "echo.tz": `${shebang}let! line = IO.read_line ()\nlet! value = line\ndo! IO.write_line ("got " + value)\n`,
+  "echo.tz": `${shebang}let! line = IO.readln ()\nlet! value = line\ndo! IO.writeln ("got " + value)\n`,
   "unused.tz": `${shebang}let unused = 1\n2\n`,
   // A sibling with a syntax error: `tsuzuri run` of the folder would read it, a script does not.
   "Broken.tz": "def broken :: i64 = (\n",
@@ -112,7 +112,7 @@ if (process.platform !== "win32") {
   const forms = process.platform === "darwin" ? ["#!/usr/bin/env tsuzuri script", "#!/usr/bin/env -S tsuzuri script"] : ["#!/usr/bin/env -S tsuzuri script"];
   for (const [index, line] of forms.entries()) {
     const script = join(root, `greet${index}`);
-    writeFileSync(script, `${line}\ndef main :: Array<string> -> i32 = \\args ->\n    do! IO.write_line ("hi " + String.join (ref " ") (ref args))\n    0\n`);
+    writeFileSync(script, `${line}\ndef main :: Array<string> -> i32 = \\args ->\n    do! IO.writeln ("hi " + String.join (ref " ") (ref args))\n    0\n`);
     chmodSync(script, 0o755);
     expect(spawn(script, ["x", "y z"], { extraEnv: { PATH: path } }), 0, "hi x y z\n");
     // Through a symbolic link, as a script installed on PATH often is.

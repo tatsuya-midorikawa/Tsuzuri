@@ -96,6 +96,6 @@ fn run _ =
 def main :: unit -> i32
 fn main _ =
     tzroutine {
-        do! IO.write_line (run ())
+        do! IO.writeln (run ())
     }
     0

@@ -39,7 +39,8 @@ const FLOORS: &[(&str, usize)] = &[
     ("Gpu", 9),
     ("HashMap", 24),
     ("HashSet", 17),
-    ("IO", 14),
+    // E17 merged `write_line` and its alias `writeln` into `writeln`: 14 public functions became 13.
+    ("IO", 13),
     ("Json", 28),
     ("List", 126),
     ("Map", 16),

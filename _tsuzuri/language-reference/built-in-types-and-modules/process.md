@@ -34,11 +34,11 @@ def main :: unit -> i32 = \() ->
             | Result.Error error -> Os.message (ref error)
         | Result.Error error -> Os.message (ref error))
     let! missing = Process.run "definitely-not-a-tsuzuri-program" [] []
-    do! IO.write_line (match missing with
+    do! IO.writeln (match missing with
         | Result.Ok _ -> "unexpected"
         | Result.Error error -> Os.message (ref error))
     let! blank = Process.run "" [] []
-    do! IO.write_line (match blank with
+    do! IO.writeln (match blank with
         | Result.Ok _ -> "unexpected"
         | Result.Error error -> Os.message (ref error))
     0

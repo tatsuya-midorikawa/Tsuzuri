@@ -65,7 +65,7 @@ def main :: unit -> i32 = \() ->
     let second = match Channel.recv order with
         | Maybe.Some text -> text
         | Maybe.None -> "none"
-    do! IO.write_line $"{first} {second}"
+    do! IO.writeln $"{first} {second}"
     // callback_from_extern: eight tzroutines call the host, which calls `doubled` back.
     let sums: Channel<i64> = Channel.make 8
     for i in 1 ..= 8 do
@@ -78,7 +78,7 @@ def main :: unit -> i32 = \() ->
         total = total + match Channel.recv sums with
             | Maybe.Some value -> value
             | Maybe.None -> 0
-    do! IO.write_line $"callbacks={total}"
+    do! IO.writeln $"callbacks={total}"
     // export_from_extern: eight tzroutines call the host, which calls the export `doubled_export`.
     let exported: Channel<i64> = Channel.make 8
     for i in 1 ..= 8 do
@@ -91,7 +91,7 @@ def main :: unit -> i32 = \() ->
         through = through + match Channel.recv exported with
             | Maybe.Some value -> value
             | Maybe.None -> 0
-    do! IO.write_line $"exports={through}"
+    do! IO.writeln $"exports={through}"
     // file_read_in_routines: eight tzroutines read a file each.
     let lengths: Channel<i64> = Channel.make 8
     for i in 0 ..< 8 do
@@ -108,5 +108,5 @@ def main :: unit -> i32 = \() ->
         bytes = bytes + match Channel.recv lengths with
             | Maybe.Some value -> value
             | Maybe.None -> 0
-    do! IO.write_line $"files={bytes}"
+    do! IO.writeln $"files={bytes}"
     0

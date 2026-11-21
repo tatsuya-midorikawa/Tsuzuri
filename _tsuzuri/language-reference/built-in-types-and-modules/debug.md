@@ -8,7 +8,7 @@
 
 - `print` は共有借用して表示します。所有権は呼び出し元に残ります。
 - `trace` は所有権を受け取り、表示したあと、同じ値を返します。
-- ネイティブでは標準エラーです。エントリーポイントの表示や `IO.write_line` は標準出力です。
+- ネイティブでは標準エラーです。エントリーポイントの表示や `IO.writeln` は標準出力です。
 - WASM の既定は何も書きません。`--debug-output` で `tsuzuri_debug.write` をインポートします。
 - `Debug.__print_string` はユーザーコードから呼べません。
 
@@ -27,13 +27,13 @@
 
 ## 標準エラーと標準出力
 
-`Debug.trace` は標準エラーへ出し、返した値は引き続き使えます。次の例の標準出力は、`IO.write_line` の 1 行だけです。
+`Debug.trace` は標準エラーへ出し、返した値は引き続き使えます。次の例の標準出力は、`IO.writeln` の 1 行だけです。
 
 ```tsuzuri run=150
 def main :: unit -> i32 = \() ->
     let total = 120 + 30
     let traced = Debug.trace total
-    do! IO.write_line traced
+    do! IO.writeln traced
     0
 ```
 
@@ -55,7 +55,7 @@ def main :: unit -> i32 = \() ->
 def main :: unit -> i32 = \() ->
     let label = "tea"
     Debug.print (ref label)
-    do! IO.write_line "stdout"
+    do! IO.writeln "stdout"
     0
 ```
 
@@ -120,7 +120,7 @@ error[E1022]: Debug.__print_string is private to the standard Debug module; use 
 
 ## 注意点
 
-- 表示は副作用ですが、型の上では純粋な関数と区別されません。本番の記録には `IO.write_error_line` を使います。
+- 表示は副作用ですが、型の上では純粋な関数と区別されません。本番の記録には `IO.write_errln` を使います。
 - 値を消費したくないときは `print (ref value)`、パイプラインの途中で見たいときは `trace` です。
 - 孤立サロゲートを含む `string` は、出力時の UTF-8 変換でトラップします。
 

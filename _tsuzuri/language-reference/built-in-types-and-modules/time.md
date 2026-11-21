@@ -33,16 +33,16 @@ def main :: unit -> i32 = \() ->
     let! after = Time.monotonic_ns ()
     let! unix = Time.unix_ns ()
     let! negative = Time.sleep_ms (-1)
-    do! IO.write_line (match (before, after) with
+    do! IO.writeln (match (before, after) with
         | (Result.Ok first, Result.Ok second) -> to_string (second - first >= 0)
         | _ -> "clock-failed")
-    do! IO.write_line (match slept with
+    do! IO.writeln (match slept with
         | Result.Ok _ -> "slept-zero"
         | Result.Error error -> Os.message (ref error))
-    do! IO.write_line (match unix with
+    do! IO.writeln (match unix with
         | Result.Ok value -> to_string (value > 0)
         | Result.Error _ -> "unix-failed")
-    do! IO.write_line (match negative with
+    do! IO.writeln (match negative with
         | Result.Ok _ -> "unexpected"
         | Result.Error error -> Os.message (ref error))
     0

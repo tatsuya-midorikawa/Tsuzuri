@@ -46,7 +46,7 @@ fn d4(root: &Path) -> PathBuf {
     write(
         root,
         "app/Main.tz",
-        "def main :: unit -> i32 = \\() ->\n    let! _text = Fscache::Cache.load \"notes.txt\"\n    do! IO.write_line \"loaded\"\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    let! _text = Fscache::Cache.load \"notes.txt\"\n    do! IO.writeln \"loaded\"\n    0\n",
     );
     write(
         root,
@@ -81,12 +81,12 @@ fn audit_text_matches_the_examples() {
     let io = audit(&["examples/io"], repository);
     assert_eq!(
         stdout(&io),
-        "audit: io\npolicy: none\npackages: 1\n\npackage io (root)\n  allowed: all\n  used: stdio\n    stdio: 3 sites\n      Main.tz:2:9  IO.write\n      Main.tz:3:17  IO.read_line\n      Main.tz:5:9  IO.write_line\n  denied: none\n  externs: none\n\nsummary: used=stdio denied=0 untrusted_externs=0\n"
+        "audit: io\npolicy: none\npackages: 1\n\npackage io (root)\n  allowed: all\n  used: stdio\n    stdio: 3 sites\n      Main.tz:2:9  IO.write\n      Main.tz:3:17  IO.readln\n      Main.tz:5:9  IO.writeln\n  denied: none\n  externs: none\n\nsummary: used=stdio denied=0 untrusted_externs=0\n"
     );
     let hello = audit(&["examples/hello"], repository);
     assert_eq!(
         stdout(&hello),
-        "audit: hello\npolicy: none\npackages: 1\n\npackage hello (root)\n  allowed: all\n  used: stdio\n    stdio: 1 site\n      Main.tz:11:9  IO.write_line\n  denied: none\n  externs: none\n\nsummary: used=stdio denied=0 untrusted_externs=0\n"
+        "audit: hello\npolicy: none\npackages: 1\n\npackage hello (root)\n  allowed: all\n  used: stdio\n    stdio: 1 site\n      Main.tz:11:9  IO.writeln\n  denied: none\n  externs: none\n\nsummary: used=stdio denied=0 untrusted_externs=0\n"
     );
     let tasks = audit(&["examples/tzroutines"], repository);
     assert_eq!(
@@ -101,7 +101,7 @@ fn audit_text_matches_the_examples() {
     assert_eq!(
         stdout(&app),
         "audit: app 0.1.0\npolicy: enforced\npackages: 2\n\n\
-         package app 0.1.0 (root)\n  allowed: fs stdio\n  used: stdio\n    stdio: 1 site\n      Main.tz:3:9  IO.write_line\n  denied: none\n  unused: fs\n  externs: none\n\n\
+         package app 0.1.0 (root)\n  allowed: fs stdio\n  used: stdio\n    stdio: 1 site\n      Main.tz:3:9  IO.writeln\n  denied: none\n  unused: fs\n  externs: none\n\n\
          package fscache 0.2.0 (dependency)\n  allowed: fs\n  granted: app: fs\n  used: fs time\n    fs: 1 site\n      Cache.tz:1:63  File.read_text\n    time: 1 site\n      Cache.tz:3:57  Time.monotonic_ns\n  denied: time\n  unused: none\n  externs: none\n\n\
          summary: used=fs,stdio,time denied=1 untrusted_externs=0\n"
     );
@@ -148,7 +148,7 @@ fn audit_json_matches_the_examples() {
         stdout(&io),
         format!(
             "{{\"type\":\"audit\",\"schema\":\"tz-audit/1\",\"root\":\"io\",\"policy\":\"none\",\"packages\":1}}\n\
-             {{\"type\":\"package\",\"name\":\"io\",\"version\":null,\"root\":true,\"allowed\":[\"env\",\"ffi\",\"fs\",\"gpu\",\"net\",\"process\",\"random\",\"stdio\",\"time\"],\"granted\":[],\"used\":[{{\"capability\":\"stdio\",\"count\":3,\"sites\":[{{\"path\":\"Main.tz\",\"line\":2,\"column\":9,\"callee\":\"IO.write\",\"function\":\"Main.main\",\"scope\":\"program\"}},{{\"path\":\"Main.tz\",\"line\":3,\"column\":17,\"callee\":\"IO.read_line\",\"function\":\"Main.main\",\"scope\":\"program\"}},{{\"path\":\"Main.tz\",\"line\":5,\"column\":9,\"callee\":\"IO.write_line\",\"function\":\"Main.main\",\"scope\":\"program\"}}]}}],\"denied\":[],\"unused\":[],{NO_EFFECTS}}}\n\
+             {{\"type\":\"package\",\"name\":\"io\",\"version\":null,\"root\":true,\"allowed\":[\"env\",\"ffi\",\"fs\",\"gpu\",\"net\",\"process\",\"random\",\"stdio\",\"time\"],\"granted\":[],\"used\":[{{\"capability\":\"stdio\",\"count\":3,\"sites\":[{{\"path\":\"Main.tz\",\"line\":2,\"column\":9,\"callee\":\"IO.write\",\"function\":\"Main.main\",\"scope\":\"program\"}},{{\"path\":\"Main.tz\",\"line\":3,\"column\":17,\"callee\":\"IO.readln\",\"function\":\"Main.main\",\"scope\":\"program\"}},{{\"path\":\"Main.tz\",\"line\":5,\"column\":9,\"callee\":\"IO.writeln\",\"function\":\"Main.main\",\"scope\":\"program\"}}]}}],\"denied\":[],\"unused\":[],{NO_EFFECTS}}}\n\
              {{\"type\":\"summary\",\"packages\":1,\"used\":[\"stdio\"],\"denied\":0,\"untrusted_externs\":0,\"exit\":0}}\n"
         )
     );
@@ -175,7 +175,7 @@ fn audit_json_matches_the_examples() {
     assert_eq!(
         lines[1],
         format!(
-            "{{\"type\":\"package\",\"name\":\"app\",\"version\":\"0.1.0\",\"root\":true,\"allowed\":[\"fs\",\"stdio\"],\"granted\":[],\"used\":[{{\"capability\":\"stdio\",\"count\":1,\"sites\":[{{\"path\":\"Main.tz\",\"line\":3,\"column\":9,\"callee\":\"IO.write_line\",\"function\":\"Main.main\",\"scope\":\"program\"}}]}}],\"denied\":[],\"unused\":[\"fs\"],{NO_EFFECTS}}}"
+            "{{\"type\":\"package\",\"name\":\"app\",\"version\":\"0.1.0\",\"root\":true,\"allowed\":[\"fs\",\"stdio\"],\"granted\":[],\"used\":[{{\"capability\":\"stdio\",\"count\":1,\"sites\":[{{\"path\":\"Main.tz\",\"line\":3,\"column\":9,\"callee\":\"IO.writeln\",\"function\":\"Main.main\",\"scope\":\"program\"}}]}}],\"denied\":[],\"unused\":[\"fs\"],{NO_EFFECTS}}}"
         )
     );
     assert_eq!(

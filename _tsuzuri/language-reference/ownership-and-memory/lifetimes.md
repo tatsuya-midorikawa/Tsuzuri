@@ -360,7 +360,7 @@ def main :: unit -> i32 = \() ->
     let a = w 3 seven
     let b = w 4 one
     let fs = [apply_thunk]
-    do! IO.write_line (to_string (a * 100 + b + user (ref fs)))
+    do! IO.writeln (to_string (a * 100 + b + user (ref fs)))
     0
 ```
 

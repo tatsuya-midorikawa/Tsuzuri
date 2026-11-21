@@ -27,13 +27,13 @@ use 名前 : 型 = 式
 record Ticket { id: i64 }
 
 instance Drop<Ticket> {
-    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+    fn drop value = do! IO.writeln ("drop " + to_string value.id)
 }
 
 def main :: unit -> i32 = \() ->
     use first = Ticket { id: 1 }
     use second = Ticket { id: 2 }
-    do! IO.write_line (to_string (first.id + second.id))
+    do! IO.writeln (to_string (first.id + second.id))
     0
 ```
 
@@ -67,7 +67,7 @@ error[E1005]: 'use' needs a value whose type implements Drop; i32 does not, so b
 record Ticket { id: i64 }
 
 instance Drop<Ticket> {
-    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+    fn drop value = do! IO.writeln ("drop " + to_string value.id)
 }
 
 def main :: unit -> i32 = \() ->
@@ -75,7 +75,7 @@ def main :: unit -> i32 = \() ->
         use ticket = Ticket { id: 9 };
         ticket.id
     }
-    do! IO.write_line ("kept " + to_string kept)
+    do! IO.writeln ("kept " + to_string kept)
     0
 ```
 
@@ -103,7 +103,7 @@ flowchart TD
 record Ticket { id: i64 }
 
 instance Drop<Ticket> {
-    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+    fn drop value = do! IO.writeln ("drop " + to_string value.id)
 }
 
 def caught :: i8 -> string = \x ->
@@ -111,19 +111,19 @@ def caught :: i8 -> string = \x ->
         try
             use ticket = Ticket { id: 3 }
             let doubled = @checked x * 2i8
-            do! IO.write_line ("held " + to_string ticket.id)
+            do! IO.writeln ("held " + to_string ticket.id)
             doubled
         with
         | e -> e
         finally
-            do! IO.write_line "finally"
+            do! IO.writeln "finally"
     match outcome with
     | Ok value -> to_string value
     | Error _ -> "overflow"
 
-do! IO.write_line (caught 20i8)
-do! IO.write_line "---"
-do! IO.write_line (caught 100i8)
+do! IO.writeln (caught 20i8)
+do! IO.writeln "---"
+do! IO.writeln (caught 100i8)
 ```
 
 実行結果:
@@ -150,13 +150,13 @@ overflow
 record Ticket { id: i64 }
 
 instance Drop<Ticket> {
-    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+    fn drop value = do! IO.writeln ("drop " + to_string value.id)
 }
 
 def main :: unit -> i32 = \() ->
     let ticket = Ticket { id: 7 }
     Owned.drop ticket
-    do! IO.write_line "after"
+    do! IO.writeln "after"
     0
 ```
 
@@ -177,7 +177,7 @@ after
 record Ticket { id: i64 }
 
 instance Drop<Ticket> {
-    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+    fn drop value = do! IO.writeln ("drop " + to_string value.id)
 }
 
 def taken :: i64 -> Maybe<Ticket> = \id ->
@@ -194,8 +194,8 @@ def show :: own Maybe<i64> -> string = \value ->
     | Some id -> to_string id
     | None -> "none"
 
-do! IO.write_line (show (label 4))
-do! IO.write_line (show (label 0))
+do! IO.writeln (show (label 4))
+do! IO.writeln (show (label 0))
 ```
 
 実行結果:

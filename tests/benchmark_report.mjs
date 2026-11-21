@@ -532,7 +532,7 @@ int main(int argc,char **argv) {
   });
   test("synthetic main input and module order", () => {
     const source = mainSource(3);
-    assert.match(source, /let! line = IO\.read_line/);
+    assert.match(source, /let! line = IO\.readln\b/);
     for (let index = 0; index < 3; index++) assert.equal(source.split(`Module${index}.run seed`).length, 2);
     assert.ok(source.indexOf("Module0.run seed") < source.indexOf("Module1.run seed"));
     assert.ok(source.indexOf("Module1.run seed") < source.indexOf("Module2.run seed"));

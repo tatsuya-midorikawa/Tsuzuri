@@ -88,7 +88,7 @@ Array.sum ref values
 
 ```tsuzuri run=done
 def main :: unit -> i32 = \() ->
-    let action = IO.write_line "done"
+    let action = IO.writeln "done"
     do! action
     0
 ```
@@ -99,7 +99,7 @@ def main :: unit -> i32 = \() ->
 done
 ```
 
-`IO.write_line` を呼んでアクションを作っただけでは、画面には出ません。`do!` や `main` の本体で実行したときに副作用が起きます。同じアクションを 2 回実行すると、副作用も 2 回起きます。
+`IO.writeln` を呼んでアクションを作っただけでは、画面には出ません。`do!` や `main` の本体で実行したときに副作用が起きます。同じアクションを 2 回実行すると、副作用も 2 回起きます。
 
 ## メモ化はない
 

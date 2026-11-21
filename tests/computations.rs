@@ -25,8 +25,8 @@ fn implicit_computation_binds_follow_source_types() {
         "def answer :: Maybe<i64>\nfn answer =\n    let! first = Some 20\n    let! second = Some 22\n    return first + second\nMaybe.get (answer())",
         "def answer :: bool -> Result<i64, string>\nfn answer valid =\n    let source: Result<i64, string> = if valid then Ok 20 else Error \"failure\"\n    let! first = source\n    return first + 22\nResult.get (answer true)",
         "def answer :: Maybe<i64>\nfn answer =\n    let increment: fn(i64) -> i64 = value -> value + 1\n    let! value = Some 41\n    return increment value\nMaybe.get (answer())",
-        "def run :: IO<Maybe<unit>>\nfn run =\n    let! line = IO.read_line ()\n    let! value = line\n    do! IO.write_line value\nrun()",
-        "let! line = IO.read_line ()\nlet! value = line\ndo! IO.write_line value",
+        "def run :: IO<Maybe<unit>>\nfn run =\n    let! line = IO.readln ()\n    let! value = line\n    do! IO.writeln value\nrun()",
+        "let! line = IO.readln ()\nlet! value = line\ndo! IO.writeln value",
         "let! value = IO.pure (Some \"owned\")\nlet! text = value\nreturn text",
         "def run :: IO<Maybe<i64>>\nfn run =\n    do! IO.pure ()\n    return! Some 42\nrun()",
         "do! IO.pure ()\nreturn! Some 42",
@@ -109,7 +109,7 @@ let _eighth = Builder.forwarded (Some 41)
 let _ninth = transform 41
 IO {
     let! value = Helpers.echo (IO.pure (Some \"owned\"))
-    do! IO.write_line (Maybe.get value)
+    do! IO.writeln (Maybe.get value)
 }";
     let sources = [
         ("Helpers.tz", helpers),
@@ -142,8 +142,8 @@ fn implicit_computations_preserve_cold_values_and_foreign_short_circuiting() {
     for source in [
         "def work :: IO<i64>\nfn work =\n    let! first = IO.pure 20\n    let! second = IO.pure 22\n    return first + second\nwork()",
         "def work :: IO<Maybe<i64>>\nfn work =\n    let! option = IO.pure (Some 20)\n    let! first = option\n    let! second = IO.pure 22\n    return first + second\nwork()",
-        "let! first = IO.pure 20\nlet! second = Some 22\ndo! IO.write_line (first + second)",
-        "def main :: unit -> i32 = \\() ->\n    let mut sum = 0\n    for number in [20, 22] do\n        let! value = IO.pure number\n        sum = sum + value\n    while false do do! IO.pure ()\n    do! IO.write_line (to_string sum)\n    0\n",
+        "let! first = IO.pure 20\nlet! second = Some 22\ndo! IO.writeln (first + second)",
+        "def main :: unit -> i32 = \\() ->\n    let mut sum = 0\n    for number in [20, 22] do\n        let! value = IO.pure number\n        sum = sum + value\n    while false do do! IO.pure ()\n    do! IO.writeln (to_string sum)\n    0\n",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])
             .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
@@ -158,8 +158,8 @@ fn implicit_match_and_applicative_bindings_select_source_builders() {
     for source in [
         "def answer :: Maybe<i64>\nfn answer =\n    let! mut first: i64 = Some 20\n    and! second = Some 21\n    first = first + 1\n    return first + second\nMaybe.get (answer())",
         "def answer :: Maybe<i64>\nfn answer =\n    let! first = Some 20\n    and! second = Some 22\n    return first + second\nMaybe.get (answer())",
-        "def run :: IO<Maybe<i64>>\nfn run =\n    let! first = Some 20\n    and! second = Some 22\n    do! IO.write_line (first + second)\n    return first + second\nrun()",
-        "let! source = IO.pure (Some (20, 22))\nmatch! source with\n| (first, second) ->\n    do! IO.write_line (first + second)",
+        "def run :: IO<Maybe<i64>>\nfn run =\n    let! first = Some 20\n    and! second = Some 22\n    do! IO.writeln (first + second)\n    return first + second\nrun()",
+        "let! source = IO.pure (Some (20, 22))\nmatch! source with\n| (first, second) ->\n    do! IO.writeln (first + second)",
         "def answer :: Maybe<i64>\nfn answer =\n    match! Some true with\n    | true -> return 42\n    | false -> return 0\nMaybe.get (answer())",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])

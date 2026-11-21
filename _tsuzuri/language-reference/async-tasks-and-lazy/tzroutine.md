@@ -52,7 +52,7 @@ sum=4950
 
 ```tsuzuri run=child%0A42
 tzroutine {
-    do! IO.write_line "child"
+    do! IO.writeln "child"
 }
 42
 ```
@@ -225,7 +225,7 @@ stopped after 3
 
 ```tsuzuri run=go%0A7
 Routine.go (Owned.function (\() -> {
-    do! IO.write_line "go"
+    do! IO.writeln "go"
 }))
 7
 ```
@@ -293,7 +293,7 @@ tzroutine が OS を待つ呼び出しに入っても、ほかの tzroutine は�
 
 - **P の引き継ぎ**: 次の呼び出しの間、その tzroutine の OS スレッドは P を手放せる状態になります。スケジューラーの見張りのスレッド（sysmon）が、同じ呼び出しが 20 µs ほど続いているのを見つけると、P を取り上げて別の OS スレッドに渡し、待っている tzroutine を走らせます。呼び出しから戻った tzroutine は、P を取り戻せればそのまま続け、取り戻せなければ空いた P を待ちます。短い呼び出しの費用は、印の 2 回の atomic な書き込みです。
   - `extern` 関数の呼び出し（すべて。どの関数が待つかを型から知れないため）
-  - `File`・`Dir`・`Process.run`・`Random` の OS の呼び出し、標準入出力（`IO.read_line`・`IO.write_line` など）
+  - `File`・`Dir`・`Process.run`・`Random` の OS の呼び出し、標準入出力（`IO.readln`・`IO.writeln` など）
   - `Net.resolve`（名前解決）、ソケットを閉じる呼び出し
   - GPU の装置の呼び出し（`Gpu.request`・カーネルの実行）
 - **ソケットの待ち**: `Net.accept`・`Net.read`・`Net.write`・`Net.connect` などがソケットの準備を待つときは、その tzroutine だけが待ちます（netpoller。macOS は kqueue、Linux は epoll、Windows は `WSAPoll` の 1 本のスレッド）。OS スレッドを止めないので、接続ごとに tzroutine を起動するサーバーを、`TSUZURI_MAXPROCS=1` でも書けます。時間切れ（`Maybe.Some ms`）と、待っているソケットを閉じたときの扱いは、tzroutine でないスレッドと同じです（[Net](../built-in-types-and-modules/net.md#tzroutine-の中の-net)）。
@@ -689,7 +689,7 @@ def main :: unit -> i32 = \() ->
         let! finish = Async.now ()
         return finish - start
     })
-    do! IO.write_line (if waited >= 10 then "slept" else "early")
+    do! IO.writeln (if waited >= 10 then "slept" else "early")
     0
 ```
 
@@ -701,7 +701,7 @@ def main :: unit -> i32 = \() ->
     Time.sleep (10 * Time.millisecond())
     let! finish = Time.monotonic_ns ()
     let waited = Result.get finish - Result.get start
-    do! IO.write_line (if waited >= 10 * Time.millisecond() then "slept" else "early")
+    do! IO.writeln (if waited >= 10 * Time.millisecond() then "slept" else "early")
     0
 ```
 
@@ -878,7 +878,7 @@ def main :: unit -> i32 = \() ->
     }
     let server = Maybe.get (Channel.recv server_count)
     let client = Maybe.get (Channel.recv client_count)
-    do! IO.write_line $"server {server} client {client}"
+    do! IO.writeln $"server {server} client {client}"
     let! _closed = Net.close_listener listener
     0
 ```

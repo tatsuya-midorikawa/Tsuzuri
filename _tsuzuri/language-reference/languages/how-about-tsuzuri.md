@@ -211,7 +211,7 @@ sum=42
 
 ```tsuzuri run=order%2042
 def main :: unit -> i32 = \() ->
-    do! IO.write_line "order 42"
+    do! IO.writeln "order 42"
     0
 ```
 

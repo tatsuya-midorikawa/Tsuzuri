@@ -688,6 +688,7 @@ diagnostic_kinds! {
         (RemovedTaskApi, "removed_task_api", "E1040"),
         (RemovedTaskExpression, "removed_task_expression", "E1040"),
         (RemovedTaskType, "removed_task_type", "E1040"),
+        (RenamedIoFunction, "renamed_io_function", "E1040"),
         (RenamedToDataChannel, "renamed_to_data_channel", "E1040"),
         // E1041
         (AnonymousUnionAmbiguousLiteral, "anonymous_union_ambiguous_literal", "E1041"),

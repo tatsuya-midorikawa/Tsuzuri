@@ -302,16 +302,16 @@ match answer with
 def main :: unit -> i32 = \() ->
     let! both = IO {
         let! left = IO {
-            do! IO.write_line "left"
+            do! IO.writeln "left"
             return 20
         }
         and! right = IO {
-            do! IO.write_line "right"
+            do! IO.writeln "right"
             return 22
         }
         return left + right
     }
-    do! IO.write_line both
+    do! IO.writeln both
     0
 ```
 

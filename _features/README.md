@@ -229,7 +229,8 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | E14 | [埋め込み時のトラップ境界とスタック枯渇の報告](_completed/E14-trap-boundary.md) | P1 | L | G04, E05, (B06) | done |
 | E15 | [信頼境界と権限（`@trusted`・`tsuzuri audit`・`[capabilities]`）](_completed/E15-trust-boundary-and-capabilities.md) | P2 | L | (A20) | done（全 Phase） |
 | E16 | [新しい Clang の AST で、bindgen が無名の struct の typedef を tag の struct と取り違える](_completed/E16-bindgen-unnamed-tags-new-clang.md) | P1 | S | E11 | done（無名の struct・union・enum を名付ける typedef を、名前のない `ownedTagDecl`（Clang 21）か、名前のない tag の `id` の集合にある `decl`（Clang 21 と 23）で見分け、Clang 21 と 23 で同じ出力にする。Clang 23 の `struct (unnamed at …)` の綴りも `struct (unnamed struct)` にそろえる） |
-| E17 | [`IO` の入出力関数名の統一（`readln`／`writeln`／`write_err`／`write_errln` と `try_` 版）](E17-io-function-names.md) | P1 | M | E02, G23, G24, G34, G35 | todo |
+| E17 | [`IO` の入出力関数名の統一（`readln`／`writeln`／`write_err`／`write_errln` と `try_` 版）](_completed/E17-io-function-names.md) | P1 | M | E02, G23, G24, G34, G35 | done（`IO` の入出力関数を `readln`・`writeln`・`write_err`・`write_errln` と `try_` 版の 10 個にし、`write_line` と別名 `writeln` を `writeln` に統合。旧名 8 個は `E1040`（`renamed_io_function`）と、関数名だけを書き換える確かな修正案。プロジェクトの名前空間のモジュール `IO` は `E1002` のまま。リポジトリ全体の呼び出し・テスト・文書を移行） |
+| E18 | [`E1040` の旧名の検出を std モジュールへの解決にそろえる（`Channel`・`Net`・`Task`・`Async`）](E18-removed-names-resolve-std-modules.md) | P3 | S | E17 | todo |
 
 ### F. 並列・性能バックエンド
 
@@ -298,6 +299,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G41 | [VS Code で Tsuzuri 拡張機能が「Mac Silicon プラットフォームの Visual Studio Code では使用できません」となりインストールできない（Marketplace に残った 0.1.0・0.1.1 の `darwin-x64` が `IncludeLatestVersionOnly` に残り続け、クールダウン付きギャラリーで `allTargetPlatforms` が `["darwin-x64"]` だけになる）](_completed/G41-marketplace-orphaned-darwin-x64.md) | P1 | S | G14 | done（Marketplace から旧版 `0.1.0`・`0.1.1` を削除して孤立した `darwin-x64` を除去し、`verify-release.mjs` で全公開バージョンの `targetPlatform` と `IncludeLatestVersionOnly` の応答を検査するようにした） |
 | G42 | [Windows x64 の VS Code で、テストの実行の結果が表示の直後に消えることがある（拡張の統合テストが Windows x64 でだけ時々落ちる）](G42-windows-run-results-cleared-early.md) | P2 | S〜M | G39, G40 | todo |
 | G43 | [VS Code で、開いているファイルのあるプロジェクトのフォルダーを中身から順に消すと、その上のフォルダーが Testing ビューの根として残ることがある](G43-reroot-during-recursive-delete.md) | P3 | S | G40 | todo |
+| G44 | [複数ケースのアクティブパターン（`-> 'T`）の本体が、最初のエラーしか報告しない](G44-active-pattern-body-recovery.md) | P3 | S | – | todo |
 
 ### TZ. tzroutine（Go の goroutine に相当する並行処理。第4期）
 

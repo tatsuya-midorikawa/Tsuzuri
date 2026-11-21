@@ -225,7 +225,7 @@ export async function run(): Promise<void> {
 	assert.equal(await readFile(uri.fsPath, 'utf8'), original);
 	await replace('def main :: unit -> i32 = \\() ->\n    do! IO.\n');
 	const completions = await vscode.commands.executeCommand<vscode.CompletionList>('vscode.executeCompletionItemProvider', uri, new vscode.Position(1, 11), '.');
-	assert.ok(completions.items.some(item => item.label === 'write_line'));
+	assert.ok(completions.items.some(item => item.label === 'writeln'));
 	await replace('');
 	const snippets = JSON.parse(await readFile(path.join(extension.extensionPath, 'snippets', 'tsuzuri.json'), 'utf8'));
 	assert.ok(await vscode.window.activeTextEditor!.insertSnippet(new vscode.SnippetString(snippets.Function.body.join('\n'))));

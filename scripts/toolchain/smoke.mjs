@@ -82,8 +82,8 @@ try {
   const project = path.join(directory, 'project # [one]');
   await mkdir(project);
   await writeFile(path.join(project, 'Main.tz'),
-    'def main :: Array<string> -> i32 = \\args ->\n    let! _line = IO.read_line ()\n    do! IO.write_line "42"\n'
-    + '    let separator = "]["\n    do! IO.write_line ("[" + String.join (ref separator) (ref args) + "]")\n    args.length as i32\n\n'
+    'def main :: Array<string> -> i32 = \\args ->\n    let! _line = IO.readln ()\n    do! IO.writeln "42"\n'
+    + '    let separator = "]["\n    do! IO.writeln ("[" + String.join (ref separator) (ref args) + "]")\n    args.length as i32\n\n'
     + 'test "same" = assert false\ntest "same" = assert true\n'
     + 'test "parallel" = { let values = Parallel.init 2 (\\index -> index + 1); assert (values.length == 2) }\n');
   run(compiler, ['check', project, '--json']);
@@ -141,7 +141,7 @@ try {
     '        | Maybe.Some true -> waited = waited + 1',
     '        | _ -> ()',
     '    if spans[0] >= 10 && spans[1] >= 11 && spans[2] >= 12 && waited == 2 then',
-    '        do! IO.write_line "waited"',
+    '        do! IO.writeln "waited"',
     '        0',
     '    else',
     '        1',
@@ -199,7 +199,7 @@ try {
     // The native C runtime of a program that writes through IO is the bundle's io.c part.
     const taskProject = path.join(directory, 'prebuilt-io');
     await mkdir(taskProject);
-    await writeFile(path.join(taskProject, 'Main.tz'), 'IO {\n    do! IO.write_line "2"\n}\n');
+    await writeFile(path.join(taskProject, 'Main.tz'), 'IO {\n    do! IO.writeln "2"\n}\n');
     const taskArtifact = path.join(directory, `prebuilt-io-app${suffix}`);
     run(compiler, ['build', taskProject, '-O0', '-o', taskArtifact], { env: bundled });
     assert.equal(run(taskArtifact, []).stdout, '2\n');
@@ -256,7 +256,7 @@ try {
   console.log('Bundled native -Oz --strip: linked and executed.');
   await mkdir(path.join(created, 'Shapes'));
   await writeFile(path.join(created, 'Shapes', 'Square.tz'), 'namespace Acme::Smoke::Shapes\n\ndef side :: i64 -> i64 = \\x -> x * 2\n');
-  await writeFile(path.join(created, 'Main.tz'), 'namespace Acme::Smoke\n\nusing Acme::Smoke::Shapes\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (Square.side 20 + Shapes::Square.side 1)\n    0\n');
+  await writeFile(path.join(created, 'Main.tz'), 'namespace Acme::Smoke\n\nusing Acme::Smoke::Shapes\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.writeln (Square.side 20 + Shapes::Square.side 1)\n    0\n');
   const application = path.join(directory, `namespaces${suffix}`);
   run(compiler, ['build', created, '--no-cache', '-o', application]);
   assert.equal(run(application, []).stdout, '42\n');

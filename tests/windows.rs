@@ -208,7 +208,7 @@ fn cross_links_the_net_runtime_with_microsoft_sdk_when_requested() {
     let source = "def main :: unit -> i32 = \\() ->
     let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
     let! outcome = Net.connect address (Maybe.Some 100)
-    do! IO.write_line (Result.is_ok (ref outcome))
+    do! IO.writeln (Result.is_ok (ref outcome))
     0
 ";
     let module = tsuzuri::analyze_modules(&[("Main.tz", source)]).unwrap();

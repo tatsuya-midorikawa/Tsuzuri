@@ -52,7 +52,7 @@ fn reversed bytes =
 	Array.init bytes.length (\index -> bytes[last - index])
 
 def say :: own string -> IO<unit>
-fn say text = IO.write_line text
+fn say text = IO.writeln text
 
 /// Reads until `wanted` bytes have arrived, the stream ends, or a read fails: the count and the sum of the bytes
 /// (-1 and -1 after a failure), reading `size` bytes at a time.
@@ -596,9 +596,9 @@ fn run_case name address =
 
 /// The case name, the port of the peer, and the peer's host come on three lines of the standard input.
 def main :: own unit -> i32 = \() ->
-	let! name = IO.read_line ()
-	let! port_text = IO.read_line ()
-	let! host_text = IO.read_line ()
+	let! name = IO.readln ()
+	let! port_text = IO.readln ()
+	let! host_text = IO.readln ()
 	let case = Maybe.default_value "" name
 	let port: Maybe<i64> = Parse.parse (ref (Maybe.default_value "0" port_text))
 	match Net.parse_ip (Maybe.default_value 0 port) (ref (Maybe.default_value "127.0.0.1" host_text)) with

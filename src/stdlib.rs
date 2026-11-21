@@ -882,9 +882,9 @@ mod tests {
             );
         }
         for source in [
-            "IO { let! line = IO.read_line (); do! IO.write_line (Maybe.default_value \"\" line) }",
-            "IO { for number in [1, 2] do do! IO.write_line number }",
-            "IO { while false do do! IO.write_line 1 }",
+            "IO { let! line = IO.readln (); do! IO.writeln (Maybe.default_value \"\" line) }",
+            "IO { for number in [1, 2] do do! IO.writeln number }",
+            "IO { while false do do! IO.writeln 1 }",
             "IO {\n    let! left = IO.pure 20\n    and! right = IO.pure 22\n    return left + right\n}",
         ] {
             let module =

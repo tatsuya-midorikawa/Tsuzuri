@@ -169,7 +169,7 @@ function execute(statements, env) {
   }
 }
 function source(tree) {
-  return `def maybe :: i64 -> Maybe<[i64]> = \\v -> Maybe.Some (new [i64](4, \\i -> i + v))\n\ndef run :: i64 -> i64 = \\n ->\n${render(tree.statements)}\n    ${expression(tree.result)}\n\ndef main :: unit -> i32 = \\() ->\n${inputs.map(n => `    do! IO.write_line (to_string (run ${n}i64))`).join("\n")}\n    0\n`;
+  return `def maybe :: i64 -> Maybe<[i64]> = \\v -> Maybe.Some (new [i64](4, \\i -> i + v))\n\ndef run :: i64 -> i64 = \\n ->\n${render(tree.statements)}\n    ${expression(tree.result)}\n\ndef main :: unit -> i32 = \\() ->\n${inputs.map(n => `    do! IO.writeln (to_string (run ${n}i64))`).join("\n")}\n    0\n`;
 }
 mkdirSync(directory, { recursive: true });
 try {

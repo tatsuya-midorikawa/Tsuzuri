@@ -563,8 +563,8 @@ def main :: unit -> i32 = \() ->
     | Ok values ->
         let size = values.length
         let total = Array.sum values
-        do! IO.write_line $"length={size} sum={total}"
-    | Error _ -> do! IO.write_line "no entropy"
+        do! IO.writeln $"length={size} sum={total}"
+    | Error _ -> do! IO.writeln "no entropy"
     0
 ```
 

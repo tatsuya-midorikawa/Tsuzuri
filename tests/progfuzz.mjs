@@ -638,13 +638,13 @@ function source(program, tail) {
   }
   if (tail === "run") {
     lines.push("", "def main :: [string] -> i32 = \\args ->", "    let z = args.length");
-    for (const k of program.inputs) lines.push(`    do! IO.write_line (to_string (run (${int64Text(k)} + z)))`);
+    for (const k of program.inputs) lines.push(`    do! IO.writeln (to_string (run (${int64Text(k)} + z)))`);
     lines.push("    0");
   } else if (tail === "const") {
     lines.push("");
     program.inputs.forEach((k, j) => lines.push(`const C${j}: i64 = run ${int64Text(k)}`));
     lines.push("", "def main :: unit -> i32 = \\() ->");
-    program.inputs.forEach((_, j) => lines.push(`    do! IO.write_line (to_string C${j})`));
+    program.inputs.forEach((_, j) => lines.push(`    do! IO.writeln (to_string C${j})`));
     lines.push("    0");
   }
   return `${lines.join("\n")}\n`;
@@ -975,8 +975,8 @@ function sourceOwned(program, tail) {
   if (tail === "run") {
     lines.push("", "def main :: [string] -> i32 = \\args ->", "    let z = args.length");
     program.inputs.forEach((k, j) => {
-      if (nativeLeaks) lines.push(`    let b${j} = Alloc.snapshot ()`, `    let r${j} = run (${int64Text(k)} + z)`, `    let d${j} = Alloc.since b${j}`, `    do! IO.write_line (to_string r${j} + " leaked " + to_string (d${j}.allocs - d${j}.frees))`);
-      else lines.push(`    do! IO.write_line (to_string (run (${int64Text(k)} + z)))`);
+      if (nativeLeaks) lines.push(`    let b${j} = Alloc.snapshot ()`, `    let r${j} = run (${int64Text(k)} + z)`, `    let d${j} = Alloc.since b${j}`, `    do! IO.writeln (to_string r${j} + " leaked " + to_string (d${j}.allocs - d${j}.frees))`);
+      else lines.push(`    do! IO.writeln (to_string (run (${int64Text(k)} + z)))`);
     });
     lines.push("    0");
   }
@@ -1569,7 +1569,7 @@ async function checkProgram(seed) {
 async function supportsAlloc() {
   const folder = join(outputRoot, "alloc-probe");
   mkdirSync(folder, { recursive: true });
-  writeFileSync(join(folder, "Main.tz"), "def main :: unit -> i32 = \\() ->\n    let before = Alloc.snapshot ()\n    let spent = Alloc.since before\n    do! IO.write_line (to_string (spent.allocs - spent.frees))\n    0\n");
+  writeFileSync(join(folder, "Main.tz"), "def main :: unit -> i32 = \\() ->\n    let before = Alloc.snapshot ()\n    let spent = Alloc.since before\n    do! IO.writeln (to_string (spent.allocs - spent.frees))\n    0\n");
   const result = await exec(compiler, ["run", folder, "--allocator", "counting", "--no-cache"], { env: { TMPDIR: folder } });
   rmSync(folder, { recursive: true, force: true });
   return result.status === 0 && result.stdout.trim() === "0";
@@ -1643,7 +1643,7 @@ const OWNED_MUTANTS = ["owned-pop-ignored", "owned-clone-aliased"];
 const KNOWN_BUGS = [
   {
     id: "KB1",
-    source: "def f :: [i64] -> i64\nfn f xs = xs[({ let mut a: i64 = 0i64; for i in 0i64 ..= 1i64 do { a = (a + i); () }; a })]\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (to_string (f [10i64, 20i64, 30i64]))\n    0\n",
+    source: "def f :: [i64] -> i64\nfn f xs = xs[({ let mut a: i64 = 0i64; for i in 0i64 ..= 1i64 do { a = (a + i); () }; a })]\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.writeln (to_string (f [10i64, 20i64, 30i64]))\n    0\n",
     error: "error[E0002]: expected 'do' after the enumerable expression",
   },
 ];

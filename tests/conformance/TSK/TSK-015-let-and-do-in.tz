@@ -1,7 +1,7 @@
 tzroutine {
-    do! IO.write_line "first"
+    do! IO.writeln "first"
     let! line = IO.pure "second"
-    do! IO.write_line line
+    do! IO.writeln line
 }
 0
 

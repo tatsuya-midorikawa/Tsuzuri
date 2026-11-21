@@ -1,5 +1,5 @@
 def below :: i64 -> bool = \n ->
-    do! IO.write_line "check"
+    do! IO.writeln "check"
     n < 2
 
 let mut i = 0

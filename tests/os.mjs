@@ -75,7 +75,7 @@ fn length_text result =
     | Result.Error error -> Os.message (ref error)
 
 def say :: own string -> IO<unit>
-fn say text = IO.write_line text
+fn say text = IO.writeln text
 `;
 
 const builds = new Map();
@@ -1414,9 +1414,9 @@ def main :: unit -> i32 = \\() ->
   const wasiIo = program("wasi-io", `
 def main :: unit -> i32 = \\() ->
     let! _prompt = IO.write "Name: "
-    let! line = IO.read_line ()
-    do! IO.write_line (Maybe.default_value "<eof>" line)
-    do! IO.write_error_line "note"
+    let! line = IO.readln ()
+    do! IO.writeln (Maybe.default_value "<eof>" line)
+    do! IO.write_errln "note"
     0
 `);
   for (const optimization of optimizations) {

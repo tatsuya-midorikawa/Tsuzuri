@@ -281,7 +281,7 @@ function source(functions) {
   const lines = ["def apply1 :: (i64 -> i64) -> i64 -> i64 = \\f x -> f x", ""];
   for (const { n, parameter, body } of functions) lines.push(`def ${n} :: i64 -> i64 = \\${parameter} -> ${render(body)}`, "");
   lines.push("def main :: unit -> i32 = \\() ->");
-  for (const { n } of functions) for (const input of inputs) lines.push(`    do! IO.write_line (to_string (${n} ${input}i64))`);
+  for (const { n } of functions) for (const input of inputs) lines.push(`    do! IO.writeln (to_string (${n} ${input}i64))`);
   lines.push("    0", "");
   return lines.join("\n");
 }

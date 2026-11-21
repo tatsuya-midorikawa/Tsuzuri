@@ -41,8 +41,8 @@ def describe :: Result<i64, Domain.Failure> -> string = \outcome ->
 def main :: unit -> i32 = \() ->
     let data = [4, 8, 15]
     let empty: [i64] = []
-    do! IO.write_line (describe (Domain.run (\() -> average data)))
-    do! IO.write_line (describe (Domain.run (\() -> average empty)))
+    do! IO.writeln (describe (Domain.run (\() -> average data)))
+    do! IO.writeln (describe (Domain.run (\() -> average empty)))
     0
 ```
 

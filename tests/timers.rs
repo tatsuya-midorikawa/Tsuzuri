@@ -115,7 +115,7 @@ fn a_timer_is_not_captured_by_a_reusable_function() {
 #[test]
 fn the_function_of_a_timer_holds_no_borrow() {
     // A30: the timer calls the function after `spawn` freed the string that `g` borrows.
-    let head = "def spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    let borrowed = ref text\n    let g: unit -> unit = \\() -> {\n        do! IO.write_line $\"{borrowed}\"\n    }\n";
+    let head = "def spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    let borrowed = ref text\n    let g: unit -> unit = \\() -> {\n        do! IO.writeln $\"{borrowed}\"\n    }\n";
     let message = rejects(
         &format!(
             "{head}    let _timer = Time.after_func (5 * Time.millisecond()) (Owned.function g)\n    ()\n\nspawn 4\n0\n"
@@ -128,7 +128,7 @@ fn the_function_of_a_timer_holds_no_borrow() {
     );
     // A function value that captures the owned string is the timer's own.
     accepts(
-        "def spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    let g: unit -> unit = \\() -> {\n        do! IO.write_line $\"{text}\"\n    }\n    let _timer = Time.after_func (5 * Time.millisecond()) (Owned.function g)\n    ()\n\nspawn 4\n0\n",
+        "def spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    let g: unit -> unit = \\() -> {\n        do! IO.writeln $\"{text}\"\n    }\n    let _timer = Time.after_func (5 * Time.millisecond()) (Owned.function g)\n    ()\n\nspawn 4\n0\n",
     );
 }
 

@@ -156,7 +156,7 @@ sites: trap 1, alloc 0, copy 0
 callees (1):
   Acme::Shop::Cart.line_total  Cart.tz:14:21  args ref
 callers (3):
-  Acme::Shop::Report.print_total  Report.tz:6:24  args ref
+  Acme::Shop::Report.print_total  Report.tz:6:21  args ref
   test:Acme::Shop::Cart.empty cart  Cart.tz:19:29  args ref
   test:Acme::Shop::Main.main runs  Main.tz:8:28  args ref
 tests (2):
@@ -167,7 +167,7 @@ $ tsuzuri kg callers line_total --depth 2
 callers of Acme::Shop::Cart.line_total (depth 2)
 1 Acme::Shop::Cart.total  Cart.tz:14:21  args ref
 1 test:Acme::Shop::Cart.line total  Cart.tz:18:29  args ref
-2 Acme::Shop::Report.print_total  Report.tz:6:24  via Acme::Shop::Cart.total
+2 Acme::Shop::Report.print_total  Report.tz:6:21  via Acme::Shop::Cart.total
 2 test:Acme::Shop::Cart.empty cart  Cart.tz:19:29  via Acme::Shop::Cart.total
 2 test:Acme::Shop::Main.main runs  Main.tz:8:28  via Acme::Shop::Cart.total
 summary: 5 callers, depth 2
@@ -175,7 +175,7 @@ summary: 5 callers, depth 2
 $ tsuzuri kg path main line_total
 path from Acme::Shop::Main.main to Acme::Shop::Cart.line_total (by calls, depth 8)
 Acme::Shop::Main.main --calls--> Acme::Shop::Report.print_total  Main.tz:5:5
-Acme::Shop::Report.print_total --calls--> Acme::Shop::Cart.total  Report.tz:6:24
+Acme::Shop::Report.print_total --calls--> Acme::Shop::Cart.total  Report.tz:6:21
 Acme::Shop::Cart.total --calls--> Acme::Shop::Cart.line_total  Cart.tz:14:21
 summary: 3 steps
 ```
@@ -199,7 +199,7 @@ ID は完全な形（`Acme::Shop::Cart.total`、テストは `test:Acme::Shop::C
 <command line>:1:1: error[E2000]: unknown id 'totl'; did you mean: Acme::Shop::Cart.total
 ```
 
-プロジェクトにない ID は std の知識グラフでも探します（`Array.map`）。辺の行き先にだけ現れる組み込みの関数（`IO.write_line`）は、`show` で `symbol: not in this KG` と呼び出し元だけを出します。
+プロジェクトにない ID は std の知識グラフでも探します（`Array.map`）。辺の行き先にだけ現れる組み込みの関数（`IO.writeln`）は、`show` で `symbol: not in this KG` と呼び出し元だけを出します。
 
 ### `--json`
 
