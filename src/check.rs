@@ -6152,27 +6152,32 @@ pub(crate) fn renamed_io_function(name: &str) -> Option<&'static str> {
     })
 }
 
-/// The `E1040` of a type of the removed `Async` (TZ13) named `name` at `span`: the bare `Async`
-/// (`Async.Async`) or a qualified name of the module.
-fn removed_async_type(name: &str, span: Span) -> Option<Diagnostic> {
-    if name == "Async" {
-        return Some(
-            Diagnostic::of(
-                DiagnosticKind::RemovedAsync,
-                "the type 'Async' was removed",
-                span,
-            )
-            .with_help(ASYNC_TYPE_HELP),
-        );
+/// `removed_feature` for `module.name` written with the namespace `prefix` (`std::` or nothing,
+/// E18): the message and the replacement name the module as written, so `std::Channel.bounded` is
+/// now `std::DataChannel.bounded`.
+fn removed_spelled(
+    prefix: &str,
+    module: &str,
+    name: &str,
+) -> Option<(DiagnosticKind, String, &'static str, Option<String>)> {
+    let (kind, message, help, replacement) = removed_feature(module, name)?;
+    if prefix.is_empty() {
+        return Some((kind, message, help, replacement));
     }
-    let (module, member) = name.rsplit_once('.')?;
-    (module == "Async").then(|| removed_name(module, member, span))?
+    let mut message = message.replacen(&format!("'{module}."), &format!("'{prefix}{module}."), 1);
+    let replacement = replacement.map(|text| {
+        let written = format!("{prefix}{text}");
+        message = message.replace(&format!("'{text}'"), &format!("'{written}'"));
+        written
+    });
+    Some((kind, message, help, replacement))
 }
 
 /// The `E1040` of a removed name at `span`, which covers the whole qualified name, with the fix
-/// that writes its replacement.
-fn removed_name(module: &str, name: &str, span: Span) -> Option<Diagnostic> {
-    let (kind, message, help, replacement) = removed_feature(module, name)?;
+/// that writes its replacement. `module` is the std module (`Names::removed_module`) and `prefix`
+/// the namespace written before it.
+fn removed_name(prefix: &str, module: &str, name: &str, span: Span) -> Option<Diagnostic> {
+    let (kind, message, help, replacement) = removed_spelled(prefix, module, name)?;
     let diagnostic = Diagnostic::of(kind, message, span).with_help(help);
     Some(match replacement {
         Some(text) => diagnostic.fix(
@@ -6378,6 +6383,72 @@ impl Names {
         qualified
             .rsplit_once('.')
             .is_some_and(|(module, _)| self.searchable(requester, module))
+    }
+
+    /// E18: the std module of a removed or renamed name (`removed_feature`) that `spelled`, the
+    /// module written before the name (`Channel`, `std::Channel`), names from `requester`, and
+    /// the namespace written before it (`std::` or nothing). `Channel` and `Net` must resolve to
+    /// the std module, and `Task` and `Async`, whose modules are gone, to no module: a module of
+    /// the program with the name is the program's own, and a name that it lacks is the `E1002`
+    /// or `E1004` of any module.
+    fn removed_module<'s>(
+        &self,
+        requester: &str,
+        spelled: &'s str,
+    ) -> Option<(&'static str, &'s str)> {
+        let (prefix, last) = match spelled.rsplit_once("::") {
+            Some((namespace, last)) if namespace == crate::stdlib::NAMESPACE => {
+                (&spelled[..namespace.len() + 2], last)
+            }
+            Some(_) => return None,
+            None => ("", spelled),
+        };
+        let resolved = self.module_path(requester, spelled);
+        let module = match last {
+            "Channel" => "Channel",
+            "Net" => "Net",
+            "Task" => "Task",
+            "Async" => "Async",
+            _ => return None,
+        };
+        let std_module = match module {
+            "Channel" | "Net" => resolved == Some(module),
+            _ => resolved.is_none(),
+        };
+        std_module.then_some((module, prefix))
+    }
+
+    /// `removed_module` for the qualified type or value name `qualified` (`Channel.Sender`,
+    /// `std::Async.Operation`) when `removed_feature` knows its member: the std module, the
+    /// namespace written before it, and the member.
+    fn removed_qualified<'s>(
+        &self,
+        requester: &str,
+        qualified: &'s str,
+    ) -> Option<(&'static str, &'s str, &'s str)> {
+        let (written, member) = qualified.rsplit_once('.')?;
+        if written.contains('.') {
+            return None;
+        }
+        let (module, prefix) = self.removed_module(requester, written)?;
+        removed_feature(module, member).map(|_| (module, prefix, member))
+    }
+
+    /// The `E1040` of a type of the removed `Async` (TZ13) named `name` at `span`, written in
+    /// `requester`: the bare `Async` (`Async.Async`) or a qualified name of the module.
+    fn removed_async_type(&self, requester: &str, name: &str, span: Span) -> Option<Diagnostic> {
+        if name == "Async" {
+            return Some(
+                Diagnostic::of(
+                    DiagnosticKind::RemovedAsync,
+                    "the type 'Async' was removed",
+                    span,
+                )
+                .with_help(ASYNC_TYPE_HELP),
+            );
+        }
+        let (module, prefix, member) = self.removed_qualified(requester, name)?;
+        (module == "Async").then(|| removed_name(prefix, module, member, span))?
     }
 
     /// The key of the module that `path` (`Name` or `A::B::Name`) names from
@@ -6819,7 +6890,7 @@ impl Names {
         }
         if type_rank.is_some() && (class_rank.is_none() || type_rank < class_rank) {
             return self
-                .type_result(named, &head.text, head.span)
+                .type_result(module, named, &head.text, head.span)
                 .map(TypeHead::Type);
         }
         match (class, named) {
@@ -6838,20 +6909,17 @@ impl Names {
                 .class_result(class, &head.text, head.span)
                 .map(|_| TypeHead::Class),
             (_, named @ (Choice::Ambiguous(..) | Choice::Hidden(_))) => self
-                .type_result(named, &head.text, head.span)
+                .type_result(module, named, &head.text, head.span)
                 .map(TypeHead::Type),
-            _ if head
-                .text
-                .rsplit_once('.')
-                .and_then(|(module, name)| removed_feature(module, name))
-                .is_some() =>
-            {
-                let (removed_module, name) = head.text.rsplit_once('.').expect("a qualified name");
+            _ if self.removed_qualified(module, &head.text).is_some() => {
+                let (removed_module, prefix, name) = self
+                    .removed_qualified(module, &head.text)
+                    .expect("a removed name");
                 let removed =
-                    removed_name(removed_module, name, head.span).expect("a removed name");
+                    removed_name(prefix, removed_module, name, head.span).expect("a removed name");
                 // The name that replaced it resolves in its place, and the `E1040` waits in
                 // `renamed`, so that one analysis finds every use of the old names.
-                let replacement = removed_feature(removed_module, name)
+                let replacement = removed_spelled(prefix, removed_module, name)
                     .and_then(|(_, _, _, replacement)| replacement);
                 let Some(text) = replacement else {
                     return Err(removed);
@@ -6882,9 +6950,9 @@ impl Names {
                 "return the value directly; to run work concurrently, use 'tzroutine { ... }'",
             )),
             // TZ13: `Async<T>` was the std type `Async.Async`, reached by its bare name.
-            _ if head.text == "Async" => {
-                Err(removed_async_type(&head.text, head.span).expect("the bare name"))
-            }
+            _ if head.text == "Async" => Err(self
+                .removed_async_type(module, &head.text, head.span)
+                .expect("the bare name")),
             _ => Err(Diagnostic::of(
                 DiagnosticKind::UnknownTypeName,
                 format!(
@@ -6955,13 +7023,14 @@ impl Names {
             ));
         }
         let missing = matches!(choice, Choice::Missing);
-        self.type_result(choice, name, span).map_err(|unknown| {
-            if missing {
-                find::with_suggestions(unknown, name, span, &self.type_pool(module))
-            } else {
-                unknown
-            }
-        })
+        self.type_result(module, choice, name, span)
+            .map_err(|unknown| {
+                if missing {
+                    find::with_suggestions(unknown, name, span, &self.type_pool(module))
+                } else {
+                    unknown
+                }
+            })
     }
 
     /// The lookup behind `named_type`: the checks of the path, then the choice. `named_type`
@@ -7105,6 +7174,7 @@ impl Names {
 
     fn type_result<'n>(
         &self,
+        module: &str,
         choice: Choice<NamedType<'n>>,
         name: &str,
         span: Span,
@@ -7114,13 +7184,17 @@ impl Names {
             Choice::Hidden(named) => Err(named.info().private_error("type", span)),
             // TZ13: a type of the removed `Async` (`Async`, `Async.Operation`) is `E1040` here
             // too, where a record literal or a type without arguments looks it up.
-            Choice::Missing => Err(removed_async_type(name, span).unwrap_or_else(|| {
-                Diagnostic::of(
-                    DiagnosticKind::UnknownTypeName,
-                    format!("unknown record, union, or type alias '{name}'"),
-                    span,
-                )
-            })),
+            Choice::Missing => {
+                Err(self
+                    .removed_async_type(module, name, span)
+                    .unwrap_or_else(|| {
+                        Diagnostic::of(
+                            DiagnosticKind::UnknownTypeName,
+                            format!("unknown record, union, or type alias '{name}'"),
+                            span,
+                        )
+                    }))
+            }
             Choice::Ambiguous(visible, _) => {
                 let kind = if visible
                     .iter()
@@ -13288,7 +13362,9 @@ impl<'a> Checker<'a> {
                     };
                     if let Some(renamed) = self.renamed_io_function(&spelled, field, whole) {
                         // Recovery checks the new name with the module as written (`IO`,
-                        // `std::IO`), so that one analysis finds every old name.
+                        // `std::IO`), so that one analysis finds every old name. The new name is
+                        // the same function, so the function stays unpoisoned and `finish`
+                        // reports its other errors (E18 D1).
                         if !self.recovering {
                             return Err(renamed);
                         }
@@ -13305,13 +13381,20 @@ impl<'a> Checker<'a> {
                             depth: expression.depth,
                         };
                         self.recovered.push(renamed);
-                        self.poisoned = true;
                         return self.value_expression(&replaced, expected);
                     }
-                    if let Some(removed) = removed_name(&spelled, &field.text, whole) {
+                    let removed_module = self.names.removed_module(self.module, &spelled);
+                    if let Some(removed) = removed_module.and_then(|(module, prefix)| {
+                        removed_name(prefix, module, &field.text, whole)
+                    }) {
                         // Recovery checks the name that replaced it, so that one analysis finds
                         // every use of the old names and `tsuzuri fix` moves a program in a round.
-                        let replacement = removed_feature(&spelled, &field.text)
+                        // The replacement is a whole expression of its own type, so the function
+                        // stays unpoisoned and `finish` reports its other errors (E18 D1).
+                        let replacement = removed_module
+                            .and_then(|(module, prefix)| {
+                                removed_spelled(prefix, module, &field.text)
+                            })
                             .and_then(|(_, _, _, replacement)| replacement);
                         let Some((module, member)) = replacement
                             .as_deref()
@@ -13341,7 +13424,6 @@ impl<'a> Checker<'a> {
                             depth: expression.depth,
                         };
                         self.recovered.push(removed);
-                        self.poisoned = true;
                         return self.value_expression(&replaced, expected);
                     }
                     member = true;
@@ -15087,9 +15169,11 @@ impl<'a> Checker<'a> {
                 })
             || crate::stdlib::is_reserved_module(name)
             // TZ12, TZ13: `Task.run`, `Async.run` and the other removed functions report `E1040`
-            // (`removed_feature`).
+            // (`removed_feature`), also with `std::` before them (E18).
             || name == "Task"
             || name == "Async"
+            || name == "std::Task"
+            || name == "std::Async"
             || Builtin::ALL.iter().any(|builtin| {
                 builtin
                     .name()

@@ -345,7 +345,7 @@ match Channel.recv ch with      // ← ここでトラップする
 
 ## 旧 Channel のプログラム
 
-TZ03 より前の `Channel.bounded`・`Channel.clone_sender`・`Channel.Sender`・`Channel.Receiver` は、`E1040`（kind `renamed_to_data_channel`、`'Channel.bounded' is now 'DataChannel.bounded'`）です。`DataChannel` の送り手や受け手に `Channel.send`・`Channel.recv` を使った呼び出しも `E1040` で、`DataChannel.send`・`DataChannel.recv` を示します。どれも確かな（`certain`）修正案を持ち、`tsuzuri fix` がまとめて `DataChannel` の名前に直します。直したプログラムの意味は、旧と同じです。
+TZ03 より前の `Channel.bounded`・`Channel.clone_sender`・`Channel.Sender`・`Channel.Receiver` は、`E1040`（kind `renamed_to_data_channel`、`'Channel.bounded' is now 'DataChannel.bounded'`）です。`DataChannel` の送り手や受け手に `Channel.send`・`Channel.recv` を使った呼び出しも `E1040` で、`DataChannel.send`・`DataChannel.recv` を示します。どれも確かな（`certain`）修正案を持ち、`tsuzuri fix` がまとめて `DataChannel` の名前に直します。直したプログラムの意味は、旧と同じです。`std::Channel.bounded` のように `std::` を付けて書いても同じで、修正案は `std::DataChannel.bounded` と `std::` を保ちます。プロジェクトの名前空間に `Channel` という名前のモジュール（たとえば `App::Tools` の `Tools/Channel.tz`）があれば、そこにない `Channel.bounded` は、修正案のない `E1002` です。
 
 ## まとめ
 

@@ -425,7 +425,7 @@ console.log(await bindings.exports.sum(100n)); // sum=5050
 
 - `tsuzuri fix` が自動で書き換えるのは、`Task.scope` を `Routine.scope` にする 1 つだけです（確かな修正案）。ほかの形は、書き換えると始まる時点、結果の受け取り方、選ばれる誤りが変わるので、次の例を見て手で直します。`tsuzuri fix --dry-run <ファイルかディレクトリ>` で、書き換えの差分だけを表示できます（[fix](../compiler/usage.md#fix)）。
 - `task` は予約語ではなくなり、普通の名前です（`let task = 1`）。`.tc` に `@alias task` を書いた利用者のビルダーがあれば、`task { … }` はそのビルダーの式です（[ビルダーの別名](../computation-expressions/computation-expressions.md#ビルダーの別名)）。
-- 利用者が定義した `Task` という名前のモジュール・型・名前空間は、そのまま使えます。`E1040` になるのは、その名前が利用者の定義に解決しないときだけです。
+- 利用者が定義した `Task` という名前のモジュール・型・名前空間は、そのまま使えます。`E1040` になるのは、その名前が利用者の定義に解決しないときだけです。見えるモジュール `Task` にない `Task.run` は、ほかのモジュールと同じ `E1002` です。`std::Task.run` のように `std::` を付けても `E1040` です。
 
 ### Task.run を外す
 
@@ -614,7 +614,7 @@ Atomic.load (ref hits)
 
 - ビルダーの操作（`Async.Return`・`Async.Bind` など）を名前で呼んでも、`Async { }` と同じ help の `E1040` です。
 - `tsuzuri fix` は、どの形も自動では書き換えません。意味の同じ書き換え先がないからです。次の例を見て手で直します。
-- `async` と `Async` は普通の名前です（`let async = 2`）。`.tc` に `@alias async` を書いた利用者のビルダーがあれば、`async { … }` はそのビルダーの式です。利用者の `Async.tc` のビルダー、`Async` という名前のモジュール・型も、そのまま使えます。`E1040` になるのは、その名前が利用者の定義に解決しないときだけです（[ビルダーの別名](../computation-expressions/computation-expressions.md#ビルダーの別名)）。
+- `async` と `Async` は普通の名前です（`let async = 2`）。`.tc` に `@alias async` を書いた利用者のビルダーがあれば、`async { … }` はそのビルダーの式です。利用者の `Async.tc` のビルダー、`Async` という名前のモジュール・型も、そのまま使えます。`E1040` になるのは、その名前が利用者の定義に解決しないときだけです（[ビルダーの別名](../computation-expressions/computation-expressions.md#ビルダーの別名)）。見えるモジュール `Async` にない `Async.run` は、ほかのモジュールと同じ `E1002` です。
 - `Async.run` の仮想時刻（呼び出しごとに 0 から始まり、すべての計算が眠ったときだけ進む、決定的な時計）には後継がありません（TZ13 の D3）。時刻に依存する処理を決定的に試すときは、時刻を関数の引数で渡すか、時刻を `Channel` で届けます。
 - ホストのイベントループに計算を預ける実行器（`Async.start`・`Async.host`、C の `tsuzuri_async_poll`・`tsuzuri_async_complete`・`tsuzuri_async_post`、WebAssembly の `tsuzuri_async_set_epoch` とグルーの `bindings.async`）にも後継がありません（TZ13 の D2。[Async.start とホストの poll](#asyncstart-とホストの-poll)）。
 - 時間の単位が変わります。`Async.sleep` と `Async.now` は実行器の単位（`Async.block_on` ではミリ秒）でしたが、`Time.sleep` と `Time.monotonic_ns` はナノ秒です。ミリ秒で書くときは `n * Time.millisecond()` です。
