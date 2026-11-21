@@ -12276,15 +12276,16 @@ impl<'a> Checker<'a> {
             TypedExprKind::Function(FunctionRef::Builtin(_))
         ) {
             let tails = tail_spans(argument);
+            let spellings = self.data_channel_spellings(callee);
             for diagnostic in self.recovered.iter_mut().skip(from) {
                 if tails.contains(&diagnostic.span) {
-                    Self::name_builtin(callee, diagnostic);
+                    Self::name_builtin(callee, spellings, diagnostic);
                 }
             }
             if let Some(diagnostic) = &mut error
                 && tails.contains(&diagnostic.span)
             {
-                Self::name_builtin(callee, diagnostic);
+                Self::name_builtin(callee, spellings, diagnostic);
             }
         }
         if let Some((message, span)) = self.declared_parameter(callee, index) {
@@ -12299,13 +12300,41 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Notes on an `E1003` of an argument which builtin `callee` is and where its name is.
-    fn name_builtin(callee: &TypedExpr, diagnostic: &mut Diagnostic) {
+    /// Notes on an `E1003` of an argument which builtin `callee` is and where its name is, with
+    /// the `spellings` of `DataChannel` for a call of `Channel.send` or `Channel.recv`.
+    fn name_builtin(
+        callee: &TypedExpr,
+        spellings: Option<(bool, bool)>,
+        diagnostic: &mut Diagnostic,
+    ) {
         if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
             && diagnostic.code == "E1003"
         {
             diagnostic.detail.builtin = Some((instance.builtin.name(), callee.span));
+            diagnostic.detail.data_channel = spellings;
         }
+    }
+
+    /// E19: for a call of the builtin `Channel.send` or `Channel.recv`, whether `DataChannel`
+    /// written bare (no local binding has the name here) and written `std::DataChannel` name the
+    /// std module from this module. The hint that rewrites an old `Channel.send` given an end of a
+    /// `DataChannel` (`hints::renamed_channel_calls`) writes one of them, as `Names::removed_written`
+    /// does for the other renamed names (E18 D2).
+    fn data_channel_spellings(&self, callee: &TypedExpr) -> Option<(bool, bool)> {
+        let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind else {
+            return None;
+        };
+        if !matches!(instance.builtin.name(), "Channel.send" | "Channel.recv") {
+            return None;
+        }
+        let bare = self.local("DataChannel").is_none()
+            && self
+                .names
+                .names_std_module(self.module, "DataChannel", "DataChannel");
+        let qualified = self
+            .names
+            .names_std_module(self.module, "std::DataChannel", "DataChannel");
+        Some((bare, qualified))
     }
 
     /// `parameter {n} of '{name}'` and the span of that parameter's declared type, when `callee`
@@ -13020,10 +13049,11 @@ impl<'a> Checker<'a> {
             if let Some(expected) = expected {
                 self.same(&result, expected, expression.span)?;
             }
+            let spellings = self.data_channel_spellings(&right);
             let left = self
                 .coerce_argument(left, &parameters[0])
                 .map_err(|mut error| {
-                    Self::name_builtin(&right, &mut error);
+                    Self::name_builtin(&right, spellings, &mut error);
                     error
                 })?;
             (left, right)
@@ -13061,9 +13091,10 @@ impl<'a> Checker<'a> {
         let result = if *operator == BinaryOp::Pipe {
             let signature = self.call_signature(&right.ty, 1, right.span);
             let (parameters, result) = self.recover_signature(signature, 1, right.span)?;
+            let spellings = self.data_channel_spellings(&right);
             self.same(&left.ty, &parameters[0], left.span)
                 .map_err(|mut error| {
-                    Self::name_builtin(&right, &mut error);
+                    Self::name_builtin(&right, spellings, &mut error);
                     error
                 })?;
             self.solve_families(false)?;

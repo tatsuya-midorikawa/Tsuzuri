@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 
 use crate::SourceInput;
 use crate::check::ModuleOrigin;
-use crate::diagnostic::{Applicability, Diagnostic, DiagnosticSet, Edit, Fix, MAX_FIXES};
+use crate::diagnostic::{Applicability, Diagnostic, DiagnosticSet, Edit, Fix, MAX_FIXES, Span};
 use crate::lexer;
 use crate::syntax::{Token, TokenKind};
 
@@ -71,78 +71,112 @@ pub(crate) fn annotate(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
 /// it, and `tsuzuri fix` then moves an old program round by round through `E1040` alone. Only a
 /// mismatch of the builtin's own argument counts (the checker names it): a function `recv` of a
 /// module `Channel` of the program keeps its `E1003`.
+/// Whether `diagnostic` is the `E1003` of `Channel.send` or `Channel.recv` given an end of a
+/// `DataChannel` that `renamed_channel_calls` turns into an `E1040`, from the types alone, with the
+/// function (`send` or `recv`) and the span of the callee. `Diagnostics::finish` counts these among
+/// all the collected diagnostics, the ones past the display limit included, so that the counts
+/// of the codes can follow the rewrite (E19).
+pub(crate) fn renames_to_data_channel(diagnostic: &Diagnostic) -> Option<(&'static str, Span)> {
+    if diagnostic.kind != Some("type_mismatch") {
+        return None;
+    }
+    let (Some(expected), Some(found)) = (&diagnostic.detail.expected, &diagnostic.detail.found)
+    else {
+        return None;
+    };
+    let unref = |ty: &str| ty.strip_prefix("ref ").unwrap_or(ty).to_owned();
+    let (expected, found) = (unref(expected), unref(found));
+    let function = if found.starts_with("DataChannel.Sender<") {
+        "send"
+    } else if found.starts_with("DataChannel.Receiver<") {
+        "recv"
+    } else {
+        return None;
+    };
+    let builtin = if function == "send" {
+        "Channel.send"
+    } else {
+        "Channel.recv"
+    };
+    let (_, callee) = diagnostic
+        .detail
+        .builtin
+        .filter(|(name, _)| *name == builtin)?;
+    expected
+        .starts_with("Channel<")
+        .then_some((function, callee))
+}
+
+/// The tokens of the old name `[path::]Channel.<function>` that the callee at `callee` is written
+/// as, whatever their spacing and the parentheses around it (its span holds those): the path
+/// before `Channel` (identifiers and `::`), `Channel`, and the function's name.
+fn old_channel_name<'t>(
+    tokens: &'t [Token],
+    callee: Span,
+    function: &str,
+) -> Option<(Vec<&'t Token>, &'t Token, &'t Token)> {
+    let inside: Vec<&Token> = tokens
+        .iter()
+        .filter(|token| token.span.start >= callee.start && token.span.end <= callee.end)
+        .filter(|token| !matches!(token.kind, TokenKind::LeftParen | TokenKind::RightParen))
+        .collect();
+    let [path @ .., module, dot, name] = inside.as_slice() else {
+        return None;
+    };
+    let is =
+        |token: &Token, text: &str| matches!(&token.kind, TokenKind::Ident(word) if word == text);
+    let qualified = path.len() % 2 == 0
+        && path.chunks(2).all(|pair| {
+            matches!(pair[0].kind, TokenKind::Ident(_))
+                && matches!(pair[1].kind, TokenKind::PathSep)
+        });
+    (qualified && is(module, "Channel") && matches!(dot.kind, TokenKind::Dot) && is(name, function))
+        .then(|| (path.to_vec(), *module, *name))
+}
+
 fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
     let mut lexed: BTreeMap<usize, Vec<Token>> = BTreeMap::new();
-    for diagnostic in &mut set.diagnostics {
-        if diagnostic.kind != Some("type_mismatch") {
-            continue;
-        }
-        let (Some(expected), Some(found)) = (&diagnostic.detail.expected, &diagnostic.detail.found)
-        else {
-            continue;
-        };
-        let unref = |ty: &str| ty.strip_prefix("ref ").unwrap_or(ty).to_owned();
-        let (expected, found) = (unref(expected), unref(found));
-        let function = if found.starts_with("DataChannel.Sender<") {
-            "send"
-        } else if found.starts_with("DataChannel.Receiver<") {
-            "recv"
-        } else {
-            continue;
-        };
-        let builtin = if function == "send" {
-            "Channel.send"
-        } else {
-            "Channel.recv"
-        };
-        let Some((_, callee)) = diagnostic
-            .detail
-            .builtin
-            .filter(|(name, _)| *name == builtin)
-        else {
-            continue;
-        };
-        if !expected.starts_with("Channel<") {
-            continue;
-        }
-        let source = callee.source.or(diagnostic.span.source).unwrap_or(0);
-        let Some(input) = inputs
+    let user = |source: usize| {
+        inputs
             .get(source)
             .filter(|input| input.origin == ModuleOrigin::User)
-        else {
+    };
+    // Every candidate whose callee is the old name in a source of the program becomes an `E1040`,
+    // shown or past the display limit: the counts of the codes follow, so that the language
+    // server, which offers a quick fix only when it lowers the count of its code, offers this one.
+    let candidates = std::mem::take(&mut set.data_channel_candidates);
+    let mut renamed = 0;
+    for (callee, function) in &candidates {
+        let source = callee.source.unwrap_or(0);
+        let Some(input) = user(source) else {
             continue;
         };
-        // The callee's tokens, whatever their spacing: `Channel.recv`, `Channel . recv`, a path
-        // before it (`std::Channel.recv`), and parentheses around it (its span holds those).
         let tokens = lexed
             .entry(source)
             .or_insert_with(|| lexer::lex_all(input.text, input.edition).0);
-        let inside: Vec<&Token> = tokens
-            .iter()
-            .filter(|token| token.span.start >= callee.start && token.span.end <= callee.end)
-            .filter(|token| !matches!(token.kind, TokenKind::LeftParen | TokenKind::RightParen))
-            .collect();
-        let [path @ .., module, dot, name] = inside.as_slice() else {
+        if old_channel_name(tokens, *callee, function).is_some() {
+            renamed += 1;
+        }
+    }
+    for diagnostic in &mut set.diagnostics {
+        let Some((function, callee)) = renames_to_data_channel(diagnostic) else {
             continue;
         };
-        let is = |token: &Token, text: &str| matches!(&token.kind, TokenKind::Ident(word) if word == text);
-        let qualified = path.len() % 2 == 0
-            && path.chunks(2).all(|pair| {
-                matches!(pair[0].kind, TokenKind::Ident(_))
-                    && matches!(pair[1].kind, TokenKind::PathSep)
-            });
-        if !qualified
-            || !is(module, "Channel")
-            || !matches!(dot.kind, TokenKind::Dot)
-            || !is(name, function)
-        {
+        let source = callee.source.or(diagnostic.span.source).unwrap_or(0);
+        let Some(input) = user(source) else {
             continue;
-        }
-        let mut span = path.first().unwrap_or(module).span;
+        };
+        let tokens = lexed
+            .entry(source)
+            .or_insert_with(|| lexer::lex_all(input.text, input.edition).0);
+        let Some((path, module, name)) = old_channel_name(tokens, callee, function) else {
+            continue;
+        };
+        let mut span = path.first().copied().unwrap_or(module).span;
         span.end = name.span.end;
         span.source = Some(source);
         // The name as written, with `DataChannel` for `Channel`.
-        let text = format!(
+        let written = format!(
             "{}DataChannel{}",
             &input.text[span.start..module.span.start],
             &input.text[module.span.end..span.end]
@@ -157,17 +191,54 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
             .chunks(2)
             .map(|pair| format!("{}::", &input.text[pair[0].span.start..pair[0].span.end]))
             .collect();
-        *diagnostic = Diagnostic::of(
+        // E19: the replacement must name the std `DataChannel` where the call is (the checker
+        // tells which spellings do): the name as written when it does, `std::` before a bare
+        // name that a module or a local binding of the program takes, and no fix when neither
+        // spelling names it (a namespace `std` of the program that holds `DataChannel`).
+        let (bare, qualified) = diagnostic.detail.data_channel.unwrap_or((true, true));
+        let replacement = if prefix.is_empty() {
+            if bare {
+                Some((String::new(), written))
+            } else if qualified {
+                Some(("std::".to_owned(), format!("std::{written}")))
+            } else {
+                None
+            }
+        } else if prefix == "std::" && qualified {
+            Some((prefix.clone(), written))
+        } else {
+            None
+        };
+        let shown = replacement
+            .as_ref()
+            .map_or(prefix.as_str(), |(chosen, _)| chosen.as_str());
+        let renamed = Diagnostic::of(
             crate::diagnostic_kinds::DiagnosticKind::RenamedToDataChannel,
-            format!("'{prefix}Channel.{function}' of a DataChannel.{end} is now '{prefix}DataChannel.{function}'"),
+            format!("'{prefix}Channel.{function}' of a DataChannel.{end} is now '{shown}DataChannel.{function}'"),
             span,
         )
-        .with_help("the channel with separate Sender and Receiver ends was renamed to DataChannel; the name Channel is now Go's two-way channel (Channel.make)")
-        .fix(
-            format!("write '{prefix}DataChannel.{function}'"),
-            Applicability::Certain,
-            vec![Edit { span, text }],
-        );
+        .with_help("the channel with separate Sender and Receiver ends was renamed to DataChannel; the name Channel is now Go's two-way channel (Channel.make)");
+        *diagnostic = match replacement {
+            Some((chosen, text)) => renamed.fix(
+                format!("write '{chosen}DataChannel.{function}'"),
+                Applicability::Certain,
+                vec![Edit { span, text }],
+            ),
+            None => renamed,
+        };
+    }
+    // The candidates are taken: a second pass over the same set moves nothing.
+    if renamed > 0 {
+        let mismatches = (crate::diagnostic::Severity::Error, "E1003");
+        if let Some(count) = set.counts.get_mut(&mismatches) {
+            *count = count.saturating_sub(renamed);
+            if *count == 0 {
+                set.counts.remove(&mismatches);
+            }
+        }
+        *set.counts
+            .entry((crate::diagnostic::Severity::Error, "E1040"))
+            .or_default() += renamed;
     }
 }
 

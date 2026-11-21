@@ -1284,3 +1284,180 @@ fn the_replacement_says_std_where_the_program_has_the_module() {
     assert_eq!(error.code, "E1040", "{}", error.message);
     assert_eq!(error.fixes[0].edits[0].text, "std::Routine.scope");
 }
+
+#[test]
+fn the_channel_call_rewrite_writes_a_data_channel_that_keeps_its_meaning() {
+    // E19: `Channel.recv` given an end of a DataChannel becomes `DataChannel.recv`, written so
+    // that the name is the std module where the call is: bare as before, `std::` where a module or
+    // a local binding of the program takes the bare name, and no fix where neither spelling names
+    // the std module.
+    let body = "def f :: own std::DataChannel.Receiver<i64> -> i64\nfn f receiver =\n    match Channel.recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n0\n";
+    let check = |sources: &[(&str, &str)]| {
+        let error = analyze_modules(sources).unwrap_err();
+        assert_eq!(error.code, "E1040", "{}", error.message);
+        assert_eq!(
+            error.kind,
+            Some("renamed_to_data_channel"),
+            "{}",
+            error.message
+        );
+        error
+    };
+    // A module `DataChannel` of the program's namespace takes the bare name.
+    let main = format!("namespace App\n\n{body}");
+    let own = (
+        "App/DataChannel.tz",
+        "namespace App\n\ndef recv :: ref i64 -> i64\nfn recv value = deref value\n",
+    );
+    let error = check(&[("Main.tz", &main), own]);
+    assert_eq!(
+        error.message,
+        "'Channel.recv' of a DataChannel.Receiver is now 'std::DataChannel.recv'"
+    );
+    assert_eq!(error.fixes[0].title, "write 'std::DataChannel.recv'");
+    let edit = &error.fixes[0].edits[0];
+    assert_eq!(edit.text, "std::DataChannel.recv");
+    let fixed = format!(
+        "{}{}{}",
+        &main[..edit.span.start],
+        edit.text,
+        &main[edit.span.end..]
+    );
+    analyze_modules(&[("Main.tz", &fixed), own])
+        .unwrap_or_else(|e| panic!("{fixed}\n{}: {}", e.code, e.message));
+    // A local binding named `DataChannel` takes the bare name too.
+    let local = "record Box { recv: i64 }\n\ndef f :: own std::DataChannel.Receiver<i64> -> i64\nfn f receiver = {\n    let DataChannel = Box { recv: 1 };\n    match Channel.recv (ref receiver) with\n    | Maybe.Some v -> v + DataChannel.recv\n    | Maybe.None -> 0\n}\n\n0\n";
+    let error = check(&[("Main.tz", local)]);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.recv");
+    // A namespace `std` of the program with a module `DataChannel`, beside the program's own
+    // `DataChannel`: no spelling names the std module from `App`, so there is no fix. The
+    // receiver comes from another namespace, so `Main` does not name `DataChannel` itself.
+    let nested = (
+        "App/std/DataChannel.tz",
+        "namespace App::std\n\ndef recv :: ref i64 -> i64\nfn recv value = deref value\n",
+    );
+    let make = (
+        "Lib/Make.tz",
+        "namespace Lib\n\ndef pair :: unit -> (DataChannel.Sender<i64> * DataChannel.Receiver<i64>)\nfn pair _unit = DataChannel.bounded 3\n",
+    );
+    let main = "namespace App\n\nlet p = Lib::Make.pair ()\nmatch p with\n| (_sender, receiver) ->\n    match Channel.recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n";
+    let error = check(&[("Main.tz", main), own, nested, make]);
+    assert_eq!(
+        error.message,
+        "'Channel.recv' of a DataChannel.Receiver is now 'DataChannel.recv'"
+    );
+    assert!(error.fixes.is_empty(), "{:?}", error.fixes);
+    // With only the program's `DataChannel`, the same call gets `std::`.
+    let error = check(&[("Main.tz", main), own, make]);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.recv");
+    // A written `std::` that the program's namespace `std` takes: no fix either.
+    let written = main.replace("match Channel.recv", "match std::Channel.recv");
+    let error = analyze_modules(&[("Main.tz", &written), nested, make]).unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert!(error.fixes.is_empty(), "{:?}", error.fixes);
+    // `std::Channel.recv` keeps `std::` where `std::DataChannel` is the std module, and has no
+    // fix where the program's namespace `std` takes it.
+    let written = body.replace("match Channel.recv", "match std::Channel.recv");
+    let error = check(&[("Main.tz", &written)]);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.recv");
+    // Without such modules or bindings, the bare name stays.
+    let error = check(&[("Main.tz", body)]);
+    assert_eq!(error.fixes[0].edits[0].text, "DataChannel.recv");
+    // The pipeline form and `Channel.send` choose the same way, with a module and with a local
+    // binding of the program.
+    let piped = body.replace(
+        "match Channel.recv (ref receiver)",
+        "match (ref receiver) |> Channel.recv",
+    );
+    let main = format!("namespace App\n\n{piped}");
+    let error = check(&[("Main.tz", &main), own]);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.recv");
+    let local_piped = local.replace(
+        "match Channel.recv (ref receiver)",
+        "match (ref receiver) |> Channel.recv",
+    );
+    let error = check(&[("Main.tz", &local_piped)]);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.recv");
+    let send = "def f :: ref std::DataChannel.Sender<i64> -> i64\nfn f sender =\n    match Channel.send sender 1 with\n    | Result.Ok _ -> 1\n    | Result.Error _ -> 0\n\n0\n";
+    let main = format!("namespace App\n\n{send}");
+    let error = check(&[("Main.tz", &main), own]);
+    assert_eq!(
+        error.message,
+        "'Channel.send' of a DataChannel.Sender is now 'std::DataChannel.send'"
+    );
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.send");
+    let error = check(&[("Main.tz", send)]);
+    assert_eq!(error.fixes[0].edits[0].text, "DataChannel.send");
+}
+
+#[test]
+fn the_counts_follow_every_channel_call_rewrite_past_the_display_limit() {
+    // E19: the counts of the codes, which the language server compares to offer a quick fix,
+    // count every old `Channel.recv` given an end of a DataChannel as the E1040 it becomes, also
+    // the ones past the 50 shown diagnostics, so fixing one lowers the count of E1040.
+    let mut source = String::new();
+    for index in 0..51 {
+        source.push_str(&format!(
+            "def f{index} :: own DataChannel.Receiver<i64> -> i64\nfn f{index} receiver =\n    match Channel.recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n"
+        ));
+    }
+    source.push_str("0\n");
+    let errors = analyze_all(&source).expect_err("old names");
+    assert_eq!(errors.diagnostics.len(), 50);
+    assert_eq!(errors.omitted, 1);
+    assert!(
+        errors
+            .diagnostics
+            .iter()
+            .all(|error| error.kind == Some("renamed_to_data_channel")),
+        "{:?}",
+        errors
+            .diagnostics
+            .iter()
+            .map(|error| &error.message)
+            .collect::<Vec<_>>()
+    );
+    use tsuzuri::diagnostic::Severity;
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1040")), Some(&51));
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1003")), None);
+    // After one fix, one fewer.
+    let fixed = source.replacen("match Channel.recv", "match DataChannel.recv", 1);
+    let errors = analyze_all(&fixed).expect_err("old names");
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1040")), Some(&50));
+}
+
+#[test]
+fn the_counts_follow_only_the_calls_that_the_rewrite_turns_into_e1040() {
+    // E19: a call whose types make it a candidate but whose callee is not written as the old name
+    // (`(+Channel.recv)`) stays an E1003, also past the 50 shown diagnostics, so the counts move
+    // only the calls that become E1040s, and fixing one of them lowers E1040 and leaves E1003.
+    let function = |index: usize, call: &str| {
+        format!(
+            "def f{index} :: own DataChannel.Receiver<i64> -> i64\nfn f{index} receiver =\n    match {call} (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n"
+        )
+    };
+    let mut source: String = (0..50)
+        .map(|index| function(index, "Channel.recv"))
+        .collect();
+    source.push_str(&function(50, "(+Channel.recv)"));
+    source.push_str("0\n");
+    use tsuzuri::diagnostic::Severity;
+    let errors = analyze_all(&source).expect_err("old names");
+    assert_eq!(errors.omitted, 1);
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1040")), Some(&50));
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1003")), Some(&1));
+    let fixed = source.replacen("match Channel.recv", "match DataChannel.recv", 1);
+    let errors = analyze_all(&fixed).expect_err("old names");
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1040")), Some(&49));
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1003")), Some(&1));
+    // The shown `(+Channel.recv)` stays the E1003 that it is.
+    assert!(
+        errors.diagnostics.iter().any(|error| error.code == "E1003"),
+        "{:?}",
+        errors
+            .diagnostics
+            .iter()
+            .map(|error| &error.message)
+            .collect::<Vec<_>>()
+    );
+}
