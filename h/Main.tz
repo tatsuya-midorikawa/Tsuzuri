@@ -1,5 +1,0 @@
-def (|Pos|_|) :: i64 -> Maybe<i64> = \value ->
-    let a = 1 + "x"
-    if value > 0 then Maybe.Some value else Maybe.None
-
-match 42 with | Pos v -> v | _ -> 0
