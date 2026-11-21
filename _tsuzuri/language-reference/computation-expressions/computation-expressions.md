@@ -176,7 +176,7 @@ upper + lower
 - 別名は `{` の前にだけ書けます。値や型としては使えず、`identity.Return` のような修飾もできません（`E1002`。`Identity.Return` と書きます）。`Ns::identity` のように名前空間をつなぐ書き方もありません。`name { field: value }` はこれまでどおりレコードリテラルです。本体が空の `name {}` は別名が先に選ばれ、同名の（小文字の）空レコードがあっても変わりません。`Name.tc` と空レコード `Name` の関係と同じです。
 - 見えているビルダーが複数で同じ別名を宣言していると、どれも選ばずに `E1004` です。ビルダー自身の名前（`Acme::Tools::Parser { ... }`）で選びます。`using` した 2 つの名前空間に同じ名前のビルダーがあっても、別名は宣言したほうを選び、両方が宣言していれば `E1004` です。
 - `task` は削除された `task { ... }` 式の名前でしたが、今は普通の名前で、別名にも使えます。`@alias task` を宣言したビルダーがあれば `task { ... }` はそのビルダーの計算で、なければ `E1040`（`'task { }' was removed`）です（[Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行)）。
-- `async` は削除した `Async` ビルダーの別名でしたが、今は普通の名前で、別名にも使えます。`@alias async` を宣言したビルダーがあれば `async { ... }` はそのビルダーの計算で、なければ `E1040`（`'async { }' was removed`）です。`Async { ... }` も、利用者の `Async.tc` がなければ `E1040` です（[Async からの移行](../async-tasks-and-lazy/tzroutine.md#async-からの移行)）。
+- `async` は削除した `Async` ビルダーの別名でしたが、今は普通の名前で、別名にも使えます。`@alias async` を宣言したビルダーがあれば `async { ... }` はそのビルダーの計算で、なければ `E1040`（`'async { }' was removed`）です。`Async { ... }` も、見えるモジュール `Async` がなければ `E1040` です（[Async からの移行](../async-tasks-and-lazy/tzroutine.md#async-からの移行)）。ビルダーでないモジュール `Async`（`Async.tc` のない `Async.tz`）があれば、ほかのモジュールと同じ `E1018` です。
 
 宣言のない小文字の名前は `E1018` です。本体が空の `name {}` も、その名前のレコードがなければ同じです。
 

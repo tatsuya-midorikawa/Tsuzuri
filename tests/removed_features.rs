@@ -79,6 +79,12 @@ fn names_the_data_channel_names() {
             "'Channel.recv' of a DataChannel.Receiver is now 'DataChannel.recv'",
             "DataChannel.recv",
         ),
+        // E18: `std::` before `Channel` stays in the message and the fix.
+        (
+            "def f :: own DataChannel.Receiver<i64> -> i64\nfn f receiver =\n    match std::Channel.recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n0\n",
+            "'std::Channel.recv' of a DataChannel.Receiver is now 'std::DataChannel.recv'",
+            "std::DataChannel.recv",
+        ),
     ] {
         assert_eq!(
             renamed(source),
@@ -878,4 +884,403 @@ fn a_module_io_of_the_program_keeps_its_unknown_member() {
         ),
     ])
     .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+}
+
+#[test]
+fn old_names_with_std_report_e1040_as_written() {
+    // E18: `std::` before the module of an old name gives the E1040 of the bare name, and the
+    // message and the fix keep `std::`.
+    for (source, written, kind, message, replacement) in [
+        (
+            "let pair: (DataChannel.Sender<i64> * DataChannel.Receiver<i64>) = std::Channel.bounded 3\n0\n",
+            "std::Channel.bounded",
+            "renamed_to_data_channel",
+            "'std::Channel.bounded' is now 'std::DataChannel.bounded'",
+            Some("std::DataChannel.bounded"),
+        ),
+        (
+            "def f :: ref std::Channel.Sender<i64> -> i64\nfn f _sender = 0\n\n0\n",
+            "std::Channel.Sender",
+            "renamed_to_data_channel",
+            "'std::Channel.Sender' is now 'std::DataChannel.Sender'",
+            Some("std::DataChannel.Sender"),
+        ),
+        (
+            "let connect = std::Net.connect_async\n0\n",
+            "std::Net.connect_async",
+            "removed_net_async",
+            "'std::Net.connect_async' was removed",
+            None,
+        ),
+        (
+            "let run = std::Task.run\n0\n",
+            "std::Task.run",
+            "removed_task_api",
+            "'std::Task.run' was removed",
+            None,
+        ),
+        (
+            "let base = 10i64\nlet values = std::Task.scope (ref base) 4 (\\shared index -> deref shared + index)\nArray.sum (ref values)\n",
+            "std::Task.scope",
+            "removed_task_api",
+            "'std::Task.scope' was removed",
+            Some("std::Routine.scope"),
+        ),
+        (
+            "let run = std::Async.run\n0\n",
+            "std::Async.run",
+            "removed_async",
+            "'std::Async.run' was removed",
+            None,
+        ),
+        (
+            "def f :: ref std::Async.Operation -> i64\nfn f _operation = 0\n\n0\n",
+            "std::Async.Operation",
+            "removed_async",
+            "the type 'std::Async.Operation' was removed",
+            None,
+        ),
+    ] {
+        let error = analyze(source).expect_err(source);
+        assert_eq!(error.code, "E1040", "{source}\n{}", error.message);
+        assert_eq!(error.kind, Some(kind), "{source}");
+        assert_eq!(error.message, message, "{source}");
+        // The help of the name written without `std::`.
+        let bare = analyze(&source.replacen("std::", "", 1)).expect_err(source);
+        assert_eq!(bare.code, "E1040", "{source}");
+        assert!(error.help.is_some(), "{source}");
+        assert_eq!(error.help, bare.help, "{source}");
+        let start = source.find(written).expect("the old name");
+        assert_eq!(
+            (error.span.start, error.span.end),
+            (start, start + written.len()),
+            "{source}"
+        );
+        match replacement {
+            Some(text) => {
+                assert_eq!(error.fixes.len(), 1, "{source}");
+                let fix = &error.fixes[0];
+                assert_eq!(fix.applicability.as_str(), "certain", "{source}");
+                assert_eq!(fix.title, format!("write '{text}'"), "{source}");
+                assert_eq!(fix.edits.len(), 1, "{source}");
+                assert_eq!(fix.edits[0].text, text, "{source}");
+                assert_eq!(
+                    (fix.edits[0].span.start, fix.edits[0].span.end),
+                    (error.span.start, error.span.end),
+                    "{source}"
+                );
+            }
+            None => assert!(error.fixes.is_empty(), "{source}"),
+        }
+    }
+    // The same names without `std::` keep their messages.
+    let error = analyze("let run = Task.run\n0\n").unwrap_err();
+    assert_eq!(error.message, "'Task.run' was removed");
+}
+
+#[test]
+fn a_module_of_the_program_with_an_old_module_name_is_its_own() {
+    // E18: a module `Channel`, `Net`, `Task` or `Async` of the program's namespace is not the std
+    // one (or the removed one): a name that it lacks is the E1002 or E1004 of any module, without
+    // a fix, and a name that it defines is used. `std::Channel` still names the std module.
+    let own = |module: &str| {
+        (
+            format!("App/{module}.tz"),
+            "namespace App\n\nrecord Thing { id: i64 }\n\ndef bounded :: i64 -> i64\nfn bounded n = n + 1\n\ndef hello :: unit -> i64\nfn hello _unit = 1\n"
+                .to_owned(),
+        )
+    };
+    for (module, body, code, kind) in [
+        (
+            "Channel",
+            "let a = Channel.clone_sender 3\n0\n",
+            "E1002",
+            "unknown_module_member",
+        ),
+        (
+            "Net",
+            "let a = Net.connect_async 3\n0\n",
+            "E1002",
+            "unknown_module_member",
+        ),
+        (
+            "Task",
+            "let a = Task.run 3\n0\n",
+            "E1002",
+            "unknown_module_member",
+        ),
+        (
+            "Async",
+            "let a = Async.run 3\n0\n",
+            "E1002",
+            "unknown_module_member",
+        ),
+        (
+            "Channel",
+            "def f :: ref Channel.Sender<i64> -> i64\nfn f _sender = 0\n\n0\n",
+            "E1004",
+            "unknown_type_name",
+        ),
+        (
+            "Async",
+            "def f :: ref Async.Operation -> i64\nfn f _operation = 0\n\n0\n",
+            "E1004",
+            "unknown_type_name",
+        ),
+    ] {
+        let (path, text) = own(module);
+        let main = format!("namespace App\n\n{body}");
+        let error = analyze_modules(&[("Main.tz", &main), (&path, &text)]).unwrap_err();
+        assert_eq!(error.code, code, "{main}\n{}", error.message);
+        assert_eq!(error.kind, Some(kind), "{main}\n{}", error.message);
+        assert!(error.fixes.is_empty(), "{main}");
+        let prefix = if code == "E1002" {
+            format!("module '{module}' has no function or union case")
+        } else {
+            "unknown ".to_owned()
+        };
+        assert!(
+            error.message.starts_with(&prefix),
+            "{main}\n{}",
+            error.message
+        );
+        // E1002 points at the member, E1004 at the qualified type name.
+        let at = main.find(&format!("{module}.")).unwrap();
+        let member: String = main[at + module.len() + 1..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        let end = at + module.len() + 1 + member.len();
+        let start = if code == "E1002" {
+            at + module.len() + 1
+        } else {
+            at
+        };
+        assert_eq!((error.span.start, error.span.end), (start, end), "{main}");
+    }
+    // A type that the module defines is used, also one that the std module had.
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "namespace App\n\ndef f :: Channel.Sender<i64> -> i64\nfn f sender = sender.id\n\nf (Channel.Sender { id: 3 })\n",
+        ),
+        ("App/Channel.tz", "namespace App\n\nrecord Sender<'a> { id: 'a }\n"),
+    ])
+    .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "namespace App\n\ndef f :: Async.Operation -> i64\nfn f operation = operation.id\n\nf (Async.Operation { id: 3 })\n",
+        ),
+        ("App/Async.tz", "namespace App\n\nrecord Operation { id: i64 }\n"),
+    ])
+    .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+    // A name that the module defines is used, also one that the std module had.
+    let (path, text) = own("Channel");
+    analyze_modules(&[
+        ("Main.tz", "namespace App\n\nChannel.bounded 3\n"),
+        (&path, &text),
+    ])
+    .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+    // `std::Channel` is the std module beside the program's own `Channel`.
+    let main = "namespace App\n\nlet pair: (DataChannel.Sender<i64> * DataChannel.Receiver<i64>) = std::Channel.bounded 3\n0\n";
+    let error = analyze_modules(&[("Main.tz", main), (&path, &text)]).unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert_eq!(error.kind, Some("renamed_to_data_channel"));
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.bounded");
+}
+
+#[test]
+fn tsuzuri_fix_writes_the_data_channel_names_with_std() {
+    // E18: one round of `tsuzuri fix` moves the old names written with `std::` and keeps it.
+    let directory =
+        std::env::temp_dir().join(format!("tsuzuri-removed-std-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let old = "let pair: (std::Channel.Sender<i64> * std::Channel.Receiver<i64>) = std::Channel.bounded 3\nmatch pair with\n| (sender, _receiver) ->\n    let _other = std::Channel.clone_sender (ref sender)\n    0\n";
+    std::fs::write(directory.join("Main.tz"), old).unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("fix")
+        .arg(&directory)
+        .arg("--json")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let summary: serde_json::Value =
+        serde_json::from_str(stdout.lines().last().expect("a summary")).unwrap();
+    assert_eq!(summary["rounds"], 1, "{stdout}");
+    assert_eq!(summary["applied"], 4, "{stdout}");
+    assert_eq!(summary["remaining_errors"], 0, "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(directory.join("Main.tz")).unwrap(),
+        old.replace("std::Channel.", "std::DataChannel.")
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_rename_shows_the_other_errors_of_the_function() {
+    // E18 D1: the name that replaced an old one is checked as a whole expression, so the function
+    // is not poisoned: the errors that the fixed program has (here E1015 of the unannotated
+    // channel) come with the E1040, and `tsuzuri fix` applies the rename instead of refusing an
+    // error that it would only reveal.
+    let errors = analyze_all("let a = Channel.bounded 3\n0\n").expect_err("errors");
+    let mut codes: Vec<&str> = errors.diagnostics.iter().map(|error| error.code).collect();
+    codes.sort();
+    assert_eq!(codes, ["E1015", "E1040"]);
+    let fixed = analyze_all("let a = DataChannel.bounded 3\n0\n").expect_err("errors");
+    assert_eq!(
+        fixed
+            .diagnostics
+            .iter()
+            .map(|error| error.code)
+            .collect::<Vec<_>>(),
+        ["E1015"]
+    );
+    let directory =
+        std::env::temp_dir().join(format!("tsuzuri-removed-reveal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("Main.tz"),
+        "let a = IO.write_line 3\nlet b = Channel.bounded 3\n0\n",
+    )
+    .unwrap();
+    let run = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("fix")
+        .arg(&directory)
+        .arg("--json")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let summary: serde_json::Value = serde_json::from_str(
+        stdout
+            .lines()
+            .find(|line| line.contains("\"event\":\"summary\""))
+            .expect("a summary"),
+    )
+    .unwrap();
+    assert_eq!(summary["applied"], 2, "{stdout}");
+    assert_eq!(summary["remaining_errors"], 1, "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(directory.join("Main.tz")).unwrap(),
+        "let a = IO.writeln 3\nlet b = DataChannel.bounded 3\n0\n"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn the_replacement_says_std_where_the_program_has_the_module() {
+    // E18: where the bare replacement module would name a module of the program (its own
+    // `DataChannel` or `Routine`), the message, the recovery and the certain fix say `std::`, so
+    // the fixed program calls the std function as the old name did.
+    let modules = [
+        (
+            "App/DataChannel.tz",
+            "namespace App\n\nrecord Sender<'a> { value: 'a }\n\ndef bounded :: i64 -> i64\nfn bounded n = n + 1\n",
+        ),
+        (
+            "App/Routine.tz",
+            "namespace App\n\ndef scope :: ref i64 -> i64 -> (ref i64 -> i64 -> i64) -> i64\nfn scope _base n _f = n\n",
+        ),
+    ];
+    for (body, message, replacement) in [
+        (
+            "let pair: (std::DataChannel.Sender<i64> * std::DataChannel.Receiver<i64>) = Channel.bounded 3\n0\n",
+            "'Channel.bounded' is now 'std::DataChannel.bounded'",
+            "std::DataChannel.bounded",
+        ),
+        (
+            "let base = 10i64\nlet values = Task.scope (ref base) 4 (\\shared index -> deref shared + index)\nArray.sum (ref values)\n",
+            "'Task.scope' was removed",
+            "std::Routine.scope",
+        ),
+        (
+            "def f :: ref Channel.Sender<i64> -> i64\nfn f _sender = 0\n\n0\n",
+            "'Channel.Sender' is now 'std::DataChannel.Sender'",
+            "std::DataChannel.Sender",
+        ),
+    ] {
+        let main = format!("namespace App\n\n{body}");
+        let mut sources = vec![("Main.tz", main.as_str())];
+        sources.extend(modules);
+        let error = analyze_modules(&sources).unwrap_err();
+        assert_eq!(error.code, "E1040", "{main}\n{}", error.message);
+        assert_eq!(error.message, message, "{main}");
+        assert_eq!(error.fixes[0].edits[0].text, replacement, "{main}");
+        assert_eq!(error.fixes[0].title, format!("write '{replacement}'"));
+        // The fixed program is the std one: it checks, beside the program's modules.
+        let fixed = format!(
+            "{}{}{}",
+            &main[..error.fixes[0].edits[0].span.start],
+            replacement,
+            &main[error.fixes[0].edits[0].span.end..]
+        );
+        let mut sources = vec![("Main.tz", fixed.as_str())];
+        sources.extend(modules);
+        analyze_modules(&sources).unwrap_or_else(|e| panic!("{fixed}\n{}: {}", e.code, e.message));
+    }
+    // Without such a module, the replacement stays bare.
+    let error = analyze("let base = 10i64\nlet values = Task.scope (ref base) 4 (\\shared index -> deref shared + index)\nArray.sum (ref values)\n").unwrap_err();
+    assert_eq!(error.fixes[0].edits[0].text, "Routine.scope");
+    // Two `using` namespaces that each hold a module `DataChannel` make the bare name ambiguous:
+    // the fix says `std::` too.
+    let main = "namespace App\nusing Lib1\nusing Lib2\n\ndef f :: ref Channel.Sender<i64> -> i64\nfn f _sender = 0\n\n0\n";
+    let libraries = [
+        (
+            "Lib1/DataChannel.tz",
+            "namespace Lib1\n\ndef one :: i64 -> i64\nfn one n = n\n",
+        ),
+        (
+            "Lib2/DataChannel.tz",
+            "namespace Lib2\n\ndef two :: i64 -> i64\nfn two n = n\n",
+        ),
+    ];
+    let mut sources = vec![("Main.tz", main)];
+    sources.extend(libraries);
+    let error = analyze_modules(&sources).unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.Sender");
+    let fixed = main.replace("Channel.Sender", "std::DataChannel.Sender");
+    let mut sources = vec![("Main.tz", fixed.as_str())];
+    sources.extend(libraries);
+    analyze_modules(&sources).unwrap_or_else(|e| panic!("{fixed}\n{}: {}", e.code, e.message));
+    // A namespace `std` of the program with a module `DataChannel` takes `std::DataChannel` from
+    // `App`, and the program's own `DataChannel` takes the bare name: no spelling names the std
+    // module, so the E1040 has no fix.
+    let main = "namespace App\n\nlet pair = Channel.bounded 3\n0\n";
+    let error = analyze_modules(&[
+        ("Main.tz", main),
+        (
+            "App/DataChannel.tz",
+            "namespace App\n\ndef bounded :: i64 -> i64\nfn bounded n = n\n",
+        ),
+        (
+            "App/std/DataChannel.tz",
+            "namespace App::std\n\ndef bounded :: i64 -> i64\nfn bounded n = n\n",
+        ),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert_eq!(error.kind, Some("renamed_to_data_channel"));
+    assert!(error.fixes.is_empty(), "{:?}", error.fixes);
+    // A local binding named like the replacement module takes the bare name in a value
+    // position: the fix says `std::`, and the fixed program calls the std function.
+    let source = "record Box { bounded: i64 -> i64, scope: i64 -> i64 }\n\ndef f :: unit -> i64\nfn f _unit = {\n    let DataChannel = Box { bounded: \\n -> n + 1, scope: \\n -> n };\n    let pair: (std::DataChannel.Sender<i64> * std::DataChannel.Receiver<i64>) = Channel.bounded 3;\n    0\n}\n\n0\n";
+    let error = analyze(source).unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert_eq!(
+        error.message,
+        "'Channel.bounded' is now 'std::DataChannel.bounded'"
+    );
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.bounded");
+    let source = "record Box { scope: i64 -> i64 }\n\ndef f :: unit -> i64\nfn f _unit = {\n    let Routine = Box { scope: \\n -> n };\n    let base = 10i64;\n    let values = Task.scope (ref base) 4 (\\shared index -> deref shared + index);\n    Array.sum (ref values)\n}\n\n0\n";
+    let error = analyze(source).unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert_eq!(error.fixes[0].edits[0].text, "std::Routine.scope");
 }

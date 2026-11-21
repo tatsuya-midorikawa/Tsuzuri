@@ -231,7 +231,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | E15 | [信頼境界と権限（`@trusted`・`tsuzuri audit`・`[capabilities]`）](_completed/E15-trust-boundary-and-capabilities.md) | P2 | L | (A20) | done（全 Phase） |
 | E16 | [新しい Clang の AST で、bindgen が無名の struct の typedef を tag の struct と取り違える](_completed/E16-bindgen-unnamed-tags-new-clang.md) | P1 | S | E11 | done（無名の struct・union・enum を名付ける typedef を、名前のない `ownedTagDecl`（Clang 21）か、名前のない tag の `id` の集合にある `decl`（Clang 21 と 23）で見分け、Clang 21 と 23 で同じ出力にする。Clang 23 の `struct (unnamed at …)` の綴りも `struct (unnamed struct)` にそろえる） |
 | E17 | [`IO` の入出力関数名の統一（`readln`／`writeln`／`write_err`／`write_errln` と `try_` 版）](_completed/E17-io-function-names.md) | P1 | M | E02, G23, G24, G34, G35 | done（`IO` の入出力関数を `readln`・`writeln`・`write_err`・`write_errln` と `try_` 版の 10 個にし、`write_line` と別名 `writeln` を `writeln` に統合。旧名 8 個は `E1040`（`renamed_io_function`）と、関数名だけを書き換える確かな修正案。プロジェクトの名前空間のモジュール `IO` は `E1002` のまま。リポジトリ全体の呼び出し・テスト・文書を移行） |
-| E18 | [`E1040` の旧名の検出を std モジュールへの解決にそろえる（`Channel`・`Net`・`Task`・`Async`）](E18-removed-names-resolve-std-modules.md) | P3 | S | E17 | todo |
+| E18 | [`E1040` の旧名の検出を std モジュールへの解決にそろえる（`Channel`・`Net`・`Task`・`Async`）](_completed/E18-removed-names-resolve-std-modules.md) | P3 | S | E17 | done（書いたモジュールが std のモジュールに解決するときだけ `E1040`、プロジェクトのモジュールにない名前は `E1002`・`E1004`。`std::` 付きも `E1040` で、メッセージと修正案は `std::` を保つ。置き換えのモジュールがプロジェクトのものなら `std::` を付ける。確かな改名の回復は関数を毒にしない） |
 
 ### F. 並列・性能バックエンド
 

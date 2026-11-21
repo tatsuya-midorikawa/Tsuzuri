@@ -265,7 +265,7 @@ Routine.yield ()
 - **`ignore`**: 引数を捨てて `unit` を返す組み込み関数（`'a -> unit`）です。
 - **`assert`**: 条件が偽ならトラップする組み込み関数（`bool -> unit`）です。予約語ではなく、関数値として渡せます。
 - **`task`・`Task`**: 予約語ではなく、組み込みの名前でもありません（`task { ... }` 式、型 `Task<T>`、`Task.run` などは削除されました）。`let task = 1` や、利用者のモジュール `Task` も書けます。`task { ... }` と書くと、`@alias task` を宣言した利用者のビルダー（[ビルダーの別名](../computation-expressions/computation-expressions.md#ビルダーの別名)）がそれを使い、なければ `E1040`（`'task { }' was removed`）です。書き換え方は [Task からの移行](../async-tasks-and-lazy/tzroutine.md#task-からの移行) にあります。
-- **`async`・`Async`**: 予約語ではなく、組み込みの名前でもありません（`Async { ... }`・`async { ... }` 式、型 `Async<T>`、`Async.run` などは削除されました）。`let async = 2` や、利用者のモジュール `Async` も書けます。`async { ... }` と書くと、`@alias async` を宣言した利用者のビルダーがそれを使い、なければ `E1040`（`'async { }' was removed`）です。`Async { ... }` も、利用者の `Async.tc` がなければ `E1040` です。書き換え方は [Async からの移行](../async-tasks-and-lazy/tzroutine.md#async-からの移行) にあります。
+- **`async`・`Async`**: 予約語ではなく、組み込みの名前でもありません（`Async { ... }`・`async { ... }` 式、型 `Async<T>`、`Async.run` などは削除されました）。`let async = 2` や、利用者のモジュール `Async` も書けます。`async { ... }` と書くと、`@alias async` を宣言した利用者のビルダーがそれを使い、なければ `E1040`（`'async { }' was removed`）です。`Async { ... }` も、見えるモジュール `Async` がなければ `E1040` です（ビルダーでないモジュール `Async`、つまり `Async.tc` のない `Async.tz` があれば、ほかのモジュールと同じ `E1018` です）。書き換え方は [Async からの移行](../async-tasks-and-lazy/tzroutine.md#async-からの移行) にあります。
 - **予約モジュール名**: `Maybe` や `Array` などはキーワードではありません。ファイル名（モジュール名）として使うと `E1011` です。関数名やレコード名には使えます。
 
 ## まとめ
