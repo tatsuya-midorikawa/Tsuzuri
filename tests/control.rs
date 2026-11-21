@@ -1,4 +1,4 @@
-use tsuzuri::{analyze, analyze_modules, llvm, parser};
+use tsuzuri::{analyze, analyze_all, analyze_modules, llvm, parser};
 
 fn accepts(source: &str) -> String {
     let module = analyze(source).unwrap_or_else(|error| {
@@ -349,6 +349,60 @@ match 42 with | Positive number -> number | _ -> 0"#,
     rejects(
         "def (|Even|Odd|) :: i64 -> 'T = \\value -> | value % 2 == 0 -> Even | value % 2 != 0 -> Odd",
         "E1021",
+    );
+}
+
+#[test]
+fn active_pattern_bodies_report_every_error() {
+    // G44: the body of a multi-case active pattern whose result is inferred is checked with
+    // recovery, like any function body, so one analysis reports each of its errors once.
+    let source = "def (|Small|Large|) :: i64 -> 'T = \\value ->\n    let a = 1 + \"x\"\n    let b = 2 + \"y\"\n    if value < 10 then Small value else Large value\n\nmatch 42 with | Small value -> value | Large value -> value + 1 | _ -> 0\n";
+    let errors = analyze_all(source).expect_err(source).diagnostics;
+    let found: Vec<(&str, usize)> = errors
+        .iter()
+        .map(|error| (error.code, error.span.start))
+        .collect();
+    // The arms bind `value` although the recognizer's signature is poisoned (D1): no E1002.
+    let first = source.find("1 + \"x\"").unwrap();
+    let second = source.find("2 + \"y\"").unwrap();
+    assert_eq!(found, [("E1003", first), ("E1003", second)], "{source}");
+    // A name that the arm does not bind is still unknown.
+    let source = "def (|Small|Large|) :: i64 -> 'T = \\value ->\n    let a = 1 + \"x\"\n    if value < 10 then Small value else Large value\n\nmatch 42 with | Small value -> value | Large value -> missing + 1 | _ -> 0\n";
+    let errors = analyze_all(source).expect_err(source).diagnostics;
+    let found: Vec<(&str, usize)> = errors
+        .iter()
+        .map(|error| (error.code, error.span.start))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("E1003", source.find("1 + \"x\"").unwrap()),
+            ("E1002", source.find("missing").unwrap()),
+        ],
+        "{source}"
+    );
+    // The old names of `IO` (E17) in such a body are each reported, with the one in the program.
+    let source = "def (|Small|Large|) :: i64 -> 'T = \\value ->\n    let a = IO.write_line \"a\"\n    let b = IO.write_error \"b\"\n    if value < 10 then Small value else Large value\n\nlet c = IO.read_line ()\nmatch 42 with | Small value -> value | Large value -> value + 1 | _ -> 0\n";
+    let errors = analyze_all(source).expect_err(source).diagnostics;
+    let mut messages: Vec<&str> = errors
+        .iter()
+        .map(|error| {
+            assert_eq!(error.code, "E1040", "{}", error.message);
+            error.message.as_str()
+        })
+        .collect();
+    messages.sort();
+    assert_eq!(
+        messages,
+        [
+            "'IO.read_line' is now 'IO.readln'",
+            "'IO.write_error' is now 'IO.write_err'",
+            "'IO.write_line' is now 'IO.writeln'",
+        ]
+    );
+    // A body without errors still gives the inferred result.
+    accepts(
+        "def (|Small|Large|) :: i64 -> 'T = \\value ->\n    if value < 10 then Small value else Large (value * 2)\n\nmatch 42 with | Small value -> value | Large value -> value + 1 | _ -> 0\n",
     );
 }
 
