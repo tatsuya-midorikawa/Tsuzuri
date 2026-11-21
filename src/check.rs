@@ -10155,7 +10155,7 @@ fn infer_active_result(
     let body = checker.expression(&source, Some(&result));
     let mut errors = std::mem::take(&mut checker.recovered);
     let mut body = match body {
-        Ok(body) if errors.is_empty() && !checker.poisoned => body,
+        Ok(body) if errors.is_empty() => body,
         Ok(_) => return Err(errors),
         Err(error) => {
             errors.push(error);

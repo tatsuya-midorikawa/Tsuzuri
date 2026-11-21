@@ -2020,21 +2020,13 @@ impl Checker<'_> {
         })?;
         let (kind, ty) = self.function(id);
         if ty.contains_error() {
-            // The recognizer's signature is poisoned, and its error is reported where it is
-            // declared. The payload pattern still binds its names, as values of the error type,
-            // so the arm does not report them as unknown values (G44 D1).
-            let mut alternative = Alternative {
-                steps: vec![PatternStep::Test(TypedExpr::error(name.span))],
-                ..Alternative::default()
-            };
-            if let Some(payload) = arguments.last()
-                && let Ok((alternatives, _)) =
-                    self.pattern_alternatives(payload, TypedExpr::error(payload.span))
-                && let [only] = alternatives.as_slice()
-            {
-                alternative.bindings = only.bindings.clone();
-            }
-            return Ok((vec![alternative], CoveragePat::Opaque));
+            return Ok((
+                vec![Alternative {
+                    steps: vec![PatternStep::Test(TypedExpr::error(name.span))],
+                    ..Alternative::default()
+                }],
+                CoveragePat::Opaque,
+            ));
         }
         let Type::Function(parameters, result) = &ty else {
             unreachable!("recognizer signature checked")
