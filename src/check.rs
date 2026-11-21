@@ -6152,43 +6152,6 @@ pub(crate) fn renamed_io_function(name: &str) -> Option<&'static str> {
     })
 }
 
-/// `removed_feature` for `module.name` written with the namespace `prefix` (`std::` or nothing,
-/// E18): the message and the replacement name the module as written, so `std::Channel.bounded` is
-/// now `std::DataChannel.bounded`.
-fn removed_spelled(
-    prefix: &str,
-    module: &str,
-    name: &str,
-) -> Option<(DiagnosticKind, String, &'static str, Option<String>)> {
-    let (kind, message, help, replacement) = removed_feature(module, name)?;
-    if prefix.is_empty() {
-        return Some((kind, message, help, replacement));
-    }
-    let mut message = message.replacen(&format!("'{module}."), &format!("'{prefix}{module}."), 1);
-    let replacement = replacement.map(|text| {
-        let written = format!("{prefix}{text}");
-        message = message.replace(&format!("'{text}'"), &format!("'{written}'"));
-        written
-    });
-    Some((kind, message, help, replacement))
-}
-
-/// The `E1040` of a removed name at `span`, which covers the whole qualified name, with the fix
-/// that writes its replacement. `module` is the std module (`Names::removed_module`) and `prefix`
-/// the namespace written before it.
-fn removed_name(prefix: &str, module: &str, name: &str, span: Span) -> Option<Diagnostic> {
-    let (kind, message, help, replacement) = removed_spelled(prefix, module, name)?;
-    let diagnostic = Diagnostic::of(kind, message, span).with_help(help);
-    Some(match replacement {
-        Some(text) => diagnostic.fix(
-            format!("write '{text}'"),
-            crate::diagnostic::Applicability::Certain,
-            vec![crate::diagnostic::Edit { span, text }],
-        ),
-        None => diagnostic,
-    })
-}
-
 fn namespace_display(dotted: &str) -> String {
     dotted.replace('.', "::")
 }
@@ -6434,6 +6397,56 @@ impl Names {
         removed_feature(module, member).map(|_| (module, prefix, member))
     }
 
+    /// The `E1040` at `span` of the removed name `spelled.member` written in `requester`, which
+    /// covers the whole qualified name, and the name that replaced it as the fix writes it. The
+    /// message and the replacement name the modules as written: `std::Channel.bounded` is now
+    /// `std::DataChannel.bounded` (E18). Where the bare replacement module would name a module of
+    /// the program (its own `DataChannel` or `Routine`), the replacement says `std::`, so that
+    /// the fix keeps the meaning.
+    fn removed_written(
+        &self,
+        requester: &str,
+        spelled: &str,
+        member: &str,
+        span: Span,
+    ) -> Option<(Diagnostic, Option<String>)> {
+        let (module, prefix) = self.removed_module(requester, spelled)?;
+        let (kind, message, help, replacement) = removed_feature(module, member)?;
+        let replacement_prefix = match replacement
+            .as_deref()
+            .and_then(|text| text.rsplit_once('.'))
+        {
+            Some((target, _)) if prefix.is_empty() => match self.module_path(requester, target) {
+                Some(key) if key != target => "std::",
+                _ => "",
+            },
+            _ => prefix,
+        };
+        let mut message = if prefix.is_empty() {
+            message
+        } else {
+            message.replacen(&format!("'{module}."), &format!("'{prefix}{module}."), 1)
+        };
+        let replacement = replacement.map(|text| {
+            let written = format!("{replacement_prefix}{text}");
+            message = message.replace(&format!("'{text}'"), &format!("'{written}'"));
+            written
+        });
+        let diagnostic = Diagnostic::of(kind, message, span).with_help(help);
+        let diagnostic = match &replacement {
+            Some(text) => diagnostic.fix(
+                format!("write '{text}'"),
+                crate::diagnostic::Applicability::Certain,
+                vec![crate::diagnostic::Edit {
+                    span,
+                    text: text.clone(),
+                }],
+            ),
+            None => diagnostic,
+        };
+        Some((diagnostic, replacement))
+    }
+
     /// The `E1040` of a type of the removed `Async` (TZ13) named `name` at `span`, written in
     /// `requester`: the bare `Async` (`Async.Async`) or a qualified name of the module.
     fn removed_async_type(&self, requester: &str, name: &str, span: Span) -> Option<Diagnostic> {
@@ -6447,8 +6460,11 @@ impl Names {
                 .with_help(ASYNC_TYPE_HELP),
             );
         }
-        let (module, prefix, member) = self.removed_qualified(requester, name)?;
-        (module == "Async").then(|| removed_name(prefix, module, member, span))?
+        let (module, _, member) = self.removed_qualified(requester, name)?;
+        let (written, _) = name.rsplit_once('.')?;
+        (module == "Async")
+            .then(|| self.removed_written(requester, written, member, span))?
+            .map(|(diagnostic, _)| diagnostic)
     }
 
     /// The key of the module that `path` (`Name` or `A::B::Name`) names from
@@ -6912,15 +6928,12 @@ impl Names {
                 .type_result(module, named, &head.text, head.span)
                 .map(TypeHead::Type),
             _ if self.removed_qualified(module, &head.text).is_some() => {
-                let (removed_module, prefix, name) = self
-                    .removed_qualified(module, &head.text)
+                let (written, name) = head.text.rsplit_once('.').expect("a qualified name");
+                let (removed, replacement) = self
+                    .removed_written(module, written, name, head.span)
                     .expect("a removed name");
-                let removed =
-                    removed_name(prefix, removed_module, name, head.span).expect("a removed name");
                 // The name that replaced it resolves in its place, and the `E1040` waits in
                 // `renamed`, so that one analysis finds every use of the old names.
-                let replacement = removed_spelled(prefix, removed_module, name)
-                    .and_then(|(_, _, _, replacement)| replacement);
                 let Some(text) = replacement else {
                     return Err(removed);
                 };
@@ -13383,19 +13396,14 @@ impl<'a> Checker<'a> {
                         self.recovered.push(renamed);
                         return self.value_expression(&replaced, expected);
                     }
-                    let removed_module = self.names.removed_module(self.module, &spelled);
-                    if let Some(removed) = removed_module.and_then(|(module, prefix)| {
-                        removed_name(prefix, module, &field.text, whole)
-                    }) {
+                    if let Some((removed, replacement)) =
+                        self.names
+                            .removed_written(self.module, &spelled, &field.text, whole)
+                    {
                         // Recovery checks the name that replaced it, so that one analysis finds
                         // every use of the old names and `tsuzuri fix` moves a program in a round.
                         // The replacement is a whole expression of its own type, so the function
                         // stays unpoisoned and `finish` reports its other errors (E18 D1).
-                        let replacement = removed_module
-                            .and_then(|(module, prefix)| {
-                                removed_spelled(prefix, module, &field.text)
-                            })
-                            .and_then(|(_, _, _, replacement)| replacement);
                         let Some((module, member)) = replacement
                             .as_deref()
                             .and_then(|text| text.rsplit_once('.'))

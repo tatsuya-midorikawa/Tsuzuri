@@ -79,6 +79,12 @@ fn names_the_data_channel_names() {
             "'Channel.recv' of a DataChannel.Receiver is now 'DataChannel.recv'",
             "DataChannel.recv",
         ),
+        // E18: `std::` before `Channel` stays in the message and the fix.
+        (
+            "def f :: own DataChannel.Receiver<i64> -> i64\nfn f receiver =\n    match std::Channel.recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n0\n",
+            "'std::Channel.recv' of a DataChannel.Receiver is now 'std::DataChannel.recv'",
+            "std::DataChannel.recv",
+        ),
     ] {
         assert_eq!(
             renamed(source),
@@ -939,6 +945,11 @@ fn old_names_with_std_report_e1040_as_written() {
         assert_eq!(error.code, "E1040", "{source}\n{}", error.message);
         assert_eq!(error.kind, Some(kind), "{source}");
         assert_eq!(error.message, message, "{source}");
+        // The help of the name written without `std::`.
+        let bare = analyze(&source.replacen("std::", "", 1)).expect_err(source);
+        assert_eq!(bare.code, "E1040", "{source}");
+        assert!(error.help.is_some(), "{source}");
+        assert_eq!(error.help, bare.help, "{source}");
         let start = source.find(written).expect("the old name");
         assert_eq!(
             (error.span.start, error.span.end),
@@ -1023,7 +1034,47 @@ fn a_module_of_the_program_with_an_old_module_name_is_its_own() {
         assert_eq!(error.code, code, "{main}\n{}", error.message);
         assert_eq!(error.kind, Some(kind), "{main}\n{}", error.message);
         assert!(error.fixes.is_empty(), "{main}");
+        let prefix = if code == "E1002" {
+            format!("module '{module}' has no function or union case")
+        } else {
+            "unknown ".to_owned()
+        };
+        assert!(
+            error.message.starts_with(&prefix),
+            "{main}\n{}",
+            error.message
+        );
+        // E1002 points at the member, E1004 at the qualified type name.
+        let at = main.find(&format!("{module}.")).unwrap();
+        let member: String = main[at + module.len() + 1..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        let end = at + module.len() + 1 + member.len();
+        let start = if code == "E1002" {
+            at + module.len() + 1
+        } else {
+            at
+        };
+        assert_eq!((error.span.start, error.span.end), (start, end), "{main}");
     }
+    // A type that the module defines is used, also one that the std module had.
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "namespace App\n\ndef f :: Channel.Sender<i64> -> i64\nfn f sender = sender.id\n\nf (Channel.Sender { id: 3 })\n",
+        ),
+        ("App/Channel.tz", "namespace App\n\nrecord Sender<'a> { id: 'a }\n"),
+    ])
+    .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+    analyze_modules(&[
+        (
+            "Main.tz",
+            "namespace App\n\ndef f :: Async.Operation -> i64\nfn f operation = operation.id\n\nf (Async.Operation { id: 3 })\n",
+        ),
+        ("App/Async.tz", "namespace App\n\nrecord Operation { id: i64 }\n"),
+    ])
+    .unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
     // A name that the module defines is used, also one that the std module had.
     let (path, text) = own("Channel");
     analyze_modules(&[
@@ -1121,4 +1172,60 @@ fn a_rename_shows_the_other_errors_of_the_function() {
         "let a = IO.writeln 3\nlet b = DataChannel.bounded 3\n0\n"
     );
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn the_replacement_says_std_where_the_program_has_the_module() {
+    // E18: where the bare replacement module would name a module of the program (its own
+    // `DataChannel` or `Routine`), the message, the recovery and the certain fix say `std::`, so
+    // the fixed program calls the std function as the old name did.
+    let modules = [
+        (
+            "App/DataChannel.tz",
+            "namespace App\n\nrecord Sender<'a> { value: 'a }\n\ndef bounded :: i64 -> i64\nfn bounded n = n + 1\n",
+        ),
+        (
+            "App/Routine.tz",
+            "namespace App\n\ndef scope :: ref i64 -> i64 -> (ref i64 -> i64 -> i64) -> i64\nfn scope _base n _f = n\n",
+        ),
+    ];
+    for (body, message, replacement) in [
+        (
+            "let pair: (std::DataChannel.Sender<i64> * std::DataChannel.Receiver<i64>) = Channel.bounded 3\n0\n",
+            "'Channel.bounded' is now 'std::DataChannel.bounded'",
+            "std::DataChannel.bounded",
+        ),
+        (
+            "let base = 10i64\nlet values = Task.scope (ref base) 4 (\\shared index -> deref shared + index)\nArray.sum (ref values)\n",
+            "'Task.scope' was removed",
+            "std::Routine.scope",
+        ),
+        (
+            "def f :: ref Channel.Sender<i64> -> i64\nfn f _sender = 0\n\n0\n",
+            "'Channel.Sender' is now 'std::DataChannel.Sender'",
+            "std::DataChannel.Sender",
+        ),
+    ] {
+        let main = format!("namespace App\n\n{body}");
+        let mut sources = vec![("Main.tz", main.as_str())];
+        sources.extend(modules);
+        let error = analyze_modules(&sources).unwrap_err();
+        assert_eq!(error.code, "E1040", "{main}\n{}", error.message);
+        assert_eq!(error.message, message, "{main}");
+        assert_eq!(error.fixes[0].edits[0].text, replacement, "{main}");
+        assert_eq!(error.fixes[0].title, format!("write '{replacement}'"));
+        // The fixed program is the std one: it checks, beside the program's modules.
+        let fixed = format!(
+            "{}{}{}",
+            &main[..error.fixes[0].edits[0].span.start],
+            replacement,
+            &main[error.fixes[0].edits[0].span.end..]
+        );
+        let mut sources = vec![("Main.tz", fixed.as_str())];
+        sources.extend(modules);
+        analyze_modules(&sources).unwrap_or_else(|e| panic!("{fixed}\n{}: {}", e.code, e.message));
+    }
+    // Without such a module, the replacement stays bare.
+    let error = analyze("let base = 10i64\nlet values = Task.scope (ref base) 4 (\\shared index -> deref shared + index)\nArray.sum (ref values)\n").unwrap_err();
+    assert_eq!(error.fixes[0].edits[0].text, "Routine.scope");
 }

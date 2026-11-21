@@ -308,7 +308,7 @@
 
 独立のレビュー（コンパイラ・網羅と文書・テストの 3 つの観点と、指摘ごとの反証）で、この変更が入れた 6 件（`io.mjs` の閉じた標準出力の検査が必ず通っていたこと、`tsuzuri fix` のテストが 1 ラウンドを確かめていなかったこと、`io.md` の「1 回ですべて」の言い過ぎ、`docs/language.md` の「line 版」、`App/IO.tz` の例が `namespace = "App"` のプロジェクトで `E1011` になること、本チケットの設計の表の食い違い）を直した。E17 より前からある次の 2 つは、別のチケットにした。
 
-- [E18](../E18-removed-names-resolve-std-modules.md): `Channel`・`Net`・`Task`・`Async` の旧名の `E1040` が、書いたモジュール名の綴りだけで照合する（プロジェクトのモジュール `Channel` に無い `Channel.bounded` が `DataChannel.bounded` への確かな修正案を持つ `E1040` になり、`std::Channel.bounded` は `E1002` になる）。確かな改名の回復が関数を毒にして `finish` のエラーを隠し、`tsuzuri fix` が `E2008` で止まることがある点も、改善の候補として書いた。
+- [E18](E18-removed-names-resolve-std-modules.md): `Channel`・`Net`・`Task`・`Async` の旧名の `E1040` が、書いたモジュール名の綴りだけで照合する（プロジェクトのモジュール `Channel` に無い `Channel.bounded` が `DataChannel.bounded` への確かな修正案を持つ `E1040` になり、`std::Channel.bounded` は `E1002` になる）。確かな改名の回復が関数を毒にして `finish` のエラーを隠し、`tsuzuri fix` が `E2008` で止まることがある点も、改善の候補として書いた。
 - [G44](../G44-active-pattern-body-recovery.md): 複数ケースのアクティブパターンの本体が、最初のエラーしか報告しない（`infer_active_result` が回復しない）。
 
 E17 より前からあり、この変更の範囲外のもの: `benchmarks/run-gpu-vulkan.mjs` の生成するプログラムと `tests/fixtures/mcp/tool-examples.json` の tz_guide の例が、edition 2027 の `E0004`（`&`・`1 .. n`）になる（どちらも名前の変更とは関係しない）。

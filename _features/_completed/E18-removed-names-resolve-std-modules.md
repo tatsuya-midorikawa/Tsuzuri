@@ -7,7 +7,7 @@
 | 規模 | S（`src/check.rs` の `removed_feature` の呼び出し側、`tests/removed_features.rs`、`E1040` の文書） |
 | 依存 | E17（done） |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-21（E17 の PR のレビューで見つかった、E17 より前からある不具合。`feat/e17-io-function-names` の `2ffa444f` と `main` の `b6bbdcb5` の両方で再現） |
 | 承認 | 不要（E17 が `IO` について決めた規則（D-55 の `E1040`、E17 の仕様 2「利用者定義モジュールとの分離」）を、ほかの旧名にも当てはめる直し） |
 | 改善する劣位 | 不具合: プロジェクトのモジュール `Channel`・`Net` に無い関数が `E1040` になり、`Channel.bounded` には std の `DataChannel.bounded` へ書き換える確かな修正案が付く。`std::Channel.bounded`・`std::Net.connect_async` は `E1040` にならず `E1002` になる |
@@ -30,7 +30,7 @@
 4. テスト: 観測 1〜3 のそれぞれと、プロジェクトのモジュール `Channel` がその名前を定義していればそれが使われること（今の `a_definition_of_the_program_wins` の型の例を、名前空間の中のモジュールの例にも広げる）。
 5. 文書: `E1040.md`・`diagnostics.md` の `E1040`・`docs/language.md` の `E1040` の行・`docs/architecture.md` の `E1040` の節に、プロジェクトのモジュールは対象外で `E1002`、`std::` を付けても同じ `E1040` と書く。
 
-## 改善の候補（同じチケットで扱うか、決めてから進める）
+## 改善の候補（同じチケットで扱うか、決めてから進める。→ D1 で扱った）
 
 確かな改名（`renamed_to_data_channel` と E17 の `renamed_io_function`）の回復は `self.poisoned = true` にするので、その関数は `finish` を通らず、`finish` が報告するエラーが `E1040` の陰に隠れる。例: `def show :: (Display<'a>, Capture<'a>) => own 'a -> IO<unit> = \x -> IO.writeln x` と、`main` の中の `let r = ref 3`・`do! show r`・`do! IO.write_line "x"`。`tsuzuri check` は `6:9: error[E1040]` だけを出し、`tsuzuri fix` は `error[E2008]: the fixes would introduce E1013 in 'Main.tz' at line 4 ...; no file was changed` で止まる（`IO.writeln` で書けば `4:17: error[E1013]` がすぐ出る）。これは `tsuzuri fix` の文書（`compiler/usage.md` の `fix`）どおりの保守的な振る舞いだが、置き換えが同じ関数・同じ型のときは毒にしなくてよい。毒にしないなら、`finish` が置き換えた式で正しく動くこと、`removed_name` と `renamed_io_function` の両方を同じにすることを確かめる。
 
@@ -45,3 +45,31 @@
 
 - E17 の `IO` の旧名（E17 で `module_path` の確認を実装済み）。
 - 新しい旧名の追加。
+
+## 決定事項
+
+| 番号 | 決定 | 理由 | 状態 |
+| --- | --- | --- | --- |
+| D1 | 「改善の候補」を扱う: 値の位置の確かな改名（`removed_name` の置き換えと E17 の `renamed_io_function`）の回復は、関数を毒にしない（`poisoned` を立てない） | 置き換えは、それ自身の型を持つ正しい式として検査するので、毒にする理由がない（型の位置の改名は前から毒にしない）。`finish` とムーブ・アクセスの検査のエラー（`E1015`、ムーブ後の使用の `E1012`）が `E1040` と一緒に出て、`tsuzuri fix` は改名を適用してそれを残す（以前は `E2008` で止まった）。ただし候補の例の `E1013`（借用と寿命）は、型のエラーがなくなってからの段で出るので、改名がそれを見えるようにするときは今も `E2008` で止まる。これは段の構成で、`tsuzuri fix` の文書どおり | 決定（2026-11-21、利用者の委任） |
+| D2 | 置き換えのモジュール（`DataChannel`・`Routine`）が、書いたファイルからプロジェクトのモジュールに解決するときは、置き換えを `std::DataChannel.bounded` のように `std::` 付きで書く（メッセージ・回復・修正案とも） | 観測 1 と同じ種類の害（確かな修正案がプロジェクトの関数を呼ぶように書き換える）を、置き換えの側でも防ぐ。レビューで見つかった（E18 より前から） | 決定（同上） |
+| D3 | `Channel.send`・`Channel.recv` を `DataChannel` の端に使った `E1040`（`hints.rs` の `renamed_channel_calls`）も、メッセージと修正案の題に書いた `std::` を付ける | 文書の「`std::` を付けても、メッセージと修正案も `std::` を保つ」を、この kind のもう 1 つの出どころでも成り立たせる | 決定（同上） |
+
+## 実装と検証（2026-11-21）
+
+`main` `52155373` で着手した。
+
+- `Names::removed_module`（書いたモジュールの解決: `Channel`・`Net` は std のモジュール、`Task`・`Async` はどのモジュールにも解決しないとき。綴りは裸か `std::` だけ）、`Names::removed_qualified`（型の名前）、`Names::removed_written`（診断・メッセージ・置き換えを書いた綴りで作る。D2）、`Names::removed_async_type`（`Async` の型）。値の位置（`value_expression` の `ExprKind::Field`）と型の位置（`Names::type_head`・`type_result`）の両方で使う。`is_namespace` は `std::Task`・`std::Async` も名前空間として扱う。
+- D1: 値の位置の回復の 2 か所で `self.poisoned = true` をやめた。D3: `hints.rs` の接頭辞。
+- テスト（`tests/removed_features.rs`）: `std::` 付きの旧名 7 つ（kind・メッセージ・範囲・help が裸の書き方と同じ・修正案）、名前空間のモジュール `Channel`・`Net`・`Task`・`Async` の値と型の 6 つ（`E1002`・`E1004`、メッセージ・範囲、修正案なし）と、そのモジュールが定義する関数・型が使われること、`std::Channel` は std のまま、`std::` 付きの `tsuzuri fix` が 1 ラウンド・4 件、D1（`E1015` が一緒に出て、`tsuzuri fix` が改名を適用する）、D2（プロジェクトの `DataChannel`・`Routine` があるときの `std::` 付きの置き換えと、直したプログラムが通ること）、D3（`std::Channel.recv`）。
+- 文書: `diagnostics.md`・`channel.md`・`tzroutine.md`・`docs/language.md`・`docs/architecture.md`・`E1040.md`（1500 字の上限にちょうど収めた）。`docs/language.md` の「利用者のモジュール `Async` にない `Async.run` も `E1040`」（TZ13 の記述で、決定の記録はない）を、E18 の規則（`E1002`）に直した。レビューで見つかった、`keywords.md`・`computation-expressions.md` の「`Async { }` は利用者の `Async.tc` がなければ `E1040`」の誤り（ビルダーでないモジュール `Async` があれば `E1018`。E18 より前から）も直した。
+
+検証（macOS arm64、dev ビルド）:
+
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`（ホストと `x86_64-pc-windows-msvc`）。
+- `cargo nextest run --locked`（全体）、`tests/removed_features.rs`（21 件）。
+- `node scripts/check-docs.mjs`（変えた 5 ページ）。
+- 独立のレビュー（コンパイラ・文書とテストの 2 つの観点と、指摘ごとの反証）で、文書の言い過ぎ（`E1012` も後から出るとした誤り、`毒` という内部の用語、見えるファイルの条件）、`E1040.md` の未更新、テストの不足（help・範囲・型の位置の正の例）、D2・D3 の元になった不具合を直した。
+
+### 残る制限
+
+- `Channel.send`・`Channel.recv` を `DataChannel` の端に使った `E1040`（`hints.rs`）の置き換え `DataChannel.send` は、型の検査の後で字句から作るので、プロジェクトのモジュール `DataChannel` が見えるファイルでもそのまま書く（D2 の確かめをしない）。`DataChannel` という名前のモジュールを置き、そこから旧い `Channel.send` を書いたプログラムだけに起きる。

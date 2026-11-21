@@ -152,14 +152,19 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
         } else {
             "Receiver"
         };
+        // The namespace written before `Channel` (`std::`), in the message and the title too (E18).
+        let prefix: String = path
+            .chunks(2)
+            .map(|pair| format!("{}::", &input.text[pair[0].span.start..pair[0].span.end]))
+            .collect();
         *diagnostic = Diagnostic::of(
             crate::diagnostic_kinds::DiagnosticKind::RenamedToDataChannel,
-            format!("'Channel.{function}' of a DataChannel.{end} is now 'DataChannel.{function}'"),
+            format!("'{prefix}Channel.{function}' of a DataChannel.{end} is now '{prefix}DataChannel.{function}'"),
             span,
         )
         .with_help("the channel with separate Sender and Receiver ends was renamed to DataChannel; the name Channel is now Go's two-way channel (Channel.make)")
         .fix(
-            format!("write 'DataChannel.{function}'"),
+            format!("write '{prefix}DataChannel.{function}'"),
             Applicability::Certain,
             vec![Edit { span, text }],
         );
