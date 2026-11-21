@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 
 use crate::SourceInput;
 use crate::check::ModuleOrigin;
-use crate::diagnostic::{Applicability, Diagnostic, DiagnosticSet, Edit, Fix, MAX_FIXES};
+use crate::diagnostic::{Applicability, Diagnostic, DiagnosticSet, Edit, Fix, MAX_FIXES, Span};
 use crate::lexer;
 use crate::syntax::{Token, TokenKind};
 
@@ -71,43 +71,54 @@ pub(crate) fn annotate(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
 /// it, and `tsuzuri fix` then moves an old program round by round through `E1040` alone. Only a
 /// mismatch of the builtin's own argument counts (the checker names it): a function `recv` of a
 /// module `Channel` of the program keeps its `E1003`.
+/// Whether `diagnostic` is the `E1003` of `Channel.send` or `Channel.recv` given an end of a
+/// `DataChannel` that `renamed_channel_calls` turns into an `E1040`, from the types alone, with the
+/// function (`send` or `recv`) and the span of the callee. `Diagnostics::finish` counts these among
+/// all the collected diagnostics, the ones past the display limit included, so that the counts
+/// of the codes can follow the rewrite (E19).
+pub(crate) fn renames_to_data_channel(diagnostic: &Diagnostic) -> Option<(&'static str, Span)> {
+    if diagnostic.kind != Some("type_mismatch") {
+        return None;
+    }
+    let (Some(expected), Some(found)) = (&diagnostic.detail.expected, &diagnostic.detail.found)
+    else {
+        return None;
+    };
+    let unref = |ty: &str| ty.strip_prefix("ref ").unwrap_or(ty).to_owned();
+    let (expected, found) = (unref(expected), unref(found));
+    let function = if found.starts_with("DataChannel.Sender<") {
+        "send"
+    } else if found.starts_with("DataChannel.Receiver<") {
+        "recv"
+    } else {
+        return None;
+    };
+    let builtin = if function == "send" {
+        "Channel.send"
+    } else {
+        "Channel.recv"
+    };
+    let (_, callee) = diagnostic
+        .detail
+        .builtin
+        .filter(|(name, _)| *name == builtin)?;
+    expected
+        .starts_with("Channel<")
+        .then_some((function, callee))
+}
+
 fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
     let mut lexed: BTreeMap<usize, Vec<Token>> = BTreeMap::new();
-    // How many E1003s became E1040s: `set.counts` follows, so that the language server, which
-    // offers a quick fix only when it lowers the count of its code, offers this one (E19).
-    let mut replaced = 0;
+    // The candidates that stay `E1003` (their tokens are not the old name): every other candidate,
+    // shown or past the display limit, counts as the `E1040` it becomes, so that the language
+    // server, which offers a quick fix only when it lowers the count of its code, offers this one.
+    let mut kept = 0;
     for diagnostic in &mut set.diagnostics {
-        if diagnostic.kind != Some("type_mismatch") {
-            continue;
-        }
-        let (Some(expected), Some(found)) = (&diagnostic.detail.expected, &diagnostic.detail.found)
-        else {
+        let Some((function, callee)) = renames_to_data_channel(diagnostic) else {
             continue;
         };
-        let unref = |ty: &str| ty.strip_prefix("ref ").unwrap_or(ty).to_owned();
-        let (expected, found) = (unref(expected), unref(found));
-        let function = if found.starts_with("DataChannel.Sender<") {
-            "send"
-        } else if found.starts_with("DataChannel.Receiver<") {
-            "recv"
-        } else {
-            continue;
-        };
-        let builtin = if function == "send" {
-            "Channel.send"
-        } else {
-            "Channel.recv"
-        };
-        let Some((_, callee)) = diagnostic
-            .detail
-            .builtin
-            .filter(|(name, _)| *name == builtin)
-        else {
-            continue;
-        };
-        if !expected.starts_with("Channel<") {
-            continue;
-        }
+        // A candidate that does not become an `E1040` below stays an `E1003`.
+        kept += 1;
         let source = callee.source.or(diagnostic.span.source).unwrap_or(0);
         let Some(input) = inputs
             .get(source)
@@ -195,19 +206,22 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
             ),
             None => renamed,
         };
-        replaced += 1;
+        kept -= 1;
     }
-    if replaced > 0 {
+    let renamed = set.data_channel_candidates.saturating_sub(kept);
+    // Moved once: a second pass over the same set finds no candidate to move.
+    set.data_channel_candidates = 0;
+    if renamed > 0 {
         let mismatches = (crate::diagnostic::Severity::Error, "E1003");
         if let Some(count) = set.counts.get_mut(&mismatches) {
-            *count = count.saturating_sub(replaced);
+            *count = count.saturating_sub(renamed);
             if *count == 0 {
                 set.counts.remove(&mismatches);
             }
         }
         *set.counts
             .entry((crate::diagnostic::Severity::Error, "E1040"))
-            .or_default() += replaced;
+            .or_default() += renamed;
     }
 }
 

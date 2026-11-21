@@ -28,6 +28,10 @@ pub struct DiagnosticSet {
     /// How many diagnostics of each severity and code were collected, the omitted ones included
     /// (up to the collection limit; `omitted_is_lower_bound` says whether it was reached).
     pub counts: BTreeMap<(Severity, &'static str), usize>,
+    /// How many of the counted diagnostics are `E1003`s that `hints::renamed_channel_calls` turns
+    /// into `E1040`s (`hints::renames_to_data_channel`), the omitted ones included: the rewrite
+    /// moves them between the two codes in `counts` (E19).
+    pub data_channel_candidates: usize,
 }
 
 impl DiagnosticSet {
@@ -143,13 +147,18 @@ impl Diagnostics {
     pub fn finish(self) -> DiagnosticSet {
         let omitted_is_lower_bound = self.is_full();
         let mut counts = BTreeMap::new();
+        let mut data_channel_candidates = 0;
         for diagnostic in self.entries.values() {
             *counts
                 .entry((diagnostic.severity, diagnostic.code))
                 .or_insert(0) += 1;
+            if crate::hints::renames_to_data_channel(diagnostic).is_some() {
+                data_channel_candidates += 1;
+            }
         }
         DiagnosticSet {
             counts,
+            data_channel_candidates,
             omitted: self.entries.len().saturating_sub(MAX_REPORTED_ERRORS),
             omitted_is_lower_bound,
             diagnostics: self

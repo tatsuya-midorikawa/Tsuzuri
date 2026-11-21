@@ -1389,3 +1389,39 @@ fn the_channel_call_rewrite_writes_a_data_channel_that_keeps_its_meaning() {
     let error = check(&[("Main.tz", send)]);
     assert_eq!(error.fixes[0].edits[0].text, "DataChannel.send");
 }
+
+#[test]
+fn the_counts_follow_every_channel_call_rewrite_past_the_display_limit() {
+    // E19: the counts of the codes, which the language server compares to offer a quick fix,
+    // count every old `Channel.recv` given an end of a DataChannel as the E1040 it becomes, also
+    // the ones past the 50 shown diagnostics, so fixing one lowers the count of E1040.
+    let mut source = String::new();
+    for index in 0..51 {
+        source.push_str(&format!(
+            "def f{index} :: own DataChannel.Receiver<i64> -> i64\nfn f{index} receiver =\n    match Channel.recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n"
+        ));
+    }
+    source.push_str("0\n");
+    let errors = analyze_all(&source).expect_err("old names");
+    assert_eq!(errors.diagnostics.len(), 50);
+    assert_eq!(errors.omitted, 1);
+    assert!(
+        errors
+            .diagnostics
+            .iter()
+            .all(|error| error.kind == Some("renamed_to_data_channel")),
+        "{:?}",
+        errors
+            .diagnostics
+            .iter()
+            .map(|error| &error.message)
+            .collect::<Vec<_>>()
+    );
+    use tsuzuri::diagnostic::Severity;
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1040")), Some(&51));
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1003")), None);
+    // After one fix, one fewer.
+    let fixed = source.replacen("match Channel.recv", "match DataChannel.recv", 1);
+    let errors = analyze_all(&fixed).expect_err("old names");
+    assert_eq!(errors.counts.get(&(Severity::Error, "E1040")), Some(&50));
+}
