@@ -72,4 +72,4 @@
 
 ### 残る制限
 
-- `Channel.send`・`Channel.recv` を `DataChannel` の端に使った `E1040`（`hints.rs`）の置き換え `DataChannel.send` は、型の検査の後で字句から作るので、プロジェクトのモジュール `DataChannel` が見えるファイルでもそのまま書く（D2 の確かめをしない）。`DataChannel` という名前のモジュールを置き、そこから旧い `Channel.send` を書いたプログラムだけに起きる。
+- `Channel.send`・`Channel.recv` を `DataChannel` の端に使った `E1040`（`hints.rs`）の置き換え `DataChannel.send` は、型の検査の後で字句から作るので、プロジェクトのモジュール `DataChannel` が見えるファイルでもそのまま書く（D2 の確かめをしない）。`DataChannel` という名前のモジュールを置き、そこから旧い `Channel.send` を書いたプログラムだけに起きる。→ [E19](E19-data-channel-call-rewrite-spelling.md) で直した（2026-11-22）。

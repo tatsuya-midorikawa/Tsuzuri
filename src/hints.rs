@@ -142,7 +142,7 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
         span.end = name.span.end;
         span.source = Some(source);
         // The name as written, with `DataChannel` for `Channel`.
-        let text = format!(
+        let written = format!(
             "{}DataChannel{}",
             &input.text[span.start..module.span.start],
             &input.text[module.span.end..span.end]
@@ -157,17 +157,41 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
             .chunks(2)
             .map(|pair| format!("{}::", &input.text[pair[0].span.start..pair[0].span.end]))
             .collect();
-        *diagnostic = Diagnostic::of(
+        // E19: the replacement must name the std `DataChannel` where the call is (the checker
+        // tells which spellings do): the name as written when it does, `std::` before a bare
+        // name that a module or a local binding of the program takes, and no fix when neither
+        // spelling names it (a namespace `std` of the program that holds `DataChannel`).
+        let (bare, qualified) = diagnostic.detail.data_channel.unwrap_or((true, true));
+        let replacement = if prefix.is_empty() {
+            if bare {
+                Some((String::new(), written))
+            } else if qualified {
+                Some(("std::".to_owned(), format!("std::{written}")))
+            } else {
+                None
+            }
+        } else if prefix == "std::" && qualified {
+            Some((prefix.clone(), written))
+        } else {
+            None
+        };
+        let shown = replacement
+            .as_ref()
+            .map_or(prefix.as_str(), |(chosen, _)| chosen.as_str());
+        let renamed = Diagnostic::of(
             crate::diagnostic_kinds::DiagnosticKind::RenamedToDataChannel,
-            format!("'{prefix}Channel.{function}' of a DataChannel.{end} is now '{prefix}DataChannel.{function}'"),
+            format!("'{prefix}Channel.{function}' of a DataChannel.{end} is now '{shown}DataChannel.{function}'"),
             span,
         )
-        .with_help("the channel with separate Sender and Receiver ends was renamed to DataChannel; the name Channel is now Go's two-way channel (Channel.make)")
-        .fix(
-            format!("write '{prefix}DataChannel.{function}'"),
-            Applicability::Certain,
-            vec![Edit { span, text }],
-        );
+        .with_help("the channel with separate Sender and Receiver ends was renamed to DataChannel; the name Channel is now Go's two-way channel (Channel.make)");
+        *diagnostic = match replacement {
+            Some((chosen, text)) => renamed.fix(
+                format!("write '{chosen}DataChannel.{function}'"),
+                Applicability::Certain,
+                vec![Edit { span, text }],
+            ),
+            None => renamed,
+        };
     }
 }
 

@@ -297,6 +297,10 @@ pub struct Detail {
     /// for a hint that must know the function (TZ03: `Channel.recv` given an end of a
     /// DataChannel). Not written to JSON.
     pub builtin: Option<(&'static str, Span)>,
+    /// For a mismatch of `Channel.send` or `Channel.recv`: whether `DataChannel` written bare and
+    /// written `std::DataChannel` name the std module where the call is (E19), so that the hint
+    /// that rewrites the call writes a name that keeps its meaning. Not written to JSON.
+    pub data_channel: Option<(bool, bool)>,
 }
 
 /// Finds the path and text of the source that a `Span::source` index names.

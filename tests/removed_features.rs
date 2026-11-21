@@ -1284,3 +1284,83 @@ fn the_replacement_says_std_where_the_program_has_the_module() {
     assert_eq!(error.code, "E1040", "{}", error.message);
     assert_eq!(error.fixes[0].edits[0].text, "std::Routine.scope");
 }
+
+#[test]
+fn the_channel_call_rewrite_writes_a_data_channel_that_keeps_its_meaning() {
+    // E19: `Channel.recv` given an end of a DataChannel becomes `DataChannel.recv`, written so
+    // that the name is the std module where the call is: bare as before, `std::` where a module or
+    // a local binding of the program takes the bare name, and no fix where neither spelling names
+    // the std module.
+    let body = "def f :: own std::DataChannel.Receiver<i64> -> i64\nfn f receiver =\n    match Channel.recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n0\n";
+    let check = |sources: &[(&str, &str)]| {
+        let error = analyze_modules(sources).unwrap_err();
+        assert_eq!(error.code, "E1040", "{}", error.message);
+        assert_eq!(
+            error.kind,
+            Some("renamed_to_data_channel"),
+            "{}",
+            error.message
+        );
+        error
+    };
+    // A module `DataChannel` of the program's namespace takes the bare name.
+    let main = format!("namespace App\n\n{body}");
+    let own = (
+        "App/DataChannel.tz",
+        "namespace App\n\ndef recv :: ref i64 -> i64\nfn recv value = deref value\n",
+    );
+    let error = check(&[("Main.tz", &main), own]);
+    assert_eq!(
+        error.message,
+        "'Channel.recv' of a DataChannel.Receiver is now 'std::DataChannel.recv'"
+    );
+    assert_eq!(error.fixes[0].title, "write 'std::DataChannel.recv'");
+    let edit = &error.fixes[0].edits[0];
+    assert_eq!(edit.text, "std::DataChannel.recv");
+    let fixed = format!(
+        "{}{}{}",
+        &main[..edit.span.start],
+        edit.text,
+        &main[edit.span.end..]
+    );
+    analyze_modules(&[("Main.tz", &fixed), own])
+        .unwrap_or_else(|e| panic!("{fixed}\n{}: {}", e.code, e.message));
+    // A local binding named `DataChannel` takes the bare name too.
+    let local = "record Box { recv: i64 }\n\ndef f :: own std::DataChannel.Receiver<i64> -> i64\nfn f receiver = {\n    let DataChannel = Box { recv: 1 };\n    match Channel.recv (ref receiver) with\n    | Maybe.Some v -> v + DataChannel.recv\n    | Maybe.None -> 0\n}\n\n0\n";
+    let error = check(&[("Main.tz", local)]);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.recv");
+    // A namespace `std` of the program with a module `DataChannel`, beside the program's own
+    // `DataChannel`: no spelling names the std module from `App`, so there is no fix. The
+    // receiver comes from another namespace, so `Main` does not name `DataChannel` itself.
+    let nested = (
+        "App/std/DataChannel.tz",
+        "namespace App::std\n\ndef recv :: ref i64 -> i64\nfn recv value = deref value\n",
+    );
+    let make = (
+        "Lib/Make.tz",
+        "namespace Lib\n\ndef pair :: unit -> (DataChannel.Sender<i64> * DataChannel.Receiver<i64>)\nfn pair _unit = DataChannel.bounded 3\n",
+    );
+    let main = "namespace App\n\nlet p = Lib::Make.pair ()\nmatch p with\n| (_sender, receiver) ->\n    match Channel.recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n";
+    let error = check(&[("Main.tz", main), own, nested, make]);
+    assert_eq!(
+        error.message,
+        "'Channel.recv' of a DataChannel.Receiver is now 'DataChannel.recv'"
+    );
+    assert!(error.fixes.is_empty(), "{:?}", error.fixes);
+    // With only the program's `DataChannel`, the same call gets `std::`.
+    let error = check(&[("Main.tz", main), own, make]);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.recv");
+    // A written `std::` that the program's namespace `std` takes: no fix either.
+    let written = main.replace("match Channel.recv", "match std::Channel.recv");
+    let error = analyze_modules(&[("Main.tz", &written), nested, make]).unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert!(error.fixes.is_empty(), "{:?}", error.fixes);
+    // `std::Channel.recv` keeps `std::` where `std::DataChannel` is the std module, and has no
+    // fix where the program's namespace `std` takes it.
+    let written = body.replace("match Channel.recv", "match std::Channel.recv");
+    let error = check(&[("Main.tz", &written)]);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.recv");
+    // Without such modules or bindings, the bare name stays.
+    let error = check(&[("Main.tz", body)]);
+    assert_eq!(error.fixes[0].edits[0].text, "DataChannel.recv");
+}
