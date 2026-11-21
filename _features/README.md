@@ -301,7 +301,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G42 | [Windows x64 の VS Code で、テストの実行の結果が表示の直後に消えることがある（拡張の統合テストが Windows x64 でだけ時々落ちる）](G42-windows-run-results-cleared-early.md) | P2 | S〜M | G39, G40 | todo |
 | G43 | [VS Code で、開いているファイルのあるプロジェクトのフォルダーを中身から順に消すと、その上のフォルダーが Testing ビューの根として残ることがある](G43-reroot-during-recursive-delete.md) | P3 | S | G40 | todo |
 | G44 | [複数ケースのアクティブパターン（`-> 'T`）の本体が、最初のエラーしか報告しない](_completed/G44-active-pattern-body-recovery.md) | P3 | S | – | done（`infer_active_result` を回復ありで検査し、本体の型のエラーをすべて 1 回で報告する。毒の認識器の節の `E1002` の連鎖は G45、edition 2027 の誤った拒否は A36） |
-| G45 | [毒になった認識器を使う節で、ペイロードの名前が `E1002` の連鎖になる](G45-poisoned-recognizer-payload-cascade.md) | P3 | S〜M | G44 | todo |
+| G45 | [毒になった認識器を使う節で、ペイロードの名前が `E1002` の連鎖になる](_completed/G45-poisoned-recognizer-payload-cascade.md) | P3 | S〜M | G44 | done（宣言の引数の数と、部分パターンの結果が `bool` かから決めたペイロードのパターンの名前を、字句から集めてエラー型の値に束縛する。`pattern_alternatives` は通さない） |
 
 ### TZ. tzroutine（Go の goroutine に相当する並行処理。第4期）
 

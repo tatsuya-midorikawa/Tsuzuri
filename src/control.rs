@@ -1948,6 +1948,76 @@ impl Checker<'_> {
         ))
     }
 
+    /// The payload pattern among the `arguments` of the recognizer `id` (G45), from its
+    /// declaration rather than its signature, which may be poisoned: the last argument when there
+    /// is one more argument than the recognizer's extra parameters (its parameters but the
+    /// input), and none for a partial recognizer whose declared result is `bool`.
+    fn poisoned_payload<'p>(&self, id: usize, arguments: &'p [Pattern]) -> Option<&'p Pattern> {
+        let declared = self.names.declared.get(id)?;
+        let arity = declared.parameters.len();
+        (arity > 0 && !declared.bool_partial && arguments.len() == arity)
+            .then(|| arguments.last())
+            .flatten()
+    }
+
+    /// The names that `pattern` binds, read from its syntax alone (G45): its bindings that are no
+    /// case or recognizer, the names of `as` and of a type test, through tuples, records, arrays,
+    /// lists, the payloads of cases and recognizers, and the first side of an or-pattern. A value
+    /// argument of a recognizer binds nothing.
+    fn payload_binders(&self, pattern: &Pattern, binders: &mut Vec<Ident>) {
+        match &pattern.kind {
+            PatternKind::Wildcard | PatternKind::Argument(_) | PatternKind::Literal(_) => {}
+            PatternKind::Binding(name) => {
+                if !name.text.contains(['.', ':'])
+                    && matches!(self.pattern_case(name), Ok(None))
+                    && matches!(self.active_recognizer(name), Ok(None))
+                {
+                    binders.push(name.clone());
+                }
+            }
+            PatternKind::Apply(name, arguments) => match self.active_recognizer(name) {
+                Ok(Some((id, _))) => {
+                    if let Some(payload) = self.poisoned_payload(id, arguments) {
+                        self.payload_binders(payload, binders);
+                    }
+                }
+                Ok(None) => {
+                    for argument in arguments {
+                        self.payload_binders(argument, binders);
+                    }
+                }
+                Err(_) => {}
+            },
+            PatternKind::Tuple(patterns)
+            | PatternKind::Array(patterns)
+            | PatternKind::List(patterns) => {
+                for pattern in patterns {
+                    self.payload_binders(pattern, binders);
+                }
+            }
+            PatternKind::Record(_, fields) => {
+                for (_, pattern) in fields {
+                    self.payload_binders(pattern, binders);
+                }
+            }
+            PatternKind::Cons(left, right) | PatternKind::And(left, right) => {
+                self.payload_binders(left, binders);
+                self.payload_binders(right, binders);
+            }
+            PatternKind::Or(left, _) => self.payload_binders(left, binders),
+            PatternKind::As(pattern, name) => {
+                self.payload_binders(pattern, binders);
+                binders.push(name.clone());
+            }
+            PatternKind::Annotated(pattern, _) => self.payload_binders(pattern, binders),
+            PatternKind::TypeTest(_, binder, _) => {
+                if let Some(name) = binder.as_ref().filter(|name| name.text != "_") {
+                    binders.push(name.clone());
+                }
+            }
+        }
+    }
+
     fn active_recognizer(&self, name: &Ident) -> Result<Option<(usize, ActiveCase)>, Diagnostic> {
         self.names
             .active_pattern(self.module, &name.text, name.span)
@@ -2020,9 +2090,23 @@ impl Checker<'_> {
         })?;
         let (kind, ty) = self.function(id);
         if ty.contains_error() {
+            // The recognizer's signature is poisoned, and its error is reported where it is
+            // declared. The names of the payload pattern are still bound, as values of the error
+            // type, so the arm does not report them as unknown values (G45).
+            let mut binders = Vec::new();
+            if let Some(payload) = self.poisoned_payload(id, arguments) {
+                self.payload_binders(payload, &mut binders);
+            }
             return Ok((
                 vec![Alternative {
                     steps: vec![PatternStep::Test(TypedExpr::error(name.span))],
+                    bindings: binders
+                        .into_iter()
+                        .map(|binder| {
+                            let span = binder.span;
+                            (binder, TypedExpr::error(span))
+                        })
+                        .collect(),
                     ..Alternative::default()
                 }],
                 CoveragePat::Opaque,

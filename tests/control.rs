@@ -352,6 +352,128 @@ match 42 with | Positive number -> number | _ -> 0"#,
     );
 }
 
+/// The codes and start offsets of the errors of `source`.
+fn error_sites(source: &str) -> Vec<(&'static str, usize)> {
+    analyze_all(source)
+        .expect_err(source)
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code.starts_with('E'))
+        .map(|error| (error.code, error.span.start))
+        .collect()
+}
+
+#[test]
+fn a_poisoned_recognizer_still_binds_its_payload_names() {
+    // G45: an arm of a recognizer whose signature is poisoned binds the names of its payload
+    // pattern as values of the error type, so only the declaration's error is reported; a name
+    // that the arm does not bind is still unknown.
+    let body_error = "    let bad = 1 + \"x\"\n";
+    for (declaration, arms) in [
+        (
+            "def (|Small|Large|) :: i64 -> 'T = \\value ->\n{body}    if value < 10 then Small value else Large value\n",
+            "| Small value -> value | Large value -> value + 1 | _ -> 0",
+        ),
+        (
+            "def (|Found|Missing|) :: i64 -> 'T = \\value ->\n{body}    if value < 10 then Found (Maybe.Some value) else Missing value\n",
+            "| Found (Maybe.Some q) -> q | Missing d -> d | _ -> 0",
+        ),
+        (
+            "record Point { x: i64, y: i64 }\n\ndef (|Near|Far|) :: i64 -> 'T = \\value ->\n{body}    if value < 10 then Near (Point { x: value, y: value }) else Far value\n",
+            "| Near (Point { x = a; y = b }) -> a + b | Far d -> d | _ -> 0",
+        ),
+        (
+            "def (|Small|Large|) :: i64 -> 'T = \\value ->\n{body}    if value < 10 then Small (value, 1) else Large (2, value)\n",
+            "| Small ((a, 1) | (a, 2)) -> a | Large (_, b) -> b | _ -> 0",
+        ),
+        (
+            "def (|Many|Few|) :: i64 -> 'T = \\value ->\n{body}    if value < 10 then Many [value] else Few value\n",
+            "| Many (h :: t) -> h + List.length t | Few n -> n | _ -> 0",
+        ),
+        (
+            "def (|Inner|Outer|) :: i64 -> 'T = \\value ->\n{body}    if value < 10 then Inner (Maybe.Some (value, value)) else Outer value\n",
+            "| Inner (Maybe.Some (x, y)) -> x + y | Inner Maybe.None -> 0 | Outer o -> o | _ -> 0",
+        ),
+        (
+            "def (|Num|Rest|) :: i64 -> 'T = \\value ->\n{body}    let u: (i64 | string) = value\n    if value < 10 then Num u else Rest value\n",
+            "| Num (:? i64 as n) -> n | Num _ -> 0 | Rest o -> o | _ -> 0",
+        ),
+        (
+            "def (|Even|_|) :: i64 -> bool = \\value -> value % 2 == 0\n\ndef (|Small|Large|) :: i64 -> 'T = \\value ->\n{body}    if value < 10 then Small value else Large value\n",
+            "| Small (Even) -> 1 | Small (n & Even) -> n | Large (whole as copy) -> whole + copy | _ -> 0",
+        ),
+        (
+            "def (|Small|Large|) :: i64 -> 'T = \\value ->\n{body}    if value < 10 then Small [|value|] else Large value\n",
+            "| Small [|first|] -> first | Large (n: i64) -> n | _ -> 0",
+        ),
+    ] {
+        let source = format!(
+            "{}\nmatch 42 with {arms}\n",
+            declaration.replace("{body}", body_error)
+        );
+        let at = source.find("1 + \"x\"").unwrap();
+        assert_eq!(error_sites(&source), [("E1003", at)], "{source}");
+        // A name that the arm does not bind is still unknown.
+        let unknown = source.replacen("| _ -> 0", "| _ -> missing", 1);
+        let missing = unknown.find("missing").unwrap();
+        assert_eq!(
+            error_sites(&unknown),
+            [("E1003", at), ("E1002", missing)],
+            "{unknown}"
+        );
+    }
+    // A recognizer poisoned by its signature (an unknown type).
+    let source = "def (|Parsed|_|) :: ref Missing -> Maybe<Maybe<i64>> = \\text -> Maybe.None\n\nmatch \"42\" with | Parsed (Maybe.Some v) -> v | _ -> 0\n";
+    assert_eq!(
+        error_sites(source),
+        [("E1004", source.find("Missing").unwrap())],
+        "{source}"
+    );
+    // A total single-case recognizer whose declared result is `bool` has a payload: its name is
+    // bound (only the declaration's error).
+    let source = "def (|IsBig|) :: ref Missing -> bool = \\value -> true\n\nmatch \"a\" with | IsBig b -> if b then 1 else 0\n";
+    assert_eq!(
+        error_sites(source),
+        [("E1004", source.find("Missing").unwrap())],
+        "{source}"
+    );
+    // A partial recognizer declared `bool` (also through an alias) has no payload: `Even x` binds
+    // nothing, so `x` is still the unknown value it is on main.
+    for declaration in [
+        "def (|Even|_|) :: Missing -> bool = \\value -> true\n",
+        "type Flag = bool\n\ndef (|Even|_|) :: Missing -> Flag = \\value -> true\n",
+    ] {
+        let source = format!("{declaration}\nmatch 1 with | Even x -> x | _ -> 0\n");
+        assert_eq!(
+            error_sites(&source),
+            [
+                ("E1004", source.find("Missing").unwrap()),
+                ("E1002", source.rfind("-> x").unwrap() + 3),
+            ],
+            "{source}"
+        );
+    }
+    // A value argument before the payload binds nothing: the outer `k` keeps its meaning, here a
+    // correct use, and the payload `q` is bound.
+    let source = "def (|Div|_|) :: i64 -> Missing -> Maybe<i64> = \\divisor value -> Maybe.None\n\ndef f :: i64 -> i64 -> i64\nfn f n k = match n with | Div k q -> q + k | Div k -> k | _ -> n\n\nf 12 3\n";
+    assert_eq!(
+        error_sites(source),
+        [("E1004", source.find("Missing").unwrap())],
+        "{source}"
+    );
+    // The outer `x` (a string) also stays the outer value for a `bool` partial recognizer, so
+    // returning it where `i64` is expected is still an error.
+    let source = "def (|Even|_|) :: Missing -> bool = \\value -> true\n\ndef f :: i64 -> string -> i64\nfn f n x = match n with | Even x -> x | _ -> n\n\nf 12 \"a\"\n";
+    let sites = error_sites(source);
+    assert_eq!(sites.len(), 2, "{source}: {sites:?}");
+    assert_eq!(
+        sites[0],
+        ("E1004", source.find("Missing").unwrap()),
+        "{source}"
+    );
+    assert_eq!(sites[1].0, "E1003", "{source}: {sites:?}");
+}
+
 #[test]
 fn active_pattern_bodies_report_every_error() {
     // G44: the body of a multi-case active pattern whose result is inferred is checked with
