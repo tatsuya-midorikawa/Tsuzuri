@@ -157,6 +157,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A33 | [格納と破棄の順序の検査に残る穴と保守的な制限を、記憶域の寿命と破棄の順序の 1 つのモデルで直す](A33-remaining-store-soundness-holes.md) | P0 | XL | A31 | todo |
 | A34 | [`main` が受理する安全なプログラムを、A31 の格納と破棄の順序の検査が `E1013`・`E1014` で拒否する（フィールドや要素の `Rc.get` を束縛した変数、受け取った関数値を持つ値の破棄、書き込む部分の側の参照の変数、使い終えた共有の型の判定、`Rc.get (ref r)` の持ち主、参照の仮引数から作った共有、ループの中の置き換えの後の写し、セルへ書き込んだ複数 region のレコード）か、検査が収束せず `E1017` で打ち切る（参照の仮引数の先の借用をセルを所有する関数値へ渡すループ）](A34-store-check-safe-rejections.md) | P1 | L | A31 | todo |
 | A35 | [実際のプログラムの収束するループの借用の増え方が A31 のループの打ち切り（`LoanGrowth`）の上限に近づいたら、テストを失敗させる（収束したループの増え方の統計をテストだけに見せ、`tests/` のプログラム・`examples/`・std の例の最大を、増え方の連続の上限の 1/2 と比べる。`LOOP_GROWING_LARGE` の借用の数は 1/8 で数える）](A35-loop-growth-margin-check.md) | P2 | M | A31 | todo |
+| A36 | [edition 2027 で、ペイロードを持つジェネリックな複数ケースのアクティブパターンを誤って拒否する](A36-active-result-default-reads.md) | P2 | S | G44 | todo |
 
 ### B. エラー処理・制御
 
@@ -299,7 +300,8 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G41 | [VS Code で Tsuzuri 拡張機能が「Mac Silicon プラットフォームの Visual Studio Code では使用できません」となりインストールできない（Marketplace に残った 0.1.0・0.1.1 の `darwin-x64` が `IncludeLatestVersionOnly` に残り続け、クールダウン付きギャラリーで `allTargetPlatforms` が `["darwin-x64"]` だけになる）](_completed/G41-marketplace-orphaned-darwin-x64.md) | P1 | S | G14 | done（Marketplace から旧版 `0.1.0`・`0.1.1` を削除して孤立した `darwin-x64` を除去し、`verify-release.mjs` で全公開バージョンの `targetPlatform` と `IncludeLatestVersionOnly` の応答を検査するようにした） |
 | G42 | [Windows x64 の VS Code で、テストの実行の結果が表示の直後に消えることがある（拡張の統合テストが Windows x64 でだけ時々落ちる）](G42-windows-run-results-cleared-early.md) | P2 | S〜M | G39, G40 | todo |
 | G43 | [VS Code で、開いているファイルのあるプロジェクトのフォルダーを中身から順に消すと、その上のフォルダーが Testing ビューの根として残ることがある](G43-reroot-during-recursive-delete.md) | P3 | S | G40 | todo |
-| G44 | [複数ケースのアクティブパターン（`-> 'T`）の本体が、最初のエラーしか報告しない](G44-active-pattern-body-recovery.md) | P3 | S | – | todo |
+| G44 | [複数ケースのアクティブパターン（`-> 'T`）の本体が、最初のエラーしか報告しない](_completed/G44-active-pattern-body-recovery.md) | P3 | S | – | done（`infer_active_result` を回復ありで検査し、本体の型のエラーをすべて 1 回で報告する。毒の認識器の節の `E1002` の連鎖は G45、edition 2027 の誤った拒否は A36） |
+| G45 | [毒になった認識器を使う節で、ペイロードの名前が `E1002` の連鎖になる](G45-poisoned-recognizer-payload-cascade.md) | P3 | S〜M | G44 | todo |
 
 ### TZ. tzroutine（Go の goroutine に相当する並行処理。第4期）
 

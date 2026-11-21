@@ -9312,8 +9312,8 @@ fn check_modules_collect(
                     polymorph::variables(&signatures[id].signature.as_type());
             }
             Ok(None) => {}
-            Err(error) => {
-                diagnostics.push(error);
+            Err(errors) => {
+                diagnostics.extend(errors);
                 signatures[id] = Scheme::poisoned();
             }
         }
@@ -10212,6 +10212,11 @@ fn root_noncanonical(
     found
 }
 
+/// The result type of a multi-case active pattern whose declared result is `'T`: its body
+/// checked against the union of its cases with fresh arguments. The body is checked with recovery,
+/// like the body of any function (G44), so one analysis reports every error that checking its
+/// expressions finds; with an error, `finish` (format specs and the other deferred checks) is
+/// skipped, the caller poisons the signature and the body is not checked again.
 fn infer_active_result(
     module: &str,
     function: &FunctionDecl,
@@ -10220,15 +10225,15 @@ fn infer_active_result(
     signatures: &[Scheme],
     classes: &Classes,
     active: &crate::syntax::ActivePattern,
-) -> Result<Option<Type>, Diagnostic> {
+) -> Result<Option<Type>, Vec<Diagnostic>> {
     let id = names.local_function(module, &function.name.text).unwrap();
     let scheme = &signatures[id];
     if scheme.variables.iter().any(|name| name == "T") {
-        return Err(Diagnostic::of(
+        return Err(vec![Diagnostic::of(
             DiagnosticKind::ReservedActiveResultVariable,
             "'T is reserved for the implicit active-pattern result, not an input type variable",
             function.result.span,
-        ));
+        )]);
     }
     let Type::Union(union_id, arguments) = &scheme.signature.result else {
         return Ok(None);
@@ -10238,7 +10243,9 @@ fn infer_active_result(
     }
     let mut checker = Checker::new(module, names, types, signatures, classes);
     checker.type_parameters = scheme.variables.clone();
-    checker.kinds = classes.constraint_kinds(&function.constraints, module, names)?;
+    checker.kinds = classes
+        .constraint_kinds(&function.constraints, module, names)
+        .map_err(|error| vec![error])?;
     checker.members = scheme.members.clone();
     for (parameter, ty) in function.parameters.iter().zip(&scheme.signature.parameters) {
         checker.bind(&parameter.name, ty.clone(), parameter.mutable);
@@ -10252,11 +10259,21 @@ fn infer_active_result(
     );
     checker.use_active_result(&result, active);
     let mut source = function.body.clone();
-    computation::expand(&mut source, names, module)?;
-    let mut body = checker.expression(&source, Some(&result))?;
-    checker.finish(&mut body)?;
+    computation::expand(&mut source, names, module).map_err(|error| vec![error])?;
+    checker.recovering = true;
+    let body = checker.expression(&source, Some(&result));
+    let mut errors = std::mem::take(&mut checker.recovered);
+    let mut body = match body {
+        Ok(body) if errors.is_empty() => body,
+        Ok(_) => return Err(errors),
+        Err(error) => {
+            errors.push(error);
+            return Err(errors);
+        }
+    };
+    checker.finish(&mut body).map_err(|error| vec![error])?;
     let result = checker.inference.resolve(&result);
-    validate_size(&result, &types, function.result.span)?;
+    validate_size(&result, &types, function.result.span).map_err(|error| vec![error])?;
     Ok(Some(result))
 }
 
