@@ -7515,6 +7515,12 @@ impl Names {
                             "; write '{}::{path}' for the standard library's case",
                             crate::stdlib::NAMESPACE
                         ));
+                    } else if qualified_builtin(path).is_some() {
+                        // E20: `Mutex.create` beside the requester's own `union Mutex`.
+                        error.message.push_str(&format!(
+                            "; write '{}::{path}' for the standard library's function",
+                            crate::stdlib::NAMESPACE
+                        ));
                     }
                     error
                 });
@@ -7551,7 +7557,13 @@ impl Names {
                 }
                 _ => self.union_case(requester, module, union, name, span),
             }
-        } else if self.unions.contains_key(&format!("{requester}.{prefix}")) {
+        } else if self.unions.contains_key(&format!("{requester}.{prefix}"))
+            && source
+                .rsplit_once('.')
+                .is_some_and(|(written, _)| written == prefix)
+        {
+            // The requester's own `Union.Case` only as written bare: `std::DataChannel.bounded`
+            // names the std module, whose function or builtin the caller then finds (E20).
             self.union_case(requester, requester, prefix, name, span)
         } else {
             Ok(None)
@@ -12315,6 +12327,17 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether `name` written bare before `.member` in a value position would not name a module:
+    /// a local binding of the name, or a union of this module with the name, whose cases
+    /// `Names::case_path` finds first for a bare `name.member` (E18 D2, E19, E20).
+    fn takes_bare_module(&self, name: &str) -> bool {
+        self.local(name).is_some()
+            || self
+                .names
+                .unions
+                .contains_key(&format!("{}.{name}", self.module))
+    }
+
     /// E19: for a call of the builtin `Channel.send` or `Channel.recv`, whether `DataChannel`
     /// written bare (no local binding has the name here) and written `std::DataChannel` name the
     /// std module from this module. The hint that rewrites an old `Channel.send` given an end of a
@@ -12327,7 +12350,7 @@ impl<'a> Checker<'a> {
         if !matches!(instance.builtin.name(), "Channel.send" | "Channel.recv") {
             return None;
         }
-        let bare = self.local("DataChannel").is_none()
+        let bare = !self.takes_bare_module("DataChannel")
             && self
                 .names
                 .names_std_module(self.module, "DataChannel", "DataChannel");
@@ -13507,7 +13530,7 @@ impl<'a> Checker<'a> {
                         &spelled,
                         &field.text,
                         whole,
-                        &|name| self.local(name).is_some(),
+                        &|name| self.takes_bare_module(name),
                     ) {
                         // Recovery checks the name that replaced it, so that one analysis finds
                         // every use of the old names and `tsuzuri fix` moves a program in a round.

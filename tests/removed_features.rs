@@ -1461,3 +1461,32 @@ fn the_counts_follow_only_the_calls_that_the_rewrite_turns_into_e1040() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn a_union_named_like_the_replacement_module_makes_the_fix_say_std() {
+    // E20: the module's own `union DataChannel` takes a bare `DataChannel.bounded` (its cases come
+    // first), so the certain fixes of `Channel.bounded` and of an old `Channel.recv` write
+    // `std::DataChannel`, which names the std module, and the fixed programs check.
+    for (source, replacement) in [
+        (
+            "union DataChannel = Open | Closed\n\nlet pair: (std::DataChannel.Sender<i64> * std::DataChannel.Receiver<i64>) = Channel.bounded 3\n0\n",
+            "std::DataChannel.bounded",
+        ),
+        (
+            "union DataChannel = Open | Closed\n\ndef f :: own std::DataChannel.Receiver<i64> -> i64\nfn f receiver =\n    match Channel.recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n0\n",
+            "std::DataChannel.recv",
+        ),
+    ] {
+        let error = analyze(source).expect_err(source);
+        assert_eq!(error.code, "E1040", "{source}\n{}", error.message);
+        let edit = &error.fixes[0].edits[0];
+        assert_eq!(edit.text, replacement, "{source}");
+        let fixed = format!(
+            "{}{}{}",
+            &source[..edit.span.start],
+            edit.text,
+            &source[edit.span.end..]
+        );
+        analyze(&fixed).unwrap_or_else(|e| panic!("{fixed}\n{}: {}", e.code, e.message));
+    }
+}

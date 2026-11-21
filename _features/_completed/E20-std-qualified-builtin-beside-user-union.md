@@ -7,7 +7,7 @@
 | 規模 | S〜M（`src/check.rs` の値の名前の解決、回帰テスト、`E1040` の修正案の確かめ（E18 D2・E19）への影響の確認） |
 | 依存 | E19（done） |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（E19 の PR のレビューで見つかった、E19 より前からある不具合。`main` の `69645da3` と E19 のブランチで再現） |
 | 承認 | 不要（`std::` で修飾した名前を std のモジュールに解決する、名前の解決の直し） |
 | 改善する劣位 | 不具合: `union DataChannel = Open \| Closed` を宣言したモジュールで `std::DataChannel.bounded 3` と書くと、`E1002: union 'Main.DataChannel' has no case 'bounded'` になる |
@@ -23,8 +23,8 @@
 | `union DataChannel = Open \| Closed` | `std::DataChannel.bounded 3`（型注釈 `std::DataChannel.Sender<i64> * …`） | `E1002: union 'Main.DataChannel' has no case 'bounded'` |
 | 同上 | `std::DataChannel.clone_sender sender` | `E1002: … has no case 'clone_sender'` |
 | `union Channel = Open \| Closed` | `std::Channel.make 1` | `E1002: union 'Main.Channel' has no case 'make'` |
-| `union Mutex = Locked \| Free` | `std::Mutex.new 1` | `E1002: union 'Main.Mutex' has no case 'new'` |
-| `union Atomic = A \| B` | `std::Atomic.new 1` | `E1002: union 'Main.Atomic' has no case 'new'` |
+| `union Mutex = Locked \| Free` | `std::Mutex.create 1` | `E1002: union 'Main.Mutex' has no case 'create'`（起票時の表は `new` と書いたが、`Mutex.new` という関数はない。共用体のない `std::Mutex.new` は `module 'std::Mutex' has no function or union case 'new'`） |
+| `union Atomic = A \| B` | `std::Atomic.create 1` | `E1002: union 'Main.Atomic' has no case 'create'`（同上、`new` はない） |
 | `union Path = Here \| There` | `std::Path.join "a" "b"` | 通る（std の `.tz` の関数） |
 | `union Routine = Idle \| Busy` | `std::Routine.scope (ref base) 4 (…)` | 通る |
 
@@ -46,3 +46,13 @@ E18 の D2 と E19 は、`E1040` の確かな修正案の置き換え（`DataCha
 - [ ] 上の表の `std::` を付けた呼び出しが、std の関数に解決して通る。
 - [ ] 裸の `M.member` の解決（利用者の共用体のケースが先）は変わらない。
 - [ ] 同じ名前の共用体の隣の `E1040` の確かな修正案が、直したプログラムが通る書き方になる。
+
+## 実装と検証（2026-11-22）
+
+`main` `fe5c68bf` で着手した。
+
+- 原因: `case_reference` は、`Module.member` が見える関数（std の `.tz` の関数を含む）を名指すときは共用体のケースを探さないが、組み込み関数（`DataChannel.bounded`・`Channel.make`・`Mutex.create`・`Atomic.create`）は関数の表にないので `Names::case_path` に進む。`case_path` の最後の分岐は、モジュール（std の `DataChannel` など）にその名前のケースがないとき、参照元の同名の共用体のケースへ戻っていた。書いた名前が `std::DataChannel` でも戻っていたのが不具合。
+- 直し（`src/check.rs`）: その分岐を、書いた名前がモジュールの名前そのもの（裸）のときだけにした。`std::M.member` は `None` を返し、呼び出し側が std の組み込み関数を見つける。裸の `M.member` は今までどおり参照元の共用体のケースが先（「プログラムの定義が勝つ」）。参照元の共用体に取られて std の組み込み関数に届かない裸の名前は、`E1002` の文に `write 'std::Mutex.create' for the standard library's function` を足す（std のケースのときの `for the standard library's case` と同じ形）。
+- E18 D2・E19: 値の位置の裸の置き換えの確かめを `Checker::takes_bare_module`（同じ名前のローカルの束縛か、参照元の同名の共用体）にまとめた。自前の `union DataChannel` があるモジュールの `Channel.bounded`・旧い `Channel.recv` の修正案は `std::DataChannel.bounded`・`std::DataChannel.recv` になり、直したプログラムが通る（以前は裸の名前で、`tsuzuri fix` は `E2008` で止まった）。
+- テスト: `tests/modules.rs`（上の表の `std::` の呼び出しがすべて通ること、`std::Path.join` も、裸の `Mutex.create` の `E1002` と案内）、`tests/removed_features.rs` の `a_union_named_like_the_replacement_module_makes_the_fix_say_std`。
+- 文書: `union.md`、`compiler/diagnostics.md`（`E1040`）、`docs/language.md`、`docs/architecture.md`。

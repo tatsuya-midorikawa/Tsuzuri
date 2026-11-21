@@ -1107,7 +1107,26 @@ checked (std::Result.Ok 40) + local.value + std::Owned.call (ref work) () + valu
         ("Other.tz", "def value :: Maybe<i64> = Maybe.Some 1\n"),
     ])
     .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    // E20: a builtin of a std module written with `std::` is the builtin beside the requester's
+    // own union of the module's name, as a std function (`std::Path.join`) already was.
+    for source in [
+        "union DataChannel = Open | Closed\nlet pair: (std::DataChannel.Sender<i64> * std::DataChannel.Receiver<i64>) = std::DataChannel.bounded 3\n0",
+        "union DataChannel = Open | Closed\ndef f :: ref std::DataChannel.Sender<i64> -> i64\nfn f sender = {\n    let _other = std::DataChannel.clone_sender sender;\n    0\n}\n0",
+        "union Channel = Open | Closed\nlet ch: std::Channel<i64> = std::Channel.make 1\n0",
+        "union Mutex = Locked | Free\nlet m = std::Mutex.create 1\n0",
+        "union Atomic = Low | High\nlet a = std::Atomic.create 1\n0",
+        "union Path = Here | There\nlet p = std::Path.join \"a\" \"b\"\n0",
+    ] {
+        analyze_modules(&[("Main.tz", source)])
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    }
     for (source, code, message) in [
+        // The bare name is still the requester's union, with a hint at the builtin (E20).
+        (
+            "union Mutex = Locked | Free\nlet m = Mutex.create 1\n0",
+            "E1002",
+            "union 'Main.Mutex' has no case 'create'; write 'std::Mutex.create' for the standard library's function",
+        ),
         (
             "union Maybe = None | Some of i64\nlet x: std::Maybe<i64> = Maybe.Some 4\n0",
             "E1003",
