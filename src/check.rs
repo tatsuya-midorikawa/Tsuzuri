@@ -12078,11 +12078,13 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Binds the parameters of `function` with the types of `scheme`, as its body sees them: a
-    /// `mut` parameter and a parameter that edition 2027 reads by default (`reads`, by index) are
-    /// read through their reference where the body uses the value (`read_value_parameters`,
-    /// `default_reads`). The body of every function and the result inference of a multi-case
-    /// active pattern (A36) share it.
+    /// Binds the parameters of `function` with the types of `scheme`, as its body sees them. A
+    /// `mut` parameter, and a parameter that `reads` marks (the default reads of edition 2027, the
+    /// borrows of `pure def`, the reads of a class) whose type reaches a type variable or a
+    /// function, are read through their reference where the body uses the value
+    /// (`read_value_parameters`), unless an A32 annotation in the body asks for the reference.
+    /// Every parameter that `reads` marks gets the hint of `default_reads`. The body of every
+    /// function and the result inference of a multi-case active pattern (A36) share it.
     fn bind_function_parameters(
         &mut self,
         function: &FunctionDecl,
