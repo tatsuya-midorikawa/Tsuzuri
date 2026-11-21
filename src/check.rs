@@ -10106,8 +10106,9 @@ fn root_noncanonical(
 
 /// The result type of a multi-case active pattern whose declared result is `'T`: its body
 /// checked against the union of its cases with fresh arguments. The body is checked with recovery,
-/// like the body of any function (G44), so one analysis reports every error in it; with an error,
-/// the caller poisons the signature and the body is not checked again.
+/// like the body of any function (G44), so one analysis reports every error that checking its
+/// expressions finds; with an error, `finish` (format specs and the other deferred checks) is
+/// skipped, the caller poisons the signature and the body is not checked again.
 fn infer_active_result(
     module: &str,
     function: &FunctionDecl,
