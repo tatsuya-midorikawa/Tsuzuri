@@ -631,7 +631,7 @@ fn every_facts_row_is_found_through_its_node() {
             ),
             (
                 "Main.tz",
-                "def main :: unit -> i32 = \\() ->\n    do! IO.write_line (Lib::Util.twice 21)\n    0\n",
+                "def main :: unit -> i32 = \\() ->\n    do! IO.writeln (Lib::Util.twice 21)\n    0\n",
             ),
             (
                 "helper/Tsuzuri.toml",

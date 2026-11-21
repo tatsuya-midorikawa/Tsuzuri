@@ -47,27 +47,27 @@ def main :: unit -> i32 = \() ->
     let! _ = Dir.remove (copy root + "/a")
     let! _ = Dir.remove (copy root)
     let! created = Dir.create (copy root)
-    do! IO.write_line (kind_of created)
+    do! IO.writeln (kind_of created)
     let! again = Dir.create (copy root)
-    do! IO.write_line (kind_of again)
+    do! IO.writeln (kind_of again)
     let! _inner = Dir.create (copy root + "/a")
     let! _z = File.write_text (copy root + "/Z.txt") "z"
     let! _x = File.write_text (copy root + "/a/x.txt") "x"
     let! _b = File.write_text (copy root + "/b.txt") "b"
     let! listed = Dir.list (copy root)
-    do! IO.write_line (names_of listed)
+    do! IO.writeln (names_of listed)
     let! walked = Dir.walk (copy root)
-    do! IO.write_line (names_of walked)
+    do! IO.writeln (names_of walked)
     let! full = Dir.remove (copy root)
-    do! IO.write_line (kind_of full)
+    do! IO.writeln (kind_of full)
     let! nested = Dir.create "/tmp/tsuzuri-doc-dir-missing/inner"
-    do! IO.write_line (kind_of nested)
+    do! IO.writeln (kind_of nested)
     let! _ = File.remove (copy root + "/a/x.txt")
     let! _ = File.remove (copy root + "/Z.txt")
     let! _ = File.remove (copy root + "/b.txt")
     let! _ = Dir.remove (copy root + "/a")
     let! removed = Dir.remove (copy root)
-    do! IO.write_line (kind_of removed)
+    do! IO.writeln (kind_of removed)
     0
 ```
 

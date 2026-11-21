@@ -38,13 +38,13 @@ def main :: unit -> i32 = \() ->
     do! IO.write (show first)
     let! _appended = File.append_text (copy path) "world"
     let! both = File.read_text (copy path)
-    do! IO.write_line (show both)
+    do! IO.writeln (show both)
     let! removed = File.remove (copy path)
-    do! IO.write_line (match removed with
+    do! IO.writeln (match removed with
         | Result.Ok _ -> "removed"
         | Result.Error error -> Os.message (ref error))
     let! missing = File.read_text (copy path)
-    do! IO.write_line (show missing)
+    do! IO.writeln (show missing)
     0
 ```
 
@@ -75,20 +75,20 @@ def main :: unit -> i32 = \() ->
     let! _ = File.remove (copy path)
     let! _bom = File.write_bytes (copy path) [239ubyte, 187ubyte, 191ubyte, 65ubyte]
     let! text = File.read_text (copy path)
-    do! IO.write_line (match text with
+    do! IO.writeln (match text with
         | Result.Ok value -> to_string (value[0] == 65279i16u) + " " + to_string value.length
         | Result.Error error -> Os.message (ref error))
     let! _raw = File.write_bytes (copy path) [255ubyte]
     let! bad = File.read_text (copy path)
-    do! IO.write_line (match bad with
+    do! IO.writeln (match bad with
         | Result.Ok _ -> "unexpected"
         | Result.Error error -> Os.message (ref error))
     let! bytes = File.read_bytes (copy path)
-    do! IO.write_line (match bytes with
+    do! IO.writeln (match bytes with
         | Result.Ok data -> to_string data.length
         | Result.Error error -> Os.message (ref error))
     let! meta = File.metadata (copy path)
-    do! IO.write_line (match meta with
+    do! IO.writeln (match meta with
         | Result.Ok info ->
             match info.kind with
             | File.Regular -> "file " + to_string info.size
@@ -97,7 +97,7 @@ def main :: unit -> i32 = \() ->
             | File.Other -> "other"
         | Result.Error error -> Os.message (ref error))
     let! removed = File.remove (copy path)
-    do! IO.write_line (match removed with
+    do! IO.writeln (match removed with
         | Result.Ok _ -> "removed"
         | Result.Error error -> Os.message (ref error))
     0
@@ -156,20 +156,20 @@ def main :: unit -> i32 = \() ->
     let! _ = File.remove (copy path)
     let! outcome = File.with_open (copy path) File.Write (\handle ->
         File.write handle [104ubyte, 105ubyte])
-    do! IO.write_line (match outcome with
+    do! IO.writeln (match outcome with
         | Result.Ok (Result.Ok _) -> "wrote"
         | Result.Ok (Result.Error error) -> Os.message (ref error)
         | Result.Error error -> Os.message (ref error))
     let! text = File.read_text (copy path)
-    do! IO.write_line (match text with
+    do! IO.writeln (match text with
         | Result.Ok value -> value
         | Result.Error error -> Os.message (ref error))
     let! again = File.open (copy path) File.CreateNew
-    do! IO.write_line (match again with
+    do! IO.writeln (match again with
         | Result.Ok _ -> "unexpected"
         | Result.Error error -> Os.message (ref error))
     let! removed = File.remove (copy path)
-    do! IO.write_line (match removed with
+    do! IO.writeln (match removed with
         | Result.Ok _ -> "removed"
         | Result.Error error -> Os.message (ref error))
     0

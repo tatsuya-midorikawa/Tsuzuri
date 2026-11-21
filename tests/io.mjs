@@ -79,13 +79,16 @@ function interactive(args) {
 }
 
 try {
-  writeFileSync(source, `let _unused = IO.write_line "must not run"
-let _unread = IO.read_line ()
+  writeFileSync(source, `let _unused = IO.writeln "must not run"
+let _unread = IO.readln ()
+let _untried = IO.try_readln ()
+let _unreported = IO.try_write_errln "must not run"
 IO {
     do! IO.write "Name: "
-    let! line = IO.read_line ()
-    do! IO.write_line (Maybe.default_value "<eof>" line)
-    do! IO.write_error_line "note"
+    let! line = IO.readln ()
+    do! IO.writeln (Maybe.default_value "<eof>" line)
+    do! IO.write_err "no"
+    do! IO.write_errln "te"
 }
 `);
   const input = "hello\0\u65e5\u672c\ud83d\ude00\r\n";
@@ -199,8 +202,8 @@ int main(void) {
 
   writeFileSync(source, `IO {
     for _index in [0, 1, 2, 3, 4] do {
-        let! line = IO.read_line ()
-        do! IO.write_line (Maybe.default_value "<eof>" line)
+        let! line = IO.readln ()
+        do! IO.writeln (Maybe.default_value "<eof>" line)
     }
 }
 `);
@@ -208,33 +211,55 @@ int main(void) {
     assert.equal(execute(compiler, ["run", source, optimization], { input: "first\r\n\nlast" }).stdout, "first\n\nlast\n<eof>\n<eof>\n");
   }
 
-  writeFileSync(source, `IO {
-    let! input = IO.try_read_line ()
-    do! IO.write_error_line (match input with
+  // Every try_ writer: an isolated surrogate is InvalidEncoding and writes nothing, a write to a
+  // closed standard output is WriteFailed, and the standard error writers are not affected by it.
+  writeFileSync(source, `def report :: Result<unit, IO.Error> -> string
+fn report result = match result with
+    | Result.Ok _ -> "written"
+    | Result.Error IO.InvalidEncoding -> "encoding"
+    | Result.Error IO.WriteFailed -> "write-failed"
+    | Result.Error IO.ReadFailed -> "read-failed"
+IO {
+    let! input = IO.try_readln ()
+    do! IO.write_errln (match input with
         | Result.Ok Maybe.None -> "eof"
         | Result.Ok (Maybe.Some text) -> "line:" + text
         | Result.Error IO.InvalidEncoding -> "encoding"
         | Result.Error _ -> "read-failed")
     let! invalid = IO.try_write "\\uD800"
-    do! IO.write_error_line (match invalid with | Result.Error IO.InvalidEncoding -> "encoding" | _ -> "unexpected")
+    do! IO.write_errln (report invalid)
     let! output = IO.try_write "ok"
-    do! IO.write_error_line (match output with | Result.Error IO.WriteFailed -> "write-failed" | _ -> "written")
+    do! IO.write_errln (report output)
+    let! invalid_line = IO.try_writeln "\\uDC00"
+    do! IO.write_errln (report invalid_line)
+    let! line = IO.try_writeln "!"
+    do! IO.write_errln (report line)
+    let! invalid_err = IO.try_write_err "\\uD800x"
+    do! IO.write_errln (report invalid_err)
+    let! err = IO.try_write_err "err:"
+    do! IO.write_errln (report err)
+    let! invalid_errln = IO.try_write_errln "x\\uDFFF"
+    do! IO.write_errln (report invalid_errln)
+    let! errln = IO.try_write_errln "errln"
+    do! IO.write_errln (report errln)
 }
 `);
+  const reports = (read, stdout) => `${read}\nencoding\n${stdout}\nencoding\n${stdout}\nencoding\nerr:written\nencoding\nerrln\nwritten\n`;
   for (const optimization of ["-O0", "-O3"]) {
     const executable = join(root, `errors${optimization}`);
     execute(compiler, ["build", source, optimization, "-o", executable]);
     for (const bytes of [Buffer.from([0x80, 10]), Buffer.from([0xc0, 0xaf, 10]), Buffer.from([0xed, 0xa0, 0x80, 10]), Buffer.from([0xf0, 0x90])]) {
       const result = execute(executable, [], { input: bytes });
-      assert.equal(result.stdout, "ok");
-      assert.equal(result.stderr, "encoding\nencoding\nwritten\n");
+      assert.equal(result.stdout, "ok!\n");
+      assert.equal(result.stderr, reports("encoding", "written"));
     }
-    assert.equal(execute(executable, [], { input: "" }).stderr, "eof\nencoding\nwritten\n");
+    assert.equal(execute(executable, [], { input: "" }).stderr, reports("eof", "written"));
+    assert.equal(execute(executable, [], { input: "fine\r\n" }).stderr, reports("line:fine", "written"));
     const writeOnly = openSync(join(root, "write-only"), "w");
     const readOnly = openSync(source, "r");
     try {
       const result = execute(executable, [], { stdio: [writeOnly, readOnly, "pipe"] });
-      assert.equal(result.stderr, "read-failed\nencoding\nwrite-failed\n");
+      assert.equal(result.stderr, reports("read-failed", "write-failed"));
     } finally {
       closeSync(writeOnly);
       closeSync(readOnly);
@@ -242,13 +267,15 @@ int main(void) {
     const wasm = join(root, `errors${optimization}.wasm`);
     execute(compiler, ["build", source, "--target", "wasm32", optimization, "-o", wasm]);
     const module = new WebAssembly.Module(readFileSync(wasm));
-    for (const [lines, options, expected] of [
-      [[], {}, "eof\nencoding\nwritten\n"],
-      [[Buffer.from([0x80])], {}, "encoding\nencoding\nwritten\n"],
-      [[], { readFailure: true, writeFailure: true }, "read-failed\nencoding\nwrite-failed\n"],
+    for (const [lines, options, stdout, expected] of [
+      [[], {}, "ok!\n", reports("eof", "written")],
+      [["fine"], {}, "ok!\n", reports("line:fine", "written")],
+      [[Buffer.from([0x80])], {}, "ok!\n", reports("encoding", "written")],
+      [[], { readFailure: true, writeFailure: true }, "", reports("read-failed", "write-failed")],
     ]) {
       const result = host(module, lines, options);
       assert.equal(result.instance.exports.tsuzuri_main(), 0);
+      assert.equal(result.stdout, stdout);
       assert.equal(result.stderr, expected);
     }
   }
@@ -262,7 +289,7 @@ IO {
     for number in [first, second, third] do do! IO.write number
     let! left = IO.pure 5
     and! right = IO.pure 6
-    do! IO.write_line (left + right)
+    do! IO.writeln (left + right)
 }
 `);
   for (const optimization of ["-O0", "-O3"]) {
@@ -273,10 +300,47 @@ IO {
     assert.equal(result.instance.exports.tsuzuri_main(), 0);
     assert.equal(result.stdout, "2334411\n");
   }
-  writeFileSync(source, "IO { let! line = IO.read_line (); do! IO.write_line (Maybe.default_value \"\" line) }\n");
+  writeFileSync(source, "IO { let! line = IO.readln (); do! IO.writeln (Maybe.default_value \"\" line) }\n");
   const trapped = execute(compiler, ["run", source, "--json"], { input: Buffer.from([0xff, 10]) }, false);
   assert.equal(trapped.status, 1);
   assert.equal(JSON.parse(trapped.stderr.trim()).code, "E2005");
+
+  // The writers without try_ trap where their try_ form gives an Error (an isolated surrogate; for
+  // write and writeln also a closed standard output), after what they wrote before is out.
+  for (const [name, stdout, stderr] of [["write", "x", ""], ["writeln", "x\n", ""], ["write_err", "", "x"], ["write_errln", "", "x\n"]]) {
+    writeFileSync(source, `IO {
+    do! IO.${name} "x"
+    do! IO.${name} "\\uD800"
+    do! IO.writeln "unreachable"
+}
+`);
+    for (const optimization of ["-O0", "-O3"]) {
+      const executable = join(root, `trap-${name}${optimization}`);
+      execute(compiler, ["build", source, optimization, "-o", executable]);
+      const native = execute(executable, [], {}, false);
+      assert.notEqual(native.status, 0, name);
+      assert.equal(native.stdout, stdout, name);
+      assert.equal(native.stderr, stderr, name);
+      const readOnly = openSync(source, "r");
+      try {
+        const closed = execute(executable, [], { stdio: ["pipe", readOnly, "pipe"] }, false);
+        assert.notEqual(closed.status, 0, `${name} closed stdout`);
+        assert.equal(closed.stderr, stderr, `${name} closed stdout`);
+      } finally {
+        closeSync(readOnly);
+      }
+      const wasm = `${executable}.wasm`;
+      execute(compiler, ["build", source, "--target", "wasm32", optimization, "-o", wasm]);
+      const module = new WebAssembly.Module(readFileSync(wasm));
+      for (const [options, expectedStdout] of [[{}, stdout], [{ writeFailure: true }, ""]]) {
+        const result = host(module, [], options);
+        assert.throws(() => result.instance.exports.tsuzuri_main(), WebAssembly.RuntimeError, `${name} WASM ${optimization}`);
+        assert.equal(result.stdout, expectedStdout, `${name} WASM ${optimization}`);
+        assert.equal(result.stderr, stderr, `${name} WASM ${optimization}`);
+      }
+    }
+  }
+  console.log("IO: try_ writers give InvalidEncoding/WriteFailed and the trapping writers trap on native/WASM -O0/-O3");
 
   writeFileSync(join(root, "Gate.tc"), `union Value<'a> = Stop of string | Next of 'a
 def Return :: own 'a -> Value<'a>
@@ -346,43 +410,43 @@ fn functions =
     Maybe.get (Gate.forwarded (Some 41))
 `);
   const implicitCases = [
-    ["read", `let! line = IO.read_line ()
+    ["read", `let! line = IO.readln ()
 let! value = line
-do! IO.write_line value
-do! IO.write_line "done"
+do! IO.writeln value
+do! IO.writeln "done"
 `, "hello\ndone\n", ""],
     ["result", `def gather :: IO<Result<Maybe<string>, IO.Error>>
 fn gather =
-    let! result = IO.try_read_line ()
+    let! result = IO.try_readln ()
     let! option = result
     let! text = option
     return text
 let! result = gather()
-do! IO.write_line (match result with
+do! IO.writeln (match result with
     | Ok (Some text) -> text
     | Ok None -> "eof"
     | Error _ -> "failed")
 `, "hello\n", "eof\n"],
     ["custom", `def gather :: IO<Gate.Value<Maybe<unit>>>
 fn gather =
-    let! line = IO.read_line ()
+    let! line = IO.readln ()
     let source = if Maybe.is_none (ref line) then Gate.Stop "stopped" else Gate.Next line
     let! option = source
     let! text = option
-    do! IO.write_line text
+    do! IO.writeln text
     return ()
 let! result = gather()
-do! IO.write_line (match result with | Gate.Stop message -> message | Gate.Next _ -> "done")
+do! IO.writeln (match result with | Gate.Stop message -> message | Gate.Next _ -> "done")
 `, "hello\ndone\n", "stopped\n"],
-    ["drop", `let! line = IO.read_line ()
+    ["drop", `let! line = IO.readln ()
 let! text = line
 return new [text]
 `, "", ""],
-    ["functions", `let! line = IO.read_line ()
+    ["functions", `let! line = IO.readln ()
 let! option = Helpers.echo (IO.pure line)
 let! text = option
-do! IO.write_line text
-do! IO.write_line (Helpers.functions())
+do! IO.writeln text
+do! IO.writeln (Helpers.functions())
   `, "hello\n378\n", ""],
   ];
   for (const [name, text, successOutput, eofOutput] of implicitCases) {

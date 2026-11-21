@@ -8,5 +8,5 @@ def rec sum :: own i64 -> own i64 -> i64 = \n total ->
 export def answer :: i64 = sum 100 0
 
 def main :: own unit -> i32 = \() ->
-    do! IO.write_line (answer())
+    do! IO.writeln (answer())
     0

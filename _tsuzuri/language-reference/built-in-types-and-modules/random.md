@@ -19,19 +19,19 @@ Tsuzuri には 2 種類の乱数機構があります。OS が提供する暗号
 ```tsuzuri run=empty:0%0Asample:4%0Ainvalid%20input%0Aword
 def main :: unit -> i32 = \() ->
     let! empty = Random.bytes 0
-    do! IO.write_line (match empty with
+    do! IO.writeln (match empty with
         | Result.Ok bytes -> "empty:" + to_string bytes.length
         | Result.Error error -> Os.message (ref error))
     let! sample = Random.bytes 4
-    do! IO.write_line (match sample with
+    do! IO.writeln (match sample with
         | Result.Ok bytes -> "sample:" + to_string bytes.length
         | Result.Error error -> Os.message (ref error))
     let! negative = Random.bytes (-1)
-    do! IO.write_line (match negative with
+    do! IO.writeln (match negative with
         | Result.Ok _ -> "unexpected"
         | Result.Error error -> Os.message (ref error))
     let! word = Random.next_u64 ()
-    do! IO.write_line (match word with
+    do! IO.writeln (match word with
         | Result.Ok _ -> "word"
         | Result.Error error -> Os.message (ref error))
     0
@@ -61,7 +61,7 @@ OS の乱数を実行して得る値まで純粋とするものではなく、`b
 ```tsuzuri run=2707161783%202068313097%0Atrue%0A11627171325034361865
 def main :: unit -> i32 = \() ->
     let generator = Random.pcg 42i64u 54i64u
-    do! IO.write_line (match Random.pcg_next_u32 generator with
+    do! IO.writeln (match Random.pcg_next_u32 generator with
         | (first, next) ->
             match Random.pcg_next_u32 next with
             | (second, _) -> to_string first + " " + to_string second)
@@ -70,9 +70,9 @@ def main :: unit -> i32 = \() ->
         | (value, _) -> value
     let again = match Random.pcg_next_u32 same with
         | (value, _) -> value
-    do! IO.write_line (to_string (repeated == again))
+    do! IO.writeln (to_string (repeated == again))
     let wide = Random.pcg 42i64u 54i64u
-    do! IO.write_line (match Random.pcg_next_u64 wide with
+    do! IO.writeln (match Random.pcg_next_u64 wide with
         | (value, _) -> to_string value)
     0
 ```

@@ -1,8 +1,8 @@
 {"rel":"calls","from":"Acme::Shop::Cart.total","to":"Acme::Shop::Cart.line_total","args":["ref"],"span":{"path":"Cart.tz","start":434,"end":444,"line":14,"column":21}}
 {"rel":"calls","from":"Acme::Shop::Main.main","to":"Acme::Shop::Report.print_total","args":["ref"],"span":{"path":"Main.tz","start":127,"end":145,"line":5,"column":5}}
-{"rel":"calls","from":"Acme::Shop::Report.print_total","to":"Acme::Shop::Cart.total","args":["ref"],"span":{"path":"Report.tz","start":113,"end":123,"line":6,"column":24}}
-{"rel":"calls","from":"Acme::Shop::Report.print_total","to":"IO.run","args":["copy"],"span":{"path":"Report.tz","start":98,"end":130,"line":6,"column":9}}
-{"rel":"calls","from":"Acme::Shop::Report.print_total","to":"IO.write_line","args":["copy"],"span":{"path":"Report.tz","start":98,"end":111,"line":6,"column":9}}
+{"rel":"calls","from":"Acme::Shop::Report.print_total","to":"Acme::Shop::Cart.total","args":["ref"],"span":{"path":"Report.tz","start":110,"end":120,"line":6,"column":21}}
+{"rel":"calls","from":"Acme::Shop::Report.print_total","to":"IO.run","args":["copy"],"span":{"path":"Report.tz","start":98,"end":127,"line":6,"column":9}}
+{"rel":"calls","from":"Acme::Shop::Report.print_total","to":"IO.writeln","args":["copy"],"span":{"path":"Report.tz","start":98,"end":108,"line":6,"column":9}}
 {"rel":"calls","from":"test:Acme::Shop::Cart.empty cart","to":"Acme::Shop::Cart.total","args":["ref"],"span":{"path":"Cart.tz","start":618,"end":623,"line":19,"column":29}}
 {"rel":"calls","from":"test:Acme::Shop::Cart.empty cart","to":"assert","args":["copy"],"span":{"path":"Cart.tz","start":610,"end":616,"line":19,"column":21}}
 {"rel":"calls","from":"test:Acme::Shop::Cart.line total","to":"Acme::Shop::Cart.line_total","args":["ref"],"span":{"path":"Cart.tz","start":515,"end":525,"line":18,"column":29}}

@@ -51,7 +51,7 @@ fn executables_receive_their_command_line_arguments() {
     let root = scratch("program");
     fs::write(
         root.join("Main.tz"),
-        "def main :: Array<string> -> i32 = \\args ->\n    let separator = \"][\"\n    do! IO.write_line (\"[\" + String.join (ref separator) (ref args) + \"]\")\n    args.length as i32\n",
+        "def main :: Array<string> -> i32 = \\args ->\n    let separator = \"][\"\n    do! IO.writeln (\"[\" + String.join (ref separator) (ref args) + \"]\")\n    args.length as i32\n",
     )
     .unwrap();
     for optimization in ["-O0", "-O3"] {
@@ -103,7 +103,7 @@ fn executables_receive_their_command_line_arguments() {
     // `tsuzuri run` passes no arguments and reports a nonzero exit code.
     fs::write(
         root.join("Main.tz"),
-        "def main :: unit -> i32 = \\() ->\n    do! IO.write_line \"ran\"\n    3\n",
+        "def main :: unit -> i32 = \\() ->\n    do! IO.writeln \"ran\"\n    3\n",
     )
     .unwrap();
     let run = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))

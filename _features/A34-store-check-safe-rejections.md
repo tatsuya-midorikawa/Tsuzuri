@@ -72,7 +72,7 @@ A31（[チケット](_completed/A31-in-place-writes-keep-stored-borrows.md)）�
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -91,7 +91,7 @@ fn run n =
     let b = Rc.get (ref rs[0])
     cross (ref p2) b
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `17:5` の `E1013`（`self_referential_store`、`'rs' keeps a borrow of a part of itself, ...`。注記 `a part of 'rs' is borrowed here` は `20:20` の `b`）。
@@ -104,7 +104,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -123,7 +123,7 @@ fn run n =
     let b = Rc.get (ref rs[0])
     cross (ref p2) b
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `17:5` の `E1013`（`assignment_extends_borrow`、`'p2' keeps a borrow of a value that is dropped before it, ...`）。
@@ -143,7 +143,7 @@ fn run n =
     let b = Rc.get (ref rs[0])
     crossb (Rc.get (ref rs[0])) b
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 A31 の先端は両方の edition で `22:5` の `E1013`（`self_referential_store`）、`main` は受理して `drop -1`・`1` で、ASan は heap-use-after-free です。
@@ -155,7 +155,7 @@ A31 の先端は両方の edition で `22:5` の `E1013`（`self_referential_sto
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -175,7 +175,7 @@ fn run n =
     let p2 = mkpo ()
     keep (cross (ref p2))
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `20:5` の `E1013`（`self_referential_store`、`'p2' keeps a borrow of a part of itself, ...`。注記は `21:17` の `ref p2`）。
@@ -198,7 +198,7 @@ fn run n =
     { let text = to_string n; let t = ref text; keep (Arc.share (ref a)) (\() -> String.length t) }
     let other = [to_string 777777, to_string 88888888]
     Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ()) + other.length * 0
-do! IO.write_line (to_string (run 123456789))
+do! IO.writeln (to_string (run 123456789))
 ```
 
 - A31 の先端: 両方の edition で `10:5` の `E1013`（`assignment_extends_borrow`、`assignment lets a reference outlive its owner`。注記は `10:11` の `text`）。
@@ -211,7 +211,7 @@ do! IO.write_line (to_string (run 123456789))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -231,7 +231,7 @@ fn run n =
     cross (ref p2) q1
     let _taken = p1.h
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `21:18` の `E1014`（`borrow_conflict`。注記 `value borrowed here` は `19:14` の `ref p1`、help は `stop using 'p2' first`）。
@@ -244,7 +244,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -264,7 +264,7 @@ fn run n =
     cross (ref p2) q1
     let _taken = p1.s
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `21:18` の `E1014`（`borrow_conflict`）。
@@ -275,7 +275,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -296,7 +296,7 @@ fn run n =
     let q = Rc.new (mkpo ())
     cross (Rc.get (ref q)) (ref p)
     look (ref a.s) * 0 + n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `17:5` の `E1013`（`assignment_extends_borrow`、`'r2' keeps a borrow of a value that is dropped before it, ...`。注記は、`18:9` の `p` が `r2` の後に宣言されたこと、`22:28` の `ref p`）。
@@ -309,7 +309,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -329,7 +329,7 @@ fn run n =
     let a = Rc.get (ref r)
     cross a (ref p)
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `17:5` の `E1013`（`assignment_extends_borrow`）。
@@ -346,7 +346,7 @@ A31 の Copilot のレビューの後のレビューの第6回（[A31 のチケ�
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -374,7 +374,7 @@ fn run n =
     let o = Rc.new (mkother 3)
     crossother (Rc.get (ref o)) (ref p)
     look (ref a.s) * 0 + n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `24:5` の `E1013`（`assignment_extends_borrow`）。第5回の先端と第4回の先端も同じです。
@@ -386,7 +386,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -413,7 +413,7 @@ fn run n =
     let a = Rc.get (ref h.other)
     crossother a (ref p)
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `24:5` の `E1013`（`assignment_extends_borrow`）。
@@ -435,7 +435,7 @@ class OtherOf<'value> {
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -471,7 +471,7 @@ fn run n =
     let o = Rc.new (mkother 3)
     crossother (Rc.get (ref o)) (ref p)
     a.n * 0 + n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `32:5` の `E1013`（`assignment_extends_borrow`）。第5回の先端と第4回の先端は受理します。
@@ -482,7 +482,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -517,7 +517,7 @@ fn run n =
     let a = Rc.get (Cls.LeafOf.leaf (ref h.d))
     crossleaf a (ref p)
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `32:5` の `E1013`（`assignment_extends_borrow`）。
@@ -528,7 +528,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -565,7 +565,7 @@ fn run n =
     let o = Rc.new (mkother 3)
     crossother (Rc.get (ref o)) (ref p)
     a.n * 0 + n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `33:5` の `E1013`（`assignment_extends_borrow`）。第4回の先端も拒否し、第5回の先端は受理します。
@@ -577,7 +577,7 @@ dyn の値を持つ無関係な値への書き込み（共有に dyn の値は�
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -617,7 +617,7 @@ fn run n =
     let w = WD { d: Dyn.of (Box2 { o: mkother 3 }) }
     crossother (Cls.OtherOf.other (ref w.d)) (ref p)
     look (ref a.s) * 0 + n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `36:5` の `E1013`（`assignment_extends_borrow`）。第5回の先端と第4回の先端は受理します。
@@ -630,7 +630,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -666,7 +666,7 @@ fn run n =
     crossother (Rc.get (ref o)) (ref p)
     let r3 = r2
     (Rc.get (ref r3)).n * 0 + n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `32:5` の `E1013`（`assignment_extends_borrow`、`r` が借用を持つ）。第5回の先端と第4回の先端は受理します。
@@ -679,7 +679,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -699,7 +699,7 @@ fn run n =
     let a = Rc.get (ref r)
     cross (ref p) a
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `17:5` の `E1013`（`assignment_extends_borrow`、`'p' keeps a borrow of a value that is dropped before it, ...`。注記は、`19:9` の `r` が `p` の後に宣言されたこと、`21:19` の `a`）。
@@ -712,7 +712,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -732,7 +732,7 @@ fn run n =
     let a = Rc.get (ref r)
     cross (ref p) a
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `17:5` の `E1013`（`assignment_extends_borrow`、安全な形と同じ文）。
@@ -745,7 +745,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -767,7 +767,7 @@ fn run n =
     let a = Rc.get (ref r)
     cross a (ref p)
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `19:5` の `E1013`（`self_referential_store`、`'r2' keeps a borrow of a part of itself, ...`。注記は `21:17` の `ref r2`）。
@@ -780,7 +780,7 @@ do! IO.write_line (to_string (run 1))
 ```tsuzuri
 record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
-    fn drop h = do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
 }
 def look :: ref string -> i64
 fn look t =
@@ -802,7 +802,7 @@ fn run n =
     let a = Rc.get (ref r)
     cross a (ref p)
     n
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `19:5` の `E1013`（`assignment_extends_borrow`、`'r2' keeps a borrow of a value that is dropped before it, ...`）。
@@ -819,7 +819,7 @@ record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
     fn drop h = {
         let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")];
-        do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " " + to_string junk.length)
+        do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " " + to_string junk.length)
     }
 }
 def look :: ref string -> i64
@@ -853,7 +853,7 @@ fn run n =
     let k = renew (ref mut p0) (ref out) n
     let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy"), String.repeat 4 (ref "xxxxxxxxx")]
     Mutex.with_lock (ref out.cell) (\b -> b[0] ()) + k + junk.length * 0
-do! IO.write_line (to_string (run 2))
+do! IO.writeln (to_string (run 2))
 ```
 
 - A31 の先端: 両方の edition で `28:9` の `E1014`（`borrow_conflict`。ループの中の `deref p = mkpa ()`）。前の先端（`fbd7d194`）は受理していました。前の先端の要約は `contents_elsewhere` を比べず、1 回目の反復で要約が変わらなかったので、写しの後の状態で本体を検査し直しませんでした。その修正（`df307296`）の後は、2 回目の反復の始まりの状態（入口の状態と 1 回目の反復の終わりの状態の和）が、入口の状態の `kept` の借用（`t`）と、1 回目の反復の写しの `contents_elsewhere` の根（`p`）を合わせて持ちます。`replaced_target` は根が `contents_elsewhere` にあると `kept` の借用を終わらせないので、置き換えが `t` の借用と競合します。実行では、1 回目の置き換えが `t` の借用を古い値とともに終わらせ、その後で写すのは借用を持たない新しい値の中身なので、この 2 つが同時に成り立つことはありません。
@@ -871,7 +871,7 @@ record Holder { cell: Mutex<[unit -> i64]> }
 instance Drop<Holder> {
     fn drop h = {
         let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")];
-        do! IO.write_line ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " " + to_string junk.length)
+        do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())) + " " + to_string junk.length)
     }
 }
 def look :: ref string -> i64
@@ -905,7 +905,7 @@ fn run n =
     let k = renew (ref mut p0) (ref out) n
     let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy"), String.repeat 4 (ref "xxxxxxxxx")]
     Mutex.with_lock (ref out.cell) (\b -> b[0] ()) + k + junk.length * 0
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端と前の先端: 両方の edition で `29:9` の `E1014`（`borrow_conflict`。置き換え）。
@@ -940,7 +940,7 @@ fn run n =
     let k = eat s1
     let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")]
     look t * 100 + k + junk.length * 0
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端: 両方の edition で `20:17` の `E1014`（`borrow_conflict`。`eat s1` の `s1`。注記の借用は `t`）。前の先端は受理していました。`absorb_owner` は、局所の持ち主へ借用を持つ値を格納すると、持ち主の region の slot を捨てます（`owner.regions = None`）。そのため `let t = x.b` は `x` のすべての借用（`s1` と `s2`）を持ち、`t` が生きている間の `s1` のムーブが競合します。前の先端の要約は slot を比べず、ループの後は本体の前の状態（slot がある）に戻っていました。
@@ -974,7 +974,7 @@ fn run n =
     let k = eat s3
     let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")]
     look t * 100 + k + Mutex.with_lock (ref x.c) (\b -> b[0] ()) + junk.length * 0
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端と前の先端: 両方の edition で `21:17` の `E1014`（`borrow_conflict`。`eat s3`）。
@@ -998,7 +998,7 @@ fn run n =
     let mut b = Box { cell: Mutex.create [\() -> 3] }
     let k = run2 (ref mut b) (Arc.share (ref keep)) n
     Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端（`773ea1c4` 以降）: 両方の edition で、ループの本体の `7:9` の `E1017`（`loop_ownership_limit`）。今の打ち切り（A31 のチケットの「借用の増え方による打ち切り」、`src/ownership_control.rs` の `LoanGrowth`）は、反復の借用が 3・4・6・10・18・34 個と、5 回続けて増え方が速くなった 6 回目の反復で止め、リリースビルドで 0.2 秒ほどです。`help` が止めた増え方とその数と回避の書き方（下の「受理する形」の最後）を言います。
@@ -1035,7 +1035,7 @@ fn run n =
     let keep = Arc.new (Mutex.create [\() -> 0])
     let k = run2 (ref mut b) (Arc.share (ref keep)) n
     Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
   この回のリリースビルド（`f88d8a82`）と `main`（`168ae4a5`、開発用のビルド）で 1 回ずつ検査した時間（edition 2027、負荷 4〜6 のとき。`target/wt/a31/target/scratch/a31/lg-fix/time-lagz.txt`）: 局所値 300 個に渡すだけの形 2.7 秒（`main` 0.32 秒）、500 個 7.0 秒（0.38 秒）、局所値 60 個と文 2000 個 8.5 秒（0.49 秒）、100 個と 1500 個 8.4 秒（0.45 秒）、200 個と 1000 個 9.3 秒（0.40 秒）、23 個と 3000 個 10.9 秒（0.68 秒）、150 個と 1500 個 11.2 秒（0.49 秒）、60 個と 3000 個 14.8 秒（0.79 秒）、23 個と 10000 個 83.4 秒（4.6 秒）。局所値が 9 個と文 10000 個の形は、増え方が速くなる打ち切りで止まりますが、1 回の反復が長いので 41.3 秒かかります（4.4 秒）。レビューでは、`15d84aaf` と `1b21f734` は 150 個と 1500 個を 60 秒、60 個と 3000 個を 150 秒たっても終えませんでした。
@@ -1071,7 +1071,7 @@ fn run n =
     }
     let junk = [String.repeat 4 (ref "zzzzzzzzz"), String.repeat 4 (ref "yyyyyyyyy")]
     Mutex.with_lock (Arc.get (ref keep)) (\c -> c[0] ()) + k + junk.length * 0
-do! IO.write_line (to_string (run 1))
+do! IO.writeln (to_string (run 1))
 ```
 
 - A31 の先端（`773ea1c4` 以降）: 両方の edition で、ループの本体の `12:9` の `E1017`（`loop_ownership_limit`。今の打ち切りでは、安全な形と同じく、借用が 3・4・6・10・18・34 個と 5 回続けて増え方が速くなった 6 回目の反復で止まります）。

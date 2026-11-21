@@ -71,11 +71,11 @@ mod tests {
     fn suggests_near_last_names() {
         let ids = [
             "Acme::Shop::Cart.total",
-            "IO.write_line",
+            "IO.writeln",
             "Acme::Shop::Cart.Line",
         ];
         assert_eq!(suggestions(&ids, "totl"), ["Acme::Shop::Cart.total"]);
-        assert_eq!(suggestions(&ids, "IO.writ_line"), ["IO.write_line"]);
+        assert_eq!(suggestions(&ids, "IO.writln"), ["IO.writeln"]);
         assert!(suggestions(&ids, "zzz").is_empty());
         assert_eq!(last_name("A::B.C"), "c");
         assert_eq!(last_name("A::B"), "b");

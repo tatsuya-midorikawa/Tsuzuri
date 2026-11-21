@@ -1,7 +1,7 @@
 record Ticket { id: i64 }
 
 instance Drop<Ticket> {
-    fn drop value = do! IO.write_line "drop"
+    fn drop value = do! IO.writeln "drop"
 }
 
 let a = Ticket { id: 1 }

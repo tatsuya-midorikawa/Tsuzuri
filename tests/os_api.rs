@@ -113,7 +113,7 @@ fn os_api_signatures_type_check() {
     let try_seeded: unit -> IO<Result<HashMap<i64, string>, Os.Error>> = HashMap.try_randomized
     let seeded_set: unit -> IO<HashSet<string>> = HashSet.randomized
     let try_seeded_set: unit -> IO<Result<HashSet<string>, Os.Error>> = HashSet.try_randomized
-    do! IO.write_line \"typed\"
+    do! IO.writeln \"typed\"
     0
 ",
     );
@@ -122,7 +122,7 @@ fn os_api_signatures_type_check() {
 #[test]
 fn os_builtins_declare_runtime_only_when_reached() {
     let program = module(
-        "def main :: unit -> i32 = \\() ->\n    let! bytes = File.read_bytes \"a\"\n    do! IO.write_line (Result.is_ok (&bytes))\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    let! bytes = File.read_bytes \"a\"\n    do! IO.writeln (Result.is_ok (&bytes))\n    0\n",
     );
     for wasm in [false, true] {
         let ir = ir(&program, llvm::Entry::Library, wasm);
@@ -160,7 +160,7 @@ fn seeded_hash_containers_need_no_runtime_but_randomized_ones_do() {
         assert!(!ir.contains("wasm-import-module"), "{ir}");
     }
     let randomized = module(
-        "def main :: unit -> i32 = \\() ->\n    let! map = HashMap.randomized ()\n    let map: HashMap<i64, i64> = map\n    do! IO.write_line (HashMap.length (&map))\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    let! map = HashMap.randomized ()\n    let map: HashMap<i64, i64> = map\n    do! IO.writeln (HashMap.length (&map))\n    0\n",
     );
     for wasm in [false, true] {
         let ir = ir(&randomized, llvm::Entry::Library, wasm);
@@ -171,8 +171,8 @@ fn seeded_hash_containers_need_no_runtime_but_randomized_ones_do() {
 #[test]
 fn io_only_programs_keep_their_main() {
     for source in [
-        "def main :: unit -> i32 = \\() ->\n    do! IO.write_line \"hi\"\n    0\n",
-        "do! IO.write_line \"hi\"\n",
+        "def main :: unit -> i32 = \\() ->\n    do! IO.writeln \"hi\"\n    0\n",
+        "do! IO.writeln \"hi\"\n",
     ] {
         let program = module(source);
         let console = ir(&program, llvm::Entry::Console, false);
@@ -186,7 +186,7 @@ fn io_only_programs_keep_their_main() {
 #[test]
 fn args_entry_receives_argv() {
     let program = module(
-        "def main :: unit -> i32 = \\() ->\n    let! args = Env.args ()\n    do! IO.write_line (Result.is_ok (&args))\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    let! args = Env.args ()\n    do! IO.writeln (Result.is_ok (&args))\n    0\n",
     );
     let console = ir(&program, llvm::Entry::Console, false);
     assert!(
@@ -207,7 +207,7 @@ fn args_entry_receives_argv() {
     assert!(!library.contains("define i32 @main("), "{library}");
     // `main` can take its arguments and still read `Env.args`.
     let both = module(
-        "def main :: Array<string> -> i32 = \\args ->\n    let! all = Env.args ()\n    do! IO.write_line (Result.is_ok (&all))\n    args.length as i32\n",
+        "def main :: Array<string> -> i32 = \\args ->\n    let! all = Env.args ()\n    do! IO.writeln (Result.is_ok (&all))\n    args.length as i32\n",
     );
     let console = ir(&both, llvm::Entry::Console, false);
     let entry = function(&console, "define i32 @main(i32 %argc, ptr %argv) {");
@@ -252,17 +252,17 @@ fn file_handles_are_opaque_numbers_that_actions_can_hold() {
     \\handle -> IO {
         let! first = File.close handle
         let! second = File.close handle
-        do! IO.write_line (Result.is_ok (&first))
-        do! IO.write_line (Result.is_ok (&second))
+        do! IO.writeln (Result.is_ok (&first))
+        do! IO.writeln (Result.is_ok (&second))
     }
 def main :: unit -> i32 = \\() ->
     let! opened = File.open \"a\" File.Read
-    do! IO.write_line (Result.is_ok (&opened))
+    do! IO.writeln (Result.is_ok (&opened))
     0
 ",
     );
     let program = module(
-        "def main :: unit -> i32 = \\() ->\n    let! opened = File.open \"a\" File.Read\n    do! IO.write_line (Result.is_ok (&opened))\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    let! opened = File.open \"a\" File.Read\n    do! IO.writeln (Result.is_ok (&opened))\n    0\n",
     );
     for wasm in [false, true] {
         let ir = ir(&program, llvm::Entry::Library, wasm);
@@ -277,7 +277,7 @@ def main :: unit -> i32 = \\() ->
 #[test]
 fn exit_code_entry_returns_the_value() {
     // `main`'s value is the exit code.
-    let main = module("def main :: unit -> i32 = \\() ->\n    do! IO.write_line \"x\"\n    3i32\n");
+    let main = module("def main :: unit -> i32 = \\() ->\n    do! IO.writeln \"x\"\n    3i32\n");
     assert!(llvm::exit_code_entry(&main));
     let text = ir(&main, llvm::Entry::Console, false);
     let entry = function(&text, "define i32 @main() {");
@@ -286,16 +286,16 @@ fn exit_code_entry_returns_the_value() {
     let entry = function(&library, "define i32 @tsuzuri_main()");
     assert!(entry.contains("ret i32 %code"), "{entry}");
     // So is the `i32` of top-level `IO<i32>` code.
-    let coded = module("do! IO.write_line \"x\"\nreturn 3i32\n");
+    let coded = module("do! IO.writeln \"x\"\nreturn 3i32\n");
     assert!(llvm::exit_code_entry(&coded));
     let text = ir(&coded, llvm::Entry::Console, false);
     let entry = function(&text, "define i32 @tsuzuri_main()");
     assert!(!entry.contains("ret i32 0"), "{entry}");
     assert!(entry.contains("ret i32 %"), "{entry}");
     for source in [
-        "do! IO.write_line \"x\"\nreturn 3i64\n",
-        "do! IO.write_line \"x\"\n",
-        "do! IO.write_line \"x\"\nreturn 3i32u\n",
+        "do! IO.writeln \"x\"\nreturn 3i64\n",
+        "do! IO.writeln \"x\"\n",
+        "do! IO.writeln \"x\"\nreturn 3i32u\n",
     ] {
         let plain = module(source);
         assert!(!llvm::exit_code_entry(&plain), "{source}");

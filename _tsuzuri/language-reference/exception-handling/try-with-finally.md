@@ -93,16 +93,16 @@ def step :: i8 -> string = \x ->
             @checked x * 2i8
         with
         | e ->
-            do! IO.write_line "handler"
+            do! IO.writeln "handler"
             e
         finally
-            do! IO.write_line "finally"
+            do! IO.writeln "finally"
     match outcome with
     | Ok value -> to_string value
     | Error _ -> "overflow"
 
-do! IO.write_line (step 20i8)
-do! IO.write_line (step 100i8)
+do! IO.writeln (step 20i8)
+do! IO.writeln (step 100i8)
 ```
 
 実行結果:
@@ -127,13 +127,13 @@ def step :: i8 -> string = \x ->
                 with
                 | e when false -> e
                 finally
-                    do! IO.write_line "inner finally"
+                    do! IO.writeln "inner finally"
             match inner with
             | Ok value -> value
             | Error _ -> 0i8
         with
         | e is OverflowException ->
-            do! IO.write_line "outer handler"
+            do! IO.writeln "outer handler"
             e
     match outcome with
     | Ok value -> to_string value
@@ -193,7 +193,7 @@ def safe :: i32 -> i32 -> string = \x y ->
             @checked x + y
         with
         | e is OverflowException ->
-            do! IO.write_line $"overflow: {e.msg}"
+            do! IO.writeln $"overflow: {e.msg}"
             e
     match outcome with
     | Ok value -> to_string value

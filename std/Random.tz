@@ -26,7 +26,7 @@ fn word bytes =
 ///
 /// ```tsuzuri
 /// let! sample = Random.bytes 16
-/// do! IO.write_line (match sample with
+/// do! IO.writeln (match sample with
 ///     | Result.Ok bytes -> $"{bytes.length} bytes"
 ///     | Result.Error error -> Os.message error)
 /// ```
@@ -37,7 +37,7 @@ fn bytes count = IO.map (\() -> gather count) (IO.pure ())
 ///
 /// ```tsuzuri
 /// let! word = Random.next_u64 ()
-/// do! IO.write_line (Result.default_value 0i64u word)
+/// do! IO.writeln (Result.default_value 0i64u word)
 /// ```
 def next_u64 :: own unit -> IO<Result<i64u, Os.Error>>
 fn next_u64 _unit = IO.map (\() -> word (gather 8)) (IO.pure ())

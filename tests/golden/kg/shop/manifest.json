@@ -5,7 +5,7 @@
   "project": "shop",
   "version": "0.1.0",
   "complete": true,
-  "source_hash": "335fb51f87cbad0208adf0e6cb3913637781a7d80df698359b1170ab2fcd1e28",
+  "source_hash": "865aacef0120f2001d0069afefb460131b78dd8d8962e25965b72f6b35b4274d",
   "counts": {
     "modules": 3,
     "nodes": 14,
@@ -21,7 +21,7 @@
   "modules": [
     {"name":"Acme::Shop::Cart","key":"Cart","origin":"project","path":"Cart.tz","source":"7b8e394e141b45edcd80a35e7d1f06cbffeb28b4cf5aca35c4f4b192c5ed2750"},
     {"name":"Acme::Shop::Main","key":"Main","origin":"project","path":"Main.tz","source":"d7208bd0a04aed88790357d4a0edde9cbb0b5aa25a44ea69910d70e700a1ae65"},
-    {"name":"Acme::Shop::Report","key":"Report","origin":"project","path":"Report.tz","source":"7c5a4d722b7b150685203cdf3ccb91a11ab3a14c9ea6b41d8e1ada3691f3c6cf"}
+    {"name":"Acme::Shop::Report","key":"Report","origin":"project","path":"Report.tz","source":"7237e471f39805e5e942408672a00109b96aea9268cd0fec271574b67cc90fc0"}
   ],
   "files": {
     "brief/L0.md": "5cba4d5ef823cd031a3165d004b8962d9340ec3405d9ffdf0f0c7cc7cefd0c9a",
@@ -32,12 +32,12 @@
     "brief/L2/Acme.Shop.Cart.line_total.md": "d51c9c8a026ea3860a85617c10297ac0a331c5a1da099e0f97c35a379b11092c",
     "brief/L2/Acme.Shop.Cart.total.md": "d5287b00b65dd434fd75aadfd29bbb9ca01011df22427a1c512870f00f919360",
     "brief/L2/Acme.Shop.Main.main.md": "32d82930cdcc82da72765478048b10cc1a0055830e93715e7a409c440d9ec86e",
-    "brief/L2/Acme.Shop.Report.print_total.md": "af1c77cf3d00d0ac5a651ed07ce655847871fe02da2a23ba2723d8cd3214533c",
+    "brief/L2/Acme.Shop.Report.print_total.md": "beb1967dd9ef38730328a27b66a22f3a3eb611169441ee497ff5e592a291046a",
     "diag.jsonl": "643979037675ed81476bed0ed38277c739f16afc4d6c89f1f54133f71c6615c4",
-    "edges.jsonl": "095a8d17a74d48a2c68c81fa211853fe4211627391d99f88c8627d9dc229c0e2",
+    "edges.jsonl": "50d8c135a4790e5acde4f65c87fcbdf28269037b0cb6ca2dd93e164987e19ac9",
     "facts/Cart.jsonl": "77c95057a0d895fedd428802369ae2ba52c3ce941c118cdb2a0bd256a7d57b3f",
-    "facts/Main.jsonl": "5ac35d969b7c36c4eea7c637d792e8c49dc1e53d1fe9fdec49d2abc36ca1633e",
-    "facts/Report.jsonl": "30435e7b323fd0ca40ce28d96ad47a1202d21593ed59c4c81d755fafacc51c72",
+    "facts/Main.jsonl": "ccae11c5d188b5baf11e63dc7beb6d37096fdc9d6717c89c213934da1feacdec",
+    "facts/Report.jsonl": "b15ce3067b27d756eed100216e2b366ba9d617d76d674d17cc94c163b42b4c87",
     "layout/Cart.jsonl": "bc943ed30148439196d197a8d7e59443fb684b5714a73bb2ef32219cf13145e8",
     "nodes.jsonl": "6a53090ddea39cb4feb714b971e50927cc54fa2d61aba5185e1932358de6a75a",
     "tests.jsonl": "412f96bae1f9af2f9764d4abdcd3651f4896be65935e51d0a3a6501a1312e618",

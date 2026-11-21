@@ -74,7 +74,7 @@ fn parses_local_let_rec_bindings() {
         ),
         // A body that runs IO binds.
         (
-            "def main :: unit -> i32 = \\() ->\n    let rec go = \\n -> if n == 0 then 0 else go (n - 1)\n    do! IO.write_line (to_string (go 3))\n    0\n",
+            "def main :: unit -> i32 = \\() ->\n    let rec go = \\n -> if n == 0 then 0 else go (n - 1)\n    do! IO.writeln (to_string (go 3))\n    0\n",
             (1, 0),
         ),
         // An annotation, and a lambda in parentheses.
@@ -566,7 +566,7 @@ fn local_let_rec_in_computation_expressions() {
         // The builder is the expected result type.
         "def compute :: i64 -> Maybe<i64> = \\n ->\n    let rec fib = \\k -> if k < 2 then k else fib (k - 1) + fib (k - 2)\n    let! start = Maybe.Some n\n    return fib start\nlet shown = compute 6\nshown\n",
         // The builder is the first `let!` source, after the `let rec` that precedes it.
-        "def main :: unit -> i32 = \\() ->\n    let rec sum = \\k -> if k == 0 then 0 else k + sum (k - 1)\n    let! _line = IO.read_line ()\n    do! IO.write_line (to_string (sum 10))\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    let rec sum = \\k -> if k == 0 then 0 else k + sum (k - 1)\n    let! _line = IO.readln ()\n    do! IO.writeln (to_string (sum 10))\n    0\n",
         "let compute = \\n ->\n    let rec fib = \\k -> if k < 2 then k else fib (k - 1) + fib (k - 2)\n    let! start = Maybe.Some n\n    return fib start\ncompute 6\n",
         // A group in the body of a computation whose builder is the expected result type: the
         // members are bound together, before and after a `let!`, and in the middle of the statements.
@@ -576,8 +576,8 @@ fn local_let_rec_in_computation_expressions() {
         "let job = Maybe {\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    return even 6\n}\nMaybe.get job\n",
         // The other lowerings bind consecutive statements together: IO run directly, and a builder
         // with groups before and after a `let!` (a builder without `Run` is below).
-        "def main :: unit -> i32 = \\() ->\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    do! IO.write_line (to_string (even 10))\n    0\n",
-        "def main :: unit -> i32 = \\() ->\n    do! IO.write_line \"start\"\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    do! IO.write_line (to_string (odd 7))\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    do! IO.writeln (to_string (even 10))\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    do! IO.writeln \"start\"\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    do! IO.writeln (to_string (odd 7))\n    0\n",
         "def compute :: i64 -> Maybe<bool> = \\n ->\n    let! a = Maybe.Some n\n    let rec even = \\k -> if k == 0 then true else odd (k - 1)\n    and odd = \\k -> if k == 0 then false else even (k - 1)\n    let! b = Maybe.Some (a + 1)\n    let rec up = \\k -> if k == 0 then 0 else down (k - 1) + 1\n    and down = \\k -> if k == 0 then 0 else up (k - 1) + 1\n    return even b && up a == a\nlet shown = compute 6\nshown\n",
     ] {
         let module = analyze(source)
@@ -650,7 +650,7 @@ fn unused_local_let_rec_warns() {
 /// the lifted function were a call, whether the function captures numbers or a borrowed array.
 #[test]
 fn deep_local_tail_recursion_does_not_grow_the_stack() {
-    let source = "def triangle :: i64 -> i64 = \\limit ->\n    let rec go = \\n acc -> if n > limit then acc else go (n + 1) (acc + n)\n    go 1 0\n\ndef walk :: i64 -> i64 = \\count ->\n    let values = Array.init count (\\i -> i)\n    let rec go = \\i acc -> if i == values.length then acc else go (i + 1) (acc + values[i])\n    go 0 0\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (to_string (triangle 1000000))\n    do! IO.write_line (to_string (walk 1000000))\n    0\n";
+    let source = "def triangle :: i64 -> i64 = \\limit ->\n    let rec go = \\n acc -> if n > limit then acc else go (n + 1) (acc + n)\n    go 1 0\n\ndef walk :: i64 -> i64 = \\count ->\n    let values = Array.init count (\\i -> i)\n    let rec go = \\i acc -> if i == values.length then acc else go (i + 1) (acc + values[i])\n    go 0 0\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.writeln (to_string (triangle 1000000))\n    do! IO.writeln (to_string (walk 1000000))\n    0\n";
     let ir = accepts(source);
     let functions = lifted(&ir);
     assert!(

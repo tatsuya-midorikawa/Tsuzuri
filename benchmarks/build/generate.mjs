@@ -250,10 +250,10 @@ ${range(modules).map((index) => `    sum = sum + Module${index}.run seed`).join(
     sum
 
 def main :: unit -> i32 = \\() ->
-    let! line = IO.read_line ()
+    let! line = IO.readln ()
     let text = Maybe.default_value "" line
     let seed = String.length text as i64u
-    do! IO.write_line (to_string (total seed))
+    do! IO.writeln (to_string (total seed))
     0
 `;
   if (language === "c" || language === "cpp") return `#include <inttypes.h>

@@ -50,7 +50,7 @@ def rec sum :: i64 -> i64 -> i64 = \n total ->
 export def answer :: i64 = sum 100 0
 
 def main :: unit -> i32 = \() ->
-    do! IO.write_line (answer ())
+    do! IO.writeln (answer ())
     0
 ```
 
@@ -393,15 +393,15 @@ match ErrGroup.wait group with
 
 ```text
 def main :: unit -> i32 = \() ->
-    do! IO.write_line "お名前を入力してください:"
-    let! name = IO.read_line ()
+    do! IO.writeln "お名前を入力してください:"
+    let! name = IO.readln ()
     match name with
-    | Some n -> do! IO.write_line ($"こんにちは、{n} さん！")
-    | None -> do! IO.write_line "入力が終了しました。"
+    | Some n -> do! IO.writeln ($"こんにちは、{n} さん！")
+    | None -> do! IO.writeln "入力が終了しました。"
     0
 ```
 
-- `IO.write_line`（別名 `IO.writeln`）や `IO.read_line` などの基本関数を提供します。
+- 標準出力へ書く `IO.write`・`IO.writeln`、標準エラーへ書く `IO.write_err`・`IO.write_errln`、標準入力から 1 行読む `IO.readln` などの基本関数を提供します（`ln` は行、`err` は標準エラー）。
 - 失敗の可能性がある操作には `IO.try_*` 系統の関数を使用し、結果を `Result` 型として安全に処理できます。詳細は [IO](_tsuzuri/language-reference/built-in-types-and-modules/io.md) を参照してください。
 
 #### OS API
@@ -472,7 +472,7 @@ using Geometry
 def main :: unit -> i32 = \() ->
     let p = Point { x: 10.0, y: 20.5 }
     let d = Point.distance p
-    do! IO.write_line d
+    do! IO.writeln d
     0
 ```
 
@@ -712,7 +712,7 @@ it: i64 = 36
 ```text
 #!/usr/bin/env -S tsuzuri script
 def main :: Array<string> -> i32 = \args ->
-    do! IO.write_line ("hi " + String.join (ref " ") (ref args))
+    do! IO.writeln ("hi " + String.join (ref " ") (ref args))
     0
 ```
 
@@ -1142,7 +1142,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | 匿名共用体（A24・A25・A26。`src/anonymous_union.rs`、拡大と絞り込みは `src/control.rs` の `retag`・`narrowing_pattern`、インスタンスの本体は `src/polymorph.rs` の `Specializer::union_method`・`union_codec`） | `tests/anonymous_unions.rs`（構文・正規化・注入・型テスト・網羅性・インスタンス・名前の隠蔽・api-diff・find・拡大・絞り込み・組み込みの `Eq`／`Ord`／`Hash`／`Display`・`Encode`／`Decode` と JSON の種類の重なり）、`tests/formatter.rs`、`tests/debug_info.rs`、`src/syntax_codec.rs` の test module | `features.mjs anonymous_unions`（native と WASM の `-O0`／`-O3`、`live == 0`）、`debugger.mjs`、`frontend_cache.mjs` |
 | 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs`、`tests/mutable_slices.rs`（排他スライスと、その場の書き込みが残す借用。A31）、`tests/rc.rs`（`Rc`・`Arc` と lock のコールバックの書き込み） | `features.mjs borrowed_records`・`mutable_slices`・`in_place_writes`・`rc`、`control.mjs`、`TSUZURI_PROGFUZZ_KIND=owned progfuzz.mjs` |
 | 制御構文・パターン | `tests/control.rs`、`tests/match_exhaustiveness.rs` | `control.mjs`、`features.mjs` |
-| 計算式・IO | `tests/computations.rs` | `computations.mjs`、`io.mjs` |
+| 計算式・IO | `tests/computations.rs`、`tests/removed_features.rs`（以前の `IO` の関数名の `E1040`、E17） | `computations.mjs`、`io.mjs` |
 | コレクション・std | `tests/stdlib.rs`、`tests/map_set.rs`、`tests/vec.rs`、`tests/iteration_protocol.rs` | `features.mjs map_set`・`iteration_protocol`・`vec` |
 | 文字列・文字・表示と解析 | `tests/strings.rs`、`tests/chars.rs`、`tests/display_parse.rs` | `strings.mjs`、`display_parse.mjs` |
 | 数値・数学 | `tests/integers.rs`、`tests/integer_wrapping.rs`、`tests/overflow_report.rs`、`tests/math.rs`、`tests/f16_hardware.rs`（f16 の `half` 経路。D10） | `numeric_casts.mjs`、`integer_intrinsics.mjs`、`overflow_report.mjs`、`math.mjs`（重い。Node 24）、`f16_hardware.mjs`（`TSUZURI_F16_EXPECT` でホストが通る経路を固定） |

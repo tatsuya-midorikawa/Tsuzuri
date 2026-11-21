@@ -365,19 +365,19 @@ fn name backend = match backend with
     | Gpu.Auto -> "auto"
 
 def main :: unit -> i32 = \\() ->
-    let! a = IO.write_line ("before " + name (Gpu.last_backend ()))
+    let! a = IO.writeln ("before " + name (Gpu.last_backend ()))
     let auto = Result.get (Gpu.request Gpu.Auto)
     let small = Gpu.to_array (Gpu.map (ref auto) mix (Gpu.init (ref auto) 1000 (\\index -> index * 3 - 7)))
-    let! b = IO.write_line ("auto small " + name (Gpu.last_backend ()) + " " + to_string small[1])
+    let! b = IO.writeln ("auto small " + name (Gpu.last_backend ()) + " " + to_string small[1])
     let big = Gpu.to_array (Gpu.map (ref auto) wide (Gpu.init (ref auto) 100000 (\\index -> (index as i64) * 3i64)))
-    let! c = IO.write_line ("auto wide " + name (Gpu.last_backend ()) + " " + to_string big[1])
+    let! c = IO.writeln ("auto wide " + name (Gpu.last_backend ()) + " " + to_string big[1])
     match Gpu.request Gpu.Vulkan with
     | Result.Error _ ->
-        let! e = IO.write_line "vulkan unavailable"
+        let! e = IO.writeln "vulkan unavailable"
         0
     | Result.Ok device ->
         let explicit = Gpu.to_array (Gpu.map (ref device) mix (Gpu.init (ref device) 1000 (\\index -> index * 3 - 7)))
-        let! d = IO.write_line ("explicit " + name (Gpu.last_backend ()) + " " + to_string explicit[1])
+        let! d = IO.writeln ("explicit " + name (Gpu.last_backend ()) + " " + to_string explicit[1])
         0
 `;
 const programPath = join(directory, "program");
@@ -482,8 +482,8 @@ fn branchy_calls _unit = {
 }
 
 def main :: unit -> i32 = \\() ->
-    let! a = IO.write_line ("branchy " + to_string (branchy_calls ()))
-    let! b = IO.write_line ("straight " + to_string (straight_calls ()))
+    let! a = IO.writeln ("branchy " + to_string (branchy_calls ()))
+    let! b = IO.writeln ("straight " + to_string (straight_calls ()))
     0
 `);
     check("weights: the compiler prices a branchy kernel by its cheaper path, and Gpu.Auto keeps 1,000,000 lanes of it on the CPU reference", () => {

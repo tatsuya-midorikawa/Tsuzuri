@@ -334,8 +334,8 @@ fn borrowed_drop_data_is_readable_without_claiming_its_destructor_is_pure() {
 #[test]
 fn io_construction_is_deferred_but_execution_and_eager_captures_are_not() {
     accepted(
-        "pure def action :: unit -> IO<unit> = \\() -> IO.write_line \"deferred\"\n\
-         pure def read :: unit -> IO<Maybe<string>> = \\() -> IO.read_line ()\n\
+        "pure def action :: unit -> IO<unit> = \\() -> IO.writeln \"deferred\"\n\
+         pure def read :: unit -> IO<Maybe<string>> = \\() -> IO.readln ()\n\
          pure def composed :: unit -> IO<unit> = \\() -> IO.map (\\value -> { Debug.print (ref value); () }) (IO.pure 1)\n",
     );
     rejected(
@@ -343,7 +343,7 @@ fn io_construction_is_deferred_but_execution_and_eager_captures_are_not() {
         "debug output",
     );
     assert!(analyze(
-        "pure def bad :: unit -> unit = \\() -> { let action = IO.write_line \"not deferred\"; do! action; () }\n",
+        "pure def bad :: unit -> unit = \\() -> { let action = IO.writeln \"not deferred\"; do! action; () }\n",
     ).is_err());
     rejected(
         "pure def bad :: unit -> i64 = \\() -> { let callback = \\n -> { Debug.print (ref n); n }; let action = IO.map callback (IO.pure 1); callback 2 }\n",
@@ -704,7 +704,7 @@ fn pure_def_ir_matches_the_explicit_ref_version_without_new_attributes() {
 #[test]
 fn rejects_external_io_debug_extern_and_shared_state() {
     for (body, text) in [
-        ("do! IO.write_line \"hi\"\nn", "outside world"),
+        ("do! IO.writeln \"hi\"\nn", "outside world"),
         ("Debug.print (ref n)\nn", "debug output"),
         ("host_tick n", "extern function"),
         (
@@ -745,7 +745,7 @@ fn permits_closed_deferred_bodies_and_parallelism_but_checks_every_callback() {
 
 #[test]
 fn rejects_user_drop_even_inside_owned_aggregates() {
-    let prefix = "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = do! IO.write_line \"drop\" }\n";
+    let prefix = "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = do! IO.writeln \"drop\" }\n";
     for body in [
         "let t = Ticket { id: n }\nt.id",
         "let xs = [Ticket { id: n }]\nxs.length",

@@ -347,7 +347,7 @@ test('run_stdout_and_trap', () => {
     const result = runTree({
         'EVL/EVL-001-stdout.tz': '1 + 2\n\n// rule: EVL-001\n// expect: stdout "3\\n"\n',
         'EVL/EVL-001-trap.tz': 'let zero = 0\n1 / zero\n\n// rule: EVL-001\n// expect: trap kind=div_zero line=2\n',
-        'EVL/EVL-001-trap-stdout.tz': 'def show :: i64 -> i64 = \\n -> {\n    do! IO.write_line (to_string n);\n    n\n}\nlet zero = 0\nshow 1 + 10 / zero\n\n// rule: EVL-001\n// expect: trap kind=div_zero stdout "1\\n"\n',
+        'EVL/EVL-001-trap-stdout.tz': 'def show :: i64 -> i64 = \\n -> {\n    do! IO.writeln (to_string n);\n    n\n}\nlet zero = 0\nshow 1 + 10 / zero\n\n// rule: EVL-001\n// expect: trap kind=div_zero stdout "1\\n"\n',
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
 });

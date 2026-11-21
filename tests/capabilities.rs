@@ -70,7 +70,7 @@ fn d4(root: &Path, allow: &str, grant: &str) -> PathBuf {
     write(
         root,
         "app/Main.tz",
-        "def main :: unit -> i32 = \\() ->\n    let! _text = Fscache::Cache.load \"notes.txt\"\n    do! IO.write_line \"loaded\"\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    let! _text = Fscache::Cache.load \"notes.txt\"\n    do! IO.writeln \"loaded\"\n    0\n",
     );
     write(
         root,
@@ -120,7 +120,7 @@ fn std_probe_matches_the_expected_sites() {
         (5, 71, "Env.var", Env),
         (6, 62, "Time.monotonic_ns", Time),
         (7, 65, "Random.next_u64", Random),
-        (8, 46, "IO.write_line", Stdio),
+        (8, 46, "IO.writeln", Stdio),
         (9, 42, "Debug.print", Stdio),
         (10, 83, "Net.connect", Net),
         (11, 83, "Net.read", Net),
@@ -291,10 +291,10 @@ fn corpus_table() -> BTreeMap<String, CapabilitySet> {
 }
 
 #[test]
-fn std_table_file_lists_the_89_functions() {
+fn std_table_file_lists_the_88_functions() {
     let expected = std::fs::read_to_string("tests/fixtures/capabilities/std-table.txt").unwrap();
     let lines: Vec<&str> = expected.lines().collect();
-    assert_eq!(lines.len(), 89);
+    assert_eq!(lines.len(), 88);
     let derived: Vec<String> = corpus_table()
         .into_iter()
         .map(|(name, set)| {
@@ -322,7 +322,7 @@ fn policy_off_costs_nothing_and_changes_nothing() {
     write(
         &root,
         "app/Main.tz",
-        "def main :: unit -> i32 = \\() ->\n    let! _text = Fscache::Cache.load \"notes.txt\"\n    do! IO.write_line \"loaded\"\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    let! _text = Fscache::Cache.load \"notes.txt\"\n    do! IO.writeln \"loaded\"\n    0\n",
     );
     write(
         &root,
@@ -416,14 +416,14 @@ fn dependency_without_a_grant_gets_the_empty_set() {
     write(
         &root,
         "logger/Log.tz",
-        "def say :: string -> IO<unit> = \\text -> IO.write_line text\n",
+        "def say :: string -> IO<unit> = \\text -> IO.writeln text\n",
     );
     let errors = check_errors(&root.join("app"));
     let messages: Vec<&str> = errors.iter().map(|error| error.message.as_str()).collect();
     assert_eq!(
         messages,
         [
-            "package 'logger' may not use capability 'stdio' ('IO.write_line'); grant it with capabilities = [\"stdio\"] in the entry of 'logger' in 'app'"
+            "package 'logger' may not use capability 'stdio' ('IO.writeln'); grant it with capabilities = [\"stdio\"] in the entry of 'logger' in 'app'"
         ]
     );
     assert_eq!(

@@ -24,13 +24,13 @@ fn show value =
     | Maybe.None -> "None"
 
 def line :: own string -> own Maybe<string> -> IO<unit>
-fn line label value = IO.write_line (label + show value)
+fn line label value = IO.writeln (label + show value)
 
 def main :: unit -> i32 = \() ->
-    do! IO.write_line (Path.join "notes" "2026")
-    do! IO.write_line (Path.join "notes/" "2026")
-    do! IO.write_line (Path.join "" "2026")
-    do! IO.write_line (Path.join "notes" "/etc")
+    do! IO.writeln (Path.join "notes" "2026")
+    do! IO.writeln (Path.join "notes/" "2026")
+    do! IO.writeln (Path.join "" "2026")
+    do! IO.writeln (Path.join "notes" "/etc")
     do! line "parent a/b/c -> " (Path.parent "a/b/c")
     do! line "parent /a -> " (Path.parent "/a")
     do! line "parent a -> " (Path.parent "a")

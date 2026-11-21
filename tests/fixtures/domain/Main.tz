@@ -10,8 +10,8 @@ def at :: [i64] -> i64 -> i64 = \xs i -> xs[i]
 def main :: unit -> i32 = \() ->
     let data = [4, 8, 15]
     let empty: [i64] = []
-    do! IO.write_line (describe (Domain.run (\() -> average data)))
-    do! IO.write_line (describe (Domain.run (\() -> average empty)))
+    do! IO.writeln (describe (Domain.run (\() -> average data)))
+    do! IO.writeln (describe (Domain.run (\() -> average empty)))
     0
 
 test "an out-of-range index is caught by the domain" =

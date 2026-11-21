@@ -341,12 +341,12 @@ fn program_ir(source: &str) -> String {
 }
 
 const PROGRAMS: [&str; 5] = [
-    "def main :: unit -> i32 = \\() ->\n    do! IO.write_line \"hello\"\n    0\n",
-    "record Point { x: i64, y: i64 }\ndef scale :: Point -> i64 -> Point = \\p k -> Point { x: p.x * k, y: p.y * k }\ndef main :: unit -> i32 = \\() ->\n    let q = scale (Point { x: 3, y: 4 }) 5\n    let words = [\"a\", \"bc\", \"def\"]\n    let total = Array.length (ref words) + (q.x as i64)\n    do! IO.write_line total\n    0\n",
-    "def main :: unit -> i32 = \\() ->\n    let a = 170141183460469231731687303715884105727i128\n    let b = a / 7i128 % 1000003i128\n    let f = 2.5 * (b as f64)\n    do! IO.write_line (f as i64)\n    0\n",
-    "union Shape = Circle of f64 | Square of f64\ndef area :: Shape -> f64 = \\s -> match s with\n    | Circle r -> 3.14159 * r * r\n    | Square w -> w * w\ndef main :: unit -> i32 = \\() ->\n    let offset = 10\n    let add = x -> x + offset\n    do! IO.write_line (add ((area (Square 4.0)) as i64))\n    do! IO.write_line (Display.display (area (Circle 1.0)))\n    0\n",
+    "def main :: unit -> i32 = \\() ->\n    do! IO.writeln \"hello\"\n    0\n",
+    "record Point { x: i64, y: i64 }\ndef scale :: Point -> i64 -> Point = \\p k -> Point { x: p.x * k, y: p.y * k }\ndef main :: unit -> i32 = \\() ->\n    let q = scale (Point { x: 3, y: 4 }) 5\n    let words = [\"a\", \"bc\", \"def\"]\n    let total = Array.length (ref words) + (q.x as i64)\n    do! IO.writeln total\n    0\n",
+    "def main :: unit -> i32 = \\() ->\n    let a = 170141183460469231731687303715884105727i128\n    let b = a / 7i128 % 1000003i128\n    let f = 2.5 * (b as f64)\n    do! IO.writeln (f as i64)\n    0\n",
+    "union Shape = Circle of f64 | Square of f64\ndef area :: Shape -> f64 = \\s -> match s with\n    | Circle r -> 3.14159 * r * r\n    | Square w -> w * w\ndef main :: unit -> i32 = \\() ->\n    let offset = 10\n    let add = x -> x + offset\n    do! IO.writeln (add ((area (Square 4.0)) as i64))\n    do! IO.writeln (Display.display (area (Circle 1.0)))\n    0\n",
     // A mutual recursion: the calls between the two functions are `musttail` calls (PM09).
-    "def rec ping :: i64 -> i64 -> i64\n    def and pong :: i64 -> i64 -> i64\n    fn rec ping n acc = if n == 0 then acc else pong (n - 1) (acc + 1)\n    and pong n acc = if n == 0 then acc else ping (n - 1) (acc + 2)\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (ping 1000 0)\n    0\n",
+    "def rec ping :: i64 -> i64 -> i64\n    def and pong :: i64 -> i64 -> i64\n    fn rec ping n acc = if n == 0 then acc else pong (n - 1) (acc + 1)\n    and pong n acc = if n == 0 then acc else ping (n - 1) (acc + 2)\ndef main :: unit -> i32 = \\() ->\n    do! IO.writeln (ping 1000 0)\n    0\n",
 ];
 
 #[test]

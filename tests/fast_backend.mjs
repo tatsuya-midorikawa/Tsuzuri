@@ -324,8 +324,8 @@ function checks(compilerArgument) {
 
 def main :: unit -> i32 = \\() ->
     let xs = [1, 2, 3]
-    do! IO.write_line (pick xs 1)
-    do! IO.write_line (pick xs 7)
+    do! IO.writeln (pick xs 1)
+    do! IO.writeln (pick xs 7)
     0
 `);
       const programs = {};
@@ -418,7 +418,7 @@ def main :: unit -> i32 = \\() ->
     }
 
 def main :: unit -> i32 = \\() ->
-    do! IO.write_line (sum 99 0)
+    do! IO.writeln (sum 99 0)
     0
 `);
       const build = (backend, label) => {

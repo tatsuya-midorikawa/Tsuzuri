@@ -37,7 +37,7 @@ fn summary_of_a_scalar_function_is_empty() {
 fn io_debug_and_extern_propagate_through_calls() {
     let module = module(&format!(
         "extern \"abs\" def c_abs :: i32 -> i32\n\
-         def shout :: unit -> IO<unit> = \\() -> IO.write_line 1\n\
+         def shout :: unit -> IO<unit> = \\() -> IO.writeln 1\n\
          def trace :: i64 -> unit = \\n -> Debug.print (ref n)\n\
          def native :: i32 -> i32 = \\n -> c_abs n\n\
          def outer :: unit -> i32 = \\() ->\n    let _action = shout ()\n    trace 1\n    native 2i32\n{MAIN}"

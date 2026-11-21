@@ -13,7 +13,7 @@ import { writeProject } from "../build/generate.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
-// The Main.tz of `big`: six W1001 warnings that carry fixes (PB08, 415 bytes).
+// The Main.tz of `big`: six W1001 warnings that carry fixes (PB08; 412 bytes since E17 shortened its IO call, 415 in PB08).
 export const BIG_MAIN = `def alpha :: own i64 -> i64 = \\n -> {
     let first = n + 1;
     let second = n + 2;
@@ -34,7 +34,7 @@ def delta :: own i64 -> i64 = \\k -> {
 }
 
 def main :: own unit -> i32 = \\() ->
-    do! IO.write_line (alpha 1 + beta 2 + gamma 3 4 + delta 5)
+    do! IO.writeln (alpha 1 + beta 2 + gamma 3 4 + delta 5)
     0
 `;
 

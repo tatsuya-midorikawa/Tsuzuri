@@ -53,7 +53,7 @@ $"sum={Atomic.load (Arc.get (ref total))}"
 `, "sum=4950\n"],
   // main waits for its tzroutines before it prints the value of the last expression.
   [`tzroutine {
-    do! IO.write_line "child"
+    do! IO.writeln "child"
 }
 42
 `, "child\n42\n"],
@@ -61,14 +61,14 @@ $"sum={Atomic.load (Arc.get (ref total))}"
   [`def main :: unit -> i32 = \\() ->
     tzroutine {
         tzroutine {
-            do! IO.write_line "grandchild"
+            do! IO.writeln "grandchild"
         }
     }
     0
 `, "grandchild\n"],
   // Routine.go runs its owned function once.
   [`Routine.go (Owned.function (\\() -> {
-    do! IO.write_line "go"
+    do! IO.writeln "go"
 }))
 7
 `, "go\n7\n"],
@@ -80,7 +80,7 @@ fn spawn count =
     let text = String.repeat count (ref "abcdefgh")
     let g: unit -> unit = \\() -> {
         Time.sleep 20000000;
-        do! IO.write_line $"{String.length (ref text)} {text}"
+        do! IO.writeln $"{String.length (ref text)} {text}"
     }
     Routine.go (Owned.function g)
 
@@ -94,7 +94,7 @@ def main :: unit -> i32 = \\() ->
     let label = "piped"
     let h: unit -> unit = \\() -> {
         Time.sleep 20000000;
-        do! IO.write_line label
+        do! IO.writeln label
     }
     later (h |> Owned.function)
     0
@@ -112,7 +112,7 @@ fn remake factory =
     Routine.go (Owned.function f)
 
 def hello :: unit -> unit = \\() -> {
-    do! IO.write_line "hello"
+    do! IO.writeln "hello"
 }
 
 def main :: unit -> i32 = \\() ->
@@ -137,9 +137,9 @@ let _seen = Routine.scope (ref counter) 4 (\\shared index -> {
 Atomic.load (Arc.get (ref counter))
 `, "4\n"],
   // The IO entry waits in tsuzuri_main.
-  [`do! IO.write_line "first"
+  [`do! IO.writeln "first"
 tzroutine {
-    do! IO.write_line "second"
+    do! IO.writeln "second"
 }
 `, "first\nsecond\n"],
   // A tzroutine that waits for a Routine.scope gives its P away: with one P, the children of the
@@ -178,7 +178,7 @@ tzroutine {
     let mut spin = 0i64
     while spin < 200000i64 do
         spin = spin + 1
-    do! IO.write_line "child"
+    do! IO.writeln "child"
 }
 $"failed={failed}"
 `, "child\nfailed=1\n"],
@@ -303,7 +303,7 @@ let result =
     select
     | recv _ from never -> "value"
     | recv _ from deadline -> "timeout"
-do! IO.write_line result
+do! IO.writeln result
 `, "timeout\n"],
   // TZ07: the ticket's example: a worker stops when its context is cancelled, and main does not wait
   // for ever at its end.

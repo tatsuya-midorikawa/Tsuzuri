@@ -23,7 +23,7 @@ def main :: unit -> i32 = \() ->
     let price = 120
     let tax = 30
     assert (price + tax == 150)
-    do! IO.write_line "ok"
+    do! IO.writeln "ok"
     0
 ```
 

@@ -401,7 +401,7 @@ fn run_json_turns_report_lines_into_warning_objects() {
 fn run_json_finds_a_report_after_unterminated_output() {
     let program = "def mix :: i32u -> i32u -> i32u = \\a b -> a + b\n\
                    def main :: unit -> i32 = \\_ ->\n\
-                   \x20   do! IO.write_error \"prefix\"\n\
+                   \x20   do! IO.write_err \"prefix\"\n\
                    \x20   Debug.print (to_string (mix 3000000000i32u 3000000000i32u))\n\
                    \x20   0\n";
     let root = scratch("run-json-prefix");

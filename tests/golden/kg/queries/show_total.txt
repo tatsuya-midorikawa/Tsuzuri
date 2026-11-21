@@ -10,7 +10,7 @@ sites: trap 1, alloc 0, copy 0
 callees (1):
   Acme::Shop::Cart.line_total  Cart.tz:14:21  args ref
 callers (3):
-  Acme::Shop::Report.print_total  Report.tz:6:24  args ref
+  Acme::Shop::Report.print_total  Report.tz:6:21  args ref
   test:Acme::Shop::Cart.empty cart  Cart.tz:19:29  args ref
   test:Acme::Shop::Main.main runs  Main.tz:8:28  args ref
 tests (2):

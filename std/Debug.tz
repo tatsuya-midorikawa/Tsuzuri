@@ -4,7 +4,7 @@
 /// ```tsuzuri run=247
 /// let scores = [90, 72, 85]
 /// Debug.print scores  // standard error: [90, 72, 85]
-/// IO.write_line (Array.sum scores)
+/// IO.writeln (Array.sum scores)
 /// ```
 def print :: Display<'a> => ref 'a -> unit
 fn print value = Debug.__print_string (Display.display value)

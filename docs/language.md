@@ -1246,7 +1246,7 @@ describe first                      // "int 42"
 
 ```text
 def main :: Array<string> -> i32 = \args ->
-    do! IO.write_line ("arguments: " + to_string args.length)
+    do! IO.writeln ("arguments: " + to_string args.length)
     0
 ```
 
@@ -1294,15 +1294,16 @@ def main :: Array<string> -> i32 = \args ->
 ```text
 IO {
     do! IO.write "Name: "
-    let! line = IO.read_line ()
-    do! IO.write_line (Maybe.default_value "world" line)
+    let! line = IO.readln ()
+    do! IO.writeln (Maybe.default_value "world" line)
 }
 ```
 
-`IO.read_line : unit -> IO<Maybe<string>>` は標準入力（stdin）からの 1 行読み込みを担当し、`IO.write` および `write_line` は標準出力（stdout）、`IO.write_error` および `write_error_line` は標準エラー出力（stderr）への出力を担当します（なお `IO.writeln` は `IO.write_line` の便利な別名です）。
+`IO.readln : unit -> IO<Maybe<string>>` は標準入力（stdin）からの 1 行読み込みを担当し、`IO.write` および `IO.writeln` は標準出力（stdout）、`IO.write_err` および `IO.write_errln` は標準エラー出力（stderr）への出力を担当します。名前の `ln` は行単位（出力では末尾の LF、入力では行末の改行の除去）、`err` は標準エラー出力を表し、これら 5 つの操作にはそれぞれ失敗を値で返す `try_` 版（`IO.try_readln`、`IO.try_write`、`IO.try_writeln`、`IO.try_write_err`、`IO.try_write_errln`）があります。
+以前の名前（`read_line`、`write_line`、`write_error`、`write_error_line` と、それぞれの `try_` 版）は `E1040`（kind `renamed_io_function`）となり、`tsuzuri fix` が関数名だけを今の名前へ確実に書き換えます（E17。[診断](#診断)の `E1040`）。
 出力関数のシグネチャは `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` であり、実際の文字列表現の生成処理もアクションの実行時に初めて評価されます。`try_` プレフィックスを持つ各 API は、実行結果を `Result<..., IO.Error>` 型で安全に返却します。
 エラー型 `IO.Error` のバリアントには `ReadFailed`、`WriteFailed`、`InvalidEncoding` が用意されています（通常版の API はこれらのエラー発生時に安全にトラップします）。標準入力の終端（EOF）に達した場合は `None` を返し、空行を読み込んだ場合は `Some ""` を返し、末尾に改行のない最終行を読み込んだ場合も `Some` として安全に返します。
-入力データからは LF および CRLF 改行が自動的に除去され、UTF-8 から内部の `string`（UTF-16）へと厳密にデコードされます。出力は常に UTF-8 バイト列として書き出され、`line` 版の API のみ末尾に LF 改行を付加します。孤立サロゲートを含む文字列の出力はエラーとなり、途中に NUL 文字を含む文字列データも欠落することなく完全に保持されます。
+入力データからは LF および CRLF 改行が自動的に除去され、UTF-8 から内部の `string`（UTF-16）へと厳密にデコードされます。出力は常に UTF-8 バイト列として書き出され、`ln` 版の API（`writeln`、`write_errln` とそれらの `try_` 版）のみ末尾に LF 改行を付加します。孤立サロゲートを含む文字列の出力はエラーとなり、途中に NUL 文字を含む文字列データも欠落することなく完全に保持されます。
 ネイティブ環境では標準 C ライブラリ（stdio）のバッファリングと逐次処理を活用し、出力操作ごとに出力バッファを確実にフラッシュ（flush）します。書き込みの途中で I/O エラーが発生した場合であっても、すでに出力されたデータが取り消されることはありません。なお、システムメモリ枯渇、ABI 違反、OS レベルの致命的シグナルは回復可能な `Result` の対象外であり、直ちにトラップまたはプロセス停止となります。
 
 コンピュテーション式構文において、`let!`、`do!`、`return`、`return!`、`match!`、条件分岐、配列に対する `for`、`while`、ならびに `and!` は既存のビルダー展開規則に従って安全に展開されます（`and!` による複数アクションの結合は左から右へと順次逐次実行されます）。
@@ -1352,7 +1353,7 @@ def main :: unit -> i32 = \() ->
     let! text = File.read_text "note.txt"
     let! missing = File.read_text "missing.txt"
     do! IO.write (Result.get text)
-    do! IO.write_line (match missing with
+    do! IO.writeln (match missing with
         | Result.Ok _ -> "found"
         | Result.Error error -> Os.message (ref error))
     match written with
@@ -1423,7 +1424,7 @@ Tsuzuri はパス文字列の正規化やシンボリックリンクの完全解
 def main :: unit -> i32 = \() ->
     let! outcome = File.with_open "data.txt" File.Write (\handle -> File.write handle [104ubyte, 105ubyte])
     let! text = File.read_text "data.txt"
-    do! IO.write_line (match (outcome, text) with
+    do! IO.writeln (match (outcome, text) with
         | (Result.Ok (Result.Ok _), Result.Ok content) -> content
         | _ -> "failed")
     0
@@ -1554,7 +1555,7 @@ opt-in の std モジュール `Domain`（`std/Domain.tz`）の `Domain.run :: (
 | --- | --- | --- | --- |
 | 利用者の `Drop` | 走らない | 本体が `Drop` 型の値を持てない（A19） | 走らない |
 | `try … finally` | 走らない（`try` は `OverflowException` だけを扱う） | 走らない | 走らない |
-| 標準出力 `IO.write_line` | トラップの前の行は残る（毎回 `fflush`） | 本体が書けない | 残る |
+| 標準出力 `IO.writeln` | トラップの前の行は残る（毎回 `fflush`） | 本体が書けない | 残る |
 | `File` の書き込み | 書いた分は残る（1 回ごとに `write`） | 本体が書けない | 残る |
 | ロック（`Mutex.with_lock`） | プロセスごと終わる | 本体が取れない | 境界が `tsuzuri_sync_hooks.abandon` で解放する |
 | ヒープ | OS が回収する | 領域の中の block をすべて解放する。成功なら結果の block が残る | 境界の中の block をすべて解放する。成功なら結果はホストの物 |
@@ -2480,9 +2481,9 @@ let lower = identity { let! value = 42; return value }
 また、感嘆符を伴わない素の `do expression` は単なる `unit` 型の通常式であり、モナド計算を実行する `do! expression` とは明確に区別されます。
 
 ```text
-let! line = IO.read_line ()
+let! line = IO.readln ()
 let! value = line
-do! IO.write_line value
+do! IO.writeln value
 ```
 
 上記のトップレベルコードのエントリーポイント型は、推論によって `IO<Maybe<unit>>` となります。まず `IO` アクションが実行されて 1 行を読み取り、その結果が `Some` であった場合にのみ後続の標準出力書き込みを実行します。
@@ -3608,7 +3609,7 @@ to_string (HashSet.to_array (ref set))    // ['a', 'd', 'c']
 def main :: unit -> i32 = \() ->
     let! made = HashMap.randomized ()
     let filled: HashMap<string, i64> = HashMap.insert "a" 1 made
-    do! IO.write_line (to_string (HashMap.length (ref filled)))
+    do! IO.writeln (to_string (HashMap.length (ref filled)))
     0
 ```
 
@@ -3623,7 +3624,7 @@ seed は反復順序に影響せず、seed 付きのmapの順序は同じ操作�
 def main :: unit -> i32 = \() ->
     let! made = HashMap.randomized ()
     let filled: HashMap<string, i64> = HashMap.insert "a" 1 made
-    do! IO.write_line (to_string (HashMap.length (ref filled)))
+    do! IO.writeln (to_string (HashMap.length (ref filled)))
     0
 ```
 
@@ -5102,7 +5103,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1037` | `@trusted` の置き場と性質の誤り |
 | `E1038` | `Domain.run` の使い方の誤り（直接呼んでいない・引数がラムダでも `pure def` の名前でもない・平たいデータでない捕捉・純粋でない本体・平たいデータでない結果・領域を持てないビルド） |
 | `E1039` | 浮動小数点の数を含む型への `Monoid` の制約（`Parallel.fold` が `Array.fold_monoid` と違いうる） |
-| `E1040` | 消えた・改名された名前。`renamed_to_data_channel`: 旧 `Channel.bounded` などは `DataChannel` の名前（確かな修正案を持つ）。`removed_task_expression`: `task { … }`（`@alias task` の利用者のビルダーがないとき）。`removed_task_type`: 型 `Task<T>`。`removed_task_api`: `Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope`（`Task.scope` だけが `Routine.scope` への確かな修正案を持つ）。`removed_async`: `Async { … }`・`async { … }`（`@alias async` の利用者のビルダーがないとき）・型 `Async<T>`・`Async.Operation`・`Async.run` などの関数（TZ13）。`removed_net_async`: `Net.connect_async` などの 12 関数（TZ13）。どれも利用者の定義に解決しないときだけ（[並列実行](#並列実行)、[非同期計算（Async）](#非同期計算async)） |
+| `E1040` | 消えた・改名された名前。`renamed_to_data_channel`: 旧 `Channel.bounded` などは `DataChannel` の名前（確かな修正案を持つ）。`renamed_io_function`: `IO` の以前の関数名 8 つ（`IO.read_line`・`IO.try_read_line`・`IO.write_line`・`IO.try_write_line`・`IO.write_error`・`IO.try_write_error`・`IO.write_error_line`・`IO.try_write_error_line`）は、それぞれ `IO.readln`・`IO.try_readln`・`IO.writeln`・`IO.try_writeln`・`IO.write_err`・`IO.try_write_err`・`IO.write_errln`・`IO.try_write_errln` の名前（E17。確かな修正案は関数名だけを書き換え、`std::IO.` の修飾と空白を保つ。プログラムの名前空間のモジュール `IO` は対象外で、そこにない関数は `E1002`）。`removed_task_expression`: `task { … }`（`@alias task` の利用者のビルダーがないとき）。`removed_task_type`: 型 `Task<T>`。`removed_task_api`: `Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope`（`Task.scope` だけが `Routine.scope` への確かな修正案を持つ）。`removed_async`: `Async { … }`・`async { … }`（`@alias async` の利用者のビルダーがないとき）・型 `Async<T>`・`Async.Operation`・`Async.run` などの関数（TZ13）。`removed_net_async`: `Net.connect_async` などの 12 関数（TZ13）。どれも利用者の定義に解決しないときだけ（[並列実行](#並列実行)、[非同期計算（Async）](#非同期計算async)） |
 | `E1041` | [匿名共用体](#匿名共用体)の誤り。型変数の要素（`anonymous_union_type_variable`）、型引数によっては同じ型になる要素と、関数型が純粋かどうかだけが違う要素（`anonymous_union_indistinct_members`）、重なる要素（`anonymous_union_duplicate_member`）、2 つ以上の要素になりうるリテラル（`anonymous_union_ambiguous_literal`）と値（配列のリテラルを含む値を含む。`anonymous_union_ambiguous_member`）、匿名共用体を head とする `instance`（`anonymous_union_instance`）、型テスト `:?` の対象の型が決まらない（`type_test_unknown_scrutinee`）・匿名共用体でない（`type_test_not_anonymous_union`）、`:?` の型（匿名共用体ならその各要素）が要素でない（`type_test_not_member`）、借用した値またはガードのある腕で、Copy でない要素を持つ匿名共用体へ `as` で絞る（`type_test_narrow_borrowed`）。kind `type_test_union` は出さなくなりました（`:?` の型に匿名共用体を書けます） |
 | `E1025` | 自動導出（deriving）がサポートされていない型クラスまたは要素型、停止しない再帰的 `Default` 定義。要素が読む JSON の種類が重なる[匿名共用体](#匿名共用体)の `Decode`（`anonymous_union_decode_overlap`） |
 | `E1026` | コンパイル時定数評価（`const` の初期化式と `const def` の本体）におけるトラップ発生、循環参照、計算ステップ上限超過、未対応の定数式、`const def` の署名・本体の規則違反、静的データの合計が 4 MiB を超える定数 |

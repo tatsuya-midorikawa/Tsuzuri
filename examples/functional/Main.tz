@@ -20,5 +20,5 @@ export def transform :: own i64 -> own i64 -> own i64 -> own i64 -> i64 = \a b c
 }
 
 def main :: own unit -> i32 = \() ->
-    do! IO.write_line (transform 1 2 3 4)
+    do! IO.writeln (transform 1 2 3 4)
     0

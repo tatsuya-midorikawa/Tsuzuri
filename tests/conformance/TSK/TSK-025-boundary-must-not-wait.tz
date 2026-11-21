@@ -6,7 +6,7 @@ fn leave _ =
     let _ticks = Time.tick Time.hour()
     let _timer = Timer.create Time.hour()
     let _func = Time.after_func Time.hour() (Owned.function (\() -> {
-        do! IO.write_line "called";
+        do! IO.writeln "called";
         ()
     }))
     "done"

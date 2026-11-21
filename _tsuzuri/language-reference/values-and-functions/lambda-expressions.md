@@ -308,7 +308,7 @@ let later = \() -> borrowed
 record Ticket { id: i64 }
 
 instance Drop<Ticket> {
-    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+    fn drop value = do! IO.writeln ("drop " + to_string value.id)
 }
 
 let ticket = Ticket { id: 1 }

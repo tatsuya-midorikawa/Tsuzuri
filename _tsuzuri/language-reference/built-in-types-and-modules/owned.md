@@ -153,13 +153,13 @@ error[E1014]: access conflicts with a live borrow; use the reference or end its 
 record Lock { id: i64 }
 
 instance Drop<Lock> {
-    fn drop lock = do! IO.write_line ("drop " + to_string lock.id)
+    fn drop lock = do! IO.writeln ("drop " + to_string lock.id)
 }
 
 def main :: unit -> i32 = \() ->
     let lock = Lock { id: 7 }
     Owned.drop lock
-    do! IO.write_line "released"
+    do! IO.writeln "released"
     0
 ```
 
@@ -329,7 +329,7 @@ error[E1013]: an owned function captures only owned values; this function value 
 def spawn :: own Owned.Function<unit, unit> -> unit = \work -> Routine.go work
 
 spawn (Owned.function (\() -> {
-    do! IO.write_line "hello"
+    do! IO.writeln "hello"
 }))
 0
 ```
@@ -352,7 +352,7 @@ fn twice work =
     }))
 
 twice (Owned.function (\() -> {
-    do! IO.write_line "twice"
+    do! IO.writeln "twice"
 }))
 0
 ```

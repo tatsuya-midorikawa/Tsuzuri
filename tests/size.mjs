@@ -239,7 +239,7 @@ section("integers print the same text in to_string and interpolation at every le
   for (const [index, type] of INTEGER_TYPES.entries()) {
     const values = integerValues(type);
     lines.push(`    let values${index} = [${values.map((value) => literal(value, type)).join(", ")}]`,
-      `    for value in values${index} do`, "        do! IO.write_line (to_string value)", '        do! IO.write_line $"{value}"');
+      `    for value in values${index} do`, "        do! IO.writeln (to_string value)", '        do! IO.writeln $"{value}"');
     for (const value of values) expected.push(value.toString(), value.toString());
   }
   const project = join(directory, "integer-project");
@@ -331,11 +331,11 @@ section("integer Parse and format specs print the same at every level and match 
     }
     lines.push(`    for text in [${texts.map((text) => JSON.stringify(text)).join(", ")}] do`,
       `        let parsed${index}: Maybe<${type.name}> = Parse.parse (ref text)`,
-      `        do! IO.write_line (if Maybe.is_none (ref parsed${index}) then "none" else to_string (Maybe.get parsed${index}))`);
+      `        do! IO.writeln (if Maybe.is_none (ref parsed${index}) then "none" else to_string (Maybe.get parsed${index}))`);
     for (const text of texts) expected.push(String(parseReference(text, type) ?? "none"));
     lines.push(`    let values${index} = [${values.map((value) => literal(value, type)).join(", ")}]`,
       `    for value in values${index} do`,
-      '        do! IO.write_line $"{value:+}|{value:x}|{value:X}|{value:o}|{value:b}|{value:5}|{value:+6}"');
+      '        do! IO.writeln $"{value:+}|{value:x}|{value:X}|{value:o}|{value:b}|{value:5}|{value:+6}"');
     for (const value of values) {
       expected.push([specReference(value, 10, true), specReference(value, 16), specReference(value, 16, false, true),
         specReference(value, 8), specReference(value, 2), value.toString().padStart(5),
@@ -370,9 +370,9 @@ section("a float still uses the numeric runtime to parse, with the ASCII copy", 
   writeFileSync(join(project, "Main.tz"), [
     "def main :: unit -> i32 = \\() ->",
     '    let parsed: Maybe<f64> = Parse.parse (ref "2.5")',
-    "    do! IO.write_line (to_string (Maybe.get parsed))",
+    "    do! IO.writeln (to_string (Maybe.get parsed))",
     '    let spec = $"{Maybe.get parsed:.3}"',
-    "    do! IO.write_line spec",
+    "    do! IO.writeln spec",
     "    0",
     "",
   ].join("\n"));

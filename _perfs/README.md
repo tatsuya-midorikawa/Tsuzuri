@@ -431,7 +431,7 @@ PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02 は、全フェーズの�
   診断・IR・pack の byte は thread 数で変わらず、thread 数はキャッシュの鍵に入りません。共有機での参考値は、1,000 module の `check` が 1.39〜1.46 倍、
   hello が 1.48 倍、parse が 4.0 倍で、CPU 時間は 37〜49% 増えます。Linux と Windows の scale は未測定で、G1 は期待値で CI の閾値ではありません。
 - **PM08**（実装済み）: PB01 の Phase 3 がリンク時の dead strip を実装済みで、D1 は取り下げでした。hello（`-O3`）は 67,256 bytes ではなく 50,664 bytes（cache あり）、
-  wasm の hello は 59 bytes ではなく 35,714 bytes（`IO.write_line` を使うため）で、整数を表示するプログラムの `__text` の約 80% は
+  wasm の hello は 59 bytes ではなく 35,714 bytes（`IO.writeln` を使うため）で、整数を表示するプログラムの `__text` の約 80% は
   `tz_soft_format` と PR04 の表でした。主な成果は D2（整数の表示・書式指定・`Parse` を手書き IR の `src/runtime/integer.ll` に分け、`numeric.ll` に依存させない変更）で、
   native の hello は 50,664 → 33,896 bytes（`__text` 13,304 → 2,724）、wasm の hello は 35,714 → 6,833 bytes（`-Oz` 3,905）になりました。これは第3フェーズの統合後の値で、PM08 の branch 単体では `__text` 2,604、wasm の hello は 6,357 bytes（`-Oz` 2,587、`-Oz --wasm-opt` 2,156）でした。差は PM05 の WASM ヒープと、統合時の `integer.ll` の 2 つの変更（128 bit の除算をやめた: Windows の x86-64 で桁が壊れたため。`digits` を 2 桁ずつにした: `format_parse` が 10〜18% 遅くなったため）です。
   `-Os`／`-Oz` は build・run だけ（既定の `-O3` は変えず、`test`・`bench` は `E2000`）、`--strip` は opt-in、`wasm-opt` は明示的な `--wasm-opt`（`TSUZURI_WASM_OPT`）だけで、
@@ -485,7 +485,7 @@ Go・Zig は計測用のローカルなツールとして扱い、既定の名�
   コード・データ・その他のメタデータと成果物サイズは照合対象のままです。IR・header・object・WASM は byte 単位で照合します。
 - control は `array_index_sum` を含む 16 種目です。既存種目を消さず、件数の検査は現行の種目表に合わせます。
   C#・JavaScript に欠けていた同種目の参照も補い、定数長の追加後は統合 runner が 38 種目になります。
-- 合成プロジェクトの `main :: unit -> i32` は現行の IO の記法で `let! line = IO.read_line ()` とします。
+- 合成プロジェクトの `main :: unit -> i32` は現行の IO の記法で `let! line = IO.readln ()` とします。
   通常の `let` は IO の値を実行しないため、起票時の略記をそのまま生成コードには使いません。
 - PX03 Phase 2 は C++ と Rust の single／workspace も含めます。Zig の最適化版は安全検査を保つ
   ReleaseSafe とし、実際のコマンド・ツールの版・Go の環境は補助 manifest に記録します。

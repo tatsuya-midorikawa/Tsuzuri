@@ -397,11 +397,11 @@ fn only_the_unsuffixed_random_functions_reach_the_operating_system() {
     // Each of the five that seed a generator from the operating system calls the OS random primitive, with
     // elements that are not Copy as well for the one that moves the array in and out.
     let seeded = [
-        "let! picked = Array.random_shuffle [1, 2, 3]\n    do! IO.write_line (Result.is_ok (&picked))",
-        "let! picked = Array.random_shuffle_in_place [\"a\", \"b\"]\n    do! IO.write_line (Result.is_ok (&picked))",
-        "let! picked = Array.random_choice [1, 2, 3]\n    do! IO.write_line (Result.is_ok (&picked))",
-        "let! picked = Array.random_choices 2 [1, 2, 3]\n    do! IO.write_line (Result.is_ok (&picked))",
-        "let! picked = Array.random_sample 2 [1, 2, 3]\n    do! IO.write_line (Result.is_ok (&picked))",
+        "let! picked = Array.random_shuffle [1, 2, 3]\n    do! IO.writeln (Result.is_ok (&picked))",
+        "let! picked = Array.random_shuffle_in_place [\"a\", \"b\"]\n    do! IO.writeln (Result.is_ok (&picked))",
+        "let! picked = Array.random_choice [1, 2, 3]\n    do! IO.writeln (Result.is_ok (&picked))",
+        "let! picked = Array.random_choices 2 [1, 2, 3]\n    do! IO.writeln (Result.is_ok (&picked))",
+        "let! picked = Array.random_sample 2 [1, 2, 3]\n    do! IO.writeln (Result.is_ok (&picked))",
     ];
     for wasm in [false, true] {
         let ir = library_ir(given, wasm);

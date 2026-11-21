@@ -141,8 +141,8 @@ fn addresses_and_handles_are_opaque_copies() {
     \\stream -> IO {
         let! first = Net.close stream
         let! second = Net.close stream
-        do! IO.write_line (Result.is_ok (&first))
-        do! IO.write_line (Result.is_ok (&second))
+        do! IO.writeln (Result.is_ok (&first))
+        do! IO.writeln (Result.is_ok (&second))
     }
 def both :: Net.Address -> i64
 fn both address = Net.port address + Net.port address
@@ -351,7 +351,7 @@ fn wasm_tries_once_through_plain_imports_and_native_does_not() {
     | Result.Ok listener ->
         let! waiting = Net.accept listener Maybe.None
         let! blocking = Net.accept listener (Maybe.Some 5)
-        do! IO.write_line (Result.is_ok (ref waiting) && Result.is_ok (ref blocking))
+        do! IO.writeln (Result.is_ok (ref waiting) && Result.is_ok (ref blocking))
         0
 ",
     );
@@ -378,7 +378,7 @@ fn net_declarations_are_not_imports_by_default() {
         "def main :: unit -> i32 = \\() ->
     let address = Maybe.get (Net.parse_address (ref \"127.0.0.1:9\"))
     let! opened = Net.connect address Maybe.None
-    do! IO.write_line (Result.is_ok (ref opened))
+    do! IO.writeln (Result.is_ok (ref opened))
     0
 ",
     );
@@ -416,7 +416,7 @@ fn types_the_phase_one_api() {
     let udp_bound: Net.UdpSocket -> Net.Address = Net.udp_local_addr
     let close_udp: Net.UdpSocket -> IO<Result<unit, Os.Error>> = Net.close_udp
     let sides = [Net.Read, Net.Write, Net.Both]
-    do! IO.write_line \"typed\"
+    do! IO.writeln \"typed\"
     0
 ",
     );
@@ -433,9 +433,9 @@ def main :: unit -> i32 = \\() ->
     let! connected = with_connection address (Maybe.Some 5) serve
     let! listened = with_listener address (\\listener -> IO.pure (Net.port (Net.local_addr listener)))
     let! udp = with_udp address (\\socket -> IO.pure (Net.port (Net.udp_local_addr socket)))
-    do! IO.write_line (Result.is_ok (&connected))
-    do! IO.write_line (Result.is_ok (&listened))
-    do! IO.write_line (Result.is_ok (&udp))
+    do! IO.writeln (Result.is_ok (&connected))
+    do! IO.writeln (Result.is_ok (&listened))
+    do! IO.writeln (Result.is_ok (&udp))
     let _accepting = with_accepted
     0
 ",
@@ -483,7 +483,7 @@ fn declares_only_reached_net_builtins() {
         assert!(!ir.contains("tsuzuri_os_"), "{ir}");
     }
     let connecting = module(
-        "def main :: unit -> i32 = \\() ->\n    let address = Maybe.get (Net.parse_address (&\"127.0.0.1:9\"))\n    let! opened = Net.connect address Maybe.None\n    do! IO.write_line (Result.is_ok (&opened))\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    let address = Maybe.get (Net.parse_address (&\"127.0.0.1:9\"))\n    let! opened = Net.connect address Maybe.None\n    do! IO.writeln (Result.is_ok (&opened))\n    0\n",
     );
     for wasm in [false, true] {
         let ir = ir(&connecting, llvm::Entry::Library, wasm);
@@ -503,24 +503,24 @@ fn net_declarations_are_effectful() {
     let address = Maybe.get (Net.parse_address (&\"127.0.0.1:9\"))
     let! opened = Net.connect address Maybe.None
     match opened with
-    | Result.Error error -> do! IO.write_line (Net.error_kind error)
+    | Result.Error error -> do! IO.writeln (Net.error_kind error)
     | Result.Ok stream ->
         let! written = Net.write stream [1ubyte] Maybe.None
         let! received = Net.read stream 10 Maybe.None
         let! shut = Net.shutdown stream Net.Both
         let! closed = Net.close stream
-        do! IO.write_line (Result.is_ok (&written))
-        do! IO.write_line (Result.is_ok (&received))
-        do! IO.write_line (Result.is_ok (&shut))
-        do! IO.write_line (Result.is_ok (&closed))
+        do! IO.writeln (Result.is_ok (&written))
+        do! IO.writeln (Result.is_ok (&received))
+        do! IO.writeln (Result.is_ok (&shut))
+        do! IO.writeln (Result.is_ok (&closed))
     let! listener = Net.bind address
     match listener with
     | Result.Ok bound ->
         let! accepted = Net.accept bound Maybe.None
-        do! IO.write_line (Result.is_ok (&accepted))
-    | Result.Error _ -> do! IO.write_line \"x\"
+        do! IO.writeln (Result.is_ok (&accepted))
+    | Result.Error _ -> do! IO.writeln \"x\"
     let! resolved = Net.resolve \"localhost\" 1
-    do! IO.write_line (Result.is_ok (&resolved))
+    do! IO.writeln (Result.is_ok (&resolved))
     0
 ",
     );
@@ -548,7 +548,7 @@ fn serve stream = IO.pure 1
 def main :: unit -> i32 = \\() ->
     let address = Maybe.get (Net.parse_address (&\"127.0.0.1:9\"))
     let! used = Net.with_connection address (Maybe.Some 5) serve
-    do! IO.write_line (Result.is_ok (&used))
+    do! IO.writeln (Result.is_ok (&used))
     0
 ",
     );
@@ -563,7 +563,7 @@ def main :: unit -> i32 = \\() ->
 #[test]
 fn net_is_opt_in_and_costs_other_programs_nothing() {
     // A program that does not name Net neither loads it nor emits anything of it.
-    let plain = module("def main :: unit -> i32 = \\() ->\n    do! IO.write_line 42\n    0\n");
+    let plain = module("def main :: unit -> i32 = \\() ->\n    do! IO.writeln 42\n    0\n");
     for wasm in [false, true] {
         let ir = ir(&plain, llvm::Entry::Library, wasm);
         assert!(!ir.contains("Net"), "{ir}");

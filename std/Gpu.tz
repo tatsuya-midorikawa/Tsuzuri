@@ -130,8 +130,8 @@ fn map_on device transform buffer kernel =
 /// let device = Result.get (Gpu.request Gpu.Auto)
 /// let _doubled = Gpu.init device 1000000 (\index -> index * 2)
 /// match Gpu.last_backend () with
-/// | Gpu.Vulkan -> IO.write_line "ran on Vulkan"
-/// | _ -> IO.write_line "ran on the CPU reference"
+/// | Gpu.Vulkan -> IO.writeln "ran on Vulkan"
+/// | _ -> IO.writeln "ran on the CPU reference"
 /// ```
 def last_backend :: own unit -> Backend
 fn last_backend _unit = match Gpu.__last() with

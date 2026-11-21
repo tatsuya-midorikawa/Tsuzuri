@@ -51,7 +51,7 @@ fn parses_tzroutine_as_a_contextual_keyword() {
 
 #[test]
 fn formats_tzroutine() {
-    let source = "tzroutine {\n    do! IO.write_line \"x\"\n}\n42\n";
+    let source = "tzroutine {\n    do! IO.writeln \"x\"\n}\n42\n";
     let formatted = format_source("Main.tz", source, SourceKind::Code).unwrap();
     assert!(
         formatted.formatted.contains("tzroutine {\n"),
@@ -66,7 +66,7 @@ fn formats_tzroutine() {
 #[test]
 fn checks_the_body_and_the_captures() {
     accepts("tzroutine { () }\n0\n");
-    accepts("tzroutine {\n    do! IO.write_line \"x\"\n}\n0\n");
+    accepts("tzroutine {\n    do! IO.writeln \"x\"\n}\n0\n");
     accepts("let s = \"a\"\ntzroutine {\n    let _n = String.length (ref s)\n}\n0\n");
     accepts(
         "let shared = Arc.new (Atomic.create 0i64)\nlet mine = Arc.share (ref shared)\ntzroutine {\n    let _old = Atomic.fetch_add (Arc.get (ref mine)) 1i64\n}\nAtomic.load (Arc.get (ref shared))\n",
@@ -169,7 +169,7 @@ fn tzroutine_module_functions() {
         "let n = Routine.count ()\nlet p = Routine.max_procs ()\nlet c = Routine.cpu_count ()\nn + p + c\n",
     );
     accepts("Routine.go (Owned.function (\\() -> ()))\n0\n");
-    accepts("Routine.go (Owned.function (\\() -> {\n    do! IO.write_line \"go\"\n}))\n0\n");
+    accepts("Routine.go (Owned.function (\\() -> {\n    do! IO.writeln \"go\"\n}))\n0\n");
     accepts("let f: unit -> unit = Routine.yield\nf ()\n0\n");
     accepts(
         "let spawn: Owned.Function<unit, unit> -> unit = Routine.go\nspawn (Owned.function (\\() -> ()))\n0\n",
@@ -216,7 +216,7 @@ fn rejects_a_borrowing_owned_function(source: &str) {
 
 /// The head of a function that borrows a string it owns and makes `g`, a function value that
 /// captures the borrow (A30).
-const BORROWING_G: &str = "def spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    let borrowed = ref text\n    let g: unit -> unit = \\() -> {\n        do! IO.write_line $\"{String.length borrowed} {borrowed}\"\n    }\n";
+const BORROWING_G: &str = "def spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    let borrowed = ref text\n    let g: unit -> unit = \\() -> {\n        do! IO.writeln $\"{String.length borrowed} {borrowed}\"\n    }\n";
 
 #[test]
 fn an_owned_function_from_a_function_value_holds_no_borrow() {
@@ -243,7 +243,7 @@ fn an_owned_function_from_a_function_value_holds_no_borrow() {
     );
     // A partial application that keeps a reference.
     rejects_a_borrowing_owned_function(
-        "def show :: ref string -> unit -> unit = \\text _u -> {\n    do! IO.write_line $\"{text}\"\n}\n\ndef spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    Routine.go (Owned.function (show (ref text)))\n\nspawn 4\n0\n",
+        "def show :: ref string -> unit -> unit = \\text _u -> {\n    do! IO.writeln $\"{text}\"\n}\n\ndef spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    Routine.go (Owned.function (show (ref text)))\n\nspawn 4\n0\n",
     );
     // Through a pipeline.
     rejects_a_borrowing_owned_function(&format!(
@@ -275,21 +275,21 @@ fn an_owned_function_from_a_function_value_holds_no_borrow() {
 
     // A named function, and function values that capture only owned values, stay owned.
     accepts(
-        "def hello :: unit -> unit = \\() -> {\n    do! IO.write_line \"hello\"\n}\nRoutine.go (Owned.function hello)\n0\n",
+        "def hello :: unit -> unit = \\() -> {\n    do! IO.writeln \"hello\"\n}\nRoutine.go (Owned.function hello)\n0\n",
     );
     accepts(
-        "def spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    let g: unit -> unit = \\() -> {\n        do! IO.write_line $\"{String.length (ref text)} {text}\"\n    }\n    Routine.go (Owned.function g)\n\nspawn 4\n0\n",
+        "def spawn :: i64 -> unit\nfn spawn count =\n    let text = String.repeat count (ref \"abcdefgh\")\n    let g: unit -> unit = \\() -> {\n        do! IO.writeln $\"{String.length (ref text)} {text}\"\n    }\n    Routine.go (Owned.function g)\n\nspawn 4\n0\n",
     );
     accepts(
-        "record Job { name: string, size: i64 }\ndef spawn :: i64 -> unit\nfn spawn size =\n    let job = Job { name: \"job\", size: size }\n    let g: unit -> unit = \\() -> {\n        do! IO.write_line $\"{job.name} {job.size}\"\n    }\n    Routine.go (g |> Owned.function)\n\nspawn 4\n0\n",
+        "record Job { name: string, size: i64 }\ndef spawn :: i64 -> unit\nfn spawn size =\n    let job = Job { name: \"job\", size: size }\n    let g: unit -> unit = \\() -> {\n        do! IO.writeln $\"{job.name} {job.size}\"\n    }\n    Routine.go (g |> Owned.function)\n\nspawn 4\n0\n",
     );
     // A function that makes a function from owned values.
     accepts(
-        "def printer :: string -> unit -> unit = \\text _u -> {\n    do! IO.write_line $\"{text}\"\n}\nRoutine.go (Owned.function (printer \"owned\"))\n0\n",
+        "def printer :: string -> unit -> unit = \\text _u -> {\n    do! IO.writeln $\"{text}\"\n}\nRoutine.go (Owned.function (printer \"owned\"))\n0\n",
     );
     // An owned function parameter is passed on as it is (the example of routine.md).
     accepts(
-        "def spawn :: own Owned.Function<unit, unit> -> unit = \\work -> Routine.go work\n\nspawn (Owned.function (\\() -> {\n    do! IO.write_line \"hello from Routine.go\"\n}))\n0\n",
+        "def spawn :: own Owned.Function<unit, unit> -> unit = \\work -> Routine.go work\n\nspawn (Owned.function (\\() -> {\n    do! IO.writeln \"hello from Routine.go\"\n}))\n0\n",
     );
     // An owned function holds no borrow, so an owned lambda (as in `ErrGroup.start`) or a
     // tzroutine body may capture an owned function parameter.
@@ -363,7 +363,7 @@ fn an_owned_lambda_in_a_generic_instance_reports_its_capture() {
 fn the_result_of_owned_call_borrows_only_its_input() {
     // A30: an owned function holds no borrow and its body cannot return one of its environment, so
     // the result of `Owned.call (ref factory) ()` does not borrow `factory`.
-    let factory = "def make :: own Owned.Function<unit, unit -> unit> -> unit\nfn make factory =\n    let f = Owned.call (ref factory) ()\n    Routine.go (Owned.function f)\n\ndef hello :: unit -> unit = \\() -> {\n    do! IO.write_line \"hello\"\n}\n\nmake (Owned.function (\\() -> hello))\n0\n";
+    let factory = "def make :: own Owned.Function<unit, unit -> unit> -> unit\nfn make factory =\n    let f = Owned.call (ref factory) ()\n    Routine.go (Owned.function f)\n\ndef hello :: unit -> unit = \\() -> {\n    do! IO.writeln \"hello\"\n}\n\nmake (Owned.function (\\() -> hello))\n0\n";
     accepts(factory);
     accepts(&factory.replace(
         "Owned.call (ref factory) ()",
@@ -614,7 +614,7 @@ fn runtime_pieces_start_on_lines_of_their_own() {
     // A spawning program that shows a Char: `@tz.string.copy` comes right after the last function
     // of the Char runtime (`character.ll`). The UTF-16 form joins that runtime as it is.
     let shown = accepts(
-        "def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\ndo! IO.write_line (to_string 'x')\ngo 41\n",
+        "def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\ndo! IO.writeln (to_string 'x')\ngo 41\n",
     );
     for entry in [llvm::Entry::Library, llvm::Entry::Console] {
         let ir = emit_strings(&shown, entry, llvm::StringForm::Utf16);
@@ -1002,8 +1002,8 @@ fn wasm_stack_checks_reach_the_function_after_each_runtime_piece() {
     // (`@tz.string.copy` after `character.ll` in the UTF-16 form) sat on the line of the closing
     // brace (`}define ...`) and got no check. Both stack bounds that the pass writes: the switched
     // stacks of a wasm32 module that spawns (TZ09) and the module's stack above 2 GiB of memory.
-    const SPAWNS: &str = "def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\ndo! IO.write_line (to_string 'x')\ngo 41\n";
-    const SHOWS: &str = "do! IO.write_line (to_string 'x')\n";
+    const SPAWNS: &str = "def go :: i64 -> i64\nfn go n =\n    tzroutine { () }\n    n\ndo! IO.writeln (to_string 'x')\ngo 41\n";
+    const SHOWS: &str = "do! IO.writeln (to_string 'x')\n";
     let utf16 = [("TSUZURI_STRINGS", "utf16")];
     for (name, source, args, probes) in [
         ("checked-spawn", SPAWNS, &JSPI[..], true),

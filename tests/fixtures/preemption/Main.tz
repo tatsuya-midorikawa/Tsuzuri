@@ -261,5 +261,5 @@ fn run length =
 def main :: Array<string> -> i32
 fn main args =
     let text = if args.length < 1 then "usage: busy|values|tight|inlined|dyn_spin|drop_spin|scope_spin|closure_spin" else run args[args.length - 1].length
-    do! IO.write_line text
+    do! IO.writeln text
     0

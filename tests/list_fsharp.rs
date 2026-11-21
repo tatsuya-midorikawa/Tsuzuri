@@ -482,10 +482,10 @@ fn only_the_unsuffixed_random_functions_reach_the_operating_system() {
     let given = "export def shuffled :: i64\nfn shuffled =\n    let values = List.random_shuffle_by (\\() -> 0.5) [|1, 2, 3|]\n    values[0]\n\nexport def sampled :: i64\nfn sampled =\n    match List.random_sample_with (Random.pcg 1i64u 2i64u) 2 [|1, 2, 3|] with\n    | (values, _) -> values[0]\n";
     // Each of the four that seed a generator from the operating system calls the OS random primitive.
     let seeded = [
-        "let! picked = List.random_shuffle [|1, 2, 3|]\n    do! IO.write_line (Result.is_ok (&picked))",
-        "let! picked = List.random_choice [|1, 2, 3|]\n    do! IO.write_line (Result.is_ok (&picked))",
-        "let! picked = List.random_choices 2 [|1, 2, 3|]\n    do! IO.write_line (Result.is_ok (&picked))",
-        "let! picked = List.random_sample 2 [|1, 2, 3|]\n    do! IO.write_line (Result.is_ok (&picked))",
+        "let! picked = List.random_shuffle [|1, 2, 3|]\n    do! IO.writeln (Result.is_ok (&picked))",
+        "let! picked = List.random_choice [|1, 2, 3|]\n    do! IO.writeln (Result.is_ok (&picked))",
+        "let! picked = List.random_choices 2 [|1, 2, 3|]\n    do! IO.writeln (Result.is_ok (&picked))",
+        "let! picked = List.random_sample 2 [|1, 2, 3|]\n    do! IO.writeln (Result.is_ok (&picked))",
     ];
     for wasm in [false, true] {
         let ir = library_ir(given, wasm);

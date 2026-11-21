@@ -56,7 +56,7 @@ const example = [
   "",
   "word",
   "let broken = 10 / (base - 6)",
-  "do! IO.write_line \"hello\"",
+  "do! IO.writeln \"hello\"",
   ":list",
   ":quit",
   "1 + 1",
@@ -105,12 +105,12 @@ check("R5", ["let c = 1; let c = c + 1", "c"], ["c: i32", "c: i32", "it: i32 = 2
 
 // `:type` does not run its expression (10 / 0 would trap), an IO value is not run, and an action
 // runs once and is not kept.
-check("R6", ["let z = 0", ":type 10 / z", "IO.write_line \"y\"", "do! IO.write_line \"x\"", "do! IO.write_line \"x\"", "1 + 1"],
+check("R6", ["let z = 0", ":type 10 / z", "IO.writeln \"y\"", "do! IO.writeln \"x\"", "do! IO.writeln \"x\"", "1 + 1"],
   ["z: i32", "i32", "it: IO<unit>", "x", "x", "it: i32 = 2"], { quiet: true });
 
 // The loaded program reads a line; the REPL's own stdin ("1 + 1") must not reach it, so it reads
 // the end of its input and prints nothing. Actions do not appear in `:list`.
-const echo = "let! line = IO.read_line ()\nlet! value = line\ndo! IO.write_line value\n";
+const echo = "let! line = IO.readln ()\nlet! value = line\ndo! IO.writeln value\n";
 check("R7", [":load Echo.tz", "1 + 1", ":list"], ["it: i32 = 2"], { files: { "Echo.tz": echo }, quiet: true });
 
 const r8 = check("R8", [":foo", ":type", ":load missing.tz", ":load notes.txt", ":list extra", "1"], ["it: i32 = 1"], {
@@ -146,7 +146,7 @@ check("R10", ["while true do ()", "1 + 1"], ["it: i32 = 2"], {
 });
 
 // 17 MiB + 1 byte, as `tsuzuri run` of the same Main.tz writes.
-check("R11", ["do! IO.write_line (String.repeat (17i64 * 1048576i64) \"x\")", "1 + 1"], ["it: i32 = 2"], {
+check("R11", ["do! IO.writeln (String.repeat (17i64 * 1048576i64) \"x\")", "1 + 1"], ["it: i32 = 2"], {
   errors: ["input:1:1: error[E2005]: program output exceeded 16 MiB and the program was stopped"],
 });
 
@@ -169,7 +169,7 @@ const traced = check("R15", ["let t = Debug.trace 5", "t + 1", "t + 2"], ["t: i3
 assert.equal(count(traced.stderr, "5\n"), 3, traced.stderr);
 
 // A top-level IO value is not run when it is bound or shown, only by an action.
-check("R16", ["let action = IO.write_line \"once\"", "action", "do! action"],
+check("R16", ["let action = IO.writeln \"once\"", "action", "do! action"],
   ["action: IO<unit>", "it: IO<unit>", "once"], { quiet: true });
 
 // A statement that ends with ';' stays in the session, like a binding, so `c` is 1 + 1.
@@ -203,7 +203,7 @@ check("R20", [
   "f 1",
   "g 2",
   "let base = 6",
-  "   do! IO.write_line (to_string base)",
+  "   do! IO.writeln (to_string base)",
   ":load Indented.tz",
   "twice (inc 4)",
   ":list",

@@ -1813,7 +1813,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 警告 | `W1008` | A20 | 効果の属性が検査されない（インスタンスのないジェネリック関数、`const def` の実行時の本体だけ）。kind は `effect_attribute_unchecked_generic`・`effect_attribute_on_const_def` |
 | 警告 | `W1009` | A21 | 契約が常に真・使わない束縛など |
 | 警告 | `W1010` | E15 | 信頼を表明していない `extern` の使用（`audit` が既定で警告に格上げ） |
-| 診断コード | `E1040` | TZ03・TZ12・TZ13 | 削除・改名した並行処理の機能（`DataChannel` へ改名した旧 `Channel` の `bounded`・`clone_sender`・`Sender`・`Receiver`、削除した `task { }`・`Task.*`・`Task<T>`・`Async`・`async { }`）の使用。help に移行先、改名は `fixes` も（D-61） |
+| 診断コード | `E1040` | TZ03・TZ12・TZ13・E17 | 削除・改名した機能（`DataChannel` へ改名した旧 `Channel` の `bounded`・`clone_sender`・`Sender`・`Receiver`、削除した `task { }`・`Task.*`・`Task<T>`・`Async`・`async { }`、E17 で `readln`・`writeln`・`write_err`・`write_errln` と `try_` 版へ改名した旧 `IO` の 8 関数）の使用。help に移行先、改名は `fixes` も（D-61） |
 | 診断コード | `E1041` | A24・A25・A26 | 匿名共用体の誤り（要素の規則: 型変数・区別できない要素・重複、注入の曖昧さ、利用者のインスタンス、型テスト `:?` の誤り）。借用の要素は `E1013`、要素数の上限は `E1017`、要素でない値は `E1003`、構文は `E0002` の kind で表す（D-62）。`Decode` を持てない匿名共用体（要素が読む JSON の種類の重なり）だけは、承認済みの A26 の D5 のとおり `E1025`（`anonymous_union_decode_overlap`） |
 | 予約（未割り当て） | `E1035`・`E1042`〜`E1049`・`E2012`〜`E2015`・`W1011`〜`W1015` | — | 実装中に必要になったら、この表に追記してから使う |
 | 文脈キーワード | `tzroutine`（直後が `{`）・`select`（直後の行が `\|`）・`select` の腕の `recv`・`from`・`send`・`default` | TZ02・TZ04 | 予約語ではない（識別子として使える） |

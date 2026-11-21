@@ -1,6 +1,6 @@
 tzroutine {
     tzroutine {
-        do! IO.write_line "grandchild"
+        do! IO.writeln "grandchild"
     }
 }
 42

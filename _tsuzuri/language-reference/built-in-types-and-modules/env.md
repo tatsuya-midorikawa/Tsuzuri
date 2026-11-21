@@ -28,24 +28,24 @@
 ```tsuzuri run=0%0Anone%0Ainvalid%20input%0Ainvalid%20input%0Atrue
 def main :: unit -> i32 = \() ->
     let! args = Env.args ()
-    do! IO.write_line (match args with
+    do! IO.writeln (match args with
         | Result.Ok names -> to_string names.length
         | Result.Error error -> Os.message (ref error))
     let! unset = Env.var "TSUZURI_DOC_UNSET_VAR"
-    do! IO.write_line (match unset with
+    do! IO.writeln (match unset with
         | Result.Ok (Maybe.Some _) -> "some"
         | Result.Ok Maybe.None -> "none"
         | Result.Error error -> Os.message (ref error))
     let! equals = Env.var "A=B"
-    do! IO.write_line (match equals with
+    do! IO.writeln (match equals with
         | Result.Ok _ -> "unexpected"
         | Result.Error error -> Os.message (ref error))
     let! empty = Env.var ""
-    do! IO.write_line (match empty with
+    do! IO.writeln (match empty with
         | Result.Ok _ -> "unexpected"
         | Result.Error error -> Os.message (ref error))
     let! directory = Env.current_dir ()
-    do! IO.write_line (match directory with
+    do! IO.writeln (match directory with
         | Result.Ok text -> to_string (text.length > 0)
         | Result.Error error -> Os.message (ref error))
     0

@@ -10,7 +10,7 @@
 
 - `IO<T>` は遅延アクションです。作っただけでは副作用は起きません。
 - `main` の本体では `let!` と `do!` がその場で実行されます。明示的な `IO { ... }` も使えます。
-- `IO.write_line` の別名が `IO.writeln` です。標準エラーへは `IO.write_error_line` を使います。
+- 1 行を書くのは `IO.writeln`、読むのは `IO.readln` です。標準エラーへは `IO.write_err` と `IO.write_errln` を使います。名前の `ln` は行、`err` は標準エラーです。
 - `try_` 付きの関数は `Result<T, IO.Error>` を返します。付いていない関数は失敗するとトラップします。
 - トップレベルの結果式は表示され、トップレベルの `IO<T>` は 1 回実行されます。`IO<i32>` の値が終了コードです。
 
@@ -29,8 +29,8 @@ flowchart TD
 
 ```tsuzuri run=now
 def main :: unit -> i32 = \() ->
-    let _ignored = IO.write_line "not yet"
-    do! IO.write_line "now"
+    let _ignored = IO.writeln "not yet"
+    do! IO.writeln "now"
     0
 ```
 
@@ -44,7 +44,7 @@ now
 
 ```tsuzuri run=tick%0Atick
 def main :: unit -> i32 = \() ->
-    let action = IO.write_line "tick"
+    let action = IO.writeln "tick"
     do! action
     do! action
     0
@@ -75,11 +75,11 @@ def main :: unit -> i32 = \() ->
 hello
 ```
 
-`IO.writeln` は `IO.write_line` と同じアクションです。`IO.write` は改行を付けません。
+`IO.writeln` は値を表示したあとに LF を書きます。`IO.write` は改行を付けません。
 
 ```tsuzuri run=12%0A34
 def main :: unit -> i32 = \() ->
-    do! IO.write_line "12"
+    do! IO.writeln "12"
     do! IO.write "34"
     0
 ```
@@ -96,14 +96,14 @@ def main :: unit -> i32 = \() ->
 ```tsuzuri run=1%0A2%0Ahello%20Tsuzuri%0A7%0A42
 def greet :: own string -> IO<i64>
 fn greet name = IO {
-    do! IO.write_line $"hello {name}"
+    do! IO.writeln $"hello {name}"
     return name.length
 }
 
 def main :: unit -> i32 = \() ->
     do! IO {
         for n in [1, 2] do
-            do! IO.write_line n
+            do! IO.writeln n
     }
     let! length = greet "Tsuzuri"
     do! IO.writeln length
@@ -112,7 +112,7 @@ def main :: unit -> i32 = \() ->
         and! right = IO.pure 22
         return left + right
     }
-    do! IO.write_line both
+    do! IO.writeln both
     0
 ```
 
@@ -142,9 +142,9 @@ hello Tsuzuri
 標準入力を読む例は、入力がない環境では結果が変わるので、実行はしません。型検査だけです。
 
 ```tsuzuri
-let! line = IO.read_line ()
+let! line = IO.readln ()
 let! text = line
-do! IO.write_line text
+do! IO.writeln text
 ```
 
 このトップレベルの型は `IO<Maybe<unit>>` です。まず 1 行読み、`Some` のときだけ書き出します。終端の `None` なら残りの書き込みはスキップされ、エラーではなく `None` が残ります。明示的な `IO { ... }` の中では、右辺は `IO` のアクションである必要があります。上のようにビルダー名を省略した本体で、`Maybe` の値を `let!` します。
@@ -154,16 +154,18 @@ do! IO.write_line text
 | 関数 | 行き先 | 改行 |
 | --- | --- | --- |
 | `IO.write` / `IO.try_write` | 標準出力 | 付けない |
-| `IO.write_line` / `IO.writeln` / `IO.try_write_line` | 標準出力 | 末尾に LF |
-| `IO.write_error` / `IO.try_write_error` | 標準エラー | 付けない |
-| `IO.write_error_line` / `IO.try_write_error_line` | 標準エラー | 末尾に LF |
-| `IO.read_line` / `IO.try_read_line` | 標準入力 | LF と CRLF を除く |
+| `IO.writeln` / `IO.try_writeln` | 標準出力 | 末尾に LF |
+| `IO.write_err` / `IO.try_write_err` | 標準エラー | 付けない |
+| `IO.write_errln` / `IO.try_write_errln` | 標準エラー | 末尾に LF |
+| `IO.readln` / `IO.try_readln` | 標準入力 | LF と CRLF を除く |
+
+名前は 3 つの印の組み合わせです。`ln` は 1 行（書くときは末尾に LF を付け、読むときは行末を除く）、`err` は標準エラー、`try_` は失敗を `Result` で返すことを表します。読み書きの 5 つの操作には、それぞれ `try_` 付きと `try_` なしの関数が 1 つずつあります。
 
 出力は UTF-8 です。表示そのものもアクションの実行時まで遅延します。数値、`bool`、文字列など、`Display` を持つ値を渡せます。途中の NUL も切り捨てません。
 
 ネイティブでは C の標準入出力を使い、書き込みのたびにフラッシュします。書き込みの途中で失敗しても、すでに出たバイトは戻りません。
 
-`IO.read_line ()` の結果は `Maybe<string>` です。
+`IO.readln ()` の結果は `Maybe<string>` です。
 
 - 入力の終端では `None` です。
 - 空行は `Some ""` です。
@@ -171,12 +173,12 @@ do! IO.write_line text
 - LF と CRLF は除きます。単独の CR は残します。
 - 不正な UTF-8 は `InvalidEncoding` です。置換文字にはしません。
 
-`try_` が付かない `read_line` と `write_line` は、`Result.get` で中身を取り出します。失敗するとトラップし、呼び出し元ではキャッチできません。回復するなら `try_` を使います。
+`try_` が付かない `readln`・`write`・`writeln`・`write_err`・`write_errln` は、`try_` 付きの結果から `Result.get` で中身を取り出します。失敗するとトラップし、呼び出し元ではキャッチできません。回復するなら `try_` を使います。
 
 ```tsuzuri run=encoding
 def main :: unit -> i32 = \() ->
     let! failed = IO.try_write "\uD800"
-    do! IO.write_line (match failed with
+    do! IO.writeln (match failed with
         | Result.Error IO.InvalidEncoding -> "encoding"
         | Result.Error IO.WriteFailed -> "write-failed"
         | Result.Error IO.ReadFailed -> "read-failed"
@@ -190,12 +192,12 @@ def main :: unit -> i32 = \() ->
 encoding
 ```
 
-孤立サロゲートは書き込む前に `InvalidEncoding` になります。成功した `try_write_line` は、その時点で本当に出力します。
+孤立サロゲートは書き込む前に `InvalidEncoding` になります。成功した `try_writeln` は、その時点で本当に出力します。
 
 ```tsuzuri run=ok%0Aaccepted
 def main :: unit -> i32 = \() ->
-    let! accepted = IO.try_write_line "ok"
-    do! IO.write_line (match accepted with
+    let! accepted = IO.try_writeln "ok"
+    do! IO.writeln (match accepted with
         | Result.Ok _ -> "accepted"
         | Result.Error _ -> "failed")
     0
@@ -208,12 +210,13 @@ ok
 accepted
 ```
 
-標準エラーへの出力は、下の照合には出てきません。`tsuzuri run` は通常、標準エラーをそのまま転送します。`--json` のときだけ、終了までためて診断に含めます。
+標準エラーへの出力は、下の照合には出てきません。`tsuzuri run` は通常、標準エラーをそのまま転送します。`--json` のときだけ、終了までためて診断に含めます。次の例の標準エラーは `note: stderr` の 1 行です。`IO.write_err` は改行を付けないので、続く `IO.write_errln` の出力が同じ行に続きます。
 
 ```tsuzuri run=stdout
 def main :: unit -> i32 = \() ->
-    do! IO.write_error_line "note"
-    do! IO.write_line "stdout"
+    do! IO.write_err "note: "
+    do! IO.write_errln "stderr"
+    do! IO.writeln "stdout"
     0
 ```
 
@@ -259,17 +262,16 @@ stdout
 | `IO.pure` | `Capture<'a> => 'a -> IO<'a>` | 値を副作用のないアクションにする |
 | `IO.bind` | `('a -> IO<'b>) -> IO<'a> -> IO<'b>` | 実行結果を次のアクションへ渡す |
 | `IO.map` | `('a -> 'b) -> IO<'a> -> IO<'b>` | 実行結果を関数で変換する |
-| `IO.read_line` | `unit -> IO<Maybe<string>>` | 1 行読む。失敗するとトラップする |
-| `IO.try_read_line` | `unit -> IO<Result<Maybe<string>, IO.Error>>` | 1 行読む。失敗は `Error` |
+| `IO.readln` | `unit -> IO<Maybe<string>>` | 1 行読む。失敗するとトラップする |
+| `IO.try_readln` | `unit -> IO<Result<Maybe<string>, IO.Error>>` | 1 行読む。失敗は `Error` |
 | `IO.write` | `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` | 標準出力へ書く。失敗するとトラップする |
-| `IO.write_line` | `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` | 標準出力へ書き、LF を付ける |
-| `IO.writeln` | `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` | `write_line` の別名 |
-| `IO.write_error` | `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` | 標準エラーへ書く |
-| `IO.write_error_line` | `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` | 標準エラーへ書き、LF を付ける |
+| `IO.writeln` | `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` | 標準出力へ書き、LF を付ける。失敗するとトラップする |
+| `IO.write_err` | `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` | 標準エラーへ書く。失敗するとトラップする |
+| `IO.write_errln` | `(Display<'a>, Capture<'a>) => 'a -> IO<unit>` | 標準エラーへ書き、LF を付ける。失敗するとトラップする |
 | `IO.try_write` | `(Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, IO.Error>>` | 標準出力へ書く。失敗は `Error` |
-| `IO.try_write_line` | `(Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, IO.Error>>` | 改行付き。失敗は `Error` |
-| `IO.try_write_error` | `(Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, IO.Error>>` | 標準エラーへ書く。失敗は `Error` |
-| `IO.try_write_error_line` | `(Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, IO.Error>>` | 標準エラーへ改行付きで書く |
+| `IO.try_writeln` | `(Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, IO.Error>>` | 標準出力へ書き、LF を付ける。失敗は `Error` |
+| `IO.try_write_err` | `(Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, IO.Error>>` | 標準エラーへ書く。失敗は `Error` |
+| `IO.try_write_errln` | `(Display<'a>, Capture<'a>) => 'a -> IO<Result<unit, IO.Error>>` | 標準エラーへ書き、LF を付ける。失敗は `Error` |
 
 コンピュテーション式が使う操作も公開されています。通常のコードから直接呼ぶ必要はほとんどありません。
 
@@ -282,7 +284,7 @@ stdout
 | `MergeSources` | `and!`。左から右へ実行する |
 | `Using` | `Maybe` や `Result` など、別の計算との合成 |
 
-呼び出しは `IO.read_line ()` のように、`unit` 引数を `()` で渡します。
+呼び出しは `IO.readln ()` のように、`unit` 引数を `()` で渡します。
 
 ### 引数の順序
 
@@ -294,7 +296,7 @@ stdout
 def main :: unit -> i32 = \() ->
     let step = IO.bind (\n -> IO.pure (n * 2)) >> IO.map (\n -> n + 2)
     let! answer = IO.pure 20 |> step
-    do! IO.write_line answer
+    do! IO.writeln answer
     0
 ```
 
@@ -306,6 +308,19 @@ def main :: unit -> i32 = \() ->
 
 コンピュテーション式の展開先になる `Bind` などの操作は別で、アクションが先です（`Bind action next`）。
 
+### 以前の関数名
+
+次の 8 つの以前の名前は `E1040`（kind `renamed_io_function`）です。メッセージが今の名前を示します（`'IO.write_line' is now 'IO.writeln'`）。`std::IO.write_line` のように `std::` を付けて書いても同じです。`IO.write` と `IO.try_write` の名前は変わっていません。
+
+| 以前の名前 | 今の名前 |
+| --- | --- |
+| `IO.read_line` / `IO.try_read_line` | `IO.readln` / `IO.try_readln` |
+| `IO.write_line` / `IO.try_write_line` | `IO.writeln` / `IO.try_writeln` |
+| `IO.write_error` / `IO.try_write_error` | `IO.write_err` / `IO.try_write_err` |
+| `IO.write_error_line` / `IO.try_write_error_line` | `IO.write_errln` / `IO.try_write_errln` |
+
+どれも確かな（`certain`）修正案を持ち、`tsuzuri fix` が 1 回ですべての箇所の関数名だけを書き換えます。`std::IO.` の修飾や空白は書いたまま残り、直したプログラムの意味は以前と同じです。自分の名前空間に置いたモジュール `IO`（`namespace App` の `App/IO.tz`）は標準の `IO` ではないので、そこにない関数は従来どおり `E1002` です（[エラーコード](../compiler/diagnostics.md#エラーコード)）。
+
 ## 所有権
 
 `IO<T>` の値は何度でも実行できます。実行のたびにクロージャが走ります。中で捕捉した値は、通常の `Capture` と借用の規則に従います。排他借用や `Drop` 型の値を、アクションの中へ持ち出すことはできません（`E1005`）。
@@ -316,7 +331,7 @@ OS の API は `let!`・`do!` で実行します。入口のスレッドのほ�
 
 ## WASM
 
-既定の wasm32 出力は、到達した標準入出力だけを `tsuzuri_io.read_line` と `tsuzuri_io.write` として import します。未提供の import を無視はしません。`IO` を使わないプログラムの import は増えません。WASI は、`--wasm-host wasi` を付けたときだけ使います。
+既定の wasm32 出力は、到達した標準入出力だけを `tsuzuri_io.read_line` と `tsuzuri_io.write` として import します。未提供の import を無視はしません。`IO` を使わないプログラムの import は増えません。WASI は、`--wasm-host wasi` を付けたときだけ使います。import の名前は `IO` の関数名とは別のもので、`IO.readln` と `IO.try_readln` は `read_line` を、書き込む 8 つの関数はどれも `write` を使います。
 
 `read_line` のホスト関数は、改行を除いた所有 UTF-8 バイトの descriptor を書き、`0` が行、`1` が終端、`2` が失敗です。`write` は fd 1 または fd 2 と借用バイトを受け、全量の書き込みとフラッシュに成功すると `0` を返します。ホストはバッファを変更したり解放したりせず、行末の LF を二重に足しません。
 
@@ -334,7 +349,8 @@ OS の API は `let!`・`do!` で実行します。入口のスレッドのほ�
 
 - `IO<T>` は遅延アクションです。捨てれば副作用は起きず、実行した回数だけ起きます。
 - `main` では `do!` と `let!` が直接実行されます。遅延したまま合成するなら `IO { ... }` です。
-- 画面へ出すなら `IO.write_line`（別名 `IO.writeln`）、失敗を値で受けるなら `try_` です。
+- 画面へ 1 行出すなら `IO.writeln`、標準エラーへは `IO.write_errln`、1 行読むなら `IO.readln` です。失敗を値で受けるなら `try_` 付きを使います。
+- 以前の関数名（`write_line` など）は `E1040` で、`tsuzuri fix` が今の名前に直します（[以前の関数名](#以前の関数名)）。
 - 標準入力の終端は `None`、空行は `Some ""` です。不正な UTF-8 は置換しません。
 - トップレベルの `IO<i32>` と `main` の戻り値が終了コードです。強制終了の関数はありません。
 

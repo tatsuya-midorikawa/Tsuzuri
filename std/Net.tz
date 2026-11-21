@@ -499,8 +499,8 @@ fn resolve_with host port =
 /// ```tsuzuri
 /// let! found = Net.resolve "example.com" 443
 /// match found with
-/// | Result.Ok addresses -> IO.write_line (to_string addresses.length + " addresses")
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok addresses -> IO.writeln (to_string addresses.length + " addresses")
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def resolve :: own string -> own i64 -> IO<Result<[Address], Os.Error>>
 fn resolve host port = IO.map (\() -> resolve_with (ref host) port) (IO.pure ())
@@ -512,8 +512,8 @@ fn resolve host port = IO.map (\() -> resolve_with (ref host) port) (IO.pure ())
 /// let server = Maybe.get (Net.parse_address "127.0.0.1:8080")
 /// let! connected = Net.connect server (Maybe.Some 5000)
 /// match connected with
-/// | Result.Ok stream -> IO.write_line ("connected from " + Net.address_text (Net.stream_local_addr stream))
-/// | Result.Error error -> IO.write_line ("failed: " + to_string (Net.error_kind error))
+/// | Result.Ok stream -> IO.writeln ("connected from " + Net.address_text (Net.stream_local_addr stream))
+/// | Result.Error error -> IO.writeln ("failed: " + to_string (Net.error_kind error))
 /// ```
 def connect :: own Address -> own Maybe<i64> -> IO<Result<TcpStream, Os.Error>>
 fn connect address timeout = IO.map (\() -> connect_with address timeout) (IO.pure ())
@@ -528,8 +528,8 @@ fn connect address timeout = IO.map (\() -> connect_with address timeout) (IO.pu
 /// # let stream = Result.get connected
 /// let! received = Net.read stream 4096 (Maybe.Some 5000)
 /// match received with
-/// | Result.Ok bytes -> IO.write_line (if bytes.length == 0 then "end of stream" else to_string bytes.length + " bytes")
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok bytes -> IO.writeln (if bytes.length == 0 then "end of stream" else to_string bytes.length + " bytes")
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def read :: own TcpStream -> own i64 -> own Maybe<i64> -> IO<Result<[ubyte], Os.Error>>
 fn read stream count timeout = IO.map (\() -> read_with stream count timeout) (IO.pure ())
@@ -542,8 +542,8 @@ fn read stream count timeout = IO.map (\() -> read_with stream count timeout) (I
 /// # let stream = Result.get connected
 /// let! sent = Net.write stream (Utf8String.to_bytes u8"ping") (Maybe.Some 5000)
 /// match sent with
-/// | Result.Ok _ -> IO.write_line "sent"
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok _ -> IO.writeln "sent"
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def write :: own TcpStream -> own [ubyte] -> own Maybe<i64> -> IO<Result<unit, Os.Error>>
 fn write stream data timeout = IO.map (\() -> write_with stream (ref data) timeout) (IO.pure ())
@@ -574,8 +574,8 @@ fn shutdown stream how = IO.map (\() -> no_value (Net.__close (shutdown_number h
 /// # let stream = Result.get connected
 /// let! closed = Net.close stream
 /// match closed with
-/// | Result.Ok _ -> IO.write_line "closed"
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok _ -> IO.writeln "closed"
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def close :: own TcpStream -> IO<Result<unit, Os.Error>>
 fn close stream = IO.map (\() -> no_value (Net.__close 0i32 stream.id)) (IO.pure ())
@@ -585,7 +585,7 @@ fn close stream = IO.map (\() -> no_value (Net.__close 0i32 stream.id)) (IO.pure
 /// ```tsuzuri
 /// # let! connected = Net.connect (Maybe.get (Net.parse_address "127.0.0.1:8080")) (Maybe.Some 5000)
 /// # let stream = Result.get connected
-/// IO.write_line ("this end is " + Net.address_text (Net.stream_local_addr stream))
+/// IO.writeln ("this end is " + Net.address_text (Net.stream_local_addr stream))
 /// ```
 def stream_local_addr :: own TcpStream -> Address
 fn stream_local_addr stream = stream.local
@@ -595,7 +595,7 @@ fn stream_local_addr stream = stream.local
 /// ```tsuzuri
 /// # let! connected = Net.connect (Maybe.get (Net.parse_address "127.0.0.1:8080")) (Maybe.Some 5000)
 /// # let stream = Result.get connected
-/// IO.write_line ("connected to " + Net.address_text (Net.peer_addr stream))
+/// IO.writeln ("connected to " + Net.address_text (Net.peer_addr stream))
 /// ```
 def peer_addr :: own TcpStream -> Address
 fn peer_addr stream = stream.peer
@@ -608,8 +608,8 @@ fn peer_addr stream = stream.peer
 /// let loopback = Maybe.get (Net.parse_address "127.0.0.1:0")
 /// let! bound = Net.bind loopback
 /// match bound with
-/// | Result.Ok listener -> IO.write_line ("listening on " + Net.address_text (Net.local_addr listener))
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok listener -> IO.writeln ("listening on " + Net.address_text (Net.local_addr listener))
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def bind :: own Address -> IO<Result<TcpListener, Os.Error>>
 fn bind address = IO.map (\() -> bind_with address) (IO.pure ())
@@ -621,8 +621,8 @@ fn bind address = IO.map (\() -> bind_with address) (IO.pure ())
 /// # let listener = Result.get bound
 /// let! accepted = Net.accept listener (Maybe.Some 30000)
 /// match accepted with
-/// | Result.Ok stream -> IO.write_line ("connection from " + Net.address_text (Net.peer_addr stream))
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok stream -> IO.writeln ("connection from " + Net.address_text (Net.peer_addr stream))
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def accept :: own TcpListener -> own Maybe<i64> -> IO<Result<TcpStream, Os.Error>>
 fn accept listener timeout = IO.map (\() -> accept_with listener timeout) (IO.pure ())
@@ -632,7 +632,7 @@ fn accept listener timeout = IO.map (\() -> accept_with listener timeout) (IO.pu
 /// ```tsuzuri
 /// # let! bound = Net.bind (Maybe.get (Net.parse_address "127.0.0.1:0"))
 /// # let listener = Result.get bound
-/// IO.write_line ("port " + to_string (Net.port (Net.local_addr listener)))
+/// IO.writeln ("port " + to_string (Net.port (Net.local_addr listener)))
 /// ```
 def local_addr :: own TcpListener -> Address
 fn local_addr listener = listener.local
@@ -653,8 +653,8 @@ fn close_listener listener = IO.map (\() -> no_value (Net.__close 0i32 listener.
 /// let loopback = Maybe.get (Net.parse_address "127.0.0.1:0")
 /// let! bound = Net.bind_udp loopback
 /// match bound with
-/// | Result.Ok socket -> IO.write_line ("bound to " + Net.address_text (Net.udp_local_addr socket))
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok socket -> IO.writeln ("bound to " + Net.address_text (Net.udp_local_addr socket))
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def bind_udp :: own Address -> IO<Result<UdpSocket, Os.Error>>
 fn bind_udp address = IO.map (\() -> bind_udp_with address) (IO.pure ())
@@ -679,8 +679,8 @@ fn send_to socket data target = IO.map (\() -> no_value (Net.__write 1i32 socket
 /// # let socket = Result.get bound
 /// let! received = Net.recv_from socket 1500 (Maybe.Some 1000)
 /// match received with
-/// | Result.Ok (bytes, sender) -> IO.write_line (to_string bytes.length + " bytes from " + Net.address_text sender)
-/// | Result.Error error -> IO.write_line (Os.message error)
+/// | Result.Ok (bytes, sender) -> IO.writeln (to_string bytes.length + " bytes from " + Net.address_text sender)
+/// | Result.Error error -> IO.writeln (Os.message error)
 /// ```
 def recv_from :: own UdpSocket -> own i64 -> own Maybe<i64> -> IO<Result<([ubyte] * Address), Os.Error>>
 fn recv_from socket count timeout = IO.map (\() -> recv_with socket count timeout) (IO.pure ())
@@ -690,7 +690,7 @@ fn recv_from socket count timeout = IO.map (\() -> recv_with socket count timeou
 /// ```tsuzuri
 /// # let! bound = Net.bind_udp (Maybe.get (Net.parse_address "127.0.0.1:0"))
 /// # let socket = Result.get bound
-/// IO.write_line ("port " + to_string (Net.port (Net.udp_local_addr socket)))
+/// IO.writeln ("port " + to_string (Net.port (Net.udp_local_addr socket)))
 /// ```
 def udp_local_addr :: own UdpSocket -> Address
 fn udp_local_addr socket = socket.local

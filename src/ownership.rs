@@ -16473,7 +16473,7 @@ mod retention_tests {
     /// stores nothing of the kind adds nothing.
     #[test]
     fn shared_self_borrows_through_exclusive_references_are_facts_of_the_module() {
-        let holder = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.write_line (to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}\n";
+        let holder = "record Holder { cell: Mutex<[unit -> i64]> }\ninstance Drop<Holder> {\n    fn drop h = do! IO.writeln (to_string (Mutex.with_lock (ref h.cell) (\\b -> b[0] ())))\n}\n";
         let target = "def target :: ref mut Pair -> i64\nfn target p = { let t = ref p.s; Mutex.with_lock (ref p.h.cell) (\\b -> Array.write 0 (\\() -> String.length t) b); 0 }\ndef plain :: ref mut Pair -> i64\nfn plain p = String.length (ref p.s)\n";
         // No call: the facts are those of the bodies, whichever order the program checks.
         let run = "0";
