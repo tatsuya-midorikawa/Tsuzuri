@@ -5854,6 +5854,9 @@ mod intern;
 struct DeclaredFunction {
     name: String,
     parameters: Vec<Span>,
+    /// Whether the declared result is written `bool`: a partial active recognizer of that result
+    /// has no payload, which a poisoned signature no longer tells (G45).
+    boolean_result: bool,
 }
 
 #[derive(Default)]
@@ -8858,6 +8861,7 @@ fn check_modules_collect(
                 .iter()
                 .map(|parameter| parameter.ty.span)
                 .collect(),
+            boolean_result: matches!(&function.result.kind, TypeExprKind::Named(name) if name == "bool"),
         };
         let qualified = format!("{module}.{}", function.name.text);
         let module_symbol = names.symbols.intern(module);
