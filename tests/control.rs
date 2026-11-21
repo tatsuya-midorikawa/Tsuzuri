@@ -1,4 +1,5 @@
-use tsuzuri::{analyze, analyze_all, analyze_modules, llvm, parser};
+use tsuzuri::syntax::Edition;
+use tsuzuri::{analyze, analyze_all, analyze_modules, analyze_with_edition, llvm, parser};
 
 fn accepts(source: &str) -> String {
     let module = analyze(source).unwrap_or_else(|error| {
@@ -436,6 +437,46 @@ fn tsuzuri_fix_renames_the_old_names_of_an_active_pattern_body_in_one_round() {
             .replace("IO.read_line", "IO.readln")
     );
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn generic_active_patterns_read_their_parameters_in_edition_2027() {
+    // A36: the result inference of a multi-case active pattern binds its parameters as the body
+    // does, so a generic input that edition 2027 passes as `ref 'number` is read where the body
+    // uses its value, also into a payload.
+    let payload = r#"def (|Even|Odd|) :: 'number -> 'T
+    @'number : Integer, Copy = \value ->
+    | remainder == 0 -> Even value
+    | otherwise -> Odd value
+    where
+        remainder = value % 2
+match 42i64 with | Even number -> number | Odd _ -> 0 | _ -> -1"#;
+    for edition in [Edition::E2026, Edition::E2027] {
+        analyze_with_edition(payload, edition)
+            .unwrap_or_else(|e| panic!("{edition:?}: {}: {}", e.code, e.message));
+    }
+    // A payload computed from the input, and a recognizer used with two input types.
+    let computed = r#"def (|Small|Large|) :: 'number -> 'T
+    @'number : Integer, Copy = \value ->
+    | value < 10 -> Small (value + value)
+    | otherwise -> Large value
+let a = match 4i32 with | Small doubled -> doubled | Large _ -> 0i32 | _ -> -1i32
+let b = match 40i64 with | Small _ -> 0i64 | Large same -> same | _ -> -1i64
+if a == 8i32 then b else 0i64"#;
+    for edition in [Edition::E2026, Edition::E2027] {
+        analyze_with_edition(computed, edition)
+            .unwrap_or_else(|e| panic!("{edition:?}: {}: {}", e.code, e.message));
+    }
+    // The body is still checked: a payload that does not fit the case keeps its error.
+    let wrong = r#"def (|Small|Large|) :: 'number -> 'T
+    @'number : Integer, Copy = \value ->
+    | value < 10 -> Small (value + "x")
+    | otherwise -> Large value
+match 4i32 with | Small _ -> 1 | Large _ -> 2 | _ -> 0"#;
+    for edition in [Edition::E2026, Edition::E2027] {
+        let error = analyze_with_edition(wrong, edition).expect_err("a type error");
+        assert_eq!(error.code, "E1003", "{edition:?}: {}", error.message);
+    }
 }
 
 #[test]
