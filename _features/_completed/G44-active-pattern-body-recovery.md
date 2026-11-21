@@ -7,7 +7,7 @@
 | 規模 | S（`src/check.rs` の `infer_active_result` とその呼び出し側、回帰テスト） |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-21（E17 の PR のレビューで見つかった、E17 より前からある制限。`feat/e17-io-function-names` の `2ffa444f` と `main` の `b6bbdcb5` の両方で再現） |
 | 承認 | 不要（ほかの関数の本体と同じエラー回復にそろえる直し） |
 | 改善する劣位 | 不具合: 1 回の `tsuzuri check` が、ほかの関数の本体ならすべて報告するエラー（E17 の `E1040` の旧名を含む）を、複数ケースのアクティブパターンの本体では最初の 1 つしか報告しない |
@@ -47,3 +47,24 @@ def main :: unit -> i32 = \() ->
 ## 対象外
 
 - 単一ケース・部分アクティブパターン（`infer_active_result` を通らず、普通の関数と同じ経路で検査される）。
+
+## 実装と検証（2026-11-21）
+
+`main` `52155373` で着手した。
+
+- `infer_active_result`（`src/check.rs`）の `Checker` に `recovering = true` を立て、`recovered` に積まれた診断と硬いエラーをまとめて返す（戻り値は `Result<Option<Type>, Vec<Diagnostic>>`）。呼び出し側は、どちらかがあればすべてを積んでシグネチャを毒にする（1 つのときの今までの扱いと同じ）。回復した診断がないときだけ `finish` を通す。
+- 回復した診断がなく、本体が別の毒の関数を使うだけ（`checker.poisoned` だけが立つ）のときは、`main` と同じく `finish` を通して結果を推論する（レビューで、そのときに診断なしで毒にしてしまう最初の実装を直した）。
+- 本体の所有権・借用のエラー（`E1012` など）は、型のエラーがなくなってからの検査で報告する。普通の関数の本体は、型のエラーがあっても `ownership::check_recovered` でムーブとアクセスのエラーを一緒に報告するが、アクティブパターンの本体は推論に失敗するとシグネチャを毒にして本体を検査し直さないので、ここは同じにならない。文書（`active-pattern.md`・`docs/language.md`）はこの範囲だけを書いた。式の検査の後で確かめるエラー（`finish` の書式指定の型など）も、回復したエラーがあると `finish` を通さないので後から出る（ふつうの関数の本体でも同じ。Copilot のレビューで文言を絞った）。
+- テスト（`tests/control.rs`）: 観測のプログラムで 2 つの `E1003` が 1 回の解析で出ること、本体の E17 の旧名 2 つとプログラムの旧名 1 つが 3 つの `E1040` になること、エラーのない本体の推論が変わらないこと、`tsuzuri fix --json` が 3 つの修正を 1 ラウンドで適用してエラーが残らないこと。
+
+### 外した変更と、別のチケットにしたもの
+
+- 実装中に、毒になった認識器を使う節でペイロードの名前が `E1002` の連鎖になることに気づき、ペイロードを `pattern_alternatives` に通して束縛する直し（D1）を足したが、レビューで panic（`Maybe.Some q`・レコードのペイロード）、ペイロードでない引数の束縛、エラー型にならない束縛が見つかったので外した。連鎖は G44 より前からある振る舞いで、直し方の案と一緒に [G45](../G45-poisoned-recognizer-payload-cascade.md) にした。
+- レビューで、edition 2027 の既定の読み取りが `infer_active_result` で効かず、ペイロードを持つジェネリックな複数ケースのアクティブパターンを誤って拒否する不具合（G44 より前から）が見つかった。[A36](../A36-active-result-default-reads.md) にした。
+
+### 検証（macOS arm64、dev ビルド）
+
+- `cargo fmt --all -- --check`、`cargo clippy --locked --all-targets -- -D warnings`（ホストと `x86_64-pc-windows-msvc`）。
+- `cargo nextest run --locked`（全体）、`tests/control.rs`（32 件）。
+- `node scripts/check-docs.mjs _tsuzuri/language-reference/pattern-matching/active-pattern.md`。
+- 独立のレビュー（コンパイラ・文書とテストの 2 つの観点と、指摘ごとの反証）。

@@ -1,4 +1,4 @@
-use tsuzuri::{analyze, analyze_modules, llvm, parser};
+use tsuzuri::{analyze, analyze_all, analyze_modules, llvm, parser};
 
 fn accepts(source: &str) -> String {
     let module = analyze(source).unwrap_or_else(|error| {
@@ -350,6 +350,92 @@ match 42 with | Positive number -> number | _ -> 0"#,
         "def (|Even|Odd|) :: i64 -> 'T = \\value -> | value % 2 == 0 -> Even | value % 2 != 0 -> Odd",
         "E1021",
     );
+}
+
+#[test]
+fn active_pattern_bodies_report_every_error() {
+    // G44: the body of a multi-case active pattern whose result is inferred is checked with
+    // recovery, like any function body, so one analysis reports each of its type errors once.
+    let source = "def (|Small|Large|) :: i64 -> 'T = \\value ->\n    let a = 1 + \"x\"\n    let b = 2 + \"y\"\n    if value < 10 then Small value else Large value\n\nmatch 42 with | Small _ -> 1 | Large _ -> 2 | _ -> 0\n";
+    let errors = analyze_all(source).expect_err(source).diagnostics;
+    let found: Vec<(&str, usize)> = errors
+        .iter()
+        .map(|error| (error.code, error.span.start))
+        .collect();
+    let first = source.find("1 + \"x\"").unwrap();
+    let second = source.find("2 + \"y\"").unwrap();
+    assert_eq!(found, [("E1003", first), ("E1003", second)], "{source}");
+    // The old names of `IO` (E17) in such a body are each reported, with the one in the program.
+    let errors = analyze_all(OLD_IO_NAMES_IN_ACTIVE_BODY)
+        .expect_err("old names")
+        .diagnostics;
+    let mut messages: Vec<&str> = errors
+        .iter()
+        .map(|error| {
+            assert_eq!(error.code, "E1040", "{}", error.message);
+            error.message.as_str()
+        })
+        .collect();
+    messages.sort();
+    assert_eq!(
+        messages,
+        [
+            "'IO.read_line' is now 'IO.readln'",
+            "'IO.write_error' is now 'IO.write_err'",
+            "'IO.write_line' is now 'IO.writeln'",
+        ]
+    );
+    // A body without errors still gives the inferred result.
+    accepts(
+        "def (|Small|Large|) :: i64 -> 'T = \\value ->\n    if value < 10 then Small value else Large (value * 2)\n\nmatch 42 with | Small value -> value | Large value -> value + 1 | _ -> 0\n",
+    );
+}
+
+/// Old names of `IO` (E17) in a multi-case active pattern's body and in the program.
+const OLD_IO_NAMES_IN_ACTIVE_BODY: &str = "def (|Small|Large|) :: i64 -> 'T = \\value ->\n    let _a = IO.write_line \"a\"\n    let _b = IO.write_error \"b\"\n    if value < 10 then Small value else Large value\n\nlet _c = IO.read_line ()\nmatch 42 with | Small _ -> 1 | Large _ -> 2 | _ -> 0\n";
+
+#[test]
+fn tsuzuri_fix_renames_the_old_names_of_an_active_pattern_body_in_one_round() {
+    // G44: one analysis reports every old name of the body, so the first round of `tsuzuri fix`
+    // applies all three fixes and the project then checks.
+    let directory =
+        std::env::temp_dir().join(format!("tsuzuri-control-active-fix-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("Main.tz"), OLD_IO_NAMES_IN_ACTIVE_BODY).unwrap();
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("fix")
+        .arg(&directory)
+        .arg("--json")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let events: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect(line))
+        .collect();
+    let rounds: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|event| event["event"] == "fix")
+        .map(|event| &event["round"])
+        .collect();
+    assert_eq!(rounds, [1, 1, 1], "{stdout}");
+    let summary = events.last().expect("a summary");
+    assert_eq!(summary["rounds"], 1, "{stdout}");
+    assert_eq!(summary["remaining_errors"], 0, "{stdout}");
+    assert_eq!(
+        std::fs::read_to_string(directory.join("Main.tz")).unwrap(),
+        OLD_IO_NAMES_IN_ACTIVE_BODY
+            .replace("IO.write_line", "IO.writeln")
+            .replace("IO.write_error", "IO.write_err")
+            .replace("IO.read_line", "IO.readln")
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
 }
 
 #[test]
