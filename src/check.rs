@@ -10187,6 +10187,7 @@ fn root_noncanonical(
 /// like the body of any function (G44), so one analysis reports every error that checking its
 /// expressions finds; with an error, `finish` (format specs and the other deferred checks) is
 /// skipped, the caller poisons the signature and the body is not checked again.
+#[allow(clippy::too_many_arguments)]
 fn infer_active_result(
     module: &str,
     function: &FunctionDecl,
