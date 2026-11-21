@@ -6366,7 +6366,6 @@ impl Names {
             Some(_) => return None,
             None => ("", spelled),
         };
-        let resolved = self.module_path(requester, spelled);
         let module = match last {
             "Channel" => "Channel",
             "Net" => "Net",
@@ -6374,11 +6373,28 @@ impl Names {
             "Async" => "Async",
             _ => return None,
         };
-        let std_module = match module {
-            "Channel" | "Net" => resolved == Some(module),
-            _ => resolved.is_none(),
-        };
-        std_module.then_some((module, prefix))
+        self.names_std_module(requester, spelled, module)
+            .then_some((module, prefix))
+    }
+
+    /// Whether `spelled` (`DataChannel`, `std::DataChannel`) names the std module `target` from
+    /// `requester`, unambiguously: the loaded std module of that key, or no module at all for a
+    /// name that std has no module of (the removed `Task` and `Async`, the builtin `Routine`). A
+    /// module of the program, a `using` that makes the name ambiguous, and a namespace `std` of
+    /// the program that holds the name all fail it (E18).
+    fn names_std_module(&self, requester: &str, spelled: &str, target: &str) -> bool {
+        if self
+            .check_module(requester, spelled, Span::default())
+            .is_err()
+        {
+            return false;
+        }
+        let resolved = self.module_path(requester, spelled);
+        if self.modules.get(target) == Some(&ModuleOrigin::Std) {
+            resolved == Some(target)
+        } else {
+            resolved.is_none()
+        }
     }
 
     /// `removed_module` for the qualified type or value name `qualified` (`Channel.Sender`,
@@ -6412,25 +6428,27 @@ impl Names {
     ) -> Option<(Diagnostic, Option<String>)> {
         let (module, prefix) = self.removed_module(requester, spelled)?;
         let (kind, message, help, replacement) = removed_feature(module, member)?;
-        let replacement_prefix = match replacement
-            .as_deref()
-            .and_then(|text| text.rsplit_once('.'))
-        {
-            Some((target, _)) if prefix.is_empty() => match self.module_path(requester, target) {
-                Some(key) if key != target => "std::",
-                _ => "",
-            },
-            _ => prefix,
-        };
         let mut message = if prefix.is_empty() {
             message
         } else {
             message.replacen(&format!("'{module}."), &format!("'{prefix}{module}."), 1)
         };
-        let replacement = replacement.map(|text| {
-            let written = format!("{replacement_prefix}{text}");
+        // The replacement as written: after `std::`, with `std::`; else bare, or with `std::`
+        // where the bare module is not the std one. Where neither spelling names it, there is
+        // no fix and no recovery.
+        let replacement = replacement.and_then(|text| {
+            let (target, _) = text.rsplit_once('.')?;
+            let candidates: &[&str] = if prefix.is_empty() {
+                &["", "std::"]
+            } else {
+                &[prefix]
+            };
+            let chosen = candidates.iter().find(|candidate| {
+                self.names_std_module(requester, &format!("{candidate}{target}"), target)
+            })?;
+            let written = format!("{chosen}{text}");
             message = message.replace(&format!("'{text}'"), &format!("'{written}'"));
-            written
+            Some(written)
         });
         let diagnostic = Diagnostic::of(kind, message, span).with_help(help);
         let diagnostic = match &replacement {

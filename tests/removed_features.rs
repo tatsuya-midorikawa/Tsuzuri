@@ -1228,4 +1228,45 @@ fn the_replacement_says_std_where_the_program_has_the_module() {
     // Without such a module, the replacement stays bare.
     let error = analyze("let base = 10i64\nlet values = Task.scope (ref base) 4 (\\shared index -> deref shared + index)\nArray.sum (ref values)\n").unwrap_err();
     assert_eq!(error.fixes[0].edits[0].text, "Routine.scope");
+    // Two `using` namespaces that each hold a module `DataChannel` make the bare name ambiguous:
+    // the fix says `std::` too.
+    let main = "namespace App\nusing Lib1\nusing Lib2\n\ndef f :: ref Channel.Sender<i64> -> i64\nfn f _sender = 0\n\n0\n";
+    let libraries = [
+        (
+            "Lib1/DataChannel.tz",
+            "namespace Lib1\n\ndef one :: i64 -> i64\nfn one n = n\n",
+        ),
+        (
+            "Lib2/DataChannel.tz",
+            "namespace Lib2\n\ndef two :: i64 -> i64\nfn two n = n\n",
+        ),
+    ];
+    let mut sources = vec![("Main.tz", main)];
+    sources.extend(libraries);
+    let error = analyze_modules(&sources).unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert_eq!(error.fixes[0].edits[0].text, "std::DataChannel.Sender");
+    let fixed = main.replace("Channel.Sender", "std::DataChannel.Sender");
+    let mut sources = vec![("Main.tz", fixed.as_str())];
+    sources.extend(libraries);
+    analyze_modules(&sources).unwrap_or_else(|e| panic!("{fixed}\n{}: {}", e.code, e.message));
+    // A namespace `std` of the program with a module `DataChannel` takes `std::DataChannel` from
+    // `App`, and the program's own `DataChannel` takes the bare name: no spelling names the std
+    // module, so the E1040 has no fix.
+    let main = "namespace App\n\nlet pair = Channel.bounded 3\n0\n";
+    let error = analyze_modules(&[
+        ("Main.tz", main),
+        (
+            "App/DataChannel.tz",
+            "namespace App\n\ndef bounded :: i64 -> i64\nfn bounded n = n\n",
+        ),
+        (
+            "App/std/DataChannel.tz",
+            "namespace App::std\n\ndef bounded :: i64 -> i64\nfn bounded n = n\n",
+        ),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1040", "{}", error.message);
+    assert_eq!(error.kind, Some("renamed_to_data_channel"));
+    assert!(error.fixes.is_empty(), "{:?}", error.fixes);
 }
