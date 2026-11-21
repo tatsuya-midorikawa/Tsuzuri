@@ -1,4 +1,5 @@
-use tsuzuri::{analyze, analyze_all, analyze_modules, llvm, parser};
+use tsuzuri::syntax::Edition;
+use tsuzuri::{analyze, analyze_all, analyze_modules, analyze_with_edition, llvm, parser};
 
 fn accepts(source: &str) -> String {
     let module = analyze(source).unwrap_or_else(|error| {
@@ -436,6 +437,110 @@ fn tsuzuri_fix_renames_the_old_names_of_an_active_pattern_body_in_one_round() {
             .replace("IO.read_line", "IO.readln")
     );
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn generic_active_patterns_read_their_parameters_in_edition_2027() {
+    // A36: the result inference of a multi-case active pattern binds its parameters as the body
+    // does, so a generic input that edition 2027 passes as `ref 'number` is read where the body
+    // uses its value, also into a payload.
+    let payload = r#"def (|Even|Odd|) :: 'number -> 'T
+    @'number : Integer, Copy = \value ->
+    | remainder == 0 -> Even value
+    | otherwise -> Odd value
+    where
+        remainder = value % 2
+match 42i64 with | Even number -> number | Odd _ -> 0 | _ -> -1"#;
+    for edition in [Edition::E2026, Edition::E2027] {
+        analyze_with_edition(payload, edition)
+            .unwrap_or_else(|e| panic!("{edition:?}: {}: {}", e.code, e.message));
+    }
+    // A payload computed from the input, and a recognizer used with two input types.
+    let computed = r#"def (|Small|Large|) :: 'number -> 'T
+    @'number : Integer, Copy = \value ->
+    | value < 10 -> Small (value + value)
+    | otherwise -> Large value
+let a = match 4i32 with | Small doubled -> doubled | Large _ -> 0i32 | _ -> -1i32
+let b = match 40i64 with | Small _ -> 0i64 | Large same -> same | _ -> -1i64
+if a == 8i32 then b else 0i64"#;
+    for edition in [Edition::E2026, Edition::E2027] {
+        analyze_with_edition(computed, edition)
+            .unwrap_or_else(|e| panic!("{edition:?}: {}: {}", e.code, e.message));
+    }
+    // The body is still checked: a payload that does not fit the case keeps its error.
+    let wrong = r#"def (|Small|Large|) :: 'number -> 'T
+    @'number : Integer, Copy = \value ->
+    | value < 10 -> Small (value + "x")
+    | otherwise -> Large value
+match 4i32 with | Small _ -> 1 | Large _ -> 2 | _ -> 0"#;
+    for edition in [Edition::E2026, Edition::E2027] {
+        let error = analyze_with_edition(wrong, edition).expect_err("a type error");
+        assert_eq!(error.code, "E1003", "{edition:?}: {}", error.message);
+        // The payload's own error, not a reference that the input was not read through.
+        assert_eq!(
+            error.message, "expected 'number, found string",
+            "{edition:?}"
+        );
+    }
+    // `pure def` reads its parameters in every edition.
+    let pure = payload.replacen("def (|Even|Odd|)", "pure def (|Even|Odd|)", 1);
+    for edition in [Edition::E2026, Edition::E2027] {
+        analyze_with_edition(&pure, edition)
+            .unwrap_or_else(|e| panic!("{edition:?} pure: {}: {}", e.code, e.message));
+    }
+    // A non-Copy input put into a payload is the value read through the reference, as in a
+    // function's body: it needs `Copy` in edition 2027 (main inferred a `ref 'a` payload). A
+    // recognizer that keeps the borrow says `ref 'a`.
+    let non_copy = "def (|First|Second|) :: 'a -> 'T = \\value -> if true then First value else Second value\nlet number = match \"abc\" with | First s -> s.length | _ -> 0\nnumber\n";
+    let error = analyze_with_edition(non_copy, Edition::E2027).expect_err(non_copy);
+    assert_eq!(error.code, "E1005", "{}", error.message);
+    assert!(error.message.contains("Copy<string>"), "{}", error.message);
+    let borrowed = non_copy.replacen(":: 'a -> 'T", ":: ref 'a -> 'T", 1);
+    for edition in [Edition::E2026, Edition::E2027] {
+        analyze_with_edition(&borrowed, edition)
+            .unwrap_or_else(|e| panic!("{edition:?} ref: {}: {}", e.code, e.message));
+    }
+}
+
+#[test]
+fn generic_active_patterns_run_the_same_in_editions_2026_and_2027() {
+    // A36: the program that edition 2027 rejected runs, and prints what edition 2026 prints.
+    let program = "def (|Even|Odd|) :: 'number -> 'T\n    @'number : Integer, Copy = \\value ->\n    | remainder == 0 -> Even value\n    | otherwise -> Odd value\n    where\n        remainder = value % 2\nmatch 42i64 with | Even number -> number | Odd _ -> 0 | _ -> -1\n";
+    let root = std::env::temp_dir().join(format!("tsuzuri-control-a36-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for (name, manifest) in [
+        (
+            "e2026",
+            Some("[package]\nname = \"e2026\"\nversion = \"0.1.0\"\nedition = \"2026\"\n"),
+        ),
+        ("e2027", None),
+    ] {
+        let directory = root.join(name);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("Main.tz"), program).unwrap();
+        if let Some(manifest) = manifest {
+            std::fs::write(directory.join("Tsuzuri.toml"), manifest).unwrap();
+        }
+        for optimization in ["-O0", "-O3"] {
+            let run = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+                .arg("run")
+                .arg(&directory)
+                .arg(optimization)
+                .output()
+                .unwrap();
+            assert!(
+                run.status.success(),
+                "{name} {optimization}: {}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&run.stdout),
+                "42\n",
+                "{name} {optimization}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]

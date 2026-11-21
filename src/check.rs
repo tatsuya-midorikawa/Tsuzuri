@@ -9297,6 +9297,7 @@ fn check_modules_collect(
             continue;
         }
         let (module, function) = &function_declarations[id];
+        let reads: Vec<bool> = default_reads.get(&id).cloned().unwrap_or_default();
         match infer_active_result(
             module,
             function,
@@ -9305,6 +9306,7 @@ fn check_modules_collect(
             &signatures,
             &classes,
             active,
+            &reads,
         ) {
             Ok(Some(result)) => {
                 signatures[id].signature.result = result;
@@ -9367,39 +9369,7 @@ fn check_modules_collect(
                 checker.type_parameters = scheme.variables.clone();
                 checker.kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
                 checker.members = scheme.members.clone();
-                let mut parameters = Vec::new();
-                // A32: `def … = \(counter: ref mut Counter) -> …` keeps the lambda's parameters,
-                // and their annotations, in the chain of matches that starts the body.
-                let annotations = closures::parameter_annotations(&function.body);
-                for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
-                    let local = checker.bind(&parameter.name, ty.clone(), parameter.mutable);
-                    let annotated = |checker: &mut Checker<'_>| {
-                        let annotation = annotations.get(parameter.name.text.as_str()).copied();
-                        checker.binds_annotated_reference(ty, annotation)
-                    };
-                    if scheme.parameter_conventions.get(parameters.len())
-                        == Some(&ParameterConvention::Mut)
-                        && !annotated(&mut checker)
-                    {
-                        checker.read_value_parameters.insert(local.id);
-                    }
-                    if reads.get(parameters.len()) == Some(&true)
-                        && let Type::Reference(inner, _) = ty
-                    {
-                        checker.default_reads.insert(
-                            local.id,
-                            (local.name.clone(), inner.display(&types), function.pure),
-                        );
-                        if types.reaches(inner, |part| {
-                            matches!(part, Type::Variable(_) | Type::Function(..))
-                        }) && !annotated(&mut checker)
-                        {
-                            checker.read_value_parameters.insert(local.id);
-                        }
-                    }
-                    parameters.push(local);
-                }
-                drop(annotations);
+                let parameters = checker.bind_function_parameters(function, scheme, &reads);
                 computation::expand(&mut function.body, &names, module)?;
                 for clause in &mut function.contracts {
                     computation::expand(&mut clause.condition, &names, module)?;
@@ -10217,6 +10187,7 @@ fn root_noncanonical(
 /// like the body of any function (G44), so one analysis reports every error that checking its
 /// expressions finds; with an error, `finish` (format specs and the other deferred checks) is
 /// skipped, the caller poisons the signature and the body is not checked again.
+#[allow(clippy::too_many_arguments)]
 fn infer_active_result(
     module: &str,
     function: &FunctionDecl,
@@ -10225,6 +10196,7 @@ fn infer_active_result(
     signatures: &[Scheme],
     classes: &Classes,
     active: &crate::syntax::ActivePattern,
+    reads: &[bool],
 ) -> Result<Option<Type>, Vec<Diagnostic>> {
     let id = names.local_function(module, &function.name.text).unwrap();
     let scheme = &signatures[id];
@@ -10247,9 +10219,8 @@ fn infer_active_result(
         .constraint_kinds(&function.constraints, module, names)
         .map_err(|error| vec![error])?;
     checker.members = scheme.members.clone();
-    for (parameter, ty) in function.parameters.iter().zip(&scheme.signature.parameters) {
-        checker.bind(&parameter.name, ty.clone(), parameter.mutable);
-    }
+    // The parameters as the function's body sees them, with the reads of edition 2027 (A36).
+    checker.bind_function_parameters(function, scheme, reads);
     let result = Type::Union(
         *union_id,
         arguments
@@ -12105,6 +12076,57 @@ impl<'a> Checker<'a> {
                     .collect(),
             }));
         }
+    }
+
+    /// Binds the parameters of `function` with the types of `scheme`, as its body sees them. A
+    /// `mut` parameter, and a parameter that `reads` marks (the default reads of edition 2027, the
+    /// borrows of `pure def`, the reads of a class) whose type reaches a type variable or a
+    /// function, are read through their reference where the body uses the value
+    /// (`read_value_parameters`), unless an A32 annotation in the body asks for the reference.
+    /// Every parameter that `reads` marks gets the hint of `default_reads`. The body of every
+    /// function and the result inference of a multi-case active pattern (A36) share it.
+    fn bind_function_parameters(
+        &mut self,
+        function: &FunctionDecl,
+        scheme: &Scheme,
+        reads: &[bool],
+    ) -> Vec<Local> {
+        let mut parameters = Vec::new();
+        // A32: `def … = \(counter: ref mut Counter) -> …` keeps the lambda's parameters, and
+        // their annotations, in the chain of matches that starts the body.
+        let annotations = closures::parameter_annotations(&function.body);
+        for (parameter, ty) in function.parameters.iter().zip(&scheme.signature.parameters) {
+            let local = self.bind(&parameter.name, ty.clone(), parameter.mutable);
+            let annotated = |checker: &mut Checker<'_>| {
+                let annotation = annotations.get(parameter.name.text.as_str()).copied();
+                checker.binds_annotated_reference(ty, annotation)
+            };
+            if scheme.parameter_conventions.get(parameters.len()) == Some(&ParameterConvention::Mut)
+                && !annotated(self)
+            {
+                self.read_value_parameters.insert(local.id);
+            }
+            if reads.get(parameters.len()) == Some(&true)
+                && let Type::Reference(inner, _) = ty
+            {
+                self.default_reads.insert(
+                    local.id,
+                    (
+                        local.name.clone(),
+                        inner.display(&self.types),
+                        function.pure,
+                    ),
+                );
+                if self.types.reaches(inner, |part| {
+                    matches!(part, Type::Variable(_) | Type::Function(..))
+                }) && !annotated(self)
+                {
+                    self.read_value_parameters.insert(local.id);
+                }
+            }
+            parameters.push(local);
+        }
+        parameters
     }
 
     fn bind(&mut self, name: &Ident, ty: Type, mutable: bool) -> Local {
