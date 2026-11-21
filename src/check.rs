@@ -5854,6 +5854,10 @@ mod intern;
 struct DeclaredFunction {
     name: String,
     parameters: Vec<Span>,
+    /// Whether the function is a partial active recognizer whose declared result resolves to
+    /// `bool` (also through an alias): it has no payload, which a poisoned signature no longer
+    /// tells (G45). Set where the recognizers are registered.
+    bool_partial: bool,
 }
 
 #[derive(Default)]
@@ -8858,6 +8862,7 @@ fn check_modules_collect(
                 .iter()
                 .map(|parameter| parameter.ty.span)
                 .collect(),
+            bool_partial: false,
         };
         let qualified = format!("{module}.{}", function.name.text);
         let module_symbol = names.symbols.intern(module);
@@ -9207,6 +9212,16 @@ fn check_modules_collect(
             }
             let function = names.functions[&format!("{module}.{}", active.function)].clone();
             let id = function.id;
+            // G45: whether the partial recognizer has no payload, from its declared result, which
+            // stays known when another part of the signature is poisoned.
+            let bool_partial = active.partial
+                && matches!(
+                    resolve_type(&function_declarations[id].1.result, module, &names),
+                    Ok(Type::Bool)
+                );
+            if let Some(declared) = names.declared.get_mut(id) {
+                declared.bool_partial = bool_partial;
+            }
             let signature = &signatures[id].signature;
             if !signatures[id].is_poisoned() && signature.parameters.is_empty() {
                 diagnostics.push(Diagnostic::of(
