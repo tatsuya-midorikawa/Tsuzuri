@@ -111,7 +111,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | GC・サイクルコレクター | 所有権による決定的な解放という設計目標と矛盾する。循環は C10 の Arena／Handle と Weak で扱う |
 | 例外と巻き戻し、`?` 演算子 | D-10 の方針。ホスト境界の失敗は E14 の opt-in 境界で返し、言語内の失敗は Maybe／Result で表す |
 | 暗黙の fast-math・再結合、GPU・SIMD での黙った精度変更 | 数値の意味を変える。緩い演算は名前で区別した別 API にする（F09、C11） |
-| `unsafe` ブロック・生ポインター型 | 安全性の目標と矛盾する。低水準の処理はホストに置き、E12 の不透明ハンドルで受け渡す |
+| `unsafe` ブロック・生ポインター型 | 安全性の目標と矛盾する。低水準の処理はホストに置き、E12 の不透明ハンドルで受け渡す。2026-11-22 の [D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) で、`extern` として宣言する型付きの `extern view`（W24）と `extern interface`（W25）に限って改めることを決めた。生ポインター型と `unsafe` は引き続き入れない。この行の文言は W24 の出荷時に改める |
 | 利用者が境界検査を無効にするオプション・unchecked API | 安全性を下げる。検査のコストは F12 の証明と計測で減らす |
 | .NET／JVM ランタイム互換、クラス継承、型プロバイダー | 言語の対象外（[対応状況（旧版）](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/feature-status.md)）。.NET からの利用は E13 のバインディングで行う |
 | GUI・Web フレームワークの同梱 | ホストの責務。E13 の生成 glue で既存のフレームワークと接続する |
@@ -323,6 +323,55 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | TZ14 | [spawn しないプログラムの `Parallel.*` でも、スレッドの記憶域を読むランタイムの IR 関数を `noinline` にする](_completed/TZ14-thread-storage-across-parallel-waits.md) | P2 | S | TZ10, TZ11 | done（spawn せず `Parallel.*` を呼ぶネイティブのプログラムのうち、手伝いの tzroutine が待ちうるもの（入れ子の `Parallel.*`、ポインターを通す呼び出しや extern に届くコールバック。IR の保守的な解析）で、`--allocator small` の `tz_small_realloc` を `noinline` にする。横取りの検査は入れず、ほかのプログラムの IR は 1 byte も変わらない。すべてに付けると `Vec` を伸ばす核が 17 % 遅くなったので D1 を狭めた。`-O3` の SIGSEGV と TSan のデータ競合を再現して直した） |
 | TZ15 | [ランタイムの IR の断片を改行で終え、次の断片が閉じ括弧の行から始まらないようにする](_completed/TZ15-runtime-ir-pieces-newline.md) | P3 | S | TZ02, TZ10, TZ14 | done（2026-11-08。`src/runtime/` のすべての `.ll` が改行で終わり（単体テスト `runtime_pieces_end_with_a_newline` が保つ）、つないだ IR に `}` の後に同じ行で何かが続く行は無い。spawn するか `Parallel.*` を呼ぶネイティブのプログラムでは、以前は `}define` の行にあった関数（`@tz.string.copy`・`@tz.closure.clone` など）の見出しにも `"probe-stack"="inline-asm"` が付き（Windows を除く）、その関数を通してだけ重い呼び出しに数えられていたループの横取りの検査（検査が残らなければ `@tz.preempt.poll` の定義も）が消える。174 の project の IR の違いは、行の分割、`rc`・`recursive_types` の `@tz.closure.clone` の probe、空の行 1 つ（ネイティブの `effects_sweep`、wasm32 の `concurrency`）と、スタック検査の動く wasm32 の build で分かれた行の関数の入口に入る `@tz.stack.check` の呼び出し（9 個の project に 1 つずつ）だけで、横取りの検査と `noinline` の付き方・実行結果・診断は変わらない。`runtime_definitions`・`ir_lines`・`definition_start` などの継ぎ目の処理は、別の形でつないだ IR への備えとして残す） |
 | TZ16 | [tzroutine のランタイムの C のテストが CI でときどき落ちる（Windows x64 の `stack_size` は Xeon Platinum 8573C の runner だけで、`donor` の spinning の数は Windows x64 と Linux arm64 の ThreadSanitizer で）](TZ16-runtime-test-flakes.md) | P2 | M | TZ01, TZ02, TZ08 | todo |
+
+### W. Tsuzuri だけで Win32 のアプリを書く（D-63）
+
+| ID | チケット | 優先 | 規模 | 依存 | 状態 |
+|---|---|---|---|---|---|
+| W01 | [コールバックを取る `extern` に文字列の一時値を渡すと、`check` は通るのに不正な IR になる](W01-callback-extern-temporary-string.md) | P1 | S | – | todo |
+| W02 | [`do!` を含む関数の `while` の中の `break` が `E1023` になる](W02-break-in-do-function.md) | P2 | S | – | todo |
+| W03 | [Windows のネイティブ連携の文書と診断の誤りを直す](W03-windows-interop-doc-fixes.md) | P2 | S | – | todo |
+| W04 | [Windows でトラップの報告が黙って消える経路を塞ぐ](W04-windows-trap-report-lost.md) | P1 | S | – | todo |
+| W05 | [Windows の `--emit shared`（DLL）を実装する](W05-windows-shared-library.md) | P2 | L | – | todo |
+| W06 | [Windows の GUI をヘッドレスに検査するテスト基盤](W06-windows-gui-test-harness.md) | P1 | M | – | todo |
+| W07 | [Windows のトラップを確実に終わらせる（fail-fast・VEH・`uwtable`）](W07-windows-trap-fail-fast.md) | P1 | M | W04, W06 | todo |
+| W08 | [標準ストリームが無いときの IO の意味を決めて実装する](W08-io-without-std-streams.md) | P1 | S | – | todo |
+| W09 | [GUI サブシステムの実行ファイル（`--subsystem windows` と `[windows] subsystem`）](W09-windows-gui-subsystem.md) | P1 | M | W08 | todo |
+| W10 | [Windows のリソース（マニフェスト・アイコン・版情報・`.rc`）を埋め込む](W10-windows-resources.md) | P2 | M | W09 | todo |
+| W11 | [Windows の OS API（`File`・`Dir`・`Env`・`Random`・`Process`・`Time` の OS 時計）](W11-windows-os-api.md) | P1 | L | – | todo |
+| W12 | [静的コールバックの寿命の契約（native ではプロセスの寿命の間呼べる）](W12-static-callback-lifetime.md) | P1 | M | W06, W07 | todo |
+| W13 | [`extern` の `ref mut`（copy-in/copy-out）と、呼び出し先が書く可変バッファ・`@count`](W13-extern-ref-mut-and-mutable-buffers.md) | P1 | M | – | todo |
+| W14 | [同じ symbol の `extern` を、下げた C の ABI で照合して複数宣言できるようにする](W14-extern-multiple-declarations.md) | P1 | S | – | todo |
+| W15 | [ABI での `Maybe<H>` と `Maybe<ref R>`（NULL、native だけ）](W15-abi-nullable-handles.md) | P1 | M | – | todo |
+| W16 | [`@last_error`（呼び出し直後の `GetLastError`／`errno`）](W16-last-error-attribute.md) | P2 | S | – | todo |
+| W17 | [`extern` ごとのシステムライブラリ `@link` と `dllimport`](W17-link-attribute-dllimport.md) | P2 | M | – | todo |
+| W18 | [`extern type copy`（所有しない識別子のハンドル）](W18-copy-extern-type.md) | P1 | M | – | todo |
+| W19 | [スレッドに結び付くハンドル（`extern type local`）と、固定された文脈でだけ使える検査](W19-thread-bound-handles.md) | P1 | M | W18 | todo |
+| W20 | [NUL 終端の UTF-16 文字列 `ZString`](W20-zstring.md) | P1 | M | W13 | todo |
+| W21 | [C レイアウトの record（`@c_layout`）](W21-c-layout-records.md) | P1 | XL | W13, W15, W18（Phase 2: W20, W22） | todo |
+| W22 | [静的な関数ポインターの値 `FnPtr<F>`](W22-fnptr-values.md) | P1 | M | W12 | todo |
+| W23 | [コールバックから届くアプリの状態 `Anchor`](W23-anchor-state.md) | P1 | L | W12 | todo |
+| W24 | [`extern view`（ホストが渡したアドレスと C レイアウトの record の型付きの複写）](W24-extern-view.md) | P1 | M | W15（Phase 2: W21） | todo |
+| W25 | [`extern interface`（COM の vtable のスロット呼び出し）](W25-extern-interface-com.md) | P2 | XL | W19, W21, W24 | todo |
+| W26 | [COM オブジェクトを Tsuzuri で実装する（UI Automation・TSF・ドラッグ＆ドロップのため）](W26-com-objects-in-tsuzuri.md) | P2 | XL | W22, W23, W25 | todo |
+| W27 | [win32metadata（`.winmd`）からの生成器と公式の `win32` パッケージ](W27-win32-package-from-winmd.md) | P2 | XL | W01, W13, W14, W15, W16, W17, W18, W19, W20, W21, W22, W23, W24, W25 | todo |
+| W28 | [UI を固定した tzroutine（ファイバー）の上で動かすときのスタックと検証](W28-ui-on-fibers.md) | P2 | M | W06 | todo |
+| W29 | [コールバックの P の取り戻しの遅延を計測して短い経路を速くする](W29-callback-latency.md) | P2 | M | W12 | todo |
+| W30 | [Windows の実行ファイルのセキュリティの硬化（ASLR・NX・CET・CFG）](W30-windows-hardening.md) | P2 | M | W07（Phase 2: W25） | todo |
+| W31 | [トップレベルのコードで、最初の `let!`・`do!` より前にループがあると `E1018` になる](W31-top-level-loop-before-do.md) | P2 | S | – | todo |
+| W32 | [書き込みの失敗を黙って捨てる経路を塞ぐ（トップレベルの式の表示、`--overflow-report`）](W32-silent-write-failures.md) | P2 | S | W08 | todo |
+| W33 | [Windows のコマンドラインの分割を CRT（`CommandLineToArgvW`）の規則にそろえる](W33-windows-command-line-splitting.md) | P2 | M | – | todo |
+| W34 | [Windows の sysmon の待ちがミリ秒に切り上がり、TZ08 の 20 µs の刻みが成り立たない](W34-windows-sysmon-timer-resolution.md) | P2 | M | – | todo |
+| W35 | [Windows の `--trap-mode return`（`trap.c` の移植と `.pdata`）](W35-windows-trap-mode-return.md) | P2 | L | W07 | todo |
+| W36 | [C レイアウトの record の値渡し（引数と結果。Windows x64・Arm64 から）](W36-c-layout-by-value.md) | P2 | L | W21 | todo |
+| W37 | [同梱の `tsuzuri-clang` が `-O0` の C に UBSan の実行時の参照を入れ、別のリンカーで使えない object になる](W37-bundled-clang-ubsan-objects.md) | P3 | S | – | todo |
+| W38 | [トップレベルの `do`（`!` なし）を含むコードで、最後の式に場違いな `E1003` が出る](W38-top-level-plain-do-misplaced-e1003.md) | P3 | S | – | todo |
+| W39 | [Windows で 2 つの Tsuzuri の object を 1 つのホストにリンクできない（弱い定義の既定の名前が object ごとに違う）](W39-windows-multiple-objects-weak-defaults.md) | P2 | M | – | todo |
+| W40 | [同梱の launcher の `-x ir` の経路が `-Wl,--gc-sections` を IR のコンパイルに渡し、Windows のすべてのビルドで警告が出る](W40-launcher-ir-forwards-linker-flags.md) | P3 | S | – | todo |
+| W41 | [Windows のタイマーのスレッドの待ちがミリ秒に切り上がり、短い `Time.sleep` が大きく延びる](W41-windows-timer-thread-resolution.md) | P2 | M | W34 | todo |
+| W42 | [Windows x64 の `i128`・`i128u` の `/`・`%` が誤った値になり、リンクしたホストの `__int128` の除算も壊す](W42-windows-i128-division.md) | P1 | M | – | todo |
+| W43 | [結果の型の注釈がないラムダ・ブロックに `!` のない `do` があると、最後の式ではなく `unit` を返す型になる](W43-plain-do-in-lambda-returns-unit.md) | P2 | S | W38 | todo |
+| W44 | [数のリテラルの制約が破れたときの `E1003` が、単一化した位置ではなくリテラルを指す](W44-literal-constraint-error-location.md) | P3 | S | – | todo |
 
 ## 推奨フェーズ
 
@@ -804,3 +853,132 @@ TZ08・TZ12・TZ13・TZ09・TZ10 の実装中に見つけ、その PR では直�
 - A27・A29・E16・G37・G38・TZ14 は互いに独立で、順を問わない。
 - TZ15 は TZ14 の作業中に見つけ、2026-11-06 に `main` の `72f06862` で再現してから足しました。TZ14 の `runtime_definitions` とその単体テストを比べる相手にするので、TZ14 の後に直します。
 - 作業中に見つけたもののうち、HEAD で直っていたもの（`DataChannel.*` の展開の hint、trap の hook の配置の食い違い）は起票していません。
+
+## 追加チケット（2026-11-22。Tsuzuri だけで Win32 のアプリを書く）
+
+利用者の質問「Tsuzuri だけで C が wWinMain を持つ構成と同等の機能を有するようにしたい場合、どのような仕様変更やライブラリ開発が必要になりそう？」への回答で示した分岐のうち、利用者が X（E12 D13 を狭く改める）を選んだ。続く依頼「実現向けたチケットを @_features に W プリフィックスのチケットを作成して」「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から、W01〜W30 を起票した（HEAD `fa40eede`）。起票中に見つけた不具合と改善を W31〜W44 として足した。
+共通の決定は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) にある。各チケットの綴り・下げ方・WASM での扱いは、起票時に 1 つの表で決めてそろえた。再現の結果と行番号は各チケットの「現状」にある。
+
+### 利用者が決めた点（D-63）
+
+| 項目 | 決定 |
+| --- | --- |
+| 分岐 | X。E12 D13 を狭く改め、`extern` として宣言する型付きの 2 つの形だけを足す。`extern view`（ホストが渡したアドレスと C の配置の record の複写。W24）と `extern interface`（COM の vtable の呼び出し。W25）で、どちらも `@trusted` と `ffi` の監査の対象 |
+| 入れないもの | 生ポインター型、ポインター演算の構文、`unsafe` ブロック |
+| 改めないもの | GUI フレームワークを同梱しないという非目標（上の「採用しない改善」）。Win32 の宣言は std の外の公式パッケージにする案を W27 の既定案にした |
+| 各チケットで決めること | 決定事項の「要承認」の項目。終了コード（W07）、IO の意味（W08）、新しい属性・名前の登録（D-53・D-55）など |
+
+### 共通の綴り（起票時に決めた契約）
+
+チケットの「共通契約」はこの表を指す。綴りを変えるときは、この表と関係するチケットを同じ PR で直す。新しい ABI の種類は、表に書かない限り native だけで、wasm32・wasm64 では `E1008`（kind 案 `abi_native_only`。`build` のときに出し、target を取らない `check` では出ない）。新しい機能を使わないプログラムの IR・header・診断は変えない（例外は W39 の COFF の `comdat`、W42 の Windows x64 の i128 の補助、ランタイムの C を直す W33・W34・W35 で、各チケットに範囲を書いた）。新しい属性の置き場の誤りは `E0002` の `misplaced_<名前>_attribute`、新しい属性・フラグ・manifest のキー・環境変数・モジュール名・文脈キーワードは D-53・D-55 の改訂として要承認。
+
+| 機能 | 綴り | 要点 |
+| --- | --- | --- |
+| 所有しないハンドル（W18） | `extern type copy Hwnd` | Copy・捕捉できる・Send・Sync。値は今の `extern type` と同じ 1 ポインター |
+| スレッドに結び付くハンドル（W19） | `extern type local Hdc` | Send・Sync でなく捕捉できない。固定された文脈（`main` などの境界の本体、`Routine.with_locked_thread` の本体、コールバックの本体）だけで使え、効果 `pinned` で静的に検査する |
+| NULL（W15） | `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>`、のちに `Maybe<ref ZString>` | `None` ⇔ NULL。`Maybe<ref ZString>` は W15 と W20 のうち後に入るほうが足す |
+| `ref mut`（W13） | 引数の `ref mut R`・`ref mut T` | 既存の一時領域への copy-in/copy-out |
+| 可変バッファ（W13） | `ref mut [T..]`（勧める）と `ref mut [T]`、`@count(<位置>, i32 \| i32u \| i64 \| i64u \| none)` | 写さずに `T *ptr, <長さ>` で渡す。範囲外の長さは呼び出しの前にトラップ |
+| 複数宣言（W14） | 同じリンク名の `extern` を型を変えて複数書く | 位置ごとの C の ABI の分類が同じなら許し、`declare` を 1 つにまとめる |
+| `@last_error`（W16） | 結果の型を `R * i32u` にした `extern` の前の `@last_error` | 呼び出しの直前に消し、直後に `GetLastError`／`errno` を読んで組の 2 番目にする |
+| `@link`（W17） | `@link("user32")` | その extern に到達したときだけシステムライブラリをリンクし、Windows では `dllimport` |
+| `ZString`（W20） | `ZString.of :: ref string -> Result<ZString, ZString.Error>`、`ZString.literal "..."`、`ZString.to_string` | NUL 終端で途中に U+0000 を持たない UTF-16。`ref ZString` は `const uint16_t *` 1 つ |
+| C レイアウト（W21） | `@c_layout record ...`、`@c_layout(pack = n)` | 正確な幅・宣言順・C の整列。Phase 1 はスカラー・固定長配列・入れ子・`copy` ハンドル・`Maybe<H>`、Phase 2 は `FnPtr`・`ZString` の field。値渡しは W36 |
+| 関数ポインターの値（W22） | `FnPtr<(A -> B -> R)>`、`FnPtr.of name` | コールバックと同じ包みを指す。Tsuzuri からは呼ばない |
+| アプリの状態（W23） | `Anchor.create`・`Anchor.token`・`Anchor.read f token`・`Anchor.update f token` | 鍵は最後の引数。`Anchor.Error` は `Stale`・`Busy`・`WrongThread`・`WrongType`。再入はトラップせず `Busy` |
+| `extern view`（W24） | `@trusted extern view def read_x :: i64 -> R`、`... :: i64 -> ref R -> unit` | アドレス（`i64`）と record の型付きの複写。0 と整列違反はトラップ |
+| `extern interface`（W25） | `@trusted extern interface I : Base "<IID>" { m :: ... }`、`Module.I.m (ref obj) ...` | drop で `Release`。`AddRef`・`Release` は直接呼ばず `Com.clone`・`Com.cast`・`Com.create` |
+| COM オブジェクト（W26） | `Com.object :: i64 -> I.Methods -> I` | `I.Methods` は field が `FnPtr` の record。状態は `Anchor` の鍵 |
+| コールバックの寿命（W12） | – | native では保持してよい。実行ファイルは `main` の境界の終わりまで、ライブラリはプロセスの寿命の間呼べる。`main` の後の呼び出しはトラップ |
+| GUI サブシステム・リソース（W09・W10） | `--subsystem console \| windows`、`[windows] subsystem`・`manifest`・`icon`・`version`・`resources`、`TSUZURI_RC` | 既定のマニフェストは入れない |
+
+### 種別ごとの一覧
+
+| 種別 | チケット | 概要 |
+| --- | --- | --- |
+| 修正 | W01 | コールバックを取る `extern` に文字列の一時値を渡すと、`check` は通るのに、生成した IR が定義のない `@tz.fn.Main.<extern>` を呼んで `E2002` になる |
+| 修正 | W02 | `do!` を含む直接実行の本体で、`while`・`for` への `break`・`continue` が `E1023` になる（`do!` を消すと通る）。ビルダーで組み立てる計算（`IO { }` など）の中は、文書どおり `E1023` のまま |
+| 修正 | W03 | 素の `string` の引数、ランタイム入りの COFF の `E2002`、DLL の助言、リンク失敗のヒント、std ハンドルなしの `IO.writeln`、`--backend fast` の Windows、リンク入力の記述の食い違いを直す |
+| 修正 | W04 | Windows で std ハンドルがないと `_write` が失敗し（静的 UCRT では fd 2 が閉じていると fast-fail）、トラップとランタイムの報告が消える。CRT を通さずに書き、書けなければ `OutputDebugStringW` に送る |
+| 修正 | W05 | Windows の `--emit shared` を実装する。今の `E2000` が勧める「object を DLL にリンク」では、弱いシンボルの `tsuzuri_alloc`・`tsuzuri_free` が export されず、LLD の import library の名前も壊れる。Windows の DLL ではこの 2 つを強い `dllexport` にする |
+| 改善 | W06 | GUI を描かずに検査するテスト基盤（メッセージ専用の窓、std ハンドルなしの起動、PE の検査） |
+| 改善 | W19 | スレッドに結び付くハンドルを、固定された文脈（`main`・`with_locked_thread`・コールバック）でだけ使えるよう静的に検査する |
+| 改善 | W26 | COM オブジェクトを Tsuzuri で実装する。UI Automation・TSF・`IDropTarget` に要る |
+| 改善 | W28 | 固定した tzroutine の UI が Fiber のスタックで動くことを検証し、要れば予約や保証を広げる |
+| 改善 | W29 | コールバックごとの P の取り戻しの遅延を計測し、短い経路を速くする |
+| 改善 | W30 | ASLR・NX・CET・CFG の状態を確かめ、CFG の表を既定にする |
+| 機能 | W07〜W10 | Windows のトラップの fail-fast と `uwtable`、std ストリームがないときの IO、GUI サブシステム、リソース |
+| 機能 | W11 | Windows の OS API（E08 の Windows の方針） |
+| 機能 | W12・W22・W23 | 静的コールバックをプロセスの寿命の間呼べるようにする契約、関数ポインターの値、コールバックから届く状態 |
+| 機能 | W13〜W18・W20 | `ref mut` と可変バッファ、同じ symbol の複数宣言、NULL のハンドル、`@last_error`、`@link`、Copy のハンドル、`ZString` |
+| 機能 | W21・W24・W25 | C レイアウトの record、`extern view`、`extern interface` |
+| 機能 | W27 | `.winmd` からの生成器と公式の `win32` パッケージ |
+| 修正 | W31 | トップレベルのコードで、最初の `let!`・`do!` より前にループがあると、ビルダーを推論できず `E1018` になる |
+| 修正 | W32 | トップレベルの式の表示（`putchar`）と `--overflow-report` が、書き込みの失敗を黙って捨てる。標準出力が閉じていても終了コードは 0 になる |
+| 改善 | W33 | Windows のコマンドラインの分割を CRT の規則にそろえる。今の規則ではリテラルの `"` を受け取れない |
+| 修正 | W34 | Windows の sysmon の待ちがミリ秒に切り上がる（1 ms の待ちが約 15.6 ms）。高分解能の待機タイマーにする |
+| 改善 | W35 | Windows で `--trap-mode return` を使えるようにする（`trap.c` の移植。W07 の `uwtable` の上に立つ） |
+| 機能 | W36 | C レイアウトの record を値で渡す・返す（`WindowFromPoint(POINT)`、Direct2D の点など） |
+| 修正 | W37 | 同梱の `tsuzuri-clang` で `-O0` で作った C の object が UBSan の実行時を参照し、別のリンカーでリンクできない |
+| 修正 | W38 | トップレベルの `do`（`!` なし）があると、最後の式を `unit` として検査し、関係のない位置（`let mut n = 0` の `0`）に `E1003` を出す |
+| 修正 | W39 | Windows では、ランタイムのない object でも 2 つを 1 つのホストにリンクすると `duplicate symbol: __multi3`（lld-link）・`LNK1227`（link.exe）になる。COFF では弱い補助を selectany の COMDAT にする |
+| 修正 | W40 | 同梱の launcher が `-Wl,--gc-sections` を IR のコンパイルにも渡し、Windows のすべてのビルドで「linker input unused」の警告が出る |
+| 修正 | W41 | Windows のタイマーのスレッドの待ちもミリ秒に切り上がり、1 ms の `Time.sleep` 50 回が 1.2〜2.8 秒かかる。W34 の高分解能の待機タイマーを使う |
+
+| 修正 | W42 | Windows x64 の `i128` の `/`・`%` が誤った値になる（`-O0` で `100 / 3` が `0`。`-O3` で正しく見えるのは定数を畳んだときだけで、実行時の値なら誤る）。i128 の補助が Win64 の呼び出しの規約と合わず、object をリンクしたホスト自身の `__int128` の除算も壊す |
+| 修正 | W43 | 結果の型の注釈がないラムダに `!` のない `do` があると、ラムダが `unit` を返す型になり、正しいプログラムが `E1005` で拒否される |
+| 修正 | W44 | 数のリテラルの制約が破れたとき、`E1003` が原因の行（`let u: unit = n`）ではなくリテラルの `0` を指す |
+
+W31〜W37 は W01〜W30 の起票中に、W38〜W41 は W31〜W37 の起票中に、W42〜W44 は W38〜W41 の起票中に見つけた不具合と改善である。
+
+### 進め方
+
+- **最初に（承認なしで始められる）**: W01・W02・W03・W04・W06 は互いに独立。W05 は E13 の DLL の方針の承認の後。
+- **Windows のトラップと GUI の実行ファイル**: W07 は W04・W06 の後。W08 → W09 → W10 の順。W11 は独立に並行して進められる。
+- **コールバック**: W12 は W07 の後（トラップが user32 に握りつぶされる危険を先に塞ぐ）。その上に W22・W23・W29。
+- **型付き ABI の基本**: W13〜W18 は互いに独立で並行できる。W19 は W18 の後、W20 は W13 の後。W13 だけで `GetMessageW`・`BeginPaint`・`GetClientRect` が契約内に入る（ハンドルを `i64` の field にした MSG・RECT・PAINTSTRUCT は、今の record でも C と同じ配置）。
+- **`lParam` が指す構造体**: W24 の Phase 1 は W15 の後に出せ、32/64-bit の field だけの NMHDR・MINMAXINFO・CREATESTRUCTW を読める。W21 の Phase 1（W13・W15・W18）の後に W24 の Phase 2 で C レイアウトの record にも広げる。W21 の Phase 2 は W20・W22 の後。
+- **COM と生成**: W25 は W19・W21・W24 の後（Phase 3 は W14 と W36 も要る）。W26 は W25・W22・W23 の後。W27 は ABI の機能（W13〜W25）がそろってから。W30 の Phase 2（COM の間接呼び出しの CFG）は W25 の後。W28 は W06 の後ならいつでも。
+- **起票中に見つけたもの**: W31・W33・W34・W37・W38・W39・W40 は互いに独立。W31・W38 は W02 と同じ暗黙のビルダーの推論のコードを、W40 は W37 と同じ launcher を触るので、マージの順を各チケットに書いた。W32 は W08 の後、W35 は W07 の後、W36 は W21 の後、W41 は W34 の後、W43 は W38 の後。W42 は値を黙って誤るので、ほかより先に直す（P1。W39 と同じ i128 の補助を触るので、マージの順をチケットに書いた）。W44 は独立。
+- W04・W08・W09・W10 は W06 のテストの補助（std ハンドルなしの起動器、PE の検査）を使う。W06 が先に入っていなければ、同じ名前で要る分だけ足す。
+- Windows の挙動を変える W チケットの PR には `ci:full` を付ける（`windows.yml` は main への merge 後と `ci:full` でだけ動く）。
+
+```mermaid
+graph LR
+  W04 --> W07
+  W06 --> W07
+  W06 --> W12
+  W06 --> W28
+  W07 --> W12
+  W07 --> W30
+  W08 --> W09
+  W09 --> W10
+  W12 --> W22
+  W12 --> W23
+  W12 --> W29
+  W13 --> W20
+  W13 --> W21
+  W15 --> W21
+  W18 --> W21
+  W18 --> W19
+  W20 -.Phase 2.-> W21
+  W22 -.Phase 2.-> W21
+  W15 --> W24
+  W21 -.Phase 2.-> W24
+  W19 --> W25
+  W21 --> W25
+  W24 --> W25
+  W22 --> W26
+  W23 --> W26
+  W25 --> W26
+  W25 -.Phase 2.-> W30
+  W25 --> W27
+  W01 --> W27
+  W07 --> W35
+  W08 --> W32
+  W21 --> W36
+  W36 -.Phase 3.-> W25
+  W14 -.Phase 3.-> W25
+  W34 --> W41
+  W38 --> W43
+```
