@@ -7447,12 +7447,19 @@ impl Names {
         mut error: Diagnostic,
         names: &Names,
     ) -> Diagnostic {
-        let public = path
-            .rsplit_once('.')
-            .is_some_and(|(_, member)| !member.starts_with("__"));
-        if public
+        // Only a public builtin, and only where `std::Module` names the std module (not a module
+        // `Module` of a namespace `std` of the program).
+        let Some((module, member)) = path.rsplit_once('.') else {
+            return error;
+        };
+        if !member.starts_with("__")
             && names.origin(requester) == ModuleOrigin::User
             && qualified_builtin(path).is_some()
+            && names.names_std_module(
+                requester,
+                &format!("{}::{module}", crate::stdlib::NAMESPACE),
+                module,
+            )
         {
             error.message.push_str(&format!(
                 "; write '{}::{path}' for the standard library's function",
@@ -7539,10 +7546,17 @@ impl Names {
                 .union_case(requester, requester, prefix, name, span)
                 .map_err(|mut error| {
                     if self.cases.contains_key(path) {
-                        error.message.push_str(&format!(
-                            "; write '{}::{path}' for the standard library's case",
-                            crate::stdlib::NAMESPACE
-                        ));
+                        // Only where `std::Module` names the std module (E20).
+                        if self.names_std_module(
+                            requester,
+                            &format!("{}::{prefix}", crate::stdlib::NAMESPACE),
+                            prefix,
+                        ) {
+                            error.message.push_str(&format!(
+                                "; write '{}::{path}' for the standard library's case",
+                                crate::stdlib::NAMESPACE
+                            ));
+                        }
                         error
                     } else {
                         Self::std_function_hint(requester, path, error, self)

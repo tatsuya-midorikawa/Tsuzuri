@@ -1107,6 +1107,19 @@ checked (std::Result.Ok 40) + local.value + std::Owned.call (ref work) () + valu
         ("Other.tz", "def value :: Maybe<i64> = Maybe.Some 1\n"),
     ])
     .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    // E20: no hint where `std::Mutex` is a module of a namespace `std` of the program.
+    for (module, call) in [("Mutex", "Mutex.create 1"), ("Routine", "Routine.yield ()")] {
+        let main = format!("namespace App\n\nunion {module} = Idle | Busy\nlet x = {call}\n0");
+        let nested = "namespace App::std\n\ndef create :: i64 -> i64\nfn create n = n\n\ndef yield :: unit -> unit\nfn yield _unit = ()\n";
+        let path = format!("App/std/{module}.tz");
+        let error = analyze_modules(&[("Main.tz", &main), (&path, nested)]).unwrap_err();
+        assert_eq!(error.code, "E1002", "{main}\n{}", error.message);
+        assert!(
+            !error.message.contains("std::"),
+            "{main}\n{}",
+            error.message
+        );
+    }
     // E20: a private builtin gets no hint.
     let error = analyze_modules(&[(
         "Main.tz",
