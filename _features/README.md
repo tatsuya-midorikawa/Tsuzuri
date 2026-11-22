@@ -376,6 +376,19 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W43 | [結果の型の注釈がないラムダ・ブロックに `!` のない `do` があると、最後の式ではなく `unit` を返す型になる](W43-plain-do-in-lambda-returns-unit.md) | P2 | S | W38 | todo |
 | W44 | [数のリテラルの制約が破れたときの `E1003` が、単一化した位置ではなくリテラルを指す](W44-literal-constraint-error-location.md) | P3 | S | – | todo |
 
+### NS. Null 安全性の徹底（D-64）
+
+| ID | チケット | 優先 | 規模 | 依存 | 状態 |
+|---|---|---|---|---|---|
+| NS01 | [不透明ハンドル `extern type` の非 Null 不変条件と `Maybe<H>` の NULL niche](NS01-nonnull-extern-handles.md) | P1 | M | W15 | todo |
+| NS02 | [`export def` とホストバインディング（C#・Python・C++）での `Maybe<H>`・`Maybe<ref R>`](NS02-export-and-bindings-nullable.md) | P2 | M | W15, NS01 | todo |
+| NS03 | [`tsuzuri bindgen` の Nullability 対応（`_Nullable`・`_Nonnull` と既定 `Maybe` 化）](NS03-bindgen-nullability.md) | P1 | M | W15, NS01 | todo |
+| NS04 | [ラムダ式引数・`for...in` の反駁可能パターンの静的検査と、`let` の反駁不可能パターン分解](NS04-irrefutable-binding-patterns.md) | P1 | M | – | todo |
+| NS05 | [強制アンラップ警告 `--warn unwrap`（`Maybe.get`・`Result.get`・`Result.get_error` の静的検出）](NS05-warn-unchecked-unwrap.md) | P2 | S | – | todo |
+| NS06 | [条件付きパターン束縛 `if let`（`elif let` 連鎖を含む安全な短絡取り出し）](NS06-if-let-conditional-binding.md) | P2 | M | (NS04) | todo |
+| NS07 | [非ゼロ外部アドレス型 `ExternAddr` と `extern view` の静的非 Null 化](NS07-extern-addr-nonnull-view.md) | P2 | S | W24 | todo |
+| NS08 | [`Owned.call` の部分適用が `Capture` 検査をすり抜けて解放後読み出しになる不具合の修正](NS08-owned-call-partial-capture-check.md) | P0 | S | – | todo |
+
 ## 推奨フェーズ
 
 依存関係と価値の順に並べています。同じフェーズ内でも、上に書いたものから着手してください。
@@ -985,3 +998,36 @@ graph LR
   W34 --> W41
   W38 --> W43
 ```
+
+## 追加チケット（2026-11-22。Null 安全性の徹底）
+
+Tsuzuri を言語全体として完全な Null 安全にするための仕様調査（HEAD `edc61676`）から、純粋な Tsuzuri 内部の値モデルはすでに Null 安全である一方、C ABI / FFI 境界・`bindgen`・単一束縛パターンの網羅性・強制アンラップの静的統制・`Owned.call` 部分適用の捕捉検査に残っていた穴を塞ぐ NS01〜NS08 を起票した。共通の記録は [GUIDE D-64](GUIDE.md#d-64-null-安全性の徹底ns01ns08) にある。
+
+| 種別 | チケット | 概要 | 承認 |
+| --- | --- | --- | --- |
+| 修正 | [NS08](NS08-owned-call-partial-capture-check.md) | 2 引数以上の関数を包んだ `Owned.Function` への `Owned.call` 部分適用が `Capture` 検査と `ref w` の借用保持をすり抜け、非 Copy 値の二重解放・解放後読み出しになる不具合（[A33](A33-remaining-store-soundness-holes.md) の `owned2`）を塞ぐ | 不要 |
+| 機能 | [NS01](NS01-nonnull-extern-handles.md) | ネイティブと生成バインディングで不透明ハンドル `extern type`（`H`・`ref H`）を厳格に非 Null にし、非 `Maybe` 境界の `NULL` を `TrapKind::NullHandle` で止めて `Some(NULL)` を根絶する。ネイティブの `Maybe<H>` に `Niche::NullPointer`（1 ポインタ）を与える | D1・D2 |
+| 機能 | [NS02](NS02-export-and-bindings-nullable.md) | [W15](W15-abi-nullable-handles.md) D3 の対象外を解除し、ネイティブの `export def` と C#・Python・C++ 生成バインディングで `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>` を型安全に受け渡す | D1 |
+| 改善 | [NS03](NS03-bindgen-nullability.md) | `tsuzuri bindgen` が捨てていた `_Nullable`・`_Nonnull`・`nonnull` / `returns_nonnull` 属性を反映し、非 Null の根拠がない C ポインタを既定で `Maybe` に写す（`--nonnull` 注釈を追加） | D1・D2 |
+| 改善 | [NS04](NS04-irrefutable-binding-patterns.md) | ラムダ引数・`for...in`・計算式束縛・`select` 受信の単一パターンに網羅性検査を適用し、反駁可能パターン（`\(Some x) -> x` など）を 2027 で `E1021`、2026 で `W1012` にする。Phase 2 で不変 `let` に反駁不可能パターン分解を許す | D1〜D3 |
+| 機能 | [NS05](NS05-warn-unchecked-unwrap.md) | `--warn unwrap` でルートパッケージの `Maybe.get`・`Result.get`・`Result.get_error` に警告 `W1011`（`unchecked_unwrap`）を出し、`--deny-warnings` と併用して検査なしアンラップを禁止できるようにする | D1・D2 |
+| 機能 | [NS06](NS06-if-let-conditional-binding.md) | 新しい予約語を増やさず `if let <pattern> = <expr> [when <guard>] then ... [elif ... \| else ...]` を 2 アーム `match` の糖衣として導入し、単一ケースの安全な取り出しを簡潔にする | D1 |
+| 改善 | [NS07](NS07-extern-addr-nonnull-view.md) | opt-in の不透明値型 `ExternAddr`（`ExternAddr.of_i64 :: i64 -> Maybe<ExternAddr>`）を追加し、[W24](W24-extern-view.md) の `extern view` でアドレス `0`（NULL）の分岐確認を型レベルで強制する | D1・D2 |
+
+### 進め方
+
+- **最初に（承認不要・P0）**: NS08 は他のすべてのチケットと独立しており、直ちに着手できる。
+- **言語内検査と構文（W 系と独立）**: NS04・NS05・NS06 は互いに並行して進められる（NS06 の反駁不可能パターンの help 文だけ NS04 Phase 2 を弱く参照する）。
+- **C ABI・bindgen・FFI アドレス**: W15 → NS01 → NS02・NS03（NS02 と NS03 は並行可）。W24 → NS07。
+
+```mermaid
+graph LR
+  W15 --> NS01
+  W15 --> NS02
+  NS01 --> NS02
+  W15 --> NS03
+  NS01 --> NS03
+  NS04 -.-> NS06
+  W24 --> NS07
+```
+
