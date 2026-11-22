@@ -75,7 +75,7 @@ Maybe.get (wrap 42)
 - 自モジュールの `Union.Case`
 - `Module.Union.Case`
 
-標準ライブラリはユーザー定義より後に検索されます。自前の `union Maybe` があると、無修飾の `Maybe.Some` は自前のケースです。標準の方は `std::Maybe.Some` と書きます。`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`DataChannel`、`Monoids` のケースと型は無修飾では見つからず、`Json.Null` や `Regex.Syntax` のようにモジュール名で修飾して書きます。
+標準ライブラリはユーザー定義より後に検索されます。自前の `union Maybe` があると、無修飾の `Maybe.Some` は自前のケースです。標準の方は `std::Maybe.Some` と書きます。組み込みの関数（`Mutex.create`・`DataChannel.bounded`・`Channel.make`・`Routine.yield` など）も同じで、自前の `union Mutex` があるモジュールでは、無修飾の `Mutex.create` は自前の共用体のケースとして探して `E1002`（`write 'std::Mutex.create' for the standard library's function` の案内付き）になり、`std::Mutex.create` と書けば標準の関数です。標準ライブラリのソースで定義した関数（`Maybe.get`・`Path.join` など）は、自前の同名の共用体があっても、無修飾で標準の関数です。`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`DataChannel`、`Monoids` のケースと型は無修飾では見つからず、`Json.Null` や `Regex.Syntax` のようにモジュール名で修飾して書きます。
 
 ```tsuzuri run=42
 union Choice = Some of i64 | None
