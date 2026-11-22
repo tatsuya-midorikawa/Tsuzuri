@@ -234,6 +234,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | E18 | [`E1040` の旧名の検出を std モジュールへの解決にそろえる（`Channel`・`Net`・`Task`・`Async`）](_completed/E18-removed-names-resolve-std-modules.md) | P3 | S | E17 | done（書いたモジュールが std のモジュールに解決するときだけ `E1040`、プロジェクトのモジュールにない名前は `E1002`・`E1004`。`std::` 付きも `E1040` で、メッセージと修正案は `std::` を保つ。置き換えのモジュールがプロジェクトのものなら `std::` を付ける。確かな改名の回復は関数を毒にしない） |
 | E19 | [`DataChannel` の端に使った `Channel.send`・`Channel.recv` の書き換えも、置き換えの名前を確かめる](_completed/E19-data-channel-call-rewrite-spelling.md) | P3 | S | E18 | done（検査器が呼び出しの位置から `DataChannel` と `std::DataChannel` が std のモジュールを指すかを `detail.data_channel` に書き、`hints.rs` の書き換えはそれで裸・`std::`・修正案なしを選ぶ） |
 | E20 | [利用者の共用体と同じ名前の std の組み込みモジュールの関数を、`std::` を付けて書いても共用体のケースとして探す](_completed/E20-std-qualified-builtin-beside-user-union.md) | P3 | S〜M | E19 | done（`case_path` が参照元の同名の共用体へ戻るのを裸の名前だけにし、`std::M.f` は std の組み込み関数に解決する。裸の名前の `E1002` に `std::` の案内、E18 D2・E19 の修正案は自前の共用体の隣で `std::` を付ける） |
+| E21 | [自分の共用体と同じ名前のモジュールがサブディレクトリにあると、無修飾の `Union.Case` が自分の共用体のケースに戻らない](E21-own-union-beside-subdirectory-module.md) | P3 | S | E20 | todo |
 
 ### F. 並列・性能バックエンド
 

@@ -6429,7 +6429,7 @@ impl Names {
         spelled: &str,
         member: &str,
         span: Span,
-        local: &dyn Fn(&str) -> bool,
+        takes_bare: &dyn Fn(&str) -> bool,
     ) -> Option<(Diagnostic, Option<String>)> {
         let (module, prefix) = self.removed_module(requester, spelled)?;
         let (kind, message, help, replacement) = removed_feature(module, member)?;
@@ -6439,8 +6439,9 @@ impl Names {
             message.replacen(&format!("'{module}."), &format!("'{prefix}{module}."), 1)
         };
         // The replacement as written: after `std::`, with `std::`; else bare, or with `std::`
-        // where the bare module is not the std one or a local binding of the value position
-        // (`local`) has its name. Where neither spelling names it, there is no fix and no
+        // where the bare module is not the std one or `takes_bare` holds for its name (in a value
+        // position, a local binding or a union of the module with the name:
+        // `Checker::takes_bare_module`). Where neither spelling names it, there is no fix and no
         // recovery.
         let replacement = replacement.and_then(|text| {
             let (target, _) = text.rsplit_once('.')?;
@@ -6450,7 +6451,7 @@ impl Names {
                 &[prefix]
             };
             let chosen = candidates.iter().find(|candidate| {
-                !(candidate.is_empty() && local(target))
+                !(candidate.is_empty() && takes_bare(target))
                     && self.names_std_module(requester, &format!("{candidate}{target}"), target)
             })?;
             let written = format!("{chosen}{text}");
@@ -7437,6 +7438,30 @@ impl Names {
         }
     }
 
+    /// E20: the `E1002` of a bare `Module.member` that the requester's own `union Module` takes,
+    /// with the hint at the std builtin `Module.member` when there is one (`Mutex.create`), as
+    /// the std case gets its hint. A private builtin (`Channel.__release`) gets none.
+    fn std_function_hint(
+        requester: &str,
+        path: &str,
+        mut error: Diagnostic,
+        names: &Names,
+    ) -> Diagnostic {
+        let public = path
+            .rsplit_once('.')
+            .is_some_and(|(_, member)| !member.starts_with("__"));
+        if public
+            && names.origin(requester) == ModuleOrigin::User
+            && qualified_builtin(path).is_some()
+        {
+            error.message.push_str(&format!(
+                "; write '{}::{path}' for the standard library's function",
+                crate::stdlib::NAMESPACE
+            ));
+        }
+        error
+    }
+
     /// Resolves `Union.Case` for a union declared in `module`.
     fn union_case(
         &self,
@@ -7491,7 +7516,10 @@ impl Names {
                         && !name.contains('.')
                         && self.unions.contains_key(&format!("{requester}.{union}")) =>
                 {
+                    // A builtin module that has no std file (`Routine`, `Int`, `Simd`) gets the
+                    // hint of a std module's builtin too (E20).
                     self.union_case(requester, requester, union, name, span)
+                        .map_err(|error| Self::std_function_hint(requester, path, error, self))
                 }
                 _ => Ok(None),
             };
@@ -7515,14 +7543,10 @@ impl Names {
                             "; write '{}::{path}' for the standard library's case",
                             crate::stdlib::NAMESPACE
                         ));
-                    } else if qualified_builtin(path).is_some() {
-                        // E20: `Mutex.create` beside the requester's own `union Mutex`.
-                        error.message.push_str(&format!(
-                            "; write '{}::{path}' for the standard library's function",
-                            crate::stdlib::NAMESPACE
-                        ));
+                        error
+                    } else {
+                        Self::std_function_hint(requester, path, error, self)
                     }
-                    error
                 });
         }
         let qualified = if self.searchable(requester, prefix) {
@@ -12339,7 +12363,8 @@ impl<'a> Checker<'a> {
     }
 
     /// E19: for a call of the builtin `Channel.send` or `Channel.recv`, whether `DataChannel`
-    /// written bare (no local binding has the name here) and written `std::DataChannel` name the
+    /// written bare (no local binding or union of this module has the name here:
+    /// `takes_bare_module`) and written `std::DataChannel` name the
     /// std module from this module. The hint that rewrites an old `Channel.send` given an end of a
     /// `DataChannel` (`hints::renamed_channel_calls`) writes one of them, as `Names::removed_written`
     /// does for the other renamed names (E18 D2).

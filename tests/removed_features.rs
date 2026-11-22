@@ -1476,6 +1476,16 @@ fn a_union_named_like_the_replacement_module_makes_the_fix_say_std() {
             "union DataChannel = Open | Closed\n\ndef f :: own std::DataChannel.Receiver<i64> -> i64\nfn f receiver =\n    match Channel.recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n0\n",
             "std::DataChannel.recv",
         ),
+        (
+            "union Routine = Idle | Busy\n\nlet base = 10i64\nlet values = Task.scope (ref base) 4 (\\shared index -> deref shared + index)\nArray.sum (ref values)\n",
+            "std::Routine.scope",
+        ),
+        // `std::Channel` beside the module's own `union Channel` is the std module, so its old
+        // names are the E1040 of the std ones.
+        (
+            "union Channel = Open | Closed\n\nlet pair: (std::DataChannel.Sender<i64> * std::DataChannel.Receiver<i64>) = std::Channel.bounded 3\n0\n",
+            "std::DataChannel.bounded",
+        ),
     ] {
         let error = analyze(source).expect_err(source);
         assert_eq!(error.code, "E1040", "{source}\n{}", error.message);

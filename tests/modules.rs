@@ -1107,6 +1107,16 @@ checked (std::Result.Ok 40) + local.value + std::Owned.call (ref work) () + valu
         ("Other.tz", "def value :: Maybe<i64> = Maybe.Some 1\n"),
     ])
     .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    // E20: a private builtin gets no hint.
+    let error = analyze_modules(&[(
+        "Main.tz",
+        "union Channel = Open | Closed\nlet x = Channel.__release 1\n0",
+    )])
+    .unwrap_err();
+    assert_eq!(
+        error.message,
+        "union 'Main.Channel' has no case '__release'"
+    );
     // E20: a builtin of a std module written with `std::` is the builtin beside the requester's
     // own union of the module's name, as a std function (`std::Path.join`) already was.
     for source in [
@@ -1121,11 +1131,23 @@ checked (std::Result.Ok 40) + local.value + std::Owned.call (ref work) () + valu
             .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
     }
     for (source, code, message) in [
-        // The bare name is still the requester's union, with a hint at the builtin (E20).
+        // The bare name is still the requester's union, with a hint at the builtin (E20), also
+        // for a builtin module without a std file, and none for a private builtin.
         (
             "union Mutex = Locked | Free\nlet m = Mutex.create 1\n0",
             "E1002",
             "union 'Main.Mutex' has no case 'create'; write 'std::Mutex.create' for the standard library's function",
+        ),
+        (
+            "union Routine = Idle | Busy\nlet x = Routine.yield ()\n0",
+            "E1002",
+            "union 'Main.Routine' has no case 'yield'; write 'std::Routine.yield' for the standard library's function",
+        ),
+        // A case of the requester's own union is written bare: with `std::` it is the std module.
+        (
+            "union Maybe = None | Some of i64 | Other\nlet x = std::Maybe.Other\n0",
+            "E1002",
+            "module 'std::Maybe' has no function or union case 'Other'",
         ),
         (
             "union Maybe = None | Some of i64\nlet x: std::Maybe<i64> = Maybe.Some 4\n0",

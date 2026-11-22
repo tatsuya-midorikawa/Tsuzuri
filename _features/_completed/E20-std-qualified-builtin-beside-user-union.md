@@ -32,7 +32,7 @@
 
 ## E18・E19 との関係
 
-E18 の D2 と E19 は、`E1040` の確かな修正案の置き換え（`DataChannel.bounded`・`std::DataChannel.recv` など）を、`Names::names_std_module`（モジュールの解決）とローカルの束縛で確かめる。利用者の共用体 `DataChannel` は、モジュールでもローカルの束縛でもないので確かめを通り、修正案は裸の `DataChannel.bounded` になるが、直したプログラムは上の `E1002` になる（`tsuzuri fix` は、修正案が `E1002` を増やすので `E2008` で止まり、どのファイルも書かない。意味を変えて書くことはない）。このチケットで `std::` の修飾を直したら、`names_std_module` か `removed_written`・`data_channel_spellings` が、同じ名前の共用体（と型）も「裸の名前を取るもの」として扱い、`std::` を付けるようにする。
+E18 の D2 と E19 は、`E1040` の確かな修正案の置き換え（`DataChannel.bounded`・`std::DataChannel.recv` など）を、`Names::names_std_module`（モジュールの解決）とローカルの束縛で確かめる。利用者の共用体 `DataChannel` は、モジュールでもローカルの束縛でもないので確かめを通り、修正案は裸の `DataChannel.bounded` になるが、直したプログラムは上の `E1002` になる（旧い `Channel.recv` の書き換えは、修正案が `E1002` を増やすので `tsuzuri fix` が `E2008` で止まり、どのファイルも書かない。`Channel.bounded` は回復が同じ `E1002` をすでに出しているので、`tsuzuri fix` は裸の名前を書いて `E1002` が残る。どちらも、意味を変えて通るプログラムを書くことはない。2026-11-22 の実装で確かめて直した）。このチケットで `std::` の修飾を直したら、`names_std_module` か `removed_written`・`data_channel_spellings` が、同じ名前の共用体（と型）も「裸の名前を取るもの」として扱い、`std::` を付けるようにする。
 
 ## 進め方
 
@@ -53,6 +53,7 @@ E18 の D2 と E19 は、`E1040` の確かな修正案の置き換え（`DataCha
 
 - 原因: `case_reference` は、`Module.member` が見える関数（std の `.tz` の関数を含む）を名指すときは共用体のケースを探さないが、組み込み関数（`DataChannel.bounded`・`Channel.make`・`Mutex.create`・`Atomic.create`）は関数の表にないので `Names::case_path` に進む。`case_path` の最後の分岐は、モジュール（std の `DataChannel` など）にその名前のケースがないとき、参照元の同名の共用体のケースへ戻っていた。書いた名前が `std::DataChannel` でも戻っていたのが不具合。
 - 直し（`src/check.rs`）: その分岐を、書いた名前がモジュールの名前そのもの（裸）のときだけにした。`std::M.member` は `None` を返し、呼び出し側が std の組み込み関数を見つける。裸の `M.member` は今までどおり参照元の共用体のケースが先（「プログラムの定義が勝つ」）。参照元の共用体に取られて std の組み込み関数に届かない裸の名前は、`E1002` の文に `write 'std::Mutex.create' for the standard library's function` を足す（std のケースのときの `for the standard library's case` と同じ形）。
-- E18 D2・E19: 値の位置の裸の置き換えの確かめを `Checker::takes_bare_module`（同じ名前のローカルの束縛か、参照元の同名の共用体）にまとめた。自前の `union DataChannel` があるモジュールの `Channel.bounded`・旧い `Channel.recv` の修正案は `std::DataChannel.bounded`・`std::DataChannel.recv` になり、直したプログラムが通る（以前は裸の名前で、`tsuzuri fix` は `E2008` で止まった）。
+- E18 D2・E19: 値の位置の裸の置き換えの確かめを `Checker::takes_bare_module`（同じ名前のローカルの束縛か、参照元の同名の共用体）にまとめた。自前の `union DataChannel` があるモジュールの `Channel.bounded`・旧い `Channel.recv` の修正案は `std::DataChannel.bounded`・`std::DataChannel.recv` になり、直したプログラムが通る（以前は裸の名前だった。`Channel.bounded` は `tsuzuri fix` が裸の `DataChannel.bounded` を書いて `E1002` が残り、終了コードは 0（回復が同じ位置に同じ `E1002` をすでに出していたので `E2008` にならない）。旧い `Channel.recv` は `E2008` で止まり、ファイルを書かなかった）。
 - テスト: `tests/modules.rs`（上の表の `std::` の呼び出しがすべて通ること、`std::Path.join` も、裸の `Mutex.create` の `E1002` と案内）、`tests/removed_features.rs` の `a_union_named_like_the_replacement_module_makes_the_fix_say_std`。
 - 文書: `union.md`、`compiler/diagnostics.md`（`E1040`）、`docs/language.md`、`docs/architecture.md`。
+- 独立のレビュー（コンパイラ・文書とテストの 2 つの観点と、指摘ごとの反証）で、`tests/`・`examples/` の 579 ファイルと言語リファレンスの 709 の例の `check` が `main` と同じこと、`tsuzuri fix` と言語サーバーのクイックフィックスが `std::` を付けることを確かめた。指摘を受けて、`union.md` の言い過ぎ（標準のソースの関数は無修飾でも標準の関数）、`channel.md`、上の `tsuzuri fix` の記述、案内の抜け（std のファイルのない組み込みのモジュール `Routine`・`Int`・`Simd` にも出し、`__` で始まる非公開の組み込み関数には出さない）、コメント、テスト（`union Routine` の隣の `Task.scope`、`union Channel` の隣の `std::Channel.bounded`、`std::Maybe.Other` の `E1002`）を直した。名前空間を付けた書き方（`App::Tools.Saw`）が自分の共用体に戻らなくなったのは、言語リファレンスの規則（自分の共用体のケースは無修飾か `Main.Union.Case`）どおりの直しとした。E20 より前からある、サブディレクトリのモジュールで戻らない不一致は [E21](../E21-own-union-beside-subdirectory-module.md) にした。
