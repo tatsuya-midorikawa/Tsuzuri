@@ -6,7 +6,7 @@
 | 優先度 | P1（Win32 の多くの API は NULL を取るか返す。`CreateWindowExW` の `hWndParent`・`hMenu`・`hInstance`・`lpParam`、`LoadCursorW` の `hInstance`、失敗で NULL を返す `CreateWindowExW`・`LoadImageW`・`TlsGetValue` などで、今はどれも型の契約の内で書けない） |
 | 規模 | M（判定の関数と extern の側の述語 3 つ、生成の 3 経路（extern の引数・extern の結果・コールバックの引数）、ヘッダーの 2 つの走査、wasm の拒否、テストと文書） |
 | 依存 | – |
-| 後続 | [W21](W21-c-layout-records.md)（`@c_layout` の field の `Maybe<H>`）、[W24](W24-extern-view.md)、[W27](W27-win32-package-from-winmd.md)（win32metadata の `[Optional]` の写し先） |
+| 後続 | [W21](W21-c-layout-records.md)（`@c_layout` の field の `Maybe<H>`）、[W24](W24-extern-view.md)、[W27](W27-win32-package-from-winmd.md)（win32metadata の `[Optional]` の写し先）、[NS01](NS01-nonnull-extern-handles.md)（`H` の非 Null 不変条件と `Maybe<H>` の niche）、[NS02](NS02-export-and-bindings-nullable.md)、[NS03](NS03-bindgen-nullability.md) |
 | 状態 | todo |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（E12 の対象外の解除）。決定事項 D1 が要承認、D2〜D8 は既定案 |

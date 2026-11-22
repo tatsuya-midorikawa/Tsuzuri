@@ -34,7 +34,7 @@ A31 のマージの時点で、12 回のレビューが報告した穴（`main` 
 | --- | --- | --- |
 | `v17`（`target/wt/a31/target/scratch/review-a31-ce/v17_display_bad_forced`、`target/wt/a31/target/scratch/a31/r13/p/v17b_display_stores_param_part_check`） | `Display` の instance の `display` が、仮引数の部分の借用（`c.name`）を、仮引数の region のフィールドが指す呼び出し元の `Mutex` へ書き込み（`record Cell {r} { m: ref {r} Mutex<...>, name: string }`）、関数の局所値をその型で文字列の補間 `"{c2}"` に入れる | どちらのバイナリも受理します。補間が実行する `display` の暗黙の呼び出しには、書き込みの事実を当てはめていません。直接の呼び出し `Display.display (ref c2)`（`r13/p/v17c_display_direct_call`）は A31 が `8:13` の `E1013`（`store_local_borrow_through_reference`）で拒否し、`main` は受理して `-O0` で不定の値（`4307242976`）を出します。補間の形を実行すると、`display` の後もセルは元の関数のまま（`v17b` の `inside` が 0）で、解放後の読み出しは観測していません。補間の脱糖が `display` を何に対して呼ぶかを確かめ、書き込みが起きうるなら事実を当てはめる |
 
-A31 の Copilot のレビューの後のレビューの第2回（2026-11-14）の確かめで、格納の検査の外にある次の穴も見つけました。型の検査（捕捉の規則）の穴で、このチケットの格納と破棄の順序のモデルとは別に直す必要があります。
+A31 の Copilot のレビューの後のレビューの第2回（2026-11-14）の確かめで、格納の検査の外にある次の穴も見つけました。型の検査（捕捉の規則）の穴で、このチケットの格納と破棄の順序のモデルとは別に直す必要があります（[NS08](NS08-owned-call-partial-capture-check.md) として独立起票済み）。
 
 | 名前（再現のパス） | 形 | 分かっていること |
 | --- | --- | --- |
