@@ -1,9 +1,20 @@
 import * as assert from 'node:assert/strict';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile as fsWriteFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { activate } from '../extension';
 import { supportsDebug } from '../core';
+
+async function writeFile(target: string, content: string): Promise<void> {
+	await fsWriteFile(target, content);
+	// On Windows Server VMs, NTFS mtimeMs/ctimeMs can lead V8's Date.now() by up to one 15.6 ms clock tick;
+	// wait until Date.now() catches up so an immediately following run is not treated as predating this write.
+	const info = await stat(target);
+	const stamped = Math.trunc(Math.max(info.mtimeMs, info.ctimeMs));
+	while (Date.now() < stamped) {
+		await new Promise(resolve => setTimeout(resolve, 5));
+	}
+}
 
 async function waitFor<Value>(description: string, value: () => Value | undefined | Promise<Value | undefined>, timeout = 30000): Promise<Value> {
 	const deadline = Date.now() + timeout;

@@ -111,9 +111,11 @@ try {
     "word_int 0 42 + word_rect 1 (ref r)",
     "",
   ].join("\n"));
-  for (const extra of [["-O0"], ["-O3"], ...(process.platform === "win32" ? [] : [["--backend", "fast"]])]) {
+  for (const extra of [["-O0"], ["-O3"], ["--backend", "fast"]]) {
     const out = join(root, `multi-${extra.join("")}`);
-    execute(compiler, ["build", multiExtern, ...extra, "--link", host, "-l", "pthread", "-o", out]);
+    const built = execute(compiler, ["build", multiExtern, ...extra, "--link", host, "-l", "pthread", "-o", out], false);
+    if (extra[0] === "--backend" && /built without the fast backend|not available on/.test(built.stderr)) continue;
+    assert.equal(built.status, 0, built.stderr);
     assert.equal(execute(out, []).stdout.trim(), "50");
   }
   const nullableFixture = resolve("tests/fixtures/abi_nullable");

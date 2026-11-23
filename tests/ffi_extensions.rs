@@ -643,10 +643,19 @@ fn handles_lower_to_pointers_and_header_typedefs() {
         assert!(ir.contains("define i64 @tz_borrowed(ptr %arg0)"));
         // A borrowed handle is read from its slot before the host sees it.
         assert!(ir.contains("load ptr, ptr"));
-        // The host passes the handle itself, so the export spills it and lends the slot (E13).
-        assert!(ir.contains(
-            "  %h0 = alloca ptr, align 8\n  store ptr %arg0, ptr %h0\n  %result = call i64 @tz.fn.Main.borrowed(ptr %h0)"
-        ));
+        // The host passes the handle itself, so the export spills it and lends the slot (E13);
+        // on native, NS01 checks that %arg0 is non-null before spilling.
+        if wasm {
+            assert!(ir.contains(
+                "  %h0 = alloca ptr, align 8\n  store ptr %arg0, ptr %h0\n  %result = call i64 @tz.fn.Main.borrowed(ptr %h0)"
+            ));
+        } else {
+            assert!(
+                ir.contains("icmp ne ptr %arg0, null")
+                    && ir.contains("call i64 @tz.fn.Main.borrowed(ptr "),
+                "{ir}"
+            );
+        }
         // Handles are plain pointers: no buffer ABI use and no allocator export.
         assert_eq!(
             ir.matches("%tz.abi.buffer").count(),
